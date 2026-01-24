@@ -1033,42 +1033,399 @@ Code extraction: Port ai-editutor logic (Lua → Go)
 
 ---
 
-## Integration Points
+## Ecosystem Integration (Deep)
 
-### With ai-editutor
+The three products share a **unified knowledge graph** and communicate bidirectionally.
 
-```
-Platform                          ai-editutor
-   │                                   │
-   │  User builds project              │
-   │                                   │
-   │  ──────── questions ───────────>  │
-   │                                   │
-   │  <─────── knowledge.json ───────  │
-   │                                   │
-   │  Platform reads knowledge to      │
-   │  understand what user struggled   │
-   │  with during this milestone       │
-   │                                   │
-```
-
-### With editutor-tracker
+### Core: Shared Knowledge Graph
 
 ```
-Platform                          Tracker
-   │                                   │
-   │  AI review generates              │
-   │  "concepts to reinforce"          │
-   │                                   │
-   │  ──────── concepts ────────────>  │
-   │                                   │
-   │  Tracker creates tests            │
-   │  for those concepts               │
-   │                                   │
-   │  <─────── test results ─────────  │
-   │                                   │
-   │  Platform sees mastery level      │
-   │                                   │
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        UNIFIED KNOWLEDGE GRAPH                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  Concepts (nodes):                                                       │
+│  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐                   │
+│  │   B-tree    │───│    Index    │───│    Query    │                   │
+│  │             │   │             │   │   Planner   │                   │
+│  │ mastery: 70%│   │ mastery: 45%│   │ mastery: 20%│                   │
+│  │ last: 3d ago│   │ last: 7d ago│   │ last: never │                   │
+│  └─────────────┘   └─────────────┘   └─────────────┘                   │
+│         │                                                                │
+│         │ learned from                                                   │
+│         ▼                                                                │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ Sources:                                                         │   │
+│  │ - Crafter: "Build SQLite M3" (completed)                        │   │
+│  │ - ai-editutor: 3 questions about B-tree balancing               │   │
+│  │ - Tracker: tested 5 times, 70% avg score                        │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Data Flow 1: Crafter → ai-editutor (Context Awareness)
+
+```
+User starts milestone in Crafter
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ Crafter writes to shared state:                                          │
+│ {                                                                        │
+│   "active_project": "Build Your Own Redis",                             │
+│   "active_milestone": "M5: RDB Persistence",                            │
+│   "concepts_involved": ["serialization", "fork", "copy-on-write"],      │
+│   "hints_available": ["Look into BGSAVE flow", "RDB format spec"]       │
+│ }                                                                        │
+└─────────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ ai-editutor reads this context:                                          │
+│                                                                          │
+│ User asks: "How does fork() work?"                                      │
+│                                                                          │
+│ ai-editutor knows:                                                       │
+│ - User is working on Redis RDB persistence                              │
+│ - This is about BGSAVE, not general fork() question                     │
+│ - Answer focuses on: copy-on-write, child process snapshot              │
+│                                                                          │
+│ → More relevant, contextual answer                                      │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Data Flow 2: ai-editutor → Crafter (Struggle Detection)
+
+```
+User asks questions while building
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ ai-editutor logs to shared state:                                        │
+│ {                                                                        │
+│   "milestone": "Redis M5",                                              │
+│   "questions": [                                                         │
+│     {"q": "Why BGSAVE uses fork?", "concepts": ["fork", "cow"]},        │
+│     {"q": "How to handle concurrent writes during snapshot?", ...},     │
+│     {"q": "What if child crashes?", "concepts": ["error-handling"]},    │
+│     {"q": "Why not just write directly?", ...},                         │
+│     {"q": "What is copy-on-write?", "concepts": ["cow", "memory"]}      │
+│   ],                                                                     │
+│   "struggle_indicators": ["cow mentioned 3 times", "5 questions total"] │
+│ }                                                                        │
+└─────────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ When user submits milestone, Crafter's AI review sees:                  │
+│                                                                          │
+│ "User asked 5 questions during this milestone.                          │
+│  Struggled most with: copy-on-write (3 mentions)                        │
+│  Consider reviewing COW implementation carefully."                       │
+│                                                                          │
+│ AI Review prompt includes this context → more thorough review           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Data Flow 3: Crafter → Tracker (Concept Reinforcement)
+
+```
+AI Review completes
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ Crafter generates learning summary:                                      │
+│ {                                                                        │
+│   "milestone": "Redis M5: RDB Persistence",                             │
+│   "verdict": "ACCEPT",                                                   │
+│   "concepts_learned": [                                                  │
+│     {"name": "fork()", "confidence": "high"},                           │
+│     {"name": "copy-on-write", "confidence": "medium"},  ← struggled     │
+│     {"name": "RDB format", "confidence": "high"},                       │
+│     {"name": "BGSAVE flow", "confidence": "medium"}                     │
+│   ],                                                                     │
+│   "recommended_review": ["copy-on-write", "BGSAVE flow"]                │
+│ }                                                                        │
+└─────────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ Tracker receives and schedules:                                          │
+│                                                                          │
+│ - "copy-on-write" test: schedule in 1 day (struggled)                   │
+│ - "BGSAVE flow" test: schedule in 1 day                                 │
+│ - "fork()" test: schedule in 3 days (confident)                         │
+│ - "RDB format" test: schedule in 3 days                                 │
+│                                                                          │
+│ Test questions generated from:                                           │
+│ - User's own questions (from ai-editutor)                               │
+│ - AI review feedback                                                     │
+│ - Standard concept questions                                             │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Data Flow 4: Tracker → Crafter (Mastery Feedback)
+
+```
+User takes tests over time
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ Tracker accumulates mastery data:                                        │
+│ {                                                                        │
+│   "copy-on-write": {"tests": 5, "avg_score": 60%, "trend": "improving"},│
+│   "TCP-sockets": {"tests": 3, "avg_score": 90%, "trend": "stable"},     │
+│   "B-tree": {"tests": 4, "avg_score": 40%, "trend": "declining"} ← weak │
+│ }                                                                        │
+└─────────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ Crafter uses this for recommendations:                                   │
+│                                                                          │
+│ "You're weak on B-tree (40% mastery, declining).                        │
+│  Before starting 'Build Your Own SQLite', consider:                     │
+│  - Review B-tree questions in Tracker                                   │
+│  - Or do 'Build Your Own B-tree' mini-project first"                   │
+│                                                                          │
+│ Also adjusts AI review to be more thorough on B-tree related code      │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Data Flow 5: Tracker → ai-editutor (Adaptive Depth)
+
+```
+User asks question in ai-editutor
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ ai-editutor checks Tracker mastery:                                      │
+│                                                                          │
+│ User asks: "How does B-tree insertion work?"                            │
+│                                                                          │
+│ Tracker says: B-tree mastery = 40% (weak)                               │
+│                                                                          │
+│ ai-editutor response:                                                    │
+│ - MORE detailed explanation (not assuming prior knowledge)              │
+│ - Include visual diagrams                                                │
+│ - Add follow-up questions to check understanding                        │
+│ - Suggest: "You might want to review B-tree in Tracker"                │
+│                                                                          │
+│ vs if mastery was 90%:                                                   │
+│ - Concise answer focused on specific edge case                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Integration Summary Table
+
+| From | To | Data | Purpose |
+|------|-----|------|---------|
+| Crafter | ai-editutor | Active milestone, hints | Context-aware answers |
+| ai-editutor | Crafter | Questions asked, struggle points | Informed AI review |
+| Crafter | Tracker | Concepts learned, confidence | Schedule tests |
+| Tracker | Crafter | Mastery scores, weak areas | Recommend projects |
+| Tracker | ai-editutor | Mastery scores | Adaptive answer depth |
+| ai-editutor | Tracker | Questions as test material | Personalized tests |
+
+---
+
+## Daily Learning Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         DAILY LEARNING FLOW                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  Morning (15 min): TRACKER                                              │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ "5 concepts due for review today"                                │   │
+│  │ - copy-on-write (from Redis project, 2 days ago)                │   │
+│  │ - TCP handshake (from HTTP server, 5 days ago)                  │   │
+│  │ - ...                                                            │   │
+│  │                                                                   │   │
+│  │ Quick tests, update mastery scores                               │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                            │                                             │
+│                            ▼                                             │
+│  Main work (2-4 hours): CRAFTER + AI-EDITUTOR                          │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ Continue current milestone: "Redis M6: AOF Persistence"         │   │
+│  │                                                                   │   │
+│  │ Code in Neovim with ai-editutor:                                │   │
+│  │ - Questions auto-tagged with current milestone                  │   │
+│  │ - Context-aware answers                                          │   │
+│  │ - Hints from Crafter available                                  │   │
+│  │                                                                   │   │
+│  │ When done: Submit → AI Review → ACCEPT/REJECT                   │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                            │                                             │
+│                            ▼                                             │
+│  After milestone: AUTO-SYNC                                             │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ - New concepts pushed to Tracker                                 │   │
+│  │ - Knowledge graph updated                                        │   │
+│  │ - Next milestone unlocked                                        │   │
+│  │ - Daily streak updated                                           │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+│  Evening (optional): REVIEW                                             │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ Dashboard shows:                                                 │   │
+│  │ - Today: 1 milestone completed, 5 questions asked, 5 tests done │   │
+│  │ - Weak areas: B-tree (consider mini-project)                    │   │
+│  │ - Streak: 12 days                                                │   │
+│  │ - Next: Redis M7 or recommended detour                          │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Shared Data Model
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         SHARED DATABASE                                  │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  concepts                          questions (from ai-editutor)         │
+│  ┌─────────────────┐              ┌─────────────────────────────┐      │
+│  │ id              │              │ id                          │      │
+│  │ name            │◄─────────────│ concept_ids[]               │      │
+│  │ domain          │              │ milestone_id (nullable)     │      │
+│  │ mastery_score   │              │ question_text               │      │
+│  │ last_tested     │              │ answer_text                 │      │
+│  │ times_tested    │              │ created_at                  │      │
+│  │ sources[]       │              └─────────────────────────────┘      │
+│  └─────────────────┘                                                    │
+│         ▲                                                                │
+│         │                                                                │
+│         │ concepts_learned[]                                            │
+│         │                                                                │
+│  milestones                        tests (from tracker)                 │
+│  ┌─────────────────┐              ┌─────────────────────────────┐      │
+│  │ id              │              │ id                          │      │
+│  │ project_id      │              │ concept_id                  │──────┘
+│  │ name            │              │ question                    │
+│  │ status          │              │ user_answer                 │
+│  │ concepts_learned│──────────────│ score                       │
+│  │ struggle_points │              │ created_at                  │
+│  │ questions_asked │              └─────────────────────────────┘      │
+│  └─────────────────┘                                                    │
+│                                                                          │
+│  user_state                                                              │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ active_project          │ current project in Crafter            │   │
+│  │ active_milestone        │ current milestone                     │   │
+│  │ daily_streak            │ consecutive days learning             │   │
+│  │ total_xp                │ gamification                          │   │
+│  │ weak_concepts[]         │ from Tracker, informs Crafter        │   │
+│  │ strong_concepts[]       │ from Tracker                          │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+Storage location:
+```
+~/.local/share/editutor/
+├── editutor.db           # Shared SQLite database
+├── knowledge/            # Legacy JSON (migrate to DB)
+└── config.json           # Shared config
+```
+
+---
+
+## Neovim Integration Features
+
+### Universal Command Palette
+
+```
+:Editutor
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Editutor Command Palette                                        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Current: Redis M6: AOF Persistence                             │
+│                                                                  │
+│  [q] Ask question (ai-editutor)                                 │
+│  [s] Submit milestone (crafter)                                 │
+│  [h] View hints (crafter)                                       │
+│  [t] Quick test - 3 due concepts (tracker)                      │
+│  [d] Dashboard                                                   │
+│  [p] Switch project                                              │
+│                                                                  │
+│  Streak: 12 days | XP: 2,450 | Level: 7                        │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Inline Tracker Tests
+
+```
+:EditutorQuickTest
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Quick Test (3 concepts due)                          [1/3]     │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Concept: copy-on-write                                         │
+│  From: Redis M5 (2 days ago)                                    │
+│                                                                  │
+│  Q: When a parent process fork()s, how does COW handle          │
+│     memory pages that the child modifies?                       │
+│                                                                  │
+│  Your answer:                                                    │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ _                                                        │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+│  [Enter] Submit  [Tab] Skip  [Esc] Exit                        │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Milestone-Aware Hints
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Hint available from Crafter                                    │
+│                                                                  │
+│  You seem stuck on AOF rewrite. Hint 2/3:                       │
+│  "Consider how Redis handles BGREWRITEAOF - it's similar        │
+│   to BGSAVE but incrementally builds a new AOF file."           │
+│                                                                  │
+│  [Enter] Show full hint  [Esc] Dismiss                          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Post-Milestone Flow
+
+```
+Milestone submitted → ACCEPTED
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Milestone Complete: Redis M6 - AOF Persistence                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  +150 XP                                                         │
+│                                                                  │
+│  Concepts learned:                                               │
+│  ✓ AOF format                                                    │
+│  ✓ fsync strategies                                              │
+│  ⚠ AOF rewrite (struggled - 4 questions asked)                  │
+│                                                                  │
+│  → 3 new tests scheduled in Tracker                             │
+│  → "AOF rewrite" will be tested tomorrow (priority)             │
+│                                                                  │
+│  Next: M7 - Pub/Sub                                             │
+│                                                                  │
+│  [Enter] Continue to M7  [t] Take tests now  [d] Dashboard      │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---

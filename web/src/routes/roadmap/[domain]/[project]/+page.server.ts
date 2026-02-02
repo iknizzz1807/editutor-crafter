@@ -1,4 +1,4 @@
-import { error } from '@sveltejs/kit';
+import { error, fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types.js';
 import { db } from '$lib/server/db/index.js';
 import {
@@ -10,9 +10,12 @@ import {
 	projectResources,
 	projectLanguages,
 	learningOutcomes,
-	projectTags
+	projectTags,
+	submissions,
+	userSettings,
+	aiInteractions
 } from '$lib/server/db/schema.js';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, desc } from 'drizzle-orm';
 
 export const load: PageServerLoad = async ({ params, locals }) => {
 	const domain = db.select().from(domains).where(eq(domains.slug, params.domain)).get();
@@ -79,15 +82,77 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		.where(eq(projectTags.projectId, project.id))
 		.all();
 
+	// Get submissions for each milestone
+	const userSubmissions = locals.user
+		? db
+				.select()
+				.from(submissions)
+				.where(eq(submissions.userId, locals.user.id))
+				.orderBy(desc(submissions.createdAt))
+				.all()
+		: [];
+
+	const submissionsMap = new Map<number, typeof userSubmissions>();
+	for (const sub of userSubmissions) {
+		const existing = submissionsMap.get(sub.milestoneId) || [];
+		existing.push(sub);
+		submissionsMap.set(sub.milestoneId, existing);
+	}
+
+	// Get AI reviews for submissions
+	const allSubIds = userSubmissions.map((s) => s.id);
+	const reviews =
+		allSubIds.length > 0 && locals.user
+			? db
+					.select()
+					.from(aiInteractions)
+					.where(
+						and(
+							eq(aiInteractions.userId, locals.user.id),
+							eq(aiInteractions.interactionType, 'review')
+						)
+					)
+					.orderBy(desc(aiInteractions.createdAt))
+					.all()
+			: [];
+
+	const reviewsMap = new Map<number, (typeof reviews)[0]>();
+	for (const r of reviews) {
+		if (r.submissionId && !reviewsMap.has(r.submissionId)) {
+			reviewsMap.set(r.submissionId, r);
+		}
+	}
+
+	// Check if user has API key configured
+	const hasApiKey = locals.user
+		? !!(db
+				.select()
+				.from(userSettings)
+				.where(eq(userSettings.userId, locals.user.id))
+				.get()?.geminiApiKey)
+		: false;
+
+	const milestonesData = milestonesWithProgress.map((m) => {
+		const milestoneSubmissions = (submissionsMap.get(m.id) || []).map((s) => ({
+			...s,
+			review: reviewsMap.get(s.id)?.response || null
+		}));
+		return {
+			...m,
+			submissions: milestoneSubmissions
+		};
+	});
+
 	return {
 		domain,
 		project,
-		milestones: milestonesWithProgress,
+		milestones: milestonesData,
 		prerequisites,
 		resources,
 		languages,
 		outcomes,
-		tags
+		tags,
+		hasApiKey
 	};
 };
 
@@ -135,5 +200,30 @@ export const actions: Actions = {
 		}
 
 		return { success: true };
+	},
+
+	submitWork: async ({ request, locals }) => {
+		if (!locals.user) error(401, 'Not authenticated');
+
+		const formData = await request.formData();
+		const milestoneId = Number(formData.get('milestoneId'));
+		const content = (formData.get('content') as string)?.trim();
+		const language = (formData.get('language') as string)?.trim() || null;
+
+		if (!milestoneId) return fail(400, { submitError: 'Missing milestone ID' });
+		if (!content) return fail(400, { submitError: 'Submission content is required' });
+
+		const result = db
+			.insert(submissions)
+			.values({
+				userId: locals.user.id,
+				milestoneId,
+				content,
+				language
+			})
+			.returning()
+			.get();
+
+		return { submitSuccess: true, submissionId: result.id };
 	}
 };

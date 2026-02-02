@@ -130,7 +130,7 @@
 	{#if data.milestones.length > 0}
 		<div class="milestones-section">
 			<h3>📍 Milestones</h3>
-			<MilestoneTimeline milestones={data.milestones} />
+			<MilestoneTimeline milestones={data.milestones} languages={data.languages} hasApiKey={data.hasApiKey} />
 		</div>
 	{/if}
 </div>

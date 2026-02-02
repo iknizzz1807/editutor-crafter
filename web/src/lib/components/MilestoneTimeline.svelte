@@ -1,9 +1,12 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 	import HintAccordion from './HintAccordion.svelte';
+	import SubmissionForm from './SubmissionForm.svelte';
 
 	let {
-		milestones
+		milestones,
+		languages = [],
+		hasApiKey = false
 	}: {
 		milestones: Array<{
 			id: number;
@@ -19,7 +22,17 @@
 			skills: string | null;
 			deliverables: string | null;
 			status: string;
+			submissions: Array<{
+				id: number;
+				content: string;
+				language: string | null;
+				status: string;
+				createdAt: string;
+				review: string | null;
+			}>;
 		}>;
+		languages: Array<{ language: string; recommended: number }>;
+		hasApiKey: boolean;
 	} = $props();
 
 	let openMilestones = $state(new Set<number>());
@@ -148,6 +161,13 @@
 								</div>
 							</div>
 						{/if}
+
+						<SubmissionForm
+							milestoneId={milestone.id}
+							{languages}
+							submissions={milestone.submissions || []}
+							{hasApiKey}
+						/>
 					</div>
 				{/if}
 			</div>

@@ -169,6 +169,41 @@ export const userProgress = sqliteTable(
 	]
 );
 
+export const userSettings = sqliteTable('user_settings', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	userId: integer('user_id')
+		.notNull()
+		.references(() => users.id, { onDelete: 'cascade' })
+		.unique(),
+	geminiApiKey: text('gemini_api_key'),
+	updatedAt: text('updated_at')
+		.notNull()
+		.$defaultFn(() => new Date().toISOString())
+});
+
+export const submissions = sqliteTable(
+	'submissions',
+	{
+		id: integer('id').primaryKey({ autoIncrement: true }),
+		userId: integer('user_id')
+			.notNull()
+			.references(() => users.id, { onDelete: 'cascade' }),
+		milestoneId: integer('milestone_id')
+			.notNull()
+			.references(() => milestones.id, { onDelete: 'cascade' }),
+		content: text('content').notNull(),
+		language: text('language'),
+		status: text('status').notNull().default('pending'),
+		createdAt: text('created_at')
+			.notNull()
+			.$defaultFn(() => new Date().toISOString())
+	},
+	(table) => [
+		index('idx_submissions_user_id').on(table.userId),
+		index('idx_submissions_milestone_id').on(table.milestoneId)
+	]
+);
+
 export const aiInteractions = sqliteTable(
 	'ai_interactions',
 	{
@@ -178,6 +213,7 @@ export const aiInteractions = sqliteTable(
 			.references(() => users.id, { onDelete: 'cascade' }),
 		projectId: integer('project_id').references(() => projects.id),
 		milestoneId: integer('milestone_id').references(() => milestones.id),
+		submissionId: integer('submission_id').references(() => submissions.id),
 		interactionType: text('interaction_type').notNull(),
 		prompt: text('prompt').notNull(),
 		response: text('response'),

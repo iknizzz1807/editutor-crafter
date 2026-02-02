@@ -72,6 +72,16 @@
 	</nav>
 
 	{#if user}
+		<nav class="extra-nav">
+			<a href="/history" class="extra-nav-item">
+				<span class="extra-nav-icon">🕐</span>
+				<span>History</span>
+			</a>
+			<a href="/settings" class="extra-nav-item">
+				<span class="extra-nav-icon">⚙️</span>
+				<span>Settings</span>
+			</a>
+		</nav>
 		<div class="sidebar-footer">
 			<div class="user-info">
 				<div class="user-avatar">{user.username[0].toUpperCase()}</div>
@@ -220,6 +230,34 @@
 	.domain-count {
 		font-size: 12px;
 		color: var(--text-muted);
+	}
+
+	.extra-nav {
+		padding: 8px 0;
+		border-top: 1px solid var(--border);
+	}
+
+	.extra-nav-item {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 8px 20px;
+		font-size: 13px;
+		color: var(--text-secondary);
+		text-decoration: none;
+		transition: all 0.15s ease;
+	}
+
+	.extra-nav-item:hover {
+		background: var(--bg-card);
+		color: var(--text-primary);
+		text-decoration: none;
+	}
+
+	.extra-nav-icon {
+		width: 20px;
+		text-align: center;
+		font-size: 14px;
 	}
 
 	.sidebar-footer {

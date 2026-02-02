@@ -9,15 +9,13 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 
 	const page = parseInt(url.searchParams.get('page') || '1');
 	const limit = parseInt(url.searchParams.get('limit') || '20');
-	const domainSlug = url.searchParams.get('domain');
-	const projectSlug = url.searchParams.get('project');
 	const offset = (page - 1) * limit;
 
-	let query = db
+	const allSubmissions = db
 		.select({
 			id: submissions.id,
-			content: submissions.content,
-			language: submissions.language,
+			fileName: submissions.fileName,
+			fileSize: submissions.fileSize,
 			status: submissions.status,
 			createdAt: submissions.createdAt,
 			milestoneId: submissions.milestoneId,
@@ -35,9 +33,8 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 		.where(eq(submissions.userId, locals.user.id))
 		.orderBy(desc(submissions.createdAt))
 		.limit(limit)
-		.offset(offset);
-
-	const allSubmissions = query.all();
+		.offset(offset)
+		.all();
 
 	// Get AI interactions for these submissions
 	const submissionIds = allSubmissions.map((s) => s.id);
@@ -69,7 +66,6 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 
 	const result = allSubmissions.map((s) => ({
 		...s,
-		contentExcerpt: s.content.length > 200 ? s.content.slice(0, 200) + '...' : s.content,
 		reviews: interactionMap.get(s.id) || []
 	}));
 

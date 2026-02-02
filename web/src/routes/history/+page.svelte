@@ -21,6 +21,12 @@
 			minute: '2-digit'
 		});
 	}
+
+	function formatSize(bytes: number): string {
+		if (bytes < 1024) return bytes + ' B';
+		if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+		return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+	}
 </script>
 
 <svelte:head>
@@ -54,9 +60,7 @@
 							<div class="submission-title">{submission.milestoneTitle}</div>
 							<div class="submission-details">
 								<span class="submission-date">{formatDate(submission.createdAt)}</span>
-								{#if submission.language}
-									<span class="lang-badge">{submission.language}</span>
-								{/if}
+								<span class="file-badge">📦 {submission.fileName} ({formatSize(submission.fileSize)})</span>
 								<span class="status-badge" class:reviewed={submission.status === 'reviewed'}>
 									{submission.status}
 								</span>
@@ -68,19 +72,16 @@
 						<span class="toggle-icon" class:open={isExpanded}>▼</span>
 					</button>
 
-					{#if isExpanded}
+					{#if isExpanded && submission.review}
 						<div class="submission-body">
-							<div class="code-section">
-								<div class="section-title">Submission</div>
-								<pre class="code-block"><code>{submission.content}</code></pre>
+							<div class="review-section">
+								<div class="section-title">AI Review</div>
+								<div class="review-content">{submission.review}</div>
 							</div>
-
-							{#if submission.review}
-								<div class="review-section">
-									<div class="section-title">AI Review</div>
-									<div class="review-content">{submission.review}</div>
-								</div>
-							{/if}
+						</div>
+					{:else if isExpanded}
+						<div class="submission-body">
+							<p class="no-review">No AI review yet. Request one from the project page.</p>
 						</div>
 					{/if}
 				</div>
@@ -208,13 +209,10 @@
 		color: var(--text-muted);
 	}
 
-	.lang-badge {
-		padding: 1px 6px;
-		background: var(--bg-dark);
-		border: 1px solid var(--border);
-		border-radius: 3px;
-		font-size: 11px;
-		color: var(--text-muted);
+	.file-badge {
+		font-size: 12px;
+		color: var(--text-secondary);
+		font-family: 'JetBrains Mono', monospace;
 	}
 
 	.status-badge {
@@ -265,24 +263,6 @@
 		margin-bottom: 10px;
 	}
 
-	.code-block {
-		background: var(--bg-dark);
-		border: 1px solid var(--border);
-		border-radius: 6px;
-		padding: 14px;
-		overflow-x: auto;
-		font-family: 'JetBrains Mono', monospace;
-		font-size: 13px;
-		line-height: 1.5;
-		color: var(--text-secondary);
-		white-space: pre-wrap;
-		word-break: break-word;
-	}
-
-	.review-section {
-		margin-top: 20px;
-	}
-
 	.review-content {
 		background: var(--bg-dark);
 		border: 1px solid var(--border);
@@ -294,6 +274,12 @@
 		color: var(--text-secondary);
 		white-space: pre-wrap;
 		word-break: break-word;
+	}
+
+	.no-review {
+		font-size: 13px;
+		color: var(--text-muted);
+		font-style: italic;
 	}
 
 	@media (max-width: 768px) {

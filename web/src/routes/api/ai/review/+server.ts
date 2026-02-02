@@ -11,6 +11,71 @@ import {
 import { eq } from 'drizzle-orm';
 import { decrypt } from '$lib/server/crypto.js';
 import { reviewSubmission } from '$lib/server/gemini.js';
+import { resolve } from 'path';
+
+async function extractTextFilesFromZip(zipPath: string): Promise<string> {
+	const { exec } = await import('child_process');
+	const { promisify } = await import('util');
+	const execAsync = promisify(exec);
+
+	// List files in zip
+	let fileList: string;
+	try {
+		const { stdout } = await execAsync(`unzip -l "${zipPath}" | tail -n +4 | head -n -2 | awk '{print $4}'`, { maxBuffer: 1024 * 1024 });
+		fileList = stdout.trim();
+	} catch {
+		return '[Could not list zip contents]';
+	}
+
+	const files = fileList.split('\n').filter((f) => f && !f.endsWith('/'));
+
+	// Filter to source code files only
+	const sourceExtensions = [
+		'.js', '.ts', '.jsx', '.tsx', '.py', '.java', '.c', '.cpp', '.h', '.hpp',
+		'.cs', '.go', '.rs', '.rb', '.php', '.swift', '.kt', '.scala', '.r',
+		'.html', '.css', '.scss', '.sass', '.less', '.vue', '.svelte',
+		'.json', '.yaml', '.yml', '.toml', '.xml', '.sql',
+		'.sh', '.bash', '.zsh', '.fish', '.ps1',
+		'.md', '.txt', '.cfg', '.ini', '.env.example',
+		'.dockerfile', '.gitignore', '.editorconfig'
+	];
+
+	const sourceFiles = files.filter((f) => {
+		const lower = f.toLowerCase();
+		const name = lower.split('/').pop() || '';
+		return sourceExtensions.some((ext) => lower.endsWith(ext)) ||
+			name === 'dockerfile' || name === 'makefile' || name === 'rakefile' ||
+			name === 'gemfile' || name === 'pipfile';
+	});
+
+	if (sourceFiles.length === 0) {
+		return '[No source code files found in zip]';
+	}
+
+	// Extract and concat source files (limit total to ~50KB to not overwhelm the LLM)
+	let result = '';
+	const maxTotal = 50 * 1024;
+
+	for (const file of sourceFiles.slice(0, 50)) {
+		if (result.length >= maxTotal) {
+			result += `\n\n... (truncated, ${sourceFiles.length - sourceFiles.indexOf(file)} more files)\n`;
+			break;
+		}
+
+		try {
+			const { stdout } = await execAsync(`unzip -p "${zipPath}" "${file}"`, {
+				maxBuffer: 1024 * 1024,
+				encoding: 'utf8'
+			});
+			const content = stdout.slice(0, 5000); // max 5KB per file
+			result += `\n--- ${file} ---\n${content}\n`;
+		} catch {
+			result += `\n--- ${file} ---\n[Could not extract]\n`;
+		}
+	}
+
+	return result || '[Empty zip]';
+}
 
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.user) error(401, 'Not authenticated');
@@ -71,8 +136,17 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		.where(eq(projects.id, milestone.projectId))
 		.get();
 
+	// Extract source code from zip
+	const zipPath = resolve(`data/${submission.filePath}`);
+	let sourceCode: string;
 	try {
-		const review = await reviewSubmission(apiKey, milestone, submission.content, submission.language);
+		sourceCode = await extractTextFilesFromZip(zipPath);
+	} catch {
+		return json({ error: 'Failed to read submission file' }, { status: 500 });
+	}
+
+	try {
+		const review = await reviewSubmission(apiKey, milestone, sourceCode, null);
 
 		// Save AI interaction
 		db.insert(aiInteractions)

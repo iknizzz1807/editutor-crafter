@@ -4,16 +4,14 @@
 
 	let {
 		milestoneId,
-		languages,
 		submissions,
 		hasApiKey
 	}: {
 		milestoneId: number;
-		languages: Array<{ language: string; recommended: number }>;
 		submissions: Array<{
 			id: number;
-			content: string;
-			language: string | null;
+			fileName: string;
+			fileSize: number;
 			status: string;
 			createdAt: string;
 			review: string | null;
@@ -23,17 +21,48 @@
 
 	let submitting = $state(false);
 	let reviewingId = $state<number | null>(null);
-	let reviewResult = $state<string | null>(null);
+	let reviewResults = $state<Map<number, string>>(new Map());
 	let reviewError = $state<string | null>(null);
+	let selectedFile = $state<File | null>(null);
+	let fileError = $state<string | null>(null);
 	let guideLoading = $state(false);
 	let guideResult = $state<string | null>(null);
 	let guideError = $state<string | null>(null);
 	let guideQuestion = $state('');
 	let showGuide = $state(false);
 
+	const MAX_SIZE = 5 * 1024 * 1024;
+
+	function handleFileChange(e: Event) {
+		const input = e.target as HTMLInputElement;
+		const file = input.files?.[0] || null;
+		fileError = null;
+
+		if (file) {
+			if (!file.name.endsWith('.zip')) {
+				fileError = 'Only .zip files are allowed';
+				selectedFile = null;
+				input.value = '';
+				return;
+			}
+			if (file.size > MAX_SIZE) {
+				fileError = `File too large (${formatSize(file.size)}). Max 5MB.`;
+				selectedFile = null;
+				input.value = '';
+				return;
+			}
+		}
+		selectedFile = file;
+	}
+
+	function formatSize(bytes: number): string {
+		if (bytes < 1024) return bytes + ' B';
+		if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+		return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+	}
+
 	async function requestReview(submissionId: number) {
 		reviewingId = submissionId;
-		reviewResult = null;
 		reviewError = null;
 
 		try {
@@ -46,9 +75,10 @@
 			if (!res.ok) {
 				reviewError = data.error || 'Review failed';
 			} else {
-				reviewResult = data.review;
+				reviewResults.set(submissionId, data.review);
+				reviewResults = new Map(reviewResults);
 			}
-		} catch (err) {
+		} catch {
 			reviewError = 'Failed to connect to AI service';
 		} finally {
 			reviewingId = null;
@@ -73,7 +103,7 @@
 			} else {
 				guideResult = data.guidance;
 			}
-		} catch (err) {
+		} catch {
 			guideError = 'Failed to connect to AI service';
 		} finally {
 			guideLoading = false;
@@ -99,17 +129,16 @@
 				<div class="prev-submission">
 					<div class="prev-header">
 						<span class="prev-date">{formatDate(sub.createdAt)}</span>
-						{#if sub.language}
-							<span class="prev-lang">{sub.language}</span>
-						{/if}
+						<span class="file-info">📦 {sub.fileName} ({formatSize(sub.fileSize)})</span>
 						<span class="prev-status" class:reviewed={sub.status === 'reviewed'}>
 							{sub.status}
 						</span>
 					</div>
-					<pre class="prev-code"><code>{sub.content.length > 300 ? sub.content.slice(0, 300) + '...' : sub.content}</code></pre>
 
 					{#if sub.review}
 						<AIReview review={sub.review} />
+					{:else if reviewResults.get(sub.id)}
+						<AIReview review={reviewResults.get(sub.id) || ''} />
 					{:else if hasApiKey}
 						<button
 							class="btn-review"
@@ -121,14 +150,10 @@
 					{/if}
 				</div>
 			{/each}
+			{#if reviewError}
+				<div class="error-msg">{reviewError}</div>
+			{/if}
 		</div>
-	{/if}
-
-	{#if reviewResult}
-		<AIReview review={reviewResult} />
-	{/if}
-	{#if reviewError}
-		<div class="error-msg">{reviewError}</div>
 	{/if}
 
 	<!-- Submit Work Form -->
@@ -137,42 +162,45 @@
 		<form
 			method="POST"
 			action="?/submitWork"
+			enctype="multipart/form-data"
 			use:enhance={() => {
 				submitting = true;
 				return async ({ update }) => {
 					submitting = false;
+					selectedFile = null;
 					await update();
 				};
 			}}
 		>
 			<input type="hidden" name="milestoneId" value={milestoneId} />
 
-			<div class="form-row">
-				<label for="language-{milestoneId}">Language</label>
-				<select id="language-{milestoneId}" name="language">
-					<option value="">Select language</option>
-					{#each languages as lang}
-						<option value={lang.language}>
-							{lang.language}{lang.recommended ? ' (recommended)' : ''}
-						</option>
-					{/each}
-				</select>
+			<div class="file-upload">
+				<label for="file-{milestoneId}" class="file-label">
+					<span class="file-icon">📁</span>
+					{#if selectedFile}
+						<span class="file-name">{selectedFile.name}</span>
+						<span class="file-size">{formatSize(selectedFile.size)}</span>
+					{:else}
+						<span class="file-placeholder">Choose a .zip file (max 5MB)</span>
+					{/if}
+				</label>
+				<input
+					type="file"
+					id="file-{milestoneId}"
+					name="file"
+					accept=".zip"
+					onchange={handleFileChange}
+					class="file-input"
+				/>
 			</div>
 
-			<div class="form-row">
-				<label for="content-{milestoneId}">Code / Text</label>
-				<textarea
-					id="content-{milestoneId}"
-					name="content"
-					placeholder="Paste your code or write your submission here..."
-					rows="10"
-					required
-				></textarea>
-			</div>
+			{#if fileError}
+				<div class="error-msg">{fileError}</div>
+			{/if}
 
 			<div class="form-actions">
-				<button type="submit" class="btn-submit" disabled={submitting}>
-					{submitting ? 'Submitting...' : 'Submit'}
+				<button type="submit" class="btn-submit" disabled={submitting || !selectedFile}>
+					{submitting ? 'Uploading...' : 'Submit'}
 				</button>
 
 				{#if hasApiKey}
@@ -242,7 +270,7 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		margin-bottom: 8px;
+		flex-wrap: wrap;
 	}
 
 	.prev-date {
@@ -250,13 +278,10 @@
 		color: var(--text-muted);
 	}
 
-	.prev-lang {
-		padding: 1px 6px;
-		background: var(--bg-card);
-		border: 1px solid var(--border);
-		border-radius: 3px;
-		font-size: 11px;
-		color: var(--text-muted);
+	.file-info {
+		font-size: 12px;
+		color: var(--text-secondary);
+		font-family: 'JetBrains Mono', monospace;
 	}
 
 	.prev-status {
@@ -271,20 +296,6 @@
 	.prev-status.reviewed {
 		background: rgba(63, 185, 80, 0.15);
 		color: var(--accent-bright);
-	}
-
-	.prev-code {
-		background: var(--bg-card);
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		padding: 8px;
-		overflow-x: auto;
-		font-family: 'JetBrains Mono', monospace;
-		font-size: 12px;
-		line-height: 1.5;
-		color: var(--text-secondary);
-		white-space: pre-wrap;
-		word-break: break-word;
 	}
 
 	.btn-review {
@@ -322,44 +333,52 @@
 		margin-top: 8px;
 	}
 
-	.form-row {
+	.file-upload {
+		position: relative;
 		margin-bottom: 12px;
 	}
 
-	.form-row label {
-		display: block;
+	.file-input {
+		position: absolute;
+		inset: 0;
+		opacity: 0;
+		cursor: pointer;
+	}
+
+	.file-label {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 12px 14px;
+		background: var(--bg-dark);
+		border: 2px dashed var(--border);
+		border-radius: 6px;
+		cursor: pointer;
+		transition: border-color 0.15s;
+	}
+
+	.file-label:hover {
+		border-color: var(--blue);
+	}
+
+	.file-icon {
+		font-size: 18px;
+	}
+
+	.file-placeholder {
+		font-size: 13px;
+		color: var(--text-muted);
+	}
+
+	.file-name {
+		font-size: 13px;
+		color: var(--text-primary);
+		font-weight: 500;
+	}
+
+	.file-size {
 		font-size: 12px;
 		color: var(--text-muted);
-		margin-bottom: 4px;
-	}
-
-	.form-row select {
-		padding: 6px 10px;
-		background: var(--bg-dark);
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		color: var(--text-primary);
-		font-family: inherit;
-		font-size: 13px;
-	}
-
-	.form-row textarea {
-		width: 100%;
-		padding: 10px;
-		background: var(--bg-dark);
-		border: 1px solid var(--border);
-		border-radius: 6px;
-		color: var(--text-primary);
-		font-family: 'JetBrains Mono', monospace;
-		font-size: 13px;
-		line-height: 1.5;
-		resize: vertical;
-	}
-
-	.form-row textarea:focus,
-	.form-row select:focus {
-		outline: none;
-		border-color: var(--blue);
 	}
 
 	.form-actions {

@@ -10,8 +10,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const allSubmissions = db
 		.select({
 			id: submissions.id,
-			content: submissions.content,
-			language: submissions.language,
+			fileName: submissions.fileName,
+			fileSize: submissions.fileSize,
 			status: submissions.status,
 			createdAt: submissions.createdAt,
 			milestoneId: submissions.milestoneId,

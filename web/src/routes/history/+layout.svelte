@@ -1,8 +1,12 @@
 <script lang="ts">
 	import Sidebar from '$lib/components/Sidebar.svelte';
+	import { sidebarCollapsed } from '$lib/stores/sidebar.js';
 
 	let { children, data } = $props();
 	let sidebarOpen = $state(false);
+	let collapsed = $state(false);
+
+	sidebarCollapsed.subscribe((v) => (collapsed = v));
 </script>
 
 <div class="app-layout">
@@ -29,7 +33,7 @@
 		open={sidebarOpen}
 	/>
 
-	<main class="main">
+	<main class="main" class:collapsed>
 		{@render children()}
 	</main>
 </div>
@@ -44,6 +48,11 @@
 		flex: 1;
 		margin-left: 280px;
 		min-height: 100vh;
+		transition: margin-left 0.25s ease;
+	}
+
+	.main.collapsed {
+		margin-left: 60px;
 	}
 
 	.mobile-header {
@@ -107,7 +116,7 @@
 		}
 
 		.main {
-			margin-left: 0;
+			margin-left: 0 !important;
 		}
 	}
 </style>

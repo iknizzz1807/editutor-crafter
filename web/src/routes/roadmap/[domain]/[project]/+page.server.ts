@@ -16,6 +16,10 @@ import {
 	aiInteractions
 } from '$lib/server/db/schema.js';
 import { eq, and, desc } from 'drizzle-orm';
+import { mkdir, writeFile } from 'fs/promises';
+import { resolve } from 'path';
+
+const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 
 export const load: PageServerLoad = async ({ params, locals }) => {
 	const domain = db.select().from(domains).where(eq(domains.slug, params.domain)).get();
@@ -207,19 +211,35 @@ export const actions: Actions = {
 
 		const formData = await request.formData();
 		const milestoneId = Number(formData.get('milestoneId'));
-		const content = (formData.get('content') as string)?.trim();
-		const language = (formData.get('language') as string)?.trim() || null;
+		const file = formData.get('file') as File | null;
 
 		if (!milestoneId) return fail(400, { submitError: 'Missing milestone ID' });
-		if (!content) return fail(400, { submitError: 'Submission content is required' });
+		if (!file || file.size === 0) return fail(400, { submitError: 'Please select a zip file' });
+		if (file.size > MAX_FILE_SIZE)
+			return fail(400, { submitError: 'File size exceeds 5MB limit' });
+		if (!file.name.endsWith('.zip') && file.type !== 'application/zip')
+			return fail(400, { submitError: 'Only .zip files are allowed' });
+
+		// Save file to data/uploads/{userId}/{timestamp}-{filename}
+		const uploadDir = resolve(`data/uploads/${locals.user.id}`);
+		await mkdir(uploadDir, { recursive: true });
+
+		const timestamp = Date.now();
+		const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+		const filePath = `uploads/${locals.user.id}/${timestamp}-${safeName}`;
+		const fullPath = resolve(`data/${filePath}`);
+
+		const buffer = Buffer.from(await file.arrayBuffer());
+		await writeFile(fullPath, buffer);
 
 		const result = db
 			.insert(submissions)
 			.values({
 				userId: locals.user.id,
 				milestoneId,
-				content,
-				language
+				filePath,
+				fileName: file.name,
+				fileSize: file.size
 			})
 			.returning()
 			.get();

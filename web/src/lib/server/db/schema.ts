@@ -191,8 +191,9 @@ export const submissions = sqliteTable(
 		milestoneId: integer('milestone_id')
 			.notNull()
 			.references(() => milestones.id, { onDelete: 'cascade' }),
-		content: text('content').notNull(),
-		language: text('language'),
+		filePath: text('file_path').notNull(),
+		fileName: text('file_name').notNull(),
+		fileSize: integer('file_size').notNull(),
 		status: text('status').notNull().default('pending'),
 		createdAt: text('created_at')
 			.notNull()

@@ -5,7 +5,6 @@
 
 	let {
 		milestones,
-		languages = [],
 		hasApiKey = false
 	}: {
 		milestones: Array<{
@@ -24,14 +23,13 @@
 			status: string;
 			submissions: Array<{
 				id: number;
-				content: string;
-				language: string | null;
+				fileName: string;
+				fileSize: number;
 				status: string;
 				createdAt: string;
 				review: string | null;
 			}>;
 		}>;
-		languages: Array<{ language: string; recommended: number }>;
 		hasApiKey: boolean;
 	} = $props();
 
@@ -164,7 +162,6 @@
 
 						<SubmissionForm
 							milestoneId={milestone.id}
-							{languages}
 							submissions={milestone.submissions || []}
 							{hasApiKey}
 						/>

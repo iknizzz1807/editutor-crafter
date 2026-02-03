@@ -53,7 +53,8 @@ export const projects = sqliteTable(
 		estimatedHours: text('estimated_hours'),
 		essence: text('essence'),
 		whyImportant: text('why_important'),
-		bridge: integer('bridge').notNull().default(0)
+		bridge: integer('bridge').notNull().default(0),
+		architectureDocPath: text('architecture_doc_path')
 	},
 	(table) => [index('idx_projects_domain_id').on(table.domainId)]
 );

@@ -110,7 +110,8 @@ const seedTransaction = sqlite.transaction(() => {
 						estimatedHours: expert?.estimated_hours || null,
 						essence: expert?.essence || null,
 						whyImportant: expert?.why_important || null,
-						bridge: bridgeFlag
+						bridge: bridgeFlag,
+						architectureDocPath: expert?.architecture_doc || null
 					})
 					.returning()
 					.get();

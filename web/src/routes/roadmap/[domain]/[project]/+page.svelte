@@ -198,7 +198,7 @@
 				</svg>
 				Milestones
 			</h3>
-			<MilestoneTimeline milestones={data.milestones} hasApiKey={data.hasApiKey} />
+			<MilestoneTimeline milestones={data.milestones} hasApiKey={data.hasApiKey} projectSlug={data.project.slug} hasArchDoc={data.hasArchDoc} />
 		</div>
 	{/if}
 </div>

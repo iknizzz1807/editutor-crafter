@@ -1,0 +1,1 @@
+ALTER TABLE `projects` ADD `architecture_doc_path` text;

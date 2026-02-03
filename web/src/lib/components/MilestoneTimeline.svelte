@@ -1,11 +1,14 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 	import HintAccordion from './HintAccordion.svelte';
+	import ArchitectureDoc from './ArchitectureDoc.svelte';
 	import SubmissionForm from './SubmissionForm.svelte';
 
 	let {
 		milestones,
-		hasApiKey = false
+		hasApiKey = false,
+		projectSlug = '',
+		hasArchDoc = false
 	}: {
 		milestones: Array<{
 			id: number;
@@ -31,6 +34,8 @@
 			}>;
 		}>;
 		hasApiKey: boolean;
+		projectSlug: string;
+		hasArchDoc: boolean;
 	} = $props();
 
 	let openMilestones = $state(new Set<number>());
@@ -55,6 +60,7 @@
 </script>
 
 <div class="timeline">
+	<ArchitectureDoc {projectSlug} hasDoc={hasArchDoc} />
 	{#each milestones as milestone, idx}
 		{@const isCompleted = milestone.status === 'completed'}
 		{@const isOpen = openMilestones.has(milestone.id)}
@@ -195,7 +201,7 @@
 						{/if}
 
 						<!-- HELP section -->
-						{#if milestone.hintsLevel1 || milestone.hintsLevel2 || milestone.hintsLevel3 || pitfalls.length > 0}
+						{#if milestone.hintsLevel1 || pitfalls.length > 0}
 							<div class="detail-group">
 								<div class="group-header">
 									<div class="group-icon help-icon">
@@ -204,11 +210,9 @@
 									<span class="group-title">Guidance</span>
 								</div>
 
-								{#if milestone.hintsLevel1 || milestone.hintsLevel2 || milestone.hintsLevel3}
+								{#if milestone.hintsLevel1}
 									<HintAccordion
 										level1={milestone.hintsLevel1}
-										level2={milestone.hintsLevel2}
-										level3={milestone.hintsLevel3}
 									/>
 								{/if}
 

@@ -62,7 +62,8 @@ const yamlExpertProjectSchema = z.object({
 	learning_outcomes: z.array(z.string()).optional(),
 	skills: z.array(z.string()).optional(),
 	tags: z.array(z.string()).optional(),
-	milestones: z.array(yamlMilestoneSchema).optional()
+	milestones: z.array(yamlMilestoneSchema).optional(),
+	architecture_doc: z.string().optional()
 });
 
 const yamlDomainProjectStub = z.object({

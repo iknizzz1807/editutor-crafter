@@ -2,78 +2,54 @@
 	import { highlightCode } from '$lib/highlight.js';
 
 	let {
-		level1,
-		level2,
-		level3
+		level1
 	}: {
 		level1: string | null;
-		level2: string | null;
-		level3: string | null;
 	} = $props();
 
-	let openLevel = $state<number | null>(null);
+	let isOpen = $state(false);
+	let highlightedContent = $state('');
 
-	function toggle(level: number) {
-		openLevel = openLevel === level ? null : level;
+	function toggle() {
+		isOpen = !isOpen;
+		if (isOpen && level1 && !highlightedContent) {
+			formatHintAsync(level1);
+		}
 	}
 
-	const levels = $derived(
-		[
-			{ level: 1, label: 'Gentle Nudge', content: level1, color: 'var(--accent-bright)', bg: 'rgba(63, 185, 80, 0.08)', border: 'rgba(63, 185, 80, 0.25)' },
-			{ level: 2, label: 'More Detail', content: level2, color: 'var(--blue)', bg: 'rgba(88, 166, 255, 0.08)', border: 'rgba(88, 166, 255, 0.25)' },
-			{ level: 3, label: 'Full Guidance', content: level3, color: 'var(--purple)', bg: 'rgba(163, 113, 247, 0.08)', border: 'rgba(163, 113, 247, 0.25)' }
-		].filter((l) => l.content)
-	);
-
-	// Store highlighted HTML per level
-	let highlightedContent = $state<Record<number, string>>({});
-
-	$effect(() => {
-		if (openLevel !== null) {
-			const hint = levels.find((l) => l.level === openLevel);
-			if (hint?.content && !highlightedContent[openLevel]) {
-				formatHintAsync(hint.content, openLevel);
-			}
-		}
-	});
-
-	async function formatHintAsync(text: string, level: number) {
-		const result = await formatHintWithHighlight(text);
-		highlightedContent = { ...highlightedContent, [level]: result };
+	async function formatHintAsync(text: string) {
+		highlightedContent = await formatHintWithHighlight(text);
 	}
 </script>
 
-<div class="hints-section">
-	{#each levels as hint}
-		{@const isOpen = openLevel === hint.level}
-		<div
-			class="hint-item"
-			class:open={isOpen}
-			style="--hint-color: {hint.color}; --hint-bg: {hint.bg}; --hint-border: {hint.border}"
-		>
-			<button class="hint-header" onclick={() => toggle(hint.level)}>
-				<span class="level">
-					<span class="level-num">{hint.level}</span>
-					<span class="level-label">{hint.label}</span>
-				</span>
-				<span class="toggle-icon">
+{#if level1}
+	<div class="hint-item" class:open={isOpen}>
+		<button class="hint-header" onclick={toggle}>
+			<span class="level">
+				<span class="level-icon">
 					<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-						<path fill-rule="evenodd" d="M12.78 6.22a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.22 7.28a.75.75 0 011.06-1.06L8 9.94l3.72-3.72a.75.75 0 011.06 0z"/>
+						<path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm6.5-.25A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/>
 					</svg>
 				</span>
-			</button>
-			{#if isOpen}
-				<div class="hint-content">
-					{#if highlightedContent[hint.level]}
-						{@html highlightedContent[hint.level]}
-					{:else}
-						{@html formatHintBasic(hint.content || '')}
-					{/if}
-				</div>
-			{/if}
-		</div>
-	{/each}
-</div>
+				<span class="level-label">Gentle Nudge</span>
+			</span>
+			<span class="toggle-icon">
+				<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+					<path fill-rule="evenodd" d="M12.78 6.22a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.22 7.28a.75.75 0 011.06-1.06L8 9.94l3.72-3.72a.75.75 0 011.06 0z"/>
+				</svg>
+			</span>
+		</button>
+		{#if isOpen}
+			<div class="hint-content">
+				{#if highlightedContent}
+					{@html highlightedContent}
+				{:else}
+					{@html formatHintBasic(level1)}
+				{/if}
+			</div>
+		{/if}
+	</div>
+{/if}
 
 <script lang="ts" module>
 	function escapeHtml(text: string): string {
@@ -84,7 +60,6 @@
 			.replace(/"/g, '&quot;');
 	}
 
-	// Detect if content is primarily code (no markdown fences)
 	function looksLikeCode(text: string): boolean {
 		const hasCodeFences = /```/.test(text);
 		if (hasCodeFences) return false;
@@ -98,7 +73,6 @@
 		return codeLines.length / lines.length > 0.3;
 	}
 
-	// Guess language from code content
 	function guessLanguage(text: string): string {
 		if (/\b(func |package |:=|fmt\.)/.test(text)) return 'go';
 		if (/\b(def |import |print\(|self\.)/.test(text)) return 'python';
@@ -112,7 +86,6 @@
 	function formatHintBasic(text: string): string {
 		if (!text) return '';
 
-		// Auto-detect pure code content
 		if (looksLikeCode(text)) {
 			return `<div class="code-block-wrapper"><pre class="hint-pre"><code>${escapeHtml(text)}</code></pre></div>`;
 		}
@@ -163,7 +136,6 @@
 
 		const { highlightCode: hl } = await import('$lib/highlight.js');
 
-		// Auto-detect pure code content
 		if (looksLikeCode(text)) {
 			const lang = guessLanguage(text);
 			const highlighted = await hl(text, lang);
@@ -217,18 +189,10 @@
 </script>
 
 <style>
-	.hints-section {
+	.hint-item {
 		border-radius: var(--radius-md);
 		overflow: hidden;
 		border: 1px solid var(--border);
-	}
-
-	.hint-item {
-		border-bottom: 1px solid var(--border);
-	}
-
-	.hint-item:last-child {
-		border-bottom: none;
 	}
 
 	.hint-header {
@@ -254,9 +218,9 @@
 	}
 
 	.hint-item.open .hint-header {
-		background: var(--hint-bg);
-		color: var(--hint-color);
-		border-bottom: 1px solid var(--hint-border);
+		background: rgba(63, 185, 80, 0.08);
+		color: var(--accent-bright);
+		border-bottom: 1px solid rgba(63, 185, 80, 0.25);
 	}
 
 	.level {
@@ -265,7 +229,7 @@
 		gap: 10px;
 	}
 
-	.level-num {
+	.level-icon {
 		width: 22px;
 		height: 22px;
 		border-radius: 50%;
@@ -273,17 +237,16 @@
 		align-items: center;
 		justify-content: center;
 		font-size: 11px;
-		font-weight: 700;
-		background: var(--hint-bg);
-		color: var(--hint-color);
-		border: 1px solid var(--hint-border);
+		background: rgba(63, 185, 80, 0.08);
+		color: var(--accent-bright);
+		border: 1px solid rgba(63, 185, 80, 0.25);
 		flex-shrink: 0;
 	}
 
-	.hint-item.open .level-num {
-		background: var(--hint-color);
+	.hint-item.open .level-icon {
+		background: var(--accent-bright);
 		color: white;
-		border-color: var(--hint-color);
+		border-color: var(--accent-bright);
 	}
 
 	.level-label {
@@ -298,7 +261,7 @@
 
 	.hint-item.open .toggle-icon {
 		transform: rotate(180deg);
-		color: var(--hint-color);
+		color: var(--accent-bright);
 	}
 
 	.hint-content {
@@ -307,7 +270,7 @@
 		color: var(--text-secondary);
 		line-height: 1.7;
 		background: var(--bg-card);
-		border-left: 3px solid var(--hint-color);
+		border-left: 3px solid var(--accent-bright);
 	}
 
 	.hint-content :global(strong) {
@@ -369,7 +332,6 @@
 		font-family: inherit;
 	}
 
-	/* Shiki highlighted spans */
 	.hint-content :global(.shiki-highlighted .line) {
 		display: block;
 	}
@@ -385,13 +347,13 @@
 		width: 5px;
 		height: 5px;
 		border-radius: 50%;
-		background: var(--hint-color);
+		background: var(--accent-bright);
 		flex-shrink: 0;
 		margin-top: 8px;
 	}
 
 	.hint-content :global(.hint-bullet-num) {
-		color: var(--hint-color);
+		color: var(--accent-bright);
 		font-weight: 600;
 		flex-shrink: 0;
 		min-width: 18px;

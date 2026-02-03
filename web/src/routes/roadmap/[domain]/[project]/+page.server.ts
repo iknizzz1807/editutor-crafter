@@ -156,7 +156,8 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		languages,
 		outcomes,
 		tags,
-		hasApiKey
+		hasApiKey,
+		hasArchDoc: !!project.architectureDocPath
 	};
 };
 

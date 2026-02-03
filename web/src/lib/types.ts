@@ -27,6 +27,7 @@ export interface Project {
 	estimatedHours: string | null;
 	essence: string | null;
 	whyImportant: string | null;
+	architectureDocPath: string | null;
 	completedMilestones?: number;
 	totalMilestones?: number;
 	prerequisites?: { name: string; type: string | null }[];

@@ -583,7 +583,8 @@ Output ONLY the JSON array. No explanation.
 
 
 def consistency_check(full_doc: str, section_contents: list, project: dict,
-                      provider: str, model: str, research: bool, **llm_kwargs) -> str | None:
+                      provider: str, model: str, research: bool,
+                      out_dir: Path | None = None, **llm_kwargs) -> str | None:
     """Pass 3: Sliding window consistency check across section pairs."""
     if len(section_contents) < 2:
         print("  Only 1 section, skipping consistency check")
@@ -591,6 +592,7 @@ def consistency_check(full_doc: str, section_contents: list, project: dict,
 
     project_name = project.get("name", "")
     project_desc = project.get("description", "")
+    consistency_log = {"raw_corrections": [], "filtered_corrections": [], "applied": [], "skipped": []}
 
     all_corrections = []
     conventions_so_far = "(none yet — this is the first pair)"
@@ -640,6 +642,8 @@ def consistency_check(full_doc: str, section_contents: list, project: dict,
         # Accumulate corrections
         corrections = result.get("corrections", [])
         if corrections:
+            for c in corrections:
+                c["source_pair"] = f"{title_a} <-> {title_b}"
             all_corrections.extend(corrections)
             print(f"    Found {len(corrections)} corrections")
         else:
@@ -647,8 +651,11 @@ def consistency_check(full_doc: str, section_contents: list, project: dict,
 
     if not all_corrections:
         print("  No corrections needed")
+        consistency_log["raw_corrections"] = []
+        _save_consistency_log(out_dir, consistency_log)
         return full_doc
 
+    consistency_log["raw_corrections"] = all_corrections
     print(f"\n  Total raw corrections: {len(all_corrections)}")
 
     # Final review: filter out bad corrections
@@ -674,8 +681,11 @@ def consistency_check(full_doc: str, section_contents: list, project: dict,
             print("  WARNING: Could not parse filtered corrections, applying all raw corrections")
             approved = all_corrections
 
+    consistency_log["filtered_corrections"] = approved
+
     if not approved:
         print("  All corrections filtered out, no changes needed")
+        _save_consistency_log(out_dir, consistency_log)
         return full_doc
 
     # Apply corrections
@@ -688,9 +698,25 @@ def consistency_check(full_doc: str, section_contents: list, project: dict,
             if find_str in corrected_doc:
                 corrected_doc = corrected_doc.replace(find_str, replace_str)
                 applied += 1
+                consistency_log["applied"].append(correction)
+            else:
+                consistency_log["skipped"].append({**correction, "reason": "find string not found in document"})
+        else:
+            consistency_log["skipped"].append({**correction, "reason": "invalid find/replace"})
 
     print(f"  Applied {applied}/{len(approved)} corrections")
+    _save_consistency_log(out_dir, consistency_log)
     return corrected_doc
+
+
+def _save_consistency_log(out_dir: Path | None, log: dict):
+    """Save consistency check log to JSON file."""
+    if not out_dir:
+        return
+    log_path = out_dir / "consistency-log.json"
+    with open(log_path, "w") as f:
+        json.dump(log, f, indent=2, ensure_ascii=False)
+    print(f"  Consistency log saved to {log_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -945,7 +971,8 @@ def process_project(project_id: str, project: dict, args,
     # --- Pass 3: Consistency check (sliding window) ---
     print(f"\n  [Pass 3/4] Running consistency check ({len(section_contents)} sections)...")
     checked_doc = consistency_check(
-        full_doc, section_contents, project, args.provider, args.model, args.research, **llm_kwargs
+        full_doc, section_contents, project, args.provider, args.model, args.research,
+        out_dir=out_dir, **llm_kwargs
     )
     if checked_doc:
         full_doc = checked_doc

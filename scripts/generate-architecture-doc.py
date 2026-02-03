@@ -503,60 +503,194 @@ def generate_section(section: dict, skeleton: dict, project: dict,
 
 
 # ---------------------------------------------------------------------------
-# Pass 3: Consistency check
+# Pass 3: Consistency check (sliding window)
 # ---------------------------------------------------------------------------
 
-CONSISTENCY_PROMPT = """You are an expert technical editor. Review and fix the following architecture document for consistency.
+CONSISTENCY_EXTRACT_PROMPT = """You are an expert technical editor. Analyze the following two sections of an architecture document and extract a naming conventions registry.
 
 === PROJECT ===
 {project_name}: {project_desc}
 
-=== FULL DOCUMENT ===
-{full_document}
+=== ESTABLISHED CONVENTIONS (from previous sections) ===
+{existing_conventions}
+
+=== SECTION A: {section_a_title} ===
+{section_a}
+
+=== SECTION B: {section_b_title} ===
+{section_b}
 
 === TASK ===
-Review the document for:
-1. Consistent naming of variables, types, interfaces, and functions across all sections
-2. Consistent terminology (don't mix "token" and "lexeme" interchangeably, etc.)
-3. Code examples that reference the same types/interfaces consistently
-4. Cross-references between sections are accurate
-5. No contradictions between sections
-6. Smooth transitions between sections
+1. List all type names, struct names, interface names, function/method names, constants, and key terminology used in both sections.
+2. Identify any INCONSISTENCIES between the two sections (or with established conventions):
+   - Same concept with different names (e.g., `TxID` vs `tx_id` vs `TransactionID`)
+   - Same type/struct with different field names
+   - Contradictory descriptions of the same component
+   - Mismatched cross-references
+3. For each inconsistency, pick the BEST canonical name (prefer the one used more frequently or defined first).
+4. Output a JSON object with this structure:
 
-Fix any inconsistencies and output the COMPLETE corrected document.
+{{
+  "conventions": {{
+    "types": {{"CanonicalName": "description"}},
+    "methods": {{"canonicalName": "description"}},
+    "constants": {{"CANONICAL_NAME": "description"}},
+    "terminology": {{"preferred term": "avoid these alternatives"}}
+  }},
+  "corrections": [
+    {{
+      "find": "exact string to find",
+      "replace": "exact string to replace with",
+      "reason": "why this change"
+    }}
+  ]
+}}
 
-=== OUTPUT ===
-Output ONLY the corrected markdown document. No explanation before or after.
-Do NOT wrap your output in markdown fences. Just write the raw markdown.
+=== RULES ===
+- Output ONLY the JSON object. No explanation before or after.
+- Only include REAL inconsistencies, not style differences that are valid (e.g., Go exported vs unexported names).
+- `find` and `replace` must be exact strings that can be used for find-and-replace.
+- Be precise: `find` should include enough context to avoid false replacements (e.g., include surrounding code).
+- Do NOT suggest renaming things that are intentionally different (e.g., a `Coordinator` type vs a `coordinator` variable).
+"""
+
+CONSISTENCY_FINAL_PROMPT = """You are an expert technical editor. Review these corrections for an architecture document and filter out any that are wrong or dangerous.
+
+=== PROJECT ===
+{project_name}: {project_desc}
+
+=== ALL PROPOSED CORRECTIONS ===
+{all_corrections}
+
+=== TASK ===
+Review each correction and output ONLY the ones that are:
+1. Genuinely fixing an inconsistency (not just style preference)
+2. Safe to apply (won't break code examples)
+3. Not duplicates
+
+Output a JSON array of the approved corrections:
+[
+  {{
+    "find": "exact string to find",
+    "replace": "exact string to replace with"
+  }}
+]
+
+If no corrections are needed, output: []
+
+Output ONLY the JSON array. No explanation.
 """
 
 
-def consistency_check(full_doc: str, project: dict, provider: str, model: str,
-                      research: bool, **llm_kwargs) -> str | None:
-    """Pass 3: Check and fix consistency across the full document."""
-    prompt = CONSISTENCY_PROMPT.format(
-        project_name=project.get("name", ""),
-        project_desc=project.get("description", ""),
-        full_document=full_doc,
+def consistency_check(full_doc: str, section_contents: list, project: dict,
+                      provider: str, model: str, research: bool, **llm_kwargs) -> str | None:
+    """Pass 3: Sliding window consistency check across section pairs."""
+    if len(section_contents) < 2:
+        print("  Only 1 section, skipping consistency check")
+        return full_doc
+
+    project_name = project.get("name", "")
+    project_desc = project.get("description", "")
+
+    all_corrections = []
+    conventions_so_far = "(none yet — this is the first pair)"
+
+    # Slide through pairs of adjacent sections
+    for i in range(len(section_contents) - 1):
+        section_a, content_a = section_contents[i]
+        section_b, content_b = section_contents[i + 1]
+
+        title_a = section_a.get("title", f"Section {i+1}")
+        title_b = section_b.get("title", f"Section {i+2}")
+
+        print(f"    Checking: {title_a} <-> {title_b}...")
+
+        prompt = CONSISTENCY_EXTRACT_PROMPT.format(
+            project_name=project_name,
+            project_desc=project_desc,
+            existing_conventions=conventions_so_far,
+            section_a_title=title_a,
+            section_a=content_a[:40000],  # Cap at ~10K tokens per section
+            section_b_title=title_b,
+            section_b=content_b[:40000],
+        )
+
+        response = call_llm(prompt, provider, model, research, timeout=300, **llm_kwargs)
+        if not response:
+            print(f"    WARNING: No response for pair {title_a} <-> {title_b}")
+            continue
+
+        # Parse JSON from response
+        json_text = response.strip()
+        if json_text.startswith("```"):
+            json_text = re.sub(r"^```\w*\n?", "", json_text)
+            json_text = re.sub(r"\n?```$", "", json_text)
+
+        try:
+            result = json.loads(json_text)
+        except json.JSONDecodeError:
+            print(f"    WARNING: Could not parse JSON for pair {title_a} <-> {title_b}")
+            continue
+
+        # Accumulate conventions
+        conventions = result.get("conventions", {})
+        if conventions:
+            conventions_so_far = json.dumps(conventions, indent=2)
+
+        # Accumulate corrections
+        corrections = result.get("corrections", [])
+        if corrections:
+            all_corrections.extend(corrections)
+            print(f"    Found {len(corrections)} corrections")
+        else:
+            print(f"    No issues found")
+
+    if not all_corrections:
+        print("  No corrections needed")
+        return full_doc
+
+    print(f"\n  Total raw corrections: {len(all_corrections)}")
+
+    # Final review: filter out bad corrections
+    print(f"  Filtering corrections...")
+    filter_prompt = CONSISTENCY_FINAL_PROMPT.format(
+        project_name=project_name,
+        project_desc=project_desc,
+        all_corrections=json.dumps(all_corrections, indent=2)[:50000],
     )
 
-    # Use longer timeout for full document processing
-    response = call_llm(prompt, provider, model, research, timeout=600, **llm_kwargs)
+    response = call_llm(filter_prompt, provider, model, research, timeout=180, **llm_kwargs)
     if not response:
-        print("  ERROR: No response for consistency check")
-        return None
+        print("  WARNING: Could not filter corrections, applying all raw corrections")
+        approved = all_corrections
+    else:
+        json_text = response.strip()
+        if json_text.startswith("```"):
+            json_text = re.sub(r"^```\w*\n?", "", json_text)
+            json_text = re.sub(r"\n?```$", "", json_text)
+        try:
+            approved = json.loads(json_text)
+        except json.JSONDecodeError:
+            print("  WARNING: Could not parse filtered corrections, applying all raw corrections")
+            approved = all_corrections
 
-    content = response.strip()
-    if content.startswith("```markdown"):
-        content = content[len("```markdown"):].strip()
-    if content.startswith("```md"):
-        content = content[len("```md"):].strip()
-    if content.startswith("```"):
-        content = content[3:].strip()
-    if content.endswith("```"):
-        content = content[:-3].strip()
+    if not approved:
+        print("  All corrections filtered out, no changes needed")
+        return full_doc
 
-    return content
+    # Apply corrections
+    corrected_doc = full_doc
+    applied = 0
+    for correction in approved:
+        find_str = correction.get("find", "")
+        replace_str = correction.get("replace", "")
+        if find_str and replace_str and find_str != replace_str:
+            if find_str in corrected_doc:
+                corrected_doc = corrected_doc.replace(find_str, replace_str)
+                applied += 1
+
+    print(f"  Applied {applied}/{len(approved)} corrections")
+    return corrected_doc
 
 
 # ---------------------------------------------------------------------------
@@ -808,18 +942,13 @@ def process_project(project_id: str, project: dict, args,
     full_doc = "\n".join(parts)
     print(f"\n  Assembled document: {len(full_doc)} chars")
 
-    # --- Pass 3: Consistency check ---
-    print(f"\n  [Pass 3/4] Running consistency check...")
+    # --- Pass 3: Consistency check (sliding window) ---
+    print(f"\n  [Pass 3/4] Running consistency check ({len(section_contents)} sections)...")
     checked_doc = consistency_check(
-        full_doc, project, args.provider, args.model, args.research, **llm_kwargs
+        full_doc, section_contents, project, args.provider, args.model, args.research, **llm_kwargs
     )
     if checked_doc:
-        # Sanity check: don't use if much shorter (LLM may have truncated)
-        if len(checked_doc) >= len(full_doc) * 0.7:
-            full_doc = checked_doc
-            print(f"  Consistency check applied ({len(full_doc)} chars)")
-        else:
-            print(f"  WARNING: Consistency check output too short ({len(checked_doc)} vs {len(full_doc)}), keeping original")
+        full_doc = checked_doc
     else:
         print("  WARNING: Consistency check failed, keeping original")
 

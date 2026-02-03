@@ -34,11 +34,13 @@ Usage:
     python3 scripts/generate-architecture-doc.py --provider claude --project build-interpreter --dry-run
 
 Providers:
-    claude  — Uses `claude -p` CLI (Claude Max subscription, free with sub)
-    gemini  — Uses Gemini API (requires GEMINI_API_KEY env var)
+    claude    — Uses `claude -p` CLI (Claude Max subscription, free with sub, slower due to process spawn)
+    anthropic — Uses Anthropic SDK directly (requires ANTHROPIC_API_KEY, faster, no CLI overhead)
+    gemini    — Uses Gemini API (requires GEMINI_API_KEY env var)
 
 Requirements:
     claude provider: Claude Code CLI installed and authenticated
+    anthropic provider: pip install anthropic pyyaml && export ANTHROPIC_API_KEY=...
     gemini provider: pip install google-genai pyyaml && export GEMINI_API_KEY=...
     diagrams (optional): draw.io CLI (`drawio`) for SVG conversion
 """
@@ -137,10 +139,68 @@ def call_claude(prompt: str, model: str = "sonnet", research: bool = False, max_
 
 
 # ---------------------------------------------------------------------------
+# LLM Provider: Anthropic API (direct SDK — no CLI overhead)
+# ---------------------------------------------------------------------------
+
+_anthropic_client = None
+
+def init_anthropic(api_key: str):
+    """Initialize Anthropic client."""
+    global _anthropic_client
+    try:
+        import anthropic
+    except ImportError:
+        print("ERROR: anthropic not installed. Run: pip install anthropic")
+        sys.exit(1)
+    _anthropic_client = anthropic.Anthropic(api_key=api_key)
+    return _anthropic_client
+
+
+def call_anthropic(prompt: str, model: str = "claude-sonnet-4-20250514", max_retries: int = 3, timeout: int = 300) -> str | None:
+    """Call Anthropic API directly (no CLI spawn overhead)."""
+    MODEL_MAP = {
+        "sonnet": "claude-sonnet-4-20250514",
+        "opus": "claude-opus-4-20250514",
+        "haiku": "claude-haiku-4-20250307",
+    }
+    model_id = MODEL_MAP.get(model, model)
+
+    for attempt in range(max_retries):
+        try:
+            response = _anthropic_client.messages.create(
+                model=model_id,
+                max_tokens=16384,
+                messages=[{"role": "user", "content": prompt}],
+                timeout=timeout,
+            )
+            text = "".join(b.text for b in response.content if b.type == "text")
+            if text.strip():
+                return text.strip()
+            return None
+
+        except Exception as e:
+            err_str = str(e)
+            if "overloaded" in err_str.lower() or "rate" in err_str.lower() or "529" in err_str or "429" in err_str:
+                wait = 30 * (attempt + 1)
+                print(f"  Rate limited, waiting {wait}s...")
+                time.sleep(wait)
+            elif "500" in err_str or "503" in err_str:
+                wait = 10 * (attempt + 1)
+                print(f"  Server error, retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                print(f"  Anthropic API error: {e}")
+                if attempt == max_retries - 1:
+                    return None
+                time.sleep(5)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # LLM Provider: Gemini API
 # ---------------------------------------------------------------------------
 
-def init_gemini(api_key: str, model_name: str = "gemini-2.0-flash", use_grounding: bool = True):
+def init_gemini(api_key: str, model_name: str = "gemini-2.5-flash-lite", use_grounding: bool = True):
     """Initialize Gemini client."""
     try:
         from google import genai
@@ -204,6 +264,8 @@ def call_llm(prompt: str, provider: str, model: str, research: bool,
     """Unified LLM call dispatcher."""
     if provider == "claude":
         return call_claude(prompt, model=model, research=research, timeout=timeout)
+    elif provider == "anthropic":
+        return call_anthropic(prompt, model=model, timeout=timeout)
     elif provider == "gemini":
         return call_gemini(gemini_client, gemini_model, prompt, gemini_tools)
     return None
@@ -402,7 +464,7 @@ def generate_skeleton(project: dict, provider: str, model: str, research: bool, 
 # Pass 2: Section generation
 # ---------------------------------------------------------------------------
 
-SECTION_PROMPT = """You are an expert software architect writing a section of an architecture guide.
+SECTION_PROMPT_PARALLEL = """You are an expert software architect writing a section of an architecture guide.
 
 === PROJECT CONTEXT ===
 {context}
@@ -442,6 +504,57 @@ Write ONLY the markdown content for this section. Do not include the document ti
 Do NOT wrap your output in markdown fences. Just write the raw markdown.
 """
 
+SECTION_PROMPT_SEQUENTIAL = """You are an expert software architect writing a section of an architecture guide.
+
+=== PROJECT CONTEXT ===
+{context}
+
+=== DOCUMENT OUTLINE ===
+Title: {doc_title}
+Overview: {doc_overview}
+
+Full outline:
+{outline}
+
+=== YOUR TASK ===
+Write the following section in detail:
+
+Section: {section_title}
+Summary: {section_summary}
+{subsections_info}
+
+=== NAMING CONVENTIONS (MUST follow these exactly) ===
+{naming_conventions}
+
+=== GUIDELINES ===
+- Write in Markdown format
+- Start with a ## heading for the section title
+- Use ### for subsections
+- Include code examples in the project's primary language using fenced code blocks (```language)
+- Include TypeScript/language-appropriate type definitions and interfaces
+- Explain design decisions and trade-offs
+- Reference other sections when relevant (e.g., "as described in the Parser section")
+- Use blockquotes (>) for important tips or warnings
+- Use tables where appropriate (e.g., for operator precedence, token types)
+- Keep explanations clear and educational — the reader is a learner building this project
+- Include inline code (`backticks`) for variable names, function names, types
+- If a diagram is relevant to this section, include a placeholder: ![Diagram Title](./diagrams/diagram-id.svg)
+- CRITICAL: Use EXACTLY the type names, function names, variable names, and constants listed in NAMING CONVENTIONS above. Do NOT invent alternative names for the same concepts.
+
+=== CONTENT TO WRITE ===
+{previous_sections_summary}
+
+=== OUTPUT FORMAT ===
+First write the markdown content for this section.
+Then, after the markdown content, write a line containing ONLY `---CONVENTIONS---`
+After that marker, write a JSON object listing all type names, function/method names, constants, and key terms you used in this section:
+
+---CONVENTIONS---
+{{"types": {{"TypeName": "brief description"}}, "methods": {{"methodName": "brief description"}}, "constants": {{"CONSTANT_NAME": "brief description"}}, "terms": {{"preferred term": "brief description"}}}}
+
+The JSON must be on a SINGLE line after the marker. Include ALL names you introduced or referenced in your section.
+"""
+
 
 def build_outline_str(skeleton: dict) -> str:
     """Build a readable outline string from skeleton."""
@@ -453,10 +566,59 @@ def build_outline_str(skeleton: dict) -> str:
     return "\n".join(lines)
 
 
-def generate_section(section: dict, skeleton: dict, project: dict,
-                     previous_summaries: str, provider: str, model: str,
-                     research: bool, **llm_kwargs) -> str | None:
-    """Pass 2: Generate a single section."""
+def _strip_markdown_fences(content: str) -> str:
+    """Strip accidental markdown fence wrapping from LLM output."""
+    content = content.strip()
+    if content.startswith("```markdown"):
+        content = content[len("```markdown"):].strip()
+    if content.startswith("```md"):
+        content = content[len("```md"):].strip()
+    if content.startswith("```"):
+        content = content[3:].strip()
+    if content.endswith("```"):
+        content = content[:-3].strip()
+    return content
+
+
+def _merge_conventions(accumulated: dict, new_conventions: dict) -> dict:
+    """Merge new naming conventions into accumulated conventions."""
+    for category in ("types", "methods", "constants", "terms"):
+        existing = accumulated.get(category, {})
+        incoming = new_conventions.get(category, {})
+        existing.update(incoming)
+        accumulated[category] = existing
+    return accumulated
+
+
+def _format_conventions(conventions: dict) -> str:
+    """Format accumulated conventions as readable text for the prompt."""
+    if not conventions or all(len(v) == 0 for v in conventions.values()):
+        return "(No conventions established yet — you are defining them for the first section. Choose clear, consistent names.)"
+
+    lines = []
+    if conventions.get("types"):
+        lines.append("Types/Structs/Interfaces:")
+        for name, desc in conventions["types"].items():
+            lines.append(f"  - `{name}`: {desc}")
+    if conventions.get("methods"):
+        lines.append("Functions/Methods:")
+        for name, desc in conventions["methods"].items():
+            lines.append(f"  - `{name}`: {desc}")
+    if conventions.get("constants"):
+        lines.append("Constants/Enums:")
+        for name, desc in conventions["constants"].items():
+            lines.append(f"  - `{name}`: {desc}")
+    if conventions.get("terms"):
+        lines.append("Terminology:")
+        for name, desc in conventions["terms"].items():
+            lines.append(f"  - \"{name}\": {desc}")
+    return "\n".join(lines)
+
+
+def generate_section_parallel(section: dict, skeleton: dict, project: dict,
+                              previous_summaries: str, provider: str, model: str,
+                              research: bool, **llm_kwargs) -> str | None:
+    """Pass 2 (parallel mode): Generate a single section without conventions tracking."""
     context = get_project_context(project)
     outline = build_outline_str(skeleton)
 
@@ -472,7 +634,7 @@ def generate_section(section: dict, skeleton: dict, project: dict,
     if previous_summaries:
         prev_info = f"\nPrevious sections summary (for continuity):\n{previous_summaries}\n"
 
-    prompt = SECTION_PROMPT.format(
+    prompt = SECTION_PROMPT_PARALLEL.format(
         context=context,
         doc_title=skeleton.get("title", ""),
         doc_overview=skeleton.get("overview", ""),
@@ -488,18 +650,83 @@ def generate_section(section: dict, skeleton: dict, project: dict,
         print(f"  ERROR: No response for section '{section.get('title', '')}'")
         return None
 
-    # Strip any accidental markdown fence wrapping
-    content = response.strip()
-    if content.startswith("```markdown"):
-        content = content[len("```markdown"):].strip()
-    if content.startswith("```md"):
-        content = content[len("```md"):].strip()
-    if content.startswith("```"):
-        content = content[3:].strip()
-    if content.endswith("```"):
-        content = content[:-3].strip()
+    return _strip_markdown_fences(response)
 
-    return content
+
+def generate_section_sequential(section: dict, skeleton: dict, project: dict,
+                                previous_summaries: str, conventions: dict,
+                                provider: str, model: str,
+                                research: bool, **llm_kwargs) -> tuple[str | None, dict]:
+    """Pass 2 (sequential mode): Generate section with conventions tracking.
+    Returns (content, new_conventions)."""
+    context = get_project_context(project)
+    outline = build_outline_str(skeleton)
+
+    subsections = section.get("subsections", [])
+    if subsections:
+        sub_info = "Subsections:\n" + "\n".join(
+            f"  - {s['title']}: {s.get('summary', '')}" for s in subsections
+        )
+    else:
+        sub_info = ""
+
+    prev_info = ""
+    if previous_summaries:
+        prev_info = f"\nPrevious sections summary (for continuity):\n{previous_summaries}\n"
+
+    prompt = SECTION_PROMPT_SEQUENTIAL.format(
+        context=context,
+        doc_title=skeleton.get("title", ""),
+        doc_overview=skeleton.get("overview", ""),
+        outline=outline,
+        section_title=section.get("title", ""),
+        section_summary=section.get("summary", ""),
+        subsections_info=sub_info,
+        naming_conventions=_format_conventions(conventions),
+        previous_sections_summary=prev_info,
+    )
+
+    response = call_llm(prompt, provider, model, research, timeout=300, **llm_kwargs)
+    if not response:
+        print(f"  ERROR: No response for section '{section.get('title', '')}'")
+        return None, {}
+
+    response = response.strip()
+
+    # Split content and conventions
+    marker = "---CONVENTIONS---"
+    new_conventions = {}
+
+    if marker in response:
+        parts = response.split(marker, 1)
+        content = parts[0].strip()
+        conventions_text = parts[1].strip()
+
+        # Parse conventions JSON
+        # Handle possible markdown fence around JSON
+        if conventions_text.startswith("```"):
+            conventions_text = re.sub(r"^```\w*\n?", "", conventions_text)
+            conventions_text = re.sub(r"\n?```$", "", conventions_text)
+
+        # Take first line if multi-line (we asked for single line)
+        first_line = conventions_text.split("\n")[0].strip()
+        if not first_line.startswith("{"):
+            # Try full text
+            first_line = conventions_text.strip()
+
+        try:
+            new_conventions = json.loads(first_line)
+        except json.JSONDecodeError:
+            # Try the full text
+            try:
+                new_conventions = json.loads(conventions_text)
+            except json.JSONDecodeError:
+                print(f"    (could not parse conventions JSON, continuing)")
+    else:
+        content = response
+
+    content = _strip_markdown_fences(content)
+    return content, new_conventions
 
 
 # ---------------------------------------------------------------------------
@@ -891,14 +1118,14 @@ def process_project(project_id: str, project: dict, args,
     section_contents = []
     previous_summaries = ""
 
-    if args.workers > 1 and args.provider == "claude":
-        # Parallel section generation (less context continuity but faster)
-        print(f"  Using {args.workers} parallel workers")
+    if args.workers > 1:
+        # Parallel section generation (fast but no conventions tracking, needs Pass 3)
+        print(f"  Using {args.workers} parallel workers (no conventions tracking)")
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
             futures = {}
             for section in sections:
                 future = executor.submit(
-                    generate_section, section, skeleton, project,
+                    generate_section_parallel, section, skeleton, project,
                     "", args.provider, args.model, args.research, **llm_kwargs
                 )
                 futures[future] = section
@@ -919,29 +1146,45 @@ def process_project(project_id: str, project: dict, args,
         section_order = {s["id"]: i for i, s in enumerate(sections)}
         section_contents.sort(key=lambda x: section_order.get(x[0].get("id", ""), 999))
     else:
-        # Sequential section generation (better context continuity)
+        # Sequential section generation with conventions tracking
+        print(f"  Sequential mode (with naming conventions tracking)")
+        accumulated_conventions = {}
+
         for i, section in enumerate(sections):
             title = section.get("title", f"Section {i+1}")
             print(f"    [{i+1}/{len(sections)}] {title}...")
 
-            content = generate_section(
+            content, new_conventions = generate_section_sequential(
                 section, skeleton, project, previous_summaries,
+                accumulated_conventions,
                 args.provider, args.model, args.research, **llm_kwargs
             )
 
             if content:
                 section_contents.append((section, content))
+                # Merge conventions
+                if new_conventions:
+                    accumulated_conventions = _merge_conventions(accumulated_conventions, new_conventions)
+                    conv_count = sum(len(v) for v in accumulated_conventions.values())
+                    print(f"    OK ({len(content)} chars, {conv_count} conventions tracked)")
+                else:
+                    print(f"    OK ({len(content)} chars)")
                 # Build summary of previous sections for context
-                # Take first 200 chars of each section as summary
                 summary = content[:200].replace("\n", " ").strip()
                 previous_summaries += f"\n- {title}: {summary}..."
-                print(f"    OK ({len(content)} chars)")
             else:
                 print(f"    FAIL")
 
             # Rate limiting for Gemini
             if args.provider == "gemini":
                 time.sleep(60.0 / args.rpm)
+
+        # Save conventions for reference
+        if accumulated_conventions:
+            conv_path = out_dir / "naming-conventions.json"
+            with open(conv_path, "w") as f:
+                json.dump(accumulated_conventions, f, indent=2, ensure_ascii=False)
+            print(f"  Naming conventions saved to {conv_path}")
 
     if not section_contents:
         print("  FAILED: No sections generated")
@@ -969,15 +1212,19 @@ def process_project(project_id: str, project: dict, args,
     print(f"\n  Assembled document: {len(full_doc)} chars")
 
     # --- Pass 3: Consistency check (sliding window) ---
-    print(f"\n  [Pass 3/4] Running consistency check ({len(section_contents)} sections)...")
-    checked_doc = consistency_check(
-        full_doc, section_contents, project, args.provider, args.model, args.research,
-        out_dir=out_dir, **llm_kwargs
-    )
-    if checked_doc:
-        full_doc = checked_doc
+    # Only needed for parallel mode (no conventions tracking in Pass 2)
+    if args.workers > 1:
+        print(f"\n  [Pass 3/4] Running consistency check ({len(section_contents)} sections)...")
+        checked_doc = consistency_check(
+            full_doc, section_contents, project, args.provider, args.model, args.research,
+            out_dir=out_dir, **llm_kwargs
+        )
+        if checked_doc:
+            full_doc = checked_doc
+        else:
+            print("  WARNING: Consistency check failed, keeping original")
     else:
-        print("  WARNING: Consistency check failed, keeping original")
+        print(f"\n  [Pass 3/4] Skipped (sequential mode — conventions tracked in Pass 2)")
 
     # --- Pass 4: Diagrams ---
     if not args.no_diagrams and diagrams:
@@ -1053,8 +1300,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Generate architecture documents for projects using LLM pipeline"
     )
-    parser.add_argument("--provider", type=str, default="claude", choices=["claude", "gemini"],
-                        help="LLM provider (default: claude)")
+    parser.add_argument("--provider", type=str, default="claude", choices=["claude", "anthropic", "gemini"],
+                        help="LLM provider: claude (CLI), anthropic (SDK, fast), gemini (default: claude)")
     parser.add_argument("--model", type=str, default=None,
                         help="Model name (claude: sonnet/opus/haiku, gemini: gemini-2.0-flash)")
     parser.add_argument("--research", action="store_true",
@@ -1082,13 +1329,21 @@ def main():
 
     # Default model per provider
     if args.model is None:
-        args.model = "sonnet" if args.provider == "claude" else "gemini-2.0-flash"
+        if args.provider in ("claude", "anthropic"):
+            args.model = "sonnet"
+        else:
+            args.model = "gemini-2.5-flash-lite"
 
     # Provider checks
     if args.provider == "gemini":
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key and not args.dry_run:
             print("ERROR: GEMINI_API_KEY environment variable not set")
+            sys.exit(1)
+    elif args.provider == "anthropic":
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key and not args.dry_run:
+            print("ERROR: ANTHROPIC_API_KEY environment variable not set")
             sys.exit(1)
     elif args.provider == "claude" and not args.dry_run:
         if not shutil.which("claude"):
@@ -1100,9 +1355,11 @@ def main():
     with open(YAML_PATH) as f:
         data = yaml.safe_load(f)
 
-    # Initialize Gemini if needed
+    # Initialize providers
     gemini_client = gemini_model = gemini_tools = None
-    if args.provider == "gemini" and not args.dry_run:
+    if args.provider == "anthropic" and not args.dry_run:
+        init_anthropic(os.environ["ANTHROPIC_API_KEY"])
+    elif args.provider == "gemini" and not args.dry_run:
         gemini_client, gemini_model, gemini_tools = init_gemini(
             os.environ["GEMINI_API_KEY"],
             model_name=args.model,

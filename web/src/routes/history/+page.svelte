@@ -1,4 +1,6 @@
 <script lang="ts">
+	import FileTreeBrowser from '$lib/components/FileTreeBrowser.svelte';
+
 	let { data } = $props();
 
 	let expandedIds = $state(new Set<number>());
@@ -72,16 +74,18 @@
 						<span class="toggle-icon" class:open={isExpanded}>▼</span>
 					</button>
 
-					{#if isExpanded && submission.review}
+					{#if isExpanded}
 						<div class="submission-body">
-							<div class="review-section">
-								<div class="section-title">AI Review</div>
-								<div class="review-content">{submission.review}</div>
-							</div>
-						</div>
-					{:else if isExpanded}
-						<div class="submission-body">
-							<p class="no-review">No AI review yet. Request one from the project page.</p>
+							<FileTreeBrowser submissionId={submission.id} fileName={submission.fileName} />
+
+							{#if submission.review}
+								<div class="review-section">
+									<div class="section-title">AI Review</div>
+									<div class="review-content">{submission.review}</div>
+								</div>
+							{:else}
+								<p class="no-review">No AI review yet. Request one from the project page.</p>
+							{/if}
 						</div>
 					{/if}
 				</div>

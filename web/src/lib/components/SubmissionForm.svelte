@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 	import AIReview from './AIReview.svelte';
+	import FileTreeBrowser from './FileTreeBrowser.svelte';
 
 	let {
 		milestoneId,
@@ -134,6 +135,8 @@
 							{sub.status}
 						</span>
 					</div>
+
+					<FileTreeBrowser submissionId={sub.id} fileName={sub.fileName} />
 
 					{#if sub.review}
 						<AIReview review={sub.review} />

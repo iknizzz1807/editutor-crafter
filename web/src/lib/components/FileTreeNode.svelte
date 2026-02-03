@@ -14,6 +14,7 @@
 		onSelect: (path: string) => void;
 	} = $props();
 
+	// svelte-ignore state_referenced_locally
 	let expanded = $state(depth <= 0);
 
 	function toggle() {

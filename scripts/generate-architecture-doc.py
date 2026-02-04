@@ -36,11 +36,13 @@ Providers:
     claude    — Uses `claude -p` CLI (Claude Max subscription, free with sub, slower due to process spawn)
     anthropic — Uses Anthropic SDK directly (requires ANTHROPIC_API_KEY, faster, no CLI overhead)
     gemini    — Uses Gemini API (requires GEMINI_API_KEY env var)
+    deepseek  — Uses DeepSeek API via OpenAI-compatible SDK (requires DEEPSEEK_API_KEY env var)
 
 Requirements:
     claude provider: Claude Code CLI installed and authenticated
     anthropic provider: pip install anthropic pyyaml && export ANTHROPIC_API_KEY=...
     gemini provider: pip install google-genai pyyaml && export GEMINI_API_KEY=...
+    deepseek provider: pip install openai pyyaml && export DEEPSEEK_API_KEY=...
     diagrams (optional): d2 CLI (curl -fsSL https://d2lang.com/install.sh | sh -s --)
 """
 
@@ -294,6 +296,70 @@ def call_gemini(client, model_name: str, prompt: str, tool_config=None, max_retr
     return None
 
 
+# ---------------------------------------------------------------------------
+# LLM Provider: DeepSeek API (OpenAI-compatible)
+# ---------------------------------------------------------------------------
+
+_deepseek_client = None
+
+def init_deepseek(api_key: str):
+    """Initialize DeepSeek client using OpenAI SDK."""
+    global _deepseek_client
+    try:
+        from openai import OpenAI
+    except ImportError:
+        print("ERROR: openai not installed. Run: pip install openai")
+        sys.exit(1)
+    _deepseek_client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+    return _deepseek_client
+
+
+def call_deepseek(prompt: str, model: str = "deepseek-chat", max_retries: int = 3, timeout: int = 300) -> str | None:
+    """Call DeepSeek API with retries. Uses thinking mode for max output (64K tokens)."""
+    MODEL_MAP = {
+        "chat": "deepseek-chat",
+        "reasoner": "deepseek-reasoner",
+    }
+    model_id = MODEL_MAP.get(model, model)
+
+    for attempt in range(max_retries):
+        try:
+            kwargs = dict(
+                model=model_id,
+                messages=[{"role": "user", "content": prompt}],
+                timeout=timeout,
+            )
+            if model_id == "deepseek-reasoner":
+                kwargs["max_tokens"] = 65536
+            else:
+                # deepseek-chat: enable thinking mode for longer output (64K vs 8K)
+                kwargs["max_tokens"] = 65536
+                kwargs["extra_body"] = {"thinking": {"type": "enabled", "budget_tokens": 8192}}
+
+            response = _deepseek_client.chat.completions.create(**kwargs)
+            text = response.choices[0].message.content
+            if text and text.strip():
+                return text.strip()
+            return None
+
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "rate" in err_str.lower():
+                wait = 30 * (attempt + 1)
+                print(f"  Rate limited, waiting {wait}s...")
+                time.sleep(wait)
+            elif "500" in err_str or "503" in err_str:
+                wait = 10 * (attempt + 1)
+                print(f"  Server error, retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                print(f"  DeepSeek API error: {e}")
+                if attempt == max_retries - 1:
+                    return None
+                time.sleep(5)
+    return None
+
+
 def call_llm(prompt: str, provider: str, model: str, research: bool,
              gemini_client=None, gemini_model=None, gemini_tools=None,
              timeout: int = 300) -> str | None:
@@ -304,6 +370,8 @@ def call_llm(prompt: str, provider: str, model: str, research: bool,
         return call_anthropic(prompt, model=model, timeout=timeout)
     elif provider == "gemini":
         return call_gemini(gemini_client, gemini_model, prompt, gemini_tools)
+    elif provider == "deepseek":
+        return call_deepseek(prompt, model=model, timeout=timeout)
     return None
 
 
@@ -438,17 +506,28 @@ Generate a JSON object with the following structure:
 === DOCUMENT FORMAT ===
 
 This is a DESIGN DOCUMENT for an EDUCATIONAL PLATFORM targeting junior/fresher developers.
+The document serves as both a **learning guide** and an **architecture reference**. It should help the learner:
+1. **Understand** the problem deeply (mental models, analogies, real-world context)
+2. **Design** the solution with confidence (architecture decisions with rationale, trade-off analysis)
+3. **Implement** step by step (skeleton code, file structure, milestone checkpoints)
+4. **Debug** when stuck (common pitfalls, debugging guide, symptom-cause-fix tables)
+
 The document has TWO layers:
 
 **Layer 1 — Design Knowledge (prose + tables, NO code blocks):**
 Explains architecture, decisions, trade-offs, data flow. Uses prose paragraphs, tables, numbered algorithm steps, diagrams, and concrete walk-through examples. The reader should understand WHAT to build, WHY each decision was made, and HOW components interact.
+- Every major concept MUST start with an intuitive **mental model or analogy** before technical details
+- Every significant design decision MUST include an **Architecture Decision Record (ADR)**: Context → Options Considered → Decision → Rationale → Consequences
+- Every component MUST include **Common Pitfalls** that learners typically encounter
 
 **Layer 2 — Implementation Guidance (per section, with code):**
 At the END of each section, include an "### Implementation Guidance" subsection that bridges the gap between design and code. This layer contains:
+- **Recommended file/module structure** for organizing the codebase
 - **Technology recommendations** as a table: Component | Simple Option | Advanced Option
 - **Starter/skeleton code** for INFRASTRUCTURE components (things that are NOT the core learning goal but are needed to make the system work). For example: a simple WAL wrapper, HTTP transport helpers, serialization utilities. This code should be COMPLETE and ready to import/use.
 - **Skeleton code with TODOs** for CORE LOGIC components (things the learner SHOULD implement themselves). Show the function signature, doc comment, and TODO comments describing each step — but NO implementation body. The TODOs should map directly to the numbered algorithm steps from Layer 1.
 - **Hints and tips** specific to the recommended language/technology. For example: "In Go, use `os.File.Sync()` for fsync" or "Use `encoding/json` for log record serialization".
+- **Milestone checkpoints**: After each milestone, what behavior to verify and what output to expect
 
 The FIRST recommended language from the project's language list should be used for all code in Implementation Guidance sections.
 
@@ -457,22 +536,38 @@ The FIRST recommended language from the project's language list should be used f
 Follow this structure (adapt section names to the specific project):
 
 1. **Context and Problem Statement** — What problem are we solving? Why is it hard? What existing approaches exist?
+   - Start with a real-world **analogy or mental model** that makes the core concept intuitive (e.g., banking for 2PC, postal system for message queues)
+   - Explain the problem in concrete terms BEFORE introducing technical vocabulary
+   - Compare existing approaches with a structured comparison table
 2. **Goals and Non-Goals** — What this system must do, and explicitly what it does NOT do
 3. **High-Level Architecture** — Component overview, responsibilities, how they connect (with diagram)
+   - Include a **recommended file/module structure** showing how to organize the codebase
 4. **Data Model** — All key types/structures described as tables (Name | Type | Description), relationships between them
 5. **Component Design sections** (one per major component) — each containing:
    - Responsibility and scope
+   - **Mental model**: a 1-2 paragraph intuitive explanation or analogy for what this component does
    - Interface: what it receives, what it returns, described as a table (Method | Input | Output | Description)
    - Internal behavior described as numbered algorithm steps
    - State transitions described as a table (Current State × Event → New State + Action)
-   - Design decisions: what alternatives were considered, why this approach was chosen
+   - **Architecture Decision Records (ADRs)** for each significant decision in this component:
+     - **Context**: The situation and forces at play
+     - **Options Considered**: 2-3 alternatives with pros/cons table
+     - **Decision**: What was chosen and WHY
+     - **Consequences**: What this enables and what trade-offs it introduces
+   - **Common Pitfalls**: Mistakes learners commonly make when implementing this component, and how to avoid them
    - **Implementation Guidance** (Layer 2): technology choices, starter code for infrastructure, skeleton with TODOs for core logic
 6. **Interactions and Data Flow** — How components communicate, message formats as tables, sequence of operations
 7. **Error Handling and Edge Cases** — Failure modes, detection, recovery strategies
 8. **Testing Strategy** — What properties to verify, what scenarios to test
-9. **Future Extensions** — What could be added later, what the design accommodates
+   - **Checkpoint per milestone**: After implementing each milestone, describe the expected behavior — what should work, what command to run, what output to expect. The learner should know "if I see X, I'm on the right track"
+9. **Debugging Guide** — Common bugs learners encounter when building this system:
+   - Symptom → Likely cause → How to diagnose → Fix
+   - Debugging techniques specific to this domain (e.g., "add logging at X to trace Y")
+   - Tools and approaches for inspecting system state
+10. **Future Extensions** — What could be added later, what the design accommodates
+11. **Glossary** — Definitions of all key technical terms, acronyms, and domain-specific vocabulary used in this document. Each entry: Term | Definition | First appears in section
 
-Each section should map to one or more milestones from the project.
+Each section MUST explicitly state which milestone(s) from the project it corresponds to, so the learner knows when to read it.
 
 === DIAGRAM GUIDELINES ===
 
@@ -565,32 +660,51 @@ This document has TWO layers. The MAIN BODY uses prose + tables (no code). At th
 
 **NO CODE BLOCKS in the main body.** Everything is expressed through:
 
-1. **Prose paragraphs** — Explain concepts, decisions, rationale, and behavior in natural language. Be extremely detailed. Write as if you're a senior engineer explaining the system to a new team member at a whiteboard.
+1. **Mental Models and Analogies** — Start each major concept with an intuitive analogy or mental model BEFORE diving into technical details. The reader is a junior developer — help them build intuition first, then formalize it. Example: "Think of the WAL as a flight recorder — it records every intended action before it happens, so after a crash we can replay the tape and know exactly where we left off."
 
-2. **Tables** — Use markdown tables for ALL structured information:
+2. **Prose paragraphs** — Explain concepts, decisions, rationale, and behavior in natural language. Be extremely detailed. Write as if you're a senior engineer explaining the system to a new team member at a whiteboard.
+
+3. **Tables** — Use markdown tables for ALL structured information:
    - Data structures: Name | Type | Description (one row per field)
    - Interfaces/APIs: Method Name | Parameters | Returns | Description
    - State machines: Current State | Event | Next State | Action Taken
    - Message formats: Field | Type | Description
    - Comparison tables: Option | Pros | Cons | Chosen?
    - Error tables: Failure Mode | Detection | Recovery
+   - ADR tables: Option | Pros | Cons (for architecture decisions)
 
-3. **Numbered algorithm steps** — For procedures/algorithms, use numbered lists in prose (NOT code). Example:
+4. **Architecture Decision Records (ADRs)** — For EVERY significant design choice, use this structured format:
+   > **Decision: [Title]**
+   > - **Context**: [What situation/forces led to this decision]
+   > - **Options Considered**: [List 2-3 alternatives]
+   > - **Decision**: [What was chosen]
+   > - **Rationale**: [WHY this option — specific technical reasoning, not vague preferences]
+   > - **Consequences**: [What this enables and what trade-offs it introduces]
+
+   Follow each ADR with a comparison table of the options. This is CRITICAL for learning — understanding WHY is more valuable than understanding WHAT.
+
+5. **Numbered algorithm steps** — For procedures/algorithms, use numbered lists in prose (NOT code). Example:
    1. The coordinator generates a unique transaction ID
    2. It writes an INIT record to the transaction log (fsync to ensure durability)
    3. It sends a PREPARE message to each participant containing the transaction ID and operation list
    4. It starts a timeout timer for the voting phase
    ... etc.
 
-4. **Concrete walk-through examples** — Narrate specific scenarios in prose: "Consider a transaction T1 involving participants A, B, and C. The coordinator sends PREPARE to all three. Participant A checks its local locks, finds no conflict, and votes COMMIT. Meanwhile, participant B detects a write-write conflict and votes ABORT..."
+6. **Concrete walk-through examples** — Narrate specific scenarios in prose: "Consider a transaction T1 involving participants A, B, and C. The coordinator sends PREPARE to all three. Participant A checks its local locks, finds no conflict, and votes COMMIT. Meanwhile, participant B detects a write-write conflict and votes ABORT..."
 
-5. **Blockquotes** — For key design insights, warnings, or important principles:
+7. **Blockquotes** — For key design insights, warnings, or important principles:
    > The critical insight here is that once a participant votes YES, it enters the uncertainty window...
 
-6. **Diagrams** — Reference available diagrams where they aid understanding.
+8. **Common Pitfalls** — For component design sections, include a "### Common Pitfalls" subsection listing mistakes learners frequently make:
+   - Describe the mistake concretely (not "don't forget to handle errors" but "forgetting to fsync after writing the vote record means a crash can lose the vote")
+   - Explain WHY it's wrong (what breaks)
+   - Show how to avoid/fix it
+
+9. **Diagrams** — Reference available diagrams where they aid understanding.
 
 WHAT TO EXPLAIN IN DEPTH:
-- WHY each design decision was made and what alternatives were rejected (with reasoning)
+- WHY each design decision was made and what alternatives were rejected (with reasoning) — use ADR format
+- **Mental models and analogies** for complex concepts — help build intuition before formalization
 - The responsibility of each component: what it owns, what data it holds, what it processes
 - Every data structure: list ALL fields with their types and purpose in a table
 - Every interface method: parameters, return values, preconditions, postconditions, side effects — in a table
@@ -599,11 +713,13 @@ WHAT TO EXPLAIN IN DEPTH:
 - Data flow: what enters, how it transforms, where it exits, what gets persisted
 - Error scenarios: what can fail, how failures are detected, how recovery works
 - Concrete examples that walk through real scenarios
+- **Common mistakes** learners make and how to avoid them
 
 WHAT TO AVOID IN LAYER 1:
 - Code blocks of ANY kind (no ``` fences)
 - Language-specific syntax (don't write "func", "struct", "interface" as keywords — describe them in prose/tables)
 - Generic advice ("make sure to handle errors") — instead describe SPECIFIC error scenarios and handling
+- Vague rationale ("this is better") — instead give SPECIFIC technical reasons with measurable trade-offs
 
 Use inline `backticks` freely for names (type names, method names, field names, constants) within prose and tables.
 
@@ -617,7 +733,20 @@ Include these elements:
 | Component | Simple Option | Advanced Option |
 Example: Transport → "HTTP REST + JSON (net/http)" vs "gRPC with Protocol Buffers"
 
-**B. Infrastructure Starter Code (COMPLETE, ready to use):**
+**B. Recommended File/Module Structure** (for High-Level Architecture and Component Design sections):
+Show how this component fits into the project's directory layout. Example:
+```
+project-root/
+  cmd/server/main.go        ← entry point
+  internal/coordinator/      ← this component
+    coordinator.go           ← main logic
+    coordinator_test.go      ← tests
+  internal/wal/              ← WAL infrastructure
+    wal.go
+```
+This helps learners organize their code from the start instead of dumping everything in one file.
+
+**C. Infrastructure Starter Code (COMPLETE, ready to use):**
 Provide COMPLETE, working code for components that are NOT the core learning goal but are prerequisites. For example:
 - A simple WAL wrapper (file append + fsync + read)
 - HTTP transport helpers (send/receive messages)
@@ -625,7 +754,7 @@ Provide COMPLETE, working code for components that are NOT the core learning goa
 - Simple lock manager
 These should be fully functional — the learner imports/copies them and moves on to the real challenge.
 
-**C. Core Logic Skeleton Code (signature + TODOs only):**
+**D. Core Logic Skeleton Code (signature + TODOs only):**
 For the CORE components the learner should implement themselves, provide:
 - Function/method signature with doc comment
 - TODO comments that map to the numbered algorithm steps from Layer 1
@@ -642,11 +771,22 @@ func (c *Coordinator) MakeDecision(txID string, votes map[string]Vote) Decision 
 }}
 ```
 
-**D. Language-Specific Hints:**
+**E. Language-Specific Hints:**
 Practical tips for the recommended language. For example:
 - "Use `os.File.Sync()` for fsync in Go"
 - "Use `encoding/json` for log record serialization"
 - "Use `sync.RWMutex` for concurrent transaction map access"
+
+**F. Milestone Checkpoint** (for Testing Strategy and Component Design sections):
+After describing what the learner builds in each milestone, include a concrete checkpoint:
+- What command to run (e.g., `go test ./internal/coordinator/...`)
+- What the expected output looks like
+- What behavior to verify manually (e.g., "start the server, send a PREPARE request via curl, you should see a VOTE response")
+- Signs that something is wrong and what to check
+
+**G. Debugging Tips** (for Error Handling and Debugging Guide sections):
+Structured as: Symptom | Likely Cause | How to Diagnose | Fix
+Example: "Transaction hangs forever" → "Participant voted YES but coordinator crashed before sending decision" → "Check coordinator's WAL for the decision record" → "Implement recovery scan on coordinator startup"
 
 IMPORTANT: The ratio should be roughly 70% Layer 1 (design) and 30% Layer 2 (implementation guidance). Layer 1 is the main content. Layer 2 supplements it.
 
@@ -655,34 +795,45 @@ IMPORTANT: The ratio should be roughly 70% Layer 1 (design) and 30% Layer 2 (imp
 **CRITICAL**: Each section MUST be extremely comprehensive and detailed. Target AT LEAST 500-800 lines of markdown per section.
 
 You MUST include ALL of the following for EVERY relevant concept:
+- **Mental models/analogies** that build intuition before technical details — at least one per major concept
 - Detailed prose paragraphs (3-5 sentences minimum per paragraph) explaining the concept, its purpose, and design rationale
 - Complete data structure tables with EVERY field listed (Name | Type | Description) — never summarize or skip fields
 - Full interface/API tables with ALL methods (Method | Parameters | Returns | Description)
 - Complete state machine tables where applicable (Current State | Event | Next State | Actions)
 - Step-by-step algorithm walkthroughs with numbered lists (at least 5-10 steps per algorithm)
 - Concrete walk-through examples with specific values and scenarios (not abstract descriptions)
+- **Architecture Decision Records (ADRs)** for every significant design choice: Context → Options → Decision → Rationale → Consequences
 - Design insight blockquotes explaining WHY decisions were made
+- **Common Pitfalls** that learners typically encounter, with concrete descriptions and fixes
 - Implementation Guidance with COMPLETE starter code (not snippets — full working files with imports, types, functions)
+- **File/module structure** showing where code should live in the project
 - Core logic skeletons with detailed TODO comments mapping to algorithm steps
+- **Milestone checkpoints** describing expected behavior after each stage of implementation
+- **Debugging tips** as Symptom → Cause → Diagnosis → Fix tables
 
 DO NOT:
 - Write short, superficial descriptions. Every concept deserves deep explanation.
 - Skip fields in data structure tables. List ALL fields.
 - Use vague language like "handles errors appropriately" — specify WHAT errors and HOW.
+- Give vague design rationale like "this is better" — give SPECIFIC technical reasons.
 - Write skeleton code with just 1-2 TODOs — write 5-10 detailed TODO steps per function.
 - Provide incomplete starter code — include ALL imports, type definitions, helper functions.
+- Skip the mental model — junior devs need intuition before formalization.
 
 {reference_example}
 
 === FORMATTING ===
 - Markdown format
 - Start with ## for section title, ### for subsections
+- **Start each section** with a note: "> **Milestone(s):** [list which project milestones this section corresponds to]"
 - Use tables extensively (this is the primary way to convey structured information)
-- Use blockquotes for key insights and design principles
+- Use blockquotes for key insights, design principles, and ADR summaries
 - Use numbered lists for procedures and algorithms
 - Use bold for key concepts on first introduction
 - Reference diagrams: ![Diagram Title](./diagrams/DIAGRAM-ID.svg) — only from AVAILABLE DIAGRAMS above
 - Use EXACTLY the names from NAMING CONVENTIONS. Do NOT invent alternatives.
+- For ADRs, use this format: blockquote with **Decision: [Title]** header, then Context/Options/Decision/Rationale/Consequences
+- For Common Pitfalls, use: ⚠️ **Pitfall: [Title]** followed by description, why it's wrong, and how to fix
 
 === CONTEXT FROM PREVIOUS SECTIONS ===
 {previous_sections_summary}
@@ -1384,8 +1535,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Generate architecture documents for projects using LLM pipeline"
     )
-    parser.add_argument("--provider", type=str, default="claude", choices=["claude", "anthropic", "gemini"],
-                        help="LLM provider: claude (CLI), anthropic (SDK, fast), gemini (default: claude)")
+    parser.add_argument("--provider", type=str, default="claude", choices=["claude", "anthropic", "gemini", "deepseek"],
+                        help="LLM provider: claude (CLI), anthropic (SDK), gemini, deepseek (default: claude)")
     parser.add_argument("--model", type=str, default=None,
                         help="Model name (claude: sonnet/opus/haiku, gemini: gemini-2.0-flash)")
     parser.add_argument("--research", action="store_true",
@@ -1415,6 +1566,8 @@ def main():
     if args.model is None:
         if args.provider in ("claude", "anthropic"):
             args.model = "sonnet"
+        elif args.provider == "deepseek":
+            args.model = "deepseek-reasoner"
         else:
             args.model = "gemini-2.5-flash"
 
@@ -1428,6 +1581,11 @@ def main():
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key and not args.dry_run:
             print("ERROR: ANTHROPIC_API_KEY environment variable not set")
+            sys.exit(1)
+    elif args.provider == "deepseek":
+        api_key = os.environ.get("DEEPSEEK_API_KEY")
+        if not api_key and not args.dry_run:
+            print("ERROR: DEEPSEEK_API_KEY environment variable not set")
             sys.exit(1)
     elif args.provider == "claude" and not args.dry_run:
         if not shutil.which("claude"):
@@ -1443,6 +1601,8 @@ def main():
     gemini_client = gemini_model = gemini_tools = None
     if args.provider == "anthropic" and not args.dry_run:
         init_anthropic(os.environ["ANTHROPIC_API_KEY"])
+    elif args.provider == "deepseek" and not args.dry_run:
+        init_deepseek(os.environ["DEEPSEEK_API_KEY"])
     elif args.provider == "gemini" and not args.dry_run:
         gemini_client, gemini_model, gemini_tools = init_gemini(
             os.environ["GEMINI_API_KEY"],

@@ -64,6 +64,42 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 DATA_DIR = SCRIPT_DIR / ".." / "data"
 YAML_PATH = DATA_DIR / "projects.yaml"
 ARCH_DOCS_DIR = DATA_DIR / "architecture-docs"
+REFERENCE_DOC_PATH = ARCH_DOCS_DIR / "2pc-impl" / "index.md"
+
+
+def _load_reference_section(doc_path: Path, section_heading: str = "## Data Model") -> str | None:
+    """Load a single section from a reference doc to use as a few-shot example.
+    Extracts content from `section_heading` until the next ## heading."""
+    if not doc_path.exists():
+        return None
+    text = doc_path.read_text()
+    # Find the section
+    pattern = re.compile(r"^" + re.escape(section_heading) + r"\s*$", re.MULTILINE)
+    match = pattern.search(text)
+    if not match:
+        return None
+    start = match.start()
+    # Find next ## heading
+    next_heading = re.search(r"^## ", text[match.end():], re.MULTILINE)
+    if next_heading:
+        end = match.end() + next_heading.start()
+    else:
+        end = len(text)
+    return text[start:end].strip()
+
+
+_reference_cache: str | None = ...  # sentinel: ... means "not loaded yet"
+
+
+def _get_cached_reference() -> str | None:
+    """Load and cache the reference section (loaded once, reused across all calls)."""
+    global _reference_cache
+    if _reference_cache is not ...:
+        return _reference_cache
+    _reference_cache = _load_reference_section(REFERENCE_DOC_PATH)
+    if _reference_cache:
+        print(f"  Loaded reference example ({len(_reference_cache)} chars) from {REFERENCE_DOC_PATH}")
+    return _reference_cache
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +236,7 @@ def call_anthropic(prompt: str, model: str = "claude-sonnet-4-20250514", max_ret
 # LLM Provider: Gemini API
 # ---------------------------------------------------------------------------
 
-def init_gemini(api_key: str, model_name: str = "gemini-2.5-flash-lite", use_grounding: bool = True):
+def init_gemini(api_key: str, model_name: str = "gemini-2.5-flash", use_grounding: bool = True):
     """Initialize Gemini client."""
     try:
         from google import genai
@@ -614,6 +650,30 @@ Practical tips for the recommended language. For example:
 
 IMPORTANT: The ratio should be roughly 70% Layer 1 (design) and 30% Layer 2 (implementation guidance). Layer 1 is the main content. Layer 2 supplements it.
 
+=== LENGTH AND DETAIL REQUIREMENTS ===
+
+**CRITICAL**: Each section MUST be extremely comprehensive and detailed. Target AT LEAST 500-800 lines of markdown per section.
+
+You MUST include ALL of the following for EVERY relevant concept:
+- Detailed prose paragraphs (3-5 sentences minimum per paragraph) explaining the concept, its purpose, and design rationale
+- Complete data structure tables with EVERY field listed (Name | Type | Description) — never summarize or skip fields
+- Full interface/API tables with ALL methods (Method | Parameters | Returns | Description)
+- Complete state machine tables where applicable (Current State | Event | Next State | Actions)
+- Step-by-step algorithm walkthroughs with numbered lists (at least 5-10 steps per algorithm)
+- Concrete walk-through examples with specific values and scenarios (not abstract descriptions)
+- Design insight blockquotes explaining WHY decisions were made
+- Implementation Guidance with COMPLETE starter code (not snippets — full working files with imports, types, functions)
+- Core logic skeletons with detailed TODO comments mapping to algorithm steps
+
+DO NOT:
+- Write short, superficial descriptions. Every concept deserves deep explanation.
+- Skip fields in data structure tables. List ALL fields.
+- Use vague language like "handles errors appropriately" — specify WHAT errors and HOW.
+- Write skeleton code with just 1-2 TODOs — write 5-10 detailed TODO steps per function.
+- Provide incomplete starter code — include ALL imports, type definitions, helper functions.
+
+{reference_example}
+
 === FORMATTING ===
 - Markdown format
 - Start with ## for section title, ### for subsections
@@ -757,7 +817,21 @@ def generate_section_sequential(section: dict, skeleton: dict, project: dict,
         naming_conventions=_format_conventions(conventions),
         diagrams_info=diagrams_info,
         previous_sections_summary=prev_info,
+        reference_example="",  # placeholder replaced below
     )
+
+    # Append reference example AFTER .format() to avoid escaping issues with { } in code
+    ref_section = _get_cached_reference()
+    if ref_section:
+        ref_block = (
+            "\n\n=== REFERENCE EXAMPLE (from a completed architecture doc) ===\n"
+            "Study this example carefully. Your output MUST match this level of detail, "
+            "depth, and comprehensiveness. Notice the extensive tables, detailed prose, "
+            "concrete examples, complete code blocks, and thorough coverage of every concept.\n\n"
+            f"{ref_section}\n\n"
+            "=== END REFERENCE EXAMPLE ==="
+        )
+        prompt += ref_block
 
     response = call_llm(prompt, provider, model, research, timeout=300, **llm_kwargs)
     if not response:
@@ -1342,7 +1416,7 @@ def main():
         if args.provider in ("claude", "anthropic"):
             args.model = "sonnet"
         else:
-            args.model = "gemini-2.5-flash-lite"
+            args.model = "gemini-2.5-flash"
 
     # Provider checks
     if args.provider == "gemini":

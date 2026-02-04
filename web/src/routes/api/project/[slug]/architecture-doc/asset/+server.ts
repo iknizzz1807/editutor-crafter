@@ -6,12 +6,12 @@ import { eq } from 'drizzle-orm';
 import { readFileSync } from 'fs';
 import { resolve, dirname, normalize } from 'path';
 
-const ALLOWED_EXTENSIONS = new Set(['.svg', '.png', '.drawio']);
+const ALLOWED_EXTENSIONS = new Set(['.svg', '.png', '.d2']);
 
 const CONTENT_TYPES: Record<string, string> = {
 	'.svg': 'image/svg+xml',
 	'.png': 'image/png',
-	'.drawio': 'application/xml'
+	'.d2': 'text/plain'
 };
 
 export const GET: RequestHandler = async ({ params, url }) => {

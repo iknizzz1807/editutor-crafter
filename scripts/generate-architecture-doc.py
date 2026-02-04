@@ -3,12 +3,12 @@
 Generate architecture documents for projects using a multi-pass LLM pipeline.
 
 The pipeline generates a comprehensive architecture guide (.md) for each project,
-with optional draw.io diagrams converted to SVG.
+with optional D2 diagrams (https://d2lang.com) auto-laid-out and converted to SVG.
 
 Pipeline passes (per project):
   1. Skeleton — Generate document outline (sections, subsections, summaries)
   2. Sections — Generate each section sequentially (with naming conventions tracking)
-  3. Diagrams — Generate draw.io XML for each diagram, convert to SVG
+  3. Diagrams — Generate D2 code for each diagram, validate, convert to SVG
 
 Usage:
     # Generate for a single project
@@ -41,7 +41,7 @@ Requirements:
     claude provider: Claude Code CLI installed and authenticated
     anthropic provider: pip install anthropic pyyaml && export ANTHROPIC_API_KEY=...
     gemini provider: pip install google-genai pyyaml && export GEMINI_API_KEY=...
-    diagrams (optional): draw.io CLI (`drawio`) for SVG conversion
+    diagrams (optional): d2 CLI (curl -fsSL https://d2lang.com/install.sh | sh -s --)
 """
 
 import argparse
@@ -300,6 +300,15 @@ def get_project_context(project: dict) -> str:
     else:
         lang_str = str(languages) if languages else "Not specified"
 
+    # Primary language for implementation guidance code
+    if isinstance(languages, dict):
+        rec = languages.get("recommended", [])
+        primary_lang = rec[0] if isinstance(rec, list) and rec else "Python"
+    elif isinstance(languages, list) and languages:
+        primary_lang = str(languages[0])
+    else:
+        primary_lang = "Python"
+
     # Prerequisites
     prereqs = project.get("prerequisites", [])
     prereq_str = "\n".join(f"- {p.get('name', p) if isinstance(p, dict) else p}" for p in prereqs) if prereqs else "None"
@@ -338,6 +347,7 @@ def get_project_context(project: dict) -> str:
 DESCRIPTION: {desc}
 DIFFICULTY: {difficulty}
 LANGUAGES: {lang_str}
+PRIMARY LANGUAGE (use this for Implementation Guidance code): {primary_lang}
 
 PREREQUISITES:
 {prereq_str}
@@ -389,16 +399,22 @@ Generate a JSON object with the following structure:
   ]
 }}
 
-=== DOCUMENT FORMAT: GOOGLE DESIGN DOC STYLE ===
+=== DOCUMENT FORMAT ===
 
-This is a DESIGN DOCUMENT — the kind a senior engineer writes before a team starts coding. It contains NO code blocks whatsoever. Everything is explained through:
-- Prose paragraphs explaining concepts, decisions, and rationale
-- Tables describing data structures, interfaces, state transitions, message formats
-- Numbered algorithm steps for procedures
-- Diagrams for visual understanding
-- Concrete walk-through examples narrated in prose
+This is a DESIGN DOCUMENT for an EDUCATIONAL PLATFORM targeting junior/fresher developers.
+The document has TWO layers:
 
-The reader should finish this doc knowing WHAT to build, WHY each decision was made, and HOW components interact — then be able to write the code themselves.
+**Layer 1 — Design Knowledge (prose + tables, NO code blocks):**
+Explains architecture, decisions, trade-offs, data flow. Uses prose paragraphs, tables, numbered algorithm steps, diagrams, and concrete walk-through examples. The reader should understand WHAT to build, WHY each decision was made, and HOW components interact.
+
+**Layer 2 — Implementation Guidance (per section, with code):**
+At the END of each section, include an "### Implementation Guidance" subsection that bridges the gap between design and code. This layer contains:
+- **Technology recommendations** as a table: Component | Simple Option | Advanced Option
+- **Starter/skeleton code** for INFRASTRUCTURE components (things that are NOT the core learning goal but are needed to make the system work). For example: a simple WAL wrapper, HTTP transport helpers, serialization utilities. This code should be COMPLETE and ready to import/use.
+- **Skeleton code with TODOs** for CORE LOGIC components (things the learner SHOULD implement themselves). Show the function signature, doc comment, and TODO comments describing each step — but NO implementation body. The TODOs should map directly to the numbered algorithm steps from Layer 1.
+- **Hints and tips** specific to the recommended language/technology. For example: "In Go, use `os.File.Sync()` for fsync" or "Use `encoding/json` for log record serialization".
+
+The FIRST recommended language from the project's language list should be used for all code in Implementation Guidance sections.
 
 === SECTION STRUCTURE ===
 
@@ -414,6 +430,7 @@ Follow this structure (adapt section names to the specific project):
    - Internal behavior described as numbered algorithm steps
    - State transitions described as a table (Current State × Event → New State + Action)
    - Design decisions: what alternatives were considered, why this approach was chosen
+   - **Implementation Guidance** (Layer 2): technology choices, starter code for infrastructure, skeleton with TODOs for core logic
 6. **Interactions and Data Flow** — How components communicate, message formats as tables, sequence of operations
 7. **Error Handling and Edge Cases** — Failure modes, detection, recovery strategies
 8. **Testing Strategy** — What properties to verify, what scenarios to test
@@ -423,13 +440,17 @@ Each section should map to one or more milestones from the project.
 
 === DIAGRAM GUIDELINES ===
 
-Suggest 4-8 diagrams:
-- System component diagram (always include)
-- Data model / type relationship diagram
-- State machine diagrams for stateful components
-- Sequence diagrams for key interactions
-- Flowcharts for complex procedures
+Diagrams will be generated as D2 code (https://d2lang.com) and auto-laid-out.
+The LLM only describes nodes + edges; a layout engine handles positioning.
 
+Suggest 4-8 diagrams:
+- System component diagram (always include) — type: "component"
+- Data model / type relationship diagram — type: "class"
+- State machine diagrams for stateful components — type: "state-machine"
+- Sequence diagrams for key interactions — type: "sequence"
+- Flowcharts for complex procedures — type: "flowchart"
+
+Keep each diagram focused: max ~15-20 nodes. Split complex views into multiple diagrams.
 Each diagram's "relevant_sections" should list which section IDs it belongs to.
 
 === OUTPUT ===
@@ -502,7 +523,11 @@ Summary: {section_summary}
 
 === WRITING RULES — READ CAREFULLY ===
 
-**ZERO CODE BLOCKS.** This document must contain absolutely NO code blocks (no ``` fences). Not even declarations, not even signatures, not even pseudo-code in code fences. Everything is expressed through:
+This document has TWO layers. The MAIN BODY uses prose + tables (no code). At the END of the section, an "Implementation Guidance" subsection provides code.
+
+== LAYER 1: DESIGN KNOWLEDGE (main body of each section) ==
+
+**NO CODE BLOCKS in the main body.** Everything is expressed through:
 
 1. **Prose paragraphs** — Explain concepts, decisions, rationale, and behavior in natural language. Be extremely detailed. Write as if you're a senior engineer explaining the system to a new team member at a whiteboard.
 
@@ -539,13 +564,55 @@ WHAT TO EXPLAIN IN DEPTH:
 - Error scenarios: what can fail, how failures are detected, how recovery works
 - Concrete examples that walk through real scenarios
 
-WHAT TO AVOID:
-- Code blocks of ANY kind (no ``` fences anywhere)
+WHAT TO AVOID IN LAYER 1:
+- Code blocks of ANY kind (no ``` fences)
 - Language-specific syntax (don't write "func", "struct", "interface" as keywords — describe them in prose/tables)
-- Implementation details that belong in the code itself
 - Generic advice ("make sure to handle errors") — instead describe SPECIFIC error scenarios and handling
 
 Use inline `backticks` freely for names (type names, method names, field names, constants) within prose and tables.
+
+== LAYER 2: IMPLEMENTATION GUIDANCE (### Implementation Guidance subsection at END of section) ==
+
+This subsection bridges the gap between design and actual code. The target audience is junior/fresher developers. Use the FIRST recommended language from the project's language list.
+
+Include these elements:
+
+**A. Technology Recommendations Table:**
+| Component | Simple Option | Advanced Option |
+Example: Transport → "HTTP REST + JSON (net/http)" vs "gRPC with Protocol Buffers"
+
+**B. Infrastructure Starter Code (COMPLETE, ready to use):**
+Provide COMPLETE, working code for components that are NOT the core learning goal but are prerequisites. For example:
+- A simple WAL wrapper (file append + fsync + read)
+- HTTP transport helpers (send/receive messages)
+- Serialization utilities
+- Simple lock manager
+These should be fully functional — the learner imports/copies them and moves on to the real challenge.
+
+**C. Core Logic Skeleton Code (signature + TODOs only):**
+For the CORE components the learner should implement themselves, provide:
+- Function/method signature with doc comment
+- TODO comments that map to the numbered algorithm steps from Layer 1
+- NO implementation body — learner fills this in
+Example:
+```go
+// MakeDecision evaluates all participant votes and returns the global decision.
+// Returns DecisionCommit only if ALL participants voted VoteCommit.
+func (c *Coordinator) MakeDecision(txID string, votes map[string]Vote) Decision {{
+    // TODO 1: Check if votes were received from all participants in tx.Participants
+    // TODO 2: Iterate through votes — if any vote is VoteAbort, return DecisionAbort
+    // TODO 3: All votes are VoteCommit — return DecisionCommit
+    // Hint: len(votes) < len(tx.Participants) means some participants timed out
+}}
+```
+
+**D. Language-Specific Hints:**
+Practical tips for the recommended language. For example:
+- "Use `os.File.Sync()` for fsync in Go"
+- "Use `encoding/json` for log record serialization"
+- "Use `sync.RWMutex` for concurrent transaction map access"
+
+IMPORTANT: The ratio should be roughly 70% Layer 1 (design) and 30% Layer 2 (implementation guidance). Layer 1 is the main content. Layer 2 supplements it.
 
 === FORMATTING ===
 - Markdown format
@@ -739,9 +806,9 @@ def generate_section_sequential(section: dict, skeleton: dict, project: dict,
 # Pass 3: Diagram generation
 # ---------------------------------------------------------------------------
 
-DIAGRAM_PROMPT = """You are an expert at creating draw.io (diagrams.net) XML diagrams.
+DIAGRAM_PROMPT = """You are an expert at creating D2 diagrams (https://d2lang.com).
 
-Generate a draw.io XML diagram for:
+Generate a D2 diagram for:
 
 Title: {diagram_title}
 Description: {diagram_description}
@@ -754,32 +821,184 @@ Type: {diagram_type}
 The following is the relevant section of the architecture document:
 {relevant_section}
 
-=== REQUIREMENTS ===
-- Use draw.io mxGraph XML format
-- Use a dark theme color scheme:
-  - Background: transparent
-  - Node fill: #1a1a2e or #16213e or #0f3460
-  - Node stroke: #3fb950 (green accent)
-  - Text color: #e6edf3 (light gray)
-  - Arrow/edge color: #8b949e
-  - Highlight color: #3fb950 for important elements
-- Use clean, readable layout
-- Include all relevant components/types/flows from the architecture doc
-- Make it visually clear and educational
+=== D2 SYNTAX REFERENCE ===
+
+# Shapes (nodes)
+server: API Server
+db: Database {{
+  shape: cylinder
+}}
+queue: Message Queue {{
+  shape: queue
+}}
+
+# Connections
+server -> db: queries
+server <- client: requests
+a <-> b: bidirectional
+a -> b: solid
+a -- b: no arrow
+
+# Containers (groups)
+backend: Backend Services {{
+  api: API Server
+  worker: Background Worker
+  api -> worker: enqueue
+}}
+
+# Nested containers
+system: {{
+  coordinator: Transaction Coordinator {{
+    log: WAL {{
+      shape: page
+    }}
+  }}
+  participant: Participant {{
+    store: Data Store {{
+      shape: cylinder
+    }}
+  }}
+  coordinator -> participant: PREPARE
+}}
+
+# Styling
+my_node: Important {{
+  style.fill: "#d63031"
+  style.font-color: "#ffffff"
+  style.stroke: "#e17055"
+  style.bold: true
+}}
+
+# Sequence diagrams
+shape: sequence_diagram
+alice: Alice
+bob: Bob
+alice -> bob: Hello
+bob -> alice: Hi back
+
+# Multiple connections with labels
+a -> b: step 1
+a -> c: step 2
+b -> d: step 3
+c -> d: step 4
+
+# Text labels and notes
+note: |md
+  ## Important Note
+  This is a **markdown** note
+| {{
+  shape: page
+}}
+
+# Available shapes: rectangle (default), circle, oval, cylinder, queue,
+#   page, package, diamond, hexagon, cloud, parallelogram, class, sql_table
+
+=== DIAGRAM TYPE HINTS ===
+
+For "component" type: Use containers to group related components. Show interfaces between containers with labeled arrows.
+
+For "sequence" type: Use `shape: sequence_diagram` at the top level. Define actors as top-level nodes. Use arrows for messages.
+
+For "state-machine" type: Use circles/ovals for states, arrows for transitions with event labels. Use a filled circle for initial state, double circle for final state.
+
+For "flowchart" type: Use diamonds for decisions, rectangles for actions, arrows for flow. Label decision edges with Yes/No or conditions.
+
+For "class" type: Use `shape: class` or `shape: sql_table` for structured types.
+
+=== STYLE ===
+- Use a dark theme:
+  - Container fill: "#1a1a2e" or "#16213e" or "#0f3460"
+  - Stroke/border: "#3fb950"
+  - Text: "#e6edf3"
+  - Arrows: "#8b949e"
+  - Important elements: stroke "#3fb950" with bold
+- Keep it clean, readable, and educational
+- Do NOT over-crowd — max ~15-20 nodes per diagram
+- Use containers to organize related items
 
 === OUTPUT ===
-Output ONLY the draw.io XML. No explanation before or after.
+Output ONLY the D2 code. No explanation before or after.
 Do NOT wrap in markdown fences.
-Start with <?xml or <mxfile and end with the closing tag.
+Do NOT include ``` anywhere in the output.
 """
+
+
+def _find_d2_cli() -> str | None:
+    """Find the d2 CLI binary."""
+    d2 = shutil.which("d2")
+    if d2:
+        return d2
+    # Try common paths
+    for candidate in ["/usr/local/bin/d2", os.path.expanduser("~/.local/bin/d2"),
+                      os.path.expanduser("~/bin/d2")]:
+        if Path(candidate).exists():
+            return candidate
+    return None
+
+
+def _validate_d2(d2_code: str, d2_cli: str | None = None) -> tuple[bool, str]:
+    """Validate D2 code syntax. Returns (is_valid, error_message)."""
+    if not d2_cli:
+        d2_cli = _find_d2_cli()
+    if not d2_cli:
+        # Can't validate without CLI — accept it and hope for the best
+        return True, ""
+
+    # Write to temp file for validation
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".d2", delete=False) as f:
+        f.write(d2_code)
+        tmp_path = f.name
+
+    try:
+        result = subprocess.run(
+            [d2_cli, "--dry-run", tmp_path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            return True, ""
+        errors = (result.stderr or result.stdout or "Unknown error").strip()
+        return False, errors
+    except (subprocess.TimeoutExpired, Exception) as e:
+        return False, str(e)
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
+def _extract_relevant_section(full_doc: str, diagram: dict) -> str:
+    """Extract the most relevant section of the doc for a diagram."""
+    relevant_ids = diagram.get("relevant_sections", [])
+    if not relevant_ids:
+        return full_doc[:3000]
+
+    # Try to find sections by heading
+    chunks = []
+    for rid in relevant_ids:
+        # Search for section headings that match
+        pattern = re.compile(
+            rf"^##\s+.*{re.escape(rid.replace('-', ' '))}.*$",
+            re.MULTILINE | re.IGNORECASE
+        )
+        match = pattern.search(full_doc)
+        if match:
+            start = match.start()
+            # Find next ## heading
+            next_heading = re.search(r"^## ", full_doc[start + 1:], re.MULTILINE)
+            end = start + 1 + next_heading.start() if next_heading else start + 3000
+            chunks.append(full_doc[start:end][:2000])
+
+    if chunks:
+        return "\n\n---\n\n".join(chunks)[:4000]
+    return full_doc[:3000]
 
 
 def generate_diagram(diagram: dict, project: dict, full_doc: str,
                      provider: str, model: str, research: bool,
                      max_retries: int = 2, **llm_kwargs) -> str | None:
-    """Pass 4: Generate a draw.io XML diagram."""
-    # Extract relevant section from the document
-    relevant = full_doc[:3000]  # First part for context
+    """Pass 3: Generate a D2 diagram with validation and retry."""
+    relevant = _extract_relevant_section(full_doc, diagram)
 
     prompt = DIAGRAM_PROMPT.format(
         diagram_title=diagram.get("title", ""),
@@ -790,60 +1009,76 @@ def generate_diagram(diagram: dict, project: dict, full_doc: str,
         relevant_section=relevant,
     )
 
+    d2_cli = _find_d2_cli()
+
     for attempt in range(max_retries + 1):
         response = call_llm(prompt, provider, model, research, timeout=180, **llm_kwargs)
         if not response:
-            print(f"  ERROR: No response for diagram '{diagram.get('title', '')}'")
+            print(f"    ERROR: No response for diagram '{diagram.get('title', '')}'")
             return None
 
-        xml_text = response.strip()
+        d2_code = response.strip()
         # Strip any markdown fences
-        if xml_text.startswith("```"):
-            xml_text = re.sub(r"^```\w*\n?", "", xml_text)
-            xml_text = re.sub(r"\n?```$", "", xml_text)
+        if d2_code.startswith("```"):
+            d2_code = re.sub(r"^```\w*\n?", "", d2_code)
+            d2_code = re.sub(r"\n?```$", "", d2_code)
 
-        # Basic XML validation
-        if "<mxfile" in xml_text or "<mxGraphModel" in xml_text:
-            # Ensure it ends properly
-            if "</mxfile>" in xml_text or "</mxGraphModel>" in xml_text:
-                return xml_text
+        # Validate D2 syntax
+        is_valid, errors = _validate_d2(d2_code, d2_cli)
+        if is_valid:
+            return d2_code
 
         if attempt < max_retries:
-            print(f"  Diagram XML invalid, retrying (attempt {attempt + 2}/{max_retries + 1})...")
-            prompt = f"The previous output was not valid draw.io XML. Please try again.\n\n{prompt}"
+            print(f"    D2 syntax error, retrying (attempt {attempt + 2}/{max_retries + 1})...")
+            print(f"    Errors: {errors[:200]}")
+            # Feed errors back to LLM for correction
+            prompt = (
+                f"Your previous D2 output had syntax errors:\n\n"
+                f"```\n{errors}\n```\n\n"
+                f"The D2 code you generated:\n```d2\n{d2_code}\n```\n\n"
+                f"Fix the errors and regenerate. Remember:\n"
+                f"- Use {{ }} for containers (double-brace in some contexts)\n"
+                f"- Connections use -> not →\n"
+                f"- Labels use : after the node name\n"
+                f"- Style properties go inside {{ }} blocks\n\n"
+                f"Output ONLY the corrected D2 code, no markdown fences.\n"
+            )
         else:
-            print(f"  ERROR: Could not generate valid diagram XML after {max_retries + 1} attempts")
-            return None
+            print(f"    ERROR: Could not generate valid D2 after {max_retries + 1} attempts")
+            print(f"    Last errors: {errors[:300]}")
+            # Return it anyway — the SVG conversion will just fail gracefully
+            return d2_code
 
 
-def convert_drawio_to_svg(drawio_path: Path, svg_path: Path) -> bool:
-    """Convert a .drawio file to .svg using draw.io CLI."""
-    drawio_cli = shutil.which("drawio") or shutil.which("draw.io")
-    if not drawio_cli:
-        # Try common paths
-        for candidate in ["/usr/bin/drawio", "/usr/local/bin/drawio",
-                          "/Applications/draw.io.app/Contents/MacOS/draw.io"]:
-            if Path(candidate).exists():
-                drawio_cli = candidate
-                break
+def convert_d2_to_svg(d2_path: Path, svg_path: Path, theme: str = "200") -> bool:
+    """Convert a .d2 file to .svg using d2 CLI.
 
-    if not drawio_cli:
-        print("  WARNING: draw.io CLI not found, skipping SVG conversion")
+    Args:
+        d2_path: Path to .d2 source file
+        svg_path: Path for output .svg file
+        theme: D2 theme ID. 200 = "Dark Mauve" (dark theme).
+               Other dark themes: 201 (Dark Flagship Terrastruct), 202 (Cool Classics).
+    """
+    d2_cli = _find_d2_cli()
+    if not d2_cli:
+        print("    WARNING: d2 CLI not found, skipping SVG conversion")
+        print("    Install: curl -fsSL https://d2lang.com/install.sh | sh -s --")
         return False
 
     try:
         result = subprocess.run(
-            [drawio_cli, "--export", "--format", "svg", "--output", str(svg_path), str(drawio_path)],
+            [d2_cli, "--layout=elk", f"--theme={theme}",
+             str(d2_path), str(svg_path)],
             capture_output=True,
             text=True,
             timeout=60,
         )
         if result.returncode == 0:
             return True
-        print(f"  WARNING: draw.io export failed: {result.stderr[:200]}")
+        print(f"    WARNING: d2 export failed: {(result.stderr or result.stdout)[:200]}")
         return False
     except (subprocess.TimeoutExpired, Exception) as e:
-        print(f"  WARNING: draw.io export error: {e}")
+        print(f"    WARNING: d2 export error: {e}")
         return False
 
 
@@ -982,23 +1217,23 @@ def process_project(project_id: str, project: dict, args,
             diag_title = diagram.get("title", "")
             print(f"    {diag_title} ({diag_id})...")
 
-            xml = generate_diagram(
+            d2_code = generate_diagram(
                 diagram, project, full_doc,
                 args.provider, args.model, args.research, **llm_kwargs
             )
-            if xml:
-                # Save .drawio file
-                drawio_path = diagrams_dir / f"{diag_id}.drawio"
-                with open(drawio_path, "w") as f:
-                    f.write(xml)
-                print(f"    Saved {drawio_path.name}")
+            if d2_code:
+                # Save .d2 source file
+                d2_path = diagrams_dir / f"{diag_id}.d2"
+                with open(d2_path, "w") as f:
+                    f.write(d2_code)
+                print(f"    Saved {d2_path.name}")
 
-                # Try to convert to SVG
+                # Convert to SVG
                 svg_path = diagrams_dir / f"{diag_id}.svg"
-                if convert_drawio_to_svg(drawio_path, svg_path):
+                if convert_d2_to_svg(d2_path, svg_path):
                     print(f"    Converted to {svg_path.name}")
                 else:
-                    print(f"    SVG conversion skipped (install draw.io CLI for auto-conversion)")
+                    print(f"    SVG conversion skipped (install d2: curl -fsSL https://d2lang.com/install.sh | sh -s --)")
             else:
                 print(f"    FAIL: Could not generate diagram")
     else:

@@ -31,7 +31,7 @@ export async function renderArchDoc(
 	let blockIdx = 0;
 
 	const preprocessed = markdown.replace(
-		/```(\w*)\n([\s\S]*?)```/g,
+		/^[ \t]*```(\w*)\n([\s\S]*?)^[ \t]*```[ \t]*$/gm,
 		(_match, lang, code) => {
 			const placeholder = `<!--CODE_BLOCK_${blockIdx}-->`;
 			codeBlocks.push({ lang: lang || '', code: code.trimEnd(), placeholder });

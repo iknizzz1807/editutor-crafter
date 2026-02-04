@@ -952,7 +952,7 @@ def _validate_d2(d2_code: str, d2_cli: str | None = None) -> tuple[bool, str]:
 
     try:
         result = subprocess.run(
-            [d2_cli, "--dry-run", tmp_path],
+            [d2_cli, "validate", tmp_path],
             capture_output=True,
             text=True,
             timeout=30,

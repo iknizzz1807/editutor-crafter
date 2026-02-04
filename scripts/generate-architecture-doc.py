@@ -5,11 +5,10 @@ Generate architecture documents for projects using a multi-pass LLM pipeline.
 The pipeline generates a comprehensive architecture guide (.md) for each project,
 with optional draw.io diagrams converted to SVG.
 
-Pipeline passes:
+Pipeline passes (per project):
   1. Skeleton — Generate document outline (sections, subsections, summaries)
-  2. Sections — Generate each section in detail (parallelizable)
-  3. Consistency — Check and fix naming/type consistency across all sections
-  4. Diagrams — Generate draw.io XML for each diagram, convert to SVG
+  2. Sections — Generate each section sequentially (with naming conventions tracking)
+  3. Diagrams — Generate draw.io XML for each diagram, convert to SVG
 
 Usage:
     # Generate for a single project
@@ -21,8 +20,8 @@ Usage:
     # With web research enabled
     python3 scripts/generate-architecture-doc.py --provider claude --research --project tetris
 
-    # Parallel section generation (Claude)
-    python3 scripts/generate-architecture-doc.py --provider claude --workers 3
+    # Process 3 projects in parallel
+    python3 scripts/generate-architecture-doc.py --provider claude --workers 3 --all
 
     # Using Gemini API
     python3 scripts/generate-architecture-doc.py --provider gemini --project build-interpreter
@@ -54,6 +53,7 @@ import subprocess
 import sys
 import time
 import traceback
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -300,15 +300,6 @@ def get_project_context(project: dict) -> str:
     else:
         lang_str = str(languages) if languages else "Not specified"
 
-    # Primary language for code examples
-    if isinstance(languages, dict):
-        rec = languages.get("recommended", [])
-        primary_lang = rec[0] if isinstance(rec, list) and rec else "Python"
-    elif isinstance(languages, list) and languages:
-        primary_lang = str(languages[0])
-    else:
-        primary_lang = "Python"
-
     # Prerequisites
     prereqs = project.get("prerequisites", [])
     prereq_str = "\n".join(f"- {p.get('name', p) if isinstance(p, dict) else p}" for p in prereqs) if prereqs else "None"
@@ -347,7 +338,6 @@ def get_project_context(project: dict) -> str:
 DESCRIPTION: {desc}
 DIFFICULTY: {difficulty}
 LANGUAGES: {lang_str}
-PRIMARY LANGUAGE (for code examples): {primary_lang}
 
 PREREQUISITES:
 {prereq_str}
@@ -363,7 +353,7 @@ MILESTONES:
 # Pass 1: Skeleton generation
 # ---------------------------------------------------------------------------
 
-SKELETON_PROMPT = """You are an expert software architect and technical writer. Generate a document outline (skeleton) for an architecture guide for the following project.
+SKELETON_PROMPT = """You are an expert software architect creating a design document outline. This follows the Google Design Doc style used at major tech companies — prose-heavy, focused on decisions and trade-offs, with ZERO code blocks.
 
 {context}
 
@@ -372,8 +362,8 @@ SKELETON_PROMPT = """You are an expert software architect and technical writer. 
 Generate a JSON object with the following structure:
 
 {{
-  "title": "Architecture Guide Title",
-  "overview": "A 2-3 sentence summary of what this architecture doc covers",
+  "title": "Project Name: Design Document",
+  "overview": "A 2-3 sentence summary of what this system does and the key architectural challenge it solves",
   "sections": [
     {{
       "id": "section-id",
@@ -392,34 +382,55 @@ Generate a JSON object with the following structure:
     {{
       "id": "diagram-id",
       "title": "Diagram Title",
-      "description": "What this diagram shows",
-      "type": "flowchart|sequence|class|component|data-flow"
+      "description": "What this diagram shows and what components/flows to include",
+      "type": "flowchart|sequence|class|component|state-machine",
+      "relevant_sections": ["section-id-1", "section-id-2"]
     }}
   ]
 }}
 
-=== GUIDELINES ===
+=== DOCUMENT FORMAT: GOOGLE DESIGN DOC STYLE ===
 
-The architecture document should:
-1. Start with an Overview section explaining the big picture
-2. Cover the System Architecture (high-level component layout and data flow)
-3. Have a section for each major component/module with:
-   - Purpose and responsibilities
-   - Key types/interfaces/data structures
-   - Design decisions and trade-offs
-4. Cover how components interact (data flow, communication patterns)
-5. Include Error Handling strategy
-6. Include Testing Strategy
-7. End with Extension Points (future improvements)
+This is a DESIGN DOCUMENT — the kind a senior engineer writes before a team starts coding. It contains NO code blocks whatsoever. Everything is explained through:
+- Prose paragraphs explaining concepts, decisions, and rationale
+- Tables describing data structures, interfaces, state transitions, message formats
+- Numbered algorithm steps for procedures
+- Diagrams for visual understanding
+- Concrete walk-through examples narrated in prose
+
+The reader should finish this doc knowing WHAT to build, WHY each decision was made, and HOW components interact — then be able to write the code themselves.
+
+=== SECTION STRUCTURE ===
+
+Follow this structure (adapt section names to the specific project):
+
+1. **Context and Problem Statement** — What problem are we solving? Why is it hard? What existing approaches exist?
+2. **Goals and Non-Goals** — What this system must do, and explicitly what it does NOT do
+3. **High-Level Architecture** — Component overview, responsibilities, how they connect (with diagram)
+4. **Data Model** — All key types/structures described as tables (Name | Type | Description), relationships between them
+5. **Component Design sections** (one per major component) — each containing:
+   - Responsibility and scope
+   - Interface: what it receives, what it returns, described as a table (Method | Input | Output | Description)
+   - Internal behavior described as numbered algorithm steps
+   - State transitions described as a table (Current State × Event → New State + Action)
+   - Design decisions: what alternatives were considered, why this approach was chosen
+6. **Interactions and Data Flow** — How components communicate, message formats as tables, sequence of operations
+7. **Error Handling and Edge Cases** — Failure modes, detection, recovery strategies
+8. **Testing Strategy** — What properties to verify, what scenarios to test
+9. **Future Extensions** — What could be added later, what the design accommodates
 
 Each section should map to one or more milestones from the project.
-The document should help a learner understand the full picture BEFORE they start coding.
 
-Suggest 2-4 diagrams that would be most helpful:
-- System overview / component diagram
-- Data flow diagram
-- Key class/type relationships
-- Sequence diagram for important flows
+=== DIAGRAM GUIDELINES ===
+
+Suggest 4-8 diagrams:
+- System component diagram (always include)
+- Data model / type relationship diagram
+- State machine diagrams for stateful components
+- Sequence diagrams for key interactions
+- Flowcharts for complex procedures
+
+Each diagram's "relevant_sections" should list which section IDs it belongs to.
 
 === OUTPUT ===
 Output ONLY the JSON object, no markdown fences, no explanation before or after.
@@ -464,47 +475,7 @@ def generate_skeleton(project: dict, provider: str, model: str, research: bool, 
 # Pass 2: Section generation
 # ---------------------------------------------------------------------------
 
-SECTION_PROMPT_PARALLEL = """You are an expert software architect writing a section of an architecture guide.
-
-=== PROJECT CONTEXT ===
-{context}
-
-=== DOCUMENT OUTLINE ===
-Title: {doc_title}
-Overview: {doc_overview}
-
-Full outline:
-{outline}
-
-=== YOUR TASK ===
-Write the following section in detail:
-
-Section: {section_title}
-Summary: {section_summary}
-{subsections_info}
-
-=== GUIDELINES ===
-- Write in Markdown format
-- Start with a ## heading for the section title
-- Use ### for subsections
-- Include code examples in the project's primary language using fenced code blocks (```language)
-- Include TypeScript/language-appropriate type definitions and interfaces
-- Explain design decisions and trade-offs
-- Reference other sections when relevant (e.g., "as described in the Parser section")
-- Use blockquotes (>) for important tips or warnings
-- Use tables where appropriate (e.g., for operator precedence, token types)
-- Keep explanations clear and educational — the reader is a learner building this project
-- Include inline code (`backticks`) for variable names, function names, types
-- If a diagram is relevant to this section, include a placeholder: ![Diagram Title](./diagrams/diagram-id.svg)
-
-=== CONTENT TO WRITE ===
-{previous_sections_summary}
-
-Write ONLY the markdown content for this section. Do not include the document title or any content outside this section.
-Do NOT wrap your output in markdown fences. Just write the raw markdown.
-"""
-
-SECTION_PROMPT_SEQUENTIAL = """You are an expert software architect writing a section of an architecture guide.
+SECTION_PROMPT_SEQUENTIAL = """You are an expert software architect writing a section of a design document in the Google Design Doc style.
 
 === PROJECT CONTEXT ===
 {context}
@@ -526,33 +497,78 @@ Summary: {section_summary}
 === NAMING CONVENTIONS (MUST follow these exactly) ===
 {naming_conventions}
 
-=== GUIDELINES ===
-- Write in Markdown format
-- Start with a ## heading for the section title
-- Use ### for subsections
-- Include code examples in the project's primary language using fenced code blocks (```language)
-- Include TypeScript/language-appropriate type definitions and interfaces
-- Explain design decisions and trade-offs
-- Reference other sections when relevant (e.g., "as described in the Parser section")
-- Use blockquotes (>) for important tips or warnings
-- Use tables where appropriate (e.g., for operator precedence, token types)
-- Keep explanations clear and educational — the reader is a learner building this project
-- Include inline code (`backticks`) for variable names, function names, types
-- If a diagram is relevant to this section, include a placeholder: ![Diagram Title](./diagrams/diagram-id.svg)
-- CRITICAL: Use EXACTLY the type names, function names, variable names, and constants listed in NAMING CONVENTIONS above. Do NOT invent alternative names for the same concepts.
+=== AVAILABLE DIAGRAMS ===
+{diagrams_info}
 
-=== CONTENT TO WRITE ===
+=== WRITING RULES — READ CAREFULLY ===
+
+**ZERO CODE BLOCKS.** This document must contain absolutely NO code blocks (no ``` fences). Not even declarations, not even signatures, not even pseudo-code in code fences. Everything is expressed through:
+
+1. **Prose paragraphs** — Explain concepts, decisions, rationale, and behavior in natural language. Be extremely detailed. Write as if you're a senior engineer explaining the system to a new team member at a whiteboard.
+
+2. **Tables** — Use markdown tables for ALL structured information:
+   - Data structures: Name | Type | Description (one row per field)
+   - Interfaces/APIs: Method Name | Parameters | Returns | Description
+   - State machines: Current State | Event | Next State | Action Taken
+   - Message formats: Field | Type | Description
+   - Comparison tables: Option | Pros | Cons | Chosen?
+   - Error tables: Failure Mode | Detection | Recovery
+
+3. **Numbered algorithm steps** — For procedures/algorithms, use numbered lists in prose (NOT code). Example:
+   1. The coordinator generates a unique transaction ID
+   2. It writes an INIT record to the transaction log (fsync to ensure durability)
+   3. It sends a PREPARE message to each participant containing the transaction ID and operation list
+   4. It starts a timeout timer for the voting phase
+   ... etc.
+
+4. **Concrete walk-through examples** — Narrate specific scenarios in prose: "Consider a transaction T1 involving participants A, B, and C. The coordinator sends PREPARE to all three. Participant A checks its local locks, finds no conflict, and votes COMMIT. Meanwhile, participant B detects a write-write conflict and votes ABORT..."
+
+5. **Blockquotes** — For key design insights, warnings, or important principles:
+   > The critical insight here is that once a participant votes YES, it enters the uncertainty window...
+
+6. **Diagrams** — Reference available diagrams where they aid understanding.
+
+WHAT TO EXPLAIN IN DEPTH:
+- WHY each design decision was made and what alternatives were rejected (with reasoning)
+- The responsibility of each component: what it owns, what data it holds, what it processes
+- Every data structure: list ALL fields with their types and purpose in a table
+- Every interface method: parameters, return values, preconditions, postconditions, side effects — in a table
+- Every state machine: all states, all transitions, trigger events, actions taken — in a table
+- Algorithm logic: step-by-step numbered procedures explained in prose
+- Data flow: what enters, how it transforms, where it exits, what gets persisted
+- Error scenarios: what can fail, how failures are detected, how recovery works
+- Concrete examples that walk through real scenarios
+
+WHAT TO AVOID:
+- Code blocks of ANY kind (no ``` fences anywhere)
+- Language-specific syntax (don't write "func", "struct", "interface" as keywords — describe them in prose/tables)
+- Implementation details that belong in the code itself
+- Generic advice ("make sure to handle errors") — instead describe SPECIFIC error scenarios and handling
+
+Use inline `backticks` freely for names (type names, method names, field names, constants) within prose and tables.
+
+=== FORMATTING ===
+- Markdown format
+- Start with ## for section title, ### for subsections
+- Use tables extensively (this is the primary way to convey structured information)
+- Use blockquotes for key insights and design principles
+- Use numbered lists for procedures and algorithms
+- Use bold for key concepts on first introduction
+- Reference diagrams: ![Diagram Title](./diagrams/DIAGRAM-ID.svg) — only from AVAILABLE DIAGRAMS above
+- Use EXACTLY the names from NAMING CONVENTIONS. Do NOT invent alternatives.
+
+=== CONTEXT FROM PREVIOUS SECTIONS ===
 {previous_sections_summary}
 
 === OUTPUT FORMAT ===
 First write the markdown content for this section.
 Then, after the markdown content, write a line containing ONLY `---CONVENTIONS---`
-After that marker, write a JSON object listing all type names, function/method names, constants, and key terms you used in this section:
+After that marker, write a JSON object listing all type names, method names, constants, and key terms you used:
 
 ---CONVENTIONS---
-{{"types": {{"TypeName": "brief description"}}, "methods": {{"methodName": "brief description"}}, "constants": {{"CONSTANT_NAME": "brief description"}}, "terms": {{"preferred term": "brief description"}}}}
+{{"types": {{"TypeName": "fields: Field1 Type, Field2 Type, ..."}}, "methods": {{"methodName(params) returns": "brief description"}}, "constants": {{"CONSTANT_NAME": "value or brief description"}}, "terms": {{"preferred term": "brief description"}}}}
 
-The JSON must be on a SINGLE line after the marker. Include ALL names you introduced or referenced in your section.
+The JSON must be on a SINGLE line after the marker. Include ALL names you introduced or referenced.
 """
 
 
@@ -593,64 +609,49 @@ def _merge_conventions(accumulated: dict, new_conventions: dict) -> dict:
 def _format_conventions(conventions: dict) -> str:
     """Format accumulated conventions as readable text for the prompt."""
     if not conventions or all(len(v) == 0 for v in conventions.values()):
-        return "(No conventions established yet — you are defining them for the first section. Choose clear, consistent names.)"
+        return "(No conventions established yet — you are defining them for the first section. Choose clear, consistent names and signatures.)"
 
     lines = []
     if conventions.get("types"):
-        lines.append("Types/Structs/Interfaces:")
+        lines.append("Types/Structs/Interfaces (use these EXACT names and fields):")
         for name, desc in conventions["types"].items():
             lines.append(f"  - `{name}`: {desc}")
     if conventions.get("methods"):
-        lines.append("Functions/Methods:")
+        lines.append("Functions/Methods (use these EXACT signatures):")
         for name, desc in conventions["methods"].items():
             lines.append(f"  - `{name}`: {desc}")
     if conventions.get("constants"):
-        lines.append("Constants/Enums:")
+        lines.append("Constants/Enums (use these EXACT names):")
         for name, desc in conventions["constants"].items():
             lines.append(f"  - `{name}`: {desc}")
     if conventions.get("terms"):
-        lines.append("Terminology:")
+        lines.append("Terminology (use these preferred terms):")
         for name, desc in conventions["terms"].items():
             lines.append(f"  - \"{name}\": {desc}")
     return "\n".join(lines)
 
 
-def generate_section_parallel(section: dict, skeleton: dict, project: dict,
-                              previous_summaries: str, provider: str, model: str,
-                              research: bool, **llm_kwargs) -> str | None:
-    """Pass 2 (parallel mode): Generate a single section without conventions tracking."""
-    context = get_project_context(project)
-    outline = build_outline_str(skeleton)
+def _build_diagrams_info(skeleton: dict, section_id: str) -> str:
+    """Build diagram info string for a section, showing which diagrams are available."""
+    diagrams = skeleton.get("diagrams", [])
+    if not diagrams:
+        return "(No diagrams planned for this document)"
 
-    subsections = section.get("subsections", [])
-    if subsections:
-        sub_info = "Subsections:\n" + "\n".join(
-            f"  - {s['title']}: {s.get('summary', '')}" for s in subsections
+    lines = []
+    for d in diagrams:
+        relevant = d.get("relevant_sections", [])
+        marker = " ← RELEVANT TO THIS SECTION" if section_id in relevant else ""
+        lines.append(
+            f"- ID: `{d['id']}` | Title: {d.get('title', '')} | "
+            f"Type: {d.get('type', '')}{marker}\n"
+            f"  Description: {d.get('description', '')}"
         )
-    else:
-        sub_info = ""
 
-    prev_info = ""
-    if previous_summaries:
-        prev_info = f"\nPrevious sections summary (for continuity):\n{previous_summaries}\n"
-
-    prompt = SECTION_PROMPT_PARALLEL.format(
-        context=context,
-        doc_title=skeleton.get("title", ""),
-        doc_overview=skeleton.get("overview", ""),
-        outline=outline,
-        section_title=section.get("title", ""),
-        section_summary=section.get("summary", ""),
-        subsections_info=sub_info,
-        previous_sections_summary=prev_info,
+    lines.append(
+        "\nTo reference a diagram, use EXACTLY: ![Diagram Title](./diagrams/DIAGRAM-ID.svg)"
+        "\nOnly reference diagrams marked as RELEVANT TO THIS SECTION."
     )
-
-    response = call_llm(prompt, provider, model, research, timeout=300, **llm_kwargs)
-    if not response:
-        print(f"  ERROR: No response for section '{section.get('title', '')}'")
-        return None
-
-    return _strip_markdown_fences(response)
+    return "\n".join(lines)
 
 
 def generate_section_sequential(section: dict, skeleton: dict, project: dict,
@@ -662,6 +663,8 @@ def generate_section_sequential(section: dict, skeleton: dict, project: dict,
     context = get_project_context(project)
     outline = build_outline_str(skeleton)
 
+    section_id = section.get("id", "")
+
     subsections = section.get("subsections", [])
     if subsections:
         sub_info = "Subsections:\n" + "\n".join(
@@ -674,6 +677,8 @@ def generate_section_sequential(section: dict, skeleton: dict, project: dict,
     if previous_summaries:
         prev_info = f"\nPrevious sections summary (for continuity):\n{previous_summaries}\n"
 
+    diagrams_info = _build_diagrams_info(skeleton, section_id)
+
     prompt = SECTION_PROMPT_SEQUENTIAL.format(
         context=context,
         doc_title=skeleton.get("title", ""),
@@ -683,6 +688,7 @@ def generate_section_sequential(section: dict, skeleton: dict, project: dict,
         section_summary=section.get("summary", ""),
         subsections_info=sub_info,
         naming_conventions=_format_conventions(conventions),
+        diagrams_info=diagrams_info,
         previous_sections_summary=prev_info,
     )
 
@@ -730,224 +736,7 @@ def generate_section_sequential(section: dict, skeleton: dict, project: dict,
 
 
 # ---------------------------------------------------------------------------
-# Pass 3: Consistency check (sliding window)
-# ---------------------------------------------------------------------------
-
-CONSISTENCY_EXTRACT_PROMPT = """You are an expert technical editor. Analyze the following two sections of an architecture document and extract a naming conventions registry.
-
-=== PROJECT ===
-{project_name}: {project_desc}
-
-=== ESTABLISHED CONVENTIONS (from previous sections) ===
-{existing_conventions}
-
-=== SECTION A: {section_a_title} ===
-{section_a}
-
-=== SECTION B: {section_b_title} ===
-{section_b}
-
-=== TASK ===
-1. List all type names, struct names, interface names, function/method names, constants, and key terminology used in both sections.
-2. Identify any INCONSISTENCIES between the two sections (or with established conventions):
-   - Same concept with different names (e.g., `TxID` vs `tx_id` vs `TransactionID`)
-   - Same type/struct with different field names
-   - Contradictory descriptions of the same component
-   - Mismatched cross-references
-3. For each inconsistency, pick the BEST canonical name (prefer the one used more frequently or defined first).
-4. Output a JSON object with this structure:
-
-{{
-  "conventions": {{
-    "types": {{"CanonicalName": "description"}},
-    "methods": {{"canonicalName": "description"}},
-    "constants": {{"CANONICAL_NAME": "description"}},
-    "terminology": {{"preferred term": "avoid these alternatives"}}
-  }},
-  "corrections": [
-    {{
-      "find": "exact string to find",
-      "replace": "exact string to replace with",
-      "reason": "why this change"
-    }}
-  ]
-}}
-
-=== RULES ===
-- Output ONLY the JSON object. No explanation before or after.
-- Only include REAL inconsistencies, not style differences that are valid (e.g., Go exported vs unexported names).
-- `find` and `replace` must be exact strings that can be used for find-and-replace.
-- Be precise: `find` should include enough context to avoid false replacements (e.g., include surrounding code).
-- Do NOT suggest renaming things that are intentionally different (e.g., a `Coordinator` type vs a `coordinator` variable).
-"""
-
-CONSISTENCY_FINAL_PROMPT = """You are an expert technical editor. Review these corrections for an architecture document and filter out any that are wrong or dangerous.
-
-=== PROJECT ===
-{project_name}: {project_desc}
-
-=== ALL PROPOSED CORRECTIONS ===
-{all_corrections}
-
-=== TASK ===
-Review each correction and output ONLY the ones that are:
-1. Genuinely fixing an inconsistency (not just style preference)
-2. Safe to apply (won't break code examples)
-3. Not duplicates
-
-Output a JSON array of the approved corrections:
-[
-  {{
-    "find": "exact string to find",
-    "replace": "exact string to replace with"
-  }}
-]
-
-If no corrections are needed, output: []
-
-Output ONLY the JSON array. No explanation.
-"""
-
-
-def consistency_check(full_doc: str, section_contents: list, project: dict,
-                      provider: str, model: str, research: bool,
-                      out_dir: Path | None = None, **llm_kwargs) -> str | None:
-    """Pass 3: Sliding window consistency check across section pairs."""
-    if len(section_contents) < 2:
-        print("  Only 1 section, skipping consistency check")
-        return full_doc
-
-    project_name = project.get("name", "")
-    project_desc = project.get("description", "")
-    consistency_log = {"raw_corrections": [], "filtered_corrections": [], "applied": [], "skipped": []}
-
-    all_corrections = []
-    conventions_so_far = "(none yet — this is the first pair)"
-
-    # Slide through pairs of adjacent sections
-    for i in range(len(section_contents) - 1):
-        section_a, content_a = section_contents[i]
-        section_b, content_b = section_contents[i + 1]
-
-        title_a = section_a.get("title", f"Section {i+1}")
-        title_b = section_b.get("title", f"Section {i+2}")
-
-        print(f"    Checking: {title_a} <-> {title_b}...")
-
-        prompt = CONSISTENCY_EXTRACT_PROMPT.format(
-            project_name=project_name,
-            project_desc=project_desc,
-            existing_conventions=conventions_so_far,
-            section_a_title=title_a,
-            section_a=content_a[:40000],  # Cap at ~10K tokens per section
-            section_b_title=title_b,
-            section_b=content_b[:40000],
-        )
-
-        response = call_llm(prompt, provider, model, research, timeout=300, **llm_kwargs)
-        if not response:
-            print(f"    WARNING: No response for pair {title_a} <-> {title_b}")
-            continue
-
-        # Parse JSON from response
-        json_text = response.strip()
-        if json_text.startswith("```"):
-            json_text = re.sub(r"^```\w*\n?", "", json_text)
-            json_text = re.sub(r"\n?```$", "", json_text)
-
-        try:
-            result = json.loads(json_text)
-        except json.JSONDecodeError:
-            print(f"    WARNING: Could not parse JSON for pair {title_a} <-> {title_b}")
-            continue
-
-        # Accumulate conventions
-        conventions = result.get("conventions", {})
-        if conventions:
-            conventions_so_far = json.dumps(conventions, indent=2)
-
-        # Accumulate corrections
-        corrections = result.get("corrections", [])
-        if corrections:
-            for c in corrections:
-                c["source_pair"] = f"{title_a} <-> {title_b}"
-            all_corrections.extend(corrections)
-            print(f"    Found {len(corrections)} corrections")
-        else:
-            print(f"    No issues found")
-
-    if not all_corrections:
-        print("  No corrections needed")
-        consistency_log["raw_corrections"] = []
-        _save_consistency_log(out_dir, consistency_log)
-        return full_doc
-
-    consistency_log["raw_corrections"] = all_corrections
-    print(f"\n  Total raw corrections: {len(all_corrections)}")
-
-    # Final review: filter out bad corrections
-    print(f"  Filtering corrections...")
-    filter_prompt = CONSISTENCY_FINAL_PROMPT.format(
-        project_name=project_name,
-        project_desc=project_desc,
-        all_corrections=json.dumps(all_corrections, indent=2)[:50000],
-    )
-
-    response = call_llm(filter_prompt, provider, model, research, timeout=180, **llm_kwargs)
-    if not response:
-        print("  WARNING: Could not filter corrections, applying all raw corrections")
-        approved = all_corrections
-    else:
-        json_text = response.strip()
-        if json_text.startswith("```"):
-            json_text = re.sub(r"^```\w*\n?", "", json_text)
-            json_text = re.sub(r"\n?```$", "", json_text)
-        try:
-            approved = json.loads(json_text)
-        except json.JSONDecodeError:
-            print("  WARNING: Could not parse filtered corrections, applying all raw corrections")
-            approved = all_corrections
-
-    consistency_log["filtered_corrections"] = approved
-
-    if not approved:
-        print("  All corrections filtered out, no changes needed")
-        _save_consistency_log(out_dir, consistency_log)
-        return full_doc
-
-    # Apply corrections
-    corrected_doc = full_doc
-    applied = 0
-    for correction in approved:
-        find_str = correction.get("find", "")
-        replace_str = correction.get("replace", "")
-        if find_str and replace_str and find_str != replace_str:
-            if find_str in corrected_doc:
-                corrected_doc = corrected_doc.replace(find_str, replace_str)
-                applied += 1
-                consistency_log["applied"].append(correction)
-            else:
-                consistency_log["skipped"].append({**correction, "reason": "find string not found in document"})
-        else:
-            consistency_log["skipped"].append({**correction, "reason": "invalid find/replace"})
-
-    print(f"  Applied {applied}/{len(approved)} corrections")
-    _save_consistency_log(out_dir, consistency_log)
-    return corrected_doc
-
-
-def _save_consistency_log(out_dir: Path | None, log: dict):
-    """Save consistency check log to JSON file."""
-    if not out_dir:
-        return
-    log_path = out_dir / "consistency-log.json"
-    with open(log_path, "w") as f:
-        json.dump(log, f, indent=2, ensure_ascii=False)
-    print(f"  Consistency log saved to {log_path}")
-
-
-# ---------------------------------------------------------------------------
-# Pass 4: Diagram generation
+# Pass 3: Diagram generation
 # ---------------------------------------------------------------------------
 
 DIAGRAM_PROMPT = """You are an expert at creating draw.io (diagrams.net) XML diagrams.
@@ -1096,7 +885,7 @@ def process_project(project_id: str, project: dict, args,
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Pass 1: Skeleton ---
-    print(f"\n  [Pass 1/4] Generating skeleton...")
+    print(f"\n  [Pass 1/3] Generating skeleton...")
     skeleton = generate_skeleton(
         project, args.provider, args.model, args.research, **llm_kwargs
     )
@@ -1114,77 +903,49 @@ def process_project(project_id: str, project: dict, args,
         json.dump(skeleton, f, indent=2)
 
     # --- Pass 2: Sections ---
-    print(f"\n  [Pass 2/4] Generating {len(sections)} sections...")
+    print(f"\n  [Pass 2/3] Generating {len(sections)} sections...")
     section_contents = []
     previous_summaries = ""
 
-    if args.workers > 1:
-        # Parallel section generation (fast but no conventions tracking, needs Pass 3)
-        print(f"  Using {args.workers} parallel workers (no conventions tracking)")
-        with ThreadPoolExecutor(max_workers=args.workers) as executor:
-            futures = {}
-            for section in sections:
-                future = executor.submit(
-                    generate_section_parallel, section, skeleton, project,
-                    "", args.provider, args.model, args.research, **llm_kwargs
-                )
-                futures[future] = section
+    # Always sequential section generation with conventions tracking
+    print(f"  Sequential mode (with naming conventions tracking)")
+    accumulated_conventions = {}
 
-            for future in as_completed(futures):
-                section = futures[future]
-                try:
-                    content = future.result()
-                    if content:
-                        section_contents.append((section, content))
-                        print(f"    OK: {section.get('title', '')} ({len(content)} chars)")
-                    else:
-                        print(f"    FAIL: {section.get('title', '')}")
-                except Exception as e:
-                    print(f"    EXCEPTION for {section.get('title', '')}: {e}")
+    for i, section in enumerate(sections):
+        title = section.get("title", f"Section {i+1}")
+        print(f"    [{i+1}/{len(sections)}] {title}...")
 
-        # Sort by original order
-        section_order = {s["id"]: i for i, s in enumerate(sections)}
-        section_contents.sort(key=lambda x: section_order.get(x[0].get("id", ""), 999))
-    else:
-        # Sequential section generation with conventions tracking
-        print(f"  Sequential mode (with naming conventions tracking)")
-        accumulated_conventions = {}
+        content, new_conventions = generate_section_sequential(
+            section, skeleton, project, previous_summaries,
+            accumulated_conventions,
+            args.provider, args.model, args.research, **llm_kwargs
+        )
 
-        for i, section in enumerate(sections):
-            title = section.get("title", f"Section {i+1}")
-            print(f"    [{i+1}/{len(sections)}] {title}...")
-
-            content, new_conventions = generate_section_sequential(
-                section, skeleton, project, previous_summaries,
-                accumulated_conventions,
-                args.provider, args.model, args.research, **llm_kwargs
-            )
-
-            if content:
-                section_contents.append((section, content))
-                # Merge conventions
-                if new_conventions:
-                    accumulated_conventions = _merge_conventions(accumulated_conventions, new_conventions)
-                    conv_count = sum(len(v) for v in accumulated_conventions.values())
-                    print(f"    OK ({len(content)} chars, {conv_count} conventions tracked)")
-                else:
-                    print(f"    OK ({len(content)} chars)")
-                # Build summary of previous sections for context
-                summary = content[:200].replace("\n", " ").strip()
-                previous_summaries += f"\n- {title}: {summary}..."
+        if content:
+            section_contents.append((section, content))
+            # Merge conventions
+            if new_conventions:
+                accumulated_conventions = _merge_conventions(accumulated_conventions, new_conventions)
+                conv_count = sum(len(v) for v in accumulated_conventions.values())
+                print(f"    OK ({len(content)} chars, {conv_count} conventions tracked)")
             else:
-                print(f"    FAIL")
+                print(f"    OK ({len(content)} chars)")
+            # Build summary of previous sections for context
+            summary = content[:200].replace("\n", " ").strip()
+            previous_summaries += f"\n- {title}: {summary}..."
+        else:
+            print(f"    FAIL")
 
-            # Rate limiting for Gemini
-            if args.provider == "gemini":
-                time.sleep(60.0 / args.rpm)
+        # Rate limiting for Gemini
+        if args.provider == "gemini":
+            time.sleep(60.0 / args.rpm)
 
-        # Save conventions for reference
-        if accumulated_conventions:
-            conv_path = out_dir / "naming-conventions.json"
-            with open(conv_path, "w") as f:
-                json.dump(accumulated_conventions, f, indent=2, ensure_ascii=False)
-            print(f"  Naming conventions saved to {conv_path}")
+    # Save conventions for reference
+    if accumulated_conventions:
+        conv_path = out_dir / "naming-conventions.json"
+        with open(conv_path, "w") as f:
+            json.dump(accumulated_conventions, f, indent=2, ensure_ascii=False)
+        print(f"  Naming conventions saved to {conv_path}")
 
     if not section_contents:
         print("  FAILED: No sections generated")
@@ -1211,24 +972,9 @@ def process_project(project_id: str, project: dict, args,
     full_doc = "\n".join(parts)
     print(f"\n  Assembled document: {len(full_doc)} chars")
 
-    # --- Pass 3: Consistency check (sliding window) ---
-    # Only needed for parallel mode (no conventions tracking in Pass 2)
-    if args.workers > 1:
-        print(f"\n  [Pass 3/4] Running consistency check ({len(section_contents)} sections)...")
-        checked_doc = consistency_check(
-            full_doc, section_contents, project, args.provider, args.model, args.research,
-            out_dir=out_dir, **llm_kwargs
-        )
-        if checked_doc:
-            full_doc = checked_doc
-        else:
-            print("  WARNING: Consistency check failed, keeping original")
-    else:
-        print(f"\n  [Pass 3/4] Skipped (sequential mode — conventions tracked in Pass 2)")
-
-    # --- Pass 4: Diagrams ---
+    # --- Pass 3: Diagrams ---
     if not args.no_diagrams and diagrams:
-        print(f"\n  [Pass 4/4] Generating {len(diagrams)} diagrams...")
+        print(f"\n  [Pass 3/3] Generating {len(diagrams)} diagrams...")
         diagrams_dir.mkdir(parents=True, exist_ok=True)
 
         for diagram in diagrams:
@@ -1257,9 +1003,9 @@ def process_project(project_id: str, project: dict, args,
                 print(f"    FAIL: Could not generate diagram")
     else:
         if args.no_diagrams:
-            print(f"\n  [Pass 4/4] Skipped (--no-diagrams)")
+            print(f"\n  [Pass 3/3] Skipped (--no-diagrams)")
         else:
-            print(f"\n  [Pass 4/4] No diagrams in skeleton")
+            print(f"\n  [Pass 3/3] No diagrams in skeleton")
 
     # Write final document
     with open(out_file, "w") as f:
@@ -1315,7 +1061,7 @@ def main():
     parser.add_argument("--no-diagrams", action="store_true",
                         help="Skip diagram generation (Pass 4)")
     parser.add_argument("--workers", type=int, default=1,
-                        help="Parallel workers for section generation (default: 1)")
+                        help="Number of projects to process in parallel (default: 1). Each project runs sections sequentially for naming consistency.")
     parser.add_argument("--rpm", type=int, default=15,
                         help="Rate limit: requests per minute (gemini only, default: 15)")
     parser.add_argument("--dry-run", action="store_true",
@@ -1391,13 +1137,14 @@ def main():
 
     success = 0
     failed = 0
+    yaml_lock = threading.Lock()
 
-    for pid in project_ids:
+    def _process_one(pid: str) -> bool:
+        """Process a single project (thread-safe)."""
         project = load_project(data, pid)
         if not project:
             print(f"\nWARNING: Project '{pid}' not found in expert_projects, skipping")
-            failed += 1
-            continue
+            return False
 
         try:
             ok = process_project(
@@ -1409,22 +1156,47 @@ def main():
 
             if ok and not args.dry_run:
                 doc_path = f"architecture-docs/{pid}/index.md"
-                update_yaml(data, pid, doc_path)
+                with yaml_lock:
+                    update_yaml(data, pid, doc_path)
                 print(f"  Updated YAML: architecture_doc = {doc_path}")
-                success += 1
-            elif ok:
-                success += 1
-            else:
-                failed += 1
+            return ok
 
-        except KeyboardInterrupt:
-            print(f"\n\nInterrupted!")
-            print(f"  Completed: {success}, Failed: {failed}")
-            sys.exit(0)
         except Exception as e:
-            print(f"  EXCEPTION: {e}")
+            print(f"  EXCEPTION for {pid}: {e}")
             traceback.print_exc()
-            failed += 1
+            return False
+
+    if args.workers > 1:
+        print(f"\n  Running {args.workers} projects in parallel...")
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = {executor.submit(_process_one, pid): pid for pid in project_ids}
+            try:
+                for future in as_completed(futures):
+                    pid = futures[future]
+                    try:
+                        if future.result():
+                            success += 1
+                        else:
+                            failed += 1
+                    except Exception as e:
+                        print(f"  EXCEPTION for {pid}: {e}")
+                        failed += 1
+            except KeyboardInterrupt:
+                print(f"\n\nInterrupted! Cancelling remaining projects...")
+                executor.shutdown(wait=False, cancel_futures=True)
+                print(f"  Completed: {success}, Failed: {failed}")
+                sys.exit(0)
+    else:
+        for pid in project_ids:
+            try:
+                if _process_one(pid):
+                    success += 1
+                else:
+                    failed += 1
+            except KeyboardInterrupt:
+                print(f"\n\nInterrupted!")
+                print(f"  Completed: {success}, Failed: {failed}")
+                sys.exit(0)
 
     print(f"\n{'='*60}")
     print(f"DONE!")

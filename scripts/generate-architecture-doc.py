@@ -1242,6 +1242,35 @@ def process_project(project_id: str, project: dict, args,
         else:
             print(f"\n  [Pass 3/3] No diagrams in skeleton")
 
+    # Fix diagram references: LLM may use different names than skeleton IDs
+    if diagrams:
+        valid_ids = {d.get("id", "") for d in diagrams}
+        def _fix_diagram_ref(m):
+            alt, ref_name = m.group(1), m.group(2)
+            # ref_name is e.g. "diagrams/system-architecture.svg"
+            base = ref_name.replace("diagrams/", "").replace(".svg", "")
+            if base in valid_ids:
+                return m.group(0)  # already correct
+            # Fuzzy match: find best matching skeleton ID
+            best, best_score = None, 0
+            base_words = set(base.split("-"))
+            for vid in valid_ids:
+                vid_words = set(vid.split("-"))
+                overlap = len(base_words & vid_words)
+                if overlap > best_score:
+                    best_score = overlap
+                    best = vid
+            if best and best_score > 0:
+                print(f"  Fix diagram ref: {base} -> {best}")
+                return f"![{alt}](./diagrams/{best}.svg)"
+            return m.group(0)
+
+        full_doc = re.sub(
+            r"!\[([^\]]*)\]\(\./diagrams/([^)]+\.svg)\)",
+            lambda m: _fix_diagram_ref(m),
+            full_doc,
+        )
+
     # Write final document
     with open(out_file, "w") as f:
         f.write(full_doc)

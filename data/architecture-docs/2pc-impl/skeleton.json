@@ -1,0 +1,413 @@
+{
+  "title": "Two-Phase Commit: Design Document",
+  "overview": "A distributed transaction coordinator implementing the classic two-phase commit (2PC) protocol to achieve atomic commitment across multiple participants. The key architectural challenge is ensuring all-or-nothing semantics in the face of arbitrary failures while maintaining safety through write-ahead logging and structured recovery.",
+  "sections": [
+    {
+      "id": "context",
+      "title": "Context and Problem Statement",
+      "summary": "Defines the distributed transaction problem, explains why atomic commitment is hard, and surveys existing coordination approaches.",
+      "subsections": [
+        {
+          "id": "context-problem",
+          "title": "The Distributed Transaction Problem",
+          "summary": "Why achieving atomicity across multiple independent databases is fundamentally difficult"
+        },
+        {
+          "id": "context-existing",
+          "title": "Existing Approaches",
+          "summary": "Survey of 2PC, 3PC, Paxos Commit, and modern alternatives with trade-off analysis"
+        },
+        {
+          "id": "context-scope",
+          "title": "This Implementation's Scope",
+          "summary": "What subset of the 2PC problem space this design addresses"
+        }
+      ]
+    },
+    {
+      "id": "goals",
+      "title": "Goals and Non-Goals",
+      "summary": "Explicit enumeration of what the system must achieve and what it intentionally does not handle.",
+      "subsections": [
+        {
+          "id": "goals-functional",
+          "title": "Functional Goals",
+          "summary": "Atomicity guarantees, durability requirements, and recovery capabilities"
+        },
+        {
+          "id": "goals-non-functional",
+          "title": "Non-Functional Goals",
+          "summary": "Performance targets, latency bounds, and scalability expectations"
+        },
+        {
+          "id": "goals-explicit-non-goals",
+          "title": "Explicit Non-Goals",
+          "summary": "Byzantine failures, network partition handling, performance optimization beyond correctness"
+        }
+      ]
+    },
+    {
+      "id": "architecture",
+      "title": "High-Level Architecture",
+      "summary": "Component overview showing coordinator, participants, logs, and communication channels with their responsibilities.",
+      "subsections": [
+        {
+          "id": "architecture-components",
+          "title": "System Components",
+          "summary": "Coordinator, participant, transaction log, and network transport layer"
+        },
+        {
+          "id": "architecture-boundaries",
+          "title": "Component Boundaries and Interfaces",
+          "summary": "How components interact and what each exposes to others"
+        },
+        {
+          "id": "architecture-deployment",
+          "title": "Deployment Model",
+          "summary": "Process topology, network assumptions, and failure domain boundaries"
+        }
+      ]
+    },
+    {
+      "id": "data-model",
+      "title": "Data Model",
+      "summary": "All key data structures including transaction records, log entries, participant states, and message formats.",
+      "subsections": [
+        {
+          "id": "data-transaction",
+          "title": "Transaction Record",
+          "summary": "Core structure representing a distributed transaction in flight"
+        },
+        {
+          "id": "data-log",
+          "title": "Log Entry Format",
+          "summary": "Persistent record structure for write-ahead logging"
+        },
+        {
+          "id": "data-messages",
+          "title": "Protocol Messages",
+          "summary": "PREPARE, VOTE, COMMIT, ABORT, and ACK message formats"
+        },
+        {
+          "id": "data-state",
+          "title": "State Enumerations",
+          "summary": "Transaction states, participant states, and coordinator states"
+        }
+      ]
+    },
+    {
+      "id": "transaction-log",
+      "title": "Transaction Log Component",
+      "summary": "Write-ahead log implementation providing durability guarantees for all state transitions before they take effect.",
+      "subsections": [
+        {
+          "id": "log-responsibility",
+          "title": "Responsibility and Scope",
+          "summary": "What the log must guarantee and what it delegates to other components"
+        },
+        {
+          "id": "log-interface",
+          "title": "Log Interface",
+          "summary": "Append, read, truncate, and recovery operations exposed to coordinator and participants"
+        },
+        {
+          "id": "log-durability",
+          "title": "Durability Mechanism",
+          "summary": "Fsync strategy, write batching decisions, and crash-recovery guarantees"
+        },
+        {
+          "id": "log-compaction",
+          "title": "Log Compaction and Truncation",
+          "summary": "When completed transactions can be removed and how to prevent unbounded growth"
+        },
+        {
+          "id": "log-decisions",
+          "title": "Design Decisions",
+          "summary": "Why append-only, why fsync per record, alternatives considered"
+        }
+      ]
+    },
+    {
+      "id": "coordinator",
+      "title": "Coordinator Component",
+      "summary": "Central decision-maker that drives the two-phase protocol, manages participant votes, and determines global commit or abort.",
+      "subsections": [
+        {
+          "id": "coordinator-responsibility",
+          "title": "Responsibility and Scope",
+          "summary": "What the coordinator controls and what participants decide independently"
+        },
+        {
+          "id": "coordinator-interface",
+          "title": "Coordinator Interface",
+          "summary": "BeginTransaction, RegisterParticipant, and transaction status query operations"
+        },
+        {
+          "id": "coordinator-state-machine",
+          "title": "Coordinator State Machine",
+          "summary": "Transitions from INIT \u2192 PREPARING \u2192 COMMITTING/ABORTING \u2192 COMPLETED"
+        },
+        {
+          "id": "coordinator-prepare",
+          "title": "Prepare Phase Algorithm",
+          "summary": "Broadcasting PREPARE, collecting votes, handling timeouts, deciding outcome"
+        },
+        {
+          "id": "coordinator-commit",
+          "title": "Commit Phase Algorithm",
+          "summary": "Logging decision, broadcasting outcome, collecting acknowledgments"
+        },
+        {
+          "id": "coordinator-recovery",
+          "title": "Coordinator Recovery",
+          "summary": "How the coordinator resumes in-progress transactions after a crash"
+        },
+        {
+          "id": "coordinator-decisions",
+          "title": "Design Decisions",
+          "summary": "Why log-before-send, timeout values, presumed abort optimization"
+        }
+      ]
+    },
+    {
+      "id": "participant",
+      "title": "Participant Component",
+      "summary": "Resource manager that votes on transactions, applies decisions, and handles local crash recovery.",
+      "subsections": [
+        {
+          "id": "participant-responsibility",
+          "title": "Responsibility and Scope",
+          "summary": "What participants guarantee locally and what they delegate to the coordinator"
+        },
+        {
+          "id": "participant-interface",
+          "title": "Participant Interface",
+          "summary": "Prepare, Commit, Abort, and Query operations"
+        },
+        {
+          "id": "participant-state-machine",
+          "title": "Participant State Machine",
+          "summary": "Transitions from INIT \u2192 PREPARED \u2192 COMMITTED/ABORTED"
+        },
+        {
+          "id": "participant-voting",
+          "title": "Voting Logic",
+          "summary": "When to vote YES (resource locks acquired) vs NO (cannot proceed)"
+        },
+        {
+          "id": "participant-apply",
+          "title": "Applying Decisions",
+          "summary": "Committing changes and releasing locks on COMMIT, rolling back on ABORT"
+        },
+        {
+          "id": "participant-recovery",
+          "title": "Participant Recovery",
+          "summary": "Reloading state from log, querying coordinator for uncertain transactions"
+        },
+        {
+          "id": "participant-decisions",
+          "title": "Design Decisions",
+          "summary": "Why log vote before response, how to handle decision timeout"
+        }
+      ]
+    },
+    {
+      "id": "interactions",
+      "title": "Interactions and Data Flow",
+      "summary": "End-to-end protocol flows for normal case, abort case, and failure scenarios with message sequences.",
+      "subsections": [
+        {
+          "id": "interactions-normal",
+          "title": "Normal Commit Flow",
+          "summary": "Step-by-step message exchange when all participants vote YES"
+        },
+        {
+          "id": "interactions-abort",
+          "title": "Abort Flow",
+          "summary": "What happens when any participant votes NO or times out"
+        },
+        {
+          "id": "interactions-coordinator-crash",
+          "title": "Coordinator Crash During Prepare",
+          "summary": "How participants and coordinator recover when coordinator fails mid-protocol"
+        },
+        {
+          "id": "interactions-participant-crash",
+          "title": "Participant Crash After Voting",
+          "summary": "How the participant queries coordinator on restart to learn outcome"
+        },
+        {
+          "id": "interactions-blocking",
+          "title": "Blocking Scenario",
+          "summary": "What happens when coordinator is down and participants are uncertain"
+        }
+      ]
+    },
+    {
+      "id": "error-handling",
+      "title": "Error Handling and Edge Cases",
+      "summary": "Comprehensive failure mode analysis, detection strategies, and recovery procedures.",
+      "subsections": [
+        {
+          "id": "error-network",
+          "title": "Network Failures",
+          "summary": "Message loss, delays, duplicates, and timeout handling"
+        },
+        {
+          "id": "error-crash",
+          "title": "Crash Failures",
+          "summary": "Coordinator crash, participant crash, and simultaneous failures"
+        },
+        {
+          "id": "error-partial",
+          "title": "Partial Failures",
+          "summary": "Some participants unreachable, asymmetric network partitions"
+        },
+        {
+          "id": "error-log",
+          "title": "Log Corruption",
+          "summary": "Detection of incomplete writes, checksum validation, repair strategies"
+        },
+        {
+          "id": "error-limits",
+          "title": "Fundamental Limitations",
+          "summary": "Why 2PC blocks, CAP theorem implications, when consistency is violated"
+        }
+      ]
+    },
+    {
+      "id": "testing",
+      "title": "Testing Strategy",
+      "summary": "What properties to verify, scenarios to test, and how to inject failures for validation.",
+      "subsections": [
+        {
+          "id": "testing-properties",
+          "title": "Safety Properties",
+          "summary": "Atomicity invariants, consistency checks, durability verification"
+        },
+        {
+          "id": "testing-scenarios",
+          "title": "Test Scenarios",
+          "summary": "Normal case, abort case, crash-during-prepare, crash-during-commit"
+        },
+        {
+          "id": "testing-fault-injection",
+          "title": "Fault Injection",
+          "summary": "How to simulate crashes, network delays, message loss programmatically"
+        },
+        {
+          "id": "testing-recovery",
+          "title": "Recovery Testing",
+          "summary": "Verifying correct state restoration from logs after various failure points"
+        }
+      ]
+    },
+    {
+      "id": "extensions",
+      "title": "Future Extensions",
+      "summary": "Potential enhancements including three-phase commit, Paxos-based coordination, and performance optimizations.",
+      "subsections": [
+        {
+          "id": "extensions-3pc",
+          "title": "Three-Phase Commit",
+          "summary": "Adding a pre-commit phase to reduce blocking probability"
+        },
+        {
+          "id": "extensions-paxos",
+          "title": "Paxos Commit",
+          "summary": "Replacing single coordinator with replicated decision-making"
+        },
+        {
+          "id": "extensions-performance",
+          "title": "Performance Optimizations",
+          "summary": "Batching decisions, pipelining prepare phases, read-only optimization"
+        },
+        {
+          "id": "extensions-monitoring",
+          "title": "Observability",
+          "summary": "Metrics, tracing, and alerting for transaction health"
+        }
+      ]
+    }
+  ],
+  "diagrams": [
+    {
+      "id": "system-components",
+      "title": "System Component Diagram",
+      "description": "Shows coordinator, multiple participants, transaction logs (coordinator log and participant logs), and network communication channels. Include arrows showing request/response flows for PREPARE, VOTE, COMMIT, and ACK messages.",
+      "type": "component",
+      "relevant_sections": [
+        "architecture",
+        "coordinator",
+        "participant"
+      ]
+    },
+    {
+      "id": "data-model",
+      "title": "Data Model Relationships",
+      "description": "Shows relationships between Transaction, LogEntry, Participant, CoordinatorState, ParticipantState, and Message types. Include cardinality (1:N between Transaction and Participants, 1:N between Transaction and LogEntries).",
+      "type": "class",
+      "relevant_sections": [
+        "data-model"
+      ]
+    },
+    {
+      "id": "coordinator-state-machine",
+      "title": "Coordinator State Machine",
+      "description": "State diagram showing INIT \u2192 PREPARING \u2192 WAITING_VOTES \u2192 COMMITTING/ABORTING \u2192 COMPLETED. Label transitions with triggering events (BeginTransaction, AllPreparesSent, AllVotesReceived, VoteTimeout, AllAcksReceived).",
+      "type": "state-machine",
+      "relevant_sections": [
+        "coordinator"
+      ]
+    },
+    {
+      "id": "participant-state-machine",
+      "title": "Participant State Machine",
+      "description": "State diagram showing INIT \u2192 PREPARED \u2192 COMMITTED/ABORTED. Label transitions with events (ReceivePrepare, SendVote, ReceiveCommit, ReceiveAbort, Timeout, Recovery).",
+      "type": "state-machine",
+      "relevant_sections": [
+        "participant"
+      ]
+    },
+    {
+      "id": "normal-commit-sequence",
+      "title": "Normal Commit Sequence",
+      "description": "Sequence diagram showing coordinator sending PREPARE to all participants, participants responding with VOTE_COMMIT, coordinator logging COMMIT decision, sending COMMIT to all participants, participants sending ACK. Include log write steps before sending messages.",
+      "type": "sequence",
+      "relevant_sections": [
+        "interactions",
+        "coordinator",
+        "participant"
+      ]
+    },
+    {
+      "id": "abort-sequence",
+      "title": "Abort Sequence",
+      "description": "Sequence diagram showing coordinator sending PREPARE, one participant responding VOTE_ABORT, coordinator logging ABORT decision, sending ABORT to all participants. Include timeout scenario where one participant doesn't respond.",
+      "type": "sequence",
+      "relevant_sections": [
+        "interactions"
+      ]
+    },
+    {
+      "id": "coordinator-crash-recovery",
+      "title": "Coordinator Crash Recovery Flow",
+      "description": "Flowchart showing coordinator restart, read log, for each incomplete transaction (decision not logged), send ABORT; for each COMMIT logged but unacknowledged, resend COMMIT. Include decision points for transaction state.",
+      "type": "flowchart",
+      "relevant_sections": [
+        "coordinator",
+        "error-handling"
+      ]
+    },
+    {
+      "id": "participant-recovery-flow",
+      "title": "Participant Recovery Flow",
+      "description": "Flowchart showing participant restart, read local log, if PREPARED but no decision, query coordinator for outcome, if coordinator unreachable, enter blocked state. Include decision tree for each possible log state.",
+      "type": "flowchart",
+      "relevant_sections": [
+        "participant",
+        "error-handling"
+      ]
+    }
+  ]
+}

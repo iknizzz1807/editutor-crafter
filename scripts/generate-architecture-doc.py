@@ -66,42 +66,6 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 DATA_DIR = SCRIPT_DIR / ".." / "data"
 YAML_PATH = DATA_DIR / "projects.yaml"
 ARCH_DOCS_DIR = DATA_DIR / "architecture-docs"
-REFERENCE_DOC_PATH = ARCH_DOCS_DIR / "2pc-impl" / "index.md"
-
-
-def _load_reference_section(doc_path: Path, section_heading: str = "## Data Model") -> str | None:
-    """Load a single section from a reference doc to use as a few-shot example.
-    Extracts content from `section_heading` until the next ## heading."""
-    if not doc_path.exists():
-        return None
-    text = doc_path.read_text()
-    # Find the section
-    pattern = re.compile(r"^" + re.escape(section_heading) + r"\s*$", re.MULTILINE)
-    match = pattern.search(text)
-    if not match:
-        return None
-    start = match.start()
-    # Find next ## heading
-    next_heading = re.search(r"^## ", text[match.end():], re.MULTILINE)
-    if next_heading:
-        end = match.end() + next_heading.start()
-    else:
-        end = len(text)
-    return text[start:end].strip()
-
-
-_reference_cache: str | None = ...  # sentinel: ... means "not loaded yet"
-
-
-def _get_cached_reference() -> str | None:
-    """Load and cache the reference section (loaded once, reused across all calls)."""
-    global _reference_cache
-    if _reference_cache is not ...:
-        return _reference_cache
-    _reference_cache = _load_reference_section(REFERENCE_DOC_PATH)
-    if _reference_cache:
-        print(f"  Loaded reference example ({len(_reference_cache)} chars) from {REFERENCE_DOC_PATH}")
-    return _reference_cache
 
 
 # ---------------------------------------------------------------------------
@@ -820,8 +784,6 @@ DO NOT:
 - Provide incomplete starter code — include ALL imports, type definitions, helper functions.
 - Skip the mental model — junior devs need intuition before formalization.
 
-{reference_example}
-
 === FORMATTING ===
 - Markdown format
 - Start with ## for section title, ### for subsections
@@ -968,21 +930,7 @@ def generate_section_sequential(section: dict, skeleton: dict, project: dict,
         naming_conventions=_format_conventions(conventions),
         diagrams_info=diagrams_info,
         previous_sections_summary=prev_info,
-        reference_example="",  # placeholder replaced below
     )
-
-    # Append reference example AFTER .format() to avoid escaping issues with { } in code
-    ref_section = _get_cached_reference()
-    if ref_section:
-        ref_block = (
-            "\n\n=== REFERENCE EXAMPLE (from a completed architecture doc) ===\n"
-            "Study this example carefully. Your output MUST match this level of detail, "
-            "depth, and comprehensiveness. Notice the extensive tables, detailed prose, "
-            "concrete examples, complete code blocks, and thorough coverage of every concept.\n\n"
-            f"{ref_section}\n\n"
-            "=== END REFERENCE EXAMPLE ==="
-        )
-        prompt += ref_block
 
     response = call_llm(prompt, provider, model, research, timeout=300, **llm_kwargs)
     if not response:

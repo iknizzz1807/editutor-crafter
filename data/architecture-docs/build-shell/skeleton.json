@@ -1,0 +1,392 @@
+{
+  "title": "The Gauntlet Shell: Design Document",
+  "overview": "This document outlines the design for building a Unix shell from scratch. The core architectural challenge is managing concurrent processes, coordinating their input/output streams, and correctly handling user signals, all while maintaining a responsive command-line interface. The design must bridge the gap between a linear user command and the complex, parallel world of Unix processes and file descriptors.",
+  "sections": [
+    {
+      "id": "sec-context",
+      "title": "Context and Problem Statement",
+      "summary": "Explains the fundamental role of a shell and the core systems programming challenges involved in building one, framing the problem before diving into technical solutions.",
+      "subsections": [
+        {
+          "id": "sec-context-mental",
+          "title": "Mental Model: The Shell as an Air Traffic Control Tower",
+          "summary": "Introduces the shell's role as a manager and dispatcher for processes, analogous to an air traffic controller coordinating planes (processes) on runways (the terminal)."
+        },
+        {
+          "id": "sec-context-problem",
+          "title": "The Core Problem: Translating Text into Parallel System Actions",
+          "summary": "Defines the primary challenge: parsing a linear command string and correctly setting up the parallel execution, communication, and lifecycle management of one or more child processes."
+        },
+        {
+          "id": "sec-context-existing",
+          "title": "Existing Approaches and the Unix Philosophy",
+          "summary": "Compares the monolithic versus microkernel approaches to shell design, situating our project within the Unix tradition of small, composable tools."
+        }
+      ]
+    },
+    {
+      "id": "sec-goals",
+      "title": "Goals and Non-Goals",
+      "summary": "Clearly defines the scope of the shell's capabilities (Milestones 1-6) and explicitly states what features are out of scope for this educational project.",
+      "subsections": [
+        {
+          "id": "sec-goals-functional",
+          "title": "Functional Goals (Must-Have Features)",
+          "summary": "Lists the core features corresponding to each project milestone: basic execution, built-ins, redirections, pipes, background jobs, and job control."
+        },
+        {
+          "id": "sec-goals-nonfunctional",
+          "title": "Non-Functional Goals (Quality Attributes)",
+          "summary": "Defines desired system qualities like correctness (matching bash behavior for core features), robustness (not crashing on malformed input), and responsiveness (prompt returns quickly)."
+        },
+        {
+          "id": "sec-goals-non",
+          "title": "Explicit Non-Goals",
+          "summary": "Lists features explicitly excluded, such as advanced scripting, aliases, history, and complex prompt customization, to keep the project focused."
+        }
+      ]
+    },
+    {
+      "id": "sec-high-level",
+      "title": "High-Level Architecture",
+      "summary": "Presents a bird's-eye view of the shell's main components, their responsibilities, and how data flows between them. Introduces the recommended file structure for the codebase.",
+      "subsections": [
+        {
+          "id": "sec-high-level-component",
+          "title": "Component Overview and Data Flow",
+          "summary": "Describes the four core components: the Read-Eval-Print Loop (REPL), the Parser, the Executor, and the Job Control Manager, and how a command flows through them."
+        },
+        {
+          "id": "sec-high-level-files",
+          "title": "Recommended File/Module Structure",
+          "summary": "Provides a concrete, language-specific file layout for organizing the C codebase, separating interface from implementation and concerns."
+        }
+      ]
+    },
+    {
+      "id": "sec-data-model",
+      "title": "Data Model",
+      "summary": "Defines the key data structures that represent a parsed command, a process job, and shell state. This is the foundation for all component interactions.",
+      "subsections": [
+        {
+          "id": "sec-data-model-command",
+          "title": "The Command Structure",
+          "summary": "Details the struct that stores a single command's executable, arguments, and I/O redirections, forming a node in a pipeline."
+        },
+        {
+          "id": "sec-data-model-job",
+          "title": "The Job Structure",
+          "summary": "Details the struct that manages a background or suspended job, containing a process group ID, command string, and state."
+        },
+        {
+          "id": "sec-data-model-shellstate",
+          "title": "Shell Global State",
+          "summary": "Describes the global or context struct holding the job table, current foreground process group, and other runtime state."
+        }
+      ]
+    },
+    {
+      "id": "sec-component-repl",
+      "title": "Component Design: The Read-Eval-Print Loop (REPL)",
+      "summary": "Covers the main driver loop of the shell, responsible for displaying the prompt, reading input, and orchestrating the parse-execute cycle. (Milestones 1, 5, 6)",
+      "subsections": [
+        {
+          "id": "sec-component-repl-mental",
+          "title": "Mental Model: The Conductor of an Orchestra",
+          "summary": "Frames the REPL as the conductor that signals each section (parser, executor) to play its part in sequence for each command."
+        },
+        {
+          "id": "sec-component-repl-interface",
+          "title": "Interface and Responsibilities",
+          "summary": "Specifies the REPL's core function and its interaction with the parser and executor."
+        },
+        {
+          "id": "sec-component-repl-behavior",
+          "title": "Internal Behavior and Algorithm",
+          "summary": "Provides a step-by-step algorithm for the main loop, including signal handling and job status reporting."
+        },
+        {
+          "id": "sec-component-repl-adr-signal",
+          "title": "ADR: Signal Handling Strategy in the REPL",
+          "summary": "Documents the decision on how to handle asynchronous signals (SIGCHLD, SIGINT) safely within the main loop."
+        },
+        {
+          "id": "sec-component-repl-pitfalls",
+          "title": "Common Pitfalls",
+          "summary": "Highlights mistakes like blocking reads, improper signal mask management, and zombie process accumulation."
+        },
+        {
+          "id": "sec-component-repl-impl",
+          "title": "Implementation Guidance",
+          "summary": "Provides C skeleton code for the main loop, safe input reading, and a basic signal handler wrapper."
+        }
+      ]
+    },
+    {
+      "id": "sec-component-parser",
+      "title": "Component Design: The Parser",
+      "summary": "Covers the transformation of a raw command string into structured Command and Job objects. (Milestones 1-4)",
+      "subsections": [
+        {
+          "id": "sec-component-parser-mental",
+          "title": "Mental Model: Language Translator",
+          "summary": "Compares the parser to a translator converting human-like command text into a precise internal \"machine language\" of structures."
+        },
+        {
+          "id": "sec-component-parser-interface",
+          "title": "Interface and Tokenization",
+          "summary": "Defines the parsing function signature and the tokenization phase, including handling of quotes and special operators."
+        },
+        {
+          "id": "sec-component-parser-behavior",
+          "title": "Parsing Algorithm and Abstract Syntax Tree (AST) Construction",
+          "summary": "Describes the multi-stage algorithm: tokenization, building a parse tree for pipelines, and populating Command structs."
+        },
+        {
+          "id": "sec-component-parser-adr",
+          "title": "ADR: Recursive Descent vs. Shunting Yard for Operator Parsing",
+          "summary": "Documents the choice of parsing algorithm for handling pipe and redirection operators with correct precedence and associativity."
+        },
+        {
+          "id": "sec-component-parser-pitfalls",
+          "title": "Common Pitfalls",
+          "summary": "Discusses issues like memory leaks in AST nodes, incorrect handling of edge spaces, and forgetting to null-terminate argument lists."
+        },
+        {
+          "id": "sec-component-parser-impl",
+          "title": "Implementation Guidance",
+          "summary": "Provides C skeleton code for a tokenizer and a recursive descent parser, with TODO markers for building the command AST."
+        }
+      ]
+    },
+    {
+      "id": "sec-component-executor",
+      "title": "Component Design: The Executor",
+      "summary": "Covers the execution of a parsed command pipeline, including fork/exec, redirection, piping, and built-in command handling. (Milestones 1-4)",
+      "subsections": [
+        {
+          "id": "sec-component-executor-mental",
+          "title": "Mental Model: The Stage Manager and Set Designer",
+          "summary": "Frames the executor as a stage manager who creates actors (processes), designs their communication pipes (set design), and cues them to start (exec)."
+        },
+        {
+          "id": "sec-component-executor-interface",
+          "title": "Interface and Core Functions",
+          "summary": "Defines the functions for executing a single command, a pipeline, and for performing I/O redirection setup."
+        },
+        {
+          "id": "sec-component-executor-behavior",
+          "title": "Execution Algorithm: From AST to Processes",
+          "summary": "Provides a detailed, step-by-step algorithm for executing a pipeline: creating pipes, forking processes, setting up file descriptors, and waiting."
+        },
+        {
+          "id": "sec-component-executor-adr-fork",
+          "title": "ADR: Fork-Then-Exec Pattern vs. vfork/clone",
+          "summary": "Documents the decision to use the standard fork/exec pattern for clarity and safety over more complex alternatives."
+        },
+        {
+          "id": "sec-component-executor-pitfalls",
+          "title": "Common Pitfalls",
+          "summary": "Highlights critical mistakes like leaking file descriptors, deadlocked pipes, and incorrect order of dup2/close calls."
+        },
+        {
+          "id": "sec-component-executor-impl",
+          "title": "Implementation Guidance",
+          "summary": "Provides C skeleton code for the core execution function, redirection helper, and built-in command dispatch table."
+        }
+      ]
+    },
+    {
+      "id": "sec-component-jobctrl",
+      "title": "Component Design: Job Control Manager",
+      "summary": "Covers the management of background and suspended jobs, including the jobs table, and signal forwarding for foreground jobs. (Milestones 5-6)",
+      "subsections": [
+        {
+          "id": "sec-component-jobctrl-mental",
+          "title": "Mental Model: A Restaurant Pager System",
+          "summary": "Compares background jobs to customers waiting for a table (completion). The pager (job ID) tracks them, and the host (shell) can check status or bring them back."
+        },
+        {
+          "id": "sec-component-jobctrl-interface",
+          "title": "Interface: Job Table Operations",
+          "summary": "Defines functions for adding, removing, finding jobs, and listing them via the 'jobs' built-in."
+        },
+        {
+          "id": "sec-component-jobctrl-behavior",
+          "title": "Job Lifecycle and State Management",
+          "summary": "Describes the state transitions for jobs (running, stopped, done) and the actions for fg, bg, and Ctrl+Z."
+        },
+        {
+          "id": "sec-component-jobctrl-adr",
+          "title": "ADR: Process Groups vs. PIDs for Job Control",
+          "summary": "Documents the critical decision to use process groups for reliable signal delivery to entire pipelines, rather than managing individual PIDs."
+        },
+        {
+          "id": "sec-component-jobctrl-pitfalls",
+          "title": "Common Pitfalls",
+          "summary": "Discusses orphaned process groups, race conditions in SIGCHLD handlers, and incorrect terminal foreground group management."
+        },
+        {
+          "id": "sec-component-jobctrl-impl",
+          "title": "Implementation Guidance",
+          "summary": "Provides C skeleton code for the job table, SIGCHLD handler, and functions for modifying terminal foreground process groups."
+        }
+      ]
+    },
+    {
+      "id": "sec-interactions",
+      "title": "Interactions and Data Flow",
+      "summary": "Traces the complete journey of a complex command (e.g., with pipes and redirection) through all components, showing function calls and data transformations.",
+      "subsections": [
+        {
+          "id": "sec-interactions-sequence",
+          "title": "Sequence of Operations for a Pipeline",
+          "summary": "Walks through the step-by-step interactions between REPL, Parser, Executor, and Job Control for a command like `ls | grep foo > out.txt &`."
+        },
+        {
+          "id": "sec-interactions-messages",
+          "title": "Internal Message and Event Flow",
+          "summary": "Describes how components communicate via function calls, shared data structures, and asynchronous signals."
+        }
+      ]
+    },
+    {
+      "id": "sec-error-handling",
+      "title": "Error Handling and Edge Cases",
+      "summary": "Systematizes the approach to failures at each stage: parse errors, execution failures (command not found, permission denied), and resource exhaustion.",
+      "subsections": [
+        {
+          "id": "sec-error-handling-strategy",
+          "title": "Holistic Error Strategy",
+          "summary": "Outlines principles for error reporting, resource cleanup on failure, and maintaining shell state consistency."
+        },
+        {
+          "id": "sec-error-handling-edge",
+          "title": "Key Edge Cases and Behavior",
+          "summary": "Specifies shell behavior for edge cases like empty pipelines, redirection to directories, signals during partial pipeline setup, and interrupting built-ins."
+        }
+      ]
+    },
+    {
+      "id": "sec-testing",
+      "title": "Testing Strategy",
+      "summary": "Provides a practical guide for learners to verify their implementation at each milestone, using both manual commands and automated test scripts.",
+      "subsections": [
+        {
+          "id": "sec-testing-milestone-checkpoints",
+          "title": "Milestone-by-Milestone Verification",
+          "summary": "For each project milestone, lists concrete commands to run and the expected output or behavior to confirm correct implementation."
+        },
+        {
+          "id": "sec-testing-approach",
+          "title": "Testing Approaches and Scripts",
+          "summary": "Recommends strategies like comparison testing against a reference shell (e.g., bash) and provides a skeleton for a basic test harness."
+        }
+      ]
+    },
+    {
+      "id": "sec-debugging",
+      "title": "Debugging Guide",
+      "summary": "A symptom-based troubleshooting guide for common, frustrating issues encountered while building a shell, with diagnosis steps and fixes.",
+      "subsections": [
+        {
+          "id": "sec-debugging-table",
+          "title": "Symptom \u2192 Cause \u2192 Diagnosis \u2192 Fix Table",
+          "summary": "A reference table for issues like \"shell hangs after pipe\", \"zombie processes accumulate\", \"background jobs not reported\", and \"Ctrl+C doesn't work\"."
+        },
+        {
+          "id": "sec-debugging-tools",
+          "title": "Debugging Tools and Techniques",
+          "summary": "Suggests using strace, adding strategic print statements for file descriptors and PIDs, and visualizing process trees with pstree."
+        }
+      ]
+    },
+    {
+      "id": "sec-future",
+      "title": "Future Extensions",
+      "summary": "Suggests potential features that could be added to the shell, explaining how the current design does or does not accommodate them.",
+      "subsections": [
+        {
+          "id": "sec-future-easy",
+          "title": "Easy Additions",
+          "summary": "Lists simple extensions like command history, aliases, and better prompt customization."
+        },
+        {
+          "id": "sec-future-hard",
+          "title": "Advanced Extensions",
+          "summary": "Discusses more complex features like scripting with conditionals/loops, tab completion, and remote shell capabilities."
+        }
+      ]
+    },
+    {
+      "id": "sec-glossary",
+      "title": "Glossary",
+      "summary": "Definitions of key terms used throughout the document, from basic concepts like PID and file descriptor to shell-specific terms like job control and process group.",
+      "subsections": [
+        {
+          "id": "sec-glossary-table",
+          "title": "Terminology Reference",
+          "summary": "Alphabetical list of terms with clear, concise definitions and references to where they are first discussed."
+        }
+      ]
+    }
+  ],
+  "diagrams": [
+    {
+      "id": "diag-system-component",
+      "title": "Gauntlet Shell: Component Architecture",
+      "description": "Shows the four main components (REPL, Parser, Executor, Job Control), their key sub-modules, and the primary data flow between them. Include arrows for function calls and events.",
+      "type": "component",
+      "relevant_sections": [
+        "sec-high-level",
+        "sec-interactions"
+      ]
+    },
+    {
+      "id": "diag-data-model",
+      "title": "Shell Data Model Relationships",
+      "description": "Shows the struct relationships: a ShellState contains a JobTable. A Job contains a linked list of Command structs (for pipelines). A Command contains arrays for argv and Redirection structs.",
+      "type": "class",
+      "relevant_sections": [
+        "sec-data-model"
+      ]
+    },
+    {
+      "id": "diag-sequence-execute",
+      "title": "Sequence: Executing `ls -l | grep foo`",
+      "description": "A sequence diagram showing interactions: User inputs command to REPL. REPL calls Parser, which returns an AST. REPL calls Executor. Executor creates pipe, forks first child (sets up stdout to pipe), execs 'ls'. Forks second child (sets up stdin from pipe), execs 'grep'. Parent waits for children. REPL displays prompt again.",
+      "type": "sequence",
+      "relevant_sections": [
+        "sec-interactions",
+        "sec-component-executor"
+      ]
+    },
+    {
+      "id": "diag-flowchart-parse",
+      "title": "Flowchart: Parser Algorithm",
+      "description": "A flowchart detailing the recursive descent parsing algorithm. Start with token list. Check for command (word). Check for redirections. Check for pipe operator, if found, recursively parse right side. Build tree node. Return AST.",
+      "type": "flowchart",
+      "relevant_sections": [
+        "sec-component-parser"
+      ]
+    },
+    {
+      "id": "diag-state-job",
+      "title": "State Machine: Job Lifecycle",
+      "description": "A state machine showing job states: Foreground, Background, Stopped, Done (Zombie). Transitions: & launches to Background. Ctrl+Z moves Foreground\u2192Stopped. bg moves Stopped\u2192Background. fg moves Background/Stopped\u2192Foreground. Process exit moves any state\u2192Done. SIGCHLD reaps Done state.",
+      "type": "state-machine",
+      "relevant_sections": [
+        "sec-component-jobctrl"
+      ]
+    },
+    {
+      "id": "diag-fd-pipeline",
+      "title": "File Descriptor Layout for a 3-Stage Pipeline",
+      "description": "A visual representation of file descriptors before and after dup2 calls in a parent and three child processes for `cmd1 | cmd2 | cmd3`. Show stdin/stdout of each child connected via pipes. Highlight which pipe ends are closed in each process.",
+      "type": "component",
+      "relevant_sections": [
+        "sec-component-executor"
+      ]
+    }
+  ]
+}

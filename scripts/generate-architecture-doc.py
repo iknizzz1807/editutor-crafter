@@ -816,9 +816,11 @@ def build_outline_str(skeleton: dict) -> str:
     """Build a readable outline string from skeleton."""
     lines = []
     for s in skeleton.get("sections", []):
-        lines.append(f"- {s['title']}: {s.get('summary', '')}")
+        title = s.get("title") or s.get("name") or "Untitled"
+        lines.append(f"- {title}: {s.get('summary', '')}")
         for sub in s.get("subsections", []):
-            lines.append(f"  - {sub['title']}: {sub.get('summary', '')}")
+            sub_title = sub.get("title") or sub.get("name") or "Untitled"
+            lines.append(f"  - {sub_title}: {sub.get('summary', '')}")
     return "\n".join(lines)
 
 
@@ -908,7 +910,7 @@ def generate_section_sequential(section: dict, skeleton: dict, project: dict,
     subsections = section.get("subsections", [])
     if subsections:
         sub_info = "Subsections:\n" + "\n".join(
-            f"  - {s['title']}: {s.get('summary', '')}" for s in subsections
+            f"  - {s.get('title') or s.get('name') or 'Untitled'}: {s.get('summary', '')}" for s in subsections
         )
     else:
         sub_info = ""
@@ -1010,9 +1012,8 @@ server -> db: queries
 server <- client: requests
 a <-> b: bidirectional
 a -> b: solid
-a -- b: no arrow
 
-# Containers (groups)
+# Containers (groups) — use shape: rectangle or omit shape
 backend: Backend Services {{
   api: API Server
   worker: Background Worker
@@ -1034,7 +1035,7 @@ system: {{
   coordinator -> participant: PREPARE
 }}
 
-# Styling
+# Styling — flat dot notation (NEVER inside a style {{ }} block)
 my_node: Important {{
   style.fill: "#d63031"
   style.font-color: "#ffffff"
@@ -1049,12 +1050,6 @@ bob: Bob
 alice -> bob: Hello
 bob -> alice: Hi back
 
-# Multiple connections with labels
-a -> b: step 1
-a -> c: step 2
-b -> d: step 3
-c -> d: step 4
-
 # Text labels and notes
 note: |md
   ## Important Note
@@ -1063,20 +1058,137 @@ note: |md
   shape: page
 }}
 
+# Class shapes — fields are FLAT key: value pairs, NO nesting
+my_class: MyClass {{
+  shape: class
+  - "name: string"
+  - "items: List<Item>"
+  + "get_name(): string"
+  + "process(input: Data): Result"
+}}
+
+# sql_table shapes — flat field definitions
+users: Users {{
+  shape: sql_table
+  id: int {{constraint: primary_key}}
+  name: varchar
+  email: varchar
+}}
+
+# Named style definitions — use "classes:", NOT "styles:"
+classes: {{
+  node_style: {{
+    style.fill: "#1a1a2e"
+    style.stroke: "#3fb950"
+    style.font-color: "#e6edf3"
+  }}
+}}
+# Apply named style: use "class:", NOT "style:"
+my_node: Node {{
+  class: node_style
+}}
+
 # Available shapes: rectangle (default), circle, oval, cylinder, queue,
-#   page, package, diamond, hexagon, cloud, parallelogram, class, sql_table
+#   page, package, diamond, hexagon, cloud, parallelogram, class, sql_table,
+#   sequence_diagram, text
+
+=== CRITICAL D2 RULES — COMMON MISTAKES TO AVOID ===
+
+1. NAMED STYLES: Use `classes:` to define, `class:` to apply. NEVER `styles:` or `style: classname`.
+   WRONG:  styles: {{ process: {{ ... }} }}  /  my_node: {{ style: process }}
+   RIGHT:  classes: {{ process: {{ ... }} }}  /  my_node: {{ class: process }}
+
+2. STYLE PROPERTIES — always use flat dot notation (style.X). NEVER nest inside a style {{ }} block:
+   WRONG:  my_node: {{ style: {{ style.fill: "#fff" }} }}   ← double prefix!
+   WRONG:  my_node: {{ style: {{ fill: "#fff" }} }}          ← nested block
+   RIGHT:  my_node: {{ style.fill: "#fff"; style.stroke: "#000" }}
+
+3. BRACKETS in field values are parsed as D2 arrays. Always QUOTE them:
+   WRONG:  items: Node[]          ← D2 thinks [] is an array
+   WRONG:  cells: Cell[][]        ← parse error
+   RIGHT:  items: "Node[]"
+   RIGHT:  cells: "Cell[][]"
+   RIGHT:  data: "Map<string, string>"
+
+4. CURLY BRACES in field values create nested blocks. QUOTE them:
+   WRONG:  labels: {{string: string}}    ← creates a child block
+   RIGHT:  labels: "Map<string, string>"
+
+5. PARENTHESES in class field names are parsed as connections. QUOTE them:
+   WRONG:  get_value(): string     ← parsed as connection
+   RIGHT:  + "get_value(): string"
+   RIGHT:  + "process(input: Data): Result"
+
+6. SEPARATOR LINES (--) in class shapes are parsed as connections:
+   WRONG:  my_class: {{ shape: class; name: string; --; get(): void }}
+   RIGHT:  Just list fields without separators. Use - for fields, + for methods.
+
+7. RESERVED KEYWORDS cannot be used as bare field names in class/sql_table:
+   Reserved: shape, class, style, label, icon, tooltip, link, near, width, height,
+             top, bottom, left, right, type, constraint, direction, opacity, fill, stroke
+   WRONG:  shape: CollisionShape     ← D2 interprets as shape attribute
+   WRONG:  type: EventType           ← D2 reserved keyword
+   WRONG:  left: Node                ← D2 reserved keyword
+   RIGHT:  collision_shape: CollisionShape   ← rename the field
+   RIGHT:  event_type: EventType
+   RIGHT:  left_child: Node
+
+8. CLASS SHAPES CANNOT HAVE CHILDREN. A node with shape: class cannot contain child nodes:
+   WRONG:  parent: {{ shape: class; child_node: {{ ... }} }}
+   RIGHT:  Use shape: rectangle for containers with children.
+   RIGHT:  Use shape: class ONLY for leaf nodes with flat field definitions.
+
+9. NEAR KEYWORD only accepts position constants, NOT object references:
+   WRONG:  note: {{ near: server }}        ← object reference not allowed
+   RIGHT:  note: {{ near: top-center }}
+   Valid constants: top-left, top-center, top-right, center-left, center-right,
+                    bottom-left, bottom-center, bottom-right
+
+10. INVALID STYLE KEYWORDS — these do NOT exist in D2:
+    WRONG: style.color        → RIGHT: style.font-color
+    WRONG: style.dashed       → RIGHT: style.stroke-dash: 3
+    WRONG: style.font-style   → RIGHT: style.italic: true
+    WRONG: style.font-bold    → RIGHT: style.bold: true
+    WRONG: style.double       → RIGHT: style.double-border: true
+    WRONG: style.visibility   → (not supported, remove it)
+    WRONG: style.text-transform → (not supported, remove it)
+    WRONG: style.line-color   → RIGHT: style.stroke: "#color"
+
+11. THEME/CANVAS BLOCKS do not exist in D2:
+    WRONG:  theme: {{ canvas: {{ fill: "#000" }} }}
+    RIGHT:  Style individual nodes or use classes: {{ }}
+
+12. SEQUENCE DIAGRAM RESTRICTIONS:
+    - Edge styling blocks are NOT allowed (no {{ style.stroke: ... }} on edges)
+    - Note shapes (shape: page) are NOT allowed inside sequence diagrams
+    - near: only accepts constants, not actor names
+    - Edge map keys must be reserved keywords only
+
+13. STATE MACHINE start markers — [*] and * are NOT valid D2:
+    WRONG:  [*] -> Active
+    WRONG:  * -> Created
+    RIGHT:  init: {{ shape: circle; style.fill: "#3fb950"; label: "" }}
+            init -> Active: Begin
+
+14. UML ARROW SYNTAX is NOT supported:
+    WRONG:  A --|> B      ← UML inheritance arrow
+    RIGHT:  A -> B: inherits
+
+15. DOUBLE-BORDER only works on: rectangle, square, circle, oval.
+    WRONG:  my_queue: {{ shape: queue; style.double-border: true }}
+    RIGHT:  my_node: {{ shape: rectangle; style.double-border: true }}
 
 === DIAGRAM TYPE HINTS ===
 
-For "component" type: Use containers to group related components. Show interfaces between containers with labeled arrows.
+For "component" type: Use containers (shape: rectangle) to group related components. Show interfaces between containers with labeled arrows.
 
-For "sequence" type: Use `shape: sequence_diagram` at the top level. Define actors as top-level nodes. Use arrows for messages.
+For "sequence" type: Use `shape: sequence_diagram` at the top level. Define actors as top-level nodes. Use simple arrows for messages. NO edge styling, NO note shapes.
 
-For "state-machine" type: Use circles/ovals for states, arrows for transitions with event labels. Use a filled circle for initial state, double circle for final state.
+For "state-machine" type: Use circles for states, arrows for transitions with event labels. Use a small filled circle (style.fill: "#3fb950", label: "") for initial state. Use double-border circles for final states.
 
 For "flowchart" type: Use diamonds for decisions, rectangles for actions, arrows for flow. Label decision edges with Yes/No or conditions.
 
-For "class" type: Use `shape: class` or `shape: sql_table` for structured types.
+For "class" type: Use `shape: class` for type definitions with flat - fields and + methods (all QUOTED). Use `shape: sql_table` for tabular data. NEVER use shape: class on containers with children.
 
 === STYLE ===
 - Use a dark theme:
@@ -1209,11 +1321,18 @@ def generate_diagram(diagram: dict, project: dict, full_doc: str,
                 f"Your previous D2 output had syntax errors:\n\n"
                 f"```\n{errors}\n```\n\n"
                 f"The D2 code you generated:\n```d2\n{d2_code}\n```\n\n"
-                f"Fix the errors and regenerate. Remember:\n"
-                f"- Use {{ }} for containers (double-brace in some contexts)\n"
-                f"- Connections use -> not →\n"
-                f"- Labels use : after the node name\n"
-                f"- Style properties go inside {{ }} blocks\n\n"
+                f"Fix the errors and regenerate. Common D2 mistakes:\n"
+                f"- Named styles: use `classes:` to define, `class:` to apply (NOT `styles:` / `style: name`)\n"
+                f"- Style properties: use flat `style.fill`, `style.stroke` etc. NEVER nest inside style {{ }}\n"
+                f"- Bracket values like Node[] must be QUOTED: \"Node[]\"\n"
+                f"- Curly braces in values like {{key: val}} must be QUOTED\n"
+                f"- Method signatures with () in class fields must be QUOTED: + \"method(): type\"\n"
+                f"- No -- separators in class shapes (parsed as connections)\n"
+                f"- Reserved words (shape, type, class, left, right, style, near) cannot be bare field names\n"
+                f"- shape: class nodes CANNOT have child nodes — use shape: rectangle for containers\n"
+                f"- near: only accepts constants (top-center, bottom-left, etc.), NOT object names\n"
+                f"- style.dashed -> style.stroke-dash: 3, style.color -> style.font-color\n"
+                f"- No theme/canvas blocks, no [*] start markers, no --|> UML arrows\n\n"
                 f"Output ONLY the corrected D2 code, no markdown fences.\n"
             )
         else:
@@ -1489,8 +1608,8 @@ def main():
                         help="Model name (claude: sonnet/opus/haiku, gemini: gemini-2.0-flash)")
     parser.add_argument("--research", action="store_true",
                         help="Enable web research for accuracy")
-    parser.add_argument("--project", type=str,
-                        help="Generate for a specific project ID")
+    parser.add_argument("--project", type=str, nargs="+",
+                        help="Generate for one or more project IDs (space-separated)")
     parser.add_argument("--all", action="store_true",
                         help="Generate for all projects without an architecture doc")
     parser.add_argument("--force", action="store_true",
@@ -1560,7 +1679,7 @@ def main():
 
     # Determine projects to process
     if args.project:
-        project_ids = [args.project]
+        project_ids = args.project
     else:
         # --all: get projects without architecture docs
         all_ids = get_all_project_ids(data)

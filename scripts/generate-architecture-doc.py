@@ -942,14 +942,24 @@ def generate_section_sequential(section: dict, skeleton: dict, project: dict,
     response = response.strip()
 
     # Split content and conventions
+    # LLM sometimes outputs "CONVENTIONS---" instead of "---CONVENTIONS---"
     marker = "---CONVENTIONS---"
+    alt_marker = "CONVENTIONS---"
     new_conventions = {}
 
     if marker in response:
         parts = response.split(marker, 1)
         content = parts[0].strip()
         conventions_text = parts[1].strip()
+    elif alt_marker in response:
+        parts = response.split(alt_marker, 1)
+        content = parts[0].strip()
+        conventions_text = parts[1].strip()
+    else:
+        content = response
+        conventions_text = None
 
+    if conventions_text is not None:
         # Parse conventions JSON
         # Handle possible markdown fence around JSON
         if conventions_text.startswith("```"):
@@ -970,8 +980,6 @@ def generate_section_sequential(section: dict, skeleton: dict, project: dict,
                 new_conventions = json.loads(conventions_text)
             except json.JSONDecodeError:
                 print(f"    (could not parse conventions JSON, continuing)")
-    else:
-        content = response
 
     content = _strip_markdown_fences(content)
     return content, new_conventions

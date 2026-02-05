@@ -1,0 +1,351 @@
+{
+  "title": "System Call Tracer: Design Document",
+  "overview": "This document outlines the design of a system call tracer that uses the Linux ptrace API to intercept, decode, and log system calls made by a target process and its children. The core architectural challenge lies in orchestrating low-level process control, safely reading foreign address spaces, and correctly interpreting the kernel's execution state, all while minimizing the performance impact on the traced program.",
+  "sections": [
+    {
+      "id": "context",
+      "title": "1. Context and Problem Statement",
+      "summary": "Introduces the need for system call tracing, compares it to existing tools like strace, and explains the inherent complexity of process introspection.",
+      "subsections": [
+        {
+          "id": "analogy",
+          "title": "Mental Model: The Process's Announcer",
+          "summary": "A metaphor explaining a tracer as an announcer who narrates every interaction a program has with the operating system."
+        },
+        {
+          "id": "problem-statement",
+          "title": "The Technical Challenge of Process Introspection",
+          "summary": "Describes the precise problem of safely observing a running process's interactions with the kernel via system calls."
+        },
+        {
+          "id": "existing-approaches",
+          "title": "Existing Tools and Why Build Our Own",
+          "summary": "Compares strace, perf, and other tools, highlighting their use cases and the educational value of implementing a custom tracer."
+        }
+      ]
+    },
+    {
+      "id": "goals",
+      "title": "2. Goals and Non-Goals",
+      "summary": "Defines the functional and educational scope of the project, clarifying what the system will and will not do.",
+      "subsections": [
+        {
+          "id": "goals-list",
+          "title": "Goals",
+          "summary": "Lists the core requirements: syscall interception, argument decoding, multi-process following, and statistics generation."
+        },
+        {
+          "id": "non-goals-list",
+          "title": "Non-Goals",
+          "summary": "Explicitly states what is out of scope: source-level debugging, binary rewriting, or advanced performance profiling."
+        }
+      ]
+    },
+    {
+      "id": "high-level-architecture",
+      "title": "3. High-Level Architecture",
+      "summary": "Presents the component breakdown of the tracer, showing how the control and data flow between the tracer and the tracee(s).",
+      "subsections": [
+        {
+          "id": "component-overview",
+          "title": "Component Overview and Responsibilities",
+          "summary": "Describes the primary modules: Process Manager, Syscall Interceptor, Decoder, Event Dispatcher, and Statistics Aggregator."
+        },
+        {
+          "id": "file-structure",
+          "title": "Recommended File Structure",
+          "summary": "Suggests a logical file organization for the C codebase, separating core tracing logic from data tables and helpers."
+        }
+      ]
+    },
+    {
+      "id": "data-model",
+      "title": "4. Data Model",
+      "summary": "Defines the core data structures used to represent system call events, traced processes, and runtime configuration.",
+      "subsections": [
+        {
+          "id": "syscall-event",
+          "title": "Syscall Event Record",
+          "summary": "Describes the structure that captures a single system call entry and exit, including timing, arguments, and result."
+        },
+        {
+          "id": "process-context",
+          "title": "Process Context and Configuration",
+          "summary": "Describes the structure that tracks state for a single traced process (PID, state, filter settings)."
+        }
+      ]
+    },
+    {
+      "id": "component-tracer-core",
+      "title": "5. Component Design: Tracer Core Loop",
+      "summary": "Details the main event loop that uses waitpid and ptrace to control the execution of traced processes (Milestones 1 & 3).",
+      "subsections": [
+        {
+          "id": "responsibility-tracer-core",
+          "title": "Responsibility and Scope",
+          "summary": "Manages the lifecycle of traced processes, handles ptrace stops, and dispatches events to other components."
+        },
+        {
+          "id": "mental-model-tracer-core",
+          "title": "Mental Model: The Puppeteer",
+          "summary": "An analogy explaining how the tracer controls the tracee's execution, letting it run in small, observed steps."
+        },
+        {
+          "id": "adr-syscall-stops",
+          "title": "ADR: Managing Syscall Entry/Exit Stops",
+          "summary": "Decision record on using PTRACE_SYSCALL versus manual singlestepping for intercepting system calls."
+        },
+        {
+          "id": "common-pitfalls-tracer-core",
+          "title": "Common Pitfalls: Signal and State Management",
+          "summary": "Highlights common errors like mishandling signals, confusing entry/exit states, and register ABI differences."
+        },
+        {
+          "id": "implementation-guidance-tracer-core",
+          "title": "Implementation Guidance for Tracer Core",
+          "summary": "Provides starter code for the main loop infrastructure and skeletons for process state management."
+        }
+      ]
+    },
+    {
+      "id": "component-syscall-decoder",
+      "title": "6. Component Design: Syscall Decoder",
+      "summary": "Details the component responsible for mapping raw register values to human-readable syscall names and arguments (Milestone 2).",
+      "subsections": [
+        {
+          "id": "responsibility-decoder",
+          "title": "Responsibility and Scope",
+          "summary": "Interprets syscall numbers and arguments from registers, reads strings from tracee memory, and formats output."
+        },
+        {
+          "id": "mental-model-decoder",
+          "title": "Mental Model: The Interpreter",
+          "summary": "An analogy for translating low-level machine state (registers, memory) into a high-level, readable log line."
+        },
+        {
+          "id": "adr-argument-decoding",
+          "title": "ADR: Strategies for Reading Tracee Memory",
+          "summary": "Decision record comparing PTRACE_PEEKDATA word-by-word reads versus PTRACE_PEEKDATA in a loop for strings."
+        },
+        {
+          "id": "common-pitfalls-decoder",
+          "title": "Common Pitfalls: Memory Reads and ABI Assumptions",
+          "summary": "Highlights issues with invalid pointers, non-NULL-terminated strings, and architecture-specific register layouts."
+        },
+        {
+          "id": "implementation-guidance-decoder",
+          "title": "Implementation Guidance for Syscall Decoder",
+          "summary": "Provides a syscall number-to-name table and skeletons for register reading and safe string extraction."
+        }
+      ]
+    },
+    {
+      "id": "component-multi-process",
+      "title": "7. Component Design: Multi-Process Tracker",
+      "summary": "Details the component that detects and automatically traces new child processes (Milestone 3).",
+      "subsections": [
+        {
+          "id": "responsibility-multi-process",
+          "title": "Responsibility and Scope",
+          "summary": "Listens for fork/vfork/clone events via ptrace options, attaches to new children, and manages a process tree."
+        },
+        {
+          "id": "mental-model-multi-process",
+          "title": "Mental Model: The Family Tree Gardener",
+          "summary": "An analogy for how the tracer must care for an entire process tree, not just the initial seed."
+        },
+        {
+          "id": "adr-fork-following",
+          "title": "ADR: Following Forks with Ptrace Options",
+          "summary": "Decision record on using PTRACE_O_TRACEFORK versus manual SIGSTOP and attach for child processes."
+        },
+        {
+          "id": "common-pitfalls-multi-process",
+          "title": "Common Pitfalls: Event Race Conditions and PID Reuse",
+          "summary": "Highlights issues with waitpid(-1), handling PTRACE_EVENT_EXEC, and managing process state across exec."
+        },
+        {
+          "id": "implementation-guidance-multi-process",
+          "title": "Implementation Guidance for Multi-Process Tracker",
+          "summary": "Provides starter code for setting ptrace options and skeletons for the process table management logic."
+        }
+      ]
+    },
+    {
+      "id": "component-filter-stats",
+      "title": "8. Component Design: Filtering and Statistics Engine",
+      "summary": "Details the component for filtering syscall output and aggregating performance data (Milestone 4).",
+      "subsections": [
+        {
+          "id": "responsibility-filter-stats",
+          "title": "Responsibility and Scope",
+          "summary": "Applies user-specified filters to syscall events, records timing, and aggregates counts and errors for a final report."
+        },
+        {
+          "id": "mental-model-filter-stats",
+          "title": "Mental Model: The Data Analyst",
+          "summary": "An analogy for how this component sifts through raw event streams to produce focused summaries and metrics."
+        },
+        {
+          "id": "adr-timing-measurement",
+          "title": "ADR: Measuring Syscall Duration",
+          "summary": "Decision record on using clock_gettime(CLOCK_MONOTONIC) for wall-clock timing versus process/thread time."
+        },
+        {
+          "id": "common-pitfalls-filter-stats",
+          "title": "Common Pitfalls: Concurrency and Output Interleaving",
+          "summary": "Highlights issues with timing overhead, thread-safe statistics aggregation, and interleaved log output from multiple processes."
+        },
+        {
+          "id": "implementation-guidance-filter-stats",
+          "title": "Implementation Guidance for Filtering and Stats",
+          "summary": "Provides starter code for a simple filter parser and skeletons for the timing and aggregation logic."
+        }
+      ]
+    },
+    {
+      "id": "interactions-data-flow",
+      "title": "9. Interactions and Data Flow",
+      "summary": "Describes the end-to-end flow of a system call event through all components, from interception to logging.",
+      "subsections": [
+        {
+          "id": "sequence-trace-loop",
+          "title": "Sequence of Operations: The Main Trace Loop",
+          "summary": "Step-by-step walkthrough of what happens from process launch to a single syscall being logged."
+        },
+        {
+          "id": "data-flow-messages",
+          "title": "Data Flow and Internal Messages",
+          "summary": "Describes how the SyscallEvent and ProcessContext structures are passed and modified between components."
+        }
+      ]
+    },
+    {
+      "id": "error-handling",
+      "title": "10. Error Handling and Edge Cases",
+      "summary": "Catalogues failure modes specific to ptrace and process tracing, and strategies for graceful degradation.",
+      "subsections": [
+        {
+          "id": "common-errors",
+          "title": "Common Ptrace Errors and Interpretation",
+          "summary": "Lists ESRCH, EPERM, EIO errors, their common causes in a tracer context, and recovery actions."
+        },
+        {
+          "id": "edge-cases",
+          "title": "Edge Cases: Signal Injection and Exiting Processes",
+          "summary": "Discusses handling traced processes that receive unexpected signals or exit while being examined."
+        }
+      ]
+    },
+    {
+      "id": "testing-strategy",
+      "title": "11. Testing Strategy",
+      "summary": "Outlines a practical approach to verifying the tracer works correctly at each milestone.",
+      "subsections": [
+        {
+          "id": "milestone-checkpoints",
+          "title": "Milestone Verification Checkpoints",
+          "summary": "For each milestone, provides a simple test command and the expected output to confirm correct implementation."
+        },
+        {
+          "id": "verification-scenarios",
+          "title": "Verification Scenarios and Expected Output",
+          "summary": "Suggests specific test programs (e.g., ones that call open, read, write, fork) to validate tracer functionality."
+        }
+      ]
+    },
+    {
+      "id": "debugging-guide",
+      "title": "12. Debugging Guide",
+      "summary": "A symptom-cause-fix reference for common implementation bugs encountered when building the tracer.",
+      "subsections": [
+        {
+          "id": "common-bugs",
+          "title": "Common Bugs: Symptom \u2192 Cause \u2192 Fix",
+          "summary": "A table listing issues like 'tracer hangs', 'wrong syscall number', or 'segfault on string read' with diagnostics and solutions."
+        },
+        {
+          "id": "tools-techniques",
+          "title": "Tools and Inspection Techniques",
+          "summary": "Recommends using strace on the tracer itself, examining /proc/<pid>/status, and adding strategic debug prints."
+        }
+      ]
+    },
+    {
+      "id": "future-extensions",
+      "title": "13. Future Extensions",
+      "summary": "Suggests potential enhancements to the tracer, building on the designed architecture.",
+      "subsections": [
+        {
+          "id": "potential-features",
+          "title": "Potential Future Features",
+          "summary": "Ideas for advanced filtering, syscall tampering (injection), network packet decoding for socket calls, or a GUI frontend."
+        }
+      ]
+    },
+    {
+      "id": "glossary",
+      "title": "14. Glossary",
+      "summary": "Defines key technical terms, acronyms, and Linux-specific concepts used throughout the document.",
+      "subsections": [
+        {
+          "id": "terms",
+          "title": "Glossary of Terms",
+          "summary": "Alphabetical list of terms like ptrace, ABI, tracee, errno, and PTRACE_O_TRACEFORK with clear definitions."
+        }
+      ]
+    }
+  ],
+  "diagrams": [
+    {
+      "id": "arch-component",
+      "title": "System Component Architecture",
+      "description": "Shows the main components of the tracer (Process Manager, Event Dispatcher, Decoder, Stats) and their interactions with the Traced Process(es) and the Kernel via ptrace. Include data flow arrows for syscall events, register data, and memory reads.",
+      "type": "component",
+      "relevant_sections": [
+        "high-level-architecture",
+        "interactions-data-flow"
+      ]
+    },
+    {
+      "id": "data-model-class",
+      "title": "Data Model Relationships",
+      "description": "A class diagram showing the main data structures: SyscallEvent, ProcessContext, SyscallTableEntry, and FilterConfig. Show composition/aggregation relationships (e.g., ProcessContext has-many SyscallEvents).",
+      "type": "class",
+      "relevant_sections": [
+        "data-model"
+      ]
+    },
+    {
+      "id": "sequence-trace-syscall",
+      "title": "Sequence Diagram: Tracing a Single Syscall",
+      "description": "Shows the sequence between Tracer, Tracee, and Kernel for a syscall entry and exit. Includes waitpid, PTRACE_GETREGS, PTRACE_PEEKDATA, and log output steps.",
+      "type": "sequence",
+      "relevant_sections": [
+        "component-tracer-core",
+        "component-syscall-decoder",
+        "interactions-data-flow"
+      ]
+    },
+    {
+      "id": "state-machine-tracee",
+      "title": "State Machine: A Traced Process",
+      "description": "Shows the lifecycle states of a traced process: NEW, TRACED (in syscall), TRACED (in signal stop), TRACED (PTRACE_EVENT), and EXITED. Transitions are triggered by ptrace stops and continue operations.",
+      "type": "state-machine",
+      "relevant_sections": [
+        "component-tracer-core",
+        "component-multi-process"
+      ]
+    },
+    {
+      "id": "flowchart-main-loop",
+      "title": "Flowchart: Main Tracer Event Loop",
+      "description": "A detailed flowchart of the tracer's main loop logic. Starts with waitpid, then branches based on WIFSTOPPED status (syscall, signal, ptrace event) and WIFEXITED. Includes steps for each event type.",
+      "type": "flowchart",
+      "relevant_sections": [
+        "component-tracer-core",
+        "interactions-data-flow"
+      ]
+    }
+  ]
+}

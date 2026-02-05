@@ -1,0 +1,367 @@
+{
+  "title": "API Gateway: Design Document",
+  "overview": "This system provides a centralized API Gateway that manages, secures, and observes traffic between external clients and internal backend services. The key architectural challenge it solves is abstracting common cross-cutting concerns like routing, authentication, and transformation away from individual services, enabling a unified and scalable entry point for an API ecosystem.",
+  "sections": [
+    {
+      "id": "context",
+      "title": "Context and Problem Statement",
+      "summary": "Explains the problem of microservice sprawl and the need for a unified entry point, framing the API gateway as the 'front desk' or 'concierge' of a hotel.",
+      "subsections": [
+        {
+          "id": "context-analogy",
+          "title": "Mental Model: The Hotel Concierge",
+          "summary": "Uses the analogy of a hotel concierge to explain the gateway's role in receiving, routing, and augmenting requests."
+        },
+        {
+          "id": "context-problem",
+          "title": "The Pain of Direct Service-to-Client Communication",
+          "summary": "Describes the operational burdens (repeated auth logic, client coupling, disparate monitoring) that arise without a gateway."
+        },
+        {
+          "id": "context-existing",
+          "title": "Existing Approaches and Trade-offs",
+          "summary": "Compares building a custom gateway vs. using off-the-shelf solutions (Kong, NGINX) via a table analyzing flexibility, complexity, and control."
+        }
+      ]
+    },
+    {
+      "id": "goals",
+      "title": "Goals and Non-Goals",
+      "summary": "Defines the explicit capabilities the gateway will provide and the boundaries it will not cross.",
+      "subsections": [
+        {
+          "id": "goals-must",
+          "title": "Goals (What it MUST do)",
+          "summary": "Lists core functional requirements: routing, auth, rate limiting, transformation, and observability."
+        },
+        {
+          "id": "goals-wont",
+          "title": "Non-Goals (What it will NOT do)",
+          "summary": "Clarifies boundaries: it is not a service mesh sidecar, a full-fledged API management portal, or a persistent data store."
+        }
+      ]
+    },
+    {
+      "id": "high-level",
+      "title": "High-Level Architecture",
+      "summary": "Presents the top-level component view and data flow, showing how an HTTP request moves through the gateway's processing pipeline.",
+      "subsections": [
+        {
+          "id": "high-level-overview",
+          "title": "Component Overview and Data Flow",
+          "summary": "Describes the request lifecycle through distinct middleware layers: Ingress, Pre-Processing, Core, Post-Processing, and Egress."
+        },
+        {
+          "id": "high-level-structure",
+          "title": "Recommended File/Module Structure",
+          "summary": "Provides a suggested Go module layout to organize the codebase by responsibility (e.g., /internal/middleware, /internal/config)."
+        }
+      ]
+    },
+    {
+      "id": "data-model",
+      "title": "Data Model",
+      "summary": "Defines the core configuration and runtime data structures that power the gateway's routing and plugin logic.",
+      "subsections": [
+        {
+          "id": "data-model-config",
+          "title": "Configuration Structures",
+          "summary": "Describes tables for Route, Upstream, PluginConfig, and JWTValidationRule that define gateway behavior."
+        },
+        {
+          "id": "data-model-context",
+          "title": "Request Context and Shared State",
+          "summary": "Describes the RequestContext object passed through the middleware chain, carrying auth, transformation, and logging data."
+        }
+      ]
+    },
+    {
+      "id": "component-routing",
+      "title": "Component: Reverse Proxy & Routing Core",
+      "summary": "Covers the foundation of the gateway: receiving requests, matching them to routes, load balancing, and proxying to upstreams. (Milestone 1)",
+      "subsections": [
+        {
+          "id": "component-routing-mental",
+          "title": "Mental Model: The Airport Router",
+          "summary": "Compares the router to an airport's flight information board, matching destination (request path/header) to a gate (upstream service)."
+        },
+        {
+          "id": "component-routing-interface",
+          "title": "Interface and Behavior",
+          "summary": "Describes the Router interface and the step-by-step algorithm for request matching, load balancing, and health check integration."
+        },
+        {
+          "id": "component-routing-circuit",
+          "title": "Circuit Breaker State Machine",
+          "summary": "Defines the Closed, Open, and Half-Open states of the circuit breaker using a state transition table."
+        },
+        {
+          "id": "component-routing-adr-router",
+          "title": "ADR: Routing Match Strategy",
+          "summary": "Documents the decision to use a Radix Tree for path matching over regex or prefix lists."
+        },
+        {
+          "id": "component-routing-adr-lb",
+          "title": "ADR: Load Balancing with Passive Health Checks",
+          "summary": "Documents the decision to implement passive (failure-based) health checks instead of active probes, with a fallback to active checks."
+        },
+        {
+          "id": "component-routing-pitfalls",
+          "title": "Common Pitfalls",
+          "summary": "Lists common mistakes: forgetting to forward X-Forwarded-For, health check blocking, connection leaks, and thundering herd."
+        },
+        {
+          "id": "component-routing-implementation",
+          "title": "Implementation Guidance",
+          "summary": "Provides Go-specific guidance: using httputil.ReverseProxy, implementing a round-robin balancer, and skeleton code for the router and circuit breaker."
+        }
+      ]
+    },
+    {
+      "id": "component-transformation",
+      "title": "Component: Request/Response Transformation",
+      "summary": "Covers modifying headers, bodies, and URLs as requests pass through. (Milestone 2)",
+      "subsections": [
+        {
+          "id": "component-transformation-mental",
+          "title": "Mental Model: The Language Interpreter",
+          "summary": "Compares the transformer to an interpreter who translates and rephrases messages between two parties who speak different dialects."
+        },
+        {
+          "id": "component-transformation-interface",
+          "title": "Interface and Transformation Pipeline",
+          "summary": "Describes the Transformer interface and the sequential steps for header manipulation, URL rewrite, and body transformation."
+        },
+        {
+          "id": "component-transformation-adr-buffer",
+          "title": "ADR: Streaming vs. Buffered Body Transformation",
+          "summary": "Documents the decision to use buffered transformation for flexibility, with size limits to prevent memory issues."
+        },
+        {
+          "id": "component-transformation-pitfalls",
+          "title": "Common Pitfalls",
+          "summary": "Lists common mistakes: unbounded body buffering, mishandling Content-Length, and error propagation in aggregation."
+        },
+        {
+          "id": "component-transformation-implementation",
+          "title": "Implementation Guidance",
+          "summary": "Provides Go guidance on using io.LimitReader, json.Decoder, and skeleton code for header and JSON body transformation."
+        }
+      ]
+    },
+    {
+      "id": "component-auth",
+      "title": "Component: Authentication & Authorization Layer",
+      "summary": "Covers centralized validation of JWTs, API keys, and OAuth2 tokens. (Milestone 3)",
+      "subsections": [
+        {
+          "id": "component-auth-mental",
+          "title": "Mental Model: The Bouncer with a Guest List",
+          "summary": "Compares the auth layer to a nightclub bouncer who checks IDs (tokens) against a list (validation rules) before granting entry."
+        },
+        {
+          "id": "component-auth-interface",
+          "title": "Interface and Validation Flow",
+          "summary": "Describes the Authenticator interface and the step-by-step process for extracting, validating, and caching credentials."
+        },
+        {
+          "id": "component-auth-adr-cache",
+          "title": "ADR: Caching Validated Tokens",
+          "summary": "Documents the decision to use a time-based cache for validated tokens to balance performance and revocation sensitivity."
+        },
+        {
+          "id": "component-auth-pitfalls",
+          "title": "Common Pitfalls",
+          "summary": "Lists common mistakes: logging sensitive tokens, missing issuer/audience validation, and not rate-limiting auth attempts."
+        },
+        {
+          "id": "component-auth-implementation",
+          "title": "Implementation Guidance",
+          "summary": "Provides Go guidance on using golang-jwt/jwt, implementing an LRU cache, and skeleton code for JWT and API key validators."
+        }
+      ]
+    },
+    {
+      "id": "component-observability",
+      "title": "Component: Observability & Plugin System",
+      "summary": "Covers logging, metrics, tracing, and the extensible plugin architecture. (Milestone 4)",
+      "subsections": [
+        {
+          "id": "component-observability-mental",
+          "title": "Mental Model: The Black Box Flight Recorder",
+          "summary": "Compares observability to an airplane's black box, instrumenting every operation to understand system health and diagnose failures."
+        },
+        {
+          "id": "component-observability-interface",
+          "title": "Plugin Interface and Chaining",
+          "summary": "Describes the Plugin interface and how plugins are registered, configured, and executed in a chain during request processing."
+        },
+        {
+          "id": "component-observability-adr-plugin",
+          "title": "ADR: Compiled-in vs. Dynamic Plugins",
+          "summary": "Documents the decision to use a compiled-in plugin registry for simplicity and type-safety over dynamic loading."
+        },
+        {
+          "id": "component-observability-pitfalls",
+          "title": "Common Pitfalls",
+          "summary": "Lists common mistakes: high-cardinality metrics, logging PII, plugin panics crashing the gateway, and missing trace sampling."
+        },
+        {
+          "id": "component-observability-implementation",
+          "title": "Implementation Guidance",
+          "summary": "Provides Go guidance on using prometheus/client_golang, OpenTelemetry SDK, and skeleton code for a plugin manager and metrics middleware."
+        }
+      ]
+    },
+    {
+      "id": "interactions",
+      "title": "Interactions and Data Flow",
+      "summary": "Walks through the complete sequence of a request, from ingress to egress, showing how all components interact.",
+      "subsections": [
+        {
+          "id": "interactions-happy-path",
+          "title": "Happy Path Request Sequence",
+          "summary": "Describes the step-by-step flow for a successful authenticated API call, including component interactions."
+        },
+        {
+          "id": "interactions-error-path",
+          "title": "Error Flow and Early Termination",
+          "summary": "Describes how errors (auth failure, rate limit exceeded) short-circuit the pipeline and return appropriate HTTP responses."
+        }
+      ]
+    },
+    {
+      "id": "error-handling",
+      "title": "Error Handling and Edge Cases",
+      "summary": "Systematizes failure modes across components and defines recovery and fallback strategies.",
+      "subsections": [
+        {
+          "id": "error-handling-categories",
+          "title": "Failure Categories and Strategies",
+          "summary": "Categorizes errors (client, backend, gateway) and details strategies like circuit breaking, graceful degradation, and default responses."
+        },
+        {
+          "id": "error-handling-edge",
+          "title": "Specific Edge Cases",
+          "summary": "Examines tricky scenarios: malformed JSON in transformation, backend timeouts during aggregation, and configuration reload races."
+        }
+      ]
+    },
+    {
+      "id": "testing",
+      "title": "Testing Strategy",
+      "summary": "Outlines a multi-layered approach to verify correctness, from unit tests to integration tests with mock backends.",
+      "subsections": [
+        {
+          "id": "testing-approach",
+          "title": "Testing Pyramid and Tools",
+          "summary": "Recommends unit, integration, and end-to-end testing strategies with suggested tools (httptest, testify) for Go."
+        },
+        {
+          "id": "testing-checkpoints",
+          "title": "Milestone Verification Checkpoints",
+          "summary": "For each milestone, provides concrete commands and expected outputs to verify core functionality is working."
+        }
+      ]
+    },
+    {
+      "id": "debugging",
+      "title": "Debugging Guide",
+      "summary": "Provides a symptom-cause-fix table for common implementation bugs and techniques for inspecting the gateway's internal state.",
+      "subsections": [
+        {
+          "id": "debugging-table",
+          "title": "Common Bug Symptom \u2192 Cause \u2192 Fix",
+          "summary": "Table of common issues (e.g., '502 Bad Gateway', 'Memory usage growing') with diagnostic steps and solutions."
+        },
+        {
+          "id": "debugging-techniques",
+          "title": "Debugging Techniques and Tools",
+          "summary": "Suggests techniques: structured log levels, pprof for profiling, and using the metrics endpoint for runtime observation."
+        }
+      ]
+    },
+    {
+      "id": "future",
+      "title": "Future Extensions",
+      "summary": "Discusses potential enhancements the architecture can accommodate, such as WebSocket support or a configuration API.",
+      "subsections": [
+        {
+          "id": "future-extensions-list",
+          "title": "Possible Enhancements",
+          "summary": "Lists and briefly describes advanced features: WebSocket proxying, GraphQL federation, WASM plugins, and a admin REST API."
+        }
+      ]
+    },
+    {
+      "id": "glossary",
+      "title": "Glossary",
+      "summary": "Defines key technical terms, acronyms, and domain-specific vocabulary used throughout the document.",
+      "subsections": [
+        {
+          "id": "glossary-terms",
+          "title": "Terms and Definitions",
+          "summary": "Table of terms (e.g., Upstream, JWT, Idempotent, Circuit Breaker) with definitions and reference sections."
+        }
+      ]
+    }
+  ],
+  "diagrams": [
+    {
+      "id": "diagram-system-component",
+      "title": "API Gateway System Component Diagram",
+      "description": "Shows the high-level components of the gateway (Router, Auth Middleware, Transformer, Plugin Manager) and their relationships to external entities (Client, Backend Services, Auth Server). Highlights the request processing pipeline flow.",
+      "type": "component",
+      "relevant_sections": [
+        "high-level",
+        "interactions"
+      ]
+    },
+    {
+      "id": "diagram-data-model",
+      "title": "Configuration Data Model Relationships",
+      "description": "Shows the relationships between key configuration structs: a Route points to an Upstream (which has multiple Endpoints). A Route has many PluginConfigs. A PluginConfig has specific settings for a plugin like 'rate-limit' or 'jwt-validator'.",
+      "type": "class",
+      "relevant_sections": [
+        "data-model"
+      ]
+    },
+    {
+      "id": "diagram-sequence-request",
+      "title": "Sequence Diagram: Request Flow Through Pipeline",
+      "description": "Illustrates the life of a single HTTP request as it passes sequentially through the gateway's middleware layers (Ingress \u2192 Auth \u2192 Rate Limit \u2192 Router \u2192 Transformer \u2192 Egress) and out to the upstream backend, then back.",
+      "type": "sequence",
+      "relevant_sections": [
+        "interactions",
+        "high-level"
+      ]
+    },
+    {
+      "id": "diagram-state-circuit-breaker",
+      "title": "State Machine: Circuit Breaker",
+      "description": "Shows the three states (Closed, Open, Half-Open) of the circuit breaker for an upstream endpoint. Transitions are triggered by events: failure threshold exceeded (Closed\u2192Open), timer expires (Open\u2192Half-Open), and probe success/failure (Half-Open\u2192Closed/Open).",
+      "type": "state-machine",
+      "relevant_sections": [
+        "component-routing"
+      ]
+    },
+    {
+      "id": "diagram-flowchart-routing",
+      "title": "Flowchart: Route Matching and Selection",
+      "description": "Details the decision logic for finding the correct Route for an incoming request. Steps include: match Host header, then match path prefix or pattern in a radix tree, evaluate priority, and finally select the winning route or return 404.",
+      "type": "flowchart",
+      "relevant_sections": [
+        "component-routing"
+      ]
+    },
+    {
+      "id": "diagram-component-plugin",
+      "title": "Plugin Architecture Component Diagram",
+      "description": "Zooms in on the Plugin Manager, showing how it loads plugin configurations, maintains a registry, and invokes plugins in a defined order during the request and response phases. Shows example plugins (Logger, Metrics, RateLimiter).",
+      "type": "component",
+      "relevant_sections": [
+        "component-observability"
+      ]
+    }
+  ]
+}

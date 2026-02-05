@@ -1,0 +1,337 @@
+{
+  "title": "Linux Character Device Driver: Design Document",
+  "overview": "This document describes the design of a loadable Linux kernel module that implements a simple character device driver with a `/dev` interface. The key architectural challenge is safely managing data and concurrency across the kernel/user-space boundary, which requires careful handling of memory, synchronization primitives, and driver lifecycle.",
+  "sections": [
+    {
+      "id": "context",
+      "title": "Context and Problem Statement",
+      "summary": "Explains the role of device drivers in Linux, the challenges of kernel programming, and positions our project as a learning tool for understanding kernel/user-space interaction and concurrency.",
+      "subsections": [
+        {
+          "id": "context-analogy",
+          "title": "The Kernel as a Secure Building",
+          "summary": "Uses the analogy of a secure building (kernel) with controlled entrances (system calls) and guards (kernel subsystems) to explain the separation between user applications and kernel services."
+        },
+        {
+          "id": "context-problem",
+          "title": "The Core Challenge: Safe and Concurrent Access",
+          "summary": "Defines the specific problem: creating a safe conduit for data between user-space and kernel-space that can handle multiple processes accessing it simultaneously without corruption or crashes."
+        },
+        {
+          "id": "context-existing",
+          "title": "Existing Approaches and Learning Path",
+          "summary": "Compares different driver models (character vs. block) and interfaces (sysfs, debugfs, netlink) to establish why we are building a character device."
+        }
+      ]
+    },
+    {
+      "id": "goals",
+      "title": "Goals and Non-Goals",
+      "summary": "Explicitly lists the functional and educational objectives for the project, as well as what is deliberately out of scope.",
+      "subsections": [
+        {
+          "id": "goals-functional",
+          "title": "Functional Goals (What it must do)",
+          "summary": "Lists the core features: loadable module, character device with read/write/ioctl, `/proc` interface, and support for concurrent access."
+        },
+        {
+          "id": "goals-non",
+          "title": "Non-Goals (What it explicitly does NOT do)",
+          "summary": "Clarifies scope boundaries: no hardware interaction, no network stack, no production-grade robustness, and no support for hotplugging or power management."
+        }
+      ]
+    },
+    {
+      "id": "high-level-arch",
+      "title": "High-Level Architecture",
+      "summary": "Provides a bird's-eye view of the system components, their responsibilities, and how they connect within the Linux kernel ecosystem.",
+      "subsections": [
+        {
+          "id": "arch-overview",
+          "title": "Component Overview and Responsibilities",
+          "summary": "Describes the main logical components: Module Lifecycle Manager, Character Device Core, I/O Buffer, Synchronization Manager, and Proc/Control Interface."
+        },
+        {
+          "id": "arch-file-structure",
+          "title": "Recommended File and Module Structure",
+          "summary": "Outlines the physical layout of the source code: main driver file, header file for shared ioctl definitions, Makefile, and userspace test program."
+        }
+      ]
+    },
+    {
+      "id": "data-model",
+      "title": "Data Model",
+      "summary": "Defines the key data structures that represent the driver's state, configuration, and the data format for kernel-user communication.",
+      "subsections": [
+        {
+          "id": "data-kernel-structs",
+          "title": "Kernel-Side Data Structures",
+          "summary": "Details the primary `struct mydevice_data` that holds the driver's instance state: buffer, mutex, wait queue, and device identifiers."
+        },
+        {
+          "id": "data-user-ioctl",
+          "title": "User-Space Ioctl Command Format",
+          "summary": "Defines the command numbers and data structures passed via the `ioctl` interface for operations like buffer resize and status query."
+        }
+      ]
+    },
+    {
+      "id": "comp-module-lifecycle",
+      "title": "Component: Module Lifecycle Manager",
+      "summary": "Covers the initialization and cleanup of the kernel module, corresponding to Milestone 1.",
+      "subsections": [
+        {
+          "id": "comp-lifecycle-mental",
+          "title": "Mental Model: The Driver's Birth and Death Certificate",
+          "summary": "Analogy of module loading as obtaining a permit to operate within the kernel, and unloading as cleaning up and returning all resources."
+        },
+        {
+          "id": "comp-lifecycle-adr-alloc",
+          "title": "ADR: Dynamic vs. Static Device Number Allocation",
+          "summary": "Decision record for using `alloc_chrdev_region` (dynamic major number) over a static one, focusing on flexibility and conflict avoidance."
+        },
+        {
+          "id": "comp-lifecycle-pitfalls",
+          "title": "Common Pitfalls: Module Lifecycle",
+          "summary": "Lists errors like forgetting MODULE_LICENSE, resource leak on initialization failure, and version mismatch with kernel headers."
+        },
+        {
+          "id": "comp-lifecycle-impl",
+          "title": "Implementation Guidance",
+          "summary": "Provides skeleton code for init/exit functions, Makefile template, and verification steps for Milestone 1."
+        }
+      ]
+    },
+    {
+      "id": "comp-char-device",
+      "title": "Component: Character Device Core",
+      "summary": "Details the implementation of the character device operations (open, release, read, write), corresponding to Milestone 2.",
+      "subsections": [
+        {
+          "id": "comp-device-mental",
+          "title": "Mental Model: The Device as a Shared Notebook",
+          "summary": "Analogy of the device buffer as a notebook where userspace programs can write messages and read them back, with the kernel as the librarian enforcing rules."
+        },
+        {
+          "id": "comp-device-adr-buffer",
+          "title": "ADR: Simple Linear Buffer vs. Circular Buffer",
+          "summary": "Decision record for starting with a simple linear, `kmalloc`-backed buffer for simplicity, with notes on the trade-off for future extension."
+        },
+        {
+          "id": "comp-device-pitfalls",
+          "title": "Common Pitfalls: User/Kernel Boundary",
+          "summary": "Highlights critical errors: directly dereferencing user pointers, not checking `copy_to/from_user` return values, and incorrect return values from read/write."
+        },
+        {
+          "id": "comp-device-impl",
+          "title": "Implementation Guidance",
+          "summary": "Provides skeleton code for `file_operations` handlers, `copy_to/from_user` usage, and automatic `/dev` node creation."
+        }
+      ]
+    },
+    {
+      "id": "comp-control-interface",
+      "title": "Component: Control Interface (ioctl and proc)",
+      "summary": "Covers the implementation of the `ioctl` handler and `/proc` filesystem entry for control and monitoring, corresponding to Milestone 3.",
+      "subsections": [
+        {
+          "id": "comp-control-mental",
+          "title": "Mental Model: The Driver's Control Panel and Dashboard",
+          "summary": "Analogy of `ioctl` as a control panel with specific knobs (commands) and `/proc` entry as a real-time dashboard showing device statistics."
+        },
+        {
+          "id": "comp-control-adr-proc",
+          "title": "ADR: Raw procfs vs. seq_file Interface",
+          "summary": "Decision record for starting with the simpler `single_open` style `proc_ops` over the more complex `seq_file` interface for educational clarity."
+        },
+        {
+          "id": "comp-control-pitfalls",
+          "title": "Common Pitfalls: ioctl and procfs",
+          "summary": "Lists issues like incorrect ioctl command numbering, missing size argument in _IOR/_IOW macros, and mishandling offset in `/proc` read callbacks."
+        },
+        {
+          "id": "comp-control-impl",
+          "title": "Implementation Guidance",
+          "summary": "Provides skeleton code for `unlocked_ioctl`, `proc_ops`, and the shared header file for ioctl command definitions."
+        }
+      ]
+    },
+    {
+      "id": "comp-concurrency",
+      "title": "Component: Concurrency and Synchronization Manager",
+      "summary": "Describes the mechanisms for safe concurrent access: mutexes, wait queues, and poll support, corresponding to Milestone 4.",
+      "subsections": [
+        {
+          "id": "comp-concurrency-mental",
+          "title": "Mental Model: The Queue at the Library Desk",
+          "summary": "Analogy of a mutex as a 'one-at-a-time' ticket for accessing the buffer, and a wait queue as a line where readers sleep until data arrives."
+        },
+        {
+          "id": "comp-concurrency-adr-lock",
+          "title": "ADR: Mutex vs. Spinlock for Buffer Protection",
+          "summary": "Decision record for using a mutex (`mutex_lock`) over a spinlock, as our operations may sleep (e.g., `copy_to_user`, `wait_event`)."
+        },
+        {
+          "id": "comp-concurrency-pitfalls",
+          "title": "Common Pitfalls: Kernel Synchronization",
+          "summary": "Highlights deadlock scenarios, forgetting to release locks on error paths, and incorrect use of `wait_event_interruptible` without re-checking the condition."
+        },
+        {
+          "id": "comp-concurrency-impl",
+          "title": "Implementation Guidance",
+          "summary": "Provides skeleton code for integrating a mutex, implementing a blocking read with a wait queue, and adding the `poll` file operation."
+        }
+      ]
+    },
+    {
+      "id": "interactions",
+      "title": "Interactions and Data Flow",
+      "summary": "Illustrates the sequence of operations for key user interactions: loading the module, writing data, reading data, using ioctl, and concurrent access scenarios.",
+      "subsections": [
+        {
+          "id": "interactions-sequence",
+          "title": "Sequence of Operations: From User Command to Kernel Action",
+          "summary": "Walks through the step-by-step kernel function calls triggered by user actions like `echo 'hello' > /dev/mychardev`."
+        },
+        {
+          "id": "interactions-concurrent",
+          "title": "Concurrent Access Flow",
+          "summary": "Describes the data and lock flow when multiple processes read and write simultaneously, showing how the mutex and wait queue coordinate access."
+        }
+      ]
+    },
+    {
+      "id": "error-handling",
+      "title": "Error Handling and Edge Cases",
+      "summary": "Documents the system's approach to handling failures and unexpected conditions, such as memory allocation failure, invalid user input, and signal interruption.",
+      "subsections": [
+        {
+          "id": "error-strategy",
+          "title": "Error Detection and Recovery Strategy",
+          "summary": "Outlines the principle of failing cleanly during initialization and propagating error codes from system calls to userspace."
+        },
+        {
+          "id": "error-edge-cases",
+          "title": "Specific Edge Cases and Handling",
+          "summary": "Details handling for cases like buffer full/empty, `ioctl` with invalid command, process being killed while sleeping on wait queue, and `poll` with multiple events."
+        }
+      ]
+    },
+    {
+      "id": "testing",
+      "title": "Testing Strategy",
+      "summary": "Provides a plan for verifying the correctness of the driver, broken down by milestone, with specific commands and expected outputs.",
+      "subsections": [
+        {
+          "id": "testing-milestone-checkpoints",
+          "title": "Milestone Verification Checkpoints",
+          "summary": "A table listing, for each milestone, the command to run and the expected output in `dmesg` or from a userspace test program."
+        },
+        {
+          "id": "testing-concurrency-stress",
+          "title": "Concurrency Stress Test",
+          "summary": "Describes a simple shell script using `dd` and background processes to stress test the locking and wait queue implementation."
+        }
+      ]
+    },
+    {
+      "id": "debugging",
+      "title": "Debugging Guide",
+      "summary": "A practical guide for diagnosing common problems when developing the kernel module, using tools like `dmesg`, `strace`, and `printk`.",
+      "subsections": [
+        {
+          "id": "debugging-symptom-table",
+          "title": "Symptom \u2192 Cause \u2192 Diagnosis \u2192 Fix Table",
+          "summary": "A reference table for common issues: module fails to load, write succeeds but read returns nothing, system hangs on read, `ioctl` returns `-1` with `errno=22`."
+        },
+        {
+          "id": "debugging-techniques",
+          "title": "Kernel-Specific Debugging Techniques",
+          "summary": "Explains how to use `printk` with different log levels, inspect `/proc/modules` and `/proc/devices`, and the meaning of kernel 'taint'."
+        }
+      ]
+    },
+    {
+      "id": "future",
+      "title": "Future Extensions",
+      "summary": "Suggests possible enhancements to the project for further learning, building upon the completed milestones.",
+      "subsections": [
+        {
+          "id": "future-extensions-list",
+          "title": "Potential Enhancements",
+          "summary": "Ideas like implementing a circular buffer, adding `mmap` support, creating multiple device instances, or integrating with the Device Tree for hardware information."
+        }
+      ]
+    },
+    {
+      "id": "glossary",
+      "title": "Glossary",
+      "summary": "Defines key technical terms, acronyms, and Linux kernel-specific vocabulary used throughout the document.",
+      "subsections": [
+        {
+          "id": "glossary-terms",
+          "title": "Terms and Definitions",
+          "summary": "Alphabetical list of terms: Character Device, File Operations (`file_operations`), Ioctl, Kernel Module, `printk`, User-Space vs. Kernel-Space, Wait Queue, and more."
+        }
+      ]
+    }
+  ],
+  "diagrams": [
+    {
+      "id": "diagram-sys-component",
+      "title": "System Component Diagram",
+      "description": "Shows the main components of the driver (Module Lifecycle, Char Device Core, Buffer, Sync Manager, Proc Interface) and their relationships with external kernel subsystems (VFS, Proc FS) and userspace processes.",
+      "type": "component",
+      "relevant_sections": [
+        "high-level-arch",
+        "comp-module-lifecycle",
+        "comp-char-device",
+        "comp-control-interface",
+        "comp-concurrency"
+      ]
+    },
+    {
+      "id": "diagram-data-model",
+      "title": "Data Model and State Relationships",
+      "description": "Illustrates the key data structures, primarily the `mydevice_data` struct, showing its fields (buffer pointer, size, mutex, wait_queue_head_t, cdev) and their connections to kernel objects (e.g., `struct cdev` links to `file_operations`).",
+      "type": "class",
+      "relevant_sections": [
+        "data-model",
+        "comp-char-device",
+        "comp-concurrency"
+      ]
+    },
+    {
+      "id": "diagram-seq-write-read",
+      "title": "Sequence Diagram: Write then Read",
+      "description": "Shows the flow from a userspace `write()` system call through VFS, to our driver's write handler (copy_from_user, mutex_lock), and a subsequent blocking `read()` that sleeps on the wait queue and is woken up.",
+      "type": "sequence",
+      "relevant_sections": [
+        "interactions",
+        "comp-char-device",
+        "comp-concurrency"
+      ]
+    },
+    {
+      "id": "diagram-state-buffer",
+      "title": "State Machine: Device Buffer",
+      "description": "Models the buffer's states (EMPTY, PARTIALLY_FILLED, FULL) and the transitions triggered by events like successful write, successful read, or ioctl CLEAR. Includes conditions (e.g., write only possible if not FULL).",
+      "type": "state-machine",
+      "relevant_sections": [
+        "comp-char-device",
+        "comp-concurrency",
+        "error-handling"
+      ]
+    },
+    {
+      "id": "diagram-flow-ioctl",
+      "title": "Flowchart: Ioctl Command Dispatch",
+      "description": "A flowchart depicting the path of an `ioctl` system call: entering the driver's handler, using a switch statement on the command number, performing actions (resize, clear, query), and returning appropriate values or errors.",
+      "type": "flowchart",
+      "relevant_sections": [
+        "comp-control-interface",
+        "error-handling"
+      ]
+    }
+  ]
+}

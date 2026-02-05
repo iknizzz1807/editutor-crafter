@@ -1,0 +1,417 @@
+{
+  "title": "ELFlex: A Trampoline-Based Binary Instrumentation Tool - Design Document",
+  "overview": "This document outlines the design of a binary instrumentation tool that modifies ELF executables to inject custom monitoring and behavior hooks at runtime. The key architectural challenge is inserting new code into an existing, compiled binary without breaking its structure or execution flow, requiring precise manipulation of executable formats, instruction patching, and dynamic code generation.",
+  "sections": [
+    {
+      "id": "context",
+      "title": "Context and Problem Statement",
+      "summary": "Explains the need for binary instrumentation, the complexity of modifying compiled executables, and introduces core concepts like trampolines and patching. Covers Milestone 1 & 2.",
+      "subsections": [
+        {
+          "id": "mental-model",
+          "title": "Mental Model: The Building Blueprint and the Renovation Crew",
+          "summary": "An analogy comparing a compiled binary to a building blueprint and the instrumentation tool to a renovation crew that needs to add new wiring (hooks) without collapsing the structure."
+        },
+        {
+          "id": "problem-detail",
+          "title": "The Core Problem: Modifying a Running (or Static) Machine",
+          "summary": "Describes the technical challenges: self-modifying code, position-independent code, and maintaining ELF integrity during modification."
+        },
+        {
+          "id": "existing-approaches",
+          "title": "Existing Approaches and Trade-offs",
+          "summary": "Compares static binary rewriting (like our tool), dynamic binary instrumentation (e.g., DynamoRIO, Intel Pin), and kernel modules (e.g., ftrace)."
+        }
+      ]
+    },
+    {
+      "id": "goals",
+      "title": "Goals and Non-Goals",
+      "summary": "Defines the scope of the project across all four milestones, clarifying what the system will and will not do.",
+      "subsections": [
+        {
+          "id": "goals-list",
+          "title": "Goals: What ELFlex Must Achieve",
+          "summary": "Lists functional requirements: instruction patching, function hooking, code injection, and runtime patching via ptrace."
+        },
+        {
+          "id": "non-goals-list",
+          "title": "Non-Goals: Explicit Exclusions",
+          "summary": "Clarifies what is out of scope: supporting non-ELF formats, Windows binaries, kernel modules, or providing a full DBI framework."
+        }
+      ]
+    },
+    {
+      "id": "high-level-arch",
+      "title": "High-Level Architecture",
+      "summary": "Provides a bird's-eye view of the system components, their responsibilities, and how they interact. Covers all milestones.",
+      "subsections": [
+        {
+          "id": "component-overview",
+          "title": "Architectural Components and Flow",
+          "summary": "Describes the five core components: ELF Loader, Patch Planner, Code Generator, Binary Writer, and Runtime Attacher."
+        },
+        {
+          "id": "file-structure",
+          "title": "Recommended File/Module Structure",
+          "summary": "Proposes a logical directory and file layout for the C codebase to separate concerns (parsing, patching, injection, runtime)."
+        }
+      ]
+    },
+    {
+      "id": "data-model",
+      "title": "Data Model",
+      "summary": "Defines the key data structures used to represent the ELF binary, patches, trampolines, and injection payloads. Covers Milestones 1, 2, and 3.",
+      "subsections": [
+        {
+          "id": "core-structs",
+          "title": "Core Data Structures",
+          "summary": "Describes structures like `elf_binary_t`, `patch_site_t`, `trampoline_t`, and `injected_section_t` with type tables."
+        },
+        {
+          "id": "relationships",
+          "title": "Relationships and State",
+          "summary": "Explains how structures reference each other and the lifecycle of a patch operation."
+        }
+      ]
+    },
+    {
+      "id": "elf-loader",
+      "title": "Component: ELF Loader and Parser",
+      "summary": "Details the component responsible for reading, parsing, and validating ELF binaries, providing an in-memory representation for modification. Primary for Milestone 1.",
+      "subsections": [
+        {
+          "id": "elf-mental-model",
+          "title": "Mental Model: The Map Reader",
+          "summary": "Analogy of the ELF loader as a cartographer creating a detailed, editable map from a binary file."
+        },
+        {
+          "id": "elf-interface",
+          "title": "Interface and Responsibilities",
+          "summary": "Table of functions like `elf_load`, `elf_find_section`, `elf_get_symbol_address`."
+        },
+        {
+          "id": "elf-behavior",
+          "title": "Internal Behavior and Algorithms",
+          "summary": "Step-by-step process for loading an ELF: validate headers, parse program and section headers, load segments."
+        },
+        {
+          "id": "elf-adr",
+          "title": "ADR: In-Memory vs. On-Disk Representation",
+          "summary": "Decision to maintain a complete in-memory copy of the binary for easier modification, versus streaming edits."
+        },
+        {
+          "id": "elf-pitfalls",
+          "title": "Common Pitfalls: Alignment and Endianness",
+          "summary": "Warns about section alignment requirements, endianness handling for cross-compilation, and symbol table parsing."
+        },
+        {
+          "id": "elf-impl",
+          "title": "Implementation Guidance",
+          "summary": "Starter code for ELF header structs and a skeleton for the loader with TODOs."
+        }
+      ]
+    },
+    {
+      "id": "patch-planner",
+      "title": "Component: Patch Planner and Binary Patcher",
+      "summary": "Covers the logic for planning and applying instruction-level modifications, including NOP padding and offset management. Core to Milestone 1.",
+      "subsections": [
+        {
+          "id": "patch-mental-model",
+          "title": "Mental Model: The Surgical Editor",
+          "summary": "Compares the patcher to a text editor that must replace words (instructions) without changing the paragraph's length or breaking grammar (control flow)."
+        },
+        {
+          "id": "patch-interface",
+          "title": "Interface and Responsibilities",
+          "summary": "Table of functions like `plan_patch`, `apply_patch`, `generate_nop_sled`."
+        },
+        {
+          "id": "patch-behavior",
+          "title": "Internal Behavior: The Patching Algorithm",
+          "summary": "Steps: validate target offset is in .text, calculate new instruction size, generate padding, update internal binary representation."
+        },
+        {
+          "id": "patch-adr",
+          "title": "ADR: Same-Size vs. Variable-Size Patching",
+          "summary": "Decision to enforce same-size replacements (with NOP padding) initially for simplicity, versus complex re-layout."
+        },
+        {
+          "id": "patch-pitfalls",
+          "title": "Common Pitfalls: Relative Jump Offsets and Cache Lines",
+          "summary": "Highlights issues with patching relative branches and the need to consider instruction cache coherence."
+        },
+        {
+          "id": "patch-impl",
+          "title": "Implementation Guidance",
+          "summary": "Skeleton code for the patch application function and NOP sled generator."
+        }
+      ]
+    },
+    {
+      "id": "trampoline-gen",
+      "title": "Component: Trampoline Generator",
+      "summary": "Describes the design for generating trampoline code that saves state, calls a hook, and jumps to the original function. Core to Milestone 2.",
+      "subsections": [
+        {
+          "id": "tramp-mental-model",
+          "title": "Mental Model: The Detour and Callback Service",
+          "summary": "Analogy of a trampoline as a detour on a highway: traffic (execution) is briefly redirected to a service station (hook) before continuing to the original destination."
+        },
+        {
+          "id": "tramp-interface",
+          "title": "Interface and Responsibilities",
+          "summary": "Table of functions like `generate_trampoline`, `relocate_prologue`, `fixup_rip_relative`."
+        },
+        {
+          "id": "tramp-behavior",
+          "title": "Internal Behavior: Trampoline Assembly",
+          "summary": "Steps: emit register save, call hook, restore registers, execute relocated original prologue, jump to original function body."
+        },
+        {
+          "id": "tramp-adr",
+          "title": "ADR: Direct Jump vs. Indirect Jump for Trampoline",
+          "summary": "Decision to use an indirect jump via a register for the final jump to the original function to handle arbitrary distances."
+        },
+        {
+          "id": "tramp-pitfalls",
+          "title": "Common Pitfalls: Register Save/Restore and RIP-Relative Fixups",
+          "summary": "Warns about clobbering registers and the complexity of adjusting RIP-relative addressing in relocated instructions."
+        },
+        {
+          "id": "tramp-impl",
+          "title": "Implementation Guidance",
+          "summary": "Skeleton code for x86-64 trampoline generation and prologue relocation logic."
+        }
+      ]
+    },
+    {
+      "id": "code-injector",
+      "title": "Component: Code Injector and Section Manager",
+      "summary": "Details the process of adding new executable sections to an ELF binary, including header updates and symbol resolution. Core to Milestone 3.",
+      "subsections": [
+        {
+          "id": "inject-mental-model",
+          "title": "Mental Model: The Building Annex",
+          "summary": "Compares code injection to constructing a new annex on a building, requiring updates to the blueprint (ELF headers) and ensuring the new space has utilities (resolved symbols)."
+        },
+        {
+          "id": "inject-interface",
+          "title": "Interface and Responsibilities",
+          "summary": "Table of functions like `inject_section`, `allocate_code_cave`, `resolve_symbol_in_target`."
+        },
+        {
+          "id": "inject-behavior",
+          "title": "Internal Behavior: Section Injection Algorithm",
+          "summary": "Steps: find space or expand file, create new section/segment headers, copy PIC code, apply relocations, update all affected offsets."
+        },
+        {
+          "id": "inject-adr",
+          "title": "ADR: New Section vs. Code Cave Utilization",
+          "summary": "Decision to prioritize adding a new section for flexibility and clarity, versus hunting for existing padding (code caves)."
+        },
+        {
+          "id": "inject-pitfalls",
+          "title": "Common Pitfalls: Segment Overlap and Symbol Table Growth",
+          "summary": "Highlights risks of segment overlap when shifting data and the need to expand symbol/string tables for new symbols."
+        },
+        {
+          "id": "inject-impl",
+          "title": "Implementation Guidance",
+          "summary": "Starter code for section header manipulation and skeleton for the injection routine."
+        }
+      ]
+    },
+    {
+      "id": "runtime-patcher",
+      "title": "Component: Runtime Patcher (via ptrace)",
+      "summary": "Covers the design for attaching to a running process, modifying its memory, and injecting hooks dynamically. Core to Milestone 4.",
+      "subsections": [
+        {
+          "id": "runtime-mental-model",
+          "title": "Mental Model: The Live Surgery Team",
+          "summary": "Analogy of runtime patching as a surgical team performing a heart transplant on a running patient (process), using specialized tools (ptrace) to pause and modify vital organs (memory)."
+        },
+        {
+          "id": "runtime-interface",
+          "title": "Interface and Responsibilities",
+          "summary": "Table of functions like `attach_to_process`, `read_process_memory`, `write_process_memory`, `make_page_writable`."
+        },
+        {
+          "id": "runtime-behavior",
+          "title": "Internal Behavior: Live Patching Protocol",
+          "summary": "Steps: attach and stop process, change page protections, write trampoline code, flush instruction cache, resume process."
+        },
+        {
+          "id": "runtime-state",
+          "title": "State Machine: Ptrace Session Lifecycle",
+          "summary": "Defines states: DETACHED, ATTACHED, STOPPED, MEMORY_MODIFIED and transitions between them."
+        },
+        {
+          "id": "runtime-adr",
+          "title": "ADR: Ptrace vs. /proc/pid/mem for Memory Access",
+          "summary": "Decision to use ptrace for its atomicity and control, despite complexity, over simpler /proc interface."
+        },
+        {
+          "id": "runtime-pitfalls",
+          "title": "Common Pitfalls: Signal Interference and Instruction Cache",
+          "summary": "Warns about pending signals during ptrace and the need for explicit cache flushing (e.g., `__builtin___clear_cache`)."
+        },
+        {
+          "id": "runtime-impl",
+          "title": "Implementation Guidance",
+          "summary": "Skeleton code for the main runtime patching loop and helper to change page protections via syscall injection."
+        }
+      ]
+    },
+    {
+      "id": "interactions",
+      "title": "Interactions and Data Flow",
+      "summary": "Describes the end-to-end flow for static and runtime instrumentation, showing how components collaborate. Covers all milestones.",
+      "subsections": [
+        {
+          "id": "static-flow",
+          "title": "Static Instrumentation Flow",
+          "summary": "Sequence diagram and description for patching an on-disk binary: Load -> Plan Patch -> Generate Trampoline -> Inject Code -> Write."
+        },
+        {
+          "id": "runtime-flow",
+          "title": "Runtime Instrumentation Flow",
+          "summary": "Sequence diagram and description for patching a running process: Attach -> Locate Function -> Generate/Patch in memory -> Detach."
+        }
+      ]
+    },
+    {
+      "id": "error-handling",
+      "title": "Error Handling and Edge Cases",
+      "summary": "Catalogues failure modes across all components and strategies for graceful recovery or clean reporting.",
+      "subsections": [
+        {
+          "id": "failure-modes",
+          "title": "Common Failure Modes and Detection",
+          "summary": "Table of errors: malformed ELF, invalid offset, mprotect failure, ptrace permission denied."
+        },
+        {
+          "id": "recovery-strategy",
+          "title": "Recovery and Cleanup Strategy",
+          "summary": "Philosophy of 'fail early' and detailed cleanup procedures, especially for runtime patching to avoid leaving processes in a stuck state."
+        }
+      ]
+    },
+    {
+      "id": "testing",
+      "title": "Testing Strategy",
+      "summary": "Outlines approaches for validating each component and the integrated system, with explicit checkpoints for each milestone.",
+      "subsections": [
+        {
+          "id": "testing-approach",
+          "title": "Testing Approach and Tools",
+          "summary": "Recommends using simple test binaries, unit tests for parsers, and integration tests with known-good outputs."
+        },
+        {
+          "id": "milestone-checkpoints",
+          "title": "Milestone Checkpoints",
+          "summary": "For each milestone, a concrete description of what to test, expected output, and verification commands (e.g., using `objdump`, `gdb`, or a test script)."
+        }
+      ]
+    },
+    {
+      "id": "debugging",
+      "title": "Debugging Guide",
+      "summary": "A practical guide to diagnosing common implementation bugs, organized by symptom. Covers all milestones.",
+      "subsections": [
+        {
+          "id": "symptom-table",
+          "title": "Symptom \u2192 Cause \u2192 Diagnosis \u2192 Fix Table",
+          "summary": "Table for issues like 'Segmentation fault after patching', 'Hook not called', 'Process hangs after ptrace attach'."
+        },
+        {
+          "id": "tools-techniques",
+          "title": "Debugging Tools and Techniques",
+          "summary": "Recommendations for using `readelf`, `objdump`, `strace`, `gdb`, and building debug logging into the tool itself."
+        }
+      ]
+    },
+    {
+      "id": "extensions",
+      "title": "Future Extensions",
+      "summary": "Ideas for expanding the tool's capabilities beyond the core milestones, showing how the design accommodates growth.",
+      "subsections": [
+        {
+          "id": "extensions-list",
+          "title": "Potential Extension Areas",
+          "summary": "Discusses adding support for inline hooking, more complex trampolines (e.g., for function exits), other architectures (ARM), and a higher-level API."
+        }
+      ]
+    },
+    {
+      "id": "glossary",
+      "title": "Glossary",
+      "summary": "Definitions of key terms used throughout the document, from ELF structures to instrumentation concepts.",
+      "subsections": [
+        {
+          "id": "terms-table",
+          "title": "Terminology Reference",
+          "summary": "Table of terms: ELF, .text, Symbol Table, Trampoline, Prologue, Ptrace, Position-Independent Code (PIC), NOP Sled."
+        }
+      ]
+    }
+  ],
+  "diagrams": [
+    {
+      "id": "sys-component",
+      "title": "System Component Overview",
+      "description": "Shows the five main components (ELF Loader, Patch Planner, Trampoline Generator, Code Injector, Runtime Patcher) and their dependencies. Arrows indicate data flow (e.g., ELF Loader provides binary rep to Patch Planner).",
+      "type": "component",
+      "relevant_sections": [
+        "high-level-arch"
+      ]
+    },
+    {
+      "id": "elf-data-model",
+      "title": "ELF Data Model Relationships",
+      "description": "Class diagram showing the relationship between key structures: elf_binary_t contains multiple section_t and segment_t. section_t has a type (.text, .inject). patch_site_t references a location within a section. trampoline_t is a type of patch.",
+      "type": "class",
+      "relevant_sections": [
+        "data-model"
+      ]
+    },
+    {
+      "id": "static-patch-seq",
+      "title": "Sequence: Static Binary Patching",
+      "description": "Sequence diagram showing the interaction between a User, the main Tool, and the components (ELF Loader, Patch Planner, etc.) to patch an on-disk file. Includes messages like 'load binary', 'plan patch at symbol X', 'generate trampoline', 'inject section', 'write file'.",
+      "type": "sequence",
+      "relevant_sections": [
+        "interactions"
+      ]
+    },
+    {
+      "id": "trampoline-flow",
+      "title": "Flowchart: Trampoline Execution Flow",
+      "description": "Flowchart visualizing the CPU's path when a hooked function is called: 1. Jump to trampoline, 2. Save registers, 3. Call hook function, 4. Restore registers, 5. Execute relocated original prologue, 6. Jump to original function body.",
+      "type": "flowchart",
+      "relevant_sections": [
+        "trampoline-gen"
+      ]
+    },
+    {
+      "id": "runtime-state-machine",
+      "title": "State Machine: Runtime Ptrace Session",
+      "description": "State machine diagram for the Runtime Patcher component. States: DETACHED, ATTACHED (process stopped), MEMORY_MODIFIED. Transitions triggered by events: ATTACH_CMD, DETACH_CMD, PATCH_APPLIED.",
+      "type": "state-machine",
+      "relevant_sections": [
+        "runtime-patcher"
+      ]
+    },
+    {
+      "id": "code-injection-layout",
+      "title": "ELF Layout Before and After Injection",
+      "description": "Two side-by-side simplified views of an ELF file's segment layout in virtual address space. Left: original with .text and .data segments. Right: after injection, showing a new .inject segment at a higher address, and how a trampoline in .text jumps to it.",
+      "type": "component",
+      "relevant_sections": [
+        "code-injector"
+      ]
+    }
+  ]
+}

@@ -2141,6 +2141,8 @@ The incremental update process maintains an update log that records all modifica
 
 The index lifecycle management system handles state transitions from initialization through active operation to shutdown, ensuring data consistency and enabling graceful recovery from failures.
 
+![Index Lifecycle State Machine](./diagrams/index-state-machine.svg)
+
 | State | Description | Allowed Transitions | Recovery Actions |
 |-------|-------------|-------------------|------------------|
 | **Initializing** | Loading persisted index or building new | → Training, → Active | Load checkpoint or start fresh build |

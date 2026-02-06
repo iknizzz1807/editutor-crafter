@@ -3898,6 +3898,8 @@ Expected output should show pass/fail for each test case with detailed state tra
 
 While NFA simulation from Milestone 3 provides correct pattern matching, it requires tracking multiple active states simultaneously during execution. Think of DFA conversion as **transforming a parallel processing machine into a sequential one** — instead of maintaining multiple possible execution paths, the DFA follows exactly one deterministic path through the state space. This transformation trades compilation time and memory usage for dramatically faster execution speed, making it ideal for applications that compile patterns once but match them thousands of times.
 
+![NFA to DFA Subset Construction](./diagrams/dfa-conversion.svg)
+
 The core insight behind **subset construction** is elegant: if an NFA can be in multiple states simultaneously, we create a single DFA state that represents each possible combination of NFA states. This process converts the non-deterministic "maybe I'm in state 1 or state 3 or state 7" into deterministic "I'm definitely in DFA state {1,3,7}". The resulting automaton processes each input character in constant time with a single state transition, eliminating the exponential worst-case behavior of NFA simulation.
 
 ### Subset Construction Algorithm
@@ -4692,6 +4694,8 @@ These metrics enable **adaptive compilation strategies** where the engine can ch
 ### Pattern Matching Pipeline
 
 The **pattern matching pipeline** applies a compiled regex automaton to an input string, executing the actual pattern recognition through **state-driven computation**. Think of this pipeline like a sophisticated scanner that reads input characters one by one while maintaining awareness of all possible matching paths through the pattern's state space.
+
+![Matching Sequence](./diagrams/matching-sequence.svg)
 
 The matching pipeline supports **multiple execution engines** optimized for different scenarios. **NFA simulation** handles complex patterns with minimal memory usage by tracking multiple possible states simultaneously. **DFA execution** provides faster matching for simple patterns by maintaining a single current state. **Lazy DFA construction** builds DFA states on-demand during matching, balancing memory usage with execution speed.
 

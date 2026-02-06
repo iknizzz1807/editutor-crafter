@@ -5047,6 +5047,8 @@ Understanding the data flow is crucial because RAG systems involve multiple exte
 
 The **query processing flow** represents the complete journey from user input to final answer delivery. This is fundamentally an **assembly line** where each station (component) performs a specific transformation on the data before passing it to the next stage. However, unlike a physical assembly line, our pipeline involves network calls, caching decisions, and dynamic routing based on intermediate results.
 
+![Query Processing Sequence](./diagrams/query-processing-flow.svg)
+
 The flow begins with a user submitting a natural language question and ends with a streaming response that includes both the generated answer and source citations. Between these endpoints, the system performs embedding generation, similarity search, context selection, prompt construction, and LLM generation - all while managing token budgets, API rate limits, and error recovery.
 
 | Stage | Input | Output | Primary Component | Key Operations |

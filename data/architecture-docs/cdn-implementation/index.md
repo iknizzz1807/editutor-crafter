@@ -1445,6 +1445,9 @@ def format_http_date(timestamp: float) -> str:
 #### D. Core Logic Skeleton Code (Data Model Classes)
 
 **File: `src/blue_origin/models/cache_entry.py`**
+
+![Data Model: Cache Entry & Relationships](./diagrams/data-model-class.svg)
+
 ```python
 """
 Core CacheEntry data model and associated logic.

@@ -1305,6 +1305,8 @@ After setting up the basic architecture:
 
 The data model forms the bedrock of the spreadsheet application, defining how we represent, store, and connect the core spreadsheet concepts. Think of this as the DNA of your spreadsheet—every feature, from simple cell rendering to complex formula recalculation, will rely on these fundamental data structures. This section provides a comprehensive blueprint for the core types that will persist across user sessions, enable efficient dependency tracking, and support the reactive dataflow that makes spreadsheets so powerful.
 
+![Data Model Class Diagram](./diagrams/data-model-diagram.svg)
+
 ### Cell Data Structure: Value, Formula, and Metadata
 
 **Mental Model: A Cell is a Tiny Computer with Memory and Processing Instructions**
@@ -1381,6 +1383,8 @@ Consider cell `C3` containing the formula `=A1+B2`. When the user enters this fo
 ### Dependency Graph: Nodes, Edges, and Adjacency
 
 **Mental Model: The Spreadsheet as a Network of Information Pipelines**
+
+![Dependency Graph State Transitions](./diagrams/dependency-graph-state.svg)
 
 Imagine each cell as a processing station in a factory assembly line. Raw materials (input values) flow into some stations, get processed (formulas compute results), and then travel via conveyor belts to other stations that need them. The dependency graph is the blueprint of this factory—it maps every conveyor belt connection, showing exactly which stations supply which others. When a station changes its output (a cell value changes), we can trace the conveyor belts downstream to see exactly which other stations are affected and need to rerun their processing. Crucially, this blueprint also lets us detect when someone tries to create a circular conveyor belt that would cause materials to flow endlessly in a loop—a **circular reference** error.
 
@@ -1881,6 +1885,8 @@ The virtualized grid component is the visual interface through which users inter
 ### Mental Model: A Movable Viewport Over a Large Canvas
 
 Imagine the spreadsheet as a massive canvas painted with a grid of 1,000 rows and 26 columns. The user's screen is a small, movable window (the **viewport**) that shows only a tiny portion of this canvas—perhaps 20 rows and 10 columns. As the user scrolls, the window moves across the canvas, revealing different sections.
+
+![Virtual Grid Viewport Model](./diagrams/virtual-grid-viewport.svg)
 
 Instead of painting the entire canvas (which would be impossibly large and slow), we paint only the visible area on the window glass. When the window moves, we don't repaint the entire canvas—we simply **reposition existing paint** (DOM elements) and fill in the newly revealed areas. This technique, called **virtual scrolling**, is like having a fixed set of movable sticky notes that we constantly reposition and relabel as the user's view changes.
 
@@ -2482,6 +2488,8 @@ The journey from a raw formula string like `=SUM(A1:A10) * 2` to a computed nume
 - **Description**: Implementing evaluation as simple left-to-right without respecting `*` and `/` before `+` and `-`
 - **Why it's wrong**: `1 + 2 * 3` would evaluate to `9` instead of `7`, breaking standard mathematical expectations
 - **How to fix**: Use proper expression grammar with precedence levels or shunting yard algorithm
+
+![Formula Parsing Flowchart](./diagrams/formula-parsing-flow.svg)
 
 ⚠️ **Pitfall 2: Mishandling Negative Numbers**
 - **Description**: Treating the `-` in `-5` as a binary operator with missing left operand instead of a unary operator

@@ -1106,6 +1106,8 @@ The **Evaluation and Merging Component** measures the effectiveness of fine-tuni
 
 The components interact through a carefully orchestrated data flow that minimizes memory overhead while maintaining training stability. The flow follows a **pipeline pattern** where each stage produces artifacts consumed by subsequent stages, with explicit checkpointing and validation at component boundaries.
 
+![Training Flow Sequence](./diagrams/training-flow-sequence.svg)
+
 The data flow begins with the **Dataset Preparation Component** ingesting raw training data and producing tokenized datasets with proper train-validation splits. This component has no dependencies on other pipeline components but requires access to the target model's tokenizer to ensure consistent token encoding. The tokenizer dependency creates a weak coupling to the model loading process, but this is resolved by loading the tokenizer independently during the data preparation phase.
 
 | Data Flow Stage | Component | Input Dependencies | Output Artifacts | Downstream Consumers |
@@ -1691,6 +1693,8 @@ Default configuration values are chosen based on empirical results across divers
 ### Evaluation and Logging
 
 The evaluation and logging data structures capture training progress, model performance, and system resource utilization throughout the fine-tuning process. Think of this as the **mission control dashboard** for training - these structures provide real-time visibility into whether the training is proceeding successfully and enable data-driven decisions about when to stop, adjust hyperparameters, or investigate problems.
+
+![Evaluation Workflow](./diagrams/evaluation-workflow.svg)
 
 Comprehensive logging serves multiple critical functions: tracking convergence for early stopping decisions, diagnosing training instabilities, measuring resource utilization for cost optimization, and providing reproducible records for experiment comparison. The logging system balances detail with performance, avoiding expensive computations during training while capturing sufficient information for post-training analysis.
 
@@ -4167,6 +4171,8 @@ After implementing the QLoRA quantization component, verify the following behavi
 ## Training Loop Component
 
 > **Milestone(s):** Milestone 4 - this section implements the training orchestration system that coordinates the fine-tuning process with gradient accumulation, learning rate scheduling, checkpoint management, loss tracking, and early stopping mechanisms.
+
+![Training Loop State Machine](./diagrams/training-state-machine.svg)
 
 ### Mental Model: The Personal Trainer
 
@@ -9682,6 +9688,8 @@ This glossary serves as the definitive reference for understanding the specializ
 ### LoRA Architecture and Configuration
 
 **Target modules** specify which layers in the neural network receive LoRA adapter injections. Common targets include attention projection matrices (query, key, value, and output projections) and feed-forward network layers. The choice of target modules significantly impacts both the effectiveness of adaptation and the memory overhead, as each targeted layer requires its own set of low-rank matrices.
+
+![LoRA Adapter Architecture](./diagrams/lora-architecture.svg)
 
 **Rank** represents the dimensionality of the low-rank decomposition and serves as the primary hyperparameter controlling adapter capacity. Higher ranks (64-128) can capture more complex adaptations but require proportionally more parameters and memory. Lower ranks (8-32) are more memory-efficient but may underfitfor complex domain adaptations. The optimal rank depends on task complexity, dataset size, and available computational resources.
 

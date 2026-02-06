@@ -972,6 +972,8 @@ Configuration files are separated into their own directory with examples for bot
 
 **Mental Model: The Secure Relay Race**
 
+![Packet Encryption/Decryption Flow](./diagrams/encryption-flow.svg)
+
 Imagine a relay race where runners must pass a baton (the packet) through several specialized stations, with each station performing a specific transformation before passing it to the next runner. At each station, the baton gets wrapped in additional protective layers—first a security envelope, then a shipping container, then delivery labels. At the destination, the process reverses as each station unwraps one layer until the original baton emerges intact.
 
 In our VPN, packets follow a similar journey with precise handoffs between components. A single mistake in the relay—dropping the baton, forgetting to add a protective layer, or passing it to the wrong runner—breaks the entire chain and prevents the packet from reaching its destination.

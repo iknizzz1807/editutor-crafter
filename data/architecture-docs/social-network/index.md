@@ -1041,6 +1041,8 @@ This flow demonstrates the **event-driven architecture** where services communic
 
 Social interactions create a **ripple effect** through the system, updating counts, triggering notifications, and broadcasting real-time updates to active users. The interaction flow demonstrates our approach to handling race conditions and maintaining consistency across multiple data stores.
 
+![Social Interaction Data Flow](./diagrams/interaction-flow.svg)
+
 The like operation flow illustrates atomic interaction handling:
 1. **API Gateway** receives like request with user ID and post ID
 2. **Interaction Service** begins database transaction for atomic like creation

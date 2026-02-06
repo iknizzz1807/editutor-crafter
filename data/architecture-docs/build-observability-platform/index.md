@@ -4108,6 +4108,8 @@ Each milestone delivers a testable slice of functionality. The checkpoints below
 
 **Goal:** Verify that the core data structures are correctly defined and that correlation mechanisms work.
 
+![Unified Data Model Relationships](./diagrams/diagram-unified-data-model.svg)
+
 | Test Area | What to Test | Expected Outcome |
 |-----------|--------------|------------------|
 | **Resource Model Validation** | Create a `ResourceAttributes` struct with missing `service_name`. Call `IsValid()`. | The method returns `false`. A valid struct returns `true`. |

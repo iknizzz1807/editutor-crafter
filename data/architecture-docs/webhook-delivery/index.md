@@ -5,6 +5,8 @@
 
 A reliable webhook delivery system that provides guaranteed event delivery to HTTP endpoints with security, fault tolerance, and observability. The key architectural challenge is building resilience against network failures, endpoint downtime, and security threats while maintaining ordered delivery and preventing data loss.
 
+![System Overview](./diagrams/system-overview.svg)
+
 
 > This guide is meant to help you understand the big picture before diving into each milestone. Refer back to it whenever you need context on how components connect.
 
@@ -1473,6 +1475,8 @@ The relationship design enforces data integrity while supporting the system's op
 
 The webhook registration model captures everything needed to securely and reliably deliver events to customer endpoints. This model serves as the foundation for endpoint security, event filtering, and delivery targeting throughout the system's operation.
 
+![Registration Sequence](./diagrams/registration-sequence.svg)
+
 | Field | Type | Description |
 |-------|------|-------------|
 | id | str | UUID primary key uniquely identifying this webhook registration |
@@ -1564,6 +1568,8 @@ The state transitions ensure events never become lost or forgotten within the sy
 ### Delivery Tracking Model
 
 The delivery tracking model provides comprehensive audit trails and debugging information for every webhook delivery attempt, creating an immutable record of system behavior that supports troubleshooting and compliance requirements.
+
+![Delivery Sequence](./diagrams/delivery-sequence.svg)
 
 | Field | Type | Description |
 |-------|------|-------------|

@@ -3138,6 +3138,8 @@ After implementing the sampling subsystem:
 
 > **Milestone(s):** This section corresponds to Milestone 4: Performance Analytics & Anomaly Detection, which designs the analytics engine that computes performance percentiles, establishes historical baselines, and automatically flags anomalies in the APM Tracing System.
 
+![Performance Analytics and Alerting](./diagrams/analytics-sequence.svg)
+
 ### Mental Model: The Weather Forecaster for Performance
 
 Imagine our distributed system is a vast, complex climate system. Individual service calls are like local weather events—some sunny and fast (low latency), others stormy and slow (high latency). The **Performance Analytics & Anomaly Detection** component acts as our **weather forecaster**.

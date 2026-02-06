@@ -804,6 +804,8 @@ The Protocol Handler's connection-oriented design would extend naturally to a cl
 
 > **Milestone(s):** All milestones (1-4) — the core data structures that evolve throughout the project, from basic message handling in Milestone 1 to persistence and dead letter queues in Milestones 3-4
 
+![Data Model Entity Relationships](./diagrams/data-model-relationships.svg)
+
 ### Mental Model: The Library Card Catalog System
 
 Before diving into the technical data structures, let's build intuition using a familiar analogy. Think of our message queue's data model as a sophisticated library card catalog system from the pre-digital era.

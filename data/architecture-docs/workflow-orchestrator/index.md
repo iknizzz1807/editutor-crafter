@@ -1535,6 +1535,8 @@ After implementing the high-level architecture:
 
 The data model forms the foundational layer of our workflow orchestration system, defining how workflows, tasks, and execution state are represented, stored, and manipulated throughout the system lifecycle. Think of the data model as the **blueprint language** for our orchestration system - just as architectural blueprints define the structure of a building with precise specifications for rooms, connections, and materials, our data model defines the precise structure of workflows with their tasks, dependencies, and execution metadata.
 
+![Data Model Relationships](./diagrams/data-model.svg)
+
 This data model must serve multiple masters simultaneously: the DAG parser needs to transform configuration files into structured representations, the scheduler requires temporal metadata for triggering runs, the executor needs dependency information for task ordering, and the monitoring system demands detailed state tracking for observability. The challenge lies in designing entities that are rich enough to support all these use cases while remaining simple enough to reason about and maintain.
 
 ### Core Entities

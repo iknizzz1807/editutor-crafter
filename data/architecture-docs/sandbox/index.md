@@ -2371,6 +2371,8 @@ After implementing the namespace isolation component, verify correct behavior:
 
 The filesystem isolation component creates a **convincing but restricted filesystem environment** for sandboxed processes. While namespace isolation provides the container for our security boundaries, filesystem isolation defines what the sandboxed process can actually see and access within those boundaries. This component transforms a potentially dangerous process that expects full system access into one that operates within a carefully crafted minimal environment.
 
+![Isolated Filesystem Layout](./diagrams/filesystem-layout.svg)
+
 ### Mental Model: The Fake Building
 
 Understanding filesystem isolation requires thinking about it like constructing a **fake building** for a movie set. When filming a scene that takes place in a hospital, the production team doesn't need to build an actual functioning hospital—they only need to construct the rooms and corridors that will appear on camera, fill them with convincing props, and ensure the actors can't accidentally wander off the set into the real world.
@@ -3006,6 +3008,8 @@ This creates a powerful security boundary that complements our namespace and fil
 
 Berkeley Packet Filter programs provide the mechanism for implementing sophisticated system call filtering logic. Originally designed for high-performance network packet filtering, BPF has evolved into a general-purpose kernel programming interface. In the context of seccomp, BPF programs examine system call invocations and return decisions about whether to allow or block them.
 
+![Seccomp BPF Filter Evaluation](./diagrams/seccomp-filter-flow.svg)
+
 A **BPF filter program** consists of a sequence of instructions that operate on a virtual machine within the kernel. This virtual machine provides a safe execution environment where filter programs can examine data without risking kernel stability. The BPF instruction set includes arithmetic operations, comparison operations, memory access operations, and control flow operations, but is deliberately constrained to ensure that programs always terminate and cannot cause kernel crashes.
 
 When a system call occurs, the kernel creates a **seccomp data structure** containing information about the system call attempt. This structure includes the system call number, the architecture identifier, and all six system call arguments. The BPF program receives a pointer to this data structure and can examine any fields within it to make filtering decisions.
@@ -3588,6 +3592,8 @@ The **block I/O controller** manages disk bandwidth by setting per-device read a
 ### Cgroup Hierarchy Management
 
 Cgroups organize resources through a **hierarchical filesystem interface** mounted at `/sys/fs/cgroup`. This hierarchy reflects resource inheritance relationships - child cgroups inherit resource limits from their parents and can further subdivide allocated resources among their own children. Understanding this hierarchy is crucial for properly isolating sandbox instances from each other and from the host system.
+
+![Cgroup Hierarchy](./diagrams/cgroup-hierarchy.svg)
 
 The filesystem interface means that creating and configuring cgroups involves standard filesystem operations: creating directories establishes new cgroups, writing to special files configures limits, and reading from these files monitors current usage. This design provides a uniform interface for cgroup management that integrates well with existing system administration tools and scripts.
 

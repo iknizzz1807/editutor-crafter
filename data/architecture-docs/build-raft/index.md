@@ -19,6 +19,8 @@ This system implements the Raft consensus algorithm, enabling multiple servers t
 
 Imagine a team of accountants responsible for maintaining an identical set of financial ledgers for a large corporation. Each accountant has their own copy of the ledger, and whenever a financial transaction occurs—a payment, receipt, or adjustment—all accountants must record that transaction in exactly the same order in their respective ledgers. If even one accountant records transactions in a different sequence, the ledgers will diverge, leading to financial discrepancies that could compromise the entire organization's integrity.
 
+![Raft Node State Machine Diagram](./diagrams/raft-state-machine.svg)
+
 This scenario captures the essence of **distributed consensus**: multiple independent processes (the accountants) must agree on a sequence of operations (the transactions) despite occasional failures, network delays, or temporary unavailability of some members. The challenge is ensuring that all correct participants apply the same operations in the same order, creating the illusion of a single, fault-tolerant ledger.
 
 > The critical insight in Raft is that this problem becomes tractable by appointing a **single leader** at any given time. Just as a head accountant might dictate the sequence of transactions to the team, the Raft leader sequences client commands and orchestrates their replication to followers. This leader-centric approach dramatically simplifies the protocol's logic and understandability compared to peer-to-peer approaches.

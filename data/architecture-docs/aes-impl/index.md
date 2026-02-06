@@ -1802,6 +1802,8 @@ The `add_round_key` transformation is the simplest: it combines the state with a
 | Explicit 2D array `[4][4]` | Clear row/column syntax; compiler handles indexing | Memory layout is row-major (in C); MixColumns still needs column iteration; potential alignment issues | No |
 | Union of types | Maximum flexibility; can access same data as 1D, 2D, or words | Complex type definition; may confuse learners; endianness concerns with word access | No |
 
+![State Cbc](./diagrams/state-cbc.svg)
+
 ### Common Pitfalls
 
 ⚠️ **Pitfall: Incorrect Shift Direction**

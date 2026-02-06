@@ -2104,6 +2104,8 @@ class CommitObject(GitObject):
 
 > **Milestone(s):** This section provides the storage engine foundation for Milestone 2 (Object Storage - Blobs), Milestone 3 (Tree Objects), and Milestone 4 (Commit Objects), establishing the content-addressable storage patterns used throughout all subsequent milestones
 
+![Object Store File Layout](./diagrams/object-storage-layout.svg)
+
 ### Mental Model: The Universal Library
 
 Imagine a vast, magical library where books are never filed by title or author, but instead by their exact content. Every book receives a unique fingerprint derived from every word, punctuation mark, and space within its pages. This fingerprint becomes the book's permanent address on the shelf. If you know the fingerprint, you can instantly locate any book. If two people write identical books independently, they receive the same fingerprint and occupy the same shelf space—the library automatically deduplicates content.
@@ -4805,6 +4807,8 @@ The power of this approach is that it preserves the intent of both sets of chang
 ### Finding the Merge Base
 
 The merge base calculation is a graph traversal problem that finds the **lowest common ancestor** (LCA) between two commits in Git's directed acyclic graph. This ancestor represents the most recent point in history where both branches shared the same state, making it the ideal reference point for three-way comparison.
+
+![Merge Base Algorithm](./diagrams/merge-base-algorithm.svg)
 
 The algorithm uses a breadth-first search approach that explores the commit history backwards from both branch tips simultaneously. The key insight is that Git's commit graph forms a DAG where each commit points to its parent(s), creating paths back through history. The merge base is the commit that appears in both traversal paths with the shortest distance from either starting point.
 

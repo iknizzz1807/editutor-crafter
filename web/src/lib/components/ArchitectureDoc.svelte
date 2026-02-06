@@ -9,6 +9,7 @@
 
 	let isOpen = $state(false);
 	let loading = $state(false);
+	let pdfLoading = $state(false);
 	let errorMsg = $state('');
 	let html = $state('');
 	let markdown = $state('');
@@ -49,6 +50,29 @@
 		URL.revokeObjectURL(url);
 	}
 
+	async function downloadPdf() {
+		pdfLoading = true;
+		try {
+			const res = await fetch(`/api/project/${projectSlug}/architecture-doc/pdf`);
+			if (!res.ok) throw new Error('Failed to generate PDF');
+			const blob = await res.blob();
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `${projectSlug}-architecture.pdf`;
+			a.click();
+			URL.revokeObjectURL(url);
+		} catch (e) {
+			alert(e instanceof Error ? e.message : 'Failed to generate PDF');
+		} finally {
+			pdfLoading = false;
+		}
+	}
+
+	function viewPdf() {
+		window.open(`/api/project/${projectSlug}/architecture-doc/pdf?disposition=inline`, '_blank');
+	}
+
 	function scrollToSection(id: string) {
 		const el = document.getElementById(id);
 		if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -85,8 +109,21 @@
 				{:else}
 					<div class="arch-toolbar">
 						<span class="arch-title">{title}</span>
-						<div class="arch-actions">
-							<button class="arch-btn" onclick={downloadMd}>
+					<div class="arch-actions">
+							<button class="arch-btn" onclick={viewPdf} title="View PDF in new tab">
+								<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M3.75 2h3.5a.75.75 0 0 1 0 1.5h-3.5a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-3.5a.75.75 0 0 1 1.5 0v3.5A1.75 1.75 0 0 1 12.25 14h-8.5A1.75 1.75 0 0 1 2 12.25v-8.5C2 2.784 2.784 2 3.75 2Zm6.854-1h4.146a.25.25 0 0 1 .25.25v4.146a.25.25 0 0 1-.427.177L13.03 4.03 9.28 7.78a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042l3.75-3.75-1.543-1.543A.25.25 0 0 1 10.604 1Z"/></svg>
+								View PDF
+							</button>
+							<button class="arch-btn" onclick={downloadPdf} disabled={pdfLoading} title="Download as PDF">
+								{#if pdfLoading}
+									<div class="btn-spinner"></div>
+									Generating...
+								{:else}
+									<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2.75 14A1.75 1.75 0 0 1 1 12.25v-2.5a.75.75 0 0 1 1.5 0v2.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25v-2.5a.75.75 0 0 1 1.5 0v2.5A1.75 1.75 0 0 1 13.25 14ZM7.25 7.689V2a.75.75 0 0 1 1.5 0v5.689l1.97-1.969a.749.749 0 1 1 1.06 1.06l-3.25 3.25a.749.749 0 0 1-1.06 0L4.22 6.78a.749.749 0 1 1 1.06-1.06l1.97 1.969Z"/></svg>
+									Download PDF
+								{/if}
+							</button>
+							<button class="arch-btn" onclick={downloadMd} title="Download as Markdown">
 								<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2.75 14A1.75 1.75 0 0 1 1 12.25v-2.5a.75.75 0 0 1 1.5 0v2.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25v-2.5a.75.75 0 0 1 1.5 0v2.5A1.75 1.75 0 0 1 13.25 14ZM7.25 7.689V2a.75.75 0 0 1 1.5 0v5.689l1.97-1.969a.749.749 0 1 1 1.06 1.06l-3.25 3.25a.749.749 0 0 1-1.06 0L4.22 6.78a.749.749 0 1 1 1.06-1.06l1.97 1.969Z"/></svg>
 								Download .md
 							</button>
@@ -256,9 +293,24 @@
 		border-color: var(--text-muted);
 	}
 
+	.arch-btn:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	.btn-spinner {
+		width: 12px;
+		height: 12px;
+		border: 1.5px solid var(--border);
+		border-top-color: var(--purple);
+		border-radius: 50%;
+		animation: spin 0.6s linear infinite;
+	}
+
 	.arch-layout {
 		display: flex;
 		min-height: 300px;
+		overflow: hidden;
 	}
 
 	.arch-toc {
@@ -309,13 +361,16 @@
 
 	.arch-content {
 		flex: 1;
+		min-width: 0;
 		padding: 24px 28px;
-		overflow-x: auto;
+		overflow-x: hidden;
 		max-height: 70vh;
 		overflow-y: auto;
 		font-size: 14px;
 		line-height: 1.7;
 		color: var(--text-secondary);
+		word-wrap: break-word;
+		overflow-wrap: break-word;
 	}
 
 	/* Markdown content styles */
@@ -441,6 +496,8 @@
 		border-collapse: collapse;
 		margin: 12px 0;
 		font-size: 13px;
+		table-layout: fixed;
+		word-wrap: break-word;
 	}
 
 	.arch-content :global(th) {
@@ -465,8 +522,12 @@
 
 	.arch-content :global(img) {
 		max-width: 100%;
+		width: 100%;
+		height: auto;
 		border-radius: var(--radius-sm);
 		margin: 12px 0;
+		display: block;
+		object-fit: contain;
 	}
 
 	.arch-content :global(a) {

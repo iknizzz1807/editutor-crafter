@@ -3597,6 +3597,8 @@ message SafetyThresholdBreachedEvent {
 
 GameDay scenarios introduce additional complexity by coordinating multiple experiments with manual intervention points. The communication pattern becomes a choreographed sequence rather than a single experiment flow.
 
+![Flowchart: GameDay Scenario Execution](./diagrams/diag-flow-gameday.svg)
+
 **GameDay Execution Sequence:**
 
 1. **Scenario Loading**: `GameDayController.LoadScenario()` reads YAML definition, validates it, and stores it with status `PENDING`

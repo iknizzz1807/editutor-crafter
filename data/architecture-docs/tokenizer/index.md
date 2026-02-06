@@ -130,6 +130,8 @@ These pitfalls highlight the importance of systematic implementation and thoroug
 
 The implementation guidance provides practical direction for building the lexer using Python, chosen for its clear syntax and excellent string processing capabilities that allow learners to focus on lexical analysis concepts rather than language-specific complexity.
 
+![Implementation Milestone Dependencies](./diagrams/milestone-progression.svg)
+
 **Technology Recommendations**
 
 | Component | Simple Approach | Advanced Approach | Recommended for Learning |

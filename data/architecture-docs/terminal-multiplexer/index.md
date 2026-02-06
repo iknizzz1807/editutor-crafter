@@ -3798,6 +3798,8 @@ gcc -o tmux src/*.c src/window/*.c
 
 > **Milestone(s):** Milestone 4 (Key Bindings and UI) - this section implements the user interaction layer that enables command mode, key bindings, and input routing to control the terminal multiplexer
 
+![Input Routing](./diagrams/input-routing.svg)
+
 ### Mental Model: The Traffic Controller
 
 Think of the Input Handler as a **traffic controller at a busy intersection**. Just like a traffic controller must decide whether to direct each car to continue straight through the intersection or pull them aside for inspection, the Input Handler must decide what to do with each keystroke that arrives from the user's keyboard.

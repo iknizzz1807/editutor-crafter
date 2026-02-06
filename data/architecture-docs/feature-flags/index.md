@@ -1582,6 +1582,8 @@ func (e *EvaluationEngine) resolveVariantValue(variants []common.Variant, varian
 
 Think of the data model as the **blueprint for a sophisticated air traffic control system**. Just as air traffic control needs detailed information about each aircraft (flight number, destination, altitude, speed), weather conditions (wind patterns, visibility), and flight rules (priority levels, restricted airspace), our feature flag system needs comprehensive data structures to make intelligent routing decisions about which users receive which features.
 
+![Data Model Relationships](./diagrams/data-model.svg)
+
 The air traffic control analogy extends to the relationships between data entities. Aircraft have dependencies on runways, weather affects multiple flights simultaneously, and control tower decisions must be logged for safety audits. Similarly, feature flags have complex relationships with targeting rules, user contexts affect multiple flag evaluations, and every flag decision must be tracked for analysis and compliance.
 
 Our data model must support three critical capabilities that parallel air traffic control operations. First, **real-time decision making** requires rich context about each "aircraft" (user) and current "weather conditions" (system state) to route traffic safely. Second, **historical tracking** demands comprehensive logging of every decision for post-incident analysis and performance optimization. Third, **predictive planning** needs structured experiment data to forecast the impact of routing changes before they affect live traffic.

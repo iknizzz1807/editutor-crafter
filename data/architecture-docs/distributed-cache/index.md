@@ -4181,6 +4181,8 @@ For **batch operations** and **multi-key requests**, the routing system implemen
 
 The gossip protocol serves as the nervous system of the distributed cache, propagating cluster membership information, failure notifications, and topology changes throughout the network without requiring centralized coordination. Like its biological namesake, gossip spreads information through periodic, random exchanges between cluster members, ensuring that important updates eventually reach all nodes while providing remarkable resilience to network failures and partitions.
 
+![Gossip Protocol Flow](./diagrams/gossip-protocol-flow.svg)
+
 The protocol operates on the principle of **eventual consistency**—there's no guarantee that all nodes have identical membership views at any given moment, but the system converges toward consensus over time. This relaxed consistency model enables high availability and partition tolerance while maintaining sufficient coordination for the cache to function correctly.
 
 Each node maintains a **membership table** that represents its current view of the cluster state. This table is continuously updated through gossip exchanges and serves as the source of truth for local routing decisions. The table includes not only basic membership information but also **version vectors** and **conflict resolution metadata** that enable deterministic reconciliation of divergent views.
@@ -4995,6 +4997,8 @@ This analogy captures the core tension in distributed systems: we replicate for 
 ### Replication Factor and Placement
 
 The **replication factor** determines how many copies of each cache entry exist in the cluster. This is a fundamental configuration parameter that directly impacts both fault tolerance and storage overhead. A replication factor of 1 means no redundancy—if the node holding a key fails, that data is lost. A replication factor of 3 provides strong fault tolerance, allowing the system to survive the failure of any 2 nodes while still serving requests for all data.
+
+![Data Replication and Placement](./diagrams/replication-strategy.svg)
 
 **Replica placement strategy** determines which specific nodes store copies of each key. The most common approach in consistent hashing systems is **successor-based placement**: for any given key, find its position on the hash ring, then place replicas on the next N-1 successor nodes in clockwise order. This provides several advantages: replica placement is deterministic and calculable by any node, replicas are naturally distributed across different physical nodes, and the placement remains stable as nodes join and leave the cluster.
 

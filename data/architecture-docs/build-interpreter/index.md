@@ -3777,6 +3777,8 @@ When executing a return statement (`Stmt.Return`):
 
 **Comparison of Environment Capture Strategies:**
 
+![Environment Chain](./diagrams/diagram-environment-chain.svg)
+
 | Option | Pros | Cons | Suitable For |
 |--------|------|------|--------------|
 | **Capture by reference** | - Allows mutable captured variables<br>- Memory efficient<br>- Simple implementation | - Can create unintentional sharing<br>- Requires environment lifetime management | Lexical scoping with mutable state (Lox, JavaScript, Python) |
@@ -4031,6 +4033,8 @@ This section extends the interpreter from a procedural language with functions t
 ### Mental Model: The Class as a Blueprint and Factory
 
 Think of a **class** as both a **blueprint** and a **factory**. The blueprint defines the structure—what methods the object will have—while the factory is a callable entity that produces new instances. An **instance** is a house built from the blueprint: it has its own storage rooms (fields) that can hold unique furnishings (values), but shares the architectural plans (methods) with every other house from the same blueprint. **Inheritance** is creating a modified copy of the blueprint: you start with the original blueprint, trace over it, and add or change some rooms while keeping the rest. When you build a house from this derived blueprint, it includes features from both the original and the modifications.
+
+![Class and Instance Relationships](./diagrams/diagram-class-inheritance.svg)
 
 The `this` keyword is like a labeled floor plan inside the house that says "you are here"—it allows methods running within an instance to refer to the instance itself. The `super` keyword is a special phone line installed in the house that connects directly to the original blueprint's architect, allowing you to ask how a room was originally designed even if you've modified it in your copy.
 

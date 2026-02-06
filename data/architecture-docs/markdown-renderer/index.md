@@ -8351,3 +8351,4 @@ Signs of terminology problems:
 | Integration problems | Different components use different terms | Check inter-component interfaces | Align all interfaces to standard terminology |
 
 This implementation guidance ensures that the comprehensive terminology defined in the glossary is consistently applied throughout the codebase, enabling clear communication, easier maintenance, and better developer experience when working with the markdown renderer system.
+```

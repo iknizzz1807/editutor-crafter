@@ -1177,6 +1177,8 @@ After setting up the workspace and the `Database` skeleton, you should be able t
 
 The data model defines the fundamental building blocks of information that our database engine manipulates. Think of it as the **DNA of the system**—the exact schemas and formats that determine how every piece of data, from a table definition to a single integer value in a row, is represented in memory and on disk. Getting these structures right is critical because they form the contract between subsystems; a change here ripples through every component. This section details the three primary categories of structures: metadata (the "blueprints"), storage (the "physical storage units"), and runtime state (the "active work in progress").
 
+![Core Data Model Entity Relationship Diagram](./diagrams/data-model-erd.svg)
+
 ### Catalog and Metadata
 
 The **catalog** is the database's permanent memory about its own structure—a self-describing registry. Imagine a library's central card catalog that records every book's title, author, location, and genre. Our catalog does the same for tables, columns, indexes, and constraints. It is stored persistently (so it survives restarts) and is cached in memory for fast access during query processing.

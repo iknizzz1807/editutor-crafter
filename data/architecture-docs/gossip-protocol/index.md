@@ -1563,6 +1563,8 @@ The architecture foundation provides the scaffolding for implementing the specif
 
 The data model forms the foundation of our gossip protocol implementation, defining how nodes represent themselves, track peers, manage state, and communicate. Think of the data model as the **vocabulary and grammar** of our distributed system - just as humans need shared language to communicate effectively, our gossip nodes need standardized data structures to exchange information reliably.
 
+![Data Model Relationships](./diagrams/data-model.svg)
+
 ### Mental Model: Distributed Address Book with Timestamped Notes
 
 Understanding the gossip protocol data model is like maintaining a **distributed address book** where everyone keeps their own copy, but periodically shares updates with friends to stay synchronized. Each person in your network has an entry with their contact information, current status (reachable, suspected unreachable, or confirmed unreachable), and the last time you heard from them. When you want to share news or updates, you write timestamped notes and pass them along through your network of contacts.

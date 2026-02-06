@@ -7465,6 +7465,8 @@ LSP servers provide specific IDE capabilities through feature providers that ana
 
 Robust error handling distinguishes production-quality language servers from simple prototypes. These terms describe the various failure modes and recovery strategies required for reliable operation.
 
+![Error Handling and Recovery](./diagrams/error-handling-flow.svg)
+
 | Term | Category | Definition | Why It Matters |
 |------|----------|------------|----------------|
 | **error recovery** | Strategy | Graceful handling of various failure modes without corrupting server state or crashing the process | Maintains server availability even when individual requests fail - essential for production use |

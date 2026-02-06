@@ -1540,6 +1540,8 @@ Components that open files, create threads, or allocate memory but don't clean u
 
 > **Milestone(s):** All milestones (1-4) — these data structures underpin stack sampling, symbol resolution, flame graph generation, and memory profiling
 
+![Data Model Relationships](./diagrams/data-model-relationships.svg)
+
 ### Mental Model: The Evidence Collection System
 
 Think of the profiler's data model as a comprehensive evidence collection system for a performance investigation. Just as a detective gathers different types of evidence (photographs, witness statements, forensic reports, timelines), our profiler collects different types of performance data that all interconnect to tell the complete story.
@@ -3105,6 +3107,8 @@ print(f'Sample rate: {len(batch.samples) / (batch.end_time - batch.start_time):.
 ## Symbol Resolution Component
 
 > **Milestone(s):** Milestone 2 — Symbol Resolution: Convert raw addresses to human-readable function names and source locations by parsing ELF binaries, loading symbol tables, and processing DWARF debug information
+
+![Symbol Resolution Process](./diagrams/symbol-resolution-flow.svg)
 
 ### Mental Model: Address Book Lookup
 

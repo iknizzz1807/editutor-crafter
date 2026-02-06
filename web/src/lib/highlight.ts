@@ -1,5 +1,5 @@
 import { createHighlighterCore, type HighlighterCore } from 'shiki/core';
-import { createJavaScriptRegexEngine } from 'shiki/engine/javascript';
+import { createOnigurumaEngine } from 'shiki/engine/oniguruma';
 
 let highlighterPromise: Promise<HighlighterCore> | null = null;
 let highlighterInstance: HighlighterCore | null = null;
@@ -59,7 +59,7 @@ function getHighlighter(): Promise<HighlighterCore> {
 	if (highlighterInstance) return Promise.resolve(highlighterInstance);
 	if (!highlighterPromise) {
 		highlighterPromise = createHighlighterCore({
-			engine: createJavaScriptRegexEngine(),
+			engine: createOnigurumaEngine(import('shiki/wasm')),
 			themes: [import('shiki/themes/github-dark.mjs')],
 			langs: []
 		}).then((hl) => {

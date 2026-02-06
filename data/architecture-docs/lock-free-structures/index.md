@@ -2054,6 +2054,8 @@ The atomic operations foundation provides the essential building blocks that eve
 
 The lock-free stack represents the first substantial data structure built upon our atomic operations foundation. Unlike traditional mutex-protected stacks that serialize all operations through exclusive locking, the Treiber stack algorithm achieves thread-safety through careful use of atomic compare-and-swap operations on a single top-of-stack pointer. This approach eliminates the performance bottlenecks and deadlock risks inherent in lock-based designs while providing strong correctness guarantees about the linearizable behavior of concurrent push and pop operations.
 
+![Treiber Stack Push/Pop Flow](./diagrams/treiber-stack-operations.svg)
+
 ### Mental Model: Stack as a Shared Notepad
 
 Imagine a busy office where multiple people need to share a single notepad for writing quick notes. In a traditional lock-based approach, only one person could hold the notepad at any time - they would pick it up, write their note on top, and put it back down before anyone else could use it. This creates a bottleneck where everyone else must wait in line, even if they only need a few seconds to jot down a quick message.
@@ -3295,6 +3297,8 @@ The key to successful debugging is adding extensive logging around CAS operation
 
 The fundamental challenge in lock-free programming lies not just in implementing the core algorithms, but in safely managing memory in an environment where multiple threads may simultaneously access, modify, and potentially deallocate shared nodes. Traditional garbage-collected languages solve this problem automatically, but in systems programming languages like C++, Rust, or even Python with manual memory management, we must carefully coordinate when it's safe to free memory that other threads might still be accessing.
 
+![Hazard Pointer Memory Lifecycle](./diagrams/hazard-pointer-lifecycle.svg)
+
 The **hazard pointer** technique, introduced by Maged Michael in 2004, provides an elegant solution to this memory reclamation problem. It allows threads to announce their intention to access specific memory locations, preventing other threads from prematurely deallocating those locations while maintaining the non-blocking properties essential to lock-free algorithms.
 
 ### Mental Model: Hazard Pointers as Safety Signs
@@ -3905,6 +3909,8 @@ test_performance_benchmark ... PASSED (throughput > 1M ops/sec)
 > **Milestone(s):** Milestone 5 (Lock-free Hash Map) - This section implements a concurrent hash map using split-ordered lists with lock-free bucket operations and incremental resizing that maintains performance under high contention.
 
 The culmination of our lock-free data structure journey leads us to one of the most challenging concurrent data structures: the hash map. Unlike stacks and queues which operate on single points of contention (top pointer or head/tail pointers), hash maps present multiple buckets that can be accessed concurrently, along with the complex challenge of resizing the underlying array while concurrent operations continue. The split-ordered list approach represents an elegant solution that maintains logical hash ordering within a physical linked list structure, enabling incremental resizing without global synchronization.
+
+![Split-Ordered Hash Map Structure](./diagrams/hashmap-structure.svg)
 
 A concurrent hash map must satisfy several demanding requirements simultaneously. It must provide constant-time average case performance for insert, lookup, and delete operations while supporting concurrent access from multiple threads. The hash map must handle dynamic resizing as the load factor increases, migrating entries to a larger bucket array without blocking ongoing operations. Most critically, it must maintain consistency guarantees ensuring that no updates are lost and no phantom reads occur during concurrent modifications.
 
@@ -7516,6 +7522,8 @@ Lock-free programming encompasses different levels of progress guarantees, each 
 ### Data Structure Specific Algorithms
 
 Each lock-free data structure employs specialized algorithms and techniques tailored to its specific access patterns and consistency requirements.
+
+![Data Structure Relationships](./diagrams/data-model-relationships.svg)
 
 | Term | Definition | Application Context |
 |------|------------|-------------------|

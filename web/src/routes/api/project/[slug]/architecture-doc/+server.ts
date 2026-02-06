@@ -3,7 +3,7 @@ import type { RequestHandler } from './$types.js';
 import { db } from '$lib/server/db/index.js';
 import { projects } from '$lib/server/db/schema.js';
 import { eq } from 'drizzle-orm';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 import { renderArchDocCached } from '$lib/markdown.js';
 
@@ -17,6 +17,19 @@ export const GET: RequestHandler = async ({ params }) => {
 	if (!project) error(404, 'Project not found');
 	if (!project.architectureDocPath) error(404, 'No architecture document for this project');
 
+	// Try pre-generated file first
+	const generatedPath = resolve('../data/generated-docs', params.slug, 'doc.json');
+	if (existsSync(generatedPath)) {
+		try {
+			const raw = readFileSync(generatedPath, 'utf-8');
+			const doc = JSON.parse(raw);
+			return json(doc);
+		} catch {
+			// Fall through to on-the-fly rendering
+		}
+	}
+
+	// Fallback: render on-the-fly (slow for large docs)
 	const docPath = resolve(`../data/${project.architectureDocPath}`);
 
 	let markdown: string;

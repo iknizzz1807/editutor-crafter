@@ -374,6 +374,8 @@ DWARF debug information is organized as a tree of Debug Information Entries (DIE
 
 The debugger reads and displays variable values by combining DWARF location information with ptrace memory access capabilities. This feature completes the source-level debugging experience by allowing developers to examine program state using the same variable names they wrote in source code.
 
+![Variable Inspection Sequence](./diagrams/variable-inspection-sequence.svg)
+
 | Variable Inspection Capability | Technical Approach | User Experience |
 |--------------------------------|-------------------|-----------------|
 | Local Variable Access | Parse DWARF location expressions, read from stack or registers | User types `print local_var`, sees formatted value |
@@ -560,6 +562,8 @@ This organization separates concerns cleanly while avoiding over-engineering. Ea
 #### Core Data Structures
 
 The functional requirements drive the design of several key data structures that appear throughout the system. These structures directly reflect our scope decisions and functional priorities.
+
+![Core Data Structures](./diagrams/data-model.svg)
 
 **Process Representation (process_control.h):**
 ```c
@@ -4837,6 +4841,8 @@ The conductor (command processor) doesn't play any instruments directly — inst
 
 The **command processing flow** represents the primary interface between user intent and system action. When a user types a command like `break main` or `step`, that text string must be parsed, validated, and translated into a series of component operations that achieve the desired debugging behavior.
 
+![Command Processing Flow](./diagrams/command-processing.svg)
+
 The flow begins with **command parsing** in the main debugger loop. Raw input text gets tokenized into command name and arguments, then matched against a registry of available commands. Each registered command has a handler function that knows how to interpret its specific argument format and delegate to appropriate components.
 
 > **Design Insight**: The command registry pattern allows for clean separation between user interface concerns and core debugging logic. New commands can be added without modifying the parsing infrastructure, and components can register their own command handlers without tight coupling to the main loop.
@@ -5502,6 +5508,8 @@ The command processing, breakpoint workflow, and symbol lookup flows represent t
 ## Error Handling and Edge Cases
 
 > **Milestone(s):** All milestones — this section defines error handling strategies that apply throughout debugger implementation, with specific focus on robust failure detection and recovery mechanisms
+
+![Error Handling and Recovery](./diagrams/error-handling-flow.svg)
 
 ### The Emergency Response System Analogy
 

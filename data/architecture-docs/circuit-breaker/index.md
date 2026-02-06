@@ -2386,6 +2386,8 @@ The sliding window continuously tracks request outcomes over time, automatically
 
 The sliding window algorithm divides time into discrete buckets and tracks request metrics within each bucket. As time progresses, the window slides forward by discarding old buckets and creating new ones, maintaining a constant time span of historical data for failure rate calculations.
 
+![Sliding Window Algorithm Flow](./diagrams/sliding-window-algorithm.svg)
+
 The core algorithm operates through time-based bucket management. The total window duration is divided into multiple smaller time buckets, each tracking request counts, success counts, failure counts, and latency statistics for requests that arrive during that bucket's time interval. For example, a 60-second window might be divided into 12 buckets of 5 seconds each, providing granular time-based tracking while maintaining reasonable memory usage.
 
 When a new request outcome arrives, the algorithm first determines the current time bucket based on the request timestamp. If the request falls into an existing bucket, the algorithm updates that bucket's counters. If the request arrives after the newest bucket's time range, the algorithm rotates the window by creating a new bucket and potentially discarding the oldest bucket to maintain the fixed window size.
@@ -4284,6 +4286,8 @@ func (cb *CircuitBreaker) canExecuteInHalfOpen() bool {
 > **Milestone(s):** Milestone 1 (Basic Circuit Breaker), Milestone 2 (Advanced Features), Milestone 3 (Integration & Testing)
 
 Comprehensive error handling and edge case management form the foundation of a robust circuit breaker system. The circuit breaker must gracefully handle not just the obvious failure scenarios like network timeouts and service errors, but also the subtle edge cases that emerge in distributed systems: clock skew, configuration changes during runtime, concurrent state transitions, and cascading fallback failures.
+
+![Error Classification and Handling](./diagrams/error-handling-flow.svg)
 
 This section provides a systematic analysis of failure modes, establishes clear error classification rules, addresses complex edge cases involving timing and concurrency, and defines recovery strategies that maintain system stability even under extreme conditions.
 

@@ -7255,6 +7255,8 @@ Distance metrics quantify similarity between data points and form the mathematic
 
 The voting mechanisms transform neighbor information into final predictions, representing the democratic decision-making process at the heart of KNN classification.
 
+![Classification Voting Process](./diagrams/voting-process.svg)
+
 | Term | Definition | Implementation Approach | Advantages and Limitations |
 |------|------------|------------------------|---------------------------|
 | **Majority Voting** | Classification strategy assigning the class that appears most frequently among K neighbors | Count occurrences of each class; return class with maximum count | Simple and interpretable but ignores distance information; vulnerable to ties |

@@ -1655,6 +1655,8 @@ Routes: 1, Upstreams: 1
 
 This component forms the foundational engine of the API Gateway. Its primary responsibility is to accept incoming HTTP requests, determine which backend service should handle them, and efficiently proxy the traffic to a healthy instance of that service. Think of it as the gateway's central nervous system for traffic flow—without it, requests would have nowhere to go.
 
+![Flowchart: Route Matching and Selection](./diagrams/diagram-flowchart-routing.svg)
+
 ### Mental Model: The Airport Router
 
 Imagine a large international airport. Thousands of passengers (requests) arrive at the main terminal (the gateway) every hour, each trying to reach a different final destination (backend service). The airport's flight information display system (the router) is critical: it examines each passenger's ticket (the request's path and headers) and directs them to the correct departure gate (the upstream endpoint). Some gates service multiple destinations via connecting flights (path prefixes), while others are exclusive to a single airline (host-based routing). The ground crew (load balancer) at each gate manages the queue of passengers, ensuring they board available aircraft (healthy backend instances) in an orderly fashion. If a particular aircraft is undergoing maintenance (unhealthy endpoint), the crew redirects passengers to another plane, and if the entire route is experiencing severe weather (circuit breaker open), the airport may temporarily suspend all flights to that destination to avoid stranding passengers. This mental model captures the essence of routing, load balancing, and failure handling.

@@ -1170,6 +1170,8 @@ This architecture provides the foundation for all four milestones. The clear sep
 
 The data model defines the formal language through which the kernel and user-space components communicate. Think of it as the **shared vocabulary** between the tiny, in-kernel eBPF programs and the user-space dashboard. Without a precisely defined data model, events would be lost in translation, much like two people trying to coordinate a complex task without agreeing on what terms like "urgent," "complete," or "error" mean.
 
+![Data Model Relationships](./diagrams/diagram-data-model.svg)
+
 This section specifies the three categories of data structures that flow through the system: the **events** that capture what happened, the **maps** that store intermediate state, and the **aggregates** that summarize data for display. These structures must balance efficiency (minimizing kernel-to-user copy overhead), clarity (being self-describing for debugging), and extensibility (supporting new event types without breaking existing code).
 
 ### Kernel-Space Event Structures
@@ -1786,6 +1788,8 @@ Every eBPF tracing program follows a similar workflow, regardless of its specifi
 #### Decision: Hash Map vs LRU Map for State Tracking
 
 **Context**: For tracking connection state (Milestone 3) and syscall start times (Milestone 2), we need key-value storage that can handle dynamic sets of keys (connection tuples, PID+TID pairs) with automatic cleanup of old entries.
+
+![TCP State Machine for Connection Tracking](./diagrams/diagram-tcp-state-machine.svg)
 
 **Options Considered**:
 1. **Hash Map (`BPF_MAP_TYPE_HASH`)**: Fixed-size hash table, fails when full

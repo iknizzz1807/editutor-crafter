@@ -2792,6 +2792,8 @@ Permanently failed notifications are logged as errors but not retried further. A
 | **Tree-Based Routing** | Natural hierarchical organization. Explicit control with `continue` flag. Inherits timing parameters. Industry-proven pattern. | More complex to implement. Configuration requires understanding tree traversal. | **Yes** |
 | Tag-Based Subscription | Decouples senders and receivers. Easy to add new receivers without modifying routing logic. | Can cause notification explosion (one alert to many receivers). No built-in exclusivity. Difficult to manage rate limits per logical route. | No |
 
+![Flowchart: Routing Tree Walk](./diagrams/flowchart-routing-tree.svg)
+
 ### Common Pitfalls & Mitigations
 
 ⚠️ **Pitfall: Missing Default Route**
@@ -4269,6 +4271,8 @@ go test ./internal/engine/... -v -count=1
 #### Milestone 2: Alert Grouping Checkpoint
 
 **Expected Behavior**: Alerts with identical grouping labels aggregate into groups with configurable `group_wait` and `group_interval` timers, reducing notification noise.
+
+![Flowchart: Alert Grouping Logic](./diagrams/flowchart-grouping.svg)
 
 **Verification Commands**:
 

@@ -1725,6 +1725,8 @@ User code should never see header pointers directly—always return payload poin
 
 > **Milestone(s):** This section corresponds to Milestone 2 (Root Discovery), which identifies and enumerates all GC roots from stack, globals, and registers to serve as starting points for the mark phase reachability analysis.
 
+![Root Discovery Process](./diagrams/root-discovery-flow.svg)
+
 ### Root Set Concept
 
 Think of **root references** as the entry points into your program's object universe. Imagine your program's memory as a vast network of interconnected islands (objects), where some islands have bridges directly connecting them to the mainland (your running program). The root set represents all those bridges — the direct connections from your actively executing code to objects in the heap. Without these bridges, islands become unreachable and can be safely removed during garbage collection.
@@ -2168,6 +2170,8 @@ The marking process must solve several fundamental challenges: efficiently trave
 ### Marking Algorithm
 
 The core marking algorithm implements a systematic graph traversal that visits every object reachable from the root set. The algorithm maintains the critical invariant that every reachable object gets marked exactly once, while unreachable objects remain unmarked for subsequent collection during the sweep phase.
+
+![Marking Sequence](./diagrams/marking-sequence.svg)
 
 The marking process begins with the root set constructed during the root discovery phase. Each root represents a direct reference from program execution context—stack variables, global variables, or register contents that point to heap objects. The algorithm treats these roots as starting points for reachability analysis, ensuring that any object referenced directly or indirectly from active program state remains marked as live.
 

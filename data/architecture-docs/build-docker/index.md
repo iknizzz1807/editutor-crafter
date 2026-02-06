@@ -2097,6 +2097,8 @@ These "mirrored walls" create a powerful illusion: from inside the room, it appe
 | `fork()` + `unshare()` | More flexibility in multi-stage setup. | Non-atomic, complex state management, potential for leaks. | No |
 | User ns first | Enhanced security via privilege dropping. | Significantly more complex, requires mapping UIDs/GIDs. | No (considered for future extension) |
 
+![Namespace Hierarchy](./diagrams/namespace-hierarchy.svg)
+
 > **Decision: Implement a `NamespaceManager` Component for Lifecycle Operations**
 >
 > - **Context:** Namespace creation, management, and cleanup are distinct operations that must be coordinated with the container's lifecycle. These operations also differ for the initial `init` process versus subsequent `exec` operations (like `docker exec`).
@@ -3448,6 +3450,8 @@ In technical terms:
 The critical insight is that **identical lower layers can be shared across hundreds of containers**, just as multiple classrooms can use the same set of base acetate sheets. Each container gets its own writable top sheet for modifications, but the vast majority of data (OS files, libraries) is stored once and referenced many times, achieving tremendous storage efficiency.
 
 ### Architecture Decision Records: OverlayFS vs Alternatives
+
+![Overlayfs Layout](./diagrams/overlayfs-layout.svg)
 
 #### Decision: OverlayFS for Layered Filesystem Implementation
 

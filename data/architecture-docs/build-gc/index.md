@@ -3027,6 +3027,8 @@ The beauty of this approach is that it transforms the complex problem of concurr
 
 The **tri-color abstraction** models each object's state during garbage collection as one of three colors, representing different phases of the marking process. This abstraction was first formalized by Dijkstra and provides the theoretical foundation for incremental and concurrent garbage collection algorithms.
 
+![Tricolor State Machine](./diagrams/tricolor-state-machine.svg)
+
 | Current State | Event | Next State | Condition | Actions Taken |
 |---------------|--------|------------|-----------|---------------|
 | WHITE | Discovery from root set | GRAY | Object found during root scanning | Add to gray worklist, mark as discovered |

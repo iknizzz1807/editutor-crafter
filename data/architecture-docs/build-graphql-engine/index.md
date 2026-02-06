@@ -849,6 +849,10 @@ The GraphQL engine architecture bridges two fundamentally different worlds: Grap
 
 ![GraphQL Engine System Components](./diagrams/system-component-diagram.svg)
 
+![Query Parsing Sequence Diagram](./diagrams/parsing-sequence.svg)
+
+![Ast Class Diagram](./diagrams/ast-class-diagram.svg)
+
 The system comprises five core components that transform a GraphQL query string into database results:
 
 | Component | Responsibility | Input | Output | Analogy |

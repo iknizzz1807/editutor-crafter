@@ -3607,6 +3607,8 @@ After implementing the ranking engine, verify correct behavior:
 
 The **fuzzy matching component** provides typo tolerance by finding approximate matches between user queries and indexed terms. Think of fuzzy matching like a helpful librarian who understands what you mean even when you misspell a word. When you ask for a book about "algoritms" (missing an 'h'), the librarian recognizes you likely meant "algorithms" and helps you find the right section. Similarly, our fuzzy matcher bridges the gap between imperfect user input and exact term matches in the inverted index.
 
+![Fuzzy Search Algorithm](./diagrams/fuzzy-matching-process.svg)
+
 The core challenge in fuzzy matching lies in balancing accuracy with performance. Computing edit distances between a query term and every term in the vocabulary would be prohibitively expensive for large indexes. Instead, we employ a multi-stage filtering approach that quickly eliminates impossible candidates before applying expensive similarity calculations to a small set of promising matches.
 
 > **Decision: Multi-Stage Filtering Architecture**
@@ -8392,6 +8394,8 @@ The future extensions integrate with the existing system through well-defined in
 ### Relevance Scoring and Ranking
 
 **TF-IDF (Term Frequency-Inverse Document Frequency)**: A foundational ranking algorithm that scores documents based on term frequency within the document multiplied by inverse document frequency across the corpus. Documents with high frequencies of rare query terms receive higher scores.
+
+![Scoring Algorithm](./diagrams/scoring-algorithm.svg)
 
 **BM25 (Best Matching 25)**: An advanced ranking algorithm that extends TF-IDF with saturation and document length normalization. BM25 prevents term frequency from growing unboundedly and normalizes for document length differences, making it more robust than basic TF-IDF.
 

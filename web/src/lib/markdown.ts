@@ -31,7 +31,7 @@ export async function renderArchDoc(
 	let blockIdx = 0;
 
 	const preprocessed = markdown.replace(
-		/^[ \t]*```(\w*)\n([\s\S]*?)^[ \t]*```[ \t]*$/gm,
+		/^[ \t]*```(\w*)[ \t]*\n([\s\S]*?)^[ \t]*```[ \t]*$/gm,
 		(_match, lang, code) => {
 			const placeholder = `<!--CODE_BLOCK_${blockIdx}-->`;
 			codeBlocks.push({ lang: lang || '', code: code.trimEnd(), placeholder });
@@ -63,12 +63,14 @@ export async function renderArchDoc(
 	let html = await marked.parse(processed);
 
 	// Replace code block placeholders with highlighted content
+	// Note: use split/join instead of replace to avoid $-substitution in replacement strings
+	// (shiki output often contains $ characters which trigger special replacement patterns)
 	for (let i = 0; i < codeBlocks.length; i++) {
 		const { lang, placeholder } = codeBlocks[i];
 		const highlighted = highlightedBlocks[i];
 		const langLabel = lang ? `<span class="code-lang">${escapeHtml(lang)}</span>` : '';
 		const replacement = `<div class="code-block-wrapper">${langLabel}<pre class="arch-pre shiki-highlighted"><code>${highlighted}</code></pre></div>`;
-		html = html.replace(placeholder, replacement);
+		html = html.split(placeholder).join(replacement);
 	}
 
 	// Process headings: add IDs and collect TOC

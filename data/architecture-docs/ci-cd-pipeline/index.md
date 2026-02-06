@@ -4161,6 +4161,8 @@ Signs of problems:
 
 Think of deployment strategies as **air traffic control systems** for software releases. Just as airports use different approaches to land aircraft safely—some planes arrive during clear weather and can land directly, others need special patterns during storms, and emergency situations require immediate runway clearing—deployment strategies provide structured approaches for safely transitioning software from development to production environments.
 
+![Deployment Strategy Comparison](./diagrams/deployment-strategies.svg)
+
 The fundamental challenge in deployment is managing the **state transition risk**. Unlike simply copying files, deployments involve coordinating multiple moving parts: application servers, load balancers, databases, caches, and external integrations. Each deployment strategy represents a different risk/speed trade-off, much like how pilots choose different landing approaches based on weather conditions, runway availability, and aircraft capabilities.
 
 ### Rolling Deployment: Incremental Updates with Health Check Validation

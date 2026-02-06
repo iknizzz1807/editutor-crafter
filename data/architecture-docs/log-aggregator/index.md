@@ -1862,6 +1862,8 @@ The partitioning strategy creates natural boundaries for index maintenance:
 
 The storage layer must efficiently persist log data while supporting fast retrieval, compression, and retention management. Our storage format is designed around compressed chunks with metadata enabling selective decompression and efficient querying.
 
+![Storage Layout and Chunks](./diagrams/storage-layout.svg)
+
 #### Chunk Storage Format
 
 Chunks are the fundamental storage unit, containing a time-ordered collection of log entries with associated metadata and compression. Each chunk is designed to be independently readable and compressible.
@@ -5065,6 +5067,8 @@ The key insight from this analogy is that multi-tenancy isn't just about storing
 ### Tenant Isolation Design
 
 **Multi-tenant isolation** in a log aggregation system requires creating secure boundaries between different organizations or teams while maximizing infrastructure efficiency. Unlike simple access control where we trust users not to peek at each other's data, tenant isolation assumes potential adversaries and enforces separation at the architectural level.
+
+![Multi-Tenant Architecture](./diagrams/tenant-isolation.svg)
 
 Our tenant isolation strategy operates on three fundamental principles: **authentication identity**, **authorization boundaries**, and **data segregation**. Every request entering the system must first establish which tenant it represents, then verify that tenant has permission for the requested operation, and finally ensure all data access respects tenant boundaries throughout the entire processing pipeline.
 

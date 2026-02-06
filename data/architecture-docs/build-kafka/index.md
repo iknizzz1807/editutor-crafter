@@ -350,6 +350,8 @@ build-your-own-kafka/
 
 To understand how components interact, let's trace the journey of a single message through the system. We'll follow a concrete example: a weather service (producer) publishing a temperature reading to a `weather-updates` topic, which is then consumed by a dashboard application (consumer).
 
+![Leader-Follower Replication Flow](./diagrams/diagram-replication-flow.svg)
+
 #### Scenario Setup:
 - **Topic**: `weather-updates` with 3 partitions
 - **Message Key**: `station-42` (identifies the weather station)

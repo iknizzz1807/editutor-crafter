@@ -2901,6 +2901,8 @@ The hash table implementation uses FNV-1a or DJB2 hashing for symbol names, with
 | Two-pass with definition collection | Correct strong/weak, correct COMMON, reliable undefined detection | Double traversal, memory for all symbols | **CHOSEN**: Correctness trumps minor overhead |
 | Multi-pass dependency analysis | Handles circular references, optimal for complex cases | Complex implementation, overkill for static linking | Too complex for educational linker |
 
+![Symbol Resolution Flowchart](./diagrams/symbol-resolution-flowchart.svg)
+
 ### Common Pitfalls
 
 ⚠️ **Pitfall: Incorrect Strong/Weak Resolution**
@@ -3433,6 +3435,8 @@ gcc -c test_reloc.c -o test_reloc.o
 > **Milestone(s):** Milestone 4: Executable Generation
 
 The **Executable Writer** is the final component in the static linker's pipeline, responsible for transforming the merged and relocated section data into a fully-formed ELF executable that can be loaded and run by the operating system. While previous components dealt with the logical organization of code and data, this component focuses on the physical layout and packaging requirements that the OS loader expects. It creates the **ELF header** that identifies the file type, the **program headers** that describe how the file should be mapped into memory, and writes the actual bytes to disk in the proper ELF format.
+
+![Executable Segment Layout](./diagrams/segment-layout-diagram.svg)
 
 ### Mental Model: Building Blueprint
 

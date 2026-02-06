@@ -787,6 +787,8 @@ The scope boundaries we've established provide clear guidance for every implemen
 
 Building a browser engine is like constructing a sophisticated assembly line for document production. Imagine a printing press that takes raw manuscript text and transforms it through multiple specialized stations: first, typesetters organize the text into structured pages; then, designers apply styling rules to determine fonts and colors; next, layout artists position every element on the page; and finally, printers render the finished product to paper. Our browser engine follows this same assembly line approach, with each stage performing a specific transformation on the document data until we achieve the final visual output.
 
+![System Component Diagram](./diagrams/component-architecture.svg)
+
 The browser rendering pipeline represents one of the most complex data transformation systems in modern software engineering. Unlike typical applications that process discrete requests, a browser engine must parse two different languages simultaneously (HTML and CSS), resolve their interactions through sophisticated rule systems, perform complex geometric calculations, and generate precise visual output—all while maintaining performance and handling malformed input gracefully. This complexity arises because web standards evolved organically over decades, accumulating layers of backward compatibility and edge cases that production browsers must handle flawlessly.
 
 ### The Rendering Pipeline

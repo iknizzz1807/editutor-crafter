@@ -8777,6 +8777,8 @@ The glossary serves as both a reference during development and a learning tool f
 | **two-phase commit** | Distributed transaction protocol ensuring atomicity across multiple systems | Provides strong consistency guarantees at the cost of performance and availability. Requires all participants to vote before committing |
 | **compensation transaction** | Reverse operation designed to undo the effects of a completed transaction step | Key component of saga pattern. Must be idempotent and handle partial completion scenarios |
 
+![Error Handling and Recovery Flow](./diagrams/error-handling-flow.svg)
+
 ### Monitoring and Operations Terms
 
 | Term | Definition | Context and Usage |

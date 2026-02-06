@@ -1832,6 +1832,8 @@ RunMetrics run_benchmark(const char* config_label,
 
 This component explores the fundamental trade-offs between two memory layout strategies for structured data: **Array of Structs (AoS)** and **Struct of Arrays (SoA)**. Using a particle physics simulation as our case study, we'll implement both layouts, benchmark their performance under different access patterns, and understand when each layout excels based on cache utilization and hardware prefetching behavior. The core insight is that the optimal memory layout depends critically on the **access pattern** of your workload, not just the logical data model.
 
+![AoS vs SoA Memory Layout](./diagrams/mem-layout-aos-soa.svg)
+
 ### Mental Model: Packing for a Trip
 
 Imagine you're packing for a vacation with several people. You have two packing strategies:
@@ -2550,6 +2552,8 @@ The following table defines the core data structure for representing a vEB tree 
 ### Search in vEB Layout
 
 Searching in a vEB-laid-out array emulates standard binary search on a binary tree but requires calculating child node indices based on the recursive layout rules. The algorithm assumes the `vEBTree` structure is already initialized with a vEB-ordered array. The search process for a target key `k` is as follows:
+
+![Flow Veb Search](./diagrams/flow-veb-search.svg)
 
 1.  **Initialization**: Set `current_index` to `tree->root_index` (typically 0). Obtain a pointer or reference to the node value at `tree->data[current_index]`.
 2.  **Comparison**: Compare `k` with the value at the current node.

@@ -1684,6 +1684,8 @@ After implementing the basic wiring:
 
 The data model defines the fundamental building blocks of KVoyage—the nouns and verbs of our distributed system. Just as a library's catalog system needs standardized formats for books, shelves, and borrower records, KVoyage requires precisely defined data structures for keys, values, replication metadata, and communication messages. This section specifies every data type, their relationships, and how they're serialized for storage and transmission. A well-defined data model ensures all components share a common language, enabling correct interactions even as nodes fail and rejoin.
 
+![Data Model Relationships](./diagrams/data-model-diagram.svg)
+
 ### Core Data Types and Structures
 
 Think of KVoyage's core data types as the **DNA of the system**—the fundamental genetic code that defines what information exists, how it's organized, and how it evolves. Just as DNA contains both the data (genes) and metadata (epigenetic markers), our core types include both the actual key-value pairs and the crucial metadata that enables distribution features like replication consistency and conflict resolution.

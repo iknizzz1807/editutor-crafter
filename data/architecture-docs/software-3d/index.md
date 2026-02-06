@@ -1819,6 +1819,8 @@ After matrix transformation, homogeneous coordinates must be converted back to 3
 
 The framebuffer represents the final destination of the rendering pipeline - the digital canvas where 3D geometry becomes 2D pixels. Think of it as the **digital film** in our photography studio analogy, capturing both color information and depth data needed to create the illusion of three-dimensional space on a flat screen.
 
+![Z-Buffer Depth Testing Flow](./diagrams/zbuffer-algorithm.svg)
+
 **Mental Model: The Digital Darkroom**
 Imagine the framebuffer as a digital darkroom where the final photograph develops. The color buffer is like photographic film, capturing the light and color from the 3D scene. The depth buffer acts like a precision measuring device, recording how far each point was from the camera lens. The rendering context is like the darkroom settings - controlling how the light is processed, what filters are applied, and how the final image is developed.
 

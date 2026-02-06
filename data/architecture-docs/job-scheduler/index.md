@@ -3231,6 +3231,8 @@ Just as an orchestra has backup conductors ready to step in if the primary condu
 
 **Leader election** is the process by which multiple coordinator nodes agree on a single leader responsible for job assignment and worker management. This prevents the catastrophic **split-brain** scenario where multiple coordinators simultaneously make conflicting job assignments, leading to duplicate execution or worker thrashing.
 
+![Leader Election Process](./diagrams/leader-election-flow.svg)
+
 > **Decision: etcd-based Leader Election with Lease Mechanism**
 > - **Context**: Multiple coordinator nodes need to agree on a single leader for job assignment decisions, with fast failover when the leader crashes
 > - **Options Considered**: Database-based locking, Redis-based election, etcd lease-based election

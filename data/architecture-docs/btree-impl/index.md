@@ -2672,6 +2672,8 @@ The diagram ![Node State During Deletion](./diagrams/delete-state-machine.svg) s
 - **Why it's wrong**: Borrowing from a sibling with only `t-1` keys would leave it with `t-2` keys, violating the minimum occupancy invariant. This corruption may not be detected immediately but will cause future operations to fail.
 - **Fix**: Always check `sibling->num_keys ≥ t` before borrowing. For merging, check that both the child and chosen sibling have exactly `t-1` keys.
 
+![Borrow vs. Merge Operations](./diagrams/borrow-merge-visual.svg)
+
 ⚠️ **Pitfall: Not handling left/right sibling symmetry**
 - **Description**: Implementing borrowing from only the left sibling (or only the right), or treating left and right cases with copy-pasted but not properly mirrored logic.
 - **Why it's wrong**: When the left sibling doesn't exist or can't lend a key, the right sibling might be able to. Missing this case causes unnecessary merges, increasing tree height prematurely. Incorrect mirroring (e.g., wrong index adjustments) corrupts key ordering.

@@ -1608,6 +1608,8 @@ After completing Milestone 1, you should be able to:
 
 > **Milestone(s):** This section provides the foundational data architecture for Milestone 1 (Service Decomposition & Discovery), defines the gRPC contracts used throughout Milestone 2 (API Gateway & Resilience), and establishes the data consistency patterns that enable Milestone 3 (Distributed Transactions & Saga).
 
+![Service Data Model and Boundaries](./diagrams/service-data-model.svg)
+
 ### Domain-Driven Service Boundaries
 
 Think of service boundaries like property lines in a neighborhood. Just as each homeowner has exclusive rights to their land and house, each service must have exclusive ownership of its data and business logic. When neighbors need something from each other, they don't just walk into each other's houses—they knock on the door and make a request. This is the essence of **bounded contexts** in domain-driven design.

@@ -1064,6 +1064,8 @@ The `ProcessContext` aggregates everything the tracer needs to know about a sing
 
 A traced process is never simply "running" or "stopped"—it exists in specific ptrace-defined states that dictate what actions the tracer may take. The `state` field should track one of the following enumerated states, with clear transitions:
 
+![State Machine: A Traced Process](./diagrams/state-machine-tracee.svg)
+
 | Current State | Event Trigger | Next State | Actions Taken by Tracer |
 |---------------|---------------|------------|-------------------------|
 | `STATE_NEW` | Process attached via `PTRACE_ATTACH` or created with `PTRACE_TRACEME` | `STATE_STOPPED_INITIAL` | Set ptrace options, configure initial filter |

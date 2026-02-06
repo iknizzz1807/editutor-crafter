@@ -526,6 +526,8 @@ The implementation will include resource usage monitoring through cgroup statist
 
 The runtime will implement copy-on-write filesystem semantics using overlayfs, demonstrating how container images achieve efficient storage and fast startup times. This capability shows how containers can share base images while maintaining isolated filesystem changes.
 
+![OverlayFS Layer Structure](./diagrams/overlayfs-structure.svg)
+
 | Layer Type | Purpose | Behavior |
 |---|---|---|
 | Base Image Layers | Read-only image content | Shared across containers, never modified |
@@ -962,6 +964,8 @@ If the Manager process crashes, it loses track of active containers and their as
 ### Recommended File Structure
 
 The codebase organization reflects our component-based architecture, with clear module boundaries that align with component responsibilities. This structure makes it easy to develop, test, and maintain each component independently while keeping integration points well-defined.
+
+![Cgroup v2 Hierarchy Structure](./diagrams/cgroup-hierarchy.svg)
 
 ```
 container-runtime/

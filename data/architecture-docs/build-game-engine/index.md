@@ -5341,6 +5341,8 @@ The physics simulation phase includes collision detection and response, which in
 
 The **rendering phase** transforms the current world state into visual output, operating like a **3D photography studio** with multiple stages of scene preparation, lighting setup, and final image composition. The Renderer coordinates this phase, collecting visual data from ECS components, organizing it for efficient GPU processing, and issuing draw commands that produce the final frame. This phase typically consumes 4-6 milliseconds on modern hardware but can vary dramatically based on scene complexity.
 
+![Graphics Rendering Pipeline](./diagrams/rendering-pipeline.svg)
+
 Rendering operates on snapshot data from the completed ECS and physics updates, ensuring visual consistency throughout the frame. The rendering pipeline processes visual data through several stages:
 
 1. **Scene Culling**: The Renderer queries the ECSWorld for all entities with visual components (`Transform`, `Sprite`, `Mesh`), filtering out objects outside the camera frustum

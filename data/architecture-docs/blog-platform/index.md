@@ -1572,6 +1572,8 @@ After implementing the database schema and migrations:
 
 This component is the gatekeeper of the blog platform, responsible for verifying user identities, managing authenticated sessions, and securely handling credentials. It's arguably the most security-critical component, as flaws here can compromise the entire system. The design must balance security, usability, and implementation complexity for an educational context.
 
+![User Authentication State Machine](./diagrams/auth-state-machine.svg)
+
 ### Mental Model: The Club Bouncer & Membership Desk
 
 Imagine the blog platform as an exclusive nightclub. The **authentication system** serves two roles: the **membership desk** where new patrons sign up and get their credentials (email/password), and the **bouncer** at the entrance who checks credentials and grants access.

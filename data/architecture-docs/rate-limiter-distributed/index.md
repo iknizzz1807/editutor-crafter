@@ -9628,6 +9628,8 @@ The `RedisStorage` type encapsulates all Redis interactions, providing a clean i
 | `HealthChecker` | Monitors Redis node health and coordinates responses | Performs health checks, manages circuit breakers, handles failover |
 | `HotKeyDetector` | Identifies disproportionately accessed rate limit keys | Analyzes access patterns, triggers replication, enables load balancing |
 
+![Redis Cluster and Consistent Hashing](./diagrams/redis-cluster-topology.svg)
+
 The `HashRing` implementation uses virtual nodes to ensure even distribution of rate limit keys across Redis instances. The virtual node approach prevents hotspots that could occur if keys were distributed only based on physical nodes, especially in small clusters.
 
 `CircuitBreaker` provides protection against cascading failures by implementing a state machine with closed (normal operation), open (all requests rejected), and half-open (limited test requests allowed) states. This pattern prevents the system from overwhelming failing components while allowing for automatic recovery.

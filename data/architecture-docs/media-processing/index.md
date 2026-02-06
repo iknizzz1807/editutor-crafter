@@ -5,6 +5,8 @@
 
 This system builds a scalable media processing service that handles image resizing, video transcoding, and thumbnail generation through an asynchronous job queue. The key architectural challenge is efficiently processing large media files while providing real-time progress tracking and reliable error recovery across distributed worker processes.
 
+![System Architecture Overview](./diagrams/system-architecture.svg)
+
 
 > This guide is meant to help you understand the big picture before diving into each milestone. Refer back to it whenever you need context on how components connect.
 
@@ -5391,6 +5393,8 @@ The media processing pipeline orchestrates complex sequences of operations acros
 #### Image Processing Workflow Sequence
 
 Image processing jobs follow a predictable sequence from submission through completion, with progress tracking and error handling at each stage. This workflow optimizes for quality while maintaining reasonable processing times for typical web and mobile image requirements.
+
+![Image Processing Workflow](./diagrams/image-processing-flow.svg)
 
 **Stage 1: Job Submission and Validation (5% of total progress)**
 

@@ -2315,6 +2315,8 @@ The model registry manages trained models through their complete lifecycle, from
 
 Models progress through a structured lifecycle with explicit stage transitions and approval gates. This mirrors software release management practices, ensuring that only validated models reach production environments.
 
+![Model Version State Machine](./diagrams/model-lifecycle.svg)
+
 | Stage | Purpose | Entry Criteria | Exit Actions |
 |-------|---------|----------------|--------------|
 | Development | Initial model registration | Completed training run | Enable further testing |
@@ -5416,6 +5418,8 @@ The auto-scaling controller tracks **request queue depth** as the primary indica
 ### Traffic Management and Rollouts
 
 Traffic management enables safe, controlled deployment of new model versions while maintaining service availability and providing mechanisms for rapid rollback when issues arise. The traffic management subsystem implements sophisticated routing logic that supports multiple deployment strategies, each optimized for different risk profiles and operational requirements.
+
+![Deployment Traffic Management](./diagrams/deployment-traffic.svg)
 
 **Blue-Green Deployments** provide the safest approach for model updates by maintaining two complete, identical production environments and switching traffic atomically between them. In the context of model serving, blue-green deployments mean running both the current model version and the new model version on separate infrastructure, then redirecting all traffic from the blue environment to the green environment instantaneously.
 

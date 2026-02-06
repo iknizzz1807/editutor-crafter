@@ -886,6 +886,8 @@ Expected behavior after this milestone:
 
 Think of our data model as the **blueprint for a sophisticated banking system**. Just as a bank needs clear definitions for accounts, transactions, customers, and policies, our rate limiter needs precise data structures for token buckets, client identities, rate limit rules, and storage mechanisms. Each data type serves a specific purpose in the rate limiting ecosystem, and their relationships determine how efficiently we can track and enforce limits across thousands of concurrent clients.
 
+![Data Model and Type Relationships](./diagrams/data-model-relationships.svg)
+
 The data model forms the foundation that supports all rate limiting operations. Whether we're implementing a simple in-memory token bucket or a distributed system coordinating across multiple servers, these core data structures remain consistent. Understanding these types deeply ensures that our implementation can evolve from basic functionality to enterprise-scale distributed rate limiting without architectural rewrites.
 
 ### Core Data Types

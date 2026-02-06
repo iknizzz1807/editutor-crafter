@@ -3564,6 +3564,8 @@ echo "ABCDEFGHIJKL" | ./hexdump -s 2 -n 4
 
 > **Milestone(s):** All Milestones 1-4 - establishing robust error handling patterns from basic file reading through complete CLI functionality; critical for production-ready hexdump utility
 
+![Error Handling Flow](./diagrams/error-handling-flow.svg)
+
 ### Mental Model: The Safety Inspector
 
 Think of error handling in a hexdump utility like a safety inspector at a construction site. The inspector doesn't just watch for obvious dangers like missing hard hats — they systematically check every potential hazard, from unstable scaffolding (file permission errors) to electrical faults (I/O failures) to structural weaknesses (partial file reads). A good safety inspector has protocols for every type of incident: immediate evacuation procedures for catastrophic failures, first-aid protocols for minor injuries, and prevention checklists to avoid problems entirely. Similarly, our hexdump utility must anticipate every way binary file processing can fail and have specific, tested responses that protect both the program's integrity and the user's experience.

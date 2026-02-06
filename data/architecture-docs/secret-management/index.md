@@ -4003,6 +4003,8 @@ After reconstructing the master key from shares, the key must be cleared from me
 
 The seal and unseal mechanism implements a security state machine that protects the system's cryptographic capabilities when not in active use. Think of this like a bank vault that automatically locks itself during non-business hours and requires multiple officers to unlock it each morning - the vault provides maximum security by default and only becomes accessible through deliberate, authenticated actions.
 
+![Unseal Process Flow](./diagrams/unseal-process-flow.svg)
+
 When sealed, our secret management system enters a hardened state where all cryptographic operations are disabled, the master key is absent from memory, and only basic administrative operations remain available. This provides defense against a wide range of attack scenarios: memory dumps cannot reveal the master key, compromised processes cannot access secrets, and even insider threats require coordination with multiple other operators.
 
 The unsealing process transforms the system from this secure but non-functional state into full operational capability by reconstructing the master key from operator-provided shares and loading the cryptographic engines. This state transition must be carefully orchestrated to maintain security properties while providing operational convenience.

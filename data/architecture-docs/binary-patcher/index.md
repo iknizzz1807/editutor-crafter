@@ -629,6 +629,8 @@ The tool must implement the classic function hooking pattern using trampolines, 
 #### Functional Goal 3: Code Injection and Symbol Resolution
 ELFlex must inject new executable code into target binaries and resolve cross-references between injected and original code:
 
+![Code Injection Layout](./diagrams/code-injection-layout.svg)
+
 | Capability | Description | Implementation Approach |
 |------------|-------------|-------------------------|
 | **New Section Creation** | Add a new executable section (e.g., `.inject`) to the ELF file with proper alignment and permissions | Create new `Elf64_Shdr` and potentially a new `PT_LOAD` segment |

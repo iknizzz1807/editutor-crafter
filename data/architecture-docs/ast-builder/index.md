@@ -3203,6 +3203,8 @@ The critical data flow occurs at the syntactic layer, where tokens are consumed 
 **Mental Model: Spell Checker in a Word Processor**
 When a word processor encounters a misspelled word, it doesn't stop processing the entire document. Instead, it highlights the error, suggests corrections, and continues checking the rest of the text. The parser's error recovery system works similarly: when a syntax error is detected, it records the error, "skips ahead" to a safe point in the token stream, and continues parsing to find additional errors. This mental model emphasizes **non-blocking error reporting** and **intelligent resynchronization**.
 
+![Error Recovery Flowchart](./diagrams/error-recovery-flow.svg)
+
 **Panic Mode Recovery Algorithm**
 The parser implements panic mode recovery through the following coordinated sequence when a syntax error is detected:
 

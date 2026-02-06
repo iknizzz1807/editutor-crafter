@@ -506,6 +506,8 @@ The project uses a macro-based generic dynamic array implementation to avoid cod
 
 Picture the **VM** as the central control panel of a factory assembly line. The operand stack is a spring-loaded tray dispenser where workers temporarily place parts during assembly. The call frame stack is a pile of work orders, each representing a sub-assembly task, with the top sheet being the currently active task. The instruction pointer is the foreman's finger pointing to the next step in the current work order. This whole apparatus maintains the complete dynamic state of program execution.
 
+![VM Runtime State Machine](./diagrams/vm-state-machine.svg)
+
 The `VM` struct is the heart of the runtime. It owns all mutable execution state: the operand stack for intermediate calculations, the call frame stack for tracking function activations, and the current instruction pointer. It also tracks whether execution is proceeding normally or has entered an error state.
 
 **VM Structure:**

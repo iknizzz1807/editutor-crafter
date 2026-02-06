@@ -4892,6 +4892,8 @@ The `user_data` field is your primary correlation tool between submissions and c
 
 The kernel exposes io_uring statistics through procfs when configured:
 
+![Io_uring Ring Memory Layout](./diagrams/diagram-ring-layout.svg)
+
 - **Enable statistics**: Set `IORING_SETUP_SQPOLL` or use `io_uring_register` with `IORING_REGISTER_STAT` (kernel ≥6.6)
 - **Check SQ poll thread**: Look for additional thread in `/proc/<pid>/task/` when using SQPOLL
 - **Monitor file descriptors**: The io_uring instance itself is an fd; monitor its status like any other fd

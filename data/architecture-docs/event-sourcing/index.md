@@ -3751,6 +3751,8 @@ The snapshot system also preserves the **temporal query capability** that makes 
 
 The **snapshot creation strategy** determines when, how often, and under what conditions the system creates snapshots for aggregates. This strategy significantly impacts both performance characteristics and storage costs, requiring careful calibration based on aggregate usage patterns and system resources.
 
+![Snapshot Strategy](./diagrams/snapshot-strategy.svg)
+
 > **Decision: Snapshot Trigger Strategy**
 > - **Context**: Aggregates accumulate events at different rates and have different loading frequency patterns, requiring flexible snapshot creation policies
 > - **Options Considered**: Fixed event count threshold, time-based intervals, hybrid count+time triggers, manual snapshot requests, machine learning-based prediction

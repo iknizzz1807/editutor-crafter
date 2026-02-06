@@ -2013,6 +2013,8 @@ After implementing the State Manager, verify its functionality:
 
 The **Planner** is the strategic brain of the IaC engine, responsible for transforming a collection of resources (from the parser) and the current state (from the state manager) into a safe, ordered execution plan. It determines **what** needs to change and, critically, **in what order** those changes must be applied to respect dependencies and avoid system failures.
 
+![Flowchart: Dependency Graph and Topological Sort](./diagrams/flowchart-graph.svg)
+
 ### Mental Model: The Project Manager and Gantt Chart
 
 Think of the Planner as a **project manager** preparing to renovate a house. The project manager receives:

@@ -885,6 +885,8 @@ The goals defined in this section establish clear expectations for recommendatio
 
 Building a production recommendation system is like orchestrating a sophisticated restaurant kitchen that serves both regular customers and VIP guests with different needs. Think of it this way: the kitchen has prep stations working in the background (offline model training), expeditors who know what each customer likes (candidate generation), and skilled servers who customize each dish on demand (real-time scoring). Just as a restaurant separates slow prep work from fast service, our recommendation engine uses a **two-stage architecture** that separates computationally expensive model training from lightning-fast recommendation serving.
 
+![Multi-Level Caching Architecture](./diagrams/caching-strategy.svg)
+
 The fundamental architectural insight is that most recommendation computation can be done ahead of time, but the final personalization must happen in real-time. This separation allows us to handle the inherent challenges of recommendation systems: **data sparsity** where most user-item pairs have no interactions, the **cold start problem** for new users and items, and the need to serve millions of users with sub-second latency while continuously learning from their behavior.
 
 ![System Component Architecture](./diagrams/system-components.svg)

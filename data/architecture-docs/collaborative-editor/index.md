@@ -1907,6 +1907,8 @@ The `vectorClock` maintains the highest logical clock seen from each site. This 
 
 User awareness features require tracking each connected user's current state, including cursor position, selection range, and visual identifier information. The cursor state must be **continuously synchronized** as users type and navigate through the document.
 
+![Cursor Synchronization State Machine](./diagrams/cursor-sync-state.svg)
+
 | Field Name | Type | Description |
 |---|---|---|
 | `userId` | `string` | Unique identifier for this user session |

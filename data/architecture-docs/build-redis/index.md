@@ -1315,6 +1315,8 @@ This structure provides several key benefits for development:
 
 Understanding how a client request flows through the system layers provides insight into the component interactions and data transformations. This flow demonstrates how each layer adds value while maintaining clear separation of concerns.
 
+![Pubsub Message Flow](./diagrams/pubsub-message-flow.svg)
+
 ![Request Processing Sequence](./diagrams/request-processing-flow.svg)
 
 #### Phase 1: Connection and Message Reception

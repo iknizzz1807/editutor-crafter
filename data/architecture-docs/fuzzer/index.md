@@ -426,6 +426,8 @@ Our fuzzing framework aims to demonstrate the core principles of modern grey-box
 
 The central goal of our fuzzing framework is implementing **coverage-guided mutation**—the technique that revolutionized automated bug discovery by providing systematic feedback for input generation. Unlike black-box fuzzing that mutates inputs blindly, our fuzzer observes which code paths each test input exercises and prioritizes mutations that are likely to explore uncharted program regions.
 
+![Mutation Strategy Flow](./diagrams/mutation-strategy-flow.svg)
+
 This goal encompasses several interconnected capabilities that work together to create intelligent input generation:
 
 | Capability | Implementation Requirement | Learning Objective |
@@ -4388,6 +4390,8 @@ After implementing corpus management, verify functionality with these checkpoint
 ## Fuzzing Loop Orchestrator
 
 > **Milestone(s):** This section primarily covers Milestone 5 (Fuzzing Loop), integrating all previous components into a coordinated fuzzing campaign that manages input selection, mutation scheduling, parallel execution, and progress reporting.
+
+![Fuzzing Loop Sequence](./diagrams/fuzzing-loop-sequence.svg)
 
 ### Mental Model: The Symphony Conductor: Understanding orchestration as coordinating multiple activities toward a unified goal
 

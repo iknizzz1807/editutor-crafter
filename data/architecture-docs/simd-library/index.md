@@ -2782,6 +2782,8 @@ echo "Benchmarking 64KB buffers..." && ./bench_memory --size=65536 --iterations=
 
 String processing represents one of the most compelling use cases for SIMD optimization because traditional scalar string operations examine one character at a time, leaving significant performance on the table. Think of SIMD string operations like having a team of 16 inspectors examining a conveyor belt of characters simultaneously, rather than a single inspector checking each character sequentially. When searching for a specific character or scanning for a null terminator, this parallel inspection can dramatically reduce the number of memory accesses and CPU cycles required.
 
+![String Search State](./diagrams/string-search-state.svg)
+
 The fundamental insight behind SIMD string operations is that we can load 16 characters into a single 128-bit register and perform comparison operations across all 16 positions simultaneously. This transforms what would be 16 separate comparison instructions in scalar code into a single vectorized comparison that produces a result mask indicating which positions matched our search criteria. The challenge lies in efficiently extracting meaningful information from these parallel comparison results and handling the inevitable edge cases where strings don't align perfectly with 16-byte boundaries.
 
 ### SIMD strlen Implementation: Parallel null terminator detection across 16-byte chunks

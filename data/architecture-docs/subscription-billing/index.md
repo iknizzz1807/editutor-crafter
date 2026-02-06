@@ -2334,6 +2334,8 @@ The `tier_breakdown` field contains a detailed calculation showing how usage was
 
 Usage events flow through several processing stages to ensure accuracy and performance in high-volume scenarios. This pipeline architecture supports real-time ingestion while maintaining billing accuracy.
 
+![Usage Event Processing and Aggregation](./diagrams/usage-aggregation-flow.svg)
+
 1. **Event Ingestion**: Client systems submit usage events via API with idempotency keys. Events are validated for required fields, reasonable quantities, and timestamp constraints.
 
 2. **Deduplication**: The system checks `idempotency_key` and `customer_id` combinations to prevent duplicate events. Duplicate submissions return the original event ID without creating new records.

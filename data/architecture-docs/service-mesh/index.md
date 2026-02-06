@@ -4952,6 +4952,8 @@ Managing consistent state across components in a concurrent system is like condu
 
 Service discovery state presents unique synchronization challenges because endpoint information changes dynamically as services scale up and down, and stale endpoint data can cause request failures. The service discovery component maintains a multi-layered caching strategy that balances consistency with performance.
 
+![Service Discovery Sync](./diagrams/service-discovery-sync.svg)
+
 **Endpoint Cache Synchronization Strategy:**
 
 The `EndpointCache` uses a combination of write-through caching and event-driven invalidation to maintain consistency:

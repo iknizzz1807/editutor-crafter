@@ -2598,6 +2598,8 @@ The core challenge lies in maintaining payment state consistency while handling 
 
 The charge processing flow represents the core algorithm that transforms a payment intent into an actual charge against a customer's payment method. Think of this process like conducting an orchestra - multiple instruments (tokenization, provider APIs, authentication flows) must play their parts in precise coordination to create a harmonious payment experience.
 
+![Webhook Processing Pipeline](./diagrams/webhook-processing-flow.svg)
+
 The flow begins when a payment intent transitions from the `created` status to active processing. At this point, the system has already validated the payment amount, currency, and idempotency constraints through the payment intent management layer. The processing engine's responsibility is to execute the actual charge while handling the various authentication and authorization steps required by modern payment regulations.
 
 > **Decision: Asynchronous Processing with State Persistence**

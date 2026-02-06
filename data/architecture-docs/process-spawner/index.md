@@ -6591,6 +6591,8 @@ The terminology in process management spans multiple layers of abstraction, from
 
 **process_info_t**: A structure that encapsulates all information needed to manage a single child process, including its process identifier, communication file descriptors, command line, and current status. This structure serves as the primary data type for tracking individual processes throughout their lifecycle from creation through termination. The structure contains fields for `pid` (process ID), `stdin_fd` and `stdout_fd` (communication endpoints), `command` (the executed command), and `status` (current process state).
 
+![Data Structure Relationships](./diagrams/data-structures.svg)
+
 **worker_t**: A structure representing a single worker process within a worker pool, containing a pointer to the process information, activity status, and linkage for pool management. The structure includes an `is_busy` flag to track whether the worker is currently processing a task, and a `next` pointer to support linked list organization of workers within the pool. This structure enables efficient worker selection and status tracking.
 
 **worker_pool_t**: A structure that manages a collection of worker processes, tracking the pool size, active worker count, and signal-based notification of child process state changes. The structure includes a linked list of workers, counters for pool management, and an atomic variable (`child_died`) for signal-safe communication between signal handlers and the main program logic.

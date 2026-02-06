@@ -1,0 +1,395 @@
+{
+  "title": "HTTP/2 Server: Design Document",
+  "overview": "This system implements a production-grade HTTP/2 server with full multiplexing, binary framing, and header compression capabilities. The key architectural challenge is managing concurrent multiplexed streams over a single TCP connection while implementing complex binary protocol parsing, HPACK compression, and flow control mechanisms.",
+  "sections": [
+    {
+      "id": "context-problem",
+      "title": "Context and Problem Statement",
+      "summary": "Explains why HTTP/2 exists, its advantages over HTTP/1.1, and the core challenges in implementing binary framing and multiplexing.",
+      "subsections": [
+        {
+          "id": "http1-limitations",
+          "title": "HTTP/1.1 Limitations",
+          "summary": "Head-of-line blocking, connection overhead, and header redundancy problems"
+        },
+        {
+          "id": "http2-benefits",
+          "title": "HTTP/2 Benefits",
+          "summary": "Multiplexing, binary framing, header compression, and server push advantages"
+        },
+        {
+          "id": "implementation-challenges",
+          "title": "Implementation Challenges",
+          "summary": "Binary protocol parsing, state machine complexity, and concurrency management"
+        }
+      ]
+    },
+    {
+      "id": "goals-non-goals",
+      "title": "Goals and Non-Goals",
+      "summary": "Defines what our HTTP/2 server will and will not implement, focusing on core multiplexing and compression features.",
+      "subsections": [
+        {
+          "id": "functional-goals",
+          "title": "Functional Goals",
+          "summary": "Binary framing, multiplexing, HPACK compression, flow control, and basic HTTP/2 semantics"
+        },
+        {
+          "id": "non-functional-goals",
+          "title": "Non-Functional Goals",
+          "summary": "Performance characteristics, resource usage, and reliability requirements"
+        },
+        {
+          "id": "explicit-non-goals",
+          "title": "Explicit Non-Goals",
+          "summary": "Server push, HTTP/3, advanced priority features, and production optimizations"
+        }
+      ]
+    },
+    {
+      "id": "high-level-architecture",
+      "title": "High-Level Architecture",
+      "summary": "Component overview showing how connection handlers, frame processors, stream managers, and HPACK engines work together.",
+      "subsections": [
+        {
+          "id": "component-overview",
+          "title": "Component Overview",
+          "summary": "Main components and their responsibilities in the server architecture"
+        },
+        {
+          "id": "module-structure",
+          "title": "Module Structure",
+          "summary": "Recommended file organization and package structure for the codebase"
+        },
+        {
+          "id": "threading-model",
+          "title": "Threading Model",
+          "summary": "Concurrency approach for handling multiple connections and streams"
+        }
+      ]
+    },
+    {
+      "id": "data-model",
+      "title": "Data Model",
+      "summary": "Core data structures including frames, streams, connection state, and HPACK tables with their relationships.",
+      "subsections": [
+        {
+          "id": "frame-types",
+          "title": "Frame Types",
+          "summary": "Binary frame structures for DATA, HEADERS, SETTINGS, and control frames"
+        },
+        {
+          "id": "stream-state",
+          "title": "Stream State",
+          "summary": "Stream lifecycle states and associated metadata"
+        },
+        {
+          "id": "connection-state",
+          "title": "Connection State",
+          "summary": "Connection-level settings, flow control windows, and active streams"
+        },
+        {
+          "id": "hpack-tables",
+          "title": "HPACK Tables",
+          "summary": "Static and dynamic table structures for header compression"
+        }
+      ]
+    },
+    {
+      "id": "binary-framing",
+      "title": "Binary Framing Engine",
+      "summary": "Implements HTTP/2's binary frame format with parsing, validation, and serialization of all frame types.",
+      "subsections": [
+        {
+          "id": "frame-parsing",
+          "title": "Frame Parsing",
+          "summary": "9-byte header parsing and payload extraction with endianness and length validation"
+        },
+        {
+          "id": "frame-types-impl",
+          "title": "Frame Type Implementation",
+          "summary": "Specific parsing and serialization logic for DATA, HEADERS, SETTINGS, and control frames"
+        },
+        {
+          "id": "frame-validation",
+          "title": "Frame Validation",
+          "summary": "Length limits, reserved bit checking, and protocol compliance validation"
+        }
+      ]
+    },
+    {
+      "id": "hpack-compression",
+      "title": "HPACK Compression Engine",
+      "summary": "Implements RFC 7541 header compression with static/dynamic tables, Huffman coding, and integer encoding.",
+      "subsections": [
+        {
+          "id": "static-table",
+          "title": "Static Table",
+          "summary": "Predefined 61-entry table for common headers with indexed lookup"
+        },
+        {
+          "id": "dynamic-table",
+          "title": "Dynamic Table",
+          "summary": "FIFO eviction, size management, and entry insertion for connection-specific headers"
+        },
+        {
+          "id": "huffman-coding",
+          "title": "Huffman Coding",
+          "summary": "Huffman decoding for compressed header values with boundary handling"
+        },
+        {
+          "id": "integer-encoding",
+          "title": "Integer Encoding",
+          "summary": "Variable-length integer encoding/decoding for 5, 6, and 7-bit prefixes"
+        }
+      ]
+    },
+    {
+      "id": "stream-management",
+      "title": "Stream Management",
+      "summary": "Handles multiplexed stream lifecycle, state machines, priority scheduling, and concurrent stream limits.",
+      "subsections": [
+        {
+          "id": "stream-state-machine",
+          "title": "Stream State Machine",
+          "summary": "State transitions between idle, open, half-closed, and closed states"
+        },
+        {
+          "id": "stream-allocation",
+          "title": "Stream ID Allocation",
+          "summary": "Odd/even ID assignment for client/server streams and ID exhaustion handling"
+        },
+        {
+          "id": "priority-scheduling",
+          "title": "Priority Scheduling",
+          "summary": "Weight-based scheduling and dependency tree management for stream prioritization"
+        },
+        {
+          "id": "stream-limits",
+          "title": "Stream Limits",
+          "summary": "Concurrent stream enforcement and RST_STREAM handling for cancellation"
+        }
+      ]
+    },
+    {
+      "id": "flow-control",
+      "title": "Flow Control",
+      "summary": "Implements connection and stream-level flow control with window management and backpressure handling.",
+      "subsections": [
+        {
+          "id": "window-management",
+          "title": "Window Management",
+          "summary": "Connection and stream window tracking with WINDOW_UPDATE frame processing"
+        },
+        {
+          "id": "backpressure-handling",
+          "title": "Backpressure Handling",
+          "summary": "Data queueing when windows are exhausted and resumption on window updates"
+        },
+        {
+          "id": "window-edge-cases",
+          "title": "Window Edge Cases",
+          "summary": "Underflow/overflow prevention and deadlock avoidance strategies"
+        }
+      ]
+    },
+    {
+      "id": "interactions-data-flow",
+      "title": "Interactions and Data Flow",
+      "summary": "How components communicate during request processing, frame routing, and stream multiplexing operations.",
+      "subsections": [
+        {
+          "id": "request-processing",
+          "title": "Request Processing Flow",
+          "summary": "End-to-end flow from frame reception to HTTP response generation"
+        },
+        {
+          "id": "frame-routing",
+          "title": "Frame Routing",
+          "summary": "How frames are dispatched to appropriate stream handlers based on stream ID"
+        },
+        {
+          "id": "header-decompression-flow",
+          "title": "Header Decompression Flow",
+          "summary": "HPACK decompression pipeline and header reconstruction process"
+        }
+      ]
+    },
+    {
+      "id": "error-handling",
+      "title": "Error Handling and Edge Cases",
+      "summary": "Protocol violations, connection errors, stream resets, and graceful degradation strategies.",
+      "subsections": [
+        {
+          "id": "protocol-errors",
+          "title": "Protocol Errors",
+          "summary": "Handling malformed frames, invalid state transitions, and spec violations"
+        },
+        {
+          "id": "connection-errors",
+          "title": "Connection Errors",
+          "summary": "GOAWAY frame handling and connection-level error recovery"
+        },
+        {
+          "id": "stream-errors",
+          "title": "Stream Errors",
+          "summary": "RST_STREAM scenarios and per-stream error isolation"
+        }
+      ]
+    },
+    {
+      "id": "testing-strategy",
+      "title": "Testing Strategy",
+      "summary": "Unit testing approaches for each component, integration testing with real HTTP/2 clients, and milestone checkpoints.",
+      "subsections": [
+        {
+          "id": "unit-testing",
+          "title": "Unit Testing",
+          "summary": "Testing frame parsing, HPACK compression, and stream state machines in isolation"
+        },
+        {
+          "id": "integration-testing",
+          "title": "Integration Testing",
+          "summary": "End-to-end testing with curl, browser clients, and HTTP/2 test tools"
+        },
+        {
+          "id": "milestone-checkpoints",
+          "title": "Milestone Checkpoints",
+          "summary": "Verification steps after each milestone showing expected behavior and outputs"
+        }
+      ]
+    },
+    {
+      "id": "debugging-guide",
+      "title": "Debugging Guide",
+      "summary": "Common implementation bugs, diagnostic techniques, and troubleshooting flowcharts for HTTP/2 protocol issues.",
+      "subsections": [
+        {
+          "id": "frame-parsing-bugs",
+          "title": "Frame Parsing Bugs",
+          "summary": "Endianness issues, length validation errors, and binary parsing problems"
+        },
+        {
+          "id": "hpack-compression-bugs",
+          "title": "HPACK Compression Bugs",
+          "summary": "Table index errors, Huffman decoding issues, and dynamic table management bugs"
+        },
+        {
+          "id": "stream-state-bugs",
+          "title": "Stream State Bugs",
+          "summary": "State machine violations, concurrent access issues, and flow control bugs"
+        },
+        {
+          "id": "debugging-tools",
+          "title": "Debugging Tools",
+          "summary": "Wireshark analysis, logging strategies, and HTTP/2 debugging utilities"
+        }
+      ]
+    },
+    {
+      "id": "future-extensions",
+      "title": "Future Extensions",
+      "summary": "Server push implementation, advanced priority features, HTTP/3 migration path, and performance optimizations.",
+      "subsections": [
+        {
+          "id": "server-push",
+          "title": "Server Push",
+          "summary": "PUSH_PROMISE frame handling and resource push strategies"
+        },
+        {
+          "id": "advanced-features",
+          "title": "Advanced Features",
+          "summary": "Connection coalescing, alternative services, and HTTP/2 extensions"
+        },
+        {
+          "id": "performance-optimizations",
+          "title": "Performance Optimizations",
+          "summary": "Connection pooling, memory management, and high-performance I/O patterns"
+        }
+      ]
+    },
+    {
+      "id": "glossary",
+      "title": "Glossary",
+      "summary": "Definitions of HTTP/2 terminology, frame types, HPACK concepts, and protocol-specific vocabulary.",
+      "subsections": []
+    }
+  ],
+  "diagrams": [
+    {
+      "id": "component-architecture",
+      "title": "HTTP/2 Server Component Architecture",
+      "description": "Shows the main components including Connection Handler, Frame Parser, Stream Manager, HPACK Engine, and Flow Controller with their interactions and data flow",
+      "type": "component",
+      "relevant_sections": [
+        "high-level-architecture",
+        "interactions-data-flow"
+      ]
+    },
+    {
+      "id": "frame-structure",
+      "title": "HTTP/2 Frame Structure",
+      "description": "Visual representation of the 9-byte frame header and different frame types (DATA, HEADERS, SETTINGS) with their payload formats",
+      "type": "class",
+      "relevant_sections": [
+        "data-model",
+        "binary-framing"
+      ]
+    },
+    {
+      "id": "stream-state-machine",
+      "title": "HTTP/2 Stream State Machine",
+      "description": "State transitions between idle, reserved, open, half-closed-local, half-closed-remote, and closed states with triggering events",
+      "type": "state-machine",
+      "relevant_sections": [
+        "stream-management"
+      ]
+    },
+    {
+      "id": "request-processing-flow",
+      "title": "Request Processing Sequence",
+      "description": "End-to-end sequence showing frame reception, HPACK decompression, stream routing, and response generation",
+      "type": "sequence",
+      "relevant_sections": [
+        "interactions-data-flow"
+      ]
+    },
+    {
+      "id": "hpack-compression-flow",
+      "title": "HPACK Header Compression Process",
+      "description": "Flowchart showing header compression decision tree including static table lookup, dynamic table insertion, and Huffman encoding",
+      "type": "flowchart",
+      "relevant_sections": [
+        "hpack-compression"
+      ]
+    },
+    {
+      "id": "flow-control-windows",
+      "title": "Flow Control Window Management",
+      "description": "Component diagram showing connection-level and stream-level flow control windows with WINDOW_UPDATE frame interactions",
+      "type": "component",
+      "relevant_sections": [
+        "flow-control"
+      ]
+    },
+    {
+      "id": "multiplexing-visualization",
+      "title": "Stream Multiplexing Visualization",
+      "description": "Shows multiple concurrent streams over a single TCP connection with frame interleaving and priority scheduling",
+      "type": "sequence",
+      "relevant_sections": [
+        "stream-management",
+        "interactions-data-flow"
+      ]
+    },
+    {
+      "id": "error-handling-flow",
+      "title": "Error Handling and Recovery Flow",
+      "description": "Flowchart showing error detection, classification (connection vs stream), and recovery actions including GOAWAY and RST_STREAM",
+      "type": "flowchart",
+      "relevant_sections": [
+        "error-handling"
+      ]
+    }
+  ]
+}

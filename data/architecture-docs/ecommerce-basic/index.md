@@ -6174,6 +6174,8 @@ artillery run tests/performance/cart-concurrency-test.yml
 # - No inventory overselling under concurrent cart operations
 # - Session management stable under authentication load
 
+```
+
 
 ## Debugging Guide
 

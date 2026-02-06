@@ -5019,6 +5019,8 @@ int validate_state_marshaling_consistency(StateMarshalingContext* context);
     #define ATOMIC_INCREMENT(ptr) do { pthread_mutex_lock(&profiling_mutex); (*ptr)++; pthread_mutex_unlock(&profiling_mutex); } while(0)
 #endif
 
+```
+
 
 ## Error Handling and Edge Cases
 

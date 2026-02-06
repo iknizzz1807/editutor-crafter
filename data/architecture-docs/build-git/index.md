@@ -8021,6 +8021,8 @@ class MilestoneTestBase:
         """Clean up test repository and restore environment."""
         # TODO 1:
 
+```
+
 
 ## Debugging Guide
 
@@ -9907,6 +9909,8 @@ if pack_dir.exists():
         print(f'Pack file has objects: {reader.has_object}')
 "
 # Expected: Successfully reads pack file metadata
+
+```
 
 
 ## Glossary

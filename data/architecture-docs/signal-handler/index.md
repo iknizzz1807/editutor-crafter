@@ -1258,6 +1258,8 @@ kill -USR1 $!  # Signal should be delivered after critical section exits
 ./signal_test &
 kill -TERM $!  # Should see event loop processing signal, not direct handler
 
+```
+
 
 ## Data Model
 

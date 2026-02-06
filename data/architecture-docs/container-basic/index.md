@@ -2829,6 +2829,8 @@ sudo lsns -t mnt
 # Check device nodes in container
 ls -la /dev/null /dev/zero /dev/random
 
+```
+
 
 ## Network Namespace Component
 
@@ -5307,6 +5309,8 @@ sudo ./test_integration
 # PASS: System cleanup verification - no resource leaks detected
 # 
 # Integration test summary: 24/24 tests passed
+
+```
 
 
 ## Debugging Guide

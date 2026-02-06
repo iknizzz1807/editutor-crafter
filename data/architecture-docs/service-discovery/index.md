@@ -938,6 +938,8 @@ curl http://localhost:8080/services/test-service
 # Expected: JSON response with service instances
 # Should see: proper HTTP status codes, error handling, JSON formatting
 
+```
+
 
 ## Data Model
 

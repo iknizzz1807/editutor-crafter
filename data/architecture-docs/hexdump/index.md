@@ -1201,6 +1201,8 @@ while ((result = file_reader_read_chunk(&reader, &chunk)) == SUCCESS) {
 ./hexdump nonexistent_file.bin  # Should show appropriate error
 ./hexdump -s -10 file.bin       # Should reject negative offset
 
+```
+
 
 ## Data Model
 

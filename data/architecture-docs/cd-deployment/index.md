@@ -4170,6 +4170,8 @@ cat $ACTIVE_ENV_FILE 2>/dev/null || echo "No active env file"
 # List running containers by environment color
 docker ps --filter "label=environment=blue" --format "table {{.ID}}\t{{.Names}}\t{{.Status}}"
 
+```
+
 
 ## Testing Strategy
 

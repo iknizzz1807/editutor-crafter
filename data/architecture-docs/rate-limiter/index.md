@@ -6299,6 +6299,8 @@ class RateLimiterLoadTester:
 #     result = await tester.execute_load_test(request_rate=150, duration_seconds=60)
 #     assert tester.validate_rate_limiting_accuracy(result)
 
+```
+
 
 ## Debugging Guide
 

@@ -8369,6 +8369,8 @@ func checkMemoryGrowth(ctx context.Context) error {
   "timestamp": "2024-01-15T10:30:00Z"
 }
 
+```
+
 
 ## Future Extensions
 

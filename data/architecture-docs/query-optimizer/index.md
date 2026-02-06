@@ -6550,6 +6550,8 @@ def validate_milestone_4_debugging(planner: 'PhysicalPlanner') -> List[str]:
     # TODO: Validate final plan correctness verification
     return issues
 
+```
+
 
 ## Future Extensions
 

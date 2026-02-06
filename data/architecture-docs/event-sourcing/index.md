@@ -3722,6 +3722,8 @@ SELECT account_id, balance FROM account_summary WHERE account_id = 'test-account
 -- Check for duplicate processing
 SELECT COUNT(*) as event_count FROM events WHERE stream_id = 'account-test-account';
 
+```
+
 
 ## Snapshot System
 

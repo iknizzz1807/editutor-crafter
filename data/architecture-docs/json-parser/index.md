@@ -854,6 +854,8 @@ except ParseError as e:
     print(f"Parse error: {e}")
     # Should report unexpected trailing comma
 
+```
+
 
 ## High-Level Architecture
 

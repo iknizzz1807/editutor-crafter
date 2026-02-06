@@ -2472,6 +2472,8 @@ console.table(board.grid);  // Visual grid display
 console.log('Board dimensions:', board.width, 'x', board.height);
 console.log('Cell (5,10):', board.getCellAt(5, 10));
 
+```
+
 
 ## Tetromino System Component
 
@@ -7950,6 +7952,8 @@ function verifyMilestone2() {
     
     console.log('Milestone 2 verification complete');
 }
+
+```
 
 
 ## Future Extensions

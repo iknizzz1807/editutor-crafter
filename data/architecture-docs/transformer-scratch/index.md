@@ -2397,6 +2397,8 @@ else:
     print('✓ Memory usage within reasonable bounds')
 "
 
+```
+
 
 ## Attention Mechanism Design
 
@@ -7884,6 +7886,8 @@ class TensorShapeDebugger:
         # TODO 5: Validate d_k = d_model / num_heads consistency
         # Hint: Non-contiguous tensors after transpose operations cause view() errors
         pass
+
+```
 
 
 ## Debugging Guide

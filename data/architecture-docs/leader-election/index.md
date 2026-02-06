@@ -1835,6 +1835,8 @@ pkill -f "node-id=3"
 # Expected: Token should skip failed nodes and complete ring traversal
 # Check logs for "Token forwarded", "Ring repaired", "Leader selected" messages
 
+```
+
 
 ## Data Model and Message Types
 

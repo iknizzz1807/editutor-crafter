@@ -4544,6 +4544,8 @@ make test-integration
 # Expected: Full GC cycles work correctly, object lifetimes managed properly
 # Verify: No memory leaks, use-after-free, or corruption detected
 
+```
+
 
 ## Debugging Guide
 
@@ -5143,6 +5145,8 @@ Expected command-line usage:
 
 # Integration with external tools
 valgrind --leak-check=full --suppressions=gc_valgrind.supp ./gc_test
+
+```
 
 
 ## Future Extensions

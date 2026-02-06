@@ -1870,6 +1870,8 @@ done
 # Expected: New requests avoid backend1 (has active connection)
 # Verify: backend2 and backend3 get the new requests
 
+```
+
 
 ## Data Model
 
@@ -7856,6 +7858,8 @@ go test ./test/integration/ -run TestMilestone4 -v
 
 # Expected: All algorithms work correctly, runtime switching successful
 
+```
+
 
 ## Debugging Guide
 
@@ -8396,6 +8400,8 @@ for i in {1..10}; do curl http://localhost:8080/api/test; done
 
 # Restart backend and verify recovery
 docker start backend2
+
+```
 
 
 ## Future Extensions

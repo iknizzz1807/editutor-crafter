@@ -1479,6 +1479,8 @@ verified = verify_token(token, secret, context)
 print(f'Fully validated: {verified.sub}')
 "
 
+```
+
 
 ## Data Model
 

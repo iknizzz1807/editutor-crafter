@@ -918,6 +918,8 @@ ldd /bin/ls                      # Compare library list
 readelf -d /bin/ls               # Compare dynamic section
 readelf -l /bin/ls               # Compare program headers
 
+```
+
 
 ## High-Level Architecture
 

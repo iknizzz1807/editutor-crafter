@@ -6988,6 +6988,8 @@ go test -v ./test/benchmarks -run TestCompression
 # Load test with multiple clients
 ./test/integration/load_test --clients=32 --duration=60s
 
+```
+
 
 ## Debugging Guide and Common Issues
 

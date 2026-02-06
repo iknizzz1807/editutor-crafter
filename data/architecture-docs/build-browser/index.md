@@ -6604,6 +6604,8 @@ cargo test integration --features test-utils
 # Error recovery should maintain usable output despite malformed input  
 # Performance tests should complete within reasonable time/memory bounds
 
+```
+
 
 ## Debugging Guide and Common Issues
 

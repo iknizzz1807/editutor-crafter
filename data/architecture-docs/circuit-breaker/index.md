@@ -2367,6 +2367,8 @@ go test -v -run TestStateTransitions ./internal/circuitbreaker/
 # Run benchmarks to check performance
 go test -bench=. ./internal/circuitbreaker/
 
+```
+
 
 ## Sliding Window Metrics
 

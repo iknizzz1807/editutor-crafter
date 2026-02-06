@@ -2773,6 +2773,8 @@ echo "Testing memcpy..." && ./test_memory memcpy
 echo "Benchmarking 4KB buffers..." && ./bench_memory --size=4096 --iterations=10000
 echo "Benchmarking 64KB buffers..." && ./bench_memory --size=65536 --iterations=1000
 
+```
+
 
 ## String Operations Component
 

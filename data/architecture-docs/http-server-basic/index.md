@@ -6376,6 +6376,8 @@ test_resource_limits() {
     # Expected: Server enforces limits without crashing
 }
 
+```
+
 
 ## Debugging Guide
 

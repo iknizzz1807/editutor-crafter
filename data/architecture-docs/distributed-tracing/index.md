@@ -610,6 +610,8 @@ func (pb *PerformanceBudget) CheckBudget(ctx context.Context) error {
     return nil
 }
 
+```
+
 
 ## High-Level Architecture
 
@@ -7287,6 +7289,8 @@ echo "   - Unit tests passed: ✅"
 echo "   - Context propagation: ✅"
 echo "   - Span hierarchy: ✅"
 echo "   - Performance overhead: < 0.1ms"
+
+```
 
 
 ## Debugging Guide

@@ -6811,6 +6811,8 @@ func (mv *MilestoneValidator) ValidateMilestone3() error {
     // Signs of issues: infected files in production storage, false positives
 }
 
+```
+
 
 ## Debugging Guide and Common Issues
 

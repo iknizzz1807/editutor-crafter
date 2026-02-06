@@ -3415,6 +3415,8 @@ curl -X POST http://localhost:8080/webhook \
   -H "X-Hub-Signature-256: sha256=..." \
   -d '{"ref":"refs/heads/main","after":"commit-sha",...}'
 
+```
+
 
 ## Manifest Generator
 
@@ -8964,6 +8966,8 @@ curl -X POST http://localhost:8080/webhooks/github \
     --dry-run
 
 # Expected output: 2 orphaned resources identified for deletion: service/old-service, configmap/deprecated-config
+
+```
 
 
 ## Debugging Guide

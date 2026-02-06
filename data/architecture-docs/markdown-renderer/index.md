@@ -2231,6 +2231,8 @@ After implementing the block parser, verify correct functionality with these spe
 This is a paragraph with
 multiple lines of text.
 
+```
+
 ## Subsection
 
 ```python
@@ -2253,6 +2255,8 @@ Run your parser and verify the AST contains 6 blocks: heading, paragraph, headin
 - If paragraphs merge incorrectly, verify blank line handling in `can_current_block_continue`
 - If code blocks lose content, check fence detection and content preservation logic
 - If blockquotes don't handle continuation, verify lazy continuation rules
+
+```
 
 
 ## Inline Parser Design
@@ -5847,6 +5851,8 @@ def generate_block_test_cases() -> Dict[str, str]:
 This is a regular paragraph with some text that spans
 multiple lines but should be grouped together.
 
+```
+
 ## Second Level Heading
 
 Another paragraph here.
@@ -6429,6 +6435,8 @@ if __name__ == "__main__":
     create_test_data_files()
 ```
 
+```
+
 #### Core Logic Skeleton Code
 
 **Block Parser Test Template** (`tests/unit/test_block_parser.py`):
@@ -6961,6 +6969,8 @@ def main():
             else:
                 print(f"❌ Milestone {milestone_num} needs more work.")
                 sys
+
+```
 
 
 ## Debugging Guide

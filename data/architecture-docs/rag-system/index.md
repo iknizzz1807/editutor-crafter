@@ -9078,6 +9078,8 @@ class CacheCoherence:
         # TODO 4: Monitor cache hit rate during transition
         pass
 
+```
+
 
 ## Glossary
 

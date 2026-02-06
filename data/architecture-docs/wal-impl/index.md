@@ -6282,6 +6282,8 @@ cargo test checkpoint_truncation_safety
 # Expected behavior: Stable operation with bounded disk usage
 # Signs of problems: Unbounded log growth, checkpoint inconsistency, truncation errors
 
+```
+
 
 ## Future Extensions
 

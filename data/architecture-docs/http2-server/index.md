@@ -7880,3 +7880,4 @@ logger.WithFields(logrus.Fields{
     "current_state": state.String(),
     "error_code": errorCode.String(),
 }).Error("Stream state machine violation")
+```

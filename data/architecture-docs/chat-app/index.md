@@ -5551,6 +5551,8 @@ Test: Send messages, restart server, reload page, rejoin room
 Expected: Previous messages loaded from history
 Debug: Check database queries, message timestamps, pagination limits
 
+```
+
 
 ## Future Extensions
 > **Milestone(s):** This section explores enhancements that build upon all four milestones, showing how the foundational architecture can evolve to support more sophisticated features and scale.

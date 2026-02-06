@@ -5077,6 +5077,8 @@ python -m cProfile -s cumulative scripts/benchmark_verification.py
 # Analyze timing attack resistance  
 python scripts/timing_analysis.py --algorithm bcrypt --samples 1000 --output timing_report.json
 
+```
+
 
 ## Error Handling and Edge Cases
 

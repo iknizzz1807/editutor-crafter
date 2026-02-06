@@ -5355,6 +5355,8 @@ func TestMilestone3InterceptorChain(t *testing.T) {
     // TODO: Add tests for logging and recovery interceptors
 }
 
+```
+
 
 ## Common Issues and Debugging
 

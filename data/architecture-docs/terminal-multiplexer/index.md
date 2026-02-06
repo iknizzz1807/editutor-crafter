@@ -6220,6 +6220,8 @@ make test-milestone4
 
 # Manual verification: Test all key bindings and UI features
 
+```
+
 
 ## Debugging Guide
 

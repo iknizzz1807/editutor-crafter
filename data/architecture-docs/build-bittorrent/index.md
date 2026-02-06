@@ -466,6 +466,8 @@ go run cmd/bt-client/main.go connect testdata/sample.torrent 192.168.1.100:6881
 # Received bitfield: 11110000 (peer has first 4 pieces)
 # Peer unchoked us, ready to request pieces
 
+```
+
 
 ## Goals and Non-Goals
 

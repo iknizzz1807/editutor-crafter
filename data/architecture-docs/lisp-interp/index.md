@@ -7198,6 +7198,8 @@ def validate_milestone_progress(milestone_number: int):
     # TODO 4: Suggest next steps if tests fail
     pass
 
+```
+
 
 ## Debugging Guide
 

@@ -6742,6 +6742,8 @@ go test -v ./test/integration/client_test.go
 # - Strong consistency reads always current
 # - Subscription streams deliver all entries
 
+```
+
 
 ## Debugging Guide
 

@@ -5362,6 +5362,8 @@ After implementing the scheduler:
 | **Missed jobs after restart** | Timeline scores in past not processed | Check if `ZRANGEBYSCORE` uses `now() + interval` not just `now()` | Always poll with range `0` to `now + interval` |
 | **Cron job runs twice in same minute** | Uniqueness window too short | Check `unique_window_seconds` vs cron frequency | Increase window to cover entire polling interval |
 
+```
+
 ---
 
 

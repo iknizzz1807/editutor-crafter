@@ -6232,6 +6232,8 @@ class TestParserPerformance:
         # TODO 5: Validate graceful handling of extreme nesting
         pass
 
+```
+
 
 ## Debugging Guide
 

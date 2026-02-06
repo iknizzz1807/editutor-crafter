@@ -7979,6 +7979,8 @@ func BenchmarkMessageThroughput(b *testing.B) {
     // TODO: Verify that performance scales with resources
 }
 
+```
+
 
 ## Debugging Guide
 

@@ -5338,6 +5338,8 @@ func (p *Participant) Recover() error {
        delay *= 2
    }
 
+```
+
 
 ## Error Handling and Edge Cases
 
@@ -7220,6 +7222,8 @@ func TestVoteTimeout(t *testing.T) {
     // No need to actually wait 5 seconds!
 }
 
+```
+
 
 ## Future Extensions
 
@@ -8073,3 +8077,4 @@ func (c *Coordinator) CollectAcksAsync(txID string, participants []Participant) 
         c.markTransactionForTruncation(txID)
     }()
 }
+```

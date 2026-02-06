@@ -2350,6 +2350,8 @@ func TestFunctionDefinition_JSONRoundTrip(t *testing.T) {
 	assert.Equal(t, fd.Runtime, fd2.Runtime)
 }
 
+```
+
 
 ## Component Design: Function Packaging
 > **Milestone(s):** Milestone 1
@@ -6750,6 +6752,8 @@ $ for i in {1..10}; do
   done
 # First few should return 500, then circuit should trip and return 503
 # Verify circuit breaker metrics
+
+```
 
 
 ## Testing Strategy

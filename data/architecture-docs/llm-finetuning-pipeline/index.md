@@ -8390,6 +8390,8 @@ def test_milestone_1_dataset_preparation_complete():
         #     formatted_text = formatter.apply_template(sample)
         #     assert isinstance(formatted_text, str),
 
+```
+
 
 ## Debugging Guide
 

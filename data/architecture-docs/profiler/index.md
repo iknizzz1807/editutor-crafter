@@ -8296,6 +8296,8 @@ python -m profiler.debugging.validators validate_milestone_4_memory_profiling
 # - Memory overhead <10% of tracked allocations
 # - No metadata corruption detected
 
+```
+
 
 ## Future Extensions
 

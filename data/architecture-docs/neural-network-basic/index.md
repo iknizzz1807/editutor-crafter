@@ -4091,6 +4091,8 @@ python examples/debug_simple_network.py
 Expected: Decreasing loss, stable gradients, successful learning on XOR problem
 Signs of problems: Exploding loss, zero gradients, failure to learn simple patterns
 
+```
+
 
 ## Future Extensions
 

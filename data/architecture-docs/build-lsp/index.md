@@ -1172,6 +1172,8 @@ public handleDidChange(params: any): void {
   });
 }
 
+```
+
 
 ## High-Level Architecture
 

@@ -9602,6 +9602,8 @@ def test_experiment_tracking_load():
               f"p99: {result.p99_latency:.1f}ms, "
               f"errors: {result.error_rate:.2%}")
 
+```
+
 
 ## Debugging Guide
 

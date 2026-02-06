@@ -3082,6 +3082,8 @@ $ echo $PATH
 # Test file descriptor limits
 $ ulimit -n
 
+```
+
 
 ## I/O Redirection and Pipes
 

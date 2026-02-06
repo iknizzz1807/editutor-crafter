@@ -1649,6 +1649,8 @@ cmake .. && make
 # - Diffuse objects show soft, realistic shading
 # - No visual artifacts (shadow acne, light leaks, etc.)
 
+```
+
 
 ## Data Model and Core Types
 

@@ -24,37 +24,41 @@
 </svelte:head>
 
 <header class="main-header">
-	<h1>
-		<span>{data.domain.icon}</span>
-		{data.domain.name}
-	</h1>
-	{#if data.domain.description}
-		<p>{data.domain.description}</p>
-	{/if}
+	<div class="header-top">
+		<div class="header-left">
+			<h1>
+				<span>{data.domain.icon}</span>
+				{data.domain.name}
+			</h1>
+			{#if data.domain.description}
+				<p>{data.domain.description}</p>
+			{/if}
+		</div>
 
-	<div class="filters">
-		<button
-			class="filter-btn"
-			class:active={currentFilter === 'all'}
-			onclick={() => (currentFilter = 'all')}
-		>
-			All Levels
-		</button>
-		{#each ['beginner', 'intermediate', 'advanced', 'expert'] as level}
+		<div class="filters">
 			<button
 				class="filter-btn"
-				class:active={currentFilter === level}
-				onclick={() => (currentFilter = level)}
+				class:active={currentFilter === 'all'}
+				onclick={() => (currentFilter = 'all')}
 			>
-				{levelLabels[level]}
+				All Levels
 			</button>
-		{/each}
+			{#each ['beginner', 'intermediate', 'advanced', 'expert'] as level}
+				<button
+					class="filter-btn"
+					class:active={currentFilter === level}
+					onclick={() => (currentFilter = level)}
+				>
+					{levelLabels[level]}
+				</button>
+			{/each}
+		</div>
 	</div>
 </header>
 
 <div class="content">
 	{#each levels as level}
-		{@const levelProjects = data.projects[level] || []}
+		{@const levelProjects = data.projects[level as keyof typeof data.projects] || []}
 		{#if levelProjects.length > 0}
 			<div class="level-group">
 				<div class="level-header">
@@ -87,19 +91,33 @@
 		display: flex;
 		align-items: center;
 		gap: 12px;
+		margin-bottom: 4px;
 	}
 
 	.main-header p {
 		color: var(--text-secondary);
-		margin-top: 4px;
+		margin-top: 0;
 		font-size: 14px;
+		margin-bottom: 16px;
+	}
+
+	.header-top {
+		display: flex;
+		justify-content: space-between;
+		align-items: flex-start;
+		gap: 20px;
+	}
+
+	.header-left {
+		flex: 1;
+		min-width: 0;
 	}
 
 	.filters {
 		display: flex;
 		gap: 8px;
-		margin-top: 16px;
 		flex-wrap: wrap;
+		flex-shrink: 0;
 	}
 
 	.filter-btn {

@@ -5,6 +5,11 @@ from pathlib import Path
 from string import Template
 from langgraph.graph import StateGraph, START, END
 from langchain_openai import ChatOpenAI
+
+try:
+    from langchain_anthropic import ChatAnthropic
+except ImportError:
+    ChatAnthropic = None
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # --- CONFIGURATION ---
@@ -22,12 +27,8 @@ def load_instruction(name):
 
 
 def load_d2_docs():
-    docs = []
-    for file in ["d2_docs.md", "dagre.txt", "elk.txt", "tala.txt"]:
-        path = D2_EXAMPLES_DIR / file
-        if path.exists():
-            docs.append(f"--- DOC: {file} ---\n{path.read_text()}")
-    return "\n\n".join(docs)
+    path = D2_EXAMPLES_DIR / "d2_docs.md"
+    return path.read_text() if path.exists() else "Standard D2 documentation."
 
 
 D2_REFERENCE = load_d2_docs()
@@ -35,21 +36,32 @@ INSTR_ARCHITECT = load_instruction("architect")
 INSTR_EDUCATOR = load_instruction("educator")
 INSTR_ARTIST = load_instruction("artist")
 
-LLM = ChatOpenAI(
-    base_url="http://127.0.0.1:7999/v1",
-    api_key="mythong2005",
-    model="gemini_cli/gemini-3-flash-preview",
-    temperature=0.1,
-)
+# --- LLM SETUP ---
+USE_ANTHROPIC = os.getenv("USE_ANTHROPIC", "false").lower() == "true"
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
+
+if USE_ANTHROPIC and ChatAnthropic:
+    LLM = ChatAnthropic(
+        model=ANTHROPIC_MODEL,
+        temperature=0.1,
+    )
+    print(f">>> Provider: ANTHROPIC ({ANTHROPIC_MODEL})")
+else:
+    LLM = ChatOpenAI(
+        base_url="http://127.0.0.1:7999/v1",
+        api_key="mythong2005",
+        model="gemini_cli/gemini-3-flash-preview",
+        temperature=0.1,
+    )
+    if USE_ANTHROPIC and not ChatAnthropic:
+        print(
+            ">>> Warning: langchain-anthropic not installed. Falling back to local proxy."
+        )
+    print(">>> Provider: LOCAL PROXY (Gemini 3 Flash)")
 
 
 def replace_reducer(old, new):
     return new
-
-
-# ===========================================================================
-# V17.1 - THE SCHEMA-ENFORCED ATLAS (Robust JSON & Fallbacks)
-# ===========================================================================
 
 
 class GraphState(TypedDict):
@@ -66,7 +78,6 @@ class GraphState(TypedDict):
     status: Annotated[str, replace_reducer]
 
 
-# --- HELPERS ---
 def extract_json(text):
     if not text:
         return None
@@ -79,33 +90,27 @@ def extract_json(text):
     return None
 
 
-# --- AGENT NODES ---
-
-
 def architect_node(state: GraphState):
-    """Phase 1: Planning with strict JSON schema."""
     print(f"  [Agent: Architect] Blueprinting {state['project_id']}...")
     meta = state["meta"]
-
     prompt = f"""
     {INSTR_ARCHITECT}
     PROJECT: {meta.get("name")}\nDESC: {meta.get("description")}
-    
     TASK: Output ONLY raw JSON for the Blueprint. 
     EXAMPLE JSON FORMAT (STRICT):
     {{
       "title": "Build a Garbage Collector",
-      "overview": "Comprehensive summary...",
+      "overview": "Summary...",
       "technical_contract": {{ "structs": [], "interfaces": [] }},
-      "milestones": [ {{ "id": "ms-1", "title": "Object Anatomy", "summary": "..." }} ],
-      "diagrams": [ {{ "id": "diag-01", "title": "Memory Layout", "description": "...", "anchor_target": "ms-1" }} ]
+      "milestones": [ {{ "id": "ms-1", "title": "...", "summary": "..." }} ],
+      "diagrams": [ {{ "id": "diag-01", "title": "...", "description": "...", "anchor_target": "ms-1" }} ]
     }}
-    Plan 25+ diagrams. Ensure unique IDs like diag-01, diag-02.
+    Plan 10-15 diagrams.
     """
     res = LLM.invoke(
         [
             SystemMessage(
-                content="You are a Master Architect. Output ONLY valid JSON based on the example."
+                content="You are a Master Architect. Output ONLY valid JSON."
             ),
             HumanMessage(content=prompt),
         ]
@@ -114,22 +119,15 @@ def architect_node(state: GraphState):
     if not blueprint:
         raise ValueError("Architect failed to return valid JSON")
 
-    # Validation & Fallbacks
-    if "milestones" not in blueprint:
-        blueprint["milestones"] = []
-    if "diagrams" not in blueprint:
-        blueprint["diagrams"] = []
-
     return {
         "blueprint": blueprint,
-        "diagrams_to_generate": blueprint["diagrams"],
+        "diagrams_to_generate": blueprint.get("diagrams", []),
         "status": "writing",
         "accumulated_md": f"# {blueprint.get('title', state['project_id'])}\n\n{blueprint.get('overview', '')}\n\n",
     }
 
 
 def writer_node(state: GraphState):
-    """Phase 2: Writing Chapters."""
     idx = state["current_ms_index"]
     blueprint = state["blueprint"]
     milestones = blueprint.get("milestones", [])
@@ -137,28 +135,27 @@ def writer_node(state: GraphState):
         return {"status": "visualizing"}
 
     ms = milestones[idx]
-    ms_title = ms.get("title") or ms.get("id") or f"Milestone {idx + 1}"
+    ms_title = ms.get("title") or f"Milestone {idx + 1}"
     print(f"  [Agent: Educator] Writing Atlas Node: {ms_title}...")
 
     prompt = f"""
     {INSTR_EDUCATOR}
-    TASK: Write Chapter content for: {ms_title}.
+    TASK: Write content for: {ms_title}.
     SUMMARY: {ms.get("summary", "")}
     ANCHOR_ID: {ms.get("id", f"ms-{idx}")}
-    CONTRACT: {json.dumps(blueprint.get("technical_contract", {}))}
-    PREVIOUS: {state["accumulated_md"][-20000:]}
+    PREVIOUS: {state["accumulated_md"][-10000:]}
     """
     res = LLM.invoke([HumanMessage(content=prompt)])
     return {
-        "accumulated_md": state["accumulated_md"] + f"\n\n{res.content.strip()}\n",
+        "accumulated_md": state["accumulated_md"] + f"\n\n{str(res.content).strip()}\n",
         "current_ms_index": idx + 1,
     }
 
 
 def visualizer_node(state: GraphState):
-    """Phase 3: Drawing."""
     if not state["diagrams_to_generate"]:
         return {"status": "done"}
+
     diag = state["diagrams_to_generate"][0]
     attempt = state["diagram_attempt"] + 1
     print(
@@ -167,19 +164,26 @@ def visualizer_node(state: GraphState):
 
     prompt = f"""
     {INSTR_ARTIST}
-    TASK: Generate D2 for: '{diag.get("title", "Untitled")}'
-    DESCRIPTION: {diag.get("description", "")}
-    TARGET_ANCHOR: {diag.get("anchor_target", "")}
-    REFERENCE: {D2_REFERENCE[:8000]}
-    CONTEXT: {state["accumulated_md"][-15000:]}
+    REFERENCE: {D2_REFERENCE[:50000]}
+    CONTEXT: {state["accumulated_md"][-10000:]}
+    TASK: Generate D2 for '{diag.get("title", "Untitled")}'
+    DESC: {diag.get("description", "")}
+    ANCHOR: {diag.get("anchor_target", "")}
     """
     if state.get("last_error"):
-        prompt += f"\n\nFIX ERROR: {state['last_error']}"
+        prompt += f"\n\n!!! FIX PREVIOUS ERROR: {state['last_error']}"
+
     res = LLM.invoke(
-        [SystemMessage(content="You are a D2 Master."), HumanMessage(content=prompt)]
+        [
+            SystemMessage(
+                content="You are a D2 Master. Output ONLY raw D2 code. No preamble, no explanation."
+            ),
+            HumanMessage(content=prompt),
+        ]
     )
+    code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
     return {
-        "current_diagram_code": re.sub(r"```d2\n?|```", "", res.content).strip(),
+        "current_diagram_code": code,
         "current_diagram_meta": diag,
         "diagram_attempt": attempt,
     }
@@ -187,17 +191,15 @@ def visualizer_node(state: GraphState):
 
 def compiler_node(state: GraphState):
     diag = state["current_diagram_meta"]
-    if not diag:
+    code = state["current_diagram_code"]
+    if not diag or not code:
         return {}
-    code = state["current_diagram_code"] or ""
-    project_id = state["project_id"]
-    proj_dir = OUTPUT_BASE / project_id
+
+    proj_dir = OUTPUT_BASE / state["project_id"]
     proj_dir.mkdir(parents=True, exist_ok=True)
     (proj_dir / "diagrams").mkdir(exist_ok=True)
     d2_path = proj_dir / "diagrams" / f"{diag.get('id', 'diag')}.d2"
 
-    for s in ["capsule", "plaintext", "record", "sticky_note"]:
-        code = code.replace(f"shape: {s}", "shape: rectangle")
     d2_path.write_text(code)
     res = subprocess.run(
         ["d2", "--layout=elk", str(d2_path), str(d2_path.with_suffix(".svg"))],
@@ -210,16 +212,25 @@ def compiler_node(state: GraphState):
         img_link = (
             f"\n![{diag.get('title', 'Diagram')}](./diagrams/{diag.get('id')}.svg)\n"
         )
-        tag = f"{{{{DIAGRAM:{diag.get('id')}}}}}"
         return {
-            "accumulated_md": state["accumulated_md"].replace(tag, img_link),
+            "accumulated_md": state["accumulated_md"].replace(
+                f"{{{{DIAGRAM:{diag.get('id')}}}}}", img_link
+            ),
             "diagrams_to_generate": state["diagrams_to_generate"][1:],
             "diagram_attempt": 0,
             "last_error": None,
+            "current_diagram_code": None,
         }
     else:
-        print(f"    ✗ Failed, retrying...")
-        return {"diagram_attempt": state["diagram_attempt"], "last_error": res.stderr}
+        print(f"    ✗ Failed (Attempt {state['diagram_attempt']}), retrying...")
+        if state["diagram_attempt"] >= 5:
+            return {
+                "diagrams_to_generate": state["diagrams_to_generate"][1:],
+                "diagram_attempt": 0,
+                "last_error": None,
+                "current_diagram_code": None,
+            }
+        return {"last_error": res.stderr}
 
 
 # --- GRAPH ---
@@ -228,15 +239,17 @@ workflow.add_node("architect", architect_node)
 workflow.add_node("writer", writer_node)
 workflow.add_node("visualizer", visualizer_node)
 workflow.add_node("compiler", compiler_node)
-workflow.add_node("check", lambda x: x)
 
 workflow.add_edge(START, "architect")
 workflow.add_edge("architect", "writer")
 
 
 def route_writer(state):
-    milestones = state["blueprint"].get("milestones", [])
-    return "writer" if state["current_ms_index"] < len(milestones) else "visualizer"
+    return (
+        "writer"
+        if state["current_ms_index"] < len(state["blueprint"].get("milestones", []))
+        else "visualizer"
+    )
 
 
 workflow.add_conditional_edges(
@@ -245,31 +258,21 @@ workflow.add_conditional_edges(
 
 
 def route_compiler(state):
-    if state.get("last_error") and state["diagram_attempt"] < 3:
-        return "retry"
-    return "next"
+    return (
+        "retry" if state.get("last_error") and state["diagram_attempt"] > 0 else "next"
+    )
 
 
 workflow.add_edge("visualizer", "compiler")
 workflow.add_conditional_edges(
-    "compiler", route_compiler, {"retry": "visualizer", "next": "check"}
-)
-
-
-def route_check(state):
-    return "visualizer" if state.get("diagrams_to_generate") else END
-
-
-workflow.add_edge("check", "visualizer")
-workflow.add_conditional_edges(
-    "check", route_check, {"visualizer": "visualizer", END: END}
+    "compiler", route_compiler, {"retry": "visualizer", "next": "visualizer"}
 )
 
 app = workflow.compile()
 
 
 def generate_project(project_id):
-    print(f"\n>>> V17.1 SCHEMA-ENFORCED ATLAS STARTING: {project_id}")
+    print(f"\n>>> V17.1 ATLAS STARTING: {project_id}")
     with open(YAML_PATH) as f:
         data = yaml.safe_load(f)
         meta = next(
@@ -308,7 +311,7 @@ def generate_project(project_id):
         cwd=SCRIPT_DIR / ".." / "web",
         capture_output=True,
     )
-    print(f"  ✓ MASTERPIECE V17.1 COMPLETE: {project_id}")
+    print(f"  ✓ MASTERPIECE COMPLETE: {project_id}")
 
 
 if __name__ == "__main__":

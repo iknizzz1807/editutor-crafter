@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import * as schema from './schema.js';
-import { yamlDataSchema, type YamlData, type YamlExpertProject } from './yaml-schema.js';
+import { yamlDataSchema, type YamlData } from './yaml-schema.js';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import yaml from 'js-yaml';
@@ -69,8 +69,6 @@ const seedTransaction = sqlite.transaction(() => {
 	sqlite.exec('DELETE FROM projects');
 	sqlite.exec('DELETE FROM domains');
 
-	const expertProjects = data.expert_projects || {};
-
 	let domainOrder = 0;
 	for (const domain of data.domains) {
 		const domainRow = db
@@ -91,128 +89,112 @@ const seedTransaction = sqlite.transaction(() => {
 		const levels = ['beginner', 'intermediate', 'advanced', 'expert'] as const;
 
 		for (const level of levels) {
-			const projects = domain.projects[level] || [];
-			for (const proj of projects) {
-				const expert: YamlExpertProject | undefined = expertProjects[proj.id];
-
-				// Determine bridge flag from domain stub or expert project
-				const bridgeFlag = proj.bridge ? 1 : expert?.bridge ? 1 : 0;
-
+			const projectsList = domain.projects[level] || [];
+			for (const proj of projectsList) {
 				const projectRow = db
 					.insert(schema.projects)
 					.values({
 						domainId: domainRow.id,
 						slug: proj.id,
-						name: proj.name || expert?.name || proj.id,
-						description: proj.description || expert?.description || null,
+						name: proj.name,
+						description: proj.description || null,
 						difficulty: level,
 						sortOrder: projectOrder++,
-						estimatedHours: expert?.estimated_hours || null,
-						essence: expert?.essence || null,
-						whyImportant: expert?.why_important || null,
-						bridge: bridgeFlag,
-						architectureDocPath: expert?.architecture_doc || null
+						estimatedHours: proj.estimated_hours || null,
+						essence: proj.essence || null,
+						whyImportant: proj.why_important || null,
+						bridge: proj.difficulty === 'beginner' ? 0 : 0, // Simplified or use proj.bridge if added to schema
+						architectureDocPath: proj.architecture_doc || null
 					})
 					.returning()
 					.get();
 
-				if (expert) {
-					// Prerequisites
-					if (expert.prerequisites) {
-						for (const prereq of expert.prerequisites) {
-							const name =
-								typeof prereq === 'string'
-									? prereq
-									: ('name' in prereq ? prereq.name : prereq.id ?? String(prereq));
-							const type =
-								typeof prereq === 'string' ? null : (prereq?.type || null);
-							if (!name) continue;
-							db.insert(schema.projectPrerequisites)
-								.values({
-									projectId: projectRow.id,
-									prerequisiteName: name,
-									prerequisiteType: type
-								})
-								.run();
-						}
-					}
-
-					// Resources
-					if (expert.resources) {
-						for (const res of expert.resources) {
-							db.insert(schema.projectResources)
-								.values({
-									projectId: projectRow.id,
-									title: res.name,
-									url: res.url,
-									resourceType: res.type || null
-								})
-								.run();
-						}
-					}
-
-					// Languages (handles both flat list and dict defensively)
-					const langs = normalizeLanguages(expert.languages);
-					for (const lang of langs.recommended) {
-						db.insert(schema.projectLanguages)
-							.values({ projectId: projectRow.id, language: lang, recommended: 1 })
+				// Prerequisites
+				if (proj.prerequisites) {
+					for (const prereq of proj.prerequisites) {
+						const name =
+							typeof prereq === 'string'
+								? prereq
+								: ('name' in prereq ? prereq.name : prereq.id ?? String(prereq));
+						const type = typeof prereq === 'string' ? null : (prereq?.type || null);
+						if (!name) continue;
+						db.insert(schema.projectPrerequisites)
+							.values({
+								projectId: projectRow.id,
+								prerequisiteName: name,
+								prerequisiteType: type
+							})
 							.run();
 					}
-					for (const lang of langs.also_possible) {
-						db.insert(schema.projectLanguages)
-							.values({ projectId: projectRow.id, language: lang, recommended: 0 })
+				}
+
+				// Resources
+				if (proj.resources) {
+					for (const res of proj.resources) {
+						db.insert(schema.projectResources)
+							.values({
+								projectId: projectRow.id,
+								title: res.name,
+								url: res.url,
+								resourceType: res.type || null
+							})
 							.run();
 					}
+				}
 
-					// Learning outcomes
-					if (expert.learning_outcomes) {
-						for (const outcome of expert.learning_outcomes) {
-							db.insert(schema.learningOutcomes)
-								.values({ projectId: projectRow.id, outcome })
-								.run();
-						}
+				// Languages
+				const langs = normalizeLanguages(proj.languages);
+				for (const lang of langs.recommended) {
+					db.insert(schema.projectLanguages)
+						.values({ projectId: projectRow.id, language: lang, recommended: 1 })
+						.run();
+				}
+				for (const lang of langs.also_possible) {
+					db.insert(schema.projectLanguages)
+						.values({ projectId: projectRow.id, language: lang, recommended: 0 })
+						.run();
+				}
+
+				// Learning outcomes
+				if (proj.learning_outcomes) {
+					for (const outcome of proj.learning_outcomes) {
+						const outcomeStr = typeof outcome === 'string' ? outcome : JSON.stringify(outcome);
+						db.insert(schema.learningOutcomes)
+							.values({ projectId: projectRow.id, outcome: outcomeStr })
+							.run();
 					}
+				}
 
-					// Tags
-					if (expert.tags) {
-						for (const tag of expert.tags) {
-							db.insert(schema.projectTags)
-								.values({ projectId: projectRow.id, tag })
-								.run();
-						}
+				// Tags
+				if (proj.tags) {
+					for (const tag of proj.tags) {
+						db.insert(schema.projectTags)
+							.values({ projectId: projectRow.id, tag })
+							.run();
 					}
+				}
 
-					// Milestones
-					if (expert.milestones) {
-						let msOrder = 0;
-						for (const ms of expert.milestones) {
-							db.insert(schema.milestones)
-								.values({
-									projectId: projectRow.id,
-									slug: ms.id || null,
-									title: ms.name,
-									description: ms.description || null,
-									sortOrder: msOrder++,
-									estimatedHours: ms.estimated_hours || null,
-									acceptanceCriteria: ms.acceptance_criteria
-										? JSON.stringify(ms.acceptance_criteria)
-										: null,
-									commonPitfalls: ms.pitfalls
-										? JSON.stringify(ms.pitfalls)
-										: null,
-									hintsLevel1: ms.hints?.level1 || null,
-									hintsLevel2: ms.hints?.level2 || null,
-									hintsLevel3: ms.hints?.level3 || null,
-									concepts: ms.concepts
-										? JSON.stringify(ms.concepts)
-										: null,
-									skills: ms.skills ? JSON.stringify(ms.skills) : null,
-									deliverables: ms.deliverables
-										? JSON.stringify(ms.deliverables)
-										: null
-								})
-								.run();
-						}
+				// Milestones
+				if (proj.milestones) {
+					let msOrder = 0;
+					for (const ms of proj.milestones) {
+						db.insert(schema.milestones)
+							.values({
+								projectId: projectRow.id,
+								slug: ms.id || null,
+								title: ms.name,
+								description: ms.description || null,
+								sortOrder: msOrder++,
+								estimatedHours: ms.estimated_hours || null,
+								acceptanceCriteria: ms.acceptance_criteria
+									? JSON.stringify(ms.acceptance_criteria)
+									: null,
+								commonPitfalls: ms.pitfalls ? JSON.stringify(ms.pitfalls) : null,
+								concepts: ms.concepts ? JSON.stringify(ms.concepts) : null,
+								skills: ms.skills ? JSON.stringify(ms.skills) : null,
+								deliverables: ms.deliverables ? JSON.stringify(ms.deliverables) : null
+							})
+							.run();
 					}
 				}
 			}

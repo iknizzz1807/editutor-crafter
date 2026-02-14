@@ -27,8 +27,15 @@ def load_instruction(name):
 
 
 def load_d2_docs():
-    path = D2_EXAMPLES_DIR / "d2_docs.md"
-    return path.read_text() if path.exists() else "Standard D2 documentation."
+    """Load ALL documentation files in the d2_examples directory for maximum context."""
+    docs = []
+    if D2_EXAMPLES_DIR.exists():
+        for file_path in sorted(D2_EXAMPLES_DIR.glob("*")):
+            if file_path.is_file() and file_path.suffix in [".md", ".txt"]:
+                docs.append(
+                    f"--- DOCUMENT: {file_path.name} ---\n{file_path.read_text()}"
+                )
+    return "\n\n".join(docs) if docs else "Standard D2 documentation."
 
 
 D2_REFERENCE = load_d2_docs()
@@ -90,6 +97,39 @@ def extract_json(text):
     return None
 
 
+def safe_invoke(messages, max_retries=5):
+    """Invoke LLM with exponential backoff to handle quota and transient server errors."""
+    for attempt in range(max_retries):
+        try:
+            return LLM.invoke(messages)
+        except Exception as e:
+            err_str = str(e).lower()
+            # Catch Rate Limits (429), Quota, Timeouts, and Internal Server Errors (500, 502, 503, 504)
+            transient_errors = [
+                "quota",
+                "limit",
+                "timeout",
+                "429",
+                "500",
+                "502",
+                "503",
+                "504",
+                "internal server error",
+                "api_error",
+            ]
+            if any(err in err_str for err in transient_errors):
+                wait_time = (attempt + 1) * 20  # Wait 20s, 40s, 60s...
+                print(
+                    f"    ! LLM Provider error (transient). Retrying in {wait_time}s... (Attempt {attempt + 1}/{max_retries})"
+                )
+                time.sleep(wait_time)
+            else:
+                raise e
+    raise Exception(
+        "Max retries exceeded for LLM invocation due to persistent provider errors."
+    )
+
+
 def architect_node(state: GraphState):
     print(f"  [Agent: Architect] Blueprinting {state['project_id']}...")
     meta = state["meta"]
@@ -105,9 +145,9 @@ def architect_node(state: GraphState):
       "milestones": [ {{ "id": "ms-1", "title": "...", "summary": "..." }} ],
       "diagrams": [ {{ "id": "diag-01", "title": "...", "description": "...", "anchor_target": "ms-1" }} ]
     }}
-    Plan 10-15 diagrams.
+    Plan 10-15 diagrams. Ensure unique IDs.
     """
-    res = LLM.invoke(
+    res = safe_invoke(
         [
             SystemMessage(
                 content="You are a Master Architect. Output ONLY valid JSON."
@@ -131,6 +171,8 @@ def writer_node(state: GraphState):
     idx = state["current_ms_index"]
     blueprint = state["blueprint"]
     milestones = blueprint.get("milestones", [])
+    diagrams = blueprint.get("diagrams", [])
+
     if idx >= len(milestones):
         return {"status": "visualizing"}
 
@@ -138,14 +180,28 @@ def writer_node(state: GraphState):
     ms_title = ms.get("title") or f"Milestone {idx + 1}"
     print(f"  [Agent: Educator] Writing Atlas Node: {ms_title}...")
 
+    # Create a list of available diagram IDs for the Educator to use
+    diag_list = "\n".join(
+        [
+            f"- ID: {d['id']} | Title: {d['title']} | Desc: {d['description']}"
+            for d in diagrams
+        ]
+    )
+
     prompt = f"""
     {INSTR_EDUCATOR}
     TASK: Write content for: {ms_title}.
     SUMMARY: {ms.get("summary", "")}
     ANCHOR_ID: {ms.get("id", f"ms-{idx}")}
-    PREVIOUS: {state["accumulated_md"][-10000:]}
+    PREVIOUS: {state["accumulated_md"][-15000:]}
+    
+    IMPORTANT: You MUST use these specific Diagram IDs when inserting diagrams using the {{{{DIAGRAM:id}}}} syntax. 
+    Only use diagrams that are relevant to this milestone.
+    
+    AVAILABLE DIAGRAMS:
+    {diag_list}
     """
-    res = LLM.invoke([HumanMessage(content=prompt)])
+    res = safe_invoke([HumanMessage(content=prompt)])
     return {
         "accumulated_md": state["accumulated_md"] + f"\n\n{str(res.content).strip()}\n",
         "current_ms_index": idx + 1,
@@ -153,8 +209,8 @@ def writer_node(state: GraphState):
 
 
 def visualizer_node(state: GraphState):
-    if not state["diagrams_to_generate"]:
-        return {"status": "done"}
+    if not state.get("diagrams_to_generate"):
+        return {"status": "done", "current_diagram_code": None}
 
     diag = state["diagrams_to_generate"][0]
     attempt = state["diagram_attempt"] + 1
@@ -164,24 +220,30 @@ def visualizer_node(state: GraphState):
 
     prompt = f"""
     {INSTR_ARTIST}
-    REFERENCE: {D2_REFERENCE[:50000]}
-    CONTEXT: {state["accumulated_md"][-10000:]}
-    TASK: Generate D2 for '{diag.get("title", "Untitled")}'
-    DESC: {diag.get("description", "")}
-    ANCHOR: {diag.get("anchor_target", "")}
+    
+    REFERENCE (FULL D2 DOCUMENTATION): 
+    {D2_REFERENCE}
+    
+    CONTEXT (TECHNICAL CONTENT):
+    {state["accumulated_md"][-15000:]}
+    
+    TASK: Generate D2 code for the diagram: '{diag.get("title", "Untitled")}'
+    DIAGRAM DESCRIPTION: {diag.get("description", "")}
+    TARGET ANCHOR (for links): {diag.get("anchor_target", "")}
     """
     if state.get("last_error"):
-        prompt += f"\n\n!!! FIX PREVIOUS ERROR: {state['last_error']}"
+        prompt += f"\n\n!!! FIX PREVIOUS COMPILER ERROR: {state['last_error']}\nAnalyze the error and update the D2 code to resolve it."
 
-    res = LLM.invoke(
+    res = safe_invoke(
         [
             SystemMessage(
-                content="You are a D2 Master. Output ONLY raw D2 code. No preamble, no explanation."
+                content="You are a D2 Master Artist. Output ONLY raw D2 code. No preamble, no explanation."
             ),
             HumanMessage(content=prompt),
         ]
     )
-    code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
+    content = str(res.content)
+    code = re.sub(r"```d2\n?|```", "", content).strip()
     return {
         "current_diagram_code": code,
         "current_diagram_meta": diag,
@@ -193,14 +255,17 @@ def compiler_node(state: GraphState):
     diag = state["current_diagram_meta"]
     code = state["current_diagram_code"]
     if not diag or not code:
-        return {}
+        return {"last_error": None}
 
     proj_dir = OUTPUT_BASE / state["project_id"]
     proj_dir.mkdir(parents=True, exist_ok=True)
     (proj_dir / "diagrams").mkdir(exist_ok=True)
     d2_path = proj_dir / "diagrams" / f"{diag.get('id', 'diag')}.d2"
 
+    # Strip remote icons which cause 403 Forbidden in some environments
+    code = re.sub(r'icon:\s*"(https?://.*?)"', "", code)
     d2_path.write_text(code)
+
     res = subprocess.run(
         ["d2", "--layout=elk", str(d2_path), str(d2_path.with_suffix(".svg"))],
         capture_output=True,
@@ -220,15 +285,18 @@ def compiler_node(state: GraphState):
             "diagram_attempt": 0,
             "last_error": None,
             "current_diagram_code": None,
+            "current_diagram_meta": None,
         }
     else:
         print(f"    ✗ Failed (Attempt {state['diagram_attempt']}), retrying...")
         if state["diagram_attempt"] >= 5:
+            print(f"    ! Max attempts reached for {diag.get('id')}. Skipping.")
             return {
                 "diagrams_to_generate": state["diagrams_to_generate"][1:],
                 "diagram_attempt": 0,
                 "last_error": None,
                 "current_diagram_code": None,
+                "current_diagram_meta": None,
             }
         return {"last_error": res.stderr}
 
@@ -257,13 +325,23 @@ workflow.add_conditional_edges(
 )
 
 
+def route_visualizer(state):
+    if not state.get("diagrams_to_generate"):
+        return END
+    return "compiler"
+
+
+workflow.add_conditional_edges(
+    "visualizer", route_visualizer, {"compiler": "compiler", END: END}
+)
+
+
 def route_compiler(state):
     return (
         "retry" if state.get("last_error") and state["diagram_attempt"] > 0 else "next"
     )
 
 
-workflow.add_edge("visualizer", "compiler")
 workflow.add_conditional_edges(
     "compiler", route_compiler, {"retry": "visualizer", "next": "visualizer"}
 )

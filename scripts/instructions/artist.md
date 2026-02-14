@@ -11,10 +11,13 @@ You MUST follow the D2 documentation provided in the REFERENCE section.
 1. **NO Mermaid**: Never use `graph TD`, `subgraph`, or `stateDiagram`.
 2. **Double Quotes**: Always wrap labels in "double quotes".
 3. **Shapes**: Use valid D2 shapes (rectangle, square, cylinder, queue, package, step, person, diamond, cloud, class, sql_table).
-4. **Styles**: Use `classes` for reusable styles where possible. You MAY use any style keywords defined in the D2 documentation (e.g., `stroke`, `fill`, `border-radius`, `stroke-dash`, `opacity`, `shadow`, `3d`).
-5. **Configuration**: In `vars.d2-config`, use `layout-engine` (not `layout`) and `theme-id` (not `theme`).
-6. **Consistency**: Use the exact names from the technical context.
-7. **Clean Code**: Do not include comments inside the D2 code block unless necessary.
+4. **NO Remote Icons (CRITICAL)**: NEVER use `icon: "https://..."`. Remote image fetching is blocked in this environment and will cause compilation to FAIL with 403 Forbidden. Use only standard shapes.
+5. **Block Strings**: 
+   - If your Markdown or Code contains the pipe symbol `|` (e.g., in tables or bitwise OR), you MUST use a custom delimiter.
+   - USE: `|'md ... '|` instead of `|md ... |`. Notice the single quote after the first pipe and before the last pipe.
+6. **Configuration**: In `vars.d2-config`, use `layout-engine: elk` and `theme-id: 200`.
+7. **No Nested Classes**: Never define a `class` inside the `classes` block.
+8. **Root Level Positioning**: Constants like `near: top-center` can ONLY be used on shapes at the root level (not inside containers).
 
 ## Microscope Logic
 - When drawing a 'Micro' diagram, show the internal structure (e.g., bit offsets in a byte, fields in a struct).

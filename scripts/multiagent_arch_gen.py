@@ -5,7 +5,7 @@ from openai import OpenAI
 
 # --- CONFIGURATION ---
 client = OpenAI(base_url="http://127.0.0.1:7999/v1", api_key="mythong2005")
-MODEL = "gemini_cli/gemini-3-flash-preview"
+MODEL = "gemini_cli/gemini-3-pro-preview"
 SCRIPT_DIR = Path(__file__).parent.resolve()
 DATA_DIR = SCRIPT_DIR / ".." / "data"
 YAML_PATH = DATA_DIR / "projects.yaml"

@@ -16,7 +16,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 SCRIPT_DIR = Path(__file__).parent.resolve()
 DATA_DIR = SCRIPT_DIR / ".." / "data"
 YAML_PATH = DATA_DIR / "projects.yaml"
-OUTPUT_BASE = DATA_DIR / "architecture-docs"
+DEFAULT_OUTPUT = DATA_DIR / "architecture-docs"
 D2_EXAMPLES_DIR = SCRIPT_DIR / ".." / "d2_examples"
 INSTRUCTIONS_DIR = SCRIPT_DIR / "instructions"
 
@@ -38,33 +38,60 @@ def load_d2_docs():
     return "\n\n".join(docs) if docs else "Standard D2 documentation."
 
 
+print(">>> Loading D2 docs...", flush=True)
 D2_REFERENCE = load_d2_docs()
+print(f">>> D2 docs loaded ({len(D2_REFERENCE)} chars)", flush=True)
 INSTR_ARCHITECT = load_instruction("architect")
 INSTR_EDUCATOR = load_instruction("educator")
 INSTR_ARTIST = load_instruction("artist")
+print(">>> Instructions loaded", flush=True)
 
 # --- LLM SETUP ---
-USE_ANTHROPIC = os.getenv("USE_ANTHROPIC", "false").lower() == "true"
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "sonnet")  # haiku, sonnet, opus
 
-if USE_ANTHROPIC and ChatAnthropic:
-    LLM = ChatAnthropic(
-        model=ANTHROPIC_MODEL,
-        temperature=0.1,
-    )
-    print(f">>> Provider: ANTHROPIC ({ANTHROPIC_MODEL})")
-else:
-    LLM = ChatOpenAI(
-        base_url="http://127.0.0.1:7999/v1",
-        api_key="mythong2005",
-        model="gemini_cli/gemini-3-flash-preview",
-        temperature=0.1,
-    )
-    if USE_ANTHROPIC and not ChatAnthropic:
-        print(
-            ">>> Warning: langchain-anthropic not installed. Falling back to local proxy."
+# Global variables (will be initialized by init_llm_provider())
+LLM_PROVIDER = None
+LLM = None
+USE_ANTHROPIC = False
+
+
+def init_llm_provider():
+    """Initialize LLM provider based on environment variables or command line flags."""
+    global LLM_PROVIDER, LLM, CLAUDE_MODEL, USE_ANTHROPIC
+    print(">>> Initializing LLM provider...", flush=True)
+
+    USE_ANTHROPIC = os.getenv("USE_ANTHROPIC", "false").lower() == "true"
+    USE_CLAUDE_CLI = os.getenv("USE_CLAUDE_CLI", "false").lower() == "true"
+    CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "sonnet")  # Re-read from env
+
+    if USE_CLAUDE_CLI:
+        LLM_PROVIDER = "claude-cli"
+        print(f">>> Provider: CLAUDE CODE CLI (Model: {CLAUDE_MODEL})", flush=True)
+    elif USE_ANTHROPIC and ChatAnthropic:
+        print(">>> Setting up Anthropic...", flush=True)
+        LLM = ChatAnthropic(
+            model=ANTHROPIC_MODEL,
+            temperature=1,
+            max_tokens=64000,  # 64K tokens output limit
         )
-    print(">>> Provider: LOCAL PROXY (Gemini 3 Flash)")
+        LLM_PROVIDER = "anthropic"
+        print(f">>> Provider: ANTHROPIC ({ANTHROPIC_MODEL})", flush=True)
+    else:
+        print(">>> Setting up local proxy (Gemini)...", flush=True)
+        LLM = ChatOpenAI(
+            base_url="http://127.0.0.1:7999/v1",
+            api_key="mythong2005",
+            model="gemini_cli/gemini-3-pro-preview",
+            temperature=1,
+            max_tokens=64000,  # 64K tokens output limit
+        )
+        LLM_PROVIDER = "local-proxy"
+        if USE_ANTHROPIC and not ChatAnthropic:
+            print(
+                ">>> Warning: langchain-anthropic not installed. Falling back to local proxy."
+            )
+        print(">>> Provider: LOCAL PROXY (Gemini 3 Pro)", flush=True)
 
 
 def replace_reducer(old, new):
@@ -97,14 +124,73 @@ def extract_json(text):
     return None
 
 
-def safe_invoke(messages, max_retries=5):
-    """Invoke LLM with exponential backoff to handle quota and transient server errors."""
+def invoke_claude_cli(messages, max_retries=3):
+    """Invoke Claude Code CLI with exponential backoff."""
+    # Extract system message and human message from LangChain format
+    system_prompt = ""
+    user_prompt = ""
+
+    for msg in messages:
+        if isinstance(msg, SystemMessage):
+            system_prompt = msg.content
+        elif isinstance(msg, HumanMessage):
+            user_prompt = msg.content
+
     for attempt in range(max_retries):
         try:
-            return LLM.invoke(messages)
+            # Build the claude command - use stdin for long prompts
+            cmd = ["claude", "-p", "--model", CLAUDE_MODEL]
+
+            # Add system prompt if present via flag
+            if system_prompt:
+                cmd.extend(["--system-prompt", system_prompt])
+
+            # Use stdin for user prompt to avoid argument length limit
+            result = subprocess.run(
+                cmd,
+                input=user_prompt,  # Pass via stdin instead of argument
+                capture_output=True,
+                text=True,
+                timeout=1200,  # 10 minute timeout
+            )
+
+            if result.returncode == 0:
+                # Create a mock response object compatible with LangChain
+                class MockResponse:
+                    def __init__(self, content):
+                        self.content = content
+
+                return MockResponse(result.stdout)
+            else:
+                err_str = result.stderr.lower()
+                # Check for transient errors
+                transient_errors = [
+                    "quota",
+                    "limit",
+                    "timeout",
+                    "429",
+                    "500",
+                    "502",
+                    "503",
+                    "504",
+                    "internal server error",
+                    "api_error",
+                ]
+                if any(err in err_str for err in transient_errors):
+                    wait_time = (attempt + 1) * 20
+                    print(
+                        f"    ! Claude CLI transient error. Retrying in {wait_time}s..."
+                    )
+                    time.sleep(wait_time)
+                else:
+                    raise Exception(f"Claude CLI failed: {result.stderr}")
+
+        except subprocess.TimeoutExpired:
+            wait_time = (attempt + 1) * 20
+            print(f"    ! Claude CLI timeout. Retrying in {wait_time}s...")
+            time.sleep(wait_time)
         except Exception as e:
             err_str = str(e).lower()
-            # Catch Rate Limits (429), Quota, Timeouts, and Internal Server Errors (500, 502, 503, 504)
             transient_errors = [
                 "quota",
                 "limit",
@@ -118,25 +204,72 @@ def safe_invoke(messages, max_retries=5):
                 "api_error",
             ]
             if any(err in err_str for err in transient_errors):
-                wait_time = (attempt + 1) * 20  # Wait 20s, 40s, 60s...
-                print(
-                    f"    ! LLM Provider error (transient). Retrying in {wait_time}s... (Attempt {attempt + 1}/{max_retries})"
-                )
+                wait_time = (attempt + 1) * 20
+                print(f"    ! Claude CLI transient error. Retrying in {wait_time}s...")
                 time.sleep(wait_time)
             else:
                 raise e
-    raise Exception(
-        "Max retries exceeded for LLM invocation due to persistent provider errors."
+
+    raise Exception("Max retries exceeded for Claude CLI invocation.")
+
+
+def safe_invoke(messages, max_retries=5, invoke_kwargs=None):
+    """Invoke LLM with exponential backoff to handle quota and transient server errors."""
+    if LLM_PROVIDER == "claude-cli":
+        return invoke_claude_cli(messages, max_retries)
+
+    kwargs = invoke_kwargs or {}
+    print(
+        f"    [safe_invoke] Starting LLM call with {len(messages)} messages...",
+        flush=True,
     )
+    for attempt in range(max_retries):
+        try:
+            result = LLM.invoke(messages, **kwargs)
+            if result is None or (
+                hasattr(result, "content") and result.content is None
+            ):
+                raise Exception("LLM returned None response")
+            print(f"    [safe_invoke] LLM call succeeded", flush=True)
+            return result
+        except Exception as e:
+            print(f"    [safe_invoke] Error: {e}", flush=True)
+            err_str = str(e).lower()
+            transient_errors = [
+                "quota",
+                "limit",
+                "timeout",
+                "429",
+                "500",
+                "502",
+                "503",
+                "504",
+                "internal server error",
+                "api_error",
+                "nonetype",
+                "iterable",
+                "none",
+                "empty",
+            ]
+            if any(err in err_str for err in transient_errors):
+                wait_time = (attempt + 1) * 20
+                print(f"    ! LLM transient error. Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+            else:
+                raise e
+    raise Exception("Max retries exceeded for LLM invocation.")
 
 
 def architect_node(state: GraphState):
-    print(f"  [Agent: Architect] Blueprinting {state['project_id']}...")
+    print(f"  [Agent: Architect] Blueprinting {state['project_id']}...", flush=True)
     meta = state["meta"]
     prompt = f"""
     {INSTR_ARCHITECT}
     PROJECT: {meta.get("name")}\nDESC: {meta.get("description")}
     TASK: Output ONLY raw JSON for the Blueprint. 
+    
+    CRITICAL: Do NOT include any conversational text or markdown blocks outside the JSON.
+    
     EXAMPLE JSON FORMAT (STRICT):
     {{
       "title": "Build a Garbage Collector",
@@ -147,17 +280,40 @@ def architect_node(state: GraphState):
     }}
     Plan 10-15 diagrams. Ensure unique IDs.
     """
+    # Use JSON mode if supported by local proxy (Gemini)
+    invoke_args = {}
+    if LLM_PROVIDER == "local-proxy":
+        invoke_args["response_format"] = {"type": "json_object"}
+
+    print(f"  [Agent: Architect] Calling LLM (provider={LLM_PROVIDER})...", flush=True)
     res = safe_invoke(
         [
             SystemMessage(
                 content="You are a Master Architect. Output ONLY valid JSON."
             ),
             HumanMessage(content=prompt),
-        ]
+        ],
+        invoke_kwargs=invoke_args,
+    )
+    print(
+        f"  [Agent: Architect] LLM response received ({len(res.content)} chars)",
+        flush=True,
     )
     blueprint = extract_json(res.content)
     if not blueprint:
-        raise ValueError("Architect failed to return valid JSON")
+        print("    ! Failed with JSON mode, retrying with raw prompt...")
+        res = safe_invoke(
+            [
+                SystemMessage(
+                    content="You are a Master Architect. Output ONLY raw JSON code block."
+                ),
+                HumanMessage(content=prompt),
+            ]
+        )
+        blueprint = extract_json(res.content)
+
+    if not blueprint:
+        raise ValueError("Architect failed to return valid JSON after retries")
 
     return {
         "blueprint": blueprint,
@@ -180,7 +336,6 @@ def writer_node(state: GraphState):
     ms_title = ms.get("title") or f"Milestone {idx + 1}"
     print(f"  [Agent: Educator] Writing Atlas Node: {ms_title}...")
 
-    # Create a list of available diagram IDs for the Educator to use
     diag_list = "\n".join(
         [
             f"- ID: {d['id']} | Title: {d['title']} | Desc: {d['description']}"
@@ -220,7 +375,6 @@ def visualizer_node(state: GraphState):
 
     prompt = f"""
     {INSTR_ARTIST}
-    
     REFERENCE (FULL D2 DOCUMENTATION): 
     {D2_REFERENCE}
     
@@ -242,8 +396,7 @@ def visualizer_node(state: GraphState):
             HumanMessage(content=prompt),
         ]
     )
-    content = str(res.content)
-    code = re.sub(r"```d2\n?|```", "", content).strip()
+    code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
     return {
         "current_diagram_code": code,
         "current_diagram_meta": diag,
@@ -252,6 +405,7 @@ def visualizer_node(state: GraphState):
 
 
 def compiler_node(state: GraphState):
+    global OUTPUT_BASE
     diag = state["current_diagram_meta"]
     code = state["current_diagram_code"]
     if not diag or not code:
@@ -262,10 +416,8 @@ def compiler_node(state: GraphState):
     (proj_dir / "diagrams").mkdir(exist_ok=True)
     d2_path = proj_dir / "diagrams" / f"{diag.get('id', 'diag')}.d2"
 
-    # Strip remote icons which cause 403 Forbidden in some environments
     code = re.sub(r'icon:\s*"(https?://.*?)"', "", code)
     d2_path.write_text(code)
-
     res = subprocess.run(
         ["d2", "--layout=elk", str(d2_path), str(d2_path.with_suffix(".svg"))],
         capture_output=True,
@@ -290,7 +442,6 @@ def compiler_node(state: GraphState):
     else:
         print(f"    ✗ Failed (Attempt {state['diagram_attempt']}), retrying...")
         if state["diagram_attempt"] >= 5:
-            print(f"    ! Max attempts reached for {diag.get('id')}. Skipping.")
             return {
                 "diagrams_to_generate": state["diagrams_to_generate"][1:],
                 "diagram_attempt": 0,
@@ -350,6 +501,7 @@ app = workflow.compile()
 
 
 def generate_project(project_id):
+    global OUTPUT_BASE
     print(f"\n>>> V17.1 ATLAS STARTING: {project_id}")
     with open(YAML_PATH) as f:
         data = yaml.safe_load(f)
@@ -395,6 +547,26 @@ def generate_project(project_id):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--projects", nargs="+", required=True)
+    parser.add_argument("--claude-cli", action="store_true")
+    parser.add_argument("--claude-model", default=None)
+    parser.add_argument("--anthropic", action="store_true")
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Output directory (default: data/architecture-docs)",
+    )
     args = parser.parse_args()
+    if args.claude_cli:
+        os.environ["USE_CLAUDE_CLI"] = "true"
+    if args.claude_model:
+        os.environ["CLAUDE_MODEL"] = args.claude_model
+    if args.anthropic:
+        os.environ["USE_ANTHROPIC"] = "true"
+    if args.output:
+        OUTPUT_BASE = Path(args.output).resolve()
+    else:
+        OUTPUT_BASE = DEFAULT_OUTPUT
+    print(f">>> Output directory: {OUTPUT_BASE}", flush=True)
+    init_llm_provider()
     for p in args.projects:
         generate_project(p)

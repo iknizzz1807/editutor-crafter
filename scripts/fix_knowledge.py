@@ -7,7 +7,7 @@ from openai import OpenAI
 
 # Setup
 client = OpenAI(base_url="http://127.0.0.1:7999/v1", api_key="mythong2005")
-MODEL = "gemini_cli/gemini-3-flash-preview"
+MODEL = "gemini_cli/gemini-3-pro-preview"
 YAML_PATH = Path("data/projects.yaml")
 REPORT_PATH = Path("audit_report.json")
 

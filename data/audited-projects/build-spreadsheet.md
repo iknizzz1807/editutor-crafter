@@ -1,0 +1,233 @@
+# AUDIT & FIX: build-spreadsheet
+
+## CRITIQUE
+- **Formula range expansion gap**: The dependency graph milestone (M3) has no AC or deliverable that addresses expanding range references like `A1:A10` into individual cell dependencies (`A1, A2, ... A10`). Without this, the topological sort cannot correctly track dependencies from range-based functions like SUM, and changes to a cell within a range won't trigger recalculation of the formula referencing that range.
+- **Circular reference detection is vague**: The AC says 'circular reference is detected and displays error' but doesn't specify WHERE the detection occurs — during parsing (AST construction), during dependency graph update, or during recalculation. These are fundamentally different approaches with different trade-offs. It should be explicit: detection occurs when the dependency graph is updated (i.e., when a formula is entered or changed), NOT during AST construction.
+- **AST vs. evaluation conflation**: Milestone 2 conflates parsing (AST construction) and evaluation into one milestone. Evaluation depends on the dependency graph for correct ordering (M3), yet M2's AC includes evaluating SUM(A1:A10). This creates a chicken-and-egg problem: you can't correctly evaluate formulas with cell references until the dependency graph exists. The AC should clarify that M2 evaluation is for standalone expressions or a single cell without dependencies.
+- **Missing error handling in formulas**: No AC for handling division by zero, type errors (e.g., SUM on text cells), or #REF! errors when referenced cells are deleted.
+- **Virtual scrolling is mentioned as a concept but not an AC**: Milestone 1 says 'at least 26 columns and 100 rows' which is trivially renderable without virtual scrolling. The AC should mandate a much larger grid (e.g., 1000+ rows) or explicitly require virtual/windowed rendering.
+- **Pitfalls are superficial**: 'Rendering too many cells' and 'Slow scrolling' are symptoms, not pitfalls. Real pitfalls: not using virtual scrolling causes DOM node explosion; re-rendering entire grid on each cell change instead of targeted updates; storing cell state in DOM attributes instead of a model.
+- **Undo/redo AC is weak**: 'Undo reverts the most recent cell change' doesn't specify how undo interacts with cascading recalculations. If changing A1 triggers recalculation of B1 and C1, does undo restore all three? This must be explicit.
+- **Missing AC for formula display vs. value display**: Cells should show computed values but display the formula in an edit bar when selected. This fundamental spreadsheet behavior is not mentioned.
+- **No AC for multi-cell selection or range operations**: Copy/paste with reference adjustment (M4) implicitly requires range selection, but no prior milestone establishes it.
+
+## FIXED YAML
+```yaml
+id: build-spreadsheet
+name: Build Your Own Spreadsheet
+description: Excel-like app with formulas, dependency tracking, and recalculation engine
+difficulty: expert
+estimated_hours: "55-85"
+essence: >
+  Expression parsing, abstract syntax tree construction, and topological sort-based
+  dependency resolution to enable cell formula evaluation and propagation through a
+  directed acyclic graph of cell references, with range expansion for aggregate functions.
+why_important: >
+  Building this project teaches the fundamentals of interpreter design (lexing, parsing,
+  AST evaluation) and graph algorithms (topological sort, cycle detection) that power
+  real-world developer tools, compilers, and reactive systems used across the software industry.
+learning_outcomes:
+  - Implement a lexer and parser to convert formula strings into abstract syntax trees
+  - Design and evaluate ASTs with proper operator precedence and function call handling
+  - Build a dependency graph tracker that expands range references and detects circular references
+  - Implement topological sorting with Kahn's algorithm for correct recalculation order
+  - Handle bidirectional data flow where cell changes trigger cascading updates through dependents
+  - Implement efficient dirty-marking and demand-driven recalculation strategies
+  - Design undo/redo systems using command pattern and memento state snapshots
+  - Debug complex state synchronization issues in reactive data structures
+skills:
+  - Abstract Syntax Trees
+  - Recursive Descent Parsing
+  - Dependency Graph Management
+  - Topological Sort Algorithms
+  - Expression Evaluation
+  - Reactive State Management
+  - Lexical Analysis
+  - Command Pattern Design
+tags:
+  - build-from-scratch
+  - cells
+  - dependency-graph
+  - expert
+  - formulas
+  - javascript
+  - recalculation
+  - typescript
+architecture_doc: architecture-docs/build-spreadsheet/index.md
+languages:
+  recommended:
+    - JavaScript
+    - TypeScript
+  also_possible:
+    - Python
+    - Rust
+resources:
+  - type: article
+    name: Building a Spreadsheet Engine
+    url: https://leanrada.com/notes/spreadsheet-engine/
+  - type: video
+    name: How Excel Recalculates
+    url: https://www.youtube.com/watch?v=R0hhDgvWbUU
+prerequisites:
+  - type: skill
+    name: DOM manipulation
+  - type: skill
+    name: Graph algorithms
+  - type: skill
+    name: Expression parsing
+  - type: skill
+    name: Event handling
+milestones:
+  - id: build-spreadsheet-m1
+    name: Grid & Cell Rendering
+    description: >
+      Build the spreadsheet grid with editable cells, virtual scrolling for large datasets,
+      and a formula bar that displays raw formula text for the selected cell.
+    acceptance_criteria:
+      - Grid supports at least 26 columns (A-Z) and 1000 rows, rendered via virtual scrolling so only visible cells exist in the DOM
+      - Double-clicking a cell enters edit mode with an inline text input; pressing Enter commits the value and Escape cancels
+      - Selected cell is visually distinct with highlighted border; a formula bar above the grid displays the raw cell content (formula string or literal value)
+      - Row and column headers remain fixed during scrolling; column headers show A-Z labels and row headers show 1-based numbers
+      - Arrow keys navigate between cells; Tab moves right and Shift+Tab moves left
+      - Typing into a non-editing cell immediately enters edit mode with the typed character
+    pitfalls:
+      - Rendering all 26,000+ cells as DOM nodes causes severe jank; must implement virtual/windowed rendering showing only visible cells plus a small overscan buffer
+      - Storing cell state in DOM attributes instead of a separate data model makes formula evaluation and undo/redo nearly impossible to implement later
+      - Focus management between the grid, inline editor, and formula bar creates subtle bugs if not handled with a clear state machine (viewing, editing-inline, editing-bar)
+      - Not debouncing scroll events on the virtual scroller leads to excessive re-renders
+    concepts:
+      - Virtual scrolling / windowed rendering
+      - DOM optimization and recycling
+      - Keyboard navigation state machine
+      - Model-view separation
+    skills:
+      - DOM manipulation and event handling
+      - Performance optimization for large datasets
+      - Implementing keyboard shortcuts and focus management
+      - Managing application state separate from view
+    deliverables:
+      - Virtual scrolling grid rendering only visible cells with overscan buffer
+      - Cell editing UI with inline text input on double-click and formula bar display
+      - Selection highlighting showing currently active cell with distinct border
+      - Column (A-Z) and row (1-N) headers that remain fixed during scroll
+      - Keyboard navigation with arrow keys, Tab, Enter, and Escape
+    estimated_hours: "10-15"
+
+  - id: build-spreadsheet-m2
+    name: Formula Lexer & Parser
+    description: >
+      Implement a lexer and recursive descent parser that converts formula strings
+      (prefixed with =) into abstract syntax trees. Evaluation at this stage is limited
+      to literal expressions and single-cell references for testing; full dependency-aware
+      evaluation is deferred to M3.
+    acceptance_criteria:
+      - Lexer tokenizes formula strings into tokens: numbers, strings, cell references (e.g., A1, $A$1), range references (e.g., A1:A10), operators (+, -, *, /, ^, comparison), parentheses, commas, and function names
+      - Parser builds an AST from tokens with correct operator precedence (unary minus > exponentiation > multiplication/division > addition/subtraction > comparison)
+      - Cell references (relative like A1, absolute like $A$1, and mixed like $A1 or A$1) are parsed into distinct AST nodes preserving their reference type
+      - Range references like A1:B10 are parsed into a RangeNode AST node containing start and end cell references
+      - Function calls like SUM(A1:A10, 5) are parsed into FunctionCallNode with function name and argument list
+      - Parser reports syntax errors with position information (e.g., "Unexpected token '*' at position 5")
+      - AST evaluation of literal-only expressions (no cell references) produces correct numeric results: =2+3*4 evaluates to 14
+      - Negative numbers and unary minus are handled correctly: =-5+3 evaluates to -2
+    pitfalls:
+      - Confusing operator precedence: multiplication must bind tighter than addition; exponentiation must be right-associative
+      - Not handling unary minus as distinct from binary minus causes parse failures on expressions like =-A1 or =(-5)
+      - Treating cell references as evaluated values during parsing conflates parsing with evaluation; the parser should produce an AST node, not look up a value
+      - String-to-number coercion must be explicit; silently coercing "hello" to 0 hides errors
+      - Range references (A1:A10) must not be confused with two separate cell references separated by a colon operator
+    concepts:
+      - Lexical analysis / tokenization
+      - Recursive descent parsing
+      - AST construction
+      - Operator precedence and associativity
+    skills:
+      - Writing lexers and tokenizers
+      - Building recursive descent parsers
+      - Designing AST node types
+      - Implementing operator precedence climbing or Pratt parsing
+    deliverables:
+      - Tokenizer that splits formula strings into typed tokens with position information
+      - Recursive descent parser producing a well-typed AST from tokens
+      - AST node types for literals, cell references (with absolute/relative distinction), ranges, binary ops, unary ops, and function calls
+      - Error reporting with position information for malformed formulas
+      - Evaluator for literal-only ASTs (no cell reference resolution) as a test harness
+    estimated_hours: "12-18"
+
+  - id: build-spreadsheet-m3
+    name: Dependency Graph & Recalculation
+    description: >
+      Build a directed dependency graph that tracks which cells depend on which others.
+      Range references (e.g., A1:A10) must be expanded into individual cell dependencies.
+      Use topological sort for correct recalculation order, with cycle detection to prevent
+      infinite loops. Integrate AST evaluation with cell reference resolution.
+    acceptance_criteria:
+      - When a formula is entered or changed, its AST is walked to extract all referenced cells; range nodes like A1:A10 are expanded into individual cell references (A1, A2, ..., A10) and each is registered as a dependency edge in the graph
+      - Changing a cell value triggers recalculation of all directly and transitively dependent cells, and ONLY those cells
+      - Topological sort (Kahn's algorithm or DFS-based) determines recalculation order so every cell is evaluated after all its dependencies have been updated
+      - Circular references are detected at formula entry time (when updating the dependency graph) and the offending cell displays a #CIRC! error without entering an infinite loop
+      - Deleting or clearing a cell that is referenced by other cells causes those dependent cells to show #REF! error
+      - Full formula evaluation with cell reference resolution works end-to-end: entering =A1+B1 in C1, then changing A1, correctly updates C1
+      - Built-in functions SUM, AVERAGE, MIN, MAX, COUNT correctly evaluate over expanded range arguments
+      - Recalculation of 1000 dependent cells completes in under 100ms in benchmarks
+    pitfalls:
+      - Failing to expand range references into individual cell dependencies means changing a cell inside a SUM range won't trigger recalculation of the SUM formula
+      - Detecting cycles only during evaluation (not at graph update time) means the user gets a hang instead of an error message
+      - Stale dependency edges: when a formula changes from =A1+B1 to =C1+D1, the old edges (A1, B1) must be removed before adding new edges (C1, D1), otherwise phantom dependencies cause unnecessary recalculations or missed updates
+      - Recalculating the entire spreadsheet instead of only the dirty subgraph destroys performance at scale
+      - Not handling self-referential formulas (=A1+1 entered in A1) as a trivial cycle
+    concepts:
+      - Directed acyclic graph (DAG)
+      - Topological sorting (Kahn's algorithm)
+      - Cycle detection (DFS back-edge or Kahn's remaining-node check)
+      - Incremental / dirty-subgraph recalculation
+      - Range expansion
+    skills:
+      - Graph data structures and algorithms
+      - Implementing topological sort with cycle detection
+      - Dependency tracking with add/remove edge operations
+      - Integrating AST evaluation with live cell data
+    deliverables:
+      - Dependency graph data structure with add-dependency, remove-dependency, and get-dependents operations
+      - Range expansion module that converts RangeNode ASTs into lists of individual cell references for dependency registration
+      - Topological sort producing recalculation order; returns error on cycle detection
+      - Incremental recalculation engine that marks dirty cells and recalculates only the affected subgraph
+      - Full AST evaluator that resolves cell references and function calls against live cell data
+      - Error propagation for #CIRC!, #REF!, #VALUE!, and #DIV/0! error types
+    estimated_hours: "14-20"
+
+  - id: build-spreadsheet-m4
+    name: Advanced Features
+    description: >
+      Add multi-cell selection, copy/paste with relative reference adjustment, undo/redo
+      using the command pattern, CSV import/export, and basic cell formatting.
+    acceptance_criteria:
+      - Multi-cell selection via click-and-drag or Shift+Arrow highlights a rectangular range and displays it visually
+      - Copying a formula and pasting to a new location adjusts relative cell references by the row/column offset; absolute references ($A$1) remain unchanged; mixed references adjust only the non-absolute component
+      - Undo reverts the most recent operation (cell edit, paste, delete) including all cascading recalculations triggered by that operation; redo reapplies it; undo stack holds at least 50 operations
+      - CSV export produces a valid comma-separated file with quoted strings and escaped commas; importing a CSV file populates the grid correctly
+      - Number formatting allows cells to display as currency ($1,234.56), percentage (12.34%), or fixed decimal places; formatting is stored separately from the raw value
+      - Undo/redo operations complete in under 50ms regardless of the number of affected cells
+    pitfalls:
+      - Unbounded undo stack causes memory leaks in long sessions; must cap stack size or implement compression of old entries
+      - Not distinguishing between absolute ($A$1), relative (A1), and mixed ($A1, A$1) references during paste causes incorrect formula adjustments
+      - Pasting over existing formulas must correctly update the dependency graph (remove old edges, add new edges, recalculate)
+      - CSV export must handle cells containing commas, newlines, and double quotes per RFC 4180
+      - Undo of a cell change must restore both the cell's raw value AND re-trigger dependency recalculation to restore all dependent cells
+    concepts:
+      - Command pattern for undo/redo
+      - Reference adjustment (relative vs absolute)
+      - State snapshotting
+      - CSV serialization (RFC 4180)
+    skills:
+      - Implementing design patterns (Command, Memento)
+      - Clipboard API integration
+      - Building undo/redo systems with cascading state
+      - Cell range manipulation and selection
+    deliverables:
+      - Multi-cell selection with visual highlighting and range operations
+      - Copy/paste with relative, absolute, and mixed reference adjustment
+      - Undo/redo stack using command pattern with support for compound operations
+      - CSV import and export conforming to RFC 4180
+      - Cell formatting engine for currency, percentage, and decimal display
+    estimated_hours: "15-22"
+```

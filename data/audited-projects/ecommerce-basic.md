@@ -1,0 +1,225 @@
+# AUDIT & FIX: ecommerce-basic
+
+## CRITIQUE
+- **Audit Finding Confirmed (Payment Integration):** M4 (Checkout) has no AC for payment processing. The essence explicitly mentions 'coordinating atomic transactions between cart state, inventory deduction, and payment processing.' The deliverables mention a 'Payment integration stub' but there's no AC to verify it works. A stub is insufficient—at minimum there should be ACs for initiating payment, handling success/failure, and ensuring the order is only confirmed on payment success.
+- **Audit Finding Confirmed (Order History):** No AC anywhere for retrieving order history. A user completes checkout but can never view their past orders. This breaks the 'complete stateful journey.'
+- **M2/M3 Ordering Issue:** Shopping Cart (M2) comes before User Authentication (M3). This means the cart must work for anonymous users, but M2's AC says 'Cart persistence survives page refresh and browser session restoration' without specifying the anonymous-to-authenticated cart merge flow. When a user logs in (M3), what happens to their anonymous cart? This is a critical gap.
+- **M4 Atomicity Gap:** The pitfall mentions 'Race conditions on stock' and 'Partial order failures' but no AC requires database transactions or any specific atomicity guarantee. The AC just says 'Inventory updates decrement stock' with no mention of what happens if the decrement fails mid-order.
+- **Difficulty Label:** Tagged as 'beginner' but involves payment integration, inventory race conditions, session management, and transactional operations. This is at least intermediate.
+- **M1 Price Precision:** Pitfall correctly warns 'Price precision (use cents)' but no AC requires storing prices as integers in cents. This should be an explicit AC.
+- **Missing Security:** No AC anywhere for CSRF protection on state-changing operations, which is critical for an e-commerce checkout flow.
+- **Estimated Hours Inconsistency:** M4 says '7-15' hours which is an unusually wide range suggesting the scope is unclear.
+- **M2 Price Change Risk:** Pitfall mentions 'Price changes between add and checkout' but no AC addresses snapshotting the price at cart-add time or re-validating at checkout.
+
+## FIXED YAML
+```yaml
+id: ecommerce-basic
+name: E-commerce Store (Basic)
+description: >-
+  Build a basic e-commerce application with product catalog, shopping cart,
+  user authentication, checkout with payment integration, and order history.
+difficulty: intermediate
+estimated_hours: "30-40"
+essence: >-
+  Stateful session management across HTTP's stateless protocol, normalized
+  relational data modeling for products/users/orders with foreign key
+  constraints, and coordinating atomic transactions between cart state,
+  inventory deduction, and payment processing.
+why_important: >-
+  Building this teaches full-stack web architecture patterns, relational
+  database modeling, transactional integrity, and payment integration—
+  foundational skills for most modern web applications.
+learning_outcomes:
+  - Implement RESTful API endpoints with proper HTTP methods and status codes
+  - Design normalized database schemas for products, users, orders, and carts
+  - Build authentication with secure password hashing and session/token management
+  - Integrate payment processing (mock or third-party) with success/failure handling
+  - Implement atomic checkout transactions coordinating cart, inventory, and payment
+  - Handle price precision using integer cents to avoid floating-point errors
+  - Design cart persistence for both anonymous and authenticated users
+  - Build order history retrieval for completed purchases
+skills:
+  - RESTful API Design
+  - Database Schema Modeling
+  - Session Management
+  - Payment Integration
+  - Input Validation
+  - Transaction Management
+  - SQL Queries
+  - HTTP Protocol
+tags:
+  - cart
+  - checkout
+  - intermediate
+  - inventory
+  - javascript/node.js
+  - payment
+  - python/flask
+architecture_doc: architecture-docs/ecommerce-basic/index.md
+languages:
+  recommended:
+    - JavaScript/Node.js
+    - Python/Flask
+    - Ruby/Rails
+  also_possible:
+    - PHP
+    - Go
+    - Java/Spring
+resources:
+  - type: tutorial
+    name: Full Stack E-commerce
+    url: https://www.freecodecamp.org/news/how-to-build-an-e-commerce-app/
+  - type: documentation
+    name: Stripe API Reference
+    url: https://stripe.com/docs/api
+prerequisites:
+  - type: skill
+    name: HTML/CSS/JS
+  - type: skill
+    name: REST API basics
+  - type: skill
+    name: Database basics (SQL)
+milestones:
+  - id: ecommerce-basic-m1
+    name: Product Catalog & Database Schema
+    description: >-
+      Design the database schema for all entities and implement the product
+      catalog with listing, search, and detail views.
+    acceptance_criteria:
+      - "Database schema defines tables for users, products, categories, carts, cart_items, orders, and order_items with foreign key constraints"
+      - "Product prices are stored as integers in the smallest currency unit (e.g., cents) to avoid floating-point precision errors"
+      - "Product listing endpoint returns paginated results with configurable page size, sort order, and total count"
+      - "Product detail endpoint returns full product information including name, description, price, stock quantity, and category"
+      - "Category filtering narrows product listing to the selected category"
+      - "Search endpoint matches products by name and description keywords; results are paginated"
+      - "Indexes exist on product.category_id, product.name, and other frequently queried columns"
+    pitfalls:
+      - "Using float or decimal for prices introduces rounding errors; always store as integer cents"
+      - "Large product images served directly from the application server; use a CDN or object storage"
+      - "N+1 queries when loading products with categories; use JOINs or eager loading"
+      - "Missing indexes on category_id and name columns causes slow listing and search queries"
+    concepts:
+      - Normalized relational schema design
+      - Integer arithmetic for currency
+      - Pagination and filtering
+      - Database indexing
+    skills:
+      - Database schema design
+      - REST API development
+      - Search query implementation
+      - Pagination handling
+    deliverables:
+      - Complete database schema DDL with all tables, foreign keys, and indexes
+      - Product listing API with pagination, sorting, and category filtering
+      - Product detail API returning full product information
+      - Product search endpoint with keyword matching
+    estimated_hours: "5-7"
+
+  - id: ecommerce-basic-m2
+    name: User Authentication
+    description: >-
+      Implement user registration, login, logout, and session management
+      with secure password handling.
+    acceptance_criteria:
+      - "POST /auth/register validates email format and password strength (min 8 chars, mixed case), creates user with hashed password, returns 201"
+      - "Passwords are hashed with bcrypt (cost >= 10) or argon2id before storage"
+      - "POST /auth/login authenticates credentials and returns a session token or sets an HttpOnly secure cookie"
+      - "Login failure returns 401 with a generic error that does not reveal whether the email exists"
+      - "Protected endpoints return 401 when the request lacks a valid authentication credential"
+      - "POST /auth/logout invalidates the session so subsequent requests with that credential are rejected"
+    pitfalls:
+      - "Timing attacks on login if password comparison is not constant-time"
+      - "Not enforcing password complexity allows trivially guessable passwords"
+      - "Storing session tokens insecurely; use HttpOnly, Secure, SameSite cookie attributes"
+      - "Not implementing CSRF protection for cookie-based session authentication"
+    concepts:
+      - Password hashing with bcrypt/argon2id
+      - Session token management
+      - Secure cookie attributes
+      - CSRF protection
+    skills:
+      - Password hashing
+      - Session/JWT implementation
+      - Secure cookie configuration
+      - Input validation
+    deliverables:
+      - Registration endpoint with validation and password hashing
+      - Login endpoint with credential verification and token/cookie issuance
+      - Logout endpoint invalidating the session
+      - Auth middleware protecting routes
+    estimated_hours: "4-6"
+
+  - id: ecommerce-basic-m3
+    name: Shopping Cart
+    description: >-
+      Implement shopping cart with add, remove, update quantity operations
+      for both authenticated and anonymous users.
+    acceptance_criteria:
+      - "Authenticated users have a server-side cart persisted in the database linked to their user ID"
+      - "Anonymous users have a cart stored in the session or a client-side cookie that is created on first cart action"
+      - "Add-to-cart validates that the product exists and the requested quantity does not exceed current stock"
+      - "Update quantity validates against available inventory; quantities of 0 remove the item"
+      - "Cart total is calculated server-side using current product prices in integer cents with correct arithmetic"
+      - "When an anonymous user logs in, their anonymous cart is merged with their authenticated cart (quantities summed, capped at stock)"
+      - "Cart persists across page refreshes for both anonymous and authenticated users"
+    pitfalls:
+      - "Product prices may change between add-to-cart and checkout; always recalculate totals at checkout using current prices"
+      - "Not validating stock at add-to-cart time allows adding more items than available"
+      - "Forgetting to handle anonymous-to-authenticated cart merge loses the user's selections on login"
+      - "Session expiry for anonymous carts should be long enough (days) to not frustrate users"
+    concepts:
+      - Server-side vs client-side cart state
+      - Session management for anonymous users
+      - Cart merge on authentication
+      - Price recalculation at read time
+    skills:
+      - Session management
+      - API design for cart operations
+      - Inventory validation
+      - State management
+    deliverables:
+      - Cart CRUD operations (add, remove, update quantity)
+      - Server-side cart persistence for authenticated users
+      - Anonymous cart using session storage
+      - Cart merge logic on user login
+    estimated_hours: "5-7"
+
+  - id: ecommerce-basic-m4
+    name: Checkout, Payment & Order History
+    description: >-
+      Implement the checkout flow with address collection, payment processing,
+      atomic order creation, and order history retrieval.
+    acceptance_criteria:
+      - "Checkout validates all cart items are still in stock at current prices before proceeding"
+      - "Address collection form validates required shipping fields (street, city, postal code, country)"
+      - "Payment is processed through a mock payment gateway or Stripe test mode; payment success/failure is handled"
+      - "Order creation is atomic: cart items, inventory deduction, and order record are committed in a single database transaction"
+      - "If payment fails, the order is not created and inventory is not deducted; the user sees an error with retry option"
+      - "If inventory is insufficient at checkout time, the order is rejected with a clear message identifying the out-of-stock items"
+      - "Successful checkout returns an order confirmation with order ID and summary; the cart is cleared"
+      - "GET /orders returns the authenticated user's order history with pagination, showing order date, total, and status"
+      - "GET /orders/:id returns full order details including line items, quantities, prices, and shipping address; returns 403 for non-owner"
+    pitfalls:
+      - "Race conditions on stock: two concurrent checkouts can oversell; use SELECT FOR UPDATE or optimistic locking"
+      - "Not wrapping order creation in a transaction causes partial state (order created but inventory not deducted)"
+      - "Abandoned checkouts reserving inventory indefinitely; implement reservation timeouts or don't reserve until payment"
+      - "Not handling payment gateway timeouts; implement idempotency keys to prevent double charges on retry"
+    concepts:
+      - Database transactions and ACID properties
+      - Optimistic/pessimistic locking for inventory
+      - Payment gateway integration patterns
+      - Idempotency for payment operations
+      - Order state machine
+    skills:
+      - Database transaction management
+      - Inventory locking mechanisms
+      - Payment gateway integration
+      - Order lifecycle management
+    deliverables:
+      - Checkout endpoint with stock re-validation and price confirmation
+      - Payment integration (mock gateway or Stripe test mode) with success/failure handling
+      - Atomic order creation within a database transaction
+      - Order history listing and detail endpoints for authenticated users
+      - Order confirmation response with order ID and summary
+    estimated_hours: "8-12"
+```

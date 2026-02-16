@@ -1,0 +1,259 @@
+# AUDIT & FIX: build-bundler
+
+## CRITIQUE
+- The project is well-structured with a clear progression: parse -> resolve -> bundle -> tree-shake.
+- M1 AC 'ES module import and export statements are correctly parsed and their specifiers extracted' — good but should specify which AST parser to use (Acorn, Babel parser, SWC) and note that the student is NOT building a parser from scratch.
+- M1 deliverable mentions 'TypeScript parser integration' but TypeScript is not mentioned in any AC. This is scope creep unless explicitly tested.
+- M1 AC mentions 'Module dependency graph is constructed with nodes for each module and edges for each import relationship' but this is really a M2 deliverable (after resolution). In M1, you have unresolved specifiers; the graph is only complete after resolution.
+- M2 AC 'Package.json main, module, and exports fields are consulted in the correct priority order' — the correct order depends on the bundler's target (browser vs node). Should specify: module > main for ESM bundlers, or the exports field conditional resolution.
+- M2 pitfalls mention 'Conditional exports' but no AC tests them. The package.json 'exports' field with conditions (import, require, browser, default) is complex and important.
+- M3 AC 'Module registry tracks loaded modules by ID and returns cached exports on subsequent require calls' — this is runtime behavior. Should also specify that circular dependencies are handled (partially initialized module exports are returned).
+- M3 AC 'Source maps are generated in v3 format' — this is a significant sub-project on its own. The AC should specify that at minimum, file and line mapping works (column mapping is bonus).
+- M3 pitfall 'Live bindings' is critical: ES modules have live bindings (import sees updated value), CJS has value copies. The bundler must decide which semantics to preserve.
+- M4 AC 'Used exports are tracked across the module graph and only reachable code is included in the output' — this is a high-level description. Should specify the mechanism (marking exports as used during graph traversal, then eliminating unmarked declarations).
+- M4 AC about sideEffects: false is correct but the implementation is non-trivial. Should specify how to detect that NO exports from a module are used (all import paths lead to unused code).
+- No mention of handling CSS imports, JSON imports, or other non-JS assets which real bundlers must handle. The project should explicitly scope this out.
+- No mention of watch mode or incremental builds, which is fine for scope but worth noting.
+- Total hours (50-80) is reasonable for this complexity level.
+
+## FIXED YAML
+```yaml
+id: build-bundler
+name: Build Your Own JavaScript Bundler
+description: >-
+  Build a JavaScript module bundler from scratch: AST-based dependency
+  extraction, Node.js-style module resolution, bundle generation with scope
+  isolation, and tree shaking via static analysis.
+difficulty: expert
+estimated_hours: 70
+essence: >-
+  Module graph construction through AST parsing and dependency extraction,
+  Node.js-compatible module resolution, bundle code generation with function
+  scope isolation and a runtime module loader, and dead code elimination
+  through static reachability analysis of export usage.
+why_important: >-
+  Building a bundler demystifies the build tools developers use daily and
+  teaches compiler-like techniques (parsing, static analysis, code generation)
+  that apply across many domains from transpilers to linters to language
+  tooling.
+learning_outcomes:
+  - Parse JavaScript ASTs and extract import/export declarations
+  - Build a module resolution algorithm following Node.js semantics
+  - Construct a dependency graph from static import analysis
+  - Generate executable bundles with module scope isolation
+  - Handle circular dependencies with partially-initialized module exports
+  - Implement tree shaking via export usage reachability analysis
+  - Generate source maps mapping bundle positions to original sources
+skills:
+  - AST Parsing & Traversal
+  - Dependency Graph Construction
+  - Static Code Analysis
+  - Module Resolution Algorithms
+  - Tree Shaking
+  - Code Generation
+  - Source Map Generation
+  - Graph Traversal Algorithms
+tags:
+  - build-from-scratch
+  - code-splitting
+  - expert
+  - javascript
+  - module-resolution
+  - tree-shaking
+architecture_doc: architecture-docs/build-bundler/index.md
+languages:
+  recommended:
+    - JavaScript
+    - TypeScript
+  also_possible:
+    - Go
+    - Rust
+resources:
+  - type: article
+    name: Minipack - Simple bundler walkthrough
+    url: https://github.com/ronami/minipack
+  - type: documentation
+    name: Rollup Plugin Development
+    url: https://rollupjs.org/plugin-development/
+  - type: documentation
+    name: Acorn JavaScript Parser
+    url: https://github.com/acornjs/acorn
+  - type: article
+    name: Source Map Specification v3
+    url: https://sourcemaps.info/spec.html
+prerequisites:
+  - type: skill
+    name: JavaScript AST concepts (know what an AST is)
+  - type: skill
+    name: "Module systems (CommonJS require, ES import/export)"
+  - type: skill
+    name: File system operations (reading files, resolving paths)
+milestones:
+  - id: build-bundler-m1
+    name: AST Parsing & Dependency Extraction
+    description: >-
+      Parse JavaScript source files into ASTs using an existing parser (Acorn)
+      and extract all import/export declarations and require() calls to build
+      a list of unresolved dependency specifiers per module.
+    estimated_hours: 12
+    concepts:
+      - "AST: Abstract Syntax Tree — structured representation of source code"
+      - "ImportDeclaration node: import { foo } from './bar' -> specifier './bar'"
+      - "ExportNamedDeclaration with source: export { foo } from './bar'"
+      - "CallExpression with callee 'require': require('./bar') -> specifier './bar'"
+      - "Dynamic import(): import('./bar') for code-split boundaries (detect but don't resolve yet)"
+    skills:
+      - Using Acorn or Babel parser to produce ASTs
+      - AST node traversal (visitor pattern or recursive walk)
+      - Extracting import/export metadata from AST nodes
+      - Distinguishing static imports from dynamic imports
+    acceptance_criteria:
+      - "Acorn (or equivalent parser) parses JavaScript source files into ASTs; parsing errors produce clear error messages with file path and line number"
+      - "All ES module static import specifiers are extracted: import x from 'y', import { a } from 'y', import * as ns from 'y', and import 'y' (side-effect import)"
+      - "All ES module export-from specifiers are extracted: export { a } from 'y', export * from 'y'"
+      - "CommonJS require() calls with string literal arguments are detected: require('./foo') extracts './foo' as a dependency"
+      - "Dynamic import() calls are detected and flagged as code-split boundaries (specifier extracted but marked as dynamic)"
+      - "For each parsed module, the output is: {filePath, imports: [{specifier, importedNames}], exports: [{exportedName, localName}], dynamicImports: [specifier]}"
+      - "Relative specifiers ('./foo', '../bar') and bare specifiers ('lodash', '@scope/pkg') are both recognized but NOT yet resolved to file paths"
+    pitfalls:
+      - Trying to build a parser from scratch instead of using Acorn/Babel (not the goal of this project)
+      - Missing export-from re-exports which are both imports and exports
+      - Not handling side-effect-only imports (import './polyfill') which have no imported names
+      - require() with non-literal arguments (require(variable)) cannot be statically analyzed — should warn and skip
+      - Not preserving which names are imported (needed later for tree shaking)
+    deliverables:
+      - Acorn parser integration producing ASTs from JavaScript source files
+      - AST walker extracting ImportDeclaration nodes with specifiers and imported names
+      - AST walker extracting ExportNamedDeclaration and ExportDefaultDeclaration
+      - Re-export detection (export from) extracting both import specifier and exported names
+      - CommonJS require() call detection with string literal argument extraction
+      - Dynamic import() detection flagged as code-split boundary
+      - Module metadata structure (file, imports, exports, dynamicImports)
+
+  - id: build-bundler-m2
+    name: Module Resolution & Dependency Graph
+    description: >-
+      Resolve unresolved import specifiers to absolute file paths following
+      Node.js resolution semantics, then construct the complete transitive
+      dependency graph.
+    estimated_hours: 12
+    concepts:
+      - "Relative resolution: './foo' -> try ./foo.js, ./foo/index.js"
+      - "Bare specifier resolution: 'lodash' -> walk up node_modules directories"
+      - "Package.json entry points: exports > module > main (for ESM bundlers)"
+      - "File extension resolution: try .js, .mjs, .json in order"
+      - "Dependency graph: directed graph where nodes are modules and edges are imports"
+    skills:
+      - File system path resolution
+      - Node.js module resolution algorithm
+      - Package.json field parsing
+      - Graph construction and cycle detection
+    acceptance_criteria:
+      - "Relative imports (./foo, ../bar) resolve to absolute file paths by trying extensions (.js, .mjs, .json) and index files (foo/index.js) in order"
+      - "Bare specifiers (lodash, @scope/pkg) resolve by walking up parent directories checking node_modules/{specifier} until found or filesystem root is reached"
+      - "Package.json resolution reads the exports field first (if present), then module field, then main field, in that priority order; missing fields fall through to the next"
+      - "Index file fallback: import './dir' resolves to ./dir/index.js if ./dir is a directory"
+      - "Dependency graph is constructed by starting from an entry point, parsing each module (M1), resolving its specifiers, and recursively processing unvisited dependencies"
+      - "Circular dependencies are detected and handled: modules involved in a cycle are included in the graph without infinite recursion (visited set prevents re-processing)"
+      - "The complete transitive closure is computed: all modules reachable from the entry point are in the graph, with edges labeled by import type and imported names"
+      - "Resolution failures (module not found) produce clear errors with the importing file, the specifier, and the paths that were tried"
+    pitfalls:
+      - Not handling symlinks (realpath resolution for node_modules)
+      - Package.json 'exports' field with conditional exports (import vs require vs default) is complex
+      - Infinite loop on circular dependencies without a visited set
+      - Case-sensitive vs case-insensitive file systems causing resolution inconsistencies
+      - Not trying all file extensions causing 'module not found' for extensionless imports
+    deliverables:
+      - Relative path resolver (./, ../ with extension and index fallback)
+      - Bare specifier resolver (node_modules directory walking)
+      - Package.json entry point resolver (exports > module > main)
+      - Extension resolution (.js, .mjs, .json)
+      - Dependency graph builder with entry point and recursive resolution
+      - Circular dependency detection with visited set
+      - Clear error messages for unresolved modules
+
+  - id: build-bundler-m3
+    name: Bundle Generation
+    description: >-
+      Generate a single executable JavaScript bundle from the dependency graph
+      with module scope isolation, a runtime module loader, and source map
+      generation.
+    estimated_hours: 22
+    concepts:
+      - "Module wrapping: each module's code is wrapped in a function to isolate its scope"
+      - "Runtime loader: a small bootstrap function that manages module registry and execution"
+      - "Import/export rewriting: replace import/export with runtime loader calls"
+      - "Topological sort: determine initialization order (respecting dependency ordering)"
+      - "Circular dependency handling: partially-initialized exports object is returned for cycles"
+      - "Source maps v3: JSON format mapping generated positions to original file/line"
+    skills:
+      - Code generation and AST manipulation
+      - Module wrapper function design
+      - Topological sorting of dependency graph
+      - Source map v3 format generation
+      - Circular dependency semantics
+    acceptance_criteria:
+      - "Each module's code is wrapped in a function scope: function(module, exports, require) { ...original code... } preventing top-level variable pollution"
+      - "A runtime module loader is prepended to the bundle that: maintains a module registry by ID, executes module functions on first require, and caches exports for subsequent requires"
+      - "Import and export statements are rewritten: imports become require() calls to the module loader; exports set properties on the module's exports object"
+      - "Modules are ordered by topological sort of the dependency graph; circular dependencies return the partially-initialized exports object (matching Node.js CJS behavior)"
+      - "The generated bundle executes correctly in a browser and Node.js environment: importing a module that exports a function allows calling that function"
+      - "Source maps in v3 format are generated as a separate .map file; the bundle includes a //# sourceMappingURL comment; file and line mapping is accurate (column mapping is optional)"
+      - "A bundle of 3 modules with inter-dependencies produces correct output: module A imports from B, B imports from C, executing A correctly initializes C then B then A"
+    pitfalls:
+      - Circular dependencies causing undefined exports if not handled (return partial exports object)
+      - ES module live bindings vs CJS value copying — must decide semantics and document
+      - Default export handling differs between ESM and CJS (exports.default vs module.exports)
+      - Source map mappings getting offset by prepended runtime code
+      - Not handling modules that modify exports after initial execution (live binding issue)
+    deliverables:
+      - Module wrapper function template enclosing each module's code
+      - Runtime module loader (registry, execute-on-demand, cache exports)
+      - Import/export rewriting (AST transformation or string replacement)
+      - Topological sort of dependency graph for initialization order
+      - Circular dependency handling with partial exports
+      - Source map v3 generator with file and line mappings
+      - Bundle entry point execution bootstrap
+
+  - id: build-bundler-m4
+    name: Tree Shaking
+    description: >-
+      Eliminate unused code from the bundle through static analysis of export
+      usage across the module graph.
+    estimated_hours: 24
+    concepts:
+      - "Export usage tracking: mark each export as 'used' when it's imported by a reachable module"
+      - "Reachability analysis: start from entry point's imports, follow the import graph, mark used exports"
+      - "Dead code elimination: remove export declarations (and their code) that are never marked as used"
+      - "Side effects: modules with top-level side effects must be preserved even if no exports are used"
+      - "sideEffects field: package.json flag indicating a package is side-effect-free"
+    skills:
+      - Static analysis of code usage
+      - Graph reachability algorithms
+      - Side effect detection
+      - Package.json sideEffects field handling
+    acceptance_criteria:
+      - "Export usage is tracked: starting from the entry point, each imported name is traced through the graph; an export is marked 'used' only if it's transitively imported from the entry point"
+      - "Unused named exports and their associated function/variable declarations are removed from the bundle output"
+      - "Side-effect-only imports (import './polyfill') always include the imported module regardless of export usage"
+      - "Modules marked with sideEffects: false in their package.json are entirely removed from the bundle when none of their exports are used by any included module"
+      - "Modules with detectable top-level side effects (function calls, global assignments, prototype modifications) are preserved even when exports are unused and no sideEffects: false flag is present"
+      - "Re-exports (export { foo } from './bar') correctly propagate usage: foo is marked used in bar only if it's used by an importer of the re-exporting module"
+      - "Bundle size comparison: a test module exporting 10 functions where only 2 are used produces a bundle containing only those 2 functions and their transitive dependencies"
+      - "Tree shaking report is generated showing: per module, which exports were used, which were eliminated, and bytes saved"
+    pitfalls:
+      - Incorrectly removing modules with side effects (top-level console.log, global state mutation)
+      - Not handling re-exports correctly (export * from './utils' makes all usage tracking harder)
+      - Dynamic property access (obj[key]) defeats static analysis — must conservatively keep all exports
+      - Getter/setter side effects in exported objects are hard to detect statically
+      - Star exports (export * from) requiring analysis of ALL exports from the source module
+    deliverables:
+      - Export usage marker traversing import graph from entry point
+      - Unused export elimination removing dead declarations from bundle
+      - Side-effect-only import preservation
+      - Package.json sideEffects: false handling for pure module elimination
+      - Top-level side effect detection heuristic (conservative: when in doubt, keep)
+      - Re-export usage propagation
+      - Tree shaking size report (used/eliminated exports, bytes saved per module)
+
+```

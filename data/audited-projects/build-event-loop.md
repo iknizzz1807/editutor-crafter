@@ -1,0 +1,230 @@
+# AUDIT & FIX: build-event-loop
+
+## CRITIQUE
+- **Edge-triggered vs level-triggered is the key educational point and it's buried**: The audit correctly identifies this. Edge-triggered (ET) mode requires draining the socket with a read loop until EAGAIN; level-triggered (LT) re-notifies. Most high-performance servers use ET. This distinction must be a core AC, not just a pitfall footnote.
+- **EPOLLOUT management is missing from AC**: The audit correctly identifies that M4 mentions write buffers but the AC for write-readiness management is weak. When a send() returns EAGAIN, the event loop must: (1) buffer the remaining data, (2) register interest in EPOLLOUT for that fd, (3) on EPOLLOUT event, attempt to flush the buffer, (4) deregister EPOLLOUT when the buffer is empty. This is fundamental to non-blocking I/O and must be explicit.
+- **Timer wheel complexity is overambitious for M2**: A hierarchical timer wheel is an advanced data structure. For an intermediate project, a simple single-level timer wheel or even a min-heap is more appropriate. The AC should specify the simpler version with hierarchical as a stretch.
+- **M3 async task scheduling is vague**: 'Deferred task queue for scheduling work in the next iteration' sounds like Node.js's process.nextTick or microtask queue. The educational value is unclear. The real value is in the reactor pattern's event registration API, which is what M3 should focus on.
+- **Missing AC for connection state machine**: Each connection needs a state machine (reading headers, reading body, processing, writing response, closing). This is mentioned nowhere.
+- **No AC for partial write handling**: Network writes can be partial (write returns fewer bytes than requested). The event loop must track write buffer offsets.
+- **epoll_wait maxevents parameter**: Not mentioned but critical. Setting it too low causes multiple epoll_wait calls per event batch; too high wastes stack space.
+- **File descriptor to state mapping**: The event loop needs a way to associate file descriptors with per-connection state (buffers, parser state, etc.). This data structure design is unmentioned.
+- **Memory management for connections**: When a connection closes, its state must be cleaned up. Under load with rapid connect/disconnect, this is a source of leaks.
+
+## FIXED YAML
+```yaml
+id: build-event-loop
+name: Event Loop with epoll
+description: Single-threaded server handling 10K+ connections using epoll and the reactor pattern
+difficulty: intermediate
+estimated_hours: "22-35"
+essence: >
+  Scalable I/O multiplexing using the reactor pattern where a single-threaded event loop
+  uses epoll to monitor thousands of file descriptors, dispatches events to registered
+  handlers, and manages connection state machines with non-blocking I/O, write buffering,
+  and timer-based idle timeouts.
+why_important: >
+  Building this teaches the foundational architecture behind NGINX, Redis, and Node.js,
+  demonstrating how systems achieve massive concurrency without threads through non-blocking
+  I/O and event-driven programming.
+learning_outcomes:
+  - Implement epoll-based I/O multiplexing understanding edge-triggered vs level-triggered semantics
+  - Design a reactor pattern event loop with per-fd state management and callback dispatch
+  - Handle non-blocking socket operations with EAGAIN/EWOULDBLOCK, write buffering, and EPOLLOUT management
+  - Build timer management for connection idle timeouts
+  - Implement an incremental HTTP parser for streaming request data
+  - Benchmark under 10K+ concurrent connections
+skills:
+  - epoll API (edge-triggered and level-triggered)
+  - Non-blocking I/O
+  - Reactor pattern
+  - Timer management
+  - Single-threaded concurrency
+  - Network socket programming
+  - HTTP protocol implementation
+  - Write buffer and backpressure management
+tags:
+  - event-loop
+  - epoll
+  - async-io
+  - networking
+  - reactor-pattern
+  - c10k
+architecture_doc: architecture-docs/build-event-loop/index.md
+languages:
+  recommended:
+    - C
+    - Rust
+  also_possible:
+    - Go
+resources:
+  - name: epoll(7) man page
+    url: https://man7.org/linux/man-pages/man7/epoll.7.html
+    type: reference
+  - name: The C10K Problem
+    url: http://www.kegel.com/c10k.html
+    type: article
+  - name: "Edge-Triggered vs Level-Triggered epoll"
+    url: https://habr.com/en/articles/600123/
+    type: article
+prerequisites:
+  - type: project
+    name: http-server-basic
+milestones:
+  - id: build-event-loop-m1
+    name: "epoll Basics: Level-Triggered and Edge-Triggered"
+    description: >
+      Set up epoll-based event loop with non-blocking sockets. Implement both
+      level-triggered (LT) and edge-triggered (ET) modes, understanding the
+      critical difference in read/write handling.
+    acceptance_criteria:
+      - Create epoll instance with epoll_create1(EPOLL_CLOEXEC) and register the listening socket for EPOLLIN events
+      - Set ALL sockets (listening and client) to non-blocking mode using fcntl(O_NONBLOCK)
+      - Accept new connections in a loop (accept until EAGAIN) and register each with epoll
+      - Implement level-triggered (LT) mode first: epoll re-notifies if data remains unread; read can process one chunk per event
+      - Then implement edge-triggered (ET) mode (EPOLLET flag): read in a loop until EAGAIN to drain the socket completely, because epoll will NOT re-notify for already-available data
+      - Demonstrate the difference: in ET mode, reading only once per event loses data; in LT mode, it works but may cause redundant wakeups
+      - Handle EAGAIN/EWOULDBLOCK on all non-blocking read() and write() calls without treating them as errors
+      - Build a basic echo server as the test application: read data from client, echo it back
+      - Use an array or hash map indexed by file descriptor to store per-connection state
+    pitfalls:
+      - Edge-triggered mode REQUIRES reading until EAGAIN; a single read per event will lose data if more than one read-worth of data arrives between epoll_wait calls
+      - Level-triggered mode can cause a thundering-herd-like issue where the same fd is reported as ready on every epoll_wait call if data isn't fully consumed
+      - The listening socket must also be non-blocking; otherwise accept() blocks when a connection is initiated and then reset before accept runs (the 'accept race')
+      - epoll_wait maxevents parameter should be sized reasonably (e.g., 1024); too small causes extra epoll_wait calls, too large wastes stack
+      - Not setting EPOLL_CLOEXEC on the epoll fd leaks it to child processes
+    concepts:
+      - epoll API (epoll_create1, epoll_ctl, epoll_wait)
+      - Edge-triggered vs level-triggered semantics
+      - Non-blocking socket I/O
+      - Per-fd state management
+    skills:
+      - epoll API usage
+      - Non-blocking socket programming
+      - Understanding ET vs LT trade-offs
+      - Per-connection state tracking
+    deliverables:
+      - epoll instance creation and listening socket registration
+      - Non-blocking socket configuration for all connections
+      - Level-triggered event loop with single-read-per-event
+      - Edge-triggered event loop with drain-until-EAGAIN loop
+      - Echo server demonstrating both modes
+      - Per-fd state map for connection tracking
+    estimated_hours: "6-8"
+
+  - id: build-event-loop-m2
+    name: Write Buffering and Timer Management
+    description: >
+      Implement write buffer management with EPOLLOUT backpressure handling and
+      timer-based connection idle timeouts.
+    acceptance_criteria:
+      - When write() returns EAGAIN (socket send buffer full), buffer the remaining data in a per-connection write queue
+      - Register interest in EPOLLOUT for that fd; when EPOLLOUT fires, attempt to flush the write buffer
+      - When the write buffer is fully flushed, DEREGISTER EPOLLOUT interest to avoid busy-spinning on write-ready events
+      - Handle partial writes: write() may send fewer bytes than requested; advance the buffer offset and retry on next EPOLLOUT
+      - Implement timer management using a min-heap (priority queue) or single-level timer wheel with configurable resolution
+      - Support connection idle timeouts: if no data is received for N seconds, close the connection and free its state
+      - Use epoll_wait timeout parameter set to the time until the next timer expiration; when no timers are pending, use -1 (infinite wait)
+      - Timer cancellation: when a connection receives data, reset its idle timer; when a connection closes, cancel its timer
+    pitfalls:
+      - Leaving EPOLLOUT registered when the write buffer is empty causes epoll_wait to return immediately every iteration (busy loop), consuming 100% CPU
+      - Timer wheel slot count should be a power of 2 for efficient modulo (bitwise AND); non-power-of-2 requires expensive division
+      - epoll_wait timeout is in milliseconds; timer resolution finer than 1ms is not achievable with epoll alone
+      - Closing a connection must cancel its timer AND deregister from epoll AND free per-connection buffers; missing any step leaks resources
+      - Multiple timer expirations may occur in a single tick; must process all expired timers, not just one
+    concepts:
+      - Write buffering and backpressure
+      - EPOLLOUT lifecycle management
+      - Min-heap or timer wheel for timeout management
+      - epoll_wait timeout integration with timers
+    skills:
+      - Write buffer management with partial write handling
+      - EPOLLOUT registration/deregistration lifecycle
+      - Timer data structure implementation
+      - Connection lifecycle management (create, timeout, close)
+    deliverables:
+      - Per-connection write buffer with partial write tracking
+      - EPOLLOUT registration on EAGAIN, deregistration on buffer flush
+      - Timer data structure (min-heap or timer wheel) with insert, cancel, and expire-all operations
+      - Idle timeout enforcement closing inactive connections
+      - epoll_wait timeout derived from next timer expiration
+    estimated_hours: "5-8"
+
+  - id: build-event-loop-m3
+    name: Reactor API and Callback Dispatch
+    description: >
+      Abstract the raw epoll calls into a clean reactor-pattern API with event
+      registration, callback dispatch, and deferred task scheduling.
+    acceptance_criteria:
+      - Clean API for registering interest in fd events: reactor.register(fd, READABLE | WRITABLE, callback); reactor.deregister(fd)
+      - Callback functions receive the fd and event type (readable, writable, error/hangup) as arguments
+      - Support one-shot and repeating timer callbacks: reactor.set_timeout(ms, callback) and reactor.set_interval(ms, callback)
+      - Deferred task queue: reactor.defer(callback) schedules a function to run after all I/O events in the current tick are processed
+      - Handle callback re-entrancy: a callback that calls reactor.deregister(fd) or reactor.register(fd) must not corrupt the current iteration's event list; defer modifications to the next epoll_wait call
+      - EPOLLHUP and EPOLLERR events are dispatched to the registered callback with appropriate event type flags
+      - API hides epoll internals: user code never calls epoll_ctl or epoll_wait directly
+    pitfalls:
+      - Modifying the epoll interest set during event dispatch (inside a callback) can invalidate the current events array; must defer epoll_ctl calls or copy the events array
+      - Deferred tasks should run after ALL I/O events in the current tick, not interleaved with them
+      - A callback that closes an fd must not cause a use-after-free if that fd has a pending event in the same epoll_wait batch; must mark closed fds and skip their events
+      - Re-entrancy: a timer callback that sets another timer must not corrupt the timer data structure during iteration
+    concepts:
+      - Reactor pattern (event demultiplexer + dispatcher)
+      - Callback-based asynchronous programming
+      - Deferred execution queue
+      - Safe event set modification during dispatch
+    skills:
+      - API design for event-driven systems
+      - Callback management and dispatch
+      - Safe iteration with concurrent modification
+      - Deferred task queue implementation
+    deliverables:
+      - Reactor API: register, deregister, set_timeout, set_interval, defer
+      - Event dispatch loop calling registered callbacks
+      - Deferred task queue running after I/O dispatch
+      - Safe fd closure during event dispatch (deferred deregistration)
+      - EPOLLHUP/EPOLLERR event handling
+    estimated_hours: "5-8"
+
+  - id: build-event-loop-m4
+    name: HTTP Server on Event Loop
+    description: >
+      Build a complete HTTP/1.1 server on top of the reactor API, demonstrating
+      incremental parsing, per-connection state machines, keep-alive, and C10K capability.
+    acceptance_criteria:
+      - Parse HTTP requests incrementally as data arrives: accumulate bytes in a per-connection read buffer; attempt to parse after each read; handle requests that span multiple read events
+      - Per-connection state machine with states: READING_HEADERS, READING_BODY, PROCESSING, WRITING_RESPONSE, CLOSING
+      - Handle partial writes using the write buffer from M2: if the response can't be sent in one write, buffer and register EPOLLOUT
+      - Support HTTP/1.1 keep-alive: after sending a response, reset the connection state to READING_HEADERS for the next request (unless Connection: close)
+      - Idle timeout (from M2): connections with no activity for 30 seconds are closed
+      - Serve static files from a configured directory with correct Content-Type and Content-Length
+      - Benchmark with a load testing tool (e.g., wrk, ab): demonstrate 10K+ concurrent connections with p99 latency under 100ms for static file responses
+      - Connection cleanup on error or timeout: free read buffer, write buffer, cancel timer, deregister from epoll, close fd
+    pitfalls:
+      - HTTP request headers may arrive split across multiple read() calls; the parser must handle partial headers gracefully (not assume the full request is in one read)
+      - The write buffer can grow unboundedly if the client reads slowly (slow loris); must set a maximum write buffer size and close connections that exceed it
+      - Keep-alive connections accumulate over time; without idle timeouts the server runs out of file descriptors
+      - Pipelining: HTTP/1.1 allows clients to send multiple requests without waiting for responses; the server must process them in order
+      - Closing a connection from a timer callback while an EPOLLIN event is pending for the same fd causes use-after-free; must handle via deferred close (M3)
+    concepts:
+      - Incremental protocol parsing
+      - Per-connection state machine
+      - HTTP keep-alive and connection lifecycle
+      - Backpressure and slow client handling
+      - C10K performance target
+    skills:
+      - Streaming HTTP parser implementation
+      - Per-connection state and buffer management
+      - HTTP/1.1 keep-alive protocol
+      - Load testing and performance benchmarking
+      - Resource cleanup under all exit paths
+    deliverables:
+      - Incremental HTTP request parser accumulating across reads
+      - Per-connection state machine (read headers → read body → process → write → keep-alive/close)
+      - Write buffer integration with EPOLLOUT backpressure from M2
+      - HTTP keep-alive with Connection header support
+      - Static file serving with MIME types
+      - Benchmark results: 10K concurrent connections, p99 latency reported
+      - Resource cleanup on close/error/timeout
+    estimated_hours: "6-10"
+```

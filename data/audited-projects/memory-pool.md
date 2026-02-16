@@ -1,0 +1,194 @@
+# AUDIT & FIX: memory-pool
+
+## CRITIQUE
+- **Memory alignment is completely missing**: The AC for M1 says 'N blocks of size S bytes' but never mentions alignment. On most architectures, accessing misaligned data causes either a performance penalty (x86) or a CPU trap/bus error (ARM, SPARC). Block size must be rounded up to the platform's alignment requirement (typically 8 or 16 bytes). This is a fundamental requirement, not an optimization.
+- **Block size minimum not enforced**: The free list embeds a pointer in each free block. If the block size is smaller than sizeof(void*), the free list link corrupts adjacent blocks. The AC should require enforcing a minimum block size of at least sizeof(void*).
+- **Cross-chunk free is unspecified**: M2 allows the pool to grow by allocating new chunks, but the free operation in M1 was designed for a single contiguous allocation. When blocks span multiple non-contiguous chunks, freeing a block from chunk B should still work correctly with the shared free list. The AC should explicitly address this.
+- **Use-after-free detection is claimed but mechanism is vague**: M3 says 'memory poisoning fills freed blocks with a sentinel pattern' but doesn't specify what pattern or how use-after-free is actually detected. Poisoning helps with debugging but doesn't actively detect use-after-free at the point of access — it makes corruption visible when the block is re-allocated.
+- **Lock-free CAS is mentioned too casually**: The M3 AC says 'Mutex or atomic CAS protects alloc and free.' Lock-free memory pools using CAS are extremely difficult to implement correctly due to the ABA problem. The AC should be clearer: mutex-based is the expected implementation; lock-free is a stretch goal.
+- **No AC for pool destruction safety**: M2 mentions tracking chunks for cleanup, but there's no AC verifying that destroying a pool with still-allocated blocks is handled (e.g., warning, leak report).
+- **Benchmark requirement is missing**: The whole point of a pool allocator is performance. There should be an AC requiring benchmarking against malloc/free to demonstrate the advantage.
+- **Per-thread pool variant in M3 deliverables is extremely complex**: Thread-local free lists with work-stealing or batch transfer is a research-level topic. This should be marked as a stretch goal, not a core deliverable.
+
+## FIXED YAML
+```yaml
+id: memory-pool
+name: Memory Pool Allocator
+description: Fixed-size block allocation with O(1) alloc/free, growth, and thread safety
+difficulty: intermediate
+estimated_hours: "12-18"
+essence: >
+  Pre-allocated fixed-size block management through free list data structures, enabling
+  O(1) allocation and deallocation by trading general-purpose flexibility for predictable
+  performance, reduced fragmentation, and proper memory alignment.
+why_important: >
+  Building this teaches low-level memory management fundamentals critical for systems programming,
+  game engines, embedded systems, and high-performance applications where allocation speed and
+  predictability matter more than general-purpose flexibility.
+learning_outcomes:
+  - Implement aligned free list data structures for tracking available memory blocks
+  - Design block allocation and deallocation algorithms with O(1) complexity
+  - Build dynamic pool expansion with proper cross-chunk free list management
+  - Debug memory corruption using canary values and poison patterns
+  - Understand alignment requirements and fragmentation trade-offs
+  - Implement thread-safe memory operations using mutexes
+  - Benchmark pool allocator performance vs standard malloc/free
+skills:
+  - Memory Management
+  - Data Structure Design
+  - Low-Level C/Rust
+  - Linked List Implementation
+  - Thread Synchronization
+  - Performance Optimization
+  - Debugging Techniques
+  - Systems Programming
+tags:
+  - allocation
+  - c
+  - fixed-size
+  - intermediate
+  - pools
+  - rust
+  - systems
+  - zig
+architecture_doc: architecture-docs/memory-pool/index.md
+languages:
+  recommended:
+    - C
+    - Rust
+    - Zig
+  also_possible:
+    - C++
+resources:
+  - name: Memory Pool Design
+    url: https://en.wikipedia.org/wiki/Memory_pool
+    type: article
+  - name: Writing a Pool Allocator
+    url: https://dmitrysoshnikov.com/compilers/writing-a-pool-allocator/
+    type: tutorial
+  - name: "Untangling Lifetimes: The Arena Allocator"
+    url: https://www.rfleury.com/p/untangling-lifetimes-the-arena-allocator
+    type: article
+  - name: A Fixed Block Memory Allocator in C
+    url: https://www.codeproject.com/Articles/1272619/A-Fixed-Block-Memory-Allocator-in-C
+    type: tutorial
+prerequisites:
+  - type: skill
+    name: C pointers and pointer arithmetic
+  - type: skill
+    name: Memory layout and alignment concepts
+  - type: skill
+    name: Data structures (linked lists)
+milestones:
+  - id: memory-pool-m1
+    name: Fixed-Size Aligned Pool
+    description: >
+      Allocate a pool of fixed-size, properly aligned blocks managed by a free list.
+      Both alloc and free must be O(1).
+    acceptance_criteria:
+      - Pool initializes with N blocks carved from a single contiguous memory allocation obtained via malloc/mmap
+      - Block size is automatically rounded up to satisfy platform alignment requirements (minimum alignof(max_align_t), typically 8 or 16 bytes) and is at least sizeof(void*) to hold the free list pointer
+      - pool_alloc() returns a pointer to a free block in O(1) by popping from the free list head; returns NULL when pool is exhausted
+      - pool_free(ptr) returns the block to the free list in O(1) by pushing to the free list head
+      - Double-free is detected by checking if the block is already in the free list (via a bitmap or sentinel value in the block header); attempting double-free returns an error or assertion failure
+      - All returned pointers are aligned to the enforced alignment boundary; verified by asserting (ptr % alignment == 0)
+      - Benchmark: 1 million alloc/free cycles complete in under 50ms (demonstrating O(1) per-operation)
+    pitfalls:
+      - If block size is smaller than sizeof(void*), the free list next pointer overwrites adjacent blocks; enforce minimum block size
+      - Pointer aliasing between the free list link and user data requires care: the link is only valid when the block is free; writing to an allocated block must not corrupt the link since it's been removed from the list
+      - Alignment must be enforced at the base allocation AND at each block boundary; simply aligning the base is insufficient if block size is not a multiple of the alignment
+      - Using the block's own memory for the free list link means the free list is intrusive; this is correct but must be documented clearly
+    concepts:
+      - Intrusive free list (singly linked)
+      - Memory alignment (alignof, aligned_alloc)
+      - Pointer arithmetic for block indexing
+      - O(1) push/pop on a singly linked list
+    skills:
+      - Memory alignment and layout
+      - Pointer arithmetic and type casting
+      - Free list data structure implementation
+      - Low-level debugging and assertion design
+    deliverables:
+      - Pool initializer allocating contiguous region divided into aligned, equal-sized blocks
+      - Free list constructed by threading a next pointer through all blocks during init
+      - pool_alloc() popping from free list head in O(1)
+      - pool_free() pushing to free list head in O(1) with double-free detection
+      - Alignment enforcement with static or runtime assertion
+      - Benchmark harness comparing pool_alloc/pool_free against malloc/free
+    estimated_hours: "4-5"
+
+  - id: memory-pool-m2
+    name: Pool Growth & Lifecycle
+    description: >
+      Allow the pool to grow by allocating additional chunks when exhausted.
+      Manage the full lifecycle including destruction with leak reporting.
+    acceptance_criteria:
+      - When pool_alloc() is called and the free list is empty, a new chunk of N blocks is automatically allocated and its blocks are added to the free list
+      - All chunks are tracked in a linked list (chunk registry) for cleanup during pool destruction
+      - pool_free() works correctly for blocks from any chunk: a block allocated from chunk 2 can be freed and later re-allocated without corruption
+      - Optional configurable maximum pool size (max chunks or max bytes); once reached, pool_alloc() returns NULL instead of growing
+      - pool_destroy() frees all chunks; if any blocks are still allocated (not freed), it logs a warning with the count of leaked blocks
+      - Pool statistics API reports: total blocks, allocated blocks, free blocks, chunk count, and total memory used (including chunk metadata overhead)
+    pitfalls:
+      - Memory leak on destroy: forgetting to walk the chunk list and free each chunk leaks all pool memory
+      - Cross-chunk free list: the free list is a single unified list spanning all chunks; blocks from different (non-contiguous) chunks coexist on the same list, so the next pointer can point across chunk boundaries — this is correct but students often assume blocks must be in the same chunk
+      - Unbounded growth without a limit allows a memory leak in user code to consume all system memory
+      - Chunk metadata (pointer to next chunk, block count) should not be stored in the block region itself to avoid corruption; store it in a separate allocation or at the chunk header
+    concepts:
+      - Dynamic memory growth strategies
+      - Chunk-based allocation
+      - Resource lifecycle management
+      - Leak detection at teardown
+    skills:
+      - Dynamic memory management
+      - Linked list manipulation for chunk tracking
+      - Resource lifecycle (init, grow, destroy)
+      - Statistics collection and reporting
+    deliverables:
+      - Automatic chunk allocation when free list is empty
+      - Chunk registry linking all allocated chunks
+      - Unified free list spanning multiple non-contiguous chunks
+      - Configurable maximum pool size with NULL return on exhaustion
+      - pool_destroy() with leak detection and warning
+      - Statistics API for monitoring pool state
+    estimated_hours: "3-4"
+
+  - id: memory-pool-m3
+    name: Thread Safety & Debugging
+    description: >
+      Add mutex-based thread safety and debugging aids including memory poisoning,
+      double-free detection, and use-after-free detection via canary patterns.
+    acceptance_criteria:
+      - Mutex protects pool_alloc() and pool_free() from data corruption under concurrent access from multiple threads
+      - Concurrent stress test: 8 threads performing 100K alloc/free cycles each with no data corruption, deadlocks, or assertion failures
+      - Memory poisoning in debug mode: freed blocks are filled with a sentinel pattern (e.g., 0xDEADBEEF); on re-allocation, the pattern is verified to detect heap corruption from use-after-free writes
+      - Double-free detection via per-block state tracking (bitmap or header flag); double-free attempts produce an error message including the block address
+      - Canary values placed at block boundaries (before and after user data) detect buffer overflows; canary integrity is checked on pool_free() and reports corruption with block address
+      - Leak report on pool_destroy() in debug mode lists the number of unfreed blocks and optionally their addresses
+      - Debug features can be compiled out (via preprocessor flag or build config) for production use with zero overhead
+    pitfalls:
+      - Lock-free pool using CAS suffers from the ABA problem and is extremely difficult to implement correctly; use mutex for correctness first, lock-free only as an advanced stretch goal
+      - Debug overhead (poisoning, canary checks) can be 2-5x slower; must be toggleable at compile time
+      - Canary values must not match any valid free-list pointer pattern; use a value unlikely to appear in normal data
+      - Per-thread pools (thread-local free lists) eliminate contention but require cross-thread free (returning blocks to the originating pool) which adds significant complexity; mark as stretch goal
+      - Memory poisoning only detects use-after-free that WRITES to the freed block; read-after-free is not detectable this way
+    concepts:
+      - Mutex-based synchronization
+      - Memory poisoning and canary values
+      - Debug vs release build configuration
+      - Concurrent data structure correctness
+    skills:
+      - Mutex usage and concurrent programming
+      - Memory corruption debugging techniques
+      - Build configuration for debug/release modes
+      - Stress testing concurrent code
+    deliverables:
+      - Mutex-protected pool_alloc() and pool_free()
+      - Concurrent stress test demonstrating correctness under contention
+      - Memory poison fill on free with verification on re-alloc (debug mode)
+      - Double-free detection with error reporting
+      - Canary values at block boundaries with overflow detection on free
+      - Compile-time toggle for debug features
+      - Leak report on pool_destroy()
+    estimated_hours: "4-6"
+```

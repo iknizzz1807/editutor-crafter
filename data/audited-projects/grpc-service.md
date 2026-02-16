@@ -1,0 +1,234 @@
+# AUDIT & FIX: grpc-service
+
+## CRITIQUE
+- **No Audit Findings:** The audit returned no findings, but that doesn't mean the project is flawless.
+- **M1 Missing Client Streaming in AC:** M1 AC says 'Define service methods including unary, server streaming, and bidirectional streaming' but omits client streaming. The essence and learning outcomes list all four patterns. Client streaming should be explicitly included.
+- **M2 Missing Error Handling AC:** While the pitfalls mention status codes, the ACs for M2 don't explicitly require returning proper gRPC status codes (NOT_FOUND, INVALID_ARGUMENT, etc.). The deliverables mention it but ACs don't enforce it.
+- **M3 Interceptor Order Not Tested:** The pitfall says 'Interceptor order matters' but no AC verifies that interceptors execute in the correct order (e.g., auth before rate limiting before business logic).
+- **M4 Connection Pooling Misunderstanding:** The AC says 'Connection pooling reuses gRPC connections across multiple client calls.' In gRPC, a single `grpc.ClientConn` (Go) or `Channel` (Java) already multiplexes RPCs over HTTP/2. True 'connection pooling' (multiple TCP connections) is only needed for extreme throughput. The AC should be more precise about what's being pooled.
+- **M4 Retry Safety:** The pitfall correctly warns about retrying non-idempotent methods, but the AC doesn't require the retry policy to be configurable per-method or to respect idempotency annotations.
+- **Missing Reflection/Health:** No milestone covers gRPC health checking protocol or server reflection, both of which are standard production requirements.
+- **Proto3 Default Values:** Pitfall in M1 mentions 'Using required fields (proto3 doesn't have them)' which is correct but could be more precise: proto3 removed `required` and `optional` keywords (though `optional` was re-added in proto3 syntax since protoc 3.15).
+- **Overall Quality:** This is one of the better-defined projects. The fixes are refinements rather than structural changes.
+
+## FIXED YAML
+```yaml
+id: grpc-service
+name: gRPC Microservice
+description: >-
+  Build a gRPC service with all four RPC patterns, interceptor middleware,
+  proper error handling, and a robust client with retry logic and testing.
+difficulty: intermediate
+estimated_hours: "25-40"
+essence: >-
+  HTTP/2-based remote procedure calls using Protocol Buffer binary
+  serialization, with support for four streaming patterns (unary,
+  server-stream, client-stream, bidirectional) and middleware-based request
+  interception for cross-cutting concerns in distributed systems.
+why_important: >-
+  Building this project teaches you the foundations of modern microservice
+  architecture and high-performance inter-service communication patterns
+  used at scale by companies like Google, Netflix, and Uber.
+learning_outcomes:
+  - Define service contracts with Protocol Buffers including message types and all four RPC method patterns
+  - Implement unary, server streaming, client streaming, and bidirectional streaming RPCs
+  - Build custom interceptors for authentication, logging, and error handling
+  - Handle backpressure and flow control in streaming scenarios
+  - Implement proper error handling with gRPC status codes and rich error details
+  - Debug serialization issues and optimize message schemas for performance
+  - Write integration tests for streaming RPCs and edge cases
+  - Deploy language-agnostic services with cross-platform compatibility
+skills:
+  - Protocol Buffers
+  - HTTP/2 Protocol
+  - Bidirectional Streaming
+  - RPC Interceptors
+  - Service Contracts
+  - Binary Serialization
+  - Async I/O Patterns
+  - Microservice Communication
+tags:
+  - backend
+  - bidirectional
+  - code-generation
+  - go
+  - intermediate
+  - protobuf
+  - protocols
+  - rust
+  - service
+  - streaming
+architecture_doc: architecture-docs/grpc-service/index.md
+languages:
+  recommended:
+    - Go
+    - Rust
+  also_possible:
+    - Java
+    - Python
+    - C++
+resources:
+  - name: gRPC Official Docs
+    url: https://grpc.io/docs/
+    type: documentation
+  - name: Protocol Buffers Language Guide
+    url: https://protobuf.dev/programming-guides/proto3/
+    type: documentation
+  - name: gRPC Health Checking Protocol
+    url: https://github.com/grpc/grpc/blob/master/doc/health-checking.md
+    type: documentation
+prerequisites:
+  - type: skill
+    name: Protocol Buffers basics
+  - type: skill
+    name: RPC concepts
+  - type: skill
+    name: Go or Rust
+milestones:
+  - id: grpc-service-m1
+    name: Proto Definition & Code Generation
+    description: >-
+      Define the service contract with Protocol Buffers covering all four
+      RPC patterns, generate server and client stubs, and establish versioning.
+    acceptance_criteria:
+      - "Define message types with proper field numbering, type annotations, and descriptive comments"
+      - "Define service methods covering all four patterns: unary, server streaming, client streaming, and bidirectional streaming"
+      - "First enum value in every enum type is set to UNSPECIFIED with tag 0 as a safe default"
+      - "Generate server and client code from proto definitions using protoc with language-specific plugins"
+      - "Proto files use package namespacing and the generated code compiles without errors"
+      - "Schema changes are backward-compatible: no reused or changed field numbers, no removed fields (only deprecated)"
+    pitfalls:
+      - "Changing or reusing field numbers breaks wire compatibility with existing clients"
+      - "Not setting the first enum value to UNSPECIFIED (tag 0) causes confusing default behavior"
+      - "Large messages exceeding the default 4MB gRPC max message size; configure limits explicitly"
+      - "Proto3 removed the `required` keyword; all fields are implicitly optional (use `optional` keyword since protoc 3.15 for explicit presence tracking)"
+      - "Not adding comments to proto definitions results in undocumented APIs"
+    concepts:
+      - Protocol Buffer v3 syntax and type system
+      - Service definition with four RPC patterns
+      - Code generation pipeline with protoc
+      - Backward-compatible schema evolution
+    skills:
+      - Protocol Buffer Schema Design
+      - Code Generation Tooling
+      - API Versioning Strategies
+      - Message Serialization
+    deliverables:
+      - Proto file with message definitions, enums, and service declaration
+      - Code generation setup producing compilable server and client stubs
+      - Service definition with unary, server streaming, client streaming, and bidirectional RPCs
+      - Documentation comments on all messages, fields, and RPC methods
+    estimated_hours: "4-6"
+
+  - id: grpc-service-m2
+    name: Server Implementation
+    description: >-
+      Implement the gRPC server with all four RPC types, proper error
+      handling with gRPC status codes, and graceful shutdown.
+    acceptance_criteria:
+      - "Unary RPC handles single request-response with input validation; invalid input returns INVALID_ARGUMENT status"
+      - "Server streaming RPC sends multiple sequential responses for a single client request; stream is closed cleanly on completion"
+      - "Client streaming RPC receives multiple messages and returns a single aggregated response after the client closes the stream"
+      - "Bidirectional streaming handles concurrent send and receive; both sides can close independently"
+      - "All errors return appropriate gRPC status codes (NOT_FOUND, INVALID_ARGUMENT, INTERNAL, etc.) with descriptive messages"
+      - "Server embeds UnimplementedServer (Go) or equivalent for forward compatibility with new RPC methods"
+      - "Graceful shutdown stops accepting new connections, completes in-flight RPCs within a deadline, then terminates"
+      - "Health checking endpoint implements the gRPC health checking protocol and reports SERVING status"
+    pitfalls:
+      - "Blocking indefinitely in streaming without respecting context cancellation causes hung connections"
+      - "Not handling context.Done() in long-running streams means cancelled requests continue executing"
+      - "Forgetting to embed UnimplementedServer breaks forward compatibility when new methods are added to the proto"
+      - "Memory leaks from unclosed streams or unbounded buffering of stream messages"
+      - "Returning generic UNKNOWN status instead of specific error codes makes debugging impossible"
+    concepts:
+      - gRPC server lifecycle
+      - Four streaming patterns
+      - gRPC status codes and error model
+      - Graceful shutdown with deadline
+      - Health checking protocol
+    skills:
+      - gRPC Server Implementation
+      - Stream Management
+      - Context Cancellation Handling
+      - Service Lifecycle Management
+      - Error Code Mapping
+    deliverables:
+      - gRPC server with listener binding and service registration
+      - Implementation of all four RPC method types
+      - Error handling returning proper gRPC status codes
+      - Graceful shutdown completing in-flight requests
+      - Health check service implementation
+    estimated_hours: "8-12"
+
+  - id: grpc-service-m3
+    name: Interceptors & Middleware
+    description: >-
+      Add cross-cutting concerns via unary and stream interceptors with
+      correct ordering and context propagation.
+    acceptance_criteria:
+      - "Logging interceptor records method name, duration (ms), and response status code for every RPC call"
+      - "Authentication interceptor extracts and validates bearer tokens from gRPC metadata; unauthenticated requests receive UNAUTHENTICATED status"
+      - "Recovery interceptor catches panics in handler code and returns INTERNAL status instead of crashing the server"
+      - "Interceptors are chained in a documented order: recovery → logging → authentication → business logic"
+      - "Both unary and stream interceptor variants are implemented for each cross-cutting concern"
+      - "Context values set by upstream interceptors (e.g., user identity from auth) are accessible in downstream interceptors and handlers"
+    pitfalls:
+      - "Interceptor ordering matters: auth before logging leaks unauthenticated request details; recovery must be outermost"
+      - "Recovery interceptor only catches panics in the goroutine it runs on; spawned goroutines need their own recovery"
+      - "Context values set in interceptors are lost if a new context is created instead of deriving from the incoming one"
+      - "Stream interceptors are structurally different from unary interceptors; wrapping the stream interface is required"
+    concepts:
+      - gRPC unary and stream interceptors
+      - Middleware chaining and ordering
+      - Context propagation through interceptor chain
+      - Panic recovery patterns
+    skills:
+      - Interceptor Development
+      - Cross-Cutting Concern Separation
+      - Context Propagation
+      - Middleware Chain Configuration
+    deliverables:
+      - Unary and stream interceptors for logging, auth, and recovery
+      - Interceptor chain with documented execution order
+      - Auth interceptor extracting user identity into context
+      - Logging interceptor with method name, duration, and status output
+    estimated_hours: "6-10"
+
+  - id: grpc-service-m4
+    name: Client Implementation & Testing
+    description: >-
+      Build a robust gRPC client with retry policies, deadline management,
+      and comprehensive unit and integration tests.
+    acceptance_criteria:
+      - "Client sets deadlines on every RPC call; calls exceeding the deadline are cancelled with DEADLINE_EXCEEDED status"
+      - "Retry policy with configurable exponential backoff and jitter retries transient failures (UNAVAILABLE, RESOURCE_EXHAUSTED)"
+      - "Retry policy is configurable per-method; non-idempotent methods (e.g., create operations) are not retried by default"
+      - "Client reuses a single gRPC channel (HTTP/2 connection with multiplexing) rather than creating a new connection per call"
+      - "Unit tests use a mock or fake server to verify client behavior including retry, timeout, and error handling"
+      - "Integration tests start an in-process gRPC server and verify full request-response flow for all four RPC types"
+      - "Tests verify stream cancellation, deadline propagation, and error status code handling"
+    pitfalls:
+      - "Not setting deadlines causes requests to hang indefinitely if the server is unresponsive"
+      - "Retrying non-idempotent methods (e.g., create) causes duplicate resource creation"
+      - "Creating a new gRPC channel per request wastes resources; a single channel multiplexes over HTTP/2"
+      - "Tests not cleaning up connections or stopping servers cause resource leaks and flaky CI"
+      - "Retry with constant backoff (no jitter) causes thundering herd on service recovery"
+    concepts:
+      - gRPC client channel management
+      - Retry policies and idempotency
+      - Deadline and timeout propagation
+      - HTTP/2 multiplexing
+      - Test strategies for RPC services
+    skills:
+      - gRPC Client Implementation
+      - Retry Logic with Backoff
+      - Integration Testing
+      - Mock Server Construction
+      - Connection Lifecycle Management
+    deliverables:
+      - gRPC client with shared channel and deadline configuration
+      - Per-method retry policy with exponential backoff and jitter
+      - Unit tests with mock server for client behavior verification
+      - Integration tests covering all four RPC patterns end-to-end
+    estimated_hours: "6-10"
+```

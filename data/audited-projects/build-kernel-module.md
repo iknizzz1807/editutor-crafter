@@ -1,0 +1,222 @@
+# AUDIT & FIX: build-kernel-module
+
+## CRITIQUE
+- **copy_to_user/copy_from_user is mentioned in pitfalls but not in AC**: This is the most critical correctness and security requirement for kernel-userspace data transfer. Directly dereferencing a userspace pointer from kernel code can: (1) read/write arbitrary kernel memory if the pointer is crafted, (2) cause a kernel oops/panic if the pointer is invalid. The AC MUST require copy_to_user/copy_from_user and verify their return values.
+- **Non-blocking I/O (O_NONBLOCK) missing from M4**: The AC for M4 includes poll/select support and blocking reads, but doesn't handle O_NONBLOCK. When a user opens the device with O_NONBLOCK, the read handler must return -EAGAIN instead of blocking. This is a fundamental POSIX requirement.
+- **M2 read handler EOF handling is mentioned in pitfalls but not AC**: The read handler must return 0 at EOF to signal end-of-data. If it returns the buffer size every time, userspace reads loop forever. This must be an AC.
+- **M3 ioctl security**: ioctl handlers must validate the `cmd` argument against known commands and return -ENOTTY for unknown commands. An ioctl that accepts any command is a security risk.
+- **M4 wait_event_interruptible signal handling**: When a process waiting in wait_event_interruptible receives a signal, it returns -ERESTARTSYS. The driver must propagate this to userspace. This is a critical correctness detail.
+- **Missing AC for kernel memory allocation**: M2 needs a kernel buffer (kmalloc/kzalloc) but no AC requires it or addresses error handling for allocation failure.
+- **Module parameters not covered**: The learning outcomes mention module parameters but no milestone covers them.
+- **Missing AC for multiple device instances**: What if two processes open the device simultaneously? M2 should at least acknowledge concurrent open() handling.
+- **M1 is too trivial for the estimated hours**: A hello world module is 2 hours max, not 3-5.
+
+## FIXED YAML
+```yaml
+id: build-kernel-module
+name: Linux Kernel Module
+description: Character device driver with /dev/ interface, ioctl, /proc, and concurrent access handling
+difficulty: intermediate
+estimated_hours: "22-32"
+essence: >
+  Bridging kernel and user space through character device file operations, implementing
+  safe data transfer with copy_to_user/copy_from_user, custom ioctl control interfaces,
+  /proc introspection, and mutex/wait-queue-based concurrency for shared kernel resources.
+why_important: >
+  Kernel programming is fundamental for systems developers working on embedded systems,
+  device drivers, or OS internals. Mastering kernel-userspace boundaries, concurrency
+  primitives, and safe memory transfer is essential for reliable low-level software.
+learning_outcomes:
+  - Implement loadable kernel modules with proper init/exit and module metadata
+  - Design character device drivers with file_operations for read/write/open/release
+  - Use copy_to_user/copy_from_user for safe kernel-userspace data transfer
+  - Build ioctl interfaces for custom device control from userspace
+  - Create /proc filesystem entries for runtime module introspection
+  - Implement mutex and wait-queue synchronization for concurrent device access
+  - Handle O_NONBLOCK and poll/select for multiplexed I/O
+  - Debug kernel code using printk, dmesg, and oops analysis
+skills:
+  - Kernel Module Development
+  - Character Device Drivers
+  - Kernel Synchronization (mutex, spinlock, wait_queue)
+  - ioctl Implementation
+  - /proc Filesystem Interface
+  - copy_to_user / copy_from_user
+  - Concurrent Access Control
+  - Kernel Memory Allocation (kmalloc)
+tags:
+  - linux-kernel
+  - device-drivers
+  - kernel-programming
+  - systems
+  - concurrency
+architecture_doc: architecture-docs/build-kernel-module/index.md
+languages:
+  recommended:
+    - C
+  also_possible: []
+resources:
+  - name: Linux Kernel Module Programming Guide
+    url: https://sysprog21.github.io/lkmpg/
+    type: tutorial
+  - name: "Linux Device Drivers, 3rd Edition"
+    url: https://lwn.net/Kernel/LDD3/
+    type: book
+prerequisites:
+  - type: skill
+    name: C programming (pointers, structs, memory management)
+  - type: project
+    name: signal-handler
+milestones:
+  - id: build-kernel-module-m1
+    name: Hello World Kernel Module
+    description: >
+      Create a loadable kernel module with init/exit functions, proper metadata,
+      and module parameters. Verify loading/unloading via dmesg.
+    acceptance_criteria:
+      - Module compiles against current running kernel headers using a Kbuild Makefile
+      - insmod loads the module; module_init function runs and printk(KERN_INFO ...) message appears in dmesg
+      - rmmod cleanly unloads the module; module_exit function runs with cleanup message in dmesg
+      - Module declares MODULE_LICENSE("GPL"), MODULE_AUTHOR, and MODULE_DESCRIPTION; all visible via modinfo command
+      - Module accepts at least one parameter via module_param() macro (e.g., buffer_size integer with default); parameter is visible in /sys/module/<name>/parameters/ and settable at load time via insmod
+      - Module compiles with -Werror and produces no warnings
+    pitfalls:
+      - Omitting MODULE_LICENSE("GPL") taints the kernel and prevents access to GPL-only exported symbols (most of the useful kernel API)
+      - Kernel headers version must exactly match the running kernel; mismatched headers cause subtle ABI incompatibilities or build failures
+      - printk uses log levels (KERN_INFO, KERN_ERR, etc.) not newlines for message separation; missing log level defaults to KERN_DEFAULT which may be suppressed by console log level
+      - Module parameters declared with wrong permissions (e.g., 0666) allow any user to modify kernel module state
+    concepts:
+      - Kernel module lifecycle (init/exit)
+      - Kbuild system and out-of-tree module compilation
+      - Kernel logging with printk
+      - Module parameters
+    skills:
+      - Kernel module compilation with Kbuild
+      - Module metadata declaration
+      - Kernel logging and dmesg inspection
+      - Module parameter handling
+    deliverables:
+      - Kernel module source with module_init/module_exit
+      - Kbuild Makefile for out-of-tree compilation
+      - Module metadata (LICENSE, AUTHOR, DESCRIPTION)
+      - Module parameter with /sys/module visibility
+      - Verification script using insmod, dmesg, modinfo, rmmod
+    estimated_hours: "2-4"
+
+  - id: build-kernel-module-m2
+    name: Character Device Driver
+    description: >
+      Implement a character device with read/write file operations, dynamic major number
+      allocation, automatic /dev/ node creation, and safe kernel-userspace data transfer.
+    acceptance_criteria:
+      - Register character device with alloc_chrdev_region() for dynamic major number; major/minor visible in /proc/devices
+      - Create /dev/ node automatically using class_create() and device_create(); udev creates the node without manual mknod
+      - Implement file_operations struct with .open, .release, .read, and .write handlers
+      - Allocate a kernel buffer (e.g., 4KB) using kmalloc/kzalloc in module_init; handle allocation failure with -ENOMEM return
+      - Write handler copies data FROM userspace using copy_from_user(); returns -EFAULT if the copy fails; stores data in kernel buffer up to buffer capacity
+      - Read handler copies data TO userspace using copy_to_user(); returns -EFAULT if the copy fails; returns 0 at EOF when all data has been read (preventing infinite read loops)
+      - Read handler uses and updates *f_pos (file position offset) to track how much has been read; subsequent reads continue from where the last read left off
+      - Userspace verification: `echo "hello" > /dev/mydevice` followed by `cat /dev/mydevice` outputs "hello"
+      - Open handler increments a usage counter; release decrements it; counter visible via printk
+    pitfalls:
+      - NEVER directly dereference a userspace pointer from kernel code; always use copy_to_user/copy_from_user; direct access can crash the kernel or create security vulnerabilities
+      - copy_to_user/copy_from_user return the number of bytes NOT copied (not bytes copied); non-zero return indicates partial copy and must return -EFAULT
+      - Read handler must return 0 at EOF (when all data is consumed); returning a positive value forever causes cat/read to loop infinitely
+      - kmalloc can fail; must check return value and return -ENOMEM; never assume allocation succeeds in kernel
+      - Forgetting to unregister the char device and destroy the class in module_exit leaks kernel resources
+    concepts:
+      - Character device registration and major/minor numbers
+      - file_operations structure
+      - Kernel-userspace memory boundary (copy_to_user/copy_from_user)
+      - /dev/ node creation via device class
+    skills:
+      - Character device registration API
+      - Safe kernel-userspace data transfer
+      - File operations implementation
+      - Kernel memory allocation (kmalloc/kfree)
+    deliverables:
+      - Dynamic major number allocation with alloc_chrdev_region
+      - Automatic /dev/ node via class_create + device_create
+      - file_operations with open, release, read (with f_pos), write
+      - copy_to_user/copy_from_user with error checking in all data transfer paths
+      - Kernel buffer with kmalloc and proper cleanup in module_exit
+      - Userspace test demonstrating echo/cat round-trip
+    estimated_hours: "5-8"
+
+  - id: build-kernel-module-m3
+    name: ioctl and /proc Interface
+    description: >
+      Add ioctl commands for device control and /proc filesystem entries for
+      runtime introspection.
+    acceptance_criteria:
+      - Implement unlocked_ioctl handler with at least 3 custom commands: buffer resize, buffer clear, and status query
+      - Define ioctl command numbers using _IOW/_IOR/_IOWR macros with a unique magic number; definitions in a shared header included by both kernel module and userspace program
+      - ioctl handler validates the command number and returns -ENOTTY for unknown/unsupported commands
+      - ioctl data transfer uses copy_from_user/copy_to_user for pointer-type arguments; access_ok() or equivalent validation before access
+      - Create /proc/<module_name> entry using proc_create() with a seq_file implementation showing: buffer size, bytes used, open count, read/write counts
+      - /proc read handler uses seq_file interface (seq_printf, seq_read) for correct handling of partial reads and offset management
+      - Userspace test program exercises all ioctl commands and reads /proc entry; compiles with the shared header
+    pitfalls:
+      - ioctl command numbers must be unique across the system; use _IOW/_IOR/_IOWR macros with a unique magic number (typically a character) and sequential command numbers
+      - Raw proc_read callbacks are error-prone for partial reads and offset handling; seq_file interface handles this correctly and is the recommended approach
+      - Not validating ioctl command numbers allows malicious userspace programs to trigger undefined behavior
+      - Buffer resize via ioctl must handle the case where the new size is smaller than current content: either truncate or return -EBUSY
+      - Shared header between kernel and userspace must use __user annotations correctly and avoid including kernel-only headers in userspace builds
+    concepts:
+      - ioctl interface design
+      - _IOW/_IOR/_IOWR command number macros
+      - /proc filesystem and seq_file
+      - Kernel-userspace header sharing
+    skills:
+      - ioctl command design and implementation
+      - seq_file /proc interface
+      - Shared header file management
+      - Userspace test program development
+    deliverables:
+      - unlocked_ioctl handler with 3+ custom commands
+      - Shared header file with ioctl definitions and magic number
+      - /proc entry using seq_file showing device statistics
+      - Command validation returning -ENOTTY for unknown commands
+      - Userspace test program exercising all ioctl commands
+    estimated_hours: "5-8"
+
+  - id: build-kernel-module-m4
+    name: Concurrent Access, Blocking I/O, and Poll Support
+    description: >
+      Handle concurrent access from multiple processes with mutex protection,
+      blocking reads via wait queues, non-blocking I/O with O_NONBLOCK, and
+      poll/select support.
+    acceptance_criteria:
+      - Protect the shared kernel buffer with a mutex_lock/mutex_unlock around all read and write operations; concurrent readers and writers do not corrupt data
+      - Implement blocking read: when buffer is empty, read blocks using wait_event_interruptible() until data is written by another process
+      - wait_event_interruptible returns -ERESTARTSYS when interrupted by a signal; the read handler must propagate this return value to userspace
+      - Handle O_NONBLOCK flag on open: when set, read returns -EAGAIN instead of blocking when buffer is empty; write returns -EAGAIN instead of blocking when buffer is full
+      - Implement .poll file operation: call poll_wait() with the wait queue, then return a mask with POLLIN|POLLRDNORM when data is available and POLLOUT|POLLWRNORM when buffer has space
+      - Write handler calls wake_up_interruptible() on the wait queue after adding data to the buffer
+      - Stress test: 4 concurrent writer processes and 4 concurrent reader processes operating simultaneously with no data corruption, deadlocks, or kernel oops; verified by checksumming data written vs data read
+    pitfalls:
+      - Cannot use mutex (sleeping lock) in interrupt context or while holding a spinlock; but for character device file operations this is safe since they run in process context
+      - wait_event_interruptible must re-check its condition after waking (spurious wakeups); the macro handles this but manual loops must include the check
+      - Forgetting to handle -ERESTARTSYS from wait_event_interruptible causes signals (e.g., Ctrl+C) to be silently ignored, making the process unkillable
+      - poll handler must call poll_wait() AND return the current readiness mask; calling only poll_wait() without returning the mask causes poll/select to never indicate readiness
+      - The poll mask bits (POLLIN, POLLOUT, etc.) must be correct; returning POLLIN when buffer is empty causes busy-looping in userspace poll
+    concepts:
+      - Kernel mutex synchronization
+      - Wait queues and blocking I/O
+      - O_NONBLOCK semantics
+      - poll/select support in drivers
+      - Signal handling in kernel wait paths
+    skills:
+      - Kernel mutex and wait queue usage
+      - Blocking vs non-blocking I/O implementation
+      - poll file operation implementation
+      - Concurrent stress testing of kernel code
+    deliverables:
+      - Mutex-protected buffer for concurrent access
+      - Blocking read with wait_event_interruptible and signal handling
+      - O_NONBLOCK support returning -EAGAIN
+      - .poll file operation with correct mask bits
+      - wake_up_interruptible on write to unblock readers
+      - Stress test script with multiple concurrent readers and writers
+    estimated_hours: "6-10"
+```

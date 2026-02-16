@@ -1,0 +1,220 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+  colors: {
+    wal: "#E1D5E7"
+    db: "#DAE8FC"
+    process: "#FFF2CC"
+    header: "#F8CECC"
+    highlight: "#FF5733"
+    sync: "#FF0000"
+  }
+}
+
+classes: {
+  file_structure: {
+    style: {
+      stroke-width: 2
+      fill: ${colors.db}
+      border-radius: 5
+      shadow: true
+    }
+  }
+  wal_block: {
+    shape: package
+    style: {
+      stroke-width: 2
+      fill: ${colors.wal}
+    }
+  }
+  process_node: {
+    shape: package
+    style: {
+      fill: ${colors.process}
+      stroke-width: 2
+      stroke-dash: 3
+    }
+  }
+}
+
+title: |md
+  # Write-Ahead Log (WAL) Architecture
+  *Milestone 10: Durability & Atomicity Implementation*
+| {
+  near: top-center
+  link: "#anchor-transactions"
+}
+
+# ----------------------------------------------------------------------
+# 1. The WAL File (Sequential, Append-Only)
+# ----------------------------------------------------------------------
+WAL_File: "database.db-wal" {
+  link: "#anchor-transactions"
+  class: file_structure
+  tooltip: "Append-only log of page modifications"
+  
+  Header: WAL Header {
+    class: wal_block
+    style.fill: ${colors.header}
+    
+    label: |md
+      **WAL Header (32 bytes)**
+      - Magic Number
+      - Format Version
+      - Page Size (4096)
+      - Checkpoint Seq
+      - Salts & Checksum
+    |
+  }
+
+  Frame_1: "Frame #1\n(Tx 101)" {
+    class: wal_block
+    PageID: "Page 5"
+  }
+
+  Frame_2: "Frame #2\n(Tx 101)" {
+    class: wal_block
+    PageID: "Page 8"
+  }
+
+  Frame_3: "Frame #3\n(Tx 102)" {
+    class: wal_block
+    style.stroke: ${colors.highlight}
+    style.stroke-width: 4
+    PageID: "Page 5 (Newer)"
+  }
+
+  Header -> Frame_1: "Offset 32"
+  Frame_1 -> Frame_2: "Sequential Write"
+  Frame_2 -> Frame_3: "Append"
+}
+
+# ----------------------------------------------------------------------
+# 2. Microscopic View: WAL Frame Structure
+# ----------------------------------------------------------------------
+Microscope_View: "Zoom: WAL Frame Structure" {
+  link: "#anchor-transactions"
+  style: {
+    stroke-dash: 3
+    fill: transparent
+  }
+
+  WalFrame_Struct: "struct WalFrame" {
+    shape: sql_table
+    style: {
+        fill: white
+        stroke-width: 1
+    }
+    
+    # Types quoted to ensure special characters don't break parsing
+    offset: "uint32_t" {constraint: "0x00"}
+    page_id: "uint32_t" {constraint: "Page #"}
+    commit_size: "uint32_t" {constraint: "DB Size"}
+    salt: "uint64_t" {constraint: "Salt 1/2"}
+    checksum: "uint64_t" {constraint: "Checksum 1/2"}
+    payload: "byte[4096]" {constraint: "Page Data"}
+  }
+
+  Binary_Layout: |md
+    **On-Disk Layout**
+    `[PgID (4B)][Size (4B)][Salt (8B)][Checksum (8B)]`
+    `[ ........................................... ]`
+    `[ ............ 4096 BYTES DATA ............. ]`
+    `[ ........................................... ]`
+  |
+  
+  WalFrame_Struct -> Binary_Layout
+}
+
+# Link WAL to Microscope
+WAL_File.Frame_3 -> Microscope_View.WalFrame_Struct: "inspects" {
+  style: {
+    stroke-dash: 3
+    opacity: 0.5
+  }
+}
+
+# ----------------------------------------------------------------------
+# 3. The Checkpointer (Background Process)
+# ----------------------------------------------------------------------
+Checkpointer: "Background Checkpoint Process" {
+  link: "#anchor-transactions"
+  class: process_node
+  
+  Logic: |md
+    1. **Read** WAL Frames
+    2. **Sync** to Main DB
+    3. **Truncate** WAL
+  |
+}
+
+WAL_File -> Checkpointer: "1. Read Frames" {
+  style.animated: true
+}
+
+# ----------------------------------------------------------------------
+# 4. The Main Database (Random Access, Paged)
+# ----------------------------------------------------------------------
+Main_DB: "database.db" {
+  link: "#anchor-transactions"
+  class: file_structure
+  grid-columns: 2
+  grid-gap: 10
+  
+  Page_0: "Page 0\n(Metadata)" { 
+    shape: square 
+    width: 80
+    height: 80
+  }
+  Page_1: "Page 1\n(Root)" { 
+    shape: square 
+    width: 80
+    height: 80
+  }
+  Page_5: "Page 5\n(Leaf Node)" { 
+    shape: square
+    style.fill: "#E1E1E1" 
+    label: "Page 5\n(Stale)"
+    width: 80
+    height: 80
+  }
+  Page_8: "Page 8\n(Leaf Node)" { 
+    shape: square 
+    width: 80
+    height: 80
+  }
+}
+
+# Checkpoint Action
+Checkpointer -> Main_DB.Page_5: "2. Overwrite Page 5\n(fsync)" {
+  style: {
+    stroke: ${colors.sync}
+    stroke-width: 3
+    animated: true
+  }
+}
+
+Checkpointer -> Main_DB.Page_8: "Overwrite Page 8"
+
+# ----------------------------------------------------------------------
+# 5. Transaction Safety Context
+# ----------------------------------------------------------------------
+Safety_Barrier: "fsync() Barrier" {
+  link: "#anchor-transactions"
+  shape: cloud
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#333"
+    stroke-dash: 3
+  }
+  
+  explanation: |md
+    **Durability Guarantee**
+    Only returns success to user
+    after WAL frame hits physical disk.
+  |
+}
+
+Safety_Barrier -> WAL_File.Frame_3: "Guards Append"

@@ -1,0 +1,230 @@
+# AUDIT & FIX: rate-limiter
+
+## CRITIQUE
+- **Logical Gap (Confirmed - Burst):** M1 mentions burst handling in deliverables but the AC doesn't explicitly define burst capacity as a separate parameter from max capacity. In token bucket, the bucket capacity IS the burst size. This should be made explicit — the bucket can accumulate up to `capacity` tokens, allowing a burst of `capacity` requests instantly even if the sustained rate is much lower.
+- **Logical Gap (Confirmed - Clock Drift):** M4 (distributed) doesn't address clock drift. If Server A's clock is 5 seconds ahead of Server B, the sliding window calculations diverge. The Lua script approach partially mitigates this by using Redis server time, but this must be explicitly stated.
+- **Technical Concern - Sliding Window:** M4 deliverables mention 'Sliding window rate limit implementation in Redis' but this isn't developed in earlier milestones. The progression should go: Token Bucket → Sliding Window Log → Sliding Window Counter, with the distributed version building on the local implementation.
+- **Missing Algorithm Comparison:** No milestone compares token bucket vs fixed window vs sliding window. Understanding the tradeoffs (burst behavior, memory usage, accuracy) is the key educational value.
+- **AC Weakness - M3:** 'Include Retry-After header indicating seconds until next allowed request' — calculating accurate Retry-After for token bucket requires knowing the refill rate and current token count. The AC doesn't address how to compute this value.
+- **Pitfall Weakness:** 'Client spoofing bypassing limits' in M2 is mentioned but not elaborated. X-Forwarded-For spoofing is trivial unless the proxy is trusted. This deserves more detail.
+- **Missing: Rate Limit by Endpoint:** M3 mentions 'Configurable limit rules per endpoint' in deliverables but no AC requires it. Deliverables and AC are misaligned.
+
+## FIXED YAML
+```yaml
+id: rate-limiter
+name: Rate Limiter
+description: >-
+  Build a rate limiter with token bucket and sliding window algorithms,
+  per-client tracking, HTTP middleware integration, and distributed
+  coordination via Redis.
+difficulty: intermediate
+estimated_hours: "14-20"
+essence: >-
+  Token-based quota management where bucket capacity defines burst size
+  and refill rate defines sustained throughput, per-client state tracking
+  with memory-efficient cleanup, HTTP middleware integration with standard
+  rate limit headers, and distributed coordination using Redis Lua scripts
+  for atomic operations with server-side timestamps to avoid clock drift.
+why_important: >-
+  Rate limiting is critical infrastructure in production systems to prevent
+  resource exhaustion and abuse. Building one teaches concurrency control,
+  algorithm tradeoffs (burst vs smoothing), distributed state management,
+  and performance-sensitive code that runs on every API request.
+learning_outcomes:
+  - Implement token bucket algorithm understanding that bucket capacity equals burst size
+  - Implement sliding window counter as an alternative with different burst characteristics
+  - Compare tradeoffs between token bucket, fixed window, and sliding window approaches
+  - Handle concurrent request validation using locks or atomic operations
+  - Design per-client tracking with memory-efficient stale bucket cleanup
+  - Build HTTP middleware with proper 429 responses and standard rate limit headers
+  - Implement distributed rate limiting using Redis Lua scripts with server-side timestamps
+  - Handle Redis failures with local fallback strategies
+skills:
+  - Concurrency Control
+  - Rate Limiting Algorithms
+  - Redis Lua Scripting
+  - Atomic Operations
+  - HTTP Middleware
+  - Per-Client State Management
+  - Clock Drift Mitigation
+  - Performance Optimization
+tags:
+  - algorithms
+  - go
+  - intermediate
+  - javascript
+  - python
+  - sliding-window
+  - throttling
+  - token-bucket
+architecture_doc: architecture-docs/rate-limiter/index.md
+languages:
+  recommended:
+    - Python
+    - Go
+    - JavaScript
+  also_possible:
+    - Java
+    - Rust
+resources:
+  - name: Token Bucket Algorithm
+    url: https://en.wikipedia.org/wiki/Token_bucket
+    type: documentation
+  - name: Rate Limiting Strategies
+    url: https://blog.bytebytego.com/p/rate-limiting-fundamentals
+    type: article
+  - name: "Cloudflare: How We Built Rate Limiting"
+    url: https://blog.cloudflare.com/counting-things-a-lot-of-different-things/
+    type: article
+prerequisites:
+  - type: skill
+    name: Basic web server / HTTP framework
+  - type: skill
+    name: Concurrency primitives (mutex, atomic)
+  - type: skill
+    name: Time handling and monotonic clocks
+milestones:
+  - id: rate-limiter-m1
+    name: Token Bucket Algorithm
+    description: >-
+      Implement the core token bucket algorithm. The bucket has two
+      parameters: capacity (maximum tokens = burst size) and refill rate
+      (tokens per second = sustained throughput). Tokens are lazily
+      refilled based on elapsed time.
+    acceptance_criteria:
+      - "Configure bucket with two explicit parameters: capacity (burst size, integer) and refill_rate (tokens per second, float)"
+      - Lazy refill calculates tokens to add based on elapsed time since last refill using monotonic clock
+      - Token count never exceeds capacity (tokens are capped after refill)
+      - "consume(n) returns {allowed: true, remaining: X} if n tokens available, or {allowed: false, retry_after_seconds: Y} if not"
+      - "retry_after_seconds is accurately calculated as (n - current_tokens) / refill_rate"
+      - "Burst behavior verified: a full bucket allows 'capacity' requests instantly even if refill_rate is 1/s"
+      - "Thread-safe: 100 concurrent goroutines/threads consuming tokens do not cause data races (verified by race detector)"
+    pitfalls:
+      - "Using wall-clock time instead of monotonic clock: NTP adjustments can cause negative elapsed time, granting infinite tokens"
+      - "Floating-point accumulation error: over millions of refills, floating-point tokens can drift. Use integer math (tokens as nanoseconds) or periodic rounding."
+      - "Not capping tokens at capacity after refill: allows infinite burst if refill runs after long idle period"
+      - "Lock contention under high concurrency: consider using atomic CAS loops instead of mutex for the hot path"
+    concepts:
+      - Token bucket algorithm (capacity = burst, rate = sustained throughput)
+      - Lazy vs eager refill strategies
+      - Monotonic clock for elapsed time calculation
+      - Thread safety via mutex or atomic CAS
+    skills:
+      - Concurrent data structure implementation
+      - Monotonic time measurement
+      - Atomic compare-and-swap operations
+      - Numerical precision management
+    deliverables:
+      - TokenBucket struct/class with capacity and refill_rate configuration
+      - consume(n) method returning allow/deny decision with accurate retry_after
+      - Lazy refill logic using monotonic elapsed time
+      - Thread-safety implementation (mutex or atomic CAS)
+    estimated_hours: "3-4"
+
+  - id: rate-limiter-m2
+    name: Per-Client Tracking and Sliding Window
+    description: >-
+      Track rate limits per client using IP address or API key.
+      Implement sliding window counter as an alternative algorithm.
+      Add background cleanup of stale client state.
+    acceptance_criteria:
+      - Separate token bucket instance maintained per client identifier (IP or API key)
+      - "Client identification supports two strategies: X-API-Key header (priority) and client IP from X-Forwarded-For or socket address (fallback)"
+      - "Sliding window counter algorithm implemented: divides time into fixed windows and weights the previous window's count by overlap percentage"
+      - "Background cleanup goroutine/thread runs every 60s and removes client buckets not accessed within configurable TTL (default 300s)"
+      - "Memory usage grows linearly with active clients and shrinks after cleanup (verified: 10K clients created, then after TTL+cleanup, memory returns to near baseline)"
+      - "Configurable per-client limit overrides: a config map allows specific API keys to have different capacity/rate than the global default"
+    pitfalls:
+      - "Memory leak from never cleaning stale buckets: without cleanup, memory grows unbounded with unique client IPs"
+      - "X-Forwarded-For spoofing: if the proxy is untrusted, clients can set arbitrary X-Forwarded-For headers to bypass rate limits. Trust only the rightmost IP added by your proxy."
+      - "Lock contention on the client map: use sharded maps or sync.Map to reduce contention with many concurrent clients"
+      - "Sliding window approximation error: the weighted previous window is an approximation; understand its accuracy bounds"
+    concepts:
+      - Per-client state isolation
+      - Sliding window counter algorithm
+      - Background garbage collection of expired state
+      - X-Forwarded-For trust and spoofing
+    skills:
+      - Concurrent map / sharded map implementation
+      - Background task scheduling
+      - Client identification strategies
+      - Algorithm comparison (token bucket vs sliding window)
+    deliverables:
+      - Client state manager with per-client bucket creation and lookup
+      - Sliding window counter implementation as alternative algorithm
+      - Background cleanup task evicting stale client entries
+      - Per-client override configuration for premium/custom limits
+    estimated_hours: "3-4"
+
+  - id: rate-limiter-m3
+    name: HTTP Middleware Integration
+    description: >-
+      Integrate the rate limiter as HTTP middleware with proper response
+      headers conforming to IETF RateLimit header draft.
+    acceptance_criteria:
+      - Middleware intercepts all HTTP requests before reaching the application handler
+      - "Rate-limited requests receive HTTP 429 Too Many Requests with JSON body: {error: 'rate limit exceeded', retry_after: N}"
+      - "Every response includes headers: X-RateLimit-Limit (max requests), X-RateLimit-Remaining (remaining in window), X-RateLimit-Reset (epoch seconds when limit resets)"
+      - "429 responses include Retry-After header with seconds until the client can retry (matches the token bucket's calculated retry_after)"
+      - "Rate limit headers are present on ALL responses (200, 404, 500, etc.), not just 429 responses"
+      - "Per-route configuration: different endpoints can have different limits (e.g., /api/login: 5/min, /api/data: 100/min)"
+      - "Middleware latency overhead is less than 1ms per request for local (non-distributed) rate limiting (verified by benchmark)"
+    pitfalls:
+      - "Only adding rate limit headers on 429 responses: clients need remaining/limit info on every request to self-throttle"
+      - "Incorrect Retry-After calculation: must account for current token count and refill rate, not just a static value"
+      - "X-RateLimit-Reset as relative seconds vs epoch: be consistent and document which format is used"
+      - "Rate limiter becoming the bottleneck: if middleware takes 10ms, a 1000 req/s server can only handle 100 concurrent rate checks"
+    concepts:
+      - HTTP middleware pattern
+      - IETF RateLimit header fields
+      - Per-route rate limit configuration
+      - Middleware performance requirements
+    skills:
+      - HTTP middleware implementation in chosen framework
+      - Response header management
+      - Framework-specific middleware registration
+      - Performance benchmarking
+    deliverables:
+      - Rate limit middleware function compatible with chosen web framework
+      - Standard rate limit headers on all responses
+      - Per-route limit configuration support
+      - Performance benchmark proving sub-millisecond overhead
+    estimated_hours: "3-4"
+
+  - id: rate-limiter-m4
+    name: Distributed Rate Limiting with Redis
+    description: >-
+      Scale rate limiting across multiple server instances using Redis.
+      Use Lua scripts for atomic operations and Redis server time to
+      avoid clock drift between application servers.
+    acceptance_criteria:
+      - "Rate limit state is stored in Redis, shared across all server instances"
+      - "Token bucket or sliding window operations are implemented as atomic Redis Lua scripts (EVAL/EVALSHA) — no separate GET then SET"
+      - "Lua scripts use Redis server time (redis.call('TIME')) instead of application server time to eliminate clock drift"
+      - "Consistency verified: 3 server instances handling 1000 concurrent requests total enforce the global limit accurately (within 5% overshoot)"
+      - "Redis connection failure triggers graceful fallback to local in-memory rate limiting with a warning log"
+      - "Redis key TTL is set to 2x the rate limit window to auto-expire stale keys"
+      - "Latency overhead from Redis round-trip is measured and documented; should be < 5ms p99 on local network"
+    pitfalls:
+      - "Non-atomic read-modify-write: doing GET, compute, SET in separate Redis commands creates a race window where concurrent requests both read the same value"
+      - "Using application server time in Redis scripts: clock drift between servers causes inconsistent rate windows. Always use redis.call('TIME')."
+      - "Not setting TTL on Redis keys: stale rate limit keys accumulate forever, wasting Redis memory"
+      - "Redis failover causing brief period of no rate limiting: the fallback must be to local limiting, not to allowing all traffic"
+    concepts:
+      - Redis Lua scripting for atomic operations
+      - Server-side timestamps to eliminate clock drift
+      - Graceful degradation on dependency failure
+      - Distributed state consistency challenges
+    skills:
+      - Redis client integration
+      - Lua script development and testing
+      - Distributed system failure handling
+      - Latency measurement and optimization
+    deliverables:
+      - Redis Lua script implementing atomic token bucket or sliding window
+      - Redis key schema with automatic TTL expiration
+      - Local fallback rate limiter activated on Redis failure
+      - Latency benchmark comparing local vs Redis-backed rate limiting
+    estimated_hours: "4-5"
+
+```

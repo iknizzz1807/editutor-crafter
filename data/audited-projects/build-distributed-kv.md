@@ -1,0 +1,289 @@
+# AUDIT & FIX: build-distributed-kv
+
+## CRITIQUE
+- **Critical Architectural Contradiction**: The project conflates AP (Dynamo-style) and CP (linearizable 2PC) semantics without acknowledging this is a fundamental design choice, not a feature list. Sloppy quorum + hinted handoff (AP) and linearizable single-key reads + 2PC (CP) are mutually exclusive consistency models. A real system picks one (or offers both with explicit mode switching, like CockroachDB vs. Cassandra). Presenting them as sequential milestones implies they compose trivially—they do not.
+- **2PC Blocking Problem Glossed Over**: The pitfall 'Coordinator failure during 2PC' is listed but no mitigation is required in the AC. In practice, 2PC blocks indefinitely on coordinator failure. Without requiring a recovery protocol (e.g., cooperative termination, Paxos commit, or 3PC), the implementation is incomplete and non-functional under failure.
+- **Milestone 4 AC Contradiction**: AC1 demands linearizability for single-key ops, but Milestone 2 already built eventual consistency with LWW/vector clocks. Which is it? You can't have both without explicit per-operation consistency level selection (like Cassandra's CL parameter).
+- **MVCC + Vector Clocks + LWW Confusion**: Milestone 4 deliverables list MVCC for snapshot isolation AND conflict resolution via LWW/CRDTs. These are different concurrency models serving different purposes. MVCC is for transaction isolation; LWW/CRDTs are for replica convergence. The project doesn't distinguish between them.
+- **Missing Milestone: Storage Engine**: There is no milestone for the actual single-node KV storage engine (LSM tree, B-tree, or in-memory). The project assumes this exists but never builds it.
+- **Gossip + Hinted Handoff Duplication**: Hinted handoff appears in both M2 (replication) and M3 (cluster management) deliverables. This creates confusion about where it lives architecturally.
+- **Virtual Node Count Pitfall is Vague**: '10% standard deviation' for key distribution is a reasonable metric, but the pitfall 'Virtual node count tuning' doesn't explain that too few VNodes cause hotspots and too many cause excessive metadata overhead.
+- **No Client Protocol Milestone**: The project mentions 'client routing logic' in learning outcomes but has no milestone for building the client-facing API, request routing, or coordinator pattern.
+
+## FIXED YAML
+```yaml
+id: build-distributed-kv
+name: "Build Your Own Distributed KV Store"
+description: "Build a Dynamo-style eventually consistent distributed key-value store with consistent hashing, quorum replication, gossip-based cluster management, and anti-entropy repair."
+difficulty: expert
+estimated_hours: "80-130"
+essence: >
+  Distributed data partitioning through consistent hashing for load balancing,
+  quorum-based replication with tunable consistency guarantees (ONE, QUORUM, ALL),
+  gossip-based cluster membership and failure detection, and anti-entropy repair
+  for replica convergence—implementing an AP-leaning system inspired by Amazon Dynamo
+  that trades strong consistency for availability under network partitions.
+why_important: >
+  Building this teaches you the core techniques powering production databases like
+  DynamoDB and Cassandra, giving you deep expertise in distributed systems
+  consistency tradeoffs, failure handling, and data partitioning that is highly
+  valued for backend infrastructure roles.
+learning_outcomes:
+  - Implement consistent hashing with virtual nodes for even data distribution across cluster nodes
+  - Design and build quorum-based replication with tunable consistency levels (R, W, N)
+  - Implement gossip protocols for cluster membership and failure detection
+  - Build anti-entropy repair using Merkle trees for replica divergence detection
+  - Design partition tolerance strategies handling network splits and node failures
+  - Implement vector clocks for causal ordering and conflict detection
+  - Build coordinator-based request routing using partition maps and preference lists
+  - Debug consistency anomalies by reasoning about quorum overlap and read repair
+skills:
+  - Consistent Hashing
+  - Quorum Replication
+  - Failure Detection
+  - Vector Clocks
+  - Gossip Protocols
+  - Network Partitioning
+  - Anti-Entropy Repair
+  - Sloppy Quorum & Hinted Handoff
+tags:
+  - build-from-scratch
+  - consistency
+  - distributed
+  - expert
+  - go
+  - java
+  - partitioning
+  - replication
+  - rust
+  - eventual-consistency
+architecture_doc: architecture-docs/build-distributed-kv/index.md
+languages:
+  recommended:
+    - Go
+    - Rust
+    - Java
+  also_possible:
+    - C++
+    - Scala
+resources:
+  - type: paper
+    name: "Dynamo: Amazon's Key-Value Store"
+    url: https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf
+  - type: course
+    name: "MIT 6.824 Distributed Systems"
+    url: https://pdos.csail.mit.edu/6.824/
+  - type: paper
+    name: "SWIM: Scalable Weakly-consistent Infection-style Process Group Membership"
+    url: https://www.cs.cornell.edu/projects/Quicksilver/public_pdfs/SWIM.pdf
+prerequisites:
+  - type: skill
+    name: "Network programming (TCP/gRPC)"
+  - type: skill
+    name: "Consistent hashing concepts"
+  - type: skill
+    name: "Basic concurrency (mutexes, channels)"
+milestones:
+  - id: build-distributed-kv-m1
+    name: "Single-Node Storage Engine"
+    description: >
+      Build an in-memory key-value storage engine with a write-ahead log (WAL)
+      for durability. This is the foundation that each node in the cluster will use.
+    acceptance_criteria:
+      - "Put(key, value) and Get(key) operations complete in O(1) average time using a hash map"
+      - "Delete(key) removes the key and subsequent Get returns key-not-found"
+      - "Write-ahead log persists every mutation to disk before acknowledging the write"
+      - "On restart, the storage engine replays the WAL and recovers all committed data"
+      - "Concurrent reads and writes are safe under multi-threaded access with proper locking or lock-free structures"
+    pitfalls:
+      - "WAL fsync on every write kills throughput—batch syncs or group commit needed"
+      - "Unbounded WAL growth without compaction or snapshotting will exhaust disk"
+      - "Using a global lock instead of fine-grained locking destroys read concurrency"
+    concepts:
+      - Key-value storage
+      - Write-ahead logging
+      - Crash recovery
+      - Concurrent data structures
+    skills:
+      - Hash map implementation
+      - File I/O and fsync semantics
+      - Concurrency control
+      - Crash recovery design
+    deliverables:
+      - "In-memory hash map storing key-value pairs with O(1) lookup"
+      - "WAL implementation that logs mutations before applying them"
+      - "Recovery routine that replays WAL on startup to restore state"
+      - "Thread-safe access layer using reader-writer locks or concurrent map"
+    estimated_hours: "8-12"
+
+  - id: build-distributed-kv-m2
+    name: "Consistent Hashing & Partitioning"
+    description: >
+      Implement consistent hashing with virtual nodes to partition the key space
+      across cluster nodes, with a preference list for replication targets.
+    acceptance_criteria:
+      - "Hash ring with configurable virtual nodes (default 256 per physical node) distributes keys with <10% standard deviation across nodes"
+      - "Key lookup returns the correct responsible node by walking clockwise to the next token on the ring"
+      - "Preference list returns N distinct physical nodes (not virtual nodes on the same host) for each key's replication set"
+      - "Adding a node causes only K/N keys to be redistributed (where K is total keys, N is total nodes)"
+      - "Removing a node redistributes only that node's key ranges to successor nodes on the ring"
+    pitfalls:
+      - "Too few virtual nodes (<50) cause significant load imbalance; too many (>1000) increase ring metadata and lookup overhead"
+      - "Preference list must skip virtual nodes belonging to the same physical node to ensure replicas are on distinct machines"
+      - "Hash function choice matters: MD5/SHA-1 provide good uniformity; naive modulo does not"
+      - "Ring recalculation during rebalancing must be atomic to avoid split-brain key ownership"
+    concepts:
+      - Consistent hashing
+      - Virtual nodes
+      - Preference lists
+      - Data partitioning
+    skills:
+      - Hash ring implementation
+      - Virtual node management
+      - Key routing algorithms
+      - Load distribution analysis
+    deliverables:
+      - "Hash ring mapping keys to positions using SHA-256 or similar uniform hash function"
+      - "Virtual node support placing multiple tokens per physical node for balanced distribution"
+      - "Preference list generator returning N distinct physical nodes for each key"
+      - "Rebalancing logic that transfers only affected key ranges when nodes join or leave"
+    estimated_hours: "10-15"
+
+  - id: build-distributed-kv-m3
+    name: "Quorum Replication & Conflict Resolution"
+    description: >
+      Implement replication with tunable consistency levels (R, W, N), vector clocks
+      for conflict detection, and read repair for replica convergence.
+    acceptance_criteria:
+      - "Each key is replicated to N nodes from the preference list (N configurable, default 3)"
+      - "Write operations succeed after receiving W acknowledgments from replica nodes"
+      - "Read operations return after receiving R responses and selecting the value with the highest vector clock version"
+      - "When R + W > N, reads and writes overlap on at least one replica guaranteeing read-your-writes consistency"
+      - "Vector clocks track per-node version increments and detect concurrent writes (neither dominates the other)"
+      - "Read repair triggers asynchronously when a read detects stale replicas, pushing the latest version to lagging nodes"
+      - "Concurrent conflicting writes are detected via vector clock comparison and returned to the client for application-level resolution"
+    pitfalls:
+      - "Vector clocks grow unboundedly with many writers—implement clock pruning with timestamp-based truncation"
+      - "Read repair races: two concurrent read repairs can overwrite each other; use CAS or version checks"
+      - "Sloppy quorum (writing to non-preferred nodes) requires hinted handoff to eventually move data to the correct node"
+      - "Client-side conflict resolution is complex—many teams fall back to LWW which silently drops writes"
+    concepts:
+      - Quorum consensus
+      - Vector clocks
+      - Read repair
+      - Tunable consistency
+      - Sloppy quorum
+    skills:
+      - Quorum-based replication
+      - Vector clock implementation and comparison
+      - Conflict detection algorithms
+      - Read repair mechanisms
+    deliverables:
+      - "Configurable replication factor N storing each key on N consecutive distinct ring nodes"
+      - "Tunable R and W parameters per operation with validation that R+W>N for strong quorum"
+      - "Vector clock implementation tracking causal version history per key per node"
+      - "Read repair mechanism that asynchronously updates stale replicas after read quorum"
+      - "Client-facing conflict resolution returning sibling values when vector clocks are concurrent"
+    estimated_hours: "15-25"
+
+  - id: build-distributed-kv-m4
+    name: "Cluster Membership & Failure Detection"
+    description: >
+      Implement gossip-based cluster membership protocol and failure detection
+      with hinted handoff for temporary node failures.
+    acceptance_criteria:
+      - "Gossip protocol propagates membership changes to all N nodes within O(log N) communication rounds"
+      - "Each node maintains a membership list with node ID, state (alive/suspect/down), and heartbeat counter"
+      - "Failure detector marks a node as suspect after missing heartbeats for a configurable timeout (default 10s)"
+      - "Suspect nodes are confirmed down after a configurable grace period if no counter-gossip refutes the suspicion"
+      - "Hinted handoff stores writes destined for a failed node locally with metadata, replaying them when the node recovers"
+      - "Cluster state converges: all live nodes agree on membership within 30 seconds of any change"
+    pitfalls:
+      - "Gossip message size grows with cluster size—use digest-based protocol with pull-based detail exchange"
+      - "False positives in failure detection (network blip != node death) cause unnecessary data migration"
+      - "Hinted handoff storage can exhaust local disk if a node is down for extended periods—set TTL on hints"
+      - "Split brain during network partition: two subclusters may independently declare the other dead"
+    concepts:
+      - Gossip protocols
+      - Phi-accrual failure detection
+      - Hinted handoff
+      - Cluster membership
+    skills:
+      - Gossip protocol implementation
+      - Heartbeat monitoring
+      - Failure detection tuning
+      - Temporary write buffering
+    deliverables:
+      - "Gossip protocol sending periodic state digests to random peers for protocol dissemination"
+      - "Failure detector using phi-accrual or timeout-based suspicion with configurable thresholds"
+      - "Hinted handoff store that buffers writes for unavailable nodes and replays on recovery"
+      - "Membership state machine tracking node lifecycle: joining → alive → suspect → down → removed"
+    estimated_hours: "15-25"
+
+  - id: build-distributed-kv-m5
+    name: "Anti-Entropy & Merkle Tree Repair"
+    description: >
+      Implement Merkle tree-based anti-entropy protocol to detect and repair
+      divergent replicas in the background.
+    acceptance_criteria:
+      - "Each node builds a Merkle tree over its key-value data for each partition range it owns"
+      - "Merkle tree comparison between two replicas identifies divergent key ranges in O(log N) comparisons"
+      - "Anti-entropy repair runs periodically (configurable interval) and synchronizes divergent keys between replicas"
+      - "After anti-entropy repair completes, all replicas for a given key range have identical data"
+      - "Merkle tree is incrementally updated on writes to avoid full rebuild cost"
+    pitfalls:
+      - "Full Merkle tree rebuild on every write is O(N log N)—must use incremental updates"
+      - "Anti-entropy repair during high write load can cause contention—throttle repair bandwidth"
+      - "Hash collisions in Merkle tree can cause false negatives (missing divergences)—use cryptographic hash"
+      - "Repairing during membership changes can cause data to be sent to the wrong node"
+    concepts:
+      - Merkle trees
+      - Anti-entropy repair
+      - Replica synchronization
+      - Background consistency enforcement
+    skills:
+      - Merkle tree construction and comparison
+      - Incremental hash updates
+      - Background task scheduling
+      - Bandwidth throttling
+    deliverables:
+      - "Merkle tree builder constructing hash tree over key ranges for each owned partition"
+      - "Tree comparison protocol exchanging root and subtree hashes to identify divergent ranges"
+      - "Key-level synchronization transferring missing or outdated keys from source to target replica"
+      - "Incremental tree update modifying only affected tree branches on key mutation"
+    estimated_hours: "12-18"
+
+  - id: build-distributed-kv-m6
+    name: "Client API & Coordinator Routing"
+    description: >
+      Build the client-facing API and coordinator node logic that routes requests
+      to the correct partition and manages quorum responses.
+    acceptance_criteria:
+      - "Client API exposes GET, PUT, DELETE operations over HTTP or gRPC"
+      - "Coordinator node hashes the key, identifies the preference list, and fans out requests to replica nodes"
+      - "Coordinator collects R or W responses, resolves conflicts, and returns the result to the client"
+      - "Client can connect to any node; that node acts as coordinator for the request (zero-hop routing)"
+      - "Timeout handling: coordinator returns an error if quorum is not achieved within configurable deadline"
+      - "Integration test: 3-node cluster handles concurrent reads and writes with node failure and recovery, maintaining quorum guarantees"
+    pitfalls:
+      - "Coordinator bottleneck if all clients connect to the same node—use client-side partition-aware routing"
+      - "Fan-out latency dominated by slowest replica—use speculative reads to reduce tail latency"
+      - "Request timeout too short causes false quorum failures; too long causes client-perceived latency spikes"
+      - "Coordinator crash mid-request leaves replicas in inconsistent state—client must retry"
+    concepts:
+      - Request coordination
+      - Fan-out/fan-in pattern
+      - Tail latency mitigation
+      - Zero-hop routing
+    skills:
+      - RPC/HTTP API design
+      - Concurrent request fan-out
+      - Timeout and deadline management
+      - Integration testing distributed systems
+    deliverables:
+      - "HTTP or gRPC API server accepting client GET/PUT/DELETE requests"
+      - "Coordinator logic hashing key, selecting preference list, and fanning out to replicas"
+      - "Quorum response aggregator collecting R/W replies and resolving version conflicts"
+      - "End-to-end integration test with multi-node cluster exercising failure and recovery scenarios"
+    estimated_hours: "12-18"
+```

@@ -1,0 +1,290 @@
+# AUDIT & FIX: sql-parser
+
+## CRITIQUE
+- **JOIN Syntax Completely Missing**: The project description says 'SELECT, WHERE, JOIN' but there is no milestone for parsing JOIN clauses. JOIN is the most complex part of SQL parsing — it introduces nested table references, ON conditions, join types (INNER, LEFT, RIGHT, FULL, CROSS), and their interaction with WHERE. This is a glaring omission that contradicts the project's own title.
+- **No Semantic Analysis/Binding Phase**: A parser that produces an AST but never validates that referenced tables/columns exist is of limited educational value. Even a basic 'binding' step that resolves identifiers against a schema catalog is essential for understanding compiler pipelines.
+- **Milestone 1 AC is Vague**: 'Recognize SQL keywords (SELECT, FROM, WHERE)' — how many keywords? What about INSERT, UPDATE, DELETE, JOIN, ON, AS, NULL, IS, NOT, IN, BETWEEN, LIKE, GROUP, BY, HAVING, ORDER, LIMIT? The AC should specify the complete keyword set.
+- **Error Handling is Mentioned but Never AC'd**: The learning outcomes mention 'error detection and recovery during parsing with helpful diagnostics' but no milestone has an AC for error messages with line/column position.
+- **String Literal Handling Incomplete**: The tokenizer AC says 'Parse string literals enclosed in single or double quotes' but SQL standard uses single quotes for string literals and double quotes for identifiers. Conflating them is a common error.
+- **No Subquery Parsing**: Even for intermediate level, parsing a subquery in WHERE (e.g., WHERE x IN (SELECT ...)) is a natural extension that tests recursive parsing.
+- **No GROUP BY / ORDER BY / LIMIT**: These are fundamental SELECT clauses that are simpler than JOIN and should be included.
+- **Milestone 4 (INSERT/UPDATE/DELETE) ACs are Sloppy**: 'INSERT INTO table (cols) VALUES (vals)' is not an AC — it's just a syntax example. ACs must be verifiable conditions.
+
+## FIXED YAML
+```yaml
+id: sql-parser
+name: "SQL Parser"
+description: >-
+  Build a SQL parser that tokenizes SQL text, parses SELECT (with JOIN, WHERE,
+  GROUP BY, ORDER BY), INSERT, UPDATE, and DELETE statements into Abstract Syntax
+  Trees, and performs basic semantic validation against a schema catalog.
+difficulty: intermediate
+estimated_hours: "20-30"
+essence: >-
+  Lexical tokenization of SQL text followed by recursive descent parsing to
+  construct Abstract Syntax Trees (ASTs) that capture query structure, operator
+  precedence, JOIN relationships, and expression hierarchies, with a semantic
+  binding phase that validates identifiers against a schema catalog.
+why_important: >-
+  Building a SQL parser teaches you fundamental compiler construction techniques
+  (lexing, parsing, AST manipulation, semantic analysis) that apply across
+  programming languages, data pipelines, and developer tooling, while
+  demystifying how databases process queries.
+learning_outcomes:
+  - Implement lexical analysis with tokenization rules for keywords, identifiers, operators, and literals
+  - Design recursive descent parsers for hierarchical grammar rules
+  - Build Abstract Syntax Tree (AST) data structures with proper node relationships
+  - Parse JOIN clauses with multiple join types and ON conditions
+  - Parse complex WHERE clause expressions with operator precedence and associativity
+  - Parse GROUP BY, HAVING, ORDER BY, and LIMIT clauses
+  - Implement error detection with line/column position reporting
+  - Build a semantic binding phase that validates identifiers against a schema catalog
+skills:
+  - Lexical Analysis
+  - Recursive Descent Parsing
+  - Abstract Syntax Trees
+  - Formal Grammars
+  - Token Recognition
+  - Expression Parsing
+  - Semantic Analysis
+  - Compiler Design Fundamentals
+tags:
+  - compilers
+  - databases
+  - go
+  - intermediate
+  - parsing
+  - python
+  - rust
+  - sql
+architecture_doc: architecture-docs/sql-parser/index.md
+languages:
+  recommended:
+    - Python
+    - Go
+    - Rust
+  also_possible:
+    - JavaScript
+    - Java
+resources:
+  - name: "SQLite Grammar"
+    url: https://www.sqlite.org/lang.html
+    type: documentation
+  - name: "Writing a SQL Parser"
+    url: https://blog.subnetzero.io/post/building-a-sql-parser/
+    type: article
+  - name: "Crafting Interpreters (Pratt Parsing)"
+    url: https://craftinginterpreters.com/parsing-expressions.html
+    type: book
+  - name: "SQL Standard Grammar (BNF)"
+    url: https://jakewheat.github.io/sql-overview/sql-2016-foundation-grammar.html
+    type: reference
+prerequisites:
+  - type: skill
+    name: Basic tokenizer/lexer concepts
+  - type: skill
+    name: Recursive descent parsing or Pratt parsing
+  - type: skill
+    name: Tree data structures (traversal, construction)
+  - type: skill
+    name: Basic SQL familiarity (writing queries)
+milestones:
+  - id: sql-parser-m1
+    name: "SQL Tokenizer"
+    description: >-
+      Build a lexer that tokenizes SQL text into a stream of typed tokens,
+      handling keywords, identifiers, literals, operators, and punctuation with
+      correct position tracking.
+    estimated_hours: "3-5"
+    concepts:
+      - Lexical analysis and token classification
+      - SQL keyword vs identifier disambiguation
+      - String literal escaping (single quotes with '' escape)
+      - Multi-character operators (<>, >=, <=, !=)
+      - Token position tracking (line, column)
+    skills:
+      - String parsing and character-by-character scanning
+      - Token classification and categorization
+      - State machine or switch-based lexer design
+      - Position tracking for error reporting
+    acceptance_criteria:
+      - Tokenizer recognizes all required SQL keywords as distinct token types — at minimum SELECT, FROM, WHERE, JOIN, INNER, LEFT, RIGHT, FULL, CROSS, ON, AND, OR, NOT, IS, NULL, AS, INSERT, INTO, VALUES, UPDATE, SET, DELETE, GROUP, BY, HAVING, ORDER, ASC, DESC, LIMIT, IN, BETWEEN, LIKE
+      - Identifiers (table names, column names) are correctly distinguished from keywords using case-insensitive keyword lookup
+      - String literals use single quotes with '' escape for embedded single quotes (SQL standard); double-quoted tokens are treated as quoted identifiers
+      - Numeric literals include both integers and floating-point (e.g., 42, 3.14, .5)
+      - Multi-character operators are tokenized correctly — >=, <=, <>, != are single tokens, not split into two
+      - Each token carries its source position (line number, column number) for error reporting
+      - Whitespace and SQL single-line comments (-- ...) are skipped; tokens are separated correctly
+      - Unterminated string literals produce an error with the position of the opening quote
+    pitfalls:
+      - SQL keywords are case-insensitive; 'SELECT', 'select', 'Select' must all produce the same keyword token
+      - Single quotes delimit strings, double quotes delimit identifiers — conflating them breaks SQL semantics
+      - The token '<>' is a not-equal operator, not two separate tokens '<' and '>'
+      - Forgetting to handle '--' comments causes comment text to be parsed as SQL, producing cryptic errors
+      - Numeric literals like '.5' (no leading digit) and '5.' (no trailing digit) must be handled
+    deliverables:
+      - Token type enum covering keywords, identifiers, literals (string, integer, float), operators, and punctuation
+      - Lexer function producing a token stream from SQL text input
+      - Position tracking (line, column) attached to every token
+      - Error reporting for malformed tokens (unterminated strings, invalid characters)
+      - Test suite covering all token types with edge cases (escaped strings, multi-char operators, comments)
+
+  - id: sql-parser-m2
+    name: "SELECT, FROM, JOIN & Table References"
+    description: >-
+      Parse SELECT statements including column lists, FROM clause with table
+      references, JOIN clauses (INNER, LEFT, RIGHT, CROSS), ON conditions, and
+      table/column aliases.
+    estimated_hours: "5-7"
+    concepts:
+      - Recursive descent parsing for SQL SELECT grammar
+      - AST node types for SelectStatement, ColumnRef, TableRef, JoinClause
+      - JOIN types and their semantics
+      - Alias resolution (AS keyword and implicit aliasing)
+      - Qualified column names (table.column)
+    skills:
+      - Recursive parsing algorithms
+      - Abstract syntax tree construction
+      - Grammar rule implementation
+      - Lookahead token inspection
+    acceptance_criteria:
+      - SELECT clause parses column lists, star wildcard (*), and qualified names (table.column) into ColumnRef AST nodes
+      - FROM clause parses single table references with optional AS alias into TableRef AST nodes
+      - JOIN clause parses INNER JOIN, LEFT [OUTER] JOIN, RIGHT [OUTER] JOIN, CROSS JOIN, and FULL [OUTER] JOIN
+      - Each JOIN produces a JoinClause AST node containing join type, right table reference, and ON condition expression
+      - Multiple JOINs in a single query are parsed left-to-right into a left-deep join tree
+      - Implicit aliases (FROM users u) are parsed correctly without requiring the AS keyword
+      - Comma-separated tables in FROM (FROM a, b) are parsed as implicit CROSS JOINs
+      - Parser error messages include the token position and expected vs actual token type
+    pitfalls:
+      - JOIN binds tighter than comma in FROM — 'FROM a, b JOIN c ON ...' means a CROSS b, then (b JOIN c), not ((a CROSS b) JOIN c)
+      - OUTER keyword is optional in LEFT/RIGHT/FULL joins; parser must accept both 'LEFT JOIN' and 'LEFT OUTER JOIN'
+      - ON condition is an expression that can contain AND/OR — don't parse it as a simple comparison
+      - Implicit alias without AS is ambiguous — 'FROM foo bar' could be table 'foo' aliased as 'bar' or a syntax error depending on context
+    deliverables:
+      - SelectStatement AST node containing column list, from clause, join clauses, and placeholder for WHERE
+      - ColumnRef AST node with optional table qualifier and optional alias
+      - TableRef AST node with table name and optional alias
+      - JoinClause AST node with join type enum, right table reference, and ON condition
+      - Parser error with position information for syntax violations
+      - Test suite covering star select, multi-column, qualified names, all join types, and aliases
+
+  - id: sql-parser-m3
+    name: "WHERE, GROUP BY, HAVING, ORDER BY, LIMIT"
+    description: >-
+      Parse WHERE clause expressions with correct operator precedence, GROUP BY
+      with HAVING, ORDER BY with ASC/DESC, and LIMIT. Implement Pratt parsing or
+      precedence climbing for expressions.
+    estimated_hours: "5-7"
+    concepts:
+      - Operator precedence (NOT > AND > OR)
+      - Pratt parsing / precedence climbing for expressions
+      - Parenthesized sub-expressions
+      - NULL-safe comparisons (IS NULL, IS NOT NULL)
+      - IN, BETWEEN, LIKE operators
+      - GROUP BY and HAVING clause semantics
+    skills:
+      - Expression tree building with precedence
+      - Pratt parser or recursive descent with precedence levels
+      - Boolean logic in AST form
+      - Clause ordering validation
+    acceptance_criteria:
+      - Comparison operators (=, <, >, <=, >=, <>, !=) parse into BinaryExpr AST nodes with correct left/right operands
+      - Boolean operators AND, OR, NOT bind with correct precedence (NOT > AND > OR) producing correctly nested AST
+      - Parentheses override default precedence and produce correct nesting in the expression tree
+      - IS NULL and IS NOT NULL parse into unary IsNull/IsNotNull AST nodes
+      - IN operator parses both value lists (x IN (1,2,3)) and subqueries (x IN (SELECT ...)) — subquery may be a placeholder AST node
+      - BETWEEN parses as 'expr BETWEEN low AND high' without confusing the AND with boolean AND
+      - GROUP BY clause parses a list of column references; HAVING clause parses a filter expression
+      - ORDER BY clause parses column references with optional ASC/DESC direction (default ASC)
+      - LIMIT clause parses an integer count and optional OFFSET
+      - Clause ordering is validated — WHERE before GROUP BY before HAVING before ORDER BY before LIMIT
+    pitfalls:
+      - BETWEEN ... AND is syntactically ambiguous with boolean AND; the parser must consume the AND as part of BETWEEN, not as a boolean operator
+      - NOT can appear in multiple positions — NOT IN, NOT BETWEEN, NOT LIKE, IS NOT NULL, NOT (expr); each requires different parsing
+      - GROUP BY columns that are expressions (e.g., GROUP BY YEAR(date)) require expression parsing, not just identifier parsing
+      - HAVING without GROUP BY is technically valid in some SQL dialects but semantically questionable — decide and document your policy
+    deliverables:
+      - Expression parser using Pratt parsing or precedence climbing with configurable precedence levels
+      - BinaryExpr, UnaryExpr, IsNull, InList, Between, Like AST nodes
+      - GroupByClause AST node with column list
+      - HavingClause AST node with filter expression
+      - OrderByClause AST node with column references and direction
+      - LimitClause AST node with count and optional offset
+      - Test suite with complex nested expressions verifying correct precedence
+
+  - id: sql-parser-m4
+    name: "INSERT, UPDATE, DELETE Statements"
+    description: >-
+      Parse data modification statements — INSERT INTO with column lists and
+      value rows, UPDATE with SET clauses, and DELETE with WHERE conditions.
+    estimated_hours: "3-5"
+    concepts:
+      - DML statement grammar rules
+      - INSERT with explicit column lists and multi-row VALUES
+      - UPDATE SET clause with column=expression pairs
+      - DELETE with WHERE filter reuse
+    skills:
+      - Statement type discrimination from leading keyword
+      - Column-value mapping in AST
+      - Reusing expression parser for SET and WHERE clauses
+    acceptance_criteria:
+      - INSERT INTO table (col1, col2) VALUES (v1, v2) parses into InsertStatement AST node with table name, column list, and list of value rows
+      - Multi-row INSERT (VALUES (1,'a'), (2,'b')) parses all rows into a list of value tuples in the AST
+      - INSERT without column list (INSERT INTO table VALUES (...)) is parsed with an empty/absent column list field
+      - UPDATE table SET col1=expr1, col2=expr2 WHERE condition parses into UpdateStatement AST with table, set-clause pairs, and optional WHERE
+      - DELETE FROM table WHERE condition parses into DeleteStatement AST with table name and optional WHERE condition
+      - Column count vs value count mismatch is NOT checked at parse time (this is a semantic error) — parser produces AST regardless
+      - Missing WHERE in UPDATE/DELETE is parsed successfully with a null/absent WHERE field (not an error at parse level)
+    pitfalls:
+      - Column/value count mismatch should be caught in semantic analysis, not during parsing — parser's job is syntax only
+      - SET clause expressions can be complex (SET x = x + 1); reuse the expression parser from milestone 3
+      - INSERT ... SELECT (insert from subquery) is a common extension; define whether your grammar supports it or not
+      - DELETE and UPDATE without WHERE are dangerous but syntactically valid — don't reject them in the parser
+    deliverables:
+      - InsertStatement AST node with table, optional column list, and value row list
+      - UpdateStatement AST node with table, SET clause pairs, and optional WHERE
+      - DeleteStatement AST node with table and optional WHERE
+      - Statement dispatcher routing to correct parser based on leading keyword token
+      - Test suite covering all DML variants including multi-row insert and complex SET expressions
+
+  - id: sql-parser-m5
+    name: "Semantic Analysis & Schema Binding"
+    description: >-
+      Implement a semantic analysis pass that validates ASTs against a schema
+      catalog. Resolve table and column references, detect ambiguous column
+      references, and validate type compatibility in expressions.
+    estimated_hours: "4-6"
+    concepts:
+      - Schema catalog (table definitions with column names and types)
+      - Name resolution and binding
+      - Ambiguous column reference detection
+      - Type checking in expressions
+      - Scope management for aliases and subqueries
+    skills:
+      - AST visitor/walker pattern
+      - Symbol table / scope management
+      - Type system basics
+      - Error collection and reporting
+    acceptance_criteria:
+      - Schema catalog stores table definitions with column names and data types, loadable from a configuration file or in-memory definition
+      - Table references in FROM/JOIN are resolved against the catalog; unknown tables produce a 'table not found' error with position
+      - Column references are resolved against the tables in scope; unknown columns produce 'column not found' error
+      - Ambiguous column references (column exists in multiple tables without qualifier) produce 'ambiguous column' error
+      - SELECT * is expanded to the full column list from all tables in scope
+      - Type compatibility is checked for comparison operators — comparing string to integer produces a warning or error
+      - Aliases defined in FROM/JOIN are added to the scope and used for subsequent column resolution
+      - All semantic errors are collected (not just the first) and reported with source position
+    pitfalls:
+      - Column resolution must consider aliases — 'SELECT t.x FROM table AS t' must resolve 't.x' not 'table.x'
+      - SELECT aliases are NOT in scope for WHERE (in standard SQL) — 'SELECT x AS y FROM t WHERE y > 5' should fail on 'y' in WHERE
+      - GROUP BY changes which columns are valid in SELECT — non-aggregated columns must appear in GROUP BY; this is a semantic rule
+      - Schema catalog must be extensible; hardcoding table definitions breaks reusability
+    deliverables:
+      - Schema catalog with table and column definitions
+      - AST visitor that resolves all table and column references
+      - Ambiguity detection for unqualified column references
+      - Type compatibility checker for expression operators
+      - Error collector reporting all semantic errors with source positions
+      - Test suite with valid queries, unknown tables, unknown columns, ambiguous references, and type mismatches
+```

@@ -1,0 +1,238 @@
+# AUDIT & FIX: replicated-log
+
+## CRITIQUE
+- **Logical Gap (Confirmed - Terms/Epochs):** Without epoch/term numbers, a former primary that was partitioned and recovers can overwrite valid entries with stale data. This is a fundamental correctness issue. Every replication protocol (Raft, VR, Paxos) uses terms/epochs. The project must introduce this concept.
+- **Technical Inaccuracy (Confirmed - O(1) Lookup):** The AC claims O(1) lookup by sequence index. This is only true if you maintain an in-memory index mapping sequence numbers to file offsets. The AC should require building this index explicitly and note that it must be rebuilt on crash recovery by scanning the log.
+- **Milestone Ordering Issue:** M2 (Replication Protocol) includes 'Leader election mechanism' as a deliverable, but leader election is introduced in M3 as part of failure detection. This is backwards — you can't replicate with a leader if you haven't elected one.
+- **Missing Crash Recovery:** M1 mentions 'persist all entries to disk surviving process restarts' but doesn't address partial write corruption (process crashes mid-write). Write-ahead logging requires checksums and the ability to detect and truncate partial entries.
+- **Split Brain Not Addressed Until Too Late:** M3 deliverables include 'Split-brain prevention' but this should be part of M2's replication protocol (quorum writes inherently prevent split brain if implemented correctly).
+- **AC Weakness - M4:** 'Provide consistent reads by verifying data freshness against primary' is vague. How? Read from primary? Read quorum? Lease-based? Needs specifics.
+- **Missing Compaction Details:** M1 says 'Handle log compaction' but gives no AC for how compaction works, what entries are eligible, or how it interacts with replication (you can't compact entries that followers haven't received yet).
+- **Scope Concern:** 15-25 hours for what is essentially a simplified Raft implementation is extremely aggressive.
+
+## FIXED YAML
+```yaml
+id: replicated-log
+name: Replicated Log
+description: >-
+  Build an append-only replicated log with durable storage, primary-backup
+  replication using epochs/terms, quorum writes, failure detection, and
+  a client interface with failover.
+difficulty: intermediate
+estimated_hours: "20-30"
+essence: >-
+  Deterministic event ordering via append-only log storage with crash-safe
+  writes (checksums + truncation), primary-backup replication coordinated
+  by epoch/term numbers, quorum-based acknowledgment for consistency,
+  heartbeat-based failure detection, and automatic primary failover.
+why_important: >-
+  Building this teaches you the core infrastructure patterns behind
+  production databases (PostgreSQL replication), message queues (Kafka),
+  and coordination services (etcd/ZooKeeper). The concepts of epochs,
+  quorum writes, and crash recovery are fundamental to distributed systems
+  engineering.
+learning_outcomes:
+  - Implement append-only log storage with checksummed entries and crash recovery
+  - Build an in-memory offset index for O(1) sequence-to-offset lookup, rebuilt on recovery
+  - Design primary-backup replication with epoch/term numbers preventing stale leader writes
+  - Implement quorum-based write acknowledgment (majority of replicas)
+  - Build heartbeat-based failure detection with automatic primary failover
+  - Handle follower catch-up by replaying missing entries from the primary's log
+  - Implement a client library with automatic primary discovery and failover
+  - Test crash recovery, network partition, and split-brain prevention scenarios
+skills:
+  - Append-Only Log Storage
+  - Crash Recovery with Checksums
+  - Primary-Backup Replication
+  - Epoch/Term-Based Leader Validity
+  - Quorum Writes
+  - Heartbeat Failure Detection
+  - Client Failover
+  - Distributed Systems Testing
+tags:
+  - append-only
+  - distributed
+  - durability
+  - go
+  - intermediate
+  - java
+  - ordering
+  - rust
+  - replication
+architecture_doc: architecture-docs/replicated-log/index.md
+languages:
+  recommended:
+    - Go
+    - Rust
+    - Java
+  also_possible:
+    - Python
+    - C
+resources:
+  - type: paper
+    name: Viewstamped Replication Revisited
+    url: https://pmg.csail.mit.edu/papers/vr-revisited.pdf
+  - type: article
+    name: "The Log: What Every Software Engineer Should Know"
+    url: https://engineering.linkedin.com/distributed-systems/log-what-every-software-engineer-should-know-about-real-time-datas-unifying
+  - type: paper
+    name: "Raft Consensus Algorithm"
+    url: https://raft.github.io/raft.pdf
+prerequisites:
+  - type: skill
+    name: TCP socket programming
+  - type: skill
+    name: File I/O and fsync
+  - type: skill
+    name: Concurrency primitives
+milestones:
+  - id: replicated-log-m1
+    name: Durable Append-Only Log Storage
+    description: >-
+      Implement an append-only log on a single node with crash-safe writes.
+      Each entry has a sequence number, CRC32 checksum, and data payload.
+      Build an in-memory offset index for O(1) lookup by sequence number.
+      The index is rebuilt by scanning the log file on startup.
+    acceptance_criteria:
+      - "Entries are appended with format: [4-byte length][4-byte CRC32][8-byte sequence number][data payload]"
+      - Sequence numbers are monotonically increasing starting from 1
+      - Each write is followed by fsync to guarantee durability before returning success
+      - "An in-memory index maps sequence number → file offset for O(1) lookup. On startup, the log file is scanned to rebuild this index."
+      - "On recovery, partial/corrupt entries at the end of the log (detected by CRC mismatch or incomplete length) are truncated"
+      - "Read-by-sequence returns the entry in O(1) using the in-memory index, or an error if the sequence number does not exist"
+      - "Read-range(start, end) returns all entries in the specified sequence range"
+      - "Benchmark: 10,000 sequential appends complete without sequence gaps or corruption after kill -9 and restart"
+    pitfalls:
+      - "Partial writes on crash: process dies after writing 50% of an entry. Without CRC, the partial entry is interpreted as valid but corrupt data."
+      - "Not calling fsync: data sits in OS page cache and is lost on power failure. fsync is slow (~1ms) but necessary for durability."
+      - "Index not rebuilt on restart: after a crash, the in-memory index is empty and all lookups fail"
+      - "File handle exhaustion: open the log file once and keep it open, don't open/close per operation"
+    concepts:
+      - Append-only log structure
+      - CRC32 checksumming for integrity
+      - fsync for durability guarantees
+      - In-memory offset index with recovery rebuild
+    skills:
+      - Binary file I/O with structured records
+      - CRC32 checksum calculation
+      - fsync and durability semantics
+      - Index reconstruction from sequential scan
+    deliverables:
+      - Log storage engine with append, read-by-sequence, and read-range operations
+      - Entry format with length, CRC32, sequence number, and payload
+      - In-memory offset index with startup rebuild from log scan
+      - Crash recovery with partial entry truncation
+    estimated_hours: "4-6"
+
+  - id: replicated-log-m2
+    name: Leader Election and Epoch Management
+    description: >-
+      Before replication, establish which node is the primary. Implement
+      a simple leader election with epoch (term) numbers. Every election
+      increments the epoch. Nodes reject messages from leaders with
+      stale epochs.
+    acceptance_criteria:
+      - "Cluster of N nodes (configurable, minimum 3) with static membership configured at startup"
+      - "Heartbeat-based failure detection: primary sends heartbeats every T seconds; followers suspect failure after 3*T seconds"
+      - "When a follower suspects primary failure and has not heard from a higher-epoch leader, it increments epoch and requests votes from peers"
+      - "A node votes for a candidate only if the candidate's epoch is higher than the node's current epoch (each node votes at most once per epoch)"
+      - "A candidate becomes primary if it receives votes from a majority (N/2 + 1) of nodes including itself"
+      - "The new primary broadcasts its epoch to all nodes. Nodes update their known primary and epoch."
+      - "Any message (heartbeat, replication, etc.) from a leader with epoch < node's current epoch is rejected"
+      - "A former primary with a stale epoch that reconnects steps down to follower upon receiving a higher-epoch message"
+    pitfalls:
+      - "Missing epoch numbers: without them, a partitioned former leader can corrupt data by accepting writes after a new leader is elected"
+      - "Not restricting votes to one per epoch: a node voting for two candidates in the same epoch can cause two leaders"
+      - "Election timeout too deterministic: if all followers time out simultaneously, they split the vote. Use randomized election timeouts."
+      - "Epoch not persisted to disk: after restart, a node forgets its epoch and may vote again in an epoch it already voted in"
+    concepts:
+      - Epoch/term numbers for leader validity
+      - Majority vote election
+      - Randomized election timeout to break ties
+      - Stale leader rejection via epoch comparison
+    skills:
+      - Quorum-based election implementation
+      - Epoch persistence and comparison
+      - Randomized timeout design
+      - State machine for node role (follower/candidate/leader)
+    deliverables:
+      - Leader election protocol with epoch-based voting
+      - Heartbeat sender (primary) and failure detector (followers)
+      - Epoch persistence to disk for crash recovery
+      - Role state machine (follower → candidate → leader → follower)
+    estimated_hours: "5-7"
+
+  - id: replicated-log-m3
+    name: Primary-Backup Replication
+    description: >-
+      The elected primary accepts writes and replicates log entries to
+      followers. Writes are acknowledged to the client only after a
+      quorum of replicas confirms. Followers that fall behind catch up
+      by requesting missing entries.
+    acceptance_criteria:
+      - "Only the current primary (verified by epoch) accepts write requests from clients. Followers redirect writes to the primary."
+      - "Primary appends the entry to its local log, then sends AppendEntries(epoch, entries, prev_seq) to all followers"
+      - "Followers accept AppendEntries only if the epoch matches their current known epoch AND prev_seq matches their last entry. Otherwise they request catch-up."
+      - "Primary acknowledges the write to the client only after receiving success from a majority of nodes (quorum = N/2 + 1 including itself)"
+      - "Follower catch-up: when a follower's log is behind, the primary sends missing entries starting from the follower's last known sequence number"
+      - "Entries replicated to a quorum are marked as committed. Only committed entries are visible to clients."
+      - "Replication latency for a 3-node cluster with local networking is < 10ms p99 for 1KB entries"
+    pitfalls:
+      - "Split brain without epoch check: both old and new primary accept writes, creating divergent logs"
+      - "Acknowledging before quorum: if only the primary has the entry and it crashes, the entry is lost"
+      - "Log divergence: if a follower received entries from a stale leader, it may have entries that conflict with the new leader's log. Must truncate divergent entries."
+      - "Thundering herd on catch-up: if 10 followers reconnect simultaneously and all request full log replay, the primary is overwhelmed. Rate-limit catch-up."
+    concepts:
+      - AppendEntries replication RPC
+      - Quorum write acknowledgment
+      - Commit index tracking
+      - Log divergence detection and truncation
+    skills:
+      - RPC-based replication protocol
+      - Quorum counting and commit tracking
+      - Log consistency checking (prev_seq matching)
+      - Follower catch-up streaming
+    deliverables:
+      - AppendEntries RPC from primary to followers with epoch and prev_seq
+      - Quorum tracking for write acknowledgment
+      - Commit index advancement after quorum confirmation
+      - Follower catch-up mechanism for missing entries
+    estimated_hours: "6-8"
+
+  - id: replicated-log-m4
+    name: Client Interface with Failover
+    description: >-
+      Implement a client library that discovers the primary, submits
+      writes, reads committed entries, and handles primary failover
+      transparently.
+    acceptance_criteria:
+      - "Client connects to any cluster node and is redirected to the current primary (via redirect response or peer list)"
+      - "Append(data) sends a write to the primary and blocks until the committed acknowledgment is received or timeout expires"
+      - "Read(seq) fetches a committed entry by sequence number from the primary (strong read) or any node (eventual read, flagged as such)"
+      - "If the primary is unreachable, the client retries with exponential backoff (base 100ms, max 5s, with jitter) up to a configurable max attempts"
+      - "After max retries, the client re-discovers the primary by querying other cluster nodes and retries the operation"
+      - "Client prevents infinite retry loops: after N re-discovery attempts, it returns an error to the caller"
+      - "Read-your-writes consistency: after a successful Append, a subsequent Read for that sequence number returns the appended data (when using strong reads)"
+    pitfalls:
+      - "Stale primary cache: client caches the primary address but the primary changed. Must handle redirect/error and re-discover."
+      - "Read-your-writes violation: if the client reads from a follower after writing to the primary, the follower may not have the entry yet"
+      - "Infinite retry loop: if all nodes are down, the client retries forever unless there is a max retry limit"
+      - "Duplicate writes on retry: if the primary committed the write but the ack was lost, the client retries and creates a duplicate. Consider idempotency keys."
+    concepts:
+      - Primary discovery and failover
+      - Strong vs eventual read consistency
+      - Exponential backoff with jitter
+      - Idempotent writes
+    skills:
+      - Client library design
+      - Retry logic with backoff and jitter
+      - Primary discovery protocol
+      - Consistency level selection
+    deliverables:
+      - Client library with Append and Read operations
+      - Primary discovery via any cluster node
+      - Automatic failover with exponential backoff retry
+      - Strong and eventual read modes
+    estimated_hours: "4-6"
+
+```

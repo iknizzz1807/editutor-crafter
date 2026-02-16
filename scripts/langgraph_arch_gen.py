@@ -99,10 +99,11 @@ def init_llm_provider():
         LLM = ChatOpenAI(
             base_url="http://127.0.0.1:7999/v1",
             api_key="mythong2005",
-            model="gemini_cli/gemini-3-pro-preview",
-            temperature=1,
+            model="gemini_cli/gemini-3-flash-preview",
+            temperature=0.2,
             max_tokens=64000,
         )
+
     elif USE_MISTRAL:
         LLM_PROVIDER = "mistral"
         print(f">>> Provider: MISTRAL ({MISTRAL_MODEL})", flush=True)
@@ -133,8 +134,8 @@ def init_llm_provider():
         LLM = ChatOpenAI(
             base_url="http://127.0.0.1:7999/v1",
             api_key="mythong2005",
-            model="gemini_cli/gemini-3-pro-preview",
-            temperature=1,
+            model="gemini_cli/gemini-3-flash-preview",
+            temperature=0.2,
             max_tokens=64000,  # 64K tokens output limit
         )
         LLM_PROVIDER = "local-proxy"
@@ -142,7 +143,7 @@ def init_llm_provider():
             print(
                 ">>> Warning: langchain-anthropic not installed. Falling back to local proxy."
             )
-        print(">>> Provider: LOCAL PROXY (Gemini 3 Pro)", flush=True)
+        print(">>> Provider: LOCAL PROXY (Gemini 3 Flash)", flush=True)
 
 
 def replace_reducer(old, new):
@@ -287,6 +288,11 @@ def invoke_claude_cli(messages, max_retries=3):
             )
 
             if result.returncode == 0:
+                if os.getenv("DEBUG_MODE") == "true":
+                    print(
+                        f"\n--- [RAW CLAUDE CLI RESPONSE] ---\n{result.stdout}\n---------------------------------\n"
+                    )
+
                 # Create a mock response object compatible with LangChain
                 class MockResponse:
                     def __init__(self, content):
@@ -358,6 +364,10 @@ def safe_invoke(messages, max_retries=5, invoke_kwargs=None, provider_override=N
         return invoke_kilo_cli(messages, max_retries)
 
     kwargs = invoke_kwargs or {}
+    # Force a very long timeout for Gemini Proxy to handle large context
+    if "timeout" not in kwargs:
+        kwargs["timeout"] = 600
+
     for attempt in range(max_retries):
         try:
             result = LLM.invoke(messages, **kwargs)
@@ -365,9 +375,18 @@ def safe_invoke(messages, max_retries=5, invoke_kwargs=None, provider_override=N
                 hasattr(result, "content") and result.content is None
             ):
                 raise Exception("LLM returned None response")
+
+            if os.getenv("DEBUG_MODE") == "true":
+                print(
+                    f"\n--- [RAW LLM RESPONSE] ---\n{result.content}\n--------------------------\n"
+                )
+
             return result
         except Exception as e:
-            err_str = str(e).lower()
+            err_msg = str(e)
+            err_str = err_msg.lower()
+            print(f"    ! LLM Call Failed: {err_msg[:200]}...")
+
             transient_errors = [
                 "quota",
                 "limit",
@@ -381,14 +400,14 @@ def safe_invoke(messages, max_retries=5, invoke_kwargs=None, provider_override=N
                 "api_error",
                 "nonetype",
                 "iterable",
-                "none",
                 "empty",
             ]
             if any(err in err_str for err in transient_errors):
                 wait_time = (attempt + 1) * 20
-                print(f"    ! LLM transient error. Retrying in {wait_time}s...")
+                print(f"    ! Transient error detected. Retrying in {wait_time}s...")
                 time.sleep(wait_time)
             else:
+                # If it's not a known transient error, raise it immediately
                 raise e
     raise Exception("Max retries exceeded for LLM invocation.")
 
@@ -513,14 +532,11 @@ def writer_node(state: GraphState):
     # Determine Provider for this node
     is_claude = LLM_PROVIDER == "mixed-heavy-claude" or LLM_PROVIDER == "claude-cli"
 
-    # CONTEXT OPTIMIZATION STRATEGY:
-    # If Claude: Small Input (Summary + Last MS) -> Big Output
-    # If Gemini: Big Input (Full History) -> Specialized Output
     if is_claude and state["accumulated_md"]:
-        # Get only the last milestone content to maintain style without bloating input
-        history_parts = state["accumulated_md"].split("\n\n")
-        last_ms_context = "\n\n".join(history_parts[-2:])  # Take last 2 blocks
-        context_to_send = f"(...previous omitted for brevity...)\n\n{last_ms_context}"
+        # Split by milestone marker to get the actual last milestone
+        ms_parts = state["accumulated_md"].split("<!-- END_MS -->")
+        last_ms_content = ms_parts[-2] if len(ms_parts) > 1 else state["accumulated_md"]
+        context_to_send = f"(...previous history omitted...)\n\n{last_ms_content}"
     else:
         context_to_send = state["accumulated_md"]
 
@@ -546,6 +562,7 @@ def writer_node(state: GraphState):
     2. DYNAMIC DIAGRAMS: If you find a new complex technical point that absolutely needs a visualization but IS NOT in the list above, you can ORDER a new one using this syntax:
     [[DYNAMIC_DIAGRAM:new-id|Title|Detailed Description of what to draw]]
     """
+
     res = safe_invoke(
         [HumanMessage(content=prompt)],
         invoke_kwargs={"temperature": 0.7},
@@ -577,7 +594,7 @@ def writer_node(state: GraphState):
         r"\[\[DYNAMIC_DIAGRAM:(.*?)\|.*?\|.*?\]\]", r"{{DIAGRAM:\1}}", content
     )
 
-    full_content = f"\n\n{content}\n"
+    full_content = f"\n\n{content}\n<!-- END_MS -->\n"
     print(f"    ✓ Content generated: {len(full_content)} chars")
 
     return {
@@ -1087,6 +1104,7 @@ if __name__ == "__main__":
         "--kilo-model", default=None, help="Model for Kilo (provider/model)"
     )
     parser.add_argument("--anthropic", action="store_true")
+    parser.add_argument("--debug", action="store_true", help="Log raw LLM responses")
     parser.add_argument(
         "--output",
         default=None,
@@ -1111,6 +1129,8 @@ if __name__ == "__main__":
         os.environ["KILO_MODEL"] = args.kilo_model
     if args.anthropic:
         os.environ["USE_ANTHROPIC"] = "true"
+    if args.debug:
+        os.environ["DEBUG_MODE"] = "true"
     if args.output:
         OUTPUT_BASE = Path(args.output).resolve()
     else:

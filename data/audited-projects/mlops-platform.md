@@ -1,0 +1,281 @@
+# AUDIT & FIX: mlops-platform
+
+## CRITIQUE
+- **Scope Too Broad**: This project tries to build MLflow + Kubeflow + Seldon + Evidently in 70 hours. Each component (experiment tracking, model registry, pipeline orchestration, model deployment, monitoring) is a substantial project on its own. The result will be shallow across all areas.
+- **Missing Feature Store**: The tags include 'feature-store' but no milestone addresses it. Feature stores are a core MLOps component for ensuring training-serving consistency.
+- **Technical Inaccuracy – Canary Deployment**: Canary deployment requires a load balancer or service mesh layer (e.g., Istio, Envoy) to split traffic at the network level. The project presents this as a model-serving concern when it's actually an infrastructure concern. Without specifying the traffic splitting mechanism, the AC is unimplementable.
+- **M3 Distributed Training Overreach**: 'Distributed training across multiple GPUs or nodes is supported' is a massive requirement that's out of scope for a platform project. This is framework-level (PyTorch DDP, FSDP) not platform-level.
+- **M4 Integration with Inference Servers**: 'Deployment integrates with inference servers like Triton, TorchServe, or TensorFlow Serving' implies wrapping external systems, not building them. The AC should be clearer about abstraction level.
+- **M5 A/B Testing Analysis**: This duplicates functionality from M4 (canary) and from the ml-model-serving project. It should focus on ML-specific monitoring (drift, accuracy), not repeat A/B testing.
+- **Missing Data Versioning**: The pipeline orchestration mentions DAGs but there's no data versioning or data lineage tracking beyond model lineage in M2.
+- **Uniform Hours (14h each)**: Experiment tracking (M1) and model deployment (M4) have vastly different complexity. Flat allocation is unrealistic.
+- **M1 Missing Concurrency**: Experiment tracking must handle concurrent runs logging simultaneously. No mention of thread safety or concurrent access.
+
+## FIXED YAML
+```yaml
+id: mlops-platform
+name: MLOps Platform
+description: >-
+  Build an end-to-end ML lifecycle management platform covering experiment
+  tracking, model registry, training pipeline orchestration, model deployment,
+  and production monitoring.
+difficulty: advanced
+estimated_hours: "70-90"
+essence: >-
+  Orchestrating the ML lifecycle through structured experiment tracking with
+  metric and artifact management, a versioned model registry with lineage
+  tracking, containerized training pipelines with DAG-based orchestration,
+  model deployment with traffic management, and production monitoring with
+  statistical drift detection.
+why_important: >-
+  The gap between training a model and running it reliably in production is
+  enormous. Building an MLOps platform teaches production-grade ML engineering—
+  reproducibility, versioning, automation, and monitoring—skills that separate
+  ML researchers from ML engineers.
+learning_outcomes:
+  - Design experiment tracking systems with concurrent run support
+  - Implement model registries with lineage, versioning, and stage promotion
+  - Build DAG-based training pipeline orchestration with fault tolerance
+  - Deploy models as HTTP endpoints with canary rollout
+  - Monitor production models for data drift and performance degradation
+  - Understand the boundaries between platform components and when to integrate vs build
+skills:
+  - Experiment tracking
+  - Model versioning and registry
+  - Pipeline orchestration (DAG-based)
+  - Model deployment and serving
+  - Production monitoring and drift detection
+  - Container orchestration basics
+tags:
+  - advanced
+  - devops
+  - experiments
+  - model-registry
+  - pipelines
+  - monitoring
+  - mlops
+architecture_doc: architecture-docs/mlops-platform/index.md
+languages:
+  recommended:
+    - Python
+    - Go
+  also_possible:
+    - TypeScript
+resources:
+  - name: MLflow Documentation
+    url: https://mlflow.org/docs/latest/
+    type: documentation
+  - name: Google Cloud MLOps Guide
+    url: https://cloud.google.com/architecture/mlops-continuous-delivery-and-automation-pipelines-in-machine-learning
+    type: article
+  - name: ML Model Monitoring Best Practices
+    url: https://www.datadoghq.com/blog/ml-model-monitoring-in-production-best-practices/
+    type: article
+prerequisites:
+  - type: skill
+    name: ML basics (training, evaluation)
+  - type: skill
+    name: Docker and containerization
+  - type: skill
+    name: REST API design
+  - type: skill
+    name: SQL basics
+milestones:
+  - id: mlops-platform-m1
+    name: Experiment Tracking
+    description: >-
+      Build an experiment tracking system that records parameters, metrics,
+      and artifacts for every training run with concurrent access support.
+    acceptance_criteria:
+      - Experiments group related runs under a named experiment with metadata (description, owner, created_at)
+      - Each run logs hyperparameters as key-value pairs (string keys, JSON-serializable values)
+      - Training metrics logged at each step as time-series data (step_number, timestamp, value)
+      - Artifacts (model files, plots, configs) stored in object storage (local filesystem or S3-compatible) with run association
+      - Concurrent runs (at least 5 simultaneous) log without data corruption or race conditions
+      - Comparison view displays selected runs side-by-side with metrics, parameters, and artifact links
+      - Query API filters and sorts runs by metric values, parameters, and tags
+      - Pagination for experiment listing with at least 1000 runs supported without performance degradation
+    pitfalls:
+      - Not normalizing metric names (e.g., 'val_loss' vs 'validation_loss') causes duplicate entries and broken comparisons
+      - Storing large artifacts directly in the database instead of object storage causes database bloat
+      - Logging every step for every metric with high-frequency training overwhelms storage; support configurable log frequency
+      - Not handling concurrent writes causes data corruption when multiple runs log simultaneously
+      - Missing pagination causes memory issues when listing experiments with thousands of runs
+    concepts:
+      - Experiment-run hierarchy
+      - Time-series metric storage
+      - Object storage for artifacts
+      - Concurrent access patterns
+    skills:
+      - Database design (SQLite/PostgreSQL)
+      - Object storage integration
+      - Concurrent access handling
+      - REST API implementation
+    deliverables:
+      - Experiment and run data model with metadata storage
+      - Parameter logging API recording key-value pairs per run
+      - Metric logging API recording step-level time-series data
+      - Artifact storage system saving files to object storage with run association
+      - Run comparison API returning side-by-side metrics for selected runs
+      - Query API with filtering, sorting, and pagination
+    estimated_hours: "12-16"
+
+  - id: mlops-platform-m2
+    name: Model Registry
+    description: >-
+      Version and manage trained models with lineage tracking and stage
+      promotion workflows.
+    acceptance_criteria:
+      - Models registered with name, version (auto-incremented), and link to source experiment run
+      - Model lineage traces to training data hash, code commit SHA, experiment run ID, and hyperparameters
+      - Stage promotion workflow moves models through stages: None → Staging → Production → Archived
+      - Only one model version can be in Production stage per model name at a time
+      - Model signature (input/output schema) stored and validated on registration
+      - Stage transitions logged with timestamp, user, and reason for audit trail
+      - Model artifacts downloadable by name and version through API
+      - Search and filter models by name, stage, tags, and metric thresholds
+    pitfalls:
+      - Not enforcing immutability on registered model artifacts allows post-registration corruption
+      - Missing schema validation means deploying a model with changed input/output breaks downstream consumers
+      - Not tracking model dependencies (framework version, library versions) causes deployment failures
+      - Allowing multiple Production models per name creates ambiguity in serving
+      - Not recording stage transition history loses audit trail
+    concepts:
+      - Model registry with versioning
+      - Model lineage and provenance
+      - Stage promotion with audit trail
+      - Model signature validation
+    skills:
+      - Content-addressable storage
+      - Version management
+      - Workflow state machines
+      - Schema validation
+    deliverables:
+      - Model registration API creating versioned model entries with source run linkage
+      - Model lineage store recording data hash, code commit, run ID, and hyperparameters
+      - Stage promotion workflow with transition validation and audit logging
+      - Model signature validator checking input/output schema on registration
+      - Model artifact download API serving files by name and version
+      - Model search API with filtering by name, stage, tags, and metrics
+    estimated_hours: "12-15"
+
+  - id: mlops-platform-m3
+    name: Training Pipeline Orchestration
+    description: >-
+      Orchestrate multi-step training workflows as DAGs with fault tolerance
+      and reproducibility.
+    acceptance_criteria:
+      - Pipeline steps defined as a DAG with explicit data dependencies between steps
+      - Each step runs in a Docker container with specified image, command, and resource requests (CPU, memory)
+      - Step outputs passed to downstream steps via file-based or object-storage data passing
+      - Failed steps are retried up to N times (configurable) before the pipeline fails
+      - Pipeline execution is idempotent: re-running a completed pipeline skips already-successful steps
+      - Independent steps execute in parallel to minimize total pipeline duration
+      - Pipeline definition is versioned; each execution records the pipeline version used
+      - Execution logs and step statuses (pending, running, succeeded, failed) are queryable via API
+    pitfalls:
+      - Not handling partial failures forces full pipeline restarts, wasting compute on completed steps
+      - Hardcoding resource requirements leads to either waste (over-provisioned) or failures (under-provisioned)
+      - Missing data validation between steps causes silent failures that propagate downstream
+      - Non-idempotent steps produce different results on re-run, breaking reproducibility
+      - Not versioning pipeline definitions means you can't reproduce past executions
+    concepts:
+      - DAG-based task orchestration
+      - Container-based step execution
+      - Idempotent step design
+      - Fault tolerance with retry
+    skills:
+      - DAG construction and topological sort
+      - Docker container management
+      - File/object storage data passing
+      - Retry and fault tolerance patterns
+    deliverables:
+      - Pipeline definition DSL specifying steps, dependencies, container images, and resources
+      - DAG executor running steps in dependency order with parallel execution of independent steps
+      - Container runner executing each step in a Docker container with resource limits
+      - Data passing mechanism transferring step outputs via shared storage
+      - Retry handler re-executing failed steps up to configurable limit
+      - Pipeline execution logger recording step statuses, durations, and logs
+    estimated_hours: "14-18"
+
+  - id: mlops-platform-m4
+    name: Model Deployment & Serving
+    description: >-
+      Deploy registered models as HTTP inference endpoints with traffic
+      management for safe rollouts.
+    acceptance_criteria:
+      - A registered model version is deployed as an HTTP endpoint accepting JSON inference requests
+      - Model warmup runs configurable dummy requests before accepting live traffic
+      - Health and readiness probes report whether the model is loaded and ready
+      - Canary deployment implemented at the application level: a reverse proxy or routing layer splits traffic by percentage between two model versions
+      - Traffic split percentages are adjustable via API without redeployment
+      - Automatic rollback triggers when the canary version's error rate exceeds 2x the baseline's error rate
+      - Deployment metadata recorded: model version, deployment timestamp, traffic configuration
+      - Per-version latency (p50, p95) and error rate tracked during canary period
+    pitfalls:
+      - Not warming up models before routing traffic causes latency spikes for first requests
+      - Canary deployment requires a traffic splitting layer (reverse proxy, application-level router)—this is the implementation, not an external service mesh
+      - Not draining in-flight requests before shutting down old version causes 500 errors
+      - Automatic rollback threshold too sensitive causes flapping between versions
+      - Missing health probes means the orchestrator routes traffic to unready instances
+    concepts:
+      - Model serving as HTTP endpoints
+      - Application-level traffic splitting for canary
+      - Warmup and readiness probes
+      - Automatic rollback on error rate
+    skills:
+      - HTTP API design for inference
+      - Reverse proxy / routing implementation
+      - Health check patterns
+      - Deployment automation
+    deliverables:
+      - Model serving endpoint wrapping a registered model version behind HTTP API
+      - Application-level traffic router splitting requests between two model versions by percentage
+      - Canary configuration API adjusting traffic percentages without redeployment
+      - Warmup runner and readiness probe ensuring model is ready before accepting traffic
+      - Automatic rollback trigger monitoring error rate differential
+      - Deployment metadata recorder tracking version, timestamp, and traffic config
+    estimated_hours: "14-18"
+
+  - id: mlops-platform-m5
+    name: Production Monitoring & Drift Detection
+    description: >-
+      Monitor deployed models for performance degradation and data drift
+      with alerting.
+    acceptance_criteria:
+      - Inference latency (p50, p90, p95, p99) and throughput (RPS) tracked per deployed model version
+      - Training data baseline feature distributions stored at deployment time as reference
+      - Data drift detected by computing PSI (Population Stability Index) or KS test between sampled live features and training baseline
+      - Drift detection runs on a configurable sample rate (default 1% of requests) to minimize overhead
+      - Prediction distribution monitored via histogram comparison; significant shifts flagged
+      - Alerts fire when drift score or error rate exceeds configurable thresholds
+      - Delayed ground truth labels integrated when available to compute actual model accuracy over time
+      - Monitoring dashboard visualizes latency, throughput, drift scores, and accuracy trends
+    pitfalls:
+      - Static thresholds don't adapt to seasonal patterns—consider rolling baselines
+      - Not monitoring upstream data pipeline failures means drift detection doesn't know if inputs are corrupted vs shifted
+      - Drift detection on every request adds unacceptable latency; always sample
+      - Not storing the training baseline at deployment time makes drift detection impossible to configure later
+      - Alert fatigue from overly sensitive thresholds causes operators to ignore real issues
+      - Not correlating infrastructure metrics (CPU, memory, GPU) with model performance misses resource-based degradation
+    concepts:
+      - PSI and KS test for drift detection
+      - Feature distribution baselining
+      - Delayed ground truth integration
+      - Alert threshold management
+    skills:
+      - Statistical distribution comparison
+      - Metrics instrumentation (Prometheus)
+      - Dashboard creation (Grafana)
+      - Sampling strategies for monitoring
+    deliverables:
+      - Latency and throughput metrics tracker exposing Prometheus-compatible metrics
+      - Training baseline store capturing feature distributions at deployment time
+      - Drift detector computing PSI or KS test on sampled live features vs baseline
+      - Prediction distribution monitor tracking output histograms over sliding windows
+      - Ground truth integrator computing accuracy when delayed labels become available
+      - Alert rule engine firing notifications on threshold breaches
+      - Monitoring dashboard with latency, drift, accuracy, and alert visualizations
+    estimated_hours: "14-18"
+
+```

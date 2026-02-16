@@ -1,0 +1,322 @@
+# AUDIT & FIX: ai-agent-framework
+
+## CRITIQUE
+- **Massive Complexity Leap M2→M5**: Going from a single ReAct loop (M2) to multi-agent collaboration (M5) is a 10x complexity jump. The audit correctly identifies a missing intermediate milestone. Memory (M4) and multi-agent (M5) have no intermediate 'communication protocol' or 'agent interface' milestone.
+- **Technical Inaccuracy – JSON Parsing**: M2 AC mentions 'Structured output parsing handles both JSON and freeform action formats' but doesn't require retry logic or constrained decoding when parsing fails. In practice, LLM JSON output fails 5-20% of the time depending on the model. This is a critical reliability concern.
+- **M1 Security Gap**: 'Built-in tools including... sandboxed code execution' is mentioned as a deliverable but the AC has no security-specific criteria. Sandboxed code execution without proper isolation (Docker, gVisor, or at minimum subprocess with resource limits) is a critical security vulnerability.
+- **M3 DAG Execution Without Graph Library**: The AC requires DAG-based execution with dependency tracking and parallel execution, but doesn't specify how circular dependencies are detected (topological sort will fail but silently?). The pitfall mentions it but the AC doesn't require detection.
+- **M4 Token Budget Management Underspecified**: 'Memory retrieval injects relevant context into the LLM prompt without exceeding the token budget' is critical but the AC doesn't specify how the token budget is calculated or how content is prioritized when the budget is exceeded.
+- **M5 'Conflict Resolution' is Vague**: 'Applies a defined merge strategy' for contradictory agent outputs—what merge strategy? Voting? Priority-based? LLM arbitration? This needs to be concrete.
+- **Missing Guardrails/Safety Milestone**: No mention of rate limiting LLM calls, cost tracking, or preventing the agent from taking harmful actions. An autonomous agent without guardrails is dangerous.
+- **Estimated Hours Seem Low**: 50-80 hours for a framework covering tools, ReAct, planning, memory, AND multi-agent is aggressive. Most production agent frameworks take teams months.
+
+## FIXED YAML
+```yaml
+id: ai-agent-framework
+name: AI Agent Framework
+description: >-
+  Build a framework for autonomous AI agents that can use tools, plan, execute
+  multi-step tasks, maintain memory, and coordinate with other agents.
+difficulty: advanced
+estimated_hours: "60-90"
+essence: >-
+  LLM-orchestrated control flow alternating between reasoning traces and tool
+  execution, with state management across multi-step plans that dynamically
+  adapt based on observation feedback, persistent memory via vector stores,
+  and multi-agent coordination through structured message passing.
+why_important: >-
+  Agent frameworks are the architecture of autonomous AI systems—a rapidly
+  growing category requiring skills in prompt engineering, tool orchestration,
+  stateful workflow design, and safety guardrails. Building one from scratch
+  teaches the design patterns underlying LangChain, CrewAI, and AutoGPT.
+learning_outcomes:
+  - Implement a tool calling system with schemas, validation, and sandboxed execution
+  - Design ReAct loops with robust output parsing and retry logic
+  - Build task decomposition engines producing DAG-based execution plans
+  - Implement short-term and long-term memory using conversation buffers and vector stores
+  - Design safety guardrails including cost limits, action allowlists, and human-in-the-loop
+  - Build multi-agent coordination with message passing and orchestration patterns
+  - Handle error recovery and plan re-evaluation when tool calls fail
+  - Implement structured output extraction with retry and constrained decoding fallbacks
+skills:
+  - Tool Orchestration
+  - ReAct Pattern Implementation
+  - Task Decomposition (DAG-based)
+  - LLM Function Calling & Structured Output
+  - Stateful Workflow Design
+  - Vector Memory Systems
+  - Agent Safety & Guardrails
+  - Multi-Agent Coordination
+tags:
+  - advanced
+  - ai-ml
+  - framework
+  - memory
+  - planning
+  - python
+  - reasoning
+  - tools
+  - agents
+architecture_doc: architecture-docs/ai-agent-framework/index.md
+languages:
+  recommended:
+    - Python
+  also_possible:
+    - TypeScript
+resources:
+  - name: ReAct Paper
+    url: https://arxiv.org/abs/2210.03629
+    type: paper
+  - name: LangChain Agents
+    url: https://python.langchain.com/docs/modules/agents/
+    type: documentation
+  - name: AutoGPT
+    url: https://github.com/Significant-Gravitas/AutoGPT
+    type: reference
+  - name: Generative Agents (Stanford)
+    url: https://arxiv.org/abs/2304.03442
+    type: paper
+prerequisites:
+  - type: skill
+    name: LLM APIs (OpenAI, Anthropic function calling)
+  - type: skill
+    name: Python async/await
+  - type: skill
+    name: System design basics
+milestones:
+  - id: ai-agent-framework-m1
+    name: Tool System
+    description: >-
+      Build an extensible, safe tool system that agents can discover, validate,
+      and execute with proper sandboxing.
+    acceptance_criteria:
+      - Tool interface defines name, description, JSON-schema parameters, return type, and an execute callback
+      - Tool registry supports dynamic registration and discovery at runtime without restart
+      - Parameter validation against JSON schema rejects malformed inputs with descriptive errors before execution
+      - All tool executions have a configurable timeout (default 30s); timeouts raise a ToolTimeoutError
+      - Tool execution errors are caught, wrapped in a structured ToolError response, and returned to the caller (not raised)
+      - Code execution tool runs in a subprocess with resource limits (memory, CPU time) and no filesystem access outside a sandbox directory
+      - Tool result formatting converts raw output to a structured string consumable by the LLM, truncated to a configurable max length
+      - At least 3 built-in tools implemented: web_search (mock or real), calculator, and python_executor (sandboxed)
+      - Permission system allows marking tools as "requires_confirmation" which blocks execution until approved
+    pitfalls:
+      - Tool descriptions too vague cause the LLM to select wrong tools or hallucinate non-existent ones
+      - Missing timeout on tool execution allows infinite hangs (e.g., network request to unresponsive server)
+      - Sandboxed code execution without resource limits allows fork bombs or memory exhaustion
+      - Tool output that exceeds the LLM context window silently truncates reasoning; enforce explicit truncation with indicator
+      - Not sanitizing tool inputs allows prompt injection through tool parameters
+    concepts:
+      - Tool abstraction and registry pattern
+      - JSON Schema validation
+      - Subprocess sandboxing with resource limits
+      - Permission-gated execution
+    skills:
+      - Python decorator patterns for tool registration
+      - JSON Schema validation (jsonschema library)
+      - Subprocess management with timeouts
+      - Plugin architecture design
+    deliverables:
+      - Tool interface class with name, description, parameter schema, and execute method
+      - Tool registry supporting registration, lookup, listing, and schema export
+      - Tool executor validating inputs, enforcing timeouts, and capturing structured output/errors
+      - Sandboxed Python executor running code in a subprocess with resource limits
+      - Permission gate requiring confirmation for sensitive tool invocations
+      - At least 3 built-in tools (web_search, calculator, python_executor)
+    estimated_hours: "8-12"
+
+  - id: ai-agent-framework-m2
+    name: ReAct Loop (Reasoning + Acting)
+    description: >-
+      Implement the core agent loop: think, select action, execute tool,
+      observe result, repeat—with robust output parsing and retry logic.
+    acceptance_criteria:
+      - Thought-Action-Observation cycle repeats until the agent produces a final answer or hits the iteration limit (configurable, default 10)
+      - LLM prompt template elicits structured output with explicit Thought, Action (tool name + JSON args), and Final Answer sections
+      - Action parser extracts tool name and JSON arguments; on parse failure, retries the LLM call with an error message appended (up to 3 retries)
+      - Fallback: if structured output parsing fails after all retries, attempt regex-based extraction before giving up
+      - Tool execution errors are formatted as Observation errors and fed back to the LLM for self-correction
+      - Maximum iteration limit triggers a graceful response explaining the agent could not complete the task
+      - Full execution trace (all thoughts, actions, observations) is logged and returnable for debugging
+      - Agent correctly solves a multi-step task requiring at least 2 different tools (e.g., search then calculate)
+    pitfalls:
+      - LLM hallucinates non-existent tool names; the parser must check against the registry and return a clear error
+      - Infinite loops when the agent repeats the same failed action; detect repeated actions and force a different approach
+      - JSON parsing of LLM output fails 5-20% of the time; retry with error feedback is essential, not optional
+      - Not including available tool schemas in the prompt causes the LLM to guess parameter formats
+      - Context window overflow from long execution traces; implement trace truncation keeping most recent observations
+    concepts:
+      - ReAct framework (Reason + Act)
+      - LLM function calling and structured output
+      - Retry logic with error feedback
+      - Agent loop state machine
+    skills:
+      - LLM API integration (function calling mode)
+      - Prompt engineering for structured output
+      - Robust JSON parsing with fallbacks
+      - State machine design
+    deliverables:
+      - Agent loop executing Think → Act → Observe cycles until completion or limit
+      - Prompt template including system instructions, tool schemas, and conversation history
+      - Action parser with JSON extraction, retry on failure, and regex fallback
+      - Observation formatter feeding tool results or errors back into the conversation
+      - Iteration limiter with graceful termination message
+      - Execution trace logger recording full agent reasoning history
+    estimated_hours: "10-15"
+
+  - id: ai-agent-framework-m3
+    name: Planning & Task Decomposition
+    description: >-
+      Add a planning layer that decomposes complex tasks into subtask DAGs
+      with dependency tracking and re-planning on failure.
+    acceptance_criteria:
+      - Agent decomposes a multi-step goal into a list of concrete subtasks with explicit dependencies
+      - Subtask graph is validated as a DAG; circular dependencies are detected and rejected with an error
+      - Subtasks execute in topological order; independent subtasks may execute in parallel (async)
+      - Each subtask's result is stored and available to downstream dependent subtasks
+      - When a subtask fails, the agent re-plans by generating alternative subtasks (max 2 re-plan attempts)
+      - Re-planning includes the failed subtask's error in the context so the agent can route around the failure
+      - Goal completion check evaluates whether all required subtasks succeeded and the overall objective is met
+      - Successfully decomposes and executes a task requiring at least 3 subtasks with at least 1 dependency
+    pitfalls:
+      - Circular dependencies cause infinite loops if not detected via topological sort
+      - Over-decomposition creates too many trivial subtasks that waste LLM calls and context
+      - Context lost between subtasks—each subtask needs access to relevant prior results
+      - Re-planning loops infinitely; cap re-plan attempts and fail gracefully
+      - Parallel execution without proper dependency checking causes subtasks to run before prerequisites complete
+    concepts:
+      - Task decomposition prompting
+      - DAG construction and topological sorting
+      - Async parallel execution
+      - Dynamic re-planning
+    skills:
+      - Graph data structures and topological sort
+      - Async/await and concurrent execution
+      - LLM prompting for structured plans
+      - Error recovery and re-planning
+    deliverables:
+      - Task decomposition prompter instructing the LLM to output structured subtask lists with dependencies
+      - DAG builder constructing a dependency graph from subtask specifications with cycle detection
+      - Plan executor running subtasks in topological order with optional parallel execution of independent tasks
+      - Subtask result store making completed results available to downstream tasks
+      - Re-planning module regenerating failed subtask alternatives with error context
+      - Goal completion evaluator checking if all subtasks succeeded
+    estimated_hours: "12-18"
+
+  - id: ai-agent-framework-m4
+    name: Memory & Context Management
+    description: >-
+      Give agents short-term conversation memory and long-term semantic memory
+      with intelligent context window management.
+    acceptance_criteria:
+      - Short-term memory maintains ordered conversation history for the current session
+      - Working memory holds current task state including goals, partial results, and active plan
+      - Long-term memory backed by a vector store (FAISS or ChromaDB) indexes past interactions and retrieved facts
+      - Memory retrieval returns top-K (configurable) most semantically relevant entries for a given query
+      - Context window manager counts tokens in the assembled prompt and truncates/summarizes history to stay within budget
+      - Summarization compresses older conversation turns using an LLM call, preserving key facts and decisions
+      - Token budget allocation is explicit: X% for system prompt, Y% for memory retrieval, Z% for recent history (configurable)
+      - Verified: agent correctly recalls a fact stored 20+ conversation turns ago via long-term memory retrieval
+    pitfalls:
+      - Memory grows unbounded without TTL or eviction; implement max entries and oldest-first eviction
+      - Retrieved memories not relevant to current task; embedding quality and retrieval threshold matter
+      - Summarization loses critical details (numbers, names); validate summaries preserve key entities
+      - Token counting must use the actual tokenizer of the target LLM, not word count or character count
+      - Storing every intermediate observation in long-term memory pollutes retrieval with noise
+    concepts:
+      - Short-term vs long-term memory
+      - Vector store semantic retrieval
+      - Context window token budgeting
+      - Conversation summarization
+    skills:
+      - Vector embedding and similarity search
+      - Token counting with tiktoken or equivalent
+      - LLM-based summarization
+      - Priority-based context assembly
+    deliverables:
+      - Conversation memory buffer storing ordered dialogue history
+      - Working memory store for current task state, goals, and partial results
+      - Long-term vector memory with semantic storage and retrieval
+      - Context window manager with token counting and budget allocation
+      - Summarization module compressing older turns while preserving key facts
+      - Memory retrieval module augmenting the current prompt with relevant past context
+    estimated_hours: "10-15"
+
+  - id: ai-agent-framework-m5
+    name: Safety, Guardrails & Cost Control
+    description: >-
+      Implement safety mechanisms to prevent runaway agents, control costs,
+      and enforce action boundaries.
+    acceptance_criteria:
+      - Per-task budget limit caps total LLM API calls (default 20) and total tokens consumed (configurable)
+      - Cost tracker estimates dollar cost per task based on model pricing and total input/output tokens
+      - Action allowlist/denylist restricts which tools can be used per task context
+      - Human-in-the-loop checkpoint pauses execution and requests approval before executing high-risk actions
+      - Rate limiter caps LLM API calls per minute to stay within provider rate limits
+      - All agent actions are logged in an audit trail with timestamps, tool names, inputs, and outputs
+      - Agent gracefully terminates with a summary when any budget limit is reached
+    pitfalls:
+      - Without cost limits, a planning loop can burn hundreds of dollars in LLM calls in minutes
+      - Rate limiting without backoff causes cascading failures
+      - Human-in-the-loop blocks async execution; implement as a callback/webhook pattern
+      - Audit logging without redaction exposes sensitive data in tool inputs
+    concepts:
+      - Budget and cost management
+      - Action safety boundaries
+      - Human-in-the-loop patterns
+      - Audit logging
+    skills:
+      - Token counting and cost estimation
+      - Rate limiting implementation
+      - Callback/approval flow design
+      - Structured audit logging
+    deliverables:
+      - Budget manager tracking LLM calls, tokens consumed, and estimated cost per task
+      - Action allowlist/denylist filter restricting available tools per context
+      - Human-in-the-loop gate pausing execution for approval on flagged actions
+      - Rate limiter throttling LLM API calls with exponential backoff
+      - Audit trail logger recording all agent actions with timestamps
+      - Graceful termination handler summarizing progress when budget is exhausted
+    estimated_hours: "8-12"
+
+  - id: ai-agent-framework-m6
+    name: Multi-Agent Collaboration
+    description: >-
+      Build systems where multiple specialized agents coordinate on complex
+      tasks through structured message passing and orchestration.
+    acceptance_criteria:
+      - Each agent has a defined role (name, description, capabilities, tool access) used for task routing
+      - Message passing protocol supports typed messages (request, response, broadcast) between agents
+      - Orchestrator agent receives the top-level task, decomposes it, and delegates subtasks to specialized agents
+      - Delegated agents return structured results that the orchestrator aggregates into a final response
+      - Circular delegation detected and prevented (agent A cannot delegate to B which delegates back to A)
+      - Timeout on agent responses (configurable, default 60s) prevents indefinite blocking
+      - Shared context store allows agents working on the same task to read/write shared state
+      - Conflict resolution when agents produce contradictory outputs uses majority voting or orchestrator arbitration
+      - Successfully completes a task requiring 3 specialized agents (e.g., researcher, analyst, writer)
+    pitfalls:
+      - Agents talking past each other without shared context produces incoherent results
+      - Delegation loops (A→B→A) consume budget and never terminate
+      - Orchestrator becomes a bottleneck if all communication routes through it; consider direct agent-to-agent messaging
+      - No timeout on agent responses causes the entire system to hang on one unresponsive agent
+      - Shared state without locking causes race conditions when multiple agents write simultaneously
+    concepts:
+      - Multi-agent systems and role specialization
+      - Message passing protocols
+      - Orchestration vs peer-to-peer patterns
+      - Conflict resolution strategies
+    skills:
+      - Message queue/protocol design
+      - Agent orchestration logic
+      - Shared state management with concurrency control
+      - Role-based task routing
+    deliverables:
+      - Agent definition class with role, capabilities, and tool access specification
+      - Message protocol supporting request, response, and broadcast message types
+      - Orchestrator agent that decomposes tasks and delegates to specialized agents
+      - Task router matching subtasks to the most capable agent by role
+      - Result aggregator collecting and merging outputs from multiple agents
+      - Delegation loop detector preventing circular agent-to-agent delegation
+      - Shared context store with read/write access for cooperating agents
+    estimated_hours: "15-20"
+
+```

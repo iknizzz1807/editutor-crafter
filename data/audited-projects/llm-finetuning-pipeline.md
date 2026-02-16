@@ -1,0 +1,280 @@
+# AUDIT & FIX: llm-finetuning-pipeline
+
+## CRITIQUE
+- **Missing Tokenization Strategy Milestone**: The audit correctly identifies that sequence packing and tokenization strategy are critical for training efficiency. The current M1 covers data formatting but doesn't address packing multiple short examples into a single training sequence (which can improve training throughput by 2-5x) or the critical detail of masking loss on prompt tokens.
+- **Technical Inaccuracy – QLoRA Merging**: M5 says 'LoRA adapter weights are merged into the base model producing a single standalone model file' but for QLoRA, the base model is in 4-bit. You MUST dequantize to float16/bfloat16 before merging LoRA adapters, otherwise the merge produces garbage. This is completely unspecified.
+- **M1 Missing Loss Masking**: For instruction tuning, you typically mask the loss on the instruction/prompt tokens and only compute loss on the response tokens. This is never mentioned but is critical for training quality.
+- **M2 Alpha/Rank Relationship Underspecified**: The AC says 'Rank and alpha parameters are configurable and affect the capacity' but doesn't explain that the effective scaling is alpha/rank, so changing rank without adjusting alpha changes the effective learning rate of the LoRA layers.
+- **M4 Gradient Accumulation Learning Rate**: The pitfalls mention 'Setting gradient accumulation steps without adjusting learning rate' but the relationship isn't specified. Effective batch size = micro_batch × gradient_accumulation × num_GPUs, and learning rate should scale accordingly.
+- **M3 Oversimplified**: 4-bit quantization is presented as straightforward, but the actual implementation is one bitsandbytes config + one flag. The real complexity is understanding WHEN quantization hurts quality and how to diagnose it. The deliverables feel padded.
+- **Uniform Hours (11h each)**: All milestones at exactly 11 hours is suspicious. Dataset preparation is usually faster than training loop debugging.
+- **Missing Chat Template Complexity**: Different model families (Llama, Mistral, ChatML, Alpaca) have incompatible chat templates. This is mentioned as a pitfall but never as an AC requiring actual support.
+
+## FIXED YAML
+```yaml
+id: llm-finetuning-pipeline
+name: LLM Fine-tuning Pipeline
+description: >-
+  Build a complete LoRA/QLoRA fine-tuning pipeline with dataset preparation,
+  proper tokenization, memory-efficient training, and evaluation.
+difficulty: advanced
+estimated_hours: "50-65"
+essence: >-
+  Low-rank matrix decomposition for parameter-efficient adapter training on
+  frozen base models, combined with 4-bit NormalFloat quantization for
+  memory-constrained optimization of billion-parameter transformers, with
+  proper instruction-tuning data formatting and loss masking.
+why_important: >-
+  Fine-tuning is how general-purpose LLMs become domain-specific tools. Building
+  this pipeline teaches production-ready techniques for customizing LLMs on
+  consumer hardware (single GPU), bridging research models to real applications
+  without enterprise infrastructure.
+learning_outcomes:
+  - Prepare and format instruction-tuning datasets with proper chat templates
+  - Implement tokenization with loss masking on prompt tokens
+  - Configure LoRA adapters with understanding of rank, alpha, and target module selection
+  - Apply QLoRA 4-bit quantization for memory-efficient training
+  - Implement training loops with gradient accumulation, checkpointing, and early stopping
+  - Evaluate fine-tuned models with perplexity and task-specific benchmarks
+  - Merge LoRA adapters correctly (including dequantization for QLoRA) and export models
+skills:
+  - LoRA/QLoRA configuration
+  - Instruction-tuning data formatting
+  - Chat template application
+  - Tokenization with loss masking
+  - 4-bit quantization
+  - Training loop optimization
+  - Model evaluation and merging
+tags:
+  - advanced
+  - ai-ml
+  - datasets
+  - lora
+  - training
+  - fine-tuning
+  - quantization
+architecture_doc: architecture-docs/llm-finetuning-pipeline/index.md
+languages:
+  recommended:
+    - Python
+  also_possible: []
+resources:
+  - name: PEFT Documentation
+    url: https://huggingface.co/docs/peft/en/index
+    type: documentation
+  - name: QLoRA Paper
+    url: https://arxiv.org/abs/2305.14314
+    type: paper
+  - name: 4-bit Quantization with bitsandbytes
+    url: https://huggingface.co/blog/4bit-transformers-bitsandbytes
+    type: article
+  - name: Instruction Tuning Data Overview
+    url: https://www.ruder.io/an-overview-of-instruction-tuning-data/
+    type: article
+prerequisites:
+  - type: skill
+    name: PyTorch basics (tensors, autograd, nn.Module)
+  - type: skill
+    name: HuggingFace Transformers library
+  - type: skill
+    name: GPU training basics (CUDA, device management)
+milestones:
+  - id: llm-finetuning-pipeline-m1
+    name: Dataset Preparation & Tokenization
+    description: >-
+      Prepare instruction-tuning data with proper chat templates, tokenization,
+      and loss masking. This is where most fine-tuning bugs originate.
+    acceptance_criteria:
+      - Load training data from JSON/JSONL with validation of required fields (instruction, response; optional system prompt)
+      - Apply the correct chat template for the target model family (e.g., Llama-3 uses <|begin_of_text|> format, Mistral uses [INST] format)
+      - Tokenize with proper special tokens (BOS, EOS) placed correctly per model's convention
+      - Loss masking labels set to -100 for all prompt/instruction tokens so loss is computed only on response tokens
+      - Verify loss masking by decoding masked vs unmasked token positions and confirming only response tokens are unmasked
+      - Sequences exceeding max_length are truncated with a warning; sequences are right-padded with pad_token_id
+      - Train/validation split with configurable ratio (default 90/10); validation set is never used for training
+      - Data quality filter removes exact duplicates and entries with empty responses
+      - Report dataset statistics: total examples, token length distribution (min, max, mean, p95), and filtered count
+    pitfalls:
+      - Not adding EOS token between turns causes the model to not learn when to stop generating
+      - Using the wrong chat template for the model family produces gibberish—always verify by decoding tokenized examples
+      - Computing loss on prompt tokens teaches the model to memorize prompts instead of learning to respond
+      - Truncating mid-sentence without proper attention mask handling causes silent training degradation
+      - Pad token conflicts with EOS token in some models (e.g., Llama); must set a distinct pad token
+      - Creating validation set from the same distribution without shuffling causes data leakage if data is ordered
+    concepts:
+      - Chat templates per model family
+      - Loss masking for instruction tuning
+      - Tokenizer special tokens (BOS, EOS, PAD)
+      - Data quality filtering
+    skills:
+      - HuggingFace tokenizer usage
+      - Chat template application
+      - Loss label construction with -100 masking
+      - Data validation and statistics
+    deliverables:
+      - Data loader reading JSON/JSONL with field validation
+      - Chat template applicator supporting at least 2 model families (Llama, Mistral)
+      - Tokenizer pipeline with proper special tokens, padding, and truncation
+      - Loss mask builder setting -100 for prompt tokens, preserving response tokens
+      - Tokenization verifier decoding masked/unmasked positions for visual inspection
+      - Train/validation splitter with configurable ratio
+      - Dataset statistics reporter (token length distribution, example count)
+    estimated_hours: "10-13"
+
+  - id: llm-finetuning-pipeline-m2
+    name: LoRA Configuration & QLoRA Setup
+    description: >-
+      Configure LoRA adapters and optionally load the base model in 4-bit
+      precision using QLoRA for memory-efficient fine-tuning.
+    acceptance_criteria:
+      - LoRA config specifies rank (r), alpha, dropout, and target modules; effective scaling = alpha/r is documented
+      - Target modules auto-detected from model architecture (at minimum q_proj, v_proj; optionally k_proj, o_proj, gate_proj, up_proj, down_proj)
+      - Adapter injected into frozen base model; verify trainable parameters < 1% of total model parameters
+      - QLoRA: base model loaded in 4-bit NF4 precision using BitsAndBytesConfig with configurable compute_dtype (bfloat16 preferred)
+      - Double quantization enabled for additional memory savings (quantizing quantization constants)
+      - VRAM usage measured and reported: (a) base model only, (b) base model + LoRA adapters, (c) during training with optimizer states
+      - Gradient checkpointing enabled to trade compute for memory
+      - Verify LoRA layers have gradients enabled and base model layers have gradients disabled
+    pitfalls:
+      - Effective learning rate of LoRA layers scales with alpha/r—changing rank without adjusting alpha changes training dynamics
+      - Targeting only q_proj and v_proj may underfit; including FFN layers (gate_proj, up_proj, down_proj) often improves quality
+      - Forgetting to set compute_dtype to bfloat16 uses float32 for computation, negating QLoRA memory savings
+      - Not enabling gradient checkpointing with QLoRA wastes memory on activation storage
+      - Loading an already-quantized model (e.g., GPTQ) with bitsandbytes causes errors or double-quantization artifacts
+      - CUDA version incompatibility with bitsandbytes is the #1 setup failure—verify before starting
+    concepts:
+      - LoRA low-rank decomposition (W = W0 + BA where B∈R^{d×r}, A∈R^{r×d})
+      - Alpha scaling and effective learning rate
+      - 4-bit NormalFloat (NF4) quantization
+      - Double quantization
+      - Gradient checkpointing
+    skills:
+      - PEFT library configuration
+      - BitsAndBytes quantization setup
+      - Model parameter inspection
+      - VRAM profiling
+    deliverables:
+      - LoRA configuration with rank, alpha, dropout, and target module specification
+      - Target module auto-detector for common model architectures
+      - LoRA adapter injector with parameter count reporting
+      - QLoRA model loader with NF4 quantization and configurable compute dtype
+      - VRAM profiler measuring memory at each stage (base, adapters, training)
+      - Gradient verification script confirming LoRA layers train and base layers are frozen
+    estimated_hours: "9-12"
+
+  - id: llm-finetuning-pipeline-m3
+    name: Training Loop
+    description: >-
+      Implement the training loop with gradient accumulation, learning rate
+      scheduling, checkpointing, and convergence monitoring.
+    acceptance_criteria:
+      - Training runs with gradient accumulation; effective batch size = micro_batch × gradient_accumulation_steps
+      - Learning rate schedule: linear warmup for N steps (default 10% of total steps) followed by cosine decay to 0
+      - Training loss logged every step; validation loss evaluated every N steps (default every 100 steps)
+      - Checkpoints saved at configurable intervals; best checkpoint tracked by validation loss
+      - Early stopping halts training when validation loss fails to improve for K evaluations (configurable, default 3)
+      - Gradient clipping (max norm 1.0) applied to prevent training instability
+      - Training resumes from checkpoint without loss of optimizer state or learning rate schedule position
+      - WandB or TensorBoard logging streams training metrics in real-time
+      - Total training time and tokens processed are reported at completion
+    pitfalls:
+      - Gradient accumulation effectively increases batch size; learning rate should scale accordingly (linear scaling rule)
+      - Learning rate too high (>2e-4 for LoRA) causes catastrophic forgetting of base model capabilities
+      - Running validation too frequently slows training significantly; too infrequently misses the optimal stopping point
+      - Resuming from checkpoint without restoring optimizer state and LR schedule causes training instability
+      - Not monitoring loss curves manually means you miss obvious overfitting (val loss diverging from train loss)
+      - Mixed precision with bfloat16 is preferred over float16 for training stability (avoids loss scaling issues)
+    concepts:
+      - Gradient accumulation for simulating larger batch sizes
+      - Learning rate warmup and cosine decay
+      - Early stopping criteria
+      - Checkpoint-resume lifecycle
+    skills:
+      - HuggingFace Trainer or custom training loop
+      - Learning rate scheduler implementation
+      - Checkpoint management
+      - Training monitoring and logging
+    deliverables:
+      - Training configuration (LR, batch size, warmup steps, max epochs, gradient accumulation)
+      - Gradient accumulation handler simulating larger effective batch sizes
+      - Learning rate scheduler with linear warmup and cosine decay
+      - Checkpoint manager saving model + optimizer state at intervals, tracking best by val loss
+      - Early stopping callback halting on validation loss plateau
+      - Logging integration (WandB or TensorBoard) streaming loss, LR, and throughput metrics
+      - Resume-from-checkpoint logic restoring full training state
+    estimated_hours: "11-14"
+
+  - id: llm-finetuning-pipeline-m4
+    name: Evaluation
+    description: >-
+      Evaluate the fine-tuned model against the base model using perplexity,
+      task-specific benchmarks, and qualitative comparison.
+    acceptance_criteria:
+      - Perplexity evaluated on held-out validation set for both base model and fine-tuned model; fine-tuned should be lower
+      - Task-specific evaluation on at least 20 held-out examples showing measurable improvement (e.g., accuracy, format compliance)
+      - Side-by-side comparison: same 10 prompts run through base and fine-tuned model with outputs displayed for qualitative review
+      - Out-of-distribution test: 10 prompts outside the training domain verify the model hasn't catastrophically forgotten general capabilities
+      - Model set to eval mode with dropout disabled during all evaluation
+      - Evaluation results saved as a structured report with prompt, base response, fine-tuned response, and scores
+    pitfalls:
+      - Evaluating only on training distribution misses catastrophic forgetting on general tasks
+      - Forgetting to set model to eval mode causes non-deterministic evaluation from dropout
+      - Perplexity alone doesn't capture generation quality; always include qualitative side-by-side comparison
+      - Not comparing against the base model baseline means you don't know if fine-tuning actually helped
+    concepts:
+      - Perplexity as a language modeling metric
+      - Task-specific evaluation
+      - Catastrophic forgetting detection
+      - Qualitative evaluation
+    skills:
+      - Perplexity computation
+      - Benchmark evaluation
+      - Side-by-side comparison design
+      - Structured result reporting
+    deliverables:
+      - Perplexity calculator evaluating on validation set for base and fine-tuned models
+      - Task-specific evaluator measuring domain performance metrics
+      - Side-by-side comparison tool running identical prompts through both models
+      - Out-of-distribution test suite checking general capabilities are preserved
+      - Evaluation report generator producing structured output with all results
+    estimated_hours: "8-10"
+
+  - id: llm-finetuning-pipeline-m5
+    name: Adapter Merging & Export
+    description: >-
+      Merge LoRA adapters into the base model and export for deployment.
+      QLoRA merging requires explicit dequantization.
+    acceptance_criteria:
+      - For standard LoRA: adapter weights merged into base model producing a single model with no adapter dependency
+      - For QLoRA: base model explicitly dequantized from 4-bit to float16/bfloat16 BEFORE merging LoRA adapters (document why: merging into 4-bit produces lossy garbage)
+      - Merged model produces identical outputs to adapter-attached model on 10 test prompts (within float tolerance)
+      - Model exported in HuggingFace format (safetensors) loadable by transformers library
+      - Optional: model converted to GGUF format and verified to load in llama.cpp with correct output
+      - Merged model size reported and compared to base model size (should be identical)
+      - Inference speed benchmarked: merged model vs adapter-attached model (merged should be equal or faster)
+    pitfalls:
+      - Merging QLoRA adapters without dequantizing the base model first produces incorrect weights—this is the #1 QLoRA deployment bug
+      - Not verifying merged model outputs match adapter-attached outputs means the merge may have introduced errors
+      - GGUF conversion can introduce quantization artifacts; always compare perplexity before and after conversion
+      - Forgetting to save the tokenizer alongside the model makes the export unusable
+      - Large models may require offloading during dequantization+merge if VRAM is insufficient
+    concepts:
+      - LoRA weight merging (W_merged = W_base + alpha/r × B × A)
+      - QLoRA dequantization before merge
+      - Model export formats (safetensors, GGUF)
+      - Verification of merged model correctness
+    skills:
+      - PEFT merge_and_unload
+      - Model dequantization
+      - Model format conversion
+      - Inference verification
+    deliverables:
+      - LoRA merger combining adapter weights with base model
+      - QLoRA dequantizer converting 4-bit base to float16 before merge
+      - Output verification script comparing merged vs adapter-attached model outputs
+      - HuggingFace safetensors exporter saving merged model and tokenizer
+      - Optional GGUF converter with post-conversion perplexity check
+      - Inference benchmark comparing merged model speed vs adapter-attached
+    estimated_hours: "8-10"
+
+```

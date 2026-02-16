@@ -1,0 +1,273 @@
+# AUDIT & FIX: apm-system
+
+## CRITIQUE
+- **Tail-Based Sampling Oversimplification**: Tail-based sampling requires buffering COMPLETE traces before making a keep/drop decision. This means ALL spans for a trace must be held in memory (or on disk) until the trace is considered 'complete' (timeout-based) or a sampling decision is made. The original AC says 'retains error traces' but doesn't address the fundamental challenge: how do you know a trace has errors if the error span arrives last? You need a global trace buffer with a completion timeout.
+- **Clock Skew**: Spans from different servers have different clock offsets. Parent spans can appear to END before child spans START due to clock skew. The original mentions this in pitfalls but provides no AC requiring clock skew detection or correction.
+- **Span Links**: Modern distributed tracing (OpenTelemetry) supports span links for asynchronous messaging patterns where parent-child nesting doesn't apply (e.g., message queue consumer processing a message produced by another trace). The original has no mention of this.
+- **M2 Service Map metrics**: 'Inter-service call metrics' is vague. Need to specify request count, error count, latency percentiles per edge, and the time window over which they're computed.
+- **M3 'Sampled traces include all spans'**: This is the AC but it contradicts head-based sampling where the decision is made BEFORE spans exist. For head-based sampling, the decision propagates via trace context. For tail-based, you need a buffer. The AC conflates both.
+- **M4 Percentile aggregation**: The pitfall correctly notes that 'percentile aggregation across services is not mathematically correct' (you can't average percentiles), but the AC doesn't specify using histograms or t-digest for correct cross-service percentile computation.
+- **M5 Monkey-patching risks**: Auto-instrumentation via monkey-patching is language-specific and can break in subtle ways. The AC should require a compatibility test verifying that instrumented libraries still pass their own test suites.
+- **Missing trace visualization**: No milestone covers trace waterfall visualization (Jaeger-style), which is the primary way engineers consume trace data.
+
+## FIXED YAML
+```yaml
+id: apm-system
+name: APM System
+description: >-
+  Application performance monitoring with distributed trace collection, service
+  dependency mapping, adaptive sampling with trace buffering, performance analytics,
+  and auto-instrumentation SDK.
+difficulty: advanced
+estimated_hours: "50-60"
+essence: >-
+  Distributed span ingestion with context propagation and parent-child relationships,
+  global trace buffering for tail-based sampling decisions, clock skew correction,
+  span link support for async messaging patterns, service dependency graph
+  construction, and SDK-based auto-instrumentation.
+why_important: >-
+  APM helps identify performance bottlenecks across microservices. Understanding
+  trace collection, sampling strategies (especially tail-based with trace buffering),
+  and service dependency mapping enables you to debug distributed system issues
+  that are invisible at the single-service level.
+learning_outcomes:
+  - Design span collection with trace assembly, clock skew detection, and span link support
+  - Build service dependency maps from trace data with per-edge metrics
+  - Implement head-based and tail-based sampling with global trace buffer for deferred decisions
+  - Build performance analytics with correct cross-service percentile calculation
+  - Develop auto-instrumentation SDK with context propagation across async boundaries
+  - Visualize traces as waterfall diagrams with span timing and dependency information
+skills:
+  - Distributed Tracing
+  - Span Collection & Storage
+  - Service Dependency Graphs
+  - Adaptive Sampling with Trace Buffering
+  - Clock Skew Correction
+  - Span Links (OpenTelemetry)
+  - Time-Series Data Processing
+  - Auto-Instrumentation
+  - Latency Percentile Analysis
+tags:
+  - advanced
+  - devops
+  - distributed
+  - distributed-systems
+  - errors
+  - observability
+  - performance
+  - transactions
+architecture_doc: architecture-docs/apm-system/index.md
+languages:
+  recommended:
+    - Go
+    - Python
+    - Java
+  also_possible:
+    - JavaScript
+resources:
+  - name: OpenTelemetry Tracing Documentation
+    url: https://opentelemetry.io/docs/concepts/signals/traces/
+    type: documentation
+  - name: Jaeger Distributed Tracing Platform
+    url: https://www.jaegertracing.io/
+    type: documentation
+  - name: Adaptive Sampling in Jaeger
+    url: https://medium.com/jaegertracing/adaptive-sampling-in-jaeger-50f336f4334
+    type: article
+  - name: OpenTelemetry Span Links
+    url: https://opentelemetry.io/docs/concepts/signals/traces/#span-links
+    type: documentation
+  - name: W3C Trace Context Specification
+    url: https://www.w3.org/TR/trace-context/
+    type: documentation
+prerequisites:
+  - type: project
+    id: distributed-tracing
+  - type: skill
+    name: HTTP and gRPC fundamentals
+  - type: skill
+    name: Concurrency and goroutines/threads
+milestones:
+  - id: apm-system-m1
+    name: Trace Collection with Clock Skew Correction
+    description: >-
+      Build a trace collector that ingests spans from multiple services, assembles
+      traces from parent-child relationships, handles late-arriving spans, supports
+      span links, and corrects clock skew.
+    acceptance_criteria:
+      - "Ingestion endpoint receives spans via HTTP and gRPC in OpenTelemetry format; acknowledgment is returned within 100ms p99"
+      - "Spans are assembled into complete traces using trace ID; parent-child relationships are reconstructed from parent_span_id"
+      - "Late-arriving spans (received after initial trace assembly) are attached to their trace within a configurable grace window (default 30 seconds)"
+      - "Traces with missing spans after the grace window are stored as incomplete with a 'partial' flag"
+      - "Span links (OpenTelemetry SpanLink) are parsed and stored for async messaging patterns where parent-child nesting is broken (e.g., queue producer -> consumer)"
+      - "Clock skew detection: when a child span starts before its parent span due to clock drift, the system detects the anomaly and adjusts timestamps using the parent-child constraint (child_start >= parent_start)"
+      - "System handles at least 1000 spans per second without data loss on a single node (verified via benchmark)"
+      - "Trace ID is indexed for O(1) retrieval of all spans in a trace; secondary indexes exist for service name, operation, and time range"
+    pitfalls:
+      - "Late-arriving spans: if the grace window is too short, distributed traces with high-latency services lose their last spans; too long wastes memory"
+      - "Clock skew correction can be wrong if the parent and child are on the same host but the child genuinely starts before the parent (e.g., event-driven)—only correct when services are on different hosts"
+      - "Memory grows unbounded with incomplete traces waiting for missing spans—implement trace eviction after the grace window"
+      - "Span links are not parent-child: they reference related spans without implying timing dependency—don't include linked spans in the critical path calculation"
+    concepts:
+      - Span and trace ID propagation
+      - Parent-child span relationship assembly
+      - Span links for async messaging
+      - Clock skew detection and correction
+      - Grace window for late-arriving spans
+    skills:
+      - Protocol buffer / OTLP parsing
+      - In-memory trace assembly
+      - Clock skew heuristics
+      - Index design for trace storage
+    deliverables:
+      - "OTLP-compatible ingestion endpoint (HTTP and gRPC) with sub-100ms acknowledgment"
+      - "Trace assembler reconstructing complete traces from individual spans with grace window"
+      - "Span link parser storing cross-trace references for async patterns"
+      - "Clock skew detector and corrector using parent-child timing constraints"
+      - "Trace storage with primary (trace_id) and secondary (service, operation, time) indexes"
+    estimated_hours: "12-14"
+
+  - id: apm-system-m2
+    name: Service Map & Trace Visualization
+    description: >-
+      Build a service dependency map from trace data with per-edge metrics,
+      and a trace waterfall visualization.
+    acceptance_criteria:
+      - "Service dependency graph is constructed from parent-child span relationships where parent.service != child.service"
+      - "Per-edge metrics are computed over configurable time windows (default 5 minutes): request count, error count, error rate, and latency percentiles (p50, p95, p99)"
+      - "Same-service spans (internal function calls) are excluded from the service map edges; only cross-service calls are shown"
+      - "Topology changes (new services, removed dependencies) are reflected within one refresh interval"
+      - "Trace waterfall visualization renders individual traces as a timeline showing each span's start time, duration, service, operation, and parent-child nesting"
+      - "Waterfall view highlights spans with errors (red) and slow spans exceeding a configurable threshold (orange)"
+      - "Span links are rendered as dashed lines in the waterfall view connecting related spans across traces"
+    pitfalls:
+      - "Async calls via message queues appear as separate traces unless span links connect them—use span links for the service map"
+      - "High-cardinality operations (e.g., per-URL-path) bloat the service map—aggregate by service, not by operation, for the top-level map"
+      - "Per-edge percentile computation using averaged percentiles is mathematically incorrect—use merged histograms or t-digest for correct percentiles"
+      - "Clock skew causes waterfall timeline to show child spans starting before parent spans—apply clock skew correction before rendering"
+    concepts:
+      - Directed graph for service topology
+      - Per-edge metric aggregation
+      - Waterfall trace visualization
+      - Correct percentile computation across services
+    skills:
+      - Graph construction and traversal
+      - Time-windowed metric aggregation
+      - Visualization data formatting
+      - Histogram merging for percentiles
+    deliverables:
+      - "Service dependency extractor building directed graph from cross-service span relationships"
+      - "Per-edge metric aggregator computing request count, error rate, and latency percentiles using merged histograms"
+      - "Service map API returning graph with nodes (services) and edges (dependencies) with metrics"
+      - "Trace waterfall renderer displaying span timeline with nesting, errors, and span links"
+    estimated_hours: "10-12"
+
+  - id: apm-system-m3
+    name: Trace Sampling with Global Trace Buffer
+    description: >-
+      Implement head-based and tail-based sampling. Tail-based sampling requires
+      a global trace buffer to hold complete traces before making keep/drop decisions.
+    acceptance_criteria:
+      - "Head-based sampling: probabilistic keep/drop decision at trace creation using trace-ID-based deterministic hashing so all spans in a trace get the same decision"
+      - "Tail-based sampling: all spans for a trace are buffered in memory until the trace is considered complete (no new spans received for configurable timeout, default 30s)"
+      - "Tail-based sampling decisions are made on complete traces: retain traces with errors (any span with error status), high latency (total duration > configurable threshold), or matching custom criteria"
+      - "Tail-based buffer has a configurable maximum size (by trace count and memory usage); when the buffer is full, oldest incomplete traces are force-evaluated and evicted"
+      - "Sampling rates are configurable per service; high-traffic services can be sampled at lower rates"
+      - "Head-based and tail-based sampling can be combined: head-based reduces volume before tail-based evaluates the survivors"
+      - "Sampling decision is recorded in trace metadata so downstream consumers know whether a trace was sampled or force-kept"
+    pitfalls:
+      - "Tail-based sampling requires ALL spans to be buffered before deciding—this is memory-intensive for high-throughput systems. Budget memory carefully."
+      - "Trace 'completion' is heuristic: there's no signal that says 'this trace is done.' You must use a timeout, which means fast traces are buffered unnecessarily."
+      - "Head-based sampling loses interesting traces (errors, high latency) because the decision is made before the outcome is known—combine with tail-based for important traces"
+      - "Consistent sampling using trace-ID hash: if you hash the trace ID, ALL services must use the same hash function or span decisions will disagree"
+      - "Buffer eviction under pressure: force-evaluating incomplete traces may keep uninteresting partial traces and discard interesting complete ones that arrived late"
+    concepts:
+      - Head-based vs tail-based sampling
+      - Global trace buffer for deferred decisions
+      - Consistent trace-ID-based hashing
+      - Buffer pressure management
+    skills:
+      - Probabilistic sampling implementation
+      - Memory-bounded buffer design
+      - Trace completion heuristics
+      - Hash function selection for consistency
+    deliverables:
+      - "Head-based sampler with trace-ID deterministic hash for consistent per-trace decisions"
+      - "Global trace buffer holding complete traces for tail-based evaluation"
+      - "Tail-based sampler evaluating completed traces on error status, latency threshold, and custom criteria"
+      - "Buffer pressure manager evicting oldest incomplete traces when capacity is exceeded"
+      - "Combined sampling pipeline: head-based -> buffer -> tail-based evaluation"
+    estimated_hours: "12-14"
+
+  - id: apm-system-m4
+    name: Performance Analytics & Anomaly Detection
+    description: >-
+      Build performance analytics with correct percentile computation using
+      histograms and anomaly detection using statistical baselines.
+    acceptance_criteria:
+      - "Latency percentiles (p50, p95, p99) are calculated per service and per endpoint using HDR histogram or t-digest, NOT by averaging percentiles"
+      - "Anomaly detection uses statistical methods: flag metrics where current value deviates by more than configurable standard deviations (default 3) from the rolling baseline"
+      - "Rolling baseline is computed from the same time window in previous periods (e.g., same hour last week) to account for cyclical patterns"
+      - "Performance regression alerts fire when latency p95 exceeds the baseline by a configurable factor for a sustained period (default 5 minutes)"
+      - "Historical comparison view shows current period vs previous period (e.g., this week vs last week) for trend analysis"
+      - "Percentile calculations handle sparse data gracefully: endpoints with fewer than configurable minimum samples (default 10) are excluded from anomaly detection to avoid false positives"
+    pitfalls:
+      - "Averaging percentiles across services or time windows is mathematically WRONG—always merge histograms or use t-digest for correct computation"
+      - "False positive alerts during deployments: latency spikes during deployment are expected—integrate with deployment events to suppress alerts during known deploy windows"
+      - "Cyclical traffic patterns (low at night, high during day) cause false anomalies if baseline doesn't account for time-of-day—use same-period-previous-week baselines"
+      - "Sparse data: a single slow request to a rarely-called endpoint triggers anomaly detection—require minimum sample count"
+    concepts:
+      - Correct percentile aggregation (histogram merge, t-digest)
+      - Statistical anomaly detection (z-score, moving average)
+      - Baseline computation with cyclical patterns
+      - Deployment-aware alerting
+    skills:
+      - Statistical analysis
+      - HDR histogram or t-digest implementation
+      - Time-series baseline computation
+      - Anomaly detection algorithms
+    deliverables:
+      - "Percentile calculator using HDR histogram or t-digest for mathematically correct per-service/endpoint percentiles"
+      - "Anomaly detector comparing current metrics against rolling cyclical baselines"
+      - "Performance regression alerter firing on sustained p95 deviation from baseline"
+      - "Historical comparison API returning current vs previous period metrics for trend analysis"
+    estimated_hours: "8-10"
+
+  - id: apm-system-m5
+    name: APM SDK & Auto-Instrumentation
+    description: >-
+      Build an APM SDK that auto-instruments HTTP clients, database drivers,
+      and web framework middleware with W3C Trace Context propagation.
+    acceptance_criteria:
+      - "SDK automatically instruments outgoing HTTP requests: injects W3C Trace Context headers (traceparent, tracestate) and creates a child span with request/response metadata"
+      - "Database query spans capture operation type (SELECT/INSERT/UPDATE/DELETE), table name, and execution time; SQL query text is included with parameter values sanitized (replaced with '?')"
+      - "Framework middleware for at least one framework (Express, Flask, or Gin) creates a root span for each incoming request with HTTP method, path, status code, and duration"
+      - "Context propagation works across async boundaries: async/await in Python, goroutines in Go, CompletableFuture in Java—verified with a test creating 50 concurrent async operations with distinct trace contexts"
+      - "Instrumented libraries pass their own test suites: auto-instrumentation does not break the original behavior of HTTP clients, database drivers, or frameworks"
+      - "Performance overhead of instrumentation is measured: latency overhead < 1ms per instrumented operation and memory overhead < 10MB for the SDK (verified via benchmark)"
+    pitfalls:
+      - "Monkey-patching can break original library behavior in subtle ways—always run the library's own test suite with instrumentation enabled"
+      - "Context loss in async code: Python threading.local doesn't propagate to async tasks (use contextvars); Go context.Context must be explicitly passed; Java MDC doesn't propagate to CompletableFuture threads"
+      - "Performance overhead: tracing every database query adds latency—support configurable sampling at the SDK level"
+      - "SQL parameter sanitization: failing to sanitize means PII and secrets appear in trace data—always replace parameter values"
+      - "W3C Trace Context header parsing: malformed traceparent headers should be handled gracefully (start a new trace) rather than crashing"
+    concepts:
+      - Monkey-patching and library wrapping
+      - W3C Trace Context standard
+      - Context propagation across async boundaries
+      - Auto-instrumentation safety and compatibility
+    skills:
+      - Language-specific instrumentation techniques
+      - W3C Trace Context header parsing/injection
+      - Async context propagation
+      - Performance benchmarking
+    deliverables:
+      - "HTTP client instrumentation injecting W3C Trace Context and capturing request/response spans"
+      - "Database driver wrapper creating spans with sanitized query text and execution time"
+      - "Framework middleware creating root spans for incoming HTTP requests"
+      - "Async context propagation bridge verified with concurrent async test"
+      - "Compatibility test running instrumented library's own test suite"
+      - "Performance benchmark measuring latency and memory overhead of instrumentation"
+    estimated_hours: "10-12"
+
+```

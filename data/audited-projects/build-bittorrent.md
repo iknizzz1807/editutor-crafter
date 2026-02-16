@@ -1,0 +1,247 @@
+# AUDIT & FIX: build-bittorrent
+
+## CRITIQUE
+- **Audit Finding #1 is PARTIALLY VALID but ALREADY ADDRESSED**: Milestone 3 explicitly mentions 'Choking and unchoking state transitions' in AC #5, and the deliverables include a peer state machine tracking am_choking, am_interested, peer_choking, and peer_interested flags. However, the initialization of these states (the client must send 'interested' before it can be unchoked) is not explicitly sequenced in the AC. The state machine initial values (choked=true, interested=false per BEP 3) should be stated.
+- **Audit Finding #2 is PARTIALLY VALID but ALREADY ADDRESSED**: Milestone 3 deliverables include 'Request pipelining that sends multiple outstanding block requests to maximize download throughput.' However, the AC doesn't require pipelining — it only requires correct transfer of 16KB blocks. The pipelining should be elevated to an AC.
+- **M1 time estimate (8-12 hours) is excessive for bencode parsing**: Bencode is one of the simplest serialization formats. 4-6 hours is more realistic. The 8-12 hours should be redistributed.
+- **M2 missing UDP tracker support**: The project mentions 'UDP protocols' in learning outcomes but M2 only covers HTTP tracker. UDP tracker (BEP 15) is significantly more complex with its own connection/announce protocol. Should be explicitly scoped or deferred.
+- **M3 AC mentions '16KB blocks' without context**: The 16KB (2^14 bytes) default block size is a de facto standard, not a protocol requirement. The AC should specify this is the conventional request size, not a protocol-mandated size.
+- **M4 Endgame mode appears in deliverables but not AC**: Endgame mode is listed as a deliverable but has no corresponding acceptance criterion. Either add an AC or remove the deliverable.
+- **Missing multi-file torrent support**: The project only mentions single-file torrents. Multi-file torrents require mapping piece boundaries across file boundaries, which is a significant implementation challenge.
+- **No mention of keep-alive messages**: The protocol requires keep-alive messages (length=0) to be sent every 2 minutes to prevent connection timeout. Missing from AC.
+- **Security concern**: No mention of validating peer_id from handshake against tracker-provided peer_id. This is a basic protocol verification step.
+- **Missing 'have' message handling**: After downloading and verifying a piece, the client must broadcast 'have' messages to all connected peers. This is missing from the AC.
+
+## FIXED YAML
+```yaml
+id: build-bittorrent
+name: Build Your Own BitTorrent Client
+description: P2P file sharing client implementing the BitTorrent protocol
+difficulty: expert
+estimated_hours: "55-85"
+essence: >
+  Decentralized file distribution through bencode metadata parsing, binary peer wire
+  protocol implementation, and cryptographic piece verification with concurrent TCP
+  connection management across an untrusted swarm.
+why_important: >
+  Building this teaches distributed systems fundamentals, binary protocol implementation,
+  and concurrent network programming — skills directly applicable to cloud infrastructure,
+  microservices, and real-time data synchronization systems used in production environments.
+learning_outcomes:
+  - Implement bencode parsing and serialization for torrent metadata extraction
+  - Design concurrent peer connection management with TCP socket handling
+  - Build binary wire protocol parsers for BitTorrent message framing
+  - Implement piece selection strategies using rarest-first algorithm
+  - Create SHA-1 hash verification for data integrity across distributed sources
+  - Design request pipelining and choking algorithms for bandwidth optimization
+  - Implement tracker communication using HTTP protocol (and optionally UDP BEP 15)
+  - Build concurrent piece downloading with proper synchronization and error handling
+  - Handle multi-file torrent piece-to-file boundary mapping
+skills:
+  - Binary Protocol Design
+  - Concurrent TCP Networking
+  - Cryptographic Hashing
+  - P2P Architecture
+  - State Machine Implementation
+  - Distributed Systems
+  - Bencode Parsing
+  - Bandwidth Management
+tags:
+  - build-from-scratch
+  - expert
+  - go
+  - peer-to-peer
+  - pieces
+  - python
+  - rust
+  - swarm
+  - torrent
+architecture_doc: architecture-docs/build-bittorrent/index.md
+languages:
+  recommended:
+    - Go
+    - Rust
+    - Python
+  also_possible:
+    - JavaScript
+    - Java
+resources:
+  - type: specification
+    name: "BitTorrent Protocol (BEP 3)"
+    url: "https://www.bittorrent.org/beps/bep_0003.html"
+  - type: tutorial
+    name: "Building a BitTorrent Client"
+    url: "https://blog.jse.li/posts/torrent/"
+  - type: tool
+    name: "CodeCrafters BitTorrent"
+    url: "https://app.codecrafters.io/courses/bittorrent/overview"
+prerequisites:
+  - type: skill
+    name: Networking (TCP/UDP)
+  - type: skill
+    name: Concurrency
+  - type: skill
+    name: File I/O
+  - type: skill
+    name: Binary data manipulation
+milestones:
+  - id: build-bittorrent-m1
+    name: Torrent File Parsing
+    description: >
+      Parse .torrent files by implementing a bencode decoder, extract torrent
+      metadata, and compute the info hash.
+    acceptance_criteria:
+      - Bencode decoder correctly parses byte strings, integers, lists, and nested dictionaries from raw bytes, including edge cases (empty strings, negative integers, leading zeros rejection)
+      - Bencode encoder correctly serializes data structures back to bencoded bytes, producing byte-identical output for round-trip encoding
+      - Announce URL is extracted from the torrent metainfo and validated as a well-formed HTTP or UDP tracker URL
+      - File info including name, total length (single-file) or file list with paths and lengths (multi-file), and piece length is correctly extracted from the info dictionary
+      - Info hash is a 20-byte SHA-1 digest computed from the exact bencoded bytes of the info dictionary (not from re-encoded data)
+      - Piece hashes are extracted as a list of 20-byte SHA-1 digests from the concatenated 'pieces' field in the info dictionary
+    pitfalls:
+      - Computing info hash from re-encoded info dict instead of original bytes will produce wrong hash if encoder ordering differs
+      - Bencode integers with leading zeros (except '0' itself) are invalid per spec and must be rejected
+      - The 'pieces' field is a raw byte string, not a bencoded list; it must be split into 20-byte chunks
+      - Binary strings vs UTF-8 text strings are both encoded the same way in bencode; the 'pieces' field is binary data, not text
+      - Multi-file torrents have a 'files' key instead of 'length' in the info dict; both formats must be handled
+    concepts:
+      - Bencode format specification
+      - Cryptographic hashing (SHA-1)
+      - Torrent metadata structure
+      - Single-file vs multi-file torrent formats
+    skills:
+      - Binary data parsing
+      - Data structure serialization and deserialization
+      - Cryptographic hashing (SHA-1)
+      - File I/O operations
+    deliverables:
+      - Bencode decoder supporting all four types with edge case handling
+      - Bencode encoder for round-trip serialization
+      - Metainfo extraction reading announce URL, info dictionary, and file metadata
+      - Info hash calculation from the original bencoded info dictionary bytes
+      - Piece hash list extraction from the concatenated pieces field
+    estimated_hours: "5-8"
+
+  - id: build-bittorrent-m2
+    name: Tracker Communication
+    description: >
+      Communicate with the HTTP tracker to announce the client and
+      receive a list of peers in the swarm.
+    acceptance_criteria:
+      - HTTP tracker announce request includes all required parameters: info_hash (20 bytes URL-encoded), peer_id (20 bytes), port, uploaded, downloaded, left, compact=1, and event
+      - info_hash and peer_id are correctly percent-encoded as raw bytes (not hex string) in the query string
+      - Compact peer list response is parsed into a list of (IP address, port) pairs by reading 6-byte entries (4 bytes IP + 2 bytes port big-endian)
+      - Non-compact (dictionary) peer list format is also handled as a fallback when compact response is not provided
+      - Tracker error responses (failure reason key) are detected and reported to the user
+      - Client re-announces to the tracker at the interval specified in the tracker response, sending updated uploaded/downloaded/left counts
+      - The 'started', 'completed', and 'stopped' event parameters are sent at the appropriate lifecycle points
+    pitfalls:
+      - URL-encoding the info_hash as a hex string instead of raw percent-encoded bytes is the most common bug; each of the 20 bytes must be individually percent-encoded
+      - Tracker may return compact peers even without compact=1; always try to parse compact format first
+      - Tracker interval must be respected; hammering the tracker causes IP bans
+      - peer_id should follow a convention (e.g., -XX0001- prefix) for identification by other clients
+      - Some trackers require the 'event=started' parameter only on the first announce
+    concepts:
+      - HTTP GET request construction
+      - URL percent-encoding of binary data
+      - Tracker announce/scrape protocol
+      - Peer discovery mechanisms
+    skills:
+      - HTTP client implementation
+      - URL encoding of binary data
+      - Network protocol design
+      - Byte array manipulation and parsing
+    deliverables:
+      - HTTP GET announce request with all required parameters correctly encoded
+      - Compact and non-compact peer list parser
+      - Tracker response handler parsing interval, complete, incomplete, and peers fields
+      - Periodic re-announce with updated progress statistics at tracker-specified interval
+      - Event lifecycle management sending started/completed/stopped events
+    estimated_hours: "6-10"
+
+  - id: build-bittorrent-m3
+    name: Peer Wire Protocol
+    description: >
+      Implement the BitTorrent peer wire protocol: handshake, message framing,
+      state machine, and block transfer with request pipelining.
+    acceptance_criteria:
+      - Handshake sends and receives the 68-byte message: 1 byte pstrlen (19), 19 bytes pstr ('BitTorrent protocol'), 8 bytes reserved, 20 bytes info_hash, 20 bytes peer_id
+      - Handshake validation rejects peers whose info_hash does not match the expected torrent info hash
+      - Message framing correctly reads the 4-byte big-endian length prefix and 1-byte message ID for each peer message; length=0 is a keep-alive
+      - All core message types are implemented: keep-alive (len=0), choke (0), unchoke (1), interested (2), not-interested (3), have (4), bitfield (5), request (6), piece (7), cancel (8)
+      - Peer state machine initializes with am_choking=true, am_interested=false, peer_choking=true, peer_interested=false per BEP 3 specification
+      - Client sends 'interested' message after receiving bitfield and finding the peer has pieces we need; downloads only proceed after receiving 'unchoke'
+      - Request messages specify piece index, byte offset within piece, and block length (conventionally 2^14 = 16384 bytes)
+      - Request pipelining sends multiple outstanding block requests (5-10) per peer to maximize throughput on high-latency connections
+      - Keep-alive messages (length=0) are sent at least every 2 minutes to prevent connection timeout
+      - Partial TCP reads are handled correctly; messages may span multiple recv() calls and multiple messages may arrive in a single recv()
+    pitfalls:
+      - All multi-byte integers in the wire protocol are big-endian (network byte order); using native endianness causes silent corruption
+      - TCP is a stream protocol; a single recv() may contain partial messages or multiple messages; implement a proper framing buffer
+      - Blocking on a choked peer wastes a connection slot; must handle choke by stopping requests and resuming on unchoke
+      - Not sending keep-alive causes peers to disconnect after ~2 minutes of inactivity
+      - Request pipelining requires tracking outstanding requests; if peer chokes, all outstanding requests are implicitly dropped per spec
+      - Bitfield message must be the first message after handshake if sent; receiving it at any other time is a protocol error
+    concepts:
+      - Binary wire protocol framing
+      - Peer connection state machine
+      - TCP stream reassembly
+      - Request pipelining for throughput
+    skills:
+      - TCP socket programming
+      - Binary protocol implementation
+      - State machine design
+      - Concurrent connection handling
+      - Message serialization and deserialization
+    deliverables:
+      - TCP connection establishment and BitTorrent handshake with info hash verification
+      - Message parser/serializer for all peer protocol message types
+      - Peer state machine tracking choking and interest states for both local and remote sides
+      - Request pipelining sending configurable number of outstanding block requests per peer
+      - Keep-alive message sending on idle connections
+      - TCP stream framing buffer handling partial reads and message boundaries
+    estimated_hours: "15-22"
+
+  - id: build-bittorrent-m4
+    name: Piece Management, Assembly, and Seeding
+    description: >
+      Manage piece download scheduling, verify integrity via SHA-1, assemble
+      the output file(s), and seed completed pieces to other peers.
+    acceptance_criteria:
+      - Completed piece SHA-1 hash is verified against the expected hash from torrent metadata; corrupt pieces are discarded and re-requested from a different peer
+      - Rarest-first piece selection downloads pieces in order of ascending availability (fewest peers having the piece), with random tie-breaking to avoid swarm convergence
+      - After verifying a piece, a 'have' message is broadcast to all connected peers to update their view of our availability
+      - Completed pieces are written to the output file at the correct byte offset; for multi-file torrents, piece data is split across file boundaries correctly
+      - After all pieces are downloaded and verified, the complete file(s) match the expected total length and the concatenation of all piece hashes matches the torrent metadata
+      - Endgame mode is activated when few pieces remain: all remaining blocks are requested from all peers that have them, and cancel messages are sent when a block is received from another peer
+      - Seeding mode serves requested blocks to connected peers by reading from completed pieces on disk
+      - Client maintains concurrent connections to multiple peers (at least 5) and downloads different pieces from each
+      - Client reports uploaded byte count to tracker during re-announce
+    pitfalls:
+      - Hash verification must be performed on the complete piece, not individual blocks; partial pieces cannot be verified
+      - Race conditions in piece selection can cause multiple connections to download the same piece simultaneously; use a lock or atomic claim mechanism
+      - The last piece of a torrent may be smaller than piece_length; requests for the last piece must use the correct truncated size
+      - Multi-file torrent pieces span file boundaries; a single piece may contain data for multiple files
+      - Endgame mode without cancel messages wastes bandwidth as the same blocks arrive from multiple peers
+      - Memory usage grows if all in-progress pieces are held in memory simultaneously; consider limiting concurrent piece downloads
+    concepts:
+      - SHA-1 content verification
+      - Rarest-first scheduling algorithm
+      - Endgame mode optimization
+      - Multi-file piece-to-file mapping
+      - Concurrent download coordination
+    skills:
+      - Multi-threaded/async programming
+      - Data integrity verification
+      - Resource scheduling algorithms
+      - Concurrent data structure access with synchronization
+      - File I/O with offset-based writes
+    deliverables:
+      - Piece verification computing SHA-1 and comparing against expected hash, re-requesting on failure
+      - Rarest-first piece selection with availability tracking from bitfield and have messages
+      - Have message broadcasting after successful piece verification
+      - File assembly writing verified pieces at correct byte offsets, handling multi-file boundaries
+      - Endgame mode requesting remaining blocks from all available peers with cancel on completion
+      - Seeding capability serving piece data to requesting peers
+      - Concurrent multi-peer download manager with connection pooling
+    estimated_hours: "18-25"
+```

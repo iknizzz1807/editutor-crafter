@@ -1,0 +1,209 @@
+# AUDIT & FIX: hexdump
+
+## CRITIQUE
+- **Endianness conflation in M3**: AC 4 conflates display grouping (visual clustering of bytes) with endianness interpretation (byte-swap for multi-byte values). Standard `xxd` groups bytes visually but does NOT reorder them; standard `hexdump` without `-C` displays 2-byte little-endian words. The AC must clearly distinguish these two operations.
+- **stdin convention (M4 AC 4)**: Requiring a dash '-' for stdin deviates from POSIX convention where many tools (cat, hexdump, xxd) read stdin when no file argument is given. The dash convention is secondary.
+- **Missing validation**: No AC requires validating that the file exists or is readable before processing, which is a basic CLI correctness requirement.
+- **M3 default grouping**: Claiming 'default to 2-byte groups similar to xxd output format' is misleading. xxd default is 2-byte groups displayed in file order (big-endian visual), while hexdump default is 2-byte groups in little-endian interpretation. These are fundamentally different.
+- **Missing edge case**: No mention of handling empty files (0 bytes), which should produce no hex output but possibly just the final offset line.
+- **M1 AC 2**: '16 bytes per line' is the canonical format but should be stated as configurable later or at least acknowledged as a default.
+- **No mention of the canonical trailing offset line** that many hexdump tools print to indicate total file size.
+
+## FIXED YAML
+```yaml
+id: hexdump
+name: Hexdump Utility
+description: Binary file viewer with hex/ASCII display
+difficulty: beginner
+estimated_hours: "8-12"
+essence: >
+  Byte-level binary file reading with buffered I/O, hexadecimal and ASCII
+  formatting engines with configurable column alignment and grouping, address
+  offset calculation, and non-printable character mapping for visualizing raw
+  file data.
+why_important: >
+  Building a hexdump utility teaches low-level file handling and byte
+  manipulation patterns essential for systems programming, debugging, reverse
+  engineering, and understanding how data is actually stored and structured
+  in files.
+learning_outcomes:
+  - Implement binary file reading with buffered I/O for efficient byte-level access
+  - Design formatted output systems with aligned columns and configurable grouping
+  - Build byte-to-hexadecimal conversion and ASCII mapping functions
+  - Understand the difference between display grouping and endianness interpretation
+  - Create command-line argument parsing for offset, length, and format options
+  - Debug binary data representation issues across different file types
+  - Implement character encoding handling for non-printable bytes in ASCII columns
+skills:
+  - Binary File I/O
+  - Hexadecimal Formatting
+  - Bit Manipulation
+  - CLI Argument Parsing
+  - Buffered Reading
+  - Character Encoding
+  - Output Alignment
+tags:
+  - beginner-friendly
+  - binary
+  - c
+  - formatting
+  - inspection
+  - python
+  - rust
+architecture_doc: architecture-docs/hexdump/index.md
+languages:
+  recommended:
+    - C
+    - Python
+    - Rust
+  also_possible:
+    - Go
+    - JavaScript
+resources:
+  - name: "Let's Build a Hexdump Utility in C"
+    url: "http://www.dmulholl.com/blog/lets-build-a-hexdump-utility.html"
+    type: tutorial
+  - name: Hexdump man page
+    url: "https://man7.org/linux/man-pages/man1/hexdump.1.html"
+    type: reference
+  - name: xxd man page
+    url: "https://linux.die.net/man/1/xxd"
+    type: reference
+prerequisites:
+  - type: skill
+    name: File I/O
+  - type: skill
+    name: Binary vs text mode
+  - type: skill
+    name: Formatted output
+milestones:
+  - id: hexdump-m1
+    name: Basic Hex Output
+    description: Read binary file and output bytes in hexadecimal format with offset addresses.
+    estimated_hours: "2-3"
+    concepts:
+      - Binary file I/O
+      - Hexadecimal formatting
+      - Chunked/streamed reading
+    skills:
+      - Binary file handling
+      - Hexadecimal number formatting
+      - Buffered file reading
+      - Byte-level data manipulation
+    acceptance_criteria:
+      - Open file in binary mode (not text mode) to preserve exact byte content
+      - Read file in fixed-size chunks (e.g., 4096 bytes) for streaming; never load entire file into memory
+      - Output 16 bytes per line as space-separated two-digit uppercase hex values
+      - Show file offset in hexadecimal (minimum 8 hex digits, zero-padded) at the start of each line
+      - Print a final offset line after all data to indicate total file size
+      - Handle empty files gracefully (output only the final offset line showing 00000000)
+      - Validate that the input file exists and is readable; print a meaningful error to stderr if not
+    pitfalls:
+      - Opening file in text mode mangles binary data (e.g., CRLF conversion on Windows)
+      - Last chunk will likely have fewer than 16 bytes; must handle partial lines
+      - Loading entire large files into memory causes OOM; always stream
+      - Forgetting to zero-pad hex offset or byte values (e.g., '0A' not 'A')
+    deliverables:
+      - File reading loop processing fixed-size chunks in binary mode
+      - Byte-to-hex conversion formatting each byte as two-digit hexadecimal
+      - Offset display showing file position at start of each output line
+      - Streaming architecture that handles arbitrarily large files
+
+  - id: hexdump-m2
+    name: ASCII Column
+    description: Add printable ASCII representation alongside hex output.
+    estimated_hours: "2-3"
+    concepts:
+      - ASCII encoding
+      - String formatting
+      - Column alignment
+    skills:
+      - ASCII character encoding
+      - Control character filtering
+      - String formatting and padding
+      - Multi-column text alignment
+    acceptance_criteria:
+      - Display printable ASCII characters (0x20-0x7E) in a right-side column delimited by pipe characters
+      - Replace non-printable bytes (< 0x20 or > 0x7E) with '.' to prevent terminal corruption
+      - On partial final lines, pad the hex section with spaces so the ASCII column remains vertically aligned
+      - Verify alignment by running against files of sizes 0, 1, 15, 16, 17, and 32 bytes
+    pitfalls:
+      - Printing control characters (newlines, tabs, escape codes) corrupts terminal output
+      - Alignment breaks on the last line if you forget to pad missing hex bytes with spaces
+      - High bytes (0x80-0xFF) are not printable ASCII; they must be replaced with '.'
+      - Unicode terminals may render some bytes differently; stick to strict 0x20-0x7E range
+    deliverables:
+      - Printable character display showing ASCII representation of each byte
+      - Non-printable character replacement using '.' for all bytes outside 0x20-0x7E
+      - Padding logic for partial lines ensuring ASCII column alignment
+      - Combined line formatting: offset | hex bytes | ASCII column
+
+  - id: hexdump-m3
+    name: Grouped Output
+    description: Group hex bytes for readability with configurable group sizes.
+    estimated_hours: "2-3"
+    concepts:
+      - Visual byte grouping vs endianness interpretation
+      - Flexible formatting
+      - Boundary handling
+    skills:
+      - Byte grouping and chunking
+      - Endianness awareness
+      - Flexible output formatting
+      - Boundary condition handling
+    acceptance_criteria:
+      - "-g N" flag sets display group size; valid values are 1, 2, 4, or 8 bytes; reject invalid values with error
+      - Default group size is 1 (space between every byte, matching hexdump -C canonical format)
+      - Within a group, hex digits are concatenated without spaces; groups are separated by a single space
+      - "-e" flag enables endian-swap interpretation mode, displaying each group's bytes in reversed (little-endian) order; this is OFF by default
+      - Clearly document that without -e, grouping is purely visual (bytes in file order), and with -e, byte order within each group is reversed for value interpretation
+      - Handle end-of-file where the final group may be incomplete; pad with spaces to maintain alignment
+      - Verify output against xxd (visual grouping) and hexdump (LE interpretation) for correctness
+    pitfalls:
+      - Confusing visual grouping (xxd-style, bytes in file order) with endianness interpretation (hexdump-style, bytes reversed within group)
+      - Incomplete final group at EOF needs space-padding to maintain column alignment
+      - Different tools use different defaults; be explicit about your default
+      - Group size must evenly relate to the line width (16 bytes) or padding logic gets complex
+    deliverables:
+      - Group size option (-g) with validation of allowed values
+      - Visual grouping mode concatenating hex digits within groups in file order
+      - Endian-swap interpretation mode (-e) reversing byte order within groups
+      - Proper padding for incomplete final groups
+
+  - id: hexdump-m4
+    name: CLI Options and stdin Support
+    description: Add command-line options for offset, length, output format, and stdin reading.
+    estimated_hours: "2-3"
+    concepts:
+      - CLI design
+      - Standard input handling
+      - Argument parsing
+      - POSIX conventions
+    skills:
+      - Command-line argument parsing
+      - File seeking and positioning
+      - Stream processing
+      - Standard input/output handling
+    acceptance_criteria:
+      - "-s OFFSET" / "--skip OFFSET" seeks to specified byte offset before starting output; offset accepts hex (0x prefix) and decimal
+      - "-n LENGTH" / "--length LENGTH" limits output to exactly LENGTH bytes from the starting position
+      - "-C" flag produces canonical hex+ASCII format (matching standard hexdump -C output)
+      - Read from stdin when no file path argument is provided (POSIX convention); also accept '-' as explicit stdin indicator
+      - When reading from stdin with -s, read and discard bytes (cannot seek on pipes); document this behavior
+      - stdin must be opened in binary mode to avoid encoding translation
+      - Print usage/help message on --help or invalid arguments
+      - Exit code 0 on success, non-zero on error (file not found, invalid arguments)
+    pitfalls:
+      - Cannot seek on stdin/pipes; must read and discard bytes to simulate skip
+      - Length limit interacts with offset (length counts from after the skip, not from file start)
+      - Binary mode is required for stdin on Windows (sys.stdin.buffer in Python)
+      - Hex offset parsing (0x prefix) must be handled for -s flag
+      - Combining -n with streaming requires counting bytes output, not bytes read
+    deliverables:
+      - Argument parser supporting all flags with validation and help text
+      - Skip/offset implementation with seek for files and read-discard for stdin
+      - Length limiting with accurate byte counting
+      - Stdin support following POSIX conventions (no file arg = read stdin)
+      - Canonical output format (-C) matching standard hexdump -C
+
+```

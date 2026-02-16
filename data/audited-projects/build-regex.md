@@ -1,0 +1,473 @@
+# AUDIT & FIX: build-regex
+
+## CRITIQUE
+- The project claims 'expert' difficulty but Milestones 1-3 are solidly intermediate-level work. The real expert-level challenge (capture groups, backreferences, Unicode) is entirely absent.
+- Milestone 1 AC for character classes ([a-z]) is listed but never carried through to the NFA construction or simulation milestones, creating a dangling feature.
+- Milestone 3 claims 'Simulation handles patterns with nested quantifiers without exponential blowup' — this is true for NFA simulation (Thompson's approach) but should explicitly state this is because parallel state tracking is O(n*m) not O(2^m). The AC is not measurable without defining what 'exponential blowup' means in terms of a time/input bound.
+- Milestone 4 AC 'DFA execution processes each input character in constant time' is correct, but 'DFA minimization reduces state count without changing accepted language' needs Myhill-Nerode or Hopcroft's algorithm specified — it's not trivial.
+- Missing: No milestone for capture groups, which fundamentally change the NFA simulation algorithm (need tagged transitions or augmented NFA). This is the most important practical feature.
+- Missing: No discussion of catastrophic backtracking. Even though Thompson NFA avoids it, the educational value of understanding WHY backtracking engines (Perl, Python, Java) suffer from it is critical.
+- Tag 'game-dev' is irrelevant and misleading.
+- Milestone 2 pitfall 'Memory leaks from circular refs' is not a real concern in Thompson construction — NFA states form a DAG per fragment. The real pitfall is incorrect epsilon wiring for quantifier fragments.
+- No mention of anchoring (^, $), which changes match semantics fundamentally.
+- Resources only list 2 items; should include Thompson's 1968 paper or at minimum Russ Cox's full series.
+
+## FIXED YAML
+```yaml
+id: build-regex
+name: Build Your Own Regex Engine
+description: >-
+  Implement a regex engine from scratch: parser to AST, Thompson's construction
+  to NFA, NFA simulation, subset construction to DFA, and capture group support.
+difficulty: expert
+estimated_hours: "50-70"
+essence: >-
+  Converting regular expression patterns into executable state machines through
+  Thompson's NFA construction with epsilon transitions, parallel NFA simulation
+  for guaranteed linear-time matching, powerset (subset) construction for DFA
+  conversion, and tagged NFA transitions for capture group extraction.
+why_important: >-
+  Building a regex engine teaches compiler front-end fundamentals (lexing,
+  parsing, AST), automata theory in practice, and the critical difference
+  between NFA simulation (linear-time) and backtracking (exponential worst-case)
+  — knowledge directly applicable to building parsers, lexers, and understanding
+  why production regex libraries behave as they do.
+learning_outcomes:
+  - Implement recursive descent parsing to convert regex syntax into an AST with correct operator precedence
+  - Design Thompson's construction to transform AST nodes into epsilon-NFA fragments
+  - Build NFA simulation using parallel state tracking for O(n*m) matching guarantees
+  - Implement subset construction to convert NFA to DFA with state minimization
+  - Understand catastrophic backtracking in backtracking engines and why NFA simulation avoids it
+  - Implement capture groups using tagged NFA transitions or submatch extraction
+  - Handle anchoring (^, $), character classes, and escape sequences
+  - Measure and compare time complexity between NFA simulation and DFA execution
+skills:
+  - Automata Theory
+  - Compiler Construction (Parsing)
+  - State Machine Design
+  - Algorithm Optimization
+  - Graph Algorithms
+  - Recursive Parsing
+  - Time Complexity Analysis
+  - Pattern Matching
+tags:
+  - automata
+  - build-from-scratch
+  - c
+  - dfa
+  - expert
+  - go
+  - nfa
+  - pattern-matching
+  - rust
+  - thompson-construction
+architecture_doc: architecture-docs/build-regex/index.md
+languages:
+  recommended:
+    - C
+    - Rust
+    - Go
+  also_possible:
+    - Python
+resources:
+  - type: article
+    name: "Regular Expression Matching Can Be Simple And Fast (Russ Cox)"
+    url: https://swtch.com/~rsc/regexp/regexp1.html
+  - type: article
+    name: "Regular Expression Matching: the Virtual Machine Approach (Russ Cox)"
+    url: https://swtch.com/~rsc/regexp/regexp2.html
+  - type: article
+    name: "Regular Expression Matching in the Wild (Russ Cox)"
+    url: https://swtch.com/~rsc/regexp/regexp3.html
+  - type: book
+    name: "Introduction to Automata Theory, Languages, and Computation"
+    url: https://www.amazon.com/Introduction-Automata-Theory-Languages-Computation/dp/0321455363
+prerequisites:
+  - type: skill
+    name: Basic automata theory (DFA/NFA concepts)
+  - type: skill
+    name: Graph algorithms (BFS/DFS)
+  - type: skill
+    name: Recursion and recursive descent parsing
+  - type: skill
+    name: Proficiency in C, Rust, or Go
+milestones:
+  - id: build-regex-m1
+    name: "Regex Parser"
+    description: >-
+      Parse a regex pattern string into an Abstract Syntax Tree (AST) with
+      correct operator precedence: quantifiers bind tightest, then
+      concatenation, then alternation.
+    acceptance_criteria:
+      - >-
+        Parser correctly handles literal characters, producing Literal AST
+        nodes for each non-special character.
+      - >-
+        Alternation operator '|' produces an Alt(left, right) AST node
+        splitting the pattern into two alternative branches.
+      - >-
+        Concatenation is implicit between adjacent elements and produces
+        Concat(left, right) AST nodes with correct left-to-right associativity.
+      - >-
+        Quantifiers *, +, and ? produce Repeat AST nodes bound to the
+        immediately preceding element, with correct greedy semantics.
+      - >-
+        Parenthesized groups produce Group AST nodes that override default
+        precedence and are indexed sequentially for capture group numbering.
+      - >-
+        Character classes [a-z], [^abc], [0-9A-F] are parsed into CharClass
+        AST nodes containing the set of matching characters with range
+        expansion.
+      - >-
+        Escape sequences (\d, \w, \s, \., \\, etc.) are parsed into
+        the correct literal or character class AST node.
+      - >-
+        Anchors ^ and $ produce Anchor AST nodes for start-of-line and
+        end-of-line assertions.
+      - >-
+        Parser reports descriptive error messages for malformed patterns
+        (e.g., unbalanced parentheses, dangling quantifier, empty group).
+    pitfalls:
+      - >-
+        Operator precedence errors: quantifiers must bind tighter than
+        concatenation, which binds tighter than alternation. a|bc* must
+        parse as a|(b(c*)), not ((a|b)c)*.
+      - >-
+        Forgetting to handle escape characters before checking for
+        operators causes '\*' to be treated as a quantifier instead
+        of a literal asterisk.
+      - >-
+        Empty alternation branches (e.g., 'a|' or '|b') must produce
+        an epsilon (empty match) branch, not a parse error.
+      - >-
+        Character class parsing must handle ']' as a literal if it
+        appears first, and '-' as literal at start/end of class.
+    concepts:
+      - Recursive descent parsing
+      - AST construction
+      - Regex syntax and operator precedence
+      - Character classes and escape sequences
+    skills:
+      - Recursive descent parsing
+      - Abstract syntax tree design
+      - String tokenization
+      - Grammar rule implementation
+    deliverables:
+      - >-
+        Tokenizer splitting regex pattern into operator tokens, literals,
+        character classes, and escape sequences.
+      - >-
+        Recursive descent parser producing an AST with correct precedence:
+        quantifiers > concatenation > alternation.
+      - >-
+        AST node types: Literal, Concat, Alt, Repeat (*, +, ?), Group,
+        CharClass, Anchor, Epsilon.
+      - >-
+        Error reporting with position information for malformed patterns.
+      - >-
+        Test suite covering precedence, nested groups, character classes,
+        escape sequences, and error cases.
+    estimated_hours: "8-12"
+
+  - id: build-regex-m2
+    name: "Thompson's Construction (NFA)"
+    description: >-
+      Convert the regex AST to an NFA using Thompson's construction, producing
+      one NFA fragment per AST node with epsilon transitions for composition.
+    acceptance_criteria:
+      - >-
+        Each NFA fragment has exactly one start state and one accept state,
+        following Thompson's construction guarantee.
+      - >-
+        Literal nodes produce a two-state fragment with a single labeled
+        transition on the matching character.
+      - >-
+        Concatenation connects fragment A's accept state to fragment B's
+        start state via an epsilon transition.
+      - >-
+        Alternation creates a new start state with epsilon transitions to
+        both alternatives' start states, and both accept states epsilon-
+        transition to a new shared accept state.
+      - >-
+        Kleene star (a*) creates epsilon loops correctly: new start -ε->
+        inner start, inner accept -ε-> inner start, inner accept -ε->
+        new accept, new start -ε-> new accept (for zero matches).
+      - >-
+        Plus (a+) and optional (a?) produce correct fragments: a+ is
+        concat(a, a*); a? has epsilon bypass from start to accept.
+      - >-
+        Character class nodes produce transitions for each character in
+        the class from a single start state.
+      - >-
+        Total number of NFA states is O(n) where n is the length of the
+        regex pattern (Thompson's linear construction guarantee).
+      - >-
+        Anchor nodes produce epsilon transitions with anchor metadata
+        (checked during simulation, not as character transitions).
+    pitfalls:
+      - >-
+        Wrong epsilon wiring in Kleene star: forgetting the epsilon from
+        new start to new accept (allows zero matches) causes a+ behavior
+        instead of a* behavior.
+      - >-
+        Not distinguishing the accept state of composed fragments: after
+        concatenation, only the second fragment's accept state should be
+        the composite accept state.
+      - >-
+        Creating O(n^2) states for character classes by building an
+        alternation chain instead of a single state with multiple
+        transitions.
+      - >-
+        Epsilon transitions forming unintended cycles that allow the NFA
+        to accept strings it shouldn't (typically from incorrect star
+        or plus wiring).
+    concepts:
+      - Thompson's construction algorithm
+      - NFA fragments (start state, accept state)
+      - Epsilon transitions for composition
+      - Linear state count guarantee
+    skills:
+      - Graph construction algorithms
+      - State machine design
+      - Epsilon transition handling
+      - Recursive AST traversal
+    deliverables:
+      - >-
+        NFA state structure with labeled transitions (character or epsilon)
+        to sets of destination states.
+      - >-
+        Fragment data structure holding a start state and accept state for
+        compositional construction.
+      - >-
+        AST-to-NFA recursive builder implementing Thompson's rules for
+        each AST node type.
+      - >-
+        NFA pretty-printer or DOT graph exporter for debugging and
+        visualization.
+      - >-
+        Test suite verifying state counts and transition structure for
+        known patterns.
+    estimated_hours: "10-15"
+
+  - id: build-regex-m3
+    name: "NFA Simulation and Matching"
+    description: >-
+      Implement NFA simulation using parallel state tracking (Thompson's
+      algorithm) to match input strings in O(n*m) time, where n is input
+      length and m is NFA size.
+    acceptance_criteria:
+      - >-
+        Epsilon closure correctly computes the full set of states reachable
+        from a given set via zero or more epsilon transitions, using BFS
+        or DFS with a visited set to prevent infinite loops.
+      - >-
+        Simulation maintains a current state set (initially the epsilon
+        closure of the start state) and advances it on each input character
+        by computing transitions then epsilon closure.
+      - >-
+        Full match returns true only when the accept state is in the current
+        state set after consuming the entire input string.
+      - >-
+        Search match (find first occurrence) correctly handles non-anchored
+        patterns by trying the NFA from each position in the input.
+      - >-
+        Worst-case time complexity is O(n*m) where n is input length and
+        m is NFA state count, verified by benchmarking the pattern
+        'a?^n a^n' against 'a^n' (where ^n means repeated n times)
+        completing in polynomial time for n=25.
+      - >-
+        Anchor assertions (^, $) are checked at appropriate positions
+        during simulation without consuming input characters.
+    pitfalls:
+      - >-
+        Forgetting epsilon closure after initialization: the start state
+        set must be the epsilon closure of {start}, not just {start}.
+      - >-
+        Infinite loop on epsilon cycles: epsilon closure must track
+        visited states to avoid cycling on patterns like (a*)*.
+      - >-
+        Incorrect match boundaries: full match requires the accept state
+        at end of input, while search requires tracking the earliest
+        and longest match.
+      - >-
+        Performance regression from using sets with poor hash functions
+        for state tracking — use bitsets indexed by state ID for O(1)
+        membership testing.
+    concepts:
+      - NFA simulation (Thompson's algorithm)
+      - Epsilon closure computation
+      - Parallel state tracking vs. backtracking
+      - Why Thompson NFA avoids catastrophic backtracking
+    skills:
+      - Set operations and efficient state tracking
+      - BFS/DFS for epsilon closure
+      - String matching algorithms
+      - Performance benchmarking
+    deliverables:
+      - >-
+        Epsilon closure function computing all epsilon-reachable states
+        from a state set.
+      - >-
+        NFA simulator advancing state sets on each input character using
+        parallel state tracking.
+      - >-
+        Full-match and search-match functions with correct anchor
+        handling.
+      - >-
+        Catastrophic backtracking demonstration: benchmark showing
+        Thompson NFA matches 'a?^25 a^25' in milliseconds while naive
+        backtracking would take exponential time.
+      - >-
+        Test suite with edge cases: empty pattern, empty input, nested
+        quantifiers, alternation, anchors.
+    estimated_hours: "8-12"
+
+  - id: build-regex-m4
+    name: "DFA Conversion and State Minimization"
+    description: >-
+      Convert NFA to DFA using subset (powerset) construction, minimize
+      the DFA using Hopcroft's algorithm, and implement O(n) matching.
+    acceptance_criteria:
+      - >-
+        Subset construction produces a DFA that accepts exactly the same
+        language as the input NFA, verified by testing both against a
+        comprehensive test suite of accept/reject strings.
+      - >-
+        Each DFA state corresponds to a unique set of NFA states; states
+        are deduplicated by their NFA state set during construction.
+      - >-
+        Dead (trap) states are explicitly handled: transitions on
+        characters not in any NFA transition lead to a dead state that
+        is non-accepting.
+      - >-
+        DFA minimization using Hopcroft's algorithm (or equivalent)
+        reduces state count by merging equivalent states, verified by
+        checking minimized DFA for 'a|b' has the minimum possible states.
+      - >-
+        DFA execution processes each input character with a single table
+        lookup (O(1) per character, O(n) total for input of length n).
+      - >-
+        Lazy DFA construction option: states are constructed on-demand
+        during matching to avoid exponential state explosion for complex
+        patterns, with a configurable state cache size.
+      - >-
+        Benchmarks demonstrate DFA matching is at least 2x faster than
+        NFA simulation for repeated matching of the same pattern against
+        different inputs.
+    pitfalls:
+      - >-
+        Exponential state blowup: subset construction can produce 2^n DFA
+        states for n NFA states. The pattern (a|b)*(a|b){20} triggers
+        this. Lazy construction with eviction is the practical solution.
+      - >-
+        Forgetting to include the dead state in minimization: if the
+        dead state is omitted, Hopcroft's algorithm may merge accepting
+        and non-accepting states incorrectly.
+      - >-
+        Alphabet enumeration: the DFA transition table must cover the
+        full input alphabet. For byte-oriented matching this is 256
+        entries per state — use equivalence classes to compress.
+      - >-
+        Minimization correctness: Hopcroft's algorithm requires the
+        initial partition to separate accepting from non-accepting states.
+        Mixing them in the initial partition produces an incorrect
+        minimized DFA.
+    concepts:
+      - Subset (powerset) construction
+      - DFA state minimization (Hopcroft's algorithm)
+      - Lazy DFA construction with caching
+      - Equivalence classes for alphabet compression
+    skills:
+      - Powerset construction algorithm
+      - State minimization techniques
+      - Hash-based state deduplication
+      - Performance optimization and benchmarking
+    deliverables:
+      - >-
+        Subset construction algorithm converting NFA to equivalent DFA
+        with state deduplication.
+      - >-
+        Dead state handling for transitions on characters with no NFA
+        transitions.
+      - >-
+        DFA state minimization using Hopcroft's algorithm.
+      - >-
+        Lazy DFA construction that builds states on-demand with bounded
+        cache size.
+      - >-
+        O(n) DFA execution using transition table lookup.
+      - >-
+        Performance benchmark comparing NFA simulation, eager DFA, and
+        lazy DFA.
+    estimated_hours: "12-18"
+
+  - id: build-regex-m5
+    name: "Capture Groups and Submatch Extraction"
+    description: >-
+      Extend the engine to support capture groups that extract matched
+      substrings, using tagged NFA transitions or Pike's VM algorithm.
+    acceptance_criteria:
+      - >-
+        Parenthesized groups in the regex (e.g., '(a+)(b+)') capture the
+        matched substring for each group, indexed by group number.
+      - >-
+        Nested capture groups are numbered by opening parenthesis position
+        (left to right), matching standard regex group numbering.
+      - >-
+        Non-capturing groups (?:...) are parsed and handled correctly
+        without creating capture entries.
+      - >-
+        Submatch extraction returns start and end positions for each
+        capture group in the input string.
+      - >-
+        Leftmost-longest (or leftmost-greedy) match semantics are
+        implemented for ambiguous patterns.
+      - >-
+        Implementation uses Pike's VM / tagged NFA approach (not
+        backtracking) to maintain polynomial time complexity.
+      - >-
+        Test suite covers nested groups, alternation with groups,
+        quantified groups, and empty group matches.
+    pitfalls:
+      - >-
+        Capture groups fundamentally cannot be implemented with pure DFA
+        (DFA has no memory of traversal path). Must use NFA-based approach
+        (Pike's VM, tagged transitions, or augmented NFA).
+      - >-
+        Greedy vs. lazy quantifier semantics in capture groups require
+        careful priority handling in the NFA simulation.
+      - >-
+        Group numbering with alternation: '(a)|(b)' has groups 1 and 2;
+        only one will have a match value per input. Must handle None/null
+        for unmatched groups.
+      - >-
+        Performance: naive submatch tracking can degrade NFA simulation
+        from O(n*m) to O(n*m^2) if capture state is copied on every
+        transition. Use priority-ordered threads with shared state.
+    concepts:
+      - Capture groups and submatch extraction
+      - Pike's VM algorithm
+      - Tagged NFA transitions
+      - Greedy vs. lazy quantifier semantics
+      - Why DFA cannot support capture groups
+    skills:
+      - NFA augmentation for submatch tracking
+      - Priority-based thread scheduling
+      - Submatch extraction algorithms
+      - Testing ambiguous match semantics
+    deliverables:
+      - >-
+        AST support for capture groups (numbered) and non-capturing groups.
+      - >-
+        Tagged NFA or Pike's VM implementation tracking capture group
+        boundaries during simulation.
+      - >-
+        Submatch extraction API returning (start, end) pairs for each
+        capture group.
+      - >-
+        Greedy/lazy quantifier priority in capture resolution.
+      - >-
+        Comprehensive test suite for nested, alternated, and quantified
+        capture groups.
+    estimated_hours: "12-16"
+```

@@ -11,6 +11,7 @@ You are a Senior System Architect. Your task is to transform a pedagogical tutor
    - Core Interfaces/Structs.
    - Critical Data Flow.
    - Implementation logic and "hidden" complexities.
+5. **Visual Blueprint**: Plan **at least 3-5 diagrams PER module**. Focus on Class Hierarchies, State Machines, and Sequence Diagrams.
 
 ## Output Format
 Output ONLY raw JSON.

@@ -521,7 +521,7 @@ def writer_node(state: GraphState):
     SUMMARY: {ms.get("summary", "")}
     ANCHOR_ID: {ms.get("id", f"ms-{idx}")}
     KNOWLEDGE MAP (Already Explained): {state.get("knowledge_map", [])}
-    PREVIOUS: {state["accumulated_md"][-10000:]}
+    PREVIOUS CONTENT (FULL HISTORY): {state["accumulated_md"]}
     
     IMPORTANT: 
     1. You MUST use these specific Diagram IDs when inserting diagrams using the {{{{DIAGRAM:id}}}} syntax:
@@ -642,9 +642,9 @@ def tdd_planner_node(state: GraphState):
     {INSTR_TDD_PLANNER}
     PROJECT META: {state["meta"]}
     ATLAS BLUEPRINT: {state["blueprint"]}
-    ATLAS CONTENT SUMMARY: {state["accumulated_md"][:10000]}... (truncated)
+    FULL ATLAS CONTENT: {state["accumulated_md"]}
     
-    TASK: Review the pedagogical Atlas content and plan a professional TDD.
+    TASK: Review the COMPLETE pedagogical Atlas content and plan a professional TDD.
     Output ONLY raw JSON.
     """
 
@@ -700,6 +700,8 @@ def tdd_writer_node(state: GraphState):
     MODULE: {mod.get("name")}
     DESCRIPTION: {mod.get("description")}
     INITIAL SPECS: {mod.get("specs")}
+    FULL ATLAS HISTORY (for consistency): {state["accumulated_md"]}
+    PREVIOUS TDD SPECS: {state["tdd_accumulated_md"]}
     
     TASK: Write a rigorous Technical Design Specification for this module.
     Use markdown headers. Include Pseudo-code. Use diagram markers {{{{DIAGRAM:id}}}} for: 
@@ -731,15 +733,26 @@ def visualizer_node(state: GraphState):
     REFERENCE (FULL D2 DOCUMENTATION): 
     {D2_REFERENCE}
     
-    CONTEXT (TECHNICAL CONTENT):
-    {state["accumulated_md"][-15000:]}
+    CONTEXT (FULL TECHNICAL HISTORY):
+    {state["accumulated_md"]}
     
     TASK: Generate D2 code for the diagram: '{diag.get("title", "Untitled")}'
     DIAGRAM DESCRIPTION: {diag.get("description", "")}
     TARGET ANCHOR (for links): {diag.get("anchor_target", "")}
     """
     if state.get("last_error"):
-        prompt += f"\n\n!!! FIX PREVIOUS COMPILER ERROR: {state['last_error']}"
+        prompt += f"""
+        
+        !!! FIX PREVIOUS COMPILER ERROR !!!
+        FAILED CODE:
+        ```d2
+        {state.get("current_diagram_code")}
+        ```
+        ERROR MESSAGE:
+        {state["last_error"]}
+        
+        Analyze the FAILED CODE and the ERROR MESSAGE, then provide the corrected D2 code.
+        """
 
     res = safe_invoke(
         [
@@ -750,83 +763,11 @@ def visualizer_node(state: GraphState):
         ]
     )
     code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
-    print(f"    ✓ Diagram code generated: {len(code)} chars")
     return {
         "current_diagram_code": code,
         "current_diagram_meta": diag,
         "diagram_attempt": attempt,
     }
-
-
-def compiler_node(state: GraphState):
-    global OUTPUT_BASE
-    diag = state["current_diagram_meta"]
-    code = state["current_diagram_code"]
-    if not diag or not code:
-        return {"last_error": None}
-
-    proj_dir = OUTPUT_BASE / state["project_id"]
-    proj_dir.mkdir(parents=True, exist_ok=True)
-    (proj_dir / "diagrams").mkdir(exist_ok=True)
-    d2_path = proj_dir / "diagrams" / f"{diag.get('id', 'diag')}.d2"
-
-    code = re.sub(r'icon:\s*"(https?://.*?)"', "", code)
-    d2_path.write_text(code)
-    res = subprocess.run(
-        ["d2", "--layout=elk", str(d2_path), str(d2_path.with_suffix(".svg"))],
-        capture_output=True,
-        text=True,
-    )
-
-    if res.returncode == 0:
-        print(f"    ✓ Success: {diag.get('id')}")
-        img_link = (
-            f"\n![{diag.get('title', 'Diagram')}](./diagrams/{diag.get('id')}.svg)\n"
-        )
-
-        # Decide which MD to update
-        if str(diag.get("id")).startswith("tdd-diag"):
-            return {
-                "tdd_accumulated_md": state["tdd_accumulated_md"].replace(
-                    f"{{{{DIAGRAM:{diag.get('id')}}}}}", img_link
-                ),
-                "tdd_diagrams_to_generate": state["tdd_diagrams_to_generate"][1:],
-                "diagram_attempt": 0,
-                "last_error": None,
-                "current_diagram_code": None,
-                "current_diagram_meta": None,
-            }
-        else:
-            return {
-                "accumulated_md": state["accumulated_md"].replace(
-                    f"{{{{DIAGRAM:{diag.get('id')}}}}}", img_link
-                ),
-                "diagrams_to_generate": state["diagrams_to_generate"][1:],
-                "diagram_attempt": 0,
-                "last_error": None,
-                "current_diagram_code": None,
-                "current_diagram_meta": None,
-            }
-    else:
-        print(f"    ✗ Failed (Attempt {state['diagram_attempt']}), retrying...")
-        if state["diagram_attempt"] >= 5:
-            if str(diag.get("id")).startswith("tdd-diag"):
-                return {
-                    "tdd_diagrams_to_generate": state["tdd_diagrams_to_generate"][1:],
-                    "diagram_attempt": 0,
-                    "last_error": None,
-                    "current_diagram_code": None,
-                    "current_diagram_meta": None,
-                }
-            else:
-                return {
-                    "diagrams_to_generate": state["diagrams_to_generate"][1:],
-                    "diagram_attempt": 0,
-                    "last_error": None,
-                    "current_diagram_code": None,
-                    "current_diagram_meta": None,
-                }
-        return {"last_error": res.stderr}
 
 
 def tdd_visualizer_node(state: GraphState):
@@ -844,15 +785,27 @@ def tdd_visualizer_node(state: GraphState):
     REFERENCE (FULL D2 DOCUMENTATION): 
     {D2_REFERENCE}
     
-    CONTEXT (TDD SPECS):
-    {state["tdd_accumulated_md"][-15000:]}
+    CONTEXT (FULL TECHNICAL & TDD HISTORY):
+    {state["accumulated_md"]}
+    {state["tdd_accumulated_md"]}
     
     TASK: Generate detailed D2 code for the technical diagram: '{diag.get("title", "Untitled")}'
     DIAGRAM DESCRIPTION: {diag.get("description", "")}
     TARGET ANCHOR: {diag.get("anchor_target", "")}
     """
     if state.get("last_error"):
-        prompt += f"\n\n!!! FIX PREVIOUS COMPILER ERROR: {state['last_error']}"
+        prompt += f"""
+        
+        !!! FIX PREVIOUS COMPILER ERROR !!!
+        FAILED CODE:
+        ```d2
+        {state.get("current_diagram_code")}
+        ```
+        ERROR MESSAGE:
+        {state["last_error"]}
+        
+        Analyze the FAILED CODE and the ERROR MESSAGE, then provide the corrected D2 code.
+        """
 
     res = safe_invoke(
         [
@@ -864,34 +817,11 @@ def tdd_visualizer_node(state: GraphState):
         provider_override="local-proxy",
     )
     code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
-    print(f"    ✓ TDD Diagram code generated: {len(code)} chars")
     return {
         "current_diagram_code": code,
         "current_diagram_meta": diag,
         "diagram_attempt": attempt,
     }
-
-
-def bibliographer_node(state: GraphState):
-    print(f"  [Agent: Bibliographer] Curating external resources...", flush=True)
-
-    # Use both accumulated text and the explicitly flagged advanced contexts
-    full_text = state["accumulated_md"] + "\n" + state["tdd_accumulated_md"]
-    adv_terms = ", ".join(state.get("advanced_contexts", []))
-
-    prompt = f"""
-    {INSTR_BIBLIOGRAPHER}
-    ADVANCED TERMS TO COVER: {adv_terms}
-    
-    PROJECT CONTENT SUMMARY:
-    {full_text[-15000:]}
-    
-    TASK: Provide a "Beyond the Atlas" reading list. 
-    Focus specifically on the ADVANCED TERMS listed above plus any other foundational giants found in the text.
-    """
-
-    res = safe_invoke([HumanMessage(content=prompt)], provider_override="local-proxy")
-    return {"external_reading": str(res.content).strip(), "status": "done"}
 
 
 # --- GRAPH ---

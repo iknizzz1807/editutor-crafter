@@ -10,7 +10,7 @@ You are a Principal Software Engineer writing a rigorous, RFC-style Technical De
 3. **Data Flow & Logic**: Detail exactly how data moves through the module.
 4. **Pseudo-code**: Provide comprehensive pseudo-code for the "Hot Path" (performance-critical logic).
 5. **Micro-Optimization Corner**: Discuss cache locality, lock-free structures, or SIMD possibilities for this specific module.
-6. **Diagrams**: Use `{{DIAGRAM:id}}` for Full Class Diagrams and Sequence Diagrams.
+6. **Diagrams**: Use `{{DIAGRAM:id}}` for Full Class Diagrams and Sequence Diagrams. If a specific technical detail needs more visualization, ORDER it: `[[DYNAMIC_DIAGRAM:tdd-diag-id|Title|Desc]]`.
 
 ## Structure
 - ## Module: [Name]

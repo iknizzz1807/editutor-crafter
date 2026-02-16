@@ -49,6 +49,9 @@ print(">>> Instructions loaded", flush=True)
 # --- LLM SETUP ---
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "sonnet")  # haiku, sonnet, opus
+KILO_MODEL = os.getenv("KILO_MODEL", "kilo/minimax/minimax-m2.5")  # Default kilo model
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "lEJimXOmklwc8z4iQPF0g2yClh9NBs4D")
+MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-large-2411")
 
 # Global variables (will be initialized by init_llm_provider())
 LLM_PROVIDER = None
@@ -58,14 +61,58 @@ USE_ANTHROPIC = False
 
 def init_llm_provider():
     """Initialize LLM provider based on environment variables or command line flags."""
-    global LLM_PROVIDER, LLM, CLAUDE_MODEL, USE_ANTHROPIC
+    global LLM_PROVIDER, LLM, CLAUDE_MODEL, KILO_MODEL, USE_ANTHROPIC, MISTRAL_MODEL
     print(">>> Initializing LLM provider...", flush=True)
 
     USE_ANTHROPIC = os.getenv("USE_ANTHROPIC", "false").lower() == "true"
     USE_CLAUDE_CLI = os.getenv("USE_CLAUDE_CLI", "false").lower() == "true"
+    USE_KILO_CLI = os.getenv("USE_KILO_CLI", "false").lower() == "true"
+    USE_MISTRAL = os.getenv("USE_MISTRAL", "false").lower() == "true"
+    USE_MIXED_CLAUDE_GEMINI = (
+        os.getenv("USE_MIXED_CLAUDE_GEMINI", "false").lower() == "true"
+    )
+    USE_MIXED_HEAVY_CLAUDE = (
+        os.getenv("USE_MIXED_HEAVY_CLAUDE", "false").lower() == "true"
+    )
     CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "sonnet")  # Re-read from env
+    KILO_MODEL = os.getenv("KILO_MODEL", KILO_MODEL)  # Re-read from env or keep default
+    MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", MISTRAL_MODEL)
 
-    if USE_CLAUDE_CLI:
+    if USE_MIXED_CLAUDE_GEMINI or USE_MIXED_HEAVY_CLAUDE:
+        LLM_PROVIDER = (
+            "mixed-claude-gemini" if USE_MIXED_CLAUDE_GEMINI else "mixed-heavy-claude"
+        )
+        mode_desc = (
+            "Architect=Claude, Others=Gemini"
+            if USE_MIXED_CLAUDE_GEMINI
+            else "Architect+Educator=Claude, Artist=Gemini"
+        )
+        print(
+            f">>> Provider: MIXED ({mode_desc})",
+            flush=True,
+        )
+        # We need to initialize the local proxy for the non-claude parts
+        LLM = ChatOpenAI(
+            base_url="http://127.0.0.1:7999/v1",
+            api_key="mythong2005",
+            model="gemini_cli/gemini-3-pro-preview",
+            temperature=1,
+            max_tokens=64000,
+        )
+    elif USE_MISTRAL:
+        LLM_PROVIDER = "mistral"
+        print(f">>> Provider: MISTRAL ({MISTRAL_MODEL})", flush=True)
+        LLM = ChatOpenAI(
+            base_url="https://api.mistral.ai/v1",
+            api_key=MISTRAL_API_KEY,
+            model=MISTRAL_MODEL,
+            temperature=1,
+            max_tokens=64000,
+        )
+    elif USE_KILO_CLI:
+        LLM_PROVIDER = "kilo-cli"
+        print(f">>> Provider: KILO CLI (Model: {KILO_MODEL})", flush=True)
+    elif USE_CLAUDE_CLI:
         LLM_PROVIDER = "claude-cli"
         print(f">>> Provider: CLAUDE CODE CLI (Model: {CLAUDE_MODEL})", flush=True)
     elif USE_ANTHROPIC and ChatAnthropic:
@@ -124,6 +171,68 @@ def extract_json(text):
     return None
 
 
+def strip_ansi_codes(text):
+    """Remove ANSI escape codes from text."""
+    ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+    return ansi_escape.sub("", text)
+
+
+def invoke_kilo_cli(messages, max_retries=3):
+    """Invoke Kilo CLI with exponential backoff."""
+    system_prompt = ""
+    user_prompt = ""
+
+    for msg in messages:
+        if isinstance(msg, SystemMessage):
+            system_prompt = msg.content
+        elif isinstance(msg, HumanMessage):
+            user_prompt = msg.content
+
+    # Kilo doesn't have a distinct system prompt flag in 'run', so we combine them.
+    full_prompt = (
+        f"SYSTEM INSTRUCTIONS:\n{system_prompt}\n\nUSER REQUEST:\n{user_prompt}"
+        if system_prompt
+        else user_prompt
+    )
+
+    for attempt in range(max_retries):
+        try:
+            # cmd = ["kilo", "run", "--model", KILO_MODEL, full_prompt]
+            # Use 'run' with the prompt.
+            # NOTE: We are passing the prompt as an argument.
+            # If the prompt is huge, we might hit shell arg limits, but subprocess.run
+            # usually handles large args better than shell=True.
+            cmd = ["kilo", "run"]
+            if KILO_MODEL:
+                cmd.extend(["--model", KILO_MODEL])
+            cmd.append(full_prompt)
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=1200,
+            )
+
+            if result.returncode == 0:
+
+                class MockResponse:
+                    def __init__(self, content):
+                        self.content = content
+
+                return MockResponse(result.stdout)
+            else:
+                err_str = result.stderr.lower()
+                print(f"    ! Kilo CLI Error: {result.stderr[:200]}...")
+                # Retry logic for potential networking/API blips
+                time.sleep((attempt + 1) * 5)
+        except Exception as e:
+            print(f"    ! Kilo CLI Exception: {e}")
+            time.sleep((attempt + 1) * 5)
+
+    raise Exception("Max retries exceeded for Kilo CLI invocation.")
+
+
 def invoke_claude_cli(messages, max_retries=3):
     """Invoke Claude Code CLI with exponential backoff."""
     # Extract system message and human message from LangChain format
@@ -139,7 +248,16 @@ def invoke_claude_cli(messages, max_retries=3):
     for attempt in range(max_retries):
         try:
             # Build the claude command - use stdin for long prompts
-            cmd = ["claude", "-p", "--model", CLAUDE_MODEL]
+            # Disable tools to prevent interactive prompts that hang the process
+            cmd = [
+                "claude",
+                "-p",
+                "--model",
+                CLAUDE_MODEL,
+                "--dangerously-skip-permissions",
+                "--tools",
+                "",
+            ]
 
             # Add system prompt if present via flag
             if system_prompt:
@@ -148,17 +266,17 @@ def invoke_claude_cli(messages, max_retries=3):
             # Use stdin for user prompt to avoid argument length limit
             result = subprocess.run(
                 cmd,
-                input=user_prompt,  # Pass via stdin instead of argument
+                input=user_prompt,
                 capture_output=True,
                 text=True,
-                timeout=1200,  # 10 minute timeout
+                timeout=1200,
             )
 
             if result.returncode == 0:
                 # Create a mock response object compatible with LangChain
                 class MockResponse:
                     def __init__(self, content):
-                        self.content = content
+                        self.content = strip_ansi_codes(content)
 
                 return MockResponse(result.stdout)
             else:
@@ -183,7 +301,10 @@ def invoke_claude_cli(messages, max_retries=3):
                     )
                     time.sleep(wait_time)
                 else:
-                    raise Exception(f"Claude CLI failed: {result.stderr}")
+                    error_msg = result.stderr if result.stderr else result.stdout
+                    raise Exception(
+                        f"Claude CLI failed (RC={result.returncode}): {error_msg}"
+                    )
 
         except subprocess.TimeoutExpired:
             wait_time = (attempt + 1) * 20
@@ -213,16 +334,16 @@ def invoke_claude_cli(messages, max_retries=3):
     raise Exception("Max retries exceeded for Claude CLI invocation.")
 
 
-def safe_invoke(messages, max_retries=5, invoke_kwargs=None):
+def safe_invoke(messages, max_retries=5, invoke_kwargs=None, provider_override=None):
     """Invoke LLM with exponential backoff to handle quota and transient server errors."""
-    if LLM_PROVIDER == "claude-cli":
+    actual_provider = provider_override or LLM_PROVIDER
+
+    if actual_provider == "claude-cli":
         return invoke_claude_cli(messages, max_retries)
+    if actual_provider == "kilo-cli":
+        return invoke_kilo_cli(messages, max_retries)
 
     kwargs = invoke_kwargs or {}
-    print(
-        f"    [safe_invoke] Starting LLM call with {len(messages)} messages...",
-        flush=True,
-    )
     for attempt in range(max_retries):
         try:
             result = LLM.invoke(messages, **kwargs)
@@ -230,10 +351,8 @@ def safe_invoke(messages, max_retries=5, invoke_kwargs=None):
                 hasattr(result, "content") and result.content is None
             ):
                 raise Exception("LLM returned None response")
-            print(f"    [safe_invoke] LLM call succeeded", flush=True)
             return result
         except Exception as e:
-            print(f"    [safe_invoke] Error: {e}", flush=True)
             err_str = str(e).lower()
             transient_errors = [
                 "quota",
@@ -280,9 +399,14 @@ def architect_node(state: GraphState):
     }}
     Plan 10-15 diagrams. Ensure unique IDs.
     """
-    # Use JSON mode if supported by local proxy (Gemini)
+    # Use JSON mode if supported by local proxy or Mistral
     invoke_args = {}
-    if LLM_PROVIDER == "local-proxy":
+    if LLM_PROVIDER in [
+        "local-proxy",
+        "mistral",
+        "mixed-claude-gemini",
+        "mixed-heavy-claude",
+    ]:
         invoke_args["response_format"] = {"type": "json_object"}
 
     print(f"  [Agent: Architect] Calling LLM (provider={LLM_PROVIDER})...", flush=True)
@@ -294,32 +418,40 @@ def architect_node(state: GraphState):
             HumanMessage(content=prompt),
         ],
         invoke_kwargs=invoke_args,
+        provider_override="claude-cli"
+        if LLM_PROVIDER and LLM_PROVIDER.startswith("mixed")
+        else None,
     )
-    print(
-        f"  [Agent: Architect] LLM response received ({len(res.content)} chars)",
-        flush=True,
-    )
+    print(f"  [Agent: Architect] Response received: {len(res.content)} chars")
     blueprint = extract_json(res.content)
     if not blueprint:
-        print("    ! Failed with JSON mode, retrying with raw prompt...")
         res = safe_invoke(
             [
                 SystemMessage(
                     content="You are a Master Architect. Output ONLY raw JSON code block."
                 ),
                 HumanMessage(content=prompt),
-            ]
+            ],
+            provider_override="claude-cli"
+            if LLM_PROVIDER and str(LLM_PROVIDER).startswith("mixed")
+            else None,
         )
+        print(f"  [Agent: Architect] Retry response received: {len(res.content)} chars")
         blueprint = extract_json(res.content)
 
     if not blueprint:
         raise ValueError("Architect failed to return valid JSON after retries")
 
+    # Incremental write
+    proj_dir = OUTPUT_BASE / state["project_id"]
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    header = f"# {blueprint.get('title', state['project_id'])}\n\n{blueprint.get('overview', '')}\n\n"
+
     return {
         "blueprint": blueprint,
         "diagrams_to_generate": blueprint.get("diagrams", []),
         "status": "writing",
-        "accumulated_md": f"# {blueprint.get('title', state['project_id'])}\n\n{blueprint.get('overview', '')}\n\n",
+        "accumulated_md": header,
     }
 
 
@@ -356,9 +488,17 @@ def writer_node(state: GraphState):
     AVAILABLE DIAGRAMS:
     {diag_list}
     """
-    res = safe_invoke([HumanMessage(content=prompt)])
+    res = safe_invoke(
+        [HumanMessage(content=prompt)],
+        provider_override="claude-cli"
+        if LLM_PROVIDER == "mixed-heavy-claude"
+        else None,
+    )
+    content = f"\n\n{str(res.content).strip()}\n"
+    print(f"    ✓ Content generated: {len(content)} chars")
+
     return {
-        "accumulated_md": state["accumulated_md"] + f"\n\n{str(res.content).strip()}\n",
+        "accumulated_md": state["accumulated_md"] + content,
         "current_ms_index": idx + 1,
     }
 
@@ -397,6 +537,7 @@ def visualizer_node(state: GraphState):
         ]
     )
     code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
+    print(f"    ✓ Diagram code generated: {len(code)} chars")
     return {
         "current_diagram_code": code,
         "current_diagram_meta": diag,
@@ -534,8 +675,13 @@ def generate_project(project_id):
         }
     )
 
-    with open(OUTPUT_BASE / project_id / "index.md", "w") as f:
+    # Save final index.md
+    proj_dir = OUTPUT_BASE / project_id
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    with open(proj_dir / "index.md", "w") as f:
         f.write(final_state.get("accumulated_md", ""))
+
+    # Final HTML generation
     subprocess.run(
         ["npm", "run", "generate:html", "--", project_id],
         cwd=SCRIPT_DIR / ".." / "web",
@@ -548,7 +694,23 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--projects", nargs="+", required=True)
     parser.add_argument("--claude-cli", action="store_true")
+    parser.add_argument("--mistral", action="store_true", help="Use Mistral AI")
+    parser.add_argument(
+        "--mixed-claude-gemini",
+        action="store_true",
+        help="Architect=Claude CLI, Others=Gemini Proxy",
+    )
+    parser.add_argument(
+        "--mixed-heavy-claude",
+        action="store_true",
+        help="Architect+Educator=Claude CLI, Artist=Gemini Proxy",
+    )
+    parser.add_argument("--kilo-cli", action="store_true", help="Use Kilo CLI")
     parser.add_argument("--claude-model", default=None)
+    parser.add_argument("--mistral-model", default=None, help="Mistral model name")
+    parser.add_argument(
+        "--kilo-model", default=None, help="Model for Kilo (provider/model)"
+    )
     parser.add_argument("--anthropic", action="store_true")
     parser.add_argument(
         "--output",
@@ -558,8 +720,20 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.claude_cli:
         os.environ["USE_CLAUDE_CLI"] = "true"
+    if args.mistral:
+        os.environ["USE_MISTRAL"] = "true"
+    if args.mixed_claude_gemini:
+        os.environ["USE_MIXED_CLAUDE_GEMINI"] = "true"
+    if args.mixed_heavy_claude:
+        os.environ["USE_MIXED_HEAVY_CLAUDE"] = "true"
+    if args.kilo_cli:
+        os.environ["USE_KILO_CLI"] = "true"
     if args.claude_model:
         os.environ["CLAUDE_MODEL"] = args.claude_model
+    if args.mistral_model:
+        os.environ["MISTRAL_MODEL"] = args.mistral_model
+    if args.kilo_model:
+        os.environ["KILO_MODEL"] = args.kilo_model
     if args.anthropic:
         os.environ["USE_ANTHROPIC"] = "true"
     if args.output:

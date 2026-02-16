@@ -44,6 +44,10 @@ print(f">>> D2 docs loaded ({len(D2_REFERENCE)} chars)", flush=True)
 INSTR_ARCHITECT = load_instruction("architect")
 INSTR_EDUCATOR = load_instruction("educator")
 INSTR_ARTIST = load_instruction("artist")
+INSTR_TDD_PLANNER = load_instruction("tdd_planner")
+INSTR_TDD_WRITER = load_instruction("tdd_writer")
+INSTR_TDD_ARTIST = load_instruction("tdd_artist")
+INSTR_BIBLIOGRAPHER = load_instruction("bibliographer")
 print(">>> Instructions loaded", flush=True)
 
 # --- LLM SETUP ---
@@ -157,6 +161,16 @@ class GraphState(TypedDict):
     current_diagram_meta: Annotated[Optional[Dict[str, Any]], replace_reducer]
     last_error: Annotated[Optional[str], replace_reducer]
     status: Annotated[str, replace_reducer]
+    # Knowledge Tracking
+    knowledge_map: Annotated[List[str], replace_reducer]
+    advanced_contexts: Annotated[List[str], replace_reducer]
+    # TDD Fields
+    tdd_blueprint: Annotated[Dict[str, Any], replace_reducer]
+    tdd_accumulated_md: Annotated[str, replace_reducer]
+    tdd_current_mod_index: Annotated[int, replace_reducer]
+    tdd_diagrams_to_generate: Annotated[List[Dict[str, Any]], replace_reducer]
+    # Bibliographer
+    external_reading: Annotated[str, replace_reducer]
 
 
 def extract_json(text):
@@ -455,6 +469,32 @@ def architect_node(state: GraphState):
     }
 
 
+def knowledge_mapper_node(state: GraphState):
+    """Scan the last generated content for key technical concepts to add to the knowledge map."""
+    print(f"  [Agent: Knowledge Mapper] Updating map...", flush=True)
+
+    last_content = state["accumulated_md"].split("\n\n")[-1]
+
+    prompt = f"""
+    Extract 3-5 key technical concepts/keywords from the following text that were explained in detail.
+    Output ONLY a comma-separated list of terms.
+    
+    TEXT:
+    {last_content}
+    """
+
+    res = safe_invoke([HumanMessage(content=prompt)], provider_override="local-proxy")
+    new_terms = [t.strip() for t in str(res.content).split(",") if t.strip()]
+
+    # Also extract Advanced Context tags
+    adv_tags = re.findall(r"\[\[ADVANCED_CONTEXT:(.*?)\]\]", state["accumulated_md"])
+
+    return {
+        "knowledge_map": list(set(state.get("knowledge_map", []) + new_terms)),
+        "advanced_contexts": list(set(state.get("advanced_contexts", []) + adv_tags)),
+    }
+
+
 def writer_node(state: GraphState):
     idx = state["current_ms_index"]
     blueprint = state["blueprint"]
@@ -480,13 +520,16 @@ def writer_node(state: GraphState):
     TASK: Write content for: {ms_title}.
     SUMMARY: {ms.get("summary", "")}
     ANCHOR_ID: {ms.get("id", f"ms-{idx}")}
-    PREVIOUS: {state["accumulated_md"][-15000:]}
+    KNOWLEDGE MAP (Already Explained): {state.get("knowledge_map", [])}
+    PREVIOUS: {state["accumulated_md"][-10000:]}
     
-    IMPORTANT: You MUST use these specific Diagram IDs when inserting diagrams using the {{{{DIAGRAM:id}}}} syntax. 
-    Only use diagrams that are relevant to this milestone.
-    
-    AVAILABLE DIAGRAMS:
+    IMPORTANT: 
+    1. You MUST use these specific Diagram IDs when inserting diagrams using the {{{{DIAGRAM:id}}}} syntax:
     {diag_list}
+    
+    2. DYNAMIC DIAGRAMS: If you find a new complex technical point that absolutely needs a visualization but IS NOT in the list above, you can ORDER a new one using this syntax:
+    [[DYNAMIC_DIAGRAM:new-id|Title|Detailed Description of what to draw]]
+    This will trigger the Artist to draw it specifically for your content.
     """
     res = safe_invoke(
         [HumanMessage(content=prompt)],
@@ -494,18 +537,188 @@ def writer_node(state: GraphState):
         if LLM_PROVIDER == "mixed-heavy-claude"
         else None,
     )
-    content = f"\n\n{str(res.content).strip()}\n"
-    print(f"    ✓ Content generated: {len(content)} chars")
+    content = str(res.content).strip()
+
+    # --- DYNAMIC DISCOVERY LOGIC ---
+    new_diagrams = state["diagrams_to_generate"]
+    # Pattern: [[DYNAMIC_DIAGRAM:id|title|description]]
+    dynamic_orders = re.findall(r"\[\[DYNAMIC_DIAGRAM:(.*?)\|(.*?)\|(.*?)\]\]", content)
+
+    for d_id, d_title, d_desc in dynamic_orders:
+        d_id = d_id.strip()
+        # Only add if not already in the list
+        if not any(d["id"] == d_id for d in new_diagrams):
+            print(f"    + Dynamic Diagram Ordered: {d_id}")
+            new_diagrams.append(
+                {
+                    "id": d_id,
+                    "title": d_title.strip(),
+                    "description": d_desc.strip(),
+                    "anchor_target": ms.get("id", f"ms-{idx}"),
+                }
+            )
+
+    # Replace the order syntax with a standard marker for the final MD
+    content = re.sub(
+        r"\[\[DYNAMIC_DIAGRAM:(.*?)\|.*?\|.*?\]\]", r"{{DIAGRAM:\1}}", content
+    )
+
+    full_content = f"\n\n{content}\n"
+    print(f"    ✓ Content generated: {len(full_content)} chars")
 
     return {
-        "accumulated_md": state["accumulated_md"] + content,
+        "accumulated_md": state["accumulated_md"] + full_content,
         "current_ms_index": idx + 1,
+        "diagrams_to_generate": new_diagrams,
+    }
+
+
+def tdd_writer_node(state: GraphState):
+    idx = state["tdd_current_mod_index"]
+    blueprint = state["tdd_blueprint"]
+    modules = blueprint.get("modules", [])
+
+    if idx >= len(modules):
+        return {"status": "tdd_visualizing"}
+
+    mod = modules[idx]
+    print(f"  [Agent: TDD Writer] Writing Spec for Module: {mod.get('name')}...")
+
+    prompt = f"""
+    {INSTR_TDD_WRITER}
+    PROJECT: {blueprint.get("project_title")}
+    MODULE: {mod.get("name")}
+    DESCRIPTION: {mod.get("description")}
+    INITIAL SPECS: {mod.get("specs")}
+    
+    TASK: Write a rigorous Technical Design Specification for this module.
+    Use markdown headers. Include Pseudo-code.
+    
+    DIAGRAMS: 
+    - Available IDs: {", ".join([d["id"] for d in mod.get("diagrams", [])])}
+    - If you need a NEW complex technical diagram (Class/Sequence/Flow) for this module, ORDER it:
+      [[DYNAMIC_DIAGRAM:tdd-diag-newid|Title|Detailed technical description]]
+    """
+
+    res = safe_invoke([HumanMessage(content=prompt)], provider_override="local-proxy")
+    content = str(res.content).strip()
+
+    # --- DYNAMIC DISCOVERY LOGIC ---
+    new_tdd_diagrams = state["tdd_diagrams_to_generate"]
+    dynamic_orders = re.findall(r"\[\[DYNAMIC_DIAGRAM:(.*?)\|(.*?)\|(.*?)\]\]", content)
+
+    for d_id, d_title, d_desc in dynamic_orders:
+        d_id = d_id.strip()
+        if not any(d["id"] == d_id for d in new_tdd_diagrams):
+            print(f"    + Dynamic TDD Diagram Ordered: {d_id}")
+            new_tdd_diagrams.append(
+                {
+                    "id": d_id,
+                    "title": d_title.strip(),
+                    "description": d_desc.strip(),
+                    "anchor_target": mod["id"],
+                }
+            )
+
+    content = re.sub(
+        r"\[\[DYNAMIC_DIAGRAM:(.*?)\|.*?\|.*?\]\]", r"{{DIAGRAM:\1}}", content
+    )
+    full_content = f"\n\n{content}\n"
+    print(f"    ✓ TDD Module generated: {len(full_content)} chars")
+
+    return {
+        "tdd_accumulated_md": state["tdd_accumulated_md"] + full_content,
+        "tdd_current_mod_index": idx + 1,
+        "tdd_diagrams_to_generate": new_tdd_diagrams,
+    }
+
+
+def tdd_planner_node(state: GraphState):
+    print(
+        f"  [Agent: TDD Orchestrator] Planning Technical Design Document...", flush=True
+    )
+
+    prompt = f"""
+    {INSTR_TDD_PLANNER}
+    PROJECT META: {state["meta"]}
+    ATLAS BLUEPRINT: {state["blueprint"]}
+    ATLAS CONTENT SUMMARY: {state["accumulated_md"][:10000]}... (truncated)
+    
+    TASK: Review the pedagogical Atlas content and plan a professional TDD.
+    Output ONLY raw JSON.
+    """
+
+    res = safe_invoke(
+        [
+            SystemMessage(
+                content="You are a Technical Design Orchestrator. Output ONLY valid JSON."
+            ),
+            HumanMessage(content=prompt),
+        ],
+        provider_override="local-proxy",  # Force Gemini Proxy for this step
+    )
+
+    print(
+        f"  [Agent: TDD Orchestrator] TDD Blueprint received: {len(res.content)} chars"
+    )
+    tdd_blueprint = extract_json(res.content)
+    if not tdd_blueprint:
+        raise ValueError("TDD Orchestrator failed to return valid JSON")
+
+    header = f"\n\n# TECHNICAL DESIGN DOCUMENT (TDD)\n\n## Design Vision\n{tdd_blueprint.get('design_vision', '')}\n\n"
+
+    # Collect all TDD diagrams into a flat list for the visualizer to handle
+    tdd_diags = []
+    for mod in tdd_blueprint.get("modules", []):
+        for d in mod.get("diagrams", []):
+            d["anchor_target"] = mod["id"]  # Link diagram to module anchor
+            tdd_diags.append(d)
+
+    return {
+        "tdd_blueprint": tdd_blueprint,
+        "tdd_accumulated_md": header,
+        "tdd_current_mod_index": 0,
+        "tdd_diagrams_to_generate": tdd_diags,
+        "status": "tdd_writing",
+    }
+
+
+def tdd_writer_node(state: GraphState):
+    idx = state["tdd_current_mod_index"]
+    blueprint = state["tdd_blueprint"]
+    modules = blueprint.get("modules", [])
+
+    if idx >= len(modules):
+        return {"status": "tdd_visualizing"}
+
+    mod = modules[idx]
+    print(f"  [Agent: TDD Writer] Writing Spec for Module: {mod.get('name')}...")
+
+    prompt = f"""
+    {INSTR_TDD_WRITER}
+    PROJECT: {blueprint.get("project_title")}
+    MODULE: {mod.get("name")}
+    DESCRIPTION: {mod.get("description")}
+    INITIAL SPECS: {mod.get("specs")}
+    
+    TASK: Write a rigorous Technical Design Specification for this module.
+    Use markdown headers. Include Pseudo-code. Use diagram markers {{{{DIAGRAM:id}}}} for: 
+    {", ".join([d["id"] for d in mod.get("diagrams", [])])}
+    """
+
+    res = safe_invoke([HumanMessage(content=prompt)], provider_override="local-proxy")
+    content = f"\n\n{str(res.content).strip()}\n"
+    print(f"    ✓ TDD Module generated: {len(content)} chars")
+
+    return {
+        "tdd_accumulated_md": state["tdd_accumulated_md"] + content,
+        "tdd_current_mod_index": idx + 1,
     }
 
 
 def visualizer_node(state: GraphState):
     if not state.get("diagrams_to_generate"):
-        return {"status": "done", "current_diagram_code": None}
+        return {"status": "tdd_planning"}
 
     diag = state["diagrams_to_generate"][0]
     attempt = state["diagram_attempt"] + 1
@@ -526,7 +739,7 @@ def visualizer_node(state: GraphState):
     TARGET ANCHOR (for links): {diag.get("anchor_target", "")}
     """
     if state.get("last_error"):
-        prompt += f"\n\n!!! FIX PREVIOUS COMPILER ERROR: {state['last_error']}\nAnalyze the error and update the D2 code to resolve it."
+        prompt += f"\n\n!!! FIX PREVIOUS COMPILER ERROR: {state['last_error']}"
 
     res = safe_invoke(
         [
@@ -570,73 +783,214 @@ def compiler_node(state: GraphState):
         img_link = (
             f"\n![{diag.get('title', 'Diagram')}](./diagrams/{diag.get('id')}.svg)\n"
         )
-        return {
-            "accumulated_md": state["accumulated_md"].replace(
-                f"{{{{DIAGRAM:{diag.get('id')}}}}}", img_link
-            ),
-            "diagrams_to_generate": state["diagrams_to_generate"][1:],
-            "diagram_attempt": 0,
-            "last_error": None,
-            "current_diagram_code": None,
-            "current_diagram_meta": None,
-        }
-    else:
-        print(f"    ✗ Failed (Attempt {state['diagram_attempt']}), retrying...")
-        if state["diagram_attempt"] >= 5:
+
+        # Decide which MD to update
+        if str(diag.get("id")).startswith("tdd-diag"):
             return {
+                "tdd_accumulated_md": state["tdd_accumulated_md"].replace(
+                    f"{{{{DIAGRAM:{diag.get('id')}}}}}", img_link
+                ),
+                "tdd_diagrams_to_generate": state["tdd_diagrams_to_generate"][1:],
+                "diagram_attempt": 0,
+                "last_error": None,
+                "current_diagram_code": None,
+                "current_diagram_meta": None,
+            }
+        else:
+            return {
+                "accumulated_md": state["accumulated_md"].replace(
+                    f"{{{{DIAGRAM:{diag.get('id')}}}}}", img_link
+                ),
                 "diagrams_to_generate": state["diagrams_to_generate"][1:],
                 "diagram_attempt": 0,
                 "last_error": None,
                 "current_diagram_code": None,
                 "current_diagram_meta": None,
             }
+    else:
+        print(f"    ✗ Failed (Attempt {state['diagram_attempt']}), retrying...")
+        if state["diagram_attempt"] >= 5:
+            if str(diag.get("id")).startswith("tdd-diag"):
+                return {
+                    "tdd_diagrams_to_generate": state["tdd_diagrams_to_generate"][1:],
+                    "diagram_attempt": 0,
+                    "last_error": None,
+                    "current_diagram_code": None,
+                    "current_diagram_meta": None,
+                }
+            else:
+                return {
+                    "diagrams_to_generate": state["diagrams_to_generate"][1:],
+                    "diagram_attempt": 0,
+                    "last_error": None,
+                    "current_diagram_code": None,
+                    "current_diagram_meta": None,
+                }
         return {"last_error": res.stderr}
+
+
+def tdd_visualizer_node(state: GraphState):
+    if not state.get("tdd_diagrams_to_generate"):
+        return {"status": "done", "current_diagram_code": None}
+
+    diag = state["tdd_diagrams_to_generate"][0]
+    attempt = state["diagram_attempt"] + 1
+    print(
+        f"  [Agent: TDD Artist] Drawing: {diag.get('title', 'Diagram')} (Attempt {attempt})..."
+    )
+
+    prompt = f"""
+    {INSTR_TDD_ARTIST}
+    REFERENCE (FULL D2 DOCUMENTATION): 
+    {D2_REFERENCE}
+    
+    CONTEXT (TDD SPECS):
+    {state["tdd_accumulated_md"][-15000:]}
+    
+    TASK: Generate detailed D2 code for the technical diagram: '{diag.get("title", "Untitled")}'
+    DIAGRAM DESCRIPTION: {diag.get("description", "")}
+    TARGET ANCHOR: {diag.get("anchor_target", "")}
+    """
+    if state.get("last_error"):
+        prompt += f"\n\n!!! FIX PREVIOUS COMPILER ERROR: {state['last_error']}"
+
+    res = safe_invoke(
+        [
+            SystemMessage(
+                content="You are a Technical D2 Master Artist. Output ONLY raw D2 code."
+            ),
+            HumanMessage(content=prompt),
+        ],
+        provider_override="local-proxy",
+    )
+    code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
+    print(f"    ✓ TDD Diagram code generated: {len(code)} chars")
+    return {
+        "current_diagram_code": code,
+        "current_diagram_meta": diag,
+        "diagram_attempt": attempt,
+    }
+
+
+def bibliographer_node(state: GraphState):
+    print(f"  [Agent: Bibliographer] Curating external resources...", flush=True)
+
+    # Use both accumulated text and the explicitly flagged advanced contexts
+    full_text = state["accumulated_md"] + "\n" + state["tdd_accumulated_md"]
+    adv_terms = ", ".join(state.get("advanced_contexts", []))
+
+    prompt = f"""
+    {INSTR_BIBLIOGRAPHER}
+    ADVANCED TERMS TO COVER: {adv_terms}
+    
+    PROJECT CONTENT SUMMARY:
+    {full_text[-15000:]}
+    
+    TASK: Provide a "Beyond the Atlas" reading list. 
+    Focus specifically on the ADVANCED TERMS listed above plus any other foundational giants found in the text.
+    """
+
+    res = safe_invoke([HumanMessage(content=prompt)], provider_override="local-proxy")
+    return {"external_reading": str(res.content).strip(), "status": "done"}
 
 
 # --- GRAPH ---
 workflow = StateGraph(GraphState)
 workflow.add_node("architect", architect_node)
+workflow.add_node("knowledge_mapper", knowledge_mapper_node)
 workflow.add_node("writer", writer_node)
 workflow.add_node("visualizer", visualizer_node)
 workflow.add_node("compiler", compiler_node)
+workflow.add_node("tdd_planner", tdd_planner_node)
+workflow.add_node("tdd_writer", tdd_writer_node)
+workflow.add_node("tdd_visualizer", tdd_visualizer_node)
+workflow.add_node("bibliographer", bibliographer_node)
 
 workflow.add_edge(START, "architect")
 workflow.add_edge("architect", "writer")
 
 
 def route_writer(state):
-    return (
-        "writer"
-        if state["current_ms_index"] < len(state["blueprint"].get("milestones", []))
-        else "visualizer"
-    )
+    if state["current_ms_index"] < len(state["blueprint"].get("milestones", [])):
+        return "knowledge_mapper"
+    return "visualizer"
 
 
 workflow.add_conditional_edges(
-    "writer", route_writer, {"writer": "writer", "visualizer": "visualizer"}
+    "writer",
+    route_writer,
+    {"knowledge_mapper": "knowledge_mapper", "visualizer": "visualizer"},
 )
+
+workflow.add_edge("knowledge_mapper", "writer")
 
 
 def route_visualizer(state):
     if not state.get("diagrams_to_generate"):
-        return END
+        return "tdd_planner"
     return "compiler"
 
 
 workflow.add_conditional_edges(
-    "visualizer", route_visualizer, {"compiler": "compiler", END: END}
+    "visualizer",
+    route_visualizer,
+    {"compiler": "compiler", "tdd_planner": "tdd_planner"},
 )
 
 
-def route_compiler(state):
+def route_tdd_writer(state):
     return (
-        "retry" if state.get("last_error") and state["diagram_attempt"] > 0 else "next"
+        "tdd_writer"
+        if state["tdd_current_mod_index"]
+        < len(state["tdd_blueprint"].get("modules", []))
+        else "tdd_visualizer"
     )
 
 
 workflow.add_conditional_edges(
-    "compiler", route_compiler, {"retry": "visualizer", "next": "visualizer"}
+    "tdd_writer",
+    route_tdd_writer,
+    {"tdd_writer": "tdd_writer", "tdd_visualizer": "tdd_visualizer"},
 )
+
+
+def route_tdd_visualizer(state):
+    if not state.get("tdd_diagrams_to_generate"):
+        return "bibliographer"
+    return "compiler"
+
+
+workflow.add_conditional_edges(
+    "tdd_visualizer",
+    route_tdd_visualizer,
+    {"compiler": "compiler", "bibliographer": "bibliographer"},
+)
+
+workflow.add_edge("bibliographer", END)
+
+
+def route_compiler(state):
+    # Determine phase based on status field instead of cleared metadata
+    is_tdd = state.get("status") == "tdd_visualizing"
+
+    if state.get("last_error") and state["diagram_attempt"] > 0:
+        return "tdd_retry" if is_tdd else "visual_retry"
+
+    return "tdd_next" if is_tdd else "visual_next"
+
+
+workflow.add_conditional_edges(
+    "compiler",
+    route_compiler,
+    {
+        "visual_retry": "visualizer",
+        "visual_next": "visualizer",
+        "tdd_retry": "tdd_visualizer",
+        "tdd_next": "tdd_visualizer",
+    },
+)
+
+workflow.add_edge("tdd_planner", "tdd_writer")
 
 app = workflow.compile()
 
@@ -672,14 +1026,28 @@ def generate_project(project_id):
             "status": "planning",
             "current_diagram_code": None,
             "current_diagram_meta": None,
+            "tdd_blueprint": {},
+            "tdd_accumulated_md": "",
+            "tdd_current_mod_index": 0,
+            "tdd_diagrams_to_generate": [],
+            "external_reading": "",
+            "knowledge_map": [],
+            "advanced_contexts": [],
         }
     )
 
-    # Save final index.md
+    # Save final index.md (Concatenate Atlas + TDD + Further Reading)
     proj_dir = OUTPUT_BASE / project_id
     proj_dir.mkdir(parents=True, exist_ok=True)
+    full_content = (
+        final_state.get("accumulated_md", "")
+        + "\n\n"
+        + final_state.get("tdd_accumulated_md", "")
+        + "\n\n"
+        + final_state.get("external_reading", "")
+    )
     with open(proj_dir / "index.md", "w") as f:
-        f.write(final_state.get("accumulated_md", ""))
+        f.write(full_content)
 
     # Final HTML generation
     subprocess.run(

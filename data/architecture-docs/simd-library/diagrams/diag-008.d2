@@ -1,0 +1,271 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+# --- Global Style Classes ---
+classes: {
+  decision: {
+    shape: diamond
+    style: {
+      fill: "#3b4252"
+      font-color: "#eceff4"
+      stroke: "#4c566a"
+    }
+  }
+  strategy: {
+    style: {
+      fill: "#88c0d0"
+      stroke: "#5e81ac"
+      stroke-width: 2
+      double-border: true
+      font-color: "#2e3440"
+      bold: true
+    }
+  }
+  byte_cell: {
+    style: {
+      fill: "#e5e9f0"
+      stroke: "#4c566a"
+      font: mono
+      font-size: 12
+    }
+  }
+  simd_reg: {
+    style: {
+      fill: "#ebcb8b"
+      stroke: "#d08770"
+      stroke-width: 2
+      font: mono
+    }
+  }
+  annotation: {
+    shape: text
+    style: {
+      font-size: 14
+      italic: true
+    }
+  }
+}
+
+# --- Root Level Content ---
+
+Title: |'md
+# Strategy Selection: SIMD Memcpy Logic
+*Heuristic-based branching for throughput optimization*
+'| {
+  near: top-center
+  link: "#memcpy-strategy-root"
+}
+
+# --- Section 1: Memcpy Strategy Decision Tree ---
+
+Decision_Tree: {
+  link: "#memcpy-strategy-root"
+  style.fill: "#f8f9fb"
+  style.stroke: "#d8dee9"
+
+  Entry: "void* memcpy(dst, src, N)" {
+    shape: rectangle
+    style.border-radius: 10
+    link: "#memcpy-api"
+  }
+
+  Check_Tiny: "N < 16?" {
+    class: decision
+    link: "#check-tiny"
+  }
+
+  Check_Small: "N <= 128?" {
+    class: decision
+    link: "#check-small"
+  }
+
+  Check_Med: "N < 2048?" {
+    class: decision
+    link: "#check-med"
+  }
+
+  Check_L3: "N > L3/2?" {
+    class: decision
+    link: "#check-threshold"
+  }
+
+  # Strategies
+  Strat_Scalar: "Scalar JMP Table\nUnrolled MOVs" {
+    class: strategy
+    link: "#strat-scalar"
+  }
+
+  Strat_Overlap: "SIMD Overlap\n(SSE/AVX Head-Tail)" {
+    class: strategy
+    link: "#strat-overlap"
+  }
+
+  Strat_AVX: "AVX Aligned Loop\n(VMOVDQA 32-64B)" {
+    class: strategy
+    link: "#strat-avx"
+  }
+
+  Strat_ERMS: "ERMS Bulk\n(REP MOVSB)" {
+    class: strategy
+    link: "#strat-erms"
+  }
+
+  Strat_NT: "Non-Temporal Stores\n(VMOVNTDQ Bypass)" {
+    class: strategy
+    link: "#strat-nt"
+  }
+
+  # Connections
+  Entry -> Check_Tiny
+  Check_Tiny -> Strat_Scalar: "Yes"
+  Check_Tiny -> Check_Small: "No"
+  
+  Check_Small -> Strat_Overlap: "Yes"
+  Check_Small -> Check_Med: "No"
+  
+  Check_Med -> Strat_AVX: "Yes"
+  Check_Med -> Check_L3: "No"
+  
+  Check_L3 -> Strat_ERMS: "No"
+  Check_L3 -> Strat_NT: "Yes"
+}
+
+# --- Section 2: Overlapping SIMD View ---
+
+Overlap_Detail: "SIMD Overlap Microscope (16 < N <= 32)" {
+  link: "#simd-overlap-detail"
+  style.fill: "#eceff4"
+
+  Source_Mem: {
+    grid-columns: 8
+    grid-gap: 0
+    B00: "00" { class: byte_cell; style.fill: "#a3be8c" }
+    B01: "01" { class: byte_cell; style.fill: "#a3be8c" }
+    B02: ".." { class: byte_cell; style.fill: "#a3be8c" }
+    B15: "15" { class: byte_cell; style.fill: "#a3be8c" }
+    BN16: "N-16" { class: byte_cell; style.fill: "#bf616a" }
+    BN15: ".." { class: byte_cell; style.fill: "#bf616a" }
+    BN01: "N-1" { class: byte_cell; style.fill: "#bf616a" }
+  }
+
+  Registers: {
+    XMM0: "XMM0 (Head)" { class: simd_reg }
+    XMM1: "XMM1 (Tail)" { class: simd_reg }
+  }
+
+  Dest_Mem: {
+    grid-columns: 8
+    grid-gap: 0
+    D00: "00" { class: byte_cell; style.fill: "#a3be8c" }
+    D15: "15" { class: byte_cell; style.fill: "#a3be8c" }
+    DN16: "N-16" { class: byte_cell; style.fill: "#bf616a" }
+    DN01: "N-1" { class: byte_cell; style.fill: "#bf616a" }
+  }
+
+  Source_Mem.B00 -> Registers.XMM0: "LOAD (0..15)"
+  Source_Mem.BN16 -> Registers.XMM1: "LOAD (N-16..N)"
+  
+  Registers.XMM0 -> Dest_Mem.D00: "STORE"
+  Registers.XMM1 -> Dest_Mem.DN01: "STORE"
+
+  label: "Registers hold overlapping slices; stores overlap in center"
+}
+
+# --- Section 3: Alignment Transition ---
+
+Alignment_Phase: "Pointer Alignment Transition" {
+  link: "#alignment-logic"
+  direction: right
+
+  State_Before: "Unaligned State" {
+    Ptr: "src: 0x...F3" { style.fill: "#bf616a" }
+    Note: "Split Line Penalty" { class: annotation }
+  }
+
+  Transition: "Preamble Loop" {
+    shape: step
+    label: "Copy 1..15 bytes"
+    link: "#alignment-logic"
+  }
+
+  State_After: "Aligned State" {
+    Ptr: "src: 0x...00" { style.fill: "#a3be8c" }
+    Note: "VMOVDQA Enabled" { class: annotation }
+  }
+
+  State_Before -> Transition -> State_After
+}
+
+# --- Section 4: Memory Hierarchy Bypass ---
+
+Memory_Pathways: "Memory Hierarchy Context" {
+  link: "#nt-stores"
+  
+  CPU: {
+    shape: sql_table
+    Register_File: {
+      YMM0: "256-bit"
+      YMM1: "256-bit"
+    }
+  }
+
+  Cache_Layers: {
+    L1: "L1 Cache" { shape: package }
+    L2: "L2 Cache" { shape: package }
+    L3: "L3 Cache" { shape: package }
+  }
+
+  RAM: "Main Memory (DDR4/5)" { 
+    shape: cylinder
+    style.fill: "#81a1c1" 
+  }
+
+  CPU.Register_File -> Cache_Layers.L1: "Temporal Store (Standard)" {
+    link: "#check-threshold"
+  }
+  
+  CPU.Register_File -> RAM: "Non-Temporal Store (VMOVNTDQ)" {
+    style: {
+      stroke: "#d08770"
+      stroke-width: 4
+      stroke-dash: 3
+      animated: true
+    }
+    link: "#strat-nt"
+  }
+}
+
+# --- Inter-Component Links ---
+
+Decision_Tree.Strat_Overlap -> Overlap_Detail: "Implements Strategy"
+Decision_Tree.Strat_AVX -> Alignment_Phase: "Depends On Alignment"
+Decision_Tree.Strat_NT -> Memory_Pathways: "Triggers NT Path"
+
+# --- Legends & Summaries ---
+
+Decision_Matrix_Note: |'md
+### Selection Criteria Summary
+| Range (N) | Strategy | ISA Instruction |
+| :--- | :--- | :--- |
+| **0-15** | Unrolled GPR | `MOV` (64-bit) |
+| **16-128** | SIMD Overlap | `MOVUPS` (128-bit) |
+| **128-2048**| AVX Loop | `VMOVDQU` (256-bit) |
+| **>2048** | ERMS | `REP MOVSB` |
+| **>L3/2** | Non-Temporal | `VMOVNTDQ` |
+'| {
+  near: bottom-right
+}
+
+Global_Legend: |'md
+### Color Key
+- <span style="color:#a3be8c">■</span> Aligned / Correct
+- <span style="color:#bf616a">■</span> Unaligned / Penalty
+- <span style="color:#88c0d0">■</span> Strategy Endpoint
+- <span style="color:#3b4252; background:#3b4252">■</span> Decision Logic
+'| {
+  near: bottom-left
+}

@@ -1,0 +1,196 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+classes: {
+  interface_table: {
+    shape: sql_table
+    style: {
+      stroke: "#63c08c"
+      fill: "#222a25"
+      font-color: "#adf1c6"
+      stroke-width: 4
+    }
+  }
+  engine_core: {
+    style: {
+      fill: "#1e1e2e"
+      stroke: "#89b4fa"
+      stroke-width: 2
+      double-border: true
+    }
+  }
+  os_block: {
+    style: {
+      fill: "#313244"
+      stroke: "#f5e0dc"
+      border-radius: 5
+    }
+  }
+  fault_zone: {
+    style: {
+      fill: "#451a1a"
+      stroke: "#f38ba8"
+      stroke-dash: 5
+    }
+  }
+}
+
+# THE VFS SHIELD: ARCHITECTURAL DECOUPLING
+# Root Level container for the primary architecture
+vfs_atlas: {
+  link: "#milestone-10"
+  
+  # Core Database Logic (The "Users" of VFS)
+  database_engine: "DATABASE CORE" {
+    class: engine_core
+    
+    btree: "B-Tree Manager" {
+      link: "#milestone-4"
+      tooltip: "Logic for finding pages"
+    }
+    
+    pager: "Pager Module" {
+      link: "#milestone-4"
+      tooltip: "Manages memory cache and page fetches"
+    }
+    
+    btree -> pager: "Request Page X"
+  }
+
+  # THE SHIELD (VFS Interface)
+  # Representing the C Struct dispatch table
+  vfs_interface: "sqlite3_vfs (Dispatch Table)" {
+    class: interface_table
+    link: "#milestone-10"
+    
+    xOpen: "filename, flags" {constraint: "vfs_file*"}
+    xRead: "vfs_file*, buffer, amount" {constraint: "int"}
+    xWrite: "vfs_file*, buffer, amount" {constraint: "int"}
+    xSync: "vfs_file*, flags" {constraint: "int"}
+    xClose: "vfs_file*" {constraint: "int"}
+    xTruncate: "vfs_file*, size" {constraint: "int"}
+    xCheckReservedLock: "vfs_file*" {constraint: "int"}
+  }
+
+  database_engine.pager -> vfs_interface: "Abstract I/O Calls" {
+    style: {
+      stroke-width: 4
+      animated: true
+    }
+  }
+
+  # OS-Specific Implementations
+  platform_adaptors: "PLATFORM ADAPTORS" {
+    
+    linux_posix: "Unix/Linux VFS" {
+      class: os_block
+      posix_io: "System Calls" {
+        shape: package
+        "open()"
+        "pread()"
+        "pwrite()"
+        "fsync()"
+      }
+    }
+
+    win32: "Windows VFS" {
+      class: os_block
+      win32_api: "Win32 API" {
+        shape: package
+        "CreateFileW()"
+        "ReadFile()"
+        "WriteFile()"
+        "FlushFileBuffers()"
+      }
+    }
+
+    # The Fault Injector (Milestone 10)
+    fault_injector: "Malicious VFS (Testing)" {
+      class: [os_block; fault_zone]
+      link: "#milestone-10"
+      
+      logic: |'md
+        c
+        // Fault Injection Logic
+        if (counter++ == target_fail) 
+           return SQLITE_IOERR;
+        else 
+           return real_vfs->xWrite(...);
+        
+      '|
+    }
+  }
+
+  vfs_interface -> platform_adaptors.linux_posix: "Dynamic Dispatch"
+  vfs_interface -> platform_adaptors.win32: "Dynamic Dispatch"
+  vfs_interface -> platform_adaptors.fault_injector: "Hook for Fuzzing"
+}
+
+# STATE TRANSITION: THE IO_ERR INJECTION
+# Moved to root level to avoid near-key constraint errors
+fault_scenario: "FAULT INJECTION: BEFORE VS AFTER" {
+  near: bottom-right
+  link: "#milestone-10"
+  
+  state_before: "NOMINAL STATE" {
+    write_op: "xWrite() -> OK"
+    disk: "Consistent Page" {shape: cylinder}
+    write_op -> disk: "Success"
+  }
+
+  state_after: "FAULT TRIGGERED" {
+    class: fault_zone
+    write_op: "xWrite() -> SQLITE_IOERR"
+    disk: "Torn Page / Corruption" {
+      shape: cylinder
+      style.fill: "#f38ba8"
+    }
+    write_op -> disk: "ABORTED" {style.stroke: "#f38ba8"; style.stroke-width: 3}
+  }
+  
+  state_before -> state_after: "Counter == Target" {
+    style.stroke-dash: 3
+  }
+}
+
+# Hardware interaction layer
+hardware: "PHYSICAL LAYER (HARDWARE)" {
+  near: bottom-center
+  style.fill: "#11111b"
+  
+  cpu_cache: "CPU Cache Line (64B)" {
+    class: os_block
+    width: 300
+  }
+  
+  disk_controller: "Disk Controller / SSD" {
+    shape: cylinder
+    style.fill: "#181825"
+  }
+}
+
+vfs_atlas.platform_adaptors.linux_posix.posix_io -> hardware.disk_controller: "fsync barrier" {
+  style: {
+    stroke: "#f38ba8"
+    stroke-width: 5
+    animated: true
+  }
+}
+
+vfs_legend: |'md
+  ### The VFS Philosophy
+  - **Indirection**: The Engine never calls `write()` directly, protecting the core from OS variations.
+  - **Portability**: To port SQLite to a new OS, you only write one C file implementing this interface.
+  - **Testability**: We can "Lie" to the Pager about disk success to test recovery and ACID compliance.
+'| {
+  near: top-right
+}
+
+# Connection from pager to specific interface method for detail
+vfs_atlas.database_engine.pager -> vfs_atlas.vfs_interface.xWrite: "Call via fn pointer" {
+  style.stroke: "#89b4fa"
+}

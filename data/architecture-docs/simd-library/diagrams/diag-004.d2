@@ -1,0 +1,226 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+# Visual Styles and Classes
+classes: {
+  module: {
+    style: {
+      stroke-width: 2
+      border-radius: 8
+      fill: "#1e1e2e"
+      font-color: "#cdd6f4"
+    }
+  }
+  register_table: {
+    shape: sql_table
+    style: {
+      fill: "#11111b"
+      stroke: "#89b4fa"
+      font-color: "#cdd6f4"
+      stroke-width: 2
+    }
+  }
+  logic_gate: {
+    style: {
+      fill: "#313244"
+      stroke: "#f5e0dc"
+      border-radius: 4
+      font-color: "#f5e0dc"
+    }
+  }
+}
+
+# Main Structure: String Search Module Architecture
+SSMA: "String Search Module Architecture" {
+  link: "#architecture-root"
+  
+  CTRL_PLANE: "Control Plane" {
+    class: module
+    link: "#api-spec"
+    
+    entry: "search(haystack, needle)" {
+      shape: step
+      link: "#search-impl"
+    }
+    result_handler: "Result Handler: return offset" {
+      link: "#result-handler"
+    }
+  }
+
+  DATA_PLANE: "Data Plane" {
+    class: module
+    link: "#vector-engine"
+    
+    orchestrator: "Memory Orchestrator" {
+      link: "#load-ctrl"
+      guard: "Alignment Guard"
+      unroller: "SIMD Unroller"
+      guard -> unroller: "256-bit boundaries"
+    }
+
+    exec_core: "Execution Core" {
+      link: "#comp-pipeline"
+      
+      broadcast: "Broadcast: VPBROADCASTB" {
+        tooltip: "Spreads first char of needle across all lanes"
+        link: "#broadcast"
+      }
+
+      matcher: "SIMD Matcher: VPCMPEQB" {
+        tooltip: "Parallel byte comparison (32 bytes at once)"
+        link: "#matcher"
+      }
+    }
+  }
+
+  REDUCTION: "Reduction Stage" {
+    class: module
+    link: "#bitmask-reducer"
+    
+    movemask: "VPMOVMSKB: MSB Extraction" {
+      link: "#movemask"
+    }
+    
+    tzcnt: "TZCNT: Bit Scanning" {
+      tooltip: "Trailing Zero Count - find first match"
+      link: "#tzcnt"
+    }
+  }
+
+  # Internal Logic Flow
+  CTRL_PLANE.entry -> DATA_PLANE.orchestrator: "Base Ptr + Len"
+  DATA_PLANE.exec_core -> REDUCTION.movemask: "YMM Result Vector"
+  REDUCTION.tzcnt -> CTRL_PLANE.result_handler: "Int32 Offset"
+}
+
+# Detailed View: SIMD Register State
+REG_VIEW: "SIMD Register State (256-bit AVX2)" {
+  near: top-right
+  link: "#memory-layout"
+
+  ymm0: "YMM0 (Pattern Register)" {
+    class: register_table
+    "Byte 0": "'S'"
+    "Byte 1": "'S'"
+    "Byte 2": "'S'"
+    "Byte ...": "..."
+    "Byte 31": "'S'"
+  }
+
+  ymm1: "YMM1 (Haystack Chunk)" {
+    class: register_table
+    "Byte 0": "'M'"
+    "Byte 1": "'I'"
+    "Byte 2": "'S'"
+    "Byte ...": "..."
+    "Byte 31": "'P'"
+  }
+
+  alu_logic: "SIMD Comparison Logic" {
+    class: logic_gate
+    link: "#alu-logic"
+    explanation: |'md
+      ## Parallel Comparison (AVX2)
+      **Instruction**: `VPCMPEQB`
+      **Micro-Op**: `dest[i] = (src1[i] == src2[i]) ? 0xFF : 0x00`
+      Checks 32 bytes in a single clock cycle.
+    '|
+  }
+
+  ymm0 -> alu_logic: "Pattern"
+  ymm1 -> alu_logic: "Loaded Data"
+  alu_logic -> ymm2: "Writeback"
+
+  ymm2: "YMM2 (Result Mask)" {
+    class: register_table
+    "Byte 0": "0x00 (Mismatch)"
+    "Byte 1": "0x00 (Mismatch)"
+    "Byte 2": "0xFF (Match Found!)"
+    "Byte ...": "..."
+    "Byte 31": "0x00 (Mismatch)"
+  }
+}
+
+# Pipeline Execution Transitions
+PIPELINE: "Execution Pipeline Transitions" {
+  near: bottom-left
+  link: "#state-flow"
+  
+  pre_scan: "State: Pre-Scan" {
+    "Pointer": "0x7FFEE000"
+    "Needle": "'SIMD'"
+    link: "#pre-scan"
+  }
+
+  hot_loop: "State: Hot Loop (32-byte step)" {
+    link: "#simd-loop"
+    load: "SIMD_LOAD: [ptr] -> YMM1"
+    match: "SIMD_MATCH: VPCMPEQB(YMM0, YMM1)"
+    test: "BIT_TEST: VPMOVMSKB(YMM2) != 0"
+    
+    load -> match -> test
+    test -> load: "ptr += 32" {
+      style.stroke-dash: 4
+      style.animated: true
+    }
+  }
+
+  resolution: "State: Match Resolution" {
+    "Step 1": "mask = movemask(YMM2)"
+    "Step 2": "bit_idx = tzcnt(mask)"
+    "Step 3": "offset = loop_ptr + bit_idx"
+    link: "#post-processing"
+  }
+
+  pre_scan -> hot_loop: "Init"
+  hot_loop -> resolution: "Match Found"
+}
+
+# Logic Microscope View
+DEEP_DIVE: "Logic Microscope: Mask Reduction" {
+  near: bottom-right
+  link: "#mask-mechanics"
+  
+  content: |'md
+    ### Bit Manipulation Sequence
+    1. **VPMOVMSKB**
+    Compresses 32 bytes (0xFF/0x00) into a single 32-bit integer by extracting bit 7 of each byte.
+    
+    2. **TZCNT**
+    Counts trailing zeros. If byte 2 was the first 0xFF, bit 2 is '1', TZCNT returns 2.
+    
+    3. **Pointer Synthesis**
+    Adds the bit index to the chunk base address to get the absolute memory location.
+  '| {
+    shape: rectangle
+    style.fill: "#181825"
+    style.stroke: "#fab387"
+  }
+}
+
+# Dense Interconnects
+SSMA.DATA_PLANE.exec_core.matcher -> REG_VIEW.alu_logic: "Execution Trigger" {
+  style: {
+    stroke: "#f38ba8"
+    stroke-width: 3
+    stroke-dash: 2
+    animated: true
+  }
+}
+
+SSMA.REDUC.movemask -> DEEP_DIVE.content: "Logic Deep-Dive" {
+  style: {
+    stroke: "#a6e3a1"
+    stroke-width: 2
+  }
+}
+
+# Global Overrides
+***.style.font-size: 14
+(*** -> ***)[*]: {
+  style.stroke: "#585b70"
+}

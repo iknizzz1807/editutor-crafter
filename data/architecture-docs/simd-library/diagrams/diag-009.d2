@@ -1,0 +1,207 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+# Classes for consistent styling
+classes: {
+  byte_aligned: {
+    style: {
+      stroke: "#bdc3c7"
+      fill: "#ffffff"
+      font-size: 10
+    }
+  }
+  byte_active: {
+    style: {
+      fill: "#3498db"
+      font-color: white
+      bold: true
+    }
+  }
+  byte_crossed: {
+    style: {
+      fill: "#e74c3c"
+      font-color: white
+    }
+  }
+  register_ymm: {
+    shape: rectangle
+    style: {
+      fill: "#2ecc71"
+      stroke: "#27ae60"
+      stroke-width: 4
+      double-border: true
+    }
+  }
+  logic_gate: {
+    shape: diamond
+    style: {
+      fill: "#f1c40f"
+    }
+  }
+}
+
+# Root level Documentation and Theory
+avx_theory: |'md
+  ### AVX Unaligned Memcpy (VMOVDQU)
+  **Micro-architectural Reality:**
+  1. **Source RSI**: Not 32-byte aligned (e.g., `addr % 32 != 0`).
+  2. **VMOVDQU**: "Move Unaligned Double Quadword".
+  3. **Penalty**: If the 32-byte load straddles a **64-byte cache line boundary**, the hardware must perform two physical memory accesses and fuse the results in the Load Buffer.
+'| {
+  near: top-left
+  link: "#avx-memcpy-specs"
+}
+
+# State Transitions: Before, During, After
+memcpy_flow: "AVX UNALIGNED COPY PIPELINE" {
+  link: "#avx-memcpy-flow"
+  
+  # --- STEP 1: LOAD ---
+  source_view: "STAGE 1: UNALIGNED LOAD (RSI)" {
+    memory_grid: {
+      grid-columns: 8
+      grid-gap: 2
+      
+      b0: "0x00" {class: byte_aligned}
+      b1: "0x01" {class: byte_aligned}
+      b2: "0x02" {class: byte_aligned}
+      b3: "0x03" {class: byte_aligned}
+      
+      # The unaligned window starts at offset 4
+      target_start: "0x04" {class: byte_active; tooltip: "Start of 256-bit Vector"}
+      b5: "0x05" {class: byte_active}
+      b6: "0x06" {class: byte_active}
+      b7: "0x07" {class: byte_active}
+      
+      dots: "..." {shape: text}
+    }
+    
+    vmovdqu_load: "VMOVDQU YMM0, [RSI]" {
+      shape: step
+      style.fill: "#ecf0f1"
+      link: "#instr-vmovdqu-load"
+    }
+    
+    memory_grid.target_start -> vmovdqu_load: "32-Byte Stream"
+  }
+
+  # --- STEP 2: REGISTER ---
+  register_state: "STAGE 2: YMM0 REGISTER CONTENT" {
+    ymm0: "YMM0 (256-bit)" {
+      class: register_ymm
+      link: "#reg-ymm0"
+      
+      lane_low: "Low 128-bit (XMM)" {
+        style.fill: "#27ae60"
+      }
+      lane_high: "High 128-bit" {
+        style.fill: "#1e8449"
+      }
+    }
+  }
+
+  # --- STEP 3: STORE ---
+  target_view: "STAGE 3: UNALIGNED STORE (RDI)" {
+    dest_memory: {
+      grid-columns: 8
+      grid-gap: 2
+      
+      d0: "0x80" {class: byte_aligned}
+      target_dest: "0x81" {class: byte_active; tooltip: "Destination Offset 1"}
+      d2: "0x82" {class: byte_active}
+      d3: "0x83" {class: byte_active}
+      d4: "0x84" {class: byte_active}
+      d5: "0x85" {class: byte_active}
+      d6: "0x86" {class: byte_active}
+      d7: "0x87" {class: byte_active}
+      
+      dots: "..." {shape: text}
+    }
+
+    vmovdqu_store: "VMOVDQU [RDI], YMM0" {
+      shape: step
+      style.fill: "#ecf0f1"
+      link: "#instr-vmovdqu-store"
+    }
+  }
+
+  source_view.vmovdqu_load -> register_state.ymm0: "Fill"
+  register_state.ymm0 -> target_view.vmovdqu_store: "Discharge"
+  target_view.vmovdqu_store -> target_view.dest_memory.target_dest: "Commit"
+}
+
+# The Microscope View: Cache Line Splitting
+# Positioned at root to avoid nesting errors
+cache_microscope: "MICROSCOPE: CACHE LINE BOUNDARY SPLIT" {
+  link: "#cache-line-splitting"
+  
+  l1_cache: "L1 Data Cache (64B Lines)" {
+    line_a: "CACHE LINE N" {
+      grid-columns: 8
+      style.fill: "#f8f9f9"
+      a56; a57; a58; a59; a60; a61; a62; a63
+    }
+    
+    boundary: "" {
+      shape: text
+      label: "---------------- BOUNDARY (64-BYTE) ----------------"
+      style.font-color: red
+      style.bold: true
+    }
+    
+    line_b: "CACHE LINE N+1" {
+      grid-columns: 8
+      style.fill: "#f8f9f9"
+      b00; b01; b02; b03; b04; b05; b06; b07
+    }
+  }
+  
+  load_op: "Unaligned 32B Load Window" {
+    style.stroke: "#e67e22"
+    style.stroke-width: 4
+    style.fill: transparent
+  }
+  
+  # Visualization of the split
+  l1_cache.line_a.a60 -> load_op: "Partial Data A" {style.stroke: red}
+  l1_cache.line_b.b07 -> load_op: "Partial Data B" {style.stroke: red}
+  
+  note: |'md
+    **Hardware Stall**:
+    The Load Buffer must wait for *both* cache lines to be fetched from L1.
+    This "Split Load" costs extra cycles.
+  '| {shape: text}
+}
+
+# Explicitly position Microscope and Legend at root
+cache_microscope.near: bottom-right
+legend.near: bottom-left
+
+# Legend
+legend: "VISUAL LEGEND" {
+  ptr_src: "RSI Pointer" {
+    shape: person
+    style.fill: "#3498db"
+  }
+  ptr_dst: "RDI Pointer" {
+    shape: person
+    style.fill: "#27ae60"
+  }
+  split_warn: "Split Load Penalty" {
+    shape: diamond
+    style.fill: "#e74c3c"
+  }
+}
+
+# Global Annotations
+(memcpy_flow.source_view -> memcpy_flow.target_view): "Data Path" {
+  style: {
+    stroke-width: 2
+    stroke-dash: 5
+    animated: true
+  }
+}

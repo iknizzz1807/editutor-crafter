@@ -1,0 +1,209 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+# --- Design Tokens & Classes ---
+classes: {
+  memory_cell: {
+    style: {
+      stroke: "#444444"
+      fill: "#1e1e1e"
+      font-color: "#888888"
+      font: mono
+    }
+  }
+  aligned_boundary: {
+    style: {
+      stroke: "#00ff00"
+      stroke-width: 4
+      double-border: true
+    }
+  }
+  peel_zone: {
+    style: {
+      fill: "#4a235a"
+      stroke: "#a569bd"
+      stroke-dash: 3
+    }
+  }
+  register_zmm: {
+    shape: queue
+    style: {
+      fill: "#1b4f72"
+      stroke: "#5dade2"
+      stroke-width: 2
+    }
+  }
+  logic_step: {
+    shape: step
+    style: {
+      fill: "#145a32"
+      stroke: "#2ecc71"
+      bold: true
+    }
+  }
+  warning_label: {
+    shape: text
+    style: {
+      font-color: "#ec7063"
+      italic: true
+    }
+  }
+}
+
+# --- 1. Strategic Pipeline (The Flow) ---
+alignment_pipeline: "Strategy Execution Pipeline" {
+  link: "#alignment-logic"
+  
+  start: "Input: raw_ptr" {shape: circle}
+  
+  detect: "Check Alignment\n(ptr & 63)" {
+    shape: diamond
+    link: "#detection-phase"
+  }
+  
+  peel: "Scalar Peeling Loop" {
+    class: peel_zone
+    tooltip: "Process elements 1-by-1 until boundary"
+    link: "#peeling-strategy"
+  }
+  
+  simd_main: "Main SIMD Loop\n(Aligned Loads)" {
+    class: logic_step
+    link: "#main-simd-loop"
+  }
+  
+  remainder: "Cleanup Loop\n(Scalar/Masked)" {
+    style.fill: "#784212"
+  }
+
+  start -> detect
+  detect -> peel: "Misaligned" {style.stroke: "#ec7063"}
+  detect -> simd_main: "Aligned" {style.stroke: "#2ecc71"}
+  peel -> simd_main: "Alignment Reached"
+  simd_main -> remainder: "Tail Elements"
+}
+
+# --- 2. Microscope View: Memory Geometry ---
+memory_microscope: "Microscope View: AVX-512 (64-Byte) Alignment" {
+  
+  cache_line_0: "Cache Line A (0x00 - 0x3F)" {
+    grid-columns: 8
+    grid-gap: 2
+    
+    b00: "00" {class: [memory_cell; aligned_boundary]}
+    b04: "04" {class: memory_cell}
+    b08: "08" {class: memory_cell}
+    b12: "0C" {class: [memory_cell; peel_zone]}
+    b16: "10" {class: [memory_cell; peel_zone]}
+    b20: "14" {class: [memory_cell; peel_zone]}
+    b24: "18" {class: [memory_cell; peel_zone]}
+    b28: "1C" {class: [memory_cell; peel_zone]}
+  }
+
+  cache_line_1: "Cache Line B (0x40 - 0x7F)" {
+    grid-columns: 8
+    grid-gap: 2
+    
+    b64: "40" {class: [memory_cell; aligned_boundary]}
+    b68: "44" {class: memory_cell}
+    b72: "48" {class: memory_cell}
+    b76: "4C" {class: memory_cell}
+    b80: "50" {class: memory_cell}
+    b84: "54" {class: memory_cell}
+    b88: "58" {class: memory_cell}
+    b92: "5C" {class: memory_cell}
+  }
+
+  pointer_entry: "Raw Pointer (0x0C)" {
+    shape: package
+    style.fill: "#f39c12"
+  }
+
+  pointer_entry -> cache_line_0.b12: "Entry Offset" {
+    style.stroke: "#f39c12"
+    style.stroke-width: 4
+  }
+}
+
+# --- 3. State Transition: Load Mechanics ---
+load_comparison: "State Transition: Load Performance" {
+  
+  unaligned_state: {
+    label: "BEFORE: Unaligned Access"
+    mem: "Cache Line 1 | Cache Line 2" {
+      shape: cylinder
+      style.fill: "#7b241c"
+    }
+    cpu_op: "_mm512_loadu_ps" {
+      style.bold: true
+    }
+    reg: "ZMM0" {class: register_zmm}
+    
+    penalty_note: "Split-Load Penalty\n2x L1 Hits Required" {class: warning_label}
+
+    mem -> cpu_op -> reg
+  }
+
+  aligned_state: {
+    label: "AFTER: Aligned Access"
+    mem: "Single Cache Line" {
+      shape: cylinder
+      style.fill: "#145a32"
+    }
+    cpu_op: "_mm512_load_ps" {
+      style.bold: true
+    }
+    reg: "ZMM1" {class: register_zmm}
+    
+    optimal_note: "Optimal Single Cycle\nSingle Cache Line Transaction" {
+      shape: text
+      style.font-color: "#2ecc71"
+    }
+
+    mem -> cpu_op -> reg
+  }
+}
+
+# --- 4. Technical Logic Specification & Annotations ---
+# NOTE: Using 'near' only on root level shapes to comply with D2 constraints
+
+peel_annotation: "Scalar Peeling: Elements processed individually until 64-byte boundary (0x40)" {
+  near: bottom-left
+  style.font-color: "#a569bd"
+}
+
+logic_details: ||md
+### Alignment Calculation
+cpp
+// Detect offset from 64-byte boundary
+uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+size_t misalignment = addr & 63; 
+
+if (misalignment > 0) {
+    // Calculate elements to bridge the gap
+    size_t peel_count = (64 - misalignment) / sizeof(T);
+    peel_scalar(ptr, peel_count);
+    ptr += peel_count;
+}
+
+// Now safe for VMOVAPS (Aligned Packed Single-FP)
+__m512 data = _mm512_load_ps(ptr);
+
+|| {
+  near: top-right
+}
+
+# --- Interconnections ---
+alignment_pipeline.peel -> peel_annotation: "Triggers Strategy"
+alignment_pipeline.simd_main -> load_comparison.aligned_state: "Optimized Path"
+memory_microscope.cache_line_1.b64 -> load_comparison.aligned_state.mem: "Aligned Source"
+
+# --- Global Style Consistency ---
+***.style.font-size: 13
+(*** -> ***)[*]: {
+  style.stroke-width: 2
+}

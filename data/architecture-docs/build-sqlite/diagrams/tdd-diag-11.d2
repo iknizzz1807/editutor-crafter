@@ -1,0 +1,120 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+classes: {
+  module: {
+    style: {
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  logic: {
+    style: {
+      fill: "#e1f5fe"
+      stroke: "#01579b"
+    }
+  }
+  storage: {
+    style: {
+      fill: "#fff3e0"
+      stroke: "#e65100"
+    }
+  }
+}
+
+wal_protocol: {
+  shape: sequence_diagram
+  label: "WAL Write-Ahead Protocol Sequence"
+
+  vdbe: VDBE Engine {
+    class: logic
+    tooltip: "Virtual Database Engine executing bytecode"
+    link: "layers.mod-vdbe"
+  }
+  
+  tcc: Transaction Manager {
+    class: logic
+    tooltip: "Transaction & Concurrency Controller"
+    link: "layers.mod-tx-manager"
+  }
+  
+  wal_log: WAL File (.wal) {
+    shape: cylinder
+    class: storage
+    tooltip: "Append-only Write Ahead Log on Disk"
+  }
+  
+  wal_index: WAL Index (SHM) {
+    class: logic
+    style.stroke-dash: 3
+    tooltip: "Shared-memory index for fast WAL lookups"
+  }
+  
+  main_db: Main DB (.db) {
+    shape: cylinder
+    class: storage
+    tooltip: "Primary B-Tree storage file"
+    link: "layers.mod-storage"
+  }
+
+  vdbe.start -> tcc: "tcc_acquire_lock(SHARED)"
+  tcc -> wal_index: "Map read-mark"
+  
+  group Transaction Write Phase {
+    vdbe.modify -> tcc: "tcc_wal_append(pgno, data)"
+    tcc.prep -> wal_log: "Write WalFrameHeader"
+    tcc.prep -> wal_log: "Write 4KB Page Data"
+    
+    vdbe.commit -> tcc: "tcc_commit()"
+    tcc.sync -> wal_log: "Write COMMIT frame"
+    tcc.sync -> wal_log: "fsync()" {
+      style.stroke: red
+      style.animated: true
+    }
+    tcc.sync -> wal_index: "Update end-of-log pointer"
+  }
+
+  tcc -> vdbe: "Return SQLITE_OK"
+
+  group Checkpoint Lifecycle (Async) {
+    tcc.cp -> wal_log: "Read frames from salt-start"
+    tcc.cp -> main_db: "pwrite(pgno, data)"
+    main_db -> tcc.cp: "ACK"
+    tcc.cp -> main_db: "fsync()"
+    tcc.cp -> wal_index: "Reset backfill point"
+  }
+}
+
+# Technical Structs for Context
+protocol_definitions: {
+  near: wal_protocol
+  
+  WalFrame: {
+    shape: class
+    header: WalFrameHeader {
+      pgno: uint32
+      commit: uint8
+      checksum: uint64
+    }
+    data: "uint8[4096]"
+  }
+  
+  LockHierarchy: {
+    shape: sql_table
+    state: LockLevel {constraint: PK}
+    compatibility: AllowedConcurrent
+    UNLOCKED: "ALL"
+    SHARED: "SHARED, RESERVED"
+    RESERVED: "SHARED"
+    PENDING: "SHARED (closing)"
+    EXCLUSIVE: "NONE"
+  }
+}
+
+(wal_protocol.vdbe -> wal_protocol.tcc)[0].style.bold: true
+(wal_protocol.tcc -> wal_protocol.wal_log)[2].style.stroke: "#d32f2f"

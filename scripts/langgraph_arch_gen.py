@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import os, json, re, subprocess, time, yaml, argparse, operator
-from typing import Annotated, List, TypedDict, Dict, Any, Optional, Union
+from typing import Annotated, List, TypedDict, Dict, Any, Optional, Union, cast
 from pathlib import Path
 from string import Template
 from langgraph.graph import StateGraph, START, END
@@ -17,6 +17,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 DATA_DIR = SCRIPT_DIR / ".." / "data"
 YAML_PATH = DATA_DIR / "projects.yaml"
 DEFAULT_OUTPUT = DATA_DIR / "architecture-docs"
+OUTPUT_BASE = DEFAULT_OUTPUT  # Will be overridden by --output flag if provided
 D2_EXAMPLES_DIR = SCRIPT_DIR / ".." / "d2_examples"
 INSTRUCTIONS_DIR = SCRIPT_DIR / "instructions"
 
@@ -78,32 +79,22 @@ def init_llm_provider():
     USE_MIXED_HEAVY_CLAUDE = (
         os.getenv("USE_MIXED_HEAVY_CLAUDE", "false").lower() == "true"
     )
-    CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "sonnet")  # Re-read from env
-    KILO_MODEL = os.getenv("KILO_MODEL", KILO_MODEL)  # Re-read from env or keep default
+    CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "sonnet")
+    KILO_MODEL = os.getenv("KILO_MODEL", KILO_MODEL)
     MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", MISTRAL_MODEL)
 
     if USE_MIXED_CLAUDE_GEMINI or USE_MIXED_HEAVY_CLAUDE:
         LLM_PROVIDER = (
             "mixed-claude-gemini" if USE_MIXED_CLAUDE_GEMINI else "mixed-heavy-claude"
         )
-        mode_desc = (
-            "Architect=Claude, Others=Gemini"
-            if USE_MIXED_CLAUDE_GEMINI
-            else "Architect+Educator=Claude, Artist=Gemini"
-        )
-        print(
-            f">>> Provider: MIXED ({mode_desc})",
-            flush=True,
-        )
-        # We need to initialize the local proxy for the non-claude parts
+        print(f">>> Provider: MIXED ({LLM_PROVIDER})", flush=True)
         LLM = ChatOpenAI(
             base_url="http://127.0.0.1:7999/v1",
             api_key="mythong2005",
             model="gemini_cli/gemini-3-flash-preview",
-            temperature=0.2,
+            temperature=1,
             max_tokens=64000,
         )
-
     elif USE_MISTRAL:
         LLM_PROVIDER = "mistral"
         print(f">>> Provider: MISTRAL ({MISTRAL_MODEL})", flush=True)
@@ -121,11 +112,10 @@ def init_llm_provider():
         LLM_PROVIDER = "claude-cli"
         print(f">>> Provider: CLAUDE CODE CLI (Model: {CLAUDE_MODEL})", flush=True)
     elif USE_ANTHROPIC and ChatAnthropic:
-        print(">>> Setting up Anthropic...", flush=True)
         LLM = ChatAnthropic(
             model=ANTHROPIC_MODEL,
             temperature=1,
-            max_tokens=64000,  # 64K tokens output limit
+            max_tokens=64000,
         )
         LLM_PROVIDER = "anthropic"
         print(f">>> Provider: ANTHROPIC ({ANTHROPIC_MODEL})", flush=True)
@@ -135,19 +125,146 @@ def init_llm_provider():
             base_url="http://127.0.0.1:7999/v1",
             api_key="mythong2005",
             model="gemini_cli/gemini-3-flash-preview",
-            temperature=0.2,
-            max_tokens=64000,  # 64K tokens output limit
+            temperature=1,
+            max_tokens=64000,
         )
         LLM_PROVIDER = "local-proxy"
-        if USE_ANTHROPIC and not ChatAnthropic:
-            print(
-                ">>> Warning: langchain-anthropic not installed. Falling back to local proxy."
-            )
-        print(">>> Provider: LOCAL PROXY (Gemini 3 Flash)", flush=True)
 
 
 def replace_reducer(old, new):
     return new
+
+
+def extract_json(text):
+    if not text:
+        return None
+    try:
+        text = str(text)
+        match = re.search(r"(\{.*\}|\[.*\])", text, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+    except:
+        pass
+    return None
+
+
+def strip_ansi_codes(text):
+    ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+    return ansi_escape.sub("", str(text))
+
+
+def invoke_kilo_cli(messages, max_retries=3):
+    system_prompt = ""
+    user_prompt = ""
+    for msg in messages:
+        if isinstance(msg, SystemMessage):
+            system_prompt = str(msg.content)
+        elif isinstance(msg, HumanMessage):
+            user_prompt = str(msg.content)
+
+    full_prompt = (
+        f"SYSTEM INSTRUCTIONS:\n{system_prompt}\n\nUSER REQUEST:\n{user_prompt}"
+        if system_prompt
+        else user_prompt
+    )
+
+    for attempt in range(max_retries):
+        try:
+            cmd = ["kilo", "run"]
+            if KILO_MODEL:
+                cmd.extend(["--model", KILO_MODEL])
+            cmd.append(full_prompt)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)
+            if result.returncode == 0:
+
+                class MockResponse:
+                    def __init__(self, content):
+                        self.content = content
+
+                return MockResponse(result.stdout)
+            time.sleep((attempt + 1) * 5)
+        except Exception:
+            time.sleep((attempt + 1) * 5)
+    raise Exception("Kilo CLI failed")
+
+
+def invoke_claude_cli(messages, max_retries=3):
+    system_prompt = ""
+    user_prompt = ""
+    for msg in messages:
+        if isinstance(msg, SystemMessage):
+            system_prompt = str(msg.content)
+        elif isinstance(msg, HumanMessage):
+            user_prompt = str(msg.content)
+
+    for attempt in range(max_retries):
+        try:
+            cmd = [
+                "claude",
+                "-p",
+                "--model",
+                CLAUDE_MODEL,
+                "--dangerously-skip-permissions",
+                "--tools",
+                "",
+            ]
+            if system_prompt:
+                cmd.extend(["--system-prompt", system_prompt])
+            result = subprocess.run(
+                cmd, input=user_prompt, capture_output=True, text=True, timeout=1200
+            )
+            if result.returncode == 0:
+
+                class MockResponse:
+                    def __init__(self, content):
+                        self.content = strip_ansi_codes(content)
+
+                return MockResponse(result.stdout)
+            time.sleep((attempt + 1) * 20)
+        except Exception:
+            time.sleep((attempt + 1) * 20)
+    raise Exception("Claude CLI failed")
+
+
+def safe_invoke(messages, max_retries=5, invoke_kwargs=None, provider_override=None):
+    actual_provider = provider_override or LLM_PROVIDER
+    if actual_provider == "claude-cli":
+        return invoke_claude_cli(messages, max_retries)
+    if actual_provider == "kilo-cli":
+        return invoke_kilo_cli(messages, max_retries)
+
+    kwargs = invoke_kwargs or {}
+    if "timeout" not in kwargs:
+        kwargs["timeout"] = 600
+
+    for attempt in range(max_retries):
+        try:
+            if LLM is None:
+                raise Exception("LLM not initialized")
+            result = LLM.invoke(messages, **kwargs)
+            if result is None or (
+                hasattr(result, "content") and result.content is None
+            ):
+                raise Exception("LLM returned None")
+            return result
+        except Exception as e:
+            err_str = str(e).lower()
+            transient = [
+                "quota",
+                "limit",
+                "timeout",
+                "429",
+                "500",
+                "502",
+                "503",
+                "504",
+                "internal server error",
+            ]
+            if any(t in err_str for t in transient):
+                time.sleep((attempt + 1) * 20)
+            else:
+                raise e
+    raise Exception("LLM invocation failed")
 
 
 class GraphState(TypedDict):
@@ -162,277 +279,53 @@ class GraphState(TypedDict):
     current_diagram_meta: Annotated[Optional[Dict[str, Any]], replace_reducer]
     last_error: Annotated[Optional[str], replace_reducer]
     status: Annotated[str, replace_reducer]
-    # Knowledge Tracking
+    phase: Annotated[str, replace_reducer]  # atlas, tdd, done
     knowledge_map: Annotated[List[str], replace_reducer]
     advanced_contexts: Annotated[List[str], replace_reducer]
-    # TDD Fields
     tdd_blueprint: Annotated[Dict[str, Any], replace_reducer]
     tdd_accumulated_md: Annotated[str, replace_reducer]
     tdd_current_mod_index: Annotated[int, replace_reducer]
     tdd_diagrams_to_generate: Annotated[List[Dict[str, Any]], replace_reducer]
-    # Bibliographer
     external_reading: Annotated[str, replace_reducer]
 
 
-def extract_json(text):
-    if not text:
+# --- CHECKPOINT MANAGER ---
+class CheckpointManager:
+    @staticmethod
+    def get_path(project_id):
+        return OUTPUT_BASE / project_id / "checkpoint.json"
+
+    @staticmethod
+    def save(state: Dict[str, Any]):
+        path = CheckpointManager.get_path(state["project_id"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        serializable = {k: v for k, v in state.items()}
+        path.write_text(json.dumps(serializable, indent=2))
+
+    @staticmethod
+    def load(project_id) -> Optional[Dict]:
+        path = CheckpointManager.get_path(project_id)
+        if path.exists():
+            try:
+                return json.loads(path.read_text())
+            except:
+                return None
         return None
-    try:
-        match = re.search(r"(\{.*\}|\[.*\])", text, re.DOTALL)
-        if match:
-            return json.loads(match.group(0))
-    except:
-        pass
-    return None
-
-
-def strip_ansi_codes(text):
-    """Remove ANSI escape codes from text."""
-    ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-    return ansi_escape.sub("", text)
-
-
-def invoke_kilo_cli(messages, max_retries=3):
-    """Invoke Kilo CLI with exponential backoff."""
-    system_prompt = ""
-    user_prompt = ""
-
-    for msg in messages:
-        if isinstance(msg, SystemMessage):
-            system_prompt = msg.content
-        elif isinstance(msg, HumanMessage):
-            user_prompt = msg.content
-
-    # Kilo doesn't have a distinct system prompt flag in 'run', so we combine them.
-    full_prompt = (
-        f"SYSTEM INSTRUCTIONS:\n{system_prompt}\n\nUSER REQUEST:\n{user_prompt}"
-        if system_prompt
-        else user_prompt
-    )
-
-    for attempt in range(max_retries):
-        try:
-            # cmd = ["kilo", "run", "--model", KILO_MODEL, full_prompt]
-            # Use 'run' with the prompt.
-            # NOTE: We are passing the prompt as an argument.
-            # If the prompt is huge, we might hit shell arg limits, but subprocess.run
-            # usually handles large args better than shell=True.
-            cmd = ["kilo", "run"]
-            if KILO_MODEL:
-                cmd.extend(["--model", KILO_MODEL])
-            cmd.append(full_prompt)
-
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=1200,
-            )
-
-            if result.returncode == 0:
-
-                class MockResponse:
-                    def __init__(self, content):
-                        self.content = content
-
-                return MockResponse(result.stdout)
-            else:
-                err_str = result.stderr.lower()
-                print(f"    ! Kilo CLI Error: {result.stderr[:200]}...")
-                # Retry logic for potential networking/API blips
-                time.sleep((attempt + 1) * 5)
-        except Exception as e:
-            print(f"    ! Kilo CLI Exception: {e}")
-            time.sleep((attempt + 1) * 5)
-
-    raise Exception("Max retries exceeded for Kilo CLI invocation.")
-
-
-def invoke_claude_cli(messages, max_retries=3):
-    """Invoke Claude Code CLI with exponential backoff."""
-    # Extract system message and human message from LangChain format
-    system_prompt = ""
-    user_prompt = ""
-
-    for msg in messages:
-        if isinstance(msg, SystemMessage):
-            system_prompt = msg.content
-        elif isinstance(msg, HumanMessage):
-            user_prompt = msg.content
-
-    for attempt in range(max_retries):
-        try:
-            # Build the claude command - use stdin for long prompts
-            # Disable tools to prevent interactive prompts that hang the process
-            cmd = [
-                "claude",
-                "-p",
-                "--model",
-                CLAUDE_MODEL,
-                "--dangerously-skip-permissions",
-                "--tools",
-                "",
-            ]
-
-            # Add system prompt if present via flag
-            if system_prompt:
-                cmd.extend(["--system-prompt", system_prompt])
-
-            # Use stdin for user prompt to avoid argument length limit
-            result = subprocess.run(
-                cmd,
-                input=user_prompt,
-                capture_output=True,
-                text=True,
-                timeout=1200,
-            )
-
-            if result.returncode == 0:
-                if os.getenv("DEBUG_MODE") == "true":
-                    print(
-                        f"\n--- [RAW CLAUDE CLI RESPONSE] ---\n{result.stdout}\n---------------------------------\n"
-                    )
-
-                # Create a mock response object compatible with LangChain
-                class MockResponse:
-                    def __init__(self, content):
-                        self.content = strip_ansi_codes(content)
-
-                return MockResponse(result.stdout)
-            else:
-                err_str = result.stderr.lower()
-                # Check for transient errors
-                transient_errors = [
-                    "quota",
-                    "limit",
-                    "timeout",
-                    "429",
-                    "500",
-                    "502",
-                    "503",
-                    "504",
-                    "internal server error",
-                    "api_error",
-                ]
-                if any(err in err_str for err in transient_errors):
-                    wait_time = (attempt + 1) * 20
-                    print(
-                        f"    ! Claude CLI transient error. Retrying in {wait_time}s..."
-                    )
-                    time.sleep(wait_time)
-                else:
-                    error_msg = result.stderr if result.stderr else result.stdout
-                    raise Exception(
-                        f"Claude CLI failed (RC={result.returncode}): {error_msg}"
-                    )
-
-        except subprocess.TimeoutExpired:
-            wait_time = (attempt + 1) * 20
-            print(f"    ! Claude CLI timeout. Retrying in {wait_time}s...")
-            time.sleep(wait_time)
-        except Exception as e:
-            err_str = str(e).lower()
-            transient_errors = [
-                "quota",
-                "limit",
-                "timeout",
-                "429",
-                "500",
-                "502",
-                "503",
-                "504",
-                "internal server error",
-                "api_error",
-            ]
-            if any(err in err_str for err in transient_errors):
-                wait_time = (attempt + 1) * 20
-                print(f"    ! Claude CLI transient error. Retrying in {wait_time}s...")
-                time.sleep(wait_time)
-            else:
-                raise e
-
-    raise Exception("Max retries exceeded for Claude CLI invocation.")
-
-
-def safe_invoke(messages, max_retries=5, invoke_kwargs=None, provider_override=None):
-    """Invoke LLM with exponential backoff to handle quota and transient server errors."""
-    actual_provider = provider_override or LLM_PROVIDER
-
-    if actual_provider == "claude-cli":
-        return invoke_claude_cli(messages, max_retries)
-    if actual_provider == "kilo-cli":
-        return invoke_kilo_cli(messages, max_retries)
-
-    kwargs = invoke_kwargs or {}
-    # Force a very long timeout for Gemini Proxy to handle large context
-    if "timeout" not in kwargs:
-        kwargs["timeout"] = 600
-
-    for attempt in range(max_retries):
-        try:
-            result = LLM.invoke(messages, **kwargs)
-            if result is None or (
-                hasattr(result, "content") and result.content is None
-            ):
-                raise Exception("LLM returned None response")
-
-            if os.getenv("DEBUG_MODE") == "true":
-                print(
-                    f"\n--- [RAW LLM RESPONSE] ---\n{result.content}\n--------------------------\n"
-                )
-
-            return result
-        except Exception as e:
-            err_msg = str(e)
-            err_str = err_msg.lower()
-            print(f"    ! LLM Call Failed: {err_msg[:200]}...")
-
-            transient_errors = [
-                "quota",
-                "limit",
-                "timeout",
-                "429",
-                "500",
-                "502",
-                "503",
-                "504",
-                "internal server error",
-                "api_error",
-                "nonetype",
-                "iterable",
-                "empty",
-            ]
-            if any(err in err_str for err in transient_errors):
-                wait_time = (attempt + 1) * 20
-                print(f"    ! Transient error detected. Retrying in {wait_time}s...")
-                time.sleep(wait_time)
-            else:
-                # If it's not a known transient error, raise it immediately
-                raise e
-    raise Exception("Max retries exceeded for LLM invocation.")
 
 
 def architect_node(state: GraphState):
+    if state.get("blueprint") and state["blueprint"].get("milestones"):
+        print(f"  [Agent: Architect] Resuming blueprint for {state['project_id']}...")
+        return {"status": "writing", "phase": "atlas"}
+
     print(f"  [Agent: Architect] Blueprinting {state['project_id']}...", flush=True)
     meta = state["meta"]
     prompt = f"""
     {INSTR_ARCHITECT}
     PROJECT: {meta.get("name")}\nDESC: {meta.get("description")}
     TASK: Output ONLY raw JSON for the Blueprint. 
-    
-    CRITICAL: Do NOT include any conversational text or markdown blocks outside the JSON.
-    
-    EXAMPLE JSON FORMAT (STRICT):
-    {{
-      "title": "Build a Garbage Collector",
-      "overview": "Summary...",
-      "technical_contract": {{ "structs": [], "interfaces": [] }},
-      "milestones": [ {{ "id": "ms-1", "title": "...", "summary": "..." }} ],
-      "diagrams": [ {{ "id": "diag-01", "title": "...", "description": "...", "anchor_target": "ms-1" }} ]
-    }}
-    Plan 10-15 diagrams. Ensure unique IDs.
+    Plan 10-15 diagrams.
     """
-    # Use JSON mode if supported by local proxy or Mistral
     invoke_args = {}
     if LLM_PROVIDER in [
         "local-proxy",
@@ -442,7 +335,6 @@ def architect_node(state: GraphState):
     ]:
         invoke_args["response_format"] = {"type": "json_object"}
 
-    print(f"  [Agent: Architect] Calling LLM (provider={LLM_PROVIDER})...", flush=True)
     res = safe_invoke(
         [
             SystemMessage(
@@ -451,65 +343,36 @@ def architect_node(state: GraphState):
             HumanMessage(content=prompt),
         ],
         invoke_kwargs=invoke_args,
-        provider_override=(
-            "claude-cli" if LLM_PROVIDER and LLM_PROVIDER.startswith("mixed") else None
-        ),
+        provider_override="claude-cli"
+        if LLM_PROVIDER and LLM_PROVIDER.startswith("mixed")
+        else None,
     )
-    print(f"  [Agent: Architect] Response received: {len(res.content)} chars")
     blueprint = extract_json(res.content)
     if not blueprint:
-        res = safe_invoke(
-            [
-                SystemMessage(
-                    content="You are a Master Architect. Output ONLY raw JSON code block."
-                ),
-                HumanMessage(content=prompt),
-            ],
-            provider_override=(
-                "claude-cli"
-                if LLM_PROVIDER and str(LLM_PROVIDER).startswith("mixed")
-                else None
-            ),
-        )
-        print(f"  [Agent: Architect] Retry response received: {len(res.content)} chars")
-        blueprint = extract_json(res.content)
+        raise ValueError("Architect failed to return valid JSON")
 
-    if not blueprint:
-        raise ValueError("Architect failed to return valid JSON after retries")
-
-    # Incremental write
     proj_dir = OUTPUT_BASE / state["project_id"]
     proj_dir.mkdir(parents=True, exist_ok=True)
     header = f"# {blueprint.get('title', state['project_id'])}\n\n{blueprint.get('overview', '')}\n\n"
 
-    return {
+    new_state = {
         "blueprint": blueprint,
         "diagrams_to_generate": blueprint.get("diagrams", []),
         "status": "writing",
+        "phase": "atlas",
         "accumulated_md": header,
     }
+    CheckpointManager.save({**state, **new_state})
+    return new_state
 
 
 def knowledge_mapper_node(state: GraphState):
-    """Scan the last generated content for key technical concepts to add to the knowledge map."""
     print(f"  [Agent: Knowledge Mapper] Updating map...", flush=True)
-
     last_content = state["accumulated_md"].split("\n\n")[-1]
-
-    prompt = f"""
-    Extract 3-5 key technical concepts/keywords from the following text that were explained in detail.
-    Output ONLY a comma-separated list of terms.
-    
-    TEXT:
-    {last_content}
-    """
-
+    prompt = f"Extract 3-5 key technical concepts from: {last_content}. Output ONLY comma-separated list."
     res = safe_invoke([HumanMessage(content=prompt)], provider_override="local-proxy")
     new_terms = [t.strip() for t in str(res.content).split(",") if t.strip()]
-
-    # Also extract Advanced Context tags
     adv_tags = re.findall(r"\[\[ADVANCED_CONTEXT:(.*?)\]\]", state["accumulated_md"])
-
     return {
         "knowledge_map": list(set(state.get("knowledge_map", []) + new_terms)),
         "advanced_contexts": list(set(state.get("advanced_contexts", []) + adv_tags)),
@@ -520,92 +383,70 @@ def writer_node(state: GraphState):
     idx = state["current_ms_index"]
     blueprint = state["blueprint"]
     milestones = blueprint.get("milestones", [])
-    diagrams = blueprint.get("diagrams", [])
-
     if idx >= len(milestones):
-        return {"status": "visualizing"}
+        return {"status": "visualizing", "phase": "atlas"}
 
     ms = milestones[idx]
-    ms_title = ms.get("title") or f"Milestone {idx + 1}"
-    print(f"  [Agent: Educator] Writing Atlas Node: {ms_title}...")
+    marker = f"<!-- MS_ID: {ms.get('id', f'ms-{idx}')} -->"
+    if marker in state["accumulated_md"]:
+        print(
+            f"  [Agent: Educator] Skipping already generated Milestone: {ms.get('title')}"
+        )
+        return {"current_ms_index": idx + 1}
 
-    # Determine Provider for this node
+    print(f"  [Agent: Educator] Writing Atlas Node: {ms.get('title')}...")
     is_claude = LLM_PROVIDER == "mixed-heavy-claude" or LLM_PROVIDER == "claude-cli"
-
-    if is_claude and state["accumulated_md"]:
-        # Split by milestone marker to get the actual last milestone
-        ms_parts = state["accumulated_md"].split("<!-- END_MS -->")
-        last_ms_content = ms_parts[-2] if len(ms_parts) > 1 else state["accumulated_md"]
-        context_to_send = f"(...previous history omitted...)\n\n{last_ms_content}"
-    else:
-        context_to_send = state["accumulated_md"]
+    context_to_send = state["accumulated_md"]
+    if is_claude and "<!-- END_MS -->" in context_to_send:
+        context_to_send = (
+            "...history omitted...\n\n" + context_to_send.split("<!-- END_MS -->")[-2]
+        )
 
     diag_list = "\n".join(
         [
-            f"- ID: {d['id']} | Title: {d['title']} | Desc: {d['description']}"
-            for d in diagrams
+            f"- ID: {d['id']} | Title: {d['title']}"
+            for d in blueprint.get("diagrams", [])
         ]
     )
-
-    prompt = f"""
-    {INSTR_EDUCATOR}
-    TASK: Write content for: {ms_title}.
-    SUMMARY: {ms.get("summary", "")}
-    ANCHOR_ID: {ms.get("id", f"ms-{idx}")}
-    KNOWLEDGE MAP (Compressed Memory): {state.get("knowledge_map", [])}
-    PREVIOUS CONTEXT: {context_to_send}
-    
-    IMPORTANT: 
-    1. You MUST use these specific Diagram IDs when inserting diagrams using the {{{{DIAGRAM:id}}}} syntax:
-    {diag_list}
-    
-    2. DYNAMIC DIAGRAMS: If you find a new complex technical point that absolutely needs a visualization but IS NOT in the list above, you can ORDER a new one using this syntax:
-    [[DYNAMIC_DIAGRAM:new-id|Title|Detailed Description of what to draw]]
-    """
+    prompt = f"{INSTR_EDUCATOR}\nTASK: Write content for: {ms.get('title')}.\nSUMMARY: {ms.get('summary')}\nCONTEXT: {context_to_send}\nDIAGRAMS:\n{diag_list}"
 
     res = safe_invoke(
         [HumanMessage(content=prompt)],
-        invoke_kwargs={"temperature": 0.7},
         provider_override="claude-cli" if is_claude else None,
     )
     content = str(res.content).strip()
 
-    # --- DYNAMIC DISCOVERY LOGIC ---
+    # Discovery
     new_diagrams = state["diagrams_to_generate"]
-    # Pattern: [[DYNAMIC_DIAGRAM:id|title|description]]
     dynamic_orders = re.findall(r"\[\[DYNAMIC_DIAGRAM:(.*?)\|(.*?)\|(.*?)\]\]", content)
-
     for d_id, d_title, d_desc in dynamic_orders:
-        d_id = d_id.strip()
-        # Only add if not already in the list
-        if not any(d["id"] == d_id for d in new_diagrams):
-            print(f"    + Dynamic Diagram Ordered: {d_id}")
+        if not any(d["id"] == d_id.strip() for d in new_diagrams):
             new_diagrams.append(
                 {
-                    "id": d_id,
+                    "id": d_id.strip(),
                     "title": d_title.strip(),
                     "description": d_desc.strip(),
-                    "anchor_target": ms.get("id", f"ms-{idx}"),
+                    "anchor_target": ms.get("id"),
                 }
             )
 
-    # Replace the order syntax with a standard marker for the final MD
     content = re.sub(
         r"\[\[DYNAMIC_DIAGRAM:(.*?)\|.*?\|.*?\]\]", r"{{DIAGRAM:\1}}", content
     )
+    full_content = f"\n\n{marker}\n{content}\n<!-- END_MS -->\n"
 
-    full_content = f"\n\n{content}\n<!-- END_MS -->\n"
-    print(f"    ✓ Content generated: {len(full_content)} chars")
-
-    return {
+    new_state = {
         "accumulated_md": state["accumulated_md"] + full_content,
         "current_ms_index": idx + 1,
         "diagrams_to_generate": new_diagrams,
+        "status": "writing",
+        "phase": "atlas",
     }
+    CheckpointManager.save({**state, **new_state})
+    return new_state
 
 
 def compiler_node(state: GraphState):
-    global OUTPUT_BASE
     diag = state["current_diagram_meta"]
     code = state["current_diagram_code"]
     if not diag or not code:
@@ -614,50 +455,52 @@ def compiler_node(state: GraphState):
     proj_dir = OUTPUT_BASE / state["project_id"]
     proj_dir.mkdir(parents=True, exist_ok=True)
     (proj_dir / "diagrams").mkdir(exist_ok=True)
-    d2_path = proj_dir / "diagrams" / f"{diag.get('id', 'diag')}.d2"
+    d2_path = proj_dir / "diagrams" / f"{diag['id']}.d2"
+    d2_path.write_text(re.sub(r'icon:\s*"(https?://.*?)"', "", code))
 
-    code = re.sub(r'icon:\s*"(https?://.*?)"', "", code)
-    d2_path.write_text(code)
     res = subprocess.run(
         ["d2", "--layout=elk", str(d2_path), str(d2_path.with_suffix(".svg"))],
         capture_output=True,
         text=True,
     )
+    is_tdd = state.get("phase") == "tdd"
 
     if res.returncode == 0:
-        print(f"    ✓ Success: {diag.get('id')}")
-        img_link = (
-            f"\n![{diag.get('title', 'Diagram')}](./diagrams/{diag.get('id')}.svg)\n"
-        )
-
-        # Decide which MD to update
-        if state.get("status") == "tdd_visualizing":
-            return {
+        print(f"    ✓ Success: {diag['id']}")
+        link = f"\n![{diag.get('title')}](./diagrams/{diag['id']}.svg)\n"
+        if is_tdd:
+            new_state = {
                 "tdd_accumulated_md": state["tdd_accumulated_md"].replace(
-                    f"{{{{DIAGRAM:{diag.get('id')}}}}}", img_link
+                    f"{{{{DIAGRAM:{diag['id']}}}}}", link
                 ),
                 "tdd_diagrams_to_generate": state["tdd_diagrams_to_generate"][1:],
                 "diagram_attempt": 0,
                 "last_error": None,
                 "current_diagram_code": None,
                 "current_diagram_meta": None,
+                "status": "tdd_visualizing",
+                "phase": "tdd",
             }
         else:
-            return {
+            new_state = {
                 "accumulated_md": state["accumulated_md"].replace(
-                    f"{{{{DIAGRAM:{diag.get('id')}}}}}", img_link
+                    f"{{{{DIAGRAM:{diag['id']}}}}}", link
                 ),
                 "diagrams_to_generate": state["diagrams_to_generate"][1:],
                 "diagram_attempt": 0,
                 "last_error": None,
                 "current_diagram_code": None,
                 "current_diagram_meta": None,
+                "status": "visualizing",
+                "phase": "atlas",
             }
+        CheckpointManager.save({**state, **new_state})
+        return new_state
     else:
         print(f"    ✗ Failed (Attempt {state['diagram_attempt']}), retrying...")
         if state["diagram_attempt"] >= 5:
-            if state.get("status") == "tdd_visualizing":
-                return {
+            if is_tdd:
+                new_state = {
                     "tdd_diagrams_to_generate": state["tdd_diagrams_to_generate"][1:],
                     "diagram_attempt": 0,
                     "last_error": None,
@@ -665,134 +508,101 @@ def compiler_node(state: GraphState):
                     "current_diagram_meta": None,
                 }
             else:
-                return {
+                new_state = {
                     "diagrams_to_generate": state["diagrams_to_generate"][1:],
                     "diagram_attempt": 0,
                     "last_error": None,
                     "current_diagram_code": None,
                     "current_diagram_meta": None,
                 }
+            CheckpointManager.save({**state, **new_state})
+            return new_state
         return {"last_error": res.stderr}
 
 
-def bibliographer_node(state: GraphState):
-    print(f"  [Agent: Bibliographer] Curating external resources...", flush=True)
+def visualizer_node(state: GraphState):
+    if not state.get("diagrams_to_generate"):
+        return {"status": "tdd_planning", "phase": "tdd"}
+    diag = state["diagrams_to_generate"][0]
+    proj_dir = OUTPUT_BASE / state["project_id"]
+    svg_path = proj_dir / "diagrams" / f"{diag['id']}.svg"
+    # Skip if SVG already exists (already compiled successfully)
+    if svg_path.exists():
+        print(f"  [Agent: Artist] Skipping existing diagram: {diag['title']}")
+        return {"diagrams_to_generate": state["diagrams_to_generate"][1:]}
 
-    # Use BOTH accumulated Atlas and TDD text for a complete sweep
-    full_text = state["accumulated_md"] + "\n" + state["tdd_accumulated_md"]
-    adv_terms = ", ".join(state.get("advanced_contexts", []))
-
-    prompt = f"""
-    {INSTR_BIBLIOGRAPHER}
-    ADVANCED TERMS TO COVER: {adv_terms}
-    
-    FULL PROJECT CONTENT (Atlas + TDD):
-    {full_text}
-    
-    TASK: Provide a "Beyond the Atlas" reading list. 
-    Focus specifically on the ADVANCED TERMS listed above plus any other foundational giants found in the text.
-    """
-
-    res = safe_invoke([HumanMessage(content=prompt)], provider_override="local-proxy")
-    return {"external_reading": str(res.content).strip(), "status": "done"}
-
-
-def tdd_planner_node(state: GraphState):
-    print(
-        f"  [Agent: TDD Orchestrator] Planning Technical Design Document...", flush=True
-    )
-
-    prompt = f"""
-    {INSTR_TDD_PLANNER}
-    PROJECT META: {state["meta"]}
-    ATLAS BLUEPRINT: {state["blueprint"]}
-    FULL ATLAS CONTENT: {state["accumulated_md"]}
-    
-    TASK: Review the COMPLETE pedagogical Atlas content and plan a professional TDD.
-    Output ONLY raw JSON.
-    """
+    attempt = state["diagram_attempt"] + 1
+    print(f"  [Agent: Artist] Drawing: {diag['title']} (Attempt {attempt})...")
+    prompt = f"{INSTR_ARTIST}\nDOCS:\n{D2_REFERENCE}\nCONTEXT:\n{state['accumulated_md']}\nTASK: Draw '{diag['title']}': {diag.get('description')}"
+    if state.get("last_error"):
+        prompt += f"\nFIX ERROR: {state['last_error']}\nFAILED CODE:\n{state.get('current_diagram_code')}"
 
     res = safe_invoke(
         [
-            SystemMessage(
-                content="You are a Technical Design Orchestrator. Output ONLY valid JSON."
-            ),
+            SystemMessage(content="Output ONLY raw D2 code."),
             HumanMessage(content=prompt),
-        ],
-        provider_override="local-proxy",  # Force Gemini Proxy for this step
+        ]
     )
+    code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
+    return {
+        "current_diagram_code": code,
+        "current_diagram_meta": diag,
+        "diagram_attempt": attempt,
+        "phase": "atlas",
+    }
 
-    print(
-        f"  [Agent: TDD Orchestrator] TDD Blueprint received: {len(res.content)} chars"
-    )
+
+def tdd_planner_node(state: GraphState):
+    if state.get("tdd_blueprint"):
+        return {"status": "tdd_writing", "phase": "tdd"}
+    print(f"  [Agent: TDD Orchestrator] Planning TDD...")
+    prompt = f"{INSTR_TDD_PLANNER}\nATLAS:\n{state['accumulated_md']}\nTASK: Output ONLY raw JSON for TDD Blueprint."
+    res = safe_invoke([HumanMessage(content=prompt)], provider_override="local-proxy")
     tdd_blueprint = extract_json(res.content)
     if not tdd_blueprint:
-        raise ValueError("TDD Orchestrator failed to return valid JSON")
+        raise ValueError("TDD Planner failed")
 
-    header = f"\n\n# TECHNICAL DESIGN DOCUMENT (TDD)\n\n## Design Vision\n{tdd_blueprint.get('design_vision', '')}\n\n"
-
-    # Collect all TDD diagrams into a flat list for the visualizer to handle
     tdd_diags = []
     for mod in tdd_blueprint.get("modules", []):
         for d in mod.get("diagrams", []):
-            d["anchor_target"] = mod["id"]  # Link diagram to module anchor
+            d["anchor_target"] = mod["id"]
             tdd_diags.append(d)
 
-    return {
+    new_state = {
         "tdd_blueprint": tdd_blueprint,
-        "tdd_accumulated_md": header,
+        "tdd_accumulated_md": f"\n\n# TDD\n\n{tdd_blueprint.get('design_vision')}\n\n",
         "tdd_current_mod_index": 0,
         "tdd_diagrams_to_generate": tdd_diags,
         "status": "tdd_writing",
+        "phase": "tdd",
     }
+    CheckpointManager.save({**state, **new_state})
+    return new_state
 
 
 def tdd_writer_node(state: GraphState):
     idx = state["tdd_current_mod_index"]
-    blueprint = state["tdd_blueprint"]
-    modules = blueprint.get("modules", [])
-
+    modules = state["tdd_blueprint"].get("modules", [])
     if idx >= len(modules):
-        return {"status": "tdd_visualizing"}
+        return {"status": "tdd_visualizing", "phase": "tdd"}
 
     mod = modules[idx]
-    print(f"  [Agent: TDD Writer] Writing Spec for Module: {mod.get('name')}...")
+    marker = f"<!-- TDD_MOD_ID: {mod['id']} -->"
+    if marker in state["tdd_accumulated_md"]:
+        return {"tdd_current_mod_index": idx + 1}
 
-    prompt = f"""
-    {INSTR_TDD_WRITER}
-    PROJECT: {blueprint.get("project_title")}
-    MODULE: {mod.get("name")}
-    DESCRIPTION: {mod.get("description")}
-    INITIAL SPECS: {mod.get("specs")}
-    FULL ATLAS HISTORY (for consistency): {state["accumulated_md"]}
-    PREVIOUS TDD SPECS: {state["tdd_accumulated_md"]}
-    
-    TASK: Write a rigorous Technical Design Specification for this module.
-    Use markdown headers. Include Pseudo-code. Use diagram markers {{{{DIAGRAM:id}}}} for: 
-    {", ".join([d["id"] for d in mod.get("diagrams", [])])}
-    
-    DYNAMIC DIAGRAMS: If you need a NEW complex technical diagram (Class/Sequence/Flow) for this module, ORDER it:
-    [[DYNAMIC_DIAGRAM:tdd-diag-newid|Title|Detailed technical description]]
-    """
-
-    res = safe_invoke(
-        [HumanMessage(content=prompt)],
-        invoke_kwargs={"temperature": 1},
-        provider_override="local-proxy",
-    )
+    print(f"  [Agent: TDD Writer] Writing Spec: {mod['name']}...")
+    prompt = f"{INSTR_TDD_WRITER}\nMODULE: {mod['name']}\nATLAS:\n{state['accumulated_md']}\nPREVIOUS TDD:\n{state['tdd_accumulated_md']}"
+    res = safe_invoke([HumanMessage(content=prompt)], provider_override="local-proxy")
     content = str(res.content).strip()
 
-    # --- DYNAMIC DISCOVERY LOGIC ---
-    new_tdd_diagrams = state["tdd_diagrams_to_generate"]
-    dynamic_orders = re.findall(r"\[\[DYNAMIC_DIAGRAM:(.*?)\|(.*?)\|(.*?)\]\]", content)
-
-    for d_id, d_title, d_desc in dynamic_orders:
-        d_id = d_id.strip()
-        if not any(d["id"] == d_id for d in new_tdd_diagrams):
-            print(f"    + Dynamic TDD Diagram Ordered: {d_id}")
-            new_tdd_diagrams.append(
+    new_diags = state["tdd_diagrams_to_generate"]
+    dynamic = re.findall(r"\[\[DYNAMIC_DIAGRAM:(.*?)\|(.*?)\|(.*?)\]\]", content)
+    for d_id, d_title, d_desc in dynamic:
+        if not any(d["id"] == d_id.strip() for d in new_diags):
+            new_diags.append(
                 {
-                    "id": d_id,
+                    "id": d_id.strip(),
                     "title": d_title.strip(),
                     "description": d_desc.strip(),
                     "anchor_target": mod["id"],
@@ -802,110 +612,35 @@ def tdd_writer_node(state: GraphState):
     content = re.sub(
         r"\[\[DYNAMIC_DIAGRAM:(.*?)\|.*?\|.*?\]\]", r"{{DIAGRAM:\1}}", content
     )
-    full_content = f"\n\n{content}\n"
-    print(f"    ✓ TDD Module generated: {len(full_content)} chars")
-
-    return {
-        "tdd_accumulated_md": state["tdd_accumulated_md"] + full_content,
+    new_state = {
+        "tdd_accumulated_md": state["tdd_accumulated_md"]
+        + f"\n\n{marker}\n{content}\n",
         "tdd_current_mod_index": idx + 1,
-        "tdd_diagrams_to_generate": new_tdd_diagrams,
+        "tdd_diagrams_to_generate": new_diags,
+        "status": "tdd_writing",
+        "phase": "tdd",
     }
-
-
-def visualizer_node(state: GraphState):
-    if not state.get("diagrams_to_generate"):
-        return {"status": "tdd_planning"}
-
-    diag = state["diagrams_to_generate"][0]
-    attempt = state["diagram_attempt"] + 1
-    print(
-        f"  [Agent: Artist] Drawing: {diag.get('title', 'Diagram')} (Attempt {attempt})..."
-    )
-
-    prompt = f"""
-    {INSTR_ARTIST}
-    REFERENCE (FULL D2 DOCUMENTATION): 
-    {D2_REFERENCE}
-    
-    CONTEXT (FULL TECHNICAL HISTORY):
-    {state["accumulated_md"]}
-    
-    TASK: Generate D2 code for the diagram: '{diag.get("title", "Untitled")}'
-    DIAGRAM DESCRIPTION: {diag.get("description", "")}
-    TARGET ANCHOR (for links): {diag.get("anchor_target", "")}
-    """
-    if state.get("last_error"):
-        prompt += f"""
-        
-        !!! FIX PREVIOUS COMPILER ERROR !!!
-        FAILED CODE:
-        ```d2
-        {state.get("current_diagram_code")}
-        ```
-        ERROR MESSAGE:
-        {state["last_error"]}
-        
-        Analyze the FAILED CODE and the ERROR MESSAGE, then provide the corrected D2 code.
-        """
-
-    res = safe_invoke(
-        [
-            SystemMessage(
-                content="You are a D2 Master Artist. Output ONLY raw D2 code. No preamble, no explanation."
-            ),
-            HumanMessage(content=prompt),
-        ]
-    )
-    code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
-    return {
-        "current_diagram_code": code,
-        "current_diagram_meta": diag,
-        "diagram_attempt": attempt,
-    }
+    CheckpointManager.save({**state, **new_state})
+    return new_state
 
 
 def tdd_visualizer_node(state: GraphState):
     if not state.get("tdd_diagrams_to_generate"):
-        return {"status": "done", "current_diagram_code": None}
-
+        return {"status": "done", "phase": "done"}
     diag = state["tdd_diagrams_to_generate"][0]
+    proj_dir = OUTPUT_BASE / state["project_id"]
+    svg_path = proj_dir / "diagrams" / f"{diag['id']}.svg"
+    # Skip if SVG already exists (already compiled successfully)
+    if svg_path.exists():
+        print(f"  [Agent: TDD Artist] Skipping existing diagram: {diag['title']}")
+        return {"tdd_diagrams_to_generate": state["tdd_diagrams_to_generate"][1:]}
+
     attempt = state["diagram_attempt"] + 1
-    print(
-        f"  [Agent: TDD Artist] Drawing: {diag.get('title', 'Diagram')} (Attempt {attempt})..."
-    )
-
-    prompt = f"""
-    {INSTR_TDD_ARTIST}
-    REFERENCE (FULL D2 DOCUMENTATION): 
-    {D2_REFERENCE}
-    
-    CONTEXT (FULL TECHNICAL & TDD HISTORY):
-    {state["accumulated_md"]}
-    {state["tdd_accumulated_md"]}
-    
-    TASK: Generate detailed D2 code for the technical diagram: '{diag.get("title", "Untitled")}'
-    DIAGRAM DESCRIPTION: {diag.get("description", "")}
-    TARGET ANCHOR: {diag.get("anchor_target", "")}
-    """
-    if state.get("last_error"):
-        prompt += f"""
-        
-        !!! FIX PREVIOUS COMPILER ERROR !!!
-        FAILED CODE:
-        ```d2
-        {state.get("current_diagram_code")}
-        ```
-        ERROR MESSAGE:
-        {state["last_error"]}
-        
-        Analyze the FAILED CODE and the ERROR MESSAGE, then provide the corrected D2 code.
-        """
-
+    print(f"  [Agent: TDD Artist] Drawing: {diag['title']} (Attempt {attempt})...")
+    prompt = f"{INSTR_TDD_ARTIST}\nDOCS:\n{D2_REFERENCE}\nCONTEXT:\n{state['accumulated_md']}\n{state['tdd_accumulated_md']}\nTASK: Draw '{diag['title']}'"
     res = safe_invoke(
         [
-            SystemMessage(
-                content="You are a Technical D2 Master Artist. Output ONLY raw D2 code."
-            ),
+            SystemMessage(content="Output ONLY raw D2 code."),
             HumanMessage(content=prompt),
         ],
         provider_override="local-proxy",
@@ -915,7 +650,15 @@ def tdd_visualizer_node(state: GraphState):
         "current_diagram_code": code,
         "current_diagram_meta": diag,
         "diagram_attempt": attempt,
+        "phase": "tdd",
     }
+
+
+def bibliographer_node(state: GraphState):
+    print(f"  [Agent: Bibliographer] Curating...")
+    prompt = f"{INSTR_BIBLIOGRAPHER}\nCONTENT:\n{state['accumulated_md']}\n{state['tdd_accumulated_md']}"
+    res = safe_invoke([HumanMessage(content=prompt)], provider_override="local-proxy")
+    return {"external_reading": str(res.content).strip(), "status": "done"}
 
 
 # --- GRAPH ---
@@ -935,9 +678,11 @@ workflow.add_edge("architect", "writer")
 
 
 def route_writer(state):
-    if state["current_ms_index"] < len(state["blueprint"].get("milestones", [])):
-        return "knowledge_mapper"
-    return "visualizer"
+    return (
+        "knowledge_mapper"
+        if state["current_ms_index"] < len(state["blueprint"].get("milestones", []))
+        else "visualizer"
+    )
 
 
 workflow.add_conditional_edges(
@@ -945,14 +690,11 @@ workflow.add_conditional_edges(
     route_writer,
     {"knowledge_mapper": "knowledge_mapper", "visualizer": "visualizer"},
 )
-
 workflow.add_edge("knowledge_mapper", "writer")
 
 
 def route_visualizer(state):
-    if not state.get("diagrams_to_generate"):
-        return "tdd_planner"
-    return "compiler"
+    return "compiler" if state.get("diagrams_to_generate") else "tdd_planner"
 
 
 workflow.add_conditional_edges(
@@ -979,9 +721,7 @@ workflow.add_conditional_edges(
 
 
 def route_tdd_visualizer(state):
-    if not state.get("tdd_diagrams_to_generate"):
-        return "bibliographer"
-    return "compiler"
+    return "compiler" if state.get("tdd_diagrams_to_generate") else "bibliographer"
 
 
 workflow.add_conditional_edges(
@@ -990,16 +730,11 @@ workflow.add_conditional_edges(
     {"compiler": "compiler", "bibliographer": "bibliographer"},
 )
 
-workflow.add_edge("bibliographer", END)
-
 
 def route_compiler(state):
-    # Determine phase based on status field instead of cleared metadata
-    is_tdd = state.get("status") == "tdd_visualizing"
-
-    if state.get("last_error") and state["diagram_attempt"] > 0:
+    is_tdd = state.get("phase") == "tdd"
+    if state.get("last_error") and state.get("diagram_attempt", 0) > 0:
         return "tdd_retry" if is_tdd else "visual_retry"
-
     return "tdd_next" if is_tdd else "visual_next"
 
 
@@ -1015,7 +750,7 @@ workflow.add_conditional_edges(
 )
 
 workflow.add_edge("tdd_planner", "tdd_writer")
-
+workflow.add_edge("bibliographer", END)
 app = workflow.compile()
 
 
@@ -1037,43 +772,51 @@ def generate_project(project_id):
     if not meta:
         return print(f"Error: {project_id} not found.")
 
-    final_state = app.invoke(
-        {
-            "project_id": project_id,
-            "meta": meta,
-            "blueprint": {},
-            "accumulated_md": "",
-            "current_ms_index": 0,
-            "diagrams_to_generate": [],
-            "diagram_attempt": 0,
-            "last_error": None,
-            "status": "planning",
-            "current_diagram_code": None,
-            "current_diagram_meta": None,
-            "tdd_blueprint": {},
-            "tdd_accumulated_md": "",
-            "tdd_current_mod_index": 0,
-            "tdd_diagrams_to_generate": [],
-            "external_reading": "",
-            "knowledge_map": [],
-            "advanced_contexts": [],
-        }
-    )
+    checkpoint = CheckpointManager.load(project_id)
+    initial_state = {
+        "project_id": project_id,
+        "meta": meta,
+        "blueprint": {},
+        "accumulated_md": "",
+        "current_ms_index": 0,
+        "diagrams_to_generate": [],
+        "diagram_attempt": 0,
+        "last_error": None,
+        "status": "planning",
+        "phase": "atlas",
+        "current_diagram_code": None,
+        "current_diagram_meta": None,
+        "tdd_blueprint": {},
+        "tdd_accumulated_md": "",
+        "tdd_current_mod_index": 0,
+        "tdd_diagrams_to_generate": [],
+        "external_reading": "",
+        "knowledge_map": [],
+        "advanced_contexts": [],
+    }
+    if checkpoint:
+        print(f">>> Resuming phase: {checkpoint.get('phase')}")
+        for k, v in checkpoint.items():
+            if v is not None:
+                initial_state[k] = v
 
-    # Save final index.md (Concatenate Atlas + TDD + Further Reading)
+    final_state = app.invoke(cast(GraphState, initial_state))
+
     proj_dir = OUTPUT_BASE / project_id
     proj_dir.mkdir(parents=True, exist_ok=True)
-    full_content = (
+    full = (
         final_state.get("accumulated_md", "")
         + "\n\n"
         + final_state.get("tdd_accumulated_md", "")
         + "\n\n"
         + final_state.get("external_reading", "")
     )
-    with open(proj_dir / "index.md", "w") as f:
-        f.write(full_content)
+    (proj_dir / "index.md").write_text(full)
 
-    # Final HTML generation
+    cp_path = CheckpointManager.get_path(project_id)
+    if cp_path.exists():
+        cp_path.unlink()
+
     subprocess.run(
         ["npm", "run", "generate:html", "--", project_id],
         cwd=SCRIPT_DIR / ".." / "web",

@@ -94,12 +94,12 @@ milestones:
       modules will be plugged into this queue in subsequent milestones.
     estimated_hours: 14
     concepts:
-      - "Message queue patterns: work queues with competing consumers"
-      - "Priority queues: urgent jobs processed before batch jobs"
-      - "Idempotent job processing: same job submitted twice produces same result without duplication"
+      - Message queue patterns: work queues with competing consumers
+      - Priority queues: urgent jobs processed before batch jobs
+      - Idempotent job processing: same job submitted twice produces same result without duplication
       - "Exponential backoff retry for transient failures"
       - "Webhook delivery with signature verification and retry"
-      - "Temporary file lifecycle: create before processing, clean up after completion or failure"
+      - Temporary file lifecycle: create before processing, clean up after completion or failure
     skills:
       - Job queue implementation
       - Worker process management
@@ -138,11 +138,11 @@ milestones:
       thumbnail) that plug into the job queue from Milestone 1.
     estimated_hours: 13
     concepts:
-      - "Color space: images must be in RGB for processing; CMYK input requires conversion"
-      - "Interpolation algorithms: Lanczos for downscaling, bicubic for upscaling"
-      - "EXIF orientation: rotate image according to EXIF orientation tag before processing"
-      - "Lossy vs lossless: JPEG/WebP lossy save bandwidth; PNG lossless preserves quality"
-      - "Privacy: strip EXIF GPS data from output unless explicitly configured to preserve"
+      - Color space: images must be in RGB for processing; CMYK input requires conversion
+      - Interpolation algorithms: Lanczos for downscaling, bicubic for upscaling
+      - EXIF orientation: rotate image according to EXIF orientation tag before processing
+      - Lossy vs lossless: JPEG/WebP lossy save bandwidth; PNG lossless preserves quality
+      - Privacy: strip EXIF GPS data from output unless explicitly configured to preserve
     skills:
       - Image format handling
       - Resize algorithms
@@ -153,9 +153,9 @@ milestones:
       - "EXIF orientation tag is read and applied (image rotated/flipped accordingly) BEFORE any resize or crop operation"
       - "Format conversion between JPEG, PNG, and WebP produces valid output with configurable quality level (1-100); output file size for WebP is at least 20% smaller than equivalent JPEG at same perceptual quality"
       - "Thumbnails are generated at standard sizes (64x64, 128x128, 256x256) with center-crop; the crop center is the geometric center of the image"
-      - "EXIF metadata is stripped from output by default (privacy: no GPS data); an explicit 'preserve_exif' option retains metadata when needed"
+      - EXIF metadata is stripped from output by default (privacy: no GPS data); an explicit 'preserve_exif' option retains metadata when needed
       - "Invalid or corrupt image inputs return a descriptive error within 1 second rather than hanging or crashing the worker"
-      - "Image processing jobs report progress stages to the queue: (validating -> resizing -> converting -> uploading -> completed)"
+      - Image processing jobs report progress stages to the queue: (validating -> resizing -> converting -> uploading -> completed)
     pitfalls:
       - Not applying EXIF orientation before processing — images appear rotated
       - WebP/AVIF browser support varies — always generate JPEG fallback
@@ -178,11 +178,11 @@ milestones:
       queue, producing multiple quality variants with thumbnail extraction.
     estimated_hours: 18
     concepts:
-      - "Container vs codec: MP4 container with H.264 video + AAC audio for maximum compatibility"
-      - "CRF (Constant Rate Factor): quality-based encoding where lower CRF = higher quality = larger file"
-      - "Keyframe interval (GOP): shorter GOP enables faster seeking but increases file size"
-      - "HLS segmentation: split video into 6-second TS segments with M3U8 playlist"
-      - "-movflags +faststart: moves metadata to beginning of MP4 for progressive download"
+      - Container vs codec: MP4 container with H.264 video + AAC audio for maximum compatibility
+      - CRF (Constant Rate Factor): quality-based encoding where lower CRF = higher quality = larger file
+      - Keyframe interval (GOP): shorter GOP enables faster seeking but increases file size
+      - HLS segmentation: split video into 6-second TS segments with M3U8 playlist
+      - -movflags +faststart: moves metadata to beginning of MP4 for progressive download
     skills:
       - FFmpeg command-line integration
       - Video codec parameters
@@ -190,13 +190,13 @@ milestones:
       - Progress parsing from FFmpeg output
     acceptance_criteria:
       - "FFmpeg transcodes videos to H.264 (baseline profile for compatibility) + AAC audio in MP4 container with -movflags +faststart"
-      - "Multiple quality variants are generated from a single source: 360p (CRF 28), 720p (CRF 23), 1080p (CRF 20) with configurable CRF values"
+      - Multiple quality variants are generated from a single source: 360p (CRF 28), 720p (CRF 23), 1080p (CRF 20) with configurable CRF values
       - "HLS output is generated with fixed 6-second segments (TS format) and valid M3U8 playlists; a master playlist references all quality variants with BANDWIDTH and RESOLUTION tags"
-      - "Video thumbnail frames are extracted at configurable time offsets (default: 0s, 25%, 50%, 75%) as JPEG images"
+      - Video thumbnail frames are extracted at configurable time offsets (default: 0s, 25%, 50%, 75%) as JPEG images
       - "FFmpeg progress is parsed from stderr output (frame count / total frames) and reported as stage progress to the job queue, updated at least every 5 seconds"
       - "Transcoding jobs run with configurable resource limits (max 2 concurrent FFmpeg processes, CPU nice level) to prevent resource exhaustion"
       - "Failed transcoding (FFmpeg exit code != 0) captures the FFmpeg stderr output in the error record for debugging"
-      - "Output files are written to configurable storage (local disk or object storage path) with a predictable directory structure: /{job_id}/{variant}/"
+      - Output files are written to configurable storage (local disk or object storage path) with a predictable directory structure: /{job_id}/{variant}/
     pitfalls:
       - Not using H.264 baseline profile — some mobile devices can't decode main/high profile
       - Forgetting -movflags +faststart for MP4 — video won't play until fully downloaded
@@ -212,6 +212,5 @@ milestones:
       - Resource limiter for concurrent FFmpeg processes
       - Output storage organizer with predictable directory structure
       - FFmpeg error capture and reporting to job queue
-      - Progress stage reporting (queued -> transcoding:360p -> transcoding:720p -> ... -> completed)
-
+      - Progress stage reporting (queued -> transcoding: 360p -> transcoding:720p -> ... -> completed)
 ```

@@ -323,5 +323,4 @@ milestones:
       - WebSocket endpoint for live market data subscription
       - Asynchronous publication ensuring matching thread is never blocked
     estimated_hours: 14
-
 ```

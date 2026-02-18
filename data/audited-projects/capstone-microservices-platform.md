@@ -63,16 +63,16 @@ languages:
     - Rust
     - TypeScript
 resources:
-  - name: "Microservices Patterns"
+  - name: Microservices Patterns""
     url: https://microservices.io/patterns/
     type: documentation
-  - name: "Building Microservices (Sam Newman)"
+  - name: Building Microservices (Sam Newman)""
     url: https://samnewman.io/books/building_microservices_2nd_edition/
     type: book
-  - name: "The Twelve-Factor App"
+  - name: The Twelve-Factor App""
     url: https://12factor.net/
     type: article
-  - name: "gRPC-JSON Transcoding"
+  - name: gRPC-JSON Transcoding""
     url: https://cloud.google.com/endpoints/docs/grpc/transcoding
     type: documentation
 prerequisites:
@@ -107,12 +107,12 @@ milestones:
       - "All services register with service discovery on startup with health metadata and deregister gracefully on shutdown"
       - "Inter-service communication uses gRPC with automatic service address lookup from the discovery registry"
       - "Health check endpoints expose /healthz (liveness) and /readyz (readiness) returning structured health status"
-      - "Each service's bounded context is documented: owned entities, exposed APIs, and explicitly prohibited cross-service database access"
+      - Each service's bounded context is documented: owned entities, exposed APIs, and explicitly prohibited cross-service database access
     pitfalls:
-      - "Distributed monolith: services that must be deployed together due to tight coupling defeat the purpose"
+      - Distributed monolith: services that must be deployed together due to tight coupling defeat the purpose
       - "Service discovery stale entries from crashed services cause routing failures—TTL-based eviction needed"
-      - "Shared database anti-pattern: services reading each other's tables creates hidden coupling"
-      - "Proto file versioning: breaking changes in .proto files break all consumers—use additive-only changes"
+      - Shared database anti-pattern: services reading each other's tables creates hidden coupling
+      - Proto file versioning: breaking changes in .proto files break all consumers—use additive-only changes
     concepts:
       - Bounded contexts and domain-driven design
       - Database-per-service pattern
@@ -139,10 +139,10 @@ milestones:
     acceptance_criteria:
       - "Gateway routes HTTP requests to gRPC services using discovery lookup for service address resolution"
       - "REST-to-gRPC transcoding converts JSON request bodies to protobuf messages using .proto HTTP annotations or explicit mapping definitions"
-      - "Per-client rate limiting enforces configurable tiers (e.g., free: 100 req/min, pro: 1000 req/min) identified by API key"
+      - Per-client rate limiting enforces configurable tiers (e.g., free: 100 req/min, pro: 1000 req/min) identified by API key
       - "Circuit breaker per downstream service transitions through closed → open → half-open states with configurable failure threshold (default 50% over 10-second window)"
-      - "Gateway returns appropriate HTTP status codes: 429 for rate limit, 503 for open circuit, 504 for timeout"
-      - "Gateway does not become a single point of failure: multiple gateway instances can run behind a load balancer"
+      - Gateway returns appropriate HTTP status codes: 429 for rate limit, 503 for open circuit, 504 for timeout
+      - Gateway does not become a single point of failure: multiple gateway instances can run behind a load balancer
     pitfalls:
       - "Gateway becoming a performance bottleneck—must be stateless and horizontally scalable"
       - "Circuit breaker masking intermittent issues—log every circuit state transition with reason"
@@ -172,15 +172,15 @@ milestones:
       Orders, Products (inventory), and Payments services, with compensation
       on failure and idempotency for retry safety.
     acceptance_criteria:
-      - "Saga orchestrator coordinates: create order → reserve inventory → process payment → confirm order"
-      - "Payment failure triggers compensating actions: release inventory reservation, cancel order—in reverse order"
+      - Saga orchestrator coordinates: create order → reserve inventory → process payment → confirm order
+      - Payment failure triggers compensating actions: release inventory reservation, cancel order—in reverse order
       - "Saga state (current step, completed steps, compensation status) is persisted to survive orchestrator crashes"
       - "Idempotency keys (request IDs) on all saga step operations prevent duplicate charges or double reservations on retry"
       - "Compensation handler failure is retried with exponential backoff; after max retries, the saga is moved to a dead letter queue for manual resolution"
       - "Concurrent sagas for the same inventory item are serialized or use optimistic locking to prevent overselling"
     pitfalls:
       - "Compensation failure leaving permanently inconsistent state—must have dead letter queue and alerting"
-      - "Race condition between saga steps: inventory reserved but payment processed against stale balance"
+      - Race condition between saga steps: inventory reserved but payment processed against stale balance
       - "Long-running sagas holding inventory reservations block other orders—use reservation TTL with automatic release"
       - "Saga orchestrator is a single point of failure if not designed for crash recovery"
     concepts:
@@ -246,13 +246,13 @@ milestones:
       canary releases with metrics-driven automatic rollback, and database
       migration coordination.
     acceptance_criteria:
-      - "Each service has an independent CI pipeline: lint → test → build container image → push to registry"
+      - Each service has an independent CI pipeline: lint → test → build container image → push to registry
       - "Blue-green deployment runs two environments; traffic is switched atomically after health check validation of the new environment"
       - "Canary release controller routes a configurable percentage (starting at 5%) of traffic to the new version"
-      - "Canary promotion: if error rate and p99 latency remain within SLO bounds for a configurable observation window (default 10 minutes), traffic percentage increases automatically to 100%"
-      - "Automatic rollback: if canary error rate exceeds 2x the baseline or p99 exceeds SLO, traffic is immediately shifted back to 100% stable version"
+      - Canary promotion: if error rate and p99 latency remain within SLO bounds for a configurable observation window (default 10 minutes), traffic percentage increases automatically to 100%
+      - Automatic rollback: if canary error rate exceeds 2x the baseline or p99 exceeds SLO, traffic is immediately shifted back to 100% stable version
       - "Rollback mechanism uses the observability stack's metrics API (from M4) as the data source for promotion/rollback decisions"
-      - "Database migrations are backward-compatible (expand-contract pattern): new code works with old schema and old code works with new schema"
+      - Database migrations are backward-compatible (expand-contract pattern): new code works with old schema and old code works with new schema
     pitfalls:
       - "Canary with incompatible API versions causes errors for routed clients—enforce backward compatibility"
       - "Rollback does not revert database schema changes—expand-contract pattern is mandatory"

@@ -70,7 +70,7 @@ resources:
   - name: Hystrix Wiki (Netflix)
     url: https://github.com/Netflix/Hystrix/wiki
     type: reference
-  - name: "Resilience4j (modern Hystrix alternative)"
+  - name: Resilience4j (modern Hystrix alternative)""
     url: https://resilience4j.readme.io/docs/circuitbreaker
     type: documentation
 prerequisites:
@@ -94,7 +94,7 @@ milestones:
       - "Open-to-half-open transition occurs automatically after a configurable timeout duration elapses"
       - "Half-open state allows exactly one probe request through; success transitions to closed, failure transitions back to open"
       - "Failure count resets to zero on a successful request in the closed state"
-      - "Implementation is thread-safe: a race detector (e.g., Go's -race flag) reports zero data races under concurrent load of at least 100 goroutines/threads"
+      - Implementation is thread-safe: a race detector (e.g., Go's -race flag) reports zero data races under concurrent load of at least 100 goroutines/threads
       - "All thresholds (failure count, timeout duration, half-open probe limit) are configurable at construction time"
     pitfalls:
       - "Race conditions on state transitions without proper mutex or atomic operations"
@@ -131,7 +131,7 @@ milestones:
       - "Error classification distinguishes retriable errors (timeouts, 503s) from non-retriable errors (400s, 404s); only retriable errors count toward the failure rate"
       - "A configurable fallback function executes when the circuit is open, returning a degraded response instead of an error"
       - "If the fallback function itself fails, a static/cached default response is returned (never an unhandled error)"
-      - "Metrics are exposed via a method/endpoint: current state, failure count, success count, failure rate percentage, and time since last state transition"
+      - Metrics are exposed via a method/endpoint: current state, failure count, success count, failure rate percentage, and time since last state transition
       - "State change events (closed→open, open→half-open, half-open→closed) emit observable notifications (callback, channel, or log)"
     pitfalls:
       - "Sliding window bucket rotation must handle the case where no requests arrive for multiple bucket periods"

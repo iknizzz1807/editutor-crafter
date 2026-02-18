@@ -279,5 +279,4 @@ milestones:
       - Alert rule engine firing notifications when drift or latency thresholds are exceeded
       - Sampled request logger storing input/output pairs for a configurable percentage of requests
     estimated_hours: "10-14"
-
 ```

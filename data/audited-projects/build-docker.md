@@ -165,7 +165,7 @@ milestones:
       old-root cleanup.
     acceptance_criteria:
       - New root is bind-mounted onto itself (mount --bind newroot newroot) making it a valid mount point for pivot_root
-      - pivot_root() atomically swaps the container's root; old root is mounted at a subdirectory (e.g., /oldroot)
+      - "pivot_root() atomically swaps the container's root; old root is mounted at a subdirectory (e.g., /oldroot)"
       - Old root is unmounted with umount2(MNT_DETACH) making the host filesystem completely inaccessible from within
       - /proc is mounted inside the container (mount -t proc proc /proc) with nosuid,noexec,nodev flags
       - /dev is minimally populated with null, zero, urandom, tty devices (bind-mount from host or mknod)
@@ -210,7 +210,7 @@ milestones:
       - "Directory rename in OverlayFS triggers a full copy-up of all contents; this is expensive and surprising"
       - "Whiteout files (mknod c 0 0) are OverlayFS-specific; they must be cleaned up properly"
       - "Not all filesystem features work on OverlayFS (e.g., inotify on lower-layer files may not trigger)"
-      - "lowerdir order matters: rightmost is the bottom layer, leftmost is the top"
+      - lowerdir order matters: rightmost is the bottom layer, leftmost is the top
     concepts:
       - Union/overlay filesystems
       - Copy-on-write semantics
@@ -235,7 +235,7 @@ milestones:
     acceptance_criteria:
       - Network namespace (CLONE_NEWNET) provides isolated interfaces, routing, and iptables
       - veth pair created; one end moved into container namespace, other end attached to a host bridge (e.g., docker0)
-      - Bridge has an IP address serving as the container's default gateway
+      - "Bridge has an IP address serving as the container's default gateway"
       - Container has a unique IP address on the bridge subnet; default route points to bridge IP
       - Loopback interface inside container is brought up
       - NAT masquerade rule on host enables outbound internet from container
@@ -243,10 +243,10 @@ milestones:
       - DNS resolution inside container works (/etc/resolv.conf is configured)
       - Two containers on the same bridge can communicate via their IP addresses
     pitfalls:
-      - "veth pair must be created on the host, then one end moved into the container's netns with `ip link set <veth> netns <pid>`"
-      - "IP forwarding must be enabled on host: sysctl net.ipv4.ip_forward=1"
+      - "veth pair must be created on the host, then one end moved into the container's netns with 'ip link set <veth> netns <pid>'"
+      - IP forwarding must be enabled on host: sysctl net.ipv4.ip_forward=1
       - "iptables MASQUERADE rule must specify the correct outbound interface"
-      - "DNS: copy /etc/resolv.conf from host or generate one pointing to a known DNS server"
+      - DNS: copy /etc/resolv.conf from host or generate one pointing to a known DNS server
       - "Not cleaning up veth pairs, bridge, and iptables rules on container removal leaks resources"
     concepts:
       - Network namespaces
@@ -277,13 +277,13 @@ milestones:
       - Layers are downloaded by digest, verified by SHA256 hash, and extracted as tar.gz archives in order
       - Extracted layers are stored in a content-addressable directory (named by digest) for deduplication
       - Container run applies metadata: ENV variables are set in the child process environment; WORKDIR is chdir'd to before exec; USER changes the effective UID/GID; ENTRYPOINT + CMD form the executed command
-      - If user specifies a command on the CLI (e.g., 'run ubuntu /bin/bash'), it overrides CMD but ENTRYPOINT is preserved (Docker semantics)
+      - "If user specifies a command on the CLI (e.g., 'run ubuntu /bin/bash'), it overrides CMD but ENTRYPOINT is preserved (Docker semantics)"
       - Image layers are stacked as OverlayFS lower directories in the correct order
     pitfalls:
-      - "Docker Hub requires auth token exchange (GET /token?service=registry.docker.io&scope=repository:library/alpine:pull) before pulling"
+      - Docker Hub requires auth token exchange (GET /token?service=registry.docker.io&scope=repository: library/alpine:pull) before pulling
       - "Manifest schema v2 vs OCI manifest; handle both media types"
-      - "Content-addressable storage: layers are identified by sha256 digest, not by name; dedup relies on exact digest matching"
-      - "ENTRYPOINT + CMD interaction: ENTRYPOINT is the executable, CMD provides default arguments; CLI args override CMD only"
+      - Content-addressable storage: layers are identified by sha256 digest, not by name; dedup relies on exact digest matching
+      - ENTRYPOINT + CMD interaction: ENTRYPOINT is the executable, CMD provides default arguments; CLI args override CMD only
       - "USER directive requires resolving the username to UID via /etc/passwd inside the rootfs, not the host"
     concepts:
       - OCI image specification
@@ -310,18 +310,18 @@ milestones:
       Implement full container lifecycle management with proper signal handling
       and resource cleanup.
     acceptance_criteria:
-      - 'create' prepares all container state (rootfs, cgroup, network) without starting the process
-      - 'start' launches the container process within all configured namespaces and cgroups
-      - 'stop' sends SIGTERM to the container's PID 1; waits up to a configurable timeout (default 10s); sends SIGKILL if still running
-      - 'remove' deletes the container's upper OverlayFS layer, cgroup, veth pair, and any port forwarding rules
-      - Container state is tracked (created, running, stopped, removed) and queryable via a 'ps' or 'list' command
-      - 'exec' runs a new command inside an existing running container's namespaces (using nsenter or setns)
-      - Exit code of the container's main process is captured and reported
+      - "'create' prepares all container state (rootfs, cgroup, network) without starting the process"
+      - "'start' launches the container process within all configured namespaces and cgroups"
+      - "'stop' sends SIGTERM to the container's PID 1; waits up to a configurable timeout (default 10s); sends SIGKILL if still running"
+      - "'remove' deletes the container's upper OverlayFS layer, cgroup, veth pair, and any port forwarding rules"
+      - "Container state is tracked (created, running, stopped, removed) and queryable via a 'ps' or 'list' command"
+      - "'exec' runs a new command inside an existing running container's namespaces (using nsenter or setns)"
+      - "Exit code of the container's main process is captured and reported"
     pitfalls:
       - "SIGTERM must be sent to the container's PID 1 from the host PID namespace (the host-visible PID), not PID 1 directly"
       - "If PID 1 inside the container doesn't handle SIGTERM, it won't die (PID 1 is protected from signals it doesn't handle)"
       - "nsenter/setns for 'exec' requires opening /proc/<pid>/ns/* file descriptors for each namespace"
-      - "Cleanup order: stop processes → remove cgroup → unmount overlay → remove network → delete state files"
+      - Cleanup order: stop processes → remove cgroup → unmount overlay → remove network → delete state files
     concepts:
       - Container lifecycle state machine
       - Graceful shutdown (SIGTERM → SIGKILL)
@@ -337,6 +337,6 @@ milestones:
       - Container stop with SIGTERM → timeout → SIGKILL
       - Container remove with full resource cleanup
       - Container list/ps showing state of all containers
-      - Container exec entering running container's namespaces
+      - "Container exec entering running container's namespaces"
     estimated_hours: "6-8"
 ```

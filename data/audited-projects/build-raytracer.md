@@ -105,7 +105,7 @@ milestones:
       - "RGB values not clamped to [0,1] before gamma correction causes overflow"
       - "Forgetting gamma correction makes all images too dark (linear vs sRGB)"
       - "Ray direction not normalized affects later distance calculations"
-      - "Y-axis direction: PPM rows go top-to-bottom; ray y goes bottom-to-top"
+      - Y-axis direction: PPM rows go top-to-bottom; ray y goes bottom-to-top
       - "Integer types for coordinates loses sub-pixel precision"
     concepts:
       - Image file formats (PPM)
@@ -135,7 +135,7 @@ milestones:
       normal determination.
     acceptance_criteria:
       - "Ray-sphere intersection solves the quadratic equation and returns the nearest positive t"
-      - "Hit record stores: intersection point, surface normal, t parameter, and front_face boolean"
+      - Hit record stores: intersection point, surface normal, t parameter, and front_face boolean
       - "Surface normals are unit-length and always point outward from the geometry surface"
       - "front_face flag indicates whether the ray hit the outside (true) or inside (false) of the surface"
       - "Normal-to-color mapping renders sphere with visually distinct directional shading"
@@ -145,7 +145,7 @@ milestones:
       - "Scene with ground sphere and centered sphere renders both with correct occlusion"
     pitfalls:
       - "Choosing wrong quadratic root (must select smallest positive t)"
-      - "Floating-point self-intersection: t_min = 0 causes shadow acne (use 0.001)"
+      - Floating-point self-intersection: t_min = 0 causes shadow acne (use 0.001)
       - "Normal pointing inward for back-face hits—must flip based on ray direction"
       - "Forgetting to normalize normals after computation"
       - "Returning first hit instead of closest hit from object list"
@@ -218,17 +218,17 @@ milestones:
       - "Metal material reflects rays using v - 2*dot(v,n)*n formula"
       - "Fuzz parameter [0,1] adds random perturbation to reflected direction; fuzz=0 is mirror"
       - "Reflected rays pointing into surface (dot > 0 with normal) are absorbed (return black)"
-      - "Dielectric material refracts using Snell's law: n1*sin(θ1) = n2*sin(θ2)"
-      - "IOR ratio correctly flips based on front_face: entering uses 1/ior, exiting uses ior/1"
+      - Dielectric material refracts using Snell's law: n1*sin(θ1) = n2*sin(θ2)
+      - IOR ratio correctly flips based on front_face: entering uses 1/ior, exiting uses ior/1
       - "Total internal reflection occurs when sin(θ_transmitted) > 1; ray reflects instead of refracting"
       - "Schlick approximation computes reflectance probability at grazing angles"
       - "Hollow glass sphere rendered using negative-radius inner sphere trick"
-      - "Material assignment: different objects in the same scene have different materials"
+      - Material assignment: different objects in the same scene have different materials
       - "Scene demonstrates all three materials (diffuse, metal, glass) simultaneously"
     pitfalls:
-      - "IOR ratio inverted: entering medium should be (1.0 / ior), not (ior / 1.0)"
+      - IOR ratio inverted: entering medium should be (1.0 / ior), not (ior / 1.0)
       - "Fuzz > 1 causes scattered ray to point through surface—clamp or reject"
-      - "Total internal reflection check forgotten: glass appears black at steep angles"
+      - Total internal reflection check forgotten: glass appears black at steep angles
       - "Not attenuating color per bounce produces unrealistically bright reflections"
       - "Negative radius trick for hollow glass requires normal flip understanding from M2"
     concepts:
@@ -261,13 +261,13 @@ milestones:
       - "Orthonormal basis (u, v, w) computed from view direction and vup vector"
       - "Field of view parameter (vertical, in degrees) controls zoom level"
       - "Aspect ratio matches output image dimensions"
-      - "Thin lens model: ray origins randomly offset within circular aperture disk"
+      - Thin lens model: ray origins randomly offset within circular aperture disk
       - "Focus distance parameter controls the plane of sharp focus"
       - "Objects at focus distance are sharp; objects nearer/farther are blurred proportionally"
       - "Aperture=0 produces pinhole camera (no blur); larger aperture increases blur"
       - "Camera up vector parallel to view direction is detected and reported as error"
     pitfalls:
-      - "FOV in radians vs degrees confusion (common: forgetting to convert)"
+      - FOV in radians vs degrees confusion (common: forgetting to convert)
       - "vup parallel to view direction produces degenerate basis (cross product = zero)"
       - "Aspect ratio computed as height/width instead of width/height—stretched image"
       - "Random disk sampling with bias produces visible ring artifacts in bokeh"
@@ -304,7 +304,7 @@ milestones:
       - "Progress reporting outputs percentage complete to stderr during rendering"
       - "Final scene contains 100+ objects with mixed materials demonstrating all features"
       - "Final scene renders at 1920×1080 with 100+ samples per pixel in under 10 minutes on modern hardware"
-      - "Multi-threading (optional but recommended): render tiles in parallel across CPU cores"
+      - Multi-threading (optional but recommended): render tiles in parallel across CPU cores
     pitfalls:
       - "BVH with bad split heuristic degenerates to linear scan—measure speedup"
       - "AABB hit test must handle rays parallel to an axis (division by zero or NaN)"
@@ -327,8 +327,7 @@ milestones:
       - "Ray-BVH traversal with early termination"
       - "Binary PPM (P6) or PNG image output"
       - "Render progress reporting"
-      - "Final scene: 100+ objects, mixed materials, camera effects"
-      - "Performance benchmark: BVH vs linear, with timing output"
+      - Final scene: 100+ objects, mixed materials, camera effects
+      - Performance benchmark: BVH vs linear, with timing output
     estimated_hours: "5-8"
-
 ```

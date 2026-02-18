@@ -93,10 +93,10 @@ milestones:
       protocols.
     acceptance_criteria:
       - "Server listens on a TCP socket and reads incoming HTTP requests line by line"
-      - "Upgrade request is detected by checking for Connection: Upgrade and Upgrade: websocket headers (case-insensitive)"
+      - Upgrade request is detected by checking for Connection: Upgrade and Upgrade: websocket headers (case-insensitive)
       - "Sec-WebSocket-Version header is validated; versions other than 13 are rejected with 426 Upgrade Required"
       - "Sec-WebSocket-Key header is extracted, concatenated with the magic GUID '258EAFA5-E914-47DA-95CA-5AB0DC85B11', SHA-1 hashed, and Base64-encoded to produce Sec-WebSocket-Accept"
-      - "Server responds with '101 Switching Protocols' including Connection: Upgrade, Upgrade: websocket, and Sec-WebSocket-Accept headers"
+      - Server responds with '101 Switching Protocols' including Connection: Upgrade, Upgrade: websocket, and Sec-WebSocket-Accept headers
       - "After the 101 response, the connection switches to WebSocket framing mode; subsequent data is interpreted as WebSocket frames"
       - "Non-upgrade HTTP requests receive a 400 Bad Request response"
     pitfalls:
@@ -127,7 +127,7 @@ milestones:
       Parse incoming WebSocket frames and construct outgoing frames,
       handling masking, payload length encoding, opcodes, and fragmentation.
     acceptance_criteria:
-      - "Incoming frames are parsed extracting: FIN bit, opcode (4 bits), MASK bit, payload length (7-bit, 16-bit, or 64-bit extended), masking key (4 bytes if masked), and payload data"
+      - Incoming frames are parsed extracting: FIN bit, opcode (4 bits), MASK bit, payload length (7-bit, 16-bit, or 64-bit extended), masking key (4 bytes if masked), and payload data
       - "Client frames are unmasked by XOR-ing each payload byte with the corresponding byte of the 4-byte masking key; frames from clients without masking are rejected with 1002 Protocol Error close"
       - "Server-to-client frames are constructed WITHOUT masking (servers MUST NOT mask per RFC 6455)"
       - "Text frames (opcode 0x1) have their payload validated as valid UTF-8; invalid UTF-8 triggers a 1007 Invalid Payload close"
@@ -170,8 +170,8 @@ milestones:
       - "Connection states (OPEN, CLOSING, CLOSED) are tracked; operations on non-OPEN connections are rejected"
       - "Server sends ping frames at a configurable interval (e.g., 30 seconds); pong responses reset the liveness timer"
       - "Connections that do not respond to ping within a configurable timeout are terminated and removed from the registry"
-      - "Close handshake: when server initiates close, it sends a close frame with status code, waits for the client's close frame response, then closes the TCP connection"
-      - "Close handshake: when client sends a close frame, server responds with a close frame echoing the status code, then closes the TCP connection"
+      - Close handshake: when server initiates close, it sends a close frame with status code, waits for the client's close frame response, then closes the TCP connection
+      - Close handshake: when client sends a close frame, server responds with a close frame echoing the status code, then closes the TCP connection
       - "Broadcast method sends a message to all OPEN connections except the sender; errors on individual connections do not affect other recipients"
       - "Disconnected connections are cleaned up from the registry immediately; no resource leaks"
     pitfalls:
@@ -211,11 +211,11 @@ milestones:
       - "Origin header is validated against a configurable allowlist during the handshake; disallowed origins receive 403 Forbidden"
       - "Per-connection message rate limiting rejects clients sending more than a configurable number of messages per second with a 1008 Policy Violation close"
       - "Maximum message size (after reassembly of fragments) is enforced; oversized messages trigger a 1009 Message Too Big close"
-      - "Integration test: standard WebSocket client (e.g., browser, wscat) successfully completes handshake and exchanges text messages"
-      - "Integration test: fragmented message sent by client is correctly reassembled by server"
-      - "Integration test: server detects dead connection via ping timeout and cleans up within 2x the configured timeout"
-      - "Integration test: broadcast message is received by all connected clients except the sender"
-      - "Integration test: close handshake completes cleanly with correct status code exchange"
+      - Integration test: standard WebSocket client (e.g., browser, wscat) successfully completes handshake and exchanges text messages
+      - Integration test: fragmented message sent by client is correctly reassembled by server
+      - Integration test: server detects dead connection via ping timeout and cleans up within 2x the configured timeout
+      - Integration test: broadcast message is received by all connected clients except the sender
+      - Integration test: close handshake completes cleanly with correct status code exchange
     pitfalls:
       - "Not validating Origin allows cross-site WebSocket hijacking attacks"
       - "Rate limiting must be per-connection, not global; a single abusive client should not affect others"

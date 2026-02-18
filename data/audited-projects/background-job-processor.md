@@ -97,7 +97,7 @@ milestones:
     estimated_hours: 12
     concepts:
       - "Redis LMOVE (formerly RPOPLPUSH) for atomic move from processing queue to in-flight set"
-      - "Alternative: Redis Streams with XREADGROUP and consumer groups for durable delivery"
+      - Alternative: Redis Streams with XREADGROUP and consumer groups for durable delivery
       - Job serialization with JSON or msgpack for cross-language compatibility
       - Connection pooling to Redis for efficient resource usage
       - At-least-once delivery semantics and why exactly-once is impossible in distributed systems
@@ -150,7 +150,7 @@ milestones:
     acceptance_criteria:
       - Workers poll configured queues using BLMOVE (or XREADGROUP) with a configurable timeout (default 5s) and dispatch jobs to the correct handler based on job type
       - Configurable concurrency (thread pool or process pool) allows a single worker process to execute N jobs in parallel where N is configurable at startup
-      - "Graceful shutdown on SIGTERM: the worker stops accepting new jobs and waits up to a configurable timeout (default 30s) for in-flight jobs to complete before exiting"
+      - Graceful shutdown on SIGTERM: the worker stops accepting new jobs and waits up to a configurable timeout (default 30s) for in-flight jobs to complete before exiting
       - Worker heartbeat is updated in Redis every 5 seconds (configurable); a separate reaper process or the worker itself detects stale workers (no heartbeat for 3x interval) and returns their in-flight jobs to the queue
       - Unhandled exceptions in job execution are caught, logged, and do not crash the worker process
       - Per-job execution timeout is enforced; jobs exceeding the timeout are terminated and moved to the retry or dead letter queue
@@ -177,7 +177,7 @@ milestones:
       and full error tracking.
     estimated_hours: 10
     concepts:
-      - "Exponential backoff with jitter: delay = min(base * 2^attempt + random_jitter, max_delay)"
+      - Exponential backoff with jitter: delay = min(base * 2^attempt + random_jitter, max_delay)
       - Dead letter queue for permanently failed jobs
       - Idempotency considerations for retried jobs (at-least-once means handlers should be idempotent)
       - Retry state tracking with attempt counter and error history
@@ -186,9 +186,9 @@ milestones:
       - Dead letter queue management
       - Error tracking and forensics
     acceptance_criteria:
-      - "Failed jobs are retried with exponential backoff: delay = min(base * 2^attempt + uniform_random(0, jitter_max), max_delay) where base, jitter_max, and max_delay are configurable per job type with global defaults"
+      - Failed jobs are retried with exponential backoff: delay = min(base * 2^attempt + uniform_random(0, jitter_max), max_delay) where base, jitter_max, and max_delay are configurable per job type with global defaults
       - Jobs that exhaust their maximum retry count are moved to the dead letter queue with full error history (every attempt's exception class, message, backtrace, and timestamp)
-      - "Error details for each attempt are stored as an array on the job record: [{attempt: N, error_class, message, backtrace, timestamp}]"
+      - Error details for each attempt are stored as an array on the job record: [{attempt: N, error_class, message, backtrace, timestamp}]
       - Dead letter queue jobs can be manually retried (re-enqueued to original queue) or permanently deleted through a management API
       - Retry scheduling uses a Redis sorted set with the scheduled retry timestamp as score; a poller moves due jobs back to the work queue
       - Maximum retry count is configurable per job type (e.g., EmailJob max 5, PaymentJob max 10) with a global default (e.g., 3)
@@ -199,7 +199,7 @@ milestones:
       - "Retrying non-idempotent operations (e.g., charging a credit card) without idempotency keys causes duplicate side effects"
       - Not implementing jitter causing synchronized retry storms
     deliverables:
-      - "Exponential backoff calculator: delay = min(base * 2^attempt + random(0, jitter_max), max_delay)"
+      - Exponential backoff calculator: delay = min(base * 2^attempt + random(0, jitter_max), max_delay)
       - Retry queue as Redis sorted set with scheduled execution timestamps as scores
       - Retry poller that moves due jobs from the sorted set back to the work queue
       - Dead letter queue storing permanently failed jobs with full error history
@@ -217,7 +217,7 @@ milestones:
     concepts:
       - Redis sorted sets for timestamp-based job scheduling (same mechanism as retry queue)
       - Cron expression parsing and next-execution-time calculation
-      - "Timezone handling and DST transitions — a 2:30 AM job may not fire or fire twice during DST change"
+      - Timezone handling and DST transitions — a 2: 30 AM job may not fire or fire twice during DST change
       - Leader election or distributed lock for the scheduler process to prevent duplicate cron enqueue
     skills:
       - Cron parsing
@@ -227,19 +227,19 @@ milestones:
     acceptance_criteria:
       - "Delayed jobs are stored in a Redis sorted set with their scheduled execution timestamp as score; a poller enqueues them when current_time >= score"
       - "Recurring jobs defined with standard 5-field cron expressions (minute, hour, day-of-month, month, day-of-week) are automatically re-enqueued after each execution"
-      - "Unique job constraints prevent duplicate enqueue: for recurring jobs, a distributed lock or unique key ensures only one instance is enqueued per schedule period"
-      - "Scheduler crash recovery on restart: scans for overdue scheduled jobs (scheduled_time < now) and enqueues them immediately"
+      - Unique job constraints prevent duplicate enqueue: for recurring jobs, a distributed lock or unique key ensures only one instance is enqueued per schedule period
+      - Scheduler crash recovery on restart: scans for overdue scheduled jobs (scheduled_time < now) and enqueues them immediately
       - "Cron expressions are evaluated in a configurable timezone (default UTC); DST transitions are handled correctly (jobs scheduled during a skipped hour are run at the next valid time, jobs during a repeated hour are run only once)"
       - Only one scheduler process enqueues cron jobs at a time, enforced via a Redis distributed lock with TTL
     pitfalls:
-      - "Not handling DST transitions: 2:30 AM may not exist (spring forward) or exist twice (fall back)"
+      - Not handling DST transitions: 2:30 AM may not exist (spring forward) or exist twice (fall back)
       - Running multiple scheduler processes without distributed locking causes duplicate cron enqueues
       - Missing scheduled jobs during downtime without catch-up logic
       - Cron parsing libraries that don't handle edge cases (day 31, Feb 29)
       - Using system local time instead of a consistent timezone reference
     deliverables:
       - Delayed job API accepting a job and a future timestamp, stored in Redis sorted set
-      - "Recurring job definitions: job class, arguments, cron expression, timezone"
+      - Recurring job definitions: job class, arguments, cron expression, timezone
       - "Cron expression parser supporting 5-field syntax with wildcards, ranges, steps, and lists"
       - Scheduler poller process that checks for due jobs and enqueues them
       - Distributed lock for scheduler leader election preventing duplicate cron enqueue
@@ -256,7 +256,7 @@ milestones:
       - "WebSocket or SSE for pushing metric updates to the dashboard"
       - Aggregating job metrics without blocking worker processes (use separate Redis keys/HyperLogLog)
       - Rate limiting dashboard API to prevent Redis overload from frequent polling
-      - "Key metrics: queue depth, processing rate (jobs/sec), error rate, p95 processing time"
+      - Key metrics: queue depth, processing rate (jobs/sec), error rate, p95 processing time
     skills:
       - Metrics collection
       - Web UI development
@@ -275,13 +275,12 @@ milestones:
       - Dashboard polling too frequently overloading Redis — enforce minimum poll interval
       - High-cardinality metrics (per-job-ID) instead of aggregate metrics causing memory explosion
     deliverables:
-      - "Per-queue metrics: pending, active, completed, failed, dead job counts"
-      - "Worker status tracker: active workers, current job, last heartbeat, uptime"
+      - Per-queue metrics: pending, active, completed, failed, dead job counts
+      - Worker status tracker: active workers, current job, last heartbeat, uptime
       - "Job history log with configurable retention (TTL-based cleanup)"
       - "Rolling error rate calculator per queue and per job type"
       - "Web dashboard UI with real-time updates (SSE or WebSocket)"
-      - "Dead letter queue management UI: list, retry, delete"
-      - "Job search API with filters: ID, status, queue, time range, with pagination"
+      - Dead letter queue management UI: list, retry, delete
+      - Job search API with filters: ID, status, queue, time range, with pagination
       - "Alert configuration for queue depth and error rate thresholds"
-
 ```

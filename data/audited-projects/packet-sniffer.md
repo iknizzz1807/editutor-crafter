@@ -123,7 +123,7 @@ milestones:
       - Variable-offset header parsing
     acceptance_criteria:
       - Extract destination MAC (bytes 0-5), source MAC (bytes 6-11), and EtherType (bytes 12-13) from Ethernet header
-      - Format MAC addresses as colon-separated hex (e.g., aa:bb:cc:dd:ee:ff)
+      - Format MAC addresses as colon-separated hex (e.g., aa: bb:cc:dd:ee:ff)
       - Convert EtherType from network byte order (big-endian) to host byte order
       - Detect 802.1Q VLAN tags (EtherType 0x8100); extract VLAN ID and the real EtherType from the next 4 bytes
       - Correctly compute the offset to the network layer payload (14 bytes normally, 18 bytes with VLAN tag)
@@ -187,8 +187,8 @@ milestones:
       - Service identification by port
     acceptance_criteria:
       - Dispatch to TCP parser when IP protocol is 6, UDP parser when protocol is 17; log and skip others
-      - "TCP: Extract source port, destination port, sequence number, acknowledgment number, data offset, flags (SYN/ACK/FIN/RST/PSH/URG), window size"
-      - "UDP: Extract source port, destination port, length, and checksum"
+      - TCP: Extract source port, destination port, sequence number, acknowledgment number, data offset, flags (SYN/ACK/FIN/RST/PSH/URG), window size
+      - UDP: Extract source port, destination port, length, and checksum
       - TCP data offset is in 4-byte words; compute actual header length to find payload start
       - Identify well-known services by port number (HTTP/80, HTTPS/443, DNS/53, SSH/22) in output display
       - Calculate and display payload size (total IP length minus IP header minus transport header)
@@ -236,5 +236,4 @@ milestones:
       - PCAP file reader for offline analysis
       - Formatted one-line packet summary display
       - Hex dump output option for payload inspection
-
 ```

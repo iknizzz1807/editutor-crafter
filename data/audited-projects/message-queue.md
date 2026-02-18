@@ -62,13 +62,13 @@ languages:
     - Java
     - JavaScript
 resources:
-  - name: "RabbitMQ AMQP Concepts"
+  - name: RabbitMQ AMQP Concepts""
     url: https://www.rabbitmq.com/tutorials/amqp-concepts
     type: documentation
-  - name: "Kafka Design Documentation"
+  - name: Kafka Design Documentation""
     url: https://kafka.apache.org/documentation/#design
     type: documentation
-  - name: "Redis Pub/Sub Documentation"
+  - name: Redis Pub/Sub Documentation""
     url: https://redis.io/docs/latest/develop/interact/pubsub/
     type: documentation
 prerequisites:

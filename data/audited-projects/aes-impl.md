@@ -70,13 +70,13 @@ languages:
     - Go
     - Java
 resources:
-  - name: "FIPS 197 (AES Specification)"
+  - name: FIPS 197 (AES Specification)""
     url: https://csrc.nist.gov/publications/detail/fips/197/final
     type: specification
-  - name: "A Stick Figure Guide to AES"
+  - name: A Stick Figure Guide to AES""
     url: http://www.moserware.com/2009/09/stick-figure-guide-to-advanced.html
     type: article
-  - name: "NIST AES Test Vectors"
+  - name: NIST AES Test Vectors""
     url: https://csrc.nist.gov/CSRC/media/Projects/Cryptographic-Algorithm-Validation-Program/documents/aes/AESAVS.pdf
     type: reference
 prerequisites:

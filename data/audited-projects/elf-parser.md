@@ -92,9 +92,9 @@ milestones:
       - Read and validate ELF magic bytes (0x7f 'E' 'L' 'F') at file offset 0; reject non-ELF files with clear error
       - Parse e_ident array to determine class (32/64-bit), data encoding (little/big endian), and OS/ABI
       - Parse all ELF header fields using the correct struct size for the detected class (Elf32_Ehdr or Elf64_Ehdr)
-      - Display parsed header matching `readelf -h` output format (type, machine, version, entry point, phoff, shoff, flags, sizes)
+      - Display parsed header matching 'readelf -h' output format (type, machine, version, entry point, phoff, shoff, flags, sizes)
       - Read all multi-byte fields using the endianness declared in e_ident[EI_DATA]
-      - Verify against `readelf -h` output for at least 3 different binaries (shared library, executable, relocatable object)
+      - Verify against 'readelf -h' output for at least 3 different binaries (shared library, executable, relocatable object)
     pitfalls:
       - Endianness of multi-byte fields must match the ELF file's declared endianness, not the host machine's
       - 32-bit and 64-bit ELF headers have different struct sizes and field widths (e.g., e_entry is 4 bytes vs 8 bytes)
@@ -122,9 +122,9 @@ milestones:
       - Read section header table using e_shoff, e_shentsize, and e_shnum from the ELF header
       - Handle the extended section numbering case where e_shnum == 0 (actual count in sh_size of section 0)
       - Resolve section names by reading the section header string table identified by e_shstrndx
-      - Display section table matching `readelf -S` output (index, name, type, address, offset, size, flags, link, info, align)
+      - Display section table matching 'readelf -S' output (index, name, type, address, offset, size, flags, link, info, align)
       - Identify key sections by type: SHT_PROGBITS, SHT_SYMTAB, SHT_STRTAB, SHT_RELA, SHT_DYNAMIC, SHT_NOTE
-      - Verify output against `readelf -S` for at least 2 different binaries
+      - Verify output against 'readelf -S' for at least 2 different binaries
     pitfalls:
       - Section 0 is always SHN_UNDEF (null section); do not skip it, as it may carry extended metadata
       - String table is just a blob of null-terminated strings; index is a byte offset into this blob, not a string index
@@ -152,8 +152,8 @@ milestones:
       - Parse each symbol entry extracting name index, info (type + binding), other (visibility), shndx, value, and size
       - Resolve symbol names from the corresponding string table (.strtab for .symtab, .dynstr for .dynsym) using sh_link
       - Handle STT_SECTION symbols by displaying the corresponding section name instead of empty string
-      - Display output matching `readelf -s` format (index, value, size, type, binding, visibility, ndx, name)
-      - Verify against `readelf -s` for at least 2 binaries (one with .symtab, one stripped with only .dynsym)
+      - Display output matching 'readelf -s' format (index, value, size, type, binding, visibility, ndx, name)
+      - Verify against 'readelf -s' for at least 2 binaries (one with .symtab, one stripped with only .dynsym)
     pitfalls:
       - .symtab may be absent in stripped binaries; handle gracefully and fall back to .dynsym
       - Symbol name index 0 means the symbol has no name (STN_UNDEF); display empty string
@@ -179,12 +179,12 @@ milestones:
       - Dynamic linker metadata extraction
     acceptance_criteria:
       - Parse program header table using e_phoff, e_phentsize, and e_phnum from the ELF header
-      - Display segment information matching `readelf -l` output (type, offset, vaddr, paddr, filesz, memsz, flags, align)
+      - Display segment information matching 'readelf -l' output (type, offset, vaddr, paddr, filesz, memsz, flags, align)
       - Show section-to-segment mapping (which sections fall within each segment's address range)
       - Locate the PT_DYNAMIC segment and parse .dynamic section entries
       - Extract DT_NEEDED entries and resolve library names from the dynamic string table
       - Extract PT_INTERP segment content to show the dynamic linker path
-      - Verify against `readelf -l` and `readelf -d` output
+      - Verify against 'readelf -l' and 'readelf -d' output
     pitfalls:
       - Program headers describe runtime memory layout; sections describe link-time structure—they can overlap
       - DT_NEEDED d_val is a string table offset into .dynstr, not a direct pointer
@@ -197,5 +197,4 @@ milestones:
       - Dynamic section parser extracting DT_NEEDED and other key entries
       - Dynamic linker path extraction from PT_INTERP
       - Library dependency listing from DT_NEEDED entries
-
 ```

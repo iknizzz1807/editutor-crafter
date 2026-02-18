@@ -92,18 +92,18 @@ milestones:
       (tokens per second = sustained throughput). Tokens are lazily
       refilled based on elapsed time.
     acceptance_criteria:
-      - "Configure bucket with two explicit parameters: capacity (burst size, integer) and refill_rate (tokens per second, float)"
+      - Configure bucket with two explicit parameters: capacity (burst size, integer) and refill_rate (tokens per second, float)
       - Lazy refill calculates tokens to add based on elapsed time since last refill using monotonic clock
       - Token count never exceeds capacity (tokens are capped after refill)
-      - "consume(n) returns {allowed: true, remaining: X} if n tokens available, or {allowed: false, retry_after_seconds: Y} if not"
+      - consume(n) returns {allowed: true, remaining: X} if n tokens available, or {allowed: false, retry_after_seconds: Y} if not
       - "retry_after_seconds is accurately calculated as (n - current_tokens) / refill_rate"
-      - "Burst behavior verified: a full bucket allows 'capacity' requests instantly even if refill_rate is 1/s"
-      - "Thread-safe: 100 concurrent goroutines/threads consuming tokens do not cause data races (verified by race detector)"
+      - Burst behavior verified: a full bucket allows 'capacity' requests instantly even if refill_rate is 1/s
+      - Thread-safe: 100 concurrent goroutines/threads consuming tokens do not cause data races (verified by race detector)
     pitfalls:
-      - "Using wall-clock time instead of monotonic clock: NTP adjustments can cause negative elapsed time, granting infinite tokens"
-      - "Floating-point accumulation error: over millions of refills, floating-point tokens can drift. Use integer math (tokens as nanoseconds) or periodic rounding."
-      - "Not capping tokens at capacity after refill: allows infinite burst if refill runs after long idle period"
-      - "Lock contention under high concurrency: consider using atomic CAS loops instead of mutex for the hot path"
+      - Using wall-clock time instead of monotonic clock: NTP adjustments can cause negative elapsed time, granting infinite tokens
+      - Floating-point accumulation error: over millions of refills, floating-point tokens can drift. Use integer math (tokens as nanoseconds) or periodic rounding.
+      - Not capping tokens at capacity after refill: allows infinite burst if refill runs after long idle period
+      - Lock contention under high concurrency: consider using atomic CAS loops instead of mutex for the hot path
     concepts:
       - Token bucket algorithm (capacity = burst, rate = sustained throughput)
       - Lazy vs eager refill strategies
@@ -129,16 +129,16 @@ milestones:
       Add background cleanup of stale client state.
     acceptance_criteria:
       - Separate token bucket instance maintained per client identifier (IP or API key)
-      - "Client identification supports two strategies: X-API-Key header (priority) and client IP from X-Forwarded-For or socket address (fallback)"
-      - "Sliding window counter algorithm implemented: divides time into fixed windows and weights the previous window's count by overlap percentage"
+      - Client identification supports two strategies: X-API-Key header (priority) and client IP from X-Forwarded-For or socket address (fallback)
+      - Sliding window counter algorithm implemented: divides time into fixed windows and weights the previous window's count by overlap percentage
       - "Background cleanup goroutine/thread runs every 60s and removes client buckets not accessed within configurable TTL (default 300s)"
-      - "Memory usage grows linearly with active clients and shrinks after cleanup (verified: 10K clients created, then after TTL+cleanup, memory returns to near baseline)"
-      - "Configurable per-client limit overrides: a config map allows specific API keys to have different capacity/rate than the global default"
+      - Memory usage grows linearly with active clients and shrinks after cleanup (verified: 10K clients created, then after TTL+cleanup, memory returns to near baseline)
+      - Configurable per-client limit overrides: a config map allows specific API keys to have different capacity/rate than the global default
     pitfalls:
-      - "Memory leak from never cleaning stale buckets: without cleanup, memory grows unbounded with unique client IPs"
-      - "X-Forwarded-For spoofing: if the proxy is untrusted, clients can set arbitrary X-Forwarded-For headers to bypass rate limits. Trust only the rightmost IP added by your proxy."
-      - "Lock contention on the client map: use sharded maps or sync.Map to reduce contention with many concurrent clients"
-      - "Sliding window approximation error: the weighted previous window is an approximation; understand its accuracy bounds"
+      - Memory leak from never cleaning stale buckets: without cleanup, memory grows unbounded with unique client IPs
+      - X-Forwarded-For spoofing: if the proxy is untrusted, clients can set arbitrary X-Forwarded-For headers to bypass rate limits. Trust only the rightmost IP added by your proxy.
+      - Lock contention on the client map: use sharded maps or sync.Map to reduce contention with many concurrent clients
+      - Sliding window approximation error: the weighted previous window is an approximation; understand its accuracy bounds
     concepts:
       - Per-client state isolation
       - Sliding window counter algorithm
@@ -163,17 +163,17 @@ milestones:
       headers conforming to IETF RateLimit header draft.
     acceptance_criteria:
       - Middleware intercepts all HTTP requests before reaching the application handler
-      - "Rate-limited requests receive HTTP 429 Too Many Requests with JSON body: {error: 'rate limit exceeded', retry_after: N}"
-      - "Every response includes headers: X-RateLimit-Limit (max requests), X-RateLimit-Remaining (remaining in window), X-RateLimit-Reset (epoch seconds when limit resets)"
+      - Rate-limited requests receive HTTP 429 Too Many Requests with JSON body: {error: 'rate limit exceeded', retry_after: N}
+      - Every response includes headers: X-RateLimit-Limit (max requests), X-RateLimit-Remaining (remaining in window), X-RateLimit-Reset (epoch seconds when limit resets)
       - "429 responses include Retry-After header with seconds until the client can retry (matches the token bucket's calculated retry_after)"
       - "Rate limit headers are present on ALL responses (200, 404, 500, etc.), not just 429 responses"
-      - "Per-route configuration: different endpoints can have different limits (e.g., /api/login: 5/min, /api/data: 100/min)"
+      - Per-route configuration: different endpoints can have different limits (e.g., /api/login: 5/min, /api/data: 100/min)
       - "Middleware latency overhead is less than 1ms per request for local (non-distributed) rate limiting (verified by benchmark)"
     pitfalls:
-      - "Only adding rate limit headers on 429 responses: clients need remaining/limit info on every request to self-throttle"
-      - "Incorrect Retry-After calculation: must account for current token count and refill rate, not just a static value"
-      - "X-RateLimit-Reset as relative seconds vs epoch: be consistent and document which format is used"
-      - "Rate limiter becoming the bottleneck: if middleware takes 10ms, a 1000 req/s server can only handle 100 concurrent rate checks"
+      - Only adding rate limit headers on 429 responses: clients need remaining/limit info on every request to self-throttle
+      - Incorrect Retry-After calculation: must account for current token count and refill rate, not just a static value
+      - X-RateLimit-Reset as relative seconds vs epoch: be consistent and document which format is used
+      - Rate limiter becoming the bottleneck: if middleware takes 10ms, a 1000 req/s server can only handle 100 concurrent rate checks
     concepts:
       - HTTP middleware pattern
       - IETF RateLimit header fields
@@ -201,15 +201,15 @@ milestones:
       - "Rate limit state is stored in Redis, shared across all server instances"
       - "Token bucket or sliding window operations are implemented as atomic Redis Lua scripts (EVAL/EVALSHA) — no separate GET then SET"
       - "Lua scripts use Redis server time (redis.call('TIME')) instead of application server time to eliminate clock drift"
-      - "Consistency verified: 3 server instances handling 1000 concurrent requests total enforce the global limit accurately (within 5% overshoot)"
+      - Consistency verified: 3 server instances handling 1000 concurrent requests total enforce the global limit accurately (within 5% overshoot)
       - "Redis connection failure triggers graceful fallback to local in-memory rate limiting with a warning log"
       - "Redis key TTL is set to 2x the rate limit window to auto-expire stale keys"
       - "Latency overhead from Redis round-trip is measured and documented; should be < 5ms p99 on local network"
     pitfalls:
-      - "Non-atomic read-modify-write: doing GET, compute, SET in separate Redis commands creates a race window where concurrent requests both read the same value"
-      - "Using application server time in Redis scripts: clock drift between servers causes inconsistent rate windows. Always use redis.call('TIME')."
-      - "Not setting TTL on Redis keys: stale rate limit keys accumulate forever, wasting Redis memory"
-      - "Redis failover causing brief period of no rate limiting: the fallback must be to local limiting, not to allowing all traffic"
+      - Non-atomic read-modify-write: doing GET, compute, SET in separate Redis commands creates a race window where concurrent requests both read the same value
+      - Using application server time in Redis scripts: clock drift between servers causes inconsistent rate windows. Always use redis.call('TIME').
+      - Not setting TTL on Redis keys: stale rate limit keys accumulate forever, wasting Redis memory
+      - Redis failover causing brief period of no rate limiting: the fallback must be to local limiting, not to allowing all traffic
     concepts:
       - Redis Lua scripting for atomic operations
       - Server-side timestamps to eliminate clock drift
@@ -226,5 +226,4 @@ milestones:
       - Local fallback rate limiter activated on Redis failure
       - Latency benchmark comparing local vs Redis-backed rate limiting
     estimated_hours: "4-5"
-
 ```

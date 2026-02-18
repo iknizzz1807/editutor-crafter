@@ -61,19 +61,19 @@ languages:
     - Python
   also_possible: []
 resources:
-  - name: "Redis Rate Limiting Tutorial"
+  - name: Redis Rate Limiting Tutorial""
     url: "https://redis.io/tutorials/howtos/ratelimiting/"
     type: tutorial
-  - name: "Rate Limiting Algorithms Explained"
+  - name: Rate Limiting Algorithms Explained""
     url: "https://blog.algomaster.io/p/rate-limiting-algorithms-explained-with-code"
     type: article
-  - name: "Designing a Distributed Rate Limiter"
+  - name: Designing a Distributed Rate Limiter""
     url: "https://blog.algomaster.io/p/designing-a-distributed-rate-limiter"
     type: article
-  - name: "Sliding Window Rate Limiter"
+  - name: Sliding Window Rate Limiter""
     url: "https://arpitbhayani.me/blogs/sliding-window-ratelimiter/"
     type: article
-  - name: "IETF RateLimit Header Fields (draft)"
+  - name: IETF RateLimit Header Fields (draft)""
     url: "https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/"
     type: documentation
 prerequisites:
@@ -92,12 +92,12 @@ milestones:
       algorithms as local (single-node) implementations. Benchmark accuracy
       and memory usage to understand trade-offs before distributing.
     acceptance_criteria:
-      - "Token bucket algorithm: configurable capacity (burst size) and refill rate (tokens/second); a request is allowed if tokens > 0, otherwise rejected"
-      - "Sliding window log algorithm: stores exact timestamps of each request; counts requests in the trailing window; rejects if count exceeds limit"
-      - "Sliding window counter algorithm: uses weighted sum of current and previous fixed-window counters to approximate a sliding window; approximation error is bounded to at most 2x the limit at window boundaries"
+      - Token bucket algorithm: configurable capacity (burst size) and refill rate (tokens/second); a request is allowed if tokens > 0, otherwise rejected
+      - Sliding window log algorithm: stores exact timestamps of each request; counts requests in the trailing window; rejects if count exceeds limit
+      - Sliding window counter algorithm: uses weighted sum of current and previous fixed-window counters to approximate a sliding window; approximation error is bounded to at most 2x the limit at window boundaries
       - "All algorithms are thread-safe and correct under concurrent access from 100 goroutines/threads making simultaneous requests"
-      - "Benchmark: measure memory usage per rate-limited key for each algorithm at 1000 RPS; sliding window log uses O(R) memory where R=requests in window; token bucket and sliding window counter use O(1)"
-      - "Accuracy test: at exactly the rate limit (e.g., 100 req/s), fewer than 2% of requests are incorrectly allowed or rejected over a 60-second run"
+      - Benchmark: measure memory usage per rate-limited key for each algorithm at 1000 RPS; sliding window log uses O(R) memory where R=requests in window; token bucket and sliding window counter use O(1)
+      - Accuracy test: at exactly the rate limit (e.g., 100 req/s), fewer than 2% of requests are incorrectly allowed or rejected over a 60-second run
     pitfalls:
       - "Token bucket allows instantaneous burst up to capacity, which may exceed the sustained rate limit; document this as expected behavior, not a bug"
       - "Sliding window log memory grows linearly with request rate per key; at 10K RPS with 1-minute window, that's 600K timestamps per key—use sorted sets with periodic cleanup"
@@ -127,17 +127,17 @@ milestones:
       - "Token bucket algorithm implemented as a single Redis Lua script that atomically reads current tokens, calculates refill based on elapsed time, decrements if allowed, and returns (allowed, remaining_tokens, retry_after_ms)"
       - "Sliding window counter implemented as a Redis Lua script using two hash keys for current and previous windows with atomic weighted-sum calculation"
       - "All Lua scripts use Redis TIME command (not application node time) as the time source, eliminating clock skew between application nodes"
-      - "Clock skew test: two application nodes with 2-second clock difference both enforce the same rate limit against the same key without exceeding the limit"
+      - Clock skew test: two application nodes with 2-second clock difference both enforce the same rate limit against the same key without exceeding the limit
       - "Connection pool with configurable min/max connections, health checking, and automatic eviction of broken connections"
-      - "Retry logic: transient Redis errors (connection reset, timeout) are retried once with 10ms delay before falling back"
-      - "Graceful degradation: when Redis is unreachable for >3 consecutive attempts, fall back to local in-memory rate limiting per node; log a warning; resume Redis-backed limiting when connectivity is restored"
-      - "Fallback test: disconnect Redis, verify requests are still rate-limited locally; reconnect Redis, verify shared state resumes within 5 seconds"
+      - Retry logic: transient Redis errors (connection reset, timeout) are retried once with 10ms delay before falling back
+      - Graceful degradation: when Redis is unreachable for >3 consecutive attempts, fall back to local in-memory rate limiting per node; log a warning; resume Redis-backed limiting when connectivity is restored
+      - Fallback test: disconnect Redis, verify requests are still rate-limited locally; reconnect Redis, verify shared state resumes within 5 seconds
     pitfalls:
       - "Without Lua scripts, MULTI/EXEC transactions in Redis do not support conditional logic (read-then-write); you must use EVAL for atomic check-and-update"
       - "Redis TIME returns seconds and microseconds, not milliseconds or nanoseconds; parse it correctly in the Lua script"
       - "Local fallback during Redis outage means each node enforces its own limit independently; with N nodes, the effective global limit becomes N * local_limit. Document this and set local_limit = global_limit / expected_nodes"
       - "Connection pool exhaustion under high load causes request queuing; monitor pool utilization and scale pool size accordingly"
-      - "Redis single point of failure: for production, use Redis Sentinel or Redis Cluster for HA; this milestone uses a single instance for simplicity"
+      - Redis single point of failure: for production, use Redis Sentinel or Redis Cluster for HA; this milestone uses a single instance for simplicity
     concepts:
       - Redis Lua scripting for atomic operations
       - Server-side time source for clock skew elimination
@@ -160,19 +160,19 @@ milestones:
       per-endpoint, and global tiers. Evaluate tiers in priority order
       with short-circuit rejection.
     acceptance_criteria:
-      - "Rate limit tiers are evaluated in order: global -> per-endpoint -> per-user (or per-IP for unauthenticated); if any tier rejects, the request is rejected immediately (short-circuit)"
-      - "Each tier has independently configurable limit and window (e.g., global: 10000/min, per-endpoint: 1000/min, per-user: 100/min)"
+      - Rate limit tiers are evaluated in order: global -> per-endpoint -> per-user (or per-IP for unauthenticated); if any tier rejects, the request is rejected immediately (short-circuit)
+      - Each tier has independently configurable limit and window (e.g., global: 10000/min, per-endpoint: 1000/min, per-user: 100/min)
       - "Per-user tier uses authenticated user ID as key; per-IP tier uses client IP as key for unauthenticated requests"
       - "Global tier aggregates all requests across all clients and all nodes via shared Redis counter"
-      - "Burst allowance: per-user tier supports a configurable burst multiplier (e.g., 2x) allowing short spikes up to burst_limit before enforcing sustained rate"
-      - "Different rate limit thresholds per API endpoint are configurable (e.g., /api/search: 50/min vs /api/login: 5/min)"
-      - "Short-circuit test: when global tier rejects, per-user tier is not evaluated (verified by checking Redis command count)"
-      - "Response includes rate limit headers: RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset (seconds until window reset), and Retry-After (seconds) when rejected—all from the most restrictive tier that triggered"
+      - Burst allowance: per-user tier supports a configurable burst multiplier (e.g., 2x) allowing short spikes up to burst_limit before enforcing sustained rate
+      - Different rate limit thresholds per API endpoint are configurable (e.g., /api/search: 50/min vs /api/login: 5/min)
+      - Short-circuit test: when global tier rejects, per-user tier is not evaluated (verified by checking Redis command count)
+      - Response includes rate limit headers: RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset (seconds until window reset), and Retry-After (seconds) when rejected—all from the most restrictive tier that triggered
     pitfalls:
       - "Evaluating all tiers even after one rejects wastes Redis round-trips; implement short-circuit evaluation that stops at the first rejection"
-      - "Different window sizes per tier confuse clients: per-user window=1min but global window=1s means headers from different tiers show different reset times; always report the most restrictive tier's headers"
+      - Different window sizes per tier confuse clients: per-user window=1min but global window=1s means headers from different tiers show different reset times; always report the most restrictive tier's headers
       - "Burst allowance combined with sliding window counter can allow up to burst * 2x limit at window boundaries; test this edge case"
-      - "Rate limit key format must be carefully designed to avoid collisions: use structured keys like rl:{tier}:{endpoint}:{user_id}"
+      - Rate limit key format must be carefully designed to avoid collisions: use structured keys like rl:{tier}:{endpoint}:{user_id}
     concepts:
       - Hierarchical rate limit tiers with priority ordering
       - Short-circuit evaluation for performance
@@ -195,12 +195,12 @@ milestones:
       monitoring endpoint exposing current usage metrics per key and tier.
       Rules update without service restart.
     acceptance_criteria:
-      - "REST API supports CRUD operations on rate limit rules: create, read, update, delete rules identified by tier + endpoint + key pattern"
+      - REST API supports CRUD operations on rate limit rules: create, read, update, delete rules identified by tier + endpoint + key pattern
       - "Rule updates take effect within 5 seconds without requiring service restart; new requests use updated rules immediately"
       - "Rule validation rejects invalid configurations (e.g., negative limits, zero window, missing required fields) with descriptive error messages"
       - "Monitoring endpoint (/metrics or /stats) exposes per-key current usage, remaining quota, and time-to-reset for the top N most active keys"
-      - "Prometheus-compatible metrics: rate_limit_requests_total (counter, labeled by tier, endpoint, decision=allowed|rejected), rate_limit_current_usage (gauge per key)"
-      - "Configuration propagation: in a multi-node deployment, a rule change on one node is visible to all nodes within 10 seconds (via shared Redis config or polling)"
+      - Prometheus-compatible metrics: rate_limit_requests_total (counter, labeled by tier, endpoint, decision=allowed|rejected), rate_limit_current_usage (gauge per key)
+      - Configuration propagation: in a multi-node deployment, a rule change on one node is visible to all nodes within 10 seconds (via shared Redis config or polling)
     pitfalls:
       - "Configuration propagation delay means different nodes enforce different rules briefly; document this eventual consistency window"
       - "Monitoring endpoint that queries Redis for every active key overwhelms Redis at scale; use local caching with periodic refresh"

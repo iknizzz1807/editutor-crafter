@@ -58,13 +58,13 @@ languages:
     - JavaScript
     - Julia
 resources:
-  - name: "KNN Explained (scikit-learn)"
+  - name: KNN Explained (scikit-learn)""
     url: https://scikit-learn.org/stable/modules/neighbors.html
     type: documentation
-  - name: "KNN from Scratch Tutorial"
+  - name: KNN from Scratch Tutorial""
     url: https://machinelearningmastery.com/tutorial-to-implement-k-nearest-neighbors-in-python-from-scratch/
     type: tutorial
-  - name: "Curse of Dimensionality Explained"
+  - name: Curse of Dimensionality Explained""
     url: https://en.wikipedia.org/wiki/Curse_of_dimensionality
     type: article
 prerequisites:

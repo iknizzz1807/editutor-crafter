@@ -96,19 +96,19 @@ milestones:
       (happens-before, happens-after, or concurrent). Define the formal
       comparison algorithm.
     acceptance_criteria:
-      - "Initialize a vector clock for a node as a map/dictionary of {node_id: counter}, defaulting unseen nodes to 0"
+      - Initialize a vector clock for a node as a map/dictionary of {node_id: counter}, defaulting unseen nodes to 0
       - "increment(node_id) increments only the local node's counter by 1"
       - "merge(other_clock) computes element-wise maximum of all components from both clocks, then increments the local node's counter by 1"
       - "compare(a, b) returns HAPPENS_BEFORE if all components of a ≤ b AND at least one component of a < b"
       - "compare(a, b) returns HAPPENS_AFTER if all components of b ≤ a AND at least one component of b < a"
       - "compare(a, b) returns CONCURRENT if neither a ≤ b nor b ≤ a (at least one component of a > corresponding in b, and vice versa)"
-      - "Deep copy of clock on send: the sent message carries a copy, not a reference to the sender's mutable clock"
+      - Deep copy of clock on send: the sent message carries a copy, not a reference to the sender's mutable clock
       - "Unit tests verify all comparison outcomes with at least 10 scenarios including edge cases (identical clocks, single-node, unknown nodes)"
     pitfalls:
-      - "Not incrementing after merge on receive: the standard rule is merge THEN increment. Forgetting the increment loses the 'receive' event from the causal history."
-      - "Shallow copy on send: if the sent clock is a reference, subsequent increments by the sender corrupt the message in transit"
-      - "Comparison logic error: the most common bug is returning HAPPENS_BEFORE when clocks are equal (equal clocks are CONCURRENT — they represent the same event, not a causal relationship). Actually, equal clocks can be treated as EQUAL/IDENTICAL, a fourth category."
-      - "Not handling clocks with different key sets: if clock A has node X but clock B doesn't, B's component for X is implicitly 0"
+      - Not incrementing after merge on receive: the standard rule is merge THEN increment. Forgetting the increment loses the 'receive' event from the causal history.
+      - Shallow copy on send: if the sent clock is a reference, subsequent increments by the sender corrupt the message in transit
+      - Comparison logic error: the most common bug is returning HAPPENS_BEFORE when clocks are equal (equal clocks are CONCURRENT — they represent the same event, not a causal relationship). Actually, equal clocks can be treated as EQUAL/IDENTICAL, a fourth category.
+      - Not handling clocks with different key sets: if clock A has node X but clock B doesn't, B's component for X is implicitly 0
     concepts:
       - Vector clock operations (increment, merge, compare)
       - "Formal happens-before definition: VC(a) < VC(b) iff ∀i: a[i] ≤ b[i] ∧ ∃j: a[j] < b[j]"
@@ -138,14 +138,14 @@ milestones:
       - "If context_clock is CONCURRENT with the stored clock, both versions are kept as siblings (multi-value register)"
       - "If context_clock is HAPPENS_BEFORE the stored clock, the write is rejected as stale (409 Conflict or equivalent)"
       - "get(key) returns a list of all current siblings with their vector clocks. A single entry means no conflict."
-      - "Client-side merge: get returns siblings, client merges them, put writes the merged result with a new clock that dominates all sibling clocks"
+      - Client-side merge: get returns siblings, client merges them, put writes the merged result with a new clock that dominates all sibling clocks
       - "After a successful merge-put, subsequent get returns only the single merged version"
       - "LWW (last-writer-wins using wall-clock timestamp) is available as a degenerate conflict resolution option but documented as defeating the purpose of vector clocks"
     pitfalls:
-      - "Growing sibling lists without bounds: if many concurrent writes happen without reads/merges, siblings accumulate. Set a max sibling count with a warning log."
-      - "Using LWW by default: this eliminates all benefits of vector clocks. It should be opt-in and documented as lossy."
-      - "Lost updates: if a client reads version A, another client reads version A, both write updates without knowing about each other — the second write should create a sibling, not silently overwrite"
-      - "Comparison direction error: comparing the incoming clock against the stored clock in the wrong direction causes incorrect conflict/overwrite decisions"
+      - Growing sibling lists without bounds: if many concurrent writes happen without reads/merges, siblings accumulate. Set a max sibling count with a warning log.
+      - Using LWW by default: this eliminates all benefits of vector clocks. It should be opt-in and documented as lossy.
+      - Lost updates: if a client reads version A, another client reads version A, both write updates without knowing about each other — the second write should create a sibling, not silently overwrite
+      - Comparison direction error: comparing the incoming clock against the stored clock in the wrong direction causes incorrect conflict/overwrite decisions
     concepts:
       - Multi-value register (sibling values)
       - Context clock for read-modify-write
@@ -171,17 +171,17 @@ milestones:
       age-based pruning, which breaks causality). Optionally explore
       Dotted Version Vectors.
     acceptance_criteria:
-      - "Dominated version detection: version A is dominated if there exists another version B where compare(A, B) = HAPPENS_BEFORE. Dominated versions are safe to prune."
+      - Dominated version detection: version A is dominated if there exists another version B where compare(A, B) = HAPPENS_BEFORE. Dominated versions are safe to prune.
       - "On every put, after adding the new version, scan siblings and remove any version dominated by the new version"
-      - "Pruning never removes concurrent versions: only versions causally superseded by another stored version are pruned"
-      - "Configurable max sibling count (default 10): if exceeded, a warning is logged. Optionally, the oldest sibling by insertion time is dropped with an explicit data-loss warning."
-      - "Garbage collection for departed nodes: clock entries for nodes that have permanently left the cluster can be folded into a 'base' counter after operator confirmation"
-      - "Metrics endpoint reports: current sibling count per key, total pruning events, forced-drop events (max sibling exceeded)"
+      - Pruning never removes concurrent versions: only versions causally superseded by another stored version are pruned
+      - Configurable max sibling count (default 10): if exceeded, a warning is logged. Optionally, the oldest sibling by insertion time is dropped with an explicit data-loss warning.
+      - Garbage collection for departed nodes: clock entries for nodes that have permanently left the cluster can be folded into a 'base' counter after operator confirmation
+      - Metrics endpoint reports: current sibling count per key, total pruning events, forced-drop events (max sibling exceeded)
     pitfalls:
-      - "Naive age-based pruning breaks causality: deleting 'the oldest version' may remove a version that is concurrent with (not dominated by) newer versions, losing conflict information"
-      - "Aggressive pruning losing conflict info: if you prune too much, you can't detect conflicts that the application needs to resolve"
-      - "Clock entries for departed nodes growing the clock forever: without garbage collection, the clock size grows with the total number of nodes that ever existed"
-      - "Not running pruning on every write: if pruning only runs periodically, siblings accumulate between runs"
+      - Naive age-based pruning breaks causality: deleting 'the oldest version' may remove a version that is concurrent with (not dominated by) newer versions, losing conflict information
+      - Aggressive pruning losing conflict info: if you prune too much, you can't detect conflicts that the application needs to resolve
+      - Clock entries for departed nodes growing the clock forever: without garbage collection, the clock size grows with the total number of nodes that ever existed
+      - Not running pruning on every write: if pruning only runs periodically, siblings accumulate between runs
     concepts:
       - Dominated version detection (causally superseded)
       - Safe pruning preserving concurrent versions
@@ -209,15 +209,15 @@ milestones:
       - "3-node cluster where every write is asynchronously replicated to all other nodes"
       - "Each node increments its own component in the vector clock when accepting a write"
       - "When a replicated write arrives, the receiving node compares clocks and either replaces (dominated), adds sibling (concurrent), or rejects (stale)"
-      - "get(key) from any node triggers read-repair: if the responding node has fewer siblings than another node, it fetches the missing siblings"
+      - get(key) from any node triggers read-repair: if the responding node has fewer siblings than another node, it fetches the missing siblings
       - "After network partition heals, nodes exchange keys and reconcile using vector clock comparison (anti-entropy)"
-      - "Configurable conflict resolution per key: application-merge callback or LWW (opt-in)"
-      - "Integration test: two nodes write different values for the same key during a partition. After heal, both nodes show both values as siblings until a client merges them."
+      - Configurable conflict resolution per key: application-merge callback or LWW (opt-in)
+      - Integration test: two nodes write different values for the same key during a partition. After heal, both nodes show both values as siblings until a client merges them.
     pitfalls:
-      - "Network partition causing permanent divergence: without anti-entropy, partitioned nodes never reconcile after healing"
-      - "Replication lag during high write load: async replication means a read from a slow replica may miss recent writes"
-      - "Clock synchronization across restarts: if a node restarts and forgets its clock, it starts from 0 and creates false conflicts. Persist the clock."
-      - "Anti-entropy scanning all keys is expensive: use Merkle trees or hash-based comparison to identify differing keys efficiently"
+      - Network partition causing permanent divergence: without anti-entropy, partitioned nodes never reconcile after healing
+      - Replication lag during high write load: async replication means a read from a slow replica may miss recent writes
+      - Clock synchronization across restarts: if a node restarts and forgets its clock, it starts from 0 and creates false conflicts. Persist the clock.
+      - Anti-entropy scanning all keys is expensive: use Merkle trees or hash-based comparison to identify differing keys efficiently
     concepts:
       - Full replication with asynchronous propagation
       - Read repair for consistency on read
@@ -234,5 +234,4 @@ milestones:
       - Anti-entropy background process for post-partition reconciliation
       - Integration tests demonstrating partition, divergence, heal, and reconciliation
     estimated_hours: "5-7"
-
 ```

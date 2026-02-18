@@ -100,7 +100,7 @@ milestones:
       - "Each piece stores all 4 rotation states as explicit 2D arrays (not computed at runtime)"
       - "Each shape has a distinct color matching Tetris Guideline color assignments"
       - "Board renders the empty grid with visible cell boundaries at a consistent cell size"
-      - "Coordinate system is documented: origin position, x-right, y-down convention"
+      - Coordinate system is documented: origin position, x-right, y-down convention
     pitfalls:
       - "Piece rotation states defined inconsistently across shapes (e.g., different pivot assumptions)"
       - "Board dimensions swapped (columns vs rows, width vs height)"
@@ -116,7 +116,7 @@ milestones:
       - Coordinate system management
       - Shape representation in code
     deliverables:
-      - "Game board grid data structure: 10-column by 20+buffer-row playing field"
+      - Game board grid data structure: 10-column by 20+buffer-row playing field
       - "Tetromino shape definitions for all 7 piece types with 4 rotation states each"
       - "Color mapping table assigning Guideline-accurate colors to each tetromino type"
       - "Rendered empty grid displayed on screen with cell boundaries"
@@ -129,13 +129,13 @@ milestones:
       center, gravity-based falling, and player movement controls including
       soft drop, hard drop, and DAS/ARR key repeat.
     acceptance_criteria:
-      - "7-bag randomization: all 7 pieces appear exactly once per bag before the next bag begins"
+      - 7-bag randomization: all 7 pieces appear exactly once per bag before the next bag begins
       - "Pieces spawn centered horizontally in the hidden rows above the visible playfield"
       - "Current piece falls automatically at a rate determined by the current level"
       - "Left/right arrow keys move piece one cell horizontally with DAS (Delayed Auto Shift) after initial delay"
       - "ARR (Auto Repeat Rate) controls the speed of continued movement when key is held"
       - "Down arrow accelerates fall speed (soft drop) and awards 1 point per cell dropped"
-      - "Space bar performs hard drop: piece instantly moves to lowest valid position, locks, awards 2 points per cell"
+      - Space bar performs hard drop: piece instantly moves to lowest valid position, locks, awards 2 points per cell
       - "No piece can move outside board boundaries or into occupied cells (collision check before every move)"
       - "Next-piece preview displays at least the next piece in the queue"
     pitfalls:
@@ -172,12 +172,12 @@ milestones:
       special handling.
     acceptance_criteria:
       - "Up arrow (or Z/X keys) rotates the current piece clockwise by one state"
-      - "Rotation cycles through 4 states: 0→R→2→L→0"
+      - Rotation cycles through 4 states: 0→R→2→L→0
       - "If basic rotation collides, up to 4 additional wall-kick offset positions are tested from the SRS table"
       - "J, L, S, T, Z pieces share one SRS offset table; the I-piece uses a separate, distinct offset table"
       - "O-piece does not rotate and remains in its single orientation"
       - "Wall kicks correctly handle rotation near left wall, right wall, and floor"
-      - "T-spin detection is implemented: recognize when a T-piece locks after a rotation into a T-slot (optional but recommended)"
+      - T-spin detection is implemented: recognize when a T-piece locks after a rotation into a T-slot (optional but recommended)
       - "All rotation tests pass for each piece type in each rotation direction from each starting state"
     pitfalls:
       - "Using a single wall-kick table for all pieces—I-piece has fundamentally different offsets"
@@ -198,7 +198,7 @@ milestones:
       - "Rotation state machine cycling through 4 orientations per piece type"
       - "SRS offset table for J/L/S/T/Z pieces (5 tests per rotation transition)"
       - "Separate SRS offset table for the I-piece (5 tests per rotation transition)"
-      - "Wall-kick test logic: attempt basic rotation, then each offset in order, accept first valid position"
+      - Wall-kick test logic: attempt basic rotation, then each offset in order, accept first valid position
       - "Comprehensive test suite verifying rotation in all states for all piece types"
     estimated_hours: "3-5"
 
@@ -208,11 +208,11 @@ milestones:
       Implement lock delay before piece placement, line clearing with
       gravity, and a scoring system with level progression.
     acceptance_criteria:
-      - "Lock delay: piece does not lock instantly on ground contact; a timer (e.g., 500ms) allows last-second moves/rotations"
+      - Lock delay: piece does not lock instantly on ground contact; a timer (e.g., 500ms) allows last-second moves/rotations
       - "Lock delay resets on successful move or rotation (up to a maximum reset count, e.g., 15)"
       - "Filled rows are detected immediately after a piece locks into place"
       - "Filled rows are removed and all rows above shift down to fill gaps"
-      - "Scoring follows a defined table: Single=100×level, Double=300×level, Triple=500×level, Tetris=800×level"
+      - Scoring follows a defined table: Single=100×level, Double=300×level, Triple=500×level, Tetris=800×level
       - "Level increases every 10 lines cleared"
       - "Gravity speed increases with each level (e.g., from 1 cell/second at level 1 to 20 cells/second at level 15)"
       - "Line clear animation or visual feedback is displayed before rows collapse"
@@ -223,7 +223,7 @@ milestones:
       - "Iterating rows top-to-bottom when clearing causes skipped rows—iterate bottom-to-top or rebuild array"
       - "Forgetting level multiplier in scoring (flat 100/300/500/800 ignores level)"
       - "Speed curve too aggressive—game becomes impossible before level 10"
-      - "Not re-checking rows after gravity collapse (edge case: cascading clears)"
+      - Not re-checking rows after gravity collapse (edge case: cascading clears)
     concepts:
       - Lock delay mechanics
       - Row clearing and gravity
@@ -239,7 +239,7 @@ milestones:
       - "Lock delay timer with configurable duration and max reset count"
       - "Full line detection scanning each row for completely filled cells"
       - "Line removal logic clearing filled rows and shifting rows above downward"
-      - "Scoring system: points = base_score × current_level"
+      - Scoring system: points = base_score × current_level
       - "Level progression system increasing level every 10 lines"
       - "Gravity speed table mapping level to fall interval"
       - "UI displaying score, level, and lines cleared"
@@ -253,9 +253,9 @@ milestones:
     acceptance_criteria:
       - "Game over triggers when a newly spawned piece immediately collides with occupied cells"
       - "Game over screen displays final score, level, and lines cleared"
-      - "Game state machine manages transitions: Menu → Playing → Paused → Game Over → Menu"
+      - Game state machine manages transitions: Menu → Playing → Paused → Game Over → Menu
       - "Pause functionality freezes game state and hides the board (to prevent pausing to think)"
-      - "Hold piece: player can swap current piece with held piece once per drop"
+      - Hold piece: player can swap current piece with held piece once per drop
       - "Restart option resets all state (board, score, level, bag) without reloading"
       - "Ghost piece shows where the current piece would land if hard-dropped"
       - "Frame rate is stable at 60 FPS with game logic decoupled from render rate"
@@ -277,11 +277,10 @@ milestones:
       - Feature integration and polish
     deliverables:
       - "Game-over detection at piece spawn"
-      - "Game state machine: Menu, Playing, Paused, Game Over"
+      - Game state machine: Menu, Playing, Paused, Game Over
       - "Hold piece functionality with once-per-drop restriction"
       - "Ghost piece rendering showing hard-drop landing position"
       - "Game over screen with final statistics"
       - "Restart functionality with full state reset"
     estimated_hours: "3-5"
-
 ```

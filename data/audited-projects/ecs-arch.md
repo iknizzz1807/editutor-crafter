@@ -113,7 +113,7 @@ milestones:
       - "Entity destruction adding index to free list and incrementing generation"
       - "is_alive() validation checking generation match"
       - "World container struct owning entity manager state"
-      - "Benchmark: create/destroy 1M entities with timing output"
+      - Benchmark: create/destroy 1M entities with timing output
     estimated_hours: "3-5"
 
   - id: ecs-arch-m2
@@ -129,11 +129,11 @@ milestones:
       - "get_component(entity) returns a reference/pointer to the component in O(1) time"
       - "has_component(entity) returns true/false in O(1) time"
       - "Entity destruction removes all components associated with that entity across all storage arrays"
-      - "Type-safe access: requesting a component of the wrong type produces a compile-time or runtime error"
+      - Type-safe access: requesting a component of the wrong type produces a compile-time or runtime error
       - "Iterating over all components of a type touches only contiguous memory (verifiable by cache miss profiling or by inspecting memory layout)"
     pitfalls:
       - "Swap-and-pop changes the index of the swapped element—must update its sparse entry"
-      - "Sparse array growth: entity index 999999 requires sparse array of size 1M if using flat array"
+      - Sparse array growth: entity index 999999 requires sparse array of size 1M if using flat array
       - "Using a sentinel value (e.g., -1) for 'no component' in sparse array—must be consistent"
       - "Forgetting to clean up components on entity destruction causes dangling data"
       - "Type erasure losing type information—need per-type storage arrays"
@@ -163,12 +163,12 @@ milestones:
     acceptance_criteria:
       - "Systems are registered with the World and execute in a defined order each tick"
       - "Each system declares its required component types; iteration only visits entities possessing all required components"
-      - "Query API: query<A, B>() returns an iterator over all entities with both component A and B"
-      - "Command buffer: structural changes (create entity, destroy entity, add/remove component) are queued during system execution and applied after all systems complete"
+      - Query API: query<A, B>() returns an iterator over all entities with both component A and B
+      - Command buffer: structural changes (create entity, destroy entity, add/remove component) are queued during system execution and applied after all systems complete
       - "Applying command buffer does not invalidate any currently-held references (because systems have finished)"
       - "System execution receives delta time for time-based updates"
       - "Attempting to modify component storage directly during iteration produces an error or is prevented by API design"
-      - "Integration test: a MovementSystem updates Position using Velocity for all entities with both components; entities without Velocity are not visited"
+      - Integration test: a MovementSystem updates Position using Velocity for all entities with both components; entities without Velocity are not visited
     pitfalls:
       - "Modifying component storage during iteration corrupts sparse set indices"
       - "Command buffer not flushed between frames causes stale commands"
@@ -190,7 +190,7 @@ milestones:
       - "Entity command buffer queuing create/destroy/add/remove operations"
       - "Command buffer flush applying all deferred operations after systems execute"
       - "Delta time propagation to systems"
-      - "Integration test: MovementSystem processing Position + Velocity entities"
+      - Integration test: MovementSystem processing Position + Velocity entities
     estimated_hours: "6-8"
 
   - id: ecs-arch-m4
@@ -203,16 +203,16 @@ milestones:
       - "Archetype is identified by a sorted set of component type IDs (e.g., bitmask or sorted vector)"
       - "Entities with the same component set are stored in the same archetype table with components in parallel arrays"
       - "Adding or removing a component moves the entity from its current archetype to the target archetype"
-      - "Archetype graph: edges connect archetypes that differ by one component, enabling O(1) transition lookup"
+      - Archetype graph: edges connect archetypes that differ by one component, enabling O(1) transition lookup
       - "Queries match against archetype component sets (not individual entities), iterating only over matching archetype tables"
       - "Iteration over a matching archetype table is purely sequential memory access (no indirection through sparse array)"
-      - "Benchmark: iterating 100K entities with 2 components is at least 2x faster with archetypes vs sparse-set queries (measured)"
+      - Benchmark: iterating 100K entities with 2 components is at least 2x faster with archetypes vs sparse-set queries (measured)
     pitfalls:
-      - "Archetype explosion: too many unique component combinations creates many small tables (monitor archetype count)"
+      - Archetype explosion: too many unique component combinations creates many small tables (monitor archetype count)
       - "Entity move between archetypes requires copying all component data—expensive if done frequently"
-      - "Archetype graph edge caching: forgetting to cache causes repeated hash lookups"
+      - Archetype graph edge caching: forgetting to cache causes repeated hash lookups
       - "Chunk-based allocation within arcetype tables needed to avoid massive reallocation on growth"
-      - "Command buffer interactions: structural changes must correctly move entities between archetypes"
+      - Command buffer interactions: structural changes must correctly move entities between archetypes
     concepts:
       - Archetype tables
       - Archetype graph
@@ -229,7 +229,6 @@ milestones:
       - "Entity migration between archetypes on component add/remove"
       - "Archetype graph with cached edges for O(1) transitions"
       - "Query system matching archetype tables instead of individual entities"
-      - "Benchmark: 100K entity iteration comparing sparse-set vs archetype performance"
+      - Benchmark: 100K entity iteration comparing sparse-set vs archetype performance
     estimated_hours: "7-10"
-
 ```

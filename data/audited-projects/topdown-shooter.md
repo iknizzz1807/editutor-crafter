@@ -91,7 +91,7 @@ milestones:
       and a health system that will receive damage from enemies later.
     acceptance_criteria:
       - "WASD movement supports eight directions including diagonal combinations"
-      - "Diagonal movement vectors are normalized to prevent √2 speed boost (measurable: diagonal speed equals cardinal speed ±1%)"
+      - Diagonal movement vectors are normalized to prevent √2 speed boost (measurable: diagonal speed equals cardinal speed ±1%)
       - "Mouse position is converted from screen coordinates to world coordinates for aiming"
       - "Player sprite rotates to face the cursor position in real time using atan2"
       - "Movement uses acceleration and deceleration curves (not instant velocity)"
@@ -137,13 +137,13 @@ milestones:
       - "Bullets travel at constant speed in their fired direction, scaled by delta time"
       - "Fire rate limiter enforces minimum cooldown (e.g., 100ms) between shots"
       - "Bullets leaving the arena bounds are returned to the pool (deactivated, not destroyed)"
-      - "Pool utilization is measurable: active count and pool capacity are queryable"
+      - Pool utilization is measurable: active count and pool capacity are queryable
       - "Projectile spawn position is offset from player center to weapon tip (not center of player)"
     pitfalls:
       - "Spawning bullet at player center causes it to visually pop out of the body"
       - "Not resetting bullet state (position, velocity) when recycling from pool causes ghost bullets"
       - "Fire rate timer using wall-clock time instead of game time breaks on pause"
-      - "Pool exhaustion: firing when all bullets are active silently fails or crashes"
+      - Pool exhaustion: firing when all bullets are active silently fails or crashes
       - "Memory growing unbounded if pool is bypassed and new objects are allocated on overflow"
     concepts:
       - Object pooling pattern
@@ -169,14 +169,14 @@ milestones:
       Add enemies with finite-state-machine AI (Idle, Chase, Attack states),
       health systems, and separation forces to prevent stacking.
     acceptance_criteria:
-      - "Enemies have a finite state machine with at least: Idle, Chase, and Attack states"
-      - "Idle state: enemy stands still or wanders until player enters detection radius"
-      - "Chase state: enemy moves toward player position, activated when player is within detection range"
-      - "Attack state: enemy performs attack action (melee contact or ranged) when within attack range"
+      - Enemies have a finite state machine with at least: Idle, Chase, and Attack states
+      - Idle state: enemy stands still or wanders until player enters detection radius
+      - Chase state: enemy moves toward player position, activated when player is within detection range
+      - Attack state: enemy performs attack action (melee contact or ranged) when within attack range
       - "At least 2 enemy types with different stats (speed, health, damage, detection range)"
-      - "Enemy health system: takes damage from projectile hits, dies at 0 HP with death effect"
-      - "Projectile-enemy collision: bullet deals damage and is returned to pool"
-      - "Enemy-player collision: deals contact damage to player; player receives brief invincibility frames"
+      - Enemy health system: takes damage from projectile hits, dies at 0 HP with death effect
+      - Projectile-enemy collision: bullet deals damage and is returned to pool
+      - Enemy-player collision: deals contact damage to player; player receives brief invincibility frames
       - "Enemy separation force prevents enemies from overlapping each other (enemies push apart)"
       - "Division-by-zero protection in direction normalization when enemy is at player position"
     pitfalls:
@@ -213,14 +213,14 @@ milestones:
     acceptance_criteria:
       - "Waves spawn groups of enemies at random positions outside the visible arena"
       - "Rest period between waves (e.g., 3-5 seconds) with wave announcement UI"
-      - "Difficulty scales each wave: increase enemy count, speed, and/or health by a defined formula"
+      - Difficulty scales each wave: increase enemy count, speed, and/or health by a defined formula
       - "Score increments per enemy kill, with different enemy types worth different point values"
       - "Wave clear bonus awards extra points when all enemies in a wave are eliminated"
-      - "Game state machine manages: Playing, Paused, Game Over states"
+      - Game state machine manages: Playing, Paused, Game Over states
       - "Game over triggers when player HP reaches 0; displays final score and wave reached"
       - "High score persists across sessions using localStorage or file I/O"
       - "Restart resets all game state (player HP, score, wave, enemies, projectiles) without reload"
-      - "HUD displays: health, score, current wave, and enemy count"
+      - HUD displays: health, score, current wave, and enemy count
     pitfalls:
       - "Infinite spawn loop if wave completion check is wrong"
       - "No rest between waves—player is overwhelmed immediately"
@@ -242,9 +242,8 @@ milestones:
       - "Wave spawning system with configurable enemy composition per wave"
       - "Difficulty scaling formula applied each wave"
       - "Scoring system with per-enemy-type values and wave clear bonus"
-      - "Game state machine: Playing → Paused → Game Over → Restart"
+      - Game state machine: Playing → Paused → Game Over → Restart
       - "High score persistence across sessions"
       - "HUD displaying health, score, wave number, enemies remaining"
     estimated_hours: "4-6"
-
 ```

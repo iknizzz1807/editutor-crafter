@@ -166,7 +166,7 @@ milestones:
       - Serve index.html automatically when path maps to a directory (if index.html exists); otherwise return 403
     pitfalls:
       - Using simple string prefix check for path containment is bypassable with symlinks; must canonicalize (realpath) THEN check containment
-      - URL-encoded path traversal: %2e%2e%2f decodes to ../ and must be decoded before path resolution
+      - URL-encoded path traversal: "%2e%2e%2f decodes to ../ and must be decoded before path resolution"
       - Binary files (images, PDFs) must be read and sent in binary mode; text-mode reads corrupt binary content on some platforms
       - Missing Content-Type defaults to application/octet-stream, which triggers download instead of display in browsers
       - Last-Modified timestamp comparison must handle timezone differences and second-level granularity per HTTP date format

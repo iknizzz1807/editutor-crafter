@@ -64,16 +64,16 @@ languages:
     - Zig
   also_possible: []
 resources:
-  - name: "Lord of the io_uring"
+  - name: Lord of the io_uring""
     url: https://unixism.net/loti/
     type: tutorial
-  - name: "io_uring Kernel Documentation"
+  - name: io_uring Kernel Documentation""
     url: https://kernel.dk/io_uring.pdf
     type: reference
-  - name: "liburing GitHub Repository"
+  - name: liburing GitHub Repository""
     url: https://github.com/axboe/liburing
     type: reference
-  - name: "io_uring by Example (zero-copy, provided buffers)"
+  - name: io_uring by Example (zero-copy, provided buffers)""
     url: https://github.com/shuveb/io_uring-by-example
     type: tutorial
 prerequisites:

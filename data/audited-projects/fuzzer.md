@@ -180,13 +180,13 @@ milestones:
       systematic exploration, then non-deterministic havoc mode for
       random combined mutations.
     acceptance_criteria:
-      - "Deterministic phase (applied in order for each seed input):"
+      - Deterministic phase (applied in order for each seed input): 
       - Walking bit flips: flip 1, 2, and 4 bits at each bit position sequentially
       - Walking byte flips: flip 1, 2, and 4 bytes at each byte position
       - Arithmetic mutations: add/subtract values 1-35 to each 1/2/4-byte integer field (both endiannesses)
       - Interesting value substitution: replace 1/2/4-byte fields with known interesting values (0, 1, -1, MAX_INT, MIN_INT, etc.)
       - Dictionary token insertion and replacement: insert/replace known tokens (from user-provided dictionary or auto-discovered) at each position
-      - "Non-deterministic havoc phase (applied after deterministic phase completes for a seed):"
+      - Non-deterministic havoc phase (applied after deterministic phase completes for a seed): 
       - Havoc applies random combinations of mutations: bit flip, byte set, arithmetic, block delete, block insert, block overwrite, splice with another corpus input
       - Number of havoc mutations per input is configurable (default: energy-based, more for high-value seeds)
       - Track which mutation strategies discovered new coverage to inform adaptive selection

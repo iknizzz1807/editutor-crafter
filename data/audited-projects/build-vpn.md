@@ -66,13 +66,13 @@ languages:
   also_possible:
     - Python
 resources:
-  - name: "TUN/TAP Interface Tutorial"
+  - name: TUN/TAP Interface Tutorial""
     url: "https://www.kernel.org/doc/Documentation/networking/tuntap.txt"
     type: documentation
-  - name: "WireGuard Whitepaper"
+  - name: WireGuard Whitepaper""
     url: "https://www.wireguard.com/papers/wireguard.pdf"
     type: paper
-  - name: "Noise Protocol Framework"
+  - name: Noise Protocol Framework""
     url: "http://noiseprotocol.org/"
     type: specification
 prerequisites:

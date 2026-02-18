@@ -1,0 +1,196 @@
+# AUDIT & FIX: bytecode-vm
+
+## CRITIQUE
+- **Logical Gap (Confirmed - PUSH_CONST):** The constant pool is mentioned in Milestone 1 (Design) but Milestone 2 (Stack-Based Execution) doesn't include an instruction to actually load constants (e.g., PUSH_CONST or LOAD_CONST) onto the stack. Without this, the VM cannot execute any non-trivial program involving literal values.
+- **Technical Inaccuracy (Confirmed - Bytecode Verification):** Milestone 3 suggests jump targets outside bounds are detected during execution; in production VMs like the JVM, this is typically handled by a bytecode verifier pass prior to execution for performance. At minimum, the AC should specify whether validation is at load-time or run-time.
+- **Hour Ranges:** Using ranges like '2-3' is imprecise. Converting to single estimates.
+- **Estimated Hours:** 15-25 range is reasonable; estimate ~20 hours.
+
+## FIXED YAML
+```yaml
+id: bytecode-vm
+name: Bytecode VM
+description: >-
+  Stack-based virtual machine with instruction set design, operand stack
+  management, control flow primitives, and call frame support for function
+  execution.
+difficulty: intermediate
+estimated_hours: 20
+essence: >-
+  Stack-based instruction dispatch and execution engine that translates custom
+  bytecode into runtime behavior through fetch-decode-execute cycles, managing
+  operand stacks, call frames, and control flow primitives.
+why_important: >-
+  Building a VM reveals how high-level languages actually execute under the
+  hood—from Python's CPython to the JVM—teaching you the runtime foundations
+  that power every interpreted language and preparing you for systems
+  programming, compiler backends, and language implementation work.
+learning_outcomes:
+  - Design a bytecode instruction set with opcodes for arithmetic, control flow, and calls
+  - Implement a fetch-decode-execute interpreter loop
+  - Manage an operand stack for intermediate values
+  - Implement call frames for function execution with local variables
+  - Build a disassembler for debugging bytecode programs
+skills:
+  - Instruction Set Design
+  - Stack Machine Implementation
+  - Bytecode Interpretation
+  - Call Frame Management
+  - Disassembly
+tags:
+  - vm
+  - bytecode
+  - stack-machine
+  - intermediate
+  - interpreter
+architecture_doc: architecture-docs/bytecode-vm/index.md
+languages:
+  recommended:
+    - C
+    - Rust
+    - Go
+  also_possible:
+    - Python
+    - Java
+resources:
+  - name: Crafting Interpreters
+    url: https://craftinginterpreters.com/
+    type: book
+  - name: Lua VM Source
+    url: https://www.lua.org/source/5.4/lvm.c.html
+    type: code
+  - name: Python Bytecode
+    url: https://docs.python.org/3/library/dis.html
+    type: documentation
+prerequisites:
+  - type: skill
+    name: Basic data structures (stacks, arrays)
+  - type: skill
+    name: Understanding of assembly/machine code concepts
+  - type: skill
+    name: C or systems programming basics
+milestones:
+  - id: bytecode-vm-m1
+    name: Instruction Set Design
+    description: >-
+      Define opcodes, bytecode format, and constant pool structure.
+    acceptance_criteria:
+      - Opcode enum covers arithmetic (ADD, SUB, MUL, DIV), comparison, load/store, jump, and call operations
+      - Instruction format encodes opcode in first byte with operand bytes following
+      - Bytecode chunk stores instruction stream alongside indexed constant pool for literals
+      - Disassembler outputs instruction name, operands, and offset for each bytecode instruction
+      - HALT instruction exists to stop execution gracefully
+    pitfalls:
+      - Too complex instruction set—start with ~15-20 core opcodes, add more as needed
+      - Forgetting HALT causes the VM to run past the end of bytecode into garbage memory
+      - Operand encoding issues: decide on 8-bit vs 16-bit vs variable-length operands early
+    concepts:
+      - Opcodes are fixed-size operation identifiers
+      - Instruction encoding determines how operands follow opcodes
+      - Constant pool deduplicates literals and enables efficient loading
+    skills:
+      - Instruction set architecture design
+      - Binary encoding and bit manipulation
+      - Opcode specification and documentation
+      - Assembly language fundamentals
+    deliverables:
+      - Opcode enumeration defining all supported bytecode instruction types
+      - Instruction encoding format specifying opcode byte and operand bytes layout
+      - Bytecode chunk structure holding instruction bytes and constant pool together
+      - Disassembler printing human-readable representation of bytecode instructions
+    estimated_hours: 3
+
+  - id: bytecode-vm-m2
+    name: Stack-Based Execution
+    description: >-
+      Implement the execution loop with value stack and constant loading.
+    acceptance_criteria:
+      - Operand stack correctly pushes and pops values without overflow or underflow errors
+      - LOAD_CONST instruction loads a value from the constant pool by index onto the stack
+      - ADD instruction pops two values, computes sum, and pushes result onto stack
+      - Comparison instructions pop two values and push boolean result for conditional use
+      - Instruction pointer advances sequentially and dispatches correct handler per opcode
+      - Stack underflow and overflow are detected and reported as runtime errors
+    pitfalls:
+      - Stack over/underflow: always check stack depth before pop, set a maximum size
+      - Off-by-one in IP: the IP should point to the NEXT instruction after decoding
+      - Order of operands for SUB/DIV: the right operand is popped first, then left
+    concepts:
+      - Stack machines use a LIFO stack for all operand storage
+      - Instruction pointer tracks current position in bytecode
+      - Fetch-decode-execute is the fundamental interpreter loop
+    skills:
+      - Stack data structure implementation
+      - Program counter management
+      - Bytecode interpretation loops
+      - Runtime error detection
+    deliverables:
+      - Operand stack pushing and popping values during instruction execution
+      - LOAD_CONST instruction loading values from constant pool onto the stack
+      - Arithmetic instruction execution performing operations on stack top values
+      - Comparison instruction execution pushing boolean result onto stack
+      - Instruction pointer advancing through bytecode and dispatching each opcode
+      - Stack bounds checking with clear error messages
+    estimated_hours: 5
+
+  - id: bytecode-vm-m3
+    name: Control Flow
+    description: >-
+      Add jumps, conditionals, and optional bytecode validation.
+    acceptance_criteria:
+      - Unconditional JUMP sets instruction pointer to specified absolute offset
+      - JUMP_IF_FALSE pops stack top and jumps only if value evaluates to false
+      - Loop back-edge correctly jumps backward creating repeated execution of loop body
+      - Invalid jump targets outside bytecode bounds are detected—either at load time (verifier) or run time (error)
+      - Backward jumps to negative offsets are also detected as errors
+    pitfalls:
+      - Jump offset calculation: decide if offsets are absolute or relative to current IP
+      - Forgetting to pop condition in conditional jump causes stack leak
+      - Infinite loops without HALT: document that the programmer must ensure termination
+    concepts:
+      - Control flow is implemented via instruction pointer manipulation
+      - Jumps can be conditional based on stack top value
+      - Bytecode validation ensures safety before or during execution
+    skills:
+      - Branch instruction implementation
+      - Conditional logic evaluation
+      - Jump target address calculation
+      - Control flow graph understanding
+    deliverables:
+      - Unconditional JUMP instruction setting instruction pointer to target offset
+      - Conditional JUMP_IF_FALSE instruction branching based on stack top truth value
+      - Loop back-edge jumping instruction pointer backward to loop condition
+      - Branch target validation ensuring jump offsets stay within bytecode bounds
+    estimated_hours: 4
+
+  - id: bytecode-vm-m4
+    name: Variables and Functions
+    description: Add local variables and function calls.
+    acceptance_criteria:
+      - LOAD_LOCAL and STORE_LOCAL instructions access slots by index within current frame
+      - Call frame stores return address so execution resumes at correct point after return
+      - CALL instruction pushes new frame with argument values accessible as local variables
+      - RETURN instruction pops frame, restores caller state, and pushes return value onto stack
+      - Functions can call other functions to arbitrary depth (up to frame stack limit)
+    pitfalls:
+      - Frame pointer calculation: each frame needs its own base for local variable indexing
+      - Argument passing order: typically left-to-right or right-to-left—be consistent
+      - Return value handling: the return value must be pushed onto the CALLER's stack, not the callee's
+    concepts:
+      - Call frames isolate local variables between function invocations
+      - Local variables are indexed slots within a frame
+      - Function calls push frames, returns pop them
+    skills:
+      - Call stack frame management
+      - Function calling conventions
+      - Local variable storage and retrieval
+      - Stack-based parameter passing
+      - Return address handling
+    deliverables:
+      - Local variable slots indexed storage for function-scoped variable values
+      - Call frame stack tracking return addresses and local variable base pointers
+      - CALL instruction creating new frame and transferring execution control
+      - RETURN instruction restoring caller frame and passing return value back
+      - Frame depth limit checking to prevent stack overflow
+    estimated_hours: 8
+```

@@ -62,7 +62,7 @@ resources:
   - name: Intel x86 Manual Vol. 2
     url: "https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html"
     type: reference
-  - name: "Medium - Building x86-64 Disassembler"
+  - name: Medium - Building x86-64 Disassembler""
     url: "https://medium.com/@Koukyosyumei/learning-x86-64-machine-language-and-assembly-by-implementing-a-disassembler-dccc736ae85f"
     type: tutorial
   - name: x86 Instruction Encoding (OSDev)
@@ -95,7 +95,7 @@ milestones:
       - Support both 32-bit and 64-bit ELF formats; auto-detect from ELF class field
       - Load symbol table if present for function name resolution in output
       - Handle stripped binaries (no .symtab) gracefully; disassembly still works, just without symbol names
-      - Verify by comparing extracted bytes against `objdump -d -j .text` hex output
+      - Verify by comparing extracted bytes against 'objdump -d -j .text' hex output
     pitfalls:
       - Virtual address (sh_addr) differs from file offset (sh_offset); use file offset for reading, virtual address for display
       - Some binaries use non-standard section names; prefer flag-based identification over name matching
@@ -121,7 +121,7 @@ milestones:
       - State machine for prefix consumption
       - Opcode table design and lookup
     acceptance_criteria:
-      - "Implement the core decode loop: at current offset, decode one instruction determining its total length, advance offset by that length, repeat until end of section"
+      - Implement the core decode loop: at current offset, decode one instruction determining its total length, advance offset by that length, repeat until end of section
       - Consume legacy prefixes (66h, 67h, F0h/LOCK, F2h/REPNE, F3h/REP, segment overrides 26h/2Eh/36h/3Eh/64h/65h) in any order
       - Detect and decode REX prefix byte (40h-4Fh range, 64-bit mode only); extract W, R, X, B bit fields
       - REX must be the last prefix before the opcode; a legacy prefix after REX cancels the REX
@@ -129,7 +129,7 @@ milestones:
       - Build two-byte opcode table (0F xx) covering at minimum MOVZX, MOVSX, conditional jumps (0F 80-8F), SETcc, CMOV
       - Handle opcode extensions via ModRM.reg field (e.g., opcode 80h-83h use reg field to select ADD/OR/ADC/SBB/AND/SUB/XOR/CMP)
       - Reject instruction lengths exceeding 15 bytes as invalid (#UD)
-      - For unrecognized opcodes, emit `.byte 0xNN` and advance by 1 byte
+      - For unrecognized opcodes, emit '.byte 0xNN' and advance by 1 byte
       - Verify decoded instruction lengths against objdump output for a test binary with diverse instructions
     pitfalls:
       - REX prefix occupies the same byte range (40h-4Fh) as INC/DEC in 32-bit mode; must know the operating mode
@@ -162,7 +162,7 @@ milestones:
       - When mod != 11 and rm == 100b, parse the SIB byte: scale (2 bits), index (3 bits), base (3 bits)
       - Handle SIB special case: base == 101b with mod == 00 means disp32 with no base register
       - Handle SIB special case: index == 100b means no index register (unless REX.X extends it)
-      - "Decode RIP-relative addressing: in 64-bit mode, mod == 00 and rm == 101b means [RIP + disp32]. Compute the target address as (current_instruction_address + current_instruction_length + disp32)"
+      - Decode RIP-relative addressing: in 64-bit mode, mod == 00 and rm == 101b means [RIP + disp32]. Compute the target address as (current_instruction_address + current_instruction_length + disp32)
       - Apply REX.R, REX.B, REX.X to extend reg, rm, and SIB index/base to access r8-r15
       - Decode immediate operands (imm8, imm16, imm32, imm64) based on opcode and operand size
       - Handle operand size override (66h prefix) switching between 16-bit and 32-bit operands
@@ -196,13 +196,13 @@ milestones:
       - Branch target address arithmetic
       - Graceful error handling
     acceptance_criteria:
-      - "Display each instruction as: virtual_address: raw_hex_bytes  mnemonic operands"
+      - Display each instruction as: virtual_address: raw_hex_bytes  mnemonic operands
       - Default to Intel syntax (destination first); support AT&T syntax (source first, % register prefix, $ immediate prefix) via --att flag
       - Resolve relative branch and call targets to absolute virtual addresses; display as hex or symbol name if available
-      - Insert symbol name labels (e.g., '<main>:') before instructions at known symbol addresses
-      - Handle undefined/invalid opcodes by emitting `.byte 0xNN` without crashing
+      - Insert symbol name labels (e.g., '<main>: ') before instructions at known symbol addresses
+      - Handle undefined/invalid opcodes by emitting '.byte 0xNN' without crashing
       - Pad hex bytes column to consistent width for visual alignment (e.g., max 15 bytes = 45 hex chars)
-      - "Comprehensive verification: disassemble the .text section of /bin/ls (or similar) and diff against `objdump -d -M intel` output. Achieve >= 95% instruction-level match for the supported instruction subset"
+      - Comprehensive verification: disassemble the .text section of /bin/ls (or similar) and diff against 'objdump -d -M intel' output. Achieve >= 95% instruction-level match for the supported instruction subset
       - Display summary statistics: total instructions decoded, unrecognized opcodes count, coverage percentage
     pitfalls:
       - Relative branch targets are signed offsets from the END of the current instruction (next instruction address), not from the start
@@ -234,7 +234,7 @@ milestones:
       - Identify function boundaries using RET instructions and symbol table entries
       - Display cross-references for CALL instructions (list of functions called by each function)
       - Achieve >= 98% instruction match against objdump for standard system binaries
-      - "Optional: implement basic VEX prefix (2-byte and 3-byte) decoding for AVX instructions"
+      - Optional: implement basic VEX prefix (2-byte and 3-byte) decoding for AVX instructions
     pitfalls:
       - SSE instructions reuse legacy prefixes (66h, F2h, F3h) as mandatory prefixes changing the opcode meaning, not as operand size overrides
       - VEX prefix encoding is complex (encodes REX bits, implied 0F/0F38/0F3A, and operand count)
@@ -245,5 +245,4 @@ milestones:
       - Function boundary identification
       - Cross-reference listing for CALL targets
       - Optional VEX prefix support
-
 ```

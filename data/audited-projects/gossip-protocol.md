@@ -109,7 +109,7 @@ milestones:
       - Uniform random peer sampling with bounded fanout
       - Thread-safe concurrent data structures
     deliverables:
-      - "Seed node join protocol: new node contacts seeds, receives peer list, announces itself"
+      - Seed node join protocol: new node contacts seeds, receives peer list, announces itself
       - "Thread-safe peer list with read-write locking supporting concurrent gossip operations"
       - "Peer state tracking with alive/suspect/dead/left states and transition timestamps"
       - "Random peer selection function returning k unique alive peers per round"
@@ -128,9 +128,9 @@ milestones:
       - "Each key-value state entry carries a logical timestamp or version number; receivers accept an update only if its version is strictly greater than the locally stored version for that key"
       - "A gossip message includes the sender's node ID, a list of key-version-value triples, and a message TTL (hop count) to bound propagation diameter"
       - "Message TTL is decremented on each forward; messages with TTL=0 are not forwarded further, preventing infinite propagation"
-      - "Convergence test: inject a state update on one node in a 10-node cluster and verify all nodes have the update within ceil(log2(10)) * 3 gossip rounds with fanout=3"
+      - Convergence test: inject a state update on one node in a 10-node cluster and verify all nodes have the update within ceil(log2(10)) * 3 gossip rounds with fanout=3
       - "Duplicate message detection using a bounded seen-message cache (e.g., LRU of message hashes) prevents redundant processing and re-forwarding"
-      - "Bandwidth measurement: log bytes sent per gossip round per node and verify it scales as O(fanout * delta_size), not O(N * state_size)"
+      - Bandwidth measurement: log bytes sent per gossip round per node and verify it scales as O(fanout * delta_size), not O(N * state_size)
     pitfalls:
       - "Without TTL or hop-count limits, updates circulate indefinitely in the cluster, consuming bandwidth long after convergence"
       - "Using wall-clock timestamps for versioning introduces clock skew issues across nodes; prefer monotonic logical clocks (Lamport timestamps) or hybrid logical clocks"
@@ -144,8 +144,8 @@ milestones:
       - TTL-bounded message propagation
       - Duplicate suppression via seen-message caches
     deliverables:
-      - "Gossip sender: periodic loop selecting fanout peers and sending versioned state deltas via UDP"
-      - "Gossip receiver: UDP listener that deserializes messages, applies version-checked updates, and optionally forwards"
+      - Gossip sender: periodic loop selecting fanout peers and sending versioned state deltas via UDP
+      - Gossip receiver: UDP listener that deserializes messages, applies version-checked updates, and optionally forwards
       - "Logical clock implementation (Lamport or HLC) attached to every state mutation"
       - "Message TTL enforcement decrementing hop count and dropping expired messages"
       - "Seen-message LRU cache preventing duplicate processing"
@@ -159,13 +159,13 @@ milestones:
       digest comparison (Merkle trees or version digests) to guarantee
       convergence despite message loss and partitions.
     acceptance_criteria:
-      - "Pull mechanism: a node sends a digest (map of key -> version) to a random peer; the peer responds with entries where its version is higher than the requester's version"
-      - "Push-pull mode: during each anti-entropy round, both sides exchange digests and each sends the other any entries it has that are newer, achieving bidirectional reconciliation in a single round-trip"
-      - "Digest size is bounded: for large state, use a Merkle tree where only differing subtree hashes trigger detailed exchange, keeping digest overhead at O(log S) where S is state size"
+      - Pull mechanism: a node sends a digest (map of key -> version) to a random peer; the peer responds with entries where its version is higher than the requester's version
+      - Push-pull mode: during each anti-entropy round, both sides exchange digests and each sends the other any entries it has that are newer, achieving bidirectional reconciliation in a single round-trip
+      - Digest size is bounded: for large state, use a Merkle tree where only differing subtree hashes trigger detailed exchange, keeping digest overhead at O(log S) where S is state size
       - "Anti-entropy runs at a configurable interval (e.g., every 10s) independent of push gossip, targeting a random peer each round"
-      - "Conflict resolution strategy is explicitly implemented: Last-Write-Wins using logical timestamps, with ties broken by node ID"
-      - "Partition healing test: create a 2-partition split for 30 seconds, inject different updates to each partition, heal the partition, and verify all nodes converge to the correct merged state within 5 anti-entropy rounds"
-      - "Anti-entropy does not cause thundering herd: jitter is added to the anti-entropy interval so nodes do not all sync simultaneously"
+      - Conflict resolution strategy is explicitly implemented: Last-Write-Wins using logical timestamps, with ties broken by node ID
+      - Partition healing test: create a 2-partition split for 30 seconds, inject different updates to each partition, heal the partition, and verify all nodes converge to the correct merged state within 5 anti-entropy rounds
+      - Anti-entropy does not cause thundering herd: jitter is added to the anti-entropy interval so nodes do not all sync simultaneously
     pitfalls:
       - "Sending full state as digest defeats the purpose of pull-based reconciliation; digests must be compact summaries (version vectors or Merkle tree roots)"
       - "Sync storms occur when all nodes schedule anti-entropy at the same wall-clock time after startup; add random jitter to the initial delay"
@@ -201,14 +201,14 @@ milestones:
       - "A SUSPECT member that does not refute the suspicion (by sending an alive message with incremented incarnation number) before the suspicion timer expires is declared DEAD"
       - "A suspected node that receives its own suspicion message can refute it by incrementing its incarnation number and broadcasting an alive override"
       - "Membership change events (join, suspect, dead, alive-refutation) are piggybacked on ping, ping-req, and ack messages with bounded piggyback buffer"
-      - "False positive rate test: in a 10-node cluster with 5% simulated packet loss, fewer than 1% of alive nodes are incorrectly declared dead over 1000 protocol periods"
+      - False positive rate test: in a 10-node cluster with 5% simulated packet loss, fewer than 1% of alive nodes are incorrectly declared dead over 1000 protocol periods
       - "Protocol period, ping timeout, suspicion timeout, and indirect probe fanout (k) are all configurable at startup"
     pitfalls:
       - "False positives spike when ping timeout is set below network RTT p99; always measure baseline latency before tuning"
       - "Suspicion timeout too short causes cascading false deaths under transient network congestion; too long delays legitimate failure detection"
       - "Not implementing incarnation numbers means a node cannot refute false suspicion, leading to permanent incorrect death declarations"
       - "Piggyback buffer overflow drops membership updates if the buffer is too small relative to cluster churn rate"
-      - "Split brain: if a network partition isolates a minority, that minority may declare the majority dead; implement 'protocol period nack' counting or minimum alive threshold to detect this"
+      - Split brain: if a network partition isolates a minority, that minority may declare the majority dead; implement 'protocol period nack' counting or minimum alive threshold to detect this
     concepts:
       - SWIM protocol phases (ping, ping-req, suspect, confirm)
       - Incarnation numbers for suspicion refutation
@@ -219,7 +219,7 @@ milestones:
       - "Direct probe (ping/ack) implementation with configurable timeout"
       - "Indirect probe (ping-req) implementation forwarding probes through k helper nodes"
       - "Suspicion state machine with incarnation number tracking and timer-based confirmation"
-      - "Alive refutation: node detects its own suspicion and broadcasts incarnation-incremented alive message"
+      - Alive refutation: node detects its own suspicion and broadcasts incarnation-incremented alive message
       - "Piggyback buffer attaching recent membership events to all protocol messages"
       - "False positive rate measurement test under simulated packet loss"
     estimated_hours: "5-8"
@@ -232,11 +232,11 @@ milestones:
       verifies convergence, failure detection accuracy, and bandwidth overhead.
     acceptance_criteria:
       - "Test harness launches N (configurable, default 10) gossip nodes as separate processes or goroutines communicating over real or simulated UDP"
-      - "Convergence test: inject 100 unique key-value pairs on random nodes and verify all alive nodes have all 100 entries within a bounded time (e.g., 30 * gossip_interval)"
-      - "Failure detection test: kill a node and verify all remaining nodes detect it as dead within suspicion_timeout + 3 * protocol_period"
-      - "Partition test: partition cluster into two halves, inject updates to each half, heal partition, verify full state convergence within anti-entropy convergence bound"
-      - "Bandwidth measurement: log total bytes sent/received per node per second and verify it is O(fanout * message_size * round_frequency), not O(N^2)"
-      - "Consistency check: at any point, no node holds a key-value pair with a version strictly less than a version that has been committed (applied by majority) more than convergence_bound rounds ago"
+      - Convergence test: inject 100 unique key-value pairs on random nodes and verify all alive nodes have all 100 entries within a bounded time (e.g., 30 * gossip_interval)
+      - Failure detection test: kill a node and verify all remaining nodes detect it as dead within suspicion_timeout + 3 * protocol_period
+      - Partition test: partition cluster into two halves, inject updates to each half, heal partition, verify full state convergence within anti-entropy convergence bound
+      - Bandwidth measurement: log total bytes sent/received per node per second and verify it is O(fanout * message_size * round_frequency), not O(N^2)
+      - Consistency check: at any point, no node holds a key-value pair with a version strictly less than a version that has been committed (applied by majority) more than convergence_bound rounds ago
     pitfalls:
       - "Simulated networks that don't model realistic packet loss and reordering produce misleadingly optimistic convergence results"
       - "Deterministic tests with fixed seeds are reproducible but may miss rare race conditions; combine with randomized long-running soak tests"

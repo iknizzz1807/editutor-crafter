@@ -92,16 +92,16 @@ milestones:
       RPC patterns, generate server and client stubs, and establish versioning.
     acceptance_criteria:
       - "Define message types with proper field numbering, type annotations, and descriptive comments"
-      - "Define service methods covering all four patterns: unary, server streaming, client streaming, and bidirectional streaming"
+      - Define service methods covering all four patterns: unary, server streaming, client streaming, and bidirectional streaming
       - "First enum value in every enum type is set to UNSPECIFIED with tag 0 as a safe default"
       - "Generate server and client code from proto definitions using protoc with language-specific plugins"
       - "Proto files use package namespacing and the generated code compiles without errors"
-      - "Schema changes are backward-compatible: no reused or changed field numbers, no removed fields (only deprecated)"
+      - Schema changes are backward-compatible: no reused or changed field numbers, no removed fields (only deprecated)
     pitfalls:
       - "Changing or reusing field numbers breaks wire compatibility with existing clients"
       - "Not setting the first enum value to UNSPECIFIED (tag 0) causes confusing default behavior"
       - "Large messages exceeding the default 4MB gRPC max message size; configure limits explicitly"
-      - "Proto3 removed the `required` keyword; all fields are implicitly optional (use `optional` keyword since protoc 3.15 for explicit presence tracking)"
+      - "Proto3 removed the 'required' keyword; all fields are implicitly optional (use 'optional' keyword since protoc 3.15 for explicit presence tracking)"
       - "Not adding comments to proto definitions results in undocumented APIs"
     concepts:
       - Protocol Buffer v3 syntax and type system
@@ -169,11 +169,11 @@ milestones:
       - "Logging interceptor records method name, duration (ms), and response status code for every RPC call"
       - "Authentication interceptor extracts and validates bearer tokens from gRPC metadata; unauthenticated requests receive UNAUTHENTICATED status"
       - "Recovery interceptor catches panics in handler code and returns INTERNAL status instead of crashing the server"
-      - "Interceptors are chained in a documented order: recovery → logging → authentication → business logic"
+      - Interceptors are chained in a documented order: recovery → logging → authentication → business logic
       - "Both unary and stream interceptor variants are implemented for each cross-cutting concern"
       - "Context values set by upstream interceptors (e.g., user identity from auth) are accessible in downstream interceptors and handlers"
     pitfalls:
-      - "Interceptor ordering matters: auth before logging leaks unauthenticated request details; recovery must be outermost"
+      - Interceptor ordering matters: auth before logging leaks unauthenticated request details; recovery must be outermost
       - "Recovery interceptor only catches panics in the goroutine it runs on; spawned goroutines need their own recovery"
       - "Context values set in interceptors are lost if a new context is created instead of deriving from the incoming one"
       - "Stream interceptors are structurally different from unary interceptors; wrapping the stream interface is required"

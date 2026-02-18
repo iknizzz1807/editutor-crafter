@@ -66,19 +66,19 @@ languages:
     - Python
   also_possible: []
 resources:
-  - name: "Debezium Documentation"
+  - name: Debezium Documentation""
     url: https://debezium.io/documentation/reference/stable/index.html
     type: documentation
-  - name: "Kafka Delivery Semantics"
+  - name: Kafka Delivery Semantics""
     url: https://docs.confluent.io/kafka/design/delivery-semantics.html
     type: documentation
-  - name: "PostgreSQL Logical Decoding"
+  - name: PostgreSQL Logical Decoding""
     url: https://www.postgresql.org/docs/current/logicaldecoding.html
     type: documentation
-  - name: "MySQL Binary Log"
+  - name: MySQL Binary Log""
     url: https://dev.mysql.com/doc/refman/8.0/en/binary-log.html
     type: documentation
-  - name: "Change Data Capture Overview"
+  - name: Change Data Capture Overview""
     url: https://www.confluent.io/learn/change-data-capture/
     type: tutorial
 prerequisites:

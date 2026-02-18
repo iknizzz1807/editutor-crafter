@@ -69,13 +69,13 @@ languages:
     - Java
     - C#
 resources:
-  - name: "OWASP Password Storage Cheat Sheet"
+  - name: OWASP Password Storage Cheat Sheet""
     url: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
     type: documentation
-  - name: "Argon2 vs Bcrypt vs Scrypt vs PBKDF2 - Complete Guide"
+  - name: Argon2 vs Bcrypt vs Scrypt vs PBKDF2 - Complete Guide""
     url: https://guptadeepak.com/the-complete-guide-to-password-hashing-argon2-vs-bcrypt-vs-scrypt-vs-pbkdf2-2026/
     type: article
-  - name: "CrackStation - Salted Password Hashing"
+  - name: CrackStation - Salted Password Hashing""
     url: https://crackstation.net/hashing-security.htm
     type: tutorial
 prerequisites:

@@ -106,12 +106,12 @@ milestones:
       - "Core loop implements fixed-timestep update with accumulator (e.g., 60 Hz physics tick)"
       - "Render phase runs at monitor refresh rate, decoupled from update rate"
       - "Delta time is computed and passed to update functions"
-      - "Frame timing is measurable: FPS counter available"
+      - Frame timing is measurable: FPS counter available
       - "Clean shutdown releases all OS resources"
     pitfalls:
       - "Variable timestep physics causes non-deterministic behavior"
       - "Input polling in wrong phase (before/after update) causes one-frame latency"
-      - "Accumulator spiral of death: if update takes too long, accumulator grows unbounded"
+      - Accumulator spiral of death: if update takes too long, accumulator grows unbounded
       - "Forgetting to cap accumulator to prevent hundreds of physics steps per frame"
     concepts:
       - Fixed timestep with accumulator
@@ -138,9 +138,9 @@ milestones:
       - "OpenGL context initialized; screen clears to solid color each frame"
       - "Shader system compiles vertex + fragment shaders, reports errors with line numbers"
       - "Texture loader reads PNG/JPG from disk, uploads to GPU, returns a handle"
-      - "Resource manager caches loaded assets: duplicate load requests return same handle"
+      - Resource manager caches loaded assets: duplicate load requests return same handle
       - "Reference counting tracks asset usage; assets freed when reference count reaches zero"
-      - "Batched sprite renderer: multiple sprites sharing a texture are drawn in a single draw call"
+      - Batched sprite renderer: multiple sprites sharing a texture are drawn in a single draw call
       - "Sprites support position, rotation, scale, and tint color"
       - "Rendering 10,000 sprites at 60 FPS (measurable benchmark)"
       - "Resource handles are invalidated on unload; using a stale handle produces an error, not a crash"
@@ -166,7 +166,7 @@ milestones:
       - "Texture loader with GPU upload"
       - "Resource manager with caching and reference counting"
       - "Batched sprite renderer"
-      - "Benchmark: 10K sprites at 60 FPS"
+      - Benchmark: 10K sprites at 60 FPS
     estimated_hours: "20-35"
 
   - id: build-game-engine-m3
@@ -183,7 +183,7 @@ milestones:
       - "Component queries iterate only entities possessing all required component types"
       - "Command buffer defers entity create/destroy and component add/remove until after system execution"
       - "Entity destruction cleans up all associated components"
-      - "Integration test: TransformSystem + SpriteSystem correctly update and render 1000 entities"
+      - Integration test: TransformSystem + SpriteSystem correctly update and render 1000 entities
     pitfalls:
       - "Modifying components during iteration without command buffer corrupts sparse set"
       - "Memory fragmentation from frequent entity create/destroy without pooling"
@@ -204,7 +204,7 @@ milestones:
       - "Sparse-set component storage with type-safe access"
       - "System scheduler with ordered execution"
       - "Command buffer for deferred structural changes"
-      - "Integration with renderer: SpriteComponent + TransformComponent renders entities"
+      - Integration with renderer: SpriteComponent + TransformComponent renders entities
     estimated_hours: "20-30"
 
   - id: build-game-engine-m4
@@ -218,15 +218,15 @@ milestones:
       - "AABB-vs-AABB collision detection correctly identifies overlapping pairs"
       - "Circle-vs-circle collision detection correctly identifies overlapping pairs"
       - "AABB-vs-circle collision detection correctly identifies overlapping pairs"
-      - "Collision manifold generated for each collision pair: contact normal, penetration depth, contact point(s)"
+      - Collision manifold generated for each collision pair: contact normal, penetration depth, contact point(s)
       - "Impulse-based response separates overlapping bodies and adjusts velocities based on manifold and restitution"
       - "Positional correction prevents objects from sinking into each other over time"
       - "Spatial partitioning (uniform grid or quadtree) reduces broad-phase from O(n²) to O(n log n) or better"
-      - "Physics timestep is fixed and deterministic: same inputs produce same outputs regardless of frame rate"
+      - Physics timestep is fixed and deterministic: same inputs produce same outputs regardless of frame rate
       - "Objects stack stably (e.g., boxes on a floor don't jitter or explode)"
     pitfalls:
       - "Variable timestep in physics causes non-deterministic and unstable behavior"
-      - "Tunneling: fast objects pass through thin walls—need CCD or velocity capping"
+      - Tunneling: fast objects pass through thin walls—need CCD or velocity capping
       - "Impulse without positional correction causes slow sinking"
       - "Missing manifold makes impulse direction arbitrary—objects bounce in wrong directions"
       - "Collision jitter from insufficient solver iterations or incorrect restitution handling"
@@ -259,13 +259,13 @@ milestones:
       - "Scene serialization writes all entities and their components to a JSON or binary file"
       - "Scene deserialization recreates the exact entity/component state from a saved file"
       - "Scene transitions unload current scene resources and load new scene without memory leaks"
-      - "Hierarchical transform: child entities inherit parent transform (position, rotation, scale propagation)"
+      - Hierarchical transform: child entities inherit parent transform (position, rotation, scale propagation)
       - "Resource manager correctly frees assets no longer referenced after scene unload"
-      - "A playable demo game (e.g., simple platformer or shooter) uses all engine systems: rendering, ECS, physics, input, scenes"
+      - A playable demo game (e.g., simple platformer or shooter) uses all engine systems: rendering, ECS, physics, input, scenes
       - "Demo runs at 60 FPS with no memory leaks (verified by memory profiler or leak sanitizer)"
-      - "Engine API is documented: creating entities, adding components, registering systems, loading scenes"
+      - Engine API is documented: creating entities, adding components, registering systems, loading scenes
     pitfalls:
-      - "Serialization version incompatibility: adding a new component field breaks old save files"
+      - Serialization version incompatibility: adding a new component field breaks old save files
       - "Scene transition corrupting global state (e.g., input system, physics world not reset)"
       - "Hierarchical transform cycles causing infinite recursion"
       - "Memory leaks from resources loaded but never freed during scene transitions"
@@ -287,5 +287,4 @@ milestones:
       - "Playable demo game exercising all engine subsystems"
       - "Engine API documentation"
     estimated_hours: "20-30"
-
 ```

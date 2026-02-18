@@ -58,13 +58,13 @@ languages:
   also_possible:
     - JavaScript
 resources:
-  - name: "Rasa Open Source"
+  - name: Rasa Open Source""
     url: https://rasa.com/docs/rasa/
     type: documentation
-  - name: "spaCy NER Documentation"
+  - name: spaCy NER Documentation""
     url: https://spacy.io/usage/linguistic-features#named-entities
     type: documentation
-  - name: "scikit-learn Text Classification"
+  - name: scikit-learn Text Classification""
     url: https://scikit-learn.org/stable/tutorial/text_analytics/working_with_text_data.html
     type: tutorial
 prerequisites:
@@ -83,7 +83,7 @@ milestones:
     acceptance_criteria:
       - "Training data contains at least 5 intent categories with a minimum of 20 examples per intent"
       - "Data is split into training (80%) and test (20%) sets with stratified sampling to preserve class distribution"
-      - "Classifier pipeline: text preprocessing (lowercase, tokenize, remove punctuation) → TF-IDF vectorization → supervised classifier (Naive Bayes or SVM)"
+      - Classifier pipeline: text preprocessing (lowercase, tokenize, remove punctuation) → TF-IDF vectorization → supervised classifier (Naive Bayes or SVM)
       - "Classifier predicts the most likely intent with a confidence score (probability) for each category"
       - "Predictions with confidence below a configurable threshold (default 0.4) are classified as 'unknown/fallback' intent"
       - "Classifier achieves at least 80% F1-score (macro-averaged) on the held-out test set"
@@ -116,9 +116,9 @@ milestones:
       Extract structured entities (names, dates, locations, custom types) from user
       input using regex patterns and pre-trained spaCy NER models.
     acceptance_criteria:
-      - "Pre-trained spaCy NER model extracts standard entity types: PERSON, DATE, GPE (location), ORG from user text"
+      - Pre-trained spaCy NER model extracts standard entity types: PERSON, DATE, GPE (location), ORG from user text
       - "Custom regex patterns extract domain-specific entities (e.g., email addresses, phone numbers, times, order IDs)"
-      - "Extracted entities are normalized to canonical formats (e.g., 'next Tuesday' → ISO date string, '5pm' → '17:00')"
+      - Extracted entities are normalized to canonical formats (e.g., 'next Tuesday' → ISO date string, '5pm' → '17: 00')
       - "Slot-filling maps extracted entities to intent-specific parameter slots (e.g., 'book_flight' intent requires 'origin', 'destination', 'date' slots)"
       - "Missing required slots are identified and listed so the dialog manager can prompt for them"
       - "Multiple entities of the same type in a single message are correctly extracted and assigned to appropriate slots"
@@ -151,16 +151,16 @@ milestones:
       dialog policy that decides the next action based on current state and
       filled/missing slots.
     acceptance_criteria:
-      - "Dialog state persists across turns: tracks current intent, filled slots, and conversation phase"
-      - "Dialog policy decides the next action based on state: prompt for missing slot, confirm values, execute action, or ask for clarification"
+      - Dialog state persists across turns: tracks current intent, filled slots, and conversation phase
+      - Dialog policy decides the next action based on state: prompt for missing slot, confirm values, execute action, or ask for clarification
       - "Follow-up messages update existing context without requiring the user to restate the intent"
       - "Missing required slots trigger specific prompt questions (e.g., 'What date would you like to travel?')"
       - "'Cancel' or 'start over' commands clear the current dialog state and return to initial state"
       - "Intent changes mid-conversation (e.g., user switches from booking to checking status) are handled by saving or discarding prior context"
-      - "Session timeout: context is cleared after 5 minutes of inactivity (configurable)"
+      - Session timeout: context is cleared after 5 minutes of inactivity (configurable)
     pitfalls:
       - "Infinite dialog loops when slot-filling repeatedly fails validation—cap retry attempts per slot"
-      - "Losing context on intent change: user says 'actually, check my booking instead'—must handle gracefully"
+      - Losing context on intent change: user says 'actually, check my booking instead'—must handle gracefully
       - "Session state stored only in memory leaks if sessions are never cleaned up—implement TTL-based eviction"
       - "State machine transitions not exhaustively defined cause unhandled states and crashes"
     concepts:
@@ -190,14 +190,14 @@ milestones:
       - "Each intent-state combination has at least 3 response variations to avoid repetitive output"
       - "Fallback responses handle unknown intents with helpful suggestions (e.g., 'I can help with booking flights or checking weather. What would you like?')"
       - "User input is sanitized before insertion into templates to prevent format string injection"
-      - "End-to-end pipeline: user text → intent classification → entity extraction → dialog state update → policy decision → response generation"
-      - "Integration test: a multi-turn conversation (3+ turns) completing a task from start to finish runs without errors"
+      - End-to-end pipeline: user text → intent classification → entity extraction → dialog state update → policy decision → response generation
+      - Integration test: a multi-turn conversation (3+ turns) completing a task from start to finish runs without errors
       - "Conversation log records all turns with user input, detected intent, extracted entities, and generated response for debugging"
     pitfalls:
       - "Missing template variables cause KeyError—validate all required slots are filled before rendering template"
       - "Too few response variations make the chatbot feel robotic—add at least 3 per intent-state"
       - "Template rendering with f-strings or .format() on user input is a code injection risk—use safe substitution"
-      - "Integration bugs: components work in isolation but fail together due to data format mismatches between modules"
+      - Integration bugs: components work in isolation but fail together due to data format mismatches between modules
     concepts:
       - Template-based natural language generation
       - Response variation for naturalness

@@ -92,7 +92,7 @@ milestones:
     acceptance_criteria:
       - "Database schema defines tables for files (id, owner_id, original_filename, size_bytes, mime_type, checksum_sha256, status, storage_path, created_at, updated_at) and upload_sessions (id, file_id, total_size, bytes_received, chunk_size, status, expires_at, created_at)"
       - "POST /uploads initializes a new upload session returning an upload_id, expected chunk size, and upload endpoint URL"
-      - "GET /uploads/:id returns the current upload session state including bytes_received and status (pending, uploading, assembling, scanning, complete, quarantined, failed)"
+      - GET /uploads/: id returns the current upload session state including bytes_received and status (pending, uploading, assembling, scanning, complete, quarantined, failed)
       - "Upload sessions expire after a configurable timeout (e.g., 24 hours); expired sessions are marked as failed"
       - "File metadata records are created with status 'pending' at upload initialization and updated through the lifecycle"
       - "Per-user upload quota is enforced; requests exceeding the quota are rejected with 413 Payload Too Large"
@@ -125,10 +125,10 @@ milestones:
       Implement a resumable chunked upload protocol where clients upload
       file data in sequential byte-range chunks with resume-on-failure capability.
     acceptance_criteria:
-      - "PATCH /uploads/:id accepts a chunk with Upload-Offset and Content-Length headers; server validates offset matches bytes_received"
+      - PATCH /uploads/: id accepts a chunk with Upload-Offset and Content-Length headers; server validates offset matches bytes_received
       - "Server responds with Upload-Offset header indicating the next expected byte offset after each successful chunk"
       - "If the client sends an offset that doesn't match server's bytes_received, the server returns 409 Conflict with the correct offset"
-      - "HEAD /uploads/:id returns the current Upload-Offset so clients can resume from the correct position after a failure"
+      - HEAD /uploads/: id returns the current Upload-Offset so clients can resume from the correct position after a failure
       - "Each chunk's integrity is verified using a Content-MD5 or checksum header; mismatched chunks are rejected with 400"
       - "When all bytes are received (bytes_received == total_size), chunks are assembled into a complete file in temporary/quarantine storage"
       - "Assembled file's SHA-256 checksum is computed and verified against the client-provided checksum if supplied"
@@ -206,7 +206,7 @@ milestones:
       - "S3-compatible backend implements the storage interface using multipart upload for files exceeding a configurable threshold (e.g., 5MB minimum part size)"
       - "Storage backend is selected via configuration; switching backends requires no code changes"
       - "Signed download URLs are generated with configurable expiration for secure file access without exposing storage credentials"
-      - "Garbage collection job runs periodically, cleaning up: (a) expired upload sessions and their temporary chunks, (b) orphaned files in quarantine older than a configurable retention period"
+      - Garbage collection job runs periodically, cleaning up: (a) expired upload sessions and their temporary chunks, (b) orphaned files in quarantine older than a configurable retention period
       - "Files are streamed to/from storage without loading the entire file into memory"
     pitfalls:
       - "S3 multipart upload requires minimum 5MB parts (except the last); violating this causes API errors"

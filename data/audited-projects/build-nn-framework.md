@@ -215,7 +215,7 @@ milestones:
       - Learning rate scheduler supports at least step decay (reduce LR every N epochs)
       - Training loop: forward pass → loss computation → backward pass → optimizer step → zero_grad, iterated over mini-batches
       - Mini-batch training shuffles data each epoch and processes fixed-size batches
-      - Train a 2-layer network on MNIST or XOR: loss decreases monotonically and accuracy exceeds 90% (MNIST) or 100% (XOR)
+      - Train a 2-layer network on MNIST or XOR: loss decreases monotonically and accuracy exceeds 90% (MNIST) or 100% (XOR)""
       - Adam converges faster (fewer epochs to target accuracy) than vanilla SGD on the same task
       - Gradient clipping (max norm) implemented as optional utility
     pitfalls:
@@ -243,5 +243,4 @@ milestones:
       - Demo training script achieving target accuracy on MNIST or XOR
       - Convergence comparison plot: SGD vs Adam on the same task
     estimated_hours: "15-20"
-
 ```

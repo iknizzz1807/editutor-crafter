@@ -105,7 +105,7 @@ milestones:
       - Forward keyboard input from parent stdin to PTY master; forward PTY master output to parent stdout
       - Handle SIGCHLD to detect child shell exit and clean up PTY file descriptors
       - Set initial terminal size on slave PTY using TIOCSWINSZ ioctl before exec'ing the shell
-      - "On exit (normal or crash): restore the original terminal attributes using the saved termios struct"
+      - On exit (normal or crash): restore the original terminal attributes using the saved termios struct
       - Verify by running an interactive shell (bash/zsh) and confirming basic commands work (ls, cat, vim)
     pitfalls:
       - Must call setsid() in child before opening slave PTY, otherwise it won't become the controlling terminal
@@ -133,7 +133,7 @@ milestones:
       - Screen buffer management
       - UTF-8 decoding
     acceptance_criteria:
-      - "Implement a state machine parser based on Paul Williams' VT500 parser model with states: Ground, Escape, CSI Entry, CSI Param, CSI Intermediate, CSI Dispatch, OSC String"
+      - Implement a state machine parser based on Paul Williams' VT500 parser model with states: Ground, Escape, CSI Entry, CSI Param, CSI Intermediate, CSI Dispatch, OSC String
       - Handle cursor movement sequences: CUU (up), CUD (down), CUF (forward), CUB (back), CUP (absolute position), HVP
       - Handle erase sequences: ED (erase display), EL (erase line) with mode parameters (0=to-end, 1=to-start, 2=all)
       - Handle SGR (Select Graphic Rendition) for: reset, bold, dim, underline, blink, reverse, 8-color foreground/background, 256-color, and 24-bit RGB color
@@ -143,7 +143,7 @@ milestones:
       - Maintain a virtual screen buffer as a 2D array of cells; each cell stores a character (Unicode codepoint), foreground color, background color, and text attributes
       - Maintain a scrollback buffer of at least 1000 lines above the visible screen
       - Handle basic UTF-8 multi-byte character sequences (2-4 bytes)
-      - "Explicitly OUT OF SCOPE: Sixel graphics, mouse tracking, OSC clipboard, DCS sequences"
+      - Explicitly OUT OF SCOPE: Sixel graphics, mouse tracking, OSC clipboard, DCS sequences
       - Verify by running vim, htop, and less in the terminal and confirming correct display
     pitfalls:
       - Many escape sequences have optional parameters with defaults; e.g., CSI H with no params means row 1, col 1
@@ -180,7 +180,7 @@ milestones:
       - Handle SIGWINCH on the parent terminal: recalculate all pane dimensions and propagate new sizes to all PTY slaves
       - Enforce minimum pane dimensions (4 columns × 2 rows); reject splits that would create panes below minimum
       - Draw single-line box-drawing character borders between panes
-      - "Known limitation: scrollback reflow on resize is not required; existing content may display incorrectly after resize. Document this."
+      - Known limitation: scrollback reflow on resize is not required; existing content may display incorrectly after resize. Document this.
       - Support at least 4 simultaneous panes without performance degradation
     pitfalls:
       - Resizing a pane requires updating the PTY size AND re-rendering the screen buffer content; without scrollback reflow, long lines will wrap incorrectly
@@ -215,7 +215,7 @@ milestones:
       - Render a status bar on the bottom line showing: session name, pane index, active pane title, and clock
       - Composite all pane screen buffers plus borders plus status bar to the real terminal using efficient cursor movement (avoid full-screen redraws when only one pane changed)
       - Implement double-buffered rendering: compute the new frame in memory, then diff against previous frame and emit only changed characters to minimize flicker
-      - "Restore terminal to normal mode on exit: reset raw mode, show cursor, clear alternate screen buffer"
+      - Restore terminal to normal mode on exit: reset raw mode, show cursor, clear alternate screen buffer
       - Handle Ctrl-C in command mode without killing the multiplexer (intercept and ignore or send to pane)
     pitfalls:
       - Raw mode disables Ctrl-C, Ctrl-Z, Ctrl-D interpretation; must handle them explicitly
@@ -267,5 +267,4 @@ milestones:
       - Reattach command reconnecting to existing session
       - Session listing command
       - Socket cleanup and stale session handling
-
 ```

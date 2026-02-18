@@ -61,16 +61,16 @@ languages:
     - Java
   also_possible: []
 resources:
-  - name: "Great Expectations Official Documentation"
+  - name: Great Expectations Official Documentation""
     url: https://docs.greatexpectations.io/
     type: documentation
-  - name: "Data Contracts for Schema Registry"
+  - name: Data Contracts for Schema Registry""
     url: https://docs.confluent.io/platform/current/schema-registry/fundamentals/data-contracts.html
     type: documentation
-  - name: "Data Drift Detection Guide"
+  - name: Data Drift Detection Guide""
     url: https://www.evidentlyai.com/ml-in-production/data-drift
     type: article
-  - name: "HyperLogLog for Cardinality Estimation"
+  - name: HyperLogLog for Cardinality Estimation""
     url: https://engineering.fb.com/2018/12/13/data-infrastructure/hyperloglog/
     type: article
 prerequisites:

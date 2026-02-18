@@ -299,5 +299,4 @@ milestones:
       - Inference benchmark comparing generation speed with and without KV cache
       - End-to-end demo generating outputs from the trained model
     estimated_hours: "6-10"
-
 ```

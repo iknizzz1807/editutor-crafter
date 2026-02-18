@@ -175,7 +175,7 @@ milestones:
       - DWARF Debug Information Entries (DIEs) are decoded with correct handling of abbreviation tables, tag types, and attribute forms including references to .debug_str
       - Address-to-line mapping converts a program counter value to the corresponding source file path and line number using .debug_line line number program
       - Name-to-address mapping resolves a function name (DW_TAG_subprogram with DW_AT_name) to its entry point address (DW_AT_low_pc) for setting breakpoints by name
-      - Source-level breakpoint: user can specify "break filename:line" and the debugger resolves it to a machine address using .debug_line data and sets a breakpoint
+      - Source-level breakpoint: user can specify break filename:line" and the debugger resolves it to a machine address using .debug_line data and sets a breakpoint"
       - When stopped at a breakpoint, the debugger displays the current source file, line number, and surrounding lines of source code
     pitfalls:
       - DWARF versions 2, 3, 4, and 5 have different header formats and attribute encodings; scope to DWARF 4 (most common with gcc -g) initially
@@ -199,7 +199,7 @@ milestones:
       - DWARF compilation unit and DIE parser (or library integration)
       - Address-to-source-line mapping using .debug_line data
       - Function-name-to-address mapping from DW_TAG_subprogram entries
-      - Source-level breakpoint setting by filename:line specification
+      - Source-level breakpoint setting by filename: line specification
       - Source code display showing current file and line when stopped
     estimated_hours: "15-22"
 

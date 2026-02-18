@@ -193,14 +193,14 @@ milestones:
       - "Checkout validates all cart items are still in stock at current prices before proceeding"
       - "Address collection form validates required shipping fields (street, city, postal code, country)"
       - "Payment is processed through a mock payment gateway or Stripe test mode; payment success/failure is handled"
-      - "Order creation is atomic: cart items, inventory deduction, and order record are committed in a single database transaction"
+      - Order creation is atomic: cart items, inventory deduction, and order record are committed in a single database transaction
       - "If payment fails, the order is not created and inventory is not deducted; the user sees an error with retry option"
       - "If inventory is insufficient at checkout time, the order is rejected with a clear message identifying the out-of-stock items"
       - "Successful checkout returns an order confirmation with order ID and summary; the cart is cleared"
       - "GET /orders returns the authenticated user's order history with pagination, showing order date, total, and status"
-      - "GET /orders/:id returns full order details including line items, quantities, prices, and shipping address; returns 403 for non-owner"
+      - GET /orders/: id returns full order details including line items, quantities, prices, and shipping address; returns 403 for non-owner
     pitfalls:
-      - "Race conditions on stock: two concurrent checkouts can oversell; use SELECT FOR UPDATE or optimistic locking"
+      - Race conditions on stock: two concurrent checkouts can oversell; use SELECT FOR UPDATE or optimistic locking
       - "Not wrapping order creation in a transaction causes partial state (order created but inventory not deducted)"
       - "Abandoned checkouts reserving inventory indefinitely; implement reservation timeouts or don't reserve until payment"
       - "Not handling payment gateway timeouts; implement idempotency keys to prevent double charges on retry"

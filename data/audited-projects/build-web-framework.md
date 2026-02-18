@@ -92,7 +92,7 @@ milestones:
       and proper 404/405 responses.
     acceptance_criteria:
       - Route registration associates HTTP methods (GET, POST, PUT, DELETE, PATCH) with URL patterns and handler functions
-      - URL parameters like /users/:id extract named values accessible as a key-value map (e.g., {id: "42"}) from matching path segments
+      - URL parameters like /users/: id extract named values accessible as a key-value map (e.g., {id: "42"}) from matching path segments
       - Route matching uses a trie (radix tree) or compiled regex per route; linear scan of raw string patterns is not acceptable for more than 100 routes
       - Static path segments take priority over parameterized segments: /users/admin matches before /users/:id
       - Unmatched paths return 404 Not Found; paths matching a route but with wrong HTTP method return 405 Method Not Allowed with an Allow header listing valid methods
@@ -101,7 +101,7 @@ milestones:
       - Wildcard/catch-all routes like /files/*path capture the remaining path as a single parameter
     pitfalls:
       - Linear scan route matching becomes O(n) per request; trie-based matching is O(path length) and should be the target
-      - Route ordering ambiguity between /users/:id and /users/admin leads to bugs if static segments don't take priority
+      - Route ordering ambiguity between /users/: id and /users/admin leads to bugs if static segments don't take priority
       - URL-encoded characters (%20, %2F) in path segments must be decoded before matching
       - Trailing slash inconsistency causes subtle 404s; must have an explicit normalization policy
       - Forgetting to return 405 (instead of 404) when the path matches but method doesn't violates HTTP semantics
@@ -169,12 +169,12 @@ milestones:
       as middleware that plugs into the M2 pipeline. This ensures all downstream middleware
       and route handlers can access parsed body data.
     acceptance_criteria:
-      - JSON body parsing middleware reads the request body stream, parses JSON, and attaches the parsed object to `req.body`; invalid JSON returns 400 Bad Request
-      - URL-encoded form body parsing middleware decodes application/x-www-form-urlencoded data into key-value pairs on `req.body`
+      - JSON body parsing middleware reads the request body stream, parses JSON, and attaches the parsed object to 'req.body'; invalid JSON returns 400 Bad Request
+      - URL-encoded form body parsing middleware decodes application/x-www-form-urlencoded data into key-value pairs on 'req.body'
       - Body parsing middleware enforces a configurable maximum body size (default 1MB); bodies exceeding the limit return 413 Payload Too Large
-      - Response helpers: `res.json(obj)` sets Content-Type to application/json and serializes; `res.send(text)` sends text; `res.redirect(url)` sends 302; `res.status(code)` chains
-      - Query parameters are parsed from the URL query string and accessible as `req.query` key-value map
-      - Cookie reading parses the Cookie header into `req.cookies` map; `res.cookie(name, value, options)` sets Set-Cookie header with path, httpOnly, secure, maxAge, and sameSite options
+      - Response helpers: 'res.json(obj)' sets Content-Type to application/json and serializes; 'res.send(text)' sends text; 'res.redirect(url)' sends 302; 'res.status(code)' chains
+      - Query parameters are parsed from the URL query string and accessible as 'req.query' key-value map
+      - Cookie reading parses the Cookie header into 'req.cookies' map; 'res.cookie(name, value, options)' sets Set-Cookie header with path, httpOnly, secure, maxAge, and sameSite options
       - Content-Type header is checked before body parsing; mismatched Content-Type skips the parser gracefully
     pitfalls:
       - Reading the request body stream twice (once in body parser, once in handler) yields empty data the second time; body must be parsed once and cached
@@ -211,12 +211,12 @@ milestones:
     acceptance_criteria:
       - Template variables like {{ name }} are replaced with corresponding context values; undefined variables render as empty string
       - All variable output is HTML-escaped by default (< > & " ' are encoded); a raw/safe filter like {{{ html }}} or {{ html | safe }} bypasses escaping
-      - For-each loops iterate over arrays: {% for item in items %}...{% endfor %} renders the block for each element
-      - If/else conditionals: {% if condition %}...{% else %}...{% endif %} include/exclude template sections based on truthiness
+      - For-each loops iterate over arrays: "{% for item in items %}...{% endfor %} renders the block for each element"
+      - If/else conditionals: "{% if condition %}...{% else %}...{% endif %} include/exclude template sections based on truthiness"
       - Template inheritance: child templates declare {% extends "base.html" %} and override {% block content %}...{% endblock %} sections defined in the parent
       - Templates are compiled to JavaScript/Python functions on first use and cached; subsequent renders use the cached function without re-parsing
       - Template syntax errors report the template file name, line number, and description of the error
-      - Integration with the framework: `res.render('template.html', {data})` looks up the template, renders it, and sends the HTML response with correct Content-Type
+      - Integration with the framework: 'res.render('template.html', {data})' looks up the template, renders it, and sends the HTML response with correct Content-Type
     pitfalls:
       - Not auto-escaping variable output by default creates XSS vulnerabilities; escaping must be the default, not opt-in
       - Template injection: if user input is used as a template string (not a context variable), arbitrary code execution is possible; templates must come from trusted sources only

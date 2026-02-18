@@ -96,12 +96,12 @@ milestones:
       - Configure ITIMER_PROF or timer_create to deliver SIGPROF at a configurable interval
       - Support sampling rates from 10Hz to 1000Hz; warn the user if rate exceeds 1000Hz due to overhead
       - In the signal handler, capture the user-space call stack as an array of instruction pointer addresses
-      - "Signal handler must be async-signal-safe: no malloc, no printf, no mutex locks; write to a pre-allocated ring buffer only"
+      - Signal handler must be async-signal-safe: no malloc, no printf, no mutex locks; write to a pre-allocated ring buffer only
       - Store captured stack samples (array of IPs + sample count) in a pre-allocated lock-free data structure
       - Support targeting a specific process by PID (attach via ptrace or self-profiling via LD_PRELOAD)
       - Support targeting specific threads within a process when self-profiling
       - Measure and report profiler overhead as a percentage of target process wall time; must be < 5% at 100Hz
-      - "Note: This milestone captures USER-SPACE stacks only. Kernel stack capture requires perf_event_open and is out of scope."
+      - Note: This milestone captures USER-SPACE stacks only. Kernel stack capture requires perf_event_open and is out of scope.
     pitfalls:
       - "Signal handlers that call malloc, printf, or lock mutexes cause deadlocks or undefined behavior"
       - Binaries compiled without frame pointers (-fomit-frame-pointer, default in GCC -O2+) break frame-pointer-based stack walking; use libunwind as fallback
@@ -203,7 +203,7 @@ milestones:
       - Leak analysis
     acceptance_criteria:
       - Intercept malloc, calloc, realloc, and free via LD_PRELOAD shared library (or compile-time wrapping)
-      - "Solve the recursive-malloc problem: use a static fallback allocator (e.g., small static buffer with bump allocation) for allocations made by the interceptor itself before the real malloc is resolved"
+      - Solve the recursive-malloc problem: use a static fallback allocator (e.g., small static buffer with bump allocation) for allocations made by the interceptor itself before the real malloc is resolved
       - Record allocation size and call stack (backtrace) for each malloc/calloc/realloc call
       - Record free calls and match them to their corresponding allocation by pointer address
       - Track realloc correctly (free old + alloc new) to maintain accurate allocation map
@@ -212,7 +212,7 @@ milestones:
       - Generate an allocation flame graph (flame graph where width represents bytes allocated, not CPU samples)
       - Measure and report memory profiler overhead; metadata tracking should use < 10% of the profiled program's peak memory
     pitfalls:
-      - "Recursive malloc: your interceptor calls a function that calls malloc, which re-enters your interceptor—infinite recursion. Use a thread-local guard flag and static fallback allocator."
+      - Recursive malloc: your interceptor calls a function that calls malloc, which re-enters your interceptor—infinite recursion. Use a thread-local guard flag and static fallback allocator.
       - realloc with NULL pointer is equivalent to malloc; realloc to size 0 may be equivalent to free (implementation-defined)
       - Thread-local storage allocations and static constructor allocations happen before LD_PRELOAD initializes; some allocations will be missed
       - Excessive metadata per allocation (full backtrace) can consume significant memory; limit backtrace depth (e.g., 16 frames)
@@ -225,5 +225,4 @@ milestones:
       - Top-N allocation site report by total bytes
       - Leak report (unfreed allocations at exit)
       - Allocation flame graph
-
 ```

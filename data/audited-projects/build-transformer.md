@@ -248,5 +248,4 @@ milestones:
       - Text generation function producing output from a given prompt string
       - Repetition penalty (optional) reducing probability of recent tokens
     estimated_hours: "12-18"
-
 ```

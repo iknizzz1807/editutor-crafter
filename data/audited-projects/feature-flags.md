@@ -95,18 +95,18 @@ milestones:
       default value, targeting rules, and lifecycle state. All changes
       are audit-logged.
     acceptance_criteria:
-      - "POST /flags creates a flag with: key (unique string), type (boolean|string|number|json), default_value, description, and optional targeting rules"
+      - POST /flags creates a flag with: key (unique string), type (boolean|string|number|json), default_value, description, and optional targeting rules
       - "GET /flags/{key} returns the full flag definition including rules and current state"
       - "PUT /flags/{key} updates flag definition; changes are audit-logged with timestamp, user, old value, new value"
       - "DELETE /flags/{key} soft-deletes (archives) the flag; it is excluded from evaluation but retained for audit"
       - "GET /flags returns paginated list of all flags with filtering by state (active, archived)"
-      - "Flag key uniqueness enforced: duplicate key creation returns 409 Conflict"
+      - Flag key uniqueness enforced: duplicate key creation returns 409 Conflict
       - "Audit log queryable via GET /flags/{key}/audit returning chronological change history"
     pitfalls:
-      - "Hard-deleting flags: clients with cached references to deleted flags crash. Use soft-delete with archival."
-      - "No audit trail: in production, flag changes cause incidents. Without audit logs, root cause analysis is impossible."
-      - "Not validating default_value against flag type: a boolean flag with default_value 'hello' silently breaks evaluation"
-      - "Allowing flag key changes: renaming a key breaks all SDKs referencing the old key. Keys should be immutable."
+      - Hard-deleting flags: clients with cached references to deleted flags crash. Use soft-delete with archival.
+      - No audit trail: in production, flag changes cause incidents. Without audit logs, root cause analysis is impossible.
+      - Not validating default_value against flag type: a boolean flag with default_value 'hello' silently breaks evaluation
+      - Allowing flag key changes: renaming a key breaks all SDKs referencing the old key. Keys should be immutable.
     concepts:
       - CRUD API design for configuration management
       - Soft delete and archival
@@ -133,17 +133,17 @@ milestones:
       rollout > default value. Include safe fallback defaults.
     acceptance_criteria:
       - "evaluate(flag_key, user_context) returns {value, variant_key, reason} where reason explains which rule matched"
-      - "Evaluation hierarchy (checked in order, first match wins): 1) Kill switch (flag disabled → default), 2) User ID override list, 3) Segment/attribute rules (AND/OR conditions), 4) Percentage rollout, 5) Default value"
-      - "Percentage rollout uses consistent hashing: hash(flag_key + user_id) % 100 determines bucket. Same user always gets same variant for a given flag."
-      - "Segment rules support attribute conditions: equals, not_equals, contains, regex, in_list on user context attributes"
+      - Evaluation hierarchy (checked in order, first match wins): 1) Kill switch (flag disabled → default), 2) User ID override list, 3) Segment/attribute rules (AND/OR conditions), 4) Percentage rollout, 5) Default value
+      - Percentage rollout uses consistent hashing: hash(flag_key + user_id) % 100 determines bucket. Same user always gets same variant for a given flag.
+      - Segment rules support attribute conditions: equals, not_equals, contains, regex, in_list on user context attributes
       - "Circular flag dependencies (flag A depends on flag B which depends on flag A) are detected at creation time and rejected with 400 error"
       - "If evaluation throws any exception (missing flag, corrupt rules, unexpected type), the hardcoded fallback default is returned with reason='ERROR_FALLBACK'"
       - "Evaluation latency is < 1ms for flags with up to 10 rules (verified by benchmark)"
     pitfalls:
-      - "Non-deterministic rule evaluation: without strict priority ordering, the same request can get different results depending on rule iteration order"
-      - "Inconsistent hashing causing user flip-flop: if the hash function changes or the modulo base changes, users switch variants. Use a stable hash like MurmurHash3."
-      - "No fallback on error: if the flag store is corrupted or unreachable, evaluate() throws an exception instead of returning a safe default. This crashes the application."
-      - "Circular dependency infinite loop: flag A's rule references flag B, flag B's rule references flag A. Without cycle detection at write time, evaluation loops forever."
+      - Non-deterministic rule evaluation: without strict priority ordering, the same request can get different results depending on rule iteration order
+      - Inconsistent hashing causing user flip-flop: if the hash function changes or the modulo base changes, users switch variants. Use a stable hash like MurmurHash3.
+      - No fallback on error: if the flag store is corrupted or unreachable, evaluate() throws an exception instead of returning a safe default. This crashes the application.
+      - Circular dependency infinite loop: flag A's rule references flag B, flag B's rule references flag A. Without cycle detection at write time, evaluation loops forever.
     concepts:
       - Targeting rule hierarchy with strict precedence
       - Consistent hashing for stable percentage bucketing
@@ -169,7 +169,7 @@ milestones:
       updates when flags change. If the SSE connection fails, the SDK
       falls back to the local cache and periodically polls.
     acceptance_criteria:
-      - "GET /stream returns an SSE event stream. Each event contains: event type (flag_updated, flag_archived), flag key, new flag definition, and monotonic event ID"
+      - GET /stream returns an SSE event stream. Each event contains: event type (flag_updated, flag_archived), flag key, new flag definition, and monotonic event ID
       - "When a flag is created/updated/archived via the CRUD API, an SSE event is broadcast to all connected clients within 2 seconds"
       - "SDK maintains a local in-memory cache of all flag values. evaluate() reads from cache, not the network."
       - "On SSE reconnect, SDK sends Last-Event-ID header and receives all missed events (catch-up)"
@@ -178,10 +178,10 @@ milestones:
       - "SDK reconnection uses exponential backoff with jitter (base 1s, max 30s) to prevent thundering herd"
       - "At least 200 concurrent SSE connections supported without degrading API response latency by more than 20%"
     pitfalls:
-      - "Thundering herd on SSE reconnect: if 1000 SDKs lose connection simultaneously and all reconnect at once, the server is overwhelmed. Exponential backoff with jitter is mandatory."
-      - "Stale cache served indefinitely: if SSE is down and polling also fails, the cache TTL should eventually trigger a 'stale cache' warning in evaluation reasons"
-      - "Not sending SSE keepalive: intermediate proxies (nginx, AWS ALB) close idle connections after 60s"
-      - "Full flag payloads in every SSE event: for large flag sets, send only the changed flag, not the entire flag collection"
+      - Thundering herd on SSE reconnect: if 1000 SDKs lose connection simultaneously and all reconnect at once, the server is overwhelmed. Exponential backoff with jitter is mandatory.
+      - Stale cache served indefinitely: if SSE is down and polling also fails, the cache TTL should eventually trigger a 'stale cache' warning in evaluation reasons
+      - Not sending SSE keepalive: intermediate proxies (nginx, AWS ALB) close idle connections after 60s
+      - Full flag payloads in every SSE event: for large flag sets, send only the changed flag, not the entire flag collection
     concepts:
       - Server-Sent Events protocol
       - Local cache with push invalidation
@@ -207,17 +207,17 @@ milestones:
       Statistical analysis is out of scope — focus on correct exposure
       logging and assignment consistency.
     acceptance_criteria:
-      - "Every flag evaluation logs an exposure event: {flag_key, variant_key, user_id, timestamp, reason} to a configurable sink (file, HTTP endpoint, or in-memory buffer)"
+      - Every flag evaluation logs an exposure event: {flag_key, variant_key, user_id, timestamp, reason} to a configurable sink (file, HTTP endpoint, or in-memory buffer)
       - "Exposure events are batched and flushed periodically (default every 10s or 100 events) to reduce I/O overhead"
-      - "Experiment mode can be enabled per flag: marks the flag as an active experiment with defined variant keys and traffic allocation percentages"
-      - "User-to-variant assignment is persistent: once a user is assigned to a variant, they always get the same variant (consistent hashing ensures this)"
+      - Experiment mode can be enabled per flag: marks the flag as an active experiment with defined variant keys and traffic allocation percentages
+      - User-to-variant assignment is persistent: once a user is assigned to a variant, they always get the same variant (consistent hashing ensures this)
       - "GET /flags/{key}/exposures returns aggregated exposure counts per variant (total evaluations, unique users)"
-      - "Sample ratio mismatch detection: if actual variant distribution deviates from configured allocation by > 5%, a warning is logged"
+      - Sample ratio mismatch detection: if actual variant distribution deviates from configured allocation by > 5%, a warning is logged
     pitfalls:
-      - "Logging every evaluation synchronously: blocks the hot path. Buffer and flush asynchronously."
-      - "Not deduplicating exposures: if a user is evaluated 100 times per minute, the exposure log grows 100x. Deduplicate by (user_id, flag_key, variant) per flush window."
-      - "Sample ratio mismatch going undetected: a bug in the hashing function or targeting rules causes uneven distribution, invalidating any experiment conclusions"
-      - "Exposures logged for non-experiment flags: only log exposures for flags marked as experiments, or provide a filter, to avoid log explosion"
+      - Logging every evaluation synchronously: blocks the hot path. Buffer and flush asynchronously.
+      - Not deduplicating exposures: if a user is evaluated 100 times per minute, the exposure log grows 100x. Deduplicate by (user_id, flag_key, variant) per flush window.
+      - Sample ratio mismatch going undetected: a bug in the hashing function or targeting rules causes uneven distribution, invalidating any experiment conclusions
+      - Exposures logged for non-experiment flags: only log exposures for flags marked as experiments, or provide a filter, to avoid log explosion
     concepts:
       - Exposure logging and analytics
       - Consistent user-to-variant assignment
@@ -234,5 +234,4 @@ milestones:
       - Exposure aggregation API (counts per variant)
       - Sample ratio mismatch detector with warning logs
     estimated_hours: "6-8"
-
 ```

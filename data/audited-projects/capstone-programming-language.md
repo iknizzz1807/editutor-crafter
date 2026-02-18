@@ -70,16 +70,16 @@ languages:
   also_possible:
     - Java
 resources:
-  - name: "Crafting Interpreters"
+  - name: Crafting Interpreters""
     url: https://craftinginterpreters.com/
     type: book
-  - name: "Writing An Interpreter In Go"
+  - name: Writing An Interpreter In Go""
     url: https://interpreterbook.com/
     type: book
-  - name: "Engineering a Compiler (3rd Edition)"
+  - name: Engineering a Compiler (3rd Edition)""
     url: https://www.elsevier.com/books/engineering-a-compiler/cooper/978-0-12-815412-0
     type: book
-  - name: "Types and Programming Languages (Pierce)"
+  - name: Types and Programming Languages (Pierce)""
     url: https://www.cis.upenn.edu/~bcpierce/tapl/
     type: book
 prerequisites:

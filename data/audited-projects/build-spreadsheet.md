@@ -124,8 +124,8 @@ milestones:
       - Lexer tokenizes formula strings into tokens: numbers, strings, cell references (e.g., A1, $A$1), range references (e.g., A1:A10), operators (+, -, *, /, ^, comparison), parentheses, commas, and function names
       - Parser builds an AST from tokens with correct operator precedence (unary minus > exponentiation > multiplication/division > addition/subtraction > comparison)
       - Cell references (relative like A1, absolute like $A$1, and mixed like $A1 or A$1) are parsed into distinct AST nodes preserving their reference type
-      - Range references like A1:B10 are parsed into a RangeNode AST node containing start and end cell references
-      - Function calls like SUM(A1:A10, 5) are parsed into FunctionCallNode with function name and argument list
+      - Range references like A1: B10 are parsed into a RangeNode AST node containing start and end cell references
+      - Function calls like SUM(A1: A10, 5) are parsed into FunctionCallNode with function name and argument list
       - Parser reports syntax errors with position information (e.g., "Unexpected token '*' at position 5")
       - AST evaluation of literal-only expressions (no cell references) produces correct numeric results: =2+3*4 evaluates to 14
       - Negative numbers and unary minus are handled correctly: =-5+3 evaluates to -2
@@ -134,7 +134,7 @@ milestones:
       - Not handling unary minus as distinct from binary minus causes parse failures on expressions like =-A1 or =(-5)
       - Treating cell references as evaluated values during parsing conflates parsing with evaluation; the parser should produce an AST node, not look up a value
       - String-to-number coercion must be explicit; silently coercing "hello" to 0 hides errors
-      - Range references (A1:A10) must not be confused with two separate cell references separated by a colon operator
+      - Range references (A1: A10) must not be confused with two separate cell references separated by a colon operator
     concepts:
       - Lexical analysis / tokenization
       - Recursive descent parsing
@@ -161,7 +161,7 @@ milestones:
       Use topological sort for correct recalculation order, with cycle detection to prevent
       infinite loops. Integrate AST evaluation with cell reference resolution.
     acceptance_criteria:
-      - When a formula is entered or changed, its AST is walked to extract all referenced cells; range nodes like A1:A10 are expanded into individual cell references (A1, A2, ..., A10) and each is registered as a dependency edge in the graph
+      - When a formula is entered or changed, its AST is walked to extract all referenced cells; range nodes like A1: A10 are expanded into individual cell references (A1, A2, ..., A10) and each is registered as a dependency edge in the graph
       - Changing a cell value triggers recalculation of all directly and transitively dependent cells, and ONLY those cells
       - Topological sort (Kahn's algorithm or DFS-based) determines recalculation order so every cell is evaluated after all its dependencies have been updated
       - Circular references are detected at formula entry time (when updating the dependency graph) and the offending cell displays a #CIRC! error without entering an infinite loop

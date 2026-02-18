@@ -56,13 +56,13 @@ languages:
     - JavaScript
     - Julia
 resources:
-  - name: "Linear Regression Tutorial"
+  - name: Linear Regression Tutorial""
     url: https://scikit-learn.org/stable/modules/linear_model.html
     type: documentation
-  - name: "Gradient Descent Explained (3Blue1Brown)"
+  - name: Gradient Descent Explained (3Blue1Brown)""
     url: https://www.youtube.com/watch?v=sDv4f4s2SB8
     type: video
-  - name: "Andrew Ng - Machine Learning (Linear Regression)"
+  - name: Andrew Ng - Machine Learning (Linear Regression)""
     url: https://www.coursera.org/learn/machine-learning
     type: course
 prerequisites:
@@ -155,7 +155,7 @@ milestones:
     acceptance_criteria:
       - "Design matrix X is constructed with an intercept column of ones prepended to the feature matrix"
       - "Predictions are computed as y_hat = X @ w using matrix-vector multiplication"
-      - "Vectorized gradient descent updates the entire weight vector w in a single matrix operation per iteration: w = w - α * (1/N) * X.T @ (X @ w - y)"
+      - Vectorized gradient descent updates the entire weight vector w in a single matrix operation per iteration: w = w - α * (1/N) * X.T @ (X @ w - y)
       - "Feature normalization scales each feature column independently to zero mean and unit variance using training set statistics"
       - "Model handles 2+ features and produces test-set R² comparable to sklearn's LinearRegression on the same data (within 0.01)"
       - "Normal equation (closed-form) solution w = (X^T X)^(-1) X^T y is implemented and verified against gradient descent results"

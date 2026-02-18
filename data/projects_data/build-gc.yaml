@@ -1,0 +1,418 @@
+id: build-gc
+name: Build Your Own Garbage Collector
+description: >-
+  Implement a garbage collector from scratch, progressing from stop-the-world
+  mark-sweep through incremental tri-color marking, generational collection
+  with write barriers, and concurrent marking with safepoints.
+difficulty: expert
+estimated_hours: "50-75"
+essence: >-
+  Automatic memory reclamation through reachability analysis and object graph
+  traversal, implementing stop-the-world mark-sweep, tri-color invariants for
+  incremental collection, generational heaps with write barriers to track
+  inter-generational references, and concurrent marking with safepoints and
+  memory barriers to minimize application pause times.
+why_important: >-
+  Building a garbage collector teaches you low-level memory management, pointer
+  manipulation, and algorithmic optimization critical for systems programming,
+  runtime development, and understanding performance characteristics of managed
+  languages like Java, Go, and C#.
+learning_outcomes:
+  - Implement a managed heap with bump-pointer and free-list allocation strategies
+  - Implement stop-the-world mark-sweep collection with precise root set identification
+  - Design tri-color marking invariants for incremental collection with mutator interleaving
+  - Build generational heaps with nursery copying collection and remembered set tracking
+  - Implement write barriers (Dijkstra-style and SATB) for inter-generational and concurrent correctness
+  - Design concurrent marking algorithms with safepoints and memory fences
+  - Debug memory corruption using heap dumps, pointer validation, and invariant checking
+  - Measure and profile GC pause times, throughput, memory fragmentation, and allocation rates
+skills:
+  - Memory Management
+  - Pointer Arithmetic
+  - Graph Traversal Algorithms
+  - Concurrent Programming
+  - Performance Profiling
+  - Low-level Debugging
+  - Systems Programming
+  - Memory Barriers and Fences
+tags:
+  - build-from-scratch
+  - c
+  - expert
+  - garbage-collection
+  - mark-sweep
+  - generational
+  - concurrent
+  - rust
+  - zig
+architecture_doc: architecture-docs/build-gc/index.md
+languages:
+  recommended:
+    - C
+    - Rust
+    - Zig
+  also_possible: []
+resources:
+  - type: book
+    name: "The Garbage Collection Handbook"
+    url: https://gchandbook.org/
+  - type: article
+    name: "Baby's First Garbage Collector"
+    url: https://journal.stuffwithstuff.com/2013/12/08/babys-first-garbage-collector/
+  - type: article
+    name: "Writing a Simple GC in C"
+    url: https://maplant.com/gc.html
+prerequisites:
+  - type: skill
+    name: Manual memory management (malloc/free)
+  - type: skill
+    name: C or Rust proficiency
+  - type: skill
+    name: Data structures (linked lists, graphs)
+  - type: skill
+    name: Graph traversal algorithms (DFS/BFS)
+milestones:
+  - id: build-gc-m1
+    name: "Managed Heap and Stop-the-World Mark-Sweep Collector"
+    description: >-
+      Build a managed heap with object allocation, implement stop-the-world
+      pausing for consistent root scanning, and perform mark-sweep collection.
+    acceptance_criteria:
+      - >-
+        Managed heap allocates objects using bump-pointer allocation within a
+        contiguous memory region, falling back to free-list allocation when
+        bump-pointer space is exhausted.
+      - >-
+        Each allocated object has a header containing at minimum: mark bit,
+        object size, and a pointer to the next object in the heap for
+        sweep-phase iteration.
+      - >-
+        Stop-the-world mechanism halts all mutator execution before root
+        scanning begins and resumes it only after the sweep phase completes.
+      - >-
+        Root set identification precisely enumerates all GC roots from the
+        explicit root stack (or conservative stack scan), global variable
+        roots, and any pinned handles.
+      - >-
+        Mark phase performs a depth-first traversal from all roots, setting
+        the mark bit on every reachable object exactly once (visited set
+        prevents revisiting).
+      - >-
+        Sweep phase iterates the entire heap linearly, adds every unmarked
+        object to the free list, and clears mark bits on surviving objects
+        for the next cycle.
+      - >-
+        After a collection cycle, no object reachable from any root has been
+        freed, verified by a post-GC heap walk that checks all root-reachable
+        objects are still allocated.
+      - >-
+        Free list correctly coalesces adjacent free blocks to reduce
+        fragmentation, verified by allocating and freeing patterns that would
+        otherwise fragment.
+    pitfalls:
+      - >-
+        Missing roots: forgetting to register local variables as GC roots
+        causes premature collection. Use an explicit root stack rather than
+        relying on conservative stack scanning initially.
+      - >-
+        Infinite loop during marking: if the visited/mark check is performed
+        after pushing to the worklist rather than before, already-marked
+        objects in cyclic graphs cause unbounded traversal.
+      - >-
+        Not clearing mark bits after sweep: the next GC cycle will consider
+        all previously-live objects as marked, causing no memory to be
+        reclaimed.
+      - >-
+        Not stopping the world: attempting root scanning while the mutator
+        runs causes torn reads and inconsistent root sets, leading to live
+        objects being missed and freed.
+      - >-
+        Interior pointers: if the language allows pointers into the middle
+        of objects, conservative scanning may miss or misidentify roots.
+    concepts:
+      - Reachability and liveness
+      - Stop-the-world pausing
+      - Graph traversal (DFS)
+      - Memory reclamation and free-list management
+      - Object headers and metadata
+    skills:
+      - Graph traversal algorithms
+      - Manual memory management (mmap/VirtualAlloc)
+      - Pointer manipulation and validation
+      - Root set identification strategies
+      - Free-list and bump-pointer allocators
+    deliverables:
+      - >-
+        Managed heap with bump-pointer allocator and free-list fallback,
+        backed by a contiguous mmap region.
+      - >-
+        Object header structure with mark bit, size, type tag, and
+        heap-iteration pointer.
+      - >-
+        Explicit root stack API (push_root / pop_root) for precise root
+        registration by the mutator.
+      - >-
+        Stop-the-world collection trigger that halts mutator, scans roots,
+        marks, sweeps, and resumes.
+      - >-
+        Free-list manager with block coalescing and O(1) allocation for
+        common size classes.
+      - >-
+        Test harness that allocates objects, drops references, triggers GC,
+        and verifies correct reclamation via heap walk.
+    estimated_hours: "12-18"
+
+  - id: build-gc-m2
+    name: "Tri-color Incremental Marking"
+    description: >-
+      Replace stop-the-world marking with incremental tri-color marking that
+      interleaves marking work with mutator execution, using write barriers
+      to maintain the tri-color invariant.
+    acceptance_criteria:
+      - >-
+        Objects are tracked in one of three states: white (unvisited/condemned),
+        gray (discovered but children not yet scanned), black (fully scanned),
+        using either per-object color bits or set membership.
+      - >-
+        Marking proceeds incrementally: a configurable number of gray objects
+        are processed per increment (e.g., 10-50 objects), then control
+        returns to the mutator.
+      - >-
+        The strong tri-color invariant is maintained: no black object directly
+        references a white object, enforced by a Dijkstra-style write barrier
+        that grays the referent when a pointer store targets a white object
+        from a black object.
+      - >-
+        Write barrier is invoked on every pointer store performed by the
+        mutator during an active incremental marking phase.
+      - >-
+        Marking terminates when the gray set is empty, at which point all
+        white objects are garbage and can be swept.
+      - >-
+        Correctness test: create a scenario where the mutator moves a white
+        object behind a black object during incremental marking; verify the
+        write barrier prevents its collection.
+      - >-
+        Sweep phase (which may remain STW) correctly reclaims all white
+        objects after incremental marking completes.
+    pitfalls:
+      - >-
+        Missing write barrier on any single pointer store path causes the
+        tri-color invariant to be violated, leading to live objects being
+        collected. Audit every code path that writes a pointer.
+      - >-
+        Confusing the strong invariant (no black→white) with the weak
+        invariant (every white reachable from black is also reachable from
+        gray). Dijkstra barrier enforces strong; Steele barrier enforces
+        weak. Choose one and be consistent.
+      - >-
+        Forgetting to process new allocations: objects allocated during
+        incremental marking must be born black (or gray) to avoid immediate
+        collection.
+      - >-
+        Termination race: if the mutator creates new gray objects faster
+        than the collector drains them, marking may never terminate. Bound
+        the ratio or use a finishing STW phase.
+    concepts:
+      - Tri-color abstraction (Dijkstra et al.)
+      - Strong vs. weak tri-color invariant
+      - Incremental collection with mutator interleaving
+      - Write barriers (Dijkstra-style insertion barrier)
+    skills:
+      - Write barrier instrumentation
+      - Incremental algorithm design
+      - Worklist-based graph traversal
+      - Invariant verification and testing
+    deliverables:
+      - >-
+        Tri-color state tracking per object (white/gray/black) with O(1)
+        transitions.
+      - >-
+        Gray worklist (explicit stack or queue) for incremental processing.
+      - >-
+        Dijkstra-style write barrier that grays the referent on pointer
+        stores from black to white objects.
+      - >-
+        Incremental marking loop that processes a bounded number of gray
+        objects per mutator yield point.
+      - >-
+        Termination detection that triggers sweep when gray set is empty.
+      - >-
+        Test case demonstrating write barrier prevents lost-object bug.
+    estimated_hours: "12-18"
+
+  - id: build-gc-m3
+    name: "Generational Collection with Nursery"
+    description: >-
+      Implement a two-generation collector with a copying nursery for young
+      objects and the existing mark-sweep collector for the old generation,
+      using a remembered set to track old-to-young pointers.
+    acceptance_criteria:
+      - >-
+        Young generation (nursery) is a fixed-size contiguous region using
+        bump-pointer allocation; allocation fails and triggers a minor GC
+        when the nursery is full.
+      - >-
+        Minor (nursery) collection copies all live young objects to the old
+        generation (or a survivor space), updating all pointers to forwarding
+        addresses.
+      - >-
+        Objects surviving more than a configurable tenuring threshold
+        (default: 2 minor collections) are promoted to the old generation.
+      - >-
+        A write barrier (card marking or remembered set) records every
+        pointer store where the source is in the old generation and the
+        target is in the young generation.
+      - >-
+        Minor collection treats remembered set entries as additional roots,
+        so young objects referenced only from old-gen are not prematurely
+        collected.
+      - >-
+        Minor collection pause time is bounded and measurably less than
+        a full-heap collection by at least 5x on a benchmark with >1000
+        old-gen objects and a 64KB nursery.
+      - >-
+        Major (full) collection reclaims garbage in both generations using
+        mark-sweep on the old generation.
+      - >-
+        Pointer update correctness: after a minor GC, no pointer in the
+        heap or root set references a nursery address of a promoted object.
+    pitfalls:
+      - >-
+        Missing remembered set entries: if the write barrier fails to record
+        an old→young pointer, minor collection will collect a live young
+        object. This is the most common generational GC bug.
+      - >-
+        Write barrier overhead: card marking (coarse) is cheaper than
+        precise remembered sets but may cause unnecessary scanning. Profile
+        both approaches.
+      - >-
+        Premature promotion: setting the tenuring threshold too low promotes
+        short-lived objects into old-gen, increasing major GC frequency.
+        Too high wastes survivor space.
+      - >-
+        Forwarding pointer corruption: during copying collection, failing
+        to install a forwarding pointer before scanning the copied object's
+        fields causes duplicate copies and dangling pointers.
+      - >-
+        Not updating interior pointers in old-gen objects that point to
+        promoted nursery objects.
+    concepts:
+      - Generational hypothesis (most objects die young)
+      - Copying/semi-space collection
+      - Remembered sets and card tables
+      - Object promotion and tenuring
+      - Inter-generational pointers
+    skills:
+      - Object copying and pointer forwarding
+      - Multi-region memory management
+      - Card table / remembered set implementation
+      - Age-based promotion policies
+    deliverables:
+      - >-
+        Young generation (nursery) region with bump-pointer allocation.
+      - >-
+        Minor (copying) collector that evacuates live nursery objects to
+        old-gen with forwarding pointers.
+      - >-
+        Write barrier (card marking or precise remembered set) tracking
+        old→young pointer stores.
+      - >-
+        Configurable tenuring threshold and promotion policy.
+      - >-
+        Major collection fallback that performs full-heap mark-sweep on
+        old generation.
+      - >-
+        Benchmark comparing minor-only vs. full-heap collection pause times.
+    estimated_hours: "15-22"
+
+  - id: build-gc-m4
+    name: "Concurrent Marking and Low-Pause Collection"
+    description: >-
+      Add a concurrent marking thread that traces the object graph in parallel
+      with mutator execution, using safepoints and snapshot-at-the-beginning
+      (SATB) write barriers to maintain correctness.
+    acceptance_criteria:
+      - >-
+        A dedicated GC thread performs marking concurrently while mutator
+        threads continue executing, with no full stop-the-world marking phase
+        (only brief STW pauses for root scanning and remark).
+      - >-
+        Safepoint mechanism allows the GC thread to request mutator threads
+        to reach a safe state within a bounded time (< 1ms for synthetic
+        benchmarks).
+      - >-
+        SATB write barrier logs the old value of every overwritten pointer
+        during concurrent marking into a per-thread SATB buffer, ensuring
+        no object reachable at the start of marking is missed.
+      - >-
+        Remark phase (brief STW) drains all SATB buffers and processes any
+        remaining gray objects to achieve marking termination.
+      - >-
+        Concurrent sweep reclaims dead objects while mutators run, using
+        lazy sweeping or concurrent sweep thread.
+      - >-
+        No data races detected under ThreadSanitizer (or equivalent) for
+        all shared data structures between GC and mutator threads.
+      - >-
+        Total STW pause time (root scan + remark) is measurably < 20% of
+        equivalent full STW collection time on a benchmark with >10,000
+        live objects.
+      - >-
+        Stress test with 4+ mutator threads and 1 GC thread runs 10 million
+        allocations without crashes, leaks, or use-after-free.
+    pitfalls:
+      - >-
+        Data races on object mark bits: use atomic operations (compare-and-swap)
+        for mark bit transitions shared between GC and mutator threads.
+      - >-
+        SATB buffer overflow: if per-thread buffers fill up during heavy
+        mutation, the GC thread must drain them or the mutator must block.
+        Design a handoff protocol.
+      - >-
+        Missing safepoint polls: if a mutator thread runs a long loop without
+        hitting a safepoint, it delays GC synchronization indefinitely.
+        Insert safepoint polls at loop back-edges.
+      - >-
+        Concurrent sweep racing with allocation: if the sweeper frees a
+        block that the allocator is about to use, use atomic free-list
+        operations or per-thread local allocation buffers (TLABs).
+      - >-
+        Memory ordering: on weakly-ordered architectures (ARM), acquire/release
+        fences are required around mark bit reads and pointer loads during
+        concurrent tracing.
+    concepts:
+      - Concurrent vs. parallel vs. incremental collection
+      - Snapshot-at-the-beginning (SATB) invariant
+      - Safepoints and handshake protocols
+      - Memory ordering and atomic operations
+      - Thread-local allocation buffers (TLABs)
+    skills:
+      - Thread synchronization primitives
+      - Lock-free and wait-free algorithm design
+      - Atomic operations and memory fences
+      - Concurrent marking protocols (SATB)
+      - Performance measurement under concurrency
+    deliverables:
+      - >-
+        Concurrent marking thread that traces the object graph without
+        stopping mutator threads.
+      - >-
+        SATB write barrier with per-thread logging buffers and overflow
+        handling.
+      - >-
+        Safepoint mechanism with poll-based mutator yielding and bounded
+        response time.
+      - >-
+        Brief STW remark phase that drains SATB buffers and finalizes
+        marking.
+      - >-
+        Concurrent or lazy sweep phase reclaiming dead objects without
+        STW pause.
+      - >-
+        Thread-sanitizer-clean stress test with multiple mutator threads
+        and sustained allocation pressure.
+      - >-
+        Pause time benchmark comparing concurrent collector to STW
+        collector from Milestone 1.
+    estimated_hours: "18-25"

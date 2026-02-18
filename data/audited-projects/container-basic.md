@@ -92,13 +92,13 @@ milestones:
       Isolate process tree with PID namespace and hostname with UTS namespace.
     acceptance_criteria:
       - Create new PID namespace using clone(CLONE_NEWPID) or unshare(CLONE_NEWPID); child process sees itself as PID 1
-      - Parent process observes the child's real host PID via the return value of clone() or waitpid()
+      - "Parent process observes the child's real host PID via the return value of clone() or waitpid()"
       - Container init (PID 1) properly reaps zombie child processes using waitpid(-1, ..., WNOHANG) in a loop
       - UTS namespace (CLONE_NEWUTS) isolates hostname; sethostname() inside container does not affect host
       - Verify isolation by reading /proc/self/status and comparing NSpid field from inside vs outside the namespace
     pitfalls:
       - "clone() requires a properly allocated and aligned stack passed as the child's stack pointer; on x86-64 pass the TOP of the stack (stack grows downward)"
-      - "PID 1 in a namespace has init responsibilities: it must reap orphaned children or they become zombies that can never be collected"
+      - PID 1 in a namespace has init responsibilities: it must reap orphaned children or they become zombies that can never be collected
       - "unshare(CLONE_NEWPID) affects children, not the calling process itself; the caller must fork() after unshare for PID 1 behavior"
       - "Forgetting CLONE_NEWUTS means hostname changes inside the container leak to the host"
     concepts:
@@ -165,10 +165,10 @@ milestones:
       - Host-side veth end is attached to a Linux bridge (e.g., ctr0); bridge has an IP address serving as the container gateway
       - Container-side veth has an IP address assigned and a default route pointing to the bridge IP
       - Loopback interface inside the container is brought up (ip link set lo up)
-      - Container can reach external networks via NAT (iptables MASQUERADE on the host's outbound interface)
+      - "Container can reach external networks via NAT (iptables MASQUERADE on the host's outbound interface)"
       - DNS resolution works inside the container via a bind-mounted or generated /etc/resolv.conf
     pitfalls:
-      - "Creating the veth pair before the network namespace exists; the pair must be created then one end moved with `ip link set <veth> netns <pid>`"
+      - "Creating the veth pair before the network namespace exists; the pair must be created then one end moved with 'ip link set <veth> netns <pid>'"
       - "Forgetting to bring up the loopback interface inside the container; many applications depend on localhost"
       - "NAT/MASQUERADE rules require IP forwarding enabled on the host (sysctl net.ipv4.ip_forward=1)"
       - "DNS resolution fails silently without /etc/resolv.conf inside the container; always configure it"
@@ -200,7 +200,7 @@ milestones:
       - Detect whether the system uses cgroups v1 or v2 by checking /sys/fs/cgroup/cgroup.controllers existence
       - Create a cgroup for the container and write the container PID to cgroup.procs before exec
       - Set memory.max (v2) or memory.limit_in_bytes (v1) and verify OOM killer terminates the process when exceeded
-      - Set cpu.max (v2) with quota and period (e.g., '50000 100000' for 50% CPU) and verify CPU throttling under load
+      - "Set cpu.max (v2) with quota and period (e.g., '50000 100000' for 50% CPU) and verify CPU throttling under load"
       - Set pids.max to cap the number of processes; verify fork bomb is contained
       - Clean up the cgroup hierarchy (remove cgroup directory) on container exit to prevent resource leaks
       - Report resource usage (memory.current, cpu.stat) for observability
@@ -208,7 +208,7 @@ milestones:
       - "cgroups v2 uses a unified hierarchy with different file names than v1; code must handle the active version"
       - "Writing to cgroup files requires the container PID to already exist; write to cgroup.procs after clone/fork but before exec"
       - "memory.max does not account for kernel memory by default in v2; kernel memory is included automatically"
-      - "Cleanup order matters: all processes must exit before the cgroup directory can be removed (rmdir)"
+      - Cleanup order matters: all processes must exit before the cgroup directory can be removed (rmdir)
       - "Not enabling the memory and pids controllers in the parent cgroup's cgroup.subtree_control prevents child cgroups from using them"
     concepts:
       - cgroups v2 unified hierarchy
@@ -236,7 +236,7 @@ milestones:
     acceptance_criteria:
       - User namespace (CLONE_NEWUSER) is created allowing an unprivileged user to appear as root (UID 0) inside the container
       - UID/GID mapping is written to /proc/<pid>/uid_map and /proc/<pid>/gid_map before the container process calls exec
-      - 'deny' is written to /proc/<pid>/setgroups before writing gid_map (required by kernel for unprivileged user namespace creation)
+      - "'deny' is written to /proc/<pid>/setgroups before writing gid_map (required by kernel for unprivileged user namespace creation)"
       - Container process running as mapped UID 0 can perform mount operations and other privileged operations within its namespaces
       - Outside the container, the process is observed running as the original unprivileged UID
       - All previous milestones (PID, mount, network, cgroups) function correctly when combined with user namespace

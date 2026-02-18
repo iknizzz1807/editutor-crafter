@@ -62,19 +62,19 @@ languages:
   also_possible:
     - Java
 resources:
-  - name: "Argo CD Documentation"
+  - name: Argo CD Documentation""
     url: "https://argo-cd.readthedocs.io/en/stable/"
     type: documentation
-  - name: "OpenGitOps Principles"
+  - name: OpenGitOps Principles""
     url: "https://opengitops.dev/"
     type: documentation
-  - name: "Kubernetes Server-Side Apply"
+  - name: Kubernetes Server-Side Apply""
     url: "https://kubernetes.io/docs/reference/using-api/server-side-apply/"
     type: documentation
-  - name: "SealedSecrets"
+  - name: SealedSecrets""
     url: "https://github.com/bitnami-labs/sealed-secrets"
     type: tool
-  - name: "SOPS - Secrets OPerationS"
+  - name: SOPS - Secrets OPerationS""
     url: "https://github.com/getsops/sops"
     type: tool
 prerequisites:
@@ -93,9 +93,9 @@ milestones:
       webhook signature verification.
     acceptance_criteria:
       - "Clone a Git repository from a remote URL with a specific branch checked out; support shallow clones (--depth 1) to reduce bandwidth"
-      - "Poll for changes at a configurable interval (default: 3 minutes); detect new commits by comparing local HEAD SHA with remote HEAD SHA"
+      - Poll for changes at a configurable interval (default: 3 minutes); detect new commits by comparing local HEAD SHA with remote HEAD SHA
       - "Webhook receiver accepts POST requests on /webhook endpoint; triggers immediate sync when a push event is received"
-      - "Webhook signature verification: validate the webhook payload against a shared secret using HMAC-SHA256 (GitHub) or equivalent; reject requests with invalid signatures (test: send a webhook with wrong signature and verify 403 response)"
+      - Webhook signature verification: validate the webhook payload against a shared secret using HMAC-SHA256 (GitHub) or equivalent; reject requests with invalid signatures (test: send a webhook with wrong signature and verify 403 response)
       - "Support both SSH key and HTTPS token authentication for private repositories; credentials are loaded from Kubernetes Secrets or environment variables, never hardcoded"
       - "Track current synced commit SHA persistently (in a ConfigMap or local file); on restart, compare with remote HEAD and sync only if behind"
       - "Exponential backoff on polling failures (e.g., network error, auth failure); maximum backoff of 5 minutes"
@@ -125,14 +125,14 @@ milestones:
       before applying. Validate all generated manifests against the
       Kubernetes API schema.
     acceptance_criteria:
-      - "Detect manifest source type from repository structure: plain YAML (directory of .yaml files), Kustomize (kustomization.yaml present), Helm (Chart.yaml present)"
-      - "Plain YAML: read and parse all .yaml files in the configured directory; concatenate into a manifest list"
-      - "Kustomize: run kustomize build on the configured overlay directory; produce final manifests with patches and overlays applied"
-      - "Helm: render templates using helm template with configurable values files and release name; produce final manifests"
-      - "Secret decryption: detect SOPS-encrypted files (sops metadata in YAML) and decrypt them using a configured key (age, GPG, or cloud KMS) before including in manifest list"
-      - "Manifest validation: run kubectl apply --dry-run=server on all generated manifests to validate against the live cluster's API schema; reject manifests that fail validation with detailed error messages"
-      - "Validation test: introduce an invalid manifest (wrong apiVersion, missing required field); verify the system detects and reports the error before applying"
-      - "Environment-specific configuration: support per-environment values files or Kustomize overlays (dev, staging, prod) selected by configuration"
+      - Detect manifest source type from repository structure: plain YAML (directory of .yaml files), Kustomize (kustomization.yaml present), Helm (Chart.yaml present)
+      - Plain YAML: read and parse all .yaml files in the configured directory; concatenate into a manifest list
+      - Kustomize: run kustomize build on the configured overlay directory; produce final manifests with patches and overlays applied
+      - Helm: render templates using helm template with configurable values files and release name; produce final manifests
+      - Secret decryption: detect SOPS-encrypted files (sops metadata in YAML) and decrypt them using a configured key (age, GPG, or cloud KMS) before including in manifest list
+      - Manifest validation: run kubectl apply --dry-run=server on all generated manifests to validate against the live cluster's API schema; reject manifests that fail validation with detailed error messages
+      - Validation test: introduce an invalid manifest (wrong apiVersion, missing required field); verify the system detects and reports the error before applying
+      - Environment-specific configuration: support per-environment values files or Kustomize overlays (dev, staging, prod) selected by configuration
     pitfalls:
       - "Not validating YAML syntax before applying causes cryptic API server errors; validate locally first"
       - "Helm template rendering with missing values produces empty or incorrect manifests silently; always validate rendered output"
@@ -163,19 +163,19 @@ milestones:
       Git-driven changes and manual cluster drift. Apply changes using
       server-side apply with dry-run validation first.
     acceptance_criteria:
-      - "Three-way diff: compare (1) desired state from Git, (2) last-applied state stored in kubectl.kubernetes.io/last-applied-configuration annotation, and (3) live cluster state; correctly identify fields changed in Git, fields changed manually in cluster, and fields changed in both (conflict)"
-      - "Drift detection: if a resource in the cluster has been manually modified (field differs from last-applied but matches Git), flag it as drifted; report drifted resources in sync status"
-      - "Sync operation: first run kubectl apply --dry-run=server to validate; if dry-run succeeds, run kubectl apply --server-side to apply changes; log all changes made"
-      - "Resource pruning: resources that exist in the cluster with the GitOps label but do NOT exist in the Git manifests are deleted (opt-in, with configuration flag)"
-      - "Sync hooks: support PreSync, Sync, and PostSync hooks (Kubernetes Jobs or other resources) that execute before, during, and after the main sync"
-      - "Sync waves: resources are applied in wave order (lower wave first) to handle dependencies (e.g., Namespace before Deployment)"
-      - "Selective sync: support syncing specific resources by name or kind without syncing everything"
-      - "Drift detection test: create a resource from Git, manually modify it with kubectl edit, trigger sync, verify the system detects the drift and reports it"
+      - Three-way diff: compare (1) desired state from Git, (2) last-applied state stored in kubectl.kubernetes.io/last-applied-configuration annotation, and (3) live cluster state; correctly identify fields changed in Git, fields changed manually in cluster, and fields changed in both (conflict)
+      - Drift detection: if a resource in the cluster has been manually modified (field differs from last-applied but matches Git), flag it as drifted; report drifted resources in sync status
+      - Sync operation: first run kubectl apply --dry-run=server to validate; if dry-run succeeds, run kubectl apply --server-side to apply changes; log all changes made
+      - Resource pruning: resources that exist in the cluster with the GitOps label but do NOT exist in the Git manifests are deleted (opt-in, with configuration flag)
+      - Sync hooks: support PreSync, Sync, and PostSync hooks (Kubernetes Jobs or other resources) that execute before, during, and after the main sync
+      - Sync waves: resources are applied in wave order (lower wave first) to handle dependencies (e.g., Namespace before Deployment)
+      - Selective sync: support syncing specific resources by name or kind without syncing everything
+      - Drift detection test: create a resource from Git, manually modify it with kubectl edit, trigger sync, verify the system detects the drift and reports it
     pitfalls:
       - "Two-way diff (Git vs cluster) misses manual changes that should be preserved; three-way diff is required to correctly handle drift"
       - "Pruning resources still in use by other applications that happen to lack the GitOps label is dangerous; prune only resources with the system's ownership label"
       - "Applying without dry-run first risks breaking the cluster with invalid manifests; always dry-run before real apply"
-      - "Resource ordering matters: creating a Deployment before its Namespace causes a 404 error; implement wave-based ordering"
+      - Resource ordering matters: creating a Deployment before its Namespace causes a 404 error; implement wave-based ordering
       - "Server-side apply field management conflicts with other controllers (e.g., HPA modifying replicas); configure field ownership correctly"
     concepts:
       - Three-way merge (desired, last-applied, live)
@@ -200,13 +200,13 @@ milestones:
       Continuously detect drift between synced state and live cluster.
       Classify resources as Healthy, Progressing, Degraded, or Missing.
     acceptance_criteria:
-      - "Built-in health checks for core resource kinds: Deployment (available replicas == desired replicas), Service (endpoints exist), StatefulSet (ready replicas == replicas), Job (succeeded), Pod (phase=Running and containers ready)"
-      - "Custom health check support: user-defined Lua scripts or rules that evaluate health for CRDs or non-standard resources"
-      - "Resource health classification: Healthy (all conditions met), Progressing (rollout in progress), Degraded (partial failure), Missing (resource deleted from cluster), Unknown (unable to determine)"
-      - "Application-level health aggregation: overall application health is the worst health status among all its resources (if any resource is Degraded, application is Degraded)"
-      - "Continuous drift monitoring: periodically (configurable, default every 60s) compare live cluster state with last-synced state; report any drifted resources"
+      - Built-in health checks for core resource kinds: Deployment (available replicas == desired replicas), Service (endpoints exist), StatefulSet (ready replicas == replicas), Job (succeeded), Pod (phase=Running and containers ready)
+      - Custom health check support: user-defined Lua scripts or rules that evaluate health for CRDs or non-standard resources
+      - Resource health classification: Healthy (all conditions met), Progressing (rollout in progress), Degraded (partial failure), Missing (resource deleted from cluster), Unknown (unable to determine)
+      - Application-level health aggregation: overall application health is the worst health status among all its resources (if any resource is Degraded, application is Degraded)
+      - Continuous drift monitoring: periodically (configurable, default every 60s) compare live cluster state with last-synced state; report any drifted resources
       - "Health status is exposed via API endpoint and stored in sync status record"
-      - "Health check test: deploy a Deployment with replicas=3, scale one replica down manually, verify health changes from Healthy to Degraded"
+      - Health check test: deploy a Deployment with replicas=3, scale one replica down manually, verify health changes from Healthy to Degraded
     pitfalls:
       - "Relying only on Pod phase without checking container readiness misses CrashLoopBackOff states where phase=Running but container is restarting"
       - "Not distinguishing Progressing from Degraded causes false alarms during normal rollouts"
@@ -232,14 +232,14 @@ milestones:
       sync results. Support rollback to any previous revision. Implement
       auto-rollback on health degradation.
     acceptance_criteria:
-      - "Each successful sync creates a history record containing: revision number, Git commit SHA, sync timestamp, synced manifest snapshot (or hash), sync result (success/partial/fail), and user/trigger (webhook/poll/manual)"
+      - Each successful sync creates a history record containing: revision number, Git commit SHA, sync timestamp, synced manifest snapshot (or hash), sync result (success/partial/fail), and user/trigger (webhook/poll/manual)
       - "History is stored persistently (in a CRD, ConfigMap, or database) and survives system restarts"
       - "CLI/API command to list deployment history showing revision, commit SHA, timestamp, status"
       - "Rollback to a specific revision re-applies that revision's manifest snapshot to the cluster; the rollback itself creates a new history entry referencing the original revision"
       - "Diff between any two revisions shows which resources were added, modified, or removed"
-      - "Auto-rollback (opt-in): if application health degrades to Degraded within a configurable window after sync (e.g., 5 minutes), automatically rollback to the previous revision and alert"
-      - "Auto-rollback test: deploy a broken manifest that causes health degradation; verify auto-rollback restores the previous working state within the configured window"
-      - "Audit trail: all sync and rollback operations are logged with timestamp, trigger source, commit SHA, and user identity (if applicable)"
+      - Auto-rollback (opt-in): if application health degrades to Degraded within a configurable window after sync (e.g., 5 minutes), automatically rollback to the previous revision and alert
+      - Auto-rollback test: deploy a broken manifest that causes health degradation; verify auto-rollback restores the previous working state within the configured window
+      - Audit trail: all sync and rollback operations are logged with timestamp, trigger source, commit SHA, and user identity (if applicable)
     pitfalls:
       - "Not preserving enough history means old revisions are unavailable for rollback; keep at least 10 revisions (configurable)"
       - "Rollback without validating the target revision's manifests against the current cluster API schema may fail if the cluster has been upgraded since that revision"

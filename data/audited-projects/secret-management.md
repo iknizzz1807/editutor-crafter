@@ -82,8 +82,8 @@ resources:
   - name: Envelope Encryption Guide
     url: https://docs.cloud.google.com/kms/docs/envelope-encryption
     type: documentation
-  - name: "Shamir's Secret Sharing"
-    url: https://en.wikipedia.org/wiki/Shamir%27s_secret_sharing
+  - name: Shamir's Secret Sharing""
+    url: "https://en.wikipedia.org/wiki/Shamir%27s_secret_sharing"
     type: reference
   - name: HashiCorp Vault Seal/Unseal
     url: https://developer.hashicorp.com/vault/docs/concepts/seal

@@ -100,14 +100,14 @@ milestones:
       - "Late-arriving spans (received after initial trace assembly) are attached to their trace within a configurable grace window (default 30 seconds)"
       - "Traces with missing spans after the grace window are stored as incomplete with a 'partial' flag"
       - "Span links (OpenTelemetry SpanLink) are parsed and stored for async messaging patterns where parent-child nesting is broken (e.g., queue producer -> consumer)"
-      - "Clock skew detection: when a child span starts before its parent span due to clock drift, the system detects the anomaly and adjusts timestamps using the parent-child constraint (child_start >= parent_start)"
+      - Clock skew detection: when a child span starts before its parent span due to clock drift, the system detects the anomaly and adjusts timestamps using the parent-child constraint (child_start >= parent_start)
       - "System handles at least 1000 spans per second without data loss on a single node (verified via benchmark)"
       - "Trace ID is indexed for O(1) retrieval of all spans in a trace; secondary indexes exist for service name, operation, and time range"
     pitfalls:
-      - "Late-arriving spans: if the grace window is too short, distributed traces with high-latency services lose their last spans; too long wastes memory"
+      - Late-arriving spans: if the grace window is too short, distributed traces with high-latency services lose their last spans; too long wastes memory
       - "Clock skew correction can be wrong if the parent and child are on the same host but the child genuinely starts before the parent (e.g., event-driven)—only correct when services are on different hosts"
       - "Memory grows unbounded with incomplete traces waiting for missing spans—implement trace eviction after the grace window"
-      - "Span links are not parent-child: they reference related spans without implying timing dependency—don't include linked spans in the critical path calculation"
+      - Span links are not parent-child: they reference related spans without implying timing dependency—don't include linked spans in the critical path calculation
     concepts:
       - Span and trace ID propagation
       - Parent-child span relationship assembly
@@ -134,7 +134,7 @@ milestones:
       and a trace waterfall visualization.
     acceptance_criteria:
       - "Service dependency graph is constructed from parent-child span relationships where parent.service != child.service"
-      - "Per-edge metrics are computed over configurable time windows (default 5 minutes): request count, error count, error rate, and latency percentiles (p50, p95, p99)"
+      - Per-edge metrics are computed over configurable time windows (default 5 minutes): request count, error count, error rate, and latency percentiles (p50, p95, p99)
       - "Same-service spans (internal function calls) are excluded from the service map edges; only cross-service calls are shown"
       - "Topology changes (new services, removed dependencies) are reflected within one refresh interval"
       - "Trace waterfall visualization renders individual traces as a timeline showing each span's start time, duration, service, operation, and parent-child nesting"
@@ -168,19 +168,19 @@ milestones:
       Implement head-based and tail-based sampling. Tail-based sampling requires
       a global trace buffer to hold complete traces before making keep/drop decisions.
     acceptance_criteria:
-      - "Head-based sampling: probabilistic keep/drop decision at trace creation using trace-ID-based deterministic hashing so all spans in a trace get the same decision"
-      - "Tail-based sampling: all spans for a trace are buffered in memory until the trace is considered complete (no new spans received for configurable timeout, default 30s)"
-      - "Tail-based sampling decisions are made on complete traces: retain traces with errors (any span with error status), high latency (total duration > configurable threshold), or matching custom criteria"
+      - Head-based sampling: probabilistic keep/drop decision at trace creation using trace-ID-based deterministic hashing so all spans in a trace get the same decision
+      - Tail-based sampling: all spans for a trace are buffered in memory until the trace is considered complete (no new spans received for configurable timeout, default 30s)
+      - Tail-based sampling decisions are made on complete traces: retain traces with errors (any span with error status), high latency (total duration > configurable threshold), or matching custom criteria
       - "Tail-based buffer has a configurable maximum size (by trace count and memory usage); when the buffer is full, oldest incomplete traces are force-evaluated and evicted"
       - "Sampling rates are configurable per service; high-traffic services can be sampled at lower rates"
-      - "Head-based and tail-based sampling can be combined: head-based reduces volume before tail-based evaluates the survivors"
+      - Head-based and tail-based sampling can be combined: head-based reduces volume before tail-based evaluates the survivors
       - "Sampling decision is recorded in trace metadata so downstream consumers know whether a trace was sampled or force-kept"
     pitfalls:
       - "Tail-based sampling requires ALL spans to be buffered before deciding—this is memory-intensive for high-throughput systems. Budget memory carefully."
-      - "Trace 'completion' is heuristic: there's no signal that says 'this trace is done.' You must use a timeout, which means fast traces are buffered unnecessarily."
+      - Trace 'completion' is heuristic: there's no signal that says 'this trace is done.' You must use a timeout, which means fast traces are buffered unnecessarily.
       - "Head-based sampling loses interesting traces (errors, high latency) because the decision is made before the outcome is known—combine with tail-based for important traces"
-      - "Consistent sampling using trace-ID hash: if you hash the trace ID, ALL services must use the same hash function or span decisions will disagree"
-      - "Buffer eviction under pressure: force-evaluating incomplete traces may keep uninteresting partial traces and discard interesting complete ones that arrived late"
+      - Consistent sampling using trace-ID hash: if you hash the trace ID, ALL services must use the same hash function or span decisions will disagree
+      - Buffer eviction under pressure: force-evaluating incomplete traces may keep uninteresting partial traces and discard interesting complete ones that arrived late
     concepts:
       - Head-based vs tail-based sampling
       - Global trace buffer for deferred decisions
@@ -196,7 +196,7 @@ milestones:
       - "Global trace buffer holding complete traces for tail-based evaluation"
       - "Tail-based sampler evaluating completed traces on error status, latency threshold, and custom criteria"
       - "Buffer pressure manager evicting oldest incomplete traces when capacity is exceeded"
-      - "Combined sampling pipeline: head-based -> buffer -> tail-based evaluation"
+      - Combined sampling pipeline: head-based -> buffer -> tail-based evaluation
     estimated_hours: "12-14"
 
   - id: apm-system-m4
@@ -206,16 +206,16 @@ milestones:
       histograms and anomaly detection using statistical baselines.
     acceptance_criteria:
       - "Latency percentiles (p50, p95, p99) are calculated per service and per endpoint using HDR histogram or t-digest, NOT by averaging percentiles"
-      - "Anomaly detection uses statistical methods: flag metrics where current value deviates by more than configurable standard deviations (default 3) from the rolling baseline"
+      - Anomaly detection uses statistical methods: flag metrics where current value deviates by more than configurable standard deviations (default 3) from the rolling baseline
       - "Rolling baseline is computed from the same time window in previous periods (e.g., same hour last week) to account for cyclical patterns"
       - "Performance regression alerts fire when latency p95 exceeds the baseline by a configurable factor for a sustained period (default 5 minutes)"
       - "Historical comparison view shows current period vs previous period (e.g., this week vs last week) for trend analysis"
-      - "Percentile calculations handle sparse data gracefully: endpoints with fewer than configurable minimum samples (default 10) are excluded from anomaly detection to avoid false positives"
+      - Percentile calculations handle sparse data gracefully: endpoints with fewer than configurable minimum samples (default 10) are excluded from anomaly detection to avoid false positives
     pitfalls:
       - "Averaging percentiles across services or time windows is mathematically WRONG—always merge histograms or use t-digest for correct computation"
-      - "False positive alerts during deployments: latency spikes during deployment are expected—integrate with deployment events to suppress alerts during known deploy windows"
+      - False positive alerts during deployments: latency spikes during deployment are expected—integrate with deployment events to suppress alerts during known deploy windows
       - "Cyclical traffic patterns (low at night, high during day) cause false anomalies if baseline doesn't account for time-of-day—use same-period-previous-week baselines"
-      - "Sparse data: a single slow request to a rarely-called endpoint triggers anomaly detection—require minimum sample count"
+      - Sparse data: a single slow request to a rarely-called endpoint triggers anomaly detection—require minimum sample count
     concepts:
       - Correct percentile aggregation (histogram merge, t-digest)
       - Statistical anomaly detection (z-score, moving average)
@@ -239,18 +239,18 @@ milestones:
       Build an APM SDK that auto-instruments HTTP clients, database drivers,
       and web framework middleware with W3C Trace Context propagation.
     acceptance_criteria:
-      - "SDK automatically instruments outgoing HTTP requests: injects W3C Trace Context headers (traceparent, tracestate) and creates a child span with request/response metadata"
+      - SDK automatically instruments outgoing HTTP requests: injects W3C Trace Context headers (traceparent, tracestate) and creates a child span with request/response metadata
       - "Database query spans capture operation type (SELECT/INSERT/UPDATE/DELETE), table name, and execution time; SQL query text is included with parameter values sanitized (replaced with '?')"
       - "Framework middleware for at least one framework (Express, Flask, or Gin) creates a root span for each incoming request with HTTP method, path, status code, and duration"
-      - "Context propagation works across async boundaries: async/await in Python, goroutines in Go, CompletableFuture in Java—verified with a test creating 50 concurrent async operations with distinct trace contexts"
-      - "Instrumented libraries pass their own test suites: auto-instrumentation does not break the original behavior of HTTP clients, database drivers, or frameworks"
-      - "Performance overhead of instrumentation is measured: latency overhead < 1ms per instrumented operation and memory overhead < 10MB for the SDK (verified via benchmark)"
+      - Context propagation works across async boundaries: async/await in Python, goroutines in Go, CompletableFuture in Java—verified with a test creating 50 concurrent async operations with distinct trace contexts
+      - Instrumented libraries pass their own test suites: auto-instrumentation does not break the original behavior of HTTP clients, database drivers, or frameworks
+      - Performance overhead of instrumentation is measured: latency overhead < 1ms per instrumented operation and memory overhead < 10MB for the SDK (verified via benchmark)
     pitfalls:
       - "Monkey-patching can break original library behavior in subtle ways—always run the library's own test suite with instrumentation enabled"
-      - "Context loss in async code: Python threading.local doesn't propagate to async tasks (use contextvars); Go context.Context must be explicitly passed; Java MDC doesn't propagate to CompletableFuture threads"
-      - "Performance overhead: tracing every database query adds latency—support configurable sampling at the SDK level"
-      - "SQL parameter sanitization: failing to sanitize means PII and secrets appear in trace data—always replace parameter values"
-      - "W3C Trace Context header parsing: malformed traceparent headers should be handled gracefully (start a new trace) rather than crashing"
+      - Context loss in async code: Python threading.local doesn't propagate to async tasks (use contextvars); Go context.Context must be explicitly passed; Java MDC doesn't propagate to CompletableFuture threads
+      - Performance overhead: tracing every database query adds latency—support configurable sampling at the SDK level
+      - SQL parameter sanitization: failing to sanitize means PII and secrets appear in trace data—always replace parameter values
+      - W3C Trace Context header parsing: malformed traceparent headers should be handled gracefully (start a new trace) rather than crashing
     concepts:
       - Monkey-patching and library wrapping
       - W3C Trace Context standard
@@ -269,5 +269,4 @@ milestones:
       - "Compatibility test running instrumented library's own test suite"
       - "Performance benchmark measuring latency and memory overhead of instrumentation"
     estimated_hours: "10-12"
-
 ```

@@ -92,11 +92,11 @@ milestones:
       metadata.
     estimated_hours: 12
     concepts:
-      - "W3C Trace Context: traceparent header format (version-trace_id-span_id-trace_flags)"
-      - "Trace ID: 16-byte (128-bit) random identifier encoded as 32 hex chars"
-      - "Span ID: 8-byte (64-bit) random identifier encoded as 16 hex chars"
-      - "Context propagation: inject on outgoing requests, extract on incoming requests"
-      - "Baggage: key-value pairs propagated across all downstream services"
+      - W3C Trace Context: traceparent header format (version-trace_id-span_id-trace_flags)
+      - Trace ID: 16-byte (128-bit) random identifier encoded as 32 hex chars
+      - Span ID: 8-byte (64-bit) random identifier encoded as 16 hex chars
+      - Context propagation: inject on outgoing requests, extract on incoming requests
+      - Baggage: key-value pairs propagated across all downstream services
     skills:
       - W3C Trace Context header parsing and generation
       - Cryptographically random ID generation
@@ -104,10 +104,10 @@ milestones:
       - Async context propagation
     acceptance_criteria:
       - "Trace IDs are generated as 128-bit (16-byte) cryptographically random values encoded as 32 lowercase hex characters; span IDs are 64-bit (8-byte) encoded as 16 hex chars"
-      - "Outgoing HTTP requests inject a valid W3C traceparent header (format: 00-{trace_id}-{span_id}-{trace_flags}) containing the current trace and span context"
+      - Outgoing HTTP requests inject a valid W3C traceparent header (format: 00-{trace_id}-{span_id}-{trace_flags}) containing the current trace and span context
       - "Incoming HTTP requests extract the traceparent header; if valid, the trace continues with the received trace_id; if absent or malformed, a new trace_id is generated"
       - "gRPC metadata propagation injects and extracts trace context from gRPC metadata keys, enabling tracing across gRPC service calls"
-      - "Parent-child span relationships are correctly established: a span created within the scope of another span records the outer span's ID as its parent_span_id"
+      - Parent-child span relationships are correctly established: a span created within the scope of another span records the outer span's ID as its parent_span_id
       - "Baggage items (arbitrary key-value pairs) are propagated to all downstream services via the W3C tracestate or baggage header and are accessible in each service's span context"
       - "Malformed traceparent headers (wrong length, invalid hex, unsupported version) are handled gracefully by starting a new trace rather than crashing"
     pitfalls:
@@ -132,11 +132,11 @@ milestones:
       asynchronous batch export to the collector.
     estimated_hours: 12
     concepts:
-      - "Span lifecycle: start (record timestamp) -> add attributes/events -> end (record timestamp, compute duration)"
-      - "Span attributes: key-value pairs for filtering (http.method, http.status_code, db.system)"
-      - "Span events: timestamped log entries within a span's lifetime"
-      - "Batch export: buffer completed spans in memory, flush to collector periodically or when buffer is full"
-      - "Span limits: maximum number of attributes, events, and links per span"
+      - Span lifecycle: start (record timestamp) -> add attributes/events -> end (record timestamp, compute duration)
+      - Span attributes: key-value pairs for filtering (http.method, http.status_code, db.system)
+      - Span events: timestamped log entries within a span's lifetime
+      - Batch export: buffer completed spans in memory, flush to collector periodically or when buffer is full
+      - Span limits: maximum number of attributes, events, and links per span
     skills:
       - Span lifecycle management
       - High-precision timestamp recording
@@ -175,10 +175,10 @@ milestones:
       backend.
     estimated_hours: 16
     concepts:
-      - "Collector pipeline: receive -> sample -> enrich -> store"
-      - "Head-based sampling: decide at trace start whether to sample (probabilistic)"
-      - "Tail-based sampling: decide after seeing all spans (keep errors, slow traces) — requires holding trace in memory"
-      - "Storage indexing: by trace_id (primary), by service+operation+time (search), by duration (latency queries)"
+      - Collector pipeline: receive -> sample -> enrich -> store
+      - Head-based sampling: decide at trace start whether to sample (probabilistic)
+      - Tail-based sampling: decide after seeing all spans (keep errors, slow traces) — requires holding trace in memory
+      - Storage indexing: by trace_id (primary), by service+operation+time (search), by duration (latency queries)
       - Clock skew detection and adjustment for cross-service span timing
     skills:
       - High-throughput HTTP/gRPC ingestion
@@ -190,7 +190,7 @@ milestones:
       - "Head-based probabilistic sampling is configurable (e.g., sample 10% of traces) and is deterministic based on trace_id so all spans of a sampled trace are kept"
       - "Tail-based sampling holds trace spans in memory for a configurable window (default 30 seconds) and retains complete traces that contain error spans or exceed a latency threshold"
       - "Span enrichment adds service metadata (service name, version, host) from collector configuration before storage"
-      - "Storage supports efficient queries by: (1) trace_id lookup returning all spans in <100ms, (2) service + operation + time range search, (3) duration-based filtering for slow trace discovery"
+      - Storage supports efficient queries by: (1) trace_id lookup returning all spans in <100ms, (2) service + operation + time range search, (3) duration-based filtering for slow trace discovery
       - "Batch writes to storage aggregate spans and flush at configurable intervals to reduce write amplification"
       - "Collector handles ingestion spikes gracefully with bounded in-memory queue; backpressure returns 429 to exporters when queue is full"
     pitfalls:
@@ -215,10 +215,10 @@ milestones:
       service dependency graphs, and latency analysis.
     estimated_hours: 15
     concepts:
-      - "Trace reconstruction: assemble all spans of a trace into parent-child tree"
-      - "Service dependency graph: infer edges from spans where service A calls service B"
-      - "Latency percentiles: p50, p95, p99 computed from span durations over time windows"
-      - "Partial traces: handle missing spans gracefully (show gaps in timeline)"
+      - Trace reconstruction: assemble all spans of a trace into parent-child tree
+      - Service dependency graph: infer edges from spans where service A calls service B
+      - Latency percentiles: p50, p95, p99 computed from span durations over time windows
+      - Partial traces: handle missing spans gracefully (show gaps in timeline)
     skills:
       - Time-range indexed querying
       - Tree reconstruction from flat span list
@@ -244,5 +244,4 @@ milestones:
       - Service dependency graph API with edge weights (count, avg latency)
       - Latency percentile analysis (p50, p95, p99) per service and operation
       - Paginated search results with configurable sort order
-
 ```

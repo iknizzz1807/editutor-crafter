@@ -95,19 +95,19 @@ milestones:
       execution times. Handle edge cases like DST transitions and
       impossible dates (Feb 31).
     acceptance_criteria:
-      - "Parser correctly interprets 5-field cron expressions: minute, hour, day-of-month, month, day-of-week"
+      - Parser correctly interprets 5-field cron expressions: minute, hour, day-of-month, month, day-of-week
       - "Supports wildcards (*), ranges (1-5), step values (*/15), lists (1,3,5), and combinations (1-5/2)"
       - "next_run(cron_expr, after_time) returns the correct next execution time after the given timestamp"
       - "next_n_runs(cron_expr, after_time, n) returns the next N execution times as a list"
-      - "Timezone-aware: cron times are interpreted in a configurable timezone (default UTC). DST transitions do not cause missed or duplicate runs."
-      - "Shorthand aliases supported: @yearly, @monthly, @weekly, @daily, @hourly"
+      - Timezone-aware: cron times are interpreted in a configurable timezone (default UTC). DST transitions do not cause missed or duplicate runs.
+      - Shorthand aliases supported: @yearly, @monthly, @weekly, @daily, @hourly
       - "Invalid expressions are rejected with descriptive error messages (e.g., 'minute field 61 out of range 0-59')"
-      - "Edge case: '0 0 31 2 *' (Feb 31) does not cause infinite loop; next_run returns the next valid occurrence or indicates no valid date within 4 years"
+      - Edge case: '0 0 31 2 *' (Feb 31) does not cause infinite loop; next_run returns the next valid occurrence or indicates no valid date within 4 years
     pitfalls:
-      - "DST spring-forward: 2:30 AM doesn't exist on spring-forward day. The cron job scheduled for 2:30 must fire at 3:00 or be skipped, depending on policy."
-      - "DST fall-back: 1:30 AM occurs twice on fall-back day. The cron job must fire once, not twice."
-      - "Infinite loop on impossible dates: '0 0 31 2 *' has no valid next run. Without a max-search bound (e.g., 4 years), the algorithm loops forever."
-      - "Day-of-month AND day-of-week interaction: in standard cron, if both are specified (non-*), the job runs on either matching day (OR), not both (AND). This is a common misunderstanding."
+      - DST spring-forward: 2:30 AM doesn't exist on spring-forward day. The cron job scheduled for 2:30 must fire at 3:00 or be skipped, depending on policy.
+      - DST fall-back: 1:30 AM occurs twice on fall-back day. The cron job must fire once, not twice.
+      - Infinite loop on impossible dates: '0 0 31 2 *' has no valid next run. Without a max-search bound (e.g., 4 years), the algorithm loops forever.
+      - Day-of-month AND day-of-week interaction: in standard cron, if both are specified (non-*), the job runs on either matching day (OR), not both (AND). This is a common misunderstanding.
     concepts:
       - Cron expression syntax and field semantics
       - Timezone handling with DST edge cases
@@ -135,16 +135,16 @@ milestones:
       - "Jobs enqueued with numeric priority (0=highest) are dequeued in strict priority order (min-heap)"
       - "Delayed jobs have a 'run_after' timestamp and are invisible until that time"
       - "Duplicate submissions with the same idempotency_key within a configurable window (default 24h) are silently deduplicated and return the existing job ID"
-      - "Failed jobs are retried with exponential backoff: delay = base_delay * 2^attempt (base 1s, max 300s, with ±25% jitter)"
+      - Failed jobs are retried with exponential backoff: delay = base_delay * 2^attempt (base 1s, max 300s, with ±25% jitter)
       - "After max_retries (configurable, default 3) failures, the job moves to the dead letter queue (DLQ)"
       - "GET /dlq returns dead letter jobs with failure reason, attempt count, and last error message"
       - "POST /dlq/{job_id}/retry re-enqueues a dead letter job with reset retry count"
       - "Jobs with expired TTL (configurable per job) are removed from the queue before dequeue and logged as expired"
     pitfalls:
-      - "Visibility timeout too short: if a job takes longer than the visibility timeout, the queue re-delivers it to another worker, causing duplicate processing"
-      - "Deduplication key collision across different job types: use composite key (job_type + business_key) not just business_key"
-      - "No dead letter queue: permanently failed jobs silently disappear, making debugging impossible"
-      - "Jitter not applied to backoff: without jitter, all retries for the same batch fire simultaneously"
+      - Visibility timeout too short: if a job takes longer than the visibility timeout, the queue re-delivers it to another worker, causing duplicate processing
+      - Deduplication key collision across different job types: use composite key (job_type + business_key) not just business_key
+      - No dead letter queue: permanently failed jobs silently disappear, making debugging impossible
+      - Jitter not applied to backoff: without jitter, all retries for the same batch fire simultaneously
     concepts:
       - Priority queue with min-heap
       - Exponential backoff with jitter
@@ -171,17 +171,17 @@ milestones:
       shutdown with drain timeout.
     acceptance_criteria:
       - "Workers register with the scheduler providing their ID and capacity (max concurrent jobs)"
-      - "Job claiming uses atomic lease acquisition: only one worker can claim a given job. The lease has a configurable TTL (default 5 minutes)."
+      - Job claiming uses atomic lease acquisition: only one worker can claim a given job. The lease has a configurable TTL (default 5 minutes).
       - "Workers renew their lease by sending heartbeats every TTL/3 seconds. If a heartbeat is missed for > TTL, the job's lease expires and becomes claimable by other workers."
       - "When a worker's lease expires, the job is re-enqueued with its retry count preserved (not reset)"
-      - "Graceful shutdown: worker stops claiming new jobs and waits up to a configurable drain timeout (default 30s) for in-progress jobs to complete. Jobs not finished within drain timeout are re-enqueued."
-      - "Job completion acknowledgment is idempotent: if the ack is lost and the coordinator re-assigns the job, completing it twice does not cause incorrect state (the second ack is ignored)"
+      - Graceful shutdown: worker stops claiming new jobs and waits up to a configurable drain timeout (default 30s) for in-progress jobs to complete. Jobs not finished within drain timeout are re-enqueued.
+      - Job completion acknowledgment is idempotent: if the ack is lost and the coordinator re-assigns the job, completing it twice does not cause incorrect state (the second ack is ignored)
       - "GET /workers returns registered workers with their status, current job count, and last heartbeat time"
     pitfalls:
-      - "Lease-based locking without idempotent completion: if Worker A completes a job but the ack is lost, the coordinator re-assigns to Worker B. Both workers 'completed' the job. The result must be idempotent."
-      - "Waiting indefinitely for graceful shutdown on long jobs: a 4-hour ETL job will never finish within a drain timeout. Re-enqueue and let the job restart (or implement checkpointing)."
-      - "Heartbeat interval too close to lease TTL: network jitter causes false lease expiration. Heartbeat should be TTL/3 at most."
-      - "Worker starvation: if one worker always claims jobs first, other workers idle. Randomize claim order or use fair assignment."
+      - Lease-based locking without idempotent completion: if Worker A completes a job but the ack is lost, the coordinator re-assigns to Worker B. Both workers 'completed' the job. The result must be idempotent.
+      - Waiting indefinitely for graceful shutdown on long jobs: a 4-hour ETL job will never finish within a drain timeout. Re-enqueue and let the job restart (or implement checkpointing).
+      - Heartbeat interval too close to lease TTL: network jitter causes false lease expiration. Heartbeat should be TTL/3 at most.
+      - Worker starvation: if one worker always claims jobs first, other workers idle. Randomize claim order or use fair assignment.
     concepts:
       - Lease-based distributed locking
       - Heartbeat-based failure detection
@@ -206,18 +206,18 @@ milestones:
       jobs automatically create job instances at their next run time.
       Implement misfire policies for handling scheduler downtime.
     acceptance_criteria:
-      - "POST /schedules creates a recurring schedule with: name, cron_expression, job_payload, timezone, and misfire_policy"
+      - POST /schedules creates a recurring schedule with: name, cron_expression, job_payload, timezone, and misfire_policy
       - "The scheduler evaluates all active schedules periodically (every 1s) and enqueues job instances at their cron-determined run times"
-      - "Misfire policy FIRE_NOW: if the scheduler was down during a scheduled time, the missed job runs immediately on restart (once, not for every missed interval)"
-      - "Misfire policy SKIP: if the scheduler was down during a scheduled time, the missed run is skipped and the next future run is scheduled normally"
-      - "Misfire policy FIRE_ALL: all missed runs are enqueued (with configurable max catch-up count to prevent flooding)"
+      - Misfire policy FIRE_NOW: if the scheduler was down during a scheduled time, the missed job runs immediately on restart (once, not for every missed interval)
+      - Misfire policy SKIP: if the scheduler was down during a scheduled time, the missed run is skipped and the next future run is scheduled normally
+      - Misfire policy FIRE_ALL: all missed runs are enqueued (with configurable max catch-up count to prevent flooding)
       - "The scheduler persists the 'last fired at' timestamp for each schedule. On restart, it compares this with the current time to detect misfires."
-      - "Concurrent scheduler instances coordinate via distributed lock: only one instance evaluates cron schedules at a time to prevent duplicate job creation"
+      - Concurrent scheduler instances coordinate via distributed lock: only one instance evaluates cron schedules at a time to prevent duplicate job creation
     pitfalls:
-      - "No misfire handling: scheduler restarts after 2 hours of downtime and 2 hours of missed jobs are silently lost"
-      - "FIRE_ALL without a cap: if the scheduler was down for a week and the cron runs every minute, it enqueues 10,080 jobs simultaneously"
-      - "Not persisting last-fired timestamp: without this, the scheduler cannot detect which runs were missed during downtime"
-      - "Multiple scheduler instances creating duplicate cron jobs: without distributed locking, each instance independently evaluates cron and creates duplicate job instances"
+      - No misfire handling: scheduler restarts after 2 hours of downtime and 2 hours of missed jobs are silently lost
+      - FIRE_ALL without a cap: if the scheduler was down for a week and the cron runs every minute, it enqueues 10,080 jobs simultaneously
+      - Not persisting last-fired timestamp: without this, the scheduler cannot detect which runs were missed during downtime
+      - Multiple scheduler instances creating duplicate cron jobs: without distributed locking, each instance independently evaluates cron and creates duplicate job instances
     concepts:
       - Misfire policies (FIRE_NOW, SKIP, FIRE_ALL)
       - Last-fired timestamp persistence
@@ -234,5 +234,4 @@ milestones:
       - Misfire detection comparing last-fired vs current time on startup
       - Distributed lock ensuring single-scheduler-evaluator pattern
     estimated_hours: "10-12"
-
 ```

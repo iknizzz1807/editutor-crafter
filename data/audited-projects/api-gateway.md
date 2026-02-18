@@ -89,9 +89,9 @@ milestones:
       balancing, health checks, and connection pooling.
     estimated_hours: 15
     concepts:
-      - "Reverse proxy: accept client request, forward to backend, return response"
-      - "Load balancing algorithms: round-robin, weighted round-robin, least connections"
-      - "Active health checks: periodic HTTP requests to backend health endpoint"
+      - Reverse proxy: accept client request, forward to backend, return response
+      - Load balancing algorithms: round-robin, weighted round-robin, least connections
+      - Active health checks: periodic HTTP requests to backend health endpoint
       - Connection pooling to backends for reduced TCP handshake overhead
       - "X-Forwarded-For, X-Real-IP, and Via header propagation"
     skills:
@@ -100,7 +100,7 @@ milestones:
       - Service health monitoring
       - Connection pool management
     acceptance_criteria:
-      - "Path-based routing maps URL prefixes to backend services (e.g., /api/users/* -> user-service:8080) configured via YAML or JSON config file"
+      - Path-based routing maps URL prefixes to backend services (e.g., /api/users/* -> user-service: 8080) configured via YAML or JSON config file
       - "Host-based routing directs requests to different backends based on the Host header (e.g., api.example.com -> service-a, admin.example.com -> service-b)"
       - "Load balancing distributes requests across multiple backend instances using configurable strategy (round-robin by default); measured distribution is within 10% of expected ratio across 1000 requests"
       - "Active health checks poll each backend's /health endpoint every 10 seconds (configurable); unhealthy backends (3 consecutive failures) are removed from the pool and re-added after 2 consecutive successes"
@@ -128,10 +128,10 @@ milestones:
       Redis backend, and circuit breaker pattern for backend failure isolation.
     estimated_hours: 15
     concepts:
-      - "Token bucket algorithm: tokens replenish at a fixed rate, each request consumes one token"
-      - "Distributed rate limiting: store bucket state in Redis using atomic Lua scripts"
-      - "Sliding window rate limiting as alternative: count requests in time windows"
-      - "Circuit breaker states: closed (normal), open (failing), half-open (testing recovery)"
+      - Token bucket algorithm: tokens replenish at a fixed rate, each request consumes one token
+      - Distributed rate limiting: store bucket state in Redis using atomic Lua scripts
+      - Sliding window rate limiting as alternative: count requests in time windows
+      - Circuit breaker states: closed (normal), open (failing), half-open (testing recovery)
       - Rate limit scoping by client IP, API key, or JWT subject
     skills:
       - Rate limiting algorithm implementation
@@ -140,13 +140,13 @@ milestones:
       - Distributed state management
     acceptance_criteria:
       - "Token bucket rate limiter enforces configurable requests-per-second per client (identified by IP, API key, or JWT subject); bucket state is stored in Redis using an atomic Lua script that checks and decrements in a single round-trip"
-      - "Rate limit headers are returned on every response: X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset (Unix timestamp); 429 Too Many Requests is returned when limit is exceeded"
-      - "Rate limit configuration is per-route: different routes can have different limits (e.g., /api/search -> 10/s, /api/posts -> 100/s)"
+      - Rate limit headers are returned on every response: X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset (Unix timestamp); 429 Too Many Requests is returned when limit is exceeded
+      - Rate limit configuration is per-route: different routes can have different limits (e.g., /api/search -> 10/s, /api/posts -> 100/s)
       - "Circuit breaker opens after N consecutive failures (configurable, default 5) to a backend; while open, requests immediately return 503 Service Unavailable without contacting the backend"
       - "After a configurable cooldown (default 30s), circuit breaker transitions to half-open and allows one test request; if it succeeds, circuit closes; if it fails, circuit re-opens"
       - "Rate limiting works correctly across multiple gateway instances sharing the same Redis backend (verified by running 2 gateway instances and confirming aggregate rate does not exceed the limit)"
     pitfalls:
-      - "Non-atomic Redis check-then-decrement: race condition allows burst above limit"
+      - Non-atomic Redis check-then-decrement: race condition allows burst above limit
       - "Not using Lua script or Redis transaction for atomic token bucket operation"
       - Circuit breaker not resetting failure count on successful requests when closed
       - Rate limit key with high cardinality (per-path + per-user) exhausting Redis memory
@@ -166,10 +166,10 @@ milestones:
       transformation middleware.
     estimated_hours: 15
     concepts:
-      - "JWT validation: signature verification (HS256/RS256), expiration, issuer, audience checks"
+      - JWT validation: signature verification (HS256/RS256), expiration, issuer, audience checks
       - API key lookup and validation from header or query parameter
-      - "Authentication result propagation: pass user context to backends via headers"
-      - "Request/response transformation: header manipulation, body rewriting, URL rewriting"
+      - Authentication result propagation: pass user context to backends via headers
+      - Request/response transformation: header manipulation, body rewriting, URL rewriting
     skills:
       - JWT token validation
       - API key authentication
@@ -208,11 +208,11 @@ milestones:
       propagation, and a plugin architecture for extensibility.
     estimated_hours: 20
     concepts:
-      - "Structured logging: JSON format with request ID, method, path, status, latency"
-      - "Prometheus metrics: request count, latency histograms, error rates by route"
-      - "Distributed tracing: propagate W3C traceparent/tracestate headers"
-      - "Plugin architecture: middleware chain with defined interface contract"
-      - "Configuration hot-reload: apply config changes without dropping in-flight requests"
+      - Structured logging: JSON format with request ID, method, path, status, latency
+      - Prometheus metrics: request count, latency histograms, error rates by route
+      - Distributed tracing: propagate W3C traceparent/tracestate headers
+      - Plugin architecture: middleware chain with defined interface contract
+      - Configuration hot-reload: apply config changes without dropping in-flight requests
     skills:
       - Metrics collection and exposition
       - Distributed tracing propagation
@@ -220,11 +220,11 @@ milestones:
       - Plugin system design
       - Graceful configuration reload
     acceptance_criteria:
-      - "Structured JSON access logs include: request_id (generated UUID), method, path, query, status_code, response_time_ms, client_ip, user_agent, upstream_service, and upstream_response_time_ms for every proxied request"
-      - "Prometheus-compatible /metrics endpoint exposes: gateway_requests_total (counter by route, method, status), gateway_request_duration_seconds (histogram by route with 0.01, 0.05, 0.1, 0.25, 0.5, 1, 5, 10 second buckets), gateway_active_connections (gauge)"
-      - "Distributed tracing: if incoming request has W3C traceparent header, it is propagated to backend; if absent, a new trace ID is generated and traceparent is injected"
-      - "Plugin interface defines: OnRequest(req) -> (req, error), OnResponse(req, resp) -> (resp, error), and Name() -> string methods; plugins are loaded from configuration and executed in defined order"
-      - "Plugin errors are isolated: a panicking or erroring plugin does not crash the gateway; the error is logged and the request continues through the remaining middleware chain"
+      - Structured JSON access logs include: request_id (generated UUID), method, path, query, status_code, response_time_ms, client_ip, user_agent, upstream_service, and upstream_response_time_ms for every proxied request
+      - Prometheus-compatible /metrics endpoint exposes: gateway_requests_total (counter by route, method, status), gateway_request_duration_seconds (histogram by route with 0.01, 0.05, 0.1, 0.25, 0.5, 1, 5, 10 second buckets), gateway_active_connections (gauge)
+      - Distributed tracing: if incoming request has W3C traceparent header, it is propagated to backend; if absent, a new trace ID is generated and traceparent is injected
+      - Plugin interface defines: OnRequest(req) -> (req, error), OnResponse(req, resp) -> (resp, error), and Name() -> string methods; plugins are loaded from configuration and executed in defined order
+      - Plugin errors are isolated: a panicking or erroring plugin does not crash the gateway; the error is logged and the request continues through the remaining middleware chain
       - "Configuration reload on SIGHUP applies new routes, rate limits, and plugin configuration without dropping in-flight requests; new requests use updated config while in-flight requests complete with old config"
       - "Sensitive data (Authorization headers, API keys, request bodies) is NOT included in access logs by default; a configurable redaction list controls which headers are masked"
     pitfalls:
@@ -242,5 +242,4 @@ milestones:
       - Plugin error isolation with panic recovery
       - SIGHUP configuration hot-reload with graceful transition
       - Sensitive header redaction in logs
-
 ```

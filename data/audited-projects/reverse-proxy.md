@@ -64,16 +64,16 @@ languages:
   also_possible:
     - Java
 resources:
-  - name: "RFC 9110 HTTP Semantics"
+  - name: RFC 9110 HTTP Semantics""
     url: "https://httpwg.org/specs/rfc9110.html"
     type: specification
-  - name: "RFC 9111 HTTP Caching"
+  - name: RFC 9111 HTTP Caching""
     url: "https://httpwg.org/specs/rfc9111.html"
     type: specification
-  - name: "RFC 7239 Forwarded HTTP Extension"
+  - name: RFC 7239 Forwarded HTTP Extension""
     url: "https://httpwg.org/specs/rfc7239.html"
     type: specification
-  - name: "NGINX Reverse Proxy Guide"
+  - name: NGINX Reverse Proxy Guide""
     url: "https://docs.nginx.com/nginx/admin-guide/web-server/reverse-proxy/"
     type: documentation
 prerequisites:
@@ -93,7 +93,7 @@ milestones:
     acceptance_criteria:
       - Accept incoming HTTP/1.1 requests on a configurable listen address and port
       - Parse request line (method, path, version) and all headers; reject malformed requests with 400
-      - Rewrite Host header to match the backend's host:port before forwarding
+      - Rewrite Host header to match the backend's host: port before forwarding
       - Add X-Forwarded-For header with the client's IP address; append to existing header if present
       - Add X-Forwarded-Proto header indicating whether the client connection was HTTP or HTTPS
       - Add Via header indicating the proxy's identity per RFC 9110 §7.6.3
@@ -103,11 +103,11 @@ milestones:
       - Return 502 Bad Gateway if the backend connection fails or times out; return 504 Gateway Timeout if the backend is too slow
       - Access log entry written for each request: timestamp, client IP, method, path, status, response size, duration
     pitfalls:
-      - "Partial TCP reads: HTTP messages may arrive in multiple TCP segments; must buffer until headers are complete (look for \r\n\r\n)"
+      - Partial TCP reads: HTTP messages may arrive in multiple TCP segments; must buffer until headers are complete (look for \r\n\r\n)
       - "Buffering entire request/response bodies causes OOM on large uploads; stream chunks as they arrive"
       - "Not removing hop-by-hop headers (Connection, Keep-Alive, Transfer-Encoding, Proxy-*) before forwarding"
       - "Mixing up client-side and backend-side connection state; they are independent"
-      - "Not handling Connection: close properly — if either side requests close, don't reuse that connection"
+      - Not handling Connection: close properly — if either side requests close, don't reuse that connection
     concepts:
       - HTTP/1.1 message format and parsing
       - Proxy header semantics (X-Forwarded-*, Via, Host)
@@ -144,9 +144,9 @@ milestones:
     pitfalls:
       - "Using naive round-robin without health checks sends requests to dead backends causing client-visible errors"
       - "Not handling backend failure DURING request forwarding; must retry on a different backend or return 502"
-      - "Health check thundering herd: if health checks are synchronized, all backends get checked simultaneously causing load spikes"
+      - Health check thundering herd: if health checks are synchronized, all backends get checked simultaneously causing load spikes
       - "Least-connections counter must be updated atomically in multi-threaded proxy"
-      - "Weight changes when backends go down: remaining backends should absorb proportionally, not equally"
+      - Weight changes when backends go down: remaining backends should absorb proportionally, not equally
     concepts:
       - Load balancing algorithms
       - Active health checking
@@ -255,7 +255,7 @@ milestones:
       - Certificate chain validation: intermediate certificates are included in the TLS handshake
     pitfalls:
       - "Storing private keys in source code, logs, or error messages; keys must be loaded from files with restricted permissions"
-      - "SNI mismatch: if the certificate doesn't match the SNI hostname, browsers show a warning; verify certificate CN/SAN matches"
+      - SNI mismatch: if the certificate doesn't match the SNI hostname, browsers show a warning; verify certificate CN/SAN matches
       - "Not including intermediate certificates in the chain causes validation failure on clients that don't have the intermediate cached"
       - "TLS session resumption (session tickets/IDs) must be handled to avoid expensive full handshakes on every connection"
       - "OCSP stapling improves client-side validation speed; not implementing it causes slower TLS handshakes as clients fetch OCSP themselves"

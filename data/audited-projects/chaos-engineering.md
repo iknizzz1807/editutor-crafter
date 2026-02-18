@@ -63,16 +63,16 @@ languages:
     - Java
   also_possible: []
 resources:
-  - name: "Principles of Chaos Engineering"
+  - name: Principles of Chaos Engineering""
     url: "https://principlesofchaos.org/"
     type: documentation
-  - name: "Chaos Monkey by Netflix"
+  - name: Chaos Monkey by Netflix""
     url: "https://netflix.github.io/chaosmonkey/"
     type: tool
-  - name: "LitmusChaos"
+  - name: LitmusChaos""
     url: "https://litmuschaos.io/"
     type: tool
-  - name: "Google Cloud Chaos Engineering Guide"
+  - name: Google Cloud Chaos Engineering Guide""
     url: "https://cloud.google.com/blog/products/devops-sre/getting-started-with-chaos-engineering"
     type: article
 prerequisites:
@@ -94,16 +94,16 @@ milestones:
       (kill, pause), and resource faults (CPU, memory, disk exhaustion).
       Each fault must have a clean rollback mechanism.
     acceptance_criteria:
-      - "Network latency injection: uses tc netem to add configurable delay (mean and jitter) to traffic on a specified network interface; verified by measuring RTT increase with ping"
-      - "Packet loss injection: uses tc netem to drop a configurable percentage of packets on a specified interface; verified by measuring packet loss with ping -c 100"
-      - "Network partition: uses iptables DROP rules to block all traffic between specified IP pairs; verified by confirming connection timeout between partitioned services"
-      - "DNS failure injection: intercepts DNS resolution and returns NXDOMAIN, SERVFAIL, or wrong IP for specified domains; implemented via /etc/resolv.conf manipulation, local DNS proxy, or iptables DNS redirect"
-      - "Process kill: sends SIGKILL to a specified process by name or PID and verifies the process is terminated; optionally supports SIGSTOP/SIGCONT for pause/resume"
-      - "CPU stress: launches CPU-bound workers (or uses cgroup cpu.max) to consume a configurable percentage of CPU on the target; verified by measuring CPU utilization via /proc/stat or cgroup metrics"
-      - "Memory pressure: allocates memory (or sets cgroup memory.max) to simulate OOM conditions at configurable utilization; verified by checking memory metrics or OOM kill events"
-      - "Disk exhaustion: fills a specified filesystem to a configurable percentage using fallocate; verified by checking df output"
+      - Network latency injection: uses tc netem to add configurable delay (mean and jitter) to traffic on a specified network interface; verified by measuring RTT increase with ping
+      - Packet loss injection: uses tc netem to drop a configurable percentage of packets on a specified interface; verified by measuring packet loss with ping -c 100
+      - Network partition: uses iptables DROP rules to block all traffic between specified IP pairs; verified by confirming connection timeout between partitioned services
+      - DNS failure injection: intercepts DNS resolution and returns NXDOMAIN, SERVFAIL, or wrong IP for specified domains; implemented via /etc/resolv.conf manipulation, local DNS proxy, or iptables DNS redirect
+      - Process kill: sends SIGKILL to a specified process by name or PID and verifies the process is terminated; optionally supports SIGSTOP/SIGCONT for pause/resume
+      - CPU stress: launches CPU-bound workers (or uses cgroup cpu.max) to consume a configurable percentage of CPU on the target; verified by measuring CPU utilization via /proc/stat or cgroup metrics
+      - Memory pressure: allocates memory (or sets cgroup memory.max) to simulate OOM conditions at configurable utilization; verified by checking memory metrics or OOM kill events
+      - Disk exhaustion: fills a specified filesystem to a configurable percentage using fallocate; verified by checking df output
       - "EVERY fault has a corresponding rollback function that removes the fault completely (deletes tc rules, removes iptables rules, kills stress processes, removes files); rollback is verified by re-measuring the affected metric"
-      - "Privilege check: each fault verifier tests for required capabilities (CAP_NET_ADMIN for tc/iptables, CAP_SYS_RESOURCE for cgroups) and fails with a clear error message if missing"
+      - Privilege check: each fault verifier tests for required capabilities (CAP_NET_ADMIN for tc/iptables, CAP_SYS_RESOURCE for cgroups) and fails with a clear error message if missing
     pitfalls:
       - "tc and iptables commands require CAP_NET_ADMIN or root; without this capability, all network faults fail silently or with cryptic errors. Check capabilities at startup."
       - "CPU stress tool running in the same cgroup as the chaos framework consumes resources needed by the framework itself; always isolate stress workloads in a separate cgroup"
@@ -117,10 +117,10 @@ milestones:
       - DNS interception and manipulation
       - Rollback verification for fault cleanup
     deliverables:
-      - "Fault library with implementations for: latency, packet loss, partition, DNS failure, process kill, CPU stress, memory pressure, disk exhaustion"
+      - Fault library with implementations for: latency, packet loss, partition, DNS failure, process kill, CPU stress, memory pressure, disk exhaustion
       - "Rollback function for each fault type with post-rollback verification"
       - "Capability checker validating required Linux capabilities before fault execution"
-      - "Fault configuration schema: target (IP/interface/process/path), parameters (duration, intensity), and rollback config"
+      - Fault configuration schema: target (IP/interface/process/path), parameters (duration, intensity), and rollback config
     estimated_hours: "12-16"
 
   - id: chaos-engineering-m2
@@ -132,16 +132,16 @@ milestones:
       after fault injection.
     acceptance_criteria:
       - "Hypothesis definition specifies metric queries (e.g., Prometheus PromQL), expected thresholds (e.g., p99_latency < 200ms, error_rate < 1%), and evaluation interval (e.g., every 5s)"
-      - "Baseline validation: before any fault is injected, all hypothesis metrics are evaluated for a configurable warm-up period (e.g., 30s); if baseline is unhealthy, the experiment is aborted before injection"
-      - "During-fault validation: metrics are continuously evaluated during fault injection; if any metric breaches its threshold, the experiment is flagged as hypothesis-violated"
-      - "Post-fault validation: after fault rollback, metrics are re-evaluated for a recovery period; the system must return to baseline within a configurable recovery timeout"
-      - "Blast radius control - target scope: experiments specify affected targets as a percentage of instances (e.g., 10% of pods) or specific named instances; the framework ensures only specified targets receive faults"
-      - "Blast radius control - traffic scope: for HTTP/gRPC faults, only a configurable percentage of requests are affected (e.g., inject latency on 5% of requests)"
-      - "Safety abort: if any hypothesis metric exceeds a stricter 'abort threshold' (separate from the hypothesis threshold), the experiment immediately rolls back all faults and terminates"
-      - "Abort test: run an experiment with abort threshold at error_rate > 5%; inject a fault that causes 10% error rate; verify the experiment auto-aborts within 2 evaluation intervals and faults are rolled back"
+      - Baseline validation: before any fault is injected, all hypothesis metrics are evaluated for a configurable warm-up period (e.g., 30s); if baseline is unhealthy, the experiment is aborted before injection
+      - During-fault validation: metrics are continuously evaluated during fault injection; if any metric breaches its threshold, the experiment is flagged as hypothesis-violated
+      - Post-fault validation: after fault rollback, metrics are re-evaluated for a recovery period; the system must return to baseline within a configurable recovery timeout
+      - Blast radius control - target scope: experiments specify affected targets as a percentage of instances (e.g., 10% of pods) or specific named instances; the framework ensures only specified targets receive faults
+      - Blast radius control - traffic scope: for HTTP/gRPC faults, only a configurable percentage of requests are affected (e.g., inject latency on 5% of requests)
+      - Safety abort: if any hypothesis metric exceeds a stricter 'abort threshold' (separate from the hypothesis threshold), the experiment immediately rolls back all faults and terminates
+      - Abort test: run an experiment with abort threshold at error_rate > 5%; inject a fault that causes 10% error rate; verify the experiment auto-aborts within 2 evaluation intervals and faults are rolled back
     pitfalls:
       - "Metrics collection lag (Prometheus scrape interval, metric pipeline latency) means the hypothesis engine sees stale data; account for at least 2x scrape interval delay in abort decisions"
-      - "Confounding variables: other system changes during the experiment can affect metrics; always document what changed and consider running a control group"
+      - Confounding variables: other system changes during the experiment can affect metrics; always document what changed and consider running a control group
       - "Blast radius percentage calculation requires accurate knowledge of total instances; stale instance count means wrong percentage"
       - "Abort threshold too close to hypothesis threshold causes false aborts; abort threshold should represent actual danger, not expected experiment behavior"
     concepts:
@@ -151,10 +151,10 @@ milestones:
       - Safety abort with hard thresholds
       - Metrics lag and its impact on abort latency
     deliverables:
-      - "Hypothesis definition schema: metrics, thresholds, evaluation interval, abort thresholds"
-      - "Hypothesis validator: baseline check, continuous monitoring, post-recovery validation"
-      - "Blast radius controller: target percentage selection and traffic percentage limiting"
-      - "Safety abort mechanism: threshold breach detection and automatic fault rollback"
+      - Hypothesis definition schema: metrics, thresholds, evaluation interval, abort thresholds
+      - Hypothesis validator: baseline check, continuous monitoring, post-recovery validation
+      - Blast radius controller: target percentage selection and traffic percentage limiting
+      - Safety abort mechanism: threshold breach detection and automatic fault rollback
       - "Abort latency test verifying rollback occurs within bounded time of threshold breach"
     estimated_hours: "10-14"
 
@@ -166,16 +166,16 @@ milestones:
       Experiments are defined declaratively and executed through a state
       machine: BASELINE -> INJECTION -> MONITORING -> ROLLBACK -> VALIDATION -> REPORT.
     acceptance_criteria:
-      - "Experiment definition (YAML or JSON) specifies: name, hypothesis, fault(s) to inject, target(s), blast radius, duration, abort conditions, and metadata (owner, description)"
-      - "Experiment state machine executes phases in order: INIT -> BASELINE_CHECK -> FAULT_INJECTION -> MONITORING -> ROLLBACK -> POST_VALIDATION -> REPORT"
+      - Experiment definition (YAML or JSON) specifies: name, hypothesis, fault(s) to inject, target(s), blast radius, duration, abort conditions, and metadata (owner, description)
+      - Experiment state machine executes phases in order: INIT -> BASELINE_CHECK -> FAULT_INJECTION -> MONITORING -> ROLLBACK -> POST_VALIDATION -> REPORT
       - "BASELINE_CHECK phase validates all hypothesis metrics are within thresholds for the warm-up period; experiment aborts if baseline is unhealthy"
       - "FAULT_INJECTION phase activates the configured faults on the specified targets within blast radius limits"
       - "MONITORING phase continuously validates hypothesis metrics and safety abort thresholds for the configured experiment duration"
       - "ROLLBACK phase removes all injected faults and verifies rollback via rollback verification checks"
       - "POST_VALIDATION phase checks that the system returns to baseline within recovery timeout"
-      - "REPORT phase generates a structured report containing: experiment ID, start/end timestamps, each phase's duration and outcome, metric values (baseline average, during-fault average, post-recovery average), hypothesis result (maintained/violated), and a pass/fail verdict"
-      - "Experiment catalog: experiments are stored with version numbers; re-running an experiment uses the same definition for reproducibility"
-      - "Dry-run mode: experiment executes all phases except FAULT_INJECTION (faults are logged but not applied) to validate the experiment definition and metric connectivity"
+      - REPORT phase generates a structured report containing: experiment ID, start/end timestamps, each phase's duration and outcome, metric values (baseline average, during-fault average, post-recovery average), hypothesis result (maintained/violated), and a pass/fail verdict
+      - Experiment catalog: experiments are stored with version numbers; re-running an experiment uses the same definition for reproducibility
+      - Dry-run mode: experiment executes all phases except FAULT_INJECTION (faults are logged but not applied) to validate the experiment definition and metric connectivity
     pitfalls:
       - "Always verify steady state BEFORE injecting faults; skipping baseline validation means you can't distinguish pre-existing issues from experiment-caused issues"
       - "Automatic rollback is critical; manual cleanup after a failed experiment is error-prone and may leave persistent faults"
@@ -207,13 +207,13 @@ milestones:
       - "GameDay runner executes experiments one at a time, waiting for each to complete (including post-validation) before starting the next"
       - "If any experiment triggers a safety abort, the GameDay halts all remaining experiments and generates a partial report"
       - "System-wide health check runs between experiments; if the system hasn't recovered to baseline from the previous experiment, the GameDay pauses until recovery or times out and halts"
-      - "Final GameDay report aggregates all experiment reports into a single document with: overall pass/fail, per-experiment summary, timeline of events, and recommendations for failed hypotheses"
+      - Final GameDay report aggregates all experiment reports into a single document with: overall pass/fail, per-experiment summary, timeline of events, and recommendations for failed hypotheses
       - "Schedule GameDays for recurring execution (e.g., weekly) with configurable notification (webhook, email) on completion"
-      - "Approval gate: optionally require manual approval before each experiment in the sequence (for initial adoption)"
+      - Approval gate: optionally require manual approval before each experiment in the sequence (for initial adoption)
     pitfalls:
       - "Running experiments back-to-back without recovery verification causes cascading failures where each experiment starts from a degraded baseline"
       - "GameDays without team notification mean nobody is watching when things go wrong; always notify the team before automated GameDays"
-      - "Recording observations is critical: automated metrics capture misses qualitative observations like 'UI was slow but not measured'"
+      - Recording observations is critical: automated metrics capture misses qualitative observations like 'UI was slow but not measured'
       - "Scheduling GameDays during off-hours when nobody can respond defeats the purpose of validating operational readiness"
     concepts:
       - Multi-experiment scenario sequencing

@@ -80,15 +80,15 @@ milestones:
       - "Dynamic spatial data structure (hashed spatial grid or loose octree) supports insertion, deletion, and movement of 100k+ entities with O(1) amortized update cost per entity"
       - "Range query returns all entities within a specified axis-aligned bounding box in O(k + overhead) where k is the result count, not O(n) total entities"
       - "k-nearest-neighbor query returns the k closest entities to a point, used for interaction systems (e.g., 'find the 5 nearest NPCs')"
-      - "SIMD-accelerated frustum culling: given a view frustum (6 planes), cull entities outside the frustum; benchmark shows >2x speedup over scalar implementation for 10k entities"
+      - SIMD-accelerated frustum culling: given a view frustum (6 planes), cull entities outside the frustum; benchmark shows >2x speedup over scalar implementation for 10k entities
       - "Spatial structure dynamically rebalances or resizes as entities cluster or spread (e.g., grid cell subdivision or octree depth adjustment)"
-      - "World state serialization: the complete entity state can be serialized to disk and deserialized, enabling crash recovery; round-trip preserves all entity positions, components, and spatial index integrity"
+      - World state serialization: the complete entity state can be serialized to disk and deserialized, enabling crash recovery; round-trip preserves all entity positions, components, and spatial index integrity
       - "World state checkpointing runs periodically (configurable interval, default 60s) in a background thread without blocking the simulation tick"
     pitfalls:
-      - "Octree depth explosion: if many entities cluster at a single point, the octree subdivides to extreme depth. Set a maximum depth and use a flat list at leaf nodes."
-      - "Cache thrashing: pointer-based octrees have terrible cache performance. Use a flat array-backed structure with implicit indexing or a hashed spatial grid for cache-friendly access."
-      - "Entity movement cost: if an entity moves every frame, removing and reinserting into the spatial structure every tick is expensive. Use loose bounds or lazy update with dirty flags."
-      - "Serialization during mutation: if the world state is being serialized while entities move, you get inconsistent snapshots. Use copy-on-write or snapshot the state atomically."
+      - Octree depth explosion: if many entities cluster at a single point, the octree subdivides to extreme depth. Set a maximum depth and use a flat list at leaf nodes.
+      - Cache thrashing: pointer-based octrees have terrible cache performance. Use a flat array-backed structure with implicit indexing or a hashed spatial grid for cache-friendly access.
+      - Entity movement cost: if an entity moves every frame, removing and reinserting into the spatial structure every tick is expensive. Use loose bounds or lazy update with dirty flags.
+      - Serialization during mutation: if the world state is being serialized while entities move, you get inconsistent snapshots. Use copy-on-write or snapshot the state atomically.
     concepts:
       - Spatial hashing and octrees
       - SIMD frustum culling
@@ -114,19 +114,19 @@ milestones:
       reliability, ordering, congestion control, encryption, and clock
       synchronization between client and server.
     acceptance_criteria:
-      - "Custom UDP protocol with bit-packing serialization: game state is serialized at the bit level (e.g., 10 bits for health, 3 bits for direction) to minimize packet size"
-      - "Reliability layer: critical messages (e.g., item pickups, chat) are delivered reliably with acknowledgment and retransmission; unreliable messages (position updates) are sent fire-and-forget"
-      - "Packet fragmentation and reassembly: messages larger than MTU (~1200 bytes for safe UDP) are fragmented, transmitted, and reassembled on the receiving end"
-      - "Congestion control: sending rate adapts to measured RTT and packet loss using an algorithm appropriate for real-time games (e.g., not TCP-style AIMD; use a jitter-aware approach); document the algorithm choice and rationale"
-      - "Clock synchronization: client and server establish a shared time reference using a protocol similar to NTP (multiple round-trip measurements, filtering outliers, estimating clock offset); synchronized to within 10ms accuracy"
-      - "Authenticated encryption: every packet is encrypted and authenticated using a symmetric cipher (e.g., ChaCha20-Poly1305) negotiated during connection handshake; tampered packets are dropped silently"
-      - "Connection handshake: a challenge-response protocol prevents IP spoofing and establishes the encryption session key before any game data is exchanged"
+      - Custom UDP protocol with bit-packing serialization: game state is serialized at the bit level (e.g., 10 bits for health, 3 bits for direction) to minimize packet size
+      - Reliability layer: critical messages (e.g., item pickups, chat) are delivered reliably with acknowledgment and retransmission; unreliable messages (position updates) are sent fire-and-forget
+      - Packet fragmentation and reassembly: messages larger than MTU (~1200 bytes for safe UDP) are fragmented, transmitted, and reassembled on the receiving end
+      - Congestion control: sending rate adapts to measured RTT and packet loss using an algorithm appropriate for real-time games (e.g., not TCP-style AIMD; use a jitter-aware approach); document the algorithm choice and rationale
+      - Clock synchronization: client and server establish a shared time reference using a protocol similar to NTP (multiple round-trip measurements, filtering outliers, estimating clock offset); synchronized to within 10ms accuracy
+      - Authenticated encryption: every packet is encrypted and authenticated using a symmetric cipher (e.g., ChaCha20-Poly1305) negotiated during connection handshake; tampered packets are dropped silently
+      - Connection handshake: a challenge-response protocol prevents IP spoofing and establishes the encryption session key before any game data is exchanged
     pitfalls:
-      - "Reimplementing TCP poorly: the most common mistake is building a reliable-ordered channel that behaves exactly like TCP (with head-of-line blocking). Separate reliable and unreliable channels explicitly."
-      - "Bit-packing endianness: bit-packing across byte boundaries produces different results on big-endian vs. little-endian architectures. Standardize on network byte order or document platform constraints."
-      - "Clock sync with asymmetric routes: if upload and download latencies differ, simple RTT/2 offset estimation is wrong. Use multiple samples and filter outliers."
-      - "Encryption overhead: authenticated encryption adds 16 bytes (tag) + nonce overhead per packet. For small position updates (20 bytes), this is significant. Batch small messages into a single encrypted packet."
-      - "Amplification attacks: a server that sends large responses to small unauthenticated packets is an amplification vector. Require the challenge-response handshake before sending any game data."
+      - Reimplementing TCP poorly: the most common mistake is building a reliable-ordered channel that behaves exactly like TCP (with head-of-line blocking). Separate reliable and unreliable channels explicitly.
+      - Bit-packing endianness: bit-packing across byte boundaries produces different results on big-endian vs. little-endian architectures. Standardize on network byte order or document platform constraints.
+      - Clock sync with asymmetric routes: if upload and download latencies differ, simple RTT/2 offset estimation is wrong. Use multiple samples and filter outliers.
+      - Encryption overhead: authenticated encryption adds 16 bytes (tag) + nonce overhead per packet. For small position updates (20 bytes), this is significant. Batch small messages into a single encrypted packet.
+      - Amplification attacks: a server that sends large responses to small unauthenticated packets is an amplification vector. Require the challenge-response handshake before sending any game data.
     concepts:
       - Reliable UDP protocol design
       - Bit-packing serialization
@@ -156,17 +156,17 @@ milestones:
       Interest, variable update rates based on relevance, and delta compression
       for entity property changes.
     acceptance_criteria:
-      - "Area of Interest (AoI) filtering: each player receives updates only for entities within their AoI region (configurable shape: sphere, frustum, or custom polygon); entities outside the AoI are not sent"
-      - "AoI supports different update frequencies based on distance: nearby entities update at full tick rate, distant entities update at reduced rates (e.g., 1/4 rate beyond 50% of AoI radius)"
-      - "Delta compression: only changed entity properties are sent each update; unchanged properties are omitted, reducing average packet size by >50% compared to full-state updates (verified by benchmark)"
-      - "Entity enter/exit events: when an entity enters or leaves a player's AoI, explicit create/destroy messages are sent so the client can spawn or despawn the entity smoothly"
-      - "Fast-moving entity handling: entities that cross spatial partition boundaries or transit through an AoI in a single tick are correctly detected and included in updates (no 'invisible bullet' problem)"
-      - "Priority-based bandwidth allocation: when total update data exceeds the per-player bandwidth budget, lower-priority entities (e.g., distant decorations) are dropped first while high-priority entities (nearby players, combat targets) are always included"
+      - Area of Interest (AoI) filtering: each player receives updates only for entities within their AoI region (configurable shape: sphere, frustum, or custom polygon); entities outside the AoI are not sent
+      - AoI supports different update frequencies based on distance: nearby entities update at full tick rate, distant entities update at reduced rates (e.g., 1/4 rate beyond 50% of AoI radius)
+      - Delta compression: only changed entity properties are sent each update; unchanged properties are omitted, reducing average packet size by >50% compared to full-state updates (verified by benchmark)
+      - Entity enter/exit events: when an entity enters or leaves a player's AoI, explicit create/destroy messages are sent so the client can spawn or despawn the entity smoothly
+      - Fast-moving entity handling: entities that cross spatial partition boundaries or transit through an AoI in a single tick are correctly detected and included in updates (no 'invisible bullet' problem)
+      - Priority-based bandwidth allocation: when total update data exceeds the per-player bandwidth budget, lower-priority entities (e.g., distant decorations) are dropped first while high-priority entities (nearby players, combat targets) are always included
     pitfalls:
-      - "AoI boundary oscillation: an entity at the exact edge of the AoI flickers between visible and invisible every frame. Use hysteresis (enter at distance D, exit at D+buffer)."
-      - "Delta compression baseline drift: if a delta update is lost (unreliable channel), the client's baseline diverges from the server's. Periodically send full-state snapshots to re-synchronize."
-      - "Fast-moving objects: a bullet moving 1000 units/tick may traverse a player's AoI without ever being 'in' it at a tick boundary. Use swept-volume intersection tests for fast objects."
-      - "Bandwidth estimation: the priority system needs to know how much bandwidth is available, which depends on the congestion control layer from M2. These systems must be integrated."
+      - AoI boundary oscillation: an entity at the exact edge of the AoI flickers between visible and invisible every frame. Use hysteresis (enter at distance D, exit at D+buffer).
+      - Delta compression baseline drift: if a delta update is lost (unreliable channel), the client's baseline diverges from the server's. Periodically send full-state snapshots to re-synchronize.
+      - Fast-moving objects: a bullet moving 1000 units/tick may traverse a player's AoI without ever being 'in' it at a tick boundary. Use swept-volume intersection tests for fast objects.
+      - Bandwidth estimation: the priority system needs to know how much bandwidth is available, which depends on the congestion control layer from M2. These systems must be integrated.
     concepts:
       - Area of Interest management
       - Delta compression
@@ -193,20 +193,20 @@ milestones:
       simulation, and server reconciliation (rollback and replay) scoped to the
       player's Area of Interest entities.
     acceptance_criteria:
-      - "Client-side prediction: the client immediately applies player input locally without waiting for server confirmation, providing responsive movement at any latency"
-      - "Server-authoritative simulation: the server processes all player inputs and produces the canonical game state; the server's state is always correct by definition"
-      - "Input buffer: the client sends timestamped inputs to the server and retains a buffer of unacknowledged inputs; when the server confirms a past state, the client replays all unacknowledged inputs on top of the confirmed state (reconciliation)"
-      - "Rollback scope: reconciliation replays only entities within the player's AoI (typically <500 entities), NOT all 100k world entities; reconciliation of 500 entities completes in <2ms (verified by benchmark)"
-      - "Visual smoothing: when reconciliation produces a correction, the client interpolates visually from the incorrect position to the corrected position over a configurable duration (default 100ms) rather than snapping"
+      - Client-side prediction: the client immediately applies player input locally without waiting for server confirmation, providing responsive movement at any latency
+      - Server-authoritative simulation: the server processes all player inputs and produces the canonical game state; the server's state is always correct by definition
+      - Input buffer: the client sends timestamped inputs to the server and retains a buffer of unacknowledged inputs; when the server confirms a past state, the client replays all unacknowledged inputs on top of the confirmed state (reconciliation)
+      - Rollback scope: reconciliation replays only entities within the player's AoI (typically <500 entities), NOT all 100k world entities; reconciliation of 500 entities completes in <2ms (verified by benchmark)
+      - Visual smoothing: when reconciliation produces a correction, the client interpolates visually from the incorrect position to the corrected position over a configurable duration (default 100ms) rather than snapping
       - "Simulation uses fixed-point arithmetic (or identical floating-point configuration with matching rounding modes) to ensure determinism between client and server on the same architecture; document the determinism strategy"
-      - "Lag compensation for interactions: when a player fires a weapon, the server rewinds the target's position to the shooter's perceived time (based on RTT and clock sync from M2) to evaluate the hit"
-      - "Misprediction metric: the system tracks and reports the frequency and magnitude of client mispredictions per player, enabling network quality diagnosis"
+      - Lag compensation for interactions: when a player fires a weapon, the server rewinds the target's position to the shooter's perceived time (based on RTT and clock sync from M2) to evaluate the hit
+      - Misprediction metric: the system tracks and reports the frequency and magnitude of client mispredictions per player, enabling network quality diagnosis
     pitfalls:
-      - "100k entity rollback in <1ms is physically impossible: cache misses alone make this infeasible. Scope rollback to AoI entities only (hundreds). Document this constraint explicitly."
-      - "Floating-point non-determinism: different CPUs (Intel vs AMD vs ARM) produce different float results for the same operations due to different rounding, FMA behavior, and instruction scheduling. Fixed-point arithmetic is the only portable solution; if using floats, mandate same-architecture client/server."
-      - "Input queue overflow: if the server falls behind processing inputs, the input buffer grows unboundedly. Set a maximum buffer size and drop oldest inputs with a desync warning."
-      - "Lag compensation abuse: excessive rewind (e.g., 500ms into the past) allows players on bad connections to 'shoot around corners.' Cap the maximum rewind time."
-      - "Visual smoothing artifacts: interpolating a correction of >1 unit while the player is moving produces visible rubber-banding. For large corrections, teleport rather than interpolate."
+      - 100k entity rollback in <1ms is physically impossible: cache misses alone make this infeasible. Scope rollback to AoI entities only (hundreds). Document this constraint explicitly.
+      - Floating-point non-determinism: different CPUs (Intel vs AMD vs ARM) produce different float results for the same operations due to different rounding, FMA behavior, and instruction scheduling. Fixed-point arithmetic is the only portable solution; if using floats, mandate same-architecture client/server.
+      - Input queue overflow: if the server falls behind processing inputs, the input buffer grows unboundedly. Set a maximum buffer size and drop oldest inputs with a desync warning.
+      - Lag compensation abuse: excessive rewind (e.g., 500ms into the past) allows players on bad connections to 'shoot around corners.' Cap the maximum rewind time.
+      - Visual smoothing artifacts: interpolating a correction of >1 unit while the player is moving produces visible rubber-banding. For large corrections, teleport rather than interpolate.
     concepts:
       - Client-side prediction
       - Server reconciliation (rollback and replay)

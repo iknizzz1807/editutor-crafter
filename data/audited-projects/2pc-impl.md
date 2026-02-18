@@ -93,11 +93,11 @@ milestones:
       implementing the protocol communication.
     acceptance_criteria:
       - "WAL appends log records containing (tx_id, state, participant_list, timestamp) and calls fsync before returning success"
-      - "Log records support states: PREPARE_SENT, VOTE_YES, VOTE_NO, COMMIT, ABORT, ACK for both coordinator and participant roles"
-      - "Coordinator state machine defines transitions: INIT -> PREPARE_SENT -> COMMITTED | ABORTED -> DONE, with each transition logged before acting"
-      - "Participant state machine defines transitions: INIT -> PREPARED (voted YES) | ABORTED (voted NO) -> COMMITTED | ABORTED, with each transition logged before responding"
+      - Log records support states: PREPARE_SENT, VOTE_YES, VOTE_NO, COMMIT, ABORT, ACK for both coordinator and participant roles
+      - Coordinator state machine defines transitions: INIT -> PREPARE_SENT -> COMMITTED | ABORTED -> DONE, with each transition logged before acting
+      - Participant state machine defines transitions: INIT -> PREPARED (voted YES) | ABORTED (voted NO) -> COMMITTED | ABORTED, with each transition logged before responding
       - "Log replay function reads all records and reconstructs the last known state for every transaction, returning a map of tx_id -> state"
-      - "Crash simulation test: write 5 log records, kill the process after record 3, restart, verify only records 1-3 are recovered (no partial writes)"
+      - Crash simulation test: write 5 log records, kill the process after record 3, restart, verify only records 1-3 are recovered (no partial writes)
       - "Log truncation removes records for completed transactions (DONE state) while preserving records for in-progress transactions"
     pitfalls:
       - "Calling fsync on the file descriptor is not enough if the filesystem uses write barriers; on Linux, use fdatasync or O_DSYNC for guaranteed durability"
@@ -131,7 +131,7 @@ milestones:
       - "Participant persists its vote to WAL BEFORE sending the vote response to the coordinator (force-write rule)"
       - "Coordinator aborts the transaction if any participant's vote is not received within a configurable timeout (e.g., 5 seconds)"
       - "After voting YES, participant enters the PREPARED (in-doubt/uncertain) state and MUST NOT unilaterally abort or commit until it receives the coordinator's decision"
-      - "Test: with 3 participants, participant 2 votes NO; verify coordinator receives the NO vote and proceeds to abort in the commit phase"
+      - Test: with 3 participants, participant 2 votes NO; verify coordinator receives the NO vote and proceeds to abort in the commit phase
     pitfalls:
       - "If the participant sends its vote before logging it, a crash after sending means the vote is lost and the coordinator may have already counted it—violating the protocol's safety guarantee"
       - "Setting the vote timeout too low causes spurious aborts under normal network latency; measure baseline RTT and set timeout to at least 3x p99 RTT"
@@ -144,7 +144,7 @@ milestones:
       - Lock acquisition and holding during protocol
     deliverables:
       - "Coordinator PREPARE broadcast sending PREPARE RPC to all participants"
-      - "Participant vote logic: lock acquisition, WAL write, vote response"
+      - Participant vote logic: lock acquisition, WAL write, vote response
       - "Vote collection with configurable timeout and early abort on any NO"
       - "Participant PREPARED state tracking with explicit uncertainty window documentation"
       - "Integration test with 3 participants covering all-YES and mixed-vote scenarios"
@@ -164,7 +164,7 @@ milestones:
       - "Participant receiving COMMIT applies changes, releases locks, logs COMMITTED to WAL, and responds ACK"
       - "Participant receiving ABORT rolls back changes, releases locks, logs ABORTED to WAL, and responds ACK"
       - "Coordinator retries decision delivery to participants that do not ACK within timeout, using exponential backoff"
-      - "Decision delivery is idempotent: if a participant receives a duplicate COMMIT or ABORT, it responds ACK without re-applying changes; verified by test sending COMMIT twice"
+      - Decision delivery is idempotent: if a participant receives a duplicate COMMIT or ABORT, it responds ACK without re-applying changes; verified by test sending COMMIT twice
       - "Transaction completes (coordinator logs DONE) only after all participants have acknowledged"
     pitfalls:
       - "Logging the decision AFTER sending it to participants means a coordinator crash after sending but before logging could lose the decision, creating an inconsistency if some participants committed and the recovered coordinator defaults to abort"
@@ -177,12 +177,12 @@ milestones:
       - Reliable delivery with retry and acknowledgment
       - Lock release after decision
     deliverables:
-      - "Decision logic: COMMIT if all YES, ABORT otherwise; logged to WAL before notification"
+      - Decision logic: COMMIT if all YES, ABORT otherwise; logged to WAL before notification
       - "Decision notification RPC sent to each participant with retry on timeout"
       - "Participant apply/rollback logic triggered by decision, with lock release"
       - "Acknowledgment collection with retry for non-responding participants"
-      - "Idempotency test: duplicate COMMIT delivery produces single application and ACK"
-      - "Transaction completion: coordinator logs DONE after all ACKs received"
+      - Idempotency test: duplicate COMMIT delivery produces single application and ACK
+      - Transaction completion: coordinator logs DONE after all ACKs received
     estimated_hours: "4-6"
 
   - id: 2pc-impl-m4
@@ -193,20 +193,20 @@ milestones:
       during the uncertainty window. Analyze and demonstrate the blocking
       nature of 2PC. Implement presumed abort optimization.
     acceptance_criteria:
-      - "Coordinator crash recovery: on restart, replay WAL; for transactions in PREPARE_SENT state, re-collect votes or abort; for transactions in COMMIT/ABORT state, re-send decision to unacknowledged participants"
-      - "Participant crash recovery: on restart, replay WAL; for transactions in PREPARED state (voted YES, no decision), enter uncertainty state and query coordinator for outcome"
-      - "Participant termination protocol: participant in uncertainty state sends QUERY(tx_id) to coordinator; coordinator responds with COMMIT, ABORT, or UNKNOWN"
+      - Coordinator crash recovery: on restart, replay WAL; for transactions in PREPARE_SENT state, re-collect votes or abort; for transactions in COMMIT/ABORT state, re-send decision to unacknowledged participants
+      - Participant crash recovery: on restart, replay WAL; for transactions in PREPARED state (voted YES, no decision), enter uncertainty state and query coordinator for outcome
+      - Participant termination protocol: participant in uncertainty state sends QUERY(tx_id) to coordinator; coordinator responds with COMMIT, ABORT, or UNKNOWN
       - "If coordinator responds UNKNOWN (no decision logged), the participant must remain blocked until the coordinator makes a decision—this is the fundamental blocking property of 2PC"
-      - "Blocking demonstration test: crash the coordinator after receiving all YES votes but before logging the decision; verify all participants are stuck in uncertainty state and cannot progress"
-      - "Presumed abort optimization: coordinator does not force-write ABORT decisions (only COMMIT); on recovery, any transaction without a COMMIT record is presumed aborted, reducing log writes for abort-heavy workloads"
-      - "Presumed abort correctness test: abort a transaction without logging ABORT, crash coordinator, recover, verify the transaction is correctly presumed aborted and participants are notified"
-      - "End-to-end recovery test: run 10 transactions, crash coordinator at random points, restart, verify all transactions either fully committed or fully aborted across all participants"
+      - Blocking demonstration test: crash the coordinator after receiving all YES votes but before logging the decision; verify all participants are stuck in uncertainty state and cannot progress
+      - Presumed abort optimization: coordinator does not force-write ABORT decisions (only COMMIT); on recovery, any transaction without a COMMIT record is presumed aborted, reducing log writes for abort-heavy workloads
+      - Presumed abort correctness test: abort a transaction without logging ABORT, crash coordinator, recover, verify the transaction is correctly presumed aborted and participants are notified
+      - End-to-end recovery test: run 10 transactions, crash coordinator at random points, restart, verify all transactions either fully committed or fully aborted across all participants
     pitfalls:
       - "The blocking problem is inherent to 2PC and cannot be fully solved without moving to 3PC or Paxos Commit; the learner must understand this is a fundamental limitation, not a bug"
-      - "Presumed abort is unsafe if participants do not also follow the protocol: a participant that voted YES and crashes must query the coordinator on recovery, not assume abort"
+      - Presumed abort is unsafe if participants do not also follow the protocol: a participant that voted YES and crashes must query the coordinator on recovery, not assume abort
       - "Coordinator single point of failure means the entire protocol halts if the coordinator is permanently lost; document this limitation explicitly"
       - "Network partitions between coordinator and participants look identical to coordinator crashes from the participant's perspective; the termination protocol handles both cases"
-      - "Recovery loops: a participant that repeatedly queries an unavailable coordinator must use exponential backoff to avoid overwhelming the network"
+      - Recovery loops: a participant that repeatedly queries an unavailable coordinator must use exponential backoff to avoid overwhelming the network
     concepts:
       - Coordinator crash recovery via WAL replay
       - Participant uncertainty state and termination protocol
@@ -214,11 +214,11 @@ milestones:
       - Presumed abort optimization
       - Single point of failure analysis
     deliverables:
-      - "Coordinator recovery: WAL replay, re-drive in-progress transactions to completion"
-      - "Participant recovery: WAL replay, query coordinator for unknown outcomes"
-      - "Termination protocol: participant QUERY RPC and coordinator response handler"
-      - "Blocking demonstration: test proving participants cannot progress without coordinator"
-      - "Presumed abort: optimized log writes for abort case with correctness test"
+      - Coordinator recovery: WAL replay, re-drive in-progress transactions to completion
+      - Participant recovery: WAL replay, query coordinator for unknown outcomes
+      - Termination protocol: participant QUERY RPC and coordinator response handler
+      - Blocking demonstration: test proving participants cannot progress without coordinator
+      - Presumed abort: optimized log writes for abort case with correctness test
       - "End-to-end recovery integration test with random crash injection"
     estimated_hours: "5-8"
 ```

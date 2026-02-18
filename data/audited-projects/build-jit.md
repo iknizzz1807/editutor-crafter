@@ -68,13 +68,13 @@ languages:
     - Zig
   also_possible: []
 resources:
-  - name: "Adventures in JIT Compilation"
+  - name: Adventures in JIT Compilation""
     url: https://eli.thegreenplace.net/2017/adventures-in-jit-compilation-part-1-an-interpreter/
     type: article
-  - name: "x86-64 Instruction Reference"
+  - name: x86-64 Instruction Reference""
     url: https://www.felixcloutier.com/x86/
     type: reference
-  - name: "Intel 64 and IA-32 Software Developer Manuals"
+  - name: Intel 64 and IA-32 Software Developer Manuals""
     url: https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html
     type: reference
 prerequisites:

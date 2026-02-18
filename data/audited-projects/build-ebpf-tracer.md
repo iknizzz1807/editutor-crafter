@@ -170,7 +170,7 @@ milestones:
       Trace TCP connection lifecycle events using kernel tracepoints with
       configurable filtering.
     acceptance_criteria:
-      - Attaches to the sock:inet_sock_set_state tracepoint for TCP state change tracking
+      - Attaches to the sock: inet_sock_set_state tracepoint for TCP state change tracking
       - Captures source IP, destination IP, source port, destination port, old state, and new state for each transition
       - Handles both IPv4 (4-byte) and IPv6 (16-byte) addresses correctly using the address family field
       - Tracks connection duration by recording the timestamp of the ESTABLISHED transition and computing delta at CLOSE/TIME_WAIT
@@ -195,7 +195,7 @@ milestones:
       - Event correlation
       - Runtime filtering
     deliverables:
-      - Tracepoint attachment for sock:inet_sock_set_state
+      - Tracepoint attachment for sock: inet_sock_set_state
       - IP and port extraction handling both IPv4 and IPv6
       - Connection duration tracking from ESTABLISHED to CLOSE
       - BPF map-based filtering by PID, port, and address
@@ -239,5 +239,4 @@ milestones:
       - Runtime probe enable/disable and filter reconfiguration
       - Performance overhead measurement documenting CPU cost of active probes
     estimated_hours: 10
-
 ```

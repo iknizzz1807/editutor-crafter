@@ -214,7 +214,7 @@ milestones:
       - Memory retrieval returns top-K (configurable) most semantically relevant entries for a given query
       - Context window manager counts tokens in the assembled prompt and truncates/summarizes history to stay within budget
       - Summarization compresses older conversation turns using an LLM call, preserving key facts and decisions
-      - Token budget allocation is explicit: X% for system prompt, Y% for memory retrieval, Z% for recent history (configurable)
+      - Token budget allocation is explicit: X% for system prompt, Y% for memory retrieval, Z% for recent history (configurable)""
       - Verified: agent correctly recalls a fact stored 20+ conversation turns ago via long-term memory retrieval
     pitfalls:
       - Memory grows unbounded without TTL or eviction; implement max entries and oldest-first eviction
@@ -318,5 +318,4 @@ milestones:
       - Delegation loop detector preventing circular agent-to-agent delegation
       - Shared context store with read/write access for cooperating agents
     estimated_hours: "15-20"
-
 ```

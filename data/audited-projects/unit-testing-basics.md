@@ -66,13 +66,13 @@ languages:
     - Go
     - Rust
 resources:
-  - name: "pytest Documentation"
+  - name: pytest Documentation""
     url: "https://docs.pytest.org/"
     type: documentation
-  - name: "Jest Documentation"
+  - name: Jest Documentation""
     url: "https://jestjs.io/docs/getting-started"
     type: documentation
-  - name: "JUnit 5 User Guide"
+  - name: JUnit 5 User Guide""
     url: "https://junit.org/junit5/docs/current/user-guide/"
     type: documentation
 prerequisites:

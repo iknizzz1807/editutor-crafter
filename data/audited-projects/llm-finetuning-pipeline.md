@@ -169,7 +169,7 @@ milestones:
       scheduling, checkpointing, and convergence monitoring.
     acceptance_criteria:
       - Training runs with gradient accumulation; effective batch size = micro_batch × gradient_accumulation_steps
-      - Learning rate schedule: linear warmup for N steps (default 10% of total steps) followed by cosine decay to 0
+      - Learning rate schedule: "linear warmup for N steps (default 10% of total steps) followed by cosine decay to 0"
       - Training loss logged every step; validation loss evaluated every N steps (default every 100 steps)
       - Checkpoints saved at configurable intervals; best checkpoint tracked by validation loss
       - Early stopping halts training when validation loss fails to improve for K evaluations (configurable, default 3)
@@ -276,5 +276,4 @@ milestones:
       - Optional GGUF converter with post-conversion perplexity check
       - Inference benchmark comparing merged model speed vs adapter-attached
     estimated_hours: "8-10"
-
 ```

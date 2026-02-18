@@ -101,10 +101,10 @@ milestones:
       - Built-in commands (cd, exit, export, pwd, unset) are dispatched without forking; cd changes cwd and updates PWD; export sets env vars; student explains WHY these must be built-ins
       - Parser errors produce descriptive messages (e.g., 'syntax error near unexpected token |')
     pitfalls:
-      - "String splitting is not parsing; 'echo "hello world"' must produce one argument, not two"
+      - "String splitting is not parsing; 'echo \"hello world\"' must produce one argument, not two"
       - "Nested quotes and escape sequences require careful state tracking in the lexer"
       - "AST design affects extensibility; flat token lists make control flow very hard to add later"
-      - "execvp failure in child: must call _exit(127) not exit() to avoid flushing parent's stdio buffers"
+      - execvp failure in child: must call _exit(127) not exit() to avoid flushing parent's stdio buffers
     concepts:
       - Lexical analysis and tokenization
       - Recursive descent or precedence-climbing parsing
@@ -140,7 +140,7 @@ milestones:
       - "Command substitution requires creating a subshell (fork), capturing its stdout via pipe, and substituting the output — this is recursive shell invocation"
       - "Nested command substitution $(echo $(date)) must work; requires recursive parsing"
       - "Glob expansion in the wrong directory or not escaping glob characters in variable values"
-      - "2>&1 order matters: '> file 2>&1' redirects both to file; '2>&1 > file' redirects stderr to original stdout, then stdout to file"
+      - 2>&1 order matters: '> file 2>&1' redirects both to file; '2>&1 > file' redirects stderr to original stdout, then stdout to file
     concepts:
       - Shell expansion pipeline
       - Command substitution as subshell
@@ -177,7 +177,7 @@ milestones:
       - 'bg %N' sends SIGCONT to stopped job, leaves it in background
       - Completed background jobs are reported at next prompt
     pitfalls:
-      - "tcsetpgrp() is the CRITICAL piece: without it, terminal-generated signals (Ctrl+C, Ctrl+Z) go to the shell's group, not the foreground job"
+      - tcsetpgrp() is the CRITICAL piece: without it, terminal-generated signals (Ctrl+C, Ctrl+Z) go to the shell's group, not the foreground job
       - "Race between parent's setpgid and child's exec; both must call setpgid independently"
       - "SIGCHLD handler must NOT call printf, malloc, or any non-async-signal-safe function; use write() for output"
       - "sigprocmask to block SIGCHLD during job table modifications prevents corruption"
@@ -219,7 +219,7 @@ milestones:
       - "If condition is a command's exit status, NOT a boolean expression; 'if true; then' works because 'true' is a command that exits 0"
       - "test/[ command is external (/usr/bin/test); the shell doesn't need to implement comparison operators itself"
       - "Function definitions must be stored (name → AST body) and dispatched before external command lookup"
-      - "Variable scope: shell functions share the parent's variable scope by default (no local scope unless using 'local')"
+      - Variable scope: shell functions share the parent's variable scope by default (no local scope unless using 'local')
       - "Script execution must handle line continuations (trailing \\) and multi-line constructs"
     concepts:
       - Exit-status-based conditionals

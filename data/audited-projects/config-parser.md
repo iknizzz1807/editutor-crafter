@@ -102,8 +102,8 @@ milestones:
       - Data validation
     acceptance_criteria:
       - Parse [section] headers creating nested dictionary structure; section names are case-sensitive
-      - Parse key=value and key:value pairs with whitespace trimming around both key and value
-      - Handle keys before any section header as belonging to a 'DEFAULT' or global section
+      - Parse key=value and key: value pairs with whitespace trimming around both key and value
+      - "Handle keys before any section header as belonging to a 'DEFAULT' or global section"
       - Handle ; and # full-line comments by ignoring them; handle inline comments after values (separated by ; or #)
       - Support quoted string values (single and double quotes) with proper escape sequences (\n, \t, \\, \")
       - Do NOT parse = or : inside quoted strings as key-value delimiters
@@ -112,8 +112,8 @@ milestones:
       - Verify by round-tripping: parse then serialize back and re-parse; result must be identical
     pitfalls:
       - INI has no formal spec; explicitly document which dialect you implement (e.g., Python configparser compatible)
-      - Forgetting to handle inline comments after values (e.g., 'key = value ; comment')
-      - '=' inside quoted strings must not split key from value
+      - "Forgetting to handle inline comments after values (e.g., 'key = value ; comment')"
+      - "'=' inside quoted strings must not split key from value"
       - Keys outside any section are common in some INI dialects but not others; decide and document
       - Multi-line values (continuation lines) exist in some dialects; decide whether to support
     deliverables:
@@ -178,7 +178,7 @@ milestones:
       - Handle dotted keys (e.g., physical.color = "orange") creating intermediate tables implicitly
       - Reject duplicate key definitions with clear error messages (TOML spec forbids key redefinition)
       - Reject defining a key as both a table and a value
-      - Pass the official TOML test suite (https://github.com/toml-lang/toml-test) for valid inputs; reject all invalid inputs
+      - Pass the official TOML test suite (https: //github.com/toml-lang/toml-test) for valid inputs; reject all invalid inputs
     pitfalls:
       - Cannot redefine a key that already exists; this includes implicit tables created by dotted keys
       - Array of tables ([[x]]) and inline arrays ([1,2]) have completely different syntax and semantics
@@ -208,17 +208,17 @@ milestones:
       - Parse block sequences (- item) with indentation determining nesting depth
       - Use consistent indentation (spaces only; reject tabs with clear error per YAML spec)
       - Handle quoted strings (single and double) preserving exact content
-      - "Handle unquoted scalars with YAML 1.2 Core Schema type inference ONLY: null (null, ~), boolean (true, false only—NOT yes/no/on/off), integer (decimal), float (decimal, inf, nan)"
+      - Handle unquoted scalars with YAML 1.2 Core Schema type inference ONLY: null (null, ~), boolean (true, false only—NOT yes/no/on/off), integer (decimal), float (decimal, inf, nan)
       - All other unquoted values are treated as strings (safe default)
       - Handle comments (# to end of line)
-      - "Explicitly OUT OF SCOPE: flow style, multi-line scalars (| and >), anchors/aliases, tags, merge keys"
+      - Explicitly OUT OF SCOPE: flow style, multi-line scalars (| and >), anchors/aliases, tags, merge keys
       - Report errors with line numbers for indentation violations or malformed syntax
       - Verify against PyYAML output for a test suite of 10+ YAML files (block-style only)
     pitfalls:
       - Tabs are forbidden for indentation in YAML; detect and reject with clear error
       - "YAML 1.1 type inference (yes/no/on/off as booleans) caused the infamous 'Norway problem'; restrict to YAML 1.2 Core Schema"
       - Indentation must be consistent within a level but different levels can use different amounts
-      - Empty values after colon (key:) should produce null, not empty string
+      - Empty values after colon (key: ) should produce null, not empty string
       - Nested mappings inside sequences and vice versa create complex indentation tracking
     deliverables:
       - Indentation tracker using a stack to manage nesting depth
@@ -255,5 +255,4 @@ milestones:
       - Unified parse() API returning normalized data structures
       - Format-specific parser entry points
       - Integration test suite covering all three formats
-
 ```

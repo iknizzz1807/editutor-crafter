@@ -90,16 +90,16 @@ milestones:
     acceptance_criteria:
       - "Tokenizer reads input string character by character and emits a list of tokens"
       - "Number tokens correctly capture integers (42) and floating-point (3.14) as a single token"
-      - "Operator tokens: +, -, *, /, ^ are each emitted as individual tokens with correct type"
-      - "Parenthesis tokens: ( and ) are emitted as distinct token types"
-      - "Identifier tokens: sequences of letters/underscores (e.g., sqrt, x, pi) are captured"
+      - Operator tokens: +, -, *, /, ^ are each emitted as individual tokens with correct type
+      - Parenthesis tokens: ( and ) are emitted as distinct token types
+      - Identifier tokens: sequences of letters/underscores (e.g., sqrt, x, pi) are captured
       - "Whitespace is consumed and skipped without emitting tokens"
       - "EOF token is emitted at the end of input"
       - "Invalid characters (e.g., @, #) produce an error with the character position"
       - "Each token stores its type, lexeme string, and position (column number)"
     pitfalls:
       - "Forgetting to handle multi-digit numbers—tokenizing '42' as two tokens '4' and '2'"
-      - "Decimal point handling: '3.14' is one number token, not '3', '.', '14'"
+      - Decimal point handling: "'3.14' is one number token, not '3', '.', '14'"
       - "Not emitting EOF causes parser to crash at end of input"
       - "Negative numbers should NOT be tokenized as negative literals—'-5' is minus token then number token (unary handled by parser)"
     concepts:
@@ -125,17 +125,17 @@ milestones:
       Build a recursive descent parser that consumes tokens and evaluates
       expressions with correct operator precedence and parentheses.
     acceptance_criteria:
-      - "Addition and subtraction are left-associative at lowest precedence: 1-2-3 = -4"
-      - "Multiplication and division bind tighter: 2+3*4 = 14"
-      - "Parentheses override precedence: (2+3)*4 = 20"
+      - Addition and subtraction are left-associative at lowest precedence: 1-2-3 = -4
+      - Multiplication and division bind tighter: 2+3*4 = 14
+      - Parentheses override precedence: (2+3)*4 = 20
       - "Division by zero produces a clear error message, not a crash or infinity"
-      - "Nested parentheses work to arbitrary depth: ((((1+2)))) = 3"
+      - Nested parentheses work to arbitrary depth: ((((1+2)))) = 3
       - "Unmatched parentheses produce error with position of the offending token"
       - "Empty input or unexpected token (e.g., '+ 3') produces descriptive error"
       - "Parser operates on token stream from M1 (not raw characters)"
       - "Evaluation produces floating-point results (e.g., 7/2 = 3.5)"
     pitfalls:
-      - "Right-associative parsing of left-associative operators: 1-2-3 = 2 instead of -4"
+      - Right-associative parsing of left-associative operators: 1-2-3 = 2 instead of -4
       - "Consuming tokens incorrectly causes parser to skip or double-read"
       - "Missing error for unmatched ')' at top level"
       - "Integer division truncation when float was expected"
@@ -162,17 +162,17 @@ milestones:
     description: >
       Add unary minus/plus and right-associative exponentiation operator.
     acceptance_criteria:
-      - "Unary minus negates values: -5 evaluates to -5"
-      - "Double unary: --5 evaluates to 5 (unary minus applied twice)"
-      - "Exponentiation: 2^10 evaluates to 1024"
-      - "Right-associativity: 2^3^2 evaluates to 2^9 = 512, NOT (2^3)^2 = 64"
-      - "Precedence: -2^2 evaluates to -(2^2) = -4 (power binds tighter than unary)"
-      - "Exponentiation with fractional exponents: 4^0.5 evaluates to 2.0"
-      - "Precedence hierarchy verified: parentheses > power > unary > multiply/divide > add/subtract"
+      - Unary minus negates values: -5 evaluates to -5
+      - Double unary: --5 evaluates to 5 (unary minus applied twice)
+      - Exponentiation: 2^10 evaluates to 1024
+      - Right-associativity: 2^3^2 evaluates to 2^9 = 512, NOT (2^3)^2 = 64
+      - Precedence: -2^2 evaluates to -(2^2) = -4 (power binds tighter than unary)
+      - Exponentiation with fractional exponents: 4^0.5 evaluates to 2.0
+      - Precedence hierarchy verified: parentheses > power > unary > multiply/divide > add/subtract
     pitfalls:
       - "Right-associativity requires recursing at same precedence level, not precedence+1"
-      - "Unary minus binding tighter than power: -2^2=-4 requires power to be parsed before unary is applied"
-      - "Confusing unary minus with subtraction: '3-2' is subtraction, '3*-2' is multiply then unary"
+      - Unary minus binding tighter than power: -2^2=-4 requires power to be parsed before unary is applied
+      - Confusing unary minus with subtraction: "'3-2' is subtraction, '3*-2' is multiply then unary"
       - "0^0 is mathematically contentious—decide on behavior and document it"
     concepts:
       - Unary operators
@@ -186,7 +186,7 @@ milestones:
       - "Unary minus (and optionally plus) prefix operator"
       - "Exponentiation operator with right-associative evaluation"
       - "Updated precedence hierarchy"
-      - "Test suite verifying: -2^2=-4, 2^3^2=512, --5=5"
+      - Test suite verifying: -2^2=-4, 2^3^2=512, --5=5
     estimated_hours: "2-3"
 
   - id: calculator-parser-m4
@@ -195,21 +195,21 @@ milestones:
       Add variable assignment, built-in math functions, and an
       interactive REPL loop.
     acceptance_criteria:
-      - "Variable assignment: 'x = 5' stores value; 'x + 2' evaluates to 7"
-      - "Assignment is a statement (not an expression): 'y = x = 5' is a syntax error"
+      - Variable assignment: "'x = 5' stores value; 'x + 2' evaluates to 7"
+      - Assignment is a statement (not an expression): "'y = x = 5' is a syntax error"
       - "Undefined variable reference produces error with variable name"
-      - "Built-in functions: sin, cos, sqrt, abs, log accept one argument in parentheses"
-      - "Function call syntax: 'sqrt(16)' evaluates to 4.0"
-      - "Nested function calls: 'sqrt(abs(-16))' evaluates to 4.0"
-      - "Built-in constants: pi = 3.14159..., e = 2.71828... are pre-defined"
-      - "REPL mode: reads input line by line, evaluates, prints result, repeats until exit command"
+      - Built-in functions: sin, cos, sqrt, abs, log accept one argument in parentheses
+      - Function call syntax: "'sqrt(16)' evaluates to 4.0"
+      - Nested function calls: "'sqrt(abs(-16))' evaluates to 4.0"
+      - Built-in constants: pi = 3.14159..., e = 2.71828... are pre-defined
+      - REPL mode: reads input line by line, evaluates, prints result, repeats until exit command
       - "REPL displays errors without crashing and continues accepting input"
       - "'exit' or 'quit' command terminates the REPL"
     pitfalls:
-      - "Function name vs variable name ambiguity: 'sqrt' as variable shadows the function"
+      - Function name vs variable name ambiguity: "'sqrt' as variable shadows the function"
       - "Assignment inside an expression context (e.g., '2 + x = 3') must be rejected"
       - "REPL not catching exceptions—single bad input crashes the session"
-      - "Scope issues: all variables are global (acceptable for a calculator)"
+      - Scope issues: all variables are global (acceptable for a calculator)
     concepts:
       - Symbol tables
       - Function call parsing
@@ -225,9 +225,8 @@ milestones:
       - "Variable assignment parsing and storage"
       - "Variable lookup in expression evaluation"
       - "Built-in function registry with sin, cos, sqrt, abs, log"
-      - "Function call parsing: identifier + '(' + expression + ')'"
+      - Function call parsing: "identifier + '(' + expression + ')'"
       - "Pre-defined constants (pi, e)"
       - "Interactive REPL loop with error recovery"
     estimated_hours: "2-4"
-
 ```

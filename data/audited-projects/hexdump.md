@@ -205,5 +205,4 @@ milestones:
       - Length limiting with accurate byte counting
       - Stdin support following POSIX conventions (no file arg = read stdin)
       - Canonical output format (-C) matching standard hexdump -C
-
 ```

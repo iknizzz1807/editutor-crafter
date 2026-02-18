@@ -91,11 +91,11 @@ milestones:
       DOM from virtual DOM, including functional component support.
     estimated_hours: 12
     concepts:
-      - "Virtual DOM: lightweight JS objects {type, props, children} representing UI"
-      - "createElement: function called by JSX transpiler to produce virtual nodes"
-      - "Functional components: functions that return virtual DOM trees"
-      - "Text nodes: wrap raw strings/numbers in a text virtual node type"
-      - "Children normalization: filter out null, undefined, false; flatten nested arrays"
+      - Virtual DOM: lightweight JS objects {type, props, children} representing UI
+      - createElement: function called by JSX transpiler to produce virtual nodes
+      - Functional components: functions that return virtual DOM trees
+      - Text nodes: wrap raw strings/numbers in a text virtual node type
+      - Children normalization: filter out null, undefined, false; flatten nested arrays
     skills:
       - DOM API (createElement, createTextNode, setAttribute)
       - Recursive tree traversal
@@ -106,9 +106,9 @@ milestones:
       - "Children that are null, undefined, false, or true are filtered out; strings and numbers are wrapped as text virtual nodes"
       - "render(vdom, container) creates matching real DOM elements from the virtual node tree and appends them to the container element"
       - "Text nodes (strings, numbers) are correctly created as DOM text nodes"
-      - "Props are applied to DOM elements: className sets class attribute, style object sets inline styles, on* props (onClick, onChange) attach event listeners"
+      - Props are applied to DOM elements: className sets class attribute, style object sets inline styles, on* props (onClick, onChange) attach event listeners
       - "Functional components (functions returning virtual DOM) are called during render and their return value is recursively rendered"
-      - "JSX integration: configuring Babel/TypeScript pragma to use your createElement produces working UI from JSX syntax"
+      - JSX integration: configuring Babel/TypeScript pragma to use your createElement produces working UI from JSX syntax
     pitfalls:
       - Not handling null/undefined/boolean children causing crashes on document.createTextNode(null)
       - Event listener naming mismatch (onClick in JSX vs onclick in DOM)
@@ -131,10 +131,10 @@ milestones:
       updates the real DOM by diffing old and new virtual DOM trees.
     estimated_hours: 18
     concepts:
-      - "Heuristic: different type = destroy and recreate entire subtree (no cross-type diffing)"
-      - "Same type element: update changed props in-place, recurse into children"
-      - "Keyed reconciliation: match children by key to preserve DOM identity across reorders"
-      - "O(n) complexity: compare trees level-by-level, not arbitrary tree edit distance"
+      - Heuristic: different type = destroy and recreate entire subtree (no cross-type diffing)
+      - Same type element: update changed props in-place, recurse into children
+      - Keyed reconciliation: match children by key to preserve DOM identity across reorders
+      - O(n) complexity: compare trees level-by-level, not arbitrary tree edit distance
     skills:
       - Algorithm design (tree comparison)
       - DOM node reference tracking
@@ -143,11 +143,11 @@ milestones:
     acceptance_criteria:
       - "When element type changes (e.g., div -> span), the old subtree is completely destroyed (DOM nodes removed, event listeners cleaned up) and new subtree is created from scratch"
       - "When element type is the same, only changed props are updated on the existing DOM node; unchanged subtrees are not touched"
-      - "Property diffing correctly handles: added props (set on DOM), removed props (remove from DOM), changed props (update on DOM), and changed event listeners (remove old, add new)"
+      - Property diffing correctly handles: added props (set on DOM), removed props (remove from DOM), changed props (update on DOM), and changed event listeners (remove old, add new)
       - "Keyed children are matched by key across renders; a reordered list of keyed items moves existing DOM nodes instead of destroying and recreating them (verified by checking DOM node identity via reference equality)"
       - "Unkeyed children are diffed by index position; inserting at the beginning of an unkeyed list recreates all children (known limitation matching React behavior)"
       - "Re-render of unchanged virtual DOM tree produces zero DOM mutations (verified by counting DOM API calls)"
-      - "Component re-rendering: when a functional component's parent re-renders, the component is re-invoked and its output is reconciled"
+      - Component re-rendering: when a functional component's parent re-renders, the component is re-invoked and its output is reconciled
     pitfalls:
       - Using array index as key causing incorrect DOM reuse when list items are reordered
       - Not cleaning up event listeners on removed elements causing memory leaks
@@ -171,11 +171,11 @@ milestones:
       thread.
     estimated_hours: 22
     concepts:
-      - "Fiber node: linked list structure with child, sibling, parent pointers replacing recursive tree walk"
-      - "Work loop: process one fiber unit of work, then check if browser needs control back"
-      - "Double buffering: current fiber tree (what's on screen) and work-in-progress tree (being built)"
-      - "Commit phase: after all fibers are processed, apply DOM mutations atomically in one batch"
-      - "requestIdleCallback (or MessageChannel scheduler): yield to browser between work units"
+      - Fiber node: linked list structure with child, sibling, parent pointers replacing recursive tree walk
+      - Work loop: process one fiber unit of work, then check if browser needs control back
+      - Double buffering: current fiber tree (what's on screen) and work-in-progress tree (being built)
+      - Commit phase: after all fibers are processed, apply DOM mutations atomically in one batch
+      - requestIdleCallback (or MessageChannel scheduler): yield to browser between work units
     skills:
       - Linked list data structures
       - Cooperative scheduling patterns
@@ -189,7 +189,7 @@ milestones:
       - "Commit phase applies all accumulated DOM mutations (insertions, updates, deletions) in a single synchronous pass after the entire tree is reconciled — no partial updates are visible to the user"
       - "A rendering workload of 10,000 elements does not block the main thread for more than 16ms at a time (verified by measuring long task duration with PerformanceObserver or manual timing)"
       - "In-progress render work can be interrupted (simulated by reducing deadline) and resumed correctly, producing the same final DOM as an uninterrupted render"
-      - "Functional components are processed as fiber nodes: the component function is called during the render phase, and its returned virtual DOM is used to create child fibers"
+      - Functional components are processed as fiber nodes: the component function is called during the render phase, and its returned virtual DOM is used to create child fibers
     pitfalls:
       - Forgetting to handle the 'return' (parent) pointer causing incomplete tree traversal
       - Memory leaks in the alternate (old) fiber tree if not properly cleaned up after commit
@@ -212,11 +212,11 @@ milestones:
       persistence, with batched state updates and proper effect lifecycle.
     estimated_hours: 28
     concepts:
-      - "Hooks array: each fiber maintains an ordered array of hook values, indexed by call order"
-      - "useState: returns [value, setter]; setter queues a re-render; multiple setters in one handler batch into single re-render"
-      - "useEffect: runs AFTER commit phase (DOM is updated); cleanup runs before next effect or on unmount"
-      - "Dependency array: effect re-runs only when deps change (shallow comparison)"
-      - "Rules of hooks: hooks must be called in the same order every render (no conditionals)"
+      - Hooks array: each fiber maintains an ordered array of hook values, indexed by call order
+      - useState: returns [value, setter]; setter queues a re-render; multiple setters in one handler batch into single re-render
+      - useEffect: runs AFTER commit phase (DOM is updated); cleanup runs before next effect or on unmount
+      - Dependency array: effect re-runs only when deps change (shallow comparison)
+      - Rules of hooks: hooks must be called in the same order every render (no conditionals)
     skills:
       - JavaScript closures
       - State management patterns
@@ -225,13 +225,13 @@ milestones:
       - Hook ordering rules enforcement
     acceptance_criteria:
       - "useState(initialValue) returns [currentValue, setterFunction]; calling the setter with a new value triggers a re-render of the component"
-      - "State persists across re-renders: calling useState on re-render returns the updated value, not the initial value"
+      - State persists across re-renders: calling useState on re-render returns the updated value, not the initial value
       - "Multiple setState calls within the same event handler are batched into a single re-render (component renders once, not N times)"
       - "useEffect(callback, deps) runs the callback AFTER the commit phase (DOM is updated), not during render"
-      - "useEffect cleanup: if the callback returns a function, it is called before the effect re-runs and on component unmount"
-      - "Dependency tracking: effect re-runs only when at least one dependency value changes (shallow equality comparison); empty deps array ([]) means effect runs only on mount"
+      - useEffect cleanup: if the callback returns a function, it is called before the effect re-runs and on component unmount
+      - Dependency tracking: effect re-runs only when at least one dependency value changes (shallow equality comparison); empty deps array ([]) means effect runs only on mount
       - "Hooks called in different order across renders (e.g., inside an if statement) throw a descriptive error message"
-      - "Custom hooks: functions starting with 'use' that compose useState and useEffect work correctly and share no state between different component instances"
+      - Custom hooks: functions starting with 'use' that compose useState and useEffect work correctly and share no state between different component instances
       - "A counter component using useState correctly increments and re-renders; a timer component using useEffect correctly starts on mount and cleans up on unmount"
     pitfalls:
       - Stale closures capturing old state values in event handlers — setter should support functional updates: setState(prev => prev + 1)
@@ -248,5 +248,4 @@ milestones:
       - Dependency array comparison (shallow equality)
       - Hook order validation (error on conditional hooks)
       - Custom hook support (composable useState/useEffect)
-
 ```

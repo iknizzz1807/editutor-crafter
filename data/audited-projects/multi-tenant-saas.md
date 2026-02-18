@@ -93,16 +93,16 @@ milestones:
       make isolation concrete and testable.
     estimated_hours: 13
     concepts:
-      - "Shared database, shared schema: all tenants in same tables, distinguished by tenant_id"
+      - Shared database, shared schema: all tenants in same tables, distinguished by tenant_id
       - "Composite indexes with tenant_id prefix for efficient tenant-scoped queries"
-      - "Soft delete: mark records as deleted without physical removal"
-      - "Sample domain: tenants, users, projects, tasks — all scoped by tenant_id"
+      - Soft delete: mark records as deleted without physical removal
+      - Sample domain: tenants, users, projects, tasks — all scoped by tenant_id
     skills:
       - Schema design with tenant isolation
       - Foreign key and index design
       - Tenant provisioning workflow
     acceptance_criteria:
-      - "Tenant table has columns: id (UUID), name, slug (unique), subdomain (unique), plan (free/pro/enterprise), settings (JSONB), created_at, deleted_at (nullable for soft delete)"
+      - Tenant table has columns: id (UUID), name, slug (unique), subdomain (unique), plan (free/pro/enterprise), settings (JSONB), created_at, deleted_at (nullable for soft delete)
       - "Sample domain tables (users, projects, tasks) all include a tenant_id column with NOT NULL constraint and foreign key to tenant table"
       - "Composite indexes on (tenant_id, id) and (tenant_id, created_at) exist on all tenant-scoped tables; EXPLAIN ANALYZE confirms index scan for tenant-scoped queries"
       - "Tenant provisioning API creates a tenant record with default settings, creates an admin user, and returns credentials — all within a single database transaction"
@@ -130,22 +130,22 @@ milestones:
       query filtering as the first layer of tenant isolation.
     estimated_hours: 13
     concepts:
-      - "Tenant resolution: determine tenant from subdomain, header, or JWT claim"
-      - "Request-scoped context: store tenant_id for the duration of the request"
-      - "ORM global filter: automatically append WHERE tenant_id = X to all queries"
-      - "Context propagation: ensure tenant context reaches background jobs and async tasks"
+      - Tenant resolution: determine tenant from subdomain, header, or JWT claim
+      - Request-scoped context: store tenant_id for the duration of the request
+      - ORM global filter: automatically append WHERE tenant_id = X to all queries
+      - Context propagation: ensure tenant context reaches background jobs and async tasks
     skills:
       - Middleware implementation
       - Request context management
       - ORM query hooks/filters
     acceptance_criteria:
-      - "Tenant is resolved from (in priority order): JWT tenant_id claim, X-Tenant-ID header, or request subdomain; missing tenant identification returns 400 Bad Request"
+      - Tenant is resolved from (in priority order): JWT tenant_id claim, X-Tenant-ID header, or request subdomain; missing tenant identification returns 400 Bad Request
       - "Tenant context is stored in request scope and accessible to all downstream handlers, services, and database queries within the same request"
-      - "All ORM queries automatically include WHERE tenant_id = :current_tenant without manual specification; a query for tasks returns only the current tenant's tasks"
-      - "Cross-tenant data access is blocked: manually constructing a query with a different tenant_id returns zero rows (application-level filter overrides)"
+      - All ORM queries automatically include WHERE tenant_id = : current_tenant without manual specification; a query for tasks returns only the current tenant's tasks
+      - Cross-tenant data access is blocked: manually constructing a query with a different tenant_id returns zero rows (application-level filter overrides)
       - "All log entries include tenant_id for request tracing and debugging"
       - "Background jobs triggered by a request carry the originating tenant_id in their payload and set the tenant context before execution"
-      - "An async test: two concurrent requests from different tenants executing simultaneously each see only their own data (no context leakage)"
+      - An async test: two concurrent requests from different tenants executing simultaneously each see only their own data (no context leakage)
       - "Admin superuser endpoint allows platform operators to query across all tenants by explicitly bypassing the tenant filter"
     pitfalls:
       - Thread-local/context-local tenant ID leaking between async requests in event-loop frameworks
@@ -169,9 +169,9 @@ milestones:
       tenant isolation at the database level, independent of application code.
     estimated_hours: 13
     concepts:
-      - "RLS policy: CREATE POLICY tenant_isolation ON tasks USING (tenant_id = current_setting('app.current_tenant')::uuid)"
-      - "Session variable: SET app.current_tenant = 'tenant-uuid' before each query"
-      - "Defense in depth: RLS catches bugs in application-level filtering"
+      - RLS policy: CREATE POLICY tenant_isolation ON tasks USING (tenant_id = current_setting('app.current_tenant')::uuid)
+      - Session variable: SET app.current_tenant = 'tenant-uuid' before each query
+      - Defense in depth: RLS catches bugs in application-level filtering
       - "RLS applies to SELECT, INSERT, UPDATE, DELETE independently"
       - "Superuser and table owner bypass RLS — use a non-owner application role"
     skills:
@@ -182,7 +182,7 @@ milestones:
       - "RLS is enabled on all tenant-scoped tables (ALTER TABLE ... ENABLE ROW LEVEL SECURITY)"
       - "RLS policies restrict SELECT, INSERT, UPDATE, and DELETE to rows where tenant_id matches the session variable (current_setting('app.current_tenant'))"
       - "Application sets the session variable (SET app.current_tenant = X) at the beginning of each database connection/transaction before executing any queries"
-      - "Cross-tenant isolation test: with RLS enabled, a query executed with tenant A's context against a table containing both tenant A and tenant B data returns ONLY tenant A's rows"
+      - Cross-tenant isolation test: with RLS enabled, a query executed with tenant A's context against a table containing both tenant A and tenant B data returns ONLY tenant A's rows
       - "INSERT with a mismatched tenant_id (different from session variable) is rejected by the RLS policy"
       - "A dedicated application database role (not superuser, not table owner) is used for all application queries, ensuring RLS is enforced"
       - "Schema migrations run as a superuser role that bypasses RLS; data migrations run as the application role with RLS enforced"
@@ -209,20 +209,20 @@ milestones:
       branding customization.
     estimated_hours: 13
     concepts:
-      - "Feature flags: boolean or percentage-based toggles per tenant"
-      - "Plan-based gating: free plan gets features A/B, pro gets A/B/C/D"
-      - "Configuration hierarchy: global defaults -> plan defaults -> tenant overrides"
-      - "Configuration caching: cache in Redis with TTL, invalidate on update"
+      - Feature flags: boolean or percentage-based toggles per tenant
+      - Plan-based gating: free plan gets features A/B, pro gets A/B/C/D
+      - Configuration hierarchy: global defaults -> plan defaults -> tenant overrides
+      - Configuration caching: cache in Redis with TTL, invalidate on update
     skills:
       - Feature flag system design
       - Hierarchical configuration
       - Cache management
     acceptance_criteria:
-      - "Feature flags are evaluated per-tenant with a hierarchy: global default -> plan default -> tenant-specific override; the most specific value wins"
-      - "Plan-based feature gating: accessing a feature not included in the tenant's plan returns 403 Forbidden with a message indicating the required plan"
+      - Feature flags are evaluated per-tenant with a hierarchy: global default -> plan default -> tenant-specific override; the most specific value wins
+      - Plan-based feature gating: accessing a feature not included in the tenant's plan returns 403 Forbidden with a message indicating the required plan
       - "Tenant branding (logo URL, primary color, accent color) is stored per tenant and returned in a branding API endpoint; the frontend applies these values"
       - "Configuration changes take effect within 30 seconds (cached in Redis with 30s TTL, invalidated on explicit update)"
-      - "Feature flag check is fast: <1ms with warm cache (Redis lookup); verified under load"
+      - Feature flag check is fast: <1ms with warm cache (Redis lookup); verified under load
       - "Settings management API allows tenant admins to view and update their configurable options with validation (e.g., color must be valid hex, URL must be valid)"
       - "Feature flag changes are audit-logged with who changed what and when"
     pitfalls:
@@ -246,11 +246,11 @@ milestones:
       Stripe for subscription billing and usage-based invoicing.
     estimated_hours: 13
     concepts:
-      - "Usage metering: record each billable event (API call, storage byte, compute minute) with idempotency key"
-      - "Aggregation: roll up raw events into hourly/daily totals per tenant"
-      - "Quota enforcement: check current usage against plan limits before allowing action"
-      - "Stripe integration: create customer, subscription, and usage records via API"
-      - "Webhook handling: process Stripe events (payment succeeded, failed, subscription updated) idempotently"
+      - Usage metering: record each billable event (API call, storage byte, compute minute) with idempotency key
+      - Aggregation: roll up raw events into hourly/daily totals per tenant
+      - Quota enforcement: check current usage against plan limits before allowing action
+      - Stripe integration: create customer, subscription, and usage records via API
+      - Webhook handling: process Stripe events (payment succeeded, failed, subscription updated) idempotently
     skills:
       - Usage event tracking
       - Billing API integration (Stripe)
@@ -263,7 +263,7 @@ milestones:
       - "Stripe integration creates a Stripe customer and subscription on tenant provisioning; usage-based line items are reported to Stripe at the end of each billing period"
       - "Stripe webhook handler processes events (invoice.paid, invoice.payment_failed, customer.subscription.updated) idempotently using the event ID; webhook signature is verified using Stripe's signing secret"
       - "A billing dashboard API returns current period usage, plan limits, and projected cost for the current billing cycle"
-      - "Tenant suspension: when payment fails after configurable retry period (default 7 days), tenant access is suspended (read-only mode) until payment is resolved"
+      - Tenant suspension: when payment fails after configurable retry period (default 7 days), tenant access is suspended (read-only mode) until payment is resolved
     pitfalls:
       - Double-counting usage events without idempotency keys
       - Race condition when checking quota under high concurrency (check-then-act)
@@ -280,5 +280,4 @@ milestones:
       - Stripe webhook handler with signature verification and idempotent processing
       - Billing dashboard API (usage, limits, projected cost)
       - Tenant suspension on payment failure
-
 ```

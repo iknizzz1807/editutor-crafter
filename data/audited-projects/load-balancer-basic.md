@@ -70,7 +70,7 @@ resources:
   - name: Load Balancer in Go
     url: https://kasvith.me/posts/lets-create-a-simple-lb-go/
     type: tutorial
-  - name: "RFC 7230 - HTTP/1.1 Message Syntax (Hop-by-hop headers)"
+  - name: RFC 7230 - HTTP/1.1 Message Syntax (Hop-by-hop headers)""
     url: https://datatracker.ietf.org/doc/html/rfc7230#section-6.1
     type: specification
 prerequisites:
@@ -94,12 +94,12 @@ milestones:
       - Backend response status code, headers, and body are returned to the originating client
       - Connection errors to the backend return 502 Bad Gateway with a descriptive JSON error body
       - "A connection pool of configurable size (default 10) is maintained per backend to reuse TCP connections"
-      - "Proxied requests are logged with: timestamp, client IP, method, path, backend address, response status, and latency in milliseconds"
+      - Proxied requests are logged with: timestamp, client IP, method, path, backend address, response status, and latency in milliseconds
     pitfalls:
-      - "Forwarding hop-by-hop headers to the backend: this is an HTTP protocol violation that causes Connection header confusion"
-      - "Opening a new TCP connection per request: without connection pooling, ephemeral port exhaustion occurs under load (~64K ports)"
-      - "Not handling chunked transfer-encoding: if the backend sends chunked responses, the proxy must forward them correctly"
-      - "Blocking on slow backend responses without a timeout: set a backend response timeout (default 30s) to avoid hanging the proxy"
+      - Forwarding hop-by-hop headers to the backend: this is an HTTP protocol violation that causes Connection header confusion
+      - Opening a new TCP connection per request: without connection pooling, ephemeral port exhaustion occurs under load (~64K ports)
+      - Not handling chunked transfer-encoding: if the backend sends chunked responses, the proxy must forward them correctly
+      - Blocking on slow backend responses without a timeout: set a backend response timeout (default 30s) to avoid hanging the proxy
     concepts:
       - Reverse proxy mechanics
       - HTTP header classification (end-to-end vs hop-by-hop)
@@ -126,15 +126,15 @@ milestones:
     acceptance_criteria:
       - "Backend server list is configurable via a JSON/YAML config file loaded at startup"
       - Round-robin algorithm cycles through backends sequentially, wrapping from last to first
-      - "Distribution is verified as even: over 1000 requests to N backends, each backend receives 1000/N ± 5% requests"
+      - Distribution is verified as even: over 1000 requests to N backends, each backend receives 1000/N ± 5% requests
       - "Counter increment is thread-safe using atomic operations (verified by 50+ concurrent request test with no race detector warnings)"
-      - "Division by zero is prevented: if the healthy backend list is empty, the proxy returns 503 Service Unavailable"
+      - Division by zero is prevented: if the healthy backend list is empty, the proxy returns 503 Service Unavailable
       - Backends can be added or removed via a config reload endpoint (POST /admin/reload) without restarting the proxy
     pitfalls:
-      - "Race condition on the round-robin counter: use atomic increment, not lock-read-increment-unlock"
-      - "Modulo with zero backends: if all backends are removed or unhealthy, the modulo operation panics"
-      - "Not resetting or adjusting the counter when backends change: can cause temporary uneven distribution"
-      - "Config reload not being atomic: partially loaded config can cause routing to nonexistent backends"
+      - Race condition on the round-robin counter: use atomic increment, not lock-read-increment-unlock
+      - Modulo with zero backends: if all backends are removed or unhealthy, the modulo operation panics
+      - Not resetting or adjusting the counter when backends change: can cause temporary uneven distribution
+      - Config reload not being atomic: partially loaded config can cause routing to nonexistent backends
     concepts:
       - Round-robin algorithm
       - Atomic operations for shared counters
@@ -167,10 +167,10 @@ milestones:
       - "GET /admin/health returns JSON showing each backend's status, last check time, and consecutive pass/fail count"
       - Health checks are jittered (± 20% of interval) to avoid synchronized probing bursts
     pitfalls:
-      - "Thundering herd on recovery: when a backend recovers, all queued/waiting requests flood it simultaneously"
-      - "Health checks overwhelming small backends: if the check interval is 1s and there are 100 backends, that is 100 checks/second from one proxy"
-      - "No jitter: all health checks firing at exactly the same time creates periodic CPU/network spikes"
-      - "Not handling the all-backends-down case: many implementations crash with division-by-zero or null pointer"
+      - Thundering herd on recovery: when a backend recovers, all queued/waiting requests flood it simultaneously
+      - Health checks overwhelming small backends: if the check interval is 1s and there are 100 backends, that is 100 checks/second from one proxy
+      - No jitter: all health checks firing at exactly the same time creates periodic CPU/network spikes
+      - Not handling the all-backends-down case: many implementations crash with division-by-zero or null pointer
     concepts:
       - Active health checking with failure thresholds
       - Recovery detection with consecutive success counting
@@ -195,16 +195,16 @@ milestones:
       Address sticky sessions using cookie-based affinity (not IP hash,
       which fails behind NAT/proxies).
     acceptance_criteria:
-      - "Weighted round-robin distributes requests proportionally to integer weights: a backend with weight 3 receives 3x the requests of weight 1 (verified over 1000 requests, ± 10%)"
+      - Weighted round-robin distributes requests proportionally to integer weights: a backend with weight 3 receives 3x the requests of weight 1 (verified over 1000 requests, ± 10%)
       - "Least-connections routes each request to the backend with the fewest active (in-flight) connections, with active count decremented when the backend response completes"
-      - "Cookie-based sticky sessions: proxy sets a session cookie (e.g., X-LB-Backend) on first request; subsequent requests with that cookie route to the same backend"
+      - Cookie-based sticky sessions: proxy sets a session cookie (e.g., X-LB-Backend) on first request; subsequent requests with that cookie route to the same backend
       - "If the sticky backend is unhealthy, the request is routed to a healthy backend and a new cookie is set"
       - "Active algorithm is selected via configuration; changing the algorithm via POST /admin/algorithm takes effect for new requests without restart"
     pitfalls:
-      - "IP hash fails behind NAT/corporate proxies: thousands of users share one IP, creating massive imbalance. Use cookie-based affinity instead."
-      - "Least-connections not decrementing on response completion: active count grows monotonically, defeating the algorithm"
+      - IP hash fails behind NAT/corporate proxies: thousands of users share one IP, creating massive imbalance. Use cookie-based affinity instead.
+      - Least-connections not decrementing on response completion: active count grows monotonically, defeating the algorithm
       - "Weighted round-robin with large weights causing integer overflow in the accumulated weight counter"
-      - "Sticky session cookie not having an expiry: sessions stick forever even if the backend pool changes"
+      - Sticky session cookie not having an expiry: sessions stick forever even if the backend pool changes
     concepts:
       - Weighted round-robin with weight accumulation
       - Least-connections tracking
@@ -221,5 +221,4 @@ milestones:
       - Cookie-based sticky session implementation with health-aware fallback
       - Algorithm selection API with runtime switching
     estimated_hours: "5-6"
-
 ```

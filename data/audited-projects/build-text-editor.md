@@ -63,13 +63,13 @@ languages:
     - Go
   also_possible: []
 resources:
-  - name: "Build Your Own Text Editor"
+  - name: Build Your Own Text Editor""
     url: "https://viewsourcecode.org/snaptoken/kilo/"
     type: tutorial
-  - name: "antirez/kilo source"
+  - name: antirez/kilo source""
     url: "https://github.com/antirez/kilo"
     type: reference
-  - name: "Hecto (Rust version)"
+  - name: Hecto (Rust version)""
     url: "https://philippflenker.com/hecto/"
     type: tutorial
 prerequisites:

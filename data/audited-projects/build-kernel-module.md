@@ -116,7 +116,7 @@ milestones:
       - Write handler copies data FROM userspace using copy_from_user(); returns -EFAULT if the copy fails; stores data in kernel buffer up to buffer capacity
       - Read handler copies data TO userspace using copy_to_user(); returns -EFAULT if the copy fails; returns 0 at EOF when all data has been read (preventing infinite read loops)
       - Read handler uses and updates *f_pos (file position offset) to track how much has been read; subsequent reads continue from where the last read left off
-      - Userspace verification: `echo "hello" > /dev/mydevice` followed by `cat /dev/mydevice` outputs "hello"
+      - Userspace verification: 'echo "hello" > /dev/mydevice' followed by 'cat /dev/mydevice' outputs "hello"
       - Open handler increments a usage counter; release decrements it; counter visible via printk
     pitfalls:
       - NEVER directly dereference a userspace pointer from kernel code; always use copy_to_user/copy_from_user; direct access can crash the kernel or create security vulnerabilities

@@ -88,8 +88,8 @@ milestones:
       grouping ({, }, (, ), [, ]), delimiters (, ;), and comments
       (// single-line, /* */ multi-line). Identifiers are ASCII-only.
     acceptance_criteria:
-      - "Token type enumeration defines all categories: Number, String, Identifier, Keyword, Operator, Punctuation, EOF, Error"
-      - "Token struct stores: type, lexeme (raw text), line number, and column number"
+      - Token type enumeration defines all categories: Number, String, Identifier, Keyword, Operator, Punctuation, EOF, Error
+      - Token struct stores: type, lexeme (raw text), line number, and column number
       - "Scanner has advance() consuming and returning current character, peek() inspecting next character without consuming"
       - "Scanner tracks current line (incremented on newline) and column (reset on newline)"
       - "Single-character tokens (+, -, *, /, (, ), {, }, [, ], ;, ,) are recognized and emitted"
@@ -125,21 +125,21 @@ milestones:
       operators, number literals, identifiers, and keywords. Apply
       maximal munch to always prefer the longest matching token.
     acceptance_criteria:
-      - "Two-character operators: ==, !=, <=, >= are recognized as single tokens (not two separate tokens)"
-      - "Maximal munch: '==' is emitted as Equals-Equals, never as Assign + Assign"
+      - Two-character operators: ==, !=, <=, >= are recognized as single tokens (not two separate tokens)
+      - Maximal munch: "'==' is emitted as Equals-Equals, never as Assign + Assign"
       - "Single '=' is emitted as Assign only when not followed by '='"
       - "'<' is emitted as LessThan; '<=' is emitted as LessEqual (maximal munch applied)"
-      - "Integer literals: sequences of digits (e.g., '42', '0') are scanned as Number tokens"
-      - "Float literals: digit sequences with one decimal point (e.g., '3.14') are scanned as Number tokens"
-      - "Identifiers: sequences starting with letter or underscore, followed by alphanumeric or underscore"
+      - Integer literals: "sequences of digits (e.g., '42', '0') are scanned as Number tokens"
+      - Float literals: "digit sequences with one decimal point (e.g., '3.14') are scanned as Number tokens"
+      - Identifiers: sequences starting with letter or underscore, followed by alphanumeric or underscore
       - "Keywords (if, else, while, return, true, false, null) are identified by lookup table after scanning identifier"
       - "Keywords are emitted as Keyword tokens, not Identifier tokens"
-      - "Input '>==' is tokenized as GreaterEqual + Assign (maximal munch: '>=' then '=')"
+      - Input '>==' is tokenized as GreaterEqual + Assign (maximal munch: "'>=' then '=')"
     pitfalls:
       - "Not peeking ahead causes '==' to be scanned as '=' + '='"
-      - "Float with trailing dot ('3.') or leading dot ('.5')—decide: accept or reject, and document"
+      - Float with trailing dot ('3.') or leading dot ('.5')—decide: accept or reject, and document
       - "Keyword 'if' inside identifier 'iffy' must NOT match—keyword check only on exact match"
-      - "Number immediately followed by identifier ('42abc') must be handled: scan as Number then Identifier, or error"
+      - Number immediately followed by identifier ('42abc') must be handled: scan as Number then Identifier, or error
     concepts:
       - Maximal munch principle
       - Lookahead (peek)
@@ -169,13 +169,13 @@ milestones:
       - "Single-line comments (//) skip all characters until end of line"
       - "Multi-line comments (/* */) skip all characters between delimiters including newlines"
       - "Unterminated multi-line comment (no closing */) produces Error token with position of opening /*"
-      - "Multi-line comments do NOT nest: /* /* */ ends at the first */ encountered"
-      - "Comments inside strings are NOT treated as comments: \"hello // world\" is a string"
+      - Multi-line comments do NOT nest: /* /* */ ends at the first */ encountered
+      - Comments inside strings are NOT treated as comments: \"hello // world\" is a string
       - "Line numbers are correctly updated inside multi-line comments and strings"
     pitfalls:
       - "String scanning consuming the closing quote as part of the next token"
-      - "Escape backslash at end of string: '\"hello\\\"' is unterminated, not a valid string"
-      - "Nested /* */ comments: deciding to not support nesting but accidentally doing so with a counter"
+      - Escape backslash at end of string: "'\"hello\\\"' is unterminated, not a valid string"
+      - Nested /* */ comments: deciding to not support nesting but accidentally doing so with a counter
       - "Comment starting with '/' but followed by neither '/' nor '*'—emit '/' as Division operator"
     concepts:
       - String literal scanning
@@ -202,16 +202,16 @@ milestones:
       full token stream output.
     acceptance_criteria:
       - "Complete multi-line test program is tokenized into correct token stream (verified token-by-token)"
-      - "Error recovery: after encountering an invalid character, scanning continues from the next character"
+      - Error recovery: after encountering an invalid character, scanning continues from the next character
       - "Multiple errors in a single input are all reported (not just the first)"
-      - "Token stream for 'if (x >= 42) { return true; }' produces exactly: Keyword(if), LParen, Ident(x), GreaterEqual, Number(42), RParen, LBrace, Keyword(return), Keyword(true), Semicolon, RBrace, EOF"
-      - "Edge cases tested: empty input (produces only EOF), single character input, maximum-length identifiers"
-      - "Performance: tokenizing a 10,000-line input completes in under 1 second"
+      - Token stream for 'if (x >= 42) { return true; }' produces exactly: Keyword(if), LParen, Ident(x), GreaterEqual, Number(42), RParen, LBrace, Keyword(return), Keyword(true), Semicolon, RBrace, EOF
+      - Edge cases tested: empty input (produces only EOF), single character input, maximum-length identifiers
+      - Performance: tokenizing a 10,000-line input completes in under 1 second
       - "All token positions (line, column) are accurate for a multi-line test file"
     pitfalls:
       - "Error recovery consuming too many characters and skipping valid tokens"
       - "Not testing with real multi-line input—only testing individual token types in isolation"
-      - "Position tracking drift: errors in line/column accumulate over long inputs"
+      - Position tracking drift: errors in line/column accumulate over long inputs
       - "Off-by-one in column tracking after tab characters or multi-byte sequences"
     concepts:
       - Error recovery
@@ -224,10 +224,9 @@ milestones:
       - Performance awareness
     deliverables:
       - "Integration test with complete multi-line program and expected token stream"
-      - "Error recovery: continue scanning after invalid characters"
+      - Error recovery: continue scanning after invalid characters
       - "Multi-error reporting in single input"
-      - "Edge case test suite: empty input, single char, long identifiers"
+      - Edge case test suite: empty input, single char, long identifiers
       - "Position accuracy verification across multi-line input"
     estimated_hours: "2-3"
-
 ```

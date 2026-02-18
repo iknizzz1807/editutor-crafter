@@ -130,8 +130,8 @@ milestones:
       - BLEU and ROUGE computed as baseline metrics with documented limitations (penalizes valid paraphrases, rewards surface overlap)
       - Semantic similarity computes cosine similarity between embeddings of output and reference; calibration data establishes what score thresholds map to "good"/"acceptable"/"poor"
       - LLM-as-judge sends output (and optionally reference) to a judge model with a rubric prompt and parses a structured score (1-5 scale)
-      - LLM-as-judge consistency validated: same input scored 3 times, standard deviation < 0.5 for at least 90% of cases
-      - Position bias check: when judge evaluates two outputs, swapping their order should not change the winner more than 10% of the time
+      - LLM-as-judge consistency validated: same input scored 3 times, standard deviation < 0.5 for at least 90% of cases""
+      - Position bias check: when judge evaluates two outputs, swapping their order should not change the winner more than 10% of the time""
       - Golden example calibration: judge scores on 10 pre-scored golden examples must correlate >= 0.8 with human scores
       - Custom metric functions registered as plugins, returning float in [0, 1] range, called automatically during evaluation
       - All metrics handle edge cases: empty strings return 0, None values return 0 with a warning
@@ -238,5 +238,4 @@ milestones:
       - Comparison report showing side-by-side metric diffs between two runs
       - CI/CD integration script with configurable pass/fail thresholds and exit codes
     estimated_hours: "10-14"
-
 ```

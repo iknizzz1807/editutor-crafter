@@ -177,7 +177,7 @@ milestones:
       - Selector matching correctly determines which CSS rules apply to each DOM element by testing the selector against the element and its ancestors (for descendant combinator)
       - Cascade resolution applies rules in correct order: user-agent defaults, then author stylesheet rules ordered by specificity, then inline styles; later rules of equal specificity win
       - Property inheritance is implemented: inheritable properties (color, font-size) are inherited from parent if not explicitly set on the element
-      - Default values from a minimal user-agent stylesheet are applied (e.g., display:block for div/p/h1-h6, display:inline for span/a/em/strong)
+      - Default values from a minimal user-agent stylesheet are applied (e.g., display: block for div/p/h1-h6, display:inline for span/a/em/strong)
       - Render tree excludes non-visual elements: elements with display:none, and non-rendering elements (<head>, <script>, <style>, <meta>, <link>) are not included
       - Each render tree node stores its computed style (resolved property values) and a reference to its DOM node
       - Computed styles are accessible for debugging (dump styled tree showing element + computed properties)
@@ -185,7 +185,7 @@ milestones:
       - Selector matching for descendant combinators requires walking up the DOM ancestor chain; this can be expensive for deep trees
       - Inheritance must distinguish between inherited and non-inherited properties; margin, padding, border are NOT inherited
       - The 'initial' value for each property must be defined; without a user-agent stylesheet, nothing has sensible defaults
-      - display:none removes the element AND all its descendants from the render tree; display:inline on a block's child changes layout behavior
+      - display: none removes the element AND all its descendants from the render tree; display:inline on a block's child changes layout behavior
       - Multiple selectors may match the same element; all matching rules must be collected, sorted by specificity, and merged
     concepts:
       - CSS selector matching algorithm
@@ -201,7 +201,7 @@ milestones:
       - Selector matching engine testing CSS selectors against DOM elements
       - Cascade resolver merging matching rules by specificity order
       - Property inheritance propagating inheritable values from parent to child
-      - Render tree builder excluding display:none and non-visual elements
+      - Render tree builder excluding display: none and non-visual elements
       - Minimal user-agent stylesheet providing default display values
     estimated_hours: "15-25"
 
@@ -218,7 +218,7 @@ milestones:
       - Width resolves correctly: explicit px width is used directly; 'auto' width for block elements expands to fill parent content width minus margins; percentage width resolves against parent content width
       - Height resolves correctly: explicit px height is used; 'auto' height for block elements is the sum of child heights (content-driven)
       - Layout tree assigns each render tree node a position (x, y) and dimensions (width, height) in a global coordinate space
-      - Auto margins (margin-left:auto, margin-right:auto) center a block element horizontally within its parent
+      - Auto margins (margin-left: auto, margin-right:auto) center a block element horizontally within its parent
     pitfalls:
       - Margin collapsing is one of the most confusing CSS behaviors; only vertical margins between adjacent block siblings collapse (not horizontal, not inline, not parent-child without border/padding separation)
       - Percentage width resolution requires a chain: each element resolves against its parent's content width, which must already be computed (top-down width pass)

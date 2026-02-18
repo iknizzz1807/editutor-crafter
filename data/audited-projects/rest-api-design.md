@@ -94,10 +94,10 @@ milestones:
     acceptance_criteria:
       - "POST /resources creates a new resource, returns 201 Created with a Location header pointing to the new resource URI"
       - "GET /resources returns a paginated list with Link headers or next/prev cursors; default page size is configurable"
-      - "GET /resources/:id returns the single resource with 200 OK, or 404 Not Found with a structured error body"
-      - "PUT /resources/:id replaces the entire resource representation idempotently and returns 200 OK with the new state"
-      - "PATCH /resources/:id applies a partial update to specified fields only and returns 200 OK with the updated state"
-      - "DELETE /resources/:id removes the resource and returns 204 No Content with an empty body"
+      - GET /resources/: id returns the single resource with 200 OK, or 404 Not Found with a structured error body
+      - PUT /resources/: id replaces the entire resource representation idempotently and returns 200 OK with the new state
+      - PATCH /resources/: id applies a partial update to specified fields only and returns 200 OK with the updated state
+      - DELETE /resources/: id removes the resource and returns 204 No Content with an empty body
       - "All responses include correct Content-Type header (application/json) and a consistent JSON envelope structure"
       - "Concurrent updates are detected using an ETag or version field; conflicting writes return 409 Conflict"
     pitfalls:
@@ -136,7 +136,7 @@ milestones:
       - "Path parameters are validated for correct format; non-existent resources return 404 Not Found"
       - "Validation error responses include a structured body listing each field-level failure with field name, expected constraint, and actual value"
       - "All string inputs are sanitized against SQL injection and NoSQL injection before use in queries"
-      - "Error responses follow a consistent schema across all endpoints: {error: {code, message, details[]}}"
+      - Error responses follow a consistent schema across all endpoints: {error: {code, message, details[]}}
       - "Internal errors return 500 with a generic message; no stack traces or internal details are leaked to the client"
     pitfalls:
       - "Only validating types but not business rules (e.g., end_date must be after start_date)"

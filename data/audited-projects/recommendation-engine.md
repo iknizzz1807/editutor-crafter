@@ -269,5 +269,4 @@ milestones:
       - A/B test router splitting users deterministically between model versions
       - Request logger recording user ID, recommendations returned, latency, and model version
     estimated_hours: "10-14"
-
 ```

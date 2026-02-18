@@ -103,7 +103,7 @@ milestones:
       - SQL query optimization
       - API endpoint design
     acceptance_criteria:
-      - "User profile CRUD: create, read, update, delete with validation on bio (max 500 chars), avatar URL (valid URL format), and links (max 5, valid URLs)"
+      - User profile CRUD: create, read, update, delete with validation on bio (max 500 chars), avatar URL (valid URL format), and links (max 5, valid URLs)
       - "Follow/unfollow operations atomically create/delete the relationship record AND increment/decrement denormalized follower and following counts in a single transaction"
       - Self-follow attempts return a 400 error with descriptive message
       - "Follower and following lists return cursor-paginated results (max 50 per page) including user ID, username, display name, and avatar"
@@ -129,10 +129,10 @@ milestones:
       architecture with asynchronous delivery and cursor-based pagination.
     estimated_hours: 12
     concepts:
-      - "Fan-out on write: when a user posts, write a reference to every follower's feed"
+      - Fan-out on write: when a user posts, write a reference to every follower's feed
       - Asynchronous fan-out via background job queue to avoid blocking post creation
       - Cursor-based pagination for stable feed ordering
-      - "Hybrid fan-out: fan-out on write for normal users, fan-out on read for high-follower accounts (>10K followers)"
+      - Hybrid fan-out: fan-out on write for normal users, fan-out on read for high-follower accounts (>10K followers)
     skills:
       - Asynchronous processing
       - Background job systems
@@ -140,14 +140,14 @@ milestones:
       - Cursor pagination
     acceptance_criteria:
       - "Post creation endpoint accepts text (max 5000 chars) and optional image URL; returns the created post within 200ms regardless of follower count"
-      - "Fan-out is performed asynchronously: a background job writes the post reference to each follower's feed list within 5 seconds of creation for users with <10K followers"
+      - Fan-out is performed asynchronously: a background job writes the post reference to each follower's feed list within 5 seconds of creation for users with <10K followers
       - "For users with >=10K followers, the feed is assembled at read time (fan-out on read) to avoid expensive write amplification"
       - "Home feed endpoint returns chronologically ordered posts from followed users using cursor-based pagination (next_cursor token, max 20 posts per page)"
       - "User's own post list returns all authored posts in reverse chronological order with cursor pagination"
       - Feed pagination is stable — inserting new posts does not cause duplicates or skips in paginated results
     pitfalls:
       - Fan-out blocking post creation response time (must be async)
-      - "Celebrity problem: fan-out on write for millions of followers is prohibitively slow and expensive"
+      - Celebrity problem: fan-out on write for millions of followers is prohibitively slow and expensive
       - Offset-based pagination performance degrades and causes duplicates/skips as new posts are inserted
       - Not indexing the feed table by (user_id, created_at) causing full table scans
     deliverables:
@@ -164,7 +164,7 @@ milestones:
       race condition prevention.
     estimated_hours: 10
     concepts:
-      - "Idempotent like toggle: unique constraint on (user_id, post_id) prevents double-likes"
+      - Idempotent like toggle: unique constraint on (user_id, post_id) prevents double-likes
       - Atomic count updates with database-level constraints
       - Threaded comments using adjacency list (parent_id) or materialized path
       - Optimistic UI updates with server reconciliation
@@ -174,11 +174,11 @@ milestones:
       - Atomic operations
       - Nested data structures
     acceptance_criteria:
-      - "Like/unlike is idempotent: liking an already-liked post returns success without incrementing count; a unique constraint on (user_id, post_id) prevents duplicates at the database level"
+      - Like/unlike is idempotent: liking an already-liked post returns success without incrementing count; a unique constraint on (user_id, post_id) prevents duplicates at the database level
       - "Like count is updated atomically (UPDATE posts SET like_count = like_count + 1) within the same transaction as the like record insert"
       - Comments support text content (max 2000 chars) with author attribution and creation timestamp
       - "Threaded replies are supported with a parent_comment_id field; replies are returned nested under their parent up to 3 levels deep"
-      - "Like and comment counts on a post are consistent: count column matches the actual count of related records (verified under concurrent load with 50 simultaneous like requests)"
+      - Like and comment counts on a post are consistent: count column matches the actual count of related records (verified under concurrent load with 50 simultaneous like requests)
       - "Notification trigger events are emitted asynchronously for like, comment, and reply actions (consumed by M4)"
     pitfalls:
       - Double-like race condition without unique constraint at database level
@@ -208,7 +208,7 @@ milestones:
       - Notification batching and deduplication
       - Redis pub/sub
     acceptance_criteria:
-      - "Notifications fire for: new follower, like on user's post, comment on user's post, reply to user's comment"
+      - Notifications fire for: new follower, like on user's post, comment on user's post, reply to user's comment
       - Self-notifications are suppressed (user does not receive notification for their own actions)
       - "Similar notifications within a 5-minute window are batched (e.g., '3 people liked your post' instead of 3 separate notifications)"
       - "Real-time delivery via WebSocket pushes notification events to connected clients within 2 seconds of the triggering action"
@@ -238,7 +238,7 @@ milestones:
     concepts:
       - Full-text search with trigram or inverted index
       - Trending algorithm based on recent engagement velocity
-      - "Content discovery: surfacing popular posts from outside the user's network"
+      - Content discovery: surfacing popular posts from outside the user's network
     skills:
       - Full-text search implementation
       - Search indexing
@@ -270,7 +270,7 @@ milestones:
       CDN integration, and load testing.
     estimated_hours: 16
     concepts:
-      - "Cache-aside pattern: check cache, on miss load from DB and populate cache"
+      - Cache-aside pattern: check cache, on miss load from DB and populate cache
       - Cache invalidation strategies (TTL, write-through, event-driven)
       - CDN for static media assets
       - Load testing methodology and bottleneck identification
@@ -281,11 +281,11 @@ milestones:
       - CDN integration
       - Rate limiting
     acceptance_criteria:
-      - "Redis caching for feeds and profiles: cache hit rate >80% under steady-state load, measured by comparing Redis hits to total requests over a 5-minute window"
+      - Redis caching for feeds and profiles: cache hit rate >80% under steady-state load, measured by comparing Redis hits to total requests over a 5-minute window
       - "Feed cache is invalidated within 5 seconds when a new post is created by a followed user"
       - Background job processing handles fan-out and notification delivery asynchronously (no synchronous fan-out in request path)
       - "CDN serves uploaded media with cache-control headers (max-age >= 1 day) and response time <100ms from edge"
-      - "Database indexes are verified: EXPLAIN ANALYZE on feed query, follower list query, and search query all show index scans (no sequential scans on tables >10K rows)"
+      - Database indexes are verified: EXPLAIN ANALYZE on feed query, follower list query, and search query all show index scans (no sequential scans on tables >10K rows)
       - "Load testing with a tool (k6, locust, or wrk) confirms the system handles 1000 concurrent users with p95 response time <500ms for feed and profile endpoints"
       - Rate limiting middleware returns 429 for clients exceeding 100 requests/minute
     pitfalls:
@@ -301,5 +301,4 @@ milestones:
       - Rate limiting middleware (token bucket or sliding window)
       - Load test scripts and results report with bottleneck analysis
       - Query optimization report showing before/after for critical queries
-
 ```

@@ -97,12 +97,12 @@ milestones:
       - Decode unsigned varints from a byte stream returning the value AND the number of bytes consumed
       - Implement ZigZag encoding for sint32/sint64: (n << 1) ^ (n >> 31) for 32-bit, (n << 1) ^ (n >> 63) for 64-bit
       - Implement ZigZag decoding: (n >>> 1) ^ -(n & 1)
-      - "Implement sign-extended varint encoding for int32/int64: negative int32 values are sign-extended to 64-bit and encoded as 10-byte varints (this is the protobuf int32 behavior, NOT ZigZag)"
+      - Implement sign-extended varint encoding for int32/int64: negative int32 values are sign-extended to 64-bit and encoded as 10-byte varints (this is the protobuf int32 behavior, NOT ZigZag)
       - Handle the full 64-bit range: values up to 2^64-1 for unsigned, -2^63 to 2^63-1 for signed
       - Reject varints longer than 10 bytes as malformed (10 bytes is the maximum for 64-bit values)
-      - "Verify: encode then decode round-trips correctly for edge values: 0, 1, 127, 128, 16383, 16384, -1 (ZigZag=1, int32=10 bytes), INT32_MIN, INT64_MAX, UINT64_MAX"
+      - Verify: encode then decode round-trips correctly for edge values: 0, 1, 127, 128, 16383, 16384, -1 (ZigZag=1, int32=10 bytes), INT32_MIN, INT64_MAX, UINT64_MAX
     pitfalls:
-      - "CRITICAL: int32 and sint32 use DIFFERENT encodings for negative numbers. int32(-1) = 10 bytes (sign-extended), sint32(-1) = 1 byte (ZigZag maps -1 to 1). Confusing these is the #1 protobuf encoding bug."
+      - CRITICAL: int32 and sint32 use DIFFERENT encodings for negative numbers. int32(-1) = 10 bytes (sign-extended), sint32(-1) = 1 byte (ZigZag maps -1 to 1). Confusing these is the #1 protobuf encoding bug.
       - Varint decoding must check for overflow; a malicious input could have more than 10 continuation bytes
       - Python's arbitrary-precision integers can mask overflow bugs that would appear in C/Go/Rust
       - Forgetting the unsigned right shift (>>>) in ZigZag decode causes sign extension bugs in languages with signed shift
@@ -128,14 +128,14 @@ milestones:
     acceptance_criteria:
       - Encode field keys as varints: (field_number << 3) | wire_type
       - Decode field keys extracting field_number (key >> 3) and wire_type (key & 0x07)
-      - "Wire type 0 (VARINT): encode/decode int32, int64, uint32, uint64, sint32, sint64, bool, enum values"
-      - "Wire type 1 (I64): encode/decode fixed64, sfixed64, double as 8 bytes in little-endian order"
-      - "Wire type 2 (LEN): encode/decode strings, bytes, embedded messages, and packed repeated fields as varint-length-prefixed byte sequences"
-      - "Wire type 5 (I32): encode/decode fixed32, sfixed32, float as 4 bytes in little-endian order"
+      - Wire type 0 (VARINT): encode/decode int32, int64, uint32, uint64, sint32, sint64, bool, enum values
+      - Wire type 1 (I64): encode/decode fixed64, sfixed64, double as 8 bytes in little-endian order
+      - Wire type 2 (LEN): encode/decode strings, bytes, embedded messages, and packed repeated fields as varint-length-prefixed byte sequences
+      - Wire type 5 (I32): encode/decode fixed32, sfixed32, float as 4 bytes in little-endian order
       - "Skip deprecated wire types 3 (SGROUP) and 4 (EGROUP) without error when encountered during decoding"
       - Validate field numbers are in range 1 to 2^29-1 and not in reserved range 19000-19999
       - Implement a raw wire-format decoder that reads a protobuf binary and dumps all fields as (field_number, wire_type, raw_value) without a schema
-      - "Verify: encode a message with the reference protobuf library (e.g., protoc + Python protobuf), decode with your implementation, and compare field values"
+      - Verify: encode a message with the reference protobuf library (e.g., protoc + Python protobuf), decode with your implementation, and compare field values
     pitfalls:
       - Fixed-size fields (I32, I64) are little-endian, matching x86 native order but differing from network byte order
       - Unknown fields (unrecognized field numbers) must be SKIPPED based on wire type, not rejected; this enables forward compatibility
@@ -162,15 +162,15 @@ milestones:
       - AST construction
       - Schema validation
     acceptance_criteria:
-      - "Parse a simplified .proto3 subset supporting: syntax declaration, message definitions, field declarations (type name = number;)"
-      - "Support scalar types: int32, int64, uint32, uint64, sint32, sint64, fixed32, fixed64, sfixed32, sfixed64, float, double, bool, string, bytes"
+      - Parse a simplified .proto3 subset supporting: syntax declaration, message definitions, field declarations (type name = number;)
+      - Support scalar types: int32, int64, uint32, uint64, sint32, sint64, fixed32, fixed64, sfixed32, sfixed64, float, double, bool, string, bytes
       - Support 'repeated' field modifier for array-type fields
       - Support nested message definitions (message inside message)
       - Support enum definitions with named integer constants
       - Validate field numbers are unique within each message and in valid range (1 to 536870911, excluding 19000-19999)
       - Build an in-memory schema representation mapping message names to field definitions (number, type, name, modifier)
       - Map each field type to its wire type (e.g., int32 -> VARINT, string -> LEN, float -> I32)
-      - "Report parse errors with line numbers: unknown types, duplicate field numbers, syntax errors"
+      - Report parse errors with line numbers: unknown types, duplicate field numbers, syntax errors
     pitfalls:
       - Field numbers must be unique within a message; detect and report duplicates
       - Nested message types need qualified name resolution (e.g., Outer.Inner)
@@ -204,8 +204,8 @@ milestones:
       - Handle missing optional fields by simply not encoding them (proto3 default behavior)
       - Handle unknown fields during deserialization by preserving them as raw bytes (for re-serialization)
       - Handle default values: in proto3, fields with default values (0, false, empty string) are not encoded; decoder must return defaults for missing fields
-      - "Round-trip test: create a message with the reference protobuf library, decode with your implementation, re-encode with your implementation, decode with reference library; all field values must match"
-      - "Compatibility test: add a new field to the schema; verify that old encoded messages (without the new field) decode successfully with default values"
+      - Round-trip test: create a message with the reference protobuf library, decode with your implementation, re-encode with your implementation, decode with reference library; all field values must match
+      - Compatibility test: add a new field to the schema; verify that old encoded messages (without the new field) decode successfully with default values
     pitfalls:
       - Field order in the wire format is arbitrary and may not match field number order; do not assume ordering
       - Unknown fields must be preserved and re-serialized for forward compatibility; discarding them breaks proxies and middleware
@@ -220,5 +220,4 @@ milestones:
       - Unknown field preservation
       - Default value handling for proto3 semantics
       - Round-trip compatibility test suite
-
 ```

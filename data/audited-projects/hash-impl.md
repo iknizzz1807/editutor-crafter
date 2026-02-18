@@ -67,13 +67,13 @@ languages:
     - Go
     - Java
 resources:
-  - name: "SHA-256 Step by Step"
+  - name: SHA-256 Step by Step""
     url: https://blog.boot.dev/cryptography/how-sha-2-works-step-by-step-sha-256/
     type: tutorial
-  - name: "NIST FIPS 180-4 (SHA-256 Specification)"
+  - name: NIST FIPS 180-4 (SHA-256 Specification)""
     url: https://csrc.nist.gov/publications/detail/fips/180/4/final
     type: specification
-  - name: "NIST SHA-256 Test Vectors"
+  - name: NIST SHA-256 Test Vectors""
     url: https://csrc.nist.gov/CSRC/media/Projects/Cryptographic-Standards-and-Guidelines/documents/examples/SHA256.pdf
     type: reference
 prerequisites:

@@ -284,5 +284,4 @@ milestones:
       - Load factor monitor triggering resize when threshold is exceeded
       - Throughput benchmark comparing against mutex-based hash map
     estimated_hours: 13
-
 ```

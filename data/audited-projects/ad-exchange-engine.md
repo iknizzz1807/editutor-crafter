@@ -79,15 +79,15 @@ milestones:
       - "HTTP server uses io_uring (Linux) or kqueue (macOS) for async I/O; the choice is documented with rationale for the target platform"
       - "Achieve at least 200,000 requests per second on a single core for a simple echo endpoint, verified by a load test (wrk or similar)"
       - "Support at least 100,000 concurrent keep-alive connections without file descriptor exhaustion (configure ulimits, use connection pooling)"
-      - "Request parsing uses zero-copy techniques: HTTP headers are parsed in-place from the read buffer without copying into separate string allocations"
+      - Request parsing uses zero-copy techniques: HTTP headers are parsed in-place from the read buffer without copying into separate string allocations
       - "Inter-thread communication uses lock-free ring buffers (SPSC or MPSC) with documented memory ordering guarantees (acquire/release semantics)"
-      - "Hot path allocations are minimized: the request-response path for a cached auction uses arena/pool allocation with <10 heap allocations per request, verified by profiling"
-      - "Graceful shutdown: in-flight requests complete within a configurable drain timeout before the server exits"
+      - Hot path allocations are minimized: the request-response path for a cached auction uses arena/pool allocation with <10 heap allocations per request, verified by profiling
+      - Graceful shutdown: in-flight requests complete within a configurable drain timeout before the server exits
     pitfalls:
-      - "io_uring vs DPDK confusion: io_uring is async kernel I/O (still uses the kernel network stack); DPDK is full kernel bypass requiring dedicated NICs and hugepages. They are fundamentally different architectures. Choose one and understand the tradeoffs."
-      - "False sharing: lock-free ring buffers with producer/consumer counters on the same cache line cause severe performance degradation. Pad counters to separate cache lines (64 bytes)."
-      - "File descriptor limits: Linux defaults to 1024 open FDs. Forgetting to raise ulimits causes silent connection refusal under load."
-      - "Memory ordering bugs: using relaxed atomics where acquire/release is needed causes data corruption that only manifests under high contention on specific CPU architectures (ARM more than x86)."
+      - io_uring vs DPDK confusion: io_uring is async kernel I/O (still uses the kernel network stack); DPDK is full kernel bypass requiring dedicated NICs and hugepages. They are fundamentally different architectures. Choose one and understand the tradeoffs.
+      - False sharing: lock-free ring buffers with producer/consumer counters on the same cache line cause severe performance degradation. Pad counters to separate cache lines (64 bytes).
+      - File descriptor limits: Linux defaults to 1024 open FDs. Forgetting to raise ulimits causes silent connection refusal under load.
+      - Memory ordering bugs: using relaxed atomics where acquire/release is needed causes data corruption that only manifests under high contention on specific CPU architectures (ARM more than x86).
     concepts:
       - Async I/O (io_uring, epoll, kqueue)
       - Lock-free data structures
@@ -115,16 +115,16 @@ milestones:
     acceptance_criteria:
       - "Bid request parser handles OpenRTB 2.5/2.6 JSON bid request format, extracting impression objects, device info, user segments, and geo data"
       - "Auction engine fans out bid requests to registered demand-side platform (DSP) endpoints with a configurable per-bidder timeout (default 100ms); slow bidders are excluded from the auction"
-      - "Second-price auction: the winning bidder pays the second-highest bid price plus a minimum increment (1 cent), not their own bid price"
-      - "Targeting rules filter eligible campaigns using bitset-based evaluation: geo (country/region), device type, user segment membership, and time-of-day targeting are evaluated in <1ms"
-      - "Cache-aligned data structures: campaign and targeting data is stored in contiguous, cache-line-aligned arrays for sequential access; benchmark shows >80% L1 cache hit rate during auction"
-      - "Ad creative/markup validation: winning ad HTML/JS is sanitized against a whitelist of allowed tags and attributes; known malicious patterns (crypto miners, redirects) are rejected"
+      - Second-price auction: the winning bidder pays the second-highest bid price plus a minimum increment (1 cent), not their own bid price
+      - Targeting rules filter eligible campaigns using bitset-based evaluation: geo (country/region), device type, user segment membership, and time-of-day targeting are evaluated in <1ms
+      - Cache-aligned data structures: campaign and targeting data is stored in contiguous, cache-line-aligned arrays for sequential access; benchmark shows >80% L1 cache hit rate during auction
+      - Ad creative/markup validation: winning ad HTML/JS is sanitized against a whitelist of allowed tags and attributes; known malicious patterns (crypto miners, redirects) are rejected
       - "P99 auction latency remains under 10ms under sustained load of 50,000 auctions per second, verified by latency histogram"
     pitfalls:
-      - "First-price vs second-price: implementing first-price when the protocol expects second-price (or vice versa) fundamentally changes bidder economics. Document the auction type explicitly."
-      - "Bidder timeout handling: if you wait for the slowest bidder, all auctions are slow. Use a hard timeout with async response collection; late responses are discarded."
-      - "JSON parsing overhead: OpenRTB bid requests can be large (10KB+). Use a streaming JSON parser or pre-allocate parse buffers to avoid per-request allocation."
-      - "Ad markup injection: if ad creative HTML is served without sanitization, malicious bidders can inject scripts that steal user data or redirect to phishing sites."
+      - First-price vs second-price: implementing first-price when the protocol expects second-price (or vice versa) fundamentally changes bidder economics. Document the auction type explicitly.
+      - Bidder timeout handling: if you wait for the slowest bidder, all auctions are slow. Use a hard timeout with async response collection; late responses are discarded.
+      - JSON parsing overhead: OpenRTB bid requests can be large (10KB+). Use a streaming JSON parser or pre-allocate parse buffers to avoid per-request allocation.
+      - Ad markup injection: if ad creative HTML is served without sanitization, malicious bidders can inject scripts that steal user data or redirect to phishing sites.
     concepts:
       - OpenRTB protocol
       - Second-price auction mechanics
@@ -152,17 +152,17 @@ milestones:
       budget pacing algorithms to ensure even campaign spend distribution.
     acceptance_criteria:
       - "Sliding window anomaly detection identifies IP addresses or device IDs exhibiting abnormal request patterns (e.g., >100 requests/second from a single IP) using count-min sketch or similar probabilistic data structure"
-      - "Distributed blacklist: flagged IPs/devices are propagated to all exchange nodes via a shared cache (Redis or gossip protocol) within 5 seconds of detection"
+      - Distributed blacklist: flagged IPs/devices are propagated to all exchange nodes via a shared cache (Redis or gossip protocol) within 5 seconds of detection
       - "Fraud detection pipeline processes the full request stream inline with <1ms added latency per request; heavy analysis (SIMD-accelerated pattern matching) runs on a dedicated thread pool processing batched data"
-      - "Measurable fraud metrics: the system reports detection rate, flagged request count, and estimated false positive rate using a holdout sample of manually-labeled traffic (at least 10,000 labeled samples)"
-      - "Budget pacing: each campaign has a daily budget and the pacing algorithm distributes spend evenly across the day using a probabilistic throttle (bid probability = remaining_budget / remaining_time * adjustment_factor)"
-      - "Pacing adjusts dynamically: if traffic volume drops, the pacing algorithm increases bid probability to avoid under-delivery; if traffic spikes, it decreases bid probability to avoid exhaustion"
-      - "Budget overspend protection: even under race conditions with multiple auction nodes, total spend exceeds the daily budget by no more than 1%, enforced by periodic budget synchronization"
+      - Measurable fraud metrics: the system reports detection rate, flagged request count, and estimated false positive rate using a holdout sample of manually-labeled traffic (at least 10,000 labeled samples)
+      - Budget pacing: each campaign has a daily budget and the pacing algorithm distributes spend evenly across the day using a probabilistic throttle (bid probability = remaining_budget / remaining_time * adjustment_factor)
+      - Pacing adjusts dynamically: if traffic volume drops, the pacing algorithm increases bid probability to avoid under-delivery; if traffic spikes, it decreases bid probability to avoid exhaustion
+      - Budget overspend protection: even under race conditions with multiple auction nodes, total spend exceeds the daily budget by no more than 1%, enforced by periodic budget synchronization
     pitfalls:
-      - "100GB/s per node is impossible: even with DPDK, a single 100GbE NIC delivers 12.5GB/s. Design the fraud pipeline as distributed, with each node processing its local traffic share."
-      - "False positive measurement without ground truth is meaningless: you must have labeled data (known bots, known humans) to compute false positive rate. Use honeypot traffic and known bot signatures for labeling."
-      - "Budget pacing race conditions: two nodes simultaneously checking remaining budget and both deciding to bid can cause overspend. Use optimistic locking with periodic reconciliation, not distributed locks (too slow)."
-      - "SIMD portability: AVX-512 instructions are not available on all CPUs (notably AMD before Zen 4). Use runtime feature detection and provide scalar fallbacks."
+      - 100GB/s per node is impossible: even with DPDK, a single 100GbE NIC delivers 12.5GB/s. Design the fraud pipeline as distributed, with each node processing its local traffic share.
+      - False positive measurement without ground truth is meaningless: you must have labeled data (known bots, known humans) to compute false positive rate. Use honeypot traffic and known bot signatures for labeling.
+      - Budget pacing race conditions: two nodes simultaneously checking remaining budget and both deciding to bid can cause overspend. Use optimistic locking with periodic reconciliation, not distributed locks (too slow).
+      - SIMD portability: AVX-512 instructions are not available on all CPUs (notably AMD before Zen 4). Use runtime feature detection and provide scalar fallbacks.
     concepts:
       - Streaming anomaly detection
       - Probabilistic data structures (count-min sketch, bloom filter)
@@ -190,19 +190,19 @@ milestones:
       synchronization with eventual consistency, and immutable financial
       settlement ledger.
     acceptance_criteria:
-      - "Impression tracking: when an ad is displayed, the client fires an impression beacon; the exchange records the impression with auction ID, winning bid, and timestamp"
-      - "Click tracking: click-through URLs are wrapped with a redirect through the exchange for click recording before forwarding to the advertiser's landing page"
-      - "Impression-auction reconciliation: a background process matches impressions to auctions, flagging discrepancies (impressions without auctions, auctions without impressions) for investigation"
-      - "Multi-region budget state: each region maintains a local budget counter updated optimistically; regions synchronize budget state every N seconds (configurable, default 5s) using a convergent replicated data type (CRDT counter) or central coordinator"
+      - Impression tracking: when an ad is displayed, the client fires an impression beacon; the exchange records the impression with auction ID, winning bid, and timestamp
+      - Click tracking: click-through URLs are wrapped with a redirect through the exchange for click recording before forwarding to the advertiser's landing page
+      - Impression-auction reconciliation: a background process matches impressions to auctions, flagging discrepancies (impressions without auctions, auctions without impressions) for investigation
+      - Multi-region budget state: each region maintains a local budget counter updated optimistically; regions synchronize budget state every N seconds (configurable, default 5s) using a convergent replicated data type (CRDT counter) or central coordinator
       - "Late-arriving events (impressions received after budget synchronization) are handled with a grace window; events arriving after the grace window are logged but do not affect billing"
-      - "Deduplication: duplicate impression or click events (same auction_id + event_type) are detected and discarded using a time-windowed deduplication set"
-      - "Immutable financial ledger: all billing events (impressions, clicks, spend) are written to an append-only log with cryptographic chaining (each entry's hash includes the previous entry's hash) for tamper detection"
-      - "Regional failover: if a region becomes unavailable, traffic is rerouted to surviving regions; the failed region's uncommitted budget changes are reconciled upon recovery without exceeding campaign budgets by more than the documented tolerance"
+      - Deduplication: duplicate impression or click events (same auction_id + event_type) are detected and discarded using a time-windowed deduplication set
+      - Immutable financial ledger: all billing events (impressions, clicks, spend) are written to an append-only log with cryptographic chaining (each entry's hash includes the previous entry's hash) for tamper detection
+      - Regional failover: if a region becomes unavailable, traffic is rerouted to surviving regions; the failed region's uncommitted budget changes are reconciled upon recovery without exceeding campaign budgets by more than the documented tolerance
     pitfalls:
-      - "CRDT counter convergence delay: during the convergence window, total cluster-wide budget tracking is approximate. Document the maximum possible overspend during a partition."
-      - "Click fraud via beacon replay: impression/click beacons must include a cryptographic nonce or signed token to prevent replay by bots."
-      - "Append-only log corruption detection: if the hash chain is only verified on read, corruption can go undetected for days. Verify chain integrity periodically in a background process."
-      - "Failover budget reconciliation: if a region was partitioned and independently spending budget, reconciliation may discover the combined spend exceeds the budget. Define a policy (absorb overspend vs. bill advertiser)."
+      - CRDT counter convergence delay: during the convergence window, total cluster-wide budget tracking is approximate. Document the maximum possible overspend during a partition.
+      - Click fraud via beacon replay: impression/click beacons must include a cryptographic nonce or signed token to prevent replay by bots.
+      - Append-only log corruption detection: if the hash chain is only verified on read, corruption can go undetected for days. Verify chain integrity periodically in a background process.
+      - Failover budget reconciliation: if a region was partitioned and independently spending budget, reconciliation may discover the combined spend exceeds the budget. Define a policy (absorb overspend vs. bill advertiser).
     concepts:
       - Impression/click tracking pipeline
       - CRDTs and eventual consistency

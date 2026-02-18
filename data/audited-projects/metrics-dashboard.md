@@ -101,12 +101,12 @@ milestones:
       - "Pull-based scraping fetches metrics from configured HTTP endpoints in Prometheus exposition format at configurable intervals"
       - "Push-based ingestion accepts metrics via HTTP POST in JSON format for short-lived jobs that cannot be scraped"
       - "Cardinality enforcement rejects or drops metric series when unique label combinations exceed a configurable limit per metric name (default 10,000)"
-      - "Metric operations are thread-safe: concurrent increments from 100 goroutines produce the correct total"
+      - Metric operations are thread-safe: concurrent increments from 100 goroutines produce the correct total
     pitfalls:
-      - "Cardinality explosion: a label like 'user_id' or 'request_path' with unbounded values creates millions of series, exhausting memory—enforce cardinality limits"
-      - "Counter resets on process restart: consumers must use rate() which handles resets, but raw counter values will show drops"
+      - Cardinality explosion: a label like 'user_id' or 'request_path' with unbounded values creates millions of series, exhausting memory—enforce cardinality limits
+      - Counter resets on process restart: consumers must use rate() which handles resets, but raw counter values will show drops
       - "Histogram bucket boundaries cannot be changed after creation without invalidating existing data—choose boundaries carefully upfront"
-      - "Thread safety: naive counter increment without atomic operations or mutexes loses increments under concurrency"
+      - Thread safety: naive counter increment without atomic operations or mutexes loses increments under concurrency
     concepts:
       - Time-series data model
       - Metric types and their semantics
@@ -136,13 +136,13 @@ milestones:
       - "Range queries return data points within specified start/end timestamps; queries automatically use downsampled data for time ranges exceeding raw retention"
       - "Aggregation functions sum, avg, max, min, rate, and quantile produce correct results grouped by specified label dimensions"
       - "rate() correctly handles counter resets by detecting decreases and adjusting the calculation"
-      - "High-cardinality label queries are bounded: queries that would scan more than a configurable number of series (default 50,000) are rejected with an error"
+      - High-cardinality label queries are bounded: queries that would scan more than a configurable number of series (default 50,000) are rejected with an error
     pitfalls:
-      - "Not implementing downsampling: querying 1 year of 15-second resolution data is O(millions) of points per series—downsampling is mandatory for historical views"
+      - Not implementing downsampling: querying 1 year of 15-second resolution data is O(millions) of points per series—downsampling is mandatory for historical views
       - "Gorilla compression ratio degrades with irregular scrape intervals—document expected compression ratios for regular vs irregular data"
       - "Concurrent writes to the same chunk corrupt data without proper locking—use per-series or per-chunk locks"
-      - "rate() across counter resets: if the counter resets mid-window, naive (last-first)/duration gives a negative rate—detect resets and adjust"
-      - "Downsampled data loses precision: p99 cannot be accurately computed from 5-minute averages—store raw histograms for percentile queries"
+      - rate() across counter resets: if the counter resets mid-window, naive (last-first)/duration gives a negative rate—detect resets and adjust
+      - Downsampled data loses precision: p99 cannot be accurately computed from 5-minute averages—store raw histograms for percentile queries
     concepts:
       - Gorilla time-series compression
       - Downsampling and rollup strategies
@@ -172,12 +172,12 @@ milestones:
       - "Dashboard layout and panel configuration is saved and loaded from persistent JSON schema; dashboards can be exported/imported"
       - "Auto-refresh updates all panels at configurable intervals (5s, 15s, 30s, 1m, 5m) without full page reload"
       - "Time range selector supports relative ranges (last 1h, 6h, 24h, 7d) and absolute date-time ranges"
-      - "Missing data points in sparse time series are handled: charts show gaps rather than interpolating false data"
+      - Missing data points in sparse time series are handled: charts show gaps rather than interpolating false data
       - "Chart rendering remains responsive with up to 10,000 data points per panel; downsampling is applied for display if needed"
     pitfalls:
-      - "Interpolating missing data points: connecting the dots across gaps in sparse data misleads operators—show gaps explicitly"
+      - Interpolating missing data points: connecting the dots across gaps in sparse data misleads operators—show gaps explicitly
       - "Rendering 100,000+ points in the browser causes UI freeze—apply server-side downsampling for display resolution"
-      - "Time zone issues: storing timestamps in local time causes confusion across teams—always use UTC internally, convert for display"
+      - Time zone issues: storing timestamps in local time causes confusion across teams—always use UTC internally, convert for display
       - "Template variable queries that return thousands of values make the dropdown unusable—limit template variable cardinality"
     concepts:
       - Data visualization best practices
@@ -204,18 +204,18 @@ milestones:
       and notification routing.
     acceptance_criteria:
       - "Alert rules define a metric query, comparison operator, threshold value, for-duration, and evaluation interval"
-      - "Alert states transition correctly: inactive -> pending (condition met but for-duration not elapsed) -> firing (for-duration elapsed) -> resolved (condition no longer met)"
+      - Alert states transition correctly: inactive -> pending (condition met but for-duration not elapsed) -> firing (for-duration elapsed) -> resolved (condition no longer met)
       - "Firing alerts send a notification on first transition to firing; repeated evaluations while firing do NOT send duplicate notifications unless repeat_interval has elapsed"
       - "Resolved notifications are sent when a firing alert transitions to resolved"
       - "Notification channels (email, Slack webhook, generic webhook) are configurable per alert rule with customizable message templates"
       - "Alert silencing suppresses notifications for alerts matching specified label matchers during a configurable time window"
-      - "Alert evaluation state is persisted: a process restart does not reset pending durations or lose firing state"
+      - Alert evaluation state is persisted: a process restart does not reset pending durations or lose firing state
     pitfalls:
-      - "Alert fatigue: too many alerts with low thresholds—require for-duration to filter transient spikes"
-      - "Flapping alerts: metric oscillating around threshold causes rapid firing/resolved cycles—implement hysteresis (different thresholds for firing and resolving)"
-      - "Missing resolved notifications: operators don't know the incident is over—always send resolved notifications"
-      - "State loss on restart: pending durations reset, causing delayed re-firing—persist alert state"
-      - "Deduplication failure: sending a notification every evaluation interval (e.g., every 15s) floods channels"
+      - Alert fatigue: too many alerts with low thresholds—require for-duration to filter transient spikes
+      - Flapping alerts: metric oscillating around threshold causes rapid firing/resolved cycles—implement hysteresis (different thresholds for firing and resolving)
+      - Missing resolved notifications: operators don't know the incident is over—always send resolved notifications
+      - State loss on restart: pending durations reset, causing delayed re-firing—persist alert state
+      - Deduplication failure: sending a notification every evaluation interval (e.g., every 15s) floods channels
     concepts:
       - Alert state machine (inactive/pending/firing/resolved)
       - Notification deduplication and repeat intervals
@@ -233,5 +233,4 @@ milestones:
       - "Notification channel integrations for email, Slack, and webhook with customizable templates"
       - "Alert silencing mechanism suppressing notifications for matching labels during maintenance windows"
     estimated_hours: "8-12"
-
 ```

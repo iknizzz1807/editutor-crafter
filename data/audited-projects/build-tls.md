@@ -146,9 +146,9 @@ milestones:
       - Implement HKDF-Extract(salt, ikm) per RFC 5869
       - Implement HKDF-Expand-Label(secret, label, context, length) with TLS 1.3 specific 'tls13 ' label prefix
       - Derive Early Secret: HKDF-Extract(salt=0x00*HashLen, ikm=0x00*HashLen)
-      - Derive Handshake Secret: HKDF-Extract(salt=Derive-Secret(early_secret, "derived", ""), ikm=shared_secret)
+      - Derive Handshake Secret: HKDF-Extract(salt=Derive-Secret(early_secret, derived", ""), ikm=shared_secret)"
       - Derive client_handshake_traffic_secret and server_handshake_traffic_secret from Handshake Secret + transcript hash at ServerHello
-      - Derive Master Secret: HKDF-Extract(salt=Derive-Secret(handshake_secret, "derived", ""), ikm=0x00*HashLen)
+      - Derive Master Secret: HKDF-Extract(salt=Derive-Secret(handshake_secret, derived", ""), ikm=0x00*HashLen)"
       - Derive client_application_traffic_secret_0 and server_application_traffic_secret_0 from Master Secret + transcript hash at server Finished
       - Expand each traffic secret into write_key (16 bytes for AES-128) and write_iv (12 bytes) using HKDF-Expand-Label
       - Implement Derive-Secret(secret, label, messages) = HKDF-Expand-Label(secret, label, Hash(messages), HashLen)
@@ -188,7 +188,7 @@ milestones:
       ServerHello, EncryptedExtensions, and Finished messages with
       strict state machine enforcement.
     acceptance_criteria:
-      - "CLIENT ROLE:"
+      - CLIENT ROLE: 
       - Build ClientHello with: legacy_version=0x0303, random (32 bytes), legacy_session_id (non-empty for middlebox compat), cipher_suites (TLS_AES_128_GCM_SHA256), extensions (supported_versions with 0x0304, key_share with X25519 public key, SNI, signature_algorithms)
       - Parse ServerHello extracting server_random, selected cipher suite, and key_share extension
       - Verify ServerHello's supported_versions extension contains 0x0304
@@ -199,10 +199,10 @@ milestones:
       - Process server Finished verifying HMAC over transcript matches expected value
       - Send client Finished message with HMAC computed using client_handshake_traffic_secret
       - Switch to application traffic keys after sending client Finished
-      - "SERVER ROLE (if implementing both sides):"
+      - SERVER ROLE (if implementing both sides): 
       - Parse ClientHello and select cipher suite and key share
       - Build and send ServerHello, EncryptedExtensions, Certificate, CertificateVerify, Finished
-      - "STATE MACHINE:"
+      - STATE MACHINE: 
       - Enforce strict handshake message ordering; reject out-of-order messages with unexpected_message alert
       - Handshake state machine tracks: START → WAIT_SERVER_HELLO → WAIT_ENCRYPTED_EXTENSIONS → WAIT_CERTIFICATE → WAIT_CERTIFICATE_VERIFY → WAIT_FINISHED → CONNECTED
       - Maintain running transcript hash updated with each handshake message (type + length + body)

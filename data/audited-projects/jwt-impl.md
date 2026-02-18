@@ -139,7 +139,7 @@ milestones:
       - Token format assembly
     deliverables:
       - Base64URL encoder/decoder with padding removal
-      - Header encoder producing {"alg":"...","typ":"JWT"}
+      - "Header encoder producing {\"alg\": \"...\",\"typ\":\"JWT\"}"
       - Payload encoder with registered and custom claims
       - Token assembler (header.payload.signature format)
       - Round-trip encode/decode test
@@ -202,7 +202,7 @@ milestones:
     concepts:
       - HMAC-SHA256 symmetric signing
       - RSA-SHA256 asymmetric signing
-      - 'alg: none' vulnerability
+      - "alg: none vulnerability"
       - Algorithm confusion attacks
       - Constant-time comparison
     skills:
@@ -214,9 +214,9 @@ milestones:
       - HS256 sign and verify with constant-time comparison
       - RS256 sign (private key) and verify (public key)
       - Algorithm allowlist enforcement in verifier
-      - 'alg: none' rejection with explicit error
+      - "alg: none rejection with explicit error"
       - Key validation (minimum length for HS256, minimum size for RSA)
-      - Test suite covering valid signatures, tampered tokens, alg:none, and algorithm confusion
+      - Test suite covering valid signatures, tampered tokens, alg: none, and algorithm confusion
     estimated_hours: "4-5"
 
   - id: jwt-impl-m3

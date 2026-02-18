@@ -119,12 +119,12 @@ milestones:
       - Implement simd_strlen using _mm_cmpeq_epi8 to compare 16 bytes against zero simultaneously
       - Implement simd_memchr using _mm_cmpeq_epi8 to find a target byte across 16 bytes simultaneously
       - Use _mm_movemask_epi8 to convert comparison results to a 16-bit bitmask; use __builtin_ctz (count trailing zeros) to find the first match position
-      - "Handle page-boundary safety: before the first aligned read, compute the distance from the input pointer to the next page boundary (4096-byte aligned). If the input is within 16 bytes of a page boundary, use scalar scanning until aligned. After alignment, 16-byte aligned reads within a page cannot fault."
+      - Handle page-boundary safety: before the first aligned read, compute the distance from the input pointer to the next page boundary (4096-byte aligned). If the input is within 16 bytes of a page boundary, use scalar scanning until aligned. After alignment, 16-byte aligned reads within a page cannot fault.
       - For the initial unaligned chunk (pointer not 16-byte aligned), either use scalar scanning OR read from the aligned-down address and mask out bytes before the actual start
       - Verify correctness with strings of lengths 0, 1, 15, 16, 17, 4095, 4096, 4097 (page boundary cases)
       - Benchmark against libc strlen/memchr across string lengths
     pitfalls:
-      - "CRITICAL: Reading 16 bytes starting at an arbitrary address can cross a page boundary into unmapped memory, causing a segfault. Always align reads to 16-byte boundaries; an aligned 16-byte read that starts within a mapped page cannot cross a page boundary."
+      - CRITICAL: Reading 16 bytes starting at an arbitrary address can cross a page boundary into unmapped memory, causing a segfault. Always align reads to 16-byte boundaries; an aligned 16-byte read that starts within a mapped page cannot cross a page boundary.
       - When reading from an aligned-down address, the first few bytes may be before the string start; mask these out of the movemask result to avoid false positives
       - movemask returns a 16-bit value where bit N corresponds to byte N; __builtin_ctz gives the index of the first set bit
       - For memchr with a size limit, must not scan past the end of the buffer
@@ -190,7 +190,7 @@ milestones:
       - Inspect generated assembly for at least 3 functions; annotate which SIMD instructions the compiler chose
       - Identify at least 2 cases where hand-written SIMD outperforms auto-vectorization and explain why (e.g., the compiler couldn't prove alignment, couldn't vectorize complex control flow, chose suboptimal instruction sequence)
       - Identify at least 1 case where auto-vectorization matches or beats hand-written SIMD and explain why
-      - "Benchmark methodology: pin CPU frequency (disable turbo boost and frequency scaling), warm up caches with 3 untimed runs, report median of 10+ timed runs with standard deviation"
+      - Benchmark methodology: pin CPU frequency (disable turbo boost and frequency scaling), warm up caches with 3 untimed runs, report median of 10+ timed runs with standard deviation
       - "Disable auto-vectorization for scalar baselines using __attribute__((optimize(\"no-tree-vectorize\"))) or equivalent"
       - Produce a written analysis document (markdown) summarizing findings with assembly excerpts and benchmark data
     pitfalls:
@@ -205,5 +205,4 @@ milestones:
       - Annotated assembly excerpts for key functions
       - Comprehensive benchmark with statistical rigor (median, stddev, frequency pinning)
       - Written analysis document with conclusions
-
 ```

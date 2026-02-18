@@ -95,15 +95,15 @@ milestones:
     acceptance_criteria:
       - "YAML pipeline files are parsed into a structured pipeline object with stages, jobs, and steps; invalid YAML produces clear schema validation errors with line numbers"
       - "Job dependency declarations are validated as a DAG; circular dependencies are detected and rejected with a descriptive error message naming the cycle"
-      - "Environment variables are substituted using ${VAR} and $VAR syntax in step commands, with support for default values (${VAR:-default}) and error on undefined (${VAR:?error})"
-      - "Conditional expressions (if: branch == 'main', if: event == 'pull_request') are parsed and evaluated, controlling whether a step or job is included in the execution plan"
+      - Environment variables are substituted using ${VAR} and $VAR syntax in step commands, with support for default values (${VAR: -default}) and error on undefined (${VAR:?error})
+      - Conditional expressions (if: branch == 'main', if: event == 'pull_request') are parsed and evaluated, controlling whether a step or job is included in the execution plan
       - "Matrix builds expand axis definitions into the cartesian product of job configurations; 'exclude' rules filter out specific invalid combinations before execution"
       - "A 'services' block defines sidecar containers (e.g., postgres, redis) that run alongside the job container on the same network"
     pitfalls:
-      - "Circular dependencies: a naive topological sort will infinite loop or silently produce wrong order. Use Kahn's algorithm with explicit cycle detection."
-      - "Matrix combinatorial explosion: a 5x5x5 matrix generates 125 jobs. Implement a hard cap and warn the user."
-      - "YAML type coercion: YAML silently converts 'on' to boolean True and '3.10' to float 3.1. Use safe_load and explicit string types for branch names and version numbers."
-      - "Environment variable injection attacks: a step command containing ${USER_INPUT} with malicious content (e.g., '; rm -rf /') enables command injection. Sanitize or quote substitutions."
+      - Circular dependencies: a naive topological sort will infinite loop or silently produce wrong order. Use Kahn's algorithm with explicit cycle detection.
+      - Matrix combinatorial explosion: a 5x5x5 matrix generates 125 jobs. Implement a hard cap and warn the user.
+      - YAML type coercion: YAML silently converts 'on' to boolean True and '3.10' to float 3.1. Use safe_load and explicit string types for branch names and version numbers.
+      - Environment variable injection attacks: a step command containing ${USER_INPUT} with malicious content (e.g., '; rm -rf /') enables command injection. Sanitize or quote substitutions.
     concepts:
       - YAML parsing and schema validation
       - DAG construction and topological sort
@@ -131,16 +131,16 @@ milestones:
       - "Each job runs in a fresh Docker container using the image specified in the pipeline config; the container is guaranteed to be removed after execution (pass or fail) to prevent resource leaks"
       - "A git clone/checkout step populates the workspace with the repository at the triggered commit SHA before any user-defined steps run"
       - "Steps within a single job execute sequentially inside the same container, sharing the same filesystem (workspace) and able to propagate environment variables to subsequent steps via a defined mechanism (e.g., writing to a shared env file)"
-      - "The job fails immediately on the first non-zero exit code from a step, unless the step is marked with 'continue-on-error: true'"
-      - "Secret values injected as environment variables are masked in all log output: any occurrence of a secret value in stdout/stderr is replaced with '***' before storage or streaming"
+      - The job fails immediately on the first non-zero exit code from a step, unless the step is marked with 'continue-on-error: true'
+      - Secret values injected as environment variables are masked in all log output: any occurrence of a secret value in stdout/stderr is replaced with '***' before storage or streaming
       - "Each step's stdout and stderr are captured with timestamps and stored for later retrieval; output exceeding a configurable limit (default 10MB per step) is truncated with a warning"
       - "Jobs that exceed a configurable timeout are killed (SIGTERM, then SIGKILL after grace period) and marked as TIMED_OUT"
       - "Sidecar service containers (defined in the 'services' block) start before the job and are torn down after it completes"
     pitfalls:
-      - "Container cleanup: if the process crashes between container creation and cleanup registration, orphaned containers accumulate. Use Docker labels and a periodic reaper process."
-      - "Environment propagation: each 'docker exec' call starts a new shell, losing exports from previous steps. Use a shared .env file that each step sources, or run all steps in a single shell script."
-      - "Secret masking in binary output: scanning for secret strings in potentially binary stdout is fragile. Only mask in text mode and skip binary artifact streams."
-      - "Timeout race condition: if SIGTERM is sent right as a step completes, the exit code may be ambiguous. Record the timeout event explicitly rather than relying on exit codes alone."
+      - Container cleanup: if the process crashes between container creation and cleanup registration, orphaned containers accumulate. Use Docker labels and a periodic reaper process.
+      - Environment propagation: each 'docker exec' call starts a new shell, losing exports from previous steps. Use a shared .env file that each step sources, or run all steps in a single shell script.
+      - Secret masking in binary output: scanning for secret strings in potentially binary stdout is fragile. Only mask in text mode and skip binary artifact streams.
+      - Timeout race condition: if SIGTERM is sent right as a step completes, the exit code may be ambiguous. Record the timeout event explicitly rather than relying on exit codes alone.
     concepts:
       - Container isolation and lifecycle
       - Workspace management
@@ -173,10 +173,10 @@ milestones:
       - "Workspace directories on workers are cleaned up after job completion; a periodic garbage collector removes any orphaned workspaces older than 24 hours"
       - "Storage usage metrics (total artifact size, cache hit rate, disk usage per worker) are exposed via an API endpoint"
     pitfalls:
-      - "Cache poisoning: a malicious branch can write a bad cache that poisons builds on the main branch. Scope cache keys by branch or use content-addressable storage."
-      - "Glob pattern edge cases: '**/*.jar' may follow symlinks or match inside node_modules, producing multi-GB artifacts. Set a max artifact size."
-      - "Race condition in cache writes: two concurrent jobs with the same cache key may write simultaneously, corrupting the cache. Use atomic rename or locking."
-      - "Disk exhaustion: without the cleanup job running, a busy CI system fills disks within days. Make cleanup a first-class concern, not an afterthought."
+      - Cache poisoning: a malicious branch can write a bad cache that poisons builds on the main branch. Scope cache keys by branch or use content-addressable storage.
+      - Glob pattern edge cases: '**/*.jar' may follow symlinks or match inside node_modules, producing multi-GB artifacts. Set a max artifact size.
+      - Race condition in cache writes: two concurrent jobs with the same cache key may write simultaneously, corrupting the cache. Use atomic rename or locking.
+      - Disk exhaustion: without the cleanup job running, a busy CI system fills disks within days. Make cleanup a first-class concern, not an afterthought.
     concepts:
       - Content-addressable caching
       - Artifact lifecycle management
@@ -207,14 +207,14 @@ milestones:
       - "Webhook handler parses GitHub push, pull_request, and tag event payloads and matches them against pipeline trigger configurations to determine which pipelines to enqueue"
       - "Job queue stores pending pipeline runs durably (database or Redis) with at-least-once delivery semantics; a crashed worker's job is re-queued after a visibility timeout"
       - "Worker pool dequeues and executes pipeline jobs with configurable maximum concurrency; jobs exceeding the limit wait in the queue"
-      - "Priority scheduling: jobs can be assigned priority levels (e.g., production deploy > feature branch); higher-priority jobs are dequeued before lower-priority ones even if enqueued later"
-      - "Pipeline cancellation API: an API call or new push to the same branch cancels any in-progress or queued pipeline for the previous commit on that branch"
-      - "Rate limiting: a configurable maximum number of pipeline triggers per repository per minute prevents webhook floods from overwhelming the system"
+      - Priority scheduling: jobs can be assigned priority levels (e.g., production deploy > feature branch); higher-priority jobs are dequeued before lower-priority ones even if enqueued later
+      - Pipeline cancellation API: an API call or new push to the same branch cancels any in-progress or queued pipeline for the previous commit on that branch
+      - Rate limiting: a configurable maximum number of pipeline triggers per repository per minute prevents webhook floods from overwhelming the system
     pitfalls:
-      - "Queue starvation: if high-priority jobs are continuously enqueued, low-priority jobs may never execute. Implement aging that gradually increases priority over time."
+      - Queue starvation: if high-priority jobs are continuously enqueued, low-priority jobs may never execute. Implement aging that gradually increases priority over time.
       - "At-least-once delivery means jobs may run twice if a worker crashes after completion but before acknowledgment. Make pipeline execution idempotent or use fencing tokens."
-      - "Webhook secret rotation: changing the secret invalidates all in-flight webhook deliveries. Support multiple active secrets during rotation periods."
-      - "Cancellation race: cancelling a job that is between steps requires signaling the execution engine; if the engine doesn't poll for cancellation, the job runs to completion."
+      - Webhook secret rotation: changing the secret invalidates all in-flight webhook deliveries. Support multiple active secrets during rotation periods.
+      - Cancellation race: cancelling a job that is between steps requires signaling the execution engine; if the engine doesn't poll for cancellation, the job runs to completion.
     concepts:
       - HMAC signature verification
       - Work queue with priority and visibility timeout
@@ -240,17 +240,17 @@ milestones:
       pipeline DAG visualization, and embeddable status badges.
     acceptance_criteria:
       - "Build list view shows recent pipeline runs with status (running/passed/failed/cancelled), trigger type, branch, commit SHA, and wall-clock duration; paginated for large histories"
-      - "Real-time log streaming: clicking on a running job displays live log output in the browser within 2 seconds of it being produced, using WebSocket or Server-Sent Events"
+      - Real-time log streaming: clicking on a running job displays live log output in the browser within 2 seconds of it being produced, using WebSocket or Server-Sent Events
       - "Completed job logs are served from storage with support for searching within log output and jumping to specific steps"
       - "Pipeline DAG visualization renders stages and jobs as a graph with directed edges showing dependencies; node color reflects job status (green/red/gray/spinning)"
       - "Build status badges return SVG images (pass/fail/running) at a stable URL suitable for embedding in README files; badges are served with appropriate Cache-Control headers (short TTL)"
       - "Artifact download page lists collected artifacts for each pipeline run with file names, sizes, and download links"
-      - "Manual pipeline trigger: a button or API allows triggering a pipeline run for a specific branch/commit without a webhook event"
+      - Manual pipeline trigger: a button or API allows triggering a pipeline run for a specific branch/commit without a webhook event
     pitfalls:
-      - "WebSocket connection management: reconnecting after network disruption must resume from the last received log offset, not from the beginning, to avoid duplicates or gaps."
-      - "Large log rendering: naively appending millions of log lines to the DOM causes the browser to freeze. Use virtualized scrolling (render only visible lines)."
-      - "Badge caching: CDN or browser caching badges for too long shows stale status. Use Cache-Control: no-cache or short max-age with ETag validation."
-      - "SVG injection: if badge text includes user-controlled data (branch names), it must be XML-escaped to prevent SVG injection attacks."
+      - WebSocket connection management: reconnecting after network disruption must resume from the last received log offset, not from the beginning, to avoid duplicates or gaps.
+      - Large log rendering: naively appending millions of log lines to the DOM causes the browser to freeze. Use virtualized scrolling (render only visible lines).
+      - Badge caching: CDN or browser caching badges for too long shows stale status. Use Cache-Control: no-cache or short max-age with ETag validation.
+      - SVG injection: if badge text includes user-controlled data (branch names), it must be XML-escaped to prevent SVG injection attacks.
     concepts:
       - Real-time streaming protocols
       - DAG visualization

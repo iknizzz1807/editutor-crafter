@@ -94,19 +94,19 @@ milestones:
       Build an in-memory offset index for O(1) lookup by sequence number.
       The index is rebuilt by scanning the log file on startup.
     acceptance_criteria:
-      - "Entries are appended with format: [4-byte length][4-byte CRC32][8-byte sequence number][data payload]"
+      - Entries are appended with format: [4-byte length][4-byte CRC32][8-byte sequence number][data payload]
       - Sequence numbers are monotonically increasing starting from 1
       - Each write is followed by fsync to guarantee durability before returning success
       - "An in-memory index maps sequence number → file offset for O(1) lookup. On startup, the log file is scanned to rebuild this index."
       - "On recovery, partial/corrupt entries at the end of the log (detected by CRC mismatch or incomplete length) are truncated"
       - "Read-by-sequence returns the entry in O(1) using the in-memory index, or an error if the sequence number does not exist"
       - "Read-range(start, end) returns all entries in the specified sequence range"
-      - "Benchmark: 10,000 sequential appends complete without sequence gaps or corruption after kill -9 and restart"
+      - Benchmark: 10,000 sequential appends complete without sequence gaps or corruption after kill -9 and restart
     pitfalls:
-      - "Partial writes on crash: process dies after writing 50% of an entry. Without CRC, the partial entry is interpreted as valid but corrupt data."
-      - "Not calling fsync: data sits in OS page cache and is lost on power failure. fsync is slow (~1ms) but necessary for durability."
-      - "Index not rebuilt on restart: after a crash, the in-memory index is empty and all lookups fail"
-      - "File handle exhaustion: open the log file once and keep it open, don't open/close per operation"
+      - Partial writes on crash: process dies after writing 50% of an entry. Without CRC, the partial entry is interpreted as valid but corrupt data.
+      - Not calling fsync: data sits in OS page cache and is lost on power failure. fsync is slow (~1ms) but necessary for durability.
+      - Index not rebuilt on restart: after a crash, the in-memory index is empty and all lookups fail
+      - File handle exhaustion: open the log file once and keep it open, don't open/close per operation
     concepts:
       - Append-only log structure
       - CRC32 checksumming for integrity
@@ -133,7 +133,7 @@ milestones:
       stale epochs.
     acceptance_criteria:
       - "Cluster of N nodes (configurable, minimum 3) with static membership configured at startup"
-      - "Heartbeat-based failure detection: primary sends heartbeats every T seconds; followers suspect failure after 3*T seconds"
+      - Heartbeat-based failure detection: primary sends heartbeats every T seconds; followers suspect failure after 3*T seconds
       - "When a follower suspects primary failure and has not heard from a higher-epoch leader, it increments epoch and requests votes from peers"
       - "A node votes for a candidate only if the candidate's epoch is higher than the node's current epoch (each node votes at most once per epoch)"
       - "A candidate becomes primary if it receives votes from a majority (N/2 + 1) of nodes including itself"
@@ -141,10 +141,10 @@ milestones:
       - "Any message (heartbeat, replication, etc.) from a leader with epoch < node's current epoch is rejected"
       - "A former primary with a stale epoch that reconnects steps down to follower upon receiving a higher-epoch message"
     pitfalls:
-      - "Missing epoch numbers: without them, a partitioned former leader can corrupt data by accepting writes after a new leader is elected"
-      - "Not restricting votes to one per epoch: a node voting for two candidates in the same epoch can cause two leaders"
-      - "Election timeout too deterministic: if all followers time out simultaneously, they split the vote. Use randomized election timeouts."
-      - "Epoch not persisted to disk: after restart, a node forgets its epoch and may vote again in an epoch it already voted in"
+      - Missing epoch numbers: without them, a partitioned former leader can corrupt data by accepting writes after a new leader is elected
+      - Not restricting votes to one per epoch: a node voting for two candidates in the same epoch can cause two leaders
+      - Election timeout too deterministic: if all followers time out simultaneously, they split the vote. Use randomized election timeouts.
+      - Epoch not persisted to disk: after restart, a node forgets its epoch and may vote again in an epoch it already voted in
     concepts:
       - Epoch/term numbers for leader validity
       - Majority vote election
@@ -174,14 +174,14 @@ milestones:
       - "Primary appends the entry to its local log, then sends AppendEntries(epoch, entries, prev_seq) to all followers"
       - "Followers accept AppendEntries only if the epoch matches their current known epoch AND prev_seq matches their last entry. Otherwise they request catch-up."
       - "Primary acknowledges the write to the client only after receiving success from a majority of nodes (quorum = N/2 + 1 including itself)"
-      - "Follower catch-up: when a follower's log is behind, the primary sends missing entries starting from the follower's last known sequence number"
+      - Follower catch-up: when a follower's log is behind, the primary sends missing entries starting from the follower's last known sequence number
       - "Entries replicated to a quorum are marked as committed. Only committed entries are visible to clients."
       - "Replication latency for a 3-node cluster with local networking is < 10ms p99 for 1KB entries"
     pitfalls:
-      - "Split brain without epoch check: both old and new primary accept writes, creating divergent logs"
-      - "Acknowledging before quorum: if only the primary has the entry and it crashes, the entry is lost"
-      - "Log divergence: if a follower received entries from a stale leader, it may have entries that conflict with the new leader's log. Must truncate divergent entries."
-      - "Thundering herd on catch-up: if 10 followers reconnect simultaneously and all request full log replay, the primary is overwhelmed. Rate-limit catch-up."
+      - Split brain without epoch check: both old and new primary accept writes, creating divergent logs
+      - Acknowledging before quorum: if only the primary has the entry and it crashes, the entry is lost
+      - Log divergence: if a follower received entries from a stale leader, it may have entries that conflict with the new leader's log. Must truncate divergent entries.
+      - Thundering herd on catch-up: if 10 followers reconnect simultaneously and all request full log replay, the primary is overwhelmed. Rate-limit catch-up.
     concepts:
       - AppendEntries replication RPC
       - Quorum write acknowledgment
@@ -211,13 +211,13 @@ milestones:
       - "Read(seq) fetches a committed entry by sequence number from the primary (strong read) or any node (eventual read, flagged as such)"
       - "If the primary is unreachable, the client retries with exponential backoff (base 100ms, max 5s, with jitter) up to a configurable max attempts"
       - "After max retries, the client re-discovers the primary by querying other cluster nodes and retries the operation"
-      - "Client prevents infinite retry loops: after N re-discovery attempts, it returns an error to the caller"
-      - "Read-your-writes consistency: after a successful Append, a subsequent Read for that sequence number returns the appended data (when using strong reads)"
+      - Client prevents infinite retry loops: after N re-discovery attempts, it returns an error to the caller
+      - Read-your-writes consistency: after a successful Append, a subsequent Read for that sequence number returns the appended data (when using strong reads)
     pitfalls:
-      - "Stale primary cache: client caches the primary address but the primary changed. Must handle redirect/error and re-discover."
-      - "Read-your-writes violation: if the client reads from a follower after writing to the primary, the follower may not have the entry yet"
-      - "Infinite retry loop: if all nodes are down, the client retries forever unless there is a max retry limit"
-      - "Duplicate writes on retry: if the primary committed the write but the ack was lost, the client retries and creates a duplicate. Consider idempotency keys."
+      - Stale primary cache: client caches the primary address but the primary changed. Must handle redirect/error and re-discover.
+      - Read-your-writes violation: if the client reads from a follower after writing to the primary, the follower may not have the entry yet
+      - Infinite retry loop: if all nodes are down, the client retries forever unless there is a max retry limit
+      - Duplicate writes on retry: if the primary committed the write but the ack was lost, the client retries and creates a duplicate. Consider idempotency keys.
     concepts:
       - Primary discovery and failover
       - Strong vs eventual read consistency
@@ -234,5 +234,4 @@ milestones:
       - Automatic failover with exponential backoff retry
       - Strong and eventual read modes
     estimated_hours: "4-6"
-
 ```

@@ -64,16 +64,16 @@ languages:
     - Java
   also_possible: []
 resources:
-  - name: "Apache Airflow Documentation"
+  - name: Apache Airflow Documentation""
     url: https://airflow.apache.org/docs/
     type: documentation
-  - name: "Dagster Orchestration Platform"
+  - name: Dagster Orchestration Platform""
     url: https://dagster.io
     type: tool
-  - name: "Data Validation in ETL Guide"
+  - name: Data Validation in ETL Guide""
     url: https://www.integrate.io/blog/data-validation-etl/
     type: article
-  - name: "Schema Evolution Best Practices"
+  - name: Schema Evolution Best Practices""
     url: https://dataterrain.com/handling-schema-evolution-etl-data-transformation
     type: article
 prerequisites:

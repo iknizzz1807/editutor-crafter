@@ -144,7 +144,7 @@ milestones:
       - Italic (*text* or _text_) produces emphasis AST nodes
       - Nested emphasis (**bold *and italic* text**) produces correctly nested strong and emphasis nodes
       - Underscore emphasis does NOT trigger in the middle_of_words (intraword emphasis rules per CommonMark)
-      - Inline code (`code`) produces code_span AST nodes preserving inner whitespace; backtick strings can use multiple backticks (`` ` ``)
+      - Inline code ('code') produces code_span AST nodes preserving inner whitespace; backtick strings can use multiple backticks ('' ' '')
       - Links [text](url "title") produce link AST nodes with text, url, and optional title
       - Reference links [text][ref] and [text] (shortcut) resolve against collected reference definitions
       - Images ![alt](url "title") produce image AST nodes with alt text, url, and optional title

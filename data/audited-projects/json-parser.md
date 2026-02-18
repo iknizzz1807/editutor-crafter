@@ -90,11 +90,11 @@ milestones:
       Build a lexer that converts a JSON input string into a stream of
       typed tokens, with RFC 8259-compliant number validation at scan time.
     acceptance_criteria:
-      - "Tokenizer emits tokens for: string, number, true, false, null, '{', '}', '[', ']', ':', ','"
+      - Tokenizer emits tokens for: "string, number, true, false, null, '{', '}', '[', ']', ':', ','"
       - "Whitespace (space, tab, newline, carriage return) is consumed between tokens without emitting"
-      - "String tokens handle escape sequences: \\\", \\\\, \\/, \\b, \\f, \\n, \\r, \\t"
-      - "String tokens handle basic Unicode escapes: \\uXXXX where X is a hex digit"
-      - "Number validation per RFC 8259: no leading zeros (except '0' itself), no trailing decimal point, no lone minus"
+      - String tokens handle escape sequences: \\\", \\\\, \\/, \\b, \\f, \\n, \\r, \\t
+      - String tokens handle basic Unicode escapes: \\uXXXX where X is a hex digit
+      - Number validation per RFC 8259: "no leading zeros (except '0' itself), no trailing decimal point, no lone minus"
       - "Numbers support optional minus, integer part, optional decimal fraction, optional exponent (e/E with optional +/-)"
       - "Invalid number formats (e.g., '007', '1.', '.5', '+1') produce error tokens with position"
       - "Unterminated strings produce error with line and column of the opening quote"
@@ -104,7 +104,7 @@ milestones:
       - "Accepting '007' as valid number—JSON forbids leading zeros"
       - "Accepting '.5' or '1.'—JSON requires digit before and after decimal point"
       - "Not handling escaped forward slash (\\/) which is valid JSON"
-      - "Scientific notation: '1e10', '1E-3', '1.5e+2' are all valid; '1e' is not"
+      - Scientific notation: "'1e10', '1E-3', '1.5e+2' are all valid; '1e' is not"
       - "Unterminated string spanning multiple lines—JSON strings cannot contain literal newlines"
     concepts:
       - Lexical analysis
@@ -133,20 +133,20 @@ milestones:
       list, string, number, bool, None/null) using recursive descent.
     acceptance_criteria:
       - "Parser consumes token stream and returns native data structure (dict/list/string/number/bool/null)"
-      - "Objects parse as key-value pairs: keys must be strings, values can be any JSON type"
+      - Objects parse as key-value pairs: keys must be strings, values can be any JSON type
       - "Arrays parse as ordered lists of any JSON type"
-      - "Nested structures parse correctly: objects containing arrays containing objects, etc."
+      - Nested structures parse correctly: objects containing arrays containing objects, etc.
       - "Empty objects {} and empty arrays [] parse correctly"
       - "Trailing commas are rejected as syntax errors per RFC 8259 (e.g., [1,2,] is invalid)"
-      - "Any JSON value type is accepted at the top level (per RFC 8259: not just objects/arrays)"
+      - Any JSON value type is accepted at the top level (per RFC 8259: not just objects/arrays)
       - "Nesting depth is limited to a configurable maximum (e.g., 512); exceeding produces error"
       - "Extra tokens after the root value produce an error (e.g., '{}[]' is invalid)"
-      - "Syntax errors produce descriptive messages: 'Expected : but found , at line 3, column 12'"
+      - Syntax errors produce descriptive messages: "'Expected : but found , at line 3, column 12'"
     pitfalls:
       - "Accepting trailing commas silently—common in JavaScript but invalid JSON"
       - "Stack overflow on deeply nested input—must enforce depth limit"
-      - "Empty object/array: forgetting to check for closing brace/bracket immediately after opening"
-      - "Duplicate keys: RFC 8259 says SHOULD be unique; decide behavior (last-wins or error) and document"
+      - Empty object/array: forgetting to check for closing brace/bracket immediately after opening
+      - Duplicate keys: RFC 8259 says SHOULD be unique; decide behavior (last-wins or error) and document
       - "Not consuming the full input—silently ignoring garbage after the root value"
     concepts:
       - Recursive descent parsing
@@ -160,7 +160,7 @@ milestones:
       - Error message formatting
     deliverables:
       - "parse_value() dispatching to parse_object, parse_array, parse_string, parse_number, parse_bool, parse_null"
-      - "parse_object() reading key:value pairs into dictionary"
+      - parse_object() reading key: value pairs into dictionary
       - "parse_array() reading values into list"
       - "Nesting depth counter with configurable limit"
       - "Trailing token check after root value"
@@ -183,10 +183,10 @@ milestones:
       - "Empty string input produces an error (not a crash or empty result)"
       - "Parser handles all 'i_' (implementation-defined) tests with documented behavior"
     pitfalls:
-      - "Surrogate pair decoding is complex: high surrogate (D800-DBFF) must be followed by low surrogate (DC00-DFFF)"
-      - "Float precision: very large or very small exponents may produce infinity or zero—decide behavior"
+      - Surrogate pair decoding is complex: high surrogate (D800-DBFF) must be followed by low surrogate (DC00-DFFF)
+      - Float precision: very large or very small exponents may produce infinity or zero—decide behavior
       - "JSONTestSuite includes tricky edge cases like '0e1' (valid), '0e' (invalid), '\\u0000' (null character in string)"
-      - "Null bytes inside strings: some implementations crash; must handle gracefully"
+      - Null bytes inside strings: some implementations crash; must handle gracefully
     concepts:
       - Conformance testing
       - Unicode processing
@@ -198,11 +198,10 @@ milestones:
       - Specification reading and implementation
       - Boundary condition testing
     deliverables:
-      - "JSONTestSuite integration: automated run of y_, n_, and i_ test cases"
+      - JSONTestSuite integration: automated run of y_, n_, and i_ test cases
       - "Unicode \\uXXXX basic escape decoding"
       - "Surrogate pair decoding (optional/advanced)"
       - "Documented behavior for implementation-defined cases"
-      - "Edge case handling: empty input, extreme numbers, null bytes"
+      - Edge case handling: empty input, extreme numbers, null bytes
     estimated_hours: "3-5"
-
 ```

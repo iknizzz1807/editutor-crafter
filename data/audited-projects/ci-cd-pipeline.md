@@ -107,7 +107,7 @@ milestones:
       - "Variable interpolation resolves ${VAR} references in step definitions from pipeline-level and environment variables"
     pitfalls:
       - "Topological sort on a cyclic graph does not infinite loop—it fails to produce a complete ordering. The real pitfall is not detecting the cycle upfront and reporting which jobs form the cycle."
-      - "YAML anchors and aliases (*anchor, <<: *merge) need explicit handling or they produce unexpected merged structures"
+      - YAML anchors and aliases (*anchor, <<: *merge) need explicit handling or they produce unexpected merged structures
       - "Variable interpolation before validation can mask errors—validate structure first, then interpolate"
       - "Duplicate job names in different stages silently shadow each other—validate uniqueness across the entire pipeline"
     concepts:
@@ -144,9 +144,9 @@ milestones:
       - "Pipeline execution can be cancelled; cancellation terminates running containers within 10 seconds using SIGTERM then SIGKILL"
     pitfalls:
       - "Zombie containers when the executor process is killed without cleanup—always use defer/finally to remove containers"
-      - "Environment variable injection of secrets: if a step runs 'env' or 'printenv', all secrets are exposed in logs unless masked"
+      - Environment variable injection of secrets: if a step runs 'env' or 'printenv', all secrets are exposed in logs unless masked
       - "Large stdout output (e.g., verbose build logs) causes memory exhaustion if buffered entirely—stream to disk with a size cap"
-      - "Docker-in-Docker (DinD) has security implications: the inner Docker daemon has root access to the host. Prefer Docker socket mounting with read-only where possible."
+      - Docker-in-Docker (DinD) has security implications: the inner Docker daemon has root access to the host. Prefer Docker socket mounting with read-only where possible.
       - "Workspace not cleaned between retries can cause 'works on retry' non-determinism"
     concepts:
       - Process isolation using containers
@@ -178,11 +178,11 @@ milestones:
       - "Artifact download verifies SHA-256 checksum to detect corruption during transfer or storage; mismatches fail the job"
       - "Retention policy deletes artifacts older than the configured age; manual pinning prevents deletion of release artifacts"
       - "Large artifacts (>1GB) are handled via streaming upload/download without loading the entire file into memory"
-      - "Path traversal attacks are prevented: artifact extraction rejects entries containing '..' or absolute paths, and symlinks pointing outside the extraction directory are rejected"
+      - Path traversal attacks are prevented: artifact extraction rejects entries containing '..' or absolute paths, and symlinks pointing outside the extraction directory are rejected
       - "Cache keys are namespaced per pipeline and include a content hash to prevent unrelated cache collisions"
     pitfalls:
       - "Symlinks in tarballs can escape the extraction directory (zip-slip vulnerability)—validate every entry path before extraction"
-      - "Cache key collision: using only branch name as cache key overwrites caches from different pipelines on the same branch"
+      - Cache key collision: using only branch name as cache key overwrites caches from different pipelines on the same branch
       - "Streaming upload interrupted mid-transfer leaves partial artifacts—use atomic rename (write to temp, rename on completion)"
       - "Not verifying checksum before marking artifact as available allows corrupted artifacts to propagate to downstream jobs"
     concepts:
@@ -216,10 +216,10 @@ milestones:
       - "Deployment state is persisted so that a coordinator restart does not lose track of which environment is active and what version is deployed"
       - "Connection draining waits for in-flight requests (up to configurable timeout, default 30s) to complete before decommissioning the old environment"
     pitfalls:
-      - "Database migration incompatibility between versions: the expand-contract pattern is required but out of scope—document this as a prerequisite assumption"
+      - Database migration incompatibility between versions: the expand-contract pattern is required but out of scope—document this as a prerequisite assumption
       - "Session affinity (sticky sessions) can cause users to be stuck on the old environment after traffic switch—document and test with stateless services"
-      - "Health check passing on /health but application failing on actual traffic: smoke tests should hit real endpoints, not just health"
-      - "Missing persistent state for deployment: if the coordinator restarts mid-deployment, it must know which environment is active"
+      - Health check passing on /health but application failing on actual traffic: smoke tests should hit real endpoints, not just health
+      - Missing persistent state for deployment: if the coordinator restarts mid-deployment, it must know which environment is active
     concepts:
       - Blue-green deployment pattern
       - Load balancer traffic switching
@@ -238,5 +238,4 @@ milestones:
       - "Manual approval gate with API endpoint for authorized user approval"
       - "Deployment state store persisting active environment, version, and deployment history"
     estimated_hours: "10-12"
-
 ```

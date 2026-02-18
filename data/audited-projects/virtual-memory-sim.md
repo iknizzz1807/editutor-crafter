@@ -136,7 +136,7 @@ milestones:
       - Statistics tracked: TLB hits, TLB misses, TLB hit rate percentage, TLB flushes
       - TLB dirty bit is propagated back to the page table on eviction (write-back of metadata)
     pitfalls:
-      - "TLB coherency: when a PTE is modified (e.g., page evicted), the corresponding TLB entry must be invalidated or the TLB serves stale data"
+      - TLB coherency: when a PTE is modified (e.g., page evicted), the corresponding TLB entry must be invalidated or the TLB serves stale data
       - "Not updating the page table's referenced/dirty bits on TLB hits; the TLB must either write-through these bits or flush them on eviction"
       - "ASID width limits (e.g., 8-bit ASID = 256 processes before recycling requires flush)"
       - "Random replacement is simpler but makes testing non-deterministic; use a seeded PRNG for reproducibility"
@@ -174,7 +174,7 @@ milestones:
       - Context switch changes CR3 to point to a different process's page directory; TLB is flushed or ASID is switched
       - Three-level page table support is implemented as a stretch goal (e.g., 2+9+9+12 for a 32-bit space with 4KB pages)
     pitfalls:
-      - "Index extraction order: most significant bits select the directory, middle bits select the table, least significant bits are the offset"
+      - Index extraction order: most significant bits select the directory, middle bits select the table, least significant bits are the offset
       - "Confusing page directory entries (which point to page tables) with page table entries (which point to frames)"
       - "Not accounting for the memory consumed by the page table structures themselves in overhead calculations"
       - "Forgetting to handle the case where the page directory entry is NULL (entire region unmapped) vs the PTE being invalid (single page unmapped)"
@@ -213,11 +213,11 @@ milestones:
       - Comparative statistics are printed: page faults per algorithm, dirty write-backs, and optional Bélády's anomaly demonstration with FIFO
       - Working set size is tracked as the number of distinct pages accessed in a sliding window of the last N accesses
     pitfalls:
-      - "Bélády's anomaly: FIFO can produce MORE page faults with MORE frames; demonstrate with a specific trace to build intuition"
+      - Bélády's anomaly: FIFO can produce MORE page faults with MORE frames; demonstrate with a specific trace to build intuition
       - "Not writing dirty pages to swap on eviction means data is silently lost; reload from swap returns stale/zero data"
       - "LRU with timestamps can be expensive (O(n) scan); consider approximate LRU with the Clock algorithm as the practical alternative"
       - "Optimal algorithm requires the full future access trace; it's a benchmark, not a real algorithm. Students sometimes try to implement it as online."
-      - "Thrashing: if working set exceeds physical memory, every access is a fault. Detect and report this condition."
+      - Thrashing: if working set exceeds physical memory, every access is a fault. Detect and report this condition.
     concepts:
       - Page replacement policies
       - Swap space and disk I/O simulation

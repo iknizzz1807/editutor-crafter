@@ -103,7 +103,7 @@ milestones:
       Implement the core RBAC model with named roles, typed permissions,
       DAG-based role inheritance, and a permission resolution API.
     acceptance_criteria:
-      - Define permissions as (resource_type, action) tuples (e.g., 'document:read', 'document:write', 'user:delete')
+      - Define permissions as (resource_type, action) tuples (e.g., 'document: read', 'document:write', 'user:delete')
       - Define roles with a name, description, and a set of directly assigned permissions
       - Support role hierarchy where child roles inherit all permissions from parent roles
       - Validate role hierarchy is a DAG (Directed Acyclic Graph); reject any role assignment that would create a cycle
@@ -113,7 +113,7 @@ milestones:
       - Support explicit DENY permissions that override any inherited or direct ALLOW
       - Deny always wins: if any role (direct or inherited) has deny for a permission, the final result is deny
       - Default-deny: if no matching permission (allow or deny) exists, the result is deny
-      - Wildcard permissions (e.g., 'document:*') are supported but resolved explicitly (expanded, not pattern-matched at check time)
+      - Wildcard permissions (e.g., 'document: *') are supported but resolved explicitly (expanded, not pattern-matched at check time)
     pitfalls:
       - Role hierarchy cycles cause infinite loops in permission resolution; MUST validate DAG property on every role relationship change
       - Cache invalidation required when roles or permissions change; use versioned cache keys or event-based invalidation

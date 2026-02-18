@@ -1,0 +1,255 @@
+id: log-aggregator
+name: Log Aggregation System
+description: >-
+  Centralized log aggregation with forwarder agents, inverted index with bloom
+  filters, query engine with mandatory time-scoping, compressed chunk storage,
+  and multi-tenant isolation.
+difficulty: intermediate
+estimated_hours: "40-50"
+essence: >-
+  Agent-based log forwarding to a central indexer with label-only inverted index
+  and bloom filters for membership testing, schema-on-read query processing,
+  chunk-based compression with write-ahead logging, and multi-tenant isolation
+  with per-tenant rate limiting.
+why_important: >-
+  Log aggregation systems are critical for debugging production issues across
+  distributed systems. Understanding the architecture—forwarder agents vs central
+  indexers, inverted indexes vs full-text indexes, schema-on-read vs schema-on-write
+  tradeoffs—helps you design cost-effective, queryable log infrastructure.
+learning_outcomes:
+  - Design a log forwarding agent that tails files and ships structured logs to a central aggregator
+  - Build an inverted index with bloom filters for efficient label-based and negative lookups
+  - Implement a query engine with mandatory time-range scoping and schema-on-read field extraction
+  - Design chunk-based compressed storage with write-ahead logging for durability
+  - Implement multi-tenant isolation with per-tenant rate limiting and authentication
+  - Understand schema-on-read vs schema-on-write tradeoffs and their performance implications
+skills:
+  - Inverted Index Design
+  - Bloom Filter Implementation
+  - Stream Processing
+  - Label-Based Querying
+  - Log Compression
+  - Query Language Parsing
+  - Write-Ahead Logging
+  - Multi-Tenant Isolation
+  - Agent Architecture
+tags:
+  - collection
+  - databases
+  - indexing
+  - intermediate
+  - observability
+  - querying
+  - search
+architecture_doc: architecture-docs/log-aggregator/index.md
+languages:
+  recommended:
+    - Go
+    - Rust
+    - Python
+  also_possible:
+    - Java
+resources:
+  - name: Grafana Loki Documentation
+    url: https://grafana.com/docs/loki/latest/
+    type: documentation
+  - name: LogQL Query Guide
+    url: https://grafana.com/docs/loki/latest/query/
+    type: documentation
+  - name: Bloom Filters by Example
+    url: http://llimllib.github.io/bloomfilter-tutorial/
+    type: tutorial
+  - name: Loki Bloom Filter Operations
+    url: https://grafana.com/docs/loki/latest/operations/bloom-filters/
+    type: documentation
+prerequisites:
+  - type: skill
+    name: Networking (TCP/UDP)
+  - type: skill
+    name: File I/O and buffering
+  - type: skill
+    name: Data serialization (JSON, protobuf)
+  - type: skill
+    name: Basic data structures (hash maps, arrays)
+milestones:
+  - id: log-aggregator-m1
+    name: Log Ingestion & Forwarding Agent
+    description: >-
+      Build a log forwarder agent and a central ingestion endpoint. The agent
+      tails log files, parses multiple formats, and ships structured logs to
+      the aggregator. The aggregator buffers during downstream outages.
+    acceptance_criteria:
+      - "Forwarder agent watches configured log files for new lines (using inotify/kqueue or polling) and forwards them to the central aggregator via HTTP or TCP"
+      - "Agent handles log rotation: detects when a file is rotated (inode change, truncation) and re-opens without losing lines"
+      - "Central aggregator accepts logs via HTTP POST (JSON) and TCP (syslog RFC 5424/3164) endpoints"
+      - "Multiple log formats are parsed: JSON (structured), syslog (RFC 5424, RFC 3164), and configurable regex patterns for custom formats"
+      - "Single-node ingestion handles burst rates of at least 10,000 messages per second with backpressure (measured via benchmark); horizontal scaling is documented as out-of-scope"
+      - "Incoming logs are buffered to a disk-backed queue during downstream outage (e.g., storage unavailable) and replayed in order on recovery; buffer has a configurable maximum size"
+      - "Out-of-order timestamps are accepted but flagged; ingestion does not reject logs with timestamps in the past"
+    pitfalls:
+      - "Agent missing log rotation: when logrotate renames the file, the agent keeps reading the old (now renamed) file descriptor—detect inode change and reopen"
+      - "Unbounded in-memory batching during bursts causes OOM—use a bounded buffer with disk overflow"
+      - "Label values containing special characters (spaces, quotes, equals signs) break naive key=value parsing—use proper escaping or quoted values"
+      - "TCP syslog framing: without octet-counting framing, newlines in log messages split a single log into multiple entries"
+    concepts:
+      - Agent vs aggregator architecture
+      - File tailing with rotation detection
+      - Multi-protocol ingestion (HTTP, TCP, UDP)
+      - Disk-backed buffering for reliability
+    skills:
+      - File system watching and tailing
+      - HTTP and TCP server implementation
+      - Log format parsing (JSON, syslog, regex)
+      - Disk-backed queue implementation
+    deliverables:
+      - "Log forwarder agent that tails configured files and ships to aggregator via HTTP/TCP"
+      - "HTTP ingestion endpoint accepting JSON-formatted log entries via POST"
+      - "Syslog receiver parsing RFC 5424 and RFC 3164 over TCP and UDP"
+      - "Multi-format log parser with JSON, syslog, and configurable regex support"
+      - "Disk-backed buffer for ingestion reliability during downstream outages"
+    estimated_hours: "10-12"
+
+  - id: log-aggregator-m2
+    name: Inverted Index with Bloom Filters
+    description: >-
+      Build an inverted index for fast label-based log queries with bloom filters
+      for efficient negative lookups and time-based partitioning.
+    acceptance_criteria:
+      - "Inverted index maps each unique label key-value pair to the set of log chunk IDs containing entries with that label"
+      - "Bloom filter is constructed per chunk to enable fast negative lookups: 'does this chunk possibly contain entries matching label X=Y?' with a configurable false positive rate (default 1%)"
+      - "Bloom filter correctly rejects non-matching chunks without false negatives; false positives are handled by falling back to full chunk scan"
+      - "Time-based partitioning segments the index into configurable windows (hourly or daily) so queries scan only relevant time partitions"
+      - "Structured fields (level, service, hostname) are automatically extracted and indexed; custom fields require explicit configuration"
+      - "Index compaction merges small segments into larger ones periodically to reduce file count and query overhead"
+      - "Index survives process restart: it is persisted to disk and can be loaded or rebuilt from the WAL on startup"
+    pitfalls:
+      - "Bloom filter false positives increase as the filter fills—size the filter based on expected entries per chunk and target FP rate using the formula m = -(n * ln(p)) / (ln(2))^2"
+      - "High cardinality labels (e.g., request_id) bloat the inverted index with millions of entries per label key—only index low-cardinality labels by default"
+      - "Index corruption requires full rebuild from raw log data, which can take hours for large datasets—implement incremental index repair from WAL"
+      - "Compaction running concurrently with queries can cause readers to access deleted segments—use reference counting or copy-on-write"
+    concepts:
+      - Inverted index data structures
+      - Bloom filter probabilistic data structure
+      - Time-based index partitioning
+      - Index compaction and segment merging
+    skills:
+      - Hash-based data structure implementation
+      - Probabilistic algorithm tuning (FP rate)
+      - Index persistence and recovery
+      - Concurrent reader/writer safety
+    deliverables:
+      - "Inverted index mapping label key-value pairs to chunk IDs with persistent storage"
+      - "Bloom filter per chunk with configurable false positive rate for negative lookups"
+      - "Time-based partition manager segmenting index into hourly/daily shards"
+      - "Index compaction merging small segments into larger ones on a configurable schedule"
+      - "Index recovery loading persisted index or rebuilding from WAL on startup"
+    estimated_hours: "10-12"
+
+  - id: log-aggregator-m3
+    name: Query Engine with Time-Scoped Search
+    description: >-
+      Build a LogQL-style query engine with mandatory time-range scoping,
+      label filtering, text search, and schema-on-read field extraction.
+    acceptance_criteria:
+      - "All queries require a time range (start, end); queries without a time range are rejected with an error message explaining the requirement"
+      - "Maximum query time window is configurable (default 24h) to prevent unbounded scans; queries exceeding the limit are rejected"
+      - "Label filters (e.g., service=api, level!=DEBUG) use the inverted index for efficient lookup; bloom filters eliminate non-matching chunks before scanning"
+      - "Full-text search matches log entries containing specified keywords within the filtered label set and time range"
+      - "Schema-on-read field extraction: regex or JSON field extraction at query time allows filtering on fields that were not indexed at ingestion (documented tradeoff: slower than indexed fields)"
+      - "Regular expression patterns in queries match against log message text and extracted fields"
+      - "Query pagination returns results in pages with a cursor token for efficient traversal of large result sets"
+      - "Query execution timeout (configurable, default 30s) cancels long-running queries and returns partial results with a timeout indicator"
+    pitfalls:
+      - "Schema-on-read is flexible but slow: extracting fields via regex at query time is orders of magnitude slower than querying pre-indexed fields—document this tradeoff clearly to users"
+      - "JSON parsing failures in log messages should be handled gracefully: return the raw log line with an extraction-failure annotation, don't silently drop the entry"
+      - "Filter pipeline ordering matters: apply label index filters first (cheapest), then bloom filter checks, then text search, then regex—wrong ordering causes full scans"
+      - "Cursor-based pagination with concurrent ingestion: new entries may shift positions—use timestamp+offset cursors, not simple numeric offsets"
+    concepts:
+      - Query language parsing and AST construction
+      - Schema-on-read vs schema-on-write tradeoffs
+      - Query execution planning and optimization
+      - Cursor-based pagination
+    skills:
+      - Parser implementation (recursive descent or PEG)
+      - Query optimization and filter ordering
+      - Streaming result processing
+      - Timeout and cancellation handling
+    deliverables:
+      - "Query language parser supporting label filters, full-text search, regex, and boolean operators"
+      - "Mandatory time-range enforcer rejecting queries without time bounds or exceeding max window"
+      - "Schema-on-read field extractor parsing JSON or applying regex at query time"
+      - Query optimizer applying filters in cost order: label index -> bloom filter -> chunk scan -> text search
+      - "Cursor-based pagination for large result sets with timeout protection"
+    estimated_hours: "10-12"
+
+  - id: log-aggregator-m4
+    name: Compressed Chunk Storage with WAL
+    description: >-
+      Implement chunk-based compressed storage with write-ahead logging,
+      retention policies, and durability guarantees.
+    acceptance_criteria:
+      - "Logs are stored in compressed chunks using a configurable algorithm (snappy for speed, zstd for ratio, gzip for compatibility); default is snappy"
+      - "Chunks are organized by time window (configurable, default 1 hour) and label stream; each chunk contains logs for one label set within one time window"
+      - "Write-ahead log (WAL) records all incoming log entries before they are written to chunks; on crash recovery, the WAL is replayed to reconstruct any incomplete chunks"
+      - "WAL checkpointing truncates the WAL after chunks are successfully flushed, preventing unbounded WAL growth"
+      - "Retention policy automatically deletes chunks older than configurable TTL (default 7 days); deletion is verified by checking that no chunks older than TTL+1h exist"
+      - "Compression achieves at least 5: 1 ratio on typical application log data (JSON logs); ratio is measured and reported in benchmarks"
+      - "Storage layer supports local disk; S3-compatible object storage is documented as a future extension but not required"
+    pitfalls:
+      - "WAL growing unbounded if checkpointing fails or is too infrequent—checkpoint after every chunk flush and monitor WAL size"
+      - "Decompression performance on queries: snappy is fast to decompress but has lower compression ratio; zstd gives better ratio but slower decompress—benchmark both"
+      - "Storage leak from failed retention cleanup (e.g., file lock prevents deletion)—implement retry with alerting on persistent failure"
+      - "Chunk boundary alignment: if a chunk covers 1-hour windows, a query for 'last 5 minutes' still decompresses the entire 1-hour chunk—consider smaller chunk windows for recent data"
+    concepts:
+      - Chunk-based storage architecture
+      - Write-ahead logging for durability
+      - Compression algorithm tradeoffs
+      - Retention policy enforcement
+    skills:
+      - Compression algorithm usage (snappy, zstd, gzip)
+      - WAL implementation and recovery
+      - File system management
+      - Benchmark design
+    deliverables:
+      - "Chunk-based storage engine organizing logs by time window and label stream with configurable compression"
+      - "Write-ahead log recording entries before chunk writes with replay-on-recovery"
+      - "WAL checkpoint manager truncating WAL after successful chunk flush"
+      - "Retention policy engine deleting chunks older than configured TTL"
+      - "Compression benchmark comparing snappy, zstd, and gzip on representative log data"
+    estimated_hours: "8-10"
+
+  - id: log-aggregator-m5
+    name: Multi-Tenant Isolation & Log-Based Alerting
+    description: >-
+      Add multi-tenant isolation with authenticated tenant identification,
+      per-tenant rate limiting, and log-pattern-based alerting.
+    acceptance_criteria:
+      - "Tenant isolation: every API request (ingestion and query) requires a tenant ID via HTTP header or authentication token; unauthenticated requests are rejected with 401"
+      - "Tenant ID is validated against a whitelist or authentication backend; invalid or spoofed tenant IDs are rejected with 403"
+      - "Logs from one tenant cannot be queried by another tenant; cross-tenant data access is verified impossible by test"
+      - "Per-tenant ingestion rate limit (configurable, e.g., 1000 msg/s per tenant) is enforced; exceeding the limit returns 429 with retry-after header"
+      - "Alert rules match log patterns (e.g., 'more than 100 ERROR logs from service=payments in 5 minutes') and trigger webhook notifications"
+      - "Alert deduplication prevents sending the same alert more than once within a configurable suppression window (default 15 minutes)"
+    pitfalls:
+      - "Tenant ID injection: if tenant ID is passed as a header without authentication, any client can impersonate another tenant—always authenticate"
+      - "Noisy neighbor: one tenant flooding the system degrades performance for all tenants—enforce rate limits at ingestion"
+      - "Alert storms: a cascading failure generates thousands of matching log lines, triggering hundreds of alerts—deduplication and rate limiting on alerts are essential"
+      - "Per-tenant storage accounting: without tracking per-tenant usage, you can't enforce quotas or bill—track bytes ingested per tenant"
+    concepts:
+      - Multi-tenancy patterns
+      - Rate limiting algorithms (token bucket, sliding window)
+      - Log-pattern-based alerting
+      - Alert deduplication
+    skills:
+      - Authentication and authorization
+      - Rate limiter implementation
+      - Pattern matching on log streams
+      - Webhook notification delivery
+    deliverables:
+      - "Tenant authentication middleware validating tenant ID on every request"
+      - "Tenant data isolation ensuring queries are scoped to authenticated tenant's data only"
+      - "Per-tenant rate limiter using token bucket algorithm with configurable limits"
+      - "Log-pattern alert rule engine matching configurable conditions on log streams"
+      - "Alert deduplication system suppressing duplicate notifications within configurable window"
+      - "Webhook notification sender for triggered alerts with configurable endpoint"
+    estimated_hours: "8-10"

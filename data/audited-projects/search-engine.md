@@ -259,8 +259,8 @@ milestones:
       - Recursive descent parser converts query strings into an abstract syntax tree (AST)
       - Boolean AND combines posting lists via sorted intersection; OR via sorted union; NOT via sorted difference
       - Phrase queries verify term adjacency using positional index data, returning only documents where terms appear consecutively in order
-      - Field-specific filters (e.g., 'author:smith', 'title:database') restrict search to named fields
-      - Numeric range queries (e.g., 'year:2020..2024') filter by min/max values
+      - Field-specific filters (e.g., 'author: smith', 'title:database') restrict search to named fields
+      - Numeric range queries (e.g., 'year: 2020..2024') filter by min/max values
       - Standalone NOT queries are rejected with an error message (prevents returning entire index)
       - Query depth is limited to a configurable maximum (default 10) to prevent stack overflow from deeply nested expressions
       - Leading wildcard queries (e.g., '*tion') are rejected or flagged as expensive

@@ -130,7 +130,7 @@ milestones:
     pitfalls:
       - "Too few virtual nodes (<50) cause significant load imbalance; too many (>1000) increase ring metadata and lookup overhead"
       - "Preference list must skip virtual nodes belonging to the same physical node to ensure replicas are on distinct machines"
-      - "Hash function choice matters: MD5/SHA-1 provide good uniformity; naive modulo does not"
+      - Hash function choice matters: MD5/SHA-1 provide good uniformity; naive modulo does not
       - "Ring recalculation during rebalancing must be atomic to avoid split-brain key ownership"
     concepts:
       - Consistent hashing
@@ -164,7 +164,7 @@ milestones:
       - "Concurrent conflicting writes are detected via vector clock comparison and returned to the client for application-level resolution"
     pitfalls:
       - "Vector clocks grow unboundedly with many writers—implement clock pruning with timestamp-based truncation"
-      - "Read repair races: two concurrent read repairs can overwrite each other; use CAS or version checks"
+      - Read repair races: two concurrent read repairs can overwrite each other; use CAS or version checks
       - "Sloppy quorum (writing to non-preferred nodes) requires hinted handoff to eventually move data to the correct node"
       - "Client-side conflict resolution is complex—many teams fall back to LWW which silently drops writes"
     concepts:
@@ -197,12 +197,12 @@ milestones:
       - "Failure detector marks a node as suspect after missing heartbeats for a configurable timeout (default 10s)"
       - "Suspect nodes are confirmed down after a configurable grace period if no counter-gossip refutes the suspicion"
       - "Hinted handoff stores writes destined for a failed node locally with metadata, replaying them when the node recovers"
-      - "Cluster state converges: all live nodes agree on membership within 30 seconds of any change"
+      - Cluster state converges: all live nodes agree on membership within 30 seconds of any change
     pitfalls:
       - "Gossip message size grows with cluster size—use digest-based protocol with pull-based detail exchange"
       - "False positives in failure detection (network blip != node death) cause unnecessary data migration"
       - "Hinted handoff storage can exhaust local disk if a node is down for extended periods—set TTL on hints"
-      - "Split brain during network partition: two subclusters may independently declare the other dead"
+      - Split brain during network partition: two subclusters may independently declare the other dead
     concepts:
       - Gossip protocols
       - Phi-accrual failure detection
@@ -217,7 +217,7 @@ milestones:
       - "Gossip protocol sending periodic state digests to random peers for protocol dissemination"
       - "Failure detector using phi-accrual or timeout-based suspicion with configurable thresholds"
       - "Hinted handoff store that buffers writes for unavailable nodes and replays on recovery"
-      - "Membership state machine tracking node lifecycle: joining → alive → suspect → down → removed"
+      - Membership state machine tracking node lifecycle: joining → alive → suspect → down → removed
     estimated_hours: "15-25"
 
   - id: build-distributed-kv-m5
@@ -263,8 +263,8 @@ milestones:
       - "Coordinator node hashes the key, identifies the preference list, and fans out requests to replica nodes"
       - "Coordinator collects R or W responses, resolves conflicts, and returns the result to the client"
       - "Client can connect to any node; that node acts as coordinator for the request (zero-hop routing)"
-      - "Timeout handling: coordinator returns an error if quorum is not achieved within configurable deadline"
-      - "Integration test: 3-node cluster handles concurrent reads and writes with node failure and recovery, maintaining quorum guarantees"
+      - Timeout handling: coordinator returns an error if quorum is not achieved within configurable deadline
+      - Integration test: 3-node cluster handles concurrent reads and writes with node failure and recovery, maintaining quorum guarantees
     pitfalls:
       - "Coordinator bottleneck if all clients connect to the same node—use client-side partition-aware routing"
       - "Fan-out latency dominated by slowest replica—use speculative reads to reduce tail latency"

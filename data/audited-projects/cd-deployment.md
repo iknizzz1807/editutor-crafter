@@ -101,13 +101,13 @@ milestones:
     acceptance_criteria:
       - "Two identical environments (blue and green) run simultaneously on separate ports or addresses with independent process lifecycles"
       - "Health check endpoint returns JSON with environment color, application version, uptime, and readiness status"
-      - "Readiness probe goes beyond HTTP 200: it verifies database connectivity, cache availability, and connection pool initialization before reporting ready"
+      - Readiness probe goes beyond HTTP 200: it verifies database connectivity, cache availability, and connection pool initialization before reporting ready
       - "Deploying to one environment does not affect the other currently serving traffic; verified by deploying while running a continuous request stream against the active environment with zero errors"
       - "Environment configuration (database URL, port, feature flags) is injected via environment variables or config files, with no hardcoded values"
       - "Both environments can be provisioned from the same infrastructure-as-code definition with environment color as the only differentiator"
     pitfalls:
-      - "Environment config drift: blue and green diverge over time due to manual changes—always provision from the same IaC template"
-      - "Cold start: JVM warm-up, connection pool initialization, and cache priming can take seconds to minutes—the readiness probe must account for this"
+      - Environment config drift: blue and green diverge over time due to manual changes—always provision from the same IaC template
+      - Cold start: JVM warm-up, connection pool initialization, and cache priming can take seconds to minutes—the readiness probe must account for this
       - "Health endpoint returning 200 while the application is partially initialized (database connection not yet established)—check all critical dependencies"
       - "Shared database between environments means a bad migration affects both—the database is shared by design but migrations must be backward-compatible"
     concepts:
@@ -134,17 +134,17 @@ milestones:
       graceful connection draining and configurable drain timeouts.
     acceptance_criteria:
       - "Nginx or HAProxy routes all traffic to the currently active environment based on a configuration file or upstream directive"
-      - "Traffic switch uses Nginx graceful reload (not restart): worker_shutdown_timeout is configured to allow in-flight requests to complete (configurable, default 30s)"
-      - "Connection draining is verified: a long-running request started before the switch completes successfully on the old environment, not the new one"
+      - Traffic switch uses Nginx graceful reload (not restart): worker_shutdown_timeout is configured to allow in-flight requests to complete (configurable, default 30s)
+      - Connection draining is verified: a long-running request started before the switch completes successfully on the old environment, not the new one
       - "Health check confirms target environment readiness probe returns healthy before switching traffic; if readiness fails, the switch is aborted"
       - "Rollback switches traffic back to the previous environment within 10 seconds by reverting the load balancer configuration"
       - "Load balancer configuration is validated (nginx -t) before applying to prevent invalid config from breaking routing"
       - "The switch operation is logged with timestamp, from-environment, to-environment, and operator for audit purposes"
     pitfalls:
-      - "Using 'nginx restart' instead of 'nginx reload': restart drops all connections immediately; reload allows workers to finish"
-      - "Not setting worker_shutdown_timeout: Nginx default is unlimited, meaning old workers may never terminate if clients keep connections open"
-      - "Forgetting to validate config before reload: an invalid upstream directive will cause reload to fail silently on some Nginx versions"
-      - "Session stickiness: if sessions are stored in-process, users with active sessions on the old environment lose state—externalize sessions to Redis/DB"
+      - Using 'nginx restart' instead of 'nginx reload': restart drops all connections immediately; reload allows workers to finish
+      - Not setting worker_shutdown_timeout: Nginx default is unlimited, meaning old workers may never terminate if clients keep connections open
+      - Forgetting to validate config before reload: an invalid upstream directive will cause reload to fail silently on some Nginx versions
+      - Session stickiness: if sessions are stored in-process, users with active sessions on the old environment lose state—externalize sessions to Redis/DB
       - "DNS-based switching has TTL propagation delay—use load balancer config switching for instant cutover"
     concepts:
       - Reverse proxy configuration
@@ -170,18 +170,18 @@ milestones:
       Automate the deployment process with pre-deployment checks, smoke testing,
       and idempotent execution.
     acceptance_criteria:
-      - "Deployment script automates the full sequence: build -> deploy to inactive -> readiness wait -> smoke test -> switch trigger"
+      - Deployment script automates the full sequence: build -> deploy to inactive -> readiness wait -> smoke test -> switch trigger
       - "New version is deployed to the inactive environment while the active environment continues serving live traffic with zero impact"
       - "Smoke tests validate at least 3 critical API endpoints return expected responses and status codes after deployment"
       - "Switch trigger only executes after ALL pre-deployment checks (readiness probe + smoke tests) pass; any failure aborts the deployment"
-      - "Deployment is idempotent: running the deployment script twice with the same version produces the same result without errors or duplicate resources"
-      - "Deployment script has configurable timeouts for each phase (build: 10min, deploy: 5min, readiness: 2min, smoke: 2min) with failure on timeout"
-      - "Post-switch verification: after traffic switch, the script monitors error rate for a configurable window (default 60s) and triggers automatic rollback if error rate exceeds threshold (default 5%)"
+      - Deployment is idempotent: running the deployment script twice with the same version produces the same result without errors or duplicate resources
+      - Deployment script has configurable timeouts for each phase (build: 10min, deploy: 5min, readiness: 2min, smoke: 2min) with failure on timeout
+      - Post-switch verification: after traffic switch, the script monitors error rate for a configurable window (default 60s) and triggers automatic rollback if error rate exceeds threshold (default 5%)
     pitfalls:
-      - "No timeout handling: a hung build or unresponsive readiness probe blocks the pipeline forever—every phase needs a timeout"
-      - "Missing error handling: a failed smoke test that doesn't abort leaves the pipeline in an inconsistent state"
-      - "Not verifying AFTER switch: smoke tests pass on inactive environment but the LB switch itself fails—always verify post-switch"
-      - "Non-idempotent deployments: re-running creates duplicate containers or fails on 'already exists' errors"
+      - No timeout handling: a hung build or unresponsive readiness probe blocks the pipeline forever—every phase needs a timeout
+      - Missing error handling: a failed smoke test that doesn't abort leaves the pipeline in an inconsistent state
+      - Not verifying AFTER switch: smoke tests pass on inactive environment but the LB switch itself fails—always verify post-switch
+      - Non-idempotent deployments: re-running creates duplicate containers or fails on 'already exists' errors
     concepts:
       - Deployment automation and orchestration
       - Smoke testing
@@ -196,7 +196,7 @@ milestones:
       - "Deployment orchestration script with phased execution and per-phase timeouts"
       - "Smoke test suite validating critical endpoints after deployment"
       - "Post-switch health monitor comparing error rates against threshold"
-      - "Idempotency verification: test that double-running the script succeeds without side effects"
+      - Idempotency verification: test that double-running the script succeeds without side effects
     estimated_hours: "6-9"
 
   - id: cd-deployment-m4
@@ -206,15 +206,15 @@ milestones:
       migrations using the expand-contract pattern.
     acceptance_criteria:
       - "Automatic rollback completes within 15 seconds by switching traffic back to the still-running previous environment"
-      - "Expand-contract migrations: 'expand' phase adds nullable columns or new tables without modifying existing columns; 'contract' phase (removing old columns) is a separate migration applied only after all instances run the new code"
+      - Expand-contract migrations: 'expand' phase adds nullable columns or new tables without modifying existing columns; 'contract' phase (removing old columns) is a separate migration applied only after all instances run the new code
       - "Both blue and green application versions work correctly against the intermediate (expanded) database schema; verified by running the test suite of BOTH versions against the expanded schema"
       - "Database version is tracked in a migrations table; migrations are applied idempotently (re-running a migration that already ran is a no-op)"
-      - "Rollback test is automated: the deployment pipeline includes a step that deploys, switches, rolls back, and verifies the old version still works correctly"
+      - Rollback test is automated: the deployment pipeline includes a step that deploys, switches, rolls back, and verifies the old version still works correctly
       - "Migration rollback scripts exist for each expand migration, undoing schema changes if needed (with data preservation where possible)"
     pitfalls:
-      - "Running the 'contract' phase too early: if old code is still running, removing the old column breaks it—contract only after all instances are on new code"
+      - Running the 'contract' phase too early: if old code is still running, removing the old column breaks it—contract only after all instances are on new code
       - "Breaking migrations (e.g., renaming a column) that prevent rollback—never rename; add new column, migrate data, remove old column in separate phases"
-      - "Not testing rollback regularly: the rollback path bit-rots if never exercised—include it in the deployment pipeline"
+      - Not testing rollback regularly: the rollback path bit-rots if never exercised—include it in the deployment pipeline
       - "Data migrations (backfilling new columns) running in a transaction that locks the table for minutes—use batched updates with small transaction sizes"
     concepts:
       - Expand-contract migration pattern
@@ -233,5 +233,4 @@ milestones:
       - "Migration idempotency verification ensuring re-run safety"
       - "Automated rollback test integrated into deployment pipeline"
     estimated_hours: "6-10"
-
 ```

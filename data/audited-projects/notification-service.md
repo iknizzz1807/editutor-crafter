@@ -148,7 +148,7 @@ milestones:
     pitfalls:
       - "SMS templates exceeding 160 characters are split into multiple segments, each billed separately"
       - "HTML email rendered with CSS classes will look broken in Gmail, Outlook, etc.; always inline styles"
-      - "Template variable injection: user-controlled data in HTML email templates can inject malicious HTML/links; escape user data contextually"
+      - Template variable injection: user-controlled data in HTML email templates can inject malicious HTML/links; escape user data contextually
       - "Locale detection should never fail silently; always fall back to a default locale"
       - "Retrying permanent failures wastes resources and annoys third-party providers; classify errors correctly"
       - "Exponential backoff without jitter causes retry storms when many notifications fail simultaneously"
@@ -215,7 +215,7 @@ milestones:
       Track delivery status through the notification lifecycle, process
       webhook events from providers, and build analytics for delivery metrics.
     acceptance_criteria:
-      - "Each notification's delivery status is tracked through states: queued → sent → delivered → opened → clicked → bounced → failed"
+      - Each notification's delivery status is tracked through states: queued → sent → delivered → opened → clicked → bounced → failed
       - "Webhook endpoint receives delivery events (delivered, bounced, complained) from email/SMS providers; events are processed idempotently using event ID"
       - "Webhook payload signatures are verified using provider-specific HMAC validation before processing"
       - "Hard bounces update the recipient's reachability status; subsequent notifications to unreachable recipients are suppressed"
@@ -224,7 +224,7 @@ milestones:
       - "Metrics are exposed via an API endpoint (GET /analytics/delivery) with time range filtering"
       - "Alert fires when the failure rate for any channel exceeds a configurable threshold (e.g., >10% in 5 minutes)"
     pitfalls:
-      - "Email open tracking via 1x1 pixel is unreliable: image blocking, Apple Mail Privacy Protection prefetching pixels inflate counts"
+      - Email open tracking via 1x1 pixel is unreliable: image blocking, Apple Mail Privacy Protection prefetching pixels inflate counts
       - "Do not track opens/clicks on transactional emails (password resets, security alerts) for user privacy"
       - "Webhook endpoints must be idempotent; providers may send the same event multiple times"
       - "Not verifying webhook signatures allows attackers to inject fake delivery events"

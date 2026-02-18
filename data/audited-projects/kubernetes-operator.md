@@ -90,14 +90,14 @@ milestones:
       object your operator will manage.
     acceptance_criteria:
       - "CRD YAML manifest defines a custom resource with Group, Version, Kind (e.g., apps.example.com/v1/MyApp) and is successfully applied to the cluster"
-      - "OpenAPI v3 schema validation rejects resources with missing required fields (test: apply a CR missing a required field and verify the API server returns a validation error)"
-      - "Spec and status are separate subresources: updating spec does not overwrite status and vice versa (test: update spec, verify status is unchanged; update status, verify spec is unchanged)"
+      - OpenAPI v3 schema validation rejects resources with missing required fields (test: apply a CR missing a required field and verify the API server returns a validation error)
+      - Spec and status are separate subresources: updating spec does not overwrite status and vice versa (test: update spec, verify status is unchanged; update status, verify spec is unchanged)
       - "Printer columns display at least 3 relevant fields (e.g., status, replicas, age) in 'kubectl get myapp' output"
-      - "Default values are set for optional fields via the schema defaulting mechanism (test: create a CR without an optional field and verify the default is applied)"
+      - Default values are set for optional fields via the schema defaulting mechanism (test: create a CR without an optional field and verify the default is applied)
       - "Scope is correctly set (Namespaced or Cluster) and the CR can be created in the intended scope"
     pitfalls:
       - "Not marking fields as 'required' in the schema allows empty specs that cause nil pointer panics in the controller"
-      - "Forgetting to enable the status subresource (subresources.status: {}) means spec and status updates overwrite each other"
+      - Forgetting to enable the status subresource (subresources.status: {}) means spec and status updates overwrite each other
       - "OpenAPI schema validation cannot express all constraints (e.g., 'field A required if field B is set'); complex validation requires webhooks (Milestone 4)"
       - "Schema changes on a live CRD can break existing CRs if fields are renamed or types changed; use versioning for breaking changes"
     concepts:
@@ -108,8 +108,8 @@ milestones:
     deliverables:
       - "CRD YAML manifest with OpenAPI schema, status subresource, and printer columns"
       - "Go types (or equivalent) representing the CR spec and status structs"
-      - "Validation test: CR with invalid fields is rejected by API server"
-      - "Default values test: CR with omitted optional fields gets defaults"
+      - Validation test: CR with invalid fields is rejected by API server
+      - Default values test: CR with omitted optional fields gets defaults
     estimated_hours: "8-10"
 
   - id: kubernetes-operator-m2
@@ -122,10 +122,10 @@ milestones:
       - "Controller uses a SharedInformer for the custom resource that caches objects locally and reduces API server load"
       - "Informer cache is synced before the controller starts processing events (verified by WaitForCacheSync returning true)"
       - "Event handlers for Add, Update, and Delete enqueue the resource's namespace/name key into a rate-limited work queue"
-      - "Work queue uses exponential backoff: first retry after 5ms, max backoff 1000s, with rate limiting to prevent overloading the API server"
+      - Work queue uses exponential backoff: first retry after 5ms, max backoff 1000s, with rate limiting to prevent overloading the API server
       - "Worker goroutines (configurable count, default 2) continuously dequeue items and call the reconcile function"
-      - "Leader election is configured so that only one controller replica actively processes events; standby replicas wait for the lease (test: run 2 replicas, verify only one is reconciling)"
-      - "RBAC: controller ServiceAccount has only the permissions needed to watch/list/get/update the custom resource and manage owned resources (test: remove a permission and verify the controller logs an authorization error)"
+      - Leader election is configured so that only one controller replica actively processes events; standby replicas wait for the lease (test: run 2 replicas, verify only one is reconciling)
+      - RBAC: controller ServiceAccount has only the permissions needed to watch/list/get/update the custom resource and manage owned resources (test: remove a permission and verify the controller logs an authorization error)
     pitfalls:
       - "Processing events before informer cache sync causes the controller to see partial state and create duplicate resources"
       - "Using direct API calls instead of informer cache lookups causes unnecessary API server load and latency"
@@ -158,12 +158,12 @@ milestones:
       - "Reconciler fetches the CR from the informer cache; if not found (deleted), returns without error"
       - "Reconciler compares the desired state (CR spec) with actual state of owned Kubernetes resources (e.g., Deployment, Service) and creates, updates, or deletes them to match"
       - "Owner references are set on all created resources so Kubernetes garbage collector deletes them when the CR is deleted"
-      - "Status subresource is updated after each reconciliation with: conditions (Ready, Degraded), observed generation, ready replicas count, and last reconciled timestamp"
-      - "Finalizer implementation: on CR creation, the controller adds a finalizer string to metadata.finalizers; on CR deletion (DeletionTimestamp is set), the controller performs cleanup of external resources (e.g., simulated external DB deletion), then removes the finalizer to allow Kubernetes to complete deletion"
-      - "Finalizer test: create a CR, verify finalizer is added; delete the CR, verify external cleanup occurs before the CR is actually removed from the cluster"
-      - "Idempotency test: trigger reconciliation 3 times on the same unchanged CR; verify no duplicate resources are created and no unnecessary API calls are made"
+      - Status subresource is updated after each reconciliation with: conditions (Ready, Degraded), observed generation, ready replicas count, and last reconciled timestamp
+      - Finalizer implementation: on CR creation, the controller adds a finalizer string to metadata.finalizers; on CR deletion (DeletionTimestamp is set), the controller performs cleanup of external resources (e.g., simulated external DB deletion), then removes the finalizer to allow Kubernetes to complete deletion
+      - Finalizer test: create a CR, verify finalizer is added; delete the CR, verify external cleanup occurs before the CR is actually removed from the cluster
+      - Idempotency test: trigger reconciliation 3 times on the same unchanged CR; verify no duplicate resources are created and no unnecessary API calls are made
       - "Reconciliation errors trigger requeue with exponential backoff; permanent errors (e.g., invalid spec) do not requeue and are reported in status conditions"
-      - "Generation tracking: reconciler skips reconciliation if spec has not changed (metadata.generation == status.observedGeneration)"
+      - Generation tracking: reconciler skips reconciliation if spec has not changed (metadata.generation == status.observedGeneration)
     pitfalls:
       - "Not setting owner references means owned resources are NOT cleaned up when the CR is deleted, causing orphaned resources"
       - "Forgetting to remove the finalizer after cleanup causes the CR to be stuck in Terminating state forever"
@@ -179,10 +179,10 @@ milestones:
     deliverables:
       - "Reconcile function comparing desired spec with actual cluster state"
       - "Resource mutator creating/updating/deleting owned Deployments, Services, etc."
-      - "Finalizer lifecycle: add on create, cleanup on delete, remove after cleanup"
+      - Finalizer lifecycle: add on create, cleanup on delete, remove after cleanup
       - "Status updater writing conditions, observed generation, and metrics"
-      - "Idempotency: repeated reconciliation produces no duplicate resources"
-      - "Error classification: transient errors requeue, permanent errors report in status"
+      - Idempotency: repeated reconciliation produces no duplicate resources
+      - Error classification: transient errors requeue, permanent errors report in status
     estimated_hours: "12-14"
 
   - id: kubernetes-operator-m4
@@ -196,7 +196,7 @@ milestones:
       - "Webhook is served over HTTPS with a valid TLS certificate; cert-manager or a self-signed CA provisioned by the operator handles certificate lifecycle"
       - "Webhook failurePolicy is set to 'Fail' for validating (to enforce rules) and tested with the webhook service down to verify the API server rejects CR modifications"
       - "Namespace selector ensures the webhook only intercepts resources in the operator's target namespace(s), not system namespaces (kube-system)"
-      - "Mutating webhook executes before validating webhook (Kubernetes default ordering); test: mutating webhook sets a field, validating webhook validates that field is set"
+      - Mutating webhook executes before validating webhook (Kubernetes default ordering); test: mutating webhook sets a field, validating webhook validates that field is set
     pitfalls:
       - "Self-signed certificates expire without rotation; use cert-manager or implement rotation with a renewal timer"
       - "Webhook service unavailability with failurePolicy=Fail blocks ALL CR operations cluster-wide; ensure HA or use failurePolicy=Ignore during initial development (but switch to Fail for production)"
@@ -214,7 +214,7 @@ milestones:
       - "Mutating webhook injecting defaults and computed fields"
       - "TLS certificate provisioning (cert-manager or self-signed with rotation)"
       - "Webhook configuration manifests with namespace selector"
-      - "Test: webhook rejects invalid CR; webhook mutates CR; webhook down blocks operations"
+      - Test: webhook rejects invalid CR; webhook mutates CR; webhook down blocks operations
     estimated_hours: "8-10"
 
   - id: kubernetes-operator-m5
@@ -224,14 +224,14 @@ milestones:
       image, and create deployment manifests (Helm chart or plain YAML)
       with proper RBAC.
     acceptance_criteria:
-      - "Unit tests using a fake Kubernetes client cover: create, update, delete reconciliation paths; finalizer add/remove; status update; error handling with requeue; idempotency"
-      - "Integration tests using envtest (real API server in-process) verify end-to-end reconciliation: create CR -> owned resources created -> update CR spec -> owned resources updated -> delete CR -> finalizer cleanup -> CR removed"
-      - "Test coverage: reconciliation logic has >80% line coverage"
+      - Unit tests using a fake Kubernetes client cover: create, update, delete reconciliation paths; finalizer add/remove; status update; error handling with requeue; idempotency
+      - Integration tests using envtest (real API server in-process) verify end-to-end reconciliation: create CR -> owned resources created -> update CR spec -> owned resources updated -> delete CR -> finalizer cleanup -> CR removed
+      - Test coverage: reconciliation logic has >80% line coverage
       - "Container image is built with a multi-stage Dockerfile (build stage + minimal runtime stage) and tagged with version"
-      - "Deployment manifests include: Namespace, ServiceAccount, ClusterRole/Role, ClusterRoleBinding/RoleBinding, Deployment with resource limits, CRD, and webhook configuration"
-      - "RBAC follows least privilege: controller can only watch/list/get/update custom resources and manage owned resource types (Deployment, Service, etc.)"
+      - Deployment manifests include: Namespace, ServiceAccount, ClusterRole/Role, ClusterRoleBinding/RoleBinding, Deployment with resource limits, CRD, and webhook configuration
+      - RBAC follows least privilege: controller can only watch/list/get/update custom resources and manage owned resource types (Deployment, Service, etc.)
       - "Helm chart (optional but recommended) parameterizes image, replicas, resource limits, namespace, and RBAC scope"
-      - "Smoke test: deploy operator to a test cluster, create a CR, verify owned resources are created, update CR, verify changes propagate, delete CR, verify cleanup"
+      - Smoke test: deploy operator to a test cluster, create a CR, verify owned resources are created, update CR, verify changes propagate, delete CR, verify cleanup
     pitfalls:
       - "Not testing reconciliation with concurrent updates (e.g., user updates CR while controller is reconciling) misses race conditions; use envtest with parallel operations"
       - "Missing RBAC permissions discovered only in production; run the operator with --v=6 logging to see API server authorization denials during testing"

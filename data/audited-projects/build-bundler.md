@@ -97,11 +97,11 @@ milestones:
       a list of unresolved dependency specifiers per module.
     estimated_hours: 12
     concepts:
-      - "AST: Abstract Syntax Tree — structured representation of source code"
-      - "ImportDeclaration node: import { foo } from './bar' -> specifier './bar'"
-      - "ExportNamedDeclaration with source: export { foo } from './bar'"
-      - "CallExpression with callee 'require': require('./bar') -> specifier './bar'"
-      - "Dynamic import(): import('./bar') for code-split boundaries (detect but don't resolve yet)"
+      - AST: Abstract Syntax Tree — structured representation of source code
+      - ImportDeclaration node: "import { foo } from './bar' -> specifier './bar'"
+      - ExportNamedDeclaration with source: "export { foo } from './bar'"
+      - CallExpression with callee 'require': "require('./bar') -> specifier './bar'"
+      - Dynamic import(): "import('./bar') for code-split boundaries (detect but don't resolve yet)"
     skills:
       - Using Acorn or Babel parser to produce ASTs
       - AST node traversal (visitor pattern or recursive walk)
@@ -109,16 +109,16 @@ milestones:
       - Distinguishing static imports from dynamic imports
     acceptance_criteria:
       - "Acorn (or equivalent parser) parses JavaScript source files into ASTs; parsing errors produce clear error messages with file path and line number"
-      - "All ES module static import specifiers are extracted: import x from 'y', import { a } from 'y', import * as ns from 'y', and import 'y' (side-effect import)"
-      - "All ES module export-from specifiers are extracted: export { a } from 'y', export * from 'y'"
-      - "CommonJS require() calls with string literal arguments are detected: require('./foo') extracts './foo' as a dependency"
+      - All ES module static import specifiers are extracted: "import x from 'y', import { a } from 'y', import * as ns from 'y', and import 'y' (side-effect import)"
+      - All ES module export-from specifiers are extracted: "export { a } from 'y', export * from 'y'"
+      - CommonJS require() calls with string literal arguments are detected: "require('./foo') extracts './foo' as a dependency"
       - "Dynamic import() calls are detected and flagged as code-split boundaries (specifier extracted but marked as dynamic)"
-      - "For each parsed module, the output is: {filePath, imports: [{specifier, importedNames}], exports: [{exportedName, localName}], dynamicImports: [specifier]}"
+      - For each parsed module, the output is: {filePath, imports: [{specifier, importedNames}], exports: [{exportedName, localName}], dynamicImports: [specifier]}
       - "Relative specifiers ('./foo', '../bar') and bare specifiers ('lodash', '@scope/pkg') are both recognized but NOT yet resolved to file paths"
     pitfalls:
       - Trying to build a parser from scratch instead of using Acorn/Babel (not the goal of this project)
       - Missing export-from re-exports which are both imports and exports
-      - Not handling side-effect-only imports (import './polyfill') which have no imported names
+      - "Not handling side-effect-only imports (import './polyfill') which have no imported names"
       - require() with non-literal arguments (require(variable)) cannot be statically analyzed — should warn and skip
       - Not preserving which names are imported (needed later for tree shaking)
     deliverables:
@@ -138,11 +138,11 @@ milestones:
       dependency graph.
     estimated_hours: 12
     concepts:
-      - "Relative resolution: './foo' -> try ./foo.js, ./foo/index.js"
-      - "Bare specifier resolution: 'lodash' -> walk up node_modules directories"
-      - "Package.json entry points: exports > module > main (for ESM bundlers)"
-      - "File extension resolution: try .js, .mjs, .json in order"
-      - "Dependency graph: directed graph where nodes are modules and edges are imports"
+      - Relative resolution: "'./foo' -> try ./foo.js, ./foo/index.js"
+      - Bare specifier resolution: "'lodash' -> walk up node_modules directories"
+      - Package.json entry points: exports > module > main (for ESM bundlers)
+      - File extension resolution: try .js, .mjs, .json in order
+      - Dependency graph: directed graph where nodes are modules and edges are imports
     skills:
       - File system path resolution
       - Node.js module resolution algorithm
@@ -152,17 +152,17 @@ milestones:
       - "Relative imports (./foo, ../bar) resolve to absolute file paths by trying extensions (.js, .mjs, .json) and index files (foo/index.js) in order"
       - "Bare specifiers (lodash, @scope/pkg) resolve by walking up parent directories checking node_modules/{specifier} until found or filesystem root is reached"
       - "Package.json resolution reads the exports field first (if present), then module field, then main field, in that priority order; missing fields fall through to the next"
-      - "Index file fallback: import './dir' resolves to ./dir/index.js if ./dir is a directory"
+      - Index file fallback: "import './dir' resolves to ./dir/index.js if ./dir is a directory"
       - "Dependency graph is constructed by starting from an entry point, parsing each module (M1), resolving its specifiers, and recursively processing unvisited dependencies"
-      - "Circular dependencies are detected and handled: modules involved in a cycle are included in the graph without infinite recursion (visited set prevents re-processing)"
-      - "The complete transitive closure is computed: all modules reachable from the entry point are in the graph, with edges labeled by import type and imported names"
+      - Circular dependencies are detected and handled: modules involved in a cycle are included in the graph without infinite recursion (visited set prevents re-processing)
+      - The complete transitive closure is computed: all modules reachable from the entry point are in the graph, with edges labeled by import type and imported names
       - "Resolution failures (module not found) produce clear errors with the importing file, the specifier, and the paths that were tried"
     pitfalls:
       - Not handling symlinks (realpath resolution for node_modules)
-      - Package.json 'exports' field with conditional exports (import vs require vs default) is complex
+      - "Package.json 'exports' field with conditional exports (import vs require vs default) is complex"
       - Infinite loop on circular dependencies without a visited set
       - Case-sensitive vs case-insensitive file systems causing resolution inconsistencies
-      - Not trying all file extensions causing 'module not found' for extensionless imports
+      - "Not trying all file extensions causing 'module not found' for extensionless imports"
     deliverables:
       - Relative path resolver (./, ../ with extension and index fallback)
       - Bare specifier resolver (node_modules directory walking)
@@ -180,12 +180,12 @@ milestones:
       generation.
     estimated_hours: 22
     concepts:
-      - "Module wrapping: each module's code is wrapped in a function to isolate its scope"
-      - "Runtime loader: a small bootstrap function that manages module registry and execution"
-      - "Import/export rewriting: replace import/export with runtime loader calls"
-      - "Topological sort: determine initialization order (respecting dependency ordering)"
-      - "Circular dependency handling: partially-initialized exports object is returned for cycles"
-      - "Source maps v3: JSON format mapping generated positions to original file/line"
+      - Module wrapping: "each module's code is wrapped in a function to isolate its scope"
+      - Runtime loader: a small bootstrap function that manages module registry and execution
+      - Import/export rewriting: replace import/export with runtime loader calls
+      - Topological sort: determine initialization order (respecting dependency ordering)
+      - Circular dependency handling: partially-initialized exports object is returned for cycles
+      - Source maps v3: JSON format mapping generated positions to original file/line
     skills:
       - Code generation and AST manipulation
       - Module wrapper function design
@@ -193,13 +193,13 @@ milestones:
       - Source map v3 format generation
       - Circular dependency semantics
     acceptance_criteria:
-      - "Each module's code is wrapped in a function scope: function(module, exports, require) { ...original code... } preventing top-level variable pollution"
-      - "A runtime module loader is prepended to the bundle that: maintains a module registry by ID, executes module functions on first require, and caches exports for subsequent requires"
-      - "Import and export statements are rewritten: imports become require() calls to the module loader; exports set properties on the module's exports object"
+      - Each module's code is wrapped in a function scope: function(module, exports, require) { ...original code... } preventing top-level variable pollution
+      - A runtime module loader is prepended to the bundle that: maintains a module registry by ID, executes module functions on first require, and caches exports for subsequent requires
+      - Import and export statements are rewritten: "imports become require() calls to the module loader; exports set properties on the module's exports object"
       - "Modules are ordered by topological sort of the dependency graph; circular dependencies return the partially-initialized exports object (matching Node.js CJS behavior)"
-      - "The generated bundle executes correctly in a browser and Node.js environment: importing a module that exports a function allows calling that function"
+      - The generated bundle executes correctly in a browser and Node.js environment: importing a module that exports a function allows calling that function
       - "Source maps in v3 format are generated as a separate .map file; the bundle includes a //# sourceMappingURL comment; file and line mapping is accurate (column mapping is optional)"
-      - "A bundle of 3 modules with inter-dependencies produces correct output: module A imports from B, B imports from C, executing A correctly initializes C then B then A"
+      - A bundle of 3 modules with inter-dependencies produces correct output: module A imports from B, B imports from C, executing A correctly initializes C then B then A
     pitfalls:
       - Circular dependencies causing undefined exports if not handled (return partial exports object)
       - ES module live bindings vs CJS value copying — must decide semantics and document
@@ -207,7 +207,7 @@ milestones:
       - Source map mappings getting offset by prepended runtime code
       - Not handling modules that modify exports after initial execution (live binding issue)
     deliverables:
-      - Module wrapper function template enclosing each module's code
+      - "Module wrapper function template enclosing each module's code"
       - Runtime module loader (registry, execute-on-demand, cache exports)
       - Import/export rewriting (AST transformation or string replacement)
       - Topological sort of dependency graph for initialization order
@@ -222,28 +222,28 @@ milestones:
       usage across the module graph.
     estimated_hours: 24
     concepts:
-      - "Export usage tracking: mark each export as 'used' when it's imported by a reachable module"
-      - "Reachability analysis: start from entry point's imports, follow the import graph, mark used exports"
-      - "Dead code elimination: remove export declarations (and their code) that are never marked as used"
-      - "Side effects: modules with top-level side effects must be preserved even if no exports are used"
-      - "sideEffects field: package.json flag indicating a package is side-effect-free"
+      - Export usage tracking: "mark each export as 'used' when it's imported by a reachable module"
+      - Reachability analysis: "start from entry point's imports, follow the import graph, mark used exports"
+      - Dead code elimination: remove export declarations (and their code) that are never marked as used
+      - Side effects: modules with top-level side effects must be preserved even if no exports are used
+      - sideEffects field: package.json flag indicating a package is side-effect-free
     skills:
       - Static analysis of code usage
       - Graph reachability algorithms
       - Side effect detection
       - Package.json sideEffects field handling
     acceptance_criteria:
-      - "Export usage is tracked: starting from the entry point, each imported name is traced through the graph; an export is marked 'used' only if it's transitively imported from the entry point"
+      - Export usage is tracked: "starting from the entry point, each imported name is traced through the graph; an export is marked 'used' only if it's transitively imported from the entry point"
       - "Unused named exports and their associated function/variable declarations are removed from the bundle output"
       - "Side-effect-only imports (import './polyfill') always include the imported module regardless of export usage"
-      - "Modules marked with sideEffects: false in their package.json are entirely removed from the bundle when none of their exports are used by any included module"
-      - "Modules with detectable top-level side effects (function calls, global assignments, prototype modifications) are preserved even when exports are unused and no sideEffects: false flag is present"
-      - "Re-exports (export { foo } from './bar') correctly propagate usage: foo is marked used in bar only if it's used by an importer of the re-exporting module"
-      - "Bundle size comparison: a test module exporting 10 functions where only 2 are used produces a bundle containing only those 2 functions and their transitive dependencies"
-      - "Tree shaking report is generated showing: per module, which exports were used, which were eliminated, and bytes saved"
+      - Modules marked with sideEffects: false in their package.json are entirely removed from the bundle when none of their exports are used by any included module
+      - Modules with detectable top-level side effects (function calls, global assignments, prototype modifications) are preserved even when exports are unused and no sideEffects: false flag is present
+      - Re-exports (export { foo } from './bar') correctly propagate usage: "foo is marked used in bar only if it's used by an importer of the re-exporting module"
+      - Bundle size comparison: a test module exporting 10 functions where only 2 are used produces a bundle containing only those 2 functions and their transitive dependencies
+      - Tree shaking report is generated showing: per module, which exports were used, which were eliminated, and bytes saved
     pitfalls:
       - Incorrectly removing modules with side effects (top-level console.log, global state mutation)
-      - Not handling re-exports correctly (export * from './utils' makes all usage tracking harder)
+      - "Not handling re-exports correctly (export * from './utils' makes all usage tracking harder)"
       - Dynamic property access (obj[key]) defeats static analysis — must conservatively keep all exports
       - Getter/setter side effects in exported objects are hard to detect statically
       - Star exports (export * from) requiring analysis of ALL exports from the source module
@@ -255,5 +255,4 @@ milestones:
       - Top-level side effect detection heuristic (conservative: when in doubt, keep)
       - Re-export usage propagation
       - Tree shaking size report (used/eliminated exports, bytes saved per module)
-
 ```

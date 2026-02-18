@@ -94,16 +94,16 @@ milestones:
       Discover test functions by scanning file system paths and dynamically importing
       modules, then execute each discovered test in isolation recording pass/fail/error.
     acceptance_criteria:
-      - "Discovery recursively finds all files matching a configurable glob pattern (default: test_*.py or *.test.js)"
+      - Discovery recursively finds all files matching a configurable glob pattern (default: test_*.py or *.test.js)
       - "Within each module, discovery collects all functions/methods matching a naming convention (e.g., test_ prefix) using language reflection APIs"
       - "Runner executes each test function and categorizes the outcome as PASSED, FAILED (assertion error), or ERROR (unexpected exception)"
-      - "Each test runs in isolation: module-level global state is reset or re-imported so one test's side effects do not affect subsequent tests"
+      - Each test runs in isolation: module-level global state is reset or re-imported so one test's side effects do not affect subsequent tests
       - "Tests can be marked as skip or expected-failure (xfail) via decorators/markers, and the runner respects these markers in its output"
       - "A test that exceeds a configurable timeout (default 30s) is terminated and reported as ERROR with a timeout message"
     pitfalls:
-      - "Module import side effects: modules with top-level code (e.g., database connections, print statements) execute during discovery, polluting state or causing import failures. Guard discovery with try/except and report import errors clearly."
-      - "Path handling: relative vs absolute paths, sys.path manipulation, and package __init__.py files cause discovery to silently miss tests. Normalize all paths before import."
-      - "Test ordering assumptions: tests that pass only when run in a specific order indicate shared state leakage. Randomize execution order to surface this."
+      - Module import side effects: modules with top-level code (e.g., database connections, print statements) execute during discovery, polluting state or causing import failures. Guard discovery with try/except and report import errors clearly.
+      - Path handling: relative vs absolute paths, sys.path manipulation, and package __init__.py files cause discovery to silently miss tests. Normalize all paths before import.
+      - Test ordering assumptions: tests that pass only when run in a specific order indicate shared state leakage. Randomize execution order to surface this.
     concepts:
       - Reflection and dynamic module loading
       - File system traversal
@@ -130,13 +130,13 @@ milestones:
       - "For container types (list, dict, set), failure messages include a unified diff showing exactly which elements differ"
       - "assertAlmostEqual supports configurable absolute and relative tolerances for floating-point comparison"
       - "assertRaises (or equivalent context manager) fails with a clear message if the expected exception type is not raised, and captures the exception instance for further assertions"
-      - "Custom matcher API: users can register predicate functions with custom failure message formatters, and the framework calls them seamlessly within assertion chains"
+      - Custom matcher API: users can register predicate functions with custom failure message formatters, and the framework calls them seamlessly within assertion chains
       - "Assertion failure output includes the source file, line number, and the failing source line for immediate developer orientation"
     pitfalls:
       - "Naive assertion messages that show only 'True != False' are useless. The entire value of assertion rewriting is showing intermediate values like 'where x.name = alice and y.name = bob'."
       - "Float comparison using == is a classic bug. Always require tolerance-based comparison for floating-point assertions."
       - "AST rewriting must handle multi-line expressions, f-strings, and complex boolean expressions without corrupting the source. Test the rewriter on its own output."
-      - "Exception context loss: catching exceptions without preserving __cause__ or __context__ (Python) destroys the traceback chain."
+      - Exception context loss: catching exceptions without preserving __cause__ or __context__ (Python) destroys the traceback chain.
     concepts:
       - AST parsing and rewriting
       - Frame inspection for variable capture
@@ -167,13 +167,13 @@ milestones:
       - "Fixtures are injected into test functions by matching parameter names to registered fixture names — no manual lookup or global state required"
       - "Fixtures can depend on other fixtures; the framework resolves the dependency DAG and creates them in topological order, tearing down in reverse order"
       - "Circular fixture dependencies are detected at collection time and reported as a configuration error before any test executes"
-      - "Generator/yield-based fixtures support: code before yield is setup, code after yield is teardown, and teardown runs even on test failure"
+      - Generator/yield-based fixtures support: code before yield is setup, code after yield is teardown, and teardown runs even on test failure
       - "Global hooks (beforeEach, afterEach, beforeAll, afterAll) can be registered via plugin API and execute around the appropriate scope"
     pitfalls:
-      - "Teardown not running on exception: if teardown is in a finally block or generator finalization is missing, resources leak on failure."
-      - "Scope leaks: a function-scoped test accidentally mutating a module-scoped fixture's internal state corrupts all subsequent tests sharing that fixture. Defensive copying or immutability checks are essential."
+      - Teardown not running on exception: if teardown is in a finally block or generator finalization is missing, resources leak on failure.
+      - Scope leaks: a function-scoped test accidentally mutating a module-scoped fixture's internal state corrupts all subsequent tests sharing that fixture. Defensive copying or immutability checks are essential.
       - "Topological sort must handle diamonds (A depends on B and C, both depend on D) without creating D twice."
-      - "Session-scoped fixture teardown at process exit: if the runner crashes, cleanup may never run. Provide atexit hooks as a safety net."
+      - Session-scoped fixture teardown at process exit: if the runner crashes, cleanup may never run. Provide atexit hooks as a safety net.
     concepts:
       - Dependency injection
       - Directed acyclic graph resolution
@@ -198,18 +198,18 @@ milestones:
       Build the CLI interface, multiple output reporters, parameterized test support,
       and structured report generation for CI integration.
     acceptance_criteria:
-      - "CLI accepts arguments for: file/directory paths, name-based filter patterns (-k), marker-based selection (-m), verbosity level, output format, parallelism count, and fail-fast flag"
+      - CLI accepts arguments for: file/directory paths, name-based filter patterns (-k), marker-based selection (-m), verbosity level, output format, parallelism count, and fail-fast flag
       - "Terminal reporter displays each test with PASSED/FAILED/SKIPPED/XFAIL status, execution duration, and a summary line with counts and total wall-clock time"
       - "On failure, the terminal reporter prints the assertion introspection output (from M2) with source location, variable values, and diff"
       - "JUnit XML output is schema-valid and correctly parsed by Jenkins, GitHub Actions, and GitLab CI (validate against the JUnit XSD)"
       - "Parameterized test decorator/annotation generates N test cases from a parameter list, each reported as a distinct test with its parameter values in the name"
       - "Exit code is 0 if all tests pass (or xfail), 1 if any test fails, and 2 for usage/configuration errors"
-      - "JSON report output includes structured data for every test: name, outcome, duration, failure message, fixture setup times"
+      - JSON report output includes structured data for every test: name, outcome, duration, failure message, fixture setup times
     pitfalls:
-      - "Exit codes: many CI systems only check exit code. Returning 0 on failure silently breaks CI pipelines."
-      - "XML escaping: test names or failure messages containing <, >, &, or CDATA-breaking sequences corrupt JUnit XML. Use proper XML serialization, not string concatenation."
-      - "Terminal detection: piping output to a file while using ANSI color codes produces garbage. Detect isatty() and strip colors when not a terminal."
-      - "Parameterized test IDs: parameters containing special characters (slashes, brackets) break test selection filters. Sanitize parameter representations in test IDs."
+      - Exit codes: many CI systems only check exit code. Returning 0 on failure silently breaks CI pipelines.
+      - XML escaping: test names or failure messages containing <, >, &, or CDATA-breaking sequences corrupt JUnit XML. Use proper XML serialization, not string concatenation.
+      - Terminal detection: piping output to a file while using ANSI color codes produces garbage. Detect isatty() and strip colors when not a terminal.
+      - Parameterized test IDs: parameters containing special characters (slashes, brackets) break test selection filters. Sanitize parameter representations in test IDs.
     concepts:
       - CLI argument parsing
       - Reporter/formatter pattern
@@ -240,15 +240,15 @@ milestones:
       - "Each worker process independently imports test modules, ensuring complete memory isolation — a segfault or OOM in one worker does not crash others"
       - "Results from all workers are aggregated into a single unified report as if tests ran sequentially"
       - "Parallel execution achieves at least 2x speedup on a suite of 100+ CPU-bound tests when run with 4 workers vs. 1 worker (demonstrate with benchmark)"
-      - "Plugin hook API exposes lifecycle events: collection_start, test_start, test_end, test_skip, collection_end, report_generation with ability to register multiple listeners"
+      - Plugin hook API exposes lifecycle events: collection_start, test_start, test_end, test_skip, collection_end, report_generation with ability to register multiple listeners
       - "A sample plugin (e.g., code coverage reporter or slow-test highlighter) is implemented to validate the hook API"
-      - "Fixtures with module or session scope are correctly handled in parallel mode: either each worker gets its own instance, or the framework detects and warns about scope conflicts"
+      - Fixtures with module or session scope are correctly handled in parallel mode: either each worker gets its own instance, or the framework detects and warns about scope conflicts
     pitfalls:
-      - "Process forking on macOS/Windows: fork() behavior differs across platforms. Use subprocess spawning (not fork) for portability."
-      - "Serialization of test results: results must cross process boundaries via IPC (pipes, sockets, or files). Complex objects (exceptions with tracebacks) may not serialize cleanly — serialize a simplified representation."
-      - "Session-scoped fixtures in parallel mode: if each worker creates its own session fixture, the semantics change. Document this clearly or implement a coordinator process."
-      - "stdout/stderr interleaving: parallel workers writing to the same terminal produce garbled output. Buffer output per-test and flush atomically."
-      - "Plugin ordering: multiple plugins hooking the same event need a defined execution order (priority system or registration order)."
+      - Process forking on macOS/Windows: fork() behavior differs across platforms. Use subprocess spawning (not fork) for portability.
+      - Serialization of test results: results must cross process boundaries via IPC (pipes, sockets, or files). Complex objects (exceptions with tracebacks) may not serialize cleanly — serialize a simplified representation.
+      - Session-scoped fixtures in parallel mode: if each worker creates its own session fixture, the semantics change. Document this clearly or implement a coordinator process.
+      - stdout/stderr interleaving: parallel workers writing to the same terminal produce garbled output. Buffer output per-test and flush atomically.
+      - Plugin ordering: multiple plugins hooking the same event need a defined execution order (priority system or registration order).
     concepts:
       - Process-based parallelism
       - Inter-process communication

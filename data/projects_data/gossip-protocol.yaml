@@ -1,0 +1,241 @@
+id: gossip-protocol
+name: Gossip Protocol
+description: Epidemic broadcast with SWIM-style failure detection
+difficulty: advanced
+estimated_hours: "20-30"
+essence: >
+  Randomized peer-to-peer message dissemination using epidemic spreading models,
+  with periodic state reconciliation through push/pull anti-entropy, explicit
+  conflict resolution via logical clocks, and probabilistic convergence guarantees
+  despite node failures and network partitions.
+why_important: >
+  Gossip protocols power real-world distributed systems like Cassandra, Consul,
+  and Riak. Building one teaches you how to achieve scalable, fault-tolerant
+  information dissemination that sacrifices strong consistency for availability
+  and partition tolerance, a fundamental trade-off in distributed systems.
+learning_outcomes:
+  - Implement seed-node bootstrapping and cluster join procedures
+  - Implement randomized peer selection algorithms with bounded fanout
+  - Design push-based and pull-based anti-entropy mechanisms for state reconciliation
+  - Build explicit conflict resolution using vector clocks or LWW timestamps
+  - Build gossip-based failure detection using indirect probing and suspicion mechanisms (SWIM)
+  - Implement infection-style message dissemination and measure probabilistic delivery guarantees
+  - Debug convergence issues in eventually consistent systems
+  - Measure and optimize gossip round complexity and bandwidth overhead
+skills:
+  - Epidemic Algorithms
+  - Eventual Consistency
+  - Distributed Failure Detection
+  - Peer-to-Peer Networking
+  - Probabilistic Protocols
+  - Anti-Entropy Mechanisms
+  - Membership Management
+  - Conflict Resolution (Vector Clocks / LWW)
+tags:
+  - advanced
+  - dissemination
+  - distributed
+  - failure-detection
+  - go
+  - membership
+  - protocols
+  - python
+  - rust
+architecture_doc: architecture-docs/gossip-protocol/index.md
+languages:
+  recommended:
+    - Go
+    - Rust
+    - Python
+  also_possible:
+    - Java
+    - Erlang
+resources:
+  - name: "Epidemic Algorithms for Replicated Database Maintenance"
+    url: "https://www.cs.cornell.edu/home/rvr/papers/flowgossip.pdf"
+    type: paper
+  - name: "SWIM: Scalable Weakly-consistent Infection-style Process Group Membership Protocol"
+    url: "https://www.cs.cornell.edu/projects/Quicksilver/public_pdfs/SWIM.pdf"
+    type: paper
+  - name: "Lifeguard: Local Health Awareness for More Accurate Failure Detection"
+    url: "https://arxiv.org/abs/1707.00788"
+    type: paper
+prerequisites:
+  - type: skill
+    name: "Networking basics (TCP/UDP sockets)"
+  - type: skill
+    name: "Distributed systems concepts (CAP theorem, eventual consistency)"
+  - type: skill
+    name: "Basic probability (expected value, exponential distribution)"
+milestones:
+  - id: gossip-protocol-m1
+    name: "Bootstrapping & Peer Management"
+    description: >
+      Implement seed-node based cluster bootstrapping and manage cluster
+      membership with a thread-safe peer list supporting join, leave, and
+      state tracking.
+    acceptance_criteria:
+      - "New node accepts a list of seed node addresses at startup and contacts at least one seed to join the cluster"
+      - "Seed node responds with its current peer list so the joining node discovers existing cluster members"
+      - "Maintain a peer list data structure storing address, port, node ID, state (alive/suspect/dead), and last-seen timestamp for each peer"
+      - "Random peer selection picks k (configurable fanout) random alive peers for each gossip round using uniform random sampling without replacement"
+      - "Graceful leave broadcasts a LEAVE message to fanout peers before shutdown; peers remove the leaving node within 2 gossip rounds"
+      - "Peer list is protected by a read-write lock (or lock-free structure) and unit tests demonstrate safe concurrent access from gossip sender, receiver, and failure detector threads simultaneously"
+      - "Periodic peer list exchange (full sync) between random peer pairs synchronizes membership; new node converges to full membership within O(log N) exchange rounds verified by test"
+      - "Own node address is excluded from peer selection to prevent self-gossip"
+    pitfalls:
+      - "Forgetting to exclude own address from the peer selection pool causes self-gossip loops that waste bandwidth and distort protocol behavior"
+      - "Using a simple mutex instead of a read-write lock creates contention between frequent reads (peer selection) and infrequent writes (join/leave), degrading throughput under high fanout"
+      - "Stale peer entries accumulate if there is no reaping mechanism for peers that have been marked dead beyond a grace period"
+      - "Seed nodes that are themselves down at startup cause the new node to fail to join; implement retry with exponential backoff across multiple seeds"
+      - "Not persisting the peer list means a restarting node must re-bootstrap from seeds, which is slow in large clusters"
+    concepts:
+      - Seed node bootstrapping and cluster join protocol
+      - Membership state machine (alive, suspect, dead, left)
+      - Uniform random peer sampling with bounded fanout
+      - Thread-safe concurrent data structures
+    deliverables:
+      - Seed node join protocol: new node contacts seeds, receives peer list, announces itself
+      - "Thread-safe peer list with read-write locking supporting concurrent gossip operations"
+      - "Peer state tracking with alive/suspect/dead/left states and transition timestamps"
+      - "Random peer selection function returning k unique alive peers per round"
+      - "Graceful leave protocol broadcasting departure to fanout peers"
+      - "Dead peer reaper removing peers that have been dead longer than a configurable grace period"
+    estimated_hours: "3-5"
+
+  - id: gossip-protocol-m2
+    name: "Push Gossip Dissemination"
+    description: >
+      Implement push-based gossip dissemination with versioned state deltas,
+      configurable fanout, and infection-style spreading with convergence
+      measurement.
+    acceptance_criteria:
+      - "Periodic gossip rounds execute at a configurable interval (e.g., 200ms-1s) sending state deltas to fanout peers via UDP"
+      - "Each key-value state entry carries a logical timestamp or version number; receivers accept an update only if its version is strictly greater than the locally stored version for that key"
+      - "A gossip message includes the sender's node ID, a list of key-version-value triples, and a message TTL (hop count) to bound propagation diameter"
+      - "Message TTL is decremented on each forward; messages with TTL=0 are not forwarded further, preventing infinite propagation"
+      - "Convergence test: inject a state update on one node in a 10-node cluster and verify all nodes have the update within ceil(log2(10)) * 3 gossip rounds with fanout=3"
+      - "Duplicate message detection using a bounded seen-message cache (e.g., LRU of message hashes) prevents redundant processing and re-forwarding"
+      - "Bandwidth measurement: log bytes sent per gossip round per node and verify it scales as O(fanout * delta_size), not O(N * state_size)"
+    pitfalls:
+      - "Without TTL or hop-count limits, updates circulate indefinitely in the cluster, consuming bandwidth long after convergence"
+      - "Using wall-clock timestamps for versioning introduces clock skew issues across nodes; prefer monotonic logical clocks (Lamport timestamps) or hybrid logical clocks"
+      - "Sending full state instead of deltas in each round causes O(N * state_size) bandwidth per round, which does not scale"
+      - "Unbounded seen-message caches grow monotonically and leak memory; use an LRU or time-expiring cache"
+      - "Setting fanout too high (close to N) degenerates into broadcast flooding; too low (1) causes exponential convergence time"
+    concepts:
+      - Push gossip with bounded fanout
+      - Logical timestamps (Lamport clocks) for version ordering
+      - Infection-style epidemic spreading and O(log N) convergence
+      - TTL-bounded message propagation
+      - Duplicate suppression via seen-message caches
+    deliverables:
+      - Gossip sender: periodic loop selecting fanout peers and sending versioned state deltas via UDP
+      - Gossip receiver: UDP listener that deserializes messages, applies version-checked updates, and optionally forwards
+      - "Logical clock implementation (Lamport or HLC) attached to every state mutation"
+      - "Message TTL enforcement decrementing hop count and dropping expired messages"
+      - "Seen-message LRU cache preventing duplicate processing"
+      - "Convergence test harness measuring rounds-to-full-dissemination for a given cluster size and fanout"
+    estimated_hours: "4-6"
+
+  - id: gossip-protocol-m3
+    name: "Pull Gossip & Anti-Entropy"
+    description: >
+      Add pull-based reconciliation and periodic anti-entropy repair using
+      digest comparison (Merkle trees or version digests) to guarantee
+      convergence despite message loss and partitions.
+    acceptance_criteria:
+      - "Pull mechanism: a node sends a digest (map of key -> version) to a random peer; the peer responds with entries where its version is higher than the requester's version"
+      - "Push-pull mode: during each anti-entropy round, both sides exchange digests and each sends the other any entries it has that are newer, achieving bidirectional reconciliation in a single round-trip"
+      - "Digest size is bounded: for large state, use a Merkle tree where only differing subtree hashes trigger detailed exchange, keeping digest overhead at O(log S) where S is state size"
+      - "Anti-entropy runs at a configurable interval (e.g., every 10s) independent of push gossip, targeting a random peer each round"
+      - "Conflict resolution strategy is explicitly implemented: Last-Write-Wins using logical timestamps, with ties broken by node ID"
+      - "Partition healing test: create a 2-partition split for 30 seconds, inject different updates to each partition, heal the partition, and verify all nodes converge to the correct merged state within 5 anti-entropy rounds"
+      - "Anti-entropy does not cause thundering herd: jitter is added to the anti-entropy interval so nodes do not all sync simultaneously"
+    pitfalls:
+      - "Sending full state as digest defeats the purpose of pull-based reconciliation; digests must be compact summaries (version vectors or Merkle tree roots)"
+      - "Sync storms occur when all nodes schedule anti-entropy at the same wall-clock time after startup; add random jitter to the initial delay"
+      - "During a partition, stale data is served as if current; applications must be designed for eventual consistency semantics"
+      - "Merkle tree rebuilds on every state change are expensive; use incremental updates or dirty-flag subtree recalculation"
+      - "Pull responses can be large if partitions last long; implement chunked responses with flow control to avoid overwhelming the requester"
+    concepts:
+      - Pull-based gossip and digest exchange
+      - Merkle tree-based efficient state comparison
+      - Anti-entropy repair for convergence guarantee
+      - Conflict resolution strategies (LWW, vector clocks, CRDTs)
+      - Partition tolerance and post-partition convergence
+    deliverables:
+      - "Digest generation producing a compact summary of local state (version map or Merkle tree root)"
+      - "Pull request/response protocol exchanging digests and returning missing or newer entries"
+      - "Push-pull anti-entropy combining both directions in a single round-trip"
+      - "Conflict resolution module implementing LWW with logical timestamps and node ID tiebreaker"
+      - "Partition healing test demonstrating convergence after network split"
+      - "Jittered anti-entropy scheduling preventing sync storms"
+    estimated_hours: "5-7"
+
+  - id: gossip-protocol-m4
+    name: "SWIM-Style Failure Detection"
+    description: >
+      Implement SWIM protocol failure detection with direct probing, indirect
+      probing via ping-req, configurable suspicion timers, and protocol-period
+      based protocol rounds. Membership changes are piggybacked on protocol
+      messages.
+    acceptance_criteria:
+      - "Each protocol period, the node selects one random peer for direct ping (probe) and expects an ack within a configurable timeout (e.g., 500ms)"
+      - "If direct ping times out, the node sends ping-req to k indirect peers asking them to probe the target on its behalf; if any indirect ack returns, the target is marked alive"
+      - "If both direct and indirect probes fail, the target transitions to SUSPECT state; a suspicion timer starts (configurable, e.g., 3 * protocol_period)"
+      - "A SUSPECT member that does not refute the suspicion (by sending an alive message with incremented incarnation number) before the suspicion timer expires is declared DEAD"
+      - "A suspected node that receives its own suspicion message can refute it by incrementing its incarnation number and broadcasting an alive override"
+      - "Membership change events (join, suspect, dead, alive-refutation) are piggybacked on ping, ping-req, and ack messages with bounded piggyback buffer"
+      - "False positive rate test: in a 10-node cluster with 5% simulated packet loss, fewer than 1% of alive nodes are incorrectly declared dead over 1000 protocol periods"
+      - "Protocol period, ping timeout, suspicion timeout, and indirect probe fanout (k) are all configurable at startup"
+    pitfalls:
+      - "False positives spike when ping timeout is set below network RTT p99; always measure baseline latency before tuning"
+      - "Suspicion timeout too short causes cascading false deaths under transient network congestion; too long delays legitimate failure detection"
+      - "Not implementing incarnation numbers means a node cannot refute false suspicion, leading to permanent incorrect death declarations"
+      - "Piggyback buffer overflow drops membership updates if the buffer is too small relative to cluster churn rate"
+      - "Split brain: if a network partition isolates a minority, that minority may declare the majority dead; implement 'protocol period nack' counting or minimum alive threshold to detect this"
+    concepts:
+      - SWIM protocol phases (ping, ping-req, suspect, confirm)
+      - Incarnation numbers for suspicion refutation
+      - Indirect probing for reducing false positives
+      - Piggyback dissemination of membership events
+      - Configurable failure detection sensitivity
+    deliverables:
+      - "Direct probe (ping/ack) implementation with configurable timeout"
+      - "Indirect probe (ping-req) implementation forwarding probes through k helper nodes"
+      - "Suspicion state machine with incarnation number tracking and timer-based confirmation"
+      - Alive refutation: node detects its own suspicion and broadcasts incarnation-incremented alive message
+      - "Piggyback buffer attaching recent membership events to all protocol messages"
+      - "False positive rate measurement test under simulated packet loss"
+    estimated_hours: "5-8"
+
+  - id: gossip-protocol-m5
+    name: "Integration Testing & Convergence Verification"
+    description: >
+      Build an integration test harness that runs a multi-node gossip cluster,
+      injects faults (node crashes, network partitions, packet loss), and
+      verifies convergence, failure detection accuracy, and bandwidth overhead.
+    acceptance_criteria:
+      - "Test harness launches N (configurable, default 10) gossip nodes as separate processes or goroutines communicating over real or simulated UDP"
+      - "Convergence test: inject 100 unique key-value pairs on random nodes and verify all alive nodes have all 100 entries within a bounded time (e.g., 30 * gossip_interval)"
+      - "Failure detection test: kill a node and verify all remaining nodes detect it as dead within suspicion_timeout + 3 * protocol_period"
+      - "Partition test: partition cluster into two halves, inject updates to each half, heal partition, verify full state convergence within anti-entropy convergence bound"
+      - "Bandwidth measurement: log total bytes sent/received per node per second and verify it is O(fanout * message_size * round_frequency), not O(N^2)"
+      - "Consistency check: at any point, no node holds a key-value pair with a version strictly less than a version that has been committed (applied by majority) more than convergence_bound rounds ago"
+    pitfalls:
+      - "Simulated networks that don't model realistic packet loss and reordering produce misleadingly optimistic convergence results"
+      - "Deterministic tests with fixed seeds are reproducible but may miss rare race conditions; combine with randomized long-running soak tests"
+      - "Not measuring bandwidth overhead means you cannot tell if the protocol scales; always instrument bytes sent/received"
+    concepts:
+      - Integration testing of distributed protocols
+      - Fault injection (crash, partition, packet loss)
+      - Convergence bound verification
+      - Bandwidth overhead measurement
+    deliverables:
+      - "Multi-node test harness launching a configurable cluster with simulated or real networking"
+      - "Convergence verification test asserting all-node state equality within bounded rounds"
+      - "Failure detection accuracy test measuring detection latency and false positive rate"
+      - "Partition healing test verifying post-partition state merge correctness"
+      - "Bandwidth profiling report showing per-node bytes/second under various cluster sizes"
+    estimated_hours: "3-4"

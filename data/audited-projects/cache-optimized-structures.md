@@ -275,5 +275,4 @@ milestones:
       - Blocked matrix transpose with cache performance comparison
       - Cache miss profiling comparing naive vs blocked implementations
     estimated_hours: 8
-
 ```

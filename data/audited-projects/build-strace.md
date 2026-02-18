@@ -80,7 +80,7 @@ milestones:
       - Parent uses PTRACE_SYSCALL + waitpid loop to stop the child at each syscall boundary
       - Explicitly track entry/exit state with a toggle flag: on entry, read syscall number from orig_rax register; on exit, read return value from rax register
       - Print syscall number and return value for each intercepted syscall (e.g., "syscall(0) = 5")
-      - Detect error returns: on x86_64, return values in range [-4096, -1] indicate error; display as -1 ERRNO (e.g., "-1 ENOENT")
+      - Detect error returns: on x86_64, return values in range [-4096, -1] indicate error; display as -1 ERRNO (e.g., -1 ENOENT")"
       - Handle signals delivered to the tracee: when waitpid reports a signal-delivery stop (not a syscall stop), re-inject the signal using PTRACE_SYSCALL with the signal number, do not suppress it
       - Handle tracee exit cleanly: detect WIFEXITED/WIFSIGNALED from waitpid and exit the tracer
     pitfalls:
@@ -118,7 +118,7 @@ milestones:
       - Read string arguments (e.g., file paths for open/stat) from tracee memory using PTRACE_PEEKDATA in a word-by-word loop until a null terminator byte is found within a read word
       - Handle PTRACE_PEEKDATA correctly: set errno to 0 before call, check errno after (since -1 is both a valid data value and an error indicator)
       - Truncate displayed strings at a configurable maximum length (default 32 bytes) with "..." suffix
-      - Format output matching strace style: syscall_name(arg1, arg2, ...) = return_value (e.g., 'open("/etc/passwd", O_RDONLY) = 3')
+      - Format output matching strace style: syscall_name(arg1, arg2, ...) = return_value (e.g., 'open(/etc/passwd", O_RDONLY) = 3')"
       - Decode flag arguments for common syscalls: open() flags (O_RDONLY, O_WRONLY, O_CREAT), mmap() prot and flags
     pitfalls:
       - PTRACE_PEEKDATA reads one word (8 bytes on x86_64) at a time; string reading requires looping and scanning each word for a null byte, handling the case where the null is in the middle of a word

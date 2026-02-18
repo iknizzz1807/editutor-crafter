@@ -140,17 +140,17 @@ milestones:
       Implement subscription creation, activation, renewal, cancellation,
       pause/resume with a strict state machine.
     acceptance_criteria:
-      - Subscription creation associates a customer, plan version, payment method, and billing anchor date; status starts as 'trialing' (if trial) or 'active'
+      - "Subscription creation associates a customer, plan version, payment method, and billing anchor date; status starts as 'trialing' (if trial) or 'active'"
       - Subscription state machine enforces valid transitions - trialing->active, active->past_due, active->cancelled, past_due->active, past_due->unpaid, paused->active
-      - Trial expiration triggers automatic transition to 'active' and schedules the first charge
-      - Cancellation supports both 'immediate' (terminates now) and 'at_period_end' (terminates at cycle boundary) modes, recording cancellation reason
+      - "Trial expiration triggers automatic transition to 'active' and schedules the first charge"
+      - "Cancellation supports both 'immediate' (terminates now) and 'at_period_end' (terminates at cycle boundary) modes, recording cancellation reason"
       - Pause freezes billing and access; resume reactivates with prorated billing adjustment from the resume date
       - Billing anchor date ensures consistent billing on the same day each month; month overflow is handled (Jan 31 -> Feb 28, not Mar 3)
-      - Renewal processing generates a charge at each billing cycle boundary and transitions to 'past_due' on payment failure
+      - "Renewal processing generates a charge at each billing cycle boundary and transitions to 'past_due' on payment failure"
       - Each subscription has a unique idempotency key for creation to prevent duplicate subscriptions from retried requests
     pitfalls:
       - Billing anchor date must handle month-length variations correctly (Jan 31 + 1 month = Feb 28)
-      - 'past_due' means payment retry is still in progress; 'unpaid' means all retries exhausted - these are distinct states with different customer experiences
+      - "'past_due' means payment retry is still in progress; 'unpaid' means all retries exhausted - these are distinct states with different customer experiences"
       - Cancel at period end is the most user-friendly option since the customer already paid for the period
       - Reactivation after cancellation must check whether the original plan version is still available
       - Concurrent subscription creation for the same customer+plan must be prevented via unique constraint or distributed lock
@@ -181,7 +181,7 @@ milestones:
       and PDF rendering for each billing event.
     acceptance_criteria:
       - Each billing cycle generates an invoice with line items showing description, quantity, unit price, and total for each charge
-      - Tax is calculated per line item based on the customer's jurisdiction, with tax rate looked up from a configurable tax rate table
+      - "Tax is calculated per line item based on the customer's jurisdiction, with tax rate looked up from a configurable tax rate table"
       - Tax-exempt customers are flagged and their invoices show zero tax with an exemption reason
       - Invoice total equals the sum of all line items plus applicable taxes minus any credits applied
       - Invoices are numbered sequentially with no gaps for compliance (e.g., INV-2024-00001)
@@ -221,16 +221,16 @@ milestones:
       Implement upgrade/downgrade with prorated charges and credits,
       generating correct invoice line items.
     acceptance_criteria:
-      - Upgrade calculates a prorated charge for the remaining days in the current cycle at the new plan's rate minus credit for unused time on the old plan
-      - Downgrade calculates a credit for unused time on the higher-tier plan, applied to the customer's balance for the next invoice
-      - Proration formula uses (days_remaining / total_days_in_period) * plan_price, with amounts rounded to the nearest cent using banker's rounding
+      - "Upgrade calculates a prorated charge for the remaining days in the current cycle at the new plan's rate minus credit for unused time on the old plan"
+      - "Downgrade calculates a credit for unused time on the higher-tier plan, applied to the customer's balance for the next invoice"
+      - "Proration formula uses (days_remaining / total_days_in_period) * plan_price, with amounts rounded to the nearest cent using banker's rounding"
       - Immediate plan change takes effect now and generates a prorated invoice line item; end-of-cycle change is scheduled and takes effect at next renewal
       - Quantity changes (e.g., adding seats) are prorated the same way as plan changes
       - Credits are tracked in a customer credit balance and automatically applied to the next invoice before charging the payment method
       - All proration line items appear on the next invoice with clear descriptions (e.g., 'Unused time on Pro plan: -$15.00')
     pitfalls:
       - Proration direction matters - upgrade charges extra, downgrade credits; getting this backwards is a revenue-critical bug
-      - Small rounding errors accumulate over thousands of customers - use banker's rounding (round half to even) consistently
+      - "Small rounding errors accumulate over thousands of customers - use banker's rounding (round half to even) consistently"
       - Credits must be applied automatically on the next invoice; forgotten credits lead to customer complaints and churn
       - Quantity changes (adding/removing seats) are proration events too, not just plan tier changes
       - Multiple plan changes within a single billing period must each be prorated correctly relative to their effective date
@@ -239,7 +239,7 @@ milestones:
       - Credit balance management and application order (credits before payment method)
       - Invoice line items for prorated upgrades and downgrades
       - Immediate vs scheduled plan change execution
-      - Banker's rounding for financial calculations
+      - "Banker's rounding for financial calculations"
     skills:
       - Proration calculation
       - Credit management
@@ -260,13 +260,13 @@ milestones:
       Implement failed payment retry logic with exponential backoff,
       customer notifications, and grace period enforcement.
     acceptance_criteria:
-      - Failed initial charge transitions subscription to 'past_due' and schedules the first retry
+      - "Failed initial charge transitions subscription to 'past_due' and schedules the first retry"
       - Retry schedule is configurable (e.g., retry at 1, 3, 5, 7 days after failure) with a maximum of N attempts
       - Each retry attempt is logged with the failure reason (declined, insufficient funds, expired card, etc.)
       - Customer is notified via email/webhook at each stage - payment failed, retry scheduled, final warning, subscription cancelled
-      - After all retries are exhausted, subscription transitions to 'unpaid' and optionally to 'cancelled' based on configuration
-      - Grace period allows customer access during 'past_due' status for a configurable number of days
-      - Customer can update their payment method while in 'past_due' status, triggering an immediate retry
+      - "After all retries are exhausted, subscription transitions to 'unpaid' and optionally to 'cancelled' based on configuration"
+      - "Grace period allows customer access during 'past_due' status for a configurable number of days"
+      - "Customer can update their payment method while in 'past_due' status, triggering an immediate retry"
       - Smart retry logic avoids retrying at times known to have low success rates (e.g., weekends for business cards)
     pitfalls:
       - Retrying too aggressively increases card network decline rates and can get your merchant account flagged
@@ -313,7 +313,7 @@ milestones:
       - Always use server timestamps for billing purposes - client clocks cannot be trusted
       - Aggregation type matters enormously - sum vs max gives very different bills for the same usage pattern
       - Usage limits should alert before hitting the limit (80% threshold), not after - customers hate surprise overages
-      - Period boundary alignment must match the subscription's billing anchor date, not calendar month boundaries
+      - "Period boundary alignment must match the subscription's billing anchor date, not calendar month boundaries"
     concepts:
       - Event-based metering with deduplication via idempotency keys
       - Time-series aggregation (sum, count, max, last-value)
@@ -334,5 +334,4 @@ milestones:
       - Usage threshold alerting at configurable percentage limits
       - Invoice line item generation from aggregated usage data
     estimated_hours: 13
-
 ```

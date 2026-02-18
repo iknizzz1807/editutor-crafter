@@ -64,13 +64,13 @@ languages:
     - Java
   also_possible: []
 resources:
-  - name: "Write-Ahead Log Pattern"
+  - name: Write-Ahead Log Pattern""
     url: https://martinfowler.com/articles/patterns-of-distributed-systems/write-ahead-log.html
     type: article
-  - name: "Efficient Tamper-Evident Logging (Crosby & Wallach)"
+  - name: Efficient Tamper-Evident Logging (Crosby & Wallach)""
     url: https://static.usenix.org/event/sec09/tech/full_papers/crosby.pdf
     type: paper
-  - name: "SOC 2 Compliance Requirements"
+  - name: SOC 2 Compliance Requirements""
     url: https://www.venn.com/learn/soc2-compliance/
     type: documentation
 prerequisites:

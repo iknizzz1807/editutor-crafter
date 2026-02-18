@@ -147,7 +147,7 @@ milestones:
       - Interrupts are enabled (sti) after IDT and PIC setup is complete
     pitfalls:
       - "Forgetting to send EOI causes the PIC to stop delivering interrupts; the system appears to hang"
-      - "PIC remapping: the default mapping overlaps CPU exceptions (IRQ0=vector 8=double fault); this must be remapped BEFORE enabling interrupts"
+      - PIC remapping: the default mapping overlaps CPU exceptions (IRQ0=vector 8=double fault); this must be remapped BEFORE enabling interrupts
       - "Not saving/restoring all registers in interrupt handlers causes mysterious register corruption in interrupted code"
       - "Exceptions 8 (double fault), 10-14 push an error code; others don't; the handler must account for this or the stack frame is misaligned"
       - "PS/2 keyboard sends make AND break codes; ignoring break codes causes repeated character issues"
@@ -218,7 +218,7 @@ milestones:
     acceptance_criteria:
       - Process control block (PCB) stores: PID, register state (EIP, ESP, EBP, general regs, EFLAGS), page directory pointer, process state (ready/running/blocked), and kernel stack pointer
       - Context switch saves current process registers to its PCB and loads the next process's registers; implemented in assembly for correctness
-      - TSS (Task State Segment) is configured with the kernel stack pointer (SS0:ESP0) so the CPU knows which stack to use when transitioning from ring 3 to ring 0 on interrupt/syscall
+      - TSS (Task State Segment) is configured with the kernel stack pointer (SS0: ESP0) so the CPU knows which stack to use when transitioning from ring 3 to ring 0 on interrupt/syscall
       - Timer interrupt (IRQ0) triggers the scheduler; scheduler selects the next ready process in round-robin order and performs a context switch
       - At least 3 kernel-mode processes run concurrently, each printing to a different screen region, demonstrating preemptive multitasking
       - User-mode processes: at least one process runs in ring 3 with its own page directory; accessing kernel memory from user mode triggers a page fault (user-bit not set)
@@ -227,7 +227,7 @@ milestones:
     pitfalls:
       - "Context switch must save ALL registers including EFLAGS; missing a register causes subtle corruption that manifests much later"
       - "TSS is required for ring 3 → ring 0 transitions; without it, the CPU doesn't know what kernel stack to use and triple-faults"
-      - "Stack corruption during context switch: each process needs its own kernel stack; reusing the same stack corrupts saved state"
+      - Stack corruption during context switch: each process needs its own kernel stack; reusing the same stack corrupts saved state
       - "Preemptive scheduling requires re-enabling interrupts after the context switch or the system freezes"
       - "Not disabling interrupts during critical sections of the context switch causes nested interrupts and stack overflow"
       - "User-mode processes need their own page directory with kernel pages mapped but marked supervisor-only"

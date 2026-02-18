@@ -289,5 +289,4 @@ milestones:
       - Multi-currency translation converting foreign balances at period-end exchange rates
       - Report export module outputting PDF and CSV formats
     estimated_hours: 15
-
 ```

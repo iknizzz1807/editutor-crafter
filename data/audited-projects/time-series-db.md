@@ -223,7 +223,7 @@ milestones:
       - Loading entire time ranges into memory before filtering causes OOM for large queries—stream results
       - AVG aggregation must track both sum and count; computing it incrementally avoids a second pass
       - Gaps in data must not be interpolated silently—report gaps or fill with explicit null values, never fabricate data
-      - Windowed aggregation boundary alignment (e.g., does the 5m window start at :00 or at query start?) must be documented
+      - Windowed aggregation boundary alignment (e.g., does the 5m window start at : 00 or at query start?) must be documented
     concepts:
       - Block pruning skips blocks outside the query time range using min/max index
       - Tag filter pushdown resolves matching series via inverted index before block scan

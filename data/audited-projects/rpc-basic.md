@@ -74,7 +74,7 @@ resources:
   - name: JSON-RPC 2.0 Specification
     url: https://www.jsonrpc.org/specification
     type: specification
-  - name: "Beej's Guide to Network Programming"
+  - name: Beej's Guide to Network Programming""
     url: https://beej.us/guide/bgnet/
     type: tutorial
 prerequisites:
@@ -94,16 +94,16 @@ milestones:
       unpredictably in the receive buffer.
     acceptance_criteria:
       - "Messages are framed with a 4-byte big-endian length prefix followed by the JSON payload bytes"
-      - "Request format contains fields: jsonrpc (version string), method (string), params (array or object), and id (unique integer or string)"
-      - "Response format contains fields: jsonrpc (version string), result (any) OR error (object with code and message), and id (matching request id)"
+      - Request format contains fields: jsonrpc (version string), method (string), params (array or object), and id (unique integer or string)
+      - Response format contains fields: jsonrpc (version string), result (any) OR error (object with code and message), and id (matching request id)
       - "Framing correctly handles messages up to 1MB; messages exceeding max size are rejected with an error"
       - "A standalone encode/decode module can round-trip serialize and deserialize 1000 random messages without data loss"
-      - "Partial TCP reads are handled correctly: the receiver accumulates bytes until the full length-prefixed message is available"
+      - Partial TCP reads are handled correctly: the receiver accumulates bytes until the full length-prefixed message is available
     pitfalls:
-      - "Not handling partial TCP reads: recv() may return fewer bytes than the length prefix indicates, requiring a read loop"
-      - "Endianness mismatch: always use network byte order (big-endian) for the length prefix"
-      - "Not validating the length prefix: a malicious or buggy client sending length=2GB will exhaust memory"
-      - "Using newline delimiters instead of length-prefixing: JSON payloads can contain newlines, breaking the framing"
+      - Not handling partial TCP reads: recv() may return fewer bytes than the length prefix indicates, requiring a read loop
+      - Endianness mismatch: always use network byte order (big-endian) for the length prefix
+      - Not validating the length prefix: a malicious or buggy client sending length=2GB will exhaust memory
+      - Using newline delimiters instead of length-prefixing: JSON payloads can contain newlines, breaking the framing
     concepts:
       - TCP stream vs message semantics
       - Length-prefixed framing
@@ -137,10 +137,10 @@ milestones:
       - "Server handles at least 10 concurrent clients sending requests simultaneously without deadlock or data corruption"
       - "A special introspection method 'rpc.listMethods' returns a list of all registered method names"
     pitfalls:
-      - "Single-threaded server blocks all clients while processing one request: always handle clients concurrently"
-      - "Letting handler exceptions crash the server: every handler invocation must be wrapped in try/except"
-      - "Not closing client connections on framing errors: a malformed message should close that connection, not corrupt state"
-      - "Shared mutable state in handlers without synchronization: the method registry is read-only after startup, but handler state may not be"
+      - Single-threaded server blocks all clients while processing one request: always handle clients concurrently
+      - Letting handler exceptions crash the server: every handler invocation must be wrapped in try/except
+      - Not closing client connections on framing errors: a malformed message should close that connection, not corrupt state
+      - Shared mutable state in handlers without synchronization: the method registry is read-only after startup, but handler state may not be
     concepts:
       - Method registry and dynamic dispatch
       - Concurrent connection handling
@@ -175,10 +175,10 @@ milestones:
       - Configurable per-call timeout (default 30s) raises TimeoutError if no response is received within the deadline
       - Client can be used in a context manager / with-statement for automatic connection cleanup
     pitfalls:
-      - "Not correlating responses by ID: if the server sends responses out of order (future pipelining), mismatched results will occur"
-      - "Conflating transport and application errors: retrying a 'method not found' error is pointless, but retrying a connection timeout is valid"
-      - "Not implementing connection cleanup: leaked TCP connections exhaust file descriptors"
-      - "Infinite timeout by default: a missing timeout means a hung server hangs the client forever"
+      - Not correlating responses by ID: if the server sends responses out of order (future pipelining), mismatched results will occur
+      - Conflating transport and application errors: retrying a 'method not found' error is pointless, but retrying a connection timeout is valid
+      - Not implementing connection cleanup: leaked TCP connections exhaust file descriptors
+      - Infinite timeout by default: a missing timeout means a hung server hangs the client forever
     concepts:
       - Client-side proxy / stub pattern
       - Request-response correlation by ID
@@ -204,16 +204,16 @@ milestones:
       handles real-world scenarios: concurrent calls, large payloads,
       server crashes, and malformed messages.
     acceptance_criteria:
-      - "Integration test: 10 concurrent clients each make 100 calls; all 1000 responses are correctly correlated and returned"
-      - "Integration test: calling a method that throws an exception returns RemoteError on the client without crashing the server"
-      - "Integration test: sending a payload larger than the max message size is rejected gracefully"
-      - "Integration test: server shutdown while client is waiting returns TransportError on the client"
-      - "Integration test: client timeout fires correctly when server handler sleeps longer than the deadline"
-      - "Integration test: rpc.listMethods returns all registered method names"
+      - Integration test: 10 concurrent clients each make 100 calls; all 1000 responses are correctly correlated and returned
+      - Integration test: calling a method that throws an exception returns RemoteError on the client without crashing the server
+      - Integration test: sending a payload larger than the max message size is rejected gracefully
+      - Integration test: server shutdown while client is waiting returns TransportError on the client
+      - Integration test: client timeout fires correctly when server handler sleeps longer than the deadline
+      - Integration test: rpc.listMethods returns all registered method names
     pitfalls:
-      - "Flaky tests from port conflicts: use dynamic port assignment (port 0) in tests"
-      - "Not waiting for server startup before connecting clients: add a readiness check"
-      - "Test isolation: each test should start a fresh server to avoid state leakage"
+      - Flaky tests from port conflicts: use dynamic port assignment (port 0) in tests
+      - Not waiting for server startup before connecting clients: add a readiness check
+      - Test isolation: each test should start a fresh server to avoid state leakage
     concepts:
       - Integration testing patterns
       - Fault injection
@@ -229,5 +229,4 @@ milestones:
       - Fault injection tests (server crash, timeout, malformed message)
       - CI-compatible test runner configuration
     estimated_hours: "2-3"
-
 ```

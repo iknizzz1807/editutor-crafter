@@ -164,7 +164,7 @@ milestones:
       - Generate @@ hunk headers with correct 1-indexed line ranges for both files (e.g., @@ -1,3 +1,4 @@)
       - Group changes into hunks with 3 lines of context by default; merge hunks whose context lines overlap
       - Append 'No newline at end of file' marker when applicable (per POSIX diff spec)
-      - Verify output by piping to `patch` and confirming it applies cleanly to produce the target file
+      - Verify output by piping to 'patch' and confirming it applies cleanly to produce the target file
     pitfalls:
       - Unified diff format is 1-indexed; off-by-one errors are the most common bug
       - Hunk line counts must accurately reflect the number of lines in each side (including context)
@@ -210,5 +210,4 @@ milestones:
       - Context line count configuration via --context flag
       - Side-by-side display option computing column widths from terminal size
       - Correct exit codes following POSIX diff conventions
-
 ```

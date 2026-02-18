@@ -100,15 +100,15 @@ milestones:
       via context.
     acceptance_criteria:
       - "Schema defines at least 3 object types with relationships (e.g., User, Post, Comment with author/post foreign key relationships)"
-      - "Query type includes at least: single entity by ID, and list query with cursor-based pagination following Relay connection spec (edges, nodes, pageInfo with hasNextPage/endCursor)"
-      - "Mutation type includes at least: create, update, and delete operations with input types for arguments"
+      - Query type includes at least: single entity by ID, and list query with cursor-based pagination following Relay connection spec (edges, nodes, pageInfo with hasNextPage/endCursor)
+      - Mutation type includes at least: create, update, and delete operations with input types for arguments
       - "Custom scalar types (e.g., DateTime) are implemented with serialize, parseValue, and parseLiteral methods"
-      - "Enum types are used for fixed-value fields (e.g., PostStatus: DRAFT, PUBLISHED)"
+      - Enum types are used for fixed-value fields (e.g., PostStatus: DRAFT, PUBLISHED)
       - "Schema is validated at startup; invalid definitions cause a startup error with a descriptive message"
       - "Resolver functions receive (parent, args, context, info) and fetch data from the database"
       - "Context object is constructed per-request containing database connection and authenticated user (or null)"
-      - "Authentication: mutations and protected queries check context.user; unauthenticated access returns an UNAUTHENTICATED error"
-      - "Authorization: mutations verify the current user owns the resource being modified; unauthorized access returns a FORBIDDEN error"
+      - Authentication: mutations and protected queries check context.user; unauthenticated access returns an UNAUTHENTICATED error
+      - Authorization: mutations verify the current user owns the resource being modified; unauthorized access returns a FORBIDDEN error
       - "Resolver errors return structured GraphQL errors with appropriate error codes (UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, BAD_USER_INPUT)"
     pitfalls:
       - "Making too many fields nullable leads to complex null handling on the client; prefer non-null with explicit error handling"
@@ -221,7 +221,7 @@ milestones:
       - "Subscription resolvers return an async iterator/generator yielding events from a pub/sub system"
       - "Events are published to named topics when mutations occur (e.g., postCreated, commentAdded)"
       - "Subscription filtering ensures clients receive only events matching their subscription arguments (e.g., subscribe to comments on a specific post)"
-      - "Client disconnection triggers cleanup: subscription iterators are closed, pub/sub listeners are removed, no resource leaks"
+      - Client disconnection triggers cleanup: subscription iterators are closed, pub/sub listeners are removed, no resource leaks
       - "Connection keep-alive pings are sent at a configurable interval to detect dead WebSocket connections"
     pitfalls:
       - "Not authenticating subscription connections allows unauthenticated users to receive real-time data"

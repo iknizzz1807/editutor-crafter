@@ -71,7 +71,7 @@ resources:
   - name: WebSocket API - MDN
     url: https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API
     type: documentation
-  - name: "RFC 6455 - The WebSocket Protocol"
+  - name: RFC 6455 - The WebSocket Protocol""
     url: https://datatracker.ietf.org/doc/html/rfc6455
     type: documentation
 prerequisites:
@@ -201,7 +201,7 @@ milestones:
       - "Client reconnection after a dropped connection resumes from the last seen sequence number, receiving missed messages"
       - "Reconnection uses exponential backoff with jitter to avoid thundering herd on server recovery"
     pitfalls:
-      - "Presence race conditions: user disconnect and reconnect in quick succession can show incorrect status"
+      - Presence race conditions: user disconnect and reconnect in quick succession can show incorrect status
       - "Typing indicator spam if not rate-limited; clients can flood the server with typing events"
       - "Thundering herd problem when many clients reconnect simultaneously after a server restart"
       - "Message catch-up loading too many messages; cap the catch-up window and direct client to history API for older messages"

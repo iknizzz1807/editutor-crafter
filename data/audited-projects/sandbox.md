@@ -272,7 +272,7 @@ milestones:
       - Set memory.max to configurable threshold (e.g., 67108864 for 64MB) and verify OOM kill triggers
       - Set cpu.max to configurable quota (e.g., '10000 100000' for 10% of one core) and verify throttling
       - Set pids.max to limit maximum number of processes/threads (e.g., 64) and verify fork bomb protection
-      - Set io.max to limit disk throughput (e.g., 'MAJ:MIN rbps=1048576 wbps=1048576' for 1MB/s)
+      - Set io.max to limit disk throughput (e.g., 'MAJ: MIN rbps=1048576 wbps=1048576' for 1MB/s)
       - Write sandboxed process PID to cgroup.procs to place it under resource control
       - Verify resource limits by running stress tests that exceed each configured limit
       - Clean up cgroup subtree on sandbox exit (rmdir the cgroup directory after all processes exit)
@@ -281,7 +281,7 @@ milestones:
       - Controllers must be enabled in PARENT cgroup's subtree_control before they appear in child
       - Cgroup delegation for unprivileged users requires specific ownership/permissions on cgroup directory
       - memory.max=0 doesn't mean unlimited; use 'max' string for no limit
-      - io.max requires device major:minor numbers, not device paths
+      - io.max requires device major: minor numbers, not device paths
       - Cannot delete a cgroup directory while it still has processes; must wait or migrate them first
       - cpu.max format is 'QUOTA PERIOD' in microseconds; getting the format wrong silently fails
       - Some cloud/container environments don't expose all cgroup controllers

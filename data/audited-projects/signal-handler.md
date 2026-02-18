@@ -68,7 +68,7 @@ resources:
   - name: Signal Safety (signal-safety(7))
     url: https://man7.org/linux/man-pages/man7/signal-safety.7.html
     type: documentation
-  - name: "The Self-Pipe Trick"
+  - name: The Self-Pipe Trick""
     url: https://cr.yp.to/docs/selfpipe.html
     type: article
 prerequisites:

@@ -388,5 +388,4 @@ milestones:
       - Merge abort restoring pre-merge state
       - Handling of added, deleted, and modified files across branches
     estimated_hours: 10
-
 ```

@@ -60,19 +60,19 @@ languages:
   also_possible:
     - TypeScript
 resources:
-  - name: "LangChain RAG Tutorial"
+  - name: LangChain RAG Tutorial""
     url: https://python.langchain.com/docs/tutorials/rag/
     type: tutorial
-  - name: "OpenAI Embeddings Guide"
+  - name: OpenAI Embeddings Guide""
     url: https://platform.openai.com/docs/guides/embeddings
     type: documentation
-  - name: "BM25 Algorithm Explained"
+  - name: BM25 Algorithm Explained""
     url: https://en.wikipedia.org/wiki/Okapi_BM25
     type: article
-  - name: "Cross-Encoder Re-ranking (SBERT)"
+  - name: Cross-Encoder Re-ranking (SBERT)""
     url: https://www.sbert.net/examples/applications/cross-encoder/README.html
     type: documentation
-  - name: "RAGAS Evaluation Framework"
+  - name: RAGAS Evaluation Framework""
     url: https://docs.ragas.io/
     type: documentation
 prerequisites:
@@ -92,11 +92,11 @@ milestones:
       and split into chunks using configurable strategies with overlap.
     acceptance_criteria:
       - "Document loader reads PDF (via PyPDF2 or pdfplumber), Markdown, HTML, and plain text files"
-      - "Text extraction preserves document metadata: source filename, page number (for PDF), section headings"
+      - Text extraction preserves document metadata: source filename, page number (for PDF), section headings
       - "Fixed-size chunking splits text into chunks of configurable token count (default 512 tokens) with configurable overlap (default 50 tokens)"
       - "Recursive character splitting breaks text at paragraph → sentence → word boundaries, respecting a maximum chunk size"
-      - "Each chunk object contains: chunk text, chunk ID, source document metadata, and character offset within the source"
-      - "Chunk statistics are reported: total chunks generated, average chunk length, min/max chunk length"
+      - Each chunk object contains: chunk text, chunk ID, source document metadata, and character offset within the source
+      - Chunk statistics are reported: total chunks generated, average chunk length, min/max chunk length
       - "UTF-8 encoding is handled correctly; non-UTF-8 files produce a clear error message"
     pitfalls:
       - "Chunks too small (<100 tokens) lose semantic context; chunks too large (>1000 tokens) may exceed embedding model limits and dilute relevance"
@@ -131,9 +131,9 @@ milestones:
       - "Embeddings are L2-normalized so that cosine similarity equals dot product similarity"
       - "Batch processing generates embeddings in configurable batch sizes (default 32) to respect API rate limits"
       - "Embedding cache persists computed vectors to disk (pickle or numpy) to avoid redundant API calls on re-run"
-      - "BM25 inverted index is built from chunk text: for each term, store the list of chunk IDs containing it with term frequency"
+      - BM25 inverted index is built from chunk text: for each term, store the list of chunk IDs containing it with term frequency
       - "Vector store (Chroma, FAISS, or pgvector) indexes all chunk embeddings with associated metadata"
-      - "Metadata filtering is supported: queries can restrict search to specific source documents or date ranges"
+      - Metadata filtering is supported: queries can restrict search to specific source documents or date ranges
     pitfalls:
       - "Not normalizing embeddings causes cosine similarity to incorrectly favor longer vectors"
       - "API rate limits without retry logic cause silent data loss—implement exponential backoff"
@@ -165,9 +165,9 @@ milestones:
     acceptance_criteria:
       - "Dense retrieval returns top-K chunks by cosine similarity from the vector store (default K=20)"
       - "Sparse retrieval returns top-K chunks by BM25 score from the inverted index (default K=20)"
-      - "Hybrid search merges dense and sparse results using Reciprocal Rank Fusion (RRF): score = Σ 1/(k + rank_i) across retrieval methods"
+      - Hybrid search merges dense and sparse results using Reciprocal Rank Fusion (RRF): score = Σ 1/(k + rank_i) across retrieval methods
       - "Cross-encoder re-ranker scores each (query, chunk) pair using a pre-trained model (e.g., cross-encoder/ms-marco-MiniLM-L-6-v2) and returns top-N by re-ranked score (default N=5)"
-      - "Re-ranking improves precision: on a test set of 20 queries with labeled relevant chunks, re-ranked top-5 has higher precision than unreranked top-5"
+      - Re-ranking improves precision: on a test set of 20 queries with labeled relevant chunks, re-ranked top-5 has higher precision than unreranked top-5
       - "Metadata filters can be applied before or after retrieval to restrict results by source or attribute"
     pitfalls:
       - "BM25 and dense scores are on different scales—RRF avoids the need for score normalization by using ranks"
@@ -197,18 +197,18 @@ milestones:
       Generate answers using retrieved context injected into LLM prompts,
       with token budget management, streaming, and prompt injection mitigation.
     acceptance_criteria:
-      - "RAG prompt template includes: system instruction, retrieved context chunks with source citations, and user query"
+      - RAG prompt template includes: system instruction, retrieved context chunks with source citations, and user query
       - "System instruction directs the LLM to answer only from provided context and cite sources"
       - "Token budget manager calculates available tokens for context after accounting for system prompt, user query, and expected response length"
       - "Context is selected by re-ranked relevance score until the token budget is filled; excess chunks are dropped"
       - "LLM responses are streamed token-by-token to the client for perceived latency reduction"
-      - "Basic prompt injection mitigation: retrieved chunk text is enclosed in clearly delimited markers (e.g., <context>...</context>) and the system prompt instructs the LLM to treat content within markers as data, not instructions"
+      - Basic prompt injection mitigation: retrieved chunk text is enclosed in clearly delimited markers (e.g., <context>...</context>) and the system prompt instructs the LLM to treat content within markers as data, not instructions
       - "LLM API errors and timeouts return a graceful error message to the user, not a stack trace"
     pitfalls:
       - "Exceeding context window silently truncates input and produces incoherent answers—must count tokens accurately"
       - "LLM may hallucinate despite 'only use context' instruction—this is a known limitation, not a solvable bug"
       - "Streaming error mid-response (e.g., API timeout) leaves partial response—handle with error suffix"
-      - "Prompt injection from retrieved content: a malicious document could contain 'Ignore previous instructions'—delimiter-based mitigation reduces but doesn't eliminate risk"
+      - Prompt injection from retrieved content: a malicious document could contain 'Ignore previous instructions'—delimiter-based mitigation reduces but doesn't eliminate risk
     concepts:
       - Prompt engineering for RAG
       - Token budget management
@@ -235,10 +235,10 @@ milestones:
       generation quality metrics, and configuration experiments.
     acceptance_criteria:
       - "Evaluation dataset contains at least 30 questions with labeled relevant chunk IDs and expected answer summaries"
-      - "Retrieval metrics are computed: Recall@K (proportion of relevant chunks in top-K), Mean Reciprocal Rank (MRR), and Precision@K"
-      - "Generation quality metrics are computed: faithfulness (answer is supported by retrieved context) and answer relevance (answer addresses the question)—using LLM-as-judge or RAGAS framework"
-      - "Configuration experiment: at least 3 chunk size configurations (e.g., 256, 512, 1024 tokens) are compared on retrieval metrics"
-      - "Configuration experiment: hybrid search (dense + BM25 + re-ranking) is compared against dense-only search on retrieval metrics"
+      - Retrieval metrics are computed: Recall@K (proportion of relevant chunks in top-K), Mean Reciprocal Rank (MRR), and Precision@K
+      - Generation quality metrics are computed: faithfulness (answer is supported by retrieved context) and answer relevance (answer addresses the question)—using LLM-as-judge or RAGAS framework
+      - Configuration experiment: at least 3 chunk size configurations (e.g., 256, 512, 1024 tokens) are compared on retrieval metrics
+      - Configuration experiment: hybrid search (dense + BM25 + re-ranking) is compared against dense-only search on retrieval metrics
       - "Results are presented in a comparison table showing metric values for each configuration"
       - "Best configuration is selected and documented with justification"
     pitfalls:

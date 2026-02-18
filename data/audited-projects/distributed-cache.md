@@ -97,15 +97,15 @@ milestones:
       - "Hash ring maps keys to nodes using a hash function (e.g., MD5, MurmurHash3) with the ring space [0, 2^32)"
       - "Each physical node is represented by V virtual nodes (configurable, default 150) distributed across the ring"
       - "lookup(key) returns the responsible node by finding the first virtual node position ≥ hash(key) via binary search — O(log N) complexity where N = total virtual nodes"
-      - "Distribution balance: with 3 nodes and 150 vnodes each, key distribution across nodes has < 15% deviation from uniform over 10,000 random keys"
+      - Distribution balance: with 3 nodes and 150 vnodes each, key distribution across nodes has < 15% deviation from uniform over 10,000 random keys
       - "add_node(node) adds the node's virtual nodes to the ring and remaps only the keys that now belong to the new node (minimal disruption)"
       - "remove_node(node) removes the node's virtual nodes and remaps affected keys to successor nodes"
-      - "Benchmark: lookup latency is < 10μs for a ring with 1000 virtual nodes"
+      - Benchmark: lookup latency is < 10μs for a ring with 1000 virtual nodes
     pitfalls:
-      - "Claiming O(1) lookup: ring lookup is O(log N) via binary search, not O(1). Only a direct-mapping array (wasteful) achieves O(1)."
-      - "Too few virtual nodes: with V=1, distribution is extremely uneven. 100-300 vnodes per physical node is the standard recommendation."
-      - "Poor hash function: using CRC32 or Java's hashCode() produces clustered ring positions. Use a well-distributed hash like MurmurHash3."
-      - "Not handling the ring wrap-around: if hash(key) > max virtual node position, the key wraps to the first virtual node in the ring."
+      - Claiming O(1) lookup: ring lookup is O(log N) via binary search, not O(1). Only a direct-mapping array (wasteful) achieves O(1).
+      - Too few virtual nodes: with V=1, distribution is extremely uneven. 100-300 vnodes per physical node is the standard recommendation.
+      - Poor hash function: using CRC32 or Java's hashCode() produces clustered ring positions. Use a well-distributed hash like MurmurHash3.
+      - Not handling the ring wrap-around: if hash(key) > max virtual node position, the key wraps to the first virtual node in the ring.
     concepts:
       - Consistent hashing with hash ring
       - Virtual nodes for load balancing
@@ -136,14 +136,14 @@ milestones:
       - "DELETE(key) removes the entry immediately"
       - "LRU is O(1) for all operations using a hash map + doubly-linked list"
       - "Memory accounting tracks key_size + value_size + overhead (fixed 64 bytes per entry). Total tracked size does not exceed configured memory_limit."
-      - "TTL expiration: expired keys are lazily deleted on access AND periodically cleaned by a background sweeper (every 1s, sampling 20 random keys per sweep)"
-      - "Singleflight / request collapsing: when multiple concurrent GET requests miss the same key simultaneously, only ONE fetch to the backend is performed and all waiters receive the result"
+      - TTL expiration: expired keys are lazily deleted on access AND periodically cleaned by a background sweeper (every 1s, sampling 20 random keys per sweep)
+      - Singleflight / request collapsing: when multiple concurrent GET requests miss the same key simultaneously, only ONE fetch to the backend is performed and all waiters receive the result
       - "All operations are thread-safe under 100 concurrent goroutines/threads with no data races"
     pitfalls:
-      - "Memory accounting errors: not counting key size, or not subtracting evicted entry size, causes the cache to over- or under-fill"
-      - "Thundering herd on popular key expiration: 1000 concurrent requests all miss and hit the backend simultaneously. Singleflight pattern is mandatory."
-      - "Eager TTL expiration scanning all keys: O(N) full scan is too expensive. Use random sampling (Redis-style) or lazy expiration."
-      - "Lock contention on the LRU list: every GET requires moving a node in the linked list. Consider sharded LRU (multiple independent LRUs by key hash)."
+      - Memory accounting errors: not counting key size, or not subtracting evicted entry size, causes the cache to over- or under-fill
+      - Thundering herd on popular key expiration: 1000 concurrent requests all miss and hit the backend simultaneously. Singleflight pattern is mandatory.
+      - Eager TTL expiration scanning all keys: O(N) full scan is too expensive. Use random sampling (Redis-style) or lazy expiration.
+      - Lock contention on the LRU list: every GET requires moving a node in the linked list. Consider sharded LRU (multiple independent LRUs by key hash).
     concepts:
       - LRU cache with O(1) operations
       - Memory accounting and limit enforcement
@@ -170,16 +170,16 @@ milestones:
     acceptance_criteria:
       - "Each node exposes an inter-node RPC API (TCP/gRPC/HTTP) for GET, SET, DELETE operations from peer nodes"
       - "When a node receives a client request for a key it doesn't own, it forwards the request to the owning node and returns the response to the client (proxy mode)"
-      - "Node discovery: static configuration (list of node addresses) at startup. All nodes share the same consistent hash ring."
-      - "Health checks: each node pings all peers every 5s. Unresponsive nodes (3 consecutive failures) are marked down and removed from the local hash ring."
+      - Node discovery: static configuration (list of node addresses) at startup. All nodes share the same consistent hash ring.
+      - Health checks: each node pings all peers every 5s. Unresponsive nodes (3 consecutive failures) are marked down and removed from the local hash ring.
       - "When a node is removed from the ring, its key range is absorbed by the successor node (keys are lost unless replicated — M4)"
       - "When a node recovers and re-announces, it is re-added to the ring and starts accepting its key range"
       - "Request routing latency overhead (proxy hop) is < 5ms p99 on local network"
     pitfalls:
-      - "Split brain: node A thinks node B is down, node B thinks node A is down. Both remove each other from their rings, causing inconsistent routing."
-      - "Stale ring membership: a node's local ring view is out of date, routing requests to the wrong node or a dead node"
-      - "Not handling the 'all nodes down' case: if a node's ring is empty, it should serve what it can from local cache or return 503"
-      - "Full gossip protocol is complex: for a beginner implementation, static configuration with health checks is sufficient. Don't over-engineer."
+      - Split brain: node A thinks node B is down, node B thinks node A is down. Both remove each other from their rings, causing inconsistent routing.
+      - Stale ring membership: a node's local ring view is out of date, routing requests to the wrong node or a dead node
+      - Not handling the 'all nodes down' case: if a node's ring is empty, it should serve what it can from local cache or return 503
+      - Full gossip protocol is complex: for a beginner implementation, static configuration with health checks is sufficient. Don't over-engineer.
     concepts:
       - Request routing via hash ring
       - Proxy-mode forwarding
@@ -204,18 +204,18 @@ milestones:
       to N successor nodes on the hash ring. Implement configurable
       read/write quorum for consistency control.
     acceptance_criteria:
-      - "Configurable replication factor R (default 3): each key is stored on the owning node and R-1 successor nodes on the ring"
-      - "Write quorum W (configurable): a SET is acknowledged after W nodes confirm the write. W=1 is fast but risks data loss; W=R is safe but slow."
-      - "Read quorum Q (configurable): a GET reads from Q nodes and returns the most recent value. For strong consistency, W + Q > R."
-      - "Conflict resolution: if read quorum returns divergent values, the most recent value (by timestamp or version counter) is returned and read-repair is triggered"
-      - "Read repair: after a read detects stale replicas, the latest value is written back to the stale nodes asynchronously"
+      - Configurable replication factor R (default 3): each key is stored on the owning node and R-1 successor nodes on the ring
+      - Write quorum W (configurable): a SET is acknowledged after W nodes confirm the write. W=1 is fast but risks data loss; W=R is safe but slow.
+      - Read quorum Q (configurable): a GET reads from Q nodes and returns the most recent value. For strong consistency, W + Q > R.
+      - Conflict resolution: if read quorum returns divergent values, the most recent value (by timestamp or version counter) is returned and read-repair is triggered
+      - Read repair: after a read detects stale replicas, the latest value is written back to the stale nodes asynchronously
       - "When a node fails, reads/writes can still succeed as long as quorum is met with remaining replicas"
-      - "Integration test: with R=3, W=2, Q=2: kill one node, verify writes and reads still succeed. Kill two nodes, verify writes fail (quorum not met)."
+      - Integration test: with R=3, W=2, Q=2: kill one node, verify writes and reads still succeed. Kill two nodes, verify writes fail (quorum not met).
     pitfalls:
-      - "Stale reads with W=1, Q=1: a write goes to one node, a read goes to a different node that doesn't have the write yet. W + Q must > R for consistency."
-      - "Write conflicts during partition: two clients write the same key to different partition sides. Conflict resolution (LWW, version vector) determines the winner."
-      - "Eviction inconsistency across replicas: one replica evicts a key due to memory pressure but others still have it. Reads may return the key from non-evicting replicas."
-      - "Anti-entropy complexity: detecting which keys are inconsistent across replicas requires Merkle trees or full key comparison, which is expensive for large caches."
+      - Stale reads with W=1, Q=1: a write goes to one node, a read goes to a different node that doesn't have the write yet. W + Q must > R for consistency.
+      - Write conflicts during partition: two clients write the same key to different partition sides. Conflict resolution (LWW, version vector) determines the winner.
+      - Eviction inconsistency across replicas: one replica evicts a key due to memory pressure but others still have it. Reads may return the key from non-evicting replicas.
+      - Anti-entropy complexity: detecting which keys are inconsistent across replicas requires Merkle trees or full key comparison, which is expensive for large caches.
     concepts:
       - Replication factor and successor selection on hash ring
       - Read/write quorum (W + Q > R for strong consistency)
@@ -232,5 +232,4 @@ milestones:
       - Read quorum with conflict detection and resolution
       - Read repair for stale replica synchronization
     estimated_hours: "10-14"
-
 ```

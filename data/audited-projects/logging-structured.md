@@ -72,16 +72,16 @@ languages:
     - JavaScript
     - Rust
 resources:
-  - name: "12 Factor App - Logs"
+  - name: 12 Factor App - Logs""
     url: "https://12factor.net/logs"
     type: article
-  - name: "Structured Logging Guide"
+  - name: Structured Logging Guide""
     url: "https://www.honeycomb.io/blog/structured-logging"
     type: article
-  - name: "Python structlog Documentation"
+  - name: Python structlog Documentation""
     url: "https://www.structlog.org/en/stable/"
     type: documentation
-  - name: "Go slog Package"
+  - name: Go slog Package""
     url: "https://pkg.go.dev/log/slog"
     type: documentation
 prerequisites:
@@ -102,12 +102,12 @@ milestones:
     acceptance_criteria:
       - "Log levels DEBUG, INFO, WARN, ERROR, and FATAL are defined with numeric ordering; messages below the configured minimum level are discarded before serialization"
       - "Minimum log level is configurable per logger instance and can be changed at runtime without process restart, taking effect on the next log call"
-      - "Logging operations are thread-safe: 100 concurrent goroutines/threads writing simultaneously produce zero corrupted or interleaved JSON lines in output"
+      - Logging operations are thread-safe: 100 concurrent goroutines/threads writing simultaneously produce zero corrupted or interleaved JSON lines in output
       - "Log records are dispatched to multiple output handlers (stdout, file, remote HTTP/TCP) with independent failure handling per handler"
       - "Handler failures (e.g., file write error, remote collector timeout) do not block the calling application thread for more than a configurable timeout (default 50ms)"
     pitfalls:
       - "Interleaved partial JSON lines when multiple threads write to the same fd without atomic writes or mutex protection—test with high concurrency to verify"
-      - "Blocking I/O in the log dispatch hot path: if a remote collector is slow, the application thread stalls. Use async dispatch with bounded queues."
+      - Blocking I/O in the log dispatch hot path: if a remote collector is slow, the application thread stalls. Use async dispatch with bounded queues.
       - "Forgetting to propagate log level changes to child loggers when parent level is updated at runtime"
       - "Using fmt.Sprintf or string concatenation eagerly for log messages that will be filtered—use lazy evaluation to avoid allocation overhead"
     concepts:
@@ -134,14 +134,14 @@ milestones:
       formatters, and handle sensitive data redaction.
     acceptance_criteria:
       - "JSON output produces valid single-line JSON per log record; each record includes a 'schema_version' field (e.g., '1.0') for forward-compatible evolution"
-      - "Each log record includes at minimum: timestamp (ISO 8601 with timezone), level, message, logger_name, schema_version, and any attached context fields"
-      - "Non-serializable values (functions, circular references, binary data) are handled gracefully: replaced with a '[non-serializable: <type>]' placeholder, never causing a serialization exception"
-      - "Sensitive field redaction is supported: fields matching configurable patterns (e.g., 'password', 'token', 'ssn') are replaced with '[REDACTED]' in output"
+      - Each log record includes at minimum: timestamp (ISO 8601 with timezone), level, message, logger_name, schema_version, and any attached context fields
+      - Non-serializable values (functions, circular references, binary data) are handled gracefully: replaced with a '[non-serializable: <type>]' placeholder, never causing a serialization exception
+      - Sensitive field redaction is supported: fields matching configurable patterns (e.g., 'password', 'token', 'ssn') are replaced with '[REDACTED]' in output
       - "Pretty-print mode formats JSON with indentation for TTY-detected stdout; ANSI color codes are suppressed when output is not a TTY (piped to file or redirected)"
       - "Custom formatters can be registered by name and selected per handler to control log output appearance (e.g., logfmt, CSV, custom)"
     pitfalls:
       - "Non-serializable values (e.g., socket objects, lambda functions) in context fields cause silent log drops or crashes—always implement a safe fallback serializer"
-      - "Forgetting to flush buffered writers: logs are lost on process crash if the buffer is not flushed on FATAL or at shutdown"
+      - Forgetting to flush buffered writers: logs are lost on process crash if the buffer is not flushed on FATAL or at shutdown
       - "Large context objects (e.g., entire request bodies) attached to every log line cause massive I/O and storage bloat—enforce a max context field size"
       - "ANSI escape codes written to non-TTY outputs corrupt log files and break JSON parsers downstream"
       - "Schema version not included from day one means retroactive identification of log format is impossible"
@@ -173,13 +173,13 @@ milestones:
       - "Incoming HTTP requests with an existing correlation ID header (e.g., X-Request-ID, traceparent) reuse that ID instead of generating a new one"
       - "Context key-value pairs propagate through nested function calls without explicit parameter passing, using thread-local storage (Python threading.local, Go context.Context, Java MDC)"
       - "Child loggers inherit all context fields from their parent and can add additional fields without mutating the parent's context"
-      - "Logging context is preserved correctly across async/await boundaries: a test with 50 concurrent async tasks each logging with distinct correlation IDs shows zero cross-contamination"
+      - Logging context is preserved correctly across async/await boundaries: a test with 50 concurrent async tasks each logging with distinct correlation IDs shows zero cross-contamination
       - "Context cleanup occurs automatically at request scope exit to prevent memory leaks in long-running server processes"
     pitfalls:
       - "Thread-local storage does not propagate to child threads or async tasks by default—each language has different semantics (Python contextvars vs threading.local, Go context.Context is explicit, Java InheritableThreadLocal has footguns)"
       - "Memory leaks from context not being cleaned up at end of request scope in long-running processes—use context managers or defer patterns"
-      - "Async context loss: Python's threading.local is NOT async-safe; must use contextvars. Go's context.Context must be explicitly passed. Java's MDC doesn't propagate to CompletableFuture threads."
-      - "Correlation ID collision: UUID v4 collision probability is negligible but using sequential IDs or short random strings can collide at scale"
+      - Async context loss: Python's threading.local is NOT async-safe; must use contextvars. Go's context.Context must be explicitly passed. Java's MDC doesn't propagate to CompletableFuture threads.
+      - Correlation ID collision: UUID v4 collision probability is negligible but using sequential IDs or short random strings can collide at scale
     concepts:
       - Correlation IDs and distributed tracing context
       - Thread-local vs context-variable storage
@@ -208,11 +208,11 @@ milestones:
       - "File-based log rotation triggers when log file exceeds a configurable size threshold (e.g., 100MB) or at configurable time intervals (e.g., daily)"
       - "Rotated log files are named with a timestamp suffix and optionally compressed (gzip); at most N rotated files are retained, older ones are deleted automatically"
       - "When a remote log collector is unavailable, log records are buffered locally in a bounded disk-backed queue (configurable max size, e.g., 500MB)"
-      - "When the local buffer is full, the system applies a configurable backpressure policy: either drop oldest entries, drop newest entries, or block the caller with a timeout"
+      - When the local buffer is full, the system applies a configurable backpressure policy: either drop oldest entries, drop newest entries, or block the caller with a timeout
       - "Buffered logs are replayed to the remote collector in order upon reconnection, with at-least-once delivery semantics"
       - "A health/status endpoint or log line reports the current buffer depth and remote collector connection status"
     pitfalls:
-      - "Rotation race condition: if multiple processes write to the same log file, rotation by one process can cause the other to write to a stale file descriptor—use advisory locking or separate files per process"
+      - Rotation race condition: if multiple processes write to the same log file, rotation by one process can cause the other to write to a stale file descriptor—use advisory locking or separate files per process
       - "Unbounded local buffer during prolonged remote outage will exhaust disk—always enforce a max buffer size"
       - "Replaying buffered logs too aggressively on reconnection can overwhelm the collector—implement rate-limited replay"
       - "Retention cleanup running concurrently with rotation can delete the file currently being written—use atomic rename and ordered cleanup"
@@ -234,5 +234,4 @@ milestones:
       - "Replay mechanism that drains the local buffer to the remote collector upon reconnection with configurable rate limiting"
       - "Backpressure policy configuration allowing selection of drop-oldest, drop-newest, or block-with-timeout when buffer is full"
     estimated_hours: "4-6"
-
 ```

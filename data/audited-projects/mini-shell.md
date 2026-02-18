@@ -237,10 +237,10 @@ milestones:
     description: >
       Implement background execution, job table, and fg/bg/jobs built-ins.
     acceptance_criteria:
-      - Trailing '&' launches a pipeline in the background; shell prints '[job_number] PID' and immediately shows next prompt
+      - "Trailing '&' launches a pipeline in the background; shell prints '[job_number] PID' and immediately shows next prompt"
       - Job table tracks each job's job number, process group ID, command string, and state (running, stopped, done)
-      - 'jobs' built-in lists all jobs with format '[N] Running/Stopped command'
-      - 'fg %N' brings job N to foreground: sends SIGCONT if stopped, calls tcsetpgrp to give it terminal, waits for completion or stop
+      - "jobs built-in lists all jobs with format '[N] Running/Stopped command'"
+      - "fg %N brings job N to foreground": sends SIGCONT if stopped, calls tcsetpgrp to give it terminal, waits for completion or stop
       - 'bg %N' sends SIGCONT to stopped job N allowing it to continue running in background
       - Ctrl+Z sends SIGTSTP to the foreground process group, stopping it; shell updates job state to 'Stopped' and prints notification
       - Ctrl+C sends SIGINT to the foreground process group only; shell itself is unaffected
@@ -248,7 +248,7 @@ milestones:
     pitfalls:
       - "Zombie processes from background jobs that complete without being waited on; SIGCHLD handler must reap them"
       - "Race condition between SIGCHLD delivery and job table lookup; use sigprocmask to block SIGCHLD during table updates"
-      - "Orphaned process groups: if the shell exits with running background jobs, they receive SIGHUP"
+      - Orphaned process groups: if the shell exits with running background jobs, they receive SIGHUP
       - "Not waiting for ALL processes in a pipeline's process group; wait for the entire group, not just the last PID"
     concepts:
       - Background execution

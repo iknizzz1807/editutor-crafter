@@ -95,7 +95,7 @@ milestones:
     concepts:
       - Chunked upload protocols (tus.io or custom)
       - Resumable uploads with chunk tracking and offset management
-      - "Server-side chunk assembly: ordered concatenation with integrity verification"
+      - Server-side chunk assembly: ordered concatenation with integrity verification
       - File type validation (magic bytes, not just extension)
     skills:
       - Multipart/chunked upload handling
@@ -130,18 +130,18 @@ milestones:
       segments and manifests for adaptive streaming.
     estimated_hours: 12
     concepts:
-      - "Container formats vs codecs: MP4/fMP4 containers with H.264/H.265/VP9 codecs"
+      - Container formats vs codecs: MP4/fMP4 containers with H.264/H.265/VP9 codecs
       - "Constant Rate Factor (CRF) for quality-based encoding vs target bitrate"
-      - "HLS segmentation: splitting transcoded output into fixed-duration TS or fMP4 segments"
+      - HLS segmentation: splitting transcoded output into fixed-duration TS or fMP4 segments
       - Keyframe interval (GOP) alignment across quality levels for seamless switching
-      - "Audio track handling: AAC encoding, preserving or re-encoding audio streams"
+      - Audio track handling: AAC encoding, preserving or re-encoding audio streams
     skills:
       - FFmpeg command-line integration
       - Video codec parameters and profiles
       - HLS manifest and segment generation
       - Background job queue management
     acceptance_criteria:
-      - "FFmpeg transcodes each uploaded video into at least 3 quality variants: 360p (800kbps), 720p (2500kbps), and 1080p (5000kbps) using H.264 baseline/main profile with AAC audio"
+      - FFmpeg transcodes each uploaded video into at least 3 quality variants: 360p (800kbps), 720p (2500kbps), and 1080p (5000kbps) using H.264 baseline/main profile with AAC audio
       - "Each quality variant is segmented into fixed-duration HLS segments (default 6 seconds) with aligned keyframes across all variants"
       - "A master M3U8 playlist is generated referencing variant playlists for each quality level with BANDWIDTH and RESOLUTION tags"
       - "Each variant has its own M3U8 playlist listing all segments with correct duration (EXT-X-TARGETDURATION) and sequence numbers"
@@ -170,7 +170,7 @@ milestones:
       CDN-friendly caching for adaptive playback.
     estimated_hours: 8
     concepts:
-      - "HLS serving: M3U8 manifests and TS/fMP4 segments over HTTP"
+      - HLS serving: M3U8 manifests and TS/fMP4 segments over HTTP
       - "Cache-control headers for segments (immutable, long max-age) vs manifests (short max-age for live)"
       - CORS headers for cross-origin player access
       - CDN integration for edge caching of segments
@@ -180,8 +180,8 @@ milestones:
       - CDN cache header design
       - Content-type handling for media
     acceptance_criteria:
-      - "Master M3U8 playlists are served with Content-Type: application/vnd.apple.mpegurl and CORS headers allowing the player origin"
-      - "TS segments are served with Content-Type: video/MP2T and cache-control headers (max-age >= 1 year, immutable) since segment content never changes"
+      - Master M3U8 playlists are served with Content-Type: application/vnd.apple.mpegurl and CORS headers allowing the player origin
+      - TS segments are served with Content-Type: video/MP2T and cache-control headers (max-age >= 1 year, immutable) since segment content never changes
       - "Variant M3U8 playlists are served with shorter cache-control (max-age 60s) to allow for potential updates"
       - "A standard HLS player (hls.js, Safari native) successfully plays the stream and switches between quality levels based on simulated bandwidth conditions"
       - "404 responses are returned within 50ms for non-existent video IDs, preventing enumeration attacks"
@@ -206,7 +206,7 @@ milestones:
       and playback analytics.
     estimated_hours: 17
     concepts:
-      - "HLS.js: JavaScript HLS client for browsers without native HLS support"
+      - HLS.js: JavaScript HLS client for browsers without native HLS support
       - Adaptive bitrate switching (ABR) based on measured download throughput
       - Media Source Extensions (MSE) API for programmatic media feeding
       - Playback event-driven analytics collection
@@ -219,12 +219,12 @@ milestones:
       - "HLS.js is initialized with the master playlist URL and plays adaptive streams in Chrome, Firefox, and Edge; Safari uses native HLS"
       - "Quality selector UI shows available renditions (360p, 720p, 1080p, Auto) and allows manual selection; switching occurs within 2 segments"
       - "Progress bar displays current playback position, buffered ranges, and total duration; click-to-seek navigates to the target time within 1 second"
-      - "Playback analytics events are recorded: view start, view duration at 5-second intervals, quality switches (from/to level and timestamp), and buffering events (start time, duration >500ms)"
-      - "Player handles network errors gracefully: displays error state and allows retry without page reload"
+      - Playback analytics events are recorded: view start, view duration at 5-second intervals, quality switches (from/to level and timestamp), and buffering events (start time, duration >500ms)
+      - Player handles network errors gracefully: displays error state and allows retry without page reload
       - Play, pause, volume, and fullscreen controls function correctly
     pitfalls:
       - Not destroying HLS.js instance on component unmount causing memory leaks
-      - "Browser compatibility: Safari has native HLS but doesn't support MSE-based hls.js the same way"
+      - Browser compatibility: Safari has native HLS but doesn't support MSE-based hls.js the same way
       - Bandwidth estimation inaccuracy in low-bandwidth conditions causing quality thrashing
       - Not handling seek to unbuffered position (need to wait for segment download)
     deliverables:
@@ -234,5 +234,4 @@ milestones:
       - Progress bar with buffered range visualization
       - Analytics collector recording view events, quality switches, and buffering
       - Error handling overlay with retry functionality
-
 ```

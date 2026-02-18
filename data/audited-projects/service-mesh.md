@@ -66,19 +66,19 @@ languages:
     - C++
   also_possible: []
 resources:
-  - name: "Envoy Proxy Documentation"
+  - name: Envoy Proxy Documentation""
     url: "https://www.envoyproxy.io/docs"
     type: documentation
-  - name: "Linux TPROXY Documentation"
+  - name: Linux TPROXY Documentation""
     url: "https://docs.kernel.org/networking/tproxy.html"
     type: documentation
-  - name: "Go and Proxy Servers Tutorial"
+  - name: Go and Proxy Servers Tutorial""
     url: "https://eli.thegreenplace.net/2022/go-and-proxy-servers-part-1-http-proxies/"
     type: tutorial
-  - name: "Envoy xDS Protocol"
+  - name: Envoy xDS Protocol""
     url: "https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol"
     type: documentation
-  - name: "SPIFFE Specification"
+  - name: SPIFFE Specification""
     url: "https://spiffe.io/docs/latest/spiffe-about/overview/"
     type: documentation
 prerequisites:
@@ -101,15 +101,15 @@ milestones:
       - "iptables OWNER module (--uid-owner) excludes the proxy process's own traffic from redirection, preventing redirect loops"
       - "Separate ip6tables rules handle IPv6 traffic if dual-stack is required"
       - "Proxy recovers the original destination address using getsockopt(SO_ORIGINAL_DST) on redirected connections"
-      - "Protocol detection reads the first bytes of a connection and distinguishes: TLS ClientHello (0x16 0x03), HTTP/1.x (method line), HTTP/2 connection preface ('PRI * HTTP/2.0'), and falls back to raw TCP pass-through for unrecognized protocols"
+      - Protocol detection reads the first bytes of a connection and distinguishes: TLS ClientHello (0x16 0x03), HTTP/1.x (method line), HTTP/2 connection preface ('PRI * HTTP/2.0'), and falls back to raw TCP pass-through for unrecognized protocols
       - "Init script or init container sets up iptables rules before the application starts, requiring only CAP_NET_ADMIN (not full root)"
-      - "Integration test: application makes HTTP request to external service; proxy intercepts, logs the request, and forwards it transparently without application code changes"
-      - "Pass-through test: unrecognized protocol traffic is forwarded without modification or error"
+      - Integration test: application makes HTTP request to external service; proxy intercepts, logs the request, and forwards it transparently without application code changes
+      - Pass-through test: unrecognized protocol traffic is forwarded without modification or error
     pitfalls:
-      - "Redirect loops: if the proxy's own outbound connections are redirected back to itself, the proxy deadlocks; always exclude proxy UID/GID with iptables OWNER module"
+      - Redirect loops: if the proxy's own outbound connections are redirected back to itself, the proxy deadlocks; always exclude proxy UID/GID with iptables OWNER module
       - "SO_ORIGINAL_DST is Linux-specific and not available on macOS; development requires a Linux VM or container"
       - "IPv6 requires separate ip6tables rules; forgetting this breaks IPv6-only services silently"
-      - "Protocol detection must be non-destructive: bytes read for detection must be replayed to the upstream handler (use buffered peek, not consume)"
+      - Protocol detection must be non-destructive: bytes read for detection must be replayed to the upstream handler (use buffered peek, not consume)
       - "CAP_NET_ADMIN is required for iptables; without it, rule installation fails with EPERM. Document the privilege model explicitly."
     concepts:
       - Transparent proxying with iptables REDIRECT and TPROXY targets
@@ -138,8 +138,8 @@ milestones:
       - "Endpoint health status is tracked; unhealthy endpoints are excluded from load balancing selection"
       - "Sidecar reconnects to control plane automatically with exponential backoff if the stream disconnects"
       - "Local cache serves endpoint lookups even when control plane is temporarily unavailable (graceful degradation)"
-      - "Cache staleness test: disconnect control plane for 60s, verify sidecar continues routing to last-known endpoints; reconnect and verify cache is refreshed within 5 seconds"
-      - "DNS-based fallback: if service is not found in control plane, resolve via DNS as a last resort"
+      - Cache staleness test: disconnect control plane for 60s, verify sidecar continues routing to last-known endpoints; reconnect and verify cache is refreshed within 5 seconds
+      - DNS-based fallback: if service is not found in control plane, resolve via DNS as a last resort
     pitfalls:
       - "Watch connections drop silently without TCP keepalive; implement application-level heartbeat or gRPC keepalive"
       - "Stale cache continues routing to dead endpoints; implement a TTL or version-based invalidation"
@@ -166,12 +166,12 @@ milestones:
       Authority (CA) in the control plane that signs per-service certificates.
       Handle automatic certificate rotation without dropping active connections.
     acceptance_criteria:
-      - "Control plane runs a CA that issues X.509 certificates signed by a root CA; each sidecar receives a unique certificate with a SPIFFE-format SAN (spiffe://trust-domain/ns/namespace/sa/service-account)"
+      - Control plane runs a CA that issues X.509 certificates signed by a root CA; each sidecar receives a unique certificate with a SPIFFE-format SAN (spiffe: //trust-domain/ns/namespace/sa/service-account)
       - "Sidecar generates a private key locally and sends a Certificate Signing Request (CSR) to the control plane CA; private key never leaves the sidecar"
-      - "All inter-service connections use mTLS: sidecar presents its certificate and verifies the peer's certificate chain against the CA root"
-      - "Certificate rotation: sidecar requests a new certificate before the current one reaches 80% of its lifetime; new connections use the new certificate while existing connections continue with the old one until they close"
-      - "Identity verification test: service A connects to service B; service B's sidecar verifies that service A's certificate SAN matches an allowed identity; connections from unauthorized identities are rejected with TLS handshake failure"
-      - "Clock skew tolerance: certificates have a NotBefore set 5 minutes in the past to tolerate clock differences between nodes"
+      - All inter-service connections use mTLS: sidecar presents its certificate and verifies the peer's certificate chain against the CA root
+      - Certificate rotation: sidecar requests a new certificate before the current one reaches 80% of its lifetime; new connections use the new certificate while existing connections continue with the old one until they close
+      - Identity verification test: service A connects to service B; service B's sidecar verifies that service A's certificate SAN matches an allowed identity; connections from unauthorized identities are rejected with TLS handshake failure
+      - Clock skew tolerance: certificates have a NotBefore set 5 minutes in the past to tolerate clock differences between nodes
     pitfalls:
       - "Certificate rotation during active requests drops connections if the TLS context is swapped atomically; use dynamic TLS credential reloading (e.g., tls.Config GetCertificate callback in Go) to serve the new cert for new connections while old connections finish"
       - "Missing SAN (Subject Alternative Name) in certificates causes modern TLS libraries to reject them even if CN matches; always set SAN"
@@ -185,11 +185,11 @@ milestones:
       - Dynamic certificate reloading for zero-downtime rotation
       - Trust domain and identity-based authorization
     deliverables:
-      - "Control plane CA: CSR signing endpoint issuing X.509 certificates with SPIFFE SANs"
-      - "Sidecar CSR flow: local key generation, CSR submission, certificate installation"
-      - "mTLS enforcement: sidecar requires mutual certificate verification on all connections"
-      - "Certificate rotation: automatic renewal at 80% lifetime with graceful handoff"
-      - "Identity verification: peer SAN validation against authorization policy"
+      - Control plane CA: CSR signing endpoint issuing X.509 certificates with SPIFFE SANs
+      - Sidecar CSR flow: local key generation, CSR submission, certificate installation
+      - mTLS enforcement: sidecar requires mutual certificate verification on all connections
+      - Certificate rotation: automatic renewal at 80% lifetime with graceful handoff
+      - Identity verification: peer SAN validation against authorization policy
     estimated_hours: "14-18"
 
   - id: service-mesh-m4
@@ -204,8 +204,8 @@ milestones:
       - "Weighted round-robin distributes requests proportional to configured weights; endpoint with weight=3 receives 3x traffic of weight=1 endpoint (within 5% over 1000 requests)"
       - "Consistent hashing maps request keys (e.g., user ID header) to endpoints using a hash ring with configurable virtual nodes (default 150 per endpoint); adding/removing an endpoint remaps at most 1/N of keys"
       - "All algorithms exclude endpoints marked unhealthy by the service discovery health status"
-      - "Weight=0 is handled correctly: endpoint is excluded from selection, not causing division by zero"
-      - "Slow-start: newly added endpoint receives gradually increasing traffic over a configurable warm-up period to avoid overwhelming a cold cache"
+      - Weight=0 is handled correctly: endpoint is excluded from selection, not causing division by zero
+      - Slow-start: newly added endpoint receives gradually increasing traffic over a configurable warm-up period to avoid overwhelming a cold cache
     pitfalls:
       - "Consistent hashing ring must be rebuilt when endpoints change; use sorted virtual node array with binary search for O(log V) lookup"
       - "Least-connections can thundering-herd to a recovered endpoint that suddenly has 0 connections; combine with slow-start"
@@ -233,15 +233,15 @@ milestones:
       status codes, throughput), structured access logs, and propagate
       distributed tracing headers.
     acceptance_criteria:
-      - "Sidecar emits Prometheus-compatible metrics: request count, request latency histogram, and error rate, labeled by source service, destination service, HTTP method, and response code"
+      - Sidecar emits Prometheus-compatible metrics: request count, request latency histogram, and error rate, labeled by source service, destination service, HTTP method, and response code
       - "Structured access logs record timestamp, source, destination, method, path, response code, latency, and bytes transferred for every proxied request"
       - "Distributed tracing headers (e.g., X-Request-ID, traceparent from W3C Trace Context) are propagated from inbound to outbound requests; if no trace header exists, one is generated"
       - "Metrics endpoint exposes /metrics in Prometheus exposition format, scraped by a Prometheus instance in test"
-      - "Observability overhead test: sidecar adds less than 1ms p99 latency overhead for proxied requests under 1000 RPS load"
+      - Observability overhead test: sidecar adds less than 1ms p99 latency overhead for proxied requests under 1000 RPS load
     pitfalls:
       - "High-cardinality labels (e.g., full URL path) cause metric explosion and OOM; use parameterized route patterns"
       - "Logging every request at high throughput overwhelms disk I/O; use sampling or async buffered writes"
-      - "Trace header propagation must be protocol-aware: HTTP/1.1 headers are different from gRPC metadata"
+      - Trace header propagation must be protocol-aware: HTTP/1.1 headers are different from gRPC metadata
     concepts:
       - RED metrics (Rate, Errors, Duration)
       - Prometheus exposition format

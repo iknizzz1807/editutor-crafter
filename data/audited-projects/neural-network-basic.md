@@ -84,7 +84,7 @@ milestones:
     acceptance_criteria:
       - "Value class wraps a Python float and stores a .grad field initialized to 0.0"
       - "Each Value tracks its child operands (_children) and the operation that produced it (_op)"
-      - "Operator overloads support: addition (+), multiplication (*), power (**), negation (-), subtraction (-), and true division (/)"
+      - Operator overloads support: addition (+), multiplication (*), power (**), negation (-), subtraction (-), and true division (/)
       - "Reverse operators (__radd__, __rmul__) handle expressions like 2 + Value(3) where the scalar is on the left"
       - "Division is implemented as a * b**(-1), chaining through the power operation's backward"
       - "Each operation stores a _backward closure that computes local gradients and accumulates them into children's .grad fields"
@@ -92,7 +92,7 @@ milestones:
     pitfalls:
       - "Using = instead of += for gradient accumulation silently drops gradients when a value feeds into multiple operations"
       - "Not implementing __radd__/__rmul__ causes TypeError when doing int + Value or float * Value"
-      - "Division backward: d/da(a/b) = 1/b and d/db(a/b) = -a/b²—easy to get the sign wrong"
+      - Division backward: d/da(a/b) = 1/b and d/db(a/b) = -a/b²—easy to get the sign wrong
       - "Power backward must handle the case where the exponent is negative (e.g., b**(-1) for division)"
     concepts:
       - Computational graphs
@@ -118,13 +118,13 @@ milestones:
     acceptance_criteria:
       - "Topological sort produces a valid ordering of all Values in the graph from inputs to output using DFS with visited set"
       - "backward() sets the output Value's gradient to 1.0, then iterates in reverse topological order calling each node's _backward"
-      - "Gradients are correct for a multi-operation expression: e.g., for L = (a*b + c)**2, verify dL/da, dL/db, dL/dc analytically"
-      - "Numerical gradient verification: for each parameter, compute (f(x+h) - f(x-h)) / 2h and verify it matches the analytical gradient within 1e-5 relative tolerance"
+      - Gradients are correct for a multi-operation expression: e.g., for L = (a*b + c)**2, verify dL/da, dL/db, dL/dc analytically
+      - Numerical gradient verification: for each parameter, compute (f(x+h) - f(x-h)) / 2h and verify it matches the analytical gradient within 1e-5 relative tolerance
       - "Calling backward() twice without zeroing gradients accumulates (doubles) gradients—this behavior is documented and tested"
-      - "Tanh activation function is implemented on Value with correct backward: grad = (1 - tanh²(x)) * upstream_grad"
-      - "ReLU activation function is implemented on Value with correct backward: grad = (1 if x > 0 else 0) * upstream_grad"
+      - Tanh activation function is implemented on Value with correct backward: grad = (1 - tanh²(x)) * upstream_grad
+      - ReLU activation function is implemented on Value with correct backward: grad = (1 if x > 0 else 0) * upstream_grad
     pitfalls:
-      - "Wrong topological order: processing a node before its consumers causes zero gradients"
+      - Wrong topological order: processing a node before its consumers causes zero gradients
       - "Not zeroing gradients before a new backward pass causes incorrect accumulated gradients from previous iterations"
       - "Tanh backward must use the output value (tanh(x)), not recompute from input—avoids numerical instability"
       - "Numerical gradient step size h too large gives inaccurate approximation; too small causes floating point errors—use h=1e-6"
@@ -151,16 +151,16 @@ milestones:
       Build neural network components (Neuron, Layer, MLP) using the Value class,
       with proper weight initialization and parameter collection.
     acceptance_criteria:
-      - "Neuron computes: activation(Σ(w_i * x_i) + b) where weights and bias are Value objects initialized with random values in [-1, 1]"
-      - "Neuron supports configurable activation function: tanh for hidden layers, linear (no activation) for output layer"
+      - Neuron computes: activation(Σ(w_i * x_i) + b) where weights and bias are Value objects initialized with random values in [-1, 1]
+      - Neuron supports configurable activation function: tanh for hidden layers, linear (no activation) for output layer
       - "Layer groups N neurons and returns a list of outputs (or single Value if N=1) for a given input vector"
       - "MLP chains multiple Layers with configurable sizes (e.g., MLP(3, [4, 4, 1]) = 3 inputs, two hidden layers of 4, 1 output)"
       - "parameters() method recursively collects all trainable Value objects (weights and biases) from the entire MLP hierarchy"
-      - "Parameter count matches expected: for MLP(3, [4, 4, 1]), parameters = (3*4+4) + (4*4+4) + (4*1+1) = 33"
+      - Parameter count matches expected: for MLP(3, [4, 4, 1]), parameters = (3*4+4) + (4*4+4) + (4*1+1) = 33
     pitfalls:
       - "Applying activation function on the output layer for regression tasks produces bounded outputs—use linear (identity) for output"
       - "parameters() missing some weights causes those weights to never update during training"
-      - "Weight initialization with all zeros causes symmetry: all neurons compute the same thing and learn identically"
+      - Weight initialization with all zeros causes symmetry: all neurons compute the same thing and learn identically
       - "Returning a list vs. single Value from Layer causes inconsistent types downstream—handle the N=1 case explicitly"
     concepts:
       - Neural network architecture (feed-forward)
@@ -185,10 +185,10 @@ milestones:
       Build a training loop with loss computation, backward pass, gradient zeroing,
       and an SGD optimizer to train the MLP on a concrete task.
     acceptance_criteria:
-      - "Training dataset: a simple classification or regression task (e.g., learn a moon dataset or XOR-like function with at least 20 data points)"
+      - Training dataset: a simple classification or regression task (e.g., learn a moon dataset or XOR-like function with at least 20 data points)
       - "MSE loss is computed as the mean of (prediction - target)² over all training examples"
-      - "SGD optimizer class encapsulates: zero_grad() to reset all parameter gradients, and step() to update parameters by p.data -= lr * p.grad"
-      - "Training loop repeats: forward pass → compute loss → backward() → optimizer.step() → optimizer.zero_grad() for each epoch"
+      - SGD optimizer class encapsulates: zero_grad() to reset all parameter gradients, and step() to update parameters by p.data -= lr * p.grad
+      - Training loop repeats: forward pass → compute loss → backward() → optimizer.step() → optimizer.zero_grad() for each epoch
       - "Loss decreases monotonically (on average) over 100+ epochs, demonstrating that the network is learning"
       - "Final loss is below 0.01 on the training data for the chosen task, confirming convergence"
       - "Loss vs. epoch plot shows the convergence curve"

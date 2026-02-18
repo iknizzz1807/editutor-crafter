@@ -163,11 +163,11 @@ milestones:
     acceptance_criteria:
       - Directory is a special file whose data blocks contain an array of directory entries; each entry has inode number, entry length, name length, and name
       - add_entry(dir_inode, name, target_inode) appends a new entry to the directory; fails if name already exists
-      - remove_entry(dir_inode, name) removes the entry and decrements the target inode's link count; if link count reaches 0 and no open file descriptors, inode is freed
-      - Path resolution traverses '/' separated components from root (or cwd): for path 'a/b/c', look up 'a' in root, then 'b' in a's inode, then 'c' in b's inode
-      - '.' entry always points to the directory's own inode; '..' entry points to parent directory's inode (root's '..' points to itself)
-      - mkdir creates a new directory inode with '.' and '..' entries; parent's link count is incremented (because '..' in child points to parent)
-      - rmdir removes a directory only if it's empty (contains only '.' and '..')
+      - "remove_entry(dir_inode, name) removes the entry and decrements the target inode's link count; if link count reaches 0 and no open file descriptors, inode is freed"
+      - Path resolution traverses '/' separated components from root (or cwd): "for path 'a/b/c', look up 'a' in root, then 'b' in a's inode, then 'c' in b's inode"
+      - "'.' entry always points to the directory's own inode; '..' entry points to parent directory's inode (root's '..' points to itself)"
+      - "mkdir creates a new directory inode with '.' and '..' entries; parent's link count is incremented (because '..' in child points to parent)"
+      - "rmdir removes a directory only if it's empty (contains only '.' and '..')"
       - Hard link creation (link) adds a new directory entry pointing to an existing inode and increments link count
     pitfalls:
       - "Not validating name uniqueness before adding an entry; duplicate names cause ambiguous lookups"
@@ -198,7 +198,7 @@ milestones:
       Implement file creation, reading, writing, truncation, and sparse file support.
     acceptance_criteria:
       - create_file(parent_dir_inode, name, mode) allocates a new inode, adds a directory entry, and returns the inode number
-      - read(inode, offset, length) reads data from the file's blocks via inode pointers; reading unallocated blocks (holes) returns zero bytes
+      - "read(inode, offset, length) reads data from the file's blocks via inode pointers; reading unallocated blocks (holes) returns zero bytes"
       - write(inode, offset, data) writes data to allocated blocks; allocates new blocks as needed for growth; updates inode size if writing past current end
       - truncate(inode, new_size) either extends the file (zero-filling conceptually via holes) or shrinks it (freeing blocks beyond new_size and updating pointers)
       - Sparse file support: writing at a high offset without writing intermediate positions does not allocate blocks for the gap; those blocks read as zeros
@@ -236,7 +236,7 @@ milestones:
     acceptance_criteria:
       - Filesystem mounts via FUSE appearing as a regular mount point accessible by the OS
       - FUSE callbacks implemented: getattr, readdir, lookup, create, open, read, write, release, mkdir, rmdir, unlink, rename, truncate, chmod, utimens
-      - Standard tools work: 'ls -la' lists directory contents with correct sizes/permissions; 'cat' reads files; 'cp' copies files into the mount; 'echo > file' writes
+      - Standard tools work: "'ls -la' lists directory contents with correct sizes/permissions; 'cat' reads files; 'cp' copies files into the mount; 'echo > file' writes"
       - Concurrent access from multiple processes does not corrupt filesystem state (proper locking around shared structures)
       - Unmount flushes all pending data to the disk image and cleans up resources
       - rename operation moves entries between directories atomically
@@ -274,10 +274,10 @@ milestones:
       - Recovery (fsck/replay): on mount, scan the journal for committed transactions and replay their operations; discard uncommitted transactions
       - Metadata journaling mode: only metadata changes (inode updates, bitmap changes, directory entries) are journaled; data blocks are written directly
       - Crash simulation test: kill the filesystem process mid-operation, remount, verify recovery produces a consistent filesystem with no orphaned inodes or leaked blocks
-      - Journal checkpoint: after all committed transactions are applied, the journal is marked as clean so it doesn't replay stale entries
+      - Journal checkpoint: "after all committed transactions are applied, the journal is marked as clean so it doesn't replay stale entries"
     pitfalls:
       - "Not writing the commit record atomically (or at least ensuring it's fully flushed); a partial commit record looks uncommitted on recovery"
-      - "Replaying a transaction that was already applied (idempotency): operations must be safe to apply multiple times"
+      - Replaying a transaction that was already applied (idempotency): operations must be safe to apply multiple times
       - "Journal wrap-around overwriting uncommitted transactions; must checkpoint before the journal fills"
       - "Data journaling (journaling data blocks too) doubles write amplification; metadata-only journaling is the practical default"
       - "Not fsyncing the journal before writing to the main data structures; reorder by the OS can defeat the write-ahead guarantee"

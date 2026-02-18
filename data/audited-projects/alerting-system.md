@@ -96,14 +96,14 @@ milestones:
       - "Rule engine evaluates PromQL-like expressions against current metric data at a configurable interval (default 15 seconds)"
       - "Comparison operators >, <, >=, <=, ==, != are supported for threshold-based alerting"
       - "for-duration keeps alerts in 'pending' state until the condition holds continuously for the specified period; a brief return to normal resets the pending timer"
-      - "Alert states transition correctly: inactive -> pending (condition met) -> firing (for-duration elapsed) -> resolved (condition no longer met)"
+      - Alert states transition correctly: inactive -> pending (condition met) -> firing (for-duration elapsed) -> resolved (condition no longer met)
       - "Alert state (including pending start time and firing start time) is persisted to disk or database; a service restart does NOT reset pending timers or lose firing state"
-      - "Hysteresis (flapping protection): alert fires when metric exceeds 'fire_threshold' and resolves only when metric drops below 'resolve_threshold' (where resolve_threshold < fire_threshold); configurable per rule"
-      - "Dead-man's-switch alert: a rule can be configured to fire when NO data is received for a metric within a configurable window (e.g., 5 minutes), detecting crashed services"
+      - Hysteresis (flapping protection): alert fires when metric exceeds 'fire_threshold' and resolves only when metric drops below 'resolve_threshold' (where resolve_threshold < fire_threshold); configurable per rule
+      - Dead-man's-switch alert: a rule can be configured to fire when NO data is received for a metric within a configurable window (e.g., 5 minutes), detecting crashed services
       - "Template rendering errors for one alert rule do not crash the evaluation loop or prevent other rules from being evaluated; errors are logged and the affected alert uses a fallback message"
     pitfalls:
-      - "State loss on restart: pending durations reset, causing alerts to be delayed by the full for-duration again after every restart—persist state"
-      - "Flapping without hysteresis: metric oscillating at exactly the threshold causes rapid firing/resolved cycles, flooding notification channels"
+      - State loss on restart: pending durations reset, causing alerts to be delayed by the full for-duration again after every restart—persist state
+      - Flapping without hysteresis: metric oscillating at exactly the threshold causes rapid firing/resolved cycles, flooding notification channels
       - "for-duration timer resets on ANY brief recovery, even a single scrape—consider configurable tolerance (e.g., 'condition must hold for 4 out of 5 evaluations')"
       - "Template rendering error crashing the entire evaluation goroutine—isolate template rendering with panic recovery"
       - "Dead-man's-switch false positives during planned maintenance—integrate with silencing"
@@ -171,15 +171,15 @@ milestones:
     acceptance_criteria:
       - "Silence rules suppress notifications for alerts whose labels match ALL specified matchers (exact match, regex match, not-equal)"
       - "Time-based silence windows activate at start time and expire at end time; expired silences are automatically removed"
-      - "Inhibition rules define: source alert matchers, target alert matchers, and equal labels; when a source alert is firing, target alerts with matching equal labels are suppressed"
+      - Inhibition rules define: source alert matchers, target alert matchers, and equal labels; when a source alert is firing, target alerts with matching equal labels are suppressed
       - "Inhibition cycle detection prevents rules where A inhibits B and B inhibits A; cycles are rejected at configuration time with an error listing the cycle"
       - "Suppressed alerts maintain their state (pending/firing) but do NOT trigger notifications; when the silence or inhibition condition ends, notifications resume without re-triggering for-duration"
-      - "Race condition between silence creation and a currently firing alert is handled: if a silence is created while an alert is firing, the next notification cycle respects the silence"
+      - Race condition between silence creation and a currently firing alert is handled: if a silence is created while an alert is firing, the next notification cycle respects the silence
     pitfalls:
-      - "Inhibition loops: A inhibits B, B inhibits A—both get suppressed and nobody gets notified. Detect cycles at configuration time."
+      - Inhibition loops: A inhibits B, B inhibits A—both get suppressed and nobody gets notified. Detect cycles at configuration time.
       - "Silence with wrong matchers (e.g., regex typo) doesn't match intended alerts but silences unrelated ones—provide a 'preview' API showing which alerts a silence would affect"
-      - "Race between silence creation and in-flight notification: the notification was already queued before the silence was created—check silences at send time, not just evaluation time"
-      - "Suppressed alerts not being tracked: if an inhibition source resolves, target alerts must be re-evaluated and notifications sent if they're still firing"
+      - Race between silence creation and in-flight notification: the notification was already queued before the silence was created—check silences at send time, not just evaluation time
+      - Suppressed alerts not being tracked: if an inhibition source resolves, target alerts must be re-evaluated and notifications sent if they're still firing
     concepts:
       - Label matcher syntax and evaluation
       - Time-based silence activation
@@ -205,14 +205,14 @@ milestones:
       escalation policies for unacknowledged alerts.
     acceptance_criteria:
       - "Routing tree matches alerts to notification channels based on label matchers; a default route catches all unmatched alerts"
-      - "Multiple notification channels are supported: email, Slack webhook, PagerDuty, and generic HTTP webhook"
+      - Multiple notification channels are supported: email, Slack webhook, PagerDuty, and generic HTTP webhook
       - "Notification templates use Go-template (or Jinja2) syntax with access to alert labels, annotations, and group information"
       - "Rate limiting enforces a maximum notification frequency per channel (e.g., max 1 per minute per channel) to prevent notification storms"
-      - "Escalation policy: if an alert is not acknowledged within a configurable time (e.g., 15 minutes), it is re-routed to the next escalation level (e.g., from Slack to PagerDuty)"
+      - Escalation policy: if an alert is not acknowledged within a configurable time (e.g., 15 minutes), it is re-routed to the next escalation level (e.g., from Slack to PagerDuty)
       - "Acknowledgment API allows on-call responders to acknowledge an alert, stopping escalation and suppressing repeat notifications for a configurable period"
       - "Notification delivery failure (HTTP timeout, 5xx response) triggers retry with exponential backoff (max 3 retries); persistent failure is logged and the alert is routed to fallback channel"
     pitfalls:
-      - "Missing default route: alerts not matching any route are silently dropped—always require a catch-all default route"
+      - Missing default route: alerts not matching any route are silently dropped—always require a catch-all default route
       - "continue=true on every route sends duplicate notifications to multiple channels unintentionally—document the continue flag behavior clearly"
       - "Rate limiting by channel prevents important alerts when mixed with noisy alerts—rate limit per (channel, alert_group) tuple, not just per channel"
       - "Escalation timer starts from first notification, not from alert firing time—if group_wait delays the first notification by 30s, escalation is also delayed"
@@ -235,5 +235,4 @@ milestones:
       - "Acknowledgment API stopping escalation and suppressing repeat notifications"
       - "Notification retry with exponential backoff and fallback channel on persistent failure"
     estimated_hours: "10-12"
-
 ```

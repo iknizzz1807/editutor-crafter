@@ -125,9 +125,9 @@ milestones:
       - ARP request is sent for unknown destination IPs, and outbound packets are queued until resolution completes or times out
       - All multi-byte fields are converted between network byte order (big-endian) and host byte order using explicit conversion functions
     pitfalls:
-      - "Byte order: all Ethernet/ARP fields are big-endian on the wire; forgetting ntohs/ntohl causes silent corruption"
+      - Byte order: all Ethernet/ARP fields are big-endian on the wire; forgetting ntohs/ntohl causes silent corruption
       - ARP cache poisoning is trivial — do not trust unsolicited ARP replies in production, but accept them for this project scope
-      - Broadcast frames (destination FF:FF:FF:FF:FF:FF) must be handled; dropping them breaks ARP
+      - Broadcast frames (destination FF: FF:FF:FF:FF:FF) must be handled; dropping them breaks ARP
       - TAP device MTU defaults may differ from physical interface MTU, causing silent truncation
       - Forgetting to set the correct EtherType (0x0806 for ARP, 0x0800 for IPv4) causes frames to be dropped by receivers
     deliverables:

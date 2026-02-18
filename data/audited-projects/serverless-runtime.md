@@ -60,19 +60,19 @@ languages:
     - Java
     - Python
 resources:
-  - name: "AWS Lambda Under the Hood"
+  - name: AWS Lambda Under the Hood""
     url: https://aws.amazon.com/blogs/compute/understanding-and-remediating-cold-starts-an-aws-lambda-perspective/
     type: article
-  - name: "Firecracker MicroVM"
+  - name: Firecracker MicroVM""
     url: https://github.com/firecracker-microvm/firecracker
     type: documentation
-  - name: "OpenFaaS Documentation"
+  - name: OpenFaaS Documentation""
     url: https://docs.openfaas.com/
     type: documentation
-  - name: "Linux Namespaces and Cgroups"
+  - name: Linux Namespaces and Cgroups""
     url: https://man7.org/linux/man-pages/man7/namespaces.7.html
     type: documentation
-  - name: "CRIU Checkpoint/Restore"
+  - name: CRIU Checkpoint/Restore""
     url: https://criu.org/Main_Page
     type: documentation
 prerequisites:
@@ -172,7 +172,7 @@ milestones:
       - "Unbounded request queue causes memory exhaustion under sustained load—must enforce queue depth limit"
       - "Routing to a cold instance when warm instances are available increases latency unnecessarily"
       - "Not draining in-flight requests during shutdown causes request loss"
-      - "Head-of-line blocking: one slow function blocks the queue for all requests to that function"
+      - Head-of-line blocking: one slow function blocks the queue for all requests to that function
     concepts:
       - Reverse proxy routing
       - Bounded queue with backpressure
@@ -236,9 +236,9 @@ milestones:
       - "Scale-down removes idle instances after a cooldown period (configurable, default 5 minutes) to avoid oscillation"
       - "Scale-to-zero terminates all instances after prolonged inactivity (configurable, default 15 minutes)"
       - "Minimum and maximum instance counts are configurable per function and enforced by the scaler"
-      - "Scaling decisions account for cold start latency: pre-scale before hitting the concurrency wall"
+      - Scaling decisions account for cold start latency: pre-scale before hitting the concurrency wall
       - "Scaling events (up, down, to-zero) are logged with timestamp, trigger reason, and resulting instance count"
-      - "Integration test: burst of 100 concurrent requests to a scaled-to-zero function completes within 10 seconds with all requests served"
+      - Integration test: burst of 100 concurrent requests to a scaled-to-zero function completes within 10 seconds with all requests served
     pitfalls:
       - "Scaling too aggressively on transient spikes causes instance churn and wasted resources"
       - "Scale-to-zero timeout too short for bursty workloads causes repeated cold starts"
@@ -269,9 +269,9 @@ milestones:
       Build function invocation logging, metrics collection, and a simple
       dashboard for monitoring the runtime and debugging functions.
     acceptance_criteria:
-      - "Every invocation is logged with: function name, version, request ID, start time, duration, memory used, and status (success/error/timeout)"
+      - Every invocation is logged with: function name, version, request ID, start time, duration, memory used, and status (success/error/timeout)
       - "Function stdout/stderr logs are associated with the invocation request ID for correlation"
-      - "Metrics are collected: invocations per second, error rate, p50/p95/p99 latency, cold start percentage per function"
+      - Metrics are collected: invocations per second, error rate, p50/p95/p99 latency, cold start percentage per function
       - "Metrics are queryable via an API endpoint returning JSON time-series data"
       - "Error logs include the function's stack trace when the function crashes or times out"
       - "Log retention enforces a configurable maximum age (default 7 days) with automatic cleanup"

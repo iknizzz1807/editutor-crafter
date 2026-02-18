@@ -63,19 +63,19 @@ languages:
     - Rust
     - TypeScript
 resources:
-  - name: "Terraform Language Documentation"
+  - name: Terraform Language Documentation""
     url: https://developer.hashicorp.com/terraform/language
     type: documentation
-  - name: "HCL Syntax Specification"
+  - name: HCL Syntax Specification""
     url: https://github.com/hashicorp/hcl/blob/main/hclsyntax/spec.md
     type: documentation
-  - name: "Terraform State Management"
+  - name: Terraform State Management""
     url: https://developer.hashicorp.com/terraform/language/state
     type: documentation
-  - name: "Dependency Graph Resolution Algorithm"
+  - name: Dependency Graph Resolution Algorithm""
     url: https://www.electricmonk.nl/docs/dependency_resolving_algorithm/dependency_resolving_algorithm.html
     type: article
-  - name: "How Terraform Works Internals"
+  - name: How Terraform Works Internals""
     url: https://www.youtube.com/watch?v=MYbf_BODFeg
     type: video
 prerequisites:
@@ -127,7 +127,7 @@ milestones:
       locking, atomic writes, and crash recovery.
     acceptance_criteria:
       - "State file stores resource IDs, all attributes, dependency metadata, and a serial version number"
-      - "State writes are atomic: use write-to-temp-file + rename to prevent corruption on crash"
+      - State writes are atomic: use write-to-temp-file + rename to prevent corruption on crash
       - "Distributed lock acquisition prevents concurrent apply operations; lock includes owner ID and expiry timestamp"
       - "Stale locks from crashed processes expire after configurable TTL and can be force-unlocked"
       - "State backup is created automatically before every apply operation"
@@ -135,7 +135,7 @@ milestones:
     pitfalls:
       - "Partial write on crash corrupts state—must use atomic rename, never in-place overwrite"
       - "Stale lock from crashed process blocks all subsequent operations—implement lease-based expiry"
-      - "Remote state race condition: two processes read same version, both write—use ETag-based conditional put"
+      - Remote state race condition: two processes read same version, both write—use ETag-based conditional put
       - "State file grows unboundedly with resource history—implement periodic compaction"
     concepts:
       - Atomic file operations
@@ -187,7 +187,7 @@ milestones:
     deliverables:
       - "DAG builder extracting explicit and implicit dependencies between resources"
       - "Cycle detector reporting circular dependency paths"
-      - "Topological sort with parallelism: resources at the same depth level can execute concurrently"
+      - Topological sort with parallelism: resources at the same depth level can execute concurrently
       - "Plan generator computing create/update/delete/replace actions from config-vs-state diff"
       - "Human-readable plan output showing per-resource attribute changes"
     estimated_hours: "12-18"
@@ -200,7 +200,7 @@ milestones:
       and actual live state to detect drift.
     acceptance_criteria:
       - "Refresh operation reads current attributes of every managed resource from the live cloud API"
-      - "Three-way diff compares desired config vs. stored state vs. live state and categorizes each attribute as: in-sync, config-changed, drifted, or conflict"
+      - Three-way diff compares desired config vs. stored state vs. live state and categorizes each attribute as: in-sync, config-changed, drifted, or conflict
       - "Drifted resources (live != state, config unchanged) are flagged with a drift warning in the plan output"
       - "Conflicting resources (live != state AND config != state) require explicit user decision (keep live, apply config, or abort)"
       - "Refresh updates the stored state to match live reality before plan generation"
@@ -235,9 +235,9 @@ milestones:
     acceptance_criteria:
       - "Provider interface defines Create, Read, Update, Delete methods with standardized input/output schemas"
       - "At least one provider is implemented end-to-end (e.g., local file provider, mock AWS, or Docker)"
-      - "All provider operations are idempotent: retrying a failed Create does not produce duplicate resources"
+      - All provider operations are idempotent: retrying a failed Create does not produce duplicate resources
       - "Apply engine executes plan actions in topological order, updating state after each successful resource operation"
-      - "Partial apply failure leaves state consistent: successfully applied resources are recorded, failed resources are reported, and remaining resources are skipped"
+      - Partial apply failure leaves state consistent: successfully applied resources are recorded, failed resources are reported, and remaining resources are skipped
       - "Provider operations implement retry with exponential backoff and jitter for transient API failures"
       - "Provider authentication reads credentials from environment variables or configuration file"
     pitfalls:

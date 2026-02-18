@@ -94,17 +94,17 @@ milestones:
       Implement the Transactional Outbox Pattern for reliable command
       delivery to services and response handling.
     acceptance_criteria:
-      - "Saga definition DSL or builder specifies an ordered list of steps, each with: step name, forward action (command), compensation action (command), and per-step timeout"
+      - Saga definition DSL or builder specifies an ordered list of steps, each with: step name, forward action (command), compensation action (command), and per-step timeout
       - "Each step's forward action and compensation action are defined as serializable command objects that can be persisted and transmitted"
-      - "Transactional Outbox: when the orchestrator decides to invoke a step, it writes the command to an outbox table in the SAME database transaction that updates the saga state; a separate outbox relay process polls the outbox and sends commands to the message broker"
-      - "Response handling: services send response messages (success/failure) back to the orchestrator via the message broker; orchestrator consumes responses and correlates them to the originating saga instance by saga_id and step_name"
+      - Transactional Outbox: when the orchestrator decides to invoke a step, it writes the command to an outbox table in the SAME database transaction that updates the saga state; a separate outbox relay process polls the outbox and sends commands to the message broker
+      - Response handling: services send response messages (success/failure) back to the orchestrator via the message broker; orchestrator consumes responses and correlates them to the originating saga instance by saga_id and step_name
       - "Saga definitions are stored in a registry and can be retrieved by saga type name for instantiation"
-      - "Test: define a 3-step saga (reserve inventory, charge payment, ship order) with compensations (release inventory, refund payment, cancel shipment); verify the definition is serializable and all steps are accessible"
+      - Test: define a 3-step saga (reserve inventory, charge payment, ship order) with compensations (release inventory, refund payment, cancel shipment); verify the definition is serializable and all steps are accessible
     pitfalls:
       - "Without the Outbox Pattern, writing saga state and sending the command are two separate operations that can fail independently—if the send fails after the state write, the step is never invoked; if the send succeeds but the state write fails, the step runs but the orchestrator doesn't know"
       - "Compensation that itself has side effects (e.g., sending a refund) must also be idempotent; define compensations as carefully as forward actions"
       - "Per-step timeout too short fails legitimate slow operations (e.g., payment processing); too long delays failure detection. Make timeouts configurable per step."
-      - "Outbox relay must handle at-least-once delivery: if the relay crashes after sending but before marking the outbox row as sent, it will re-send on restart. Services must handle duplicates."
+      - Outbox relay must handle at-least-once delivery: if the relay crashes after sending but before marking the outbox row as sent, it will re-send on restart. Services must handle duplicates.
     concepts:
       - Saga step definition with forward and compensation actions
       - Transactional Outbox Pattern for reliable messaging
@@ -126,21 +126,21 @@ milestones:
       compensations in reverse order, and recovers from crashes by resuming
       from the last persisted state.
     acceptance_criteria:
-      - "Orchestrator executes saga steps in defined sequence: for each step, write command to outbox (in same tx as state update), wait for response, advance to next step on success"
-      - "Saga instance state is persisted to a database table after every state transition: (saga_id, saga_type, current_step, status [RUNNING|COMPENSATING|COMPLETED|FAILED|STUCK], step_results JSON, created_at, updated_at)"
-      - "On step failure response: orchestrator transitions to COMPENSATING status and executes compensation actions in reverse order (step N-1, N-2, ..., 1)"
-      - "Compensation execution uses the same outbox pattern: compensation commands are written to the outbox in the same transaction as the state update"
-      - "Crash recovery: on orchestrator restart, query database for all saga instances in RUNNING or COMPENSATING status; resume each from its last persisted state"
-      - "Recovery test: start a 3-step saga, kill the orchestrator after step 2 succeeds but before step 3 starts, restart, verify step 3 is executed and the saga completes"
-      - "Compensation test: 3-step saga where step 3 fails; verify compensations for step 2 and step 1 execute in reverse order and saga status is FAILED"
-      - "Idempotent step execution: each step invocation includes an idempotency key (saga_id + step_name + attempt_number); services check a database table of processed idempotency keys and skip duplicate invocations"
-      - "Idempotency test: send the same step command twice with the same idempotency key; verify the service processes it only once and returns the cached result for the duplicate"
+      - Orchestrator executes saga steps in defined sequence: for each step, write command to outbox (in same tx as state update), wait for response, advance to next step on success
+      - Saga instance state is persisted to a database table after every state transition: (saga_id, saga_type, current_step, status [RUNNING|COMPENSATING|COMPLETED|FAILED|STUCK], step_results JSON, created_at, updated_at)
+      - On step failure response: orchestrator transitions to COMPENSATING status and executes compensation actions in reverse order (step N-1, N-2, ..., 1)
+      - Compensation execution uses the same outbox pattern: compensation commands are written to the outbox in the same transaction as the state update
+      - Crash recovery: on orchestrator restart, query database for all saga instances in RUNNING or COMPENSATING status; resume each from its last persisted state
+      - Recovery test: start a 3-step saga, kill the orchestrator after step 2 succeeds but before step 3 starts, restart, verify step 3 is executed and the saga completes
+      - Compensation test: 3-step saga where step 3 fails; verify compensations for step 2 and step 1 execute in reverse order and saga status is FAILED
+      - Idempotent step execution: each step invocation includes an idempotency key (saga_id + step_name + attempt_number); services check a database table of processed idempotency keys and skip duplicate invocations
+      - Idempotency test: send the same step command twice with the same idempotency key; verify the service processes it only once and returns the cached result for the duplicate
     pitfalls:
       - "Resuming a saga after crash loses in-memory step results that were not persisted; always persist step results (output) alongside state transitions"
       - "Parallel compensation of independent steps sounds efficient but can cause ordering issues if compensations have dependencies; start with sequential reverse-order compensation"
       - "Network partition between orchestrator and message broker causes the orchestrator to believe a step timed out when the service actually processed it; idempotency keys prevent double-execution on retry"
       - "Idempotency key must include attempt number or be unique per invocation attempt; otherwise, a legitimate retry after a transient failure would be incorrectly deduplicated"
-      - "Recovery loop: if the orchestrator crashes repeatedly during recovery of the same saga, it retries indefinitely; implement a max-recovery-attempts counter that sends the saga to DLQ"
+      - Recovery loop: if the orchestrator crashes repeatedly during recovery of the same saga, it retries indefinitely; implement a max-recovery-attempts counter that sends the saga to DLQ
     concepts:
       - State machine-based saga execution
       - Persistent state for crash recovery
@@ -163,16 +163,16 @@ milestones:
       and compensation steps, detect stuck sagas, and escalate to a dead
       letter queue for manual resolution.
     acceptance_criteria:
-      - "Per-step timeout: if no response is received within the step's configured timeout, the step is retried up to max_retries times with exponential backoff (base_delay * 2^attempt, capped at max_delay)"
+      - Per-step timeout: if no response is received within the step's configured timeout, the step is retried up to max_retries times with exponential backoff (base_delay * 2^attempt, capped at max_delay)
       - "After exhausting retries for a forward step, the saga transitions to COMPENSATING and begins reverse compensations"
-      - "Compensation steps also support retry with backoff: if a compensation fails, it is retried up to compensation_max_retries times before escalating"
-      - "If a compensation exhausts its retries, the saga transitions to STUCK status and is placed in the Dead Letter Queue (DLQ) table with: saga_id, stuck_step, error_message, attempt_count, created_at"
-      - "Stuck saga detection: a background scanner queries for sagas in RUNNING or COMPENSATING status that have not been updated within 2x the maximum step timeout; these are flagged as potentially stuck"
-      - "Admin API provides operations for stuck sagas: retry_step (re-invoke the stuck step), skip_step (mark as succeeded and advance), force_compensate (trigger full compensation), force_complete (mark saga as completed)"
-      - "DLQ monitoring: expose a metric counting sagas in DLQ and their age; alert if DLQ size exceeds configurable threshold"
-      - "Timeout test: configure a step with 2-second timeout; service delays response by 5 seconds; verify retry occurs and saga eventually succeeds or compensates within bounded time"
+      - Compensation steps also support retry with backoff: if a compensation fails, it is retried up to compensation_max_retries times before escalating
+      - If a compensation exhausts its retries, the saga transitions to STUCK status and is placed in the Dead Letter Queue (DLQ) table with: saga_id, stuck_step, error_message, attempt_count, created_at
+      - Stuck saga detection: a background scanner queries for sagas in RUNNING or COMPENSATING status that have not been updated within 2x the maximum step timeout; these are flagged as potentially stuck
+      - Admin API provides operations for stuck sagas: retry_step (re-invoke the stuck step), skip_step (mark as succeeded and advance), force_compensate (trigger full compensation), force_complete (mark saga as completed)
+      - DLQ monitoring: expose a metric counting sagas in DLQ and their age; alert if DLQ size exceeds configurable threshold
+      - Timeout test: configure a step with 2-second timeout; service delays response by 5 seconds; verify retry occurs and saga eventually succeeds or compensates within bounded time
     pitfalls:
-      - "Timeout too short causes false positives: a slow but successful step triggers compensation while the step is still running, causing duplicate side effects. Always use idempotency keys."
+      - Timeout too short causes false positives: a slow but successful step triggers compensation while the step is still running, causing duplicate side effects. Always use idempotency keys.
       - "DLQ growing without monitoring or alerting means failed sagas accumulate silently, leaving the system in an inconsistent state indefinitely"
       - "Compensation that itself times out and enters DLQ means the forward action's side effects are never rolled back; this requires manual intervention and must be documented as a known limitation"
       - "Admin force_complete without verifying the actual state of external services risks accepting an inconsistent saga as completed; always require manual verification before force operations"
@@ -199,11 +199,11 @@ milestones:
     acceptance_criteria:
       - "Each saga execution creates a trace span; each step (forward and compensation) creates a child span with step name, duration, and outcome"
       - "Trace context is propagated through outbox commands and message broker so service-side spans are correlated with the saga trace"
-      - "Metrics emitted: saga_started_total, saga_completed_total (labeled by status=completed|failed|stuck), saga_duration_seconds (histogram), step_duration_seconds (histogram, labeled by step_name and outcome=success|failure|timeout), compensation_triggered_total"
-      - "Saga execution log: a queryable record showing for each saga instance: all step transitions with timestamps, outcomes, and error messages"
-      - "Failure injection test suite: for a 5-step saga, inject failure at each step (1 through 5) and verify correct compensation behavior in each case"
-      - "Duplicate delivery test: send duplicate commands for each step and verify idempotency keys prevent double execution"
-      - "Concurrent saga test: run 50 saga instances simultaneously and verify no cross-saga interference or deadlocks"
+      - Metrics emitted: saga_started_total, saga_completed_total (labeled by status=completed|failed|stuck), saga_duration_seconds (histogram), step_duration_seconds (histogram, labeled by step_name and outcome=success|failure|timeout), compensation_triggered_total
+      - Saga execution log: a queryable record showing for each saga instance: all step transitions with timestamps, outcomes, and error messages
+      - Failure injection test suite: for a 5-step saga, inject failure at each step (1 through 5) and verify correct compensation behavior in each case
+      - Duplicate delivery test: send duplicate commands for each step and verify idempotency keys prevent double execution
+      - Concurrent saga test: run 50 saga instances simultaneously and verify no cross-saga interference or deadlocks
     pitfalls:
       - "Tracing overhead in the hot path (outbox write + state transition) adds latency; use asynchronous span export"
       - "Failure injection tests that modify real external services corrupt state; use mock services or a test environment"
@@ -214,7 +214,7 @@ milestones:
       - Failure injection testing for compensation verification
       - Idempotency verification testing
     deliverables:
-      - "Tracing integration: span creation for saga lifecycle and step execution"
+      - Tracing integration: span creation for saga lifecycle and step execution
       - "Prometheus metrics exporter for saga and step-level counters and histograms"
       - "Saga execution log queryable by saga_id showing full step-by-step history"
       - "Failure injection test suite covering all step failure positions"

@@ -95,17 +95,17 @@ milestones:
       the aggregator. The aggregator buffers during downstream outages.
     acceptance_criteria:
       - "Forwarder agent watches configured log files for new lines (using inotify/kqueue or polling) and forwards them to the central aggregator via HTTP or TCP"
-      - "Agent handles log rotation: detects when a file is rotated (inode change, truncation) and re-opens without losing lines"
+      - Agent handles log rotation: detects when a file is rotated (inode change, truncation) and re-opens without losing lines
       - "Central aggregator accepts logs via HTTP POST (JSON) and TCP (syslog RFC 5424/3164) endpoints"
-      - "Multiple log formats are parsed: JSON (structured), syslog (RFC 5424, RFC 3164), and configurable regex patterns for custom formats"
+      - Multiple log formats are parsed: JSON (structured), syslog (RFC 5424, RFC 3164), and configurable regex patterns for custom formats
       - "Single-node ingestion handles burst rates of at least 10,000 messages per second with backpressure (measured via benchmark); horizontal scaling is documented as out-of-scope"
       - "Incoming logs are buffered to a disk-backed queue during downstream outage (e.g., storage unavailable) and replayed in order on recovery; buffer has a configurable maximum size"
       - "Out-of-order timestamps are accepted but flagged; ingestion does not reject logs with timestamps in the past"
     pitfalls:
-      - "Agent missing log rotation: when logrotate renames the file, the agent keeps reading the old (now renamed) file descriptor—detect inode change and reopen"
+      - Agent missing log rotation: when logrotate renames the file, the agent keeps reading the old (now renamed) file descriptor—detect inode change and reopen
       - "Unbounded in-memory batching during bursts causes OOM—use a bounded buffer with disk overflow"
       - "Label values containing special characters (spaces, quotes, equals signs) break naive key=value parsing—use proper escaping or quoted values"
-      - "TCP syslog framing: without octet-counting framing, newlines in log messages split a single log into multiple entries"
+      - TCP syslog framing: without octet-counting framing, newlines in log messages split a single log into multiple entries
     concepts:
       - Agent vs aggregator architecture
       - File tailing with rotation detection
@@ -131,12 +131,12 @@ milestones:
       for efficient negative lookups and time-based partitioning.
     acceptance_criteria:
       - "Inverted index maps each unique label key-value pair to the set of log chunk IDs containing entries with that label"
-      - "Bloom filter is constructed per chunk to enable fast negative lookups: 'does this chunk possibly contain entries matching label X=Y?' with a configurable false positive rate (default 1%)"
+      - Bloom filter is constructed per chunk to enable fast negative lookups: 'does this chunk possibly contain entries matching label X=Y?' with a configurable false positive rate (default 1%)
       - "Bloom filter correctly rejects non-matching chunks without false negatives; false positives are handled by falling back to full chunk scan"
       - "Time-based partitioning segments the index into configurable windows (hourly or daily) so queries scan only relevant time partitions"
       - "Structured fields (level, service, hostname) are automatically extracted and indexed; custom fields require explicit configuration"
       - "Index compaction merges small segments into larger ones periodically to reduce file count and query overhead"
-      - "Index survives process restart: it is persisted to disk and can be loaded or rebuilt from the WAL on startup"
+      - Index survives process restart: it is persisted to disk and can be loaded or rebuilt from the WAL on startup
     pitfalls:
       - "Bloom filter false positives increase as the filter fills—size the filter based on expected entries per chunk and target FP rate using the formula m = -(n * ln(p)) / (ln(2))^2"
       - "High cardinality labels (e.g., request_id) bloat the inverted index with millions of entries per label key—only index low-cardinality labels by default"
@@ -170,15 +170,15 @@ milestones:
       - "Maximum query time window is configurable (default 24h) to prevent unbounded scans; queries exceeding the limit are rejected"
       - "Label filters (e.g., service=api, level!=DEBUG) use the inverted index for efficient lookup; bloom filters eliminate non-matching chunks before scanning"
       - "Full-text search matches log entries containing specified keywords within the filtered label set and time range"
-      - "Schema-on-read field extraction: regex or JSON field extraction at query time allows filtering on fields that were not indexed at ingestion (documented tradeoff: slower than indexed fields)"
+      - Schema-on-read field extraction: regex or JSON field extraction at query time allows filtering on fields that were not indexed at ingestion (documented tradeoff: slower than indexed fields)
       - "Regular expression patterns in queries match against log message text and extracted fields"
       - "Query pagination returns results in pages with a cursor token for efficient traversal of large result sets"
       - "Query execution timeout (configurable, default 30s) cancels long-running queries and returns partial results with a timeout indicator"
     pitfalls:
-      - "Schema-on-read is flexible but slow: extracting fields via regex at query time is orders of magnitude slower than querying pre-indexed fields—document this tradeoff clearly to users"
-      - "JSON parsing failures in log messages should be handled gracefully: return the raw log line with an extraction-failure annotation, don't silently drop the entry"
-      - "Filter pipeline ordering matters: apply label index filters first (cheapest), then bloom filter checks, then text search, then regex—wrong ordering causes full scans"
-      - "Cursor-based pagination with concurrent ingestion: new entries may shift positions—use timestamp+offset cursors, not simple numeric offsets"
+      - Schema-on-read is flexible but slow: extracting fields via regex at query time is orders of magnitude slower than querying pre-indexed fields—document this tradeoff clearly to users
+      - JSON parsing failures in log messages should be handled gracefully: return the raw log line with an extraction-failure annotation, don't silently drop the entry
+      - Filter pipeline ordering matters: apply label index filters first (cheapest), then bloom filter checks, then text search, then regex—wrong ordering causes full scans
+      - Cursor-based pagination with concurrent ingestion: new entries may shift positions—use timestamp+offset cursors, not simple numeric offsets
     concepts:
       - Query language parsing and AST construction
       - Schema-on-read vs schema-on-write tradeoffs
@@ -193,7 +193,7 @@ milestones:
       - "Query language parser supporting label filters, full-text search, regex, and boolean operators"
       - "Mandatory time-range enforcer rejecting queries without time bounds or exceeding max window"
       - "Schema-on-read field extractor parsing JSON or applying regex at query time"
-      - "Query optimizer applying filters in cost order: label index -> bloom filter -> chunk scan -> text search"
+      - Query optimizer applying filters in cost order: label index -> bloom filter -> chunk scan -> text search
       - "Cursor-based pagination for large result sets with timeout protection"
     estimated_hours: "10-12"
 
@@ -208,13 +208,13 @@ milestones:
       - "Write-ahead log (WAL) records all incoming log entries before they are written to chunks; on crash recovery, the WAL is replayed to reconstruct any incomplete chunks"
       - "WAL checkpointing truncates the WAL after chunks are successfully flushed, preventing unbounded WAL growth"
       - "Retention policy automatically deletes chunks older than configurable TTL (default 7 days); deletion is verified by checking that no chunks older than TTL+1h exist"
-      - "Compression achieves at least 5:1 ratio on typical application log data (JSON logs); ratio is measured and reported in benchmarks"
+      - Compression achieves at least 5: 1 ratio on typical application log data (JSON logs); ratio is measured and reported in benchmarks
       - "Storage layer supports local disk; S3-compatible object storage is documented as a future extension but not required"
     pitfalls:
       - "WAL growing unbounded if checkpointing fails or is too infrequent—checkpoint after every chunk flush and monitor WAL size"
-      - "Decompression performance on queries: snappy is fast to decompress but has lower compression ratio; zstd gives better ratio but slower decompress—benchmark both"
+      - Decompression performance on queries: snappy is fast to decompress but has lower compression ratio; zstd gives better ratio but slower decompress—benchmark both
       - "Storage leak from failed retention cleanup (e.g., file lock prevents deletion)—implement retry with alerting on persistent failure"
-      - "Chunk boundary alignment: if a chunk covers 1-hour windows, a query for 'last 5 minutes' still decompresses the entire 1-hour chunk—consider smaller chunk windows for recent data"
+      - Chunk boundary alignment: if a chunk covers 1-hour windows, a query for 'last 5 minutes' still decompresses the entire 1-hour chunk—consider smaller chunk windows for recent data
     concepts:
       - Chunk-based storage architecture
       - Write-ahead logging for durability
@@ -239,17 +239,17 @@ milestones:
       Add multi-tenant isolation with authenticated tenant identification,
       per-tenant rate limiting, and log-pattern-based alerting.
     acceptance_criteria:
-      - "Tenant isolation: every API request (ingestion and query) requires a tenant ID via HTTP header or authentication token; unauthenticated requests are rejected with 401"
+      - Tenant isolation: every API request (ingestion and query) requires a tenant ID via HTTP header or authentication token; unauthenticated requests are rejected with 401
       - "Tenant ID is validated against a whitelist or authentication backend; invalid or spoofed tenant IDs are rejected with 403"
       - "Logs from one tenant cannot be queried by another tenant; cross-tenant data access is verified impossible by test"
       - "Per-tenant ingestion rate limit (configurable, e.g., 1000 msg/s per tenant) is enforced; exceeding the limit returns 429 with retry-after header"
       - "Alert rules match log patterns (e.g., 'more than 100 ERROR logs from service=payments in 5 minutes') and trigger webhook notifications"
       - "Alert deduplication prevents sending the same alert more than once within a configurable suppression window (default 15 minutes)"
     pitfalls:
-      - "Tenant ID injection: if tenant ID is passed as a header without authentication, any client can impersonate another tenant—always authenticate"
-      - "Noisy neighbor: one tenant flooding the system degrades performance for all tenants—enforce rate limits at ingestion"
-      - "Alert storms: a cascading failure generates thousands of matching log lines, triggering hundreds of alerts—deduplication and rate limiting on alerts are essential"
-      - "Per-tenant storage accounting: without tracking per-tenant usage, you can't enforce quotas or bill—track bytes ingested per tenant"
+      - Tenant ID injection: if tenant ID is passed as a header without authentication, any client can impersonate another tenant—always authenticate
+      - Noisy neighbor: one tenant flooding the system degrades performance for all tenants—enforce rate limits at ingestion
+      - Alert storms: a cascading failure generates thousands of matching log lines, triggering hundreds of alerts—deduplication and rate limiting on alerts are essential
+      - Per-tenant storage accounting: without tracking per-tenant usage, you can't enforce quotas or bill—track bytes ingested per tenant
     concepts:
       - Multi-tenancy patterns
       - Rate limiting algorithms (token bucket, sliding window)
@@ -268,5 +268,4 @@ milestones:
       - "Alert deduplication system suppressing duplicate notifications within configurable window"
       - "Webhook notification sender for triggered alerts with configurable endpoint"
     estimated_hours: "8-10"
-
 ```

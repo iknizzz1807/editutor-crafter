@@ -67,16 +67,16 @@ languages:
     - JavaScript
     - Java
 resources:
-  - name: "SQLite Grammar"
+  - name: SQLite Grammar""
     url: https://www.sqlite.org/lang.html
     type: documentation
-  - name: "Writing a SQL Parser"
+  - name: Writing a SQL Parser""
     url: https://blog.subnetzero.io/post/building-a-sql-parser/
     type: article
-  - name: "Crafting Interpreters (Pratt Parsing)"
+  - name: Crafting Interpreters (Pratt Parsing)""
     url: https://craftinginterpreters.com/parsing-expressions.html
     type: book
-  - name: "SQL Standard Grammar (BNF)"
+  - name: SQL Standard Grammar (BNF)""
     url: https://jakewheat.github.io/sql-overview/sql-2016-foundation-grammar.html
     type: reference
 prerequisites:

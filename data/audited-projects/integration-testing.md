@@ -103,10 +103,10 @@ milestones:
       - "Readiness probe polls the database container (e.g., pg_isready, mysqladmin ping) and blocks test execution until the database accepts connections, with a configurable timeout (default 30s)"
       - "Schema migrations run automatically before the test suite executes, creating all required tables and indexes"
       - "Each test starts with a clean database state achieved via transaction rollback (preferred) or table truncation; no data leaks between tests"
-      - "Test ordering independence is verified: running the test suite in randomized order produces the same pass/fail results"
+      - Test ordering independence is verified: running the test suite in randomized order produces the same pass/fail results
       - "Database container is torn down and removed after the test suite completes, freeing all resources including volumes"
     pitfalls:
-      - "Not waiting for container readiness: the container port is open but the database process is still initializing—always use application-level readiness checks, not just TCP port checks"
+      - Not waiting for container readiness: the container port is open but the database process is still initializing—always use application-level readiness checks, not just TCP port checks
       - "Port conflicts in CI when multiple test suites run in parallel on the same host—always use dynamic port mapping (docker -P or Testcontainers' random port)"
       - "Transaction rollback cleanup doesn't work for DDL statements in some databases (e.g., MySQL auto-commits DDL)—know your database's transaction semantics"
       - "Data leaking between tests via sequences or auto-increment IDs that don't reset on truncation—use RESTART IDENTITY with TRUNCATE"
@@ -136,11 +136,11 @@ milestones:
       - "Test server starts on a randomly assigned port to avoid conflicts; the port is communicated to test HTTP clients programmatically"
       - "Real HTTP requests are made to the running server using a configured HTTP client; responses include full status code, headers, and body"
       - "Response assertions verify status codes, JSON body structure, header values, and response times (< configurable threshold)"
-      - "Complete authentication flow is tested: registration -> login -> token issuance -> protected endpoint access -> token expiry rejection"
-      - "Error cases are tested: invalid input returns 400, unauthorized returns 401, not found returns 404, and server errors return 500 with safe error messages"
+      - Complete authentication flow is tested: registration -> login -> token issuance -> protected endpoint access -> token expiry rejection
+      - Error cases are tested: invalid input returns 400, unauthorized returns 401, not found returns 404, and server errors return 500 with safe error messages
       - "Tests are independent and runnable in any order; no test depends on side effects of another test"
     pitfalls:
-      - "Test order dependencies: test B relies on data created by test A—use per-test setup/teardown to ensure independence"
+      - Test order dependencies: test B relies on data created by test A—use per-test setup/teardown to ensure independence
       - "Shared mutable state (e.g., global user count) across tests causes non-deterministic failures"
       - "Slow tests from unnecessary database seeding—seed only the data each test needs, not a global fixture"
       - "Token expiry tests require clock control—without clock mocking, you either wait real seconds or skip the test"
@@ -169,14 +169,14 @@ milestones:
     acceptance_criteria:
       - "Mock HTTP server intercepts outbound calls to external APIs and returns predefined responses based on URL, method, and header matching"
       - "Request verification confirms external APIs were called with correct URL, method, headers, and body content"
-      - "Error simulation: mock returns configurable HTTP error codes (500, 503, timeout) to test error handling and retry paths"
-      - "Retry logic test: mock fails the first N requests then succeeds, verifying the application retries with correct backoff"
-      - "Network isolation is enforced: an unmatched outbound HTTP call raises an error rather than hitting a real external API"
+      - Error simulation: mock returns configurable HTTP error codes (500, 503, timeout) to test error handling and retry paths
+      - Retry logic test: mock fails the first N requests then succeeds, verifying the application retries with correct backoff
+      - Network isolation is enforced: an unmatched outbound HTTP call raises an error rather than hitting a real external API
       - "Mock response schemas are validated against the real API's OpenAPI/Swagger spec (or a recorded contract) to prevent mock drift"
     pitfalls:
       - "Missing mock for an API endpoint causes a real HTTP call to production—always enforce network isolation (block all unmocked outbound calls)"
-      - "Mock drift: the mock returns a response format the real API no longer uses—contract tests or schema validation catch this"
-      - "Mock setup order: registering mocks after the test starts can miss early requests—setup all mocks before any application code runs"
+      - Mock drift: the mock returns a response format the real API no longer uses—contract tests or schema validation catch this
+      - Mock setup order: registering mocks after the test starts can miss early requests—setup all mocks before any application code runs
       - "Mocking at the wrong layer (e.g., mocking the HTTP client instead of the network) can mask real serialization/deserialization bugs"
     concepts:
       - HTTP request interception
@@ -208,9 +208,9 @@ milestones:
       - "CI pipeline runs containerized tests without manual Docker setup; Docker socket access or DinD is configured"
       - "Total test suite startup time (all containers ready) is measured and reported; target < 60 seconds"
     pitfalls:
-      - "Slow container startup: pulling images on every CI run—use pre-cached images or a local registry mirror"
+      - Slow container startup: pulling images on every CI run—use pre-cached images or a local registry mirror
       - "Port conflicts in CI from hardcoded ports—always use Testcontainers' automatic port mapping"
-      - "Docker socket permissions: CI runner may not have access to /var/run/docker.sock—document required permissions"
+      - Docker socket permissions: CI runner may not have access to /var/run/docker.sock—document required permissions
       - "Container cleanup failure on test abort leaves orphaned containers consuming resources—use Testcontainers' Ryuk sidecar for automatic cleanup"
     concepts:
       - Testcontainers lifecycle management
@@ -242,10 +242,10 @@ milestones:
       - "Test report is generated with pass/fail counts, execution time per test, failure details, and flaky test annotations"
       - "Clock mocking utility is available for testing time-sensitive operations (token expiry, cache TTL, scheduled tasks) deterministically"
     pitfalls:
-      - "Brittle E2E tests: testing UI details or exact response bodies that change frequently—test behavior and contracts, not implementation details"
-      - "Contract versioning: provider changes break consumer contracts—use semantic versioning and can-i-deploy checks"
-      - "Test environment drift: E2E test environment diverges from production configuration—use infrastructure-as-code to keep them aligned"
-      - "Clock mocking that leaks into other tests: always restore the real clock in teardown"
+      - Brittle E2E tests: testing UI details or exact response bodies that change frequently—test behavior and contracts, not implementation details
+      - Contract versioning: provider changes break consumer contracts—use semantic versioning and can-i-deploy checks
+      - Test environment drift: E2E test environment diverges from production configuration—use infrastructure-as-code to keep them aligned
+      - Clock mocking that leaks into other tests: always restore the real clock in teardown
     concepts:
       - Consumer-driven contract testing
       - E2E testing strategy
@@ -263,5 +263,4 @@ milestones:
       - "Flaky test detector that runs tests N times and reports inconsistent results"
       - "Clock mocking utility for deterministic time-sensitive test scenarios"
     estimated_hours: "5-7"
-
 ```

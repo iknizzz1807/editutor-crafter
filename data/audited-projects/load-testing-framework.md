@@ -79,7 +79,7 @@ resources:
   - name: HdrHistogram on GitHub
     url: https://github.com/HdrHistogram/HdrHistogram
     type: tool
-  - name: "Gil Tene - How NOT to Measure Latency (Coordinated Omission)"
+  - name: Gil Tene - How NOT to Measure Latency (Coordinated Omission)""
     url: https://www.youtube.com/watch?v=lJ8ydIuPFeU
     type: video
   - name: AWS Distributed Load Testing Architecture
@@ -104,15 +104,15 @@ milestones:
     acceptance_criteria:
       - "Concurrent virtual users are spawned up to a configurable maximum with a linear ramp-up period (e.g., add N users per second until target is reached)"
       - "Each virtual user executes a defined scenario as a repeating sequence of HTTP requests with configurable iteration count or duration limit"
-      - "Think time between requests is configurable: fixed delay, uniform random range, or exponential distribution to simulate realistic user pacing"
+      - Think time between requests is configurable: fixed delay, uniform random range, or exponential distribution to simulate realistic user pacing
       - "Session management maintains a per-user cookie jar, follows redirects, and propagates authentication headers across requests within a scenario"
-      - "HTTP connection pooling is configurable: max connections per host, keep-alive timeout, and idle connection cleanup are exposed as tunable parameters"
+      - HTTP connection pooling is configurable: max connections per host, keep-alive timeout, and idle connection cleanup are exposed as tunable parameters
       - "Request timing records both 'intended send time' (scheduled) and 'actual send time' to enable coordinated omission correction in the metrics layer"
       - "Scenario DSL supports sequential steps, named requests with method/URL/headers/body, response assertions (status code, body contains), and variable extraction from responses for use in subsequent requests"
     pitfalls:
-      - "Coordinated omission: in a closed-loop model, if the server is slow, VUs wait before sending the next request, hiding the true latency experienced by users who would have arrived during the delay. Record intended send time."
-      - "Connection pooling misconfiguration: using a single connection per VU serializes requests; too many connections exhausts server file descriptors"
-      - "Ephemeral port exhaustion: at >10k req/s, TIME_WAIT sockets accumulate. Configure SO_REUSEADDR and expand the local port range (net.ipv4.ip_local_port_range on Linux)"
+      - Coordinated omission: in a closed-loop model, if the server is slow, VUs wait before sending the next request, hiding the true latency experienced by users who would have arrived during the delay. Record intended send time.
+      - Connection pooling misconfiguration: using a single connection per VU serializes requests; too many connections exhausts server file descriptors
+      - Ephemeral port exhaustion: at >10k req/s, TIME_WAIT sockets accumulate. Configure SO_REUSEADDR and expand the local port range (net.ipv4.ip_local_port_range on Linux)
       - "Not following redirects by default causes authentication flows to fail silently"
       - "Variable extraction failure in one step silently breaks subsequent steps—fail fast with clear error"
     concepts:
@@ -141,7 +141,7 @@ milestones:
       Implement distributed load generation with coordinator-worker architecture,
       synchronized execution, and generator resource monitoring.
     acceptance_criteria:
-      - "Virtual user load is distributed across connected worker nodes proportionally (configurable: even split or weighted)"
+      - Virtual user load is distributed across connected worker nodes proportionally (configurable: even split or weighted)
       - "Coordinator signals synchronized test start across all workers; test begins within 1 second of the signal on all workers (verified)"
       - "Response timing is measured on the WORKER node, not the coordinator, to avoid network latency contamination"
       - "Metrics from all workers are aggregated using HDR histogram merge into a unified result with correct percentile calculations"
@@ -150,10 +150,10 @@ milestones:
       - "Coordinator gracefully stops all workers on test completion or abort signal; workers drain in-flight requests before shutting down"
     pitfalls:
       - "Measuring timing on the coordinator adds network RTT to every measurement—always measure on the worker"
-      - "Clock skew between workers: use relative elapsed time from test start rather than absolute timestamps for time-series alignment"
-      - "Automatic load redistribution on worker failure can cause a thundering herd: remaining workers suddenly spike in load—prefer logging the failure and reducing total target load"
+      - Clock skew between workers: use relative elapsed time from test start rather than absolute timestamps for time-series alignment
+      - Automatic load redistribution on worker failure can cause a thundering herd: remaining workers suddenly spike in load—prefer logging the failure and reducing total target load
       - "HDR histogram merge requires all histograms to have the same configuration (value range, significant digits)—validate on worker registration"
-      - "Generator CPU saturation: if the worker is at 100% CPU, it can't send requests fast enough and reported latencies include generator queuing time"
+      - Generator CPU saturation: if the worker is at 100% CPU, it can't send requests fast enough and reported latencies include generator queuing time
     concepts:
       - Coordinator-worker architecture
       - Clock synchronization and relative timing
@@ -181,18 +181,18 @@ milestones:
       coordinated omission correction, and comprehensive report generation.
     acceptance_criteria:
       - "Latency percentiles p50, p90, p95, p99, and p99.9 are calculated using HDR histogram with configurable significant digits (default 3)"
-      - "Coordinated omission correction is applied: for each late response, the histogram is populated with estimated service times for the requests that WOULD have been sent during the delay period, using the recorded intended-vs-actual send time delta"
+      - Coordinated omission correction is applied: for each late response, the histogram is populated with estimated service times for the requests that WOULD have been sent during the delay period, using the recorded intended-vs-actual send time delta
       - "Both corrected and uncorrected latency percentiles are reported side-by-side so users can see the impact of coordinated omission"
       - "Throughput (requests/second) and error rate (percentage) are computed over 1-second sliding windows and displayed in real-time"
       - "Live dashboard updates via WebSocket at least once per second showing current latency percentiles, throughput, error rate, VU count, and worker health"
       - "Final report is exported in both HTML (with embedded charts) and JSON formats with summary statistics, time-series data, and percentile distribution"
-      - "Report handles edge cases: zero requests, all errors, and empty time windows produce valid output (not crashes)"
+      - Report handles edge cases: zero requests, all errors, and empty time windows produce valid output (not crashes)
     pitfalls:
       - "Reporting average latency hides tail latency—always report percentiles, never just mean"
       - "HDR histogram requires pre-defining the value range (e.g., 1ms to 60s) and significant digits; values outside the range are clipped—choose range carefully"
       - "Coordinated omission correction can significantly increase reported p99/p99.9—this is correct behavior, not a bug. The uncorrected values are the ones that are wrong."
       - "Streaming percentile calculation using naive sorted arrays is O(n log n) per query—HDR histogram gives O(1) percentile lookups"
-      - "WebSocket connection drops during long tests: implement auto-reconnect with buffered catch-up"
+      - WebSocket connection drops during long tests: implement auto-reconnect with buffered catch-up
     concepts:
       - HDR Histogram for percentile accuracy
       - Coordinated omission correction methodology
@@ -211,5 +211,4 @@ milestones:
       - "HTML report generator with embedded latency percentile charts, throughput time-series, and summary table"
       - "JSON report exporter with complete time-series data and summary statistics"
     estimated_hours: "14-16"
-
 ```

@@ -1,0 +1,199 @@
+# AUDIT & FIX: lisp-interp
+
+## CRITIQUE
+- **Logical Gap (Confirmed - Quote):** The original project mentions a "Quote handler" in M1 deliverables but lacks a dedicated `quote` special form in the evaluation logic. Without `quote`, it is impossible to treat lists as data rather than code, which is fundamental to Lisp's homoiconicity. The evaluator must recognize `(quote x)` or `'x` as a special form that returns its argument unevaluated.
+- **Technical Inaccuracy (Confirmed - TCO):** M4 mentions "recursion without stack overflow" as an acceptance criterion but doesn't specify Tail Call Optimization (TCO). In most high-level languages (Python, JavaScript without strict mode, etc.), deep recursion will overflow the call stack. TCO requires detecting calls in tail position and reusing the current stack frame, which is a non-trivial implementation detail that must be explicitly documented.
+- **Hour Ranges:** Using ranges like '2-4' is imprecise. Converting to single estimates.
+- **Estimated Hours:** 15-25 range is reasonable; with TCO added, estimate ~22 hours.
+
+## FIXED YAML
+```yaml
+id: lisp-interp
+name: Lisp Interpreter
+description: >-
+  S-expression parser and tree-walking evaluator implementing atoms, lists,
+  special forms (define, lambda, quote, if), and lexical closures with optional
+  tail call optimization.
+difficulty: intermediate
+estimated_hours: 22
+essence: >-
+  Recursive evaluation of symbolic expressions through environment chaining,
+  where tokenized S-expressions are parsed into nested list structures and
+  evaluated by applying operators to operands with lexical scope resolution
+  through linked environment frames capturing variable bindings and closures.
+why_important: >-
+  Building a Lisp interpreter demystifies how programming languages work at a
+  fundamental level, teaching you about parsing, evaluation strategies, closure
+  implementation, and metaprogramming—skills that transfer directly to
+  understanding any language runtime or building domain-specific languages.
+learning_outcomes:
+  - Parse S-expressions into nested list structures using recursive descent
+  - Implement environment chaining for lexical scope resolution
+  - Build special forms (define, lambda, quote, if) that control evaluation order
+  - Implement closures that capture their defining environment
+  - Optionally implement tail call optimization to support deep recursion
+skills:
+  - Recursive Parsing
+  - Tree-Walking Evaluation
+  - Environment Chaining
+  - Closure Implementation
+  - Special Forms
+  - Tail Call Optimization
+tags:
+  - interpreter
+  - lisp
+  - s-expressions
+  - closures
+  - intermediate
+  - parsing
+architecture_doc: architecture-docs/lisp-interp/index.md
+languages:
+  recommended:
+    - Python
+    - JavaScript
+    - Rust
+  also_possible:
+    - Go
+    - Java
+resources:
+  - name: Build Your Own Lisp
+    url: http://www.buildyourownlisp.com/
+    type: tutorial
+  - name: SICP
+    url: https://mitpress.mit.edu/sites/default/files/sicp/index.html
+    type: book
+  - name: Mal (Make a Lisp)
+    url: https://github.com/kanaka/mal
+    type: project
+prerequisites:
+  - type: skill
+    name: Recursion
+  - type: skill
+    name: Tree data structures
+  - type: skill
+    name: Basic parsing concepts
+milestones:
+  - id: lisp-interp-m1
+    name: S-Expression Parser
+    description: >-
+      Parse Lisp S-expressions into data structures, including quote shorthand
+      handling.
+    acceptance_criteria:
+      - Atoms including numbers, symbols, and string literals are parsed into their correct types
+      - Nested parenthesized lists are parsed into nested list data structures at arbitrary depth
+      - Whitespace and semicolon-initiated line comments are correctly ignored during tokenization
+      - Parser returns native data structures (numbers as numbers, symbols as strings, lists as arrays)
+      - "'expr" shorthand is transformed into the equivalent (quote expr) list form during parsing
+    pitfalls:
+      - Unbalanced parentheses cause infinite loops or confusing errors—track open/close count
+      - Quote syntax "'x" must expand to "(quote x)" before the parser sees it
+      - Negative numbers like "-5" are ambiguous with subtraction—handle at tokenizer level
+    concepts:
+      - S-expressions as nested list structures
+      - Tokenization splits input into atoms and delimiters
+      - Recursive parsing builds nested structures
+      - Quote as syntactic sugar
+    skills:
+      - String manipulation and tokenization
+      - Recursive data structure parsing
+      - Abstract syntax tree construction
+      - Syntactic sugar expansion
+    deliverables:
+      - Tokenizer that splits input into parentheses, atoms, string literals, and whitespace tokens
+      - Recursive descent parser that builds nested list structures from the token stream
+      - List constructor that creates the internal representation for parenthesized sequences
+      - Quote handler that transforms "'expr" shorthand into the equivalent (quote expr) list form
+    estimated_hours: 4
+
+  - id: lisp-interp-m2
+    name: Basic Evaluation
+    description: >-
+      Evaluate arithmetic, conditionals, and implement the quote special form.
+    acceptance_criteria:
+      - Number literals evaluate to themselves without any environment lookup or transformation
+      - Arithmetic operators +, -, *, / return correct results for integers and floating-point operands
+      - Comparison operators <, >, =, <=, >= return boolean results for numeric comparisons
+      - Conditional if-expressions evaluate the consequent or alternative branch based on the test value
+      - Quote special form returns its argument unevaluated (e.g., (quote (1 2)) returns the list (1 2))
+    pitfalls:
+      - Special forms like quote and if must NOT evaluate all their arguments—only the needed ones
+      - Short-circuit evaluation in if means only one branch is evaluated
+      - Environment lookup for undefined symbols must produce a clear error with the symbol name
+    concepts:
+      - Evaluation rules differ for special forms vs function calls
+      - Environments map symbols to values
+      - Special forms control evaluation order of their arguments
+    skills:
+      - Expression evaluation engines
+      - Environment and scope management
+      - Conditional logic implementation
+      - Pattern matching for special forms
+    deliverables:
+      - Number evaluator that returns numeric atoms as their literal value without transformation
+      - Arithmetic primitives implementing addition, subtraction, multiplication, and division operators
+      - Comparison primitives implementing less-than, greater-than, equal, and their combinations
+      - If special form that evaluates condition first, then only the appropriate branch
+      - Quote special form that returns its single argument unevaluated
+    estimated_hours: 4
+
+  - id: lisp-interp-m3
+    name: Variables and Functions
+    description: Add define, lambda, and lexical scope.
+    acceptance_criteria:
+      - Define form binds a variable name to the evaluated value in the current environment
+      - Lambda form creates a first-class function value that captures its lexical environment
+      - Lexical scoping ensures closures access variables from their definition scope, not the call site
+      - Let form creates local bindings that are visible only within the let body expressions
+      - Function application evaluates the operator to get a closure, then evaluates arguments
+    pitfalls:
+      - Mutation vs shadowing: define in a nested scope shadows, it doesn't mutate the outer binding
+      - Closure capturing: the closure must capture the environment at definition time, not call time
+      - Let vs let*: let evaluates all init expressions before any bindings, let* evaluates and binds sequentially
+    concepts:
+      - Closures capture their defining environment
+      - Lexical scope means variable resolution depends on source code structure
+      - Variable binding creates new entries in the current environment frame
+    skills:
+      - Function closure implementation
+      - Lexical scoping systems
+      - Variable binding and shadowing
+      - First-class function support
+    deliverables:
+      - Environment data structure mapping symbol names to their bound values with parent scope chain
+      - Define special form that binds a name to a value in the current environment scope
+      - Lambda special form that creates a closure capturing the defining environment and parameter list
+      - Function application logic that evaluates arguments and calls the function with a new scope
+      - Let form implementation creating local bindings in a nested environment
+    estimated_hours: 6
+
+  - id: lisp-interp-m4
+    name: List Operations & Recursion
+    description: Add list primitives and optionally tail call optimization.
+    acceptance_criteria:
+      - Cons creates a pair, car returns the first element, and cdr returns the rest of the list
+      - List constructor builds a proper nil-terminated list from its arguments in order
+      - Null? predicate returns true for the empty list and false for all other values
+      - Recursive functions execute correctly for reasonable recursion depths (1000+ levels with TCO)
+      - If TCO is implemented, tail-recursive functions run in constant stack space
+    pitfalls:
+      - Proper vs improper lists: (cons 1 2) creates a pair, not a proper list; only (cons 1 nil) is proper
+      - Stack overflow on deep recursion is guaranteed without TCO—document this limitation or implement TCO
+      - Empty list handling: distinguish between '() and nil consistently
+      - TCO requires detecting tail position: a call is in tail position only if its result is directly returned
+    concepts:
+      - List processing primitives build and deconstruct pairs
+      - Recursion is the primary iteration mechanism in Lisp
+      - Tail call optimization reuses stack frames for calls in tail position
+    skills:
+      - Recursive algorithm design
+      - List data structure operations
+      - Higher-order function implementation
+      - Tail call optimization techniques
+    deliverables:
+      - Car, cdr, and cons primitives that access the head, tail, and construct new pairs respectively
+      - List construction function that builds a proper list from a variable number of arguments
+      - Recursive function support allowing functions to call themselves by name within their body
+      - Optional: Tail call optimization that detects tail-position calls and reuses the current stack frame
+      - Null? predicate for detecting the empty list
+    estimated_hours: 8
+```

@@ -66,13 +66,13 @@ languages:
     - Rust
     - C++
 resources:
-  - name: "CMU Database Systems Course (15-445)"
+  - name: CMU Database Systems Course (15-445)""
     url: https://15445.courses.cs.cmu.edu/
     type: course
-  - name: "Access Path Selection in a Relational Database Management System (Selinger)"
+  - name: Access Path Selection in a Relational Database Management System (Selinger)""
     url: https://courses.cs.duke.edu/compsci516/cps216/spring03/papers/selinger-etal-1979.pdf
     type: paper
-  - name: "Query Optimization Survey"
+  - name: Query Optimization Survey""
     url: https://www.vldb.org/pvldb/vol14/p3025-yang.pdf
     type: paper
 prerequisites:

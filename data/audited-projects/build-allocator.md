@@ -103,7 +103,7 @@ milestones:
       - "Alignment to 16 bytes, not 8; SSE instructions and C standard require 16-byte alignment on x86-64 for max_align_t"
       - "Forgetting footer means backward coalescing is impossible later; build it in from the start"
       - "sbrk is not thread-safe; in M1 this is acceptable but must be addressed in M4"
-      - "Header/footer overhead: each block costs 2×sizeof(size_t) + padding; very small allocations have high overhead ratio"
+      - Header/footer overhead: each block costs 2×sizeof(size_t) + padding; very small allocations have high overhead ratio
       - "Not handling sbrk failure; in production, sbrk can fail if address space is exhausted"
     concepts:
       - Heap management with sbrk
@@ -174,7 +174,7 @@ milestones:
       - Internal fragmentation measured: wasted bytes within allocated blocks due to size class rounding; compared to non-segregated allocator
     pitfalls:
       - "Power-of-two size classes (16, 32, 64, 128) cause up to 50% internal fragmentation (e.g., 33-byte request gets 64-byte block); finer granularity for small sizes reduces waste"
-      - "Moving a freed block between size class lists during coalescing: the merged block may belong in a different (larger) size class"
+      - Moving a freed block between size class lists during coalescing: the merged block may belong in a different (larger) size class
       - "realloc in-place growth by coalescing with the next block must update the free list to remove the absorbed block"
       - "Cache-unfriendly access when scanning multiple segregated lists; keep hot size classes in fast-access array positions"
     concepts:
@@ -212,7 +212,7 @@ milestones:
     pitfalls:
       - "sbrk is process-global and not thread-safe; per-thread arenas must either serialize sbrk access or use mmap for arena creation"
       - "Lock contention on a global allocator destroys multi-threaded throughput; per-thread arenas are essential"
-      - "Cross-thread free is the hardest part: thread A frees memory from thread B's arena; without proper synchronization this corrupts B's free list"
+      - Cross-thread free is the hardest part: thread A frees memory from thread B's arena; without proper synchronization this corrupts B's free list
       - "mmap for large allocations must be aligned to page boundaries; munmap must free the exact mapped region"
       - "Canary checking on free adds overhead; make it compile-time optional (debug mode)"
       - "LD_PRELOAD requires implementing calloc (malloc + memset) and potentially memalign/posix_memalign"

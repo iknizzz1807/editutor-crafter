@@ -73,7 +73,7 @@ resources:
   - name: Ring Election Algorithm
     url: https://www.cs.colostate.edu/~cs551/CourseNotes/Synchronization/LeijdElect.html
     type: article
-  - name: "Designing Data-Intensive Applications - Chapter 8 (Leader Election)"
+  - name: Designing Data-Intensive Applications - Chapter 8 (Leader Election)""
     url: https://dataintensive.net/
     type: book
 prerequisites:
@@ -99,10 +99,10 @@ milestones:
       - "Node failure/recovery events are logged with timestamp, node ID, and event type"
       - "Messages are JSON-serialized with a type field (HEARTBEAT, ELECTION, OK, COORDINATOR) for dispatch"
     pitfalls:
-      - "Not handling partial TCP reads: use length-prefixed framing for messages"
-      - "Heartbeat timeout too short relative to network latency: causes false failure detection"
-      - "Blocking send() calls: if a peer is slow/down, sending to it blocks heartbeats to other peers. Use per-peer send queues or async I/O."
-      - "Not handling connection refused when a peer is down: catch the exception and mark the peer as suspected"
+      - Not handling partial TCP reads: use length-prefixed framing for messages
+      - Heartbeat timeout too short relative to network latency: causes false failure detection
+      - Blocking send() calls: if a peer is slow/down, sending to it blocks heartbeats to other peers. Use per-peer send queues or async I/O.
+      - Not handling connection refused when a peer is down: catch the exception and mark the peer as suspected
     concepts:
       - Point-to-point and broadcast messaging
       - Heartbeat-based failure detection
@@ -131,14 +131,14 @@ milestones:
       - "If a higher-ID node responds with OK within the election timeout (configurable, default 5s), the initiator defers and waits"
       - "If no higher-ID node responds within the timeout, the initiator declares itself leader and broadcasts COORDINATOR to all nodes"
       - "A node receiving a COORDINATOR message accepts the new leader only if the sender's ID is higher than or equal to its own"
-      - "Quorum check: an election is only valid if the electing node can communicate with a majority (N/2 + 1) of the cluster. If quorum is not met, the node does NOT declare itself leader and logs a warning."
+      - Quorum check: an election is only valid if the electing node can communicate with a majority (N/2 + 1) of the cluster. If quorum is not met, the node does NOT declare itself leader and logs a warning.
       - "Each election produces a monotonically increasing epoch number (term). The COORDINATOR message includes the epoch. Nodes reject COORDINATOR messages with an epoch ≤ their current known epoch."
       - "Concurrent elections (two nodes detect failure simultaneously) converge to the same leader within 2 election timeout periods"
     pitfalls:
-      - "Split brain without quorum: in a 5-node cluster partitioned 2|3, both sides could elect a leader. The quorum requirement prevents the minority partition from electing."
-      - "Missing epoch/term numbers: a former leader that was partitioned and comes back sends stale COORDINATOR messages. Without epoch comparison, other nodes accept the stale leader."
-      - "Election storm: if timeout is too short, nodes repeatedly trigger elections. Use exponential backoff between election attempts."
-      - "Not handling the case where the new leader crashes immediately after sending COORDINATOR: nodes must re-detect failure and re-elect."
+      - Split brain without quorum: in a 5-node cluster partitioned 2|3, both sides could elect a leader. The quorum requirement prevents the minority partition from electing.
+      - Missing epoch/term numbers: a former leader that was partitioned and comes back sends stale COORDINATOR messages. Without epoch comparison, other nodes accept the stale leader.
+      - Election storm: if timeout is too short, nodes repeatedly trigger elections. Use exponential backoff between election attempts.
+      - Not handling the case where the new leader crashes immediately after sending COORDINATOR: nodes must re-detect failure and re-elect.
     concepts:
       - Bully algorithm three-phase protocol (ELECTION → OK → COORDINATOR)
       - Quorum requirement for partition tolerance
@@ -165,17 +165,17 @@ milestones:
       Coordinator phase) to prevent infinite loops.
     acceptance_criteria:
       - "Nodes are arranged in a logical ring ordered by ID; each node knows its successor (next higher ID, wrapping around)"
-      - "Phase 1 (Election): initiator sends an ELECTION message containing its own ID to its successor. Each node appends its ID and forwards to its successor."
+      - Phase 1 (Election): initiator sends an ELECTION message containing its own ID to its successor. Each node appends its ID and forwards to its successor.
       - "When the ELECTION message returns to the initiator (its ID is already in the list), Phase 1 is complete. The initiator selects the highest ID from the collected list."
-      - "Phase 2 (Coordinator): initiator sends a COORDINATOR message with the winner's ID and epoch around the ring. Each node records the new leader and epoch."
+      - Phase 2 (Coordinator): initiator sends a COORDINATOR message with the winner's ID and epoch around the ring. Each node records the new leader and epoch.
       - "If a node's successor is down, it skips to the next live node in the ring (ring repair)"
-      - "Quorum: the election is valid only if the number of IDs collected in the ELECTION message is > N/2"
+      - Quorum: the election is valid only if the number of IDs collected in the ELECTION message is > N/2
       - "Epoch number is incremented on each election and included in COORDINATOR. Nodes reject stale COORDINATOR messages."
     pitfalls:
-      - "Infinite loop without two-phase protocol: if there is no termination condition, the ELECTION message circulates forever"
-      - "Ring break with multiple consecutive failures: if two adjacent nodes fail, the ring is broken. The skip logic must handle chains of failures."
-      - "Multiple simultaneous elections: two nodes detect failure and start elections concurrently. The protocol must converge (typically by the message with the longer ID list absorbing the shorter one)."
-      - "Node rejoin during election: a recovering node receives an ELECTION message with an in-progress election. It should add its ID and forward, not start a new election."
+      - Infinite loop without two-phase protocol: if there is no termination condition, the ELECTION message circulates forever
+      - Ring break with multiple consecutive failures: if two adjacent nodes fail, the ring is broken. The skip logic must handle chains of failures.
+      - Multiple simultaneous elections: two nodes detect failure and start elections concurrently. The protocol must converge (typically by the message with the longer ID list absorbing the shorter one).
+      - Node rejoin during election: a recovering node receives an ELECTION message with an in-progress election. It should add its ID and forward, not start a new election.
     concepts:
       - Ring topology and successor management
       - Two-phase election protocol (Election → Coordinator)
@@ -199,16 +199,16 @@ milestones:
       Write comprehensive tests that simulate node failures, network
       partitions, and concurrent elections to verify correctness.
     acceptance_criteria:
-      - "Test: kill the current leader process; verify a new leader is elected within 2 * election_timeout"
-      - "Test: partition a 5-node cluster into (2, 3); verify only the majority partition elects a leader; minority partition has no leader"
-      - "Test: heal the partition; verify the minority nodes accept the majority's leader (with the correct epoch)"
-      - "Test: kill and restart a node; verify it re-integrates and accepts the current leader without triggering a new election"
-      - "Test: trigger 3 simultaneous elections from different nodes; verify exactly one leader emerges with a consistent epoch across all nodes"
-      - "Test: verify epoch numbers are monotonically increasing across successive elections"
+      - Test: kill the current leader process; verify a new leader is elected within 2 * election_timeout
+      - Test: partition a 5-node cluster into (2, 3); verify only the majority partition elects a leader; minority partition has no leader
+      - Test: heal the partition; verify the minority nodes accept the majority's leader (with the correct epoch)
+      - Test: kill and restart a node; verify it re-integrates and accepts the current leader without triggering a new election
+      - Test: trigger 3 simultaneous elections from different nodes; verify exactly one leader emerges with a consistent epoch across all nodes
+      - Test: verify epoch numbers are monotonically increasing across successive elections
     pitfalls:
-      - "Flaky tests from timing dependencies: use controllable/mockable clocks and message delivery"
-      - "Not testing the quorum path: many implementations work perfectly until a partition occurs"
-      - "Process management in tests: ensure all spawned processes are cleaned up even if the test fails"
+      - Flaky tests from timing dependencies: use controllable/mockable clocks and message delivery
+      - Not testing the quorum path: many implementations work perfectly until a partition occurs
+      - Process management in tests: ensure all spawned processes are cleaned up even if the test fails
     concepts:
       - Fault injection patterns
       - Deterministic testing of distributed systems
@@ -225,5 +225,4 @@ milestones:
       - Test suite covering leader failure, partition, heal, rejoin, and concurrent election
       - CI-compatible test runner with timeout and cleanup
     estimated_hours: "3-4"
-
 ```

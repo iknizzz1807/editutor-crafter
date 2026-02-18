@@ -98,7 +98,7 @@ milestones:
       - "All 8 octants handled correctly, including horizontal, vertical, and diagonal lines"
       - "Algorithm uses integer-only arithmetic with no floating-point operations"
       - "Lines are clipped to framebuffer bounds (pixels outside buffer are not written)"
-      - "Visual test: wireframe triangle rendered from 3 line segments"
+      - Visual test: wireframe triangle rendered from 3 line segments
     pitfalls:
       - "Missing octant handling causes lines in certain directions to render incorrectly"
       - "Integer overflow on large coordinate differences"
@@ -116,7 +116,7 @@ milestones:
       - "Framebuffer with set_pixel(x, y, color) and save/display interface"
       - "Bresenham's line algorithm supporting all octants"
       - "Bounds checking or clipping for out-of-range pixels"
-      - "Visual test: wireframe shapes drawn from line segments"
+      - Visual test: wireframe shapes drawn from line segments
     estimated_hours: "3-4"
 
   - id: software-3d-m2
@@ -133,12 +133,12 @@ milestones:
       - "Perspective divide converts clip-space (x,y,z,w) to NDC by dividing by w"
       - "Viewport transform maps NDC [-1,1] to screen pixel coordinates [0,width] × [0,height]"
       - "OBJ file loader reads vertex positions and face indices (at minimum)"
-      - "Wireframe render: 3D model is projected and drawn as line segments on screen"
+      - Wireframe render: 3D model is projected and drawn as line segments on screen
       - "Rotating the model matrix produces visible 3D rotation in output"
     pitfalls:
-      - "Matrix multiplication order: MVP = Projection × View × Model, not the reverse"
+      - Matrix multiplication order: MVP = Projection × View × Model, not the reverse
       - "Forgetting perspective divide—everything looks orthographic"
-      - "Y-axis flip: screen Y increases downward, NDC Y increases upward"
+      - Y-axis flip: screen Y increases downward, NDC Y increases upward
       - "Homogeneous w=0 vertices cause divide-by-zero (need clipping, addressed in M4)"
       - "OBJ face indices are 1-based, not 0-based"
     concepts:
@@ -170,14 +170,14 @@ milestones:
       - "Top-left fill rule ensures no gaps or double-drawn pixels between adjacent triangles"
       - "Flat-top, flat-bottom, and general triangles all rasterize correctly"
       - "Degenerate triangles (zero area) are rejected without crashing"
-      - "Backface culling: triangles facing away from the camera (negative winding in screen space) are skipped"
+      - Backface culling: triangles facing away from the camera (negative winding in screen space) are skipped
       - "Barycentric coordinates are computed for each pixel inside the triangle (used for interpolation in later milestones)"
-      - "Visual test: 3D model renders as flat-colored solid faces"
+      - Visual test: 3D model renders as flat-colored solid faces
     pitfalls:
       - "Inconsistent winding order between model faces—some faces culled incorrectly"
       - "Gaps between adjacent triangles from incorrect fill rule implementation"
       - "Sub-pixel precision errors causing shimmer on moving geometry"
-      - "Rasterizer performance: naive bounding-box iteration is O(screen) per triangle; should iterate only within triangle bounds"
+      - Rasterizer performance: naive bounding-box iteration is O(screen) per triangle; should iterate only within triangle bounds
     concepts:
       - Triangle rasterization
       - Fill rules (top-left)
@@ -202,13 +202,13 @@ milestones:
       geometry behind the camera, and add a z-buffer for correct depth
       ordering of overlapping faces.
     acceptance_criteria:
-      - "Triangles partially behind the near plane are clipped: the behind-camera portion is removed and new vertices are generated at the clip boundary"
+      - Triangles partially behind the near plane are clipped: the behind-camera portion is removed and new vertices are generated at the clip boundary
       - "Triangles fully behind the near plane are discarded entirely"
       - "Clipping produces 0, 1, or 2 output triangles from each input triangle (Sutherland-Hodgman or equivalent)"
       - "Z-buffer stores per-pixel depth values initialized to maximum depth each frame"
-      - "Depth test: only the nearest fragment at each pixel is written to the color buffer"
+      - Depth test: only the nearest fragment at each pixel is written to the color buffer
       - "Depth values are correctly interpolated across the triangle surface using barycentric coordinates"
-      - "Visual test: overlapping geometry renders with correct occlusion (no z-fighting at normal distances)"
+      - Visual test: overlapping geometry renders with correct occlusion (no z-fighting at normal distances)
       - "Camera can move freely without geometry inversion or crashes when objects pass behind the camera"
     pitfalls:
       - "Skipping near-plane clipping causes inverted/exploded geometry when vertices have w ≤ 0"
@@ -231,7 +231,7 @@ milestones:
       - "Z-buffer allocation and per-frame clearing"
       - "Depth test integrated into rasterizer"
       - "Perspective-correct depth interpolation"
-      - "Visual test: camera moving through geometry without artifacts"
+      - Visual test: camera moving through geometry without artifacts
     estimated_hours: "6-8"
 
   - id: software-3d-m5
@@ -241,12 +241,12 @@ milestones:
       from a directional light source.
     acceptance_criteria:
       - "Face normals are computed from triangle vertex positions using cross product"
-      - "Flat shading: each triangle face is lit uniformly based on dot(face_normal, light_direction)"
+      - Flat shading: each triangle face is lit uniformly based on dot(face_normal, light_direction)
       - "Vertex normals are computed by averaging face normals of adjacent faces (or loaded from OBJ)"
-      - "Gouraud shading: per-vertex lighting is interpolated across the triangle using barycentric coordinates"
+      - Gouraud shading: per-vertex lighting is interpolated across the triangle using barycentric coordinates
       - "Diffuse lighting intensity = max(0, dot(normal, light_dir)) (clamped, no negative light)"
       - "Light direction is configurable and consistent across the scene"
-      - "Visual test: 3D model shows smooth shading gradients on curved surfaces (Gouraud) vs faceted appearance (flat)"
+      - Visual test: 3D model shows smooth shading gradients on curved surfaces (Gouraud) vs faceted appearance (flat)
     pitfalls:
       - "Normals pointing inward produce inverted lighting (dark where it should be bright)"
       - "Not normalizing normals after interpolation causes brightness variation"
@@ -268,5 +268,4 @@ milestones:
       - "Gouraud shading with per-vertex lighting interpolated across triangles"
       - "Configurable directional light source"
     estimated_hours: "5-8"
-
 ```

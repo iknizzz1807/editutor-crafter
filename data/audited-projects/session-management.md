@@ -65,13 +65,13 @@ languages:
     - Java
   also_possible: []
 resources:
-  - name: "OWASP Session Management Cheat Sheet"
+  - name: OWASP Session Management Cheat Sheet""
     url: https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html
     type: documentation
-  - name: "Redis Session Management"
+  - name: Redis Session Management""
     url: https://redis.io/solutions/session-management/
     type: documentation
-  - name: "Session Fixation Prevention"
+  - name: Session Fixation Prevention""
     url: https://owasp.org/www-community/controls/Session_Fixation_Protection
     type: article
 prerequisites:

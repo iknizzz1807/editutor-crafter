@@ -99,7 +99,7 @@ milestones:
       prevention, and endpoint ownership verification.
     acceptance_criteria:
       - Endpoint registration accepts a callback URL and list of subscribed event types; a cryptographically random signing secret (256-bit minimum) is generated and returned once
-      - Registered URLs are validated against an SSRF blocklist rejecting private IP ranges (10.x, 172.16-31.x, 192.168.x, 127.x, 169.254.x, ::1, fc00::/7) and non-HTTPS schemes
+      - Registered URLs are validated against an SSRF blocklist rejecting private IP ranges (10.x, 172.16-31.x, 192.168.x, 127.x, 169.254.x, : :1, fc00::/7) and non-HTTPS schemes
       - Endpoint ownership is verified by sending a challenge request with a random token; only endpoints that echo back the token within 10 seconds are activated
       - Unverified endpoints cannot receive any webhook deliveries; delivery queue rejects events for unverified endpoints
       - HMAC-SHA256 signature is computed over 'timestamp.payload' and included in the X-Webhook-Signature header along with the timestamp
@@ -248,5 +248,4 @@ milestones:
       - Delivery metrics dashboard showing success rate, latency percentiles, and error rates per endpoint
       - Event debugging view with full request/response timeline for each delivery attempt
     estimated_hours: 11
-
 ```

@@ -418,7 +418,7 @@ milestones:
     acceptance_criteria:
       - 16384 hash slots are distributed across cluster nodes, with each node owning a contiguous range of slots
       - Key-to-slot mapping uses CRC16(key) mod 16384, producing deterministic routing
-      - MOVED response (e.g., -MOVED 3999 127.0.0.1:7001) redirects clients to the correct node for a given key
+      - MOVED response (e.g., -MOVED 3999 127.0.0.1: 7001) redirects clients to the correct node for a given key
       - ASK response handles in-progress slot migration, directing the client to retry at the migration target
       - Cluster nodes exchange topology information via a gossip protocol with periodic PING/PONG messages
       - Hash tags (e.g., {user}.name and {user}.email) ensure related keys map to the same slot

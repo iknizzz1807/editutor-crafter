@@ -94,7 +94,7 @@ milestones:
       generates log records for begin, write, commit, and abort operations.
     estimated_hours: "4-6"
     concepts:
-      - "WAL motivation: steal/no-force buffer pool policy"
+      - WAL motivation: steal/no-force buffer pool policy
       - Log record types (BEGIN, UPDATE, COMMIT, ABORT, CLR, CHECKPOINT)
       - LSN (Log Sequence Number) as monotonically increasing record identifier
       - Before-image (undo data) and after-image (redo data)
@@ -178,7 +178,7 @@ milestones:
       (roll back uncommitted transactions using CLRs for crash-safe undo).
     estimated_hours: "6-9"
     concepts:
-      - "ARIES three phases: Analysis, Redo, Undo"
+      - ARIES three phases: Analysis, Redo, Undo
       - Analysis phase builds transaction table and dirty page table
       - Redo phase replays ALL changes (committed and uncommitted) from redoLSN
       - Undo phase rolls back uncommitted transactions using prevLSN chain
@@ -191,9 +191,9 @@ milestones:
       - Idempotent operation design
       - Crash simulation and testing
     acceptance_criteria:
-      - "Analysis phase: scans log from last checkpoint forward, reconstructs the transaction table (active transactions with status and lastLSN) and dirty page table (pages with uncommitted changes and their recLSN)"
-      - "Redo phase: replays ALL logged changes (both committed and uncommitted) starting from the minimum recLSN in the dirty page table; a change is skipped if the page's pageLSN >= the record's LSN (already applied)"
-      - "Undo phase: rolls back all transactions that were active (uncommitted) at crash time by following each transaction's prevLSN chain backward, applying inverse operations"
+      - Analysis phase: scans log from last checkpoint forward, reconstructs the transaction table (active transactions with status and lastLSN) and dirty page table (pages with uncommitted changes and their recLSN)
+      - Redo phase: replays ALL logged changes (both committed and uncommitted) starting from the minimum recLSN in the dirty page table; a change is skipped if the page's pageLSN >= the record's LSN (already applied)
+      - Undo phase: rolls back all transactions that were active (uncommitted) at crash time by following each transaction's prevLSN chain backward, applying inverse operations
       - Each undo operation writes a CLR to the log with undoNextLSN pointing to the next record to undo; this ensures that if the system crashes during undo, recovery skips already-undone records
       - Recovery is idempotent — running recovery multiple times produces the same database state (verified by test)
       - Recovery handles crash during undo correctly — if a crash occurs mid-undo, the next recovery uses CLRs to skip already-undone operations
@@ -240,7 +240,7 @@ milestones:
       - Log segments older than the last checkpoint's minimum recLSN can be safely truncated (deleted); truncation reclaims disk space
       - Log truncation does NOT delete segments that contain records needed for undo of active transactions (i.e., segments referenced by any active transaction's firstLSN)
       - Checkpoint interval is configurable (by time or by number of log records); shorter intervals mean faster recovery but more checkpoint overhead
-      - Recovery time test: without checkpoint, recovery scans entire log; with checkpoint at 50% through the log, recovery scan is approximately halved
+      - Recovery time test: "without checkpoint, recovery scans entire log; with checkpoint at 50% through the log, recovery scan is approximately halved"
     pitfalls:
       - Checkpoint must capture transaction table and dirty page table atomically (or nearly so); capturing them at different times can cause inconsistencies
       - Master record must be updated atomically after CHECKPOINT_END is written; crash between CHECKPOINT_END and master record update is handled by using the previous checkpoint

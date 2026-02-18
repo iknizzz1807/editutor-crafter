@@ -97,11 +97,11 @@ milestones:
       filesystem using pivot_root. Mount essential pseudo-filesystems
       (/proc, /sys, /dev) inside the container.
     acceptance_criteria:
-      - "Create new PID namespace: process inside container sees itself as PID 1 (verified by running 'cat /proc/self/status' inside container)"
-      - "Create new mount namespace: mounts inside container are not visible from the host (verified by mounting tmpfs inside container and checking host /proc/mounts)"
-      - "Create new UTS namespace: container can set its own hostname without affecting the host (verified with 'hostname' command inside and outside)"
-      - "Create new user namespace with UID/GID mapping: container root (UID 0) maps to an unprivileged host UID (verified by checking /proc/self/uid_map inside container)"
-      - "pivot_root: after namespace creation, mount the container rootfs as a new mount point, call pivot_root to swap root, and unmount the old root; the process can no longer access the host filesystem (verified by attempting to read host-specific files like /etc/hostname and confirming they show container values)"
+      - Create new PID namespace: "process inside container sees itself as PID 1 (verified by running 'cat /proc/self/status' inside container)"
+      - Create new mount namespace: mounts inside container are not visible from the host (verified by mounting tmpfs inside container and checking host /proc/mounts)
+      - Create new UTS namespace: "container can set its own hostname without affecting the host (verified with 'hostname' command inside and outside)"
+      - Create new user namespace with UID/GID mapping: container root (UID 0) maps to an unprivileged host UID (verified by checking /proc/self/uid_map inside container)
+      - pivot_root: after namespace creation, mount the container rootfs as a new mount point, call pivot_root to swap root, and unmount the old root; the process can no longer access the host filesystem (verified by attempting to read host-specific files like /etc/hostname and confirming they show container values)
       - "Mount /proc inside the container (mount -t proc proc /proc) so process tools (ps, top) work correctly inside the container"
       - "Mount minimal /dev with /dev/null, /dev/zero, /dev/random, /dev/urandom as bind mounts or device nodes"
       - "Drop all Linux capabilities except a minimal set (CAP_NET_BIND_SERVICE, CAP_KILL, CAP_CHOWN) after namespace setup; verify with capsh --print inside container"
@@ -135,18 +135,18 @@ milestones:
     acceptance_criteria:
       - "Pull an OCI image manifest and layer blobs from a container registry (e.g., Docker Hub) via the OCI Distribution API (HTTP-based); authenticate with token-based auth for public images"
       - "Alternatively, load an OCI image from a local tar archive (e.g., exported via 'docker save' or 'skopeo copy')"
-      - "Verify layer integrity: each downloaded layer blob's SHA256 digest matches the digest listed in the image manifest; reject corrupted layers"
+      - Verify layer integrity: "each downloaded layer blob's SHA256 digest matches the digest listed in the image manifest; reject corrupted layers"
       - "Unpack each layer tarball into a content-addressable directory (e.g., /var/lib/runtime/layers/<sha256>/)"
       - "Mount overlayfs combining all image layers (read-only lower dirs in correct stacking order) with a per-container writable upper dir and work dir"
-      - "Verify copy-on-write: modify a file inside the container; confirm the modification exists only in the upper dir, not in any lower layer"
-      - "Layer caching: if a layer with the same digest already exists locally, skip download and reuse the cached layer"
-      - "Cleanup on container removal: unmount overlayfs, delete the writable upper and work dirs; shared read-only layers are retained for reuse"
+      - Verify copy-on-write: modify a file inside the container; confirm the modification exists only in the upper dir, not in any lower layer
+      - Layer caching: if a layer with the same digest already exists locally, skip download and reuse the cached layer
+      - Cleanup on container removal: unmount overlayfs, delete the writable upper and work dirs; shared read-only layers are retained for reuse
       - "Work directory is on the same filesystem as the upper directory (overlayfs requirement); verify this or fail with a clear error"
     pitfalls:
       - "Overlayfs requires kernel 3.18+; older kernels silently fail or produce incorrect behavior. Check kernel version at startup."
       - "The work directory MUST be on the same filesystem as the upper directory and MUST be empty; violating either causes mount failure with a confusing error"
       - "Hardlinks across overlayfs layers cause unexpected behavior (POSIX inode semantics break); this is a known overlayfs limitation"
-      - "Layer ordering matters: the OCI manifest lists layers bottom-to-top; overlayfs lowerdir parameter lists them left-to-right (topmost first). Getting this wrong produces a broken filesystem."
+      - Layer ordering matters: the OCI manifest lists layers bottom-to-top; overlayfs lowerdir parameter lists them left-to-right (topmost first). Getting this wrong produces a broken filesystem.
       - "Not verifying layer digests allows supply-chain attacks where a compromised registry serves modified layers"
     concepts:
       - OCI Image Specification (manifest, config, layers)
@@ -155,11 +155,11 @@ milestones:
       - Overlayfs mount semantics (lowerdir, upperdir, workdir)
       - Copy-on-write filesystem behavior
     deliverables:
-      - "Image puller: download manifest and layer blobs from OCI registry with digest verification"
-      - "Layer unpacker: extract tar layers into content-addressable storage directories"
-      - "Overlayfs mounter: combine layers and writable dir into container rootfs mount"
-      - "Layer cache: skip download for locally-available layers"
-      - "Cleanup function: unmount overlayfs and remove per-container writable state"
+      - Image puller: download manifest and layer blobs from OCI registry with digest verification
+      - Layer unpacker: extract tar layers into content-addressable storage directories
+      - Overlayfs mounter: combine layers and writable dir into container rootfs mount
+      - Layer cache: skip download for locally-available layers
+      - Cleanup function: unmount overlayfs and remove per-container writable state
     estimated_hours: "10-14"
 
   - id: container-runtime-m3
@@ -175,8 +175,8 @@ milestones:
       - "Set io.max for configurable I/O bandwidth limits on specified block devices"
       - "Add the container process to the cgroup by writing its PID to cgroup.procs"
       - "Monitor resource usage by reading memory.current, cpu.stat, and io.stat; expose these as container metrics"
-      - "OOM handling: detect OOM kill events by monitoring memory.events (oom_kill counter); log the event and optionally restart the container based on configuration"
-      - "Cleanup: remove the cgroup directory on container deletion; verify no processes remain in the cgroup before removal"
+      - OOM handling: detect OOM kill events by monitoring memory.events (oom_kill counter); log the event and optionally restart the container based on configuration
+      - Cleanup: remove the cgroup directory on container deletion; verify no processes remain in the cgroup before removal
     pitfalls:
       - "Cannot remove a cgroup directory while processes are still inside it; EBUSY is returned. Kill all processes first."
       - "Memory limit without swap limit (memory.swap.max) allows the container to use unlimited swap, effectively bypassing the memory limit. Set memory.swap.max = 0 or a bounded value."
@@ -207,15 +207,15 @@ milestones:
       - "For each container, create a veth pair; move one end into the container's network namespace; attach the other end to the bridge"
       - "Assign a unique IP address from the bridge subnet to the container's veth interface; configure the default route to point to the bridge gateway IP"
       - "Enable IP forwarding (net.ipv4.ip_forward = 1) on the host; add iptables MASQUERADE rule for the bridge subnet to enable outbound internet access from containers"
-      - "Port mapping: add iptables DNAT rules to forward traffic from host_port to container_ip:container_port; verified by curling host:host_port from outside and receiving response from container"
-      - "Inter-container communication: two containers on the same bridge can communicate via their container IPs without NAT (verified by ping between containers)"
-      - "DNS resolution: write a resolv.conf inside the container with configurable nameserver (default: host's nameserver); container can resolve external domains"
-      - "Cleanup: on container removal, delete veth pair, remove iptables rules (DNAT and MASQUERADE for specific container), and release IP address back to the pool"
+      - Port mapping: add iptables DNAT rules to forward traffic from host_port to container_ip:container_port; verified by curling host:host_port from outside and receiving response from container
+      - Inter-container communication: two containers on the same bridge can communicate via their container IPs without NAT (verified by ping between containers)
+      - DNS resolution: "write a resolv.conf inside the container with configurable nameserver (default: host's nameserver); container can resolve external domains"
+      - Cleanup: on container removal, delete veth pair, remove iptables rules (DNAT and MASQUERADE for specific container), and release IP address back to the pool
     pitfalls:
       - "Deleting the host-side veth automatically deletes the container-side veth; but if the container is deleted first, the host-side veth may orphan. Always clean up explicitly."
       - "iptables rules persist after container death if not explicitly removed; leaked rules accumulate and cause port conflicts or security holes"
       - "MTU mismatch between bridge and container veth causes packet fragmentation and performance degradation; set consistent MTU across all interfaces"
-      - "IP address pool exhaustion: if the subnet is too small for the number of containers, allocation fails. Use at least a /16 subnet."
+      - IP address pool exhaustion: if the subnet is too small for the number of containers, allocation fails. Use at least a /16 subnet.
       - "Not enabling ip_forward on the host means container traffic to external networks is silently dropped"
     concepts:
       - Virtual Ethernet (veth) pairs and network namespaces
@@ -239,19 +239,19 @@ milestones:
       create, start, exec, stop, and delete operations, exposed via a
       CLI tool.
     acceptance_criteria:
-      - "CLI command 'runtime create <image> --name <name> --memory <limit> --cpu <quota> --port <host:container>' creates a container: pulls/caches image, unpacks layers, sets up overlayfs, creates cgroup, configures networking, but does NOT start the process"
+      - CLI command 'runtime create <image> --name <name> --memory <limit> --cpu <quota> --port <host: "container>' creates a container: pulls/caches image, unpacks layers, sets up overlayfs, creates cgroup, configures networking, but does NOT start the process"
       - "CLI command 'runtime start <name>' starts the container process inside its namespaces, attached to its cgroup, with pivot_root into the overlayfs rootfs"
       - "CLI command 'runtime exec <name> <cmd>' executes a new process inside an existing running container's namespaces (using setns syscall)"
       - "CLI command 'runtime stop <name>' sends SIGTERM to the container's PID 1, waits for configurable grace period, then SIGKILL if still running"
-      - "CLI command 'runtime delete <name>' removes the container: unmounts overlayfs, removes cgroup, cleans up networking, deletes writable layer"
+      - CLI command 'runtime delete <name>' removes the container: unmounts overlayfs, removes cgroup, cleans up networking, deletes writable layer
       - "CLI command 'runtime list' shows all containers with name, status (created/running/stopped), image, PID, IP, and created timestamp"
       - "Container state is persisted to disk (JSON file per container) so the runtime survives restarts and can manage previously created containers"
-      - "End-to-end test: create a container from an alpine image, start it running a web server, curl it via port mapping, exec a command inside it, stop it, delete it; all operations succeed"
+      - End-to-end test: create a container from an alpine image, start it running a web server, curl it via port mapping, exec a command inside it, stop it, delete it; all operations succeed
     pitfalls:
       - "Container PID 1 must handle SIGTERM properly; if the entrypoint ignores SIGTERM, the grace period expires and SIGKILL is used, which doesn't allow graceful shutdown"
       - "setns for exec requires the target namespaces' file descriptors in /proc/<pid>/ns/; if the container PID 1 has exited, exec fails"
       - "State file corruption (e.g., crash during write) causes the runtime to lose track of containers; use atomic write (write to temp file, then rename)"
-      - "Zombie processes: if PID 1 inside the container doesn't reap children, zombie processes accumulate. Consider a minimal init process (like tini) as PID 1."
+      - Zombie processes: "if PID 1 inside the container doesn't reap children, zombie processes accumulate. Consider a minimal init process (like tini) as PID 1."
     concepts:
       - Container lifecycle state machine (created -> running -> stopped -> deleted)
       - Process management (fork, exec, signal handling)
@@ -261,7 +261,7 @@ milestones:
     deliverables:
       - "CLI tool with create, start, exec, stop, delete, and list commands"
       - "Container state persistence (JSON file per container with metadata)"
-      - "Lifecycle integration: create chains image pull + overlayfs + cgroup + network setup"
+      - Lifecycle integration: create chains image pull + overlayfs + cgroup + network setup
       - "exec implementation using setns to join running container namespaces"
       - "Graceful stop with SIGTERM + grace period + SIGKILL"
       - "End-to-end integration test covering full lifecycle"

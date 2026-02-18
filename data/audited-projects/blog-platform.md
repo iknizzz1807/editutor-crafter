@@ -161,13 +161,13 @@ milestones:
     acceptance_criteria:
       - "POST /posts creates a new post storing raw markdown content with the authenticated user as author; returns 201"
       - "GET /posts returns paginated results (offset or cursor-based) with configurable page size; response includes total count"
-      - "GET /posts/:id returns the full post with author display_name, raw markdown, and rendered HTML (sanitized)"
-      - "PUT /posts/:id returns 403 Forbidden when a non-author attempts to modify the post"
-      - "DELETE /posts/:id returns 403 Forbidden when a non-author attempts to delete the post; author receives 204"
+      - GET /posts/: id returns the full post with author display_name, raw markdown, and rendered HTML (sanitized)
+      - PUT /posts/: id returns 403 Forbidden when a non-author attempts to modify the post
+      - DELETE /posts/: id returns 403 Forbidden when a non-author attempts to delete the post; author receives 204
       - "Rendered HTML output is sanitized using an allowlist-based HTML sanitizer to prevent stored XSS from malicious markdown"
-      - "POST /posts/:id/comments creates a comment by the authenticated user; returns 201 with the comment"
-      - "GET /posts/:id/comments returns paginated comments for the post, ordered by created_at ascending"
-      - "DELETE /comments/:id allows only the comment author to delete; returns 403 for non-authors"
+      - POST /posts/: id/comments creates a comment by the authenticated user; returns 201 with the comment
+      - GET /posts/: id/comments returns paginated comments for the post, ordered by created_at ascending
+      - DELETE /comments/: id allows only the comment author to delete; returns 403 for non-authors
       - "Queries for posts with authors use JOIN or eager loading to avoid N+1 query patterns"
     pitfalls:
       - "Rendering unsanitized user markdown to HTML creates stored XSS vulnerabilities; always sanitize rendered output"

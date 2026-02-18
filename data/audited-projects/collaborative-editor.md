@@ -91,11 +91,11 @@ milestones:
       conflict-free text insertion and deletion with guaranteed convergence.
     estimated_hours: 15
     concepts:
-      - "RGA: each character has a unique ID (site_id, logical_clock) determining total order"
-      - "Tombstone deletion: deleted characters are marked, not removed, to maintain ID stability"
-      - "Causal ordering: operations are applied only after all causally preceding operations"
-      - "Convergence: all replicas applying the same set of operations reach identical state regardless of order"
-      - "Position identifiers: unique IDs that remain valid even as concurrent inserts occur at the same position"
+      - RGA: each character has a unique ID (site_id, logical_clock) determining total order
+      - Tombstone deletion: deleted characters are marked, not removed, to maintain ID stability
+      - Causal ordering: operations are applied only after all causally preceding operations
+      - Convergence: all replicas applying the same set of operations reach identical state regardless of order
+      - Position identifiers: unique IDs that remain valid even as concurrent inserts occur at the same position
     skills:
       - CRDT algorithms
       - Logical clock implementation
@@ -105,8 +105,8 @@ milestones:
       - "Insert operation creates a character with a unique ID (site_id, lamport_timestamp) and positions it after a specified predecessor ID in the sequence"
       - "Delete operation marks a character as a tombstone by its unique ID; the character is hidden from the visible document but retained in the internal structure"
       - "Concurrent inserts at the same position (same predecessor) are deterministically ordered using the total order on IDs (compare lamport_timestamp, break ties with site_id)"
-      - "Convergence test: 3 independent replicas each apply 50 random concurrent insert and delete operations; after all operations are exchanged and applied, all 3 replicas produce the identical visible document string"
-      - "Operations are commutative: applying operations in any order produces the same final state (verified by randomizing application order in tests)"
+      - Convergence test: 3 independent replicas each apply 50 random concurrent insert and delete operations; after all operations are exchanged and applied, all 3 replicas produce the identical visible document string
+      - Operations are commutative: applying operations in any order produces the same final state (verified by randomizing application order in tests)
       - "Document with 10,000 characters supports insert and delete operations in under 10ms each (O(log n) or better lookup)"
     pitfalls:
       - Lamport timestamp collision when two sites have identical clocks — must use site_id as tiebreaker
@@ -130,10 +130,10 @@ milestones:
       handling, and document persistence.
     estimated_hours: 15
     concepts:
-      - "Operation-based sync: broadcast each insert/delete operation to all peers via server relay"
-      - "Causal ordering with vector clocks: only apply an operation when all its causal predecessors have been applied"
-      - "State sync on reconnection: send missing operations or full document state to reconnecting clients"
-      - "Document persistence: periodically snapshot the CRDT state for durability"
+      - Operation-based sync: broadcast each insert/delete operation to all peers via server relay
+      - Causal ordering with vector clocks: only apply an operation when all its causal predecessors have been applied
+      - State sync on reconnection: send missing operations or full document state to reconnecting clients
+      - Document persistence: periodically snapshot the CRDT state for durability
     skills:
       - WebSocket server implementation
       - Vector clock causal ordering
@@ -168,10 +168,10 @@ milestones:
       editors with colored indicators and user presence awareness.
     estimated_hours: 12
     concepts:
-      - "Cursor position as CRDT ID reference: cursor points to a character ID, not a numeric index"
+      - Cursor position as CRDT ID reference: cursor points to a character ID, not a numeric index
       - "Selection range as pair of CRDT IDs (anchor, focus)"
-      - "Presence protocol: lightweight high-frequency updates separate from document operations"
-      - "Cursor transformation: when remote operations insert/delete near cursor, position adjusts automatically"
+      - Presence protocol: lightweight high-frequency updates separate from document operations
+      - Cursor transformation: when remote operations insert/delete near cursor, position adjusts automatically
     skills:
       - WebSocket presence channel
       - UI state synchronization
@@ -205,11 +205,11 @@ milestones:
       inverse operations scoped to the local user's action history.
     estimated_hours: 18
     concepts:
-      - "Selective undo: each user undoes only their own operations, not everyone's"
-      - "Inverse operations: undo of insert is delete of the same character; undo of delete is re-insert"
-      - "Undo in CRDT context: inverse operations are themselves CRDT operations that are broadcast and merged"
-      - "Operation grouping: consecutive keystrokes are grouped into a single undo unit (word or phrase)"
-      - "Redo as undo of undo: maintain a redo stack cleared on new operations"
+      - Selective undo: each user undoes only their own operations, not everyone's
+      - Inverse operations: undo of insert is delete of the same character; undo of delete is re-insert
+      - Undo in CRDT context: inverse operations are themselves CRDT operations that are broadcast and merged
+      - Operation grouping: consecutive keystrokes are grouped into a single undo unit (word or phrase)
+      - Redo as undo of undo: maintain a redo stack cleared on new operations
     skills:
       - Undo/redo stack management
       - Inverse operation computation
@@ -222,7 +222,7 @@ milestones:
       - "Consecutive character insertions within 500ms are grouped into a single undo unit; pressing undo reverts the entire group"
       - "Redo reapplies the most recently undone operation group; the redo stack is cleared when the user performs a new edit"
       - "Undo works correctly even when concurrent remote operations have interleaved with the user's operations (the undone characters are correctly identified regardless of document mutations)"
-      - "Undo stack survives reconnection: after disconnect and reconnect, the user can still undo their pre-disconnect operations"
+      - Undo stack survives reconnection: after disconnect and reconnect, the user can still undo their pre-disconnect operations
     pitfalls:
       - Undoing a delete requires storing the deleted content (tombstones help here in CRDTs)
       - Undo stack invalidation on reconnection if not stored with CRDT operation IDs
@@ -236,5 +236,4 @@ milestones:
       - Redo stack with clear-on-new-edit semantics
       - Undo/redo operations broadcast as regular CRDT ops for convergence
       - Undo correctness test with concurrent edits from multiple users
-
 ```

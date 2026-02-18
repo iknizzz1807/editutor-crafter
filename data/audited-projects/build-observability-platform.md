@@ -102,15 +102,15 @@ milestones:
     acceptance_criteria:
       - "Data model defines concrete schema types (structs/protobufs) for LogRecord, MetricDataPoint (counter, gauge, histogram), and Span with shared Resource attributes (service.name, service.version, service.instance.id, deployment.environment)"
       - "Every LogRecord carries optional trace_id and span_id fields linking it to the active trace context at emission time"
-      - "MetricDataPoints support exemplar attachments: each exemplar contains a trace_id, span_id, and the metric value, linking a specific metric observation to a representative trace"
-      - "Schema is compatible with OpenTelemetry semantic conventions: field names, types, and required attributes match the OTel specification"
+      - MetricDataPoints support exemplar attachments: each exemplar contains a trace_id, span_id, and the metric value, linking a specific metric observation to a representative trace
+      - Schema is compatible with OpenTelemetry semantic conventions: field names, types, and required attributes match the OTel specification
       - "Serialization/deserialization round-trips correctly for all three signal types using Protocol Buffers with no data loss (verified by automated tests)"
       - "A test data generator produces synthetic logs, metrics, and traces for a simulated microservice architecture (at least 3 services with inter-service calls), outputting valid OTLP payloads"
     pitfalls:
-      - "Schema drift: if log, metric, and trace schemas define Resource differently, correlation queries break silently. Use a single shared Resource type."
-      - "Missing correlation IDs: logs emitted outside a trace context have empty trace_id. The schema must handle this gracefully (nullable, not zero-valued)."
-      - "Cardinality in attributes: allowing arbitrary key-value attributes without limits enables accidental cardinality explosion. Define a max attribute count per signal."
-      - "Protobuf field numbering: changing field numbers after initial implementation breaks backward compatibility. Plan the schema carefully."
+      - Schema drift: if log, metric, and trace schemas define Resource differently, correlation queries break silently. Use a single shared Resource type.
+      - Missing correlation IDs: logs emitted outside a trace context have empty trace_id. The schema must handle this gracefully (nullable, not zero-valued).
+      - Cardinality in attributes: allowing arbitrary key-value attributes without limits enables accidental cardinality explosion. Define a max attribute count per signal.
+      - Protobuf field numbering: changing field numbers after initial implementation breaks backward compatibility. Plan the schema carefully.
     concepts:
       - Data modeling and schema design
       - OpenTelemetry semantic conventions
@@ -137,15 +137,15 @@ milestones:
       - "OTLP gRPC receiver accepts ExportLogsServiceRequest, ExportMetricsServiceRequest, and ExportTraceServiceRequest and returns appropriate status codes"
       - "Incoming data is buffered in memory up to a configurable batch size (default 1000 items) or time window (default 5 seconds) before flushing to storage"
       - "Pipeline normalizes timestamps to UTC nanosecond precision and validates required resource attributes, rejecting malformed data with descriptive error responses"
-      - "Backpressure: when the internal buffer exceeds a high-water mark, the receiver returns gRPC RESOURCE_EXHAUSTED status, signaling producers to slow down"
-      - "Tail-based trace sampling: traces are held in a buffer until complete (all spans received or a configurable timeout elapses), then a sampling decision is made based on configurable rules (e.g., always sample errors, sample 10% of healthy traces)"
+      - Backpressure: when the internal buffer exceeds a high-water mark, the receiver returns gRPC RESOURCE_EXHAUSTED status, signaling producers to slow down
+      - Tail-based trace sampling: traces are held in a buffer until complete (all spans received or a configurable timeout elapses), then a sampling decision is made based on configurable rules (e.g., always sample errors, sample 10% of healthy traces)
       - "Sampled-out traces are discarded; sampled-in traces are forwarded to storage. Sampling decision is recorded as a metric (sample rate, traces kept vs. dropped)"
       - "Pipeline sustains at least 10,000 small metric data points per second on a single core with <100MB memory usage, verified by a load test"
     pitfalls:
-      - "Data loss on crash: in-memory buffers are lost on process termination. Implement a write-ahead log or accept documented data loss window."
-      - "Memory exhaustion from tail sampling: holding incomplete traces in memory while waiting for all spans can consume unbounded memory. Set a max buffer size and time-based eviction."
-      - "Head-of-line blocking: a slow storage backend blocks the entire pipeline. Use async flush with a separate writer goroutine/thread and bounded channel."
-      - "Tail sampling completeness: in a distributed system, spans from different services arrive at different times. A trace is 'complete' only heuristically (timeout or root span received)."
+      - Data loss on crash: in-memory buffers are lost on process termination. Implement a write-ahead log or accept documented data loss window.
+      - Memory exhaustion from tail sampling: holding incomplete traces in memory while waiting for all spans can consume unbounded memory. Set a max buffer size and time-based eviction.
+      - Head-of-line blocking: a slow storage backend blocks the entire pipeline. Use async flush with a separate writer goroutine/thread and bounded channel.
+      - Tail sampling completeness: in a distributed system, spans from different services arrive at different times. A trace is 'complete' only heuristically (timeout or root span received).
     concepts:
       - High-throughput data pipelines
       - Backpressure and flow control
@@ -177,15 +177,15 @@ milestones:
       - "Metric storage uses time-series compression (e.g., Gorilla/delta-of-delta for timestamps, XOR for values) achieving at least 2x compression ratio over raw storage"
       - "Metric storage enforces a configurable cardinality limit per metric name (default 10,000 unique label sets); exceeding the limit triggers a warning and drops new series with a 'cardinality exceeded' error"
       - "Trace storage stores individual spans and reconstructs full span trees (parent-child relationships) from a trace_id query, returning the complete tree structure"
-      - "Cross-signal index: a secondary index maps trace_id to log record locations and metric exemplar locations, enabling O(1) lookup of all signals for a given trace"
+      - Cross-signal index: a secondary index maps trace_id to log record locations and metric exemplar locations, enabling O(1) lookup of all signals for a given trace
       - "Configurable retention policies automatically delete data older than a specified duration (separate settings per signal type); deletion runs as a background process without blocking ingestion or queries"
-      - "Storage engines expose internal metrics: disk usage, record count, index size, and query latency percentiles via an internal metrics endpoint"
+      - Storage engines expose internal metrics: disk usage, record count, index size, and query latency percentiles via an internal metrics endpoint
     pitfalls:
-      - "Inverted index memory usage: indexing every token in every log line requires significant memory. Use term frequency filtering, stop words, and on-disk index segments."
-      - "Cardinality explosion in metrics: a single metric with user_id as a label generates millions of time series and crashes the storage engine. Cardinality limits are not optional."
-      - "Time-series compression edge cases: NaN values, large gaps between samples, and counter resets break naive delta encoding. Handle each case explicitly."
-      - "Cross-signal consistency: if a log is written but the corresponding trace_id index entry fails, correlation is broken. Use atomic writes or accept eventual consistency with reconciliation."
-      - "Retention deletion performance: deleting millions of old records inline with queries causes latency spikes. Use time-partitioned storage (segments per time window) so deletion is a segment drop."
+      - Inverted index memory usage: indexing every token in every log line requires significant memory. Use term frequency filtering, stop words, and on-disk index segments.
+      - Cardinality explosion in metrics: a single metric with user_id as a label generates millions of time series and crashes the storage engine. Cardinality limits are not optional.
+      - Time-series compression edge cases: NaN values, large gaps between samples, and counter resets break naive delta encoding. Handle each case explicitly.
+      - Cross-signal consistency: if a log is written but the corresponding trace_id index entry fails, correlation is broken. Use atomic writes or accept eventual consistency with reconciliation.
+      - Retention deletion performance: deleting millions of old records inline with queries causes latency spikes. Use time-partitioned storage (segments per time window) so deletion is a segment drop.
     concepts:
       - Inverted indexes
       - Time-series compression (Gorilla encoding)
@@ -214,16 +214,16 @@ milestones:
       and aggregation, and generates a service dependency topology map from trace data.
     acceptance_criteria:
       - "Query language supports filtering by time range, service name, attributes, severity (logs), metric name, and label matchers using a defined syntax"
-      - "Cross-signal query: given a trace_id, return the complete trace tree, all associated log records, and any metric exemplars referencing that trace, in a single API response"
+      - Cross-signal query: given a trace_id, return the complete trace tree, all associated log records, and any metric exemplars referencing that trace, in a single API response
       - "Aggregate queries compute rate, sum, avg, percentiles (p50/p95/p99), and histogram bucket counts over metric time series for a specified time range and group-by labels"
       - "Query API returns paginated results with cursor-based navigation; initial page returns within 2 seconds for typical queries over the last hour of data"
       - "Service topology endpoint returns a directed graph of service dependencies derived from trace span parent-child relationships across service boundaries, with edge weights (request count, error rate, latency percentiles) for a specified time window"
-      - "Query execution plan: for complex queries, the API can return an explain/plan showing which storage backends are queried and estimated cost"
+      - Query execution plan: for complex queries, the API can return an explain/plan showing which storage backends are queried and estimated cost
     pitfalls:
-      - "Cross-signal fan-out: a single trace_id may link to thousands of log records. Limit result sets and use streaming for large responses."
-      - "Topology map staleness: computing the service graph from raw traces on every request is expensive. Pre-aggregate service-to-service edges periodically (e.g., every minute) and serve from cache."
-      - "Percentile aggregation: you cannot average percentiles across time windows. Use t-digest or DDSketch for mergeable percentile sketches."
-      - "Query injection: if the query language is parsed from user input, ensure it cannot access internal tables or cause unbounded scans. Implement query timeout and row limits."
+      - Cross-signal fan-out: a single trace_id may link to thousands of log records. Limit result sets and use streaming for large responses.
+      - Topology map staleness: computing the service graph from raw traces on every request is expensive. Pre-aggregate service-to-service edges periodically (e.g., every minute) and serve from cache.
+      - Percentile aggregation: you cannot average percentiles across time windows. Use t-digest or DDSketch for mergeable percentile sketches.
+      - Query injection: if the query language is parsed from user input, ensure it cannot access internal tables or cause unbounded scans. Implement query timeout and row limits.
     concepts:
       - Query planning and optimization
       - Cross-database correlation
@@ -255,14 +255,14 @@ milestones:
       - "Anomaly detection uses a defined statistical method (e.g., z-score on a rolling window, or exponential moving average with deviation bands) to identify metric values outside learned baselines; the specific algorithm and its parameters are documented"
       - "Alert correlation groups related alerts (e.g., high latency + high error rate on the same service) into a single incident, reducing notification noise"
       - "Notifications route to configured channels (webhook, email, Slack-compatible) based on alert severity and service ownership labels"
-      - "Alert deduplication: repeated firings of the same alert rule for the same label set within a configurable window (default 1 hour) produce at most one notification; subsequent firings update the existing alert state"
-      - "Alert silencing: manually silence specific alerts for a time window (e.g., during maintenance) with an audit log of who silenced what and when"
-      - "Alert history API: query past alert firings, resolutions, and notification delivery status for audit and debugging"
+      - Alert deduplication: repeated firings of the same alert rule for the same label set within a configurable window (default 1 hour) produce at most one notification; subsequent firings update the existing alert state
+      - Alert silencing: manually silence specific alerts for a time window (e.g., during maintenance) with an audit log of who silenced what and when
+      - Alert history API: query past alert firings, resolutions, and notification delivery status for audit and debugging
     pitfalls:
-      - "Alert fatigue: if every metric fluctuation triggers an alert, operators ignore them all. Require minimum duration (for-clause) and hysteresis (resolve threshold different from fire threshold)."
-      - "Anomaly detection false positives: seasonal patterns (e.g., daily traffic cycles) cause z-score methods to fire every morning. Use seasonality-aware baselines or allow time-of-day exclusions."
-      - "Notification thunderstorm: a cascading failure triggers hundreds of alerts simultaneously. Implement rate limiting on notifications per channel."
-      - "Missing resolved notification: if an alert fires but the resolution notification fails, operators think the incident is ongoing. Track notification delivery status."
+      - Alert fatigue: if every metric fluctuation triggers an alert, operators ignore them all. Require minimum duration (for-clause) and hysteresis (resolve threshold different from fire threshold).
+      - Anomaly detection false positives: seasonal patterns (e.g., daily traffic cycles) cause z-score methods to fire every morning. Use seasonality-aware baselines or allow time-of-day exclusions.
+      - Notification thunderstorm: a cascading failure triggers hundreds of alerts simultaneously. Implement rate limiting on notifications per channel.
+      - Missing resolved notification: if an alert fires but the resolution notification fails, operators think the incident is ongoing. Track notification delivery status.
     concepts:
       - Statistical anomaly detection
       - Alert grouping and correlation

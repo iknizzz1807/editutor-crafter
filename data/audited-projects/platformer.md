@@ -133,7 +133,7 @@ milestones:
       - "Horizontal movement responds to left/right input with acceleration and deceleration"
       - "Gravity applies downward acceleration each physics frame, scaled by delta time"
       - "Terminal velocity caps maximum falling speed"
-      - "AABB collision detection checks player against nearby solid tiles (broad phase: only check tiles overlapping player AABB)"
+      - AABB collision detection checks player against nearby solid tiles (broad phase: only check tiles overlapping player AABB)
       - "X-axis and Y-axis collisions are resolved separately to prevent corner sticking"
       - "Player cannot pass through solid tiles in any direction (floor, walls, ceiling)"
       - "'Grounded' flag is set when player's bottom edge rests on a solid tile"
@@ -171,10 +171,10 @@ milestones:
       and one-way platforms. Focus on making movement feel responsive.
     acceptance_criteria:
       - "Jump is only allowed when grounded flag is true (or within coyote time window)"
-      - "Variable jump height: releasing jump button early reduces upward velocity (gravity multiplier on release)"
-      - "Coyote time: jump is permitted within a configurable window (e.g., 80-150ms) after walking off an edge"
-      - "Jump buffer: jump input registered within a configurable window (e.g., 80-150ms) before landing is executed on land"
-      - "One-way platforms: player passes through from below but lands on top; dropping through is triggered by down+jump"
+      - Variable jump height: releasing jump button early reduces upward velocity (gravity multiplier on release)
+      - Coyote time: jump is permitted within a configurable window (e.g., 80-150ms) after walking off an edge
+      - Jump buffer: jump input registered within a configurable window (e.g., 80-150ms) before landing is executed on land
+      - One-way platforms: player passes through from below but lands on top; dropping through is triggered by down+jump
       - "Jump apex feels controlled—separate gravity multiplier for rising vs falling"
       - "All timing parameters (coyote time, buffer window, gravity multipliers) are configurable constants"
     pitfalls:
@@ -208,13 +208,13 @@ milestones:
       Implement character animation states (idle, run, jump, fall) driven
       by a state machine, and a camera system that follows the player.
     acceptance_criteria:
-      - "Character animation state machine with at least: Idle, Run, Jump, Fall states"
+      - Character animation state machine with at least: Idle, Run, Jump, Fall states
       - "State transitions triggered by velocity and grounded status (not input directly)"
       - "Sprite flips horizontally based on movement direction"
       - "Animation frames play at correct speed independent of frame rate"
       - "Camera follows player with configurable smoothing (lerp or deadzone)"
       - "Camera is clamped to level bounds—does not show area outside the tile map"
-      - "Camera lookahead: optionally shifts in the direction of player movement"
+      - Camera lookahead: optionally shifts in the direction of player movement
     pitfalls:
       - "Animation state driven by input instead of physics state causes desync (e.g., 'run' animation while sliding on wall)"
       - "Camera snapping instead of smoothing causes jarring movement"
@@ -246,12 +246,12 @@ milestones:
       - "Enemies patrol between defined waypoints with direction reversal at endpoints"
       - "Player-enemy collision from the side or below kills the player"
       - "Player landing on top of an enemy (stomp) defeats the enemy and gives a small bounce"
-      - "Stomp detection: player's bottom edge contacts enemy's top edge while player is falling (vy > 0)"
+      - Stomp detection: player's bottom edge contacts enemy's top edge while player is falling (vy > 0)
       - "Player death triggers respawn at last activated checkpoint with brief invincibility"
       - "Invincibility frames after respawn prevent immediate re-death (visual flicker feedback)"
       - "At least one hazard type (spikes, pits) that kills on contact"
       - "Checkpoint activation is visually indicated (flag, color change)"
-      - "Game can be completed: reaching the end of the level triggers a win condition"
+      - Game can be completed: reaching the end of the level triggers a win condition
     pitfalls:
       - "Stomp detection window too narrow—stomps register as side hits"
       - "Enemy stuck at patrol bounds due to collision with walls not handled"
@@ -276,5 +276,4 @@ milestones:
       - "Hazard tiles (spikes/pits) causing instant death"
       - "Win condition on reaching level end"
     estimated_hours: "5-7"
-
 ```

@@ -101,8 +101,8 @@ milestones:
       - "Histogram type buckets observations into immutable configurable boundaries and tracks count and sum; bucket boundaries cannot be changed after creation"
       - "Summary type (client-side quantiles) is parseable from the exposition format even though server-side histograms are preferred"
       - "Labels attach key-value pairs to metrics; label names are validated against pattern [a-zA-Z_][a-zA-Z0-9_]* and label values are arbitrary UTF-8 strings"
-      - "Metric names are validated: must match [a-zA-Z_:][a-zA-Z0-9_:]* and must not use reserved prefixes (__)"
-      - "Cardinality enforcement: configurable maximum unique label combinations per metric name (default 10,000); exceeding the limit logs a warning and drops new series"
+      - Metric names are validated: must match [a-zA-Z_:][a-zA-Z0-9_:]* and must not use reserved prefixes (__)
+      - Cardinality enforcement: configurable maximum unique label combinations per metric name (default 10,000); exceeding the limit logs a warning and drops new series
       - "Metric metadata (HELP text, TYPE declaration, UNIT) is stored and retrievable alongside metric values"
     pitfalls:
       - "Counter resets on process restart produce a value decrease—consumers must use rate() which detects resets, but the data model should allow storing the reset event"
@@ -140,12 +140,12 @@ milestones:
       - "When a target is removed from discovery or fails to respond for a configurable number of consecutive scrapes (default 5), all its series are marked with a staleness marker (special NaN value)"
       - "Staleness markers cause the series to be excluded from query results after the staleness timestamp; lookback window queries do not return stale data"
       - "Per-target scrape interval is configurable; different targets can have different scrape frequencies"
-      - "Label collision between target labels (e.g., instance, job) and metric-internal labels is resolved: target labels take precedence with a configurable prefix for conflicting metric labels"
+      - Label collision between target labels (e.g., instance, job) and metric-internal labels is resolved: target labels take precedence with a configurable prefix for conflicting metric labels
     pitfalls:
-      - "Thundering herd: 1000 targets all scraped at exactly T+0, T+15, T+30 creates periodic load spikes—jitter spreads scrapes across the interval"
-      - "Missing staleness markers: a crashed service's last metric value appears 'frozen' in queries indefinitely, misleading dashboards and alerts"
-      - "Network timeout blocking the scrape goroutine: use context.WithTimeout and cancel properly"
-      - "Label collision: target has a metric with label 'instance' and the scrape config also adds 'instance'—one overwrites the other silently without collision handling"
+      - Thundering herd: 1000 targets all scraped at exactly T+0, T+15, T+30 creates periodic load spikes—jitter spreads scrapes across the interval
+      - Missing staleness markers: a crashed service's last metric value appears 'frozen' in queries indefinitely, misleading dashboards and alerts
+      - Network timeout blocking the scrape goroutine: use context.WithTimeout and cancel properly
+      - Label collision: target has a metric with label 'instance' and the scrape config also adds 'instance'—one overwrites the other silently without collision handling
     concepts:
       - Pull-based scraping architecture
       - Scrape jitter for load distribution
@@ -180,10 +180,10 @@ milestones:
       - "Chunk boundaries align to configurable time windows (default 2 hours); concurrent writes to different chunks are serialized per-series using per-series locks"
       - "High-cardinality label combinations are bounded by the cardinality limits from M1; the storage layer does not accept series exceeding the limit"
     pitfalls:
-      - "Out-of-order samples corrupt delta-of-delta encoding: the delta becomes negative in unexpected ways, producing incorrect decompressed values—reject strictly"
-      - "Compression ratio degrades significantly with irregular scrape intervals: if scrape times vary by seconds, delta-of-delta uses more bits per timestamp—document expected ratios"
+      - Out-of-order samples corrupt delta-of-delta encoding: the delta becomes negative in unexpected ways, producing incorrect decompressed values—reject strictly
+      - Compression ratio degrades significantly with irregular scrape intervals: if scrape times vary by seconds, delta-of-delta uses more bits per timestamp—document expected ratios
       - "Concurrent writes to the same series (e.g., from duplicate scrape configs) require per-series locking; global locks kill throughput"
-      - "Chunk boundary at exact timestamp: a sample at exactly T=chunk_boundary belongs to which chunk? Define consistently (e.g., inclusive start, exclusive end)"
+      - Chunk boundary at exact timestamp: a sample at exactly T=chunk_boundary belongs to which chunk? Define consistently (e.g., inclusive start, exclusive end)
       - "WAL replay after crash can be slow for large WAL files—implement incremental checkpointing"
     concepts:
       - Gorilla time-series compression (delta-of-delta, XOR)
@@ -216,16 +216,16 @@ milestones:
       - "Instant queries return the most recent sample within a configurable lookback window (default 5 minutes); samples older than the lookback are not returned (staleness-aware)"
       - "Range queries return all samples within [start, end] at the specified step interval"
       - "Aggregation functions sum, avg, max, min, count, and quantile produce correct results grouped by specified label dimensions with 'by' and 'without' clauses"
-      - "rate() function calculates per-second rate from counter metrics with counter reset detection: when a counter value decreases (process restart), rate() treats it as a reset and adds the new value to the accumulated total"
-      - "Label matchers support: exact match (=), not-equal (!=), regex match (=~), and negative regex (!~); regex uses RE2 syntax"
+      - rate() function calculates per-second rate from counter metrics with counter reset detection: when a counter value decreases (process restart), rate() treats it as a reset and adds the new value to the accumulated total
+      - Label matchers support: exact match (=), not-equal (!=), regex match (=~), and negative regex (!~); regex uses RE2 syntax
       - "Query timeout (configurable, default 2 minutes) cancels long-running queries and returns an error; queries scanning more than configurable max series (default 50,000) are rejected upfront"
-      - "Staleness markers are respected: series with staleness markers are excluded from query results after the staleness timestamp"
+      - Staleness markers are respected: series with staleness markers are excluded from query results after the staleness timestamp
     pitfalls:
-      - "rate() without counter reset detection: counter restarts produce a massive negative rate; naive (last-first)/duration gives incorrect results"
+      - rate() without counter reset detection: counter restarts produce a massive negative rate; naive (last-first)/duration gives incorrect results
       - "Regex label matching can be slow (O(n) scan of all series)—use inverted index for exact matches, fall back to regex only for =~ and !~"
       - "High-cardinality queries (e.g., sum by (user_id)) scan millions of series and cause OOM—enforce max series limit per query"
-      - "Staleness not respected: stale series appear in aggregations with their last known value, skewing results"
-      - "Quantile aggregation across labels: quantile(0.99, ...) over pre-computed quantiles is incorrect; only histogram_quantile over histograms gives correct results"
+      - Staleness not respected: stale series appear in aggregations with their last known value, skewing results
+      - Quantile aggregation across labels: quantile(0.99, ...) over pre-computed quantiles is incorrect; only histogram_quantile over histograms gives correct results
     concepts:
       - Expression parsing and abstract syntax trees
       - Vector and matrix result types
@@ -245,5 +245,4 @@ milestones:
       - "Query limiter enforcing max series and timeout per query"
       - "Label matcher optimizer using inverted index for exact matches"
     estimated_hours: "14-16"
-
 ```

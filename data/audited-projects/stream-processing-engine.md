@@ -69,10 +69,10 @@ resources:
   - name: Apache Flink Documentation
     url: https://nightlies.apache.org/flink/flink-docs-lts/
     type: documentation
-  - name: "Streaming Systems Book (Akidau, Chernyak, Lax)"
+  - name: Streaming Systems Book (Akidau, Chernyak, Lax)""
     url: https://www.oreilly.com/library/view/streaming-systems/9781491983867/
     type: book
-  - name: "Lightweight Asynchronous Snapshots for Distributed Dataflows (Chandy-Lamport variant)"
+  - name: Lightweight Asynchronous Snapshots for Distributed Dataflows (Chandy-Lamport variant)""
     url: https://arxiv.org/abs/1506.08603
     type: paper
   - name: Exactly-Once Semantics in Kafka

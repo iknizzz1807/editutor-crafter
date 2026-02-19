@@ -152,10 +152,12 @@
 
 	.content {
 		padding: 24px 32px;
+		min-width: 0;
 	}
 
 	.level-group {
 		margin-bottom: 32px;
+		min-width: 0;
 	}
 
 	.level-header {
@@ -202,6 +204,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
+		min-width: 0;
 	}
 
 	@media (max-width: 768px) {

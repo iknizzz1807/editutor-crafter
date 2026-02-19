@@ -91,6 +91,7 @@
 		color: var(--text-primary);
 		display: flex;
 		flex-direction: column;
+		min-width: 0;
 	}
 
 	.project-card:hover {
@@ -102,6 +103,11 @@
 
 	.card-top {
 		padding: 16px 20px 12px;
+		min-width: 0;
+	}
+
+	.project-info {
+		min-width: 0;
 	}
 
 	.title-row {

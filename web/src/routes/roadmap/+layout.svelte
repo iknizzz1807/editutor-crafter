@@ -45,19 +45,19 @@
 
 <style>
 	.app-layout {
-		display: flex;
 		min-height: 100vh;
 	}
 
 	.main {
-		flex: 1;
-		margin-left: 280px;
+		padding-left: 280px;
 		min-height: 100vh;
-		transition: margin-left 0.25s ease;
+		transition: padding-left 0.25s ease;
+		max-width: 100%;
+		overflow-x: hidden;
 	}
 
 	.main.collapsed {
-		margin-left: 60px;
+		padding-left: 60px;
 	}
 
 	.mobile-header {
@@ -121,7 +121,7 @@
 		}
 
 		.main {
-			margin-left: 0 !important;
+			padding-left: 0 !important;
 		}
 	}
 </style>

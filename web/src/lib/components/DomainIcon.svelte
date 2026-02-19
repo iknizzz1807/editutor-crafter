@@ -1,34 +1,34 @@
 <script lang="ts">
 	import { Globe, Cpu, Database, Cloud, Brain, Gamepad2, FileCode, Shield, Wrench, CheckCircle, Trophy, Folder } from 'lucide-svelte';
 
-	let { icon }: { icon: string | null | undefined } = $props();
+	let { icon, size = 24 }: { icon: string | null | undefined, size?: number } = $props();
 </script>
 
 <div class="icon-wrapper">
 	{#if icon === 'lucide:globe' || icon === 'lucide:app-window'}
-		<Globe size={24} />
+		<Globe size={size} />
 	{:else if icon === 'lucide:cpu'}
-		<Cpu size={24} />
+		<Cpu size={size} />
 	{:else if icon === 'lucide:database'}
-		<Database size={24} />
+		<Database size={size} />
 	{:else if icon === 'lucide:network' || icon === 'lucide:cloud'}
-		<Cloud size={24} />
+		<Cloud size={size} />
 	{:else if icon === 'lucide:brain'}
-		<Brain size={24} />
+		<Brain size={size} />
 	{:else if icon === 'lucide:gamepad-2'}
-		<Gamepad2 size={24} />
+		<Gamepad2 size={size} />
 	{:else if icon === 'lucide:code-2' || icon === 'lucide:file-code'}
-		<FileCode size={24} />
+		<FileCode size={size} />
 	{:else if icon === 'lucide:shield'}
-		<Shield size={24} />
+		<Shield size={size} />
 	{:else if icon === 'lucide:sparkles' || icon === 'lucide:wrench'}
-		<Wrench size={24} />
+		<Wrench size={size} />
 	{:else if icon === 'lucide:git-branch' || icon === 'lucide:check-circle'}
-		<CheckCircle size={24} />
+		<CheckCircle size={size} />
 	{:else if icon === 'lucide:trophy'}
-		<Trophy size={24} />
+		<Trophy size={size} />
 	{:else}
-		<Folder size={24} />
+		<Folder size={size} />
 	{/if}
 </div>
 

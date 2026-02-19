@@ -30,7 +30,7 @@
 		<a href="/roadmap">Roadmap</a>
 		<span class="sep">/</span>
 		<a href="/roadmap/{data.domain.slug}" class="breadcrumb-domain">
-			<DomainIcon icon={data.domain.icon} />
+			<DomainIcon icon={data.domain.icon} size={16} />
 			{data.domain.name}
 		</a>
 		<span class="sep">/</span>
@@ -231,6 +231,12 @@
 	.breadcrumb a:hover {
 		color: var(--blue);
 		text-decoration: none;
+	}
+
+	.breadcrumb-domain {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
 	}
 
 	.sep {

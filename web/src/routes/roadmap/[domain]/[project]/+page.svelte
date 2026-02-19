@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 	import MilestoneTimeline from '$lib/components/MilestoneTimeline.svelte';
+	import DomainIcon from '$lib/components/DomainIcon.svelte';
 
 	let { data } = $props();
 
@@ -28,7 +29,10 @@
 	<div class="breadcrumb">
 		<a href="/roadmap">Roadmap</a>
 		<span class="sep">/</span>
-		<a href="/roadmap/{data.domain.slug}">{data.domain.icon} {data.domain.name}</a>
+		<a href="/roadmap/{data.domain.slug}" class="breadcrumb-domain">
+			<DomainIcon icon={data.domain.icon} />
+			{data.domain.name}
+		</a>
 		<span class="sep">/</span>
 		<span class="current">{data.project.name}</span>
 	</div>

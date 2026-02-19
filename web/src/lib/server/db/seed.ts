@@ -73,7 +73,7 @@ const domainMetadata: Record<
 > = {
 	'app-dev': {
 		name: 'Application Development',
-		icon: 'lucide:app-window',
+		icon: 'lucide:globe',
 		subdomains: ['Web Apps', 'Mobile', 'Desktop', 'APIs']
 	},
 	systems: {
@@ -123,7 +123,7 @@ const domainMetadata: Record<
 	},
 	'world-scale': {
 		name: 'World-Scale Infrastructure (Final Boss)',
-		icon: 'lucide:globe',
+		icon: 'lucide:trophy',
 		subdomains: ['Massive Scale', 'Global Distribution', 'Enterprise']
 	}
 };

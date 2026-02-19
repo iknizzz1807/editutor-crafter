@@ -1,5 +1,6 @@
 <script lang="ts">
 	import ProjectCard from '$lib/components/ProjectCard.svelte';
+	import DomainIcon from '$lib/components/DomainIcon.svelte';
 
 	let { data } = $props();
 
@@ -27,7 +28,7 @@
 	<div class="header-top">
 		<div class="header-left">
 			<h1>
-				<span>{data.domain.icon}</span>
+				<span class="domain-icon"><DomainIcon icon={data.domain.icon} /></span>
 				{data.domain.name}
 			</h1>
 			{#if data.domain.description}
@@ -92,6 +93,12 @@
 		align-items: center;
 		gap: 12px;
 		margin-bottom: 4px;
+	}
+
+	.domain-icon {
+		display: flex;
+		align-items: center;
+		justify-content: center;
 	}
 
 	.main-header p {

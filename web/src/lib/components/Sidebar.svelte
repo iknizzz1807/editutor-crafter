@@ -1,5 +1,6 @@
 <script lang="ts">
 	import ProgressCircle from './ProgressCircle.svelte';
+	import DomainIcon from './DomainIcon.svelte';
 	import { sidebarCollapsed } from '$lib/stores/sidebar.js';
 
 	let {
@@ -77,7 +78,7 @@
 				class:active={currentDomainSlug === domain.slug}
 				title={collapsed ? domain.name : ''}
 			>
-				<span class="domain-icon">{domain.icon || '📁'}</span>
+				<span class="domain-icon"><DomainIcon icon={domain.icon} /></span>
 				{#if !collapsed}
 					<div class="domain-info">
 						<div class="domain-name">{domain.name}</div>

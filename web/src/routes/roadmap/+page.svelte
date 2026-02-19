@@ -1,4 +1,5 @@
 <script lang="ts">
+	import DomainIcon from '$lib/components/DomainIcon.svelte';
 	let { data } = $props();
 </script>
 
@@ -24,7 +25,9 @@
 			{@const pct = totalM > 0 ? (completedM / totalM) * 100 : 0}
 			<a href="/roadmap/{domain.slug}" class="domain-card">
 				<div class="domain-card-top">
-					<div class="domain-card-icon">{domain.icon || '📁'}</div>
+					<div class="domain-card-icon">
+					<DomainIcon icon={domain.icon} />
+				</div>
 					<div class="domain-card-info">
 						<h2>{domain.name}</h2>
 						{#if domain.description}

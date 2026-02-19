@@ -12,18 +12,19 @@ const yamlMilestoneSchema = z.object({
 	id: z.string().optional(),
 	name: z.string(),
 	description: z.string().optional(),
-	acceptance_criteria: z.array(z.string()).optional(),
-	pitfalls: z.array(z.string()).optional(),
-	concepts: z.array(z.string()).optional(),
-	skills: z.array(z.string()).optional(),
-	deliverables: z.array(z.string()).optional(),
+	acceptance_criteria: z.array(z.union([z.string(), z.record(z.string(), z.string())])).optional(),
+	pitfalls: z.array(z.union([z.string(), z.record(z.string(), z.string())])).optional(),
+	concepts: z.array(z.union([z.string(), z.record(z.string(), z.string())])).optional(),
+	skills: z.array(z.union([z.string(), z.record(z.string(), z.string())])).optional(),
+	deliverables: z.array(z.union([z.string(), z.record(z.string(), z.string())])).optional(),
 	estimated_hours: z.union([z.string(), z.number()]).optional()
 });
 
-const yamlProjectSchema = z.object({
+export const yamlProjectSchema = z.object({
 	id: z.string(),
 	name: z.string(),
 	description: z.string().optional(),
+	domain: z.string().optional(),
 	difficulty: z.string().optional(),
 	estimated_hours: z.union([z.string(), z.number()]).optional(),
 	essence: z.string().optional(),

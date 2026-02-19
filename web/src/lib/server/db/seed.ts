@@ -2,17 +2,17 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import * as schema from './schema.js';
-import { yamlDataSchema, type YamlData } from './yaml-schema.js';
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { yamlProjectSchema, type YamlProject } from './yaml-schema.js';
+import { readFileSync, readdirSync } from 'fs';
+import { resolve, basename } from 'path';
 import yaml from 'js-yaml';
 
 const dbPath = resolve('data/editutor.db');
-const yamlPath = resolve('../data/projects.yaml');
+const projectsDataDir = resolve('../data/projects_data');
 
 console.log('Seeding database...');
 console.log('DB path:', dbPath);
-console.log('YAML path:', yamlPath);
+console.log('Projects data dir:', projectsDataDir);
 
 // Create DB connection
 const sqlite = new Database(dbPath);
@@ -25,23 +25,132 @@ const db = drizzle(sqlite, { schema });
 migrate(db, { migrationsFolder: resolve('drizzle') });
 console.log('Migrations applied.');
 
-// Load and validate YAML
-const yamlContent = readFileSync(yamlPath, 'utf-8');
-const rawData = yaml.load(yamlContent);
-const parseResult = yamlDataSchema.safeParse(rawData);
+// Load all project YAML files
+const projectFiles = readdirSync(projectsDataDir).filter((f) => f.endsWith('.yaml'));
+console.log(`Found ${projectFiles.length} project files`);
 
-if (!parseResult.success) {
-	console.error('YAML validation failed:');
-	for (const issue of parseResult.error.issues.slice(0, 20)) {
-		console.error(`  ${issue.path.join('.')}: ${issue.message}`);
+// Parse and validate all projects
+const projects: YamlProject[] = [];
+const parseErrors: string[] = [];
+
+for (const file of projectFiles) {
+	const filePath = resolve(projectsDataDir, file);
+	const content = readFileSync(filePath, 'utf-8');
+	const rawData = yaml.load(content);
+
+	const parseResult = yamlProjectSchema.safeParse(rawData);
+	if (!parseResult.success) {
+		parseErrors.push(
+			`${file}: ${parseResult.error.issues.slice(0, 3).map((i) => i.message).join(', ')}`
+		);
+		continue;
 	}
-	console.error(`(${parseResult.error.issues.length} total issues)`);
+
+	projects.push(parseResult.data);
+}
+
+if (parseErrors.length > 0) {
+	console.error('YAML validation errors:');
+	for (const err of parseErrors.slice(0, 10)) {
+		console.error(`  ${err}`);
+	}
+	console.error(`(${parseErrors.length} total errors)`);
 	process.exit(1);
 }
 
-const data: YamlData = parseResult.data;
-console.log(`Found ${data.domains.length} domains`);
-console.log(`Found ${Object.keys(data.expert_projects || {}).length} expert projects`);
+console.log(`Loaded ${projects.length} valid projects`);
+
+// Group projects by domain
+const domainMap = new Map<
+	string,
+	{ name: string; icon: string; subdomains: string[]; projects: Map<string, YamlProject[]> }
+>();
+
+// Domain metadata (hardcoded for now, could be moved to a separate file)
+const domainMetadata: Record<
+	string,
+	{ name: string; icon: string; subdomains: string[] }
+> = {
+	'app-dev': {
+		name: 'Application Development',
+		icon: 'lucide:app-window',
+		subdomains: ['Web Apps', 'Mobile', 'Desktop', 'APIs']
+	},
+	systems: {
+		name: 'Systems & Low-Level',
+		icon: 'lucide:cpu',
+		subdomains: ['Operating Systems', 'Networks', 'Compilers', 'Databases']
+	},
+	'data-storage': {
+		name: 'Data & Storage',
+		icon: 'lucide:database',
+		subdomains: ['File Systems', 'Caching', 'Indexing', 'Compression']
+	},
+	distributed: {
+		name: 'Distributed & Cloud',
+		icon: 'lucide:network',
+		subdomains: ['Consensus', 'Replication', 'Sharding', 'Messaging']
+	},
+	'ai-ml': {
+		name: 'AI & Machine Learning',
+		icon: 'lucide:brain',
+		subdomains: ['ML Fundamentals', 'Deep Learning', 'NLP', 'Computer Vision']
+	},
+	'game-dev': {
+		name: 'Game Development',
+		icon: 'lucide:gamepad-2',
+		subdomains: ['Game Engines', 'Multiplayer', 'Physics', 'Rendering']
+	},
+	compilers: {
+		name: 'Languages & Compilers',
+		icon: 'lucide:code-2',
+		subdomains: ['Lexers', 'Parsers', 'Interpreters', 'Compilers']
+	},
+	security: {
+		name: 'Security',
+		icon: 'lucide:shield',
+		subdomains: ['Cryptography', 'Authentication', 'Vulnerability Analysis']
+	},
+	specialized: {
+		name: 'Specialized',
+		icon: 'lucide:sparkles',
+		subdomains: ['Emulators', 'Browsers', 'Advanced Systems']
+	},
+	'software-engineering': {
+		name: 'Software Engineering Practices',
+		icon: 'lucide:git-branch',
+		subdomains: ['Testing', 'CI/CD', 'Observability', 'Architecture']
+	},
+	'world-scale': {
+		name: 'World-Scale Infrastructure (Final Boss)',
+		icon: 'lucide:globe',
+		subdomains: ['Massive Scale', 'Global Distribution', 'Enterprise']
+	}
+};
+
+// Group projects by domain and level
+for (const proj of projects) {
+	const domainId = proj.domain || 'tools';
+	const level = proj.difficulty || 'intermediate';
+
+	if (!domainMap.has(domainId)) {
+		const meta = domainMetadata[domainId] || {
+			name: domainId,
+			icon: 'lucide:folder',
+			subdomains: []
+		};
+		domainMap.set(domainId, {
+			...meta,
+			projects: new Map()
+		});
+	}
+
+	const domain = domainMap.get(domainId)!;
+	if (!domain.projects.has(level)) {
+		domain.projects.set(level, []);
+	}
+	domain.projects.get(level)!.push(proj);
+}
 
 // Helper to normalize languages (handles both flat list and dict)
 function normalizeLanguages(
@@ -70,15 +179,13 @@ const seedTransaction = sqlite.transaction(() => {
 	sqlite.exec('DELETE FROM domains');
 
 	let domainOrder = 0;
-	for (const domain of data.domains) {
+	for (const [domainId, domain] of domainMap) {
 		const domainRow = db
 			.insert(schema.domains)
 			.values({
-				slug: domain.id,
+				slug: domainId,
 				name: domain.name,
-				description: domain.subdomains
-					.map((s) => (typeof s === 'string' ? s : s.name))
-					.join(', '),
+				description: domain.subdomains.join(', '),
 				icon: domain.icon,
 				sortOrder: domainOrder++
 			})
@@ -89,7 +196,7 @@ const seedTransaction = sqlite.transaction(() => {
 		const levels = ['beginner', 'intermediate', 'advanced', 'expert'] as const;
 
 		for (const level of levels) {
-			const projectsList = domain.projects[level] || [];
+			const projectsList = domain.projects.get(level) || [];
 			for (const proj of projectsList) {
 				const projectRow = db
 					.insert(schema.projects)
@@ -100,10 +207,10 @@ const seedTransaction = sqlite.transaction(() => {
 						description: proj.description || null,
 						difficulty: level,
 						sortOrder: projectOrder++,
-						estimatedHours: proj.estimated_hours || null,
+						estimatedHours: proj.estimated_hours ? String(proj.estimated_hours) : null,
 						essence: proj.essence || null,
 						whyImportant: proj.why_important || null,
-						bridge: proj.difficulty === 'beginner' ? 0 : 0, // Simplified or use proj.bridge if added to schema
+						bridge: 0,
 						architectureDocPath: proj.architecture_doc || null
 					})
 					.returning()
@@ -115,8 +222,10 @@ const seedTransaction = sqlite.transaction(() => {
 						const name =
 							typeof prereq === 'string'
 								? prereq
-								: ('name' in prereq ? prereq.name : prereq.id ?? String(prereq));
-						const type = typeof prereq === 'string' ? null : (prereq?.type || null);
+								: 'name' in prereq
+									? prereq.name
+									: (prereq.id ?? String(prereq));
+						const type = typeof prereq === 'string' ? null : prereq?.type || null;
 						if (!name) continue;
 						db.insert(schema.projectPrerequisites)
 							.values({
@@ -158,7 +267,8 @@ const seedTransaction = sqlite.transaction(() => {
 				// Learning outcomes
 				if (proj.learning_outcomes) {
 					for (const outcome of proj.learning_outcomes) {
-						const outcomeStr = typeof outcome === 'string' ? outcome : JSON.stringify(outcome);
+						const outcomeStr =
+							typeof outcome === 'string' ? outcome : JSON.stringify(outcome);
 						db.insert(schema.learningOutcomes)
 							.values({ projectId: projectRow.id, outcome: outcomeStr })
 							.run();
@@ -185,7 +295,7 @@ const seedTransaction = sqlite.transaction(() => {
 								title: ms.name,
 								description: ms.description || null,
 								sortOrder: msOrder++,
-								estimatedHours: ms.estimated_hours || null,
+								estimatedHours: ms.estimated_hours ? String(ms.estimated_hours) : null,
 								acceptanceCriteria: ms.acceptance_criteria
 									? JSON.stringify(ms.acceptance_criteria)
 									: null,

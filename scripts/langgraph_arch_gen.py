@@ -16,7 +16,28 @@ from langchain_core.messages import HumanMessage, SystemMessage
 SCRIPT_DIR = Path(__file__).parent.resolve()
 DATA_DIR = SCRIPT_DIR / ".." / "data"
 YAML_PATH = DATA_DIR / "projects.yaml"
+PROJECTS_DATA_DIR = DATA_DIR / "projects_data"
 DEFAULT_OUTPUT = DATA_DIR / "architecture-docs"
+
+
+def load_project_meta(project_id):
+    """Load project metadata from projects_data/ folder (preferred) or projects.yaml (fallback)."""
+    # Try projects_data/ first
+    yaml_file = PROJECTS_DATA_DIR / f"{project_id}.yaml"
+    if yaml_file.exists():
+        with open(yaml_file) as f:
+            return yaml.safe_load(f)
+
+    # Fallback to projects.yaml
+    if YAML_PATH.exists():
+        with open(YAML_PATH) as f:
+            data = yaml.safe_load(f)
+            for d in data.get("domains", []):
+                for level in ["beginner", "intermediate", "advanced", "expert"]:
+                    for p in d.get("projects", {}).get(level, []):
+                        if p.get("id") == project_id:
+                            return p
+    return None
 OUTPUT_BASE = DEFAULT_OUTPUT  # Will be overridden by --output flag if provided
 D2_EXAMPLES_DIR = SCRIPT_DIR / ".." / "d2_examples"
 INSTRUCTIONS_DIR = SCRIPT_DIR / "instructions"
@@ -757,18 +778,7 @@ app = workflow.compile()
 def generate_project(project_id):
     global OUTPUT_BASE
     print(f"\n>>> V17.1 ATLAS STARTING: {project_id}")
-    with open(YAML_PATH) as f:
-        data = yaml.safe_load(f)
-        meta = next(
-            (
-                p
-                for d in data.get("domains", [])
-                for l in ["beginner", "intermediate", "advanced", "expert"]
-                for p in d.get("projects", {}).get(l, [])
-                if p.get("id") == project_id
-            ),
-            None,
-        )
+    meta = load_project_meta(project_id)
     if not meta:
         return print(f"Error: {project_id} not found.")
 

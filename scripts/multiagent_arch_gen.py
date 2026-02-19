@@ -9,7 +9,26 @@ MODEL = "gemini_cli/gemini-3-pro-preview"
 SCRIPT_DIR = Path(__file__).parent.resolve()
 DATA_DIR = SCRIPT_DIR / ".." / "data"
 YAML_PATH = DATA_DIR / "projects.yaml"
+PROJECTS_DATA_DIR = DATA_DIR / "projects_data"
 OUTPUT_BASE = DATA_DIR / "architecture-docs"
+
+
+def load_project_meta(project_id):
+    """Load project metadata from projects_data/ folder (preferred) or projects.yaml (fallback)."""
+    yaml_file = PROJECTS_DATA_DIR / f"{project_id}.yaml"
+    if yaml_file.exists():
+        with open(yaml_file) as f:
+            return yaml.safe_load(f)
+
+    if YAML_PATH.exists():
+        with open(YAML_PATH) as f:
+            data = yaml.safe_load(f)
+            for d in data.get("domains", []):
+                for level in ["beginner", "intermediate", "advanced", "expert"]:
+                    for p in d.get("projects", {}).get(level, []):
+                        if p.get("id") == project_id:
+                            return p
+    return None
 
 D2_GUIDE = """
 === D2 SYNTAX RULES (STRICT) ===
@@ -219,14 +238,7 @@ class MultiAgentOrchestrator:
         print(f"  ✓ DONE: {self.project_id}")
 
     def _load_meta(self):
-        with open(YAML_PATH) as f:
-            data = yaml.safe_load(f)
-            for d in data.get("domains", []):
-                for l in ["beginner", "intermediate", "advanced", "expert"]:
-                    for p in d.get("projects", {}).get(l, []):
-                        if p["id"] == self.project_id:
-                            return p
-        return None
+        return load_project_meta(self.project_id)
 
     def _sanitize_d2(self, code):
         code = re.sub(r"```d2\n?|```", "", code).strip()

@@ -125,6 +125,11 @@ const domainMetadata: Record<
 		name: 'World-Scale Infrastructure (Final Boss)',
 		icon: 'lucide:trophy',
 		subdomains: ['Massive Scale', 'Global Distribution', 'Enterprise']
+	},
+	'performance-engineering': {
+		name: 'Performance Engineering',
+		icon: 'lucide:gauge',
+		subdomains: ['Low-Latency', 'Memory Optimization', 'Profiling', 'SIMD/Vectorization']
 	}
 };
 

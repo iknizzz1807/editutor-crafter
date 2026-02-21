@@ -1,9 +1,8 @@
 # PROJECTS INVENTORY REPORT
-Total Projects: 194
+Total Projects: 193
 
-## Domain: ai-ml (23 projects)
+## Domain: ai-ml (22 projects)
 ----------------------------------------
-  - [beginner] chatbot-intent: Intent-Based Chatbot
   - [intermediate] ml-model-serving: ML Model Serving API
   - [intermediate] neural-network-basic: Neural Network from Scratch (micrograd)
   - [intermediate] rag-system: RAG System (Retrieval Augmented Generation)
@@ -249,4 +248,3 @@ Total Projects: 194
   - custom-jit-backend: Simple JIT compiler using Cranelift or LLVM for custom DSL (Compiler Team Magnet).
   - hardware-software-codesign-sim: Simulator for custom AI hardware accelerators.
   - formal-verification-logic: Proving a small kernel or consensus algorithm using SMT solvers (Safety-critical Magnet).
-

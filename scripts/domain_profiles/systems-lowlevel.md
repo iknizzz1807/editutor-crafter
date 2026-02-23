@@ -43,3 +43,10 @@ Other domains may need to borrow from this profile when they involve:
 - GPU pipeline → game rendering, ML training infrastructure
 
 
+
+
+## Artist Examples for This Domain
+- **data_walk**: trace virtual address 0xC0103456 -> CR3 -> PDE[768] -> PTE[259] -> physical frame -> byte.
+- **before_after**: `ESP=0x1FFF0, [empty stack]` -> `push eax,ecx,edx,ebx,esp,ebp,esi,edi` -> `ESP=0x1FFD0, [8 registers on stack]`.
+- **structure_layout**: GDT entry with byte offsets: base[0:15] at +0, limit[0:15] at +2, access byte at +5, etc.
+- **state_evolution**: physical memory bitmap frame 0-31: `[1,1,0,0,0,...]` -> alloc frame -> `[1,1,1,0,0,...]`.

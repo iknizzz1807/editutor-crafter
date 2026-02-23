@@ -891,11 +891,17 @@ Output ONLY the corrected D2 code."""
             else state["accumulated_md"]
         )
 
+        # Provide the satellite map code if available for consistency
+        satellite_map_marker = "![diag-satellite-overview]"
+        satellite_context = ""
+        if satellite_map_marker in state["accumulated_md"]:
+            satellite_context = "\nREFERENCE SATELLITE MAP: Use consistent IDs from the existing Master Map found in the beginning of CONTEXT."
+
         prompt = (
             f"{INSTR_ARTIST}\n"
             f"DOCS:\n{D2_REFERENCE}\n"
             f"CONTEXT:\n{context_tail}\n"
-            f"{type_hint}\n"
+            f"{type_hint}{satellite_context}\n"
             f"TASK: Draw '{diag.get('title', 'Untitled')}': {diag.get('description', '')}"
         )
 
@@ -1133,11 +1139,14 @@ Output ONLY the corrected D2 code."""
             else state["tdd_accumulated_md"]
         )
 
+        # Satellite consistency
+        satellite_context = "\nREFERENCE SATELLITE MAP: Use consistent IDs from the Master Map found in the ATLAS CONTEXT."
+
         prompt = (
             f"{INSTR_TDD_ARTIST}\n"
             f"DOCS:\n{D2_REFERENCE}\n"
             f"CONTEXT:\n{atlas_tail}\n{tdd_tail}\n"
-            f"{type_hint}\n"
+            f"{type_hint}{satellite_context}\n"
             f"TASK: Draw '{diag.get('title', 'Untitled')}': {diag.get('description', '')}"
         )
 

@@ -32,3 +32,10 @@ Express/Fastify, Django/FastAPI, Rails, Spring Boot, Next.js/Nuxt/SvelteKit, Rea
 May need systems knowledge (epoll, TCP, process management for "from scratch" servers), security (auth, CSRF/XSS), distributed concepts (session consistency, cache invalidation), or compiler knowledge (bundler = AST parsing + dependency resolution).
 
 
+
+
+## Artist Examples for This Domain
+- **packet_journey**: HTTP Request -> Middleware A -> Controller -> Service -> DB -> Response.
+- **state_evolution**: React component lifecycle or Redux/Store state transition.
+- **data_walk**: URL parsing or Virtual DOM tree diffing.
+- **before_after**: UI state before and after a WebSocket notification.

@@ -34,3 +34,10 @@ OpenSSL/BoringSSL, WireGuard, Signal Protocol, seccomp/AppArmor/SELinux, HashiCo
 May need systems knowledge (sandboxing, namespaces, cgroups, kernel modules), web knowledge (CSRF/XSS, OAuth), or distributed concepts (mTLS, distributed auth).
 
 
+
+
+## Artist Examples for This Domain
+- **packet_journey**: A malicious packet being inspected and dropped by a Firewall/IDS.
+- **before_after**: Memory before and after a buffer overflow (Stack smashing).
+- **data_walk**: Trace of a JWT token being signed -> transmitted -> verified.
+- **structure_layout**: Anatomy of an ELF header or a X.509 certificate.

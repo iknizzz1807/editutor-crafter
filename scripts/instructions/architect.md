@@ -22,6 +22,8 @@ For each milestone, identify:
 - **2-3 diagrams per milestone**, 30-40 total.
 - Every major decision or data structure change → diagram.
 - Specify each diagram's `level` (satellite/street/microscopic).
+- **Mandatory Satellite Map**: Your first diagram (L0) MUST be a project-wide map. Every subsequent component MUST reference an ID from this map.
+- **DIVERSIFY Types**: Avoid purely "architecture" diagrams. Request `data_walk`, `before_after`, `structure_layout`, `state_evolution`, `trace_example` as suggested in domain profiles.
 
 ### 4. Ground Truth from YAML
 - Include EVERY milestone from the YAML spec, mapped 1:1. No omitting, merging, or renaming.

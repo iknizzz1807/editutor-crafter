@@ -29,3 +29,10 @@ SQLite, PostgreSQL, Redis, RocksDB/LevelDB, LMDB, Cassandra, DuckDB, FoundationD
 May need systems knowledge (mmap, fsync, direct I/O), distributed concepts (replication, consensus), or AI/ML concepts (vector similarity, embeddings).
 
 
+
+
+## Artist Examples for This Domain
+- **structure_layout**: B-Tree page layout (Header, Cell Pointers, Free Space, Cells).
+- **data_walk**: Binary search inside a page: `ptr -> offset -> key compare -> jump`.
+- **before_after**: B+Tree before and after a node split or rotation.
+- **state_evolution**: Write-Ahead Log (WAL) growing and then being checkpointed to the main DB.

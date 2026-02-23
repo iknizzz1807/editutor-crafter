@@ -46,8 +46,3 @@ Borrow from compiler-language when: custom operators, graph compilation (XLA, To
 
 
 
-## Artist Examples for This Domain
-- **matrix_flow**: Tensor shapes changing through layers (e.g., [B, S, D] -> [B, S, H, D/H]).
-- **attention_map**: Heatmaps of tokens attending to each other (e.g., 'The' -> 'Cat').
-- **gradient_path**: Backpropagation path from Loss through Weights.
-- **data_walk**: Path of a prompt through Tokenizer -> Embedding -> N Blocks -> Logits.

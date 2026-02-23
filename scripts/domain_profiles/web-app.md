@@ -34,8 +34,3 @@ May need systems knowledge (epoll, TCP, process management for "from scratch" se
 
 
 
-## Artist Examples for This Domain
-- **packet_journey**: HTTP Request -> Middleware A -> Controller -> Service -> DB -> Response.
-- **state_evolution**: React component lifecycle or Redux/Store state transition.
-- **data_walk**: URL parsing or Virtual DOM tree diffing.
-- **before_after**: UI state before and after a WebSocket notification.

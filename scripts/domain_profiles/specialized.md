@@ -40,7 +40,3 @@ This domain borrows heavily. The project likely touches networking (→ systems)
 
 
 
-## Artist Examples for This Domain
-- **data_walk**: Specific logic flow for the niche domain.
-- **structure_layout**: Domain-specific data structures.
-- **state_evolution**: Lifecycle of specialized entities.

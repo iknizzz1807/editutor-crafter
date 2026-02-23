@@ -45,8 +45,3 @@ Borrow from security when: mTLS between nodes, auth for cluster membership.
 
 
 
-## Artist Examples for This Domain
-- **packet_journey**: Trace a request through Client -> Load Balancer -> Node A -> Raft Log -> DB.
-- **failure_scenario**: State of the cluster when Leader dies (Term 5 -> Term 6 election).
-- **timeline_evolution**: Sequence of messages (AppendEntries) across multiple nodes over time.
-- **state_evolution**: Quorum growth: `[S1:Voted, S2:Follower, S3:Voted]` -> `[Leader Elected]`.

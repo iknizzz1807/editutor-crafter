@@ -45,8 +45,3 @@ Borrow from web-app when: dashboard frontend, API design.
 
 
 
-## Artist Examples for This Domain
-- **packet_journey**: Git Push -> Webhook -> CI Runner -> Build -> Deploy.
-- **structure_layout**: Docker Image Layer stack or Kubernetes Pod spec.
-- **state_evolution**: Deployment rollout (Blue/Green or Canary) percentages.
-- **failure_scenario**: Automated recovery when a health check fails.

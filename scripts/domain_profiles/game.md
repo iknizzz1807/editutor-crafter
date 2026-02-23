@@ -43,8 +43,3 @@ Borrow from ai-ml when: NPC behavior (behavior trees, ML agents), procedural gen
 
 
 
-## Artist Examples for This Domain
-- **state_evolution**: Game Loop (Update -> Render) or Entity State Machine (Idle -> Walk -> Attack).
-- **structure_layout**: Entity-Component-System (ECS) memory layout (Arrays of components).
-- **data_walk**: Ray tracing a photon from light source -> bounce -> camera.
-- **before_after**: Scene graph before and after an object transform.

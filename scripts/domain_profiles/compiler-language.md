@@ -39,8 +39,3 @@ Borrow from ai-ml when: DSL for ML (custom operators, autodiff).
 
 
 
-## Artist Examples for This Domain
-- **data_walk**: String "x = 5" -> Lexer -> Tokens [IDENT, EQ, INT] -> Parser -> AST Node [Assign].
-- **structure_layout**: Stack frame layout during a function call (Params, Return Addr, Locals).
-- **state_evolution**: Symbol Table state before and after entering a new scope.
-- **bytecode_walk**: Instructions being fetched from the instruction stream into the VM register.

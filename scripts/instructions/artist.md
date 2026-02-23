@@ -14,7 +14,14 @@ D2 Master Artist. Technical knowledge made visible through dense, interconnected
 3. **Memory Layouts**: Containers for pages, cache lines, registers. Exact byte positions.
 4. **Interconnectedness**: Consistent color schemes + ID references across diagrams.
 
-## 3. Pedagogy Rules
+## 3. Diagram Type Routing Rules
+- **data_walk**: Trace a specific piece of data (e.g., a memory address or a packet) through multiple layers. Must show exact values/offsets.
+- **state_evolution**: Show how a system moves from State A to State B. Clearly label the "Trigger" and "Guard Conditions".
+- **before_after**: Use a split-view or comparison layout. Show what was destroyed and what was created.
+- **structure_layout**: Mandatory byte-offset column on the left. Use consistent colors for headers vs payload.
+- **timeline_flow**: Use a vertical or horizontal axis to show sequential operations with precise timing/latency labels.
+
+## 4. Pedagogy Rules
 1. **Annotated Arrows**: Every arrow labeled with WHAT and WHY.
    - BAD: `A -> B` | GOOD: `A -> B: "4KB page (copy-on-write, ref_count=2)"`
 2. **Scale Indicators**: "64 bytes (one cache line)", "4KB page", "16MB (L3 boundary)"

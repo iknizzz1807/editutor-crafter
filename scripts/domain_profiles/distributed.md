@@ -41,3 +41,5 @@ etcd (Raft), ZooKeeper (Zab), Consul (gossip+Raft), CockroachDB (distributed SQL
 Borrow from systems-lowlevel when: high-perf networking (epoll, io_uring, kernel bypass).
 Borrow from data-storage when: replicated storage layer (WAL, page management).
 Borrow from security when: mTLS between nodes, auth for cluster membership.
+
+

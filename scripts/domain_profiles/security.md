@@ -32,3 +32,5 @@ OpenSSL/BoringSSL, WireGuard, Signal Protocol, seccomp/AppArmor/SELinux, HashiCo
 
 ## Cross-Domain Awareness
 May need systems knowledge (sandboxing, namespaces, cgroups, kernel modules), web knowledge (CSRF/XSS, OAuth), or distributed concepts (mTLS, distributed auth).
+
+

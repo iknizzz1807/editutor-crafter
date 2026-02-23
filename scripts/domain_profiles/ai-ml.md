@@ -42,3 +42,5 @@ Borrow from systems-lowlevel when: CUDA kernels, memory management, GPU pipeline
 Borrow from distributed when: distributed training (all-reduce, ring topology, gradient sync).
 Borrow from data-storage when: embedding storage, vector retrieval, dataset pipeline.
 Borrow from compiler-language when: custom operators, graph compilation (XLA, TorchScript).
+
+

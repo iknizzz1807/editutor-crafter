@@ -41,3 +41,5 @@ Other domains may need to borrow from this profile when they involve:
 - Network I/O (epoll/kqueue, TCP buffers) → web servers, game networking
 - Memory-mapped I/O → database storage engines
 - GPU pipeline → game rendering, ML training infrastructure
+
+

@@ -30,3 +30,5 @@ Express/Fastify, Django/FastAPI, Rails, Spring Boot, Next.js/Nuxt/SvelteKit, Rea
 
 ## Cross-Domain Awareness
 May need systems knowledge (epoll, TCP, process management for "from scratch" servers), security (auth, CSRF/XSS), distributed concepts (session consistency, cache invalidation), or compiler knowledge (bundler = AST parsing + dependency resolution).
+
+

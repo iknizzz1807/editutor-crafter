@@ -36,3 +36,5 @@ DNS: BIND, CoreDNS, Unbound. Git: libgit2, JGit. Browser: Blink, Gecko, Servo. W
 
 ## Cross-Domain Awareness
 This domain borrows heavily. The project likely touches networking (→ systems), file formats (→ storage), parsing (→ compilers), rendering (→ game), math (→ AI/ML), or protocols (→ distributed/security).
+
+

@@ -27,3 +27,5 @@ SQLite, PostgreSQL, Redis, RocksDB/LevelDB, LMDB, Cassandra, DuckDB, FoundationD
 
 ## Cross-Domain Awareness
 May need systems knowledge (mmap, fsync, direct I/O), distributed concepts (replication, consensus), or AI/ML concepts (vector similarity, embeddings).
+
+

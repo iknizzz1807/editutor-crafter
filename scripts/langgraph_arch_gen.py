@@ -11,6 +11,7 @@ try:
 except ImportError:
     ChatAnthropic = None
 from langchain_core.messages import HumanMessage, SystemMessage
+from pydantic import SecretStr
 
 # --- CONFIGURATION ---
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -145,7 +146,7 @@ def init_llm_provider():
         print(f">>> Provider: MIXED ({LLM_PROVIDER})", flush=True)
         LLM = ChatOpenAI(
             base_url="http://127.0.0.1:7999/v1",
-            api_key=os.getenv("GEMINI_PROXY_API_KEY", "mythong2005"),
+            api_key=SecretStr(os.getenv("GEMINI_PROXY_API_KEY", "mythong2005")),
             model="gemini_cli/gemini-3-flash-preview",
             temperature=1,
             max_completion_tokens=64000,
@@ -155,7 +156,7 @@ def init_llm_provider():
         print(f">>> Provider: MISTRAL ({MISTRAL_MODEL})", flush=True)
         LLM = ChatOpenAI(
             base_url="https://api.mistral.ai/v1",
-            api_key=os.getenv("MISTRAL_API_KEY"),
+            api_key=SecretStr(os.getenv("MISTRAL_API_KEY") or ""),
             model=MISTRAL_MODEL,
             temperature=1,
             max_completion_tokens=64000,
@@ -175,7 +176,7 @@ def init_llm_provider():
             model=ANTHROPIC_MODEL,
             temperature=1,
             max_tokens=64000,
-            api_key=api_key,
+            api_key=SecretStr(api_key),
             timeout=1800,
             betas=["context-1m-2025-08-07"],  # Correct way to enable 1M context
         )
@@ -185,7 +186,7 @@ def init_llm_provider():
         print(">>> Setting up local proxy (Gemini)...", flush=True)
         LLM = ChatOpenAI(
             base_url="http://127.0.0.1:7999/v1",
-            api_key=os.getenv("GEMINI_PROXY_API_KEY", "mythong2005"),
+            api_key=SecretStr(os.getenv("GEMINI_PROXY_API_KEY", "mythong2005")),
             model="gemini_cli/gemini-3-flash-preview",
             temperature=1,
             max_completion_tokens=64000,
@@ -195,6 +196,21 @@ def init_llm_provider():
 
 def replace_reducer(old, new):
     return new
+
+
+def get_val(obj: Any, fields: List[str], default: Any = None) -> Any:
+    """Flexible field getter for LLM-generated objects."""
+    if not isinstance(obj, dict):
+        return default
+    for f in fields:
+        if f in obj and obj[f]:
+            return obj[f]
+    return default
+
+
+def get_id(obj: Dict[str, Any], default: str) -> str:
+    """Helper to handle various ID field names from different LLMs."""
+    return str(get_val(obj, ["id", "diagram_id", "anchor_id", "mod_id"], default))
 
 
 def extract_json(text):
@@ -291,9 +307,12 @@ def invoke_claude_cli(messages, max_retries=3):
 def safe_invoke(messages, max_retries=5, invoke_kwargs=None, provider_override=None):
     actual_provider = provider_override or LLM_PROVIDER
 
+    # If Gemini (local-proxy) is explicitly requested for full pipeline, use it everywhere
+    if LLM_PROVIDER == "local-proxy":
+        actual_provider = "local-proxy"
     # If the user explicitly requested Anthropic API, use it for everything
     # except when we are forced to a local-proxy (which usually means specific Gemini logic)
-    if LLM_PROVIDER == "anthropic" and actual_provider != "local-proxy":
+    elif LLM_PROVIDER == "anthropic" and actual_provider != "local-proxy":
         actual_provider = "anthropic"
 
     if actual_provider == "claude-cli":
@@ -356,6 +375,8 @@ class GraphState(TypedDict):
     tdd_diagrams_to_generate: Annotated[List[Dict[str, Any]], replace_reducer]
     external_reading: Annotated[str, replace_reducer]
     running_criteria: Annotated[List[Dict[str, Any]], replace_reducer]
+    explained_concepts: Annotated[List[str], replace_reducer]
+    blueprint_warnings: Annotated[List[str], replace_reducer]
 
 
 # --- CHECKPOINT MANAGER ---
@@ -426,10 +447,56 @@ For each milestone: misconception, reveal, cascade (3-5 connections, 1+ cross-do
             "claude-cli" if LLM_PROVIDER and LLM_PROVIDER.startswith("mixed") else None
         ),
     )
-    print(f"  [Agent: Architect] Response received: {len(res.content)} chars")
+    print(f"  [Agent: Architect] Initial response received: {len(res.content)} chars")
     blueprint = extract_json(res.content)
     if not blueprint:
         raise ValueError("Architect failed to return valid JSON")
+
+    warnings = _validate_blueprint(blueprint, meta)
+
+    # --- INTELLIGENT REFINEMENT LOOP ---
+    if warnings:
+        print(
+            f"  [Agent: Architect] Detected {len(warnings)} issues. Requesting refinement...",
+            flush=True,
+        )
+        refine_prompt = f"""
+        You are an elite Auditor and Systems Architect. I just reviewed your previous Blueprint and found several CRITICAL issues that must be fixed to meet "Perfect Engineer" standards.
+        
+        --- ISSUES DETECTED ---
+        {chr(10).join(["- " + w for w in warnings])}
+        
+        --- YOUR PREVIOUS (FLAWED) BLUEPRINT ---
+        {json.dumps(blueprint, indent=2)}
+        
+        TASK:
+        1. Address EVERY warning listed above.
+        2. Ensure all prerequisites are explicitly listed.
+        3. Output the FULL CORRECTED JSON. Do not include conversational text.
+        """
+
+        res_refined = safe_invoke(
+            [
+                SystemMessage(
+                    content="You are a Master Architect. Output ONLY corrected raw JSON."
+                ),
+                HumanMessage(content=refine_prompt),
+            ],
+            invoke_kwargs=invoke_args,
+            provider_override=(
+                "claude-cli"
+                if LLM_PROVIDER and str(LLM_PROVIDER).startswith("mixed")
+                else None
+            ),
+        )
+        print(
+            f"  [Agent: Architect] Refined response received: {len(res_refined.content)} chars"
+        )
+        refined_blueprint = extract_json(res_refined.content)
+        if refined_blueprint:
+            blueprint = refined_blueprint
+            # Re-validate once for logging, but accept it
+            warnings = _validate_blueprint(blueprint, meta)
 
     proj_dir = OUTPUT_BASE / state["project_id"]
     proj_dir.mkdir(parents=True, exist_ok=True)
@@ -441,9 +508,34 @@ For each milestone: misconception, reveal, cascade (3-5 connections, 1+ cross-do
         "status": "writing",
         "phase": "atlas",
         "accumulated_md": header,
+        "blueprint_warnings": warnings,
     }
     CheckpointManager.save({**state, **new_state})
     return new_state
+
+
+def _validate_blueprint(blueprint, meta):
+    """Post-generation validation. Call inside architect_node after extract_json."""
+    warnings = []
+
+    # Check prerequisites exist
+    if not blueprint.get("prerequisites"):
+        warnings.append(
+            "Missing 'prerequisites' — reader knowledge assumptions will be unclear"
+        )
+
+    # Check concept count
+    for ms in blueprint.get("milestones", []):
+        count = ms.get("concept_count", 0)
+        if count > 5:
+            warnings.append(
+                f"Milestone '{ms.get('title')}' has {count} concepts — consider splitting"
+            )
+
+    for w in warnings:
+        print(f"  [VALIDATION WARN] {w}")
+
+    return warnings
 
 
 def knowledge_mapper_node(state: GraphState):
@@ -482,9 +574,10 @@ def writer_node(state: GraphState):
     )
     domain_profile = load_domain_profile(state["meta"])
 
+    # Include diagram_type in the listing so Educator knows what types are available
     diag_list = "\n".join(
         [
-            f"- ID: {d.get('id', '?')} | Title: {d.get('title', '?')}"
+            f"- ID: {get_id(d, 'unknown')} | Title: {d.get('title', '?')} | Type: {d.get('diagram_type', 'architecture')}"
             for d in blueprint.get("diagrams", [])
             if isinstance(d, dict)
         ]
@@ -503,6 +596,42 @@ def writer_node(state: GraphState):
         else "  (none)"
     )
 
+    # Use FULL accumulated markdown as context (No sliding window as requested)
+    context_md = state["accumulated_md"]
+
+    # ---- Knowledge map summary ----
+    knowledge_summary = ", ".join(state.get("knowledge_map", [])[-30:])
+
+    # ---- Prerequisites for this milestone ----
+    prereqs = blueprint.get("prerequisites", {})
+    must_teach = prereqs.get("must_teach_first", [])
+    assumed = prereqs.get("assumed_known", [])
+
+    ms_prereqs = []
+    for p in must_teach:
+        when = p.get("when", "").lower()
+        if (
+            ms_title.lower() in when
+            or f"milestone {idx}" in when
+            or f"milestone {idx + 1}" in when
+            or ms_id.lower() in when
+        ):
+            ms_prereqs.append(p)
+
+    prereqs_str = (
+        "\n".join(
+            f"  - [[EXPLAIN]] candidate: {p['concept']} (depth: {p.get('depth', 'basic')})"
+            for p in ms_prereqs
+        )
+        if ms_prereqs
+        else "  (none identified — mark any you discover with [[EXPLAIN:...]])"
+    )
+
+    assumed_str = ", ".join(assumed) if assumed else "(not specified)"
+
+    # ---- Already-explained concepts ----
+    already_explained = ", ".join(state.get("explained_concepts", [])[-20:])
+
     prompt = f"""
 {domain_profile}
 
@@ -511,8 +640,17 @@ def writer_node(state: GraphState):
 --- GROUND TRUTH PROJECT SPEC (YAML) ---
 {full_yaml_meta}
 
---- FULL ATLAS SO FAR ---
-{state["accumulated_md"]}
+--- READER CONTEXT ---
+Assumed known: {assumed_str}
+Concepts Architect flagged for this milestone:
+{prereqs_str}
+Concepts already explained in earlier milestones: {already_explained or "(none yet)"}
+
+--- CONCEPTS TAUGHT SO FAR ---
+{knowledge_summary}
+
+--- RECENT ATLAS CONTEXT ---
+{context_md}
 
 --- TASK ---
 Write Atlas content for milestone: {ms_title}
@@ -528,10 +666,12 @@ Knowledge Cascade connections to surface:
 YAML Acceptance Criteria (must be covered):
 {ms_criteria_str}
 
-Available diagrams ({{{{DIAGRAM:id}}}}):
+Available diagrams (use {{{{DIAGRAM:id}}}}):
 {diag_list}
 
-Quality check: Does the reader understand WHY this exists, HOW it works, and WHAT ELSE connects to it?
+When ordering dynamic diagrams, specify type: [[DYNAMIC_DIAGRAM:id|Title|type:flow_sequence|Description]]
+Prefer flow_sequence, data_walk, before_after, state_evolution over architecture.
+
 End with [[CRITERIA_JSON: {{"milestone_id": "{ms_id}", "criteria": [...]}} ]]
 """
 
@@ -541,13 +681,11 @@ End with [[CRITERIA_JSON: {{"milestone_id": "{ms_id}", "criteria": [...]}} ]]
     )
     raw_content = str(res.content).strip()
 
-    # Extract criteria
+    # ---- Extract criteria (Safe version) ----
     new_criteria_list = list(state.get("running_criteria", []))
-    criteria_match = re.search(
-        r"\[\[CRITERIA_JSON:\s*(\{.*?\})\s*\]\]", raw_content, re.DOTALL
-    )
-    if criteria_match:
-        extracted = extract_json(criteria_match.group(1))
+    criteria_tags = re.findall(r"\[\[CRITERIA_JSON:(.*?)\]\]", raw_content, re.DOTALL)
+    for tag_content in criteria_tags:
+        extracted = extract_json(tag_content)
         if extracted:
             new_criteria_list.append(extracted)
 
@@ -555,23 +693,41 @@ End with [[CRITERIA_JSON: {{"milestone_id": "{ms_id}", "criteria": [...]}} ]]
         r"\[\[CRITERIA_JSON:.*?\]\]", "", raw_content, flags=re.DOTALL
     ).strip()
 
-    # Dynamic diagrams
-    new_diagrams = state["diagrams_to_generate"]
-    dynamic_orders = re.findall(r"\[\[DYNAMIC_DIAGRAM:(.*?)\|(.*?)\|(.*?)\]\]", content)
-    for d_id, d_title, d_desc in dynamic_orders:
-        if not any(d["id"] == d_id.strip() for d in new_diagrams):
+    # ---- Dynamic diagrams with type support ----
+    new_diagrams = list(state["diagrams_to_generate"])  # copy to avoid mutation
+
+    # Match both formats:
+    #   [[DYNAMIC_DIAGRAM:id|Title|Description]]                    (old)
+    #   [[DYNAMIC_DIAGRAM:id|Title|type:flow_sequence|Description]] (new)
+    for match in re.finditer(
+        r"\[\[DYNAMIC_DIAGRAM:([\w-]+)\|(.*?)\|((?:type:[\w_]+\|)?)(.*?)\]\]", content
+    ):
+        d_id = match.group(1).strip()
+        d_title = match.group(2).strip()
+        d_type_raw = match.group(3).strip()
+        d_desc = match.group(4).strip()
+
+        d_type = (
+            d_type_raw.replace("type:", "").rstrip("|")
+            if d_type_raw
+            else "architecture"
+        )
+
+        if not any(d["id"] == d_id for d in new_diagrams):
             new_diagrams.append(
                 {
-                    "id": d_id.strip(),
-                    "title": d_title.strip(),
-                    "description": d_desc.strip(),
+                    "id": d_id,
+                    "title": d_title,
+                    "description": d_desc,
+                    "diagram_type": d_type or "architecture",
                     "anchor_target": ms_id,
                 }
             )
 
     content = re.sub(
-        r"\[\[DYNAMIC_DIAGRAM:(.*?)\|.*?\|.*?\]\]", r"{{DIAGRAM:\1}}", content
+        r"\[\[DYNAMIC_DIAGRAM:([\w-]+)\|.*?\]\]", r"{{DIAGRAM:\1}}", content
     )
+
     full_content = f"\n\n{marker}\n{content}\n<!-- END_MS -->\n"
     print(f"    ✓ Content generated: {len(full_content)} chars")
 
@@ -607,8 +763,9 @@ def compiler_node(state: GraphState):
     is_tdd = state.get("phase") == "tdd"
 
     if res.returncode == 0:
-        print(f"    ✓ Success: {diag['id']}")
-        link = f"\n![{diag.get('title')}](./diagrams/{diag['id']}.svg)\n"
+        diag_id = diag["id"]
+        print(f"    ✓ Success: {diag_id}")
+        link = f"\n![{diag.get('title')}](./diagrams/{diag_id}.svg)\n"
         if is_tdd:
             new_state = {
                 "tdd_accumulated_md": state["tdd_accumulated_md"].replace(
@@ -666,17 +823,81 @@ def visualizer_node(state: GraphState):
         return {"status": "tdd_planning", "phase": "tdd"}
     diag = state["diagrams_to_generate"][0]
     proj_dir = OUTPUT_BASE / state["project_id"]
-    svg_path = proj_dir / "diagrams" / f"{diag['id']}.svg"
-    # Skip if SVG already exists (already compiled successfully)
-    if svg_path.exists():
-        print(f"  [Agent: Artist] Skipping existing diagram: {diag['title']}")
+    diag_id = get_id(diag, "unknown")
+
+    # Safety check for missing ID
+    if diag_id == "unknown":
+        print(f"  [Agent: Artist] Warning: Skipping invalid diagram metadata: {diag}")
+        return {"diagrams_to_generate": state["diagrams_to_generate"][1:]}
+
+    svg_path = proj_dir / "diagrams" / f"{diag_id}.svg"
+
+    # Skip if SVG already exists
+    if (
+        svg_path.exists()
+        and f"{{{{DIAGRAM:{diag_id}}}}}" not in state["accumulated_md"]
+    ):
+        print(
+            f"  [Agent: Artist] Skipping existing diagram: {diag.get('title', 'Unknown')}"
+        )
         return {"diagrams_to_generate": state["diagrams_to_generate"][1:]}
 
     attempt = state["diagram_attempt"] + 1
-    print(f"  [Agent: Artist] Drawing: {diag['title']} (Attempt {attempt})...")
-    prompt = f"{INSTR_ARTIST}\nDOCS:\n{D2_REFERENCE}\nCONTEXT:\n{state['accumulated_md']}\nTASK: Draw '{diag['title']}': {diag.get('description')}"
-    if state.get("last_error"):
-        prompt += f"\nFIX ERROR: {state['last_error']}\nFAILED CODE:\n{state.get('current_diagram_code')}"
+    is_retry = state.get("last_error") and attempt > 1
+
+    # --- Build type-aware instructions ---
+    diag_type = diag.get("diagram_type", "architecture")
+    trace_example = diag.get("trace_example", "")
+
+    type_hint = f"\nDIAGRAM TYPE: {diag_type}"
+    type_hint += f"\nFollow the '{diag_type}' routing rules from your instructions."
+    if trace_example:
+        type_hint += f"\nTRACE EXAMPLE (use these EXACT values): {trace_example}"
+
+    if is_retry:
+        # ---- RETRY: Minimal context — fix the D2 error only ----
+        print(
+            f"  [Agent: Artist] RETRY {attempt}: Fixing '{diag.get('title', 'Diagram')}'..."
+        )
+        prompt = f"""{INSTR_ARTIST}
+
+D2 REFERENCE DOCS:
+{D2_REFERENCE}
+{type_hint}
+
+TASK: Fix the D2 compilation error below. Keep the same structure and content — only fix what caused the error.
+
+DIAGRAM: '{diag.get("title", "Diagram")}'
+
+FAILED CODE:
+```d2
+{state.get("current_diagram_code", "")}
+```
+
+COMPILER ERROR:
+{state["last_error"]}
+
+Output ONLY the corrected D2 code."""
+
+    else:
+        # ---- FIRST ATTEMPT: Full context ----
+        print(
+            f"  [Agent: Artist] Drawing: {diag.get('title', 'Diagram')} (Attempt {attempt})..."
+        )
+        # Trim context to last ~8K chars to avoid massive prompts
+        context_tail = (
+            state["accumulated_md"][-8000:]
+            if len(state["accumulated_md"]) > 8000
+            else state["accumulated_md"]
+        )
+
+        prompt = (
+            f"{INSTR_ARTIST}\n"
+            f"DOCS:\n{D2_REFERENCE}\n"
+            f"CONTEXT:\n{context_tail}\n"
+            f"{type_hint}\n"
+            f"TASK: Draw '{diag.get('title', 'Untitled')}': {diag.get('description', '')}"
+        )
 
     res = safe_invoke(
         [
@@ -792,13 +1013,11 @@ End with [[CRITERIA_JSON: {{"module_id": "{mod_id}", "criteria": [...]}} ]]
     res = safe_invoke([HumanMessage(content=prompt)])
     raw_content = str(res.content).strip()
 
-    # Extract criteria
+    # ---- Extract criteria (Safe version) ----
     new_criteria_list = list(state.get("running_criteria", []))
-    criteria_match = re.search(
-        r"\[\[CRITERIA_JSON:\s*(\{.*?\})\s*\]\]", raw_content, re.DOTALL
-    )
-    if criteria_match:
-        extracted = extract_json(criteria_match.group(1))
+    criteria_tags = re.findall(r"\[\[CRITERIA_JSON:(.*?)\]\]", raw_content, re.DOTALL)
+    for tag_content in criteria_tags:
+        extracted = extract_json(tag_content)
         if extracted:
             new_criteria_list.append(extracted)
 
@@ -843,15 +1062,85 @@ def tdd_visualizer_node(state: GraphState):
         return {"status": "done", "phase": "done"}
     diag = state["tdd_diagrams_to_generate"][0]
     proj_dir = OUTPUT_BASE / state["project_id"]
-    svg_path = proj_dir / "diagrams" / f"{diag['id']}.svg"
-    # Skip if SVG already exists (already compiled successfully)
-    if svg_path.exists():
-        print(f"  [Agent: TDD Artist] Skipping existing diagram: {diag['title']}")
+    diag_id = get_id(diag, "unknown")
+    if diag_id == "unknown":
+        print(
+            f"  [Agent: TDD Artist] Warning: Skipping invalid diagram metadata: {diag}"
+        )
+        return {"tdd_diagrams_to_generate": state["tdd_diagrams_to_generate"][1:]}
+
+    svg_path = proj_dir / "diagrams" / f"{diag_id}.svg"
+
+    if (
+        svg_path.exists()
+        and f"{{{{DIAGRAM:{diag_id}}}}}" not in state["tdd_accumulated_md"]
+    ):
+        print(
+            f"  [Agent: TDD Artist] Skipping existing diagram: {diag.get('title', 'Unknown')}"
+        )
         return {"tdd_diagrams_to_generate": state["tdd_diagrams_to_generate"][1:]}
 
     attempt = state["diagram_attempt"] + 1
-    print(f"  [Agent: TDD Artist] Drawing: {diag['title']} (Attempt {attempt})...")
-    prompt = f"{INSTR_TDD_ARTIST}\nDOCS:\n{D2_REFERENCE}\nCONTEXT:\n{state['accumulated_md']}\n{state['tdd_accumulated_md']}\nTASK: Draw '{diag['title']}'"
+    is_retry = state.get("last_error") and attempt > 1
+
+    # Type-aware instructions
+    diag_type = diag.get("diagram_type", diag.get("type", "architecture"))
+    trace_example = diag.get("trace_example", "")
+
+    type_hint = f"\nDIAGRAM TYPE: {diag_type}"
+    type_hint += f"\nFollow the '{diag_type}' routing rules from your instructions."
+    if trace_example:
+        type_hint += f"\nTRACE EXAMPLE (use these EXACT values): {trace_example}"
+
+    if is_retry:
+        # RETRY: Minimal context
+        print(
+            f"  [Agent: TDD Artist] RETRY {attempt}: Fixing '{diag.get('title', 'Diagram')}'..."
+        )
+        prompt = f"""{INSTR_TDD_ARTIST}
+
+D2 REFERENCE DOCS:
+{D2_REFERENCE}
+{type_hint}
+
+TASK: Fix the D2 compilation error. Keep same structure — only fix the error.
+
+DIAGRAM: '{diag.get("title", "Diagram")}'
+
+FAILED CODE:
+```d2
+{state.get("current_diagram_code", "")}
+```
+
+COMPILER ERROR:
+{state["last_error"]}
+
+Output ONLY the corrected D2 code."""
+
+    else:
+        # FIRST ATTEMPT: Full context (trimmed)
+        print(
+            f"  [Agent: TDD Artist] Drawing: {diag.get('title', 'Diagram')} (Attempt {attempt})..."
+        )
+        atlas_tail = (
+            state["accumulated_md"][-6000:]
+            if len(state["accumulated_md"]) > 6000
+            else state["accumulated_md"]
+        )
+        tdd_tail = (
+            state["tdd_accumulated_md"][-4000:]
+            if len(state["tdd_accumulated_md"]) > 4000
+            else state["tdd_accumulated_md"]
+        )
+
+        prompt = (
+            f"{INSTR_TDD_ARTIST}\n"
+            f"DOCS:\n{D2_REFERENCE}\n"
+            f"CONTEXT:\n{atlas_tail}\n{tdd_tail}\n"
+            f"{type_hint}\n"
+            f"TASK: Draw '{diag.get('title', 'Untitled')}': {diag.get('description', '')}"
+        )
+
     res = safe_invoke(
         [
             SystemMessage(content="Output ONLY raw D2 code."),
@@ -868,6 +1157,93 @@ def tdd_visualizer_node(state: GraphState):
     }
 
 
+def explainer_node(state: GraphState):
+    """
+    Process [[EXPLAIN:id|description]] markers left by the Educator.
+    Generate concise explanations and replace markers with Foundation blocks.
+    Uses a cheap/fast model since explanations are short.
+    """
+    content = state["accumulated_md"]
+    markers = re.findall(r"\[\[EXPLAIN:([\w-]+)\|(.*?)\]\]", content)
+
+    if not markers:
+        return {}  # Nothing to explain — pass through
+
+    # Skip concepts already explained in earlier milestones
+    already_explained = set(state.get("explained_concepts", []))
+    new_markers = [(mid, desc) for mid, desc in markers if mid not in already_explained]
+
+    if not new_markers:
+        # Remove duplicate markers silently
+        for mid, desc in markers:
+            content = content.replace(f"[[EXPLAIN:{mid}|{desc}]]", "")
+        return {"accumulated_md": content}
+
+    print(f"  [Agent: Explainer] Generating {len(new_markers)} explanations...")
+
+    # Batch all explanations in one LLM call
+    level = state["meta"].get("level", "intermediate")
+    concept_list = "\n".join(
+        f"{i + 1}. **{mid}**: {desc}" for i, (mid, desc) in enumerate(new_markers)
+    )
+
+    prompt = f"""You are a technical concept explainer. Reader level: '{level}'.
+
+For each concept below, write a concise explanation (3-6 sentences) covering:
+1. What it IS (definition in plain language)
+2. WHY the reader needs it right now (context for this project)
+3. ONE key insight or mental model to remember
+
+Keep it tight — this is a sidebar, not a chapter. Use concrete examples where possible.
+
+Concepts:
+{concept_list}
+
+Output format — for EACH concept, output EXACTLY:
+===CONCEPT:concept-id===
+Your explanation here.
+===END===
+
+No other text outside these blocks."""
+
+    res = safe_invoke(
+        [HumanMessage(content=prompt)],
+        provider_override="local-proxy",  # Use cheap/fast model
+    )
+
+    # Parse explanations
+    explanations = {}
+    for match in re.finditer(
+        r"===CONCEPT:([\w-]+)===\s*(.*?)\s*===END===", str(res.content), re.DOTALL
+    ):
+        explanations[match.group(1)] = match.group(2).strip()
+
+    # Replace markers with formatted Foundation blocks
+    for mid, desc in markers:
+        marker_text = f"[[EXPLAIN:{mid}|{desc}]]"
+        if mid in explanations:
+            # Extract a clean title from the description (before first — or ( or ,)
+            title = re.split(r"[—\(\,]", desc)[0].strip()
+            block = f"\n> **🔑 Foundation: {title}**\n> \n> {explanations[mid]}\n"
+            content = content.replace(marker_text, block)
+        elif mid in already_explained:
+            # Already explained before — just remove marker
+            content = content.replace(marker_text, "")
+        else:
+            # Explanation generation failed — remove marker, log warning
+            print(f"    [WARN] No explanation generated for: {mid}")
+            content = content.replace(marker_text, "")
+
+    new_explained = list(
+        already_explained | {mid for mid, _ in new_markers if mid in explanations}
+    )
+
+    return {
+        "accumulated_md": content,
+        "explained_concepts": new_explained,
+    }
+
+
 def bibliographer_node(state: GraphState):
     print(f"  [Agent: Bibliographer] Curating...")
     prompt = f"{INSTR_BIBLIOGRAPHER}\nCONTENT:\n{state['accumulated_md']}\n{state['tdd_accumulated_md']}"
@@ -875,35 +1251,120 @@ def bibliographer_node(state: GraphState):
     return {"external_reading": str(res.content).strip(), "status": "done"}
 
 
+def spec_syncer_node(state: GraphState):
+    """
+    Back-sync synchronized technical criteria to the original YAML project spec.
+    Ensures AI Reviewer and educational docs use the exact same standard.
+    """
+    project_id = state["project_id"]
+    proj_yaml_path = PROJECTS_DATA_DIR / f"{project_id}.yaml"
+
+    if not proj_yaml_path.exists():
+        print(
+            f"  [Agent: Syncer] Original YAML not found at {proj_yaml_path}. Skipping."
+        )
+        return {}
+
+    synced_data = state.get("running_criteria", [])
+    if not synced_data:
+        # Try reading from file if memory is empty
+        proj_dir = OUTPUT_BASE / project_id
+        criteria_file = proj_dir / "synced_criteria.json"
+        if criteria_file.exists():
+            try:
+                synced_data = json.loads(criteria_file.read_text())
+            except:
+                pass
+
+    if not synced_data:
+        print("  [Agent: Syncer] No synchronized criteria found. Skipping.")
+        return {}
+
+    print(
+        f"  [Agent: Syncer] Synchronizing {len(synced_data)} criteria sets to YAML..."
+    )
+
+    with open(proj_yaml_path, "r") as f:
+        proj_data = yaml.safe_load(f)
+
+    # Merge logic
+    # synced_data is a list of entries like:
+    # {"milestone_id": "ms-1", "criteria": [...]} OR {"module_id": "mod-1", "criteria": [...]}
+
+    milestones = proj_data.get("milestones", [])
+    for entry in synced_data:
+        ms_id = entry.get("milestone_id") or entry.get("module_id")
+        new_criteria = entry.get("criteria", [])
+
+        if not ms_id or not new_criteria:
+            continue
+
+        # Find matching milestone in YAML
+        found = False
+        for ms in milestones:
+            if ms.get("id") == ms_id:
+                # Merge: unique items, keep original order if possible
+                original = ms.get("acceptance_criteria", [])
+                if isinstance(original, str):
+                    original = [original]
+
+                # Combine and deduplicate while preserving order
+                combined = original + [c for c in new_criteria if c not in original]
+                ms["acceptance_criteria"] = combined
+                found = True
+                break
+
+        if not found:
+            # If it was a dynamic module or missing ID, we could append it?
+            # For now, let's just log it.
+            print(f"    [WARN] Milestone/Module {ms_id} not found in original YAML.")
+
+    # Write back to YAML with nice formatting
+    with open(proj_yaml_path, "w") as f:
+        yaml.dump(
+            proj_data, f, allow_unicode=True, default_flow_style=False, sort_keys=False
+        )
+
+    print(f"  ✓ YAML synchronized successfully: {proj_yaml_path}")
+    return {}
+
+
 # --- GRAPH ---
 workflow = StateGraph(GraphState)
 workflow.add_node("architect", architect_node)
 workflow.add_node("knowledge_mapper", knowledge_mapper_node)
 workflow.add_node("writer", writer_node)
+workflow.add_node("explainer", explainer_node)
 workflow.add_node("visualizer", visualizer_node)
 workflow.add_node("compiler", compiler_node)
 workflow.add_node("tdd_planner", tdd_planner_node)
 workflow.add_node("tdd_writer", tdd_writer_node)
 workflow.add_node("tdd_visualizer", tdd_visualizer_node)
 workflow.add_node("bibliographer", bibliographer_node)
+workflow.add_node("spec_syncer", spec_syncer_node)
 
 workflow.add_edge(START, "architect")
 workflow.add_edge("architect", "writer")
 
 
 def route_writer(state):
-    return (
-        "knowledge_mapper"
-        if state["current_ms_index"] < len(state["blueprint"].get("milestones", []))
-        else "visualizer"
-    )
+    has_more = state["current_ms_index"] < len(state["blueprint"].get("milestones", []))
+    if not has_more:
+        return "visualizer"
+    # Return list of nodes to execute in parallel
+    return ["explainer", "knowledge_mapper"]
 
 
 workflow.add_conditional_edges(
     "writer",
     route_writer,
-    {"knowledge_mapper": "knowledge_mapper", "visualizer": "visualizer"},
+    {
+        "explainer": "explainer",
+        "knowledge_mapper": "knowledge_mapper",
+        "visualizer": "visualizer",
+    },
 )
+workflow.add_edge("explainer", "writer")
 workflow.add_edge("knowledge_mapper", "writer")
 
 
@@ -964,7 +1425,8 @@ workflow.add_conditional_edges(
 )
 
 workflow.add_edge("tdd_planner", "tdd_writer")
-workflow.add_edge("bibliographer", END)
+workflow.add_edge("bibliographer", "spec_syncer")
+workflow.add_edge("spec_syncer", END)
 app = workflow.compile()
 
 
@@ -997,6 +1459,8 @@ def generate_project(project_id):
         "knowledge_map": [],
         "advanced_contexts": [],
         "running_criteria": [],
+        "explained_concepts": [],
+        "blueprint_warnings": [],
     }
     if checkpoint:
         print(f">>> Resuming phase: {checkpoint.get('phase')}")
@@ -1058,6 +1522,11 @@ if __name__ == "__main__":
         "--kilo-model", default=None, help="Model for Kilo (provider/model)"
     )
     parser.add_argument("--anthropic", action="store_true")
+    parser.add_argument(
+        "--gemini",
+        action="store_true",
+        help="Use Gemini (Local Proxy) for full pipeline",
+    )
     parser.add_argument("--debug", action="store_true", help="Log raw LLM responses")
     parser.add_argument(
         "--output",
@@ -1083,6 +1552,10 @@ if __name__ == "__main__":
         os.environ["KILO_MODEL"] = args.kilo_model
     if args.anthropic:
         os.environ["USE_ANTHROPIC"] = "true"
+    if args.gemini:
+        # Fallback to local-proxy is the default behavior if nothing else is set,
+        # but we can force it here if needed.
+        pass
     if args.debug:
         os.environ["DEBUG_MODE"] = "true"
     if args.output:

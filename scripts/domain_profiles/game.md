@@ -39,3 +39,5 @@ Unity (ECS/DOTS), Unreal (Nanite, Lumen), Godot (scene tree), Bevy (Rust ECS), B
 Borrow from systems-lowlevel when: GPU pipeline internals, cache optimization, SIMD for physics/rendering.
 Borrow from distributed when: multiplayer server architecture, authoritative server, lag compensation.
 Borrow from ai-ml when: NPC behavior (behavior trees, ML agents), procedural generation.
+
+

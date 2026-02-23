@@ -41,3 +41,5 @@ Borrow from systems-lowlevel when: CI runner process management (fork/exec/wait)
 Borrow from distributed when: distributed pipeline execution, log aggregation consistency.
 Borrow from security when: pipeline security (secrets management, supply chain, RBAC).
 Borrow from web-app when: dashboard frontend, API design.
+
+

@@ -1,24 +1,21 @@
 # PROJECTS INVENTORY REPORT
-Total Projects: 193
+Total Projects: 190
 
-## Domain: ai-ml (22 projects)
+## Domain: ai-ml (19 projects)
 ----------------------------------------
   - [intermediate] ml-model-serving: ML Model Serving API
   - [intermediate] neural-network-basic: Neural Network from Scratch (micrograd)
   - [intermediate] rag-system: RAG System (Retrieval Augmented Generation)
   - [intermediate] recommendation-engine: Recommendation Engine
-  - [intermediate] semantic-search: Semantic Search Engine
   - [intermediate] word2vec: Word Embeddings (Word2Vec)
   - [advanced] ai-agent-framework: AI Agent Framework
   - [advanced] automl-framework: AutoML Framework
   - [advanced] computer-vision-pipeline: Computer Vision Pipeline
-  - [advanced] constitutional-ai-system: Constitutional AI System
   - [advanced] federated-learning-system: Federated Learning System
   - [advanced] llm-eval-framework: LLM Evaluation Framework
   - [advanced] llm-finetuning-pipeline: LLM Fine-tuning Pipeline
   - [advanced] mlops-platform: MLOps Platform
   - [advanced] reinforcement-learning-framework: Reinforcement Learning Framework
-  - [advanced] scaling-laws-analyzer: Scaling Laws Analyzer
   - [advanced] transformer-scratch: Transformer from Scratch
   - [expert] build-nn-framework: Build Your Own Neural Network Framework
   - [expert] distributed-training-framework: Distributed Training Framework
@@ -234,17 +231,23 @@ Total Projects: 193
 ================================================================================
 # PART 2: PROJECTS UNDER CONSIDERATION (Planned)
 ================================================================================
+# 🌉 TRULY MISSING BRIDGE PROJECTS (Foundational Tools)
+1. high-perf-cpp-stdlib: Custom optimized containers (FlatHashMap, SSO String, SmallVector) for HFT.
+2. zero-copy-msg-bus: Zero-copy serialization (FlatBuffers style) and Shared Memory IPC.
+3. coroutine-runtime-engine: M:N user-space scheduler / Coroutine runtime (Go-style).
+4. columnar-storage-format: Columnar data layout with SIMD-optimized compression (RLE, Delta).
+5. performance-warmup-harness: Scientific benchmarking tool for tail-latency (p99.9) and warm-up strategies.
 
-## 🌉 Knowledge Bridge Projects (Foundational)
-  - high-perf-cpp-stdlib: Custom optimized containers (FlatHashMap, SSO String, SmallVector) for HFT.
-  - zero-copy-msg-bus: Zero-copy serialization (FlatBuffers style) and Shared Memory IPC.
-  - coroutine-runtime-engine: M:N user-space scheduler / Coroutine runtime (Go-style).
-  - columnar-storage-format: Columnar data layout with SIMD-optimized compression (RLE, Delta).
-  - performance-warmup-harness: Scientific benchmarking tool for tail-latency (p99.9) and warm-up strategies.
+# 🧲 COMPANY MAGNET PROJECTS (Elite Tier)
+6. kernel-bypass-network-stack: User-space TCP/IP using DPDK/AF_XDP (HFT Magnet).
+7. micro-vmm-hypervisor: Minimal Virtual Machine Monitor using KVM API (Cloud Infra Magnet).
+8. custom-jit-backend: Simple JIT compiler using Cranelift or LLVM for custom DSL (Compiler Team Magnet).
+9. hardware-software-codesign-sim: Simulator for custom AI hardware accelerators.
+10. formal-verification-logic: Proving a small kernel or consensus algorithm using SMT solvers (Safety-critical Magnet).
 
-## 🧲 Company Magnet Projects (Elite Tier)
-  - kernel-bypass-network-stack: User-space TCP/IP using DPDK/AF_XDP (HFT Magnet).
-  - micro-vmm-hypervisor: Minimal Virtual Machine Monitor using KVM API (Cloud Infra Magnet).
-  - custom-jit-backend: Simple JIT compiler using Cranelift or LLVM for custom DSL (Compiler Team Magnet).
-  - hardware-software-codesign-sim: Simulator for custom AI hardware accelerators.
-  - formal-verification-logic: Proving a small kernel or consensus algorithm using SMT solvers (Safety-critical Magnet).
+# 🚀 NEW HIGH-PRIORITY PROJECTS (From LLM Analysis)
+11. auth-system: (app-dev, intermediate) JWT, OAuth2 flow, session management, refresh token rotation.
+12. ipc-mechanisms: (systems, intermediate) Shared memory, Unix domain sockets, named pipes. Prerequisite for containers.
+13. llm-application-patterns: (ai-ml, intermediate) Structured output, function calling, multi-turn state management, prompt chaining.
+14. file-upload-service: (app-dev, intermediate) Chunked upload, multipart, presigned URLs, resume interrupted uploads.
+15. dynamic-linker: (compilers, advanced) GOT, PLT, dlopen, runtime symbol resolution. (Follows static linker).

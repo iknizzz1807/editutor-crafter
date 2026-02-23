@@ -1,0 +1,474 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+title: "PS/2 Keyboard Scancode Pipeline: Make Code to ASCII Character" {
+  near: top-center
+  style: {
+    font-size: 18
+    bold: true
+  }
+}
+
+hardware: "Hardware Layer" {
+  style: {
+    fill: "#1a1a2e"
+    stroke: "#4a4a8a"
+    font-color: "#c0c0ff"
+    border-radius: 8
+  }
+
+  key_matrix: "Key Matrix Scanner\n~1kHz poll rate" {
+    style: {
+      fill: "#2d2d5e"
+      stroke: "#6060aa"
+      font-color: "#d0d0ff"
+      border-radius: 4
+    }
+  }
+
+  debounce: "Contact Debounce\n5–20ms filter" {
+    style: {
+      fill: "#2d2d5e"
+      stroke: "#6060aa"
+      font-color: "#d0d0ff"
+      border-radius: 4
+    }
+  }
+
+  ps2_controller: "PS/2 Controller\n(Intel 8042)\nSerializes at 10–16kHz" {
+    style: {
+      fill: "#2d2d5e"
+      stroke: "#6060aa"
+      font-color: "#d0d0ff"
+      border-radius: 4
+    }
+  }
+
+  key_matrix -> debounce: "raw contact\nbounce signal"
+  debounce -> ps2_controller: "stable press/\nrelease event"
+}
+
+irq_path: "Interrupt Path (IRQ1 → Vector 33)" {
+  style: {
+    fill: "#1a2e1a"
+    stroke: "#4a8a4a"
+    font-color: "#c0ffc0"
+    border-radius: 8
+  }
+
+  pic: "8259 PIC\nIRQ1 arbitration\n(priority check + IMR)" {
+    style: {
+      fill: "#2d5e2d"
+      stroke: "#60aa60"
+      font-color: "#d0ffd0"
+      border-radius: 4
+    }
+  }
+
+  cpu_irq: "CPU INTR Pin\nIF=1 check\nAt instruction boundary" {
+    style: {
+      fill: "#2d5e2d"
+      stroke: "#60aa60"
+      font-color: "#d0ffd0"
+      border-radius: 4
+    }
+  }
+
+  idt_lookup: "IDT Lookup\nVector 33 → irq1 stub\n(L1 cache: ~5 cycles)" {
+    style: {
+      fill: "#2d5e2d"
+      stroke: "#60aa60"
+      font-color: "#d0ffd0"
+      border-radius: 4
+    }
+  }
+
+  pic -> cpu_irq: "INTR assert\n~1μs PIC latency"
+  cpu_irq -> idt_lookup: "pipeline flush\n~20 cycles"
+}
+
+irq_stub: "IRQ Stub + Common Stub (Assembly)" {
+  style: {
+    fill: "#2e1a1a"
+    stroke: "#8a4a4a"
+    font-color: "#ffc0c0"
+    border-radius: 8
+  }
+
+  irq1_stub: "|asm\nirq1:\n  push dword 0   ; no error code\n  push dword 33  ; vector\n  jmp irq_common_stub\n|" {
+    style: {
+      fill: "#3d2020"
+      stroke: "#aa6060"
+      font-color: "#ffd0d0"
+      border-radius: 4
+    }
+  }
+
+  common_stub: "|asm\nirq_common_stub:\n  pusha               ; save EDI,ESI,EBP,ESP,EBX,EDX,ECX,EAX\n  push ds/es/fs/gs    ; save segment registers\n  mov ax, 0x10        ; load kernel data selector\n  mov ds/es/fs/gs, ax\n  push esp            ; arg: interrupt_frame_t*\n  call irq_dispatcher\n  add esp, 4\n  pop gs/fs/es/ds     ; restore segments\n  popa                ; restore GPRs\n  add esp, 8          ; discard vector + error_code\n  iret                ; restore EIP, CS, EFLAGS [+ESP,SS if ring-3]\n|" {
+    style: {
+      fill: "#3d2020"
+      stroke: "#aa6060"
+      font-color: "#ffd0d0"
+      border-radius: 4
+    }
+  }
+
+  irq1_stub -> common_stub: "jmp"
+}
+
+c_dispatch: "C Dispatch Layer" {
+  style: {
+    fill: "#2e2a1a"
+    stroke: "#8a7a4a"
+    font-color: "#ffffc0"
+    border-radius: 8
+  }
+
+  irq_dispatcher: "irq_dispatcher(frame)\nirq = frame->vector - 32 = 1\nCall irq_handlers[1]\nSend EOI after return" {
+    style: {
+      fill: "#3d3820"
+      stroke: "#aaaa60"
+      font-color: "#ffffd0"
+      border-radius: 4
+    }
+  }
+
+  kb_handler: "keyboard_handler(frame)" {
+    style: {
+      fill: "#3d3820"
+      stroke: "#aaaa60"
+      font-color: "#ffffd0"
+      border-radius: 4
+      bold: true
+    }
+  }
+
+  irq_dispatcher -> kb_handler: "irq_handlers[1](frame)"
+}
+
+scancode_decode: "Scancode Decode Pipeline" {
+  style: {
+    fill: "#1a1a2e"
+    stroke: "#5a5aaa"
+    font-color: "#c0c0ff"
+    border-radius: 8
+  }
+
+  read_port: "Step 1: Read Port 0x60\nscancode = inb(0x60)\n~1–4μs I/O bus stall" {
+    style: {
+      fill: "#2020aa"
+      stroke: "#6060cc"
+      font-color: "#e0e0ff"
+      border-radius: 4
+    }
+  }
+
+  e0_check: "Step 2: Extended Prefix?\nscancode == 0xE0?" {
+    shape: diamond
+    style: {
+      fill: "#3030aa"
+      stroke: "#7070cc"
+      font-color: "#e0e0ff"
+    }
+  }
+
+  e0_set_flag: "Set kb_expect_extended=1\nReturn (wait for next IRQ)" {
+    style: {
+      fill: "#404080"
+      stroke: "#6060aa"
+      font-color: "#c0c0ff"
+      border-radius: 4
+    }
+  }
+
+  e0_discard: "kb_expect_extended=0\nDiscard code\nReturn (arrow key ignored)" {
+    style: {
+      fill: "#404080"
+      stroke: "#6060aa"
+      font-color: "#c0c0ff"
+      border-radius: 4
+    }
+  }
+
+  break_check: "Step 3: Break Code?\n(scancode & 0x80) != 0?" {
+    shape: diamond
+    style: {
+      fill: "#3030aa"
+      stroke: "#7070cc"
+      font-color: "#e0e0ff"
+    }
+  }
+
+  make_code: "make_code = scancode & 0x7F\n(strip bit 7)" {
+    style: {
+      fill: "#2020aa"
+      stroke: "#6060cc"
+      font-color: "#e0e0ff"
+      border-radius: 4
+    }
+  }
+
+  modifier_check: "Step 4: Modifier Key?\nmake_code == 0x2A (LShift)\nmake_code == 0x36 (RShift)\nmake_code == 0x1D (Ctrl)\nmake_code == 0x38 (Alt)" {
+    shape: diamond
+    style: {
+      fill: "#3030aa"
+      stroke: "#7070cc"
+      font-color: "#e0e0ff"
+    }
+  }
+
+  shift_update: "Update kb_shift_held\n(1 on make, 0 on break)\nReturn" {
+    style: {
+      fill: "#404080"
+      stroke: "#6060aa"
+      font-color: "#c0c0ff"
+      border-radius: 4
+    }
+  }
+
+  break_filter: "is_break==1 for non-modifier\nReturn (discard release)" {
+    style: {
+      fill: "#404080"
+      stroke: "#6060aa"
+      font-color: "#c0c0ff"
+      border-radius: 4
+    }
+  }
+
+  table_lookup: "Step 5: Table Lookup\nif kb_shift_held:\n  c = scancode_ascii_upper[make_code]\nelse:\n  c = scancode_ascii_lower[make_code]" {
+    style: {
+      fill: "#2020aa"
+      stroke: "#6060cc"
+      font-color: "#e0e0ff"
+      border-radius: 4
+    }
+  }
+
+  unmapped_check: "Step 6: Mapped?\nc == 0?" {
+    shape: diamond
+    style: {
+      fill: "#3030aa"
+      stroke: "#7070cc"
+      font-color: "#e0e0ff"
+    }
+  }
+
+  discard_unmapped: "Discard (F-keys,\narrow keys, etc.)\nReturn" {
+    style: {
+      fill: "#404080"
+      stroke: "#6060aa"
+      font-color: "#c0c0ff"
+      border-radius: 4
+    }
+  }
+
+  read_port -> e0_check
+  e0_check -> e0_set_flag: "YES\n(0xE0 prefix)"
+  e0_check -> break_check: "NO"
+  break_check -> make_code: "NO (make code)"
+  break_check -> modifier_check: "extract make_code\nfrom break code"
+  make_code -> modifier_check: "check type"
+  modifier_check -> shift_update: "YES (shift/ctrl/alt)"
+  modifier_check -> break_filter: "NO: is_break check"
+  break_filter -> table_lookup: "is_break==0\n(key press)"
+  table_lookup -> unmapped_check
+  unmapped_check -> discard_unmapped: "YES (c==0)"
+}
+
+ring_buffer: "Circular Buffer Write" {
+  style: {
+    fill: "#2e1a2e"
+    stroke: "#8a4a8a"
+    font-color: "#ffc0ff"
+    border-radius: 8
+  }
+
+  overflow_check: "Step 7: Buffer Full?\n(head+1) & 0xFF == tail?" {
+    shape: diamond
+    style: {
+      fill: "#5a205a"
+      stroke: "#aa60aa"
+      font-color: "#ffd0ff"
+    }
+  }
+
+  drop: "Silently Drop\n(preserve oldest chars)\nReturn" {
+    style: {
+      fill: "#401840"
+      stroke: "#805080"
+      font-color: "#ffc0ff"
+      border-radius: 4
+    }
+  }
+
+  write_buf: "buf[head] = c\nhead++ (uint8_t wraps at 256)" {
+    style: {
+      fill: "#5a205a"
+      stroke: "#aa60aa"
+      font-color: "#ffd0ff"
+      border-radius: 4
+    }
+  }
+
+  overflow_check -> drop: "YES\n(buffer full)"
+  overflow_check -> write_buf: "NO\n(space available)"
+}
+
+eoi: "EOI Phase" {
+  style: {
+    fill: "#1a2e2e"
+    stroke: "#4a8a8a"
+    font-color: "#c0ffff"
+    border-radius: 8
+  }
+
+  send_eoi: "pic_send_eoi(irq=1)\noutb(PIC1_CMD=0x20, 0x20)\nMaster EOI only (IRQ1 is master)" {
+    style: {
+      fill: "#205858"
+      stroke: "#60aaaa"
+      font-color: "#d0ffff"
+      border-radius: 4
+    }
+  }
+
+  pic_clears: "PIC clears ISR bit 1\nIRQ1 line re-enabled\nNext keypress can fire" {
+    style: {
+      fill: "#205858"
+      stroke: "#60aaaa"
+      font-color: "#d0ffff"
+      border-radius: 4
+    }
+  }
+
+  send_eoi -> pic_clears
+}
+
+kernel_consumer: "Kernel Consumer (polling)" {
+  style: {
+    fill: "#2a2a2a"
+    stroke: "#6a6a6a"
+    font-color: "#f0f0f0"
+    border-radius: 8
+  }
+
+  getchar: "keyboard_getchar()\nif head==tail: return 0 (empty)\nc = buf[tail]\ntail++\nreturn c" {
+    style: {
+      fill: "#444444"
+      stroke: "#888888"
+      font-color: "#f0f0f0"
+      border-radius: 4
+      font: mono
+    }
+  }
+
+  echo: "kmain echo loop:\nif c != 0: kprintf(\"%c\", c)" {
+    style: {
+      fill: "#444444"
+      stroke: "#888888"
+      font-color: "#f0f0f0"
+      border-radius: 4
+    }
+  }
+
+  getchar -> echo
+}
+
+scancode_table_legend: "Scancode Set 1 Examples" {
+  near: bottom-right
+  style: {
+    fill: "#1a1a1a"
+    stroke: "#555555"
+    font-color: "#aaaaaa"
+    border-radius: 8
+  }
+
+  table: ||md
+| Make | Break | Key   | Lower | Shift |
+|------|-------|-------|-------|-------|
+| 0x1E | 0x9E  | A     | 'a'   | 'A'   |
+| 0x02 | 0x82  | 1     | '1'   | '!'   |
+| 0x39 | 0xB9  | Space | ' '   | ' '   |
+| 0x1C | 0x9C  | Enter | '\n'  | '\n'  |
+| 0x0E | 0x8E  | Bksp  | '\b'  | '\b'  |
+| 0x2A | 0xAA  | LShft | —     | —     |
+| 0x3B | 0xBB  | F1    | 0     | 0     |
+| 0xE0 | —     | Ext.  | prefix| —     |
+  || {
+    style.fill: "#1a1a1a"
+    style.font-color: "#aaaaaa"
+  }
+}
+
+hardware -> irq_path: "IRQ1 assert\n~60μs PS/2 serial" {
+  style.stroke: "#888888"
+  style.font-color: "#aaaaaa"
+}
+
+irq_path -> irq_stub: "Jump to irq1 stub\n(IDT vector 33)" {
+  style.stroke: "#888888"
+  style.font-color: "#aaaaaa"
+}
+
+irq_stub -> c_dispatch: "call irq_dispatcher(frame)" {
+  style.stroke: "#888888"
+  style.font-color: "#aaaaaa"
+}
+
+c_dispatch -> scancode_decode: "keyboard_handler(frame)" {
+  style.stroke: "#888888"
+  style.font-color: "#aaaaaa"
+}
+
+scancode_decode.unmapped_check -> ring_buffer.overflow_check: "NO (c != 0)\nvalid ASCII char" {
+  style.stroke: "#aa88aa"
+  style.font-color: "#cc88cc"
+}
+
+ring_buffer -> eoi: "return from\nkeyboard_handler" {
+  style.stroke: "#888888"
+  style.font-color: "#aaaaaa"
+}
+
+eoi -> irq_stub: "return to\nirq_common_stub\n(popa + iret)" {
+  style.stroke: "#888888"
+  style.font-color: "#aaaaaa"
+  style.stroke-dash: 3
+}
+
+ring_buffer.write_buf -> kernel_consumer.getchar: "char available\n(async; polled by kernel)" {
+  style.stroke: "#886688"
+  style.font-color: "#aa88aa"
+  style.stroke-dash: 5
+  style.animated: true
+}
+
+timing_note: "Timing Summary" {
+  near: bottom-left
+  style: {
+    fill: "#1a1a1a"
+    stroke: "#555555"
+    font-color: "#aaaaaa"
+    border-radius: 8
+  }
+  note: ||md
+**Key Press to Buffer Write:**
+- PS/2 debounce:    5–20 ms
+- PS/2 serial Tx:  ~60 μs
+- PIC arbitration: ~1 μs
+- CPU IRQ response:~75 ns (150 cycles @ 2GHz)
+- pusha + handler: ~200 cycles
+- inb(0x60):       ~1–4 μs (I/O bus)
+- table lookup:    ~5 cycles (L1 cache)
+- buf write:       ~3 cycles (L1 cache)
+- EOI outb:        ~1–4 μs (I/O bus)
+- popa + iret:     ~30 cycles
+**Total: dominated by 5–20ms debounce**
+  || {
+    style.fill: "#1a1a1a"
+    style.font-color: "#888888"
+  }
+}

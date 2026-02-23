@@ -77,7 +77,15 @@ async function main() {
 		console.log('Launching Puppeteer browser...');
 		browser = await puppeteer.launch({
 			headless: true,
-			args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+			protocolTimeout: 600_000, // 10 minutes - critical for massive docs like build-os
+			args: [
+				'--no-sandbox', 
+				'--disable-setuid-sandbox', 
+				'--disable-dev-shm-usage',
+				'--disable-gpu',
+				'--no-zygote',
+				'--single-process'
+			]
 		});
 	}
 
@@ -146,7 +154,13 @@ async function main() {
 				// Block external font requests — use system fallback fonts for PDF
 				await page.setRequestInterception(true);
 				page.on('request', (req) => {
-					if (req.url().startsWith('https://fonts.googleapis.com') || req.url().startsWith('https://fonts.gstatic.com')) {
+					const resourceType = req.resourceType();
+					const url = req.url();
+					if (
+						url.startsWith('https://fonts.googleapis.com') || 
+						url.startsWith('https://fonts.gstatic.com') ||
+						(['image', 'media', 'font'].includes(resourceType) && !url.startsWith('data:'))
+					) {
 						req.abort();
 					} else {
 						req.continue();

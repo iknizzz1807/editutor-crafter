@@ -1,0 +1,449 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+title: |md
+  # Process State Machine & Round-Robin Scheduler
+  **Milestone 4** — Preemptive Multitasking · x86 Protected Mode
+| {near: top-center}
+
+# ─────────────────────────────────────────────
+# COLOR LEGEND
+# ─────────────────────────────────────────────
+legend: {
+  near: bottom-left
+  label: "Legend"
+  style: {
+    fill: "#1a1a2e"
+    stroke: "#4a4a6a"
+    border-radius: 8
+    font-color: "#ccccdd"
+    font-size: 12
+  }
+  l1: "🟢 Green  = active / running / success" {shape: text; style.font-color: "#aaffaa"; style.font-size: 11}
+  l2: "🔵 Blue   = data flow / read path" {shape: text; style.font-color: "#88ccff"; style.font-size: 11}
+  l3: "🟡 Yellow = waiting / caution / not-yet-impl" {shape: text; style.font-color: "#ffee88"; style.font-size: 11}
+  l4: "🔴 Red    = hot path / preemption / danger" {shape: text; style.font-color: "#ff8888"; style.font-size: 11}
+  l5: "🟣 Purple = metadata / headers / kernel structs" {shape: text; style.font-color: "#cc88ff"; style.font-size: 11}
+  l6: "⚪ Gray   = unused / zombie / terminal" {shape: text; style.font-color: "#aaaaaa"; style.font-size: 11}
+}
+
+# ─────────────────────────────────────────────
+# PROCESS STATES
+# ─────────────────────────────────────────────
+
+NEW: {
+  label: "NEW\n─────────\nprocess_create_kernel()\nprocess_create_user()\n\nState: PROCESS_UNUSED → READY\nAllocates PCB + kernel stack\nBuilds fake initial iret frame"
+  style: {
+    fill: "#0d3b66"
+    stroke: "#4488cc"
+    stroke-width: 3
+    font-color: "#aaddff"
+    border-radius: 10
+    font-size: 12
+  }
+}
+
+READY: {
+  label: "READY\n─────────\nstate = PROCESS_READY\n\nIn the run queue.\nCPU not assigned.\nAll registers saved\nin PCB.cpu (cpu_state_t).\nAwaiting scheduler pick."
+  style: {
+    fill: "#0d4429"
+    stroke: "#44cc77"
+    stroke-width: 3
+    font-color: "#aaffcc"
+    border-radius: 10
+    font-size: 12
+  }
+}
+
+RUNNING: {
+  label: "RUNNING\n─────────\nstate = PROCESS_RUNNING\n\nCurrent CPU owner.\ncurrent_process → this PCB.\nTSS.ESP0 = kernel_stack_top.\nCR3 = page_directory phys addr.\nTimer ticks_remaining > 0."
+  style: {
+    fill: "#1a4a00"
+    stroke: "#66ff44"
+    stroke-width: 4
+    font-color: "#ccffaa"
+    border-radius: 10
+    font-size: 12
+    bold: true
+    shadow: true
+  }
+}
+
+BLOCKED: {
+  label: "BLOCKED\n─────────\nstate = PROCESS_BLOCKED\n⚠ NOT IMPLEMENTED IN M4\n(field reserved in PCB)\n\nFuture: waiting on I/O,\nsemaphore, or sleep().\nSkipped by round-robin.\nResumed by event callback."
+  style: {
+    fill: "#3a2e00"
+    stroke: "#ccaa00"
+    stroke-width: 3
+    stroke-dash: 5
+    font-color: "#ffdd88"
+    border-radius: 10
+    font-size: 12
+  }
+}
+
+ZOMBIE: {
+  label: "ZOMBIE\n─────────\nstate = PROCESS_ZOMBIE\n\nProcess called sys_exit().\nNever scheduled again.\nPCB slot held until parent\ncollects exit code.\n(No parent yet in M4 —\nslot eventually reused.)"
+  style: {
+    fill: "#2a2a2a"
+    stroke: "#666666"
+    stroke-width: 2
+    stroke-dash: 3
+    font-color: "#999999"
+    border-radius: 10
+    font-size: 12
+  }
+}
+
+# ─────────────────────────────────────────────
+# STATE TRANSITIONS
+# ─────────────────────────────────────────────
+
+NEW -> READY: "process_create_kernel() / process_create_user()\n──────────────────────────────────────\n① pmm_alloc_frame() for page dir (user)\n② Build fake iret stack frame in kernel_stack[]\n③ Set cpu.esp = sp (top of fake frame)\n④ state = PROCESS_READY\n⑤ Add to process_table[]" {
+  style: {
+    stroke: "#4488cc"
+    stroke-width: 2
+    font-color: "#88bbff"
+    font-size: 11
+    animated: true
+  }
+}
+
+READY -> RUNNING: "sched_schedule() selects this PCB\n──────────────────────────────────────\n① Find next with state==READY (round-robin)\n② old->state = READY  |  next->state = RUNNING\n③ tss_set_kernel_stack(next->kernel_stack_top)\n④ context_switch_asm(&old->cpu.esp,\n        next->cpu.esp, next->page_directory)\n⑤ iret → resumes at saved EIP (ring0 or ring3)" {
+  style: {
+    stroke: "#44cc77"
+    stroke-width: 3
+    font-color: "#88ffbb"
+    font-size: 11
+    animated: true
+    bold: true
+  }
+}
+
+RUNNING -> READY: "Timer IRQ preemption  ← HOT PATH\n──────────────────────────────────────\n① PIT fires IRQ0 every 10 ms (100 Hz)\n② irq_common_stub: cli; pusha; push segs\n③ timer_handler(): pit_tick_count++\n④ sched_tick(): ticks_remaining--\n   if ticks_remaining == 0 → sched_schedule()\n⑤ current->state = READY\n⑥ context_switch_asm() pivots the stack" {
+  style: {
+    stroke: "#ff4444"
+    stroke-width: 4
+    font-color: "#ff8888"
+    font-size: 11
+    animated: true
+    bold: true
+  }
+}
+
+RUNNING -> BLOCKED: "syscall blocking  (M5+)\n──────────────────────────────────────\n① Process calls sys_read() or sys_sleep()\n② Kernel: current->state = BLOCKED\n③ sched_schedule() — skip this process\n④ Wake event registered in wait-queue\n⚠ NOT IMPLEMENTED IN M4" {
+  style: {
+    stroke: "#ccaa00"
+    stroke-width: 2
+    stroke-dash: 5
+    font-color: "#ffdd88"
+    font-size: 11
+  }
+}
+
+BLOCKED -> READY: "I/O complete / event fires  (M5+)\n──────────────────────────────────────\n① IRQ handler signals completion\n② process->state = PROCESS_READY\n③ Next sched_schedule() picks it up\n⚠ NOT IMPLEMENTED IN M4" {
+  style: {
+    stroke: "#ccaa00"
+    stroke-width: 2
+    stroke-dash: 5
+    font-color: "#ffdd88"
+    font-size: 11
+  }
+}
+
+RUNNING -> ZOMBIE: "sys_exit(exit_code)\n──────────────────────────────────────\n① User calls sys_exit() via int 0x80\n② syscall_dispatch() case SYS_EXIT:\n   current->state = PROCESS_ZOMBIE\n③ sched_schedule() → never resumes\n④ PCB slot held (exit code preserved)" {
+  style: {
+    stroke: "#888888"
+    stroke-width: 2
+    font-color: "#aaaaaa"
+    font-size: 11
+  }
+}
+
+# ─────────────────────────────────────────────
+# ROUND-ROBIN READY QUEUE  (circular PCB chain)
+# ─────────────────────────────────────────────
+
+rq: "READY QUEUE  —  process_table[MAX_PROCESSES=16]" {
+  style: {
+    fill: "#111122"
+    stroke: "#4444aa"
+    stroke-width: 2
+    border-radius: 8
+    font-color: "#8888ff"
+    font-size: 13
+    bold: true
+  }
+
+  rq_note: |md
+    **Round-Robin Policy**
+    - Fixed time slice: `SCHEDULER_TICKS_PER_SLICE = 5` ticks × 10 ms = **50 ms**
+    - Linear scan: `(current_idx + i) % MAX_PROCESSES`
+    - Skips `UNUSED`, `BLOCKED`, `ZOMBIE` slots
+    - If **no other READY process** → reset current's slice, keep running
+  | {style.font-size: 11; style.fill: "#111122"; style.stroke: "#333355"}
+
+  pcb0: "PCB[0] — idle\npid=0  RUNNING\nkernel_stack_top\ncpu.esp (saved)\npage_directory→boot_pd\nticks_remaining" {
+    style: {
+      fill: "#1a4a00"
+      stroke: "#66ff44"
+      stroke-width: 3
+      font-color: "#ccffaa"
+      border-radius: 6
+      font-size: 10
+      bold: true
+    }
+  }
+
+  pcb1: "PCB[1] — proc_a\npid=1  READY\nkernel_stack[4096]\ncpu.esp → saved frame\npage_directory→boot_pd\nticks_remaining=5" {
+    style: {
+      fill: "#0d4429"
+      stroke: "#44cc77"
+      stroke-width: 2
+      font-color: "#aaffcc"
+      border-radius: 6
+      font-size: 10
+    }
+  }
+
+  pcb2: "PCB[2] — proc_b\npid=2  READY\nkernel_stack[4096]\ncpu.esp → saved frame\npage_directory→boot_pd\nticks_remaining=5" {
+    style: {
+      fill: "#0d4429"
+      stroke: "#44cc77"
+      stroke-width: 2
+      font-color: "#aaffcc"
+      border-radius: 6
+      font-size: 10
+    }
+  }
+
+  pcb3: "PCB[3] — proc_c\npid=3  READY\nkernel_stack[4096]\ncpu.esp → saved frame\npage_directory→boot_pd\nticks_remaining=5" {
+    style: {
+      fill: "#0d4429"
+      stroke: "#44cc77"
+      stroke-width: 2
+      font-color: "#aaffcc"
+      border-radius: 6
+      font-size: 10
+    }
+  }
+
+  pcb4: "PCB[4] — user_hello\npid=4  READY\nkernel_stack[4096]\ncpu.esp → ring-3 frame\npage_directory→user_pd\n(U/S=1 pages mapped)" {
+    style: {
+      fill: "#1a1a4a"
+      stroke: "#8888ff"
+      stroke-width: 2
+      font-color: "#bbbbff"
+      border-radius: 6
+      font-size: 10
+    }
+  }
+
+  pcbn: "PCB[5..15]\nstate=PROCESS_UNUSED\n(empty slots)" {
+    style: {
+      fill: "#1a1a1a"
+      stroke: "#444444"
+      stroke-dash: 3
+      font-color: "#555555"
+      border-radius: 6
+      font-size: 10
+    }
+  }
+
+  pcb0 -> pcb1: "next (i+1)%16" {style.stroke: "#44cc77"; style.font-size: 9; style.animated: true}
+  pcb1 -> pcb2: "next" {style.stroke: "#44cc77"; style.font-size: 9; style.animated: true}
+  pcb2 -> pcb3: "next" {style.stroke: "#44cc77"; style.font-size: 9; style.animated: true}
+  pcb3 -> pcb4: "next" {style.stroke: "#44cc77"; style.font-size: 9; style.animated: true}
+  pcb4 -> pcbn: "next" {style.stroke: "#555555"; style.font-size: 9; style.stroke-dash: 4}
+  pcbn -> pcb0: "wraps → idx 0\n(circular)" {style.stroke: "#44cc77"; style.font-size: 9; style.animated: true; style.stroke-dash: 4}
+}
+
+# ─────────────────────────────────────────────
+# TIMER IRQ → SCHEDULER CALL CHAIN
+# ─────────────────────────────────────────────
+
+irq_chain: "TIMER IRQ HANDLER CALL CHAIN  (Hot Path — Red)" {
+  style: {
+    fill: "#200808"
+    stroke: "#aa2222"
+    stroke-width: 2
+    border-radius: 8
+    font-color: "#ff8888"
+    font-size: 13
+    bold: true
+  }
+
+  pit: "PIT Channel 0\nclk=1,193,182 Hz\ndivisor=11,932\n→ 100 Hz (10 ms/tick)\nIRQ0 → PIC Master" {
+    style: {fill: "#3a0000"; stroke: "#ff4444"; stroke-width: 2; font-color: "#ffaaaa"; border-radius: 6; font-size: 11}
+  }
+
+  irq_stub: "irq0 (assembly stub)\n────────────────────\ncli\npush dword 0   ; dummy err\npush dword 32  ; vector\njmp irq_common_stub" {
+    style: {fill: "#2a0a00"; stroke: "#cc4422"; stroke-width: 2; font-color: "#ffbb88"; border-radius: 6; font-size: 10; font: mono}
+  }
+
+  common_stub: "irq_common_stub (assembly)\n────────────────────\npusha            ; saves EDI..EAX (32 B)\npush ds/es/fs/gs ; saves seg regs\nmov ax, 0x10    ; load kernel segs\npush esp         ; → interrupt_frame_t*\ncall irq_dispatcher" {
+    style: {fill: "#2a0a00"; stroke: "#cc4422"; stroke-width: 2; font-color: "#ffbb88"; border-radius: 6; font-size: 10; font: mono}
+  }
+
+  irq_disp: "irq_dispatcher(frame)\n────────────────────\nirq = frame->vector - 32\nirq_handlers[irq](frame)\npic_send_eoi(irq)" {
+    style: {fill: "#1a0808"; stroke: "#cc2222"; stroke-width: 2; font-color: "#ffaaaa"; border-radius: 6; font-size: 11; font: mono}
+  }
+
+  timer_h: "timer_handler(frame)\n────────────────────\npit_tick_count++\nsched_tick()" {
+    style: {fill: "#1a0808"; stroke: "#cc2222"; stroke-width: 2; font-color: "#ffaaaa"; border-radius: 6; font-size: 11; font: mono}
+  }
+
+  sched_tick_f: "sched_tick()\n────────────────────\ncurrent->ticks_remaining--\nif ticks_remaining == 0:\n  → sched_schedule()" {
+    style: {fill: "#1a0808"; stroke: "#cc2222"; stroke-width: 2; font-color: "#ffaaaa"; border-radius: 6; font-size: 11; font: mono}
+  }
+
+  sched_sched: "sched_schedule()\n────────────────────\nold = current_process\nfind next READY PCB\nold->state = READY\nnext->state = RUNNING\nnext->ticks = SLICE\ncurrent_process = next\ntss_set_kernel_stack(\n  next->kernel_stack_top)\ncontext_switch_asm(\n  &old->cpu.esp,\n  next->cpu.esp,\n  next->page_directory)" {
+    style: {fill: "#0a0a1a"; stroke: "#aa44ff"; stroke-width: 3; font-color: "#cc88ff"; border-radius: 6; font-size: 10; font: mono; bold: true}
+  }
+
+  ctx_asm: "context_switch_asm (assembly)\n────────────────────\n; Save args before touching ESP\nmov eax, [esp+4]  ; &old->cpu.esp\nmov ecx, [esp+8]  ; next->cpu.esp\nmov edx, [esp+12] ; next->cr3\n; Record old kernel stack\nmov [eax], esp\n; Switch stack → next process\nmov esp, ecx\n; Optionally reload CR3\ncmp cr3, edx\nje .same_as\nmov cr3, edx   ; TLB flush!\n.same_as:\nret  ← pivots to next's saved frame" {
+    style: {fill: "#100010"; stroke: "#ff44ff"; stroke-width: 3; font-color: "#ffaaff"; border-radius: 6; font-size: 10; font: mono; bold: true}
+  }
+
+  iret_box: "irq_common_stub resumes on NEW stack\n────────────────────\npop gs/fs/es/ds\npopa            ; restore next's GPRs\nadd esp, 8      ; discard vec+errcode\niret            ; restore EIP,CS,EFLAGS\n                ; [+ESP,SS if ring-3]\n→ next process runs!" {
+    style: {fill: "#001a00"; stroke: "#44ff44"; stroke-width: 3; font-color: "#aaffaa"; border-radius: 6; font-size: 10; font: mono; bold: true}
+  }
+
+  pit -> irq_stub: "asserts IRQ0\n(every 10 ms)" {style.stroke: "#ff4444"; style.stroke-width: 2; style.font-color: "#ff8888"; style.font-size: 10; style.animated: true}
+  irq_stub -> common_stub: "jmp" {style.stroke: "#cc4422"; style.font-size: 9; style.stroke-width: 2}
+  common_stub -> irq_disp: "call irq_dispatcher(frame*)" {style.stroke: "#cc4422"; style.font-size: 9; style.stroke-width: 2}
+  irq_disp -> timer_h: "irq_handlers[0](frame)" {style.stroke: "#cc2222"; style.font-size: 9; style.stroke-width: 2}
+  timer_h -> sched_tick_f: "call sched_tick()" {style.stroke: "#cc2222"; style.font-size: 9; style.stroke-width: 2}
+  sched_tick_f -> sched_sched: "slice expired\n→ call sched_schedule()" {style.stroke: "#aa44ff"; style.stroke-width: 3; style.font-color: "#cc88ff"; style.font-size: 10; style.animated: true}
+  sched_sched -> ctx_asm: "call context_switch_asm(\n  &old->cpu.esp,\n  next->cpu.esp,\n  next->page_directory)" {style.stroke: "#ff44ff"; style.stroke-width: 3; style.font-color: "#ffaaff"; style.font-size: 10; style.animated: true}
+  ctx_asm -> iret_box: "ret → resumes common_stub\non next process's kernel stack" {style.stroke: "#44ff44"; style.stroke-width: 3; style.font-color: "#aaffaa"; style.font-size: 10; style.animated: true}
+}
+
+# ─────────────────────────────────────────────
+# PCB KERNEL STACK LAYOUT (fake initial frame)
+# ─────────────────────────────────────────────
+
+stack_layout: "PCB KERNEL STACK — Fake Initial iret Frame\n(built by process_create_kernel / process_create_user)" {
+  style: {
+    fill: "#0a0a20"
+    stroke: "#4444cc"
+    stroke-width: 2
+    border-radius: 8
+    font-color: "#8888ff"
+    font-size: 12
+    bold: true
+  }
+
+  s_high: "kernel_stack_top  (high addr)\n↓ stack grows downward ↓" {
+    style: {fill: "#1a1a3a"; stroke: "#3333aa"; font-color: "#8888cc"; border-radius: 4; font-size: 11}
+  }
+
+  s_ret: "[return addr] → irq_return_trampoline\n(context_switch_asm's 'ret' lands here\nthen common_stub exit sequence runs)" {
+    style: {fill: "#2a0a2a"; stroke: "#aa44aa"; stroke-width: 2; font-color: "#ffaaff"; border-radius: 4; font-size: 10; font: mono}
+  }
+
+  s_gpr: "EAX=0  ECX=0  EDX=0  EBX=0\nESP=0  EBP=0  ESI=0  EDI=0\n← pusha layout (popa restores these)" {
+    style: {fill: "#0a1a2a"; stroke: "#2244aa"; font-color: "#8899cc"; border-radius: 4; font-size: 10; font: mono}
+  }
+
+  s_segs: "DS=0x10  ES=0x10  FS=0x10  GS=0x10\n(kernel data segment — popped after popa)" {
+    style: {fill: "#0a1a2a"; stroke: "#2244aa"; font-color: "#8899cc"; border-radius: 4; font-size: 10; font: mono}
+  }
+
+  s_vec: "vector=0 (dummy)  error_code=0 (dummy)\n← add esp,8 discards these" {
+    style: {fill: "#1a1a1a"; stroke: "#444444"; font-color: "#888888"; border-radius: 4; font-size: 10; font: mono}
+  }
+
+  s_eip: "EIP = entry function address\nCS  = 0x08 (kernel) OR 0x1B (ring-3)\nEFLAGS = 0x00000202  (IF=1 !)" {
+    style: {fill: "#001a00"; stroke: "#44aa44"; stroke-width: 2; font-color: "#aaffaa"; border-radius: 4; font-size: 10; font: mono; bold: true}
+  }
+
+  s_ring3: "user_ESP = 0x00C00000  (top of user stack)\nuser_SS  = 0x23         (user data sel, RPL=3)\n← only for ring-3 processes; iret pops these\n  to restore user-mode stack" {
+    style: {fill: "#1a1a0a"; stroke: "#aaaa22"; stroke-width: 2; font-color: "#ffffaa"; border-radius: 4; font-size: 10; font: mono}
+  }
+
+  s_pcb_esp: "↑ cpu.esp points HERE ↑\n(process_table[n].cpu.esp\n= (uint32_t)sp after all pushes)" {
+    style: {fill: "#2a0a00"; stroke: "#ff4444"; stroke-width: 3; font-color: "#ffaaaa"; border-radius: 4; font-size: 10; font: mono; bold: true}
+  }
+
+  s_low: "kernel_stack[0]  (low addr)" {
+    style: {fill: "#1a1a3a"; stroke: "#3333aa"; font-color: "#8888cc"; border-radius: 4; font-size: 11}
+  }
+
+  s_high -> s_ret: "first push (highest addr)" {style.stroke: "#aa44aa"; style.font-size: 9}
+  s_ret -> s_gpr: "pusha layout" {style.stroke: "#2244aa"; style.font-size: 9}
+  s_gpr -> s_segs: "seg regs" {style.stroke: "#2244aa"; style.font-size: 9}
+  s_segs -> s_vec: "dummy fields" {style.stroke: "#444444"; style.font-size: 9}
+  s_vec -> s_eip: "CPU iret frame" {style.stroke: "#44aa44"; style.stroke-width: 2; style.font-size: 9}
+  s_eip -> s_ring3: "ring-3 only\n(user processes)" {style.stroke: "#aaaa22"; style.stroke-dash: 4; style.font-size: 9}
+  s_ring3 -> s_pcb_esp: "cpu.esp saved here" {style.stroke: "#ff4444"; style.stroke-width: 2; style.font-size: 9}
+  s_pcb_esp -> s_low: "" {style.stroke: "#3333aa"; style.font-size: 9}
+}
+
+# ─────────────────────────────────────────────
+# TSS DETAIL
+# ─────────────────────────────────────────────
+
+tss_detail: "TSS — Task State Segment  (hardware-read on ring-3 → ring-0)" {
+  style: {
+    fill: "#1a0a2a"
+    stroke: "#8844cc"
+    stroke-width: 2
+    border-radius: 8
+    font-color: "#cc88ff"
+    font-size: 12
+    bold: true
+  }
+
+  tss_esp0: "TSS.esp0  ← THE critical field\n─────────────────────────────\nUpdated by tss_set_kernel_stack()\non EVERY context switch.\nPoints to: next->kernel_stack_top\n\nCPU reads this on ANY ring-3 interrupt\nto find the kernel stack before\npushing the 5-word ring-crossing frame." {
+    style: {fill: "#2a0a3a"; stroke: "#cc44ff"; stroke-width: 3; font-color: "#ffaaff"; border-radius: 6; font-size: 11; bold: true}
+  }
+
+  tss_ss0: "TSS.ss0 = 0x10\n(kernel data segment)\nFixed — never changes." {
+    style: {fill: "#1a0a2a"; stroke: "#8844cc"; font-color: "#bb88ee"; border-radius: 6; font-size: 11; font: mono}
+  }
+
+  tss_other: "All other fields = 0\n(hardware task switching\nnot used in M4)" {
+    style: {fill: "#111118"; stroke: "#444455"; stroke-dash: 3; font-color: "#777788"; border-radius: 6; font-size: 10}
+  }
+
+  tss_gdt: "GDT entry[5] = TSS descriptor\ntype=0x9 (available 32-bit TSS)\nS=0 (system descriptor)\nDPL=0\nInstalled via gdt_install_tss(5,...)\nLoaded via 'ltr 0x28'" {
+    style: {fill: "#1a0a2a"; stroke: "#8844cc"; font-color: "#bb88ee"; border-radius: 6; font-size: 10; font: mono}
+  }
+
+  tss_esp0 -> tss_ss0: "" {style.stroke: "#8844cc"; style.font-size: 9}
+  tss_ss0 -> tss_other: "" {style.stroke: "#444455"; style.font-size: 9}
+  tss_other -> tss_gdt: "" {style.stroke: "#444455"; style.font-size: 9}
+}
+
+# ─────────────────────────────────────────────
+# CONNECTIONS BETWEEN SECTIONS
+# ─────────────────────────────────────────────
+
+RUNNING -> rq: "current_process ptr\npoints into process_table[]" {
+  style: {stroke: "#44cc77"; stroke-width: 2; font-color: "#88ffbb"; font-size: 10; stroke-dash: 4}
+}
+
+irq_chain.sched_sched -> tss_detail.tss_esp0: "tss_set_kernel_stack(\n  next->kernel_stack_top)\nbefore context_switch_asm()" {
+  style: {stroke: "#cc44ff"; stroke-width: 2; font-color: "#ee88ff"; font-size: 10; animated: true}
+}
+
+irq_chain.ctx_asm -> stack_layout.s_pcb_esp: "loads next->cpu.esp\n→ switches to this stack" {
+  style: {stroke: "#ff44ff"; stroke-width: 2; font-color: "#ffaaff"; font-size: 10; animated: true}
+}
+
+RUNNING -> irq_chain.pit: "timer fires\nmid-execution\n(no cooperation)" {
+  style: {stroke: "#ff4444"; stroke-width: 3; font-color: "#ff8888"; font-size: 10; animated: true}
+}
+
+irq_chain.iret_box -> RUNNING: "iret → resumes\nnext process" {
+  style: {stroke: "#44ff44"; stroke-width: 3; font-color: "#aaffaa"; font-size: 10; animated: true}
+}
+
+rq.pcb1 -> stack_layout: "each PCB has its own\nkernel_stack[4096]\nwith saved cpu state" {
+  style: {stroke: "#4444cc"; stroke-width: 2; font-color: "#8888ff"; font-size: 10; stroke-dash: 3}
+}

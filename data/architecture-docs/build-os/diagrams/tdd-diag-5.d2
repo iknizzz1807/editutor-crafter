@@ -1,0 +1,122 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+title: |md
+  ## Protected Mode Transition: Instruction-Level Sequence Diagram
+  *x86 real mode → protected mode choreography with hardware constraints*
+| {near: top-center}
+
+shape: sequence_diagram
+
+cpu: "x86 CPU\n(16-bit Real Mode)"
+stage2: "Stage2 Bootloader\n(at 0x7E00)"
+gdt_mem: "GDT Memory\n(physical)"
+cr_regs: "Control Registers\n(CR0, CR3, GDTR)"
+pipeline: "CPU Pipeline\n(prefetch queue)"
+kernel: "Kernel Entry\n(0x100000)"
+
+stage2 -> stage2: "Step 1: cli — disable interrupts\n(IF=0 mandatory; IVT useless after PE=1)" {
+  style.stroke: red
+  style.bold: true
+}
+
+stage2 -> gdt_mem: "Step 2: Write GDT to memory\n5 entries × 8B = 40B\n[null, kcode, kdata, ucode, udata]" {
+  style.stroke: "#7B2D8B"
+}
+
+gdt_mem -> stage2: "GDT bytes in RAM\n(base=gdt_start, limit=39)" {
+  style.stroke: "#7B2D8B"
+  style.stroke-dash: 4
+}
+
+stage2 -> cr_regs: "Step 3: lgdt [gdt_descriptor]\n(loads 6-byte GDTR: limit=39, base=phys addr)" {
+  style.stroke: "#2D5A8B"
+}
+
+cr_regs -> stage2: "GDTR = {limit:39, base:gdt_start}\n(CPU knows GDT location; still real mode)" {
+  style.stroke: "#2D5A8B"
+  style.stroke-dash: 4
+}
+
+stage2 -> cr_regs: "Step 4: mov eax, cr0 / or eax,1 / mov cr0,eax\nSets CR0.PE=1 → ENTERS PROTECTED MODE" {
+  style.stroke: red
+  style.bold: true
+  style.stroke-width: 3
+}
+
+cr_regs -> pipeline: "CR0.PE=1 write is SERIALIZING:\nFlushes pipeline, discards prefetched instrs" {
+  style.stroke: red
+  style.stroke-dash: 3
+}
+
+pipeline -> cpu: "Pipeline flushed\nCS still has real-mode value 0x0000\n(INCONSISTENT STATE — 1 instruction max)" {
+  style.stroke: red
+  style.stroke-dash: 3
+}
+
+note1: |md
+  **⚠ CRITICAL WINDOW**
+  CPU is in protected mode but CS=0x0000
+  (real-mode segment value). No interrupt
+  can fire (cli). Must execute far jmp
+  immediately — no other instructions.
+| {
+  style.fill: "#FFE0E0"
+  style.stroke: red
+}
+
+stage2 -> cpu: "Step 5: jmp 0x08:pm32_entry\n(far jump — only valid next instruction)\nCS ← selector 0x08 (kernel code)\nPipeline flushed again; protected mode stable" {
+  style.stroke: red
+  style.bold: true
+  style.stroke-width: 3
+}
+
+cpu -> cpu: "CS=0x08 loaded → CPU looks up GDT[1]\nBase=0, Limit=4GB, DPL=0, 32-bit\nCode fetches now validated by GDT" {
+  style.stroke: "#2D5A8B"
+}
+
+cpu -> cpu: "Step 6: Load all data segment registers\nmov ax, 0x10 ; mov ds/es/fs/gs/ss, ax\n(0x10 = GDT[2]: kernel data, DPL=0)" {
+  style.stroke: "#2D8B2D"
+}
+
+note2: |md
+  **Without this step:** DS/ES/SS still hold
+  real-mode values (0x0000). First data
+  access → CPU misinterprets as selector 0
+  → GPF (null descriptor fault).
+| {
+  style.fill: "#FFE0E0"
+  style.stroke: red
+}
+
+cpu -> cpu: "Step 7: mov esp, KERNEL_STACK_TOP\n(stack required before C code)\nESP ← top of 16KB static kernel stack" {
+  style.stroke: "#5A8B2D"
+}
+
+cpu -> kernel: "Step 8: jmp 0x100000\n(kernel binary loaded there by Stage2)\nFirst 32-bit kernel instruction executes" {
+  style.stroke: "#7B2D8B"
+  style.bold: true
+}
+
+kernel -> kernel: "entry.asm: zero BSS (rep stosd)\nthen: call kmain" {
+  style.stroke: "#2D5A8B"
+}
+
+invariants: |md
+  **Invariants after Step 8:**
+  - CR0.PE = 1 (protected mode, irrevocable)
+  - EFLAGS.IF = 0 (cli still in effect)
+  - CS = 0x08 (kernel code, flat 4GB)
+  - DS = ES = FS = GS = SS = 0x10 (kernel data)
+  - ESP valid (16KB static stack)
+  - GDT: 5 entries at known physical address
+  - No IDT yet — interrupts must stay disabled
+| {
+  style.fill: "#E0FFE0"
+  style.stroke: "#2D8B2D"
+  near: bottom-center
+}

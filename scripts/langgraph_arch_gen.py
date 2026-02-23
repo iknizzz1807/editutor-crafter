@@ -38,6 +38,8 @@ def load_project_meta(project_id):
                         if p.get("id") == project_id:
                             return p
     return None
+
+
 OUTPUT_BASE = DEFAULT_OUTPUT  # Will be overridden by --output flag if provided
 D2_EXAMPLES_DIR = SCRIPT_DIR / ".." / "d2_examples"
 INSTRUCTIONS_DIR = SCRIPT_DIR / "instructions"
@@ -46,6 +48,38 @@ INSTRUCTIONS_DIR = SCRIPT_DIR / "instructions"
 def load_instruction(name):
     path = INSTRUCTIONS_DIR / f"{name}.md"
     return path.read_text() if path.exists() else f"You are a master {name}."
+
+
+DOMAIN_PROFILES_DIR = INSTRUCTIONS_DIR / ".." / "domain_profiles"
+
+
+def load_domain_map():
+    map_path = DOMAIN_PROFILES_DIR / "domain_map.yaml"
+    if map_path.exists():
+        with open(map_path) as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+
+def load_domain_profile(meta):
+    """Load domain profile + depth calibration for a project."""
+    domain = meta.get("domain", "")
+    level = meta.get("level", "intermediate")
+    domain_map = load_domain_map()
+    profile_name = domain_map.get(domain, "specialized")
+    profile_path = DOMAIN_PROFILES_DIR / f"{profile_name}.md"
+    profile_content = profile_path.read_text() if profile_path.exists() else ""
+
+    return f"""--- DOMAIN PROFILE ({domain} / {level}) ---
+{profile_content}
+
+--- DEPTH CALIBRATION ---
+Project level: **{level}**
+- beginner: explain everything, skip hardware/formal, focus patterns + API
+- intermediate: domain concepts, system-level view, tradeoff analysis
+- advanced: deep internals, production concerns, failure modes, optimization
+- expert: full depth, byte/bit-level where relevant, research papers
+"""
 
 
 def load_d2_docs():
@@ -73,7 +107,7 @@ INSTR_BIBLIOGRAPHER = load_instruction("bibliographer")
 print(">>> Instructions loaded", flush=True)
 
 # --- LLM SETUP ---
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "sonnet")  # haiku, sonnet, opus
 KILO_MODEL = os.getenv("KILO_MODEL", "kilo/minimax/minimax-m2.5")  # Default kilo model
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "lEJimXOmklwc8z4iQPF0g2yClh9NBs4D")
@@ -111,20 +145,20 @@ def init_llm_provider():
         print(f">>> Provider: MIXED ({LLM_PROVIDER})", flush=True)
         LLM = ChatOpenAI(
             base_url="http://127.0.0.1:7999/v1",
-            api_key="mythong2005",
+            api_key=os.getenv("GEMINI_PROXY_API_KEY", "mythong2005"),
             model="gemini_cli/gemini-3-flash-preview",
             temperature=1,
-            max_tokens=64000,
+            max_completion_tokens=64000,
         )
     elif USE_MISTRAL:
         LLM_PROVIDER = "mistral"
         print(f">>> Provider: MISTRAL ({MISTRAL_MODEL})", flush=True)
         LLM = ChatOpenAI(
             base_url="https://api.mistral.ai/v1",
-            api_key=MISTRAL_API_KEY,
+            api_key=os.getenv("MISTRAL_API_KEY"),
             model=MISTRAL_MODEL,
             temperature=1,
-            max_tokens=64000,
+            max_completion_tokens=64000,
         )
     elif USE_KILO_CLI:
         LLM_PROVIDER = "kilo-cli"
@@ -133,10 +167,17 @@ def init_llm_provider():
         LLM_PROVIDER = "claude-cli"
         print(f">>> Provider: CLAUDE CODE CLI (Model: {CLAUDE_MODEL})", flush=True)
     elif USE_ANTHROPIC and ChatAnthropic:
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
+        # For Anthropic, we use max_tokens and the 'betas' parameter
         LLM = ChatAnthropic(
             model=ANTHROPIC_MODEL,
             temperature=1,
             max_tokens=64000,
+            api_key=api_key,
+            timeout=1800,
+            betas=["context-1m-2025-08-07"],  # Correct way to enable 1M context
         )
         LLM_PROVIDER = "anthropic"
         print(f">>> Provider: ANTHROPIC ({ANTHROPIC_MODEL})", flush=True)
@@ -144,10 +185,10 @@ def init_llm_provider():
         print(">>> Setting up local proxy (Gemini)...", flush=True)
         LLM = ChatOpenAI(
             base_url="http://127.0.0.1:7999/v1",
-            api_key="mythong2005",
+            api_key=os.getenv("GEMINI_PROXY_API_KEY", "mythong2005"),
             model="gemini_cli/gemini-3-flash-preview",
             temperature=1,
-            max_tokens=64000,
+            max_completion_tokens=64000,
         )
         LLM_PROVIDER = "local-proxy"
 
@@ -249,6 +290,12 @@ def invoke_claude_cli(messages, max_retries=3):
 
 def safe_invoke(messages, max_retries=5, invoke_kwargs=None, provider_override=None):
     actual_provider = provider_override or LLM_PROVIDER
+
+    # If the user explicitly requested Anthropic API, use it for everything
+    # except when we are forced to a local-proxy (which usually means specific Gemini logic)
+    if LLM_PROVIDER == "anthropic" and actual_provider != "local-proxy":
+        actual_provider = "anthropic"
+
     if actual_provider == "claude-cli":
         return invoke_claude_cli(messages, max_retries)
     if actual_provider == "kilo-cli":
@@ -256,7 +303,7 @@ def safe_invoke(messages, max_retries=5, invoke_kwargs=None, provider_override=N
 
     kwargs = invoke_kwargs or {}
     if "timeout" not in kwargs:
-        kwargs["timeout"] = 600
+        kwargs["timeout"] = 1200
 
     for attempt in range(max_retries):
         try:
@@ -308,6 +355,7 @@ class GraphState(TypedDict):
     tdd_current_mod_index: Annotated[int, replace_reducer]
     tdd_diagrams_to_generate: Annotated[List[Dict[str, Any]], replace_reducer]
     external_reading: Annotated[str, replace_reducer]
+    running_criteria: Annotated[List[Dict[str, Any]], replace_reducer]
 
 
 # --- CHECKPOINT MANAGER ---
@@ -341,12 +389,22 @@ def architect_node(state: GraphState):
 
     print(f"  [Agent: Architect] Blueprinting {state['project_id']}...", flush=True)
     meta = state["meta"]
+    full_yaml_meta = yaml.dump(meta, allow_unicode=True, default_flow_style=False)
+    domain_profile = load_domain_profile(meta)
+
     prompt = f"""
-    {INSTR_ARCHITECT}
-    PROJECT: {meta.get("name")}\nDESC: {meta.get("description")}
-    TASK: Output ONLY raw JSON for the Blueprint. 
-    Plan 10-15 diagrams.
-    """
+{domain_profile}
+
+{INSTR_ARCHITECT}
+
+--- FULL PROJECT SPECIFICATION (YAML) ---
+{full_yaml_meta}
+
+TASK: Output ONLY raw JSON for the Blueprint.
+Include every milestone from YAML — 1:1 mapping.
+Plan 2-3 diagrams per milestone.
+For each milestone: misconception, reveal, cascade (3-5 connections, 1+ cross-domain).
+"""
     invoke_args = {}
     if LLM_PROVIDER in [
         "local-proxy",
@@ -359,15 +417,16 @@ def architect_node(state: GraphState):
     res = safe_invoke(
         [
             SystemMessage(
-                content="You are a Master Architect. Output ONLY valid JSON."
+                content="You are a Principal Systems Architect. Output ONLY valid JSON."
             ),
             HumanMessage(content=prompt),
         ],
         invoke_kwargs=invoke_args,
-        provider_override="claude-cli"
-        if LLM_PROVIDER and LLM_PROVIDER.startswith("mixed")
-        else None,
+        provider_override=(
+            "claude-cli" if LLM_PROVIDER and LLM_PROVIDER.startswith("mixed") else None
+        ),
     )
+    print(f"  [Agent: Architect] Response received: {len(res.content)} chars")
     blueprint = extract_json(res.content)
     if not blueprint:
         raise ValueError("Architect failed to return valid JSON")
@@ -408,36 +467,95 @@ def writer_node(state: GraphState):
         return {"status": "visualizing", "phase": "atlas"}
 
     ms = milestones[idx]
-    marker = f"<!-- MS_ID: {ms.get('id', f'ms-{idx}')} -->"
+    ms_id = ms.get("id", f"ms-{idx}")
+    ms_title = ms.get("title", f"Milestone {idx + 1}")
+    marker = f"<!-- MS_ID: {ms_id} -->"
     if marker in state["accumulated_md"]:
-        print(
-            f"  [Agent: Educator] Skipping already generated Milestone: {ms.get('title')}"
-        )
+        print(f"  [Agent: Educator] Skipping already generated: {ms_title}")
         return {"current_ms_index": idx + 1}
 
-    print(f"  [Agent: Educator] Writing Atlas Node: {ms.get('title')}...")
+    print(f"  [Agent: Educator] Writing Atlas Node: {ms_title}...")
     is_claude = LLM_PROVIDER == "mixed-heavy-claude" or LLM_PROVIDER == "claude-cli"
-    context_to_send = state["accumulated_md"]
-    if is_claude and "<!-- END_MS -->" in context_to_send:
-        context_to_send = (
-            "...history omitted...\n\n" + context_to_send.split("<!-- END_MS -->")[-2]
-        )
+
+    full_yaml_meta = yaml.dump(
+        state["meta"], allow_unicode=True, default_flow_style=False
+    )
+    domain_profile = load_domain_profile(state["meta"])
 
     diag_list = "\n".join(
         [
-            f"- ID: {d['id']} | Title: {d['title']}"
+            f"- ID: {d.get('id', '?')} | Title: {d.get('title', '?')}"
             for d in blueprint.get("diagrams", [])
+            if isinstance(d, dict)
         ]
     )
-    prompt = f"{INSTR_EDUCATOR}\nTASK: Write content for: {ms.get('title')}.\nSUMMARY: {ms.get('summary')}\nCONTEXT: {context_to_send}\nDIAGRAMS:\n{diag_list}"
+
+    ms_misconception = ms.get("misconception", "N/A")
+    ms_reveal = ms.get("reveal", "N/A")
+    ms_cascade = ms.get("cascade", [])
+    ms_cascade_str = (
+        "\n".join(f"  - {c}" for c in ms_cascade) if ms_cascade else "  (none)"
+    )
+    ms_yaml_criteria = ms.get("yaml_acceptance_criteria", [])
+    ms_criteria_str = (
+        "\n".join(f"  - {c}" for c in ms_yaml_criteria)
+        if ms_yaml_criteria
+        else "  (none)"
+    )
+
+    prompt = f"""
+{domain_profile}
+
+{INSTR_EDUCATOR}
+
+--- GROUND TRUTH PROJECT SPEC (YAML) ---
+{full_yaml_meta}
+
+--- FULL ATLAS SO FAR ---
+{state["accumulated_md"]}
+
+--- TASK ---
+Write Atlas content for milestone: {ms_title}
+Summary: {ms.get("summary", ms.get("description", ""))}
+
+Revelation inputs from Architect:
+- Misconception: {ms_misconception}
+- Reveal: {ms_reveal}
+
+Knowledge Cascade connections to surface:
+{ms_cascade_str}
+
+YAML Acceptance Criteria (must be covered):
+{ms_criteria_str}
+
+Available diagrams ({{{{DIAGRAM:id}}}}):
+{diag_list}
+
+Quality check: Does the reader understand WHY this exists, HOW it works, and WHAT ELSE connects to it?
+End with [[CRITERIA_JSON: {{"milestone_id": "{ms_id}", "criteria": [...]}} ]]
+"""
 
     res = safe_invoke(
         [HumanMessage(content=prompt)],
         provider_override="claude-cli" if is_claude else None,
     )
-    content = str(res.content).strip()
+    raw_content = str(res.content).strip()
 
-    # Discovery
+    # Extract criteria
+    new_criteria_list = list(state.get("running_criteria", []))
+    criteria_match = re.search(
+        r"\[\[CRITERIA_JSON:\s*(\{.*?\})\s*\]\]", raw_content, re.DOTALL
+    )
+    if criteria_match:
+        extracted = extract_json(criteria_match.group(1))
+        if extracted:
+            new_criteria_list.append(extracted)
+
+    content = re.sub(
+        r"\[\[CRITERIA_JSON:.*?\]\]", "", raw_content, flags=re.DOTALL
+    ).strip()
+
+    # Dynamic diagrams
     new_diagrams = state["diagrams_to_generate"]
     dynamic_orders = re.findall(r"\[\[DYNAMIC_DIAGRAM:(.*?)\|(.*?)\|(.*?)\]\]", content)
     for d_id, d_title, d_desc in dynamic_orders:
@@ -447,7 +565,7 @@ def writer_node(state: GraphState):
                     "id": d_id.strip(),
                     "title": d_title.strip(),
                     "description": d_desc.strip(),
-                    "anchor_target": ms.get("id"),
+                    "anchor_target": ms_id,
                 }
             )
 
@@ -455,11 +573,13 @@ def writer_node(state: GraphState):
         r"\[\[DYNAMIC_DIAGRAM:(.*?)\|.*?\|.*?\]\]", r"{{DIAGRAM:\1}}", content
     )
     full_content = f"\n\n{marker}\n{content}\n<!-- END_MS -->\n"
+    print(f"    ✓ Content generated: {len(full_content)} chars")
 
     new_state = {
         "accumulated_md": state["accumulated_md"] + full_content,
         "current_ms_index": idx + 1,
         "diagrams_to_generate": new_diagrams,
+        "running_criteria": new_criteria_list,
         "status": "writing",
         "phase": "atlas",
     }
@@ -577,9 +697,32 @@ def tdd_planner_node(state: GraphState):
     if state.get("tdd_blueprint"):
         return {"status": "tdd_writing", "phase": "tdd"}
     print(f"  [Agent: TDD Orchestrator] Planning TDD...")
-    prompt = f"{INSTR_TDD_PLANNER}\nATLAS:\n{state['accumulated_md']}\nTASK: Output ONLY raw JSON for TDD Blueprint."
-    res = safe_invoke([HumanMessage(content=prompt)], provider_override="local-proxy")
+    full_yaml_meta = yaml.dump(
+        state["meta"], allow_unicode=True, default_flow_style=False
+    )
+    domain_profile = load_domain_profile(state["meta"])
+
+    prompt = f"""
+{domain_profile}
+
+{INSTR_TDD_PLANNER}
+
+--- GROUND TRUTH PROJECT SPEC (YAML) ---
+{full_yaml_meta}
+
+--- PEDAGOGICAL ATLAS (completed) ---
+{state["accumulated_md"]}
+
+TASK: Output ONLY raw JSON for TDD Blueprint.
+Follow DOMAIN PROFILE for diagram types and spec detail level.
+    Minimum 20 diagrams total. Include implementation phases with hours.
+"""
+    res = safe_invoke([HumanMessage(content=prompt)])
+    print(
+        f"  [Agent: TDD Orchestrator] TDD Blueprint received: {len(res.content)} chars"
+    )
     tdd_blueprint = extract_json(res.content)
+
     if not tdd_blueprint:
         raise ValueError("TDD Planner failed")
 
@@ -608,15 +751,62 @@ def tdd_writer_node(state: GraphState):
         return {"status": "tdd_visualizing", "phase": "tdd"}
 
     mod = modules[idx]
-    marker = f"<!-- TDD_MOD_ID: {mod['id']} -->"
+    mod_id = mod.get("id", f"mod-{idx}")
+    mod_name = mod.get("name", f"Module {idx + 1}")
+    marker = f"<!-- TDD_MOD_ID: {mod_id} -->"
     if marker in state["tdd_accumulated_md"]:
         return {"tdd_current_mod_index": idx + 1}
 
-    print(f"  [Agent: TDD Writer] Writing Spec: {mod['name']}...")
-    prompt = f"{INSTR_TDD_WRITER}\nMODULE: {mod['name']}\nATLAS:\n{state['accumulated_md']}\nPREVIOUS TDD:\n{state['tdd_accumulated_md']}"
-    res = safe_invoke([HumanMessage(content=prompt)], provider_override="local-proxy")
-    content = str(res.content).strip()
+    print(f"  [Agent: TDD Writer] Writing Spec: {mod_name}...")
+    full_yaml_meta = yaml.dump(
+        state["meta"], allow_unicode=True, default_flow_style=False
+    )
+    domain_profile = load_domain_profile(state["meta"])
+    mod_diag_ids = ", ".join([d.get("id", "?") for d in mod.get("diagrams", [])])
 
+    prompt = f"""
+{domain_profile}
+
+{INSTR_TDD_WRITER}
+
+--- GROUND TRUTH PROJECT SPEC (YAML) ---
+{full_yaml_meta}
+
+--- PEDAGOGICAL ATLAS ---
+{state["accumulated_md"]}
+
+--- TDD PROGRESS ---
+{state["tdd_accumulated_md"]}
+
+--- TASK ---
+Full Technical Design Specification for module: {mod_name}
+Description: {mod.get("description", "")}
+Specs: {json.dumps(mod.get("specs", {}), indent=2)}
+Phases: {json.dumps(mod.get("implementation_phases", []), indent=2)}
+
+Diagrams ({{{{DIAGRAM:id}}}}): {mod_diag_ids}
+
+Quality check: Could an engineer implement this module from this spec alone?
+End with [[CRITERIA_JSON: {{"module_id": "{mod_id}", "criteria": [...]}} ]]
+"""
+    res = safe_invoke([HumanMessage(content=prompt)])
+    raw_content = str(res.content).strip()
+
+    # Extract criteria
+    new_criteria_list = list(state.get("running_criteria", []))
+    criteria_match = re.search(
+        r"\[\[CRITERIA_JSON:\s*(\{.*?\})\s*\]\]", raw_content, re.DOTALL
+    )
+    if criteria_match:
+        extracted = extract_json(criteria_match.group(1))
+        if extracted:
+            new_criteria_list.append(extracted)
+
+    content = re.sub(
+        r"\[\[CRITERIA_JSON:.*?\]\]", "", raw_content, flags=re.DOTALL
+    ).strip()
+
+    # Dynamic diagrams
     new_diags = state["tdd_diagrams_to_generate"]
     dynamic = re.findall(r"\[\[DYNAMIC_DIAGRAM:(.*?)\|(.*?)\|(.*?)\]\]", content)
     for d_id, d_title, d_desc in dynamic:
@@ -626,18 +816,21 @@ def tdd_writer_node(state: GraphState):
                     "id": d_id.strip(),
                     "title": d_title.strip(),
                     "description": d_desc.strip(),
-                    "anchor_target": mod["id"],
+                    "anchor_target": mod_id,
                 }
             )
 
     content = re.sub(
         r"\[\[DYNAMIC_DIAGRAM:(.*?)\|.*?\|.*?\]\]", r"{{DIAGRAM:\1}}", content
     )
+    full_content = f"\n\n{marker}\n{content}\n"
+    print(f"    ✓ TDD Module generated: {len(full_content)} chars")
+
     new_state = {
-        "tdd_accumulated_md": state["tdd_accumulated_md"]
-        + f"\n\n{marker}\n{content}\n",
+        "tdd_accumulated_md": state["tdd_accumulated_md"] + full_content,
         "tdd_current_mod_index": idx + 1,
         "tdd_diagrams_to_generate": new_diags,
+        "running_criteria": new_criteria_list,
         "status": "tdd_writing",
         "phase": "tdd",
     }
@@ -803,6 +996,7 @@ def generate_project(project_id):
         "external_reading": "",
         "knowledge_map": [],
         "advanced_contexts": [],
+        "running_criteria": [],
     }
     if checkpoint:
         print(f">>> Resuming phase: {checkpoint.get('phase')}")
@@ -822,6 +1016,13 @@ def generate_project(project_id):
         + final_state.get("external_reading", "")
     )
     (proj_dir / "index.md").write_text(full)
+
+    criteria = final_state.get("running_criteria", [])
+    if criteria:
+        (proj_dir / "synced_criteria.json").write_text(
+            json.dumps(criteria, indent=2, ensure_ascii=False)
+        )
+        print(f"  ✓ Synced criteria: {len(criteria)} entries")
 
     cp_path = CheckpointManager.get_path(project_id)
     if cp_path.exists():

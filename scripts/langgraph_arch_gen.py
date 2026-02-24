@@ -496,7 +496,16 @@ def _validate_blueprint(blueprint, meta):
 
 def knowledge_mapper_node(state: GraphState):
     print(f"  [Agent: Knowledge Mapper] Updating map...", flush=True)
-    last_content = state["accumulated_md"].split("\n\n")[-1]
+
+    # Robust extraction: find the content of the actual last milestone
+    full_md = state["accumulated_md"]
+    segments = full_md.split("<!-- END_MS -->")
+    # The last segment is usually empty or whitespace after the last tag
+    last_content = segments[-2] if len(segments) > 1 else full_md
+
+    # Remove the marker from the top of the content
+    last_content = re.sub(r"<!-- MS_ID: .+? -->", "", last_content).strip()
+
     prompt = f"Extract ALL significant technical concepts from the following text that were explained in detail. Output ONLY a comma-separated list of terms.\n\nTEXT:\n{last_content}"
     res = safe_invoke([HumanMessage(content=prompt)], provider_override="local-proxy")
     new_terms = [t.strip() for t in str(res.content).split(",") if t.strip()]

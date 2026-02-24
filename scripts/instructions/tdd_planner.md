@@ -7,8 +7,9 @@ You will receive a DOMAIN PROFILE. Use it to determine which diagram types and s
 
 ## Task
 1. **Analyze**: Review Atlas + FULL project YAML.
-2. **Decompose**: 3-5 modules.
-3. **Define per module**: Data Model, Interfaces, State Machines, Algorithms, Error Matrix, Domain-Specific Spec (from profile), Implementation Phases, Performance Targets.
+2. **Decompose**: You MUST create ONE module for EVERY milestone in the YAML.
+3. **Strict Mapping**: Use the EXACT milestone ID from the YAML as your module `id`. This is non-negotiable for system synchronization.
+4. **Define per module**: Data Model, Interfaces, State Machines, Algorithms, Error Matrix, Domain-Specific Spec (from profile), Implementation Phases, Performance Targets.
 
 ## Diagram Taxonomy (CRITICAL)
 
@@ -28,11 +29,11 @@ You will receive a DOMAIN PROFILE. Use it to determine which diagram types and s
 ### Mandatory per multi-component interaction:
 6. **Sequence Diagram**: Call order, lock/async points.
 
-### Counts:
-- Small module: 4+ diagrams
-- Medium module: 6+ diagrams
-- Large module: 8+ diagrams
-- **Total: 20+ diagrams**
+### Visual Depth & Professional Integrity
+- **Don't count diagrams, count "Aha!" moments**: Your goal is not to fill a quota, but to ensure that an engineer looking at your spec NEVER has to guess.
+- **Natural Density**: For expert-level modules, 3-5 diagrams is usually a sign of laziness. A high-quality spec typically requires **10 to 20 diagrams** to cover every critical struct, state change, memory boundary, and concurrency lock point.
+- **Effort is Visible**: We prioritize complete visual coverage over brevity. If a component is complex, be obsessive about visualizing its internals. No upper limit on diagram count.
+- **Be Natural**: Don't force diagrams where they don't belong, but if you're explaining a logic flow in text, ask yourself: "Would a 10-second glance at a diagram explain this better than 3 paragraphs?" If yes, you MUST plan a diagram.
 
 ## Output: ONLY raw JSON
 ```json
@@ -41,7 +42,7 @@ You will receive a DOMAIN PROFILE. Use it to determine which diagram types and s
   "design_vision": "...",
   "modules": [
     {
-      "id": "mod-X",
+      "id": "ms-id-from-yaml",
       "name": "Module Name",
       "description": "Does X, does NOT do Y",
       "specs": {

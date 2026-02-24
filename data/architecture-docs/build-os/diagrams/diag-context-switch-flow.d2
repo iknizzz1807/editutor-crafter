@@ -1,0 +1,370 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+title: |md
+  # Context Switch: Register Save/Restore
+  Timer Interrupt → Save → Schedule → Restore → IRET
+| {near: top-center}
+
+direction: right
+
+step1: Timer Interrupt Fires {
+  link: "#timer-interrupt"
+  style.fill: "#ffcccc"
+  style.stroke: "#cc0000"
+  
+  stack_state: |md
+    **User Stack (before INT)**
+    
+    0xBFFFF000: return_addr
+    0xBFFFF004: return_cs  
+    0xBFFFF008: return_eflags
+    
+    
+    **Kernel Stack (after INT)**
+    
+    0x0010FFF0: SS=0x23 (user data)
+    0x0010FFF4: ESP=0xBFFFF000
+    0x0010FFF8: EFLAGS=0x202
+    0x0010FFFC: CS=0x1B (user code)
+    0x00110000: EIP=0x08048500 ← resume here
+  |
+  
+  cpu_state: |md
+    **CPU State After INT**
+    
+    CR3: 0x00100000 (Process A)
+    CS:  0x08 (kernel code)
+    SS:  0x10 (kernel data)
+    ESP: 0x00110000 (kernel stack)
+    CPL: 0 (ring 0)
+  |
+  
+  hardware_note: |md
+    **Hardware Actions (automatic)**
+    1. Switch to TSS.ESP0 stack
+    2. Push SS, ESP, EFLAGS, CS, EIP
+    3. Load CS:EIP from IDT[32]
+    4. Clear IF (interrupts disabled)
+  |
+}
+
+step2: Save Current Process {
+  link: "#save-context"
+  style.fill: "#ffffcc"
+  style.stroke: "#cccc00"
+  
+  assembly: |md
+    **timer_handler:**
+    asm
+    push eax           ; save remaining regs
+    push ebx
+    push ecx
+    push edx
+    push esi
+    push edi
+    push ebp
+    
+    mov eax, [current_process]
+    mov [eax + PCB.esp], esp  ; save kernel ESP
+    mov [eax + PCB.eip], .resume_point
+    
+    ; Save CR3 (page directory)
+    mov ebx, cr3
+    mov [eax + PCB.cr3], ebx
+    
+  |
+  
+  pcb_state: |md
+    **PCB A After Save**
+    
+    c
+    struct PCB {
+      pid:     1
+      state:   RUNNING→READY
+      esp:     0x0010FFE0  ← saved here
+      eip:     .resume_point
+      cr3:     0x00100000
+      eax:     0xDEADBEEF
+      ebx:     0x12345678
+      ecx:     0x00000001
+      edx:     0x00000000
+      esi:     0xBFFFF100
+      edi:     0xBFFFF200
+      ebp:     0x0010FFE0
+    }
+    
+  |
+  
+  stack_state: |md
+    **Kernel Stack (Process A)**
+    
+    0x0010FFE0: EBP ← ESP here
+    0x0010FFE4: EDI
+    0x0010FFE8: ESI
+    0x0010FFEC: EDX
+    0x0010FFF0: ECX
+    0x0010FFF4: EBX
+    0x0010FFF8: EAX
+    0x0010FFFC: SS (user)
+    0x00110000: ESP (user)
+    0x00110004: EFLAGS
+    0x00110008: CS (user)
+    0x0011000C: EIP (user)
+  |
+}
+
+step3: Scheduler Picks Next {
+  link: "#scheduler"
+  style.fill: "#ccffcc"
+  style.stroke: "#00cc00"
+  
+  scheduler: |md
+    **Round-Robin Queue**
+    
+    run_queue:
+      head → [PCB A] → [PCB B] → [PCB C] → tail
+    
+    After rotation:
+      head → [PCB B] → [PCB C] → [PCB A] → tail
+  |
+  
+  assembly: |md
+    asm
+    ; Call scheduler
+    call schedule
+    
+    ; Returns next process in EAX
+    ; current_process now = Process B
+    
+  |
+  
+  schedule_code: |md
+    **schedule()**
+    c
+    PCB* schedule(void) {
+        PCB* prev = current_process;
+        prev->state = READY;
+        
+        // Rotate queue
+        PCB* next = dequeue(&run_queue);
+        enqueue(&run_queue, prev);
+        
+        current_process = next;
+        next->state = RUNNING;
+        return next;
+    }
+    
+  |
+  
+  pcb_b: |md
+    **PCB B (Ready to Run)**
+    
+    c
+    struct PCB {
+      pid:     2
+      state:   READY→RUNNING
+      esp:     0x00108000  ← will restore
+      eip:     .resume_point
+      cr3:     0x00200000  ← different!
+      eax-edx: (saved values)
+    }
+    
+  |
+}
+
+step4: Load Next Process {
+  link: "#restore-context"
+  style.fill: "#ccccff"
+  style.stroke: "#0000cc"
+  
+  assembly: |md
+    **Load Process B**
+    asm
+    mov eax, [current_process]  ; = Process B
+    
+    ; Load CR3 (TLB flush!)
+    mov ebx, [eax + PCB.cr3]
+    mov cr3, ebx           ; ← TLB FLUSH HERE
+    
+    ; Update TSS.ESP0 for future INT
+    mov ebx, [eax + PCB.kernel_stack_top]
+    mov [tss + 4], ebx     ; TSS.ESP0
+    
+    ; Restore general registers
+    mov esp, [eax + PCB.esp]
+    
+    pop ebp
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
+    
+  |
+  
+  tlb_flush: |md
+    **CR3 Write Effects**
+    
+    Before: CR3 = 0x00100000 (Process A)
+      TLB: 50 entries for Process A pages
+    
+    mov cr3, ebx  ← atomic write
+    
+    After: CR3 = 0x00200000 (Process B)
+      TLB: EMPTY (all entries flushed!)
+      
+    Note: PCID avoids this on modern CPUs
+  |
+  
+  stack_state: |md
+    **Kernel Stack (Process B)**
+    
+    0x00108000: EBP ← ESP now here
+    0x00108004: EDI
+    0x00108008: ESI
+    0x0010800C: EDX
+    0x00108010: ECX
+    0x00108014: EBX
+    0x00108018: EAX
+    0x0010801C: SS (user)
+    0x00108020: ESP (user)
+    0x00108024: EFLAGS
+    0x00108028: CS (user)
+    0x0010802C: EIP (user) ← resume addr
+  |
+}
+
+step5: IRET Returns {
+  link: "#iret"
+  style.fill: "#ffccff"
+  style.stroke: "#cc00cc"
+  
+  assembly: |md
+    **Resume Process B**
+    asm
+    iretd    ; interrupt return
+    
+    ; Hardware actions:
+    ; 1. Pop EIP, CS, EFLAGS from stack
+    ; 2. Pop ESP, SS from stack
+    ; 3. Load CS:EIP, SS:ESP
+    ; 4. Restore CPL=3 (ring 3)
+    ; 5. Continue at Process B's EIP
+    
+  |
+  
+  stack_pop: |md
+    **IRETD Stack Operations**
+    
+    Pop order (automatic):
+    EIP  ← [ESP+0]  = 0x0804A300
+    CS   ← [ESP+4]  = 0x1B (user code)
+    EFL  ← [ESP+8]  = 0x202 (IF=1)
+    ESP  ← [ESP+12] = 0xBFFF7000
+    SS   ← [ESP+16] = 0x23 (user data)
+  |
+  
+  cpu_state: |md
+    **CPU State After IRET**
+    
+    CR3: 0x00200000 (Process B)
+    CS:  0x1B (user code, CPL=3)
+    SS:  0x23 (user data)
+    ESP: 0xBFFF7000 (user stack)
+    EIP: 0x0804A300 (Process B code)
+    CPL: 3 (ring 3)
+    
+    Process B resumes...
+    Oblivious that it was ever paused.
+  |
+}
+
+step1 -> step2: "push registers\nsave to PCB A" {
+  style.stroke-width: 3
+  style.stroke: "#cc0000"
+}
+step2 -> step3: "schedule()\npick PCB B" {
+  style.stroke-width: 3
+  style.stroke: "#cccc00"
+}
+step3 -> step4: "load CR3\nrestore regs" {
+  style.stroke-width: 3
+  style.stroke: "#00cc00"
+}
+step4 -> step5: "iretd\nring 3 return" {
+  style.stroke-width: 3
+  style.stroke: "#0000cc"
+}
+
+legend: {
+  near: bottom-center
+  
+  timing: |md
+    **Timing (x86 @ 2GHz)**
+    | Phase | Cycles | Time |
+    |-------|--------|------|
+    | Timer INT | ~200 | 100ns |
+    | Save regs | ~50 | 25ns |
+    | Schedule | ~200 | 100ns |
+    | Load regs | ~50 | 25ns |
+    | IRET | ~150 | 75ns |
+    | **Total** | ~650 | **325ns** |
+    
+    Context switch overhead: ~0.03% at 100Hz
+  |
+}
+
+memory_layout: {
+  near: top-right
+  label: ""
+  
+  kernel_mem: Kernel Memory {
+    style.fill: "#e0e0ff"
+    
+    pcb_a: PCB A {
+      style.fill: "#ffcccc"
+      pid: "pid: 1"
+      regs: "regs: saved"
+      cr3: "cr3: 0x00100000"
+    }
+    
+    pcb_b: PCB B {
+      style.fill: "#ccffcc"
+      pid: "pid: 2"
+      regs: "saved→restoring"
+      cr3: "cr3: 0x00200000"
+    }
+    
+    tss: TSS {
+      style.fill: "#ffffcc"
+      esp0: "ESP0: 0x00109000"
+      ss0: "SS0: 0x10"
+    }
+  }
+  
+  user_mem_a: Process A Space {
+    style.fill: "#ffe0e0"
+    
+    pages_a: Pages {
+      style.fill: "#ffcccc"
+      text: "0x08048000"
+      stack_a: "Stack 0xBFFF0000"
+    }
+  }
+  
+  user_mem_b: Process B Space {
+    style.fill: "#e0ffe0"
+    
+    pages_b: Pages {
+      style.fill: "#ccffcc"
+      text: "0x08048000"
+      stack_b: "Stack 0xBFFF0000"
+    }
+  }
+}

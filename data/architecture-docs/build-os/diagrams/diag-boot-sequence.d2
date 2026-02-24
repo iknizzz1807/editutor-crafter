@@ -1,0 +1,368 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+title: |md
+  # x86 Boot Sequence: BIOS to C Entry
+  Power-on → Protected Mode → Kernel Entry Point
+| {near: top-center}
+
+direction: right
+
+# ==================== STAGE 0: POWER ON ====================
+stage0: Power-On Reset {
+  style.fill: "#E8F5E9"
+  style.stroke: "#2E7D32"
+  
+  cpu_state: CPU State {
+    style.fill: "#C8E6C9"
+    cr0: |md
+      **CR0 = 0x60000010**
+      - PE (bit 0) = 0 (Real Mode)
+      - Cache disabled
+      - No paging
+    |
+    eip: "**EIP = 0xFFFFFFF0**\n(reset vector)"
+    cs: "**CS = 0xF000**\n(base=0xFFFF0000)"
+  }
+  
+  mem_layout: Physical Memory {
+    style.fill: "#A5D6A7"
+    ram_top: |md
+      0xFFFFFFF0 - CS:IP fetch (0xFFFFFFF0) - BIOS EP
+    |
+  }
+}
+
+# ==================== STAGE 1: BIOS EXECUTION ====================
+stage1: BIOS POST & Boot Device Search {
+  style.fill: "#E3F2FD"
+  style.stroke: "#1565C0"
+  
+  bios_actions: BIOS Actions {
+    style.fill: "#BBDEFB"
+    post: |md
+      1. **POST** (Power-On Self-Test)
+         - Memory test
+         - Hardware init
+         - PCI enumeration
+      2. **Boot device selection**
+         - Check boot order (HD, USB, PXE)
+    |
+  }
+  
+  mem_after_bios: Memory After BIOS {
+    style.fill: "#90CAF9"
+    ivt_bda: |md
+      0x0000 - IVT (1KB)
+      0x0400 - BDA (256B) BIOS Data Area
+      0x0500 - Available
+      0x7C00 - MBR Load Target
+      0xA000 - VGA Memory
+      0xF0000 - BIOS ROM
+      0xFFFFF - ROM End
+    |
+  }
+}
+
+# ==================== STAGE 2: MBR LOAD ====================
+stage2: MBR Load at 0x7C00 {
+  style.fill: "#FFF3E0"
+  style.stroke: "#E65100"
+  
+  disk_read: INT 13h Read {
+    style.fill: "#FFE0B2"
+    params: |md
+      **AH=02h (Read Sectors)**
+      - DL = drive number (0x80)
+      - CH = cylinder 0
+      - DH = head 0
+      - CL = sector 1 (LBA 0)
+      - ES:BX = 0x0000:0x7C00
+      - AL = 1 sector (512 bytes)
+    |
+    result: "Sector 0 -> 0x0000:0x7C00\n**BIOS jumps to 0x7C00**"
+  }
+  
+  mbr_layout: MBR Structure (512 bytes) {
+    style.fill: "#FFCC80"
+    shape: class
+    "+0x000": "Boot code (446 bytes)"
+    "+0x1BE": "Partition table (64 bytes)"
+    "+0x1FE": "Signature 0x55 0xAA"
+  }
+}
+
+# ==================== STAGE 3: STAGE1 BOOTLOADER ====================
+stage3: Stage1 Bootloader Execution {
+  style.fill: "#F3E5F5"
+  style.stroke: "#7B1FA2"
+  
+  stage1_code: Real Mode Code {
+    style.fill: "#E1BEE7"
+    actions: |md
+      1. **Save drive number** (DL)
+      2. **Reset disk** (INT 13h, AH=0)
+      3. **Find active partition**
+      4. **Load stage2 sectors**
+      5. **Jump to stage2**
+    |
+  }
+  
+  mem_stage1: Memory at Stage1 {
+    style.fill: "#CE93D8"
+    layout: |md
+      0x7C00 - Stage1 code (running here)
+      0x8000 - Stage2 load addr (target for read)
+      0x10000 - Kernel load addr
+    |
+  }
+}
+
+# ==================== STAGE 4: STAGE2 / GDT SETUP ====================
+stage4: Stage2 - GDT Setup {
+  style.fill: "#FFEBEE"
+  style.stroke: "#C62828"
+  
+  gdt_content: Global Descriptor Table {
+    style.fill: "#FFCDD2"
+    structure: {
+      shape: sql_table
+      offset: int {constraint: primary_key}
+      selector: string
+      descriptor: string
+      base: string
+      limit: string
+      access: string
+    }
+    
+    null_entry: |md
+      **Offset 0x00: Null Descriptor**
+      Base: 0x00000000, Limit: 0x00000
+    |
+    
+    code_entry: |md
+      **Offset 0x08: Kernel Code**
+      Descriptor: 0x00CF9A00
+      Base: 0x00000000, Limit: 4GB
+      Access: Exec/Read, Ring 0
+    |
+    
+    data_entry: |md
+      **Offset 0x10: Kernel Data**
+      Descriptor: 0x00CF9200
+      Base: 0x00000000, Limit: 4GB
+      Access: Read/Write, Ring 0
+    |
+  }
+  
+  gdtr_setup: GDTR Load {
+    style.fill: "#EF9A9A"
+    code: |go
+      // GDT descriptor structure
+      struct gdtr {
+        limit: u16   // GDT size - 1
+        base: u32    // GDT address
+      }
+      
+      // Assembly sequence
+      lgdt [gdtr]    // Load GDTR
+    |
+  }
+  
+  mem_gdt: Memory with GDT {
+    style.fill: "#E57373"
+    layout: |md
+      0x7C00 - Stage1 (still present)
+      0x8000 - Stage2 code -> 0x8200 - GDT (24 bytes) [Null][Code][Data]
+    |
+  }
+}
+
+# ==================== STAGE 5: PROTECTED MODE ENTER ====================
+stage5: Enter Protected Mode {
+  style.fill: "#E8EAF6"
+  style.stroke: "#303F9F"
+  
+  cr0_modify: CR0.PE Enable {
+    style.fill: "#C5CAE9"
+    code: |go
+      mov eax, cr0
+      or  al,  0x01    // Set PE bit
+      mov cr0, eax     // PROTECTED MODE!
+    |
+    cr0_new: |md
+      **CR0 after: 0x60000011**
+      - PE (bit 0) = 1
+      - Still no paging
+    |
+  }
+  
+  warning: CRITICAL SEQUENCE {
+    style.fill: "#FFEB3B"
+    style.stroke: "#F57F17"
+    danger: |md
+      **Pipeline flush required!**
+      After CR0.PE=1, CPU is in protected mode but CS still has real-mode base.
+      Must do **FAR JUMP** immediately to:
+      1. Reload CS with selector 0x08
+      2. Flush prefetch queue
+      3. Load new CS cache (base=0, limit=4GB)
+    |
+  }
+}
+
+# ==================== STAGE 6: FAR JUMP & SEGMENT RELOAD ====================
+stage6: Segment Reload {
+  style.fill: "#E0F2F1"
+  style.stroke: "#00695C"
+  
+  far_jump: Far Jump Sequence {
+    style.fill: "#B2DFDB"
+    code: |go
+      // Far jump to protected mode code
+      jmp 0x08:protected_mode_entry
+      
+    protected_mode_entry:
+      // Reload data segments
+      mov ax, 0x10    // Data selector
+      mov ds, ax
+      mov es, ax
+      mov fs, ax
+      mov gs, ax
+      mov ss, ax
+      
+      // Set up stack
+      mov esp, 0x90000
+    |
+  }
+  
+  segment_state: Segment State After {
+    style.fill: "#80CBC4"
+    state: |md
+      **Flat memory model achieved!**
+      
+      CS = 0x08 (base=0, limit=4GB)
+      DS = 0x10 (base=0, limit=4GB)
+      ES = 0x10 (base=0, limit=4GB)
+      SS = 0x10 (base=0, limit=4GB)
+    |
+  }
+}
+
+# ==================== STAGE 7: C ENTRY ====================
+stage7: C Entry Point {
+  style.fill: "#FCE4EC"
+  style.stroke: "#AD1457"
+  
+  stack_setup: Stack & Call {
+    style.fill: "#F8BBD9"
+    setup: |md
+      1. **Setup stack** (ESP = 0x90000)
+      2. **Push boot info pointer**
+      3. **Call C function**
+    |
+  }
+  
+  c_entry: kernel_main() {
+    style.fill: "#F48FB1"
+    code: |c
+      // Entry point called from asm
+      void kernel_main(struct boot_info *info) {
+          // Initialize console
+          vga_init();
+          printk("Kernel started!\n");
+          
+          // Initialize subsystems
+          gdt_init();   // Full GDT
+          idt_init();   // Interrupts
+          mm_init();    // Memory
+          
+          // Never return
+          for(;;) halt();
+      }
+    |
+  }
+  
+  final_mem: Final Memory Layout {
+    style.fill: "#EC407A"
+    style.font-color: white
+    layout: |md
+      0x000000 - IVT (unused in PM)
+      0x0007C00 - Stage1 (can be reused)
+      0x0008000 - Stage2 bootloader
+      0x0008200 - GDT (24 bytes)
+      0x0009000 - Stack top (grows down)
+      0x0010000 - Kernel (ELF loaded) .text .rodata .data .bss
+      0x00A0000 - VGA buffer (0xB8000)
+    |
+  }
+}
+
+# ==================== FLOW CONNECTIONS ====================
+stage0.cpu_state -> stage1.bios_actions: "Reset vector jump (0xFFFFFFF0 -> BIOS)" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 3
+}
+
+stage1.bios_actions -> stage2.disk_read: "INT 19h: Load MBR\nDisk -> 0x7C00" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 3
+}
+
+stage2.disk_read -> stage3.stage1_code: "JMP 0x0000:0x7C00\nStage1 starts" {
+  style.stroke: "#E65100"
+  style.stroke-width: 3
+}
+
+stage3.stage1_code -> stage4.gdt_content: "Load stage2\nSetup GDT" {
+  style.stroke: "#7B1FA2"
+  style.stroke-width: 3
+}
+
+stage4.gdtr_setup -> stage5.cr0_modify: "LGDT complete\nEnable PE" {
+  style.stroke: "#C62828"
+  style.stroke-width: 3
+}
+
+stage5.cr0_modify -> stage6.far_jump: "CR0.PE = 1\nMUST far jump NOW" {
+  style.stroke: "#303F9F"
+  style.stroke-width: 3
+  style.animated: true
+}
+
+stage6.far_jump -> stage7.c_entry: "Segments reloaded\nCall kernel_main()" {
+  style.stroke: "#00695C"
+  style.stroke-width: 3
+}
+
+# ==================== TIMELINE ANNOTATION ====================
+timeline: Boot Timeline {
+  near: bottom-center
+  style.fill: "#37474F"
+  style.font-color: white
+  
+  time: |md
+    **Boot Timeline:**
+    - Reset: 0ms - CPU powers on
+    - BIOS: 0-2000ms - POST, HW init
+    - MBR: +1ms - Read sector 0
+    - Stage1: +1ms - Find partition
+    - Stage2: +5ms - Load kernel
+    - PM enter: +1us - CR0.PE=1
+    - C entry: +1ms - kernel_main()
+    
+    **Total: ~2 seconds to kernel**
+  |
+}
+
+# ==================== BACK REFERENCE ====================
+back_ref: Back to Satellite Map {
+  near: top-right
+  link: "#boot-sequence"
+  style.fill: "#ECEFF1"
+  style.stroke: "#607D8B"
+}

@@ -110,7 +110,6 @@ print(">>> Instructions loaded", flush=True)
 # --- LLM SETUP ---
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "sonnet")  # haiku, sonnet, opus
-KILO_MODEL = os.getenv("KILO_MODEL", "kilo/minimax/minimax-m2.5")  # Default kilo model
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "lEJimXOmklwc8z4iQPF0g2yClh9NBs4D")
 MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-large-2411")
 
@@ -122,12 +121,11 @@ USE_ANTHROPIC = False
 
 def init_llm_provider():
     """Initialize LLM provider based on environment variables or command line flags."""
-    global LLM_PROVIDER, LLM, CLAUDE_MODEL, KILO_MODEL, USE_ANTHROPIC, MISTRAL_MODEL
+    global LLM_PROVIDER, LLM, CLAUDE_MODEL, USE_ANTHROPIC, MISTRAL_MODEL
     print(">>> Initializing LLM provider...", flush=True)
 
     USE_ANTHROPIC = os.getenv("USE_ANTHROPIC", "false").lower() == "true"
     USE_CLAUDE_CLI = os.getenv("USE_CLAUDE_CLI", "false").lower() == "true"
-    USE_KILO_CLI = os.getenv("USE_KILO_CLI", "false").lower() == "true"
     USE_MISTRAL = os.getenv("USE_MISTRAL", "false").lower() == "true"
     USE_MIXED_CLAUDE_GEMINI = (
         os.getenv("USE_MIXED_CLAUDE_GEMINI", "false").lower() == "true"
@@ -136,7 +134,6 @@ def init_llm_provider():
         os.getenv("USE_MIXED_HEAVY_CLAUDE", "false").lower() == "true"
     )
     CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "sonnet")
-    KILO_MODEL = os.getenv("KILO_MODEL", KILO_MODEL)
     MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", MISTRAL_MODEL)
 
     if USE_MIXED_CLAUDE_GEMINI or USE_MIXED_HEAVY_CLAUDE:
@@ -161,9 +158,6 @@ def init_llm_provider():
             temperature=1,
             max_completion_tokens=64000,
         )
-    elif USE_KILO_CLI:
-        LLM_PROVIDER = "kilo-cli"
-        print(f">>> Provider: KILO CLI (Model: {KILO_MODEL})", flush=True)
     elif USE_CLAUDE_CLI:
         LLM_PROVIDER = "claude-cli"
         print(f">>> Provider: CLAUDE CODE CLI (Model: {CLAUDE_MODEL})", flush=True)
@@ -231,41 +225,6 @@ def strip_ansi_codes(text):
     return ansi_escape.sub("", str(text))
 
 
-def invoke_kilo_cli(messages, max_retries=3):
-    system_prompt = ""
-    user_prompt = ""
-    for msg in messages:
-        if isinstance(msg, SystemMessage):
-            system_prompt = str(msg.content)
-        elif isinstance(msg, HumanMessage):
-            user_prompt = str(msg.content)
-
-    full_prompt = (
-        f"SYSTEM INSTRUCTIONS:\n{system_prompt}\n\nUSER REQUEST:\n{user_prompt}"
-        if system_prompt
-        else user_prompt
-    )
-
-    for attempt in range(max_retries):
-        try:
-            cmd = ["kilo", "run"]
-            if KILO_MODEL:
-                cmd.extend(["--model", KILO_MODEL])
-            cmd.append(full_prompt)
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)
-            if result.returncode == 0:
-
-                class MockResponse:
-                    def __init__(self, content):
-                        self.content = content
-
-                return MockResponse(result.stdout)
-            time.sleep((attempt + 1) * 5)
-        except Exception:
-            time.sleep((attempt + 1) * 5)
-    raise Exception("Kilo CLI failed")
-
-
 def invoke_claude_cli(messages, max_retries=3):
     system_prompt = ""
     user_prompt = ""
@@ -307,18 +266,14 @@ def invoke_claude_cli(messages, max_retries=3):
 def safe_invoke(messages, max_retries=5, invoke_kwargs=None, provider_override=None):
     actual_provider = provider_override or LLM_PROVIDER
 
-    # If Gemini (local-proxy) is explicitly requested for full pipeline, use it everywhere
-    if LLM_PROVIDER == "local-proxy":
-        actual_provider = "local-proxy"
-    # If the user explicitly requested Anthropic API, use it for everything
-    # except when we are forced to a local-proxy (which usually means specific Gemini logic)
-    elif LLM_PROVIDER == "anthropic" and actual_provider != "local-proxy":
-        actual_provider = "anthropic"
+    # FULL PIPELINE ENFORCEMENT:
+    # If a CLI or Anthropic provider is active, use it for EVERYTHING.
+    # No more jumping to local-proxy for helper nodes.
+    if LLM_PROVIDER in ["claude-cli", "anthropic", "local-proxy"]:
+        actual_provider = LLM_PROVIDER
 
     if actual_provider == "claude-cli":
         return invoke_claude_cli(messages, max_retries)
-    if actual_provider == "kilo-cli":
-        return invoke_kilo_cli(messages, max_retries)
 
     kwargs = invoke_kwargs or {}
     if "timeout" not in kwargs:
@@ -423,6 +378,7 @@ def architect_node(state: GraphState):
 
 TASK: Output ONLY raw JSON for the Blueprint.
 Include every milestone from YAML — 1:1 mapping.
+Explicitly list 'prerequisites' (assumed known vs. must teach first).
 Plan 2-3 diagrams per milestone.
 For each milestone: misconception, reveal, cascade (3-5 connections, 1+ cross-domain).
 """
@@ -541,7 +497,7 @@ def _validate_blueprint(blueprint, meta):
 def knowledge_mapper_node(state: GraphState):
     print(f"  [Agent: Knowledge Mapper] Updating map...", flush=True)
     last_content = state["accumulated_md"].split("\n\n")[-1]
-    prompt = f"Extract 3-5 key technical concepts from: {last_content}. Output ONLY comma-separated list."
+    prompt = f"Extract ALL significant technical concepts from the following text that were explained in detail. Output ONLY a comma-separated list of terms.\n\nTEXT:\n{last_content}"
     res = safe_invoke([HumanMessage(content=prompt)], provider_override="local-proxy")
     new_terms = [t.strip() for t in str(res.content).split(",") if t.strip()]
     adv_tags = re.findall(r"\[\[ADVANCED_CONTEXT:(.*?)\]\]", state["accumulated_md"])
@@ -1513,7 +1469,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--projects", nargs="+", required=True)
     parser.add_argument("--claude-cli", action="store_true")
-    parser.add_argument("--mistral", action="store_true", help="Use Mistral AI")
+    parser.add_argument("--anthropic", action="store_true")
+    parser.add_argument(
+        "--gemini",
+        action="store_true",
+        help="Use Gemini (Local Proxy) for full pipeline",
+    )
     parser.add_argument(
         "--mixed-claude-gemini",
         action="store_true",
@@ -1524,18 +1485,8 @@ if __name__ == "__main__":
         action="store_true",
         help="Architect+Educator=Claude CLI, Artist=Gemini Proxy",
     )
-    parser.add_argument("--kilo-cli", action="store_true", help="Use Kilo CLI")
     parser.add_argument("--claude-model", default=None)
-    parser.add_argument("--mistral-model", default=None, help="Mistral model name")
-    parser.add_argument(
-        "--kilo-model", default=None, help="Model for Kilo (provider/model)"
-    )
-    parser.add_argument("--anthropic", action="store_true")
-    parser.add_argument(
-        "--gemini",
-        action="store_true",
-        help="Use Gemini (Local Proxy) for full pipeline",
-    )
+    parser.add_argument("--anthropic-model", default=None)
     parser.add_argument("--debug", action="store_true", help="Log raw LLM responses")
     parser.add_argument(
         "--output",
@@ -1543,28 +1494,24 @@ if __name__ == "__main__":
         help="Output directory (default: data/architecture-docs)",
     )
     args = parser.parse_args()
+
     if args.claude_cli:
         os.environ["USE_CLAUDE_CLI"] = "true"
-    if args.mistral:
-        os.environ["USE_MISTRAL"] = "true"
+    if args.anthropic:
+        os.environ["USE_ANTHROPIC"] = "true"
+    if args.gemini:
+        # Implicitly falls back to local-proxy in init_llm_provider
+        pass
     if args.mixed_claude_gemini:
         os.environ["USE_MIXED_CLAUDE_GEMINI"] = "true"
     if args.mixed_heavy_claude:
         os.environ["USE_MIXED_HEAVY_CLAUDE"] = "true"
-    if args.kilo_cli:
-        os.environ["USE_KILO_CLI"] = "true"
+
     if args.claude_model:
         os.environ["CLAUDE_MODEL"] = args.claude_model
-    if args.mistral_model:
-        os.environ["MISTRAL_MODEL"] = args.mistral_model
-    if args.kilo_model:
-        os.environ["KILO_MODEL"] = args.kilo_model
-    if args.anthropic:
-        os.environ["USE_ANTHROPIC"] = "true"
-    if args.gemini:
-        # Fallback to local-proxy is the default behavior if nothing else is set,
-        # but we can force it here if needed.
-        pass
+    if args.anthropic_model:
+        os.environ["ANTHROPIC_MODEL"] = args.anthropic_model
+
     if args.debug:
         os.environ["DEBUG_MODE"] = "true"
     if args.output:

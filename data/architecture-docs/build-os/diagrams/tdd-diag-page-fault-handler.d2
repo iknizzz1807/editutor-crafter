@@ -1,0 +1,261 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+title: |md
+  # Page Fault Handler Decision Tree
+  **INT 14 → CR2 Analysis → Error Code Decode → Action**
+| {near: top-center}
+
+direction: down
+
+classes: {
+  hardware: {
+    style: {
+      fill: "#9B7ED9"
+      font-color: white
+      bold: true
+    }
+  }
+  check: {
+    shape: diamond
+    style: {
+      fill: "#F5D76E"
+      stroke: "#D4AC0D"
+      stroke-width: 2
+    }
+  }
+  action: {
+    style: {
+      fill: "#58D68D"
+      stroke: "#27AE60"
+      stroke-width: 2
+    }
+  }
+  error: {
+    style: {
+      fill: "#E74C3C"
+      font-color: white
+      bold: true
+    }
+  }
+  recover: {
+    style: {
+      fill: "#3498DB"
+      font-color: white
+    }
+  }
+  reg: {
+    style: {
+      fill: "#85929E"
+      font-color: white
+      font: mono
+    }
+  }
+}
+
+entry: INT 14 Handler {
+  class: hardware
+  width: 200
+}
+
+entry -> read_cr2
+
+read_cr2: ||md
+  **Step 1: Read CR2**
+  
+  mov eax, cr2    ; faulting address
+  
+  CR2 contains the linear address that caused the fault
+||
+read_cr2.class: reg
+read_cr2.width: 280
+
+read_cr2 -> error_code
+
+error_code: ||md
+  **Step 2: Read Error Code** (pushed by CPU)
+  
+  | Bit | Name | Meaning |
+  |-----|------|---------|
+  | 0   | P    | 0=not present, 1=protection |
+  | 1   | W    | 0=read, 1=write |
+  | 2   | U    | 0=kernel, 1=user |
+  | 3   | R    | 1=reserved bit set |
+  | 4   | I    | 1=instruction fetch |
+||
+error_code.class: reg
+error_code.width: 320
+
+error_code -> check_present
+
+check_present: "Bit 0 (P):\nPresent?" {class: check}
+
+check_present -> not_present: No (P=0)
+check_present -> check_write: Yes (P=1)
+
+not_present: ||md
+  **Page Not Present**
+  Check page tables for mapping
+||
+not_present.class: action
+not_present.width: 200
+
+not_present -> check_valid_addr
+
+check_valid_addr: "Address in\nvalid range?" {class: check}
+
+check_valid_addr -> alloc_page: Yes
+check_valid_addr -> segfault_valid: No
+
+alloc_page: ||md
+  **ALLOCATE PAGE**
+  
+  - Find free frame
+  - Update page table
+  - Invalidate TLB: invlpg [cr2]
+  - iret (retry instruction)
+||
+alloc_page.class: recover
+alloc_page.width: 220
+
+segfault_valid: ||md
+  **SEGFAULT: Invalid Access**
+  
+  Halt or send SIGSEGV
+||
+segfault_valid.class: error
+segfault_valid.width: 180
+
+check_write: "Bit 1 (W):\nWrite?" {class: check}
+
+check_write -> protection_fault: Yes (W=1)
+check_write -> check_user: No (W=0)
+
+protection_fault: ||md
+  **Write Protection Violation**
+  
+  Check if page is writable
+||
+protection_fault.class: action
+protection_fault.width: 200
+
+protection_fault -> check_cow
+
+check_cow: "Copy-on-Write\npage?" {class: check}
+
+check_cow -> do_cow: Yes
+check_cow -> segfault_write: No
+
+do_cow: ||md
+  **COW HANDLER**
+  
+  1. Allocate new frame
+  2. Copy page contents
+  3. Map as writable
+  4. Update refcount
+  5. iret
+||
+do_cow.class: recover
+do_cow.width: 200
+
+segfault_write: ||md
+  **SEGFAULT: Read-Only**
+  
+  Page not writable
+||
+segfault_write.class: error
+segfault_write.width: 180
+
+check_user: "Bit 2 (U):\nUser mode?" {class: check}
+
+check_user -> check_supervisor: Yes (U=1)
+check_user -> kernel_fault: No (U=0)
+
+check_supervisor: "Page has\nuser bit?" {class: check}
+
+check_supervisor -> segfault_priv: No
+check_supervisor -> check_reserved: Yes
+
+segfault_priv: ||md
+  **SEGFAULT: Privilege**
+  
+  User accessed supervisor page
+||
+segfault_priv.class: error
+segfault_priv.width: 200
+
+kernel_fault: ||md
+  **KERNEL MODE FAULT**
+  
+  Check if valid kernel access
+||
+kernel_fault.class: action
+kernel_fault.width: 200
+
+kernel_fault -> check_reserved
+
+check_reserved: "Bit 3 (R):\nReserved set?" {class: check}
+
+check_reserved -> reserved_fault: Yes (R=1)
+check_reserved -> check_ifetch: No (R=0)
+
+reserved_fault: ||md
+  **RESERVED BIT FAULT**
+  
+  Corrupt page tables or
+  use of reserved bits
+||
+reserved_fault.class: error
+reserved_fault.width: 200
+
+check_ifetch: "Bit 4 (I):\nInstruction fetch?" {class: check}
+
+check_ifetch -> exec_fault: Yes (I=1)
+check_ifetch -> unknown_fault: No (I=0)
+
+exec_fault: ||md
+  **EXECUTE VIOLATION**
+  
+  NX (No-Execute) protection
+  on code page
+||
+exec_fault.class: error
+exec_fault.width: 200
+
+unknown_fault: ||md
+  **UNKNOWN FAULT**
+  
+  Dump registers and halt
+||
+unknown_fault.class: error
+unknown_fault.width: 180
+
+legend: ||md
+  ## Legend
+  - **Purple**: Hardware entry
+  - **Yellow diamond**: Decision check
+  - **Green**: Diagnostic action  
+  - **Blue**: Recovery path (iret)
+  - **Red**: Fatal error (halt/SIGSEGV)
+  - **Gray**: Register/code operations
+|| {near: bottom-right}
+
+bit_layout: ||md
+  ## Error Code Layout
+  
+  ┌─────┬─────┬─────┬─────┬─────┬─────────────┐
+  │  4  │  3  │  2  │  1  │  0  │   Reserved  │
+  │  I  │  R  │  U  │  W  │  P  │      0      │
+  └─────┴─────┴─────┴─────┴─────┴─────────────┘
+  
+  P=0: Page not present
+  P=1: Protection violation
+  W=0: Read access
+  W=1: Write access
+  U=0: Kernel mode
+  U=1: User mode
+|| {near: bottom-left}

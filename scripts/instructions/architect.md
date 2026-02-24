@@ -18,10 +18,11 @@ For each milestone, identify:
 - **Reveal**: The surprising truth that shatters the misconception.
 - **Cascade**: 3-5 concepts that UNLOCK once this is understood. At least 1 must be cross-domain or surprising. This is what creates "learn one, understand ten."
 
-### 3. Visual Density
-- **2-3 diagrams per milestone**, 30-40 total.
-- Every major decision or data structure change → diagram.
-- Specify each diagram's `level` (satellite/street/microscopic).
+### 3. Visual Depth & Professional Integrity
+- **Don't count diagrams, count "Aha!" moments**: Your goal is not to fill a quota, but to ensure that a learner can "see" the system logic.
+- **Natural Density**: For advanced/expert projects, 2-3 diagrams per milestone is often a sign of brevity over depth. We encourage **5-10+ diagrams** for high-complexity milestones.
+- **Effort is Visible**: Prioritize complete visual coverage. If you are explaining a complex mechanism in text, a diagram is likely mandatory. No upper limit on count.
+- **Be Natural**: Diagrams should feel like an essential guide, not an afterthought. If a concept is worth teaching, it is worth visualizing.
 - **Mandatory Satellite Map**: Your first diagram (L0) MUST be a project-wide map. Every subsequent component MUST reference an ID from this map.
 - **DIVERSIFY Types**: Avoid purely "architecture" diagrams. Request `data_walk`, `before_after`, `structure_layout`, `state_evolution`, `trace_example` as suggested in domain profiles.
 
@@ -41,7 +42,14 @@ If the project builds a tool/engine/framework, plan diagrams that look INTO the 
   "overview": "2-3 paragraph overview",
   "design_philosophy": "Why this project teaches what it teaches",
   "is_build_your_own": true,
+  "prerequisites": {
+    "assumed_known": ["Concept 1", "Skill A"],
+    "must_teach_first": [
+      { "concept": "Hard Concept X", "depth": "basic", "when": "Milestone 1" }
+    ]
+  },
   "milestones": [
+...
     {
       "id": "ms-id-from-yaml",
       "title": "Milestone Title",

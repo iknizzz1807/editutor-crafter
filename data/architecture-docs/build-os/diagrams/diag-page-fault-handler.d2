@@ -1,0 +1,255 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+title: |md
+  # Page Fault Handler: Reading CR2
+  Exception 14 (INT 0x0E) Flow
+| {near: top-center}
+
+direction: right
+
+classes: {
+  hardware: {
+    style: {
+      fill: "#FFE4E1"
+      stroke: "#B22222"
+      stroke-width: 2
+    }
+  }
+  register: {
+    style: {
+      fill: "#87CEEB"
+      stroke: "#4169E1"
+      font: mono
+    }
+  }
+  handler: {
+    style: {
+      fill: "#90EE90"
+      stroke: "#228B22"
+      stroke-width: 2
+    }
+  }
+  error_code: {
+    style: {
+      fill: "#DDA0DD"
+      stroke: "#800080"
+      font: mono
+    }
+  }
+  diagnostic: {
+    style: {
+      fill: "#F0E68C"
+      stroke: "#B8860B"
+    }
+  }
+  scenario: {
+    style: {
+      fill: "#E0FFFF"
+      stroke: "#008B8B"
+      stroke-dash: 3
+    }
+  }
+}
+
+cpu_exception: CPU Exception #14 {
+  class: hardware
+  link: "#exception-trigger"
+  
+  trigger: Page Fault Triggered {
+    style.fill: "#FFB6C1"
+  }
+  
+  push_sequence: CPU Auto-Push {
+    class: hardware
+    style.fill: "#FFE4E1"
+    
+    push_err: "PUSH error_code (4 bytes)"
+    push_eip: "PUSH EIP (return address)"
+    push_cs: "PUSH CS"
+    push_eflags: "PUSH EFLAGS"
+  }
+}
+
+cpu_exception.push_sequence -> stack_frame: Stack Frame Built
+
+stack_frame: Kernel Stack Frame {
+  class: register
+  link: "#stack-layout"
+  
+  offset00: "+0: EFLAGS"
+  offset04: "+4: CS"
+  offset08: "+8: EIP"
+  offset12: "+12: error_code"
+  
+  style.fill: "#E6E6FA"
+}
+
+cr2_register: CR2 Register {
+  class: register
+  link: "#cr2-details"
+  
+  label: CR2 (Faulting Address)
+  desc: |md
+    Hardware automatically loads:
+    - Linear address that caused fault
+    - Valid even before handler runs
+    - Read with `MOV EAX, CR2`
+  |
+  
+  value_example: "Example: 0x00401234"
+}
+
+handler_entry: Page Fault Handler {
+  class: handler
+  link: "#handler-implementation"
+  
+  entry: "isr14_handler:"
+  
+  read_cr2: ||asm
+    ; Read faulting address
+    MOV EAX, CR2
+    ; EAX now = faulting linear address
+||
+  
+  read_error: ||asm
+    ; Get error code from stack
+    MOV EBX, [ESP + 12]
+    ; EBX now = error_code
+||
+  
+  parse_bits: Parse Error Code {
+    class: error_code
+    
+    bit0: "Bit 0 (P): Present flag"
+    bit1: "Bit 1 (W): Write flag"
+    bit2: "Bit 2 (U): User flag"
+    bit3: "Bit 3 (R): Reserved bit"
+    bit4: "Bit 4 (I): Instruction fetch"
+  }
+}
+
+error_code_structure: Error Code Structure {
+  class: error_code
+  link: "#error-code-bits"
+  
+  grid-columns: 5
+  grid-gap: 0
+  
+  header_bit: "Bit"
+  header_val: "Value"
+  header_name: "Name"
+  header_meaning: "Meaning"
+  header_action: "Action"
+  
+  bit0: "0"
+  val0: "0"
+  name0: "P=0"
+  meaning0: "Page not present"
+  action0: "Map page or segfault"
+  
+  bit1: "1"
+  val1: "1"
+  name1: "P=1"
+  meaning1: "Protection violation"
+  action1: "Check permissions"
+  
+  bit2_row: "2"
+  val2: "0/1"
+  name2: "W"
+  meaning2: "0=Read, 1=Write"
+  action2: "Write to read-only?"
+  
+  bit3_row: "3"
+  val3: "0/1"
+  name3: "U"
+  meaning3: "0=Kernel, 1=User"
+  action3: "Privilege violation?"
+  
+  bit4_row: "4"
+  val4: "0/1"
+  name4: "R"
+  meaning4: "0=Supervisor, 1=Reserved"
+  action4: "Reserved bit set?"
+  
+  bit5_row: "5"
+  val5: "0/1"
+  name5: "I"
+  meaning5: "Instruction fetch"
+  action5: "Execute non-executable?"
+}
+
+diagnostic_output: Diagnostic Output {
+  class: diagnostic
+  link: "#diagnostic-format"
+  
+  serial_print: ||c
+    kprintf("PAGE FAULT at EIP=0x%x\n", regs->eip);
+    kprintf("  Faulting address: 0x%x\n", fault_addr);
+    kprintf("  Error code: 0x%x\n", error_code);
+    kprintf("  Present: %d, Write: %d, User: %d\n",
+            error_code & 1,
+            (error_code >> 1) & 1,
+            (error_code >> 2) & 1);
+||
+  
+  example_output: |md
+    PAGE FAULT at EIP=0x80101234
+      Faulting address: 0x00000000
+      Error code: 0x04
+      Present: 0, Write: 0, User: 1
+  |
+}
+
+cpu_exception -> handler_entry: "IDT gate 14\n(INT 0x0E)"
+stack_frame -> handler_entry: "ESP points here"
+cr2_register -> handler_entry: "MOV EAX, CR2"
+handler_entry.parse_bits -> error_code_structure: "Decode bits"
+handler_entry -> diagnostic_output: "kprintf()"
+
+scenarios: Example Fault Scenarios {
+  class: scenario
+  link: "#fault-scenarios"
+  
+  scenario1: Null Pointer Dereference {
+    cr2_val: "CR2 = 0x00000000"
+    error_val: "Error = 0x04 (U=1, W=0, P=0)"
+    cause: "User code read NULL"
+    fix: "SIGSEGV to process"
+  }
+  
+  scenario2: Write to Read-Only {
+    cr2_val2: "CR2 = 0x08049A00"
+    error_val2: "Error = 0x06 (U=1, W=1, P=0)"
+    cause2: "Write to .rodata section"
+    fix2: "SIGSEGV (protection)"
+  }
+  
+  scenario3: Valid Copy-on-Write {
+    cr2_val3: "CR2 = 0xBFFFF123"
+    error_val3: "Error = 0x07 (U=1, W=1, P=1)"
+    cause3: "Write to COW page after fork()"
+    fix3: "Allocate new page, copy data"
+  }
+  
+  scenario4: Kernel NULL Access {
+    cr2_val4: "CR2 = 0x00000010"
+    error_val4: "Error = 0x00 (U=0, W=0, P=0)"
+    cause4: "Kernel dereferenced offset+16"
+    fix4: "Kernel panic"
+  }
+}
+
+legend: |md
+  **Color Key:**
+  - Pink/Red: Hardware/CPU components
+  - Blue: Registers (CR2, stack)
+  - Green: Handler code
+  - Purple: Error code parsing
+  - Yellow: Diagnostic output
+  - Cyan: Example scenarios
+| {near: bottom-center}

@@ -1,0 +1,240 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+title: |md
+  # System Call: INT 0x80 Path
+  `Ring 3 → Ring 0 → Ring 3` privilege transition
+| {near: top-center}
+
+direction: right
+
+user_space: User Space (Ring 3) {
+  style.fill: "#E8F5E9"
+  style.stroke: "#2E7D32"
+  
+  user_code: User Process {
+    style.fill: "#C8E6C9"
+    
+    registers_before: |md
+      **Before INT 0x80:**
+      - `EAX = 3` (syscall: read)
+      - `EBX = 0` (fd: stdin)
+      - `ECX = buffer_addr`
+      - `EDX = 256` (count)
+    |
+  }
+  
+  int_instruction: INT 0x80 {
+    style.fill: "#FFCDD2"
+    style.stroke: "#C62828"
+    style.bold: true
+    tooltip: Software interrupt triggering privilege transition
+  }
+  
+  user_code -> int_instruction: "EAX=syscall_num\nEBX/ECX/EDX=args" {
+    style.stroke: "#1565C0"
+    style.stroke-width: 2
+  }
+}
+
+transition: Privilege Transition {
+  style.fill: "#FFF3E0"
+  style.stroke: "#E65100"
+  style.stroke-dash: 3
+  
+  cpu_check: CPU Hardware Check {
+    style.fill: "#FFE0B2"
+    
+    checks: |md
+      1. Lookup IDT entry 0x80
+      2. Check DPL ≥ CPL (3 ≥ 3 ✓)
+      3. Selector DPL = 0 (ring 0)
+      4. **Privilege transition!**
+    |
+  }
+  
+  tss_stack: TSS Stack Switch {
+    style.fill: "#FFCC80"
+    
+    stack_ops: |md
+      **SS0:ESP0 from TSS:**
+      - Save user SS:ESP to kernel stack
+      - Load SS0 = 0x10 (kernel data)
+      - Load ESP0 = process.kernel_stack
+    |
+  }
+  
+  idt_vector: IDT[0x80] Gate {
+    style.fill: "#FFB74D"
+    
+    gate_contents: |md
+      Offset Low  [15:0]
+      Selector    [31:16] = 0x08 (kernel CS)
+      Reserved    [47:32]
+      Offset High [63:48]
+      P=1 DPL=3 Type=0xE
+    |
+  }
+}
+
+user_space.int_instruction -> transition.cpu_check: "vector 0x80" {
+  style.stroke: "#C62828"
+  style.stroke-width: 3
+  style.animated: true
+}
+
+transition.cpu_check -> transition.idt_vector: "lookup gate"
+transition.cpu_check -> transition.tss_stack: "ring 3→0 detected"
+
+kernel_space: Kernel Space (Ring 0) {
+  style.fill: "#E3F2FD"
+  style.stroke: "#1565C0"
+  
+  entry: syscall_entry {
+    style.fill: "#BBDEFB"
+    
+    asm: |md
+      asm
+      syscall_entry:
+        push ds, es, fs, gs
+        pusha           ; save all GPRs
+        mov ds, 0x10    ; kernel segments
+        mov es, 0x10
+        call syscall_dispatch
+        popa
+        add esp, 16     ; skip seg regs
+        iret            ; return to user
+      
+    |
+  }
+  
+  dispatch: Syscall Dispatch Table {
+    style.fill: "#90CAF9"
+    
+    table: |md
+      | EAX | Handler | Function |
+      |-----|---------|----------|
+      | 0   | sys_exit | Terminate |
+      | 1   | sys_print | Output |
+      | 2   | sys_read | Input |
+      | 3   | sys_write | Write |
+      | ... | ... | ... |
+    |
+  }
+  
+  handler: sys_read() Handler {
+    style.fill: "#64B5F6"
+    
+    handler_code: |md
+      c
+      int sys_read(int fd, char* buf, int count) {
+        // EBX=fd, ECX=buf, EDX=count
+        // Returns bytes read in EAX
+        return vfs_read(fd, buf, count);
+      }
+      
+    |
+  }
+  
+  entry -> dispatch: "jmp *[table + EAX*4]"
+  dispatch -> handler: "EAX=3"
+}
+
+transition.tss_stack -> kernel_space.entry: "load CS:EIP from gate\npush user SS:ESP:CS:EIP"
+transition.idt_vector -> kernel_space.entry: "target address"
+
+return_path: Return Path {
+  style.fill: "#F3E5F5"
+  style.stroke: "#7B1FA2"
+  
+  iret: IRET Instruction {
+    style.fill: "#E1BEE7"
+    style.bold: true
+    
+    iret_ops: |md
+      **IRET pops from stack:**
+      1. EIP (return address)
+      2. CS (user code segment)
+      3. EFLAGS (user flags)
+      4. ESP (user stack pointer)
+      5. SS (user stack segment)
+      
+      **CPL → 3, privilege transition back**
+    |
+  }
+  
+  user_resumes: User Resumes {
+    style.fill: "#CE93D8"
+    
+    after: |md
+      **After IRET:**
+      - EAX = return value (bytes read)
+      - EBX/ECX/EDX = preserved
+      - Execution continues after INT 0x80
+    |
+  }
+  
+  iret -> user_resumes: "back to ring 3"
+}
+
+kernel_space.handler -> return_path.iret: "return value in EAX"
+kernel_space.entry -> return_path.iret: "iret"
+
+return_path.user_resumes -> user_space.user_code: "next instruction" {
+  style.stroke: "#2E7D32"
+  style.stroke-dash: 5
+  label: "transparent to process"
+}
+
+stack_diagram: Stack During Transition {
+  near: bottom-center
+  
+  kernel_stack: Kernel Stack (grows down) {
+    style.fill: "#E3F2FD"
+    
+    stack_contents: |md
+      
+      ESP0 → +------------------+
+             | User SS          | ← pushed by CPU
+             | User ESP         |
+             | EFLAGS           |
+             | User CS          |
+             | User EIP         | ← return point
+             | Error Code (opt) |
+             +------------------+
+             | DS, ES, FS, GS   | ← pushed by handler
+             | EDI, ESI, EBP... |
+             | EBX, EDX, ECX... |
+             | EAX (saved)      |
+             +------------------+
+      
+    |
+  }
+}
+
+legend: {
+  near: top-right
+  
+  ring3: Ring 3 (User) {
+    style.fill: "#E8F5E9"
+    shape: rectangle
+    width: 80
+  }
+  ring0: Ring 0 (Kernel) {
+    style.fill: "#E3F2FD"
+    shape: rectangle
+    width: 80
+  }
+  hardware: Hardware/CPU {
+    style.fill: "#FFF3E0"
+    shape: rectangle
+    width: 80
+  }
+  
+  ring3 -> ring0: "INT 0x80" {style.stroke: "#C62828"}
+  ring0 -> ring3: "IRET" {style.stroke: "#7B1FA2"}
+}

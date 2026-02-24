@@ -210,8 +210,37 @@ def get_id(obj: Dict[str, Any], default: str) -> str:
 def extract_json(text):
     if not text:
         return None
+    text = str(text)
+
+    # Find the first potential start of JSON
+    start_brace = text.find("{")
+    start_bracket = text.find("[")
+
+    if start_brace == -1 and start_bracket == -1:
+        return None
+
+    # Decide which structure to look for first
+    if start_brace != -1 and (start_bracket == -1 or start_brace < start_bracket):
+        start_char, end_char, start_idx = "{", "}", start_brace
+    else:
+        start_char, end_char, start_idx = "[", "]", start_bracket
+
+    count = 0
+    for i in range(start_idx, len(text)):
+        if text[i] == start_char:
+            count += 1
+        elif text[i] == end_char:
+            count -= 1
+            if count == 0:
+                json_str = text[start_idx : i + 1]
+                try:
+                    return json.loads(json_str)
+                except:
+                    # If this block isn't valid JSON, keep searching
+                    continue
+
+    # Fallback to regex if bracket counting fails to find a valid object
     try:
-        text = str(text)
         match = re.search(r"(\{.*\}|\[.*\])", text, re.DOTALL)
         if match:
             return json.loads(match.group(0))
@@ -225,7 +254,28 @@ def strip_ansi_codes(text):
     return ansi_escape.sub("", str(text))
 
 
-def invoke_claude_cli(messages, max_retries=3):
+def log_llm_interaction(node_label, provider, messages, response_text):
+    if os.getenv("DEBUG_MODE", "false").lower() != "true":
+        return
+
+    log_path = Path("llm_traces.log")
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    separator = "=" * 80
+
+    input_str = ""
+    for msg in messages:
+        role = "System" if hasattr(msg, "type") and msg.type == "system" else "User"
+        # Handle both LangChain messages and simple dicts if needed
+        content = getattr(msg, "content", str(msg))
+        input_str += f"\n--- {role} ---\n{content}\n"
+
+    log_entry = f"\n{separator}\nTIMESTAMP: {timestamp}\nNODE: {node_label}\nPROVIDER: {provider}\n{separator}\nINPUT:{input_str}\n{separator}\nOUTPUT:\n{response_text}\n{separator}\n"
+
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(log_entry)
+
+
+def invoke_claude_cli(messages, node_label="unknown", max_retries=3):
     system_prompt = ""
     user_prompt = ""
     for msg in messages:
@@ -251,29 +301,36 @@ def invoke_claude_cli(messages, max_retries=3):
                 cmd, input=user_prompt, capture_output=True, text=True, timeout=1200
             )
             if result.returncode == 0:
+                content = strip_ansi_codes(result.stdout)
+                log_llm_interaction(
+                    node_label, f"claude-cli ({CLAUDE_MODEL})", messages, content
+                )
 
                 class MockResponse:
                     def __init__(self, content):
-                        self.content = strip_ansi_codes(content)
+                        self.content = content
 
-                return MockResponse(result.stdout)
+                return MockResponse(content)
             time.sleep((attempt + 1) * 20)
         except Exception:
             time.sleep((attempt + 1) * 20)
     raise Exception("Claude CLI failed")
 
 
-def safe_invoke(messages, max_retries=5, invoke_kwargs=None, provider_override=None):
+def safe_invoke(
+    messages,
+    node_label="unknown",
+    max_retries=5,
+    invoke_kwargs=None,
+    provider_override=None,
+):
     actual_provider = provider_override or LLM_PROVIDER
 
-    # FULL PIPELINE ENFORCEMENT:
-    # If a CLI or Anthropic provider is active, use it for EVERYTHING.
-    # No more jumping to local-proxy for helper nodes.
     if LLM_PROVIDER in ["claude-cli", "anthropic", "local-proxy"]:
         actual_provider = LLM_PROVIDER
 
     if actual_provider == "claude-cli":
-        return invoke_claude_cli(messages, max_retries)
+        return invoke_claude_cli(messages, node_label, max_retries)
 
     kwargs = invoke_kwargs or {}
     if "timeout" not in kwargs:
@@ -288,6 +345,10 @@ def safe_invoke(messages, max_retries=5, invoke_kwargs=None, provider_override=N
                 hasattr(result, "content") and result.content is None
             ):
                 raise Exception("LLM returned None")
+
+            log_llm_interaction(
+                node_label, actual_provider, messages, str(result.content)
+            )
             return result
         except Exception as e:
             err_str = str(e).lower()
@@ -398,6 +459,7 @@ For each milestone: misconception, reveal, cascade (3-5 connections, 1+ cross-do
             ),
             HumanMessage(content=prompt),
         ],
+        node_label="Architect",
         invoke_kwargs=invoke_args,
         provider_override=(
             "claude-cli" if LLM_PROVIDER and LLM_PROVIDER.startswith("mixed") else None
@@ -438,6 +500,7 @@ For each milestone: misconception, reveal, cascade (3-5 connections, 1+ cross-do
                 ),
                 HumanMessage(content=refine_prompt),
             ],
+            node_label="Architect (Refinement)",
             invoke_kwargs=invoke_args,
             provider_override=(
                 "claude-cli"
@@ -507,7 +570,11 @@ def knowledge_mapper_node(state: GraphState):
     last_content = re.sub(r"<!-- MS_ID: .+? -->", "", last_content).strip()
 
     prompt = f"Extract ALL significant technical concepts from the following text that were explained in detail. Output ONLY a comma-separated list of terms.\n\nTEXT:\n{last_content}"
-    res = safe_invoke([HumanMessage(content=prompt)], provider_override="local-proxy")
+    res = safe_invoke(
+        [HumanMessage(content=prompt)],
+        node_label="Knowledge Mapper",
+        provider_override="local-proxy",
+    )
     new_terms = [t.strip() for t in str(res.content).split(",") if t.strip()]
     adv_tags = re.findall(r"\[\[ADVANCED_CONTEXT:(.*?)\]\]", state["accumulated_md"])
     return {
@@ -642,6 +709,7 @@ End with [[CRITERIA_JSON: {{"milestone_id": "{ms_id}", "criteria": [...]}} ]]
 
     res = safe_invoke(
         [HumanMessage(content=prompt)],
+        node_label=f"Educator (MS: {ms_title})",
         provider_override="claude-cli" if is_claude else None,
     )
     raw_content = str(res.content).strip()
@@ -849,12 +917,7 @@ Output ONLY the corrected D2 code."""
         print(
             f"  [Agent: Artist] Drawing: {diag.get('title', 'Diagram')} (Attempt {attempt})..."
         )
-        # Trim context to last ~8K chars to avoid massive prompts
-        context_tail = (
-            state["accumulated_md"][-8000:]
-            if len(state["accumulated_md"]) > 8000
-            else state["accumulated_md"]
-        )
+        context_full = state["accumulated_md"]
 
         # Provide the satellite map code if available for consistency
         satellite_map_marker = "![diag-satellite-overview]"
@@ -865,7 +928,7 @@ Output ONLY the corrected D2 code."""
         prompt = (
             f"{INSTR_ARTIST}\n"
             f"DOCS:\n{D2_REFERENCE}\n"
-            f"CONTEXT:\n{context_tail}\n"
+            f"CONTEXT:\n{context_full}\n"
             f"{type_hint}{satellite_context}\n"
             f"TASK: Draw '{diag.get('title', 'Untitled')}': {diag.get('description', '')}"
         )
@@ -874,7 +937,8 @@ Output ONLY the corrected D2 code."""
         [
             SystemMessage(content="Output ONLY raw D2 code."),
             HumanMessage(content=prompt),
-        ]
+        ],
+        node_label=f"Artist (Diag: {diag.get('title')})",
     )
     code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
     return {
@@ -909,7 +973,7 @@ TASK: Output ONLY raw JSON for TDD Blueprint.
 Follow DOMAIN PROFILE for diagram types and spec detail level.
     Minimum 20 diagrams total. Include implementation phases with hours.
 """
-    res = safe_invoke([HumanMessage(content=prompt)])
+    res = safe_invoke([HumanMessage(content=prompt)], node_label="TDD Planner")
     print(
         f"  [Agent: TDD Orchestrator] TDD Blueprint received: {len(res.content)} chars"
     )
@@ -981,7 +1045,9 @@ Diagrams ({{{{DIAGRAM:id}}}}): {mod_diag_ids}
 Quality check: Could an engineer implement this module from this spec alone?
 End with [[CRITERIA_JSON: {{"module_id": "{mod_id}", "criteria": [...]}} ]]
 """
-    res = safe_invoke([HumanMessage(content=prompt)])
+    res = safe_invoke(
+        [HumanMessage(content=prompt)], node_label=f"TDD Writer (Mod: {mod_name})"
+    )
     raw_content = str(res.content).strip()
 
     # ---- Extract criteria (Safe version) ----
@@ -1013,7 +1079,7 @@ End with [[CRITERIA_JSON: {{"module_id": "{mod_id}", "criteria": [...]}} ]]
     content = re.sub(
         r"\[\[DYNAMIC_DIAGRAM:(.*?)\|.*?\|.*?\]\]", r"{{DIAGRAM:\1}}", content
     )
-    full_content = f"\n\n{marker}\n{content}\n"
+    full_content = f"\n\n{marker}\n{content}\n<!-- END_TDD_MOD -->\n"
     print(f"    ✓ TDD Module generated: {len(full_content)} chars")
 
     new_state = {
@@ -1089,20 +1155,12 @@ COMPILER ERROR:
 Output ONLY the corrected D2 code."""
 
     else:
-        # FIRST ATTEMPT: Full context (trimmed)
+        # FIRST ATTEMPT: Full context
         print(
             f"  [Agent: TDD Artist] Drawing: {diag.get('title', 'Diagram')} (Attempt {attempt})..."
         )
-        atlas_tail = (
-            state["accumulated_md"][-6000:]
-            if len(state["accumulated_md"]) > 6000
-            else state["accumulated_md"]
-        )
-        tdd_tail = (
-            state["tdd_accumulated_md"][-4000:]
-            if len(state["tdd_accumulated_md"]) > 4000
-            else state["tdd_accumulated_md"]
-        )
+        atlas_full = state["accumulated_md"]
+        tdd_full = state["tdd_accumulated_md"]
 
         # Satellite consistency
         satellite_context = "\nREFERENCE SATELLITE MAP: Use consistent IDs from the Master Map found in the ATLAS CONTEXT."
@@ -1110,7 +1168,7 @@ Output ONLY the corrected D2 code."""
         prompt = (
             f"{INSTR_TDD_ARTIST}\n"
             f"DOCS:\n{D2_REFERENCE}\n"
-            f"CONTEXT:\n{atlas_tail}\n{tdd_tail}\n"
+            f"CONTEXT:\n{atlas_full}\n{tdd_full}\n"
             f"{type_hint}{satellite_context}\n"
             f"TASK: Draw '{diag.get('title', 'Untitled')}': {diag.get('description', '')}"
         )
@@ -1120,6 +1178,7 @@ Output ONLY the corrected D2 code."""
             SystemMessage(content="Output ONLY raw D2 code."),
             HumanMessage(content=prompt),
         ],
+        node_label=f"TDD Artist (Diag: {diag.get('title')})",
         provider_override="local-proxy",
     )
     code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
@@ -1137,8 +1196,14 @@ def explainer_node(state: GraphState):
     Generate concise explanations and replace markers with Foundation blocks.
     Uses a cheap/fast model since explanations are short.
     """
-    content = state["accumulated_md"]
-    markers = re.findall(r"\[\[EXPLAIN:([\w-]+)\|(.*?)\]\]", content)
+    full_md = state["accumulated_md"]
+    segments = full_md.split("<!-- END_MS -->")
+
+    if len(segments) < 2:
+        return {}
+
+    last_ms_content = segments[-2]
+    markers = re.findall(r"\[\[EXPLAIN:([\w-]+)\|(.*?)\]\]", last_ms_content)
 
     if not markers:
         return {}  # Nothing to explain — pass through
@@ -1148,10 +1213,15 @@ def explainer_node(state: GraphState):
     new_markers = [(mid, desc) for mid, desc in markers if mid not in already_explained]
 
     if not new_markers:
-        # Remove duplicate markers silently
+        # Remove duplicate markers silently from this segment
+        processed_segment = last_ms_content
         for mid, desc in markers:
-            content = content.replace(f"[[EXPLAIN:{mid}|{desc}]]", "")
-        return {"accumulated_md": content}
+            processed_segment = processed_segment.replace(
+                f"[[EXPLAIN:{mid}|{desc}]]", ""
+            )
+
+        segments[-2] = processed_segment
+        return {"accumulated_md": "<!-- END_MS -->".join(segments)}
 
     print(f"  [Agent: Explainer] Generating {len(new_markers)} explanations...")
 
@@ -1182,6 +1252,7 @@ No other text outside these blocks."""
 
     res = safe_invoke(
         [HumanMessage(content=prompt)],
+        node_label="Explainer",
         provider_override="local-proxy",  # Use cheap/fast model
     )
 
@@ -1192,28 +1263,27 @@ No other text outside these blocks."""
     ):
         explanations[match.group(1)] = match.group(2).strip()
 
-    # Replace markers with formatted Foundation blocks
+    # Replace markers in the current segment
+    processed_segment = last_ms_content
     for mid, desc in markers:
         marker_text = f"[[EXPLAIN:{mid}|{desc}]]"
         if mid in explanations:
-            # Extract a clean title from the description (before first — or ( or ,)
             title = re.split(r"[—\(\,]", desc)[0].strip()
             block = f"\n> **🔑 Foundation: {title}**\n> \n> {explanations[mid]}\n"
-            content = content.replace(marker_text, block)
+            processed_segment = processed_segment.replace(marker_text, block)
         elif mid in already_explained:
-            # Already explained before — just remove marker
-            content = content.replace(marker_text, "")
+            processed_segment = processed_segment.replace(marker_text, "")
         else:
-            # Explanation generation failed — remove marker, log warning
             print(f"    [WARN] No explanation generated for: {mid}")
-            content = content.replace(marker_text, "")
+            processed_segment = processed_segment.replace(marker_text, "")
 
     new_explained = list(
         already_explained | {mid for mid, _ in new_markers if mid in explanations}
     )
 
+    segments[-2] = processed_segment
     return {
-        "accumulated_md": content,
+        "accumulated_md": "<!-- END_MS -->".join(segments),
         "explained_concepts": new_explained,
     }
 
@@ -1221,7 +1291,11 @@ No other text outside these blocks."""
 def bibliographer_node(state: GraphState):
     print(f"  [Agent: Bibliographer] Curating...")
     prompt = f"{INSTR_BIBLIOGRAPHER}\nCONTENT:\n{state['accumulated_md']}\n{state['tdd_accumulated_md']}"
-    res = safe_invoke([HumanMessage(content=prompt)], provider_override="local-proxy")
+    res = safe_invoke(
+        [HumanMessage(content=prompt)],
+        node_label="Bibliographer",
+        provider_override="local-proxy",
+    )
     return {"external_reading": str(res.content).strip(), "status": "done"}
 
 

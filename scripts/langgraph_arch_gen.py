@@ -692,11 +692,22 @@ def writer_node(state: GraphState):
     ms_cascade_str = (
         "\n".join(f"  - {c}" for c in ms_cascade) if ms_cascade else "  (none)"
     )
-    ms_yaml_criteria = ms.get("yaml_acceptance_criteria", [])
+
+    # Get acceptance criteria from ORIGINAL YAML (not blueprint - Architect doesn't copy them)
+    yaml_milestones = state["meta"].get("milestones", [])
+    yaml_ms = None
+    for ym in yaml_milestones:
+        if ym.get("id") == ms_id or ym.get("title") == ms_title:
+            yaml_ms = ym
+            break
+
+    ms_yaml_criteria = yaml_ms.get("acceptance_criteria", []) if yaml_ms else []
+    if isinstance(ms_yaml_criteria, str):
+        ms_yaml_criteria = [ms_yaml_criteria]
     ms_criteria_str = (
         "\n".join(f"  - {c}" for c in ms_yaml_criteria)
         if ms_yaml_criteria
-        else "  (none)"
+        else "  (none specified)"
     )
 
     context_md = state["accumulated_md"]
@@ -759,7 +770,7 @@ Revelation inputs from Architect:
 Knowledge Cascade connections to surface:
 {ms_cascade_str}
 
-YAML Acceptance Criteria (must be covered):
+YAML Acceptance Criteria (ANCHOR - must be covered, but refine based on your content):
 {ms_criteria_str}
 
 Available diagrams (use {{{{DIAGRAM:id}}}}):
@@ -771,6 +782,13 @@ CRITICAL RULES:
 1. **NO CONVERSATION**: Output ONLY the Markdown content. Do NOT say "I will now write..." or "Let me read...". Start immediately with the content.
 2. **MINIMUM LENGTH**: This is an {state["meta"].get("difficulty", "intermediate")} project. Write at least 10,000 characters of deep technical content.
 3. **EXACT ID**: Use the exact milestone ID '{ms_id}' in your CRITERIA_JSON block.
+
+After writing the content, generate CRITERIA_JSON:
+- Start from YAML Acceptance Criteria above as your base
+- Refine each criterion to be more specific and technical based on what you actually wrote
+- Add new criteria for any important technical details you covered that weren't in the original
+- Each criterion must be measurable and testable
+- Remove any criteria that became irrelevant
 
 End with [[CRITERIA_JSON: {{"milestone_id": "{ms_id}", "criteria": [...]}} ]]
 """

@@ -1,0 +1,361 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+direction: right
+
+title: |md
+  # Dual Output: VGA Text Mode and Serial Port
+  ## kprintf() Architecture for Kernel Debugging
+| {near: top-center}
+
+classes: {
+  kernel_func: {
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+      stroke-width: 2
+      font: mono
+      bold: true
+    }
+  }
+  
+  hardware: {
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#E65100"
+      stroke-width: 2
+    }
+  }
+  
+  mmio: {
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1565C0"
+      stroke-width: 2
+      font: mono
+    }
+  }
+  
+  port_io: {
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+      stroke-width: 2
+      font: mono
+    }
+  }
+  
+  annotation: {
+    shape: text
+    style: {
+      font-size: 14
+      italic: true
+      font-color: "#616161"
+    }
+  }
+  
+  flow: {
+    style: {
+      stroke: "#1976D2"
+      stroke-width: 2
+      animated: true
+    }
+  }
+}
+
+kprintf: kprintf(fmt, ...) {
+  class: kernel_func
+  tooltip: ||md
+    Formatted print to both outputs
+    
+    - Parses format string
+    - Handles %s, %d, %x, %c
+    - Calls both output drivers
+  ||
+  
+  parser: Format Parser {
+    style.fill: "#C8E6C9"
+  }
+  
+  parser -> char_buffer: "each char"
+}
+
+char_buffer: Character Buffer {
+  style.fill: "#FAFAFA"
+  style.stroke: "#9E9E9E"
+}
+
+char_buffer -> vga_putchar: "char c"
+char_buffer -> serial_putchar: "char c"
+
+kprintf -> char_buffer: {class: flow}
+
+vga_putchar: vga_putchar(c) {
+  class: kernel_func
+  
+  attr_compute: Compute Attribute {
+    style.fill: "#C8E6C9"
+    label: ||md
+      c
+      fg = VGA_COLOR_WHITE
+      bg = VGA_COLOR_BLACK
+      attr = fg | (bg << 4)
+    ||
+  }
+  
+  attr_compute -> entry_write
+}
+
+entry_write: Write Entry {
+  style.fill: "#C8E6C9"
+  label: ||md
+    c
+    entry = char | (attr << 8)
+    VGA_BUFFER[pos] = entry
+  ||
+}
+
+entry_write -> vga_buffer: "16-bit write"
+
+vga_buffer: VGA Text Buffer {
+  class: mmio
+  label: ||md
+    **0xB8000** (Memory-Mapped)
+    
+    80 x 25 = 2000 cells
+    
+    Each cell: 2 bytes
+    - Byte 0: Character (ASCII)
+    - Byte 1: Attribute (color)
+  ||
+  
+  style.fill: "#BBDEFB"
+}
+
+vga_output: VGA Display {
+  class: hardware
+  icon: https://icons.terrastruct.com/essentials%2F207-monitor.svg
+  
+  screen: ||md
+    +--------------------------------------------------------------------+
+    | Welcome to MyOS!                                                   |
+    | Kernel loaded at 0x100000                                          |
+    |                                                                    |
+    |                                                                    |
+    | ... (80x25 text grid) ...                                          |
+    |                                                                    |
+    |                                                                    |
+    +--------------------------------------------------------------------+
+  ||
+  
+  screen.style: {
+    font: mono
+    font-size: 12
+  }
+}
+
+vga_buffer -> vga_output: "60Hz scan\n(hardware refresh)" {
+  style.stroke-dash: 3
+  style.animated: false
+}
+
+vga_note: ||md
+  **VGA Advantage**: Immediate visual feedback
+  - No configuration needed
+  - Works before serial init
+  - Color attributes for highlighting
+|| {
+  class: annotation
+  near: vga_output
+}
+
+serial_putchar: serial_putchar(c) {
+  class: kernel_func
+  
+  wait_tx: Wait for TX Empty {
+    style.fill: "#C8E6C9"
+    label: ||md
+      c
+      while (!(inb(PORT+5) & 0x20));
+      // Wait for bit 5 (THRE)
+    ||
+  }
+  
+  wait_tx -> outb_write
+}
+
+outb_write: outb(PORT, c) {
+  class: port_io
+  label: ||md
+    asm
+    outb %al, %dx
+    ; Output byte to I/O port
+  ||
+}
+
+outb_write -> com1_port
+
+com1_port: COM1 Port Registers {
+  class: port_io
+  label: ||md
+    **Base: 0x3F8**
+    
+    | Offset | Name        | Function          |
+    |--------|-------------|-------------------|
+    | +0     | THR/RBR     | TX/RX data        |
+    | +1     | IER         | Interrupt enable  |
+    | +3     | LCR         | Line control      |
+    | +5     | LSR         | Line status       |
+    
+    Bit 5 of LSR = TX Holding Register Empty
+  ||
+  
+  style.fill: "#E1BEE7"
+}
+
+serial_init: serial_init() {
+  class: kernel_func
+  
+  init_seq: ||md
+    **Initialization Sequence:**
+    
+    1. outb(0x3F9, 0x00)   // Disable interrupts
+    2. outb(0x3FB, 0x80)   // Enable DLAB
+    3. outb(0x3F8, 0x03)   // Divisor low (38400 baud)
+    4. outb(0x3F9, 0x00)   // Divisor high
+    5. outb(0x3FB, 0x03)   // 8N1 (8 bits, no parity, 1 stop)
+    6. outb(0x3FA, 0xC7)   // Enable FIFO
+    7. outb(0x3FC, 0x0B)   // RTS/DSR set
+  ||
+  
+  init_seq.style.font: mono
+}
+
+serial_output: Serial Console {
+  class: hardware
+  icon: https://icons.terrastruct.com/essentials%2F230-commands.svg
+  
+  qemu: ||md
+    $ qemu-system-i386 -serial stdio os.img
+    
+    Welcome to MyOS!
+    Kernel loaded at 0x100000
+    Initializing IDT...
+    Remapping PIC...
+    System ready.
+  ||
+  
+  qemu.style: {
+    font: mono
+    font-size: 12
+  }
+}
+
+com1_port -> serial_output: "UART TX\n(electrical signal)" {
+  style.stroke-dash: 3
+  style.animated: false
+}
+
+serial_note: ||md
+  **Serial Advantage**: Automated testing
+  - Captured by CI/CD pipelines
+  - Works with GDB remote debug
+  - No display hardware needed
+|| {
+  class: annotation
+  near: serial_output
+}
+
+legend: Legend {
+  near: bottom-center
+  
+  green_box: Kernel Function {
+    class: kernel_func
+  }
+  
+  orange_box: Hardware Device {
+    class: hardware
+  }
+  
+  blue_box: Memory-Mapped I/O {
+    class: mmio
+  }
+  
+  purple_box: Port I/O {
+    class: port_io
+  }
+  
+  arrow: Data Flow {
+    class: flow
+    label: ""
+  }
+}
+
+legend.style.fill: "#FAFAFA"
+legend.style.stroke: "#E0E0E0"
+
+comparison: Why Dual Output? {
+  near: bottom-right
+  
+  vga_col: VGA {
+    shape: hexagon
+    style.fill: "#E8F5E9"
+    
+    v1: "+ Visual feedback"
+    v2: "+ Color support"
+    v3: "+ No setup required"
+    v4: "- Hard to capture"
+    v5: "- VM only"
+  }
+  
+  serial_col: Serial {
+    shape: hexagon
+    style.fill: "#E3F2FD"
+    
+    s1: "+ CI/CD capture"
+    s2: "+ GDB debugging"
+    s3: "+ Works headless"
+    s4: "+ Persistent logs"
+    s5: "- Requires init"
+  }
+  
+  vga_col -> serial_col: "Complementary" {
+    style.stroke-dash: 5
+    style.stroke: "#9E9E9E"
+  }
+}
+
+comparison.style.fill: "#FAFAFA"
+comparison.style.stroke: "#BDBDBD"
+comparison.style.border-radius: 8
+
+byte_layout: Byte Layout Detail {
+  vga_entry: VGA Entry (2 bytes) {
+    grid-columns: 2
+    grid-gap: 0
+    
+    byte0: Byte 0 Character {
+      style.fill: "#C8E6C9"
+      label: ||md
+        ASCII code
+        'A' = 0x41
+      ||
+    }
+    
+    byte1: Byte 1 Attribute {
+      style.fill: "#FFCDD2"
+      label: ||md
+        Bits 0-3: FG color
+        Bits 4-6: BG color
+        Bit 7: Blink
+      ||
+    }
+  }
+}
+
+byte_layout.style.fill: "#FAFAFA"
+byte_layout.style.stroke: "#BDBDBD"

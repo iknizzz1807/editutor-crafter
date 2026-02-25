@@ -1,0 +1,360 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+  colors: {
+    header: "#8B5CF6"
+    data: "#3B82F6"
+    hardware: "#EF4444"
+    kernel: "#10B981"
+    flow: "#6366F1"
+  }
+}
+
+title: |md
+  # Interrupt Module Architecture
+  **IDT Registration → IRQ Dispatch → Handler Chain**
+| {near: top-center}
+
+CPU: {
+  shape: rectangle
+  style.fill: "${colors.hardware}"
+  style.font-color: white
+  style.stroke: "#DC2626"
+  label: |md
+    **Hardware Interrupt Sources**
+    - Timer (IRQ0): PIT Channel 0
+    - Keyboard (IRQ1): PS/2 Port 0x60
+    - Exceptions: Vectors 0-31
+  |
+}
+
+PIC: {
+  label: "8259 PIC\n(Master + Slave)"
+  shape: rectangle
+  style.fill: "${colors.hardware}"
+  style.font-color: white
+  style.stroke: "#DC2626"
+  desc: |md
+    **IRQ → Vector Mapping**
+    - IRQ0-7 → Vectors 32-39
+    - IRQ8-15 → Vectors 40-47
+  |
+}
+
+IDT: {
+  style.fill: "${colors.header}"
+  style.font-color: white
+  style.stroke: "#7C3AED"
+  
+  idt_array: {
+    label: "IDT[256]"
+    shape: rectangle
+    style.fill: "#A78BFA"
+    desc: |md
+      **Gate Descriptors (8 bytes each)**
+      - Offset Low/High
+      - Segment Selector
+      - Type/Attributes (0x8E)
+    |
+  }
+  
+  idt_ptr: {
+    label: "IDT Pointer"
+    shape: rectangle
+    style.fill: "#A78BFA"
+    desc: |md
+      - Limit: 0x7FF (256×8-1)
+      - Base: &idt_array
+    |
+  }
+}
+
+idt_c: {
+  label: "idt.c"
+  shape: rectangle
+  style.fill: "${colors.kernel}"
+  style.font-color: white
+  style.stroke: "#059669"
+  desc: |md
+    **Functions:**
+    - `idt_init()` - Zero IDT, load IDTR
+    - `idt_set_gate(num, handler, sel, flags)`
+    - `idt_load()` - Execute `lidt`
+    
+    **Structures:**
+    - `idt_entry_t` (8 bytes)
+    - `idt_ptr_t` (6 bytes)
+  |
+}
+
+interrupt_asm: {
+  label: "interrupt.asm"
+  shape: rectangle
+  style.fill: "${colors.kernel}"
+  style.font-color: white
+  style.stroke: "#059669"
+  desc: |md
+    **ISR Stubs (Vectors 0-31):**
+    - `isr0`...`isr31`
+    - Macro: `ISR_NO_ERROR` / `ISR_ERROR`
+    - Push dummy error code if needed
+    
+    **IRQ Stubs (Vectors 32-47):**
+    - `irq0`...`irq15`
+    - Push IRQ number (0-15)
+    
+    **Common Stub:**
+    - `isr_common_stub` / `irq_common_stub`
+    - `pusha` (saves EAX,ECX,EDX,EBX,ESP,EBP,ESI,EDI)
+    - Push DS, ES, FS, GS
+    - Load kernel DS (0x10)
+    - Call C handler
+  |
+}
+
+pic_c: {
+  label: "pic.c"
+  shape: rectangle
+  style.fill: "${colors.kernel}"
+  style.font-color: white
+  style.stroke: "#059669"
+  desc: |md
+    **Functions:**
+    - `pic_remap(32, 40)` - ICW1-ICW4
+    - `pic_send_eoi(irq)` - Send 0x20
+    - `pic_mask_irq(irq)` / `pic_unmask_irq(irq)`
+    
+    **Ports:**
+    - Master: 0x20 (cmd), 0x21 (data)
+    - Slave: 0xA0 (cmd), 0xA1 (data)
+  |
+}
+
+interrupt_c: {
+  label: "interrupt.c"
+  shape: rectangle
+  style.fill: "${colors.kernel}"
+  style.font-color: white
+  style.stroke: "#059669"
+  desc: |md
+    **Main Dispatcher:**
+    - `c_interrupt_handler(regs_t *regs)`
+    
+    **Dispatch Logic:**
+    
+    if (int_no < 32)
+      → exception_handler()
+    else if (int_no < 48)
+      → irq_handler()
+    
+    
+    **registers_t Structure:**
+    - GS, FS, ES, DS
+    - EDI, ESI, EBP, ESP, EBX, EDX, ECX, EAX
+    - int_no, err_code
+    - EIP, CS, EFLAGS
+    - (useresp, SS if ring transition)
+  |
+}
+
+timer_c: {
+  label: "timer.c"
+  shape: rectangle
+  style.fill: "${colors.data}"
+  style.font-color: white
+  style.stroke: "#2563EB"
+  desc: |md
+    **Functions:**
+    - `timer_init(freq)` - Program PIT
+    - `timer_handler()` - Increment ticks
+    
+    **PIT Programming:**
+    - Port 0x43: Command (0x36)
+    - Port 0x40: Divisor low/high
+    - Base: 1,193,182 Hz
+    
+    **Global:**
+    - `volatile uint64_t timer_ticks`
+  |
+}
+
+keyboard_c: {
+  label: "keyboard.c"
+  shape: rectangle
+  style.fill: "${colors.data}"
+  style.font-color: white
+  style.stroke: "#2563EB"
+  desc: |md
+    **Functions:**
+    - `keyboard_init()` - Clear buffer
+    - `keyboard_handler()` - Read scancode
+    - `keyboard_getchar()` - Blocking read
+    
+    **Scancode Translation:**
+    - Port 0x60: Scancode
+    - Table: scancode → ASCII
+    - Shift state tracking
+    
+    **Buffer:**
+    - Circular buffer (256 bytes)
+    - read_pos, write_pos
+  |
+}
+
+exception_c: {
+  label: "exception.c"
+  shape: rectangle
+  style.fill: "${colors.data}"
+  style.font-color: white
+  style.stroke: "#2563EB"
+  desc: |md
+    **Handler:**
+    - `exception_handler(regs_t *regs)`
+    
+    **Exception Table:**
+    - 0: Divide Error
+    - 6: Invalid Opcode
+    - 8: Double Fault (error code)
+    - 13: General Protection (error code)
+    - 14: Page Fault (error code, read CR2)
+    
+    **Action:**
+    - Print diagnostic
+    - Halt system
+  |
+}
+
+idt_c -> IDT.idt_array: "1. Set 256 gates" {
+  style.stroke: "${colors.flow}"
+  style.stroke-width: 2
+  label: "idt_set_gate()"
+}
+
+IDT.idt_ptr -> CPU: "2. Load IDTR" {
+  style.stroke: "${colors.flow}"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+  label: "lidt"
+}
+
+pic_c -> PIC: "3. Remap IRQ→Vector" {
+  style.stroke: "${colors.flow}"
+  style.stroke-width: 2
+  label: "ICW1-ICW4"
+}
+
+CPU -> IDT.idt_array: "4. Interrupt fires" {
+  style.stroke: "${colors.hardware}"
+  style.stroke-width: 3
+  style.animated: true
+  label: "Vector lookup"
+}
+
+IDT.idt_array -> interrupt_asm: "5. Jump to stub" {
+  style.stroke: "${colors.flow}"
+  style.stroke-width: 2
+}
+
+interrupt_asm -> interrupt_c: "6. Call C handler" {
+  style.stroke: "${colors.flow}"
+  style.stroke-width: 2
+  label: "push esp\ncall"
+}
+
+interrupt_c -> exception_c: "int_no < 32" {
+  style.stroke: "${colors.header}"
+  style.stroke-width: 2
+}
+
+interrupt_c -> pic_c: "int_no 32-47" {
+  style.stroke: "${colors.data}"
+  style.stroke-width: 2
+  label: "irq = int_no - 32"
+}
+
+pic_c -> timer_c: "irq == 0" {
+  style.stroke: "${colors.data}"
+  style.stroke-width: 2
+  label: "timer_handler()"
+}
+
+pic_c -> keyboard_c: "irq == 1" {
+  style.stroke: "${colors.data}"
+  style.stroke-width: 2
+  label: "keyboard_handler()"
+}
+
+timer_c -> PIC: "7. Send EOI" {
+  style.stroke: "${colors.hardware}"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+  label: "outb(0x20, 0x20)"
+}
+
+keyboard_c -> PIC: "7. Send EOI" {
+  style.stroke: "${colors.hardware}"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+}
+
+interrupt_asm -> CPU: "8. iret" {
+  style.stroke: "${colors.kernel}"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+  label: "Restore registers\nResume execution"
+}
+
+legend: {
+  near: bottom-right
+  style.fill: "#F3F4F6"
+  style.stroke: "#9CA3AF"
+  
+  hw: {
+    label: "Hardware"
+    style.fill: "${colors.hardware}"
+  }
+  kern: {
+    label: "Kernel Core"
+    style.fill: "${colors.kernel}"
+  }
+  dev: {
+    label: "Device Driver"
+    style.fill: "${colors.data}"
+  }
+  idt: {
+    label: "IDT Structures"
+    style.fill: "${colors.header}"
+  }
+  
+  hw - kern - dev - idt
+}
+
+stack_frame: {
+  near: bottom-left
+  style.fill: "#F9FAFB"
+  style.stroke: "#D1D5DB"
+  label: "Interrupt Stack Frame (registers_t)"
+  
+  frame_layout: {
+    shape: rectangle
+    style.fill: white
+    label: |md
+      +------------+  High
+      | SS         |  (if ring transition)
+      | useresp    |  (if ring transition)
+      +------------+
+      | EFLAGS     |  ← CPU pushes
+      | CS         |
+      | EIP        |
+      +------------+
+      | err_code   |  ← CPU (some exceptions)
+      | int_no     |  ← Stub pushes
+      +------------+
+      | EAX-EDI    |  ← pusha
+      | DS-GS      |  ← Stub pushes
+      +------------+  ESP points here
+    |
+  }
+}

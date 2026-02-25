@@ -1,0 +1,297 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+title: |md
+  # EOI Timing: Why Forgetting EOI Freezes the System
+  ## PIC In-Service Register (ISR) State Evolution
+| {near: top-center}
+
+direction: right
+
+classes: {
+  pic_box: {
+    shape: rectangle
+    style: {
+      fill: "#2d3748"
+      stroke: "#4a5568"
+      stroke-width: 2
+      font-color: white
+      border-radius: 4
+    }
+  }
+  state_good: {
+    style: {
+      fill: "#48bb78"
+      stroke: "#276749"
+      font-color: white
+    }
+  }
+  state_bad: {
+    style: {
+      fill: "#fc8181"
+      stroke: "#c53030"
+      font-color: white
+      animated: true
+    }
+  }
+  state_neutral: {
+    style: {
+      fill: "#4299e1"
+      stroke: "#2b6cb0"
+      font-color: white
+    }
+  }
+  state_blocked: {
+    style: {
+      fill: "#ed8936"
+      stroke: "#c05621"
+      font-color: white
+    }
+  }
+  flow_arrow: {
+    style: {
+      stroke: "#a0aec0"
+      stroke-width: 2
+      animated: true
+    }
+  }
+  problem_arrow: {
+    style: {
+      stroke: "#fc8181"
+      stroke-width: 3
+      stroke-dash: 5
+      animated: true
+    }
+  }
+}
+
+section_before: Before IRQ {
+  pic_isr_before: {
+    class: pic_box
+    label: |md
+      **Master PIC ISR**
+      
+      Bit 76543210
+          --------
+          00000000  ← All bits clear
+      
+      No IRQs in service
+    |
+  }
+  
+  irq_signal: {
+    shape: diamond
+    style.fill: "#f6e05e"
+    style.stroke: "#d69e2e"
+    label: "IRQ1 arrives\n(Keyboard)"
+  }
+}
+
+section_during: During Handler {
+  pic_isr_during: {
+    class: pic_box
+    label: |md
+      **Master PIC ISR**
+      
+      Bit 76543210
+          --------
+          00000010  ← Bit 1 SET
+          ↑
+          IRQ1 in-service
+      
+    |
+  }
+  
+  irq1_active: {
+    class: state_good
+    label: "IRQ1 Handler\nRUNNING"
+  }
+  
+  keyboard_blocked: {
+    class: state_blocked
+    label: "Keyboard (IRQ1)\nBLOCKED by ISR"
+  }
+  
+  lower_irqs: {
+    class: state_blocked
+    label: |md
+      **IRQs 2-7 BLOCKED**
+      - Timer (IRQ0) ❌
+      - Cascade (IRQ2) ❌
+      - COM2 (IRQ3) ❌
+      - COM1 (IRQ4) ❌
+      - LPT1 (IRQ7) ❌
+    |
+  }
+}
+
+section_after_good: After EOI (Correct) {
+  pic_isr_after_eoi: {
+    class: pic_box
+    label: |md
+      **Master PIC ISR**
+      
+      Bit 76543210
+          --------
+          00000000  ← Bit cleared!
+      
+      EOI sent: ISR[1] = 0
+    |
+  }
+  
+  eoi_sent: {
+    class: state_good
+    label: |md
+      **EOI Command**
+      `outb(0x20, 0x20)`
+      
+      Master PIC acknowledges
+      ISR bit cleared
+    |
+  }
+  
+  system_responsive: {
+    class: state_good
+    label: |md
+      ✅ **System Responsive**
+      
+      All IRQs unblocked
+      Next interrupt handled
+    |
+  }
+}
+
+section_after_bad: Without EOI (Bug) {
+  pic_isr_stuck: {
+    class: pic_box
+    label: |md
+      **Master PIC ISR**
+      
+      Bit 76543210
+          --------
+          00000010  ← STILL SET!
+      
+      No EOI sent: ISR[1] = 1
+    |
+  }
+  
+  no_eoi: {
+    class: state_bad
+    label: |md
+      **❌ Forgot EOI**
+      
+      Handler returns via `iret`
+      ISR bit remains set
+    |
+  }
+  
+  system_frozen: {
+    class: state_bad
+    label: |md
+      ❌ **System Frozen**
+      
+      Keyboard: BLOCKED
+      Timer: BLOCKED
+      All lower IRQs: BLOCKED
+      
+      *Not crashed—just deaf*
+    |
+  }
+}
+
+irq_signal -> pic_isr_during: "1. IRQ1 fires\nPIC sets ISR[1]" {class: flow_arrow}
+pic_isr_during -> irq1_active: "2. CPU jumps\nto handler" {class: flow_arrow}
+irq1_active -> keyboard_blocked: "Same IRQ blocked\n(re-entrancy protection)" {style.stroke-dash: 3}
+irq1_active -> lower_irqs: "Lower priority\nIRQs blocked" {class: problem_arrow}
+
+irq1_active -> eoi_sent: "3a. CORRECT:\nsend EOI" {class: flow_arrow; style.stroke: "#48bb78"}
+eoi_sent -> pic_isr_after_eoi: "4. ISR cleared" {class: flow_arrow; style.stroke: "#48bb78"}
+pic_isr_after_eoi -> system_responsive: "5. System lives" {style.stroke: "#48bb78"}
+
+irq1_active -> no_eoi: "3b. BUG:\nreturn without EOI" {class: problem_arrow}
+no_eoi -> pic_isr_stuck: "ISR still set" {class: problem_arrow}
+pic_isr_stuck -> system_frozen: "All IRQs blocked\nforever" {class: problem_arrow}
+
+code_example: {
+  near: bottom-center
+  label: |md
+    c
+    // CORRECT IRQ Handler Pattern
+    void irq_handler(registers_t *regs) {
+        uint8_t irq = regs->int_no - 32;
+        
+        // Handle the interrupt
+        switch (irq) {
+            case 0: timer_handler(); break;
+            case 1: keyboard_handler(); break;
+            // ...
+        }
+        
+        // CRITICAL: Send EOI!
+        if (irq >= 8) {
+            outb(PIC2_CMD, PIC_EOI);  // Slave first
+        }
+        outb(PIC1_CMD, PIC_EOI);      // Then master
+    }
+    
+  |
+  style: {
+    fill: "#1a202c"
+    font-color: "#e2e8f0"
+    font: mono
+    border-radius: 8
+  }
+}
+
+pic_architecture: {
+  near: center-right
+  label: |md
+    ## PIC Priority Logic
+    
+    The 8259 PIC uses **fixed priority**:
+    - IRQ0 (Timer): Highest
+    - IRQ7: Lowest
+    
+    **Rule**: An IRQ is only serviced if:
+    1. It's not masked (IMR bit = 0)
+    2. No higher-priority IRQ is in-service
+    
+    **ISR bit stays set until EOI**
+    → Without EOI, all lower IRQs wait forever
+  |
+  style: {
+    fill: "#2d3748"
+    font-color: "#e2e8f0"
+    border-radius: 8
+    stroke: "#4a5568"
+    stroke-width: 2
+  }
+}
+
+timing_note: {
+  near: top-right
+  label: |md
+    ### Why System "Freezes"
+    
+    The CPU isn't crashed—it's just that the
+    PIC refuses to signal any new interrupts.
+    
+    - Timer ticks? Ignored (ISR blocks IRQ0)
+    - Keyboard? Ignored (ISR blocks IRQ1)
+    - Disk I/O? Ignored (ISR blocks IRQ6)
+    
+    The system looks dead but is actually
+    running whatever code was executing
+    when the last interrupt returned.
+  |
+  style: {
+    fill: "#744210"
+    font-color: "#fefcbf"
+    border-radius: 8
+    stroke: "#c05621"
+  }
+}

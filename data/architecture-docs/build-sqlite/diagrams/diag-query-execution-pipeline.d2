@@ -1,0 +1,273 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+title: |md
+  # Query Execution Pipeline
+  From SQL Text to Result Rows
+| {near: top-center}
+
+direction: right
+
+sql_input: "SELECT name FROM users WHERE age > 21" {
+  shape: text
+  style: {
+    font: mono
+    font-size: 14
+    fill: "#E8F4F8"
+    stroke: "#4A90A4"
+    stroke-width: 2
+  }
+}
+
+layers: {
+  cold: {
+    label: "Cold Path (First Execution)"
+    
+    tokenizer: Tokenizer {
+      style: {
+        fill: "#FFE4B5"
+        stroke: "#D4A76A"
+      }
+      
+      state_machine: "FSM States:\n• DEFAULT\n• IN_STRING\n• IN_QUOTED_ID\n• IN_NUMBER\n• IN_IDENTIFIER"
+      
+      token_stream: |md
+        [0] KEYWORD("SELECT")
+        [1] IDENTIFIER("name")
+        [2] KEYWORD("FROM")
+        [3] IDENTIFIER("users")
+        [4] KEYWORD("WHERE")
+        [5] IDENTIFIER("age")
+        [6] OPERATOR(">")
+        [7] NUMBER("21")
+      |
+    }
+    
+    parser: Parser {
+      style: {
+        fill: "#E6F3D4"
+        stroke: "#8FB339"
+      }
+      
+      ast_output: |md
+        SelectStatement {
+          Columns: [name]
+          FromTable: users
+          Where: BinaryExpr {
+            Op: ">"
+            Left: Identifier("age")
+            Right: Literal(21)
+          }
+        }
+      |
+    }
+    
+    compiler: Compiler {
+      style: {
+        fill: "#D4E5F7"
+        stroke: "#4A90D9"
+      }
+      
+      bytecode: |md
+        addr  opcode      p1  p2  p3
+        ----  ----------  --  --  --
+        0     OpenTable   0   2   0
+        1     Rewind      0   8   0
+        2     Column      0   2   0
+        3     Integer     21  1   0
+        4     Le          0   6   1
+        5     Column      0   1   2
+        6     ResultRow   2   1   0
+        7     Next        0   2   0
+        8     Halt        0   0   0
+      |
+    }
+    
+    tokenizer -> parser: "Token Array\n~50-200ns"
+    parser -> compiler: "AST\n~1-10μs"
+  }
+  
+  hot: {
+    label: "Hot Path (Cached)"
+    
+    cache_lookup: "Cache Lookup\nByKey(SQL)" {
+      shape: diamond
+      style: {
+        fill: "#FFE4E1"
+        stroke: "#CD5C5C"
+      }
+    }
+    
+    cache: PreparedStatementCache {
+      style: {
+        fill: "#F5DEB3"
+        stroke: "#DAA520"
+        stroke-dash: 3
+      }
+      
+      entry: |md
+        Key: "SELECT name FROM..."
+        Value: {
+          bytecode: [...]
+          schema: [...]
+          compiled_at: timestamp
+        }
+      |
+    }
+    
+    cache_lookup -> cache: "HIT\n~10-50ns"
+  }
+  
+  execution: {
+    label: "Execution Layer"
+    
+    vm: VDBE {
+      style: {
+        fill: "#E8D4F0"
+        stroke: "#9B59B6"
+      }
+      
+      vm_loop: |md
+        while (!halted) {
+          instr = fetch()
+          decode_and_execute(instr)
+          update_registers()
+        }
+      |
+    }
+    
+    buffer_pool: BufferPool {
+      style: {
+        fill: "#E8F4F8"
+        stroke: "#5DADE2"
+      }
+      
+      stats: "1000 frames\n99% hit rate\n~100ns per hit"
+    }
+    
+    btree: BTree {
+      style: {
+        fill: "#D5F5E3"
+        stroke: "#27AE60"
+      }
+      
+      traversal: "O(log n) seek\n~3-4 page reads\n~1-10μs"
+    }
+    
+    vm -> buffer_pool: "FetchPage"
+    buffer_pool -> btree: "Cache Miss"
+  }
+  
+  output: {
+    label: "Results"
+    
+    result_set: |md
+      | name   |
+      |--------|
+      | Alice  |
+      | Bob    |
+      | Carol  |
+    |
+    result_set.shape: text
+    result_set.style: {
+      fill: "#E8F8F5"
+      stroke: "#1ABC9C"
+    }
+  }
+  
+  sql_input -> cold.tokenizer: "Raw SQL"
+  sql_input -> hot.cache_lookup: "Hash Key"
+  
+  cold.compiler -> execution.vm: "Bytecode\n~1-5μs compile"
+  hot.cache -> execution.vm: "Cached Bytecode"
+  
+  execution.vm -> output.result_set: "Row Callbacks\n~1-10μs per row"
+}
+
+timing: {
+  near: bottom-center
+  
+  breakdown: |md
+    ## Timing Breakdown (10,000 row query)
+    
+    | Phase           | Cold Path  | Hot Path   |
+    |-----------------|------------|------------|
+    | Tokenize        | ~50μs      | -          |
+    | Parse           | ~200μs     | -          |
+    | Compile         | ~100μs     | -          |
+    | Cache Lookup    | -          | ~50ns      |
+    | VM Execution    | ~10ms      | ~10ms      |
+    | **Total**       | ~10.35ms   | ~10.00ms   |
+    
+    **Speedup: ~3.5%** (amortized over many executions)
+    
+    For repeated queries with parameters:
+    - 1000 executions: Cold=~10.35s, Hot=~10.00s
+    - With params: Savings increase significantly
+  |
+  
+  breakdown.shape: text
+  breakdown.style: {
+    font-size: 13
+    fill: "#F9F9F9"
+    stroke: "#CCCCCC"
+  }
+}
+
+legend: {
+  near: top-right
+  
+  legend_box: {
+    style.fill: transparent
+    style.stroke: "#666666"
+    
+    cold_label: "Cold Path" {
+      style.fill: "#FFE4B5"
+    }
+    hot_label: "Hot Path (Cached)" {
+      style.fill: "#F5DEB3"
+      style.stroke-dash: 3
+    }
+    exec_label: "Execution" {
+      style.fill: "#E8D4F0"
+    }
+    data_label: "Data Layer" {
+      style.fill: "#D5F5E3"
+    }
+    
+    cold_label -> hot_label -> exec_label -> data_label
+  }
+}
+
+annotations: {
+  cache_benefit: |md
+    **Prepared Statement Benefits:**
+    1. Parse once, execute many
+    2. Parameter binding prevents SQL injection
+    3. Query plan reuse
+    4. Reduced memory allocation
+  |
+  cache_benefit.near: hot.cache
+  cache_benefit.style: {
+    fill: "#FFFACD"
+    stroke: "#DAA520"
+    font-size: 11
+  }
+  
+  vm_note: |md
+    **VDBE is register-based:**
+    - Instructions specify register operands
+    - Intermediate values persist across instructions
+    - Register allocation at compile time
+  |
+  vm_note.near: execution.vm
+  vm_note.style: {
+    fill: "#E8E4F0"
+    stroke: "#9B59B6"
+    font-size: 11
+  }
+}

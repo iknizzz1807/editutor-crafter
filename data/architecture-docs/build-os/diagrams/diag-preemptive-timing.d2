@@ -1,0 +1,283 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+  colors: {
+    running: "#4CAF50"
+    interrupted: "#FF9800"
+    kernel: "#2196F3"
+    switching: "#9C27B0"
+    idle: "#9E9E9E"
+  }
+}
+
+title: |md
+  # Preemptive Timing: Timer Interrupt to Context Switch
+  ## 100Hz Timer → 10ms Time Quantum → Round-Robin Scheduling
+| {near: top-center}
+
+direction: right
+
+timeline: {
+  shape: sequence_diagram
+  
+  Process_A: Process A (User)
+  CPU: CPU Hardware
+  Timer: PIT Timer
+  IRQ_Handler: IRQ0 Handler
+  Scheduler: Scheduler
+  Process_B: Process B (User)
+  
+  time_slice_1: Time Slice 1 (10ms) {
+    Process_A.t1 -> CPU.t1: Executing user code
+    CPU.t1.style.fill: ${colors.running}
+    
+    Process_A.t2 -> CPU.t2: More execution...
+    CPU.t2.style.fill: ${colors.running}
+  }
+  
+  timer_fires: Timer Interrupt Fires {
+    Timer.a -> CPU.a: IRQ0 signal (100Hz tick)
+    Timer.a.style.fill: ${colors.interrupted}
+    
+    CPU.a -> CPU.b: Hardware interrupt cycle
+    CPU.b.style.fill: ${colors.interrupted}
+    
+    CPU.b: |md
+      CPU automatically:
+      1. Finishes current instruction
+      2. Pushes EFLAGS, CS, EIP to stack
+      3. Looks up IDT entry 32
+      4. Jumps to IRQ0 handler
+    |
+    CPU.b.style.fill: ${colors.kernel}
+  }
+  
+  irq_handler: IRQ0 Handler Execution {
+    CPU.c -> IRQ_Handler.c: Enter kernel mode
+    IRQ_Handler.c: |md
+      irq0_handler:
+        pusha              ; Save all registers
+        push ds, es, fs, gs
+        call timer_handler
+    |
+    IRQ_Handler.c.style.fill: ${colors.kernel}
+    
+    IRQ_Handler.d -> Timer.d: timer_handler()
+    Timer.d: |md
+      timer_ticks++
+      if (time_slice_expired):
+          schedule()
+    |
+    Timer.d.style.fill: ${colors.kernel}
+  }
+  
+  scheduling: Scheduler Decision {
+    Scheduler.e: |md
+      schedule_next():
+        current->state = READY
+        next = pick_next_ready()
+        next->state = RUNNING
+        context_switch(current, next)
+    |
+    Scheduler.e.style.fill: ${colors.switching}
+    
+    Scheduler.e -> Process_A.e: Save A's state to PCB
+    Process_A.e.style.fill: ${colors.idle}
+    
+    Scheduler.e -> Process_B.e: Load B's state from PCB
+    Process_B.e.style.fill: ${colors.switching}
+  }
+  
+  context_switch_op: Context Switch {
+    Scheduler.f: |md
+      context_switch:
+        ; Save A's complete state
+        mov [A->cpu.eax], eax
+        mov [A->cpu.esp], esp
+        mov [A->cpu.cr3], cr3
+        
+        ; Load B's complete state  
+        mov cr3, [B->cpu.cr3]
+        mov esp, [B->cpu.esp]
+        
+        ; Update TSS ESP0
+        mov [tss.esp0], B->kernel_stack_top
+        
+        ; Restore B's registers and iret
+        iret
+    |
+    Scheduler.f.style.fill: ${colors.switching}
+  }
+  
+  time_slice_2: Time Slice 2 (10ms) {
+    Process_B.g -> CPU.g: Executing user code
+    CPU.g.style.fill: ${colors.running}
+    Process_B.g.style.fill: ${colors.running}
+    
+    Process_B.h -> CPU.h: More execution...
+    CPU.h.style.fill: ${colors.running}
+  }
+}
+
+timing_details: {
+  near: center-left
+  label: Timing Parameters
+  
+  frequency: {
+    label: Timer Frequency
+    shape: hexagon
+    style.fill: ${colors.kernel}
+  }
+  
+  quantum: {
+    label: Time Quantum
+    shape: hexagon
+    style.fill: ${colors.switching}
+  }
+  
+  latency: {
+    label: Switch Latency
+    shape: hexagon
+    style.fill: ${colors.interrupted}
+  }
+  
+  frequency_details: |md
+    **100 Hz** = 100 ticks/second
+    
+    PIT divisor = 1193182 / 100
+                = 11931
+    
+    Channel 0 programmed with:
+    
+    outb(0x43, 0x36)  ; Mode 3
+    outb(0x40, 0x9B)  ; Low byte
+    outb(0x40, 0x2E)  ; High byte
+    
+  |
+  frequency_details.style.fill: "#E3F2FD"
+  
+  quantum_details: |md
+    **10 ms** per time slice
+    
+    Time slice = 1 / frequency
+               = 1 / 100 Hz
+               = 0.01 seconds
+               = 10 milliseconds
+    
+    Each process gets 10ms before
+    being preempted (if still READY)
+  |
+  quantum_details.style.fill: "#F3E5F5"
+  
+  latency_details: |md
+    **~1-5 µs** context switch overhead
+    
+    Components:
+    • Register save: ~20 cycles
+    • CR3 reload: ~100-500 cycles
+    • Pipeline flush: ~10-20 cycles
+    • TLB effects: variable
+    
+    Overhead = ~0.05% of 10ms quantum
+  |
+  latency_details.style.fill: "#FFF3E0"
+  
+  frequency -> frequency_details
+  quantum -> quantum_details
+  latency -> latency_details
+}
+
+state_diagram: {
+  label: Process State Transitions
+  
+  ready_a: READY (A) {
+    shape: circle
+    style.fill: ${colors.idle}
+  }
+  
+  running_a: RUNNING (A) {
+    shape: circle
+    style.fill: ${colors.running}
+  }
+  
+  ready_b: READY (B) {
+    shape: circle
+    style.fill: ${colors.idle}
+  }
+  
+  running_b: RUNNING (B) {
+    shape: circle
+    style.fill: ${colors.running}
+  }
+  
+  running_a -> ready_a: Timer interrupt\n(state saved to PCB) {
+    label.near: center-right
+    style.stroke: ${colors.interrupted}
+    style.stroke-width: 3
+  }
+  
+  ready_a -> running_a: Scheduled again\n(round-robin) {
+    style.stroke-dash: 5
+  }
+  
+  ready_b -> running_b: Scheduler picks B\n(context switch) {
+    label.near: center-left
+    style.stroke: ${colors.switching}
+    style.stroke-width: 3
+  }
+  
+  running_b -> ready_b: Timer interrupt {
+    style.stroke: ${colors.interrupted}
+    style.stroke-width: 3
+  }
+}
+
+register_state: {
+  label: Register State Saved in PCB
+  
+  registers: {
+    shape: class
+    
+    eax: uint32_t
+    ebx: uint32_t
+    ecx: uint32_t
+    edx: uint32_t
+    esi: uint32_t
+    edi: uint32_t
+    ebp: uint32_t
+    esp: uint32_t "Stack pointer"
+    eip: uint32_t "Instruction pointer"
+    eflags: uint32_t "CPU flags (IF=1)"
+    cr3: uint32_t "Page directory"
+    cs: uint16_t "Code segment"
+    ds: uint16_t "Data segment"
+    ss: uint16_t "Stack segment"
+  }
+  
+  registers.style.fill: "#FAFAFA"
+}
+
+timing_equation: |md
+  
+  ┌─────────────────────────────────────────────────────────────┐
+  │                    10ms Time Slice                          │
+  ├─────────────────────────────────────────────────────────────┤
+  │  Process A runs  │ IRQ │ Scheduler │ Ctx Sw │  Process B runs │
+  │  ~9.995 ms       │~1µs│  ~2µs     │ ~2µs  │  ~9.995 ms      │
+  └─────────────────────────────────────────────────────────────┘
+  
+  Effective CPU utilization = (10ms - 5µs) / 10ms = 99.95%
+  
+| {near: bottom-center}
+
+legend: {
+  near: bottom-right
+  
+  leg_running: Running (User Mode) {style.fill: ${colors.running}}
+  leg_kernel: Kernel Mode {style.fill: ${colors.kernel}}
+  leg_switch: Context Switch {style.fill: ${colors.switching}}
+  leg_interrupt: Interrupt {style.fill: ${colors.interrupted}}
+  leg_ready: Ready/Idle {style.fill: ${colors.idle}}
+}

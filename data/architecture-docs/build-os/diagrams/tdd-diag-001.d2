@@ -1,0 +1,154 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+# Boot Sequence: BIOS to Kernel Entry
+
+shape: sequence_diagram
+
+# Participants (ordered left to right)
+BIOS: "BIOS/UEFI Firmware"
+MBR: "MBR @ 0x7C00"
+GDT: "GDT Setup"
+PM: "Protected Mode"
+Kernel: "Kernel @ 0x100000"
+
+# ============================================
+# Phase 1: BIOS POST and Handoff (~100-500ms)
+# ============================================
+
+POST: {
+  BIOS -> BIOS: "POST: Power-On Self-Test\n~50-200ms"
+  BIOS -> BIOS: "Hardware detection\n~50-100ms"
+  BIOS -> BIOS: "Search bootable device\n~10-50ms"
+}
+
+BIOS -> MBR: "Load 512 bytes to 0x7C00\n~1-5ms"
+BIOS -> MBR: "Verify boot signature 0x55AA"
+BIOS -> MBR: "JMP 0x0000:0x7C00\nCS:IP = 0x7C00"
+
+# ============================================
+# Phase 2: Real Mode Bootloader (~1-5ms)
+# ============================================
+
+MBR -> MBR: "CLI (disable interrupts)"
+MBR -> MBR: "Set segments: DS=ES=SS=0\nSP=0x7C00"
+
+A20_Enable: {
+  MBR -> MBR: "Enable A20 Line\n(Method 1: Port 0x92)"
+  MBR -> MBR: "Test A20 with wrap check"
+}
+
+Disk_Load: {
+  MBR -> MBR: "Read kernel sectors via INT 13h\nLoad to temp buffer <1MB"
+}
+
+# ============================================
+# Phase 3: GDT Configuration (~0.1-0.5ms)
+# ============================================
+
+MBR -> GDT: "Define GDT entries"
+GDT -> GDT: "Entry 0: Null (0x00)"
+GDT -> GDT: "Entry 1: Kernel Code\nbase=0, limit=4GB, RX, Ring 0"
+GDT -> GDT: "Entry 2: Kernel Data\nbase=0, limit=4GB, RW, Ring 0"
+GDT -> GDT: "Entry 3: User Code\nbase=0, limit=4GB, RX, Ring 3"
+GDT -> GDT: "Entry 4: User Data\nbase=0, limit=4GB, RW, Ring 3"
+
+MBR -> GDT: "LGDT [gdt_descriptor]\nLoad GDTR"
+
+# ============================================
+# Phase 4: Protected Mode Transition (~0.01ms)
+# ============================================
+
+MBR -> PM: "MOV EAX, CR0\nOR EAX, 1\nMOV CR0, EAX"
+PM -> PM: "CR0.PE = 1 (Protection Enable)"
+
+CRITICAL_JUMP: {
+  PM -> PM: "FAR JMP 0x08:protected_entry\n~Pipeline flush~"
+  PM -> PM: "CS = 0x08 (Kernel Code Selector)"
+}
+
+PM -> PM: "Load data segments\nDS=ES=FS=GS=SS = 0x10"
+PM -> PM: "Set kernel stack\nESP = 0x90000"
+
+# ============================================
+# Phase 5: Kernel Load and Entry (~1-5ms)
+# ============================================
+
+PM -> Kernel: "Copy kernel to 0x100000\n(1MB mark)"
+PM -> Kernel: "JMP 0x08:0x100000"
+
+Kernel_Entry: {
+  Kernel -> Kernel: "kernel_entry (assembly)"
+  Kernel -> Kernel: "Zero BSS section\n(__bss_start to __bss_end)"
+  Kernel -> Kernel: "CALL kernel_main"
+  Kernel -> Kernel: "Initialize VGA @ 0xB8000"
+  Kernel -> Kernel: "Initialize Serial @ 0x3F8"
+  Kernel -> Kernel: "kprintf(\"Welcome to MyOS!\")"
+}
+
+# ============================================
+# Annotations
+# ============================================
+
+Phase1_Note: ||md
+  **Phase 1: BIOS POST**
+  - Hardware initialization
+  - Memory detection (E820)
+  - Boot device search
+  Total: ~100-500ms
+||
+
+Phase2_Note: ||md
+  **Phase 2: Real Mode (16-bit)**
+  - 512-byte MBR constraint
+  - A20 line enablement
+  - Disk I/O via BIOS INT 13h
+  Total: ~1-5ms
+||
+
+Phase3_Note: ||md
+  **Phase 3: GDT Setup**
+  - 5 entries: null + 4 segments
+  - Flat addressing (base=0, limit=4GB)
+  - Loaded via LGDT
+  Total: ~0.1-0.5ms
+||
+
+Phase4_Note: ||md
+  **Phase 4: Protected Mode**
+  - Set CR0.PE bit
+  - **CRITICAL: Far jump flushes pipeline**
+  - Load segment selectors
+  Total: ~0.01ms
+||
+
+Phase5_Note: ||md
+  **Phase 5: Kernel Entry**
+  - Copy kernel to 1MB
+  - Zero BSS (C runtime requirement)
+  - Call kernel_main()
+  Total: ~1-5ms
+||
+
+Timing_Summary: ||md
+  ## Timing Summary
+  
+  | Phase | Duration | Notes |
+  |-------|----------|-------|
+  | BIOS POST | 100-500ms | Hardware dependent |
+  | MBR Load | 1-5ms | Disk I/O |
+  | GDT Config | 0.1-0.5ms | Memory writes |
+  | PM Transition | 0.01ms | Pipeline flush |
+  | Kernel Entry | 1-5ms | Copy + init |
+  | **Total** | **~102-510ms** | |
+  
+  Critical path: BIOS → MBR → GDT → CR0.PE → Far JMP → Kernel
+||
+
+# Style annotations for critical path
+Phase4_Note.style.fill: "#FFE4E1"
+CRITICAL_JUMP.style.fill: "#FFE4E1"

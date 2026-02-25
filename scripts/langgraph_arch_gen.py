@@ -1445,14 +1445,8 @@ def spec_syncer_node(state: GraphState):
             if yaml_ms_id == ms_id or (
                 ms_num and yaml_ms_num and ms_num == yaml_ms_num
             ):
-                # Merge: unique items, keep original order if possible
-                original = ms.get("acceptance_criteria", [])
-                if isinstance(original, str):
-                    original = [original]
-
-                # Combine and deduplicate while preserving order
-                combined = original + [c for c in new_criteria if c not in original]
-                ms["acceptance_criteria"] = combined
+                # REPLACE: Use AI-generated criteria entirely (more precise & aligned with content)
+                ms["acceptance_criteria"] = new_criteria
                 found = True
                 break
 

@@ -105,7 +105,12 @@ INSTR_TDD_PLANNER = load_instruction("tdd_planner")
 INSTR_TDD_WRITER = load_instruction("tdd_writer")
 INSTR_TDD_ARTIST = load_instruction("tdd_artist")
 INSTR_BIBLIOGRAPHER = load_instruction("bibliographer")
+INSTR_SYSTEM_DIAGRAM_ARTIST = load_instruction("system_diagram_artist")
 print(">>> Instructions loaded", flush=True)
+
+# --- FEATURE FLAGS ---
+ENABLE_SYSTEM_DIAGRAM = os.getenv("ENABLE_SYSTEM_DIAGRAM", "false").lower() == "true"
+MAX_SYSTEM_DIAGRAM_ITERATIONS = 10
 
 # --- LLM SETUP ---
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
@@ -431,7 +436,7 @@ class GraphState(TypedDict):
     current_diagram_meta: Annotated[Optional[Dict[str, Any]], replace_reducer]
     last_error: Annotated[Optional[str], replace_reducer]
     status: Annotated[str, replace_reducer]
-    phase: Annotated[str, replace_reducer]  # atlas, tdd, done
+    phase: Annotated[str, replace_reducer]  # atlas, tdd, system_diagram, done
     knowledge_map: Annotated[List[str], replace_reducer]
     advanced_contexts: Annotated[List[str], replace_reducer]
     tdd_blueprint: Annotated[Dict[str, Any], replace_reducer]
@@ -442,6 +447,10 @@ class GraphState(TypedDict):
     running_criteria: Annotated[List[Dict[str, Any]], operator.add]
     explained_concepts: Annotated[List[str], replace_reducer]
     blueprint_warnings: Annotated[List[str], replace_reducer]
+    # System Overview Diagram
+    system_diagram_d2: Annotated[Optional[str], replace_reducer]
+    system_diagram_iteration: Annotated[int, replace_reducer]
+    system_diagram_done: Annotated[bool, replace_reducer]
 
 
 # --- CHECKPOINT MANAGER ---
@@ -1292,6 +1301,198 @@ Output ONLY the corrected D2 code."""
     }
 
 
+# --- SYSTEM OVERVIEW DIAGRAM NODES ---
+def system_diagram_writer_node(state: GraphState):
+    """
+    Generate initial system overview diagram from Atlas + TDD content.
+    Uses Gemini local proxy by default for cost efficiency.
+    """
+    if not ENABLE_SYSTEM_DIAGRAM:
+        return {"phase": "done", "status": "done"}
+
+    print(f"  [Agent: System Diagram Writer] Creating initial system overview...")
+    atlas_content = state["accumulated_md"]
+    tdd_content = state["tdd_accumulated_md"]
+    project_name = state["meta"].get("name", state["project_id"])
+
+    prompt = f"""{INSTR_SYSTEM_DIAGRAM_ARTIST}
+
+--- PROJECT: {project_name} ---
+
+--- ATLAS CONTENT (Educational) ---
+{atlas_content[:50000]}
+
+--- TDD CONTENT (Technical Specs) ---
+{tdd_content[:50000]}
+
+--- D2 REFERENCE ---
+{D2_REFERENCE}
+
+TASK: Create a comprehensive system overview diagram that captures ALL major components and relationships from the content above.
+
+Output ONLY valid D2 code. No markdown fences, no explanations."""
+
+    res = safe_invoke(
+        [HumanMessage(content=prompt)],
+        node_label="System Diagram Writer",
+        provider_override="local-proxy",  # Default to Gemini
+    )
+    d2_code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
+
+    print(f"    ✓ Initial D2 generated: {len(d2_code)} chars")
+    return {
+        "system_diagram_d2": d2_code,
+        "system_diagram_iteration": 0,
+        "system_diagram_done": False,
+        "phase": "system_diagram",
+        "status": "system_diagram_refining",
+    }
+
+
+def system_diagram_refiner_node(state: GraphState):
+    """
+    Review and refine the system diagram until complete.
+    Agent decides when done based on completeness check.
+    Max 10 iterations.
+    """
+    iteration = state.get("system_diagram_iteration", 0) + 1
+    current_d2 = state.get("system_diagram_d2", "")
+    atlas_content = state["accumulated_md"]
+    tdd_content = state["tdd_accumulated_md"]
+    project_name = state["meta"].get("name", state["project_id"])
+
+    print(f"  [Agent: System Diagram Refiner] Iteration {iteration}/{MAX_SYSTEM_DIAGRAM_ITERATIONS}...")
+
+    prompt = f"""You are reviewing a D2 system diagram for completeness and accuracy.
+
+--- PROJECT: {project_name} ---
+
+--- ATLAS CONTENT (Educational) ---
+{atlas_content[:40000]}
+
+--- TDD CONTENT (Technical Specs) ---
+{tdd_content[:40000]}
+
+--- CURRENT D2 DIAGRAM ---
+```d2
+{current_d2}
+```
+
+--- D2 REFERENCE ---
+{D2_REFERENCE}
+
+YOUR TASK:
+Review the diagram against the full content above. Check:
+1. Are ALL major components from Atlas + TDD included in the diagram?
+2. Are ALL important relationships (data flows, dependencies) shown?
+3. Is the visual hierarchy clear (system > subsystem > component)?
+4. Will this D2 code compile without errors?
+5. Is the layout balanced and readable?
+
+OUTPUT JSON (no markdown, just raw JSON):
+{{
+  "done": true/false,
+  "d2": "complete updated D2 code here (only if not done)",
+  "feedback": "brief explanation of what you added/fixed or why diagram is complete"
+}}
+
+CRITICAL RULES:
+- Set done=true ONLY when diagram is COMPLETE and ACCURATE
+- If done=false, output the FULL updated D2 code (not just changes)
+- The D2 code MUST be valid and compile successfully
+- Add missing components and relationships
+- Improve layout if needed"""
+
+    invoke_args = {}
+    if LLM_PROVIDER in ["local-proxy", "mistral", "mixed-claude-gemini", "mixed-heavy-claude"]:
+        invoke_args["response_format"] = {"type": "json_object"}
+
+    res = safe_invoke(
+        [HumanMessage(content=prompt)],
+        node_label=f"System Diagram Refiner (iter {iteration})",
+        invoke_kwargs=invoke_args,
+        provider_override="local-proxy",
+    )
+
+    result = extract_json(res.content)
+    if not result:
+        # Fallback: try to extract D2 directly if JSON parse fails
+        raw = str(res.content).strip()
+        d2_match = re.search(r'"d2"\s*:\s*"((?:[^"\\]|\\.)*)"', raw, re.DOTALL)
+        if d2_match:
+            result = {
+                "done": "done" in raw.lower() and '"done":true' in raw.replace(" ", ""),
+                "d2": d2_match.group(1).replace("\\n", "\n").replace('\\"', '"'),
+                "feedback": "Extracted from malformed JSON"
+            }
+
+    if result:
+        is_done = result.get("done", False) or iteration >= MAX_SYSTEM_DIAGRAM_ITERATIONS
+        new_d2 = result.get("d2", current_d2)
+        feedback = result.get("feedback", "")
+
+        # Clean D2 code
+        new_d2 = re.sub(r"```d2\n?|```", "", new_d2).strip()
+
+        print(f"    Feedback: {feedback[:100]}...")
+        print(f"    Done: {is_done}, D2 size: {len(new_d2)} chars")
+
+        return {
+            "system_diagram_d2": new_d2,
+            "system_diagram_iteration": iteration,
+            "system_diagram_done": is_done,
+            "phase": "system_diagram" if not is_done else "done",
+            "status": "system_diagram_refining" if not is_done else "done",
+        }
+
+    # If JSON extraction failed completely, mark as done to avoid infinite loop
+    print(f"    [WARN] Failed to parse refiner output, marking as done")
+    return {
+        "system_diagram_iteration": iteration,
+        "system_diagram_done": True,
+        "phase": "done",
+        "status": "done",
+    }
+
+
+def system_diagram_renderer_node(state: GraphState):
+    """
+    Render the final system diagram to SVG.
+    """
+    d2_code = state.get("system_diagram_d2", "")
+    if not d2_code:
+        return {"phase": "done"}
+
+    proj_dir = OUTPUT_BASE / state["project_id"]
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    (proj_dir / "diagrams").mkdir(exist_ok=True)
+
+    d2_path = proj_dir / "diagrams" / "system-overview.d2"
+    # Clean icon URLs that cause D2 issues
+    clean_d2 = re.sub(r'icon:\s*"(https?://.*?)"', "", d2_code)
+    d2_path.write_text(clean_d2)
+
+    svg_path = d2_path.with_suffix(".svg")
+    res = subprocess.run(
+        ["d2", "--layout=elk", str(d2_path), str(svg_path)],
+        capture_output=True,
+        text=True,
+    )
+
+    if res.returncode == 0:
+        print(f"  ✓ System Overview Diagram rendered: {svg_path}")
+        # Add to accumulated_md
+        link = f"\n\n## System Overview\n\n![System Overview](./diagrams/system-overview.svg)\n"
+        return {
+            "accumulated_md": state["accumulated_md"] + link,
+            "phase": "done",
+            "status": "done",
+        }
+    else:
+        print(f"  [WARN] D2 render failed: {res.stderr[:200]}")
+        return {"phase": "done", "status": "done"}
+
+
 def explainer_node(state: GraphState):
     """
     Process [[EXPLAIN:id|description]] markers left by the Educator.
@@ -1494,6 +1695,9 @@ workflow.add_node("compiler", compiler_node)
 workflow.add_node("tdd_planner", tdd_planner_node)
 workflow.add_node("tdd_writer", tdd_writer_node)
 workflow.add_node("tdd_visualizer", tdd_visualizer_node)
+workflow.add_node("system_diagram_writer", system_diagram_writer_node)
+workflow.add_node("system_diagram_refiner", system_diagram_refiner_node)
+workflow.add_node("system_diagram_renderer", system_diagram_renderer_node)
 workflow.add_node("bibliographer", bibliographer_node)
 workflow.add_node("spec_syncer", spec_syncer_node)
 
@@ -1550,14 +1754,44 @@ workflow.add_conditional_edges(
 
 
 def route_tdd_visualizer(state):
-    return "compiler" if state.get("tdd_diagrams_to_generate") else "bibliographer"
+    if state.get("tdd_diagrams_to_generate"):
+        return "compiler"
+    # After TDD diagrams done, go to system diagram or bibliographer
+    if ENABLE_SYSTEM_DIAGRAM:
+        return "system_diagram_writer"
+    return "bibliographer"
 
 
 workflow.add_conditional_edges(
     "tdd_visualizer",
     route_tdd_visualizer,
-    {"compiler": "compiler", "bibliographer": "bibliographer"},
+    {
+        "compiler": "compiler",
+        "system_diagram_writer": "system_diagram_writer",
+        "bibliographer": "bibliographer",
+    },
 )
+
+
+def route_system_diagram_refiner(state):
+    """Loop until done or max iterations reached."""
+    if state.get("system_diagram_done"):
+        return "system_diagram_renderer"
+    if state.get("system_diagram_iteration", 0) >= MAX_SYSTEM_DIAGRAM_ITERATIONS:
+        return "system_diagram_renderer"
+    return "system_diagram_refiner"
+
+
+workflow.add_edge("system_diagram_writer", "system_diagram_refiner")
+workflow.add_conditional_edges(
+    "system_diagram_refiner",
+    route_system_diagram_refiner,
+    {
+        "system_diagram_refiner": "system_diagram_refiner",
+        "system_diagram_renderer": "system_diagram_renderer",
+    },
+)
+workflow.add_edge("system_diagram_renderer", "bibliographer")
 
 
 def route_compiler(state):
@@ -1615,6 +1849,9 @@ def generate_project(project_id):
         "running_criteria": [],
         "explained_concepts": [],
         "blueprint_warnings": [],
+        "system_diagram_d2": None,
+        "system_diagram_iteration": 0,
+        "system_diagram_done": False,
     }
     if checkpoint:
         print(f">>> Resuming phase: {checkpoint.get('phase')}")
@@ -1682,6 +1919,11 @@ if __name__ == "__main__":
         default=None,
         help="Output directory (default: data/architecture-docs)",
     )
+    parser.add_argument(
+        "--system-diagram",
+        action="store_true",
+        help="Enable system overview diagram generation (uses Gemini local proxy)",
+    )
     args = parser.parse_args()
 
     if args.claude_cli:
@@ -1703,6 +1945,10 @@ if __name__ == "__main__":
 
     if args.debug:
         os.environ["DEBUG_MODE"] = "true"
+    if args.system_diagram:
+        os.environ["ENABLE_SYSTEM_DIAGRAM"] = "true"
+        ENABLE_SYSTEM_DIAGRAM = True  # Already global at module level
+        print(">>> System Overview Diagram: ENABLED", flush=True)
     if args.output:
         OUTPUT_BASE = Path(args.output).resolve()
     else:

@@ -114,8 +114,8 @@ Total Projects: 205
 
 ## Domain: game-dev (10 projects)
 ----------------------------------------
+  - [beginner] tetris: Tetris
   - [intermediate] platformer: Platformer
-  - [beginner-intermediate] tetris: Tetris
   - [intermediate] topdown-shooter: Top-down Shooter
   - [advanced] build-raytracer: Build Your Own Ray Tracer
   - [advanced] ecs-arch: ECS Architecture

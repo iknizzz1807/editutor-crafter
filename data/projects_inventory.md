@@ -1,7 +1,7 @@
 # PROJECTS INVENTORY REPORT
-Total Projects: 205
+Total Projects: 210
 
-## Domain: ai-ml (20 projects)
+## Domain: ai-ml (22 projects)
 ----------------------------------------
   - [intermediate] llm-application-patterns: LLM Application Patterns
   - [intermediate] ml-model-serving: ML Model Serving API
@@ -17,12 +17,14 @@ Total Projects: 205
   - [advanced] llm-finetuning-pipeline: LLM Fine-tuning Pipeline
   - [advanced] mlops-platform: MLOps Platform
   - [advanced] reinforcement-learning-framework: Reinforcement Learning Framework
+  - [advanced] tensor-quantization-engine: Tensor Quantization Engine
   - [advanced] transformer-scratch: Transformer from Scratch
   - [expert] build-nn-framework: Build Your Own Neural Network Framework
   - [expert] distributed-training-framework: Distributed Training Framework
   - [expert] mixture-of-experts-engine: Mixture of Experts Engine
   - [expert] multimodal-ai-system: Multimodal AI System
   - [expert] neural-rendering: Neural Rendering
+  - [expert] rlhf-alignment-training: RLHF and DPO Alignment Training
 
 ## Domain: app-dev (18 projects)
 ----------------------------------------
@@ -87,7 +89,7 @@ Total Projects: 205
   - [expert] search-engine: Search Engine
   - [expert] stream-processing-engine: Stream Processing Engine
 
-## Domain: distributed (22 projects)
+## Domain: distributed (23 projects)
 ----------------------------------------
   - [beginner] rpc-basic: RPC Framework (Basic)
   - [intermediate] feature-flags: Feature Flag System
@@ -97,6 +99,7 @@ Total Projects: 205
   - [intermediate] replicated-log: Replicated Log
   - [intermediate] vector-clocks: Vector Clocks
   - [advanced] 2pc-impl: Two-Phase Commit
+  - [advanced] bgp-routing-daemon: BGP Routing Daemon
   - [advanced] container-runtime: Container Runtime
   - [advanced] distributed-cache: Distributed Cache
   - [advanced] gitops-deployment: GitOps Deployment System
@@ -114,8 +117,8 @@ Total Projects: 205
 
 ## Domain: game-dev (10 projects)
 ----------------------------------------
-  - [beginner] tetris: Tetris
   - [intermediate] platformer: Platformer
+  - [intermediate] tetris: Tetris
   - [intermediate] topdown-shooter: Top-down Shooter
   - [advanced] build-raytracer: Build Your Own Ray Tracer
   - [advanced] ecs-arch: ECS Architecture
@@ -177,8 +180,9 @@ Total Projects: 205
   - [expert] formal-verification-tool: Formal Verification Tool
   - [expert] load-testing-framework: Load Testing Framework
 
-## Domain: specialized (25 projects)
+## Domain: specialized (26 projects)
 ----------------------------------------
+  - [intermediate] packet-sniffer: Packet Sniffer
   - [advanced] bioinformatics-pipeline: Bioinformatics Pipeline
   - [advanced] build-ebpf-tracer: eBPF Tracing Tool
   - [advanced] build-text-editor: Build Your Own Text Editor
@@ -205,7 +209,7 @@ Total Projects: 205
   - [expert] slam-system: SLAM System
   - [expert] webassembly-runtime: WebAssembly Runtime
 
-## Domain: systems (22 projects)
+## Domain: systems (23 projects)
 ----------------------------------------
   - [intermediate] build-event-loop: Event Loop with epoll
   - [intermediate] build-kernel-module: Linux Kernel Module
@@ -220,6 +224,7 @@ Total Projects: 205
   - [advanced] container-basic: Container (Basic)
   - [advanced] embedded-rtos: Embedded RTOS
   - [advanced] filesystem: Filesystem Implementation
+  - [advanced] firewall-packet-filter: Firewall and Packet Filter
   - [advanced] http2-server: HTTP/2 Server
   - [advanced] reverse-proxy: Reverse Proxy
   - [advanced] virtual-memory-sim: Virtual Memory Simulator

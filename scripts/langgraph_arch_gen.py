@@ -254,35 +254,52 @@ def strip_ansi_codes(text):
     return ansi_escape.sub("", str(text))
 
 
-def log_llm_interaction(node_label, provider, messages, response_text):
+def log_llm_interaction(
+    project_id, node_label, provider, messages, response_text=None, error=None
+):
     if os.getenv("DEBUG_MODE", "false").lower() != "true":
         return
 
-    log_path = Path("llm_traces.log")
+    # Create log in the project output directory
+    if project_id:
+        log_dir = OUTPUT_BASE / project_id
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "llm_traces.log"
+    else:
+        log_path = Path("llm_traces.log")
+
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     separator = "=" * 80
 
-    input_str = ""
-    for msg in messages:
-        role = "System" if hasattr(msg, "type") and msg.type == "system" else "User"
-        # Handle both LangChain messages and simple dicts if needed
-        content = getattr(msg, "content", str(msg))
-        input_str += f"\n--- {role} ---\n{content}\n"
+    if response_text is None and error is None:
+        input_str = ""
+        for msg in messages:
+            role = "System" if hasattr(msg, "type") and msg.type == "system" else "User"
+            content = getattr(msg, "content", str(msg))
+            input_str += f"\n--- {role} ---\n{content}\n"
 
-    log_entry = f"\n{separator}\nTIMESTAMP: {timestamp}\nNODE: {node_label}\nPROVIDER: {provider}\n{separator}\nINPUT:{input_str}\n{separator}\nOUTPUT:\n{response_text}\n{separator}\n"
+        log_entry = f"\n{separator}\n[REQUEST] TIMESTAMP: {timestamp} | NODE: {node_label} | PROVIDER: {provider}\n{separator}\nINPUT:{input_str}\n{separator}\n"
+    elif error:
+        log_entry = f"\n[ERROR] TIMESTAMP: {timestamp} | NODE: {node_label}\nERROR: {error}\n{separator}\n"
+    else:
+        log_entry = f"\n[RESPONSE] TIMESTAMP: {timestamp} | NODE: {node_label}\nOUTPUT:\n{response_text}\n{separator}\n"
 
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(log_entry)
 
 
-def invoke_claude_cli(messages, node_label="unknown", max_retries=3):
-    system_prompt = ""
+def invoke_claude_cli(messages, node_label="unknown", project_id=None, max_retries=3):
+    system_prompt = "You are a specialized technical content engine. Output ONLY the requested Markdown or JSON. NO conversational text, NO preambles (e.g. 'Here is the...', 'I will now...'), NO acknowledgments. If writing a milestone, start directly with the content."
     user_prompt = ""
     for msg in messages:
         if isinstance(msg, SystemMessage):
-            system_prompt = str(msg.content)
+            system_prompt += "\n" + str(msg.content)
         elif isinstance(msg, HumanMessage):
             user_prompt = str(msg.content)
+
+    log_llm_interaction(
+        project_id, node_label, f"claude-cli ({CLAUDE_MODEL})", messages
+    )
 
     for attempt in range(max_retries):
         try:
@@ -294,16 +311,30 @@ def invoke_claude_cli(messages, node_label="unknown", max_retries=3):
                 "--dangerously-skip-permissions",
                 "--tools",
                 "",
+                "--system-prompt",
+                system_prompt,
             ]
-            if system_prompt:
-                cmd.extend(["--system-prompt", system_prompt])
             result = subprocess.run(
                 cmd, input=user_prompt, capture_output=True, text=True, timeout=1200
             )
             if result.returncode == 0:
-                content = strip_ansi_codes(result.stdout)
+                content = strip_ansi_codes(result.stdout).strip()
+
+                # Filter out obvious conversational noise from CLI tool itself
+                lines = content.split("\n")
+                filtered_lines = [
+                    l
+                    for l in lines
+                    if not l.startswith("Thinking Process:") and not l.strip() == ""
+                ]
+                content = "\n".join(filtered_lines)
+
                 log_llm_interaction(
-                    node_label, f"claude-cli ({CLAUDE_MODEL})", messages, content
+                    project_id,
+                    node_label,
+                    f"claude-cli ({CLAUDE_MODEL})",
+                    messages,
+                    response_text=content,
                 )
 
                 class MockResponse:
@@ -311,8 +342,16 @@ def invoke_claude_cli(messages, node_label="unknown", max_retries=3):
                         self.content = content
 
                 return MockResponse(content)
+
+            err_msg = f"Attempt {attempt + 1} failed with return code {result.returncode}. Stderr: {result.stderr}"
+            log_llm_interaction(
+                project_id, node_label, f"claude-cli", messages, error=err_msg
+            )
             time.sleep((attempt + 1) * 20)
-        except Exception:
+        except Exception as e:
+            log_llm_interaction(
+                project_id, node_label, f"claude-cli", messages, error=str(e)
+            )
             time.sleep((attempt + 1) * 20)
     raise Exception("Claude CLI failed")
 
@@ -320,6 +359,7 @@ def invoke_claude_cli(messages, node_label="unknown", max_retries=3):
 def safe_invoke(
     messages,
     node_label="unknown",
+    project_id=None,
     max_retries=5,
     invoke_kwargs=None,
     provider_override=None,
@@ -330,7 +370,9 @@ def safe_invoke(
         actual_provider = LLM_PROVIDER
 
     if actual_provider == "claude-cli":
-        return invoke_claude_cli(messages, node_label, max_retries)
+        return invoke_claude_cli(messages, node_label, project_id, max_retries)
+
+    log_llm_interaction(project_id, node_label, actual_provider, messages)
 
     kwargs = invoke_kwargs or {}
     if "timeout" not in kwargs:
@@ -347,11 +389,18 @@ def safe_invoke(
                 raise Exception("LLM returned None")
 
             log_llm_interaction(
-                node_label, actual_provider, messages, str(result.content)
+                project_id,
+                node_label,
+                actual_provider,
+                messages,
+                response_text=str(result.content),
             )
             return result
         except Exception as e:
             err_str = str(e).lower()
+            log_llm_interaction(
+                project_id, node_label, actual_provider, messages, error=err_str
+            )
             transient = [
                 "quota",
                 "limit",
@@ -390,7 +439,7 @@ class GraphState(TypedDict):
     tdd_current_mod_index: Annotated[int, replace_reducer]
     tdd_diagrams_to_generate: Annotated[List[Dict[str, Any]], replace_reducer]
     external_reading: Annotated[str, replace_reducer]
-    running_criteria: Annotated[List[Dict[str, Any]], replace_reducer]
+    running_criteria: Annotated[List[Dict[str, Any]], operator.add]
     explained_concepts: Annotated[List[str], replace_reducer]
     blueprint_warnings: Annotated[List[str], replace_reducer]
 
@@ -594,9 +643,32 @@ def writer_node(state: GraphState):
     ms_id = ms.get("id", f"ms-{idx}")
     ms_title = ms.get("title", f"Milestone {idx + 1}")
     marker = f"<!-- MS_ID: {ms_id} -->"
+
+    # --- QUALITY GATE / SKIP LOGIC ---
     if marker in state["accumulated_md"]:
-        print(f"  [Agent: Educator] Skipping already generated: {ms_title}")
-        return {"current_ms_index": idx + 1}
+        # Extract the content for this milestone to check its validity
+        parts = state["accumulated_md"].split(marker)
+        if len(parts) > 1:
+            ms_content = parts[1].split("<!-- END_MS -->")[0].strip()
+            # If content is substantial (>1000 chars) and doesn't look like a preamble
+            bad_starts = ["Let me", "I will", "I'll now", "I am now"]
+            if len(ms_content) > 1000 and not any(
+                ms_content.startswith(s) for s in bad_starts
+            ):
+                print(f"  [Agent: Educator] Skipping already generated: {ms_title}")
+                return {"current_ms_index": idx + 1}
+            else:
+                print(
+                    f"  [Agent: Educator] Existing content for {ms_title} is invalid or too thin. Rewriting..."
+                )
+                # Remove the failed segment from accumulated_md to allow rewrite
+                before = parts[0]
+                after = (
+                    parts[1].split("<!-- END_MS -->", 1)[1]
+                    if "<!-- END_MS -->" in parts[1]
+                    else ""
+                )
+                state["accumulated_md"] = before + after
 
     print(f"  [Agent: Educator] Writing Atlas Node: {ms_title}...")
     is_claude = LLM_PROVIDER == "mixed-heavy-claude" or LLM_PROVIDER == "claude-cli"
@@ -606,7 +678,6 @@ def writer_node(state: GraphState):
     )
     domain_profile = load_domain_profile(state["meta"])
 
-    # Include diagram_type in the listing so Educator knows what types are available
     diag_list = "\n".join(
         [
             f"- ID: {get_id(d, 'unknown')} | Title: {d.get('title', '?')} | Type: {d.get('diagram_type', 'architecture')}"
@@ -628,13 +699,9 @@ def writer_node(state: GraphState):
         else "  (none)"
     )
 
-    # Use FULL accumulated markdown as context (No sliding window as requested)
     context_md = state["accumulated_md"]
-
-    # ---- Knowledge map summary ----
     knowledge_summary = ", ".join(state.get("knowledge_map", [])[-30:])
 
-    # ---- Prerequisites for this milestone ----
     prereqs = blueprint.get("prerequisites", {})
     must_teach = prereqs.get("must_teach_first", [])
     assumed = prereqs.get("assumed_known", [])
@@ -660,14 +727,11 @@ def writer_node(state: GraphState):
     )
 
     assumed_str = ", ".join(assumed) if assumed else "(not specified)"
-
-    # ---- Already-explained concepts ----
     already_explained = ", ".join(state.get("explained_concepts", [])[-20:])
 
+    # PROMPT RE-ENGINEERING: Move instructions to the end to avoid "Lost in the Middle"
     prompt = f"""
 {domain_profile}
-
-{INSTR_EDUCATOR}
 
 --- GROUND TRUTH PROJECT SPEC (YAML) ---
 {full_yaml_meta}
@@ -684,8 +748,8 @@ Concepts already explained in earlier milestones: {already_explained or "(none y
 --- RECENT ATLAS CONTEXT ---
 {context_md}
 
---- TASK ---
-Write Atlas content for milestone: {ms_title}
+--- YOUR TASK ---
+Write the full chapter for: **{ms_title}**
 Summary: {ms.get("summary", ms.get("description", ""))}
 
 Revelation inputs from Architect:
@@ -701,8 +765,12 @@ YAML Acceptance Criteria (must be covered):
 Available diagrams (use {{{{DIAGRAM:id}}}}):
 {diag_list}
 
-When ordering dynamic diagrams, specify type: [[DYNAMIC_DIAGRAM:id|Title|type:flow_sequence|Description]]
-Prefer flow_sequence, data_walk, before_after, state_evolution over architecture.
+{INSTR_EDUCATOR}
+
+CRITICAL RULES:
+1. **NO CONVERSATION**: Output ONLY the Markdown content. Do NOT say "I will now write..." or "Let me read...". Start immediately with the content.
+2. **MINIMUM LENGTH**: This is an {state["meta"].get("difficulty", "intermediate")} project. Write at least 10,000 characters of deep technical content.
+3. **EXACT ID**: Use the exact milestone ID '{ms_id}' in your CRITERIA_JSON block.
 
 End with [[CRITERIA_JSON: {{"milestone_id": "{ms_id}", "criteria": [...]}} ]]
 """
@@ -710,55 +778,45 @@ End with [[CRITERIA_JSON: {{"milestone_id": "{ms_id}", "criteria": [...]}} ]]
     res = safe_invoke(
         [HumanMessage(content=prompt)],
         node_label=f"Educator (MS: {ms_title})",
+        project_id=state["project_id"],
         provider_override="claude-cli" if is_claude else None,
     )
     raw_content = str(res.content).strip()
 
-    # ---- Extract criteria (Safe version) ----
-    new_criteria_list = list(state.get("running_criteria", []))
+    # ---- Extract criteria ----
+    new_criteria_to_add = []
     criteria_tags = re.findall(r"\[\[CRITERIA_JSON:(.*?)\]\]", raw_content, re.DOTALL)
     for tag_content in criteria_tags:
         extracted = extract_json(tag_content)
         if extracted:
-            new_criteria_list.append(extracted)
+            new_criteria_to_add.append(extracted)
 
     content = re.sub(
         r"\[\[CRITERIA_JSON:.*?\]\]", "", raw_content, flags=re.DOTALL
     ).strip()
 
-    # ---- Dynamic diagrams with type support ----
-    new_diagrams = list(state["diagrams_to_generate"])  # copy to avoid mutation
-
-    # Match both formats:
-    #   [[DYNAMIC_DIAGRAM:id|Title|Description]]                    (old)
-    #   [[DYNAMIC_DIAGRAM:id|Title|type:flow_sequence|Description]] (new)
+    # ---- Dynamic diagrams ----
+    new_diagrams = list(state["diagrams_to_generate"])
     for match in re.finditer(
-        r"\[\[DYNAMIC_DIAGRAM:([\w-]+)\|(.*?)\|((?:type:[\w_]+\|)?)(.*?)\]\]", content
+        r"\[\[DYNAMIC_DIAGRAM:([\w-]+)\|([^|]+)(?:\|type:([\w-]+))?\|([^\]]+)\]\]",
+        content,
     ):
-        d_id = match.group(1).strip()
-        d_title = match.group(2).strip()
-        d_type_raw = match.group(3).strip()
-        d_desc = match.group(4).strip()
-
-        d_type = (
-            d_type_raw.replace("type:", "").rstrip("|")
-            if d_type_raw
-            else "architecture"
-        )
-
-        if not any(d["id"] == d_id for d in new_diagrams):
+        d_id, d_title, d_type, d_desc = match.groups()
+        if not any(d["id"] == d_id.strip() for d in new_diagrams):
             new_diagrams.append(
                 {
-                    "id": d_id,
-                    "title": d_title,
-                    "description": d_desc,
-                    "diagram_type": d_type or "architecture",
+                    "id": d_id.strip(),
+                    "title": d_title.strip(),
+                    "diagram_type": (d_type or "architecture").strip(),
+                    "description": d_desc.strip(),
                     "anchor_target": ms_id,
                 }
             )
 
     content = re.sub(
-        r"\[\[DYNAMIC_DIAGRAM:([\w-]+)\|.*?\]\]", r"{{DIAGRAM:\1}}", content
+        r"\[\[DYNAMIC_DIAGRAM:.*?\]\]",
+        lambda m: f"{{{{DIAGRAM:{m.group(1)}}}}}",
+        content,
     )
 
     full_content = f"\n\n{marker}\n{content}\n<!-- END_MS -->\n"
@@ -768,8 +826,8 @@ End with [[CRITERIA_JSON: {{"milestone_id": "{ms_id}", "criteria": [...]}} ]]
         "accumulated_md": state["accumulated_md"] + full_content,
         "current_ms_index": idx + 1,
         "diagrams_to_generate": new_diagrams,
-        "running_criteria": new_criteria_list,
-        "status": "writing",
+        "running_criteria": new_criteria_to_add,  # ONLY RETURN NEW ONES (operator.add will handle)
+        "status": "visualizing",
         "phase": "atlas",
     }
     CheckpointManager.save({**state, **new_state})
@@ -1010,8 +1068,27 @@ def tdd_writer_node(state: GraphState):
     mod_id = mod.get("id", f"mod-{idx}")
     mod_name = mod.get("name", f"Module {idx + 1}")
     marker = f"<!-- TDD_MOD_ID: {mod_id} -->"
+
+    # --- QUALITY GATE / SKIP LOGIC ---
     if marker in state["tdd_accumulated_md"]:
-        return {"tdd_current_mod_index": idx + 1}
+        parts = state["tdd_accumulated_md"].split(marker)
+        if len(parts) > 1:
+            mod_content = parts[1].split("<!-- END_TDD_MOD -->")[0].strip()
+            if len(mod_content) > 1000 and not any(
+                mod_content.startswith(s) for s in ["Let me", "I will", "I'll now"]
+            ):
+                return {"tdd_current_mod_index": idx + 1}
+            else:
+                print(
+                    f"  [Agent: TDD Writer] Content for {mod_name} is too thin. Rewriting..."
+                )
+                before = parts[0]
+                after = (
+                    parts[1].split("<!-- END_TDD_MOD -->", 1)[1]
+                    if "<!-- END_TDD_MOD -->" in parts[1]
+                    else ""
+                )
+                state["tdd_accumulated_md"] = before + after
 
     print(f"  [Agent: TDD Writer] Writing Spec: {mod_name}...")
     full_yaml_meta = yaml.dump(
@@ -1023,8 +1100,6 @@ def tdd_writer_node(state: GraphState):
     prompt = f"""
 {domain_profile}
 
-{INSTR_TDD_WRITER}
-
 --- GROUND TRUTH PROJECT SPEC (YAML) ---
 {full_yaml_meta}
 
@@ -1035,35 +1110,44 @@ def tdd_writer_node(state: GraphState):
 {state["tdd_accumulated_md"]}
 
 --- TASK ---
-Full Technical Design Specification for module: {mod_name}
+Full Technical Design Specification for module: **{mod_name}**
 Description: {mod.get("description", "")}
 Specs: {json.dumps(mod.get("specs", {}), indent=2)}
 Phases: {json.dumps(mod.get("implementation_phases", []), indent=2)}
 
 Diagrams ({{{{DIAGRAM:id}}}}): {mod_diag_ids}
 
-Quality check: Could an engineer implement this module from this spec alone?
+{INSTR_TDD_WRITER}
+
+CRITICAL RULES:
+1. **NO CONVERSATION**: Output ONLY the technical specification. Do NOT introduce yourself or the task.
+2. **BYTE-LEVEL PRECISION**: If this is an Expert project, you MUST provide tables for binary layouts, memory addresses, and register states.
+3. **MINIMUM LENGTH**: Output at least 8,000 characters of deep technical specification.
+4. **EXACT ID**: Use the exact module ID '{mod_id}' in your CRITERIA_JSON.
+
 End with [[CRITERIA_JSON: {{"module_id": "{mod_id}", "criteria": [...]}} ]]
 """
     res = safe_invoke(
-        [HumanMessage(content=prompt)], node_label=f"TDD Writer (Mod: {mod_name})"
+        [HumanMessage(content=prompt)],
+        node_label=f"TDD Writer (Mod: {mod_name})",
+        project_id=state["project_id"],
     )
     raw_content = str(res.content).strip()
 
-    # ---- Extract criteria (Safe version) ----
-    new_criteria_list = list(state.get("running_criteria", []))
+    # ---- Extract criteria ----
+    new_criteria_to_add = []
     criteria_tags = re.findall(r"\[\[CRITERIA_JSON:(.*?)\]\]", raw_content, re.DOTALL)
     for tag_content in criteria_tags:
         extracted = extract_json(tag_content)
         if extracted:
-            new_criteria_list.append(extracted)
+            new_criteria_to_add.append(extracted)
 
     content = re.sub(
         r"\[\[CRITERIA_JSON:.*?\]\]", "", raw_content, flags=re.DOTALL
     ).strip()
 
     # Dynamic diagrams
-    new_diags = state["tdd_diagrams_to_generate"]
+    new_diags = list(state["tdd_diagrams_to_generate"])
     dynamic = re.findall(r"\[\[DYNAMIC_DIAGRAM:(.*?)\|(.*?)\|(.*?)\]\]", content)
     for d_id, d_title, d_desc in dynamic:
         if not any(d["id"] == d_id.strip() for d in new_diags):
@@ -1086,7 +1170,7 @@ End with [[CRITERIA_JSON: {{"module_id": "{mod_id}", "criteria": [...]}} ]]
         "tdd_accumulated_md": state["tdd_accumulated_md"] + full_content,
         "tdd_current_mod_index": idx + 1,
         "tdd_diagrams_to_generate": new_diags,
-        "running_criteria": new_criteria_list,
+        "running_criteria": new_criteria_to_add,  # ONLY RETURN NEW ONES
         "status": "tdd_writing",
         "phase": "tdd",
     }
@@ -1341,16 +1425,26 @@ def spec_syncer_node(state: GraphState):
 
     milestones = proj_data.get("milestones", [])
     for entry in synced_data:
-        ms_id = entry.get("milestone_id") or entry.get("module_id")
+        ms_id = str(entry.get("milestone_id") or entry.get("module_id", ""))
         new_criteria = entry.get("criteria", [])
 
         if not ms_id or not new_criteria:
             continue
 
-        # Find matching milestone in YAML
+        # Find matching milestone in YAML (Fuzzy match)
         found = False
+        ms_num_match = re.search(r"(\d+)", ms_id)
+        ms_num = ms_num_match.group(1) if ms_num_match else None
+
         for ms in milestones:
-            if ms.get("id") == ms_id:
+            yaml_ms_id = str(ms.get("id", ""))
+            yaml_ms_num_match = re.search(r"(\d+)", yaml_ms_id)
+            yaml_ms_num = yaml_ms_num_match.group(1) if yaml_ms_num_match else None
+
+            # Match criteria: Exact ID match OR Matching milestone number
+            if yaml_ms_id == ms_id or (
+                ms_num and yaml_ms_num and ms_num == yaml_ms_num
+            ):
                 # Merge: unique items, keep original order if possible
                 original = ms.get("acceptance_criteria", [])
                 if isinstance(original, str):

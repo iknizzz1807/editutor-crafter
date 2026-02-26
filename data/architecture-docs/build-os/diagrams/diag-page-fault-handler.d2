@@ -1,0 +1,267 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+title: |md
+  # Page Fault Handler: CR2 Analysis
+  Exception 14 — Virtual Memory Fault Resolution
+| {near: top-center}
+cpu_exception: "CPU Exception 14" {
+  style.fill: "#FFE4E1"
+  style.stroke: "#DC143C"
+  style.font-color: "#8B0000"
+  cr2_push: |md
+    **CR2 Register** (auto-loaded by CPU)
+    Faulting Virtual Address
+    ┌────────────────────────────────┐
+    │ 31                           0 │
+    │    Virtual Address [31:0]      │
+    └────────────────────────────────┘
+    Example: 0xC0123ABC
+  |
+  stack_frame: |md
+    **Stack Frame** (pushed by CPU)
+    SS:ESP or ESP ← Stack pointer
+    ─────────────────────
+    SS             ← (if CPL change)
+    ESP            ← (if CPL change)
+    EFLAGS         ← Condition codes
+    CS             ← Code segment
+    EIP            ← Return address
+    Error Code     ← Fault metadata
+  |
+}
+error_code_decoder: "Error Code Decoder" {
+  style.fill: "#E6E6FA"
+  style.stroke: "#483D8B"
+  error_bits: |md
+    **Error Code Bit Layout**
+    ┌─────┬─────┬─────┬─────┬─────┬─────────────┐
+    │ Bit │ Val │  P  │  W  │  U  │ Meaning     │
+    ├─────┼─────┼─────┼─────┼─────┼─────────────┤
+    │  0  │  0  │  -  │  -  │  -  │ Not Present │
+    │  0  │  1  │  ✓  │  -  │  -  │ Prot. Viol. │
+    │  1  │  0  │  -  │  R  │  -  │ Read access │
+    │  1  │  1  │  -  │  W  │  -  │ Write access│
+    │  2  │  0  │  -  │  -  │  K  │ Kernel mode │
+    │  2  │  1  │  -  │  -  │  U  │ User mode   │
+    │  3  │  1  │  -  │  -  │  -  │ Reserved bit│
+    │  4  │  1  │  -  │  -  │  -  │ Instr fetch │
+    └─────┴─────┴─────┴─────┴─────┴─────────────┘
+  |
+  decode_logic: |c
+    // Decoding Logic
+    bool present = error_code & 0x01;
+    bool write   = error_code & 0x02;
+    bool user    = error_code & 0x04;
+    bool reserved = error_code & 0x08;
+    bool exec    = error_code & 0x10;
+  |
+}
+handler_entry: "ISR Entry (vector 14)" {
+  style.fill: "#F0FFF0"
+  style.stroke: "#228B22"
+  entry_code: |asm
+    ; Assembly Entry Stub
+    isr14:
+        push dword 0
+        push dword 14
+        jmp isr_common_stub
+  |
+}
+cr2_extract: "Read CR2" {
+  style.fill: "#FFFACD"
+  style.stroke: "#DAA520"
+  cr2_code: |c
+    // Extract Faulting Address
+    uint32_t fault_addr;
+    asm volatile("mov %%cr2, %0" 
+                 : "=r"(fault_addr));
+    // fault_addr now contains the
+    // virtual address that caused
+    // the page fault
+  |
+}
+addr_classify: "Address Classification" {
+  style.fill: "#E0FFFF"
+  style.stroke: "#008B8B"
+  regions: |md
+    **Memory Region Check**
+    ┌─────────────────────────────────────────┐
+    │ Address Range       │ Region │ Action   │
+    ├─────────────────────────────────────────┤
+    │ 0x00000000-0x000FFFFF │ Low   │ Reserved │
+    │ 0x00100000-0x00FFFFFF │ Kernel│ Identity │
+    │ 0xB8000-B8FFF         │ VGA   │ MMIO     │
+    │ 0x08048000-0xBFFFFFFF │ User  │ Check    │
+    │ 0xC0000000-0xFFFFFFFF │ Kern  │ Privilege│
+    └─────────────────────────────────────────┘
+  |
+}
+decision_valid: "Valid Address?" {
+  shape: diamond
+  style.fill: "#FFF8DC"
+  style.stroke: "#D2691E"
+  width: 180
+}
+decision_present: "Page Present?" {
+  shape: diamond
+  style.fill: "#FFF8DC"
+  style.stroke: "#D2691E"
+  width: 180
+}
+demand_paging: "Demand Paging" {
+  style.fill: "#98FB98"
+  style.stroke: "#2E8B57"
+  demand_code: |c
+    // Allocate and Map New Page
+    void *frame = frame_alloc();
+    paging_map_page(
+        fault_addr & ~0xFFF,
+        (uint32_t)frame,
+        PTE_PRESENT | PTE_WRITABLE | 
+        PTE_USER
+    );
+  |
+}
+protection_violation: "Protection Violation" {
+  style.fill: "#FFB6C1"
+  style.stroke: "#DC143C"
+  violation_check: |md
+    **Check Protection**
+    ┌──────────────────────────────────────┐
+    │ Violation Type     │ Action         │
+    ├──────────────────────────────────────┤
+    │ Write to RO page   │ Copy-on-Write? │
+    │ User access kernel │ SIGSEGV        │
+    │ Execute NX page    │ SIGSEGV        │
+    │ Reserved bit set   │ SIGSEGV        │
+    └──────────────────────────────────────┘
+  |
+}
+kill_process: "Terminate Process" {
+  style.fill: "#FF6347"
+  style.stroke: "#8B0000"
+  style.font-color: "white"
+  kill_code: |c
+    // Process Termination
+    kprintf("SEGFAULT: PID %d\n", 
+            current->pid);
+    sys_exit(139);
+  |
+}
+diagnostic: "Diagnostic Output" {
+  style.fill: "#2F4F4F"
+  style.font-color: "#00FF00"
+  style.font: mono
+  output: |md
+    !!! PAGE FAULT !!!
+    Faulting address: 0xC0123ABC
+    Cause: Protection violation during Write 
+           in Kernel mode
+    Page directory entry [768]: 0x00C09027
+    Page table entry [291]: 0x00000000
+    Registers:
+      EIP: 0xC0102140  EFLAGS: 0x00000206
+      EAX: 0x00000000  EBX: 0x00000001
+      ECX: 0xDEADBEEF  EDX: 0x00000000
+    System halted.
+  |
+}
+pt_lookup: "Page Table Lookup" {
+  style.fill: "#E6E6FA"
+  style.stroke: "#483D8B"
+  lookup_code: |c
+    // Extract Page Table Entries
+    uint32_t pd_idx = (addr >> 22) & 0x3FF;
+    uint32_t pt_idx = (addr >> 12) & 0x3FF;
+    uint32_t pde = current_pd->entries[pd_idx];
+    if (pde & PTE_PRESENT) {
+        page_table_t *pt = 
+            (page_table_t *)(pde & 0xFFFFF000);
+        uint32_t pte = pt->entries[pt_idx];
+    }
+  |
+}
+resume: "Resume Execution" {
+  style.fill: "#90EE90"
+  style.stroke: "#228B22"
+  resume_code: |md
+    **iret — Retry Faulting Instruction**
+    CPU restores:
+    - EIP, CS, EFLAGS from stack
+    - ESP, SS (if privilege change)
+    Instruction re-executes with
+    new page mapping in place
+  |
+}
+cpu_exception -> handler_entry: "Exception 14 (interrupt)" {
+  style.stroke: "#DC143C"
+  style.stroke-width: 3
+}
+handler_entry -> cr2_extract: "Extract fault address" {
+  style.stroke: "#228B22"
+}
+cr2_extract -> error_code_decoder: "Decode error bits" {
+  style.stroke: "#DAA520"
+}
+error_code_decoder -> addr_classify: "Classify address" {
+  style.stroke: "#483D8B"
+}
+addr_classify -> decision_valid: "Check" {
+  style.stroke: "#008B8B"
+}
+decision_valid -> pt_lookup: "Valid region" {
+  style.stroke: "#228B22"
+}
+decision_valid -> kill_process: "Invalid address" {
+  style.stroke: "#DC143C"
+}
+pt_lookup -> decision_present: "Check PDE/PTE" {
+  style.stroke: "#483D8B"
+}
+decision_present -> demand_paging: "Page not present" {
+  style.stroke: "#228B22"
+}
+decision_present -> protection_violation: "Page present" {
+  style.stroke: "#DAA520"
+}
+demand_paging -> resume: "Page mapped" {
+  style.stroke: "#228B22"
+  style.animated: true
+}
+protection_violation -> kill_process: "Access violation" {
+  style.stroke: "#DC143C"
+}
+protection_violation -> resume: "Copy-on-Write" {
+  style.stroke: "#228B22"
+}
+diagnostic -> kill_process: "Log error" {
+  style.stroke: "#696969"
+  style.stroke-dash: 3
+}
+legend: |md
+  **Color Semantics**
+  Red = Error/Fatal path
+  Green = Success/Recovery path  
+  Yellow = Decision/Check
+  Purple = Metadata/Decode
+  Gray = Diagnostic/Log
+| {
+  near: bottom-right
+  style.fill: "#F5F5F5"
+  style.stroke: "#696969"
+  style.stroke-dash: 3
+}
+scale: |md
+  **Memory Scale**
+  - Page: 4KB (0x1000)
+  - Page Table: 1024 entries = 4MB coverage
+  - Page Directory: 1024 PTs = 4GB coverage
+| {
+  near: bottom-left
+  style.fill: "#F5F5F5"
+  style.stroke: "#696969"
+}

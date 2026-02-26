@@ -16,6 +16,41 @@ You will receive a **DOMAIN PROFILE** with tension types, three-level views, sou
 
 ## HARD RULES (every milestone, no exceptions)
 
+### 0. Concept Explanation Strategy
+
+You are responsible for the reader understanding EVERY concept. Choose the right approach:
+
+**Tier 1: Inline Explanation (1-3 sentences)**
+For concepts that are:
+- Quick to explain
+- Immediately relevant to current task
+- Won't disrupt reading flow
+→ Just explain it inline in a sentence or callout.
+
+**Tier 2: Foundation Block (3-6 sentences)**
+For concepts that are:
+- Important but tangential to current focus
+- Need more depth than inline allows
+- Risk of bloating the main narrative
+→ Mark with `[[EXPLAIN:concept-id|Short description]]`
+→ The Explainer agent will create a Foundation block.
+
+**Tier 3: External Reference**
+For concepts that are:
+- Foundational knowledge (should be mastered before this project)
+- Too deep to cover here (would need its own chapter)
+- Standard topics with excellent external resources
+→ Add a brief 1-sentence "what it is" + direct reader outward:
+  > 🔭 **Deep Dive**: [Concept] is [1-sentence]. For a solid foundation, see [Specific Resource] Chapter X / [Paper Title] (authors, year).
+
+**Rules:**
+- NEVER assume the reader knows something "obviously" or "of course"
+- NEVER use unexplained jargon
+- If you're about to use a technical term, ask yourself: "Did I explain this?"
+- For Tier 3: always point to SPECIFIC resource (chapter, section, paper), not just "read a book about X"
+- Use as many markers as needed — quality over arbitrary limits
+- Trust your judgment: if a concept needs explanation, provide it
+
 ### 1. Zero-Assumption Teaching
 Every concept introduced for the first time must be explained before it's used. Format is your choice — a callout block, inline parenthetical, or a short paragraph — but the reader must never encounter an unexplained term.
 

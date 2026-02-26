@@ -1,0 +1,174 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+  colors: {
+    safe: "#4CAF50"
+    danger: "#F44336"
+    warning: "#FF9800"
+    info: "#2196F3"
+    neutral: "#9E9E9E"
+    critical: "#D32F2F"
+  }
+}
+title: |md
+  # Rollback Journal: Write Sequence
+  Transaction Lifecycle with Crash Recovery Points
+| {near: top-center}
+states: {
+  shape: sequence_diagram
+  AUTOCOMMIT: "AUTOCOMMIT\n(Initial State)"
+  STARTED: "STARTED\n(BEGIN executed)"
+  DIRTY: "DIRTY\n(Journal created)"
+  COMMITTING: "COMMITTING\n(Write phase)"
+  COMMITTED: "COMMITTED\n(Durable)"
+  CRASH_1: "CRASH POINT A\nJournal not synced" {
+    style.fill: ${colors.danger}
+    style.stroke: ${colors.critical}
+  }
+  CRASH_2: "CRASH POINT B\nJournal synced, DB not" {
+    style.fill: ${colors.warning}
+    style.stroke: ${colors.warning}
+  }
+  CRASH_3: "CRASH POINT C\nDB synced" {
+    style.fill: ${colors.safe}
+    style.stroke: ${colors.safe}
+  }
+}
+flow: {
+  direction: right
+  step1: BEGIN {
+    style.fill: ${colors.info}
+    style.font-color: white
+  }
+  step2: "Write Original\nPages to Journal" {
+    style.fill: "#E3F2FD"
+  }
+  step3: "fsync(journal)" {
+    style.fill: ${colors.critical}
+    style.font-color: white
+    style.bold: true
+  }
+  step4: "Modify Pages\nin Buffer Pool" {
+    style.fill: "#FFF3E0"
+  }
+  step5: "Flush Dirty Pages\nto Database" {
+    style.fill: "#E8F5E9"
+  }
+  step6: "fsync(database)" {
+    style.fill: ${colors.critical}
+    style.font-color: white
+    style.bold: true
+  }
+  step7: "Delete Journal" {
+    style.fill: ${colors.safe}
+    style.font-color: white
+  }
+  step1 -> step2: "First write\ntriggers journal"
+  step2 -> step3: "CRITICAL:\nJournal durability"
+  step3 -> step4: "Safe to modify\nafter sync"
+  step4 -> step5: "COMMIT\nbegins"
+  step5 -> step6: "CRITICAL:\nDB durability"
+  step6 -> step7: "Transaction\ncommitted"
+}
+crash_analysis: {
+  direction: right
+  crash_a: {
+    label: "CRASH POINT A\nBefore fsync(journal)"
+    style.fill: "#FFEBEE"
+    style.stroke: ${colors.danger}
+    state: "Journal may not\nbe on disk"
+    recovery: "Database unchanged\nNo recovery needed\nOR incomplete journal\nis detected & deleted"
+    result: "SAFE"
+    result.style.fill: ${colors.safe}
+    result.style.font-color: white
+  }
+  crash_b: {
+    label: "CRASH POINT B\nAfter fsync(journal)\nBefore fsync(database)"
+    style.fill: "#FFF3E0"
+    style.stroke: ${colors.warning}
+    state: "Journal on disk\nDatabase partially\nmodified"
+    recovery: "RECOVERY:\nRestore pages from\njournal to database"
+    result: "ROLLBACK"
+    result.style.fill: ${colors.info}
+    result.style.font-color: white
+  }
+  crash_c: {
+    label: "CRASH POINT C\nAfter fsync(database)\nBefore journal delete"
+    style.fill: "#E8F5E9"
+    style.stroke: ${colors.safe}
+    state: "Both journal\nand database\non disk"
+    recovery: "RECOVERY:\nJournal exists but\ndatabase has changes\nDelete journal"
+    result: "COMMITTED"
+    result.style.fill: ${colors.safe}
+    result.style.font-color: white
+  }
+}
+ordering_rules: {
+  label: |md
+    ## CRITICAL ORDERING RULES
+    
+    ┌─────────────────────────────────────────────────────┐
+    │  1. Journal write MUST complete BEFORE DB modify    │
+    │  2. fsync(journal) BEFORE ANY database writes       │
+    │  3. fsync(database) BEFORE journal deletion         │
+    │                                                     │
+    │  WRONG ORDER = CORRUPTION                           │
+    │  If DB written before journal synced:               │
+    │    Crash → Modified DB + No journal → CORRUPTED     │
+    └─────────────────────────────────────────────────────┘
+    
+  |
+  shape: rectangle
+  style.fill: "#FAFAFA"
+  style.stroke: ${colors.critical}
+  style.stroke-width: 2
+}
+recovery_logic: {
+  label: |md
+    ## Recovery on Startup
+    
+    if (journal_exists()) {
+        if (journal_is_valid()) {
+            // Hot journal - crash during transaction
+            restore_all_pages_from_journal();
+            sync_database();
+            delete_journal();
+        } else {
+            // Corrupted journal
+            delete_journal();
+        }
+    }
+    // No journal = clean state
+    
+  |
+  shape: rectangle
+  style.fill: "#F5F5F5"
+  style.stroke: ${colors.info}
+}
+legend: {
+  direction: right
+  safe_label: "SAFE - No data loss" {
+    style.fill: ${colors.safe}
+    style.font-color: white
+  }
+  warn_label: "RECOVERABLE - Rollback" {
+    style.fill: ${colors.warning}
+    style.font-color: white
+  }
+  danger_label: "DANGER ZONE - Ordering critical" {
+    style.fill: ${colors.danger}
+    style.font-color: white
+  }
+  critical_label: "fsync() - Durability barrier" {
+    style.fill: ${colors.critical}
+    style.font-color: white
+    style.bold: true
+  }
+}
+states -> flow: "Lifecycle"
+flow -> crash_analysis: "Crash scenarios"
+crash_analysis -> ordering_rules: "Rules"
+ordering_rules -> recovery_logic: "Recovery"
+recovery_logic -> legend: "Legend"

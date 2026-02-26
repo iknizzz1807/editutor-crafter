@@ -1,0 +1,269 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+title: |md
+  # Ring 3 → Ring 0: Privilege Transition Mechanics
+  ## INT Instruction from User Mode
+| {near: top-center}
+direction: right
+classes: {
+  user_box: {
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  kernel_box: {
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1565C0"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  cpu_box: {
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#E65100"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  hardware_box: {
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  stack_box: {
+    style: {
+      fill: "#FAFAFA"
+      stroke: "#424242"
+      stroke-width: 2
+      border-radius: 4
+      font: mono
+    }
+  }
+  data_flow: {
+    style: {
+      stroke: "#1976D2"
+      stroke-width: 2
+      animated: true
+    }
+  }
+  control_flow: {
+    style: {
+      stroke: "#D32F2F"
+      stroke-width: 2
+    }
+  }
+  check_flow: {
+    style: {
+      stroke: "#F57C00"
+      stroke-width: 2
+      stroke-dash: 4
+    }
+  }
+}
+user_mode: User Mode (Ring 3) {
+  class: user_box
+  user_code: "User Process" {
+    user_instruction: ||md
+      **INT 0x80 instruction**
+      mov eax, 2      ; syscall #
+      mov ebx, 1      ; arg1
+      int 0x80        ; trap to kernel
+    ||
+  }
+  user_stack_mem: User Stack {
+    class: stack_box
+    shape: rectangle
+    width: 180
+    user_stack_layout: ||md
+      ┌─────────────────┐ ← ESP (user)
+      │  local vars     │
+      │  saved regs     │
+      │  return addr    │
+      │       ↓         │
+      └─────────────────┘
+      (grows downward)
+    ||
+  }
+}
+cpu_hardware: CPU Hardware Actions {
+  class: cpu_box
+  step1: "Step 1: DPL Check" {
+    check_gate: ||md
+      CPU reads IDT entry 0x80
+      **Gate Descriptor:**
+      - DPL (bits 45-46) = 3 ✓
+      - Present bit = 1 ✓
+      - Type = 0xE (32-bit trap gate)
+      *DPL ≥ CPL allows transition*
+    ||
+  }
+  step2: "Step 2: TSS Read" {
+    tss_access: ||md
+      CPU reads Task State Segment:
+      **TSS at GDT selector 0x28:**
+      SS0  = 0x10 (kernel data)
+      ESP0 = 0xC0100F00 (kernel stack top)
+      *CPU needs valid kernel stack*
+    ||
+  }
+  step3: "Step 3: Stack Switch" {
+    stack_transition: ||md
+      CPU switches stacks:
+      1. Saves current SS:ESP (user)
+      2. Loads SS0:ESP0 from TSS
+      3. Now on kernel stack!
+      *Old stack pointer preserved*
+    ||
+  }
+  step4: "Step 4: Push State" {
+    push_sequence: ||md
+      CPU automatically pushes:
+      SS    ← user stack segment
+      ESP   ← user stack pointer
+      EFLAGS ← processor flags
+      CS    ← user code segment
+      EIP   ← return address
+      *5 values, 20 bytes total*
+    ||
+  }
+}
+kernel_stack: Kernel Stack (Ring 0) {
+  class: stack_box
+  shape: rectangle
+  width: 220
+  kernel_stack_after: ||md
+    After CPU automatic push:
+    ┌─────────────────┐ ← ESP0 (kernel)
+    │  EIP (ret addr) │ +0x00
+    │  CS  = 0x1B     │ +0x04
+    │  EFLAGS = 0x202 │ +0x08
+    │  ESP (user)     │ +0x0C
+    │  SS  = 0x23     │ +0x10 ← TSS.ESP0
+    └─────────────────┘
+    *Handler can access user regs*
+  ||
+  kernel_stack_handler: ||md
+    After handler pusha + segments:
+    ┌─────────────────┐
+    │  GS, FS, ES, DS │ +0x00
+    │  EAX..EDI (8)   │ +0x10
+    │  int_no, err    │ +0x30
+    │  EIP, CS, EFLAGS│ +0x38
+    │  ESP, SS (user) │ +0x44
+    └─────────────────┘
+  ||
+}
+kernel_mode: Kernel Mode (Ring 0) {
+  class: kernel_box
+  kernel_handler: "ISR Handler" {
+    handler_code: ||md
+      **Handler entry:**
+      push ds, es, fs, gs  ; save segments
+      mov ax, 0x10         ; kernel DS
+      mov ds, ax
+      pusha                ; save GP regs
+      ; C handler call
+      push edx, ecx, ebx, eax
+      call syscall_handler
+      add esp, 16
+      popa                 ; restore GP
+      pop gs, fs, es, ds   ; restore segs
+      iret                 ; return to user
+    ||
+  }
+  tss_structure: TSS Structure {
+    class: hardware_box
+    tss_fields: ||md
+      **Task State Segment:**
+      | Offset | Field | Value      |
+      |--------|-------|------------|
+      | +4     | ESP0  | 0xC0100F00 |
+      | +8     | SS0   | 0x10       |
+      | ...    | ...   | ...        |
+      *ESP0 updated every context switch*
+    ||
+  }
+}
+return_path: "IRET: Return to User" {
+  class: kernel_box
+  iret_actions: ||md
+    **IRET instruction:**
+    1. Pop EIP, CS, EFLAGS from stack
+    2. Check CS.RPL (was 3 = user mode)
+    3. Pop ESP, SS (restore user stack)
+    4. Load CS:EIP, SS:ESP
+    5. Resume at CPL=3
+    *Privilege transition reversed*
+  ||
+}
+idt_gate: IDT Gate Descriptor {
+  class: hardware_box
+  near: user_mode
+  gate_bits: ||md
+    **IDT Entry 0x80 (8 bytes):**
+    ┌─────────────────────────────┐
+    │ Offset[15:0]    │ Selector   │
+    ├─────────────────┼───────────┤
+    │ Reserved:0      │Attr:0xEF  │
+    ├─────────────────┴───────────┤
+    │ Offset[31:16]               │
+    └─────────────────────────────┘
+    Attr 0xEF = 11101111b:
+    - P=1 (present)
+    - DPL=11 (ring 3 can call)
+    - Type=1111 (trap gate)
+  ||
+}
+data_structures: Key Data Structures {
+  class: hardware_box
+  gdt_entries: ||md
+    **GDT Entries (selectors):**
+    | Index | Sel  | Type | DPL |
+    |-------|------|------|-----|
+    | 1     | 0x08 | Code | 0   |
+    | 2     | 0x10 | Data | 0   |
+    | 3     | 0x1B | Code | 3   |
+    | 4     | 0x23 | Data | 3   |
+    | 5     | 0x28 | TSS  | 0   |
+    *RPL bits in selector matter!*
+  ||
+}
+user_mode.user_code -> cpu_hardware.step1: "1. Execute INT 0x80" {class: control_flow}
+cpu_hardware.step1 -> cpu_hardware.step2: "2. DPL check passes" {class: check_flow}
+cpu_hardware.step2 -> cpu_hardware.step3: "3. Read TSS" {class: data_flow}
+cpu_hardware.step3 -> cpu_hardware.step4: "4. Switch stack" {class: control_flow}
+cpu_hardware.step4 -> kernel_stack.kernel_stack_after: "5. Push user state" {class: data_flow}
+kernel_stack.kernel_stack_after -> kernel_mode.kernel_handler: "6. Jump to handler" {class: control_flow}
+kernel_mode.kernel_handler -> kernel_stack.kernel_stack_handler: "7. Save more regs" {class: data_flow}
+kernel_mode.kernel_handler -> return_path: "8. IRET instruction" {class: control_flow}
+return_path -> user_mode.user_code: "9. Resume at EIP+2" {
+  class: control_flow
+  style.stroke: "#388E3C"
+}
+idt_gate -> cpu_hardware.step1: "CPU reads gate" {style.stroke-dash: 3}
+kernel_mode.tss_structure -> cpu_hardware.step2: "CPU reads ESP0:SS0" {style.stroke-dash: 3}
+user_mode.user_stack_mem -> cpu_hardware.step3: "Save ESP" {style.stroke: "#9E9E9E"; style.stroke-dash: 2}
+kernel_stack.kernel_stack_after -> cpu_hardware.step3: "Load ESP0" {style.stroke: "#9E9E9E"; style.stroke-dash: 2}
+legend: ||md
+  **Legend:**
+  - Red arrows: Control flow
+  - Blue arrows: Data flow  
+  - Orange dashed: Validation checks
+  - Green arrow: Return to user
+|| {
+  near: bottom-center
+  shape: text
+  style.font-size: 14
+}

@@ -1,0 +1,345 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+title: |md
+  # Real Mode → Protected Mode Transition State Machine
+  ## Critical Steps, CPU State, and Failure Modes
+| {near: top-center}
+direction: right
+classes: {
+  state_box: {
+    shape: rectangle
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  danger_state: {
+    shape: rectangle
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#C62828"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  transition: {
+    style: {
+      stroke: "#1565C0"
+      stroke-width: 2
+      font-size: 14
+    }
+  }
+  failure: {
+    style: {
+      stroke: "#C62828"
+      stroke-width: 2
+      stroke-dash: 4
+      font-size: 12
+    }
+  }
+  register_box: {
+    style: {
+      fill: "#FFF8E1"
+      stroke: "#F9A825"
+      font: mono
+      font-size: 12
+    }
+  }
+  note: {
+    shape: text
+    style: {
+      font-size: 11
+      font-color: "#616161"
+    }
+  }
+}
+states: {
+  s0: "STATE 0: Real Mode\n16-bit, BIOS Active" {
+    class: state_box
+    regs0: |md
+      **CPU State:**
+      - CS: 0x0000
+      - IP: 0x7C00
+      - CR0.PE: 0
+      - IF: 1 (interrupts on)
+      - Mode: **REAL (16-bit)**
+      - Addressing: segment:offset
+    | {class: register_box}
+  }
+  s1: "STATE 1: CLI Executed\nInterrupts Disabled" {
+    class: state_box
+    regs1: |md
+      **CPU State:**
+      - IF: 0
+      - IVT still at 0x0000
+      - No IRQs will fire
+    | {class: register_box}
+  }
+  s2: "STATE 2: LGDT Complete\nGDT Loaded into GDTR" {
+    class: state_box
+    regs2: |md
+      **CPU State:**
+      - GDTR: loaded
+      - GDT at known addr
+      - Still Real Mode!
+      - Segments still real-mode
+    | {class: register_box}
+  }
+  s3: "STATE 3: CR0.PE = 1\n**DANGER ZONE**" {
+    class: danger_state
+    regs3: |md
+      **CPU State:**
+      - CR0.PE: 1
+      - CS still has 0x0000
+      - **Pipeline has 16-bit instr**
+      - CPU "confused" state
+      - Technically protected
+      - But segments invalid!
+    | {
+      class: register_box
+      style.fill: "#FFCDD2"
+    }
+  }
+  s4: "STATE 4: Far Jump Done\nPipeline Flushed" {
+    class: state_box
+    regs4: |md
+      **CPU State:**
+      - CS: 0x08 (kernel code)
+      - Pipeline: 32-bit mode
+      - EIP: correct target
+      - DS/ES/SS: still old!
+    | {class: register_box}
+  }
+  s5: "STATE 5: Segments Reloaded\nProtected Mode Complete" {
+    class: state_box
+    style: {
+      fill: "#C8E6C9"
+      stroke: "#1B5E20"
+    }
+    regs5: |md
+      **CPU State:**
+      - CS: 0x08
+      - DS/ES/FS/GS: 0x10
+      - SS: 0x10
+      - ESP: valid stack
+      - Mode: **PROTECTED (32-bit)**
+      - Full 4GB addressable
+    | {
+      class: register_box
+      style.fill: "#DCEDC8"
+    }
+  }
+}
+states.s0 -> states.s1: "1. cli\nClear IF flag" {
+  class: transition
+}
+states.s1 -> states.s2: "2. lgdt\nLoad GDT register\n(GDTR.limit, GDTR.base)" {
+  class: transition
+}
+states.s2 -> states.s3: "3. Set PE bit\nCR0 |= 0x00000001" {
+  class: transition
+  style.stroke: "#C62828"
+}
+states.s3 -> states.s4: "4. FAR JUMP\nLoad CS=0x08\nFlush pipeline" {
+  class: transition
+  style.stroke: "#2E7D32"
+}
+states.s4 -> states.s5: "5. Reload segments\nDS=ES=FS=GS=SS=0x10\nmov esp, 0x90000" {
+  class: transition
+}
+failures: {
+  f_cli: "**TRIPLE FAULT**\nCPU Reset" {
+    class: danger_state
+  }
+  f_gdt: "**#GP (General Protection)**\nFault vector 13" {
+    class: danger_state
+  }
+  f_pipeline: "**UNDEFINED BEHAVIOR**\nIllegal opcode or #GP" {
+    class: danger_state
+  }
+  f_segments: "**#GP or #SS**\nSegment limit violation" {
+    class: danger_state
+  }
+}
+states.s1 -> failures.f_cli: "IRQ during transition\nIVT garbage\nTriple Fault" {
+  class: failure
+}
+states.s2 -> failures.f_gdt: "Bad GDTR or\ndescriptors\n#GP on first access" {
+  class: failure
+}
+states.s3 -> failures.f_pipeline: "Skip far jump?\nCPU decodes garbage\n16-bit instr as 32-bit\nImmediate crash" {
+  class: failure
+}
+states.s4 -> failures.f_segments: "DS still 0x0000?\nLimit = 64KB\nAny access >64KB = #GP" {
+  class: failure
+}
+critical_sequence: {
+  near: bottom-center
+  title: "The Deadly Gap (State 3)" {
+    shape: text
+    style.bold: true
+  }
+  gap_detail: |md
+    mov eax, cr0
+    or eax, 1           ; PE set here
+    mov cr0, eax        ; CPU now in protected mode
+    CRITICAL: Pipeline still has 16-bit instructions
+    CS still = real-mode value (0x0000)
+    Any interrupt = DEATH (no IDT yet)
+    jmp 0x08:pm_entry   ; FAR JUMP is MANDATORY
+    This single instruction:
+    1. Loads CS with selector 0x08
+    2. Flushes the prefetch queue
+    3. Forces 32-bit decoding
+    4. Is the ONLY way to survive
+  | {
+    shape: rectangle
+    style.fill: "#FFF3E0"
+    style.stroke: "#E65100"
+  }
+}
+gdt_requirements: {
+  near: top-right
+  title: "GDT Must Contain (Before lgdt)" {
+    shape: text
+    style.bold: true
+  }
+  gdt_entries: {
+    shape: sql_table
+    Index: int {constraint: primary_key}
+    Selector: string
+    Type: string
+    Base: string
+    Limit: string
+    null_entry: "0"
+    code_entry: "0x08"
+    data_entry: "0x10"
+    user_code: "0x18"
+    user_data: "0x20"
+  }
+  note1: "Selector = (Index x 8) | RPL" {class: note}
+  note2: "0x08 = Index 1, RPL=0 (kernel)" {class: note}
+  note3: "0x1B = Index 3, RPL=3 (user)" {class: note}
+}
+code_sequence: {
+  near: bottom-left
+  title: "Correct Transition Sequence" {
+    shape: text
+    style.bold: true
+  }
+  code: |asm
+    ; STEP 1: Disable interrupts (CRITICAL!)
+    cli                     ; IF = 0
+    ; STEP 2: Load GDT
+    lgdt [gdt_descriptor]   ; GDTR = limit + base
+    ; STEP 3: Enable protected mode
+    mov eax, cr0
+    or eax, 1               ; Set PE bit
+    mov cr0, eax            ; NOW IN PROTECTED MODE
+    ; STEP 4: Far jump (MANDATORY)
+    jmp 0x08:protected_mode_entry
+    ; STEP 5: Now in 32-bit protected mode
+    [BITS 32]
+    protected_mode_entry:
+        mov ax, 0x10
+        mov ds, ax
+        mov es, ax
+        mov fs, ax
+        mov gs, ax
+        mov ss, ax
+        mov esp, 0x90000
+        jmp kernel_main
+  | {
+    shape: rectangle
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    style.font: mono
+  }
+}
+why_far_jump: {
+  near: center-right
+  title: "Why Far Jump is Mandatory" {
+    shape: text
+    style.bold: true
+    style.font-size: 16
+  }
+  explanation: |md
+    **The CPU Pipeline Problem:**
+    After `mov cr0, eax`, the CPU is in protected mode, but:
+    1. **Pipeline contains pre-fetched 16-bit instructions**
+       - These were fetched BEFORE the mode switch
+       - They're decoded as 16-bit
+       - But CPU now expects 32-bit decoding
+    2. **CS still has real-mode value (0x0000)**
+       - In protected mode, this is an INDEX
+       - Index 0 = Null descriptor = #GP
+       - CPU doesn't know segment limits yet
+    3. **Far jump does TWO things:**
+       - Loads CS with valid selector (0x08)
+       - **Flushes the pipeline**
+       - Forces re-fetch at new CS:EIP
+       - New fetch is in 32-bit mode
+    **Near jump is NOT enough:**
+       - Doesn't change CS
+       - Doesn't flush pipeline
+       - CPU continues with garbage
+  | {
+    shape: rectangle
+    style.fill: "#FCE4EC"
+    style.stroke: "#AD1457"
+  }
+}
+timing: {
+  near: top-left
+  title: "Timing and Atomicity" {
+    shape: text
+    style.bold: true
+  }
+  details: |md
+    | Step | Cycles | Interruptible? |
+    |------|--------|----------------|
+    | cli | 1-5 | No (atomic) |
+    | lgdt | 10-20 | No |
+    | mov cr0 | 10-30 | No |
+    | far jmp | 50-100+ | No (serializing) |
+    | mov seg | 5-10 each | No |
+    **Total transition: ~100-200 cycles (~50-100 ns)**
+    The far jump is a "serializing instruction":
+    - Drains the pipeline completely
+    - All previous operations complete
+    - No speculation past this point
+  | {
+    shape: rectangle
+    style.fill: "#E8EAF6"
+    style.stroke: "#3F51B5"
+  }
+}
+legend: {
+  near: bottom-right
+  title: "Legend" {
+    shape: text
+    style.bold: true
+  }
+  green: "Safe State" {
+    class: state_box
+    width: 80
+  }
+  red: "Danger State" {
+    class: danger_state
+    width: 80
+  }
+  blue_arrow: "Correct Flow" {
+    shape: text
+    style.font-color: "#1565C0"
+  }
+  red_arrow: "Failure Path" {
+    shape: text
+    style.font-color: "#C62828"
+  }
+}

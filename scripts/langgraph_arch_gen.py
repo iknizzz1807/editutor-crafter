@@ -294,7 +294,8 @@ def log_llm_interaction(
         f.write(log_entry)
 
 
-def invoke_claude_cli(messages, node_label="unknown", project_id=None, max_retries=3):
+def invoke_claude_cli(messages, node_label="unknown", project_id=None, max_retries=3, model_override=None):
+    model = model_override or CLAUDE_MODEL
     system_prompt = "You are a specialized technical content engine. Output ONLY the requested Markdown or JSON. NO conversational text, NO preambles (e.g. 'Here is the...', 'I will now...'), NO acknowledgments. If writing a milestone, start directly with the content."
     user_prompt = ""
     for msg in messages:
@@ -304,7 +305,7 @@ def invoke_claude_cli(messages, node_label="unknown", project_id=None, max_retri
             user_prompt = str(msg.content)
 
     log_llm_interaction(
-        project_id, node_label, f"claude-cli ({CLAUDE_MODEL})", messages
+        project_id, node_label, f"claude-cli ({model})", messages
     )
 
     for attempt in range(max_retries):
@@ -312,8 +313,7 @@ def invoke_claude_cli(messages, node_label="unknown", project_id=None, max_retri
             cmd = [
                 "claude",
                 "-p",
-                "--model",
-                CLAUDE_MODEL,
+                f"--model={model}",
                 "--dangerously-skip-permissions",
                 "--tools",
                 "",
@@ -338,7 +338,7 @@ def invoke_claude_cli(messages, node_label="unknown", project_id=None, max_retri
                 log_llm_interaction(
                     project_id,
                     node_label,
-                    f"claude-cli ({CLAUDE_MODEL})",
+                    f"claude-cli ({model})",
                     messages,
                     response_text=content,
                 )
@@ -369,6 +369,7 @@ def safe_invoke(
     max_retries=5,
     invoke_kwargs=None,
     provider_override=None,
+    model_override=None,
 ):
     actual_provider = provider_override or LLM_PROVIDER
 
@@ -376,7 +377,7 @@ def safe_invoke(
         actual_provider = LLM_PROVIDER
 
     if actual_provider == "claude-cli":
-        return invoke_claude_cli(messages, node_label, project_id, max_retries)
+        return invoke_claude_cli(messages, node_label, project_id, max_retries, model_override=model_override)
 
     log_llm_interaction(project_id, node_label, actual_provider, messages)
 
@@ -438,8 +439,7 @@ class GraphState(TypedDict):
     last_error: Annotated[Optional[str], replace_reducer]
     status: Annotated[str, replace_reducer]
     phase: Annotated[str, replace_reducer]  # atlas, tdd, system_diagram, done
-    knowledge_map: Annotated[List[str], replace_reducer]
-    advanced_contexts: Annotated[List[str], replace_reducer]
+
     tdd_blueprint: Annotated[Dict[str, Any], replace_reducer]
     tdd_accumulated_md: Annotated[str, replace_reducer]
     tdd_current_mod_index: Annotated[int, replace_reducer]
@@ -525,6 +525,7 @@ For each milestone: misconception, reveal, cascade (3-5 connections, 1+ cross-do
         provider_override=(
             "claude-cli" if LLM_PROVIDER and LLM_PROVIDER.startswith("mixed") else None
         ),
+        model_override="opus[1m]",
     )
     print(f"  [Agent: Architect] Initial response received: {len(res.content)} chars")
     blueprint = extract_json(res.content)
@@ -618,30 +619,6 @@ def _validate_blueprint(blueprint, meta):
     return warnings
 
 
-def knowledge_mapper_node(state: GraphState):
-    print(f"  [Agent: Knowledge Mapper] Updating map...", flush=True)
-
-    # Robust extraction: find the content of the actual last milestone
-    full_md = state["accumulated_md"]
-    segments = full_md.split("<!-- END_MS -->")
-    # The last segment is usually empty or whitespace after the last tag
-    last_content = segments[-2] if len(segments) > 1 else full_md
-
-    # Remove the marker from the top of the content
-    last_content = re.sub(r"<!-- MS_ID: .+? -->", "", last_content).strip()
-
-    prompt = f"Extract ALL significant technical concepts from the following text that were explained in detail. Output ONLY a comma-separated list of terms.\n\nTEXT:\n{last_content}"
-    res = safe_invoke(
-        [HumanMessage(content=prompt)],
-        node_label="Knowledge Mapper",
-        provider_override="local-proxy",
-    )
-    new_terms = [t.strip() for t in str(res.content).split(",") if t.strip()]
-    adv_tags = re.findall(r"\[\[ADVANCED_CONTEXT:(.*?)\]\]", state["accumulated_md"])
-    return {
-        "knowledge_map": list(set(state.get("knowledge_map", []) + new_terms)),
-        "advanced_contexts": list(set(state.get("advanced_contexts", []) + adv_tags)),
-    }
 
 
 def writer_node(state: GraphState):
@@ -723,7 +700,6 @@ def writer_node(state: GraphState):
     )
 
     context_md = state["accumulated_md"]
-    knowledge_summary = ", ".join(state.get("knowledge_map", [])[-30:])
 
     prereqs = blueprint.get("prerequisites", {})
     must_teach = prereqs.get("must_teach_first", [])
@@ -764,9 +740,6 @@ Assumed known: {assumed_str}
 Concepts Architect flagged for this milestone:
 {prereqs_str}
 Concepts already explained in earlier milestones: {already_explained or "(none yet)"}
-
---- CONCEPTS TAUGHT SO FAR ---
-{knowledge_summary}
 
 --- RECENT ATLAS CONTEXT ---
 {context_md}
@@ -1720,7 +1693,7 @@ def spec_syncer_node(state: GraphState):
 # --- GRAPH ---
 workflow = StateGraph(GraphState)
 workflow.add_node("architect", architect_node)
-workflow.add_node("knowledge_mapper", knowledge_mapper_node)
+
 workflow.add_node("writer", writer_node)
 workflow.add_node("explainer", explainer_node)
 workflow.add_node("visualizer", visualizer_node)
@@ -1744,7 +1717,7 @@ def route_writer(state):
     if not has_more:
         return "visualizer"
     # Return list of nodes to execute in parallel
-    return ["explainer", "knowledge_mapper"]
+    return "explainer"
 
 
 workflow.add_conditional_edges(
@@ -1752,12 +1725,10 @@ workflow.add_conditional_edges(
     route_writer,
     {
         "explainer": "explainer",
-        "knowledge_mapper": "knowledge_mapper",
         "visualizer": "visualizer",
     },
 )
 workflow.add_edge("explainer", "writer")
-workflow.add_edge("knowledge_mapper", "writer")
 
 
 def route_visualizer(state):
@@ -1879,8 +1850,7 @@ def generate_project(project_id):
         "tdd_current_mod_index": 0,
         "tdd_diagrams_to_generate": [],
         "external_reading": "",
-        "knowledge_map": [],
-        "advanced_contexts": [],
+
         "running_criteria": [],
         "explained_concepts": [],
         "blueprint_warnings": [],
@@ -1949,7 +1919,7 @@ if __name__ == "__main__":
         action="store_true",
         help="Architect+Educator=Claude CLI, Artist=Gemini Proxy",
     )
-    parser.add_argument("--claude-model", default=None)
+    parser.add_argument("--claude-model", default="sonnet[1m]", help="Claude CLI model (default: sonnet[1m])")
     parser.add_argument("--anthropic-model", default=None)
     parser.add_argument("--debug", action="store_true", help="Log raw LLM responses")
     parser.add_argument(
@@ -1966,6 +1936,8 @@ if __name__ == "__main__":
 
     if args.claude_cli:
         os.environ["USE_CLAUDE_CLI"] = "true"
+        os.environ["CLAUDE_MODEL"] = args.claude_model
+        print(f">>> Claude CLI: ENABLED (model={args.claude_model})", flush=True)
     if args.anthropic:
         os.environ["USE_ANTHROPIC"] = "true"
     if args.gemini:
@@ -1976,8 +1948,6 @@ if __name__ == "__main__":
     if args.mixed_heavy_claude:
         os.environ["USE_MIXED_HEAVY_CLAUDE"] = "true"
 
-    if args.claude_model:
-        os.environ["CLAUDE_MODEL"] = args.claude_model
     if args.anthropic_model:
         os.environ["ANTHROPIC_MODEL"] = args.anthropic_model
 

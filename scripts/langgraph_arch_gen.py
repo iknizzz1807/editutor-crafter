@@ -106,6 +106,7 @@ INSTR_TDD_WRITER = load_instruction("tdd_writer")
 INSTR_TDD_ARTIST = load_instruction("tdd_artist")
 INSTR_BIBLIOGRAPHER = load_instruction("bibliographer")
 INSTR_SYSTEM_DIAGRAM_ARTIST = load_instruction("system_diagram_artist")
+INSTR_PROJECT_STRUCTURE = load_instruction("project_structure")
 print(">>> Instructions loaded", flush=True)
 
 # --- FEATURE FLAGS ---
@@ -451,6 +452,8 @@ class GraphState(TypedDict):
     system_diagram_d2: Annotated[Optional[str], replace_reducer]
     system_diagram_iteration: Annotated[int, replace_reducer]
     system_diagram_done: Annotated[bool, replace_reducer]
+    # Project Structure
+    project_structure_md: Annotated[str, replace_reducer]
 
 
 # --- CHECKPOINT MANAGER ---
@@ -1591,6 +1594,36 @@ No other text outside these blocks."""
     }
 
 
+def project_structure_node(state: GraphState):
+    """Synthesize unified project directory structure from all TDD modules."""
+    print(f"  [Agent: Project Structure] Synthesizing...")
+
+    project_name = state["meta"].get("name", state["project_id"])
+    prompt = f"""
+{INSTR_PROJECT_STRUCTURE}
+
+--- PROJECT NAME ---
+{project_name}
+
+--- COMPLETE TDD CONTENT (contains all modules with file structures) ---
+{state["tdd_accumulated_md"]}
+
+--- PEDAGOGICAL CONTEXT (for milestone mapping) ---
+{state["accumulated_md"]}
+
+TASK: Output ONLY the project structure markdown (no preamble, no conversation).
+"""
+
+    res = safe_invoke(
+        [HumanMessage(content=prompt)],
+        node_label="Project Structure",
+        project_id=state["project_id"],
+    )
+    structure_md = str(res.content).strip()
+    print(f"  [Agent: Project Structure] Generated {len(structure_md)} chars")
+    return {"project_structure_md": structure_md}
+
+
 def bibliographer_node(state: GraphState):
     print(f"  [Agent: Bibliographer] Curating...")
     prompt = f"{INSTR_BIBLIOGRAPHER}\nCONTENT:\n{state['accumulated_md']}\n{state['tdd_accumulated_md']}"
@@ -1698,6 +1731,7 @@ workflow.add_node("tdd_visualizer", tdd_visualizer_node)
 workflow.add_node("system_diagram_writer", system_diagram_writer_node)
 workflow.add_node("system_diagram_refiner", system_diagram_refiner_node)
 workflow.add_node("system_diagram_renderer", system_diagram_renderer_node)
+workflow.add_node("project_structure", project_structure_node)
 workflow.add_node("bibliographer", bibliographer_node)
 workflow.add_node("spec_syncer", spec_syncer_node)
 
@@ -1756,10 +1790,10 @@ workflow.add_conditional_edges(
 def route_tdd_visualizer(state):
     if state.get("tdd_diagrams_to_generate"):
         return "compiler"
-    # After TDD diagrams done, go to system diagram or bibliographer
+    # After TDD diagrams done, go to system diagram or project structure
     if ENABLE_SYSTEM_DIAGRAM:
         return "system_diagram_writer"
-    return "bibliographer"
+    return "project_structure"
 
 
 workflow.add_conditional_edges(
@@ -1768,7 +1802,7 @@ workflow.add_conditional_edges(
     {
         "compiler": "compiler",
         "system_diagram_writer": "system_diagram_writer",
-        "bibliographer": "bibliographer",
+        "project_structure": "project_structure",
     },
 )
 
@@ -1791,7 +1825,8 @@ workflow.add_conditional_edges(
         "system_diagram_renderer": "system_diagram_renderer",
     },
 )
-workflow.add_edge("system_diagram_renderer", "bibliographer")
+workflow.add_edge("system_diagram_renderer", "project_structure")
+workflow.add_edge("project_structure", "bibliographer")
 
 
 def route_compiler(state):
@@ -1852,6 +1887,7 @@ def generate_project(project_id):
         "system_diagram_d2": None,
         "system_diagram_iteration": 0,
         "system_diagram_done": False,
+        "project_structure_md": "",
     }
     if checkpoint:
         print(f">>> Resuming phase: {checkpoint.get('phase')}")
@@ -1867,6 +1903,8 @@ def generate_project(project_id):
         final_state.get("accumulated_md", "")
         + "\n\n"
         + final_state.get("tdd_accumulated_md", "")
+        + "\n\n"
+        + final_state.get("project_structure_md", "")
         + "\n\n"
         + final_state.get("external_reading", "")
     )

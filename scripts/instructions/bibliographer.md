@@ -21,3 +21,4 @@ Group by topic. Max 15-20 resources. Quality > quantity.
 - Specific references ("Chapter 3 of DDIA" not "read DDIA").
 - Only confident-exist resources. If unsure of URL, give title+authors instead.
 - Order by relevance to project.
+- **Pedagogical Timing**: For each resource, state WHEN the learner should read it — before or after which milestone, and why that moment is the right time. Example: "Read after Milestone 3 (Memory Allocator) — you'll have enough context to appreciate the design tradeoffs." or "Read BEFORE starting this project — required foundational knowledge."

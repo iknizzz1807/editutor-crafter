@@ -107,6 +107,7 @@ INSTR_TDD_ARTIST = load_instruction("tdd_artist")
 INSTR_BIBLIOGRAPHER = load_instruction("bibliographer")
 INSTR_SYSTEM_DIAGRAM_ARTIST = load_instruction("system_diagram_artist")
 INSTR_PROJECT_STRUCTURE = load_instruction("project_structure")
+INSTR_PROJECT_CHARTER = load_instruction("project_charter")
 print(">>> Instructions loaded", flush=True)
 
 # --- FEATURE FLAGS ---
@@ -373,9 +374,6 @@ def safe_invoke(
 ):
     actual_provider = provider_override or LLM_PROVIDER
 
-    if LLM_PROVIDER in ["claude-cli", "anthropic", "local-proxy"]:
-        actual_provider = LLM_PROVIDER
-
     if actual_provider == "claude-cli":
         return invoke_claude_cli(messages, node_label, project_id, max_retries, model_override=model_override)
 
@@ -447,13 +445,14 @@ class GraphState(TypedDict):
     external_reading: Annotated[str, replace_reducer]
     running_criteria: Annotated[List[Dict[str, Any]], operator.add]
     explained_concepts: Annotated[List[str], replace_reducer]
-    blueprint_warnings: Annotated[List[str], replace_reducer]
     # System Overview Diagram
     system_diagram_d2: Annotated[Optional[str], replace_reducer]
     system_diagram_iteration: Annotated[int, replace_reducer]
     system_diagram_done: Annotated[bool, replace_reducer]
     # Project Structure
     project_structure_md: Annotated[str, replace_reducer]
+    # Project Charter
+    project_charter_md: Annotated[str, replace_reducer]
 
 
 # --- CHECKPOINT MANAGER ---
@@ -501,7 +500,7 @@ def architect_node(state: GraphState):
 TASK: Output ONLY raw JSON for the Blueprint.
 Include every milestone from YAML — 1:1 mapping.
 Explicitly list 'prerequisites' (assumed known vs. must teach first).
-Plan 2-3 diagrams per milestone.
+Plan diagrams generously — every concept that benefits from visualization should have one. Minimum 2 per milestone, but add as many as the complexity demands. Diagrams are cheap; confusion is not.
 For each milestone: misconception, reveal, cascade (3-5 connections, 1+ cross-domain).
 """
     invoke_args = {}
@@ -589,7 +588,6 @@ For each milestone: misconception, reveal, cascade (3-5 connections, 1+ cross-do
         "status": "writing",
         "phase": "atlas",
         "accumulated_md": header,
-        "blueprint_warnings": warnings,
     }
     CheckpointManager.save({**state, **new_state})
     return new_state
@@ -1266,7 +1264,6 @@ Output ONLY the corrected D2 code."""
             HumanMessage(content=prompt),
         ],
         node_label=f"TDD Artist (Diag: {diag.get('title')})",
-        provider_override="local-proxy",
     )
     code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
     return {
@@ -1296,10 +1293,10 @@ def system_diagram_writer_node(state: GraphState):
 --- PROJECT: {project_name} ---
 
 --- ATLAS CONTENT (Educational) ---
-{atlas_content[:50000]}
+{atlas_content}
 
 --- TDD CONTENT (Technical Specs) ---
-{tdd_content[:50000]}
+{tdd_content}
 
 --- D2 REFERENCE ---
 {D2_REFERENCE}
@@ -1311,7 +1308,6 @@ Output ONLY valid D2 code. No markdown fences, no explanations."""
     res = safe_invoke(
         [HumanMessage(content=prompt)],
         node_label="System Diagram Writer",
-        provider_override="local-proxy",  # Default to Gemini
     )
     d2_code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
 
@@ -1344,10 +1340,10 @@ def system_diagram_refiner_node(state: GraphState):
 --- PROJECT: {project_name} ---
 
 --- ATLAS CONTENT (Educational) ---
-{atlas_content[:40000]}
+{atlas_content}
 
 --- TDD CONTENT (Technical Specs) ---
-{tdd_content[:40000]}
+{tdd_content}
 
 --- CURRENT D2 DIAGRAM ---
 ```d2
@@ -1387,7 +1383,6 @@ CRITICAL RULES:
         [HumanMessage(content=prompt)],
         node_label=f"System Diagram Refiner (iter {iteration})",
         invoke_kwargs=invoke_args,
-        provider_override="local-proxy",
     )
 
     result = extract_json(res.content)
@@ -1512,12 +1507,12 @@ def explainer_node(state: GraphState):
 
     prompt = f"""You are a technical concept explainer. Reader level: '{level}'.
 
-For each concept below, write a concise explanation (3-6 sentences) covering:
+For each concept below, write an explanation covering:
 1. What it IS (definition in plain language)
 2. WHY the reader needs it right now (context for this project)
 3. ONE key insight or mental model to remember
 
-Keep it tight — this is a sidebar, not a chapter. Use concrete examples where possible.
+Use as much depth as the concept demands — simple concepts can be brief, complex ones deserve more. Use concrete examples where possible. This is a Foundation sidebar, not a chapter — stay focused but never sacrifice clarity for brevity.
 
 Concepts:
 {concept_list}
@@ -1532,7 +1527,6 @@ No other text outside these blocks."""
     res = safe_invoke(
         [HumanMessage(content=prompt)],
         node_label="Explainer",
-        provider_override="local-proxy",  # Use cheap/fast model
     )
 
     # Parse explanations
@@ -1567,6 +1561,36 @@ No other text outside these blocks."""
     }
 
 
+def project_charter_node(state: GraphState):
+    """Generate the Project Charter — placed at the very beginning of the document."""
+    print(f"  [Agent: Project Charter] Writing charter...")
+    full_yaml_meta = yaml.dump(
+        state["meta"], allow_unicode=True, default_flow_style=False
+    )
+    prompt = f"""
+{INSTR_PROJECT_CHARTER}
+
+--- PROJECT SPEC (YAML) ---
+{full_yaml_meta}
+
+--- PEDAGOGICAL ATLAS (educator content — milestones, concepts taught) ---
+{state["accumulated_md"]}
+
+--- TDD CONTENT (modules, implementation phases, hours estimates) ---
+{state["tdd_accumulated_md"]}
+
+TASK: Output ONLY the Project Charter markdown. Start directly with `# 🎯 Project Charter`.
+"""
+    res = safe_invoke(
+        [HumanMessage(content=prompt)],
+        node_label="Project Charter",
+        project_id=state["project_id"],
+    )
+    charter_md = str(res.content).strip()
+    print(f"  [Agent: Project Charter] Generated {len(charter_md)} chars")
+    return {"project_charter_md": charter_md}
+
+
 def project_structure_node(state: GraphState):
     """Synthesize unified project directory structure from all TDD modules."""
     print(f"  [Agent: Project Structure] Synthesizing...")
@@ -1599,11 +1623,10 @@ TASK: Output ONLY the project structure markdown (no preamble, no conversation).
 
 def bibliographer_node(state: GraphState):
     print(f"  [Agent: Bibliographer] Curating...")
-    prompt = f"{INSTR_BIBLIOGRAPHER}\nCONTENT:\n{state['accumulated_md']}\n{state['tdd_accumulated_md']}"
+    prompt = f"{INSTR_BIBLIOGRAPHER}\nCONTENT:\n{state['accumulated_md']}\n{state['tdd_accumulated_md']}\n{state.get('project_structure_md', '')}"
     res = safe_invoke(
         [HumanMessage(content=prompt)],
         node_label="Bibliographer",
-        provider_override="local-proxy",
     )
     return {"external_reading": str(res.content).strip(), "status": "done"}
 
@@ -1704,6 +1727,7 @@ workflow.add_node("tdd_visualizer", tdd_visualizer_node)
 workflow.add_node("system_diagram_writer", system_diagram_writer_node)
 workflow.add_node("system_diagram_refiner", system_diagram_refiner_node)
 workflow.add_node("system_diagram_renderer", system_diagram_renderer_node)
+workflow.add_node("project_charter", project_charter_node)
 workflow.add_node("project_structure", project_structure_node)
 workflow.add_node("bibliographer", bibliographer_node)
 workflow.add_node("spec_syncer", spec_syncer_node)
@@ -1761,10 +1785,9 @@ workflow.add_conditional_edges(
 def route_tdd_visualizer(state):
     if state.get("tdd_diagrams_to_generate"):
         return "compiler"
-    # After TDD diagrams done, go to system diagram or project structure
     if ENABLE_SYSTEM_DIAGRAM:
         return "system_diagram_writer"
-    return "project_structure"
+    return ["project_charter", "project_structure"]
 
 
 workflow.add_conditional_edges(
@@ -1773,6 +1796,7 @@ workflow.add_conditional_edges(
     {
         "compiler": "compiler",
         "system_diagram_writer": "system_diagram_writer",
+        "project_charter": "project_charter",
         "project_structure": "project_structure",
     },
 )
@@ -1796,7 +1820,9 @@ workflow.add_conditional_edges(
         "system_diagram_renderer": "system_diagram_renderer",
     },
 )
+workflow.add_edge("system_diagram_renderer", "project_charter")
 workflow.add_edge("system_diagram_renderer", "project_structure")
+workflow.add_edge("project_charter", "bibliographer")
 workflow.add_edge("project_structure", "bibliographer")
 
 
@@ -1853,11 +1879,12 @@ def generate_project(project_id):
 
         "running_criteria": [],
         "explained_concepts": [],
-        "blueprint_warnings": [],
+
         "system_diagram_d2": None,
         "system_diagram_iteration": 0,
         "system_diagram_done": False,
         "project_structure_md": "",
+        "project_charter_md": "",
     }
     if checkpoint:
         print(f">>> Resuming phase: {checkpoint.get('phase')}")
@@ -1870,7 +1897,9 @@ def generate_project(project_id):
     proj_dir = OUTPUT_BASE / project_id
     proj_dir.mkdir(parents=True, exist_ok=True)
     full = (
-        final_state.get("accumulated_md", "")
+        final_state.get("project_charter_md", "")
+        + "\n\n---\n\n"
+        + final_state.get("accumulated_md", "")
         + "\n\n"
         + final_state.get("tdd_accumulated_md", "")
         + "\n\n"

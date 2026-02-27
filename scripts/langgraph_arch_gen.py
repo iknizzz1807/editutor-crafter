@@ -124,12 +124,13 @@ MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-large-2411")
 # Global variables (will be initialized by init_llm_provider())
 LLM_PROVIDER = None
 LLM = None
+LLM_FALLBACK = None  # Gemini local-proxy, used for diagram retries when main provider is claude-cli
 USE_ANTHROPIC = False
 
 
 def init_llm_provider():
     """Initialize LLM provider based on environment variables or command line flags."""
-    global LLM_PROVIDER, LLM, CLAUDE_MODEL, USE_ANTHROPIC, MISTRAL_MODEL
+    global LLM_PROVIDER, LLM, LLM_FALLBACK, CLAUDE_MODEL, USE_ANTHROPIC, MISTRAL_MODEL
     print(">>> Initializing LLM provider...", flush=True)
 
     USE_ANTHROPIC = os.getenv("USE_ANTHROPIC", "false").lower() == "true"
@@ -169,6 +170,15 @@ def init_llm_provider():
     elif USE_CLAUDE_CLI:
         LLM_PROVIDER = "claude-cli"
         print(f">>> Provider: CLAUDE CODE CLI (Model: {CLAUDE_MODEL})", flush=True)
+        # Init Gemini fallback for diagram retries + system diagram
+        LLM_FALLBACK = ChatOpenAI(
+            base_url="http://127.0.0.1:7999/v1",
+            api_key=SecretStr(os.getenv("GEMINI_PROXY_API_KEY", "mythong2005")),
+            model="gemini_cli/gemini-3-flash-preview",
+            temperature=1,
+            max_completion_tokens=64000,
+        )
+        print(">>> Gemini fallback initialized for diagram retries", flush=True)
     elif USE_ANTHROPIC and ChatAnthropic:
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
@@ -373,6 +383,16 @@ def safe_invoke(
     provider_override=None,
     model_override=None,
 ):
+    # When running claude-cli, use Gemini fallback if provider_override="local-proxy", else claude-cli
+    if LLM_PROVIDER == "claude-cli":
+        if provider_override == "local-proxy" and LLM_FALLBACK is not None:
+            log_llm_interaction(project_id, node_label, "local-proxy (fallback)", messages)
+            kwargs = invoke_kwargs or {}
+            if "timeout" not in kwargs:
+                kwargs["timeout"] = 1200
+            return LLM_FALLBACK.invoke(messages, **kwargs)
+        return invoke_claude_cli(messages, node_label, project_id, max_retries, model_override=model_override)
+
     actual_provider = provider_override or LLM_PROVIDER
 
     if actual_provider == "claude-cli":

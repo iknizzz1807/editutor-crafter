@@ -112,6 +112,7 @@ print(">>> Instructions loaded", flush=True)
 
 # --- FEATURE FLAGS ---
 ENABLE_SYSTEM_DIAGRAM = os.getenv("ENABLE_SYSTEM_DIAGRAM", "false").lower() == "true"
+USE_1M = os.getenv("USE_1M", "false").lower() == "true"
 MAX_SYSTEM_DIAGRAM_ITERATIONS = 10
 
 # --- LLM SETUP ---
@@ -524,7 +525,7 @@ For each milestone: misconception, reveal, cascade (3-5 connections, 1+ cross-do
         provider_override=(
             "claude-cli" if LLM_PROVIDER and LLM_PROVIDER.startswith("mixed") else None
         ),
-        model_override="opus[1m]",
+        model_override="opus[1m]" if USE_1M else "opus",
     )
     print(f"  [Agent: Architect] Initial response received: {len(res.content)} chars")
     blueprint = extract_json(res.content)
@@ -1948,7 +1949,8 @@ if __name__ == "__main__":
         action="store_true",
         help="Architect+Educator=Claude CLI, Artist=Gemini Proxy",
     )
-    parser.add_argument("--claude-model", default="sonnet[1m]", help="Claude CLI model (default: sonnet[1m])")
+    parser.add_argument("--claude-model", default="sonnet", help="Claude CLI model (default: sonnet)")
+    parser.add_argument("--1m", dest="use_1m", action="store_true", help="Use 1M context window (appends [1m] to model)")
     parser.add_argument("--anthropic-model", default=None)
     parser.add_argument("--debug", action="store_true", help="Log raw LLM responses")
     parser.add_argument(
@@ -1964,9 +1966,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.claude_cli:
+        model = args.claude_model + ("[1m]" if args.use_1m else "")
         os.environ["USE_CLAUDE_CLI"] = "true"
-        os.environ["CLAUDE_MODEL"] = args.claude_model
-        print(f">>> Claude CLI: ENABLED (model={args.claude_model})", flush=True)
+        os.environ["CLAUDE_MODEL"] = model
+        print(f">>> Claude CLI: ENABLED (model={model})", flush=True)
     if args.anthropic:
         os.environ["USE_ANTHROPIC"] = "true"
     if args.gemini:
@@ -1984,8 +1987,12 @@ if __name__ == "__main__":
         os.environ["DEBUG_MODE"] = "true"
     if args.system_diagram:
         os.environ["ENABLE_SYSTEM_DIAGRAM"] = "true"
-        ENABLE_SYSTEM_DIAGRAM = True  # Already global at module level
+        ENABLE_SYSTEM_DIAGRAM = True
         print(">>> System Overview Diagram: ENABLED", flush=True)
+    if args.use_1m:
+        os.environ["USE_1M"] = "true"
+        USE_1M = True
+        print(">>> 1M Context Window: ENABLED", flush=True)
     if args.output:
         OUTPUT_BASE = Path(args.output).resolve()
     else:

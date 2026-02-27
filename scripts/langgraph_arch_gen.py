@@ -525,7 +525,7 @@ For each milestone: misconception, reveal, cascade (3-5 connections, 1+ cross-do
         provider_override=(
             "claude-cli" if LLM_PROVIDER and LLM_PROVIDER.startswith("mixed") else None
         ),
-        model_override="opus[1m]" if USE_1M else "opus",
+        model_override="default[1m]" if USE_1M else "default",
     )
     print(f"  [Agent: Architect] Initial response received: {len(res.content)} chars")
     blueprint = extract_json(res.content)
@@ -999,6 +999,7 @@ Output ONLY the corrected D2 code."""
             HumanMessage(content=prompt),
         ],
         node_label=f"Artist (Diag: {diag.get('title')})",
+        provider_override="local-proxy" if is_retry else None,
     )
     code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
     return {
@@ -1265,6 +1266,7 @@ Output ONLY the corrected D2 code."""
             HumanMessage(content=prompt),
         ],
         node_label=f"TDD Artist (Diag: {diag.get('title')})",
+        provider_override="local-proxy" if is_retry else None,
     )
     code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
     return {
@@ -1309,6 +1311,7 @@ Output ONLY valid D2 code. No markdown fences, no explanations."""
     res = safe_invoke(
         [HumanMessage(content=prompt)],
         node_label="System Diagram Writer",
+        provider_override="local-proxy",
     )
     d2_code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
 
@@ -1384,6 +1387,7 @@ CRITICAL RULES:
         [HumanMessage(content=prompt)],
         node_label=f"System Diagram Refiner (iter {iteration})",
         invoke_kwargs=invoke_args,
+        provider_override="local-proxy",
     )
 
     result = extract_json(res.content)

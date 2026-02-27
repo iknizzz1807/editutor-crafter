@@ -1,0 +1,551 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+title: |md
+  ## PS/2 Keyboard — Scancode to ASCII Pipeline
+  **data_walk:** Key 'A' press (make=0x1E) → ring buffer
+| {near: top-center}
+back_to_map: "↖ Back to Satellite Map" {
+  link: "#anchor-id"
+  style: {
+    fill: "#2d2d2d"
+    font-color: "#aaaaaa"
+    font-size: 11
+    border-radius: 4
+    stroke: "#555555"
+  }
+}
+hw: Physical Hardware {
+  style: {
+    fill: "#1a1a2e"
+    stroke: "#e94560"
+    stroke-width: 2
+    border-radius: 8
+    font-color: "#e94560"
+    bold: true
+  }
+  key: |md
+    **Key 'A' Pressed**
+    Mechanical switch closes
+    circuit on scan matrix
+  | {
+    style: {
+      fill: "#2d1b2e"
+      stroke: "#e94560"
+      stroke-width: 2
+      border-radius: 6
+      font-color: "#f5f5f5"
+    }
+  }
+  ps2_mcu: |md
+    **PS/2 Keyboard MCU**
+    Internal 8051-like controller
+    scans key matrix at ~1 kHz
+    Scancode Set 1 selected
+  | {
+    style: {
+      fill: "#2d1b2e"
+      stroke: "#c0392b"
+      stroke-width: 2
+      border-radius: 6
+      font-color: "#f5f5f5"
+    }
+  }
+  ps2_wire: |md
+    **PS/2 Serial Line**
+    CLK: ~10-13 kHz
+    DATA: serial, LSB first
+    11-bit frame: start+8data+parity+stop
+  | {
+    style: {
+      fill: "#1a1a1a"
+      stroke: "#888888"
+      stroke-dash: 3
+      border-radius: 6
+      font-color: "#cccccc"
+    }
+  }
+  i8042: |md
+    **Intel 8042 Controller**
+    (or PCH firmware equivalent)
+    Buffers serial byte from PS/2
+    Deasserts clock, asserts IRQ1
+    I/O ports: 0x60 (data), 0x64 (status)
+  | {
+    style: {
+      fill: "#2d1b2e"
+      stroke: "#e67e22"
+      stroke-width: 2
+      border-radius: 6
+      font-color: "#f5f5f5"
+    }
+  }
+  key -> ps2_mcu: "Key matrix scan\nrow/col closure detected" {
+    style.stroke: "#e94560"
+    style.animated: true
+  }
+  ps2_mcu -> ps2_wire: "Serialize scancode 0x1E\n11-bit PS/2 frame @ 10kHz" {
+    style.stroke: "#e94560"
+    style.animated: true
+  }
+  ps2_wire -> i8042: "Deserialize → latch 0x1E\nin output buffer" {
+    style.stroke: "#e67e22"
+    style.animated: true
+  }
+}
+irq_layer: IRQ Delivery Path {
+  style: {
+    fill: "#1a1a2e"
+    stroke: "#f39c12"
+    stroke-width: 2
+    border-radius: 8
+    font-color: "#f39c12"
+    bold: true
+  }
+  pic_master: |md
+    **8259A Master PIC**
+    IRQ1 line asserted by 8042
+    ISR bit 1 set — blocks further IRQ1
+    Asserts CPU INTR pin
+    After remap: IRQ1 → vector 0x21 (33)
+  | {
+    style: {
+      fill: "#2d2200"
+      stroke: "#f39c12"
+      stroke-width: 2
+      border-radius: 6
+      font-color: "#f5f5f5"
+    }
+  }
+  cpu_intr: |md
+    **CPU Interrupt Acknowledgement**
+    Checks EFLAGS.IF = 1
+    INTA cycle → PIC returns vector 33
+    Pushes onto kernel stack:
+    SS (if ring change)
+    ESP_old (if ring change)
+    EFLAGS
+    CS = 0x08
+    EIP_ret (return address)
+    Reads IDT[33] → isr_33
+  | {
+    style: {
+      fill: "#2d2200"
+      stroke: "#e67e22"
+      stroke-width: 2
+      border-radius: 6
+      font-color: "#f5f5f5"
+    }
+  }
+  idt_entry: |md
+    **IDT Entry [33] — Interrupt Gate**
+    offset_low:  lo16(isr_33)
+    selector:    0x08 (kernel code)
+    flags:       0x8E (P=1, DPL=0, type=INT)
+    offset_high: hi16(isr_33)
+    IF cleared on entry (interrupt gate)
+  | {
+    style: {
+      fill: "#1f1a00"
+      stroke: "#f1c40f"
+      stroke-width: 1
+      border-radius: 6
+      font-color: "#f5f5f5"
+    }
+  }
+  pic_master -> cpu_intr: "INTR pin asserted\nvector=33 on INTA" {
+    style.stroke: "#f39c12"
+    style.animated: true
+  }
+  cpu_intr -> idt_entry: "Lookup IDT[33]\nread gate descriptor" {
+    style.stroke: "#f1c40f"
+    style.stroke-dash: 3
+  }
+}
+isr_layer: ISR Assembly Stub {
+  style: {
+    fill: "#0d1b0d"
+    stroke: "#27ae60"
+    stroke-width: 2
+    border-radius: 8
+    font-color: "#27ae60"
+    bold: true
+  }
+  isr_33_stub: |md
+    **isr_33: (ISR_NOERR macro)**
+    push dword 0    ; fake error code
+    push dword 33   ; interrupt number
+    jmp isr_common_stub
+  | {
+    style: {
+      fill: "#0a1a0a"
+      stroke: "#27ae60"
+      stroke-width: 2
+      border-radius: 6
+      font-color: "#a8f0a8"
+      font: mono
+    }
+  }
+  common_stub: |md
+    **isr_common_stub**
+    pusha           ; save EAX ECX EDX EBX ESP EBP ESI EDI
+    push ds/es/fs/gs
+    mov ax, 0x10    ; kernel data segment
+    mov ds/es/fs/gs, ax
+    push esp        ; → interrupt_frame ptr
+    call interrupt_dispatch
+    add esp, 4
+    pop gs/fs/es/ds
+    popa
+    add esp, 8      ; discard int_no + err_code
+    iret
+  | {
+    style: {
+      fill: "#0a1a0a"
+      stroke: "#2ecc71"
+      stroke-width: 2
+      border-radius: 6
+      font-color: "#a8f0a8"
+      font: mono
+    }
+  }
+  stack_frame: |md
+    **interrupt_frame on kernel stack**
+    esp+52  EFLAGS   (CPU pushed)
+    esp+48  CS=0x08  (CPU pushed)
+    esp+44  EIP_ret  (CPU pushed)
+    esp+40  err=0    (stub pushed)
+    esp+36  int_no=33(stub pushed)
+    esp+32  EDI
+    esp+28  ESI
+    esp+24  EBP      pusha block
+    esp+20  ESP*
+    esp+16  EBX
+    esp+12  EDX
+    esp+8   ECX
+    esp+4   EAX
+    esp+0   → passed to C as ptr
+  | {
+    style: {
+      fill: "#051005"
+      stroke: "#1abc9c"
+      stroke-width: 1
+      border-radius: 6
+      font-color: "#7fefcf"
+      font: mono
+    }
+  }
+  isr_33_stub -> common_stub: "jmp (uniform entry\ninto C dispatcher)" {
+    style.stroke: "#27ae60"
+    style.animated: true
+  }
+  common_stub -> stack_frame: "pusha builds\nthis layout" {
+    style.stroke: "#1abc9c"
+    style.stroke-dash: 3
+  }
+}
+c_handler: C Keyboard Handler {
+  style: {
+    fill: "#0d0d2e"
+    stroke: "#3498db"
+    stroke-width: 2
+    border-radius: 8
+    font-color: "#3498db"
+    bold: true
+  }
+  read_port: |md
+    **Read port 0x60**
+    uint8_t sc = inb(0x60);
+    sc = 0x1E  → make: key 'A' pressed
+    sc = 0x9E  → break: key 'A' released
+    MUST always read 0x60:
+    8042 holds byte until consumed;
+    failure blocks further IRQ1.
+  | {
+    style: {
+      fill: "#05052e"
+      stroke: "#3498db"
+      stroke-width: 2
+      border-radius: 6
+      font-color: "#aad4f5"
+      font: mono
+    }
+  }
+  make_break: |md
+    **Make / Break Decision**
+    bit 7 of scancode:
+    0 → MAKE  (key pressed)  sc AND 0x7F = key
+    1 → BREAK (key released) sc AND 0x7F = key
+    0x1E AND 0x80 = 0 → MAKE  → continue
+    0x9E AND 0x80 = 1 → BREAK → update modifier, return
+  | {
+    style: {
+      fill: "#05052e"
+      stroke: "#2980b9"
+      stroke-width: 2
+      border-radius: 6
+      font-color: "#aad4f5"
+      font: mono
+    }
+  }
+  modifier_check: |md
+    **Modifier Key Detection**
+    if (sc == 0x2A) shift_pressed = 1; // LShift make
+    if (sc == 0x36) shift_pressed = 1; // RShift make
+    if (sc == 0x1D) ctrl_pressed  = 1; // LCtrl make
+    if (sc == 0x38) alt_pressed   = 1; // LAlt make
+    break codes: sc AND 0x7F → set flag = 0
+    State: shift_pressed=0, ctrl_pressed=0, alt_pressed=0
+  | {
+    style: {
+      fill: "#05052e"
+      stroke: "#1565c0"
+      stroke-width: 2
+      border-radius: 6
+      font-color: "#aad4f5"
+      font: mono
+    }
+  }
+  ascii_lookup: |md
+    **Scancode → ASCII Table Lookup**
+    if (shift_pressed)
+        ascii = scancode_to_ascii_shift[0x1E]; // → 'A'
+    else
+        ascii = scancode_to_ascii[0x1E];       // → 'a'
+    scancode_to_ascii[0x1E]       = 'a' (0x61)
+    scancode_to_ascii_shift[0x1E] = 'A' (0x41)
+    Returns 0 for non-printable keys (F1-F12, arrows...)
+  | {
+    style: {
+      fill: "#05052e"
+      stroke: "#9b59b6"
+      stroke-width: 2
+      border-radius: 6
+      font-color: "#d7aef5"
+      font: mono
+    }
+  }
+  eoi_send: |md
+    **EOI — End of Interrupt**
+    outb(0x20, 0x20);  // EOI to master PIC
+    Clears ISR bit 1 in 8259A.
+    PIC may now deliver further IRQ1.
+    If omitted: keyboard silently freezes.
+  | {
+    style: {
+      fill: "#2d0000"
+      stroke: "#e74c3c"
+      stroke-width: 2
+      border-radius: 6
+      font-color: "#f5a0a0"
+      font: mono
+    }
+  }
+  read_port -> make_break: "sc=0x1E\n(raw scancode)" {
+    style.stroke: "#3498db"
+    style.animated: true
+  }
+  make_break -> modifier_check: "bit7=0 → MAKE\nprocess key" {
+    style.stroke: "#2980b9"
+    style.animated: true
+  }
+  modifier_check -> ascii_lookup: "shift_pressed=0\nsc=0x1E" {
+    style.stroke: "#9b59b6"
+    style.animated: true
+  }
+}
+ring_buffer: Circular Keyboard Buffer (256 bytes) {
+  style: {
+    fill: "#1a1a0a"
+    stroke: "#f1c40f"
+    stroke-width: 2
+    border-radius: 8
+    font-color: "#f1c40f"
+    bold: true
+  }
+  ring_push: |md
+    **ring_push(kbd_buf, 'a')**
+    if (!ring_full(rb)) {
+        rb->buf[rb->head] = 'a';  // 0x61
+        rb->head = (rb->head + 1) % 256;
+    }
+    If full: silently drop (overrun condition)
+    Full condition:  (head+1) % 256 == tail
+    Empty condition: head == tail
+  | {
+    style: {
+      fill: "#1a1200"
+      stroke: "#f1c40f"
+      stroke-width: 2
+      border-radius: 6
+      font-color: "#ffe88a"
+      font: mono
+    }
+  }
+  buf_layout: |md
+    **ring_buffer_t layout (static in .bss)**
+    typedef struct {
+        char    buf[256];  // circular array
+        uint8_t head;      // write ptr (IRQ writes)
+        uint8_t tail;      // read  ptr (getchar reads)
+    } ring_buffer_t;
+    Before push: head=2, tail=0
+    buf[0]='H', buf[1]='i', buf[2]=?
+    After push:  head=3, tail=0
+    buf[2]='a'  newly written
+    Single-producer (IRQ), single-consumer (getchar)
+    Lock-free on single core — no atomic needed
+  | {
+    style: {
+      fill: "#1a1200"
+      stroke: "#e6b800"
+      stroke-width: 1
+      border-radius: 6
+      font-color: "#ffe88a"
+      font: mono
+    }
+  }
+  consumer: |md
+    **keyboard_getchar() — consumer**
+    char keyboard_getchar(void) {
+        while (ring_empty(&kbd_buf))
+            __asm__ volatile("hlt");
+        return ring_pop(&kbd_buf);
+    }
+    Called from kernel shell or sys_read.
+    Blocking: CPU halts between keystrokes.
+  | {
+    style: {
+      fill: "#0a1a0a"
+      stroke: "#27ae60"
+      stroke-width: 2
+      border-radius: 6
+      font-color: "#a8f0a8"
+      font: mono
+    }
+  }
+  ring_push -> buf_layout: "write 'a' at buf[head]\nadvance head" {
+    style.stroke: "#f1c40f"
+    style.animated: true
+  }
+  buf_layout -> consumer: "ring_pop(): read buf[tail]\nadvance tail → 'a' returned" {
+    style.stroke: "#27ae60"
+    style.animated: true
+  }
+}
+scancode_ref: Scancode Set 1 — Key Events Reference {
+  style: {
+    fill: "#0a0a0a"
+    stroke: "#555555"
+    stroke-width: 1
+    border-radius: 8
+    font-color: "#aaaaaa"
+  }
+  make_table: |||md
+    **Make Codes (key press, bit7=0)**
+    | Scancode | Key    | ASCII (no shift) | ASCII (shift) |
+    |----------|--------|------------------|---------------|
+    | 0x1E     | A      | 'a' (0x61)       | 'A' (0x41)    |
+    | 0x30     | B      | 'b' (0x62)       | 'B' (0x42)    |
+    | 0x2A     | LShift | —                | —             |
+    | 0x36     | RShift | —                | —             |
+    | 0x1D     | LCtrl  | —                | —             |
+    | 0x0E     | Backsp | '\b' (0x08)      | '\b'          |
+    | 0x1C     | Enter  | '\n' (0x0A)      | '\n'          |
+    | 0x39     | Space  | ' '  (0x20)      | ' '           |
+  ||| {
+    style: {
+      fill: "#0a0a0a"
+      stroke: "#333333"
+      border-radius: 6
+      font-color: "#cccccc"
+    }
+  }
+  break_table: |||md
+    **Break Codes (key release, bit7=1)**
+    | Break Code | = Make | Key    | Action                |
+    |------------|--------|--------|-----------------------|
+    | 0x9E       | 0x1E   | A      | discard (no buf push) |
+    | 0xAA       | 0x2A   | LShift | shift_pressed=0       |
+    | 0xB6       | 0x36   | RShift | shift_pressed=0       |
+    | 0x9D       | 0x1D   | LCtrl  | ctrl_pressed=0        |
+    | 0xB8       | 0x38   | LAlt   | alt_pressed=0         |
+    Break code = Make code OR 0x80
+    Handler returns immediately on break — no ring_push
+  ||| {
+    style: {
+      fill: "#0a0a0a"
+      stroke: "#333333"
+      border-radius: 6
+      font-color: "#cccccc"
+    }
+  }
+}
+hw.i8042 -> irq_layer.pic_master: "IRQ1 line asserted\n(8042 output buffer full)" {
+  style: {
+    stroke: "#e67e22"
+    stroke-width: 2
+    animated: true
+    font-color: "#f5c5a0"
+  }
+}
+irq_layer.idt_entry -> isr_layer.isr_33_stub: "CPU jumps to handler\nCS=0x08, EIP=isr_33" {
+  style: {
+    stroke: "#27ae60"
+    stroke-width: 2
+    animated: true
+    font-color: "#a8f0a8"
+  }
+}
+isr_layer.common_stub -> c_handler.read_port: "interrupt_dispatch(frame)\n→ irq_dispatch(1, frame)\n→ keyboard_handler(frame)" {
+  style: {
+    stroke: "#3498db"
+    stroke-width: 2
+    animated: true
+    font-color: "#aad4f5"
+  }
+}
+c_handler.ascii_lookup -> ring_buffer.ring_push: "ring_push(kbd_buf, 'a')\nascii != 0 → enqueue" {
+  style: {
+    stroke: "#f1c40f"
+    stroke-width: 2
+    animated: true
+    font-color: "#ffe88a"
+  }
+}
+c_handler.ascii_lookup -> c_handler.eoi_send: "after push:\nsend EOI to PIC" {
+  style: {
+    stroke: "#e74c3c"
+    stroke-width: 2
+    animated: true
+  }
+}
+c_handler.eoi_send -> irq_layer.pic_master: "outb(0x20,0x20)\nclears ISR bit 1\nPIC ready for next IRQ1" {
+  style: {
+    stroke: "#e74c3c"
+    stroke-dash: 4
+    font-color: "#f5a0a0"
+  }
+}
+break_path: |md
+  **BREAK PATH (0x9E for 'A' release)**
+  inb(0x60) → sc = 0x9E
+  sc AND 0x80 = 1 → BREAK
+  key = sc AND 0x7F = 0x1E (A key)
+  Not a modifier → return immediately
+  No ring_push. Send EOI. Done.
+| {
+  near: bottom-center
+  style: {
+    fill: "#1a0000"
+    stroke: "#c0392b"
+    stroke-width: 1
+    stroke-dash: 5
+    border-radius: 6
+    font-color: "#f0a0a0"
+    font-size: 12
+  }
+}

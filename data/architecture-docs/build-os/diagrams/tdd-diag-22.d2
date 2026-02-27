@@ -1,0 +1,220 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+direction: right
+
+title: ||md
+  ## Page Fault (#14) — CR2 and Error Code Bit Decode
+|| {near: top-center}
+
+# ── Interrupt Frame ──────────────────────────────────────────────────────────
+frame: interrupt_frame_t {
+  style.fill: "#7B2D8B"
+  style.font-color: white
+  style.border-radius: 4
+  
+  fields: ||md
+    | Offset | Field       | Size |
+    |--------|-------------|------|
+    | +0     | gs          | 4 B  |
+    | +4     | fs          | 4 B  |
+    | +8     | es          | 4 B  |
+    | +12    | ds          | 4 B  |
+    | +16    | edi         | 4 B  |
+    | +20    | esi         | 4 B  |
+    | +24    | ebp         | 4 B  |
+    | +28    | esp_dummy   | 4 B  |
+    | +32    | ebx         | 4 B  |
+    | +36    | edx         | 4 B  |
+    | +40    | ecx         | 4 B  |
+    | +44    | eax         | 4 B  |
+    | +48    | int_no = 14 | 4 B  |
+    | **+52**| **err_code**| **4 B** |
+    | +56    | eip         | 4 B  |
+    | +60    | cs          | 4 B  |
+    | +64    | eflags      | 4 B  |
+    | +68    | user_esp    | 4 B  |
+    | +72    | user_ss     | 4 B  |
+  ||
+}
+
+# ── CR2 Register ─────────────────────────────────────────────────────────────
+cr2: CR2 — Faulting Virtual Address {
+  style.fill: "#E65C00"
+  style.font-color: white
+  style.border-radius: 4
+  
+  warn: ||md
+    ⚠ **Must be read FIRST inside handler**
+    before any memory operation that
+    could trigger a nested page fault
+    and overwrite CR2.
+
+    c
+    uint32_t fault_addr;
+    __asm__ volatile (
+      "mov %0, cr2"
+      : "=r"(fault_addr)
+    );
+    
+  ||
+}
+
+# ── Error Code Register ───────────────────────────────────────────────────────
+errcode: err_code (32-bit, bits 4:0 significant) {
+  style.fill: "#1A5276"
+  style.font-color: white
+  style.border-radius: 4
+  
+  layout: ||md
+    Bit 31 ........................ Bit 5  |  4   3   2   1   0
+    ──────────────────────────────────────┼──────────────────────
+               (reserved, always 0)       │  I/D RSVD  U   W   P
+  ||
+}
+
+# ── Bit Definitions ──────────────────────────────────────────────────────────
+bits: Error Code Bit Field Definitions {
+  style.fill: "#1B4F72"
+  style.font-color: white
+  style.border-radius: 4
+  
+  b0: Bit 0 — P (Present) {
+    style.fill: "#2471A3"
+    style.font-color: white
+    style.border-radius: 3
+    val: ||md
+      **0** → Page not present in memory\
+      **1** → Protection violation\
+      &nbsp;&nbsp;&nbsp;&nbsp;(page IS present, access denied)
+    ||
+  }
+  b1: Bit 1 — W (Write) {
+    style.fill: "#2471A3"
+    style.font-color: white
+    style.border-radius: 3
+    val: ||md
+      **0** → Fault caused by a READ\
+      **1** → Fault caused by a WRITE
+    ||
+  }
+  b2: Bit 2 — U (User) {
+    style.fill: "#2471A3"
+    style.font-color: white
+    style.border-radius: 3
+    val: ||md
+      **0** → Access was from KERNEL mode (CPL=0)\
+      **1** → Access was from USER mode (CPL=3)
+    ||
+  }
+  b3: Bit 3 — RSVD {
+    style.fill: "#2471A3"
+    style.font-color: white
+    style.border-radius: 3
+    val: ||md
+      **1** → Reserved bit set in PTE\
+      &nbsp;&nbsp;&nbsp;&nbsp;(hardware/kernel PTE corruption)\
+      **0** → Normal
+    ||
+  }
+  b4: Bit 4 — I/D (Instruction Fetch) {
+    style.fill: "#2471A3"
+    style.font-color: white
+    style.border-radius: 3
+    val: ||md
+      **1** → Fault on instruction fetch\
+      &nbsp;&nbsp;&nbsp;&nbsp;(NX/XD bit violation)\
+      **0** → Data access
+    ||
+  }
+}
+
+# ── C Decode Snippet ─────────────────────────────────────────────────────────
+decode: Handler Decode Logic {
+  style.fill: "#145A32"
+  style.font-color: white
+  style.border-radius: 4
+  
+  code: ||c
+    int p     = (frame->err_code >> 0) & 1; // Present
+    int write = (frame->err_code >> 1) & 1; // Write
+    int user  = (frame->err_code >> 2) & 1; // User mode
+    int rsvd  = (frame->err_code >> 3) & 1; // Reserved bit
+    int ifetch= (frame->err_code >> 4) & 1; // Instr fetch
+  ||
+}
+
+# ── Truth Table ───────────────────────────────────────────────────────────────
+truth: Common err_code Combinations — Diagnosis {
+  style.fill: "#17202A"
+  style.font-color: white
+  style.border-radius: 4
+  
+  table: ||md
+    | P | W | U | Diagnosis | Action |
+    |---|---|---|-----------|--------|
+    | **0** | 0 | 0 | Kernel NULL deref / wild ptr | Kernel bug → **HALT** |
+    | **0** | 1 | 0 | Kernel write to unmapped page | Kernel bug → **HALT** |
+    | **0** | 0 | 1 | User read of unmapped page | Demand-page / segfault |
+    | **0** | 1 | 1 | User write to unmapped page | Demand-page / segfault |
+    | **1** | 0 | 0 | Kernel read, permission denied | Kernel bug → **HALT** |
+    | **1** | 0 | 1 | User read of supervisor page | **Ring-3 isolation proof** → kill |
+    | **1** | 1 | 0 | Kernel write to RO page | Kernel bug → **HALT** |
+    | **1** | 1 | 1 | User write to RO page | **COW trigger** (fork) → copy frame |
+  ||
+}
+
+# ── Key Case Callouts ─────────────────────────────────────────────────────────
+case_kernel_null: ||md
+  **(P=0, W=0, U=0)**\
+  CR2 = 0x00000000\
+  → Kernel null-pointer\
+  deref after identity\
+  map removal
+|| {shape: rectangle; style.fill: "#641E16"; style.font-color: white; style.border-radius: 4}
+
+case_user_prot: ||md
+  **(P=1, W=0, U=1)**\
+  CR2 = 0xC0100000\
+  → User tried to read\
+  kernel page\
+  → Ring-3 isolation\
+  **VERIFIED**
+|| {shape: rectangle; style.fill: "#7D6608"; style.font-color: white; style.border-radius: 4}
+
+case_cow: ||md
+  **(P=1, W=1, U=1)**\
+  CR2 = any user addr\
+  → Write to shared\
+  RO page\
+  → Copy-on-Write\
+  (fork / mmap COW)
+|| {shape: rectangle; style.fill: "#145A32"; style.font-color: white; style.border-radius: 4}
+
+case_demand: ||md
+  **(P=0, W=0, U=1)**\
+  CR2 = user addr\
+  → Page not yet\
+  committed\
+  → Demand paging:\
+  alloc frame, map,\
+  iret to retry
+|| {shape: rectangle; style.fill: "#154360"; style.font-color: white; style.border-radius: 4}
+
+# ── Connections ───────────────────────────────────────────────────────────────
+frame -> cr2: "read CR2 before anything else" {style.stroke: "#E65C00"; style.bold: true}
+frame -> errcode: "err_code at offset +52" {style.stroke: "#F0B27A"}
+errcode -> bits: "bit decomposition" {style.stroke: "#85C1E9"}
+bits -> decode: "extract each flag" {style.stroke: "#82E0AA"}
+decode -> truth: "pattern match → diagnosis" {style.stroke: "#F9E79F"}
+
+truth -> case_kernel_null: "(0,0,0)" {style.stroke: "#EC7063"; style.stroke-dash: 3}
+truth -> case_user_prot:   "(1,0,1)" {style.stroke: "#F4D03F"; style.stroke-dash: 3}
+truth -> case_cow:         "(1,1,1)" {style.stroke: "#58D68D"; style.stroke-dash: 3}
+truth -> case_demand:      "(0,0,1)" {style.stroke: "#5DADE2"; style.stroke-dash: 3}
+
+cr2 -> truth: "fault_addr annotates each row" {style.stroke: "#E65C00"; style.stroke-dash: 5}

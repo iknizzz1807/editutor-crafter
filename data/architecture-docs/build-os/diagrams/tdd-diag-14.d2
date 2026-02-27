@@ -1,0 +1,525 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+direction: right
+style.fill: "#0F0F1A"
+style.stroke: "#2A2A4A"
+title: |md
+  # PS/2 Keyboard Scancode-to-ASCII Pipeline
+  Key press → IRQ1 → scancode → ASCII → ring buffer → consumer
+| {near: top-center}
+
+# ─── STAGE 1: Physical Hardware ───────────────────────────────────────────────
+stage1: "Stage 1 — Physical Key & PS/2 Protocol" {
+  style.fill: "#1A0D2E"
+  style.stroke: "#7B3FBE"
+  style.border-radius: 8
+  key: "Key Switch" {
+    style.fill: "#4A1A6E"
+    style.stroke: "#9B5FDE"
+    style.font-color: "#E8D5FF"
+    shape: rectangle
+    label: |md
+      **Key Switch**
+      Mechanical contact closes
+      circuit at key press event
+    |
+  }
+  ps2_serial: "PS/2 Serial" {
+    style.fill: "#3A1558"
+    style.stroke: "#8B4FCE"
+    style.font-color: "#E0C8FF"
+    label: |md
+      **PS/2 Serial Protocol**
+      Clock: ~10–13 kHz
+      11-bit frame: start + 8 data
+      + parity + stop bit
+      Transmitted LSB-first
+    |
+  }
+  kbc: "8042 KBC" {
+    style.fill: "#2E1248"
+    style.stroke: "#7B3FBE"
+    style.font-color: "#D8C0FF"
+    label: |md
+      **Intel 8042 KBC**
+      Receives serial byte
+      Stores in Output Buffer
+      Port 0x60 = data register
+      Port 0x64 = status register
+    |
+  }
+  key -> ps2_serial: "Contact pulse\n~10 kHz clock" {
+    style.stroke: "#9B5FDE"
+    style.font-color: "#C8A8FF"
+    style.animated: true
+  }
+  ps2_serial -> kbc: "8-bit scancode\nframe received" {
+    style.stroke: "#8B4FCE"
+    style.font-color: "#C8A8FF"
+    style.animated: true
+  }
+}
+
+# ─── STAGE 2: Interrupt Delivery ──────────────────────────────────────────────
+stage2: "Stage 2 — IRQ1 Delivery" {
+  style.fill: "#0D1A2E"
+  style.stroke: "#3F7BBE"
+  style.border-radius: 8
+  irq1: "IRQ1 Assert" {
+    style.fill: "#1A3558"
+    style.stroke: "#5F9FDE"
+    style.font-color: "#C8E0FF"
+    label: |md
+      **8042 asserts IRQ1**
+      Drives interrupt request
+      line high to master PIC
+    |
+  }
+  pic: "Master 8259A PIC" {
+    style.fill: "#152848"
+    style.stroke: "#4F8FCE"
+    style.font-color: "#C0D8FF"
+    label: |md
+      **Master 8259A PIC**
+      IRQ1 not masked (0xFC mask)
+      Remapped: IRQ1 → vector 33
+      Asserts CPU INTR pin
+      Provides vector 33 on INTA
+    |
+  }
+  idt_lookup: "IDT[33]" {
+    style.fill: "#102040"
+    style.stroke: "#3F7BBE"
+    style.font-color: "#B8D0FF"
+    label: |md
+      **IDT[33] Gate Lookup**
+      Interrupt gate: flags=0x8E
+      Selector: 0x08 (kernel code)
+      Clears EFLAGS.IF on entry
+      Handler: isr_33 stub addr
+    |
+  }
+  isr33: "isr_33 Stub" {
+    style.fill: "#0D1830"
+    style.stroke: "#2F6FAE"
+    style.font-color: "#B0C8FF"
+    label: |md
+      **isr_33 (ISR_NOERR stub)**
+      push dword 0  ; fake err_code
+      push dword 33 ; int_no
+      jmp isr_common_stub
+    |
+    style.font: mono
+  }
+  irq1 -> pic: "IRQ1 line high\nOB full flag set" {
+    style.stroke: "#5F9FDE"
+    style.font-color: "#A0C0FF"
+    style.animated: true
+  }
+  pic -> idt_lookup: "INTR→CPU\nvector=33 on INTA" {
+    style.stroke: "#4F8FCE"
+    style.font-color: "#A0C0FF"
+  }
+  idt_lookup -> isr33: "Handler dispatch\nCS:EIP loaded" {
+    style.stroke: "#3F7BBE"
+    style.font-color: "#A0C0FF"
+  }
+}
+
+# ─── STAGE 3: Scancode Read ───────────────────────────────────────────────────
+stage3: "Stage 3 — Scancode Read inb(0x60)" {
+  style.fill: "#0D2E1A"
+  style.stroke: "#3FBE7B"
+  style.border-radius: 8
+  common_stub: "isr_common_stub" {
+    style.fill: "#1A3520"
+    style.stroke: "#5FDE9B"
+    style.font-color: "#C8FFE0"
+    label: |md
+      **isr_common_stub**
+      pusha           ; save EAX–EDI
+      push ds/es/fs/gs
+      mov ax, 0x10   ; kernel data seg
+      push esp        ; frame pointer
+      call interrupt_dispatch
+    |
+    style.font: mono
+  }
+  inb60: "Port 0x60 Read" {
+    style.fill: "#155528"
+    style.stroke: "#4FCE8B"
+    style.font-color: "#C0FFD8"
+    label: |md
+      **keyboard_handler(frame)**
+      uint8_t sc = inb(0x60);
+      ─────────────────────────
+      MUST always read port 0x60
+      Consuming byte re-enables
+      KBC for next scancode
+      Raw value: e.g. 0x1E = 'A'
+    |
+    style.font: mono
+  }
+  common_stub -> inb60: "Routes to\nkeyboard_handler()" {
+    style.stroke: "#5FDE9B"
+    style.font-color: "#A0FFD0"
+  }
+}
+
+# ─── STAGE 4: Break/Make Decode ───────────────────────────────────────────────
+stage4: "Stage 4 — Break / Make Decode" {
+  style.fill: "#2E1A0D"
+  style.stroke: "#BE7B3F"
+  style.border-radius: 8
+  bit7: "Bit 7 Check" {
+    style.fill: "#3D2010"
+    style.stroke: "#DE9B5F"
+    style.font-color: "#FFE0C8"
+    label: |md
+      **Bit 7 Check**
+      is_break = (sc & 0x80) != 0
+      key      = sc & 0x7F
+      ─────────────────────────
+      Break (0x80 set): key release
+      Make (0x80 clear): key press
+    |
+    style.font: mono
+  }
+  break_path: "Break Code Path" {
+    style.fill: "#4A1A1A"
+    style.stroke: "#DE5F5F"
+    style.font-color: "#FFD0D0"
+    label: |md
+      **Break Code (bit 7 = 1)**
+      if key == LSHIFT/RSHIFT:
+        shift_down = 0
+      if key == LCTRL:
+        ctrl_down  = 0
+      if key == LALT:
+        alt_down   = 0
+      → RETURN (no ring push)
+    |
+    style.font: mono
+  }
+  make_modifier: "Make — Modifier Keys" {
+    style.fill: "#3A2810"
+    style.stroke: "#CE8B4F"
+    style.font-color: "#FFD8B8"
+    label: |md
+      **Make Code — Modifiers**
+      if key == 0x2A/0x36 (SHIFT):
+        shift_down = 1; return
+      if key == 0x1D (LCTRL):
+        ctrl_down  = 1; return
+      if key == 0x38 (LALT):
+        alt_down   = 1; return
+      if key == 0x3A (CAPS):
+        caps ^= 1;     return
+    |
+    style.font: mono
+  }
+  bit7 -> break_path: "bit 7 = 1\n(key release)" {
+    style.stroke: "#DE5F5F"
+    style.font-color: "#FFB0B0"
+    style.stroke-dash: 5
+  }
+  bit7 -> make_modifier: "bit 7 = 0\n(key press)" {
+    style.stroke: "#DE9B5F"
+    style.font-color: "#FFD0A0"
+  }
+}
+
+# ─── STAGE 5: Table Lookup ────────────────────────────────────────────────────
+stage5: "Stage 5 — Scancode Table Lookup" {
+  style.fill: "#1A2E0D"
+  style.stroke: "#7BBE3F"
+  style.border-radius: 8
+  modifier_state: "Modifier State" {
+    style.fill: "#253510"
+    style.stroke: "#9BDE5F"
+    style.font-color: "#E0FFC8"
+    label: |md
+      **Modifier State (globals)**
+      shift_down: int  (0 or 1)
+      ctrl_down:  int  (0 or 1)
+      alt_down:   int  (0 or 1)
+      caps_active: int (0 or 1)
+      ─────────────────────────
+      use_upper = shift_down
+                ^ caps_active
+    |
+    style.font: mono
+  }
+  table_normal: "scancode_ascii[128]" {
+    style.fill: "#1A2D08"
+    style.stroke: "#8BCE4F"
+    style.font-color: "#D8FFB8"
+    label: |md
+      **scancode_ascii[128]**
+      Unshifted table (char[128])
+      0x1E → 'a'
+      0x30 → 'b'
+      0x2E → 'c'
+      0x20 → 'd'
+      …
+      Non-printable keys → 0
+    |
+    style.font: mono
+  }
+  table_shift: "scancode_ascii_shift[128]" {
+    style.fill: "#182808"
+    style.stroke: "#7BBE3F"
+    style.font-color: "#D0FFB0"
+    label: |md
+      **scancode_ascii_shift[128]**
+      Shifted table (char[128])
+      0x1E → 'A'
+      0x02 → '!'
+      0x03 → '@'
+      0x04 → '#'
+      …
+      Non-printable keys → 0
+    |
+    style.font: mono
+  }
+  selector: "Table Selector" {
+    style.fill: "#203808"
+    style.stroke: "#8BCE4F"
+    style.font-color: "#D8FFB8"
+    label: |md
+      **Select Table**
+      if use_upper:
+        ascii = scancode_ascii_shift[key]
+      else:
+        ascii = scancode_ascii[key]
+    |
+    style.font: mono
+  }
+  modifier_state -> selector: "use_upper\n(shift XOR caps)" {
+    style.stroke: "#9BDE5F"
+    style.font-color: "#B8FF90"
+  }
+  selector -> table_normal: "use_upper == 0" {
+    style.stroke: "#7BBE3F"
+    style.stroke-dash: 3
+  }
+  selector -> table_shift: "use_upper == 1" {
+    style.stroke: "#8BCE4F"
+    style.stroke-dash: 3
+  }
+}
+
+# ─── STAGE 6: Ring Buffer Push ────────────────────────────────────────────────
+stage6: "Stage 6 — ring_push() to Circular Buffer" {
+  style.fill: "#1A1A0D"
+  style.stroke: "#BEBE3F"
+  style.border-radius: 8
+  zero_check: "ASCII Zero Filter" {
+    style.fill: "#2E2E10"
+    style.stroke: "#DEDE5F"
+    style.font-color: "#FFFFE0"
+    label: |md
+      **ASCII Zero Filter**
+      if (ascii != 0):
+        ring_push(ascii)
+      else:
+        discard silently
+        (F-keys, numpad etc.)
+    |
+    style.font: mono
+  }
+  ring_buf: "ring_buffer_t" {
+    style.fill: "#252510"
+    style.stroke: "#CECE4F"
+    style.font-color: "#FFFFF0"
+    label: |md
+      **ring_buffer_t**
+      char    buf[256]
+      uint8_t head  ← producer writes
+      uint8_t tail  ← consumer reads
+      ──────────────────────────────
+      Full:  (uint8_t)(head+1)==tail
+      Empty: head == tail
+      Cap:   255 chars max
+    |
+    style.font: mono
+  }
+  push_logic: "ring_push() Logic" {
+    style.fill: "#202008"
+    style.stroke: "#BEBE3F"
+    style.font-color: "#FFFFE8"
+    label: |md
+      **ring_push(c)**
+      next = (uint8_t)(head + 1)
+      if next != tail:          // not full
+        buf[head] = c
+        head = next             // advance HEAD
+      else:
+        // FULL → silently drop
+    |
+    style.font: mono
+  }
+  zero_check -> push_logic: "ascii != 0\n→ push char" {
+    style.stroke: "#DEDE5F"
+    style.font-color: "#E0E090"
+  }
+  push_logic -> ring_buf: "buf[head]=c\nhead++" {
+    style.stroke: "#CECE4F"
+    style.font-color: "#E0E090"
+    style.animated: true
+  }
+}
+
+# ─── STAGE 7: Consumer (keyboard_getchar) ─────────────────────────────────────
+stage7: "Stage 7 — keyboard_getchar() Consumer" {
+  style.fill: "#2E0D1A"
+  style.stroke: "#BE3F7B"
+  style.border-radius: 8
+  spin_wait: "Empty Spin-Wait" {
+    style.fill: "#3D1020"
+    style.stroke: "#DE5F9B"
+    style.font-color: "#FFD0E8"
+    label: |md
+      **keyboard_getchar()**
+      // Requires EFLAGS.IF=1
+      while (head == tail):
+        __asm__ volatile("hlt")
+        // CPU sleeps until IRQ
+        // Timer or keyboard IRQ
+        // wakes CPU, loop retests
+    |
+    style.font: mono
+  }
+  pop_logic: "ring_pop() Logic" {
+    style.fill: "#35101C"
+    style.stroke: "#CE4F8B"
+    style.font-color: "#FFD8F0"
+    label: |md
+      **ring_pop() on non-empty**
+      c    = buf[tail]
+      tail = (uint8_t)(tail + 1)  // advance TAIL
+      return c
+      ─────────────────────────
+      Returns: ASCII char (≠ 0)
+    |
+    style.font: mono
+  }
+  caller: "Caller Receives char" {
+    style.fill: "#2A0D16"
+    style.stroke: "#BE3F7B"
+    style.font-color: "#FFCCE0"
+    label: |md
+      **Caller receives char**
+      e.g. kernel shell loop:
+        char c = keyboard_getchar();
+        kprintf("%c", c);
+      Blocks until key pressed;
+      never returns 0
+    |
+    style.font: mono
+  }
+  spin_wait -> pop_logic: "head != tail\n(buffer non-empty)" {
+    style.stroke: "#DE5F9B"
+    style.font-color: "#FFB8E0"
+  }
+  pop_logic -> caller: "return c\n(ASCII char)" {
+    style.stroke: "#CE4F8B"
+    style.font-color: "#FFB8E0"
+    style.animated: true
+  }
+}
+
+# ─── EOI PATH ─────────────────────────────────────────────────────────────────
+eoi: "EOI — pic_send_eoi(1)" {
+  style.fill: "#1A0A2A"
+  style.stroke: "#8A4FAA"
+  style.font-color: "#DDB8FF"
+  style.border-radius: 6
+  label: |md
+    **pic_send_eoi(irq=1)**
+    outb(0x20, 0x20)
+    IRQ1 ISR bit cleared in PIC
+    PIC can deliver next IRQ1
+    Called by irq_dispatch after
+    keyboard_handler() returns
+  |
+  style.font: mono
+}
+
+# ─── CROSS-STAGE CONNECTIONS ──────────────────────────────────────────────────
+# Stage 1 → Stage 2
+stage1.kbc -> stage2.irq1: "OB full → IRQ1\nasserted" {
+  style.stroke: "#888888"
+  style.font-color: "#AAAAAA"
+  style.animated: true
+}
+# Stage 2 → Stage 3
+stage2.isr33 -> stage3.common_stub: "jmp isr_common_stub\nStack: [err=0, int=33, EIP, CS, EFLAGS]" {
+  style.stroke: "#888888"
+  style.font-color: "#AAAAAA"
+}
+# Stage 3 → Stage 4
+stage3.inb60 -> stage4.bit7: "uint8_t sc\nfrom port 0x60" {
+  style.stroke: "#888888"
+  style.font-color: "#AAAAAA"
+}
+# Stage 4 make → Stage 5
+stage4.make_modifier -> stage5.modifier_state: "Non-modifier\nkey sc & 0x7F" {
+  style.stroke: "#888888"
+  style.font-color: "#AAAAAA"
+}
+# Stage 5 → Stage 6
+stage5.table_normal -> stage6.zero_check: "ascii = table[key]\n(unshifted path)" {
+  style.stroke: "#888888"
+  style.font-color: "#AAAAAA"
+}
+stage5.table_shift -> stage6.zero_check: "ascii = table[key]\n(shifted path)" {
+  style.stroke: "#888888"
+  style.font-color: "#AAAAAA"
+  style.stroke-dash: 3
+}
+# Stage 6 ring_buf → Stage 7 consumer (the shared ring buffer)
+stage6.ring_buf -> stage7.spin_wait: "Shared ring_buffer_t\nhead moves on push\ntail moves on pop" {
+  style.stroke: "#BBBB44"
+  style.font-color: "#DDDD66"
+  style.stroke-width: 2
+  style.animated: true
+}
+# EOI connection
+stage3.inb60 -> eoi: "After handler returns\npic_send_eoi(1) via irq_dispatch" {
+  style.stroke: "#8A4FAA"
+  style.font-color: "#BB88DD"
+  style.stroke-dash: 5
+}
+eoi -> stage2.irq1: "PIC ISR[1] cleared\nNext IRQ1 can fire" {
+  style.stroke: "#7A3F9A"
+  style.font-color: "#AA77CC"
+  style.stroke-dash: 5
+}
+
+# ─── HEAD/TAIL MOVEMENT ANNOTATION ───────────────────────────────────────────
+legend: |'md
+  ## Ring Buffer Head/Tail Mechanics
+  **buf[256]** — uint8_t indices wrap naturally at 256 (uint8_t overflow = mod 256)
+  | Event | head | tail | Result |
+  |-------|------|------|--------|
+  | Initial (empty) | 0 | 0 | head == tail → empty |
+  | Push 'A' | 1 | 0 | buf[0]='A'; head advanced |
+  | Push 'B' | 2 | 0 | buf[1]='B'; head advanced |
+  | Pop | 2 | 1 | returns buf[0]='A'; tail advanced |
+  | Pop | 2 | 2 | returns buf[1]='B'; now empty |
+  | Full (255 chars) | N | (uint8_t)(N+1) | next push dropped |
+  **Producer** (IRQ handler): writes `buf[head]`, increments `head`
+  **Consumer** (keyboard_getchar): reads `buf[tail]`, increments `tail`
+  **No atomics needed** on single-core: IRQ cannot re-enter itself (IF=0 inside interrupt gate)
+'| {
+  near: bottom-center
+  style.fill: "#0A0A18"
+  style.stroke: "#333366"
+  style.font-color: "#AAAACC"
+  style.border-radius: 6
+}

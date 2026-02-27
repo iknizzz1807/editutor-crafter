@@ -1,0 +1,223 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+title: |md
+  ## Ring 3 Entry via `iretd` — Stack Layout and CPU State Transitions
+  `enter_user_mode(user_eip, user_esp)` execution trace
+| {near: top-center}
+# ─── BEFORE: Segment register loads ────────────────────────────────────────────
+before_segs: "STEP 1 — Load Segment Registers (kernel mode, CPL=0)" {
+  style.fill: "#2D1B69"
+  style.stroke: "#9B59B6"
+  style.border-radius: 8
+  seg_table: {
+    style.fill: "#1A0A3D"
+    style.stroke: "#6C3483"
+    style.border-radius: 4
+    shape: sql_table
+    DS: "0x23  ← user data, RPL=3  (was 0x10)"
+    ES: "0x23  ← user data, RPL=3  (was 0x10)"
+    FS: "0x23  ← user data, RPL=3  (was 0x10)"
+    GS: "0x23  ← user data, RPL=3  (was 0x10)"
+    CS: "0x08  ← kernel code       (unchanged until iretd)"
+    SS: "0x10  ← kernel data       (unchanged until iretd)"
+  }
+  note_segs: |md
+    **Must be done BEFORE building iretd frame.**
+    If DS/ES hold 0x10 (ring-0) after iretd switches to ring-3,
+    first data access raises **#GP** (CPL=3, DPL=0 mismatch).
+  | {style.fill: "#1A0A3D"; style.stroke: "#6C3483"; style.border-radius: 4}
+}
+# ─── BEFORE: Kernel stack layout ────────────────────────────────────────────────
+before_stack: "STEP 2 — Kernel Stack: Push iretd Frame (push in reverse order)" {
+  style.fill: "#1A3A5C"
+  style.stroke: "#2E86C1"
+  style.border-radius: 8
+  push_order: "Push sequence (each push: ESP -= 4, then write)" {
+    style.fill: "#0D2137"
+    style.stroke: "#1A5276"
+    style.border-radius: 4
+    p1: "① push 0x23" {style.fill: "#154360"; style.stroke: "#1A5276"; style.border-radius: 4}
+    p2: "② push user_esp" {style.fill: "#154360"; style.stroke: "#1A5276"; style.border-radius: 4}
+    p3: "③ pushfd; pop eax; or eax,0x200; and eax,~0x3000; push eax" {style.fill: "#154360"; style.stroke: "#1A5276"; style.border-radius: 4}
+    p4: "④ push 0x1B" {style.fill: "#154360"; style.stroke: "#1A5276"; style.border-radius: 4}
+    p5: "⑤ push user_eip" {style.fill: "#154360"; style.stroke: "#1A5276"; style.border-radius: 4}
+    p1 -> p2 -> p3 -> p4 -> p5: {style.stroke: "#2E86C1"; style.stroke-width: 2}
+  }
+  stack_frame: "Kernel Stack at iretd — Low Address (ESP) → High Address" {
+    style.fill: "#0D2137"
+    style.stroke: "#1A5276"
+    style.border-radius: 4
+    shape: sql_table
+    "[ESP + 0]  ← iretd reads EIP first": "user_EIP         ← entry point in user address space"
+    "[ESP + 4]  ← iretd reads CS": "0x1B             ← user code selector (RPL=3)"
+    "[ESP + 8]  ← iretd reads EFLAGS": "user_EFLAGS      ← IF=1 (bit 9 set); IOPL=0 (bits 13:12 clear)"
+    "[ESP + 12] ← iretd reads ESP  ★privilege change": "user_ESP         ← top of user stack allocation"
+    "[ESP + 16] ← iretd reads SS   ★privilege change": "0x23             ← user stack selector (RPL=3)"
+  }
+  note_priv: |md
+    **★ Privilege-change rule:** `iretd` reads **5** values (not 3) when
+    the CS on the stack has RPL > current CPL.
+    0x1B RPL=3 > CPL=0 → privilege change → CPU also pops ESP and SS.
+    Without the extra two words the stack is misaligned and CS/EFLAGS
+    are read from wrong addresses → **triple fault**.
+  | {style.fill: "#0D2137"; style.stroke: "#1A5276"; style.border-radius: 4}
+}
+# ─── SELECTOR DECODER ────────────────────────────────────────────────────────────
+selectors: "Selector Bit Decode" {
+  style.fill: "#1B4F72"
+  style.stroke: "#2E86C1"
+  style.border-radius: 8
+  cs_sel: "CS = 0x1B  (User Code, Ring 3)" {
+    style.fill: "#0D2137"
+    style.stroke: "#1A5276"
+    style.border-radius: 4
+    shape: sql_table
+    "Bits 15:3 = 0x1B >> 3 = 3": "GDT Index 3  (User Code descriptor)"
+    "Bit 2  (TI)": "0  → GDT (not LDT)"
+    "Bits 1:0 (RPL)": "11 → RPL = 3"
+    "DPL of GDT[3]": "3  (access byte 0xFA, bits 6:5 = 11)"
+    "CPL after iretd": "3  (low 2 bits of CS) ← ring 3"
+  }
+  ds_sel: "DS/SS = 0x23  (User Data, Ring 3)" {
+    style.fill: "#0D2137"
+    style.stroke: "#1A5276"
+    style.border-radius: 4
+    shape: sql_table
+    "Bits 15:3 = 0x23 >> 3 = 4": "GDT Index 4  (User Data descriptor)"
+    "Bit 2  (TI)": "0  → GDT"
+    "Bits 1:0 (RPL)": "11 → RPL = 3"
+    "DPL of GDT[4]": "3  (access byte 0xF2, bits 6:5 = 11)"
+    "Access check: max(CPL=3, RPL=3) ≤ DPL=3": "PASS ✓"
+  }
+}
+# ─── IRETD EXECUTION ─────────────────────────────────────────────────────────────
+iretd_exec: "STEP 3 — iretd Execution: Atomic CPU Micro-Sequence" {
+  style.fill: "#1E4D2B"
+  style.stroke: "#27AE60"
+  style.border-radius: 8
+  s1: "① Pop EIP ← [ESP+0] = user_EIP" {style.fill: "#0B2E13"; style.stroke: "#1D8348"; style.border-radius: 4; style.font-color: "#ABEBC6"}
+  s2: "② Pop CS  ← [ESP+4] = 0x1B" {style.fill: "#0B2E13"; style.stroke: "#1D8348"; style.border-radius: 4; style.font-color: "#ABEBC6"}
+  s3: "③ Validate: CPL(0x1B & 3 = 3) > current CPL(0) → PRIVILEGE CHANGE PATH" {style.fill: "#0B2E13"; style.stroke: "#27AE60"; style.border-radius: 4; style.font-color: "#82E0AA"; style.bold: true}
+  s4: "④ Pop EFLAGS ← [ESP+8]  (IF=1 restores interrupt enable)" {style.fill: "#0B2E13"; style.stroke: "#1D8348"; style.border-radius: 4; style.font-color: "#ABEBC6"}
+  s5: "⑤ Pop ESP ← [ESP+12] = user_ESP  (switch to user stack)" {style.fill: "#0B2E13"; style.stroke: "#1D8348"; style.border-radius: 4; style.font-color: "#ABEBC6"}
+  s6: "⑥ Pop SS  ← [ESP+16] = 0x23  (validate: DPL=3 ≥ CPL=3 ✓)" {style.fill: "#0B2E13"; style.stroke: "#1D8348"; style.border-radius: 4; style.font-color: "#ABEBC6"}
+  s7: "⑦ Set CPL = 3  (from CS bits 1:0)" {style.fill: "#0B2E13"; style.stroke: "#27AE60"; style.border-radius: 4; style.font-color: "#F9E79F"; style.bold: true}
+  s1 -> s2 -> s3 -> s4 -> s5 -> s6 -> s7: {style.stroke: "#27AE60"; style.stroke-width: 2}
+}
+# ─── AFTER: CPU state ────────────────────────────────────────────────────────────
+after_state: "STEP 4 — CPU State After iretd  (User Mode Active)" {
+  style.fill: "#1E4D2B"
+  style.stroke: "#27AE60"
+  style.border-radius: 8
+  regs_after: {
+    style.fill: "#0B2E13"
+    style.stroke: "#1D8348"
+    style.border-radius: 4
+    shape: sql_table
+    "EIP": "user_EIP        ← user process begins here"
+    "CS  = 0x1B  CPL=3": "User code segment, ring 3"
+    "EFLAGS  IF=1": "Interrupts ENABLED — timer will preempt"
+    "ESP": "user_ESP        ← user-mode stack active"
+    "SS  = 0x23": "User data segment"
+    "DS/ES/FS/GS = 0x23": "All data segments: user (set in Step 1)"
+  }
+  note_after: |md
+    Kernel stack (ESP0 in TSS) is **abandoned but preserved**.
+    Next interrupt/syscall: CPU reads TSS.ESP0, switches back to
+    `current_process->kernel_stack_top`, pushes ring-3 frame there.
+    Kernel memory (0xC0000000+) is mapped **PTE_USER=0** — any user
+    access causes **#PF  err_code.U=1** (protection violation).
+  | {style.fill: "#0B2E13"; style.stroke: "#1D8348"; style.border-radius: 4}
+}
+# ─── ILLEGAL ALTERNATIVES ────────────────────────────────────────────────────────
+illegal: "ILLEGAL Alternatives — Result in #GP" {
+  style.fill: "#4A0E0E"
+  style.stroke: "#E74C3C"
+  style.border-radius: 8
+  ill1: "CS = 0x18  (RPL=0, kernel selector from ring-3)" {
+    style.fill: "#2C0A0A"
+    style.stroke: "#C0392B"
+    style.border-radius: 4
+    shape: rectangle
+  }
+  ill1_note: "iretd pops CS=0x18 (CPL becomes 0). Then pops EFLAGS, but expects\nno further stack pops (same privilege). SS/ESP NOT popped. Stack misread → #GP" {
+    style.fill: "#2C0A0A"
+    style.stroke: "#C0392B"
+    style.border-radius: 4
+    style.font-color: "#F1948A"
+  }
+  ill2: "SS = 0x10  (RPL=0, kernel data selector)" {
+    style.fill: "#2C0A0A"
+    style.stroke: "#C0392B"
+    style.border-radius: 4
+    shape: rectangle
+  }
+  ill2_note: "CPL=3 loading SS=0x10: max(CPL=3, RPL=0) = 3 > DPL=0 → #GP\nKernel data segment not accessible from ring 3" {
+    style.fill: "#2C0A0A"
+    style.stroke: "#C0392B"
+    style.border-radius: 4
+    style.font-color: "#F1948A"
+  }
+  ill3: "DS/ES still = 0x10 when entering ring-3 code" {
+    style.fill: "#2C0A0A"
+    style.stroke: "#C0392B"
+    style.border-radius: 4
+    shape: rectangle
+  }
+  ill3_note: "First user instruction's data access: CPL=3, DS.DPL=0 → #GP\nMust load 0x23 BEFORE iretd (Step 1)" {
+    style.fill: "#2C0A0A"
+    style.stroke: "#C0392B"
+    style.border-radius: 4
+    style.font-color: "#F1948A"
+  }
+  ill4: "Missing user_ESP / user_SS words on stack" {
+    style.fill: "#2C0A0A"
+    style.stroke: "#C0392B"
+    style.border-radius: 4
+    shape: rectangle
+  }
+  ill4_note: "iretd privilege-change path expects 5 words.\nWith only 3 words (EIP/CS/EFLAGS), iretd reads garbage as ESP and SS → triple fault" {
+    style.fill: "#2C0A0A"
+    style.stroke: "#C0392B"
+    style.border-radius: 4
+    style.font-color: "#F1948A"
+  }
+  ill1 -> ill1_note: {style.stroke: "#E74C3C"; style.stroke-dash: 5}
+  ill2 -> ill2_note: {style.stroke: "#E74C3C"; style.stroke-dash: 5}
+  ill3 -> ill3_note: {style.stroke: "#E74C3C"; style.stroke-dash: 5}
+  ill4 -> ill4_note: {style.stroke: "#E74C3C"; style.stroke-dash: 5}
+}
+# ─── TSS CONNECTION ──────────────────────────────────────────────────────────────
+tss_note: "TSS Invariant: Must Be Correct BEFORE enter_user_mode" {
+  style.fill: "#4A3000"
+  style.stroke: "#F39C12"
+  style.border-radius: 8
+  tss_fields: {
+    style.fill: "#2D1C00"
+    style.stroke: "#D68910"
+    style.border-radius: 4
+    shape: sql_table
+    "TSS.SS0  = 0x10": "Kernel stack segment selector"
+    "TSS.ESP0 = current_process->kernel_stack_top": "★ Updated by tss_set_kernel_stack() in context_switch"
+    "TR register = 0x28": "Loaded by ltr 0x28 in tss_init()"
+  }
+  tss_warn: |md
+    If **TSS.ESP0** is stale (points to a different process's kernel stack),
+    the next timer interrupt fires while user code runs and the CPU
+    pushes the ring-3 frame onto the **wrong** kernel stack →
+    **silent corruption** → random crash many ticks later.
+    `tss_set_kernel_stack(new->kernel_stack_top)` is Step 1 of every `context_switch()`.
+  | {style.fill: "#2D1C00"; style.stroke: "#D68910"; style.border-radius: 4; style.font-color: "#FAD7A0"}
+}
+# ─── CONNECTIONS ─────────────────────────────────────────────────────────────────
+before_segs -> before_stack: "after DS/ES/FS/GS = 0x23" {style.stroke: "#2E86C1"; style.stroke-width: 2}
+before_stack -> selectors: "selector values decoded" {style.stroke: "#2E86C1"; style.stroke-width: 2}
+selectors -> iretd_exec: "iretd instruction" {style.stroke: "#27AE60"; style.stroke-width: 3; style.bold: true}
+iretd_exec -> after_state: "CPU exits iretd" {style.stroke: "#27AE60"; style.stroke-width: 3}
+before_segs -> illegal: "wrong values cause" {style.stroke: "#E74C3C"; style.stroke-dash: 5; style.stroke-width: 2}
+before_stack -> illegal: "wrong frame causes" {style.stroke: "#E74C3C"; style.stroke-dash: 5; style.stroke-width: 2}
+tss_note -> iretd_exec: "TSS.ESP0 must be valid\nbefore any ring-3 code runs" {style.stroke: "#F39C12"; style.stroke-dash: 3; style.stroke-width: 2}

@@ -11,6 +11,57 @@ You will receive a **DOMAIN PROFILE** specifying detail levels and which section
 
 ## HARD RULES (every module)
 
+### 0. Language Consistency (BINDING)
+
+You MUST use the **primary language** specified in the blueprint's `implementation.primary_language` field. This is a BINDING decision made by the Architect.
+
+**All code in this TDD must be:**
+- Struct/class definitions in primary language syntax
+- Function signatures in primary language syntax
+- Code examples in primary language
+- Variable names follow the language's conventions (snake_case for C/Rust, camelCase for Java/Go)
+
+**Example - C (primary_language = "C"):**
+```c
+// Struct definition
+typedef struct {
+    uint32_t id;           // 4 bytes, offset 0x00
+    uint32_t ref_count;    // 4 bytes, offset 0x04
+    bool is_valid;         // 1 byte,  offset 0x08
+} Node;                    // Total: 9 bytes (pad to 12 for alignment)
+
+// Function signature
+int node_get(Context* ctx, uint32_t id, Node** out_node);
+```
+
+**Example - Rust (primary_language = "Rust"):**
+```rust
+// Struct definition
+#[repr(C)]
+struct Node {
+    id: u32,           // 4 bytes, offset 0x00
+    ref_count: u32,    // 4 bytes, offset 0x04
+    is_valid: bool,    // 1 byte,  offset 0x08
+}                      // Total: 9 bytes (compiler may add padding)
+
+// Function signature
+fn node_get(ctx: &mut Context, id: u32) -> Result<*mut Node, Error>;
+```
+
+**❌ FORBIDDEN:**
+- Mixing languages (e.g., Rust struct + C function)
+- Using pseudocode where implementation code is expected
+- Omitting type information
+
+**Naming Conventions by Language:**
+| Language | Functions | Variables | Constants | Types |
+|----------|-----------|-----------|-----------|-------|
+| C | snake_case | snake_case | SCREAMING_CASE | PascalCase |
+| Rust | snake_case | snake_case | SCREAMING_CASE | PascalCase |
+| Go | PascalCase (exported) | camelCase | PascalCase | PascalCase |
+| Java | camelCase | camelCase | SCREAMING_CASE | PascalCase |
+| Python | snake_case | snake_case | SCREAMING_CASE | PascalCase |
+
 ### 1. Module Charter
 5-8 sentences: what it does, what it does NOT do, upstream/downstream dependencies, invariants (properties that must always hold).
 

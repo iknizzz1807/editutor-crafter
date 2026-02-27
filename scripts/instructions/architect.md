@@ -34,6 +34,44 @@ For each milestone, identify:
 ### 5. "Build Your Own" Awareness
 If the project builds a tool/engine/framework, plan diagrams that look INTO the thing being built (public API, internal engine, underlying primitives) — not just from the user's perspective.
 
+### 6. Primary Language Selection (CRITICAL)
+
+You MUST decide the **primary implementation language** for this project. This decision is BINDING for all downstream agents (Educator, TDD Writer, Artist).
+
+**Decision Criteria:**
+| Project Type | Primary Language | Rationale |
+|--------------|------------------|-----------|
+| Systems/OS/Embedded/Database | C | Direct hardware control, manual memory management, pointer arithmetic |
+| Performance + Memory Safety | Rust | Zero-cost abstractions, borrow checker, modern tooling |
+| Distributed/Cloud/Network | Go | Concurrency primitives, fast compilation, simple deployment |
+| Web/API/Scripting | Python, TypeScript | Rapid development, rich ecosystem |
+| Game Engine/Graphics | C++, Rust | Low-level control, SIMD, existing engines |
+| Compiler/Interpreter | Rust, C, OCaml | Pattern matching, algebraic data types |
+
+**If YAML lists multiple recommended languages:**
+1. Analyze the project's core challenge (e.g., "page-based storage" → C)
+2. Pick ONE primary language
+3. Document the rationale
+
+**Output in blueprint (REQUIRED):**
+```json
+{
+  "implementation": {
+    "primary_language": "C",
+    "rationale": "Why this language fits the project's core challenge",
+    "style_guide": "Language-specific conventions (naming, formatting, idioms)",
+    "build_system": "Makefile, Cargo, go mod, pip, npm, etc.",
+    "alternatives": ["Other viable options with trade-offs"]
+  }
+}
+```
+
+This language will be used for:
+- All code examples in educational content
+- All struct/class definitions in TDD
+- All method signatures in diagrams
+- Pseudocode is allowed for algorithm explanation, but primary language version must also be shown
+
 ## Output: ONLY raw JSON
 
 ```json
@@ -42,6 +80,13 @@ If the project builds a tool/engine/framework, plan diagrams that look INTO the 
   "overview": "2-3 paragraph overview",
   "design_philosophy": "Why this project teaches what it teaches",
   "is_build_your_own": true,
+  "implementation": {
+    "primary_language": "C",
+    "rationale": "Why this language was chosen",
+    "style_guide": "Naming conventions, formatting rules",
+    "build_system": "Makefile, Cargo, go mod, etc.",
+    "alternatives": ["Other viable options"]
+  },
   "prerequisites": {
     "assumed_known": ["Concept 1", "Skill A"],
     "must_teach_first": [

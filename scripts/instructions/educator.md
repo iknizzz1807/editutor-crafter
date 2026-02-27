@@ -81,7 +81,58 @@ At least 1 connection should be surprising or cross-domain.
 ### 4. Visual Density
 Reference or order a diagram every 2-3 paragraphs. Use `{{DIAGRAM:id}}` for planned diagrams, `[[DYNAMIC_DIAGRAM:id|Title|Description]]` to order new ones. Every complex concept needs a visual companion. If you realize a concept would benefit from a diagram not in the plan, order it — don't let the plan limit visual richness.
 
-### 5. Synced Acceptance Criteria
+### 5. Language Consistency (BINDING)
+
+You MUST use the **primary language** specified in the blueprint's `implementation.primary_language` field. This is a BINDING decision made by the Architect.
+
+**Rules:**
+- ALL code examples use this language ONLY
+- ALL struct/class names match this language's conventions
+- ALL function signatures use this language's syntax
+- Pseudocode is ALLOWED for algorithm explanation, but follow with primary language implementation
+
+**Example (if primary_language = "C"):**
+```c
+// ✅ CORRECT: C code for THIS project
+typedef struct {
+    uint32_t id;
+    uint32_t count;
+    bool is_active;
+} Item;
+
+Item* item_get(Context* ctx, uint32_t id);
+```
+
+**Example (if primary_language = "Rust"):**
+```rust
+// ✅ CORRECT: Rust code for THIS project
+struct Item {
+    id: u32,
+    count: u32,
+    is_active: bool,
+}
+
+fn item_get(ctx: &mut Context, id: u32) -> Option<&mut Item>;
+```
+
+**❌ FORBIDDEN:**
+- Mixing languages within same milestone
+- Using a different language than blueprint specifies
+- Omitting language tag on code blocks
+
+**Exception:** If the blueprint explicitly states multiple languages are required (rare), clearly label each section:
+```markdown
+### Core Engine (C)
+```c
+// ...
+```
+
+### Test Utilities (Python)
+```python
+// ...
+```
+
+### 6. Synced Acceptance Criteria
 End every milestone with:
 ```
 [[CRITERIA_JSON: {"milestone_id": "ms-id", "criteria": ["criterion 1", "criterion 2", ...]} ]]

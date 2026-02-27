@@ -306,7 +306,9 @@ def log_llm_interaction(
         f.write(log_entry)
 
 
-def invoke_claude_cli(messages, node_label="unknown", project_id=None, max_retries=3, model_override=None):
+def invoke_claude_cli(
+    messages, node_label="unknown", project_id=None, max_retries=3, model_override=None
+):
     model = model_override or CLAUDE_MODEL
     system_prompt = "You are a specialized technical content engine. Output ONLY the requested Markdown or JSON. NO conversational text, NO preambles (e.g. 'Here is the...', 'I will now...'), NO acknowledgments. If writing a milestone, start directly with the content."
     user_prompt = ""
@@ -316,9 +318,7 @@ def invoke_claude_cli(messages, node_label="unknown", project_id=None, max_retri
         elif isinstance(msg, HumanMessage):
             user_prompt = str(msg.content)
 
-    log_llm_interaction(
-        project_id, node_label, f"claude-cli ({model})", messages
-    )
+    log_llm_interaction(project_id, node_label, f"claude-cli ({model})", messages)
 
     for attempt in range(max_retries):
         try:
@@ -386,17 +386,23 @@ def safe_invoke(
     # When running claude-cli, use Gemini fallback if provider_override="local-proxy", else claude-cli
     if LLM_PROVIDER == "claude-cli":
         if provider_override == "local-proxy" and LLM_FALLBACK is not None:
-            log_llm_interaction(project_id, node_label, "local-proxy (fallback)", messages)
+            log_llm_interaction(
+                project_id, node_label, "local-proxy (fallback)", messages
+            )
             kwargs = invoke_kwargs or {}
             if "timeout" not in kwargs:
                 kwargs["timeout"] = 1200
             return LLM_FALLBACK.invoke(messages, **kwargs)
-        return invoke_claude_cli(messages, node_label, project_id, max_retries, model_override=model_override)
+        return invoke_claude_cli(
+            messages, node_label, project_id, max_retries, model_override=model_override
+        )
 
     actual_provider = provider_override or LLM_PROVIDER
 
     if actual_provider == "claude-cli":
-        return invoke_claude_cli(messages, node_label, project_id, max_retries, model_override=model_override)
+        return invoke_claude_cli(
+            messages, node_label, project_id, max_retries, model_override=model_override
+        )
 
     log_llm_interaction(project_id, node_label, actual_provider, messages)
 
@@ -449,6 +455,7 @@ class GraphState(TypedDict):
     project_id: Annotated[str, replace_reducer]
     meta: Annotated[Dict[str, Any], replace_reducer]
     blueprint: Annotated[Dict[str, Any], replace_reducer]
+    primary_language: Annotated[str, replace_reducer]  # From architect decision
     accumulated_md: Annotated[str, replace_reducer]
     current_ms_index: Annotated[int, replace_reducer]
     diagrams_to_generate: Annotated[List[Dict[str, Any]], replace_reducer]
@@ -603,8 +610,17 @@ For each milestone: misconception, reveal, cascade (3-5 connections, 1+ cross-do
     proj_dir.mkdir(parents=True, exist_ok=True)
     header = f"# {blueprint.get('title', state['project_id'])}\n\n{blueprint.get('overview', '')}\n\n"
 
+    # Extract primary language from blueprint
+    primary_language = _get_primary_language(blueprint, meta)
+    print(f"  [Agent: Architect] Primary language: {primary_language}")
+
+    impl = blueprint.get("implementation", {})
+    if impl:
+        print(f"    Rationale: {impl.get('rationale', 'N/A')}")
+
     new_state = {
         "blueprint": blueprint,
+        "primary_language": primary_language,
         "diagrams_to_generate": blueprint.get("diagrams", []),
         "status": "writing",
         "phase": "atlas",
@@ -624,6 +640,11 @@ def _validate_blueprint(blueprint, meta):
             "Missing 'prerequisites' — reader knowledge assumptions will be unclear"
         )
 
+    # Check implementation language decision
+    impl = blueprint.get("implementation", {})
+    if not impl.get("primary_language"):
+        warnings.append("Missing 'implementation.primary_language' — will default to C")
+
     # Check concept count
     for ms in blueprint.get("milestones", []):
         count = ms.get("concept_count", 0)
@@ -638,6 +659,33 @@ def _validate_blueprint(blueprint, meta):
     return warnings
 
 
+def _get_primary_language(blueprint: Dict, meta: Dict) -> str:
+    """Extract primary language from blueprint, with fallback logic."""
+    impl = blueprint.get("implementation", {})
+    primary = impl.get("primary_language")
+
+    if primary:
+        return primary
+
+    # Fallback 1: Check YAML recommendations
+    langs = meta.get("languages", {})
+    recommended = langs.get("recommended", [])
+    if recommended:
+        # Pick first recommended language
+        return recommended[0]
+
+    # Fallback 2: Default based on domain
+    domain = meta.get("domain", "systems")
+    domain_defaults = {
+        "systems": "C",
+        "database": "C",
+        "compiler": "Rust",
+        "distributed": "Go",
+        "web": "TypeScript",
+        "ml": "Python",
+        "game": "C++",
+    }
+    return domain_defaults.get(domain, "C")
 
 
 def writer_node(state: GraphState):
@@ -747,12 +795,26 @@ def writer_node(state: GraphState):
     assumed_str = ", ".join(assumed) if assumed else "(not specified)"
     already_explained = ", ".join(state.get("explained_concepts", [])[-20:])
 
+    # Get primary language for code examples
+    primary_language = state.get("primary_language", "C")
+    impl = blueprint.get("implementation", {})
+    language_rationale = impl.get("rationale", "")
+
     # PROMPT RE-ENGINEERING: Move instructions to the end to avoid "Lost in the Middle"
     prompt = f"""
 {domain_profile}
 
 --- GROUND TRUTH PROJECT SPEC (YAML) ---
 {full_yaml_meta}
+
+--- IMPLEMENTATION LANGUAGE (BINDING) ---
+Primary Language: **{primary_language}**
+Rationale: {language_rationale}
+
+ALL code examples in this milestone MUST use {primary_language}. This is a BINDING decision.
+- Use {primary_language} syntax for all structs, functions, and code blocks
+- Follow {primary_language} naming conventions
+- Pseudocode allowed for algorithm explanation, but follow with {primary_language} implementation
 
 --- READER CONTEXT ---
 Assumed known: {assumed_str}
@@ -1120,11 +1182,28 @@ def tdd_writer_node(state: GraphState):
     domain_profile = load_domain_profile(state["meta"])
     mod_diag_ids = ", ".join([d.get("id", "?") for d in mod.get("diagrams", [])])
 
+    # Get primary language for code examples
+    primary_language = state.get("primary_language", "C")
+    impl = state.get("blueprint", {}).get("implementation", {})
+    language_rationale = impl.get("rationale", "")
+    style_guide = impl.get("style_guide", "")
+
     prompt = f"""
 {domain_profile}
 
 --- GROUND TRUTH PROJECT SPEC (YAML) ---
 {full_yaml_meta}
+
+--- IMPLEMENTATION LANGUAGE (BINDING) ---
+Primary Language: **{primary_language}**
+Rationale: {language_rationale}
+Style Guide: {style_guide}
+
+ALL code in this TDD MUST use {primary_language}. This is a BINDING decision.
+- Struct/class definitions in {primary_language} syntax
+- Function signatures in {primary_language} syntax  
+- Memory layouts with {primary_language} types
+- Follow {primary_language} naming conventions
 
 --- PEDAGOGICAL ATLAS ---
 {state["accumulated_md"]}
@@ -1310,10 +1389,12 @@ def system_diagram_writer_node(state: GraphState):
     atlas_content = state["accumulated_md"]
     tdd_content = state["tdd_accumulated_md"]
     project_name = state["meta"].get("name", state["project_id"])
+    primary_language = state.get("primary_language", "C")
 
     prompt = f"""{INSTR_SYSTEM_DIAGRAM_ARTIST}
 
 --- PROJECT: {project_name} ---
+Primary Language: {primary_language}
 
 --- ATLAS CONTENT (Educational) ---
 {atlas_content}
@@ -1325,6 +1406,16 @@ def system_diagram_writer_node(state: GraphState):
 {D2_REFERENCE}
 
 TASK: Create a comprehensive system overview diagram that captures ALL major components and relationships from the content above.
+
+REQUIREMENTS:
+1. Use 2D grid layout (horizontal layers + vertical detail)
+2. Every component must have: name, file reference, link to milestone
+3. Structs must show: byte offsets, field types, total size
+4. Methods must show: return type, parameters
+5. Data flow arrows must be labeled with type and size
+6. Include scale indicators ("4KB page", "64 bytes")
+7. Code blocks must use {primary_language}
+8. This diagram must be IMPLEMENTATION-READY
 
 Output ONLY valid D2 code. No markdown fences, no explanations."""
 
@@ -1357,17 +1448,17 @@ def system_diagram_refiner_node(state: GraphState):
     tdd_content = state["tdd_accumulated_md"]
     project_name = state["meta"].get("name", state["project_id"])
 
-    print(f"  [Agent: System Diagram Refiner] Iteration {iteration}/{MAX_SYSTEM_DIAGRAM_ITERATIONS}...")
+    print(
+        f"  [Agent: System Diagram Refiner] Iteration {iteration}/{MAX_SYSTEM_DIAGRAM_ITERATIONS}..."
+    )
 
-    prompt = f"""You are reviewing a D2 system diagram for completeness and accuracy.
+    # Get primary language for diagram code blocks
+    primary_language = state.get("primary_language", "C")
+
+    prompt = f"""{INSTR_SYSTEM_DIAGRAM_ARTIST}
 
 --- PROJECT: {project_name} ---
-
---- ATLAS CONTENT (Educational) ---
-{atlas_content}
-
---- TDD CONTENT (Technical Specs) ---
-{tdd_content}
+Primary Language: {primary_language}
 
 --- CURRENT D2 DIAGRAM ---
 ```d2
@@ -1377,30 +1468,40 @@ def system_diagram_refiner_node(state: GraphState):
 --- D2 REFERENCE ---
 {D2_REFERENCE}
 
-YOUR TASK:
-Review the diagram against the full content above. Check:
-1. Are ALL major components from Atlas + TDD included in the diagram?
-2. Are ALL important relationships (data flows, dependencies) shown?
-3. Is the visual hierarchy clear (system > subsystem > component)?
-4. Will this D2 code compile without errors?
-5. Is the layout balanced and readable?
+QUALITY CHECKLIST (ALL must pass for done=true):
+1. ☐ Every major component has: name, file reference (e.g., "pager.c"), link to milestone
+2. ☐ Struct/class definitions show: byte offsets, field types, total size
+3. ☐ Methods show: return type, parameters, brief description
+4. ☐ Data flow arrows labeled with: type, size, example value
+5. ☐ Scale indicators present ("4KB page", "64 bytes", "cache line")
+6. ☐ 2D grid layout used (horizontal layers + vertical detail within)
+7. ☐ No overlapping nodes, readable in PDF
+8. ☐ All milestone IDs from Atlas included with links
+9. ☐ Code blocks use primary language ({primary_language})
+10. ☐ At least 3 levels of detail (layer → component → struct/method)
 
 OUTPUT JSON (no markdown, just raw JSON):
 {{
   "done": true/false,
   "d2": "complete updated D2 code here (only if not done)",
-  "feedback": "brief explanation of what you added/fixed or why diagram is complete"
+  "feedback": "list which checklist items failed and what you fixed",
+  "checklist_passed": [1, 2, 3, ...]
 }}
 
 CRITICAL RULES:
-- Set done=true ONLY when diagram is COMPLETE and ACCURATE
-- If done=false, output the FULL updated D2 code (not just changes)
-- The D2 code MUST be valid and compile successfully
-- Add missing components and relationships
-- Improve layout if needed"""
+- Set done=true ONLY when ALL 10 checklist items pass
+- If ANY item fails → done=false, output FULL improved D2 code
+- The D2 code MUST compile successfully
+- This diagram must be IMPLEMENTATION-READY (code-able blueprint)
+- An engineer should be able to implement directly from this diagram"""
 
     invoke_args = {}
-    if LLM_PROVIDER in ["local-proxy", "mistral", "mixed-claude-gemini", "mixed-heavy-claude"]:
+    if LLM_PROVIDER in [
+        "local-proxy",
+        "mistral",
+        "mixed-claude-gemini",
+        "mixed-heavy-claude",
+    ]:
         invoke_args["response_format"] = {"type": "json_object"}
 
     res = safe_invoke(
@@ -1419,11 +1520,13 @@ CRITICAL RULES:
             result = {
                 "done": "done" in raw.lower() and '"done":true' in raw.replace(" ", ""),
                 "d2": d2_match.group(1).replace("\\n", "\n").replace('\\"', '"'),
-                "feedback": "Extracted from malformed JSON"
+                "feedback": "Extracted from malformed JSON",
             }
 
     if result:
-        is_done = result.get("done", False) or iteration >= MAX_SYSTEM_DIAGRAM_ITERATIONS
+        is_done = (
+            result.get("done", False) or iteration >= MAX_SYSTEM_DIAGRAM_ITERATIONS
+        )
         new_d2 = result.get("d2", current_d2)
         feedback = result.get("feedback", "")
 
@@ -1658,83 +1761,22 @@ def bibliographer_node(state: GraphState):
 
 def spec_syncer_node(state: GraphState):
     """
-    Back-sync synchronized technical criteria to the original YAML project spec.
-    Ensures AI Reviewer and educational docs use the exact same standard.
+    Save AI-generated criteria to a separate JSON file.
+    Does NOT modify the original YAML spec - user-authored criteria are preserved.
+    The synced_criteria.json file is for reference/debugging only.
     """
     project_id = state["project_id"]
-    proj_yaml_path = PROJECTS_DATA_DIR / f"{project_id}.yaml"
-
-    if not proj_yaml_path.exists():
-        print(
-            f"  [Agent: Syncer] Original YAML not found at {proj_yaml_path}. Skipping."
-        )
-        return {}
+    proj_dir = OUTPUT_BASE / project_id
 
     synced_data = state.get("running_criteria", [])
-    if not synced_data:
-        # Try reading from file if memory is empty
-        proj_dir = OUTPUT_BASE / project_id
-        criteria_file = proj_dir / "synced_criteria.json"
-        if criteria_file.exists():
-            try:
-                synced_data = json.loads(criteria_file.read_text())
-            except:
-                pass
-
     if not synced_data:
         print("  [Agent: Syncer] No synchronized criteria found. Skipping.")
         return {}
 
-    print(
-        f"  [Agent: Syncer] Synchronizing {len(synced_data)} criteria sets to YAML..."
-    )
-
-    with open(proj_yaml_path, "r") as f:
-        proj_data = yaml.safe_load(f)
-
-    # Merge logic
-    # synced_data is a list of entries like:
-    # {"milestone_id": "ms-1", "criteria": [...]} OR {"module_id": "mod-1", "criteria": [...]}
-
-    milestones = proj_data.get("milestones", [])
-    for entry in synced_data:
-        ms_id = str(entry.get("milestone_id") or entry.get("module_id", ""))
-        new_criteria = entry.get("criteria", [])
-
-        if not ms_id or not new_criteria:
-            continue
-
-        # Find matching milestone in YAML (Fuzzy match)
-        found = False
-        ms_num_match = re.search(r"(\d+)", ms_id)
-        ms_num = ms_num_match.group(1) if ms_num_match else None
-
-        for ms in milestones:
-            yaml_ms_id = str(ms.get("id", ""))
-            yaml_ms_num_match = re.search(r"(\d+)", yaml_ms_id)
-            yaml_ms_num = yaml_ms_num_match.group(1) if yaml_ms_num_match else None
-
-            # Match criteria: Exact ID match OR Matching milestone number
-            if yaml_ms_id == ms_id or (
-                ms_num and yaml_ms_num and ms_num == yaml_ms_num
-            ):
-                # REPLACE: Use AI-generated criteria entirely (more precise & aligned with content)
-                ms["acceptance_criteria"] = new_criteria
-                found = True
-                break
-
-        if not found:
-            # If it was a dynamic module or missing ID, we could append it?
-            # For now, let's just log it.
-            print(f"    [WARN] Milestone/Module {ms_id} not found in original YAML.")
-
-    # Write back to YAML with nice formatting
-    with open(proj_yaml_path, "w") as f:
-        yaml.dump(
-            proj_data, f, allow_unicode=True, default_flow_style=False, sort_keys=False
-        )
-
-    print(f"  ✓ YAML synchronized successfully: {proj_yaml_path}")
+    criteria_file = proj_dir / "synced_criteria.json"
+    criteria_file.write_text(json.dumps(synced_data, indent=2, ensure_ascii=False))
+    print(f"  ✓ Saved {len(synced_data)} criteria sets to synced_criteria.json")
+    print(f"    (Original YAML spec left unchanged)")
     return {}
 
 
@@ -1887,6 +1929,7 @@ def generate_project(project_id):
         "project_id": project_id,
         "meta": meta,
         "blueprint": {},
+        "primary_language": "C",  # Will be set by architect
         "accumulated_md": "",
         "current_ms_index": 0,
         "diagrams_to_generate": [],
@@ -1901,10 +1944,8 @@ def generate_project(project_id):
         "tdd_current_mod_index": 0,
         "tdd_diagrams_to_generate": [],
         "external_reading": "",
-
         "running_criteria": [],
         "explained_concepts": [],
-
         "system_diagram_d2": None,
         "system_diagram_iteration": 0,
         "system_diagram_done": False,
@@ -1973,8 +2014,15 @@ if __name__ == "__main__":
         action="store_true",
         help="Architect+Educator=Claude CLI, Artist=Gemini Proxy",
     )
-    parser.add_argument("--claude-model", default="sonnet", help="Claude CLI model (default: sonnet)")
-    parser.add_argument("--1m", dest="use_1m", action="store_true", help="Use 1M context window (appends [1m] to model)")
+    parser.add_argument(
+        "--claude-model", default="sonnet", help="Claude CLI model (default: sonnet)"
+    )
+    parser.add_argument(
+        "--1m",
+        dest="use_1m",
+        action="store_true",
+        help="Use 1M context window (appends [1m] to model)",
+    )
     parser.add_argument("--anthropic-model", default=None)
     parser.add_argument("--debug", action="store_true", help="Log raw LLM responses")
     parser.add_argument(

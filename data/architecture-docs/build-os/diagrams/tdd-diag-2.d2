@@ -1,0 +1,141 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+title: |md
+  ## Two-Stage Boot Sequence Timeline
+  Power-On → BIOS → Stage1 (0x7C00) → A20 → Stage2 → GDT → Protected Mode → kernel_main
+| {near: top-center}
+shape: sequence_diagram
+BIOS
+Stage1
+A20
+Stage2
+KernelEntry
+KernelMain
+power_on: {
+  label: "① POWER-ON RESET"
+  shape: text
+  style.bold: true
+}
+BIOS -> BIOS: "POST: enumerate hardware\nCPU starts at 0xFFFFFFF0 (real mode)\nEFLAGS.IF=0, CS=0xF000, IP=0xFFF0"
+BIOS -> BIOS: "Scan boot devices\nRead sector 0 of boot disk\nVerify bytes[510]=0x55, bytes[511]=0xAA" {
+  style.stroke-dash: 3
+}
+BIOS -> Stage1: "Load MBR → 0x7C00\njmp 0x0000:0x7C00\nDL=boot_drive_number"
+stage1_init: {
+  label: "② STAGE1 — MBR (512 bytes)"
+  shape: text
+  style.bold: true
+}
+Stage1 -> Stage1: "cli  ; disable interrupts\nxor ax,ax\nmov ds,ax ; DS=0\nmov es,ax ; ES=0\nmov ss,ax ; SS=0\nmov sp,0x7C00 ; stack below MBR\nsti" {
+  style.fill: "#E8D5F5"
+}
+Stage1 -> Stage1: "mov [boot_drive],dl ; save DL\n\nINT 13h AH=0x02:\n  al=8 sectors, ch=0, cl=2\n  dh=0, bx=0x7E00\n; Load stage2 → 0x7E00"
+Stage1 -> Stage1: "jc disk_error\n; CF=1 → print 'E' via INT 10h\n; cli; hlt" {
+  style.stroke: red
+  style.stroke-dash: 3
+}
+Stage1 -> Stage2: "jmp 0x0000:0x7E00\n; Stage2 at physical 0x7E00"
+a20_header: {
+  label: "③ A20 ENABLE WATERFALL"
+  shape: text
+  style.bold: true
+}
+Stage2 -> A20: "ATTEMPT METHOD 1\nmov ax,0x2401\nint 0x15\njc try_method2\n; CF=1 → not supported"
+A20 -> A20: "check_a20:\n  write 0x00 → [0x0500]\n  write 0xFF → [0x10500]\n  cmp [0x0500],0xFF\n  jnz a20_enabled ; ZF=0 → ON" {
+  style.fill: "#D5EAF5"
+}
+A20 -> Stage2: "✓ A20 ON via INT 15h\n(ZF=0 from check_a20)" {
+  style.stroke: green
+}
+A20 -> A20: "ATTEMPT METHOD 2 (fast A20)\nin al,0x92\nor al,0x02  ; set A20 bit\nand al,0xFE ; KEEP bit0=0 (NO RESET)\nout 0x92,al" {
+  style.stroke-dash: 5
+}
+A20 -> Stage2: "✓ A20 ON via port 0x92" {
+  style.stroke: green
+  style.stroke-dash: 5
+}
+A20 -> A20: "ATTEMPT METHOD 3 (8042 KBC)\nkbd_wait_cmd; out 0x64,0xAD ; disable kbd\nkbd_wait_cmd; out 0x64,0xD0 ; read port\nkbd_wait_data; in al,0x60\nor al,0x02   ; set A20\nout 0x60,al\nout 0x64,0xAE ; enable kbd\ndelay: out 0x80,al × 100" {
+  style.stroke-dash: 5
+}
+A20 -> Stage2: "✓ A20 ON via 8042 KBC" {
+  style.stroke: green
+  style.stroke-dash: 5
+}
+A20 -> A20: "FAIL: all 3 methods exhausted\nprint 'A' via INT 10h\ncli; hlt" {
+  style.stroke: red
+  style.fill: "#FDECEA"
+}
+kernel_load: {
+  label: "④ KERNEL LOAD"
+  shape: text
+  style.bold: true
+}
+Stage2 -> Stage2: "INT 13h AH=0x42 (ext read)\nDAP: 64 sectors, LBA=10\ndest segment=0x1000 → phys 0x10000\nmov dl,[boot_drive]\nint 0x13\njc load_error ; print 'L'; hlt"
+gdt_phase: {
+  label: "⑤ GDT CONSTRUCTION"
+  shape: text
+  style.bold: true
+}
+Stage2 -> Stage2: "Build GDT in stage2 data:\n[0x00]: NULL (8B zeros)\n[0x08]: kernel code  access=0x9A flags=0xCF\n[0x10]: kernel data  access=0x92 flags=0xCF\n[0x18]: user code    access=0xFA flags=0xCF\n[0x20]: user data    access=0xF2 flags=0xCF\n\ngdt_descriptor: dw 39; dd gdt_start" {
+  style.fill: "#E8D5F5"
+}
+pm_transition: {
+  label: "⑥ PROTECTED MODE TRANSITION"
+  shape: text
+  style.bold: true
+}
+Stage2 -> Stage2: "cli  ; MANDATORY before lgdt\n; stale IVT + IF=1 = triple fault" {
+  style.fill: "#FFF3CD"
+}
+Stage2 -> Stage2: "lgdt [gdt_descriptor]\n; GDTR.limit=39, GDTR.base=&gdt_start\nCR0.PE must be 0 at this point"
+Stage2 -> Stage2: "mov eax,cr0\nor  eax,0x01  ; set CR0.PE bit 0\nmov cr0,eax\n; CPU IS NOW IN PROTECTED MODE\n; CS still holds real-mode value\n; prefetch queue has real-mode ops" {
+  style.fill: "#D5F5E3"
+  style.stroke: green
+}
+Stage2 -> Stage2: "jmp 0x08:protected_entry\n; far jump:\n;  (1) CS ← 0x08 (kernel code)\n;  (2) flushes prefetch queue\n;  (3) validates CS vs GDT\n; WITHOUT THIS → triple fault" {
+  style.fill: "#D5F5E3"
+}
+seg_reload: {
+  label: "⑦ SEGMENT REGISTER RELOAD [BITS 32]"
+  shape: text
+  style.bold: true
+}
+Stage2 -> Stage2: "protected_entry: [BITS 32]\nmov ax,0x10 ; kernel data selector\nmov ds,ax ; DS=0x10\nmov es,ax ; ES=0x10\nmov fs,ax ; FS=0x10\nmov gs,ax ; GS=0x10\nmov ss,ax ; SS=0x10\nmov esp,0x9FC00 ; below EBDA"
+Stage2 -> Stage2: "Copy kernel 0x10000→0x100000\nmov esi,0x10000\nmov edi,0x100000\nmov ecx,8192 ; 32KB/4 dwords\ncld\nrep movsd"
+Stage2 -> KernelEntry: "jmp 0x100000\n; CS=0x08, all segs=0x10\n; EFLAGS.IF=0"
+kernel_entry_phase: {
+  label: "⑧ kernel_entry.asm"
+  shape: text
+  style.bold: true
+}
+KernelEntry -> KernelEntry: "cld  ; DF=0 FIRST (req for rep stosb)\n; C ABI: DF must be 0 on entry\n; BIOS may have left DF=1 → corruption"
+KernelEntry -> KernelEntry: "BSS zero loop:\nmov edi,__bss_start ; from linker script\nmov ecx,__bss_end\nsub ecx,edi ; byte count\nxor eax,eax\nrep stosb\n; Without this: global vars = garbage" {
+  style.fill: "#FFF3CD"
+}
+KernelEntry -> KernelEntry: "Stack setup:\nmov esp,kernel_stack_top\n; kernel_stack: resb 16384 (.bss)\n; kernel_stack_top = base + 16384\n\nxor ebp,ebp\n; EBP=0 → marks call chain bottom\n; enables correct stack unwind"
+KernelEntry -> KernelMain: "call kernel_main\n; C entry point\n; EFLAGS.IF=0 still\n; No IDT yet — any exception = triple fault"
+KernelMain -> KernelMain: "kernel_main():\n  gdt_init()    ← reinit GDT in permanent .data\n  vga_clear()   ← volatile uint16_t* 0xB8000\n  serial_init() ← COM1 115200/8N1\n  kprintf(\"[OK] Kernel started\\n\")\n  /* M2: idt_init, pic_remap, pit_init, sti */\n  for(;;) hlt" {
+  style.fill: "#D5F5E3"
+}
+KernelEntry -> KernelEntry: "kernel_main must not return\n.hang: cli; hlt; jmp .hang" {
+  style.stroke: red
+  style.stroke-dash: 3
+}
+failure_modes: |md
+  **Key Failure Modes → Triple Fault Causes**
+  - Boot sig wrong: BIOS skips device
+  - A20 disabled: kernel load corrupts 0x0500
+  - lgdt before cli: IVT dispatch in PM → #GP → #DF → triple
+  - No far jmp after CR0.PE: pipeline inconsistency → #GP
+  - DF=1 before rep stosb: BSS zero runs backward
+  - BSS not zeroed: global vars = garbage → undefined behavior
+  - ESP unmapped: first push → triple fault
+| {
+  near: bottom-center
+  style.fill: "#FFF3CD"
+  style.stroke: "#C0A000"
+}

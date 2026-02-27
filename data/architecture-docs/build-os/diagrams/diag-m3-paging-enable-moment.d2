@@ -1,0 +1,324 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+
+direction: down
+
+title: ||md
+  ## Paging Enable Moment — CR3 Load → CR0.PG → MMU Activation → Higher-Half Jump
+  *State Evolution: Physical Addressing → Virtual Addressing*
+|| {near: top-center}
+
+back_to_map: "↖ Satellite Map" {
+  link: "#diag-satellite-os-map"
+  style: {
+    fill: "#2d2d2d"
+    font-color: "#aaaaaa"
+    font-size: 11
+    stroke: "#555555"
+    border-radius: 4
+  }
+}
+
+# ─────────────────────────────────────────────────
+# PHASE 0 — Pre-paging physical world
+# ─────────────────────────────────────────────────
+phase0: "PHASE 0 — Physical Addressing Active" {
+  style: {
+    fill: "#1a1a2e"
+    stroke: "#4a4a8a"
+    stroke-width: 2
+    border-radius: 6
+    font-color: "#aaaaff"
+    bold: true
+  }
+  cpu_state0: "CPU State" {
+    style.fill: "#0f3460"
+    style.stroke: "#4a90d9"
+    style.font-color: white
+    style.bold: true
+    regs0: ||md
+      **CR0** = `0x00000011`  PG=**0** PE=1  
+      **CR3** = `0x00000000`  (no page dir)  
+      **EIP** = `0x00101000`  (phys addr)  
+      **ESP** = `0x00090000`  (phys addr)
+    ||
+  }
+  mmu_state0: "MMU State: DISABLED" {
+    style.fill: "#3d0000"
+    style.stroke: "#cc3333"
+    style.font-color: "#ff8888"
+    style.bold: true
+    mmu_detail0: ||md
+      Every load/store/fetch:  
+      **Virtual addr = Physical addr**  
+      No TLB lookups performed  
+      No page table walks
+    ||
+  }
+  phys_layout: "Physical Memory Layout (before paging)" {
+    style.fill: "#0d0d0d"
+    style.stroke: "#555555"
+    style.font-color: "#cccccc"
+    style.font-size: 11
+    mem_block: ||md
+      `0x00000000` ██ BIOS / IVT / BDA (reserved)  
+      `0x00007C00` ██ MBR/Stage1 remnant  
+      `0x00008000` ░░ Stage2 loader  
+      `0x00090000` ██ Stack (grows ↓)  
+      `0x000B8000` ██ VGA MMIO framebuffer  
+      `0x000F0000` ██ BIOS ROM (reserved)  
+      `0x00100000` **██ Kernel .text / .rodata**  ← EIP  
+      `0x00104000` **██ Kernel .data / .bss**  
+      `0x00110000` **██ boot_pd[1024]** ← PAGE DIR  
+      `0x00111000` **██ pt_identity[1024]** ← table (low)  
+      `0x00112000` **██ pt_kernel_high[1024]** ← table (high)  
+      `0x00400000` ░░ free frames (pmm_alloc)
+    ||
+  }
+}
+
+# ─────────────────────────────────────────────────
+# PHASE 1 — Build page tables
+# ─────────────────────────────────────────────────
+phase1: "PHASE 1 — Construct Page Tables" {
+  style: {
+    fill: "#0d1f0d"
+    stroke: "#2a6a2a"
+    stroke-width: 2
+    border-radius: 6
+    font-color: "#88ff88"
+    bold: true
+  }
+  code1: ||cpp
+    // paging_init() — runs at physical EIP ~0x00101800
+    // Step A: Identity-map first 4 MB (pt_identity)
+    for (uint32_t i = 0; i < 1024; i++) {
+        pt_identity[i] = (i * 0x1000) | PTE_PRESENT | PTE_WRITABLE;
+    }
+    // Step B: Map kernel to higher-half (pt_kernel_high)
+    // Virtual 0xC00_00000 → Physical 0x000_00000
+    for (uint32_t i = 0; i < 1024; i++) {
+        pt_kernel_high[i] = (i * 0x1000) | PTE_PRESENT | PTE_WRITABLE;
+    }
+    // Step C: Install page tables in page directory
+    boot_pd[0]   = (uint32_t)pt_identity   | PDE_PRESENT | PDE_WRITABLE;
+    boot_pd[768] = (uint32_t)pt_kernel_high | PDE_PRESENT | PDE_WRITABLE;
+  ||
+  pt_visual: "Page Directory — Key Entries" {
+    style.fill: "#0a0a1a"
+    style.stroke: "#3a5a3a"
+    style.font-color: "#99cc99"
+    style.font-size: 11
+    pd_table: ||md
+      | PDE Index | VA Range | PDE Value | PT Target |
+      |-----------|----------|-----------|-----------|
+      | **0** | `0x00000000`–`0x003FFFFF` | `0x00111003` | `pt_identity` |
+      | 1–767 | (unmapped) | `0x00000000` | — |
+      | **768** | `0xC0000000`–`0xC03FFFFF` | `0x00112003` | `pt_kernel_high` |
+    ||
+  }
+}
+
+# ─────────────────────────────────────────────────
+# PHASE 2 — Load CR3
+# ─────────────────────────────────────────────────
+phase2: "PHASE 2 — Load CR3 (PD Base)" {
+  style: {
+    fill: "#1a1500"
+    stroke: "#806000"
+    stroke-width: 2
+    border-radius: 6
+    font-color: "#ffdd44"
+    bold: true
+  }
+  code2: ||nasm
+    ; CR3 bits[31:12] = page directory frame number = 0x00110
+    mov eax, 0x00110000 ; Physical address of boot_pd
+    mov cr3, eax
+    ; Paging is still DISABLED (CR0.PG=0)
+  ||
+  cr3_note: "⚠ CR3 State Loaded" {
+    style.fill: "#2a2000"
+    style.stroke: "#aa8800"
+    style.font-color: "#ffcc00"
+    cr3_detail: ||md
+      **CR3** = `0x00110000`  
+      - MMU is still **inactive**  
+      - Address translation is currently transparent
+    ||
+  }
+}
+
+# ─────────────────────────────────────────────────
+# PHASE 3 — THE MOMENT: CR0.PG set
+# ─────────────────────────────────────────────────
+phase3: "PHASE 3 — Set CR0.PG = 1" {
+  style: {
+    fill: "#1f0505"
+    stroke: "#cc2222"
+    stroke-width: 3
+    border-radius: 6
+    font-color: "#ff6666"
+    bold: true
+  }
+  the_instruction: "⚡ CRITICAL MOMENT" {
+    style.fill: "#3d0000"
+    style.stroke: "#ff0000"
+    style.stroke-width: 3
+    style.font-color: "#ff4444"
+    style.bold: true
+    code_cr0: ||nasm
+      mov eax, cr0
+      or  eax, 0x80000000    ; Set bit 31 (PG)
+      mov cr0, eax           ; ← ATOM BOMB
+      ; MMU ACTIVE IMMEDIATELY AFTER THIS
+    ||
+  }
+  transition_box: "Translation Boundary" {
+    style.fill: "#0d0d0d"
+    style.stroke: "#ff4444"
+    style.stroke-dash: 5
+    style.font-color: "#ff8888"
+    style.font-size: 11
+    trans_detail: ||md
+      | Context | Address | Translation Logic |
+      |---------|---------|--------------------|
+      | BEFORE  | `0x00101C28` | PA = VA (MMU OFF) |
+      | AFTER   | `0x00101C2E` | VA → PA (via boot_pd[0]) |
+      **Identity Map Status:** `pt_identity` provides mapping for VA `0x00101...` to PA `0x00101...`
+    ||
+  }
+}
+
+# ─────────────────────────────────────────────────
+# PHASE 4 — Identity Execution
+# ─────────────────────────────────────────────────
+phase4: "PHASE 4 — Identity Window" {
+  style: {
+    fill: "#001a00"
+    stroke: "#004400"
+    stroke-width: 2
+    border-radius: 6
+    font-color: "#44aa44"
+    bold: true
+  }
+  identity_exec: "Transition to Higher-Half" {
+    style.fill: "#001200"
+    style.stroke: "#006600"
+    style.font-color: "#66cc66"
+    id_code: ||nasm
+      ; Code still in low 4MB identity window
+      lea eax, [kernel_main_high]   ; VMA = 0xC0101xxx
+      jmp eax                        ; THE ESCAPE JUMP
+    ||
+  }
+}
+
+# ─────────────────────────────────────────────────
+# PHASE 5 — The Higher-Half Jump
+# ─────────────────────────────────────────────────
+phase5: "PHASE 5 — Higher-Half Jump" {
+  style: {
+    fill: "#001020"
+    stroke: "#004488"
+    stroke-width: 3
+    border-radius: 6
+    font-color: "#4488ff"
+    bold: true
+  }
+  jump_code: "jmp 0xC0101xxx" {
+    style.fill: "#001530"
+    style.stroke: "#0066cc"
+    style.font-color: "#88ccff"
+    jcode: ||md
+      MMU now uses PDE[768] → pt_kernel_high.
+      Points to same physical frames but different VA.
+    ||
+  }
+  post_jump: "Cleanup Identity Map" {
+    style.fill: "#001a2a"
+    style.stroke: "#005599"
+    style.font-color: "#66aaee"
+    post_code: ||nasm
+      kernel_main_high:
+          ; Remove identity mapping (PDE 0)
+          mov dword [boot_pd + 0], 0 
+          ; Flush TLB to enforce removal
+          mov eax, cr3
+          mov cr3, eax 
+          call kernel_main
+    ||
+  }
+}
+
+# ─────────────────────────────────────────────────
+# PHASE 6 — Final stable state
+# ─────────────────────────────────────────────────
+phase6: "PHASE 6 — Final Stable State" {
+  style: {
+    fill: "#001a00"
+    stroke: "#00aa44"
+    stroke-width: 2
+    border-radius: 6
+    font-color: "#44ff88"
+    bold: true
+  }
+  final_cpu: "CPU State" {
+    style.fill: "#003310"
+    style.stroke: "#00aa44"
+    fcpu_regs: ||md
+      **CR0.PG** = 1 (Paging Active)
+      **CR3** = `0x00110000`
+      **EIP** = `0xC010xxxx` (Virtual)
+    ||
+  }
+}
+
+# ─────────────────────────────────────────────────
+# CONNECTIONS
+# ─────────────────────────────────────────────────
+phase0 -> phase1: "paging_init()"
+phase1 -> phase2: "Tables Ready"
+phase2 -> phase3: "CR3 Loaded"
+phase3 -> phase4: "PG=1 (MAPPED)" {
+  style.stroke: "#cc2222"
+  style.stroke-width: 3
+}
+phase4 -> phase5: "High-Half JMP"
+phase5 -> phase6: "Identity Removed"
+
+identity_must: "⚠ IDENTITY MAP REQUIREMENT" {
+  style: {
+    fill: "#1a0505"
+    stroke: "#ff4444"
+    stroke-width: 2
+    stroke-dash: 4
+    font-color: "#ff8888"
+    font-size: 11
+  }
+  must_content: ||md
+    If `VA X != PA X` at `mov cr0`, the fetch of the
+    instruction at `EIP+len` will fault. Since no IDT
+    is yet mapped, the CPU will Triple Fault.
+  ||
+}
+phase3 -> identity_must: "Crash Trigger" {style.stroke: red}
+
+legend: "Legend" {
+  near: bottom-right
+  style: {
+    fill: "#0d0d0d"
+    stroke: "#444444"
+    font-color: "#aaaaaa"
+    font-size: 11
+  }
+  legend_content: ||md
+    🔴 Red = Critical
+    🟡 Yellow = Intermediate
+    🟢 Green = Stable
+  ||
+}

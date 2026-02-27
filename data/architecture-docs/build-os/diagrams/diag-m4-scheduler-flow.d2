@@ -1,0 +1,515 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 200
+  }
+}
+title: |md
+  ## Round-Robin Scheduler — Timer Interrupt to Context Switch
+  **state_evolution** · IRQ0 fires every 10ms (100Hz PIT) · Preemptive, non-cooperative
+| {near: top-center}
+back_to_map: "↖ Satellite Map" {
+  link: "#diag-satellite-os-map"
+  style: {
+    fill: "#1a1a2e"
+    font-color: "#aaaacc"
+    stroke: "#444466"
+    border-radius: 6
+    font-size: 11
+  }
+}
+# ─── COLOR LEGEND ────────────────────────────────────────────────────────────
+legend: {
+  near: bottom-right
+  label: "Legend"
+  style.fill: "#111122"
+  style.stroke: "#333355"
+  style.border-radius: 6
+  hw: "🔴 Hardware / PIT / PIC" {style.fill: "#2a0000"; style.stroke: "#cc2222"; style.font-color: "#ff8888"; style.border-radius: 4}
+  cpu: "🟠 CPU Interrupt Entry" {style.fill: "#2a1500"; style.stroke: "#cc6600"; style.font-color: "#ffaa44"; style.border-radius: 4}
+  sched: "🟣 Scheduler Logic" {style.fill: "#1a0a2a"; style.stroke: "#8855cc"; style.font-color: "#cc99ff"; style.border-radius: 4}
+  ctx: "🔵 Context Switch (ASM)" {style.fill: "#001a2a"; style.stroke: "#2277cc"; style.font-color: "#66bbff"; style.border-radius: 4}
+  proc: "🟢 Process State" {style.fill: "#001a00"; style.stroke: "#22aa44"; style.font-color: "#77ee99"; style.border-radius: 4}
+}
+# ─── PHASE 0: BEFORE — PROCESS A RUNNING ─────────────────────────────────────
+phase0: "PHASE 0 — STEADY STATE: Process A Running (Ring 3)" {
+  style.fill: "#0a1a0a"
+  style.stroke: "#22aa44"
+  style.stroke-width: 2
+  style.border-radius: 8
+  proc_a_running: "Process A\n[RUNNING @ Ring 3]" {
+    style.fill: "#003300"
+    style.stroke: "#22aa44"
+    style.font-color: "#77ee99"
+    style.border-radius: 6
+    style.bold: true
+  }
+  cpu_state: |md
+    **CPU Registers (User Context)**
+    `CS  = 0x1B`  (user code, RPL=3)
+    `SS  = 0x23`  (user data, RPL=3)
+    `EIP = 0x00401234`  (user code addr)
+    `ESP = 0xBFFFFE80`  (user stack)
+    `EFLAGS.IF = 1`  (interrupts enabled)
+    `CR3 = proc_a.page_directory (phys)`
+  | {style.fill: "#001a00"; style.stroke: "#226644"}
+  cr3_note: "CR3 → Process A's\npage directory (phys)" {
+    style.fill: "#002200"
+    style.stroke: "#224422"
+    style.font-color: "#55cc77"
+    style.border-radius: 4
+    style.font-size: 11
+  }
+  proc_a_running -> cpu_state: "executing user instructions"
+  cpu_state -> cr3_note: "MMU using" {style.stroke-dash: 4}
+}
+# ─── PHASE 1: PIT FIRES IRQ0 ──────────────────────────────────────────────────
+phase1: "PHASE 1 — PIT FIRES IRQ0 (every 10ms @ 100Hz)" {
+  style.fill: "#1a0000"
+  style.stroke: "#cc2222"
+  style.stroke-width: 2
+  style.border-radius: 8
+  pit_hw: "PIT 8254\nChannel 0" {
+    shape: cylinder
+    style.fill: "#330000"
+    style.stroke: "#cc2222"
+    style.font-color: "#ff8888"
+    style.bold: true
+  }
+  pit_calc: |md
+    **Divisor Calculation**
+    `1,193,182 Hz ÷ divisor = 100 Hz`
+    `divisor = 11,932`
+    Counter decrements each input tick.
+    At zero → output line asserts.
+  | {style.fill: "#1a0000"; style.stroke: "#882222"}
+  pic_master: "8259 PIC\n(Master)" {
+    style.fill: "#2a0000"
+    style.stroke: "#cc4444"
+    style.font-color: "#ff9999"
+    style.border-radius: 4
+  }
+  pic_logic: |md
+    **PIC Arbitration**
+    IRQ0 asserts on PIC pin
+    IRQ0 not masked → asserts INTR
+    CPU acknowledges → INTA cycle
+    PIC responds: vector = **32** (0x20)
+    *(Master remapped: IRQ0 → vec 32)*
+  | {style.fill: "#1a0000"; style.stroke: "#882222"}
+  pit_hw -> pit_calc: "counter → 0\nasserts output" {style.stroke: "#cc2222"}
+  pit_calc -> pic_master: "IRQ0 signal" {style.stroke: "#cc3333"; style.bold: true}
+  pic_master -> pic_logic: "arbitrate\n→ vector 32" {style.stroke: "#cc3333"}
+}
+# ─── PHASE 2: CPU INTERRUPT ENTRY ────────────────────────────────────────────
+phase2: "PHASE 2 — CPU INTERRUPT ENTRY (Hardware-Automatic)" {
+  style.fill: "#1a0d00"
+  style.stroke: "#cc6600"
+  style.stroke-width: 2
+  style.border-radius: 8
+  priv_check: "Privilege Check" {
+    shape: diamond
+    style.fill: "#2a1500"
+    style.stroke: "#cc6600"
+    style.font-color: "#ffaa44"
+  }
+  tss_read: "Read TSS\nSS0:ESP0" {
+    style.fill: "#2a1000"
+    style.stroke: "#cc5500"
+    style.font-color: "#ff9933"
+    style.border-radius: 4
+  }
+  tss_detail: |md
+    **TSS.ESP0 = proc_a.kernel_stack_top**
+    *(updated last context switch)*
+    SS0 = 0x10  (kernel data segment)
+  | {style.fill: "#1a0a00"; style.stroke: "#664400"}
+  stack_push: "Push 5 Values\nonto Kernel Stack" {
+    style.fill: "#2a1500"
+    style.stroke: "#cc6600"
+    style.font-color: "#ffaa44"
+    style.border-radius: 4
+    style.bold: true
+  }
+  pushed_frame: |md
+    **Kernel Stack after CPU push (top→bottom):**
+    `[esp+0 ]  SS_user  = 0x23`
+    `[esp+4 ]  ESP_user = 0xBFFFFE80`
+    `[esp+8 ]  EFLAGS   = 0x00000202  (IF=1)`
+    `[esp+12]  CS_user  = 0x1B`
+    `[esp+16]  EIP_user = 0x00401234`  ← return addr
+  | {style.fill: "#1a0a00"; style.stroke: "#885500"}
+  idt_lookup: "IDT[32] Lookup" {
+    style.fill: "#2a1000"
+    style.stroke: "#aa5500"
+    style.font-color: "#ffcc88"
+    style.border-radius: 4
+  }
+  idt_entry: |md
+    **IDT Gate Descriptor [32]**
+    offset_low  = isr_32 & 0xFFFF
+    selector    = 0x08  (kernel code)
+    flags       = **0x8E**  (interrupt gate, DPL=0)
+    *→ IF cleared on entry (no re-entrant IRQ)*
+  | {style.fill: "#1a0a00"; style.stroke: "#664400"}
+  priv_check -> tss_read: "CPL=3 < DPL=0\nring change needed" {style.stroke: "#cc6600"}
+  tss_read -> tss_detail: "fetch ESP0" {style.stroke-dash: 4}
+  tss_read -> stack_push: "switch to kernel stack\nESP = TSS.ESP0" {style.stroke: "#cc6600"}
+  stack_push -> pushed_frame: "5 words pushed" {style.stroke: "#cc7700"}
+  stack_push -> idt_lookup: "load CS, EIP from\nIDT[32] gate" {style.stroke: "#cc6600"}
+  idt_lookup -> idt_entry: "decode gate\ndescriptor" {style.stroke-dash: 4}
+}
+# ─── PHASE 3: ISR STUB + COMMON STUB ─────────────────────────────────────────
+phase3: "PHASE 3 — ISR STUB + isr_common_stub" {
+  style.fill: "#0d0a1a"
+  style.stroke: "#6633cc"
+  style.stroke-width: 2
+  style.border-radius: 8
+  isr32_stub: |nasm
+    isr_32:
+        push dword 0      ; fake err_code
+        push dword 32     ; int_no
+        jmp isr_common_stub
+  | {style.fill: "#0a0820"; style.stroke: "#553399"}
+  common_stub: |nasm
+    isr_common_stub:
+        pusha             ; save EDI,ESI,EBP,
+                          ;      ESP,EBX,EDX,ECX,EAX
+        push ds; push es  ; save segment registers
+        push fs; push gs
+        mov ax, 0x10      ; kernel data selector
+        mov ds, ax        ; reload all data segs
+        mov es, ax
+        push esp          ; ptr to struct interrupt_frame
+        call interrupt_dispatch
+        add esp, 4        ; pop frame ptr arg
+        pop gs; pop fs
+        pop es; pop ds
+        popa
+        add esp, 8        ; remove int_no + err_code
+        iret              ; restore EIP,CS,EFLAGS,ESP,SS
+  | {style.fill: "#0a0820"; style.stroke: "#553399"}
+  frame_struct: |md
+    **struct interrupt_frame (on kernel stack)**
+    `[+0 ] EDI, ESI, EBP, ESP_dummy`
+    `[+16] EBX, EDX, ECX, EAX`   (pusha)
+    `[+32] DS, ES, FS, GS`        (seg regs)
+    `[+48] int_no = 32`
+    `[+52] err_code = 0`
+    `[+56] EIP_user = 0x00401234`
+    `[+60] CS_user  = 0x1B`
+    `[+64] EFLAGS   = 0x00000202`
+    `[+68] ESP_user = 0xBFFFFE80`
+    `[+72] SS_user  = 0x23`
+  | {style.fill: "#0a0a1a"; style.stroke: "#442277"}
+  isr32_stub -> common_stub: "jmp" {style.stroke: "#8844cc"; style.bold: true}
+  common_stub -> frame_struct: "builds complete\ninterrupt_frame" {style.stroke: "#6633cc"; style.stroke-dash: 4}
+}
+# ─── PHASE 4: SCHEDULER LOGIC ─────────────────────────────────────────────────
+phase4: "PHASE 4 — SCHEDULER (scheduler_tick)" {
+  style.fill: "#150a22"
+  style.stroke: "#8855cc"
+  style.stroke-width: 2
+  style.border-radius: 8
+  tick_entry: "interrupt_dispatch\n→ timer_handler\n→ scheduler_tick" {
+    style.fill: "#1a0a2a"
+    style.stroke: "#8855cc"
+    style.font-color: "#cc99ff"
+    style.border-radius: 4
+    style.bold: true
+  }
+  accounting: |md
+    **Accounting**
+    `tick_counter++`
+    `current_process->total_ticks++`
+    *(current = Process A)*
+  | {style.fill: "#100820"; style.stroke: "#553388"}
+  policy: "Pick Next\nREADY Process" {
+    shape: diamond
+    style.fill: "#1a0a2a"
+    style.stroke: "#9966cc"
+    style.font-color: "#ddaaff"
+  }
+  rr_rule: |md
+    **Round-Robin Policy**
+    `next = current_process->next`
+    Walk circular list skipping
+    BLOCKED / DEAD processes.
+    If next == current → no switch.
+  | {style.fill: "#100820"; style.stroke: "#553388"}
+  state_tx: |md
+    **State Transitions**
+    `proc_a->state = PROCESS_READY`
+    `proc_b->state = PROCESS_RUNNING`
+    `current_process = proc_b`
+  | {style.fill: "#100820"; style.stroke: "#664499"; style.font-color: "#ddaaff"}
+  tick_entry -> accounting: "first thing" {style.stroke: "#8855cc"}
+  accounting -> policy: "find next" {style.stroke: "#8855cc"}
+  policy -> rr_rule: "advance\ncircular ptr" {style.stroke-dash: 4}
+  rr_rule -> state_tx: "proc_b\nselected" {style.stroke: "#9966cc"; style.bold: true}
+}
+# ─── CIRCULAR READY QUEUE ────────────────────────────────────────────────────
+ready_queue: "Ready Queue — Circular Linked List of PCBs" {
+  style.fill: "#0a0a0a"
+  style.stroke: "#445566"
+  style.stroke-width: 2
+  style.border-radius: 8
+  pcb_a: "PCB: proc_a\npid=1  state=READY\nkernel_stack_top=0xC0201FFF\npage_dir=0x00301000 (phys)\ncontext.esp=0xC0201F80\nnext→" {
+    style.fill: "#003300"
+    style.stroke: "#22aa44"
+    style.font-color: "#77ee99"
+    style.border-radius: 6
+    style.font-size: 10
+    style.font: mono
+  }
+  pcb_b: "PCB: proc_b\npid=2  state=RUNNING ◄ SELECTED\nkernel_stack_top=0xC0203FFF\npage_dir=0x00302000 (phys)\ncontext.esp=0xC0203F80\nnext→" {
+    style.fill: "#001a33"
+    style.stroke: "#2277cc"
+    style.font-color: "#66bbff"
+    style.border-radius: 6
+    style.font-size: 10
+    style.font: mono
+    style.bold: true
+  }
+  pcb_c: "PCB: proc_c\npid=3  state=READY\nkernel_stack_top=0xC0205FFF\npage_dir=0x00303000 (phys)\ncontext.esp=0xC0205F80\nnext→" {
+    style.fill: "#1a1a00"
+    style.stroke: "#aaaa22"
+    style.font-color: "#dddd66"
+    style.border-radius: 6
+    style.font-size: 10
+    style.font: mono
+  }
+  idle_pcb: "PCB: idle\npid=0  state=READY\nkernel_stack_top=0xC0207FFF\npage_dir=0x00301000 (phys)\ncontext.esp=0xC0207F80\nnext→" {
+    style.fill: "#111111"
+    style.stroke: "#444444"
+    style.font-color: "#888888"
+    style.border-radius: 6
+    style.font-size: 10
+    style.font: mono
+  }
+  current_ptr: "current_process\npointer" {
+    shape: circle
+    style.fill: "#330000"
+    style.stroke: "#cc2222"
+    style.font-color: "#ff6666"
+    style.bold: true
+    style.font-size: 10
+  }
+  current_ptr -> pcb_b: "was→A, now→B\n(updated in context_switch)" {
+    style.stroke: "#cc2222"
+    style.bold: true
+    style.stroke-width: 2
+  }
+  pcb_a -> pcb_b: "next" {style.stroke: "#22aa44"; style.stroke-dash: 3}
+  pcb_b -> pcb_c: "next" {style.stroke: "#2277cc"; style.stroke-dash: 3}
+  pcb_c -> idle_pcb: "next" {style.stroke: "#aaaa22"; style.stroke-dash: 3}
+  idle_pcb -> pcb_a: "next\n(wrap)" {style.stroke: "#444444"; style.stroke-dash: 3}
+}
+# ─── PHASE 5: CONTEXT SWITCH (context_switch) ────────────────────────────────
+phase5: "PHASE 5 — context_switch() [C Wrapper]" {
+  style.fill: "#001a2a"
+  style.stroke: "#2277cc"
+  style.stroke-width: 2
+  style.border-radius: 8
+  cr3_switch: "Load B's\nPage Directory → CR3" {
+    style.fill: "#001a33"
+    style.stroke: "#2277cc"
+    style.font-color: "#66bbff"
+    style.border-radius: 4
+    style.bold: true
+  }
+  cr3_detail: |md
+    `mov cr3, proc_b.page_directory`
+    TLB **fully flushed** — all user-space
+    translations evicted. Kernel PDEs
+    (idx 768-1023) shared → no re-walk needed.
+  | {style.fill: "#001020"; style.stroke: "#114466"}
+  tss_update: "Update TSS.ESP0\n→ B's kernel_stack_top" {
+    style.fill: "#001a33"
+    style.stroke: "#2277cc"
+    style.font-color: "#66bbff"
+    style.border-radius: 4
+    style.bold: true
+  }
+  tss_why: |md
+    **Why this MUST happen here:**
+    Next interrupt while B runs → CPU reads TSS.
+    If ESP0 still = A's stack → CPU pushes frame onto A's stack.
+    A's state silently corrupted. Crash later, not now.
+    `tss_set_kernel_stack(proc_b->kernel_stack_top)`
+    `kernel_tss.esp0 = 0xC0203FFF`
+  | {style.fill: "#001020"; style.stroke: "#114466"; style.font-color: "#aaddff"}
+  ptr_update: "current_process = proc_b" {
+    style.fill: "#001a33"
+    style.stroke: "#2266aa"
+    style.font-color: "#66aaff"
+    style.border-radius: 4
+  }
+  asm_call: "call context_switch_asm\n(&old_ctx, &new_ctx)" {
+    style.fill: "#002244"
+    style.stroke: "#3399cc"
+    style.font-color: "#88ccff"
+    style.border-radius: 4
+    style.bold: true
+  }
+  cr3_switch -> cr3_detail: "TLB impact" {style.stroke-dash: 4}
+  cr3_switch -> tss_update: "then" {style.stroke: "#2277cc"}
+  tss_update -> tss_why: "critical invariant" {style.stroke-dash: 4}
+  tss_update -> ptr_update: "then" {style.stroke: "#2277cc"}
+  ptr_update -> asm_call: "finally: swap\nregisters" {style.stroke: "#2277cc"; style.bold: true}
+}
+# ─── PHASE 6: context_switch_asm ─────────────────────────────────────────────
+phase6: "PHASE 6 — context_switch_asm [Assembly — The Register Swap]" {
+  style.fill: "#001a2a"
+  style.stroke: "#1166bb"
+  style.stroke-width: 3
+  style.border-radius: 8
+  save_old: |nasm
+    ;; ── SAVE PROCESS A ──────────────────────
+    push ebx          ; A's EBX → A's kernel stack
+    push esi          ; A's ESI
+    push edi          ; A's EDI
+    push ebp          ; A's EBP
+    pushfd            ; A's EFLAGS (IF=0, inside IRQ handler)
+    ;; Save A's ESP into A->context.esp
+    mov eax, [esp+24] ; eax = old_ctx ptr (arg1)
+    mov [eax+16], esp ; old_ctx->esp = current ESP
+                      ; (A is now fully suspended)
+  | {style.fill: "#001020"; style.stroke: "#1155aa"; style.font-color: "#aaddff"}
+  pivot: "ESP SWAP\n← Identity Change Happens Here →" {
+    style.fill: "#002244"
+    style.stroke: "#3399ff"
+    style.font-color: "#ffffff"
+    style.border-radius: 8
+    style.bold: true
+    style.font-size: 13
+    style.3d: true
+  }
+  swap_code: |nasm
+    ;; ── LOAD PROCESS B ──────────────────────
+    mov eax, [esp+28] ; eax = new_ctx ptr (arg2)
+    mov esp, [eax+16] ; ESP = B->context.esp
+                      ; ← WE ARE NOW ON B'S STACK
+  | {style.fill: "#001a33"; style.stroke: "#2277cc"; style.font-color: "#aaddff"}
+  restore_b: |nasm
+    ;; ── RESTORE PROCESS B ───────────────────
+    popfd             ; B's EFLAGS → IF=1 (re-enables interrupts!)
+    pop ebp           ; B's EBP
+    pop edi           ; B's EDI
+    pop esi           ; B's ESI
+    pop ebx           ; B's EBX
+    ret               ; pop B's saved EIP → resume B
+                      ; (= return addr from B's last context_switch_asm call)
+  | {style.fill: "#001a33"; style.stroke: "#2277cc"; style.font-color: "#aaddff"}
+  b_stacks_note: |md
+    **Process B's kernel stack (as of last preemption):**
+    `[esp+0 ]  B's EFLAGS   = 0x00000202  (IF=1)`
+    `[esp+4 ]  B's EBP`
+    `[esp+8 ]  B's EDI`
+    `[esp+12]  B's ESI`
+    `[esp+16]  B's EBX`
+    `[esp+20]  B's EIP  ← return into isr_common_stub`
+    *(if first schedule: fabricated by process_create)*
+  | {style.fill: "#001020"; style.stroke: "#114466"}
+  save_old -> pivot: "A fully saved\nnow swap" {style.stroke: "#cc6600"; style.bold: true; style.stroke-width: 2}
+  pivot -> swap_code: "1 instruction:\nmov esp, [eax+16]" {style.stroke: "#3399ff"; style.bold: true; style.stroke-width: 2}
+  swap_code -> restore_b: "B's regs\npop from B's stack" {style.stroke: "#2277cc"; style.bold: true}
+  restore_b -> b_stacks_note: "what B's\nstack contains" {style.stroke-dash: 4}
+}
+# ─── PHASE 7: IRET — RETURN TO USER MODE ─────────────────────────────────────
+phase7: "PHASE 7 — IRET: Return to Process B's User Code" {
+  style.fill: "#0a1a0a"
+  style.stroke: "#22aa44"
+  style.stroke-width: 2
+  style.border-radius: 8
+  return_path: |md
+    **ret** → back into `isr_common_stub`
+    `pop gs; pop fs; pop es; pop ds`  (restore B's seg regs)
+    `popa`  → restore B's EAX,ECX,EDX,EBX,EBP,ESI,EDI
+    `add esp, 8`  → remove int_no + err_code
+    **iretd**  → 5-field restore (ring-change variant):
+    &nbsp;&nbsp;pops  EIP    → B's user code address
+    &nbsp;&nbsp;pops  CS     → 0x1B  (ring 3)
+    &nbsp;&nbsp;pops  EFLAGS → 0x00000202  (IF=1)
+    &nbsp;&nbsp;pops  ESP    → B's user stack pointer
+    &nbsp;&nbsp;pops  SS     → 0x23  (user data)
+  | {style.fill: "#001a00"; style.stroke: "#226644"}
+  proc_b_running: "Process B\n[RUNNING @ Ring 3]" {
+    style.fill: "#003300"
+    style.stroke: "#22aa44"
+    style.font-color: "#77ee99"
+    style.border-radius: 6
+    style.bold: true
+  }
+  eoi_note: "PIC EOI sent\nbefore context_switch_asm\n(in irq_dispatch)" {
+    style.fill: "#1a0000"
+    style.stroke: "#cc2222"
+    style.font-color: "#ff8888"
+    style.border-radius: 4
+    style.font-size: 11
+    style.stroke-dash: 4
+  }
+  illusion: |md
+    **The Illusion Maintained:**
+    Process B resumes at its exact instruction.
+    Its registers are identical to when it was preempted.
+    It has no knowledge that A ran or that the timer fired.
+    **10ms later: IRQ0 fires again → cycle repeats.**
+  | {style.fill: "#001a00"; style.stroke: "#115522"; style.font-color: "#55cc77"}
+  return_path -> proc_b_running: "B resumes\nring 3 execution" {style.stroke: "#22aa44"; style.bold: true; style.stroke-width: 2}
+  proc_b_running -> illusion: "transparent\npreemption" {style.stroke-dash: 4; style.stroke: "#22aa44"}
+  eoi_note -> return_path: "PIC ready for\nnext interrupt" {style.stroke: "#cc3333"; style.stroke-dash: 4}
+}
+# ─── FLOW CONNECTIONS BETWEEN PHASES ─────────────────────────────────────────
+phase0 -> phase1: "PIT counter → 0\nIRQ0 asserts" {
+  style.stroke: "#cc2222"
+  style.bold: true
+  style.stroke-width: 2
+  style.font-color: "#ff6666"
+}
+phase1 -> phase2: "CPU INTR pin asserted\nvector = 32" {
+  style.stroke: "#cc6600"
+  style.bold: true
+  style.stroke-width: 2
+  style.font-color: "#ffaa44"
+}
+phase2 -> phase3: "CS=0x08, EIP=isr_32\nESP=kernel stack" {
+  style.stroke: "#8844cc"
+  style.bold: true
+  style.stroke-width: 2
+  style.font-color: "#cc99ff"
+}
+phase3 -> phase4: "call interrupt_dispatch\n(frame ptr on stack)" {
+  style.stroke: "#8855cc"
+  style.bold: true
+  style.stroke-width: 2
+  style.font-color: "#cc99ff"
+}
+phase4 -> ready_queue: "inspect queue\nselect next" {
+  style.stroke: "#666699"
+  style.stroke-dash: 4
+}
+phase4 -> phase5: "proc_b selected\ncall context_switch()" {
+  style.stroke: "#2277cc"
+  style.bold: true
+  style.stroke-width: 2
+  style.font-color: "#66bbff"
+}
+phase5 -> phase6: "call context_switch_asm\n(&proc_a.ctx, &proc_b.ctx)" {
+  style.stroke: "#1166bb"
+  style.bold: true
+  style.stroke-width: 3
+  style.font-color: "#88ccff"
+}
+phase6 -> phase7: "ret → isr_common_stub\n→ iretd" {
+  style.stroke: "#22aa44"
+  style.bold: true
+  style.stroke-width: 2
+  style.font-color: "#77ee99"
+}
+phase7 -> phase0: "next tick:\nProc B becomes 'current'" {
+  style.stroke: "#228844"
+  style.stroke-dash: 5
+  style.font-color: "#55cc77"
+  style.stroke-width: 1
+}

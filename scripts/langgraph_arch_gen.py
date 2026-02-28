@@ -552,6 +552,7 @@ For each milestone: misconception, reveal, cascade (3-5 connections, 1+ cross-do
             HumanMessage(content=prompt),
         ],
         node_label="Architect",
+        project_id=state["project_id"],
         invoke_kwargs=invoke_args,
         provider_override=(
             "claude-cli"
@@ -597,6 +598,7 @@ For each milestone: misconception, reveal, cascade (3-5 connections, 1+ cross-do
                 HumanMessage(content=refine_prompt),
             ],
             node_label="Architect (Refinement)",
+            project_id=state["project_id"],
             invoke_kwargs=invoke_args,
             provider_override=(
                 "claude-cli"
@@ -1088,6 +1090,7 @@ Output ONLY the corrected D2 code."""
             HumanMessage(content=prompt),
         ],
         node_label=f"Artist (Diag: {diag.get('title')})",
+        project_id=state["project_id"],
         provider_override="local-proxy" if is_retry else None,
     )
     code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
@@ -1127,6 +1130,7 @@ Follow DOMAIN PROFILE for diagram types and spec detail level.
     res = safe_invoke(
         [HumanMessage(content=prompt)],
         node_label="TDD Planner",
+        project_id=state["project_id"],
         provider_override="claude-cli" if is_claude else None,
     )
     print(
@@ -1377,6 +1381,7 @@ Output ONLY the corrected D2 code."""
             HumanMessage(content=prompt),
         ],
         node_label=f"TDD Artist (Diag: {diag.get('title')})",
+        project_id=state["project_id"],
         provider_override="local-proxy" if is_retry else None,
     )
     code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
@@ -1434,6 +1439,7 @@ Output ONLY valid D2 code. No markdown fences, no explanations."""
     res = safe_invoke(
         [HumanMessage(content=prompt)],
         node_label="System Diagram Writer",
+        project_id=state["project_id"],
         provider_override="local-proxy",
     )
     d2_code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
@@ -1519,6 +1525,7 @@ CRITICAL RULES:
     res = safe_invoke(
         [HumanMessage(content=prompt)],
         node_label=f"System Diagram Refiner (iter {iteration})",
+        project_id=state["project_id"],
         invoke_kwargs=invoke_args,
         provider_override="local-proxy",
     )
@@ -1667,6 +1674,7 @@ No other text outside these blocks."""
     res = safe_invoke(
         [HumanMessage(content=prompt)],
         node_label="Explainer",
+        project_id=state["project_id"],
     )
 
     # Parse explanations

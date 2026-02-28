@@ -1,0 +1,148 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+# START: waitpid(-1) dispatch entry
+start: "●" {
+  shape: circle
+  style: {
+    fill: black
+    font-color: white
+    bold: true
+  }
+}
+
+main_loop: "Wait Event Loop" {
+  wait_call: "waitpid(-1, &status, 0)" {
+    shape: rectangle
+    tooltip: "Blocking call: wakes on any child state change"
+  }
+
+  status_check: "Wait Status Decoder" {
+    shape: diamond
+  }
+
+  process_exit: "Termination Handler" {
+    style.fill: "#fce4ec"
+    label: "Process Exited\n(WIFEXITED / WIFSIGNALED)"
+    invariant: "active_count > 0"
+    action: |md
+      1. **state_map_remove(stopped_pid)**
+      2. **active_count--**
+      3. **Continue** loop if count > 0
+    |
+  }
+
+  stop_handler: "Stop Handler\n(WIFSTOPPED)" {
+    sig_logic: "Stop Logic Dispatch" {
+      shape: diamond
+      label: "event = (status >> 16) & 0xFF\nsig = WSTOPSIG(status)"
+    }
+
+    # Branch 1: ptrace Events
+    events: "ptrace Event Logic" {
+      fork_clon: "FORK / VFORK / CLONE" {
+        action: |md
+          1. **PTRACE_GETEVENTMSG** -> new_child_pid
+          2. **state_map_insert(new_child_pid)**
+          3. **active_count++**
+          4. **PTRACE_SYSCALL(new_child_pid)**
+        |
+      }
+      exec_ev: "EXECVE" {
+        action: |md
+          1. **state->in_syscall = 0** (Reset)
+          2. **Reset entry_regs**
+        |
+      }
+    }
+
+    # Branch 2: Syscall Stops
+    syscalls: "Syscall Intercepts\n(sig == 0x85)" {
+      entry: "Entry Stop" {
+        invariant: "state->in_syscall == 0"
+        action: |md
+          1. **state->entry_regs = regs**
+          2. **state->in_syscall = 1**
+        |
+      }
+      exit: "Exit Stop" {
+        invariant: "state->in_syscall == 1"
+        action: |md
+          1. **print_syscall(...)**
+          2. **state->in_syscall = 0**
+        |
+      }
+    }
+
+    # Branch 3: Signal Delivery
+    signals: "Signal Delivery" {
+      inject: "Signal Re-injection" {
+        label: "sig != 0x85 && sig != SIGTRAP"
+        action: |md
+          **ptrace(PTRACE_SYSCALL, pid, NULL, (void*)sig)**
+        |
+      }
+    }
+  }
+
+  resume: "ptrace(PTRACE_SYSCALL, pid, NULL, NULL)" {
+    shape: rectangle
+    style: {
+      stroke: "#1a237e"
+      stroke-width: 2
+    }
+  }
+}
+
+# Connections with Guards and Actions
+start -> main_loop.wait_call
+
+main_loop.wait_call -> main_loop.status_check
+
+main_loop.status_check -> main_loop.process_exit: "WIFEXITED || WIFSIGNALED"
+main_loop.status_check -> main_loop.stop_handler: "WIFSTOPPED"
+
+main_loop.stop_handler.sig_logic -> main_loop.stop_handler.events: "event != 0"
+main_loop.stop_handler.sig_logic -> main_loop.stop_handler.syscalls: "event == 0 [sig == (SIGTRAP | 0x80)]"
+main_loop.stop_handler.sig_logic -> main_loop.stop_handler.signals.inject: "event == 0 [else]"
+
+main_loop.stop_handler.syscalls -> main_loop.stop_handler.syscalls.entry: "state->in_syscall == 0"
+main_loop.stop_handler.syscalls -> main_loop.stop_handler.syscalls.exit: "state->in_syscall == 1"
+
+# Resume Transitions
+main_loop.stop_handler.events -> main_loop.resume
+main_loop.stop_handler.syscalls.entry -> main_loop.resume
+main_loop.stop_handler.syscalls.exit -> main_loop.resume
+main_loop.stop_handler.signals.inject -> main_loop.wait_call: "Skip default resume"
+
+main_loop.resume -> main_loop.wait_call: "Next Loop Iteration"
+
+# Global Termination
+main_loop.process_exit -> end: "active_count == 0"
+end: "Tracer Exit" {
+  shape: circle
+  style: {
+    fill: red
+    stroke: "#b71c1c"
+    stroke-width: 2
+  }
+}
+
+# Annotations
+main_loop.status_check.style.stroke: orange
+main_loop.stop_handler.sig_logic.style.stroke: orange
+
+notes: {
+  near: bottom-right
+  label: |'md
+### State Invariants
+* **active_count**: Tracks total PIDs in `state_map`.
+* **in_syscall**: Per-PID toggle to handle interleaved events.
+* **PTRACE_O_TRACESYSGOOD**: Required for `0x85` (SIGTRAP | 0x80) markers.
+'|
+}

@@ -1,0 +1,124 @@
+[
+  {
+    "milestone_id": "build-strace-m1",
+    "criteria": [
+      "Fork a child process using fork(); the child calls ptrace(PTRACE_TRACEME, 0, NULL, NULL) before execvp() to register itself for tracing",
+      "The child calls execvp() to exec the target program immediately after PTRACE_TRACEME; if execvp returns, report error and exit with status 1",
+      "The parent catches the initial post-exec SIGTRAP by calling waitpid() and verifies the child stopped with WIFSTOPPED(status)",
+      "The parent calls ptrace(PTRACE_SETOPTIONS, child, NULL, PTRACE_O_TRACESYSGOOD) after the initial stop so syscall stops have bit 7 set (SIGTRAP | 0x80 = 0x85)",
+      "Implement a PTRACE_SYSCALL + waitpid loop: call ptrace(PTRACE_SYSCALL, child, NULL, NULL) to resume the tracee, then waitpid() to block until the next stop",
+      "Maintain an in_syscall toggle flag (initialized to 0); flip it between 0 and 1 on every syscall stop to track entry vs exit",
+      "On syscall entry stop (in_syscall == 0, signal == SIGTRAP|0x80): call ptrace(PTRACE_GETREGS) and record orig_rax as the syscall number; do not read rax as a return value",
+      "On syscall exit stop (in_syscall == 1, signal == SIGTRAP|0x80): read rax (cast to long) as the return value and orig_rax as the syscall number",
+      "Print syscall number and return value on exit in the format: syscall(N) = V, e.g. 'syscall(1) = 5'",
+      "Detect error returns by checking: (long)regs.rax >= -4096L && (long)regs.rax <= -1L; negate rax to obtain the errno value",
+      "Print error returns in the format: syscall(N) = -1 ERRNAME, e.g. 'syscall(2) = -1 ENOENT', using strerror() or equivalent",
+      "Detect signal-delivery stops (WSTOPSIG(status) is not SIGTRAP and not SIGTRAP|0x80); re-inject the signal by calling ptrace(PTRACE_SYSCALL, child, NULL, (void*)(long)sig); do NOT pass 0 which would suppress the signal",
+      "Detect tracee normal exit with WIFEXITED(status); print exit status and terminate the tracer loop",
+      "Detect tracee signal-killed exit with WIFSIGNALED(status); print killing signal and terminate the tracer loop",
+      "Handle ESRCH errno from ptrace calls (tracee may have exited between waitpid and ptrace) gracefully without crashing"
+    ]
+  },
+  {
+    "milestone_id": "build-strace-m2",
+    "criteria": [
+      "Build a static array syscall name table indexed by syscall number covering at least the 50 most common x86_64 syscalls (0=read, 1=write, 2=open, 3=close, 9=mmap, 11=munmap, 12=brk, 21=access, 39=getpid, 57=fork, 59=execve, 60=exit, 257=openat, and others); implement a syscall_name(long num) lookup function that returns 'unknown' for out-of-range or unmapped numbers",
+      "Save struct user_regs_struct at syscall entry stop into per-process state; use the saved entry registers (not exit registers) to read argument values, since argument registers may be modified by the kernel during syscall execution",
+      "Extract the six syscall arguments from the correct x86_64 registers in the entry snapshot: rdi (arg1), rsi (arg2), rdx (arg3), r10 (arg4), r8 (arg5), r9 (arg6) — note r10 not rcx for arg4",
+      "Implement a word-by-word string reader using PTRACE_PEEKDATA: loop reading 8-byte words, scan each word's bytes from LSB to MSB for a null terminator (\\0), append non-null bytes to output buffer, stop when null found or max length exceeded",
+      "Before every PTRACE_PEEKDATA call, set errno = 0; after the call, check for error as (word == -1 && errno != 0) — not just word == -1 — because -1 (0xFFFFFFFFFFFFFFFF) is valid data that can legitimately appear in tracee memory",
+      "Check for NULL pointer before calling PTRACE_PEEKDATA: if the argument value is 0, print 'NULL' instead of attempting to read tracee address 0 (which is always unmapped)",
+      "Truncate strings that reach the configurable maximum length (default 32 bytes) by stopping the PEEKDATA loop at maxlen bytes and appending '...' suffix to the displayed string",
+      "Decode open() flags bitmask using a (value, name) flag table covering at minimum: O_RDONLY (0), O_WRONLY, O_RDWR, O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_NONBLOCK, O_CLOEXEC; handle the O_RDONLY=0 edge case explicitly since bitwise AND with 0 never produces a match",
+      "Decode mmap() prot flags covering PROT_NONE (0), PROT_READ, PROT_WRITE, PROT_EXEC; decode mmap() map flags covering MAP_SHARED, MAP_PRIVATE, MAP_FIXED, MAP_ANONYMOUS; print remaining unrecognized bits as hex with '|0x...' suffix",
+      "Format output in strace style: 'syscall_name(arg1, arg2, ...) = return_value' where errors display as '-1 ERRNO (error message)' and successful returns display the signed decimal return value",
+      "Define a per-syscall argument schema (ArgType enum + SyscallDesc struct) specifying the type of each argument position (ARG_INT, ARG_STR, ARG_PTR, ARG_OPEN_FLAGS, ARG_MMAP_PROT, ARG_MMAP_FLAGS, etc.) so the print function can dispatch correctly by argument type",
+      "Handle PEEKDATA errors mid-string gracefully: if PEEKDATA fails after reading some bytes, return what was read so far rather than discarding it; if PEEKDATA fails on the very first word, print '<unreadable>'"
+    ]
+  },
+  {
+    "milestone_id": "build-strace-m3",
+    "criteria": [
+      "Set PTRACE_O_TRACEFORK, PTRACE_O_TRACEVFORK, PTRACE_O_TRACECLONE, and PTRACE_O_TRACEEXEC options in a single PTRACE_SETOPTIONS call on the initial tracee, before the tracee makes any fork/clone calls",
+      "Switch the main tracing loop to use waitpid(-1, &status, 0) and use the returned pid_t to identify which process stopped",
+      "Decode ptrace event type by extracting bits 23-16 of the waitpid status word with (status >> 16) & 0xff, and dispatch on PTRACE_EVENT_FORK, PTRACE_EVENT_VFORK, and PTRACE_EVENT_CLONE",
+      "On fork/vfork/clone events, call PTRACE_GETEVENTMSG to retrieve the new child PID as an unsigned long, insert it into the per-PID state map with in_syscall=0, increment active_count, and call ptrace(PTRACE_SYSCALL, new_child_pid, NULL, NULL) to start the child tracing",
+      "Implement a per-PID state hash map using open addressing with at minimum 256 slots, where each slot holds pid, in_syscall toggle, and saved entry_regs (struct user_regs_struct)",
+      "Maintain correct, independent in_syscall toggle state for each PID: syscall entry and exit events for different PIDs must not affect each other's toggle",
+      "Tag every printed syscall line with the PID prefix '[pid NNNN]' identifying which process made the call",
+      "On PTRACE_EVENT_EXEC, reset the affected PID's in_syscall to 0 and zero out entry_regs, then resume the process with PTRACE_SYSCALL",
+      "Track the count of active traced processes; decrement on WIFEXITED or WIFSIGNALED events and print '+++ exited with N +++' or '+++ killed by signal N +++' with the PID prefix; exit the main loop when active_count reaches 0",
+      "Handle the case where state_map_find returns NULL for a stopped PID by defensively inserting a new state entry rather than crashing",
+      "Correctly identify event stops (event != 0) before checking the signal number, to avoid misclassifying fork/exec event stops as syscall stops or signal-delivery stops",
+      "Options set on the initial tracee must propagate automatically to all forked descendants so that grandchildren of the initial child are also traced without additional PTRACE_SETOPTIONS calls"
+    ]
+  },
+  {
+    "milestone_id": "build-strace-m4",
+    "criteria": [
+      "Parse -e trace=name,name,... flag using getopt(); resolve each name to a syscall number at parse time using reverse lookup of syscall_names[]; unknown names produce a warning but do not abort",
+      "Apply the filter in print_syscall() only: unmatched syscalls skip the fprintf output but still call stats_record() and still participate in the entry/exit toggle cycle",
+      "Record CLOCK_MONOTONIC timestamp (struct timespec) in ProcessState.entry_time immediately after PTRACE_GETREGS on every entry stop, before any I/O operations",
+      "Compute elapsed nanoseconds as (exit_tv_sec - entry_tv_sec)*1e9 + (exit_tv_nsec - entry_tv_nsec) using signed arithmetic to detect pathological negative values",
+      "Maintain a SyscallStats[336] array with fields total_ns (long long), call_count (long), error_count (long); call stats_record() on every exit stop regardless of filter state",
+      "Detect error returns in stats_record() using the x86_64 range [-4096, -1] on the signed cast of rax, consistent with the detection used for print output",
+      "stats_print() builds an index array of entries with call_count > 0, sorts descending by total_ns using qsort with a comparator accessing the global stats array, then prints the header, one row per syscall, and a totals footer",
+      "Summary table columns: % time (2 decimal places), seconds (6 decimal places), usecs/call (integer), calls (integer), errors (integer), syscall name; total row shows grand totals with 100.00% time",
+      "Support -o filename flag via getopt(); open file with fopen(filename, 'w') and assign to trace_out global; if flag absent, trace_out = stderr; close file at exit; summary always prints to stderr",
+      "Support -c flag that suppresses per-syscall line output (only accumulates statistics) and prints the summary table to stderr on exit",
+      "Implement attach_to_process(pid_t pid) that calls ptrace(PTRACE_ATTACH, pid, NULL, NULL), then waitpid(pid, &status, 0) to confirm SIGSTOP receipt, then ptrace(PTRACE_SETOPTIONS) with the full option set including TRACESYSGOOD and all fork-following flags",
+      "Handle PTRACE_ATTACH permission failure (EPERM) with an informative message explaining ptrace_scope and suggesting solutions",
+      "Install SIGINT handler using sigaction() with SA_RESTART not set, so waitpid() returns EINTR when interrupted; handler sets only a volatile sig_atomic_t flag and nothing else",
+      "In the main loop, check g_interrupted after each waitpid() return (including EINTR path); if set and g_attached_pid != 0, send SIGSTOP to the attached process, waitpid() for the stop, call ptrace(PTRACE_DETACH, ...), then print the summary and exit",
+      "If the tracer forked the tracee (not PTRACE_ATTACH mode), SIGINT does not call PTRACE_DETACH; instead print the summary and let normal process-group signal delivery terminate the children",
+      "The tracing event loop uses waitpid(-1, ...) and dispatches by returned PID to per-PID ProcessState exactly as in Milestone 3; timing and statistics integrate into the existing exit-stop handler path without restructuring the loop"
+    ]
+  },
+  {
+    "module_id": "build-strace-m1",
+    "criteria": [
+      "Fork a child process; child calls PTRACE_TRACEME then exec's the target program",
+      "Parent uses PTRACE_SYSCALL + waitpid loop to stop the child at each syscall boundary",
+      "Explicitly track entry/exit state with a toggle flag: on entry, read syscall number from orig_rax register; on exit, read return value from rax register",
+      "Print syscall number and return value for each intercepted syscall (e.g., 'syscall(0) = 5')",
+      "Detect error returns: on x86_64, return values in range [-4096, -1] indicate error; display as -1 ERRNO",
+      "Handle signals delivered to the tracee: re-inject the signal using PTRACE_SYSCALL with the signal number",
+      "Handle tracee exit cleanly: detect WIFEXITED/WIFSIGNALED from waitpid and exit the tracer"
+    ]
+  },
+  {
+    "module_id": "build-strace-m2",
+    "criteria": [
+      "Implement a sparse array syscall table mapping numbers 0-335 to names.",
+      "Implement word-by-word PTRACE_PEEKDATA string extraction with null-terminator detection.",
+      "Use a snapshot of entry registers for argument decoding during the exit stop.",
+      "Decode bitmask flags for open() and mmap() including the O_RDONLY=0 case.",
+      "Handle NULL pointers by printing 'NULL' instead of dereferencing via PEEKDATA.",
+      "Truncate strings at a maximum length (e.g. 32 bytes) with '...' suffix.",
+      "Correctly distinguish valid -1 data from PTRACE_PEEKDATA errors using errno."
+    ]
+  },
+  {
+    "module_id": "build-strace-m3",
+    "criteria": [
+      "Implement PTRACE_O_TRACEFORK/VFORK/CLONE/EXEC for atomic attachment",
+      "Switch to waitpid(-1) for multi-process event collection",
+      "Maintain per-PID state using a 256-slot open-addressing hash map",
+      "Correctly handle PTRACE_EVENT_EXEC by resetting toggle and registers",
+      "Implement PID-tagged output format: [pid N] syscall(...) = result",
+      "Track active_count to manage tracer lifecycle across forked descendants"
+    ]
+  },
+  {
+    "module_id": "build-strace-m4",
+    "criteria": [
+      "Implement -e trace= filter for selective syscall display",
+      "Record CLOCK_MONOTONIC timestamps at entry/exit for wall-time duration",
+      "Aggregate stats in 336-entry SyscallStats array (call count, errors, time)",
+      "Generate sorted summary table on exit in -c mode",
+      "Support -o filename for trace output redirection",
+      "Support -p PID for attaching to running processes using PTRACE_ATTACH",
+      "Handle SIGINT cleanly by detaching from all traced processes using PTRACE_DETACH"
+    ]
+  }
+]

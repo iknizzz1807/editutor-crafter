@@ -233,6 +233,11 @@ def extract_json(text):
     if not text:
         return None
     text = str(text)
+    # Fix invalid escape sequences LLMs commonly generate inside JSON strings
+    text = re.sub(r"\\'", "'", text)                    # \' -> '
+    text = re.sub(r"\\0(?![0-9a-fA-F])", r"\\\\0", text)  # \0 -> \\0 (but not \0x hex)
+    text = re.sub(r"\\x([0-9a-fA-F]{2})", r"\\u00\1", text)  # \xNN -> \u00NN
+    text = re.sub(r",(\s*[}\]])", r"\1", text)          # trailing commas ,} or ,]
 
     # Find the first potential start of JSON
     start_brace = text.find("{")
@@ -794,11 +799,11 @@ def writer_node(state: GraphState):
 
     prereqs_str = (
         "\n".join(
-            f"  - [[EXPLAIN]] candidate: {p['concept']} (depth: {p.get('depth', 'basic')})"
+            f"  - MUST place [[EXPLAIN:{p['concept'].lower().replace(' ', '-')}|{p['concept']}]] marker in your text where this concept first appears (depth: {p.get('depth', 'basic')})"
             for p in ms_prereqs
         )
         if ms_prereqs
-        else "  (none identified — mark any you discover with [[EXPLAIN:...]])"
+        else "  (none — mark any tangential concept you encounter with [[EXPLAIN:concept-id|description]])"
     )
 
     assumed_str = ", ".join(assumed) if assumed else "(not specified)"
@@ -857,6 +862,7 @@ CRITICAL RULES:
 1. **NO CONVERSATION**: Output ONLY the Markdown content. Do NOT say "I will now write..." or "Let me read...". Start immediately with the content.
 2. **MINIMUM LENGTH**: This is an {state["meta"].get("difficulty", "intermediate")} project. Write at least 10,000 characters of deep technical content.
 3. **EXACT ID**: Use the exact milestone ID '{ms_id}' in your CRITERIA_JSON block.
+4. **EXPLAIN MARKERS**: As you write, whenever you introduce a concept that is important but tangential (would bloat the narrative if explained inline), place `[[EXPLAIN:concept-id|Short description of concept]]` right where it first appears. The Explainer agent will replace it with a Foundation block. Use this freely — it is NOT optional.
 
 After writing the content, generate CRITERIA_JSON:
 - Start from YAML Acceptance Criteria above as your base

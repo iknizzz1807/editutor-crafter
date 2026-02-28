@@ -1,0 +1,111 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 6
+  }
+}
+
+# START: waitpid returns status
+waitpid_call: "waitpid(-1, &status, 0)" {
+  shape: parallelogram
+  style.stroke-width: 2
+}
+
+# DECISION: Is the process stopped?
+is_stopped: "WIFSTOPPED(status)?" {
+  shape: diamond
+}
+
+waitpid_call -> is_stopped
+
+# TERMINATION BRANCHES
+is_stopped -> process_exit: "No (WIFEXITED)"
+is_stopped -> process_killed: "No (WIFSIGNALED)"
+
+process_exit: "Process Terminated" {
+  style.fill: "#f8cecc"
+  style.stroke: "#b85450"
+}
+
+# STOP CLASSIFICATION TREE
+classification: "WSTOPSIG(status) Classification" {
+  
+  # CASE 1: TRACESYSGOOD Syscall Stop
+  syscall_stop: "1. sig == (SIGTRAP | 0x80)" {
+    shape: rectangle
+    label: "SYSCALL STOP\n(Entry or Exit)"
+    
+    # Renamed from 'steps' to 'internal_logic' to avoid keyword collision
+    internal_logic: {
+      step1: "1. PTRACE_GETREGS"
+      step2: "**Toggle in_syscall flag**" {
+        style.font-color: red
+        style.bold: true
+      }
+      step3: "2. If entry: Save regs\nIf exit: Print trace"
+      step1 -> step2 -> step3
+    }
+    
+    resume: "ptrace(PTRACE_SYSCALL, pid, NULL, 0)" {
+      style.stroke: "#6c8ebf"
+    }
+    internal_logic.step3 -> resume
+  }
+
+  # CASE 2: Plain SIGTRAP
+  trap_event: "2. sig == SIGTRAP (0x05)" {
+    shape: rectangle
+    label: "TRAP EVENT\n(Exec, Breakpoint, or Step)"
+    
+    action: "Resume Tracee\n(Do not inject SIGTRAP)"
+    resume: "ptrace(PTRACE_SYSCALL, pid, NULL, **0**)" {
+      style.stroke: "#6c8ebf"
+    }
+    action -> resume
+  }
+
+  # CASE 3: External Signal Delivery
+  signal_delivery: "3. sig == [OTHER]" {
+    shape: rectangle
+    label: "SIGNAL-DELIVERY STOP\n(SIGPIPE, SIGINT, SIGSEGV...)"
+    
+    action: "RE-INJECT SIGNAL" {
+      style.font-color: red
+      style.bold: true
+    }
+    
+    resume: "ptrace(PTRACE_SYSCALL, pid, NULL, **sig**)" {
+      style.stroke: red
+      style.stroke-width: 4
+    }
+    
+    warning: |md
+      ### CRITICAL
+      Passing **0** here is **WRONG**.
+      It swallows the signal and 
+      breaks tracee logic.
+    | {
+      style.fill: "#ffcccc"
+    }
+    
+    action -> resume
+    resume -> warning
+  }
+}
+
+is_stopped -> classification: "Yes"
+
+# Mapping branches to sub-containers
+classification -> classification.syscall_stop: "0x85"
+classification -> classification.trap_event: "0x05"
+classification -> classification.signal_delivery: "Default"
+
+# Final state for all stops
+classification.syscall_stop.resume -> loop_next
+classification.trap_event.resume -> loop_next
+classification.signal_delivery.resume -> loop_next
+
+loop_next: "Next waitpid iteration" {
+  shape: circle
+  style.stroke-dash: 3
+}

@@ -1,0 +1,141 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --------------------------------------------------------------------------------------------
+# THREE-LEVEL VIEW: fork() INTERCEPTION ACROSS PROCESS BOUNDARY
+# --------------------------------------------------------------------------------------------
+
+app_lvl: "APPLICATION LEVEL (Ring 3)" {
+  style.fill: "#E4DBFE" # Purple Header Style
+  
+  bash: "bash (PID: 12345)" {
+    shape: person
+    style.fill: "#B6DDF6" # Blue Data/Process
+  }
+  
+  glibc: "glibc wrapper" {
+    shape: rectangle
+    style.fill: "#DEE1EB" # Gray Logic
+    code: |c
+      fork() {
+        return clone(SIGCHLD, ...);
+      }
+    |
+  }
+
+  bash -> glibc: "libc call"
+  glibc -> kernel_lvl.entry_point: "syscall instruction\n(RAX=56/57)" {
+    style: {
+      stroke: "#ed800c" # Orange Pointer/Critical Path
+      stroke-width: 4
+    }
+  }
+}
+
+kernel_lvl: "KERNEL LEVEL (Ring 0)" {
+  style.fill: "#E4DBFE"
+
+  entry_point: "entry_SYSCALL_64" {
+    shape: diamond
+    style.fill: "#B5AFF6"
+  }
+
+  do_fork: "kernel_clone() / do_fork()" {
+    style.fill: "#B6DDF6"
+    ptrace_check: "Check Parent PT_TRACED"
+    copy_process: "copy_process()"
+    alloc_pid: "alloc_pid()"
+  }
+
+  ptrace_logic: "ptrace_clone() logic" {
+    style.stroke-dash: 3
+    style.fill: "#DEE1EB"
+    set_traced: "Set PT_TRACED on Child"
+    stop_child: "Set TASK_STOPPED"
+    event_notify: "Queue PTRACE_EVENT_FORK"
+  }
+
+  child_task: "New Task (PID: 12346)" {
+    shape: rectangle
+    style.fill: "#ACE1AF" # Green for Free/New allocation
+    style.multiple: true
+  }
+
+  entry_point -> do_fork: "Dispatch"
+  do_fork.copy_process -> ptrace_logic.set_traced: "Atomic Attach"
+  ptrace_logic.event_notify -> tracer_process.wait_queue: "Wakeup Tracer"
+  ptrace_logic.stop_child -> child_task: "Suspend immediately"
+}
+
+hw_lvl: "HARDWARE LEVEL (MMU/CPU)" {
+  style.fill: "#F6F9FC"
+
+  cr3_op: "CR3 Register Operation" {
+    label: "Copy PML4 Table Pointer\n(Virtual Address Space Clone)"
+    shape: parallelogram
+    style.fill: "#B6DDF6"
+  }
+
+  mmu_cow: "MMU Page Table Logic" {
+    shape: square
+    label: "Set Read-Only Bits (CoW)\nBit 1 = 0"
+    style.font-color: red
+    style.bold: true
+    style.stroke: red
+    style.stroke-width: 3
+  }
+
+  tlb_sub: "TLB Maintenance" {
+    ipi_send: "IPI Shootdown" {
+      tooltip: "Inter-Processor Interrupt"
+    }
+    cores: "CPU Cores 0-7" {
+      grid-columns: 4
+      c0: {style.fill: "#DEE1EB"}
+      c1: {style.fill: "#DEE1EB"}
+      c2: {style.fill: "#DEE1EB"}
+      c3: {style.fill: "#DEE1EB"}
+      c4: {style.fill: "#DEE1EB"}
+      c5: {style.fill: "#DEE1EB"}
+      c6: {style.fill: "#DEE1EB"}
+      c7: {style.fill: "#DEE1EB"}
+    }
+    ipi_send -> cores: "Invalidate Writable TLB entries"
+  }
+}
+
+# Root-level annotation to fix compilation error regarding 'near' on nested shapes
+hw_annotation: |md
+  **TLB Shootdown Cost:**
+  ~1-10µs on 8-core system.
+  Requires cross-core sync.
+| {
+  near: bottom-right
+  style.stroke: red
+}
+
+tracer_process: "TRACER (strace clone)" {
+  style.fill: "#fce7c6"
+  wait_queue: "waitpid(-1) return"
+  logic: "handle_ptrace_event()"
+}
+
+# Data Flow Connections
+kernel_lvl.do_fork.copy_process -> hw_lvl.cr3_op: "Memory Context Duplicate"
+hw_lvl.cr3_op -> hw_lvl.mmu_cow: "PTE Write Protect"
+hw_lvl.mmu_cow -> hw_lvl.tlb_sub.ipi_send: "Trigger Sync"
+kernel_lvl.child_task -> hw_lvl.cr3_op: "Reference Parent Tables"
+
+tracer_process.logic -> kernel_lvl.ptrace_logic: "PTRACE_GETEVENTMSG" {
+  style.stroke: "#ed800c"
+  style.stroke-dash: 5
+}
+
+# Specific Overlays
+kernel_lvl.ptrace_logic.event_notify.style.fill: "#ed800c"
+kernel_lvl.ptrace_logic.event_notify.style.font-color: white

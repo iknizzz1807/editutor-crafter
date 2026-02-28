@@ -1424,23 +1424,34 @@ Primary Language: {primary_language}
 
 TASK: Create a comprehensive system overview diagram that captures ALL major components and relationships from the content above.
 
+QUALITY CHECKLIST (ALL 10 must pass - you are the ONLY generation, no retries):
+1. ☐ Every major component has: name, file reference (e.g., "pager.c"), milestone link
+2. ☐ Struct/class definitions show: byte offsets, field types, total size
+3. ☐ Methods show: return type, parameters, brief description
+4. ☐ Data flow arrows labeled with: type, size, example value
+5. ☐ Scale indicators present ("4KB page", "64 bytes", "cache line")
+6. ☐ 2D grid layout used (horizontal layers + vertical detail within)
+7. ☐ No overlapping nodes, readable in PDF
+8. ☐ All milestone IDs from Atlas included
+9. ☐ Code blocks use primary language ({primary_language})
+10. ☐ At least 3 levels of detail (layer → component → struct/method)
+
 REQUIREMENTS:
-1. Use 2D grid layout (horizontal layers + vertical detail)
-2. Every component must have: name, file reference, link to milestone
-3. Structs must show: byte offsets, field types, total size
-4. Methods must show: return type, parameters
-5. Data flow arrows must be labeled with type and size
-6. Include scale indicators ("4KB page", "64 bytes")
-7. Code blocks must use {primary_language}
-8. This diagram must be IMPLEMENTATION-READY
+- This diagram must be IMPLEMENTATION-READY (code-able blueprint)
+- An engineer should be able to implement directly from this diagram
+- Use ONLY light themes (0, 1, 3, 4, 5, 6, 100, 104) - NO dark themes
+- DO NOT use `near` key at non-root level
+- DO NOT use `near` with object references when using dagre layout
+- Ensure all md block strings are properly closed
 
 Output ONLY valid D2 code. No markdown fences, no explanations."""
 
+    is_claude = LLM_PROVIDER == "mixed-heavy-claude" or LLM_PROVIDER == "claude-cli"
     res = safe_invoke(
         [HumanMessage(content=prompt)],
         node_label="System Diagram Writer",
         project_id=state["project_id"],
-        provider_override="local-proxy",
+        provider_override="claude-cli" if is_claude else "local-proxy",
     )
     d2_code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
 

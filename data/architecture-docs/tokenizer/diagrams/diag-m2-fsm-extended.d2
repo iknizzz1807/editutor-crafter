@@ -1,0 +1,162 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+# 1. LEGEND & METADATA
+legend: {
+  shape: package
+  label: "Scanner FSM Logic (scanner.py)"
+  info: |md
+    ### Maximal Munch Strategy
+    - Greedy consumption (longest match)
+    - 1-2 character lookahead via `peek()`
+    - **Complexity**: O(n) Time | O(1) Space
+  |
+  near: top-left
+}
+
+# 2. DATA STRUCTURES (L2 IMPLEMENTATION DETAIL)
+data_structures: {
+  direction: down
+  
+  token_class: {
+    shape: sql_table
+    label: "struct Token (scanner.py)"
+    row1: "0x00 | TokenType | type"
+    row2: "0x08 | char*     | lexeme"
+    row3: "0x10 | uint32_t  | line"
+    row4: "0x14 | uint32_t  | column"
+    label_bottom: "Total: 24 bytes (Aligned)"
+    
+    python_repr: |md
+      python
+      @dataclass
+      class Token:
+          type: TokenType
+          lexeme: str
+          line: int
+          column: int
+      
+    |
+  }
+
+  token_type: {
+    shape: sql_table
+    label: "enum TokenType (0x01-0xFF)"
+    t01: "0x01 | NUMBER (Literal)"
+    t02: "0x02 | STRING (Literal)"
+    t03: "0x03 | IDENTIFIER (Name)"
+    t04: "0x04 | KEYWORD (Reserved)"
+    t05: "0x05 | OPERATORS (Symbols)"
+    tff: "0xFF | EOF (Sentinel)"
+  }
+}
+
+# 3. FINITE STATE MACHINE (L1 SYSTEM)
+fsm: {
+  label: "Lexer State Machine"
+  direction: down
+
+  START: {
+    shape: double_circle
+    label: "START\n(next_token)"
+  }
+
+  # Self-transition for whitespace
+  START -> START: "is_space(peek())\nadvance()" {
+    style.stroke-dash: 5
+  }
+
+  # Multi-character Operator Branch
+  OPERATOR_LOGIC: {
+    IN_OPERATOR_LOOKAHEAD: {
+      shape: circle
+      label: "IN_OPERATOR\n(Lookahead Match)"
+    }
+    
+    START -> IN_OPERATOR_LOOKAHEAD: "char in [!, =, <, >]"
+    IN_OPERATOR_LOOKAHEAD -> START: "match('=')\nEmit 2-char token" {
+      tooltip: "Consumes 2nd character if matched"
+    }
+    IN_OPERATOR_LOOKAHEAD -> START: "fallback\nEmit 1-char token" {
+      tooltip: "Stays on current character"
+    }
+  }
+
+  # Number Literal Branch
+  NUMBER_LOGIC: {
+    direction: right
+    IN_NUMBER: {
+      shape: circle
+      label: "IN_NUMBER\n(Integer Part)"
+    }
+    
+    IN_FLOAT: {
+      shape: circle
+      label: "IN_FLOAT\n(Fractional)"
+    }
+
+    START -> IN_NUMBER: "isdigit(char)"
+    IN_NUMBER -> IN_NUMBER: "isdigit(peek())\nadvance()"
+    IN_NUMBER -> IN_FLOAT: "peek() == '.' &&\nisdigit(peek_next())"
+    IN_FLOAT -> IN_FLOAT: "isdigit(peek())\nadvance()"
+    
+    IN_FLOAT -> START: "Done\nEmit NUMBER"
+    IN_NUMBER -> START: "peek() != '.'\nEmit NUMBER"
+  }
+
+  # Identifier & Keyword Branch
+  IDENT_LOGIC: {
+    IN_IDENTIFIER: {
+      shape: circle
+      label: "IN_IDENTIFIER\n(Scan-Then-Lookup)"
+    }
+
+    START -> IN_IDENTIFIER: "isalpha(char) || '_'"
+    IN_IDENTIFIER -> IN_IDENTIFIER: "isalnum(peek()) || '_'\nadvance()"
+    IN_IDENTIFIER -> START: "KEYWORDS.get(lexeme)\nEmit TOKEN"
+  }
+
+  # Terminal States
+  TERMINALS: {
+    direction: right
+    ERROR_STATE: {
+      shape: circle
+      label: "ERROR\n(Panic Recovery)"
+      style: {
+        fill: "#ffcccc"
+        stroke: red
+      }
+    }
+    
+    EOF_STATE: {
+      shape: circle
+      label: "EOF\nEmit EOF"
+      style: {
+        double-border: true
+      }
+    }
+  }
+
+  START -> TERMINALS.ERROR_STATE: "Unrecognized"
+  TERMINALS.ERROR_STATE -> START: "Emit ERROR\nAdvance"
+  START -> TERMINALS.EOF_STATE: "is_at_end()"
+}
+
+# 4. CROSS-LAYER DATA FLOW ANNOTATIONS
+fsm.START -> fsm.NUMBER_LOGIC.IN_NUMBER: "char | 1B | '4'"
+fsm.START -> fsm.IDENT_LOGIC.IN_IDENTIFIER: "char | 1B | 'w'"
+
+# Annotated return flows using connection indexing
+(fsm.OPERATOR_LOGIC.IN_OPERATOR_LOOKAHEAD -> fsm.START)[0]: "Token | 24B | {lex: '=='}"
+(fsm.NUMBER_LOGIC.IN_NUMBER -> fsm.START)[1]: "Token | 24B | {lex: '42'}"
+(fsm.IDENT_LOGIC.IN_IDENTIFIER -> fsm.START)[1]: "Token | 24B | {lex: 'while'}"
+
+# Structural dependencies
+data_structures -> fsm: "Defines Token Memory Layout" {
+  style.stroke-dash: 3
+}

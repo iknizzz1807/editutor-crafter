@@ -1,0 +1,166 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# STAGE 1: INPUT & PREPROCESSING
+# ---------------------------------------------------------------------------------
+layer_input: {
+  direction: down
+  label: "STAGE 1: PREPROCESSING (sha256_pad.c)"
+
+  input_msg: {
+    shape: class
+    label: "Raw Message: 'abc'"
+    data: |md
+      c
+      uint8_t msg[] = { 0x61, 0x62, 0x63 };
+      size_t msg_len = 3;
+      
+    |
+  }
+
+  padding_logic: {
+    shape: sql_table
+    label: "struct SHA256_BLOCK (512-bit)"
+    
+    row_0: "0x00 | 0x61 0x62 0x63 0x80 | msg + marker"
+    row_1: "0x04 | 0x00 0x00 0x00 0x00 | zero fill..."
+    row_gap: "...  | 0x00 ...           | 52 bytes total"
+    row_56: "0x38 | 0x00 0x00 0x00 0x00 | len_bits (high)"
+    row_60: "0x3C | 0x00 0x00 0x00 0x18 | len_bits (low: 24)"
+    
+    label_bottom: "Total: 64 bytes (1 block)"
+  }
+
+  input_msg -> padding_logic: "sha256_pad() | 3B -> 64B"
+}
+
+# ---------------------------------------------------------------------------------
+# STAGE 2: MESSAGE SCHEDULE
+# ---------------------------------------------------------------------------------
+layer_schedule: {
+  direction: down
+  label: "STAGE 2: MESSAGE SCHEDULE (sha256_schedule.c)"
+
+  schedule_array: {
+    shape: sql_table
+    label: "uint32_t W[64]"
+    
+    w0: "W[00] | 0x61626380 | big-endian parse"
+    w1: "W[01] | 0x00000000 | zero"
+    w_mid: "...  | 0x00000000 | ..."
+    w15: "W[15] | 0x00000018 | bits: 24"
+    w16: "W[16] | 0x61626380 | σ1(W14)+W9+σ0(W1)+W0"
+    w63: "W[63] | 0x70E359ED | Final word"
+    
+    label_bottom: "64 words * 4 bytes = 256 bytes"
+  }
+
+  expansion_fn: {
+    shape: code
+    label: "Recurrence Relation"
+    language: c
+    content: "W[t] = σ1(W[t-2]) + W[t-7] + σ0(W[t-15]) + W[t-16]"
+  }
+
+  schedule_array.w16 -> expansion_fn: "calls σ functions"
+}
+
+# ---------------------------------------------------------------------------------
+# STAGE 3: COMPRESSION
+# ---------------------------------------------------------------------------------
+layer_compression: {
+  direction: down
+  label: "STAGE 3: COMPRESSION ROUNDS (sha256_compress.c)"
+
+  initial_state: {
+    shape: sql_table
+    label: "Initial H[8] (H-prime)"
+    h0: "H[0] | 0x6A09E667 | sqrt(2)"
+    h1: "H[1] | 0xBB67AE85 | sqrt(3)"
+    h2: "H[2] | 0x3C6EF372 | sqrt(5)"
+    h3: "H[3] | 0xA54FF53A | sqrt(7)"
+    h4: "H[4] | 0x510E527F | sqrt(11)"
+    h5: "H[5] | 0x9B05688C | sqrt(13)"
+    h6: "H[6] | 0x1F83D9AB | sqrt(17)"
+    h7: "H[7] | 0x5BE0CD19 | sqrt(19)"
+  }
+
+  round_0: {
+    direction: right
+    label: "Round 0 Execution"
+    
+    t1_calc: {
+      shape: code
+      label: "T1 Computation"
+      language: c
+      content: "T1 = h + Σ1(e) + Ch(e,f,g) + K[0] + W[0]"
+    }
+    
+    t2_calc: {
+      shape: code
+      label: "T2 Computation"
+      language: c
+      content: "T2 = Σ0(a) + Maj(a,b,c)"
+    }
+    
+    result_0: "a = T1+T2 | e = d+T1"
+  }
+
+  final_state: {
+    shape: sql_table
+    label: "Accumulated H[8]"
+    h0: "H[0] | 0xBA7816BF"
+    h1: "H[1] | 0x8F01CFEA"
+    h2: "H[2] | 0x414140DE"
+    h3: "H[3] | 0x5DAE2223"
+    h4: "H[4] | 0xB00361A3"
+    h5: "H[5] | 0x96177A9C"
+    h6: "H[6] | 0xB410FF61"
+    h7: "H[7] | 0xF20015AD"
+    label_bottom: "H[i] = H_init[i] + working_var[i]"
+  }
+
+  initial_state -> round_0: "initialize a...h"
+  round_0 -> final_state: "after 64 rounds"
+}
+
+# ---------------------------------------------------------------------------------
+# STAGE 4: OUTPUT
+# ---------------------------------------------------------------------------------
+layer_output: {
+  direction: down
+  label: "STAGE 4: DIGEST (sha256.c)"
+
+  binary_out: {
+    shape: class
+    label: "uint8_t out[32]"
+    bytes: "BA 78 16 BF 8F 01 CF EA ... 15 AD"
+  }
+
+  hex_string: {
+    shape: code
+    label: "Final SHA-256 Digest"
+    language: text
+    content: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+  }
+
+  binary_out -> hex_string: "sha256_hex()"
+}
+
+# ---------------------------------------------------------------------------------
+# DATA FLOW CONNECTIONS
+# ---------------------------------------------------------------------------------
+layer_input.padding_logic -> layer_schedule.schedule_array: "Block | 64B | {0x61626380...}"
+layer_schedule.schedule_array -> layer_compression.round_0.t1_calc: "W[0] | 4B | 0x61626380"
+layer_compression.final_state -> layer_output.binary_out: "H[0..7] | 32B | Big-Endian"
+
+# Global Config Styling
+***.style.font: mono
+layer_compression.round_0.style.fill: "#fff"
+layer_compression.round_0.style.stroke-dash: 3

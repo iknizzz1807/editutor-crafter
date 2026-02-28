@@ -30,7 +30,12 @@ You create implementation-grade diagrams — Intel manual quality. Engineers det
 - Initial=●. Error states=red. ILLEGAL transitions=red dashed "ILLEGAL".
 
 ## 6. D2 Compliance
-- `layout-engine: elk`, `theme-id: 200`.
+- `layout-engine: elk`, `theme-id: <CHOOSE>`
+- **Theme Selection:**
+  - 0 (Neutral Default): Clean technical specs
+  - 4 (Cool Classics): Data structures, algorithms
+  - 6 (Grape Soda): State machines, workflows
+  - Vary themes across TDD modules for visual distinction
 - Double quotes for labels. Valid D2 shapes only.
 - NO remote icons. Use `|'md ... '|` for annotations. `style.fill` for colors.
 

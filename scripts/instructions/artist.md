@@ -209,7 +209,7 @@ manager -> storage: "read"
 
 ---
 
-## 7. D2 Syntax
+## 7. D2 Syntax & Theme Selection
 
 ```d2
 # Standard header for all diagrams
@@ -217,10 +217,28 @@ direction: right  # or down for component diagrams
 vars: {
   d2-config: {
     layout-engine: elk
-    theme-id: 200
+    theme-id: <CHOOSE>
   }
 }
 ```
+
+**Theme Selection (CHOOSE based on diagram purpose):**
+
+| Theme ID | Name | Best For |
+|----------|------|----------|
+| 0 | Neutral Default | System overviews, clean diagrams |
+| 1 | Neutral Grey | Professional, minimal |
+| 3 | Flagship Terrastruct | Corporate, polished |
+| 4 | Cool Classics | Data structures, flows |
+| 5 | Mixed Berry Blue | Network, distributed |
+| 6 | Grape Soda | State machines, transitions |
+| 100 | Vanilla Nitro Cola | Warm, friendly explanations |
+| 104 | Everglade Green | Timelines, sequences |
+
+**Rules:**
+- Vary themes across diagrams in same project — avoid monotony
+- Match theme to diagram's purpose
+- Keep it readable and professional
 
 - NO Mermaid syntax
 - Double quotes for labels with special characters

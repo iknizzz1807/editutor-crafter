@@ -21,10 +21,17 @@ direction: right  # or down for component diagrams
 vars: {
   d2-config: {
     layout-engine: elk
-    theme-id: 200
+    theme-id: <CHOOSE>
   }
 }
 ```
+
+**Theme Selection — choose based on system nature:**
+- 0 (Neutral Default): Clean system overviews
+- 3 (Flagship Terrastruct): Professional architectures  
+- 5 (Mixed Berry Blue): Distributed/networked systems
+- 4 (Cool Classics): Data structures, algorithms
+
 - NO Mermaid syntax
 - Double quotes for labels with special characters
 - Valid D2 shapes only (rectangle, circle, cylinder, sql_table, class, code)

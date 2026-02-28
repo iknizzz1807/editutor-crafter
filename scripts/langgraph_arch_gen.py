@@ -142,13 +142,17 @@ def init_llm_provider():
     USE_MIXED_HEAVY_CLAUDE = (
         os.getenv("USE_MIXED_HEAVY_CLAUDE", "false").lower() == "true"
     )
+    USE_ARCHITECT_CLAUDE = os.getenv("USE_ARCHITECT_CLAUDE", "false").lower() == "true"
     CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "sonnet")
     MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", MISTRAL_MODEL)
 
-    if USE_MIXED_CLAUDE_GEMINI or USE_MIXED_HEAVY_CLAUDE:
-        LLM_PROVIDER = (
-            "mixed-claude-gemini" if USE_MIXED_CLAUDE_GEMINI else "mixed-heavy-claude"
-        )
+    if USE_MIXED_CLAUDE_GEMINI or USE_MIXED_HEAVY_CLAUDE or USE_ARCHITECT_CLAUDE:
+        if USE_MIXED_CLAUDE_GEMINI:
+            LLM_PROVIDER = "mixed-claude-gemini"
+        elif USE_MIXED_HEAVY_CLAUDE:
+            LLM_PROVIDER = "mixed-heavy-claude"
+        else:
+            LLM_PROVIDER = "architect-claude"
         print(f">>> Provider: MIXED ({LLM_PROVIDER})", flush=True)
         LLM = ChatOpenAI(
             base_url="http://127.0.0.1:7999/v1",
@@ -550,7 +554,10 @@ For each milestone: misconception, reveal, cascade (3-5 connections, 1+ cross-do
         node_label="Architect",
         invoke_kwargs=invoke_args,
         provider_override=(
-            "claude-cli" if LLM_PROVIDER and LLM_PROVIDER.startswith("mixed") else None
+            "claude-cli"
+            if LLM_PROVIDER
+            and (LLM_PROVIDER.startswith("mixed") or LLM_PROVIDER == "architect-claude")
+            else None
         ),
         model_override="default[1m]" if USE_1M else "default",
     )
@@ -1095,6 +1102,7 @@ Output ONLY the corrected D2 code."""
 def tdd_planner_node(state: GraphState):
     if state.get("tdd_blueprint"):
         return {"status": "tdd_writing", "phase": "tdd"}
+    is_claude = LLM_PROVIDER == "mixed-heavy-claude" or LLM_PROVIDER == "claude-cli"
     print(f"  [Agent: TDD Orchestrator] Planning TDD...")
     full_yaml_meta = yaml.dump(
         state["meta"], allow_unicode=True, default_flow_style=False
@@ -1116,7 +1124,11 @@ TASK: Output ONLY raw JSON for TDD Blueprint.
 Follow DOMAIN PROFILE for diagram types and spec detail level.
     Minimum 20 diagrams total. Include implementation phases with hours.
 """
-    res = safe_invoke([HumanMessage(content=prompt)], node_label="TDD Planner")
+    res = safe_invoke(
+        [HumanMessage(content=prompt)],
+        node_label="TDD Planner",
+        provider_override="claude-cli" if is_claude else None,
+    )
     print(
         f"  [Agent: TDD Orchestrator] TDD Blueprint received: {len(res.content)} chars"
     )

@@ -1,0 +1,152 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 0
+    layout-engine: elk
+  }
+}
+
+title: |md
+  # EPOLLHUP vs EPOLLERR vs EPOLLRDHUP: Correct Dispatch Logic
+  ## Event Loop Fault Tolerance & Resource Cleanup
+| {
+  near: top-center
+  shape: text
+}
+
+# Decision Tree Flow
+event_dispatch: {
+  label: "Step 1: epoll_wait() Result Batch"
+  shape: package
+  style: {
+    stroke-width: 2
+    fill: "#f8f9fa"
+  }
+
+  raw_flags: "uint32_t events" {
+    shape: parallelogram
+    style.fill: "#e7f3ff"
+  }
+}
+
+event_dispatch.raw_flags -> error_check: "Check Bitmask"
+
+error_check: {
+  grid-columns: 3
+  grid-gap: 50
+
+  epollerr: "EPOLLERR" {
+    style.fill: "#fff5f5"
+    style.stroke: "#ff0000"
+    tooltip: "Socket-level error occurred (e.g. RST received)"
+  }
+
+  epollrdhup: "EPOLLRDHUP / EPOLLHUP" {
+    style.fill: "#fff9db"
+    style.stroke: "#fab005"
+    tooltip: "Peer performed half-close (FIN) or full hangup"
+  }
+
+  epollin: "EPOLLIN" {
+    style.fill: "#e7f5ff"
+    style.stroke: "#228be6"
+    tooltip: "Data available in kernel recv buffer"
+  }
+}
+
+# Branch: EPOLLERR
+error_check.epollerr -> get_errno: "Priority 1"
+get_errno: "getsockopt(fd, SOL_SOCKET, SO_ERROR)" {
+  shape: cylinder
+  style.fill: "#ffe3e3"
+}
+
+get_errno -> log_error: "Extract actual errno\n(ECONNRESET, ETIMEDOUT)"
+log_error: "perror/fprintf" {
+  shape: step
+}
+
+log_error -> defer_close_err: "reactor_defer(cleanup)" {
+  style.stroke: "#ff0000"
+  style.stroke-width: 2
+}
+
+# Branch: HANGUP (The Drain Pattern)
+error_check.epollrdhup -> check_in: "Priority 2"
+
+check_in: "Is EPOLLIN also set?" {
+  shape: diamond
+}
+
+check_in -> drain_data: "YES" {
+  style.stroke: "#2f9e44"
+  style.bold: true
+}
+
+check_in -> defer_close_hup: "NO" {
+  style.stroke: "#fab005"
+}
+
+drain_data: "handle_read()\n(Drain kernel buffer to EAGAIN)" {
+  style.fill: "#ebfbee"
+  style.stroke: "#2f9e44"
+}
+
+drain_data -> defer_close_hup: "Buffer empty"
+
+# Final Cleanup State
+cleanup_state: {
+  label: "Step 2: Deferred Cleanup Phase"
+  style.fill: "#f1f3f5"
+  
+  defer_close_err: "http_conn_close_deferred()" {
+    shape: rectangle
+    style.fill: "#ffc9c9"
+    style.bold: true
+  }
+  
+  defer_close_hup: "http_conn_close_deferred()" {
+    shape: rectangle
+    style.fill: "#fff3bf"
+  }
+}
+
+# Pitfall Annotation 
+# FIX: Changed 'near: drain_data' to 'near: bottom-left' as ELK does not support object-relative 'near'
+pitfall: |md
+  ### ⚠️ THE CRITICAL PITFALL
+  **Symptom**: Intermittent 400/500 errors or dropped requests.
+  **Cause**: Closing immediately on `EPOLLHUP` without checking `EPOLLIN`.
+  **Effect**: If a client sends a request and immediately calls `close()`, the `FIN` packet may arrive with the data. If you close on hangup without draining, the data remaining in the kernel buffer is discarded, losing the request.
+| {
+  near: bottom-left
+  style: {
+    stroke: "#ff0000"
+    stroke-dash: 5
+    fill: "#fff5f5"
+  }
+}
+
+# Legend/Invariants
+legend: {
+  near: bottom-right
+  
+  inv1: "Invariant: Never call close() directly in I/O callback" {
+    shape: text
+    style.font-color: "#d9480f"
+  }
+  inv2: "Invariant: EPOLLRDHUP requires Linux 2.6.17+" {
+    shape: text
+    style.font-color: "#d9480f"
+  }
+}
+
+# Visual Connections
+error_check.epollin -> drain_data: "Normal Read Path" {
+  style.stroke-dash: 3
+}
+
+(cleanup_state.defer_close_err -> terminal): "1. Cancel Timers\n2. Deregister\n3. Close FD\n4. Free State"
+terminal: "●" {
+  shape: circle
+}

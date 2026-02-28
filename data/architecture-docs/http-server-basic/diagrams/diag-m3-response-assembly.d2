@@ -1,0 +1,136 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# LAYER 0: SATELLITE MAP - DATA ORIGIN TO NETWORK
+input_sources: {
+  label: "INPUT METADATA & DATA (L0)"
+  direction: down
+  
+  sys_clock: "System Clock (time.h)" {
+    shape: circle
+    label: "time_t now"
+  }
+  
+  fstat_metadata: {
+    shape: sql_table
+    label: "struct stat (sys/stat.h)"
+    row1: "off_t | st_size | 102400"
+    row2: "time_t | st_mtime | 1677645600"
+    label_bottom: "File: index.html"
+  }
+
+  disk_storage: {
+    shape: cylinder
+    label: "Filesystem (ext4/xfs)"
+  }
+}
+
+assembly_stage: {
+  label: "BUFFER ASSEMBLY LAYER (L1)"
+  direction: down
+
+  header_logic: {
+    shape: class
+    label: "ResponseBuilder (file_server.c)"
+    definition: |md
+      c
+      int header_len = snprintf(header_buf, 2048,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: %s\r\n"
+        "Content-Length: %ld\r\n"
+        "Last-Modified: %s\r\n"
+        "Date: %s\r\n"
+        "Connection: close\r\n"
+        "\r\n", 
+        mime, size, lm_str, date_str);
+      
+    |
+  }
+
+  header_memory: {
+    shape: sql_table
+    label: "header_buf[2048] (Stack Allocation)"
+    
+    row0: "0x00 | Status Line   | 'HTTP/1.1 200 OK\r\n'"
+    row1: "0x11 | Content-Type  | 'text/html; charset=utf-8\r\n'"
+    row2: "0x32 | Content-Length| 'Content-Length: 102400\r\n'"
+    row3: "0x4C | Last-Modified | 'Last-Modified: Wed, 01 Mar 2023 12:00:00 GMT\r\n'"
+    row4: "0x7C | Date          | 'Date: Wed, 01 Mar 2023 12:05:00 GMT\r\n'"
+    row5: "0x9E | Connection    | 'Connection: close\r\n'"
+    row6: "0xAF | Terminator    | '\r\n' (0x0D 0x0A)"
+    
+    label_bottom: "Total Header Overhead: 177 bytes"
+  }
+
+  io_buffer: {
+    shape: sql_table
+    label: "io_buf[65536] (Heap/Stack Buffer)"
+    row1: "0x0000 | <html><head>... | (Raw Binary Read)"
+    row2: "0x4000 | ...             | (Page 2)"
+    label_bottom: "Capacity: 64KB (Aligned to Page Size)"
+  }
+}
+
+transmission_stage: {
+  label: "NETWORK TRANSMISSION (L2)"
+  direction: down
+
+  syscall_sequence: {
+    shape: class
+    label: "Socket Operations (socket.c)"
+    ops: |md
+      c
+      // 1. Send Headers
+      write_all(client_fd, header_buf, 177);
+      
+      // 2. Send Body (Chunked)
+      while((n = read(file_fd, io_buf, 64K)) > 0) {
+          write_all(client_fd, io_buf, n);
+      }
+      
+    |
+  }
+
+  tcp_stream: {
+    shape: queue
+    label: "TCP Send Buffer (Kernel Space)"
+    style.stroke: blue
+  }
+}
+
+# DATA FLOW CONNECTIONS
+input_sources.sys_clock -> assembly_stage.header_logic: "time_t | 8B | strftime()"
+input_sources.fstat_metadata -> assembly_stage.header_logic: "st_size, st_mtime | 16B"
+
+assembly_stage.header_logic -> assembly_stage.header_memory: "snprintf() | formatted ASCII"
+input_sources.disk_storage -> assembly_stage.io_buffer: "read() | 64KB chunks"
+
+assembly_stage.header_memory -> transmission_stage.syscall_sequence: "write_all() | const char*"
+assembly_stage.io_buffer -> transmission_stage.syscall_sequence: "write_all() | void*"
+
+transmission_stage.syscall_sequence -> transmission_stage.tcp_stream: "send(MSG_NOSIGNAL) | Stream"
+
+# ANNOTATIONS
+transmission_stage.tcp_stream -> output_client: "HTTP/1.1 200 OK\nHeaders...\n\n[BODY]" {
+  style.stroke-dash: 5
+}
+
+output_client: "Client Browser / Curl" {
+  shape: person
+}
+
+legend: {
+  near: bottom-right
+  note: |md
+    **Response Profile:**
+    - Header Size: ~200B
+    - Body Size: Variable (st_size)
+    - Total Writes: 1 + (size / 64KB)
+    - Encoding: ASCII Headers + Binary Body
+  |
+}

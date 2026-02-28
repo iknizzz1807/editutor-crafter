@@ -1,0 +1,144 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# SATELLITE CONTEXT: Milestone 2 - String Dereferencing (strace_clone.c)
+title: "PTRACE_PEEKDATA: Word-by-Word String Extraction (x86_64)" {
+  shape: text
+  near: top-center
+  style: {
+    font-size: 18
+    bold: true
+  }
+}
+
+# --- Tracee Memory Space (The Source) ---
+tracee_mem: {
+  label: "Tracee Virtual Address Space"
+  direction: down
+
+  ptr_ref: {
+    shape: sql_table
+    label: "struct user_regs_struct (sys/user.h)"
+    row0: "0x48 | uint64_t | rdi (pointer)"
+    row1: "0x48 | 0x7ffd0010 | [Target Address]"
+  }
+
+  mem_table: {
+    shape: sql_table
+    label: "Memory at 0x7ffd0010 (Little Endian)"
+    
+    row0: "0x7ffd0010 | 2f 65 74 63 2f 70 61 73 | / e t c / p a s"
+    row1: "0x7ffd0018 | 73 77 64 00 3f 3f 3f 3f | s w d \\0 ? ? ? ?"
+    
+    label_bottom: "8-byte word boundaries (Total: 16 bytes)"
+  }
+}
+
+# --- The Extraction Logic (Step-by-Step Data Walk) ---
+extraction_process: {
+  label: "Tracer Extraction Logic"
+  direction: down
+
+  step_1: {
+    label: "Iteration 1: Base Address"
+    direction: right
+    
+    peek_1: |md
+      c
+      // Read 8 bytes from tracee
+      long word = ptrace(PTRACE_PEEKDATA, pid, 0x7ffd0010, NULL);
+      // Register result: 0x7361702f6374652f
+      
+    |
+    
+    scan_1: {
+      shape: sql_table
+      label: "Buffer[0..7] (No Null)"
+      b0: "0 | 0x2f | /"
+      b1: "1 | 0x65 | e"
+      b2: "2 | 0x74 | t"
+      b3: "3 | 0x63 | c"
+      b4: "4 | 0x2f | /"
+      b5: "5 | 0x70 | p"
+      b6: "6 | 0x61 | a"
+      b7: "7 | 0x73 | s"
+    }
+    peek_1 -> scan_1: "Cast to (unsigned char*)"
+  }
+
+  step_2: {
+    label: "Iteration 2: Base + 8"
+    direction: right
+    
+    peek_2: |md
+      c
+      // Advance word size (8 bytes)
+      long word = ptrace(PTRACE_PEEKDATA, pid, 0x7ffd0018, NULL);
+      // Register result: 0x3f3f3f3f00647773
+      
+    |
+    
+    scan_2: {
+      shape: sql_table
+      label: "Buffer[8..15] (Match!)"
+      b0: "0 | 0x73 | s"
+      b1: "1 | 0x77 | w"
+      b2: "2 | 0x64 | d"
+      b3: "3 | 0x00 | \\0" {style.fill: green}
+      b4: "4 | 0x3f | ?"
+      b5: "5 | 0x3f | ?"
+      b6: "6 | 0x3f | ?"
+      b7: "7 | 0x3f | ?"
+    }
+    peek_2 -> scan_2: "Null terminator found"
+  }
+
+  step_1 -> step_2: "next_addr += 8"
+}
+
+# --- Destination ---
+tracer_buffer: {
+  shape: cylinder
+  label: "Tracer Local Heap"
+  
+  content: |md
+    c
+    char path[PATH_MAX]; // Result
+    // Buffer content after copy:
+    "/etc/passwd\0"
+    
+  |
+  label_bottom: "Size: 12 bytes (incl. null)"
+}
+
+# --- Connections ---
+tracee_mem.mem_table.row0 -> extraction_process.step_1.peek_1: "PTRACE_PEEKDATA | 8B | word_1" {
+  style.stroke: blue
+  style.animated: true
+}
+
+tracee_mem.mem_table.row1 -> extraction_process.step_2.peek_2: "PTRACE_PEEKDATA | 8B | word_2" {
+  style.stroke: blue
+  style.animated: true
+}
+
+extraction_process.step_1.scan_1 -> tracer_buffer: "memcpy(path, word, 8)"
+extraction_process.step_2.scan_2 -> tracer_buffer: "memcpy(path + 8, word, 4)"
+
+# --- Implementation Annotation ---
+note: |md
+  ### The 10-Second Logic
+  1. **Source**: Syscall `RDI` holds pointer to tracee memory string.
+  2. **Peek**: `PTRACE_PEEKDATA` reads exactly one machine word (8 bytes).
+  3. **Loop**: Iterate words, casting to `char*` to search for `\0`.
+  4. **Boundary**: Since `path` can cross page boundaries, tracer handles address increments.
+  5. **Stop**: Terminate loop immediately when `0x00` is detected in the current word.
+| {
+  near: bottom-right
+  style.fill: "#f8f8f8"
+}

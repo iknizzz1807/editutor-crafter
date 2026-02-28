@@ -1,0 +1,146 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- L0 SATELLITE MAP CONTEXT ---
+# Milestone 4: Concurrent Connections (pool.c / log.c)
+
+unprotected_race: {
+  label: "SCENARIO A: UNPROTECTED DATA RACE (R-M-W FAILURE)"
+  direction: down
+
+  shared_memory: {
+    shape: sql_table
+    label: "Shared Heap Memory (pool_t)"
+    row1: "0x40 | uint64_t | total_requests"
+    row2: "0x48 | int      | active_connections"
+    label_bottom: "Initial Value: 41"
+  }
+
+  execution_timeline: {
+    shape: sequence_diagram
+    thread_a: Worker Thread A
+    thread_b: Worker Thread B
+    
+    thread_a -> shared_memory: "READ 0x40 | val: 41"
+    thread_b -> shared_memory: "READ 0x40 | val: 41 (STALE)"
+    thread_a -> thread_a: "local_val = 41 + 1"
+    thread_b -> thread_b: "local_val = 41 + 1"
+    thread_a -> shared_memory: "WRITE 0x40 | val: 42"
+    thread_b -> shared_memory: "WRITE 0x40 | val: 42 (LOST UPDATE)"
+  }
+
+  summary: {
+    shape: text
+    label: "RESULT: 42 | EXPECTED: 43\nRoot Cause: Non-atomic Read-Modify-Write"
+    style: {
+      font-color: red
+      bold: true
+    }
+  }
+}
+
+mutex_protection: {
+  label: "SCENARIO B: PTHREAD MUTEX SOLUTION"
+  direction: down
+
+  implementation: {
+    shape: class
+    label: "thread_pool_t (pool.c)"
+    definition: |md
+      c
+      typedef struct {
+          pthread_mutex_t lock;
+          long total_requests;
+      } thread_pool_t;
+      
+    |
+    method: |md
+      c
+      // Atomic increment pattern
+      pthread_mutex_lock(&pool->lock);
+      pool->total_requests++; 
+      pthread_mutex_unlock(&pool->lock);
+      
+    |
+  }
+
+  safe_timeline: {
+    shape: sequence_diagram
+    thread_a: Worker Thread A
+    mutex: Mutex Lock
+    shared_mem: Memory
+    thread_b: Worker Thread B
+
+    thread_a -> mutex: "pthread_mutex_lock()"
+    mutex -> thread_a: "ACQUIRED"
+    thread_b -> mutex: "pthread_mutex_lock() | BLOCKED"
+    thread_a -> shared_mem: "READ 41 -> WRITE 42"
+    thread_a -> mutex: "pthread_mutex_unlock()"
+    mutex -> thread_b: "WAKE / ACQUIRED"
+    thread_b -> shared_mem: "READ 42 -> WRITE 43"
+    thread_b -> mutex: "pthread_mutex_unlock()"
+  }
+}
+
+logging_concurrency: {
+  label: "LOGGING CONCURRENCY (log.c)"
+  direction: down
+
+  problem: {
+    label: "Interleaved Writes (Unprotected stdout/stderr)"
+    shape: code
+    value: |md
+      Thread A: "127.0.0.1 - [28/Feb] GET /index.html"
+      Thread B: "192.168.1.1 - [28/Feb] GET /style.css"
+      
+      OS Write Buffer (Interleaved):
+      "127.0.192.168.0.1 - [28/Feb] 1.1 - [28/Feb] GET /iGET /st..."
+    |
+    style.stroke: red
+  }
+
+  solution: {
+    label: "Synchronized Logging"
+    direction: right
+    
+    mutex_fix: {
+      shape: class
+      label: "Global Log Mutex"
+      code: |md
+        c
+        pthread_mutex_lock(&log_mutex);
+        fprintf(stdout, "%s - %d\n", ip, code);
+        fflush(stdout);
+        pthread_mutex_unlock(&log_mutex);
+        
+      |
+    }
+    
+    buffering_fix: {
+      shape: class
+      label: "Per-Thread Buffering"
+      code: |md
+        c
+        char line[1024];
+        snprintf(line, 1024, ...);
+        write(STDOUT_FILENO, line, strlen(line));
+        // Atomic write() for buffers < PIPE_BUF (4KB)
+        
+      |
+    }
+  }
+}
+
+# Horizontal Flow
+unprotected_race -> mutex_protection: "Refactor to Atomic"
+mutex_protection -> logging_concurrency: "Apply to I/O"
+
+# Annotations
+unprotected_race.summary -> mutex_protection.implementation: "Prevents Lost Update" {
+  style.stroke-dash: 5
+}

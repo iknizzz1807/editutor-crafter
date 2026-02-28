@@ -1,0 +1,127 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# L0 Satellite Map: Benchmark Environment
+setup_layer: {
+  label: "BENCHMARK ORCHESTRATION"
+  direction: down
+
+  client: {
+    shape: class
+    label: "Load Generator: wrk (v4.2.0)"
+    definition: |md
+      bash
+      # C10K Command
+      wrk -t12 -c10000 -d30s \
+        --latency \
+        http://127.0.0.1:8080/test.html
+      
+    |
+  }
+
+  tuning: {
+    shape: sql_table
+    label: "Linux Kernel Parameters (/etc/sysctl.conf)"
+    
+    row1: "fs.file-max | 200000 | System-wide FD limit"
+    row2: "net.core.somaxconn | 65535 | Listen backlog size"
+    row3: "net.ipv4.tcp_max_syn_backlog | 65535 | SYN queue depth"
+    row4: "net.ipv4.ip_local_port_range | 1024 65535 | Ephemeral ports"
+    row5: "ulimit -n | 65536 | Process FD limit"
+    
+    label_bottom: "Tuning for TCP Control Block (TCB) Density"
+  }
+}
+
+server_layer: {
+  label: "SYSTEM UNDER TEST (SUT)"
+  direction: down
+
+  reactor_server: {
+    shape: class
+    label: "Event Loop Server (http_server.c)"
+    fields: |md
+      c
+      reactor* r;           // M3 Reactor Instance
+      http_conn conns[64k]; // M4 Connection Table
+      int listen_fd;        // Non-blocking socket
+      
+    |
+    methods: |md
+      c
+      void http_accept_cb(...);
+      void http_on_readable(...);
+      void http_on_writable(...);
+      
+    |
+  }
+
+  resource_usage: {
+    shape: rectangle
+    label: "Hardware Bound Analysis"
+    style: {
+      fill-pattern: grain
+    }
+    content: |md
+      - **CPU**: Single Core (100% Saturation)
+      - **RAM**: ~17.5KB per connection (10k = 175MB)
+      - **Interrupts**: NAPI Polling active
+      - **Context Switches**: < 500/sec (Single Threaded)
+    |
+  }
+}
+
+results_layer: {
+  label: "PERFORMANCE VALIDATION"
+  direction: down
+
+  metrics_table: {
+    shape: sql_table
+    label: "Benchmark Results (Static 1.3KB File)"
+    
+    header: "Conns | p50 Latency | p99 Latency | RPS | RAM"
+    r1: "100   | 0.21 ms     | 1.42 ms     | 85k | 15MB"
+    r2: "1,000 | 0.48 ms     | 4.88 ms     | 82k | 32MB"
+    r3: "5,000 | 1.15 ms     | 14.2 ms     | 80k | 95MB"
+    r4: "10,000| 2.14 ms     | 82.4 ms     | 78k | 180MB"
+    
+    label_bottom: "Throughput remains stable; Latency scales with epoll batch size"
+  }
+
+  characteristic_curve: {
+    label: "C10K Performance Curve"
+    tooltip: "The Performance Cliff"
+    icon: https://icons.terrastruct.com/essentials%2F092-graph%20bar.svg
+    description: |md
+      **Latency Profile (Log-Linear)**
+      1. **Linear Range (0-8k)**: Latency remains flat (<5ms). `epoll_wait` batches are small.
+      2. **Saturation Knee (~8.5k)**: Interrupt coalescing and `rdllist` processing time starts to exceed loop cycle time.
+      3. **Queuing Delay (>9k)**: Gradual increase in p99 as `epoll_wait` processing time grows linearly with active events per tick.
+    |
+    style: {
+      stroke: "#ca052b"
+      stroke-width: 3
+    }
+  }
+}
+
+# Data Flows (Annotated with Size and Type)
+setup_layer.client -> server_layer.reactor_server: "HTTP/1.1 | 10k Conns | 82k Req/sec" {
+  style: {
+    stroke-width: 4
+    animated: true
+  }
+}
+
+server_layer.reactor_server -> results_layer.metrics_table: "JSON | 480B | Telemetry"
+results_layer.metrics_table -> results_layer.characteristic_curve: "Profile Mapping"
+
+# Style overrides
+setup_layer.tuning.style.fill: "#DEE1EB"
+server_layer.resource_usage.style.fill: "#FFF9C9"
+results_layer.characteristic_curve.style.stroke-dash: 5

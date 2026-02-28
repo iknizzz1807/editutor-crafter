@@ -1,0 +1,150 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- Components ---
+
+main_thread: "Main Thread\n(Accept Loop)" {
+  shape: person
+  style: {
+    fill: "#E1D5E7"
+    stroke: "#9673A6"
+  }
+}
+
+signal_thread: "Signal Thread\n(sigwait)" {
+  shape: person
+  style: {
+    fill: "#F8CECC"
+    stroke: "#B85450"
+  }
+}
+
+thread_pool: "thread_pool_t" {
+  shape: class
+  tooltip: "sizeof=192 bytes (approx)"
+  style.fill: "#E1D5E7"
+  style.stroke: "#DAE8FC"
+  
+  # Exact byte offsets left, sizes right
+  "0x00": "queue: work_item_t* (8 bytes)"
+  "0x08": "queue_capacity: int (4 bytes)"
+  "0x0C": "queue_size: int (4 bytes)"
+  "0x10": "queue_head: int (4 bytes)"
+  "0x14": "queue_tail: int (4 bytes)"
+  "0x18": "lock: pthread_mutex_t (40 bytes)"
+  "0x40": "not_empty: pthread_cond_t (48 bytes)"
+  "0x70": "not_full: pthread_cond_t (48 bytes)"
+  "0xA0": "threads: pthread_t* (8 bytes)"
+  "0xA8": "shutdown: int (4 bytes)"
+
+  # Methods
+  submit: "submit(client_fd: int): int"
+  shutdown_fn: "shutdown(): void"
+  join: "join(): void"
+}
+
+work_queue: "Circular Work Queue\n(Array of work_item_t)" {
+  grid-columns: 8
+  grid-gap: 2
+  style: {
+    fill: "#D5E8D4"
+    stroke: "#82B366"
+  }
+  slot0: "0" { style.fill: "#D5E8D4" }
+  slot1: "1" { style.fill: "#D5E8D4" }
+  slot2: "[fd]" { 
+    style: {
+      fill: "#DAE8FC"
+      stroke: "#6666FF"
+      bold: true
+    } 
+  }
+  slot3: "[fd]" { 
+    style: {
+      fill: "#DAE8FC"
+      stroke: "#6666FF"
+      bold: true
+    } 
+  }
+  slot4: "[fd]" { 
+    style: {
+      fill: "#DAE8FC"
+      stroke: "#6666FF"
+      bold: true
+    } 
+  }
+  slot5: "N-2" { style.fill: "#D5E8D4" }
+  slot6: "N-1" { style.fill: "#D5E8D4" }
+  slot7: "..." { style.fill: "#D5E8D4" }
+}
+
+workers: {
+  grid-columns: 3
+  worker_1: "Worker Thread 1" { shape: person }
+  worker_2: "Worker Thread 2" { shape: person }
+  worker_n: "Worker Thread N" { shape: person }
+  style.fill: "#FFF2CC"
+}
+
+# --- Relationships & Flow ---
+
+main_thread -> thread_pool.submit: "1. Dispatch Client FD"
+thread_pool.submit -> thread_pool."0x18": "▼ Lock Acquire"
+thread_pool.submit -> work_queue: "2. Enqueue item"
+thread_pool.submit -> thread_pool."0x40": "3. Signal (NotEmpty)"
+thread_pool.submit -> thread_pool."0x18": "▲ Lock Release"
+
+signal_thread -> thread_pool.shutdown_fn: "SIGINT / SIGTERM"
+thread_pool.shutdown_fn -> thread_pool."0x18": "▼ Lock Acquire"
+thread_pool.shutdown_fn -> thread_pool."0xA8": "Set to 1"
+thread_pool.shutdown_fn -> thread_pool."0x40": "Broadcast"
+thread_pool.shutdown_fn -> thread_pool."0x18": "▲ Lock Release"
+
+workers.worker_1 -> thread_pool."0x18": "▼ Lock Acquire"
+workers.worker_1 -> thread_pool."0x40": "Wait if size == 0"
+workers.worker_1 -> work_queue: "4. Dequeue Item"
+workers.worker_1 -> thread_pool."0x0C": "Decrement"
+workers.worker_1 -> thread_pool."0x70": "Signal (NotFull)"
+workers.worker_1 -> thread_pool."0x18": "▲ Lock Release"
+workers.worker_1 -> client_connection: "5. handle_connection()"
+
+client_connection: "Client Socket\n(I/O Stream)" {
+  shape: cylinder
+  style.fill: "#F5F5F5"
+}
+
+# --- Ownership (Solid=Owns, Dashed=References) ---
+
+thread_pool -> work_queue: "owns" {
+  target-arrowhead: triangle
+}
+thread_pool -> workers: "manages" {
+  target-arrowhead: triangle
+}
+work_queue -> work_item: "references" {
+  style.stroke-dash: 3
+}
+
+work_item: "work_item_t" {
+  shape: class
+  style.fill: "#DAE8FC"
+  client_fd: "client_fd: int (4 bytes)"
+}
+
+# --- Annotations ---
+
+# FIXED: Changed 'near: thread_pool' (object relative) to 'near: top-right' (constant)
+annotation: |md
+  **sizeof=192 bytes (one cache line x3)**
+  **Concurrency Invariants**
+  - `pthread_mutex_t` MUST be held for all queue pointer offsets.
+  - Spurious wakeups handled via `while(size == 0)` predicate.
+  - Shutdown bit prevents new `submit()` calls.
+| {
+  near: top-right
+}

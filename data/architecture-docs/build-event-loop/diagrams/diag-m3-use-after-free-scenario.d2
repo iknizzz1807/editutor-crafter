@@ -1,0 +1,198 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- STYLES & CLASSES ---
+classes: {
+  memory_struct: {
+    shape: sql_table
+    style: {
+      stroke: "#333333"
+      fill: "white"
+      font-size: 12
+    }
+  }
+  logic_block: {
+    shape: class
+    style: {
+      fill: "#f8f9fa"
+      stroke: "#212529"
+      border-radius: 4
+    }
+  }
+  danger: {
+    style: {
+      fill: "#ffe3e3"
+      stroke: "#c92a2a"
+      font-color: "#c92a2a"
+      bold: true
+    }
+  }
+  fix: {
+    style: {
+      fill: "#ebfbee"
+      stroke: "#2b8a3e"
+      font-color: "#2b8a3e"
+      bold: true
+    }
+  }
+}
+
+# --- DATA STRUCTURE DEFINITIONS ---
+kernel_space: {
+  label: "Kernel Space (eventpoll.c)"
+  direction: down
+
+  rdllist: {
+    shape: sql_table
+    label: "epoll Ready List (rdllist)"
+    
+    item0: "0x... | fd: 5 | ev: EPOLLIN"
+    item1: "0x... | fd: 7 | ev: EPOLLIN"
+    item2: "0x... | fd: 5 | ev: EPOLLHUP"
+    label_bottom: "Kernel wait queue of ready events"
+  }
+}
+
+user_space: {
+  label: "User Space (reactor.c)"
+  direction: down
+
+  event_array: {
+    class: memory_struct
+    label: "struct epoll_event events[MAX_EVENTS] (reactor.h)"
+    
+    row0: "0x00 | 0: { .data.ptr = &handlers[5], .events = EPOLLIN }"
+    row1: "0x0C | 1: { .data.ptr = &handlers[7], .events = EPOLLIN }"
+    row2: "0x18 | 2: { .data.ptr = &handlers[5], .events = EPOLLHUP }"
+    label_bottom: "Total: 36 bytes (copied via epoll_wait)"
+  }
+
+  handler_table: {
+    class: memory_struct
+    label: "fd_handler handlers[MAX_FDS] (reactor.c)"
+    
+    h5: "index 5 | callback: http_read | user_data: 0x55aa | zombie: false"
+    h7: "index 7 | callback: http_read | user_data: 0x77bb | zombie: false"
+    h_pad: "... | ..."
+    label_bottom: "O(1) lookup table (1.5MB total)"
+  }
+}
+
+# --- THE DATA WALK: CHRONOLOGICAL STEPS ---
+timeline: {
+  direction: right
+
+  step_t1: {
+    label: "T1: Dispatch Event [0]"
+    class: logic_block
+    
+    code: |md
+      c
+      // Processing events[0] (fd 5)
+      h = events[0].data.ptr;
+      h->callback(5, READABLE, h->user_data);
+      
+      // LOGIC: Deregister on error
+      reactor_deregister(r, 5); 
+      // -> close(5)
+      // -> handlers[5].zombie = true;
+      
+    |
+  }
+
+  step_t2_race: {
+    label: "T2: The Race (External Event)"
+    class: danger
+    
+    code: |md
+      c
+      // NEW CONNECTION ARRIVES
+      // accept4() returns REUSED fd 5
+      int new_fd = accept4(l_fd, ...); // fd=5
+      
+      reactor_register(r, new_fd, ...);
+      // handlers[5] is RE-INITIALIZED
+      // .zombie = false, new callback/data
+      
+    |
+  }
+
+  step_t3_bug: {
+    label: "T3: The Use-After-Free Bug"
+    class: danger
+    
+    code: |md
+      c
+      // Processing events[2] (STALE fd 5)
+      h = events[2].data.ptr; 
+      // ptr still points to handlers[5]
+      
+      // BUG: Old event fires on NEW client
+      h->callback(5, HANGUP, h->user_data);
+      // Logic error: hangup fired for fd 5 
+      // but 'h' is now a different session.
+      
+    |
+  }
+
+  step_t3_fix: {
+    label: "T3 (FIXED): Zombie Check"
+    class: fix
+    
+    code: |md
+      c
+      // Fixed Dispatch Loop
+      for (int i = 0; i < n; i++) {
+        h = events[i].data.ptr;
+        
+        // THE FIX: Check if deregistered 
+        // earlier in the same batch
+        if (h->zombie) continue; 
+        
+        h->callback(...);
+      }
+      
+    |
+  }
+}
+
+# --- CONNECTIONS & ANNOTATIONS ---
+kernel_space.rdllist -> user_space.event_array: "epoll_wait() | 36 bytes | copy_to_user()"
+
+user_space.event_array.row0 -> timeline.step_t1: "ptr to handlers[5]"
+timeline.step_t1 -> user_space.handler_table.h5: "deregister() | zombie=true" {
+  style: {
+    stroke: red
+    stroke-dash: 3
+  }
+}
+
+timeline.step_t2_race -> user_space.handler_table.h5: "accept() | Overwrites context" {
+  style: {
+    stroke: red
+    stroke-width: 2
+  }
+}
+
+user_space.event_array.row2 -> timeline.step_t3_bug: "ptr to handlers[5] (STALE)"
+timeline.step_t3_bug -> timeline.step_t3_fix: "Resolution: Zombie Bit Guard"
+
+# --- LEGEND / SCALE ---
+legend: {
+  near: bottom-right
+  
+  uaf_red: "Red Path = Use-After-Free / Race Condition" {
+    style: { font-color: red; stroke: red }
+  }
+  logic_green: "Green Path = Deferred Modification Fix" {
+    style: { font-color: green; stroke: green }
+  }
+  note: "Scale: 1.5MB table (MAX_FDS=65536)" {
+    shape: text
+  }
+}

@@ -1,0 +1,176 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- Classes & Styles ---
+classes: {
+  danger_zone: {
+    style: {
+      fill: "#fff5f5"
+      stroke: "#c53030"
+      stroke-dash: 5
+      stroke-width: 2
+    }
+  }
+  safe_zone: {
+    style: {
+      fill: "#f0fff4"
+      stroke: "#2f855a"
+      stroke-width: 2
+    }
+  }
+  kernel_obj: {
+    shape: cylinder
+    style: { fill: "#edf2f7"; stroke: "#2d3748" }
+  }
+  code_box: {
+    style: { font: mono; font-size: 11 }
+  }
+}
+
+title: {
+  label: "Signal Handling Architecture — Pitfall (Async) vs. Solution (Sync) [signal.c]"
+  near: top-center
+  shape: text
+  style: { font-size: 20; bold: true }
+}
+
+# --- SECTION 1: THE PITFALL (Default Behavior) ---
+pitfall: {
+  label: "THE PITFALL: ASYNCHRONOUS INTERRUPTION"
+  class: danger_zone
+  direction: down
+
+  kernel: {
+    label: "OS Kernel (Scheduler) (kernel/signal.c)"
+    class: kernel_obj
+    signal_dispatcher: "Signal Queue\n(SIGTERM | 8 bytes)"
+  }
+
+  process_space: "Process Memory Space (PID 1024)" {
+    direction: right
+    worker_1: "Thread 1 (Idle)"
+    worker_2: "Thread 2 (Active syscall)" {
+      style.fill: "#feb2b2"
+      label: "Thread 2\nwrite(fd, buf, len)"
+    }
+    worker_3: "Thread 3 (Idle)"
+  }
+
+  kernel.signal_dispatcher -> process_space.worker_2: "SIGTERM | Interrupt Vector" {
+    style: { stroke: "#c53030"; animated: true; bold: true }
+  }
+}
+
+# --- SECTION 2: THE SOLUTION (Dedicated Signal Thread) ---
+solution: {
+  label: "THE SOLUTION: SYNCHRONOUS SIGNAL HANDLING"
+  class: safe_zone
+  direction: right
+
+  # Step 1: Initialization
+  initialization: {
+    label: "Phase 1: Masking (main.c)"
+    direction: down
+
+    sigmask_setup: {
+      shape: sql_table
+      label: "sigset_t (Signal Mask) | 128 Bytes"
+      row1: "0x00 | uint64_t | __val[0] (SIGTERM/SIGINT bits)"
+      row2: "0x08 | uint64_t | __val[1..15] (Reserved)"
+      label_bottom: "Applied via pthread_sigmask()"
+    }
+
+    mask_call: |md
+      c
+      sigfillset(&all_sigs);
+      // Block signals in main before spawning threads
+      pthread_sigmask(SIG_BLOCK, &all_sigs, NULL);
+      
+    | { class: code_box }
+  }
+
+  # Step 2: Thread Creation
+  threads: {
+    label: "Phase 2: Thread Separation"
+    direction: down
+
+    signal_thread: "Signal Mgmt Thread (signal.c)" {
+      shape: class
+      label: "sig_thread (signal.c)"
+      definition: |md
+        c
+        void* sig_thread(void* arg) {
+            int sig;
+            sigwait(&set, &sig); // Synchronous
+            pool->shutdown = 1;
+            pthread_cond_broadcast(&pool->cond);
+            return NULL;
+        }
+        
+      |
+    }
+
+    worker_pool: "Worker Pool (Inherited Mask)" {
+      style.multiple: true
+      w1: "Thread 1"
+      w2: "Thread 2"
+      w3: "Thread 3"
+    }
+  }
+
+  # Step 3: Shared State
+  shared_state: {
+    shape: sql_table
+    label: "struct thread_pool_t (pool.h)"
+    off_0: "0x00 | int | shutdown_flag"
+    off_8: "0x08 | pthread_mutex_t | lock (40B)"
+    off_48: "0x30 | pthread_cond_t | cond (48B)"
+    label_bottom: "Total: 96 Bytes | Cache-Aligned"
+  }
+
+  # Connections inside solution
+  initialization.mask_call -> threads.worker_pool: "sigmask inherited"
+  initialization.mask_call -> threads.signal_thread: "sigmask inherited"
+  threads.signal_thread -> shared_state.off_0: "pool->shutdown = 1" {
+    style: { stroke: "#3182ce"; stroke-dash: 3 }
+  }
+}
+
+# --- GLOBAL CONNECTIONS & FLOW ---
+pitfall -> solution: "Migration to Thread-Safe Model" {
+  style: { stroke-width: 4; border-radius: 10 }
+}
+
+# Cross-section delivery
+pitfall.kernel.signal_dispatcher -> solution.threads.signal_thread: "sigwait() consumes signal" {
+  label: "SIGTERM | Synchronous Delivery"
+  style: { stroke: "#2f855a"; stroke-width: 3; animated: true }
+}
+
+# --- ROOT-LEVEL ANNOTATIONS (Fixing 'near' error) ---
+
+pitfall_analysis: |md
+  ### Vulnerability: Race Condition
+  1. Kernel picks a random thread to deliver signal.
+  2. `Thread 2` is mid-syscall (`write()`).
+  3. Handler runs on `Thread 2` stack, potentially calling unsafe `printf` or `malloc`.
+  4. Result: `EINTR` error or Deadlock.
+| {
+  near: bottom-left
+}
+
+implementation_details: |md
+  ### Critical Implementation Checklist (POSIX Threads):
+  1. **Block First**: Call `pthread_sigmask` in `main()` *before* any `pthread_create`.
+  2. **Dedicated Waiter**: One thread calls `sigwait()` in a loop. All others keep signals blocked.
+  3. **Atomic Notification**: Use a `shutdown_flag` protected by mutex + `pthread_cond_broadcast`.
+  4. **Safe Exit**: Workers check `shutdown_flag` after waking from `cond_wait`.
+| {
+  near: bottom-right
+  shape: text
+}

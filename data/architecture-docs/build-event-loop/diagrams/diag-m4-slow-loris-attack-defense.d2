@@ -1,0 +1,161 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- EXTERNAL ENTITY ---
+attacker: Malicious Client {
+  shape: person
+  label: "Slow Loris Attacker\n(Python/Scapy Script)"
+  tooltip: "Objective: Exhaust server file descriptors and memory"
+}
+
+# --- SERVER ARCHITECTURE ---
+server: "Event-Loop HTTP Server (http_server.c)" {
+  direction: down
+
+  # --- LAYER 1: MULTIPLEXER ---
+  reactor_layer: {
+    label: "REACTOR LAYER (reactor.c)"
+    direction: down
+    
+    reactor_struct: {
+      shape: sql_table
+      label: "struct reactor_t"
+      "0x00": "int            | epoll_fd"
+      "0x04": "bool           | dispatching"
+      "0x08": "fd_handler_t*  | handlers[65536]"
+      "0x18": "timer_heap_t*  | timers"
+      label_bottom: "Total: ~1.6MB allocated on startup"
+    }
+
+    epoll_dispatch: |md
+      c
+      // reactor_dispatch logic
+      int n = epoll_wait(r->epoll_fd, events, 1024, timeout);
+      for(int i=0; i<n; i++) {
+          struct fd_handler *h = r->handlers[events[i].data.fd];
+          h->callback(events[i].data.fd, events[i].events, h->user_data);
+      }
+      
+    |
+  }
+
+  # --- LAYER 2: PROTOCOL STATE MACHINE ---
+  http_layer: {
+    label: "HTTP PROTOCOL LAYER (http_server.c)"
+    direction: down
+
+    http_conn_struct: {
+      shape: sql_table
+      label: "struct http_conn_t"
+      "0x0000": "char[16384] | read_buf"
+      "0x4000": "uint32_t    | read_len"
+      "0x4004": "int         | fd"
+      "0x4008": "uint32_t    | state (READING_HEADERS)"
+      "0x4010": "uint64_t    | timer_id"
+      label_bottom: "Total: 17,488 bytes per connection"
+    }
+
+    state_machine: {
+      direction: right
+      S1: "READING_HEADERS" {style.fill: yellow}
+      S2: "READING_BODY"
+      S3: "PROCESSING"
+      
+      S1 -> S2: "find_header_end() > 0"
+      S1 -> S3: "headers_complete && content_len == 0"
+    }
+  }
+
+  # --- LAYER 3: DEFENSE SUBSYSTEMS ---
+  defenses: {
+    direction: right
+    label: "SECURITY ENFORCEMENT SUBSYSTEMS"
+
+    idle_timeout: "DEFENSE L1: Idle Timeout (timer.c)" {
+      style.stroke: green
+      tooltip: "Closes connection if no data arrives for 30s"
+      logic: |md
+        c
+        if (now_ms() > conn->expiry_ms) 
+            terminate_connection(conn->fd);
+        
+      |
+    }
+
+    header_limit: "DEFENSE L2: Buffer Limit" {
+      style.stroke: green
+      tooltip: "Closes connection if headers > 16KB"
+      logic: "read_len >= READ_BUF_SIZE"
+    }
+
+    fd_limit: "DEFENSE L3: OS Resource Limit" {
+      style.stroke: green
+      tooltip: "ulimit -n enforces max concurrent fds"
+      logic: "fd_count < OS_MAX_FILES"
+    }
+  }
+}
+
+# --- DATA FLOW & ATTACK VECTORS ---
+
+# 1. Connection established
+attacker -> server.reactor_layer: "TCP SYN | 60 bytes | 3-Way Handshake" {
+  style.stroke: blue
+}
+
+# 2. Slow Loris Byte Injection
+attacker -> server.http_layer: "char[1] | 1 Byte | 'G'" {
+  style.stroke: red
+  label: "Attack: 1 byte sent every 25 sec"
+}
+
+# 3. State update (Partial Header Read)
+server.http_layer.http_conn_struct."0x4000" -> server.http_layer.state_machine.S1: "read_len++ | State: READING_HEADERS" {
+  style.stroke-dash: 3
+}
+
+# 4. Timer Reset (The exploit: preventing timeout)
+server.http_layer -> server.reactor_layer.reactor_struct."0x18": "timer_update(fd, now+30s)" {
+  style.stroke: purple
+  label: "Reset L1 Timer"
+}
+
+# --- TERMINATION PATHS (DEFENSE MECHANISMS) ---
+
+# Defense L1 triggers if attacker fails to send byte within 30s
+server.reactor_layer.reactor_struct."0x18" -> server.http_layer: "timeout | EVENT_IDLE | Call http_handle_timeout" {
+  style.stroke: green
+  source-arrowhead: diamond
+}
+
+# Defense L2 triggers if buffer overflows without finding CRLFCRLF
+server.http_layer.http_conn_struct."0x4000" -> server.defenses.header_limit: "Condition: read_len == 16384"
+server.defenses.header_limit -> server.http_layer: "action: force_close(fd)" {
+  style.stroke: red
+}
+
+# --- ANNOTATIONS ---
+
+no_defense_note: |md
+  ### ATTACK IMPACT (Without Mitigation)
+  - **Memory Leakage:** 10k connections * 17KB = ~170MB RAM locked in I/O buffers.
+  - **FD Exhaustion:** 10,000 / 10,000 active descriptors.
+  - **Availability:** `accept4()` returns `EMFILE`. Legitimate traffic is dropped.
+| {
+  near: top-left
+  style.fill: "#ffcccc"
+  style.stroke: red
+}
+
+legend: {
+  near: bottom-right
+  attack: "Attack Vector" {style.stroke: red}
+  defense: "Defense Mechanism" {style.stroke: green}
+  control: "Timer/Control Path" {style.stroke: purple}
+  network: "TCP Handshake" {style.stroke: blue}
+}

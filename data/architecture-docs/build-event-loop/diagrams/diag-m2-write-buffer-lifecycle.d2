@@ -1,0 +1,184 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- CLASSES & STYLES ---
+classes: {
+  state_node: {
+    style: {
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  warning: {
+    style: {
+      fill: "#ffcfcf"
+      stroke: "#cc0000"
+      stroke-dash: 3
+    }
+  }
+}
+
+# --- DATA STRUCTURES (L2 Detail) ---
+data_structures: {
+  label: "MEMORY LAYOUT (L2) (connection.h / server.c)"
+  direction: down
+  
+  struct_write_buf: {
+    shape: sql_table
+    label: "struct write_buf (connection.h)"
+    
+    row1: "0x00 | char*    | data    | Heap pointer"
+    row2: "0x08 | uint32_t | len     | Unsent bytes"
+    row3: "0x0C | uint32_t | cap     | Allocation size"
+    row4: "0x10 | uint32_t | offset  | Start position"
+    label_bottom: "Total: 24 bytes"
+  }
+
+  struct_conn_state: {
+    shape: sql_table
+    label: "struct conn_state (server.c)"
+    
+    row1: "0x0000 | char[4096] | read_buf"
+    row2: "0x1000 | write_buf  | wbuf"
+    row3: "0x1018 | bool       | epollout_armed"
+    row4: "0x101C | int        | fd"
+    label_bottom: "Total: 4128 bytes"
+  }
+}
+
+# --- THE EPOLLOUT DANCE (L1 Evolution) ---
+lifecycle: {
+  label: "THE EPOLLOUT DANCE (L1 Lifecycle)"
+  direction: right
+
+  # STEP 1: FAST PATH
+  step_1: {
+    class: state_node
+    label: "STEP 1: Immediate Success (Ideal Path)"
+    
+    logic: |md
+      c
+      // Initial state: epollout_armed = false
+      ssize_t w = write(fd, data, 2000);
+      if (w == 2000) return 0; // Kernel buffer accepted all
+      
+    |
+    status: "EPOLLOUT: Idle"
+    style.fill: "#e6ffed"
+  }
+
+  # STEP 2: PARTIAL WRITE
+  step_2: {
+    class: state_node
+    label: "STEP 2: Partial Write (Buffering)"
+    
+    logic: |md
+      c
+      ssize_t w = write(fd, data, 2000); // w = 500
+      wbuf_append(c, data + 500, 1500);
+      epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, EPOLLIN | EPOLLOUT);
+      c->epollout_armed = true;
+      
+    |
+    status: "EPOLLOUT: ARMED"
+    style.fill: "#fffbe6"
+  }
+
+  # STEP 3: INTERMEDIATE FLUSH
+  step_3: {
+    class: state_node
+    label: "STEP 3: Partial Flush (Backpressure)"
+    
+    logic: |md
+      c
+      // epoll_wait() triggers EPOLLOUT
+      ssize_t w = write(fd, wbuf.ptr, 1500); // w = 1000
+      wbuf_consume(c, 1000);
+      // wbuf.len is 500 (not zero). Stay armed.
+      return 0;
+      
+    |
+    status: "EPOLLOUT: STAY ARMED"
+    style.fill: "#fffbe6"
+  }
+
+  # STEP 4: FINAL FLUSH
+  step_4: {
+    class: state_node
+    label: "STEP 4: Final Flush (Deregistration)"
+    
+    logic: |md
+      c
+      // epoll_wait() triggers EPOLLOUT
+      ssize_t w = write(fd, wbuf.ptr, 500); // w = 500
+      wbuf_consume(c, 500);
+      if (wbuf_is_empty(c)) {
+          epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, EPOLLIN);
+          c->epollout_armed = false;
+      }
+      
+    |
+    status: "EPOLLOUT: DEREGISTERED"
+    style.fill: "#e6ffed"
+  }
+
+  # THE PITFALL
+  busy_loop_danger: {
+    class: [state_node; warning]
+    label: "THE PITFALL: CPU Busy Loop"
+    
+    logic: |md
+      c
+      // IF DEREGISTRATION SKIPPED:
+      // Buffer is empty, but EPOLLOUT is still set in epoll.
+      // kernel: "buffer is writable!" -> epoll_wait() returns.
+      // loop repeats instantly with no work to do.
+      
+    |
+    status: "CPU: 100% Core Load"
+  }
+
+  # --- INTERNAL FLOWS ---
+  step_1 -> step_2: "write() < total | 1500 bytes unsent"
+  step_2 -> step_3: "EPOLLOUT Event | sent 1000"
+  step_3 -> step_3: "Loop until drained"
+  step_3 -> step_4: "EPOLLOUT Event | sent final 500"
+  step_4 -> busy_loop_danger: "Deregistration Forgotten" {
+    style: {
+      stroke: red
+      stroke-width: 4
+    }
+  }
+}
+
+# --- CROSS-LAYER ANNOTATIONS ---
+lifecycle.step_1 -> data_structures.struct_conn_state: "Reads fd status"
+lifecycle.step_2 -> data_structures.struct_write_buf: "Appends 1500b"
+
+# --- LEGEND ---
+legend: {
+  near: bottom-right
+  "Success Path": { 
+    style: {
+      fill: "#e6ffed"
+      stroke: "#22863a"
+    }
+  }
+  "Waiting / Buffered": { 
+    style: {
+      fill: "#fffbe6"
+      stroke: "#b08800"
+    }
+  }
+  "Critical Failure": {
+    style: {
+      fill: "#ffcfcf"
+      stroke: red
+    }
+  }
+}

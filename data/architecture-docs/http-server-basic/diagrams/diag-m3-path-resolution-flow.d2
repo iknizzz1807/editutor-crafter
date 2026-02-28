@@ -1,0 +1,181 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- STYLES & CLASSES ---
+classes: {
+  logic_gate: {
+    shape: parallelogram
+    style: {
+      fill: "#E4DBFE"
+      stroke: "#333333"
+    }
+  }
+  security_fail: {
+    style: {
+      fill: "#FFDADA"
+      stroke: "#CA052B"
+      stroke-width: 3
+    }
+  }
+  data_buffer: {
+    shape: sql_table
+    style: {
+      fill: "#F0F7FF"
+      stroke: "#333333"
+    }
+  }
+}
+
+# --- INPUT LAYER ---
+input_layer: {
+  label: "INPUT LAYER (parser.c)"
+  direction: down
+
+  request_struct: {
+    shape: sql_table
+    label: "struct http_request_t (http.h)"
+    row1: "0x00 | char[8192] | path"
+    row2: "0x2000 | uint16_t | port"
+    row3: "0x2002 | bool | is_ssl"
+    label_bottom: "Input: /images/../secret/../../etc/passwd"
+  }
+  
+  config: {
+    shape: sql_table
+    label: "struct server_config_t (config.h)"
+    row1: "0x00 | char[4096] | root"
+    row2: "0x1000 | uint32_t | max_conns"
+    label_bottom: "Doc Root: /var/www"
+  }
+}
+
+# --- RESOLUTION PIPELINE ---
+pipeline: {
+  label: "RESOLUTION PIPELINE (file_server.c)"
+  direction: down
+
+  step1_decode: {
+    shape: code
+    label: "1. url_decode()"
+    instruction: |md
+      c
+      // Decodes %2e -> .
+      // Decodes %2f -> /
+      // Rejects %00 (Null Byte)
+      
+    |
+  }
+
+  step2_join: {
+    shape: code
+    label: "2. snprintf(raw_path, ...)"
+    instruction: |md
+      c
+      snprintf(raw, sizeof(raw), "%s%s", 
+               root, decoded_path);
+      
+    |
+  }
+
+  state_table: {
+    class: data_buffer
+    label: "Path Transformation State"
+    # Manual SQL Table Row Formatting
+    "STAGE": "VALUE"
+    "Decoded": "/images/../secret/../../etc/passwd"
+    "Joined": "/var/www/images/../secret/../../etc/passwd"
+  }
+
+  step3_realpath: {
+    shape: code
+    label: "3. realpath(3) - Canonicalize"
+    instruction: |md
+      c
+      // THE CRITICAL STEP
+      // Resolves all .. and .
+      // Follows symlinks
+      // Returns absolute path
+      char *canon = realpath(raw, resolved);
+      
+    |
+  }
+
+  step1_decode -> step2_join: "char[] decoded"
+  step2_join -> state_table: "Mem Update"
+  state_table -> step3_realpath: "raw_path"
+}
+
+# --- SECURITY GATE ---
+security_gate: {
+  label: "SECURITY GATE"
+  direction: down
+
+  canonical_result: {
+    class: data_buffer
+    label: "Kernel Resolved Identity"
+    "PROPERTY": "VALUE"
+    "Resolved Path": "/etc/passwd"
+    "Inode": "98234"
+    label_bottom: "Length: 11 bytes"
+  }
+
+  prefix_check: {
+    class: logic_gate
+    label: "strncmp(canon, root, root_len)"
+    check: |md
+      c
+      strncmp("/etc/passwd", "/var/www", 8)
+      // Result: -1 (MISMATCH)
+      
+    |
+  }
+
+  resolution_fail: {
+    class: security_fail
+    label: "403 FORBIDDEN"
+    reason: "Path escaped document root"
+  }
+
+  canonical_result -> prefix_check: "Verify Prefix"
+  prefix_check -> resolution_fail: "FAIL (Access Denied)"
+}
+
+# --- NAIVE CONTRAST ---
+naive_comparison: {
+  label: "WARNING: Naive Approach (SKIP realpath)"
+  style.stroke-dash: 5
+  
+  logic: |md
+    c
+    // VULNERABLE LOGIC:
+    // This only checks the string prefix, 
+    // it doesn't resolve directory traversal.
+    if (strncmp(raw_path, root, len) == 0) {
+        // Returns TRUE because string starts 
+        // with "/var/www"
+        open(raw_path); // EXPLOITED
+    }
+    
+  |
+}
+
+# --- FLOWS ---
+input_layer.request_struct -> pipeline.step1_decode: "char[] | Raw URL"
+input_layer.config -> pipeline.step2_join: "char[] | Doc Root"
+
+pipeline.step3_realpath -> security_gate.canonical_result: "char *resolved | syscall" {
+  source-arrowhead: * { shape: circle }
+}
+
+pipeline.step2_join -> naive_comparison: "Bypass Vector" {
+  style.stroke: red
+  style.stroke-dash: 3
+}
+
+security_gate.prefix_check.style.fill: "#FFEDED"
+pipeline.state_table.style.stroke-width: 2

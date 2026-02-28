@@ -1,0 +1,172 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+# -----------------------------------------------------------------------------
+# EXIT PATHS: THE TRIGGERS
+# -----------------------------------------------------------------------------
+ExitPaths: {
+  label: "CONVERGENT EXIT PATHS (ASYNC)"
+  style.stroke-dash: 5
+
+  Timer: "Idle Timeout" {
+    shape: circle
+    style.fill: "#ef4444"
+    style.font-color: white
+  }
+  ReadErr: "Read Error / EOF" {
+    shape: circle
+    style.fill: "#ef4444"
+    style.font-color: white
+  }
+  WriteOverflow: "Write Buffer Overflow" {
+    shape: circle
+    style.fill: "#ef4444"
+    style.font-color: white
+  }
+  ParseErr: "HTTP Parse Error" {
+    shape: circle
+    style.fill: "#ef4444"
+    style.font-color: white
+  }
+  Protocol: "Connection: close" {
+    shape: circle
+    style.fill: "#3b82f6"
+    style.font-color: white
+  }
+}
+
+# -----------------------------------------------------------------------------
+# THE DEFERRAL BRIDGE
+# -----------------------------------------------------------------------------
+ExitPaths -> Dispatch: "reactor_defer(r, close_fn, conn)" {
+  style.stroke-width: 4
+  style.stroke: orange # Pointer/Transition Color
+}
+
+Dispatch: "REACTOR TASK QUEUE\n(Post-I/O Dispatch)" {
+  shape: cylinder
+  style.fill: "#f3e8ff"
+}
+
+Dispatch -> CleanupFunction: "Callback Invoked" {
+  style.stroke: orange
+}
+
+# -----------------------------------------------------------------------------
+# MANDATORY CLEANUP SEQUENCE
+# -----------------------------------------------------------------------------
+CleanupFunction: "void http_conn_close_deferred(reactor_t *r, void *arg)" {
+  style.fill: "#6a0dad" # Header Purple
+  style.font-color: white
+  
+  # Step 1: Guard
+  Guard: "1. IF (conn->fd < 0) RETURN" {
+    style.fill: "#3b82f6" # Data/Logic Blue
+    style.font-color: white
+  }
+  
+  # Step 2: Cancel Timer
+  CancelTimer: "2. reactor_cancel_timer(r, conn->timer_id)" {
+    style.fill: "#3b82f6" # Data/Logic Blue
+    style.font-color: white
+  }
+  
+  # Step 3: Deregister
+  Deregister: "3. reactor_deregister(r, conn->fd)" {
+    style.fill: "#3b82f6" # Data/Logic Blue
+    style.font-color: white
+  }
+  
+  # Step 4: Free Write Buffer
+  FreeWbuf: "4. wbuf_free(&conn->wbuf)" {
+    style.fill: "#10b981" # Free Green
+    style.font-color: white
+  }
+  
+  # Step 5: Close Syscall
+  SyscallClose: "5. close(conn->fd)" {
+    style.fill: "#10b981" # Free Green
+    style.font-color: white
+  }
+  
+  # Step 6: Mark Dead
+  MarkDead: "6. conn->fd = -1" {
+    style.fill: "#3b82f6" # Data/Logic Blue
+    style.font-color: white
+  }
+  
+  # Step 7: Release Memory
+  FinalFree: "7. free(conn)" {
+    style.fill: "#10b981" # Free Green
+    style.font-color: white
+  }
+
+  # Mandatory Order
+  Guard -> CancelTimer -> Deregister -> FreeWbuf -> SyscallClose -> MarkDead -> FinalFree: {
+    style.stroke: orange
+  }
+}
+
+# -----------------------------------------------------------------------------
+# CONSEQUENCE ANNOTATIONS
+# -----------------------------------------------------------------------------
+FailureConsequences: {
+  near: top-right # Fixed: ELK requires constant value
+  
+  G1: |md
+    **IF STEP 1 SKIPPED:**
+    Double-free or Use-After-Free (UAF).
+  | { style.stroke: red; style.fill: "#f9fafb" }
+
+  G2: |md
+    **IF STEP 2 SKIPPED:**
+    Timer fires on reused FD closing new client.
+  | { style.stroke: red; style.fill: "#f9fafb" }
+
+  G3: |md
+    **IF STEP 3 SKIPPED:**
+    Epoll reports events on closed FD (EBADF).
+  | { style.stroke: red; style.fill: "#f9fafb" }
+
+  G4: |md
+    **IF STEP 4 SKIPPED:**
+    **HEAP LEAK:** `wbuf.data` is unreleased.
+  | { style.stroke: red; style.fill: "#f9fafb" }
+
+  G5: |md
+    **IF STEP 5 SKIPPED:**
+    **FD LEAK:** Process reaches `EMFILE`.
+  | { style.stroke: red; style.fill: "#f9fafb" }
+
+  G7: |md
+    **IF STEP 7 SKIPPED:**
+    **MEMORY LEAK:** RSS grows until OOM.
+  | { style.stroke: red; style.fill: "#f9fafb" }
+}
+
+# -----------------------------------------------------------------------------
+# VISUAL LINKING
+# -----------------------------------------------------------------------------
+CleanupFunction.Guard -> FailureConsequences.G1: {style.stroke-dash: 3; style.stroke: gray}
+CleanupFunction.CancelTimer -> FailureConsequences.G2: {style.stroke-dash: 3; style.stroke: gray}
+CleanupFunction.Deregister -> FailureConsequences.G3: {style.stroke-dash: 3; style.stroke: gray}
+CleanupFunction.FreeWbuf -> FailureConsequences.G4: {style.stroke-dash: 3; style.stroke: gray}
+CleanupFunction.SyscallClose -> FailureConsequences.G5: {style.stroke-dash: 3; style.stroke: gray}
+CleanupFunction.FinalFree -> FailureConsequences.G7: {style.stroke-dash: 3; style.stroke: gray}
+
+# -----------------------------------------------------------------------------
+# LEGEND
+# -----------------------------------------------------------------------------
+Legend: {
+  near: bottom-left # Fixed: ELK requires constant value
+  H: "Header (Mandatory Sequence)" { style.fill: "#6a0dad"; style.font-color: white }
+  L: "Logic / Data Update" { style.fill: "#3b82f6"; style.font-color: white }
+  F: "Freeing / Syscall" { style.fill: "#10b981"; style.font-color: white }
+  P: "Pointer / Transition" { style.stroke: orange; style.stroke-width: 2 }
+  E: "Failure Consequence" { style.stroke: red }
+}

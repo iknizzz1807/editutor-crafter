@@ -1,0 +1,140 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# TCP Backpressure Flow: Application -> Kernel -> Hardware
+
+application: "Application Layer (User Space)" {
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#333333"
+    stroke-width: 2
+  }
+
+  write_buf_struct: "struct write_buf_t" {
+    shape: sql_table
+    style.fill: "white"
+    header: "Memory Layout (24 Bytes)" {style.fill: "#6f42c1"; style.font-color: "white"}
+    00: "data (char*)" {constraint: "8 Bytes (Pointer)"; style.fill: "#fd7e14"}
+    08: "len (uint32_t)" {constraint: "4 Bytes (Data)"; style.fill: "#cfe2ff"}
+    12: "cap (uint32_t)" {constraint: "4 Bytes (Data)"; style.fill: "#cfe2ff"}
+    16: "offset (uint32_t)" {constraint: "4 Bytes (Data)"; style.fill: "#cfe2ff"}
+    20: "padding" {constraint: "4 Bytes (Padding)"; style.fill: "#e2e3e5"}
+  }
+
+  app_logic: "Event Loop / conn_write()" {
+    shape: rectangle
+    style.fill: "#cfe2ff"
+  }
+}
+
+kernel: "Kernel Layer (Ring 0)" {
+  style: {
+    fill: "#e2e3e5"
+    stroke: "#333333"
+    stroke-width: 2
+  }
+
+  tcp_stack: "Kernel Send Buffer\n(87KB - 208KB)" {
+    shape: cylinder
+    style.fill: "#d1e7dd"
+  }
+
+  epoll_subsystem: "epoll Readiness" {
+    style.fill: "#fff3cd"
+  }
+}
+
+hardware: "Hardware Layer (NIC)" {
+  style: {
+    fill: "#f8d7da"
+    stroke: "#333333"
+    stroke-width: 2
+  }
+
+  tx_ring: "NIC TX Ring" {
+    grid-columns: 4
+    label: "DMA Descriptors (No CPU Copy)"
+    slot1: "Slot 0" {style.fill: "#d1e7dd"}
+    slot2: "Slot 1" {style.fill: "#d1e7dd"}
+    slot3: "Slot 2" {style.fill: "#d1e7dd"}
+    slot4: "Free" {style.fill: "#f1f1f1"}
+  }
+}
+
+# DATA FLOW PATHS
+
+application.app_logic -> kernel.tcp_stack: "1. write(fd, buf, n)" {
+  style.stroke: "#0d6efd"
+  style.stroke-width: 4
+}
+
+kernel.tcp_stack -> application.app_logic: "2. EAGAIN (Buffer Full)" {
+  style.stroke: "#dc3545"
+  style.stroke-dash: 5
+}
+
+application.app_logic -> application.write_buf_struct: "3. Append to wbuf\n(Queue unsent bytes)" {
+  style.stroke: "#6610f2"
+}
+
+kernel.tcp_stack -> hardware.tx_ring: "4. DMA Transfer\n(Kernel to NIC)" {
+  style.stroke: "#198754"
+  style.stroke-width: 3
+}
+
+hardware.tx_ring -> network: "5. Wire Send" {
+  style.animated: true
+}
+
+network -> hardware.tx_ring: "6. TCP ACK Received" {
+  style.stroke-dash: 3
+}
+
+hardware.tx_ring -> kernel.tcp_stack: "7. Interrupt / Free Space" {
+  style.stroke: "#198754"
+}
+
+kernel.epoll_subsystem -> application.app_logic: "8. EPOLLOUT Fired" {
+  style.stroke: "#fd7e14"
+  style.stroke-width: 3
+  source-arrowhead: triangle
+}
+
+application.app_logic -> kernel.tcp_stack: "9. conn_flush()\n(Drain wbuf to Kernel)" {
+  style.stroke: "#0d6efd"
+}
+
+# ANNOTATIONS
+
+slow_loris_note: |md
+  ### BACKPRESSURE & SLOW LORIS
+  - **Client Stalls**: ACK stops arriving.
+  - **Kernel Saturation**: `sk_sndbuf` hits max capacity.
+  - **App EAGAIN**: Every `write()` fails.
+  - **Wbuf Growth**: `wbuf->len` increases linearly.
+  - **Defense**: If `wbuf->len > WRITE_BUF_MAX (256KB)` 
+    → **Close Connection**.
+| {
+  near: top-right
+  style.fill: "#fff3cd"
+  style.stroke: "#ffc107"
+}
+
+backpressure_label: "Backpressure Propagation Sequence" {
+  shape: text
+  near: top-center
+  style.font-size: 20
+  style.bold: true
+}
+
+network: "Remote Peer (Network)" {
+  shape: cloud
+}
+
+# Constraints overrides
+(application.app_logic -> application.write_buf_struct)[0].style.stroke-dash: 0

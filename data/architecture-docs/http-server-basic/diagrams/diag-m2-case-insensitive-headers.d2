@@ -1,0 +1,135 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# HEADER CASE INSENSITIVITY ARCHITECTURE
+# REFERENCE: RFC 7230 Section 3.2
+
+input_layer: {
+  label: "CLIENT INPUT LAYER (Network Sockets)"
+  direction: down
+
+  curl: {
+    shape: package
+    label: "Client A (curl/7.88)"
+    data: "0x48 6f 73 74 3a 20 ... | 'Host: localhost\\r\\n'"
+  }
+
+  wget: {
+    shape: package
+    label: "Client B (wget/1.21)"
+    data: "0x68 6f 73 74 3a 20 ... | 'host: localhost\\r\\n'"
+  }
+
+  java: {
+    shape: package
+    label: "Client C (JDK/17)"
+    data: "0x48 4f 53 54 3a 20 ... | 'HOST: localhost\\r\\n'"
+  }
+}
+
+parser_engine: {
+  label: "PARSER LOGIC (parser.c)"
+  direction: down
+
+  naive_approach: {
+    shape: code
+    label: "The Trap: Naive strcmp"
+    content: |md
+      c
+      // FAIL: Case-sensitive comparison
+      // Matches 'Host' only.
+      if (strcmp(h_name, "Host") == 0) {
+          req->host = h_value; 
+      }
+      
+    |
+    style: {
+      stroke: red
+      stroke-width: 2
+    }
+  }
+
+  robust_approach: {
+    shape: code
+    label: "Correct Implementation: RFC 7230 Compliant"
+    content: |md
+      c
+      // SUCCESS: Normalize to lowercase on parse
+      void str_to_lower(char *s) {
+          for (; *s; ++s)
+              if (*s >= 'A' && *s <= 'Z') *s += 32;
+      }
+      
+      str_to_lower(h_name); 
+      if (strcmp(h_name, "host") == 0) {
+          req->host = h_value;
+      }
+      
+    |
+    style: {
+      stroke: green
+      stroke-width: 2
+    }
+  }
+}
+
+internal_state: {
+  label: "NORMALIZED REQUEST STATE"
+  direction: down
+
+  http_request_t: {
+    shape: sql_table
+    label: "struct http_request_t (parser.h)"
+    
+    row1: "0x00 | int        | method"
+    row2: "0x04 | char[8192] | path"
+    row3: "0x2004 | int      | header_count"
+    row4: "0x2008 | header*  | headers_array"
+    label_bottom: "Total size: ~270KB (Stack Allocated)"
+  }
+
+  header_entry: {
+    shape: sql_table
+    label: "struct http_header_t"
+    
+    field1: "0x00 | char[256]  | name (normalized: 'host')"
+    field2: "0x100 | char[8192] | value ('localhost')"
+  }
+}
+
+# Data Flows
+input_layer.curl -> parser_engine: "Raw Bytes | 17B | 'Host:...'"
+input_layer.wget -> parser_engine: "Raw Bytes | 17B | 'host:...'"
+input_layer.java -> parser_engine: "Raw Bytes | 17B | 'HOST:...'"
+
+parser_engine.naive_approach -> internal_state: "❌ MISSED HEADERS" {
+  style: {
+    stroke: red
+    stroke-dash: 3
+  }
+}
+
+parser_engine.robust_approach -> internal_state: "✅ MATCHED: 'host'" {
+  style: {
+    stroke: green
+  }
+}
+
+# Annotations
+rfc_note: |md
+  ### RFC 7230 Section 3.2
+  "Each header field consists of a case-insensitive field name..."
+  
+  **Implementation Guideline:**
+  1. Extract key up to ':'
+  2. Map A-Z to a-z (c + 32)
+  3. Store in internal table
+  4. Subsequent lookups use lowercase keys
+| {
+  near: bottom-center
+}

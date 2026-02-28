@@ -1,0 +1,122 @@
+layout-engine: elk
+theme-id: 6
+
+# Reactor Loop Algorithm State Diagram: Lifecycle of a Single Tick
+reactor_run: {
+  shape: package
+  label: "Complete reactor_run() Tick: Phase-Ordered Dispatch"
+
+  # --- PHASE 1 ---
+  step1: "1. Calculate Sleep" {
+    shape: rectangle
+    action: "timeout_ms = timer_next_ms(r)"
+    state: |md
+      - **timer_heap[0]**: next expiry
+      - **now_ms()**: current time
+      - **Result**: ms until next task
+    |
+    style.stroke: blue
+  }
+
+  # --- PHASE 2 ---
+  step2: "2. Kernel Polling" {
+    shape: rectangle
+    action: "n = epoll_wait(r->epoll_fd, events, 1024, timeout_ms)"
+    state: |md
+      - **CPU State**: **SLEEPING** (HLT)
+      - **Wakeup**: I/O arrival OR timeout
+      - **Result**: `n` ready file descriptors
+    |
+  }
+
+  # --- PHASE 3 ---
+  step3: "3. Timer Processing" {
+    shape: rectangle
+    action: "reactor_process_timers(r)"
+    state: |md
+      - **Priority**: **HIGH** (Time-sensitive)
+      - **Effect**: Fire callbacks for expired timers
+      - **Context**: Prevents I/O handling jitter.
+    |
+    style.fill: "#fff3e0"
+  }
+
+  # --- PHASE 4 ---
+  # CRITICAL STATE TRANSITION: RED + BOLD
+  step4: "4. I/O Dispatch" {
+    shape: rectangle
+    action: "for (i = 0; i < n; i++) { dispatch_callback(events[i]) }"
+    state: |md
+      - **is_dispatching**: <b style="color:red">TRUE</b>
+      - **Zombie Check**: Skip if `h->is_zombie`
+      - **Execution**: **App-level callbacks run**
+    |
+    style: {
+      stroke: red
+      stroke-width: 6
+      bold: true
+      font-color: red
+    }
+  }
+
+  # --- PHASE 5 ---
+  step5: "5. Safety Reset" {
+    shape: rectangle
+    action: "r->is_dispatching = false"
+    state: |md
+      - **is_dispatching**: <b style="color:red">FALSE</b>
+      - **Mod Guard**: Modifications no longer queued.
+    |
+  }
+
+  # --- PHASE 6 ---
+  step6: "6. Apply Modifications" {
+    shape: rectangle
+    action: "apply_deferred_mods(r->mod_queue)"
+    state: |md
+      - **Queue**: `EPOLL_CTL_MOD/DEL`
+      - **Safety**: Safe to update kernel list now.
+      - **Effect**: Interest list synchronized.
+    |
+    style.fill: "#e8f5e9"
+  }
+
+  # --- PHASE 7 ---
+  step7: "7. Run Deferred Tasks" {
+    shape: rectangle
+    action: "reactor_run_deferred(r)"
+    state: |md
+      - **Mechanism**: **Swap-Buffer** (Snapshot)
+      - **Purpose**: Runs `reactor_defer` tasks.
+      - **Order**: Clean state after all I/O.
+    |
+    style.stroke: orange
+  }
+
+  # --- CONNECTION FLOW ---
+  step1 -> step2: "Next timeout found"
+  step2 -> step3: "Events returned"
+  step3 -> step4: "Timers current"
+  step4 -> step5: "Batch finished"
+  step5 -> step6: "Dispatch safe"
+  step6 -> step7: "Interest synced"
+  step7 -> step1: "Tick complete" {
+    style.stroke-dash: 5
+  }
+}
+
+# --- ANNOTATIONS ---
+annotations: {
+  near: bottom-center
+  
+  order_logic: |md
+    ### Phase Dependencies & Invariants:
+    1. **Timers vs I/O**: Timers processed **before** I/O to ensure maximum temporal precision.
+    2. **Deferred Mods**: Must happen **after** the `for` loop to prevent `events[]` array referencing invalidated `fd_handler` pointers.
+    3. **Deferred Tasks**: Executed last to provide a "clean slate" where I/O and kernel modifications are finalized.
+  |
+}
+
+# --- STYLING OVERRIDES ---
+reactor_run.step4.style.bold: true
+reactor_run.step7.style.double-border: true

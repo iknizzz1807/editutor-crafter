@@ -1,0 +1,104 @@
+layout-engine: elk
+theme-id: 6
+
+# Title and Technical Context
+title: |md
+  ### Use-After-Free & FD Reuse Race
+  **Scenario**: One `epoll_wait` batch contains multiple events for `fd=7`.
+  **Invariant**: Modifications to the interest set must be deferred or guarded by a zombie flag.
+| {
+  near: top-center
+}
+
+UAF_Scenario: {
+  shape: sequence_diagram
+
+  # Participants
+  Kernel: Linux Kernel {
+    shape: cloud
+    style.fill: "#DEE1EB"
+  }
+
+  Reactor: Reactor {
+    label: "reactor_run()\n(Dispatch Loop)"
+    style.bold: true
+  }
+
+  HandlerTable: Handler Table {
+    label: "handlers[7]\n(fd_handler_t)"
+  }
+
+  CallbackA: "Callback A\n(Event[2])" {
+    style.fill: "#C7F1FF"
+  }
+
+  CallbackB: "Callback B\n(Event[5])" {
+    style.fill: "#E4DBFE"
+  }
+
+  # 1. epoll_wait returns a batch of events
+  Reactor -> Kernel: "epoll_wait(MAX_EVENTS=1024)"
+  Kernel -> Reactor: "n_ready=8, events=[..., [2]:fd=7, ..., [5]:fd=7]"
+  
+  Reactor."**The Batch Snapshot**: The events array in user-space now contains TWO entries for fd=7."
+
+  # 2. Dispatch Event[2]
+  Reactor -> HandlerTable: "lookup handlers[7]"
+  HandlerTable -> Reactor: "{cb: CallbackA, reg: true}"
+  Reactor -> CallbackA: "invoke(fd=7, REACTOR_READABLE)"
+
+  # 3. Callback A closes the connection
+  CallbackA -> Reactor: "reactor_deregister(r, 7)"
+
+  # --- FAILURE PATH (No Zombie Protection) ---
+  "FAILURE PATH: Immediate Close": {
+    style.stroke: red
+    Reactor -> Kernel: "epoll_ctl(DEL, fd=7)"
+    Reactor -> Kernel: "close(7)"
+    Kernel -> Kernel: "fd=7 is now FREE"
+    
+    Kernel."**Race Window**: Another part of the app (e.g. accept4) now gets fd=7 for a NEW client."
+    
+    Reactor -> HandlerTable: "Process Event[5] (fd=7)"
+    Reactor -> CallbackB: "invoke(fd=7, STALE_DATA)" {
+      style.stroke: red
+      style.animated: true
+    }
+    CallbackB -> CallbackB: "**CRASH / CORRUPTION**" {
+      style.font-color: red
+    }
+  }
+
+  # --- SUCCESS PATH (With Zombie Protection) ---
+  "SUCCESS PATH: Deferred Modification": {
+    style.stroke: green
+    
+    CallbackA -> HandlerTable: "set handlers[7].is_zombie = true" {
+      style.stroke: green
+    }
+    Reactor -> Reactor: "enqueue_mod(MOD_DEL, 7)"
+    
+    Reactor -> Reactor: "Increment loop to i=5"
+    
+    Reactor -> HandlerTable: "check handlers[7].is_zombie"
+    HandlerTable -> Reactor: "true"
+    
+    Reactor -> Reactor: "**SKIP DISPATCH**" {
+      style.stroke: green
+      style.bold: true
+    }
+    
+    Reactor -> Reactor: "Loop ends (is_dispatching = false)"
+    
+    Reactor -> Kernel: "Apply deferred MOD_DEL (epoll_ctl)"
+    Reactor -> Kernel: "close(7)"
+  }
+}
+
+# Style Annotations for Connections
+(UAF_Scenario.Reactor -> UAF_Scenario.Kernel)[0].style.stroke: "#2D72D9"
+(UAF_Scenario.Kernel -> UAF_Scenario.Reactor)[0].style.stroke: "#2D72D9"
+
+# Timing / Sequencing Indicators via notes on Reactor lifeline
+UAF_Scenario.Reactor."Dispatch i=2"
+UAF_Scenario.Reactor."Dispatch i=5"

@@ -1,0 +1,142 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# STATE MACHINE DEFINITION
+syscall_tracer_logic: {
+  label: "Syscall Interception State Machine (tracer.c)"
+  direction: right
+
+  # State 0: ENTRY
+  STATE_ENTRY: {
+    label: "STATE: ENTRY (in_syscall == 0)"
+    style: {
+      fill: "#E1F5FE"
+      stroke: "#01579B"
+      stroke-width: 2
+    }
+    
+    actions: |md
+      c
+      // Authority: orig_rax contains the syscall number
+      long syscall_nr = regs.orig_rax;
+      
+      // Arguments are stable in registers
+      long arg0 = regs.rdi;
+      long arg1 = regs.rsi;
+      long arg2 = regs.rdx;
+      
+    |
+    
+    register_map: {
+      shape: sql_table
+      label: "struct user_regs_struct (sys/user.h)"
+      
+      row0: "0x80 | unsigned long long | orig_rax | SYSCALL NR"
+      row1: "0x68 | unsigned long long | rdi      | ARG 1"
+      row2: "0x60 | unsigned long long | rsi      | ARG 2"
+      row3: "0x58 | unsigned long long | rdx      | ARG 3"
+      
+      label_bottom: "Snapshot: Entry Stop"
+      style: {
+        stroke: "#01579B"
+      }
+    }
+  }
+
+  # State 1: EXIT
+  STATE_EXIT: {
+    label: "STATE: EXIT (in_syscall == 1)"
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#1B5E20"
+      stroke-width: 2
+    }
+    
+    logic: |md
+      c
+      // Authority: rax contains the return value
+      long retval = (long)regs.rax;
+      
+      // Error Detection Range: [-4096, -1]
+      if (retval >= -4096L && retval <= -1L) {
+          errno = -retval;
+          result = -1;
+      }
+      
+    |
+    
+    register_map: {
+      shape: sql_table
+      label: "struct user_regs_struct (sys/user.h)"
+      
+      row0: "0x80 | unsigned long long | orig_rax | SAME SYSCALL NR"
+      row1: "0x50 | unsigned long long | rax      | RETURN VALUE"
+      
+      label_bottom: "Snapshot: Exit Stop"
+      style: {
+        stroke: "#1B5E20"
+      }
+    }
+  }
+
+  # Transitions
+  STATE_ENTRY -> STATE_EXIT: "PTRACE_SYSCALL + waitpid()\nKernel executes syscall" {
+    style: {
+      stroke-width: 2
+      animated: true
+    }
+  }
+  
+  STATE_EXIT -> STATE_ENTRY: "PTRACE_SYSCALL + waitpid()\nTracee resumes execution" {
+    style: {
+      stroke-dash: 5
+    }
+  }
+}
+
+# FAILURE CASE / WARNING
+FAILURE_MODE: {
+  label: "CRITICAL: The Stale Data Trap"
+  shape: rectangle
+  style: {
+    fill: "#FFEBEE"
+    stroke: "#B71C1C"
+    stroke-width: 4
+    double-border: true
+  }
+  
+  warning: |md
+    **If Toggle Fails (Reading RAX on Entry):**
+    
+    On Entry Stop, `regs.rax` still contains the 
+    result of the **PREVIOUS** syscall.
+    
+    **Result:** Tracer reports incorrect return values
+    and misattributes errors.
+  |
+}
+
+# DATA FLOW EXPLANATION
+# Correct Source (orig_rax)
+syscall_tracer_logic.STATE_ENTRY.register_map.row0 -> FAILURE_MODE: "Valid NR | 8 bytes" {
+  style: {
+    stroke: "#2E7D32"
+    stroke-width: 2
+  }
+}
+
+# Stale Source (rax at entry)
+syscall_tracer_logic.STATE_EXIT.register_map.row1 -> FAILURE_MODE: "Stale Value if read at Entry" {
+  style: {
+    stroke: "#C62828"
+    stroke-dash: 3
+  }
+}
+
+# Layout constraints
+FAILURE_MODE.near: bottom-center

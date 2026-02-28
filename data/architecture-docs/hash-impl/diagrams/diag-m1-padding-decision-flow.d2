@@ -1,0 +1,147 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- Metadata and Standards ---
+title: |md
+  # SHA-256 Padding Decision Logic
+  **Specification:** FIPS 180-4 Section 5.1.1
+| {near: top-center}
+
+# --- Layer 1: Input Analysis ---
+input_stage: {
+  label: "INPUT: Raw Message Buffer (sha256_pad.c)"
+  
+  message_meta: {
+    shape: sql_table
+    label: "Message Metadata"
+    row1: "L | size_t | Original Length (Bytes)"
+    row2: "L_bits | uint64_t | L * 8"
+    row3: "L_mod_64 | uint8_t | L % 64"
+  }
+
+  overhead_calc: {
+    shape: sql_table
+    label: "Minimum Overhead: 9 Bytes"
+    row1: "0x01 | 0x80 | Separator Byte ('1' bit)"
+    row2: "0x08 | uint64_t | Big-endian Bit Length"
+    label_bottom: "Threshold: 64 - 9 = 55 Bytes"
+  }
+}
+
+# --- Layer 2: Decision Logic ---
+decision_logic: {
+  label: "Padding Boundary Condition"
+  
+  threshold_check: {
+    shape: diamond
+    label: "L_mod_64 <= 55?"
+    tooltip: "Can we fit the separator and the length in the current 64-byte block?"
+    style.fill: "#FFF9C9"
+  }
+
+  single_block: {
+    label: "Path A: Single Block Finalization"
+    desc: |md
+      c
+      // Fits in current block
+      pad_zeros = 55 - L_mod_64;
+      total_blocks = (L / 64) + 1;
+      
+    |
+    style.stroke: green
+  }
+
+  double_block: {
+    label: "Path B: Block Overflow (Multi-block)"
+    desc: |md
+      c
+      // Spills to next block
+      pad_zeros = (64 - L_mod_64) + 55;
+      total_blocks = (L / 64) + 2;
+      
+    |
+    style.stroke: red
+  }
+}
+
+# --- Layer 3: Implementation Formula ---
+math_engine: {
+  label: "Implementation Constants"
+  
+  formula: {
+    shape: code
+    label: "C Implementation (Generic)"
+    language: c
+    content: |
+      size_t zero_pad = (64 - ((input_len + 9) % 64)) % 64;
+      size_t total_len = input_len + 1 + zero_pad + 8;
+      size_t num_blocks = total_len / 64;
+    |
+  }
+}
+
+# --- Layer 4: Physical Layout Comparison ---
+layout_viz: {
+  direction: right
+  
+  case_55: {
+    label: "Message = 55 Bytes (L_mod_64 = 55)"
+    shape: sql_table
+    row1: "0x00 - 0x36 | Message Bytes [55]"
+    row2: "0x37 | 0x80 (Separator) [1]"
+    row3: "0x38 - 0x3F | Bit Length (uint64_t) [8]"
+    label_bottom: "Total: 64 Bytes (1 Block)"
+    style.fill: "#E6EBF1"
+  }
+
+  case_56: {
+    direction: down
+    label: "Message = 56 Bytes (L_mod_64 = 56)"
+    
+    block_1: {
+      shape: sql_table
+      label: "Block N (Overflow)"
+      row1: "0x00 - 0x37 | Message Bytes [56]"
+      row2: "0x38 | 0x80 (Separator) [1]"
+      row3: "0x39 - 0x3F | 0x00 Padding [7]"
+    }
+    
+    block_2: {
+      shape: sql_table
+      label: "Block N+1 (Final)"
+      row1: "0x00 - 0x37 | 0x00 Padding [56]"
+      row2: "0x38 - 0x3F | Bit Length (uint64_t) [8]"
+    }
+    label_bottom: "Total: 128 Bytes (2 Blocks)"
+    style.fill: "#FFE0F5"
+  }
+}
+
+# --- Connections ---
+input_stage.message_meta -> decision_logic.threshold_check: "Check residue"
+decision_logic.threshold_check -> decision_logic.single_block: "TRUE | residue <= 55"
+decision_logic.threshold_check -> decision_logic.double_block: "FALSE | residue > 55"
+
+decision_logic.single_block -> layout_viz.case_55: "Produces"
+decision_logic.double_block -> layout_viz.case_56: "Produces"
+
+math_engine.formula -> decision_logic: "Unified Logic" {
+  style.stroke-dash: 3
+}
+
+# --- Annotations ---
+legend: {
+  near: bottom-right
+  note: |md
+    **Why 55?**
+    Block Size: 64 bytes
+    - Len Field: 8 bytes
+    - Separator: 1 byte
+    = 55 Bytes Available
+  |
+}

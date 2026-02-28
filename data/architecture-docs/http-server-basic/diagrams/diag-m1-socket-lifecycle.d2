@@ -1,0 +1,147 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# -------------------------------------------------------------------------------------------
+# L0: SYSTEM DEFINITIONS
+# -------------------------------------------------------------------------------------------
+
+definitions: {
+  direction: down
+
+  server_app: "Application (Server)" {
+    shape: class
+    icon: https://icons.terrastruct.com/dev%2Fgo.svg
+    label: "HTTP Server Process (main.c)"
+    
+    fields: |md
+      c
+      int server_fd;              // Passive socket
+      int client_fd;              // Active connection
+      struct sockaddr_in addr;    // Local address
+      struct sockaddr_in c_addr;  // Remote address
+      
+    |
+    
+    methods: |md
+      c
+      int main(int argc, char** argv);
+      void handle_client(int fd);
+      
+    |
+  }
+
+  sockaddr_in: {
+    shape: sql_table
+    label: "struct sockaddr_in (netinet/in.h)"
+    
+    row1: "0x00 | uint16_t | sin_family (AF_INET)"
+    row2: "0x02 | uint16_t | sin_port (Network Byte Order)"
+    row3: "0x04 | uint32_t | sin_addr (INADDR_ANY)"
+    row4: "0x08 | char[8]   | sin_zero (Padding)"
+    label_bottom: "Total Size: 16 bytes"
+  }
+}
+
+kernel: "OS Kernel (Network Stack)" {
+  shape: cylinder
+  style: {
+    fill: "#DEE1EB"
+    stroke-dash: 3
+  }
+}
+
+remote_client: "Remote Client" {
+  shape: person
+}
+
+# -------------------------------------------------------------------------------------------
+# L1: SYSCALL LIFECYCLE SEQUENCE
+# -------------------------------------------------------------------------------------------
+
+lifecycle: {
+  shape: sequence_diagram
+  
+  # Actors
+  server_app; kernel; remote_client
+
+  # 1. Socket Creation
+  server_app -> kernel: "1. socket(AF_INET, SOCK_STREAM, 0)" {
+    tooltip: "Create socket endpoint"
+  }
+  kernel -> server_app: "server_fd (int >= 0)"
+  kernel."State: [CLOSED]\nAlloc FD in Process Table"
+
+  # 2. Config
+  server_app -> kernel: "2. setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &1, 4)"
+  kernel -> server_app: "0 (Success)"
+  kernel."Bypass TIME_WAIT for restart"
+
+  # 3. Bind
+  server_app -> kernel: "3. bind(server_fd, (struct sockaddr*)&addr, 16)"
+  kernel -> server_app: "0 (Success)"
+  kernel."State: [BOUND]\nAssign IP/Port to FD"
+
+  # 4. Listen
+  server_app -> kernel: "4. listen(server_fd, SOMAXCONN)"
+  kernel -> server_app: "0 (Success)"
+  kernel."State: [LISTEN]\nAlloc SYN/ACCEPT queues"
+
+  # 5-7. Blocking Accept and Data Loop
+  loop: "CONNECTION PHASE (Blocking Loop)" {
+    server_app -> kernel: "5. accept(server_fd, &client_addr, &len)"
+    
+    remote_client -> kernel: "TCP 3-Way Handshake (SYN -> SYN-ACK -> ACK)"
+    kernel -> kernel: "Move from SYN to Accept Queue"
+    
+    kernel -> server_app: "client_fd (new int)"
+    kernel."State: [ESTABLISHED]\nReturns NEW FD for session"
+
+    # Data Transfer
+    server_app -> kernel: "6a. read(client_fd, buf, size)"
+    kernel <- remote_client: "MTU 1500 | TCP Segment | [GET / HTTP/1.1]"
+    kernel -> server_app: "n_bytes_read"
+    
+    server_app -> kernel: "6b. write(client_fd, resp, resp_len)"
+    kernel -> remote_client: "MTU 1500 | TCP Segment | [HTTP/1.1 200 OK]"
+    kernel -> server_app: "n_bytes_written"
+
+    # Cleanup
+    server_app -> kernel: "7. close(client_fd)"
+    kernel -> remote_client: "TCP FIN"
+    kernel -> server_app: "0"
+    kernel."Release client_fd from table"
+  }
+}
+
+# -------------------------------------------------------------------------------------------
+# ANNOTATIONS & ERROR HANDLING
+# -------------------------------------------------------------------------------------------
+
+err_handling: {
+  near: bottom-right
+  shape: text
+  label: |md
+    ### Critical Errno Handling
+    - **EADDRINUSE (bind):** Port locked by TIME_WAIT. Use SO_REUSEADDR.
+    - **EMFILE (accept):** Process reached FD limit (`ulimit -n`).
+    - **EAGAIN (read):** No data in non-blocking mode.
+    - **EPIPE (write):** Client RST. Triggers `SIGPIPE`.
+    - **EINTR (any):** Interrupted by signal. Check `errno == EINTR`.
+  |
+}
+
+# Flow Annotations
+definitions.server_app -> definitions.sockaddr_in: "0x10 | void* | addr"
+definitions.sockaddr_in -> lifecycle: "Passed to bind() as const struct sockaddr*"
+
+# Styling
+lifecycle.loop.style: {
+  fill: "#F6F9FC"
+  stroke: "#6772E5"
+  stroke-width: 2
+}

@@ -1,0 +1,194 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# SATELLITE MAP (L0) - MULTI-PID DISPATCHER LOGIC
+# Implementation: main.c
+
+tracer_process: {
+  label: "Tracer Loop Context (main.c)"
+  direction: down
+
+  wait_call: {
+    shape: code
+    label: |md
+      c
+      int status;
+      pid_t stopped_pid = waitpid(-1, &status, 0);
+      
+    |
+  }
+
+  error_handler: {
+    shape: diamond
+    label: "stopped_pid == -1?"
+  }
+
+  wait_call -> error_handler: "pid_t | 4 bytes | 12345"
+
+  error_handler -> exit_tracer: "errno == ECHILD" {
+    style.stroke-dash: 5
+  }
+}
+
+state_management: {
+  label: "State Management Subsystem"
+  direction: down
+
+  process_state_struct: {
+    shape: sql_table
+    label: "struct ProcessState (tracer.h)"
+    row1: "0x00 | pid_t | pid"
+    row2: "0x04 | int   | in_syscall (0: Entry, 1: Exit)"
+    row3: "0x08 | struct user_regs_struct | entry_regs"
+    row4: "0xE0 | struct timespec | entry_time"
+    row5: "0xF0 | int   | valid"
+    label_bottom: "Total: 248 bytes"
+  }
+
+  map_lookup: {
+    shape: code
+    label: |md
+      c
+      ProcessState *state = state_map_find(stopped_pid);
+      if (!state) state = state_map_insert(stopped_pid);
+      
+    |
+  }
+
+  process_state_struct -> map_lookup: "Reference"
+}
+
+tracer_process.error_handler -> state_management.map_lookup: "Valid PID"
+
+event_classifier: {
+  label: "Event Classifier (status bits)"
+  direction: down
+
+  termination_check: {
+    shape: diamond
+    label: "WIFEXITED || WIFSIGNALED?"
+  }
+
+  event_check: {
+    shape: diamond
+    label: "status >> 16 != 0?"
+  }
+
+  syscall_check: {
+    shape: diamond
+    label: "WSTOPSIG == (SIGTRAP | 0x80)?"
+  }
+
+  signal_check: {
+    shape: diamond
+    label: "Other Signal?"
+  }
+
+  termination_check -> event_check: "No"
+  event_check -> syscall_check: "No"
+  syscall_check -> signal_check: "No"
+}
+
+state_management.map_lookup -> event_classifier.termination_check: "ProcessState*"
+
+action_layer: {
+  label: "Action Handlers"
+  direction: right
+
+  exit_handler: {
+    label: "Cleanup Handler"
+    direction: down
+    remove_map: "state_map_remove(pid)"
+    dec_count: "active_count--"
+  }
+
+  event_handlers: {
+    label: "Ptrace Event Handlers"
+    direction: down
+    
+    fork_handler: {
+      shape: code
+      label: "FORK/CLONE: ptrace(PTRACE_GETEVENTMSG) -> new_pid"
+    }
+    
+    exec_handler: {
+      shape: code
+      label: "EXEC: state->in_syscall = 0; reset cached regs"
+    }
+  }
+
+  syscall_logic: {
+    label: "Syscall Entry/Exit Logic"
+    direction: down
+    
+    entry_path: {
+      label: "Entry (in_syscall == 0)"
+      action: "PTRACE_GETREGS -> state->entry_regs; in_syscall = 1"
+    }
+    
+    exit_path: {
+      label: "Exit (in_syscall == 1)"
+      action: "PTRACE_GETREGS -> regs.rax; print_syscall(); in_syscall = 0"
+    }
+  }
+
+  signal_reinjection: {
+    label: "Signal Passthrough"
+    action: "ptrace(PTRACE_SYSCALL, pid, NULL, sig)"
+  }
+}
+
+# Connections to Action Layer
+event_classifier.termination_check -> action_layer.exit_handler: "Yes"
+event_classifier.event_check -> action_layer.event_handlers: "PTRACE_EVENT_*"
+event_classifier.syscall_check -> action_layer.syscall_logic: "Syscall Stop"
+event_classifier.signal_check -> action_layer.signal_reinjection: "SIGSTOP/SIGILL/etc"
+
+# Final resumption loop
+resumption: {
+  shape: code
+  label: "ptrace(PTRACE_SYSCALL, stopped_pid, NULL, NULL)"
+  near: bottom-center
+}
+
+action_layer.event_handlers -> resumption: "Resume parent & child"
+action_layer.syscall_logic -> resumption: "Continue to next boundary"
+action_layer.signal_reinjection -> resumption: "Continue with signal"
+
+# Styling
+event_classifier.syscall_check: {
+  style: {
+    fill: "#C7F1FF"
+    stroke-width: 2
+  }
+}
+
+action_layer.exit_handler: {
+  style: {
+    fill: "#FFE7CB"
+  }
+}
+
+action_layer.signal_reinjection: {
+  style: {
+    stroke: red
+    stroke-dash: 3
+  }
+}
+
+resumption: {
+  style: {
+    fill: "#ACE1AF"
+    bold: true
+  }
+}
+
+# Annotations for Engineers
+tracer_process.wait_call -> state_management.map_lookup: "pid_t | 4 bytes"
+event_classifier.event_check -> action_layer.event_handlers: "status >> 16 | 0x01..0x06"
+event_classifier.syscall_check -> action_layer.syscall_logic: "WSTOPSIG | 0x85 (5|0x80)"

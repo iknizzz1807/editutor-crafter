@@ -1,0 +1,182 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- ARCHITECTURAL CLASSES ---
+classes: {
+  danger: {
+    style: {
+      fill: "#ffcfcf"
+      stroke: "#ff0000"
+      stroke-width: 2
+      bold: true
+    }
+  }
+  safe: {
+    style: {
+      fill: "#d5f5e3"
+      stroke: "#27ae60"
+      stroke-width: 2
+    }
+  }
+  header: {
+    style: {
+      fill: "#e8daef" # Purple Header
+      bold: true
+    }
+  }
+  data_field: {
+    style: {
+      fill: "#d6eaf8" # Blue Data
+      stroke: "#2e86c1"
+    }
+  }
+  free_field: {
+    style: {
+      fill: "#d5f5e3" # Green Free
+    }
+  }
+  padding_field: {
+    style: {
+      fill: "#d5dbdb" # Gray Padding
+    }
+  }
+  ptr_edge: {
+    style: {
+      stroke: "#f39c12" # Orange Pointers
+      stroke-width: 2
+    }
+  }
+}
+
+# --- DIAGRAM BODY ---
+ComparisonBoard: "RESOURCE EXHAUSTION COMPARISON: HTTP CONCURRENCY MODELS" {
+  
+  # --- UNBOUNDED THREAD-PER-CONNECTION ---
+  Unbounded: "UNBOUNDED MODEL: Thread-per-Connection" {
+    class: danger
+    style.stroke-dash: 5
+
+    Attacker: "10,000 Slowloris" {
+      shape: person
+      
+    }
+
+    AcceptLoop: "Accept Loop (Main)" {
+      class: header
+      label: "while(1) { fd = accept(); pthread_create(...) }"
+    }
+
+    # Memory Layout - Requirement 1: Byte offsets left, field sizes right.
+    # FIX: sql_table labels cannot contain newlines.
+    ThreadMemory: "Thread Context Memory Layout (sizeof=8260 KB per-conn)" {
+      shape: sql_table
+      style.fill: white
+      "Offset" : "Field Content" {constraint: "Size"}
+      "0x0000": "Guard Page (No Access)" {class: padding_field; constraint: "4 KB"}
+      "0x1000": "Thread Stack (User-space)" {class: data_field; constraint: "8 MB"}
+      "0x801000": "task_struct (Kernel-space)" {class: data_field; constraint: "64 KB"}
+    }
+
+    LoadStats: "Aggregated Resource Load" {
+      VA_Space: "Virtual Address Reserved: 80.6 GB" { class: danger }
+      Kernel_Mem: "Slab Allocation: 640 MB" { class: danger }
+    }
+
+    Trigger: "Kernel Limit: threads-max" {
+      label: "/proc/sys/kernel/threads-max reached"
+      shape: parallelogram
+      style.fill: "#f5b7b1"
+    }
+
+    AcceptLoop -> ThreadMemory: "fork / pthread_create" {class: ptr_edge}
+    ThreadMemory -> LoadStats: "sum(N)"
+    LoadStats -> Trigger: "exhaustion"
+
+    Outcome: "DENIAL OF SERVICE" {
+      label: "EAGAIN: Cannot allocate memory"
+      class: danger
+    }
+    
+    Attacker -> AcceptLoop: "Rapid SYN Flood"
+    Trigger -> Outcome: "Service Collapse"
+  }
+
+  # --- BOUNDED THREAD POOL ---
+  Bounded: "BOUNDED POOL MODEL: Fixed Workers" {
+    class: safe
+
+    Attacker_B: "10,000 Slowloris" {
+      shape: person
+      
+    }
+
+    AcceptLoop_B: "Accept Loop (Bounded)" {
+      class: header
+      label: "submit(fd, &pool)"
+    }
+
+    WorkQueue: "Work Queue (Circular Buffer)" {
+      shape: sql_table
+      style.fill: "#fef9e7"
+      "Index" : "Descriptor" {constraint: "State"}
+      "[0]": "client_fd_101" {constraint: "PENDING"}
+      "[1]": "client_fd_102" {constraint: "PENDING"}
+      "[...]": "---" {class: padding_field}
+      "[255]": "client_fd_356" {constraint: "FULL"}
+    }
+
+    WorkerPool: "Fixed Thread Pool (Size=16)\nsizeof=129 MB" {
+      class: data_field
+      Worker_Layout: "Memory Footprint" {
+        shape: sql_table
+        "Resource" : "Cost"
+        "16 x Stack" : "128 MB" {class: data_field}
+        "16 x task_struct" : "1 MB" {class: data_field}
+        "Status" : "O(1) Constant" {class: safe}
+      }
+    }
+
+    Rejection: "Graceful Rejection" {
+      label: "Queue Overflow -> 503 Busy"
+      class: safe
+    }
+
+    AcceptLoop_B -> WorkQueue: "enqueue_task()" {class: ptr_edge}
+    WorkQueue -> WorkerPool: "pop_task()" {class: ptr_edge}
+    AcceptLoop_B -> Rejection: "queue_full == true" {style.stroke: red}
+
+    FinalStatus: "SYSTEM STABLE" {
+      label: "Memory usage capped at 129MB"
+      class: safe
+    }
+
+    Attacker_B -> AcceptLoop_B: "Rapid SYN Flood"
+    Rejection -> FinalStatus
+  }
+}
+
+# --- ANNOTATIONS ---
+# FIX: 'near' at constant keys can only be set on root level shapes.
+# Move Comparison_Summary outside of ComparisonBoard.
+Comparison_Summary: |md
+  ### Architectural Constraints
+  - **Unbounded**: Memory growth is **O(N)**. 10k connections = 80GB Virtual Memory.
+  - **Bounded**: Memory growth is **O(1)**. 10k connections = ~130MB constant.
+  
+  ### System Stability
+  - **Failure Mode**: Unbounded crashes the entire process or kernel via OOM. 
+  - **Failure Mode**: Bounded gracefully degrades by dropping connections at the ingress queue.
+| {
+  near: bottom-center
+}
+
+# --- GLOBAL STYLE OVERRIDE ---
+***.style.font: mono
+(*** -> ***)[*]: {
+  style.stroke-width: 2
+}

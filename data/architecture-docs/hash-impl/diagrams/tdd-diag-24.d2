@@ -1,0 +1,186 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- GLOBAL STYLES ---
+classes: {
+  step_box: {
+    style: {
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  mem_cell: {
+    shape: sql_table
+    style: {
+      fill: "#f8f9fa"
+      stroke: "#dee2e6"
+    }
+  }
+  changed: {
+    style: {
+      stroke: "#dc3545"
+      stroke-width: 4
+      font-color: "#dc3545"
+      bold: true
+    }
+  }
+  header_style: {
+    style: {
+      fill: "#6f42c1"
+      font-color: white
+      bold: true
+    }
+  }
+  data_field: {
+    style: {
+      fill: "#007bff"
+      font-color: white
+    }
+  }
+  padding_field: {
+    style: {
+      fill: "#6c757d"
+      font-color: white
+    }
+  }
+  free_field: {
+    style: {
+      fill: "#28a745"
+      font-color: white
+    }
+  }
+  pointer: {
+    style: {
+      stroke: "#fd7e14"
+      stroke-width: 2
+    }
+  }
+}
+
+# --- LOGIC FLOW ---
+Finalize_Logic: {
+  label: "SHA-256 Finalize State Machine"
+  
+  step_1: "1. Append 0x80 Separator" {
+    class: step_box
+    instruction: "buf[buf_len] = 0x80; buf_len++;"
+  }
+
+  decision: "2. Is buf_len <= 56?" {
+    shape: diamond
+  }
+
+  path_a: "3a. Single Block Padding" {
+    class: step_box
+    desc: "memset(buf + buf_len, 0, 56 - buf_len)\nWrite 8-byte Length BE to buf[56..63]"
+  }
+
+  path_b: "3b. Double Block Padding" {
+    class: step_box
+    desc: "Block A: zero-fill buf to 64; compress\nBlock B: memset buf[0..55]=0; write Length BE to buf[56..63]"
+  }
+
+  step_4: "4. Final Block Compression" {
+    class: step_box
+  }
+
+  step_5: "5. Extract Hash State" {
+    class: step_box
+    instruction: "H[0..7] -> 32-byte binary digest"
+  }
+
+  step_1 -> decision
+  decision -> path_a: "YES\n(msg <= 55 bytes)"
+  decision -> path_b: "NO\n(msg >= 56 bytes)"
+  path_a -> step_4
+  path_b -> step_4
+  step_4 -> step_5
+}
+
+# --- SCENARIO A: 0-BYTE MESSAGE ---
+Scenario_A: {
+  label: "Scenario A: 0-byte Input (Empty)"
+  
+  before: {
+    shape: sql_table
+    header: "Initial Buffer (buf_len=0)" {class: header_style}
+    "00": "FREE_SPACE" {constraint: "64 bytes"; class: free_field}
+  }
+
+  after_0x80: {
+    shape: sql_table
+    header: "Append 0x80 (buf_len=1)" {class: header_style}
+    "00": "**0x80**" {constraint: "1 byte"; class: changed}
+    "01": "FREE_SPACE" {constraint: "63 bytes"; class: free_field}
+  }
+
+  final_block: {
+    shape: sql_table
+    header: "Final Block (512-bit)" {class: header_style}
+    "00": "0x80" {constraint: "1 byte"; class: data_field}
+    "01": "**0x00 ... 0x00**" {constraint: "55 bytes"; class: changed}
+    "56": "**LENGTH (0)**" {constraint: "8 bytes"; class: changed}
+  }
+
+  before -> after_0x80: "Step 1"
+  after_0x80 -> final_block: "Step 3a"
+}
+
+# --- SCENARIO B: 56-BYTE MESSAGE ---
+Scenario_B: {
+  label: "Scenario B: 56-byte Input (Boundary)"
+  
+  before: {
+    shape: sql_table
+    header: "Initial Buffer (buf_len=56)" {class: header_style}
+    "00": "MESSAGE_DATA" {constraint: "56 bytes"; class: data_field}
+    "56": "FREE_SPACE" {constraint: "8 bytes"; class: free_field}
+  }
+
+  after_0x80: {
+    shape: sql_table
+    header: "Append 0x80 (buf_len=57)" {class: header_style}
+    "00": "MESSAGE_DATA" {constraint: "56 bytes"; class: data_field}
+    "56": "**0x80**" {constraint: "1 byte"; class: changed}
+    "57": "FREE_SPACE" {constraint: "7 bytes"; class: free_field}
+  }
+
+  block_1: {
+    shape: sql_table
+    header: "Block 1 (M[N])" {class: header_style}
+    "00": "MESSAGE_DATA" {constraint: "56 bytes"; class: data_field}
+    "56": "0x80" {constraint: "1 byte"; class: data_field}
+    "57": "**0x00 (Pad)**" {constraint: "7 bytes"; class: changed}
+  }
+
+  block_2: {
+    shape: sql_table
+    header: "Block 2 (M[N+1])" {class: header_style}
+    "00": "**0x00 (Zero-Fill)**" {constraint: "56 bytes"; class: changed}
+    "56": "**LENGTH (448)**" {constraint: "8 bytes"; class: changed}
+  }
+
+  before -> after_0x80: "Step 1"
+  after_0x80 -> block_1: "Step 3b (Part 1)"
+  block_1 -> block_2: "Step 3b (Part 2)"
+}
+
+# --- ANNOTATIONS ---
+Annotations: |md
+  ### SHA-256 Finalization Invariants
+  - **Total Padded Length**: $L + 1 + k + 64 \equiv 0 \pmod{512}$
+  - **Critical Boundary**: A message of **55 bytes** fits length in its last block. A message of **56 bytes** overflows to an additional block.
+  - **Endianness**: Length is written as 8 bytes, Big-Endian ($msg\_len \gg 56 \dots msg\_len \gg 0$).
+| {
+  near: bottom-center
+}
+
+Finalize_Logic.step_1.style.fill: "#e2e3ff"
+Finalize_Logic.path_a.style.fill: "#d4edda"
+Finalize_Logic.path_b.style.fill: "#fff3cd"
+Finalize_Logic.step_5.style.fill: "#f8d7da"

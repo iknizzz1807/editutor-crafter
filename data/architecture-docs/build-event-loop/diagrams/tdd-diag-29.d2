@@ -1,0 +1,106 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+  }
+}
+
+shape: sequence_diagram
+
+Client: "User\n(Client)" {
+  shape: person
+}
+NIC: "NIC\n(Hardware)" {
+  style.fill: gray
+}
+Kernel: "Linux Kernel\n(TCP/epoll/FS)" {
+  style.fill: lightgray
+}
+Reactor: "Reactor\n(Event Loop)" {
+  style.fill: "#DEE1EB"
+}
+Readable: "http_on_readable\n(Ingress Handler)" {
+  style.fill: "#C7F1FF"
+}
+App: "http_process_request\n(Logic)" {
+  style.fill: "#E4DBFE"
+}
+FS: "File System\n(Page Cache)" {
+  shape: cylinder
+}
+Writable: "http_on_writable\n(Egress Handler)" {
+  style.fill: "#C7F1FF"
+}
+
+# --- PHASE 1: ACCEPT ---
+Connection_Setup: {
+  Client -> NIC: "TCP SYN (Handshake)"
+  NIC -> Kernel: "IRQ / Packet Received"
+  Kernel -> Reactor: "epoll_wait() returns EPOLLIN (listen_fd)"
+  Reactor -> Reactor: "dispatch_to_callback(http_accept_cb)"
+  Reactor -> Kernel: "accept4(listen_fd, SOCK_NONBLOCK)"
+  Kernel -> Reactor: "client_fd = 7"
+  Reactor -> Kernel: "epoll_ctl(ADD, fd=7, READABLE | ET)"
+  Reactor -> Reactor: "timer_set(fd=7, now+30s)"
+}
+
+# --- PHASE 2: READ & PARSE ---
+Data_Ingress: {
+  Client -> NIC: "HTTP GET /index.html ..."
+  NIC -> Kernel: "DMA to sk_receive_queue"
+  Kernel -> Reactor: "epoll_wait() returns EPOLLIN (fd=7)"
+  Reactor -> Readable.t1: "callback(REACTOR_READABLE)"
+  Readable.t1 -> Kernel: "read(fd=7, read_buf, 16KB)"
+  Kernel -> Readable.t1: "n bytes (Fragmented Chunk)"
+  Readable.t1 -> Readable.t1: "http_parse_incremental() -> INCOMPLETE"
+  Readable.t1 -> Reactor: "return to loop (wait for next ET trigger)"
+  
+  # Next segment arrives
+  Client -> Kernel: "... \r\n\r\n (End of Headers)"
+  Kernel -> Reactor: "EPOLLIN"
+  Reactor -> Readable.t2: "callback(REACTOR_READABLE)"
+  Readable.t2 -> Kernel: "read(fd=7)"
+  Readable.t2 -> Readable.t2: "http_parse_incremental() -> COMPLETE"
+  Readable.t2 -> Reactor: "reactor_cancel_timer(idle_timer)"
+  Readable.t2 -> Reactor: "reactor_set_timeout(idle_timer, 30s)"
+}
+
+# --- PHASE 3: PROCESSING ---
+Request_Processing: {
+  Readable.t2 -> App: "http_process_request(conn)"
+  App -> App: "build_safe_path() -> ./public/index.html"
+  App -> Kernel: "stat('./public/index.html')"
+  Kernel -> App: "st_size = 45056"
+  App -> Kernel: "open('./public/index.html', O_RDONLY)"
+  Kernel -> App: "file_fd = 12"
+  App -> FS: "read(file_fd, chunk_buf, 64KB)"
+  FS -> App: "data bytes"
+  App -> Kernel: "close(file_fd)"
+  
+  # Attempt to send headers + body
+  App -> Kernel: "write(fd=7, headers + chunk)"
+  Kernel -> App: "n_written < total (EAGAIN / Buffer Full)"
+  App -> Reactor: "reactor_register(fd=7, WRITABLE) [Arm EPOLLOUT]"
+}
+
+# --- PHASE 4: WRITE & FLUSH ---
+Data_Egress: {
+  Kernel -> Reactor: "epoll_wait() returns EPOLLOUT"
+  Reactor -> Writable: "callback(REACTOR_WRITABLE)"
+  Writable -> Kernel: "write(fd=7, wbuf->data + offset)"
+  Kernel -> Writable: "n_written (wbuf empty)"
+  Writable -> Reactor: "reactor_deregister(fd=7, WRITABLE) [Deregister EPOLLOUT]"
+}
+
+# --- PHASE 5: KEEP-ALIVE ---
+Connection_Cycling: {
+  Writable -> Writable: "http_conn_reset_for_keepalive()"
+  Writable."State: READING_HEADERS"
+  Writable."Timer: 30s until reap"
+  Writable -> Client: "HTTP Response Sent (TCP ACK)"
+}
+
+Reactor.style.stroke: blue
+Kernel.style.stroke: gray
+App.style.stroke: purple
+Client.style.stroke: black

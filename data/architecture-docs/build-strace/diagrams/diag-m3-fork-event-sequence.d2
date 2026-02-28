@@ -1,0 +1,145 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+# --- PROCESS STATES ---
+
+tracer_process: {
+  shape: class
+  label: "Tracer (tracer.c) [PID: 50]"
+  active_count: "int | 1"
+  state_map: "HashMap<pid_t, ProcessState>"
+  
+  methods: |md
+    c
+    void handle_fork_event(pid_t parent_pid);
+    ProcessState* state_map_insert(pid_t pid);
+    
+  |
+}
+
+# --- EVOLUTION PHASES ---
+
+phase_1_entry: {
+  label: "PHASE 1: Syscall Entry"
+  direction: down
+  
+  parent_100: {
+    shape: sql_table
+    label: "Process 100 (Parent)"
+    status: "TASK_STOPPED (ptrace-stop)"
+    orig_rax: "57 (fork)"
+    in_syscall: "1 (ENTRY)"
+  }
+  
+  tracer_action: {
+    shape: code
+    label: "tracer.c"
+    content: |cpp
+      waitpid(-1, &status, 0); // Returns 100
+      ptrace(PTRACE_SYSCALL, 100, ...);
+    |
+  }
+  
+  tracer_action -> parent_100: "Resume | PTRACE_SYSCALL"
+}
+
+phase_2_kernel_atomic: {
+  label: "PHASE 2: Kernel Fork (Atomic)"
+  direction: down
+  
+  kernel_logic: {
+    shape: rectangle
+    label: "Kernel (kernel/fork.c)"
+    style.fill: "#E4DBFE"
+    
+    step1: "1. do_fork() logic"
+    step2: "2. Create Task 200"
+    step3: "3. Copy Options (P_O_TRACEFORK)"
+    step4: "4. Child.state = TASK_STOPPED"
+  }
+  
+  child_200_init: {
+    shape: sql_table
+    label: "Process 200 (Child)"
+    status: "TASK_STOPPED (new)"
+    rip: "Entry Point"
+    rax: "0 (return value)"
+    style.stroke-dash: 5
+  }
+  
+  kernel_logic -> child_200_init: "Atomic Creation"
+}
+
+phase_3_event_stop: {
+  label: "PHASE 3: Event Notification"
+  direction: down
+  
+  parent_100_stop: {
+    shape: sql_table
+    label: "Process 100 (Parent)"
+    status: "TASK_STOPPED (PTRACE_EVENT_FORK)"
+    event_msg: "200 (Child PID)"
+  }
+  
+  tracer_handler: {
+    shape: code
+    label: "handle_fork_event(100)"
+    content: |cpp
+      ptrace(PTRACE_GETEVENTMSG, 100, &child_pid);
+      state_map_insert(200);
+      active_count++;
+    |
+  }
+  
+  parent_100_stop -> tracer_handler: "waitpid() | status >> 16 == 1"
+}
+
+phase_4_resumption: {
+  label: "PHASE 4: Full Tracing"
+  direction: down
+  
+  parent_traced: {
+    shape: sql_table
+    label: "PID 100"
+    status: "TASK_RUNNING"
+  }
+  
+  child_traced: {
+    shape: sql_table
+    label: "PID 200"
+    status: "TASK_RUNNING"
+  }
+  
+  tracer_final: {
+    shape: code
+    label: "Resuming Both"
+    content: |cpp
+      ptrace(PTRACE_SYSCALL, 100, ...);
+      ptrace(PTRACE_SYSCALL, 200, ...);
+    |
+  }
+  
+  tracer_final -> parent_traced
+  tracer_final -> child_traced
+}
+
+# --- STATE FLOW ---
+
+phase_1_entry -> phase_2_kernel_atomic: "Trigger: syscall instruction"
+phase_2_kernel_atomic -> phase_3_event_stop: "Kernel sets PTRACE_EVENT_FORK"
+phase_3_event_stop -> phase_4_resumption: "Tracer handles msg & resumes"
+
+# --- ANNOTATIONS ---
+
+phase_3_event_stop.tracer_handler -> tracer_process.state_map: "Insert | pid_t: 200"
+phase_3_event_stop.tracer_handler -> tracer_process.active_count: "Increment | 1 -> 2"
+
+legend: {
+  near: bottom-right
+  note: "Child (200) is held in TASK_STOPPED until Tracer authorizes execution.\nEliminates TOCTOU race window."
+}

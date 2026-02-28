@@ -1,0 +1,164 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# -----------------------------------------------------------------------------
+# LEVEL 1: APPLICATION SPACE (USER LAND)
+# -----------------------------------------------------------------------------
+level_1: "LEVEL 1: APPLICATION SPACE (USER)" {
+  style: {
+    stroke: "#B5AFF6"
+    stroke-width: 4
+    fill: "#f8f9ff"
+  }
+
+  user_buffer: "conn_state.read_buf[4096]" {
+    shape: sql_table
+    style.fill: "#673AB7" # Header=Purple
+    
+    "0x0000": "L1 Cache Line 0 (Data Block)" {constraint: "64B"; style.fill: "#2196F3"; style.stroke-dash: 5}
+    "0x0040": "L1 Cache Line 1 (Data Block)" {constraint: "64B"; style.fill: "#2196F3"; style.stroke-dash: 5}
+    "0x0080": "L1 Cache Line 2 (Padding)"    {constraint: "64B"; style.fill: "#9E9E9E"; style.stroke-dash: 5}
+    "0x00C0": "L1 Cache Line 3 (Data Block)" {constraint: "64B"; style.fill: "#2196F3"; style.stroke-dash: 5}
+    "...": "..." {constraint: "3840B"}
+    "0x0FC0": "L1 Cache Line 63 (Final)"      {constraint: "64B"; style.fill: "#2196F3"}
+  }
+
+  call_stack: "Call Sequence" {
+    shape: sequence_diagram
+    app: "EventLoop"
+    reactor: "EPollReactor"
+    kernel: "Syscall Layer"
+
+    app -> reactor: reactor_run()
+    reactor -> kernel: epoll_wait(epfd, events, 1024, -1)
+    kernel -> reactor: n_ready: int
+    reactor -> app: on_readable(fd)
+    app -> kernel: read(fd, buf, 4096)
+    kernel -> app: bytes_read: ssize_t
+  }
+}
+
+# -----------------------------------------------------------------------------
+# LEVEL 2: KERNEL SPACE (RING 0)
+# -----------------------------------------------------------------------------
+level_2: "LEVEL 2: KERNEL SPACE (OS)" {
+  style: {
+    stroke: "#3f87a6"
+    stroke-width: 4
+    fill: "#f0f4f7"
+  }
+
+  epoll_subsystem: "epoll: fs/eventpoll.c" {
+    rdllist: "Ready List (rdllist)" {
+      shape: rectangle
+      item_1: "epitem (fd: 42)" {style.fill: "#FF9800"} # Pointer=Orange
+    }
+  }
+
+  socket_layer: "Socket: net/socket.c" {
+    sk_receive_queue: "sk_receive_queue (sk_buff list)" {
+      shape: cylinder
+      style.fill: "#2196F3" # Data=Blue
+    }
+  }
+
+  copy_engine: "copy_to_user() logic" {
+    simd_ops: "AVX2 Vector Copy" {
+      tooltip: "32 bytes/instruction"
+      style.fill: "#FFF9C9"
+    }
+    timing: "4096B copy ≈ 20ns" {
+      shape: text
+    }
+  }
+
+  mmu: "Memory Management Unit" {
+    tlb: "TLB Cache" {style.fill: "#E8F5E9"}
+    page_table: "Page Table Walk" {shape: diamond}
+  }
+}
+
+# -----------------------------------------------------------------------------
+# LEVEL 3: HARDWARE LAYER (NIC / BUS)
+# -----------------------------------------------------------------------------
+level_3: "LEVEL 3: HARDWARE LAYER" {
+  style: {
+    stroke: "#ed800c"
+    stroke-width: 4
+    fill: "#fff3e0"
+  }
+
+  nic: "Network Interface Card" {
+    rx_ring: "RX Descriptor Ring" {
+      shape: sql_table
+      "Slot 0": "Buffer Addr 0x... [DESC]"
+      "Slot 1": "Buffer Addr 0x... [FREE]" {style.fill: "#4CAF50"} # Free=Green
+    }
+  }
+
+  dma_engine: "DMA Controller" {
+    label: "Direct Memory Access"
+    style.stroke: "#ed800c" # Pointers=Orange
+  }
+
+  interrupt_line: "MSI-X Interrupt" {
+    shape: parallelogram
+    style.fill: "#FFEB3B"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# DATA FLOW CONNECTIONS
+# -----------------------------------------------------------------------------
+
+# Path 1: Hardware to Kernel (NIC DMA)
+level_3.nic -> level_3.dma_engine: "1. Receive Frame"
+level_3.dma_engine -> level_2.socket_layer.sk_receive_queue: "2. DMA Write (PCIe)" {
+  style: {
+    stroke: "#2E7D32"
+    stroke-width: 3
+    animated: true
+  }
+}
+level_3.dma_engine -> level_3.interrupt_line: "3. Assert IRQ"
+
+# Path 2: Kernel Internal (Notification)
+level_3.interrupt_line -> level_2.socket_layer: "4. IRQ Handler (Top Half)"
+level_2.socket_layer -> level_2.epoll_subsystem.rdllist: "5. sock_def_readable()" {
+  style.stroke: "#ed800c"
+}
+
+# Path 3: Kernel to User (The Memory Move)
+level_1.call_stack.kernel -> level_2.epoll_subsystem: "6. poll"
+level_2.epoll_subsystem -> level_1.user_buffer: "7. copy_to_user(events)" {
+  style.stroke-dash: 5
+}
+
+level_1.call_stack.kernel -> level_2.socket_layer: "8. read() entry"
+level_2.socket_layer -> level_2.copy_engine.simd_ops: "9. skb_copy_datagram_iter()"
+level_2.copy_engine.simd_ops -> level_2.mmu.tlb: "10. virt_to_phys"
+level_2.copy_engine.simd_ops -> level_1.user_buffer: "11. copy_to_user(data)" {
+  style: {
+    stroke: "#2196F3"
+    stroke-width: 4
+    animated: true
+  }
+}
+
+# Metadata Annotations
+perf_note: |md
+  ### L1 Cache Performance
+  - **Cold Path**: Hardware DMA bypasses CPU cache.
+  - **Hot Path**: `copy_to_user` primes L1/L2 on destination.
+  - **Latency**: Sub-microsecond from IRQ to User-space visibility.
+| {
+  near: bottom-right
+}
+
+level_2.copy_engine.timing -> level_2.copy_engine.simd_ops: "Pipeline: 128 ops"
+level_2.mmu.tlb -> level_2.mmu.page_table: "On TLB Miss" {style.stroke: red}

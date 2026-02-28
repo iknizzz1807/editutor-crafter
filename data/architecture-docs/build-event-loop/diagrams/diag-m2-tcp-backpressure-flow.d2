@@ -1,0 +1,203 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# -----------------------------------------------------------------------------
+# LAYER 1: SERVER APPLICATION (USERSPACE)
+# -----------------------------------------------------------------------------
+server_app: {
+  label: "SERVER APPLICATION (reactor.c / http_server.c)"
+  direction: down
+
+  event_loop: {
+    label: "Event Loop (reactor.c)"
+    logic: |md
+      c
+      // Write Path with Backpressure
+      ssize_t w = write(fd, data, len);
+      if (w == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+          wbuf_append(&c->wbuf, data, len);
+          reactor_mod(r, fd, REACTOR_WRITABLE);
+      }
+      
+    |
+  }
+
+  write_buffer: {
+    shape: sql_table
+    label: "struct write_buf (connection.h)"
+    
+    row1: "0x00 | char*    | data   | Heap allocated queue"
+    row2: "0x08 | uint32_t | len    | Bytes waiting to send"
+    row3: "0x0C | uint32_t | cap    | Total capacity"
+    row4: "0x10 | uint32_t | offset | Current flush index"
+    
+    label_bottom: "Total: 24 bytes (struct) + Dynamic Data"
+  }
+
+  defense_logic: {
+    label: "SLOW LORIS DEFENSE (security.c)"
+    style: {
+      fill: "#ffcccc"
+      stroke: red
+      stroke-width: 2
+    }
+    check: |md
+      c
+      if (c->wbuf.len > WRITE_BUF_MAX) {
+          log_warn("Backpressure limit reached for fd=%d", c->fd);
+          conn_close(r, c->fd); // Prevent OOM
+      }
+      
+    |
+  }
+
+  event_loop -> write_buffer: "Store unsent data | 256KB Max"
+  write_buffer -> defense_logic: "Check limits"
+}
+
+# -----------------------------------------------------------------------------
+# LAYER 2: SERVER KERNEL (TCP STACK)
+# -----------------------------------------------------------------------------
+server_kernel: {
+  label: "SERVER KERNEL (Linux Network Stack)"
+  direction: down
+
+  sk_write_queue: {
+    shape: cylinder
+    label: "sk_write_queue (Send Buffer)"
+    style: {
+      fill: "#ffe6cc"
+      stroke: "#d79b00"
+    }
+    status: "Status: FULL | ~208 KB (net.ipv4.tcp_wmem)"
+  }
+
+  tcp_engine: "TCP Output Engine (tcp_output.c)"
+}
+
+# -----------------------------------------------------------------------------
+# LAYER 3: THE NETWORK (PHYSICAL/LOGICAL)
+# -----------------------------------------------------------------------------
+network: {
+  shape: cloud
+  label: "TCP CONGESTION & FLOW CONTROL"
+  
+  congestion_signal: "Zero Window Advertisement" {
+    style: {
+      font-color: red
+      bold: true
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# LAYER 4: CLIENT KERNEL (TCP STACK)
+# -----------------------------------------------------------------------------
+client_kernel: {
+  label: "CLIENT KERNEL"
+  direction: down
+
+  sk_receive_queue: {
+    shape: cylinder
+    label: "sk_receive_queue (Recv Buffer)"
+    style: {
+      fill: "#ffe6cc"
+      stroke: "#d79b00"
+    }
+    status: "Status: FULL | ~208 KB (net.ipv4.tcp_rmem)"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# LAYER 5: CLIENT APPLICATION (SLOW CONSUMER)
+# -----------------------------------------------------------------------------
+client_app: {
+  label: "CLIENT APPLICATION (Slow Reader)"
+  direction: down
+  
+  logic: {
+    label: "Bottleneck Logic"
+    snippet: |md
+      c
+      while(1) {
+          // Read 1 byte, wait 1s
+          recv(fd, buf, 1, 0);
+          sleep(1); 
+      }
+      
+    |
+  }
+}
+
+# -----------------------------------------------------------------------------
+# DATA FLOW & BACKPRESSURE PROPAGATION
+# -----------------------------------------------------------------------------
+
+server_app.event_loop -> server_kernel.sk_write_queue: "write(fd, ..., 16KB) | errno: EAGAIN" {
+  style: {
+    stroke: red
+    stroke-width: 2
+  }
+}
+
+server_kernel.tcp_engine -> network: "TCP Segment | 1448B Payload | Seq=N"
+network -> server_kernel.tcp_engine: "TCP ACK | Win=0 | Seq=N+1" {
+  style: {
+    stroke: red
+    animated: true
+  }
+}
+
+network -> client_kernel.sk_receive_queue: "Incoming Segments | Fills Window"
+client_kernel.sk_receive_queue -> client_app.logic: "read(fd, ..., 1) | 1 Byte/sec"
+
+# -----------------------------------------------------------------------------
+# ANNOTATIONS & LEGEND
+# -----------------------------------------------------------------------------
+
+note: |md
+  ### The Backpressure Chain (Implementation Details)
+  1. **Client App** (Layer 5) consumes data at 1 B/s via `read()`.
+  2. **Client Kernel** (Layer 4) `sk_receive_queue` hits `tcp_rmem` limit.
+  3. **Client TCP Stack** advertises `win=0` in ACK headers to Server.
+  4. **Server Kernel** (Layer 2) `sk_write_queue` saturates as it cannot transmit.
+  5. **Server App** (Layer 1) `write()` returns `-1` with `errno == EAGAIN`.
+  6. **Reactor** must buffer in `write_buf` or disconnect to avoid memory exhaustion.
+| {
+  near: top-left
+  style.fill: "#fff2cc"
+}
+
+legend: {
+  near: bottom-right
+  direction: right
+  
+  congested: "Congested Path" { 
+    style: {
+      fill: "#ffcccc"
+      stroke: red
+    }
+  }
+  saturated: "Buffer Saturated" { 
+    style: {
+      fill: "#ffe6cc"
+      stroke: "#d79b00"
+    }
+  }
+  normal: "Normal Logic" { 
+    style: {
+      fill: "#cce5ff"
+      stroke: blue
+    }
+  }
+}
+
+server_app -> server_kernel: "System Calls"
+server_kernel -> network: "IP/Ethernet"
+network -> client_kernel: "IP/Ethernet"
+client_kernel -> client_app: "System Calls"

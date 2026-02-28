@@ -1,0 +1,157 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# L2: Resource Lifecycle & Cleanup Matrix
+# Implementation Blueprint for http_conn_close_deferred()
+
+title: "Resource Cleanup Architecture: Exit Path Consistency (http_server.c)" {
+  shape: text
+  near: top-center
+  style: {
+    font-size: 18
+    bold: true
+  }
+}
+
+cleanup_logic: {
+  label: "struct http_conn Cleanup Logic"
+  
+  # The "Single Source of Truth" for cleanup
+  function_spec: {
+    shape: code
+    label: "static void http_conn_close_deferred(reactor *r, void *user_data)"
+    language: c
+    content: |md
+      c
+      void http_conn_close_deferred(reactor *r, void *user_data) {
+          http_conn *conn = (http_conn *)user_data;
+          if (conn->fd < 0) return; // Guard: Already closed
+
+          // 1. TIMERS: Must cancel to prevent firing on freed memory
+          if (conn->timer_id >= 0) {
+              reactor_cancel_timer(r, conn->timer_id);
+              conn->timer_id = -1;
+          }
+
+          // 2. REACTOR: Remove interest list entries (EPOLL_CTL_DEL)
+          reactor_deregister(r, conn->fd);
+
+          // 3. MEMORY: Free heap-allocated buffers
+          wbuf_free(&conn->wbuf); 
+
+          // 4. SYSCALL: Release kernel file descriptor
+          close(conn->fd);
+          conn->fd = -1;
+
+          // 5. HEAP: Final release of the connection object
+          free(conn);
+      }
+      
+    |
+  }
+}
+
+# The Matrix: Exit Paths vs. Required Actions
+cleanup_matrix: {
+  grid-columns: 6
+  grid-gap: 20
+  
+  # Header Row
+  header_path: "Exit Path Trigger" { style: { bold: true; fill: "#DEE1EB" } }
+  header_timer: "1. Cancel Timer" { style: { bold: true; fill: "#DEE1EB" } }
+  header_epoll: "2. Deregister" { style: { bold: true; fill: "#DEE1EB" } }
+  header_wbuf: "3. Free W-Buffer" { style: { bold: true; fill: "#DEE1EB" } }
+  header_fd: "4. Close FD" { style: { bold: true; fill: "#DEE1EB" } }
+  header_mem: "5. Free Struct" { style: { bold: true; fill: "#DEE1EB" } }
+
+  # Row 1: Normal Completion
+  r1_path: "Normal: 'Conn: close'"
+  r1_1: "✓" { style.fill: "#ACE1AF" }
+  r1_2: "✓" { style.fill: "#ACE1AF" }
+  r1_3: "✓" { style.fill: "#ACE1AF" }
+  r1_4: "✓" { style.fill: "#ACE1AF" }
+  r1_5: "✓" { style.fill: "#ACE1AF" }
+
+  # Row 2: Socket Error
+  r2_path: "Error: ECONNRESET"
+  r2_1: "Required" { 
+    tooltip: "CRITICAL: If missed, timer fires on freed 'conn' pointer"
+    style: { fill: "#FE7070"; bold: true }
+  }
+  r2_2: "✓" { style.fill: "#ACE1AF" }
+  r2_3: "✓" { style.fill: "#ACE1AF" }
+  r2_4: "✓" { style.fill: "#ACE1AF" }
+  r2_5: "✓" { style.fill: "#ACE1AF" }
+
+  # Row 3: Idle Timeout
+  r3_path: "Timeout: 30s Idle"
+  r3_1: "N/A (Fired)"
+  r3_2: "✓" { style.fill: "#ACE1AF" }
+  r3_3: "✓" { style.fill: "#ACE1AF" }
+  r3_4: "✓" { style.fill: "#ACE1AF" }
+  r3_5: "✓" { style.fill: "#ACE1AF" }
+
+  # Row 4: Write Overflow
+  r4_path: "Buffer Overflow"
+  r4_1: "✓" { style.fill: "#ACE1AF" }
+  r4_2: "✓" { style.fill: "#ACE1AF" }
+  r4_3: "Leak Point" { 
+    tooltip: "DANGER: Failing to call wbuf_free() leaks heap data"
+    style: { fill: "#FE7070"; bold: true }
+  }
+  r4_4: "✓" { style.fill: "#ACE1AF" }
+  r4_5: "✓" { style.fill: "#ACE1AF" }
+
+  # Row 5: FD Reuse Race
+  r5_path: "FD Reuse Race"
+  r5_1: "✓" { style.fill: "#ACE1AF" }
+  r5_2: "Race Danger" { 
+    tooltip: "Close() before Deregister() can lead to events firing on new socket"
+    style: { fill: "#F69E03"; bold: true }
+  }
+  r5_3: "✓" { style.fill: "#ACE1AF" }
+  r5_4: "✓" { style.fill: "#ACE1AF" }
+  r5_5: "✓" { style.fill: "#ACE1AF" }
+}
+
+# Component details for implementation verification
+struct_layout: {
+  shape: sql_table
+  label: "struct http_conn (http_server.c)"
+  
+  row0: "0x00 | int      | fd              | -1 when closed"
+  row1: "0x04 | int      | timer_id        | -1 when idle"
+  row2: "0x08 | uint32_t | read_len        | bytes in buffer"
+  row3: "0x10 | write_buf| wbuf            | struct with char* data"
+  row4: "0x28 | void*    | reactor_ref     | pointer to event loop"
+  
+  label_bottom: "Total: ~17.5 KB (incl. 16KB read_buf)"
+}
+
+# Connecting the flow
+cleanup_matrix.r2_1 -> cleanup_logic.function_spec: "Must trigger single cleanup" {
+  style: { stroke: red; stroke-width: 2; animated: true }
+}
+
+cleanup_matrix.r4_3 -> struct_layout.row3: "Frees heap field" {
+  style: { stroke: blue; stroke-dash: 3 }
+}
+
+legend: {
+  near: bottom-right
+  
+  red_box: "High Vulnerability (UAF/Race)" {
+    style: { fill: "#FE7070"; stroke-width: 0 }
+  }
+  yellow_box: "Logical Hazard" {
+    style: { fill: "#F69E03"; stroke-width: 0 }
+  }
+  green_box: "Safe Operation" {
+    style: { fill: "#ACE1AF"; stroke-width: 0 }
+  }
+}

@@ -1,0 +1,194 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# GLOBAL STYLES
+***.style.font: mono
+
+title: "FD Management & Leak Detection (server.c)\nResource: File Descriptor Table (Kernel-side)" {
+  shape: text
+  near: top-center
+  style.font-size: 24
+  style.bold: true
+}
+
+# --- LIFECYCLE BLUEPRINT ---
+lifecycle_blueprint: {
+  label: "CONNECTION LIFECYCLE (server.c)"
+  direction: down
+  
+  step1: {
+    label: "Phase 1: Allocation"
+    description: |md
+      c
+      // accept() returns next available int
+      int client_fd = accept(server_fd, ...);
+      if (client_fd < 0) {
+          perror("accept");
+          continue;
+      }
+      
+    |
+  }
+
+  step2: {
+    label: "Phase 2: Processing"
+    description: |md
+      c
+      // Perform I/O via FD
+      read(client_fd, buf, len);
+      serve_static_file(req, client_fd, root);
+      
+    |
+  }
+
+  step3: {
+    label: "Phase 3: Destruction"
+    description: |md
+      c
+      // MUST execute on ALL exit paths
+      close(client_fd); 
+      client_fd = -1;
+      
+    |
+  }
+
+  step1 -> step2: "int | 4 bytes | fd: 5"
+  step2 -> step3: "int | 4 bytes | fd: 5"
+}
+
+# --- COMPARISON VIEW (Renamed from scenarios to allow cross-container edges) ---
+comparison_view: {
+  direction: right
+
+  # CASE A: THE LEAK
+  leaky_server: {
+    label: "SCENARIO A: LEAKY SERVER (Buggy Error Paths)"
+    direction: down
+    style.stroke: red
+    style.fill: "#fff5f5"
+
+    before_stats: {
+      shape: sql_table
+      label: "Baseline: /proc/self/fd"
+      row1: "0x00 | int | 0: stdin"
+      row2: "0x04 | int | 1: stdout"
+      row3: "0x08 | int | 2: stderr"
+      row4: "0x0C | int | 3: server_fd"
+      row5: "0x10 | int | 4: epoll_fd"
+      label_bottom: "Total: 5 FDs (Stable)"
+    }
+
+    leak_mechanism: {
+      shape: rectangle
+      label: "Critical Bug: Missing close()"
+      description: |md
+        c
+        if (pthread_create(...) != 0) {
+            // BUG: Early return without close()
+            // Resource 'client_fd' is leaked here
+            perror("pthread_create");
+            return; 
+        }
+        
+      |
+      style.stroke: red
+      style.stroke-width: 3
+    }
+
+    after_stats: {
+      shape: sql_table
+      label: "After 10,000 Iterations"
+      row1: "0-4 | System FDs"
+      row5: "5 | Socket (stale)"
+      row6: "6 | Socket (stale)"
+      row7: "... | ..."
+      row8: "10004 | Socket (stale)"
+      label_bottom: "Total: 10,005 FDs (Leak detected)"
+      style.fill: "#ffcccc"
+    }
+
+    system_failure: {
+      shape: circle
+      label: "EMFILE\nToo many open files"
+      style.fill: red
+      style.font-color: white
+    }
+
+    before_stats -> leak_mechanism: "10k accept() cycles"
+    leak_mechanism -> after_stats: "FD table exhaustion"
+    after_stats -> system_failure: "New accept() returns -1"
+  }
+
+  # CASE B: STABLE SERVER
+  stable_server: {
+    label: "SCENARIO B: CLEAN SERVER (FD Recycling)"
+    direction: down
+    style.stroke: green
+    style.fill: "#f5fff5"
+
+    before_stats: {
+      shape: sql_table
+      label: "Baseline: /proc/self/fd"
+      row1: "0x00 | int | 0-4: System FDs"
+      label_bottom: "Total: 5 FDs"
+    }
+
+    recycling: {
+      shape: rectangle
+      label: "Correct Logic: Cleanup on all paths"
+      description: |md
+        c
+        void handle(...) {
+            if (err) goto cleanup;
+            // ... logic ...
+        cleanup:
+            // Ensures FD is always released
+            close(client_fd);
+        }
+        
+      |
+      style.stroke: green
+    }
+
+    after_stats: {
+      shape: sql_table
+      label: "After 10,000 Iterations"
+      row1: "0-4 | System FDs"
+      row5: "UNUSED | [FD Recycled]"
+      label_bottom: "Total: 5 FDs (Healthy)"
+      style.fill: "#ccffcc"
+    }
+
+    system_health: {
+      shape: circle
+      label: "STABLE\nUptime: ∞"
+      style.fill: green
+      style.font-color: white
+    }
+
+    before_stats -> recycling: "10k accept() cycles"
+    recycling -> after_stats: "FD recycled via close()"
+    after_stats -> system_health: "Accept loop continues"
+  }
+}
+
+# --- CROSS-COMPONENT FLOW ---
+lifecycle_blueprint.step1 -> comparison_view.leaky_server.before_stats: "Monitoring via /proc/self/fd" {
+  style.stroke-dash: 5
+}
+
+# --- LEGEND ---
+legend: {
+  near: bottom-right
+  leaked: "Leaked / Stale FD" {
+    style.fill: "#ffcccc"
+  }
+  active: "Active / Managed FD" {
+    style.fill: "#ccffcc"
+  }
+}

@@ -1,0 +1,200 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# SHARED STATE DEFINITION
+# ---------------------------------------------------------------------------------
+shared_state: {
+  shape: sql_table
+  label: "struct thread_pool_t (server.h)"
+  
+  row0: "0x00 | int        | shutdown           | [0 -> 1]"
+  row1: "0x04 | int        | queue_size         | count of pending FDs"
+  row2: "0x08 | mutex_t    | lock               | pthread_mutex_t"
+  row3: "0x28 | cond_t     | not_empty          | pthread_cond_t"
+  row4: "0x48 | int        | active_connections | atomic count"
+  
+  label_bottom: "Total: 128 bytes (aligned to cache lines)"
+}
+
+# ---------------------------------------------------------------------------------
+# PHASE 1: SIGNAL INTERCEPT
+# ---------------------------------------------------------------------------------
+phase_1: {
+  label: "PHASE 1: External Trigger (signals.c)"
+  direction: down
+  
+  signal_thread: {
+    shape: class
+    label: "Signal Handler Thread"
+    definition: |md
+      c
+      void* signal_thread(void* arg) {
+          sigwait(&set, &sig);
+          pthread_mutex_lock(&pool->lock);
+          pool->shutdown = 1;
+          pthread_cond_broadcast(&pool->not_empty);
+          pthread_mutex_unlock(&pool->lock);
+      }
+      
+    |
+  }
+  
+  failure_risk_1: "SKIP RISK: Process killed instantly. Port stays in TIME_WAIT. Next start fails with EADDRINUSE." {
+    style: {
+      stroke: red
+      fill: "#ffcccc"
+      stroke-dash: 3
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# PHASE 2: ACCEPT LOOP QUIESCENCE
+# ---------------------------------------------------------------------------------
+phase_2: {
+  label: "PHASE 2: Listener Shutdown (listener.c)"
+  direction: down
+  
+  accept_loop: {
+    shape: class
+    label: "Main Accept Thread"
+    logic: |md
+      c
+      while (!pool->shutdown) {
+          int client_fd = accept(server_fd, ...);
+          if (client_fd < 0) {
+              if (pool->shutdown) break;
+              continue;
+          }
+          submit_to_pool(client_fd);
+      }
+      close(server_fd); // Stop new TCP handshakes
+      
+    |
+  }
+  
+  failure_risk_2: "SKIP RISK: Race condition. New clients keep entering the queue while workers are trying to exit." {
+    style: {
+      stroke: red
+      fill: "#ffcccc"
+      stroke-dash: 3
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# PHASE 3: WORKER DRAINING
+# ---------------------------------------------------------------------------------
+phase_3: {
+  label: "PHASE 3: In-flight Completion (worker.c)"
+  direction: down
+  
+  worker_pool: {
+    worker_n: "Worker Thread Pool [N]" {
+      shape: circle
+      style.multiple: true
+    }
+    
+    drain_logic: |md
+      c
+      // Check after processing each task
+      pthread_mutex_lock(&pool->lock);
+      if (pool->shutdown && pool->queue_size == 0) {
+          pthread_mutex_unlock(&pool->lock);
+          pthread_exit(NULL);
+      }
+      pthread_mutex_unlock(&pool->lock);
+      
+    |
+  }
+  
+  failure_risk_3: "SKIP RISK: Dropped Requests. 50% downloaded images stay truncated. Browsers show 'Connection Reset'." {
+    style: {
+      stroke: red
+      fill: "#ffcccc"
+      stroke-dash: 3
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# PHASE 4: FINAL CLEANUP
+# ---------------------------------------------------------------------------------
+phase_4: {
+  label: "PHASE 4: Resource Release (main.c)"
+  direction: down
+  
+  main_cleanup: {
+    shape: class
+    label: "Main Thread Join"
+    join: |md
+      c
+      for (int i=0; i<N; i++) 
+          pthread_join(threads[i], NULL);
+      
+      cleanup_shared_state(pool);
+      free(pool->queue);
+      exit(0);
+      
+    |
+  }
+  
+  failure_risk_4: "SKIP RISK: Memory leaks and Zombie threads. Kernel task_structs remain allocated until reboot." {
+    style: {
+      stroke: red
+      fill: "#ffcccc"
+      stroke-dash: 3
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# DATA FLOWS & TRANSITIONS
+# ---------------------------------------------------------------------------------
+
+kernel: OS Kernel { shape: cloud }
+
+kernel -> phase_1.signal_thread: "SIGTERM | Signal 15 | External Kill" {
+  style.stroke: purple
+  style.stroke-width: 4
+}
+
+phase_1.signal_thread -> shared_state: "WRITE | offset 0x00 | val: 1"
+shared_state -> phase_2.accept_loop: "READ | check shutdown flag"
+
+phase_2.accept_loop -> phase_3.worker_pool: "BROADCAST | wake sleeping workers" {
+  style.animated: true
+}
+
+phase_3.worker_pool -> phase_4.main_cleanup: "EXIT | thread termination signal"
+
+phase_4.main_cleanup -> kernel: "syscall | exit(0) | code 0x00" {
+  style.stroke: green
+  style.stroke-width: 4
+}
+
+# ---------------------------------------------------------------------------------
+# LEGEND & METADATA
+# ---------------------------------------------------------------------------------
+legend: {
+  near: bottom-right
+  title: "LEGEND"
+  r: "Red = High Failure Impact" { style.font-color: red }
+  p: "Purple = Control Signal" { style.font-color: purple }
+  g: "Green = Success Terminal" { style.font-color: green }
+}
+
+annotation: |md
+  ### Implementation Notes
+  1. **Atomic Flag**: `shutdown` must be accessed under `pool->lock` or be `atomic_int`.
+  2. **Broadcast**: `pthread_cond_broadcast` is mandatory; `signal` may only wake one worker.
+  3. **Listener**: Closing `server_fd` in Phase 2 ensures any thread currently blocked in `accept()` wakes up with `EBADF`.
+| {
+  near: bottom-center
+}

@@ -1,0 +1,161 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# DATA STRUCTURE DEFINITION (Implementation-Ready)
+# ---------------------------------------------------------------------------------
+struct_definitions: {
+  shape: sql_table
+  label: "struct http_conn (server.h)"
+  
+  row0: "0x0000 | char[16384]     | read_buf"
+  row1: "0x4000 | write_buf        | wbuf (24 bytes)"
+  row2: "0x4018 | http_request     | req (1056 bytes)"
+  row3: "0x4438 | uint32_t         | read_len"
+  row4: "0x443C | int              | fd"
+  row5: "0x4440 | int              | timer_id"
+  row6: "0x4444 | conn_http_state  | state (enum)"
+  row7: "0x4448 | reactor*         | reactor_ref"
+  
+  label_bottom: "Total: ~17.5 KB (Stack/Heap Resident)"
+}
+
+# ---------------------------------------------------------------------------------
+# STATE EVOLUTION MACHINE
+# ---------------------------------------------------------------------------------
+lifecycle: {
+  direction: right
+
+  # Initial Entry Point
+  accept: {
+    shape: circle
+    label: "accept4()"
+  }
+
+  # State 1: Initialization
+  CREATED: {
+    direction: down
+    style.fill: "#E4DBFE"
+    
+    init_logic: |md
+      c
+      conn = calloc(1, sizeof(http_conn));
+      wbuf_init(&conn->wbuf);
+      conn->timer_id = reactor_set_timeout(r, 30s, ...);
+      reactor_register(r, fd, READABLE, ...);
+      
+    |
+  }
+
+  # State 2: Active Monitoring
+  ACTIVE: {
+    direction: down
+    style.fill: "#C7F1FF"
+    
+    substates: {
+      direction: right
+      READING: "HTTP_READING_HEADERS"
+      PROCESSING: "HTTP_PROCESSING"
+      WRITING: "HTTP_WRITING_RESPONSE"
+      
+      READING -> PROCESSING: "Parse Complete"
+      PROCESSING -> WRITING: "Response Built"
+      WRITING -> READING: "Keep-Alive Reset"
+    }
+
+    on_activity: "timer_set(fd, now + 30s) | Reset Expiry"
+  }
+
+  # State 3: Termination Triggers
+  TERMINATION: {
+    direction: down
+    
+    timeout_fired: "IDLE_TIMEOUT | Timer Callback" {
+      style.stroke: orange
+    }
+    io_error: "IO_ERROR | EPOLLERR/HUP" {
+      style.stroke: red
+    }
+    client_eof: "EOF | read() == 0" {
+      style.stroke: grey
+    }
+    protocol_close: "PROTOCOL_CLOSE | Connection: close" {
+      style.stroke: purple
+    }
+  }
+
+  # State 4: Safe Deletion
+  CLOSING: {
+    shape: class
+    label: "http_conn_close_deferred (Task)"
+    style.fill: "#FFE7CB"
+    
+    # REQUIRED CLEANUP STEPS
+    methods: |md
+      c
+      void cleanup(http_conn* conn) {
+        if (conn->fd < 0) return; // Guard
+        timer_cancel(conn->timer_id);
+        reactor_deregister(r, conn->fd);
+        wbuf_free(&conn->wbuf);
+        close(conn->fd);
+        free(conn);
+      }
+      
+    |
+  }
+
+  # Transitions
+  accept -> CREATED: "fd > 0 | SOCK_NONBLOCK"
+  CREATED -> ACTIVE: "Success"
+  ACTIVE -> ACTIVE: "Data Received | timer_set()"
+  
+  # Termination paths
+  ACTIVE -> TERMINATION.timeout_fired: "30s Inactivity"
+  ACTIVE -> TERMINATION.io_error: "Socket Error"
+  ACTIVE -> TERMINATION.client_eof: "Peer FIN"
+  ACTIVE -> TERMINATION.protocol_close: "Response Sent"
+
+  # All termination leads to deferred cleanup
+  TERMINATION -> CLOSING: "reactor_defer(r, cleanup, conn)"
+}
+
+# ---------------------------------------------------------------------------------
+# RESOURCE CLEANUP CHECKLIST (MANDATORY)
+# ---------------------------------------------------------------------------------
+cleanup_checklist: {
+  shape: sql_table
+  label: "Resource Teardown Stack"
+  
+  step1: "1. Timer Heap | timer_cancel(id) | Prevents UAF after close"
+  step2: "2. Epoll Map  | reactor_deregister | Stops events on defunct FD"
+  step3: "3. Write Buf  | wbuf_free(wb)      | Releases heap data pointer"
+  step4: "4. Kernel FD  | close(fd)          | Frees port/file resources"
+  step5: "5. Conn Mem   | free(conn)         | Reclaims 17.5KB heap slot"
+  
+  style.fill: "#DEE1EB"
+}
+
+# ---------------------------------------------------------------------------------
+# ANNOTATIONS & FLOW CONTEXT
+# ---------------------------------------------------------------------------------
+lifecycle.TERMINATION.timeout_fired -> lifecycle.CLOSING: "Timer Expired | O(log N) Heap Delete"
+lifecycle.TERMINATION.io_error -> lifecycle.CLOSING: "TCP RST/Error | reactor_deregister"
+
+# Structural Links
+struct_definitions -> lifecycle.CREATED: "Memory Layout Reference"
+lifecycle.CLOSING -> cleanup_checklist: "Execution Order"
+
+# Legend
+legend: {
+  near: bottom-right
+  
+  r1: "Blue: Data Path" { style.font-color: blue }
+  r2: "Orange: Logic/Timer Path" { style.font-color: orange }
+  r3: "Red: Critical Error Path" { style.font-color: red }
+}

@@ -1,0 +1,113 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+# State Definitions
+READING_HEADERS: "READING_HEADERS" {
+  tooltip: "Initial state / Keep-alive reset point"
+  |md
+    **Invariant:** 
+    - `read_buf` contains partial data
+    - `read_pos < 16KB`
+    - `is_zombie == false`
+  |
+}
+
+READING_BODY: "READING_BODY" {
+  |md
+    **Invariant:** 
+    - `has_content_length == true`
+    - `body_received < content_length`
+  |
+}
+
+PROCESSING: "PROCESSING" {
+  |md
+    **Invariant:** 
+    - Full request in `read_buf`
+    - Path sanitized (no `..`)
+    - File `fd` is valid/opened
+  |
+}
+
+WRITING_RESPONSE: "WRITING_RESPONSE" {
+  |md
+    **Invariant:** 
+    - `wbuf.len > 0`
+    - `epollout_armed == true`
+  |
+}
+
+CLOSING: "CLOSING" {
+  style.stroke: red
+  style.bold: true
+  |md
+    **Invariant:** 
+    - `wbuf.len == 0`
+    - `timer_id == -1`
+    - `fd` about to be closed
+  |
+}
+
+# Initial State
+START: ● {
+  shape: circle
+  style.fill: black
+}
+
+START -> READING_HEADERS: "accept4() success\n[Action: conn_init]"
+
+# Valid Transitions
+READING_HEADERS -> READING_BODY: "Trigger: find_header_end() != -1\nGuard: [has_content_length == true]\nAction: memmove() body start"
+
+READING_HEADERS -> PROCESSING: "Trigger: find_header_end() != -1\nGuard: [no body/GET]\nAction: http_process_request()"
+
+READING_BODY -> PROCESSING: "Trigger: read() update\nGuard: [body_received == content_length]\nAction: http_process_request()"
+
+PROCESSING -> WRITING_RESPONSE: "Trigger: conn_write() called\nAction: Arm EPOLLOUT if EAGAIN"
+
+WRITING_RESPONSE -> READING_HEADERS: "Trigger: conn_flush() empty\nGuard: [keep_alive == true]\nAction: http_reset_connection()"
+
+WRITING_RESPONSE -> CLOSING: "Trigger: conn_flush() empty\nGuard: [keep_alive == false]\nAction: reactor_defer(close)"
+
+# Error / Timeout Paths
+READING_HEADERS -> CLOSING: "Trigger: IDLE_TIMEOUT\nAction: Defer Close" {
+  style.stroke: "#ff6666"
+}
+
+READING_HEADERS -> CLOSING: "Trigger: PARSE_ERROR\nAction: Send 400 + Defer Close" {
+  style.stroke: "#ff6666"
+}
+
+# Illegal Transitions
+READING_HEADERS -> CLOSING: "ILLEGAL" {
+  label: "ILLEGAL: must send 4xx first"
+  style: {
+    stroke: red
+    stroke-dash: 5
+    font-color: red
+  }
+}
+
+PROCESSING -> READING_HEADERS: "ILLEGAL" {
+  label: "ILLEGAL: state bypass"
+  style: {
+    stroke: red
+    stroke-dash: 5
+    font-color: red
+  }
+}
+
+# Global Annotation
+explanation: |md
+  ### HTTP/1.1 Reactor State Machine
+  - **Single Threaded:** Transitions are atomic.
+  - **Memory Safety:** `CLOSING` must always be deferred to clean up `wbuf` and `timer`.
+  - **Backpressure:** Managed via the `WRITING_RESPONSE` <-> `Reactor EPOLLOUT` loop.
+| {
+  near: bottom-center
+}

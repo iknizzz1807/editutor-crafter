@@ -1,0 +1,166 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# LEFT COLUMN: REACTOR PATTERN (epoll-based)
+# ---------------------------------------------------------------------------------------
+reactor_pattern: {
+  label: "REACTOR PATTERN (Synchronous Readiness)\n[Linux epoll / BSD kqueue]"
+  direction: down
+
+  user_space: {
+    label: "USER SPACE"
+    style.stroke-dash: 5
+
+    event_loop: {
+      shape: class
+      label: "Event Loop (reactor.c)"
+      definition: |md
+        c
+        while (running) {
+            int n = epoll_wait(ep_fd, events, MAX, timeout);
+            for (int i=0; i < n; i++) {
+                dispatch(&events[i]);
+            }
+        }
+        
+      |
+    }
+
+    application_logic: {
+      shape: class
+      label: "I/O Handlers (app.c)"
+      methods: |md
+        c
+        void on_readable(int fd, void* ctx) {
+            // APP PERFORMS I/O
+            ssize_t n = read(fd, buf, len); 
+            if (n > 0) process(buf);
+            else if (n < 0 && errno == EAGAIN) return;
+        }
+        
+      |
+    }
+  }
+
+  kernel_space: {
+    label: "KERNEL SPACE"
+    
+    epoll_subsystem: {
+      shape: sql_table
+      label: "struct eventpoll (fs/eventpoll.c)"
+      rbr: "0x00 | rbtree      | interest_list"
+      rdl: "0x10 | list_head   | ready_list"
+      wq:  "0x20 | wait_queue  | poll_waiters"
+    }
+
+    network_stack: {
+      shape: cylinder
+      label: "TCP Receive Buffer (sk_receive_queue)"
+    }
+  }
+
+  # Flow for Reactor
+  user_space.event_loop -> kernel_space.epoll_subsystem: "1. epoll_wait() | Wait for readiness"
+  kernel_space.epoll_subsystem -> user_space.event_loop: "2. Return Ready FDs | events[] array"
+  user_space.event_loop -> user_space.application_logic: "3. Dispatch Callback | func(fd, ctx)"
+  user_space.application_logic -> kernel_space.network_stack: "4. read(fd, buf) | SYNC DATA COPY"
+  kernel_space.network_stack -> user_space.application_logic: "5. Return Bytes | copy_to_user()"
+
+  footer: {
+    shape: text
+    label: "Systems: NGINX, Redis, Node.js (libuv), Python (asyncio)"
+    style.italic: true
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# RIGHT COLUMN: PROACTOR PATTERN (io_uring-based)
+# ---------------------------------------------------------------------------------------
+proactor_pattern: {
+  label: "PROACTOR PATTERN (Asynchronous Completion)\n[Linux io_uring / Windows IOCP]"
+  direction: down
+
+  user_space: {
+    label: "USER SPACE"
+    style.stroke-dash: 5
+
+    submission_interface: {
+      shape: sql_table
+      label: "struct io_uring_sqe (io_uring.h)"
+      opcode: "0x00 | uint8_t  | opcode (IORING_OP_READ)"
+      fd:     "0x04 | int32_t  | fd"
+      addr:   "0x10 | uint64_t | addr (User Buffer Pointer)"
+      len:    "0x18 | uint32_t | len"
+      user:   "0x20 | uint64_t | user_data"
+    }
+
+    completion_handler: {
+      shape: class
+      label: "Completion Dispatcher"
+      methods: |md
+        c
+        void handle_completion(cqe) {
+            // I/O IS ALREADY DONE
+            Data* d = (Data*)cqe->user_data;
+            process(d->buf, cqe->res);
+        }
+        
+      |
+    }
+  }
+
+  kernel_space: {
+    label: "KERNEL SPACE"
+
+    io_uring_subsystem: {
+      shape: sql_table
+      label: "io_uring Rings"
+      sq: "0x00 | ring_ptr | Submission Queue"
+      cq: "0x10 | ring_ptr | Completion Queue"
+    }
+
+    async_worker: {
+      label: "Kernel I/O Worker / DMA"
+      style.fill: "#E4DBFE"
+    }
+  }
+
+  # Flow for Proactor
+  user_space.submission_interface -> kernel_space.io_uring_subsystem: "1. io_uring_enter | Submit Request"
+  kernel_space.io_uring_subsystem -> kernel_space.async_worker: "2. Schedule I/O | Async Execution"
+  kernel_space.async_worker -> user_space.submission_interface: "3. KERNEL PERFORMS I/O | Direct DMA to User Buf"
+  kernel_space.async_worker -> kernel_space.io_uring_subsystem: "4. Post Completion | Write to CQ"
+  kernel_space.io_uring_subsystem -> user_space.completion_handler: "5. CQE Available | No syscall needed"
+
+  footer: {
+    shape: text
+    label: "Systems: Windows IIS, GlusterFS, ScyllaDB, Modern Netty"
+    style.italic: true
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# CENTRAL COMPARISON ANNOTATIONS
+# ---------------------------------------------------------------------------------------
+reactor_pattern -> proactor_pattern: "Evolution: Readiness → Completion" {
+  style.stroke: gray
+  style.stroke-dash: 3
+}
+
+comparison_table: {
+  near: top-center
+  shape: sql_table
+  label: "Key Architectural Differences"
+  
+  header: "Feature | Reactor (epoll) | Proactor (io_uring)"
+  row1: "I/O Operation | Synchronous (performed by App) | Asynchronous (performed by Kernel)"
+  row2: "Buffer Mgmt | App manages after notification | Kernel fills App buffer directly"
+  row3: "Complexity | High (must handle EAGAIN/drains) | Medium (must manage SQ/CQ slots)"
+  row4: "Efficiency | \$O(Events)\$ Syscalls | Amortized Zero Syscalls (SQPolling)"
+}

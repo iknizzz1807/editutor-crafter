@@ -1,0 +1,112 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# SATELLITE REFERENCE: PID 100 (Tracee)
+# Milestone 3: Multi-process and Fork Following - EXEC event handling
+
+before_exec: {
+  label: "BEFORE PTRACE_EVENT_EXEC\n(Target: /bin/bash)"
+  direction: down
+
+  address_space: {
+    shape: sql_table
+    label: "Process Address Space (PID 100)"
+    
+    "0x400000": "TEXT | /bin/bash code"
+    "0x600000": "DATA/BSS | Globals"
+    "0x800000": "HEAP | malloc() regions"
+    "0x7ffd00": "STACK | argv, envp, locals"
+    
+    label_bottom: "Virtual Memory Map (CR3: 0x1A2000)"
+  }
+
+  tracer_memory: {
+    shape: sql_table
+    label: "struct ProcessState (state_map.c)"
+    
+    row1: "0x00 | pid_t    | pid = 100"
+    row2: "0x04 | int      | in_syscall = 1 (EXIT_PENDING)"
+    row3: "0x08 | regs     | entry_regs (from execve entry)"
+    row4: "0xE0 | timespec | entry_time (start of execve)"
+    row5: "0xF0 | int      | valid = 1"
+    
+    label_bottom: "Total: 248 bytes (Cached Pointers: Active)"
+  }
+
+  address_space."0x7ffd00" -> tracer_memory.row3: "pointer: 0x7ffd8a2... | 'ls'"
+}
+
+transition_event: "PTRACE_EVENT_EXEC\n(status >> 16 == 4)" {
+  shape: rectangle
+  style: {
+    stroke-width: 4
+    stroke-dash: 5
+    font-size: 20
+    bold: true
+    fill: "#E1D5E7"
+  }
+}
+
+after_exec: {
+  label: "AFTER PTRACE_EVENT_EXEC\n(Target: /bin/ls)"
+  direction: down
+
+  address_space: {
+    shape: sql_table
+    label: "New Address Space (PID 100)"
+    
+    "0x555555": "TEXT | /bin/ls (ASLR/PIE)"
+    "0x555600": "NEW HEAP | Zeroed"
+    "0x7fffff": "NEW STACK | Fresh stack frame"
+    
+    label_bottom: "Virtual Memory Map (CR3: 0x2B4000)"
+  }
+
+  tracer_state_reset: {
+    shape: sql_table
+    label: "struct ProcessState (RESET)"
+    
+    row1: "0x00 | pid_t    | pid = 100 (Unchanged)"
+    row2: "0x04 | int      | in_syscall = 0 (ENTRY_WAIT)"
+    row3: "0x08 | regs     | entry_regs = {0}"
+    row4: "0xE0 | timespec | entry_time = {0}"
+    row5: "0xF0 | int      | valid = 1"
+    
+    label_bottom: "State Reset (Dangling Pointers Invalidated)"
+  }
+
+  ptrace_op: |md
+    c
+    // Handler logic (Milestone 3)
+    // Resets tracer tracking state for new binary image
+    void handle_exec(pid_t pid) {
+      ProcessState *s = find(pid);
+      s->in_syscall = 0;
+      memset(&s->entry_regs, 0, sizeof(s->entry_regs));
+      // Resume tracee to start of new executable
+      ptrace(PTRACE_SYSCALL, pid, NULL, NULL);
+    }
+    
+  |
+}
+
+before_exec -> transition_event: "execve() exit notification"
+transition_event -> after_exec: "Address space swap completion"
+
+# Implementation annotations
+note: |md
+  ### The Discontinuity
+  - **PID Persistence**: PID 100 remains constant throughout the replacement.
+  - **Memory Purge**: All virtual-to-physical mappings are replaced by kernel.
+  - **Instruction Pointer**: RIP resets to ELF Entry Point defined in header.
+  - **Tracer Responsibility**: Must zero `entry_regs` to prevent stale argument decoding in the new image.
+| {
+  near: bottom-center
+  style.fill: "#FFF9C9"
+  style.stroke: "#F1A64F"
+}

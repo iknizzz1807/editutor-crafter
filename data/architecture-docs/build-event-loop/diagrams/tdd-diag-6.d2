@@ -1,0 +1,141 @@
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- MEMORY LAYOUT ---
+
+conn_state_t: {
+  shape: sql_table
+  label: "struct conn_state_t | sizeof=4112 bytes"
+  
+  # Byte Offset : Type and Name { constraint: Field Size }
+  "0x0000": "char[4096] read_buf" {constraint: "4096B"}
+  "0x1000": "uint32_t read_len" {constraint: "4B"}
+  "0x1004": "int fd" {constraint: "4B"}
+  "0x1008": "bool is_active" {constraint: "1B"}
+  "0x1009": "uint8_t[7] padding" {constraint: "7B"}
+
+  style: {
+    stroke: "#6a0dad"
+    stroke-width: 2
+    fill: "#f3e5f5" # Header: Purple
+  }
+}
+
+# Page boundary bold line annotation
+conn_state_t."0x1000".style.stroke-width: 4
+
+epoll_event: {
+  shape: sql_table
+  label: "struct epoll_event (Kernel)"
+  "0x00": "uint32_t events" {constraint: "4B"}
+  "0x04": "int data.fd (union)" {constraint: "4B"}
+  "0x04_ptr": "void* data.ptr (union)" {constraint: "8B"}
+  
+  style.fill: "#f3e5f5"
+}
+
+# --- ARCHITECTURE LAYERS ---
+
+Application_Layer: {
+  label: "Application Layer: Event Dispatch & Logic"
+  style.fill: "#f0f4f8"
+
+  Loop_LT: {
+    shape: class
+    run_event_loop_lt(ep_fd: int, l_fd: int)
+  }
+
+  Loop_ET: {
+    shape: class
+    run_event_loop_et(ep_fd: int, l_fd: int)
+  }
+
+  Handlers: {
+    shape: class
+    handle_new_connection_lt(ep_fd: int, l_fd: int)
+    handle_new_connection_et(ep_fd: int, l_fd: int)
+    handle_client_read_lt(ep_fd: int, fd: int)
+    handle_client_read_et(ep_fd: int, fd: int)
+  }
+}
+
+Infrastructure_Layer: {
+  label: "Infrastructure Layer: epoll & Socket Wrappers"
+  style.fill: "#e1e8ed"
+
+  Syscall_Wrappers: {
+    shape: class
+    create_epoll(): int
+    create_listening_socket(): int
+    set_nonblocking(fd: int): int
+  }
+
+  Registration: {
+    shape: class
+    epoll_add(ep_fd: int, fd: int, events: uint32_t): int
+    epoll_mod(ep_fd: int, fd: int, events: uint32_t): int
+    epoll_del(ep_fd: int, fd: int): int
+  }
+
+  State_Mgmt: {
+    shape: class
+    conn_init(fd: int)
+    conn_close(ep_fd: int, fd: int)
+  }
+}
+
+# --- CALL RELATIONSHIPS ---
+
+# Loops to Handlers
+Application_Layer.Loop_LT -> Application_Layer.Handlers: "Dispatch events (LT)"
+Application_Layer.Loop_ET -> Application_Layer.Handlers: "Dispatch events (ET - Drain)"
+
+# Handlers to State
+Application_Layer.Handlers -> Infrastructure_Layer.State_Mgmt.conn_init: "Initialize on Accept"
+Application_Layer.Handlers -> Infrastructure_Layer.State_Mgmt.conn_close: "Cleanup on Error/EOF"
+
+# Handlers to epoll
+Infrastructure_Layer.State_Mgmt.conn_init -> Infrastructure_Layer.Registration.epoll_add
+Infrastructure_Layer.State_Mgmt.conn_close -> Infrastructure_Layer.Registration.epoll_del
+
+# State to Layout
+Application_Layer.Handlers -.-> conn_state_t: "References Pointer" {
+  style.stroke: orange
+  style.stroke-dash: 5
+}
+
+# Infrastructure to Sockets
+Infrastructure_Layer.Syscall_Wrappers -> Infrastructure_Layer.Syscall_Wrappers.set_nonblocking: "Ensure O_NONBLOCK"
+
+# --- STYLING (Memory Regions) ---
+
+# Data Fields (Blue)
+conn_state_t."0x0000".style.fill: "#e3f2fd"
+conn_state_t."0x1000".style.fill: "#e3f2fd"
+
+# Metadata Fields (Purple)
+conn_state_t."0x1004".style.fill: "#f3e5f5"
+conn_state_t."0x1008".style.fill: "#f3e5f5"
+
+# Padding (Gray)
+conn_state_t."0x1009".style.fill: "#f5f5f5"
+
+# Ownership & references
+Infrastructure_Layer.State_Mgmt -> Infrastructure_Layer.Registration: {style.stroke: "#fd7e14"}
+
+# Annotations
+notes: |md
+  ### Module Invariants
+  1. All FDs in epoll **MUST** be O_NONBLOCK.
+  2. ET Loop **MUST** drain to EAGAIN.
+  3. `conn_state_t` is indexed directly by `fd`.
+  4. Cache line boundary (64B) crossing at offset 0x0040, 0x0080...
+| {
+  near: top-right
+}

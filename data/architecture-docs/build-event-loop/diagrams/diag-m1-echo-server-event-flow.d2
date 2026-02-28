@@ -1,0 +1,172 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# SATELLITE MAP: ECHO SERVER EVENT FLOW (L1)
+
+# --- LAYERS ---
+
+kernel_space: {
+  label: "LINUX KERNEL SPACE"
+  direction: down
+  
+  nic: "Network Interface Card" {
+    shape: parallelogram
+  }
+  
+  tcp_stack: "TCP/IP Stack (net/ipv4/tcp_input.c)" {
+    shape: rectangle
+  }
+  
+  epoll_subsystem: {
+    shape: rectangle
+    label: "epoll Instance (fs/eventpoll.c)"
+    interest_list: "Interest List (RB-Tree)"
+    ready_list: "Ready List (Linked List)"
+  }
+}
+
+reactor_core: {
+  label: "REACTOR CORE (reactor.c)"
+  direction: down
+  
+  event_loop: {
+    shape: code
+    label: "reactor_run()"
+    content: |md
+      c
+      while (r->running) {
+        int n = epoll_wait(r->epoll_fd, events, ...);
+        reactor_process_timers(r);
+        for (int i = 0; i < n; i++) {
+          dispatch_callback(events[i]);
+        }
+        reactor_run_deferred(r);
+      }
+      
+    |
+  }
+  
+  handler_table: {
+    shape: sql_table
+    label: "struct fd_handler handlers[MAX_FDS]"
+    row1: "0x00 | io_callback_fn | callback"
+    row2: "0x08 | void*          | user_data"
+    row3: "0x10 | uint32_t       | events"
+    row4: "0x14 | bool           | registered"
+    label_bottom: "Total: 24 bytes per FD"
+  }
+}
+
+app_logic: {
+  label: "APPLICATION LOGIC (echo_server.c)"
+  direction: down
+  
+  accept_cb: {
+    shape: class
+    label: "accept_callback"
+    definition: |md
+      c
+      void accept_callback(int listen_fd, ...) {
+        int fd = accept4(listen_fd, ...);
+        conn_init(fd);
+        reactor_register(r, fd, READABLE, echo_readable, conn);
+      }
+      
+    |
+  }
+  
+  echo_cb: {
+    shape: class
+    label: "echo_readable"
+    definition: |md
+      c
+      void echo_readable(int fd, ...) {
+        n = read(fd, buf, 4096);
+        if (n > 0) conn_write_buffered(r, conn, buf, n);
+        else if (n == 0) reactor_defer(r, close_cb, conn);
+      }
+      
+    |
+  }
+  
+  close_cb: {
+    shape: class
+    label: "echo_conn_close"
+    definition: |md
+      c
+      void echo_conn_close(reactor *r, void *ud) {
+        reactor_deregister(r, conn->fd);
+        close(conn->fd);
+        free(conn);
+      }
+      
+    |
+  }
+}
+
+# --- DATA FLOW & STEPS ---
+
+# Step 1: Client Connects
+kernel_space.nic -> kernel_space.tcp_stack: "SYN Packet | 60B"
+kernel_space.tcp_stack -> kernel_space.epoll_subsystem.ready_list: "EPOLLIN | listen_fd"
+
+# Step 2: Reactor wakes up
+kernel_space.epoll_subsystem -> reactor_core.event_loop: "n_ready=1 | [{data.ptr: &h_listen}]"
+
+# Step 3: Dispatch to Accept
+reactor_core.event_loop -> app_logic.accept_cb: "invoke(listen_fd, READABLE)"
+
+# Step 4: Accept and Register Client
+app_logic.accept_cb -> kernel_space.tcp_stack: "accept4(listen_fd) | returns client_fd=7"
+app_logic.accept_cb -> reactor_core.handler_table: "store callback & context for fd=7"
+app_logic.accept_cb -> kernel_space.epoll_subsystem.interest_list: "EPOLL_CTL_ADD | fd=7 | EPOLLIN"
+
+# Step 5: Client sends data
+kernel_space.nic -> kernel_space.tcp_stack: "PUSH 'Hello' | 5 bytes"
+kernel_space.tcp_stack -> kernel_space.epoll_subsystem.ready_list: "EPOLLIN | client_fd=7"
+
+# Step 6: Reactor wakes for data
+kernel_space.epoll_subsystem -> reactor_core.event_loop: "n_ready=1 | [{data.ptr: &h_client}]"
+reactor_core.event_loop -> app_logic.echo_cb: "invoke(fd=7, READABLE)"
+
+# Step 7: Read and Echo
+app_logic.echo_cb -> kernel_space.tcp_stack: "read(7, buf, 4096) | 'Hello'"
+app_logic.echo_cb -> kernel_space.tcp_stack: "write(7, 'Hello', 5) | Echo back"
+
+# Step 8: Client Closes
+kernel_space.nic -> kernel_space.tcp_stack: "FIN Packet | 0 bytes"
+kernel_space.tcp_stack -> kernel_space.epoll_subsystem.ready_list: "EPOLLIN (EOF) | fd=7"
+
+# Step 9: Handle EOF
+kernel_space.epoll_subsystem -> reactor_core.event_loop: "n_ready=1 | [{data.ptr: &h_client}]"
+reactor_core.event_loop -> app_logic.echo_cb: "read(7) returns 0"
+app_logic.echo_cb -> reactor_core.event_loop: "reactor_defer(echo_conn_close)"
+
+# Step 10: Deferred Close
+reactor_core.event_loop -> app_logic.close_cb: "run_deferred()"
+app_logic.close_cb -> kernel_space.epoll_subsystem.interest_list: "EPOLL_CTL_DEL | fd=7"
+app_logic.close_cb -> kernel_space.tcp_stack: "close(7)"
+
+# --- STYLING ---
+kernel_space.style.fill: "#f1f1f1"
+reactor_core.style.fill: "#e4dbfe"
+app_logic.style.fill: "#c7f1ff"
+
+# Connections Colors
+# Green: Connection Establish
+(kernel_space.nic -> kernel_space.tcp_stack)[0].style.stroke: green
+(app_logic.accept_cb -> kernel_space.tcp_stack)[0].style.stroke: green
+
+# Blue: Data Exchange
+(kernel_space.nic -> kernel_space.tcp_stack)[1].style.stroke: blue
+(app_logic.echo_cb -> kernel_space.tcp_stack)[0].style.stroke: blue
+(app_logic.echo_cb -> kernel_space.tcp_stack)[1].style.stroke: blue
+
+# Red: Teardown
+(kernel_space.nic -> kernel_space.tcp_stack)[2].style.stroke: red
+(app_logic.close_cb -> kernel_space.tcp_stack)[0].style.stroke: red

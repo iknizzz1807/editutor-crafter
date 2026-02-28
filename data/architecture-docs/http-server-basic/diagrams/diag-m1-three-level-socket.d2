@@ -1,0 +1,130 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# L0: Major System Layers
+user_space: {
+  label: "USER SPACE (Application Process)"
+  direction: down
+
+  app_logic: {
+    shape: class
+    label: "server.c (Main Thread)"
+    
+    definition: |md
+      c
+      struct sockaddr_in client_addr;
+      socklen_t addr_len = sizeof(client_addr);
+      
+      /* Thread enters TASK_INTERRUPTIBLE 
+         state until accept_queue > 0 */
+      int client_fd = accept(server_fd, 
+                             (struct sockaddr*)&client_addr, 
+                             &addr_len);
+      
+    |
+  }
+
+  fd_table: {
+    shape: sql_table
+    label: "Process File Descriptor Table"
+    row_0: "0 | stdin"
+    row_1: "1 | stdout"
+    row_2: "2 | stderr"
+    row_3: "3 | server_fd (Listening)"
+    row_4: "4 | client_fd (New Connection)"
+    label_bottom: "Allocates next available int"
+  }
+}
+
+kernel_space: {
+  label: "KERNEL SPACE (Linux OS)"
+  direction: down
+
+  tcp_stack: {
+    label: "TCP/IP Stack (net/ipv4/tcp.c)"
+    
+    syn_queue: {
+      shape: cylinder
+      label: "SYN Queue (Incomplete Handshakes)"
+      description: "Wait for client ACK"
+    }
+
+    accept_queue: {
+      shape: cylinder
+      label: "Accept Queue (Established Backlog)"
+      description: "Connections ready for user-space"
+    }
+  }
+
+  socket_struct: {
+    shape: sql_table
+    label: "struct socket (linux/net.h)"
+    row_1: "0x00 | state_t | state (SS_CONNECTED)"
+    row_2: "0x08 | struct sock* | sk"
+    row_3: "0x10 | struct file* | file"
+    row_4: "0x20 | wait_queue_head_t | wait"
+    label_bottom: "Total: ~512 bytes"
+  }
+
+  vfs_layer: "Virtual File System (VFS / inode mapping)"
+}
+
+hardware: {
+  label: "HARDWARE LAYER"
+  direction: down
+
+  nic: {
+    shape: rectangle
+    label: "NIC (Network Interface Card)"
+  }
+
+  wire: {
+    shape: cylinder
+    label: "Ethernet / Physical Layer"
+  }
+}
+
+# --- Detailed Interaction Flows ---
+
+# 1. Background Connection Influx (Kernel Managed)
+wire -> hardware.nic: "TCP SYN | 60B | {port: 80}"
+hardware.nic -> kernel_space.tcp_stack.syn_queue: "DMA Transfer | softirq"
+kernel_space.tcp_stack.syn_queue -> hardware.nic: "TCP SYN-ACK"
+hardware.nic -> kernel_space.tcp_stack.accept_queue: "TCP ACK | Full Established"
+
+# 2. Harvesting via syscall accept()
+user_space.app_logic -> kernel_space.tcp_stack.accept_queue: "Syscall: accept() | Blocking"
+kernel_space.tcp_stack.accept_queue -> kernel_space.socket_struct: "1. Dequeue struct sock*"
+kernel_space.socket_struct -> kernel_space.vfs_layer: "2. Create VFS Inode"
+kernel_space.vfs_layer -> user_space.fd_table: "3. Map Inode to FD 4"
+
+# 3. Completion & Context Switch
+user_space.fd_table.row_4 -> user_space.app_logic: "return 4 (int client_fd)"
+kernel_space.socket_struct -> user_space.app_logic: "copy_to_user(client_addr) | 16B"
+
+# --- Annotated System Note ---
+# Correction: Using 'near: bottom-center' (constant) for ELK layout engine
+note: {
+  shape: rectangle
+  label: "Implementation Note: accept() does NOT perform a handshake. It is a consumer of the Accept Queue, which is populated asynchronously by the kernel's bottom-half handler."
+  near: bottom-center
+  style: {
+    fill: "#fff2cc"
+    stroke: "#d6b656"
+    stroke-dash: 2
+  }
+}
+
+# Visual Indicator of the Wakeup path
+kernel_space.tcp_stack.accept_queue -> user_space.app_logic: "Wakeup Event (SCHED_RETRY)" {
+  style: {
+    stroke: green
+    bold: true
+    animated: true
+  }
+}

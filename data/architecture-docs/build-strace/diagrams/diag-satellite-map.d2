@@ -1,0 +1,194 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+
+# -----------------------------------------------------------------------------
+# LAYER 1: TRACER PROCESS (User Space)
+# -----------------------------------------------------------------------------
+tracer_process: {
+  label: "TRACER PROCESS (strace_clone.c)"
+  direction: down
+
+  main_loop: {
+    shape: class
+    label: "Main Event Loop (strace_clone.c) [M1]"
+    definition: |'md
+    c
+    // Main loop logic
+    while (active_count > 0) {
+        pid_t pid = waitpid(-1, &status, 0);
+        if (WIFSTOPPED(status)) {
+            handle_event(pid, status);
+        }
+    }
+    
+    '|
+  }
+
+  state_manager: {
+    label: "State Management Subsystem"
+    direction: right
+    
+    process_state: {
+      shape: sql_table
+      label: "struct ProcessState (state.h)"
+      row_0: "0x00 | pid_t   | pid"
+      row_1: "0x04 | int     | in_syscall (bool flag)"
+      row_2: "0x08 | struct  | entry_regs (user_regs_struct)"
+      row_3: "0xE0 | struct  | entry_time (timespec)"
+      row_4: "0xF0 | int     | is_valid"
+      label_bottom: "Total: 248 bytes (M3)"
+    }
+
+    hash_map: {
+      shape: cylinder
+      label: "PID Cache (state.c)"
+      tooltip: "Open addressing hash map | Collision: Linear Probing"
+    }
+  }
+
+  logic_engine: {
+    label: "Logic & Decoding"
+    direction: right
+    
+    decoder: {
+      shape: class
+      label: "Syscall Decoder (decode.c) [M2]"
+      methods: |'md
+      c
+      void print_syscall(pid_t pid, struct user_regs_struct *regs, long retval);
+      int  read_tracee_string(pid_t pid, unsigned long addr, char *buf);
+      const char* decode_flags(int val, const struct flag_table *table);
+      
+      '|
+    }
+
+    stats_filter: {
+      shape: class
+      label: "Stats & Filter (stats.c) [M4]"
+      fields: |'md
+      c
+      SyscallStats stats[336]; // x86_64 count
+      SyscallFilter filter;    // PID/Name/Regex
+      uint64_t total_latency;  // CLOCK_MONOTONIC
+      
+      '|
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# LAYER 2: KERNEL SPACE (The Bridge)
+# -----------------------------------------------------------------------------
+kernel_space: {
+  label: "LINUX KERNEL"
+  direction: down
+  style.fill: "#DEE1EB"
+
+  ptrace_subsystem: {
+    label: "ptrace.c (Kernel Abstraction)"
+    requests: |'md
+    - **PTRACE_SYSCALL**: Step to syscall entry/exit
+    - **PTRACE_GETREGS**: Copy regs to user buffer
+    - **PTRACE_PEEKDATA**: Read 8-byte word from tracee
+    - **PTRACE_SETOPTIONS**: Set TRACESYSGOOD \| TRACEFORK
+    - **PTRACE_ATTACH**: Start tracing target PID
+    '|
+  }
+
+  task_struct_view: {
+    shape: sql_table
+    label: "struct task_struct (include/linux/sched.h)"
+    ptrace_flags: "long | ptrace | (PT_TRACED \| PT_PTRACED)"
+    options: "long | ptrace_options | (PTRACE_O_TRACESYSGOOD)"
+    saved_rax: "long | orig_rax | Syscall Hardware ID"
+    exit_code: "int  | exit_code | Signal/Status"
+    label_bottom: "Internal Task Map"
+  }
+
+  syscall_entry: {
+    shape: parallelogram
+    label: "entry_SYSCALL_64 (arch/x86/entry_64.S)"
+    style.fill: "#FFE7CB"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# LAYER 3: TRACEE PROCESSES (Observed)
+# -----------------------------------------------------------------------------
+tracee_layer: {
+  label: "TRACEE PROCESS TREE"
+  direction: down
+
+  process_a: {
+    label: "Process A (Parent)"
+    style.multiple: true
+    
+    registers: {
+      shape: sql_table
+      label: "CPU Registers (x86_64)"
+      rax: "RAX | Syscall ID / Return"
+      rdi: "RDI | Arg 1 (const char*)"
+      rsi: "RSI | Arg 2 (int flags)"
+      rdx: "RDX | Arg 3 (mode_t)"
+      r10: "R10 | Arg 4"
+      r8:  "R8  | Arg 5"
+      r9:  "R9  | Arg 6"
+    }
+    
+    execution: |'md
+    asm
+    ; Example: open("/etc/passwd", O_RDONLY)
+    mov rax, 2      ; syscall number for open
+    mov rdi, addr   ; filename address
+    xor rsi, rsi    ; O_RDONLY = 0
+    syscall         ; hardware interrupt
+    
+    '|
+  }
+
+  process_b: {
+    label: "Process B (Child Thread)"
+    style.stroke-dash: 3
+    style.opacity: 0.6
+  }
+}
+
+# -----------------------------------------------------------------------------
+# DATA FLOWS & RELATIONSHIPS
+# -----------------------------------------------------------------------------
+
+# Control Path
+tracer_process.main_loop -> kernel_space.ptrace_subsystem: "PTRACE_SYSCALL | 8B | {pid: 402}"
+kernel_space.ptrace_subsystem -> tracer_process.main_loop: "SIGTRAP | 4B | status: 0x85"
+
+# Register Sync
+tracer_process.logic_engine.decoder -> kernel_space.ptrace_subsystem: "PTRACE_GETREGS | 8B"
+kernel_space.ptrace_subsystem -> tracer_process.state_manager.process_state: "user_regs_struct | 216B | registers"
+
+# Memory Inspection
+tracer_process.logic_engine.decoder -> kernel_space.ptrace_subsystem: "PTRACE_PEEKDATA | 8B | {addr: 0x7fff...}"
+kernel_space.ptrace_subsystem -> tracee_layer.process_a: "Page Table Walk"
+tracee_layer.process_a -> kernel_space.ptrace_subsystem: "Mem Word | 8B"
+kernel_space.ptrace_subsystem -> tracer_process.logic_engine.decoder: "String Chunk | 8B | \"/etc/pas\""
+
+# Clone/Fork Events
+tracee_layer.process_a -> kernel_space.syscall_entry: "syscall 56 (clone)"
+kernel_space.task_struct_view -> tracer_process.main_loop: "PTRACE_EVENT_FORK | 4B"
+
+# Internal Tracer Flow
+tracer_process.state_manager.hash_map -> tracer_process.main_loop: "State Retrieval"
+tracer_process.logic_engine.decoder -> tracer_process.logic_engine.stats_filter: "Raw Event | decoded_info_t"
+
+# Documentation Metadata
+doc_info: {
+  near: bottom-right
+  shape: text
+  label: "System Call Tracer Architecture v1.1\nStandard: Implementation Blueprint\nFiles: strace_clone.c, state.c, decode.c, stats.c"
+  style.font-size: 10
+  style.italic: true
+}

@@ -1,0 +1,158 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+
+# --- STYLES ---
+classes: {
+  orchestrator: {
+    style: {
+      fill: "#E1D5E7" # Purple (Header/Logic)
+      stroke: "#9673A6"
+      stroke-width: 2
+    }
+  }
+  security: {
+    style: {
+      fill: "#F8CECC" # Reddish (Security/Validation)
+      stroke: "#B85450"
+    }
+  }
+  resource: {
+    style: {
+      fill: "#D5E8D4" # Green (Resource/Acquisition)
+      stroke: "#82B366"
+    }
+  }
+  data_struct: {
+    style: {
+      fill: "#DAE8FC" # Blue (Data)
+      stroke: "#6C8EBF"
+    }
+  }
+  error_path: {
+    style: {
+      stroke: "#FF0000"
+      stroke-dash: 3
+      font-color: "#FF0000"
+    }
+  }
+}
+
+# --- ARCHITECTURE ---
+
+Orchestrator: "serve_static_file()" {
+  class: orchestrator
+  
+  # Local Stack Frame
+  stack: "Stack Frame (sizeof ≈ 70KB)" {
+    resolved: "char resolved[4096]" {style.fill: "#FFF2CC"}
+    st: "struct stat st" {style.fill: "#FFF2CC"}
+    io_buf: "char io_buf[65536]" {style.fill: "#D5E8D4"}
+  }
+
+  # Methods/Phases logic
+  methods: {
+    shape: sql_table
+    Phase_1: "resolve_safe_path()"
+    Phase_2: "stat()"
+    Phase_3: "handle_directory_path()"
+    Phase_4: "S_ISREG() Check"
+    Phase_5: "mime_type_for_path()"
+    Phase_6: "should_send_304()"
+    Phase_7: "open()"
+    Phase_8: "snprintf() Headers"
+    Phase_9: "read/write Loop"
+  }
+}
+
+SecurityLayer: "Path Security Engine" {
+  class: security
+  resolve_safe_path: {
+    shape: class
+    label: "resolve_safe_path(url_path, root, out)"
+    definition: "1. url_decode()\n2. realpath()\n3. strncmp() root check"
+  }
+}
+
+VFS: "Kernel VFS Interface" {
+  class: resource
+  stat: {
+    shape: class
+    label: "stat(path, *st)"
+  }
+  open: {
+    shape: class
+    label: "open(path, O_RDONLY)"
+  }
+  read: {
+    shape: class
+    label: "read(fd, buf, 64KB)"
+  }
+  close: {
+    shape: class
+    label: "close(fd)"
+  }
+}
+
+Protocol: "HTTP Protocol Engine" {
+  class: orchestrator
+  mime: {
+    shape: class
+    label: "mime_type_for_path(path)"
+  }
+  cache: {
+    shape: class
+    label: "should_send_304(req, mtime)"
+  }
+}
+
+Network: "Socket I/O" {
+  class: resource
+  write_all: {
+    shape: class
+    label: "write_all(client_fd, buf, len)"
+  }
+}
+
+# --- PHASES & CONNECTIONS ---
+
+Orchestrator.methods.Phase_1 -> SecurityLayer.resolve_safe_path: "1: Request Path"
+SecurityLayer.resolve_safe_path -> Orchestrator.stack.resolved: "Populate [4096]"
+
+Orchestrator.methods.Phase_2 -> VFS.stat: "2: Verify Existence"
+VFS.stat -> Orchestrator.stack.st: "Write Metadata"
+
+Orchestrator.methods.Phase_3 -> Orchestrator.stack.resolved: "3: Append /index.html if DIR"
+
+Orchestrator.methods.Phase_5 -> Protocol.mime: "5: Extension Lookup"
+
+Orchestrator.methods.Phase_6 -> Protocol.cache: "6: If-Modified-Since Check"
+Protocol.cache -> Network.write_all: "If 304: Send Headers Only" {class: error_path}
+
+Orchestrator.methods.Phase_7 -> VFS.open: "7: Acquire file_fd"
+VFS.open -> Orchestrator: "Returns file_fd (MUST CLOSE)"
+
+Orchestrator.methods.Phase_8 -> Network.write_all: "8: Send 200 OK Headers"
+
+Orchestrator.methods.Phase_9 -> VFS.read: "9: Streaming (64KB Chunks)"
+Orchestrator.methods.Phase_9 -> Network.write_all: "Write chunk to client"
+VFS.read -> Orchestrator.stack.io_buf: "Fills"
+
+# --- ERROR BRANCHES ---
+Orchestrator.methods.Phase_1 -> Network.write_all: "400/403/404 Response" {class: error_path}
+Orchestrator.methods.Phase_2 -> Network.write_all: "404 Not Found" {class: error_path}
+Orchestrator.methods.Phase_4 -> Network.write_all: "403 Forbidden (Special File)" {class: error_path}
+
+# --- ANNOTATIONS ---
+note: |md
+  ### Invariants
+  - **file_fd** ownership starts at Phase 7.
+  - **close(file_fd)** must be called on all subsequent returns.
+  - **io_buf** is 64-byte aligned for cache efficiency.
+| {
+  near: top-right
+}

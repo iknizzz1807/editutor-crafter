@@ -1,0 +1,195 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- Classes & Styling ---
+classes: {
+  control: {
+    style: {
+      stroke: "#6a1b9a"
+      font-color: "#6a1b9a"
+      bold: true
+    }
+  }
+  data_flow: {
+    style: {
+      stroke: "#0277bd"
+      font-color: "#0277bd"
+    }
+  }
+  logic_check: {
+    style: {
+      fill: "#fff9c4"
+      stroke: "#fbc02d"
+    }
+  }
+}
+
+# --- System Actors ---
+browser: Browser (Client) {
+  shape: person
+  icon: https://icons.terrastruct.com/essentials%2F005-programmer.svg
+}
+
+server: "HTTP Server (file_server.c)" {
+  shape: class
+  icon: https://icons.terrastruct.com/tech/022-server.svg
+  
+  fields: |md
+    c
+    // Memory Layout: struct stat (sys/stat.h)
+    0x00 | dev_t     | st_dev
+    0x18 | ino_t     | st_ino
+    0x30 | mode_t    | st_mode
+    0x58 | time_t    | st_mtime // 1709121600
+    0x80 | off_t     | st_size  // 1024
+    
+  |
+  
+  methods: |md
+    c
+    int handle_request(int client_fd);
+    bool is_not_modified(const char* header_date, time_t file_mtime);
+    char* format_http_date(time_t time);
+    
+  |
+}
+
+fs: "Filesystem (Kernel VFS)" {
+  shape: cylinder
+  icon: https://icons.terrastruct.com/aws%2FStorage%2FAmazon-S3-Glacier_light-bg.svg
+}
+
+# --- Sequence Flow (Conditional Request Logic) ---
+conditional_flow: {
+  shape: sequence_diagram
+  
+  # Actors
+  browser; server; fs
+
+  # 1. INITIAL FETCH
+  initial_request: "ROUND 1: Initial Fetch (Full Data Transfer)" {
+    browser.t1 -> server.t1: {
+      label: |md
+        http
+        GET /index.html HTTP/1.1
+        Host: localhost
+        
+      |
+      class: control
+    }
+
+    server.t1 -> fs.t1: "stat(\"/var/www/html/index.html\", &st)" {
+      class: data_flow
+    }
+    
+    fs.t1 -> server.t1: "st_mtime = 1709121600" {
+      tooltip: "Wed, 28 Feb 2024 12:00:00 GMT"
+    }
+
+    server.t1 -> server.t1: "format_http_date(st_mtime)"
+
+    server.t1 -> browser.t1: {
+      label: |md
+        http
+        HTTP/1.1 200 OK
+        Last-Modified: Wed, 28 Feb 2024 12:00:00 GMT
+        Content-Length: 1024
+
+        [1024 bytes of HTML data]
+        
+      |
+      class: data_flow
+    }
+  }
+
+  # 2. BROWSER CACHING
+  browser."Cache: index.html | Wed, 28 Feb 2024 12:00:00 GMT" {
+    style.fill: "#e8f5e9"
+  }
+
+  # 3. CONDITIONAL FETCH
+  conditional_request: "ROUND 2: Conditional Fetch (Validation)" {
+    browser.t2 -> server.t2: {
+      label: |md
+        http
+        GET /index.html HTTP/1.1
+        If-Modified-Since: Wed, 28 Feb 2024 12:00:00 GMT
+        
+      |
+      class: control
+    }
+
+    server.t2 -> fs.t2: "stat(...)"
+    fs.t2 -> server.t2: "st_mtime = 1709121600"
+
+    server.t2 -> server.t2: {
+      label: |md
+        c
+        // should_send_304() logic
+        time_t client_time = parse_http_date(ims_header);
+        if (st.st_mtime <= client_time) {
+            return 304_NOT_MODIFIED;
+        }
+        
+      |
+      class: logic_check
+    }
+
+    server.t2 -> browser.t2: {
+      label: |md
+        http
+        HTTP/1.1 304 Not Modified
+        Date: Wed, 28 Feb 2024 12:05:00 GMT
+        Connection: keep-alive
+
+        (No Body)
+        
+      |
+      tooltip: "Bandwidth Saved: 1024 bytes"
+      class: control
+    }
+  }
+}
+
+# --- Annotations & Metadata ---
+rfc_note: {
+  near: conditional_flow
+  shape: text
+  label: |md
+    **RFC 7232 Section 3.3**
+    `If-Modified-Since` allows a recipient to 
+    make the request conditional on the last 
+    modification date of the selected representation.
+
+    **Clock Precision:** 
+    Standard HTTP-date format: 
+    `Day, DD Mon YYYY HH:MM:SS GMT`
+  |
+  style: {
+    stroke-dash: 3
+    fill: "#f5f5f5"
+  }
+}
+
+legend: {
+  near: conditional_flow
+  direction: down
+  
+  msg_200: "200 OK: Full payload delivered (1024 bytes)" {
+    style: {
+      fill: "#0277bd"
+      font-color: white
+    }
+  }
+  msg_304: "304 Not Modified: Metadata only (~150 bytes)" {
+    style: {
+      fill: "#6a1b9a"
+      font-color: white
+    }
+  }
+}

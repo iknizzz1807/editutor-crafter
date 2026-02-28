@@ -1,0 +1,196 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# L0 SATELLITE MAP: INTERLEAVED TRACING ARCHITECTURE
+# This diagram serves as a blueprint for implementing multi-process support.
+
+tracer_core: {
+  label: "Tracer Core (main.c)"
+  direction: down
+
+  event_loop: {
+    shape: class
+    label: "Wait Loop (waitpid -1)"
+    methods: |md
+      c
+      // Global wait loop for all children
+      while (active_count > 0) {
+          pid_t stopped = waitpid(-1, &status, 0);
+          ProcessState *s = state_map_find(stopped);
+          handle_event(stopped, s, status);
+      }
+      
+    |
+  }
+
+  handler: {
+    shape: class
+    label: "Event Handler"
+    methods: |md
+      c
+      void handle_syscall(pid_t pid, ProcessState *s);
+      void handle_fork_event(pid_t parent, int event);
+      
+    |
+  }
+
+  event_loop -> handler: "wait_status_t | 4B | {WIFSTOPPED: 1}"
+}
+
+state_management: {
+  label: "STATE MANAGEMENT LAYER"
+  direction: down
+
+  process_state_struct: {
+    shape: sql_table
+    label: "struct ProcessState (state_map.h)"
+    row_1: "0x00 | pid_t     | pid"
+    row_2: "0x04 | int       | in_syscall"
+    row_3: "0x08 | user_regs | entry_regs (216B)"
+    row_4: "0xE0 | timespec  | entry_time"
+    label_bottom: "Total: 248 bytes per PID"
+  }
+
+  hash_map: {
+    shape: cylinder
+    label: "state_map[256]"
+    tooltip: "Open-addressing hash table keyed by PID"
+  }
+
+  lookup_note: {
+    shape: text
+    label: "The Tracer uses the PID returned by waitpid\nto look up the specific in_syscall\ntoggle in the map."
+    style.italic: true
+  }
+
+  process_state_struct -> hash_map: "Stored in"
+}
+
+# INTERLEAVED EXECUTION TIMELINE
+execution_timeline: {
+  label: "INTERLEAVED OUTPUT (stderr)"
+  direction: down
+  
+  interleave_note: {
+    shape: text
+    label: "Waitpid(-1) catches Event 4 from PID 200\nwhile PID 100 is blocked in wait4 syscall."
+    style.italic: true
+  }
+
+  e1: {
+    shape: code
+    label: |md
+      
+      [pid 100] execve("/bin/sh", ...) = 0
+      
+    |
+    style.stroke: "#3366FF" # Blue for PID 100
+  }
+
+  e2: {
+    shape: code
+    label: |md
+      
+      [pid 100] read(0, "ls\n", 1024) = 3
+      
+    |
+    style.stroke: "#3366FF"
+  }
+
+  e3: {
+    shape: code
+    label: |md
+      
+      [pid 100] fork() = 200
+      
+    |
+    style.stroke: "#3366FF"
+  }
+
+  e4: {
+    shape: code
+    label: |md
+      
+      [pid 200] execve("/bin/ls", ...) = 0
+      
+    |
+    style.stroke: "#9933FF" # Purple for PID 200
+  }
+
+  e5: {
+    shape: code
+    label: |md
+      
+      [pid 100] wait4(200, <unfinished ...>
+      
+    |
+    style.stroke: "#3366FF"
+  }
+
+  e6: {
+    shape: code
+    label: |md
+      
+      [pid 200] openat(AT_FDCWD, ".", O_RDONLY) = 3
+      
+    |
+    style.stroke: "#9933FF"
+  }
+
+  e7: {
+    shape: code
+    label: |md
+      
+      [pid 200] write(1, "file.c\n", 7) = 7
+      
+    |
+    style.stroke: "#9933FF"
+  }
+
+  e8: {
+    shape: code
+    label: |md
+      
+      [pid 200] +++ exited with 0 +++
+      
+    |
+    style.stroke: "#9933FF"
+  }
+
+  e9: {
+    shape: code
+    label: |md
+      
+      [pid 100] <... wait4 resumed> = 200
+      
+    |
+    style.stroke: "#3366FF"
+  }
+
+  e1 -> e2 -> e3 -> e4 -> e5 -> e6 -> e7 -> e8 -> e9
+}
+
+# DATA FLOW CONNECTIONS
+tracer_core.event_loop -> execution_timeline: "char* | formatted log | \"[pid 100] fork() = 200\""
+tracer_core.handler -> state_management.hash_map: "ProcessState | 248B | write(pid, s)"
+state_management.hash_map -> tracer_core.handler: "ProcessState* | ptr | read(pid)"
+
+legend: {
+  shape: package
+  label: "LEGEND"
+  near: top-right
+  
+  pid_100: "Shell Process (PID 100)" {
+    style.stroke: "#3366FF"
+    style.stroke-width: 4
+  }
+  pid_200: "Child Process (PID 200)" {
+    style.stroke: "#9933FF"
+    style.stroke-width: 4
+  }
+}

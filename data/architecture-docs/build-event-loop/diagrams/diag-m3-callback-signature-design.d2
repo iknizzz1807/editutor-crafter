@@ -1,0 +1,170 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# -----------------------------------------------------------------------------
+# LAYER 1: DATA STRUCTURE DEFINITION
+# -----------------------------------------------------------------------------
+definitions: {
+  direction: down
+  label: "CORE DEFINITIONS (reactor.h)"
+
+  callback_typedef: {
+    shape: code
+    label: "event_cb_t Signature"
+    content: |md
+      c
+      typedef void (*event_cb_t)(
+          int fd, 
+          uint32_t events, 
+          void *user_data
+      );
+      
+    |
+  }
+
+  handler_struct: {
+    shape: sql_table
+    label: "struct fd_handler (reactor_internal.h)"
+    
+    row1: "0x00 | event_cb_t | callback"
+    row2: "0x08 | void*      | user_data"
+    row3: "0x10 | uint32_t   | interest_mask"
+    row4: "0x14 | bool       | registered"
+    row5: "0x15 | bool       | zombie"
+    
+    label_bottom: "Total: 24 bytes (aligned to 8-byte boundary)"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# LAYER 2: REGISTRATION PHASE (APPLICATION -> REACTOR)
+# -----------------------------------------------------------------------------
+registration_phase: {
+  direction: down
+  label: "PHASE 1: REGISTRATION"
+
+  user_context: {
+    shape: sql_table
+    label: "struct connection_t (app.c)"
+    row1: "0x00 | int        | fd"
+    row2: "0x04 | char*      | read_buf"
+    row3: "0x0C | state_t    | state"
+  }
+
+  register_call: {
+    shape: code
+    label: "reactor_register()"
+    content: |md
+      c
+      connection_t *conn = malloc(...);
+      reactor_register(r, fd, READABLE, 
+                       on_client_data, (void*)conn);
+      
+    |
+  }
+
+  user_context -> register_call: "Passed as opaque ptr"
+}
+
+# -----------------------------------------------------------------------------
+# LAYER 3: DISPATCH PHASE (REACTOR EVENT LOOP)
+# -----------------------------------------------------------------------------
+dispatch_phase: {
+  direction: down
+  label: "PHASE 2: DISPATCH"
+
+  epoll_result: {
+    shape: rectangle
+    label: "epoll_wait() returns"
+    tooltip: "data.ptr points to fd_handler"
+  }
+
+  dispatch_logic: {
+    shape: code
+    label: "reactor_run dispatch"
+    content: |md
+      c
+      fd_handler *h = (fd_handler*)events[i].data.ptr;
+      // Inversion of Control:
+      h->callback(fd, ev, h->user_data);
+      
+    |
+  }
+
+  epoll_result -> dispatch_logic: "ptr | 8 bytes | &handlers[fd]"
+}
+
+# -----------------------------------------------------------------------------
+# LAYER 4: EXECUTION PHASE (USER CALLBACK)
+# -----------------------------------------------------------------------------
+execution_phase: {
+  direction: down
+  label: "PHASE 3: EXECUTION"
+
+  callback_impl: {
+    shape: code
+    label: "on_client_data()"
+    content: |md
+      c
+      void on_client_data(int fd, uint32_t ev, void *ud) {
+          // Cast back to specific type:
+          connection_t *conn = (connection_t*)ud;
+          
+          read(fd, conn->read_buf, ...);
+      }
+      
+    |
+  }
+}
+
+# -----------------------------------------------------------------------------
+# COMPARATIVE ANALYSIS
+# -----------------------------------------------------------------------------
+comparisons: {
+  label: "CLOSURE IMPLEMENTATION COMPARISON"
+  grid-columns: 3
+
+  c_manual: {
+    label: "C (Manual Closure)"
+    style.fill: "#DEE1EB"
+    desc: "void* + function ptr.\nManual state management.\nZero overhead."
+  }
+
+  cpp_std: {
+    label: "C++ (std::function)"
+    style.fill: "#C7F1FF"
+    desc: "Type-erased wrapper.\nPossible heap allocation.\nSmall overhead."
+  }
+
+  rust_closure: {
+    label: "Rust (Trait Objects)"
+    style.fill: "#E4DBFE"
+    desc: "Box<dyn FnMut(...)>.\nCompile-time safety.\nStatic/Dynamic dispatch."
+  }
+}
+
+# -----------------------------------------------------------------------------
+# CONNECTIONS (DATA FLOW)
+# -----------------------------------------------------------------------------
+definitions.handler_struct -> registration_phase.register_call: "Populated by"
+registration_phase.register_call -> dispatch_phase.epoll_result: "Waiting for I/O"
+dispatch_phase.dispatch_logic -> execution_phase.callback_impl: "Invokes"
+
+# Annotations
+registration_phase.register_call -> definitions.handler_struct: "void* | 8 bytes | &conn" {
+  style.stroke: blue
+  style.animated: true
+}
+
+dispatch_phase.dispatch_logic -> execution_phase.callback_impl: "void* | 8 bytes | ctx" {
+  style.stroke: purple
+}
+
+execution_phase.callback_impl -> comparisons: "Abstraction Model" {
+  style.stroke-dash: 3
+}

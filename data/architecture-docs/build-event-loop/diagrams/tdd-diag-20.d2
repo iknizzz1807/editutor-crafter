@@ -1,0 +1,156 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- GLOBAL STYLES ---
+classes: {
+  state_box: {
+    style: {
+      stroke: "#333333"
+      fill: "#f8f9fa"
+      border-radius: 4
+    }
+  }
+  changed: {
+    style: {
+      font-color: "#d9534f"
+      bold: true
+      stroke: "#d9534f"
+      stroke-width: 2
+    }
+  }
+  kernel: {
+    style: {
+      fill: "#e9ecef"
+      stroke-dash: 5
+    }
+  }
+  queue_item: {
+    style: {
+      fill: "#cfe2ff"
+      stroke: "#0d6efd"
+    }
+  }
+}
+
+# --- STEP 1: BEFORE DISPATCH ---
+Step1: "1. Before Dispatch" {
+  style.fill: "#ffffff"
+  
+  RuntimeState: {
+    class: state_box
+    label: "Runtime Flags"
+    is_dispatching: "false"
+    mods_len: "0"
+  }
+
+  Registry: "handlers[] Table" {
+    shape: sql_table
+    h7: "fd: 7 | reg: true | zombie: false"
+    h9: "fd: 9 | reg: false | zombie: false"
+  }
+
+  KernelInterest: "Kernel Interest List" {
+    class: kernel
+    active_fds: "[ 7, ... ]"
+  }
+}
+
+# --- STEP 2: DURING DISPATCH ---
+Step2: "2. During Dispatch (Queueing)" {
+  style.fill: "#fff5f5"
+  
+  RuntimeState: {
+    class: state_box
+    label: "Runtime Flags"
+    is_dispatching: "true"
+    is_dispatching.class: changed
+    mods_len: "2"
+    mods_len.class: changed
+  }
+
+  Callbacks: "Event Callbacks" {
+    CB_A: "Callback A"
+    CB_B: "Callback B"
+
+    CB_A -> ModQueue.m0: "reactor_register(9)"
+    CB_B -> ModQueue.m1: "reactor_deregister(7)"
+    CB_B -> Registry.h7: "set zombie=true" {
+      style.stroke: red
+    }
+  }
+
+  ModQueue: "r->mods[] (Deferred Mods)" {
+    m0: "MOD_ADD | fd: 9"
+    m0.class: queue_item
+    m1: "MOD_DEL | fd: 7"
+    m1.class: queue_item
+  }
+
+  Registry: "handlers[] Table" {
+    shape: sql_table
+    h7: "fd: 7 | reg: true | zombie: true"
+    h7.class: changed
+    h9: "fd: 9 | reg: false | zombie: false"
+  }
+
+  NoSyscall: "epoll_ctl()" {
+    shape: diamond
+    label: "NO SYSCALLS\nPERMITTED"
+    style.fill: "#ffcccc"
+  }
+}
+
+# --- STEP 3: AFTER DISPATCH ---
+Step3: "3. After Dispatch (Application)" {
+  style.fill: "#f0fff4"
+
+  RuntimeState: {
+    class: state_box
+    label: "Runtime Flags"
+    is_dispatching: "false"
+    mods_len: "0"
+  }
+
+  Syscalls: "Execution Path" {
+    op1: "epoll_ctl(ADD, 9)"
+    op1.class: changed
+    op2: "epoll_ctl(DEL, 7)"
+    op2.class: changed
+    op1 -> Registry.h9: "Update"
+    op2 -> Registry.h7: "Update"
+  }
+
+  Registry: "handlers[] Table" {
+    shape: sql_table
+    h7: "fd: 7 | reg: false | zombie: false"
+    h7.class: changed
+    h9: "fd: 9 | reg: true | zombie: false"
+    h9.class: changed
+  }
+
+  KernelInterest: "Kernel Interest List" {
+    class: kernel
+    active_fds: "[ 9, ... ]"
+    active_fds.class: changed
+  }
+}
+
+# --- TRANSITIONS ---
+Step1 -> Step2: "epoll_wait() returns"
+Step2 -> Step3: "loop finishes"
+
+# --- ANNOTATIONS ---
+Explanation: |md
+  ### The Deferred Modification Invariant
+  1. **Detection**: `r->dispatching` is set to `true` during the loop.
+  2. **Protection**: `reactor_deregister` sets a `zombie` flag. If an FD appears twice in one `epoll_wait` batch, the second event is ignored if the first event closed it.
+  3. **Batching**: All `epoll_ctl` operations are collected in `r->mods` and executed once per tick, avoiding syscall overhead and memory corruption.
+| {
+  near: bottom-center
+  style.font-size: 14
+}

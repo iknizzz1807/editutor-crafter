@@ -1,0 +1,113 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+# EPOLLOUT Lifecycle State Machine
+# Technical Spec: Write Buffering & Backpressure Management
+
+START_NODE: "" {
+  shape: circle
+  style.fill: black
+  width: 20
+  height: 20
+}
+
+WRITE_DIRECT: {
+  label: |md
+    ### WRITE_DIRECT
+    **Steady State: No backpressure**
+    ---
+    - `conn->wbuf.len == 0`
+    - `conn->epollout_armed == false`
+    - Interest: `EPOLLIN | EPOLLET`
+  |
+  style.stroke: "#ACE1AF"
+}
+
+WRITE_QUEUED: {
+  label: |md
+    ### WRITE_QUEUED
+    **Backpressure active**
+    ---
+    - `conn->wbuf.len > 0`
+    - `conn->epollout_armed == true`
+    - Interest: `EPOLLIN | EPOLLOUT | EPOLLET`
+  |
+  style.stroke: "#FFB347"
+}
+
+WRITE_FLUSHING: {
+  label: |md
+    ### WRITE_FLUSHING
+    **Active Data Transfer**
+    ---
+    - `conn_flush()` executing
+    - Draining `wbuf` via `write()`
+  |
+  style.stroke: "#6772E5"
+}
+
+ERROR_CLOSED: "CONNECTION_CLOSED" {
+  style.fill: "#FFCCCC"
+  style.stroke: red
+  style.double-border: true
+}
+
+# Transitions
+
+START_NODE -> WRITE_DIRECT
+
+WRITE_DIRECT -> WRITE_QUEUED: "conn_write() [EAGAIN] / wbuf_append(), epoll_ctl(MOD, +OUT)" {
+  style.stroke: "#FFB347"
+  style.font-size: 14
+}
+
+WRITE_QUEUED -> WRITE_FLUSHING: "epoll_wait() [fired EPOLLOUT] / conn_flush()" {
+  style.stroke: "#6772E5"
+  style.font-size: 14
+}
+
+WRITE_FLUSHING -> WRITE_DIRECT: "conn_flush() [wbuf_is_empty] / epoll_ctl(MOD, -OUT), armed=false" {
+  style.stroke: "#ACE1AF"
+  style.font-size: 14
+  style.bold: true
+}
+
+WRITE_FLUSHING -> WRITE_QUEUED: "write() [EAGAIN] / offset updated, stay armed" {
+  style.stroke: "#FFB347"
+  style.stroke-dash: 3
+}
+
+# Illegal Transitions & Bug States
+
+(WRITE_QUEUED -> WRITE_QUEUED)[0]: "ILLEGAL: [wbuf_is_empty && armed] / 100% CPU BUSY-LOOP" {
+  style.stroke: red
+  style.stroke-dash: 5
+  style.font-color: red
+  style.bold: true
+}
+
+# Terminal Transitions
+
+WRITE_DIRECT -> ERROR_CLOSED: "read() [0/EOF] / conn_close()"
+WRITE_QUEUED -> ERROR_CLOSED: "wbuf_append() [len > MAX] / SLOW_LORIS_REAP" {
+  style.stroke: red
+}
+WRITE_FLUSHING -> ERROR_CLOSED: "write() [EPIPE/ECONNRESET] / conn_close()" {
+  style.stroke: red
+}
+
+# Legend/Annotations
+CONTRACT: {
+  label: |md
+    ### State Machine Contract
+    1. **Direct Write**: Attempted only when `WRITE_DIRECT`.
+    2. **Deregistration**: `EPOLLOUT` MUST be removed immediately when `len == 0`.
+    3. **Backpressure**: Only transition to `WRITE_QUEUED` on `EAGAIN`.
+  |
+  near: WRITE_DIRECT
+}

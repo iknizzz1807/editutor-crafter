@@ -1,0 +1,155 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# =============================================================================
+# L1 ARCHITECTURE: THREE-LEVEL VIEW - 100KB PNG FILE SERVICE
+# =============================================================================
+
+application_layer: {
+  direction: down
+  label: "USER SPACE (APPLICATION)"
+  
+  static_server: {
+    label: "StaticFileServer Process (server.c)"
+    
+    io_buf: {
+      shape: sql_table
+      label: "char io_buf[65536] (Stack/Heap)"
+      row1: "0x0000 | byte[0..63]    | L1 Cache Line 0"
+      row2: "0x0040 | byte[64..127]  | L1 Cache Line 1"
+      row3: "...    | ...             | ..."
+      row4: "0xFFFF | byte[65535]    | Buffer End"
+      label_bottom: "Size: 64KB (16 Pages)"
+    }
+    
+    methods: |md
+      c
+      // Phase 7: Headers
+      write_all(client_fd, header_buf, h_len);
+      // Phase 8: Data Loop
+      while ((n = read(file_fd, io_buf, 65536)) > 0) {
+          write_all(client_fd, io_buf, n);
+      }
+      
+    |
+  }
+}
+
+kernel_layer: {
+  direction: down
+  label: "KERNEL SPACE (OS)"
+  
+  vfs: {
+    label: "VFS / Inode Cache (fs/namei.c)"
+    dcache: "Directory Entry Cache"
+    icache: "Inode Metadata (Size/Perms)"
+  }
+  
+  page_cache: {
+    shape: cylinder
+    label: "Page Cache (mm/filemap.c)"
+    style.fill: "#E4DBFE"
+    p0: "Page 0 (4KB)"
+    p1: "Page 1 (4KB)"
+    pn: "Page 24 (4KB)"
+    label_bottom: "Total: 100KB resident in RAM"
+  }
+  
+  socket_buffer: {
+    shape: sql_table
+    label: "Socket Send Buffer (net/core/sock.c)"
+    row1: "sk_sndbuf | ~87KB default"
+    row2: "TCP MSS    | 1460 bytes per segment"
+    style.fill: "#C7F1FF"
+  }
+  
+  tcp_stack: {
+    label: "TCP/IP Stack"
+    segmentation: "TCP Segmentation"
+    checksum: "Header Generation"
+  }
+}
+
+hardware_layer: {
+  direction: right
+  label: "HARDWARE LAYER"
+  
+  storage_controller: {
+    label: "NVMe SSD Controller"
+    nand: {shape: package; label: "Flash NAND"}
+  }
+  
+  system_ram: {
+    shape: cylinder
+    label: "System RAM (DDR4/5)"
+  }
+  
+  nic: {
+    label: "NIC (Network Interface Card)"
+    tx_fifo: "TX FIFO Queue"
+    dma_engine: "DMA Engine"
+  }
+}
+
+# =============================================================================
+# DATA FLOW & SYSTEM CALL PATHS
+# =============================================================================
+
+# 1. Path Resolution
+application_layer.static_server -> kernel_layer.vfs: "open() | O_RDONLY"
+kernel_layer.vfs -> kernel_layer.page_cache: "File I/O Manager"
+
+# 2. READ PATH (The First Copy)
+kernel_layer.page_cache <- hardware_layer.storage_controller: "DMA Transfer | ~100us latency (Cold Read)" {
+  style.stroke: blue
+  style.animated: true
+}
+
+kernel_layer.page_cache -> application_layer.static_server.io_buf: "COPY #1 (CPU Memcpy) | Page Cache -> Userspace" {
+  style.stroke: red
+  style.stroke-width: 4
+  label: "Context Switch: Mode Switch + Memory Copy (Wasteful)"
+}
+
+# 3. WRITE PATH (The Second Copy)
+application_layer.static_server.io_buf -> kernel_layer.socket_buffer: "COPY #2 (CPU Memcpy) | Userspace -> Kernel" {
+  style.stroke: red
+  style.stroke-width: 4
+  label: "Context Switch: Boundary Crossing + Double Buffer"
+}
+
+# 4. TRANSMIT PATH
+kernel_layer.socket_buffer -> kernel_layer.tcp_stack: "Process Segments"
+kernel_layer.tcp_stack -> kernel_layer.socket_buffer: "Backpressure"
+kernel_layer.tcp_stack -> hardware_layer.nic.dma_engine: "Trigger DMA"
+
+hardware_layer.nic.dma_engine -> hardware_layer.system_ram: "Read Socket Buffer" {
+  style.stroke: blue
+}
+hardware_layer.nic -> network: "Ethernet Frame | TCP/IP | 100KB PNG Data"
+
+# =============================================================================
+# ANNOTATIONS
+# =============================================================================
+
+legend: {
+  near: bottom-right
+  
+  copy_waste: "CRITICAL OVERHEAD: Double Copy" {
+    style.fill: "#FFE7CB"
+    style.stroke: red
+    note: "sendfile() would bypass io_buf and move data directly from Page Cache to Socket Buffer."
+  }
+  
+  latencies: |md
+    - Context Switch: ~2us
+    - Page Cache Read: ~10ns
+    - SSD Cold Read: ~100us
+    - Memcpy (100KB): ~5us
+  |
+}

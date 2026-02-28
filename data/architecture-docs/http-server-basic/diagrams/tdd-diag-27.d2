@@ -1,0 +1,125 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 0
+    pad: 20
+  }
+}
+
+# --- Kernel Space ---
+kernel: OS Kernel {
+  shape: cloud
+  pending_signals: "SIGINT | SIGTERM" {
+    shape: queue
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#B71C1C"
+    }
+  }
+}
+
+# --- Process Space (Memory Architecture) ---
+http_server: HTTP Server Process {
+  style.stroke-width: 4
+  style.fill: white
+
+  # Main Orchestrator (Header/Bootstrap)
+  main_thread: Main Thread {
+    shape: sql_table
+    style.fill: "#D1C4E9" # Purple (Header/Control)
+    0x4010: "pthread_sigmask(SIG_BLOCK, ...)" {constraint: "Entry: 0x4010"}
+    0x4080: "pthread_create(&signal_tid, ...)" {constraint: "Entry: 0x4080"}
+    0x40C0: "pthread_create(&worker_tid, ...)" {constraint: "Entry: 0x40C0"}
+    "sizeof": "Stack (8MB Default Virtual)"
+  }
+
+  # Dedicated Signal Consumer (Free/Handled State)
+  signal_thread: Dedicated Signal Thread {
+    shape: sql_table
+    style.fill: "#C8E6C9" # Green (Free/Signal Logic)
+    0x5010: "sigwait(const sigset_t*, int*)" {constraint: "Synchronous"}
+    0x50A0: "thread_pool_shutdown(pool_ptr)" {constraint: "Logic"}
+    0x50F0: "mask: BLOCKED_ALL" {constraint: "8 Bytes"}
+    "sizeof": "sizeof=64 bytes (one cache line)"
+  }
+
+  # Worker Pool (Data Processing)
+  workers: Worker Threads {
+    style.fill: "#F5F5F5"
+    worker_1: {
+      shape: sql_table
+      style.fill: "#BBDEFB" # Blue (Data Processing)
+      0x6010: "recv(int, void*, size_t, 0)" {constraint: "Blocking"}
+      0x6080: "mask: BLOCKED_ALL" {constraint: "Inherited"}
+    }
+    worker_n: {
+      shape: sql_table
+      style.fill: "#BBDEFB" # Blue (Data Processing)
+      0x7010: "write(int, const void*, ...)" {constraint: "Blocking"}
+      0x7080: "mask: BLOCKED_ALL" {constraint: "Inherited"}
+    }
+  }
+
+  # Shared Thread Pool Control Block (State/Lock)
+  pool_state: thread_pool_t {
+    shape: sql_table
+    style.fill: "#FFF9C4" # Yellow (State/Lock)
+    "0x00": "pthread_mutex_t lock" {constraint: "40B"}
+    "0x28": "pthread_cond_t not_empty" {constraint: "48B"}
+    "0xAC": "int shutdown_flag" {constraint: "4B"}
+    "0xB0": "Padding/Alignment" {constraint: "Gray"}
+    "sizeof": "sizeof=208 Bytes (~4 Cache Lines)"
+  }
+}
+
+# --- Functional Flows & Invariants ---
+
+# 1. Thread Spawning & Inheritance
+http_server.main_thread -> http_server.signal_thread: "pthread_create()" {
+  style.stroke: "#FF9800" # Orange (Pointers/Refs)
+  style.stroke-width: 2
+}
+http_server.main_thread -> http_server.workers: "pthread_create()" {
+  style.stroke: "#FF9800"
+  style.stroke-width: 2
+}
+
+# 2. Kernel Signal Routing (Safe Path)
+kernel.pending_signals -> http_server.signal_thread: "sigwait() consumes synchronously" {
+  style: {
+    stroke: "#2E7D32"
+    stroke-width: 4
+  }
+}
+
+# 3. Illegal Asynchronous Interruption (Red Path)
+kernel.pending_signals -> http_server.workers.worker_1: "ILLEGAL" {
+  style: {
+    stroke: "#D32F2F"
+    stroke-dash: 5
+  }
+  target-arrowhead: {
+    label: "BLOCKED BY MASK"
+  }
+}
+
+# 4. Graceful Shutdown Path
+http_server.signal_thread -> http_server.pool_state."0xAC": "Atomic Set: 1" {
+  style: {
+    stroke: "#FF9800"
+    stroke-width: 3
+  }
+}
+
+# --- Annotations ---
+ann: |md
+  ### Technical Design: Signal Isolation (M4)
+  - **Invariants**: 
+    - `pthread_sigmask` MUST be called in `main` thread *before* any thread creation to ensure mask inheritance.
+  - **Pattern**: 
+    - Dedicated `sigwait()` thread treats signals as events, not async interruptions.
+  - **Benefit**: 
+    - Prevents re-entrancy deadlocks in non-AS-Safe functions like `malloc()`.
+| {
+  near: top-right
+}

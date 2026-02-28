@@ -1,0 +1,194 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+
+# GLOBAL CLASSES
+classes: {
+  phase: {
+    style: {
+      fill: "#f8f9fa"
+      stroke: "#333333"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  kernel_space: {
+    style: {
+      fill: "#e8f0fe"
+      stroke: "#1a73e8"
+      stroke-dash: 5
+    }
+  }
+}
+
+title: "Trace: One Complete Event Loop Tick (reactor.c)" {
+  shape: text
+  near: top-center
+  style: {
+    font-size: 24
+    bold: true
+  }
+}
+
+# --- PHASE 1: PRE-POLL MODIFICATIONS ---
+phase_1: {
+  class: phase
+  label: "PHASE 1: Apply Deferred Mods"
+  direction: down
+
+  struct_mod: {
+    shape: sql_table
+    label: "struct deferred_mod"
+    row1: "op      | MOD_ADD, MOD_MOD, MOD_DEL"
+    row2: "fd      | int"
+    row3: "events  | uint32_t (epoll flags)"
+  }
+
+  apply_logic: |md
+    c
+    // Cleans up the state before kernel wait
+    for (int i = 0; i < r->mods_len; i++) {
+        reactor_apply_mod(r, &r->mods[i]);
+    }
+    r->mods_len = 0;
+    
+  |
+}
+
+# --- PHASE 2: TIMEOUT CALCULATION ---
+phase_2: {
+  class: phase
+  label: "PHASE 2: Timer Strategy"
+  direction: down
+
+  timer_peek: {
+    shape: sql_table
+    label: "Timer Min-Heap Peek"
+    row1: "heap[0] | Soonest Expiry"
+    row2: "now_ms  | CLOCK_MONOTONIC"
+  }
+
+  calc_logic: |md
+    c
+    int timeout = timer_next_ms(r); 
+    // returns:
+    // -1: No timers (block)
+    //  0: Expired now
+    // >0: ms until heap[0]
+    
+  |
+}
+
+# --- PHASE 3: KERNEL WAIT ---
+phase_3: {
+  class: kernel_space
+  label: "PHASE 3: epoll_wait (Kernel)"
+  direction: down
+
+  syscall: |md
+    c
+    int n = epoll_wait(epoll_fd, events, 1024, timeout);
+    
+  |
+  
+  kernel_action: "Wait for NIC Interrupt\nor Timeout Expiry" {
+    shape: cloud
+  }
+}
+
+# --- PHASE 4: I/O DISPATCH LOOP ---
+phase_4: {
+  class: phase
+  label: "PHASE 4: I/O Dispatch Loop"
+  direction: down
+
+  handler_table: {
+    shape: sql_table
+    label: "fd_handler (24 bytes)"
+    row1: "0x00 | void*    | callback"
+    row2: "0x08 | void*    | user_data"
+    row3: "0x10 | uint32_t | events"
+    row4: "0x14 | bool     | registered"
+    row5: "0x15 | bool     | zombie"
+  }
+
+  dispatch_logic: |md
+    c
+    r->dispatching = true;
+    for (int i = 0; i < n; i++) {
+        fd_handler *h = events[i].data.ptr;
+        if (h->zombie) continue;
+        h->callback(fd, r_evs, h->user_data);
+    }
+    r->dispatching = false;
+    
+  |
+}
+
+# --- PHASE 5: TIMER EXPIRATION ---
+phase_5: {
+  class: phase
+  label: "PHASE 5: Process Timers"
+  direction: down
+
+  timer_proc: |md
+    c
+    while (heap_size > 0 && heap[0].exp <= now) {
+        timer_record *t = pop_heap(r);
+        t->callback(r, t->user_data);
+        if (t->interval) rearm(t);
+    }
+    
+  |
+}
+
+# --- PHASE 6: DEFERRED TASKS ---
+phase_6: {
+  class: phase
+  label: "PHASE 6: Task Drain"
+  direction: down
+
+  task_logic: |md
+    c
+    // Execute app-level 'defer' calls
+    int count = r->defer_len;
+    r->defer_len = 0;
+    for (int i = 0; i < count; i++) {
+        r->defer_queue[i].fn(r, ud);
+    }
+    
+  |
+}
+
+# --- CONNECTORS (The "Tick" Flow) ---
+
+phase_1 -> phase_2: "Interest list sync'd"
+phase_2 -> phase_3: "int timeout | 4 bytes"
+phase_3 -> phase_4: "struct epoll_event[] | N items"
+phase_4 -> phase_5: "App logic handled"
+phase_5 -> phase_6: "Timers processed"
+phase_6 -> phase_1: "Loop back (Next Tick)" {
+  style: {
+    stroke-width: 4
+  }
+}
+
+# --- API ANNOTATIONS ---
+phase_1.apply_logic -> reactor_register: "Called from callbacks" {style.stroke-dash: 3}
+phase_6.task_logic -> reactor_defer: "Used for safe close" {style.stroke-dash: 3}
+phase_2.timer_peek -> reactor_set_timeout: "Populates heap" {style.stroke-dash: 3}
+
+legend: {
+  near: bottom-right
+  
+  blue_box: Kernel Context Switch {
+    style.fill: "#e8f0fe"
+  }
+  grey_box: Userspace Reactor Phase {
+    style.fill: "#f8f9fa"
+  }
+}

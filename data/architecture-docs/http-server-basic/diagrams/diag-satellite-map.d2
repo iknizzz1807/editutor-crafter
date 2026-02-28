@@ -1,0 +1,169 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+
+# --- L0 SATELLITE MAP: HTTP SERVER ARCHITECTURE ---
+
+# LAYER 1: TRANSPORT & INGRESS (MILESTONE 1)
+transport_layer: {
+  label: "TRANSPORT LAYER (M1: server.c)"
+  direction: down
+
+  tcp_socket: {
+    shape: sql_table
+    label: "Listening Socket (AF_INET)"
+    "0x00 | int      | server_fd": "Passive handle"
+    "0x04 | uint16_t | port": "Network order"
+    "0x08 | struct sockaddr_in | addr": "INADDR_ANY"
+    label_bottom: "State: LISTENING | 64-bit alignment enforced"
+  }
+
+  socket_ops: {
+    shape: class
+    label: "Socket Lifecycle"
+    methods: |md
+      c
+      int socket(AF_INET, SOCK_STREAM, 0);
+      int bind(server_fd, &addr, sizeof(addr));
+      int listen(server_fd, SOMAXCONN);
+      int accept(server_fd, &client_addr, &len);
+      
+    |
+  }
+
+  accept_loop: {
+    shape: circle
+    label: "Accept Loop\n(Main Thread)"
+    style.fill: "#E4DBFE"
+  }
+}
+
+# LAYER 2: CONCURRENCY CONTROL (MILESTONE 4)
+concurrency_layer: {
+  label: "CONCURRENCY LAYER (M4: thread_pool.c)"
+  direction: down
+
+  work_queue: {
+    shape: sql_table
+    label: "struct thread_pool_t"
+    "0x00 | work_item_t* | queue": "Circular Buffer"
+    "0x08 | int          | head": "Consumer index"
+    "0x0C | int          | tail": "Producer index"
+    "0x10 | pthread_mutex_t | lock": "Concurrency guard"
+    "0x40 | pthread_cond_t  | not_empty": "Worker signal"
+    label_bottom: "Bounded Queue (Default: 256) | O(1) Enqueue"
+  }
+
+  worker_pool: {
+    label: "Worker Threads [0..N]"
+    direction: right
+    t1: {shape: person; label: "Thread 1"}
+    t2: {shape: person; label: "Thread 2"}
+    tn: {shape: person; label: "Thread N"; style.multiple: true}
+  }
+
+  keep_alive_logic: {
+    shape: class
+    label: "Connection Lifecycle"
+    definition: |md
+      c
+      // Idle Timeout: 30s
+      setsockopt(client_fd, SO_RCVTIMEO);
+      while(req.keep_alive) { 
+        handle_connection(); 
+      }
+      
+    |
+  }
+}
+
+# LAYER 3: PROTOCOL & RESOURCE (MILESTONES 2 & 3)
+application_layer: {
+  label: "APPLICATION LAYER (M2 & M3)"
+  direction: down
+
+  http_parser: {
+    label: "HTTP Parser (M2: parser.c)"
+    shape: sql_table
+    "struct_request": "struct http_request_t"
+    "0x00 | int    | method": "GET/HEAD/POST"
+    "0x04 | char[8192] | path": "URL Decoded"
+    "0x2004 | int  | http_minor": "1.0 vs 1.1"
+    "0x2008 | http_header_t[32] | headers": "Normalized"
+    label_bottom: "Total Size: 278,544 bytes"
+  }
+
+  file_server: {
+    label: "Static File Server (M3: file_server.c)"
+    shape: class
+    methods: |md
+      c
+      int resolve_safe_path(url, root, out);
+      const char* mime_type_for_path(path);
+      int should_send_304(req, mtime);
+      
+    |
+  }
+
+  security_gate: {
+    label: "Path Security"
+    shape: hexagon
+    style.fill: "#FE7070"
+    tooltip: "realpath() + Prefix Check"
+  }
+}
+
+# --- DATA FLOW & MILESTONE ANCHORS ---
+
+# M1: Transport
+client: {shape: cloud; label: "Remote Client"}
+client -> transport_layer.accept_loop: "TCP SYN | Port 8080"
+transport_layer.socket_ops -> transport_layer.tcp_socket: "bind/listen"
+
+# M4: Submission
+transport_layer.accept_loop -> concurrency_layer.work_queue: "thread_pool_submit() | int client_fd" {
+  style.stroke: "#88DCF7"
+}
+
+# M4: Consumption
+concurrency_layer.work_queue -> concurrency_layer.worker_pool: "not_empty signal" {
+  style.stroke-dash: 5
+}
+
+# M2: Parsing
+concurrency_layer.worker_pool -> application_layer.http_parser: "parse_http_request() | Raw Bytes" {
+  style.stroke: "#B5AFF6"
+}
+
+# M3: Resolution
+application_layer.http_parser -> application_layer.security_gate: "path string"
+application_layer.security_gate -> application_layer.file_server: "O_RDONLY | Safe Canonical Path"
+
+# Response Flow (M1 / M3)
+application_layer.file_server -> transport_layer.socket_ops: "write_all() | 64KB Chunks" {
+  style.stroke: "#167c3c"
+}
+transport_layer.socket_ops -> client: "Raw TCP Data" {
+  style.animated: true
+}
+
+# LEGEND & ANCHORS
+milestone_anchors: {
+  near: bottom-right
+  m1: "M1: TCP Sockets" {
+    style.fill: "#ACE1AF"
+  }
+  m2: "M2: HTTP Parser" {
+    style.fill: "#C7F1FF"
+  }
+  m3: "M3: File Serving" {
+    style.fill: "#FFF9C9"
+  }
+  m4: "M4: Concurrency" {
+    style.fill: "#E4DBFE"
+  }
+}

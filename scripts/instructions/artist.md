@@ -18,202 +18,224 @@ You MUST use the **primary language** from the blueprint in all code within diag
 **In diagrams, show:**
 - Struct/class names in the chosen language
 - Field types in the chosen language
-- Method signatures in the chosen language
-- Code blocks using `|md ```language ... ``` |` syntax
-
-**Generic Example (adapt to project's domain):**
-```d2
-data_structure: {
-  shape: sql_table
-  label: "struct DataNode (module.h)"
-  
-  row1: "0x00 | uint32_t | id"
-  row2: "0x04 | uint32_t | count"
-  row3: "0x08 | bool     | is_valid"
-  row4: "0x10 | void*    | data"
-  label_bottom: "Total: 24 bytes"
-}
-```
+- Method signatures in the chosen language (return type + params — NO full function body)
 
 ---
 
-## 2. Two-Dimensional Layout Strategy (CRITICAL)
+## 2. Layout Strategy (CRITICAL — prevents overlap)
 
-**Problem:** Single-direction layouts (`direction: right` only) create diagrams that are:
-- Too wide for PDF pages
-- Hard to scan visually
-- Prone to overlapping nodes
+ELK auto-layout works perfectly for **contained nodes**. Overlap happens when nodes have unbounded text. Follow these rules to stay within ELK's layout guarantees:
 
-**Solution: Use 2D Grid Layout**
-
-### For System Diagrams (L0 - Satellite Map):
+### Rule A — Never use floating text nodes
+**FORBIDDEN:**
 ```d2
-# Top level: horizontal expansion for major layers
+# BAD: shape:text floats outside layout
+annotation: "some note" {
+  shape: text
+}
+```
+**CORRECT:** Put all annotations inside a named container node with an explicit shape.
+
+### Rule B — Never use `label_bottom:` — it is NOT valid D2
+**FORBIDDEN:**
+```d2
+my_struct: {
+  shape: sql_table
+  label_bottom: "Total: 24 bytes"   # NOT VALID — renders as a rogue row
+}
+```
+**CORRECT:** Encode total size as the last row:
+```d2
+my_struct: {
+  shape: sql_table
+  label: "struct Foo (foo.h)"
+  row1: "0x00 | uint32_t | id"
+  row2: "0x04 | uint32_t | count"
+  total: "Total: 8 bytes (fits in register)"
+}
+```
+
+### Rule C — Code blocks must use block-string delimiters that survive pipe chars
+Any code block containing `|`, `||`, `->`, or `'` must use the right delimiter:
+- Default: `|md ... |` — breaks if content has `|`
+- Content has `|` or `||`: use `|'md ... '|`
+- Content has `'|`: use `|"md ... "|`
+
+**CORRECT:**
+```d2
+node: {
+  code: |'c
+    if (x < 0 || x > 255) return -1;
+    buf[i] = (uint8_t)(x & 0xFF);
+  '|
+}
+```
+
+### Rule D — Code blocks stay inside named child nodes, NOT as top-level label
+**FORBIDDEN:**
+```d2
+step1: {
+  label: |'c
+    // 50 lines of code
+    void do_thing() { ... }
+  '|
+}
+```
+**CORRECT:** Split into `code:` child with `width` set:
+```d2
+step1: {
+  label: "T1: Process Event"
+  code: |'c
+    h = events[0].data.ptr;
+    h->callback(fd, ev, h->user_data);
+  '|
+  width: 350
+}
+```
+
+### Rule E — Two-Dimensional Layout
+```d2
+# Top level: direction: right for major layers
 direction: right
 
-layer_input: {
-  direction: down  # Components expand vertically within
-  label: "INPUT LAYER"
-  
-  component_a: { ... }
-  component_b: { ... }
+layer_a: {
+  direction: down   # Components stack vertically inside
+  label: "LAYER A"
+  comp1: { ... }
+  comp2: { ... }
 }
 
-layer_processing: {
+layer_b: {
   direction: down
-  label: "PROCESSING LAYER"
-  
-  component_c: { ... }
-  component_d: { ... }
+  label: "LAYER B"
+  comp3: { ... }
 }
 
-layer_output: {
-  direction: down
-  label: "OUTPUT LAYER"
-  
-  component_e: { ... }
-  component_f: { ... }
-}
-
-# Horizontal flow between layers
-layer_input -> layer_processing -> layer_output
+layer_a -> layer_b: "DataType | size | example"
 ```
 
-### For Component Diagrams (L1/L2 - Street/Microscopic):
+**Never use single-direction expansion for diagrams with more than 4 nodes.**
+
+### Rule F — `near:` only at root level with constant values
 ```d2
-# Use nested containers for depth
-component: {
-  direction: down
-  
-  # Struct definition (compact, vertical)
-  struct_def: {
-    shape: sql_table
-    ...
-  }
-  
-  # Methods (horizontal group)
-  methods: {
-    direction: right
-    method1: { ... }
-    method2: { ... }
-  }
-  
-  # Data flow (horizontal)
-  struct_def -> methods: "calls"
-}
-```
+# CORRECT: root-level near with constant
+legend: { ... }
+legend.near: bottom-right
 
-### Layout Rules:
-1. **Top-level**: `direction: right` for major layers
-2. **Within layers**: `direction: down` for components
-3. **Within components**: Nested containers, prefer vertical for data, horizontal for flow
-4. **Never**: Single-direction expansion for large diagrams
+# FORBIDDEN: near inside nested node or referencing another node
+container: {
+  child: {
+    near: top-center      # FORBIDDEN: not at root
+  }
+}
+some_node.near: other_node  # FORBIDDEN: elk requires constant
+```
 
 ---
 
 ## 3. Implementation-Ready Standard
 
-Your diagrams must be detailed enough to code from. Include:
+### Struct / Data Structure
+Use `shape: sql_table`. Fields as rows: `"0xOFFSET | type | name // comment"`. Total size as last row.
 
-### Required Elements:
-
-| Element | Format | Example |
-|---------|--------|---------|
-| **Struct names** | `label: "struct Name (file.h)"` | `"struct Config (config.h)"` |
-| **Field offsets** | `0x00 \| type \| name` | `"0x04 \| uint32_t \| count"` |
-| **Total size** | `label_bottom:` | `"Total: 24 bytes (1 cache line)"` |
-| **Method signatures** | Code block | `\|md `return_type func(params);` \|` |
-| **File references** | In label | `"(filename.c)"` |
-| **Data flow labels** | Typed with size | `"DataType \| 4KB \| {id: 42}"` |
-
-### Struct/Class Representation:
 ```d2
-data_manager: {
-  shape: class
-  label: "DataManager (manager.c)"
-  
-  # Fields with offsets
-  fields: |md
-    ```c
-    int fd;                    // File descriptor
-    uint32_t count;            // Number of items
-    DataNode* nodes;           // Array of nodes
-    void* buffer;              // Working buffer
-    Config* config;            // Configuration
-    Mutex lock;                // Thread safety
-    ```
-  |
-  
-  # Methods
-  methods: |md
-    ```c
-    void* manager_fetch(Manager*, uint32_t id);
-    void  manager_release(Manager*, uint32_t id, bool dirty);
-    void  manager_flush_all(Manager*);
-    int   manager_init(Manager*, const char* path, uint32_t size);
-    void  manager_destroy(Manager*);
-    ```
-  |
+conn_state: {
+  shape: sql_table
+  label: "struct ConnState (reactor.h)"
+  f0: "0x00 | int       | fd"
+  f1: "0x04 | uint32_t  | events"
+  f2: "0x08 | void*     | user_data"
+  f3: "0x10 | Callback* | on_event"
+  f4: "0x18 | bool      | zombie"
+  sz: "Total: 28 bytes"
 }
 ```
 
-### Arrow Annotations:
-```d2
-# GOOD: Detailed data flow
-manager -> storage: "4KB block | void* | read(fd, buf, 4096, offset)"
+### Class / Module (methods + fields together)
+Use `shape: class`.
 
-# BAD: Vague connection
-manager -> storage: "read"
+```d2
+reactor: {
+  shape: class
+  label: "Reactor (reactor.c)"
+
+  fields: |'c
+    int epoll_fd;           // epoll instance
+    ConnState* handlers;    // fd → handler map
+    int n_fds;              // active count
+  '|
+
+  methods: |'c
+    int  reactor_init(Reactor*, int max_fds);
+    int  reactor_register(Reactor*, int fd, uint32_t ev, Callback cb, void* data);
+    void reactor_deregister(Reactor*, int fd);
+    int  reactor_run(Reactor*, int timeout_ms);
+    void reactor_destroy(Reactor*);
+  '|
+}
+```
+
+### Algorithm Step (code block in a step node)
+Keep code to **max 8 lines**. No full function bodies — show the key logic only.
+
+```d2
+step_dispatch: {
+  label: "Dispatch Loop (reactor.c:run)"
+  width: 380
+  code: |'c
+    for (int i = 0; i < n; i++) {
+      ConnState* h = events[i].data.ptr;
+      if (h->zombie) continue;       // deferred-free guard
+      h->on_event(h->fd, events[i].events, h->user_data);
+    }
+  '|
+}
+```
+
+### Arrow Annotations
+Every arrow: `type | size | example_value`
+```d2
+A -> B: "struct epoll_event[] | 36 bytes | {.data.ptr=&h[5], .events=EPOLLIN}"
 ```
 
 ---
 
 ## 4. Atlas Consistency
-- **Satellite Reference**: You will receive the Satellite Map (L0) in context. Every subsequent diagram MUST use the SAME IDs for the same components.
+Every subsequent diagram MUST use the same IDs for the same components as the Satellite Map.
 
 ---
 
 ## 5. Diagram Type Routing Rules
 
-| Type | When to Use | Required Elements |
-|------|-------------|-------------------|
-| **data_walk** | Tracing data through layers | Exact values, offsets, transformations |
-| **state_evolution** | State changes | Trigger, guard conditions, before/after |
-| **before_after** | Mutations (insert, split, update) | Side-by-side comparison |
-| **structure_layout** | Memory/data structures | Byte offsets, field types, total size |
-| **timeline_flow** | Sequential operations | Timing, latency, ordering |
-| **system_overview** | L0 satellite map | ALL components, ALL connections, file references |
+| Type | When to Use | Key Constraint |
+|------|-------------|----------------|
+| **structure_layout** | Struct/memory layouts | sql_table shape, byte offsets, total size |
+| **state_evolution** | State machines | States as circles/diamonds, transitions labeled with trigger + guard |
+| **before_after** | Mutations (insert, split, delete) | Side-by-side containers, diff arrows |
+| **data_walk** | Tracing data through layers | Exact values at each step, transformations annotated |
+| **timeline_flow** | Sequential operations | direction:right steps, time flows left→right |
 
 ---
 
 ## 6. Pedagogy Rules
 
 1. **Annotated Arrows**: Every arrow labeled with WHAT (data type), SIZE, and example.
-   - `A -> B: "DataType[] | ~1KB | [{id: 1, value: 'test'}]"`
-
-2. **Scale Indicators**: Always include sizes.
-   - "64 bytes (1 cache line)"
-   - "4KB (1 block)"
-   - "16MB (L3 cache boundary)"
-
+2. **Scale Indicators**: Always include sizes — `"64 bytes (1 cache line)"`, `"4KB (1 page)"`.
 3. **Color Semantics** (consistent across project):
-   - Red = hot path / danger / error
-   - Green = success / safe / complete
+   - Red = hot path / danger / error / use-after-free
+   - Green = success / safe / fixed path
    - Yellow = waiting / caution / pending
    - Blue = data flow / read operation
    - Purple = metadata / headers / control
    - Gray = unused / padding / reserved
-
-4. **File References**: Every component shows its file.
-   - `label: "ComponentName (filename.c)"`
+4. **File References**: Every component — `label: "ComponentName (filename.c)"`
 
 ---
 
 ## 7. D2 Syntax & Theme Selection
 
 ```d2
-# Standard header for all diagrams
-direction: right  # or down for component diagrams
+direction: right
 vars: {
   d2-config: {
     layout-engine: elk
@@ -222,48 +244,39 @@ vars: {
 }
 ```
 
-**Theme Selection (CHOOSE based on diagram purpose):**
-
 | Theme ID | Name | Best For |
 |----------|------|----------|
-| 0 | Neutral Default | System overviews, clean diagrams |
+| 0 | Neutral Default | System overviews |
 | 1 | Neutral Grey | Professional, minimal |
 | 3 | Flagship Terrastruct | Corporate, polished |
 | 4 | Cool Classics | Data structures, flows |
 | 5 | Mixed Berry Blue | Network, distributed |
-| 6 | Grape Soda | State machines, transitions |
-| 100 | Vanilla Nitro Cola | Warm, friendly explanations |
+| 6 | Grape Soda | State machines |
+| 100 | Vanilla Nitro Cola | Warm explanations |
 | 104 | Everglade Green | Timelines, sequences |
 
-**Rules:**
-- Vary themes across diagrams in same project — avoid monotony
-- Match theme to diagram's purpose
-- Keep it readable and professional
-
+**Hard rules:**
 - NO Mermaid syntax
-- Double quotes for labels with special characters
-- Valid D2 shapes only (rectangle, circle, cylinder, sql_table, class, code)
-- NO remote icons
-- Use `|'md ... '|` or `|md ... |` for code blocks
+- NO `label_bottom:` key (invalid D2)
+- NO `shape: text` for annotations — use named container nodes
+- NO `near:` inside nested nodes or pointing to other nodes
+- NO full function bodies — method signatures + key logic only (max 8 lines per code block)
+- Valid shapes only: `rectangle`, `circle`, `cylinder`, `sql_table`, `class`, `code`, `diamond`, `oval`, `hexagon`, `callout`, `parallelogram`, `document`, `queue`, `package`, `step`, `person`
+- Use `|'lang ... '|` when code contains `|` or `||`
 
 ---
 
-## 8. Quality Checklist (Before marking done)
+## 8. Quality Checklist
 
-For SYSTEM DIAGRAMS (L0):
-- [ ] All major components from Atlas + TDD included
-- [ ] Each component has: struct name, file reference, key fields
-- [ ] All data flows labeled with type, size, example
-- [ ] 2D layout (horizontal layers + vertical detail)
-- [ ] Links to all milestone sections
-- [ ] Readable in A4 PDF (no overlapping)
-
-For COMPONENT DIAGRAMS (L1/L2):
-- [ ] Byte offsets for all struct fields
-- [ ] Method signatures with return types and parameters
-- [ ] Data flow arrows with specific values
-- [ ] Before/After states for mutations
-- [ ] Error paths indicated (dashed lines)
+For COMPONENT DIAGRAMS:
+- [ ] Byte offsets for all struct fields (sql_table rows)
+- [ ] Method signatures: return type + params (no bodies)
+- [ ] Arrows: type | size | example value
+- [ ] Before/After containers for mutations
+- [ ] Error paths: dashed lines `style.stroke-dash: 4`
+- [ ] No floating text nodes (shape: text)
+- [ ] No `label_bottom:` usage
+- [ ] All code blocks ≤ 8 lines
 
 ---
 

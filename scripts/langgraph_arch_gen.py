@@ -898,7 +898,7 @@ End with [[CRITERIA_JSON: {{"milestone_id": "{ms_id}", "criteria": [...]}} ]]
             )
 
     content = re.sub(
-        r"\[\[DYNAMIC_DIAGRAM:.*?\]\]",
+        r"\[\[DYNAMIC_DIAGRAM:(.*?)\]\]",
         lambda m: f"{{{{DIAGRAM:{m.group(1)}}}}}",
         content,
     )
@@ -2015,6 +2015,11 @@ if __name__ == "__main__":
         help="Architect+Educator=Claude CLI, Artist=Gemini Proxy",
     )
     parser.add_argument(
+        "--architect-claude",
+        action="store_true",
+        help="Architect=Claude CLI, All other nodes=Gemini Proxy",
+    )
+    parser.add_argument(
         "--claude-model", default="sonnet", help="Claude CLI model (default: sonnet)"
     )
     parser.add_argument(
@@ -2051,6 +2056,8 @@ if __name__ == "__main__":
         os.environ["USE_MIXED_CLAUDE_GEMINI"] = "true"
     if args.mixed_heavy_claude:
         os.environ["USE_MIXED_HEAVY_CLAUDE"] = "true"
+    if args.architect_claude:
+        os.environ["USE_ARCHITECT_CLAUDE"] = "true"
 
     if args.anthropic_model:
         os.environ["ANTHROPIC_MODEL"] = args.anthropic_model

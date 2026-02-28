@@ -168,10 +168,8 @@ manager -> storage: "read"
 
 ---
 
-## 4. Atlas Linking (THE BIG CONNECT)
-- **High-level nodes**: Every major component MUST have `link: "#anchor-id"` to its deep-dive section.
+## 4. Atlas Consistency
 - **Satellite Reference**: You will receive the Satellite Map (L0) in context. Every subsequent diagram MUST use the SAME IDs for the same components.
-- **Navigation**: If a diagram shows a sub-component, include a small "Back to Map" node.
 
 ---
 

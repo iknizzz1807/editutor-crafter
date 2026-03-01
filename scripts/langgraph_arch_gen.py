@@ -234,10 +234,16 @@ def extract_json(text):
         return None
     text = str(text)
     # Fix invalid escape sequences LLMs commonly generate inside JSON strings
-    text = re.sub(r"\\'", "'", text)                    # \' -> '
     text = re.sub(r"\\0(?![0-9a-fA-F])", r"\\\\0", text)  # \0 -> \\0 (but not \0x hex)
     text = re.sub(r"\\x([0-9a-fA-F]{2})", r"\\u00\1", text)  # \xNN -> \u00NN
     text = re.sub(r",(\s*[}\]])", r"\1", text)          # trailing commas ,} or ,]
+    # Remove ALL remaining invalid JSON escapes iteratively (handles cascades like \\' -> \' -> ')
+    # Valid JSON escapes: \" \\ \/ \b \f \n \r \t \uXXXX
+    for _ in range(3):
+        prev = text
+        text = re.sub(r'\\([^"\\\/bfnrtu\n\r\t])', lambda m: m.group(1), text)
+        if text == prev:
+            break
 
     # Find the first potential start of JSON
     start_brace = text.find("{")

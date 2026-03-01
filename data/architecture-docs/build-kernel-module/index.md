@@ -43,7 +43,6 @@ The project is complete when:
 - Custom `ioctl` commands successfully resize the internal kernel buffer at runtime.
 - `/proc/mydevice` displays real-time, accurate counts of total bytes read and written.
 - The driver survives the "Thundering Herd" stress test (multiple concurrent readers/writers) without a kernel panic or data loss.
-```
 
 ---
 

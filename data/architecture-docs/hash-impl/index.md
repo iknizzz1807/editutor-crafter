@@ -43,7 +43,6 @@ The project is complete when:
 - The 56-byte boundary test case passes (verifying that the two-block padding logic is correct).
 - A message fed into the `update()` function in 1-byte chunks produces the same hash as the message fed in all at once.
 - The code successfully clears its internal buffers after finalization (Secret Erasure).
-```
 
 ---
 

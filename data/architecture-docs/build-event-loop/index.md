@@ -42,7 +42,6 @@ The project is complete when:
 - Idle connections are automatically closed by the timer system after a 30-second timeout.
 - Valgrind/ASAN reports zero memory leaks or use-after-free errors during high-churn connection tests.
 - Static files are served with correct `Content-Length` and `Content-Type` headers.
-```
 
 ---
 

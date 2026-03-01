@@ -48,7 +48,6 @@ The project is complete when:
 - The container successfully executes `ping 8.8.8.8` and resolves hostnames via `/etc/resolv.conf`.
 - A "fork bomb" or memory-exhaustion script run inside the container is terminated by the kernel without crashing the host.
 - The runtime launches the container successfully when executed by a non-root user.
-```
 
 ---
 

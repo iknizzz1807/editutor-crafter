@@ -1,0 +1,151 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+
+# --- GLOBAL STRUCTURES ---
+
+kernel_internal_state: {
+  label: "Kernel Internal State"
+  direction: down
+
+  chrdevs_hash: {
+    shape: sql_table
+    label: "struct char_device_struct* chrdevs[255]"
+    row1: "Index | Major | Name"
+    row2: "240   | 240   | 'mydevice'"
+    row3: "...   | ...   | ..."
+  }
+
+  cdev_map: {
+    shape: sql_table
+    label: "kobj_map (CDEV kobject map)"
+    row1: "dev_t Range | struct cdev*"
+    row2: "240:0 - 240:0 | &my_cdev"
+  }
+}
+
+sysfs_tree: {
+  label: "Sysfs Virtual Filesystem (/sys)"
+  direction: down
+  
+  class_dir: {
+    label: "/sys/class/myclass/"
+    device_entry: "/sys/class/myclass/mydevice/"
+  }
+}
+
+userspace: {
+  label: "Userspace Context"
+  direction: down
+
+  udev_daemon: {
+    label: "systemd-udevd (netlink listener)"
+    shape: queue
+  }
+
+  dev_node: {
+    label: "/dev/mydevice"
+    shape: cylinder
+    tooltip: "c 240 0"
+  }
+}
+
+# --- MODULE LIFECYCLE ---
+
+module_init: {
+  label: "module_init (init.c)"
+  direction: down
+  style.fill: "#e1f5fe"
+
+  step1: {
+    label: "1. Allocation"
+    code: |'c
+      alloc_chrdev_region(&dev, 0, 1, "mydevice");
+    '|
+  }
+
+  step2: {
+    label: "2. CDEV Registration"
+    code: |'c
+      cdev_init(&cdev, &fops);
+      cdev_add(&cdev, dev, 1);
+    '|
+  }
+
+  step3: {
+    label: "3. Class Creation"
+    code: |'c
+      cls = class_create(THIS_MODULE, "myclass");
+    '|
+  }
+
+  step4: {
+    label: "4. Device Creation"
+    code: |'c
+      device_create(cls, NULL, dev, NULL, "mydevice");
+    '|
+  }
+}
+
+module_exit: {
+  label: "module_exit (exit.c)"
+  direction: down
+  style.fill: "#fafafa"
+
+  clean1: "device_destroy(cls, dev)"
+  clean2: "class_destroy(cls)"
+  clean3: "cdev_del(&cdev)"
+  clean4: "unregister_chrdev_region(dev, 1)"
+}
+
+# --- DATA WALK FLOW ---
+
+module_init.step1 -> kernel_internal_state.chrdevs_hash: "dev_t | 4 bytes | 240:0"
+module_init.step2 -> kernel_internal_state.cdev_map: "struct cdev* | 8 bytes | 0xFFFF88..."
+
+module_init.step3 -> sysfs_tree.class_dir: "mkdir | syscall | /sys/class/myclass"
+module_init.step4 -> sysfs_tree.class_dir.device_entry: "kobject_add | kernel | mydevice"
+
+sysfs_tree.class_dir.device_entry -> userspace.udev_daemon: "netlink | ~512 bytes | ACTION=add" {
+  style.animated: true
+  style.stroke: blue
+}
+
+userspace.udev_daemon -> userspace.dev_node: "mknod | syscall | c 240 0"
+
+# --- CLEANUP PATH ---
+
+module_exit.clean1 -> sysfs_tree.class_dir.device_entry: "kobject_del | kernel | remove" {
+  style.stroke-dash: 4
+  style.stroke: gray
+}
+sysfs_tree.class_dir.device_entry -> userspace.udev_daemon: "netlink | ~512 bytes | ACTION=remove" {
+  style.stroke-dash: 4
+  style.stroke: gray
+}
+userspace.udev_daemon -> userspace.dev_node: "unlink | syscall | rm /dev/mydevice" {
+  style.stroke-dash: 4
+  style.stroke: gray
+}
+
+module_exit.clean4 -> kernel_internal_state.chrdevs_hash: "release | kernel | Major 240" {
+  style.stroke-dash: 4
+  style.stroke: gray
+}
+
+# --- ANNOTATIONS ---
+
+legend: {
+  near: bottom-right
+  init_path: "Registration (Success)" {
+    style.stroke: black
+  }
+  exit_path: "Cleanup (Unload)" {
+    style.stroke: gray
+    style.stroke-dash: 4
+  }
+}

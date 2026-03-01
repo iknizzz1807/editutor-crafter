@@ -1,0 +1,153 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- Shared Components ---
+
+vfs_layer: {
+  shape: rectangle
+  label: "Linux VFS Layer (fs/read_write.c)"
+  style.fill: "#DEE1EB"
+  
+  sys_read: {
+    label: "vfs_read(file, buf, count, pos)"
+    code: |'c
+      ret = file->f_op->read(file, buf, count, pos);
+      // VFS loop in 'cat' utility:
+      // while ((n = read(fd, b, sz)) > 0) write(1, b, n);
+    '|
+  }
+}
+
+kernel_mem: {
+  label: "Physical Memory: kernel_buffer"
+  buffer: {
+    shape: sql_table
+    label: "char *kernel_buffer (0xFFFF8880...)"
+    row0: "0x00 | 'h' | 0x68"
+    row1: "0x01 | 'e' | 0x65"
+    row2: "0x02 | 'l' | 0x6C"
+    row3: "0x03 | 'l' | 0x6C"
+    row4: "0x04 | 'o' | 0x6F"
+    sz: "buffer_used = 5 bytes"
+  }
+}
+
+# --- Scenario 1: Correct Implementation ---
+
+correct_path: {
+  label: "SCENARIO 1: CORRECT (f_pos Updated)"
+  style.stroke: "#2E7D32"
+  style.stroke-width: 4
+
+  state_c1: {
+    shape: class
+    label: "Read Call #1 (Offset 0)"
+    fields: |'c
+      count = 4096;
+      *f_pos = 0;
+      buffer_used = 5;
+    '|
+    methods: |'c
+      bytes_to_copy = min(count, 5 - 0); // = 5
+      copy_to_user(buf, kbuf + 0, 5);
+      *f_pos += 5; // Update pointer
+      return 5;
+    '|
+  }
+
+  state_c2: {
+    shape: class
+    label: "Read Call #2 (Offset 5)"
+    fields: |'c
+      count = 4096;
+      *f_pos = 5;
+      buffer_used = 5;
+    '|
+    methods: |'c
+      if (*f_pos >= buffer_used) return 0; 
+      // result = 0 (EOF)
+    '|
+  }
+  
+  terminal_c: {
+    shape: step
+    label: "'cat' receives 0"
+    code: "loop_exit(SUCCESS);"
+  }
+
+  state_c1 -> state_c2: "loff_t* | 8 bytes | *f_pos = 5"
+  state_c2 -> terminal_c: "ssize_t | 8 bytes | 0 (EOF)"
+}
+
+# --- Scenario 2: Incorrect Implementation ---
+
+incorrect_path: {
+  label: "SCENARIO 2: INCORRECT (f_pos Ignored)"
+  style.stroke: "#C62828"
+  style.stroke-width: 4
+  style.stroke-dash: 5
+
+  state_i1: {
+    shape: class
+    label: "Read Call #1 (Offset 0)"
+    fields: |'c
+      count = 4096;
+      *f_pos = 0;
+    '|
+    methods: |'c
+      copy_to_user(buf, kbuf, 5);
+      // BUG: Missing *f_pos update
+      return 5;
+    '|
+  }
+
+  state_i2: {
+    shape: class
+    label: "Read Call #2 (Still Offset 0)"
+    fields: |'c
+      count = 4096;
+      *f_pos = 0; // Stale value
+    '|
+    methods: |'c
+      copy_to_user(buf, kbuf, 5);
+      return 5; // Infinite Loop
+    '|
+  }
+
+  terminal_i: {
+    shape: step
+    label: "Infinite Output Loop"
+    style.fill: "#FFCDD2"
+    code: "printf('hellohellohello...') "
+  }
+
+  state_i1 -> state_i2: "loff_t* | 8 bytes | *f_pos = 0"
+  state_i2 -> terminal_i: "ssize_t | 8 bytes | 5"
+  terminal_i -> state_i1: "Restart Loop"
+}
+
+# --- Connections ---
+
+vfs_layer.sys_read -> correct_path.state_c1: "read() syscall"
+vfs_layer.sys_read -> incorrect_path.state_i1: "read() syscall"
+
+correct_path.state_c1 -> kernel_mem.buffer: "Read offset 0" {style.stroke: blue}
+incorrect_path.state_i1 -> kernel_mem.buffer: "Read offset 0" {style.stroke: blue}
+incorrect_path.state_i2 -> kernel_mem.buffer: "Read offset 0 (STALE)" {style.stroke: red}
+
+legend: {
+  shape: rectangle
+  near: bottom-right
+  label: "f_pos Logic Contract"
+  math: |'md
+    **Rule**: `bytes_to_read = min(count, data_len - *f_pos)`
+    1. If `*f_pos == data_len`, return `0` (EOF).
+    2. VFS tracks `f_pos` in `struct file`.
+    3. Failure to increment `*f_pos` means VFS never sees progress.
+  '|
+}

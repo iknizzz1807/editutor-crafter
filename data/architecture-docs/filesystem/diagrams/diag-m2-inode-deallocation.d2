@@ -1,0 +1,134 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- ON-DISK STRUCTURES ---
+
+inode: {
+  shape: sql_table
+  label: "struct inode_t (inode.c)"
+  f0: "0x00 | uint16_t | mode // S_IFREG"
+  f1: "0x08 | uint32_t | size // logical bytes"
+  f2: "0x18 | uint32_t | blocks[0..11] // Direct"
+  f3: "0x48 | uint32_t | single_indirect"
+  f4: "0x4C | uint32_t | double_indirect"
+  f5: "0x50 | uint8_t  | reserved[124-80]"
+  sz: "Total: 128 bytes"
+}
+
+bitmap: {
+  shape: sql_table
+  label: "Block Bitmap (Block 1)"
+  b0: "Bit 0  | Block 1024 (Data Start)"
+  b1: "Bit N  | Block 1024 + N"
+  status: "0 = FREE | 1 = USED"
+  sz: "Total: 4096 bytes (32,768 blocks)"
+}
+
+# --- RECURSION STEPS ---
+
+direct_phase: {
+  shape: package
+  label: "Phase 1: Direct Blocks"
+  logic: {
+    shape: code
+    code: |'c
+      for (int i = 0; i < 12; i++) {
+        if (inode->blocks[i] != 0) {
+          free_data_block(fd, sb, inode->blocks[i]);
+          inode->blocks[i] = 0;
+        }
+      }
+    '|
+  }
+}
+
+single_phase: {
+  shape: package
+  label: "Phase 2: Single Indirect"
+  logic: {
+    shape: code
+    code: |'c
+      uint32_t *ptrs = read_block(inode->single_indirect);
+      for (int i = 0; i < 1024; i++) {
+        if (ptrs[i] != 0) free_data_block(ptrs[i]);
+      }
+      free_data_block(inode->single_indirect);
+    '|
+  }
+}
+
+double_phase: {
+  shape: package
+  label: "Phase 3: Double Indirect"
+  logic: {
+    shape: code
+    code: |'c
+      uint32_t *l1 = read_block(inode->double_indirect);
+      for (int i = 0; i < 1024; i++) {
+        if (l1[i] != 0) {
+          uint32_t *l2 = read_block(l1[i]);
+          for (int j = 0; j < 1024; j++) {
+            if (l2[j] != 0) free_data_block(l2[j]);
+          }
+          free_data_block(l1[i]);
+        }
+      }
+      free_data_block(inode->double_indirect);
+    '|
+  }
+}
+
+# --- FLOW & SCENARIOS ---
+
+leak_warning: {
+  label: "CRITICAL: LEAK SCENARIO"
+  shape: callout
+  style: {
+    stroke: red
+    stroke-width: 4
+    fill: "#ffcccc"
+  }
+  content: "If Level-N block is freed before its children, children become ORPHANED. Pointer to child is lost; Bitmap still says USED."
+}
+
+# --- CONNECTIONS ---
+
+inode.f2 -> direct_phase: "uint32_t[12] | 48B | {1024, 1025, ...}"
+inode.f3 -> single_phase: "uint32_t | 4B | 2048 (Indirect Block)"
+inode.f4 -> double_phase: "uint32_t | 4B | 4096 (D-Indirect Block)"
+
+direct_phase -> bitmap: "idx = blk - start | 1 bit | bitmap_clear()"
+single_phase -> bitmap: "idx = blk - start | 1 bit | bitmap_clear()"
+double_phase -> bitmap: "idx = blk - start | 1 bit | bitmap_clear()"
+
+# Visualization of the recursion path
+single_phase.logic -> leak_warning: "Must free ptrs[i] BEFORE single_indirect" {
+  style.stroke: red
+  style.stroke-dash: 4
+}
+
+double_phase.logic -> leak_warning: "Must free L2 BEFORE L1" {
+  style.stroke: red
+  style.stroke-dash: 4
+}
+
+# Implementation indicators
+direct_phase.logic -> bitmap: "Step 1.1: Release Data" {style.stroke: blue}
+single_phase.logic -> bitmap: "Step 2.1: Release Leaves" {style.stroke: blue}
+single_phase.logic -> bitmap: "Step 2.2: Release Pointer Block" {style.stroke: purple}
+double_phase.logic -> bitmap: "Step 3.1: Release Leaves" {style.stroke: blue}
+double_phase.logic -> bitmap: "Step 3.2: Release L2 Blocks" {style.stroke: blue}
+double_phase.logic -> bitmap: "Step 3.3: Release L1 Block" {style.stroke: purple}
+
+legend: {
+  shape: sql_table
+  near: bottom-right
+  item1: "Blue Arrow | Data Block Free"
+  item2: "Purple Arrow | Metadata Block Free"
+  item3: "Red Dashed | Bug/Leak Path"
+}

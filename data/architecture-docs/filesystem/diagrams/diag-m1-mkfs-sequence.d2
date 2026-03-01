@@ -1,0 +1,135 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+
+# MKFS INITIALIZATION SEQUENCE: STATE EVOLUTION
+# This diagram tracks the disk image state transitions during the formatting process.
+
+mkfs_process: {
+  label: "mkfs.c Initialization Logic"
+
+  step1: {
+    label: "1. Raw Provisioning"
+    code: |'c
+      int fd = open(path, O_RDWR|O_CREAT|O_TRUNC, 0644);
+      ftruncate(fd, total_blocks * BLOCK_SIZE);
+    '|
+    desc: "Disk image is a flat, uninitialized blob of zeros on host filesystem."
+  }
+
+  step2: {
+    label: "2. Superblock Bootstrap"
+    code: |'c
+      compute_layout(total_blocks, total_inodes, &sb);
+      sb.magic = FS_MAGIC; // 0xDEADC0DE
+      write_block(fd, 0, &sb);
+    '|
+    desc: "Block 0 is defined. Filesystem geometry is now durable."
+  }
+
+  step3: {
+    label: "3. Metadata Clearing"
+    code: |'c
+      memset(buf, 0, BLOCK_SIZE);
+      write_block(fd, 1, buf); // Block Bitmap
+      write_block(fd, 2, buf); // Inode Bitmap
+      for (i=0; i < sb.inode_table_blocks; i++)
+        write_block(fd, sb.inode_table_start + i, buf);
+    '|
+    desc: "All blocks and inodes marked FREE. Inode table initialized to NULL."
+  }
+
+  step4: {
+    label: "4. Root Directory Creation"
+    code: |'c
+      inode_init_dir(&root_inode, 0755, 0, 0);
+      root_inode.blocks[0] = sb.data_block_start;
+      write_inode(fd, &sb, 1, &root_inode);
+      write_block(fd, sb.data_block_start, dir_data_with_dot_entries);
+    '|
+    desc: "Inode 1 (Root) allocated. Points to first data block containing '.' and '..'."
+  }
+
+  step5: {
+    label: "5. Bitmap Finalization"
+    code: |'c
+      bitmap_set(inode_bitmap, 0); // Inode 1 used
+      bitmap_set(block_bitmap, 0); // Data Block 0 used
+      write_block(fd, 1, block_bitmap);
+      write_block(fd, 2, inode_bitmap);
+    '|
+    desc: "Resource usage reflected in bitmaps to prevent root data overwrite."
+  }
+
+  step6: {
+    label: "6. Superblock Sync"
+    code: |'c
+      sb.free_blocks--; sb.free_inodes--;
+      write_block(fd, 0, &sb);
+      fsync(fd);
+    '|
+    desc: "Free counts updated. All buffers flushed to physical media."
+  }
+
+  step1 -> step2: "fd | int | 3"
+  step2 -> step3: "superblock_t | 4096 bytes | magic=0xDEADC0DE"
+  step3 -> step4: "zero_buf | 4096 bytes | all 0x00"
+  step4 -> step5: "inode_t | 128 bytes | mode=S_IFDIR"
+  step5 -> step6: "bitmap_t | 4096 bytes | first bits = 1"
+}
+
+disk_evolution: {
+  label: "Disk Image State Evolution"
+
+  state_v0: {
+    shape: sql_table
+    label: "State: RAW_PROVISIONED"
+    b0: "0x0000 | 4096B | 0x00 ... (Repeat to EOF)"
+    total: "Total Size: 16.00 MB"
+  }
+
+  state_v1: {
+    shape: sql_table
+    label: "State: SUPERBLOCK_DEFINED"
+    b0: "0x0000 | superblock_t | magic=0xDEADC0DE, root_ino=1"
+    b1: "0x1000 | 4096B | 0x00 (Block Bitmap)"
+    b2: "0x2000 | 4096B | 0x00 (Inode Bitmap)"
+    total: "Geometry locked in Block 0"
+  }
+
+  state_v2: {
+    shape: sql_table
+    label: "State: ROOT_PROVISIONED"
+    b0: "0x0000 | superblock_t | free_blocks=3000, free_inodes=1023"
+    b1: "0x1000 | 4096B | 0x01 (Bit 0 set: Data Block 0 used)"
+    b2: "0x2000 | 4096B | 0x01 (Bit 0 set: Inode 1 used)"
+    b3: "0x3000 | inode_t | Inode 1: Root Dir metadata"
+    bd: "0xM000 | dirent_t[] | '.' -> 1, '..' -> 1"
+    total: "Filesystem valid & navigable"
+  }
+
+  state_v0 -> state_v1: "mkfs writes SB"
+  state_v1 -> state_v2: "mkfs initializes root"
+}
+
+legend: {
+  near: bottom-right
+  metadata: "Purple | On-Disk Structure" {
+    style.fill: "#e1d5e7"
+  }
+  data: "Blue | File Content" {
+    style.fill: "#dae8fc"
+  }
+}
+
+# Explicit constraints to keep layout clean
+mkfs_process.step1 -> disk_evolution.state_v0: "Resulting State" {
+  style.stroke-dash: 3
+}
+mkfs_process.step6 -> disk_evolution.state_v2: "Final State" {
+  style.stroke-dash: 3
+}

@@ -1,0 +1,503 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+# ═══════════════════════════════════════════════════════
+# LAYER 0 — DATA STRUCTURES
+# ═══════════════════════════════════════════════════════
+layer_data: {
+  direction: down
+  label: "DATA LAYER — Core Structs & Types"
+  style.fill: "#EEF2FF"
+  style.stroke: "#6366F1"
+  pte_t: {
+    shape: sql_table
+    label: "pte_t  (vmsim_types.h)  [M1]"
+    b31_12: "uint32_t  pfn        : 20  | Physical Frame Number — bits[31:12]"
+    b11_8:  "uint32_t  _rsvd2     :  4  | Reserved"
+    b7:     "uint32_t  referenced :  1  | A-bit — any access sets this"
+    b6:     "uint32_t  dirty      :  1  | D-bit — write access only"
+    b5:     "uint32_t  perm_read  :  1  | R permission"
+    b4:     "uint32_t  perm_write :  1  | W permission"
+    b3_1:   "uint32_t  _rsvd1     :  3  | Reserved"
+    b0:     "uint32_t  valid      :  1  | V-bit — Present in RAM"
+    sz:     "Total: 4 bytes | cache line holds 16 PTEs (64B / 4B)"
+  }
+  pde_t: {
+    shape: sql_table
+    label: "pde_t  (vmsim_m3_types.h)  [M3]"
+    b31_12: "uint32_t  pt_addr   : 20  | Phys base of 2nd-level PT — bits[31:12]"
+    b11_1:  "uint32_t  avail     : 11  | OS-available bits"
+    b0:     "uint32_t  present   :  1  | P-bit — sub-table allocated"
+    sz:     "Total: 4 bytes | 1024 PDEs × 4B = 4096B = 1 frame"
+  }
+  tlb_entry_t: {
+    shape: sql_table
+    label: "tlb_entry_t  (tlb.h)  [M2]"
+    off00: "uint32_t  vpn          | Tag: Virtual Page Number — offset 0x00"
+    off04: "uint32_t  pfn          | Data: Physical Frame Number — offset 0x04"
+    off08: "uint16_t  asid         | Address Space ID — offset 0x08"
+    off0A: "uint8_t   flags        | valid(0)dirty(1)ref(2)writable(3) — 0x0A"
+    off0B: "uint8_t   age          | LRU counter (0=fresh,255=oldest) — 0x0B"
+    sz:    "Total: 12 bytes | 64-entry TLB = 768B fits in 32KB L1"
+  }
+  frame_desc_t: {
+    shape: sql_table
+    label: "frame_desc_t  (replacement_metadata.h)  [M4]"
+    off00: "uint32_t  vpn         | Current VPN owner (0xFFFFFFFF=free) — 0x00"
+    off04: "uint16_t  asid        | Owning process ASID — 0x04"
+    off06: "uint8_t   flags       | in_use(0)dirty(1)ref_bit(2) — 0x06"
+    off07: "uint8_t   _pad        | Alignment — 0x07"
+    off08: "uint64_t  load_time   | Logical timestamp of alloc (FIFO) — 0x08"
+    off10: "uint64_t  last_access | Logical timestamp of last use (LRU) — 0x10"
+    off18: "uint64_t  _reserved   | Future use — 0x18"
+    sz:    "Total: 32 bytes | 2 descriptors per 64B cache line"
+  }
+  swap_slot_t: {
+    shape: sql_table
+    label: "swap_slot_t  (swap.h)  [M4]"
+    data:   "uint8_t   data[4096]  | Saved page content"
+    vpn:    "uint32_t  vpn         | Owning VPN"
+    in_use: "bool      in_use      | Slot occupied?"
+    sz:     "Total: 4101 bytes | MAX_SWAP_PAGES=256 slots"
+  }
+  mem_access_t: {
+    shape: sql_table
+    label: "mem_access_t  (trace_parser.h)  [M1–M4]"
+    type:  "access_type_t  type   | ACCESS_READ=0  ACCESS_WRITE=1"
+    vaddr: "uint32_t       vaddr  | 32-bit virtual address from trace"
+    sz:    "Total: 8 bytes"
+  }
+  physical_frame_t: {
+    shape: sql_table
+    label: "physical_frame_t  (vmsim_types.h)  [M1]"
+    data:      "uint8_t   data[4096]  | Simulated page content"
+    owner_vpn: "uint32_t  owner_vpn   | Back-ref for debugging"
+    in_use:    "bool      in_use      | Allocation status"
+    sz:        "Total: 4101 bytes | 64 frames = 256KB simulated RAM"
+  }
+}
+# ═══════════════════════════════════════════════════════
+# LAYER 1 — LOGIC MODULES
+# ═══════════════════════════════════════════════════════
+layer_logic: {
+  direction: down
+  label: "LOGIC LAYER — Modules & Algorithms"
+  style.fill: "#F0FDF4"
+  style.stroke: "#22C55E"
+  # ── M1 ──────────────────────────────────────────────
+  m1_mmu: {
+    shape: class
+    label: "MMU / mmu.c  [M1]  — Flat Page Table"
+    style.fill: "#DCFCE7"
+    fields: |'c
+      page_table_t  pt;          // 4MB flat array (1048576 PTEs)
+      physical_frame_t *frames;  // NUM_FRAMES=64 slots
+      uint64_t  stats_accesses;
+      uint64_t  stats_page_faults;
+      uint64_t  stats_prot_faults;
+    '|
+    methods: |'c
+      uint32_t  vpn_from_addr(uint32_t vaddr);
+      uint32_t  offset_from_addr(uint32_t vaddr);
+      uint32_t  make_physical_addr(uint32_t pfn, uint32_t offset);
+      xlate_t   translate(simulator_t *sim, uint32_t vaddr, bool is_write);
+      uint32_t  alloc_free_frame(simulator_t *sim);
+      uint32_t  handle_page_fault(simulator_t *sim, uint32_t vpn, access_type_t t);
+      int       simulator_mmap(simulator_t *sim, uint32_t vpn, int r, int w);
+      void      simulator_init(simulator_t *sim);
+      void      print_stats(const simulator_t *sim);
+    '|
+  }
+  # ── M2 ──────────────────────────────────────────────
+  m2_tlb: {
+    shape: class
+    label: "TLB / tlb.c  [M2]  — Translation Lookaside Buffer"
+    style.fill: "#FEF9C3"
+    fields: |'c
+      tlb_entry_t *entries;   // TLB_SIZE=64 slots
+      uint32_t     size;      // configurable: 16/32/64
+      uint16_t     active_asid;
+      uint32_t     rand_state; // seeded PRNG for random eviction
+      uint64_t     hits;
+      uint64_t     misses;
+      uint64_t     evictions;
+      uint64_t     flushes;
+    '|
+    methods: |'c
+      void      tlb_init(tlb_t *tlb, uint32_t size, uint32_t seed);
+      uint32_t  tlb_lookup(tlb_t *t, uint32_t vpn, bool w, int *s);
+      void      tlb_insert(tlb_t *t, page_table_t *pt, uint32_t vpn,
+                           uint32_t pfn, bool writable);
+      void      tlb_flush_all(tlb_t *t, page_table_t *pt);
+      void      tlb_flush_asid(tlb_t *t, page_table_t *pt, uint16_t asid);
+      void      tlb_flush_page(tlb_t *t, page_table_t *pt, uint32_t vpn);
+      void      context_switch(tlb_t *t, page_table_t *pt,
+                               uint16_t new_asid, bool flush);
+      void      tlb_print_stats(const tlb_t *tlb);
+    '|
+  }
+  m2_translate: {
+    shape: class
+    label: "TLB-Integrated Translate / mmu_v2.c  [M2]"
+    style.fill: "#FEF9C3"
+    fields: |'c
+      // wraps M1 simulator_t + M2 tlb_t
+      simulator_t *sim;
+      tlb_t       *tlb;
+    '|
+    methods: |'c
+      xlate_t translate_with_tlb(simulator_t *sim, tlb_t *tlb,
+                                 uint32_t vaddr, access_type_t t);
+      void    simulate_with_tlb(simulator_t *sim, tlb_t *tlb,
+                                const mem_access_t *acc, size_t n);
+    '|
+  }
+  # ── M3 ──────────────────────────────────────────────
+  m3_process: {
+    shape: class
+    label: "Process Manager / process_manager.c  [M3]"
+    style.fill: "#E0F2FE"
+    fields: |'c
+      // process_t fields:
+      uint16_t          asid;
+      page_directory_t *pgdir;           // root — always 4KB
+      page_table_t     *pgtables[1024];  // NULL until demanded
+      size_t            pt_bytes_allocated;
+      // ml_simulator_t fields:
+      process_t        *active_process;
+      uint32_t          cr3;             // symbolic phys addr of pgdir
+      uint64_t          pt_walks;
+      uint64_t          tlb_hits;
+    '|
+    methods: |'c
+      process_t* process_create(uint16_t asid);
+      void       process_destroy(process_t *proc);
+      uint32_t   get_pdi(uint32_t vaddr);  // bits[31:22]
+      uint32_t   get_pti(uint32_t vaddr);  // bits[21:12]
+      uint32_t   get_offset(uint32_t vaddr);
+      xlate_t    ml_translate(ml_simulator_t *sim, tlb_t *tlb,
+                              uint32_t vaddr, bool is_write);
+      xlate_t    full_translate(ml_simulator_t *sim, tlb_t *tlb,
+                                uint32_t vaddr, access_type_t t);
+      void       ml_context_switch(ml_simulator_t *sim, tlb_t *tlb,
+                                   process_t *new_proc, int force_flush);
+      void       process_print_overhead(const process_t *proc);
+    '|
+  }
+  m3_overhead: {
+    shape: class
+    label: "Overhead Reporter / overhead_reports.c  [M3]"
+    style.fill: "#E0F2FE"
+    fields: |'c
+      // overhead_report_t:
+      size_t   pt_bytes;
+      uint32_t pages_mapped;
+      uint32_t pt2_count;
+    '|
+    methods: |'c
+      overhead_report_t measure_flat_overhead(uint32_t pages_mapped);
+      overhead_report_t measure_twolevel_overhead(const process_t *proc);
+      void print_overhead_comparison(const overhead_report_t *flat,
+                                     const overhead_report_t *two_level);
+    '|
+  }
+  # ── M4 ──────────────────────────────────────────────
+  m4_swap: {
+    shape: class
+    label: "Swap Subsystem / swap.c  [M4]"
+    style.fill: "#FEE2E2"
+    fields: |'c
+      swap_space_t sw;           // MAX_SWAP_PAGES=256 slots
+      uint64_t stats_write_backs;
+      uint64_t stats_page_ins;
+    '|
+    methods: |'c
+      bool swap_page_out(phys_mem_t *pm, swap_space_t *sw,
+                         uint32_t frame, uint32_t vpn);
+      bool swap_page_in(phys_mem_t *pm, swap_space_t *sw,
+                        uint32_t frame, uint32_t vpn);
+      uint32_t swap_find_slot(const swap_space_t *sw, uint32_t vpn);
+      uint32_t swap_alloc_slot(swap_space_t *sw, uint32_t vpn);
+    '|
+  }
+  m4_replacement: {
+    shape: class
+    label: "Replacement Engine / algorithms.c + eviction_engine.c  [M4]"
+    style.fill: "#FEE2E2"
+    fields: |'c
+      phys_mem_t  pm;             // frame_desc_t[64] + data[64][4096]
+      uint32_t    clock_hand;     // Clock algorithm persistent hand
+      uint64_t    logical_clock;  // monotonic access counter
+      // sim_stats_t per algorithm:
+      uint64_t    page_faults;
+      uint64_t    dirty_writebacks;
+      uint64_t    page_ins;
+      uint32_t    peak_working_set;
+    '|
+    methods: |'c
+      replace_result_t replace_page(phys_mem_t *pm, swap_space_t *sw,
+                                    page_table_t *pt, tlb_t *tlb,
+                                    replacement_policy_t policy,
+                                    const mem_access_t *future,
+                                    size_t len, size_t idx,
+                                    uint32_t *clock_hand);
+      replace_result_t evict_frame(phys_mem_t *pm, swap_space_t *sw,
+                                   page_table_t *pt, tlb_t *tlb,
+                                   uint32_t victim_frame);
+      uint32_t fifo_select_victim(const phys_mem_t *pm);
+      uint32_t lru_select_victim(const phys_mem_t *pm);
+      replace_result_t replace_clock(phys_mem_t *pm, swap_space_t *sw,
+                                     page_table_t *pt, tlb_t *tlb,
+                                     uint32_t *clock_hand);
+      uint32_t optimal_select_victim(const phys_mem_t *pm,
+                                     const mem_access_t *future,
+                                     size_t len, size_t idx);
+      void phys_record_access(phys_mem_t *pm, uint32_t frame);
+      uint32_t phys_find_free(phys_mem_t *pm);
+    '|
+  }
+  m4_workingset: {
+    shape: class
+    label: "Working Set Tracker / working_set.c  [M4]"
+    style.fill: "#FEE2E2"
+    fields: |'c
+      uint32_t vpn_history[50]; // WS_WINDOW_SIZE=50
+      uint32_t head;
+      uint32_t current_size;
+    '|
+    methods: |'c
+      void     ws_init(working_set_tracker_t *ws);
+      uint32_t ws_record_access(working_set_tracker_t *ws, uint32_t vpn);
+    '|
+  }
+  m4_reporting: {
+    shape: class
+    label: "Reporting / reporting.c  [M4]"
+    style.fill: "#FEE2E2"
+    fields: |'c
+      sim_stats_t results[4]; // one per policy
+    '|
+    methods: |'c
+      sim_stats_t run_simulation(const mem_access_t *acc, size_t n,
+                                  uint32_t num_frames,
+                                  replacement_policy_t policy,
+                                  page_table_t *pt, tlb_t *tlb);
+      void run_comparison(const mem_access_t *acc, size_t n,
+                          uint32_t num_frames);
+      void print_comparison_table(const sim_stats_t *stats,
+                                   int n, size_t total);
+      void demonstrate_beladys_anomaly(void);
+    '|
+  }
+}
+# ═══════════════════════════════════════════════════════
+# LAYER 2 — I/O & PIPELINE
+# ═══════════════════════════════════════════════════════
+layer_io: {
+  direction: down
+  label: "I/O LAYER — Files, Trace & Output"
+  style.fill: "#FFF7ED"
+  style.stroke: "#F97316"
+  trace_parser: {
+    shape: class
+    label: "Trace Parser / trace_parser.c  [M1–M4]"
+    style.fill: "#FFEDD5"
+    fields: |'c
+      char           op;     // 'R' or 'W'
+      uint32_t       vaddr;  // parsed hex address
+      mem_access_t  *accesses;
+      size_t         count;
+      size_t         capacity;
+    '|
+    methods: |'c
+      bool parse_trace_line(const char *line, mem_access_t *out);
+      int  load_trace(const char *path, mem_access_t **out, size_t *n);
+    '|
+  }
+  trace_file: {
+    shape: document
+    label: "trace file  (.trace)\nFormat: R 0x001A3F7C\n        W 0x004B0020\n# comment lines skipped"
+    style.fill: "#FDE68A"
+  }
+  main_entry: {
+    shape: class
+    label: "Entry Point / main.c  [M1–M4]"
+    style.fill: "#FFEDD5"
+    fields: |'c
+      int    argc;
+      char **argv;  // argv[1] = trace file path
+    '|
+    methods: |'c
+      int  main(int argc, char *argv[]);
+      void simulate(simulator_t *sim,
+                    const mem_access_t *acc, size_t n);
+    '|
+  }
+  stats_output: {
+    shape: parallelogram
+    label: "Statistics Output\nTotal accesses | Page faults %\nTLB hit rate | Swap write-backs\nWorking set | Optimal gap"
+    style.fill: "#FED7AA"
+  }
+  xlate_result: {
+    shape: sql_table
+    label: "xlate_t  (result struct)  [M1–M4]"
+    result: "xlate_result_t  result  | SUCCESS / PAGE_FAULT / PROT_FAULT / OOM"
+    paddr:  "uint32_t        paddr   | Physical address (valid on SUCCESS)"
+    pfn:    "uint32_t        pfn     | Frame number assigned"
+    sz:     "Total: 12 bytes"
+  }
+}
+# ═══════════════════════════════════════════════════════
+# ALGORITHM STEPS — Address Decomposition
+# ═══════════════════════════════════════════════════════
+layer_algo: {
+  direction: down
+  label: "ALGORITHM LAYER — Key Transforms"
+  style.fill: "#F5F3FF"
+  style.stroke: "#8B5CF6"
+  addr_decomp: {
+    label: "Address Decomposition  [M1/M3]"
+    style.fill: "#EDE9FE"
+    style.border-radius: 8
+    flat_decomp: {
+      shape: sql_table
+      label: "Flat (M1): 20+12 split"
+      vpn:    "bits[31:12] >> 12  | VPN   — 0x001A3F7C >> 12 = 0x001A3"
+      offset: "bits[11:0]  & FFF  | Offset — 0x001A3F7C & 0xFFF = 0x7C"
+      range:  "VPN range: 0–1048575 | 1M entries × 4B = 4MB table"
+    }
+    twolevel_decomp: {
+      shape: sql_table
+      label: "Two-Level (M3): 10+10+12 split"
+      pdi:    "bits[31:22] >> 22  | PDI   — covers 4MB per entry"
+      pti:    "bits[21:12] >> 12  | PTI   — covers 4KB per entry"
+      offset: "bits[11:0]  & FFF  | Offset — unchanged in paddr"
+      ex:     "0x004056A8 → PDI=1, PTI=5, offset=0x6A8"
+    }
+  }
+  eviction_seq: {
+    label: "Eviction Sequence  [M4] — MANDATORY ORDER"
+    style.fill: "#EDE9FE"
+    style.border-radius: 8
+    step1: {
+      shape: step
+      label: "1. Identify victim frame\n   (FIFO/LRU/Clock/Optimal)"
+    }
+    step2: {
+      shape: step
+      label: "2. tlb_flush_page(vpn)\n   ← BEFORE PTE change"
+    }
+    step3: {
+      shape: step
+      label: "3. If dirty: swap_page_out()\n   write-back to swap"
+    }
+    step4: {
+      shape: step
+      label: "4. Clear PTE valid+dirty+ref\n   pt->entries[vpn] &= ~mask"
+    }
+    step5: {
+      shape: step
+      label: "5. Reset frame descriptor\n   in_use=false, vpn=0xFFFFFFFF"
+    }
+    step1 -> step2 -> step3 -> step4 -> step5
+  }
+  tlb_lookup_flow: {
+    label: "TLB Lookup Hot Path  [M2]"
+    style.fill: "#EDE9FE"
+    style.border-radius: 8
+    check_valid: {
+      shape: diamond
+      label: "flags & TLB_VALID?"
+    }
+    check_asid: {
+      shape: diamond
+      label: "asid == active_asid?"
+    }
+    check_vpn: {
+      shape: diamond
+      label: "vpn == target_vpn?"
+    }
+    hit: {
+      shape: oval
+      label: "HIT\nreturn pfn"
+      style.fill: "#BBF7D0"
+    }
+    miss: {
+      shape: oval
+      label: "MISS\npage walk"
+      style.fill: "#FECACA"
+    }
+    next_slot: {
+      shape: step
+      label: "next slot"
+    }
+    check_valid -> check_asid: "true"
+    check_valid -> next_slot: "false"
+    check_asid -> check_vpn: "true"
+    check_asid -> next_slot: "false"
+    check_vpn -> hit: "true"
+    check_vpn -> next_slot: "false"
+    next_slot -> miss: "all slots exhausted"
+  }
+}
+# ═══════════════════════════════════════════════════════
+# CONNECTIONS — labeled with type | operation | example
+# ═══════════════════════════════════════════════════════
+# I/O → Logic
+layer_io.trace_file -> layer_io.trace_parser: "char* | fgets line | \"R 0x001A3F7C\\n\""
+layer_io.trace_parser -> layer_io.main_entry: "mem_access_t[] | load_trace() | 1024 entries"
+layer_io.main_entry -> layer_logic.m1_mmu: "mem_access_t* | simulate() | count=1024"
+layer_io.main_entry -> layer_logic.m2_translate: "mem_access_t* | simulate_with_tlb()"
+layer_io.main_entry -> layer_logic.m3_process: "mem_access_t* | full_translate()"
+layer_io.main_entry -> layer_logic.m4_reporting: "mem_access_t* | run_comparison()"
+# Logic → Data (struct usage)
+layer_logic.m1_mmu -> layer_data.pte_t: "pte_t* | RW entries[vpn] | PTE_GET_PFN(pte)"
+layer_logic.m1_mmu -> layer_data.physical_frame_t: "physical_frame_t* | alloc/zero | memset 4096B"
+layer_logic.m2_tlb -> layer_data.tlb_entry_t: "tlb_entry_t* | tag match | 3-way: valid+asid+vpn"
+layer_logic.m2_tlb -> layer_data.pte_t: "pte_t* | writeback | PTE_D|PTE_A on evict"
+layer_logic.m3_process -> layer_data.pde_t: "pde_t* | pgdir entries | pde_make(pt_phys)"
+layer_logic.m3_process -> layer_data.pte_t: "pte_t* | 2nd-level walk | pgtables[pdi][pti]"
+layer_logic.m4_swap -> layer_data.swap_slot_t: "swap_slot_t* | memcpy 4096B | page-out dirty"
+layer_logic.m4_replacement -> layer_data.frame_desc_t: "frame_desc_t* | victim scan | O(64)"
+layer_logic.m4_workingset -> layer_data.mem_access_t: "mem_access_t | vpn ring buffer | window=50"
+# Logic → Logic (milestone progression)
+layer_logic.m1_mmu -> layer_logic.m2_translate: "xlate_t | miss path | TLB miss → page walk"
+layer_logic.m2_translate -> layer_logic.m3_process: "xlate_t | miss path | 2-level walk on TLB miss"
+layer_logic.m3_process -> layer_logic.m4_replacement: "OOM signal | no free frame | replace_page()"
+layer_logic.m4_replacement -> layer_logic.m4_swap: "dirty bool | evict_frame() | swap_page_out()"
+layer_logic.m4_replacement -> layer_logic.m2_tlb: "vpn | tlb_flush_page() | BEFORE PTE clear"
+layer_logic.m4_reporting -> layer_logic.m4_workingset: "uint32_t vpn | ws_record_access() | per tick"
+# Logic → Output
+layer_logic.m4_reporting -> layer_io.stats_output: "sim_stats_t[4] | print_comparison_table()"
+layer_logic.m1_mmu -> layer_io.stats_output: "simulator_t | print_stats() | faults+frames"
+layer_logic.m2_tlb -> layer_io.stats_output: "tlb_t | tlb_print_stats() | hit rate %"
+layer_logic.m3_process -> layer_io.stats_output: "overhead_report_t | savings % vs 4MB flat"
+# Result type wiring
+layer_logic.m1_mmu -> layer_io.xlate_result: "xlate_t | translate() return | SUCCESS/FAULT/OOM"
+layer_logic.m2_translate -> layer_io.xlate_result: "xlate_t | translate_with_tlb() | TLB hit path"
+layer_logic.m3_process -> layer_io.xlate_result: "xlate_t | full_translate() | 2-level result"
+# Algo layer feeds logic
+layer_algo.addr_decomp -> layer_logic.m1_mmu: "uint32_t | vpn_from_addr() | vaddr>>12"
+layer_algo.addr_decomp -> layer_logic.m3_process: "uint32_t | get_pdi/pti() | 10+10+12"
+layer_algo.eviction_seq -> layer_logic.m4_replacement: "replace_result_t | evict_frame() | ordered"
+layer_algo.tlb_lookup_flow -> layer_logic.m2_tlb: "tlb_lookup_t | tag match O(64) | 3-way check"
+# Layout hint: layers flow right
+layer_data -> layer_logic: "structs flow into modules"
+layer_logic -> layer_io: "modules produce output"
+layer_algo -> layer_logic: "algorithms implement modules"
+# ═══════════════════════════════════════════════════════
+# MILESTONE INDEX
+# ═══════════════════════════════════════════════════════
+milestone_index: {
+  shape: sql_table
+  label: "Milestone Index — Virtual Memory Simulator"
+  m1: "M1 | virtual-memory-sim-m1 | Flat Page Table + Address Translation + Demand Paging"
+  m2: "M2 | virtual-memory-sim-m2 | TLB + ASID + LRU/Random Eviction + Coherence"
+  m3: "M3 | virtual-memory-sim-m3 | Multi-Level PT + CR3 + On-Demand Allocation + Overhead"
+  m4: "M4 | virtual-memory-sim-m4 | Page Replacement: FIFO/LRU/Clock/Optimal + Swap"
+}
+milestone_index.near: bottom-center

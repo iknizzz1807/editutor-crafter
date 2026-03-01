@@ -1,0 +1,126 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ─── SHARED KERNEL CONTEXT ───
+kernel_state: {
+  label: "Kernel Driver State (mydevice.c)"
+  shape: sql_table
+  f0: "0x00 | struct mutex | dev_mutex"
+  f1: "0x20 | char*        | kernel_buffer"
+  f2: "0x28 | size_t       | buffer_used"
+  f3: "0x30 | wait_queue   | read_queue"
+  sz: "Total: 64 bytes (1 cache line)"
+}
+
+# ─── UNIVERSE 1: BLOCKING I/O ───
+blocking_io: {
+  label: "Universe 1: Blocking I/O (Default)"
+  style.stroke: "#2196F3"
+  style.fill: "#E3F2FD"
+
+  user_app: {
+    label: "Process A (cat)"
+    shape: person
+  }
+
+  syscall_entry: {
+    label: "sys_read(fd, buf, count)"
+    shape: step
+  }
+
+  kernel_handler: {
+    label: "mydev_read (mydevice.c)"
+    code: |'c
+      mutex_lock(&dev_mutex);
+      while (buffer_used == 0) {
+        mutex_unlock(&dev_mutex);
+        wait_event_interruptible(read_queue, 
+                                 buffer_used > 0);
+        mutex_lock(&dev_mutex);
+      }
+    '|
+  }
+
+  process_state: {
+    label: "State: TASK_INTERRUPTIBLE"
+    style.fill: "#FFF9C4"
+    style.stroke: "#FBC02D"
+  }
+
+  user_app -> syscall_entry: "read() | 8 bytes | fd=3"
+  syscall_entry -> kernel_handler: "VFS Dispatch"
+  kernel_handler -> process_state: "Buffer Empty -> Sleep"
+}
+
+# ─── UNIVERSE 2: NON-BLOCKING I/O ───
+non_blocking_io: {
+  label: "Universe 2: Non-Blocking I/O (O_NONBLOCK)"
+  style.stroke: "#4CAF50"
+  style.fill: "#E8F5E9"
+
+  user_app: {
+    label: "Process B (Event Loop)"
+    shape: person
+  }
+
+  syscall_entry: {
+    label: "sys_read(fd, buf, count)"
+    shape: step
+  }
+
+  logic_gate: {
+    label: "O_NONBLOCK Check"
+    shape: diamond
+    style.fill: "#C8E6C9"
+  }
+
+  code_check: {
+    label: "Implementation (mydevice.c)"
+    code: |'c
+      if (buffer_used == 0) {
+        if (filp->f_flags & O_NONBLOCK) {
+          return -EAGAIN;
+        }
+      }
+    '|
+  }
+
+  immediate_return: {
+    label: "Return to Userspace"
+    shape: step
+    style.fill: "#FFCDD2"
+  }
+
+  user_app -> syscall_entry: "read() | 8 bytes | O_NONBLOCK set"
+  syscall_entry -> logic_gate: "Is Buffer Empty?"
+  logic_gate -> code_check: "YES"
+  code_check -> immediate_return: "Return -1 (errno=EAGAIN)"
+}
+
+# ─── ANNOTATIONS ───
+note_comparison: {
+  label: "Architectural Pattern: Control vs Data"
+  shape: callout
+  content: |md
+    - **Blocking**: Decouples producer/consumer timing via Kernel Scheduler.
+    - **Non-Blocking**: Basis of `epoll` / `libuv`.
+    - **Same Mechanism**: Used in Sockets, Pipes, and TTYs.
+  |
+}
+
+blocking_io.process_state -> non_blocking_io.immediate_return: "The 'Sleep vs. EAGAIN' Divergence" {
+  style.stroke-dash: 5
+}
+
+legend: {
+  shape: sql_table
+  near: bottom-right
+  r1: "Error Code | -EAGAIN | Try again later"
+  r2: "Error Code | -ERESTARTSYS | Signal interrupt, restart syscall"
+  r3: "Return 0 | EOF | Buffer closed permanently"
+}

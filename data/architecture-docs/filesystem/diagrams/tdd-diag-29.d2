@@ -1,0 +1,115 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+ls: "ls -la Process" {
+  shape: person
+}
+vfs: "Kernel VFS" {
+  style.fill: "#DEE1EB"
+}
+fuse_k: "FUSE Kernel Module" {
+  style.fill: "#C7F1FF"
+}
+myfs: "myfs Process (Userspace)" {
+  style.fill: "#E4DBFE"
+}
+disk: "Disk Image (Block Device)" {
+  shape: cylinder
+  style.fill: "#F6F9FC"
+}
+
+# START SEQUENCE
+shape: sequence_diagram
+
+# 1. GETATTR /home
+ls -> vfs: 'stat("/mnt/myfs/home")'
+vfs -> fuse_k: 'vfs_getattr(path="/home")'
+fuse_k -> myfs: "FUSE_GETATTR (unique_id=101, path=\"/home\")"
+
+getattr_logic: "getattr(/home) Logic" {
+  myfs -> myfs: "pthread_mutex_lock(&g_fs.lock) ▼"
+  
+  path_resolve: "path_resolve('/home') [Cold Cache]" {
+    myfs -> disk: "read_block(num=sb.inode_table_start) [Root Inode]"
+    disk -> myfs: "4KB Buffer (inode_t #1)"
+    myfs -> disk: "read_block(num=inode1.blocks[0]) [Root Data]"
+    disk -> myfs: "4KB Buffer (dirent_t list)"
+    myfs -> myfs: 'scan_dir_block: match "home" -> inode 14'
+  }
+
+  myfs -> disk: "read_block(num=inode_table_block_for_14)"
+  disk -> myfs: "4KB Buffer (inode_t #14)"
+  myfs -> myfs: "inode_to_stat(inode14, &st)"
+  myfs -> myfs: "pthread_mutex_unlock(&g_fs.lock) ▲"
+}
+
+myfs -> fuse_k: "reply_attr(st, attr_timeout=1.0s)"
+fuse_k -> vfs: "vfs_getattr success"
+vfs -> ls: "return struct stat"
+
+# 2. OPENDIR
+ls -> vfs: 'opendir("/mnt/myfs/home")'
+vfs -> fuse_k: "FUSE_OPENDIR"
+fuse_k -> myfs: 'myfs_opendir (path="/home")'
+myfs -> fuse_k: "success (fi->fh=14)"
+fuse_k -> vfs: "return fd"
+vfs -> ls: "DIR* handle"
+
+# 3. READDIR
+ls -> vfs: "readdir(dirp)"
+vfs -> fuse_k: "FUSE_READDIR (ino=14, offset=0)"
+
+readdir_logic: "readdir(/home) Logic" {
+  myfs -> myfs: "pthread_mutex_lock(&g_fs.lock) ▼"
+  myfs -> disk: "read_block(num=inode14.blocks[0]) [Directory Data]"
+  disk -> myfs: "4KB Buffer (dirent_t list)"
+  
+  myfs -> myfs: 'readdir_emit(".", 14, FT_DIR)'
+  myfs -> fuse_k: 'filler(buf, ".", &st_14, 0, PLUS)'
+  
+  myfs -> myfs: 'readdir_emit("..", 1, FT_DIR)'
+  myfs -> fuse_k: 'filler(buf, "..", &st_1, 0, PLUS)'
+  
+  myfs -> myfs: 'readdir_emit("user", 82, FT_DIR)'
+  myfs -> fuse_k: 'filler(buf, "user", &st_82, 0, PLUS)'
+  
+  myfs -> myfs: "pthread_mutex_unlock(&g_fs.lock) ▲"
+}
+
+myfs -> fuse_k: "reply_readdir (buffer full/done)"
+fuse_k -> vfs: "vfs_readdir result"
+vfs -> ls: "dirent (user)"
+
+# 4. LSTAT PER ENTRY
+ls -> vfs: 'lstat("/mnt/myfs/home/user")'
+
+warm_cache: "Warm Cache Optimization" {
+  vfs -> vfs: 'dcache lookup ("home", "user")'
+  vfs: "**Warm Path**: If entry_timeout > 0, Kernel skips calling myfs getattr again."
+}
+
+# Assuming Cold or Expired for detail
+vfs -> fuse_k: 'FUSE_GETATTR (path="/home/user")'
+fuse_k -> myfs: 'myfs_getattr (path="/home/user")'
+
+getattr_res: "getattr(/home/user) Resolution" {
+  myfs -> myfs: "lock acquire ▼"
+  myfs -> myfs: 'path_resolve("/home/user")'
+  myfs -> disk: "read_block(inode_table_for_82)"
+  disk -> myfs: "inode_t #82"
+  myfs -> myfs: "lock release ▲"
+}
+
+myfs -> fuse_k: "reply_attr(st_82)"
+fuse_k -> vfs: "success"
+vfs -> ls: "return struct stat"
+
+# ANNOTATIONS
+ls: "**Total Latency Breakdown**\n- Context Switches: ~4μs (2 round trips)\n- Disk I/O (Cold): ~100μs per read\n- Path Walk: O(depth) Disk Reads"
+
+myfs: "**Thread Safety**\n- Global lock protects `FsCtx`\n- Held during block-level I/O"

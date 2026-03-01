@@ -1,0 +1,172 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# DATA STRUCTURE DEFINITIONS (Implementation-Ready)
+# ────────────────────────────────────────────────────────────────────────────
+
+struct_defs: {
+  label: "Data Structures (vmsim.h)"
+  
+  pte: {
+    shape: sql_table
+    label: "pte_t (Page Table Entry)"
+    f0: "0x00 | uint32_t | [31:12] PFN  // Physical Frame Number"
+    f1: "0x00 | uint32_t | [11:8]  RSVD // Reserved"
+    f2: "0x00 | uint32_t | [7]     R    // Referenced Bit"
+    f3: "0x00 | uint32_t | [6]     D    // Dirty Bit"
+    f4: "0x00 | uint32_t | [5]     READ // Read Perm"
+    f5: "0x00 | uint32_t | [4]     WRIT // Write Perm"
+    f6: "0x00 | uint32_t | [0]     V    // Valid/Present"
+    sz: "Total: 4 bytes"
+  }
+
+  frame_desc: {
+    shape: sql_table
+    label: "frame_desc_t (Physical RAM Meta)"
+    f0: "0x00 | uint32_t | vpn         // Owning Virtual Page"
+    f1: "0x04 | uint64_t | load_time   // FIFO/LRU timestamp"
+    f2: "0x0C | bool     | dirty       // Mirrored D-bit"
+    f3: "0x0D | bool     | in_use      // Occupied flag"
+    sz: "Total: 16 bytes"
+  }
+
+  swap_slot: {
+    shape: sql_table
+    label: "swap_slot_t (Disk Storage)"
+    f0: "0x00 | uint8_t[4096] | data   // Page content"
+    f1: "0x1000| uint32_t     | vpn    // Associated VPN"
+    f2: "0x1004| bool         | in_use // Slot occupied"
+    sz: "Total: 4101 bytes"
+  }
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# THE DATA WALK: PAGE LIFECYCLE
+# ────────────────────────────────────────────────────────────────────────────
+
+lifecycle: {
+  label: "Page Lifecycle: Demand -> Dirty -> Swap -> Reload"
+
+  step1: {
+    label: "Step 1: Demand Page-In"
+    desc: "First access (Read) triggers fault. No swap data exists."
+    code: |'c
+      if (!pte->valid) {
+        frame = alloc_free_frame();
+        if (!find_in_swap(vpn)) {
+          memset(pm->data[frame], 0, 4096);
+        }
+        *pte = pte_make(frame, 1, 0); // V=1
+      }
+    '|
+    style.stroke: "#88DCF7"
+  }
+
+  step2: {
+    label: "Step 2: State Change (Dirty)"
+    desc: "Process performs Write. MMU sets D-bit."
+    code: |'c
+      if (access == WRITE) {
+        *pte |= PTE_DIRTY;
+        pm->desc[frame].dirty = true;
+      }
+    '|
+    style.stroke: "#F1A64F"
+  }
+
+  step3: {
+    label: "Step 3: Page-Out (Eviction)"
+    desc: "Victim chosen. Dirty bit=1 forces Disk Write."
+    code: |'c
+      if (victim->dirty) {
+        slot = swap_alloc_slot(vpn);
+        memcpy(sw[slot].data, pm[frame], 4096);
+        sw->write_backs++;
+      }
+      *pte &= ~PTE_VALID; // Mark swapped
+    '|
+    style.stroke: "#FE7070"
+  }
+
+  step4: {
+    label: "Step 4: Reload (Page-In)"
+    desc: "Re-access fault. Load data from Swap Slot 5."
+    code: |'c
+      slot = swap_find_slot(vpn);
+      if (slot != UNUSED) {
+        memcpy(pm[new_frame], sw[slot].data, 4096);
+        sw->slots[slot].in_use = false;
+        sw->page_ins++;
+      }
+    '|
+    style.stroke: "#A7CC9E"
+  }
+
+  step1 -> step2: "W 0x00401000 | 4 bytes | val=0xDEADBEEF"
+  step2 -> step3: "Replacement Logic | O(N) | Victim=VPN 0x401"
+  step3 -> step4: "R 0x00401004 | 4 bytes | Page Fault"
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# PHYSICAL MAPPING & SWAP MAP
+# ────────────────────────────────────────────────────────────────────────────
+
+mapping_state: {
+  direction: down
+
+  pte_valid: {
+    shape: sql_table
+    label: "PTE 0x401 (State: RESIDENT)"
+    row1: "PFN: 0x00000 | V: 1 | D: 1 | R: 1"
+  }
+
+  pte_swapped: {
+    shape: sql_table
+    label: "PTE 0x401 (State: SWAPPED)"
+    row1: "PFN: 0x00000 | V: 0 | D: 0 | R: 0"
+    note: "Meta: VPN 0x401 is in Swap Slot 5"
+  }
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# ANNOTATIONS & FLOW
+# ────────────────────────────────────────────────────────────────────────────
+
+lifecycle.step1 -> mapping_state.pte_valid: "Allocation | 4KB Page | Zero-filled" {
+  style.stroke-dash: 3
+}
+
+mapping_state.pte_valid -> lifecycle.step3: "Eviction Trigger | D=1 | Dirty Write-back" {
+  style.stroke: red
+}
+
+lifecycle.step3 -> lifecycle.step4: "Storage | 4KB | swap_slots[5]"
+
+# Legend
+legend: {
+  near: bottom-right
+  read: Read Path {
+    style.fill: "#C7F1FF"
+  }
+  write: Write/Dirty Path {
+    style.fill: "#FFE7CB"
+  }
+  fault: Page Fault Path {
+    style.fill: "#FE7070"
+  }
+}
+
+# Layout constraints to prevent overlaps
+struct_defs.near: top-left
+mapping_state.near: bottom-center
+legend.near: bottom-right
+
+# Final global style
+***.style.font: mono
+(*** -> ***)[*].style.font-size: 14

@@ -1,0 +1,155 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+
+# --- STYLES & CLASSES ---
+classes: {
+  read_op: {
+    style: {
+      stroke: "#3b82f6"
+      fill: "#eff6ff"
+      stroke-width: 2
+    }
+  }
+  write_op: {
+    style: {
+      stroke: "#10b981"
+      fill: "#ecfdf5"
+      stroke-width: 2
+    }
+  }
+  logic_step: {
+    shape: step
+    style: {
+      fill: "#f3f4f6"
+    }
+  }
+}
+
+# --- DATA STRUCTURES ---
+inode_table: {
+  shape: sql_table
+  label: "struct inode_t (fs.h)"
+  f0: "0x00 | uint16_t | mode // S_IFREG | 0644"
+  f1: "0x02 | uint16_t | nlinks // 1"
+  f2: "0x04 | uint32_t | size // 0"
+  f3: "0x08 | uint32_t | atime"
+  f4: "0x0C | uint32_t | mtime"
+  f5: "0x10 | uint32_t[12] | blocks // all 0"
+  f6: "0x40 | uint32_t | single_indirect // 0"
+  sz: "Total: 128 bytes"
+}
+
+dir_entry: {
+  shape: sql_table
+  label: "struct dirent_t (dir.h)"
+  f0: "0x00 | uint32_t | inode_num // 48"
+  f1: "0x04 | uint16_t | rec_len // variable"
+  f2: "0x06 | uint8_t  | name_len // 11"
+  f3: "0x07 | uint8_t  | file_type // FT_REG_FILE"
+  f4: "0x08 | char[256]| name // 'newfile.txt'"
+  sz: "Total: ~264 bytes (aligned)"
+}
+
+# --- OPERATION TRACE ---
+trace: {
+  label: "create_file('/home/user/newfile.txt') Trace"
+
+  path_res: {
+    label: "T1: Path Resolution"
+    class: logic_step
+    code: |'c
+      ino = sb->root_inode; // Start at 1
+      ino = dir_lookup(1, "home"); // -> 5
+      ino = dir_lookup(5, "user"); // -> 12
+    '|
+    io_meta: "6 Block Reads (Inode + Data per level)"
+  }
+
+  valid: {
+    label: "T2: Uniqueness Check"
+    class: logic_step
+    code: |'c
+      if (dir_lookup(12, "newfile.txt") > 0) 
+          return -EEXIST;
+    '|
+    io_meta: "1 Block Read (User Dir Data)"
+  }
+
+  alloc: {
+    label: "T3: Inode Allocation"
+    class: logic_step
+    code: |'c
+      uint8_t bmap[4096];
+      read_block(fd, 2, bmap);
+      int idx = bitmap_find_free(bmap); // -> 47
+      bitmap_set(bmap, 47);
+      write_block(fd, 2, bmap);
+    '|
+    io_meta: "1 Read + 1 Write (Inode Bitmap)"
+  }
+
+  persist_ino: {
+    label: "T4: Inode Persistence"
+    class: logic_step
+    code: |'c
+      inode_t new_ino;
+      inode_init_file(&new_ino, 0644, uid, gid);
+      write_inode(fd, 48, &new_ino);
+    '|
+    io_meta: "1 Read-Modify-Write (Inode Table)"
+  }
+
+  link_dir: {
+    label: "T5: Directory Linkage"
+    class: logic_step
+    code: |'c
+      dir_add_entry(12, "newfile.txt", 48);
+      // Updates parent inode 12 mtime
+      write_inode(fd, 12, &parent_ino);
+    '|
+    io_meta: "2 RMW (Dir Data + Parent Inode)"
+  }
+
+  update_sb: {
+    label: "T6: Superblock Flush"
+    class: logic_step
+    code: |'c
+      sb->free_inodes--;
+      write_block(fd, 0, sb);
+    '|
+    io_meta: "1 Block Write (Superblock)"
+  }
+}
+
+# --- IO FLOW CONNECTIONS ---
+disk_image: {
+  shape: cylinder
+  label: "disk.img (Raw Blocks)"
+}
+
+trace.path_res -> disk_image: "read_block() | 4KB | Blocks {0, 1, 5, 10, 12, 20}" { class: read_op }
+trace.valid    -> disk_image: "read_block() | 4KB | Block 20 (user dir)" { class: read_op }
+trace.alloc    -> disk_image: "write_block()| 4KB | Block 2 (bitmap)" { class: write_op }
+trace.persist_ino -> inode_table: "serialize | 128B | Inode 48"
+inode_table -> disk_image: "write_block()| 4KB | Block 4 (Table)" { class: write_op }
+trace.link_dir -> dir_entry: "append | ~24B | 'newfile.txt'->48"
+dir_entry -> disk_image: "write_block()| 4KB | Block 20 (user data)" { class: write_op }
+trace.update_sb -> disk_image: "write_block()| 4KB | Block 0 (SB)" { class: write_op }
+
+# --- SUMMARY LEGEND ---
+summary: {
+  near: bottom-right
+  shape: rectangle
+  label: "Performance Impact"
+  content: |md
+    - **Total Block Reads**: 8
+    - **Total Block Writes**: 5
+    - **Latency**: ~1.3ms (SSD @ 100µs/IO)
+    - **Note**: Journaling adds 2 fsyncs
+  |
+}

@@ -1,0 +1,139 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+
+# --- LAYER 1: VFS SYSTEM CALL DISPATCH ---
+vfs_entry: {
+  shape: package
+  label: "VFS Syscall Dispatch (fs/read_write.c)"
+  
+  vfs_write_fn: {
+    shape: code
+    label: "vfs_write(file, buf, count, pos)"
+    code: |'c
+      if (!(file->f_mode & FMODE_WRITE)) return -EBADF;
+      if (!file->f_op->write) return -EINVAL;
+      return file->f_op->write(file, buf, count, pos);
+    '|
+  }
+}
+
+# --- LAYER 2: OBJECT DATA STRUCTURES ---
+kernel_memory: {
+  label: "Kernel Space Address Space"
+  direction: down
+
+  fops: {
+    shape: sql_table
+    label: "struct file_operations (linux/fs.h)"
+    f0: "0x00 | struct module* | .owner // THIS_MODULE"
+    f1: "0x08 | ssize_t (*read)(...) | .read // __user access"
+    f2: "0x10 | ssize_t (*write)(...) | .write // __user access"
+    f3: "0x18 | int (*open)(...) | .open // Inode context"
+    f4: "0x20 | int (*release)(...) | .release // Close handler"
+    f5: "0x28 | long (*ioctl)(...) | .unlocked_ioctl // M3 Control"
+    f6: "0x30 | __poll_t (*poll)(...) | .poll // M4 Eventing"
+    sz: "Total: ~248 bytes (size varies by kernel config)"
+  }
+
+  file_a: {
+    shape: sql_table
+    label: "struct file (Process A /dev/mydev)"
+    f0: "0x20 | struct file_operations* | f_op // Pointer to table"
+    f1: "0x38 | unsigned int | f_flags // O_RDWR | O_NONBLOCK"
+    f2: "0x40 | loff_t | f_pos // Offset: 1024"
+    f3: "0x48 | void* | private_data // Driver state pointer"
+  }
+
+  file_b: {
+    shape: sql_table
+    label: "struct file (Process B /dev/mydev)"
+    f0: "0x20 | struct file_operations* | f_op // Shared table"
+    f1: "0x38 | unsigned int | f_flags // O_RDONLY"
+    f2: "0x40 | loff_t | f_pos // Offset: 0"
+    f3: "0x48 | void* | private_data // Driver state pointer"
+  }
+
+  inode: {
+    shape: sql_table
+    label: "struct inode (The Device Node)"
+    f0: "0x00 | dev_t | i_rdev // Major/Minor: 240, 0"
+    f1: "0x08 | struct cdev* | i_cdev // Points to our cdev"
+  }
+}
+
+# --- LAYER 3: USERSPACE PROCESSES ---
+processes: {
+  direction: right
+  
+  proc_a: {
+    label: "Process A (PID: 1024)"
+    fd_table: "fd[3] -> struct file*"
+  }
+
+  proc_b: {
+    label: "Process B (PID: 2048)"
+    fd_table: "fd[3] -> struct file*"
+  }
+}
+
+# --- LAYER 4: LANGUAGE EQUIVALENCE ---
+comparison: {
+  label: "Architectural Equivalence"
+  style.fill: "#f8f9fa"
+
+  cpp_model: {
+    shape: class
+    label: "C++ VTable Pattern"
+    definition: |'cpp
+      class CharDevice {
+        virtual ssize_t read(...) = 0;
+        virtual ssize_t write(...) = 0;
+      };
+    '|
+    note: "file_operations is exactly a C++ vtable"
+  }
+
+  go_model: {
+    shape: class
+    label: "Go Interface Pattern"
+    definition: |'go
+      type FileOperations interface {
+        Read(p []byte) (n int, err error)
+        Write(p []byte) (n int, err error)
+      }
+    '|
+    note: "file_operations is the itab.fun table"
+  }
+}
+
+# --- CONNECTIONS ---
+processes.proc_a -> kernel_memory.file_a: "fd[3] | 8 bytes | Pointer"
+processes.proc_b -> kernel_memory.file_b: "fd[3] | 8 bytes | Pointer"
+
+kernel_memory.file_a -> kernel_memory.fops: "f_op | 8 bytes | &mydev_fops"
+kernel_memory.file_b -> kernel_memory.fops: "f_op | 8 bytes | &mydev_fops"
+
+vfs_entry.vfs_write_fn -> kernel_memory.fops.f2: "Dispatch | Indirect Call | f_op->write()"
+
+kernel_memory.file_a -> kernel_memory.inode: "Shared Resource | f_inode | One instance"
+kernel_memory.file_b -> kernel_memory.inode: "Shared Resource | f_inode | One instance"
+
+comparison.cpp_model -> kernel_memory.fops: "Structural Match" { style.stroke-dash: 5 }
+comparison.go_model -> kernel_memory.fops: "Structural Match" { style.stroke-dash: 5 }
+
+# Legend / Annotations
+legend: {
+  shape: callout
+  label: |md
+    ### Implementation Note
+    * **Independent State**: Each `struct file` has its own `f_pos`, allowing independent read/write offsets.
+    * **Shared Behavior**: All instances of the device share the same `file_operations` jump table.
+    * **VTable Security**: `f_op` is usually `const` in kernel code to prevent rootkit hooking via pointer hijacking.
+  |
+  near: bottom-right
+}

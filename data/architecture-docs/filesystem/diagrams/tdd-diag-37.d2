@@ -1,0 +1,168 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# Journal Recovery Algorithm: journal_recover()
+# Based on TDD Section 5.2
+
+RECOVERY_FLOW: {
+  shape: sequence_diagram
+  
+  START: ● {
+    shape: circle
+    style.fill: black
+  }
+
+  STEP_1: "1. Initialization" {
+    style.fill: "#E1F5FE"
+    description: |md
+      - Read **journal_super_t** from block `sb->s_journal_start`
+      - Initialize `pos = g_jsuper.j_head`
+      - If `j_head == j_tail`, exit (clean)
+    |
+  }
+
+  STEP_2: "2. Scan Loop" {
+    style.fill: "#E1F5FE"
+    description: |md
+      - **Loop** while `pos != g_jsuper.j_tail`
+      - `abs_block = journal_abs_block(pos)`
+      - Read 4KB buffer from disk
+    |
+  }
+
+  STEP_3: "3. Magic Validation" {
+    description: |md
+      - Check `buf->j_magic == 0x4A4F5552`
+    |
+    VALID_MAGIC: "YES" {
+      style.font-color: green
+    }
+    INVALID_MAGIC: "NO (STOP SCAN)" {
+      style.font-color: red
+      style.stroke: red
+    }
+  }
+
+  STEP_4: "4. Type Check" {
+    description: |md
+      - `type = buf->j_block_type`
+    |
+    IS_DESC: "JB_TYPE_DESC"
+    IS_OTHER: "OTHER" {
+      action: "pos = (pos + 1) % total"
+    }
+  }
+
+  STEP_5: "5. Transaction Gathering" {
+    style.fill: "#FFF9C4"
+    description: |md
+      - Read `nr = desc->j_nr_blocks`
+      - Read following `nr` data blocks from journal
+      - **Compute Checksum** (sum of data bytes)
+      - Read block at `pos + 1 + nr` (Commit Block candidate)
+    |
+  }
+
+  STEP_6: "6. Commit Verification" {
+    description: |md
+      - **Check:** Magic Valid?
+      - **Check:** Type == JB_TYPE_COMMIT?
+      - **Check:** Sequence == Desc->Sequence?
+      - **Check:** Checksum Matches?
+    |
+    VERIFIED: "VALID COMMIT" {
+      style.stroke: green
+      style.font-color: green
+    }
+    ABORTED: "INVALID / INCOMPLETE" {
+      style.stroke: red
+      style.font-color: red
+    }
+  }
+
+  STEP_7: "7. In-Place Replay" {
+    style.fill: "#C8E6C9"
+    style.stroke: "#2E7D32"
+    style.stroke-width: 4
+    description: |md
+      - **REPLAY (Idempotent):**
+      - For `i` in `0..nr-1`:
+        - `target = desc->j_blocks[i]`
+        - **write_block(target, journal_data[i])**
+      - `pos = (pos + nr + 2) % total`
+    |
+  }
+
+  STEP_8: "8. Finalization" {
+    style.fill: "#D1C4E9"
+    description: |md
+      - **fsync(fd)** (Ensure all replayed blocks durable)
+      - **journal_checkpoint()**
+        - `j_head = j_tail`
+        - `journal_persist_super()`
+    |
+  }
+
+  # Transitions
+  START -> STEP_1
+  STEP_1 -> STEP_2
+  STEP_2 -> STEP_3
+  
+  STEP_3 -> STEP_3.INVALID_MAGIC: "STOP"
+  STEP_3 -> STEP_3.VALID_MAGIC -> STEP_4
+  
+  STEP_4 -> STEP_4.IS_OTHER: "Continue Scan"
+  STEP_4.IS_OTHER -> STEP_2
+  
+  STEP_4 -> STEP_4.IS_DESC -> STEP_5
+  STEP_5 -> STEP_6
+  
+  STEP_6 -> STEP_6.ABORTED: "LOG: Discard incomplete txn"
+  STEP_6.ABORTED -> STEP_2: "pos = (pos + 1) % total"
+  
+  STEP_6 -> STEP_6.VERIFIED -> STEP_7
+  STEP_7 -> STEP_2: "Next Txn"
+  
+  STEP_2 -> STEP_8: "Loop End (pos == j_tail)"
+  STEP_8 -> MOUNT_READY: "●"
+}
+
+# State Change Visualization
+REPLAY_STATE: {
+  BEFORE: {
+    INODE_TABLE: "Block 50 (Stale Data)" {
+      style.fill: gray
+    }
+    JOURNAL: {
+      DESC: "Txn Seq 5: [Target=50]"
+      DATA: "New Inode Data"
+      COMMIT: "Seq 5 [Valid]"
+    }
+  }
+  
+  AFTER: {
+    INODE_TABLE: "Block 50 (**New Inode Data**)" {
+      style.fill: blue
+      style.font-color: white
+      style.bold: true
+      style.stroke: red
+    }
+    JOURNAL: "Checkpoint Cleared (Head=Tail)" {
+      style.fill: green
+    }
+  }
+  
+  BEFORE.JOURNAL.DATA -> AFTER.INODE_TABLE: "journal_recover() Replay" {
+    style.stroke: orange
+    style.animated: true
+  }
+}
+
+RECOVERY_FLOW.STEP_7 -> REPLAY_STATE: "Algorithm Execution" {
+  style.stroke-dash: 5
+}

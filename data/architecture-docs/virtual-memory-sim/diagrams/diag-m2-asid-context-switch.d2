@@ -1,0 +1,178 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+header: {
+  label: "ASID-Tagged TLB: Context Switch Optimization (Hardware-Software Contract)"
+  near: top-center
+  style: {
+    font-size: 24
+    bold: true
+    stroke-width: 0
+  }
+}
+
+# --- Shared Data Structures ---
+definitions: {
+  tlb_entry: {
+    shape: sql_table
+    label: "struct tlb_entry_t (tlb.h)"
+    f0: "0x00 | uint32_t | vpn : 20   // Virtual Page Number Tag"
+    f1: "0x04 | uint32_t | pfn : 20   // Physical Frame Number Data"
+    f2: "0x08 | uint16_t | asid       // Address Space ID"
+    f3: "0x0A | uint8_t  | flags      // V | D | R | W"
+    sz: "Total: 12 bytes"
+  }
+}
+
+# --- Scenario 1: Legacy TLB (No ASID) ---
+legacy_flow: {
+  label: "Scenario A: Legacy TLB (No ASID Support)"
+  direction: down
+
+  t0_a: {
+    shape: sql_table
+    label: "T0: Process A Active (CR3=0x1000)"
+    h: "Idx | VPN    | PFN    | V"
+    r0: "0   | 0x001  | 0xA    | 1"
+    r1: "1   | 0x002  | 0xB    | 1"
+    r2: "2   | 0x003  | 0xC    | 1"
+    style: { fill: "#e1f5fe" }
+  }
+
+  switch_event: {
+    label: "CRITICAL: Context Switch A -> B"
+    shape: callout
+    style: { 
+      fill: "#ffebee"
+      stroke: red
+      stroke-width: 4
+    }
+  }
+
+  t1_flush: {
+    shape: sql_table
+    label: "T1: TLB FLUSHED (CR3=0x2000)"
+    h: "Idx | VPN    | PFN    | V"
+    r0: "0   | 0x000  | 0x0    | 0"
+    r1: "1   | 0x000  | 0x0    | 0"
+    r2: "2   | 0x000  | 0x0    | 0"
+    note: "All entries invalidated to prevent cross-process leakage"
+    style: { stroke-dash: 5 }
+  }
+
+  t2_miss: {
+    shape: sql_table
+    label: "T2: Process B First Access (VPN 0x001)"
+    h: "Idx | VPN    | PFN    | V"
+    r0: "0   | 0x001  | 0xF    | 1"
+    r1: "1   | 0x000  | 0x0    | 0"
+    r2: "2   | 0x000  | 0x0    | 0"
+    style: { fill: "#f3e5f5" }
+  }
+
+  t0_a -> switch_event: "Instruction | 2B | MOV CR3, 0x2000"
+  switch_event -> t1_flush: "hardware_signal | 0B | TLB_FLUSH_ALL()"
+  t1_flush -> t2_miss: "Performance Penalty | 4B | COLD MISS -> Walk PT"
+}
+
+# --- Scenario 2: Modern ASID-Tagged TLB ---
+asid_flow: {
+  label: "Scenario B: ASID-Tagged TLB (Persistent)"
+  direction: down
+
+  logic: {
+    label: "3-Way Match Logic (Hardware)"
+    code: |'c
+      bool tlb_hit(uint20_t vpn, uint16_t active_asid, Entry e) {
+        return e.valid && 
+               (e.asid == active_asid) && 
+               (e.vpn == vpn);
+      }
+    '|
+    width: 380
+  }
+
+  t0_a: {
+    shape: sql_table
+    label: "T0: Process A Active (ASID=1)"
+    h: "Idx | VPN    | PFN    | ASID | V"
+    r0: "0   | 0x001  | 0xA    | 1    | 1"
+    r1: "1   | 0x002  | 0xB    | 1    | 1"
+    r2: "2   | 0x003  | 0xC    | 1    | 1"
+    style: { fill: "#e3f2fd" }
+  }
+
+  switch_no_flush: {
+    label: "OPTIMIZED: Context Switch A -> B"
+    shape: callout
+    style: { 
+      fill: "#e8f5e9"
+      stroke: green
+      stroke-width: 4
+    }
+  }
+
+  t1_coexist: {
+    shape: sql_table
+    label: "T1: Process B Active (ASID=2)"
+    h: "Idx | VPN    | PFN    | ASID | V"
+    r0: "0   | 0x001  | 0xA    | 1    | 1 // Inactive"
+    r1: "1   | 0x002  | 0xB    | 1    | 1 // Inactive"
+    r2: "2   | 0x003  | 0xC    | 1    | 1 // Inactive"
+    note: "ASID 1 entries remain but mismatch current_asid"
+  }
+
+  t2_populated: {
+    shape: sql_table
+    label: "T2: B Accessed VPN 0x001"
+    h: "Idx | VPN    | PFN    | ASID | V"
+    r0: "0   | 0x001  | 0xA    | 1    | 1"
+    r1: "1   | 0x002  | 0xB    | 1    | 1"
+    r2: "2   | 0x003  | 0xC    | 1    | 1"
+    r3: "3   | 0x001  | 0xF    | 2    | 1 // New Entry"
+    style: { 
+      stroke: purple
+      fill: "#f3e5f5"
+    }
+  }
+
+  t0_a -> switch_no_flush: "Control Register | 2B | update_asid(2)"
+  switch_no_flush -> t1_coexist: "Performance Gain | 0B | NO FLUSH"
+  t1_coexist -> t2_populated: "Compulsory Miss | 4B | ASID 2 VPN 0x001"
+}
+
+# --- Connections & Comparisons ---
+asid_flow.t2_populated -> legacy_flow.t2_miss: {
+  label: "TLB Content Comparison"
+  style: {
+    stroke: green
+    stroke-width: 4
+    stroke-dash: 2
+  }
+}
+
+legend: {
+  near: bottom-right
+  item1: "Blue Rows: Process A (ASID 1)" { style.fill: "#e3f2fd" }
+  item2: "Purple Rows: Process B (ASID 2)" { style.fill: "#f3e5f5" }
+  item3: "Red Flow: High Latency Path" { style.font-color: red }
+}
+
+annotation_box: {
+  near: top-right
+  label: "SYSTEM NOTES"
+  content: |'md
+    - ASID (Address Space ID) allows multiple address spaces to coexist in hardware caches.
+    - Prevents "TLB Thrashing" when switching between OS kernel and User processes (KPTI).
+    - Modern CPUs typically support 8-bit to 16-bit ASIDs (PCIDs in x86).
+  '|
+  style: {
+    fill: "#fffde7"
+    stroke: "#fbc02d"
+  }
+}

@@ -1,0 +1,152 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- Data Structures ---
+
+structs: {
+  pte_t: {
+    shape: sql_table
+    label: "struct pte_t (mmu.h)"
+    f0: "0x00 | uint32_t:20 | pfn // Physical Frame Number"
+    f1: "0x02 | uint32_t:1  | referenced // [bit 7] Access bit"
+    f2: "0x02 | uint32_t:1  | dirty // [bit 6] 1=Modified"
+    f3: "0x03 | uint32_t:1  | valid // [bit 0] 1=Present"
+    sz: "Total: 32 bits (4 bytes)"
+  }
+
+  frame_desc_t: {
+    shape: sql_table
+    label: "struct frame_desc_t (phys_mem.h)"
+    f0: "0x00 | uint32_t | vpn // Owner VPN"
+    f1: "0x04 | uint64_t | last_access // Timestamp"
+    f2: "0x0C | bool     | dirty // Mirror of PTE bit"
+    f3: "0x0D | bool     | in_use // Allocation state"
+    sz: "Total: 16 bytes"
+  }
+}
+
+# --- Logic Flow ---
+
+eviction_process: {
+  label: "Eviction Logic (vmsim.c:evict_frame)"
+  
+  select_victim: {
+    shape: step
+    label: "1. Policy Selection"
+    code: |'c
+      victim_idx = policy->select_victim(pm);
+      fd = &pm->desc[victim_idx];
+    '|
+  }
+
+  check_dirty: {
+    shape: diamond
+    label: "2. Is Page Dirty?"
+  }
+
+  # --- Dirty Path (Expensive) ---
+  path_dirty: {
+    label: "DIRTY PATH (High Latency)"
+    style.stroke: "#ca052b"
+    style.fill: "#fff0f0"
+
+    swap_out: {
+      shape: step
+      label: "3a. swap_page_out()"
+      code: |'c
+        slot = swap_alloc_slot(sw, fd->vpn);
+        memcpy(sw->slots[slot].data, pm->data[idx], 4096);
+        sw->write_backs++;
+      '|
+    }
+
+    cost_io: {
+      shape: callout
+      label: "Latency: ~10ms (Disk I/O)"
+      style.font-color: "#ca052b"
+      style.bold: true
+    }
+  }
+
+  # --- Clean Path (Fast) ---
+  path_clean: {
+    label: "CLEAN PATH (Zero I/O)"
+    style.stroke: "#167c3c"
+    style.fill: "#f0fff0"
+
+    nop: {
+      shape: step
+      label: "3b. Skip Swap Write"
+      code: |'c
+        // Data in RAM matches 
+        // original backing store.
+      '|
+    }
+
+    cost_mem: {
+      shape: callout
+      label: "Latency: ~10ns (Register)"
+      style.font-color: "#167c3c"
+      style.bold: true
+    }
+  }
+
+  # --- Shared Finalization ---
+  finalize: {
+    shape: package
+    label: "4. Finalization (Coherence)"
+    
+    tlb_flush: {
+      label: "TLB Shootdown"
+      code: "tlb_flush_page(tlb, pt, vpn);"
+    }
+    
+    pte_clear: {
+      label: "Invalidate PTE"
+      code: "*pte &= ~PTE_VALID;"
+    }
+    
+    reclaim: {
+      label: "Reclaim Frame"
+      code: "fd->in_use = false;"
+    }
+  }
+}
+
+# --- Connections ---
+
+structs.frame_desc_t -> eviction_process.select_victim: "descriptor | 16 bytes | {vpn: 0x1A3, dirty: true}"
+
+eviction_process.select_victim -> eviction_process.check_dirty
+
+eviction_process.check_dirty -> eviction_process.path_dirty.swap_out: "dirty == true | 1 bit | 1"
+eviction_process.check_dirty -> eviction_process.path_clean.nop: "dirty == false | 1 bit | 0"
+
+eviction_process.path_dirty.swap_out -> eviction_process.finalize
+eviction_process.path_clean.nop -> eviction_process.finalize
+
+# --- Legend ---
+
+legend: {
+  shape: rectangle
+  near: bottom-right
+  label: "Performance Impact"
+  red: "Dirty Eviction: 100,000x slower" {
+    style.fill: "#ca052b"
+    style.font-color: white
+  }
+  green: "Clean Eviction: Immediate" {
+    style.fill: "#167c3c"
+    style.font-color: white
+  }
+}
+
+# Metadata annotations
+eviction_process.path_dirty.swap_out -> structs.pte_t: "Consults bit 6" {
+  style.stroke-dash: 3
+}

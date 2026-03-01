@@ -1,0 +1,148 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- STYLES ---
+classes: {
+  active: {
+    style: {
+      stroke: green
+      stroke-width: 3
+      fill: "#e6ffed"
+    }
+  }
+  allocation_step: {
+    style: {
+      stroke-dash: 5
+      fill: "#fff9c4"
+    }
+  }
+}
+
+# --- EVOLUTION STATES ---
+
+step_0: {
+  label: "State 0: Initial Process Creation"
+  direction: down
+  
+  pd: {
+    shape: sql_table
+    label: "Page Directory (CR3 Root)"
+    0: "0x00 | pde_t | [V:0] NULL"
+    1: "0x04 | pde_t | [V:0] NULL"
+    2: "...  | pde_t | ..."
+    sz: "Total: 4KB (Always Allocated)"
+  }
+  
+  note: {
+    shape: callout
+    label: "Only the root Page Directory exists in RAM. Second-level tables are not yet materialized."
+  }
+}
+
+step_1: {
+  label: "State 1: First Access (VPN 0x005)"
+  direction: down
+
+  logic: {
+    label: "OS Fault Handler (ml_translate)"
+    code: |'c
+      uint32_t pdi = vpn >> 10; // 0x005 -> PDI 0
+      if (!pde_present(pd[0])) {
+          pt0 = alloc_page_table();
+          pd[0] = pde_make(pt0);
+      }
+      frame = alloc_frame();
+      pt0->entries[5] = pte_make(frame);
+    '|
+  }
+
+  pd_updated: {
+    shape: sql_table
+    label: "Page Directory"
+    class: active
+    0: "0x00 | pde_t | [V:1] -> PT0_PHYS"
+    1: "0x04 | pde_t | [V:0] NULL"
+    sz: "Total: 4KB"
+  }
+
+  pt0: {
+    shape: sql_table
+    label: "Page Table 0 (PDI=0)"
+    class: allocation_step
+    0: "0x00 | pte_t | [V:0] NULL"
+    5: "0x14 | pte_t | [V:1] Frame 7"
+    sz: "Total: 4KB (Allocated on Demand)"
+  }
+
+  pd_updated.0 -> pt0: "PDE Entry | 4 bytes | 0x88001"
+}
+
+step_2: {
+  label: "State 2: Second Access (VPN 0x401)"
+  direction: down
+
+  logic: {
+    label: "Sparse Allocation Logic"
+    code: |'c
+      uint32_t pdi = vpn >> 10; // 0x401 -> PDI 1
+      if (!pde_present(pd[1])) {
+          pt1 = alloc_page_table();
+          pd[1] = pde_make(pt1);
+      }
+    '|
+  }
+
+  pd_final: {
+    shape: sql_table
+    label: "Page Directory"
+    0: "0x00 | pde_t | [V:1] -> PT0_PHYS"
+    1: "0x04 | pde_t | [V:1] -> PT1_PHYS"
+    sz: "Total: 4KB"
+  }
+
+  pt0_exist: {
+    shape: sql_table
+    label: "Page Table 0"
+    5: "[V:1] Frame 7"
+  }
+
+  pt1: {
+    shape: sql_table
+    label: "Page Table 1 (PDI=1)"
+    class: active
+    1: "0x04 | pte_t | [V:1] Frame 12"
+    sz: "Total: 4KB (Allocated on Demand)"
+  }
+
+  pd_final.0 -> pt0_exist
+  pd_final.1 -> pt1: "pde_t | 4 bytes | PT1_BASE"
+}
+
+# --- TRANSITIONS ---
+
+step_0 -> step_1: "R 0x00005ABC | 32-bit addr | PDI=0, PTI=5"
+step_1 -> step_2: "W 0x00401333 | 32-bit addr | PDI=1, PTI=1"
+
+# --- LEGEND ---
+
+legend: {
+  near: bottom-right
+  l1: "Yellow: New Allocation" {
+    style.fill: "#fff9c4"
+  }
+  l2: "Green: Active Update" {
+    style.fill: "#e6ffed"
+  }
+  mem_stats: |md
+    ### Memory Efficiency
+    - State 0: 4KB
+    - State 1: 8KB
+    - State 2: 12KB
+    *(Vs 4MB Flat Table)*
+  |
+}

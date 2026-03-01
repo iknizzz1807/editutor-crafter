@@ -1,0 +1,188 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 0
+    layout-engine: elk
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# DIAGRAM 1: POLL() FILE OPERATION: REGISTRATION-THEN-CHECK PROTOCOL
+# ---------------------------------------------------------------------------------
+
+poll_sequence: {
+  shape: sequence_diagram
+  
+  user: "Userspace Process\n(TASK_RUNNING)"
+  vfs: "VFS (fs/select.c)\ndo_poll()"
+  driver: "mydev_poll\n(f_op->poll)"
+  writer: "write_handler\n(Producer)"
+
+  user -> vfs: "poll(fds, 1, 5000)" {
+    style.stroke: "#3498db"
+  }
+
+  vfs -> driver: "f_op->poll(filp, poll_table)" {
+    style.stroke: "#3498db"
+  }
+
+  driver -> vfs: "poll_wait(filp, &read_queue, wait)" {
+    style: {
+      stroke: "#e67e22"
+      stroke-width: 3
+    }
+    label: "REGISTRATION ONLY (Does not sleep)"
+  }
+
+  driver -> driver: "mutex_lock(▼)"
+  driver -> driver: "check buffer_used == 0"
+  driver -> driver: "mask |= (POLLOUT | POLLWRNORM)"
+  driver -> driver: "mutex_unlock(▲)"
+
+  driver -> vfs: "return mask (No POLLIN bit)"
+  
+  vfs -> vfs: "No requested events ready"
+  vfs -> user: "set_current_state(TASK_INTERRUPTIBLE)" {
+    style.stroke-dash: 5
+  }
+  vfs -> user: "schedule() [PROCESS SLEEPS]" {
+    style.stroke-dash: 5
+  }
+
+  # --- Gap during sleep ---
+  
+  writer -> driver: "mydev_write(filp, buf, count, f_pos)"
+  driver -> driver: "copy_from_user(...)"
+  driver -> driver: "buffer_used = 64"
+  
+  driver -> vfs: "wake_up_interruptible(&read_queue)" {
+    style: {
+      stroke: "#27ae60"
+      animated: true
+    }
+  }
+
+  vfs -> vfs: "Task moved to Run Queue"
+  vfs -> user: "schedule() returns [PROCESS WAKES]"
+  
+  vfs -> driver: "f_op->poll(filp, NULL)"
+  driver -> vfs: "return mask (POLLIN | POLLOUT | ...)"
+  
+  vfs -> user: "poll() returns 1 (revents=POLLIN)" {
+    style.stroke: "#27ae60"
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# TECHNICAL ANNOTATIONS
+# ---------------------------------------------------------------------------------
+
+annotations: {
+  near: bottom-center
+  
+  race_condition_warning: |md
+    ### CRITICAL: Registration Ordering
+    The `poll_wait()` calls **MUST** occur before checking `buffer_used`.
+    
+    **If reversed:**
+    1. Driver checks `buffer_used == 0` (True).
+    2. Concurrent Writer fills buffer and calls `wake_up_interruptible()`.
+    3. `wake_up` finds **NO ONE** on the queue (registration hasn't happened).
+    4. Driver then calls `poll_wait()` to register.
+    5. Driver returns mask with no `POLLIN`.
+    6. VFS sleeps **FOREVER** even though data is waiting.
+  | {
+    style: {
+      stroke: "#c0392b"
+      stroke-width: 4
+      fill: "#fdedec"
+    }
+  }
+
+  vfs_role: |md
+    ### VFS vs Driver Responsibilities
+    - **Driver**: 
+      - Registers the wait queue via `poll_wait`.
+      - Returns the *current* readiness mask.
+      - Never sleeps inside `.poll`.
+    - **VFS**:
+      - Manages the timeout timer.
+      - Manages the actual `schedule()` call.
+      - Loops over all FDs until one returns a non-zero mask.
+  | {
+    style: {
+      stroke: "#2980b9"
+      fill: "#ebf5fb"
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# MEMORY LAYOUT (Master Struct Reference)
+# ---------------------------------------------------------------------------------
+
+memory_layout: {
+  grid-columns: 1
+  
+  title: |md
+    ### struct my_device_data (x86_64)
+    Memory alignment and cache line residency
+  | {shape: text}
+
+  layout: {
+    grid-columns: 3
+    grid-gap: 0
+    
+    header_off: "Offset" {style.bold: true; style.fill: "#e1d5e7"}
+    header_field: "Field" {style.bold: true; style.fill: "#e1d5e7"}
+    header_size: "Size" {style.bold: true; style.fill: "#e1d5e7"}
+
+    o0: "0x00"
+    f0: "struct cdev cdev"
+    s0: "104B"
+    
+    o1: "0x68"
+    f1: "struct mutex lock"
+    s1: "32B"
+    
+    o2: "0x88"
+    f2: "wait_queue_head_t read_queue"
+    s2: "24B"
+    
+    o3: "0xA0"
+    f3: "wait_queue_head_t write_queue"
+    s3: "24B"
+    
+    o4: "0xB8"
+    f4: "char *buffer"
+    s4: "8B"
+    
+    o5: "0xC0"
+    f5: "size_t size"
+    s5: "8B"
+    
+    o6: "0xC8"
+    f6: "size_t used"
+    s6: "8B"
+    
+    o7: "0xD0"
+    f7: "atomic_t open_count"
+    s7: "4B"
+
+    # Color coding
+    f0.style.fill: "#d4e6f1" # VFS Header
+    f1.style.fill: "#f9e79f" # Sync Primitives
+    f2.style.fill: "#f9e79f" # Sync Primitives
+    f3.style.fill: "#f9e79f" # Sync Primitives
+    f4.style.fill: "#a9dfbf" # Data Metadata
+    f5.style.fill: "#a9dfbf" # Data Metadata
+    f6.style.fill: "#a9dfbf" # Data Metadata
+  }
+
+  cache_note: |md
+    **Cache Line 1 (0x00-0x3F):** cdev internal
+    **Cache Line 2 (0x40-0x7F):** cdev end + **mutex lock start**
+    **Cache Line 3 (0x80-0xBF):** **read_queue** + **buffer pointer**
+    **Cache Line 4 (0xC0-0xFF):** **used** + **open_count**
+  | {shape: text}
+}

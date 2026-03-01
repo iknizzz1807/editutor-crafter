@@ -1,0 +1,182 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- GLOBAL STYLES ---
+classes: {
+  milestone_1: { style: { stroke: "#4ea8de"; stroke-width: 3 } }
+  milestone_2: { style: { stroke: "#560bad"; stroke-width: 3 } }
+  milestone_3: { style: { stroke: "#f72585"; stroke-width: 3 } }
+  milestone_4: { style: { stroke: "#ff4d00"; stroke-width: 3 } }
+  hot_path: { style: { stroke: red; stroke-width: 4; animated: true } }
+  fault_path: { style: { stroke: orange; stroke-dash: 5 } }
+}
+
+# --- INPUT LAYER ---
+input_layer: {
+  label: "INPUT: Trace Parsing (vmsim.c)"
+  direction: down
+
+  trace_file: {
+    shape: document
+    label: "memory.trace"
+    content: |'text
+      R 0x00401020
+      W 0x00401024
+      R 0x1A3F7000
+    '|
+  }
+
+  parser: {
+    shape: class
+    label: "TraceParser"
+    definition: |'c
+      bool parse_line(char* line, mem_access_t* out);
+      int load_trace(char* path, mem_access_t** out);
+    '|
+  }
+}
+
+# --- MILESTONE 2: TLB CACHE ---
+tlb_subsystem: {
+  class: milestone_2
+  label: "M2: TLB Subsystem (tlb.c)"
+  direction: down
+
+  tlb_cache: {
+    shape: class
+    label: "TLB (64 entries)"
+    fields: |'c
+      uint16_t active_asid;
+      tlb_entry_t entries[64];
+      uint64_t hits, misses;
+    '|
+    methods: |'c
+      tlb_lookup_t tlb_lookup(uint32_t vpn);
+      void tlb_insert(uint32_t vpn, uint32_t pfn);
+      void tlb_flush_page(uint32_t vpn);
+    '|
+  }
+
+  tlb_entry_struct: {
+    shape: sql_table
+    label: "struct tlb_entry_t (12 bytes)"
+    f0: "0x00 | uint32_t | vpn (Tag)"
+    f1: "0x04 | uint32_t | pfn (Data)"
+    f2: "0x08 | uint16_t | asid"
+    f3: "0x0A | uint8_t  | flags (V,D,R,W)"
+    f4: "0x0B | uint8_t  | lru_counter"
+  }
+}
+
+# --- MILESTONE 3: HIERARCHICAL PAGE TABLES ---
+mmu_subsystem: {
+  class: milestone_3
+  label: "M3: Hierarchical MMU (pgtable.c)"
+  direction: down
+
+  cr3_reg: {
+    shape: circle
+    label: "CR3"
+    tooltip: "Physical address of Page Directory"
+  }
+
+  page_directory: {
+    shape: sql_table
+    label: "Page Directory (L1)"
+    pde0: "0x00 | pde_t | PD_Index 0"
+    pde1: "0x04 | pde_t | PD_Index 1"
+    pde_n: "... | ... | ..."
+    size: "Size: 4KB (1024 entries)"
+  }
+
+  page_table: {
+    shape: sql_table
+    label: "Page Table (L2)"
+    pte0: "0x00 | pte_t | PT_Index 0"
+    pte1: "0x04 | pte_t | PT_Index 1"
+    pte_n: "... | ... | ..."
+    size: "Size: 4KB (1024 entries)"
+  }
+
+  pte_definition: {
+    shape: sql_table
+    label: "pte_t / pde_t (4 bytes)"
+    bits31_12: "[31:12] | PFN / PT_ADDR"
+    bits11_8: "[11:08] | Reserved"
+    bit7: "[07]    | Referenced (R)"
+    bit6: "[06]    | Dirty (D)"
+    bit5: "[05]    | Read Perm"
+    bit4: "[04]    | Write Perm"
+    bit0: "[00]    | Valid / Present (V)"
+  }
+}
+
+# --- MILESTONE 1 & 4: PHYSICAL MEMORY & SWAP ---
+memory_layer: {
+  label: "M1/M4: Storage & Replacement (memory.c)"
+  direction: right
+
+  frame_pool: {
+    shape: sql_table
+    label: "Physical Frames (RAM)"
+    f0: "Frame 0 | 4096 bytes"
+    f1: "Frame 1 | 4096 bytes"
+    f_n: "... | ..."
+    f63: "Frame 63 | 4096 bytes"
+  }
+
+  swap_space: {
+    shape: sql_table
+    label: "Swap Space (Disk)"
+    class: milestone_4
+    s0: "Slot 0 | VPN: 0x1A3"
+    s1: "Slot 1 | VPN: 0x004"
+    s_n: "... | ..."
+  }
+
+  replacement_logic: {
+    shape: class
+    label: "ReplacementPolicy"
+    class: milestone_4
+    methods: |'c
+      int fifo_select_victim();
+      int lru_select_victim();
+      int clock_select_victim();
+    '|
+  }
+}
+
+# --- DATA FLOWS ---
+
+input_layer.parser -> tlb_subsystem.tlb_cache: "uint32_t vaddr | 4 bytes | 0x00401020" { class: hot_path }
+
+tlb_subsystem.tlb_cache -> mmu_subsystem.cr3_reg: "TLB MISS | logic | walk start" { style.stroke-dash: 3 }
+
+mmu_subsystem.cr3_reg -> mmu_subsystem.page_directory: "PDI [31:22] | 10 bits | 1"
+
+mmu_subsystem.page_directory -> mmu_subsystem.page_table: "PDE | 4 bytes | PT_Phys_Addr"
+
+mmu_subsystem.page_table -> memory_layer.frame_pool: "PTE VALID | 4 bytes | PFN=7" { class: hot_path }
+
+mmu_subsystem.page_table -> memory_layer.replacement_logic: "PTE INVALID | logic | Page Fault" { class: fault_path }
+
+memory_layer.replacement_logic -> memory_layer.swap_space: "Dirty Evict | 4KB | PFN_Data" { class: milestone_4 }
+
+memory_layer.swap_space -> memory_layer.frame_pool: "Page In | 4KB | Saved_Data" { class: milestone_4 }
+
+tlb_subsystem.tlb_cache -> memory_layer.frame_pool: "TLB HIT | uint32_t pfn | 7" { class: hot_path }
+
+# --- ANNOTATIONS ---
+legend: {
+  shape: package
+  near: bottom-right
+  m1: "Milestone 1: Basic Translation" { class: milestone_1 }
+  m2: "Milestone 2: TLB Caching" { class: milestone_2 }
+  m3: "Milestone 3: Multi-Level Tables" { class: milestone_3 }
+  m4: "Milestone 4: Swap & Replacement" { class: milestone_4 }
+}

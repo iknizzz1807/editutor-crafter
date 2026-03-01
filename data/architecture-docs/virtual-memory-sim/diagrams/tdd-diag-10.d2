@@ -1,0 +1,163 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# Classes for Intel-manual consistency
+classes: {
+  logic_node: {
+    shape: rectangle
+    style: {
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  decision: {
+    shape: diamond
+    style: {
+      fill: "#d5e8d4" # Green (Free/Logic)
+    }
+  }
+  data_buffer: {
+    style: {
+      fill: "#dae8fc" # Blue (Data)
+    }
+  }
+  metadata_table: {
+    style: {
+      fill: "#e1d5e7" # Purple (Header)
+    }
+  }
+  ptr_op: {
+    style: {
+      fill: "#ffe6cc" # Orange (Pointers)
+    }
+  }
+}
+
+CPU_REQUEST: "CPU Instruction Context" {
+  shape: person
+}
+
+ADDRESS_PIPELINE: "Address Translation Pipeline" {
+  
+  vaddr: "Virtual Address (Input)" {
+    class: data_buffer
+    shape: sql_table
+    vpn: "VPN (Virtual Page Number)" {constraint: "bits [31:12]"}
+    offset: "Page Offset" {constraint: "bits [11:0]"}
+  }
+
+  tlb_unit: "TLB Unit" {
+    class: data_buffer
+    lookup: "Three-way Match Logic" {
+      class: decision
+      label: "Match?\n(V + ASID + VPN)"
+    }
+    
+    update_bits: "Update Entry Metadata" {
+      class: logic_node
+      label: "Set TLB_REF\nSet TLB_DIRTY (if write)"
+    }
+  }
+
+  pt_walker: "Hardware Page Walker" {
+    class: metadata_table
+    
+    walk_pt: "Access Page Table Array" {
+      label: "Memory Load:\nPT[VPN]"
+    }
+    
+    valid_check: "PTE.V == 1?" {
+      class: decision
+    }
+  }
+
+  pf_handler: "Page Fault Handler" {
+    class: logic_node
+    style: {
+      fill: "#f8cecc" # Red (Error/Fault)
+    }
+    label: "Handle #PF Exception\n(Demand Paging / Swap In)"
+  }
+
+  tlb_mgmt: "TLB Management" {
+    class: ptr_op
+    tlb_insert: "tlb_insert()\n(Evict + Sync Metadata)"
+  }
+
+  paddr_output: "Physical Address (Output)" {
+    class: data_buffer
+    shape: sql_table
+    pfn: "PFN (Physical Frame Number)" {constraint: "bits [31:12]"}
+    offset: "Page Offset" {constraint: "bits [11:0]"}
+  }
+}
+
+# 1. CPU issues address
+CPU_REQUEST -> ADDRESS_PIPELINE.vaddr: "Load/Store Request"
+
+# 2. Virtual address into TLB lookup
+ADDRESS_PIPELINE.vaddr.vpn -> ADDRESS_PIPELINE.tlb_unit.lookup
+
+# --- HIT PATH (BLUE/BOLD) ---
+ADDRESS_PIPELINE.tlb_unit.lookup -> ADDRESS_PIPELINE.tlb_unit.update_bits: "HIT" {
+  style: {
+    stroke: "#6c8ebf"
+    stroke-width: 4
+  }
+}
+
+ADDRESS_PIPELINE.tlb_unit.update_bits -> ADDRESS_PIPELINE.paddr_output: "PFN (Cached)" {
+  style: {
+    stroke: "#6c8ebf"
+    stroke-width: 4
+  }
+  label: |md
+    **HIT LATENCY**
+    - HW: 1 Cycle (CAM)
+    - SW: O(TLB_SIZE)
+  |
+}
+
+# --- MISS PATH (RED/DASHED) ---
+ADDRESS_PIPELINE.tlb_unit.lookup -> ADDRESS_PIPELINE.pt_walker.walk_pt: "MISS" {
+  style: {
+    stroke: "#b85450"
+    stroke-dash: 5
+  }
+  label: |md
+    **MISS LATENCY**
+    - ~100ns (DRAM Load)
+    - + O(N) TLB insertion
+  |
+}
+
+ADDRESS_PIPELINE.pt_walker.walk_pt -> ADDRESS_PIPELINE.pt_walker.valid_check
+ADDRESS_PIPELINE.pt_walker.valid_check -> ADDRESS_PIPELINE.pf_handler: "No (Invalid)"
+ADDRESS_PIPELINE.pt_walker.valid_check -> ADDRESS_PIPELINE.tlb_mgmt.tlb_insert: "Yes (Valid)"
+
+ADDRESS_PIPELINE.pf_handler -> ADDRESS_PIPELINE.tlb_mgmt.tlb_insert: "Allocate + Map"
+ADDRESS_PIPELINE.tlb_mgmt.tlb_insert -> ADDRESS_PIPELINE.paddr_output: "Update Cache"
+
+# Metadata Coherence Note
+# Correction: elk engine requires constant values for 'near'
+coherence: |md
+  **Coherence Invariant:**
+  On TLB Miss or Hit-Write,
+  Dirty/Referenced bits must
+  propagate to PTE before 
+  eviction or context switch.
+| {
+  near: bottom-right
+}
+
+ADDRESS_PIPELINE.vaddr.offset -> ADDRESS_PIPELINE.paddr_output.offset: "Pass-through" {
+  style: {
+    stroke-dash: 2
+    opacity: 0.5
+  }
+}

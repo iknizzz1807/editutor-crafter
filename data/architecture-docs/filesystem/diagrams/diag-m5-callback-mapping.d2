@@ -1,0 +1,159 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- Classes & Styles ---
+classes: {
+  hot_path: {
+    style: {
+      fill: "#ff7e67"
+      stroke: "#cc3300"
+      stroke-width: 4
+      bold: true
+    }
+  }
+  internal_api: {
+    style: {
+      fill: "#e1f5fe"
+      stroke: "#01579b"
+    }
+  }
+  fuse_callback: {
+    style: {
+      fill: "#f3e5f5"
+      stroke: "#4a148c"
+    }
+  }
+}
+
+# --- Infrastructure Layers ---
+kernel_vfs: {
+  label: "Kernel VFS (vfs_read/vfs_write)"
+  style.stroke-dash: 5
+}
+
+fuse_kernel: {
+  label: "FUSE Kernel Module (/dev/fuse)"
+  style.fill: "#eeeeee"
+}
+
+# --- The Mapping Table ---
+mapping_table: {
+  shape: sql_table
+  label: "FUSE Callbacks → Internal Operations (myfs.c)"
+  
+  header: "FUSE Callback | Stage 1: Path Resolution | Stage 2: Inode/Data Op | Stage 3: Response"
+  
+  op_getattr: "getattr(path) | resolve_path() | read_inode() | inode_to_stat() → struct stat"
+  op_readdir: "readdir(path) | resolve_path() | dir_readdir() | filler() → dir entries"
+  op_create: "create(path) | split_path() + resolve_path() | fs_create_file() | fi->fh = ino_num"
+  op_read: "read(path, fi) | (fi->fh) FAST PATH | fs_read() | memcpy() → user buffer"
+  op_write: "write(path, fi) | (fi->fh) FAST PATH | fs_write() | write_block() → disk"
+  op_mkdir: "mkdir(path) | split_path() + resolve_path() | fs_mkdir() | 0 (Success)"
+  op_unlink: "unlink(path) | split_path() + resolve_path() | fs_unlink() | 0 (Success)"
+}
+
+# --- The Hot Spine (Central Bottleneck) ---
+path_engine: {
+  label: "Path Resolution Engine (dir.c)"
+  direction: down
+  
+  resolve_path: {
+    class: hot_path
+    label: "int resolve_path(const char *path)"
+    code: |'c
+      // The #1 Hot Function
+      // Loop: O(PathDepth * DirEntries)
+      for (name in path_components) {
+        ino = dir_lookup(fd, sb, parent_ino, name);
+        if (ino <= 0) return -ENOENT;
+        parent_ino = ino;
+      }
+      return parent_ino;
+    '|
+  }
+}
+
+# --- Internal API Engine ---
+internal_api: {
+  label: "Internal FS API (Milestone 1-4)"
+  direction: down
+  
+  inode_layer: {
+    label: "Metadata Layer (inode.c)"
+    class: internal_api
+    methods: |'c
+      int read_inode(int fd, sb_t *sb, uint32_t ino, inode_t *out);
+      int write_inode(int fd, sb_t *sb, uint32_t ino, inode_t *in);
+      int alloc_inode(int fd, sb_t *sb);
+    '|
+  }
+  
+  data_layer: {
+    label: "Data Plane (file.c)"
+    class: internal_api
+    methods: |'c
+      ssize_t fs_read(int fd, sb_t *sb, uint32_t ino, uint64_t off, void *buf, size_t len);
+      ssize_t fs_write(int fd, sb_t *sb, uint32_t ino, uint64_t off, void *buf, size_t len);
+    '|
+  }
+  
+  dir_layer: {
+    label: "Namespace Layer (dir.c)"
+    class: internal_api
+    methods: |'c
+      int dir_lookup(int fd, sb_t *sb, inode_t *parent, const char *name);
+      int dir_readdir(int fd, sb_t *sb, uint32_t ino, readdir_cb_t cb, void *data);
+    '|
+  }
+}
+
+# --- Connections & Flow ---
+kernel_vfs -> fuse_kernel: "Syscall | 80 bits | e.g. stat()"
+fuse_kernel -> mapping_table: "FUSE Request | ~1KB | OPCODE_GETATTR"
+
+# Every callback chain
+mapping_table.op_getattr -> path_engine.resolve_path: "char* | path | '/home/user'"
+mapping_table.op_readdir -> path_engine.resolve_path
+mapping_table.op_create -> path_engine.resolve_path
+mapping_table.op_mkdir -> path_engine.resolve_path
+mapping_table.op_unlink -> path_engine.resolve_path
+
+# The FAST PATH Optimization
+mapping_table.op_read -> internal_api.data_layer: "uint32_t | fi->fh | Bypass Resolve"
+mapping_table.op_write -> internal_api.data_layer: "uint32_t | fi->fh | Bypass Resolve"
+
+# Resolve path calls internal lookup
+path_engine.resolve_path -> internal_api.dir_layer: "char* | component | 'user'"
+
+# Mapping to Internal API
+path_engine.resolve_path -> internal_api.inode_layer: "uint32_t | inode_num | 1041"
+
+# Legends / Annotations
+legend: {
+  near: bottom-right
+  hot: "HOT SPINE: O(N) Traversal" {
+    class: hot_path
+  }
+  internal: "Internal Engine Call" {
+    class: internal_api
+  }
+}
+
+# High-Level Operations Block
+struct_fuse_ops: {
+  shape: class
+  label: "struct fuse_operations (libfuse)"
+  fields: |'c
+    int (*getattr) (const char *, struct stat *, struct fuse_file_info *);
+    int (*readdir) (const char *, void *, fuse_fill_dir_t, off_t, ...);
+    int (*open)    (const char *, struct fuse_file_info *);
+    int (*read)    (const char *, char *, size_t, off_t, ...);
+    int (*write)   (const char *, const char *, size_t, off_t, ...);
+  '|
+}
+struct_fuse_ops.near: top-right

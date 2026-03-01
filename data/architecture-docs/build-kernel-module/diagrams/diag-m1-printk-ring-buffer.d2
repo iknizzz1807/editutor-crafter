@@ -1,0 +1,137 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- KERNEL SPACE ---
+kernel: {
+  label: "Linux Kernel Space (printk.c)"
+  direction: down
+
+  module_code: {
+    label: "Kernel Module (hello.c)"
+    code: |'c
+      printk(KERN_INFO "hello: module loaded\n");
+      // KERN_INFO expansions: "\001" "6"
+    '|
+    width: 350
+  }
+
+  log_entry: {
+    shape: sql_table
+    label: "struct printk_log (printk.h)"
+    r0: "0x00 | uint64_t | ts_nsec     // timestamp"
+    r1: "0x08 | uint16_t | len         // total record len"
+    r2: "0x0A | uint16_t | text_len    // text segment len"
+    r3: "0x0C | uint16_t | dict_len    // dictionary len"
+    r4: "0x0E | uint8_t  | facility    // syslog facility"
+    r5: "0x0F | uint8_t  | level       // log level (0-7)"
+    sz: "Total: 16 bytes + text_buf"
+    style.fill: "#E1F5FE"
+  }
+
+  ring_buffer: {
+    shape: cylinder
+    label: "__log_buf (Ring Buffer)"
+    style.fill: "#BBDEFB"
+    # Metadata for implementation
+    desc: "Type: Lockless Circular Buffer"
+    size: "Size: 256 KB (CONFIG_LOG_BUF_SHIFT)"
+  }
+
+  console_logic: {
+    shape: diamond
+    label: "LogLevel < console_log_level?"
+    style.fill: "#FFF9C4"
+  }
+
+  dev_kmsg_driver: {
+    shape: class
+    label: "Char Device Driver (/dev/kmsg)"
+    fields: |'c
+      struct file_operations kmsg_fops;
+      wait_queue_head_t wait;
+    '|
+    methods: |'c
+      ssize_t devkmsg_read(struct file*, char*, size_t, loff_t*);
+      int devkmsg_open(struct inode*, struct file*);
+    '|
+    width: 400
+    style.fill: "#E1BEE7"
+  }
+
+  # Internal Kernel Flows
+  module_code -> ring_buffer: "char* | 32 bytes | \"\0016hello: ...\""
+  ring_buffer -> log_entry: "parsing | 16 bytes | header read"
+  log_entry -> console_logic: "level check | 1 byte | level=6"
+  ring_buffer -> dev_kmsg_driver: "read pointer | 8 bytes | curr_idx"
+}
+
+# --- HARDWARE ---
+hardware: {
+  label: "Physical Hardware"
+  serial_console: {
+    label: "Serial Console / VGA"
+    icon: https://icons.terrastruct.com/tech/022-server.svg
+    style.fill: "#FFEBEE"
+  }
+}
+
+kernel.console_logic -> hardware.serial_console: "YES | bitstream | ASCII Log Line" {
+  style.stroke: red
+  style.animated: true
+}
+
+# --- USER SPACE ---
+userspace: {
+  label: "User Space"
+  direction: down
+
+  kmsg_node: {
+    shape: parallelogram
+    label: "/dev/kmsg (Device Node)"
+    style.fill: "#F5F5F5"
+  }
+
+  dmesg: {
+    label: "dmesg utility"
+    icon: https://icons.terrastruct.com/essentials/005-programmer.svg
+    style.fill: "#DCEDC8"
+  }
+
+  journald: {
+    label: "systemd-journald"
+    icon: https://icons.terrastruct.com/tech/022-server.svg
+    style.fill: "#DCEDC8"
+  }
+
+  kmsg_node -> dmesg: "read() | 4 KB | record stream"
+  kmsg_node -> journald: "poll() | 1 KB | async notify"
+}
+
+# VFS Export from Kernel to User
+kernel.dev_kmsg_driver -> userspace.kmsg_node: "VFS Export | Major 1, Minor 11" {
+  style.stroke: purple
+}
+
+# --- NOTES & LEGEND ---
+legend: {
+  shape: callout
+  label: "Ring Buffer Implementation Detail"
+  note: |'md
+    1. **Non-blocking**: `printk()` can be called from any context (irq, atomic).
+    2. **Sequence IDs**: Readers track `next_seq` to detect dropped messages.
+    3. **Wrap-around**: When `head == tail`, oldest entries are dropped.
+    4. **Filtering**: `console_log_level` is typically set via `sysctl` or `cmdline`.
+  '|
+}
+legend.near: top-right
+
+# Color Semantics Logic
+# Blue = Memory/Storage Path
+# Red = Hardware/Hot Path
+# Purple = Control/VFS Export
+# Green = User Space Process

@@ -1,0 +1,165 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# Hard Link and nlinks Reference Count — Visual Proof
+# Implementation-grade logic for inode/dirent separation
+
+Hard_Link_Lifecycle: {
+  shape: sequence_diagram
+  
+  VFS: "vfs_layer_t" {
+    style.fill: "#E4DBFE"
+  }
+  DIR: "ext4_dir_t" {
+    style.fill: "#E4DBFE"
+  }
+  INO: "ext4_inode_t" {
+    style.fill: "#C7F1FF"
+  }
+  DISK: "block_device_t" {
+    style.fill: "#DEE1EB"
+  }
+
+  Step_1_Link_Creation: {
+    label: "Link Creation: /home/user/original -> /tmp/alias"
+    
+    VFS -> DIR: "fs_link(target='/home/user/original', new='/tmp/alias') -> int"
+    DIR -> DIR: "▼ acquire_lock(global_fs_lock)"
+    
+    DIR -> DIR: "path_resolve('/home/user/original')"
+    DIR -> INO: "read_inode(ino=1041)"
+    INO -> DISK: "read_block(num=sb.inode_table_start + offset)"
+    DISK -> INO: "raw_bytes[128]"
+    INO -> DIR: "inode_t { mode: S_IFREG, nlinks: 1 }"
+    
+    DIR -> DIR: "path_resolve_parent('/tmp/alias')"
+    DIR -> DIR: "dir_lookup(parent=10, name='alias')"
+    DIR -> DIR: "returns 0 (ENOENT - OK)"
+    
+    DIR -> DISK: "write_block(parent_dir_block, new_dirent_bytes)"
+    DISK: "Mapping created: 'alias' -> 1041"
+    
+    DIR -> INO: "write_inode(ino=1041, nlinks=2)"
+    INO -> DISK: "write_block(inode_table_block, updated_bytes)"
+    
+    INO: |md
+      **State Change (0x411)**
+      nlinks: **1** -> <span style="color: red;">**2**</span>
+    |
+    
+    DIR -> DIR: "▲ release_lock(global_fs_lock)"
+    DIR -> VFS: "return 0 (Success)"
+  }
+
+  Step_2_Cycle_Prevention: {
+    label: "Cycle Prevention: EPERM on Directories"
+    
+    VFS -> DIR: "fs_link(target='/home/user', new='/tmp/link_to_dir')"
+    DIR -> DIR: "▼ acquire_lock"
+    DIR -> INO: "read_inode(ino=7)"
+    INO -> DIR: "inode_t { mode: S_IFDIR, nlinks: 3 }"
+    
+    VFS: |md
+      <span style="color: red;">**ILLEGAL**</span>: Hard-linking directories
+      breaks tree invariant (creates cycles)
+    |
+    
+    DIR -> VFS: "return -EPERM"
+    DIR -> DIR: "▲ release_lock"
+  }
+
+  Step_3_Unlink_Original: {
+    label: "Unlink 1: Remove 'original'"
+    
+    VFS -> DIR: "fs_unlink('/home/user/original')"
+    DIR -> DIR: "▼ acquire_lock"
+    
+    DIR -> DISK: "read_block(parent_block)"
+    DIR -> DISK: "write_block(parent_block, updated_rec_len)"
+    DISK: "Name 'original' removed from directory block"
+    
+    DIR -> INO: "read_inode(1041)"
+    INO -> DIR: "inode_t { nlinks: 2 }"
+    DIR -> INO: "write_inode(1041, nlinks=1)"
+    INO -> DISK: "write_block(inode_table_block, ...)"
+    
+    INO: |md
+      **State Change (0x411)**
+      nlinks: **2** -> <span style="color: red;">**1**</span>
+    |
+    
+    INO: "nlinks > 0: Inode remains live. Data blocks NOT reclaimed."
+    
+    DIR -> DIR: "▲ release_lock"
+    DIR -> VFS: "return 0"
+  }
+
+  Step_4_Final_Unlink: {
+    label: "Unlink 2: Remove 'alias' (Final Reference)"
+    
+    VFS -> DIR: "fs_unlink('/tmp/alias')"
+    DIR -> DIR: "▼ acquire_lock"
+    
+    DIR -> DISK: "write_block(parent_block, merged_rec_len)"
+    DISK: "Last name reference removed"
+    
+    DIR -> INO: "read_inode(1041)"
+    INO -> DIR: "inode_t { nlinks: 1 }"
+    DIR -> INO: "write_inode(1041, nlinks=0)"
+    
+    INO: |md
+      **State Change (0x411)**
+      nlinks: **1** -> <span style="color: red;">**0**</span>
+    |
+    
+    DIR -> INO: "free_inode(1041)"
+    INO -> INO: "recursive_block_free()"
+    INO -> DISK: "write_block(sb.block_bitmap, bits_cleared)"
+    INO -> DISK: "write_block(sb.inode_bitmap, bit_cleared)"
+    
+    DISK: |md
+      **Garbage Collection Triggered**
+      All data and metadata blocks reclaimed.
+    |
+    
+    DIR -> DIR: "▲ release_lock"
+    DIR -> VFS: "return 0"
+  }
+}
+
+# Implementation Layout Details
+Inode_Memory_Layout: {
+  shape: sql_table
+  near: bottom-right
+  style.fill: white
+  header: "ext4_inode_t (sizeof=128)"
+  0: "i_mode (Header)" {constraint: "2 bytes"; style.fill: "#E4DBFE"}
+  2: "i_uid (Data)" {constraint: "2 bytes"; style.fill: "#C7F1FF"}
+  4: "i_size_lo (Data)" {constraint: "4 bytes"; style.fill: "#C7F1FF"}
+  26: "i_links_count (Refcount)" {constraint: "2 bytes"; style.fill: "#FFA500"}
+  40: "i_block[15] (Pointers)" {constraint: "60 bytes"; style.fill: "#FFA500"}
+  100: "i_generation (Data)" {constraint: "4 bytes"; style.fill: "#C7F1FF"}
+  104: "padding (Gray)" {constraint: "24 bytes"; style.fill: "#DEE1EB"}
+}
+
+Legend: {
+  near: bottom-left
+  C_Ref: {
+    shape: text
+    label: |md
+      ### Logical Equivalency (C++/Rust)
+      - `nlinks` == `std::shared_ptr<T>::use_count()`
+      - `dirent` == A named instance (named pointer)
+      - `free_inode` == `~T()` destructor trigger
+    |
+    style: {
+      stroke: "#FFA500"
+      stroke-width: 2
+    }
+  }
+}

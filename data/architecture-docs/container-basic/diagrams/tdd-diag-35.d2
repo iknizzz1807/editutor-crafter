@@ -1,0 +1,174 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+
+# --- GLOBAL STYLES ---
+classes: {
+  vector_group: {
+    style: {
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  threat: {
+    style: {
+      fill: "#f8cecc"
+      stroke: "#b85450"
+      font-color: "#b85450"
+      bold: true
+    }
+  }
+  mitigation: {
+    style: {
+      fill: "#d5e8d4"
+      stroke: "#82b366"
+      font-color: "#82b366"
+      bold: true
+    }
+  }
+  process: {
+    shape: circle
+    style: {
+      fill: "#dae8fc"
+      stroke: "#6c8ebf"
+      stroke-width: 4
+    }
+  }
+}
+
+# --- DIAGRAM STRUCTURE ---
+
+rootless_boundary: "BLAST RADIUS LIMIT: CLONE_NEWUSER (User Namespace)" {
+  style: {
+    stroke: "#d79b00"
+    stroke-width: 4
+    stroke-dash: 5
+    fill: "#fff2cc"
+  }
+
+  container_process: "CONTAINER PROCESS\n(Isolated context)" {
+    class: process
+    tooltip: "Process inside PID, MNT, NET, UTS, and USER namespaces."
+  }
+
+  # --- 1. FILESYSTEM VECTOR ---
+  fs_vector: "FILESYSTEM (VFS)" {
+    class: vector_group
+    
+    threats: |md
+      - **Leaky Vessels (CVE-2024-21626)**: Host FD inheritance
+      - **SUID Binary**: Privilege escalation via binary in rootfs
+      - **OverlayFS Vulnerabilities**: Kernel-level directory traversal
+    | {class: threat}
+
+    mitigations: |md
+      - `pivot_root()` + `umount2(MNT_DETACH)`
+      - Drop `CAP_SETUID` / `CAP_SETGID`
+      - Run as unprivileged UID (mapped)
+    | {class: mitigation}
+  }
+
+  # --- 2. NETWORK VECTOR ---
+  net_vector: "NETWORK (Netfilter/L2)" {
+    class: vector_group
+
+    threats: |md
+      - **CAP_NET_RAW**: ICMP/Packet spoofing within segment
+      - **ARP Spoofing**: MITM between container peers
+      - **Iptables Manipulation**: Breaking bridge isolation
+    | {class: threat}
+
+    mitigations: |md
+      - Drop `CAP_NET_RAW` / `CAP_NET_ADMIN`
+      - Kubernetes `NetworkPolicy` (Ingress/Egress)
+      - User-space TCP/IP (`slirp4netns` / `pasta`)
+    | {class: mitigation}
+  }
+
+  # --- 3. KERNEL SYSCALL VECTOR ---
+  kernel_vector: "KERNEL SYSCALLS (ABI)" {
+    class: vector_group
+
+    threats: |md
+      - **Kernel Zero-Day**: Vulnerable syscall implementation
+      - **ptrace()**: Injecting code into sibling containers
+      - **Insecure IOCTLs**: Device driver exploitation
+    | {class: threat}
+
+    mitigations: |md
+      - `seccomp-bpf` whitelist (block `ptrace`, `kexec`)
+      - `AppArmor` / `SELinux` MAC profiles
+      - `PR_SET_NO_NEW_PRIVS` flag
+    | {class: mitigation}
+  }
+
+  # --- 4. CGROUP VECTOR ---
+  cgroup_vector: "CGROUPS (Accounting)" {
+    class: vector_group
+
+    threats: |md
+      - **Release Agent**: Executing arbitrary code via delegation
+      - **OOM Weaponization**: Force killing sibling processes
+      - **Resource Exhaustion**: Starving the host scheduler
+    | {class: threat}
+
+    mitigations: |md
+      - Cgroup v2 Unified Hierarchy
+      - Read-only `/sys/fs/cgroup` mount
+      - Strict `pids.max` and `memory.max` enforcement
+    | {class: mitigation}
+  }
+
+  # --- 5. USER NAMESPACE VECTOR ---
+  userns_vector: "USER NAMESPACE (Cap Scoping)" {
+    class: vector_group
+
+    threats: |md
+      - **UID Map Escalation**: pre-Linux 3.19 setgroups bug
+      - **Nesting Exhaustion**: Depth-limit DoS
+      - **Unprivileged userns bypass**: Distro-specific flaws
+    | {class: threat}
+
+    mitigations: |md
+      - `setgroups=deny` mandatory write
+      - Capability scoping (CAP only valid in NS)
+      - Subordinate UID/GID ranges (`/etc/subuid`)
+    | {class: mitigation}
+  }
+
+  # Connections
+  container_process -> fs_vector: "IO/Mnt"
+  container_process -> net_vector: "Socket"
+  container_process -> kernel_vector: "INT 0x80 / syscall"
+  container_process -> cgroup_vector: "Accounting"
+  container_process -> userns_vector: "Cap Check"
+}
+
+# --- GLOBAL ANNOTATION ---
+escaped_identity: "ESCAPED IDENTITY ON HOST:\nUID 1000 (Non-root)" {
+  style: {
+    fill: "#f5f5f5"
+    stroke: "#666666"
+    stroke-width: 2
+    stroke-dash: 2
+  }
+}
+
+rootless_boundary -> escaped_identity: "Escape Event" {
+  style: {
+    stroke: red
+    stroke-width: 3
+    animated: true
+  }
+}
+
+legend: |md
+  ### Threat Taxonomy & Mitigation
+  **Blast Radius**: Even if a process breaks out of the container isolation (namespaces/cgroups), `CLONE_NEWUSER` ensures the resulting process on the host has only the privileges of the unprivileged user (UID 1000), preventing full host takeover.
+| {
+  near: bottom-center
+}

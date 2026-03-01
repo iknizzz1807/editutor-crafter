@@ -1,0 +1,101 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+
+container_ns: {
+  label: "Container Network Namespace (CLONE_NEWNET)"
+  direction: down
+  
+  app: {
+    shape: class
+    label: "Application (binary)"
+    methods: |'c
+      getaddrinfo("google.com", ...);
+    '|
+  }
+
+  libc: {
+    shape: class
+    label: "glibc resolver (libc.so.6)"
+    code: |'c
+      // reads /etc/resolv.conf on first call
+      _res.options |= RES_INIT;
+      res_ninit(&_res);
+    '|
+  }
+
+  rootfs: {
+    label: "Container Rootfs (pivot_root)"
+    resolv_conf: {
+      shape: sql_table
+      label: "/etc/resolv.conf"
+      line1: "nameserver 8.8.8.8"
+      line2: "nameserver 1.1.1.1"
+      line3: "options ndots:0"
+      size: "Size: 52 bytes"
+    }
+  }
+
+  veth_c: "veth_c0 (172.20.0.2)"
+  
+  app -> libc: "getaddrinfo() call"
+  libc -> rootfs.resolv_conf: "open() / read()"
+  libc -> veth_c: "UDP | 53 | google.com"
+}
+
+host_ns: {
+  label: "Host Network Namespace (Initial)"
+  direction: down
+
+  veth_h: "veth_h0"
+  bridge: "ctr0 Bridge (172.20.0.1)"
+  nat: {
+    shape: class
+    label: "Netfilter (iptables)"
+    code: |'bash
+      iptables -t nat -A POSTROUTING \
+        -s 172.20.0.0/24 -o eth0 -j MASQUERADE
+    '|
+  }
+  nic: "Host Physical NIC (eth0)"
+}
+
+internet: {
+  label: "Public Internet"
+  dns_server: "Google DNS (8.8.8.8)" {
+    shape: cylinder
+  }
+}
+
+# Packet Walk
+container_ns.veth_c -> host_ns.veth_h: "L2 Frame | 74 bytes | SYN: google.com"
+host_ns.veth_h -> host_ns.bridge: "Bridge FDB Lookup"
+host_ns.bridge -> host_ns.nat: "Routing: 172.20.0.2 -> 8.8.8.8"
+host_ns.nat -> host_ns.nic: "SNAT: 172.20.0.2:53 -> host_ip:53"
+host_ns.nic -> internet.dns_server: "UDP | 53 | 8.8.8.8"
+
+# Configuration Strategy Legend
+legend: {
+  shape: sql_table
+  label: "Config Strategies (container_init.c)"
+  s1: "Bind-Mount | host resolv.conf -> container rootfs | Inherits host DNS"
+  s2: "Static | write 'nameserver 8.8.8.8' to file | Hardcoded/Reliable"
+  s3: "K8s CoreDNS | nameserver 10.96.0.10 | Cluster-internal SRV records"
+}
+legend.near: bottom-right
+
+# K8s Cross Reference Callout
+k8s_ref: {
+  shape: callout
+  label: "Kubernetes CoreDNS"
+  content: |'md
+    K8s injects the Service IP of `kube-dns` 
+    into `/etc/resolv.conf`.
+    Expansion handled by `search` domains.
+  '|
+}
+k8s_ref.near: top-right

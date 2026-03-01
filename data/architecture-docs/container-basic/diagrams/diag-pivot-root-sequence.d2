@@ -1,0 +1,108 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- STAGE 1: BIND MOUNT PREPARATION ---
+step1: {
+  label: "Step 1: Self Bind-Mount (pivot_root.c)"
+  code: |'c
+    // rootfs must be a mount point
+    mount(rootfs, rootfs, NULL, MS_BIND | MS_REC, NULL);
+  '|
+  mount_table: {
+    shape: sql_table
+    label: "VFS Mount Table (Pre-Condition)"
+    row0: "ID | Source | Target | Flags"
+    row1: "23 | /dev/sda1 | / | MS_SHARED"
+    row2: "45 | /dev/sda1 | /newroot | MS_BIND"
+  }
+}
+
+# --- STEP 1 FAILURE PATH ---
+error_node: {
+  label: "Kernel Panic / Exit"
+  shape: hexagon
+  style: {
+    fill: "#ffcccc"
+    stroke: red
+  }
+}
+
+# --- STAGE 2: DIRECTORY SETUP ---
+step2: {
+  label: "Step 2 & 3: Staging (pivot_root.c)"
+  code: |'c
+    chdir(rootfs);
+    mkdir(".pivot_old", 0700);
+  '|
+  status: "CWD -> /newroot (Host Path)"
+}
+
+# --- STAGE 3: THE ATOMIC SWAP ---
+step3: {
+  label: "Step 4: Atomic pivot_root (pivot_root.c)"
+  code: |'c
+    // Atomic Swap of Namespace Root
+    syscall(SYS_pivot_root, ".", ".pivot_old");
+    chdir("/");
+  '|
+  mount_table: {
+    shape: sql_table
+    label: "VFS Mount Table (Swapped)"
+    row0: "ID | Source | Target | Original"
+    row1: "45 | /dev/sda1 | / | (was /newroot)"
+    row2: "23 | /dev/sda1 | /.pivot_old | (was /)"
+  }
+}
+
+# --- STAGE 4: DETACHMENT ---
+step4: {
+  label: "Step 5: Detach Host FS (pivot_root.c)"
+  code: |'c
+    // Lazy unmount removes host visibility
+    umount2("/.pivot_old", MNT_DETACH);
+    rmdir("/.pivot_old");
+  '|
+  mount_table: {
+    shape: sql_table
+    label: "VFS Mount Table (Isolated)"
+    row0: "ID | Source | Target | Visibility"
+    row1: "45 | /dev/sda1 | / | Visible"
+    row2: "23 | /dev/sda1 | [DETACHED] | Unreachable"
+  }
+}
+
+# --- DATA WALK CONNECTIONS ---
+
+step1 -> step2: "MS_BIND | success | 0"
+step1 -> error_node: "errno | EINVAL | If rootfs is not a mount point" {
+  style.stroke: red
+  style.stroke-dash: 4
+}
+
+step2 -> step3: "path | const char* | '.'"
+
+step3 -> step4: "mount_id | 8 bytes | 23 -> /.pivot_old"
+
+# --- SYSTEM LEGEND ---
+legend: {
+  shape: package
+  label: "Pivot_Root Implementation Requirements"
+  r1: "1. New root must be a mount point (Step 1 fixes this)"
+  r2: "2. New root must be different from current root"
+  r3: "3. put_old must be at or below new root"
+  r4: "4. Current root must be a mount point"
+}
+legend.near: bottom-right
+
+# --- CAPABILITY ANNOTATION ---
+caps_note: {
+  label: "Kernel Capability Required"
+  desc: "Requires CAP_SYS_ADMIN in the mount namespace"
+  style.fill: "#e1f5fe"
+}
+caps_note.near: top-center

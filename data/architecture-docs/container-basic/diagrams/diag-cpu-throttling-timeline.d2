@@ -1,0 +1,167 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# CLASS DEFINITIONS
+classes: {
+  state_running: {
+    style: {
+      fill: "#d4edda"
+      stroke: "#28a745"
+      stroke-width: 2
+    }
+  }
+  state_throttled: {
+    style: {
+      fill: "#f8d7da"
+      stroke: "#dc3545"
+      stroke-width: 2
+      stroke-dash: 3
+    }
+  }
+  metric_table: {
+    shape: sql_table
+    style: {
+      stroke: "#343a40"
+      fill: "#f8f9fa"
+    }
+  }
+}
+
+# CFS CONFIGURATION DATA
+config: {
+  shape: sql_table
+  label: "struct cfs_bandwidth (kernel/sched/sched.h)"
+  quota: "0x00 | u64 | quota | 50000 (50ms)"
+  period: "0x08 | u64 | period | 100000 (100ms)"
+  runtime: "0x10 | s64 | runtime | current budget"
+  sz: "Total: 24 bytes"
+}
+
+# EXECUTION TIMELINE
+execution_timeline: {
+  label: "CFS Scheduling Timeline (Period Boundary: 100ms)"
+  direction: right
+
+  p1_start: "t=0ms" {
+    shape: circle
+    width: 30
+    height: 30
+  }
+  
+  p1_running: "Phase: RUNNING" {
+    class: state_running
+    code: |'c
+      // Process consuming quota
+      cfs_rq->runtime_remaining -= delta;
+      update_curr(cfs_rq);
+    '|
+    width: 300
+  }
+
+  p1_limit: "t=50ms" {
+    shape: diamond
+    label: "Quota Exhausted"
+  }
+
+  p1_throttled: "Phase: THROTTLED" {
+    class: state_throttled
+    code: |'c
+      // Task blocked by scheduler
+      dequeue_entity(cfs_rq, se, 0);
+      cfs_rq->throttled = 1;
+    '|
+    width: 300
+  }
+
+  p1_refill: "t=100ms" {
+    shape: circle
+    label: "Period End"
+  }
+
+  p2_running: "Phase: RUNNING" {
+    class: state_running
+    code: |'c
+      // Budget replenishment
+      cfs_rq->runtime_remaining += quota;
+      unthrottle_cfs_rq(cfs_rq);
+    '|
+    width: 300
+  }
+
+  p1_start -> p1_running: "SCHED_EVENT | 0 bytes | pick_next_task"
+  p1_running -> p1_limit: "CLOCK_TICK | 8 bytes | update_curr()"
+  p1_limit -> p1_throttled: "SIGNAL | 4 bytes | SIG_THROTTLE"
+  p1_throttled -> p1_refill: "WAIT | 0 bytes | hrtimer_expiry"
+  p1_refill -> p2_running: "INTERRUPT | 8 bytes | sched_cfs_period_timer"
+}
+
+# LATENCY IMPACT VISUALIZATION
+latency_analysis: {
+  label: "Latency Impact Analysis"
+  request_event: {
+    shape: callout
+    label: "External Request @ t=51ms"
+    style.fill: "#fff3cd"
+  }
+  
+  wait_calc: {
+    shape: sql_table
+    label: "Wait Penalty Calculation"
+    formula: "0x00 | u64 | t_arrival | 51ms"
+    window: "0x08 | u64 | t_refill | 100ms"
+    penalty: "Result: 49ms extra latency"
+  }
+
+  request_event -> execution_timeline.p1_throttled: "NET_PACKET | 1514B | Blocked by CPU ceiling"
+}
+
+# KERNEL STATS TRACKING
+cpu_stat_evolution: {
+  label: "cpu.stat (Kernel Accounting)"
+  direction: right
+  
+  initial: {
+    class: metric_table
+    label: "t=0ms (Reset)"
+    f1: "0x00 | u64 | nr_periods | 0"
+    f2: "0x08 | u64 | nr_throttled | 0"
+    f3: "0x10 | u64 | throttled_usec | 0"
+  }
+
+  post_throttle: {
+    class: metric_table
+    label: "t=100ms (Update)"
+    f1: "0x00 | u64 | nr_periods | 1"
+    f2: "0x08 | u64 | nr_throttled | 1"
+    f3: "0x10 | u64 | throttled_usec | 50000"
+  }
+
+  initial -> post_throttle: "UPDATE | 24 bytes | dist_cfs_runtime"
+}
+
+# IMPLEMENTATION LOGIC
+kernel_logic: {
+  label: "kernel/sched/fair.c"
+  code: |'c
+    void check_cfs_runtime(struct cfs_rq *cfs_rq) {
+      if (cfs_rq->runtime_remaining <= 0) {
+        resched_curr(rq);
+        throttle_cfs_rq(cfs_rq); 
+        // Logic: cfs_rq->throttled = 1
+      }
+    }
+  '|
+  width: 400
+}
+
+# PLACEMENT & RELATIONSHIPS
+latency_analysis.near: bottom-center
+
+config -> execution_timeline: "Enforcement | 24 bytes | {quota=50ms, period=100ms}"
+execution_timeline -> cpu_stat_evolution: "Metrics | 24 bytes | nr_throttled++"
+kernel_logic -> execution_timeline.p1_limit: "Fn Call | 0 bytes | check_cfs_runtime()"

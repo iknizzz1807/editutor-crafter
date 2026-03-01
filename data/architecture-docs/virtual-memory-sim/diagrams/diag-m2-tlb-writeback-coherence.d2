@@ -1,0 +1,149 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- STYLES & CLASSES ---
+classes: {
+  stale: {
+    style: {
+      fill: "#ffcfcf"
+      stroke: red
+      stroke-width: 2
+    }
+  }
+  authoritative: {
+    style: {
+      fill: "#dfffdf"
+      stroke: green
+      stroke-width: 2
+    }
+  }
+  logic: {
+    style: {
+      fill: "#e1f5fe"
+      stroke: "#01579b"
+      font-size: 14
+    }
+  }
+}
+
+# --- COMPONENTS ---
+
+tlb_subsystem: {
+  label: "TLB (SRAM) - Fast Access Path (tlb.c)"
+  direction: down
+
+  tlb_entry: {
+    shape: sql_table
+    label: "struct tlb_entry_t (vmsim_m2.h)"
+    f0: "0x00 | uint32_t | vpn: 0x00005"
+    f1: "0x04 | uint32_t | pfn: 0x00042"
+    f2: "0x08 | uint16_t | asid: 0x0001"
+    f3: "0x0A | uint8_t  | flags: 0x03 (VALID | DIRTY)" {class: authoritative}
+    f4: "0x0B | uint8_t  | lru_counter: 0x00"
+    sz: "Total: 12 bytes"
+  }
+
+  annotation: "Authoritative Dirty State" {
+    shape: callout
+    style.fill: "#dfffdf"
+  }
+}
+
+memory_subsystem: {
+  label: "Main Memory (DRAM) - Page Table (mmu.c)"
+  direction: down
+
+  page_table: {
+    shape: sql_table
+    label: "pte_t page_table[VPN] (vmsim_m1.h)"
+    p0: "..."
+    p5: "VPN 0x05 | PFN: 0x00042 | Flags: 0x01 (VALID | DIRTY=0)" {class: stale}
+    p6: "..."
+    sz: "4 MB Flat Table (32-bit)"
+  }
+
+  stale_note: "COHERENCE GAP: PTE is 'Clean' in DRAM" {
+    shape: callout
+    style.fill: "#ffcfcf"
+  }
+}
+
+# FIXED: Changed from shape: class to standard container to allow children
+eviction_logic: {
+  label: "TLB Eviction Controller (vmsim_m2.c)"
+  direction: down
+  
+  api_signatures: {
+    shape: class
+    label: "Eviction API"
+    methods: |'c
+      void tlb_writeback_entry(tlb_entry_t *e, pte_t *pte);
+      int tlb_find_victim_lru(tlb_t *tlb);
+      void tlb_flush_page(tlb_t *tlb, uint32_t vpn);
+    '|
+  }
+
+  writeback_code: {
+    label: "Coherence Logic (tlb_writeback_entry)"
+    code: |'c
+      if (e->flags & TLB_DIRTY) {
+          *pte |= PTE_DIRTY; // Sync back to DRAM
+      }
+      if (e->flags & TLB_REFERENCED) {
+          *pte |= PTE_REFERENCED;
+      }
+    '|
+    width: 350
+  }
+}
+
+# --- INTERACTIONS & FLOW ---
+
+# 1. Access Event
+user_write: "W 0x00005020"
+user_write -> tlb_subsystem.tlb_entry: "1. Write Hit | sets TLB_DIRTY=1" {
+  style.stroke: blue
+  style.animated: true
+}
+
+# 2. The Gap
+tlb_subsystem.tlb_entry -> memory_subsystem.page_table: "2. Coherence Lag | PTE not updated for performance" {
+  style.stroke: red
+  style.stroke-dash: 5
+}
+
+# 3. Eviction Trigger
+trigger: "LRU Eviction Trigger" {
+  shape: diamond
+}
+trigger -> eviction_logic: "3. TLB Full | victim found"
+
+# 4. The Sync Operation
+eviction_logic.writeback_code -> tlb_subsystem.tlb_entry: "4. Read cached flags | 1 byte | 0x03" {
+  style.stroke: green
+}
+
+eviction_logic.writeback_code -> memory_subsystem.page_table.p5: "5. Write-back | pte_t | 4 bytes | 0x00042041" {
+  style.stroke: green
+  style.stroke-width: 3
+}
+
+# 5. Cleanup
+eviction_logic -> tlb_subsystem.tlb_entry: "6. tlb_flush_page() | Clear VALID bit" {
+  style.stroke: grey
+}
+
+# Legend/Notes
+legend: {
+  shape: sql_table
+  label: "Legend & State Guide"
+  l1: "RED   | Coherence Failure (Stale DRAM)"
+  l2: "GREEN | Corrective Sync Path (Write-back)"
+  l3: "BLUE  | CPU Data Path (Memory Write)"
+}
+legend.near: bottom-right

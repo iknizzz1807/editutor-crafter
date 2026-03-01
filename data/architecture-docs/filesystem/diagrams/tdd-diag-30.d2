@@ -1,0 +1,102 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+fuse_concurrency: {
+  shape: sequence_diagram
+  
+  thread_a: "FUSE Thread A\n(readdir)"
+  thread_b: "FUSE Thread B\n(write)"
+  mutex: "Global Mutex\n(fs_lock)"
+  internal: "Internal FS\n(M1-M4 Logic)"
+  kernel: "Linux VFS / libfuse"
+
+  correct_pattern: {
+    label: "CORRECT PATTERN: Guaranteed Serialization"
+    
+    kernel -> thread_a: "myfs_readdir(path)"
+    thread_a.lock -> mutex: "pthread_mutex_lock() ▼"
+    
+    thread_a.active -> internal: "path_resolve(path)"
+    internal -> thread_a: "inode_num"
+    
+    thread_a.active -> internal: "dir_readdir(ino)"
+    internal -> thread_a: "dirent_list"
+    
+    thread_a.active -> kernel: "filler(buf, name, stat)"
+    
+    thread_b -> mutex: "pthread_mutex_lock() [WAIT]" {
+      style.stroke-dash: 3
+    }
+    
+    thread_a.unlock -> mutex: "pthread_mutex_unlock() ▲"
+    mutex -> thread_b: "[GRANTED]"
+    
+    thread_b.active -> internal: "fs_write(ino, off, buf, len)"
+    thread_b.unlock -> mutex: "pthread_mutex_unlock() ▲"
+  }
+
+  buggy_pattern: {
+    label: "BUGGY PATTERN: Early Return Deadlock"
+    
+    kernel -> thread_a: "myfs_getattr(path)"
+    thread_a.lock2 -> mutex: "pthread_mutex_lock() ▼"
+    
+    thread_a.err -> thread_a: "path_resolve(path) -> -ENOENT" {
+      style.font-color: red
+    }
+    
+    thread_a.exit -> kernel: "return -ENOENT" {
+      style.stroke: red
+    }
+    
+    thread_a."CRITICAL BUG: Function returns without unlocking mutex"
+    
+    kernel -> thread_b: "myfs_open(path)"
+    thread_b.block -> mutex: "pthread_mutex_lock()"
+    mutex -> thread_b: "BLOCKED FOREVER" {
+      style.stroke: red
+      style.stroke-dash: 5
+    }
+  }
+}
+
+annotations: {
+  near: bottom-center
+  
+  direct_io_note: ||md
+    ### Race Prevention
+    `fi->direct_io = 1`
+    
+    Bypassing the kernel page cache ensures that concurrent reads and writes 
+    always hit the FUSE process, where they are strictly serialized by the 
+    global `fs_lock`. This prevents the kernel from serving stale data while 
+    a write is pending in the userspace daemon.
+  || {
+    style: {
+      fill: "#e3f2fd"
+      stroke: "#1565c0"
+    }
+  }
+  
+  lock_logic: ||md
+    ### Implementation Invariant
+    - **Acquire:** First line of every callback.
+    - **Release:** Must exist on every return path (success and error).
+    - **Internal functions:** `path_resolve`, `read_inode`, etc., must be **lock-agnostic**.
+  || {
+    style: {
+      fill: "#fff3e0"
+      stroke: "#ef6c00"
+    }
+  }
+}
+
+# Style overrides for sequence diagram elements
+fuse_concurrency.correct_pattern.thread_a.lock.style.stroke: "#2e7d32"
+fuse_concurrency.correct_pattern.thread_a.unlock.style.stroke: "#2e7d32"
+fuse_concurrency.buggy_pattern.thread_a.lock2.style.stroke: "#c62828"
+fuse_concurrency.buggy_pattern.thread_a.exit.style.stroke-width: 4

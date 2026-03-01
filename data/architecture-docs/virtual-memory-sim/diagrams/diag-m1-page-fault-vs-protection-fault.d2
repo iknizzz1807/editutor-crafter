@@ -1,0 +1,124 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+
+mmu_translation: {
+  label: "Address Translation Decision Logic (mmu.c)"
+  
+  input_vaddr: {
+    shape: rectangle
+    label: "Incoming Virtual Address"
+    details: "32-bit | 0x00401020"
+  }
+
+  address_split: {
+    shape: sql_table
+    label: "Address Decomposition"
+    vpn: "bits [31:12] | VPN | 0x00401"
+    offset: "bits [11:0]  | Offset | 0x020"
+  }
+
+  pte_lookup: {
+    shape: sql_table
+    label: "pte_t (page_table.h)"
+    f0: "0x00 [0]    | bool     | valid // Present in RAM"
+    f1: "0x00 [4:5]  | uint2_t  | perms // R/W/X bits"
+    f2: "0x00 [6:7]  | uint2_t  | meta  // Dirty/Referenced"
+    f3: "0x01 [12:31]| uint20_t | pfn   // Physical Frame Number"
+    sz: "Total: 4 bytes (1 cache line holds 16)"
+  }
+
+  check_valid: {
+    shape: diamond
+    label: "PTE.valid == 1?"
+  }
+
+  check_perms: {
+    shape: diamond
+    label: "Access <= Permissions?"
+  }
+
+  # --- Terminal Outcomes ---
+
+  outcome_success: {
+    label: "Outcome: XLATE_SUCCESS"
+    style.fill: "#C8E6C9"
+    style.stroke: "#2E7D32"
+    logic: |'c
+      paddr = (pfn << 12) | offset;
+      pte->referenced = 1;
+      if (write) pte->dirty = 1;
+      return paddr;
+    '|
+  }
+
+  outcome_page_fault: {
+    label: "Outcome: XLATE_PAGE_FAULT"
+    style.fill: "#FFF9C4"
+    style.stroke: "#FBC02D"
+    style.stroke-dash: 5
+    status: "RECOVERABLE (Demand Paging)"
+    logic: |'c
+      sim->page_faults++;
+      frame = alloc_free_frame(sim);
+      if (frame == OOM) return XLATE_OOM;
+      load_page_from_disk(vpn, frame);
+      return XLATE_RETRY;
+    '|
+  }
+
+  outcome_prot_fault: {
+    label: "Outcome: XLATE_PROT_FAULT"
+    style.fill: "#FFCDD2"
+    style.stroke: "#C62828"
+    status: "FATAL (Segmentation Fault)"
+    logic: |'c
+      sim->protection_faults++;
+      // Rejecting write to RO page
+      kill_process(current_pid, SIGSEGV);
+    '|
+  }
+
+  # --- Connections ---
+
+  input_vaddr -> address_split: "uint32_t | 4 bytes | 0x00401020"
+  address_split -> pte_lookup: "VPN | 20 bits | 0x00401"
+  pte_lookup -> check_valid: "pte_t | 32 bits | {v:?, p:?}"
+  
+  check_valid -> outcome_page_fault: "No (0)" {
+    style.stroke: "#FBC02D"
+    style.stroke-width: 2
+  }
+  
+  check_valid -> check_perms: "Yes (1)" {
+    style.stroke: "#2E7D32"
+  }
+
+  check_perms -> outcome_success: "Match" {
+    style.stroke: "#2E7D32"
+    style.stroke-width: 3
+  }
+
+  check_perms -> outcome_prot_fault: "Violation" {
+    style.stroke: "#C62828"
+    style.stroke-width: 2
+  }
+}
+
+legend: {
+  label: "Decision Significance"
+  near: bottom-right
+  
+  item1: {
+    label: "Page Fault: Page is on Disk. OS must fetch it. (Hardware Interrupt)"
+    style.fill: "#FFF9C4"
+  }
+  item2: {
+    label: "Protection Fault: Page in RAM, but operation illegal. (Access Denied)"
+    style.fill: "#FFCDD2"
+  }
+}

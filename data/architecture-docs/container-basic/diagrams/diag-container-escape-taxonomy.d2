@@ -1,0 +1,196 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Visual Semantic Classes
+# ─────────────────────────────────────────────────────────────────────────────
+classes: {
+  vulnerability: {
+    style: {
+      fill: "#ffcccc"
+      stroke: "#cc0000"
+      stroke-width: 2
+    }
+  }
+  mitigation: {
+    style: {
+      fill: "#d5f5e3"
+      stroke: "#28b463"
+      stroke-width: 2
+    }
+  }
+  cve_node: {
+    style: {
+      fill: "#ebdef0"
+      stroke: "#8e44ad"
+      stroke-dash: 3
+    }
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Layer 1: Host Environment (Target)
+# ─────────────────────────────────────────────────────────────────────────────
+host_env: {
+  label: "Host Environment (Root Context)"
+  direction: down
+
+  sensitive_files: {
+    shape: sql_table
+    label: "Sensitive Filesystem Paths"
+    f0: "/etc/shadow | Host hashes"
+    f1: "/root/.ssh/authorized_keys"
+    f2: "/var/run/docker.sock | API access"
+  }
+
+  kernel_state: {
+    shape: sql_table
+    label: "Kernel State (task_struct)"
+    f0: "0x00 | struct nsproxy* | nsproxy"
+    f1: "0x08 | struct fs_struct* | fs"
+    f2: "0x10 | struct cred*      | real_cred"
+    f3: "0x18 | kernel_cap_t      | cap_effective"
+  }
+
+  host_binaries: {
+    shape: sql_table
+    label: "Host Binaries"
+    f0: "/usr/bin/runc"
+    f1: "/usr/bin/containerd"
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Layer 2: Vulnerability Vectors (The Attack Surface)
+# ─────────────────────────────────────────────────────────────────────────────
+vectors: {
+  label: "Container Escape Vectors"
+  direction: down
+
+  mount_escape: {
+    label: "V1: Mount Escape (Leaky Root)"
+    class: vulnerability
+    code: |'c
+      // Escape via un-detached old root
+      chdir("/.pivot_old");
+      chroot(".");
+    '|
+  }
+
+  proc_exploit: {
+    label: "V2: /proc/sys Tampering"
+    class: vulnerability
+    code: |'c
+      // Triggered by writable /proc/sys
+      echo "1" > /proc/sys/kernel/panic
+    '|
+  }
+
+  device_leak: {
+    label: "V3: Raw Device Access"
+    class: vulnerability
+    code: |'c
+      // Accessing host disk directly
+      fd = open("/dev/sda", O_RDONLY);
+      read(fd, buf, 512); // Read MBR
+    '|
+  }
+
+  cap_abuse: {
+    label: "V4: Capability Retention"
+    class: vulnerability
+    code: |'c
+      // CAP_SYS_ADMIN allows host mount
+      mount("/dev/sda1", "/mnt", "ext4", 0, NULL);
+    '|
+  }
+
+  uid_collision: {
+    label: "V5: UID 0 Collision"
+    class: vulnerability
+    code: |'c
+      // Container root == Host root
+      kill(1, SIGKILL); // Kill host init
+    '|
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Layer 3: Milestones (The Defense)
+# ─────────────────────────────────────────────────────────────────────────────
+milestones: {
+  label: "Implementation Mitigations"
+  direction: down
+
+  m2_mitigation: {
+    label: "M2: Mount/FS Isolation"
+    class: mitigation
+    details: "pivot_root() + umount2(MNT_DETACH) + MS_RDONLY for /sys"
+  }
+
+  m5_mitigation: {
+    label: "M5: User Namespaces"
+    class: mitigation
+    details: "CLONE_NEWUSER + UID mapping (0 -> 1000)"
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Layer 4: Industry CVEs (Case Studies)
+# ─────────────────────────────────────────────────────────────────────────────
+cves: {
+  label: "Historical Precedents"
+  direction: right
+
+  cve_2024_21626: {
+    label: "CVE-2024-21626 (Leaky Vessels)"
+    class: cve_node
+    desc: "Host FD leak via /proc/self/fd during pivot_root"
+  }
+
+  cve_2019_5736: {
+    label: "CVE-2019-5736 (runc Overwrite)"
+    class: cve_node
+    desc: "Overwrite host runc binary via /proc/self/exe"
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Connections & Data Walks
+# ─────────────────────────────────────────────────────────────────────────────
+
+# M2 Mitigations
+milestones.m2_mitigation -> vectors.mount_escape: "umount2(MNT_DETACH) | 0 bytes | Old root detached"
+milestones.m2_mitigation -> vectors.proc_exploit: "MS_RDONLY | 4KB | Read-only /sys/kernel"
+milestones.m2_mitigation -> vectors.device_leak: "Custom /dev tmpfs | 64MB | No raw block nodes"
+
+# M5 Mitigations
+milestones.m5_mitigation -> vectors.cap_abuse: "Cap Scoping | 64-bit | Effective caps != Initial caps"
+milestones.m5_mitigation -> vectors.uid_collision: "UID Map | 4 bytes | Container 0 -> Host 1000"
+
+# CVE Associations
+cves.cve_2024_21626 -> vectors.mount_escape: "Refines M2 logic"
+cves.cve_2019_5736 -> host_env.host_binaries: "TARGET: /usr/bin/runc"
+
+# Escape Paths (The Danger Path)
+vectors.mount_escape -> host_env.sensitive_files: "O_RDWR | 256B | /etc/shadow leak" {
+  style.stroke: red
+  style.animated: true
+}
+
+vectors.uid_collision -> host_env.kernel_state: "kill() | SIGKILL | Host PID 1" {
+  style.stroke: red
+  style.stroke-dash: 5
+}
+
+# Implementation-Ready Note
+legend: {
+  shape: callout
+  label: "Architectural Note: Security boundaries rely on atomic CLONE_NEW* composition and post-clone cleanup of inherited File Descriptors."
+}
+legend.near: top-right

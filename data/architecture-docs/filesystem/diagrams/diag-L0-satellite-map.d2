@@ -1,0 +1,168 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# USER FACING LAYER
+# ---------------------------------------------------------------------------------------
+layer_user: {
+  label: "USER INTERFACE LAYER"
+  style.stroke-dash: 0
+
+  m5: {
+    shape: class
+    label: "Milestone 5: FUSE Integration (myfs.c)"
+    fields: |'c
+      struct fuse_operations myfs_ops;
+      pthread_mutex_t fs_lock;
+    '|
+    methods: |'c
+      myfs_getattr(path, stat);
+      myfs_readdir(path, filler);
+      myfs_read(path, buf, size, off);
+      myfs_write(path, buf, size, off);
+    '|
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# LOGIC & ABSTRACTION LAYER
+# ---------------------------------------------------------------------------------------
+layer_logic: {
+  label: "FS LOGIC LAYER"
+  direction: down
+
+  m4: {
+    shape: class
+    label: "Milestone 4: File Operations (file.c)"
+    methods: |'c
+      fs_read(ino, off, buf, len);
+      fs_write(ino, off, buf, len);
+      fs_truncate(ino, new_size);
+    '|
+  }
+
+  m3: {
+    shape: class
+    label: "Milestone 3: Directory Operations (dir.c)"
+    methods: |'c
+      dir_lookup(dir_ino, name);
+      path_resolve(path);
+      fs_mkdir(parent, name);
+    '|
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# METADATA & ALLOCATION LAYER
+# ---------------------------------------------------------------------------------------
+layer_metadata: {
+  label: "METADATA LAYER"
+  direction: down
+
+  m2: {
+    shape: class
+    label: "Milestone 2: Inode Management (inode.c)"
+    fields: |'c
+      typedef struct inode_t; // 128B
+      uint32_t blocks[12];    // Direct
+    '|
+    methods: |'c
+      read_inode(ino_num, out);
+      inode_get_block(inode, off);
+      inode_set_block(inode, off, blk);
+    '|
+  }
+
+  m1: {
+    shape: class
+    label: "Milestone 1: Block Layer (block.c)"
+    methods: |'c
+      read_block(fd, blk_num, buf);
+      write_block(fd, blk_num, buf);
+      alloc_block(fd, sb);
+    '|
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# CROSS-CUTTING CONCERN: JOURNALING
+# ---------------------------------------------------------------------------------------
+m6: {
+  shape: package
+  label: "Milestone 6: Journaling (journal.c)"
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#6c757d"
+    stroke-width: 4
+  }
+  code: |'c
+    txn_begin(&txn, fd, sb);
+    txn_journal_block(&txn, blk, data);
+    txn_commit(&txn); // fsync x2
+  '|
+}
+
+# ---------------------------------------------------------------------------------------
+# PHYSICAL PERSISTENCE (DISK IMAGE)
+# ---------------------------------------------------------------------------------------
+disk_image: {
+  shape: sql_table
+  label: "Physical Disk Layout (disk.img)"
+  
+  sb: "0x0000 | Superblock | Magic, Layout, Counters"
+  b_bmap: "0x1000 | Block Bitmap | 1 bit = 1 Data Block"
+  i_bmap: "0x2000 | Inode Bitmap | 1 bit = 1 Inode Slot"
+  i_table: "0x3000 | Inode Table | N x 128B Metadata Structs"
+  journal: "0x???? | Journal Region | Circular Transaction Log"
+  data: "0x???? | Data Blocks | File Contents & Directory Records"
+
+  # Colors for semantics
+  sb.style.fill: "#e1d5e7"      # Purple (Metadata)
+  b_bmap.style.fill: "#fff2cc"  # Yellow (Allocation)
+  i_bmap.style.fill: "#fff2cc"
+  i_table.style.fill: "#e1d5e7"
+  journal.style.fill: "#f5f5f5" # Gray (Reserved)
+  data.style.fill: "#dae8fc"    # Blue (Data)
+}
+
+# ---------------------------------------------------------------------------------------
+# CONNECTIONS & DATA FLOW
+# ---------------------------------------------------------------------------------------
+
+# FUSE to Logic
+layer_user.m5 -> layer_logic.m4: "inode_num | 4 bytes | 1041"
+layer_user.m5 -> layer_logic.m3: "path_string | 256 bytes | /home/user"
+
+# File Ops to Inode Management
+layer_logic.m4 -> layer_metadata.m2: "file_offset | 8 bytes | 40960"
+layer_logic.m3 -> layer_metadata.m2: "inode_num | 4 bytes | 2"
+
+# Inode to Block Layer
+layer_metadata.m2 -> layer_metadata.m1: "LBA | 4 bytes | 512"
+
+# Journaling wraps the write paths
+m6 -> layer_metadata.m1: "intercepts writes"
+m6.style.stroke-dash: 5
+
+# Block Layer to Disk
+layer_metadata.m1 -> disk_image.sb: "struct sb | 4KB | blk 0"
+layer_metadata.m1 -> disk_image.b_bmap: "uint8_t[] | 4KB | blk 1"
+layer_metadata.m1 -> disk_image.i_table: "struct inode | 128B | blk 3..N"
+layer_metadata.m1 -> disk_image.data: "raw_data | 4KB | blk M..End"
+
+# Journaling interaction
+m6 -> disk_image.journal: "txn_commit | 4KB+ | journal_abs_block"
+
+# Legend
+legend: {
+  shape: rectangle
+  near: bottom-right
+  metadata: "Purple = Metadata" { style.fill: "#e1d5e7" }
+  allocation: "Yellow = Bitmaps" { style.fill: "#fff2cc" }
+  data: "Blue = Data Region" { style.fill: "#dae8fc" }
+}

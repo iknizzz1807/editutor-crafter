@@ -1,0 +1,152 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- STAGES OF TRANSLATION ---
+
+input: {
+  shape: sql_table
+  label: "Virtual Address (vmsim.c)"
+  0: "0x00 | uint32_t | 0x00003A7C"
+}
+
+decomposition: {
+  label: "Address Decomposition"
+  code: |'c
+    vpn    = vaddr >> 12;      // 0x3
+    offset = vaddr & 0xFFF;   // 0xA7C
+  '|
+  vpn: "VPN: 0x00003"
+  offset: "Offset: 0xA7C"
+  
+  vpn.style.fill: "#C7F1FF"
+  offset.style.fill: "#E4DBFE"
+}
+
+table_lookup: {
+  shape: sql_table
+  label: "Flat Page Table (page_table_t)"
+  header: "Index | Content | Metadata"
+  row0: "0x00 | PFN: 0x1 | V:1, R:1, W:1"
+  row1: "0x01 | PFN: 0x5 | V:1, R:1, W:0"
+  row2: "0x02 | PFN: 0x0 | V:0, R:0, W:0"
+  row3: "0x03 | PFN: 0x7 | V:1, R:1, W:1" {style.fill: "#C7F1FF"; style.bold: true}
+  row4: "0x04 | PFN: 0x9 | V:1, R:1, W:1"
+  footer: "Base Address: sim->page_table.entries"
+}
+
+logic_check: {
+  label: "MMU Logic Gates"
+  
+  is_valid: {
+    label: "Check PTE.valid"
+    code: |'c
+      if (!(*pte & PTE_VALID)) 
+          return XLATE_PAGE_FAULT;
+    '|
+  }
+  
+  is_writable: {
+    label: "Check Permissions"
+    code: |'c
+      if (write && !(*pte & PTE_W)) 
+          return XLATE_PROT_FAULT;
+    '|
+  }
+}
+
+assembly: {
+  label: "Physical Address Assembly"
+  code: |'c
+    paddr = (pfn << 12) | offset;
+    // (0x7 << 12) | 0xA7C
+  '|
+  width: 300
+}
+
+output: {
+  shape: sql_table
+  label: "Physical Address (RAM)"
+  0: "0x00 | uint32_t | 0x00007A7C"
+  style.fill: "#ACE1AF"
+}
+
+# --- FAULT HANDLERS (EXCEPTIONS) ---
+
+fault_paths: {
+  label: "Exception Handlers"
+  style.stroke: red
+  style.stroke-dash: 4
+
+  page_fault: {
+    label: "handle_page_fault()"
+    code: |'c
+      sim->page_faults++;
+      frame = alloc_free_frame(sim);
+      *pte = pte_make(frame, 1, 1);
+    '|
+    style.fill: "#FFE0F5"
+  }
+
+  prot_fault: {
+    label: "protection_fault_handler()"
+    code: |'c
+      sim->protection_faults++;
+      return SIGSEGV; 
+    '|
+    style.fill: "#FFE0F5"
+  }
+}
+
+# --- DATA FLOW CONNECTIONS ---
+
+input -> decomposition: "uint32_t | 4 bytes | 0x00003A7C"
+
+decomposition.vpn -> table_lookup.row3: "Array Index | 20 bits | 3" {
+  style.stroke: blue
+  style.animated: true
+}
+
+table_lookup.row3 -> logic_check.is_valid: "pte_t | 4 bytes | 0x00007031" {
+  style.stroke: blue
+}
+
+logic_check.is_valid -> logic_check.is_writable: "V=1 (Success)" {
+  style.stroke: green
+}
+
+logic_check.is_valid -> fault_paths.page_fault: "V=0 (Fail)" {
+  style.stroke: red
+  style.stroke-dash: 4
+}
+
+logic_check.is_writable -> assembly: "W=1 (Success)" {
+  style.stroke: green
+}
+
+logic_check.is_writable -> fault_paths.prot_fault: "W=0 (Fail)" {
+  style.stroke: red
+  style.stroke-dash: 4
+}
+
+decomposition.offset -> assembly: "uint32_t | 12 bits | 0xA7C" {
+  style.stroke: purple
+}
+
+assembly -> output: "uint32_t | 4 bytes | 0x00007A7C" {
+  style.stroke: green
+  style.stroke-width: 2
+}
+
+# --- LEGEND ---
+legend: {
+  near: bottom-right
+  success: "Success Path" { style.stroke: green }
+  data: "Data Extraction" { style.stroke: blue }
+  meta: "Offset (Passthrough)" { style.stroke: purple }
+  fail: "Fault Paths" { style.stroke: red; style.stroke-dash: 4 }
+}

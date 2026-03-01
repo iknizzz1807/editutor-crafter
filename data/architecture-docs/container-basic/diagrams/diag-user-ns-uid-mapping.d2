@@ -1,0 +1,114 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- Host / Initial Namespace Perspective ---
+host_context: {
+  label: "Initial User Namespace (Host OS)"
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#343a40"
+    stroke-width: 2
+  }
+
+  host_user: {
+    shape: person
+    label: "User: alice\nUID: 1000"
+  }
+
+  host_process_view: {
+    shape: class
+    label: "Process (Host View: PID 47832)"
+    fields: |'c
+      uid_t real = 1000;
+      uid_t effective = 1000;
+      capability_t cap_eff = 0x0;
+    '|
+    methods: |'bash
+      $ id
+      uid=1000(alice) gid=1000(alice)
+    '|
+  }
+}
+
+# --- Kernel Logic & Mapping Boundary ---
+kernel_subsystem: {
+  label: "Linux Kernel (VFS & Credential Layer)"
+  direction: down
+  
+  uid_map: {
+    shape: sql_table
+    label: "struct uid_gid_map (user_namespace.c)"
+    header: "Inside UID | Outside UID | Range Count"
+    row1: "0 | 1000 | 1 // Mapping Rule"
+    footer: "Scope: UserNS Inode [4026532847]"
+  }
+
+  translation_logic: {
+    label: "map_id_up / map_id_down"
+    code: |'c
+      // Kernel translation logic
+      if (id >= map->lower_first && 
+          id < map->lower_first + map->count)
+          return id - map->lower_first + map->upper_first;
+    '|
+  }
+}
+
+# --- Container / New Namespace Perspective ---
+container_context: {
+  label: "New User Namespace (Container)"
+  style: {
+    fill: "#e7f3ff"
+    stroke: "#007bff"
+    stroke-width: 2
+  }
+
+  container_process_view: {
+    shape: class
+    label: "Process (Inside View: PID 1)"
+    fields: |'c
+      uid_t real = 0;
+      uid_t effective = 0;
+      capability_t cap_eff = 0x1FFFFFFFFFF;
+    '|
+    methods: |'bash
+      # id
+      uid=0(root) gid=0(root) groups=0(root)
+    '|
+  }
+
+  isolated_resource: {
+    label: "Namespaced Resource"
+    shape: rectangle
+    style.fill: "#d4edda"
+    content: "Mount NS / Net NS / UTS NS"
+  }
+}
+
+# --- Data Walk & Translations ---
+host_context.host_process_view -> kernel_subsystem.uid_map: "syscall: write_uid_map | 8 bytes | '0 1000 1'"
+kernel_subsystem.uid_map -> kernel_subsystem.translation_logic: "lookup mapping"
+
+container_context.container_process_view -> kernel_subsystem.translation_logic: "syscall: getuid() | - | returns 0"
+kernel_subsystem.translation_logic -> container_context.container_process_view: "translated_id | uid_t | 0"
+
+# --- Capability Scoping Visual ---
+container_context.container_process_view -> container_context.isolated_resource: "CAP_SYS_ADMIN | scoped | PERMITTED"
+container_context.container_process_view -> host_context.host_user: "CAP_SYS_ADMIN | out-of-scope | EPERM" {
+  style.stroke-dash: 4
+  style.stroke: red
+}
+
+# --- Legend ---
+legend: {
+  shape: package
+  near: bottom-right
+  label: "Security Boundary Info"
+  note1: "Red Dash: Blocked host-level escalation"
+  note2: "UID 0 (Container) != UID 0 (Host)"
+}

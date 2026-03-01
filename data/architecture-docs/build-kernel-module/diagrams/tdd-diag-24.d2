@@ -1,0 +1,177 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+# --- CLASSES & STYLES ---
+classes: {
+  state: {
+    shape: rectangle
+    style: {
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  decision: {
+    shape: diamond
+    style: {
+      fill: "#f8f9fa"
+    }
+  }
+  error_state: {
+    style: {
+      fill: "#ffcccc"
+      stroke: "#cc0000"
+      font-color: "#cc0000"
+      bold: true
+    }
+  }
+  terminal: {
+    shape: circle
+    width: 20
+    height: 20
+  }
+}
+
+# --- STATE DEFINITIONS ---
+START: "" { 
+  class: terminal 
+  tooltip: "● Initial Entry Point"
+}
+
+ENTRY: "ENTRY\n(TASK_RUNNING)" {
+  class: state
+  tooltip: "read() syscall invoked from userspace."
+}
+
+ACQUIRE_MUTEX: "ACQUIRE_MUTEX\n(TASK_RUNNING)" {
+  class: state
+  tooltip: "Attempting to serialize access to the device buffer."
+}
+
+CHECK_CONDITION: "CHECK_CONDITION\n(INVARIANT: HAS_MUTEX)" {
+  class: decision
+  tooltip: "Comparing buffer_used against current f_pos."
+}
+
+NONBLOCK_CHECK: "NONBLOCK_CHECK" {
+  class: decision
+}
+
+RELEASE_AND_SLEEP: "RELEASE_AND_SLEEP\n(STATE_TRANSITION)" {
+  class: state
+  tooltip: "Preparing to yield CPU. Mutex MUST be released here."
+}
+
+SLEEPING: "SLEEPING\n(TASK_INTERRUPTIBLE)" {
+  class: state
+  style: {
+    fill: "#e3f2fd"
+    stroke-dash: 3
+  }
+  tooltip: "Process removed from run-queue. Waiting on read_queue."
+}
+
+REACQUIRE_MUTEX: "REACQUIRE_MUTEX\n(TASK_RUNNING)" {
+  class: state
+  tooltip: "Woken by writer. Must grab lock before re-checking condition."
+}
+
+COPY_DATA: "COPY_DATA\n(INVARIANT: DATA_AVAIL)" {
+  class: state
+  style: {
+    fill: "#e8f5e9"
+  }
+}
+
+DONE: "DONE / RETURN" {
+  class: state
+  style: {
+    double-border: true
+  }
+}
+
+# --- ERROR / EXIT STATES ---
+E_SIGNAL: "EXIT: -ERESTARTSYS" { class: error_state }
+E_NONBLOCK: "EXIT: -EAGAIN" { class: error_state }
+E_FAULT: "EXIT: -EFAULT" { class: error_state }
+
+# --- TRANSITIONS ---
+
+START -> ENTRY
+
+ENTRY -> ACQUIRE_MUTEX: "call\nmutex_lock_interruptible()"
+
+ACQUIRE_MUTEX -> CHECK_CONDITION: "Success\n(Lock Acquired)"
+
+ACQUIRE_MUTEX -> E_SIGNAL: "Signal Pending\n(return -ERESTARTSYS)" {
+  style.stroke: red
+}
+
+CHECK_CONDITION -> COPY_DATA: "[buffer_used > *f_pos]\n(Data Available)" {
+  style: {
+    stroke: green
+    bold: true
+  }
+}
+
+CHECK_CONDITION -> NONBLOCK_CHECK: "[buffer_used <= *f_pos]\n(Buffer Empty)"
+
+NONBLOCK_CHECK -> E_NONBLOCK: "[filp->f_flags & O_NONBLOCK]\n(Immediate Return)"
+
+NONBLOCK_CHECK -> RELEASE_AND_SLEEP: "[!O_NONBLOCK]\n(Block Requested)"
+
+RELEASE_AND_SLEEP -> SLEEPING: "action: mutex_unlock(&dev_mutex)\ncall: schedule()"
+
+SLEEPING -> REACQUIRE_MUTEX: "trigger: wake_up_interruptible()\naction: set_current_state(TASK_RUNNING)"
+
+SLEEPING -> E_SIGNAL: "trigger: Signal Arrival\naction: remove_wait_queue()" {
+  style.stroke: red
+}
+
+REACQUIRE_MUTEX -> CHECK_CONDITION: "Success\n(Re-check handles spurious wakeups)"
+
+REACQUIRE_MUTEX -> E_SIGNAL: "Signal Pending\n(during re-acquire)" {
+  style.stroke: red
+}
+
+COPY_DATA -> DONE: "1. copy_to_user() SUCCESS\n2. *f_pos += n\n3. wake_up(write_queue)\n4. mutex_unlock()" {
+  style.stroke: green
+}
+
+COPY_DATA -> E_FAULT: "copy_to_user() FAIL\naction: mutex_unlock()" {
+  style.stroke: red
+}
+
+E_SIGNAL -> DONE
+E_NONBLOCK -> DONE
+E_FAULT -> DONE
+
+# --- ILLEGAL TRANSITIONS ---
+
+SLEEPING -> SLEEPING: "ILLEGAL: DEADLOCK\n(Sleep while holding dev_mutex)" {
+  style: {
+    stroke: red
+    stroke-dash: 5
+  }
+}
+
+NONBLOCK_CHECK -> DONE: "ILLEGAL: SEMANTIC ERROR\n(Return 0 on Empty/Non-block)" {
+  style: {
+    stroke: red
+    stroke-dash: 5
+  }
+}
+
+# --- ANNOTATIONS ---
+legend: |md
+  ### State Machine Invariants
+  1. **Atomic Guard**: Mutex must be held for all `buffer_used` checks.
+  2. **Deadlock Avoidance**: Never call `schedule()` or `wait_event` while holding `dev_mutex`.
+  3. **Signal Awareness**: `TASK_INTERRUPTIBLE` allows clean exits via `Ctrl+C`.
+| {
+  near: bottom-right
+}

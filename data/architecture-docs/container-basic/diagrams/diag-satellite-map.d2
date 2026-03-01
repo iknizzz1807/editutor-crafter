@@ -1,0 +1,194 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+
+# --- GLOBAL CLASSES ---
+classes: {
+  syscall: {
+    shape: parallelogram
+    style: {
+      fill: "#E4DBFE"
+      stroke: "#673AB7"
+    }
+  }
+  kernel_obj: {
+    shape: sql_table
+    style: {
+      fill: "#DEE1EB"
+      stroke: "#455A64"
+    }
+  }
+  namespace: {
+    shape: package
+    style: {
+      stroke-width: 2
+      fill: "#C7F1FF"
+    }
+  }
+  hot_path: {
+    style: {
+      stroke: "#F44336"
+      stroke-width: 3
+    }
+  }
+}
+
+# --- HOST ENVIRONMENT ---
+host_runtime: {
+  label: "Container Runtime (Host User Space)"
+  direction: down
+  runtime_binary: {
+    shape: class
+    label: "main.c (Runtime Host)"
+    fields: |'c
+      int sync_pipe[2];
+      char *child_stack;
+      container_config_t cfg;
+    '|
+    methods: |'c
+      pid_t clone_container();
+      int setup_cgroups(pid_t);
+      int setup_net(pid_t);
+    '|
+  }
+
+  step1: {
+    label: "1. syscall: clone()"
+    shape: callout
+  }
+}
+
+# --- THE KERNEL SPACE ---
+kernel_layer: {
+  label: "Linux Kernel"
+  style: {
+    fill: "#f8f9fa"
+    stroke-dash: 5
+  }
+
+  task_struct: {
+    shape: sql_table
+    label: "struct task_struct (sched.h)"
+    f0: "0x00 | pid_t | pid // Host PID"
+    f1: "0x04 | struct nsproxy* | nsproxy"
+    f2: "0x0C | struct cred* | real_cred"
+    f3: "0x14 | struct css_set* | cgroups"
+    sz: "Total: ~7KB"
+  }
+
+  nsproxy: {
+    shape: sql_table
+    label: "struct nsproxy (nsproxy.h)"
+    f0: "0x00 | uts_namespace* | uts_ns"
+    f1: "0x08 | ipc_namespace* | ipc_ns"
+    f2: "0x10 | mnt_namespace* | mnt_ns"
+    f3: "0x18 | pid_namespace* | pid_ns"
+    f4: "0x20 | net* | net_ns"
+    sz: "Total: 48 bytes"
+  }
+
+  cgroup_v2: {
+    label: "Cgroup v2 Hierarchy"
+    shape: cylinder
+    mem: "memory.max"
+    cpu: "cpu.max"
+    pids: "pids.max"
+  }
+}
+
+# --- THE CONTAINER BOUNDARY ---
+container_isolation: {
+  label: "Container Isolated Environment"
+  style: {
+    fill: "#ffffff"
+    stroke: "#2196F3"
+    stroke-width: 4
+  }
+
+  user_ns: {
+    label: "User Namespace (Milestone 5)"
+    mapping: "UID 0 (Container) -> UID 1000 (Host)"
+  }
+  user_ns.class: namespace
+
+  pid_ns: {
+    label: "PID Namespace (Milestone 1)"
+    logic: "Namespace PID 1 -> Host PID 47832"
+  }
+  pid_ns.class: namespace
+
+  mnt_ns: {
+    label: "Mount Namespace (Milestone 2)"
+    op: "pivot_root() -> /.pivot_old"
+  }
+  mnt_ns.class: namespace
+
+  net_ns: {
+    label: "Network Namespace (Milestone 3)"
+    iface: "veth_c0 (172.20.0.2)"
+  }
+  net_ns.class: namespace
+
+  uts_ns: {
+    label: "UTS Namespace (Milestone 1)"
+    hostname: "sethostname('mycontainer')"
+  }
+  uts_ns.class: namespace
+
+  container_init: {
+    shape: class
+    label: "container_init (PID 1)"
+    methods: |'c
+      int reaper_loop();
+      int pivot_root();
+      int execve();
+    '|
+  }
+}
+
+# --- ARCHITECTURAL FLOWS ---
+
+# Step 1: Clone
+host_runtime.runtime_binary -> kernel_layer.task_struct: "clone() | 8 bytes | CLONE_NEWUSER|PID|NS|NET|UTS" {
+  class: hot_path
+}
+
+# Step 2: User Mapping
+host_runtime.runtime_binary -> container_isolation.user_ns: "write() | 16 bytes | /proc/pid/uid_map"
+
+# Step 3: Cgroup Attach
+kernel_layer.task_struct -> kernel_layer.cgroup_v2: "css_set link | ptr | task->cgroups"
+
+# Step 4: Network Handoff
+host_runtime.runtime_binary -> container_isolation.net_ns: "ip link set veth_c0 netns"
+
+# Step 5: Mount & Pivot
+container_isolation.container_init -> container_isolation.mnt_ns: "syscall | 0 | pivot_root('/', '/.pivot_old')"
+
+# Step 6: Final Exec
+container_isolation.container_init -> container_isolation: "execve() | args | /bin/sh" {
+  style.stroke-width: 5
+}
+
+# Relationships
+kernel_layer.task_struct.f1 -> kernel_layer.nsproxy: "points to"
+kernel_layer.nsproxy.f0 -> container_isolation.uts_ns
+kernel_layer.nsproxy.f2 -> container_isolation.mnt_ns
+kernel_layer.nsproxy.f3 -> container_isolation.pid_ns
+kernel_layer.nsproxy.f4 -> container_isolation.net_ns
+
+# --- LEGEND ---
+legend: {
+  shape: sql_table
+  label: "Map Legend"
+  m1: "Milestone 1: PID/UTS Isolation"
+  m2: "Milestone 2: Filesystem/Mount Isolation"
+  m3: "Milestone 3: Network (veth/bridge)"
+  m4: "Milestone 4: Cgroups Resource Limits"
+  m5: "Milestone 5: User Namespaces (Rootless)"
+}
+legend.near: bottom-right

@@ -1,0 +1,138 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+allocation_walk: {
+  label: "DATA WALK: Bitmap Allocation Logic (LSB-0 Order)"
+
+  input_byte: {
+    shape: sql_table
+    label: "Initial State (Offset: 0)"
+    b7: "Bit 7 | 1 | Used"
+    b6: "Bit 6 | 1 | Used"
+    b5: "Bit 5 | 0 | Free"
+    b4: "Bit 4 | 1 | Used"
+    b3: "Bit 3 | 0 | Free"
+    b2: "Bit 2 | 0 | Free (Target)"
+    b1: "Bit 1 | 1 | Used"
+    b0: "Bit 0 | 1 | Used"
+    val: "Raw: 0b11010011 (0xD3)"
+  }
+
+  scan_step: {
+    label: "Step 1: Find Free Bit"
+    code: |'c
+      for (int bit = 0; bit < 8; bit++) {
+        if (!((byte >> bit) & 1)) {
+          return bit; // Returns 2
+        }
+      }
+    '|
+    style.stroke: blue
+  }
+
+  mutate_step: {
+    label: "Step 2: Set Bit (Mark Used)"
+    code: |'c
+      // 0xD3 | (1 << 2)
+      byte |= (1u << 2); 
+      // Result: 0xD7
+    '|
+    style.stroke: green
+  }
+
+  final_byte: {
+    shape: sql_table
+    label: "Mutated State"
+    b7: "Bit 7 | 1"
+    b6: "Bit 6 | 1"
+    b5: "Bit 5 | 0"
+    b4: "Bit 4 | 1"
+    b3: "Bit 3 | 0"
+    b2: "Bit 2 | 1 | NEWLY ALLOCATED"
+    b1: "Bit 1 | 1"
+    b0: "Bit 0 | 1"
+    val: "Raw: 0b11010111 (0xD7)"
+    style.fill: "#E1F5FE"
+  }
+
+  input_byte -> scan_step: "uint8_t | 1 byte | 0xD3"
+  scan_step -> mutate_step: "int | 4 bytes | bit_index = 2"
+  mutate_step -> final_byte: "uint8_t | 1 byte | 0xD7"
+}
+
+address_translation: {
+  label: "Disk Address Calculation"
+  
+  params: {
+    shape: sql_table
+    p1: "byte_offset | 0"
+    p2: "bit_index   | 2"
+    p3: "data_start  | 1024 (e.g.)"
+  }
+
+  formula: {
+    label: "Translation Algorithm"
+    code: |'c
+      uint32_t abs_block;
+      abs_block = (byte_offset * 8) + bit_index;
+      abs_block += sb->data_block_start;
+      // Result: 1026
+    '|
+  }
+
+  result: {
+    label: "Absolute Block Address"
+    shape: cylinder
+    content: "LBA: 1026"
+    style.fill: "#C8E6C9"
+  }
+
+  params -> formula
+  formula -> result: "uint32_t | 4 bytes | 1026"
+}
+
+deallocation_walk: {
+  label: "DATA WALK: Deallocation (Freeing Block 1026)"
+
+  clear_op: {
+    label: "Bit Clear Operation"
+    code: |'c
+      // 0xD7 & ~(1 << 2)
+      // 0b11010111 & 0b11111011
+      byte &= ~(1u << bit_index);
+    '|
+    style.stroke: red
+  }
+
+  restored_byte: {
+    shape: sql_table
+    label: "Restored State"
+    b2: "Bit 2 | 0 | FREE"
+    val: "Raw: 0xD3"
+  }
+
+  clear_op -> restored_byte: "uint8_t | 1 byte | 0xD3"
+}
+
+allocation_walk.final_byte -> address_translation.params: "metadata map"
+address_translation.result -> deallocation_walk.clear_op: "trigger free"
+
+metadata_invariant: {
+  label: "Constraint: Block 0 Protection"
+  shape: callout
+  note: |md
+    ### The Off-By-One Guard
+    - **Block 0**: Superblock
+    - **Block 1**: Block Bitmap
+    - **Block 2**: Inode Bitmap
+    - **Bitmap Bit 0** maps to `sb->data_block_start`
+    - Allocation never returns < `data_block_start`
+  |
+}
+
+metadata_invariant.near: top-right

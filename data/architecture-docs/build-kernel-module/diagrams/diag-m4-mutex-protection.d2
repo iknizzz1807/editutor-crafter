@@ -1,0 +1,180 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- GLOBAL STYLES ---
+classes: {
+  kernel_struct: {
+    shape: sql_table
+    style: {
+      fill: "#f3f4f6"
+      stroke: "#374151"
+      font-color: "#111827"
+    }
+  }
+  critical_section: {
+    style: {
+      fill: "#fee2e2"
+      stroke: "#dc2626"
+      stroke-width: 2
+    }
+  }
+  waiting: {
+    style: {
+      fill: "#fef3c7"
+      stroke: "#d97706"
+      stroke-dash: 4
+    }
+  }
+  execution: {
+    style: {
+      fill: "#dcfce7"
+      stroke: "#16a34a"
+    }
+  }
+}
+
+# --- DATA STRUCTURES ---
+my_device: {
+  class: kernel_struct
+  label: "struct my_device (mydevice.c)"
+  f0: "0x00 | struct mutex      | dev_mutex   // Serialization primitive"
+  f1: "0x20 | wait_queue_head_t | read_queue  // Sleeping readers"
+  f2: "0x40 | char*             | buffer      // kmalloc'd 4KB page"
+  f3: "0x48 | size_t            | used        // Write cursor"
+  f4: "0x50 | atomic_t          | open_cnt    // Ref count"
+  sz: "Total: 88 bytes (Aligned 64-byte boundary)"
+}
+
+# --- TIMELINE: PROCESS A (WRITER) ---
+process_a: {
+  label: "Process A: sys_write() [Writer]"
+  direction: down
+  
+  a_lock: {
+    label: "T1: mutex_lock_interruptible()"
+    code: |'c
+      if (mutex_lock_interruptible(&dev->lock))
+          return -ERESTARTSYS;
+    '|
+  }
+
+  a_crit: {
+    label: "T2: CRITICAL SECTION"
+    class: critical_section
+    code: |'c
+      copy_from_user(dev->buffer + dev->used, buf, n);
+      dev->used += n;
+    '|
+  }
+
+  a_wake: {
+    label: "T3: wake_up_interruptible()"
+    code: |'c
+      wake_up_interruptible(&dev->read_queue);
+    '|
+  }
+
+  a_unlock: {
+    label: "T4: mutex_unlock()"
+    code: |'c
+      mutex_unlock(&dev->lock);
+    '|
+  }
+
+  a_lock -> a_crit -> a_wake -> a_unlock
+}
+
+# --- TIMELINE: PROCESS B (READER) ---
+process_b: {
+  label: "Process B: sys_read() [Reader]"
+  direction: down
+
+  b_lock: {
+    label: "T1: mutex_lock_interruptible()"
+    class: waiting
+    code: |'c
+      // BLOCKED
+      // Process state -> TASK_INTERRUPTIBLE
+      // Scheduler yields CPU
+    '|
+  }
+
+  b_wait: {
+    label: "T5: ACQUIRE LOCK (After A Unlocks)"
+    class: execution
+    code: |'c
+      // Resume execution
+      // State -> TASK_RUNNING
+    '|
+  }
+
+  b_crit: {
+    label: "T6: CRITICAL SECTION"
+    class: critical_section
+    code: |'c
+      copy_to_user(buf, dev->buffer + *f_pos, n);
+      *f_pos += n;
+    '|
+  }
+
+  b_unlock: {
+    label: "T7: mutex_unlock()"
+    code: |'c
+      mutex_unlock(&dev->lock);
+    '|
+  }
+
+  b_lock -> b_wait -> b_crit -> b_unlock
+}
+
+# --- INTERACTIONS & ANNOTATIONS ---
+process_a.a_lock -> my_device.f0: "LOCK | 0 bytes | Owner: PID 1024" {
+  style.stroke: "#16a34a"
+}
+
+process_b.b_lock -> my_device.f0: "CONTEND | 0 bytes | Blocks" {
+  style.stroke: "#dc2626"
+  style.stroke-dash: 3
+}
+
+process_a.a_crit -> my_device.f2: "WRITE | 64 bytes | 'Hello Kernel'" {
+  style.stroke: "#2563eb"
+}
+
+process_a.a_unlock -> process_b.b_wait: "WAKE / RELEASE | Mutex ownership transfer" {
+  style.animated: true
+  style.stroke: "#16a34a"
+}
+
+process_b.b_crit -> my_device.f2: "READ | 64 bytes | Offset: f_pos" {
+  style.stroke: "#2563eb"
+}
+
+# --- ARCHITECTURAL WARNING ---
+concurrency_hazard: {
+  label: "HAZARD: WITHOUT MUTEX"
+  class: critical_section
+  description: |md
+    If `mutex` is removed:
+    1. A updates `used`.
+    2. Context switch to B mid-update.
+    3. B reads `used` in inconsistent state.
+    **Result:** Memory Corruption / Kernel Oops.
+  |
+}
+concurrency_hazard.near: bottom-center
+
+# --- CONTEXT NOTE ---
+context_box: {
+  label: "Kernel Execution Context"
+  note: |'md
+    - **Process Context**: `mutex_lock` is legal. It may call `schedule()`.
+    - **Interrupt Context**: `mutex_lock` is **FORBIDDEN** (will Panic).
+  '|
+}
+context_box.near: top-center

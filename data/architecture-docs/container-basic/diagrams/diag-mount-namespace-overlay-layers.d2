@@ -1,0 +1,129 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- STACK COMPOSITION ---
+
+storage_layers: {
+  label: "Host Storage (ext4/xfs)"
+  direction: down
+
+  upper_layer: {
+    shape: sql_table
+    label: "UpperDir (Writable Layer)"
+    style.fill: "#ff7070"
+    f1: "path: /var/lib/docker/overlay2/<id>/diff"
+    f2: "perm: RW"
+    f3: "content: Container modifications & new files"
+  }
+
+  work_dir: {
+    shape: sql_table
+    label: "WorkDir (Kernel Internal)"
+    style.fill: "#e1d5e7"
+    f1: "path: /var/lib/docker/overlay2/<id>/work"
+    f2: "use: Atomic move operations during CoW"
+  }
+
+  lower_layers: {
+    label: "LowerDir (Image Layers - Read Only)"
+    direction: down
+    style.fill: "#f8cecc"
+
+    l3: {
+      shape: sql_table
+      label: "Layer 3 (App Binaries)"
+      row: "0x00 | /usr/bin/nginx | 4.2MB"
+    }
+    l2: {
+      shape: sql_table
+      label: "Layer 2 (Config/Deps)"
+      row: "0x00 | /etc/nginx/nginx.conf | 1.2KB"
+    }
+    l1: {
+      shape: sql_table
+      label: "Layer 1 (Base Alpine)"
+      row: "0x00 | /bin/sh, /lib/libc.so | 5.8MB"
+    }
+  }
+}
+
+kernel_vfs: {
+  label: "Kernel VFS (overlay.ko)"
+  
+  mount_call: {
+    label: "mount() Syscall Implementation"
+    code: |'c
+      mount("overlay", "./merged", "overlay", MS_NODEV,
+            "lowerdir=l3:l2:l1,"
+            "upperdir=./upper,"
+            "workdir=./work");
+    '|
+  }
+
+  cow_logic: {
+    label: "Copy-on-Write (CoW) Path"
+    style.stroke: red
+    code: |'c
+      if (file_in_lower && open_mode & O_WRONLY) {
+          copy_up(lower_path, upper_path);
+          return handle_to_upper;
+      }
+    '|
+  }
+}
+
+container_view: {
+  label: "Container Mount Namespace"
+  
+  merged_dir: {
+    shape: sql_table
+    label: "Merged View (The rootfs)"
+    style.fill: "#d5e8d4"
+    f1: "/bin/sh (from l1)"
+    f2: "/etc/nginx/nginx.conf (from l2)"
+    f3: "/usr/bin/nginx (from l3)"
+    f4: "/var/log/nginx/access.log (in upper)"
+  }
+
+  pivot_op: {
+    label: "Milestone 2: pivot_root"
+    code: |'c
+      syscall(SYS_pivot_root, "./merged", "./merged/.pivot_old");
+      chdir("/");
+      umount2("/.pivot_old", MNT_DETACH);
+    '|
+  }
+}
+
+# --- DATA FLOWS ---
+
+storage_layers.lower_layers -> kernel_vfs.mount_call: "VFS Inodes | Read-Only | /bin/sh"
+storage_layers.upper_layer -> kernel_vfs.mount_call: "VFS Inodes | Read-Write | /var/log"
+
+kernel_vfs.mount_call -> container_view.merged_dir: "mount_point | struct vfsmount | overlayfs"
+
+container_view.merged_dir -> container_view.pivot_op: "new_root | path | /mnt/container/merged"
+
+container_view.pivot_op -> container_view.merged_dir: "Atomically Swaps / | Namespace local"
+
+# --- INTERACTION PATHS ---
+
+container_view.merged_dir -> kernel_vfs.cow_logic: "Write Request | 4KB | open('/etc/config', O_RDWR)"
+kernel_vfs.cow_logic -> storage_layers.upper_layer: "Metadata/Data | 4KB | New file created in diff/"
+
+# --- LEGEND ---
+
+legend: {
+  shape: sql_table
+  label: "Architectural Legend"
+  near: bottom-right
+  l1: "Blue = Immutable Data (Lower)"
+  l2: "Red = Mutation Layer (Upper)"
+  l3: "Green = Virtualized Root (Merged)"
+  l4: "Purple = Control Logic (Kernel)"
+}

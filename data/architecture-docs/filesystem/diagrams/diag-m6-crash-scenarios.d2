@@ -1,0 +1,158 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Three Crash Scenarios: Journal Recovery Logic
+  Operation: `mkdir("/test")` — updates Inode Bitmap (blk 2) and Inode Table (blk 5)
+| {
+  near: top-center
+}
+
+scenarios: {
+  direction: down
+
+  # --- SCENARIO 1 ---
+  s1: Scenario 1: Crash Before Commit {
+    direction: right
+    state: {
+      direction: down
+      journal: {
+        shape: sql_table
+        label: "Journal Region (Incomplete)"
+        header: "Offset | Content | Status"
+        row1: "0x00 | DESC (seq: 42) | Valid"
+        row2: "0x01 | DATA (blk: 2) | Valid"
+        row3: "0x02 | DATA (blk: 5) | Valid"
+        row4: "0x03 | [EMPTY/GARBAGE] | CRASH POINT"
+        style.fill: "#FFEEEE"
+      }
+      fs: {
+        shape: sql_table
+        label: "Main Filesystem (Old State)"
+        row1: "0x02 | Inode Bitmap | Bit 7 = 0 (Free)"
+        row2: "0x05 | Inode Table | Inode 7 = [Zeroed]"
+      }
+    }
+
+    logic: {
+      label: "Recovery (journal_recover.c)"
+      code: |'c
+        if (block->type == JB_TYPE_DESC) {
+            find_commit(seq=42); // Fails
+            return DISCARD_TRANSACTION;
+        }
+      '|
+      style.stroke: red
+    }
+
+    state.journal -> logic: "Scan | 12KB | No Commit Found" {
+      style.stroke: red
+      style.stroke-dash: 3
+    }
+    logic -> state.fs: "No Changes Applied" {
+      style.stroke: green
+    }
+  }
+
+  # --- SCENARIO 2 ---
+  s2: Scenario 2: Crash After Commit, Before Apply {
+    direction: right
+    state: {
+      direction: down
+      journal: {
+        shape: sql_table
+        label: "Journal Region (Committed)"
+        header: "Offset | Content | Status"
+        row1: "0x00 | DESC (seq: 43) | Valid"
+        row2: "0x01 | DATA (blk: 2) | Valid"
+        row3: "0x02 | DATA (blk: 5) | Valid"
+        row4: "0x03 | COMMIT (seq: 43) | Valid"
+        style.fill: "#EEFFEE"
+      }
+      fs: {
+        shape: sql_table
+        label: "Main Filesystem (Old State)"
+        row1: "0x02 | Inode Bitmap | Bit 8 = 0 (Free)"
+        row2: "0x05 | Inode Table | Inode 8 = [Zeroed]"
+      }
+    }
+
+    logic: {
+      label: "Recovery (journal_recover.c)"
+      code: |'c
+        if (commit_found(seq=43)) {
+            for (b in desc->blocks)
+                write_block(b.dest, b.data);
+            return REPLAY_SUCCESS;
+        }
+      '|
+      style.stroke: green
+    }
+
+    state.journal -> logic: "Scan | 16KB | Commit Found" {
+      style.stroke: blue
+    }
+    logic -> state.fs: "Replay | 8KB | Writes blk 2, 5" {
+      style.stroke: green
+      style.animated: true
+    }
+  }
+
+  # --- SCENARIO 3 ---
+  s3: Scenario 3: Crash During Apply (Torn Write) {
+    direction: right
+    state: {
+      direction: down
+      journal: {
+        shape: sql_table
+        label: "Journal Region (Committed)"
+        header: "Offset | Content | Status"
+        row1: "0x00 | DESC (seq: 44) | Valid"
+        row2: "0x01 | DATA (blk: 2) | Valid"
+        row3: "0x02 | DATA (blk: 5) | Valid"
+        row4: "0x03 | COMMIT (seq: 44) | Valid"
+        style.fill: "#EEFFEE"
+      }
+      fs: {
+        shape: sql_table
+        label: "Main Filesystem (Inconsistent)"
+        row1: "0x02 | Inode Bitmap | Bit 9 = 1 (Used)"
+        row2: "0x05 | Inode Table | Inode 9 = [OLD/ZERO]"
+        total: "CRASH happened after blk 2 write"
+        style.fill: "#FFF4AA"
+      }
+    }
+
+    logic: {
+      label: "Idempotent Replay"
+      code: |'c
+        // Re-writing blk 2 is safe (same data)
+        write_block(2, journal_data[0]); 
+        // Corrects the missing blk 5 write
+        write_block(5, journal_data[1]); 
+      '|
+      style.stroke: blue
+    }
+
+    state.journal -> logic: "Scan | 16KB | Commit Found"
+    logic -> state.fs: "Full Replay | 8KB | Consistency Restored" {
+      style.stroke: green
+      style.stroke-width: 3
+    }
+  }
+}
+
+# Legend
+legend: {
+  shape: sql_table
+  label: "Status Legend"
+  s1: "Red Border | Dangerous Path / Abort"
+  s2: "Green Border | Safe Replay / Success"
+  s3: "Yellow Fill | Inconsistent / Fixable"
+}
+legend.near: bottom-right

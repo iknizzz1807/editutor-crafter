@@ -1,0 +1,458 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+# ─── LAYER 0: KERNEL / USERSPACE BOUNDARY ────────────────────────────────────
+boundary_label: {
+  shape: rectangle
+  label: "KERNEL-USERSPACE BOUNDARY — ring 0 vs ring 3  |  copy_to/from_user exception-table bridge"
+  style: {
+    fill: "#FFF9C9"
+    stroke: "#C8A000"
+    stroke-width: 2
+    font-size: 13
+    italic: true
+  }
+}
+# ─── LAYER 1: DATA STRUCTURES ────────────────────────────────────────────────
+layer_data: {
+  direction: down
+  label: "DATA LAYER — structs & kernel objects"
+  style.fill: "#F0F4FF"
+  module_param_var: {
+    shape: sql_table
+    label: "module param: buffer_size  (hello.c)  [M1]"
+    field_type:  "int            | static global, .data section"
+    default_val: "4096           | 1 <= x <= 1048576"
+    permissions: "0644           | S_IRUGO | S_IWUSR"
+    sysfs_path:  "/sys/module/hello/parameters/buffer_size"
+    sz: "Total: 4 bytes (one int, one cache word)"
+  }
+  elf_sections: {
+    shape: sql_table
+    label: "ELF Section Map  (hello.ko / mychar_dev.ko)  [M1–M4]"
+    init_text:   ".init.text     | hello_init code — freed after init"
+    exit_text:   ".exit.text     | hello_exit code — discarded if built-in"
+    text:        ".text          | normal code, 16B aligned, resident"
+    data:        ".data          | buffer_size var, 8B aligned"
+    modinfo:     ".modinfo       | license=GPL; author; vermagic strings"
+    param_sec:   "__param        | kernel_param structs, 8B (64-bit ABI)"
+    ex_table:    ".ex_table      | (fault_addr, fixup_addr) pairs for copy_*_user"
+    sz: "Total: ~32 KB .ko (stripped), ~16 KB after init freed"
+  }
+  my_device_data: {
+    shape: sql_table
+    label: "struct my_device_data  (mychar_dev.c)  [M2–M4]"
+    cdev:         "struct cdev        | 0x00  | 104B  | VFS vtable holder"
+    lock:         "struct mutex       | 0x68  |  32B  | sleepable serialization lock"
+    read_queue:   "wait_queue_head_t  | 0x88  |  24B  | readers sleep here (empty buf)"
+    write_queue:  "wait_queue_head_t  | 0xA0  |  24B  | writers sleep here (full buf)"
+    buffer_ptr:   "char *             | 0xB8  |   8B  | kmalloc'd 4KB data buffer"
+    buf_size:     "size_t             | 0xC0  |   8B  | total buffer capacity"
+    buf_used:     "size_t             | 0xC8  |   8B  | valid bytes stored"
+    open_count:   "atomic_t           | 0xD0  |   4B  | SMP-safe open counter"
+    read_ops:     "atomic_t           | 0xD4  |   4B  | total successful reads"
+    write_ops:    "atomic_t           | 0xD8  |   4B  | total successful writes"
+    pad:          "(padding)          | 0xDC  |   4B  | 8B boundary alignment"
+    sz: "Total: 224B ≈ 3.5 × 64B cache lines"
+  }
+  mydev_status: {
+    shape: sql_table
+    label: "struct mydev_status  (mydevice_ioctl.h)  [M3]  ABI-FROZEN"
+    buffer_size:  "__u32  | 0x00 | 4B | total buffer capacity (bytes)"
+    bytes_used:   "__u32  | 0x04 | 4B | currently stored bytes"
+    open_count:   "__u32  | 0x08 | 4B | active open fds"
+    read_count:   "__u32  | 0x0C | 4B | total successful reads"
+    write_count:  "__u32  | 0x10 | 4B | total successful writes"
+    reserved:     "__u32  | 0x14 | 4B | explicit padding / future use"
+    sz: "Total: 24B — fits in ONE 64B cache line"
+  }
+  ioctl_encoding: {
+    shape: sql_table
+    label: "ioctl Command Encoding  (mydevice_ioctl.h)  [M3]  Magic='M'(0x4D)"
+    dir_bits:    "bits 31:30 | DIR   | 00=_IO 01=_IOW 10=_IOR 11=_IOWR"
+    size_bits:   "bits 29:16 | SIZE  | sizeof(arg type), max 256B"
+    type_bits:   "bits 15:8  | TYPE  | magic 0x4D ('M') — namespace guard"
+    nr_bits:     "bits  7:0  | NR    | 0=CLEAR 1=RESIZE 2=STATUS"
+    cmd_clear:   "MYDEV_CLEAR   | _IO('M',0)              | no arg"
+    cmd_resize:  "MYDEV_RESIZE  | _IOW('M',1,__u32)       | u32 new_size in"
+    cmd_status:  "MYDEV_STATUS  | _IOR('M',2,mydev_status)| struct out"
+    sz: "Total: 4B per command constant (32-bit)"
+  }
+  kernel_buffer_mem: {
+    shape: sql_table
+    label: "Kernel Buffer  (mychar_dev.c)  [M2–M4]  GFP_KERNEL / SLUB"
+    alloc:       "kzalloc(4096, GFP_KERNEL) | physically contiguous, zeroed"
+    alignment:   "8B aligned                | SLUB returns ≥ 8B aligned ptr"
+    page_fit:    "4096B = 1 PAGE_SIZE       | fits one hardware page (x86_64)"
+    cache_lines: "64 × 64B cache lines      | full L1 friendly sequential I/O"
+    placement:   "kernel direct-map region  | virt = phys + PAGE_OFFSET"
+    gfp_note:    "GFP_KERNEL can sleep      | use GFP_ATOMIC in IRQ context"
+    sz: "Total: 4096B default (resizable via RESIZE ioctl)"
+  }
+  file_ops_vtable: {
+    shape: sql_table
+    label: "struct file_operations mydev_fops  (mychar_dev.c)  [M2–M4]"
+    owner:          ".owner          | THIS_MODULE  | ref-count guard vs rmmod"
+    f_open:         ".open           | mydev_open   | ptr → handler"
+    f_release:      ".release        | mydev_release| ptr → handler"
+    f_read:         ".read           | mydev_read   | ptr → handler"
+    f_write:        ".write          | mydev_write  | ptr → handler"
+    f_unlocked_ioctl: ".unlocked_ioctl | mydev_ioctl  | ptr → handler (no BKL)"
+    f_poll:         ".poll           | mydev_poll   | ptr → handler"
+    sz: "Total: 8 pointers × 8B = 64B (one cache line)"
+  }
+}
+# ─── LAYER 2: KERNEL MODULES / CLASSES ───────────────────────────────────────
+layer_logic: {
+  direction: down
+  label: "LOGIC LAYER — kernel module implementations"
+  style.fill: "#F0FFF0"
+  m1_module: {
+    shape: class
+    label: "Module: hello  (hello.c)  [M1]"
+    fields: |'c
+      static int   buffer_size = 4096; // .data, sysfs-backed
+      // __init section — freed after successful load
+      // __exit section — discarded if built-in
+    '|
+    methods: |'c
+      int  __init hello_init(void);
+      // Returns: 0=ok, -EINVAL=bad param
+      void __exit hello_exit(void);
+      // Side-effects: printk KERN_INFO to ring buf
+    '|
+  }
+  m2_chardev: {
+    shape: class
+    label: "Module: mychar_dev  (mychar_dev.c)  [M2–M4]"
+    fields: |'c
+      static dev_t           dev_num;        // major+minor
+      static struct cdev     my_cdev;        // VFS link
+      static struct class   *my_class;       // udev class
+      static struct device  *my_device;      // udev device
+      static struct proc_dir_entry *proc_e;  // /proc entry
+      static char           *kernel_buffer;  // 4KB SLUB
+      static size_t          buffer_size_bytes;
+      static size_t          buffer_used;
+      static DEFINE_MUTEX(dev_mutex);
+      static DECLARE_WAIT_QUEUE_HEAD(read_queue);
+      static DECLARE_WAIT_QUEUE_HEAD(write_queue);
+      static atomic_t open_count, read_count, write_count;
+    '|
+    methods: |'c
+      int      __init mydev_init(void);
+      void     __exit mydev_exit(void);
+      int      mydev_open(struct inode*, struct file*);
+      int      mydev_release(struct inode*, struct file*);
+      ssize_t  mydev_read(struct file*, char __user*, size_t, loff_t*);
+      ssize_t  mydev_write(struct file*, const char __user*, size_t, loff_t*);
+      long     mydev_ioctl(struct file*, unsigned int, unsigned long);
+      __poll_t mydev_poll(struct file*, poll_table*);
+      int      mydev_proc_show(struct seq_file*, void*);
+      int      mydev_proc_open(struct inode*, struct file*);
+    '|
+  }
+  kbuild_sys: {
+    shape: class
+    label: "Kbuild System  (Makefile)  [M1–M4]"
+    fields: |'c
+      OBJ_NAME  := hello | mychar_dev
+      KDIR      := /lib/modules/$(uname -r)/build
+      ccflags-y := -Werror -Wall
+    '|
+    methods: |'c
+      // make all  → delegates to kernel Kbuild
+      // make clean → removes .ko .o .mod* files
+      // Flags auto-applied: -D__KERNEL__, -fno-pic,
+      //   -mcmodel=kernel, -mno-red-zone, -mno-mmx
+    '|
+  }
+  vfs_dispatch: {
+    shape: class
+    label: "VFS Dispatch Path  (fs/read_write.c)  [M2–M4]"
+    fields: |'c
+      // Kernel-internal, shown for tracing only
+      struct file  *filp;      // per-open-fd state
+      loff_t        f_pos;     // per-fd read position
+      unsigned int  f_flags;   // O_RDWR | O_NONBLOCK
+      void         *private_data; // driver's per-fd ptr
+    '|
+    methods: |'c
+      // sys_read → ksys_read → vfs_read → f_op->read
+      // sys_write → ksys_write → vfs_write → f_op->write
+      // sys_ioctl → do_vfs_ioctl → f_op->unlocked_ioctl
+      // sys_poll  → do_sys_poll  → f_op->poll
+      ssize_t vfs_read(struct file*, char __user*, size_t, loff_t*);
+      ssize_t vfs_write(struct file*, const char __user*, size_t, loff_t*);
+      long    vfs_ioctl(struct file*, unsigned int, unsigned long);
+    '|
+  }
+  copy_user_mech: {
+    shape: class
+    label: "copy_{to,from}_user  (arch/x86/lib/usercopy.S)  [M2–M4]"
+    fields: |'c
+      // .ex_table ELF section:
+      // {faulting_insn_addr, fixup_stub_addr} pairs
+      // Page fault handler consults this before oops
+    '|
+    methods: |'c
+      unsigned long copy_from_user(void *to,
+          const void __user *from, unsigned long n);
+      unsigned long copy_to_user(void __user *to,
+          const void *from, unsigned long n);
+      // Returns: bytes NOT copied (0 = full success)
+      // On fault: jumps to fixup stub → returns -EFAULT
+      // access_ok(addr, size) → fast range check pre-copy
+    '|
+  }
+  blocking_io: {
+    shape: class
+    label: "Blocking I/O Engine  (mychar_dev.c)  [M4]"
+    fields: |'c
+      // Mutex-release-before-sleep pattern:
+      // 1. mutex_lock_interruptible(&dev_mutex)
+      // 2. while(!condition): mutex_unlock; wait; relock
+      // 3. critical section
+      // 4. wake_up_interruptible(opposite_queue)
+      // 5. mutex_unlock
+    '|
+    methods: |'c
+      // Blocking read condition: *f_pos < buf->used
+      int wait_event_interruptible(wq, condition);
+      // Returns: 0=condition true, -ERESTARTSYS=signal
+      void wake_up_interruptible(wait_queue_head_t *q);
+      // O_NONBLOCK path: return -EAGAIN (NOT 0/EOF)
+      // Signal path: return -ERESTARTSYS (NOT -EINTR)
+      // VFS converts -ERESTARTSYS → -EINTR if !SA_RESTART
+    '|
+  }
+  poll_engine: {
+    shape: class
+    label: "Poll Engine  (mychar_dev.c)  [M4]"
+    fields: |'c
+      // Poll NEVER sleeps in your driver.
+      // Registration → VFS sleeps → wakeup → re-poll.
+      __poll_t mask;   // readiness bitmask returned
+    '|
+    methods: |'c
+      // MUST call poll_wait BEFORE checking condition:
+      void poll_wait(struct file*, wait_queue_head_t*,
+                     poll_table*);
+      // Mask bits:
+      // POLLIN|POLLRDNORM  when buf_used > 0
+      // POLLOUT|POLLWRNORM when buf_used < buf_size
+      // epoll: calls .poll via ep_item_poll()
+      // select: calls .poll via do_select()
+    '|
+  }
+  proc_engine: {
+    shape: class
+    label: "proc/seq_file Engine  (mychar_dev.c)  [M3]"
+    fields: |'c
+      struct proc_ops mydev_proc_ops; // 5.6+ kernel API
+      // .proc_open    = mydev_proc_open (single_open wrap)
+      // .proc_read    = seq_read        (infrastructure)
+      // .proc_lseek   = seq_lseek       (infrastructure)
+      // .proc_release = single_release  (cleanup)
+    '|
+    methods: |'c
+      // single_open → one-shot iterator wrapping show_fn
+      int  single_open(struct file*, int(*)(seq_file*,void*),
+                       void *data);
+      int  mydev_proc_show(struct seq_file *m, void *v);
+      // seq_printf(m, fmt, ...) handles multi-page output
+      // proc_create(name,0444,NULL,&ops) → NULL on fail
+      // proc_remove(entry) in module_exit
+    '|
+  }
+  ioctl_handler: {
+    shape: class
+    label: "ioctl Handler  (mychar_dev.c)  [M3–M4]"
+    fields: |'c
+      // Validation order (before switch):
+      // 1. _IOC_TYPE(cmd) != MYDEV_MAGIC → -ENOTTY
+      // 2. _IOC_NR(cmd) > 2             → -ENOTTY
+      // NOT -EINVAL for unknown commands (POSIX)
+    '|
+    methods: |'c
+      // MYDEV_CLEAR:  memset+reset under mutex; wake writers
+      // MYDEV_RESIZE: allocate-then-swap (never free before alloc)
+      //   new_buf=kzalloc; copy min(used,new); kfree old; swap
+      //   On ENOMEM: old buffer untouched (atomic-like failure)
+      // MYDEV_STATUS: fill struct under mutex; copy_to_user outside
+      long mydev_ioctl(struct file*, unsigned int cmd,
+                       unsigned long arg);
+    '|
+  }
+  init_exit_seq: {
+    shape: class
+    label: "Init/Exit Goto-Unwind  (mychar_dev.c)  [M2–M4]"
+    fields: |'c
+      // Init order (each failure → reverse cleanup):
+      // 1. kzalloc buffer
+      // 2. alloc_chrdev_region → /proc/devices entry
+      // 3. cdev_init + cdev_add → device live after this!
+      // 4. class_create → /sys/class/
+      // 5. device_create → uevent → udev → /dev/mydevice
+      // 6. proc_create → /proc/mydevice
+    '|
+    methods: |'c
+      int  __init mydev_init(void);
+      // goto labels: err_proc → err_device → err_class
+      //              → err_cdev → err_region → (kfree)
+      void __exit mydev_exit(void);
+      // Reverse: proc_remove → device_destroy
+      //          → class_destroy → cdev_del
+      //          → unregister_chrdev_region → kfree
+    '|
+  }
+}
+# ─── LAYER 3: I/O & INTEGRATION ──────────────────────────────────────────────
+layer_io: {
+  direction: down
+  label: "I/O LAYER — userspace interfaces & hardware"
+  style.fill: "#FFF5F5"
+  userspace_api: {
+    shape: class
+    label: "Userspace API  (test_ioctl.c / stress_test.c)  [M2–M4]"
+    fields: |'c
+      // Includes shared header mydevice_ioctl.h
+      // __KERNEL__ NOT defined → sys/ioctl.h path
+      int fd = open("/dev/mydevice", O_RDWR);
+      int fd_nb = open("/dev/mydevice", O_RDWR|O_NONBLOCK);
+      struct pollfd pfd = {.fd=fd, .events=POLLIN|POLLOUT};
+    '|
+    methods: |'c
+      ssize_t read(int fd, void *buf, size_t n);
+      ssize_t write(int fd, const void *buf, size_t n);
+      int     ioctl(int fd, unsigned long cmd, ...);
+      int     poll(struct pollfd*, nfds_t, int timeout_ms);
+      // Returns: -1 + errno=EAGAIN  (O_NONBLOCK, not ready)
+      //          -1 + errno=EINTR   (signal, !SA_RESTART)
+      //          -1 + errno=ENOTTY  (unknown ioctl cmd)
+      //          -1 + errno=ENOSPC  (buffer full, M2 only)
+    '|
+  }
+  udev_sysfs: {
+    shape: class
+    label: "udev / sysfs  (device_create triggers uevent)  [M2]"
+    fields: |'c
+      // /dev/mydevice  c major minor  (crw-------)
+      // /sys/class/mydevice_class/mydevice/
+      // /sys/module/hello/parameters/buffer_size  (0644)
+      // /proc/devices → "NNN mydevice"
+      // /proc/mydevice → seq_file stats output
+    '|
+    methods: |'c
+      // device_create() emits kobject_uevent(KOBJ_ADD)
+      // systemd-udevd receives netlink message
+      // udev rule: creates /dev node with major/minor
+      // device_destroy() emits KOBJ_REMOVE → node gone
+    '|
+  }
+  printk_ring: {
+    shape: class
+    label: "printk Ring Buffer  (/dev/kmsg)  [M1–M4]"
+    fields: |'c
+      // log_buf: circular buffer, 512KB–4MB (CONFIG)
+      // Each entry: level prefix + timestamp + message
+      // KERN_EMERG(0)..KERN_DEBUG(7)
+      // Usage: KERN_INFO, KERN_ERR, KERN_WARNING
+    '|
+    methods: |'c
+      int printk(const char *fmt, ...);
+      // fmt starts with "\001N" where N='0'..'7'
+      // KERN_INFO = "\0016"  KERN_ERR = "\0013"
+      // Output: dmesg | tail  or  dmesg -w  or  dmesg -T
+      // Timestamp: [secs.usecs] since boot (not wall clock)
+    '|
+  }
+  hw_cache: {
+    shape: class
+    label: "Hardware: CPU Cache & TLB  [M2–M4]"
+    fields: |'c
+      // L1: 32KB, 8-way, 64B lines (typical x86_64)
+      // 4KB buffer = 64 cache lines → fits in L1
+      // dev_mutex MESI: M→S bounce on contention (~100ns)
+      // atomic_inc: LOCK XADD, exclusive line ownership
+      // context switch cost: ~2–4 µs (reg save + TLB flush)
+    '|
+    methods: |'c
+      // copy_from_user: rep movsb or SIMD (size-dependent)
+      // TLB: CR3 switch on context switch (PCID partial flush)
+      // False sharing: open_count near buf_used → bounce
+      // Prefetcher: sequential buffer access → auto prefetch
+      // copy_to_user 24B struct → 1 cache line, ~3 MOVs
+    '|
+  }
+  verify_scripts: {
+    shape: class
+    label: "Verification Scripts  (verify.sh / stress_test.c)  [M1–M4]"
+    fields: |'c
+      // M1: insmod/rmmod lifecycle, sysfs param, dmesg check
+      // M2: echo|tee, cat round-trip, ENOSPC boundary test
+      // M3: ioctl STATUS/CLEAR/RESIZE, /proc cat, strace
+      // M4: 4 writers × 4 readers pthread stress test
+      //     byte_count[writer_id] == bytes_read_by_value[fill]
+    '|
+    methods: |'c
+      // Performance targets:
+      // Load latency     < 10ms   (time insmod)
+      // Write throughput > 2 GB/s (dd bs=4k)
+      // STATUS ioctl lat < 400ns  (clock_gettime × 10k)
+      // Uncontended lock ~ 12ns   (perf stat)
+      // Context switch   < 5µs    (lmbench lat_ctx)
+    '|
+  }
+}
+# ─── CONNECTIONS: DATA FLOW ───────────────────────────────────────────────────
+# M1 lifecycle
+layer_logic.kbuild_sys -> layer_data.elf_sections: "ELF .ko sections | produces | .init.text, .modinfo, __param"
+layer_logic.m1_module -> layer_data.module_param_var: "int buffer_size | writes default | 4096"
+layer_logic.m1_module -> layer_io.printk_ring: "char* | printk KERN_INFO | ring buf entry"
+layer_data.module_param_var -> layer_io.udev_sysfs: "int | sysfs attribute | /sys/.../buffer_size = 4096"
+# M2 device registration chain
+layer_logic.m2_chardev -> layer_data.my_device_data: "struct my_device_data | owns | 224B on init"
+layer_logic.m2_chardev -> layer_data.kernel_buffer_mem: "char* | kzalloc 4096B | GFP_KERNEL"
+layer_logic.m2_chardev -> layer_data.file_ops_vtable: "struct file_operations | registers | vtable of 7 fn ptrs"
+layer_data.file_ops_vtable -> layer_logic.vfs_dispatch: "fn ptr table | VFS vtable dispatch | f_op->read(filp,...)"
+layer_logic.m2_chardev -> layer_io.udev_sysfs: "dev_t | device_create uevent | /dev/mydevice created"
+# copy_user boundary
+layer_logic.vfs_dispatch -> layer_logic.copy_user_mech: "char __user* | syscall boundary | buf ptr from userspace"
+layer_logic.copy_user_mech -> layer_data.kernel_buffer_mem: "void* | safe copy | 64B chunk to kernel buf"
+layer_logic.copy_user_mech -> layer_io.hw_cache: "64B | cache line fill | rep movsb or SIMD"
+# M3 ioctl
+layer_logic.ioctl_handler -> layer_data.ioctl_encoding: "unsigned int cmd | validates magic | _IOC_TYPE(cmd)=='M'"
+layer_logic.ioctl_handler -> layer_data.mydev_status: "struct mydev_status | fills 24B | copy_to_user outside mutex"
+layer_logic.ioctl_handler -> layer_data.kernel_buffer_mem: "char* | RESIZE allocate-then-swap | kzalloc new_size"
+layer_logic.proc_engine -> layer_data.my_device_data: "size_t,atomic_t | seq_printf reads | 5 stats fields"
+layer_logic.proc_engine -> layer_io.udev_sysfs: "char* | seq output | /proc/mydevice text"
+# M4 blocking I/O
+layer_logic.blocking_io -> layer_data.my_device_data: "wait_queue_head_t | sleeps on | read_queue / write_queue"
+layer_logic.blocking_io -> layer_io.hw_cache: "struct task_struct | context switch | ~2-4µs, CR3 swap"
+layer_logic.poll_engine -> layer_data.my_device_data: "__poll_t | reads buf_used | POLLIN | POLLOUT mask"
+layer_logic.poll_engine -> layer_data.file_ops_vtable: "__poll_t | registered via | .poll = mydev_poll"
+# userspace → kernel path
+layer_io.userspace_api -> layer_logic.vfs_dispatch: "int fd, char* | syscall instruction | ring 0 entry"
+layer_io.userspace_api -> layer_data.mydev_status: "struct mydev_status | ioctl MYDEV_STATUS fills | 24B out"
+layer_io.userspace_api -> layer_data.ioctl_encoding: "unsigned int cmd | _IOR('M',2,struct) | encoded 32-bit"
+# init/exit orchestration
+layer_logic.init_exit_seq -> layer_logic.m2_chardev: "goto chain | reverse cleanup | err_proc→err_device→..."
+layer_logic.init_exit_seq -> layer_io.udev_sysfs: "device_create/destroy | uevent | /dev node lifecycle"
+# ─── MILESTONE INDEX ─────────────────────────────────────────────────────────
+milestone_index: {
+  shape: sql_table
+  label: "Milestone Index — Linux Kernel Module"
+  m1: "M1 | build-kernel-module-m1 | Hello World LKM: Kbuild, printk, module_param, ELF sections"
+  m2: "M2 | build-kernel-module-m2 | Char Device: alloc_chrdev_region, cdev, file_operations, copy_user"
+  m3: "M3 | build-kernel-module-m3 | ioctl + /proc: shared ABI header, seq_file, CLEAR/RESIZE/STATUS"
+  m4: "M4 | build-kernel-module-m4 | Concurrency: mutex, wait_queue, O_NONBLOCK, poll/epoll integration"
+}
+milestone_index.near: bottom-center
+# ─── INTER-LAYER FLOW ────────────────────────────────────────────────────────
+layer_data -> layer_logic: "struct defs | owned by | module instances"
+layer_logic -> layer_io: "handler fns | exposed via | VFS dispatch"

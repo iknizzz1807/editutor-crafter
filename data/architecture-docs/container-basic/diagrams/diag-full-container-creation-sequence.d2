@@ -1,0 +1,176 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- GLOBAL CLASSES ---
+classes: {
+  syscall_node: {
+    shape: sql_table
+    style: {
+      stroke: "#2c3e50"
+      stroke-width: 2
+    }
+  }
+  host_side: {
+    style: {
+      fill: "#e1f5fe"
+      stroke: "#01579b"
+    }
+  }
+  container_side: {
+    style: {
+      fill: "#fff3e0"
+      stroke: "#ef6c00"
+    }
+  }
+  kernel_interface: {
+    style: {
+      fill: "#f5f5f5"
+      stroke: "#616161"
+      stroke-dash: 3
+    }
+  }
+}
+
+# --- HOST RUNTIME (PARENT) ---
+host_runtime: "Host Runtime (Parent Process)" {
+  class: host_side
+  
+  step1: {
+    label: "T1: Initialization"
+    shape: sql_table
+    row1: "syscall | pipe(sync_pipe)"
+    row2: "purpose | Synchronization primitive"
+    row3: "state   | Parent holds write end (1)"
+  }
+
+  step2: {
+    label: "T2: Clone Child"
+    shape: sql_table
+    row1: "syscall | clone(child_fn, stack_top, flags, &cfg)"
+    row2: "flags   | CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNS"
+    row3: "flags+  | CLONE_NEWNET | CLONE_NEWUTS | SIGCHLD"
+    row4: "result  | Returns host_pid to parent"
+  }
+
+  step4: {
+    label: "T4: Establish Rootless Mapping"
+    shape: sql_table
+    row1: "write   | /proc/\$PID/uid_map  -> '0 1000 1'"
+    row2: "write   | /proc/\$PID/setgroups -> 'deny'"
+    row3: "write   | /proc/\$PID/gid_map  -> '0 1000 1'"
+    row4: "effect  | Maps Host UID 1000 to Container UID 0"
+  }
+
+  step5: {
+    label: "T5: Resource Constraints"
+    shape: sql_table
+    row1: "mkdir   | /sys/fs/cgroup/mycontainer"
+    row2: "write   | cgroup.procs <- container_pid"
+    row3: "limit   | memory.max   <- 100M"
+    row4: "limit   | cpu.max      <- 50000 100000"
+  }
+
+  step6: {
+    label: "T6: Network Plumbing"
+    shape: sql_table
+    row1: "link    | ip link add ctr0 type bridge"
+    row2: "veth    | ip link add veth_h0 type veth peer veth_c0"
+    row3: "handoff | ip link set veth_c0 netns \$PID"
+    row4: "routing | iptables -t nat -A POSTROUTING -j MASQUERADE"
+  }
+
+  step7: {
+    label: "T7: Unblock Child"
+    shape: sql_table
+    row1: "write   | write(sync_pipe[1], '1', 1)"
+    row2: "effect  | Triggers child execution"
+  }
+}
+
+# --- KERNEL LAYER ---
+kernel: "Linux Kernel Subsystems" {
+  class: kernel_interface
+  proc: "/proc filesystem (UID/GID Mapping)"
+  cgroup: "/sys/fs/cgroup (Accounting)"
+  vfs: "VFS (Mounts & pivot_root)"
+  net: "Network Stack (veth/NetNS)"
+}
+
+# --- CONTAINER INIT (CHILD) ---
+container_init: "Container Init (Child Process)" {
+  class: container_side
+  
+  step3: {
+    label: "T3: Wait for Host"
+    shape: sql_table
+    row1: "syscall | read(sync_pipe[0], &buf, 1)"
+    row2: "state   | BLOCKING until maps/net are ready"
+    style.stroke: red
+  }
+
+  step8: {
+    label: "T8: Filesystem Isolation"
+    shape: sql_table
+    row1: "propagation | \"mount(NULL, '/', NULL, MS_REC|MS_PRIVATE, NULL)\""
+    row2: "bind_mount  | \"mount(rootfs, rootfs, NULL, MS_BIND|MS_REC, NULL)\""
+    row3: "pivot_root  | syscall(SYS_pivot_root, rootfs, old_root)"
+    row4: "cleanup     | umount2('/.pivot_old', MNT_DETACH)"
+  }
+
+  step9: {
+    label: "T9: Pseudo-FS & Network"
+    shape: sql_table
+    row1: "mount | mount('proc', '/proc', 'proc', ...)"
+    row2: "mount | mount('sysfs', '/sys', 'sysfs', ...)"
+    row3: "net   | ip addr add 172.20.0.2/24 dev veth_c0"
+    row4: "dns   | write /etc/resolv.conf"
+  }
+
+  step10: {
+    label: "T10: Final Handover"
+    shape: sql_table
+    row1: "syscall | fork() -> child_init"
+    row2: "exec    | execvp(cmd, argv)"
+    row3: "reaper  | PID 1 stays alive to reap zombies"
+    style.stroke: green
+  }
+}
+
+# --- CONNECTIONS & DATA WALK ---
+
+host_runtime.step1 -> host_runtime.step2: "fd | 4 bytes | sync_pipe[1]"
+host_runtime.step2 -> container_init.step3: "signal | CLONE_NEW* | PID 1"
+host_runtime.step2 -> host_runtime.step4: "pid_t | 4 bytes | 47832"
+
+host_runtime.step4 -> kernel.proc: "write | mapping | '0 1000 1'"
+host_runtime.step5 -> kernel.cgroup: "write | PID | 47832"
+host_runtime.step6 -> kernel.net: "netns_move | ifindex | veth_c0"
+
+host_runtime.step7 -> container_init.step3: "char | 1 byte | '1' (UNBLOCK)" {
+  style.stroke: green
+  style.stroke-width: 3
+}
+
+container_init.step3 -> container_init.step8: "sequence | trigger | OK"
+container_init.step8 -> kernel.vfs: "pivot | mount_id | rootfs"
+container_init.step9 -> container_init.step10: "ready | state | isolated"
+
+# --- LEGEND & ANNOTATIONS ---
+legend: {
+  label: "Sequence Legend"
+  s1: "Blue Arrows: Resource Setup" {
+    style.font-color: blue
+  }
+  s2: "Red Nodes: Blocking State" {
+    style.font-color: red
+  }
+  s3: "Green Path: Execution Hotpath" {
+    style.font-color: green
+  }
+}
+legend.near: bottom-right

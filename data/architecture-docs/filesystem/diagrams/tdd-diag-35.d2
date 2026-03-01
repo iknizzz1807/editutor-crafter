@@ -1,0 +1,170 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# -----------------------------------------------------------------------------
+# SCENARIO 1: REORDERING DISASTER (NO FSYNC 1)
+# -----------------------------------------------------------------------------
+reordering_disaster: "SCENARIO A: NO FSYNC 1 (Write-Order Violation)" {
+  style.stroke: "#ca052b"
+  style.stroke-width: 4
+
+  memory: "Kernel Page Cache (RAM)" {
+    grid-columns: 3
+    d: "Descriptor" { style.fill: "#e1d5e7" }
+    b: "Journal Data" { style.fill: "#dae8fc" }
+    c: "**COMMIT**" { 
+      style.fill: "#f8cecc"
+      style.font-color: "#ca052b"
+      style.bold: true
+    }
+  }
+
+  kernel_reorder: "OS/Disk Reordering" {
+    shape: parallelogram
+    label: "I/O Scheduler picks sector proximity\nCOMMIT block prioritized over DATA"
+  }
+
+  disk_state: "Disk Platter (Persistent)" {
+    grid-columns: 3
+    d_disk: "Stale/Zero" { style.fill: "#f5f5f5" }
+    b_disk: "Stale/Zero" { style.fill: "#f5f5f5" }
+    c_disk: "**COMMIT**" { 
+      style.fill: "#f8cecc" 
+      style.stroke: "#ca052b"
+      style.stroke-width: 4
+    }
+  }
+
+  memory.c -> kernel_reorder -> disk_state.c_disk: "Flush Commit First"
+  
+  recovery_logic: {
+    shape: cloud
+    label: |md
+      ### RECOVERY PHASE
+      **CRASH OCCURRED**
+      1. Scan Journal...
+      2. Found **COMMIT** (Seq 10)
+      3. REPLAY: Copy blocks to FS
+      4. **RESULT:** Copying 0x00/Garbage
+      5. **CORRUPTION COMPLETE**
+    |
+  }
+}
+
+# -----------------------------------------------------------------------------
+# SCENARIO 2: GUARANTEED ATOMICITY (WITH BOTH FSYNCS)
+# -----------------------------------------------------------------------------
+guaranteed_safety: "SCENARIO B: THE MANDATORY PROTOCOL" {
+  style.stroke: "#167c3c"
+  style.stroke-width: 4
+
+  step1: "1. Write Intent" {
+    memory: "Page Cache" {
+      d: "Descriptor" { style.fill: "#e1d5e7" }
+      b: "Data Blocks" { style.fill: "#dae8fc" }
+    }
+    disk: "Disk" {
+      d_off: "..."
+      b_off: "..."
+    }
+    memory -> disk: "write_block()"
+  }
+
+  fsync1: "2. FSYNC 1 (The Barrier)" {
+    shape: diamond
+    label: "Wait for ACK\nData is on Media"
+    style.fill: "#d5e8d4"
+  }
+
+  step2: "3. Write Sentinel" {
+    memory: "Page Cache" {
+      c: "COMMIT" { style.fill: "#f8cecc" }
+    }
+    disk: "Disk" {
+      c_off: "..."
+    }
+    memory -> disk: "write_block()"
+  }
+
+  fsync2: "4. FSYNC 2 (Durability)" {
+    shape: diamond
+    label: "Wait for ACK\nCommit is Durable"
+    style.fill: "#d5e8d4"
+  }
+
+  step1 -> fsync1 -> step2 -> fsync2
+
+  recovery_success: {
+    shape: cloud
+    label: |md
+      ### RECOVERY PHASE
+      **CRASH OCCURRED**
+      1. Scan Journal...
+      2. Found **COMMIT** (Seq 10)
+      3. REPLAY: Intent Data exists on media
+      4. **RESULT:** Inodes/Bitmaps Restored
+      5. **CONSISTENCY GUARANTEED**
+    |
+  }
+}
+
+# -----------------------------------------------------------------------------
+# SCENARIO 3: VOLATILE COMMIT (NO FSYNC 2)
+# -----------------------------------------------------------------------------
+volatile_commit: "SCENARIO C: NO FSYNC 2 (The Phantom Commit)" {
+  style.stroke: "#ca052b"
+  style.stroke-dash: 5
+
+  action: "Process Flow" {
+    w1: "Write(Data)"
+    f1: "fsync()"
+    w2: "Write(Commit)"
+    crash: "**CRASH**" { 
+      style.fill: "#ca052b"
+      style.font-color: white 
+    }
+    w1 -> f1 -> w2 -> crash
+  }
+
+  disk_platter: "Disk Platter" {
+    data: "Intent Data Safe" { style.fill: "#d5e8d4" }
+    commit: "Empty/Stale" { style.fill: "#f5f5f5" }
+  }
+
+  action.f1 -> disk_platter.data: "Barrier Met"
+  action.w2 -> disk_platter.commit: "In RAM Only" { 
+    style.stroke: red
+    style.animated: true 
+  }
+
+  analysis: {
+    shape: cloud
+    label: |md
+      ### RECOVERY PHASE
+      **RESULT:**
+      1. No **COMMIT** found on media.
+      2. TXN treated as **ABORTED**.
+      3. FS remains in pre-txn state.
+      4. Safe, but **Lost committed work**.
+    |
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ANNOTATIONS
+# -----------------------------------------------------------------------------
+legend: {
+  near: top-center
+  metadata: "Journal Metadata" { style.fill: "#e1d5e7" }
+  payload: "Journaled Block Copies" { style.fill: "#dae8fc" }
+  commit: "Atomic Commit Record" { style.fill: "#f8cecc" }
+  barrier: "fsync() Synchronous Barrier" { shape: diamond; style.fill: "#d5e8d4" }
+}
+
+reordering_disaster -> guaranteed_safety: "SOLUTION:\nEstablish Hardware Ordering"
+guaranteed_safety -> volatile_commit: "EDGE CASE:\nDurability vs Atomicity"

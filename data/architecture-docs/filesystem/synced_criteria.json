@@ -1,0 +1,198 @@
+[
+  {
+    "milestone_id": "filesystem-m1",
+    "criteria": [
+      "Block device abstraction implements read_block(fd, block_num, buf) and write_block(fd, block_num, buf) with exactly BLOCK_SIZE (4096) bytes per operation, using lseek + read/write syscalls to translate block_num to byte offset = block_num * 4096",
+      "read_block and write_block return non-zero error codes (-errno) on failure, and validate that block_num is within bounds (< total_blocks) before performing I/O",
+      "On-disk layout is fixed and derived from superblock fields: block 0 = superblock, block 1 = block bitmap, block 2 = inode bitmap, blocks 3..N = inode table, blocks N+1..M = journal region, blocks M+1..end = data blocks",
+      "superblock_t struct is declared with __attribute__((packed)) and contains: magic (uint32_t = 0xDEADC0DE), version (uint32_t), block_size (uint32_t = 4096), total_blocks, total_inodes, free_blocks, free_inodes, inode_table_start, inode_table_blocks, journal_start, journal_blocks, data_block_start, root_inode — all uint32_t fixed-width types",
+      "_Static_assert(sizeof(superblock_t) == 4096) passes, confirming the superblock occupies exactly one block",
+      "Block bitmap in block 1 tracks one bit per data block; bitmap_set marks a block used, bitmap_clear marks it free, bitmap_find_free returns the first 0-bit index; all return the DATA BLOCK INDEX (0-based offset into data region, not the absolute disk block number)",
+      "alloc_block reads the block bitmap, finds the first free bit, sets it, writes the bitmap back to disk, decrements sb->free_blocks, and returns the DISK block number (data_block_index + sb->data_block_start)",
+      "free_block validates that the target disk_block_num >= sb->data_block_start (cannot free a metadata block), clears the appropriate bitmap bit, and increments sb->free_blocks",
+      "Inode bitmap in block 2 tracks one bit per inode independently of the block bitmap; alloc_inode and free_inode follow the same pattern as block allocation with inode numbers being 1-based",
+      "mkfs tool creates (or truncates) the disk image file to exactly total_blocks * 4096 bytes using ftruncate, then writes superblock, zeroes block bitmap, zeroes inode bitmap, zeroes all inode table blocks in sequence",
+      "mkfs allocates inode 1 as root directory: sets bit 0 in inode bitmap, writes an inode_t with mode=S_IFDIR|0755, nlinks=2, size=BLOCK_SIZE, blocks[0] pointing to the first data block, and current timestamps",
+      "mkfs writes the root directory's data block containing two dirent_t entries: '.' with inode_num=1 and '..' with inode_num=1 (root's parent is itself)",
+      "After mkfs, verify_filesystem reads back the image and confirms: magic number matches FS_MAGIC, root inode has mode with S_IFDIR set, root inode has nlinks==2, inode bitmap bit 0 is set, and first directory entry in root's data block is '.' pointing to inode 1",
+      "mkfs calls fsync(fd) before close(fd) to guarantee all written data is flushed from the OS page cache to the disk image file",
+      "The inode table layout calculation uses: inode_table_blocks = (total_inodes + INODES_PER_BLOCK - 1) / INODES_PER_BLOCK where INODES_PER_BLOCK = BLOCK_SIZE / INODE_SIZE = 32",
+      "Mounting code validates the magic number field first and returns -EINVAL if it does not match FS_MAGIC, preventing interpretation of unformatted or foreign images as valid filesystems"
+    ]
+  },
+  {
+    "milestone_id": "filesystem-m2",
+    "criteria": [
+      "inode_t struct is exactly 128 bytes as verified by _Static_assert(sizeof(inode_t) == 128), uses __attribute__((packed)), and contains: uint16_t mode (file type + permissions), uint16_t uid, uint16_t gid, uint16_t nlinks, uint32_t size, uint32_t atime/mtime/ctime, uint32_t blocks[12] direct pointers, uint32_t single_indirect, uint32_t double_indirect, and uint8_t reserved[] padding",
+      "read_inode() and write_inode() correctly compute disk position as inode_table_start + (inode_num-1)/INODES_PER_BLOCK for the block and (inode_num-1)%INODES_PER_BLOCK for the slot, performing a read-modify-write cycle for writes",
+      "inode_get_block(fd, inode, offset, &block_num) correctly resolves file offsets in all three regions: direct (0 to 49151 bytes via blocks[0..11]), single-indirect (49152 to 4243455 bytes via one extra disk read), and double-indirect (4243456+ bytes via two extra disk reads)",
+      "inode_set_block(fd, sb, inode, offset, block_num) correctly writes block pointers in all three regions, allocating and zero-initializing indirect and double-indirect pointer blocks as needed when they do not yet exist",
+      "Null block pointer (value 0) in any pointer position — direct, single-indirect, or double-indirect — indicates an unallocated sparse hole; inode_get_block returns 0 for out_block_num without error and without disk I/O for such holes",
+      "alloc_inode() scans the inode bitmap (block 2), finds the first free bit, marks it used, writes the bitmap back, decrements sb->free_inodes, and returns the 1-based inode number; returns -1 when no inodes are free",
+      "free_inode() frees all direct data blocks (blocks[0..11] where non-zero), calls free_single_indirect() to recursively free the single-indirect pointer block and all data blocks it references, calls free_double_indirect() to recursively free all single-indirect blocks and data blocks within the double-indirect tree, zeros the inode in the inode table, and clears the inode's bitmap bit",
+      "free_single_indirect() and free_double_indirect() correctly handle null pointers (value 0) at any level of the tree as no-ops, ensuring sparse inodes are freed without attempting to read block 0",
+      "inode_touch_atime() updates atime on read, inode_touch_mtime() updates both mtime and ctime on data write, inode_touch_ctime() updates ctime on metadata changes; all three call write_inode() to persist the updated timestamps",
+      "inode_init_file() initializes mode with S_IFREG | permissions, nlinks=1, size=0, all block pointers zeroed; inode_init_dir() initializes mode with S_IFDIR | permissions, nlinks=2, size=BLOCK_SIZE, all block pointers zeroed",
+      "Block bitmap is written to disk before inode is written to disk whenever blocks are allocated via inode_set_block, maintaining the invariant that a bitmap-used block with no inode pointer is safe (leaked) while a bitmap-free block with an inode pointer is catastrophic (double-allocation)",
+      "Maximum addressable file size is N_DIRECT + PTRS_PER_BLOCK + PTRS_PER_BLOCK*PTRS_PER_BLOCK blocks, where PTRS_PER_BLOCK = BLOCK_SIZE/sizeof(uint32_t) = 1024, totaling 4,299,210,752 bytes (~4GB); offsets beyond this return -EFBIG",
+      "Test suite verifies: inode round-trip serialization, direct block pointer set/get, sparse hole returns block 0, single-indirect block allocation and traversal, double-indirect block allocation and traversal, and block count reconciliation after free_inode"
+    ]
+  },
+  {
+    "milestone_id": "filesystem-m3",
+    "criteria": [
+      "Directory entry structure uses a variable-length on-disk format with a fixed 8-byte header (inode_num uint32, rec_len uint16, name_len uint8, file_type uint8) followed by the name bytes padded to 4-byte alignment, with rec_len used as a forward-link to skip to the next entry",
+      "dir_add_entry(fd, sb, dir_ino, name, target_ino, file_type) atomically checks for name uniqueness via dir_lookup before inserting, fails with -EEXIST if the name already exists, and either splits space from the last entry's tail or allocates a new directory data block when no space is available",
+      "dir_remove_entry(fd, sb, dir_ino, name) removes the named entry by merging its rec_len into the preceding entry (or zeroing inode_num if first in block), decrements the target inode's nlinks, and calls free_inode() when nlinks reaches zero",
+      "path_resolve(fd, sb, path, root_ino, cwd_ino) tokenizes the path by '/' separators, starts from root_ino for absolute paths or cwd_ino for relative paths, and iterates component-by-component calling dir_lookup at each level, returning -ENOENT if any component is missing and -ENOTDIR if a non-terminal component resolves to a non-directory inode",
+      "path_resolve_parent(fd, sb, path, root_ino, cwd_ino, parent_ino_out, name_out, name_max) resolves all components except the last, returning the parent inode number and the final filename component, used by create/mkdir/unlink/rename",
+      "Every newly created directory's first data block contains a '.' entry (inode_num = self) as the first dirent followed by a '..' entry (inode_num = parent) that owns all remaining block space; root directory's '..' inode_num equals root_ino (points to itself)",
+      "fs_mkdir(fd, sb, parent_ino, name, mode, uid, gid) allocates a new inode with mode=S_IFDIR|mode and nlinks=2, allocates a data block with '.' and '..' entries, writes both to disk, adds an entry in the parent directory, and increments the parent inode's nlinks by 1 to account for the new directory's '..' reference",
+      "fs_rmdir(fd, sb, parent_ino, name) calls dir_is_empty() which scans all directory data blocks and returns false if any entry other than '.' and '..' has a non-zero inode_num; rmdir returns -ENOTEMPTY if not empty",
+      "fs_rmdir correctly decrements the parent directory's nlinks by 1 after removing the child directory (to account for the lost '..' reference) and calls free_inode() on the removed directory inode",
+      "fs_link(fd, sb, target_ino, dir_ino, new_name) returns -EPERM if the target inode has S_IFDIR mode (hard links to directories forbidden), otherwise adds a new dirent_t pointing to target_ino in dir_ino and increments target_inode.nlinks, returning -EMLINK if nlinks would overflow uint16_t",
+      "fs_unlink(fd, sb, dir_ino, name) returns -EISDIR for directory targets (must use rmdir), otherwise removes the entry and decrements nlinks via dir_remove_entry with automatic inode freeing when nlinks reaches zero",
+      "dir_readdir(fd, sb, dir_ino, callback, userdata) iterates all non-deleted entries (inode_num != 0) across all allocated direct data blocks of the directory inode, invoking the callback for each including '.' and '..' entries",
+      "The directory scan loop correctly handles the rec_len forward-link chain, terminating when offset + DIRENT_HEADER_SIZE > BLOCK_SIZE or when dirent_read_from_buf returns rec_len=0 (corruption sentinel)",
+      "All directory-modifying operations (add_entry, remove_entry, mkdir, rmdir) update the directory inode's mtime and ctime timestamps and call write_inode() to persist the metadata change",
+      "dirent_actual_len(name_len) correctly rounds up (DIRENT_HEADER_SIZE + name_len) to the next 4-byte boundary, ensuring all directory entries are 4-byte aligned in the block",
+      "Name length validation is enforced in all entry-adding functions: names longer than MAX_FILENAME_LEN (255) return -ENAMETOOLONG; empty names return -EINVAL",
+      "dir_remove_entry and fs_mkdir both refuse to operate on '.' or '..' names, returning -EINVAL",
+      "The test suite verifies: parent nlinks = 2 + number_of_child_directories after mkdir operations; last unlink of a regular file frees its inode (verified via inode bitmap); path resolution of '/..' returns root_ino"
+    ]
+  },
+  {
+    "milestone_id": "filesystem-m4",
+    "criteria": [
+      "fs_create_file(fd, sb, parent_ino, name, mode, uid, gid) allocates a new inode via alloc_inode, initializes it with S_IFREG mode, nlinks=1, size=0, all block pointers zeroed, writes it to the inode table, and adds a directory entry in the parent directory via dir_add_entry, returning the new inode number",
+      "fs_read(fd, sb, ino, offset, buf, length) translates each byte range [offset, offset+length) through the two-level indirection (offset → block_index + block_offset → disk_block_num via inode_get_block), fetches each 4KB block and copies only the requested bytes, returns zero bytes (memset) for any block where inode_get_block returns disk_block_num=0 (sparse holes), and clamps the read to inode.size so reads past EOF return 0",
+      "fs_write(fd, sb, ino, offset, buf, length) performs a read-modify-write cycle for partial block writes (when block_off != 0 or chunk < BLOCK_SIZE): reads the existing block if disk_block != 0, zeroes the full block if newly allocated, overwrites the relevant bytes, writes the full 4KB block back; allocates new data blocks via alloc_block and records them with inode_set_block for any file offset with a null block pointer",
+      "fs_write allocates indirect and double-indirect pointer blocks via inode_set_block when writing into the single-indirect (block_index >= 12) or double-indirect (block_index >= 12+1024) regions, and these pointer blocks are correctly initialized to zero before storing data block pointers",
+      "fs_truncate(fd, sb, ino, new_size) with new_size < inode.size frees all data blocks with block_index > (new_size-1)/BLOCK_SIZE via free_block, frees single-indirect and double-indirect pointer blocks when they become entirely empty, and zero-fills bytes from (new_size % BLOCK_SIZE) to BLOCK_SIZE-1 in the last retained block to prevent data leakage across truncate-extend cycles",
+      "fs_truncate(fd, sb, ino, new_size) with new_size > inode.size extends the file without allocating any new data blocks (sparse extension): only updates inode.size, and subsequent reads in the extended range return zero bytes via the sparse-hole path",
+      "Writing at a high file offset (e.g., offset = BLOCK_SIZE * 100) without writing intermediate offsets does not allocate data blocks for the gap; inode_get_block returns 0 for all unwritten block indices; fs_read over the gap returns memset-zero bytes; inode.size is updated to reflect the high-water mark of the written range",
+      "fs_append(fd, sb, ino, buf, length) writes buf at the current inode.size offset by reading the inode and calling fs_write at that offset, extending the file; sequential appends of block-aligned data generate no read-modify-write cycles (block_off == 0 and chunk == BLOCK_SIZE)",
+      "inode.size is updated to max(inode.size, offset + bytes_written) after every fs_write call, and inode.mtime and inode.ctime are both set to the current timestamp; inode.atime is updated after every fs_read call; fs_truncate updates inode.size, inode.mtime, and inode.ctime unconditionally",
+      "Unit test suite verifies: (a) write then read returns identical bytes byte-for-byte, (b) partial write within a block preserves surrounding bytes, (c) write crossing a block boundary correctly stores data in both blocks, (d) sparse file holes read as zeros without disk I/O, (e) truncate shrink frees the correct number of blocks (verified via sb->free_blocks delta), (f) truncate extend allocates no blocks, (g) truncate then re-extend does not expose old file content in the zeroed tail region",
+      "fs_create_file returns -EEXIST if name already exists in parent_ino, -ENOTDIR if parent_ino is not a directory, -ENOSPC if alloc_inode or alloc_block fails, and on any failure after inode allocation performs best-effort rollback to avoid inode leaks",
+      "fs_write never returns a disk block number of 0 as a valid allocation result (block 0 is the superblock); alloc_block always returns a disk_block_num >= sb->data_block_start; newly allocated blocks are zero-initialized before writing partial data to them"
+    ]
+  },
+  {
+    "milestone_id": "filesystem-m5",
+    "criteria": [
+      "Filesystem mounts successfully via FUSE using ./myfs <disk_image> <mountpoint> and appears as a real mount point accessible to the host OS (verified with mount | grep fuse)",
+      "getattr callback correctly fills struct stat for all file types (regular files with S_IFREG, directories with S_IFDIR) including st_ino, st_mode, st_nlink, st_uid, st_gid, st_size, st_blocks, st_atime, st_mtime, st_ctime",
+      "readdir callback emits '.' and '..' entries plus all real directory entries; 'ls -la /mnt/myfs' shows correct filenames, sizes, permissions, and timestamps",
+      "create callback is registered and handles O_CREAT opens; 'echo text > /mnt/myfs/file' creates a new file with correct content readable by cat",
+      "open callback stores inode number in fi->fh and handles O_TRUNC flag by truncating the file to zero",
+      "read callback returns correct data for sequential and random-offset reads; 'cat /mnt/myfs/file' outputs the exact bytes written",
+      "write callback allocates blocks as needed, updates inode size and timestamps; 'cp /etc/hosts /mnt/myfs/' produces a byte-identical copy verified by diff",
+      "mkdir callback creates directories with correct mode, nlinks=2, and '.' and '..' entries; 'mkdir /mnt/myfs/dir && ls -la /mnt/myfs/dir' shows correct output",
+      "rmdir callback removes empty directories and returns -ENOTEMPTY for non-empty ones; rmdir succeeds after removing all contents",
+      "unlink callback removes files and frees inodes when nlinks reaches zero; 'rm /mnt/myfs/file' removes the file from directory listing",
+      "rename callback moves files within and across directories atomically; 'mv /mnt/myfs/a /mnt/myfs/b' renames correctly and the old path returns ENOENT",
+      "rename replaces existing files when destination exists; 'mv src dst' where dst exists atomically replaces dst with src content",
+      "rename moving a directory updates the child's '..' entry to point to the new parent directory",
+      "truncate callback handles both path-based and fd-based truncation; 'truncate -s 0 /mnt/myfs/file' reduces file size to zero and frees blocks",
+      "chmod callback updates inode mode permission bits while preserving file type bits; stat confirms new permissions",
+      "utimens callback updates atime and mtime from struct timespec values; touch modifies timestamps correctly",
+      "statfs callback returns correct block counts and inode counts; 'df /mnt/myfs' shows reasonable free space values",
+      "Global pthread_mutex_t protects all filesystem state; concurrent writes from multiple processes do not corrupt the filesystem (verified by running parallel cp commands and checking file integrity)",
+      "destroy callback calls fsync(g_fs.fd) and persists the superblock before closing; data written before unmount survives remount",
+      "mount validates superblock magic number (FS_MAGIC) and refuses to mount invalid or non-filesystem files",
+      "FUSE runs in foreground mode (-f) for development and accepts single-threaded mode (-s) flag",
+      "Integration test script passes: mkdir, echo, cat, cp, diff, mv, rm, chmod, df all work correctly against the mounted filesystem",
+      "Data written before unmount is readable after remount (persistence test: write file, fusermount3 -u, remount, cat file)"
+    ]
+  },
+  {
+    "milestone_id": "filesystem-m6",
+    "criteria": [
+      "Journal region occupies a contiguous set of blocks beginning at sb->journal_start with sb->journal_blocks total blocks; the first block is a journal superblock (journal_super_t) storing j_magic=JOURNAL_MAGIC, j_head, j_tail, j_sequence, and j_total_blocks; the journal superblock persists to disk and is reloaded on mount",
+      "Journal entries use three distinct block types: JB_TYPE_DESC (descriptor listing target block numbers), raw data blocks (copies of metadata blocks), and JB_TYPE_COMMIT (commit record with sequence number and checksum); all three types are distinguished by j_magic and j_block_type fields at fixed byte offsets",
+      "txn_begin() initializes an in-memory transaction accumulating dirty blocks via txn_journal_block(); txn_journal_block() deduplicates entries for the same block number within a single transaction; no disk I/O occurs until txn_commit()",
+      "txn_commit() executes the exact six-step protocol: write descriptor + data blocks to journal → fsync → write commit block → fsync → write blocks to final filesystem locations → fsync; any crash before the second fsync leaves no commit record and the transaction is treated as aborted by recovery",
+      "journal_recover() on mount scans from j_head toward j_tail, identifies complete transactions (descriptor + data blocks + matching commit block with correct sequence number and valid checksum), replays each complete transaction's blocks to their filesystem target locations, and discards incomplete transactions without modifying main data structures",
+      "Incomplete transactions (no commit record, mismatched sequence number, or checksum failure) are silently discarded during recovery; the filesystem state after recovery reflects only committed transactions",
+      "Metadata-only journaling mode: file data blocks are written directly to their final locations with fsync before the inode update is journaled; inode blocks, bitmap blocks (block 0 superblock, block 1 block bitmap, block 2 inode bitmap), and directory data blocks are journaled; file data region blocks (block_num >= sb->data_block_start) are not included in journal transactions except for directory data",
+      "journal_checkpoint() resets j_head to j_tail (emptying the journal), persists the updated journal superblock to disk, and calls fsync twice: once before resetting (ensuring in-place writes are durable) and once after persisting the journal superblock (ensuring the clean state is durable)",
+      "txn_commit() detects a full journal condition (blocks_needed > journal_free) and forces journal_checkpoint() before proceeding; this prevents overwriting live committed journal entries with new transaction data",
+      "Crash simulation test: SIGKILL the FUSE process mid-operation; remount triggers journal_recover(); files committed before the crash are intact with correct content; no orphaned inodes exist (all allocated inode bitmap bits correspond to inodes reachable from the directory tree); no double-allocated blocks exist (no data block is referenced by two different inodes); superblock free counts are consistent with the actual number of free bitmap bits",
+      "All journaled operations are idempotent: applying the same committed journal transaction twice produces identical filesystem state to applying it once; verified by running journal_recover() twice on the same journal and confirming no state change on the second run",
+      "The journal circular buffer correctly handles wrap-around: j_tail advances modulo j_total_blocks; journal_abs_block() maps journal offsets to disk block numbers accounting for the journal superblock at offset 0; new transactions written after wrap-around do not overwrite live (unckeckpointed) journal entries",
+      "myfs_init() (FUSE init callback) calls journal_load() then journal_recover() before returning, ensuring all committed transactions are replayed before FUSE begins serving filesystem requests",
+      "myfs_destroy() (FUSE destroy callback) calls journal_checkpoint() followed by fsync(fd) before closing the disk image, ensuring the journal is empty and all changes are in the main data structures on clean unmount"
+    ]
+  },
+  {
+    "module_id": "filesystem-m1",
+    "criteria": [
+      "Block device abstraction provides read_block and write_block with 4KB alignment",
+      "Superblock stores magic number 0xDEADC0DE and calculated layout",
+      "Bitmap search (bitmap_find_free) correctly identifies zero bits in a 4KB block",
+      "mkfs tool initializes raw file with root directory entries",
+      "All on-disk structures use packed attributes and fixed-width types"
+    ]
+  },
+  {
+    "module_id": "filesystem-m2",
+    "criteria": [
+      "Implement 128-byte packed inode_t struct with _Static_assert verification",
+      "Implement read_inode and write_inode with proper block offset arithmetic",
+      "Implement inode_get_block supporting direct, single-indirect, and double-indirect translation",
+      "Implement inode_set_block with on-demand indirect block allocation and zeroing",
+      "Implement full recursive free_inode that reclaims data and indirect blocks bottom-up",
+      "Support sparse files via the block 0 sentinel convention",
+      "Verify 4GB file addressing capacity via double-indirection math"
+    ]
+  },
+  {
+    "module_id": "filesystem-m3",
+    "criteria": [
+      "Implement variable-length directory entries with 4-byte alignment logic.",
+      "Implement linear directory scanning and name lookup.",
+      "Path resolution must handle '.', '..', and absolute/relative paths correctly.",
+      "mkdir/rmdir must maintain POSIX nlinks invariants.",
+      "dir_remove_entry must merge rec_len to prevent intra-block fragmentation.",
+      "Hard links must be forbidden for directories to prevent cycles.",
+      "All directory entry manipulation must happen within 4KB block boundaries (no spanning)."
+    ]
+  },
+  {
+    "module_id": "filesystem-m4",
+    "criteria": [
+      "Implement fs_create_file combining inode allocation and M3 directory insertion",
+      "Implement fs_read with logic to return 0s for sparse holes (disk_block == 0)",
+      "Implement fs_write with RMW cycle for any partial block write",
+      "Implement fs_truncate (shrink) with explicit zeroing of the last block's tail to prevent data leakage",
+      "Implement recursive block freeing in truncate (freeing data blocks then indirect blocks)",
+      "Implement fs_append as a wrapper for fs_write(i_size)"
+    ]
+  },
+  {
+    "module_id": "filesystem-m5",
+    "criteria": [
+      "Implement getattr mapping internal inode_t to struct stat.",
+      "Implement readdir using dir_readdir and fuse_fill_dir_t.",
+      "Use fi->fh to store and retrieve inode numbers across callbacks.",
+      "Establish global fs_ctx_t with pthread_mutex_t for thread safety.",
+      "Implement create, read, and write mapping to Milestone 4 operations.",
+      "Implement mount/unmount lifecycle via init and destroy callbacks.",
+      "Ensure all callbacks return negative errno (e.g., -ENOENT) on failure."
+    ]
+  },
+  {
+    "module_id": "filesystem-m6",
+    "criteria": [
+      "journal_super_t, journal_desc_t, and journal_commit_t are all exactly 4096 bytes and packed.",
+      "The commit protocol implements two distinct fsync() calls to enforce journal-then-commit ordering.",
+      "journal_recover correctly identifies committed transactions by matching sequence numbers and checksums.",
+      "Recovery is idempotent, meaning multiple runs on the same journal produce the same filesystem state.",
+      "Metadata mutation functions (create, mkdir, unlink, rename) are fully wrapped in txn_begin/txn_commit blocks.",
+      "The system correctly handles journal wrap-around using the j_total_blocks limit.",
+      "A checkpoint is triggered automatically when the journal lacks space for the next transaction.",
+      "Checksums are validated during replay to protect against torn writes in the journal itself."
+    ]
+  }
+]

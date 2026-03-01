@@ -1,0 +1,160 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 1
+  }
+}
+
+# --- Classes & Global Styling ---
+classes: {
+  proc_mem: {
+    shape: sql_table
+    style: {
+      stroke: "#2c3e50"
+      fill: "#ecf0f1"
+    }
+  }
+  kernel_logic: {
+    shape: diamond
+    style: {
+      fill: "#e1dbff"
+      stroke: "#6c5ce7"
+    }
+  }
+}
+
+# --- Core Infrastructure ---
+
+title: {
+  shape: rectangle
+  label: "PID 1 Init Responsibilities — Zombie Reaping Flow"
+  style: {
+    font-size: 24
+    bold: true
+    fill: transparent
+    stroke-width: 0
+  }
+}
+title.near: top-center
+
+init_pid1: {
+  label: "PID 1: Container Init (reaper.c)"
+  direction: down
+  
+  header: {
+    class: proc_mem
+    label: "struct task_struct (Init)"
+    t0: "0x00 | pid_t       | 1"
+    t1: "0x04 | task_state  | TASK_RUNNING"
+    t2: "0x08 | parent_ptr  | host_pid_xxxx"
+    sz: "Size: 12 bytes (task_header)"
+  }
+  
+  reaper_logic: {
+    label: "Wait Loop Implementation"
+    code: |'c
+      while (1) {
+        // WNOHANG prevents blocking on active children
+        pid = waitpid(-1, &status, WNOHANG);
+        if (pid > 0) 
+          cleanup_zombie(pid);
+        sleep(1);
+      }
+    '|
+    width: 380
+  }
+}
+
+worker_pid2: {
+  class: proc_mem
+  label: "PID 2: Worker Process"
+  t0: "0x00 | pid_t       | 2"
+  t1: "0x04 | task_state  | EXIT_DEAD"
+  t2: "0x08 | parent_ptr  | 0x01 (init)"
+  sz: "Size: 12 bytes"
+}
+
+orphan_pid3: {
+  class: proc_mem
+  label: "PID 3: Grandchild/Orphan"
+  t0: "0x00 | pid_t       | 3"
+  t1: "0x04 | task_state  | TASK_RUNNING"
+  t2: "0x08 | parent_ptr  | 0x02 (stale) -> 0x01 (init)"
+  sz: "Size: 12 bytes"
+}
+
+# --- Kernel Logic & Transitions ---
+
+kernel_reparent: {
+  class: kernel_logic
+  label: "Kernel: find_new_reaper()"
+}
+
+zombie_state: {
+  class: proc_mem
+  label: "PID 3: EXIT_ZOMBIE State"
+  style: {
+    fill: "#ff7675"
+    stroke: "#d63031"
+    stroke-dash: 3
+  }
+  t0: "0x00 | pid_t       | 3"
+  t1: "0x04 | task_state  | EXIT_ZOMBIE"
+  t2: "0x08 | resources   | PID + task_struct header"
+  sz: "Resource Cost: 1.5KB RAM leak"
+}
+
+success_reap: {
+  label: "Resources Released"
+  style: {
+    fill: "#55efc4"
+    stroke: "#00b894"
+  }
+  msg: "task_struct removed from process list"
+}
+
+failure_leak: {
+  class: proc_mem
+  label: "Resource Leak / PID Exhaustion"
+  style: {
+    fill: "#ff7675"
+    stroke: "#d63031"
+    multiple: true
+  }
+  t0: "0x00 | pid_t       | 3"
+  t1: "0x04 | task_state  | EXIT_ZOMBIE"
+  sz: "Status: Unreaped Leak"
+}
+
+# --- Implementation Flow ---
+
+init_pid1.header -> worker_pid2: "sys_fork() | 0 bytes | child_pid=2"
+worker_pid2 -> orphan_pid3: "sys_fork() | 0 bytes | child_pid=3"
+
+worker_pid2 -> kernel_reparent: "sys_exit(0) | 4 bytes | SIGCHLD to PID 1"
+kernel_reparent -> orphan_pid3: "re-parenting | pointer | task->real_parent = 1"
+
+orphan_pid3 -> zombie_state: "sys_exit(1) | 4 bytes | exit_status=0x0100"
+
+zombie_state -> init_pid1.reaper_logic: "waitpid() call | 0 bytes | WNOHANG"
+init_pid1.reaper_logic -> success_reap: "cleanup_task() | 0 bytes | slab freed"
+
+zombie_state -> failure_leak: "If PID 1 is not a reaper | 0 bytes | Permanent Leak" {
+  style.stroke-dash: 5
+}
+
+# --- Annotations & Legend ---
+
+legend: {
+  shape: package
+  label: "Legend & Resource Analysis"
+  info: |'md
+    - **Red/Dashed**: Zombie/Resource Leak path
+    - **Green**: Successful cleanup path
+    - **Memory Cost**: ~1.5KB kernel memory per zombie
+    - **Control Path**: PID 1 must run wait() loop or equivalent
+    - **Threshold**: /proc/sys/kernel/pid_max (Default 32768)
+  '|
+}
+legend.near: top-right

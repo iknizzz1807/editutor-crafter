@@ -1,0 +1,145 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- GLOBAL STYLES ---
+classes: {
+  approach_container: {
+    style: {
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  logic_step: {
+    shape: step
+    style: {
+      fill: "#f8f9fa"
+    }
+  }
+}
+
+# --- APPROACH 1: TIMESTAMP SCAN ---
+timestamp_approach: {
+  label: "Approach A: Timestamp-Based LRU (vmsim_m4.c)"
+  class: approach_container
+  style.fill: "#e3f2fd"
+
+  frame_struct: {
+    shape: sql_table
+    label: "struct frame_desc_t"
+    f0: "0x00 | uint32_t | vpn"
+    f1: "0x04 | uint64_t | last_access (timestamp)"
+    f2: "0x0C | bool     | in_use"
+    f3: "0x0D | uint8_t  | padding[3]"
+    sz: "Total: 16 bytes per frame"
+  }
+
+  scan_logic: {
+    label: "LRU Victim Selection (O(n) Scan)"
+    code: |'c
+      uint32_t victim = -1; uint64_t min = -1;
+      for (int i=0; i < num_frames; i++) {
+        if (frames[i].in_use && frames[i].last_access < min) {
+          min = frames[i].last_access;
+          victim = i;
+        }
+      }
+      return victim;
+    '|
+  }
+
+  update_logic: {
+    label: "Hot Path: Update Timestamp"
+    code: |'c
+      // Called on EVERY successful translation
+      frames[pfn].last_access = global_clock++;
+    '|
+  }
+}
+
+# --- APPROACH 2: DOUBLY-LINKED LIST ---
+linked_list_approach: {
+  label: "Approach B: Doubly-Linked List LRU (production_mm.c)"
+  class: approach_container
+  style.fill: "#fff3e0"
+
+  node_struct: {
+    shape: sql_table
+    label: "struct lru_node_t (64-bit)"
+    f0: "0x00 | uint32_t    | pfn"
+    f1: "0x04 | uint32_t    | _pad"
+    f2: "0x08 | lru_node_t* | prev"
+    f3: "0x10 | lru_node_t* | next"
+    sz: "Total: 24 bytes (50% overhead increase)"
+  }
+
+  list_ops: {
+    shape: class
+    label: "LRU List Manager"
+    methods: |'c
+      void list_move_to_head(lru_list_t* l, uint32_t pfn);
+      uint32_t list_pop_tail(lru_list_t* l);
+    '|
+  }
+
+  hot_path_code: {
+    label: "Hot Path: O(1) Re-Link"
+    code: |'c
+      // Expensive pointer shuffling on every access
+      node->prev->next = node->next;
+      node->next->prev = node->prev;
+      node->next = list->head;
+      list->head = node;
+    '|
+  }
+}
+
+# --- COMPARISON & LEGEND ---
+summary: {
+  near: bottom-center
+  label: "Performance & Memory Trade-offs"
+  grid-columns: 2
+  
+  col1: {
+    shape: callout
+    label: |md
+      ### Timestamps (A)
+      * **Update Cost:** Low (1 Register Write)
+      * **Evict Cost:** High (Scan all frames)
+      * **Metadata:** 8 bytes/frame
+    |
+  }
+  
+  col2: {
+    shape: callout
+    label: |md
+      ### Linked List (B)
+      * **Update Cost:** High (6 Pointer Writes)
+      * **Evict Cost:** Low (Pop Tail)
+      * **Metadata:** 16 bytes/frame
+    |
+  }
+}
+
+# --- DATA FLOWS ---
+timestamp_approach.update_logic -> timestamp_approach.frame_struct.f1: "uint64_t | 8 bytes | sim_clock"
+linked_list_approach.hot_path_code -> linked_list_approach.node_struct.f2: "ptr update | 8 bytes | node->prev"
+linked_list_approach.hot_path_code -> linked_list_approach.node_struct.f3: "ptr update | 8 bytes | node->next"
+
+# Comparison annotations
+timestamp_approach -> linked_list_approach: "Alternative Implementation" {
+  style.stroke-dash: 5
+}
+
+# Clock Algorithm Note
+clock_note: {
+  label: "Clock Algorithm (The Hybrid Solution)"
+  shape: callout
+  style.fill: "#e8f5e9"
+  explanation: "Uses only 1 bit per page (Referenced). Updates are free (Hardware sets bit). Eviction is O(1) amortized sweep."
+}
+clock_note.near: top-center

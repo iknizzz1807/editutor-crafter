@@ -1,0 +1,217 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- TECHNICAL DESIGN ARTIST CLASSES ---
+classes: {
+  header: { 
+    style: {
+      fill: "#6f42c1"
+      font-color: white
+      bold: true 
+    }
+  }
+  data: { 
+    style: {
+      fill: "#007bff"
+      font-color: white 
+    }
+  }
+  pointer: { 
+    style: {
+      fill: "#fd7e14"
+      font-color: white 
+    }
+  }
+  error: { 
+    style: {
+      fill: "#dc3545"
+      font-color: white
+      bold: true 
+    }
+  }
+  padding: { 
+    style: {
+      fill: "#6c757d"
+      font-color: white 
+    }
+  }
+  # Prompt: Changed elements RED + bold
+  changed: { 
+    style: {
+      stroke: "#dc3545"
+      stroke-width: 4
+      bold: true
+      font-color: "#dc3545"
+    }
+  }
+}
+
+direction: right
+
+# --- 1. MEMORY LAYOUT: BEFORE ---
+BEFORE: {
+  label: "STATE: BEFORE (Userspace Trigger)\nsizeof=4096B (Page Boundary)"
+  style: {
+    stroke: "#6c757d"
+    stroke-dash: 5
+  }
+  
+  user_mem: {
+    shape: sql_table
+    class: header
+    label: "User Space (0x7FFF1234) | 6B"
+    "0x00": "h" {class: data}
+    "0x01": "e" {class: data}
+    "0x02": "l" {class: data}
+    "0x03": "l" {class: data}
+    "0x04": "o" {class: data}
+    "0x05": "\\n" {class: data}
+  }
+
+  kernel_mem: {
+    shape: sql_table
+    class: header
+    label: "Kernel Space (0xFFFF8880...) | 6B"
+    "0x00": "0x00" {class: padding}
+    "0x01": "0x00" {class: padding}
+    "0x02": "0x00" {class: padding}
+    "0x03": "0x00" {class: padding}
+    "0x04": "0x00" {class: padding}
+    "0x05": "0x00" {class: padding}
+  }
+
+  exception_table: {
+    shape: sql_table
+    class: header
+    label: ".ex_table Section (RO Data)"
+    "0x0": "FAULT_ADDR: 0xABC" {class: pointer}
+    "0x8": "FIXUP_ADDR: 0xXYZ" {class: pointer}
+  }
+}
+
+# --- 2. ALGORITHM STATE DIAGRAM ---
+ALGO_FLOW: {
+  label: "ALGORITHM EXECUTION STEPS"
+  shape: rectangle
+  style: {
+    fill: "#fdfdfe"
+  }
+
+  step1: "1. START" {
+    tooltip: "copy_from_user(dst, src, 6) called"
+    shape: package
+    style.stroke-dash: 0
+    info: |md
+      - Inst at **0xABC** starts copy
+      - CPU CPL=0 (Ring 0)
+    |
+  }
+
+  step2: "2. FAULT" {
+    tooltip: "CPU triggers Exception"
+    shape: package
+    style: {
+      stroke: "#dc3545"
+      stroke-width: 3
+    }
+    info: |md
+      - Read 0x7FFF1234 fails
+      - **CPU Triggers #PF (Page Fault)**
+      - **PC Jumps to Kernel Fault Handler**
+    |
+  }
+
+  step3: "3. RECOVER" {
+    tooltip: "Exception Table Lookup"
+    shape: package
+    info: |md
+      - Handler checks **.ex_table**
+      - Match Found: **0xABC -> 0xXYZ**
+      - **PC redirected to Fixup Stub**
+    |
+  }
+
+  step4: "4. FIXUP" {
+    tooltip: "Fixup Stub execution"
+    shape: package
+    info: |md
+      - **RAX = 6** (bytes remaining)
+      - **ZERO_FILL(dst)** for safety
+      - Return to calling driver
+    |
+  }
+
+  step1 -> step2 -> step3 -> step4
+}
+
+# --- 3. MEMORY LAYOUT: AFTER ---
+AFTER: {
+  label: "STATE: AFTER (Graceful Failure)\nstatus=-EFAULT"
+  style: {
+    stroke: "#28a745"
+    stroke-dash: 5
+  }
+  
+  kernel_mem: {
+    shape: sql_table
+    class: header
+    label: "Kernel Space (0xFFFF8880...) | CLEANED"
+    "0x00": "**0x00**" {class: changed}
+    "0x01": "**0x00**" {class: changed}
+    "0x02": "**0x00**" {class: changed}
+    "0x03": "**0x00**" {class: changed}
+    "0x04": "**0x00**" {class: changed}
+    "0x05": "**0x00**" {class: changed}
+  }
+
+  driver_result: {
+    shape: rectangle
+    label: |md
+      ### RESULT: -14 (EFAULT)
+      - **Stability:** OOPS Prevented
+      - **Data Integrity:** Dst zeroed
+    |
+    style: {
+      fill: "#d4edda"
+      stroke: "#28a745"
+      border-radius: 8
+    }
+  }
+}
+
+# --- 4. ANNOTATIONS (ELK COMPLIANT) ---
+TECH_NOTE: |md
+  ### The 'One-Way Mirror' Trap
+  - **copy_from_user**: Has entries in `.ex_table`. Faults are **Recoverable**.
+  - **memcpy**: Has **NO** entries in `.ex_table`. A fault here triggers a **Kernel Panic**.
+| {
+  near: bottom-center
+}
+
+# --- 5. CALL SEQUENCES & CONNECTIONS ---
+BEFORE.user_mem -> ALGO_FLOW.step1: "src pointer" {
+  style: {
+    stroke: orange
+    stroke-dash: 3
+  }
+}
+BEFORE.exception_table -> ALGO_FLOW.step3: "Search Match" {
+  style: {
+    stroke: "#6f42c1"
+  }
+}
+ALGO_FLOW.step4 -> AFTER.driver_result: "Propagate RAX" {
+  style: {
+    stroke: "#28a745"
+  }
+}
+ALGO_FLOW.step4 -> AFTER.kernel_mem: "Zero-Fill" {
+  style: {
+    stroke: "#28a745"
+    stroke-dash: 2
+  }
+}

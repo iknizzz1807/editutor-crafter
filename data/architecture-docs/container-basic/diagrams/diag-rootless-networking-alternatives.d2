@@ -1,0 +1,162 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- LEGEND & METADATA ---
+legend: {
+  shape: sql_table
+  label: "Network Security & Performance Legend"
+  red: "Red | High Overhead / Kernel Trap"
+  green: "Green | Optimized Path / Low Latency"
+  blue: "Blue | Standard Data Flow"
+  purple: "Purple | Namespace Boundary"
+  near: bottom-right
+}
+
+# --- COMPARISON TABLE: THE VETH CONSTRAINT ---
+veth_constraint: {
+  shape: sql_table
+  label: "The Milestone 3 Constraint (rootfs.c)"
+  0x00: "Primitive | Requirement | Rootless Status"
+  0x01: "veth pair | CAP_NET_ADMIN in Initial NS | FORBIDDEN"
+  0x02: "br_addif  | CAP_NET_ADMIN in Initial NS | FORBIDDEN"
+  0x03: "iptables  | CAP_NET_ADMIN in Initial NS | FORBIDDEN"
+  summary: "Total: Host Root Required for Bridge Setup"
+}
+
+# --- APPROACH 1: slirp4netns ---
+slirp_model: {
+  label: "Approach 1: slirp4netns (Traditional User-Mode Networking)"
+  direction: right
+
+  container: {
+    label: "Container (User NS + Net NS)"
+    app: "Application Process"
+    tap: {
+      shape: rectangle
+      label: "tap0 (Virtual L2)"
+      style.fill: "#C7F1FF"
+    }
+    app -> tap: "TCP Segment | 1500B | SYN Seq=100"
+  }
+
+  host: {
+    label: "Host (User Context)"
+    slirp_daemon: {
+      shape: class
+      label: "slirp4netns (slirp4netns.c)"
+      fields: |'c
+        int tap_fd;        // fd to /dev/net/tun
+        struct libslirp *s; // User-space TCP/IP stack
+      '|
+      methods: |'c
+        slirp_input(s, pkt, len);
+        slirp_output(s, pkt, len);
+      '|
+    }
+    socket_api: "Host Kernel Socket API"
+  }
+
+  container.tap -> host.slirp_daemon: "L2 Frame | 1514B | via /dev/net/tun" {
+    style.stroke: red
+    label: "Context Switch + Memcpy"
+  }
+  host.slirp_daemon -> host.socket_api: "Syscall | 64B | send(host_fd, ...)"
+  
+  perf: {
+    label: "Performance: ~30-40% Overhead"
+    style.stroke-dash: 3
+  }
+}
+
+# --- APPROACH 2: pasta (Podman Default) ---
+pasta_model: {
+  label: "Approach 2: pasta (Optimized User-Mode Forwarding)"
+  direction: right
+
+  container: {
+    label: "Container (User NS + Net NS)"
+    eth0: "eth0 (Injected)"
+  }
+
+  host: {
+    label: "Host (User Context)"
+    pasta_daemon: {
+      shape: class
+      label: "pasta (passt.c)"
+      methods: |'c
+        tap_handler_pasvt(c, now);
+        tcp_tap_handler(c, p, now);
+        tcp_sock_handler(c, ref, event);
+      '|
+    }
+    splice: "Kernel Splice / recvmmsg" {
+      style.fill: "#B6DDF6"
+    }
+  }
+
+  container.eth0 -> host.pasta_daemon: "L3 Packet | 1500B | Local Mapping" {
+    style.stroke: green
+    label: "Optimized Forwarding"
+  }
+  host.pasta_daemon -> host.splice: "Zero-copy | 1500B | Direct Buffer"
+  
+  perf: {
+    label: "Performance: ~10-15% Overhead"
+    style.stroke-dash: 3
+  }
+}
+
+# --- APPROACH 3: host networking ---
+host_net_model: {
+  label: "Approach 3: --network=host (No Isolation)"
+  direction: right
+
+  container: {
+    label: "Container (User NS)"
+    app: "Application Process"
+  }
+
+  host_stack: {
+    label: "Initial Network Namespace (Host)"
+    eth0: "Physical NIC (eth0)"
+  }
+
+  container.app -> host_stack.eth0: "Syscall | 1500B | direct socket()" {
+    style.stroke: green
+    style.stroke-width: 4
+    label: "Zero Namespace Overhead"
+  }
+
+  security_warning: {
+    label: "WARNING: No Isolation"
+    style.fill: "#FFE0F5"
+    style.font-color: red
+  }
+  
+  perf: {
+    label: "Performance: 100% (Native)"
+    style.stroke-dash: 3
+  }
+}
+
+# --- IMPLEMENTATION LOGIC ---
+logic: {
+  label: "Rootless Initialization Sequence (main.c)"
+  code: |'c
+    if (unshare(CLONE_NEWUSER | CLONE_NEWNET) != 0) perror("unshare");
+    // 1. User is now UID 0 in new User NS
+    // 2. User has CAP_NET_ADMIN in new Net NS
+    // 3. User CAN create tap0 but NOT veth on host
+    // 4. External helper (slirp4netns) connects to tap0
+  '|
+}
+
+# --- CROSS-LINKS ---
+veth_constraint -> slirp_model: "Forces"
+slirp_model -> pasta_model: "Evolution"
+logic -> slirp_model: "Implementation"

@@ -1,0 +1,158 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# MKDIR STATE EVOLUTION: /home/user/projects
+# This diagram tracks the metadata mutation required for directory creation.
+
+mkdir_process: {
+  label: "mkdir(\"/home/user/projects\") Implementation Flow (vfs_mkdir.c)"
+  direction: down
+
+  step1: {
+    shape: step
+    label: "1. Inode Allocation"
+    code: |'c
+      int ino = bitmap_find_free(ibmap, total_inodes);
+      bitmap_set(ibmap, ino); // Selected ino = 23
+      write_block(fd, 2, ibmap);
+    '|
+  }
+
+  step2: {
+    shape: step
+    label: "2. Block Allocation"
+    code: |'c
+      int blk = alloc_block(fd, sb); // Selected blk = 500
+      bitmap_set(bbmap, 500);
+      write_block(fd, 1, bbmap);
+    '|
+  }
+
+  step3: {
+    shape: step
+    label: "3. Inode Initialization"
+    code: |'c
+      inode_t new_ino;
+      new_ino.mode = S_IFDIR | 0755;
+      new_ino.nlinks = 2; // '.' and parent entry
+      new_ino.blocks[0] = 500;
+    '|
+  }
+
+  step4: {
+    shape: step
+    label: "4. Directory Data Setup"
+    code: |'c
+      dirent_t dot = {23, 12, 1, FT_DIR, "."};
+      dirent_t dotdot = {12, 4084, 2, FT_DIR, ".."};
+      write_block(fd, 500, buf);
+    '|
+  }
+
+  step5: {
+    shape: step
+    label: "5. Parent Entry Link"
+    code: |'c
+      // Update parent inode (12) data block
+      dir_add_entry(fd, 12, "projects", 23, FT_DIR);
+    '|
+  }
+
+  step6: {
+    shape: step
+    label: "6. Parent Metadata Update"
+    code: |'c
+      parent_inode.nlinks++; // Sub-dir '..' link
+      parent_inode.ctime = now();
+      write_inode(fd, 12, &parent_inode);
+    '|
+  }
+
+  step1 -> step2 -> step3 -> step4 -> step5 -> step6
+}
+
+disk_state_evolution: {
+  label: "On-Disk Structure Mutations (ext2_layout.h)"
+  direction: down
+
+  inode_bitmap: {
+    shape: sql_table
+    label: "Inode Bitmap (Block 2)"
+    bit_22: "0x0002 | bit 6 | 1 (used)"
+    bit_23: "0x0002 | bit 7 | 1 (ALLOCATED)"
+    bit_24: "0x0003 | bit 0 | 0 (free)"
+    sz: "Total: 4096 bytes (tracks 32,768 inodes)"
+  }
+
+  block_bitmap: {
+    shape: sql_table
+    label: "Block Bitmap (Block 1)"
+    bit_499: "0x003E | bit 3 | 1 (used)"
+    bit_500: "0x003E | bit 4 | 1 (ALLOCATED)"
+    bit_501: "0x003E | bit 5 | 0 (free)"
+    sz: "Total: 4096 bytes (tracks 32,768 blocks)"
+  }
+
+  new_inode: {
+    shape: sql_table
+    label: "inode_t [23] (Inode Table)"
+    f0: "0x00 | uint16_t | mode: 0040755 (S_IFDIR)"
+    f1: "0x06 | uint16_t | nlinks: 2"
+    f2: "0x08 | uint32_t | size: 4096 (1 block)"
+    f3: "0x18 | uint32_t | blocks[0]: 500"
+    f4: "0x1C | uint32_t | blocks[1..11]: 0"
+    sz: "Total: 128 bytes"
+  }
+
+  directory_block: {
+    shape: sql_table
+    label: "Data Block [500] (Dirent List)"
+    rec1: "0x00 | dirent_t | {ino: 23, len: 12, name: '.'}"
+    rec2: "0x0C | dirent_t | {ino: 12, len: 4084, name: '..'}"
+    sz: "Total: 4096 bytes (Block Capacity)"
+  }
+
+  parent_inode: {
+    shape: sql_table
+    label: "inode_t [12] (Parent: /home/user)"
+    f0: "0x00 | uint16_t | mode: 0040755"
+    f1: "0x06 | uint16_t | nlinks: N+1"
+    f2: "0x08 | uint32_t | size: 4096"
+    f3: "0x18 | uint32_t | blocks[0]: 102"
+    sz: "Total: 128 bytes"
+  }
+}
+
+# Implementation-Ready Data Flow
+mkdir_process.step1 -> disk_state_evolution.inode_bitmap: "uint8_t[] | 4096 bytes | bit 23 = 1"
+mkdir_process.step2 -> disk_state_evolution.block_bitmap: "uint8_t[] | 4096 bytes | bit 500 = 1"
+mkdir_process.step3 -> disk_state_evolution.new_inode: "inode_t | 128 bytes | mode=DIR, nlinks=2"
+mkdir_process.step4 -> disk_state_evolution.directory_block: "dirent_t[2] | 4096 bytes | '.'=23, '..'=12"
+mkdir_process.step6 -> disk_state_evolution.parent_inode: "inode_t | 128 bytes | nlinks++"
+
+# Highlight the consistency group
+consistency_group: {
+  label: "Atomicity Consistency Boundary"
+  style: {
+    stroke: red
+    stroke-dash: 4
+    fill: transparent
+  }
+  disk_state_evolution.inode_bitmap
+  disk_state_evolution.block_bitmap
+  disk_state_evolution.new_inode
+  disk_state_evolution.directory_block
+  disk_state_evolution.parent_inode
+}
+
+# Metadata ordering rule
+ordering_note: {
+  shape: callout
+  label: "CRITICAL: Persist bitmaps before inodes to prevent double-allocation if crash occurs."
+}
+ordering_note.near: top-left

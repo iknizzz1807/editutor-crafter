@@ -1,0 +1,129 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 5
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# LAYER 1: USER APPLICATION
+# ---------------------------------------------------------------------------------------
+user_app: {
+  label: "USER SPACE: APPLICATION"
+  app: User Process (PID: 1234) {
+    shape: rectangle
+    code: |'c
+      // Triggering the flow
+      int fd = open("/mnt/myfs/file.txt", O_RDONLY);
+    '|
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# LAYER 2: KERNEL SPACE
+# ---------------------------------------------------------------------------------------
+kernel: {
+  label: "KERNEL SPACE"
+  direction: down
+
+  vfs: VFS (Virtual Filesystem Switch) {
+    shape: rectangle
+    description: "Matches '/mnt/myfs' to FUSE mount"
+  }
+
+  fuse_module: fuse.ko (FUSE Kernel Driver) {
+    shape: rectangle
+    description: "Wait-queue for userspace responses"
+  }
+
+  dev_fuse: /dev/fuse (Character Device) {
+    shape: cylinder
+    label: "/dev/fuse"
+  }
+
+  vfs -> fuse_module: "vfs_open() | - | dentry lookup"
+}
+
+# ---------------------------------------------------------------------------------------
+# LAYER 3: USERSPACE FS DAEMON
+# ---------------------------------------------------------------------------------------
+daemon: {
+  label: "USER SPACE: FILESYSTEM DAEMON"
+  direction: down
+
+  libfuse: libfuse3 (High-level API) {
+    description: "Event loop: reads reqs, dispatches calls"
+  }
+
+  myfs_impl: MyFS Daemon (myfs.c) {
+    shape: class
+    fields: |'c
+      int disk_fd;
+      superblock_t sb;
+      pthread_mutex_t lock;
+    '|
+    methods: |'c
+      int myfs_open(const char *path, struct fuse_file_info *fi);
+      int myfs_getattr(const char *path, struct stat *st);
+    '|
+  }
+
+  internal_logic: Internal Logic {
+    path_resolve: "path_resolve() | M3"
+    inode_read: "read_inode() | M2"
+  }
+
+  libfuse -> myfs_impl: "callback | - | .open('/file.txt')"
+  myfs_impl -> internal_logic.path_resolve: "lookup | - | name -> ino"
+  internal_logic.path_resolve -> internal_logic.inode_read: "fetch | - | ino=42"
+}
+
+# ---------------------------------------------------------------------------------------
+# DATA FLOW CONNECTIONS (THE PATHWAY)
+# ---------------------------------------------------------------------------------------
+
+# 1. Syscall Entry
+user_app.app -> kernel.vfs: "syscall | 8 bytes | NR_open" {
+  style.stroke: blue
+  style.animated: true
+}
+
+# 2. Kernel to Device
+kernel.fuse_module -> kernel.dev_fuse: "fput() | 160 bytes | FUSE_OPEN req" {
+  style.stroke: purple
+}
+
+# 3. Device to Userspace (Context Switch 1)
+kernel.dev_fuse -> daemon.libfuse: "read() | 160 bytes | req_id=1, nodeid=42" {
+  label: "Context Switch (K->U)\nLatency: ~2.5µs"
+  style.stroke: red
+  style.stroke-dash: 4
+}
+
+# 4. Userspace to Device (Context Switch 2)
+daemon.libfuse -> kernel.dev_fuse: "write() | 24 bytes | status=0, fh=7" {
+  label: "Context Switch (U->K)\nLatency: ~2.5µs"
+  style.stroke: red
+  style.stroke-dash: 4
+}
+
+# 5. Kernel back to App
+kernel.vfs -> user_app.app: "ret | 4 bytes | fd=3" {
+  style.stroke: green
+  style.animated: true
+}
+
+# ---------------------------------------------------------------------------------------
+# PERFORMANCE ANNOTATIONS
+# ---------------------------------------------------------------------------------------
+perf_legend: FUSE PERFORMANCE MODEL {
+  near: bottom-right
+  c1: "Avg Round Trip: 5µs - 15µs (Warm Cache)"
+  c2: "Warm Path: VFS -> libfuse -> myfs_open -> VFS"
+  c3: "Cold Path: Disk I/O (+100µs per metadata block)"
+}
+
+perf_legend.c1: { style.font-color: blue }
+perf_legend.c2: { style.font-color: green }
+perf_legend.c3: { style.font-color: red }

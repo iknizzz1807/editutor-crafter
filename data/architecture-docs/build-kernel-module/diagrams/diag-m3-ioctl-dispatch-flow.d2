@@ -1,0 +1,151 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+
+# ─── USER SPACE ──────────────────────────────────────────────────────────
+userspace: {
+  label: "Userspace (Application Context)"
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#dee2e6"
+    stroke-dash: 5
+  }
+
+  app_call: {
+    shape: code
+    label: "app.c"
+    code: |'c
+      struct mydev_resize_args args = { .new_size = 8192 };
+      int ret = ioctl(fd, MYDEV_IOC_RESIZE, &args);
+      if (ret < 0) perror("ioctl failed");
+    '|
+  }
+
+  mem_layout: {
+    shape: sql_table
+    label: "struct mydev_resize_args (ABI)"
+    row1: "0x00 | __u32 | new_size // 8192"
+    row2: "0x04 | __u32 | flags    // Reserved"
+    total: "Total: 8 bytes"
+  }
+}
+
+# ─── KERNEL VFS LAYER ────────────────────────────────────────────────────
+kernel_vfs: {
+  label: "Kernel VFS Layer"
+  style: {
+    fill: "#e7f5ff"
+    stroke: "#74c0fc"
+  }
+
+  syscall_entry: {
+    shape: class
+    label: "SYSCALL: sys_ioctl (fs/ioctl.c)"
+    methods: |'c
+      SYSCALL_DEFINE3(ioctl, unsigned int fd, 
+                      unsigned int cmd, unsigned long arg);
+    '|
+  }
+
+  vfs_dispatch: {
+    label: "VFS Dispatch"
+    code: |'c
+      struct fd f = fdget(fd);
+      // Logic: f.file->f_op->unlocked_ioctl(...)
+      res = do_vfs_ioctl(f.file, fd, cmd, arg);
+    '|
+  }
+}
+
+# ─── DRIVER IMPLEMENTATION ───────────────────────────────────────────────
+driver: {
+  label: "Driver (mydevice.c)"
+  style: {
+    fill: "#fff4e6"
+    stroke: "#fd7e14"
+  }
+
+  ioctl_handler: {
+    shape: class
+    label: "ioctl_handler"
+    methods: |'c
+      long mydev_ioctl(struct file *filp, 
+                       unsigned int cmd, 
+                       unsigned long arg);
+    '|
+  }
+
+  cmd_decode: {
+    shape: sql_table
+    label: "cmd (32-bit Encoded Command)"
+    r1: "Bits 31:16 | NR   | Sequence Number (1)"
+    r2: "Bits 15:08 | TYPE | Magic Number ('M')"
+    r3: "Bits 13:02 | SIZE | sizeof(struct) (8)"
+    r4: "Bits 01:00 | DIR  | _IOW (01b)"
+  }
+
+  switch_logic: {
+    label: "Command Dispatch"
+    code: |'c
+      switch (cmd) {
+        case MYDEV_IOC_RESIZE: goto resize_logic;
+        default: return -ENOTTY;
+      }
+    '|
+  }
+
+  resize_logic: {
+    label: "MYDEV_IOC_RESIZE Path"
+    code: |'c
+      1. copy_from_user(&k_args, (void __user *)arg, 8);
+      2. if (k_args.new_size > MAX) return -EINVAL;
+      3. new_buf = krealloc(old_buf, k_args.new_size, GFP_KERNEL);
+      4. buffer_size = k_args.new_size;
+      5. return 0;
+    '|
+  }
+}
+
+# ─── CONNECTIONS ─────────────────────────────────────────────────────────
+
+userspace.app_call -> kernel_vfs.syscall_entry: "int | 4 bytes | fd=3\nunsigned int | 4 bytes | cmd=0xC0084D01\nunsigned long | 8 bytes | arg=0x7ffd..."
+
+kernel_vfs.syscall_entry -> kernel_vfs.vfs_dispatch: "struct file* | 8 bytes | fd_to_file(fd)"
+
+kernel_vfs.vfs_dispatch -> driver.ioctl_handler: "unsigned long | 8 bytes | user_ptr_to_args"
+
+driver.ioctl_handler -> driver.cmd_decode: "Extract Metadata"
+driver.cmd_decode -> driver.switch_logic: "cmd matching"
+
+driver.switch_logic -> driver.resize_logic: "Match (0x4D, 0x01)"
+driver.switch_logic -> userspace.app_call: "long | -ENOTTY | Result: errno=25" {
+  style.stroke-dash: 3
+  style.stroke: red
+}
+
+driver.resize_logic -> userspace.app_call: "long | 0 | Result: Success" {
+  style.stroke: green
+}
+
+userspace.mem_layout -> driver.resize_logic: "Data Source" {
+  style.stroke: blue
+  source-arrowhead: diamond
+}
+
+# ─── LEGEND / ANNOTATIONS ────────────────────────────────────────────────
+legend: {
+  near: bottom-right
+  note: |'md
+    ### ioctl Dispatch Flow
+    - **arg**: Passed as `unsigned long`. 
+      - If `_IOW`/_IOR, it is a pointer address.
+      - If `_IO`, it may be a literal value.
+    - **Error Codes**: Driver returns negative `errno`.
+      - VFS/Syscall layer propagates to CPU registers.
+      - Glibc sets `errno` = `abs(return_value)` and returns `-1`.
+  '|
+}

@@ -1,0 +1,155 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- DATA STRUCTURES ---
+
+task_struct_reader: {
+  shape: sql_table
+  label: "struct task_struct (Reader)"
+  f0: "0x00 | volatile long | state // TASK_RUNNING (0)"
+  f1: "0x10 | void*         | stack"
+  f2: "0x20 | int           | prio"
+  f3: "0x400| wait_queue*   | curr_target"
+  sz: "Total: ~9KB (Allocated via task_alloc)"
+}
+
+wait_queue_head: {
+  shape: sql_table
+  label: "wait_queue_head_t (read_queue)"
+  f0: "0x00 | spinlock_t    | lock"
+  f1: "0x08 | list_head     | head // List of waiting tasks"
+  sz: "Total: 24 bytes"
+}
+
+device_state: {
+  shape: sql_table
+  label: "Global Device State"
+  f0: "0x00 | struct mutex  | dev_mutex"
+  f1: "0x20 | char*         | kernel_buffer"
+  f2: "0x28 | size_t        | buffer_used // Initial: 0"
+  sz: "Total: 64 bytes (Cache Line Aligned)"
+}
+
+# --- PROCESS CONTEXTS ---
+
+reader_context: {
+  label: "Process A: read() Context"
+  
+  step1: {
+    label: "T1: Enter mydev_read"
+    code: |'c
+      mutex_lock_interruptible(&dev_mutex);
+      while (buffer_used == 0) {
+        mutex_unlock(&dev_mutex);
+        // Transition Point
+    '|
+  }
+
+  step2: {
+    label: "T2: wait_event_interruptible"
+    code: |'c
+      // Macro expansion:
+      add_wait_queue(&read_queue, &entry);
+      set_current_state(TASK_INTERRUPTIBLE);
+      schedule(); // Reader pauses here
+    '|
+    style.stroke: "#ca052b"
+  }
+
+  step3: {
+    label: "T5: Resume and Finish"
+    code: |'c
+      // Woken up by scheduler
+      mutex_lock(&dev_mutex);
+      copy_to_user(buf, k_buf, count);
+      mutex_unlock(&dev_mutex);
+    '|
+    style.stroke: "#167c3c"
+  }
+}
+
+writer_context: {
+  label: "Process B: write() Context"
+  
+  step1: {
+    label: "T3: Enter mydev_write"
+    code: |'c
+      mutex_lock(&dev_mutex);
+      copy_from_user(k_buf, buf, count);
+      buffer_used += count;
+    '|
+  }
+
+  step2: {
+    label: "T4: Trigger Wake-up"
+    code: |'c
+      wake_up_interruptible(&read_queue);
+      mutex_unlock(&dev_mutex);
+    '|
+    style.stroke: "#167c3c"
+  }
+}
+
+# --- STATE EVOLUTION FLOW ---
+
+reader_context.step1 -> device_state: "mutex_lock | 8 bytes | &dev_mutex"
+reader_context.step1 -> reader_context.step2: "buffer_used == 0 | flag | true"
+
+reader_context.step2 -> wait_queue_head: "add_wait_queue | ptr | task_struct_reader"
+reader_context.step2 -> task_struct_reader: "set_current_state | long | TASK_INTERRUPTIBLE (1)"
+
+# Indicate the sleep state
+sleep_state: {
+  label: "KERNEL SLEEP (TASK_INTERRUPTIBLE)"
+  shape: parallelogram
+  style.fill: "#DEE1EB"
+}
+reader_context.step2 -> sleep_state: "schedule() | context switch"
+
+# Writer intervention
+writer_context.step1 -> device_state: "copy_from_user | N bytes | data_stream"
+writer_context.step1 -> writer_context.step2: "buffer_used = N | update"
+writer_context.step2 -> wait_queue_head: "wake_up_interruptible | signal | SOH"
+
+# Wakeup flow
+wait_queue_head -> task_struct_reader: "WAKE_UP | state change | TASK_RUNNING (0)"
+task_struct_reader -> reader_context.step3: "Scheduler selects task"
+
+reader_context.step3 -> reader_context.step1: "re-check loop condition"
+reader_context.step3 -> device_state: "copy_to_user | N bytes | SUCCESS"
+
+# --- LEGEND / METADATA ---
+legend: {
+  label: "State Legend"
+  near: bottom-right
+  running: "TASK_RUNNING" {
+    style.fill: "#ACE1AF"
+  }
+  sleeping: "TASK_INTERRUPTIBLE" {
+    style.fill: "#DEE1EB"
+  }
+  sync: "Mutex/WaitQueue Interaction" {
+    style.stroke-dash: 5
+  }
+}
+
+# Global Styles
+task_struct_reader.f0: {
+  style.fill: "#FFF9C9"
+  style.bold: true
+}
+
+reader_context.step2 -> sleep_state: {
+  style.stroke: red
+  style.animated: true
+}
+
+writer_context.step2 -> wait_queue_head: {
+  style.stroke: green
+  style.animated: true
+}

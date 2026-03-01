@@ -1,0 +1,118 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- ARITHMETIC LAYER ---
+arithmetic: {
+  label: "Offset Arithmetic (inode.c:inode_get_block)"
+  
+  input: {
+    shape: parallelogram
+    label: "File Offset: 5,000,000"
+  }
+
+  calc_index: {
+    label: "Step 1: Calculate Block Index"
+    code: |'c
+      block_index = offset / 4096; // 1220
+      block_off   = offset % 4096; // 3488
+    '|
+  }
+
+  range_check: {
+    label: "Step 2: Range Selection"
+    code: |'c
+      if (idx < 12) return DIRECT;
+      idx -= 12; // 1208
+      if (idx < 1024) return SINGLE_INDIRECT;
+      idx -= 1024; // 184
+      return DOUBLE_INDIRECT;
+    '|
+  }
+
+  calc_double: {
+    label: "Step 3: Double-Indirect Indices"
+    code: |'c
+      // For idx = 184
+      outer = idx / 1024; // 0
+      inner = idx % 1024; // 184
+    '|
+  }
+
+  input -> calc_index: "off_t | 8 bytes | 5000000"
+  calc_index -> range_check: "uint32_t | 4 bytes | 1220"
+  range_check -> calc_double: "uint32_t | 4 bytes | 184"
+}
+
+# --- DISK STRUCTURES LAYER ---
+disk: {
+  label: "Disk Layout (disk.img)"
+  direction: down
+
+  inode_table: {
+    shape: sql_table
+    label: "struct inode_t (inode.h)"
+    f0: "0x00 | uint16_t | mode"
+    f1: "0x08 | uint32_t | size // 5,000,000"
+    f2: "0x18 | uint32_t[12] | blocks[]"
+    f3: "0x48 | uint32_t | single_indirect"
+    f4: "0x4C | uint32_t | double_indirect // Points to B_DI"
+    sz: "Total: 128 bytes"
+  }
+
+  double_indirect_block: {
+    shape: sql_table
+    label: "Double-Indirect Block (B_DI)"
+    ptr0: "0x00 | uint32_t | ptrs[0] // Points to B_SI"
+    ptr1: "0x04 | uint32_t | ptrs[1]"
+    ptrN: "...  | uint32_t | ptrs[1023]"
+    sz: "Total: 4096 bytes"
+    style.fill: "#f3e5f5"
+  }
+
+  single_indirect_block: {
+    shape: sql_table
+    label: "Single-Indirect Block (B_SI)"
+    ptr0: "0x00 | uint32_t | ptrs[0]"
+    ptr184: "0x2E0 | uint32_t | ptrs[184] // Points to B_DATA"
+    ptrN: "...   | uint32_t | ptrs[1023]"
+    sz: "Total: 4096 bytes"
+    style.fill: "#f3e5f5"
+  }
+
+  data_block: {
+    shape: sql_table
+    label: "Data Block (B_DATA)"
+    b0: "0x000 | byte | data[0]"
+    b3488: "0xDA0 | byte | data[3488] // TARGET BYTE"
+    b4095: "0xFFF | byte | data[4095]"
+    sz: "Total: 4096 bytes"
+    style.fill: "#e3f2fd"
+  }
+}
+
+# --- DATA WALK CONNECTIONS ---
+arithmetic.calc_double -> disk.inode_table.f4: "Access Meta"
+disk.inode_table.f4 -> disk.double_indirect_block: "READ 1 | uint32_t | B_DI address"
+disk.double_indirect_block.ptr0 -> disk.single_indirect_block: "READ 2 | uint32_t | B_SI address"
+disk.single_indirect_block.ptr184 -> disk.data_block: "READ 3 | uint32_t | B_DATA address"
+
+# --- ANNOTATIONS ---
+legend: {
+  near: bottom-right
+  title: "Read Operation Stats"
+  reads: "Indirection Overhead: 3 Blocks"
+  path: "Path: Inode -> D-Indir -> S-Indir -> Data"
+  style.stroke: "#6a1b9a"
+}
+
+disk.data_block.b3488 -> result: "Fetch Value"
+result: {
+  shape: circle
+  label: "uint8_t"
+  style.fill: "#4caf50"
+}

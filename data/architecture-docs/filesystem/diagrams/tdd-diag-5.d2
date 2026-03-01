@@ -1,0 +1,142 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+# alloc_block State Machine — Success and Failure Paths
+# Reference: filesystem-m1 (Block Layer and mkfs)
+
+legend: {
+  shape: package
+  label: "State Invariants & Notation"
+  near: top-right
+  
+  info: |md
+    - **●**: Entry point (Initial)
+    - **Red Nodes**: Terminal Error/Panic
+    - **Blue Arrows**: Standard Functional Path
+    - **Dashed Red**: ILLEGAL Transition / Data Corruption
+    - **Orange Note**: Crash consistency window
+  |
+}
+
+States: {
+  START: ●
+  
+  LOAD_BITMAP: "LOAD_BITMAP\n(read_block)" {
+    tooltip: "Read Block 1 (Data Bitmap) into 4KB buffer"
+    style: { fill: "#e1d5e7" } # Header/Metadata Read (Purple)
+  }
+  
+  SCAN: "SCAN\n(bitmap_find_free)" {
+    tooltip: "Iterate 4096 bytes looking for first 0-bit"
+    style: { fill: "#dae8fc" } # Data Processing (Blue)
+  }
+  
+  SET_BIT: "SET_BIT\n(bitmap_set)" {
+    tooltip: "Toggle bit i from 0 to 1 in local buffer"
+    style: { fill: "#dae8fc" } # Data Processing (Blue)
+  }
+  
+  WRITE_BITMAP: "WRITE_BITMAP\n(write_block)" {
+    tooltip: "Commit 4KB buffer back to Block 1"
+    style: { fill: "#dae8fc" } # Data Processing (Blue)
+  }
+  
+  UPDATE_SB: "UPDATE_SB\n(in-memory)" {
+    tooltip: "Decrement sb->s_free_blocks"
+    style: { fill: "#d5e8d4" } # Success/Free tracking (Green)
+  }
+  
+  SUCCESS: "RETURN_DISK_BLOCK" {
+    tooltip: "Return (s_data_region_start + index)"
+    style: { 
+      fill: "#d5e8d4"
+      stroke-width: 4
+    }
+  }
+  
+  ERR_FULL: "ERROR: ENOSPC" {
+    style: { fill: "#f8cecc"; font-color: "#b85450"; stroke: red }
+  }
+  
+  ERR_IO: "ERROR: EIO" {
+    style: { fill: "#f8cecc"; font-color: "#b85450"; stroke: red }
+  }
+  
+  CORRUPTION: "PANIC: METADATA OVERWRITE" {
+    style: { 
+      fill: "#f8cecc"
+      stroke: red
+      stroke-dash: 3
+    }
+  }
+}
+
+# Transitions
+States.START -> States.LOAD_BITMAP: "call alloc_block()"
+
+States.LOAD_BITMAP -> States.SCAN: "read_block(fd, 1, buf) == 0"
+States.LOAD_BITMAP -> States.ERR_IO: "read_block() < 0"
+
+States.SCAN -> States.SET_BIT: "bit 'i' found" {
+  style: { stroke: blue; bold: true }
+}
+States.SCAN -> States.ERR_FULL: "all 32,768 bits == 1"
+
+States.SET_BIT -> States.WRITE_BITMAP: "index validated"
+
+States.WRITE_BITMAP -> States.UPDATE_SB: "write_block(fd, 1, buf) == 0" {
+  label: "Durability Point"
+}
+States.WRITE_BITMAP -> States.ERR_IO: "write failure"
+
+States.UPDATE_SB -> States.SUCCESS: "return val >= data_start"
+
+# Crash Window Annotation
+# FIXED: Changed 'near' to constant for ELK compatibility
+CrashWindow: |md
+  ### CRASH WINDOW
+  **Time:** After `write_block` returns, before `UPDATE_SB` persists.
+  **State:** In-memory `free_blocks` count is stale.
+  **Result:** **Leaked Block**. 
+  Bitmap says used, SB says free. 
+  *Safety:* Orphaned block is unreachable, avoiding double-allocation.
+| {
+  near: bottom-right
+  style: {
+    fill: "#fff2cc"
+    stroke: "#d6b656"
+  }
+}
+
+# Illegal Transitions & Guard Rails
+States.SCAN -> States.CORRUPTION: "ILLEGAL: index < data_region_start" {
+  style: {
+    stroke: red
+    stroke-dash: 5
+  }
+}
+
+States.SUCCESS.invariant: |md
+  **Invariant:** 
+  `result >= superblock.s_data_region_start`
+  `result < superblock.s_total_blocks`
+|
+
+# Metadata Protection Guard
+States.SET_BIT -> States.CORRUPTION: "ILLEGAL: index 0..2 (SB/Bitmaps)" {
+  style: {
+    stroke: red
+    stroke-dash: 5
+  }
+}
+
+# Flow sequencing for ELK
+(States.LOAD_BITMAP -> States.SCAN)[0].style.animated: true
+(States.SCAN -> States.SET_BIT)[0].style.animated: true
+(States.SET_BIT -> States.WRITE_BITMAP)[0].style.animated: true
+(States.WRITE_BITMAP -> States.UPDATE_SB)[0].style.animated: true

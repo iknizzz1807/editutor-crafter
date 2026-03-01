@@ -1,0 +1,150 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 1
+  }
+}
+
+# --- STYLES & CLASSES ---
+classes: {
+  filesystem: {
+    shape: package
+    style: {
+      fill: "#f8f9fa"
+      stroke: "#6c757d"
+      stroke-width: 2
+    }
+  }
+  critical_path: {
+    style: {
+      stroke: "#dc3545"
+      stroke-width: 4
+      animated: true
+    }
+  }
+  kernel_action: {
+    style: {
+      stroke: "#6f42c1"
+      stroke-dash: 3
+    }
+  }
+}
+
+# --- COMPONENTS ---
+
+host_runtime: {
+  shape: class
+  label: "Container Runtime (host_main.c)"
+  fields: |'c
+    int sync_pipe[2];
+    pid_t child_pid;
+    cgroup_config_t cfg;
+  '|
+  methods: |'c
+    int cgroup_setup(char* name, pid_t pid);
+    void cgroup_cleanup(char* name);
+  '|
+}
+
+cgroup_v2_fs: {
+  label: "/sys/fs/cgroup/ (VFS Interface)"
+  class: filesystem
+  
+  root_ctrl: {
+    shape: sql_table
+    label: "Root Controller Config"
+    f1: "cgroup.subtree_control | +memory +cpu +pids"
+    f2: "cgroup.procs           | [Root PIDs]"
+  }
+
+  container_group: {
+    shape: sql_table
+    label: "mycontainer/ (Child Node)"
+    f1: "cgroup.procs  | 0x00 | Write Child PID here"
+    f2: "memory.max    | 0x08 | 100MB (104857600)"
+    f3: "cpu.max       | 0x10 | 50000 100000"
+    f4: "pids.max      | 0x18 | 32"
+    f5: "cpu.stat      | 0x20 | Read-only metrics"
+  }
+}
+
+container_init: {
+  shape: class
+  label: "Container Init (PID 1 inside NS)"
+  class: critical_path
+  code: |'c
+    // Phase 1: Blocked
+    read(sync_pipe[0], &ready, 1);
+    
+    // Phase 2: Active (Inside Cgroup)
+    setup_namespaces();
+    execvp(argv[0], argv);
+  '|
+}
+
+# --- DATA WALK / LIFECYCLE STEPS ---
+
+# Step 1: Preparation
+host_runtime -> cgroup_v2_fs: "mkdir(mycontainer)" {
+  label: "1. Create Node | 0 bytes | EEXIST ignored"
+}
+
+# Step 2: Delegate
+host_runtime -> cgroup_v2_fs.root_ctrl: "write('+memory +cpu +pids')" {
+  label: "2. Delegate | 18 bytes | Enable controllers for children"
+}
+
+# Step 3: Set Limits
+host_runtime -> cgroup_v2_fs.container_group: "write(limits)" {
+  label: "3. Configure | ~64 bytes | memory.max, cpu.max, pids.max"
+}
+
+# Step 4: Clone
+host_runtime -> container_init: "clone(CLONE_NEWPID | ...)" {
+  label: "4. Spawn | 0 bytes | Child blocks on sync_pipe"
+}
+
+# Step 5: Assign (THE CRITICAL WINDOW)
+host_runtime -> cgroup_v2_fs.container_group.f1: "write(child_pid)" {
+  class: critical_path
+  label: "5. ATTACH | 8 bytes | PID moves to cgroup.procs"
+}
+
+# Step 6: Release & Exec
+host_runtime -> container_init: "write(sync_pipe, '1')" {
+  label: "6. SIGNAL | 1 byte | Unblocks child to call exec()"
+}
+
+# Step 7: Run & Monitor
+container_init -> cgroup_v2_fs.container_group.f5: "Consumption" {
+  class: kernel_action
+  label: "7. Accounting | O(1) | Usage tracked in cpu.stat/memory.current"
+}
+
+# Step 8: Terminate
+container_init -> host_runtime: "exit(status)" {
+  label: "8. EXIT | 4 bytes | SIGCHLD sent to parent"
+}
+
+# Step 9: Cleanup
+host_runtime -> cgroup_v2_fs.container_group: "rmdir()" {
+  label: "9. CLEANUP | 0 bytes | Only succeeds if cgroup.procs is empty"
+}
+
+# --- ANNOTATIONS ---
+legend: {
+  shape: package
+  label: "Timing Constraints"
+  near: bottom-right
+  note: |md
+    - **Step 5** MUST precede **Step 6**.
+    - If **exec()** happens before **write(cgroup.procs)**, the process 
+      runs unconstrained on the host for a race-condition window.
+    - **rmdir()** fails with `EBUSY` if zombies are not reaped.
+  |
+}
+
+host_runtime.style.fill: "#e7f3ff"
+cgroup_v2_fs.container_group.style.fill: "#fff3cd"
+container_init.style.fill: "#f8d7da"

@@ -1,0 +1,184 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+
+# --- DATA STRUCTURES (milestone6.h) ---
+
+journal_structures: {
+  label: "Journal Control Structures"
+  
+  txn_t: {
+    shape: sql_table
+    label: "struct txn_t (in-memory)"
+    f0: "0x00 | int | fd // disk image"
+    f1: "0x08 | uint32_t | sequence // monotonic"
+    f2: "0x0C | uint32_t | nr_blocks // current count"
+    f3: "0x10 | uint32_t[64] | block_nums // target disk locs"
+    f4: "0x110 | uint8_t[64][4096] | block_data // buffered content"
+    total: "Total: ~262 KB (Slab Allocated)"
+  }
+
+  journal_commit_t: {
+    shape: sql_table
+    label: "struct journal_commit_t (on-disk)"
+    f0: "0x00 | uint32_t | j_magic // 0x4A4F5552"
+    f1: "0x04 | uint32_t | j_block_type // JB_TYPE_COMMIT"
+    f2: "0x08 | uint32_t | j_sequence // matches descriptor"
+    f3: "0x0C | uint32_t | j_checksum // CRC32 of data"
+    f4: "0x10 | uint8_t[4080] | reserved // padding"
+    total: "Total: 4096 bytes (1 Sector Atomic)"
+  }
+}
+
+# --- LIFECYCLE PHASES ---
+
+phase_1_buffering: {
+  label: "PHASE 1: VOLATILE BUFFERING (RAM)"
+  direction: down
+  
+  start: {
+    shape: oval
+    label: "txn_begin()"
+  }
+
+  buffer_op: {
+    label: "Buffer Metadata Changes"
+    code: |'c
+      // Accumulate blocks in RAM
+      txn_journal_block(txn, 1, new_ibmap); 
+      txn_journal_block(txn, 3, new_inode);
+      txn_journal_block(txn, 100, new_dirent);
+      txn_journal_block(txn, 0, new_sb);
+    '|
+  }
+
+  start -> buffer_op: "Initialize txn_t | 262 KB | {seq=101, nr=0}"
+}
+
+phase_2_journal_write: {
+  label: "PHASE 2: SEQUENTIAL LOGGING (DISK)"
+  direction: down
+
+  write_desc: {
+    label: "Write Descriptor + Data"
+    code: |'c
+      write_block(fd, j_tail, desc);
+      for(i=0; i<nr; i++) 
+        write_block(fd, j_tail+1+i, data[i]);
+    '|
+  }
+
+  fsync_1: {
+    shape: step
+    label: "fsync(fd) #1"
+    tooltip: "Ensures data blocks are on platter before commit record"
+  }
+
+  write_desc -> fsync_1: "journal_desc_t | 4KB | {nr_blocks=4}"
+}
+
+phase_3_commit: {
+  label: "PHASE 3: ATOMIC COMMIT (STABLE)"
+  direction: down
+
+  commit_record: {
+    label: "Write Commit Block"
+    style.fill: "#ACE1AF"
+  }
+
+  fsync_2: {
+    shape: step
+    label: "fsync(fd) #2"
+    style.stroke: green
+    style.stroke-width: 4
+  }
+
+  commit_record -> fsync_2: "journal_commit_t | 4KB | {checksum=0xAF32}"
+}
+
+phase_4_apply: {
+  label: "PHASE 4: IN-PLACE APPLY (IDEMPOTENT)"
+  direction: down
+
+  apply_inplace: {
+    label: "Apply to Inode/Bitmaps"
+    code: |'c
+      for(i=0; i<nr; i++)
+        write_block(fd, block_nums[i], data[i]);
+    '|
+  }
+
+  fsync_final: {
+    shape: step
+    label: "fsync(fd) #3"
+  }
+
+  apply_inplace -> fsync_final: "Metadata | 16 KB | Inode Table + Bitmaps"
+}
+
+phase_5_checkpoint: {
+  label: "PHASE 5: PURGE"
+  
+  end: {
+    shape: oval
+    label: "journal_checkpoint()"
+  }
+}
+
+# --- CRASH ANALYSIS OVERLAY ---
+
+crash_gate_1: {
+  shape: diamond
+  label: "Crash Before Commit?"
+  style.fill: "#FFCCCC"
+}
+
+crash_gate_2: {
+  shape: diamond
+  label: "Crash After Commit?"
+  style.fill: "#FFE5CC"
+}
+
+recovery_discard: {
+  label: "RECOVERY: Discard"
+  style.stroke-dash: 4
+}
+
+recovery_replay: {
+  label: "RECOVERY: Replay"
+  style.stroke: blue
+  style.stroke-width: 3
+}
+
+# --- GLOBAL CONNECTIONS ---
+
+phase_1_buffering.buffer_op -> phase_2_journal_write.write_desc: "Flush Buffer | 20 KB | {Descriptor + 4 Blocks}"
+phase_2_journal_write.fsync_1 -> crash_gate_1
+crash_gate_1 -> recovery_discard: "Commit Missing | - | Abort Operation" {
+  style.stroke-dash: 4
+}
+crash_gate_1 -> phase_3_commit.commit_record: "System Alive"
+
+phase_3_commit.fsync_2 -> crash_gate_2
+crash_gate_2 -> phase_4_apply.apply_inplace: "System Alive"
+crash_gate_2 -> recovery_replay: "Commit Present | 20 KB | journal_recover()" {
+  style.stroke: blue
+}
+
+recovery_replay -> phase_4_apply.apply_inplace: "Idempotent Write"
+
+phase_4_apply.fsync_final -> phase_5_checkpoint.end: "Release Journal Space | 4 B | j_head = j_tail"
+
+# --- LEGEND ---
+legend: {
+  shape: sql_table
+  label: "Diagram Legend"
+  r1: "Green Border | Atomic Point of No Return"
+  r2: "Blue Arrow | Crash Recovery Path (WAL Replay)"
+  r3: "Dashed Arrow | Incomplete Transaction (Discarded)"
+  near: bottom-right
+}

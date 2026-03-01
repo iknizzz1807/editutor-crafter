@@ -1,0 +1,131 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+lock_definitions: {
+  superblock_struct: {
+    shape: sql_table
+    label: "struct fs_ctx_t (fuse_main.c)"
+    f0: "0x00 | int             | fd"
+    f1: "0x08 | superblock_t    | sb"
+    f2: "0x1008 | pthread_mutex_t | lock // Hierarchy Tier 1"
+    sz: "Total: 4144 bytes"
+  }
+
+  inode_struct: {
+    shape: sql_table
+    label: "struct inode_t (inode.h)"
+    f0: "0x00 | uint16_t        | mode"
+    f1: "0x02 | uint16_t        | nlinks"
+    f2: "0x04 | uint32_t        | size"
+    f3: "0x40 | pthread_mutex_t | i_lock // Hierarchy Tier 3"
+    sz: "Total: 128 bytes"
+  }
+}
+
+hierarchy: {
+  direction: down
+  label: "LOCK ACQUISITION HIERARCHY"
+
+  t1: {
+    label: "Tier 1: superblock_lock"
+    shape: rectangle
+    style.fill: "#E1BEE7"
+    tooltip: "Protects sb->free_blocks and sb->free_inodes"
+  }
+
+  t2: {
+    label: "Tier 2: bitmap_lock"
+    shape: rectangle
+    style.fill: "#C5CAE9"
+    tooltip: "Protects read-modify-write on block/inode bitmaps"
+  }
+
+  t3: {
+    label: "Tier 3: inode_lock[ino]"
+    shape: rectangle
+    style.fill: "#B2DFDB"
+    tooltip: "Protects inode metadata and block pointer tree"
+  }
+
+  t4: {
+    label: "Tier 4: directory_lock[ino]"
+    shape: rectangle
+    style.fill: "#F0F4C3"
+    tooltip: "Protects directory data blocks during add/remove entry"
+  }
+
+  t1 -> t2: "Order: 1"
+  t2 -> t3: "Order: 2"
+  t3 -> t4: "Order: 3"
+}
+
+concurrency_scenarios: {
+  direction: right
+
+  deadlock: {
+    label: "DEADLOCK (Violation of Hierarchy)"
+    style.stroke: red
+    style.stroke-width: 2
+
+    thread_a: {
+      label: "Thread A (Truncate)"
+      code: |'c
+        // HOLDING T3
+        pthread_mutex_lock(&inode->lock);
+        // WAITING FOR T2
+        pthread_mutex_lock(&bitmap_lock);
+      '|
+    }
+
+    thread_b: {
+      label: "Thread B (Alloc)"
+      code: |'c
+        // HOLDING T2
+        pthread_mutex_lock(&bitmap_lock);
+        // WAITING FOR T3
+        pthread_mutex_lock(&inode->lock);
+      '|
+    }
+
+    thread_a <-> thread_b: "Circular Wait | ERROR | deadlock" {
+      style.stroke: red
+      style.stroke-width: 5
+      style.stroke-dash: 3
+    }
+  }
+
+  safe_path: {
+    label: "SAFE PATH (Compliant)"
+    style.stroke: green
+    style.stroke-width: 2
+
+    logic: {
+      code: |'c
+        int safe_truncate(ino) {
+          pthread_mutex_lock(&bitmap_lock); // T2
+          pthread_mutex_lock(&inode->lock);  // T3
+          // ... perform operation ...
+          pthread_mutex_unlock(&inode->lock);
+          pthread_mutex_unlock(&bitmap_lock);
+        }
+      '|
+    }
+  }
+}
+
+lock_definitions.superblock_struct -> hierarchy.t1: "Tier 1"
+lock_definitions.inode_struct -> hierarchy.t3: "Tier 3"
+
+legend: {
+  near: bottom-right
+  note: "L1: Global Superblock\nL2: Global Bitmap\nL3: Per-Inode\nL4: Per-Directory"
+  rule: "Invariant: Always acquire L(i) before L(j) where i < j" {
+    style.font-color: green
+    style.bold: true
+  }
+}

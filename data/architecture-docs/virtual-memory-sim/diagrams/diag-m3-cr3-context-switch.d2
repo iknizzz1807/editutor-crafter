@@ -1,0 +1,177 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+
+# --- CPU REGISTERS & MMU ---
+control_unit: {
+  label: "CPU Control Unit & MMU (Hardware)"
+  style.stroke-width: 2
+  
+  registers: {
+    label: "Hardware Registers"
+    cr3: {
+      label: "CR3 (Control Register 3)"
+      tooltip: "Stores physical address of the active Page Directory"
+      style.fill: "#E4DBFE"
+      style.stroke-width: 3
+      
+      content: {
+        shape: sql_table
+        label: "Register Layout"
+        f0: "bits 31:12 | PDBR (Page Directory Base Register)"
+        f1: "bits 11:3  | Reserved"
+        f2: "bits 2:0   | PWT, PCD Flags"
+      }
+    }
+    pc: "PC: 0x00401000"
+    asid: "ASID: 1 (Active)"
+  }
+
+  mmu_logic: {
+    label: "Translation Logic (mmu.c)"
+    code: |'c
+      uint32_t pdi = (vaddr >> 22) & 0x3FF;
+      uint32_t pti = (vaddr >> 12) & 0x3FF;
+      uint32_t* pd = (uint32_t*)read_cr3();
+      uint32_t pde = pd[pdi];
+      uint32_t* pt = (uint32_t*)(pde & ~0xFFF);
+      uint32_t pte = pt[pti];
+      return (pte & ~0xFFF) | (vaddr & 0xFFF);
+    '|
+    width: 400
+  }
+}
+
+# --- CONTEXT SWITCH ENGINE ---
+kernel: {
+  label: "OS Kernel: Scheduler (sched.c)"
+  
+  switch_func: {
+    label: "void context_switch(thread_t* next)"
+    code: |'c
+      // 1. Save old register state
+      prev->context.cr3 = store_cr3();
+      // 2. Load next process root
+      load_cr3(next->pgdir_phys);
+      // 3. Update TLB context tag
+      set_asid(next->asid);
+      // 4. Switch stack pointer and jump
+      switch_stack(prev, next);
+    '|
+    width: 380
+  }
+}
+
+# --- PROCESS A STRUCTURES ---
+process_a: {
+  label: "Process A Context (ASID: 1)"
+  style.stroke: blue
+  style.stroke-dash: 5
+
+  pgdir_a: {
+    shape: sql_table
+    label: "Page Directory A (Phys: 0x1000)"
+    f0: "0x000 | pde_t | entries[0] -> 0x2000 (P:1)"
+    f1: "0x004 | pde_t | entries[1] -> NULL   (P:0)"
+    f2: "...   | ...   | ..."
+    f3: "0xFFC | pde_t | entries[1023]"
+    sz: "Total: 4096 bytes (1 Page)"
+  }
+
+  pgtable_a1: {
+    shape: sql_table
+    label: "Page Table A1 (Phys: 0x2000)"
+    f0: "0x000 | pte_t | entries[0] -> NULL"
+    f1: "0x004 | pte_t | entries[1] -> Frame 7 (V:1)"
+    f2: "...   | ...   | ..."
+    sz: "Total: 4096 bytes"
+  }
+}
+
+# --- PROCESS B STRUCTURES ---
+process_b: {
+  label: "Process B Context (ASID: 2)"
+  style.stroke: red
+  style.stroke-dash: 5
+
+  pgdir_b: {
+    shape: sql_table
+    label: "Page Directory B (Phys: 0x5000)"
+    f0: "0x000 | pde_t | entries[0] -> 0x8000 (P:1)"
+    f1: "0x004 | pde_t | entries[1] -> NULL   (P:0)"
+    f2: "...   | ...   | ..."
+    sz: "Total: 4096 bytes"
+  }
+
+  pgtable_b1: {
+    shape: sql_table
+    label: "Page Table B1 (Phys: 0x8000)"
+    f0: "0x000 | pte_t | entries[0] -> NULL"
+    f1: "0x004 | pte_t | entries[1] -> Frame 42 (V:1)"
+    f2: "...   | ...   | ..."
+    sz: "Total: 4096 bytes"
+  }
+}
+
+# --- PHYSICAL RAM ---
+ram: {
+  label: "Physical RAM (4KB Frames)"
+  shape: cylinder
+  
+  frame_07: "Frame 0x07 (Proc A Stack Segment)" { 
+    style.fill: "#C7F1FF" 
+  }
+  frame_42: "Frame 0x2A (Proc B Heap Segment)" { 
+    style.fill: "#FFC7C7" 
+  }
+}
+
+# --- FLOWS & INTERCONNECTIONS ---
+
+# Current hardware root points to A
+control_unit.registers.cr3 -> process_a.pgdir_a: "physical_addr | 4 bytes | 0x00001000" {
+  style.stroke: blue
+  style.stroke-width: 4
+}
+
+# Walk A
+process_a.pgdir_a.f0 -> process_a.pgtable_a1: "pde_t | 4 bytes | PFN: 0x00002"
+process_a.pgtable_a1.f1 -> ram.frame_07: "pte_t | 4 bytes | PFN: 0x00007" {
+  label: "VA: 0x00001000 -> PA: 0x00007000"
+}
+
+# The Trigger: OS Context Switch
+kernel.switch_func -> control_unit.registers.cr3: "MOV CR3, EAX | 4 bytes | 0x00005000" {
+  style.stroke: "#ca052b"
+  style.animated: true
+  style.stroke-width: 5
+}
+
+# After Switch: Root points to B
+control_unit.registers.cr3 -> process_b.pgdir_b: "physical_addr | 4 bytes | 0x00005000" {
+  style.stroke: red
+  style.stroke-dash: 4
+}
+
+# Walk B
+process_b.pgdir_b.f0 -> process_b.pgtable_b1: "pde_t | 4 bytes | PFN: 0x00008"
+process_b.pgtable_b1.f1 -> ram.frame_42: "pte_t | 4 bytes | PFN: 0x0002A" {
+  label: "VA: 0x00001000 -> PA: 0x0002A000"
+}
+
+# Legend and Annotations
+summary: {
+  shape: callout
+  label: "Memory Isolation Blueprint"
+  content: |md
+    ### Context Switching Mechanics
+    1. **CR3 Reload**: The hardware root is swapped.
+    2. **Implicit Flush**: Changing CR3 typically flushes non-global TLB entries.
+    3. **Virtual Aliasing**: Both processes use Virtual Address `0x1000`, but map to distinct physical frames (0x07 vs 0x2A).
+  |
+}
+summary.near: bottom-right

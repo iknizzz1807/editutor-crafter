@@ -1,0 +1,155 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- PROCESS STATE DEFINITIONS ---
+task_struct: {
+  shape: sql_table
+  label: "struct task_struct (sched.h)"
+  state: "0x00 | long      | state // TASK_RUNNING, TASK_INTERRUPTIBLE"
+  flags: "0x08 | uint32_t  | flags // PF_KTHREAD, etc"
+  sig:   "0x10 | sigset_t  | pending // Bitmask of delivered signals"
+  ret:   "0x18 | long      | exit_code"
+  sz: "Total: 2048+ bytes (Task Descriptor)"
+}
+
+# --- LAYERS OF EXECUTION ---
+userspace: {
+  label: "Userspace Context"
+  style.stroke-dash: 5
+  
+  app: {
+    label: "app.c (User Application)"
+    code: |'c
+      // Blocked here in syscall
+      n = read(fd, buf, 64);
+      if (n < 0 && errno == EINTR)
+          handle_interrupt();
+    '|
+    width: 300
+  }
+}
+
+kernel_vfs: {
+  label: "Kernel: VFS & Signal Layer"
+  
+  syscall_entry: {
+    shape: step
+    label: "1. ksys_read() (vfs_read.c)"
+  }
+
+  signal_handler: {
+    shape: diamond
+    label: "Check SA_RESTART (signal.c)"
+  }
+
+  restart_logic: {
+    label: "arch/x86/kernel/signal.c"
+    code: |'c
+      if (retry_allowed) {
+          regs->ax = regs->orig_ax;
+          regs->ip -= 2; // Rewind to 'syscall' opcode
+      } else {
+          regs->ax = -EINTR;
+      }
+    '|
+    width: 350
+  }
+}
+
+driver_context: {
+  label: "Driver Context (mydevice.c)"
+  
+  wait_loop: {
+    label: "mydev_read() implementation"
+    code: |'c
+      ret = wait_event_interruptible(wq, buffer_used > 0);
+      if (ret == -ERESTARTSYS) {
+          // Signal detected! 
+          // Propagate to VFS layer
+          return -ERESTARTSYS; 
+      }
+    '|
+    width: 380
+  }
+
+  state_check: {
+    shape: hexagon
+    label: "wait_event_interruptible internal logic"
+    code: |'c
+      // include/linux/wait.h
+      if (signal_pending(current))
+          return -ERESTARTSYS;
+    '|
+    width: 320
+  }
+}
+
+# --- THE "UNKILLABLE D-STATE" CALLOUT ---
+unkillable_note: {
+  shape: callout
+  label: "Why 'D' state (TASK_UNINTERRUPTIBLE) is unkillable"
+  note: |'md
+    In `wait_event()`, the kernel uses `TASK_UNINTERRUPTIBLE`.
+    The scheduler **ignores signals** for tasks in this state.
+    `signal_pending()` is never checked in the wait loop.
+    Only a hardware wakeup or timeout can resume the task.
+  '|
+}
+
+# Fix: Near must use constant at root level for ELK engine
+unkillable_note.near: bottom-right
+
+# --- FLOW CONNECTIONS ---
+
+# 1. Blocking Path
+userspace.app -> kernel_vfs.syscall_entry: "syscall | 0 bytes | read()"
+kernel_vfs.syscall_entry -> driver_context.wait_loop: "vfs_read() | 0 bytes | f_op->read"
+driver_context.wait_loop -> task_struct.state: "Write | 8 bytes | TASK_INTERRUPTIBLE"
+
+# 2. External Event: Ctrl+C (Signal Delivery)
+ctrl_c: {
+  shape: person
+  label: "User (Ctrl+C)"
+}
+ctrl_c -> task_struct.sig: "SIGINT | 4 bytes | 0x00000002"
+
+# 3. Wakeup & Detection
+task_struct.sig -> driver_context.state_check: "Read | 8 bytes | bitmask_check"
+driver_context.state_check -> kernel_vfs.signal_handler: "return | 8 bytes | -ERESTARTSYS"
+
+# 4. Result/Resolution
+kernel_vfs.signal_handler -> kernel_vfs.restart_logic: "bool | 1 bit | SA_RESTART=true"
+kernel_vfs.signal_handler -> userspace.app: "errno | 8 bytes | -EINTR (4)"
+kernel_vfs.restart_logic -> userspace.app: "PC Update | 0 bytes | re-exec syscall"
+
+# --- STYLIZATION ---
+(ctrl_c -> task_struct.sig): {
+  style: {
+    stroke: red
+    stroke-width: 3
+    animated: true
+  }
+}
+
+(driver_context.state_check -> kernel_vfs.signal_handler): {
+  style: {
+    stroke: purple
+    stroke-width: 2
+  }
+  label: "Error Propagation"
+}
+
+(kernel_vfs.signal_handler -> userspace.app)[0]: {
+  style.stroke-dash: 4
+  label: "No SA_RESTART"
+}
+
+(kernel_vfs.restart_logic -> userspace.app): {
+  style.stroke: green
+  label: "Transparent Restart"
+}

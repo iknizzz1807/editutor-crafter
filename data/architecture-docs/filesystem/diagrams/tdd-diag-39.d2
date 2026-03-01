@@ -1,0 +1,131 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+checkpoint_logic: {
+  shape: sequence_diagram
+  app: "Application Thread"
+  js: "Journal Subsystem"
+  hk: "Host Kernel"
+  rs: "RAM State"
+  di: "Disk Image"
+
+  app -> js: journal_checkpoint()
+  js -> hk: fsync(fd) {
+    tooltip: |md
+      **Step 1:** Ensure all in-place data writes are durable on physical media
+    |
+  }
+  js -> rs: j_head = j_tail {
+    tooltip: |md
+      **Step 2:** Mark all journal entries as redundant in memory
+    |
+  }
+  js -> di: write_block(j_super_abs, jsuper_buf) {
+    tooltip: |md
+      **Step 3:** Persist new j_head/j_tail to Journal Superblock (Block 0 of region)
+    |
+  }
+  js -> hk: fsync(fd) {
+    tooltip: |md
+      **Step 4:** Final barrier to commit the checkpoint metadata
+    |
+  }
+}
+
+comparison: {
+  grid-columns: 2
+  
+  before: "STATE: BEFORE CHECKPOINT" {
+    style.stroke: "#333333"
+    
+    journal_ring: {
+      grid-rows: 1
+      grid-gap: 0
+      
+      b0_4: "Reclaimed" { style.fill: "#e0e0e0" }
+      b5_19: "Live Transactions\n(Seq 101-103)" { 
+        style.fill: "#3498db"
+        style.font-color: white
+      }
+      b20_31: "Free Space" { style.fill: "#2ecc71" }
+    }
+    
+    pointers: {
+      style.stroke-width: 0
+      style.fill: transparent
+      head: "j_head = 5" {
+        style.font-color: "#e67e22"
+        style.bold: true
+      }
+      tail: "j_tail = 20" {
+        style.font-color: "#e67e22"
+        style.bold: true
+      }
+    }
+    
+    status: |md
+      - **Used:** 15 blocks
+      - **Free:** 16 blocks
+      - **Condition:** journal_free (16) < 20% of total? No.
+    |
+  }
+
+  after: "STATE: AFTER CHECKPOINT" {
+    style.stroke: "#27ae60"
+    
+    journal_ring: {
+      grid-rows: 1
+      grid-gap: 0
+      
+      b0_19: "Reclaimed / Available" { 
+        style.fill: "#2ecc71" 
+        style.stroke: "#27ae60"
+        style.bold: true
+      }
+      b20_31: "Free Space" { style.fill: "#2ecc71" }
+    }
+    
+    pointers: {
+      style.stroke-width: 0
+      style.fill: transparent
+      head: "**j_head = 20**" {
+        style.font-color: "#c0392b"
+        style.bold: true
+      }
+      tail: "j_tail = 20" {
+        style.font-color: "#e67e22"
+        style.bold: true
+      }
+    }
+
+    status: |md
+      - **Used:** 0 blocks
+      - **Free:** 31 blocks
+      - **Result:** Log truncated; space reclaimed.
+    |
+  }
+}
+
+annotations: {
+  near: bottom-center
+  
+  trigger_warning: |md
+    ### CRITICAL INVARIANTS
+    1. **Trigger Condition:** `journal_free < (j_total_blocks * 0.20)`. Must checkpoint to prevent stall.
+    2. **Overwrite Hazard:** If `j_tail` wraps and reaches `j_head` without checkpointing, **journal corruption** occurs.
+    3. **Durability:** Checkpoint is NOT complete until the second `fsync` returns.
+  | {
+    style.fill: "#fdf2f2"
+    style.stroke: "#e74c3c"
+  }
+}
+
+comparison.before.journal_ring.b5_19 -> comparison.after.journal_ring.b0_19: "Checkpoint Reclaim" {
+  style.stroke: "#e74c3c"
+  style.animated: true
+}

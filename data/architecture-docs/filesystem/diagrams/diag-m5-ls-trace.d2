@@ -1,0 +1,158 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- LAYERS ---
+
+application: "APPLICATION (ls process)" {
+  ls_binary: {
+    shape: class
+    label: "Process: /bin/ls -la"
+    code: |'c
+      DIR *d = opendir("/mnt/myfs/home");
+      while ((de = readdir(d))) {
+          lstat(de->d_name, &st);
+          print_line(de, &st);
+      }
+    '|
+  }
+}
+
+kernel: "OS KERNEL (VFS & FUSE)" {
+  vfs: "Virtual Filesystem Switch (fs/vfs.c)" {
+    shape: package
+  }
+  fuse_mod: "FUSE Kernel Module (fs/fuse/dev.c)" {
+    shape: hexagon
+    tooltip: "Relays VFS calls to /dev/fuse character device"
+  }
+}
+
+daemon: "MYFS DAEMON (myfs.c)" {
+  direction: down
+  
+  libfuse: "libfuse High-Level Loop" {
+    shape: rectangle
+    style.fill: "#e1d5e7"
+  }
+
+  callbacks: "Callback Implementation" {
+    callback_readdir: {
+      label: "myfs_readdir(path='/home')"
+      shape: step
+      code: |'c
+        int ino = path_resolve(fd, "/home");
+        dir_readdir(fd, ino, filler_cb, buf);
+      '|
+    }
+
+    callback_getattr: {
+      label: "myfs_getattr(path='/home/f1')"
+      shape: step
+      code: |'c
+        uint32_t ino; inode_t inode;
+        path_to_inode(path, &ino, &inode);
+        inode_to_stat(&inode, ino, &st);
+      '|
+    }
+  }
+
+  path_resolver: {
+    label: "path_resolve algorithm"
+    shape: code
+    code: |'c
+      curr = root_ino;
+      for (name in components) {
+          curr = dir_lookup(fd, curr, name);
+      }
+      return curr;
+    '|
+  }
+
+  stat_storm: {
+    label: "STORM: 1 getattr call per file"
+    shape: callout
+    style.stroke: red
+  }
+}
+
+storage: "STORAGE (disk.img)" {
+  inode_table: {
+    shape: sql_table
+    label: "Inode Table (disk.img @ Block 3)"
+    row1: "0x000 | inode_t | Inode 1 (Root)  // type: DIR, blocks[0]: 100"
+    row2: "0x200 | inode_t | Inode 5 (home)  // type: DIR, blocks[0]: 101"
+    row3: "0x400 | inode_t | Inode 9 (file1) // type: REG, size: 1024"
+    sz: "Total: 4096 bytes (1 Disk Block)"
+  }
+
+  dir_block_101: {
+    shape: sql_table
+    label: "Directory Data (Block 101)"
+    h: "Offset | Ino | RecLen | Name"
+    e1: "0x00 | 5   | 12     | '.'"
+    e2: "0x0C | 1   | 12     | '..'"
+    e3: "0x18 | 9   | 16     | 'file1'"
+    e4: "0x28 | 12  | 4056   | 'file2'"
+    sz: "Total: 4096 bytes"
+  }
+}
+
+# --- DATA FLOW: PHASE 1 (Discovery) ---
+
+application.ls_binary -> kernel.vfs: "syscall | 80 bytes | opendir('/mnt/myfs/home')"
+kernel.vfs -> kernel.fuse_mod: "VFS_READDIR | internal | inode: 5"
+kernel.fuse_mod -> daemon.libfuse: "FUSE_READDIR | 128 bytes | opcode: 15, nodeid: 5"
+daemon.libfuse -> daemon.callbacks.callback_readdir: "dispatch | function pointer | path: '/home'"
+
+daemon.callbacks.callback_readdir -> daemon.path_resolver: "lookup | name | 'home'"
+daemon.path_resolver -> storage.inode_table: "read_block | 4KB | block_num: 3"
+daemon.path_resolver -> storage.dir_block_101: "read_block | 4KB | block_num: 101"
+
+daemon.callbacks.callback_readdir -> daemon.libfuse: "filler_cb | 512 bytes | {'.', '..', 'file1', 'file2'}"
+daemon.libfuse -> kernel.fuse_mod: "FUSE_REPLY | 1KB | entry list"
+kernel.fuse_mod -> application.ls_binary: "readdir() result | 1KB | [(name, ino)...]"
+
+# --- DATA FLOW: PHASE 2 (The Stat Storm) ---
+
+application.ls_binary -> kernel.vfs: "lstat('file1') | syscall | N calls"
+kernel.vfs -> kernel.fuse_mod: "VFS_GETATTR | internal | N calls"
+kernel.fuse_mod -> daemon.libfuse: "FUSE_GETATTR | 128 bytes | opcode: 3, nodeid: 9"
+daemon.libfuse -> daemon.callbacks.callback_getattr: "dispatch | N calls | '/home/file1'"
+
+daemon.callbacks.callback_getattr -> daemon.path_resolver: "resolve | 5-component walk | cold cache costs 10 IOs" {
+  style.stroke: red
+  style.stroke-width: 2
+}
+
+daemon.callbacks.callback_getattr -> storage.inode_table: "read_inode | 128 bytes | Inode 9"
+daemon.callbacks.callback_getattr -> kernel.fuse_mod: "FUSE_REPLY_ATTR | 120 bytes | struct fuse_attr"
+kernel.fuse_mod -> application.ls_binary: "lstat() result | 144 bytes | struct stat"
+
+# --- LEGEND / ANNOTATIONS ---
+
+note_cache: {
+  label: "PERFORMANCE IMPACT"
+  code: |'md
+    **10 Files In Directory:**
+    - 1 x `readdir` callback
+    - 10 x `getattr` callbacks
+    - **Total: 11 FUSE round-trips**
+    
+    *Optimization:* Use `readdirplus` in FUSE 
+    to return stat info immediately and skip the storm.
+  '|
+}
+note_cache.near: bottom-right
+
+# --- STYLING ---
+
+(daemon.path_resolver -> storage.inode_table)[*].style.stroke: "#2196f3"
+(daemon.path_resolver -> storage.dir_block_101)[*].style.stroke: "#2196f3"
+(kernel.fuse_mod -> daemon.libfuse)[*].style.stroke: "#9c27b0"
+(daemon.libfuse -> kernel.fuse_mod)[*].style.stroke: "#9c27b0"
+daemon.callbacks.callback_getattr -> daemon.stat_storm: {style.stroke-dash: 3}

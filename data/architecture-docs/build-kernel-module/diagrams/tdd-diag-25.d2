@@ -1,0 +1,99 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+
+# --- ROOT CONTAINER ---
+Signal_ERESTARTSYS_Process: {
+  signal_sequence: {
+    shape: sequence_diagram
+
+    # --- PARTICIPANTS ---
+    user: "User Process\n(Userspace)" {
+      style.fill: "#BD93F9"
+    }
+    driver: "Driver Handler\n(mydev_read)" {
+      style.fill: "#BD93F9"
+    }
+    signal_sys: "Kernel Signal\nSubsystem" {
+      style.fill: "#BD93F9"
+    }
+    exit_path: "Syscall Exit Path\n(do_syscall_64)" {
+      style.fill: "#BD93F9"
+    }
+
+    # --- SEQUENCE FLOW ---
+    user -> driver: "read(fd, buf, count)" {
+      style.stroke: "#3498DB"
+    }
+    
+    driver -> driver: "▼ mutex_lock_interruptible(&dev_mutex)"
+    driver -> driver: "wait_event_interruptible(read_queue, ...)"
+
+    # Task Sleep State
+    driver -> driver: "set_current_state(TASK_INTERRUPTIBLE)"
+    driver -> driver: "schedule()"
+    
+    user."State: TASK_INTERRUPTIBLE\n(Removed from Run Queue)"
+
+    # Async Signal Generation
+    signal_sys -> user: "Generate SIGINT (Ctrl+C)" {
+      style.stroke: "#E74C3C"
+      style.stroke-dash: 5
+    }
+    signal_sys -> signal_sys: "set TIF_SIGPENDING in task_struct"
+    signal_sys -> user: "wake_up_process(task)"
+    
+    user."State: TASK_RUNNING\n(Placed on Run Queue)"
+
+    # Driver Resumption and Early Exit
+    driver -> driver: "Resumes inside wait_event_interruptible"
+    driver -> driver: "detects signal_pending(current)"
+    driver -> driver: "return -ERESTARTSYS"
+    
+    driver."ERESTARTSYS: Internal Kernel Flag"
+
+    driver -> exit_path: "return -ERESTARTSYS"
+
+    # Kernel Decision Logic (Fragment)
+    syscall_restart_logic: "Decision: SA_RESTART check" {
+      exit_path -> user: "Scenario A: No SA_RESTART -> return -1 (errno=EINTR)" {
+        style: {
+          stroke: "#E74C3C"
+          stroke-width: 2
+        }
+      }
+
+      exit_path -> driver: "Scenario B: SA_RESTART set -> Transparently restart read()" {
+        style: {
+          stroke: "#3498DB"
+          stroke-dash: 5
+        }
+      }
+    }
+  }
+}
+
+# --- DOCUMENTATION (FIXED: Root-level shape for 'near') ---
+annote: |md
+  ### The -ERESTARTSYS Protocol
+  *   **Design Intent**: If a driver returns `-EINTR`, the kernel cannot perform transparent restarts. By returning `-ERESTARTSYS`, the driver delegates policy to the core kernel.
+  *   **Exit Path**: Kernel checks `sigaction.sa_flags`. If `SA_RESTART` is present, it rewinds the Program Counter (PC) to retry the instruction.
+  *   **Interruptible State**: `TASK_INTERRUPTIBLE` is mandatory here; `TASK_UNINTERRUPTIBLE` would ignore the signal until the driver finished.
+| {
+  shape: text
+  near: bottom-center
+  style: {
+    font-size: 14
+    stroke: "#BD93F9"
+    stroke-width: 1
+  }
+}
+
+# --- GLOBAL STYLING ---
+(*** -> ***)[*]: {
+  style.font-size: 14
+}

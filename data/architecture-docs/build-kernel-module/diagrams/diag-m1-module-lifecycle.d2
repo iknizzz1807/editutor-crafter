@@ -1,0 +1,131 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+# --- LIFECYCLE CONTAINERS ---
+
+user_space: {
+  label: "User Space (Ring 3)"
+  style.fill: "#f5f5f5"
+  
+  insmod: {
+    shape: rectangle
+    label: "insmod utility"
+    code: |'c
+      int main(int argc, char **argv) {
+        f = open(argv[1], O_RDONLY);
+        finit_module(f, "", 0);
+      }
+    '|
+  }
+
+  rmmod: {
+    shape: rectangle
+    label: "rmmod utility"
+    code: |'c
+      delete_module(name, O_NONBLOCK);
+    '|
+  }
+}
+
+kernel_loader: {
+  label: "Kernel Loader (kernel/module/main.c)"
+  style.fill: "#e1f5fe"
+
+  elf_parsing: {
+    label: "1. ELF Validation"
+    check: "Verify Magic, Arch, Vermagic"
+  }
+
+  symbol_res: {
+    label: "2. Symbol Resolution"
+    src: "/proc/kallsyms"
+    error: "FAIL: Unknown symbol"
+  }
+
+  relocation: {
+    label: "3. Relocation"
+    desc: "Patch absolute addresses into code"
+  }
+}
+
+module_runtime: {
+  label: "Kernel Address Space (Ring 0)"
+  style.fill: "#fff9c4"
+
+  init_exec: {
+    shape: step
+    label: "INITIALIZING"
+    desc: "Executes __init hello_init()"
+    context: "Process Context: insmod"
+  }
+
+  live_state: {
+    shape: rectangle
+    label: "LIVE / OPERATIONAL"
+    desc: "Serving VFS Syscalls (read/write/ioctl)"
+  }
+
+  exit_exec: {
+    shape: step
+    label: "EXITING"
+    desc: "Executes __exit hello_exit()"
+    context: "Process Context: rmmod"
+  }
+}
+
+# --- DATA STRUCTURES ---
+
+struct_module: {
+  shape: sql_table
+  label: "struct module (linux/module.h)"
+  state: "0x00 | enum module_state | state (LIVE/GOING/COMING)"
+  list: "0x08 | struct list_head | list (Global module list)"
+  name: "0x18 | char[64]         | name"
+  init: "0x58 | int (*init)(void) | init_func"
+  exit: "0x60 | void (*exit)(void)| exit_func"
+  ref: "0x68 | atomic_t          | refcnt"
+  total: "Size: ~800 bytes (arch dependent)"
+}
+
+# --- FLOW CONNECTIONS ---
+
+# Load path
+user_space.insmod -> kernel_loader.elf_parsing: "finit_module() | fd | .ko ELF"
+kernel_loader.elf_parsing -> kernel_loader.symbol_res: "Valid ELF | Header | x86_64"
+kernel_loader.symbol_res -> kernel_loader.relocation: "Symbols Resolved | CRC | printk=0x..."
+kernel_loader.relocation -> module_runtime.init_exec: "Jump to Init | void* | hello_init"
+
+# Init response
+module_runtime.init_exec -> module_runtime.live_state: "return 0 | int | Success"
+module_runtime.init_exec -> user_space.insmod: "return -EFAULT | int | Fail" {
+  style.stroke-dash: 4
+  style.stroke: red
+}
+
+# Runtime interactions
+module_runtime.live_state -> struct_module: "Track Refcount | atomic_t | inc/dec"
+
+# Unload path
+user_space.rmmod -> module_runtime.exit_exec: "delete_module() | name | 'hello'"
+module_runtime.exit_exec -> user_space.rmmod: "Refcount > 0 | -EBUSY | Fail" {
+  style.stroke-dash: 4
+  style.stroke: red
+}
+module_runtime.exit_exec -> kernel_loader: "vfree() | void* | Module memory"
+
+# --- ANNOTATION CALLOUTS ---
+
+fail_points: {
+  label: "LIFECYCLE TRAPS"
+  style.stroke: red
+  t1: "Symbol Mismatch: Module built for 6.8 loaded into 6.10"
+  t2: "Tainted: Non-GPL module calling EXPORT_SYMBOL_GPL"
+  t3: "Leaking: Init failed but forgot to kfree() previous steps"
+  t4: "Panic: rmmod while handler is sleeping in wait_queue"
+}
+fail_points.near: bottom-right

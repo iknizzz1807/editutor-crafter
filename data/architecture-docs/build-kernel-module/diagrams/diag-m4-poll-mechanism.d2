@@ -1,0 +1,133 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+userspace: {
+  label: "Userspace Process"
+  call: {
+    shape: code
+    label: "poll(2) Syscall"
+    code: |'c
+      struct pollfd pfd = { .fd = fd, .events = POLLIN };
+      int ret = poll(&pfd, 1, 5000); // 5s timeout
+    '|
+  }
+}
+
+vfs_layer: {
+  label: "Kernel VFS / Poll Infrastructure (fs/select.c)"
+  direction: down
+  
+  sys_poll: {
+    shape: class
+    label: "do_poll() Loop"
+    fields: |'c
+      struct poll_wqueues table; // contains poll_table
+      long timeout;              // remaining jiffies
+    '|
+    methods: |'c
+      static int do_pollfd(struct pollfd *pfd, poll_table **pwait);
+    '|
+  }
+
+  poll_logic: {
+    label: "Internal Poll State Machine"
+    width: 400
+    code: |'c
+      for (;;) {
+        mask = file->f_op->poll(file, pwait);
+        if (mask || !timeout || signal_pending()) break;
+        poll_schedule_timeout(table, ...); // SLEEP HERE
+      }
+    '|
+  }
+}
+
+driver_poll: {
+  label: "Driver Implementation (mydevice.c)"
+  direction: down
+
+  handler: {
+    shape: class
+    label: "mydev_poll()"
+    methods: |'c
+      __poll_t mydev_poll(struct file *filp, poll_table *wait);
+    '|
+    code: |'c
+      poll_wait(filp, &read_queue, wait);
+      poll_wait(filp, &write_queue, wait);
+      if (buffer_used > 0) mask |= POLLIN;
+      return mask;
+    '|
+  }
+
+  wait_queues: {
+    shape: sql_table
+    label: "struct wait_queue_head"
+    row1: "0x00 | spinlock_t | lock"
+    row2: "0x04 | list_head  | head // list of struct wait_queue_entry"
+    sz: "Size: 24 bytes (x86_64)"
+  }
+}
+
+mask_def: {
+  shape: sql_table
+  label: "__poll_t Bitmask (linux/poll.h)"
+  in: "0x0001 | POLLIN     | Data ready to read"
+  rd: "0x0040 | POLLRDNORM | Normal data readable"
+  out: "0x0004 | POLLOUT    | Space ready to write"
+  wr: "0x0100 | POLLWRNORM | Normal data writable"
+}
+
+failure_modes: {
+  label: "CRITICAL FAILURE MODES"
+  style.stroke: red
+  
+  infinite_sleep: {
+    label: "Infinite Sleep (Lost Wakeup)"
+    shape: callout
+    code: |'c
+      // BUG: Condition check WITHOUT poll_wait
+      if (buffer_used > 0) return POLLIN;
+      return 0; // Kernel sleeps, but no WQ registered
+    '|
+  }
+
+  busy_loop: {
+    label: "CPU Busy-Loop (100% Core)"
+    shape: callout
+    code: |'c
+      // BUG: Return readiness when NOT ready
+      poll_wait(filp, &read_queue, wait);
+      return POLLIN; // Kernel never sleeps, loops forever
+    '|
+  }
+}
+
+# Connections
+userspace.call -> vfs_layer.sys_poll: "syscall | 1 fd | {fd, POLLIN}"
+vfs_layer.poll_logic -> driver_poll.handler: "f_op->poll() | pointer | (filp, wait_table)"
+
+driver_poll.handler -> driver_poll.wait_queues: "poll_wait() | 8 bytes | &read_queue"
+driver_poll.handler -> mask_def: "return mask | 4 bytes | 0x0041 (IN|RDNORM)"
+
+mask_def -> vfs_layer.poll_logic: "Readiness | __poll_t | 0x0000 (Nothing ready)"
+
+vfs_layer.poll_logic -> driver_poll.wait_queues: "schedule() | SLEEP | TASK_INTERRUPTIBLE"
+
+driver_poll.wait_queues -> vfs_layer.poll_logic: "wake_up() | INTERRUPT | re-eval loop"
+
+vfs_layer.sys_poll -> userspace.call: "return | int | 1 (Ready FDs)"
+
+# Legend/Notes
+legend: {
+  near: bottom-right
+  step1: "1. Register: poll_wait() adds poll_table to Driver WQ"
+  step2: "2. Check: Driver returns current readiness bits"
+  step3: "3. Wait: If 0, Kernel sleeps on all registered WQs"
+  step4: "4. Wake: Driver wake_up() triggers Kernel to re-poll"
+}

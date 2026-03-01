@@ -1,0 +1,180 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ─── LEGEND ───
+legend: {
+  shape: sql_table
+  label: "Security & Ordering Legend (userns.c)"
+  r1: "Green | Success Path"
+  r2: "Red | EPERM (Security Violation)"
+  r3: "Purple | Kernel Synchronization"
+  r4: "Gray | Atomic Kernel Mapping"
+}
+legend.near: bottom-right
+
+# ─── HOST CONTEXT (PARENT) ───
+host_parent: {
+  label: "Host Parent Process (UID 1000)"
+  direction: down
+
+  clone_op: {
+    shape: class
+    label: "1. Create Child (clone.c)"
+    code: |'c
+      flags = CLONE_NEWUSER | CLONE_NEWNS | SIGCHLD;
+      pid = clone(child_fn, stack, flags, &cfg);
+    '|
+    width: 380
+  }
+
+  write_setgroups: {
+    shape: class
+    label: "3. Disable setgroups (userns.c)"
+    code: |'c
+      // MANDATORY for unprivileged GID mapping
+      fd = open("/proc/pid/setgroups", O_WRONLY);
+      write(fd, "deny", 4);
+    '|
+    width: 380
+  }
+
+  write_uid: {
+    shape: class
+    label: "4. Write UID Map"
+    code: |'c
+      fd = open("/proc/pid/uid_map", O_WRONLY);
+      write(fd, "0 1000 1", 8); // Atomic
+    '|
+    width: 380
+  }
+
+  write_gid: {
+    shape: class
+    label: "5. Write GID Map"
+    code: |'c
+      fd = open("/proc/pid/gid_map", O_WRONLY);
+      write(fd, "0 1000 1", 8);
+    '|
+    width: 380
+  }
+
+  signal: {
+    shape: step
+    label: "6. Signal Child (write pipe)"
+  }
+}
+
+# ─── CONTAINER CONTEXT (CHILD) ───
+container_child: {
+  label: "Container Child (PID 1)"
+  direction: down
+
+  unmapped_state: {
+    shape: oval
+    label: "2. Unmapped State"
+    info: "UID: 65534 (nobody)\nCaps: Empty"
+  }
+
+  wait_on_pipe: {
+    shape: class
+    label: "Sync: read(pipe)"
+    code: |'c
+      char buf;
+      read(sync_pipe[0], &buf, 1);
+    '|
+    width: 300
+  }
+
+  mapped_state: {
+    shape: oval
+    label: "7. Privileged State"
+    info: "UID: 0 (root)\nCaps: FULL (Scoped)"
+    style: {
+      fill: "#e1f5fe"
+      stroke: "#01579b"
+    }
+  }
+}
+
+# ─── DATA STRUCTURES ───
+mapping_format: {
+  shape: sql_table
+  label: "struct uid_gid_map_entry (user_namespace.h)"
+  f0: "0x00 | uint32_t | inside_id  | Root in container (0)"
+  f1: "0x04 | uint32_t | outside_id | User on host (1000)"
+  f2: "0x08 | uint32_t | count      | Number of IDs (1)"
+  sz: "Total: 12 bytes per entry"
+}
+
+# ─── FAILURE TRAPS ───
+failure_traps: {
+  label: "Kernel Security Violations (EPERM)"
+  style.stroke: red
+  style.fill: "#fff1f1"
+
+  bad_order: {
+    shape: callout
+    label: "Order Violation"
+    violation: "GID map write attempted BEFORE setgroups=deny"
+  }
+
+  double_write: {
+    shape: callout
+    label: "Immutability Violation"
+    violation: "Attempted write to map file that is already set"
+  }
+
+  self_write: {
+    shape: callout
+    label: "Self-Privilege Violation"
+    violation: "Child attempted to write its own /proc/self/gid_map"
+  }
+}
+
+# ─── FLOW CONNECTIONS ───
+
+host_parent.clone_op -> container_child.unmapped_state: "syscall | 0 bytes | CLONE_NEWUSER"
+container_child.unmapped_state -> container_child.wait_on_pipe
+
+host_parent.clone_op -> host_parent.write_setgroups: "next"
+
+host_parent.write_setgroups -> host_parent.write_uid: "success"
+host_parent.write_uid -> host_parent.write_gid: "success"
+host_parent.write_gid -> host_parent.signal: "success"
+
+# Failure paths
+host_parent.write_uid -> failure_traps.double_write: "write() | 8 bytes | EPERM (Already Set)" {
+  style.stroke: red
+  style.stroke-dash: 3
+}
+
+host_parent.write_gid -> failure_traps.bad_order: "write() | 8 bytes | EPERM (setgroups allowed)" {
+  style.stroke: red
+  style.stroke-dash: 3
+}
+
+container_child.unmapped_state -> failure_traps.self_write: "write() | 8 bytes | EPERM (CAP_SETUID missing)" {
+  style.stroke: red
+  style.stroke-dash: 3
+}
+
+# Release path
+host_parent.signal -> container_child.wait_on_pipe: "char | 1 byte | '1'" {
+  style.stroke: purple
+  style.animated: true
+}
+
+container_child.wait_on_pipe -> container_child.mapped_state: "unblocked"
+container_child.mapped_state -> mapping_format: "struct uid_gid_map_entry | 12 bytes | VFS Translation" {
+  style.stroke-dash: 5
+}
+
+# Explanatory Annotations
+host_parent.write_uid -> mapping_format: "Data Schema" {
+  style.stroke: gray
+}

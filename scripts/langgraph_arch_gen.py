@@ -113,6 +113,7 @@ print(">>> Instructions loaded", flush=True)
 # --- FEATURE FLAGS ---
 ENABLE_SYSTEM_DIAGRAM = os.getenv("ENABLE_SYSTEM_DIAGRAM", "false").lower() == "true"
 USE_1M = os.getenv("USE_1M", "false").lower() == "true"
+ENGINEERING_DOCS_MODE = os.getenv("ENGINEERING_DOCS_MODE", "false").lower() == "true"
 MAX_SYSTEM_DIAGRAM_ITERATIONS = 10
 
 # --- LLM SETUP ---
@@ -1770,6 +1771,45 @@ TASK: Output ONLY the Project Charter markdown. Start directly with `# 🎯 Proj
     return {"project_charter_md": charter_md}
 
 
+def engineering_overview_node(state: GraphState):
+    """Engineering Docs mode: concise technical overview replacing the pedagogy-heavy charter."""
+    print(f"  [Agent: Engineering Overview] Writing...")
+    meta = state["meta"]
+    import yaml as _yaml
+    meta_yaml = _yaml.dump(meta, allow_unicode=True, default_flow_style=False)
+    prompt = f"""You are a Staff Engineer writing the opening section of an internal engineering design document.
+
+PROJECT SPEC:
+{meta_yaml}
+
+TDD SPEC SUMMARY:
+{state["tdd_accumulated_md"][:3000]}
+
+Write a concise engineering overview in markdown. Cover:
+1. `# {meta.get("name", state["project_id"])} — Engineering Design Document` (H1 title)
+2. **System Purpose** (2-3 sentences: what it does, what problem it solves)
+3. **Service Map** — a markdown table: Service | Port | Responsibility | DB | Owns Events
+4. **Tech Stack** — bullet list: language, message broker, databases, infra
+5. **Key Design Decisions** — 3-5 bullets explaining the non-obvious choices (why async for X, why separate DB for Y, etc.)
+6. **Anti-Patterns Explicitly Avoided** — from spec if present, else infer from design
+
+Rules:
+- No pedagogy, no "you will learn", no misconceptions sections
+- No estimated hours, no "Is this for you?" sections
+- Assume reader is an experienced engineer who will implement this
+- Total length: 300-500 words maximum
+- Output ONLY the markdown, no code fences wrapping it
+"""
+    res = safe_invoke(
+        [HumanMessage(content=prompt)],
+        node_label="Engineering Overview",
+        project_id=state["project_id"],
+    )
+    overview_md = strip_code_fence(str(res.content))
+    print(f"  [Agent: Engineering Overview] Generated {len(overview_md)} chars")
+    return {"project_charter_md": overview_md}
+
+
 def project_structure_node(state: GraphState):
     """Synthesize unified project directory structure from all TDD modules."""
     print(f"  [Agent: Project Structure] Synthesizing...")
@@ -1846,19 +1886,32 @@ workflow.add_node("system_diagram_writer", system_diagram_writer_node)
 workflow.add_node("system_diagram_refiner", system_diagram_refiner_node)
 workflow.add_node("system_diagram_renderer", system_diagram_renderer_node)
 workflow.add_node("project_charter", project_charter_node)
+workflow.add_node("engineering_overview", engineering_overview_node)
 workflow.add_node("project_structure", project_structure_node)
 workflow.add_node("bibliographer", bibliographer_node)
 workflow.add_node("spec_syncer", spec_syncer_node)
 
 workflow.add_edge(START, "architect")
-workflow.add_edge("architect", "writer")
+
+
+def route_architect(state):
+    """In engineering-docs mode skip the educator loop entirely."""
+    if ENGINEERING_DOCS_MODE:
+        return "tdd_planner"
+    return "writer"
+
+
+workflow.add_conditional_edges(
+    "architect",
+    route_architect,
+    {"writer": "writer", "tdd_planner": "tdd_planner"},
+)
 
 
 def route_writer(state):
     has_more = state["current_ms_index"] < len(state["blueprint"].get("milestones", []))
     if not has_more:
         return "visualizer"
-    # Return list of nodes to execute in parallel
     return "explainer"
 
 
@@ -1905,6 +1958,8 @@ def route_tdd_visualizer(state):
         return "compiler"
     if ENABLE_SYSTEM_DIAGRAM:
         return "system_diagram_writer"
+    if ENGINEERING_DOCS_MODE:
+        return ["engineering_overview", "project_structure"]
     return ["project_charter", "project_structure"]
 
 
@@ -1915,6 +1970,7 @@ workflow.add_conditional_edges(
         "compiler": "compiler",
         "system_diagram_writer": "system_diagram_writer",
         "project_charter": "project_charter",
+        "engineering_overview": "engineering_overview",
         "project_structure": "project_structure",
     },
 )
@@ -1938,9 +1994,26 @@ workflow.add_conditional_edges(
         "system_diagram_renderer": "system_diagram_renderer",
     },
 )
-workflow.add_edge("system_diagram_renderer", "project_charter")
-workflow.add_edge("system_diagram_renderer", "project_structure")
+
+
+def route_system_diagram_renderer(state):
+    """After rendering, go to the right overview node based on mode."""
+    if ENGINEERING_DOCS_MODE:
+        return ["engineering_overview", "project_structure"]
+    return ["project_charter", "project_structure"]
+
+
+workflow.add_conditional_edges(
+    "system_diagram_renderer",
+    route_system_diagram_renderer,
+    {
+        "project_charter": "project_charter",
+        "engineering_overview": "engineering_overview",
+        "project_structure": "project_structure",
+    },
+)
 workflow.add_edge("project_charter", "bibliographer")
+workflow.add_edge("engineering_overview", "project_structure")
 workflow.add_edge("project_structure", "bibliographer")
 
 
@@ -2013,17 +2086,28 @@ def generate_project(project_id):
 
     proj_dir = OUTPUT_BASE / project_id
     proj_dir.mkdir(parents=True, exist_ok=True)
-    full = (
-        final_state.get("project_charter_md", "")
-        + "\n\n---\n\n"
-        + final_state.get("external_reading", "")
-        + "\n\n---\n\n"
-        + final_state.get("accumulated_md", "")
-        + "\n\n"
-        + final_state.get("tdd_accumulated_md", "")
-        + "\n\n"
-        + final_state.get("project_structure_md", "")
-    )
+
+    if ENGINEERING_DOCS_MODE:
+        # Engineering docs: Overview → TDD spec → Project Structure (no atlas, no bib)
+        full = (
+            final_state.get("project_charter_md", "")   # engineering_overview goes here
+            + "\n\n---\n\n"
+            + final_state.get("tdd_accumulated_md", "")
+            + "\n\n"
+            + final_state.get("project_structure_md", "")
+        )
+    else:
+        full = (
+            final_state.get("project_charter_md", "")
+            + "\n\n---\n\n"
+            + final_state.get("external_reading", "")
+            + "\n\n---\n\n"
+            + final_state.get("accumulated_md", "")
+            + "\n\n"
+            + final_state.get("tdd_accumulated_md", "")
+            + "\n\n"
+            + final_state.get("project_structure_md", "")
+        )
     (proj_dir / "index.md").write_text(full)
 
     criteria = final_state.get("running_criteria", [])
@@ -2082,6 +2166,11 @@ if __name__ == "__main__":
     parser.add_argument("--anthropic-model", default=None)
     parser.add_argument("--debug", action="store_true", help="Log raw LLM responses")
     parser.add_argument(
+        "--engineering-docs",
+        action="store_true",
+        help="Engineering docs mode: skip educator/atlas, output TDD spec + system diagram only",
+    )
+    parser.add_argument(
         "--output",
         default=None,
         help="Output directory (default: data/architecture-docs)",
@@ -2123,6 +2212,10 @@ if __name__ == "__main__":
         os.environ["USE_1M"] = "true"
         USE_1M = True
         print(">>> 1M Context Window: ENABLED", flush=True)
+    if args.engineering_docs:
+        os.environ["ENGINEERING_DOCS_MODE"] = "true"
+        ENGINEERING_DOCS_MODE = True
+        print(">>> Engineering Docs Mode: ENABLED (skip educator/atlas/bib)", flush=True)
     if args.output:
         OUTPUT_BASE = Path(args.output).resolve()
     else:

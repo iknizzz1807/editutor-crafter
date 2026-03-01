@@ -42,18 +42,24 @@ skills:
   - Docker / Docker Compose
   - RabbitMQ (AMQP)
   - JWT Authentication
-  - Go (net/http, database/sql)
+  - Go (net/http, database/sql, pgxpool)
   - PostgreSQL
+  - Redis (read-through cache, cache invalidation)
+  - Connection Pooling
+  - Database Index Design
 
 tags:
   - microservices
   - go
   - rabbitmq
   - postgresql
+  - redis
   - event-driven
   - api-gateway
   - intermediate
   - distributed-systems
+  - caching
+  - performance
 
 domain: distributed-systems
 
@@ -85,6 +91,15 @@ resources:
   - name: "Go net/http official docs"
     url: https://pkg.go.dev/net/http
     type: documentation
+  - name: "jackc/pgx — PostgreSQL driver with pgxpool (connection pooling)"
+    url: https://github.com/jackc/pgx
+    type: documentation
+  - name: "Redis Commands: INCR, EXPIRE, SET EX — redis.io docs"
+    url: https://redis.io/docs/latest/commands/
+    type: documentation
+  - name: "A Closer Look at Redis in System Design — Redis read-through cache pattern"
+    url: https://redis.io/learn/howtos/solutions/caching/getting-started
+    type: article
 
 prerequisites:
   - type: skill
@@ -100,12 +115,17 @@ prerequisites:
 
 # ─── SERVICE MAP ──────────────────────────────────────────────────────────────
 # api-gateway        :8080  — routing, JWT verify, rate limit (no business logic)
-# url-service        :8081  — shorten, resolve, CRUD (owns: urls DB)
+# url-service        :8081  — shorten, resolve, CRUD (owns: urls DB + Redis cache)
 # analytics-service  :8082  — click events, stats queries (owns: analytics DB)
 # user-service       :8083  — register, login, JWT issue (owns: users DB)
 # notification-service :8084 — email/webhook alerts via events (owns: notifications DB)
 #
+# Shared infrastructure (not owned by any service):
+#   Redis :6379 — used by url-service (redirect cache) + gateway (rate limit counters)
+#
 # Sync  (HTTP): Gateway → url-service (shorten/resolve), Gateway → user-service (auth)
+# Cache (Redis): url-service ↔ Redis [url:{code}] TTL=1h (read-through, invalidate on DELETE)
+# Rate  (Redis): gateway ↔ Redis [ratelimit:{ip}:{route}] INCR+EXPIRE 60s window
 # Async (AMQP): url-service → [url.clicked] → analytics-service
 #               url-service → [url.created, url.deleted] → notification-service
 #               analytics-service → [milestone.reached] → notification-service
@@ -133,10 +153,15 @@ milestones:
       - >
         docker-compose.yml declares five services (4 app + 1 gateway stub), four
         PostgreSQL containers (url_db, analytics_db, user_db, notification_db) each
-        on separate ports (5432-5435), and one RabbitMQ container with management UI
+        on separate ports (5432-5435), one RabbitMQ container with management UI,
+        and one Redis container (port 6379) — shared cache layer, not a service DB
       - >
-        Each app service connects to its own DB on startup and logs "connected to DB"
-        — fails to start (non-zero exit) if DB is unreachable (no silent fallback)
+        Each app service connects to its own DB on startup using pgxpool with
+        MaxConns=10, MinConns=2 configured via environment variables — logs
+        "connected to DB" and fails to start (non-zero exit) if DB is unreachable
+      - >
+        url-service connects to Redis on startup; logs "connected to Redis cache"
+        — Redis unavailability must NOT crash the service (cache is optional, DB is not)
       - >
         RabbitMQ exchange "url-shortener" of type "topic" is declared on startup by
         url-service; queues "analytics.clicks" and "notifications.events" are declared
@@ -165,6 +190,9 @@ milestones:
       - >
         Not adding depends_on + healthcheck in docker-compose — services crash-loop
         because DB isn't ready when the app starts
+      - >
+        Using Redis as a database for service-owned data — Redis here is a cache only;
+        all writes go to PostgreSQL first, Redis holds read copies with TTL
 
     concepts:
       - Monorepo layout for microservices
@@ -172,10 +200,12 @@ milestones:
       - AMQP exchange/queue/binding topology
       - Docker Compose service dependencies and healthchecks
       - Domain event schema design
+      - Connection pooling (pgxpool MaxConns/MinConns)
+      - Cache-aside vs read-through cache pattern
 
     deliverables:
       - Monorepo directory structure with all service skeletons
-      - docker-compose.yml with 4 PostgreSQL + 1 RabbitMQ + 5 app containers
+      - docker-compose.yml with 4 PostgreSQL + 1 RabbitMQ + 1 Redis + 5 app containers
       - shared/events/ package with all domain event structs
       - /health endpoint on each service
       - README with setup and run instructions
@@ -258,7 +288,9 @@ milestones:
       - >
         urls table: id UUID PK, short_code VARCHAR(10) UNIQUE NOT NULL,
         original_url TEXT NOT NULL, user_id UUID NOT NULL, created_at TIMESTAMPTZ,
-        expires_at TIMESTAMPTZ NULLABLE, is_active BOOLEAN DEFAULT true
+        expires_at TIMESTAMPTZ NULLABLE, is_active BOOLEAN DEFAULT true;
+        migration includes: CREATE INDEX idx_urls_short_code ON urls(short_code);
+        CREATE INDEX idx_urls_user_id_created ON urls(user_id, created_at DESC)
       - >
         outbox table: id UUID PK, event_type TEXT, payload JSONB, created_at TIMESTAMPTZ,
         published_at TIMESTAMPTZ NULLABLE — same DB as urls, same transaction
@@ -271,20 +303,29 @@ milestones:
         Short code generation uses crypto/rand for randomness — not math/rand; collision
         retry up to 5 times before returning 503
       - >
-        GET /:code performs redirect: looks up short_code, checks is_active and
-        expires_at, writes URLClickedEvent to outbox table IN THE SAME DB TRANSACTION
-        as any click counter update, returns 301 with Location header
+        GET /:code redirect implements read-through cache: check Redis key
+        "url:{short_code}" first (TTL=1h or min(expires_at - now, 1h)); on miss,
+        query PostgreSQL, populate cache, return 301; on Redis error, fall through
+        to DB silently — cache failure must never cause redirect failure
       - >
-        Outbox poller goroutine runs every 2 seconds: reads unpublished outbox rows,
-        publishes each to RabbitMQ exchange with routing key "url.clicked", marks
-        published_at on success — handles RabbitMQ unavailability gracefully (retry
-        next poll cycle, do not crash)
+        Redis cache entry stores JSON: {original_url, expires_at, is_active} —
+        enough to serve the redirect without hitting PostgreSQL on cache hit;
+        cache does NOT store the outbox event (that always goes to DB)
+      - >
+        Outbox poller runs as a worker pool of 3 goroutines (not one goroutine):
+        coordinator polls every 2s for unpublished rows (LIMIT 50, ORDER BY created_at),
+        fans out to workers via buffered channel; each worker publishes one event and
+        marks published_at — handles RabbitMQ unavailability gracefully (retry next cycle)
+      - >
+        GET /urls uses cursor-based pagination (after=<uuid>) not LIMIT/OFFSET —
+        avoids full table scan skipping N rows; query plan must use idx_urls_user_id_created
       - >
         GET /urls (auth required) returns paginated list of caller's URLs with
         {short_code, original_url, created_at, expires_at, is_active}
       - >
         DELETE /urls/:code (auth required, owner only) sets is_active=false, publishes
-        URLDeletedEvent via outbox
+        URLDeletedEvent via outbox, and invalidates Redis cache key "url:{short_code}"
+        — cache invalidation is best-effort; failure is logged but does not fail the request
       - >
         Expired URLs (expires_at < now) return 410 Gone, not 404
       - >
@@ -308,6 +349,12 @@ milestones:
       - >
         Polling outbox too aggressively (every 10ms) hammers the DB; too slowly (every
         60s) means stale analytics; 2-5s is the right balance for this project
+      - >
+        Caching without TTL — a Redis entry for a URL with expires_at must not outlive
+        that expiry; set TTL = min(expires_at - now, 1h); never cache with no expiry
+      - >
+        Skipping cache invalidation on DELETE — if Redis still has the entry, deleted
+        URLs will continue to redirect for up to 1h; DEL the key on deactivation
 
     concepts:
       - Outbox pattern (guaranteed at-least-once event delivery)
@@ -315,13 +362,19 @@ milestones:
       - Base62 encoding for short codes
       - Async decoupling via domain events
       - Redirect semantics (301 vs 302, expires_at → 410)
+      - Read-through cache pattern with TTL
+      - Cache invalidation on mutation
+      - Worker pool for concurrent outbox processing
+      - Cursor-based pagination vs LIMIT/OFFSET
 
     deliverables:
-      - urls and outbox PostgreSQL schema with migration files
-      - POST /shorten, GET /:code (redirect), GET /urls, DELETE /urls/:code
-      - Outbox poller goroutine with RabbitMQ publish and retry logic
+      - urls and outbox PostgreSQL schema with migration files and indexes
+      - POST /shorten, GET /:code (redirect with Redis cache), GET /urls, DELETE /urls/:code
+      - Outbox worker pool (coordinator + 3 worker goroutines) with RabbitMQ publish
+      - Redis cache layer: get/set/del helpers with error isolation
       - JWT middleware for protected routes (reuse from M2 package)
       - Unit tests for short code generation (collision, base62 alphabet)
+      - Benchmark: redirect handler must serve from cache in < 5ms p99 under 100 concurrent requests
 
   # ────────────────────────────────────────────────────────────────────────────
   - id: url-shortener-m4
@@ -337,7 +390,9 @@ milestones:
       - >
         clicks table: id UUID PK, short_code TEXT NOT NULL, clicked_at TIMESTAMPTZ,
         ip_hash TEXT (SHA-256 of IP, not raw IP — privacy), user_agent TEXT,
-        referer TEXT NULLABLE
+        referer TEXT NULLABLE;
+        migration includes: CREATE INDEX idx_clicks_short_code_time ON clicks(short_code, clicked_at DESC);
+        CREATE INDEX idx_clicks_referer ON clicks(short_code, referer) WHERE referer IS NOT NULL
       - >
         milestones table: id UUID PK, short_code TEXT, milestone INT,
         triggered_at TIMESTAMPTZ — records when 10, 100, 1000 click thresholds are crossed
@@ -425,6 +480,11 @@ milestones:
         Gateway validates JWT on all /api/* routes except /api/auth/*; rejects with
         401 before forwarding — downstream services also validate but gateway is first line
       - >
+        Gateway enforces per-IP rate limiting using token bucket stored in Redis:
+        POST /api/shorten: 10 requests/minute per IP; GET /r/:code: 300 requests/minute
+        per IP; exceeded limit returns 429 Too Many Requests with Retry-After header;
+        rate limit counters use Redis INCR + EXPIRE with 60s window
+      - >
         Gateway implements circuit breaker on url-service proxy: after 5 consecutive
         failures within 10s, opens circuit and returns 503 {"error":"service unavailable"}
         for 30s before attempting half-open probe; uses a simple state machine
@@ -455,6 +515,9 @@ milestones:
       - >
         Not propagating X-Correlation-ID through async events — event payloads should
         include correlation_id so log traces can be followed across the message broker
+      - >
+        Rate limiting with in-memory counters in a multi-replica gateway — counters are
+        per-process; use Redis INCR for shared rate limit state across replicas
 
     concepts:
       - API Gateway pattern (routing, auth, cross-cutting concerns only)
@@ -462,13 +525,16 @@ milestones:
       - Correlation ID propagation across sync and async boundaries
       - Structured JSON logging for distributed systems
       - Event payload design (include enough context to avoid callbacks)
+      - Token bucket rate limiting with Redis INCR + EXPIRE
+      - Redis dual role: cache (url-service) and rate limit store (gateway)
 
     deliverables:
       - Notification Service with RabbitMQ consumer and GET /notifications
-      - API Gateway with routing table, JWT middleware, circuit breaker
+      - API Gateway with routing table, JWT middleware, circuit breaker, rate limiter
       - Structured JSON logger shared across all services (shared/logger package)
       - X-Correlation-ID middleware in gateway and propagation in all services
       - End-to-end integration test through gateway
+      - Rate limit test: POST /api/shorten 11x from same IP → 11th returns 429
 
 # ─── ANTI-PATTERNS EXPLICITLY BANNED ─────────────────────────────────────────
 anti_patterns:

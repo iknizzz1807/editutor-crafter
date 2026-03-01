@@ -46,6 +46,77 @@ The project is complete when:
 
 ---
 
+# 📚 Before You Read This: Prerequisites & Further Reading
+
+> **Read these first.** The Atlas assumes you are familiar with the foundations below.
+> Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
+
+## 🌐 Foundations of Virtual Memory
+### 1. One-Level Storage System
+- **Paper**: T. Kilburn, D. B. G. Edwards, M. J. Lanigan, and F. H. Sumner, "One-Level Storage System," *IRE Transactions on Electronic Computers*, 1962.
+- **Best Explanation**: *Operating Systems: Three Easy Pieces* (OSTEP) by Arpaci-Dusseau, Chapter 13: "Address Spaces."
+- **Why**: This is the seminal paper from the Manchester Atlas project that invented virtual memory; reading it reveals that "demand paging" was born from physical hardware limitations of the 1960s.
+- **When to Read**: **Before starting Milestone 1**. It establishes the "why" before you touch the "how."
+
+### 2. Intel 64 and IA-32 Architectures Software Developer’s Manual
+- **Spec**: Intel SDM, Volume 3A, Chapter 4: "Paging."
+- **Code**: `arch/x86/include/asm/pgtable_64_types.h` (Linux Kernel).
+- **Best Explanation**: OSTEP Chapter 18: "Paging: Introduction."
+- **Why**: This is the authoritative "ground truth" for how x86 hardware actually traverses the structures you are simulating.
+- **When to Read**: **During Milestone 1**. Compare your `pte_t` bitmask to Intel’s actual hardware bit definitions (Figure 4-4).
+
+## ⚡ TLB & Context Switching
+### 3. Meltdown: Reading Kernel Memory from User Space
+- **Paper**: Moritz Lipp et al., "Meltdown: Reading Kernel Memory from User Space," *USENIX Security Symposium*, 2018.
+- **Code**: `arch/x86/mm/tlb.c` — specifically `switch_mm_irqs_off()`.
+- **Best Explanation**: "Computer Architecture: A Quantitative Approach" (Hennessy & Patterson), Appendix B.
+- **Why**: This paper highlights why the ASID (PCID on x86) you implement in M2 is no longer just a performance optimization, but a critical component of modern security mitigations (KPTI).
+- **When to Read**: **After Milestone 2 (TLB)**. You'll understand why flushing the TLB is the "nuclear option" for performance.
+
+### 4. Analysis of TLB Performance
+- **Paper**: J. Bradley Chen et al., "The Measured Performance of Personal Computer Operating Systems," *ACM SIGOPS*, 1995.
+- **Best Explanation**: OSTEP Chapter 19: "Paging: Faster Translations (TLBs)."
+- **Why**: Quantitative proof that TLB miss rates are the primary driver of overhead in modern kernels.
+- **When to Read**: **During Milestone 2**. It validates why you are bothering to track hit/miss statistics.
+
+## 🌳 Hierarchical Structures & Sparsity
+### 5. Multi-Level Page Tables
+- **Best Explanation**: OSTEP Chapter 20: "Paging: Smaller Tables."
+- **Why**: The most intuitive explanation of why "Page Directories" act as a sparse index, preventing the 4MB memory waste you see in Milestone 1.
+- **When to Read**: **Before Milestone 3 (Multi-Level)**. It provides the "Coordinate System" mental model needed for the 10-10-12 bit split.
+
+### 6. The Design and Implementation of a Log-Structured File System
+- **Paper**: Mendel Rosenblum and John K. Ousterhout, "The Design and Implementation of a Log-Structured File System," *ACM TOCS*, 1992.
+- **Why**: Demonstrates how the same Radix Tree/Trie principles used in your M3 page tables are applied to disk block mapping.
+- **When to Read**: **After Milestone 3**. To see the "Knowledge Cascade" of how multi-level indexing applies to file systems.
+
+## 🔄 Page Replacement & Swap Theory
+### 7. A Study of Replacement Algorithms for a Virtual-Storage Computer
+- **Paper**: Laszlo Bélády, "A study of replacement algorithms for a virtual-storage computer," *IBM Systems Journal*, 1966.
+- **Best Explanation**: OSTEP Chapter 22: "Beyond Physical Memory: Policies."
+- **Why**: This is the origin of "Bélády’s Anomaly," where the author proves that FIFO can actually perform worse with more memory—a concept you will replicate in M4.
+- **When to Read**: **Before Milestone 4 (Replacement)**. It sets the stage for the comparative analysis.
+
+### 8. Evaluation of Page Replacement Algorithms
+- **Paper**: Mattson et al., "Evaluation techniques for storage hierarchies," *IBM Systems Journal*, 1970.
+- **Best Explanation**: Wikipedia's "Stack algorithm" entry for the formal definition.
+- **Why**: The definitive proof that LRU and Optimal are "Stack Algorithms" and thus immune to the anomaly you found in FIFO.
+- **When to Read**: **During Milestone 4**. It explains why the "Inclusion Property" makes capacity planning possible.
+
+### 9. Linux Kernel: The Page Frame Reclaim Algorithm (PFRA)
+- **Code**: `mm/vmscan.c` (Linux Kernel).
+- **Best Explanation**: *Understanding the Linux Kernel* (Bovet & Cesati), Chapter 17: "Page Frame Reclaim."
+- **Why**: Shows how a production kernel implements the "Clock" approximation (using active/inactive lists) that you build in M4.
+- **When to Read**: **After completing the project**. It is the "Boss Level" of virtual memory understanding.
+
+## 🛠️ Tooling & Real-World Application
+### 10. Valgrind: A Framework for Heavyweight Dynamic Binary Instrumentation
+- **Paper**: Nicholas Nethercote and Julian Seward, "Valgrind: A Framework for Heavyweight Dynamic Binary Instrumentation," *PLDI*, 2007.
+- **Why**: Valgrind is essentially a massive, highly optimized version of the simulator you just built.
+- **When to Read**: **Project Reflection**. To see how your shadow page table concepts power modern debugging tools.
+
+---
+
 # Virtual Memory Simulator
 
 This project builds a complete virtual memory simulator from the ground up: starting with flat page tables and address translation, layering on TLB caching with ASID support, evolving to multi-level hierarchical page tables with a simulated CR3 register, and culminating in page replacement algorithms (FIFO, LRU, Clock, Optimal) backed by simulated swap space. The simulator processes memory access trace files, enabling reproducible experiments and comparative analysis of different policies.
@@ -4967,69 +5038,3 @@ vmsim-root/
 - **Directories:** 6
 - **Estimated Lines of Code:** ~1,800 - 2,200 LOC
 - **Primary Language:** C11 (Standard library only)
-
-# 📚 Beyond the Atlas: Further Reading
-
-## 🌐 Foundations of Virtual Memory
-### 1. One-Level Storage System
-- **Paper**: T. Kilburn, D. B. G. Edwards, M. J. Lanigan, and F. H. Sumner, "One-Level Storage System," *IRE Transactions on Electronic Computers*, 1962.
-- **Best Explanation**: *Operating Systems: Three Easy Pieces* (OSTEP) by Arpaci-Dusseau, Chapter 13: "Address Spaces."
-- **Why**: This is the seminal paper from the Manchester Atlas project that invented virtual memory; reading it reveals that "demand paging" was born from physical hardware limitations of the 1960s.
-- **When to Read**: **Before starting Milestone 1**. It establishes the "why" before you touch the "how."
-
-### 2. Intel 64 and IA-32 Architectures Software Developer’s Manual
-- **Spec**: Intel SDM, Volume 3A, Chapter 4: "Paging."
-- **Code**: `arch/x86/include/asm/pgtable_64_types.h` (Linux Kernel).
-- **Best Explanation**: OSTEP Chapter 18: "Paging: Introduction."
-- **Why**: This is the authoritative "ground truth" for how x86 hardware actually traverses the structures you are simulating.
-- **When to Read**: **During Milestone 1**. Compare your `pte_t` bitmask to Intel’s actual hardware bit definitions (Figure 4-4).
-
-## ⚡ TLB & Context Switching
-### 3. Meltdown: Reading Kernel Memory from User Space
-- **Paper**: Moritz Lipp et al., "Meltdown: Reading Kernel Memory from User Space," *USENIX Security Symposium*, 2018.
-- **Code**: `arch/x86/mm/tlb.c` — specifically `switch_mm_irqs_off()`.
-- **Best Explanation**: "Computer Architecture: A Quantitative Approach" (Hennessy & Patterson), Appendix B.
-- **Why**: This paper highlights why the ASID (PCID on x86) you implement in M2 is no longer just a performance optimization, but a critical component of modern security mitigations (KPTI).
-- **When to Read**: **After Milestone 2 (TLB)**. You'll understand why flushing the TLB is the "nuclear option" for performance.
-
-### 4. Analysis of TLB Performance
-- **Paper**: J. Bradley Chen et al., "The Measured Performance of Personal Computer Operating Systems," *ACM SIGOPS*, 1995.
-- **Best Explanation**: OSTEP Chapter 19: "Paging: Faster Translations (TLBs)."
-- **Why**: Quantitative proof that TLB miss rates are the primary driver of overhead in modern kernels.
-- **When to Read**: **During Milestone 2**. It validates why you are bothering to track hit/miss statistics.
-
-## 🌳 Hierarchical Structures & Sparsity
-### 5. Multi-Level Page Tables
-- **Best Explanation**: OSTEP Chapter 20: "Paging: Smaller Tables."
-- **Why**: The most intuitive explanation of why "Page Directories" act as a sparse index, preventing the 4MB memory waste you see in Milestone 1.
-- **When to Read**: **Before Milestone 3 (Multi-Level)**. It provides the "Coordinate System" mental model needed for the 10-10-12 bit split.
-
-### 6. The Design and Implementation of a Log-Structured File System
-- **Paper**: Mendel Rosenblum and John K. Ousterhout, "The Design and Implementation of a Log-Structured File System," *ACM TOCS*, 1992.
-- **Why**: Demonstrates how the same Radix Tree/Trie principles used in your M3 page tables are applied to disk block mapping.
-- **When to Read**: **After Milestone 3**. To see the "Knowledge Cascade" of how multi-level indexing applies to file systems.
-
-## 🔄 Page Replacement & Swap Theory
-### 7. A Study of Replacement Algorithms for a Virtual-Storage Computer
-- **Paper**: Laszlo Bélády, "A study of replacement algorithms for a virtual-storage computer," *IBM Systems Journal*, 1966.
-- **Best Explanation**: OSTEP Chapter 22: "Beyond Physical Memory: Policies."
-- **Why**: This is the origin of "Bélády’s Anomaly," where the author proves that FIFO can actually perform worse with more memory—a concept you will replicate in M4.
-- **When to Read**: **Before Milestone 4 (Replacement)**. It sets the stage for the comparative analysis.
-
-### 8. Evaluation of Page Replacement Algorithms
-- **Paper**: Mattson et al., "Evaluation techniques for storage hierarchies," *IBM Systems Journal*, 1970.
-- **Best Explanation**: Wikipedia's "Stack algorithm" entry for the formal definition.
-- **Why**: The definitive proof that LRU and Optimal are "Stack Algorithms" and thus immune to the anomaly you found in FIFO.
-- **When to Read**: **During Milestone 4**. It explains why the "Inclusion Property" makes capacity planning possible.
-
-### 9. Linux Kernel: The Page Frame Reclaim Algorithm (PFRA)
-- **Code**: `mm/vmscan.c` (Linux Kernel).
-- **Best Explanation**: *Understanding the Linux Kernel* (Bovet & Cesati), Chapter 17: "Page Frame Reclaim."
-- **Why**: Shows how a production kernel implements the "Clock" approximation (using active/inactive lists) that you build in M4.
-- **When to Read**: **After completing the project**. It is the "Boss Level" of virtual memory understanding.
-
-## 🛠️ Tooling & Real-World Application
-### 10. Valgrind: A Framework for Heavyweight Dynamic Binary Instrumentation
-- **Paper**: Nicholas Nethercote and Julian Seward, "Valgrind: A Framework for Heavyweight Dynamic Binary Instrumentation," *PLDI*, 2007.
-- **Why**: Valgrind is essentially a massive, highly optimized version of the simulator you just built.
-- **When to Read**: **Project Reflection**. To see how your shadow page table concepts power modern debugging tools.

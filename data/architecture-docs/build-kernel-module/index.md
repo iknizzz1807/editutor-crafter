@@ -1,4 +1,3 @@
-```markdown
 # 🎯 Project Charter: Linux Kernel Module
 
 ## What You Are Building
@@ -45,6 +44,111 @@ The project is complete when:
 - `/proc/mydevice` displays real-time, accurate counts of total bytes read and written.
 - The driver survives the "Thundering Herd" stress test (multiple concurrent readers/writers) without a kernel panic or data loss.
 ```
+
+---
+
+# 📚 Before You Read This: Prerequisites & Further Reading
+
+> **Read these first.** The Atlas assumes you are familiar with the foundations below.
+> Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
+
+### 1. The Kernel-Userspace Boundary
+**Topic: System Call Architecture & Memory Protection**
+
+*   **Paper**: P. J. Braam, 2003, "The Linux Virtual File System."
+*   **Code**: `arch/x86/entry/entry_64.S` — The raw assembly handling the transition from ring 3 to ring 0.
+*   **Best Explanation**: *Linux Kernel Development* (3rd Ed) by Robert Love, Chapter 5: "System Calls."
+*   **Why**: It provides the most readable explanation of how the processor physically switches privilege levels and how the kernel validates the syscall table.
+*   **Timing**: Read **BEFORE Milestone 1** to understand the "physics" of the environment you are entering.
+
+*   **Spec**: POSIX.1-2017, Section 2.9.7: "Thread-Safety" and "Memory Sanity."
+*   **Code**: `arch/x86/lib/copy_user_64.S` — Look for the `_copy_to_user` implementation and the `.fixup` section.
+*   **Best Explanation**: LWN.net, "Accessing user-space memory" by Jonathan Corbet.
+*   **Why**: This article explains the "Trap and Recover" mechanism (exception tables) that makes `copy_from_user` safe without pre-checking pointers.
+*   **Timing**: Read **during Milestone 2** after your first kernel panic to understand why your direct pointer dereference failed.
+
+---
+
+### 2. Character Device Architecture
+**Topic: VFS & Device Registration**
+
+*   **Code**: `fs/char_dev.c` — The core implementation of the major/minor number registry.
+*   **Best Explanation**: *Linux Device Drivers* (3rd Ed) by Corbet, Rubini, & Kroah-Hartman, Chapter 3: "Char Drivers."
+*   **Why**: Though written for older kernels, the architectural pattern of `struct cdev` and the VFS dispatch remains the definitive pedagogical map.
+*   **Timing**: Read **at the start of Milestone 2** to see the "contract" you are about to fulfill.
+
+*   **Spec**: Linux Kernel Documentation: `admin-guide/devices.txt`.
+*   **Code**: `include/linux/fs.h` — Focus on the `struct file_operations` definition.
+*   **Best Explanation**: "The Linux VFS" by Neil Brown (LWN series).
+*   **Why**: It explains how the VFS provides polymorphism in C, allowing a socket, a file, and your driver to share the same `read()` interface.
+*   **Timing**: Read **after Milestone 2** to appreciate how your driver fits into the global Linux filesystem tree.
+
+---
+
+### 3. Memory Management
+**Topic: SLUB Allocator & Kernel Paging**
+
+*   **Paper**: Jeff Bonwick, 1994, "The Slab Allocator: An Object-Caching Kernel Memory Allocator."
+*   **Code**: `mm/slub.c` — Specifically the `slab_alloc_node` function.
+*   **Best Explanation**: *Understanding the Linux Kernel* by Bovet & Cesati, Chapter 8: "Memory Management."
+*   **Why**: It explains the "Bento Box" model of memory allocation and why `kmalloc` is faster than `malloc`.
+*   **Timing**: Read **during Milestone 2** when you call `kzalloc()` for the first time.
+
+---
+
+### 4. Control Plane & Introspection
+**Topic: ioctl Design & Virtual Filesystems**
+
+*   **Spec**: Linux Kernel Documentation: `userspace-api/ioctl/ioctl-number.rst`.
+*   **Code**: `include/uapi/asm-generic/ioctl.h` — The macros that define the 32-bit command encoding.
+*   **Best Explanation**: "The new way of doing ioctl()" (LWN) regarding the transition to `unlocked_ioctl`.
+*   **Why**: Essential for understanding why the Big Kernel Lock was removed and how modern ioctl dispatch works.
+*   **Timing**: Read **at the start of Milestone 3** to avoid defining "garbage" ioctl numbers that conflict with other drivers.
+
+*   **Code**: `fs/seq_file.c` — The implementation of the iterator pattern for `/proc`.
+*   **Best Explanation**: Linux Kernel Documentation: "The seq_file Interface."
+*   **Why**: It is the only resource that correctly explains why you don't need to worry about 4KB buffer limits when using `seq_printf`.
+*   **Timing**: Read **during Milestone 3** while implementing your `/proc` entry.
+
+---
+
+### 5. Concurrency & Synchronization
+**Topic: Mutexes, Wait Queues, and Scheduling**
+
+*   **Code**: `kernel/locking/mutex.c` — Look for the "Fast path" vs "Slow path" logic.
+*   **Best Explanation**: *Linux Kernel Development* by Robert Love, Chapter 9: "Kernel Synchronization Methods."
+*   **Why**: Love differentiates between spinlocks and mutexes based on "context," which is the single most important concept for kernel stability.
+*   **Timing**: Read **BEFORE starting Milestone 4**; it is required knowledge to prevent deadlocks.
+
+*   **Paper**: S. Molloy, 2006, "The 'Thundering Herd' Problem in Network Servers."
+*   **Code**: `kernel/sched/wait.c` — The `prepare_to_wait` and `finish_wait` functions.
+*   **Best Explanation**: "Wait queues in the Linux kernel" (KernelNewbies Wiki).
+*   **Why**: It provides a line-by-line breakdown of how `sleep()` actually informs the scheduler to stop running a task.
+*   **Timing**: Read **during Milestone 4** while debugging why your reader process won't wake up.
+
+---
+
+### 6. Event Multiplexing
+**Topic: Poll, Select, and Epoll**
+
+*   **Code**: `fs/select.c` — The `do_poll` function loop.
+*   **Best Explanation**: "The Implementation of epoll (1)" by Marek Majkowski.
+*   **Why**: It traces the `poll_wait` callback from your driver all the way up to the `epoll_wait` system call in userspace.
+*   **Timing**: Read **at the end of Milestone 4** to understand how your driver enables high-performance servers (Nginx/Node.js).
+
+---
+
+### 7. Reliability & Debugging
+**Topic: Tainting & Oops Analysis**
+
+*   **Best Explanation**: Linux Kernel Documentation: `admin-guide/tainted-kernels.rst`.
+*   **Why**: You need to know what the letters in `Tainted: P  G      W` mean when your kernel crashes.
+*   **Timing**: Read **the first time you see a "Kernel Oops"** in your dmesg logs.
+
+*   **Code**: `scripts/decode_stacktrace.sh` in the Linux source tree.
+*   **Best Explanation**: "Kernel Address Space Layout Randomization (KASLR)" (LWN).
+*   **Why**: It explains why your crash addresses look different every time you reboot.
+*   **Timing**: Read **after Milestone 4** to transition from a student to a professional systems engineer.
 
 ---
 
@@ -4180,103 +4284,3 @@ build-kernel-module/
     - *Kernel-side*: ~500 LOC
     - *Userspace tests*: ~400 LOC
 - **Build Output**: `mychar_dev.ko` (Kernel Object)
-
-# 📚 Beyond the Atlas: Further Reading
-
-### 1. The Kernel-Userspace Boundary
-**Topic: System Call Architecture & Memory Protection**
-
-*   **Paper**: P. J. Braam, 2003, "The Linux Virtual File System."
-*   **Code**: `arch/x86/entry/entry_64.S` — The raw assembly handling the transition from ring 3 to ring 0.
-*   **Best Explanation**: *Linux Kernel Development* (3rd Ed) by Robert Love, Chapter 5: "System Calls."
-*   **Why**: It provides the most readable explanation of how the processor physically switches privilege levels and how the kernel validates the syscall table.
-*   **Timing**: Read **BEFORE Milestone 1** to understand the "physics" of the environment you are entering.
-
-*   **Spec**: POSIX.1-2017, Section 2.9.7: "Thread-Safety" and "Memory Sanity."
-*   **Code**: `arch/x86/lib/copy_user_64.S` — Look for the `_copy_to_user` implementation and the `.fixup` section.
-*   **Best Explanation**: LWN.net, "Accessing user-space memory" by Jonathan Corbet.
-*   **Why**: This article explains the "Trap and Recover" mechanism (exception tables) that makes `copy_from_user` safe without pre-checking pointers.
-*   **Timing**: Read **during Milestone 2** after your first kernel panic to understand why your direct pointer dereference failed.
-
----
-
-### 2. Character Device Architecture
-**Topic: VFS & Device Registration**
-
-*   **Code**: `fs/char_dev.c` — The core implementation of the major/minor number registry.
-*   **Best Explanation**: *Linux Device Drivers* (3rd Ed) by Corbet, Rubini, & Kroah-Hartman, Chapter 3: "Char Drivers."
-*   **Why**: Though written for older kernels, the architectural pattern of `struct cdev` and the VFS dispatch remains the definitive pedagogical map.
-*   **Timing**: Read **at the start of Milestone 2** to see the "contract" you are about to fulfill.
-
-*   **Spec**: Linux Kernel Documentation: `admin-guide/devices.txt`.
-*   **Code**: `include/linux/fs.h` — Focus on the `struct file_operations` definition.
-*   **Best Explanation**: "The Linux VFS" by Neil Brown (LWN series).
-*   **Why**: It explains how the VFS provides polymorphism in C, allowing a socket, a file, and your driver to share the same `read()` interface.
-*   **Timing**: Read **after Milestone 2** to appreciate how your driver fits into the global Linux filesystem tree.
-
----
-
-### 3. Memory Management
-**Topic: SLUB Allocator & Kernel Paging**
-
-*   **Paper**: Jeff Bonwick, 1994, "The Slab Allocator: An Object-Caching Kernel Memory Allocator."
-*   **Code**: `mm/slub.c` — Specifically the `slab_alloc_node` function.
-*   **Best Explanation**: *Understanding the Linux Kernel* by Bovet & Cesati, Chapter 8: "Memory Management."
-*   **Why**: It explains the "Bento Box" model of memory allocation and why `kmalloc` is faster than `malloc`.
-*   **Timing**: Read **during Milestone 2** when you call `kzalloc()` for the first time.
-
----
-
-### 4. Control Plane & Introspection
-**Topic: ioctl Design & Virtual Filesystems**
-
-*   **Spec**: Linux Kernel Documentation: `userspace-api/ioctl/ioctl-number.rst`.
-*   **Code**: `include/uapi/asm-generic/ioctl.h` — The macros that define the 32-bit command encoding.
-*   **Best Explanation**: "The new way of doing ioctl()" (LWN) regarding the transition to `unlocked_ioctl`.
-*   **Why**: Essential for understanding why the Big Kernel Lock was removed and how modern ioctl dispatch works.
-*   **Timing**: Read **at the start of Milestone 3** to avoid defining "garbage" ioctl numbers that conflict with other drivers.
-
-*   **Code**: `fs/seq_file.c` — The implementation of the iterator pattern for `/proc`.
-*   **Best Explanation**: Linux Kernel Documentation: "The seq_file Interface."
-*   **Why**: It is the only resource that correctly explains why you don't need to worry about 4KB buffer limits when using `seq_printf`.
-*   **Timing**: Read **during Milestone 3** while implementing your `/proc` entry.
-
----
-
-### 5. Concurrency & Synchronization
-**Topic: Mutexes, Wait Queues, and Scheduling**
-
-*   **Code**: `kernel/locking/mutex.c` — Look for the "Fast path" vs "Slow path" logic.
-*   **Best Explanation**: *Linux Kernel Development* by Robert Love, Chapter 9: "Kernel Synchronization Methods."
-*   **Why**: Love differentiates between spinlocks and mutexes based on "context," which is the single most important concept for kernel stability.
-*   **Timing**: Read **BEFORE starting Milestone 4**; it is required knowledge to prevent deadlocks.
-
-*   **Paper**: S. Molloy, 2006, "The 'Thundering Herd' Problem in Network Servers."
-*   **Code**: `kernel/sched/wait.c` — The `prepare_to_wait` and `finish_wait` functions.
-*   **Best Explanation**: "Wait queues in the Linux kernel" (KernelNewbies Wiki).
-*   **Why**: It provides a line-by-line breakdown of how `sleep()` actually informs the scheduler to stop running a task.
-*   **Timing**: Read **during Milestone 4** while debugging why your reader process won't wake up.
-
----
-
-### 6. Event Multiplexing
-**Topic: Poll, Select, and Epoll**
-
-*   **Code**: `fs/select.c` — The `do_poll` function loop.
-*   **Best Explanation**: "The Implementation of epoll (1)" by Marek Majkowski.
-*   **Why**: It traces the `poll_wait` callback from your driver all the way up to the `epoll_wait` system call in userspace.
-*   **Timing**: Read **at the end of Milestone 4** to understand how your driver enables high-performance servers (Nginx/Node.js).
-
----
-
-### 7. Reliability & Debugging
-**Topic: Tainting & Oops Analysis**
-
-*   **Best Explanation**: Linux Kernel Documentation: `admin-guide/tainted-kernels.rst`.
-*   **Why**: You need to know what the letters in `Tainted: P  G      W` mean when your kernel crashes.
-*   **Timing**: Read **the first time you see a "Kernel Oops"** in your dmesg logs.
-
-*   **Code**: `scripts/decode_stacktrace.sh` in the Linux source tree.
-*   **Best Explanation**: "Kernel Address Space Layout Randomization (KASLR)" (LWN).
-*   **Why**: It explains why your crash addresses look different every time you reboot.
-*   **Timing**: Read **after Milestone 4** to transition from a student to a professional systems engineer.

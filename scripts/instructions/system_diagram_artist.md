@@ -127,12 +127,16 @@ layer_data -> layer_logic -> layer_io
 
 ## 3. Connections
 
-Every arrow must be labeled: `"DataType | direction/operation | example"`
+Every arrow must be labeled, but **keep labels short** — max 2–3 words or `"Type | verb"`. Long labels cause ELK to overlap nodes. Never use 3-part labels.
 
 ```d2
+# GOOD — short labels
+scanner -> token: "Token[]"
+parser -> scanner: "consumes"
+copy_user -> kernel_buf: "char* | write"
+
+# BAD — too long, causes overlap
 scanner -> token: "Token | returns | Token(KEYWORD,'if',1,1)"
-scanner -> token_type: "TokenType | enum lookup | TokenType.KEYWORD"
-parser -> scanner: "Token[]  | consumes | list of ~12 tokens"
 ```
 
 Use `style.stroke-dash: 4` for error paths and optional flows.

@@ -46,6 +46,74 @@ The project is complete when:
 
 ---
 
+# 📚 Before You Read This: Prerequisites & Further Reading
+
+> **Read these first.** The Atlas assumes you are familiar with the foundations below.
+> Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
+
+## The Intercept Engine (ptrace & Signals)
+
+**Paper**: *PTRACE - Process Trace* in "The Design and Implementation of the 4.4BSD Operating System" (McKusick, 1996). 
+**Code**: [strace/strace.c](https://github.com/strace/strace/blob/master/src/strace.c) — The main event loop of the actual strace utility.
+**Best Explanation**: Eli Bendersky’s [How debuggers work: Part 2 - Breakpoints](https://eli.thegreenplace.net/2011/01/27/how-debuggers-work-part-2-breakpoints) (covers the `waitpid`/`SIGTRAP` dance).
+**Why**: This is the authoritative explanation of how `ptrace` and `SIGTRAP` interact to pause execution.
+**Pedagogical Timing**: Read **BEFORE Milestone 1**. It demystifies why the process stops and how the parent regains control, which is the foundation of the entire project.
+
+**Spec**: [Linux ptrace(2) Man Page](https://man7.org/linux/man-pages/man2/ptrace.2.html).
+**Best Explanation**: [Julia Evans: How does strace work?](https://jvns.ca/blog/2014/02/17/how-does-strace-work/) (Zine-style visual guide).
+**Why**: It provides a high-level mental model of the tracer/tracee relationship that makes the man page much easier to digest.
+**Pedagogical Timing**: Read **during Milestone 1** when the "double-stop" (entry/exit) behavior starts to feel confusing.
+
+---
+
+## The x86_64 Syscall ABI
+
+**Spec**: [System V Application Binary Interface (AMD64 Architecture Processor Supplement)](https://github.com/hjl-tools/x86-64-abi/releases) — Section 3.2.3 (Parameter Passing).
+**Code**: [linux/arch/x86/entry/entry_64.S](https://github.com/torvalds/linux/blob/master/arch/x86/entry/entry_64.S) — The kernel’s assembly-level entry point for syscalls.
+**Best Explanation**: Ryan Chapman’s [Linux System Call Table for x86_64](https://blog.rchapman.org/posts/Linux_System_Call_Table_for_x86_64/).
+**Why**: It is the "Rosetta Stone" for mapping syscall numbers to registers and argument types.
+**Pedagogical Timing**: Reference **during Milestone 2**. You will need this constantly as you build the `SyscallDesc` table.
+
+---
+
+## Memory & Address Spaces
+
+**Best Explanation**: *Understanding the Linux Kernel* (Bovet & Cesati), **Chapter 2: Memory Addressing**.
+**Code**: [linux/mm/memory.c](https://github.com/torvalds/linux/blob/master/mm/memory.c) — See `access_process_vm`, the kernel's internal version of PEEKDATA.
+**Why**: It explains the Page Global Directory (PGD) and page table walks that occur every time you call `PTRACE_PEEKDATA`.
+**Pedagogical Timing**: Read **before starting Milestone 2**. It explains why you cannot simply dereference a tracee's pointer and why the "word-walking" algorithm is necessary.
+
+---
+
+## Process Lifecycle (Fork, Exec, Clone)
+
+**Paper**: [Reflections on Trusting Trust](https://www.cs.cmu.edu/~rdriley/487/papers/Thompson_1984_ReflectionsonTrustingTrust.pdf) (Ken Thompson).
+**Code**: [linux/kernel/fork.c](https://github.com/torvalds/linux/blob/master/kernel/fork.c) — The `do_fork` (or `kernel_clone`) implementation.
+**Best Explanation**: *The Linux Programming Interface* (Michael Kerrisk), **Chapter 24 (Process Creation)** and **Chapter 27 (Program Execution)**.
+**Why**: Kerrisk is the gold standard for explaining how `execve` replaces the stack and heap, which is vital for understanding `PTRACE_EVENT_EXEC`.
+**Pedagogical Timing**: Read **before Milestone 3**. You must understand that `exec` creates a "zombie" relationship where the PID stays the same but the memory is fresh.
+
+---
+
+## Modern Observability (eBPF & Performance)
+
+**Paper**: [The BSD Packet Filter: A New Architecture for User-level Packet Capture](https://www.tcpdump.org/papers/bpf-usenix93.pdf) (McCanne & Jacobson, 1993).
+**Code**: [bpftrace/tools/syscount.bt](https://github.com/iovisor/bpftrace/blob/master/tools/syscount.bt) — A 10-line script that does what your Milestone 4 statistics engine does, but 100x faster.
+**Best Explanation**: Brendan Gregg’s [BPF Performance Tools](https://www.brendangregg.com/bpf-performance-tools-book.html), **Chapter 1: Introduction**.
+**Why**: It explains why "the observer effect" you measured in Milestone 4 is the reason the industry moved from ptrace to eBPF.
+**Pedagogical Timing**: Read **AFTER completing the project**. It provides the "What's Next" context for how these problems are solved in high-performance production environments.
+
+---
+
+## Technical Standards (Signals)
+
+**Spec**: [POSIX.1-2008: Signal Concepts](https://pubs.opengroup.org/onlinepubs/9699919799/functions/V2_chap02.html#tag_15_04).
+**Best Explanation**: [The "Self-Pipe Trick"](https://cr.yp.to/docs/selfpipe.html) by DJB.
+**Why**: It is the definitive argument for why signal handlers must be minimal and use the "flag-setting" pattern you implemented in Milestone 4.
+**Pedagogical Timing**: Read **during Milestone 4** when implementing the `SIGINT` handler and clean detach logic.
+
+---
+
 # System Call Tracer (strace clone)
 
 This project builds a fully functional strace clone from scratch — a ptrace-based system call tracer that intercepts, decodes, and reports every syscall a target process makes on x86_64 Linux. You will start by forking a child, attaching via ptrace, and toggling between syscall entry and exit stops. Then you'll decode arguments by reading registers, dereference string pointers word-by-word from the tracee's address space, follow fork/exec across process boundaries, and finally add filtering and statistical profiling.
@@ -3954,66 +4022,3 @@ strace-clone/
 - **Build/Doc Files:** 2
 - **Estimated Total Lines of Code:** ~1,350 LOC
 - **Key Hardware Dependencies:** x86_64 Linux (sys/user.h register layout)
-
-# 📚 Beyond the Atlas: Further Reading
-
-## The Intercept Engine (ptrace & Signals)
-
-**Paper**: *PTRACE - Process Trace* in "The Design and Implementation of the 4.4BSD Operating System" (McKusick, 1996). 
-**Code**: [strace/strace.c](https://github.com/strace/strace/blob/master/src/strace.c) — The main event loop of the actual strace utility.
-**Best Explanation**: Eli Bendersky’s [How debuggers work: Part 2 - Breakpoints](https://eli.thegreenplace.net/2011/01/27/how-debuggers-work-part-2-breakpoints) (covers the `waitpid`/`SIGTRAP` dance).
-**Why**: This is the authoritative explanation of how `ptrace` and `SIGTRAP` interact to pause execution.
-**Pedagogical Timing**: Read **BEFORE Milestone 1**. It demystifies why the process stops and how the parent regains control, which is the foundation of the entire project.
-
-**Spec**: [Linux ptrace(2) Man Page](https://man7.org/linux/man-pages/man2/ptrace.2.html).
-**Best Explanation**: [Julia Evans: How does strace work?](https://jvns.ca/blog/2014/02/17/how-does-strace-work/) (Zine-style visual guide).
-**Why**: It provides a high-level mental model of the tracer/tracee relationship that makes the man page much easier to digest.
-**Pedagogical Timing**: Read **during Milestone 1** when the "double-stop" (entry/exit) behavior starts to feel confusing.
-
----
-
-## The x86_64 Syscall ABI
-
-**Spec**: [System V Application Binary Interface (AMD64 Architecture Processor Supplement)](https://github.com/hjl-tools/x86-64-abi/releases) — Section 3.2.3 (Parameter Passing).
-**Code**: [linux/arch/x86/entry/entry_64.S](https://github.com/torvalds/linux/blob/master/arch/x86/entry/entry_64.S) — The kernel’s assembly-level entry point for syscalls.
-**Best Explanation**: Ryan Chapman’s [Linux System Call Table for x86_64](https://blog.rchapman.org/posts/Linux_System_Call_Table_for_x86_64/).
-**Why**: It is the "Rosetta Stone" for mapping syscall numbers to registers and argument types.
-**Pedagogical Timing**: Reference **during Milestone 2**. You will need this constantly as you build the `SyscallDesc` table.
-
----
-
-## Memory & Address Spaces
-
-**Best Explanation**: *Understanding the Linux Kernel* (Bovet & Cesati), **Chapter 2: Memory Addressing**.
-**Code**: [linux/mm/memory.c](https://github.com/torvalds/linux/blob/master/mm/memory.c) — See `access_process_vm`, the kernel's internal version of PEEKDATA.
-**Why**: It explains the Page Global Directory (PGD) and page table walks that occur every time you call `PTRACE_PEEKDATA`.
-**Pedagogical Timing**: Read **before starting Milestone 2**. It explains why you cannot simply dereference a tracee's pointer and why the "word-walking" algorithm is necessary.
-
----
-
-## Process Lifecycle (Fork, Exec, Clone)
-
-**Paper**: [Reflections on Trusting Trust](https://www.cs.cmu.edu/~rdriley/487/papers/Thompson_1984_ReflectionsonTrustingTrust.pdf) (Ken Thompson).
-**Code**: [linux/kernel/fork.c](https://github.com/torvalds/linux/blob/master/kernel/fork.c) — The `do_fork` (or `kernel_clone`) implementation.
-**Best Explanation**: *The Linux Programming Interface* (Michael Kerrisk), **Chapter 24 (Process Creation)** and **Chapter 27 (Program Execution)**.
-**Why**: Kerrisk is the gold standard for explaining how `execve` replaces the stack and heap, which is vital for understanding `PTRACE_EVENT_EXEC`.
-**Pedagogical Timing**: Read **before Milestone 3**. You must understand that `exec` creates a "zombie" relationship where the PID stays the same but the memory is fresh.
-
----
-
-## Modern Observability (eBPF & Performance)
-
-**Paper**: [The BSD Packet Filter: A New Architecture for User-level Packet Capture](https://www.tcpdump.org/papers/bpf-usenix93.pdf) (McCanne & Jacobson, 1993).
-**Code**: [bpftrace/tools/syscount.bt](https://github.com/iovisor/bpftrace/blob/master/tools/syscount.bt) — A 10-line script that does what your Milestone 4 statistics engine does, but 100x faster.
-**Best Explanation**: Brendan Gregg’s [BPF Performance Tools](https://www.brendangregg.com/bpf-performance-tools-book.html), **Chapter 1: Introduction**.
-**Why**: It explains why "the observer effect" you measured in Milestone 4 is the reason the industry moved from ptrace to eBPF.
-**Pedagogical Timing**: Read **AFTER completing the project**. It provides the "What's Next" context for how these problems are solved in high-performance production environments.
-
----
-
-## Technical Standards (Signals)
-
-**Spec**: [POSIX.1-2008: Signal Concepts](https://pubs.opengroup.org/onlinepubs/9699919799/functions/V2_chap02.html#tag_15_04).
-**Best Explanation**: [The "Self-Pipe Trick"](https://cr.yp.to/docs/selfpipe.html) by DJB.
-**Why**: It is the definitive argument for why signal handlers must be minimal and use the "flag-setting" pattern you implemented in Milestone 4.
-**Pedagogical Timing**: Read **during Milestone 4** when implementing the `SIGINT` handler and clean detach logic.

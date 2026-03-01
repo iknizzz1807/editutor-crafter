@@ -111,7 +111,7 @@ layer_b: {
   comp3: { ... }
 }
 
-layer_a -> layer_b: "DataType | size | example"
+layer_a -> layer_b: "DataType | verb"
 ```
 
 **Never use single-direction expansion for diagrams with more than 4 nodes.**
@@ -193,8 +193,12 @@ step_dispatch: {
 ```
 
 ### Arrow Annotations
-Every arrow: `type | size | example_value`
+Every arrow label must be **short**: `"Type | verb"` or just `"Type"`. Max 3 words. Long labels cause ELK to overlap nodes.
 ```d2
+# GOOD
+A -> B: "epoll_event[] | write"
+A -> B: "fd"
+# BAD — too long, causes overlap
 A -> B: "struct epoll_event[] | 36 bytes | {.data.ptr=&h[5], .events=EPOLLIN}"
 ```
 

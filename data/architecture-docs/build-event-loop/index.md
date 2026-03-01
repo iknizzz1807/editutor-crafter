@@ -1,4 +1,3 @@
-```markdown
 # 🎯 Project Charter: Event Loop with epoll
 
 ## What You Are Building
@@ -44,6 +43,69 @@ The project is complete when:
 - Valgrind/ASAN reports zero memory leaks or use-after-free errors during high-churn connection tests.
 - Static files are served with correct `Content-Length` and `Content-Type` headers.
 ```
+
+---
+
+# 📚 Before You Read This: Prerequisites & Further Reading
+
+> **Read these first.** The Atlas assumes you are familiar with the foundations below.
+> Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
+
+### 1. The Genesis of High Concurrency
+**Concept**: The C10K Problem
+- **Paper**: [The C10K Problem](http://www.kegel.com/c10k.html) by Dan Kegel (1999).
+- **Why**: The historical catalyst that moved the industry from thread-per-connection to event-driven architectures.
+- **Pedagogical Timing**: Read **BEFORE Milestone 1**. It provides the necessary context for why `select()` and `poll()` failed and why `epoll` was invented.
+
+### 2. Linux Kernel I/O Multiplexing
+**Concept**: epoll Semantics and Internal Implementation
+- **Spec**: [epoll(7) Manual Page](https://man7.org/linux/man-pages/man7/epoll.7.html) by Michael Kerrisk.
+- **Code**: [linux/fs/eventpoll.c](https://github.com/torvalds/linux/blob/master/fs/eventpoll.c) — specifically the `ep_poll_callback` function.
+- **Best Explanation**: [The Linux Programming Interface](https://man7.org/tlpi/) (Book) by Michael Kerrisk, **Chapter 63 (Alternative I/O Models)**.
+- **Why**: The "Bible" of Linux system programming; the chapter on epoll is the most rigorous explanation of Edge-Triggered vs. Level-Triggered behavior in existence.
+- **Pedagogical Timing**: Read **during Milestone 1**. Refer to the spec while implementing your first `epoll_wait` loop to understand flag nuances like `EPOLLONESHOT` and `EPOLLET`.
+
+### 3. The Reactor Design Pattern
+**Concept**: Event Demultiplexing and Dispatching
+- **Paper**: [Reactor: An Object Behavioral Pattern for Demultiplexing and Dispatching Handles for Synchronous Events](https://www.dre.vanderbilt.edu/~schmidt/PDF/reactor-siemens.pdf) by Douglas C. Schmidt (1995).
+- **Code**: [Redis: ae.c](https://github.com/redis/redis/blob/7.2/src/ae.c).
+- **Best Explanation**: [Scalable IO in Java](https://gee.cs.oswego.edu/dl/cpjslides/nio.pdf) (Slide Deck) by Doug Lea. 
+- **Why**: Redis’s `ae.c` is the cleanest, most readable production-grade implementation of a Reactor in the C language.
+- **Pedagogical Timing**: Read **BEFORE Milestone 3**. Schmidt’s paper provides the theoretical blueprint, while Doug Lea’s slides provide a visual mental model of the dispatcher/handler relationship.
+
+### 4. Efficient Timing & Priority Queues
+**Concept**: Min-Heaps for Timeout Management
+- **Code**: [libuv: timer.c](https://github.com/libuv/libuv/blob/v1.x/src/timer.c).
+- **Best Explanation**: [Introduction to Algorithms (CLRS)](https://mitpress.mit.edu/9780262046305/introduction-to-algorithms/), **Chapter 6 (Heapsort)**.
+- **Why**: Libuv (Node.js’s core) uses a min-heap for its timers; studying their `uv__timer_close` demonstrates how to handle the "arbitrary deletion" problem in O(log N).
+- **Pedagogical Timing**: Read **during Milestone 2**. You will need the sift-up/sift-down algorithms to implement the idle-connection reaper.
+
+### 5. HTTP/1.1 Protocol & Parsing
+**Concept**: Framing and Persistent Connections
+- **Spec**: [RFC 7230: HTTP/1.1 Message Syntax and Routing](https://datatracker.ietf.org/doc/html/rfc7230).
+- **Code**: [PicoHTTPParser](https://github.com/h2o/picohttpparser/blob/master/picohttpparser.c).
+- **Best Explanation**: [High Performance Browser Networking](https://hpbn.co/http1x/) (Book) by Ilya Grigorik, **Chapter 9 (HTTP 1.1)**.
+- **Why**: PicoHTTPParser shows how to use SSE4.2/AVX2 instructions to scan for `\r\n` significantly faster than standard `strstr`.
+- **Pedagogical Timing**: Read **BEFORE Milestone 4**. You must understand the rules for `Content-Length` and `Transfer-Encoding` to implement keep-alive correctly.
+
+### 6. Memory Management and Backpressure
+**Concept**: Write Buffering and User-Space Queuing
+- **Best Explanation**: [Notes on Distributed Systems: Backpressure](https://bravenewgeek.com/you-cannot-have-exactly-once-delivery/) by Tyler Treat.
+- **Why**: A masterclass in why unbounded buffers lead to cascading failures and how `EAGAIN` acts as a signal to propagate pressure upstream.
+- **Pedagogical Timing**: Read **After Milestone 2**. It will help you appreciate why we enforce a `WRITE_BUF_MAX` instead of letting the buffer grow to match the request size.
+
+### 7. Zero-Copy Optimizations
+**Concept**: `sendfile(2)` and Kernel-Space Data Transfer
+- **Spec**: [sendfile(2) Manual Page](https://man7.org/linux/man-pages/man2/sendfile.2.html).
+- **Code**: [Nginx: ngx_linux_sendfile_chain.c](https://github.com/nginx/nginx/blob/master/src/os/unix/ngx_linux_sendfile_chain.c).
+- **Why**: Nginx is the gold standard for high-performance static file serving; their implementation handles the complexity of `sendfile` returning partial results.
+- **Pedagogical Timing**: Read **After Milestone 4** as an "Extra Credit" optimization to replace your manual read/write loop for static files.
+
+### 8. The Future: Asynchronous Completion I/O
+**Concept**: io_uring (The Proactor Pattern on Linux)
+- **Paper**: [Efficient IO with io_uring](https://kernel.dk/io_uring.pdf) by Jens Axboe (2019).
+- **Why**: Written by the lead maintainer of the Linux block layer, this explains why the Reactor/epoll model is being superseded by completion queues.
+- **Pedagogical Timing**: Read **after completing the project**. It provides a "what's next" perspective on how to further reduce syscall overhead and context switching.
 
 ---
 
@@ -4317,61 +4379,3 @@ event-loop-epoll/
 *   **Total Directories**: 3
 *   **Estimated Lines of Code**: ~1,800 LOC
 *   **Build Artifacts**: `http_server` (executable), `*.o` (object files)
-
-# 📚 Beyond the Atlas: Further Reading
-
-### 1. The Genesis of High Concurrency
-**Concept**: The C10K Problem
-- **Paper**: [The C10K Problem](http://www.kegel.com/c10k.html) by Dan Kegel (1999).
-- **Why**: The historical catalyst that moved the industry from thread-per-connection to event-driven architectures.
-- **Pedagogical Timing**: Read **BEFORE Milestone 1**. It provides the necessary context for why `select()` and `poll()` failed and why `epoll` was invented.
-
-### 2. Linux Kernel I/O Multiplexing
-**Concept**: epoll Semantics and Internal Implementation
-- **Spec**: [epoll(7) Manual Page](https://man7.org/linux/man-pages/man7/epoll.7.html) by Michael Kerrisk.
-- **Code**: [linux/fs/eventpoll.c](https://github.com/torvalds/linux/blob/master/fs/eventpoll.c) — specifically the `ep_poll_callback` function.
-- **Best Explanation**: [The Linux Programming Interface](https://man7.org/tlpi/) (Book) by Michael Kerrisk, **Chapter 63 (Alternative I/O Models)**.
-- **Why**: The "Bible" of Linux system programming; the chapter on epoll is the most rigorous explanation of Edge-Triggered vs. Level-Triggered behavior in existence.
-- **Pedagogical Timing**: Read **during Milestone 1**. Refer to the spec while implementing your first `epoll_wait` loop to understand flag nuances like `EPOLLONESHOT` and `EPOLLET`.
-
-### 3. The Reactor Design Pattern
-**Concept**: Event Demultiplexing and Dispatching
-- **Paper**: [Reactor: An Object Behavioral Pattern for Demultiplexing and Dispatching Handles for Synchronous Events](https://www.dre.vanderbilt.edu/~schmidt/PDF/reactor-siemens.pdf) by Douglas C. Schmidt (1995).
-- **Code**: [Redis: ae.c](https://github.com/redis/redis/blob/7.2/src/ae.c).
-- **Best Explanation**: [Scalable IO in Java](https://gee.cs.oswego.edu/dl/cpjslides/nio.pdf) (Slide Deck) by Doug Lea. 
-- **Why**: Redis’s `ae.c` is the cleanest, most readable production-grade implementation of a Reactor in the C language.
-- **Pedagogical Timing**: Read **BEFORE Milestone 3**. Schmidt’s paper provides the theoretical blueprint, while Doug Lea’s slides provide a visual mental model of the dispatcher/handler relationship.
-
-### 4. Efficient Timing & Priority Queues
-**Concept**: Min-Heaps for Timeout Management
-- **Code**: [libuv: timer.c](https://github.com/libuv/libuv/blob/v1.x/src/timer.c).
-- **Best Explanation**: [Introduction to Algorithms (CLRS)](https://mitpress.mit.edu/9780262046305/introduction-to-algorithms/), **Chapter 6 (Heapsort)**.
-- **Why**: Libuv (Node.js’s core) uses a min-heap for its timers; studying their `uv__timer_close` demonstrates how to handle the "arbitrary deletion" problem in O(log N).
-- **Pedagogical Timing**: Read **during Milestone 2**. You will need the sift-up/sift-down algorithms to implement the idle-connection reaper.
-
-### 5. HTTP/1.1 Protocol & Parsing
-**Concept**: Framing and Persistent Connections
-- **Spec**: [RFC 7230: HTTP/1.1 Message Syntax and Routing](https://datatracker.ietf.org/doc/html/rfc7230).
-- **Code**: [PicoHTTPParser](https://github.com/h2o/picohttpparser/blob/master/picohttpparser.c).
-- **Best Explanation**: [High Performance Browser Networking](https://hpbn.co/http1x/) (Book) by Ilya Grigorik, **Chapter 9 (HTTP 1.1)**.
-- **Why**: PicoHTTPParser shows how to use SSE4.2/AVX2 instructions to scan for `\r\n` significantly faster than standard `strstr`.
-- **Pedagogical Timing**: Read **BEFORE Milestone 4**. You must understand the rules for `Content-Length` and `Transfer-Encoding` to implement keep-alive correctly.
-
-### 6. Memory Management and Backpressure
-**Concept**: Write Buffering and User-Space Queuing
-- **Best Explanation**: [Notes on Distributed Systems: Backpressure](https://bravenewgeek.com/you-cannot-have-exactly-once-delivery/) by Tyler Treat.
-- **Why**: A masterclass in why unbounded buffers lead to cascading failures and how `EAGAIN` acts as a signal to propagate pressure upstream.
-- **Pedagogical Timing**: Read **After Milestone 2**. It will help you appreciate why we enforce a `WRITE_BUF_MAX` instead of letting the buffer grow to match the request size.
-
-### 7. Zero-Copy Optimizations
-**Concept**: `sendfile(2)` and Kernel-Space Data Transfer
-- **Spec**: [sendfile(2) Manual Page](https://man7.org/linux/man-pages/man2/sendfile.2.html).
-- **Code**: [Nginx: ngx_linux_sendfile_chain.c](https://github.com/nginx/nginx/blob/master/src/os/unix/ngx_linux_sendfile_chain.c).
-- **Why**: Nginx is the gold standard for high-performance static file serving; their implementation handles the complexity of `sendfile` returning partial results.
-- **Pedagogical Timing**: Read **After Milestone 4** as an "Extra Credit" optimization to replace your manual read/write loop for static files.
-
-### 8. The Future: Asynchronous Completion I/O
-**Concept**: io_uring (The Proactor Pattern on Linux)
-- **Paper**: [Efficient IO with io_uring](https://kernel.dk/io_uring.pdf) by Jens Axboe (2019).
-- **Why**: Written by the lead maintainer of the Linux block layer, this explains why the Reactor/epoll model is being superseded by completion queues.
-- **Pedagogical Timing**: Read **after completing the project**. It provides a "what's next" perspective on how to further reduce syscall overhead and context switching.

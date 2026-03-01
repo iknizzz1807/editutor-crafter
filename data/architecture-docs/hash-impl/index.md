@@ -1,4 +1,3 @@
-```markdown
 # 🎯 Project Charter: SHA-256 Hash Function
 
 ## What You Are Building
@@ -45,6 +44,59 @@ The project is complete when:
 - A message fed into the `update()` function in 1-byte chunks produces the same hash as the message fed in all at once.
 - The code successfully clears its internal buffers after finalization (Secret Erasure).
 ```
+
+---
+
+# 📚 Before You Read This: Prerequisites & Further Reading
+
+> **Read these first.** The Atlas assumes you are familiar with the foundations below.
+> Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
+
+### 🏛️ The Formal Specification
+**Spec**: [NIST FIPS 180-4: Secure Hash Standard (SHS)](https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.180-4.pdf)  
+**Why**: This is the ultimate source of truth. Every constant, rotation count, and padding rule originates here.  
+**Pedagogical Timing**: **Read before Milestone 1.** You should keep Section 5 (Preprocessing) and Section 6 (SHA-256) open as a constant reference while coding.
+
+### 🏗️ Architectural Foundations
+**Paper**: [A Certified Digital Signature](https://www.merkle.com/papers/Thesis1979.pdf) by Ralph Merkle (1979)  
+**Why**: The "Merkle" in Merkle-Damgård. This thesis established the foundation for tree-based hashing and iterative compression.  
+**Pedagogical Timing**: **Read before Milestone 1.** It provides the theoretical "why" behind the block-based processing you are about to implement.
+
+**Best Explanation**: [Chapter 2: Designing Hash Functions](https://nostarch.com/seriouscrypto) in *Serious Cryptography* by Jean-Philippe Aumasson.  
+**Why**: Aumasson provides the clearest modern explanation of why SHA-256 uses specific bitwise functions (Ch, Maj) to achieve "confusion and diffusion."  
+**Pedagogical Timing**: **Read before Milestone 3.** It will help you see the compression function as a logical machine rather than a wall of magic math.
+
+### 🔢 Data Alignment & Endianness
+**Best Explanation**: [On Holy Wars and a Plea for Peace](https://www.ietf.org/rfc/ien/ien137.txt) by Danny Cohen (1980)  
+**Why**: The classic IEN 137 paper that coined "Big-Endian" and "Little-Endian." Essential for understanding why you must manually swap bytes in C.  
+**Pedagogical Timing**: **Read during Milestone 1.** Read it when you encounter the Big-Endian length field requirement to understand the historical context of the "byte order" problem.
+
+### 🛠️ Production-Grade Implementation
+**Code**: [OpenSSL: crypto/sha/sha256.c](https://github.com/openssl/openssl/blob/master/crypto/sha/sha256.c)  
+**Why**: The industry standard. Note how they handle "unrolling" the 64 rounds for performance and how they manage the internal buffer state.  
+**Pedagogical Timing**: **Read after Milestone 4.** Comparing your "clean" implementation to OpenSSL’s highly optimized (and sometimes obscure) C will show you how production libraries squeeze out every CPU cycle.
+
+**Code**: [BearSSL: src/hash/sha2.c](https://bearssl.org/gitweb/?p=BearSSL;a=blob;f=src/hash/sha2.c)  
+**Why**: Thomas Pornin’s BearSSL is famous for being "painfully readable" and secure. It is the best example of "Academic-quality C."  
+**Pedagogical Timing**: **Read during Milestone 3.** Use this as a reference if you get stuck on the rotation logic; the code is much easier to follow than OpenSSL's.
+
+### 🛡️ Vulnerabilities & Extensions
+**Best Explanation**: [Everything you need to know about Hash Length Extension Attacks](https://blog.skullsecurity.org/2012/everything-you-need-to-know-about-hash-length-extension-attacks) by Ron Bowes.  
+**Why**: This is the "Adversary's View." It explains why the Merkle-Damgård construction allows an attacker to add data to a hash without knowing the original message.  
+**Pedagogical Timing**: **Read after Milestone 4.** This will explain why you should never use `SHA256(key + message)` for authentication.
+
+**Spec**: [RFC 2104: HMAC: Keyed-Hashing for Message Authentication](https://datatracker.ietf.org/doc/html/rfc2104)  
+**Why**: The solution to the length extension attack. It defines how to wrap your SHA-256 function to create a secure Message Authentication Code.  
+**Pedagogical Timing**: **Read after Milestone 4.** This is the natural "Next Project" after finishing your base hash implementation.
+
+### ₿ Real-World Application: Bitcoin
+**Paper**: [Bitcoin: A Peer-to-Peer Electronic Cash System](https://bitcoin.org/bitcoin.pdf) by Satoshi Nakamoto (2008)  
+**Why**: SHA-256's most famous application. Specifically, Section 4 (Proof-of-Work) describes the "Double-SHA256" mechanism.  
+**Pedagogical Timing**: **Read after Milestone 4.** It transforms your code from an abstract utility into the engine that secures a trillion-dollar asset class.
+
+**Best Explanation**: [Chapter 8: Mining and Consensus](https://github.com/bitcoinbook/bitcoinbook/blob/develop/ch08.asciidoc) in *Mastering Bitcoin* by Andreas Antonopoulos.  
+**Why**: Visualizes how individual transaction hashes are combined into a "Merkle Tree" to produce a single block header hash.  
+**Pedagogical Timing**: **Read after Milestone 4.** It provides a grand-scale view of how your Milestone 4 `sha256_update` calls are used to build massive data structures.
 
 ---
 
@@ -3680,51 +3732,3 @@ sha256-impl/
 - **Directories**: 4
 - **Estimated lines of code**: ~950 lines
 - **Critical Components**: 64-round compression loop, Big-endian word loading, Merkle-Damgård additive chaining.
-
-# 📚 Beyond the Atlas: Further Reading
-
-### 🏛️ The Formal Specification
-**Spec**: [NIST FIPS 180-4: Secure Hash Standard (SHS)](https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.180-4.pdf)  
-**Why**: This is the ultimate source of truth. Every constant, rotation count, and padding rule originates here.  
-**Pedagogical Timing**: **Read before Milestone 1.** You should keep Section 5 (Preprocessing) and Section 6 (SHA-256) open as a constant reference while coding.
-
-### 🏗️ Architectural Foundations
-**Paper**: [A Certified Digital Signature](https://www.merkle.com/papers/Thesis1979.pdf) by Ralph Merkle (1979)  
-**Why**: The "Merkle" in Merkle-Damgård. This thesis established the foundation for tree-based hashing and iterative compression.  
-**Pedagogical Timing**: **Read before Milestone 1.** It provides the theoretical "why" behind the block-based processing you are about to implement.
-
-**Best Explanation**: [Chapter 2: Designing Hash Functions](https://nostarch.com/seriouscrypto) in *Serious Cryptography* by Jean-Philippe Aumasson.  
-**Why**: Aumasson provides the clearest modern explanation of why SHA-256 uses specific bitwise functions (Ch, Maj) to achieve "confusion and diffusion."  
-**Pedagogical Timing**: **Read before Milestone 3.** It will help you see the compression function as a logical machine rather than a wall of magic math.
-
-### 🔢 Data Alignment & Endianness
-**Best Explanation**: [On Holy Wars and a Plea for Peace](https://www.ietf.org/rfc/ien/ien137.txt) by Danny Cohen (1980)  
-**Why**: The classic IEN 137 paper that coined "Big-Endian" and "Little-Endian." Essential for understanding why you must manually swap bytes in C.  
-**Pedagogical Timing**: **Read during Milestone 1.** Read it when you encounter the Big-Endian length field requirement to understand the historical context of the "byte order" problem.
-
-### 🛠️ Production-Grade Implementation
-**Code**: [OpenSSL: crypto/sha/sha256.c](https://github.com/openssl/openssl/blob/master/crypto/sha/sha256.c)  
-**Why**: The industry standard. Note how they handle "unrolling" the 64 rounds for performance and how they manage the internal buffer state.  
-**Pedagogical Timing**: **Read after Milestone 4.** Comparing your "clean" implementation to OpenSSL’s highly optimized (and sometimes obscure) C will show you how production libraries squeeze out every CPU cycle.
-
-**Code**: [BearSSL: src/hash/sha2.c](https://bearssl.org/gitweb/?p=BearSSL;a=blob;f=src/hash/sha2.c)  
-**Why**: Thomas Pornin’s BearSSL is famous for being "painfully readable" and secure. It is the best example of "Academic-quality C."  
-**Pedagogical Timing**: **Read during Milestone 3.** Use this as a reference if you get stuck on the rotation logic; the code is much easier to follow than OpenSSL's.
-
-### 🛡️ Vulnerabilities & Extensions
-**Best Explanation**: [Everything you need to know about Hash Length Extension Attacks](https://blog.skullsecurity.org/2012/everything-you-need-to-know-about-hash-length-extension-attacks) by Ron Bowes.  
-**Why**: This is the "Adversary's View." It explains why the Merkle-Damgård construction allows an attacker to add data to a hash without knowing the original message.  
-**Pedagogical Timing**: **Read after Milestone 4.** This will explain why you should never use `SHA256(key + message)` for authentication.
-
-**Spec**: [RFC 2104: HMAC: Keyed-Hashing for Message Authentication](https://datatracker.ietf.org/doc/html/rfc2104)  
-**Why**: The solution to the length extension attack. It defines how to wrap your SHA-256 function to create a secure Message Authentication Code.  
-**Pedagogical Timing**: **Read after Milestone 4.** This is the natural "Next Project" after finishing your base hash implementation.
-
-### ₿ Real-World Application: Bitcoin
-**Paper**: [Bitcoin: A Peer-to-Peer Electronic Cash System](https://bitcoin.org/bitcoin.pdf) by Satoshi Nakamoto (2008)  
-**Why**: SHA-256's most famous application. Specifically, Section 4 (Proof-of-Work) describes the "Double-SHA256" mechanism.  
-**Pedagogical Timing**: **Read after Milestone 4.** It transforms your code from an abstract utility into the engine that secures a trillion-dollar asset class.
-
-**Best Explanation**: [Chapter 8: Mining and Consensus](https://github.com/bitcoinbook/bitcoinbook/blob/develop/ch08.asciidoc) in *Mastering Bitcoin* by Andreas Antonopoulos.  
-**Why**: Visualizes how individual transaction hashes are combined into a "Merkle Tree" to produce a single block header hash.  
-**Pedagogical Timing**: **Read after Milestone 4.** It provides a grand-scale view of how your Milestone 4 `sha256_update` calls are used to build massive data structures.

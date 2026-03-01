@@ -1,4 +1,3 @@
-```markdown
 # 🎯 Project Charter: Container (Basic)
 
 ## What You Are Building
@@ -50,6 +49,69 @@ The project is complete when:
 - A "fork bomb" or memory-exhaustion script run inside the container is terminated by the kernel without crashing the host.
 - The runtime launches the container successfully when executed by a non-root user.
 ```
+
+---
+
+# 📚 Before You Read This: Prerequisites & Further Reading
+
+> **Read these first.** The Atlas assumes you are familiar with the foundations below.
+> Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
+
+### 🛠️ Core Primitives: Clone & Namespaces
+*   **Spec**: [man 7 namespaces](https://man7.org/linux/man-pages/man7/namespaces.7.html)
+*   **Code**: [runc/libcontainer/namespaces_linux.go](https://github.com/opencontainers/runc/blob/main/libcontainer/namespaces_linux.go) — See how production runtimes map OCI specs to `CLONE_NEW*` flags.
+*   **Best Explanation**: [Namespaces in Operation](https://lwn.net/Articles/531114/) by Michael Kerrisk. Read the "Introduction" and "PID Namespaces" sections.
+*   **Why**: This series by the man-page maintainer is the definitive technical history of how namespaces were integrated into the kernel.
+*   **Pedagogical Timing**: Read **BEFORE Milestone 1** to understand the "Why" behind the bitmask flags you are about to use.
+
+### 🧟 PID 1 & The Zombie Problem
+*   **Code**: [krallin/tini/src/tini.c](https://github.com/krallin/tini/blob/master/src/tini.c) — Specifically the `wait_and_forward_signal` loop.
+*   **Best Explanation**: [Docker and the PID 1 Zombie Reaping Problem](https://blog.phusion.nl/2015/01/20/docker-and-the-pid-1-zombie-reaping-problem/) by Phusion.
+*   **Why**: It explains the Unix process lifecycle transitions (orphaning/reaping) that cause real-world production leaks in containers.
+*   **Pedagogical Timing**: Read **AFTER Milestone 1** to appreciate why your `while(1)` reaper loop is a critical stability feature, not just boilerplate.
+
+### 📂 Filesystem Isolation: Pivot_root
+*   **Spec**: [man 2 pivot_root](https://man7.org/linux/man-pages/man2/pivot_root.2.html) — Read the "Notes" section regarding the 7 kernel checks.
+*   **Code**: [runc/libcontainer/rootfs_linux.go](https://github.com/opencontainers/runc/blob/main/libcontainer/rootfs_linux.go) — Look for the `pivotRoot` function.
+*   **Best Explanation**: [Path resolution: the kernel's perspective](https://lwn.net/Articles/649115/) by Neil Brown.
+*   **Why**: Understanding how the kernel walks a path is the only way to truly grasp how `pivot_root` physically disconnects the process from the host.
+*   **Pedagogical Timing**: Read **BEFORE Milestone 2** to avoid the "Invalid Argument" errors caused by failing the kernel's mount-point requirements.
+
+### 🌐 Networking: Veth & Bridges
+*   **Code**: [linux/drivers/net/veth.c](https://github.com/torvalds/linux/blob/master/drivers/net/veth.c) — See `veth_xmit` to confirm it’s just a pointer handoff.
+*   **Best Explanation**: [Container Networking From Scratch](https://iximiuz.com/en/posts/container-networking-is-simple/) by Ivan Velichko.
+*   **Why**: It provides the best visual mental model of how packets cross namespace boundaries via virtual wires.
+*   **Pedagogical Timing**: Read **BEFORE Milestone 3** to visualize the "Two-Phase Dance" before you implement the synchronization pipe.
+
+### ⚖️ Resource Control: Cgroups v2
+*   **Spec**: [Control Group v2 Documentation](https://www.kernel.org/doc/Documentation/admin-guide/cgroup-v2.rst)
+*   **Code**: [systemd/src/core/cgroup.c](https://github.com/systemd/systemd/blob/main/src/core/cgroup.c) — How the world's most common init system manages the unified hierarchy.
+*   **Best Explanation**: [Understanding Cgroups v2](https://facebookmicrosites.github.io/cgroup2/docs/overview.html) by Facebook Engineering.
+*   **Why**: Facebook (Meta) was the primary driver for v2; this guide explains the "No Internal Process" rule which is the biggest architectural shift from v1.
+*   **Pedagogical Timing**: Read **BEFORE Milestone 4** to understand why you must enable controllers in the `subtree_control` file.
+
+### ⏱️ CPU Scheduling: CFS Bandwidth
+*   **Paper**: [Design of the CFS Bandwidth Controller](https://www.kernel.org/doc/html/latest/scheduler/sched-bwc.html) (Kernel Docs).
+*   **Best Explanation**: [Demystifying Kubernetes CPU Limits](https://itnext.io/demystifying-kubernetes-cpu-limits-7ed847895088) by Omkar Birade.
+*   **Why**: It explains the "Sawtooth" performance degradation caused by period/quota mismatches.
+*   **Pedagogical Timing**: Read **DURING Milestone 4** while you are running the `cpu_stress` test to interpret your `cpu.stat` results.
+
+### 👤 Identity: User Namespaces
+*   **Best Explanation**: [User Namespaces: A Practical Guide](https://lwn.net/Articles/532593/) by Michael Kerrisk.
+*   **Code**: [shadow-utils/src/newuidmap.c](https://github.com/shadow-utils/shadow-utils/blob/master/src/newuidmap.c) — The privileged helper that validates `/etc/subuid`.
+*   **Why**: It clarifies the "Scoped Capabilities" model which is counter-intuitive to traditional Unix security.
+*   **Pedagogical Timing**: Read **BEFORE Milestone 5** to understand why your container has `CAP_SYS_ADMIN` inside but `EPERM` on the host.
+
+### 🛡️ Security: Capabilities & Seccomp
+*   **Spec**: [man 7 capabilities](https://man7.org/linux/man-pages/man7/capabilities.7.html)
+*   **Best Explanation**: [Container Security: A Guide to User Namespaces and Capabilities](https://sysdig.com/blog/linux-capabilities-docker/) by Sysdig.
+*   **Why**: This resource bridges the gap between raw kernel bits and how Docker/Kubernetes use "Capability Dropping" for hardening.
+*   **Pedagogical Timing**: Read **AFTER Milestone 5** to round out your understanding of the container's security profile.
+
+### 🐳 The Production Standard: OCI & Runc
+*   **Spec**: [OCI Runtime Specification](https://github.com/opencontainers/runtime-spec)
+*   **Why**: This is the industry standard that defines exactly how the variables you've built (rootfs, namespaces, cgroups) should be formatted in a `config.json`.
+*   **Pedagogical Timing**: Read **AFTER finishing the project** to see how your "basic" container matches the industrial-grade specification.
 
 ---
 
@@ -5607,61 +5669,3 @@ container-basic/
 - **Total files**: 15 (13 `.c`/`.h`, 1 `Makefile`, 1 `README.md`)
 - **Directories**: 2 (`src/`, `tests/`)
 - **Estimated lines of code**: ~1,200 - 1,500 lines of C.
-
-# 📚 Beyond the Atlas: Further Reading
-
-### 🛠️ Core Primitives: Clone & Namespaces
-*   **Spec**: [man 7 namespaces](https://man7.org/linux/man-pages/man7/namespaces.7.html)
-*   **Code**: [runc/libcontainer/namespaces_linux.go](https://github.com/opencontainers/runc/blob/main/libcontainer/namespaces_linux.go) — See how production runtimes map OCI specs to `CLONE_NEW*` flags.
-*   **Best Explanation**: [Namespaces in Operation](https://lwn.net/Articles/531114/) by Michael Kerrisk. Read the "Introduction" and "PID Namespaces" sections.
-*   **Why**: This series by the man-page maintainer is the definitive technical history of how namespaces were integrated into the kernel.
-*   **Pedagogical Timing**: Read **BEFORE Milestone 1** to understand the "Why" behind the bitmask flags you are about to use.
-
-### 🧟 PID 1 & The Zombie Problem
-*   **Code**: [krallin/tini/src/tini.c](https://github.com/krallin/tini/blob/master/src/tini.c) — Specifically the `wait_and_forward_signal` loop.
-*   **Best Explanation**: [Docker and the PID 1 Zombie Reaping Problem](https://blog.phusion.nl/2015/01/20/docker-and-the-pid-1-zombie-reaping-problem/) by Phusion.
-*   **Why**: It explains the Unix process lifecycle transitions (orphaning/reaping) that cause real-world production leaks in containers.
-*   **Pedagogical Timing**: Read **AFTER Milestone 1** to appreciate why your `while(1)` reaper loop is a critical stability feature, not just boilerplate.
-
-### 📂 Filesystem Isolation: Pivot_root
-*   **Spec**: [man 2 pivot_root](https://man7.org/linux/man-pages/man2/pivot_root.2.html) — Read the "Notes" section regarding the 7 kernel checks.
-*   **Code**: [runc/libcontainer/rootfs_linux.go](https://github.com/opencontainers/runc/blob/main/libcontainer/rootfs_linux.go) — Look for the `pivotRoot` function.
-*   **Best Explanation**: [Path resolution: the kernel's perspective](https://lwn.net/Articles/649115/) by Neil Brown.
-*   **Why**: Understanding how the kernel walks a path is the only way to truly grasp how `pivot_root` physically disconnects the process from the host.
-*   **Pedagogical Timing**: Read **BEFORE Milestone 2** to avoid the "Invalid Argument" errors caused by failing the kernel's mount-point requirements.
-
-### 🌐 Networking: Veth & Bridges
-*   **Code**: [linux/drivers/net/veth.c](https://github.com/torvalds/linux/blob/master/drivers/net/veth.c) — See `veth_xmit` to confirm it’s just a pointer handoff.
-*   **Best Explanation**: [Container Networking From Scratch](https://iximiuz.com/en/posts/container-networking-is-simple/) by Ivan Velichko.
-*   **Why**: It provides the best visual mental model of how packets cross namespace boundaries via virtual wires.
-*   **Pedagogical Timing**: Read **BEFORE Milestone 3** to visualize the "Two-Phase Dance" before you implement the synchronization pipe.
-
-### ⚖️ Resource Control: Cgroups v2
-*   **Spec**: [Control Group v2 Documentation](https://www.kernel.org/doc/Documentation/admin-guide/cgroup-v2.rst)
-*   **Code**: [systemd/src/core/cgroup.c](https://github.com/systemd/systemd/blob/main/src/core/cgroup.c) — How the world's most common init system manages the unified hierarchy.
-*   **Best Explanation**: [Understanding Cgroups v2](https://facebookmicrosites.github.io/cgroup2/docs/overview.html) by Facebook Engineering.
-*   **Why**: Facebook (Meta) was the primary driver for v2; this guide explains the "No Internal Process" rule which is the biggest architectural shift from v1.
-*   **Pedagogical Timing**: Read **BEFORE Milestone 4** to understand why you must enable controllers in the `subtree_control` file.
-
-### ⏱️ CPU Scheduling: CFS Bandwidth
-*   **Paper**: [Design of the CFS Bandwidth Controller](https://www.kernel.org/doc/html/latest/scheduler/sched-bwc.html) (Kernel Docs).
-*   **Best Explanation**: [Demystifying Kubernetes CPU Limits](https://itnext.io/demystifying-kubernetes-cpu-limits-7ed847895088) by Omkar Birade.
-*   **Why**: It explains the "Sawtooth" performance degradation caused by period/quota mismatches.
-*   **Pedagogical Timing**: Read **DURING Milestone 4** while you are running the `cpu_stress` test to interpret your `cpu.stat` results.
-
-### 👤 Identity: User Namespaces
-*   **Best Explanation**: [User Namespaces: A Practical Guide](https://lwn.net/Articles/532593/) by Michael Kerrisk.
-*   **Code**: [shadow-utils/src/newuidmap.c](https://github.com/shadow-utils/shadow-utils/blob/master/src/newuidmap.c) — The privileged helper that validates `/etc/subuid`.
-*   **Why**: It clarifies the "Scoped Capabilities" model which is counter-intuitive to traditional Unix security.
-*   **Pedagogical Timing**: Read **BEFORE Milestone 5** to understand why your container has `CAP_SYS_ADMIN` inside but `EPERM` on the host.
-
-### 🛡️ Security: Capabilities & Seccomp
-*   **Spec**: [man 7 capabilities](https://man7.org/linux/man-pages/man7/capabilities.7.html)
-*   **Best Explanation**: [Container Security: A Guide to User Namespaces and Capabilities](https://sysdig.com/blog/linux-capabilities-docker/) by Sysdig.
-*   **Why**: This resource bridges the gap between raw kernel bits and how Docker/Kubernetes use "Capability Dropping" for hardening.
-*   **Pedagogical Timing**: Read **AFTER Milestone 5** to round out your understanding of the container's security profile.
-
-### 🐳 The Production Standard: OCI & Runc
-*   **Spec**: [OCI Runtime Specification](https://github.com/opencontainers/runtime-spec)
-*   **Why**: This is the industry standard that defines exactly how the variables you've built (rootfs, namespaces, cgroups) should be formatted in a `config.json`.
-*   **Pedagogical Timing**: Read **AFTER finishing the project** to see how your "basic" container matches the industrial-grade specification.

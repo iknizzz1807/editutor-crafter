@@ -1,4 +1,3 @@
-```markdown
 # 🎯 Project Charter: HTTP Server (Basic)
 
 ## What You Are Building
@@ -3850,4 +3849,3 @@ http-server/
 - **Build/Config Files**: 3
 - **Total Directories**: 3 (root, include, src)
 - **Estimated Lines of Code**: ~1,450 LOC (Implementation logic + Comments)
-

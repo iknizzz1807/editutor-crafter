@@ -45,6 +45,75 @@ The project is complete when:
 
 ---
 
+# 📚 Before You Read This: Prerequisites & Further Reading
+
+> **Read these first.** The Atlas assumes you are familiar with the foundations below.
+> Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
+
+### 🧠 Foundational Theory: Automata & Formal Languages
+
+**Paper**: [A Technique for General Writing of Code Generators](https://dl.acm.org/doi/10.1145/363347.363387) (Brooker & Morris, 1962).
+- **Code**: [The RE2 Lexer Logic](https://github.com/google/re2/blob/main/re2/parse.cc) (specifically the `Parse` function).
+- **Best Explanation**: *Introduction to the Theory of Computation* by Michael Sipser, **Chapter 1: Regular Languages**.
+- **Why**: This is the rigorous mathematical proof that finite automata can recognize exactly the class of languages definable by regular expressions.
+- **Pedagogical Timing**: Read **BEFORE Milestone 1** to understand the mathematical constraints of what you are building.
+
+**Paper**: [Regular Expression Search Algorithm](https://dl.acm.org/doi/10.1145/363347.363387) (Ken Thompson, 1968).
+- **Best Explanation**: [Regular Expression Matching Can Be Simple and Fast](https://swtch.com/~rsc/regexp/regexp1.html) by Russ Cox.
+- **Why**: It explains how to build an NFA from a regex, which is the automated version of the hand-written state machine you are building.
+- **Pedagogical Timing**: Read **AFTER Milestone 2** to see how the "Maximal Munch" logic you wrote manually can be generated automatically from patterns.
+
+---
+
+### 🛠️ The Craft of Lexing: Implementation Guides
+
+**Best Explanation**: *Crafting Interpreters* by Robert Nystrom, **Chapter 4: Scanning**.
+- **Code**: [Lox Scanner.java](https://github.com/munificent/craftinginterpreters/blob/master/java/com/craftinginterpreters/lox/Scanner.java).
+- **Why**: The most modern, approachable, and pedagogically sound walkthrough of building a hand-written scanner for a C-like language.
+- **Pedagogical Timing**: Read **DURING Milestone 1**; it serves as a parallel guide to the logic implemented in this Atlas.
+
+**Spec**: [The Lexical Grammar of C11](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf) (ISO/IEC 9899:201x, **Section 6.4**).
+- **Code**: [Clang’s Lexer.cpp](https://github.com/llvm/llvm-project/blob/main/clang/lib/Lex/Lexer.cpp).
+- **Why**: It defines the "gold standard" rules for the language your project is mimicking, including tricky edge cases for numbers and strings.
+- **Pedagogical Timing**: Read **DURING Milestone 2** to see how a professional language defines the boundaries of integers and floating-point literals.
+
+---
+
+### 🏗️ Real-World Tokenizers: Case Studies
+
+**Code**: [CPython’s Lib/tokenize.py](https://github.com/python/cpython/blob/main/Lib/tokenize.py).
+- **Best Explanation**: [The Python Tokenizer Documentation](https://docs.python.org/3/library/tokenize.html).
+- **Why**: Shows how a production-grade language uses a hybrid approach (regex + manual logic) to handle indentation-sensitive lexing.
+- **Pedagogical Timing**: Read **AFTER Milestone 2** to compare your identifier and keyword lookup logic with Python's implementation.
+
+**Code**: [V8’s scanner.cc](https://github.com/v8/v8/blob/master/src/parsing/scanner.cc).
+- **Why**: V8's scanner is optimized for extreme performance, showing how to handle Unicode/UTF-8 characters at scale.
+- **Pedagogical Timing**: Read **AFTER Milestone 4** once you have met your performance benchmarks to see how "The Big Boys" do it.
+
+---
+
+### ⚠️ Error Handling & Recovery
+
+**Paper**: [Panic Mode Recovery in Lexical Analysis](https://dl.acm.org/doi/10.1145/359545.359565) (James, 1972).
+- **Best Explanation**: *Compilers: Principles, Techniques, and Tools* (The Dragon Book), **Section 3.1.4: Lexical Errors**.
+- **Why**: It introduces the "Panic Mode" philosophy used in your project, where the scanner recovers by skipping to the next "safe" character.
+- **Pedagogical Timing**: Read **BEFORE Milestone 4** to understand why emitting an `ERROR` token is superior to throwing an exception.
+
+---
+
+### 🧵 Strings, Escapes, and Character Sets
+
+**Spec**: [The Unicode Standard, Version 15.0](https://www.unicode.org/versions/Unicode15.0.0/), **Chapter 3: Conformance (UTF-8)**.
+- **Best Explanation**: [The Absolute Minimum Every Software Developer Absolutely, Positively Must Know About Unicode and Character Sets](https://www.joelonsoftware.com/2003/10/08/the-absolute-minimum-every-software-developer-absolutely-positively-must-know-about-unicode-and-character-sets-no-excuses/) by Joel Spolsky.
+- **Why**: Explains why "character-at-a-time" scanning is significantly more complex once you leave the ASCII range.
+- **Pedagogical Timing**: Read **BEFORE Milestone 3** to prepare for the complexities of scanning string content.
+
+**Spec**: [RFC 8259: The JavaScript Object Notation (JSON) Data Interchange Format](https://datatracker.ietf.org/doc/html/rfc8259#section-7).
+- **Why**: Defines the most widely used standard for string escape sequences (`\n`, `\uXXXX`), which mirrors the logic in M3.
+- **Pedagogical Timing**: Read **DURING Milestone 3** to validate your escape sequence logic against the JSON standard.
+
+---
+
 # Tokenizer / Lexer — Interactive Atlas
 
 This project builds a complete character-level lexer for a simple C-like language. You will implement a finite state machine that reads source code one character at a time, applies the maximal munch principle to resolve ambiguities, and emits a categorized stream of tokens. Along the way you will handle string escape sequences, nested comment edge cases, position tracking, and error recovery — the same problems faced by every real-world compiler frontend from GCC to V8.
@@ -4168,67 +4237,3 @@ tokenizer-lexer/
 - **Total Configuration Files**: 4 (`Makefile`, `README`, etc.)
 - **Estimated Lines of Code**: ~400–600 lines (Logic) / ~800 lines (Tests)
 - **Target Language**: Python 3.10+ (requires `dataclasses` and `enum`)
-
-# 📚 Beyond the Atlas: Further Reading
-
-### 🧠 Foundational Theory: Automata & Formal Languages
-
-**Paper**: [A Technique for General Writing of Code Generators](https://dl.acm.org/doi/10.1145/363347.363387) (Brooker & Morris, 1962).
-- **Code**: [The RE2 Lexer Logic](https://github.com/google/re2/blob/main/re2/parse.cc) (specifically the `Parse` function).
-- **Best Explanation**: *Introduction to the Theory of Computation* by Michael Sipser, **Chapter 1: Regular Languages**.
-- **Why**: This is the rigorous mathematical proof that finite automata can recognize exactly the class of languages definable by regular expressions.
-- **Pedagogical Timing**: Read **BEFORE Milestone 1** to understand the mathematical constraints of what you are building.
-
-**Paper**: [Regular Expression Search Algorithm](https://dl.acm.org/doi/10.1145/363347.363387) (Ken Thompson, 1968).
-- **Best Explanation**: [Regular Expression Matching Can Be Simple and Fast](https://swtch.com/~rsc/regexp/regexp1.html) by Russ Cox.
-- **Why**: It explains how to build an NFA from a regex, which is the automated version of the hand-written state machine you are building.
-- **Pedagogical Timing**: Read **AFTER Milestone 2** to see how the "Maximal Munch" logic you wrote manually can be generated automatically from patterns.
-
----
-
-### 🛠️ The Craft of Lexing: Implementation Guides
-
-**Best Explanation**: *Crafting Interpreters* by Robert Nystrom, **Chapter 4: Scanning**.
-- **Code**: [Lox Scanner.java](https://github.com/munificent/craftinginterpreters/blob/master/java/com/craftinginterpreters/lox/Scanner.java).
-- **Why**: The most modern, approachable, and pedagogically sound walkthrough of building a hand-written scanner for a C-like language.
-- **Pedagogical Timing**: Read **DURING Milestone 1**; it serves as a parallel guide to the logic implemented in this Atlas.
-
-**Spec**: [The Lexical Grammar of C11](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf) (ISO/IEC 9899:201x, **Section 6.4**).
-- **Code**: [Clang’s Lexer.cpp](https://github.com/llvm/llvm-project/blob/main/clang/lib/Lex/Lexer.cpp).
-- **Why**: It defines the "gold standard" rules for the language your project is mimicking, including tricky edge cases for numbers and strings.
-- **Pedagogical Timing**: Read **DURING Milestone 2** to see how a professional language defines the boundaries of integers and floating-point literals.
-
----
-
-### 🏗️ Real-World Tokenizers: Case Studies
-
-**Code**: [CPython’s Lib/tokenize.py](https://github.com/python/cpython/blob/main/Lib/tokenize.py).
-- **Best Explanation**: [The Python Tokenizer Documentation](https://docs.python.org/3/library/tokenize.html).
-- **Why**: Shows how a production-grade language uses a hybrid approach (regex + manual logic) to handle indentation-sensitive lexing.
-- **Pedagogical Timing**: Read **AFTER Milestone 2** to compare your identifier and keyword lookup logic with Python's implementation.
-
-**Code**: [V8’s scanner.cc](https://github.com/v8/v8/blob/master/src/parsing/scanner.cc).
-- **Why**: V8's scanner is optimized for extreme performance, showing how to handle Unicode/UTF-8 characters at scale.
-- **Pedagogical Timing**: Read **AFTER Milestone 4** once you have met your performance benchmarks to see how "The Big Boys" do it.
-
----
-
-### ⚠️ Error Handling & Recovery
-
-**Paper**: [Panic Mode Recovery in Lexical Analysis](https://dl.acm.org/doi/10.1145/359545.359565) (James, 1972).
-- **Best Explanation**: *Compilers: Principles, Techniques, and Tools* (The Dragon Book), **Section 3.1.4: Lexical Errors**.
-- **Why**: It introduces the "Panic Mode" philosophy used in your project, where the scanner recovers by skipping to the next "safe" character.
-- **Pedagogical Timing**: Read **BEFORE Milestone 4** to understand why emitting an `ERROR` token is superior to throwing an exception.
-
----
-
-### 🧵 Strings, Escapes, and Character Sets
-
-**Spec**: [The Unicode Standard, Version 15.0](https://www.unicode.org/versions/Unicode15.0.0/), **Chapter 3: Conformance (UTF-8)**.
-- **Best Explanation**: [The Absolute Minimum Every Software Developer Absolutely, Positively Must Know About Unicode and Character Sets](https://www.joelonsoftware.com/2003/10/08/the-absolute-minimum-every-software-developer-absolutely-positively-must-know-about-unicode-and-character-sets-no-excuses/) by Joel Spolsky.
-- **Why**: Explains why "character-at-a-time" scanning is significantly more complex once you leave the ASCII range.
-- **Pedagogical Timing**: Read **BEFORE Milestone 3** to prepare for the complexities of scanning string content.
-
-**Spec**: [RFC 8259: The JavaScript Object Notation (JSON) Data Interchange Format](https://datatracker.ietf.org/doc/html/rfc8259#section-7).
-- **Why**: Defines the most widely used standard for string escape sequences (`\n`, `\uXXXX`), which mirrors the logic in M3.
-- **Pedagogical Timing**: Read **DURING Milestone 3** to validate your escape sequence logic against the JSON standard.

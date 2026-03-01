@@ -50,6 +50,62 @@ The project is complete when:
 
 ---
 
+# 📚 Before You Read This: Prerequisites & Further Reading
+
+> **Read these first.** The Atlas assumes you are familiar with the foundations below.
+> Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
+
+## I. Core Architecture & The Inode
+**Paper**: McKusick, M. K., et al. (1984). *A Fast File System for UNIX*.
+**Code**: [Linux Kernel: fs/ext2/inode.c](https://github.com/torvalds/linux/blob/master/fs/ext2/inode.c) — `ext2_get_block` is the classic implementation of the indirection tree.
+**Best Explanation**: [OSTEP: Chapter 40 - File System Implementation](https://pages.cs.wisc.edu/~remzi/OSTEP/file-implementation.pdf).
+**Why**: This chapter provides the clearest visual breakdown of how bitmapped allocation and inode tables interact in a "Simple File System."
+**Pedagogical Timing**: Read **BEFORE Milestone 1**. It establishes the mental model of the disk as an array of blocks that you will spend the rest of the project implementing.
+
+**Code**: [Linux Kernel: fs/ext4/extents.c](https://github.com/torvalds/linux/blob/master/fs/ext4/extents.c) — Specifically the `ext4_ext_binsearch` function.
+**Best Explanation**: [Ext4 Disk Layout (Kernel.org Wiki)](https://ext4.wiki.kernel.org/index.php/Ext4_Disk_Layout#Extents).
+**Why**: This is the industry successor to the indirection tree you build in Milestone 2, essential for understanding modern large-scale storage.
+**Pedagogical Timing**: Read **AFTER Milestone 2**. Once you've struggled with the math of triple-indirection, you will immediately appreciate why "extents" are a more efficient way to track contiguous data.
+
+## II. VFS & Path Resolution
+**Paper**: Kleiman, S. R. (1986). *Vnodes: An Architecture for Multiple File System Types in Sun UNIX*.
+**Code**: [Linux Kernel: fs/namei.c](https://github.com/torvalds/linux/blob/master/fs/namei.c) — The `link_path_walk` function is the actual engine behind `path_resolve`.
+**Best Explanation**: [The Path Lookup Series (LWN.net)](https://lwn.net/Articles/649115/) — Specifically "Part 2: Components of the path."
+**Why**: Neil Brown provides the most exhaustive explanation of the "walking" process and the subtle complexity of symlinks and mount points.
+**Pedagogical Timing**: Read **DURING Milestone 3**. Use it to debug your logic for `..` and trailing slashes in your path resolution engine.
+
+## III. Userspace Integration (FUSE)
+**Paper**: Vangoor, B. R., et al. (2017). *To FUSE or Not to FUSE: Performance of User-Level File Systems*.
+**Code**: [libfuse: example/hello.c](https://github.com/libfuse/libfuse/blob/master/example/hello.c).
+**Best Explanation**: [FUSE Kernel Documentation](https://www.kernel.org/doc/html/latest/filesystems/fuse.html).
+**Why**: It explains the protocol that lives inside `/dev/fuse`, clarifying how requests move from the VFS to your C code.
+**Pedagogical Timing**: Read **BEFORE Milestone 5**. You need to understand that FUSE is a message-passing protocol before you try to debug context switches and locking.
+
+## IV. Persistence & Crash Safety
+**Paper**: Prabhakaran, V., et al. (2005). *Analysis and Evolution of Journaling File Systems*.
+**Code**: [Linux Kernel: fs/jbd2/transaction.c](https://github.com/torvalds/linux/blob/master/fs/jbd2/transaction.c) — Look for `jbd2_journal_commit_transaction`.
+**Best Explanation**: [OSTEP: Chapter 42 - Crash Consistency: FSCK and Journaling](https://pages.cs.wisc.edu/~remzi/OSTEP/file-journaling.pdf).
+**Why**: It provides a narrative walkthrough of the "Why" behind write-ahead logging using the same block-level terminology as this project.
+**Pedagogical Timing**: Read **BEFORE starting Milestone 6**. This is a conceptually heavy module; the OSTEP chapter acts as the necessary map before you write the code.
+
+**Explanation**: [SQLite: Atomic Commit In SQLite](https://www.sqlite.org/atomiccommit.html) — Section 3.0 "The Rollback Journal."
+**Why**: This is a perfect example of how a database implements the same "intent-to-write" logic at the application level to ensure atomicity.
+**Pedagogical Timing**: Read **AFTER Milestone 6**. It will help you realize that your filesystem's journal and a database's WAL are essentially the same machine built for different purposes.
+
+## V. Hardware Interaction (The Physical Layer)
+**Spec**: [NVMe Express Base Specification, Revision 2.0](https://nvmexpress.org/developers/nvme-specification/) — Section 3.1.3 "Logical Block Address (LBA)."
+**Best Explanation**: [The LBA is a Lie: An Introduction to SSDs (Cody Littlewood)](https://codingwithcody.com/2018/12/03/the-lba-is-a-lie/).
+**Why**: It shatters the illusion that writing to "Block 5" means writing to the 5th physical slot on an SSD, explaining the "Flash Translation Layer."
+**Pedagogical Timing**: Read **AFTER Milestone 4**. You've implemented software-level indirection; now see how the hardware implements its own hidden indirection for wear leveling.
+
+## VI. Memory Management Parallelism
+**Code**: [jemalloc: src/bitmap.c](https://github.com/jemalloc/jemalloc/blob/dev/src/bitmap.c).
+**Best Explanation**: [Understanding the Linux Virtual Memory Manager (Mel Gorman)](https://www.kernel.org/doc/gorman/pdf/understand.pdf) — Chapter 6 "Page Frame Allocation."
+**Why**: This shows that the bitmap allocator you built in Milestone 1 is identical to how the Linux kernel manages physical RAM.
+**Pedagogical Timing**: Read **AFTER Milestone 1**. It validates that the patterns you are learning (bitmaps, alignment, metadata) are universal in systems engineering.
+
+---
+
 # Filesystem Implementation: An Interactive Atlas
 
 This project builds a complete inode-based filesystem from raw blocks up through FUSE mounting and write-ahead journaling. You will start with nothing but a flat file acting as a disk image, and layer increasingly sophisticated abstractions: block I/O, bitmap allocation, inode metadata with multi-level indirection, directory trees with path resolution, full POSIX-like file operations, real OS integration via FUSE, and finally crash-consistent journaling. Each layer reveals how the operating system transforms a dumb array of 4KB blocks into the rich tree of files and directories that every program takes for granted.
@@ -7416,54 +7472,3 @@ filesystem-root/
 - Total files: 35
 - Directories: 9
 - Estimated lines of code: ~4,500 lines of C (excluding tests)
-
-# 📚 Beyond the Atlas: Further Reading
-
-## I. Core Architecture & The Inode
-**Paper**: McKusick, M. K., et al. (1984). *A Fast File System for UNIX*.
-**Code**: [Linux Kernel: fs/ext2/inode.c](https://github.com/torvalds/linux/blob/master/fs/ext2/inode.c) — `ext2_get_block` is the classic implementation of the indirection tree.
-**Best Explanation**: [OSTEP: Chapter 40 - File System Implementation](https://pages.cs.wisc.edu/~remzi/OSTEP/file-implementation.pdf).
-**Why**: This chapter provides the clearest visual breakdown of how bitmapped allocation and inode tables interact in a "Simple File System."
-**Pedagogical Timing**: Read **BEFORE Milestone 1**. It establishes the mental model of the disk as an array of blocks that you will spend the rest of the project implementing.
-
-**Code**: [Linux Kernel: fs/ext4/extents.c](https://github.com/torvalds/linux/blob/master/fs/ext4/extents.c) — Specifically the `ext4_ext_binsearch` function.
-**Best Explanation**: [Ext4 Disk Layout (Kernel.org Wiki)](https://ext4.wiki.kernel.org/index.php/Ext4_Disk_Layout#Extents).
-**Why**: This is the industry successor to the indirection tree you build in Milestone 2, essential for understanding modern large-scale storage.
-**Pedagogical Timing**: Read **AFTER Milestone 2**. Once you've struggled with the math of triple-indirection, you will immediately appreciate why "extents" are a more efficient way to track contiguous data.
-
-## II. VFS & Path Resolution
-**Paper**: Kleiman, S. R. (1986). *Vnodes: An Architecture for Multiple File System Types in Sun UNIX*.
-**Code**: [Linux Kernel: fs/namei.c](https://github.com/torvalds/linux/blob/master/fs/namei.c) — The `link_path_walk` function is the actual engine behind `path_resolve`.
-**Best Explanation**: [The Path Lookup Series (LWN.net)](https://lwn.net/Articles/649115/) — Specifically "Part 2: Components of the path."
-**Why**: Neil Brown provides the most exhaustive explanation of the "walking" process and the subtle complexity of symlinks and mount points.
-**Pedagogical Timing**: Read **DURING Milestone 3**. Use it to debug your logic for `..` and trailing slashes in your path resolution engine.
-
-## III. Userspace Integration (FUSE)
-**Paper**: Vangoor, B. R., et al. (2017). *To FUSE or Not to FUSE: Performance of User-Level File Systems*.
-**Code**: [libfuse: example/hello.c](https://github.com/libfuse/libfuse/blob/master/example/hello.c).
-**Best Explanation**: [FUSE Kernel Documentation](https://www.kernel.org/doc/html/latest/filesystems/fuse.html).
-**Why**: It explains the protocol that lives inside `/dev/fuse`, clarifying how requests move from the VFS to your C code.
-**Pedagogical Timing**: Read **BEFORE Milestone 5**. You need to understand that FUSE is a message-passing protocol before you try to debug context switches and locking.
-
-## IV. Persistence & Crash Safety
-**Paper**: Prabhakaran, V., et al. (2005). *Analysis and Evolution of Journaling File Systems*.
-**Code**: [Linux Kernel: fs/jbd2/transaction.c](https://github.com/torvalds/linux/blob/master/fs/jbd2/transaction.c) — Look for `jbd2_journal_commit_transaction`.
-**Best Explanation**: [OSTEP: Chapter 42 - Crash Consistency: FSCK and Journaling](https://pages.cs.wisc.edu/~remzi/OSTEP/file-journaling.pdf).
-**Why**: It provides a narrative walkthrough of the "Why" behind write-ahead logging using the same block-level terminology as this project.
-**Pedagogical Timing**: Read **BEFORE starting Milestone 6**. This is a conceptually heavy module; the OSTEP chapter acts as the necessary map before you write the code.
-
-**Explanation**: [SQLite: Atomic Commit In SQLite](https://www.sqlite.org/atomiccommit.html) — Section 3.0 "The Rollback Journal."
-**Why**: This is a perfect example of how a database implements the same "intent-to-write" logic at the application level to ensure atomicity.
-**Pedagogical Timing**: Read **AFTER Milestone 6**. It will help you realize that your filesystem's journal and a database's WAL are essentially the same machine built for different purposes.
-
-## V. Hardware Interaction (The Physical Layer)
-**Spec**: [NVMe Express Base Specification, Revision 2.0](https://nvmexpress.org/developers/nvme-specification/) — Section 3.1.3 "Logical Block Address (LBA)."
-**Best Explanation**: [The LBA is a Lie: An Introduction to SSDs (Cody Littlewood)](https://codingwithcody.com/2018/12/03/the-lba-is-a-lie/).
-**Why**: It shatters the illusion that writing to "Block 5" means writing to the 5th physical slot on an SSD, explaining the "Flash Translation Layer."
-**Pedagogical Timing**: Read **AFTER Milestone 4**. You've implemented software-level indirection; now see how the hardware implements its own hidden indirection for wear leveling.
-
-## VI. Memory Management Parallelism
-**Code**: [jemalloc: src/bitmap.c](https://github.com/jemalloc/jemalloc/blob/dev/src/bitmap.c).
-**Best Explanation**: [Understanding the Linux Virtual Memory Manager (Mel Gorman)](https://www.kernel.org/doc/gorman/pdf/understand.pdf) — Chapter 6 "Page Frame Allocation."
-**Why**: This shows that the bitmap allocator you built in Milestone 1 is identical to how the Linux kernel manages physical RAM.
-**Pedagogical Timing**: Read **AFTER Milestone 1**. It validates that the patterns you are learning (bitmaps, alignment, metadata) are universal in systems engineering.

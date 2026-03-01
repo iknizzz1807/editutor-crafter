@@ -282,6 +282,14 @@ def extract_json(text):
     return None
 
 
+def strip_code_fence(text: str) -> str:
+    """Remove wrapping ```markdown ... ``` or ``` ... ``` that LLMs sometimes add."""
+    text = text.strip()
+    text = re.sub(r"^```[a-zA-Z]*\n", "", text)
+    text = re.sub(r"\n```$", "", text)
+    return text.strip()
+
+
 def strip_ansi_codes(text):
     ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
     return ansi_escape.sub("", str(text))
@@ -1757,7 +1765,7 @@ TASK: Output ONLY the Project Charter markdown. Start directly with `# 🎯 Proj
         node_label="Project Charter",
         project_id=state["project_id"],
     )
-    charter_md = str(res.content).strip()
+    charter_md = strip_code_fence(str(res.content))
     print(f"  [Agent: Project Charter] Generated {len(charter_md)} chars")
     return {"project_charter_md": charter_md}
 
@@ -2008,13 +2016,13 @@ def generate_project(project_id):
     full = (
         final_state.get("project_charter_md", "")
         + "\n\n---\n\n"
+        + final_state.get("external_reading", "")
+        + "\n\n---\n\n"
         + final_state.get("accumulated_md", "")
         + "\n\n"
         + final_state.get("tdd_accumulated_md", "")
         + "\n\n"
         + final_state.get("project_structure_md", "")
-        + "\n\n"
-        + final_state.get("external_reading", "")
     )
     (proj_dir / "index.md").write_text(full)
 

@@ -1,0 +1,197 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## URL Path → Filesystem Path Pipeline
+  ### Malicious path neutralization via realpath() + prefix check
+| {near: top-center}
+pipeline: "" {
+  style.stroke: transparent
+  style.fill: transparent
+  direction: down
+  s1: "Stage 1: URL Decode" {
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    style.border-radius: 6
+    direction: right
+    in1: {
+      shape: sql_table
+      label: "INPUT (raw request path)"
+      raw: "/%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd"
+    }
+    fn1: {
+      shape: hexagon
+      label: "url_decode()"
+      style.fill: "#BBDEFB"
+      style.stroke: "#1565C0"
+    }
+    out1: {
+      shape: sql_table
+      label: "OUTPUT (percent-decoded)"
+      decoded: "/../../../etc/passwd"
+    }
+    in1 -> fn1: "src | char*"
+    fn1 -> out1: "char* | write"
+  }
+  s2: "Stage 2: Concatenate with Document Root" {
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    style.border-radius: 6
+    direction: right
+    in2: {
+      shape: sql_table
+      label: "INPUTS"
+      doc_root: "doc_root = /var/www/html"
+      dec_path: "decoded  = /../../../etc/passwd"
+    }
+    fn2: {
+      shape: hexagon
+      label: "build_full_path()"
+      style.fill: "#C8E6C9"
+      style.stroke: "#2E7D32"
+    }
+    out2: {
+      shape: sql_table
+      label: "OUTPUT (raw full path)"
+      full: "/var/www/html/../../../etc/passwd"
+    }
+    in2 -> fn2: "root+path | concat"
+    fn2 -> out2: "char* | write"
+  }
+  s3: "Stage 3: realpath() — Canonicalize" {
+    style.fill: "#FFF8E1"
+    style.stroke: "#F57F17"
+    style.border-radius: 6
+    direction: right
+    in3: {
+      shape: sql_table
+      label: "INPUT (unresolved path)"
+      raw_full: "/var/www/html/../../../etc/passwd"
+    }
+    fn3: {
+      shape: hexagon
+      label: "realpath()"
+      style.fill: "#FFE082"
+      style.stroke: "#F57F17"
+    }
+    note3: "resolves" {
+      shape: sql_table
+      label: "KERNEL OPERATIONS"
+      op1: "lstat /var          → OK"
+      op2: "lstat /var/www      → OK"
+      op3: "lstat /var/www/html → OK"
+      op4: "resolve ../../../   → /etc"
+      op5: "lstat /etc/passwd   → OK"
+    }
+    out3: {
+      shape: sql_table
+      label: "OUTPUT (canonical path)"
+      canon: "/etc/passwd"
+      note: "all symlinks + .. resolved"
+    }
+    in3 -> fn3: "path | syscall"
+    fn3 -> note3: "lstat* | walk"
+    fn3 -> out3: "char* | write"
+  }
+  s4: "Stage 4: Prefix Check — ATTACK STOPPED HERE" {
+    style.fill: "#FFEBEE"
+    style.stroke: "#B71C1C"
+    style.stroke-width: 3
+    style.border-radius: 6
+    direction: right
+    in4: {
+      shape: sql_table
+      label: "INPUTS"
+      canon4: "canonical = /etc/passwd"
+      root4:  "doc_root  = /var/www/html"
+      rootlen: "root_len  = 13 bytes"
+    }
+    fn4: {
+      shape: diamond
+      label: "strncmp(canonical,\ndoc_root, root_len) == 0\nAND\ncanonical[root_len] == '/'"
+      style.fill: "#EF9A9A"
+      style.stroke: "#B71C1C"
+    }
+    out4_fail: "403 Forbidden" {
+      shape: oval
+      style.fill: "#B71C1C"
+      style.font-color: "#FFFFFF"
+      style.stroke: "#7F0000"
+    }
+    out4_pass: "Continue to Stage 5" {
+      shape: oval
+      style.fill: "#A5D6A7"
+      style.stroke: "#2E7D32"
+      style.opacity: 0.4
+    }
+    note4: {
+      shape: sql_table
+      label: "CHECK DETAIL"
+      c1: "strncmp('/etc/passwd', '/var/www/html', 13)"
+      c2: "  => '/etc' != '/var' → FAIL"
+      c3: "Result: OUTSIDE document root"
+    }
+    in4 -> fn4: "strings | compare"
+    fn4 -> out4_fail: "FAIL | 403"
+    fn4 -> out4_pass: "PASS | continue"
+    fn4 -> note4: "logic | trace"
+  }
+  s5: "Stage 5: stat() — Existence and Type Check" {
+    style.fill: "#F3E5F5"
+    style.stroke: "#6A1B9A"
+    style.border-radius: 6
+    style.opacity: 0.45
+    direction: right
+    in5: {
+      shape: sql_table
+      label: "INPUT (safe canonical path — NEVER REACHED by attacker)"
+      safe_ex: "/var/www/html/index.html"
+    }
+    fn5: {
+      shape: hexagon
+      label: "stat()"
+      style.fill: "#CE93D8"
+      style.stroke: "#6A1B9A"
+    }
+    out5: {
+      shape: sql_table
+      label: "OUTPUT (file metadata)"
+      size:  "st_size  = 1024 bytes"
+      mtime: "st_mtime = 1709337600"
+      mode:  "S_ISREG  = 1  (regular file)"
+    }
+    in5 -> fn5: "path | syscall"
+    fn5 -> out5: "struct stat | fill"
+  }
+}
+pipeline.s1 -> pipeline.s2: "decoded path | char*"
+pipeline.s2 -> pipeline.s3: "full path | char*"
+pipeline.s3 -> pipeline.s4: "canonical | char*"
+pipeline.s4 -> pipeline.s5: "safe path | char* (only on PASS)" {
+  style.stroke-dash: 4
+  style.stroke: "#9E9E9E"
+}
+legend: "" {
+  near: bottom-right
+  style.stroke: "#78909C"
+  style.fill: "#ECEFF1"
+  style.border-radius: 4
+  l1: "RED border  = security gate" {
+    style.font-color: "#B71C1C"
+    style.bold: true
+  }
+  l2: "ORANGE      = kernel syscall (realpath)" {
+    style.font-color: "#E65100"
+  }
+  l3: "DASHED edge = path only reached by benign input" {
+    style.font-color: "#546E7A"
+  }
+  l4: "ATTACK PATH: stopped at Stage 4 (403 Forbidden)" {
+    style.font-color: "#B71C1C"
+    style.bold: true
+  }
+}

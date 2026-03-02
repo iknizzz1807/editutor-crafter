@@ -1,0 +1,91 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+shape: sequence_diagram
+
+caller: "Caller"
+ctx: "SHA256_CTX"
+compress: "sha256_compress()"
+
+init: {
+  caller -> ctx: "sha256_init(ctx)"
+  ctx -> ctx: "H[0..7] ← SHA256_INITIAL_HASH\nbuf_len ← 0\ntotal_bits ← 0"
+  caller <- ctx: "return"
+}
+
+update1: "sha256_update(ctx, chunk1, 30)" {
+  caller -> ctx: "sha256_update(ctx, chunk1=30B)"
+  ctx -> ctx: "total_bits += 30×8 = 240\nbuf_len=0 → skip Phase 1\n30 < 64 → skip Phase 2\nPhase 3: memcpy(buf[0..29], chunk1)\nbuf_len ← 30"
+  ctx -> ctx: "buf[0..29] = chunk1 bytes\nbuf_len = 30 ✓\nno compression yet"
+  caller <- ctx: "return [buf_len=30, total_bits=240]"
+}
+
+update2: "sha256_update(ctx, chunk2, 26)" {
+  caller -> ctx: "sha256_update(ctx, chunk2=26B)"
+  ctx -> ctx: "total_bits += 26×8 = 208\ntotal_bits = 448 (56×8)"
+  ctx -> ctx: "Phase 1: buf_len=30 > 0\nneed = 64−30 = 34\ncan_use = min(26,34) = 26\nmemcpy(buf[30..55], chunk2)\nbuf_len = 56"
+  ctx -> ctx: "56 ≠ 64 → NO flush\nbuf_len = 56 < 64\nreturn early (all data consumed)"
+  caller <- ctx: "return [buf_len=56, total_bits=448]"
+}
+
+finalize: "sha256_finalize(ctx, digest)" {
+  caller -> ctx: "sha256_finalize(ctx, digest)"
+  
+  append_marker: "Append 0x80 marker" {
+    ctx -> ctx: "used = buf_len = 56\nbuf[56] ← 0x80\nused ← 57"
+  }
+  
+  check_boundary: "Boundary check: used=57 > 56 → TWO BLOCKS" {
+    ctx -> ctx: "57 > 56 → two-block path\nzero-fill buf[57..63]\n(7 bytes of padding)"
+  }
+  
+  block1_compress: "Block 1: message + marker + 7-byte zero fill" {
+    ctx -> compress: "sha256_compress(H, buf)\nbuf = [56 msg bytes][0x80][0×7]"
+    compress -> compress: "expand schedule W[0..63]\nrun 64 rounds on H[0..7]\nH[0..7] += a..h"
+    ctx <- compress: "H[0..7] updated"
+    ctx -> ctx: "memset(buf, 0, 64)\n← fresh all-zero block"
+  }
+  
+  block2_prep: "Block 2: zeros + 64-bit length field" {
+    ctx -> ctx: "L = total_bits = 448\nbuf[56] ← 0x00 (L>>56)\nbuf[57] ← 0x00 (L>>48)\nbuf[58] ← 0x00 (L>>40)\nbuf[59] ← 0x00 (L>>32)\nbuf[60] ← 0x00 (L>>24)\nbuf[61] ← 0x00 (L>>16)\nbuf[62] ← 0x01 (L>>8 = 0x01)\nbuf[63] ← 0xC0 (L&0xFF = 0xC0)\n[448 = 0x01C0]"
+  }
+  
+  block2_compress: "Block 2: compress final padding block" {
+    ctx -> compress: "sha256_compress(H, buf)\nbuf = [0×56][0x00][0x00][0x01][0xC0]"
+    compress -> compress: "expand schedule W[0..63]\nrun 64 rounds on H[0..7]\nH[0..7] += a..h"
+    ctx <- compress: "H[0..7] = final hash state"
+  }
+  
+  serialize: "Serialize H[0..7] → digest[0..31]" {
+    ctx -> ctx: "for i=0..7:\n  digest[i×4+0] ← H[i]>>24\n  digest[i×4+1] ← H[i]>>16\n  digest[i×4+2] ← H[i]>>8\n  digest[i×4+3] ← H[i]&0xFF\n[big-endian, explicit shifts]"
+  }
+  
+  caller <- ctx: "return [digest = SHA-256(chunk1||chunk2)]"
+}
+
+note: |'md
+  **56-byte message = two-block SHA-256 boundary case**
+
+  | Phase | buf_len | total_bits | Compressions |
+  |-------|---------|------------|--------------|
+  | after init | 0 | 0 | 0 |
+  | after update(30B) | 30 | 240 | 0 |
+  | after update(26B) | 56 | 448 | 0 |
+  | after finalize | — | — | 2 |
+
+  **Block 1 layout (64 bytes):**
+  `[msg bytes 0..55][0x80][0x00×7]`
+
+  **Block 2 layout (64 bytes):**
+  `[0x00×56][0x00 0x00 0x01 0xC0 → 448 bits big-endian]`
+
+  **Key Invariants:**
+  - `buf_len ∈ [0,63]` after every `update()`.
+  - Two-block trigger: `used = buf_len + 1 > 56` in `finalize()`.
+'| {
+  near: bottom-center
+}

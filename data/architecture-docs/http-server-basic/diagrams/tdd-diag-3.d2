@@ -1,0 +1,180 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+direction: right
+
+title: |md
+  ## Partial Read Problem: TCP Stream vs. Message Assumption
+  TCP delivers a **byte stream** — a single `recv()` call may return any number of bytes
+| {near: top-center}
+
+left_side: "❌ BROKEN: Single recv() Assumption" {
+  style: {
+    fill: "#fff0f0"
+    stroke: "#cc0000"
+    stroke-width: 2
+    border-radius: 8
+    font-size: 14
+    bold: true
+  }
+  shape: sequence_diagram
+  sender_l: "Sender\n(Client)"
+  kernel_l: "Kernel TCP\nBuffer"
+  app_l: "App recv()\nCall"
+  
+  sender_l -> kernel_l: "write(1400 bytes)\n\"GET / HTTP/1.1\\r\\nHost: ...\\r\\n\\r\\n\"" {
+    style.stroke: "#666666"
+  }
+  
+  kernel_l -> kernel_l: "TCP fragments into\n2 segments:\n• seg1: 400 bytes\n• seg2: 1000 bytes" {
+    style.stroke: "#ff8800"
+    style.stroke-dash: 4
+  }
+  
+  app_l -> kernel_l: "recv(fd, buf, 4096, 0)\n[SINGLE CALL]" {
+    style.stroke: "#cc0000"
+    style.bold: true
+  }
+  kernel_l -> app_l: "returns n=400\n(only seg1 arrived)" {
+    style.stroke: "#cc0000"
+    style.bold: true
+  }
+  
+  app_l -> app_l: "buf[0..399] = partial headers\nbuf[400] = '\\0'  ← null-terminated\nstrstr(buf,\"\\r\\n\\r\\n\") = NULL\n\n⚠ NO DELIMITER FOUND" {
+    style.stroke: "#cc0000"
+    style.fill: "#ffe0e0"
+  }
+  
+  app_l -> app_l: "if (n > 0) parse(buf);\n← WRONG: treats 400 bytes\nas complete request\n\n💥 PARSE ERROR / HANG" {
+    style.stroke: "#cc0000"
+    style.fill: "#ffcccc"
+  }
+  
+  kernel_l -> kernel_l: "seg2 (1000 bytes)\narrives... but\napp already moved on\n\n🗑 DATA LOST" {
+    style.stroke: "#888888"
+    style.stroke-dash: 5
+  }
+}
+
+right_side: "✅ CORRECT: Accumulation Loop" {
+  style: {
+    fill: "#f0fff0"
+    stroke: "#007700"
+    stroke-width: 2
+    border-radius: 8
+    font-size: 14
+    bold: true
+  }
+  shape: sequence_diagram
+  sender_r: "Sender\n(Client)"
+  kernel_r: "Kernel TCP\nBuffer"
+  app_r: "recv() Loop\n+ strstr scan"
+  
+  sender_r -> kernel_r: "write(1400 bytes)\n\"GET / HTTP/1.1\\r\\nHost:...\\r\\n\\r\\n\"" {
+    style.stroke: "#666666"
+  }
+  
+  app_r -> kernel_r: "① recv(fd, buf+0, 8191, 0)" {
+    style.stroke: "#0066cc"
+  }
+  kernel_r -> app_r: "n=400  total=400\nbuf=\"GET / HTTP/1.1\\r\\nHos...\"" {
+    style.stroke: "#0066cc"
+  }
+  
+  app_r -> app_r: "buf[400]='\\0'\nstrstr(buf,\"\\r\\n\\r\\n\") = NULL\n→ LOOP CONTINUES" {
+    style.stroke: "#0066cc"
+    style.fill: "#e8f4ff"
+  }
+  
+  app_r -> kernel_r: "② recv(fd, buf+400, 7791, 0)" {
+    style.stroke: "#0066cc"
+  }
+  kernel_r -> app_r: "n=800  total=1200\nbuf+400=\"t: localhost\\r\\nUser-...\"" {
+    style.stroke: "#0066cc"
+  }
+  
+  app_r -> app_r: "buf[1200]='\\0'\nstrstr(buf,\"\\r\\n\\r\\n\") = NULL\n→ LOOP CONTINUES" {
+    style.stroke: "#0066cc"
+    style.fill: "#e8f4ff"
+  }
+  
+  app_r -> kernel_r: "③ recv(fd, buf+1200, 6991, 0)" {
+    style.stroke: "#007700"
+    style.bold: true
+  }
+  kernel_r -> app_r: "n=200  total=1400\nbuf+1200=\"Accept: */*\\r\\n\\r\\n\"" {
+    style.stroke: "#007700"
+    style.bold: true
+  }
+  
+  app_r -> app_r: "buf[1400]='\\0'\nstrstr(buf,\"\\r\\n\\r\\n\") ✓ FOUND\nat offset 1396\n\n→ return 1400" {
+    style.stroke: "#007700"
+    style.fill: "#ccffcc"
+    style.bold: true
+  }
+  
+  app_r -> app_r: "parse(buf, 1400)\n✅ method=\"GET\"\n✅ path=\"/\"\n✅ version=\"HTTP/1.1\"\n✅ headers complete" {
+    style.stroke: "#007700"
+    style.fill: "#aaffaa"
+    style.bold: true
+  }
+}
+
+annotation_wrong: |md
+  **Why it breaks:**
+  - `recv()` returns whatever bytes the
+    kernel has *right now* in its buffer
+  - First TCP segment may be only
+    400 of 1400 bytes
+  - Parser sees incomplete headers
+  - Program hangs or crashes
+| {
+  near: bottom-left
+  style.fill: "#fff0f0"
+  style.stroke: "#cc0000"
+  style.border-radius: 6
+}
+
+annotation_right: |md
+  **Why it works:**
+  - Each `recv()` appends at `buf + total`
+  - `total` tracks accumulated bytes
+  - `strstr()` scans after **every** recv
+  - Loop exits only on `\r\n\r\n` found
+  - OR on EOF / error / buffer-full
+| {
+  near: bottom-right
+  style.fill: "#f0fff0"
+  style.stroke: "#007700"
+  style.border-radius: 6
+}
+
+code_box: |md
+  c
+  /* ❌ WRONG */
+  ssize_t n = recv(fd, buf, 4096, 0);
+  buf[n] = '\0';
+  parse(buf);  // may be incomplete!
+
+  /* ✅ CORRECT */
+  size_t total = 0;
+  while (total < buf_size - 1) {
+      ssize_t n = recv(fd, buf + total,
+                       buf_size - 1 - total, 0);
+      if (n <= 0) return -1;
+      total += n;
+      buf[total] = '\0';
+      if (strstr(buf, "\r\n\r\n"))
+          return (ssize_t)total;  // done
+  }
+  return -1;  // buffer exhausted
+  
+| {
+  near: bottom-center
+  style.fill: "#f8f8f8"
+  style.stroke: "#444444"
+  style.border-radius: 8
+}

@@ -1,0 +1,211 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+title: |'md
+  # Signal Delivery in Multithreaded Process: Safe Pattern
+  *M4 — Concurrent Connections*
+'| {near: top-center}
+
+# ─────────────────────────────────────────────
+# UNSAFE APPROACH
+# ─────────────────────────────────────────────
+unsafe_box: "❌  UNSAFE: signal(SIGTERM, handler) in multithreaded code" {
+  style.fill: "#2d1a1a"
+  style.stroke: "#cc3333"
+  style.stroke-width: 3
+  style.border-radius: 8
+  shape: sequence_diagram
+
+  kernel:    "Kernel"
+  main_t:    "Main Thread\n(accept loop)"
+  worker1:   "Worker-1\n(mid-malloc)"
+  worker2:   "Worker-2\n(idle)"
+  handler:   "Signal Handler\n(any thread)"
+
+  kernel -> main_t: "signal(SIGTERM, my_handler)\nregistered process-wide" {
+    style.stroke: "#888888"
+  }
+
+  u_work: {
+    worker1 -> worker1: "malloc() — heap lock held internally"
+    worker2 -> worker2: "recv() blocked"
+    main_t  -> main_t:  "accept() blocked"
+  }
+
+  kernel -> worker1: "SIGTERM delivered to\narbitrary thread ← RANDOM CHOICE" {
+    style.stroke: "#ff4444"
+    style.stroke-width: 2
+  }
+
+  worker1 -> handler: "handler() preempts worker1\nwhile heap lock is held" {
+    style.stroke: "#ff4444"
+  }
+
+  handler -> handler: "handler calls printf(),\nmalloc(), mutex_lock()\n← ILLEGAL in signal context\n← async-signal-UNSAFE" {
+    style.stroke: "#ff4444"
+    style.stroke-dash: 4
+  }
+
+  ub_note: "💀 UNDEFINED BEHAVIOR\nDeadlock on heap lock\nor data corruption" {
+    style.fill: "#5c0000"
+    style.stroke: "#ff4444"
+    style.font-color: "#ff9999"
+    style.bold: true
+  }
+}
+
+# ─────────────────────────────────────────────
+# SAFE APPROACH A — atomic flag
+# ─────────────────────────────────────────────
+safe_a_box: "✅  SAFE A: Handler writes atomic_int only" {
+  style.fill: "#1a2d1a"
+  style.stroke: "#33cc33"
+  style.stroke-width: 3
+  style.border-radius: 8
+  shape: sequence_diagram
+
+  kernel_a:  "Kernel"
+  main_a:    "Main Thread\n(accept loop)"
+  worker_a:  "Worker Thread"
+  handler_a: "Signal Handler"
+
+  kernel_a -> main_a: "signal(SIGTERM, handler)\nregistered at startup" {
+    style.stroke: "#888888"
+  }
+
+  main_a -> main_a: "SIGPIPE: SIG_IGN\nSIGTERM: handler\nSIGINT:  handler"
+  worker_a -> worker_a: "busy: recv() / serve_file()"
+  main_a   -> main_a:   "busy: accept() blocked"
+
+  kernel_a -> handler_a: "SIGTERM → delivered to\none thread (any)" {
+    style.stroke: "#ffaa00"
+  }
+
+  handler_a -> handler_a: "atomic_store(&shutdown_flag, 1)\n← ONLY async-signal-safe op\n← single LOCK MOV instruction" {
+    style.stroke: "#33cc33"
+  }
+
+  handler_a -> kernel_a: "handler returns" {
+    style.stroke: "#33cc33"
+  }
+
+  main_a -> main_a: "accept() returns EINTR\n→ loop checks atomic_load()\n→ sees 1 → exits loop" {
+    style.stroke: "#33cc33"
+    style.stroke-dash: 3
+  }
+
+  worker_a -> worker_a: "checks atomic_load() at\ntop of keep-alive loop\n→ sees 1 → breaks" {
+    style.stroke: "#33cc33"
+    style.stroke-dash: 3
+  }
+
+  main_a -> main_a: "close(server_fd)\nthread_pool_shutdown()\ngraceful exit" {
+    style.stroke: "#33cc33"
+  }
+
+  legal_a: "✔ Async-Signal-Safe:\natomic_store / atomic_load\nwrite() to fd\n_exit()\nsignal()" {
+    style.fill: "#0d260d"
+    style.stroke: "#33cc33"
+    style.font-color: "#99ff99"
+  }
+}
+
+# ─────────────────────────────────────────────
+# SAFE APPROACH B — sigwait
+# ─────────────────────────────────────────────
+safe_b_box: "✅  SAFE B: pthread_sigmask + sigwait (dedicated signal thread)" {
+  style.fill: "#1a1a2d"
+  style.stroke: "#3399ff"
+  style.stroke-width: 3
+  style.border-radius: 8
+  shape: sequence_diagram
+
+  main_b:   "Main Thread"
+  workers_b:"Worker Threads\n(0..N-1)"
+  sig_t:    "Signal Thread\n(dedicated)"
+  kernel_b: "Kernel"
+
+  main_b -> main_b: "① sigemptyset(&mask)\n   sigaddset(&mask, SIGTERM)\n   sigaddset(&mask, SIGINT)\n   pthread_sigmask(SIG_BLOCK, &mask, NULL)\n← blocks SIGTERM/SIGINT in main" {
+    style.stroke: "#3399ff"
+  }
+
+  main_b -> workers_b: "pthread_create × N\nworkers INHERIT blocked mask\n← no signal can interrupt them" {
+    style.stroke: "#3399ff"
+    style.stroke-width: 2
+  }
+
+  main_b -> sig_t: "pthread_create(signal_thread, &mask)" {
+    style.stroke: "#3399ff"
+  }
+
+  sig_t -> sig_t: "② sigwait(&mask, &sig)\n← blocks synchronously\n← no handler, no async context\n← 100% safe to call anything" {
+    style.stroke: "#aaaaff"
+    style.stroke-dash: 3
+  }
+
+  workers_b -> workers_b: "recv() / serve_file()\nuninterrupted by signals" {
+    style.stroke: "#888888"
+  }
+
+  kernel_b -> sig_t: "SIGTERM arrives →\nonly sig_t is unblocked\n→ sigwait() returns" {
+    style.stroke: "#ffaa00"
+    style.stroke-width: 2
+  }
+
+  sig_t -> sig_t: "③ Received sig=%d\natomic_store(&shutdown_flag,1)\nor direct pool shutdown" {
+    style.stroke: "#33cc66"
+  }
+
+  sig_t -> main_b: "pthread_mutex signal or\nreturn from thread" {
+    style.stroke: "#33cc66"
+    style.stroke-dash: 3
+  }
+
+  legal_b: "✔ sigwait() runs in normal thread context:\nprintf, malloc, mutex_lock ALL legal\nNo async-signal-safety constraints" {
+    style.fill: "#0d0d26"
+    style.stroke: "#3399ff"
+    style.font-color: "#99ccff"
+  }
+}
+
+# ─────────────────────────────────────────────
+# ASYNC-SIGNAL-SAFE REFERENCE TABLE
+# ─────────────────────────────────────────────
+safe_fns: "Async-Signal-Safe Functions (POSIX.1-2017)" {
+  style.fill: "#1a1a1a"
+  style.stroke: "#888888"
+  style.border-radius: 6
+  label: |'md
+    | **LEGAL in handler**          | **ILLEGAL in handler**        |
+    |-------------------------------|-------------------------------|
+    | `atomic_store()` / `atomic_load()` | `printf()` / `fprintf()`  |
+    | `write()` (raw syscall)       | `malloc()` / `free()`         |
+    | `_exit()` (not `exit()`)      | `mutex_lock()` / `mutex_unlock()` |
+    | `signal()` / `sigaction()`    | `fopen()` / `fclose()`        |
+    | `kill()` / `raise()`          | `syslog()`                    |
+    | `read()` / `recv()` (raw)     | Any stdio buffered I/O        |
+    | `open()` / `close()`          | C++ exceptions / RTTI         |
+  '|
+}
+
+# ─────────────────────────────────────────────
+# Layout connections
+# ─────────────────────────────────────────────
+unsafe_box -> safe_a_box: "Fix: use atomic_int flag" {
+  style.stroke: "#888888"
+  style.stroke-dash: 4
+  style.font-color: "#888888"
+}
+safe_a_box -> safe_b_box: "Alternative: dedicated\nsignal thread" {
+  style.stroke: "#888888"
+  style.stroke-dash: 4
+  style.font-color: "#888888"
+}
+safe_b_box -> safe_fns: "Reference" {
+  style.stroke: "#555555"
+  style.stroke-dash: 4
+}

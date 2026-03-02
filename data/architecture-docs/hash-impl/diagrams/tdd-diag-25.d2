@@ -1,0 +1,219 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: down
+
+title: |'md
+## `sha256_update()` Three-Phase Buffer Management
+Data Flow: Arbitrary chunk bytes -> SHA-256 block stream
+'|
+title.near: top-center
+
+entry: |md
+**ENTRY**
+`sha256_update(ctx, data, len)`
+| {
+  style.fill: "#E8D5F5"
+  style.stroke: "#7B2D8B"
+  style.border-radius: 6
+  style.font-size: 13
+}
+
+accum: |md
+**Step 0 — Accumulate bit count**
+`ctx->total_bits += (uint64_t)len * 8`
+*(must happen before any early return)*
+| {
+  style.fill: "#D6EAF8"
+  style.stroke: "#2874A6"
+  style.border-radius: 6
+  style.font-size: 13
+}
+
+entry -> accum: "all paths"
+
+phase1_check: "`ctx->buf_len > 0` ?" {
+  shape: diamond
+  style.fill: "#FEF9E7"
+  style.stroke: "#B7950B"
+  style.font-size: 13
+}
+
+accum -> phase1_check
+
+phase1_calc: |md
+**Phase 1 — Fill existing buffer**
+`need    = 64 - ctx->buf_len`
+`can_use = min(len, need)`
+`memcpy(ctx->buf + buf_len, data, can_use)`
+`ctx->buf_len += can_use`
+`i = can_use`
+| {
+  style.fill: "#FDF2E9"
+  style.stroke: "#CA6F1E"
+  style.border-radius: 6
+  style.font-size: 13
+}
+
+phase1_check -> phase1_calc: "YES\n(bytes already buffered)"
+phase1_check -> phase2_loop: "NO\n(buffer empty)\ni = 0" {
+  style.stroke-dash: 4
+}
+
+phase1_full_check: "`ctx->buf_len == 64` ?" {
+  shape: diamond
+  style.fill: "#FEF9E7"
+  style.stroke: "#B7950B"
+  style.font-size: 13
+}
+
+phase1_calc -> phase1_full_check
+
+phase1_compress: |md
+**Compress buffered block**
+`sha256_compress(ctx->H, ctx->buf)`
+`ctx->buf_len = 0`
+*(buf content now stale - buf_len is the*
+*authoritative "no valid data" signal)*
+| {
+  style.fill: "#FDEDEC"
+  style.stroke: "#CB4335"
+  style.border-radius: 6
+  style.font-size: 13
+}
+
+phase1_full_check -> phase1_compress: "YES\n(buffer just filled)"
+
+phase1_return: |md
+**RETURN EARLY**
+*(all len bytes consumed into buf;*
+*no complete block yet)*
+`ctx->buf_len` in [1, 63]
+| {
+  style.fill: "#EBF5FB"
+  style.stroke: "#2E86C1"
+  style.border-radius: 6
+  style.font-size: 13
+}
+
+phase1_full_check -> phase1_return: "NO\n(buf partially filled)\nbuf_len < 64" {
+  style.stroke-dash: 4
+}
+
+phase2_loop: "`i + 64 <= len` ?" {
+  shape: diamond
+  style.fill: "#FEF9E7"
+  style.stroke: "#B7950B"
+  style.font-size: 13
+}
+
+phase1_compress -> phase2_loop: "continue\n(i bytes consumed so far)"
+
+phase2_compress: |md
+**Phase 2 — Zero-copy block compression**
+`sha256_compress(ctx->H, data + i)`
+`i += 64`
+*(passes pointer directly - no memcpy into buf)*
+*(hot path for large inputs)*
+| {
+  style.fill: "#FDEDEC"
+  style.stroke: "#CB4335"
+  style.border-radius: 6
+  style.font-size: 13
+}
+
+phase2_loop -> phase2_compress: "YES\n(>= 64 bytes remain)"
+phase2_compress -> phase2_loop: "loop back\n(advance i by 64)"
+
+phase3_check: "`len - i > 0` ?" {
+  shape: diamond
+  style.fill: "#FEF9E7"
+  style.stroke: "#B7950B"
+  style.font-size: 13
+}
+
+phase2_loop -> phase3_check: "NO\n(< 64 bytes remain)"
+
+phase3_buffer: |md
+**Phase 3 — Buffer tail bytes**
+`remaining = len - i`
+`memcpy(ctx->buf, data + i, remaining)`
+`ctx->buf_len = remaining`
+*(0 ... 63 bytes buffered)*
+| {
+  style.fill: "#FDF2E9"
+  style.stroke: "#CA6F1E"
+  style.border-radius: 6
+  style.font-size: 13
+}
+
+phase3_check -> phase3_buffer: "YES\n(1 ... 63 bytes remain)"
+
+phase3_skip: |md
+*(no tail bytes -*
+*buf already flushed)*
+`ctx->buf_len = 0`
+| {
+  style.fill: "#EBF5FB"
+  style.stroke: "#2E86C1"
+  style.border-radius: 6
+  style.font-size: 13
+  style.opacity: 0.85
+}
+
+phase3_check -> phase3_skip: "NO\n(data was block-aligned)"
+
+exit: |md
+**EXIT**
+Invariants restored:
+`ctx->buf_len` in [0, 63]
+`ctx->total_bits` = total Σ bits
+| {
+  style.fill: "#E8D5F5"
+  style.stroke: "#7B2D8B"
+  style.border-radius: 6
+  style.font-size: 13
+}
+
+phase3_buffer -> exit
+phase3_skip -> exit
+phase1_return -> exit
+
+worked_eg: |md
+**Worked Example:**
+`ctx->buf_len = 10` on entry, `len = 100`
+Step 0: `total_bits += 800`
+Phase 1: `need=54, fill buf -> buf_len=64`
+         `-> compress, buf_len=0, i=54`
+Phase 2: `54+64=118 > 100 -> skip loop`
+Phase 3: `rem = 46 -> ctx->buf_len=46`
+| {
+  near: bottom-right
+  style.fill: "#F4F6F7"
+  style.stroke: "#7F8C8D"
+  style.border-radius: 6
+  style.font-size: 12
+  style.italic: true
+}
+
+pointer_note: |'md
+**Data pointer advancement**
+
+data: `[--- 54 ---|--- 0 complete blocks ---|--- 46 ---]`
+        Phase 1                             Phase 3
+        i=0->54                             i=54->100
+
+For `len=200`, `buf_len=0` entry:
+
+data: `[--- 64 ---|--- 64 ---|--- 64 ---|--- 8 ---]`
+        block 0     block 1     block 2    Phase 3
+'|
+pointer_note.near: bottom-left
+pointer_note.style.fill: "#F4F6F7"
+pointer_note.style.stroke: "#7F8C8D"
+pointer_note.style.border-radius: 6
+pointer_note.style.font-size: 12

@@ -1,0 +1,222 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## Three-Level View: One HTTP Request Across Application / OS / Hardware
+  _Single GET request — annotated latency at every transition_
+| {near: top-center}
+row0: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  hw_layer: "HARDWARE LAYER" {
+    direction: down
+    style.fill: "#2d1b4e"
+    style.stroke: "#7c3aed"
+    style.font-color: "#e9d5ff"
+    style.bold: true
+    nic_recv: {
+      label: "NIC: Packet Arrives"
+      shape: hexagon
+      style.fill: "#4c1d95"
+      style.stroke: "#a78bfa"
+      style.font-color: "#f5f3ff"
+      width: 280
+    }
+    nic_dma: {
+      shape: sql_table
+      label: "NIC DMA Engine (hardware)"
+      r1: "Action   | DMA transfer: packet → ring buffer"
+      r2: "Cost     | ~0 CPU cycles (DMA bypasses CPU)"
+      r3: "Latency  | ~100 ns (bus transfer)"
+      r4: "Size     | 1 Ethernet frame: 64–1518 bytes"
+    }
+    hw_interrupt: {
+      shape: sql_table
+      label: "CPU Interrupt Controller (APIC)"
+      r1: "Action   | NIC asserts IRQ line"
+      r2: "Latency  | ~200 ns to interrupt delivery"
+      r3: "Effect   | CPU stops current instruction"
+      r4: "Handler  | ISR saved to IDT entry for NIC IRQ"
+    }
+    cache_check: {
+      shape: sql_table
+      label: "Page Cache & Storage (kernel managed)"
+      r1: "L1/L2/L3 | 1–10 ns  | registers cached"
+      r2: "DRAM     | ~80 ns   | page-cache hit path"
+      r3: "NVMe SSD | ~100 µs  | page-cache miss"
+      r4: "HDD      | ~10 ms   | page-cache miss + seek"
+    }
+    nic_send_hw: {
+      shape: sql_table
+      label: "NIC TX: TCP Segment → Wire"
+      r1: "Action   | DMA reads socket send buffer"
+      r2: "Latency  | ~300 ns (DMA + framing)"
+      r3: "Output   | Ethernet frame on wire"
+      r4: "ACK      | Remote TCP ACK: 1 RTT later"
+    }
+  }
+  os_layer: "OS / KERNEL LAYER" {
+    direction: down
+    style.fill: "#1e3a5f"
+    style.stroke: "#2563eb"
+    style.font-color: "#bfdbfe"
+    style.bold: true
+    isr_handler: {
+      shape: sql_table
+      label: "NIC Interrupt Service Routine (net/core)"
+      r1: "1. Run ISR: copy frame → sk_buff"
+      r2: "2. Run NAPI poll loop (softirq)"
+      r3: "3. TCP stack: decode IP + TCP headers"
+      r4: "4. Copy payload → socket recv buffer (87 KB)"
+    }
+    sched_wake: {
+      shape: sql_table
+      label: "Scheduler: Wake Blocked Thread"
+      r1: "State change | TASK_INTERRUPTIBLE → TASK_RUNNING"
+      r2: "Target       | Thread blocked in select() or recv()"
+      r3: "Latency      | ~1–5 µs (context switch)"
+      r4: "Core         | Thread migrated if current core busy"
+    }
+    vfs_lookup: {
+      shape: sql_table
+      label: "VFS: open() Path Resolution (namei.c)"
+      r1: "1. resolve each path component via dcache"
+      r2: "2. dcache HIT:  ~500 ns per component"
+      r3: "3. dcache MISS: disk read for directory inode"
+      r4: "4. permission check: inode st_mode & ACL"
+    }
+    page_cache_os: {
+      shape: diamond
+      label: "Page Cache\nHIT or MISS?"
+      style.fill: "#1e40af"
+      style.stroke: "#93c5fd"
+      style.font-color: "#eff6ff"
+      width: 220
+    }
+    socket_send_buf: {
+      shape: sql_table
+      label: "Socket Send Buffer (kernel)"
+      r1: "Action   | copy response bytes: user → kernel"
+      r2: "Latency  | ~300 ns (memcpy, ~1 cache line / 64B)"
+      r3: "Buf size | default 87 KB (SO_SNDBUF)"
+      r4: "TCP      | segments and ACK tracking"
+    }
+  }
+  app_layer: "APPLICATION LAYER" {
+    direction: down
+    style.fill: "#1a3a2a"
+    style.stroke: "#16a34a"
+    style.font-color: "#bbf7d0"
+    style.bold: true
+    accept_call: {
+      shape: sql_table
+      label: "accept() — Dequeue Connection (server.c)"
+      r1: "Syscall  | accept(server_fd, &addr, &len)"
+      r2: "Returns  | client_fd (new file descriptor)"
+      r3: "Latency  | ~1 µs (dcache warm)"
+      r4: "State    | worker thread assigned from pool"
+    }
+    recv_loop: {
+      shape: sql_table
+      label: "recv() Loop — read_request() (server.c)"
+      r1: "Call     | recv(client_fd, buf+n, size-n, 0)"
+      r2: "Latency  | ~500 ns per call (kernel→user copy)"
+      r3: "Loop     | until strstr(buf, CRNLCRNL) != NULL"
+      r4: "Buf      | char buf[8192] on stack"
+    }
+    parser: {
+      shape: class
+      label: "HTTP Parser — http_parse.c"
+      +parse_request_line(buf, len, req): "int"
+      +parse_headers(buf, len, req): "int"
+      +get_header(req, name): "const char*"
+      +classify_method(method): "http_method_t"
+      +url_decode(src, dst, size): "int"
+    }
+    file_serve: {
+      shape: class
+      label: "File Server — file_server.c"
+      +serve_file(fd, doc_root, req, body): "void"
+      +realpath(path, canonical): "char*"
+      +stat(canonical, st): "int"
+      +open(canonical, O_RDONLY): "int"
+      +get_mime_type(path): "const char*"
+      +send_304(fd, mime, lm, len): "void"
+    }
+    send_loop: {
+      shape: sql_table
+      label: "send_all() + read() Loop (server.c)"
+      r1: "Headers  | snprintf → send_all() 300 ns"
+      r2: "Body     | read(file_fd, buf, 65536) chunks"
+      r3: "Send     | send(client_fd, buf, n, MSG_NOSIGNAL)"
+      r4: "Loop end | read() returns 0 (EOF)"
+    }
+  }
+}
+latency_legend: "" {
+  direction: right
+  style.fill: "#1c1c1c"
+  style.stroke: "#4b5563"
+  near: bottom-center
+  l_int: "Interrupt delivery: ~200 ns" {
+    style.fill: "#7c3aed"
+    style.font-color: "#f5f3ff"
+    style.border-radius: 4
+  }
+  l_recv: "recv() syscall: ~500 ns" {
+    style.fill: "#1d4ed8"
+    style.font-color: "#eff6ff"
+    style.border-radius: 4
+  }
+  l_ssd: "File read (SSD miss): ~100 µs" {
+    style.fill: "#b45309"
+    style.font-color: "#fef3c7"
+    style.border-radius: 4
+  }
+  l_hdd: "File read (HDD miss): ~10 ms" {
+    style.fill: "#991b1b"
+    style.font-color: "#fee2e2"
+    style.border-radius: 4
+  }
+  l_send: "send() syscall: ~300 ns" {
+    style.fill: "#166534"
+    style.font-color: "#dcfce7"
+    style.border-radius: 4
+  }
+}
+row0.hw_layer.nic_recv -> row0.hw_layer.nic_dma: "packet in"
+row0.hw_layer.nic_dma -> row0.hw_layer.hw_interrupt: "~200 ns | IRQ"
+row0.hw_layer.hw_interrupt -> row0.os_layer.isr_handler: "~200 ns | interrupt"
+row0.os_layer.isr_handler -> row0.os_layer.sched_wake: "softirq | sk_buff ready"
+row0.os_layer.sched_wake -> row0.app_layer.accept_call: "~1-5 µs | thread woken"
+row0.app_layer.accept_call -> row0.app_layer.recv_loop: "client_fd"
+row0.app_layer.recv_loop -> row0.os_layer.sched_wake: "~500 ns | recv() syscall" {
+  style.stroke-dash: 4
+  style.stroke: "#60a5fa"
+}
+row0.app_layer.recv_loop -> row0.app_layer.parser: "buf[8192] | complete hdrs"
+row0.app_layer.parser -> row0.app_layer.file_serve: "http_request_t"
+row0.app_layer.file_serve -> row0.os_layer.vfs_lookup: "open() syscall"
+row0.os_layer.vfs_lookup -> row0.os_layer.page_cache_os: "inode resolved"
+row0.os_layer.page_cache_os -> row0.hw_layer.cache_check: "MISS | ~100µs SSD / 10ms HDD" {
+  style.stroke: "#ef4444"
+  style.stroke-dash: 4
+}
+row0.os_layer.page_cache_os -> row0.app_layer.file_serve: "HIT | ~80 ns DRAM" {
+  style.stroke: "#22c55e"
+}
+row0.hw_layer.cache_check -> row0.app_layer.file_serve: "pages loaded" {
+  style.stroke: "#f97316"
+}
+row0.app_layer.file_serve -> row0.app_layer.send_loop: "file_fd + st"
+row0.app_layer.send_loop -> row0.os_layer.socket_send_buf: "~300 ns | send() syscall"
+row0.os_layer.socket_send_buf -> row0.hw_layer.nic_send_hw: "TCP segment"
+row0.hw_layer.nic_send_hw -> row0.hw_layer.nic_recv: "ACK received (1 RTT)" {
+  style.stroke-dash: 6
+  style.stroke: "#a78bfa"
+}

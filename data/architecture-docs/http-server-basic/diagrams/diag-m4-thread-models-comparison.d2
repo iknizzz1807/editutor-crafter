@@ -1,0 +1,270 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## Concurrency Models: Thread-per-Connection vs. Thread Pool
+| {near: top-center}
+row_models: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  left_col: "MODEL A — Thread-per-Connection" {
+    direction: down
+    style.fill: "#fff0f0"
+    style.stroke: "#cc4444"
+    style.border-radius: 8
+    tpc_accept: {
+      label: "main() — Accept Loop"
+      shape: rectangle
+      style.fill: "#e53935"
+      style.font-color: white
+      style.bold: true
+      code: |'c
+        while (1) {
+          fd = accept(server_fd, ...);
+          pthread_create(&tid, NULL,
+                         handle_conn, (void*)fd);
+          pthread_detach(tid);
+        }
+      '|
+      width: 340
+    }
+    tpc_cost_row: "" {
+      direction: right
+      style.stroke: transparent
+      style.fill: transparent
+      tpc_create_cost: {
+        shape: sql_table
+        label: "pthread_create() Cost"
+        time_cost: "~10–15 µs per call"
+        at_10k: "10k conn/s = 150ms/s overhead"
+        verdict: "15% CPU just for thread spawn"
+        style.fill: "#ffcdd2"
+      }
+      tpc_stack_cost: {
+        shape: sql_table
+        label: "Stack Memory per Thread"
+        default_stack: "8 MB virtual / thread"
+        at_1k: "1,000 conn = 8 GB virtual"
+        at_10k: "10,000 conn = 80 GB virtual"
+        physical: "Swap thrash before 10k conns"
+        style.fill: "#ffcdd2"
+      }
+    }
+    tpc_threads: "" {
+      direction: right
+      style.stroke: "#e53935"
+      style.fill: "#fff5f5"
+      style.border-radius: 6
+      tpc_t1: "Thread 1\n(conn #1)" {
+        shape: rectangle
+        style.fill: "#ef9a9a"
+      }
+      tpc_t2: "Thread 2\n(conn #2)" {
+        shape: rectangle
+        style.fill: "#ef9a9a"
+      }
+      tpc_t3: "Thread 3\n(conn #3)" {
+        shape: rectangle
+        style.fill: "#ef9a9a"
+      }
+      tpc_tdot: "Thread …\n(conn #N)" {
+        shape: rectangle
+        style.fill: "#e57373"
+        style.font-color: white
+      }
+      tpc_t1000: "Thread 1000\n(conn #1000)" {
+        shape: rectangle
+        style.fill: "#c62828"
+        style.font-color: white
+      }
+    }
+    tpc_scheduler: {
+      shape: sql_table
+      label: "OS Scheduler — DANGER ZONE"
+      ctx_switch: "1k runnable threads → scheduler thrash"
+      ctx_cost: "1–10 µs per context switch"
+      scenario: "1k threads × 10µs = 10ms/round overhead"
+      slowloris: "1k slow clients = server paralyzed"
+      style.fill: "#b71c1c"
+      style.font-color: white
+    }
+    tpc_verdict: {
+      shape: hexagon
+      label: "UNBOUNDED RESOURCE USE\nNo queue — no backpressure\nDegrades catastrophically under load"
+      style.fill: "#e53935"
+      style.font-color: white
+      style.bold: true
+    }
+  }
+  right_col: "MODEL B — Thread Pool (Bounded Queue)" {
+    direction: down
+    style.fill: "#f0fff4"
+    style.stroke: "#2e7d32"
+    style.border-radius: 8
+    tp_accept: {
+      label: "main() — Accept Loop"
+      shape: rectangle
+      style.fill: "#2e7d32"
+      style.font-color: white
+      style.bold: true
+      code: |'c
+        while (!shutdown) {
+          fd = accept(server_fd, ...);
+          if (enqueue(&pool, fd) < 0)
+            send_503(fd); // queue full
+          close(fd);
+        }
+      '|
+      width: 340
+    }
+    tp_queue: {
+      shape: sql_table
+      label: "Work Queue (Circular Buffer) — thread_pool.c"
+      f0: "capacity   | WORK_QUEUE_CAPACITY = 1024 items"
+      f1: "head/tail  | int (wrap via modulo)"
+      f2: "count      | int  (items in queue)"
+      f3: "lock       | pthread_mutex_t  (protects head/tail/count)"
+      f4: "not_empty  | pthread_cond_t   (workers wait here)"
+      f5: "not_full   | pthread_cond_t   (producer waits here)"
+      f6: "shutdown   | int  (set=1 → workers drain and exit)"
+      f7: "Item size  | ~70 bytes (fd + ip + port)"
+      f8: "Total RAM  | 1024 × 70 = ~71 KB (fits in L2 cache)"
+      style.fill: "#c8e6c9"
+    }
+    tp_enqueue_box: {
+      label: "thread_pool_enqueue() — Critical Section"
+      width: 380
+      code: |'c
+        pthread_mutex_lock(&pool->lock);
+        if (pool->count >= CAPACITY) {
+          pthread_mutex_unlock(&pool->lock);
+          return -1;  // → 503 Service Unavailable
+        }
+        pool->queue[pool->tail] = item;
+        pool->tail = (pool->tail+1) % CAPACITY;
+        pool->count++;
+        pthread_cond_signal(&pool->not_empty);
+        pthread_mutex_unlock(&pool->lock);
+      '|
+      style.fill: "#a5d6a7"
+    }
+    tp_workers: "" {
+      direction: right
+      style.stroke: "#2e7d32"
+      style.fill: "#f1f8e9"
+      style.border-radius: 6
+      tp_w1: "Worker 1" {
+        shape: rectangle
+        style.fill: "#66bb6a"
+        style.font-color: white
+      }
+      tp_w2: "Worker 2" {
+        shape: rectangle
+        style.fill: "#66bb6a"
+        style.font-color: white
+      }
+      tp_w3: "Worker 3" {
+        shape: rectangle
+        style.fill: "#66bb6a"
+        style.font-color: white
+      }
+      tp_wdot: "Worker …" {
+        shape: rectangle
+        style.fill: "#43a047"
+        style.font-color: white
+      }
+      tp_wN: "Worker N\n(default 16)" {
+        shape: rectangle
+        style.fill: "#1b5e20"
+        style.font-color: white
+      }
+    }
+    tp_worker_loop: {
+      label: "worker_thread() — Inner Loop"
+      width: 360
+      code: |'c
+        pthread_mutex_lock(&pool->lock);
+        while (count==0 && !shutdown)
+          pthread_cond_wait(&not_empty, &lock);
+        if (shutdown && count==0) { unlock; return; }
+        item = queue[head];
+        head = (head+1) % CAPACITY;
+        count--;
+        pthread_cond_signal(&not_full);
+        pthread_mutex_unlock(&pool->lock);
+        // Work happens OUTSIDE the lock:
+        handle_client_keep_alive(item.client_fd);
+        close(item.client_fd);
+      '|
+      style.fill: "#a5d6a7"
+    }
+    tp_memory: {
+      shape: sql_table
+      label: "Resource Budget — Thread Pool"
+      threads: "Fixed N=16 threads always"
+      stack_total: "16 × 8 MB = 128 MB virtual (predictable)"
+      queue_ram: "71 KB for 1024-item queue"
+      create_cost: "pthread_create() called ONCE at startup"
+      conn_1001: "Connection 1001: 503 in microseconds"
+      verdict: "Degrades gracefully — never collapses"
+      style.fill: "#c8e6c9"
+    }
+    tp_verdict: {
+      shape: hexagon
+      label: "BOUNDED RESOURCE USE\nQueue = backpressure\n503 = cooperative overload signal"
+      style.fill: "#2e7d32"
+      style.font-color: white
+      style.bold: true
+    }
+  }
+}
+comparison: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  cmp_left: {
+    shape: sql_table
+    label: "Thread-per-Connection — At-a-Glance"
+    threads: "N connections → N threads (unbounded)"
+    memory: "N × 8MB stack (unbounded)"
+    creation: "N × 10µs spawn cost (ongoing)"
+    scheduler: "O(N) context-switch overhead"
+    slowloris: "1k idle attackers = server dead"
+    backpressure: "NONE — no queue, no 503"
+    style.fill: "#ffcdd2"
+  }
+  vs_box: "VS" {
+    shape: circle
+    style.fill: "#455a64"
+    style.font-color: white
+    style.bold: true
+    style.font-size: 24
+  }
+  cmp_right: {
+    shape: sql_table
+    label: "Thread Pool — At-a-Glance"
+    threads: "Fixed N=16 threads (bounded)"
+    memory: "16 × 8MB = 128MB (fixed at startup)"
+    creation: "16 × 10µs once at startup only"
+    scheduler: "O(16) context-switch overhead"
+    slowloris: "16 slow attackers → queue absorbs rest"
+    backpressure: "503 + Retry-After: 1 when queue full"
+    style.fill: "#c8e6c9"
+  }
+}
+row_models.left_col.tpc_accept -> row_models.left_col.tpc_cost_row: "1 conn = 1 pthread_create()"
+row_models.left_col.tpc_accept -> row_models.left_col.tpc_threads: "spawns N threads"
+row_models.left_col.tpc_threads -> row_models.left_col.tpc_scheduler: "all compete for CPU cores"
+row_models.left_col.tpc_scheduler -> row_models.left_col.tpc_verdict: "collapse under load"
+row_models.right_col.tp_accept -> row_models.right_col.tp_queue: "fd | enqueue"
+row_models.right_col.tp_queue -> row_models.right_col.tp_enqueue_box: "mutex-protected push"
+row_models.right_col.tp_enqueue_box -> row_models.right_col.tp_workers: "pthread_cond_signal"
+row_models.right_col.tp_workers -> row_models.right_col.tp_worker_loop: "dequeue + handle"
+row_models.right_col.tp_worker_loop -> row_models.right_col.tp_memory: "bounded cost"
+row_models.right_col.tp_memory -> row_models.right_col.tp_verdict: "graceful under load"
+row_models -> comparison: "summary"

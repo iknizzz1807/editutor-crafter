@@ -1,0 +1,250 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+direction: right
+title: |md
+  ## Thread Pool Architecture: Accept Loop → Queue → Workers
+| { near: top-center }
+# ─── ACCEPT LOOP ───────────────────────────────────────────────────────────────
+accept_loop: "Accept Loop\n(main thread)" {
+  style.fill: "#C8B4E8"
+  style.stroke: "#7B5EA7"
+  style.border-radius: 6
+  style.bold: true
+  accept_call: "accept()\nAF_INET / SOCK_STREAM" {
+    style.fill: "#E8D8FF"
+    style.stroke: "#7B5EA7"
+    style.border-radius: 4
+  }
+  inet_ntop_call: "inet_ntop()\nclient_ip : char[16]" {
+    style.fill: "#E8D8FF"
+    style.stroke: "#7B5EA7"
+    style.border-radius: 4
+  }
+  enqueue_call: "thread_pool_enqueue()\nwork_item_t → tail" {
+    style.fill: "#E8D8FF"
+    style.stroke: "#7B5EA7"
+    style.border-radius: 4
+    style.bold: true
+  }
+  reject_path: "Queue Full (-1)\nsend 503 + close(client_fd)" {
+    style.fill: "#FFD6D6"
+    style.stroke: "#CC4444"
+    style.border-radius: 4
+    style.font-color: "#991111"
+  }
+  shutdown_check: "atomic_load\n(&shutdown_flag) == 0?" {
+    shape: diamond
+    style.fill: "#FFF8CC"
+    style.stroke: "#AA8800"
+  }
+  accept_call -> inet_ntop_call: "client_fd\n(connected)"
+  inet_ntop_call -> enqueue_call: "client_fd\nclient_ip\nclient_port"
+  enqueue_call -> reject_path: "returns -1\n(count ≥ 1024)" {
+    style.stroke: "#CC4444"
+    style.stroke-dash: 4
+  }
+}
+# ─── WORK QUEUE ────────────────────────────────────────────────────────────────
+work_queue: "Work Queue — Circular Buffer\nwork_item_t queue[1024]" {
+  style.fill: "#C8E4B8"
+  style.stroke: "#4A8840"
+  style.border-radius: 6
+  style.bold: true
+  buffer_viz: |md
+    
+    [0]  [1]  [2] … [head] … [tail] … [1023]
+          ↑ dequeue          ↑ enqueue
+    
+  | { style.fill: "#EAF7E0"; style.stroke: "#4A8840" }
+  meta: "head: int  tail: int  count: int\nCAPACITY = 1024  (power-of-2)" {
+    style.fill: "#D4EFCA"
+    style.stroke: "#4A8840"
+    style.border-radius: 4
+    style.font: mono
+  }
+  mutex_box: "pthread_mutex_t lock\n▼ acquire before read/write\n▲ release after" {
+    style.fill: "#FFF3CC"
+    style.stroke: "#AA8800"
+    style.border-radius: 4
+    style.font: mono
+  }
+  cond_not_empty: "pthread_cond_t not_empty\nsignaled: count 0 → 1\nworkers wait here" {
+    style.fill: "#CCF0FF"
+    style.stroke: "#2266AA"
+    style.border-radius: 4
+    style.font: mono
+  }
+  cond_not_full: "pthread_cond_t not_full\nsignaled: count MAX-1 → MAX-2\nacceptor waits here" {
+    style.fill: "#CCF0FF"
+    style.stroke: "#2266AA"
+    style.border-radius: 4
+    style.font: mono
+  }
+  shutdown_flag_q: "shutdown: int\n0 = running | 1 = drain+exit" {
+    style.fill: "#FFD6D6"
+    style.stroke: "#CC4444"
+    style.border-radius: 4
+    style.font: mono
+  }
+  buffer_viz -> meta
+  meta -> mutex_box
+  mutex_box -> cond_not_empty
+  mutex_box -> cond_not_full
+  mutex_box -> shutdown_flag_q
+}
+# ─── WORKER THREADS ────────────────────────────────────────────────────────────
+workers: "Worker Threads  (N = 16)" {
+  style.fill: "#B8D8F0"
+  style.stroke: "#2266AA"
+  style.border-radius: 6
+  style.bold: true
+  thread_template: "Per-Worker Loop" {
+    style.fill: "#D8ECFA"
+    style.stroke: "#2266AA"
+    style.border-radius: 4
+    step_lock: "① pthread_mutex_lock(&pool→lock)" { style.fill: "#FFF3CC"; style.stroke: "#AA8800"; style.font: mono }
+    step_wait: "② while count==0 && !shutdown:\n   pthread_cond_wait(not_empty, lock)" { style.fill: "#CCF0FF"; style.stroke: "#2266AA"; style.font: mono }
+    step_shutdown: "③ if shutdown && count==0:\n   unlock → return NULL" { style.fill: "#FFD6D6"; style.stroke: "#CC4444"; style.font: mono }
+    step_dequeue: "④ item = queue[head]\n   head = (head+1) % 1024\n   count--\n   cond_signal(not_full)" { style.fill: "#D4EFCA"; style.stroke: "#4A8840"; style.font: mono }
+    step_unlock: "⑤ pthread_mutex_unlock(&pool→lock)" { style.fill: "#FFF3CC"; style.stroke: "#AA8800"; style.font: mono }
+    step_handle: "⑥ handle_client_keep_alive(\n     item.client_fd,\n     item.client_ip,\n     item.client_port,\n     g_doc_root)\n   → closes client_fd" { style.fill: "#E8D8FF"; style.stroke: "#7B5EA7"; style.font: mono }
+    step_lock -> step_wait
+    step_wait -> step_shutdown: "spurious or\nshutdown wakeup"
+    step_wait -> step_dequeue: "count > 0"
+    step_dequeue -> step_unlock
+    step_unlock -> step_handle: "LOCK RELEASED\nbefore I/O" { style.bold: true; style.stroke: "#CC4444" }
+    step_handle -> step_lock: "loop back" { style.stroke-dash: 4 }
+  }
+  t0: "Thread 0\npthread_t threads[0]" { style.fill: "#D8ECFA"; style.stroke: "#2266AA"; style.border-radius: 4 }
+  t1: "Thread 1\npthread_t threads[1]" { style.fill: "#D8ECFA"; style.stroke: "#2266AA"; style.border-radius: 4 }
+  tdot: "…  (threads 2–14)  …" { style.fill: "#EAF3FA"; style.stroke: "#2266AA"; style.border-radius: 4; style.italic: true }
+  t15: "Thread 15\npthread_t threads[15]" { style.fill: "#D8ECFA"; style.stroke: "#2266AA"; style.border-radius: 4 }
+}
+# ─── SHARED SERVER STATE ───────────────────────────────────────────────────────
+shared_state: "Shared Server State" {
+  style.fill: "#F0E8D8"
+  style.stroke: "#8A6840"
+  style.border-radius: 6
+  stats_box: "server_stats_t g_stats\n━━━━━━━━━━━━━━━━━━━━━━\nactive_connections : int\ntotal_connections  : long long\ntotal_requests     : long long\ntotal_bytes_sent   : long long\n━━━━━━━━━━━━━━━━━━━━━━\npthread_mutex_t lock" {
+    style.fill: "#FAF0DC"
+    style.stroke: "#8A6840"
+    style.border-radius: 4
+    style.font: mono
+  }
+  log_box: "access_log_t g_log\n━━━━━━━━━━━━━━━━━━━━━━\nFILE *file   (append mode)\npthread_mutex_t lock\nfflush() under lock\n━━━━━━━━━━━━━━━━━━━━━━\nFormat: CLF\nIP:PORT - - [date] METHOD PATH STATUS BYTES" {
+    style.fill: "#FAF0DC"
+    style.stroke: "#8A6840"
+    style.border-radius: 4
+    style.font: mono
+  }
+  docroot: "g_doc_root : const char *\nWrite-once in main()\nbefore pthread_create()\n→ no lock needed" {
+    style.fill: "#EEF8EE"
+    style.stroke: "#4A8840"
+    style.border-radius: 4
+    style.font: mono
+  }
+}
+# ─── SIGNAL HANDLER ────────────────────────────────────────────────────────────
+signal_handler: "signal_handler(int sig)\nSIGTERM | SIGINT" {
+  style.fill: "#FFD6D6"
+  style.stroke: "#CC4444"
+  style.border-radius: 6
+  style.bold: true
+  sig_body: "atomic_store(&shutdown_flag, 1)\n—————————————————————\nasync-signal-safe:\ncompiles to single MOV/XCHG\nno malloc, no mutex" {
+    style.fill: "#FFECEC"
+    style.stroke: "#CC4444"
+    style.border-radius: 4
+    style.font: mono
+  }
+  shutdown_atomic: "atomic_int shutdown_flag\nmemory_order_seq_cst\nvisible to all threads" {
+    style.fill: "#FFF0CC"
+    style.stroke: "#AA8800"
+    style.border-radius: 4
+    style.font: mono
+  }
+  sig_body -> shutdown_atomic: "writes 1"
+}
+# ─── 503 RESPONSE DETAIL ───────────────────────────────────────────────────────
+resp_503: "HTTP/1.1 503 Service Unavailable\nContent-Length: 0\nConnection: close\nRetry-After: 1\n\nclose(client_fd)" {
+  style.fill: "#FFD6D6"
+  style.stroke: "#CC4444"
+  style.border-radius: 4
+  style.font: mono
+}
+# ─── CONNECTIONS: ACCEPT LOOP → QUEUE ──────────────────────────────────────────
+accept_loop.enqueue_call -> work_queue: "pthread_mutex_lock\nqueue[tail] = item\ntail = (tail+1) % 1024\ncount++\ncond_signal(not_empty)\npthread_mutex_unlock" {
+  style.stroke: "#4A8840"
+  style.stroke-width: 3
+  style.bold: true
+}
+accept_loop.reject_path -> resp_503: "sends & closes" {
+  style.stroke: "#CC4444"
+  style.stroke-dash: 3
+}
+# ─── CONNECTIONS: QUEUE → WORKERS ──────────────────────────────────────────────
+work_queue -> workers.t0: "dequeue\nitem = queue[head]\nhead++; count--" {
+  style.stroke: "#2266AA"
+  style.stroke-width: 2
+}
+work_queue -> workers.t1: "dequeue" { style.stroke: "#2266AA" }
+work_queue -> workers.tdot: "dequeue" { style.stroke: "#2266AA"; style.stroke-dash: 3 }
+work_queue -> workers.t15: "dequeue" { style.stroke: "#2266AA" }
+work_queue -> workers.thread_template: "worker_thread(pool)" {
+  style.stroke: "#2266AA"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+}
+# ─── CONNECTIONS: WORKERS → SHARED STATE ───────────────────────────────────────
+workers -> shared_state.stats_box: "stats_connection_opened/closed()\nstats_request_served()\n⟶ mutex_lock → update → mutex_unlock" {
+  style.stroke: "#8A6840"
+  style.stroke-dash: 4
+}
+workers -> shared_state.log_box: "access_log_write()\n⟶ mutex_lock → fprintf → fflush → mutex_unlock" {
+  style.stroke: "#8A6840"
+  style.stroke-dash: 4
+}
+workers -> shared_state.docroot: "read-only\n(no lock)" {
+  style.stroke: "#4A8840"
+  style.stroke-dash: 5
+}
+# ─── CONNECTIONS: SIGNAL HANDLER → ACCEPT LOOP ─────────────────────────────────
+signal_handler.shutdown_atomic -> accept_loop.shutdown_check: "atomic_load()\nbreaks while loop" {
+  style.stroke: "#CC4444"
+  style.stroke-width: 2
+  style.stroke-dash: 5
+  style.animated: true
+}
+signal_handler.shutdown_atomic -> work_queue.shutdown_flag_q: "thread_pool_shutdown():\npool→shutdown=1\ncond_broadcast(not_empty)\nthen pthread_join × N" {
+  style.stroke: "#CC4444"
+  style.stroke-dash: 5
+  style.animated: true
+}
+# ─── ANNOTATIONS ───────────────────────────────────────────────────────────────
+lock_legend: |md
+  **Lock Legend**
+  - 🟡 = pthread_mutex (short hold: O(1) ops only)
+  - 🔵 = pthread_cond_wait (blocks; lock released during wait)
+  - 🔴 = atomic_int (signal-safe, no lock)
+  - ✅ = lock released BEFORE file I/O
+| {
+  near: bottom-right
+  style.fill: "#F8F8F8"
+  style.stroke: "#AAAAAA"
+  style.border-radius: 6
+}
+cache_note: |md
+  **Cache-Line Notes**
+  - `pool→{head,tail,count,lock}` share one 64B line → bounce between cores
+  - `work_item_t` = 24B → 2.7 items/cache-line
+  - `queue[1024]` = 24KB → fits in L2
+  - Workers hold lock < 1µs; I/O outside lock
+| {
+  near: bottom-left
+  style.fill: "#F8F8F8"
+  style.stroke: "#AAAAAA"
+  style.border-radius: 6
+}

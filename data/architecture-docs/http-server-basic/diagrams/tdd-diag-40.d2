@@ -1,0 +1,466 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+direction: down
+title: |md
+  ## M4 Complete Module Architecture
+  Concurrent HTTP Server — All Components & Interfaces
+| {near: top-center}
+# ─── Signal Path ───────────────────────────────────────────────────────────────
+signals: "OS Signals\n(SIGTERM / SIGINT)" {
+  shape: hexagon
+  style.fill: "#FFCCCC"
+  style.stroke: "#CC0000"
+  style.font-color: "#7A0000"
+}
+signal_handler: "signal_handler(int sig)" {
+  shape: rectangle
+  style.fill: "#FFE0E0"
+  style.stroke: "#CC0000"
+  style.font-color: "#7A0000"
+  body: |md
+    `atomic_store(&shutdown_flag, 1)`
+    async-signal-safe only
+    NO malloc / mutex / printf
+  |
+}
+shutdown_flag: "shutdown_flag\natomic_int" {
+  shape: cylinder
+  style.fill: "#FFE0E0"
+  style.stroke: "#CC0000"
+  style.font-color: "#7A0000"
+}
+signals -> signal_handler: "delivered to\narbitrary thread" {
+  style.stroke: "#CC0000"
+  style.stroke-dash: 3
+}
+signal_handler -> shutdown_flag: "atomic_store(1)\nmemory_order_seq_cst" {
+  style.stroke: "#CC0000"
+  style.bold: true
+}
+# ─── main() ────────────────────────────────────────────────────────────────────
+main_fn: "main()" {
+  shape: rectangle
+  style.fill: "#E8D5F5"
+  style.stroke: "#7B2FBE"
+  style.font-color: "#3D0080"
+  style.bold: true
+  startup: "Startup Sequence" {
+    shape: rectangle
+    style.fill: "#F3EAFA"
+    style.stroke: "#7B2FBE"
+    body: |md
+      1. `signal(SIGPIPE, SIG_IGN)`
+      2. `signal(SIGTERM, signal_handler)`
+      3. `signal(SIGINT,  signal_handler)`
+      4. `access_log_init(&g_log, path)`
+      5. `thread_pool_init(&g_pool, N)`
+      6. `server_fd = create_server_socket(port)`
+    |
+  }
+  accept_loop: "Accept Loop" {
+    shape: rectangle
+    style.fill: "#F3EAFA"
+    style.stroke: "#7B2FBE"
+    body: |md
+      `while (!atomic_load(&shutdown_flag))`
+        `client_fd = accept(server_fd, ...)`
+        errno==EINTR → continue
+        errno==EMFILE/ENFILE → usleep(100ms) + continue
+        `thread_pool_enqueue(&g_pool, client_fd, ip, port)`
+        on -1: send HTTP 503 + `close(client_fd)`
+    |
+  }
+  shutdown_seq: "Shutdown Sequence" {
+    shape: rectangle
+    style.fill: "#F3EAFA"
+    style.stroke: "#7B2FBE"
+    body: |md
+      `close(server_fd)`
+      `thread_pool_shutdown(&g_pool)`
+      `access_log_close(&g_log)`
+      return EXIT_SUCCESS
+    |
+  }
+  startup -> accept_loop -> shutdown_seq
+}
+shutdown_flag -> main_fn.accept_loop: "atomic_load()\nloop exit condition" {
+  style.stroke: "#CC0000"
+  style.stroke-dash: 3
+}
+# ─── thread_pool_t ──────────────────────────────────────────────────────────────
+pool: "thread_pool_t   g_pool" {
+  shape: rectangle
+  style.fill: "#D5E8F5"
+  style.stroke: "#1565C0"
+  style.font-color: "#0D3F7A"
+  queue_buf: "work_item_t queue[1024]\nCircular Buffer" {
+    shape: rectangle
+    style.fill: "#EBF5FB"
+    style.stroke: "#1565C0"
+    body: |md
+      head  — dequeue index
+      tail  — enqueue index
+      count — current occupancy
+      capacity = 1024 (power-of-2)
+      item size = 24 bytes each
+      total = 24 576 bytes
+    |
+  }
+  sync_prims: "Synchronization" {
+    shape: rectangle
+    style.fill: "#EBF5FB"
+    style.stroke: "#1565C0"
+    body: |md
+      lock        pthread_mutex_t  (40 B)
+      not_empty   pthread_cond_t   (48 B)
+      not_full    pthread_cond_t   (48 B)
+      shutdown    int  (0=run / 1=drain+exit)
+    |
+  }
+  thread_handles: "threads[N]  pthread_t[]" {
+    shape: rectangle
+    style.fill: "#EBF5FB"
+    style.stroke: "#1565C0"
+    body: |md
+      thread_count = N (default 16)
+      each handle used in pthread_join()
+      during thread_pool_shutdown()
+    |
+  }
+  queue_buf -> sync_prims -> thread_handles
+}
+# ─── thread_pool_init / shutdown ───────────────────────────────────────────────
+tpi: "thread_pool_init(pool, N)" {
+  shape: rectangle
+  style.fill: "#D5E8F5"
+  style.stroke: "#1565C0"
+  style.font-color: "#0D3F7A"
+  body: |md
+    memset(pool, 0)
+    pthread_mutex_init(&pool→lock)
+    pthread_cond_init(&pool→not_empty)
+    pthread_cond_init(&pool→not_full)
+    for i=0..N-1:
+      pthread_create(&pool→threads[i],
+                     worker_thread, pool)
+    on any failure: rollback all
+    returns 0 or -1
+  |
+}
+tps: "thread_pool_shutdown(pool)" {
+  shape: rectangle
+  style.fill: "#D5E8F5"
+  style.stroke: "#1565C0"
+  style.font-color: "#0D3F7A"
+  body: |md
+    lock → pool→shutdown=1
+    pthread_cond_broadcast(not_empty)
+    unlock
+    for i=0..N-1: pthread_join(threads[i])
+    pthread_mutex_destroy / cond_destroy
+  |
+}
+tpe: "thread_pool_enqueue(pool,\nclient_fd, ip, port)" {
+  shape: rectangle
+  style.fill: "#D5E8F5"
+  style.stroke: "#1565C0"
+  style.font-color: "#0D3F7A"
+  body: |md
+    lock
+    if count ≥ 1024: unlock → return -1
+    queue[tail] = {client_fd, ip, port}
+    tail = (tail+1) % 1024
+    count++
+    pthread_cond_signal(not_empty)
+    unlock → return 0
+  |
+}
+# ─── work_item_t ───────────────────────────────────────────────────────────────
+work_item: "work_item_t  (24 B)" {
+  shape: rectangle
+  style.fill: "#BDD7EE"
+  style.stroke: "#1565C0"
+  style.font-color: "#0D3F7A"
+  body: |md
+    +0x00  client_fd    int      (4 B)
+    +0x04  client_ip    char[16] (16 B)
+    +0x14  client_port  int      (4 B)
+    value-copied into/out of queue
+  |
+}
+# ─── worker_thread() ───────────────────────────────────────────────────────────
+worker: "worker_thread(pool)  ×N threads" {
+  shape: rectangle
+  style.fill: "#D5F5E3"
+  style.stroke: "#1A7A3A"
+  style.font-color: "#0A3D1C"
+  style.bold: true
+  wt_wait: "Wait Phase  [LOCK HELD]" {
+    shape: rectangle
+    style.fill: "#EBF9F0"
+    style.stroke: "#1A7A3A"
+    body: |md
+      pthread_mutex_lock(&pool→lock)
+      while count==0 AND NOT shutdown:
+        pthread_cond_wait(not_empty, lock)
+      if shutdown AND count==0:
+        unlock → return NULL  ← EXIT
+    |
+  }
+  wt_dequeue: "Dequeue Phase  [LOCK HELD]" {
+    shape: rectangle
+    style.fill: "#EBF9F0"
+    style.stroke: "#1A7A3A"
+    body: |md
+      item = queue[head]  (24-byte copy)
+      head = (head+1) % 1024
+      count--
+      pthread_cond_signal(not_full)
+      pthread_mutex_unlock  ← RELEASE
+    |
+  }
+  wt_handle: "Handle Phase  [NO LOCK]" {
+    shape: rectangle
+    style.fill: "#EBF9F0"
+    style.stroke: "#1A7A3A"
+    body: |md
+      stats_connection_opened(&g_stats)
+      handle_client_keep_alive(
+        item.client_fd, item.client_ip,
+        item.client_port, g_doc_root)
+      ← closes client_fd before returning
+      stats_connection_closed(&g_stats)
+      → reacquire lock, loop
+    |
+  }
+  wt_wait -> wt_dequeue -> wt_handle
+}
+# ─── handle_client_keep_alive() ────────────────────────────────────────────────
+hcka: "handle_client_keep_alive(\n  client_fd, ip, port, doc_root)" {
+  shape: rectangle
+  style.fill: "#FFF9C4"
+  style.stroke: "#B8860B"
+  style.font-color: "#5C4400"
+  style.bold: true
+  ka_check: "Loop Guard" {
+    shape: diamond
+    style.fill: "#FFFDE7"
+    style.stroke: "#B8860B"
+    body: |md
+      atomic_load(shutdown_flag)?
+      requests ≥ MAX_REQUESTS(100)?
+      → break if either true
+    |
+  }
+  ka_read: "read_request_with_timeout(\n  fd, buf, 8192, 30s)" {
+    shape: rectangle
+    style.fill: "#FFFDE7"
+    style.stroke: "#B8860B"
+    body: |md
+      select(fd, timeout=30s)
+      on timeout → return -1 → break
+      on EINTR   → check shutdown, retry
+      recv() loop until \\r\\n\\r\\n found
+      returns >0 / 0(EOF) / -1(error)
+    |
+  }
+  ka_parse: "http_parse_request()\n[M2]" {
+    shape: rectangle
+    style.fill: "#FFFDE7"
+    style.stroke: "#B8860B"
+    body: |md
+      HTTP_PARSE_BAD_REQUEST → 400 + break
+      HTTP_PARSE_URI_TOO_LONG → 414 + break
+      HTTP_PARSE_NOT_IMPL    → 501 + break
+      HTTP_PARSE_OK          → continue
+    |
+  }
+  ka_serve: "serve_file()\n[M3]" {
+    shape: rectangle
+    style.fill: "#FFFDE7"
+    style.stroke: "#B8860B"
+    body: |md
+      URL decode → realpath → prefix check
+      MIME detect → stat → 304 check
+      open → send headers → stream body
+      Handles 200/304/403/404/500
+      does NOT close client_fd
+    |
+  }
+  ka_ka: "should_keep_alive(req)" {
+    shape: diamond
+    style.fill: "#FFFDE7"
+    style.stroke: "#B8860B"
+    body: |md
+      Connection: close → 0
+      Connection: keep-alive → 1
+      HTTP/1.1 default → 1
+      HTTP/1.0 default → 0
+    |
+  }
+  ka_close: "close(client_fd)\n[MANDATORY — every exit path]" {
+    shape: rectangle
+    style.fill: "#FFD700"
+    style.stroke: "#B8860B"
+    style.font-color: "#5C4400"
+    style.bold: true
+  }
+  ka_check -> ka_read -> ka_parse -> ka_serve -> ka_ka
+  ka_ka -> ka_close: "keep-alive=0\nor loop limit\nor shutdown" {
+    style.stroke: "#CC6600"
+  }
+  ka_ka -> ka_check: "keep-alive=1\nloop again" {
+    style.stroke: "#1A7A3A"
+  }
+  ka_read -> ka_close: "≤0 (EOF/timeout/error)" {
+    style.stroke: "#CC0000"
+    style.stroke-dash: 4
+  }
+  ka_parse -> ka_close: "parse error\n4xx sent" {
+    style.stroke: "#CC0000"
+    style.stroke-dash: 4
+  }
+}
+# ─── Shared State ──────────────────────────────────────────────────────────────
+shared: "Shared State (Global)" {
+  shape: rectangle
+  style.fill: "#F5D5E8"
+  style.stroke: "#9C2070"
+  style.font-color: "#5C003A"
+  stats_box: "server_stats_t  g_stats" {
+    shape: rectangle
+    style.fill: "#FBE9F3"
+    style.stroke: "#9C2070"
+    body: |md
+      lock               pthread_mutex_t (40 B)
+      active_connections int
+      total_connections  long long
+      total_requests     long long
+      total_bytes_sent   long long
+      — cache lines 0–1 (72 B total)
+    |
+  }
+  log_box: "access_log_t  g_log" {
+    shape: rectangle
+    style.fill: "#FBE9F3"
+    style.stroke: "#9C2070"
+    body: |md
+      lock   pthread_mutex_t
+      file   FILE *  (fopen append)
+      format: IP:PORT - - [date]
+              "METHOD PATH" STATUS BYTES
+      fflush() inside lock on every write
+    |
+  }
+  docroot_box: "g_doc_root  const char *" {
+    shape: rectangle
+    style.fill: "#FBE9F3"
+    style.stroke: "#9C2070"
+    body: |md
+      Set once in main() via realpath()
+      Read-only after thread creation
+      No lock needed (write-once/read-many)
+      pthread_create() acts as memory barrier
+    |
+  }
+  stats_box -> log_box -> docroot_box
+}
+# ─── FD Lifecycle annotation ────────────────────────────────────────────────────
+fd_lifecycle: "client_fd Lifecycle" {
+  shape: rectangle
+  style.fill: "#FFF3E0"
+  style.stroke: "#E65100"
+  style.font-color: "#7A2600"
+  body: |md
+    1. accept() in accept loop → OPENED
+    2. stored in work_item_t.client_fd
+    3. passed to handle_client_keep_alive()
+    4. read/write in keep-alive loop
+    5. close(client_fd) at end of
+       handle_client_keep_alive() → CLOSED
+    Exactly one open, exactly one close.
+    serve_file() does NOT close it.
+  |
+}
+# ─── 503 Response ──────────────────────────────────────────────────────────────
+resp_503: "503 Service Unavailable\n(queue full path)" {
+  shape: rectangle
+  style.fill: "#FFE0E0"
+  style.stroke: "#CC0000"
+  style.font-color: "#7A0000"
+  body: |md
+    HTTP/1.1 503 Service Unavailable
+    Content-Length: 0
+    Connection: close
+    Retry-After: 1
+    send() + close(client_fd)
+  |
+}
+# ─── Connections ───────────────────────────────────────────────────────────────
+main_fn -> tpi: "calls at startup" {
+  style.stroke: "#7B2FBE"
+}
+main_fn -> tps: "calls post-loop\n(shutdown path)" {
+  style.stroke: "#7B2FBE"
+  style.stroke-dash: 3
+}
+main_fn.accept_loop -> tpe: "calls per\naccepted connection" {
+  style.stroke: "#7B2FBE"
+  style.bold: true
+}
+tpe -> resp_503: "returns -1\n(count ≥ 1024)" {
+  style.stroke: "#CC0000"
+}
+tpe -> work_item: "enqueues\nvalue copy" {
+  style.stroke: "#1565C0"
+  style.bold: true
+}
+work_item -> pool.queue_buf: "stored at\nqueue[tail]" {
+  style.stroke: "#1565C0"
+}
+tpi -> pool: "initializes" {
+  style.stroke: "#1565C0"
+}
+tpi -> worker: "pthread_create()\n×N threads" {
+  style.stroke: "#1A7A3A"
+  style.bold: true
+}
+tps -> pool: "sets shutdown=1\nbroadcasts not_empty\njoins all threads" {
+  style.stroke: "#1565C0"
+  style.stroke-dash: 3
+}
+pool.queue_buf -> worker.wt_wait: "not_empty signal\nwakes blocked worker" {
+  style.stroke: "#1A7A3A"
+  style.animated: true
+}
+worker.wt_dequeue -> work_item: "dequeues\nvalue copy" {
+  style.stroke: "#1A7A3A"
+}
+worker.wt_handle -> hcka: "calls with\nclient_fd, ip, port,\ng_doc_root" {
+  style.stroke: "#1A7A3A"
+  style.bold: true
+}
+worker.wt_handle -> shared.stats_box: "stats_connection_opened()\nstats_connection_closed()\n▼ acquire  ▲ release" {
+  style.stroke: "#9C2070"
+  style.stroke-dash: 3
+}
+hcka.ka_serve -> shared.docroot_box: "reads g_doc_root\n(no lock needed)" {
+  style.stroke: "#9C2070"
+  style.stroke-dash: 3
+}
+hcka -> shared.log_box: "access_log_write()\n▼ lock  fflush  ▲ unlock" {
+  style.stroke: "#9C2070"
+  style.stroke-dash: 3
+}
+hcka.ka_close -> fd_lifecycle: "close(client_fd)\nexactly once" {
+  style.stroke: "#E65100"
+  style.bold: true
+}
+shutdown_flag -> hcka.ka_check: "atomic_load()\nchecked each iteration" {
+  style.stroke: "#CC0000"
+  style.stroke-dash: 3
+}

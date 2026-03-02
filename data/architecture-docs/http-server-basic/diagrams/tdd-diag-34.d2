@@ -1,0 +1,200 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |'md
+  ## HTTP/1.1 Keep-Alive: Single Connection, Multiple Requests
+  *One TCP handshake amortized across N requests — saves 2 × RTT per reused connection*
+'| {near: top-center}
+
+http11: "HTTP/1.1 Keep-Alive (THIS SERVER)" {
+  shape: sequence_diagram
+  client: "Client\n(Browser)"
+  worker: "Worker Thread\nhandle_client_keep_alive()"
+  parser: "HTTP Parser\nhttp_parse_request()"
+  fs: "File Server\nserve_file()"
+  ska: "should_keep_alive()"
+
+  tcp_open: "TCP Connection Setup" {
+    client -> worker: "TCP SYN [3-way handshake: 1.5 × RTT]" {
+      style.stroke: "#2ecc71"
+      style.bold: true
+    }
+    worker -> client: "TCP SYN-ACK" {
+      style.stroke: "#2ecc71"
+    }
+    client -> worker: "TCP ACK → connection ESTABLISHED" {
+      style.stroke: "#2ecc71"
+    }
+  }
+
+  req1: "Request 1 — GET /index.html" {
+    client -> worker: "recv() bytes → read_request_with_timeout()" {
+      style.stroke: "#3498db"
+    }
+    worker -> parser: "http_parse_request(buf, len, &req)" {
+      style.stroke: "#3498db"
+    }
+    parser -> worker: "HTTP_PARSE_OK method=GET path=/index.html version=HTTP/1.1" {
+      style.stroke: "#3498db"
+      style.stroke-dash: 5
+    }
+    worker -> ska: "should_keep_alive(&req)" {
+      style.stroke: "#9b59b6"
+    }
+    ska -> worker: "1 [HTTP/1.1 default=keep-alive]" {
+      style.stroke: "#9b59b6"
+      style.stroke-dash: 5
+    }
+    worker -> fs: "serve_file(fd, doc_root, &req, send_body=1)" {
+      style.stroke: "#e67e22"
+    }
+    fs -> worker: "200 OK | Content-Type: text/html | Connection: keep-alive" {
+      style.stroke: "#e67e22"
+      style.stroke-dash: 5
+    }
+    worker -> client: "send_all() → HTTP/1.1 200 OK ... Connection: keep-alive" {
+      style.stroke: "#3498db"
+      style.bold: true
+    }
+    worker."keep_alive=1 → NO close(client_fd) → loop continues"
+  }
+
+  req2: "Request 2 — GET /style.css" {
+    client -> worker: "recv() bytes → read_request_with_timeout() [NO new handshake]" {
+      style.stroke: "#3498db"
+    }
+    worker -> parser: "http_parse_request(buf, len, &req)" {
+      style.stroke: "#3498db"
+    }
+    parser -> worker: "HTTP_PARSE_OK method=GET path=/style.css version=HTTP/1.1" {
+      style.stroke: "#3498db"
+      style.stroke-dash: 5
+    }
+    worker -> ska: "should_keep_alive(&req)" {
+      style.stroke: "#9b59b6"
+    }
+    ska -> worker: "1 [HTTP/1.1 default; Connection header absent]" {
+      style.stroke: "#9b59b6"
+      style.stroke-dash: 5
+    }
+    worker -> fs: "serve_file(fd, doc_root, &req, send_body=1)" {
+      style.stroke: "#e67e22"
+    }
+    fs -> worker: "200 OK | Content-Type: text/css | Connection: keep-alive" {
+      style.stroke: "#e67e22"
+      style.stroke-dash: 5
+    }
+    worker -> client: "send_all() → HTTP/1.1 200 OK ... Connection: keep-alive" {
+      style.stroke: "#3498db"
+      style.bold: true
+    }
+    worker."keep_alive=1 → NO close(client_fd) → loop continues"
+  }
+
+  req3: "Request 3 — GET /logo.png (Connection: close)" {
+    client -> worker: "recv() bytes → read_request_with_timeout()" {
+      style.stroke: "#3498db"
+    }
+    worker -> parser: "http_parse_request(buf, len, &req)" {
+      style.stroke: "#3498db"
+    }
+    parser -> worker: "HTTP_PARSE_OK method=GET path=/logo.png Connection: close" {
+      style.stroke: "#3498db"
+      style.stroke-dash: 5
+    }
+    worker -> ska: "should_keep_alive(&req)" {
+      style.stroke: "#9b59b6"
+    }
+    ska -> worker: "0 [Connection: close header present]" {
+      style.stroke: "#e74c3c"
+      style.stroke-dash: 5
+    }
+    worker -> fs: "serve_file(fd, doc_root, &req, send_body=1)" {
+      style.stroke: "#e67e22"
+    }
+    fs -> worker: "200 OK | Content-Type: image/png | Connection: close" {
+      style.stroke: "#e67e22"
+      style.stroke-dash: 5
+    }
+    worker -> client: "send_all() → HTTP/1.1 200 OK ... Connection: close" {
+      style.stroke: "#e74c3c"
+      style.bold: true
+    }
+    worker."keep_alive=0 → break loop → close(client_fd)"
+    worker -> client: "TCP FIN [orderly shutdown]" {
+      style.stroke: "#e74c3c"
+      style.bold: true
+    }
+    client -> worker: "TCP FIN-ACK" {
+      style.stroke: "#e74c3c"
+    }
+  }
+}
+
+http10: "HTTP/1.0 Comparison (THREE separate connections)" {
+  shape: sequence_diagram
+  c10: "Client"
+  s10: "Server (HTTP/1.0)"
+
+  conn1: "Connection 1 — GET /index.html" {
+    c10 -> s10: "TCP SYN" {style.stroke: "#2ecc71"}
+    s10 -> c10: "TCP SYN-ACK" {style.stroke: "#2ecc71"}
+    c10 -> s10: "TCP ACK" {style.stroke: "#2ecc71"}
+    c10 -> s10: "GET /index.html HTTP/1.0" {style.stroke: "#3498db"}
+    s10 -> c10: "200 OK + body" {style.stroke: "#3498db"; style.stroke-dash: 5}
+    s10 -> c10: "TCP FIN [close after response]" {style.stroke: "#e74c3c"}
+  }
+
+  conn2: "Connection 2 — GET /style.css [FULL HANDSHAKE AGAIN]" {
+    c10 -> s10: "TCP SYN [+1.5 RTT penalty]" {style.stroke: "#2ecc71"}
+    s10 -> c10: "TCP SYN-ACK" {style.stroke: "#2ecc71"}
+    c10 -> s10: "TCP ACK" {style.stroke: "#2ecc71"}
+    c10 -> s10: "GET /style.css HTTP/1.0" {style.stroke: "#3498db"}
+    s10 -> c10: "200 OK + body" {style.stroke: "#3498db"; style.stroke-dash: 5}
+    s10 -> c10: "TCP FIN" {style.stroke: "#e74c3c"}
+  }
+
+  conn3: "Connection 3 — GET /logo.png [FULL HANDSHAKE AGAIN]" {
+    c10 -> s10: "TCP SYN [+1.5 RTT penalty]" {style.stroke: "#2ecc71"}
+    s10 -> c10: "TCP SYN-ACK" {style.stroke: "#2ecc71"}
+    c10 -> s10: "TCP ACK" {style.stroke: "#2ecc71"}
+    c10 -> s10: "GET /logo.png HTTP/1.0" {style.stroke: "#3498db"}
+    s10 -> c10: "200 OK + body" {style.stroke: "#3498db"; style.stroke-dash: 5}
+    s10 -> c10: "TCP FIN" {style.stroke: "#e74c3c"}
+  }
+}
+
+ska_logic: |'md
+### `should_keep_alive()` Decision Logic
+c
+int should_keep_alive(const http_request_t *req) {
+    const char *conn = get_header(req, "connection");
+    if (conn) {
+        if (strcasecmp(conn, "close")      == 0) return 0; // explicit close
+        if (strcasecmp(conn, "keep-alive") == 0) return 1; // explicit keep
+    }
+    // No Connection header: use HTTP version default
+    return (strcmp(req->version, "HTTP/1.1") == 0) ? 1 : 0;
+}
+
+
+| Version   | Connection header | Return | Action              |
+|-----------|-------------------|--------|---------------------|
+| HTTP/1.1  | absent            | **1**  | loop continues      |
+| HTTP/1.1  | keep-alive        | **1**  | loop continues      |
+| HTTP/1.1  | close             | **0**  | break → close(fd)   |
+| HTTP/1.0  | absent            | **0**  | break → close(fd)   |
+| HTTP/1.0  | keep-alive        | **1**  | loop continues      |
+'| {near: bottom-center}
+
+savings: |'md
+**Time saved = 2 × TCP handshake RTT**
+- 3-request HTTP/1.0: **3 handshakes** = 3 × 1.5 RTT = **4.5 RTT** overhead
+- 3-request HTTP/1.1: **1 handshake** = 1 × 1.5 RTT = **1.5 RTT** overhead
+- Saving: **3.0 RTT** ≈ **150 ms** on a 50 ms link
+- For a page with 100 assets: saves **99 × 1.5 RTT = 148.5 RTT ≈ 7.4 seconds**
+'| {near: bottom-center}

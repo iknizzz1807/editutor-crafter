@@ -1,0 +1,176 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Big-Endian vs Little-Endian: SHA-256 Word Storage
+  **Value under inspection: H0 initial = 0x6A09E667**
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  le_side: "Little-Endian (x86 native)" {
+    direction: down
+    style.fill: "#fff3cd"
+    style.stroke: "#e0a800"
+    style.border-radius: 6
+    le_label: "x86 stores LSB at lowest address" {
+      style.fill: "#fff3cd"
+      style.stroke: transparent
+      style.font-size: 13
+      style.italic: true
+    }
+    le_mem: {
+      shape: sql_table
+      label: "Memory Layout (little-endian)"
+      a0: "0x1000 | uint8_t | 0xE7  ← LSB (byte 0 of 0x6A09E667)"
+      a1: "0x1001 | uint8_t | 0xE6"
+      a2: "0x1002 | uint8_t | 0x09"
+      a3: "0x1003 | uint8_t | 0x6A  ← MSB (byte 3 of 0x6A09E667)"
+      note: "memcpy / cast → reads as 0xE7E609**6A** WRONG"
+    }
+    le_cast: {
+      label: "Naive pointer cast (WRONG)"
+      width: 360
+      code: |'c
+        uint32_t *p = (uint32_t *)buf;
+        uint32_t w  = *p;
+        // w == 0xE7E6096A  ← WRONG!
+        // x86 flipped the bytes for you
+      '|
+    }
+  }
+  gap1: "" {
+    style.stroke: transparent
+    style.fill: transparent
+    width: 40
+  }
+  be_side: "Big-Endian (SHA-256 Spec)" {
+    direction: down
+    style.fill: "#d4edda"
+    style.stroke: "#28a745"
+    style.border-radius: 6
+    be_label: "FIPS 180-4: MSB at lowest address" {
+      style.fill: "#d4edda"
+      style.stroke: transparent
+      style.font-size: 13
+      style.italic: true
+    }
+    be_mem: {
+      shape: sql_table
+      label: "Memory Layout (big-endian / network order)"
+      b0: "0x1000 | uint8_t | 0x6A  ← MSB first (most significant)"
+      b1: "0x1001 | uint8_t | 0x09"
+      b2: "0x1002 | uint8_t | 0xE6"
+      b3: "0x1003 | uint8_t | 0xE7  ← LSB last"
+      note: "load_be32() → reads as 0x6A09E667 CORRECT"
+    }
+    be_read: {
+      label: "Correct explicit load (portable)"
+      width: 360
+      code: |'c
+        uint32_t load_be32(const uint8_t *b) {
+          return ((uint32_t)b[0] << 24)
+               | ((uint32_t)b[1] << 16)
+               | ((uint32_t)b[2] <<  8)
+               | ((uint32_t)b[3]      );
+        }
+        // Returns 0x6A09E667 on ANY platform
+      '|
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  fix_box: "The Fix: Explicit Byte-Swap (sha256_schedule.c)" {
+    direction: down
+    style.fill: "#e8f4f8"
+    style.stroke: "#0077b6"
+    style.border-radius: 6
+    fix_code: {
+      label: "Block word parsing — all 16 words W[0..15]"
+      width: 560
+      code: |'c
+        for (int t = 0; t < 16; t++) {
+          W[t] = ((uint32_t)block[t*4 + 0] << 24)  // MSB
+               | ((uint32_t)block[t*4 + 1] << 16)
+               | ((uint32_t)block[t*4 + 2] <<  8)
+               | ((uint32_t)block[t*4 + 3]      ); // LSB
+        }
+        // Equivalent GCC built-in (BSWAP instruction):
+        // W[t] = __builtin_bswap32(*(uint32_t*)(block + t*4));
+      '|
+    }
+    fix_note: {
+      shape: sql_table
+      label: "Byte positions for W[0] = 0x6A09E667 (from abc block)"
+      r0: "block[0] = 0x61 (a)  | << 24 | contributes 0x61000000"
+      r1: "block[1] = 0x62 (b)  | << 16 | contributes 0x00620000"
+      r2: "block[2] = 0x63 (c)  | <<  8 | contributes 0x00006300"
+      r3: "block[3] = 0x80 (pad)| <<  0 | contributes 0x00000080"
+      r4: "OR result            |       | W[0] = 0x61626380 CORRECT"
+    }
+  }
+  gap2: "" {
+    style.stroke: transparent
+    style.fill: transparent
+    width: 40
+  }
+  digest_box: "Digest Output: Same Rule Applies" {
+    direction: down
+    style.fill: "#f8d7da"
+    style.stroke: "#dc3545"
+    style.border-radius: 6
+    digest_code: {
+      label: "Writing H[i] to digest[] — big-endian byte order"
+      width: 380
+      code: |'c
+        for (int i = 0; i < 8; i++) {
+          digest[i*4+0] = (uint8_t)(H[i] >> 24); // MSB
+          digest[i*4+1] = (uint8_t)(H[i] >> 16);
+          digest[i*4+2] = (uint8_t)(H[i] >>  8);
+          digest[i*4+3] = (uint8_t)(H[i]      ); // LSB
+        }
+        // H[0]=0xba7816bf → bytes: ba 78 16 bf
+      '|
+    }
+    digest_warn: {
+      shape: sql_table
+      label: "Common bug: memcpy of native uint32_t"
+      w0: "memcpy(digest, H, 32) on x86 | WRONG | reverses each word"
+      w1: "store_be32 loop above         | RIGHT | portable everywhere"
+      w2: "htonl(H[i]) + memcpy          | RIGHT | POSIX systems only"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  legend: "Endianness Touch Points in SHA-256" {
+    direction: down
+    style.fill: "#f0f0f0"
+    style.stroke: "#888"
+    style.border-radius: 6
+    legend_tbl: {
+      shape: sql_table
+      label: "Where endianness conversion is REQUIRED (sha256.c)"
+      l0: "M1 padding length field | write_be64(buf+56, bits)     | 64-bit length → 8 bytes MSB-first"
+      l1: "M2 schedule W[0..15]    | load_be32(block + t*4)       | 4 bytes → uint32_t"
+      l2: "M3 compression          | uint32_t arithmetic only     | no conversion needed mid-round"
+      l3: "M4 digest output        | store_be32(digest + i*4, H[i])| uint32_t → 4 bytes MSB-first"
+    }
+  }
+}
+row1 -> row2: "apply correction"
+row2 -> row3: "used at every boundary"
+le_side -> be_side: "load_be32() converts" {
+  style.stroke: "#28a745"
+  style.stroke-width: 2
+}

@@ -1,0 +1,320 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  ## `read_request()` Accumulation Loop — Step-by-Step Buffer State
+| {near: top-center}
+
+# ─── LEGEND ───────────────────────────────────────────────────────────────────
+legend: {
+  near: bottom-right
+  style.fill: "#f8f8f8"
+  style.stroke: "#999"
+  label: |md
+    **Legend**
+    🟣 Header segment · 🔵 Data bytes
+    🟩 Free / available · ⬜ Unwritten
+    🔴 Error / abort path
+  |
+  shape: text
+}
+
+# ─── STEP 0: INITIAL STATE ────────────────────────────────────────────────────
+step0: "Step 0 — Entry" {
+  style.fill: "#f3f0ff"
+  style.stroke: "#7c3aed"
+  style.border-radius: 8
+  state: |md
+    **total = 0 · buf[0..8191] unwritten**
+  | {shape: text}
+  buf0: {
+    style.fill: "#e0e0e0"
+    style.stroke: "#aaa"
+    style.border-radius: 4
+    label: |md
+      `buf[ 0..8191 ]`
+      ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+      **← 8192 bytes free (REQUEST_BUF_SIZE - 1 = 8191 usable) →**
+    |
+    shape: rectangle
+  }
+  ptr0: "buf + total\n= buf + 0\n= buf[0]" {
+    style.fill: "#fef9c3"
+    style.stroke: "#ca8a04"
+    style.font: mono
+    shape: diamond
+  }
+  inv0: |md
+    **Invariant:** `buf[total] = '\0'` → `buf[0] = '\0'`
+    **Guard:**  `total < buf_size - 1`  →  0 < 8191 ✓
+  | {shape: text; style.font-color: "#374151"}
+  state -> buf0
+  buf0 -> ptr0
+  ptr0 -> inv0
+}
+
+# ─── STEP 1: recv() CALL 1 — 312 bytes, strstr MISS ──────────────────────────
+step1: "Step 1 — recv() call #1" {
+  style.fill: "#eff6ff"
+  style.stroke: "#2563eb"
+  style.border-radius: 8
+  call1: |md
+    `n = recv(fd, buf + 0, 8191 - 0, 0)`
+    **→ n = 312  (partial headers; no \\r\\n\\r\\n yet)**
+  | {shape: text; style.font-color: "#1e3a8a"}
+  buf1: {
+    style.fill: "#dbeafe"
+    style.stroke: "#3b82f6"
+    style.border-radius: 4
+    label: |md
+      `buf[ 0 .. 311 ]`  🔵 312 bytes from network
+      `GET /index.html HTTP/1.1\r\nHost: localhost:8080\r\n`
+      `User-Agent: curl/7.88.1\r\nAccept: */*\r\n`
+      `Accept-Encoding: gzip, deflate\r\n` ← **truncated mid-header**
+      `buf[312] = '\0'`  ← **null-terminator written**
+      `buf[ 312 .. 8191 ]`  ░░ 7880 bytes still free
+    |
+    shape: rectangle
+  }
+  state1: "total = 0 + 312 = 312" {
+    style.fill: "#bfdbfe"
+    style.stroke: "#1d4ed8"
+    style.font: mono
+    shape: rectangle
+  }
+  strstr1: "strstr(buf, \"\\r\\n\\r\\n\")" {
+    style.fill: "#fef3c7"
+    style.stroke: "#d97706"
+    shape: diamond
+  }
+  miss1: "MISS — delimiter not found\nCONTINUE loop" {
+    style.fill: "#fce7f3"
+    style.stroke: "#be185d"
+    style.font: mono
+    shape: oval
+  }
+  call1 -> buf1
+  buf1 -> state1
+  state1 -> strstr1
+  strstr1 -> miss1
+}
+
+# ─── STEP 2: recv() CALL 2 — 89 bytes, strstr HIT ────────────────────────────
+step2: "Step 2 — recv() call #2" {
+  style.fill: "#f0fdf4"
+  style.stroke: "#16a34a"
+  style.border-radius: 8
+  call2: |md
+    `n = recv(fd, buf + 312, 8191 - 312, 0)`
+    **→ n = 89  (remaining headers + \\r\\n\\r\\n)**
+  | {shape: text; style.font-color: "#14532d"}
+  buf2: {
+    style.fill: "#dcfce7"
+    style.stroke: "#22c55e"
+    style.border-radius: 4
+    label: |md
+      `buf[ 0 .. 311 ]`  🔵 from recv call #1 (unchanged)
+      `buf[ 312 .. 400 ]` 🟣 89 new bytes:
+      `Cache-Control: max-age=0\r\n` ← 26 bytes
+      `Connection: keep-alive\r\n`   ← 24 bytes
+      `\r\n`                         ← **END-OF-HEADERS at offset 398..401**
+      `buf[401] = '\0'`  ← **null-terminator written**
+      `buf[ 401 .. 8191 ]`  ░░ 7791 bytes still free
+    |
+    shape: rectangle
+  }
+  state2: "total = 312 + 89 = 401" {
+    style.fill: "#bbf7d0"
+    style.stroke: "#15803d"
+    style.font: mono
+    shape: rectangle
+  }
+  strstr2: "strstr(buf, \"\\r\\n\\r\\n\")" {
+    style.fill: "#fef3c7"
+    style.stroke: "#d97706"
+    shape: diamond
+  }
+  hit2: "HIT at buf+398\n→ return 401" {
+    style.fill: "#86efac"
+    style.stroke: "#15803d"
+    style.font: mono
+    style.bold: true
+    shape: oval
+  }
+  ptr2: |md
+    **Pointer arithmetic detail:**
+    Pass 1: `recv(fd, buf+0,   8191)`   → wrote `buf[0..311]`
+    Pass 2: `recv(fd, buf+312, 7879)`   → wrote `buf[312..400]`
+    `buf[401] = '\0'`  (null-terminator)
+    `strstr` scans `buf[0..400]`, finds `\r\n\r\n` at offset 398
+  | {shape: text; style.font-color: "#1f2937"}
+  call2 -> buf2
+  buf2 -> state2
+  state2 -> strstr2
+  strstr2 -> hit2
+  hit2 -> ptr2
+}
+
+# ─── EDGE CASE A: recv() returns 0 (EOF / client closed) ─────────────────────
+eof_path: "Edge Case A — recv() returns 0 (EOF)" {
+  style.fill: "#fef2f2"
+  style.stroke: "#dc2626"
+  style.border-radius: 8
+  desc_eof: |md
+    **When:** client performs TCP orderly shutdown (FIN) before sending `\r\n\r\n`
+    `n = recv(fd, buf + total, buf_size - 1 - total, 0)`
+    **→ n = 0**
+  | {shape: text; style.font-color: "#991b1b"}
+  action_eof: |md
+    c
+    if (n == 0) {
+        return -1;   /* peer closed; no complete request */
+    }
+    
+    Caller in `handle_client()` logs "read_request failed or client disconnected"
+    and returns without sending a response.  **close(client_fd) by caller.**
+  | {shape: text; style.font-color: "#7f1d1d"}
+  desc_eof -> action_eof
+}
+
+# ─── EDGE CASE B: recv() returns -1 (error) ──────────────────────────────────
+err_path: "Edge Case B — recv() returns -1 (error)" {
+  style.fill: "#fff7ed"
+  style.stroke: "#ea580c"
+  style.border-radius: 8
+  desc_err: |md
+    **When:** network error, ECONNRESET, or signal (errno == EINTR)
+    `n = recv(fd, buf + total, ..., 0)`
+    **→ n = -1**
+  | {shape: text; style.font-color: "#9a3412"}
+  eintr_check: "errno == EINTR?" {
+    style.fill: "#fed7aa"
+    style.stroke: "#c2410c"
+    shape: diamond
+  }
+  retry_recv: "CONTINUE loop\n(retry recv)" {
+    style.fill: "#fef3c7"
+    style.stroke: "#b45309"
+    shape: oval
+  }
+  fatal_err: "return -1\n(fatal error)" {
+    style.fill: "#fca5a5"
+    style.stroke: "#b91c1c"
+    style.bold: true
+    shape: oval
+  }
+  desc_err -> eintr_check
+  eintr_check -> retry_recv: "YES"
+  eintr_check -> fatal_err: "NO"
+}
+
+# ─── EDGE CASE C: total reaches buf_size - 1 (overflow guard) ────────────────
+overflow_path: "Edge Case C — Buffer Exhausted (overflow guard)" {
+  style.fill: "#fdf4ff"
+  style.stroke: "#9333ea"
+  style.border-radius: 8
+  desc_ov: |md
+    **When:** client sends headers > 8191 bytes with no `\r\n\r\n`
+    Top of loop checks: `total < buf_size - 1`
+    **→ 8191 >= 8191: condition FALSE → loop exits**
+  | {shape: text; style.font-color: "#581c87"}
+  action_ov: |md
+    c
+    /* exits while loop */
+    return -1;   /* buffer exhausted: request too large */
+    
+    Caller sends **400 Bad Request** (or 431 Request Header Fields Too Large).
+    **Prevents unbounded accumulation / heap exhaustion attack.**
+  | {shape: text; style.font-color: "#4c1d95"}
+  guard_detail: |md
+    **Guard invariant on every recv() call:**
+    `recv(fd, buf + total, buf_size - 1 - total, 0)`
+    The third argument is always ≥ 1 when the loop condition holds,
+    so recv() is never called with length 0.
+    After recv(): `buf[total] = '\0'` uses `buf[total]` which is
+    always within `buf[0..buf_size-1]` because `total ≤ buf_size - 1`.
+  | {shape: text; style.font-color: "#3b0764"}
+  desc_ov -> action_ov
+  action_ov -> guard_detail
+}
+
+# ─── CONNECTIONS: flow arrows ─────────────────────────────────────────────────
+step0 -> step1: "loop iteration 1\ntotal=0, recv() called" {
+  style.stroke: "#2563eb"
+  style.stroke-width: 2
+}
+step1 -> step2: "loop iteration 2\nstrstr miss → continue\ntotal=312, recv() called" {
+  style.stroke: "#16a34a"
+  style.stroke-width: 2
+}
+step2 -> success_exit
+success_exit: "SUCCESS\nreturn 401" {
+  style.fill: "#052e16"
+  style.font-color: "#bbf7d0"
+  style.stroke: "#15803d"
+  style.bold: true
+  style.border-radius: 8
+  shape: oval
+}
+
+# edge case entry points (conceptually from "any iteration")
+any_iter: "(any loop iteration)" {
+  style.fill: "#f9fafb"
+  style.stroke: "#9ca3af"
+  style.stroke-dash: 4
+  shape: text
+}
+any_iter -> eof_path: "recv() == 0" {
+  style.stroke: "#dc2626"
+  style.stroke-dash: 5
+}
+any_iter -> err_path: "recv() < 0" {
+  style.stroke: "#ea580c"
+  style.stroke-dash: 5
+}
+any_iter -> overflow_path: "total >= buf_size-1" {
+  style.stroke: "#9333ea"
+  style.stroke-dash: 5
+}
+
+step0 -> any_iter {style.opacity: 0.0}
+eof_path -> failure_exit
+err_path -> failure_exit
+overflow_path -> failure_exit
+failure_exit: "FAILURE\nreturn -1" {
+  style.fill: "#450a0a"
+  style.font-color: "#fca5a5"
+  style.stroke: "#b91c1c"
+  style.bold: true
+  style.border-radius: 8
+  shape: oval
+}
+
+# ─── POINTER ARITHMETIC ANNOTATION BOX ───────────────────────────────────────
+ptr_math: "buf + total Pointer Arithmetic" {
+  near: bottom-left
+  style.fill: "#1e1b4b"
+  style.font-color: "#e0e7ff"
+  style.stroke: "#4338ca"
+  style.border-radius: 6
+  detail: |'md
+    **Every recv() argument computed as:**
+    | Arg | Value at iteration k |
+    |-----|----------------------|
+    | `buf`  | base pointer (fixed, stack) |
+    | `buf + total` | write cursor — advances by `n` each call |
+    | `buf_size - 1 - total` | remaining writable bytes (shrinks each call) |
+    | `buf[total]` | always written `'\0'` after recv() |
+
+    **Invariant holding at every strstr() call:**
+    `buf[0..total-1]` = accumulated bytes from all recv() calls
+    `buf[total]` = `'\0'`  → `strstr()` cannot overrun
+    `total < buf_size`     → `buf[total]` is always in-bounds
+  '| {
+    shape: text
+  }
+}

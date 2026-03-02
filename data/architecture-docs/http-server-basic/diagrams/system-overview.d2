@@ -1,0 +1,394 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+row0: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  title_box: "HTTP Server (Basic) — C  |  M1–M4  |  server.c + http_parse.c + file_server.c + thread_pool.c" {
+    shape: rectangle
+    style.fill: "#E8F4FD"
+    style.stroke: "#2980B9"
+    style.bold: true
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_m1: "M1 · TCP Socket Layer  [http-server-basic-m1]" {
+    direction: down
+    style.fill: "#FEF9E7"
+    style.stroke: "#F39C12"
+    sockaddr_in_tbl: {
+      shape: sql_table
+      label: "struct sockaddr_in  (arpa/inet.h)"
+      sin_family: "sa_family_t  | AF_INET=2"
+      sin_port:   "uint16_t     | htons(8080)  network-byte-order"
+      sin_addr:   "struct in_addr | INADDR_ANY=0"
+      sz:         "Total: 16 bytes"
+    }
+    server_state_tbl: {
+      shape: sql_table
+      label: "Server State  (server.c)  [M1]"
+      server_fd:    "int      | listening socket FD"
+      client_fd:    "int      | accepted client FD"
+      port:         "int      | default 8080"
+      backlog:      "int      | 128 = SOMAXCONN"
+      req_buf_size: "size_t   | 8192 bytes"
+      shutdown_flag:"atomic_int | 0=run 1=stop"
+    }
+    create_server_socket_cls: {
+      shape: class
+      label: "create_server_socket  server.c  [M1]"
+      +create_server_socket(port): "int server_fd"
+      -socket(AF_INET, SOCK_STREAM, 0): "int fd"
+      -setsockopt(fd, SO_REUSEADDR, 1): "void"
+      -bind(fd, addr, addrlen): "void"
+      -listen(fd, BACKLOG=128): "void"
+    }
+    io_cls: {
+      shape: class
+      label: "I/O Helpers  server.c  [M1]"
+      +read_request(fd, buf, buf_size): "ssize_t total"
+      +send_all(fd, buf, len): "ssize_t sent"
+      +handle_client(client_fd): "void"
+      -recv_loop_guard: "buf_size-1-total"
+      -delimiter_check: "strstr(buf, CRLF2)"
+      -msg_nosignal_flag: "MSG_NOSIGNAL"
+    }
+    http_response_tbl: {
+      shape: sql_table
+      label: "Hardcoded Response  (server.c)  [M1]"
+      status_line:   "HTTP/1.1 200 OK CRLF"
+      content_type:  "text/html; charset=utf-8"
+      content_length:"27 bytes (body exact)"
+      connection:    "close"
+      separator:     "CRLF (blank line)"
+      body:          "27 B: h1 Hello from C server h1"
+      sz:            "Total wire: 126 bytes"
+    }
+    create_server_socket_cls -> sockaddr_in_tbl: "bind | addr"
+    create_server_socket_cls -> server_state_tbl: "returns | server_fd"
+    io_cls -> http_response_tbl: "sends | 126 B"
+  }
+  layer_m2: "M2 · HTTP Parser  [http-server-basic-m2]" {
+    direction: down
+    style.fill: "#EBF5FB"
+    style.stroke: "#2980B9"
+    http_header_tbl: {
+      shape: sql_table
+      label: "struct http_header_t  (http_parse.h)  [M2]"
+      name:  "char[128]   | lowercase ASCII, null-term"
+      value: "char[1024]  | OWS-stripped, obs-fold-unfolded"
+      sz:    "Total: 1152 bytes per entry"
+    }
+    http_request_tbl: {
+      shape: sql_table
+      label: "struct http_request_t  (http_parse.h)  [M2]"
+      method:       "char[16]       | GET HEAD POST ..."
+      path:         "char[8192]     | raw URI not decoded"
+      version:      "char[16]       | HTTP/1.1 HTTP/1.0"
+      headers:      "http_header_t[32] | 32x1152=36864 B"
+      header_count: "int            | 0..32"
+      body:         "const char *   | ptr into caller buf"
+      body_len:     "size_t         | 0 if no body"
+      sz:           "Total: ~43064 bytes stack"
+    }
+    http_method_enum: {
+      shape: sql_table
+      label: "enum http_method_t  (http_parse.h)  [M2]"
+      GET:   "0 | serve file body"
+      HEAD:  "1 | headers only no body"
+      OTHER: "2 | return 501"
+    }
+    parse_cls: {
+      shape: class
+      label: "Parser  http_parse.c  [M2]"
+      +http_parse_request(buf, buf_len, req): "int rc"
+      +parse_request_line(line, line_len, req): "int rc"
+      +parse_headers(buf, buf_len, req): "int count"
+      +get_header(req, name): "const char*"
+      +classify_method(method): "http_method_t"
+      +url_decode_stub(src, dst, dst_size): "int rc"
+      -tolower_cast: "(unsigned char) mandatory"
+      -memchr_not_strchr: "bounds-safe scan"
+      -ows_strip: "leading+trailing SP HT"
+      -obs_fold_unfold: "prev_value+space+cont"
+    }
+    error_tbl: {
+      shape: sql_table
+      label: "Error Codes  (http_parse.h)  [M2]"
+      ok:           "0  | HTTP_PARSE_OK"
+      bad_request:  "-1 | HTTP_PARSE_BAD_REQUEST -> 400"
+      uri_too_long: "-2 | HTTP_PARSE_URI_TOO_LONG -> 414"
+      not_impl:     "-3 | HTTP_PARSE_NOT_IMPL -> 501"
+      max_path:     "MAX_PATH_LEN = 8192 bytes"
+      max_headers:  "MAX_HEADERS  = 32 entries"
+    }
+    parse_cls -> http_request_tbl: "populates | ~43 KB"
+    parse_cls -> http_header_tbl: "fills | 32 x 1152 B"
+    parse_cls -> http_method_enum: "returns | enum"
+    http_request_tbl -> http_header_tbl: "contains | headers[32]"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_m3: "M3 · Static File Server  [http-server-basic-m3]" {
+    direction: down
+    style.fill: "#EAFAF1"
+    style.stroke: "#27AE60"
+    constants_tbl: {
+      shape: sql_table
+      label: "Constants  (file_server.h)  [M3]"
+      doc_root_max:       "1024 bytes  | max doc_root len"
+      file_read_buf_size: "65536 bytes | 64 KB read chunks"
+      response_hdr_max:   "1024 bytes  | snprintf header buf"
+      http_date_len:      "64 bytes    | strftime buffer"
+      full_path_max:      "DOC_ROOT_MAX+MAX_PATH_LEN+2"
+    }
+    mime_entry_tbl: {
+      shape: sql_table
+      label: "struct mime_entry_t  (file_server.h)  [M3]"
+      extension: "const char * | .html .css .js .png ..."
+      mime_type: "const char * | text/html; charset=utf-8 ..."
+      sz:        "16 bytes/entry; 19 entries = 304 B (5 cache lines)"
+    }
+    pipeline_tbl: {
+      shape: sql_table
+      label: "Security Pipeline Stages  (file_server.c)  [M3]"
+      stage1: "url_decode()     | %2e->. reject %00"
+      stage2: "build_full_path()| doc_root+decoded_path"
+      stage3: "realpath()       | canonical no symlinks"
+      stage4: "prefix check     | canonical[root_len]=/ or 0"
+      stage4b:"S_ISDIR check    | append /index.html re-check"
+      stage5: "If-Modified-Since| timegm() compare mtime"
+      stage6: "open(O_RDONLY)   | file_fd"
+      stage7: "snprintf headers | Content-Length=st.st_size"
+      stage8: "read+send loop   | 64KB chunks"
+    }
+    file_server_cls: {
+      shape: class
+      label: "File Server  file_server.c  [M3]"
+      +serve_file(client_fd, doc_root, req, send_body): "void"
+      +url_decode(src, dst, dst_size): "int rc"
+      +build_full_path(doc_root, decoded, full, size): "int rc"
+      +get_mime_type(path): "const char*"
+      +parse_http_date(date_str): "time_t"
+      +send_404(client_fd): "void"
+      +send_403(client_fd): "void"
+      +send_304(client_fd, mime, lm, clen, sb): "void"
+      +send_500(client_fd): "void"
+      -realpath_check: "ENOENT->404 else->403"
+      -timegm_not_mktime: "UTC comparison only"
+      -file_fd_close_all_paths: "MANDATORY invariant"
+    }
+    stat_tbl: {
+      shape: sql_table
+      label: "struct stat usage  (sys/stat.h)  [M3]"
+      st_size:  "off_t  | Content-Length value  lld fmt"
+      st_mtime: "time_t | Last-Modified UTC"
+      st_mode:  "mode_t | S_ISDIR check"
+      sz:       "144 bytes on Linux x86-64"
+    }
+    file_server_cls -> pipeline_tbl: "executes | 8 stages"
+    file_server_cls -> mime_entry_tbl: "scans | 19 entries"
+    file_server_cls -> stat_tbl: "queries | st_size st_mtime"
+    file_server_cls -> constants_tbl: "uses | buf sizes"
+  }
+  layer_m4: "M4 · Concurrent Connections  [http-server-basic-m4]" {
+    direction: down
+    style.fill: "#F5EEF8"
+    style.stroke: "#8E44AD"
+    work_item_tbl: {
+      shape: sql_table
+      label: "struct work_item_t  (thread_pool.h)  [M4]"
+      client_fd:   "int      | offset 0x00  4 B"
+      client_ip:   "char[16] | offset 0x04  16 B INET_ADDRSTRLEN"
+      client_port: "int      | offset 0x14  4 B host byte order"
+      sz:          "Total: 24 bytes  < 1 cache line"
+    }
+    thread_pool_tbl: {
+      shape: sql_table
+      label: "struct thread_pool_t  (thread_pool.h)  [M4]"
+      queue:        "work_item_t[1024] | circular buf 24576 B"
+      head:         "int       | dequeue index"
+      tail:         "int       | enqueue index"
+      count:        "int       | current items"
+      lock:         "pthread_mutex_t | 40 B protects head/tail/count"
+      not_empty:    "pthread_cond_t  | 48 B signal worker"
+      not_full:     "pthread_cond_t  | 48 B signal producer"
+      shutdown:     "int       | 1=drain+exit"
+      threads:      "pthread_t[16]   | worker handles"
+      thread_count: "int       | 1..16"
+      sz:           "Total: ~24740 bytes"
+    }
+    server_stats_tbl: {
+      shape: sql_table
+      label: "struct server_stats_t  (stats.h)  [M4]"
+      lock:               "pthread_mutex_t | 40 B"
+      active_connections: "int             | currently open"
+      total_connections:  "long long       | cumulative"
+      total_requests:     "long long       | cumulative"
+      total_bytes_sent:   "long long       | cumulative"
+      sz:                 "Total: 72 bytes = 2 cache lines"
+    }
+    access_log_tbl: {
+      shape: sql_table
+      label: "struct access_log_t  (stats.h)  [M4]"
+      lock: "pthread_mutex_t | 40 B"
+      file: "FILE *          | fopen path a"
+      note: "fflush inside lock mandatory"
+    }
+    thread_pool_cls: {
+      shape: class
+      label: "Thread Pool  thread_pool.c  [M4]"
+      +thread_pool_init(pool, num_threads): "int rc"
+      +thread_pool_enqueue(pool, fd, ip, port): "int rc"
+      +thread_pool_shutdown(pool): "void"
+      -worker_thread(arg): "void*"
+      -while_not_if_cond_wait: "spurious wakeup guard"
+      -dequeue_under_lock_only: "O(1) critical section"
+      -handle_outside_lock: "full concurrency"
+      -broadcast_on_shutdown: "wake ALL workers"
+    }
+    connection_cls: {
+      shape: class
+      label: "Connection  connection.c  [M4]"
+      +handle_client_keep_alive(fd, ip, port, root): "void"
+      +read_request_with_timeout(fd, buf, sz, secs): "ssize_t"
+      +should_keep_alive(req): "int 0or1"
+      -select_fd_set_timeval: "per-read deadline"
+      -max_req_per_conn: "100 hard cap"
+      -keepalive_timeout: "30 seconds default"
+      -atomic_shutdown_check: "top of each loop iter"
+    }
+    connection_t_tbl: {
+      shape: sql_table
+      label: "struct connection_t  (connection.h)  [M4]"
+      client_fd:   "int             | connected socket"
+      client_ip:   "char[16]        | dotted-decimal"
+      client_port: "int             | host byte order"
+      doc_root:    "const char *    | points to main argv"
+      note:        "heap-alloc in thread-per-conn model"
+    }
+    thread_pool_cls -> thread_pool_tbl: "manages | ~24 KB"
+    thread_pool_cls -> work_item_tbl: "enqueues | 24 B items"
+    connection_cls -> connection_t_tbl: "uses | per-conn"
+    thread_pool_cls -> server_stats_tbl: "updates | under lock"
+    thread_pool_cls -> access_log_tbl: "writes | under lock"
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_main: "main()  server.c  [M1-M4]" {
+    direction: down
+    style.fill: "#FDFEFE"
+    style.stroke: "#717D7E"
+    main_cls: {
+      shape: class
+      label: "main  server.c  [M1-M4]"
+      +main(argc, argv): "int EXIT_SUCCESS"
+      -signal_SIG_IGN: "SIGPIPE ignored"
+      -signal_handler: "atomic_store shutdown_flag 1"
+      -signal_SIGTERM: "signal_handler registered"
+      -signal_SIGINT:  "signal_handler registered"
+      -access_log_init: "fopen access.log a"
+      -thread_pool_init: "16 workers default"
+      -create_server_socket: "bind listen"
+      -accept_loop:    "while shutdown_flag==0"
+      -EMFILE_backoff: "usleep 100ms + continue"
+      -EINTR_continue: "re-check shutdown flag"
+      -enqueue_or_503: "Retry-After: 1 header"
+      -close_server_fd: "post-loop"
+      -thread_pool_shutdown: "drain + join"
+      -access_log_close: "fflush fclose"
+    }
+    globals_tbl: {
+      shape: sql_table
+      label: "Global State  (server.c)  [M4]"
+      server_shutdown: "volatile sig_atomic_t | signal handler write"
+      shutdown_flag:   "atomic_int            | accept loop read"
+      g_pool:          "thread_pool_t         | ~24 KB static"
+      g_stats:         "server_stats_t        | 72 B"
+      g_log:           "access_log_t          | FILE* + mutex"
+      g_doc_root:      "const char *          | write-once in main"
+    }
+    lock_order_tbl: {
+      shape: sql_table
+      label: "Lock Ordering  (concurrency.h)  [M4]"
+      order1: "1. pool->lock       | innermost"
+      order2: "2. g_stats.lock     | mid"
+      order3: "3. g_log.lock       | outermost"
+      note:   "No code path holds two simultaneously"
+    }
+    perf_tbl: {
+      shape: sql_table
+      label: "Performance Targets  [M1-M4]"
+      m1_throughput:  "M1: >1000 req/s sequential loopback"
+      m2_parse_lat:   "M2: <5 us per request parse"
+      m3_realpath:    "M3: <50 us realpath hot dcache"
+      m3_read_64kb:   "M3: <500 us read+send 64KB loopback"
+      m4_keepalive:   "M4: >=10000 req/s 16 workers keep-alive"
+      m4_shutdown:    "M4: <100 ms graceful drain idle"
+      m4_fd_leak:     "M4: 0 FD delta after 10K connections"
+    }
+  }
+  layer_files: "File Map  [All Milestones]" {
+    direction: down
+    style.fill: "#FDFEFE"
+    style.stroke: "#717D7E"
+    files_tbl: {
+      shape: sql_table
+      label: "Source Files  (http-server/)  [M1-M4]"
+      server_c:       "server.c         | M1-M4 main accept loop"
+      http_parse_h:   "http_parse.h     | M2 structs constants decls"
+      http_parse_c:   "http_parse.c     | M2 parser implementation"
+      file_server_h:  "file_server.h    | M3 mime pipeline decls"
+      file_server_c:  "file_server.c    | M3 serve_file security"
+      thread_pool_h:  "thread_pool.h    | M4 pool structs decls"
+      thread_pool_c:  "thread_pool.c    | M4 worker enqueue shutdown"
+      connection_h:   "connection.h     | M4 keepalive timeout decls"
+      connection_c:   "connection.c     | M4 keepalive loop select"
+      stats_h:        "stats.h          | M4 stats log decls"
+      stats_c:        "stats.c          | M4 mutex-protected counters"
+      makefile:       "Makefile         | -lpthread -D_GNU_SOURCE"
+    }
+    build_tbl: {
+      shape: sql_table
+      label: "Build Flags  (Makefile)  [M1-M4]"
+      cc:         "gcc"
+      cflags1:    "-Wall -Wextra -Wpedantic -std=c11"
+      cflags2:    "-O2 -g -D_GNU_SOURCE"
+      cflags3:    "-Wframe-larger-than=131072"
+      link:       "-lpthread  (after all .c files)"
+      tsan:       "-O1 -fsanitize=thread"
+      asan:       "-O1 -fsanitize=address,undefined"
+    }
+  }
+}
+milestone_index: {
+  shape: sql_table
+  label: "Milestone Index"
+  m1: "M1 | http-server-basic-m1 | TCP Server and HTTP Response"
+  m2: "M2 | http-server-basic-m2 | HTTP Request Parsing"
+  m3: "M3 | http-server-basic-m3 | Static File Serving"
+  m4: "M4 | http-server-basic-m4 | Concurrent Connections"
+}
+row1.layer_m1.create_server_socket_cls -> row1.layer_m2.parse_cls: "char* buf | 8192 B raw"
+row1.layer_m2.parse_cls -> row2.layer_m3.file_server_cls: "http_request_t* | ~43 KB"
+row2.layer_m3.file_server_cls -> row2.layer_m4.connection_cls: "serve_file | per request"
+row2.layer_m4.thread_pool_cls -> row2.layer_m4.connection_cls: "dispatches | work_item_t"
+row3.layer_main.main_cls -> row1.layer_m1.create_server_socket_cls: "calls | port int"
+row3.layer_main.main_cls -> row2.layer_m4.thread_pool_cls: "init+shutdown | pool"
+row3.layer_main.globals_tbl -> row2.layer_m4.thread_pool_tbl: "g_pool | static 24 KB"
+row2.layer_m4.connection_cls -> row2.layer_m3.file_server_cls: "calls | doc_root req"
+row2.layer_m4.thread_pool_cls -> row3.layer_main.lock_order_tbl: "respects | lock order"

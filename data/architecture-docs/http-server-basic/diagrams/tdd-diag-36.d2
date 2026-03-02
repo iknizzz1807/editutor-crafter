@@ -1,0 +1,117 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+title: "Graceful Shutdown: SIGTERM → Clean Process Exit" {
+  near: top-center
+  style: {
+    font-size: 18
+    bold: true
+  }
+}
+shape: sequence_diagram
+OS
+main_thread: "main thread\n(accept loop)"
+pool_lock: "pool->lock\n(mutex)"
+workers: "workers[0..N-1]"
+mid_req_worker: "worker[k]\n(mid-request)"
+t0_group: "t=0 — Signal Delivery" {
+  OS -> main_thread: "SIGTERM → kernel delivers to process" {
+    style.stroke: "#c0392b"
+    style.bold: true
+  }
+  main_thread -> main_thread: "signal_handler():\natomic_store(&shutdown_flag, 1)" {
+    style.stroke: "#c0392b"
+  }
+}
+t1_group: "t≈0.1ms — Accept Loop Exit" {
+  main_thread -> main_thread: "atomic_load(&shutdown_flag) == 1\n→ exit while loop" {
+    style.stroke: "#e67e22"
+  }
+  main_thread -> OS: "close(server_fd)\n→ kernel stops queueing new connections" {
+    style.stroke: "#e67e22"
+    style.stroke-dash: 4
+  }
+}
+t2_group: "t≈0.2ms — Signal All Workers" {
+  main_thread -> pool_lock: "pthread_mutex_lock(&pool->lock)" {
+    style.stroke: "#8e44ad"
+  }
+  main_thread -> main_thread: "pool->shutdown = 1" {
+    style.stroke: "#8e44ad"
+  }
+  main_thread -> workers: "pthread_cond_broadcast(&not_empty)\n→ wake ALL waiting workers" {
+    style.stroke: "#8e44ad"
+    style.bold: true
+  }
+  main_thread -> pool_lock: "pthread_mutex_unlock(&pool->lock)" {
+    style.stroke: "#8e44ad"
+  }
+}
+t3_group: "t≈0.3ms — Idle Workers Exit" {
+  workers -> pool_lock: "re-acquire pool->lock\n(cond_wait returns)" {
+    style.stroke: "#27ae60"
+  }
+  workers -> workers: "re-check while:\ncount==0 && shutdown==1\n→ condition FALSE → exit loop" {
+    style.stroke: "#27ae60"
+  }
+  workers -> pool_lock: "pthread_mutex_unlock" {
+    style.stroke: "#27ae60"
+  }
+  workers -> main_thread: "return NULL  ▲ thread exits" {
+    style.stroke: "#27ae60"
+    style.bold: true
+    style.stroke-dash: 3
+  }
+}
+t4_group: "t=0ms..T — Mid-Request Worker Completes" {
+  mid_req_worker -> mid_req_worker: "finish handle_client_keep_alive()\nclose(client_fd)" {
+    style.stroke: "#2980b9"
+  }
+  mid_req_worker -> pool_lock: "re-acquire pool->lock at top of loop" {
+    style.stroke: "#2980b9"
+  }
+  mid_req_worker -> mid_req_worker: "re-check while:\ncount==0 && shutdown==1\n→ exit loop" {
+    style.stroke: "#2980b9"
+  }
+  mid_req_worker -> pool_lock: "pthread_mutex_unlock" {
+    style.stroke: "#2980b9"
+  }
+  mid_req_worker -> main_thread: "return NULL  ▲ thread exits" {
+    style.stroke: "#2980b9"
+    style.bold: true
+    style.stroke-dash: 3
+  }
+}
+t5_group: "t=T+ε — Main Thread Joins All Workers" {
+  main_thread -> main_thread: "pthread_join(threads[0])  ← blocks until worker 0 exits" {
+    style.stroke: "#16a085"
+  }
+  main_thread -> main_thread: "pthread_join(threads[1])\n...\npthread_join(threads[N-1])" {
+    style.stroke: "#16a085"
+    style.stroke-dash: 2
+  }
+}
+t6_group: "t=T+ε+δ — Resource Cleanup & Exit" {
+  main_thread -> main_thread: "pthread_mutex_destroy(&pool->lock)\npthread_cond_destroy(&not_empty)\npthread_cond_destroy(&not_full)" {
+    style.stroke: "#7f8c8d"
+  }
+  main_thread -> main_thread: "access_log_close()\nprintf(\"Graceful shutdown complete.\")" {
+    style.stroke: "#7f8c8d"
+  }
+  main_thread -> OS: "return EXIT_SUCCESS  (exit code 0)" {
+    style.stroke: "#27ae60"
+    style.bold: true
+  }
+}
+annotations: |md
+  **Timing invariants:**
+  - signal_handler() uses atomic_store — async-signal-safe
+  - close(server_fd) before thread_pool_shutdown() — OS stops queueing
+  - pthread_join() guarantees all in-flight requests complete
+  - Max drain time = KEEPALIVE_TIMEOUT_SECONDS × N (pathological)
+| {
+  near: bottom-right
+}

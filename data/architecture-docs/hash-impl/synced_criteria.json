@@ -1,0 +1,129 @@
+[
+  {
+    "milestone_id": "hash-impl-m1",
+    "criteria": [
+      "The padding function appends exactly the byte 0x80 immediately after the last message byte, with no gap, and zero or more 0x00 bytes after it, such that the total padded length (message + marker + zeros + 8-byte length field) is the smallest multiple of 64 bytes satisfying (len + 1 + zeros + 8) % 64 == 0.",
+      "The 64-bit length field encodes the original message length in BITS (not bytes), written as an 8-byte big-endian integer in the final 8 bytes of the padded buffer. On little-endian platforms, explicit byte-shift extraction (val >> 56, val >> 48, etc.) is used rather than memcpy of a native integer.",
+      "A 56-byte input message produces exactly 2 blocks (128 bytes total), with the 0x80 marker at byte index 56, zero fill in bytes 57–119, and the length field (448 = 0x01C0 bits, big-endian) in bytes 120–127.",
+      "A 55-byte input message produces exactly 1 block (64 bytes), with the 0x80 marker at byte index 55 and the length field (440 = 0x01B8 bits, big-endian) in bytes 56–63 with zero zero-fill bytes between marker and length.",
+      "Empty input (0 bytes) produces exactly 1 block (64 bytes), with 0x80 at byte 0, 0x00 in bytes 1–55, and a 64-bit zero length field in bytes 56–63.",
+      "The string 'abc' (3 bytes) produces exactly 1 block; data[0..2] = {0x61, 0x62, 0x63}; data[3] = 0x80; data[4..55] = 0x00; data[56..62] = 0x00; data[63] = 0x18 (24 decimal, the bit length of 'abc').",
+      "The padded buffer is accessible as an array of 64-byte blocks via index arithmetic (block_i = data + i * 64), and num_blocks is correctly set to total_padded_bytes / 64.",
+      "Any message of length L bytes where (L % 64) >= 56 produces num_blocks = ceil((L + 9) / 64), specifically requiring at least one more block than a message of length (L - 1) bytes at the 56-byte boundary.",
+      "The padding implementation initializes the entire output buffer to zero before writing, so that zero-fill bytes are implicitly handled without explicit per-byte writes.",
+      "All test assertions pass for: empty input, 'abc' (3 bytes), a 55-byte message (one block boundary), a 56-byte message (two block boundary), and at least one message longer than 64 bytes."
+    ]
+  },
+  {
+    "milestone_id": "hash-impl-m2",
+    "criteria": [
+      "A 512-bit (64-byte) block is parsed into exactly 16 uint32_t words W[0]..W[15] using big-endian byte ordering: W[t] = (block[t*4]<<24) | (block[t*4+1]<<16) | (block[t*4+2]<<8) | block[t*4+3], with no pointer casting or memcpy that would produce wrong results on little-endian x86 systems.",
+      "For the 'abc' padded block, W[0] = 0x61626380 and W[15] = 0x00000018, verifying correct big-endian parsing of the message bytes and the 64-bit length field.",
+      "ROTR32(x, n) is implemented as ((uint32_t)(x) >> n) | ((uint32_t)(x) << (32-n)) using uint32_t operands to avoid undefined behavior on signed types, correctly wrapping bits from the least-significant end back to the most-significant positions.",
+      "SHR32(x, n) is implemented as (uint32_t)(x) >> n, discarding bits that fall off the right end and filling vacated positions with zeros — demonstrably different from ROTR32 for any x where the bottom n bits are nonzero.",
+      "σ0(x) = ROTR32(x,7) ^ ROTR32(x,18) ^ SHR32(x,3) with exactly the constants (7, 18, 3) in that order, named distinctly from the compression function's Σ0 to prevent constant confusion.",
+      "σ1(x) = ROTR32(x,17) ^ ROTR32(x,19) ^ SHR32(x,10) with exactly the constants (17, 19, 10) in that order, named distinctly from the compression function's Σ1.",
+      "W[16] through W[63] are computed using the recurrence W[t] = σ1(W[t-2]) + W[t-7] + σ0(W[t-15]) + W[t-16] with all four indices correct and in range, and the four-term addition wrapping naturally via uint32_t semantics.",
+      "For the 'abc' block, W[16] = 0x61626380 (verified by the hand derivation: σ1(W[14])=0, W[9]=0, σ0(W[1])=0, W[0]=0x61626380) and W[17] = 0x000F0000 (verified by the hand derivation of σ1(0x00000018)).",
+      "All 64 words are stored as uint32_t, giving automatic 32-bit modular wrapping in C; the implementation does not require & 0xFFFFFFFF masking because uint32_t addition is guaranteed to wrap by the C standard.",
+      "The full 64-word schedule produced for the 'abc' input matches the NIST SHA-256 Example Computation PDF values for W[0]..W[63] exactly, validated by comparing program output against the published NIST table line by line.",
+      "The implementation compiles without warnings under gcc -Wall -Wextra -std=c11 and all test assertions pass, including the boundary checks W[0]=0x61626380, W[15]=0x00000018, W[16]=0x61626380, and W[17]=0x000F0000."
+    ]
+  },
+  {
+    "milestone_id": "hash-impl-m3",
+    "criteria": [
+      "Working variables a through h are correctly initialized from H[0..7] at the start of sha256_compress(), with a=H[0], b=H[1], ..., h=H[7], before any round processing begins.",
+      "The 64-round loop computes T1 = h + Σ1(e) + Ch(e,f,g) + K[t] + W[t] and T2 = Σ0(a) + Maj(a,b,c) using uint32_t arithmetic that wraps automatically at 2^32 without explicit masking.",
+      "Variable rotation is performed in the correct order: h=g, g=f, f=e, e=d+T1, d=c, c=b, b=a, a=T1+T2; specifically 'e = d + T1' (not d + T1 + T2) and 'a = T1 + T2' (not T2 alone).",
+      "Ch(x,y,z) is implemented as ((x & y) ^ (~x & z)), verified to return y for all inputs when x=0xFFFFFFFF and z for all inputs when x=0x00000000.",
+      "Maj(x,y,z) is implemented as ((x & y) ^ (x & z) ^ (y & z)), verified to return 0xFFFFFFFF when two inputs are 0xFFFFFFFF and one is 0x00000000, and 0x00000000 when two inputs are 0x00000000.",
+      "Σ0(x) is implemented as ROTR32(x,2) ^ ROTR32(x,13) ^ ROTR32(x,22) — using only rotations (no SHR) — with constants (2,13,22) distinct from σ0's constants (7,18,3).",
+      "Σ1(x) is implemented as ROTR32(x,6) ^ ROTR32(x,11) ^ ROTR32(x,25) — using only rotations (no SHR) — with constants (6,11,25) distinct from σ1's constants (17,19,10).",
+      "The K[64] array contains all 64 round constants exactly matching FIPS 180-4 Section 4.2.2, with K[0]=0x428a2f98 verifiable as floor(frac(cbrt(2)) * 2^32).",
+      "After all 64 rounds, H[0] through H[7] are updated by adding the corresponding working variable: H[0]+=a, H[1]+=b, ..., H[7]+=h, all with uint32_t wrapping semantics.",
+      "sha256_compress() applied to the padded 'abc' block with SHA-256 initial H values produces H[0..7] = {0xba7816bf, 0x8f01cfea, 0x414140de, 0x5dae2223, 0xb00361a3, 0x96177a9c, 0xb410ff61, 0xf20015ad}.",
+      "The debug round-trace output (T1, T2, a, e values after each of 64 rounds) matches the NIST SHA-256 Example Computation appendix for the 'abc' test vector.",
+      "SIGMA_UPPER_0 and SIGMA_UPPER_1 produce values different from SIGMA_LOWER_0 and SIGMA_LOWER_1 respectively when applied to the same input, confirming the constant sets are not interchanged.",
+      "The state update step uses += (additive update) not = (replacement), ensuring prior blocks' contributions persist in H[0..7] across multiple compress() calls."
+    ]
+  },
+  {
+    "milestone_id": "hash-impl-m4",
+    "criteria": [
+      "SHA-256 initial hash values H[0..7] are loaded from the FIPS 180-4 Section 5.3.3 constants (0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19) at the start of every hash computation, not reused from a previous computation",
+      "All padded blocks are processed sequentially in a loop from block 0 to block num_blocks-1, with each call to sha256_compress() receiving the H[0..7] state updated by all previous blocks",
+      "The final 32-byte digest is produced by writing each of H[0] through H[7] as a 32-bit big-endian value: digest[i*4+0] = H[i]>>24, digest[i*4+1] = H[i]>>16, digest[i*4+2] = H[i]>>8, digest[i*4+3] = H[i]",
+      "The 32-byte digest is formatted as a 64-character lowercase hexadecimal string using nibble extraction: high nibble = (byte >> 4) & 0x0F, low nibble = byte & 0x0F, mapped to '0'-'9','a'-'f'",
+      "SHA-256(\"\") produces exactly e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "SHA-256(\"abc\") produces exactly ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+      "SHA-256(\"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq\") produces exactly 248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+      "Calling sha256_init() on a SHA256_CTX between two independent hash computations resets H[0..7] to the initial constants, buf_len to 0, and total_bits to 0, so the second computation is not affected by the first",
+      "The streaming SHA256_CTX maintains a 64-byte internal buffer and buf_len counter; sha256_update() buffers incomplete blocks without compressing them, processes only complete 64-byte blocks, and correctly handles input chunks of any size including 1 byte",
+      "sha256_finalize() correctly handles the two-block padding case: when buf_len >= 56 after appending 0x80, a zero-filled first block is compressed before writing the 64-bit big-endian total_bits length field into a second block",
+      "sha256_update() accumulates total_bits as (uint64_t)len * 8 on each call, and sha256_finalize() uses this accumulated bit count (not the final buf_len) as the 64-bit big-endian length field in the padding",
+      "Feeding the same input in chunks of size 1, 17, 37, and 64 bytes via sha256_update()/sha256_finalize() produces the identical digest as a single sha256_update() call with the full input"
+    ]
+  },
+  {
+    "module_id": "hash-impl-m1",
+    "criteria": [
+      "Message is converted to its byte/bit representation, a single '1' bit is appended (as 0x80), followed by enough '0' bits so that the total message length is congruent to 448 mod 512 bits, and finally the original message length in bits is appended as a 64-bit big-endian integer, producing a message whose total length is a multiple of 512 bits.",
+      "When the original message length mod 512 is greater than 447 bits (i.e., fewer than 65 bits remain for padding + length), an additional 512-bit block is correctly appended to accommodate the padding and length field.",
+      "Padded message is parsed into an array of 512-bit (64-byte) blocks for sequential processing via sha256_get_block().",
+      "Empty input (0 bytes) produces exactly one 512-bit padded block with the '1' bit at position 0, zeros through bit 447, and a 64-bit zero length field.",
+      "The string 'abc' (24 bits) produces one 512-bit block; a 55-byte message produces one block; a 56-byte message produces two blocks (boundary case).",
+      "The 64-bit length field encodes the original message length in bits (not bytes), written as a big-endian integer using explicit byte-shift operations independent of CPU endianness.",
+      "sha256_pad() returns -1 without modifying *out when len exceeds SHA256_MAX_MESSAGE_BYTES.",
+      "All bytes between the 0x80 marker and the 64-bit length field are 0x00, achieved by memset-zeroing the entire output buffer before writing any fields."
+    ]
+  },
+  {
+    "module_id": "hash-impl-m2",
+    "criteria": [
+      "512-bit block is parsed into 16 initial 32-bit words (W[0]..W[15]) in big-endian order.",
+      "Words W[16]..W[63] are computed using the recurrence: W[t] = σ1(W[t-2]) + W[t-7] + σ0(W[t-15]) + W[t-16], all mod 2^32.",
+      "σ0(x) = ROTR(x,7) XOR ROTR(x,18) XOR SHR(x,3) produces correct values verified against NIST example computation.",
+      "σ1(x) = ROTR(x,17) XOR ROTR(x,19) XOR SHR(x,10) produces correct values verified against NIST example computation.",
+      "All 64 words are stored as 32-bit unsigned integers. In languages with arbitrary-precision integers (Python, JavaScript), every addition is masked with & 0xFFFFFFFF."
+    ]
+  },
+  {
+    "module_id": "hash-impl-m3",
+    "criteria": [
+      "SIGMA_UPPER_0 macro uses rotation constants (2, 13, 22) and contains no SHR term, verified distinct from SIGMA_LOWER_0 on non-zero input",
+      "SIGMA_UPPER_1 macro uses rotation constants (6, 11, 25) and contains no SHR term, verified distinct from SIGMA_LOWER_1 on non-zero input",
+      "CH(x,y,z) macro implements (x AND y) XOR (NOT x AND z): when x=0xFFFFFFFF output equals y; when x=0x00000000 output equals z",
+      "MAJ(x,y,z) macro implements (x AND y) XOR (x AND z) XOR (y AND z): output bit is 1 when at least 2 of 3 input bits are 1",
+      "SHA256_K[64] array contains all 64 round constants matching FIPS 180-4 Section 4.2.2; K[0]=0x428a2f98, K[63]=0xc67178f2",
+      "sha256_compress initializes working variables a..h from H[0..7] before the 64-round loop",
+      "Each compression round correctly computes T1 = h + SIGMA_UPPER_1(e) + CH(e,f,g) + K[t] + W[t] and T2 = SIGMA_UPPER_0(a) + MAJ(a,b,c)",
+      "Variable rotation assigns e = d + T1 (not d + T1 + T2) and a = T1 + T2 in the correct order preventing read-after-write",
+      "State update uses += (additive feed-forward): H[i] += working_var[i] mod 2^32 for all 8 components",
+      "sha256_compress on the 'abc' padded block starting from FIPS initial values produces H[0..7] = {0xba7816bf, 0x8f01cfea, 0x414140de, 0x5dae2223, 0xb00361a3, 0x96177a9c, 0xb410ff61, 0xf20015ad}",
+      "Intermediate round values (T1, T2, a, e) after each of the 64 rounds match the NIST SHA-256 Example Computation appendix for the 'abc' test vector",
+      "Function has no heap allocation; total stack usage is W[64] (256 bytes) plus working variables (40 bytes)"
+    ]
+  },
+  {
+    "module_id": "hash-impl-m4",
+    "criteria": [
+      "SHA256_INITIAL_HASH[8] is defined as const uint32_t with values 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 matching FIPS 180-4 Section 5.3.3",
+      "sha256_init() loads SHA256_INITIAL_HASH into ctx->H[0..7] and sets ctx->buf_len = 0 and ctx->total_bits = 0",
+      "sha256_update() increments ctx->total_bits by (uint64_t)len * 8 before any other processing",
+      "sha256_update() implements three-phase buffer management: fill existing buffer to 64 bytes and flush, process complete 64-byte blocks directly, buffer remaining bytes",
+      "ctx->buf_len is in range [0, 63] after every sha256_update() call — a complete block is never left buffered",
+      "sha256_finalize() appends 0x80 at ctx->buf[ctx->buf_len] and correctly handles the two-block boundary when buf_len >= 56",
+      "sha256_finalize() writes the 64-bit big-endian encoding of ctx->total_bits (not buf_len * 8) at buf[56..63]",
+      "sha256_finalize() performs memset(ctx->buf, 0, SHA256_BLOCK_SIZE) before writing the length field in the two-block path",
+      "sha256_finalize() serializes H[0..7] to digest[0..31] using explicit byte-shift extraction (H[i] >> 24, etc.) not memcpy",
+      "sha256_to_hex() maps each digest byte to two lowercase hex characters using the table '0123456789abcdef' and null-terminates at hex[64]",
+      "SHA-256(\"\") = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "SHA-256(\"abc\") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+      "SHA-256(\"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq\") = 248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+      "Streaming update/finalize with any chunk partitioning produces bit-identical output to sha256_oneshot for the same input",
+      "sha256_init() called between two computations on the same ctx produces identical output for identical input (context reuse correctness)",
+      "No heap allocation occurs in any API path — all state is in the caller-provided SHA256_CTX or on the stack"
+    ]
+  }
+]

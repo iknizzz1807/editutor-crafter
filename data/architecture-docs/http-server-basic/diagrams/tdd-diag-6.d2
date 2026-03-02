@@ -1,0 +1,51 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+sigpipe_diagram: {
+  shape: sequence_diagram
+  client: "Client\n(TCP Peer)"
+  kernel: "Kernel\n(TCP Stack)"
+  process: "Server Process\n(send loop)"
+  signal_h: "Signal Handler\n(default=SIG_DFL)"
+  without_protection: {
+    client -> kernel: "TCP FIN\n(close/RST)"
+    kernel -> process: "recv buffer: EOF\n(connection marked BROKEN)"
+    first_send: {
+      process -> kernel: "send(fd, buf, len, 0)\n[call #1 — data fits in send buffer]"
+      kernel -> process: "returns n > 0\n(buffered, not yet delivered)"
+    }
+    second_send: {
+      process -> kernel: "send(fd, buf+n, rem, 0)\n[call #2 — kernel discovers RST]"
+      kernel -> kernel: "RST received;\npeer socket CLOSED"
+      kernel -> process: "SIGPIPE → thread\n(async, before send() returns)"
+      process -> signal_h: "signal delivery\n(interrupts send())"
+      signal_h -> process: "SIG_DFL: terminate()\nwith SIGPIPE exit code"
+    }
+    process -> process: "❌ PROCESS KILLED\nAll connections lost\nNo cleanup"
+  }
+  spacer: {
+    shape: text
+    label: "─────────────────────────────"
+  }
+  with_msg_nosignal: {
+    client -> kernel: "TCP FIN\n(close/RST)"
+    kernel -> process: "recv buffer: EOF\n(connection marked BROKEN)"
+    first_send_safe: {
+      process -> kernel: "send(fd, buf, len, MSG_NOSIGNAL)\n[call #1 — data buffered]"
+      kernel -> process: "returns n > 0"
+    }
+    second_send_safe: {
+      process -> kernel: "send(fd, buf+n, rem, MSG_NOSIGNAL)\n[call #2 — RST detected]"
+      kernel -> kernel: "RST received;\nSIGPIPE SUPPRESSED by MSG_NOSIGNAL"
+      kernel -> process: "returns -1\nerrno = EPIPE"
+    }
+    errno_check: {
+      process -> process: "if (n <= 0) return -1;\n// errno==EPIPE handled as\n// normal disconnect"
+    }
+    process -> process: "close(client_fd)\nLog: client disconnected"
+    process -> process: "✅ LOOP CONTINUES\nNext accept() fires\nServer alive"
+  }
+}

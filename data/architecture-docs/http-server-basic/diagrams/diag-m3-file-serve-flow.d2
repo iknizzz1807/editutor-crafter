@@ -1,0 +1,215 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: "File Serving Code Path: open() → fstat() → send() Loop (512KB PNG)" {
+  near: top-center
+  style.font-size: 18
+  style.bold: true
+}
+step1: {
+  label: "Step 1: open() (file_server.c)"
+  width: 420
+  code: |'c
+    int file_fd = open(canonical, O_RDONLY);
+    if (file_fd < 0) {
+      if (errno == EACCES) send_403(client_fd);
+      else                 send_404(client_fd);
+      return;
+    }
+  '|
+}
+step2: {
+  label: "Step 2: fstat() — Read metadata (file_server.c)"
+  width: 420
+  code: |'c
+    struct stat st;
+    if (fstat(file_fd, &st) < 0) {
+      close(file_fd); send_500(client_fd); return;
+    }
+    // st.st_size  = 524288  (512 KB)
+    // st.st_mtime = Unix timestamp (UTC)
+  '|
+}
+st_layout: {
+  shape: sql_table
+  label: "struct stat (sys/stat.h) — 512KB PNG"
+  f0: "st_size  | off_t   | 524288  (512 KB)"
+  f1: "st_mtime | time_t  | 1709337600 (UTC)"
+  f2: "st_mode  | mode_t  | 0100644 (regular file)"
+  f3: "st_ino   | ino_t   | inode number"
+  sz: "Total: 144 bytes (Linux x86-64)"
+}
+step3: {
+  label: "Step 3: Format Content-Length (file_server.c)"
+  width: 420
+  code: |'c
+    // st.st_size → Content-Length header
+    snprintf(hdr, sizeof(hdr),
+      "Content-Length: %lld\r\n",
+      (long long)st.st_size);
+    // Result: "Content-Length: 524288\r\n"
+  '|
+}
+step4: {
+  label: "Step 4: Format Last-Modified (file_server.c)"
+  width: 420
+  code: |'c
+    struct tm *gmt = gmtime(&st.st_mtime);
+    strftime(ts, sizeof(ts),
+      "%a, %d %b %Y %H:%M:%S GMT", gmt);
+    // Result: "Mon, 01 Mar 2024 12:00:00 GMT"
+  '|
+}
+head_exit: "HEAD Request Exits Here" {
+  shape: hexagon
+  style.fill: "#FFD700"
+  style.font-color: "#1a1a00"
+  style.bold: true
+  width: 340
+  label: "HEAD: Steps 1-4 only\nSend headers, skip body loop\nConnection: close"
+}
+step5: {
+  label: "Step 5: send() Headers (file_server.c)"
+  width: 420
+  code: |'c
+    char hdr_buf[1024];
+    int hlen = snprintf(hdr_buf, sizeof(hdr_buf),
+      "HTTP/1.1 200 OK\r\n"
+      "Content-Type: image/png\r\n"
+      "Content-Length: 524288\r\n"
+      "Last-Modified: Mon, 01 Mar 2024 12:00:00 GMT\r\n"
+      "Connection: close\r\n\r\n");
+    send_all(client_fd, hdr_buf, hlen);
+  '|
+}
+loop_row: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  loop_container: "read()+send() Loop — GET only (file_server.c)" {
+    direction: down
+    style.fill: "#e6f3ff"
+    style.stroke: "#3a7fc1"
+    stack_note: "char read_buf[65536] — stack-allocated\n(avoids heap fragmentation; fits in L2 cache)" {
+      shape: callout
+      style.fill: "#fffbe6"
+      style.stroke: "#b8860b"
+      style.font-size: 12
+    }
+    chunk_table: {
+      shape: sql_table
+      label: "512KB PNG — 8 iterations at 64KB each"
+      c1: "Iter 1 | read() → 65536 B | send() → 65536 B | offset 0x00000"
+      c2: "Iter 2 | read() → 65536 B | send() → 65536 B | offset 0x10000"
+      c3: "Iter 3 | read() → 65536 B | send() → 65536 B | offset 0x20000"
+      c4: "Iter 4 | read() → 65536 B | send() → 65536 B | offset 0x30000"
+      c5: "Iter 5 | read() → 65536 B | send() → 65536 B | offset 0x40000"
+      c6: "Iter 6 | read() → 65536 B | send() → 65536 B | offset 0x50000"
+      c7: "Iter 7 | read() → 65536 B | send() → 65536 B | offset 0x60000"
+      c8: "Iter 8 | read() → 65536 B | send() → 65536 B | offset 0x70000"
+      eof: "Iter 9 | read() → 0 (EOF)  | loop exits      | total 524288 B"
+    }
+    loop_code: {
+      label: "Loop body (file_server.c:serve_file)"
+      width: 400
+      code: |'c
+        char read_buf[65536]; // stack — no malloc
+        ssize_t n;
+        while ((n = read(file_fd, read_buf,
+                         sizeof(read_buf))) > 0) {
+          if (send_all(client_fd, read_buf,
+                       (size_t)n) < 0) break;
+        }
+        // n == 0 → EOF, n < 0 → disk error
+      '|
+    }
+  }
+  data_flow: "Memory Path" {
+    direction: down
+    style.fill: "#f0fff0"
+    style.stroke: "#2e8b57"
+    page_cache: "Kernel Page Cache" {
+      shape: cylinder
+      style.fill: "#c8e6c9"
+      width: 160
+    }
+    copy1: "kernel→user copy\n(read() syscall)\n~10 GB/s, L3 hot" {
+      shape: parallelogram
+      style.fill: "#fff3e0"
+      style.font-size: 11
+      width: 180
+    }
+    user_buf: "char read_buf[65536]\nStack: RSP-0x10000\n64 KB, L2 resident" {
+      shape: rectangle
+      style.fill: "#bbdefb"
+      style.font-size: 11
+      width: 180
+    }
+    copy2: "user→kernel copy\n(send() syscall)\nNIC DMA enqueue" {
+      shape: parallelogram
+      style.fill: "#fff3e0"
+      style.font-size: 11
+      width: 180
+    }
+    sock_buf: "Socket Send Buffer\n~87 KB (default)\nSO_SNDBUF" {
+      shape: queue
+      style.fill: "#e1bee7"
+      width: 160
+    }
+    nic: "NIC → Client" {
+      shape: hexagon
+      style.fill: "#b2dfdb"
+      width: 160
+    }
+    page_cache -> copy1: "65536 B"
+    copy1 -> user_buf: "memcpy"
+    user_buf -> copy2: "65536 B"
+    copy2 -> sock_buf: "kernel buf"
+    sock_buf -> nic: "TCP segment"
+  }
+}
+step6: {
+  label: "Step 6: close() FD (file_server.c)"
+  width: 420
+  code: |'c
+    close(file_fd);
+    // Releases kernel file table entry.
+    // MANDATORY: every open() must have a close().
+    // FD leak = EMFILE after ~1020 connections.
+  '|
+}
+summary: {
+  shape: sql_table
+  label: "Syscall Summary — 512KB PNG GET Request"
+  r0: "open()   | 1x  | ~1-5 µs   | Returns file_fd; hits dcache"
+  r1: "fstat()  | 1x  | ~0.5 µs   | Reads inode from icache"
+  r2: "send()   | 1x  | ~1 µs     | Headers: 220 bytes"
+  r3: "read()   | 8x  | ~5 µs ea  | 64KB chunks from page cache"
+  r4: "send()   | 8x  | ~2 µs ea  | 64KB into socket send buf"
+  r5: "close()  | 1x  | ~0.5 µs   | Release file descriptor"
+  tot: "Total body data: 524288 bytes | 8 read+send iterations"
+}
+step1 -> step2: "file_fd (int)"
+step2 -> st_layout: "fstat() fills"
+st_layout -> step3: "st.st_size | off_t"
+st_layout -> step4: "st.st_mtime | time_t"
+step3 -> step5: "Content-Length: 524288"
+step4 -> step5: "Last-Modified: string"
+step2 -> head_exit: "HEAD exits" {
+  style.stroke-dash: 4
+  style.stroke: "#DAA520"
+}
+step5 -> loop_row: "GET: send body" {
+  style.stroke: "#2e8b57"
+  style.bold: true
+}
+step5 -> head_exit: "HEAD: done" {
+  style.stroke-dash: 4
+  style.stroke: "#DAA520"
+}
+loop_row -> step6: "EOF — loop done"
+step6 -> summary: "complete"

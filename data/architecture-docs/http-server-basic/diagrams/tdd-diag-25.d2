@@ -1,0 +1,76 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+shape: sequence_diagram
+browser: "Browser\n(HTTP Client)"
+server: "serve_file()\nHandler"
+fs: "Filesystem\nstat() / open()"
+parser: "parse_http_date()\n+ timegm()"
+
+# ─── REQUEST 1 ─────────────────────────────────────────────────────────────
+req1: "REQUEST 1 — Cold Cache (no If-Modified-Since)" {
+  browser -> server: "GET /style.css HTTP/1.1\nHost: example.com"
+  server -> fs: "stat(\"/var/www/html/style.css\")"
+  fs -> server: "st.st_mtime = 1704067200\n(epoch seconds, UTC)"
+  server -> server: "strftime(\"%a, %d %b %Y %H:%M:%S GMT\", gmtime(&st.st_mtime))\n→ \"Mon, 01 Jan 2024 12:00:00 GMT\""
+  server -> browser: "HTTP/1.1 200 OK\nContent-Type: text/css; charset=utf-8\nContent-Length: 842\nLast-Modified: Mon, 01 Jan 2024 12:00:00 GMT\nConnection: close\n\n[842 bytes of CSS body]" {
+    style.stroke: "#2563eb"
+    style.font-color: "#1e3a5f"
+  }
+  browser -> browser: "Cache: store body + Last-Modified timestamp\n\"Mon, 01 Jan 2024 12:00:00 GMT\""
+}
+
+# ─── REQUEST 2 ─────────────────────────────────────────────────────────────
+req2: "REQUEST 2 — Cache Validation (If-Modified-Since present)" {
+  browser -> server: "GET /style.css HTTP/1.1\nHost: example.com\nIf-Modified-Since: Mon, 01 Jan 2024 12:00:00 GMT" {
+    style.stroke: "#7c3aed"
+    style.font-color: "#3b0764"
+  }
+  server -> fs: "stat(\"/var/www/html/style.css\")"
+  fs -> server: "st.st_mtime = 1704067200"
+  server -> server: "get_header(req, \"if-modified-since\")\n→ \"Mon, 01 Jan 2024 12:00:00 GMT\""
+  server -> parser: "parse_http_date(\"Mon, 01 Jan 2024 12:00:00 GMT\")"
+  parser -> parser: "strptime(date_str, \"%a, %d %b %Y %H:%M:%S GMT\", &tm)\ntm.tm_isdst = 0   ← always UTC, no DST"
+  parser -> parser: "timegm(&tm)   ← NOT mktime() — avoids local timezone offset"
+  parser -> server: "ims = 1704067200  (time_t, UTC)"
+  server -> server: "COMPARISON (RFC 7230 §6.4):\nst.st_mtime  <=  ims\n1704067200   <=  1704067200\n    TRUE\n\nNote: '<=' not '<'\nHTTP dates have 1-second granularity;\n= means client cache is still valid"
+  server -> browser: "HTTP/1.1 304 Not Modified\nContent-Type: text/css; charset=utf-8\nContent-Length: 842\nLast-Modified: Mon, 01 Jan 2024 12:00:00 GMT\nConnection: close\n\n[NO BODY — zero bytes transmitted]" {
+    style.stroke: "#059669"
+    style.font-color: "#064e3b"
+  }
+  browser -> browser: "Serve 842 bytes from local cache\n(no network transfer of file content)"
+}
+
+# ─── ANNOTATIONS ───────────────────────────────────────────────────────────
+# In sequence diagrams, annotations are attached directly to actors as notes.
+server.comparison_note: |md
+  **≤ (not <) Comparison Semantics**
+  `st.st_mtime <= ims`
+  HTTP dates carry 1-second granularity.
+  A file modified at exactly the same UTC second
+  as the cached timestamp is still considered
+  **unmodified** — the cache remains valid.
+  Using `<` instead of `<=` would force an
+  unnecessary re-transfer every time the
+  timestamps are equal.
+|
+
+fs.savings_note: |md
+  **What 304 Saves**
+  ✓ No `open()` syscall
+  ✓ No `read()` loop
+  ✓ No 842-byte body transmitted
+  ✓ stat() latency is the only cost
+  (typically < 10 µs from hot inode cache)
+|
+
+parser.timegm_note: |md
+  **timegm() vs mktime()**
+  `mktime()` applies local timezone → wrong UTC
+  `timegm()` treats struct tm as UTC → correct
+  Requires `-D_GNU_SOURCE` on Linux
+  to expose timegm() from `<time.h>`
+|

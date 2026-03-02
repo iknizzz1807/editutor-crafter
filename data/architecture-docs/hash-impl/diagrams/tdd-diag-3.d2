@@ -1,0 +1,209 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+direction: down
+title: |'md
+  ## Padding Algorithm Decision Tree: One Block vs Two Blocks
+  **FIPS 180-4 §5.1.1** — `total_padded = ⌈(used + 8) / 64⌉ × 64`
+'| {near: top-center}
+input: |'md
+  **INPUT**
+  `msg[0..len-1]`
+  `len` bytes
+'| {
+  style: {
+    fill: "#C084FC"
+    font-color: "#1E003C"
+    border-radius: 8
+    bold: true
+  }
+}
+compute_used: |'md
+  **STEP 1: Append marker byte**
+  `used = len + 1`
+  Write `0x80` at `data[len]`
+  _(remaining bytes zeroed by memset)_
+'| {
+  style: {
+    fill: "#93C5FD"
+    font-color: "#00194A"
+    border-radius: 8
+  }
+}
+branch: |'md
+  **STEP 2: Can length field fit?**
+  Is `used ≤ 56`?
+  _(i.e., ≥ 8 bytes remain in current 64-byte block)_
+'| {
+  shape: diamond
+  style: {
+    fill: "#FDE68A"
+    font-color: "#2D1B00"
+    bold: true
+  }
+}
+path_yes: "YES  (used ≤ 56)" {
+  style: {
+    font-color: "#166534"
+    bold: true
+  }
+}
+path_no: "NO  (used > 56)" {
+  style: {
+    font-color: "#991B1B"
+    bold: true
+  }
+}
+single_block: "ONE BLOCK PATH" {
+  style: {
+    fill: "#D1FAE5"
+    font-color: "#064E3B"
+    border-radius: 8
+    bold: true
+    stroke: "#059669"
+    stroke-width: 2
+  }
+  step_a: |'md
+    **STEP 3a: Zero-fill**
+    `memset(data + used, 0, 56 − used)`
+    Fill bytes `[used .. 55]` with `0x00`
+    Zero-fill count = `56 − used` bytes
+    _(may be 0 bytes if used = 56, i.e. len = 55)_
+  '| {
+    style: {
+      fill: "#A7F3D0"
+      border-radius: 6
+    }
+  }
+  step_b: |'md
+    **STEP 4a: Write length field**
+    `data[56..63]` = 64-bit big-endian `len × 8`
+    Eight bytes, MSB first:
+    `data[56] = bit_len >> 56`  ···  `data[63] = bit_len & 0xFF`
+  '| {
+    style: {
+      fill: "#FDE68A"
+      border-radius: 6
+    }
+  }
+  result_a: |'md
+    **RESULT: 1 BLOCK**
+    `total_padded = 64`
+    `num_blocks = 1`
+    Block 0: `data[0..63]`
+    ─────────────────────────
+    `[msg][0x80][zeros][len×8]`
+  '| {
+    style: {
+      fill: "#059669"
+      font-color: "#FFFFFF"
+      border-radius: 8
+      bold: true
+    }
+  }
+  step_a -> step_b -> result_a
+}
+two_block: "TWO BLOCK PATH" {
+  style: {
+    fill: "#FEE2E2"
+    font-color: "#450A0A"
+    border-radius: 8
+    bold: true
+    stroke: "#DC2626"
+    stroke-width: 2
+  }
+  step_c: |'md
+    **STEP 3b: Zero-fill remainder of Block 0**
+    `memset(data + used, 0, 64 − used)`
+    Fill bytes `[used .. 63]` with `0x00`
+    Zero-fill count = `64 − used` bytes
+    _(Block 0 is now complete but has no length field)_
+  '| {
+    style: {
+      fill: "#FECACA"
+      border-radius: 6
+    }
+  }
+  step_d: |'md
+    **STEP 3c: Zero-fill Block 1 bytes 0–55**
+    `memset(data + 64, 0, 56)`
+    Bytes `[64 .. 119]` = `0x00`
+    _(length field goes at end of Block 1)_
+  '| {
+    style: {
+      fill: "#FECACA"
+      border-radius: 6
+    }
+  }
+  step_e: |'md
+    **STEP 4b: Write length field in Block 1**
+    `data[120..127]` = 64-bit big-endian `len × 8`
+    `data[120] = bit_len >> 56`  ···  `data[127] = bit_len & 0xFF`
+  '| {
+    style: {
+      fill: "#FDE68A"
+      border-radius: 6
+    }
+  }
+  result_b: |'md
+    **RESULT: 2 BLOCKS**
+    `total_padded = 128`
+    `num_blocks = 2`
+    Block 0: `data[0..63]`
+    Block 1: `data[64..127]`
+    ─────────────────────────────────────────
+    `[msg (0..55)][0x80][zeros]` · `[zeros (56 bytes)][len×8]`
+  '| {
+    style: {
+      fill: "#DC2626"
+      font-color: "#FFFFFF"
+      border-radius: 8
+      bold: true
+    }
+  }
+  step_c -> step_d -> step_e -> result_b
+}
+boundary_annotation: |'md
+  **⚠ THE 56-BYTE BOUNDARY TRAP**
+  | `len` | `used = len+1` | Condition | Blocks |
+  |-------|----------------|-----------|--------|
+  | 54    | 55             | 55 ≤ 56 ✓ | **1**  |
+  | **55**| **56**         | 56 ≤ 56 ✓ | **1** ← last single-block len |
+  | **56**| **57**         | 57 > 56 ✗ | **2** ← first two-block len |
+  | 57    | 58             | 58 > 56 ✗ | **2**  |
+  | 119   | 120            | 120 > 56 ✗| **2**  |
+  | 120   | 121            | 121 > 56 ✗| **3**  |
+  One extra input byte (`len=55` → `len=56`) adds an **entire extra 64-byte block**.
+  The condition `used > 56` (equivalently `len ≥ 56`) triggers the two-block path.
+'| {
+  near: bottom-center
+  style: {
+    fill: "#1E1B4B"
+    font-color: "#E0E7FF"
+    border-radius: 10
+    stroke: "#6366F1"
+    stroke-width: 2
+  }
+}
+formula_annotation: |'md
+  **General Formula (any len)**
+  `used        = len + 1`
+  `total_padded = ⌈(used + 8) / 64⌉ × 64`
+  `           = ((used + 8 + 63) / 64) × 64`  _(integer arithmetic)_
+  `num_blocks  = total_padded / 64`
+'| {
+  near: top-right
+  style: {
+    fill: "#312E81"
+    font-color: "#EEF2FF"
+    border-radius: 8
+    stroke: "#818CF8"
+    stroke-width: 1
+  }
+}
+input -> compute_used -> branch
+branch -> path_yes -> single_block
+branch -> path_no -> two_block

@@ -1,0 +1,260 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+direction: right
+title: |md
+  ## File Serve Data Flow: open() → stat() → headers → read() → send() Loop
+  *Two kernel copies: page cache → read_buf → socket send buffer*
+| {near: top-center}
+###############################################################################
+# ACTORS
+###############################################################################
+canonical: "canonical path\n(char[PATH_MAX])" {
+  style.fill: "#7C3AED"
+  style.font-color: white
+  style.bold: true
+}
+stat_call: "stat(canonical, &st)" {
+  shape: hexagon
+  style.fill: "#6D28D9"
+  style.font-color: white
+}
+st: "struct stat st" {
+  style.fill: "#4C1D95"
+  style.font-color: white
+  style.bold: true
+  size: "st.st_size\n(off_t → Content-Length)" {
+    style.fill: "#7C3AED"
+    style.font-color: white
+  }
+  mtime: "st.st_mtime\n(time_t → Last-Modified)" {
+    style.fill: "#7C3AED"
+    style.font-color: white
+  }
+  mode: "st.st_mode\n(S_ISREG check)" {
+    style.fill: "#7C3AED"
+    style.font-color: white
+  }
+}
+open_call: "open(canonical, O_RDONLY)" {
+  shape: hexagon
+  style.fill: "#1D4ED8"
+  style.font-color: white
+}
+file_fd: "file_fd\n(int)" {
+  style.fill: "#1E40AF"
+  style.font-color: white
+  style.bold: true
+}
+fd_warning: |md
+  ⚠️ **file_fd MUST be close()d**
+  on EVERY exit path:
+  - Stage 7 snprintf overflow → close + send_500
+  - Stage 7 send_all failure → close + return
+  - Stage 8 loop break (client disconnect) → close
+  - Stage 8 read error → close
+  - Normal completion → close
+| {
+  near: top-right
+  style.fill: "#FEF2F2"
+  style.stroke: "#DC2626"
+  style.font-color: "#991B1B"
+  style.stroke-width: 2
+}
+###############################################################################
+# HEADER CONSTRUCTION
+###############################################################################
+strftime_call: "strftime(last_modified,\n\"%a, %d %b %Y %H:%M:%S GMT\",\ngmtime(&st.st_mtime))" {
+  shape: hexagon
+  style.fill: "#065F46"
+  style.font-color: white
+}
+mime_call: "get_mime_type(canonical)" {
+  shape: hexagon
+  style.fill: "#065F46"
+  style.font-color: white
+}
+snprintf_call: "snprintf(header_buf,\nRESPONSE_HDR_MAX,\n\"HTTP/1.1 200 OK\\r\\n...\")" {
+  shape: hexagon
+  style.fill: "#047857"
+  style.font-color: white
+}
+header_buf: "header_buf[1024]\n(stack, ~171 bytes used)" {
+  style.fill: "#064E3B"
+  style.font-color: white
+  style.bold: true
+}
+###############################################################################
+# RESPONSE HEADER SEND
+###############################################################################
+send_headers: "send_all(client_fd,\nheader_buf, header_len)" {
+  shape: hexagon
+  style.fill: "#92400E"
+  style.font-color: white
+}
+socket_send_buf_hdr: "kernel socket\nsend buffer\n(~87 KB default)" {
+  style.fill: "#78350F"
+  style.font-color: white
+  style.double-border: true
+}
+###############################################################################
+# BODY SEND DECISION
+###############################################################################
+send_body_check: "send_body == 1?\n(GET → true,\nHEAD → false)" {
+  shape: diamond
+  style.fill: "#374151"
+  style.font-color: white
+}
+head_exit: "HEAD: return\n(no body sent;\nContent-Length still\nreflects file size)" {
+  style.fill: "#1F2937"
+  style.font-color: "#D1FAE5"
+  style.stroke: "#6EE7B7"
+}
+###############################################################################
+# READ LOOP
+###############################################################################
+read_loop: "read() Loop" {
+  style.fill: "#1E3A5F"
+  style.stroke: "#3B82F6"
+  style.stroke-width: 2
+  page_cache: "kernel page cache\n(RAM-backed file data;\nreadahead prefetches\nnext 128–512 KB)" {
+    style.fill: "#1E40AF"
+    style.font-color: white
+    style.bold: true
+    style.double-border: true
+  }
+  read_call: "read(file_fd,\nread_buf, 65536)" {
+    shape: hexagon
+    style.fill: "#1D4ED8"
+    style.font-color: white
+  }
+  read_buf: "read_buf[65536]\n(stack, 64 KB;\none cache miss on first\ntouch, then L3-resident)" {
+    style.fill: "#1E3A8A"
+    style.font-color: white
+    style.bold: true
+  }
+  copy1_label: |md
+    **Copy 1:**
+    kernel page cache → read_buf
+    (kernel-to-user copy via syscall)
+    ~10 GB/s for hot cache
+  | {
+    style.fill: "#DBEAFE"
+    style.font-color: "#1E3A8A"
+    style.stroke: "#3B82F6"
+  }
+  read_result: "bytes_read\n(ssize_t N > 0\nor 0 = EOF\nor -1 = error)" {
+    shape: diamond
+    style.fill: "#1E40AF"
+    style.font-color: white
+  }
+}
+###############################################################################
+# SEND BODY
+###############################################################################
+send_body_call: "send_all(client_fd,\nread_buf, N)" {
+  shape: hexagon
+  style.fill: "#92400E"
+  style.font-color: white
+}
+socket_send_buf_body: "kernel socket\nsend buffer\n(same buffer as headers;\nTCP segments to NIC)" {
+  style.fill: "#78350F"
+  style.font-color: white
+  style.double-border: true
+}
+copy2_label: |md
+  **Copy 2:**
+  read_buf → kernel socket send buffer
+  (user-to-kernel copy via send())
+  ~10 GB/s for loopback
+| {
+  style.fill: "#FEF3C7"
+  style.font-color: "#78350F"
+  style.stroke: "#F59E0B"
+}
+nic: "NIC / network\n(DMA from socket\nsend buffer;\nno CPU involved)" {
+  style.fill: "#292524"
+  style.font-color: "#FEF2F2"
+  style.bold: true
+}
+###############################################################################
+# LOOP CONTROL + CLOSE
+###############################################################################
+loop_again: "loop: goto read_call" {
+  shape: diamond
+  style.fill: "#065F46"
+  style.font-color: white
+}
+close_fd: "close(file_fd)" {
+  shape: hexagon
+  style.fill: "#7F1D1D"
+  style.font-color: white
+  style.bold: true
+  style.stroke-width: 3
+}
+done: "return\n(client_fd still open;\ncaller or keep-alive\nloop manages it)" {
+  style.fill: "#111827"
+  style.font-color: "#D1FAE5"
+}
+###############################################################################
+# CONNECTIONS: stat path
+###############################################################################
+canonical -> stat_call: "Stage 4b/5:\nstat() syscall"
+stat_call -> st: "fills struct stat"
+st.size -> snprintf_call: "%lld → Content-Length" {style.stroke-dash: 3}
+st.mtime -> strftime_call: "UTC timestamp" {style.stroke-dash: 3}
+st.mode -> open_call: "S_ISREG passes;\nproceed to open()" {style.stroke-dash: 3}
+###############################################################################
+# CONNECTIONS: open path
+###############################################################################
+canonical -> open_call: "Stage 6"
+open_call -> file_fd: "returns fd ≥ 0\n(EACCES → 403;\nother → 404)"
+###############################################################################
+# CONNECTIONS: header build
+###############################################################################
+strftime_call -> snprintf_call: "last_modified string"
+mime_call -> snprintf_call: "MIME type string"
+snprintf_call -> header_buf: "writes headers\n(guard: if overflow,\nclose and return)"
+header_buf -> send_headers: "Stage 7: send headers"
+send_headers -> socket_send_buf_hdr: "Copy: header_buf →\nkernel send buffer"
+socket_send_buf_hdr -> nic: "TCP segment to client"
+###############################################################################
+# CONNECTIONS: send_body decision
+###############################################################################
+send_headers -> send_body_check: "headers sent OK"
+send_body_check -> head_exit: "false (HEAD)"
+send_body_check -> read_loop.page_cache: "true (GET)\nStage 8 begins"
+###############################################################################
+# CONNECTIONS: read loop internal
+###############################################################################
+read_loop.page_cache -> read_loop.read_call: "kernel readahead data"
+read_loop.read_call -> read_loop.copy1_label: ""
+read_loop.copy1_label -> read_loop.read_buf: "N bytes written"
+read_loop.read_buf -> read_loop.read_result: "bytes_read = N"
+###############################################################################
+# CONNECTIONS: loop dispatch
+###############################################################################
+read_loop.read_result -> send_body_call: "N > 0: send chunk" {style.font-color: "#22C55E"}
+read_loop.read_result -> close_fd: "N == 0: EOF" {style.stroke: "#22C55E"}
+read_loop.read_result -> close_fd: "N < 0: read error" {style.stroke: "#EF4444"}
+###############################################################################
+# CONNECTIONS: send body chunk
+###############################################################################
+send_body_call -> copy2_label: ""
+copy2_label -> socket_send_buf_body: "N bytes to TCP"
+socket_send_buf_body -> nic: "DMA to NIC"
+send_body_call -> loop_again: "send OK" {style.stroke: "#22C55E"}
+send_body_call -> close_fd: "send error" {style.stroke: "#EF4444"}
+loop_again -> read_loop.read_call: "next chunk" {style.animated: true}
+###############################################################################
+# CONNECTIONS: cleanup
+###############################################################################
+head_exit -> close_fd: "close file_fd"
+close_fd -> done: "FD released"
+###############################################################################
+# WARNING annotation connection
+###############################################################################
+file_fd -> fd_warning: "" {style.stroke-dash: 5; style.stroke: "#DC2626"}

@@ -1,0 +1,216 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: "Per-Connection Idle Timeout: select() with Timeout" {
+  near: top-center
+  style: {
+    font-size: 18
+    bold: true
+    stroke: transparent
+    fill: transparent
+  }
+}
+row0: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  worker_entry: "Worker Thread Entry (thread_pool.c)" {
+    shape: rectangle
+    style.fill: "#E8F4FD"
+    style.stroke: "#2196F3"
+    style.bold: true
+  }
+  so_rcvtimeo_alt: "Alternative: SO_RCVTIMEO" {
+    shape: rectangle
+    style.fill: "#FFF9C4"
+    style.stroke: "#F9A825"
+    label: "Alternative: SO_RCVTIMEO"
+    note: "setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, tv, sizeof(tv))"
+    note2: "recv() returns -1 / EAGAIN after timeout"
+    note3: "Simpler but less portable than select()"
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  select_call: "select() Call (read_request_with_timeout)" {
+    shape: rectangle
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    code: |'c
+      fd_set read_fds;
+      FD_ZERO(&read_fds);
+      FD_SET(fd, &read_fds);
+      struct timeval tv = {30, 0};
+      int ready = select(fd+1,
+                         &read_fds,
+                         NULL, NULL, &tv);
+    '|
+    width: 360
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  case1: "CASE 1: Data Arrives (ready > 0)" {
+    shape: rectangle
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    recv_loop: "recv() Loop" {
+      code: |'c
+        n = recv(fd, buf+total,
+                 buf_size-1-total, 0);
+        total += n;
+        buf[total] = '\0';
+        if (strstr(buf,"\r\n\r\n"))
+          return total; // complete
+      '|
+      width: 300
+    }
+  }
+  case2: "CASE 2: 30s Elapsed (ready == 0)" {
+    shape: rectangle
+    style.fill: "#FFF3E0"
+    style.stroke: "#E65100"
+    timeout_action: "Timeout Action" {
+      code: |'c
+        if (ready == 0) {
+          // select() returned 0
+          // no data in 30 seconds
+          return -1; // caller closes fd
+        }
+      '|
+      width: 300
+    }
+  }
+  case3: "CASE 3: Client Disconnects (EOF)" {
+    shape: rectangle
+    style.fill: "#FCE4EC"
+    style.stroke: "#AD1457"
+    eof_action: "EOF Detection" {
+      code: |'c
+        n = recv(fd, buf+total, ...);
+        if (n == 0) {
+          // orderly shutdown
+          // TCP FIN received
+          return 0; // caller closes fd
+        }
+      '|
+      width: 300
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  keep_alive_loop: "Keep-Alive Loop Decision (handle_client_keep_alive)" {
+    shape: diamond
+    label: "read_request_with_timeout() result?"
+    style.fill: "#F3E5F5"
+    style.stroke: "#6A1B9A"
+    width: 380
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  serve_request: "Serve Request (file_server.c)" {
+    shape: rectangle
+    style.fill: "#E8F5E9"
+    style.stroke: "#388E3C"
+    note: "parse → validate → serve_file()"
+    note2: "returns; loop iterates to next request"
+  }
+  close_fd: "Close FD + Exit Loop" {
+    shape: rectangle
+    style.fill: "#FFEBEE"
+    style.stroke: "#C62828"
+    code: |'c
+      close(item.client_fd);
+      // worker returns to pool
+      // waits for next work_item_t
+    '|
+    width: 300
+  }
+}
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  epoll_future: "Future Scaling: epoll + timerfd (Event-Loop Model)" {
+    shape: rectangle
+    style.fill: "#ECEFF1"
+    style.stroke: "#546E7A"
+    style.italic: true
+    epoll_note: "Contrast with select()-per-thread approach" {
+      code: |'c
+        // Instead of blocking worker:
+        int efd = epoll_create1(0);
+        int tfd = timerfd_create(CLOCK_MONOTONIC, 0);
+        // arm timer: 30s per connection
+        // EPOLLIN on both fd and tfd
+        // single thread handles N conns
+      '|
+      width: 420
+    }
+    tradeoff: "Tradeoff: complexity vs. thread overhead at C10K scale" {
+      style.fill: "#FFF9C4"
+      style.stroke: "#F9A825"
+    }
+  }
+}
+row0.worker_entry -> row1.select_call: "client_fd | per-request"
+row1.select_call -> row2.case1: "ready > 0 | FD readable" {
+  style.stroke: "#2E7D32"
+  style.bold: true
+}
+row1.select_call -> row2.case2: "ready == 0 | timeout" {
+  style.stroke: "#E65100"
+  style.bold: true
+  style.stroke-dash: 4
+}
+row1.select_call -> row2.case3: "ready > 0 | n==0 on recv" {
+  style.stroke: "#AD1457"
+  style.bold: true
+  style.stroke-dash: 4
+}
+row2.case1 -> row3.keep_alive_loop: "req_len > 0 | success" {
+  style.stroke: "#2E7D32"
+}
+row2.case2 -> row3.keep_alive_loop: "req_len == -1 | timeout" {
+  style.stroke: "#E65100"
+  style.stroke-dash: 4
+}
+row2.case3 -> row3.keep_alive_loop: "req_len == 0 | EOF" {
+  style.stroke: "#AD1457"
+  style.stroke-dash: 4
+}
+row3.keep_alive_loop -> row4.serve_request: "positive | continue loop" {
+  style.stroke: "#388E3C"
+  style.bold: true
+}
+row3.keep_alive_loop -> row4.close_fd: "0 or -1 | break" {
+  style.stroke: "#C62828"
+  style.stroke-dash: 4
+}
+row4.serve_request -> row1.select_call: "keep_alive=1 | next request" {
+  style.stroke: "#1565C0"
+  style.animated: true
+}
+row4.close_fd -> row5.epoll_future: "thread returns to pool" {
+  style.stroke: "#546E7A"
+  style.stroke-dash: 6
+  style.italic: true
+}
+row0.so_rcvtimeo_alt -> row1.select_call: "alternative path" {
+  style.stroke: "#F9A825"
+  style.stroke-dash: 6
+}

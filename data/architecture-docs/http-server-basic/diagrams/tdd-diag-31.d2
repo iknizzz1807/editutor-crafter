@@ -1,0 +1,195 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+title: |md
+  ## Thread Pool Worker Loop
+  **Mutex / Condition Variable State Transitions**
+  *Single worker thread lifecycle — pool->lock held ▼ / released ▲*
+| {near: top-center}
+classes: {
+  normal_state: {
+    shape: rectangle
+    style: {
+      border-radius: 8
+      font-size: 14
+      bold: true
+    }
+  }
+  error_state: {
+    shape: rectangle
+    style: {
+      fill: "#FF4444"
+      font-color: white
+      border-radius: 8
+      font-size: 14
+      bold: true
+      stroke: "#CC0000"
+      stroke-width: 3
+    }
+  }
+  terminal_state: {
+    shape: rectangle
+    style: {
+      fill: "#444444"
+      font-color: white
+      border-radius: 8
+      font-size: 14
+      bold: true
+      stroke: "#222222"
+      stroke-width: 3
+    }
+  }
+}
+initial: {
+  shape: circle
+  label: ""
+  width: 24
+  height: 24
+  style: {
+    fill: black
+    stroke: black
+  }
+}
+WAITING: "WAITING\n─────────────────\nBlocked inside\npthread_cond_wait()\nLock: RELEASED ▲\nby cond_wait\nautomatically\n─────────────────\nInvariant:\ncount == 0 OR\nshutdown checked\nnext wakeup" {
+  class: normal_state
+  style.fill: "#B5AFF6"
+  style.stroke: "#7B6FD4"
+  style.stroke-width: 2
+}
+WOKEN: "WOKEN\n─────────────────\nReturned from\npthread_cond_wait()\nLock: HELD ▼\nRe-evaluating\nwhile condition:\ncount==0 && !shutdown\n─────────────────\nHandles spurious\nwakeups via WHILE" {
+  class: normal_state
+  style.fill: "#E4DBFE"
+  style.stroke: "#7B6FD4"
+  style.stroke-width: 2
+}
+SHUTDOWN_CHECK: "SHUTDOWN_CHECK\n─────────────────\nshutdown == 1\n&& count == 0\nLock: HELD ▼\n─────────────────\nTermination path:\nunlock + return NULL\nAll joins released\nvia pthread_join()" {
+  class: terminal_state
+}
+DEQUEUING: "DEQUEUING\n─────────────────\nLock: HELD ▼\nOperations:\n• Copy queue[head]\n  (24 bytes)\n• head = (head+1)\n  % CAPACITY\n• count--\n• cond_signal\n  (not_full)\n─────────────────\nO(1) critical section\n< 500 ns hold time" {
+  class: normal_state
+  style.fill: "#88DCF7"
+  style.stroke: "#3A8FB5"
+  style.stroke-width: 2
+}
+UNLOCKED: "UNLOCKED\n─────────────────\nLock: RELEASED ▲\nHolds: work_item\n(local copy on stack)\nclient_fd transferred\n─────────────────\nPreparing to call\nhandle_client_keep_alive()\nAll N workers can\nbe here in parallel" {
+  class: normal_state
+  style.fill: "#C7F1FF"
+  style.stroke: "#3A8FB5"
+  style.stroke-width: 2
+}
+HANDLING: "HANDLING\n─────────────────\nLock: RELEASED ▲\nExecuting:\nhandle_client_keep_alive\n  (client_fd, ip, port,\n   doc_root)\n─────────────────\nMay run 0–30s\nReads from socket\nServes files\nCloses client_fd\nbefore returning\n─────────────────\nstats & log updated\nunder their own mutexes" {
+  class: normal_state
+  style.fill: "#ACE1AF"
+  style.stroke: "#2E7D32"
+  style.stroke-width: 2
+}
+ILLEGAL_HANDLE: "❌ ILLEGAL STATE\n─────────────────\nhandle_client called\nWHILE holding\npool->lock\n─────────────────\nResult: All other\nworkers blocked;\nacquire loop\nstalls; server\ndeadlocks under load\n─────────────────\nNEVER DO THIS" {
+  class: error_state
+}
+exited: "EXITED\n(return NULL)\n─────────────────\nThread function\nreturns; pthread_join\nin shutdown completes" {
+  shape: rectangle
+  style: {
+    fill: "#222222"
+    font-color: white
+    border-radius: 20
+    font-size: 13
+    stroke: black
+    stroke-width: 3
+  }
+}
+initial -> WAITING: "pthread_mutex_lock\n(pool->lock) ▼\nthen immediately\nenters cond_wait\n(releases lock ▲)" {
+  style.stroke: black
+  style.stroke-width: 2
+}
+WAITING -> WOKEN: "cond_signal OR\ncond_broadcast\n─────────────────\npthread_cond_wait\nreacquires lock ▼\nautomatically\nbefore returning" {
+  style.stroke: "#7B6FD4"
+  style.stroke-width: 2
+  style.font-size: 12
+}
+WOKEN -> WAITING: "while condition TRUE\n(count==0 && !shutdown)\n─────────────────\nSpurious wakeup\nor signal consumed\nby another worker\n→ re-wait, lock ▼\nstill held entering\ncond_wait ▲ exit" {
+  style.stroke: "#7B6FD4"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+  style.font-size: 12
+}
+WOKEN -> SHUTDOWN_CHECK: "while condition FALSE\nbecause shutdown==1\n&& count==0\n─────────────────\nBoth checks done\nunder lock ▼" {
+  style.stroke: "#CC0000"
+  style.stroke-width: 2
+  style.font-size: 12
+}
+WOKEN -> DEQUEUING: "while condition FALSE\nbecause count > 0\n(work available)\n─────────────────\nLock ▼ still held\nfrom cond_wait return" {
+  style.stroke: "#3A8FB5"
+  style.stroke-width: 2
+  style.bold: true
+  style.font-size: 12
+}
+SHUTDOWN_CHECK -> exited: "pthread_mutex_unlock ▲\nreturn NULL\n─────────────────\npthread_join\nin shutdown\nunblocks" {
+  style.stroke: "#444444"
+  style.stroke-width: 2
+  style.font-size: 12
+}
+DEQUEUING -> UNLOCKED: "pthread_mutex_unlock\n(pool->lock) ▲\n─────────────────\nwork_item is\nlocal stack copy;\nno shared state\naccessed after\nthis point without\na separate mutex" {
+  style.stroke: "#3A8FB5"
+  style.stroke-width: 2
+  style.font-size: 12
+}
+UNLOCKED -> HANDLING: "Call:\nhandle_client_keep_alive\n(item.client_fd,\n item.client_ip,\n item.client_port,\n g_doc_root)\n─────────────────\nlock: NOT HELD ▲\nThis is critical;\nallows true parallelism" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 2
+  style.bold: true
+  style.font-size: 12
+}
+HANDLING -> WAITING: "handle_client_keep_alive\nreturns\n(client_fd closed inside)\n─────────────────\npthread_mutex_lock\n(pool->lock) ▼\nLoop back to top\nGOTO WAITING" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 2
+  style.font-size: 12
+}
+DEQUEUING -> ILLEGAL_HANDLE: "ILLEGAL:\ncalling handle_client\nbefore unlock" {
+  style.stroke: "#CC0000"
+  style.stroke-width: 3
+  style.stroke-dash: 5
+  style.font-color: "#CC0000"
+  style.bold: true
+  style.animated: true
+}
+legend: {
+  near: bottom-right
+  label: |md
+    **Legend**
+    - 🟣 Purple = Lock HELD ▼ state
+    - 🔵 Blue = Lock transition zone
+    - 🟢 Green = Lock RELEASED ▲ (work happening)
+    - ⚫ Dark = Terminal / exit
+    - 🔴 Red = ILLEGAL — must never occur
+    - `▼` = pthread_mutex_lock acquired
+    - `▲` = pthread_mutex_unlock released
+    - Dashed arrow = spurious/backward transition
+    - Animated red = illegal path
+  |
+  style: {
+    fill: "#F5F5F5"
+    stroke: "#999999"
+    border-radius: 8
+    font-size: 12
+  }
+}
+invariants: |md
+  **Critical Invariants**
+  1. `pool->lock` held at top of loop, in WOKEN, in DEQUEUING — NEVER in HANDLING
+  2. `while` (not `if`) around `pthread_cond_wait` — mandatory for spurious wakeup safety
+  3. `work_item` is value-copied (24 B) before unlock — no shared pointer after UNLOCKED
+  4. `client_fd` closed by `handle_client_keep_alive` before returning to WAITING
+  5. `shutdown==1 && count>0` → still DEQUEUES (drains queue before exit)
+  6. `pthread_cond_broadcast` used in shutdown (not signal) — wakes ALL workers
+| {
+  near: bottom-left
+  style: {
+    fill: "#FFFDE7"
+    stroke: "#F9A825"
+    border-radius: 8
+    font-size: 12
+  }
+}

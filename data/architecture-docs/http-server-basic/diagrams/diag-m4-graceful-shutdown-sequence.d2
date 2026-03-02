@@ -1,0 +1,88 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+shutdown_seq: {
+  shape: sequence_diagram
+  sig_handler: "Signal Handler"
+  main_thread: "Main Thread"
+  pool: "thread_pool_shutdown()"
+  workers: "Worker Threads [0..N-1]"
+  sigterm_arrives: {
+    sig_handler -> main_thread: "SIGTERM / SIGINT"
+  }
+  set_flag: {
+    sig_handler -> sig_handler: "atomic_store(shutdown_flag, 1)"
+    sig_handler."atomic_int — not plain int\n(plain int: compiler may cache in register,\nnever re-reads from memory → loop spins forever)"
+  }
+  accept_loop_exit: {
+    main_thread -> main_thread: "while (!atomic_load(shutdown_flag))"
+    main_thread -> main_thread: "accept() returns EINTR → continue"
+    main_thread -> main_thread: "flag == 1 → exit accept loop"
+  }
+  stop_listening: {
+    main_thread -> main_thread: "close(server_fd)"
+    main_thread."OS stops queueing new connections immediately"
+  }
+  pool_shutdown_call: {
+    main_thread -> pool: "thread_pool_shutdown(pool)"
+  }
+  set_pool_flag: {
+    pool -> pool: "lock(pool->lock)"
+    pool -> pool: "pool->shutdown = 1"
+    pool -> workers: "pthread_cond_broadcast(not_empty)"
+    pool -> pool: "unlock(pool->lock)"
+    pool."broadcast wakes ALL waiting workers\n(signal wakes only ONE — wrong for shutdown)"
+  }
+  workers_drain: {
+    workers -> workers: "pthread_cond_wait returns"
+    workers -> workers: "while (count==0 && !shutdown) — recheck"
+    workers -> workers: "shutdown==1 && count==0 → break"
+    workers -> workers: "finish current in-flight request"
+    workers -> workers: "close(client_fd)"
+    workers -> workers: "return NULL"
+    workers."queue drained before exit:\nshutdown && count==0 is the exit condition\nnot shutdown alone"
+  }
+  join_all: {
+    pool -> main_thread: "pthread_join(threads[i]) x N"
+    main_thread."blocks until every worker returns\nguarantees all in-flight responses complete"
+  }
+  cleanup: {
+    main_thread -> main_thread: "pthread_mutex_destroy(lock)"
+    main_thread -> main_thread: "pthread_cond_destroy(not_empty)"
+    main_thread -> main_thread: "pthread_cond_destroy(not_full)"
+    main_thread -> main_thread: "access_log_flush() + fclose()"
+    main_thread -> main_thread: "exit(EXIT_SUCCESS)"
+  }
+}
+race_note: "RACE CONDITION if shutdown_flag is plain int" {
+  shape: rectangle
+  style.fill: "#ffcccc"
+  style.stroke: "#cc0000"
+  style.stroke-width: 2
+  r1: "int server_shutdown = 0;  // BAD"
+  r2: "Compiler may hoist the read out of the loop:"
+  r3: "  if (!server_shutdown) { while(1) { accept(); } }"
+  r4: "Result: flag written by signal handler is never seen."
+  r5: "FIX: atomic_int server_shutdown = 0;"
+  r6: "  atomic_store writes with release semantics"
+  r7: "  atomic_load reads with acquire semantics"
+  r8: "  Prevents CPU and compiler reordering across the flag"
+}
+timeline_note: "Graceful Shutdown Timeline" {
+  shape: rectangle
+  style.fill: "#e8f4e8"
+  style.stroke: "#2a7a2a"
+  t1: "T+0ms   SIGTERM received, shutdown_flag = 1"
+  t2: "T+0ms   accept() returns EINTR (signal interrupts syscall)"
+  t3: "T+0ms   accept loop exits, server_fd closed"
+  t4: "T+0ms   pool->shutdown = 1, broadcast sent"
+  t5: "T+Xms   Workers finish in-flight requests (X = longest active request)"
+  t6: "T+Xms   All pthread_join() complete"
+  t7: "T+Xms   Clean exit — no truncated responses"
+}
+shutdown_seq -> race_note: "annotation"
+shutdown_seq -> timeline_note: "timeline"

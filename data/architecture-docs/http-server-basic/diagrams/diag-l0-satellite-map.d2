@@ -1,0 +1,286 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Project Atlas — HTTP Server Component Map
+  Satellite map: four milestone zones, data flow, concurrency fan-out
+| {near: top-center}
+row0: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  client_zone: "External Clients" {
+    direction: down
+    style.fill: "#e8f4f8"
+    style.stroke: "#4a90a4"
+    style.border-radius: 8
+    browser: "Browser / curl / ab" {
+      shape: person
+    }
+    slow_client: "Slow Client (Slowloris)" {
+      shape: person
+      style.fill: "#ffe0e0"
+      style.stroke: "#cc0000"
+    }
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  m1_zone: "MILESTONE 1 — TCP Socket Layer  (diag-m1)" {
+    direction: down
+    style.fill: "#e8f0fe"
+    style.stroke: "#3367d6"
+    style.border-radius: 8
+    style.bold: true
+    socket_lifecycle: "Socket Lifecycle (server.c)" {
+      shape: class
+      +create_server_socket(port): "int fd"
+      +setsockopt_reuseaddr(fd): "void"
+      +bind(fd, INADDR_ANY, port): "int"
+      +listen(fd, SOMAXCONN): "int"
+      +accept(fd, addr, len): "int client_fd"
+    }
+    recv_loop: "Request Read Loop (server.c)" {
+      shape: class
+      -buf: "char[8192]"
+      -total: "size_t"
+      +read_request(fd, buf, size): "ssize_t"
+      +send_all(fd, buf, len): "ssize_t"
+    }
+    sig_notes: "Signal + FD Safety" {
+      shape: sql_table
+      label: "Signal + FD Safety (server.c)"
+      r1: "SIGPIPE | SIG_IGN | process-wide at startup"
+      r2: "MSG_NOSIGNAL | send() flag | per-call on Linux"
+      r3: "SO_REUSEADDR | setsockopt | before bind()"
+      r4: "close(client_fd) | mandatory | after every response"
+      r5: "EMFILE recovery | usleep(100ms)+continue | FD exhaustion"
+    }
+    socket_lifecycle -> recv_loop: "int client_fd"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  m2_zone: "MILESTONE 2 — HTTP Parser  (diag-m2)" {
+    direction: down
+    style.fill: "#fef9e7"
+    style.stroke: "#f39c12"
+    style.border-radius: 8
+    style.bold: true
+    http_request_t: {
+      shape: sql_table
+      label: "struct http_request_t (http_parse.h)"
+      f0: "0x000 | char[16]       | method"
+      f1: "0x010 | char[8192]     | path"
+      f2: "0x010 | char[16]       | version"
+      f3: "0x020 | http_header_t[32] | headers"
+      f4: "0x820 | int            | header_count"
+      f5: "0x828 | const char*    | body  // ptr into raw buf"
+      f6: "0x830 | size_t         | body_len"
+      sz: "Total: ~36 KB stack — consider heap alloc"
+    }
+    http_header_t: {
+      shape: sql_table
+      label: "struct http_header_t (http_parse.h)"
+      f0: "0x000 | char[128]  | name  // normalized lowercase"
+      f1: "0x080 | char[1024] | value // OWS-stripped both ends"
+      sz: "Total: 1152 bytes x 32 = 36 KB"
+    }
+    parser_api: "HTTP Parser API (http_parse.c)" {
+      shape: class
+      +http_parse_request(buf, len, req): "int  // 0|-1|-2|-3"
+      +parse_request_line(line, len, req): "int"
+      +parse_headers(buf, len, req): "int"
+      +get_header(req, name): "const char*"
+      +classify_method(method): "http_method_t"
+      +url_decode(src, dst, size): "int"
+    }
+    parse_rules: "Parse Rules (RFC 7230)" {
+      shape: sql_table
+      label: "Parse Rules (RFC 7230 / http_parse.c)"
+      r1: "names   | tolower() loop   | case-insensitive storage"
+      r2: "OWS     | trim both ends   | spaces+tabs stripped"
+      r3: "obs-fold| append to prev   | CRLF+SP continuation"
+      r4: "bare LF | memchr('\\n')    | CRLF and LF both accepted"
+      r5: "limits  | buf_size-1 guard | 414 on path >= 8192"
+      r6: "errors  | -1=400 -2=414 -3=501 | caller maps to response"
+    }
+    http_request_t -> http_header_t: "headers[]"
+    parser_api -> http_request_t: "fills"
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  m3_zone: "MILESTONE 3 — File Serving Engine  (diag-m3)" {
+    direction: down
+    style.fill: "#eafaf1"
+    style.stroke: "#27ae60"
+    style.border-radius: 8
+    style.bold: true
+    security_pipeline: "URL-to-Filesystem Pipeline (file_server.c)" {
+      shape: sql_table
+      label: "Security Pipeline — 5 stages (file_server.c)"
+      s1: "Stage 1 | url_decode()     | %2e%2e → .. decoded first"
+      s2: "Stage 2 | build_full_path()| doc_root + decoded_path"
+      s3: "Stage 3 | realpath()       | resolves .., symlinks → canonical"
+      s4: "Stage 4 | prefix check     | canonical[root_len]=/ or NUL"
+      s5: "Stage 4b| S_ISDIR → index.html | re-realpath + re-check"
+      s6: "Stage 5 | open(O_RDONLY)   | binary, no newline xlation"
+    }
+    file_server_api: "File Server API (file_server.c)" {
+      shape: class
+      +serve_file(fd, doc_root, req, send_body): "void"
+      +url_decode(src, dst, size): "int"
+      +build_full_path(root, path, out, size): "int"
+      +get_mime_type(canonical_path): "const char*"
+      +parse_http_date(date_str): "time_t"
+      +send_304(fd, mime, last_mod, clen): "void"
+      +send_404(fd): "void"
+      +send_403(fd): "void"
+    }
+    mime_table: "MIME Lookup Table (file_server.c)" {
+      shape: sql_table
+      label: "MIME Table — strrchr last dot (file_server.c)"
+      m1: ".html .htm  | text/html; charset=utf-8"
+      m2: ".css        | text/css; charset=utf-8"
+      m3: ".js         | application/javascript"
+      m4: ".json       | application/json"
+      m5: ".png .jpg   | image/png / image/jpeg"
+      m6: ".svg        | image/svg+xml"
+      m7: "(unknown)   | application/octet-stream"
+    }
+    conditional_req: "Conditional Request (file_server.c)" {
+      shape: sql_table
+      label: "If-Modified-Since / 304 (file_server.c)"
+      c1: "stat() st_mtime | file mod time (UTC time_t)"
+      c2: "strptime()      | parse HTTP-date from header"
+      c3: "timegm()        | NOT mktime() — avoids TZ offset"
+      c4: "st_mtime <= ims | equal = cached valid (1s granularity)"
+      c5: "304 response    | same headers, zero body bytes"
+    }
+    security_pipeline -> file_server_api: "stages"
+    file_server_api -> mime_table: "get_mime_type"
+    file_server_api -> conditional_req: "If-Modified-Since"
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  m4_zone: "MILESTONE 4 — Concurrency Engine  (diag-m4)" {
+    direction: down
+    style.fill: "#f9f0ff"
+    style.stroke: "#8e44ad"
+    style.border-radius: 8
+    style.bold: true
+    thread_pool: "Thread Pool (thread_pool.c)" {
+      shape: class
+      -queue: "work_item_t[1024]  // circular buffer"
+      -head: "int"
+      -tail: "int"
+      -count: "int"
+      -lock: "pthread_mutex_t"
+      -not_empty: "pthread_cond_t"
+      -not_full: "pthread_cond_t"
+      -shutdown: "int  // atomic"
+      -threads: "pthread_t[N]"
+      +thread_pool_init(pool, n): "int"
+      +thread_pool_enqueue(pool, fd, ip, port): "int  // -1=full→503"
+      +thread_pool_shutdown(pool): "void"
+      -worker_thread(arg): "void*"
+    }
+    work_item_t: {
+      shape: sql_table
+      label: "struct work_item_t (thread_pool.h)"
+      f0: "0x00 | int               | client_fd"
+      f1: "0x04 | char[INET_ADDRSTRLEN] | client_ip"
+      f2: "0x18 | int               | client_port"
+      sz: "Total: ~28 bytes"
+    }
+    keepalive_loop: "Keep-Alive Loop (server.c)" {
+      shape: class
+      -KEEPALIVE_TIMEOUT: "30 // seconds via select()"
+      -MAX_REQ_PER_CONN: "100"
+      +handle_client_keep_alive(fd, ip, port): "void"
+      +read_request_with_timeout(fd, buf, size, secs): "ssize_t"
+      +should_keep_alive(req): "int  // HTTP/1.1 default=1"
+    }
+    shutdown_mgmt: "Graceful Shutdown (server.c)" {
+      shape: sql_table
+      label: "Graceful Shutdown (server.c)"
+      s1: "server_shutdown | atomic_int | SIGTERM/SIGINT handler"
+      s2: "signal(SIGTERM) | signal_handler | atomic_store=1"
+      s3: "accept EINTR    | continue | re-check shutdown flag"
+      s4: "broadcast cond  | wakes all workers | shutdown=1"
+      s5: "pthread_join x N| drain in-flight | then close(server_fd)"
+    }
+    server_stats: "Server Stats (server.c)" {
+      shape: sql_table
+      label: "Shared Stats — mutex protected (server.c)"
+      s1: "active_connections | pthread_mutex_t lock | incr on open"
+      s2: "total_connections  | same lock            | incr on open"
+      s3: "access_log.file    | mutex + fflush()     | per-request"
+    }
+    thread_pool -> work_item_t: "queue[]"
+    thread_pool -> keepalive_loop: "dispatches fd"
+    thread_pool -> shutdown_mgmt: "broadcast"
+    thread_pool -> server_stats: "shared state"
+  }
+}
+legend: "" {
+  near: bottom-right
+  style.fill: "#f8f8f8"
+  style.stroke: "#cccccc"
+  style.border-radius: 6
+  l1: "RED   = hot path / danger / attack surface" {
+    style.font-color: "#cc0000"
+  }
+  l2: "GREEN = success / safe / fixed path" {
+    style.font-color: "#27ae60"
+  }
+  l3: "BLUE  = data flow / read operation" {
+    style.font-color: "#3367d6"
+  }
+  l4: "PURPLE = concurrency / metadata / control" {
+    style.font-color: "#8e44ad"
+  }
+}
+row0.client_zone.browser -> row1.m1_zone.socket_lifecycle: "TCP SYN | connect()"
+row0.client_zone.slow_client -> row1.m1_zone.recv_loop: "1 byte/sec | Slowloris" {
+  style.stroke: "#cc0000"
+  style.stroke-dash: 4
+}
+row1.m1_zone.recv_loop -> row2.m2_zone.parser_api: "char[8192] | raw bytes" {
+  style.stroke: "#3367d6"
+  style.bold: true
+}
+row2.m2_zone.parser_api -> row3.m3_zone.file_server_api: "http_request_t* | parsed" {
+  style.stroke: "#f39c12"
+  style.bold: true
+}
+row3.m3_zone.file_server_api -> row1.m1_zone.recv_loop: "char[] response | send_all()" {
+  style.stroke: "#27ae60"
+  style.bold: true
+}
+row4.m4_zone.thread_pool -> row2.m2_zone.parser_api: "worker thread N | handle()" {
+  style.stroke: "#8e44ad"
+  style.stroke-dash: 3
+}
+row4.m4_zone.thread_pool -> row3.m3_zone.file_server_api: "worker thread N | serve()" {
+  style.stroke: "#8e44ad"
+  style.stroke-dash: 3
+}
+row1.m1_zone.socket_lifecycle -> row4.m4_zone.thread_pool: "client_fd | enqueue()" {
+  style.stroke: "#8e44ad"
+  style.bold: true
+}

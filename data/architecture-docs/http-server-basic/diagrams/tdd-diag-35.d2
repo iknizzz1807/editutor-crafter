@@ -1,0 +1,144 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |'md
+  ## Per-Connection Idle Timeout: select() Mechanism
+  `read_request_with_timeout(fd, buf, 8192, 30)`
+'| {near: top-center}
+
+shape: sequence_diagram
+
+caller: "handle_client_keep_alive()"
+fn: "read_request_with_timeout()"
+kernel: "Kernel / select()"
+client: "TCP Client"
+
+happy: "── HAPPY PATH: Slow-but-active client ──" {
+  caller -> fn: "read_request_with_timeout(client_fd, buf, 8192, 30)"
+  note1: "t = 0s" {
+    shape: text
+    style.italic: true
+  }
+  fn -> kernel: "select(fd+1, {client_fd}, NULL, NULL, {tv_sec=30, tv_usec=0})" {
+    style.stroke: blue
+  }
+  fn -> fn: "BLOCKS — waiting for readability or timeout" {
+    style.stroke-dash: 4
+    style.stroke: gray
+  }
+  note2: "t = 12s — client sends partial headers" {
+    shape: text
+    style.italic: true
+  }
+  client -> kernel: "send() — 50 bytes  (partial headers, no \r\n\r\n yet)" {
+    style.stroke: "#2ca02c"
+    style.animated: true
+  }
+  kernel -> fn: "select() returns 1  (client_fd readable)" {
+    style.stroke: blue
+  }
+  fn -> kernel: "recv(client_fd, buf+0, 8191, 0)" {
+    style.stroke: blue
+  }
+  kernel -> fn: "returns 50  →  total=50  →  strstr(buf, \"\r\n\r\n\") == NULL" {
+    style.stroke: blue
+  }
+  fn -> fn: "loop continues — reconstruct fd_set + fresh timeval {30, 0}" {
+    style.stroke-dash: 4
+    style.stroke: gray
+  }
+  note3: "t = 12.1s — second select() call" {
+    shape: text
+    style.italic: true
+  }
+  fn -> kernel: "select(fd+1, {client_fd}, NULL, NULL, {tv_sec=30, tv_usec=0})" {
+    style.stroke: blue
+  }
+  note4: "t = 15s — client sends remaining headers" {
+    shape: text
+    style.italic: true
+  }
+  client -> kernel: "send() — 200 bytes  (completes headers + \r\n\r\n)" {
+    style.stroke: "#2ca02c"
+    style.animated: true
+  }
+  kernel -> fn: "select() returns 1  (client_fd readable)" {
+    style.stroke: blue
+  }
+  fn -> kernel: "recv(client_fd, buf+50, 8141, 0)" {
+    style.stroke: blue
+  }
+  kernel -> fn: "returns 200  →  total=250  →  strstr finds \"\r\n\r\n\" ✓" {
+    style.stroke: blue
+  }
+  fn -> caller: "return 250  (success — complete headers in buf)" {
+    style.stroke: "#2ca02c"
+    style.bold: true
+  }
+}
+
+timeout_path: "── TIMEOUT PATH: Idle client (sends nothing) ──" {
+  caller -> fn: "read_request_with_timeout(client_fd, buf, 8192, 30)" {
+    style.stroke: red
+  }
+  t0: "t = 0s" {
+    shape: text
+    style.italic: true
+  }
+  fn -> kernel: "select(fd+1, {client_fd}, NULL, NULL, {tv_sec=30, tv_usec=0})" {
+    style.stroke: red
+  }
+  idle_note: "Client sends nothing — Slowloris / idle browser tab" {
+    shape: text
+    style.italic: true
+    style.font-color: red
+  }
+  fn -> fn: "BLOCKS for 30 seconds..." {
+    style.stroke-dash: 6
+    style.stroke: red
+    style.animated: true
+  }
+  t30: "t = 30s — timeout expires" {
+    shape: text
+    style.italic: true
+  }
+  kernel -> fn: "select() returns 0  (timeout — no FDs became readable)" {
+    style.stroke: red
+    style.bold: true
+  }
+  fn -> caller: "return -1  (timeout)" {
+    style.stroke: red
+    style.bold: true
+  }
+  caller -> caller: "break keep-alive loop" {
+    style.stroke: red
+    style.stroke-dash: 3
+  }
+  caller -> caller: "close(client_fd)  ← worker thread now free" {
+    style.stroke: red
+    style.bold: true
+  }
+}
+
+alt_note: |'md
+  **SO_RCVTIMEO Alternative**
+  c
+  struct timeval tv = {30, 0};
+  setsockopt(client_fd, SOL_SOCKET,
+             SO_RCVTIMEO, &tv, sizeof(tv));
+  // Now every recv() times out automatically
+  // Returns -1 / errno=EAGAIN on expiry
+  
+
+  **Trade-offs vs select():**
+  | | `select()` | `SO_RCVTIMEO` |
+  |---|---|---|
+  | Portability | POSIX standard | Behaviour varies on some BSDs |
+  | Per-call | Reconstruct fd_set each time | Set once, applies to all recv() |
+  | EINTR reset | Explicit (reconstruct timeval) | May not reset on EINTR |
+  | Clarity | Timeout intent explicit | Implicit on each recv() |
+'| {near: bottom-center}

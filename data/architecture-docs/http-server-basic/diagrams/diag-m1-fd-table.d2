@@ -1,0 +1,131 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Kernel File Descriptor Table: Listening FD vs. Client FD
+  Per-process FD table (default limit: 1024 entries)
+| {near: top-center}
+row_legend: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  fd_table_box: "Per-Process FD Table (pid: server)" {
+    direction: down
+    style.fill: "#EEF2FF"
+    style.stroke: "#6366F1"
+    style.border-radius: 8
+    fd_table: {
+      shape: sql_table
+      label: "struct fdtable (files_struct)"
+      fd0: "fd[0]  | file* | stdin  (terminal)"
+      fd1: "fd[1]  | file* | stdout (terminal)"
+      fd2: "fd[2]  | file* | stderr (terminal)"
+      fd3: "fd[3]  | file* | SERVER SOCKET — port 8080 (LISTEN)"
+      fd4: "fd[4]  | file* | CLIENT SOCKET — 127.0.0.1:54321 (ESTAB)"
+      fd5_dots: "fd[5]  | file* | (next accept() → fd[5])"
+      fd_dots: "...    | ...   | ..."
+      fd1023: "fd[1023]| file* | (last slot — EMFILE if all full)"
+      sz: "Total slots: 1024  |  Used: 5  |  Free: 1019"
+    }
+  }
+  kernel_socket_table: "Kernel Socket Object Table (inode + sock)" {
+    direction: down
+    style.fill: "#FFF7ED"
+    style.stroke: "#F97316"
+    style.border-radius: 8
+    listen_sock: {
+      shape: sql_table
+      label: "struct socket — LISTEN (sock.h)"
+      s0:  "state        | SS_CONNECTED  | TCP_LISTEN"
+      s1:  "sk_refcnt    | atomic_t      | 1"
+      s2:  "sk_rcv_buf   | int           | 87380 bytes"
+      s3:  "sk_snd_buf   | int           | 131072 bytes"
+      s4:  "local_port   | __be16        | htons(8080)"
+      s5:  "local_addr   | __be32        | INADDR_ANY (0.0.0.0)"
+      s6:  "accept_queue | request_sock* | backlog depth"
+      s7:  "ops          | proto_ops*    | inet_stream_ops"
+      sz:  "NOTE: never recv() or send() on this socket"
+    }
+    client_sock: {
+      shape: sql_table
+      label: "struct socket — ESTABLISHED (sock.h)"
+      c0:  "state        | SS_CONNECTED  | TCP_ESTABLISHED"
+      c1:  "sk_refcnt    | atomic_t      | 1  ← LEAK if close() skipped"
+      c2:  "sk_rcv_buf   | int           | 87380 bytes (recv buffer)"
+      c3:  "sk_snd_buf   | int           | 131072 bytes (send buffer)"
+      c4:  "local_port   | __be16        | htons(8080)"
+      c5:  "local_addr   | __be32        | 127.0.0.1"
+      c6:  "peer_port    | __be16        | htons(54321)"
+      c7:  "peer_addr    | __be32        | 127.0.0.1 (client)"
+      c8:  "sk_state     | int           | TCP_ESTABLISHED"
+      sz:  "read/write via recv()/send() — MUST close() after use"
+    }
+  }
+}
+leak_warn: "FD Leak: What Happens When close(client_fd) Is Skipped" {
+  direction: down
+  style.fill: "#FEF2F2"
+  style.stroke: "#EF4444"
+  style.border-radius: 8
+  leak_table: {
+    shape: sql_table
+    label: "Leak Consequence Chain (per missed close)"
+    l1: "Step 1  | fd[N] stays allocated         | FD slot never freed"
+    l2: "Step 2  | sk_refcnt stays at 1          | kernel socket not destroyed"
+    l3: "Step 3  | TCP FIN never sent            | peer waits in CLOSE_WAIT"
+    l4: "Step 4  | recv buf (87KB) not freed     | kernel memory slowly consumed"
+    l5: "Step 5  | after ~1019 conns             | accept() → EMFILE (errno 24)"
+    l6: "Step 6  | EMFILE: no new accepts        | server effectively dead"
+    l7: "Detect  | ls /proc/PID/fd | wc -l       | count rises, never falls"
+    sz: "Fix: close(client_fd) on EVERY exit path in handle_client()"
+  }
+}
+fd_limit_box: "ulimit -n: FD Limit Architecture" {
+  direction: right
+  style.fill: "#F0FDF4"
+  style.stroke: "#22C55E"
+  style.border-radius: 8
+  limits: {
+    shape: sql_table
+    label: "Linux FD Limit Layers"
+    r1: "per-process soft  | ulimit -n           | default 1024"
+    r2: "per-process hard  | /proc/sys/fs/nr_open| 1048576"
+    r3: "system-wide       | /proc/sys/fs/file-max| ~9 million"
+    r4: "reserved by proc  | fd[0] fd[1] fd[2]  | stdin/stdout/stderr"
+    r5: "server_fd usage   | fd[3]               | 1 slot always"
+    r6: "available clients | 1024 - 4            | 1020 concurrent"
+    r7: "nginx production  | worker_rlimit_nofile | 65535"
+    sz: "Raise with: setrlimit(RLIMIT_NOFILE) or ulimit -n 65535"
+  }
+  fd_visual: "FD Slot Usage (1024 total)" {
+    shape: sql_table
+    label: "Slot Map (default process)"
+    v1: "0–2   | 3 slots  | stdin / stdout / stderr   [SYSTEM]"
+    v2: "3     | 1 slot   | server_fd LISTEN :8080    [HOT-PATH]"
+    v3: "4–N   | N-3 slots| client_fds (must close)   [MANAGED]"
+    v4: "1023  | 1 slot   | last available slot"
+    v5: "1024  | EMFILE   | accept() fails here"
+    sz: "Each client_fd = 1 slot; leak 1020 → server dead"
+  }
+}
+row_legend.fd_table_box.fd_table.fd3 -> kernel_socket_table.listen_sock: "file* → socket" {
+  style.stroke: "#7C3AED"
+  style.stroke-width: 2
+}
+row_legend.fd_table_box.fd_table.fd4 -> kernel_socket_table.client_sock: "file* → socket" {
+  style.stroke: "#DC2626"
+  style.stroke-width: 2
+}
+row_legend -> leak_warn: "missed close(client_fd)" {
+  style.stroke: "#EF4444"
+  style.stroke-dash: 4
+}
+leak_warn -> fd_limit_box: "after 1020 leaks → EMFILE" {
+  style.stroke: "#F97316"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+}

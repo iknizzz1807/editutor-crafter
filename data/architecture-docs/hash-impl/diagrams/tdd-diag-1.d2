@@ -1,0 +1,251 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+direction: right
+title: |md
+  ## Module Architecture: sha256_padded_t and Public Interface
+  **Milestone 1 — Message Preprocessing and Padding**
+| {near: top-center}
+# ── Constants ────────────────────────────────────────────────────────────
+constants: "Constants (sha256_pad.h)" {
+  style.fill: "#f3e8ff"
+  style.stroke: "#7c3aed"
+  style.border-radius: 6
+  block_size: "SHA256_BLOCK_SIZE = 64u\n(512 bits per block)" {
+    style.fill: "#ede9fe"
+    style.stroke: "#7c3aed"
+    style.font: mono
+  }
+  digest_size: "SHA256_DIGEST_SIZE = 32u\n(256-bit output)" {
+    style.fill: "#ede9fe"
+    style.stroke: "#7c3aed"
+    style.font: mono
+  }
+  max_msg: "SHA256_MAX_MESSAGE_BYTES\n= 1u << 20  (1 MiB ceiling)" {
+    style.fill: "#ede9fe"
+    style.stroke: "#7c3aed"
+    style.font: mono
+  }
+  max_blocks: "SHA256_MAX_PADDED_BLOCKS\n= 16386u" {
+    style.fill: "#ede9fe"
+    style.stroke: "#7c3aed"
+    style.font: mono
+  }
+}
+# ── Primary Output Struct ─────────────────────────────────────────────────
+padded_t: "sha256_padded_t  ·  sizeof ≈ 1 MiB + 8 bytes" {
+  style.fill: "#dbeafe"
+  style.stroke: "#1d4ed8"
+  style.border-radius: 6
+  style.bold: true
+  field_data: |md
+    **data[]**
+    `uint8_t  data[SHA256_MAX_PADDED_BLOCKS * SHA256_BLOCK_SIZE]`
+    flat byte buffer — caller-allocated, no heap
+    layout: `[msg bytes][0x80][0x00 fill][64-bit BE length]`
+    valid range: `data[0 .. num_blocks*64 - 1]`
+  | {
+    style.fill: "#bfdbfe"
+    style.stroke: "#1d4ed8"
+    style.border-radius: 4
+  }
+  field_num: |md
+    **num_blocks**
+    `size_t  num_blocks`
+    count of 64-byte blocks in data[]
+    range: `[1, SHA256_MAX_PADDED_BLOCKS]`
+    set by `sha256_pad()`; read by compression loop
+  | {
+    style.fill: "#bfdbfe"
+    style.stroke: "#1d4ed8"
+    style.border-radius: 4
+  }
+  invariants: |md
+    **Post-call invariants**
+    1. `num_blocks ≥ 1`
+    2. `(num_blocks × 64) % 64 == 0`
+    3. `data[len] == 0x80`  (single marker byte)
+    4. bytes between marker and length field are `0x00`
+    5. `data[num_blocks*64-8 .. -1]` = big-endian `len×8`
+  | {
+    style.fill: "#eff6ff"
+    style.stroke: "#3b82f6"
+    style.border-radius: 4
+    style.italic: true
+  }
+}
+# ── Internal Helper ────────────────────────────────────────────────────────
+write_be64: "write_be64()  [static — internal only]" {
+  style.fill: "#d1fae5"
+  style.stroke: "#065f46"
+  style.border-radius: 6
+  sig: |md
+    **Signature**
+    `static void write_be64(uint8_t *buf, uint64_t val)`
+    **Purpose**
+    writes `val` to `buf[0..7]` in big-endian byte order
+    using explicit shift-and-mask — NOT `memcpy`
+    **Why NOT memcpy**
+    on x86 (little-endian) `memcpy` of `uint64_t` reverses bytes;
+    `0x0000000000000018` → `18 00 00 00 00 00 00 00` (wrong)
+    explicit shifts produce `00 00 00 00 00 00 00 18` (correct)
+    **Implementation**
+    `buf[0] = val >> 56;  buf[1] = val >> 48;`
+    `buf[2] = val >> 40;  buf[3] = val >> 32;`
+    `buf[4] = val >> 24;  buf[5] = val >> 16;`
+    `buf[6] = val >>  8;  buf[7] = val >>  0;`
+  | {
+    style.fill: "#a7f3d0"
+    style.stroke: "#065f46"
+    style.border-radius: 4
+  }
+}
+# ── Public Function: sha256_pad ───────────────────────────────────────────
+sha256_pad_fn: "sha256_pad()  [public]" {
+  style.fill: "#fef3c7"
+  style.stroke: "#92400e"
+  style.border-radius: 6
+  style.bold: true
+  sig: |md
+    **Signature**
+    `int sha256_pad(`
+    `    const uint8_t *msg,`
+    `    size_t         len,`
+    `    sha256_padded_t *out)`
+    **Returns**  `0` = success · `-1` = len > MAX
+    **Parameters**
+    `msg` — caller owns; read-only; NULL iff len==0
+    `len` — message length in bytes; [0, SHA256_MAX_MESSAGE_BYTES]
+    `out` — caller allocates; callee fills; must not be NULL
+  | {
+    style.fill: "#fde68a"
+    style.stroke: "#92400e"
+    style.border-radius: 4
+  }
+  implementation_steps: |md
+    **Algorithm (FIPS 180-4 §5.1.1)**
+    1. Bounds-check: `len > MAX` → return -1
+    2. `memset(out, 0, sizeof(*out))`  (zero-fill → implicit 0x00 padding)
+    3. `memcpy(out->data, msg, len)`  (copy message)
+    4. `out->data[len] = 0x80`  (marker byte)
+    5. `used = len + 1`
+       `total = ((used + 8 + 63) / 64) * 64`
+    6. `write_be64(out->data + total - 8, (uint64_t)len * 8)`
+    7. `out->num_blocks = total / 64`
+    8. return 0
+  | {
+    style.fill: "#fffbeb"
+    style.stroke: "#b45309"
+    style.border-radius: 4
+  }
+}
+# ── Public Function: sha256_get_block ─────────────────────────────────────
+sha256_get_block_fn: "sha256_get_block()  [public]" {
+  style.fill: "#fef3c7"
+  style.stroke: "#92400e"
+  style.border-radius: 6
+  style.bold: true
+  sig: |md
+    **Signature**
+    `const uint8_t *sha256_get_block(`
+    `    const sha256_padded_t *padded,`
+    `    size_t                 block_index)`
+    **Returns**  pointer to `padded->data[block_index × 64]`
+    pointer valid until `padded` goes out of scope
+    **Precondition**  `block_index < padded->num_blocks`
+    (caller must bounds-check; no runtime guard)
+    **Implementation**
+    `return padded->data + (block_index * SHA256_BLOCK_SIZE);`
+    single pointer addition — O(1), no copy
+  | {
+    style.fill: "#fde68a"
+    style.stroke: "#92400e"
+    style.border-radius: 4
+  }
+}
+# ── Caller Context ─────────────────────────────────────────────────────────
+caller: "Caller" {
+  style.fill: "#f1f5f9"
+  style.stroke: "#64748b"
+  style.border-radius: 6
+  alloc: |md
+    **Responsibilities**
+    • allocate `sha256_padded_t` (stack or heap)
+    • provide valid `msg` pointer (or NULL for empty)
+    • check return code of `sha256_pad()`
+    • bounds-check `block_index` before `sha256_get_block()`
+    • iterate `i = 0 .. num_blocks-1` in compression loop
+  | {
+    style.fill: "#e2e8f0"
+    style.stroke: "#94a3b8"
+    style.border-radius: 4
+  }
+}
+# ── Downstream Consumer ────────────────────────────────────────────────────
+downstream: "Downstream: sha256_message_schedule() [M2]" {
+  style.fill: "#f0fdf4"
+  style.stroke: "#166534"
+  style.border-radius: 6
+  note: |md
+    receives `const uint8_t *block` (64 bytes)
+    from `sha256_get_block()` return value
+    reads bytes as big-endian 32-bit words W[0..15]
+    then expands to W[16..63] via σ0/σ1 recurrence
+  | {
+    style.fill: "#dcfce7"
+    style.stroke: "#166534"
+    style.border-radius: 4
+  }
+}
+# ── Connections ────────────────────────────────────────────────────────────
+caller -> sha256_pad_fn: "sha256_pad(msg, len, &out)\nreturns: int (0 or -1)" {
+  style.stroke: "#92400e"
+  style.stroke-width: 2
+}
+sha256_pad_fn -> write_be64: "internal call\nwrite_be64(out->data+total-8, len*8)" {
+  style.stroke: "#065f46"
+  style.stroke-dash: 4
+}
+sha256_pad_fn -> padded_t: "fills out->data[]\nsets out->num_blocks\n[callee writes, caller owns]" {
+  style.stroke: "#1d4ed8"
+  style.stroke-width: 2
+}
+caller -> sha256_get_block_fn: "sha256_get_block(&out, i)\nfor i in [0, num_blocks)" {
+  style.stroke: "#92400e"
+  style.stroke-width: 2
+}
+padded_t -> sha256_get_block_fn: "padded->data + i×64\n[read-only pointer into out->data]" {
+  style.stroke: "#1d4ed8"
+  style.stroke-dash: 3
+}
+sha256_get_block_fn -> downstream: "const uint8_t *block (64 bytes)\n[borrow: valid while padded_t alive]" {
+  style.stroke: "#166534"
+  style.stroke-width: 2
+}
+constants -> sha256_pad_fn: "SHA256_BLOCK_SIZE\nSHA256_MAX_MESSAGE_BYTES\nSHA256_MAX_PADDED_BLOCKS" {
+  style.stroke: "#7c3aed"
+  style.stroke-dash: 3
+  style.font-size: 11
+}
+# ── Ownership Legend ──────────────────────────────────────────────────────
+legend: "Ownership Legend" {
+  near: bottom-right
+  style.fill: "#f8fafc"
+  style.stroke: "#94a3b8"
+  style.border-radius: 6
+  items: |md
+    **Solid arrow** → writes / fills (callee responsibility)
+    **Dashed arrow** → reads / borrows (read-only access)
+    **Yellow boxes** → public API functions
+    **Blue box** → primary data structure (caller-owned)
+    **Green box** → internal helper (static linkage)
+    **Purple box** → constants (#define, compile-time)
+  | {
+    style.fill: "#f8fafc"
+    style.stroke: "#94a3b8"
+    style.font-size: 12
+  }
+}

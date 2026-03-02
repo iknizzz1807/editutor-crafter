@@ -1,0 +1,284 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: "Thread Pool Data Structures: Work Queue & Synchronization (thread_pool.h)" {
+  near: top-center
+  style.font-size: 18
+  style.bold: true
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  thread_pool_struct: {
+    shape: sql_table
+    label: "struct thread_pool_t (thread_pool.h)"
+    style.fill: "#dbeafe"
+    style.stroke: "#2563eb"
+    f00: "0x000 | work_item_t[1024] | queue          // circular buffer"
+    f01: "0x11C0 | int               | head           // next dequeue index"
+    f02: "0x11C4 | int               | tail           // next enqueue index"
+    f03: "0x11C8 | int               | count          // items in queue"
+    f04: "0x11CC | int               | _pad0          // align to 8B"
+    f05: "0x11D0 | pthread_mutex_t   | lock           // protects all fields"
+    f06: "0x11F8 | pthread_cond_t    | not_empty      // signaled on enqueue"
+    f07: "0x1240 | pthread_cond_t    | not_full       // signaled on dequeue"
+    f08: "0x1288 | atomic_int        | shutdown       // 1 = drain and exit"
+    f09: "0x128C | int               | thread_count"
+    f10: "0x1290 | pthread_t[64]     | threads"
+    sz:  "Total: ~0x1490 bytes (~5.2 KB)"
+  }
+  work_item_struct: {
+    shape: sql_table
+    label: "struct work_item_t (thread_pool.h)"
+    style.fill: "#dcfce7"
+    style.stroke: "#16a34a"
+    g00: "0x00 | int                | client_fd"
+    g01: "0x04 | int                | client_port"
+    g02: "0x08 | char[16]           | client_ip      // INET_ADDRSTRLEN"
+    sz:  "Total: 24 bytes (fits in 1 cache line)"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  sync_box: "Sync Primitives — Cache-Line Layout" {
+    direction: down
+    style.fill: "#fef9c3"
+    style.stroke: "#ca8a04"
+    cl0: {
+      shape: sql_table
+      label: "Cache Line 0 — 0x11D0..0x120F (64 bytes)"
+      style.fill: "#fef08a"
+      style.stroke: "#a16207"
+      c0r0: "0x11D0+0x00 | uint32_t[10] | mutex.__data (lock state, owner, waiters)"
+      c0r1: "            | ... pthread_mutex_t internals (40 bytes total)          "
+      c0r2: "0x11F8+0x00 | uint32_t[8]  | not_empty.__data (first 24 bytes)        "
+      note: "mutex + start of not_empty = HOT FIELD: lock/unlock touches here"
+    }
+    cl1: {
+      shape: sql_table
+      label: "Cache Line 1 — 0x1210..0x124F (64 bytes)"
+      style.fill: "#fde68a"
+      style.stroke: "#a16207"
+      c1r0: "0x1210 | uint32_t[...]  | not_empty.__data (remaining bytes)"
+      c1r1: "0x1240 | uint32_t[8]   | not_full.__data  (first bytes)    "
+      note: "not_empty tail + not_full head share this line"
+    }
+    cl2: {
+      shape: sql_table
+      label: "Cache Line 2 — 0x1250..0x128F (64 bytes)"
+      style.fill: "#fde68a"
+      style.stroke: "#a16207"
+      c2r0: "0x1250 | uint32_t[...] | not_full.__data (remaining bytes)"
+      c2r1: "0x1288 | atomic_int    | shutdown"
+      c2r2: "0x128C | int           | thread_count"
+      note: "shutdown flag: written by main, polled by workers"
+    }
+    legend_cl: {
+      shape: sql_table
+      label: "Cache-Line Semantics"
+      style.fill: "#fffbeb"
+      style.stroke: "#d97706"
+      l0: "RED  path  → lock/unlock   touches CL0 (mutex state)"
+      l1: "GREEN path → enqueue signal touches CL0+CL1 (not_empty)"
+      l2: "BLUE  path → dequeue signal touches CL1+CL2 (not_full)"
+      l3: "Goal: mutex+not_empty hot together; shutdown on separate line"
+    }
+  }
+  circular_buf: "Circular Buffer Mechanics (queue[])" {
+    direction: down
+    style.fill: "#f3e8ff"
+    style.stroke: "#7c3aed"
+    cb_state: {
+      shape: sql_table
+      label: "Ring Buffer State: N=1024 slots"
+      style.fill: "#ede9fe"
+      style.stroke: "#6d28d9"
+      s0: "head = 3   → next item to dequeue (consumer reads here)"
+      s1: "tail = 7   → next slot to fill   (producer writes here)"
+      s2: "count = 4  → items currently in buffer"
+      s3: "FULL  when count == 1024  → producer blocks / 503"
+      s4: "EMPTY when count == 0     → consumer blocks"
+    }
+    cb_ops: {
+      shape: sql_table
+      label: "O(1) Enqueue / Dequeue"
+      style.fill: "#ede9fe"
+      style.stroke: "#6d28d9"
+      op0: "enqueue: queue[tail] = item; tail=(tail+1)%N; count++"
+      op1: "dequeue: item=queue[head]; head=(head+1)%N; count--"
+      op2: "no memmove() — indices wrap via modulo"
+      op3: "both ops hold lock for <100 ns"
+    }
+    cb_capacity: {
+      shape: sql_table
+      label: "Memory Footprint"
+      style.fill: "#ede9fe"
+      style.stroke: "#6d28d9"
+      m0: "1024 slots × 24 bytes = 24 576 bytes (24 KB)"
+      m1: "fits in L2 cache (256 KB typical)"
+      m2: "producer at tail, consumer at head = no false sharing"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  producer_flow: "Producer (main thread) — Enqueue Path" {
+    direction: down
+    style.fill: "#fff1f2"
+    style.stroke: "#e11d48"
+    p_step1: {
+      label: "P1: accept() returns client_fd"
+      style.fill: "#fce7f3"
+      style.stroke: "#db2777"
+    }
+    p_step2: {
+      label: "P2: pthread_mutex_lock(lock)"
+      style.fill: "#fce7f3"
+      style.stroke: "#db2777"
+    }
+    p_step3: {
+      label: "P3: if count==N → unlock → send 503 → close(client_fd)"
+      style.fill: "#fee2e2"
+      style.stroke: "#dc2626"
+    }
+    p_step4: {
+      label: "P4: queue[tail]=item; tail=(tail+1)%N; count++"
+      style.fill: "#fce7f3"
+      style.stroke: "#db2777"
+    }
+    p_step5: {
+      label: "P5: pthread_cond_signal(not_empty)"
+      style.fill: "#fce7f3"
+      style.stroke: "#db2777"
+    }
+    p_step6: {
+      label: "P6: pthread_mutex_unlock(lock)"
+      style.fill: "#fce7f3"
+      style.stroke: "#db2777"
+    }
+    p_step1 -> p_step2: "fd ready"
+    p_step2 -> p_step3: "locked"
+    p_step3 -> p_step4: "space available"
+    p_step4 -> p_step5: "item stored"
+    p_step5 -> p_step6: "worker woken"
+  }
+  consumer_flow: "Consumer (worker thread) — Dequeue Path" {
+    direction: down
+    style.fill: "#eff6ff"
+    style.stroke: "#1d4ed8"
+    c_step1: {
+      label: "C1: pthread_mutex_lock(lock)"
+      style.fill: "#dbeafe"
+      style.stroke: "#1d4ed8"
+    }
+    c_step2: {
+      label: "C2: while(count==0 && !shutdown)"
+      style.fill: "#dbeafe"
+      style.stroke: "#1d4ed8"
+    }
+    c_step3: {
+      label: "C3:   pthread_cond_wait(not_empty, lock)"
+      style.fill: "#bfdbfe"
+      style.stroke: "#2563eb"
+      style.italic: true
+    }
+    c_step4: {
+      label: "C4: if(shutdown && count==0) → return NULL"
+      style.fill: "#fee2e2"
+      style.stroke: "#dc2626"
+    }
+    c_step5: {
+      label: "C5: item=queue[head]; head=(head+1)%N; count--"
+      style.fill: "#dbeafe"
+      style.stroke: "#1d4ed8"
+    }
+    c_step6: {
+      label: "C6: pthread_cond_signal(not_full)"
+      style.fill: "#dbeafe"
+      style.stroke: "#1d4ed8"
+    }
+    c_step7: {
+      label: "C7: pthread_mutex_unlock(lock)"
+      style.fill: "#dbeafe"
+      style.stroke: "#1d4ed8"
+    }
+    c_step8: {
+      label: "C8: handle_client_keep_alive(item.client_fd)  ← NO LOCK"
+      style.fill: "#bbf7d0"
+      style.stroke: "#15803d"
+      style.bold: true
+    }
+    c_step9: {
+      label: "C9: close(item.client_fd)"
+      style.fill: "#dbeafe"
+      style.stroke: "#1d4ed8"
+    }
+    c_step1 -> c_step2: "locked"
+    c_step2 -> c_step3: "empty"
+    c_step3 -> c_step2: "spurious wakeup"
+    c_step2 -> c_step4: "signaled or shutdown"
+    c_step4 -> c_step5: "item exists"
+    c_step5 -> c_step6: "slot freed"
+    c_step6 -> c_step7: "producer woken"
+    c_step7 -> c_step8: "unlocked"
+    c_step8 -> c_step9: "request done"
+  }
+  shutdown_flow: "Shutdown Sequence (main thread → workers)" {
+    direction: down
+    style.fill: "#fff7ed"
+    style.stroke: "#c2410c"
+    sh1: {
+      label: "SH1: atomic_store(shutdown, 1)"
+      style.fill: "#ffedd5"
+      style.stroke: "#c2410c"
+    }
+    sh2: {
+      label: "SH2: pthread_mutex_lock(lock)"
+      style.fill: "#ffedd5"
+      style.stroke: "#c2410c"
+    }
+    sh3: {
+      label: "SH3: pthread_cond_broadcast(not_empty)"
+      style.fill: "#fed7aa"
+      style.stroke: "#ea580c"
+      style.bold: true
+    }
+    sh4: {
+      label: "SH4: pthread_mutex_unlock(lock)"
+      style.fill: "#ffedd5"
+      style.stroke: "#c2410c"
+    }
+    sh5: {
+      label: "SH5: pthread_join(threads[i]) × N"
+      style.fill: "#ffedd5"
+      style.stroke: "#c2410c"
+    }
+    sh6: {
+      label: "SH6: pthread_mutex_destroy + cond_destroy"
+      style.fill: "#dcfce7"
+      style.stroke: "#15803d"
+    }
+    sh1 -> sh2
+    sh2 -> sh3: "broadcast not signal"
+    sh3 -> sh4: "all workers wake"
+    sh4 -> sh5: "wait for drain"
+    sh5 -> sh6: "all joined"
+  }
+}
+row1.thread_pool_struct -> row1.work_item_struct: "queue[] element type"
+row1.thread_pool_struct -> row2.sync_box: "sync fields at 0x11D0"
+row1.thread_pool_struct -> row2.circular_buf: "queue[] at 0x000"
+row2.sync_box -> row3.producer_flow: "lock / not_empty"
+row2.sync_box -> row3.consumer_flow: "lock / not_empty / not_full"
+row2.sync_box -> row3.shutdown_flow: "broadcast on shutdown"
+row3.producer_flow -> row3.consumer_flow: "pthread_cond_signal(not_empty)"
+row3.consumer_flow -> row3.producer_flow: "pthread_cond_signal(not_full)"

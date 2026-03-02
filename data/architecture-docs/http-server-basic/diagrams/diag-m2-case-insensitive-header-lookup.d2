@@ -1,0 +1,140 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: "Case-Insensitive Header Normalization: Before vs After (http_parse.c)" {
+  shape: rectangle
+  style.fill: "#E8EAF6"
+  style.stroke: "#5C6BC0"
+  style.bold: true
+  style.font-size: 15
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  before: "BEFORE: Wire Format (raw recv() buffer)" {
+    direction: down
+    style.fill: "#FFEBEE"
+    style.stroke: "#E53935"
+    wire_note: {
+      shape: sql_table
+      label: "http_header_t (raw — NOT stored)"
+      r1: "Client A sends  | Content-Type: text/html"
+      r2: "Client B sends  | CONTENT-TYPE: text/html"
+      r3: "Client C sends  | content-type: text/html"
+      r4: "Client D sends  | Content-type: text/html"
+      r5: "RFC 7230 §3.2  | all four are the SAME header"
+    }
+    naive_lookup: {
+      shape: class
+      label: "Naive strcmp() Lookup — BROKEN"
+      style.fill: "#FFCDD2"
+      style.stroke: "#C62828"
+      get_header_bad(req, name): "const char*"
+      note1: "strcmp(headers[i].name, name) == 0"
+      note2: "Content-Type != CONTENT-TYPE → MISS"
+      note3: "content-type != Content-Type → MISS"
+      note4: "Cost per lookup: O(n * k) compares"
+    }
+    miss_box: {
+      label: "Result: 3 of 4 variants MISSED" {
+        style.bold: true
+        style.font-color: "#B71C1C"
+      }
+      style.fill: "#FFCDD2"
+      style.stroke: "#E53935"
+      style.border-radius: 6
+    }
+    wire_note -> naive_lookup: "strcmp()"
+    naive_lookup -> miss_box: "wrong"  {
+      style.stroke: red
+      style.stroke-dash: 4
+    }
+  }
+  after: "AFTER: Normalized Storage (http_request_t)" {
+    direction: down
+    style.fill: "#E8F5E9"
+    style.stroke: "#43A047"
+    normalize_fn: {
+      shape: sql_table
+      label: "tolower() loop in parse_headers() — O(name_len) once"
+      r1: "Input    | Content-Type  (wire bytes)"
+      r2: "Loop     | for i in 0..name_len: name[i] = tolower(name[i])"
+      r3: "Output   | content-type  (stored in http_header_t.name)"
+      r4: "Input    | CONTENT-TYPE"
+      r5: "Output   | content-type  (identical stored form)"
+      r6: "Cost     | O(n) at parse time, paid ONCE per request"
+    }
+    stored_headers: {
+      shape: sql_table
+      label: "http_header_t headers[32] — after normalization"
+      r0: "index | .name (char[128])  | .value (char[1024])"
+      r1: "  0   | content-type       | text/html; charset=utf-8"
+      r2: "  1   | host               | localhost:8080"
+      r3: "  2   | accept             | */*"
+      r4: "  3   | user-agent         | curl/7.88.1"
+      r5: "  4   | content-length     | 42"
+      rn: "  ... | (all lowercase)    | ..."
+    }
+    good_lookup: {
+      shape: class
+      label: "Correct strcmp() Lookup — FAST"
+      style.fill: "#C8E6C9"
+      style.stroke: "#2E7D32"
+      get_header(req, name): "const char*"
+      note1: "name arg must be lowercase constant"
+      note2: "strcmp(headers[i].name, \"content-type\")"
+      note3: "All variants stored identically"
+      note4: "Cost: O(n) scan, n <= 32 entries"
+    }
+    hit_box: {
+      label: "Result: ALL 4 variants HIT — 1 code path" {
+        style.bold: true
+        style.font-color: "#1B5E20"
+      }
+      style.fill: "#C8E6C9"
+      style.stroke: "#43A047"
+      style.border-radius: 6
+    }
+    normalize_fn -> stored_headers: "write once"
+    stored_headers -> good_lookup: "strcmp()"
+    good_lookup -> hit_box: "correct" {
+      style.stroke: green
+    }
+  }
+}
+lookup_api: {
+  shape: sql_table
+  label: "get_header() — caller contract (http_parse.h)"
+  r1: "const char* get_header(const http_request_t *req, const char *name)"
+  r2: "name arg    | must be lowercase: \"content-type\", \"host\", \"accept\""
+  r3: "comparison  | strcmp() — exact match after normalization"
+  r4: "not found   | returns NULL"
+  r5: "example A   | get_header(req, \"content-length\") → \"42\""
+  r6: "example B   | get_header(req, \"host\")           → \"localhost:8080\""
+}
+complexity: {
+  shape: sql_table
+  label: "Complexity Analysis: Normalize-Once vs. Normalize-Per-Lookup"
+  r0: "Strategy               | Parse Cost       | Per-Lookup Cost    | Total (k lookups)"
+  r1: "Normalize at parse     | O(H * N)         | O(N) strcmp scan   | O(H*N + k*N)"
+  r2: "strcasecmp per lookup  | O(0)             | O(N * name_len)    | O(k * N * name_len)"
+  r3: "Hash map (case-insens) | O(H * N) + alloc | O(1) amortized     | O(H*N + k)"
+  r4: "H = header count <= 32 | N = name_len <= 127 | k = num lookups per request (typically 3-8)"
+  r5: "WINNER for N<=32       | normalize-once   | cache-hot 32-entry scan wins vs. hash overhead"
+}
+title -> row1: "" {
+  style.stroke: transparent
+}
+row1.before -> lookup_api: "defines API contract" {
+  style.stroke-dash: 4
+  style.stroke: "#9E9E9E"
+}
+row1.after -> lookup_api: "implements correctly" {
+  style.stroke: "#43A047"
+}
+lookup_api -> complexity: "governs"

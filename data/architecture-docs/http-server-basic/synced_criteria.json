@@ -1,0 +1,170 @@
+[
+  {
+    "milestone_id": "http-server-basic-m1",
+    "criteria": [
+      "Server creates a TCP socket with socket(AF_INET, SOCK_STREAM, 0) and checks the return value for -1",
+      "SO_REUSEADDR socket option is set on the server socket before bind() to allow immediate restart without TIME_WAIT delay",
+      "Server binds to a configurable port (default 8080) using bind() with htons() applied to the port number in struct sockaddr_in",
+      "listen() is called with a backlog of at least 128 to queue incoming connections",
+      "Server runs an infinite accept loop; accept() errors log and continue without terminating the server process",
+      "Each accepted client_fd is closed with close() after the response is fully sent, with no FD leaks across sequential connections",
+      "Request reading uses a recv() loop that accumulates bytes into a fixed 8192-byte buffer and continues until the \\r\\n\\r\\n end-of-headers delimiter is found",
+      "recv() returning 0 (client orderly shutdown) is handled as a non-crash condition that terminates the current request gracefully",
+      "Buffer size limit is enforced: reading stops and the connection is dropped if 8191 bytes are received without finding \\r\\n\\r\\n",
+      "Server sends a hardcoded HTTP/1.1 200 OK response with correct Content-Type, Content-Length (matching actual body byte count), and Connection: close headers, followed by \\r\\n\\r\\n and an HTML body",
+      "Response is sent with a send_all() loop to handle partial writes, using MSG_NOSIGNAL or equivalent to suppress SIGPIPE",
+      "SIGPIPE is handled at startup via signal(SIGPIPE, SIG_IGN) or MSG_NOSIGNAL on all send() calls so that client disconnection during write does not terminate the server process",
+      "Server accepts a port number as an optional command-line argument and falls back to 8080 if none is provided",
+      "curl -v http://localhost:PORT/ returns HTTP/1.1 200 OK with the correct headers and HTML body",
+      "Server survives rapid sequential connections (1000+) without hitting EMFILE (file descriptor leak test)"
+    ]
+  },
+  {
+    "milestone_id": "http-server-basic-m2",
+    "criteria": [
+      "Parse the request line extracting method, path, and HTTP version using memchr()-based scanning that is bounds-safe and does not read past buf_len bytes",
+      "Reject malformed request lines (missing spaces, empty path, unrecognized version string) with a 400 Bad Request response containing a valid HTML body and correct Content-Length",
+      "Enforce a maximum path length of 8192 bytes and return 414 URI Too Long for paths at or exceeding this limit, before any path processing occurs",
+      "Store all header names normalized to lowercase at parse time so that lookups via get_header() use plain strcmp() with lowercase keys",
+      "Strip optional whitespace (spaces and tabs) from both ends of header values before storing them",
+      "Accept both CRLF (\\r\\n) and bare LF (\\n) line terminators and produce identical parse results for both",
+      "Detect and unfold obsolete obs-fold header continuations (lines beginning with space or tab) by appending the continuation to the previous header value with a single space separator",
+      "Return a pointer to the request body (pointing into the raw read buffer) and correctly compute body_len as the number of bytes between the end of the empty header line and the end of the buffer",
+      "Read remaining body bytes from the socket using a recv() loop when Content-Length exceeds bytes already captured in the header buffer",
+      "Extract the Host header value and log it; handle its absence with at minimum a logged warning",
+      "Respond with 501 Not Implemented for any method other than GET and HEAD, with a valid HTML error body",
+      "HEAD responses return the identical set of response headers as GET but with a zero-byte body — the same code path with a send_body flag controls this distinction",
+      "The http_request_t struct is fully initialized (memset to zero) before parsing begins, preventing use of uninitialized fields",
+      "The parse_headers function correctly handles MAX_HEADERS limit by stopping silently when the array is full rather than overflowing",
+      "Header names longer than 127 bytes are rejected or skipped rather than causing a buffer overflow"
+    ]
+  },
+  {
+    "milestone_id": "http-server-basic-m3",
+    "criteria": [
+      "url_decode() is called on req->path before concatenating with the document root; percent-encoded sequences like %2e%2e%2f are decoded to ../  prior to any path operations",
+      "Decoded path is validated to contain no null bytes (\\u0000); a path containing %00 returns 400 Bad Request",
+      "realpath() is called on the concatenated path before the prefix containment check; symlinks inside the document root that point outside it are caught and return 403 Forbidden",
+      "The prefix containment check verifies that canonical[strlen(doc_root)] is either '/' or '\\0', preventing /var/www/html2 from matching /var/www/html",
+      "Directory paths trigger an index.html lookup (appending /index.html to the canonical path); if index.html does not exist, the server returns 403 Forbidden, not 404",
+      "realpath() is re-called after appending /index.html to the directory canonical path, and the containment check is re-run on the result",
+      "403 Forbidden is returned for any path whose canonical form does not begin with the document root, regardless of whether the target file exists — no information about the external filesystem is leaked",
+      "Content-Type is detected from the file extension using a case-insensitive lookup table covering at minimum: .html, .htm, .css, .js, .json, .txt, .xml, .svg, .png, .jpg, .jpeg, .gif, .ico, .pdf",
+      "text/* MIME types include '; charset=utf-8' in the Content-Type header value",
+      "Unknown or missing file extensions produce Content-Type: application/octet-stream",
+      "Content-Length header value exactly equals st.st_size as returned by stat(), cast to long long and formatted with %lld",
+      "Last-Modified header is formatted in RFC 7231 HTTP-date format (e.g., 'Mon, 01 Jan 2024 12:00:00 GMT') using gmtime() for UTC conversion",
+      "Files are read and sent using POSIX open(O_RDONLY) and read() in a loop with a read buffer of at least 4096 bytes; the file descriptor is closed on all exit paths including error paths",
+      "404 Not Found with an HTML error body is returned when realpath() fails with ENOENT or when stat() fails after canonicalization",
+      "403 Forbidden with an HTML error body is returned when realpath() fails with EACCES or ELOOP, or when open() fails with EACCES",
+      "If-Modified-Since header is parsed using strptime() with the RFC 7231 date format and converted to time_t using timegm() (not mktime())",
+      "304 Not Modified is returned when a valid If-Modified-Since timestamp is present and st.st_mtime <= the parsed timestamp (less-than-or-equal, one-second granularity)",
+      "304 Not Modified response includes Content-Type, Content-Length, and Last-Modified headers but no response body",
+      "HEAD requests receive the same headers as GET (including Content-Type, Content-Length, Last-Modified) but no response body",
+      "The server does not crash or leak file descriptors when serving 1000 sequential file requests; open FD count returns to baseline after serving"
+    ]
+  },
+  {
+    "milestone_id": "http-server-basic-m4",
+    "criteria": [
+      "Thread-per-connection model: pthread_create() spawns a detached handler thread for each accepted connection; connection_t is heap-allocated and freed by the thread; pthread_create() errors close the FD without crashing",
+      "Thread pool initialization: thread_pool_init() creates exactly N pthreads (default 16, configurable via command-line argument) that block on pthread_cond_wait() until work arrives",
+      "Work queue: circular buffer of capacity >= 1024 work_item_t entries protected by a single pthread_mutex_t; head/tail indices wrap using modulo arithmetic; count field accurately reflects items in queue",
+      "503 on queue full: when thread_pool_enqueue() finds count == WORK_QUEUE_CAPACITY, it returns -1; caller sends 'HTTP/1.1 503 Service Unavailable' with Retry-After: 1 header and closes the FD without enqueueing",
+      "Worker thread correctness: worker loop uses WHILE (not if) around pthread_cond_wait(); checks shutdown flag after waking; dequeues item and releases mutex BEFORE calling handle_client_keep_alive()",
+      "HTTP/1.1 keep-alive: handle_client_keep_alive() loops on read_request_with_timeout() + serve; loop continues when should_keep_alive() returns 1 (HTTP/1.1 default or explicit Connection: keep-alive); loop exits when Connection: close received, client closes, or timeout fires",
+      "should_keep_alive() logic: returns 0 for HTTP/1.0 without explicit keep-alive header; returns 1 for HTTP/1.1 without explicit close header; explicit Connection header overrides version default for both protocols",
+      "Response Connection header: every response includes Connection: keep-alive or Connection: close matching the actual post-response socket behavior",
+      "MAX_REQUESTS_PER_CONNECTION cap: keep-alive loop exits after serving a configurable maximum (>= 100) requests on a single connection",
+      "Per-connection idle timeout: read_request_with_timeout() calls select() with tv_sec = 30 (configurable) before each recv(); returns -1 when select() returns 0 (timeout); worker closes connection and becomes available for new work",
+      "atomic_int shutdown flag: server_shutdown declared as atomic_int; signal handler sets it with atomic_store(); accept loop checks it with atomic_load(); flag change is visible across threads without data race",
+      "Signal handling: SIGTERM and SIGINT both trigger graceful shutdown; SIGPIPE is ignored process-wide; EINTR from accept() causes continue not break",
+      "Graceful shutdown sequence: accept loop exits when server_shutdown is set; close(server_fd) called before thread_pool_shutdown(); thread_pool_shutdown() sets pool->shutdown=1, calls pthread_cond_broadcast(), then pthread_join() for every worker thread; process exits only after all joins complete",
+      "In-flight request completion: a download in progress at SIGTERM time completes fully (no truncated response) before the process exits",
+      "Shared stats mutex: active_connections and total_connections counters are incremented/decremented under pthread_mutex_lock(); no plain unsynchronized int++ on shared counters",
+      "Access log thread safety: access_log_write() acquires a mutex, calls fprintf() + fflush(), then releases; concurrent log writes from multiple threads produce complete non-interleaved lines",
+      "FD leak test: after 10,000 sequential single-request connections (ab -n 10000 -c 1), /proc/PID/fd count returns to within 5 FDs of baseline",
+      "EMFILE recovery: accept() returning EMFILE or ENFILE triggers usleep(100000) and continue, not exit or break",
+      "pthread_create failure handling: if pthread_create() fails (returns non-zero), client_fd is closed and conn is freed before continuing the accept loop",
+      "Compilation: server compiles with gcc -Wall -Wextra -pthread with zero warnings; links with -lpthread"
+    ]
+  },
+  {
+    "module_id": "http-server-basic-m1",
+    "criteria": [
+      "Server binds to a configurable port (default 8080) and listens for incoming TCP connections",
+      "SO_REUSEADDR is set before bind() so the server can restart within 60 seconds without EADDRINUSE",
+      "htons() is used for the port number in addr.sin_port — server binds to the correct port",
+      "Accept loop handles sequential client connections one at a time without exiting on accept() errors",
+      "accept() returning EINTR uses continue, not break — signal does not kill the accept loop",
+      "accept() returning EMFILE or ENFILE logs and sleeps briefly before retrying — recoverable FD exhaustion handled",
+      "read_request() loops on recv() until \\r\\n\\r\\n is found — partial reads handled correctly at any recv() boundary",
+      "recv() returning 0 (client EOF before headers complete) causes read_request() to return -1 — no null-dereference",
+      "recv() buffer limit (REQUEST_BUF_SIZE - 1) enforced — unbounded reads impossible, null terminator always fits",
+      "buf[total] = '\\0' written after every recv() call before strstr() — no undefined behavior in delimiter search",
+      "Hardcoded HTTP/1.1 200 OK response sent with Content-Type, Content-Length, Connection: close headers",
+      "Content-Length header value (27) matches the body byte count exactly — clients do not hang or truncate",
+      "send_all() loops until all bytes are sent — partial writes handled correctly",
+      "MSG_NOSIGNAL passed to every send() call inside send_all() — SIGPIPE suppressed per call",
+      "signal(SIGPIPE, SIG_IGN) called at startup before any socket operations — process-wide defense in depth",
+      "close(client_fd) called after handle_client() returns on every path including error paths — no FD leaks",
+      "handle_client() never calls close(client_fd) itself — caller (main) owns the close",
+      "FD count returns to baseline after 10,000 sequential connections — zero FD leaks verified",
+      "Server survives 1,000 mid-response client disconnections without crashing — SIGPIPE fully handled",
+      "accept() + recv() + send() + close() round-trip completes in under 1ms on loopback"
+    ]
+  },
+  {
+    "module_id": "http-server-basic-m2",
+    "criteria": [
+      "Parse request line extracting method (GET, HEAD, POST), path, and HTTP version (HTTP/1.1); reject malformed request lines with 400 Bad Request",
+      "Parse headers into key-value pairs, handling optional whitespace around header values and case-insensitive header names per RFC 7230",
+      "Handle both CRLF (\\r\\n) and bare LF (\\n) line endings for robustness",
+      "Extract and log the Host header value (required in HTTP/1.1)",
+      "Read request body based on Content-Length header when present (for future POST support)",
+      "Respond with 501 Not Implemented for methods other than GET and HEAD",
+      "HEAD requests return the same headers as GET but with an empty body",
+      "Respond with 414 URI Too Long for request paths exceeding 8KB"
+    ]
+  },
+  {
+    "module_id": "http-server-basic-m3",
+    "criteria": [
+      "Server maps URL path to filesystem path within a configured document root directory",
+      "Canonicalize the resolved path using realpath() and verify it is still within the document root; reject with 403 Forbidden if path escapes root",
+      "url_decode() applied before path concatenation; percent-encoded traversal sequences such as %2e%2e%2f are decoded then rejected by realpath()+containment check",
+      "Null bytes decoded from %00 in the URL path are rejected with 400 Bad Request before reaching the filesystem",
+      "Detect and set Content-Type header based on file extension using a MIME type map supporting at least .html .css .js .json .png .jpg .gif .svg .txt .pdf",
+      "Send file contents in response body with correct Content-Length header matching st.st_size exactly",
+      "Return 404 Not Found for files that do not exist, with a simple HTML error page",
+      "Return 403 Forbidden for paths that resolve outside the document root; 403 is returned even when the escaped target path does not exist to prevent information leakage",
+      "Support If-Modified-Since header: compare against file modification time using timegm() for UTC correctness and return 304 Not Modified with no body when file is unchanged",
+      "Set Last-Modified header on all 200 file responses using the file modification timestamp formatted as RFC 7231 HTTP-date in UTC",
+      "Serve index.html automatically when path maps to a directory if index.html exists; otherwise return 403",
+      "realpath() is re-run on the index.html path and containment is re-checked to prevent index.html symlinks from escaping the document root",
+      "HEAD requests return the same headers as GET including Content-Type Content-Length and Last-Modified but with an empty body",
+      "304 response includes Content-Type Content-Length and Last-Modified headers but no body",
+      "file_fd opened by serve_file() is closed on every exit path including all error paths",
+      "Binary files are read and sent using POSIX open()+read() with O_RDONLY ensuring no newline translation corrupts binary content",
+      "Unknown file extensions map to application/octet-stream as the default MIME type",
+      "No heap allocation is performed per request; all buffers are stack-allocated"
+    ]
+  },
+  {
+    "module_id": "http-server-basic-m4",
+    "criteria": [
+      "Server binds to a configurable port (default 8080) and accepts concurrent client connections via a bounded thread pool with configurable size (default 16 threads)",
+      "Thread pool implements a circular work queue of 1024 slots with pthread_mutex_t protection and two pthread_cond_t variables (not_empty, not_full); worker threads use while loops around pthread_cond_wait to handle spurious wakeups",
+      "When the work queue is full, the accept loop sends HTTP/1.1 503 Service Unavailable with Connection: close and Retry-After: 1 headers, closes client_fd immediately, and continues accepting",
+      "HTTP/1.1 keep-alive loop handles multiple sequential requests per connection without closing; Connection: close header or HTTP/1.0 default causes server to close after the response",
+      "Per-connection idle timeout of 30 seconds (configurable) implemented via select() with timeval before each recv() call; EINTR retries select() with fresh timeval and checks shutdown flag",
+      "Graceful shutdown on SIGTERM/SIGINT: atomic_int flag set by async-signal-safe signal handler; accept loop exits on flag; thread_pool_shutdown() broadcasts to all workers and pthread_join drains all in-flight requests before process exits",
+      "All in-flight requests complete before server exits on graceful shutdown; binary file downloads are not truncated",
+      "Shared connection counter (server_stats_t) protected by its own pthread_mutex_t; access log (access_log_t) protected by a separate pthread_mutex_t with fflush() inside the lock on each write",
+      "Zero data races confirmed by ThreadSanitizer (-fsanitize=thread) under concurrent load of 50 clients",
+      "File descriptor count returns to baseline after 10,000 sequential connections; no FD leaks on any code path including error paths and timeout paths",
+      "pthread_create() failure closes client_fd and logs error without crashing the accept loop; accept() EINTR continues the loop; EMFILE/ENFILE causes 100ms sleep and continue",
+      "MAX_REQUESTS_PER_CONNECTION (100) hard cap prevents a single connection from monopolizing a worker thread indefinitely"
+    ]
+  }
+]

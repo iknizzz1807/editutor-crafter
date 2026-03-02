@@ -1,0 +1,256 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## Mutex Contention & Cache-Line False Sharing
+  16 threads × 1000 acq/sec = 16,000 invalidations/sec × 100ns = **1.6ms/sec sync overhead**
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  cpu_pkg: "CPU Package (8 cores shown)" {
+    direction: down
+    style.fill: "#e8eaf6"
+    style.stroke: "#5c6bc0"
+    style.stroke-width: 2
+    cores_row: "" {
+      direction: right
+      style.stroke: transparent
+      style.fill: transparent
+      c0: "Core 0" {
+        direction: down
+        style.fill: "#fff3e0"
+        style.stroke: "#ef6c00"
+        t0: "Thread 0" {
+          shape: rectangle
+          style.fill: "#ef6c00"
+          style.font-color: white
+          style.bold: true
+        }
+        l1_0: {
+          shape: sql_table
+          label: "L1 Cache (32KB)"
+          cl0: "0x00–0x3F | cache line | mutex+counter"
+          st0: "State: MODIFIED"
+          note: "~4 cycles hit"
+          style.fill: "#ffe0b2"
+        }
+        l2_0: {
+          shape: sql_table
+          label: "L2 Cache (256KB)"
+          cl: "cache line copy"
+          note: "~12 cycles hit"
+          style.fill: "#fff3e0"
+        }
+      }
+      c1: "Core 1" {
+        direction: down
+        style.fill: "#fff3e0"
+        style.stroke: "#ef6c00"
+        t1: "Thread 1" {
+          shape: rectangle
+          style.fill: "#ef6c00"
+          style.font-color: white
+          style.bold: true
+        }
+        l1_1: {
+          shape: sql_table
+          label: "L1 Cache (32KB)"
+          cl1: "0x00–0x3F | cache line | mutex+counter"
+          st1: "State: INVALID"
+          note: "must reload!"
+          style.fill: "#ffcdd2"
+        }
+        l2_1: {
+          shape: sql_table
+          label: "L2 Cache (256KB)"
+          cl: "cache line INVALID"
+          note: "~12 cycles hit"
+          style.fill: "#fff3e0"
+        }
+      }
+      c2: "Core 2" {
+        direction: down
+        style.fill: "#fff3e0"
+        style.stroke: "#ef6c00"
+        t2: "Thread 2" {
+          shape: rectangle
+          style.fill: "#ef6c00"
+          style.font-color: white
+          style.bold: true
+        }
+        l1_2: {
+          shape: sql_table
+          label: "L1 Cache (32KB)"
+          cl2: "0x00–0x3F | cache line | mutex+counter"
+          st2: "State: INVALID"
+          note: "must reload!"
+          style.fill: "#ffcdd2"
+        }
+        l2_2: {
+          shape: sql_table
+          label: "L2 Cache (256KB)"
+          cl: "cache line INVALID"
+          note: "~12 cycles hit"
+          style.fill: "#fff3e0"
+        }
+      }
+      cdot: "... 5 more cores ..." {
+        shape: rectangle
+        style.fill: "#eeeeee"
+        style.stroke: "#bdbdbd"
+        style.font-color: "#757575"
+        style.italic: true
+      }
+    }
+    l3: {
+      shape: sql_table
+      label: "L3 Cache — Shared (8–32MB)"
+      row0: "Cache line [mutex_lock | connection_count] — 64 bytes total"
+      row1: "MESI State: bounces M→I→M→I on every lock/unlock cycle"
+      row2: "Ping-pong cost: ~100–300ns per ownership transfer (RFO + invalidate)"
+      row3: "At 16,000 acq/sec: 1.6–4.8ms/sec of pure coherence overhead"
+      style.fill: "#e3f2fd"
+      style.stroke: "#1565c0"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  bad_struct: {
+    shape: sql_table
+    label: "PROBLEM: Shared Cache Line (server_stats.h)"
+    f0: "0x00 | pthread_mutex_t | lock       // 40 bytes"
+    f1: "0x28 | int             | connection_count // 4 bytes"
+    f2: "0x2C | char[20]        | padding    // same 64-byte line!"
+    f3: "Total: 64 bytes = 1 cache line — mutex AND counter share it"
+    f4: "Every lock() write INVALIDATES counter on ALL other cores"
+    style.fill: "#ffebee"
+    style.stroke: "#c62828"
+  }
+  mesi_states: {
+    shape: sql_table
+    label: "MESI Cache Coherence Protocol"
+    s0: "M (Modified)  | dirty, exclusive — only this core has it"
+    s1: "E (Exclusive) | clean, exclusive — only this core has it"
+    s2: "S (Shared)    | clean, multiple cores — read-only"
+    s3: "I (Invalid)   | stale — must fetch before use"
+    s4: "RFO Request   | core sends 'I want ownership' → all others: I"
+    s5: "Cost per RFO  | ~100ns (L3 hit) or ~300ns (NUMA remote)"
+    style.fill: "#f3e5f5"
+    style.stroke: "#6a1b9a"
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  fix1: "FIX 1: atomic_fetch_add (server_stats.h)" {
+    direction: down
+    style.fill: "#e8f5e9"
+    style.stroke: "#2e7d32"
+    fix1_struct: {
+      shape: sql_table
+      label: "Separate mutex and counter onto different cache lines"
+      r0: "0x00 | pthread_mutex_t | lock          // 40 bytes — line 0"
+      r1: "0x28 | char[24]        | _pad          // fills line 0 to 64B"
+      r2: "0x40 | atomic_int      | connection_count // line 1 — ISOLATED"
+      r3: "Now: lock ping-pong on line 0 ONLY"
+      r4: "Counter updates: LOCK XADD — single bus transaction, no mutex"
+      style.fill: "#c8e6c9"
+    }
+    fix1_code: {
+      label: "atomic increment (server_stats.c)"
+      width: 400
+      code: |'c
+        // No mutex needed for the counter itself
+        atomic_fetch_add(&g_stats.connection_count, 1);
+        // x86 compiles to: LOCK XADD [mem], reg
+        // One bus transaction vs. lock+CAS+unlock
+        // Still causes cache line bouncing, but
+        // eliminates mutex overhead entirely
+      '|
+    }
+  }
+  fix2: "FIX 2: Per-Thread Counters (server_stats.h)" {
+    direction: down
+    style.fill: "#e8f5e9"
+    style.stroke: "#1b5e20"
+    fix2_struct: {
+      shape: sql_table
+      label: "Per-thread local counter — zero contention on hot path"
+      r0: "thread_local_stats[THREAD_POOL_SIZE]  // one entry per worker"
+      r1: "  0x00 | int  | local_count  // private to this thread"
+      r2: "  0x04 | char | _pad[60]    // pad to 64B — OWN cache line"
+      r3: "Read path: sum all local_count values under one mutex"
+      r4: "Hot path: zero synchronization, zero cache contention"
+      style.fill: "#c8e6c9"
+    }
+    fix2_code: {
+      label: "per-thread increment (server_stats.c)"
+      width: 400
+      code: |'c
+        // Hot path: thread writes only its OWN cache line
+        per_thread_stats[my_thread_id].local_count++;
+        // No lock, no atomic, no cross-core traffic
+        // Read path (monitoring, infrequent):
+        pthread_mutex_lock(&stats_read_lock);
+        int total = 0;
+        for (int i = 0; i < POOL_SIZE; i++)
+          total += per_thread_stats[i].local_count;
+        pthread_mutex_unlock(&stats_read_lock);
+      '|
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  cost_table: {
+    shape: sql_table
+    label: "Synchronization Cost Comparison (16 threads, 1000 acq/sec each)"
+    h0: "Approach            | Cache Lines | Cost/op | Total overhead/sec"
+    r0: "PROBLEM: shared line | 1 bouncing | ~200ns  | 3.2ms (mutex+counter together)"
+    r1: "FIX 1: atomic only  | 1 bouncing | ~50ns   | 0.8ms (no mutex, just XADD)"
+    r2: "FIX 2: per-thread   | N private  | ~1ns    | 0.016ms (pure local write)"
+    r3: "Mutex alone (padded)| 1 bouncing | ~150ns  | 2.4ms (MESI only on lock line)"
+    style.fill: "#fafafa"
+    style.stroke: "#424242"
+  }
+}
+row1.cpu_pkg.cores_row.c0.t0 -> row1.cpu_pkg.l3: "LOCK CMPXCHG | RFO" {
+  style.stroke: "#ef6c00"
+  style.stroke-width: 2
+  style.animated: true
+}
+row1.cpu_pkg.cores_row.c1.t1 -> row1.cpu_pkg.l3: "RFO — waits for ownership" {
+  style.stroke: "#c62828"
+  style.stroke-dash: 4
+  style.animated: true
+}
+row1.cpu_pkg.cores_row.c2.t2 -> row1.cpu_pkg.l3: "RFO — blocked" {
+  style.stroke: "#c62828"
+  style.stroke-dash: 4
+  style.animated: true
+}
+row1.cpu_pkg.l3 -> row1.cpu_pkg.cores_row.c1.l1_1: "INVALIDATE | state: I" {
+  style.stroke: "#c62828"
+  style.stroke-width: 2
+  style.bold: true
+}
+row1.cpu_pkg.l3 -> row1.cpu_pkg.cores_row.c2.l1_2: "INVALIDATE | state: I" {
+  style.stroke: "#c62828"
+  style.stroke-width: 2
+  style.bold: true
+}
+row1 -> row2: "Cache line anatomy"
+row2 -> row3: "Apply fix"
+row3 -> row4: "Cost comparison"

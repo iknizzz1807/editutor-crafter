@@ -1,0 +1,183 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+title: |md
+  ## `serve_file()` Complete State Machine
+  All exit paths — every error calls `close(file_fd)` before `CLOSED`
+| {near: top-center}
+classes: {
+  entry: {
+    style: {
+      fill: "#1a1a2e"
+      font-color: white
+      border-radius: 999
+      stroke: "#7c3aed"
+      stroke-width: 3
+      bold: true
+    }
+  }
+  stage: {
+    style: {
+      fill: "#312e81"
+      font-color: "#e0e7ff"
+      border-radius: 8
+      stroke: "#6366f1"
+      stroke-width: 2
+      bold: true
+    }
+  }
+  decision: {
+    shape: diamond
+    style: {
+      fill: "#1e3a5f"
+      font-color: "#bfdbfe"
+      stroke: "#3b82f6"
+      stroke-width: 2
+    }
+  }
+  error_resp: {
+    style: {
+      fill: "#450a0a"
+      font-color: "#fca5a5"
+      border-radius: 6
+      stroke: "#dc2626"
+      stroke-width: 2
+    }
+  }
+  ok_resp: {
+    style: {
+      fill: "#052e16"
+      font-color: "#86efac"
+      border-radius: 6
+      stroke: "#16a34a"
+      stroke-width: 2
+    }
+  }
+  closed: {
+    style: {
+      fill: "#1c1917"
+      font-color: "#d6d3d1"
+      border-radius: 999
+      stroke: "#78716c"
+      stroke-width: 2
+      double-border: true
+    }
+  }
+  note: {
+    shape: text
+    style: {
+      font-color: "#94a3b8"
+      italic: true
+      font-size: 12
+    }
+  }
+}
+# ── States ────────────────────────────────────────────────────────────────────
+ENTRY: "● ENTRY\nclient_fd + doc_root + req + send_body" {class: entry}
+S1: "STAGE 1\nurl_decode(req→path)" {class: stage}
+d1: "rc?" {class: decision}
+S2: "STAGE 2\nbuild_full_path(doc_root, decoded)" {class: stage}
+d2: "rc?" {class: decision}
+S3: "STAGE 3\nrealpath(full_path, canonical)" {class: stage}
+d3: "errno?" {class: decision}
+S4: "STAGE 4\nPREFIX CHECK\nstrncmp + boundary char" {class: stage}
+d4: "contained?" {class: decision}
+S4b: "STAGE 4b\nstat(canonical, &st)" {class: stage}
+d4b: "S_ISDIR?" {class: decision}
+IDX: "INDEX_LOOKUP\nappend /index.html\nrealpath() → re-check prefix\nre-stat()" {class: stage}
+d_idx: "index ok?" {class: decision}
+S5: "STAGE 5\nCONDITIONAL CHECK\nparse_http_date(If-Modified-Since)\nst.st_mtime ≤ ims?" {class: stage}
+d5: "304?" {class: decision}
+S6: "STAGE 6\nopen(canonical, O_RDONLY)" {class: stage}
+d6: "errno?" {class: decision}
+S7: "STAGE 7\nBUILD HEADERS\nsnprintf(header_buf)\nsend_all(headers)" {class: stage}
+d7: "send ok?" {class: decision}
+BODY_Q: "send_body?" {class: decision}
+S8_GET: "STAGE 8 — GET\nread(file_fd, buf, 65536)\nsend_all(buf, bytes_read)" {class: stage}
+S8_HEAD: "STAGE 8 — HEAD\n(skip body)" {class: stage}
+CLOSE_FD: "close(file_fd)" {
+  style: {
+    fill: "#1c1917"
+    font-color: "#fbbf24"
+    border-radius: 6
+    stroke: "#92400e"
+    stroke-width: 2
+    bold: true
+  }
+}
+DONE: "● DONE\nreturn to caller\nclient_fd still open" {class: ok_resp}
+# ── Error response nodes ───────────────────────────────────────────────────────
+E400_1: "send_400(client_fd)\n−1: malformed %XX\n−2: null byte %00" {class: error_resp}
+E403_2: "send_403(client_fd)\npath overflow or\nno leading '/'" {class: error_resp}
+E404_3: "send_404(client_fd)\nENOENT / ENOTDIR" {class: error_resp}
+E403_3: "send_403(client_fd)\nEACCES / ELOOP\nENAMETOOLONG" {class: error_resp}
+E403_4: "send_403(client_fd)\nnot inside doc_root" {class: error_resp}
+E404_4b: "send_404(client_fd)\nstat() failed" {class: error_resp}
+E403_idx: "send_403(client_fd)\nindex.html absent /\nsymlink escapes root\nsnprintf overflow" {class: error_resp}
+E304: "send_304(client_fd,\nmime, last_modified,\nst.st_size)" {class: ok_resp}
+E403_6: "send_403(client_fd)\nEACCES on open()" {class: error_resp}
+E404_6: "send_404(client_fd)\nother open() error" {class: error_resp}
+E500_7: "close(file_fd)\nsend_500(client_fd)" {class: error_resp}
+CLOSED: "◉ CLOSED\nclient_fd returned to caller" {class: closed}
+# ── Invariant note ────────────────────────────────────────────────────────────
+inv_note: |md
+  **Invariant**: `file_fd` is opened only at Stage 6.
+  Every exit path *after* Stage 6 calls `close(file_fd)`
+  before returning. Paths exiting at Stages 1–5 never
+  opened `file_fd` and do not call `close()`.
+| {near: bottom-center}
+# ── Transitions: happy path ──────────────────────────────────────────────────
+ENTRY -> S1
+S1 -> d1
+d1 -> S2: "rc = 0\n(success)"
+S2 -> d2
+d2 -> S3: "rc = 0"
+S3 -> d3
+d3 -> S4: "NULL errno\n(success)"
+S4 -> d4
+d4 -> S4b: "yes"
+S4b -> d4b
+d4b -> S5: "not dir"
+d4b -> IDX: "S_ISDIR"
+IDX -> d_idx
+d_idx -> S5: "ok — not dir\ncontained"
+S5 -> d5
+d5 -> S6: "no — serve 200"
+S6 -> d6
+d6 -> S7: "fd ≥ 0"
+S7 -> d7
+d7 -> BODY_Q: "send ok"
+BODY_Q -> S8_GET: "send_body = 1\n(GET)"
+BODY_Q -> S8_HEAD: "send_body = 0\n(HEAD)"
+S8_GET -> CLOSE_FD
+S8_HEAD -> CLOSE_FD
+CLOSE_FD -> DONE
+# ── Transitions: error paths (Stages 1–5, no file_fd opened) ─────────────────
+d1 -> E400_1: "rc ≠ 0" {style.stroke: red}
+d2 -> E403_2: "rc ≠ 0" {style.stroke: red}
+d3 -> E404_3: "ENOENT\nENOTDIR" {style.stroke: red}
+d3 -> E403_3: "EACCES\nELOOP\n..." {style.stroke: red}
+d4 -> E403_4: "no" {style.stroke: red}
+d4b -> E404_4b: "stat() < 0" {style.stroke: red}
+d_idx -> E403_idx: "fail" {style.stroke: red}
+d5 -> E304: "yes\n(mtime ≤ ims)" {style.stroke: "#22c55e"}
+# ── Transitions: error paths (Stage 6+, file_fd may be open) ─────────────────
+d6 -> E403_6: "EACCES" {style.stroke: red}
+d6 -> E404_6: "other" {style.stroke: red}
+d7 -> E500_7: "snprintf overflow\nor send_all fails" {style.stroke: red}
+# ── All errors converge to CLOSED ────────────────────────────────────────────
+E400_1 -> CLOSED {style.stroke: "#dc2626"; style.stroke-dash: 3}
+E403_2 -> CLOSED {style.stroke: "#dc2626"; style.stroke-dash: 3}
+E404_3 -> CLOSED {style.stroke: "#dc2626"; style.stroke-dash: 3}
+E403_3 -> CLOSED {style.stroke: "#dc2626"; style.stroke-dash: 3}
+E403_4 -> CLOSED {style.stroke: "#dc2626"; style.stroke-dash: 3}
+E404_4b -> CLOSED {style.stroke: "#dc2626"; style.stroke-dash: 3}
+E403_idx -> CLOSED {style.stroke: "#dc2626"; style.stroke-dash: 3}
+E304 -> CLOSED {style.stroke: "#22c55e"; style.stroke-dash: 3}
+E403_6 -> CLOSED {style.stroke: "#dc2626"; style.stroke-dash: 3}
+E404_6 -> CLOSED {style.stroke: "#dc2626"; style.stroke-dash: 3}
+E500_7 -> CLOSED {style.stroke: "#dc2626"; style.stroke-dash: 3}
+DONE -> CLOSED {style.stroke: "#22c55e"}

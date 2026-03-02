@@ -1,0 +1,294 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: right
+
+title: |md
+  ## Data Flow: SHA-256 Compress Output → HMAC-SHA-256 Extension
+| {near: top-center}
+
+# ─── Key Preparation ───────────────────────────────────────────
+key_input: "Key Material" {
+  style.fill: "#E8D5F5"
+  style.stroke: "#7B2D8B"
+  style.border-radius: 6
+  style.bold: true
+
+  raw_key: "raw_key[]\nbytes 0..key_len-1" {
+    style.fill: "#D4B8E0"
+    style.stroke: "#7B2D8B"
+    style.font: mono
+  }
+  
+  k_block: "k_block[64]\nzero-padded or\nSHA-256(key)" {
+    style.fill: "#C9A6D4"
+    style.stroke: "#7B2D8B"
+    style.font: mono
+  }
+  
+  raw_key -> k_block: "key_len ≤ 64:\nmemcpy+zero-pad\nkey_len > 64:\nsha256(key)" {
+    style.stroke-dash: 3
+    style.font-size: 11
+  }
+}
+
+ipad_gen: "ipad[64]\n= k_block ⊕ 0x36" {
+  style.fill: "#B8D4F0"
+  style.stroke: "#1A5276"
+  style.font: mono
+  style.border-radius: 4
+}
+
+opad_gen: "opad[64]\n= k_block ⊕ 0x5C" {
+  style.fill: "#B8D4F0"
+  style.stroke: "#1A5276"
+  style.font: mono
+  style.border-radius: 4
+}
+
+key_input.k_block -> ipad_gen: "XOR 0x36\n(each byte)" {
+  style.stroke: "#1A5276"
+  style.bold: true
+}
+
+key_input.k_block -> opad_gen: "XOR 0x5C\n(each byte)" {
+  style.stroke: "#1A5276"
+  style.bold: true
+}
+
+# ─── Inner Hash Context ─────────────────────────────────────────
+inner_ctx: "inner_ctx — SHA256_CTX" {
+  style.fill: "#D5EAD5"
+  style.stroke: "#1A7A1A"
+  style.border-radius: 8
+  style.bold: true
+
+  inner_H: "H[8] = SHA256_INITIAL_HASH\n{0x6a09e667, 0xbb67ae85, ...}" {
+    style.fill: "#B8D4B8"
+    style.stroke: "#1A7A1A"
+    style.font: mono
+    style.font-size: 11
+  }
+  
+  inner_buf: "buf[64] buf_len=0\ntotal_bits=0" {
+    style.fill: "#B8D4B8"
+    style.stroke: "#1A7A1A"
+    style.font: mono
+    style.font-size: 11
+  }
+  
+  inner_compress1: "sha256_compress(H, ipad_block)\n← one complete 64-byte block" {
+    style.fill: "#90C090"
+    style.stroke: "#1A7A1A"
+    style.border-radius: 4
+    style.font: mono
+    style.font-size: 11
+  }
+  
+  inner_compress2: "sha256_compress(H, msg_blocks...)\n← message blocks (0…N)" {
+    style.fill: "#90C090"
+    style.stroke: "#1A7A1A"
+    style.border-radius: 4
+    style.font: mono
+    style.font-size: 11
+  }
+  
+  inner_finalize: "sha256_finalize(inner_ctx, inner_hash)\nappend 0x80, zero-fill,\nwrite total_bits BE-64" {
+    style.fill: "#6AAF6A"
+    style.stroke: "#1A7A1A"
+    style.border-radius: 4
+    style.font: mono
+    style.font-size: 11
+  }
+
+  inner_H -> inner_compress1: "init state" {style.stroke-dash: 2}
+  inner_compress1 -> inner_compress2: "H updated\nH_new = H_old + (a..h)" {style.stroke: "#1A7A1A"}
+  inner_compress2 -> inner_finalize: "H updated\nfeed-forward +=" {style.stroke: "#1A7A1A"}
+}
+
+inner_hash_out: "inner_hash[32]\nuint8_t[32] big-endian\ndigest bytes" {
+  style.fill: "#FFE680"
+  style.stroke: "#B8860B"
+  style.font: mono
+  style.border-radius: 6
+  style.bold: true
+}
+
+ipad_gen -> inner_ctx.inner_compress1: "sha256_update(inner_ctx,\nipad, 64)\n→ immediate flush" {
+  style.stroke: "#1A7A1A"
+  style.bold: true
+}
+
+msg_input: "message[]\nmsg_len bytes" {
+  style.fill: "#E8E8E8"
+  style.stroke: "#555555"
+  style.font: mono
+  style.border-radius: 4
+}
+
+msg_input -> inner_ctx.inner_compress2: "sha256_update(inner_ctx,\nmsg, msg_len)" {
+  style.stroke: "#1A7A1A"
+}
+
+inner_ctx.inner_finalize -> inner_hash_out: "serialize H[0..7]\ndigest[i*4+k] =\nH[i] >> (24-8k)" {
+  style.stroke: "#B8860B"
+  style.bold: true
+}
+
+# ─── CRITICAL RESET ────────────────────────────────────────────
+reset_barrier: "sha256_init(outer_ctx)\n⚠ MANDATORY RESET ⚠\nH[0..7] ← SHA256_INITIAL_HASH\nbuf_len=0, total_bits=0" {
+  style.fill: "#FFD0D0"
+  style.stroke: "#CC0000"
+  style.border-radius: 8
+  style.bold: true
+  style.font: mono
+  style.font-size: 12
+}
+
+inner_hash_out -> reset_barrier: "triggers outer\ncontext init" {
+  style.stroke: "#CC0000"
+  style.stroke-dash: 4
+  style.animated: true
+}
+
+length_ext_note: |md
+  **Why reset prevents length-extension:**
+  Without reset, outer_ctx.H would equal
+  inner_ctx's final state. An attacker knowing
+  inner_hash could *resume* outer_ctx, appending
+  arbitrary data to produce a valid MAC without
+  knowing K_opad.
+  Reset forces outer_ctx.H = INITIAL_HASH,
+  so the attacker must know K_opad (= k_block ⊕ 0x5C)
+  to produce any valid outer hash output.
+| {
+  near: top-right
+  style.font-size: 11
+}
+
+# ─── Outer Hash Context ─────────────────────────────────────────
+outer_ctx: "outer_ctx — SHA256_CTX" {
+  style.fill: "#D5E8F5"
+  style.stroke: "#1A4A8A"
+  style.border-radius: 8
+  style.bold: true
+
+  outer_H: "H[8] = SHA256_INITIAL_HASH\n(RESET — not inner_ctx state)" {
+    style.fill: "#B8CCE8"
+    style.stroke: "#1A4A8A"
+    style.font: mono
+    style.font-size: 11
+  }
+  
+  outer_compress1: "sha256_compress(H, opad_block)\n← one complete 64-byte block" {
+    style.fill: "#8AB0D8"
+    style.stroke: "#1A4A8A"
+    style.border-radius: 4
+    style.font: mono
+    style.font-size: 11
+  }
+  
+  outer_compress2: "sha256_compress(H, inner_hash_block)\n← inner_hash[32] + padding" {
+    style.fill: "#8AB0D8"
+    style.stroke: "#1A4A8A"
+    style.border-radius: 4
+    style.font: mono
+    style.font-size: 11
+  }
+  
+  outer_finalize: "sha256_finalize(outer_ctx, mac)\ntotal_bits = (64+32)*8 = 768" {
+    style.fill: "#5A90C8"
+    style.stroke: "#1A4A8A"
+    style.border-radius: 4
+    style.font: mono
+    style.font-size: 11
+  }
+
+  outer_H -> outer_compress1: "fresh init state\n(INITIAL_HASH)" {style.stroke-dash: 2}
+  outer_compress1 -> outer_compress2: "H updated" {style.stroke: "#1A4A8A"}
+  outer_compress2 -> outer_finalize: "H updated\nfeed-forward +=" {style.stroke: "#1A4A8A"}
+}
+
+mac_out: "MAC[32]\nHMAC-SHA-256 output\nuint8_t[32]" {
+  style.fill: "#FFE680"
+  style.stroke: "#B8860B"
+  style.font: mono
+  style.border-radius: 6
+  style.bold: true
+  style.shadow: true
+}
+
+reset_barrier -> outer_ctx.outer_H: "outer_ctx\ninitialized" {
+  style.stroke: "#1A4A8A"
+  style.bold: true
+}
+
+opad_gen -> outer_ctx.outer_compress1: "sha256_update(outer_ctx,\nopad, 64)\n→ immediate flush" {
+  style.stroke: "#1A4A8A"
+  style.bold: true
+}
+
+inner_hash_out -> outer_ctx.outer_compress2: "sha256_update(outer_ctx,\ninner_hash, 32)\nbuffered then padded" {
+  style.stroke: "#1A4A8A"
+  style.bold: true
+}
+
+outer_ctx.outer_finalize -> mac_out: "serialize H[0..7]\nbig-endian bytes" {
+  style.stroke: "#B8860B"
+  style.bold: true
+}
+
+# ─── Attacker Model Annotation ──────────────────────────────────
+attacker_boundary: "Attacker Visibility Boundary" {
+  style.fill: "#FFF0F0"
+  style.stroke: "#CC0000"
+  style.stroke-dash: 5
+  style.border-radius: 12
+
+  attacker_sees: "Attacker observes:" {
+    style.fill: "#FFD8D8"
+    style.stroke: "#CC0000"
+    style.border-radius: 4
+    
+    sees_mac: "MAC[32]\n(public output)" {
+      style.fill: "#FFBBBB"
+      style.font: mono
+    }
+    sees_msg: "message[]\n(known plaintext)" {
+      style.fill: "#FFBBBB"
+      style.font: mono
+    }
+    sees_len: "msg_len\n(known)" {
+      style.fill: "#FFBBBB"
+      style.font: mono
+    }
+  }
+
+  attacker_blocked: "Attacker CANNOT:" {
+    style.fill: "#FFD8D8"
+    style.stroke: "#CC0000"
+    style.border-radius: 4
+    
+    blocked1: "Invert MAC → outer H state\n(preimage resistance)" {
+      style.fill: "#FFAAAA"
+      style.font-size: 11
+    }
+    blocked2: "Resume outer_ctx without\nknowing K_opad\n(reset + unknown key)" {
+      style.fill: "#FFAAAA"
+      style.font-size: 11
+    }
+    blocked3: "Forge MAC for\nmsg || padding || extra\n(outer hash wraps inner)" {
+      style.fill: "#FFAAAA"
+      style.font-size: 11
+    }
+  }
+}
+
+mac_out -> attacker_boundary.attacker_sees.sees_mac: "observed" {
+  style.stroke: "#CC0000"
+  style.stroke-dash: 3
+}

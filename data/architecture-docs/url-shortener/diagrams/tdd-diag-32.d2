@@ -1,0 +1,93 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+shape: sequence_diagram
+Client
+Gateway
+Redis
+URLService: "url-service:8081"
+happy_path: "POST /api/shorten — Happy Path" {
+  Client -> Gateway: "POST /api/shorten\nAuthorization: Bearer <jwt>\nX-Correlation-ID: <uuid|generated>"
+  corr: "① CorrelationMiddleware" {
+    Gateway -> Gateway: "Read X-Correlation-ID header\nIF absent → uuid.New().String()\nStore in context + set on response"
+  }
+  jwt: "② GatewayJWTMiddleware" {
+    Gateway -> Gateway: "Extract Bearer token\nverifier.Verify(token) — local HMAC-SHA256\nNO network call to user-service"
+  }
+  rl: "③ RateLimitMiddleware" {
+    Gateway -> Redis: "EVAL luaIncrExpire\nKEYS[1]='ratelimit:shorten:{ip}'\nARGV[1]=60  (window seconds)"
+    Redis -> Gateway: "current_count: int64\n(INCR + conditional EXPIRE atomic)"
+  }
+  cb: "④ CircuitBreaker.Allow()" {
+    Gateway -> Gateway: "mu.Lock()\nIF state==Closed → return true\nmu.Unlock()"
+  }
+  proxy: "⑤ ReverseProxy.ServeHTTP" {
+    Gateway -> URLService: "POST /shorten\nX-Correlation-ID: <id>\nX-Forwarded-For: <client-ip>\nX-User-ID: <sub>\nX-User-Email: <email>\nAuthorization: Bearer <jwt>"
+    URLService -> Gateway: "HTTP 201 Created\n{short_code, short_url, ...}"
+  }
+  cb_success: "⑥ ModifyResponse hook" {
+    Gateway -> Gateway: "resp.StatusCode < 500\n→ cb.RecordSuccess()\n  mu.Lock(); failureCount=0; mu.Unlock()"
+  }
+  Gateway -> Client: "HTTP 201 Created\nX-Correlation-ID: <id>\n{short_code, short_url, original_url}"
+}
+fail_jwt: "FAILURE PATH A — JWT Invalid" {
+  Client -> Gateway: "POST /api/shorten\nAuthorization: Bearer <bad-token>"
+  Gateway -> Gateway: "CorrelationMiddleware — ID generated"
+  Gateway -> Client: "HTTP 401 Unauthorized\n{\"error\":\"unauthorized\"}\n— request never forwarded —" {
+    style.stroke-dash: 5
+    style.stroke: red
+  }
+}
+fail_rate: "FAILURE PATH B — Rate Limit Exceeded" {
+  Client -> Gateway: "POST /api/shorten  (11th request within 60s)"
+  Gateway -> Gateway: "CorrelationMiddleware + JWTMiddleware pass"
+  Gateway -> Redis: "EVAL luaIncrExpire → current_count=11" {
+    style.stroke-dash: 5
+    style.stroke: red
+  }
+  Redis -> Gateway: "11  (> limit=10)" {
+    style.stroke-dash: 5
+    style.stroke: red
+  }
+  Gateway -> Redis: "TTL 'ratelimit:shorten:{ip}'"
+  Redis -> Gateway: "remaining_seconds: int"
+  Gateway -> Client: "HTTP 429 Too Many Requests\nRetry-After: <seconds>\nX-RateLimit-Limit: 10\nX-RateLimit-Remaining: 0\n{\"error\":\"rate limit exceeded\"}" {
+    style.stroke-dash: 5
+    style.stroke: red
+  }
+}
+fail_cb: "FAILURE PATH C — Circuit Breaker Open" {
+  Client -> Gateway: "POST /api/shorten"
+  Gateway -> Gateway: "CorrelationMiddleware + JWTMiddleware + RateLimitMiddleware pass"
+  Gateway -> Gateway: "cb.Allow()\nmu.Lock()\nstate==Open\ntime.Since(openedAt) < 30s\nmu.Unlock() → false, ErrCircuitOpen" {
+    style.stroke-dash: 5
+    style.stroke: red
+  }
+  Gateway -> Client: "HTTP 503 Service Unavailable\n{\"error\":\"service unavailable\"}\n— ReverseProxy never called —" {
+    style.stroke-dash: 5
+    style.stroke: red
+  }
+}
+fail_upstream: "FAILURE PATH D — url-service 5xx / Timeout" {
+  Client -> Gateway: "POST /api/shorten"
+  Gateway -> Gateway: "All middleware pass; cb.Allow()→true (Closed)"
+  Gateway -> URLService: "POST /shorten (forwarded)" {
+    style.stroke-dash: 5
+    style.stroke: red
+  }
+  URLService -> Gateway: "HTTP 500  OR  timeout after 30s" {
+    style.stroke-dash: 5
+    style.stroke: red
+  }
+  Gateway -> Gateway: "ModifyResponse: status>=500\n→ cb.RecordFailure()\n  failureCount++\n  IF failureCount>=5 → state=Open" {
+    style.stroke-dash: 5
+    style.stroke: red
+  }
+  Gateway -> Client: "HTTP 502 Bad Gateway\n{\"error\":\"upstream error\"}" {
+    style.stroke-dash: 5
+    style.stroke: red
+  }
+}

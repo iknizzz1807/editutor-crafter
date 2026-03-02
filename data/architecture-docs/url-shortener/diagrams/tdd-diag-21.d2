@@ -1,0 +1,382 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+title: |md
+  # Outbox Poller State Machine
+  **Module:** `url-shortener-m3` · `outbox/poller.go`
+  Coordinator: 1 goroutine · Workers: 3 goroutines · Channel buffer: 50
+| {near: top-center}
+# ─────────────────────────────────────────────
+# COORDINATOR STATES
+# ─────────────────────────────────────────────
+coordinator: "COORDINATOR GOROUTINE" {
+  style.fill: "#1a1a2e"
+  style.stroke: "#7c5cbf"
+  style.stroke-width: 2
+  style.border-radius: 8
+  style.font-color: "#e0d0ff"
+  C_INIT: "●" {
+    shape: circle
+    style.fill: "#7c5cbf"
+    style.stroke: "#b49ee0"
+    style.stroke-width: 2
+    width: 40
+    height: 40
+    label: "●"
+  }
+  C_IDLE: "IDLE" {
+    shape: rectangle
+    style.fill: "#2d1b4e"
+    style.stroke: "#7c5cbf"
+    style.stroke-width: 2
+    style.border-radius: 6
+    style.font-color: "#d0b8ff"
+    style.bold: true
+    label: |md
+      **IDLE**
+      Invariant: timer armed (2s)
+      `jobChan` may hold pending items
+      No DB connection held
+    |
+  }
+  C_QUERYING: "QUERYING" {
+    shape: rectangle
+    style.fill: "#1e3a5f"
+    style.stroke: "#4a90d9"
+    style.stroke-width: 2
+    style.border-radius: 6
+    style.font-color: "#a8d4ff"
+    style.bold: true
+    label: |md
+      **QUERYING**
+      `FetchUnpublished(ctx, 50)`
+      Pool conn acquired
+      `WHERE published_at IS NULL`
+      `ORDER BY created_at ASC LIMIT 50`
+    |
+  }
+  C_FANNING_OUT: "FANNING_OUT" {
+    shape: rectangle
+    style.fill: "#1a3a2a"
+    style.stroke: "#4caf7d"
+    style.stroke-width: 2
+    style.border-radius: 6
+    style.font-color: "#a0e8c0"
+    style.bold: true
+    label: |md
+      **FANNING_OUT**
+      Range over fetched entries
+      `jobChan <- entry` (blocks if full)
+      Backpressure from workers
+    |
+  }
+  C_STOPPING: "STOPPING" {
+    shape: rectangle
+    style.fill: "#3a1a1a"
+    style.stroke: "#e05050"
+    style.stroke-width: 2
+    style.border-radius: 6
+    style.font-color: "#ffaaaa"
+    style.bold: true
+    label: |md
+      **STOPPING**
+      `close(jobChan)`
+      Workers drain remaining items
+      Goroutine exits
+    |
+  }
+  C_INIT -> C_IDLE: "start\npoller.Start(ctx)" {
+    style.stroke: "#7c5cbf"
+    style.font-color: "#b49ee0"
+  }
+  C_IDLE -> C_QUERYING: "timer fires\n`time.After(2s)` case" {
+    style.stroke: "#4a90d9"
+    style.stroke-width: 2
+    style.font-color: "#a8d4ff"
+    style.bold: true
+  }
+  C_QUERYING -> C_FANNING_OUT: "rows fetched\nlen(entries) > 0" {
+    style.stroke: "#4caf7d"
+    style.stroke-width: 2
+    style.font-color: "#a0e8c0"
+    style.bold: true
+  }
+  C_QUERYING -> C_IDLE: "rows fetched\nlen(entries) == 0\nor fetch error" {
+    style.stroke: "#7c5cbf"
+    style.stroke-dash: 4
+    style.font-color: "#d0b8ff"
+    label: "0 rows or\nlog.Warn + skip"
+  }
+  C_FANNING_OUT -> C_IDLE: "all entries sent\nto jobChan" {
+    style.stroke: "#7c5cbf"
+    style.stroke-width: 2
+    style.font-color: "#d0b8ff"
+  }
+  C_IDLE -> C_STOPPING: "ctx.Done()\n`case <-ctx.Done()`" {
+    style.stroke: "#e05050"
+    style.stroke-width: 2
+    style.font-color: "#ffaaaa"
+    style.bold: true
+  }
+  C_FANNING_OUT -> C_STOPPING: "ctx.Done()\nduring fan-out" {
+    style.stroke: "#e05050"
+    style.stroke-dash: 3
+    style.font-color: "#ffaaaa"
+  }
+  C_QUERYING -> C_STOPPING: "ctx.Done()\nduring query" {
+    style.stroke: "#e05050"
+    style.stroke-dash: 3
+    style.font-color: "#ffaaaa"
+  }
+}
+# ─────────────────────────────────────────────
+# WORKER STATES (shared across 3 workers)
+# ─────────────────────────────────────────────
+workers: "WORKER GOROUTINES (×3)" {
+  style.fill: "#1a2a1a"
+  style.stroke: "#4caf7d"
+  style.stroke-width: 2
+  style.border-radius: 8
+  style.font-color: "#c0e8c0"
+  W_INIT: "●" {
+    shape: circle
+    style.fill: "#4caf7d"
+    style.stroke: "#a0e8c0"
+    style.stroke-width: 2
+    width: 40
+    height: 40
+    label: "●"
+  }
+  W_WAITING: "WAITING" {
+    shape: rectangle
+    style.fill: "#1a3a2a"
+    style.stroke: "#4caf7d"
+    style.stroke-width: 2
+    style.border-radius: 6
+    style.font-color: "#a0e8c0"
+    style.bold: true
+    label: |md
+      **WAITING**
+      `for entry := range jobChan`
+      Goroutine parked (no CPU)
+      Unblocked by coordinator send
+    |
+  }
+  W_PUBLISHING: "PUBLISHING" {
+    shape: rectangle
+    style.fill: "#1e3a5f"
+    style.stroke: "#4a90d9"
+    style.stroke-width: 2
+    style.border-radius: 6
+    style.font-color: "#a8d4ff"
+    style.bold: true
+    label: |md
+      **PUBLISHING**
+      `publisher.Publish(ctx, entry.EventType, entry.Payload)`
+      Exchange: `url-shortener` (topic)
+      DeliveryMode: Persistent
+      `sync.Mutex` held on AMQP channel
+    |
+  }
+  W_MARKING_DONE: "MARKING_DONE" {
+    shape: rectangle
+    style.fill: "#2a2a1a"
+    style.stroke: "#d4af37"
+    style.stroke-width: 2
+    style.border-radius: 6
+    style.font-color: "#ffe080"
+    style.bold: true
+    label: |md
+      **MARKING_DONE**
+      `outboxRepo.MarkPublished(ctx, entry.ID)`
+      `UPDATE outbox SET published_at = now()`
+      `WHERE id = $1`
+      Pool conn acquired + released
+    |
+  }
+  W_RABBITMQ_DOWN: "RABBITMQ_DOWN" {
+    shape: rectangle
+    style.fill: "#4a1a1a"
+    style.stroke: "#e05050"
+    style.stroke-width: 3
+    style.border-radius: 6
+    style.font-color: "#ff8080"
+    style.bold: true
+    label: |md
+      **RABBITMQ_DOWN** ⚠
+      `publisher.Publish` returned error
+      Row NOT marked published
+      Will be re-fetched next poll cycle
+      log.Warn event_id
+    |
+  }
+  W_MARK_FAILED: "MARK_FAILED" {
+    shape: rectangle
+    style.fill: "#3a2a1a"
+    style.stroke: "#e08030"
+    style.stroke-width: 3
+    style.border-radius: 6
+    style.font-color: "#ffcc80"
+    style.bold: true
+    label: |md
+      **MARK_FAILED** ⚠
+      `MarkPublished` returned error
+      Event WAS published to broker
+      Row re-fetched → re-published
+      Consumer must be idempotent
+      log.Error event_id
+    |
+  }
+  W_EXITING: "EXITING" {
+    shape: rectangle
+    style.fill: "#2a1a2a"
+    style.stroke: "#9c5cbf"
+    style.stroke-width: 2
+    style.border-radius: 6
+    style.font-color: "#d0a0ff"
+    style.bold: true
+    label: |md
+      **EXITING**
+      `jobChan` closed by coordinator
+      `range` loop terminates
+      Goroutine exits cleanly
+    |
+  }
+  W_INIT -> W_WAITING: "goroutine started\n`go outboxWorker(ctx, jobChan, ...)`" {
+    style.stroke: "#4caf7d"
+    style.font-color: "#a0e8c0"
+  }
+  W_WAITING -> W_PUBLISHING: "entry received\nfrom jobChan" {
+    style.stroke: "#4a90d9"
+    style.stroke-width: 2
+    style.font-color: "#a8d4ff"
+    style.bold: true
+  }
+  W_PUBLISHING -> W_MARKING_DONE: "Publish() == nil\nsuccess" {
+    style.stroke: "#d4af37"
+    style.stroke-width: 2
+    style.font-color: "#ffe080"
+    style.bold: true
+  }
+  W_MARKING_DONE -> W_WAITING: "MarkPublished() == nil\nentry complete ✓" {
+    style.stroke: "#4caf7d"
+    style.stroke-width: 2
+    style.font-color: "#a0e8c0"
+    style.bold: true
+  }
+  W_PUBLISHING -> W_RABBITMQ_DOWN: "Publish() != nil\nAMQP error / timeout" {
+    style.stroke: "#e05050"
+    style.stroke-width: 3
+    style.font-color: "#ff8080"
+    style.bold: true
+  }
+  W_RABBITMQ_DOWN -> W_WAITING: "log.Warn\ncontinue → next item\n(row stays unpublished)" {
+    style.stroke: "#e05050"
+    style.stroke-dash: 4
+    style.font-color: "#ff8080"
+  }
+  W_MARKING_DONE -> W_MARK_FAILED: "MarkPublished() != nil\nDB error" {
+    style.stroke: "#e08030"
+    style.stroke-width: 3
+    style.font-color: "#ffcc80"
+    style.bold: true
+  }
+  W_MARK_FAILED -> W_WAITING: "log.Error\ncontinue → next item\n(row re-published next cycle)" {
+    style.stroke: "#e08030"
+    style.stroke-dash: 4
+    style.font-color: "#ffcc80"
+  }
+  W_WAITING -> W_EXITING: "jobChan closed\nrange loop ends" {
+    style.stroke: "#9c5cbf"
+    style.stroke-width: 2
+    style.font-color: "#d0a0ff"
+    style.bold: true
+  }
+}
+# ─────────────────────────────────────────────
+# ILLEGAL TRANSITION
+# ─────────────────────────────────────────────
+illegal: "ILLEGAL: Mark Before Publish" {
+  shape: rectangle
+  style.fill: "#5a0a0a"
+  style.stroke: "#ff2020"
+  style.stroke-width: 3
+  style.stroke-dash: 6
+  style.border-radius: 4
+  style.font-color: "#ff6060"
+  style.bold: true
+  label: |md
+    ⛔ **ILLEGAL TRANSITION**
+    Calling `MarkPublished(entry.ID)`
+    BEFORE `publisher.Publish()` succeeds
+    ─────────────────────────────────
+    Consequence: Row marked published
+    but event never reached broker.
+    Silent data loss — analytics-service
+    and notification-service never see event.
+    ─────────────────────────────────
+    Enforced by: sequential
+    `Publish → MarkPublished` ordering
+    in `outboxWorker`
+  |
+}
+workers.W_PUBLISHING -> illegal: "ILLEGAL" {
+  style.stroke: "#ff2020"
+  style.stroke-width: 3
+  style.stroke-dash: 6
+  style.font-color: "#ff2020"
+  style.bold: true
+  target-arrowhead: {
+    shape: arrow
+    style.filled: true
+  }
+}
+# ─────────────────────────────────────────────
+# CHANNEL LINK: coordinator → workers
+# ─────────────────────────────────────────────
+coordinator.C_FANNING_OUT -> workers.W_WAITING: "`jobChan <- entry`\nbuffered chan(50)\nblocks when full\n(backpressure)" {
+  style.stroke: "#b49ee0"
+  style.stroke-width: 3
+  style.stroke-dash: 3
+  style.animated: true
+  style.font-color: "#b49ee0"
+  target-arrowhead: {
+    shape: arrow
+    style.filled: true
+  }
+}
+coordinator.C_STOPPING -> workers.W_EXITING: "`close(jobChan)`\nworkers drain\nthen exit" {
+  style.stroke: "#e05050"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+  style.font-color: "#ffaaaa"
+  target-arrowhead: {
+    shape: arrow
+    style.filled: true
+  }
+}
+# ─────────────────────────────────────────────
+# ANNOTATIONS
+# ─────────────────────────────────────────────
+poll_note: |md
+  **Poll Cycle Timing**
+  - Interval: 2s (`time.After`)
+  - Batch size: 50 rows per cycle
+  - Partial index: `WHERE published_at IS NULL`
+  - Oldest-first ordering ensures fairness
+  - Coordinator blocks on `jobChan <- entry`
+    if all 3 workers are busy (backpressure)
+| {near: bottom-left}
+worker_note: |md
+  **Worker Concurrency Contract**
+  - 3 workers share 1 `amqp091.Channel`
+  - `sync.Mutex` in `amqpPublisher.Publish`
+    serializes concurrent AMQP writes
+  - Workers are independent: one
+    RABBITMQ_DOWN does not block others
+  - Graceful shutdown: workers drain
+    jobChan before exiting (range closes)
+| {near: bottom-right}

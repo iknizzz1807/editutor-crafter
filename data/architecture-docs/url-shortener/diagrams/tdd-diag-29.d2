@@ -1,0 +1,273 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: right
+
+title: |'md
+## GET /stats/:code — Parallel Query Plan & Data Flow
+All 4 queries are read-only SELECT; no locks held; safe to run concurrently via errgroup.
+'| {near: top-center}
+
+###############################################################################
+# HANDLER ENTRY
+###############################################################################
+handler: "HandleStats\nhttp.HandlerFunc" {
+  style.fill: "#7C3AED"
+  style.font-color: white
+  style.border-radius: 6
+  style.bold: true
+}
+
+extract: "Extract shortCode\nfrom r.PathValue(\"code\")\nnow = time.Now().UTC()" {
+  style.fill: "#5B21B6"
+  style.font-color: white
+  style.border-radius: 4
+}
+
+errgroup_init: "errgroup.WithContext\n(r.Context())\ng, gctx ← shared cancel" {
+  style.fill: "#4C1D95"
+  style.font-color: white
+  style.border-radius: 4
+  style.bold: true
+}
+
+handler -> extract: "r *http.Request"
+extract -> errgroup_init: "shortCode, now"
+
+###############################################################################
+# GOROUTINE FORK
+###############################################################################
+fork: "g.Go × 4 goroutines\nLaunched concurrently\nshare gctx + pool" {
+  shape: diamond
+  style.fill: "#1D4ED8"
+  style.font-color: white
+  style.bold: true
+}
+
+errgroup_init -> fork: "spawn 4 goroutines\nsimultaneously"
+
+###############################################################################
+# QUERY A — total clicks
+###############################################################################
+qa: "Goroutine A\nCountByCode()" {
+  style.fill: "#1E40AF"
+  style.font-color: white
+  style.border-radius: 6
+  style.bold: true
+}
+
+sql_a: |'md
+**SQL A — Total Clicks**
+sql
+SELECT COUNT(*)
+FROM clicks
+WHERE short_code = $1
+
+**Index:** idx_clicks_short_code_time
+(short_code, clicked_at DESC)
+Leading column = short_code → Index Scan
+'| {
+  style.fill: "#DBEAFE"
+  style.border-radius: 4
+}
+
+result_a: "total int64" {
+  style.fill: "#93C5FD"
+  style.border-radius: 4
+  style.bold: true
+}
+
+fork -> qa: "g.Go(func())"
+qa -> sql_a: "pool.QueryRow\n(gctx, query, shortCode)"
+sql_a -> result_a: "rows.Scan(&total)"
+
+###############################################################################
+# QUERY B — last 24 h
+###############################################################################
+qb: "Goroutine B\nCountSince(now-24h)" {
+  style.fill: "#1E40AF"
+  style.font-color: white
+  style.border-radius: 6
+  style.bold: true
+}
+
+sql_b: |'md
+**SQL B — Clicks Last 24 h**
+sql
+SELECT COUNT(*)
+FROM clicks
+WHERE short_code = $1
+  AND clicked_at >= $2
+
+**Index:** Composite (short_code, clicked_at)
+Index Range Scan; no heap fetch needed.
+'| {
+  style.fill: "#DBEAFE"
+  style.border-radius: 4
+}
+
+result_b: "last24h int64" {
+  style.fill: "#93C5FD"
+  style.border-radius: 4
+  style.bold: true
+}
+
+fork -> qb: "g.Go(func())"
+qb -> sql_b: "pool.QueryRow\n(gctx, query, shortCode, now-24h)"
+sql_b -> result_b: "rows.Scan(&last24h)"
+
+###############################################################################
+# QUERY C — last 7 d
+###############################################################################
+qc: "Goroutine C\nCountSince(now-7d)" {
+  style.fill: "#1E40AF"
+  style.font-color: white
+  style.border-radius: 6
+  style.bold: true
+}
+
+sql_c: |'md
+**SQL C — Clicks Last 7 d**
+sql
+SELECT COUNT(*)
+FROM clicks
+WHERE short_code = $1
+  AND clicked_at >= $2
+
+**Index:** Same idx_clicks_short_code_time
+Wider time range → larger index range scan.
+'| {
+  style.fill: "#DBEAFE"
+  style.border-radius: 4
+}
+
+result_c: "last7d int64" {
+  style.fill: "#93C5FD"
+  style.border-radius: 4
+  style.bold: true
+}
+
+fork -> qc: "g.Go(func())"
+qc -> sql_c: "pool.QueryRow\n(gctx, query, shortCode, now-7d)"
+sql_c -> result_c: "rows.Scan(&last7d)"
+
+###############################################################################
+# QUERY D — top referers
+###############################################################################
+qd: "Goroutine D\nTopReferers(limit=5)" {
+  style.fill: "#1E40AF"
+  style.font-color: white
+  style.border-radius: 6
+  style.bold: true
+}
+
+sql_d: |'md
+**SQL D — Top 5 Referers**
+sql
+SELECT referer, COUNT(*) AS cnt
+FROM clicks
+WHERE short_code = $1
+  AND referer IS NOT NULL
+GROUP BY referer
+ORDER BY cnt DESC
+LIMIT 5
+
+**Index:** Partial (short_code, referer)
+WHERE referer IS NOT NULL.
+'| {
+  style.fill: "#DBEAFE"
+  style.border-radius: 4
+}
+
+result_d: "refs []RefererCount" {
+  style.fill: "#93C5FD"
+  style.border-radius: 4
+  style.bold: true
+}
+
+fork -> qd: "g.Go(func())"
+qd -> sql_d: "pool.Query\n(gctx, query, shortCode, 5)"
+sql_d -> result_d: "rows.Scan loop"
+
+###############################################################################
+# ERRGROUP WAIT + MERGE
+###############################################################################
+wait: "g.Wait()\nBlocks until all 4 return" {
+  shape: diamond
+  style.fill: "#065F46"
+  style.font-color: white
+  style.bold: true
+}
+
+result_a -> wait: "total"
+result_b -> wait: "last24h"
+result_c -> wait: "last7d"
+result_d -> wait: "refs"
+
+err_path: "err != nil\nlog.Error + writeError\n500 Server Error" {
+  style.fill: "#B91C1C"
+  style.font-color: white
+  style.border-radius: 4
+}
+
+wait -> err_path: "any goroutine error\ngctx cancelled" {
+  style.stroke: red
+  style.stroke-dash: 5
+}
+
+merge: "Build StatsResponse\nMerge query results" {
+  style.fill: "#064E3B"
+  style.font-color: white
+  style.border-radius: 6
+  style.bold: true
+}
+
+wait -> merge: "err == nil\nall counts populated"
+
+###############################################################################
+# RESPONSE
+###############################################################################
+resp: |'md
+**HTTP 200 OK**
+json
+{
+  "short_code": "aB3xY9z",
+  "total_clicks": 1042,
+  "clicks_last_24h": 37,
+  "clicks_last_7d": 210,
+  "top_referers": [
+    {"referer":"https://twitter.com","count":120},
+    {"referer":"https://reddit.com","count":55}
+  ]
+}
+
+'| {
+  style.fill: "#D1FAE5"
+  style.border-radius: 6
+}
+
+merge -> resp: "writeJSON(w, 200, res)"
+
+###############################################################################
+# INDEX LEGEND
+###############################################################################
+legend: |'md
+**Index Reference**
+| Index | Columns | Type | Used By |
+|---|---|---|---|
+| idx_clicks_short_code_time | (short_code, clicked_at DESC) | B-tree | A, B, C |
+| idx_clicks_referer | (short_code, referer) WHERE referer IS NOT NULL | Partial | D |
+
+**Why parallel is safe:**
+- SELECT-only; no locks acquired; no snapshot conflicts.
+- pgxpool uses independent connections per query.
+- errgroup gctx provides unified timeout/cancellation.
+'| {
+  near: bottom-center
+  style.fill: "#F0FDF4"
+  style.border-radius: 6
+}

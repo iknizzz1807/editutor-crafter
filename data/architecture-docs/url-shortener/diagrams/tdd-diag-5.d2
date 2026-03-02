@@ -1,0 +1,114 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+direction: right
+shape: sequence_diagram
+main: "main()"
+db: "connectDB()"
+redis: "connectRedis()"
+rmq: "connectRabbitMQ()"
+routes: "registerRoutes()"
+server: "http.Server"
+os_exit: "os.Exit(1)"
+bg_retry: "background\ngoroutine"
+downstream: "downstream\nservices ×4"
+fatal_note: |md
+  **Fatal steps** (non-zero exit)
+  - connectDB failure → os.Exit(1)
+  - missing required env var → os.Exit(1)
+  **Non-fatal steps** (degraded continue)
+  - connectRedis failure → cache disabled
+  - connectRabbitMQ failure → retry loop
+| {
+  near: bottom-right
+}
+main.s1 -> main.s1: "1. mustGetEnv() — all required vars\n   abort immediately on missing (os.Exit)"
+main.s1 -> db.t1: "2. ConnectDB(ctx, DSN)\n   5 attempts, exponential backoff\n   500ms → 1s → 2s → 4s → cap"
+db.t1 -> db.t1: "attempt 1…5\npool.Ping(ctx)"
+db.t1 -> main.s1: "pool, nil  ✓"
+err_path: {
+  db.terror -> os_exit: "err != nil after 5 attempts\nlog.Fatal → os.Exit(1) ◀ FATAL" {
+    style.stroke: red
+    style.stroke-width: 2
+  }
+}
+main.s2 -> redis.t1: "3. ConnectRedis(ctx, addr)\n   single PING attempt\n   DialTimeout=3s"
+redis.t1 -> main.s2: "client, nil  ✓  (cache enabled)"
+redis.warn: {
+  redis.twarn -> main.s2: "nil, err  ⚠ NON-FATAL\nlog.Warn — cache disabled\nredisClient = nil" {
+    style.stroke: "#f4a261"
+    style.stroke-width: 2
+    style.stroke-dash: 5
+  }
+}
+main.s3 -> rmq.t1: "4. ConnectRabbitMQ(ctx, url, declareFunc)\n   5 attempts, exponential backoff\n   ExchangeDeclare + QueueDeclare + Bind"
+rmq.t1 -> main.s3: "conn, ch, nil  ✓  (broker ready)"
+rmq.warn: {
+  rmq.twarn -> main.s3: "nil, nil, err  ⚠ NON-FATAL\nlog.Warn — messaging degraded" {
+    style.stroke: "#f4a261"
+    style.stroke-width: 2
+    style.stroke-dash: 5
+  }
+  main.s3 -> bg_retry: "go func() — retry every 10s\nuntil ConnectRabbitMQ succeeds" {
+    style.stroke-dash: 3
+    style.animated: true
+  }
+  bg_retry -> rmq.t2: "ConnectRabbitMQ (background retry)" {
+    style.stroke-dash: 3
+  }
+  rmq.t2 -> bg_retry: "conn, ch, nil  ✓\nlog.Info: rabbitmq reconnected\ngoroutine returns" {
+    style.stroke-dash: 3
+  }
+}
+main.s4 -> routes.t1: "5. registerRoutes()\n   mux.HandleFunc(\"GET /health\", ...)\n   + all business routes"
+routes.t1 -> main.s4: "mux ready"
+gateway_only: "── GATEWAY ONLY ──────────────────────────────" {
+  style.stroke-dash: 5
+  style.fill: "#f0f4ff"
+  style.font-color: "#6666cc"
+}
+main.g1 -> downstream.d1: "6. GatewayStartupHealthCheck()\n   GET /health  (url-service)" {
+  style.stroke: "#5588cc"
+}
+downstream.d1 -> main.g1: "200 OK  ✓  log.Info: healthy" {
+  style.stroke: "#5588cc"
+}
+main.g2 -> downstream.d2: "   GET /health  (analytics-service)" {
+  style.stroke: "#5588cc"
+}
+downstream.d2 -> main.g2: "err / non-200  ⚠  log.Warn: degraded\n(gateway starts regardless)" {
+  style.stroke: "#f4a261"
+  style.stroke-dash: 5
+}
+main.g3 -> downstream.d3: "   GET /health  (user-service)" {
+  style.stroke: "#5588cc"
+}
+downstream.d3 -> main.g3: "200 OK  ✓" {
+  style.stroke: "#5588cc"
+}
+main.g4 -> downstream.d4: "   GET /health  (notification-service)" {
+  style.stroke: "#5588cc"
+}
+downstream.d4 -> main.g4: "200 OK  ✓" {
+  style.stroke: "#5588cc"
+}
+main.s5 -> server.t1: "7. http.Server{ReadTimeout:5s,\n   WriteTimeout:10s, IdleTimeout:120s}\n   server.ListenAndServe()"
+server.t1 -> main.s5: "err != nil ◀ FATAL\nlog.Fatal → os.Exit(1)" {
+  style.stroke: red
+}
+server.t1 -> server.t1: "SERVING  ✓\nport bound — Docker healthcheck\nGET /health < 10ms"
+steps_legend: |md
+  **Step → outcome**
+  1. `mustGetEnv` — missing var → **FATAL**
+  2. `connectDB` — 5 retries fail → **FATAL**
+  3. `connectRedis` — PING fails → **WARN, continue** (nil client)
+  4. `connectRabbitMQ` — 5 retries fail → **WARN, background retry**
+  5. `registerRoutes` — cannot fail
+  6. `GatewayHealthCheck` — downstream down → **WARN, continue** *(gateway only)*
+  7. `ListenAndServe` — port bind fail → **FATAL**
+| {
+  near: top-left
+}

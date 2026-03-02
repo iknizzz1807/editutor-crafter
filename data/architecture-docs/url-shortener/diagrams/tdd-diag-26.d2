@@ -1,0 +1,509 @@
+layout-engine: elk
+theme-id: 4
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: down
+
+title: |'md
+  ## URLClickedEvent Ingestion — Idempotent Consumer Algorithm
+  **Per AMQP Delivery · analytics-service · Queue: analytics.clicks**
+'| {near: top-center}
+
+# ── LEGEND ──────────────────────────────────────────────────────────────────
+legend: {
+  near: bottom-right
+  style.fill: "#F8F8F8"
+  style.stroke: "#AAAAAA"
+  style.border-radius: 6
+  l1: "■ Purple  = Incoming / Header data" {
+    shape: text
+    style.font-color: "#7B2D8B"
+    style.bold: true
+  }
+  l2: "■ Blue    = Data written / read" {
+    shape: text
+    style.font-color: "#1A4F8A"
+    style.bold: true
+  }
+  l3: "■ Red     = Changed element this step" {
+    shape: text
+    style.font-color: "#B22222"
+    style.bold: true
+  }
+  l4: "■ Green   = Success / ACK path" {
+    shape: text
+    style.font-color: "#1A6E1A"
+    style.bold: true
+  }
+  l5: "■ Gray    = Unchanged / context" {
+    shape: text
+    style.font-color: "#555555"
+    style.bold: true
+  }
+  l6: "■ Orange  = Pointer / cursor / key" {
+    shape: text
+    style.font-color: "#CC6600"
+    style.bold: true
+  }
+}
+
+# ── INPUT ─────────────────────────────────────────────────────────────────
+input: "AMQP Delivery (amqp091.Delivery)" {
+  style.fill: "#EDE0F5"
+  style.stroke: "#7B2D8B"
+  style.stroke-width: 2
+  style.border-radius: 6
+  f1: |'md
+    **RoutingKey**: `"url.clicked"`
+    **Body (raw JSON)**:
+    json
+    {
+      "event_type":     "url.clicked",
+      "event_id":       "uuid-EID-001",
+      "occurred_at":    "2026-03-02T14:05:00Z",
+      "correlation_id": "uuid-CORR-42",
+      "short_code":     "aB3xY9z",
+      "user_id":        "uuid-USER-7",
+      "user_email":     "alice@example.com",
+      "ip_hash":        "&lt;sha256 from url-service&gt;",
+      "user_agent":     "Mozilla/5.0 ...",
+      "referer":        "https://twitter.com"
+    }
+    
+  '|
+}
+
+# ── STEP 1 ────────────────────────────────────────────────────────────────
+step1: "Step 1 · json.Unmarshal delivery.Body → URLClickedEvent" {
+  style.fill: "#FAFAFA"
+  style.stroke: "#888888"
+  style.border-radius: 6
+  before1: "BEFORE" {
+    style.fill: "#EEEEEE"
+    style.stroke: "#999999"
+    style.border-radius: 4
+    b: |'md
+      **in**: `delivery.Body` = raw `[]byte`
+      **event**: zero-value `URLClickedEvent{}`
+    '|
+  }
+  after1: "AFTER (success path)" {
+    style.fill: "#DCEEFF"
+    style.stroke: "#1A4F8A"
+    style.border-radius: 4
+    a: |'md
+      **event.EventID**       = `"uuid-EID-001"` **RED**
+      **event.ShortCode**     = `"aB3xY9z"` **RED**
+      **event.OccurredAt**    = `2026-03-02T14:05:00Z` **RED**
+      **event.CorrelationID** = `"uuid-CORR-42"` **RED**
+      **event.IPHash**        = `"&lt;sha256&gt;"` **RED**
+      **event.UserAgent**     = `"Mozilla/5.0 ..."` **RED**
+      **event.Referer**       = `"https://twitter.com"` **RED**
+    '|
+  }
+  error1: "AFTER (error path → POISON)" {
+    style.fill: "#FFE0E0"
+    style.stroke: "#B22222"
+    style.border-radius: 4
+    e: |'md
+      `json.Unmarshal` returns `err != nil`
+      → `log.Error("malformed URLClickedEvent")`
+      → `delivery.Ack(false)` ← remove poison msg
+      → **return ProcessResultPoisoned**
+    '|
+  }
+  before1 -> after1: "unmarshal OK" {
+    style.stroke: "#1A6E1A"
+    style.stroke-width: 2
+  }
+  before1 -> error1: "unmarshal ERR" {
+    style.stroke: "#B22222"
+    style.stroke-dash: 5
+  }
+}
+
+# ── STEP 2 ────────────────────────────────────────────────────────────────
+step2: "Step 2 · BEGIN Transaction" {
+  style.fill: "#FAFAFA"
+  style.stroke: "#888888"
+  style.border-radius: 6
+  before2: "BEFORE" {
+    style.fill: "#EEEEEE"
+    style.stroke: "#999999"
+    style.border-radius: 4
+    b: |'md
+      **tx** = nil (no active transaction)
+      **pool** = pgxpool.Pool (connected)
+    '|
+  }
+  after2: "AFTER" {
+    style.fill: "#DCEEFF"
+    style.stroke: "#1A4F8A"
+    style.border-radius: 4
+    a: |'md
+      **tx** = `pgx.Tx` (active) **RED**
+      **isolation**: ReadCommitted (default)
+      `DEFER tx.Rollback(ctx)` registered
+    '|
+  }
+  error2: "BEGIN fails" {
+    style.fill: "#FFE0E0"
+    style.stroke: "#B22222"
+    style.border-radius: 4
+    e: |'md
+      `pool.Begin` → `err != nil`
+      → `log.Error("begin tx failed")`
+      → `delivery.Nack(false, true)` ← requeue
+    '|
+  }
+  before2 -> after2: "pool.Begin OK" {style.stroke: "#1A6E1A"; style.stroke-width: 2}
+  before2 -> error2: "pool.Begin ERR" {style.stroke: "#B22222"; style.stroke-dash: 5}
+}
+
+# ── STEP 3 ────────────────────────────────────────────────────────────────
+step3: "Step 3 · Idempotency Check — processed_events" {
+  style.fill: "#FAFAFA"
+  style.stroke: "#888888"
+  style.border-radius: 6
+  sql3: {
+    label: |'md
+      sql
+      SELECT 1
+      FROM   processed_events
+      WHERE  event_id = $1          -- "uuid-EID-001"
+      
+    '|
+    style.fill: "#F5F0FF"
+    style.stroke: "#7B2D8B"
+    style.border-radius: 4
+  }
+  before3: "DB STATE before check" {
+    style.fill: "#EEEEEE"
+    style.stroke: "#999999"
+    style.border-radius: 4
+    b: |'md
+      **processed_events**
+      | event_id | processed_at |
+      |:---------|:-------------|
+      | (empty)  |              |
+      
+      **Pointer**: `event_id = "uuid-EID-001"`
+    '|
+  }
+  after3_new: "AFTER → new event (rows=0)" {
+    style.fill: "#DCEEFF"
+    style.stroke: "#1A4F8A"
+    style.border-radius: 4
+    a: |'md
+      Query returns **0 rows**
+      → `already = false`
+      → **continue to Step 4** ✓
+    '|
+  }
+  after3_dup: "AFTER → duplicate (rows=1)" {
+    style.fill: "#FFFACD"
+    style.stroke: "#CC6600"
+    style.border-radius: 4
+    a: |'md
+      Query returns **1 row**
+      → `already = true`
+      → `tx.Rollback(ctx)`
+      → `delivery.Ack(false)`
+      → **return ProcessResultDuplicate**
+    '|
+  }
+  before3 -> after3_new: "0 rows found" {style.stroke: "#1A6E1A"; style.stroke-width: 2}
+  before3 -> after3_dup: "1 row found" {style.stroke: "#CC6600"; style.stroke-width: 2}
+}
+
+# ── STEP 4 ────────────────────────────────────────────────────────────────
+step4: "Step 4 · Verify ip_hash in event" {
+  style.fill: "#FAFAFA"
+  style.stroke: "#888888"
+  style.border-radius: 6
+  note4: |'md
+    **Note**: analytics-service does NOT compute the IP hash.
+    url-service already computed: `sha256(raw_ip + CLICK_SALT)`
+    **This service NEVER sees the raw IP address.**
+  '| {style.fill: "#FFF8DC"; style.stroke: "#CC6600"; style.border-radius: 4}
+  before4: "BEFORE" {
+    style.fill: "#EEEEEE"
+    style.stroke: "#999999"
+    style.border-radius: 4
+    b: |'md
+      `event.IPHash` = `"a3f8c2d1..."`
+    '|
+  }
+  after4: "AFTER" {
+    style.fill: "#DCEEFF"
+    style.stroke: "#1A4F8A"
+    style.border-radius: 4
+    a: |'md
+      `ipHash` = `event.IPHash` **RED**
+      Raw IP: **never stored or logged**
+    '|
+  }
+  before4 -> after4: "assign ipHash" {style.stroke: "#1A6E1A"; style.stroke-width: 2}
+}
+
+# ── STEP 5 ────────────────────────────────────────────────────────────────
+step5: "Step 5 · INSERT INTO clicks (within tx)" {
+  style.fill: "#FAFAFA"
+  style.stroke: "#888888"
+  style.border-radius: 6
+  sql5: {
+    label: |'md
+      sql
+      INSERT INTO clicks
+        (short_code, clicked_at, ip_hash, user_agent, referer)
+      VALUES
+        ($1,         $2,         $3,      $4,         $5)
+      
+    '|
+    style.fill: "#F5F0FF"
+    style.stroke: "#7B2D8B"
+    style.border-radius: 4
+  }
+  before5: "clicks table BEFORE" {
+    style.fill: "#EEEEEE"
+    style.stroke: "#999999"
+    style.border-radius: 4
+    b: |'md
+      | id | short_code | clicked_at | ip_hash |
+      |:---|:-----------|:-----------|:--------|
+      | …  | aB3xY9z    | (prior)    | …       |
+    '|
+  }
+  after5: "clicks table AFTER (uncommitted)" {
+    style.fill: "#DCEEFF"
+    style.stroke: "#B22222"
+    style.border-radius: 4
+    a: |'md
+      | id | short_code | clicked_at | ip_hash |
+      |:---|:-----------|:-----------|:--------|
+      | **gen** | **aB3xY9z** | **2026-03-02** | **a3f8...** |
+    '|
+  }
+  error5: "INSERT fails" {
+    style.fill: "#FFE0E0"
+    style.stroke: "#B22222"
+    style.border-radius: 4
+    e: |'md
+      `clickRepo.Insert` → `err != nil`
+      → `tx.Rollback`
+    '|
+  }
+  before5 -> after5: "INSERT OK" {style.stroke: "#1A6E1A"; style.stroke-width: 2}
+  before5 -> error5: "INSERT ERR" {style.stroke: "#B22222"; style.stroke-dash: 5}
+}
+
+# ── STEP 6 ────────────────────────────────────────────────────────────────
+step6: "Step 6 · INSERT INTO processed_events (within tx)" {
+  style.fill: "#FAFAFA"
+  style.stroke: "#888888"
+  style.border-radius: 6
+  sql6: {
+    label: |'md
+      sql
+      INSERT INTO processed_events (event_id)
+      VALUES ($1)                      -- "uuid-EID-001"
+      ON CONFLICT (event_id) DO NOTHING
+      
+    '|
+    style.fill: "#F5F0FF"
+    style.stroke: "#7B2D8B"
+    style.border-radius: 4
+  }
+  before6: "processed_events BEFORE" {
+    style.fill: "#EEEEEE"
+    style.stroke: "#999999"
+    style.border-radius: 4
+    b: |'md
+      | event_id | processed_at |
+      |:---------|:-------------|
+      | (empty)  |              |
+    '|
+  }
+  after6: "processed_events AFTER (uncommitted)" {
+    style.fill: "#DCEEFF"
+    style.stroke: "#B22222"
+    style.border-radius: 4
+    a: |'md
+      | event_id | processed_at |
+      |:---------|:-------------|
+      | **uuid-EID-001** | **now()** |
+    '|
+  }
+  error6: "INSERT fails" {
+    style.fill: "#FFE0E0"
+    style.stroke: "#B22222"
+    style.border-radius: 4
+    e: |'md
+      `processedRepo.MarkProcessed` → `err != nil`
+      → `tx.Rollback`
+    '|
+  }
+  before6 -> after6: "INSERT OK" {style.stroke: "#1A6E1A"; style.stroke-width: 2}
+  before6 -> error6: "INSERT ERR" {style.stroke: "#B22222"; style.stroke-dash: 5}
+}
+
+# ── STEP 7 ────────────────────────────────────────────────────────────────
+step7: "Step 7 · SELECT COUNT(*) — totalClicks (within tx)" {
+  style.fill: "#FAFAFA"
+  style.stroke: "#888888"
+  style.border-radius: 6
+  sql7: {
+    label: |'md
+      sql
+      SELECT COUNT(*)
+      FROM   clicks
+      WHERE  short_code = $1     -- "aB3xY9z"
+      
+    '|
+    style.fill: "#F5F0FF"
+    style.stroke: "#7B2D8B"
+    style.border-radius: 4
+  }
+  before7: "BEFORE" {
+    style.fill: "#EEEEEE"
+    style.stroke: "#999999"
+    style.border-radius: 4
+    b: |'md
+      Prior count: **9**
+      New uncommitted: **+1**
+    '|
+  }
+  after7: "AFTER" {
+    style.fill: "#DCEEFF"
+    style.stroke: "#B22222"
+    style.border-radius: 4
+    a: |'md
+      `totalClicks` = **10** **RED**
+    '|
+  }
+  before7 -> after7: "COUNT OK" {style.stroke: "#1A6E1A"; style.stroke-width: 2}
+}
+
+# ── STEP 8 ────────────────────────────────────────────────────────────────
+step8: "Step 8 · Milestone Threshold Check + INSERT INTO milestones" {
+  style.fill: "#FAFAFA"
+  style.stroke: "#888888"
+  style.border-radius: 6
+  thresholds: "Threshold Set: [10, 100, 1000]" {
+    style.fill: "#EDE0F5"
+    style.stroke: "#7B2D8B"
+    style.border-radius: 4
+    t: |'md
+      **Detector.Detect(newTotal=10)**
+      → `crossed = 10`
+    '|
+  }
+  before8: "milestones table BEFORE" {
+    style.fill: "#EEEEEE"
+    style.stroke: "#999999"
+    style.border-radius: 4
+    b: |'md
+      | id | short_code | milestone |
+      |:---|:-----------|:----------|
+      | (empty) |        |           |
+    '|
+  }
+  after8_yes: "AFTER → threshold crossed" {
+    style.fill: "#DCEEFF"
+    style.stroke: "#B22222"
+    style.border-radius: 4
+    a: |'md
+      | id | short_code | milestone |
+      |:---|:-----------|:----------|
+      | **gen** | **aB3xY9z** | **10** |
+    '|
+  }
+  thresholds -> before8
+  before8 -> after8_yes: "crossed=10" {style.stroke: "#B22222"; style.stroke-width: 2}
+}
+
+# ── STEP 9 ────────────────────────────────────────────────────────────────
+step9: "Step 9 · tx.Commit()" {
+  style.fill: "#FAFAFA"
+  style.stroke: "#888888"
+  style.border-radius: 6
+  what9: "What commits atomically:" {
+    style.fill: "#DCEEFF"
+    style.stroke: "#1A4F8A"
+    style.border-radius: 4
+    w: |'md
+      ① clicks row **RED**
+      ② processed_events row **RED**
+      ③ milestones row **RED**
+    '|
+  }
+}
+
+# ── STEP 10 ───────────────────────────────────────────────────────────────
+step10: "Step 10 · delivery.Ack(false)" {
+  style.fill: "#E8F5E9"
+  style.stroke: "#1A6E1A"
+  style.border-radius: 6
+  ack10: "Msg removed from Broker" {
+    style.fill: "#C8E6C9"
+    style.stroke: "#1A6E1A"
+    style.border-radius: 4
+  }
+}
+
+# ── STEP 11 ───────────────────────────────────────────────────────────────
+step11: "Step 11 · Publish MilestoneReachedEvent (outside tx)" {
+  style.fill: "#FAFAFA"
+  style.stroke: "#888888"
+  style.border-radius: 6
+  guard11: "Guard: milestoneInserted == true?" {
+    style.fill: "#EDE0F5"
+    style.stroke: "#7B2D8B"
+    style.border-radius: 4
+    g: |'md
+      Build & Publish to exchange `"url-shortener"`
+    '|
+  }
+  event11: "MilestoneReachedEvent payload" {
+    style.fill: "#DCEEFF"
+    style.stroke: "#1A4F8A"
+    style.border-radius: 4
+    e: |'md
+      json
+      {
+        "event_type":     "milestone.reached",
+        "short_code":     "aB3xY9z",
+        "milestone":      10,
+        "total_clicks":   10
+      }
+      
+    '|
+  }
+  result11: "return ProcessResultInserted" {
+    style.fill: "#C8E6C9"
+    style.stroke: "#1A6E1A"
+    style.border-radius: 4
+    style.bold: true
+  }
+  guard11 -> event11: "milestone=true" {style.stroke: "#1A6E1A"; style.stroke-width: 2}
+  event11 -> result11: "publish OK" {style.stroke: "#1A6E1A"; style.stroke-width: 2}
+}
+
+# ── FLOW CONNECTIONS ──────────────────────────────────────────────────────
+input -> step1: "delivery arrives" {style.stroke: "#7B2D8B"; style.stroke-width: 2}
+step1 -> step2: "Step 1 OK" {style.stroke: "#1A6E1A"; style.stroke-width: 2}
+step2 -> step3: "Step 2 OK" {style.stroke: "#1A6E1A"; style.stroke-width: 2}
+step3 -> step4: "not duplicate" {style.stroke: "#1A6E1A"; style.stroke-width: 2}
+step4 -> step5: "ipHash assigned" {style.stroke: "#1A6E1A"; style.stroke-width: 2}
+step5 -> step6: "Step 5 OK" {style.stroke: "#1A6E1A"; style.stroke-width: 2}
+step6 -> step7: "Step 6 OK" {style.stroke: "#1A6E1A"; style.stroke-width: 2}
+step7 -> step8: "totalClicks=10" {style.stroke: "#1A6E1A"; style.stroke-width: 2}
+step8 -> step9: "milestone checked" {style.stroke: "#1A6E1A"; style.stroke-width: 2}
+step9 -> step10: "COMMIT OK" {style.stroke: "#1A6E1A"; style.stroke-width: 2}
+step10 -> step11: "ACK sent" {style.stroke: "#1A6E1A"; style.stroke-width: 2}

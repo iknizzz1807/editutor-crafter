@@ -1,0 +1,227 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+title: |md
+  ## Circuit Breaker State Machine
+  **url-shortener-m5** · `gateway/circuitbreaker/circuitbreaker.go`
+  Mutex (`mu sync.Mutex`) held on ALL state reads/writes except `State()` (atomic)
+| {near: top-center}
+# ── STATE NODES ────────────────────────────────────────────────────────────────
+initial: "" {
+  shape: circle
+  style.fill: "#1a1a2e"
+  style.stroke: "#1a1a2e"
+  width: 24
+  height: 24
+  label: ""
+}
+closed: CLOSED {
+  shape: rectangle
+  style.fill: "#1a4731"
+  style.stroke: "#2ecc71"
+  style.stroke-width: 3
+  style.border-radius: 8
+  style.font-color: "#eafaf1"
+  style.bold: true
+  invariants: |md
+    **Invariants**
+    - `state == StateClosed`
+    - `openedAt.IsZero() == true`
+    - `failureCount ∈ [0, threshold)`
+    - `probeInFlight == false`
+    **Fields (live)**
+    `state        State   = 0 (Closed)`
+    `failureCount int     ∈ [0,5)`
+    `lastFailureAt time.Time`
+    `openedAt     time.Time  // zero`
+    `probeInFlight bool   = false`
+    **Allow() → (true, nil)**
+    always permits; resets count on RecordSuccess
+  | {style.fill: "#0d3324"; style.font-color: "#a9dfbf"; style.border-radius: 4}
+}
+open: OPEN {
+  shape: rectangle
+  style.fill: "#4a1020"
+  style.stroke: "#e74c3c"
+  style.stroke-width: 3
+  style.border-radius: 8
+  style.font-color: "#fde8e8"
+  style.bold: true
+  invariants: |md
+    **Invariants**
+    - `state == StateOpen`
+    - `openedAt.IsZero() == false`
+    - `failureCount == 0`
+    - `probeInFlight == false`
+    **Fields (live)**
+    `state        State   = 1 (Open)`
+    `failureCount int     = 0`
+    `lastFailureAt time.Time`
+    `openedAt     time.Time  // set on trip`
+    `probeInFlight bool   = false`
+    **Allow() → (false, ErrCircuitOpen)**
+    until `time.Since(openedAt) >= 30s`
+  | {style.fill: "#2d0a14"; style.font-color: "#f1948a"; style.border-radius: 4}
+}
+halfopen: HALF_OPEN {
+  shape: rectangle
+  style.fill: "#4a3500"
+  style.stroke: "#f39c12"
+  style.stroke-width: 3
+  style.border-radius: 8
+  style.font-color: "#fef9e7"
+  style.bold: true
+  invariants: |md
+    **Invariants**
+    - `state == StateHalfOpen`
+    - `openedAt.IsZero() == false`
+    - `failureCount == 0`
+    - `probeInFlight ∈ {true, false}`
+    **Fields (live)**
+    `state        State   = 2 (HalfOpen)`
+    `failureCount int     = 0`
+    `lastFailureAt time.Time`
+    `openedAt     time.Time  // retained`
+    `probeInFlight bool   // true = probe active`
+    **Allow() — probe slot:**
+    `!probeInFlight` → set true, return (true, nil)
+    `probeInFlight`  → return (false, ErrCircuitOpen)
+  | {style.fill: "#2d2000"; style.font-color: "#f8c471"; style.border-radius: 4}
+}
+# ── ILLEGAL TRANSITION ANNOTATIONS ────────────────────────────────────────────
+illegal_open_closed: "ILLEGAL: OPEN → CLOSED\ndirect skip of HALF_OPEN probe\nviolates recovery contract" {
+  shape: rectangle
+  style.fill: "#2c0a0a"
+  style.stroke: "#c0392b"
+  style.stroke-dash: 5
+  style.font-color: "#f1948a"
+  style.border-radius: 4
+  style.font-size: 12
+}
+illegal_closed_halfopen: "ILLEGAL: CLOSED → HALF_OPEN\nno failure threshold crossed;\nmust pass through OPEN" {
+  shape: rectangle
+  style.fill: "#2c0a0a"
+  style.stroke: "#c0392b"
+  style.stroke-dash: 5
+  style.font-color: "#f1948a"
+  style.border-radius: 4
+  style.font-size: 12
+}
+illegal_halfopen_self: "ILLEGAL: HALF_OPEN → HALF_OPEN\n(self-loop)\nprobe must resolve to\nCLOSED or OPEN; no re-entry" {
+  shape: rectangle
+  style.fill: "#2c0a0a"
+  style.stroke: "#c0392b"
+  style.stroke-dash: 5
+  style.font-color: "#f1948a"
+  style.border-radius: 4
+  style.font-size: 12
+}
+# ── LEGEND ─────────────────────────────────────────────────────────────────────
+legend: |md
+  **Legend**
+  🟢 CLOSED — normal traffic flow
+  🔴 OPEN — fast-fail; 503 returned immediately
+  🟡 HALF_OPEN — single probe allowed; all others → 503
+  **Failure definition:** HTTP 5xx from downstream
+  OR connection refused / timeout (30 s)
+  **Mutex:** `mu sync.Mutex` acquired in `Allow()`,
+  `RecordSuccess()`, `RecordFailure()`
+  **Atomic read:** `State()` uses `atomic.LoadInt32`
+  (no mutex needed for observability-only reads)
+  **Config (DefaultConfig):**
+  `FailureThreshold = 5` consecutive failures
+  `Window           = 10 s` observation period
+  `OpenDuration     = 30 s` before probe allowed
+| {
+  near: bottom-center
+  style.fill: "#1a1a2e"
+  style.stroke: "#4a4a6e"
+  style.font-color: "#c8c8e8"
+  style.border-radius: 6
+}
+# ── TRANSITIONS ────────────────────────────────────────────────────────────────
+# Initial → CLOSED
+initial -> closed: "" {
+  style.stroke: "#2ecc71"
+  style.stroke-width: 2
+}
+# CLOSED → OPEN  (trip)
+closed -> open: "TRIP\n[trigger: RecordFailure() called by proxy goroutine]\n[guard: failureCount++ >= FailureThreshold(5)\n  AND time.Since(lastFailureAt) <= Window(10s)]\n[action: state=Open; openedAt=now();\n  failureCount=0; log.Warn 'circuit tripped']\n▼ mu.Lock() acquired; ▲ mu.Unlock() on return" {
+  style.stroke: "#e74c3c"
+  style.stroke-width: 3
+  style.font-color: "#e74c3c"
+  style.bold: true
+}
+# CLOSED → CLOSED (window reset path, self-edge)
+closed -> closed: "WINDOW RESET\n[trigger: RecordFailure()]\n[guard: time.Since(lastFailureAt) > Window(10s)]\n[action: failureCount=1; lastFailureAt=now()]\n(no state change; failure count restarted)" {
+  style.stroke: "#27ae60"
+  style.stroke-dash: 4
+  style.font-color: "#27ae60"
+}
+# CLOSED → CLOSED (success reset)
+closed -> closed: "SUCCESS RESET\n[trigger: RecordSuccess() called by ModifyResponse]\n[guard: state==Closed]\n[action: failureCount=0]\n▼ mu.Lock(); ▲ mu.Unlock()" {
+  style.stroke: "#58d68d"
+  style.stroke-dash: 3
+  style.font-color: "#58d68d"
+}
+# OPEN → HALF_OPEN  (cooldown elapsed)
+open -> halfopen: "COOLDOWN ELAPSED\n[trigger: Allow() called by any request goroutine]\n[guard: time.Since(openedAt) >= OpenDuration(30s)]\n[action: state=HalfOpen; probeInFlight=true;\n  failureCount=0; return (true,nil) — THIS request IS the probe]\n▼ mu.Lock() in Allow(); ▲ mu.Unlock()" {
+  style.stroke: "#f39c12"
+  style.stroke-width: 3
+  style.font-color: "#f39c12"
+  style.bold: true
+}
+# HALF_OPEN → CLOSED  (probe success)
+halfopen -> closed: "PROBE SUCCESS\n[trigger: RecordSuccess() called by ModifyResponse]\n[guard: state==HalfOpen]\n[action: state=Closed; probeInFlight=false;\n  failureCount=0; openedAt=time.Time{} (zero)]\n▼ mu.Lock(); ▲ mu.Unlock()" {
+  style.stroke: "#2ecc71"
+  style.stroke-width: 3
+  style.font-color: "#2ecc71"
+  style.bold: true
+}
+# HALF_OPEN → OPEN  (probe failure)
+halfopen -> open: "PROBE FAILURE\n[trigger: RecordFailure() called by ErrorHandler or ModifyResponse]\n[guard: state==HalfOpen]\n[action: state=Open; openedAt=now() (fresh timer);\n  probeInFlight=false; failureCount=0]\n▼ mu.Lock(); ▲ mu.Unlock()" {
+  style.stroke: "#e74c3c"
+  style.stroke-width: 3
+  style.font-color: "#e74c3c"
+  style.bold: true
+}
+# ── ILLEGAL TRANSITION CONNECTIONS (dashed red) ────────────────────────────────
+open -> illegal_open_closed: "" {
+  style.stroke: "#c0392b"
+  style.stroke-dash: 5
+  style.stroke-width: 2
+  target-arrowhead.shape: arrow
+}
+illegal_open_closed -> closed: "" {
+  style.stroke: "#c0392b"
+  style.stroke-dash: 5
+  style.stroke-width: 2
+  target-arrowhead.shape: arrow
+}
+closed -> illegal_closed_halfopen: "" {
+  style.stroke: "#c0392b"
+  style.stroke-dash: 5
+  style.stroke-width: 2
+  target-arrowhead.shape: arrow
+}
+illegal_closed_halfopen -> halfopen: "" {
+  style.stroke: "#c0392b"
+  style.stroke-dash: 5
+  style.stroke-width: 2
+  target-arrowhead.shape: arrow
+}
+halfopen -> illegal_halfopen_self: "" {
+  style.stroke: "#c0392b"
+  style.stroke-dash: 5
+  style.stroke-width: 2
+  target-arrowhead.shape: arrow
+}
+illegal_halfopen_self -> halfopen: "" {
+  style.stroke: "#c0392b"
+  style.stroke-dash: 5
+  style.stroke-width: 2
+  target-arrowhead.shape: arrow
+}

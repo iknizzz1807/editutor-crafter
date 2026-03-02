@@ -1,0 +1,217 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+direction: right
+title: |md
+  ## JWT Middleware State Machine (per request)
+  `shared/middleware.RequireAuth` — one lifecycle per HTTP request
+| {near: top-center}
+START: "● START" {
+  shape: circle
+  style.fill: "#1a1a2e"
+  style.font-color: white
+  style.stroke: "#4a4a8a"
+}
+EXTRACT_HEADER: "EXTRACT_HEADER" {
+  shape: rectangle
+  style.fill: "#2d1b69"
+  style.font-color: white
+  style.border-radius: 6
+  style.bold: true
+  label: |md
+    **EXTRACT_HEADER**
+    `r.Header.Get("Authorization")`
+    invariant: header value is raw string or ""
+  |
+}
+PARSE_BEARER: "PARSE_BEARER" {
+  shape: rectangle
+  style.fill: "#2d1b69"
+  style.font-color: white
+  style.border-radius: 6
+  style.bold: true
+  label: |md
+    **PARSE_BEARER**
+    `strings.HasPrefix(v, "Bearer ")`
+    `tokenStr = strings.TrimPrefix(v, "Bearer ")`
+    invariant: tokenStr non-empty
+  |
+}
+VERIFY_SIGNATURE: "VERIFY_SIGNATURE" {
+  shape: rectangle
+  style.fill: "#3b0764"
+  style.font-color: white
+  style.border-radius: 6
+  style.bold: true
+  label: |md
+    **VERIFY_SIGNATURE**
+    `jwt.Parse(tokenStr, keyFunc)`
+    `keyFunc` checks `alg == HS256`
+    HMAC-SHA256 vs JWT_SECRET
+    invariant: alg is HS256; issuer == "url-shortener"
+  |
+}
+CHECK_EXPIRY: "CHECK_EXPIRY" {
+  shape: rectangle
+  style.fill: "#2d1b69"
+  style.font-color: white
+  style.border-radius: 6
+  style.bold: true
+  label: |md
+    **CHECK_EXPIRY**
+    `claims["exp"] > time.Now().Unix()`
+    invariant: token not yet expired
+  |
+}
+INJECT_CLAIMS: "INJECT_CLAIMS" {
+  shape: rectangle
+  style.fill: "#1a472a"
+  style.font-color: white
+  style.border-radius: 6
+  style.bold: true
+  label: |md
+    **INJECT_CLAIMS**
+    `ctx = context.WithValue(r.Context(),`
+    `  ClaimsContextKey, claims)`
+    `r = r.WithContext(ctx)`
+    invariant: claims.Sub, claims.Email non-empty
+  |
+}
+NEXT_HANDLER: "NEXT_HANDLER" {
+  shape: rectangle
+  style.fill: "#14532d"
+  style.font-color: white
+  style.border-radius: 6
+  style.bold: true
+  label: |md
+    **NEXT_HANDLER**
+    `next.ServeHTTP(w, r)`
+    invariant: ClaimsContextKey present in ctx
+  |
+}
+END: "● END" {
+  shape: circle
+  style.fill: "#14532d"
+  style.font-color: white
+  style.stroke: "#4ade80"
+  style.double-border: true
+}
+REJECT_401: "REJECT 401" {
+  shape: rectangle
+  style.fill: "#7f1d1d"
+  style.font-color: "#fca5a5"
+  style.stroke: "#ef4444"
+  style.stroke-width: 3
+  style.border-radius: 6
+  label: |md
+    **REJECT — 401 Unauthorized**
+    `w.WriteHeader(401)`
+    body: `{"error":"unauthorized"}`
+    `Content-Type: application/json`
+    *request terminates; next NOT called*
+  |
+}
+ILLEGAL: "⚠ ILLEGAL TRANSITION" {
+  shape: rectangle
+  style.fill: "#1c0a00"
+  style.font-color: "#fb923c"
+  style.stroke: "#ea580c"
+  style.stroke-dash: 5
+  style.stroke-width: 3
+  style.border-radius: 4
+  label: |md
+    **ILLEGAL**
+    Skip VERIFY_SIGNATURE
+    Security violation: unverified
+    claims injected into context
+  |
+}
+START -> EXTRACT_HEADER: "request enters\nmiddleware" {
+  style.stroke: "#818cf8"
+  style.stroke-width: 2
+}
+EXTRACT_HEADER -> PARSE_BEARER: "header present\n`Authorization: Bearer …`" {
+  style.stroke: "#4ade80"
+  style.stroke-width: 2
+}
+EXTRACT_HEADER -> REJECT_401: "header absent\nor empty string" {
+  style.stroke: "#ef4444"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+  label: "→ 401\n`{\"error\":\"unauthorized\"}`"
+}
+PARSE_BEARER -> VERIFY_SIGNATURE: "prefix matches\ntokenStr non-empty" {
+  style.stroke: "#4ade80"
+  style.stroke-width: 2
+}
+PARSE_BEARER -> REJECT_401: "no `Bearer ` prefix\nor empty token after trim" {
+  style.stroke: "#ef4444"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+  label: "→ 401\n`{\"error\":\"unauthorized\"}`"
+}
+VERIFY_SIGNATURE -> CHECK_EXPIRY: "HMAC valid\nalg == HS256\niss == \"url-shortener\"" {
+  style.stroke: "#4ade80"
+  style.stroke-width: 2
+}
+VERIFY_SIGNATURE -> REJECT_401: "bad signature\nwrong alg\nwrong issuer\nmalformed JWT" {
+  style.stroke: "#ef4444"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+  label: "→ 401\n`{\"error\":\"unauthorized\"}`\nlog.Warn (potential attack)"
+}
+CHECK_EXPIRY -> INJECT_CLAIMS: "exp > now\ntoken valid" {
+  style.stroke: "#4ade80"
+  style.stroke-width: 2
+}
+CHECK_EXPIRY -> REJECT_401: "exp <= now\ntoken expired" {
+  style.stroke: "#ef4444"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+  label: "→ 401\n`{\"error\":\"unauthorized\"}`\nno expiry detail exposed"
+}
+INJECT_CLAIMS -> NEXT_HANDLER: "`ClaimsContextKey` set\nin request context" {
+  style.stroke: "#4ade80"
+  style.stroke-width: 2
+}
+NEXT_HANDLER -> END: "handler returns\nw written" {
+  style.stroke: "#4ade80"
+  style.stroke-width: 2
+}
+REJECT_401 -> END: "w written\nrequest terminates" {
+  style.stroke: "#ef4444"
+  style.stroke-width: 2
+}
+PARSE_BEARER -> INJECT_CLAIMS: "ILLEGAL: skip VERIFY_SIGNATURE" {
+  style.stroke: "#ea580c"
+  style.stroke-width: 3
+  style.stroke-dash: 5
+  style.font-color: "#fb923c"
+  target-arrowhead: {
+    shape: arrow
+    style.filled: true
+  }
+}
+ILLEGAL -> PARSE_BEARER: "" {
+  style.stroke: "#ea580c"
+  style.stroke-dash: 4
+  style.opacity: 0.5
+}
+ILLEGAL -> INJECT_CLAIMS: "" {
+  style.stroke: "#ea580c"
+  style.stroke-dash: 4
+  style.opacity: 0.5
+}
+legend: |md
+  **Legend**
+  ● → start/end state
+  🟣 normal processing state
+  🟢 success / data mutation state
+  🔴 rejection terminal (401)
+  ━━ happy-path transition
+  ╌╌ rejection transition (labeled with HTTP status + body)
+  🟠╌╌ ILLEGAL transition (must never occur)
+| {near: bottom-left}

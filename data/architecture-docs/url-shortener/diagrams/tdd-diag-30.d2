@@ -1,0 +1,230 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: down
+
+title: {
+  label: |'md
+    ## Timeline `date_trunc` Bucketing Algorithm
+    `GET /stats/:code/timeline?interval=day|hour`
+  '|
+  near: top-center
+}
+
+# --- INPUT ---
+input: "INPUT DATA" {
+  style.fill: "#E8F4FD"
+  style.stroke: "#2980B9"
+  style.border-radius: 6
+  req: {
+    label: |'md
+      **HTTP Request**
+      `GET /stats/{code}/timeline?interval=day`
+      - `shortCode` from path
+      - `interval` from query string
+      - Raw untrusted values
+    '|
+  }
+}
+
+# --- STEP 1 ---
+step1: "STEP 1: Validate Params" {
+  style.fill: "#FFF9C4"
+  style.stroke: "#F39C12"
+  style.stroke-width: 2
+  style.border-radius: 6
+
+  check: {
+    label: |'md
+      go
+      interval := r.URL.Query().Get("interval")
+      if interval == "" { interval = "day" }
+      if interval != "day" && interval != "hour" {
+          return Error400
+      }
+      
+      **Literal white-list:** `day`, `hour` only.
+    '|
+  }
+
+  bad_path: "400 Bad Request" {
+    style.fill: "#FDEDEC"
+    style.stroke: "#E74C3C"
+    style.stroke-width: 2
+    style.border-radius: 4
+    label: "Error: interval must be day or hour"
+  }
+
+  good_path: "Validation Passed" {
+    style.fill: "#EAFAF1"
+    style.stroke: "#27AE60"
+    style.border-radius: 4
+  }
+}
+
+# --- STEP 2 ---
+step2: "STEP 2: SQL Construction" {
+  style.fill: "#FFF9C4"
+  style.stroke: "#F39C12"
+  style.stroke-width: 2
+  style.border-radius: 6
+
+  sql_block: {
+    label: |'md
+      sql
+      SELECT
+        date_trunc('%s', clicked_at AT TIME ZONE 'UTC') AS period,
+        COUNT(*) AS clicks
+      FROM clicks
+      WHERE short_code = $1
+      GROUP BY period
+      ORDER BY period ASC
+      
+    '|
+  }
+
+  why_literal: "Safety Note" {
+    style.fill: "#EBF5FB"
+    style.stroke: "#2980B9"
+    style.border-radius: 4
+    label: |'md
+      **Interpolation Safety**
+      Validated to "day"|"hour" in Step 1.
+      Interpolation is safe; `short_code` 
+      remains a bound parameter ($1).
+    '|
+  }
+
+  tz_note: "Timezone Logic" {
+    style.fill: "#F9EBEA"
+    style.stroke: "#E74C3C"
+    style.border-radius: 4
+    label: "AT TIME ZONE 'UTC' ensures consistent bucket boundaries."
+  }
+}
+
+# --- STEP 3 ---
+step3: "STEP 3: Data Scanning" {
+  style.fill: "#FFF9C4"
+  style.stroke: "#F39C12"
+  style.stroke-width: 2
+  style.border-radius: 6
+
+  struct_def: {
+    label: |'md
+      go
+      type PeriodCount struct {
+          Period time.Time
+          Clicks int64
+      }
+      
+    '|
+  }
+
+  scan_loop: {
+    label: |'md
+      go
+      for rows.Next() {
+          rows.Scan(&pc.Period, &pc.Clicks)
+          results = append(results, pc)
+      }
+      
+    '|
+  }
+
+  pgx_note: "Driver Mapping" {
+    style.fill: "#EBF5FB"
+    style.stroke: "#2980B9"
+    style.border-radius: 4
+    label: "pgx v5 maps TIMESTAMPTZ to time.Time in UTC"
+  }
+}
+
+# --- STEP 4 ---
+step4: "STEP 4: API Response" {
+  style.fill: "#FFF9C4"
+  style.stroke: "#F39C12"
+  style.stroke-width: 2
+  style.border-radius: 6
+
+  format_logic: {
+    label: |'md
+      go
+      func format(t time.Time, iv string) string {
+        if iv == "day" { return t.Format("2006-01-02") }
+        return t.Format(time.RFC3339)
+      }
+      
+    '|
+  }
+
+  response_wire: "JSON Output" {
+    style.fill: "#EAFAF1"
+    style.stroke: "#27AE60"
+    style.border-radius: 4
+    label: |'md
+      **Wire Format**
+      - `{"period": "2026-03-01", "clicks": 42}`
+      - Points array always non-null `[]`
+    '|
+  }
+}
+
+# --- Flows ---
+input -> step1: "raw params" {
+  style.stroke: "#2980B9"
+  style.stroke-width: 2
+}
+
+step1.check -> step1.bad_path: "invalid" {
+  style.stroke: "#E74C3C"
+  style.stroke-dash: 4
+}
+
+step1.check -> step1.good_path: "valid" {
+  style.stroke: "#27AE60"
+}
+
+step1.good_path -> step2: "validated interval" {
+  style.stroke: "#27AE60"
+}
+
+step2.sql_block -> step2.why_literal: { style.stroke-dash: 3 }
+step2.sql_block -> step2.tz_note: { style.stroke-dash: 3 }
+
+step2 -> step3: "rows.Query()" {
+  style.stroke: "#8E44AD"
+}
+
+step3.scan_loop -> step3.pgx_note: { style.stroke-dash: 3 }
+
+step3 -> step4: "slice result" {
+  style.stroke: "#8E44AD"
+}
+
+step4.format_logic -> step4.response_wire: "HTTP 200" {
+  style.stroke: "#27AE60"
+}
+
+# --- Plan ---
+qplan: "PostgreSQL Query Plan" {
+  style.fill: "#F4F6F7"
+  style.stroke: "#7F8C8D"
+  style.border-radius: 4
+  near: bottom-right
+  label: |'md
+    **Execution Strategy**
+    1. Index Scan: `idx_clicks_short_code`
+    2. HashAggregate: Group by truncated time
+    3. Memory Sort: Ascending period
+  '|
+}
+
+step2 -> qplan: {
+  style.stroke: "#7F8C8D"
+  style.stroke-dash: 5
+}

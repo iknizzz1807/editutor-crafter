@@ -1,0 +1,242 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: down
+
+title: {
+  shape: text
+  near: top-center
+  label: |md
+    ## Cursor-Based Pagination Algorithm — GET /urls
+    **Why not LIMIT/OFFSET?** OFFSET N forces the DB to scan and discard N rows — O(N) full-index skip scan.
+    Cursor uses `(created_at, id) <` predicate → O(log N) index range scan every time.
+  |
+}
+
+# ─── BEFORE / AFTER side-by-side comparison ───────────────────────────────────
+comparison: {
+  grid-columns: 2
+  
+  "offset_approach": "LIMIT/OFFSET Anti-Pattern" {
+    style: {
+      fill: "#ffd6d6"
+      stroke: "#cc0000"
+      stroke-width: 2
+      border-radius: 8
+    }
+    label: |md
+      ### ❌ LIMIT/OFFSET (avoid)
+      sql
+      SELECT * FROM urls
+      WHERE user_id = $1
+      ORDER BY created_at DESC
+      LIMIT 20 OFFSET 200;
+      
+      **Problem:** DB engine must traverse 220 index entries and discard first 200.
+      **Complexity: O(OFFSET)**
+    |
+  }
+
+  "cursor_approach": "Cursor / Keyset Approach" {
+    style: {
+      fill: "#d6ffd6"
+      stroke: "#006600"
+      stroke-width: 2
+      border-radius: 8
+    }
+    label: |md
+      ### ✅ Cursor / Keyset (use this)
+      sql
+      SELECT * FROM urls
+      WHERE user_id = $1
+        AND (created_at, id) < (
+          SELECT created_at, id
+          FROM urls WHERE id = $2)
+      ORDER BY created_at DESC, id DESC
+      LIMIT 21;
+      
+      DB seeks directly to row via index.
+      **Complexity: O(log N)**
+    |
+  }
+}
+
+# ─── STEP-BY-STEP ALGORITHM ───────────────────────────────────────────────────
+steps_box: "Algorithm Steps" {
+  direction: down
+  style: {
+    fill: "#f0f4ff"
+    stroke: "#3355aa"
+    stroke-width: 2
+    border-radius: 8
+  }
+
+  step1: "Step 1: Extract Params" {
+    style: {
+      fill: "#e8e0ff"
+      stroke: "#6633cc"
+      stroke-width: 2
+      border-radius: 6
+    }
+    label: |md
+      **Extract:** `after` (UUID) and `limit` (int).
+      **Validate:** Clamp limit [1, 100]. Check UUID format.
+      **Null Check:** `after == ""` implies first page.
+    |
+  }
+
+  step2: "Step 2: Build Query" {
+    style: {
+      fill: "#fff0cc"
+      stroke: "#cc8800"
+      stroke-width: 2
+      border-radius: 6
+    }
+    
+    branch: {
+      grid-columns: 2
+      "first_page": "Branch A: First Page" {
+        label: |md
+          sql
+          SELECT ... FROM urls
+          WHERE user_id = $1
+          ORDER BY created_at DESC, id DESC
+          LIMIT 21
+          
+        |
+      }
+      "cursor_page": "Branch B: Cursor Page" {
+        label: |md
+          sql
+          SELECT ... FROM urls
+          WHERE user_id = $1
+            AND (created_at, id) < (subquery)
+          ORDER BY created_at DESC, id DESC
+          LIMIT 21
+          
+        |
+      }
+    }
+  }
+
+  step3: "Step 3: Execute" {
+    style: {
+      fill: "#e0ffe0"
+      stroke: "#006600"
+      stroke-width: 2
+      border-radius: 6
+    }
+    label: |md
+      **Execute:** `repo.List(userID, after, pageSize + 1)`
+      **Trick:** Fetch N+1 rows to check for "HasNext" without COUNT(*).
+    |
+  }
+
+  step4: "Step 4: Pagination Logic" {
+    style: {
+      fill: "#ffe0e0"
+      stroke: "#cc0000"
+      stroke-width: 2
+      border-radius: 6
+    }
+    
+    branch2: {
+      grid-columns: 2
+      "has_more": "Branch A: len == 21" {
+        label: |md
+          **HasNext:** True
+          **Action:** Trim row 21. 
+          **Cursor:** Row 20's ID.
+        |
+      }
+      "no_more": "Branch B: len <= 20" {
+        label: |md
+          **HasNext:** False
+          **Action:** Keep all rows.
+          **Cursor:** Nil.
+        |
+      }
+    }
+  }
+
+  step5: "Step 5: Return JSON" {
+    style: {
+      fill: "#e8e8ff"
+      stroke: "#4444cc"
+      stroke-width: 2
+      border-radius: 6
+    }
+    label: |md
+      **Format:** Map to `URLItem` list.
+      **Response:** `{"urls": [...], "next_cursor": "..."}`
+      **Status:** 200 OK.
+    |
+  }
+
+  step1 -> step2
+  step2 -> step3
+  step3 -> step4
+  step4 -> step5
+}
+
+# ─── INDEX SCAN ANATOMY ───────────────────────────────────────────────────────
+index_box: "Index Scan Anatomy" {
+  direction: right
+  style: {
+    fill: "#fff8e8"
+    stroke: "#886600"
+    stroke-width: 2
+    border-radius: 8
+  }
+
+  index_tree: "idx_urls_user_id_created" {
+    style.fill: "#ffe8a0"
+    label: |md
+      **Index Structure:** 
+      `(user_id, created_at DESC, id DESC)`
+      
+      Seek matches `user_id` prefix, then
+      traverses tree to `(created_at, id)` 
+      anchor in **O(log N)** time.
+    |
+  }
+
+  explain_output: "EXPLAIN ANALYZE" {
+    style.fill: "#fff0d0"
+    label: |md
+      **Query Plan:**
+      Index Scan Backward on idx_urls...
+      Index Cond: (user_id = $1) 
+        AND (created_at, id) < (...)
+      **Rows Removed by Filter: 0**
+    |
+  }
+
+  index_tree -> explain_output
+}
+
+# ─── CONNECTIONS ───────────────────────────────────────────────────────────────
+comparison -> steps_box: "Implements Cursor"
+steps_box -> index_box: "Maps to Index Seek"
+
+# ─── LEGEND ───────────────────────────────────────────────────────────────────
+legend: {
+  shape: text
+  near: bottom-center
+  label: |md
+    **Algorithm Invariants**
+    1. **N+1 Strategy:** Detects the end of the collection without an extra DB count.
+    2. **Composite Cursor:** `(created_at, id)` is required to prevent data skipping if multiple rows share a timestamp.
+    3. **Index Coverage:** Ensure the composite index matches both the `WHERE` filter and the `ORDER BY` clause exactly.
+  |
+  style: {
+    fill: "#f5f5ff"
+    stroke: "#aaaacc"
+    border-radius: 6
+  }
+}

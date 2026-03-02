@@ -1959,7 +1959,7 @@ def route_tdd_visualizer(state):
     if ENABLE_SYSTEM_DIAGRAM:
         return "system_diagram_writer"
     if ENGINEERING_DOCS_MODE:
-        return ["engineering_overview", "project_structure"]
+        return "engineering_overview"
     return ["project_charter", "project_structure"]
 
 
@@ -1999,7 +1999,7 @@ workflow.add_conditional_edges(
 def route_system_diagram_renderer(state):
     """After rendering, go to the right overview node based on mode."""
     if ENGINEERING_DOCS_MODE:
-        return ["engineering_overview", "project_structure"]
+        return "engineering_overview"
     return ["project_charter", "project_structure"]
 
 
@@ -2014,7 +2014,20 @@ workflow.add_conditional_edges(
 )
 workflow.add_edge("project_charter", "bibliographer")
 workflow.add_edge("engineering_overview", "project_structure")
-workflow.add_edge("project_structure", "bibliographer")
+
+
+def route_project_structure(state):
+    """In engineering-docs mode skip bibliographer."""
+    if ENGINEERING_DOCS_MODE:
+        return "spec_syncer"
+    return "bibliographer"
+
+
+workflow.add_conditional_edges(
+    "project_structure",
+    route_project_structure,
+    {"bibliographer": "bibliographer", "spec_syncer": "spec_syncer"},
+)
 
 
 def route_compiler(state):

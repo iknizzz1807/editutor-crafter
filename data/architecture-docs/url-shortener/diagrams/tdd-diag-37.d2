@@ -1,0 +1,61 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+shape: sequence_diagram
+Client
+Gateway
+URLService: "url-service"
+Outbox: "outbox\n(PostgreSQL)"
+RabbitMQ
+AnalyticsConsumer: "analytics-service\nconsumer"
+sync_phase: "── SYNC BOUNDARY (HTTP) ──" {
+  Client -> Gateway: "GET /r/{code}\n[no X-Correlation-ID header]"
+  Gateway -> Gateway: "correlationID = uuid.New()\n→ \"e3f7a1b2-...\""
+  Gateway -> URLService: "GET /{code}\nX-Correlation-ID: e3f7a1b2-...\nX-Forwarded-For: <client-ip>"
+  URLService -> URLService: "correlationID = r.Header.Get(\"X-Correlation-ID\")\nctx = context.WithValue(ctx, correlationKey, correlationID)\nlog.Info().Str(\"correlation_id\",\"e3f7a1b2-...\").Str(\"path\",\"/{code}\").Msg(\"redirect handler\")"
+  URLService -> URLService: "cache.Get(ctx, shortCode)\n→ CachedURL{OriginalURL: \"https://example.com\"}"
+  URLService -> Outbox: "BEGIN tx\nINSERT INTO outbox (\n  event_type = \"url.clicked\",\n  payload = URLClickedEvent{\n    EventID:       uuid.New(),\n    CorrelationID: \"e3f7a1b2-...\",  ← from ctx\n    ShortCode:     \"aB3xY9z\",\n    IPHash:        sha256(ip+salt),\n    UserAgent:     \"...\"\n  }\n)\nCOMMIT" {
+    style.stroke: "#2266cc"
+    style.stroke-width: 2
+  }
+  URLService -> Gateway: "HTTP 301\nLocation: https://example.com\nX-Correlation-ID: e3f7a1b2-..."
+  Gateway -> Gateway: "log.Info().Str(\"correlation_id\",\"e3f7a1b2-...\").Int(\"status\",301).Int64(\"duration_ms\",4).Msg(\"request completed\")"
+  Gateway -> Client: "HTTP 301\nLocation: https://example.com\nX-Correlation-ID: e3f7a1b2-..."
+}
+async_boundary: "── ASYNC BOUNDARY (RabbitMQ) ──" {
+  style.fill: "#f0f4ff"
+  style.stroke-dash: 5
+  style.stroke: "#7799cc"
+}
+async_phase: "── ASYNC BOUNDARY (RabbitMQ) ──" {
+  Outbox -> RabbitMQ: "OutboxPoller publishes after ≤2s\nExchange: url-shortener (topic)\nRouting key: url.clicked\nBody: URLClickedEvent JSON {\n  \"event_id\":       \"9a2c...\",\n  \"correlation_id\": \"e3f7a1b2-...\",\n  \"short_code\":     \"aB3xY9z\",\n  \"ip_hash\":        \"3fa8...\",\n  \"occurred_at\":    \"2026-03-02T...\"\n}" {
+    style.stroke-dash: 5
+    style.stroke: "#995500"
+    style.animated: true
+  }
+  RabbitMQ -> AnalyticsConsumer: "Deliver to queue: analytics.clicks\namqp091.Delivery{\n  RoutingKey: \"url.clicked\",\n  Body:       <URLClickedEvent JSON>\n}" {
+    style.stroke-dash: 5
+    style.stroke: "#995500"
+    style.animated: true
+  }
+  AnalyticsConsumer -> AnalyticsConsumer: "json.Unmarshal(d.Body, &event)\ncorrelationID = event.CorrelationID\n→ \"e3f7a1b2-...\"  ← SAME ID\n\nmsgLog = log.With().\n  Str(\"correlation_id\", \"e3f7a1b2-...\").\n  Str(\"event_id\", \"9a2c...\").\n  Str(\"short_code\", \"aB3xY9z\").\n  Logger()"
+  AnalyticsConsumer -> AnalyticsConsumer: "processedRepo.IsProcessed(ctx, event.EventID)\n→ false\n\nBEGIN tx\n  processed_events INSERT event.EventID\n  clicks INSERT {short_code, clicked_at, ip_hash, ...}\nCOMMIT\n\nmsgLog.Info().Msg(\"click inserted\")\n// log line: {\"correlation_id\":\"e3f7a1b2-...\", \"event_id\":\"9a2c...\", ...}"
+  AnalyticsConsumer -> RabbitMQ: "d.Ack(false)" {
+    style.stroke: "#228833"
+  }
+}
+tracing_note: |'md
+  ## Trace Reconstruction
+  Query any log aggregator for `correlation_id = "e3f7a1b2-..."`:
+  | Service | Log line | Latency |
+  |---|---|---|
+  | **gateway** | `request completed` status=301 | t+0ms |
+  | **url-service** | `redirect handler` + outbox INSERT | t+2ms |
+  | **analytics-service** | `click inserted` (async) | t+2000ms |
+  Single ID links sync HTTP trace → async RabbitMQ consumer.
+'| {
+  near: bottom-center
+}

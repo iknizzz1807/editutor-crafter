@@ -1,0 +1,74 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+shape: sequence_diagram
+
+Client: Client
+Handler: Handler
+URLRepo: "URLRepository\n(pgxURLRepository)"
+OutboxRepo: "OutboxRepository\n(pgxOutboxRepository)"
+Pool: "pgxpool.Pool\n(PostgreSQL)"
+Cache: "CacheClient\n(redisCacheClient)"
+
+Client -> Handler: 'DELETE /urls/{code}\nAuthorization: Bearer <JWT>'
+
+check_auth: {
+  Handler -> Handler: 'RequireAuth middleware\nclaims = ClaimsFromContext(ctx)\nuser_id = claims.Sub'
+}
+
+Handler -> URLRepo: "FindByCode(ctx, shortCode)"
+URLRepo -> Pool: 'SELECT id, short_code, user_id, is_active\nFROM urls WHERE short_code = $1'
+Pool -> URLRepo: "URL row | pgx.ErrNoRows"
+
+notfound: {
+  URLRepo -> Handler: "ErrURLNotFound"
+  Handler -> Client: '404 {"error":"not found"}' {
+    style: {
+      stroke: red
+      font-color: red
+    }
+  }
+}
+
+Handler -> Handler: "if url.UserID != claims.Sub\n→ ErrNotOwner"
+
+forbidden: {
+  Handler -> Client: '403 {"error":"forbidden"}' {
+    style: {
+      stroke: red
+      font-color: red
+    }
+  }
+}
+
+tx_phase: "BEGIN TRANSACTION" {
+  Handler -> Pool: "tx = pool.Begin(ctx)"
+  Pool -> Handler: "pgx.Tx ✓\n(defer tx.Rollback)"
+  
+  Handler -> URLRepo: "SoftDelete(ctx, tx, shortCode, userID)"
+  URLRepo -> Pool: 'UPDATE urls SET is_active=false\nWHERE short_code=$1 AND user_id=$2\nRETURNING id'
+  Pool -> URLRepo: "1 row affected ✓ | 0 rows (404/403)"
+  URLRepo -> Handler: "nil ✓ | ErrURLNotFound | ErrNotOwner"
+  
+  Handler -> Handler: 'json.Marshal(URLDeletedEvent{\n  EventType: "url.deleted",\n  OccurredAt: time.Now(),\n  CorrelationID: correlationID,\n  ShortCode: shortCode,\n  UserID: userID,\n  UserEmail: claims.Email\n})'
+  
+  Handler -> OutboxRepo: 'Insert(ctx, tx, "url.deleted", payload)'
+  OutboxRepo -> Pool: 'INSERT INTO outbox\n(id, event_type, payload, created_at)\nVALUES (gen_random_uuid(), $1, $2, now())'
+  Pool -> OutboxRepo: "INSERT 1 ✓ | error → ROLLBACK"
+  OutboxRepo -> Handler: "nil ✓ | error (FATAL → rollback)"
+  
+  Handler -> Pool: "tx.Commit(ctx)"
+  Pool -> Handler: "COMMIT ✓ | error → ROLLBACK"
+}
+
+after_commit: "AFTER COMMIT — Best-Effort Cache Invalidation" {
+  Handler -> Cache: 'Del(ctx, "url:{code}")\n[best-effort; outside tx]'
+  Cache -> Cache: 'redis.Del("url:{shortCode}")\n→ if error: log.Warn()\n   swallow error, no 5xx'
+  Cache -> Handler: "void (error swallowed internally)"
+}
+
+Handler -> Client: "204 No Content\n(empty body)"

@@ -1,0 +1,173 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+
+direction: right
+
+title: {
+  shape: text
+  near: top-center
+  label: ||md
+  # API Gateway — Internal Module Architecture
+  `sizeof(CircuitBreaker) ≈ 96 bytes (state + mutex + 3×time.Time + int64)`
+  ||
+}
+
+# ─── Architecture Styles ──────────────────────────────────────────
+# Ownership = Solid, Reference = Dashed
+classes: {
+  module: {
+    shape: class
+    style: {
+      stroke: "#7B2D8B"
+      fill: "#7B2D8B"
+      font-color: white
+    }
+  }
+  middleware: {
+    shape: class
+    style: {
+      stroke: "#1A5FAB"
+      fill: "#D5E8FF"
+    }
+  }
+}
+
+# ─── Core Structs ────────────────────────────────────────────────
+Router: {
+  class: module
+  label: "Router (sizeof=24B)"
+  routes: "routes  []Route  24B"
+  ServeHTTP: "ServeHTTP(w http.ResponseWriter, r *http.Request)"
+}
+
+Route: {
+  class: module
+  label: "Route (sizeof=80B)"
+  method: "Method         string  16B"
+  pathPattern: "PathPattern    string  16B"
+  target: "Target         *url.URL 8B"
+  requiresAuth: "RequiresAuth   bool    1B"
+  rateLimitCfg: "RateLimitConfig *Limit 8B"
+}
+
+Router -> Route: "owns" {
+  source-arrowhead: 1
+  target-arrowhead: *
+}
+
+# ─── Middleware Components ────────────────────────────────────────
+CorrelationMiddleware: {
+  class: middleware
+  correlationIDKey: "correlationIDKey  contextKey 8B"
+  Wrap: "+Wrap(next http.Handler) http.Handler"
+  IDFromContext: "+IDFromContext(ctx context.Context) string"
+}
+
+JWTMiddleware: {
+  class: middleware
+  label: "GatewayJWTMiddleware"
+  verifier: "verifier  sharedauth.JWTVerifier 16B"
+  Wrap: "+Wrap(next http.Handler) http.Handler"
+}
+
+RateLimiter: {
+  class: middleware
+  redisClient: "client  *redis.Client 8B"
+  Allow: "+Allow(ctx context.Context, ip string, limit RouteLimit) AllowResult"
+}
+
+CircuitBreaker: {
+  class: middleware
+  label: "CircuitBreaker (sizeof=96B)"
+  mu: "mu             sync.Mutex 8B"
+  state: "state          State      4B"
+  failureCount: "failureCount   int        8B"
+  openedAt: "openedAt       time.Time  24B"
+  Allow: "+Allow() (bool, error)"
+  RecordSuccess: "+RecordSuccess()"
+  RecordFailure: "+RecordFailure()"
+}
+
+ReverseProxy: {
+  class: middleware
+  targets: "targets  map[string]*httputil.ReverseProxy 8B"
+  Forward: "+Forward(target string, w http.ResponseWriter, r *http.Request)"
+}
+
+# ─── Ownership / References ──────────────────────────────────────
+Router -> CorrelationMiddleware: "owns"
+Router -> JWTMiddleware: "owns"
+Router -> RateLimiter: "owns"
+Router -> CircuitBreaker: "owns"
+Router -> ReverseProxy: "owns"
+
+# Reference connections (Dashed)
+ReverseProxy -> CircuitBreaker: "updates state" {
+  style.stroke-dash: 4
+}
+JWTMiddleware -> sharedauth: "references" {
+  style.stroke-dash: 4
+}
+
+sharedauth: {
+  shape: rectangle
+  label: "shared/auth\nJWTVerifier"
+  style.fill: "#F0F0F0"
+}
+
+# ─── Middleware Pipeline ──────────────────────────────────────────
+pipeline: {
+  label: "Middleware Chain (Per-Request Execution)"
+  style.stroke-dash: 3
+  
+  p1: "① Correlation" { style.fill: "#D5E8FF" }
+  p2: "② Logger" { style.fill: "#D5E8FF" }
+  p3: "③ JWT Auth" { style.fill: "#D5E8FF" }
+  p4: "④ RateLimit" { style.fill: "#D5E8FF" }
+  p5: "⑤ CircuitBreaker" { style.fill: "#D5E8FF" }
+  p6: "⑥ ReverseProxy" { style.fill: "#FFEEDD" }
+
+  p1 -> p2 -> p3 -> p4 -> p5 -> p6
+}
+
+# ─── Short-Circuit Exits ─────────────────────────────────────────
+error_responses: {
+  style.stroke-width: 0
+  style.fill: transparent
+  
+  exit401: "401 Unauthorized" { shape: diamond; style.fill: "#FFD5D5"; style.stroke: "#CC0000" }
+  exit429: "429 Too Many Requests" { shape: diamond; style.fill: "#FFD5D5"; style.stroke: "#CC0000" }
+  exit503: "503 Service Unavailable" { shape: diamond; style.fill: "#FFD5D5"; style.stroke: "#CC0000" }
+}
+
+pipeline.p3 -> error_responses.exit401: "invalid token" { style.stroke: "#CC0000"; style.stroke-dash: 3 }
+pipeline.p4 -> error_responses.exit429: "limit hit" { style.stroke: "#CC0000"; style.stroke-dash: 3 }
+pipeline.p5 -> error_responses.exit503: "circuit open" { style.stroke: "#CC0000"; style.stroke-dash: 3 }
+
+# ─── Downstream Targets ──────────────────────────────────────────
+downstreams: {
+  label: "Downstream Services"
+  urlsvc: "url-service:8081" { style.fill: "#C8E6C9" }
+  usersvc: "user-service:8083" { style.fill: "#C8E6C9" }
+}
+
+pipeline.p6 -> downstreams.urlsvc: "Forward"
+pipeline.p6 -> downstreams.usersvc: "Forward"
+
+# ─── Route Table ────────────────────────────────────────────────
+routeTable: {
+  near: bottom-center
+  label: ||md
+  | Gateway Path | Auth | Rate Limit | Circuit Breaker | Target |
+  |---|---|---|---|---|
+  | `GET /health` | ✗ | ✗ | ✗ | gateway |
+  | `POST /api/auth/login` | ✗ | ✗ | ✗ | user-service |
+  | `GET /r/{code}` | ✗ | 300/min | ✓ | url-service |
+  | `POST /api/shorten` | ✓ | 10/min | ✓ | url-service |
+  | `GET /api/me` | ✓ | ✗ | ✗ | user-service |
+  ||
+}

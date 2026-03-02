@@ -1,0 +1,298 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  ## Token Bucket Rate Limiter — Redis INCR + EXPIRE Algorithm
+  **IP:** 203.0.113.1 · **Route:** shorten · **Limit:** 10 req / **Window:** 60 s
+| {
+  near: top-center
+}
+
+# ── BEFORE state ──────────────────────────────────────────────────────────────
+before: "BEFORE: Incoming Request" {
+  style.fill: "#e8f4f8"
+  style.stroke: "#4a90d9"
+  style.stroke-width: 2
+  style.border-radius: 8
+  req: |md
+    **HTTP Request**
+    `POST /api/shorten`
+    `X-Forwarded-For: 203.0.113.1`
+    `Authorization: Bearer <jwt>`
+  | {
+    style.fill: "#d6eaf8"
+    style.stroke: "#2980b9"
+    style.border-radius: 6
+  }
+  redis_before: "Redis State (before)" {
+    style.fill: "#fdfefe"
+    style.stroke: "#7f8c8d"
+    style.border-radius: 6
+    key_absent: |md
+      **Key:** `rl:shorten:203.0.113.1`
+      **Value:** *(absent)*
+      **TTL:** *(none)*
+    | {
+      style.fill: "#f0f3f4"
+    }
+  }
+}
+
+# ── STEP 1 ────────────────────────────────────────────────────────────────────
+step1: "Step 1 — Construct Redis Key" {
+  style.fill: "#f5f0ff"
+  style.stroke: "#8e44ad"
+  style.stroke-width: 2
+  style.border-radius: 8
+  code1: |go
+    ip    := extractClientIP(r)
+    route := ratelimit.LimitShorten
+    key   := "rl:" + route.Key + ":" + ip
+  | {
+    style.fill: "#ede7f6"
+  }
+  note1: |md
+    **Key format:** `rl:{route}:{ip}`
+    Separates counters per route × IP.
+  | {
+    style.fill: "#f3e5f5"
+    style.stroke: "#8e44ad"
+    style.stroke-dash: 3
+    style.border-radius: 4
+  }
+}
+
+# ── STEP 2 ────────────────────────────────────────────────────────────────────
+step2: "Step 2 — INCR Key (atomic counter +1)" {
+  style.fill: "#fff8e1"
+  style.stroke: "#f39c12"
+  style.stroke-width: 2
+  style.border-radius: 8
+  code2: |go
+    val, err := rl.client.Eval(ctx, luaIncrExpire,
+        []string{key},
+        int(route.Window.Seconds()),
+    ).Int64()
+  | {
+    style.fill: "#fff9c4"
+  }
+  redis_op: "Redis Server (atomic)" {
+    style.fill: "#fefefe"
+    style.stroke: "#e67e22"
+    style.border-radius: 6
+    incr_box: |md
+      `INCR rl:shorten:203.0.113.1`
+      **Before:** 0
+      **After:**  1
+    | {
+      style.fill: "#fdebd0"
+    }
+  }
+  atomicity: |md
+    ⚠️ **Atomicity Note:**
+    Lua script runs atomically server-side —
+    `EXPIRE` fires only once, when `current==1`.
+  | {
+    style.fill: "#fef9e7"
+    style.stroke: "#f39c12"
+    style.stroke-dash: 4
+    style.border-radius: 4
+  }
+}
+
+# ── STEP 3 ────────────────────────────────────────────────────────────────────
+step3: "Step 3 — If val == 1: Set TTL" {
+  style.fill: "#e8f8f5"
+  style.stroke: "#1abc9c"
+  style.stroke-width: 2
+  style.border-radius: 8
+  code3: |go
+    // Inside Lua (atomic with INCR):
+    if current == 1 then
+        redis.call('EXPIRE', KEYS[1], ARGV[1])
+    end
+  | {
+    style.fill: "#d5f5e3"
+  }
+  redis_state3: "Redis State After Step 3" {
+    style.fill: "#fdfefe"
+    style.stroke: "#16a085"
+    style.border-radius: 6
+    kv3: |md
+      **Key:** `rl:shorten:203.0.113.1`
+      **Value:** `1`
+      **TTL:** `60 s`
+    | {
+      style.fill: "#d5f5e3"
+      style.stroke: "#1abc9c"
+    }
+  }
+  annotation3: |md
+    **Why val == 1 matters:**
+    TTL is set only on the first request 
+    to define the fixed window duration.
+  | {
+    style.fill: "#eafaf1"
+    style.stroke: "#1abc9c"
+    style.stroke-dash: 3
+    style.border-radius: 4
+  }
+}
+
+# ── STEP 4 — LIMIT EXCEEDED PATH ──────────────────────────────────────────────
+step4_exceed: "Step 4A — Rate Limit Exceeded" {
+  style.fill: "#fdedec"
+  style.stroke: "#e74c3c"
+  style.stroke-width: 3
+  style.border-radius: 8
+  code4a: |go
+    if val > route.Limit {
+        ttl, _ := rl.client.TTL(ctx, key).Result()
+        return AllowResult{
+            Allowed: false,
+            RetryAfter: ttl,
+        }
+    }
+  | {
+    style.fill: "#fadbd8"
+  }
+  redis_state4a: "Redis State (11th req)" {
+    style.fill: "#fdfefe"
+    style.stroke: "#c0392b"
+    style.border-radius: 6
+    kv4a: |md
+      **Value:** `11`
+      **TTL:** `47 s`
+    | {
+      style.fill: "#fadbd8"
+      style.stroke: "#e74c3c"
+    }
+  }
+  http_429: "HTTP Response (429)" {
+    style.fill: "#f5b7b1"
+    style.stroke: "#c0392b"
+    style.stroke-width: 2
+    style.border-radius: 6
+    resp: |md
+      `429 Too Many Requests`
+      `Retry-After: 47`
+    | {
+      style.fill: "#fadbd8"
+    }
+  }
+}
+
+# ── STEP 4 — ALLOWED PATH ──────────────────────────────────────────────────────
+step4_allow: "Step 4B — Allowed" {
+  style.fill: "#eafaf1"
+  style.stroke: "#27ae60"
+  style.stroke-width: 3
+  style.border-radius: 8
+  code4b: |go
+    return AllowResult{
+        Allowed:   true,
+        Remaining: route.Limit - val,
+    }
+  | {
+    style.fill: "#d5f5e3"
+  }
+  redis_state4b: "Redis State (Allowed)" {
+    style.fill: "#fdfefe"
+    style.stroke: "#2ecc71"
+    style.border-radius: 6
+    kv4b: |md
+      **Value:** `3`
+      **TTL:** `58 s`
+    | {
+      style.fill: "#d5f5e3"
+      style.stroke: "#27ae60"
+    }
+  }
+}
+
+# ── STEP 5 — REDIS ERROR / FAIL-OPEN ──────────────────────────────────────────
+step5_error: "Step 5 — Redis Error → Fail-Open" {
+  style.fill: "#fef9e7"
+  style.stroke: "#f1c40f"
+  style.stroke-width: 2
+  style.border-radius: 8
+  code5: |go
+    if err != nil {
+        log.Warn("fail open")
+        return AllowResult{Allowed: true}
+    }
+  | {
+    style.fill: "#fef3cd"
+  }
+  failopen_note: |md
+    **Fail-Open Invariant:**
+    Redis unavailability must NEVER block 
+    traffic. (Spec §M5 §1)
+  | {
+    style.fill: "#fff9c4"
+    style.stroke: "#f39c12"
+    style.stroke-dash: 4
+    style.border-radius: 4
+  }
+}
+
+# ── AFTER state ───────────────────────────────────────────────────────────────
+after: "AFTER: Middleware Decision Applied" {
+  style.fill: "#f0f3f4"
+  style.stroke: "#7f8c8d"
+  style.stroke-width: 2
+  style.border-radius: 8
+  
+  decision_table: |'md
+    | Condition       | val  | Result | HTTP |
+    |:----------------|:----:|:------:|:----:|
+    | First request   | 1    | ✅ Allow| 201  |
+    | Requests 2–10   | 2–10 | ✅ Allow| 201  |
+    | 11th request    | 11   | ❌ Block| 429  |
+    | Redis Error     | —    | ✅ Allow| 201  |
+  '| {
+    style.fill: "#eaecee"
+  }
+  
+  lua_advantage: |md
+    **Lua vs Pipeline:**
+    ✅ Atomic INCR + EXPIRE
+    ✅ No race on TTL creation
+    ✅ One roundtrip
+  | {
+    style.fill: "#d6dbdf"
+    style.stroke: "#7f8c8d"
+    style.stroke-dash: 3
+    style.border-radius: 4
+  }
+}
+
+# ── CONNECTIONS ───────────────────────────────────────────────────────────────
+before -> step1: "request arrives" {
+  style.stroke: "#4a90d9"
+}
+step1 -> step2: "key constructed" {
+  style.stroke: "#8e44ad"
+}
+step2 -> step3: "val == 1" {
+  style.stroke: "#1abc9c"
+}
+step2 -> step4_exceed: "val > 10" {
+  style.stroke: "#e74c3c"
+  style.stroke-width: 3
+}
+step2 -> step4_allow: "val <= 10" {
+  style.stroke: "#27ae60"
+}
+step2 -> step5_error: "error" {
+  style.stroke: "#f1c40f"
+  style.stroke-dash: 5
+}
+step3 -> step4_allow: "val is 1"
+step4_exceed -> after: "blocked"
+step4_allow -> after: "allowed"
+step5_error -> after: "fail-open"

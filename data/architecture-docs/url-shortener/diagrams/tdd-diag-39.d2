@@ -1,0 +1,365 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+# ─────────────────────────────────────────
+# LEGEND
+# ─────────────────────────────────────────
+legend: {
+  label: |md
+  ### Legend
+  - **Header**: Purple | **Data**: Blue
+  - **Solid Arrow**: Owns / Calls
+  - **Dashed Arrow**: References
+  - **▼ / ▲**: Lock Acquire / Release
+  - **Red Border**: Error / Illegal State
+  |
+  near: bottom-left
+  style: {
+    fill: "#F8F8F8"
+    stroke: "#CCCCCC"
+    font-size: 12
+  }
+}
+
+# ─────────────────────────────────────────
+# DATA MODEL (SQL TABLES)
+# ─────────────────────────────────────────
+data_model: "Data Model (notification_db)" {
+  style: {
+    fill: "#E8E0FF"
+    stroke: "#7B5EA7"
+    stroke-width: 2
+    border-radius: 6
+  }
+
+  notifications_table: {
+    shape: sql_table
+    label: "notifications"
+    id: uuid {constraint: primary_key}
+    user_id: uuid {constraint: [NOT NULL]}
+    event_type: text {constraint: NOT NULL}
+    payload: jsonb {constraint: NOT NULL}
+    status: text {constraint: "NOT NULL DEFAULT 'sent'"}
+    created_at: timestamptz {constraint: "NOT NULL DEFAULT now()"}
+    sent_at: "timestamptz NULL"
+  }
+
+  processed_notifications: {
+    shape: sql_table
+    label: "processed_notifications"
+    event_key: text {constraint: primary_key}
+    processed_at: timestamptz {constraint: "NOT NULL DEFAULT now()"}
+  }
+
+  idx1: "INDEX: notifications(user_id, created_at DESC)" {
+    style: {
+      fill: "#D4C5F9"
+      stroke: "#7B5EA7"
+      font-size: 11
+    }
+  }
+
+  idx2: "PK: event_type + correlation_id" {
+    style: {
+      fill: "#D4C5F9"
+      stroke: "#7B5EA7"
+      font-size: 11
+    }
+  }
+}
+
+# ─────────────────────────────────────────
+# GO STRUCTS (DATA CLASSES)
+# ─────────────────────────────────────────
+structs: "Go Structs" {
+  style: {
+    fill: "#EAF4FF"
+    stroke: "#3A7BD5"
+    stroke-width: 2
+    border-radius: 6
+  }
+
+  notification_struct: {
+    shape: class
+    label: "Notification"
+    "+ID": "string // UUID v4"
+    "+UserID": "string // JWT sub"
+    "+EventType": "string"
+    "+Payload": "[]byte"
+    "+Status": "string // pending|sent"
+    "+CreatedAt": "time.Time"
+    "+SentAt": "*time.Time"
+  }
+
+  notification_summary: {
+    shape: class
+    label: "NotificationSummary"
+    "+ID": "string"
+    "+UserID": "string"
+    "+EventType": "string"
+    "+Status": "string"
+    "+CreatedAt": "time.Time"
+  }
+
+  process_result: {
+    shape: class
+    label: "ProcessResult"
+    "ProcessResultInserted": "0 // New"
+    "ProcessResultDuplicate": "1 // Skip"
+    "ProcessResultPoisoned": "2 // Bad"
+    "ProcessResultError": "3 // Retry"
+  }
+}
+
+# ─────────────────────────────────────────
+# INTERFACE LAYER
+# ─────────────────────────────────────────
+interfaces: "Interface Layer" {
+  style: {
+    fill: "#FFF8E8"
+    stroke: "#D4880A"
+    stroke-width: 2
+    border-radius: 6
+  }
+
+  notification_repo: {
+    shape: class
+    label: "NotificationRepository"
+    "+Insert(ctx, n Notification)": error
+    "+ListByUser(ctx, uid, after, limit)": "([]NotificationSummary, error)"
+    "+IsProcessed(ctx, eventKey)": "(bool, error)"
+    "+MarkProcessed(ctx, eventKey)": error
+  }
+
+  amqp_consumer_iface: {
+    shape: class
+    label: "AMQPConsumer"
+    "+Deliveries()": "<-chan amqp091.Delivery"
+    "+Close()": error
+  }
+}
+
+# ─────────────────────────────────────────
+# HTTP HANDLER LAYER
+# ─────────────────────────────────────────
+http_layer: "HTTP Layer (port 8084)" {
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#2E7D32"
+    stroke-width: 2
+    border-radius: 6
+  }
+
+  health_handler: {
+    label: "GET /health"
+    style.fill: "#C8E6C9"
+    tooltip: "200 OK - No dependencies"
+  }
+
+  notifications_handler: {
+    label: "GET /notifications"
+    style.fill: "#C8E6C9"
+    tooltip: "Authenticated cursor pagination"
+  }
+
+  require_auth_mw: {
+    label: "RequireAuth MW"
+    style: {
+      fill: "#A5D6A7"
+      stroke: "#1B5E20"
+    }
+  }
+
+  require_auth_mw -> notifications_handler: "passes claims"
+  notifications_handler -> interfaces.notification_repo: "ListByUser()"
+}
+
+# ─────────────────────────────────────────
+# NOTIFICATION PROCESSOR
+# ─────────────────────────────────────────
+processor: {
+  shape: class
+  label: "NotificationProcessor"
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#E65100"
+    stroke-width: 2
+  }
+  "+Process(ctx, d Delivery)": ProcessResult
+  "-pool": "*pgxpool.Pool"
+  "-repo": "NotificationRepository"
+  "-log": "zerolog.Logger"
+}
+
+processor -> interfaces.notification_repo: "Uses"
+
+# ─────────────────────────────────────────
+# CONSUMER SUPERVISOR
+# ─────────────────────────────────────────
+supervisor: "Consumer Supervisor" {
+  style: {
+    fill: "#FCE4EC"
+    stroke: "#AD1457"
+    stroke-width: 2
+    border-radius: 6
+  }
+
+  outer_loop: "Watchdog Loop" {
+    tooltip: "Restarts inner on panic"
+  }
+
+  run_consumer: "RunConsumer()" {
+    tooltip: "Connection management"
+  }
+
+  outer_loop -> run_consumer: "supervises" {
+    style.animated: true
+  }
+}
+
+supervisor -> processor: "calls Process()"
+supervisor -> interfaces.amqp_consumer_iface: "reads Deliveries"
+
+# ─────────────────────────────────────────
+# RABBITMQ SOURCE
+# ─────────────────────────────────────────
+rabbitmq_src: RabbitMQ {
+  style: {
+    fill: "#FFCCBC"
+    stroke: "#BF360C"
+    stroke-width: 2
+  }
+  exchange: "Exchange: url-shortener"
+  queue: "Queue: notifications.events"
+  exchange -> queue: "routing key match"
+}
+
+rabbitmq_src -> interfaces.amqp_consumer_iface: "AMQP Protocol" {
+  style.animated: true
+}
+
+# ─────────────────────────────────────────
+# CONSUMER STATE MACHINE
+# ─────────────────────────────────────────
+state_machine: "Consumer State Machine" {
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#6A1B9A"
+    stroke-width: 2
+    border-radius: 6
+  }
+
+  initial: {
+    shape: circle
+    width: 20
+    height: 20
+    style.fill: "#4A148C"
+  }
+
+  s_connecting: {
+    label: "CONNECTING"
+    style.fill: "#CE93D8"
+  }
+
+  s_consuming: {
+    label: "CONSUMING"
+    style: {
+      fill: "#AB47BC"
+      stroke-width: 3
+      font-color: white
+    }
+  }
+
+  s_processing: {
+    label: "PROCESSING"
+    style.fill: "#CE93D8"
+  }
+
+  s_error_db: {
+    label: "DB_ERROR"
+    style: {
+      fill: "#EF9A9A"
+      stroke: "#B71C1C"
+    }
+  }
+
+  s_disconnected: {
+    label: "RABBITMQ_DOWN"
+    style.fill: "#EF9A9A"
+  }
+
+  s_stopping: {
+    label: "STOPPING"
+    style.fill: "#B0BEC5"
+  }
+
+  initial -> s_connecting: "start"
+  s_connecting -> s_consuming: "connected" {
+    style.stroke: green
+  }
+  s_consuming -> s_processing: "msg received" {
+    style.animated: true
+  }
+  s_processing -> s_consuming: "ACK" {
+    style.stroke: green
+  }
+  s_processing -> s_error_db: "DB Fail" {
+    style: {
+      stroke: red
+      stroke-dash: 3
+    }
+  }
+  s_error_db -> s_consuming: "NACK + requeue" {
+    style.stroke: orange
+  }
+  s_consuming -> s_disconnected: "conn lost" {
+    style.stroke: red
+  }
+  s_disconnected -> s_connecting: "retry" {
+    style.animated: true
+  }
+  s_consuming -> s_stopping: "ctx.Done()"
+
+  # Illegal transition marker
+  s_stopping -> s_connecting: "ILLEGAL" {
+    style: {
+      stroke: red
+      stroke-dash: 5
+    }
+  }
+}
+
+# ─────────────────────────────────────────
+# ALGORITHM DETAIL
+# ─────────────────────────────────────────
+process_detail: "Processor.Process Algorithm" {
+  style: {
+    fill: "#E8EAF6"
+    stroke: "#283593"
+    border-radius: 6
+  }
+
+  step1: "1. Unmarshal JSON"
+  step2: "2. Validate RoutingKey"
+  step3: "3. Check Idempotency"
+  step4: "4. Write to DB"
+  step5: "5. Mark Processed"
+
+  step1 -> step2 -> step3 -> step4 -> step5
+}
+
+# Cross-container wiring
+interfaces.notification_repo -> data_model.notifications_table: "SQL" {
+  style.stroke-dash: 4
+}
+processor -> process_detail: "executes" {
+  style.stroke-dash: 4
+}
+http_layer.notifications_handler -> structs.notification_summary: "returns" {
+  style.stroke-dash: 2
+}

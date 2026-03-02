@@ -1,0 +1,233 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: |md
+    ## Analytics Service Module Architecture
+    `sizeof(pool) shared across goroutine boundaries — goroutine-safe by pgxpool design`
+  |
+  near: top-center
+}
+
+direction: right
+
+# ─── DOMAIN MODELS (Data=Blue) ────────────────────────────────────────────────
+structs: "Domain Structs (Data Layers)" {
+  style: {
+    fill: "#E8F4FD"
+    stroke: "#2E86AB"
+    bold: true
+  }
+  
+  Click: {
+    shape: class
+    style.fill: "#DBEAFE"
+    style.stroke: "#3B82F6"
+    ID: "UUID // gen by DB DEFAULT"
+    ShortCode: "string // routing key"
+    ClickedAt: "time.Time // event.OccurredAt"
+    IPHash: "string // SHA-256(ip+salt)"
+    UserAgent: "string"
+    Referer: "string // empty -> NULL"
+  }
+  
+  Milestone: {
+    shape: class
+    style.fill: "#DBEAFE"
+    style.stroke: "#3B82F6"
+    ID: "UUID"
+    ShortCode: "string"
+    Milestone: "int // 10, 100, 1000"
+    TriggeredAt: "time.Time"
+  }
+  
+  ProcessedEvent: {
+    shape: class
+    style.fill: "#DBEAFE"
+    style.stroke: "#3B82F6"
+    EventID: "UUID PRIMARY KEY"
+    ProcessedAt: "time.Time"
+  }
+}
+
+# ─── INTERFACES (Header=Purple) ──────────────────────────────────────────────
+interfaces: "Port Interfaces (Contract)" {
+  style: {
+    fill: "#F3E8FF"
+    stroke: "#7C3AED"
+    bold: true
+  }
+  
+  ClickRepository: {
+    shape: class
+    style.fill: "#EDE9FE"
+    style.stroke: "#7C3AED"
+    "+Insert(ctx, tx, click)": "error"
+    "+CountByCode(ctx, code)": "(int64, error)"
+    "+TopReferers(ctx, code, lim)": "([]RefererCount, error)"
+    "+Timeline(ctx, code, interval)": "([]PeriodCount, error)"
+  }
+  
+  ProcessedEventRepository: {
+    shape: class
+    style.fill: "#EDE9FE"
+    style.stroke: "#7C3AED"
+    "+IsProcessed(ctx, id)": "(bool, error)"
+    "+MarkProcessed(ctx, tx, id)": "error"
+  }
+  
+  AMQPConsumer: {
+    shape: class
+    style.fill: "#EDE9FE"
+    style.stroke: "#7C3AED"
+    "+Deliveries()": "<-chan Delivery"
+    "+Close()": "error"
+  }
+}
+
+# ─── IMPLEMENTATIONS (Logic=Orange) ──────────────────────────────────────────
+impls: "Infrastructure Impls" {
+  style: {
+    fill: "#FFF7ED"
+    stroke: "#EA580C"
+    bold: true
+  }
+  
+  pgxClickRepo: {
+    shape: class
+    style.fill: "#FFEDD5"
+    style.stroke: "#EA580C"
+    "-pool": "*pgxpool.Pool"
+    "-log": "zerolog.Logger"
+  }
+  
+  amqp091Consumer: {
+    shape: class
+    style.fill: "#FFEDD5"
+    style.stroke: "#EA580C"
+    "-ch": "*amqp091.Channel"
+    "config": "prefetch=1 (Sequential)"
+  }
+}
+
+# ─── CONCURRENCY: CONSUMER (Yellow) ───────────────────────────────────────────
+consumer_goroutine: "Consumer Runtime (x1)" {
+  style: {
+    fill: "#FEF9C3"
+    stroke: "#CA8A04"
+    stroke-dash: 4
+    bold: true
+  }
+  
+  ClickProcessor: {
+    shape: class
+    style.fill: "#FEF08A"
+    style.stroke: "#CA8A04"
+    "-clickRepo": "ClickRepository"
+    "-processedRepo": "ProcessedEventRepository"
+    "-pool": "*pgxpool.Pool"
+    "+Process(ctx, d)": "Result"
+  }
+  
+  RunConsumer: {
+    label: "Main Reconnect Loop"
+    style.fill: "#FDE68A"
+  }
+  
+  RunConsumer -> ClickProcessor: "Process(delivery)"
+}
+
+# ─── CONCURRENCY: HTTP (Green) ────────────────────────────────────────────────
+http_goroutines: "HTTP Handler Runtime (xN)" {
+  style: {
+    fill: "#ECFDF5"
+    stroke: "#059669"
+    stroke-dash: 4
+    bold: true
+  }
+  
+  StatsHandler: {
+    shape: class
+    style.fill: "#D1FAE5"
+    style.stroke: "#059669"
+    "pattern": "GET /stats/{code}"
+    "note": "errgroup concurrency=4"
+  }
+}
+
+# ─── SHARED RESOURCES ─────────────────────────────────────────────────────────
+sharedPool: {
+  label: "*pgxpool.Pool\nMaxConns=10\nGoroutine-Safe"
+  shape: cylinder
+  style: {
+    fill: "#FCE7F3"
+    stroke: "#DB2777"
+    bold: true
+    shadow: true
+  }
+}
+
+postgres: "PostgreSQL 16" {
+  shape: cylinder
+  style.fill: "#EFF6FF"
+  
+  clicks_table: "clicks_tab"
+  milestones_table: "milestones_tab"
+}
+
+rabbitmq: "RabbitMQ" {
+  shape: queue
+  style.fill: "#FEF3C7"
+  analytics_queue: "analytics.clicks"
+}
+
+# ─── RELATIONSHIPS ────────────────────────────────────────────────────────────
+
+# Interface Implementations (Hollow triangle)
+impls.pgxClickRepo -> interfaces.ClickRepository: {
+  target-arrowhead: {
+    shape: triangle
+    style.filled: false
+  }
+  style.stroke-dash: 5
+}
+
+impls.amqp091Consumer -> interfaces.AMQPConsumer: {
+  target-arrowhead: {
+    shape: triangle
+    style.filled: false
+  }
+  style.stroke-dash: 5
+}
+
+# Ownership (Solid)
+consumer_goroutine.ClickProcessor -> interfaces.ClickRepository: "owns"
+http_goroutines.StatsHandler -> interfaces.ClickRepository: "uses"
+
+# Data Access (Pool)
+consumer_goroutine.ClickProcessor -> sharedPool: "Acquire"
+http_goroutines.StatsHandler -> sharedPool: "Acquire"
+sharedPool -> postgres: "SQL I/O"
+
+# External
+rabbitmq.analytics_queue -> consumer_goroutine.RunConsumer: "Consume"
+
+# ─── ANNOTATIONS ──────────────────────────────────────────────────────────────
+boundary_note: {
+  label: |md
+    **Concurrency Model Compliance**
+    - **Single Consumer**: Prefetch=1 ensures strictly sequential processing of events per channel.
+    - **Thread Safety**: pgxpool handles internal mutex locking for connection acquisition.
+    - **No Shared App State**: All state is persisted in Postgres; goroutines are stateless.
+  |
+  near: bottom-center
+  style: {
+    fill: "#F8FAFC"
+    stroke: "#64748B"
+    stroke-dash: 2
+  }
+}

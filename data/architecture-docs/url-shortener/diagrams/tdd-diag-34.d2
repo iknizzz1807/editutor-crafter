@@ -1,0 +1,169 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## CircuitBreaker Struct Memory Layout
+  `gateway/circuitbreaker/circuitbreaker.go` · sizeof=40 bytes (one cache line)
+| {near: top-center}
+legend: |md
+  **Field Protection**
+  🔴 atomic read (no lock) · 🔵 mutex-protected · ⚫ padding
+| {near: bottom-center}
+cacheline: "Cache Line 0x00–0x27  (64B boundary — struct fits entirely; 24B unused tail)" {
+  style: {
+    fill: "#f0f4ff"
+    stroke: "#3a3aad"
+    stroke-width: 3
+    border-radius: 6
+    font-size: 13
+    bold: true
+  }
+  f0: "offset 0x00 | state int32 | 4 bytes" {
+    style.fill: "#c084fc"
+    style.stroke: "#7c3aed"
+    style.font-size: 13
+    style.border-radius: 3
+  }
+  f1: "offset 0x04 | _pad [4]byte | 4 bytes" {
+    style.fill: "#d1d5db"
+    style.stroke: "#6b7280"
+    style.font-size: 13
+    style.border-radius: 3
+  }
+  f2: "offset 0x08 | failures int64 | 8 bytes" {
+    style.fill: "#60a5fa"
+    style.stroke: "#1d4ed8"
+    style.font-size: 13
+    style.border-radius: 3
+  }
+  f3: "offset 0x10 | windowStart int64 | 8 bytes" {
+    style.fill: "#60a5fa"
+    style.stroke: "#1d4ed8"
+    style.font-size: 13
+    style.border-radius: 3
+  }
+  f4: "offset 0x18 | openUntil int64 | 8 bytes" {
+    style.fill: "#60a5fa"
+    style.stroke: "#1d4ed8"
+    style.font-size: 13
+    style.border-radius: 3
+  }
+  f5: "offset 0x20 | mu sync.Mutex | 8 bytes" {
+    style.fill: "#f97316"
+    style.stroke: "#c2410c"
+    style.font-size: 13
+    style.border-radius: 3
+  }
+}
+ann_state: |md
+  🔴 **atomic.LoadInt32 / StoreInt32**
+  Values: 0=Closed · 1=Open · 2=HalfOpen
+  Read lock-free from `State()` for observability.
+  Written under `mu` during transitions.
+  Must be 4-byte aligned → sits at 0x00.
+| {
+  style.fill: "#faf5ff"
+  style.stroke: "#7c3aed"
+  style.font-size: 12
+  style.border-radius: 4
+}
+ann_pad: |md
+  ⚫ **Compiler-inserted padding**
+  Aligns the next int64 (failures) to 8-byte
+  boundary required by `sync/atomic` on all
+  platforms (arm32 ABI guarantee).
+  Contains no meaningful data.
+| {
+  style.fill: "#f9fafb"
+  style.stroke: "#6b7280"
+  style.font-size: 12
+  style.border-radius: 4
+}
+ann_atomic: |md
+  🔵 **sync.Mutex protected (write)**
+  🔴 **atomic.LoadInt64 safe (read)**
+  `failures`    — consecutive failure counter;
+                  reset to 0 on success or trip.
+  `windowStart` — UnixNano of first failure in
+                  current window; reset with failures.
+  `openUntil`   — UnixNano deadline; when
+                  time.Now() > openUntil the
+                  circuit may probe (HalfOpen).
+  All three are 8-byte aligned (0x08, 0x10, 0x18)
+  satisfying atomic 64-bit access on 32-bit ARM.
+| {
+  style.fill: "#eff6ff"
+  style.stroke: "#1d4ed8"
+  style.font-size: 12
+  style.border-radius: 4
+}
+ann_mutex: |md
+  🔵 **sync.Mutex — 8 bytes (two int32 fields)**
+  Protects: state transitions, failures,
+  windowStart, openUntil, probeInFlight.
+  Why mutex AND atomic?
+  • `State()` is called from observability code
+    on every request — must never block.
+  • All WRITES to state go through Allow() /
+    RecordSuccess() / RecordFailure() which
+    hold `mu` — consistent view guaranteed.
+  • Atomic READ of `state` sees the last
+    mu-protected write; no torn reads on
+    aligned int32.
+| {
+  style.fill: "#fff7ed"
+  style.stroke: "#c2410c"
+  style.font-size: 12
+  style.border-radius: 4
+}
+total: |md
+  **Total struct size: 40 bytes**
+  One 64-byte cache line · 24 bytes unused
+  `unsafe.Sizeof(CircuitBreaker{}) == 40`
+| {
+  style.fill: "#f0fdf4"
+  style.stroke: "#15803d"
+  style.font-size: 13
+  style.border-radius: 4
+}
+why: |md
+  **Why this layout matters**
+  `Allow()` is on the critical path of every
+  proxied request. Lock contention on `mu`
+  stalls goroutines waiting to enter.
+  Separating the READ path (atomic `state`)
+  from the WRITE path (mutex for transitions)
+  means 99.9 % of calls — normal operation
+  in Closed state — do a single atomic load
+  and return `true` without acquiring `mu`.
+  The mutex is only contested during the rare
+  failure → Open and Open → HalfOpen
+  transitions, which happen at most once per
+  30-second window.
+| {
+  style.fill: "#fefce8"
+  style.stroke: "#a16207"
+  style.font-size: 12
+  style.border-radius: 4
+}
+cacheline.f0 -> ann_state: "🔴 atomic + 🔵 mutex write" {
+  style.stroke: "#7c3aed"
+  style.stroke-dash: 3
+}
+cacheline.f1 -> ann_pad: "alignment" {
+  style.stroke: "#6b7280"
+  style.stroke-dash: 4
+}
+cacheline.f2 -> ann_atomic: "🔵 mutex write\n🔴 atomic read" {
+  style.stroke: "#1d4ed8"
+  style.stroke-dash: 3
+}
+cacheline.f3 -> ann_atomic
+cacheline.f4 -> ann_atomic
+cacheline.f5 -> ann_mutex: "🔵 protects all fields" {
+  style.stroke: "#c2410c"
+  style.stroke-dash: 3
+}

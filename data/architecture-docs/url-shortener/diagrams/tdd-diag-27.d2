@@ -1,0 +1,187 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+title: |md
+  ## Consumer Goroutine State Machine
+  **analytics-service / notification-service** · prefetch=1 · single goroutine
+| {near: top-center}
+# ── States ────────────────────────────────────────────────────────────────────
+INITIAL: "" {
+  shape: circle
+  width: 28
+  height: 28
+  style.fill: "#1a1a2e"
+  style.stroke: "#1a1a2e"
+}
+CONNECTING: "CONNECTING\n─────────────────\nDials amqp://admin@rabbitmq:5672/\nExchangeDeclare url-shortener topic\nQueueDeclare + QueueBind\nQos(prefetchCount=1)\nch.Consume → deliveries chan\n─────────────────\nInvariant: no delivery channel open" {
+  shape: rectangle
+  style.fill: "#2d1b69"
+  style.stroke: "#7c3aed"
+  style.stroke-width: 2
+  style.border-radius: 6
+  style.font-size: 13
+}
+CONSUMING: "CONSUMING\n─────────────────\nBlocking: select {\n  case d := <-deliveries\n  case <-ctx.Done()\n}\nInvariant: exactly one\nAMQP connection open\nprefetch=1 → broker holds\nnext msg until ACK/NACK" {
+  shape: rectangle
+  style.fill: "#1e3a5f"
+  style.stroke: "#2563eb"
+  style.stroke-width: 2
+  style.border-radius: 6
+  style.font-size: 13
+}
+PROCESSING: "PROCESSING\n─────────────────\nStep 1:  panic recover defer\nStep 2:  json.Unmarshal d.Body\nStep 3:  validate EventID + ShortCode\nStep 4:  SetMsgLogger (correlation_id)\nStep 5:  IsProcessed(eventID) pre-check\nStep 6:  pool.Begin(ctx) → tx\nStep 7:  processedRepo.MarkProcessed(tx)\nStep 8:  clickRepo.Insert(tx, click)\nStep 9:  tx.Commit()\nStep 10: detectAndRecordMilestone() [post-commit]\nStep 11: d.Ack(false)\n─────────────────\nInvariant: exactly one msg in-flight\nACK only after Step 9 COMMIT succeeds\nILLEGAL: ACK before tx.Commit()" {
+  shape: rectangle
+  style.fill: "#1e3a2a"
+  style.stroke: "#16a34a"
+  style.stroke-width: 2
+  style.border-radius: 6
+  style.font-size: 13
+}
+STOPPING: "STOPPING\n─────────────────\nconsumer.Close()\nconn.Close()\ngoroutine exits\n─────────────────\nInvariant: called only once\non ctx.Done()" {
+  shape: rectangle
+  style.fill: "#4a1c1c"
+  style.stroke: "#dc2626"
+  style.stroke-width: 2
+  style.border-radius: 6
+  style.font-size: 13
+}
+WAIT_RECONNECT: "WAIT_RECONNECT\n─────────────────\ntime.Sleep(10s)\nLog warn: reconnecting\n─────────────────\nAll in-flight deliveries\nnot ACKed → broker\nredelivers on reconnect" {
+  shape: rectangle
+  style.fill: "#3d2a00"
+  style.stroke: "#d97706"
+  style.stroke-width: 2
+  style.border-radius: 6
+  style.font-size: 13
+}
+SUPERVISOR_RECOVER: "SUPERVISOR_RECOVER\n─────────────────────\nrecover() in outer goroutine\nlog.Error panic payload\ntime.Sleep(5s)\nRestart RunConsumer loop\n─────────────────────\nDelivery NOT ACKed\nBroker redelivers msg\nafter consumer reconnects" {
+  shape: rectangle
+  style.fill: "#3d1a3d"
+  style.stroke: "#a855f7"
+  style.stroke-width: 2
+  style.border-radius: 6
+  style.font-size: 13
+}
+# ── Outcome leaf states ────────────────────────────────────────────────────────
+DUPLICATE: "DUPLICATE\n──────────────\nIsProcessed → true\nd.Ack(false)\nlog.Debug: skipped\n→ back to CONSUMING" {
+  shape: rectangle
+  style.fill: "#1a2a3a"
+  style.stroke: "#64748b"
+  style.border-radius: 6
+  style.font-size: 13
+}
+POISON: "POISON_MESSAGE\n──────────────\nMalformed JSON\nor missing fields\nd.Ack(false)  ← remove permanently\nlog.Error: poison\n→ back to CONSUMING\n──────────────\nNEVER d.Nack requeue=true\nfor malformed payload" {
+  shape: rectangle
+  style.fill: "#3d1a00"
+  style.stroke: "#ea580c"
+  style.border-radius: 6
+  style.font-size: 13
+}
+TRANSIENT_ERROR: "TRANSIENT_ERROR\n──────────────\nDB error (Begin/Insert/Commit)\nd.Nack(false, requeue=true)\nlog.Error\n→ back to CONSUMING\nBroker redelivers msg" {
+  shape: rectangle
+  style.fill: "#3d2000"
+  style.stroke: "#ca8a04"
+  style.border-radius: 6
+  style.font-size: 13
+}
+ACK_ILLEGAL: "⛔ ILLEGAL\n──────────────\nd.Ack before tx.Commit\n──────────────\nViolates at-least-once:\nclick lost on crash\nbetween ACK and commit" {
+  shape: rectangle
+  style.fill: "#2d0000"
+  style.stroke: "#ef4444"
+  style.stroke-width: 3
+  style.border-radius: 6
+  style.font-size: 13
+}
+# ── Transitions ────────────────────────────────────────────────────────────────
+INITIAL -> CONNECTING: "service start\nmain.go launches\nsupervisor goroutine" {
+  style.stroke: "#7c3aed"
+  style.stroke-width: 2
+}
+CONNECTING -> CONSUMING: "guard: amqp.Dial OK\namqp.Channel OK\nExchangeDeclare OK\nQueueDeclare OK\nQueueBind OK\nQos(1) OK\nch.Consume OK\naction: store conn+ch\nlog.Info: consumer started" {
+  style.stroke: "#16a34a"
+  style.stroke-width: 2
+}
+CONNECTING -> WAIT_RECONNECT: "trigger: any AMQP op fails\naction: ch.Close, conn.Close\nlog.Warn: connect failed" {
+  style.stroke: "#d97706"
+  style.stroke-width: 2
+}
+WAIT_RECONNECT -> CONNECTING: "trigger: time.Sleep(10s) elapsed\naction: retry ConnectRabbitMQ\nwith exponential backoff\n(500ms→1s→2s→4s→4s cap)" {
+  style.stroke: "#d97706"
+  style.stroke-width: 2
+}
+CONSUMING -> PROCESSING: "trigger: d := <-deliveries, ok=true\naction: processor.Process(ctx, d)\nInvariant: prefetch=1 means\nbroker sends no next msg\nuntil current ACK/NACK" {
+  style.stroke: "#16a34a"
+  style.stroke-width: 2
+}
+CONSUMING -> STOPPING: "trigger: ctx.Done()\naction: consumer.Close()\n        conn.Close()" {
+  style.stroke: "#dc2626"
+  style.stroke-width: 2
+}
+CONSUMING -> WAIT_RECONNECT: "trigger: ok=false on deliveries chan\n(broker closed channel)\naction: conn.Close()\nlog.Warn: channel closed; reconnecting" {
+  style.stroke: "#d97706"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+}
+PROCESSING -> CONSUMING: "trigger: ProcessResultInserted\naction: d.Ack(false) [Step 11]\npost-commit; at-least-once safe\nlog.Info: event processed" {
+  style.stroke: "#16a34a"
+  style.stroke-width: 2
+}
+PROCESSING -> DUPLICATE: "trigger: IsProcessed(eventID)=true [Step 5]\naction: d.Ack(false)\nNo DB writes; idempotent" {
+  style.stroke: "#64748b"
+  style.stroke-width: 2
+}
+DUPLICATE -> CONSUMING: "return ProcessResultDuplicate" {
+  style.stroke: "#64748b"
+}
+PROCESSING -> POISON: "trigger: json.Unmarshal fails [Step 2]\n      OR EventID==\"\" [Step 3]\n      OR ShortCode==\"\" [Step 3]\n      OR unknown routing key\naction: d.Ack(false) — remove from queue\nlog.Error: poison message body (truncated 200 chars)" {
+  style.stroke: "#ea580c"
+  style.stroke-width: 2
+}
+POISON -> CONSUMING: "return ProcessResultPoisoned" {
+  style.stroke: "#ea580c"
+}
+PROCESSING -> TRANSIENT_ERROR: "trigger: pool.Begin fails [Step 6]\n      OR MarkProcessed fails [Step 7]\n      OR Insert fails [Step 8]\n      OR tx.Commit fails [Step 9]\naction: tx.Rollback (via defer)\n        d.Nack(false, requeue=true)" {
+  style.stroke: "#ca8a04"
+  style.stroke-width: 2
+}
+TRANSIENT_ERROR -> CONSUMING: "return ProcessResultError\nBroker redelivers; IsProcessed\npre-check prevents double-count" {
+  style.stroke: "#ca8a04"
+}
+PROCESSING -> SUPERVISOR_RECOVER: "trigger: panic() anywhere in Process\naction: deferred recover() fires\n        log.Error: panic payload\n        return ProcessResultError\n        delivery NOT ACKed" {
+  style.stroke: "#a855f7"
+  style.stroke-width: 2
+  style.stroke-dash: 5
+}
+SUPERVISOR_RECOVER -> CONNECTING: "trigger: time.Sleep(5s)\naction: outer for-loop restarts\nRunConsumer; broker redelivers\nunACKed msg on reconnect" {
+  style.stroke: "#a855f7"
+  style.stroke-width: 2
+  style.stroke-dash: 5
+}
+# ── ILLEGAL transition (red dashed) ────────────────────────────────────────────
+PROCESSING -> ACK_ILLEGAL: "ILLEGAL: ACK before tx.Commit\nCrash between ACK and COMMIT\ndrops the click event permanently\nViolates at-least-once delivery" {
+  style.stroke: "#ef4444"
+  style.stroke-width: 3
+  style.stroke-dash: 5
+}
+# ── Legend annotation ─────────────────────────────────────────────────────────
+legend: |md
+  **Legend**
+  - 🟢 Green arrow = happy path
+  - 🟡 Orange arrow = reconnect / retry path
+  - 🔴 Red dashed = ⛔ ILLEGAL transition
+  - 🟣 Purple dashed = panic recovery path
+  - ⬛ Gray = duplicate/dedup path
+  ---
+  **prefetch=1 invariant**: broker holds next msg
+  until current d.Ack() or d.Nack() is called.
+  Steps 1–9 must complete before any ACK/NACK.
+  Step 11 ACK is always after Step 9 tx.Commit().
+| {
+  near: bottom-right
+  style.fill: "#0f0f1a"
+  style.stroke: "#334155"
+  style.border-radius: 8
+  style.font-size: 12
+}

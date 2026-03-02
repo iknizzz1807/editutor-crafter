@@ -53,11 +53,11 @@
 | # | Project | Core Lesson |
 |---|---------|-------------|
 | 11 | `message-queue` | Async patterns, pub/sub, persistence |
-| 12 | `packet-sniffer` | Raw packets, Ethernet → IP → TCP layering |
+| 12 | `build-ebpf-tracer` | eBPF programs, kernel tracing, modern observability |
 | 13 | `build-tcp-stack` | TCP/IP từ zero — networking ở tầng sâu nhất |
 | 14 | `profiler` | CPU sampling, flame graphs, perf analysis |
 
-**Skills acquired:** Network protocols, observability, debugging production systems
+**Skills acquired:** Network protocols, eBPF tracing, kernel observability, debugging production systems
 
 ---
 
@@ -95,12 +95,12 @@
 | 24 | `simd-library` | CPU vectorization — instruction-level speed |
 | 25 | `cache-optimized-structures` | Cache line alignment, prefetch, struct layout |
 | 26 | `lock-free-structures` | CAS, atomics — concurrency không lock |
-| 27 | `ecs-arch` | Data-oriented design — cache-friendly thinking |
+| 27 | `coroutine-runtime-engine` | M:N scheduler, user-space threading, Go-style runtime |
 | 28 | `io-uring-server` | Zero-syscall async I/O — thế hệ mới |
 | 29 | `kernel-bypass-network-stack` | DPDK-style — network latency ~ns |
 | 30 | `zero-copy-msg-bus` | Eliminate memcpy — IPC tốc độ tối đa |
 
-**Skills acquired:** Memory optimization, CPU architecture, lock-free programming, nanosecond-level tuning
+**Skills acquired:** Memory optimization, CPU architecture, lock-free programming, M:N scheduling, nanosecond-level tuning
 
 ---
 
@@ -112,7 +112,7 @@
 | 32 | `transformer-scratch` | Attention mechanism — hiểu LLM từ gốc |
 | 33 | `build-gpu-compute` | CUDA programming — ngôn ngữ của NVIDIA |
 | 34 | `tensor-quantization-engine` | INT8/FP16 — model optimization |
-| 35 | `inference-engine` | Model serving, batching, KV-cache |
+| 35 | `ml-model-serving` | Model serving, batching, KV-cache optimization |
 | 36 | `distributed-training-framework` | Multi-GPU, gradient sync — scale AI |
 
 **Skills acquired:** Deep learning fundamentals, GPU programming, ML systems engineering
@@ -125,10 +125,10 @@
 |---|---------|-------------|
 | 37 | `build-redis` | Network server + data structures + persistence |
 | 38 | `build-docker` | Container runtime từ zero |
-| 39 | `build-allocator` | Memory allocator — low-level cuối cùng |
+| 39 | `build-os` | Full OS kernel — scheduler, syscalls, memory management |
 | 40 | `build-jit` | JIT compiler — generate native code |
 
-**Skills acquired:** Systems integration, production-grade engineering
+**Skills acquired:** Systems integration, OS internals, production-grade engineering
 
 ---
 
@@ -138,14 +138,14 @@
 # Parsing Track
 tokenizer (1) → bytecode-vm (15) → build-jit (40)
 
-# Networking Track  
-http-server (3) → packet-sniffer (12) → build-tcp-stack (13) → kernel-bypass (29)
+# Networking Track
+http-server (3) → build-ebpf-tracer (12) → build-tcp-stack (13) → kernel-bypass (29)
 
 # Async Track
-build-event-loop (4) → io-uring-server (28) → coroutine (implied in redis)
+build-event-loop (4) → io-uring-server (28) → coroutine-runtime-engine (27)
 
 # Memory Track
-virtual-memory-sim (9) → memory-pool (23) → build-allocator (39)
+virtual-memory-sim (9) → memory-pool (23) → build-os (39)
 
 # Container Track
 container-basic (7) → build-docker (38)
@@ -154,10 +154,13 @@ container-basic (7) → build-docker (38)
 gossip (20) → distributed-cache (21) → build-raft (22)
 
 # ML Track
-neural-network (31) → transformer (32) → gpu-compute (33) → inference-engine (35) → distributed-training (36)
+neural-network (31) → transformer (32) → gpu-compute (33) → ml-model-serving (35) → distributed-training (36)
 
 # Performance Track
 hash-impl (2) → simd-library (24) → cache-optimized (25) → zero-copy-msg-bus (30)
+
+# Observability Track
+build-strace (5) → build-ebpf-tracer (12) → profiler-tool (14)
 ```
 
 ---
@@ -184,4 +187,4 @@ hash-impl (2) → simd-library (24) → cache-optimized (25) → zero-copy-msg-b
 
 ---
 
-*Last updated: Feb 2026*
+*Last updated: Mar 2026*

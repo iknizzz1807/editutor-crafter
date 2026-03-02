@@ -77,6 +77,21 @@
 		const el = document.getElementById(id);
 		if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 	}
+
+	function openInNewTab() {
+		window.open(`/project/${projectSlug}/doc`, '_blank');
+	}
+
+	function handleContentClick(e: MouseEvent) {
+		const target = e.target as HTMLElement;
+		if (target.tagName === 'IMG') {
+			const img = target as HTMLImageElement;
+			if (img.src.includes('.svg') || img.src.includes('architecture-doc/asset')) {
+				e.preventDefault();
+				window.open(img.src, '_blank');
+			}
+		}
+	}
 </script>
 
 {#if hasDoc}
@@ -110,6 +125,10 @@
 					<div class="arch-toolbar">
 						<span class="arch-title">{title}</span>
 					<div class="arch-actions">
+							<button class="arch-btn" onclick={openInNewTab} title="Open doc in new tab">
+								<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M3.75 2h3.5a.75.75 0 0 1 0 1.5h-3.5a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-3.5a.75.75 0 0 1 1.5 0v3.5A1.75 1.75 0 0 1 12.25 14h-8.5A1.75 1.75 0 0 1 2 12.25v-8.5C2 2.784 2.784 2 3.75 2Zm6.854-1h4.146a.25.25 0 0 1 .25.25v4.146a.25.25 0 0 1-.427.177L13.03 4.03 9.28 7.78a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042l3.75-3.75-1.543-1.543A.25.25 0 0 1 10.604 1Z"/></svg>
+								Open
+							</button>
 							<button class="arch-btn" onclick={viewPdf} title="View PDF in new tab">
 								<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M3.75 2h3.5a.75.75 0 0 1 0 1.5h-3.5a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-3.5a.75.75 0 0 1 1.5 0v3.5A1.75 1.75 0 0 1 12.25 14h-8.5A1.75 1.75 0 0 1 2 12.25v-8.5C2 2.784 2.784 2 3.75 2Zm6.854-1h4.146a.25.25 0 0 1 .25.25v4.146a.25.25 0 0 1-.427.177L13.03 4.03 9.28 7.78a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042l3.75-3.75-1.543-1.543A.25.25 0 0 1 10.604 1Z"/></svg>
 								View PDF
@@ -144,7 +163,7 @@
 								{/each}
 							</nav>
 						{/if}
-						<div class="arch-content">
+						<div class="arch-content" onclick={handleContentClick} role="presentation">
 							{@html html}
 						</div>
 					</div>
@@ -528,6 +547,13 @@
 		margin: 12px 0;
 		display: block;
 		object-fit: contain;
+		cursor: pointer;
+		border: 1px solid transparent;
+		transition: border-color 0.15s;
+	}
+
+	.arch-content :global(img:hover) {
+		border-color: var(--blue);
 	}
 
 	.arch-content :global(a) {

@@ -55,7 +55,46 @@ my_struct: {
 }
 ```
 
-### Rule C — Code blocks must use block-string delimiters that survive pipe chars
+### Rule C — Never use `...` or `\n` in D2 keys or sql_table labels
+**FORBIDDEN:**
+```d2
+# BAD: ... in method key — D2 parses it as spread operator
++NewService(...): "*Service"
++chain(h, mws...): "http.Handler"
+
+# BAD: \n in sql_table label — D2 does not allow newlines in labels
+my_table: {
+  shape: sql_table
+  label: "struct Foo (foo.h)\nsome note"
+}
+```
+**CORRECT:**
+```d2
+# Use descriptive param name instead of ...
++NewService(deps): "*Service"
++chain(h, mws): "http.Handler"
+
+# Put notes as a row instead of \n in label
+my_table: {
+  shape: sql_table
+  label: "struct Foo (foo.h)"
+  note: "some note"
+}
+```
+
+**Also FORBIDDEN in markdown blocks:** `<placeholder>` style HTML-like tags — D2 markdown parser treats them as HTML elements and fails.
+```d2
+# BAD
+resp: |md
+  "token": "<jwt>"
+|
+# CORRECT
+resp: |md
+  "token": "eyJhbGci..."
+|
+```
+
+### Rule D — Block-string delimiters that survive pipe chars
 Any code block containing `|`, `||`, `->`, or `'` must use the right delimiter:
 - Default: `|md ... |` — breaks if content has `|`
 - Content has `|` or `||`: use `|'md ... '|`
@@ -71,7 +110,7 @@ node: {
 }
 ```
 
-### Rule D — Code blocks stay inside named child nodes, NOT as top-level label
+### Rule E — Code blocks stay inside named child nodes, NOT as top-level label
 **FORBIDDEN:**
 ```d2
 step1: {
@@ -93,30 +132,56 @@ step1: {
 }
 ```
 
-### Rule E — Two-Dimensional Layout
+### Rule F — Vertical-First Layout (CRITICAL)
+**Always use `direction: down` at the top level.** Diagrams grow vertically — PDF and screen are taller than wide.
+
+`direction: right` is ONLY allowed inside a container to place siblings side by side. Never at the root.
+
 ```d2
-# Top level: direction: right for major layers
-direction: right
+# CORRECT — vertical first
+direction: down
 
-layer_a: {
-  direction: down   # Components stack vertically inside
-  label: "LAYER A"
-  comp1: { ... }
-  comp2: { ... }
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
 }
 
-layer_b: {
-  direction: down
-  label: "LAYER B"
-  comp3: { ... }
+row1: "" {
+  direction: right          # siblings in this row go side by side
+  style.stroke: transparent
+  style.fill: transparent
+  layer_a: {
+    direction: down
+    label: "LAYER A"
+    comp1: { ... }
+    comp2: { ... }
+  }
+  layer_b: {
+    direction: down
+    label: "LAYER B"
+    comp3: { ... }
+  }
 }
 
-layer_a -> layer_b: "DataType | verb"
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_c: {
+    direction: down
+    label: "LAYER C"
+    comp4: { ... }
+  }
+}
+
+row1 -> row2: "DataType | verb"
 ```
 
-**Never use single-direction expansion for diagrams with more than 4 nodes.**
+**Never use `direction: right` at root level. Never expand a diagram only horizontally.**
 
-### Rule F — `near:` only at root level with constant values
+### Rule G — `near:` only at root level with constant values
 ```d2
 # CORRECT: root-level near with constant
 legend: { ... }
@@ -152,25 +217,35 @@ conn_state: {
 ```
 
 ### Class / Module (methods + fields together)
-Use `shape: class`.
+Use `shape: class`. **CRITICAL: `shape: class` uses KEY-VALUE PAIRS only. NEVER use block strings (`|'...'|`) inside a class shape — they cause text to float outside the box and overlap everything.**
+
+Each field: `[-/+/#]fieldName: "type"`
+Each method: `[-/+/#]methodName(params): "returnType"`
 
 ```d2
+# CORRECT — key-value pairs render as clean rows inside the box
 reactor: {
   shape: class
   label: "Reactor (reactor.c)"
+  -epoll_fd: "int"
+  -handlers: "ConnState*"
+  -n_fds: "int"
+  +reactor_init(r, max_fds): "int"
+  +reactor_register(r, fd, ev, cb, data): "int"
+  +reactor_deregister(r, fd): "void"
+  +reactor_run(r, timeout_ms): "int"
+  +reactor_destroy(r): "void"
+}
 
+# WRONG — block strings cause text to float outside box, NEVER DO THIS
+reactor_bad: {
+  shape: class
   fields: |'c
-    int epoll_fd;           // epoll instance
-    ConnState* handlers;    // fd → handler map
-    int n_fds;              // active count
+    int epoll_fd;
+    ConnState* handlers;
   '|
-
   methods: |'c
-    int  reactor_init(Reactor*, int max_fds);
-    int  reactor_register(Reactor*, int fd, uint32_t ev, Callback cb, void* data);
-    void reactor_deregister(Reactor*, int fd);
-    int  reactor_run(Reactor*, int timeout_ms);
-    void reactor_destroy(Reactor*);
+    int reactor_init(Reactor*, int max_fds);
   '|
 }
 ```
@@ -239,7 +314,7 @@ Every subsequent diagram MUST use the same IDs for the same components as the Sa
 ## 7. D2 Syntax & Theme Selection
 
 ```d2
-direction: right
+direction: down
 vars: {
   d2-config: {
     layout-engine: elk
@@ -265,17 +340,22 @@ vars: {
 - NO `shape: text` for annotations — use named container nodes
 - NO `near:` inside nested nodes or pointing to other nodes
 - NO full function bodies — method signatures + key logic only (max 8 lines per code block)
+- NO block strings (`|'...'|`) inside `shape: class` — use key-value pairs ONLY
+- NO `direction: right` at root level — always `direction: down` at root
 - Valid shapes only: `rectangle`, `circle`, `cylinder`, `sql_table`, `class`, `code`, `diamond`, `oval`, `hexagon`, `callout`, `parallelogram`, `document`, `queue`, `package`, `step`, `person`
-- Use `|'lang ... '|` when code contains `|` or `||`
+- Use `|'lang ... '|` when code contains `|` or `||` (only in non-class shapes)
 
 ---
 
 ## 8. Quality Checklist
 
 For COMPONENT DIAGRAMS:
+- [ ] `direction: down` at root level (NEVER `direction: right` at root)
+- [ ] Row-based layout: transparent row containers with `direction: right` for siblings
 - [ ] Byte offsets for all struct fields (sql_table rows)
+- [ ] `shape: class` uses key-value pairs ONLY — NO block strings (`|'...'|`) inside class shapes
 - [ ] Method signatures: return type + params (no bodies)
-- [ ] Arrows: type | size | example value
+- [ ] Arrows: short label — `"Type | verb"` or just `"Type"` — long labels cause ELK overlap
 - [ ] Before/After containers for mutations
 - [ ] Error paths: dashed lines `style.stroke-dash: 4`
 - [ ] No floating text nodes (shape: text)

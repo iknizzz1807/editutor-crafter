@@ -28,47 +28,49 @@ token: {
 }
 ```
 
-### Classes / Modules → `shape: class`
-Show fields block + methods block. Methods: **signatures only**, NO bodies.
+### Classes / Modules → `shape: class` — CRITICAL SYNTAX RULES
+
+**D2 `shape: class` uses KEY-VALUE PAIRS only. NEVER use block strings (`|'...'|`) inside a class shape — they cause text to float outside the box and overlap everything.**
+
+Each field is a key-value pair: `[-/+/#]fieldName: "type"`
+Each method is a key-value pair with `(` in the key: `[-/+/#]methodName(params): "returnType"`
+
 ```d2
+# CORRECT — key-value pairs render as clean rows inside the box
 scanner: {
   shape: class
-  label: "Scanner (scanner.c)  [M1–M4]"
+  label: "Scanner  scanner.c  [M1-M4]"
+  -source: "char*"
+  -current: "int"
+  -line: "int"
+  +scan_tokens(): "Token*"
+  +advance(): "char"
+  +peek(): "char"
+  -match(expected): "bool"
+}
 
+# WRONG — block strings cause text overflow, NEVER DO THIS
+scanner_bad: {
+  shape: class
   fields: |'c
-    char*       source;      // full input (immutable)
-    Token*      tokens;      // output list
-    int         start;       // lexeme start offset
-    int         current;     // next char to read
-    int         line;        // 1-based
-    int         column;      // 1-based
+    char* source;
+    int current;
   '|
-
   methods: |'c
-    Token*  scan_tokens(Scanner*);
-    Token   _scan_token(Scanner*);
-    char    advance(Scanner*);
-    char    peek(Scanner*);
-    bool    _match(Scanner*, char expected);
-    Token   _make_token(Scanner*, TokenType);
+    Token* scan_tokens(Scanner*);
   '|
 }
 ```
 
-### Algorithm Steps (for data_walk / timeline sections) → named container, max 6 lines
-```d2
-step_scan: {
-  label: "scan_tokens() loop"
-  width: 320
-  code: |'c
-    while (!is_at_end(s)) {
-      Token t = _scan_token(s);
-      if (t.type != WHITESPACE)
-        list_push(s->tokens, t);
-    }
-  '|
-}
-```
+Visibility prefixes:
+- `+` = public
+- `-` = private
+- `#` = protected
+- no prefix = public
+
+Keep method signatures concise — target max ~50 chars per line:
+- Long param lists: `NewURLService(pool, urlRepo, cache, log)` → `NewURLService(...deps): "*URLService"`
+- Long return types: `func(http.Handler) http.Handler` → `func(Handler) Handler`
 
 ---
 
@@ -83,12 +85,57 @@ Encode totals/notes as a last row in `sql_table`:
 sz: "Total: 24 bytes (1 cache line)"
 ```
 
-### Rule C — Code block delimiters
-- Default `|md ... |` breaks when content has `|` or `||`
-- Use `|'c ... '|` for C/C++/Rust code with `|`, `||`, `->`, `*`
-- Use `|"c ... "|` if content also has `'|`
+### Rule C — Never use `...` or `\n` in D2 keys or sql_table labels
+**FORBIDDEN:**
+```d2
+# BAD: ... in method key — D2 parses it as spread operator
++NewService(...): "*Service"
++chain(h, mws...): "http.Handler"
 
-### Rule D — `near:` only at root level with D2 constants
+# BAD: \n in sql_table label — D2 does not allow newlines in labels
+my_table: {
+  shape: sql_table
+  label: "struct Foo (foo.h)\nsome note"
+}
+```
+**CORRECT:**
+```d2
+# Use descriptive param name instead of ...
++NewService(deps): "*Service"
++chain(h, mws): "http.Handler"
+
+# Put notes as a row instead of \n in label
+my_table: {
+  shape: sql_table
+  label: "struct Foo (foo.h)"
+  note: "some note"
+}
+```
+
+**Also FORBIDDEN in markdown blocks:** `<placeholder>` style HTML-like tags — D2 markdown parser treats them as HTML elements and fails.
+```d2
+# BAD
+resp: |md
+  "token": "<jwt>"
+|
+# CORRECT
+resp: |md
+  "token": "eyJhbGci..."
+|
+```
+
+### Rule E — Quote edge labels containing `{` or `}`
+D2 interprets `{` as a map. Always quote edge labels that contain special chars:
+```d2
+# CORRECT
+gateway -> url_svc: "GET /r/:code"
+gateway -> url_svc: "POST /api/shorten"
+
+# WRONG — {code} is parsed as a map, causes compile error
+gateway -> url_svc: GET /r/{code}
+```
+
+### Rule F — `near:` only at root level with D2 constants
 ```d2
 # CORRECT
 legend.near: bottom-right
@@ -98,29 +145,56 @@ container: { child: { near: top-center } }
 node.near: other_node
 ```
 
-### Rule E — 2D layered layout
+### Rule G — Row-based 2D layout
+Use `direction: down` at top level, group layers into transparent rows with `direction: right`:
+
 ```d2
-direction: right
+direction: down
 
-layer_data: {
-  direction: down
-  label: "DATA LAYER"
-  # structs here
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
 }
 
-layer_logic: {
-  direction: down
-  label: "LOGIC LAYER"
-  # classes/modules here
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_shared: {
+    direction: down
+    label: "SHARED PACKAGES"
+    # shared structs/classes here
+  }
+  layer_infra: {
+    direction: down
+    label: "INFRASTRUCTURE"
+    # infra tables here
+  }
 }
 
-layer_io: {
-  direction: down
-  label: "I/O LAYER"
-  # output/integration here
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_svc_a: {
+    direction: down
+    label: "SERVICE A  :8081"
+    # service A structs/classes here
+  }
+  layer_svc_b: {
+    direction: down
+    label: "SERVICE B  :8082"
+    # service B structs/classes here
+  }
 }
+```
 
-layer_data -> layer_logic -> layer_io
+Cross-row edges use full paths:
+```d2
+row1.layer_shared -> row2.layer_svc_a: "imports"
+row2.layer_svc_a -> row2.layer_svc_b: "URLClickedEvent"
 ```
 
 ---
@@ -145,7 +219,7 @@ Use `style.stroke-dash: 4` for error paths and optional flows.
 
 ## 4. Milestone Navigation Panel
 
-Include a `milestone_index` table at the bottom linking all milestones:
+Include a `milestone_index` table outside all rows at the bottom:
 ```d2
 milestone_index: {
   shape: sql_table
@@ -154,14 +228,14 @@ milestone_index: {
   m2: "M2 | project-m2 | Key Deliverable 2"
   m3: "M3 | project-m3 | Key Deliverable 3"
 }
-milestone_index.near: bottom-center
 ```
 
 ---
 
 ## 5. D2 Header
 ```d2
-direction: right
+direction: down
+
 vars: {
   d2-config: {
     layout-engine: elk
@@ -175,25 +249,26 @@ Themes: 0 = neutral, 3 = polished, 4 = data structures, 5 = networked.
 ---
 
 ## 6. Hard Rules
-- NO full function bodies — method signatures ONLY (return type + name + params)
+- NO full function bodies — method signatures ONLY
 - NO `label_bottom:` key
 - NO `shape: text` floating nodes
 - NO `near:` inside nested containers
-- NO code blocks over 8 lines
-- Use `|'lang ... '|` for all code containing `|` or `||`
+- NO block strings (`|'...'|`) inside `shape: class` — use key-value pairs ONLY
+- NEVER use `{` or `}` in unquoted edge labels — always quote them
 - Valid shapes: `rectangle`, `circle`, `cylinder`, `sql_table`, `class`, `code`, `diamond`, `oval`, `hexagon`, `callout`, `parallelogram`, `document`, `queue`, `package`, `step`, `person`
 
 ---
 
 ## 7. Checklist
-- [ ] Every struct → sql_table with field types
-- [ ] Every module/class → class shape with fields + method signatures
-- [ ] All connections labeled: type | operation | example
-- [ ] Milestone index panel included
+- [ ] Every struct → `sql_table` with field types
+- [ ] Every module/class → `shape: class` with key-value field + method rows (NO block strings)
+- [ ] All connections labeled: max 2 parts `"Type | verb"`
+- [ ] Milestone index panel included (outside all rows)
 - [ ] File reference in every node label
 - [ ] No `label_bottom:`, no `shape: text`, no nested `near:`
-- [ ] Code blocks use `|'lang ... '|` if content has `|`
-- [ ] 2D layered layout (direction: right at top, direction: down within layers)
+- [ ] No block strings inside class shapes
+- [ ] All edge labels with `{`/`}` are quoted
+- [ ] Row-based layout: `direction: down` at top, transparent rows with `direction: right`
 
 ---
 

@@ -961,7 +961,7 @@ def compiler_node(state: GraphState):
     d2_path.write_text(re.sub(r'icon:\s*"(https?://.*?)"', "", code))
 
     res = subprocess.run(
-        ["d2", "--layout=elk", str(d2_path), str(d2_path.with_suffix(".svg"))],
+        ["d2", "--layout=elk", "--scale=0.25", str(d2_path), str(d2_path.with_suffix(".svg"))],
         capture_output=True,
         text=True,
     )
@@ -1624,7 +1624,7 @@ def system_diagram_renderer_node(state: GraphState):
 
     svg_path = d2_path.with_suffix(".svg")
     res = subprocess.run(
-        ["d2", "--layout=elk", str(d2_path), str(svg_path)],
+        ["d2", "--layout=elk", "--scale=0.25", str(d2_path), str(svg_path)],
         capture_output=True,
         text=True,
     )
@@ -1783,7 +1783,7 @@ PROJECT SPEC:
 {meta_yaml}
 
 TDD SPEC SUMMARY:
-{state["tdd_accumulated_md"][:3000]}
+{state["tdd_accumulated_md"]}
 
 Write a concise engineering overview in markdown. Cover:
 1. `# {meta.get("name", state["project_id"])} — Engineering Design Document` (H1 title)

@@ -1,489 +1,284 @@
 vars: {
   d2-config: {
     layout-engine: elk
-    theme-id: 4
+    theme-id: 6
   }
 }
-direction: down
 title: |md
-  ## POST /shorten — Atomic Transaction (Step-by-Step)
-  `url-shortener-m3` · Handler → URLService → PostgreSQL
+  ## GET /:code — Read-Through Cache State Machine
+  **url-service** · Redis → PostgreSQL fallback · Circuit: Redis errors are non-fatal
 | {near: top-center}
-
-# ── Legend ──────────────────────────────────────────────────────────────────
-legend: {
-  near: bottom-right
-  shape: rectangle
-  style.fill: "#F8F8F8"
-  style.stroke: "#AAAAAA"
-  style.font-size: 12
-  label: |md
-    **Legend**
-    🟦 Happy path  🟥 Error path  🟧 Retry loop
-    Red border = same DB transaction
-    Dashed arrow = error branch
-    Solid arrow = success flow
-  |
+# ── Initial state ────────────────────────────────────────────────────────────
+initial: "" {
+  shape: circle
+  style.fill: "#1a1a2e"
+  style.stroke: "#1a1a2e"
+  width: 24
+  height: 24
+  label: ""
 }
-
-# ── STEP 1: JWT Validation ───────────────────────────────────────────────────
-s1: "① JWT Validation" {
-  shape: rectangle
-  style.fill: "#E8D5F5"
-  style.stroke: "#7B2D8B"
-  style.stroke-width: 2
-  style.border-radius: 6
+# ── States ───────────────────────────────────────────────────────────────────
+REQUEST: "REQUEST\nExtract {code} from path\nBuild key: url:{code}" {
+  style.fill: "#3d2b6b"
+  style.stroke: "#9b72cf"
+  style.font-color: white
   style.bold: true
-  label: |md
-    **① Validate JWT — Extract Claims**
-    **IN:** `Authorization: Bearer &lt;token&gt;` header
-    **ACTION:**
-    `RequireAuth` middleware calls `JWTVerifier.Verify(token)`
-    Local HMAC-SHA256 — **no network call**
-    Extract: `claims.Sub` → `user_id` (UUID)
-    Extract: `claims.Email` → `user_email`
-    **OUT:** `(user_id: string, user_email: string)`
-  |
-}
-s1_err: "401 Unauthorized" {
-  shape: rectangle
-  style.fill: "#FFCCCC"
-  style.stroke: "#CC0000"
-  style.stroke-width: 2
-  style.border-radius: 4
-  style.font-size: 12
-  label: |md
-    **401**
-    `{"error":"unauthorized"}`
-    ErrTokenExpired → 401
-    ErrTokenInvalid → 401
-    Missing header → 401
-  |
-}
-s1 -> s1_err: "verify fails" {
-  style.stroke: "#CC0000"
-  style.stroke-dash: 5
-  style.font-color: "#CC0000"
-}
-
-# ── STEP 2: URL Validation ───────────────────────────────────────────────────
-s2: "② URL Format Validation" {
-  shape: rectangle
-  style.fill: "#D5E8F5"
-  style.stroke: "#1A6EA8"
-  style.stroke-width: 2
   style.border-radius: 6
+}
+REDIS_GET: "REDIS GET\nclient.Get(ctx50ms, \"url:{code}\")\nctx timeout: 50ms" {
+  style.fill: "#2d4a7a"
+  style.stroke: "#6ba3d6"
+  style.font-color: white
+  style.border-radius: 6
+}
+CACHE_HIT: "CACHE_HIT\nUnmarshal CachedURL\n{original_url, expires_at, is_active}" {
+  style.fill: "#1a4a3a"
+  style.stroke: "#4caf7d"
+  style.font-color: white
   style.bold: true
-  label: |md
-    **② Validate URL + Parse Request Body**
-    **IN:** `ShortenRequest{url, custom_code?, expires_at?}`
-    Body limit: `http.MaxBytesReader(w, r.Body, 4096)`
-    **ACTION:**
-    `url.Parse(req.URL)` — Go stdlib
-    Require: `parsed.Scheme ∈ {http, https}`
-    Require: `parsed.Host != ""`
-    If `expires_at` present: `time.Parse(RFC3339, *req.ExpiresAt)`
-    Require: `expiresAt.After(time.Now())`
-    **OUT:** `(originalURL: string, expiresAt: *time.Time, customCode: string)`
-  |
-}
-s2_err: "400 Bad Request" {
-  shape: rectangle
-  style.fill: "#FFCCCC"
-  style.stroke: "#CC0000"
-  style.stroke-width: 2
-  style.border-radius: 4
-  style.font-size: 12
-  label: |md
-    **400**
-    Missing scheme/host → `"url must include scheme and host"`
-    Non-http scheme → `"url scheme must be http or https"`
-    Bad expires_at → `"expires_at must be RFC3339 format"`
-    Past expires_at → `"expires_at must be in the future"`
-    Body > 4096B → `"request body too large"`
-  |
-}
-s2 -> s2_err: "validation fails" {
-  style.stroke: "#CC0000"
-  style.stroke-dash: 5
-  style.font-color: "#CC0000"
-}
-
-# ── STEP 3: Short Code Selection ─────────────────────────────────────────────
-s3: "③ Short Code Selection" {
-  shape: rectangle
-  style.fill: "#FFF3CC"
-  style.stroke: "#CC8800"
-  style.stroke-width: 2
   style.border-radius: 6
+}
+CACHE_HIT_ACTIVE: "CACHE_HIT_ACTIVE\nInvariant: is_active=true\nexpires_at=nil OR future" {
+  style.fill: "#1a5c3a"
+  style.stroke: "#4caf7d"
+  style.font-color: white
+  style.border-radius: 6
+}
+CACHE_HIT_INACTIVE: "CACHE_HIT_INACTIVE\nis_active=false\nServe from cache — no DB needed" {
+  style.fill: "#5c2a1a"
+  style.stroke: "#cf6b4c"
+  style.font-color: white
+  style.border-radius: 6
+}
+CACHE_HIT_EXPIRED: "CACHE_HIT_EXPIRED\nexpires_at != nil\nAND expires_at.Before(now())" {
+  style.fill: "#5c3a1a"
+  style.stroke: "#cf9b4c"
+  style.font-color: white
+  style.border-radius: 6
+}
+CACHE_MISS: "CACHE_MISS\nredis.Nil returned\nFall through to DB" {
+  style.fill: "#3a2d5c"
+  style.stroke: "#9b72cf"
+  style.font-color: white
+  style.border-radius: 6
+}
+CACHE_ERROR: "CACHE_ERROR\nnon-Nil Redis error\nlog.Warn(\"redis get failed\")\nFall through to DB" {
+  style.fill: "#4a2a2a"
+  style.stroke: "#cf4c4c"
+  style.font-color: white
+  style.border-radius: 6
+}
+DB_QUERY: "DB QUERY\nFindByCode(ctx, code)\nSELECT ... WHERE short_code=\$1\nUses idx_urls_short_code" {
+  style.fill: "#2a3d5c"
+  style.stroke: "#6ba3d6"
+  style.font-color: white
+  style.border-radius: 6
+}
+DB_HIT: "DB_HIT\nRecord found\nEvaluate is_active + expires_at\nInvariant: row exists" {
+  style.fill: "#1a3d5c"
+  style.stroke: "#4c8bcf"
+  style.font-color: white
   style.bold: true
-  label: |md
-    **③ Select Short Code (with Collision Retry)**
-    **IN:** `customCode: string` (may be empty)
-    **BRANCH A — Custom Code Provided:**
-    Validate: `len ∈ [4,10]`, all chars in `base62Alphabet`
-    Use as-is → collision detected at DB INSERT (Step ⑤)
-    Custom code conflict → **409** (not retried)
-    **BRANCH B — Auto-Generate (loop ≤ 5 attempts):**
-    
-    go
-    for attempt := 1; attempt <= 5; attempt++ {
-        code = codegen.Generate()      // crypto/rand, 7 chars
-        → attempt INSERT (Step ⑤)
-        if ErrCodeConflict: continue   // retry
-        if success: break
-    }
-    
-    
-    if attempt &gt; 5: return ErrExhausted → 503
-    
-    `base62Alphabet = "0123456789A-Za-z"` (62 chars)
-    Collision space: 62⁷ ≈ 3.5 trillion codes
-    **OUT:** `shortCode: string` (7 chars auto / 4-10 chars custom)
-  |
-}
-s3_custom_err: "409 Conflict" {
-  shape: rectangle
-  style.fill: "#FFCCCC"
-  style.stroke: "#CC0000"
-  style.stroke-width: 2
-  style.border-radius: 4
-  style.font-size: 12
-  label: |md
-    **409**
-    Custom code taken
-    `{"error":"short code already taken"}`
-  |
-}
-s3_exhaust_err: "503 Service Unavailable" {
-  shape: rectangle
-  style.fill: "#FFCCCC"
-  style.stroke: "#CC0000"
-  style.stroke-width: 2
-  style.border-radius: 4
-  style.font-size: 12
-  label: |md
-    **503**
-    5 collision retries exhausted
-    `{"error":"could not generate unique code; try again"}`
-    (Indicates pathologically high collision rate)
-  |
-}
-s3 -> s3_custom_err: "custom code\nconflict" {
-  style.stroke: "#CC0000"
-  style.stroke-dash: 5
-  style.font-color: "#CC0000"
-}
-s3 -> s3_exhaust_err: "5 retries\nexhausted" {
-  style.stroke: "#CC0000"
-  style.stroke-dash: 5
-  style.font-color: "#CC0000"
-}
-
-# ── STEP 4: BEGIN TRANSACTION ─────────────────────────────────────────────────
-s4: "④ BEGIN Transaction" {
-  shape: rectangle
-  style.fill: "#E0FFE0"
-  style.stroke: "#006600"
-  style.stroke-width: 2
   style.border-radius: 6
+}
+DB_HIT_ACTIVE: "DB_HIT_ACTIVE\nis_active=true\nAND (expires_at=nil OR future)\nProceed to cache write" {
+  style.fill: "#1a4a5c"
+  style.stroke: "#4cb3cf"
+  style.font-color: white
+  style.border-radius: 6
+}
+EXPIRED: "EXPIRED\nis_active=true\nAND expires_at.Before(now())\nDo NOT cache" {
+  style.fill: "#5c4a1a"
+  style.stroke: "#cfaf4c"
+  style.font-color: white
   style.bold: true
-  label: |md
-    **④ BEGIN PostgreSQL Transaction**
-    **IN:** `*pgxpool.Pool`
-    **ACTION:**
-    `tx, err = pool.Begin(ctx)`
-    `defer tx.Rollback(ctx)` — auto-rollback if Commit not reached
-    **OUT:** `pgx.Tx` — transaction handle passed to Steps ⑤ and ⑥
-    ⚠ Both Steps ⑤ and ⑥ MUST use this same `tx`
-    ⚠ No HTTP response before COMMIT succeeds
-  |
-}
-s4_err: "500 Internal Error" {
-  shape: rectangle
-  style.fill: "#FFCCCC"
-  style.stroke: "#CC0000"
-  style.stroke-width: 2
-  style.border-radius: 4
-  style.font-size: 12
-  label: |md
-    **500**
-    Pool exhausted or DB unreachable
-    `log.Error` + `{"error":"internal server error"}`
-  |
-}
-s4 -> s4_err: "pool.Begin fails" {
-  style.stroke: "#CC0000"
-  style.stroke-dash: 5
-  style.font-color: "#CC0000"
-}
-
-# ── ATOMIC TRANSACTION BOX (Steps 5+6) ───────────────────────────────────────
-atomic_tx: "ATOMIC TRANSACTION — Steps ⑤ + ⑥ execute in same pgx.Tx" {
-  style.fill: "#FFF0F0"
-  style.stroke: "#CC0000"
-  style.stroke-width: 3
-  style.border-radius: 8
-  style.stroke-dash: 0
-  tx_label: |md
-    🔴 **ATOMICITY INVARIANT:**
-    Both INSERTs succeed or both roll back.
-    A URL row can never exist without its outbox row.
-    An outbox row can never exist for a URL that was not created.
-  | {
-    shape: text
-    style.font-color: "#CC0000"
-    style.bold: true
-    style.font-size: 12
-  }
-  # ── STEP 5 ───────────────────────────────────────────────────────────────
-  s5: "⑤ INSERT INTO urls" {
-    shape: rectangle
-    style.fill: "#D5E8F5"
-    style.stroke: "#1A6EA8"
-    style.stroke-width: 2
-    style.border-radius: 6
-    style.bold: true
-    label: |md
-      **⑤ INSERT INTO urls (within tx)**
-      **IN:** `(tx, URL{id, short_code, original_url, user_id, expires_at})`
-      `url.ID = uuid.New().String()` — generated by app, not DB
-      **SQL:**
-      sql
-      INSERT INTO urls
-        (id, short_code, original_url, user_id, expires_at)
-      VALUES ($1, $2, $3, $4, $5)
-      
-      Unique index `idx_urls_short_code` enforces collision detection.
-      **ON `23505` (unique violation):**
-      → `ErrCodeConflict` returned to `Shorten()`
-      → tx rolled back by defer
-      → if auto-code: retry loop at Step ③
-      → if custom-code: 409 immediately
-      **OUT:** URL row in DB (uncommitted until Step ⑦)
-    |
-  }
-  # ── STEP 6 ───────────────────────────────────────────────────────────────
-  s6: "⑥ INSERT INTO outbox" {
-    shape: rectangle
-    style.fill: "#D5E8F5"
-    style.stroke: "#1A6EA8"
-    style.stroke-width: 2
-    style.border-radius: 6
-    style.bold: true
-    label: |md
-      **⑥ INSERT INTO outbox (within same tx)**
-      **IN:** `(tx, eventType="url.created", payload=URLCreatedEvent JSON)`
-      **URLCreatedEvent payload:**
-      json
-      {
-        "event_type":     "url.created",
-        "occurred_at":    "2026-03-02T14:00:00Z",
-        "correlation_id": "UUID-FROM-HEADER",
-        "short_code":     "aB3xY9z",
-        "original_url":   "https://...",
-        "user_id":        "JWT-SUB",
-        "user_email":     "JWT-EMAIL",
-        "expires_at":     null
-      }
-      
-      
-      **SQL:**
-      sql
-      INSERT INTO outbox
-        (id, event_type, payload, created_at)
-      VALUES
-        (gen_random_uuid(), $1, $2, now())
-      
-      
-      `published_at` starts NULL → poller picks it up
-      **OUT:** Outbox row in DB (uncommitted until Step ⑦)
-    |
-  }
-  s5 -> s6: "INSERT succeeded\n(tx still open)" {
-    style.stroke: "#006600"
-    style.stroke-width: 2
-    style.font-color: "#006600"
-  }
-  s5_err_inner: "tx.Rollback → retry or 500" {
-    shape: rectangle
-    style.fill: "#FFCCCC"
-    style.stroke: "#CC0000"
-    style.stroke-width: 1
-    style.border-radius: 4
-    style.font-size: 11
-    label: |md
-      **Rollback (defer)**
-      23505 → ErrCodeConflict
-      → retry if auto-code
-      → 409 if custom-code
-      Other DB error → 500
-    |
-  }
-  s6_err_inner: "tx.Rollback → 500" {
-    shape: rectangle
-    style.fill: "#FFCCCC"
-    style.stroke: "#CC0000"
-    style.stroke-width: 1
-    style.border-radius: 4
-    style.font-size: 11
-    label: |md
-      **Rollback (defer)**
-      Outbox INSERT fails → 500
-      urls row also rolled back
-      No partial state possible
-    |
-  }
-  s5 -> s5_err_inner: "INSERT fails\n(DB error / conflict)" {
-    style.stroke: "#CC0000"
-    style.stroke-dash: 4
-    style.font-color: "#CC0000"
-    style.font-size: 11
-  }
-  s6 -> s6_err_inner: "INSERT fails" {
-    style.stroke: "#CC0000"
-    style.stroke-dash: 4
-    style.font-color: "#CC0000"
-    style.font-size: 11
-  }
-}
-
-# ── STEP 7: COMMIT ────────────────────────────────────────────────────────────
-s7: "⑦ tx.Commit()" {
-  shape: rectangle
-  style.fill: "#E0FFE0"
-  style.stroke: "#006600"
-  style.stroke-width: 2
   style.border-radius: 6
+}
+INACTIVE: "INACTIVE\nis_active=false\n(soft-deleted by DELETE /urls/:code)\nDo NOT cache" {
+  style.fill: "#5c2d1a"
+  style.stroke: "#cf6b4c"
+  style.font-color: white
   style.bold: true
-  label: |md
-    **⑦ COMMIT Transaction**
-    **IN:** Open `pgx.Tx` with both rows written (uncommitted)
-    **ACTION:** `err = tx.Commit(ctx)`
-    On success:
-    - urls row is durable and visible to other connections
-    - outbox row is durable and visible to poller goroutine
-    **CRASH BETWEEN COMMIT AND HTTP RESPONSE:**
-    Client receives connection reset → URL WAS created
-    Client may retry → second INSERT hits unique constraint → 409
-    **OUT:** Both rows committed; transaction closed
-  |
-}
-s7_err: "500 Internal Error" {
-  shape: rectangle
-  style.fill: "#FFCCCC"
-  style.stroke: "#CC0000"
-  style.stroke-width: 2
-  style.border-radius: 4
-  style.font-size: 12
-  label: |md
-    **500**
-    Commit fails (extremely rare: network partition to DB)
-    Both rows rolled back atomically
-    `{"error":"internal server error"}`
-  |
-}
-s7 -> s7_err: "Commit fails" {
-  style.stroke: "#CC0000"
-  style.stroke-dash: 5
-  style.font-color: "#CC0000"
-}
-
-# ── STEP 8: HTTP 201 Response ─────────────────────────────────────────────────
-s8: "⑧ Return 201 Created" {
-  shape: rectangle
-  style.fill: "#E8D5F5"
-  style.stroke: "#7B2D8B"
-  style.stroke-width: 2
   style.border-radius: 6
+}
+DB_MISS: "DB_MISS\npgx.ErrNoRows\nErrURLNotFound returned\nNothing to cache" {
+  style.fill: "#3d1a3d"
+  style.stroke: "#cf4ccf"
+  style.font-color: white
   style.bold: true
-  label: |md
-    **⑧ HTTP 201 Created**
-    **Response Body:**
-    json
-    {
-      "short_code":   "aB3xY9z",
-      "short_url":    "http://localhost:8081/aB3xY9z",
-      "original_url": "https://very-long-url.example.com/path",
-      "expires_at":   null
-    }
-    
-    
-    `short_url = BASE_URL + "/" + short_code`
-    `Content-Type: application/json`
-  |
-}
-
-# ── HAPPY PATH CONNECTIONS ────────────────────────────────────────────────────
-s1 -> s2: "claims.Sub, claims.Email\n(user_id, user_email extracted)" {
-  style.stroke: "#006600"
-  style.stroke-width: 2
-  style.font-color: "#006600"
-}
-s2 -> s3: "originalURL, expiresAt, customCode\n(all validated)" {
-  style.stroke: "#006600"
-  style.stroke-width: 2
-  style.font-color: "#006600"
-}
-s3 -> s4: "shortCode selected\n(auto or custom)" {
-  style.stroke: "#006600"
-  style.stroke-width: 2
-  style.font-color: "#006600"
-}
-s4 -> atomic_tx: "tx handle open\n(defer Rollback armed)" {
-  style.stroke: "#006600"
-  style.stroke-width: 2
-  style.font-color: "#006600"
-}
-atomic_tx -> s7: "Both INSERTs succeeded\n(within same tx)" {
-  style.stroke: "#006600"
-  style.stroke-width: 2
-  style.font-color: "#006600"
-}
-s7 -> s8: "Commit succeeded\n(both rows durable)" {
-  style.stroke: "#006600"
-  style.stroke-width: 2
-  style.font-color: "#006600"
-}
-
-# ── RETRY LOOP ANNOTATION ─────────────────────────────────────────────────────
-retry_note: |md
-  🔁 **Collision Retry Loop**
-  `ErrCodeConflict` from Step ⑤
-  (auto-code only) causes control
-  to return to Step ③ to generate
-  a new 7-char code.
-| {
-  shape: text
-  style.font-color: "#CC8800"
-  style.font-size: 12
-  near: top-right
-}
-atomic_tx.s5_err_inner -> s3: "ErrCodeConflict\n+ auto-code\n→ retry" {
-  style.stroke: "#CC8800"
-  style.stroke-dash: 3
-  style.font-color: "#CC8800"
-  style.stroke-width: 2
-}
-
-# ── OUTBOX POLLER DOWNSTREAM ───────────────────────────────────────────────────
-poller: "Outbox Poller (background goroutine)" {
-  shape: rectangle
-  style.fill: "#F0F0F0"
-  style.stroke: "#888888"
-  style.stroke-width: 1
   style.border-radius: 6
-  style.stroke-dash: 3
-  label: |md
-    **Outbox Poller** (url-service, 3 workers)
-    Polls every **2s**:
-    `SELECT id FROM outbox WHERE published_at IS NULL`
-    Publishes to RabbitMQ routing key: `url.created`
-  |
 }
-s8 -> poller: "outbox row picked up\nwithin ≤ 2s (async)" {
-  style.stroke: "#888888"
+REDIS_SET: "REDIS SET\ncache.Set(ctx100ms, code, CachedURL, expiresAt)\nTTL = min(remaining, 1h)\nNon-blocking; errors swallowed" {
+  style.fill: "#1a3a2a"
+  style.stroke: "#4caf7d"
+  style.font-color: white
+  style.border-radius: 6
+}
+OUTBOX_CLICK: "OUTBOX_CLICK\nBegin separate tx\nINSERT outbox(URLClickedEvent)\nCommit — non-fatal if fails" {
+  style.fill: "#2a2a3d"
+  style.stroke: "#9b9bcf"
+  style.font-color: white
+  style.border-radius: 6
   style.stroke-dash: 4
-  style.font-color: "#888888"
-  style.font-size: 11
+}
+# ── Terminal states ───────────────────────────────────────────────────────────
+RESP_301: "301 Moved Permanently\nLocation: {original_url}\nX-Correlation-ID echoed" {
+  style.fill: "#1a5c2a"
+  style.stroke: "#4caf5c"
+  style.font-color: white
+  style.bold: true
+  style.double-border: true
+  style.border-radius: 6
+}
+RESP_410_EXPIRED: "410 Gone\n{\"error\":\"url has expired\"}\nCache NOT populated" {
+  style.fill: "#5c4a1a"
+  style.stroke: "#cf9b4c"
+  style.font-color: white
+  style.bold: true
+  style.double-border: true
+  style.border-radius: 6
+}
+RESP_410_INACTIVE: "410 Gone\n{\"error\":\"url has been deactivated\"}\nCache NOT populated" {
+  style.fill: "#5c2a1a"
+  style.stroke: "#cf6b4c"
+  style.font-color: white
+  style.bold: true
+  style.double-border: true
+  style.border-radius: 6
+}
+RESP_404: "404 Not Found\n{\"error\":\"short url not found\"}\nCache NOT populated" {
+  style.fill: "#3d1a1a"
+  style.stroke: "#cf4c4c"
+  style.font-color: white
+  style.bold: true
+  style.double-border: true
+  style.border-radius: 6
+}
+# ── ILLEGAL state ─────────────────────────────────────────────────────────────
+ILLEGAL_500: "❌ ILLEGAL STATE\n500 on Redis error\nMUST fall through to DB\nRedis errors are non-fatal" {
+  style.fill: "#2a0000"
+  style.stroke: "#ff0000"
+  style.font-color: "#ff6666"
+  style.bold: true
+  style.border-radius: 6
+  style.stroke-dash: 3
+  style.stroke-width: 3
+}
+# ── Transitions ───────────────────────────────────────────────────────────────
+initial -> REQUEST: "HTTP GET /{code}" {
+  style.stroke: "#9b72cf"
+  style.stroke-width: 2
+}
+REQUEST -> REDIS_GET: "CorrelationIDMiddleware applied\nkey = \"url:\" + code" {
+  style.stroke: "#6ba3d6"
+}
+REDIS_GET -> CACHE_HIT: "result != redis.Nil\nAND err == nil\nunmarshal succeeds" {
+  style.stroke: "#4caf7d"
+  style.font-color: "#4caf7d"
+}
+REDIS_GET -> CACHE_MISS: "err == redis.Nil\n(key absent)" {
+  style.stroke: "#9b72cf"
+  style.stroke-dash: 4
+}
+REDIS_GET -> CACHE_ERROR: "err != nil\nAND err != redis.Nil\n(network, timeout)" {
+  style.stroke: "#cf4c4c"
+  style.stroke-dash: 4
+}
+CACHE_HIT -> CACHE_HIT_ACTIVE: "is_active=true\nAND not expired" {
+  style.stroke: "#4caf7d"
+}
+CACHE_HIT -> CACHE_HIT_INACTIVE: "is_active=false" {
+  style.stroke: "#cf6b4c"
+}
+CACHE_HIT -> CACHE_HIT_EXPIRED: "expires_at != nil\nAND expires_at.Before(now())" {
+  style.stroke: "#cf9b4c"
+}
+CACHE_HIT_ACTIVE -> OUTBOX_CLICK: "Redirect decided\nWrite click event (non-blocking)" {
+  style.stroke: "#9b9bcf"
+  style.stroke-dash: 4
+}
+OUTBOX_CLICK -> RESP_301: "pool.Begin → INSERT outbox\nCommit (or warn + continue)" {
+  style.stroke: "#4caf5c"
+  style.stroke-width: 2
+}
+CACHE_HIT_INACTIVE -> RESP_410_INACTIVE: "Serve from cache\nno DB round-trip" {
+  style.stroke: "#cf6b4c"
+  style.stroke-width: 2
+}
+CACHE_HIT_EXPIRED -> RESP_410_EXPIRED: "Serve from cache\nno DB round-trip" {
+  style.stroke: "#cf9b4c"
+  style.stroke-width: 2
+}
+CACHE_MISS -> DB_QUERY: "Fall through\nlog: nothing" {
+  style.stroke: "#6ba3d6"
+}
+CACHE_ERROR -> DB_QUERY: "Fall through\nlog.Warn(\"redis get failed\", key, err)" {
+  style.stroke: "#cf4c4c"
+}
+DB_QUERY -> DB_HIT: "row found\n(pgx.ErrNoRows NOT returned)" {
+  style.stroke: "#4c8bcf"
+}
+DB_QUERY -> DB_MISS: "pgx.ErrNoRows\n→ ErrURLNotFound" {
+  style.stroke: "#cf4ccf"
+}
+DB_HIT -> DB_HIT_ACTIVE: "is_active=true\nAND expires_at=nil\nOR expires_at.After(now())" {
+  style.stroke: "#4cb3cf"
+}
+DB_HIT -> EXPIRED: "is_active=true\nAND expires_at.Before(now())" {
+  style.stroke: "#cfaf4c"
+}
+DB_HIT -> INACTIVE: "is_active=false" {
+  style.stroke: "#cf6b4c"
+}
+DB_HIT_ACTIVE -> REDIS_SET: "cache.Set(ctx100ms, code,\nCachedURL{url,expiresAt,true},\nexpiresAt)" {
+  style.stroke: "#4cb3cf"
+}
+REDIS_SET -> OUTBOX_CLICK: "TTL set; errors swallowed\nWrite click event" {
+  style.stroke: "#9b9bcf"
+  style.stroke-dash: 4
+}
+EXPIRED -> RESP_410_EXPIRED: "Do NOT call cache.Set\n(would cache expired state)" {
+  style.stroke: "#cfaf4c"
+  style.stroke-width: 2
+}
+INACTIVE -> RESP_410_INACTIVE: "Do NOT call cache.Set\n(stale inactive cached)" {
+  style.stroke: "#cf6b4c"
+  style.stroke-width: 2
+}
+DB_MISS -> RESP_404: "ErrURLNotFound\nno cache write" {
+  style.stroke: "#cf4ccf"
+  style.stroke-width: 2
+}
+# ── ILLEGAL transition (red dashed) ──────────────────────────────────────────
+CACHE_ERROR -> ILLEGAL_500: "ILLEGAL\n(must NOT do this)" {
+  style.stroke: "#ff0000"
+  style.stroke-dash: 5
+  style.stroke-width: 3
+  style.font-color: "#ff4444"
+}
+# ── Annotations ───────────────────────────────────────────────────────────────
+cache_note: |md
+  **Cache TTL Policy**
+  - `expires_at = nil` → TTL = 1h (defaultCacheTTL)
+  - `expires_at` in future → TTL = min(remaining, 1h)
+  - `expires_at` in past → never cached (returns 410)
+  - `is_active = false` → never cached after deactivation
+    (DELETE /urls/:code calls cache.Del before returning 204)
+| {
+  near: bottom-left
+  style.fill: "#1a1a2e"
+  style.stroke: "#3d2b6b"
+  style.font-color: "#c8b8ff"
+}
+click_note: |md
+  **Click Event Atomicity**
+  Separate transaction from redirect.
+  If commit fails after 301 sent → event lost.
+  Acceptable: at-least-once for writes,
+  not for already-sent HTTP responses.
+| {
+  near: bottom-right
+  style.fill: "#1a1a2e"
+  style.stroke: "#2a2a3d"
+  style.font-color: "#a0a0cf"
 }

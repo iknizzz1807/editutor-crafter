@@ -4,381 +4,72 @@ vars: {
     theme-id: 4
   }
 }
-
-direction: down
-
-title: {
-  label: |'md
-    ## urls + outbox Table Schema and Index Layout
-    **Migration 001_create_urls.sql · Migration 002_create_outbox.sql**
-  '|
-  near: top-center
+shape: sequence_diagram
+client: "HTTP Client\n(POST /shorten)"
+handler: "Shorten Handler\n(url-service)"
+pool: "pgxpool\n(url_db)"
+tx: "pgx.Tx"
+urls_table: "urls table"
+outbox_table: "outbox table"
+outbox_worker: "Outbox Worker\n(background)"
+rmq: "RabbitMQ\n(url-shortener exchange)"
+# ── Step 1: JWT + decode ──────────────────────────────────────────
+decode_group: "Step 1-4: Validate request, extract claims, parse expires_at, generate short_code" {
+  client -> handler: "POST /shorten\nAuthorization: Bearer <jwt>\nbody: {url, custom_code?, expires_at?}"
+  handler -> handler: "auth.ClaimsFromContext(r.Context())\n→ claims.Sub (userID), claims.Email"
+  handler -> handler: "validateURL(req.URL)\njson.NewDecoder(r.Body).Decode(&req)"
+  handler -> handler: "shortCode = codegen.Generate()\n[retry — attempt++ < maxRetries=5]"
 }
-
-# ── TABLES ──────────────────────────────────────────────────────────────────
-tables: "PostgreSQL Schema" {
-  style: {
-    fill: "#1a1a2e"
-    stroke: "#4a4a8a"
-    stroke-width: 2
-    border-radius: 6
-    font-color: white
-    bold: true
-    font-size: 16
+# ── Step 5: Build event payload BEFORE opening tx ─────────────────
+pre_tx_group: "Step 5: Build URLCreatedEvent payload (before TX opens — marshal cannot fail inside TX)" {
+  handler -> handler: "evt := URLCreatedEvent{\n  EventID:       newUUID(),\n  CorrelationID: correlationIDFromContext(ctx),\n  ShortCode:     shortCode,\n  OriginalURL:   req.URL,\n  UserID:        claims.Sub,\n  UserEmail:     claims.Email,\n  ExpiresAt:     &t,\n}\npayload, _ = json.Marshal(evt)"
+}
+# ── Step 6a: Open transaction ─────────────────────────────────────
+tx_group: "Step 6: Single atomic transaction — BOTH rows or NEITHER" {
+  handler -> pool: "pool.Begin(ctx)"
+  pool -> tx: "BEGIN"
+  tx -> handler: "*pgx.Tx"
+  handler -> tx: 'INSERT INTO urls\n(short_code, original_url, user_id, expires_at)\nVALUES ($1,$2,$3,$4)\nRETURNING id, created_at, ...'
+  tx -> urls_table: "write url row"
+  unique_check: "Unique violation check" {
+    urls_table -> tx: "pg error 23505?\n(short_code conflict)"
+    tx -> handler: "ErrShortCodeConflict"
+    handler -> tx: "tx.Rollback(ctx)"
+    tx -> pool: "ROLLBACK"
+    handler -> handler: "shortCode = codegen.Generate()\n[retry — attempt++ < maxRetries=5]"
+    handler -> pool: "pool.Begin(ctx)  [retry loop]"
+    pool -> tx: "BEGIN"
   }
-
-  urls_table: "TABLE: urls" {
-    style: {
-      fill: "#16213e"
-      stroke: "#7b68ee"
-      stroke-width: 2
-      border-radius: 4
-    }
-    header: {
-      label: |'md
-        **urls** — url_db.public.urls
-      '|
-      style: {
-        fill: "#6a0dad"
-        stroke: "#9b59b6"
-        font-color: white
-        bold: true
-      }
-    }
-    col_id: {
-      label: |'md
-        | Offset | Column | Type | Constraint | Default |
-        |--------|--------|------|------------|---------|
-        | 0 | **id** | UUID (16 B) | PRIMARY KEY · NOT NULL | gen_random_uuid() |
-        | 16 | **short_code** | VARCHAR(10) | NOT NULL · UNIQUE → idx | — |
-        | 26 | **original_url** | TEXT (variable) | NOT NULL | — |
-        | +8 | **user_id** | UUID (16 B) | NOT NULL → idx | — |
-        | +16 | **created_at** | TIMESTAMPTZ (8 B) | NOT NULL | now() |
-        | +8 | **expires_at** | TIMESTAMPTZ (8 B) | NULL | NULL |
-        | +8 | **is_active** | BOOLEAN (1 B) | NOT NULL | true |
-      '|
-    }
-    note_urls: {
-      label: |'md
-        **Storage notes**
-        - VARCHAR(10): enforces ≤ 10 chars for short_code
-        - TEXT: variable-length; toasted if original_url > 2 kB
-        - TIMESTAMPTZ: UTC int64 microseconds since epoch (8 B)
-        - BOOLEAN: 1 byte; PostgreSQL aligns to 8-byte boundary
-        - **Estimated row size**: ~120 B average
-      '|
-      style: {
-        fill: "#0d1b2a"
-        stroke: "#4a4a8a"
-        font-color: "#a0b0c0"
-        font-size: 13
-      }
-    }
+  handler -> tx: "INSERT INTO outbox\n(event_type='url.created', payload=<URLCreatedEvent JSON>)\nRETURNING id, created_at"
+  tx -> outbox_table: "write outbox row\n(published_at = NULL)"
+  outbox_table -> tx: "outbox row created"
+}
+# ── Commit or rollback ────────────────────────────────────────────
+commit_group: "Step 6 continued: COMMIT — both rows atomically visible or neither" {
+  handler -> tx: "tx.Commit(ctx)"
+  tx -> pool: "COMMIT"
+  pool -> handler: "nil error"
+  handler -> client: "201 Created\n{short_code, short_url, original_url, expires_at?}"
+}
+# ── Crash annotation ─────────────────────────────────────────────
+crash_annotation: "CRASH SCENARIOS (why single TX matters)" {
+  crash_before: "crash BEFORE COMMIT:\nBoth rows absent.\nNo orphan event.\nClient gets 502/timeout.\nClient retries → new short_code generated." {
+    handler -> handler
   }
-
-  outbox_table: "TABLE: outbox" {
-    style: {
-      fill: "#16213e"
-      stroke: "#e67e22"
-      stroke-width: 2
-      border-radius: 4
-    }
-    header_ob: {
-      label: |'md
-        **outbox** — url_db.public.outbox
-      '|
-      style: {
-        fill: "#8b4513"
-        stroke: "#e67e22"
-        font-color: white
-        bold: true
-      }
-    }
-    col_ob: {
-      label: |'md
-        | Offset | Column | Type | Constraint | Default |
-        |--------|--------|------|------------|---------|
-        | 0 | **id** | UUID (16 B) | PRIMARY KEY · NOT NULL | gen_random_uuid() |
-        | 16 | **event_type** | TEXT (variable) | NOT NULL | — |
-        | +8 | **payload** | JSONB (variable) | NOT NULL | — |
-        | +8 | **created_at** | TIMESTAMPTZ (8 B) | NOT NULL | now() |
-        | +8 | **published_at** | TIMESTAMPTZ (8 B) | NULL | NULL |
-      '|
-    }
-    note_outbox: {
-      label: |'md
-        **Storage notes**
-        - event_type: routing key string (~12 chars avg)
-        - payload: JSONB typical URLClickedEvent ≈ 400–600 B
-        - published_at NULL = not yet published (partial index target)
-        - **Estimated row size**: ~650 B average (JSONB dominant)
-      '|
-      style: {
-        fill: "#0d1b2a"
-        stroke: "#4a4a8a"
-        font-color: "#a0b0c0"
-        font-size: 13
-      }
-    }
+  crash_after: "crash AFTER COMMIT:\nBoth rows present.\nOutbox poller finds published_at=NULL\n→ publishes URLCreatedEvent.\nAt-least-once delivery preserved." {
+    handler -> handler
+  }
+  two_tx_antipattern: "WHY TWO SEPARATE TXs WOULD BREAK at-least-once:\nTX1: INSERT urls → COMMIT ✓\n[crash here]\nTX2: INSERT outbox → NEVER RUNS\n→ URL created but no event ever published.\nConsumers never notified. Silent data loss." {
+    handler -> handler
   }
 }
-
-# ── INDEXES ─────────────────────────────────────────────────────────────────
-indexes: "B-Tree Index Structures" {
-  style: {
-    fill: "#0a1628"
-    stroke: "#2ecc71"
-    stroke-width: 2
-    border-radius: 6
-    font-color: white
-    bold: true
-    font-size: 16
-  }
-
-  idx_short_code: "idx_urls_short_code (UNIQUE)" {
-    style: {
-      fill: "#0d2b1a"
-      stroke: "#2ecc71"
-      stroke-width: 2
-      border-radius: 4
-    }
-    sc_header: {
-      label: |'md
-        **CREATE UNIQUE INDEX idx_urls_short_code ON urls(short_code)**
-      '|
-      style: {
-        fill: "#1a5c2e"
-        stroke: "#2ecc71"
-        font-color: white
-        bold: true
-      }
-    }
-    sc_tree: {
-      label: |'md
-        B-Tree Root Page
-        ┌─────────────────────────────────────────────────────────┐
-        │ Key type : VARCHAR(10) │ Height: ~2–3 │ Fill: 90% │
-        └──────────────┬──────────────────────────────────────────┘
-                       │
-            ┌──────────┴──────────┐
-            ▼                     ▼
-        Internal Node          Internal Node
-        [0000000 … mZZZZZZ]   [n000000 … ZZZZZZZ]
-            │                     │
-        Leaf Pages (ctid→heap)  Leaf Pages (ctid→heap)
-      '|
-      style: {
-        fill: "#0a1f12"
-        stroke: "#27ae60"
-        font-color: "#90ee90"
-        font-size: 13
-      }
-    }
-    sc_meta: {
-      label: |'md
-        | Property | Value |
-        |----------|-------|
-        | Column | short_code VARCHAR(10) |
-        | Unique | ✅ YES — enforces at DB level |
-        | NULLs | NOT NULL — no NULL entries |
-        | Selectivity | **~100%** (every value unique) |
-        | Index size | ~120 B/entry · N entries |
-        | Lookup cost | O(log N) ≈ 3 I/Os for 10M rows |
-      '|
-    }
-    sc_queries: {
-      label: |'md
-        **Queries using this index**
-        ① `FindByCode` redirect hot path
-        sql
-        SELECT ... FROM urls WHERE short_code = $1
-        
-        ② Collision detection during INSERT
-        ③ Cache key derivation (Redis = "url:" + short_code)
-      '|
-      style: {
-        fill: "#0a1f12"
-        stroke: "#27ae60"
-        font-color: "#c8f0d0"
-        font-size: 13
-      }
-    }
-  }
-
-  idx_user_created: "idx_urls_user_id_created (COMPOSITE)" {
-    style: {
-      fill: "#1a1a0d"
-      stroke: "#f1c40f"
-      stroke-width: 2
-      border-radius: 4
-    }
-    uc_header: {
-      label: |'md
-        **CREATE INDEX idx_urls_user_id_created ON urls(user_id, created_at DESC)**
-      '|
-      style: {
-        fill: "#5c5c00"
-        stroke: "#f1c40f"
-        font-color: white
-        bold: true
-      }
-    }
-    uc_tree: {
-      label: |'md
-        B-Tree Root Page
-        ┌──────────────────────────────────────────────────────────────────┐
-        │ Key: (user_id UUID, created_at TIMESTAMPTZ DESC)                 │
-        │ Height: ~3–4 │ Fill: 85% │ Sort: ASC user_id, DESC time        │
-        └───────────────────────┬──────────────────────────────────────────┘
-                                │
-            ┌───────────────────┼───────────────────┐
-            ▼                   ▼                   ▼
-        Internal            Internal            Internal
-        (uid=A, t=T3)       (uid=M, t=T2)       (uid=Z, t=T1)
-      '|
-      style: {
-        fill: "#1a1a06"
-        stroke: "#c9a800"
-        font-color: "#fff0a0"
-        font-size: 13
-      }
-    }
-    uc_meta: {
-      label: |'md
-        | Property | Value |
-        |----------|-------|
-        | Column 1 | user_id UUID — equality filter |
-        | Column 2 | created_at TIMESTAMPTZ DESC |
-        | Index size | ~40 B/entry · N entries |
-        | Lookup cost | O(log N) for user partition |
-      '|
-    }
-    uc_queries: {
-      label: |'md
-        **Queries using this index**
-        ① `ListByUser` first page (no cursor)
-        sql
-        SELECT ... FROM urls WHERE user_id = $1 ORDER BY created_at DESC LIMIT 21
-        
-        ② `ListByUser` subsequent pages (keyset cursor)
-        sql
-        WHERE user_id = $1 AND (created_at, id) < ($2, $3)
-        
-      '|
-      style: {
-        fill: "#1a1a06"
-        stroke: "#c9a800"
-        font-color: "#fff5cc"
-        font-size: 13
-      }
-    }
-  }
-
-  idx_outbox_unpublished: "idx_outbox_unpublished (PARTIAL)" {
-    style: {
-      fill: "#1a0d1a"
-      stroke: "#e056e0"
-      stroke-width: 2
-      border-radius: 4
-    }
-    op_header: {
-      label: |'md
-        **CREATE INDEX idx_outbox_unpublished ON outbox(created_at ASC) WHERE published_at IS NULL**
-      '|
-      style: {
-        fill: "#5c005c"
-        stroke: "#e056e0"
-        font-color: white
-        bold: true
-      }
-    }
-    op_tree: {
-      label: |'md
-        Partial B-Tree (published_at IS NULL)
-        ┌──────────────────────────────────────────────────────────┐
-        │ Key: created_at TIMESTAMPTZ ASC │ Predicate check logic  │
-        └───────────────────┬──────────────────────────────────────┘
-                            │
-                ┌───────────┴───────────┐
-                ▼                       ▼
-            Leaf Page (oldest)      Leaf Page (recent)
-      '|
-      style: {
-        fill: "#0d060d"
-        stroke: "#b040b0"
-        font-color: "#f0b0f0"
-        font-size: 13
-      }
-    }
-    op_meta: {
-      label: |'md
-        | Property | Value |
-        |----------|-------|
-        | Column | created_at TIMESTAMPTZ ASC |
-        | Partial predicate | WHERE published_at IS NULL |
-        | Maintenance | Auto-shrinks; no manual cleanup |
-      '|
-    }
-    op_queries: {
-      label: |'md
-        **Queries using this index**
-        ① `FetchUnpublished` — Poller (every 2s)
-        sql
-        SELECT ... FROM outbox WHERE published_at IS NULL ORDER BY created_at ASC
-        
-        ② `MarkPublished` Side effect: row drops OUT of partial index
-      '|
-      style: {
-        fill: "#0d060d"
-        stroke: "#b040b0"
-        font-color: "#f5d0f5"
-        font-size: 13
-      }
-    }
-  }
-}
-
-# ── ANNOTATIONS ─────────────────────────────────────────────────────────────
-annotations: "Query -> Index Routing Map" {
-  style: {
-    fill: "#0a0a1a"
-    stroke: "#6677aa"
-    stroke-width: 1
-    border-radius: 4
-    font-color: white
-    font-size: 14
-  }
-  routing_table: {
-    label: |'md
-      | Query / Operation | Index Used | Access Method | Cost Tier |
-      |-------------------|-----------|---------------|-----------|
-      | `GET /:code` | idx_urls_short_code | Index Scan | 🟢 O(log N) |
-      | `POST /shorten` check | idx_urls_short_code | Index Scan | 🟢 O(log N) |
-      | `GET /urls` page 1 | idx_urls_user_id_created | Index Scan | 🟢 O(log N) |
-      | `GET /urls` page N | idx_urls_user_id_created | Index Scan | 🟢 O(log N) |
-      | Outbox poll (2s) | idx_outbox_unpublished | Index Scan | 🟢 O(pending) |
-      | Mark published | outbox PK | Index Scan | 🟢 O(log N) |
-    '|
-  }
-}
-
-# ── CONNECTIONS ─────────────────────────────────────────────────────────────
-tables.urls_table -> indexes.idx_short_code: "short_code UNIQUE" {
-  style: { stroke: "#2ecc71"; stroke-width: 2; font-color: "#2ecc71"; bold: true }
-}
-tables.urls_table -> indexes.idx_user_created: "user_id + created_at DESC" {
-  style: { stroke: "#f1c40f"; stroke-width: 2; font-color: "#f1c40f"; bold: true }
-}
-tables.outbox_table -> indexes.idx_outbox_unpublished: "WHERE published_at IS NULL" {
-  style: { stroke: "#e056e0"; stroke-width: 2; font-color: "#e056e0"; bold: true }
-}
-
-indexes.idx_short_code -> annotations: "Redirect Hot Path" {
-  style: { stroke: "#2ecc71"; stroke-dash: 4; font-color: "#2ecc71"; font-size: 12 }
-}
-indexes.idx_user_created -> annotations: "Pagination" {
-  style: { stroke: "#f1c40f"; stroke-dash: 4; font-color: "#f1c40f"; font-size: 12 }
-}
-indexes.idx_outbox_unpublished -> annotations: "Event Delivery" {
-  style: { stroke: "#e056e0"; stroke-dash: 4; font-color: "#e056e0"; font-size: 12 }
+# ── Background outbox poll (async, after commit) ──────────────────
+async_group: "Async: Outbox poller publishes the event (runs every 2s, independent of HTTP)" {
+  outbox_worker -> outbox_table: "SELECT id, event_type, payload\nFROM outbox\nWHERE published_at IS NULL\nORDER BY created_at ASC\nLIMIT 50\nFOR UPDATE SKIP LOCKED"
+  outbox_table -> outbox_worker: "[{id, 'url.created', <payload>}]"
+  outbox_worker -> rmq: "ch.PublishWithContext(\n  exchange='url-shortener',\n  routingKey='url.created',\n  DeliveryMode=Persistent,\n  body=payload\n)"
+  rmq -> outbox_worker: "publish ACK"
+  outbox_worker -> outbox_table: 'UPDATE outbox\nSET published_at = now()\nWHERE id = $1'
+  outbox_table -> outbox_worker: "1 row updated"
+  outbox_worker -> outbox_worker: "If MarkPublished fails:\n  published_at stays NULL\n  → re-fetched next poll\n  → re-published (at-least-once)\n  → consumer deduplicates by EventID"
 }

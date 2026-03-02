@@ -1,175 +1,89 @@
-layout-engine: elk
 vars: {
   d2-config: {
+    layout-engine: elk
     theme-id: 4
   }
 }
+shape: sequence_diagram
 
-# ── HEADER ────────────────────────────────────────────────────────────────────
-title: {
-  shape: text
-  label: |md
-    # Redis Cache Key Layout — `url:{short_code}`
-    Read-through cache for GET /:code redirect hot path
+ticker: "time.Ticker\n(2s interval)"
+coordinator: "OutboxCoordinator"
+db: "PostgreSQL\n(url_db)"
+workerCh: "workerCh\nchan *OutboxRow\n(cap=50)"
+worker1: "Worker-1"
+worker2: "Worker-2"
+worker3: "Worker-3"
+
+normal_poll: Normal Poll Cycle {
+  ticker -> coordinator: "C: tick"
+  coordinator -> db: "SELECT id,event_type,payload\nFROM outbox\nWHERE published_at IS NULL\nORDER BY created_at ASC\nLIMIT 50\nFOR UPDATE SKIP LOCKED"
+  db -> coordinator: "rows [r1, r2, r3]"
+  coordinator -> workerCh: "workerCh <- r1"
+  coordinator -> workerCh: "workerCh <- r2"
+  coordinator -> workerCh: "workerCh <- r3"
+}
+
+concurrent_publish: Concurrent Worker Processing {
+  workerCh -> worker1: "row r1"
+  workerCh -> worker2: "row r2"
+  workerCh -> worker3: "row r3"
+  worker1 -> worker1: "Publish(ctx 5s,\n\"url.created\",\nr1.Payload)"
+  worker2 -> worker2: "Publish(ctx 5s,\n\"url.clicked\",\nr2.Payload)"
+  worker3 -> worker3: "Publish(ctx 5s,\n\"url.deleted\",\nr3.Payload)"
+  worker1 -> db: "UPDATE outbox\nSET published_at=now()\nWHERE id=r1.ID"
+  db -> worker1: "OK"
+  worker2 -> db: "UPDATE outbox\nSET published_at=now()\nWHERE id=r2.ID"
+  db -> worker2: "OK"
+  worker3 -> db: "UPDATE outbox\nSET published_at=now()\nWHERE id=r3.ID"
+  db -> worker3: "OK"
+}
+
+rabbitmq_down: RabbitMQ Down — Publish Failure Path {
+  ticker -> coordinator: "C: tick"
+  coordinator -> db: "FetchUnpublished(limit=50)"
+  db -> coordinator: "rows [r4]"
+  coordinator -> workerCh: "workerCh <- r4"
+  workerCh -> worker1: "row r4"
+  worker1 -> worker1: "Publish(ctx 5s,\n\"url.created\",\nr4.Payload)" {
+    style.stroke: red
+    style.bold: true
+  }
+  worker1 -> worker1: "← error: amqp publish\nurl.created: EOF" {
+    style.stroke: red
+    style.font-color: red
+  }
+  worker1 -> worker1: "log.Warn(\"outbox publish failed\",\n  \"event_type\", r4.EventType,\n  \"outbox_id\",  r4.ID,\n  \"error\",      err)" {
+    style.stroke: red
+  }
+  worker1 -> worker1: "continue\n(skip MarkPublished)" {
+    style.stroke: red
+    style.bold: true
+  }
+  worker1.skip_note: |md
+    **r4.published_at remains NULL**
+    Next poll cycle will re-fetch r4.
+    Consumer must deduplicate by event_id (analytics-service M4).
   |
-  near: top-center
 }
 
-# ── KEY MEMORY LAYOUT ─────────────────────────────────────────────────────────
-key_layout: {
-  label: "KEY BINARY LAYOUT"
-  style: {
-    fill: "#f5f3ff"
-    stroke: "#7c3aed"
-    stroke-width: 2
-  }
-
-  # Offset markers
-  offsets: {
-    grid-columns: 1
-    o0: "0x00" {shape: text; style.font-color: gray}
-    o4: "0x04" {shape: text; style.font-color: gray}
-    o11: "0x0B" {shape: text; style.font-color: gray}
-  }
-
-  fields: {
-    prefix: "Prefix" {
-      label: "url:\n(4 bytes)"
-      style.fill: "#7c3aed"
-      style.font-color: white
-    }
-    code: "Short Code" {
-      label: "{short_code}\n(7 bytes)"
-      style.fill: "#2563eb"
-      style.font-color: white
-    }
-    padding: "Padding" {
-      label: "Variable\n(0-6 bytes)"
-      style.fill: "#94a3b8"
-      style.font-color: white
-    }
-  }
-
-  offsets.o0 -> fields.prefix
-  offsets.o4 -> fields.code
-  offsets.o11 -> fields.padding
+next_cycle: Next Poll — Retry r4 {
+  ticker -> coordinator: "C: tick"
+  coordinator -> db: "FetchUnpublished(limit=50)"
+  db -> coordinator: "rows [r4] (published_at IS NULL)"
+  coordinator -> workerCh: "workerCh <- r4"
+  workerCh -> worker1: "row r4 (retry)"
+  worker1 -> worker1: "Publish(ctx 5s,\n\"url.created\",\nr4.Payload) → OK"
+  worker1 -> db: "UPDATE outbox\nSET published_at=now()\nWHERE id=r4.ID"
+  db -> worker1: "OK"
 }
 
-# ── VALUE SPECIFICATION ───────────────────────────────────────────────────────
-value_layout: {
-  label: "VALUE SPECIFICATION (JSON)"
-  shape: sql_table
-  style: {
-    fill: "#f8fafc"
-    stroke: "#2563eb"
-  }
-
-  original_url: "string (UTF-8)" {
-    constraint: "max 2048B"
-  }
-  expires_at: "RFC3339 | null" {
-    constraint: "20B / 4B"
-  }
-  is_active: "boolean" {
-    constraint: "1B (true/false)"
-  }
-}
-
-# ── ALGORITHM STATE: TTL ──────────────────────────────────────────────────────
-ttl_rules: {
-  label: "TTL COMPUTATION LOGIC"
-  style: {
-    fill: "#f0fdf4"
-    stroke: "#16a34a"
-  }
-
-  check: "expires_at == null?" {
-    shape: diamond
-    style.fill: "#16a34a"
-    style.font-color: white
-  }
-
-  branch_a: "Result: 3600s" {
-    style.fill: "#dcfce7"
-    style.bold: true
-  }
-
-  check_past: "rem <= 0?" {
-    shape: diamond
-    style.fill: "#16a34a"
-    style.font-color: white
-  }
-
-  branch_b: "Result: 1s" {
-    style.fill: "#dcfce7"
-    style.bold: true
-  }
-
-  branch_c: "Result: min(rem, 3600s)" {
-    style.fill: "#dcfce7"
-    style.bold: true
-  }
-
-  check -> branch_a: "Yes"
-  check -> check_past: "No"
-  check_past -> branch_b: "Yes (Expired)"
-  check_past -> branch_c: "No (Valid)"
-}
-
-# ── SEQUENCE: INVALIDATION ────────────────────────────────────────────────────
-invalidation_seq: {
-  shape: sequence_diagram
-  label: "Cache Invalidation Flow"
-  
-  API: "URL Service"
-  DB: "PostgreSQL"
-  Cache: "Redis"
-
-  API -> DB: "UPDATE urls SET is_active=false"
-  API -> DB: "COMMIT TRANSACTION"
-  DB -> API: "Success"
-  
-  API -> Cache: "DEL url:{code}" {
-    style.stroke: "#f97316"
-    style.stroke-width: 3
-  }
-  Cache -> API: "OK ▲"
-}
-
-# ── HIT PATH ──────────────────────────────────────────────────────────────────
-hit_path: {
-  label: "HOT PATH: GET /:code"
-  style.fill: "#fafaf9"
-  
-  h1: "1. GET key" {
-    style.fill: "#e7e5e4"
-  }
-  h2: "2. Parse JSON" {
-    style.fill: "#e7e5e4"
-  }
-  h3: "3. Verify active" {
-    style.fill: "#fecaca"
-    style.bold: true
-  }
-  h4: "4. 301 Redirect" {
-    style.fill: "#bbf7d0"
-    style.bold: true
-  }
-
-  h1 -> h2 -> h3 -> h4
-}
-
-# ── GLOBAL POINTERS ───────────────────────────────────────────────────────────
-key_layout -> value_layout: "maps to" {
-  style.stroke: "#f97316"
-  style.stroke-width: 3
-}
-
-value_layout -> ttl_rules: "determines" {
-  style.stroke-dash: 5
-}
-
-invalidation_seq -> hit_path: "invalidates" {
-  style.stroke: red
-  style.stroke-dash: 3
+graceful_shutdown: Graceful Shutdown — SIGTERM Received {
+  coordinator -> coordinator: "ctx.Done() fires\n(appCancel() called)"
+  coordinator -> coordinator: "ticker.Stop()"
+  coordinator -> workerCh: "close(workerCh)\n← signals all workers to drain"
+  workerCh -> worker1: "range loop: channel closed\n→ worker1 exits"
+  workerCh -> worker2: "range loop: channel closed\n→ worker2 exits"
+  workerCh -> worker3: "range loop: channel closed\n→ worker3 exits"
+  coordinator -> coordinator: "wg.Wait()\n← blocks until all 3 workers\n   finish in-flight publishes"
+  coordinator -> coordinator: "log.Info(\"outbox coordinator stopped\")\nreturn"
 }

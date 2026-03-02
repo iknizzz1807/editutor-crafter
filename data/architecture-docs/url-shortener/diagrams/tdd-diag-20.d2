@@ -4,267 +4,287 @@ vars: {
     theme-id: 4
   }
 }
-direction: right
-title: "Outbox Worker Pool Architecture + Data Flow" {
-  near: top-center
-  shape: text
-  style: {
-    font-size: 20
-    bold: true
+
+title: |md
+  ## Cursor-Based Pagination Query Plan
+  `GET /urls?after=\<uuid\>` — Index Scan Backward on `idx_urls_user_id_created`
+| {near: top-center}
+
+# ─── BEFORE / AFTER COMPARISON ───────────────────────────────────────────────
+
+before: "OFFSET-based (ANTI-PATTERN)" {
+  style.fill: "#fff0f0"
+  style.stroke: "#cc0000"
+  style.stroke-width: 2
+  style.border-radius: 8
+
+  sql_offset: |go
+    SELECT ... FROM urls
+    WHERE user_id = $1
+    ORDER BY created_at DESC
+    LIMIT 20 OFFSET 1000
+  | {
+    style.fill: "#ffe0e0"
+    style.stroke: "#cc0000"
   }
-}
-pg: "PostgreSQL — url_db" {
-  style.fill: "#e8e0f0"
-  style.stroke: "#7c3aed"
-  style.border-radius: 6
-  outbox_table: "outbox table" {
-    shape: sql_table
-    style.fill: "#f3eeff"
-    id: "UUID (PK)"
-    event_type: "TEXT (routing key)"
-    payload: "JSONB (event struct)"
-    created_at: "TIMESTAMPTZ"
-    published_at: "TIMESTAMPTZ NULL"
-  }
-  idx: "idx_outbox_unpublished\n(partial: WHERE published_at IS NULL\nORDER BY created_at ASC)" {
-    style.fill: "#ddd6fe"
-    style.font-size: 12
+
+  cost_offset: "Cost: O(N)\nPostgreSQL must scan\n& discard 1000 rows\nbefore returning 20.\nAt 100k rows → full\ntable scan likely." {
+    shape: rectangle
+    style.fill: "#ffcccc"
+    style.stroke: "#cc0000"
+    style.font-color: "#990000"
     style.italic: true
   }
+
+  sql_offset -> cost_offset: "EXPLAIN ANALYZE shows\nSeq Scan / large\nrows_removed" {
+    style.stroke: "#cc0000"
+    style.stroke-dash: 5
+    style.font-color: "#cc0000"
+  }
 }
-coordinator: "Coordinator Goroutine\n(1×)" {
-  style.fill: "#e0f2fe"
-  style.stroke: "#0369a1"
+
+after: "Cursor-based (CORRECT)" {
+  style.fill: "#f0fff0"
+  style.stroke: "#007700"
+  style.stroke-width: 2
   style.border-radius: 8
-  timer: "time.After(2s)\nper poll cycle" {
-    shape: circle
-    style.fill: "#bae6fd"
-    style.stroke: "#0369a1"
-    width: 130
-    height: 130
-  }
-  query: |md
-    **SELECT** id, event_type, payload
-    FROM outbox
-    WHERE published_at IS NULL
-    ORDER BY created_at ASC
-    LIMIT 50
-    **FOR UPDATE SKIP LOCKED**
+
+  sql_cursor: |go
+    -- Page 1 (afterID = "")
+    SELECT id, short_code, original_url,
+           created_at, expires_at, is_active
+    FROM urls
+    WHERE user_id = $1
+    ORDER BY created_at DESC, id DESC
+    LIMIT 21
+
+    -- Page 2+ (afterID = "<uuid>")
+    SELECT id, short_code, original_url,
+           created_at, expires_at, is_active
+    FROM urls
+    WHERE user_id = $1
+      AND (created_at, id) < (
+          SELECT created_at, id
+          FROM urls WHERE id = $2   -- PK lookup
+      )
+    ORDER BY created_at DESC, id DESC
+    LIMIT 21
   | {
-    style.fill: "#f0f9ff"
-    style.stroke: "#0284c7"
-    style.border-radius: 4
+    style.fill: "#e0ffe0"
+    style.stroke: "#007700"
   }
-  skip_locked_note: |md
-    ⚠ **FOR UPDATE SKIP LOCKED**
-    Prevents concurrent coordinators
-    from double-publishing the same row
-  | {
-    style.fill: "#fff7ed"
-    style.stroke: "#c2410c"
-    style.font-size: 11
-    style.border-radius: 4
-  }
-}
-channel: "jobChan\n(buffered channel)" {
-  shape: queue
-  style.fill: "#fef9c3"
-  style.stroke: "#ca8a04"
-  style.font-size: 13
-  cap: "capacity = 50\nOutboxEntry rows" {
-    style.fill: "#fef08a"
-    style.stroke: "#a16207"
-    style.font-size: 11
+
+  cost_cursor: "Cost: O(log N)\nB-tree seek directly\nto cursor position.\nFetch next 21 rows\nfrom leaf chain.\nScalable at any N." {
+    shape: rectangle
+    style.fill: "#ccffcc"
+    style.stroke: "#007700"
+    style.font-color: "#005500"
     style.italic: true
   }
+
+  sql_cursor -> cost_cursor: "EXPLAIN ANALYZE shows\nIndex Scan Backward\nusing idx_urls_user_id_created" {
+    style.stroke: "#007700"
+    style.font-color: "#007700"
+  }
 }
-workers: "Worker Goroutines (3×)\nfor row := range jobChan" {
-  style.fill: "#dcfce7"
-  style.stroke: "#15803d"
+
+# ─── STEP-BY-STEP ALGORITHM ──────────────────────────────────────────────────
+
+algo_flow: "Algorithm Steps" {
+  style.fill: "#f5f5ff"
+  style.stroke: "#5555aa"
+  style.stroke-width: 2
   style.border-radius: 8
-  w1: "Worker 1" {
+
+  s1: "Step 1 — Parse afterID" {
     shape: rectangle
-    style.fill: "#bbf7d0"
-    style.stroke: "#16a34a"
-    style.border-radius: 5
-  }
-  w2: "Worker 2" {
-    shape: rectangle
-    style.fill: "#bbf7d0"
-    style.stroke: "#16a34a"
-    style.border-radius: 5
-  }
-  w3: "Worker 3" {
-    shape: rectangle
-    style.fill: "#bbf7d0"
-    style.stroke: "#16a34a"
-    style.border-radius: 5
-  }
-}
-rmq: "RabbitMQ\nExchange: url-shortener (topic)" {
-  style.fill: "#fff7ed"
-  style.stroke: "#ea580c"
-  style.border-radius: 8
-  exchange: "url-shortener\n(topic, durable)" {
-    shape: hexagon
-    style.fill: "#fed7aa"
-    style.stroke: "#c2410c"
-  }
-  q_analytics: "analytics.clicks\n(durable queue)" {
-    style.fill: "#ffedd5"
-    style.stroke: "#ea580c"
-    style.border-radius: 4
-  }
-  q_notify: "notifications.events\n(durable queue)" {
-    style.fill: "#ffedd5"
-    style.stroke: "#ea580c"
-    style.border-radius: 4
-  }
-  exchange -> q_analytics: "url.clicked" {
-    style.stroke: "#ea580c"
-    style.stroke-dash: 3
-  }
-  exchange -> q_notify: "url.created\nurl.deleted\nmilestone.reached" {
-    style.stroke: "#ea580c"
-    style.stroke-dash: 3
-  }
-}
-error_path: "RabbitMQ Unavailable Path" {
-  style.fill: "#fef2f2"
-  style.stroke: "#dc2626"
-  style.border-radius: 6
-  publish_err: "publisher.Publish()\nreturns error" {
-    style.fill: "#fee2e2"
-    style.stroke: "#dc2626"
-    style.border-radius: 4
-  }
-  skip_update: "Skip UPDATE outbox\n(published_at stays NULL)" {
-    style.fill: "#fca5a5"
-    style.stroke: "#b91c1c"
-    style.border-radius: 4
-  }
-  retry_note: |md
-    Row remains in
-    **unpublished** state →
-    re-fetched next 2s cycle
-  | {
-    style.fill: "#fef2f2"
-    style.stroke: "#dc2626"
-    style.font-size: 11
-    style.border-radius: 4
-  }
-  publish_err -> skip_update: "log.Warn()\nskip MarkPublished" {
-    style.stroke: "#dc2626"
+    style.fill: "#e8e8ff"
+    style.stroke: "#5555aa"
     style.bold: true
+    label: |md
+      **Step 1 — Parse `afterID`**
+      
+      `afterID := r.URL.Query().Get("after")`
+      - `""` → first page
+      - `"\<uuid\>"` → subsequent page
+    |
   }
-  skip_update -> retry_note {
-    style.stroke: "#dc2626"
-    style.stroke-dash: 4
+
+  s2: "Step 2 — Execute SQL" {
+    shape: rectangle
+    style.fill: "#e8e8ff"
+    style.stroke: "#5555aa"
+    style.bold: true
+    label: |md
+      **Step 2 — Execute SQL** *(LIMIT = 21, not 20)*
+      
+      if `afterID == ""` → Page-1 query
+      else → Cursor query with subquery
+      
+      Subquery `WHERE id = $2` is a **PRIMARY KEY** lookup.
+      Row comparison `(created_at,id) < (val)` is handled via index.
+    |
+  }
+
+  s3: "Step 3 — Count results" {
+    shape: diamond
+    style.fill: "#ffffcc"
+    style.stroke: "#888800"
+    label: "len(rows) == 21?"
+    width: 220
+    height: 90
+  }
+
+  s4_yes: "Step 4a — Has next page" {
+    shape: rectangle
+    style.fill: "#fff3cc"
+    style.stroke: "#888800"
+    label: |md
+      **Step 4a — Next page exists**
+      
+      `nextCursor = rows[20].ID` (21st row)
+      `return rows[:20]` (trim to 20)
+    |
+  }
+
+  s4_no: "Step 4b — Last page" {
+    shape: rectangle
+    style.fill: "#e8ffe8"
+    style.stroke: "#007700"
+    label: |md
+      **Step 4b — No next page**
+      
+      `nextCursor = ""` (JSON null)
+      `return rows` (all ≤ 20 rows)
+    |
+  }
+
+  s5: "Step 5 — Build response" {
+    shape: rectangle
+    style.fill: "#e8e8ff"
+    style.stroke: "#5555aa"
+    label: |md
+      **Step 5 — Serialize response**
+      go
+      writeJSON(w, 200, urlListResponse{
+          URLs:       items,
+          NextCursor: &nextCursor,
+      })
+      
+    |
+  }
+
+  s1 -> s2: "afterID parsed"
+  s2 -> s3: "rows fetched"
+  s3 -> s4_yes: "YES\n(21 rows)" {style.stroke: "#cc8800"; style.bold: true}
+  s3 -> s4_no:  "NO\n(≤ 20 rows)" {style.stroke: "#007700"; style.bold: true}
+  s4_yes -> s5
+  s4_no -> s5
+}
+
+# ─── EXPLAIN ANALYZE OUTPUT ──────────────────────────────────────────────────
+
+explain: "EXPLAIN ANALYZE Output (target)" {
+  style.fill: "#1a1a2e"
+  style.stroke: "#4444cc"
+  style.stroke-width: 2
+  style.border-radius: 6
+
+  explain_output: |go
+    EXPLAIN ANALYZE
+    SELECT id, short_code, original_url,
+           created_at, expires_at, is_active
+    FROM urls
+    WHERE user_id = 'some-uuid'
+      AND (created_at, id) < ('2026-03-01 12:00:00+00', 'cursor-uuid')
+    ORDER BY created_at DESC, id DESC
+    LIMIT 21;
+    ── QUERY PLAN ──────────────────────────────────────────────────
+    Limit  (cost=0.43..12.87 rows=21 width=120)
+           (actual time=0.041..0.182 rows=21 loops=1)
+      ->  Index Scan Backward using idx_urls_user_id_created on urls
+            (cost=0.43..1248.56 rows=2183 width=120)
+            (actual time=0.038..0.174 rows=21 loops=1)
+          Index Cond: (user_id = 'some-uuid'::uuid)
+          Filter: ((created_at, id) < ('2026-03-01...', 'cursor-uuid'))
+          Rows Removed by Filter: 0
+    Planning Time:  0.120 ms
+    Execution Time: 0.210 ms    ← O(log N); scales to millions
+  | {
+    style.fill: "#0d1117"
+    style.font-color: "#7ee787"
+    style.font: mono
+    style.stroke: "#4444cc"
   }
 }
-mark_published: "UPDATE outbox\nSET published_at = now()\nWHERE id = row.ID" {
-  style.fill: "#f0fdf4"
-  style.stroke: "#16a34a"
-  style.border-radius: 6
+
+# ─── INDEX ANATOMY ───────────────────────────────────────────────────────────
+
+index_anatomy: "Index: idx_urls_user_id_created" {
+  style.fill: "#fff8e8"
+  style.stroke: "#cc8800"
+  style.stroke-width: 2
+  style.border-radius: 8
+
+  idx_def: |go
+    CREATE INDEX idx_urls_user_id_created
+        ON urls(user_id, created_at DESC);
+  | {
+    style.fill: "#fff3cc"
+    style.stroke: "#cc8800"
+    style.font: mono
+  }
+
+  btree: "B-Tree Leaf Chain (sorted)" {
+    style.fill: "#ffeebb"
+    style.stroke: "#cc8800"
+    style.border-radius: 4
+    n1: "(user_A, 2026-03-02, id-7)" {style.fill: "#ffe599"; style.stroke: "#cc8800"}
+    n2: "(user_A, 2026-03-01, id-3)" {style.fill: "#ffe599"; style.stroke: "#cc8800"; style.bold: true}
+    n3: "(user_A, 2026-02-28, id-9)" {style.fill: "#ffe599"; style.stroke: "#cc8800"}
+    n4: "(user_B, 2026-03-02, id-1)" {style.fill: "#f0f0f0"; style.stroke: "#aaaaaa"}
+    n1 -> n2: "→" {style.stroke: "#cc8800"}
+    n2 -> n3: "→" {style.stroke: "#cc8800"}
+    n3 -> n4: "→" {style.stroke: "#aaaaaa"; style.stroke-dash: 5}
+  }
+
+  seek_annotation: "Cursor seek:\nB-tree descends to O(log N).\nThen follows leaf chain." {
+    shape: rectangle
+    style.fill: "#fff3cc"
+    style.stroke: "#cc8800"
+    style.font-color: "#885500"
+    style.italic: true
+  }
+
+  idx_def -> btree
+  btree.n2 -> seek_annotation: "seek here" {style.stroke: "#cc8800"; style.stroke-dash: 3}
 }
-# Poll cycle trigger
-coordinator.timer -> coordinator.query: "every 2s\ntime.After fires" {
-  style.stroke: "#0369a1"
-  style.bold: true
+
+# ─── COMPLEXITY COMPARISON ───────────────────────────────────────────────────
+
+complexity: "Complexity Comparison" {
+  style.fill: "#f8f8ff"
+  style.stroke: "#666688"
+  style.stroke-width: 2
+  style.border-radius: 8
+  table: ||md
+    | Method | Mechanism | Page 1 | Page 50 | Page 5000 |
+    |--------|-----------|--------|---------|-----------|
+    | `OFFSET N` | Scan + discard N | O(20) | O(1000) | O(100 000) |
+    | **Cursor** | B-tree seek | O(log N) | O(log N) | O(log N) |
+  ||
 }
-# Query to DB
-coordinator.query -> pg.outbox_table: "SELECT … FOR UPDATE\nSKIP LOCKED\nLIMIT 50" {
-  style.stroke: "#7c3aed"
+
+# ─── GLOBAL CONNECTIONS ──────────────────────────────────────────────────────
+
+before -> after: "Replace with" {
+  style.stroke: "#cc0000"
   style.stroke-width: 2
   style.bold: true
+  style.font-color: "#cc0000"
 }
-# Index used
-pg.idx -> pg.outbox_table: "covers unpublished\nrows lookup" {
-  style.stroke: "#7c3aed"
-  style.stroke-dash: 4
-  style.font-size: 11
-}
-# DB returns rows to coordinator
-pg.outbox_table -> coordinator.query: "up to 50 OutboxEntry rows\n(id, event_type, payload)" {
-  style.stroke: "#7c3aed"
-  style.stroke-dash: 5
-}
-# Coordinator feeds channel
-coordinator.query -> channel: "jobChan <- row\n(blocks if channel full\n→ backpressure)" {
-  style.stroke: "#ca8a04"
-  style.stroke-width: 2
-  style.bold: true
-}
-# Channel to workers
-channel -> workers.w1: "range jobChan" {
-  style.stroke: "#15803d"
-  style.stroke-width: 2
-}
-channel -> workers.w2: "range jobChan" {
-  style.stroke: "#15803d"
-  style.stroke-width: 2
-}
-channel -> workers.w3: "range jobChan" {
-  style.stroke: "#15803d"
-  style.stroke-width: 2
-}
-# Workers publish to RabbitMQ (happy path)
-workers.w1 -> rmq.exchange: "Publish(row.EventType,\nrow.Payload)\nContentType: application/json\nDeliveryMode: Persistent" {
-  style.stroke: "#ea580c"
-  style.stroke-width: 2
-  style.bold: true
-}
-workers.w2 -> rmq.exchange: "Publish(…)" {
-  style.stroke: "#ea580c"
-  style.stroke-width: 2
-}
-workers.w3 -> rmq.exchange: "Publish(…)" {
-  style.stroke: "#ea580c"
-  style.stroke-width: 2
-}
-# Workers mark published (happy path)
-workers.w1 -> mark_published: "on Publish() success\nMarkPublished(row.ID)" {
-  style.stroke: "#16a34a"
-  style.stroke-width: 2
-}
-workers.w2 -> mark_published {
-  style.stroke: "#16a34a"
-  style.stroke-width: 2
-}
-workers.w3 -> mark_published {
-  style.stroke: "#16a34a"
-  style.stroke-width: 2
-}
-# MarkPublished writes to DB
-mark_published -> pg.outbox_table: "UPDATE outbox\nSET published_at = now()\nWHERE id = \$1" {
-  style.stroke: "#7c3aed"
-  style.stroke-width: 2
-  style.bold: true
-}
-# Error path from workers
-workers.w1 -> error_path.publish_err: "Publish() returns\nerror" {
-  style.stroke: "#dc2626"
-  style.stroke-dash: 5
-  style.stroke-width: 2
-}
-# SKIP LOCKED note connection
-coordinator.skip_locked_note -> coordinator.query {
-  style.stroke: "#c2410c"
-  style.stroke-dash: 4
-  style.font-size: 10
-}
-legend: |md
-  **Legend**
-  - **Coordinator**: polls every 2s, sends rows to buffered channel
-  - **Workers (3×)**: drain channel, publish, mark published
-  - **FOR UPDATE SKIP LOCKED**: safe for multiple coordinator replicas
-  - **Channel capacity = 50**: matches LIMIT 50 fetch; backpressure on slow workers
-  - **Error path**: Publish fail → row stays NULL → retried next cycle
-  - **At-least-once**: if MarkPublished fails after Publish, row re-published
-| {
-  near: bottom-center
-  style.fill: "#f8fafc"
-  style.stroke: "#94a3b8"
-  style.border-radius: 6
-  style.font-size: 11
-}
+
+after -> algo_flow: "implements" {style.stroke: "#007700"; style.stroke-dash: 3}
+algo_flow -> explain: "validated by" {style.stroke: "#5555aa"; style.stroke-dash: 3}
+explain -> index_anatomy: "uses" {style.stroke: "#cc8800"; style.stroke-dash: 3}
+index_anatomy -> complexity: "justifies" {style.stroke: "#cc8800"; style.stroke-dash: 3}

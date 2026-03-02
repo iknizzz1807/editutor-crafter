@@ -1,233 +1,224 @@
 vars: {
   d2-config: {
     layout-engine: elk
-    theme-id: 4
+    theme-id: 6
   }
 }
 
-title: {
-  label: |md
-    ## Analytics Service Module Architecture
-    `sizeof(pool) shared across goroutine boundaries — goroutine-safe by pgxpool design`
-  |
-  near: top-center
+title: |md
+  ## Consumer Message Processing State Machine
+  `analytics-service` / `notification-service` · `prefetch=1` · manual Ack
+| {near: top-center}
+
+# ── States ────────────────────────────────────────────────────────────────────
+WAITING: "WAITING\n─────────────────\nInvariant: channel open\nAMQP prefetch=1\nhealthy.Load()=true" {
+  shape: rectangle
+  style.fill: "#E8F5E9"
+  style.stroke: "#388E3C"
+  style.stroke-width: 2
+  style.border-radius: 6
+}
+DECODING: "DECODING\n─────────────────\nInvariant: d.Body != nil\nAction: json.Unmarshal\n(d.Body, &evt)" {
+  shape: rectangle
+  style.fill: "#E3F2FD"
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+  style.border-radius: 6
+}
+DEDUP_CHECK: "DEDUP_CHECK\n─────────────────\nInvariant: evt.EventID != \"\"\nevt.ShortCode != \"\"\nAction: pool.Begin(ctx)\ndedupStore.Exists(tx,\n  evt.EventID)" {
+  shape: rectangle
+  style.fill: "#E3F2FD"
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+  style.border-radius: 6
+}
+INSERTING: "INSERTING\n─────────────────\nInvariant: tx open\nevent_id not seen\nAction: dedupStore.Insert(tx)\nclickStore.Insert(tx, rec)" {
+  shape: rectangle
+  style.fill: "#E3F2FD"
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+  style.border-radius: 6
+}
+MILESTONE_CHECK: "MILESTONE_CHECK\n─────────────────\nInvariant: click row inserted\ntx still open\nAction: COUNT(*) on tx\ncheck thresholds [10,100,1000]\nHasMilestone(tx, code, n)" {
+  shape: rectangle
+  style.fill: "#E3F2FD"
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+  style.border-radius: 6
+}
+PUBLISHING_MILESTONE: "PUBLISHING_MILESTONE\n─────────────────\nInvariant: milestone row inserted\ntx still open\nAction: milestoneStore.Insert(tx)\npublisher.PublishMilestone(ctx, evt)\ntx.Commit(ctx)" {
+  shape: rectangle
+  style.fill: "#FFF9C4"
+  style.stroke: "#F9A825"
+  style.stroke-width: 2
+  style.border-radius: 6
+}
+ACKING: "ACKING\n─────────────────\nInvariant: tx committed OR\nno tx needed (dedup/poison)\nAction: d.Ack(false)\nlog Info" {
+  shape: rectangle
+  style.fill: "#E8F5E9"
+  style.stroke: "#388E3C"
+  style.stroke-width: 2
+  style.border-radius: 6
+}
+ERROR_POISON: "ERROR_POISON\n─────────────────\nInvariant: msg unprocessable\n(malformed JSON OR\nmissing event_id/short_code\nOR panic recovered)\nAction: log.Error\nd.Ack(false) ← drains queue\nDO NOT nack" {
+  shape: rectangle
+  style.fill: "#FFEBEE"
+  style.stroke: "#C62828"
+  style.stroke-width: 3
+  style.border-radius: 6
+}
+ERROR_DB: "ERROR_DB\n─────────────────\nInvariant: tx may be open\nDB or broker transient error\n(Begin fail, Exists fail,\nInsert fail, Commit fail)\nAction: tx.Rollback(ctx)\nlog.Error\nd.Nack(false, requeue=true)" {
+  shape: rectangle
+  style.fill: "#FFEBEE"
+  style.stroke: "#C62828"
+  style.stroke-width: 2
+  style.border-radius: 6
 }
 
-direction: right
-
-# ─── DOMAIN MODELS (Data=Blue) ────────────────────────────────────────────────
-structs: "Domain Structs (Data Layers)" {
-  style: {
-    fill: "#E8F4FD"
-    stroke: "#2E86AB"
-    bold: true
-  }
-  
-  Click: {
-    shape: class
-    style.fill: "#DBEAFE"
-    style.stroke: "#3B82F6"
-    ID: "UUID // gen by DB DEFAULT"
-    ShortCode: "string // routing key"
-    ClickedAt: "time.Time // event.OccurredAt"
-    IPHash: "string // SHA-256(ip+salt)"
-    UserAgent: "string"
-    Referer: "string // empty -> NULL"
-  }
-  
-  Milestone: {
-    shape: class
-    style.fill: "#DBEAFE"
-    style.stroke: "#3B82F6"
-    ID: "UUID"
-    ShortCode: "string"
-    Milestone: "int // 10, 100, 1000"
-    TriggeredAt: "time.Time"
-  }
-  
-  ProcessedEvent: {
-    shape: class
-    style.fill: "#DBEAFE"
-    style.stroke: "#3B82F6"
-    EventID: "UUID PRIMARY KEY"
-    ProcessedAt: "time.Time"
-  }
+# ── Initial State ─────────────────────────────────────────────────────────────
+initial: "" {
+  shape: circle
+  style.fill: "#212121"
+  style.stroke: "#212121"
+  width: 28
+  height: 28
+}
+initial -> WAITING: "service started\nch.Consume() registered\nch.Qos(1,0,false) set" {
+  style.stroke: "#388E3C"
+  style.stroke-width: 2
 }
 
-# ─── INTERFACES (Header=Purple) ──────────────────────────────────────────────
-interfaces: "Port Interfaces (Contract)" {
-  style: {
-    fill: "#F3E8FF"
-    stroke: "#7C3AED"
-    bold: true
-  }
-  
-  ClickRepository: {
-    shape: class
-    style.fill: "#EDE9FE"
-    style.stroke: "#7C3AED"
-    "+Insert(ctx, tx, click)": "error"
-    "+CountByCode(ctx, code)": "(int64, error)"
-    "+TopReferers(ctx, code, lim)": "([]RefererCount, error)"
-    "+Timeline(ctx, code, interval)": "([]PeriodCount, error)"
-  }
-  
-  ProcessedEventRepository: {
-    shape: class
-    style.fill: "#EDE9FE"
-    style.stroke: "#7C3AED"
-    "+IsProcessed(ctx, id)": "(bool, error)"
-    "+MarkProcessed(ctx, tx, id)": "error"
-  }
-  
-  AMQPConsumer: {
-    shape: class
-    style.fill: "#EDE9FE"
-    style.stroke: "#7C3AED"
-    "+Deliveries()": "<-chan Delivery"
-    "+Close()": "error"
-  }
+# ── Normal Path Transitions ───────────────────────────────────────────────────
+WAITING -> DECODING: "trigger: <d,ok> := <-msgs\nguard: ok==true\naction: record start time" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+}
+DECODING -> DEDUP_CHECK: "trigger: json.Unmarshal success\nguard: evt.EventID != \"\" &&\n       evt.ShortCode != \"\"\naction: pool.Begin(ctx)" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+}
+DEDUP_CHECK -> INSERTING: "trigger: dedupStore.Exists → false\nguard: no DB error\naction: dedupStore.Insert(tx)\n        clickStore.Insert(tx, rec)" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+}
+INSERTING -> MILESTONE_CHECK: "trigger: both inserts succeed\nguard: tx still open\naction: COUNT(*) FROM clicks\n        WHERE short_code=\$1 on tx" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+}
+MILESTONE_CHECK -> PUBLISHING_MILESTONE: "trigger: totalClicks >= threshold &&\n         HasMilestone → false\nguard: threshold in {10,100,1000}\naction: milestoneStore.Insert(tx)\n        PublishMilestone (warn-only on fail)\n        tx.Commit(ctx)" {
+  style.stroke: "#F9A825"
+  style.stroke-width: 2
+}
+MILESTONE_CHECK -> ACKING: "trigger: no threshold crossed OR\n         all thresholds already recorded\nguard: tx committed\naction: tx.Commit(ctx)\n        log.Info(\"click processed\")" {
+  style.stroke: "#388E3C"
+  style.stroke-width: 2
+}
+PUBLISHING_MILESTONE -> ACKING: "trigger: tx.Commit success\nguard: publish may have warned but\n       milestone row is durable\naction: log.Info(\"click processed\"\n        + milestone info)" {
+  style.stroke: "#388E3C"
+  style.stroke-width: 2
+}
+ACKING -> WAITING: "trigger: d.Ack(false) sent\nguard: broker still connected\naction: await next delivery\n        (prefetch=1 releases slot)" {
+  style.stroke: "#388E3C"
+  style.stroke-width: 2
 }
 
-# ─── IMPLEMENTATIONS (Logic=Orange) ──────────────────────────────────────────
-impls: "Infrastructure Impls" {
-  style: {
-    fill: "#FFF7ED"
-    stroke: "#EA580C"
-    bold: true
-  }
-  
-  pgxClickRepo: {
-    shape: class
-    style.fill: "#FFEDD5"
-    style.stroke: "#EA580C"
-    "-pool": "*pgxpool.Pool"
-    "-log": "zerolog.Logger"
-  }
-  
-  amqp091Consumer: {
-    shape: class
-    style.fill: "#FFEDD5"
-    style.stroke: "#EA580C"
-    "-ch": "*amqp091.Channel"
-    "config": "prefetch=1 (Sequential)"
-  }
+# ── Duplicate Event Path ──────────────────────────────────────────────────────
+DEDUP_CHECK -> ACKING: "trigger: dedupStore.Exists → true\nguard: no DB error\naction: tx.Rollback(ctx)\n        log.Info(\"duplicate event skipped\")" {
+  style.stroke: "#7B1FA2"
+  style.stroke-width: 2
+  style.stroke-dash: 4
 }
 
-# ─── CONCURRENCY: CONSUMER (Yellow) ───────────────────────────────────────────
-consumer_goroutine: "Consumer Runtime (x1)" {
-  style: {
-    fill: "#FEF9C3"
-    stroke: "#CA8A04"
-    stroke-dash: 4
-    bold: true
-  }
-  
-  ClickProcessor: {
-    shape: class
-    style.fill: "#FEF08A"
-    style.stroke: "#CA8A04"
-    "-clickRepo": "ClickRepository"
-    "-processedRepo": "ProcessedEventRepository"
-    "-pool": "*pgxpool.Pool"
-    "+Process(ctx, d)": "Result"
-  }
-  
-  RunConsumer: {
-    label: "Main Reconnect Loop"
-    style.fill: "#FDE68A"
-  }
-  
-  RunConsumer -> ClickProcessor: "Process(delivery)"
+# ── Poison Message Paths ──────────────────────────────────────────────────────
+DECODING -> ERROR_POISON: "trigger: json.Unmarshal fails\nguard: d.Body unparseable\naction: log.Error(\"poison message\")\n        truncate body preview 200 chars" {
+  style.stroke: "#C62828"
+  style.stroke-width: 2
+}
+DECODING -> ERROR_POISON: "trigger: Unmarshal ok BUT\n         evt.EventID==\"\" OR\n         evt.ShortCode==\"\"\nguard: required fields missing\naction: log.Error(\"missing required fields\")" {
+  style.stroke: "#C62828"
+  style.stroke-width: 2
+}
+DECODING -> ERROR_POISON: "trigger: panic recovered\n         in defer recover()\nguard: any panic in processDelivery\naction: log.Error(\"consumer panic recovered\")\n        log panic value + body preview" {
+  style.stroke: "#C62828"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+}
+ERROR_POISON -> WAITING: "trigger: d.Ack(false) sent\nguard: broker connected\naction: poison msg drained\n        no requeue" {
+  style.stroke: "#C62828"
+  style.stroke-width: 2
 }
 
-# ─── CONCURRENCY: HTTP (Green) ────────────────────────────────────────────────
-http_goroutines: "HTTP Handler Runtime (xN)" {
-  style: {
-    fill: "#ECFDF5"
-    stroke: "#059669"
-    stroke-dash: 4
-    bold: true
-  }
-  
-  StatsHandler: {
-    shape: class
-    style.fill: "#D1FAE5"
-    style.stroke: "#059669"
-    "pattern": "GET /stats/{code}"
-    "note": "errgroup concurrency=4"
-  }
+# ── DB Error Paths ────────────────────────────────────────────────────────────
+DEDUP_CHECK -> ERROR_DB: "trigger: pool.Begin fails OR\n         dedupStore.Exists DB error\nguard: infrastructure failure\naction: tx.Rollback(ctx)\n        log.Error" {
+  style.stroke: "#C62828"
+  style.stroke-width: 2
+}
+INSERTING -> ERROR_DB: "trigger: dedupStore.Insert OR\n         clickStore.Insert DB error\nguard: non-conflict DB error\naction: tx.Rollback(ctx)\n        log.Error(\"insert failed\")" {
+  style.stroke: "#C62828"
+  style.stroke-width: 2
+}
+MILESTONE_CHECK -> ERROR_DB: "trigger: COUNT(*) error OR\n         HasMilestone DB error OR\n         milestoneStore.Insert DB error OR\n         tx.Commit fails\nguard: any DB error in check path\naction: tx.Rollback(ctx)\n        log.Error" {
+  style.stroke: "#C62828"
+  style.stroke-width: 2
+}
+PUBLISHING_MILESTONE -> ERROR_DB: "trigger: tx.Commit fails\nguard: commit failure after milestone insert\naction: tx.Rollback(ctx)\n        log.Error(\"commit failed\")\nNOTE: PublishMilestone failure alone\n      is NON-FATAL → stays in ACKING path" {
+  style.stroke: "#C62828"
+  style.stroke-width: 2
+}
+ERROR_DB -> WAITING: "trigger: d.Nack(false, requeue=true)\nguard: broker connected\naction: msg returned to queue head\n        broker will redeliver" {
+  style.stroke: "#C62828"
+  style.stroke-width: 2
 }
 
-# ─── SHARED RESOURCES ─────────────────────────────────────────────────────────
-sharedPool: {
-  label: "*pgxpool.Pool\nMaxConns=10\nGoroutine-Safe"
-  shape: cylinder
-  style: {
-    fill: "#FCE7F3"
-    stroke: "#DB2777"
-    bold: true
-    shadow: true
-  }
+# ── Channel Closed (AMQP Drop) ────────────────────────────────────────────────
+CHANNEL_CLOSED: "CHANNEL_CLOSED\n─────────────────\nInvariant: ok==false on msgs\nAction: healthy.Store(false)\n         log.Warn\n         <-ctx.Done()\n/health still returns 200" {
+  shape: rectangle
+  style.fill: "#FFF3E0"
+  style.stroke: "#E65100"
+  style.stroke-width: 2
+  style.border-radius: 6
+}
+WAITING -> CHANNEL_CLOSED: "trigger: <-msgs ok==false\nguard: AMQP connection dropped\naction: mark unhealthy\n        block until ctx cancelled" {
+  style.stroke: "#E65100"
+  style.stroke-width: 2
 }
 
-postgres: "PostgreSQL 16" {
-  shape: cylinder
-  style.fill: "#EFF6FF"
-  
-  clicks_table: "clicks_tab"
-  milestones_table: "milestones_tab"
+# ── ILLEGAL Transition ────────────────────────────────────────────────────────
+ILLEGAL_NACK_POISON: "ILLEGAL: Nack on poison msg\n─────────────────────────\nWould cause: infinite requeue\nloop consuming broker capacity.\nPoison msgs MUST be Ack'd." {
+  shape: rectangle
+  style.fill: "#B71C1C"
+  style.font-color: white
+  style.stroke: "#B71C1C"
+  style.stroke-width: 3
+  style.border-radius: 4
 }
-
-rabbitmq: "RabbitMQ" {
-  shape: queue
-  style.fill: "#FEF3C7"
-  analytics_queue: "analytics.clicks"
-}
-
-# ─── RELATIONSHIPS ────────────────────────────────────────────────────────────
-
-# Interface Implementations (Hollow triangle)
-impls.pgxClickRepo -> interfaces.ClickRepository: {
-  target-arrowhead: {
-    shape: triangle
-    style.filled: false
-  }
+ERROR_POISON -> ILLEGAL_NACK_POISON: "ILLEGAL" {
+  style.stroke: "#B71C1C"
+  style.stroke-width: 3
   style.stroke-dash: 5
+  style.font-color: "#B71C1C"
+  style.bold: true
+  target-arrowhead.shape: arrow
 }
 
-impls.amqp091Consumer -> interfaces.AMQPConsumer: {
-  target-arrowhead: {
-    shape: triangle
-    style.filled: false
-  }
-  style.stroke-dash: 5
-}
-
-# Ownership (Solid)
-consumer_goroutine.ClickProcessor -> interfaces.ClickRepository: "owns"
-http_goroutines.StatsHandler -> interfaces.ClickRepository: "uses"
-
-# Data Access (Pool)
-consumer_goroutine.ClickProcessor -> sharedPool: "Acquire"
-http_goroutines.StatsHandler -> sharedPool: "Acquire"
-sharedPool -> postgres: "SQL I/O"
-
-# External
-rabbitmq.analytics_queue -> consumer_goroutine.RunConsumer: "Consume"
-
-# ─── ANNOTATIONS ──────────────────────────────────────────────────────────────
-boundary_note: {
-  label: |md
-    **Concurrency Model Compliance**
-    - **Single Consumer**: Prefetch=1 ensures strictly sequential processing of events per channel.
-    - **Thread Safety**: pgxpool handles internal mutex locking for connection acquisition.
-    - **No Shared App State**: All state is persisted in Postgres; goroutines are stateless.
-  |
-  near: bottom-center
-  style: {
-    fill: "#F8FAFC"
-    stroke: "#64748B"
-    stroke-dash: 2
-  }
+# ── Legend ────────────────────────────────────────────────────────────────────
+legend: |md
+  **Transition colors**
+  🔵 Blue — normal happy path
+  🟢 Green — success / Ack
+  🔴 Red — error / poison / ILLEGAL
+  🟣 Purple dashed — duplicate skip (Ack)
+  🟠 Yellow — milestone triggered
+  🟧 Orange — AMQP infrastructure event
+  **Key invariants**
+  • prefetch=1: at most 1 in-flight msg per consumer goroutine
+  • All DB work (dedup + click + milestone) in ONE transaction
+  • Poison msgs → Ack (never Nack) to prevent infinite requeue
+  • Publish failure is warn-only; tx.Commit still proceeds
+  • healthy flag read by /health; consumer pause ≠ HTTP 500
+| {
+  near: bottom-right
+  style.fill: "#FAFAFA"
+  style.stroke: "#BDBDBD"
+  style.border-radius: 6
 }

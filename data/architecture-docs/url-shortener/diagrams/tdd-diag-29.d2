@@ -1,273 +1,253 @@
 vars: {
   d2-config: {
     layout-engine: elk
-    theme-id: 4
+    theme-id: 6
   }
 }
 
-direction: right
-
-title: |'md
-## GET /stats/:code — Parallel Query Plan & Data Flow
-All 4 queries are read-only SELECT; no locks held; safe to run concurrently via errgroup.
+title: |'md'
+  ## Circuit Breaker State Machine
+  `gateway/circuitbreaker.go` — all transitions guarded by `sync.Mutex`
 '| {near: top-center}
 
-###############################################################################
-# HANDLER ENTRY
-###############################################################################
-handler: "HandleStats\nhttp.HandlerFunc" {
-  style.fill: "#7C3AED"
-  style.font-color: white
-  style.border-radius: 6
-  style.bold: true
+# ── CircuitBreaker Struct ─────────────────────────────────────────────────────
+cb_struct: CircuitBreaker {
+  shape: class
+  style.fill: "#2d1b69"
+  style.font-color: "#e8d5ff"
+  style.stroke: "#7c3aed"
+  style.stroke-width: 2
+
+  state: "CircuitState  // CLOSED | OPEN | HALF_OPEN"
+  failures: "int         // consecutive failure count"
+  lastFailureTime: "time.Time   // time of most recent failure"
+  windowStart: "time.Time   // current failure window start"
+  maxFailures: "int         // default: 5"
+  openTimeout: "time.Duration // default: 30s"
+  failureWindow: "time.Duration // default: 10s"
+  mu: "sync.Mutex  // guards ALL field reads + writes"
 }
 
-extract: "Extract shortCode\nfrom r.PathValue(\"code\")\nnow = time.Now().UTC()" {
-  style.fill: "#5B21B6"
-  style.font-color: white
-  style.border-radius: 4
+# ── States ────────────────────────────────────────────────────────────────────
+closed: CLOSED {
+  shape: rectangle
+  style.fill: "#14532d"
+  style.font-color: "#bbf7d0"
+  style.stroke: "#22c55e"
+  style.stroke-width: 3
+  style.border-radius: 8
+  label: |'md'
+    **CLOSED**
+    *Normal Operation*
+    **Invariants:**
+    - All requests forwarded to upstream
+    - `failures` increments on 5xx response
+    - `failures` resets to 0 on success
+    - `windowStart` resets if `now > windowStart + failureWindow`
+  '|
 }
 
-errgroup_init: "errgroup.WithContext\n(r.Context())\ng, gctx ← shared cancel" {
-  style.fill: "#4C1D95"
-  style.font-color: white
-  style.border-radius: 4
-  style.bold: true
+open: OPEN {
+  shape: rectangle
+  style.fill: "#7f1d1d"
+  style.font-color: "#fecaca"
+  style.stroke: "#ef4444"
+  style.stroke-width: 3
+  style.border-radius: 8
+  label: |'md'
+    **OPEN**
+    *Tripped — Rejecting All Requests*
+    **Invariants:**
+    - `Do()` returns `ErrCircuitOpen` immediately
+    - No upstream call made
+    - `lastFailureTime` is set at trip moment
+    - Response to client: `503 {"error":"service unavailable"}`
+  '|
 }
 
-handler -> extract: "r *http.Request"
-extract -> errgroup_init: "shortCode, now"
-
-###############################################################################
-# GOROUTINE FORK
-###############################################################################
-fork: "g.Go × 4 goroutines\nLaunched concurrently\nshare gctx + pool" {
-  shape: diamond
-  style.fill: "#1D4ED8"
-  style.font-color: white
-  style.bold: true
+half_open: HALF_OPEN {
+  shape: rectangle
+  style.fill: "#78350f"
+  style.font-color: "#fde68a"
+  style.stroke: "#f59e0b"
+  style.stroke-width: 3
+  style.border-radius: 8
+  label: |'md'
+    **HALF_OPEN**
+    *Probe Mode — Testing Upstream*
+    **Invariants:**
+    - Exactly one probe request forwarded
+    - Probe outcome determines next state
+    - Concurrent requests during probe: implementation-defined
+  '|
 }
 
-errgroup_init -> fork: "spawn 4 goroutines\nsimultaneously"
-
-###############################################################################
-# QUERY A — total clicks
-###############################################################################
-qa: "Goroutine A\nCountByCode()" {
-  style.fill: "#1E40AF"
-  style.font-color: white
-  style.border-radius: 6
-  style.bold: true
+# ── Initial State Marker ──────────────────────────────────────────────────────
+init: "" {
+  shape: circle
+  style.fill: "#f8fafc"
+  style.stroke: "#f8fafc"
+  width: 20
+  height: 20
+}
+init -> closed: "" {
+  style.stroke: "#94a3b8"
+  style.stroke-width: 2
 }
 
-sql_a: |'md
-**SQL A — Total Clicks**
-sql
-SELECT COUNT(*)
-FROM clicks
-WHERE short_code = $1
-
-**Index:** idx_clicks_short_code_time
-(short_code, clicked_at DESC)
-Leading column = short_code → Index Scan
+# ── Legal Transitions ─────────────────────────────────────────────────────────
+closed -> open: |'md'
+  **TRIP**
+  `failures >= maxFailures (5)`
+  within `failureWindow (10s)`
+  *Action:*
+  `state = OPEN`
+  `windowStart = now()`
 '| {
-  style.fill: "#DBEAFE"
-  style.border-radius: 4
+  style.stroke: "#ef4444"
+  style.stroke-width: 3
+  style.font-color: "#ef4444"
+  target-arrowhead.shape: arrow
 }
 
-result_a: "total int64" {
-  style.fill: "#93C5FD"
-  style.border-radius: 4
-  style.bold: true
-}
-
-fork -> qa: "g.Go(func())"
-qa -> sql_a: "pool.QueryRow\n(gctx, query, shortCode)"
-sql_a -> result_a: "rows.Scan(&total)"
-
-###############################################################################
-# QUERY B — last 24 h
-###############################################################################
-qb: "Goroutine B\nCountSince(now-24h)" {
-  style.fill: "#1E40AF"
-  style.font-color: white
-  style.border-radius: 6
-  style.bold: true
-}
-
-sql_b: |'md
-**SQL B — Clicks Last 24 h**
-sql
-SELECT COUNT(*)
-FROM clicks
-WHERE short_code = $1
-  AND clicked_at >= $2
-
-**Index:** Composite (short_code, clicked_at)
-Index Range Scan; no heap fetch needed.
+open -> half_open: |'md'
+  **TIMEOUT ELAPSED**
+  `now() >= lastFailureTime + openTimeout (30s)`
+  *Guard:* checked on every `Do()` call
 '| {
-  style.fill: "#DBEAFE"
-  style.border-radius: 4
+  style.stroke: "#f59e0b"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+  style.font-color: "#f59e0b"
+  target-arrowhead.shape: arrow
 }
 
-result_b: "last24h int64" {
-  style.fill: "#93C5FD"
-  style.border-radius: 4
-  style.bold: true
-}
-
-fork -> qb: "g.Go(func())"
-qb -> sql_b: "pool.QueryRow\n(gctx, query, shortCode, now-24h)"
-sql_b -> result_b: "rows.Scan(&last24h)"
-
-###############################################################################
-# QUERY C — last 7 d
-###############################################################################
-qc: "Goroutine C\nCountSince(now-7d)" {
-  style.fill: "#1E40AF"
-  style.font-color: white
-  style.border-radius: 6
-  style.bold: true
-}
-
-sql_c: |'md
-**SQL C — Clicks Last 7 d**
-sql
-SELECT COUNT(*)
-FROM clicks
-WHERE short_code = $1
-  AND clicked_at >= $2
-
-**Index:** Same idx_clicks_short_code_time
-Wider time range → larger index range scan.
+half_open -> closed: |'md'
+  **PROBE SUCCEEDS**
+  upstream returns non-5xx
+  *Action:*
+  `state = CLOSED`, `failures = 0`
 '| {
-  style.fill: "#DBEAFE"
-  style.border-radius: 4
+  style.stroke: "#22c55e"
+  style.stroke-width: 3
+  style.font-color: "#22c55e"
+  target-arrowhead.shape: arrow
 }
 
-result_c: "last7d int64" {
-  style.fill: "#93C5FD"
-  style.border-radius: 4
-  style.bold: true
-}
-
-fork -> qc: "g.Go(func())"
-qc -> sql_c: "pool.QueryRow\n(gctx, query, shortCode, now-7d)"
-sql_c -> result_c: "rows.Scan(&last7d)"
-
-###############################################################################
-# QUERY D — top referers
-###############################################################################
-qd: "Goroutine D\nTopReferers(limit=5)" {
-  style.fill: "#1E40AF"
-  style.font-color: white
-  style.border-radius: 6
-  style.bold: true
-}
-
-sql_d: |'md
-**SQL D — Top 5 Referers**
-sql
-SELECT referer, COUNT(*) AS cnt
-FROM clicks
-WHERE short_code = $1
-  AND referer IS NOT NULL
-GROUP BY referer
-ORDER BY cnt DESC
-LIMIT 5
-
-**Index:** Partial (short_code, referer)
-WHERE referer IS NOT NULL.
+half_open -> open: |'md'
+  **PROBE FAILS**
+  upstream returns 5xx / network error
+  *Action:*
+  `state = OPEN`
+  `lastFailureTime = now()`
 '| {
-  style.fill: "#DBEAFE"
-  style.border-radius: 4
+  style.stroke: "#ef4444"
+  style.stroke-width: 3
+  style.font-color: "#ef4444"
+  target-arrowhead.shape: arrow
 }
 
-result_d: "refs []RefererCount" {
-  style.fill: "#93C5FD"
-  style.border-radius: 4
-  style.bold: true
-}
-
-fork -> qd: "g.Go(func())"
-qd -> sql_d: "pool.Query\n(gctx, query, shortCode, 5)"
-sql_d -> result_d: "rows.Scan loop"
-
-###############################################################################
-# ERRGROUP WAIT + MERGE
-###############################################################################
-wait: "g.Wait()\nBlocks until all 4 return" {
-  shape: diamond
-  style.fill: "#065F46"
-  style.font-color: white
-  style.bold: true
-}
-
-result_a -> wait: "total"
-result_b -> wait: "last24h"
-result_c -> wait: "last7d"
-result_d -> wait: "refs"
-
-err_path: "err != nil\nlog.Error + writeError\n500 Server Error" {
-  style.fill: "#B91C1C"
-  style.font-color: white
-  style.border-radius: 4
-}
-
-wait -> err_path: "any goroutine error\ngctx cancelled" {
-  style.stroke: red
-  style.stroke-dash: 5
-}
-
-merge: "Build StatsResponse\nMerge query results" {
-  style.fill: "#064E3B"
-  style.font-color: white
-  style.border-radius: 6
-  style.bold: true
-}
-
-wait -> merge: "err == nil\nall counts populated"
-
-###############################################################################
-# RESPONSE
-###############################################################################
-resp: |'md
-**HTTP 200 OK**
-json
-{
-  "short_code": "aB3xY9z",
-  "total_clicks": 1042,
-  "clicks_last_24h": 37,
-  "clicks_last_7d": 210,
-  "top_referers": [
-    {"referer":"https://twitter.com","count":120},
-    {"referer":"https://reddit.com","count":55}
-  ]
-}
-
+# Self-loops
+closed -> closed: |'md'
+  **SUCCESS**
+  `failures = 0`
 '| {
-  style.fill: "#D1FAE5"
-  style.border-radius: 6
+  style.stroke: "#22c55e"
+  style.stroke-width: 1
+  style.stroke-dash: 3
+  target-arrowhead.shape: arrow
 }
 
-merge -> resp: "writeJSON(w, 200, res)"
+closed -> closed: |'md'
+  **PARTIAL FAILURE**
+  `failures < maxFailures`
+  `failures++`
+'| {
+  style.stroke: "#f97316"
+  style.stroke-width: 1
+  style.stroke-dash: 3
+  target-arrowhead.shape: arrow
+}
 
-###############################################################################
-# INDEX LEGEND
-###############################################################################
-legend: |'md
-**Index Reference**
-| Index | Columns | Type | Used By |
-|---|---|---|---|
-| idx_clicks_short_code_time | (short_code, clicked_at DESC) | B-tree | A, B, C |
-| idx_clicks_referer | (short_code, referer) WHERE referer IS NOT NULL | Partial | D |
+# ── ILLEGAL Transition ────────────────────────────────────────────────────────
+illegal_direct: "ILLEGAL TRANSITION" {
+  shape: rectangle
+  style.fill: "#1e1b4b"
+  style.font-color: "#c7d2fe"
+  style.stroke: "#6366f1"
+  style.stroke-width: 2
+  style.stroke-dash: 6
+  style.border-radius: 4
+  label: |'md'
+    ⛔ **ILLEGAL**
+    `OPEN → CLOSED` (direct)
+    Must always pass through `HALF_OPEN`
+    probe phase.
+  '|
+}
 
-**Why parallel is safe:**
-- SELECT-only; no locks acquired; no snapshot conflicts.
-- pgxpool uses independent connections per query.
-- errgroup gctx provides unified timeout/cancellation.
+open -> illegal_direct: "" {
+  style.stroke: "#6366f1"
+  style.stroke-width: 2
+  style.stroke-dash: 6
+  target-arrowhead.shape: arrow
+}
+illegal_direct -> closed: "" {
+  style.stroke: "#6366f1"
+  style.stroke-width: 2
+  style.stroke-dash: 6
+  target-arrowhead.shape: arrow
+}
+
+# ── Mutex Annotation ──────────────────────────────────────────────────────────
+mutex_note: |'md'
+  **🔒 `sync.Mutex` guards all state transitions**
+  go
+  func (cb *CircuitBreaker) Do(ctx context.Context,
+      upstream func() error) error {
+    cb.mu.Lock()         // ← acquire
+    state := cb.state
+    // ... evaluate state ...
+    cb.mu.Unlock()       // ← release before upstream call
+    err := upstream()    // upstream runs WITHOUT lock
+    cb.mu.Lock()         // ← re-acquire to record outcome
+    defer cb.mu.Unlock()
+    // ... update state ...
+  }
+  
+  **5xx detection:** `upstream` returns error if status `>= 500`.
 '| {
   near: bottom-center
-  style.fill: "#F0FDF4"
+  style.fill: "#0f172a"
+  style.font-color: "#94a3b8"
+  style.stroke: "#334155"
+  style.stroke-width: 1
   style.border-radius: 6
+}
+
+# ── Timing Annotation ─────────────────────────────────────────────────────────
+timing_note: |'md'
+  **Timing constants (config-driven):**
+  | Parameter | Default | Config Field |
+  |-----------|---------|--------------|
+  | `maxFailures` | 5 | `CBMaxFailures` |
+  | `failureWindow` | 10s | `CBFailureWindow` |
+  | `openTimeout` | 30s | `CBOpenTimeout` |
+  
+  **Applies to:** url-service proxy only.
+'| {
+  near: bottom-right
+  style.fill: "#0f172a"
+  style.font-color: "#94a3b8"
+  style.stroke: "#334155"
+  style.border-radius: 6
+}
+
+cb_struct -> closed: "owns state" {
+  style.stroke: "#7c3aed"
+  style.stroke-width: 1
+  style.stroke-dash: 5
+  style.font-color: "#7c3aed"
+  target-arrowhead.shape: diamond
+  target-arrowhead.style.filled: false
 }

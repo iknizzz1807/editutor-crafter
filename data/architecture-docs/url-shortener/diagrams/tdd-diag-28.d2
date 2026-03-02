@@ -1,200 +1,388 @@
 vars: {
   d2-config: {
     layout-engine: elk
-    theme-id: 4
+    theme-id: 0
   }
 }
 
-direction: right
+direction: down
 
 title: |'md
-  ## IP Privacy Hashing Data Flow
-  `handler/redirect.go` → `hashIP()` → `clicks.ip_hash`
-'| {
-  near: top-center
-}
+## API Gateway Middleware Stack — Request Pipeline
+Every incoming request traverses this ordered chain (top → bottom).
+Short-circuit exits terminate processing without calling downstream stages.
+'| {near: top-center}
 
-# 1. Input Sources
-raw_ip: "Raw IP String\n'203.0.113.42'" {
-  style.fill: "#ff6b6b"
-  style.font-color: white
+###############################################################################
+# ENTRY
+###############################################################################
+client: "Client Request" {
+  shape: rectangle
+  style.fill: "#E8F4F8"
+  style.stroke: "#2980B9"
+  style.stroke-width: 2
   style.bold: true
-  style.border-radius: 4
+  style.font-size: 14
 }
 
-gdpr_warn: |'md
-  ⚠️ **GDPR Article 4(1)**
-  Raw IP is *personal data* —
-  uniquely identifies a natural
-  person's device/location.
-  Storing raw IPs without
-  lawful basis = violation.
-  Max fine: €20M or 4% revenue.
-'| {
-  style.fill: "#fff0f0"
-  style.stroke: "#ff6b6b"
-  style.border-radius: 4
-}
-
-env_salt: "CLICK_SALT\nenv var\n(random bytes)" {
-  style.fill: "#f39c12"
+###############################################################################
+# STAGE 1 — Correlation ID
+###############################################################################
+s1: "[1] CorrelationIDMiddleware" {
+  shape: rectangle
+  style.fill: "#6C3483"
   style.font-color: white
+  style.stroke: "#4A235A"
+  style.stroke-width: 2
   style.bold: true
+  style.font-size: 13
   style.border-radius: 4
-}
-
-salt_warn: |'md
-  🔑 **Salt Purpose**
-  Common IPs (e.g. 8.8.8.8) are 
-  pre-computable. Rainbow tables
-  reverse unsalted hashes.
-  Salt = per-deployment secret.
-  SHA-256(ip + salt) is infeasible
-  to invert.
+  detail: |'md
+**Read** `X-Correlation-ID` header
+**If absent:** generate UUID v4 via `crypto/rand`
+**Inject** into `context.Context` via `logger.ContextWithCorrelationID`
+**Echo** as `X-Correlation-ID` response header
+`key = "rl:{routeKey}:{clientIP}"`
 '| {
-  style.fill: "#fef9e7"
-  style.stroke: "#f39c12"
-  style.border-radius: 4
-}
-
-# 2. Transformation Steps
-step1: "Step 1: Concatenate\nip + salt\n→ []byte" {
-  shape: diamond
-  style.fill: "#9b59b6"
-  style.font-color: white
-  style.bold: true
-}
-
-step1_code: |'go
-  rawInput := ip + salt
-  // "203.0.113.42" + "secret-salt-xyz"
-  input := []byte(rawInput)
-'| {
-  style.fill: "#f5f0ff"
-  style.stroke: "#9b59b6"
-  style.border-radius: 4
-}
-
-step2: "Step 2: SHA-256\nsha256.Sum256(input)\n→ [32]byte" {
-  shape: diamond
-  style.fill: "#2980b9"
-  style.font-color: white
-  style.bold: true
-}
-
-step2_code: |'go
-  // crypto/sha256 — deterministic,
-  // one-way, collision-resistant
-  hash := sha256.Sum256(input)
-'| {
-  style.fill: "#eaf4fb"
-  style.stroke: "#2980b9"
-  style.border-radius: 4
-}
-
-# 2.5 Logic Bridge
-step3: "Step 3: Hex Encode\nhex.EncodeToString(hash[:])\n→ string (64 chars)" {
-  shape: diamond
-  style.fill: "#27ae60"
-  style.font-color: white
-  style.bold: true
-}
-
-step3_code: |'go
-  ipHash := hex.EncodeToString(hash[:])
-  // 32 bytes × 2 hex chars = 64 chars
-'| {
-  style.fill: "#eafaf1"
-  style.stroke: "#27ae60"
-  style.border-radius: 4
-}
-
-# 3. Output/Sink
-db_store: "clicks.ip_hash\nTEXT NOT NULL\n64-byte hex string" {
-  style.fill: "#1a5276"
-  style.font-color: white
-  style.bold: true
-  style.border-radius: 4
-  style.multiple: true
-}
-
-size_note: |'md
-  **Storage Characteristics**
-  | Property        | Value            |
-  |-----------------|------------------|
-  | Input size      | variable (7–45B) |
-  | Hash raw size   | 32 bytes fixed   |
-  | Stored size     | **64 bytes fixed** |
-  | Column type     | TEXT (not BYTEA) |
-  | Reversible      | ❌ No            |
-'| {
-  style.fill: "#eaf2ff"
-  style.stroke: "#1a5276"
-  style.border-radius: 4
-}
-
-go_func: |'go
-  func hashIP(rawIP string) string {
-      salt := os.Getenv("CLICK_SALT")
-      h := sha256.Sum256([]byte(rawIP + salt))
-      return hex.EncodeToString(h[:])
+    style.fill: "#EDE0F7"
+    style.stroke: "#6C3483"
+    style.font-size: 12
   }
+}
+
+###############################################################################
+# STAGE 2 — Structured Logger
+###############################################################################
+s2: "[2] RequestLogger (shared/logger)" {
+  shape: rectangle
+  style.fill: "#1A5276"
+  style.font-color: white
+  style.stroke: "#154360"
+  style.stroke-width: 2
+  style.bold: true
+  style.font-size: 13
+  style.border-radius: 4
+  detail: |'md
+Records `start := time.Now()`
+Wraps `ResponseWriter` to capture `status`
+Calls `next.ServeHTTP`
+**After response emits:**
+`{time, level, service, correlation_id, method, path, status, duration_ms}`
+'| {
+    style.fill: "#D6EAF8"
+    style.stroke: "#1A5276"
+    style.font-size: 12
+  }
+}
+
+###############################################################################
+# STAGE 3 — Router
+###############################################################################
+s3: "[3] Router — Path Matching" {
+  shape: rectangle
+  style.fill: "#1E8449"
+  style.font-color: white
+  style.stroke: "#196F3D"
+  style.stroke-width: 2
+  style.bold: true
+  style.font-size: 13
+  style.border-radius: 4
+  detail: |'md
+Linear scan of `routingTable` (8 entries)
+**Match:** `strings.HasPrefix(path, route.PathPrefix)`
+**AND** method == route.Method (or route.Method == "")
+**First match wins**
+Resolves: `upstream`, `requiresAuth`, `rateLimitKey`, `stripPrefix`
+'| {
+    style.fill: "#D5F5E3"
+    style.stroke: "#1E8449"
+    style.font-size: 12
+  }
+  table: |'md
+| Path Prefix | Upstream | Auth | RL Key |
+|---|---|---|---|
+| POST /api/auth/register | user-service | ✗ | — |
+| POST /api/auth/login | user-service | ✗ | — |
+| POST /api/shorten | url-service | ✓ | shorten |
+| GET /api/urls | url-service | ✓ | — |
+| DELETE /api/urls/ | url-service | ✓ | — |
+| GET /r/ | url-service | ✗ | redirect |
+| GET /api/stats/ | analytics-service | ✗ | — |
+| GET /api/notifications | notification-service | ✓ | — |
+'| {
+    style.fill: "#EAFAF1"
+    style.stroke: "#1E8449"
+    style.font-size: 11
+  }
+}
+
+exit_404: "EXIT: 404 Not Found" {
+  shape: rectangle
+  style.fill: "#641E16"
+  style.font-color: white
+  style.stroke: "#4A0E10"
+  style.stroke-width: 2
+  style.bold: true
+  style.font-size: 13
+  style.border-radius: 4
+  label: |'md
+**EXIT → 404**
+`{"error":"not found"}`
+No upstream call made.
+'|
+}
+
+###############################################################################
+# STAGE 4 — JWT Middleware
+###############################################################################
+s4: "[4] JWTMiddleware (shared/auth)" {
+  shape: rectangle
+  style.fill: "#7D6608"
+  style.font-color: white
+  style.stroke: "#5D4E00"
+  style.stroke-width: 2
+  style.bold: true
+  style.font-size: 13
+  style.border-radius: 4
+  detail: |'md
+**Skipped when** `route.RequiresAuth == false`
+**Applied when** `RequiresAuth == true`
+1. Read `Authorization: Bearer <token>`
+2. `auth.VerifyToken(token, JWT_SECRET)` — local HMAC-SHA256
+3. **On success:** inject `*Claims` into ctx
+**NO call to user-service per request**
+'| {
+    style.fill: "#FEF9E7"
+    style.stroke: "#7D6608"
+    style.font-size: 12
+  }
+}
+
+exit_401: "EXIT: 401 Unauthorized" {
+  shape: rectangle
+  style.fill: "#641E16"
+  style.font-color: white
+  style.stroke: "#4A0E10"
+  style.stroke-width: 2
+  style.bold: true
+  style.font-size: 13
+  style.border-radius: 4
+  label: |'md
+**EXIT → 401**
+Missing header or Invalid token.
+Logged with `correlation_id`.
+'|
+}
+
+###############################################################################
+# STAGE 5 — Rate Limiter
+###############################################################################
+s5: "[5] RateLimiter — Redis Token Bucket" {
+  shape: rectangle
+  style.fill: "#117A65"
+  style.font-color: white
+  style.stroke: "#0E6655"
+  style.stroke-width: 2
+  style.bold: true
+  style.font-size: 13
+  style.border-radius: 4
+  detail: |'md
+**Skipped when** `route.RateLimitKey == ""`
+**Key format:** `"rl:{routeKey}:{clientIP}"`
+**Algorithm:** Redis `INCR` → if count==1 then `EXPIRE windowSecs`
+**Fail-open:** Redis error → allow request
+'| {
+    style.fill: "#D1F2EB"
+    style.stroke: "#117A65"
+    style.font-size: 12
+  }
+}
+
+exit_429: "EXIT: 429 Too Many Requests" {
+  shape: rectangle
+  style.fill: "#641E16"
+  style.font-color: white
+  style.stroke: "#4A0E10"
+  style.stroke-width: 2
+  style.bold: true
+  style.font-size: 13
+  style.border-radius: 4
+  label: |'md
+**EXIT → 429**
+`{"error":"rate limit exceeded"}`
+'|
+}
+
+###############################################################################
+# STAGE 6 — Circuit Breaker
+###############################################################################
+s6: "[6] CircuitBreaker (url-service only)" {
+  shape: rectangle
+  style.fill: "#922B21"
+  style.font-color: white
+  style.stroke: "#7B241C"
+  style.stroke-width: 2
+  style.bold: true
+  style.font-size: 13
+  style.border-radius: 4
+  detail: |'md
+**Only applied when** `upstream == "url-service"`
+**OPEN:** after 5 consecutive 5xx failures within 10s window.
+**HALF_OPEN:** after 30s probe window.
+**NOT a failure:** upstream 4xx responses.
+'| {
+    style.fill: "#FDEDEC"
+    style.stroke: "#922B21"
+    style.font-size: 12
+  }
+}
+
+exit_503: "EXIT: 503 Service Unavailable" {
+  shape: rectangle
+  style.fill: "#641E16"
+  style.font-color: white
+  style.stroke: "#4A0E10"
+  style.stroke-width: 2
+  style.bold: true
+  style.font-size: 13
+  style.border-radius: 4
+  label: |'md
+**EXIT → 503** (circuit OPEN)
+`{"error":"service unavailable"}`
+'|
+}
+
+###############################################################################
+# STAGE 7 — Reverse Proxy
+###############################################################################
+s7: "[7] ReverseProxy (httputil.ReverseProxy)" {
+  shape: rectangle
+  style.fill: "#154360"
+  style.font-color: white
+  style.stroke: "#0E2D4A"
+  style.stroke-width: 2
+  style.bold: true
+  style.font-size: 13
+  style.border-radius: 4
+  detail: |'md
+**Path rewrite:** strip `route.StripPrefix` from `r.URL.Path`
+**Propagate:** `X-Correlation-ID` set on forwarded request
+**ErrorHandler:** upstream network error → 502 Bad Gateway
+'| {
+    style.fill: "#D6EAF8"
+    style.stroke: "#154360"
+    style.font-size: 12
+  }
+}
+
+###############################################################################
+# UPSTREAM TARGETS
+###############################################################################
+upstreams: "Upstream Services" {
+  style.fill: "#F2F3F4"
+  style.stroke: "#AAB7B8"
+  style.stroke-width: 1
+  style.font-size: 13
+  url_svc: "url-service\n:8081" {
+    style.fill: "#D7BDE2"
+    style.stroke: "#8E44AD"
+    style.stroke-width: 2
+    style.bold: true
+  }
+  analytics_svc: "analytics-service\n:8082" {
+    style.fill: "#AED6F1"
+    style.stroke: "#2980B9"
+    style.stroke-width: 2
+    style.bold: true
+  }
+  user_svc: "user-service\n:8083" {
+    style.fill: "#A9DFBF"
+    style.stroke: "#1E8449"
+    style.stroke-width: 2
+    style.bold: true
+  }
+  notif_svc: "notification-service\n:8084" {
+    style.fill: "#FAD7A0"
+    style.stroke: "#E67E22"
+    style.stroke-width: 2
+    style.bold: true
+  }
+}
+
+redis_store: "Redis\n(rate-limit store)" {
+  shape: cylinder
+  style.fill: "#FDEDEC"
+  style.stroke: "#C0392B"
+  style.stroke-width: 2
+  style.bold: true
+}
+
+###############################################################################
+# PIPELINE CONNECTIONS
+###############################################################################
+client -> s1: "HTTP Request" {
+  style.stroke: "#2980B9"
+  style.stroke-width: 2
+  style.bold: true
+}
+s1 -> s2: "ctx + corrID"
+s2 -> s3: "timer start"
+s3 -> s4: "route matched"
+s4 -> s5: "Claims verified"
+s5 -> s6: "allowed"
+s6 -> s7: "CLOSED/HALF_OPEN"
+
+s7 -> upstreams.url_svc: "Forward to URL Svc" {
+  style.stroke: "#8E44AD"
+  style.animated: true
+}
+s7 -> upstreams.analytics_svc: "Forward to Analytics" {
+  style.stroke: "#2980B9"
+  style.animated: true
+}
+s7 -> upstreams.user_svc: "Forward to User Svc" {
+  style.stroke: "#1E8449"
+  style.animated: true
+}
+s7 -> upstreams.notif_svc: "Forward to Notif Svc" {
+  style.stroke: "#E67E22"
+  style.animated: true
+}
+
+###############################################################################
+# EXITS
+###############################################################################
+s3 -> exit_404: "No Route" {
+  style.stroke: "#C0392B"
+  style.stroke-dash: 4
+}
+s4 -> exit_401: "Auth Failed" {
+  style.stroke: "#C0392B"
+  style.stroke-dash: 4
+}
+s5 -> exit_429: "Throttled" {
+  style.stroke: "#C0392B"
+  style.stroke-dash: 4
+}
+s6 -> exit_503: "Circuit Open" {
+  style.stroke: "#C0392B"
+  style.stroke-dash: 4
+}
+
+s5 -> redis_store: "INCR key" {
+  style.stroke: "#C0392B"
+  style.stroke-dash: 3
+}
+
+bypass_note: |'md
+**Middleware bypass rules:**
+- `/api/auth/*` → skips [4] JWT, [5] RL, [6] CB
+- `/r/*` → skips [4] JWT; applies [5] RL, [6] CB
+- `/api/stats/*` → skips [4] JWT, [5] RL, [6] CB
+- `analytics/user/notif upstreams` → skip [6] CB entirely
 '| {
   near: bottom-center
-  style.fill: "#fdfefe"
-  style.stroke: "#7f8c8d"
-  style.border-radius: 4
-}
-
-# 4. Connections & Association Links
-gdpr_warn -> raw_ip: {
-  style.stroke-dash: 3
-  style.stroke: "#ff6b6b"
-  style.opacity: 0.6
-}
-
-salt_warn -> env_salt: {
-  style.stroke-dash: 3
-  style.stroke: "#f39c12"
-  style.opacity: 0.6
-}
-
-size_note -> db_store: {
-  style.stroke-dash: 3
-  style.stroke: "#1a5276"
-  style.opacity: 0.6
-}
-
-raw_ip -> step1: "ip string" {
-  style.stroke: "#ff6b6b"
-  style.bold: true
-}
-env_salt -> step1: "salt secret" {
-  style.stroke: "#f39c12"
-  style.bold: true
-}
-step1 -> step1_code {
-  style.stroke-dash: 3
-  style.stroke: "#9b59b6"
-}
-step1 -> step2: "[]byte" {
-  style.stroke: "#9b59b6"
-  style.bold: true
-}
-step2 -> step2_code {
-  style.stroke-dash: 3
-  style.stroke: "#2980b9"
-}
-step2 -> step3: "[32]byte" {
-  style.stroke: "#2980b9"
-  style.bold: true
-}
-step3 -> step3_code {
-  style.stroke-dash: 3
-  style.stroke: "#27ae60"
-}
-step3 -> db_store: "64 hex chars" {
-  style.stroke: "#27ae60"
-  style.bold: true
-  style.stroke-width: 3
+  style.fill: "#FDFEFE"
+  style.stroke: "#AAB7B8"
+  style.font-size: 11
 }

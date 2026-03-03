@@ -1,0 +1,190 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## /proc/mydevice — Statistics Tracking & Output Trace
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  globals: {
+    label: "Module Globals (mydevice.c — .bss segment)"
+    style.fill: "#e8f4fd"
+    style.stroke: "#2980b9"
+    style.border-radius: 6
+    buf_state: {
+      shape: sql_table
+      label: "Buffer State"
+      r0: "kernel_buffer    | char*        | heap ptr (kzalloc)"
+      r1: "buffer_size      | size_t       | 4096 bytes capacity"
+      r2: "buffer_data_len  | size_t       | 42 bytes used"
+      note: "NOT atomic — protected by mutex (M4)"
+    }
+    counters: {
+      shape: sql_table
+      label: "Stat Counters — atomic_t (linux/atomic.h)"
+      r0: "open_count  | atomic_t | ATOMIC_INIT(0)"
+      r1: "read_count  | atomic_t | ATOMIC_INIT(0)"
+      r2: "write_count | atomic_t | ATOMIC_INIT(0)"
+      warn: "atomic_t required: concurrent access from multiple CPUs"
+    }
+  }
+  handlers: {
+    label: "Handler Call Sites (mydevice.c)"
+    style.fill: "#fef9e7"
+    style.stroke: "#f39c12"
+    style.border-radius: 6
+    direction: down
+    open_h: {
+      shape: class
+      label: "mydevice_open (fs.h: file_operations)"
+      +mydevice_open(inode, filp): "int"
+      note_open: "atomic_inc"
+      note_open2: "open_count: 0 → 1 → 2"
+    }
+    release_h: {
+      shape: class
+      label: "mydevice_release (fs.h: file_operations)"
+      +mydevice_release(inode, filp): "int"
+      note_rel: "atomic_dec"
+      note_rel2: "open_count: 2 → 1 → 0"
+    }
+    read_h: {
+      shape: class
+      label: "mydevice_read (fs.h: file_operations)"
+      +mydevice_read(filp, buf, count, f_pos): "ssize_t"
+      note_r: "atomic_inc per syscall"
+      note_r2: "NOT per byte — call count only"
+    }
+    write_h: {
+      shape: class
+      label: "mydevice_write (fs.h: file_operations)"
+      +mydevice_write(filp, buf, count, f_pos): "ssize_t"
+      note_w: "atomic_inc per syscall"
+      note_w2: "call count, not byte count"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  seq: {
+    label: "Concrete Session Trace — 2 Processes"
+    style.fill: "#f9f9f9"
+    style.stroke: "#7f8c8d"
+    style.border-radius: 6
+    direction: down
+    ev1: {
+      shape: sql_table
+      label: "Event Log (chronological)"
+      e1: "1  | proc A open()          | open_count: 0→1"
+      e2: "2  | proc B open()          | open_count: 1→2"
+      e3: "3  | proc A write(42 bytes) | write_count: 0→1  bytes_used=42"
+      e4: "4  | proc A read(10 bytes)  | read_count:  0→1  f_pos: 0→10"
+      e5: "5  | proc B read(10 bytes)  | read_count:  1→2  f_pos: 0→10"
+      e6: "6  | proc A read(10 bytes)  | read_count:  2→3  f_pos: 10→20"
+      e7: "7  | proc B write(0 bytes)  | write_count: 1→2  (empty write)"
+      e8: "8  | proc A read (12 more)  | read_count:  3→4"
+      e9: "...12 more read calls...   | read_count: 4→15  write_count→7"
+      e10: "N  | snapshot for /proc    | open_count=2 read=15 write=7"
+    }
+  }
+  proc_out: {
+    label: "cat /proc/mydevice — Live Output"
+    style.fill: "#1e1e2e"
+    style.stroke: "#6272a4"
+    style.border-radius: 6
+    terminal: |'md
+      
+      buffer_size:  4096
+      bytes_used:   42
+      open_count:   2
+      read_count:   15
+      write_count:  7
+      
+    '|
+    note_seq: {
+      shape: sql_table
+      label: "seq_file Render Path (seq_file.h)"
+      s1: "proc_open   | single_open(filp, proc_show, NULL)"
+      s2: "proc_show   | seq_printf(m, key: val) x5"
+      s3: "proc_read   | seq_read  — handles chunked output"
+      s4: "proc_lseek  | seq_lseek — supports re-read"
+      s5: "proc_release| single_release — frees seq state"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  atomics_box: {
+    label: "atomic_t Correctness — Why plain int Breaks"
+    style.fill: "#fdecea"
+    style.stroke: "#e74c3c"
+    style.border-radius: 6
+    direction: right
+    bad: {
+      label: "WRONG: plain int (data race)"
+      style.fill: "#fadbd8"
+      style.stroke: "#c0392b"
+      code_bad: |'c
+        /* plain int — 3 machine ops, NOT atomic */
+        read_count++;
+        /* CPU0: LOAD reg=15 */
+        /* CPU1: LOAD reg=15  ← race! */
+        /* CPU0: ADD  reg=16  */
+        /* CPU1: ADD  reg=16  */
+        /* CPU0: STORE =16    */
+        /* CPU1: STORE =16    ← lost update */
+      '|
+    }
+    good: {
+      label: "CORRECT: atomic_t (indivisible)"
+      style.fill: "#d5f5e3"
+      style.stroke: "#27ae60"
+      code_good: |'c
+        /* atomic_inc: single LOCK XADD insn */
+        atomic_inc(&read_count);
+        /* x86: F0 0F C1 — LOCK prefix */
+        /* Bus locked during entire RMW */
+        /* CPU1 sees 15 or 17, never 16+16 */
+        /* Read with barrier */
+        int v = atomic_read(&read_count);
+      '|
+    }
+  }
+  mutex_fwd: {
+    label: "Foreshadow: M4 Mutex Requirement"
+    style.fill: "#f5eef8"
+    style.stroke: "#8e44ad"
+    style.border-radius: 6
+    fwd_table: {
+      shape: sql_table
+      label: "Variable → Protection Needed"
+      f1: "open_count    | atomic_t     | OK now — simple counter"
+      f2: "read_count    | atomic_t     | OK now — simple counter"
+      f3: "write_count   | atomic_t     | OK now — simple counter"
+      f4: "buffer_data_len | size_t     | NEEDS MUTEX — multi-step update"
+      f5: "kernel_buffer | char*        | NEEDS MUTEX — multi-step copy"
+      f6: "buffer_size   | size_t       | NEEDS MUTEX — resize swaps ptr"
+      warn2: "Invariant: buffer_data_len <= buffer_size — must hold atomically"
+    }
+  }
+}
+row1.globals.buf_state -> row1.globals.counters: "same module scope"
+row1.globals.counters -> row1.handlers.open_h: "atomic_read / atomic_inc"
+row1.handlers.open_h -> row1.handlers.release_h: "open_count lifetime"
+row1.handlers.read_h -> row1.globals.counters: "atomic_inc"
+row1.handlers.write_h -> row1.globals.counters: "atomic_inc"
+row1.handlers -> row2.seq: "syscall events"
+row2.seq -> row2.proc_out: "snapshot at read time"
+row2.proc_out -> row3.atomics_box: "correctness requires"
+row3.atomics_box.bad -> row3.atomics_box.good: "replace with"
+row3.atomics_box -> row3.mutex_fwd: "counters safe | buffer state needs more"

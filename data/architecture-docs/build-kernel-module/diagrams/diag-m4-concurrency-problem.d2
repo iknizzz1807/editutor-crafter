@@ -1,0 +1,330 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # The Corruption: Concurrent Access Without vs. With a Mutex
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  before: "BEFORE — No Mutex (Data Corruption)" {
+    direction: down
+    style.fill: "#fff0f0"
+    style.stroke: "#cc0000"
+    style.stroke-width: 2
+    timeline: "Interleaved Execution Timeline" {
+      direction: down
+      style.fill: transparent
+      style.stroke: transparent
+      s1: {
+        direction: right
+        style.fill: transparent
+        style.stroke: transparent
+        cpu0: "CPU 0 — Process A (reader)" {
+          style.fill: "#ffd6d6"
+          style.stroke: "#cc0000"
+          style.bold: true
+        }
+        cpu1: "CPU 1 — Process B (writer)" {
+          style.fill: "#d6d6ff"
+          style.stroke: "#3333cc"
+          style.bold: true
+        }
+      }
+      step1: {
+        shape: sql_table
+        label: "① Process A: LOAD buffer_data_len"
+        r1: "CPU 0 | reg0 = buffer_data_len | reg0 ← 100"
+        r2: "CPU 1 | (idle)                | —"
+      }
+      step2: {
+        shape: sql_table
+        label: "② CONTEXT SWITCH → CPU 0 preempted"
+        r1: "CPU 0 | suspended mid-read     | reg0 = 100 (stale!)"
+        r2: "CPU 1 | wakes up               | begins write()"
+        style.stroke: "#ff6600"
+        style.fill: "#fff3e0"
+      }
+      step3: {
+        shape: sql_table
+        label: "③ Process B: write() runs, updates state"
+        r1: "CPU 0 | suspended              | reg0 = 100 (stale!)"
+        r2: "CPU 1 | copy_from_user 200B    | kernel_buffer filled"
+        r3: "CPU 1 | buffer_data_len = 200  | NEW value stored"
+      }
+      step4: {
+        shape: sql_table
+        label: "④ CONTEXT SWITCH → CPU 0 resumes"
+        r1: "CPU 0 | resumes with reg0=100  | sees OLD data_len"
+        r2: "CPU 1 | (idle)                 | —"
+        style.stroke: "#ff6600"
+        style.fill: "#fff3e0"
+      }
+      step5: {
+        shape: sql_table
+        label: "⑤ Process A: copy_to_user using stale reg0=100"
+        r1: "CPU 0 | to_copy = min(count,100) | WRONG: real len=200"
+        r2: "CPU 0 | copy_to_user 100 bytes   | TRUNCATED READ"
+        r3: "CPU 0 | f_pos += 100              | invariant broken"
+        style.stroke: "#cc0000"
+        style.fill: "#ffe0e0"
+      }
+      corruption: "OUTCOME: DATA CORRUPTION" {
+        style.fill: "#cc0000"
+        style.font-color: white
+        style.bold: true
+        style.border-radius: 4
+        r1: "buffer_data_len = 200 but reader copied only 100 bytes"
+        r2: "Remaining 100 bytes silently lost — no error returned"
+        r3: "Next reader: may read stale/garbage bytes [100..200]"
+        r4: "If writer also updates kernel_buffer ptr: USE-AFTER-FREE"
+      }
+      step1 -> step2: "preempt" {
+        style.stroke: "#ff6600"
+        style.stroke-dash: 4
+      }
+      step2 -> step3: "B runs" {
+        style.stroke: "#3333cc"
+      }
+      step3 -> step4: "preempt" {
+        style.stroke: "#ff6600"
+        style.stroke-dash: 4
+      }
+      step4 -> step5: "A resumes" {
+        style.stroke: "#cc0000"
+      }
+      step5 -> corruption: "result" {
+        style.stroke: "#cc0000"
+        style.stroke-width: 3
+      }
+    }
+    state_bad: "Corrupted Invariant (mydevice.c globals)" {
+      shape: sql_table
+      label: "struct state — INVARIANT BROKEN"
+      r1: "kernel_buffer    | char*  | 0xffff888012340000 (200B written)"
+      r2: "buffer_data_len  | size_t | 200  (B wrote this)"
+      r3: "f_pos after read | loff_t | 100  (A used stale len)"
+      r4: "bytes delivered  | ssize_t| 100  (should be 200)"
+      r5: "bytes lost       | size_t | 100  (silent data loss)"
+      style.fill: "#ffe0e0"
+      style.stroke: "#cc0000"
+    }
+    timeline -> state_bad: "final state"
+  }
+  after: "AFTER — mutex_lock Serializes Access" {
+    direction: down
+    style.fill: "#f0fff0"
+    style.stroke: "#007700"
+    style.stroke-width: 2
+    timeline2: "Serialized Execution Timeline" {
+      direction: down
+      style.fill: transparent
+      style.stroke: transparent
+      s1b: {
+        direction: right
+        style.fill: transparent
+        style.stroke: transparent
+        cpu0b: "CPU 0 — Process A (reader)" {
+          style.fill: "#c8f0c8"
+          style.stroke: "#007700"
+          style.bold: true
+        }
+        cpu1b: "CPU 1 — Process B (writer)" {
+          style.fill: "#c8c8f0"
+          style.stroke: "#3333cc"
+          style.bold: true
+        }
+      }
+      stepA1: {
+        shape: sql_table
+        label: "① Process A: mutex_lock_interruptible()"
+        r1: "CPU 0 | cmpxchg(&mutex, 0, A)  | SUCCESS — lock acquired"
+        r2: "CPU 1 | (idle)                 | —"
+        style.fill: "#e0ffe0"
+        style.stroke: "#007700"
+      }
+      stepA2: {
+        shape: sql_table
+        label: "② Process A owns lock — reads safely"
+        r1: "CPU 0 | reg0 = buffer_data_len | reg0 ← 100 (real value)"
+        r2: "CPU 0 | to_copy = min(cnt,100) | correct calculation"
+        r3: "CPU 1 | calls mutex_lock()     | BLOCKS — spins/sleeps"
+        style.fill: "#e0ffe0"
+      }
+      ctx_switch: "CONTEXT SWITCH mid-read" {
+        style.fill: "#e8f5e9"
+        style.stroke: "#ff6600"
+        style.stroke-dash: 3
+        r1: "CPU 0 suspended — BUT mutex still held by A"
+        r2: "CPU 1 tries mutex_lock → sees owner=A → TASK_INTERRUPTIBLE sleep"
+      }
+      stepA3: {
+        shape: sql_table
+        label: "③ Process B: BLOCKED on mutex (not running)"
+        r1: "CPU 0 | suspended (mutex held) | B cannot proceed"
+        r2: "CPU 1 | wait_queue sleeping   | buffer_data_len FROZEN"
+      }
+      stepA4: {
+        shape: sql_table
+        label: "④ CPU 0 resumes, completes copy_to_user"
+        r1: "CPU 0 | copy_to_user 100 bytes | CORRECT — len=100"
+        r2: "CPU 0 | buffer_data_len -= 100  | 0 bytes remain"
+        r3: "CPU 0 | wake_up(write_queue)    | signal B to proceed"
+        style.fill: "#e0ffe0"
+        style.stroke: "#007700"
+      }
+      stepA5: {
+        shape: sql_table
+        label: "⑤ Process A: mutex_unlock() — B wakes"
+        r1: "CPU 0 | mutex_unlock()          | lock released"
+        r2: "CPU 1 | cmpxchg succeeds        | B acquires lock"
+        r3: "CPU 1 | buffer_data_len = 0     | safe to write now"
+        style.fill: "#e0ffe0"
+        style.stroke: "#007700"
+      }
+      correct: "OUTCOME: CORRECT — No Data Loss" {
+        style.fill: "#007700"
+        style.font-color: white
+        style.bold: true
+        style.border-radius: 4
+        r1: "A read exactly 100 bytes with consistent state view"
+        r2: "B wrote 200 bytes after A fully released the buffer"
+        r3: "Invariant maintained: data_len always matches actual bytes"
+        r4: "No silent truncation, no use-after-free, no stale reads"
+      }
+      stepA1 -> stepA2: "lock held" {
+        style.stroke: "#007700"
+      }
+      stepA2 -> ctx_switch: "preempt" {
+        style.stroke: "#ff6600"
+        style.stroke-dash: 4
+      }
+      ctx_switch -> stepA3: "B blocked" {
+        style.stroke: "#3333cc"
+        style.stroke-dash: 3
+      }
+      stepA3 -> stepA4: "A resumes" {
+        style.stroke: "#007700"
+      }
+      stepA4 -> stepA5: "unlock" {
+        style.stroke: "#007700"
+      }
+      stepA5 -> correct: "result" {
+        style.stroke: "#007700"
+        style.stroke-width: 3
+      }
+    }
+    state_good: "Valid Invariant (mydevice.c globals)" {
+      shape: sql_table
+      label: "struct state — INVARIANT PRESERVED"
+      r1: "kernel_buffer    | char*  | 0xffff888012340000"
+      r2: "buffer_data_len  | size_t | 0   (A consumed all)"
+      r3: "f_pos after read | loff_t | 100 (correct)"
+      r4: "bytes delivered  | ssize_t| 100 (matches data_len)"
+      r5: "bytes lost       | size_t | 0   (no loss)"
+      style.fill: "#e0ffe0"
+      style.stroke: "#007700"
+    }
+    timeline2 -> state_good: "final state"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  mutex_impl: "DEFINE_MUTEX Implementation Detail (linux/mutex.h)" {
+    direction: down
+    style.fill: "#f5f5ff"
+    style.stroke: "#5555aa"
+    mutex_struct: {
+      shape: sql_table
+      label: "struct mutex (linux/mutex.h)"
+      f1: "0x00 | atomic_long_t | owner   // task_struct* of holder, or 0"
+      f2: "0x08 | spinlock_t    | wait_lock // protects wait_list"
+      f3: "0x10 | list_head     | wait_list // FIFO queue of waiters"
+      f4: "Total: 24 bytes"
+    }
+    mutex_ops: "Key Operations" {
+      shape: class
+      label: "mutex API (kernel/locking/mutex.c)"
+      +mutex_lock(m): "void  // sleep until acquired"
+      +mutex_lock_interruptible(m): "int   // -EINTR on signal"
+      +mutex_trylock(m): "int   // 1=got it, 0=busy"
+      +mutex_unlock(m): "void  // release + wake next waiter"
+      +mutex_is_locked(m): "bool"
+    }
+    fast_path: "Fast Path (uncontended)" {
+      style.fill: "#e8f5e9"
+      label: "Fast Path (uncontended)"
+      code: |'c
+        /* cmpxchg: if owner==0, set owner=current, return 0 */
+        if (atomic_long_cmpxchg(&m->owner, 0UL,
+                (unsigned long)current) == 0)
+            return 0; /* got lock in ~20 cycles */
+      '|
+    }
+    slow_path: "Slow Path (contended)" {
+      style.fill: "#fff3e0"
+      label: "Slow Path (contended — TASK_INTERRUPTIBLE sleep)"
+      code: |'c
+        set_current_state(TASK_INTERRUPTIBLE);
+        spin_lock(&m->wait_lock);
+        list_add_tail(&waiter.list, &m->wait_list);
+        spin_unlock(&m->wait_lock);
+        schedule(); /* yield CPU — waiter sleeps here */
+        /* woken by mutex_unlock() calling wake_up_process() */
+      '|
+    }
+    mutex_struct -> mutex_ops
+    mutex_ops -> fast_path: "no contention"
+    mutex_ops -> slow_path: "contended"
+  }
+  key_rules: "Key Rules: When to Use What" {
+    direction: down
+    style.fill: "#fffff0"
+    style.stroke: "#888800"
+    rule_table: {
+      shape: sql_table
+      label: "Synchronization Primitive Selection"
+      h:  "Context              | Can Sleep? | Primitive    | API"
+      r1: "syscall handler      | YES        | mutex        | mutex_lock_interruptible()"
+      r2: "workqueue callback   | YES        | mutex        | mutex_lock_interruptible()"
+      r3: "interrupt handler    | NO         | spinlock     | spin_lock_irqsave()"
+      r4: "softirq / tasklet    | NO         | spinlock     | spin_lock_bh()"
+      r5: "simple counter       | N/A        | atomic_t     | atomic_inc() / atomic_dec()"
+      r6: "bitmask flag         | N/A        | atomic bit   | set_bit() / test_and_set_bit()"
+    }
+    warning: "Critical: Never mutex_lock() in Interrupt Context" {
+      style.fill: "#cc0000"
+      style.font-color: white
+      style.bold: true
+      style.border-radius: 4
+      w1: "mutex_lock() may call schedule() — ILLEGAL in IRQ context"
+      w2: "Symptom: BUG: sleeping function called from invalid context"
+      w3: "Your char device handlers: process context — mutex IS correct"
+    }
+    erestart: "-ERESTARTSYS Contract" {
+      shape: sql_table
+      label: "-ERESTARTSYS Return Path (signal handling)"
+      s1: "mutex_lock_interruptible() interrupted → returns -EINTR"
+      s2: "Your handler returns -ERESTARTSYS to syscall layer"
+      s3: "Kernel checks SA_RESTART flag on signal handler"
+      s4: "SA_RESTART set   → syscall restarted transparently"
+      s5: "SA_RESTART unset → -EINTR returned to userspace"
+      s6: "NEVER return 0 or positive bytes on -EINTR: corrupts stream"
+      style.fill: "#f0f0ff"
+    }
+    rule_table -> warning
+    rule_table -> erestart
+  }
+}
+before -> after: "add mutex" {
+  style.stroke: "#007700"
+  style.stroke-width: 3
+  style.bold: true
+}

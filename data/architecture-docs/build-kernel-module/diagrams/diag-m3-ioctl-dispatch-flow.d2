@@ -1,0 +1,274 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+# ─── ROW 0: Userspace Call ───
+row0: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  userspace: "Userspace (ring 3)" {
+    direction: down
+    style.fill: "#e8f4f8"
+    style.stroke: "#2196F3"
+    style.border-radius: 8
+    call: {
+      shape: class
+      label: "userspace process (test_mydevice.c)"
+      +ioctl_resize: "ioctl(fd, MYDEV_RESIZE, &new_size)"
+      +ioctl_clear: "ioctl(fd, MYDEV_CLEAR, 0)"
+      +ioctl_status: "ioctl(fd, MYDEV_STATUS, &status)"
+    }
+    cmd_encoding: {
+      shape: sql_table
+      label: "cmd = MYDEVICE_IOC_RESIZE (encoded uint32)"
+      bits3130: "31-30 | direction | _IOC_WRITE (user writes to kernel)"
+      bits2916: "29-16 | size      | sizeof(unsigned long) = 8"
+      bits1508: "15-08 | type/magic| 'k' = 0x6B"
+      bits0700: "07-00 | number   | 0x00"
+      total: "Full cmd = 0x406B6800  (built by _IOW macro)"
+    }
+  }
+}
+# ─── ROW 1: Syscall Boundary ───
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  boundary: "Kernel Entry (ring 3 → ring 0)" {
+    style.fill: "#fff3e0"
+    style.stroke: "#FF9800"
+    style.border-radius: 8
+    syscall_entry: {
+      shape: sql_table
+      label: "syscall: sys_ioctl (fs/ioctl.c)"
+      s0: "syscall nr | x86_64: __NR_ioctl = 16"
+      s1: "arg0 (rdi) | int fd"
+      s2: "arg1 (rsi) | unsigned int cmd"
+      s3: "arg2 (rdx) | unsigned long arg  (ptr or value)"
+      s4: "action     | ring 3 → ring 0 via SYSCALL instruction"
+      s5: "TLB flush  | NO (same process VA space)"
+    }
+  }
+}
+# ─── ROW 2: VFS Layer ───
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  vfs_layer: "VFS Layer (fs/ioctl.c)" {
+    direction: down
+    style.fill: "#f3e5f5"
+    style.stroke: "#9C27B0"
+    style.border-radius: 8
+    do_vfs_ioctl: {
+      shape: class
+      label: "do_vfs_ioctl (fs/ioctl.c)"
+      +step1: "fdget(fd) → struct fd f"
+      +step2: "check f.file != NULL"
+      +step3: "handle common ioctls (FIONREAD, FIOCLEX, FIONBIO)"
+      +step4: "else: call vfs_ioctl(f.file, cmd, arg)"
+      note: "common ioctls handled here — never reach your driver"
+    }
+    vfs_ioctl: {
+      shape: class
+      label: "vfs_ioctl (fs/ioctl.c)"
+      +step1: "fop = file->f_op"
+      +step2: "if (!fop->unlocked_ioctl) return -ENOTTY"
+      +step3: "return fop->unlocked_ioctl(file, cmd, arg)"
+      note: "single indirect call through file_operations vtable"
+    }
+    fops_struct: {
+      shape: sql_table
+      label: "struct file_operations mydevice_fops (mydevice.c)"
+      f0: ".owner          | THIS_MODULE"
+      f1: ".open           | mydevice_open"
+      f2: ".release        | mydevice_release"
+      f3: ".read           | mydevice_read"
+      f4: ".write          | mydevice_write"
+      f5: ".unlocked_ioctl | mydevice_ioctl   ← dispatched here"
+      f6: ".poll           | mydevice_poll"
+    }
+  }
+}
+# ─── ROW 3: Handler Entry + Validation ───
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  handler_entry: "Handler Entry & Validation (mydevice.c)" {
+    direction: down
+    style.fill: "#e8f5e9"
+    style.stroke: "#4CAF50"
+    style.border-radius: 8
+    style.bold: true
+    note_bkl: {
+      shape: sql_table
+      label: "NOTE: 'unlocked_ioctl' — historical naming artifact"
+      n0: "Old kernel  | .ioctl required Big Kernel Lock (BKL) before calling handler"
+      n1: "BKL removed | Linux 2.6.39 — single global mutex that serialized all ioctl"
+      n2: "Modern name | .unlocked_ioctl = handler is called WITHOUT any global lock"
+      n3: "Implication | YOU are responsible for your own synchronization (mutex)"
+    }
+    validation: {
+      shape: class
+      label: "mydevice_ioctl(file, cmd, arg) (mydevice.c)"
+      +v1: "_IOC_TYPE(cmd) != MYDEVICE_IOC_MAGIC → return -ENOTTY"
+      +v2: "_IOC_NR(cmd) > MYDEVICE_IOC_MAXNR   → return -ENOTTY"
+      +v3: "_IOC_DIR(cmd) & _IOC_READ  → access_ok(arg, _IOC_SIZE(cmd))"
+      +v4: "_IOC_DIR(cmd) & _IOC_WRITE → access_ok(arg, _IOC_SIZE(cmd))"
+      +v5: "switch(cmd) { ... }"
+    }
+  }
+}
+# ─── ROW 4: Switch Dispatch — three commands + default ───
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  cmd_resize: "case MYDEV_RESIZE" {
+    direction: down
+    style.fill: "#e3f2fd"
+    style.stroke: "#1565C0"
+    style.border-radius: 6
+    resize_flow: {
+      shape: sql_table
+      label: "mydevice_ioctl_resize(arg) (mydevice.c)"
+      r0: "step 1 | copy_from_user(&new_size, (ulong __user*)arg, 8)"
+      r1: "step 2 | validate: new_size > 0 && new_size <= 1MB"
+      r2: "step 3 | new_buf = kzalloc(new_size, GFP_KERNEL)"
+      r3: "step 4 | mutex_lock_interruptible(&mydevice_mutex)"
+      r4: "step 5 | memcpy(new_buf, kernel_buffer, min(data_len, new_size))"
+      r5: "step 6 | kfree(kernel_buffer); kernel_buffer = new_buf"
+      r6: "step 7 | buffer_size = new_size"
+      r7: "step 8 | wake_up_interruptible(read_queue + write_queue)"
+      r8: "step 9 | mutex_unlock; return 0"
+      r9: "cmd    | _IOW('k',0,ulong) — user WRITES new_size TO kernel"
+    }
+    resize_err: {
+      shape: sql_table
+      label: "Resize Error Paths"
+      e0: "-EFAULT  | copy_from_user failed (bad userspace ptr)"
+      e1: "-EINVAL  | new_size == 0 or new_size > 1MB"
+      e2: "-ENOMEM  | kzalloc failed (OOM)"
+      e3: "-ERESTARTSYS | mutex interrupted by signal"
+    }
+  }
+  cmd_clear: "case MYDEV_CLEAR" {
+    direction: down
+    style.fill: "#fff8e1"
+    style.stroke: "#F57F17"
+    style.border-radius: 6
+    clear_flow: {
+      shape: sql_table
+      label: "mydevice_ioctl_clear() (mydevice.c)"
+      c0: "step 1 | mutex_lock_interruptible(&mydevice_mutex)"
+      c1: "step 2 | memset(kernel_buffer, 0, buffer_size)"
+      c2: "step 3 | buffer_data_len = 0"
+      c3: "step 4 | wake_up_interruptible(&mydevice_write_queue)"
+      c4: "step 5 | mutex_unlock; return 0"
+      c5: "cmd    | _IO('k',1) — NO argument: arg is undefined, never deref"
+    }
+    clear_note: {
+      shape: sql_table
+      label: "CLEAR Notes"
+      n0: "arg unused | _IO macro encodes zero size bits"
+      n1: "wake write | clearing creates free space → writers can proceed"
+      n2: "f_pos      | readers must re-open or lseek to see empty buffer"
+    }
+  }
+  cmd_status: "case MYDEV_STATUS" {
+    direction: down
+    style.fill: "#e8f5e9"
+    style.stroke: "#2E7D32"
+    style.border-radius: 6
+    status_flow: {
+      shape: sql_table
+      label: "mydevice_ioctl_status(user_status) (mydevice.c)"
+      s0: "step 1 | mutex_lock_interruptible(&mydevice_mutex)"
+      s1: "step 2 | build struct mydevice_status on kernel stack"
+      s2: "step 3 |   .buffer_size = buffer_size"
+      s3: "step 4 |   .bytes_used  = buffer_data_len"
+      s4: "step 5 |   .open_count  = atomic_read(&open_count)"
+      s5: "step 6 |   .read_count  = atomic_read(&read_count)"
+      s6: "step 7 |   .write_count = atomic_read(&write_count)"
+      s7: "step 8 | mutex_unlock"
+      s8: "step 9 | copy_to_user(user_status, &status, sizeof(status))"
+      s9: "cmd    | _IOR('k',2,struct) — kernel WRITES status TO user"
+    }
+    status_struct: {
+      shape: sql_table
+      label: "struct mydevice_status (mydevice.h)"
+      f0: "0x00 | unsigned long | buffer_size   (8 bytes)"
+      f1: "0x08 | unsigned long | bytes_used    (8 bytes)"
+      f2: "0x10 | unsigned int  | open_count    (4 bytes)"
+      f3: "0x18 | unsigned long | read_count    (8 bytes)"
+      f4: "0x20 | unsigned long | write_count   (8 bytes)"
+      sz: "Total: ~40 bytes on 64-bit (subject to padding)"
+    }
+  }
+  cmd_default: "default case" {
+    direction: down
+    style.fill: "#ffebee"
+    style.stroke: "#C62828"
+    style.border-radius: 6
+    default_flow: {
+      shape: sql_table
+      label: "default: return -ENOTTY"
+      d0: "errno    | ENOTTY = 25 = 'Inappropriate ioctl for device'"
+      d1: "meaning  | command not recognized by this driver"
+      d2: "callers  | strace decodes ENOTTY as 'not a typewriter' (historical)"
+      d3: "NOT -EINVAL | -EINVAL means 'bad argument'; -ENOTTY means 'bad cmd'"
+      d4: "also hit | when _IOC_TYPE != magic OR _IOC_NR > MAXNR"
+    }
+  }
+}
+# ─── ROW 5: Return Path ───
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  return_path: "Return Path" {
+    direction: down
+    style.fill: "#fafafa"
+    style.stroke: "#607D8B"
+    style.border-radius: 8
+    ret_table: {
+      shape: sql_table
+      label: "ioctl Return Values → errno mapping"
+      r0: " 0         | success"
+      r1: "-EFAULT    | copy_from/to_user failed → errno = EFAULT"
+      r2: "-EINVAL    | invalid argument (size=0, size>1MB) → errno = EINVAL"
+      r3: "-ENOMEM    | kzalloc failed → errno = ENOMEM"
+      r4: "-ENOTTY    | unknown command → errno = ENOTTY"
+      r5: "-ERESTARTSYS | signal interrupted wait → errno = EINTR (or restart)"
+      r6: "ring 0→3  | CPU privilege drop, return value in rax"
+    }
+  }
+}
+# ─── CONNECTIONS ───
+row0.userspace.call -> row1.boundary.syscall_entry: "ioctl(fd,cmd,arg) | syscall"
+row1.boundary.syscall_entry -> row2.vfs_layer.do_vfs_ioctl: "sys_ioctl | dispatch"
+row2.vfs_layer.do_vfs_ioctl -> row2.vfs_layer.vfs_ioctl: "vfs_ioctl | non-common cmd"
+row2.vfs_layer.vfs_ioctl -> row2.vfs_layer.fops_struct: "f_op lookup | indirect call"
+row2.vfs_layer.fops_struct -> row3.handler_entry.validation: "unlocked_ioctl | fn ptr call"
+row3.handler_entry.validation -> row4.cmd_resize.resize_flow: "MYDEV_RESIZE | switch"
+row3.handler_entry.validation -> row4.cmd_clear.clear_flow: "MYDEV_CLEAR | switch"
+row3.handler_entry.validation -> row4.cmd_status.status_flow: "MYDEV_STATUS | switch"
+row3.handler_entry.validation -> row4.cmd_default.default_flow: "unknown | default" {
+  style.stroke: "#C62828"
+  style.stroke-dash: 4
+}
+row4.cmd_resize.resize_flow -> row5.return_path.ret_table: "0 or errno"
+row4.cmd_clear.clear_flow -> row5.return_path.ret_table: "0 or errno"
+row4.cmd_status.status_flow -> row5.return_path.ret_table: "0 or errno"
+row4.cmd_default.default_flow -> row5.return_path.ret_table: "-ENOTTY" {
+  style.stroke: "#C62828"
+}
+row5.return_path.ret_table -> row0.userspace.call: "long retval | ring 0→3" {
+  style.stroke-dash: 3
+  style.stroke: "#607D8B"
+}

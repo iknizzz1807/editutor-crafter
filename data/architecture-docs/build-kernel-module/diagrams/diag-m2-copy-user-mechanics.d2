@@ -1,0 +1,260 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## copy_from_user / copy_to_user: What Actually Happens
+| {near: top-center}
+row0: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  bad_path: "UNSAFE PATH: raw memcpy (NEVER DO THIS)" {
+    direction: down
+    style.fill: "#fff0f0"
+    style.stroke: "#cc0000"
+    style.stroke-width: 2
+    bad_code: {
+      label: "Kernel Code (BAD)"
+      width: 320
+      code: |'c
+        /* WRONG — kernel crash or exploit */
+        memcpy(kbuf, user_ptr, n);
+      '|
+    }
+    bad_risk1: {
+      shape: sql_table
+      label: "Risk 1: SMAP Hardware Fault"
+      r1: "CPU ring 0 reads ring-3 page"
+      r2: "SMAP fires → #PF fault"
+      r3: "Result: immediate kernel oops"
+    }
+    bad_risk2: {
+      shape: sql_table
+      label: "Risk 2: Forged Kernel Pointer"
+      r1: "user_ptr = 0xffff888000000000"
+      r2: "Points into kernel page tables"
+      r3: "Result: kernel data leak / RCE"
+    }
+    bad_risk3: {
+      shape: sql_table
+      label: "Risk 3: Swapped-Out Page"
+      r1: "Physical page not in RAM"
+      r2: "#PF in kernel context → panic"
+      r3: "Result: kernel panic / hang"
+    }
+    bad_code -> bad_risk1: "leads to"
+    bad_code -> bad_risk2: "leads to"
+    bad_code -> bad_risk3: "leads to"
+  }
+  spacer0: "" {
+    width: 40
+    style.stroke: transparent
+    style.fill: transparent
+  }
+  good_path: "SAFE PATH: copy_from_user (CORRECT)" {
+    direction: down
+    style.fill: "#f0fff0"
+    style.stroke: "#006600"
+    style.stroke-width: 2
+    good_code: {
+      label: "Kernel Code (GOOD)"
+      width: 380
+      code: |'c
+        unsigned long r;
+        r = copy_from_user(kbuf, user_ptr, n);
+        if (r != 0)
+            return -EFAULT; /* r = bytes NOT copied */
+      '|
+    }
+    phase1: {
+      shape: sql_table
+      label: "Phase 1: access_ok() — Address Validation"
+      p1: "Check: user_ptr >= 0 (not NULL)"
+      p2: "Check: user_ptr + n <= TASK_SIZE_MAX"
+      p3: "TASK_SIZE_MAX x86-64 = 0x7FFFFFFFFFFF000"
+      p4: "Forged kernel ptr? → return -EFAULT"
+      p5: "Cost: 2 comparisons, ~1 ns"
+    }
+    phase2: {
+      shape: sql_table
+      label: "Phase 2: STAC — Unlock SMAP (x86 only)"
+      p1: "Instruction: STAC (Set AC flag in RFLAGS)"
+      p2: "Sets bit AC=1 in CPU RFLAGS register"
+      p3: "CPU now permits ring-0 → ring-3 page access"
+      p4: "This is a PRIVILEGED instruction (ring 0 only)"
+      p5: "Cost: 1 CPU instruction, ~1 cycle"
+    }
+    phase3: {
+      shape: sql_table
+      label: "Phase 3: Fault-Safe Copy + Exception Table"
+      p1: "Copy loop: rep movsb / SSE / optimized"
+      p2: "Each copy insn registered in __ex_table"
+      p3: "__ex_table: {faulting_addr → fixup_addr}"
+      p4: "Page fault mid-copy? → fixup runs:"
+      p5: "  fixup: store remaining_bytes, return"
+      p6: "No kernel panic — graceful partial return"
+    }
+    phase4: {
+      shape: sql_table
+      label: "Phase 4: CLAC — Re-enable SMAP"
+      p1: "Instruction: CLAC (Clear AC flag in RFLAGS)"
+      p2: "Sets bit AC=0 in CPU RFLAGS register"
+      p3: "CPU once again blocks ring-0 → ring-3 access"
+      p4: "Even if copy succeeded, SMAP is restored"
+      p5: "Cost: 1 CPU instruction, ~1 cycle"
+    }
+    phase5: {
+      shape: sql_table
+      label: "Phase 5: Return Value (bytes NOT copied)"
+      p1: "Returns 0 → full success, all n bytes copied"
+      p2: "Returns k → k bytes were NOT transferred"
+      p3: "Caller checks: if (ret) return -EFAULT;"
+      p4: "DO NOT confuse with bytes successfully copied"
+      p5: "Convention: residual, not amount transferred"
+    }
+    good_code -> phase1: "step 1"
+    phase1 -> phase2: "step 2"
+    phase2 -> phase3: "step 3"
+    phase3 -> phase4: "step 4"
+    phase4 -> phase5: "step 5"
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  ex_table: "Exception Table Internals (__ex_table section)" {
+    direction: down
+    style.fill: "#f5f0ff"
+    style.stroke: "#5500aa"
+    ex_struct: {
+      shape: sql_table
+      label: "struct exception_table_entry (arch/x86/include/asm/extable.h)"
+      f0: "0x00 | int | insn   // RIP-relative offset of faulting insn"
+      f1: "0x04 | int | fixup  // RIP-relative offset of fixup handler"
+      f2: "0x08 | int | data   // handler-specific data (e.g. reg index)"
+      sz: "Total: 12 bytes per entry"
+    }
+    ex_flow: {
+      shape: sql_table
+      label: "Fault Dispatch (arch/x86/mm/extable.c)"
+      e1: "1. #PF fires at address X inside copy loop"
+      e2: "2. do_page_fault() → search_exception_tables(X)"
+      e3: "3. Binary search __ex_table for matching insn"
+      e4: "4. Found? → set rip = fixup_addr, resume"
+      e5: "5. Fixup: set return reg = remaining_bytes"
+      e6: "6. copy_from_user returns non-zero (bytes not copied)"
+      e7: "NOT found? → kernel oops (bug in driver code)"
+    }
+    ex_struct -> ex_flow: "lookup flow"
+  }
+  spacer1: "" {
+    width: 40
+    style.stroke: transparent
+    style.fill: transparent
+  }
+  copy_to_user_box: "copy_to_user — Reverse Direction" {
+    direction: down
+    style.fill: "#fffbf0"
+    style.stroke: "#aa7700"
+    ctu_code: {
+      label: "copy_to_user signature"
+      width: 380
+      code: |'c
+        /* kernel → userspace */
+        unsigned long copy_to_user(
+            void __user *to,   /* DEST: userspace ptr */
+            const void  *from, /* SRC:  kernel ptr    */
+            unsigned long n);
+        /* Returns: bytes NOT copied (0 = success) */
+      '|
+    }
+    ctu_diff: {
+      shape: sql_table
+      label: "Differences vs copy_from_user"
+      d1: "Direction reversed: kernel buffer → user buffer"
+      d2: "access_ok() checks 'to' pointer (write access)"
+      d3: "STAC/CLAC still required (SMAP blocks both dirs)"
+      d4: "Same exception table mechanism for fault safety"
+      d5: "__user annotation on 'to' (dest), not 'from'"
+      d6: "Used in: read(), ioctl _IOR, seq_file output"
+    }
+    ctu_code -> ctu_diff
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  address_space: "Address Space: What access_ok() Actually Checks" {
+    direction: down
+    style.fill: "#f0f8ff"
+    style.stroke: "#003399"
+    width: 900
+    as_layout: {
+      shape: sql_table
+      label: "x86-64 Virtual Address Space Layout (canonical 48-bit)"
+      a1: "0x0000000000000000 - 0x00007FFFFFFFFFFF | USERSPACE  (128 TB) ← valid for user_ptr"
+      a2: "0x0000800000000000 - 0xFFFF7FFFFFFFFFFF | NON-CANONICAL  (hole, fault on access)"
+      a3: "0xFFFF800000000000 - 0xFFFFFFFFFFFFFFFF | KERNEL SPACE   (128 TB) ← INVALID for user_ptr"
+      a4: "TASK_SIZE_MAX = 0x00007FFFFFFFFFFF000 (highest valid user address)"
+      a5: "access_ok: (user_ptr + n) <= TASK_SIZE_MAX  — catches kernel-space forged ptrs"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  annotation_box: "__user Annotation: Compile-Time Safety Net" {
+    direction: down
+    style.fill: "#fff8f0"
+    style.stroke: "#884400"
+    ann_code: {
+      label: "__user usage in driver code"
+      width: 500
+      code: |'c
+        /* __user marks pointer as "from userspace" */
+        /* sparse / smatch static analysis tools warn if: */
+        /*   - you dereference it directly (no copy_from/to_user) */
+        /*   - you pass it to a function expecting kernel ptr */
+        ssize_t mydevice_write(struct file *f,
+            const char __user *buf,  /* __user: do NOT deref */
+            size_t count, loff_t *pos)
+        {
+            char kbuf[64];
+            /* CORRECT: copy through the safe gate */
+            if (copy_from_user(kbuf, buf, min(count, 64UL)))
+                return -EFAULT;
+            /* WRONG (sparse warns): char c = *buf; */
+        }
+      '|
+    }
+  }
+  spacer3: "" {
+    width: 40
+    style.stroke: transparent
+    style.fill: transparent
+  }
+  summary_box: "Summary: The Four Guarantees of copy_from_user" {
+    direction: down
+    style.fill: "#f0fff8"
+    style.stroke: "#006644"
+    summary: {
+      shape: sql_table
+      label: "Why copy_from_user Exists (not memcpy)"
+      s1: "1. SECURITY: access_ok rejects forged kernel pointers"
+      s2: "2. HARDWARE: STAC/CLAC works with SMAP silicon enforcement"
+      s3: "3. SAFETY:   exception table prevents panic on swapped pages"
+      s4: "4. CONTRACT: returns residual bytes for partial-copy detection"
+      s5: "All four are required simultaneously — no subset is sufficient"
+    }
+  }
+}
+row0 -> row1: "internals"
+row1 -> row2: "address validation detail"
+row2 -> row3: "annotations + summary"

@@ -1,0 +1,267 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: "Buffer Resize via ioctl: Edge Cases and Data Integrity (mydevice.c)"
+  style.font-size: 18
+  style.bold: true
+  near: top-center
+}
+entry: "MYDEVICE_IOC_RESIZE called" {
+  shape: rectangle
+  style.fill: "#4a90d9"
+  style.font-color: white
+  style.bold: true
+}
+copy_from_user_step: {
+  label: "copy_from_user(new_size)"
+  shape: rectangle
+  style.fill: "#5c6bc0"
+  style.font-color: white
+}
+validate: "Validate new_size" {
+  shape: diamond
+  style.fill: "#7b68ee"
+  style.font-color: white
+}
+entry -> copy_from_user_step: "unsigned long __user *arg"
+copy_from_user_step -> validate: "new_size loaded"
+bad_ptr: "Return -EFAULT" {
+  shape: rectangle
+  style.fill: "#c0392b"
+  style.font-color: white
+  style.bold: true
+}
+copy_from_user_step -> bad_ptr: "copy fails" {
+  style.stroke-dash: 4
+  style.stroke: "#c0392b"
+}
+size_check: "new_size == 0 OR > 1MB?" {
+  shape: diamond
+  style.fill: "#7b68ee"
+  style.font-color: white
+}
+validate -> size_check
+einval: "Return -EINVAL" {
+  shape: rectangle
+  style.fill: "#c0392b"
+  style.font-color: white
+  style.bold: true
+}
+size_check -> einval: "true" {
+  style.stroke-dash: 4
+  style.stroke: "#c0392b"
+}
+kmalloc_step: {
+  label: "kmalloc(new_size, GFP_KERNEL)"
+  shape: rectangle
+  style.fill: "#2e7d32"
+  style.font-color: white
+}
+size_check -> kmalloc_step: "false — valid range"
+kmalloc_check: "kmalloc succeeded?" {
+  shape: diamond
+  style.fill: "#388e3c"
+  style.font-color: white
+}
+kmalloc_step -> kmalloc_check
+enomem: {
+  label: "Return -ENOMEM"
+  shape: rectangle
+  style.fill: "#c0392b"
+  style.font-color: white
+  style.bold: true
+}
+old_buf_intact: {
+  shape: sql_table
+  label: "Old Buffer Intact (kernel_buffer unchanged)"
+  k1: "kernel_buffer | char*  | UNCHANGED — still valid"
+  k2: "buffer_size   | size_t | UNCHANGED"
+  k3: "buffer_data_len | size_t | UNCHANGED"
+  k4: "new_buf       | char*  | kfree'd by kernel (NULL returned)"
+  style.fill: "#ffebee"
+}
+kmalloc_check -> enomem: "NULL returned" {
+  style.stroke-dash: 4
+  style.stroke: "#c0392b"
+}
+enomem -> old_buf_intact: "old buffer survives" {
+  style.stroke-dash: 4
+  style.stroke: "#c0392b"
+}
+data_compare: "new_size vs buffer_data_len?" {
+  shape: diamond
+  style.fill: "#e65100"
+  style.font-color: white
+}
+kmalloc_check -> data_compare: "non-NULL: new_buf ready"
+row_cases: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  case1: "Case 1: new_size >= buffer_data_len" {
+    direction: down
+    style.fill: "#e8f5e9"
+    style.stroke: "#2e7d32"
+    c1_label: {
+      shape: sql_table
+      label: "GROW or EXACT FIT (data_walk)"
+      s1: "new_size   | e.g. 8192 bytes"
+      s2: "data_len   | e.g. 512 bytes (fits)"
+      s3: "copy_len   | min(512, 8192) = 512"
+    }
+    c1_memcpy: {
+      label: "memcpy(new_buf, kernel_buffer, 512)"
+      shape: rectangle
+      style.fill: "#43a047"
+      style.font-color: white
+    }
+    c1_swap: {
+      shape: sql_table
+      label: "Atomic Swap"
+      sw1: "kfree(kernel_buffer)   | old freed"
+      sw2: "kernel_buffer = new_buf | pointer updated"
+      sw3: "buffer_size   = 8192   | capacity updated"
+      sw4: "buffer_data_len = 512  | data unchanged"
+      style.fill: "#c8e6c9"
+    }
+    c1_ok: "Return 0 — SUCCESS" {
+      shape: rectangle
+      style.fill: "#1b5e20"
+      style.font-color: white
+      style.bold: true
+    }
+    c1_label -> c1_memcpy
+    c1_memcpy -> c1_swap
+    c1_swap -> c1_ok
+  }
+  case2_trunc: "Case 2a: new_size < data_len — TRUNCATE" {
+    direction: down
+    style.fill: "#fff3e0"
+    style.stroke: "#e65100"
+    c2_label: {
+      shape: sql_table
+      label: "SHRINK + DATA LOSS PATH"
+      s1: "new_size   | e.g. 128 bytes"
+      s2: "data_len   | e.g. 512 bytes (overflow!)"
+      s3: "copy_len   | min(512, 128) = 128"
+      s4: "bytes lost | 512 - 128 = 384 bytes"
+    }
+    c2_warn: "DATA TRUNCATED (384 bytes lost)" {
+      shape: rectangle
+      style.fill: "#ff6f00"
+      style.font-color: white
+      style.bold: true
+    }
+    c2_memcpy: {
+      label: "memcpy(new_buf, kernel_buffer, 128)"
+      shape: rectangle
+      style.fill: "#fb8c00"
+      style.font-color: white
+    }
+    c2_swap: {
+      shape: sql_table
+      label: "Swap with truncation"
+      sw1: "kfree(kernel_buffer)     | old freed"
+      sw2: "kernel_buffer = new_buf  | 128-byte buffer"
+      sw3: "buffer_size   = 128      | shrunk"
+      sw4: "buffer_data_len = 128    | TRUNCATED from 512"
+      style.fill: "#ffe0b2"
+    }
+    c2_ok: "Return 0 (caller must handle data loss)" {
+      shape: rectangle
+      style.fill: "#bf360c"
+      style.font-color: white
+    }
+    c2_label -> c2_warn
+    c2_warn -> c2_memcpy
+    c2_memcpy -> c2_swap
+    c2_swap -> c2_ok
+  }
+  case2_busy: "Case 2b: new_size < data_len — EBUSY (safe alt)" {
+    direction: down
+    style.fill: "#fce4ec"
+    style.stroke: "#880e4f"
+    c3_label: {
+      shape: sql_table
+      label: "SHRINK REJECTED (protective)"
+      s1: "new_size   | 128 bytes"
+      s2: "data_len   | 512 bytes"
+      s3: "decision   | refuse: data would not fit"
+    }
+    c3_free: {
+      label: "kfree(new_buf) — discard unused allocation"
+      shape: rectangle
+      style.fill: "#ad1457"
+      style.font-color: white
+    }
+    c3_ebusy: "Return -EBUSY" {
+      shape: rectangle
+      style.fill: "#880e4f"
+      style.font-color: white
+      style.bold: true
+    }
+    c3_intact: {
+      shape: sql_table
+      label: "Buffer Unchanged"
+      i1: "kernel_buffer   | original pointer"
+      i2: "buffer_size     | original size"
+      i3: "buffer_data_len | original data intact"
+      style.fill: "#f8bbd0"
+    }
+    c3_label -> c3_free
+    c3_free -> c3_ebusy
+    c3_ebusy -> c3_intact
+  }
+}
+data_compare -> row_cases.case1: "new_size >= data_len"
+data_compare -> row_cases.case2_trunc: "new_size < data_len (truncate)"
+data_compare -> row_cases.case2_busy: "new_size < data_len (reject)"
+race_warn: "CONCURRENCY HAZARD (foreshadow M4)" {
+  direction: down
+  style.fill: "#311b92"
+  style.stroke: "#7c4dff"
+  style.stroke-width: 3
+  race_title: {
+    shape: sql_table
+    label: "Race Window WITHOUT mutex (M3 has no lock)"
+    r1: "Step A | CPU0 in resize: new_buf allocated, old not freed yet"
+    r2: "Step B | CPU1 in read:   reads kernel_buffer (old pointer, valid)"
+    r3: "Step C | CPU0 swaps:     kfree(old), kernel_buffer = new_buf"
+    r4: "Step D | CPU1 continues: kernel_buffer now freed — USE-AFTER-FREE"
+    style.fill: "#4527a0"
+    style.font-color: white
+  }
+  race_fix: {
+    shape: sql_table
+    label: "M4 Fix: mutex_lock before swap"
+    f1: "mutex_lock_interruptible(&mydevice_mutex)"
+    f2: "— all readers/writers blocked —"
+    f3: "kfree(old); kernel_buffer = new_buf; buffer_size = new_size"
+    f4: "mutex_unlock(&mydevice_mutex)"
+    f5: "wake_up_interruptible(&write_queue)"
+    style.fill: "#ede7f6"
+  }
+  race_title -> race_fix: "solution in M4"
+}
+row_cases -> race_warn: "swap is NOT atomic in M3" {
+  style.stroke-dash: 4
+  style.stroke: "#7c4dff"
+  style.stroke-width: 2
+}
+legend: {
+  near: bottom-right
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9e9e9e"
+  label: "Legend"
+  l1: "Red path   = error return, original buffer unchanged"
+  l2: "Green path = grow: all data preserved"
+  l3: "Orange path= shrink-truncate: data loss, returns 0"
+  l4: "Pink path  = shrink-reject: -EBUSY, data preserved"
+  l5: "Purple box = concurrency hazard fixed in M4"
+}

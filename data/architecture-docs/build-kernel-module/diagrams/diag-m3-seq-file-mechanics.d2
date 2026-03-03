@@ -1,0 +1,281 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## seq_file: Why Simple proc_read Is Broken vs. seq_file Iterator Pattern
+| {near: top-center}
+row_before_after: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  before: "BEFORE: Raw proc_read (broken for large output)" {
+    direction: down
+    style.fill: "#fff0f0"
+    style.stroke: "#cc0000"
+    style.border-radius: 8
+    row_b1: "" {
+      direction: right
+      style.stroke: transparent
+      style.fill: transparent
+      user_buf: "Userspace Buffer" {
+        shape: sql_table
+        label: "cat internal buffer (proc_read.c)"
+        f1: "size: 128 bytes (typical small read)"
+        f2: "offset: tracked manually by driver"
+        f3: "danger: buffer boundary can split a line"
+        f4: "Total: caller chooses any size"
+        style.fill: "#ffe0e0"
+      }
+      proc_read_fn: "proc_read callback" {
+        shape: class
+        label: "old_proc_read (fs/proc)"
+        -buf: "char* (4096 byte kernel page)"
+        -start: "char**"
+        -offset: "off_t"
+        -count: "int"
+        -eof: "int*"
+        +handler(buf, start, off, count, eof, data): "int"
+        style.fill: "#ffcccc"
+      }
+    }
+    broken_problems: "Manual Offset Hell" {
+      shape: sql_table
+      label: "Problems Every Driver Author Faces"
+      p1: "1  Must manually track how many bytes already sent"
+      p2: "2  Buffer size is ONE page (4096 bytes) — silent truncation beyond"
+      p3: "3  Partial read mid-line: 'bytes_used: 40' split as 'bytes_us' + 'ed: 40'"
+      p4: "4  offset arithmetic differs per kernel version"
+      p5: "5  Almost every driver in Linux 2.4 had bugs here"
+      style.fill: "#ffdddd"
+      style.stroke: "#cc0000"
+    }
+    code_before: "Broken Handler Code" {
+      width: 480
+      label: "proc_read: manual, fragile"
+      code: |'c
+        /* NAIVE — breaks for output > 4096 bytes */
+        static int old_read(char *buf, char **start,
+                            off_t off, int count,
+                            int *eof, void *data) {
+          int len = 0;
+          len += sprintf(buf+len,
+            "buffer_size: %zu\n", buffer_size);
+          len += sprintf(buf+len,
+            "bytes_used:  %zu\n", buffer_data_len);
+          /* BUG: if len > count, data is silently lost */
+          /* BUG: no offset handling for partial reads  */
+          *eof = 1;
+          return len;
+        }
+      '|
+      style.fill: "#ffeeee"
+      style.stroke: "#cc0000"
+    }
+  }
+  gap: "" {
+    width: 40
+    style.stroke: transparent
+    style.fill: transparent
+  }
+  after: "AFTER: seq_file Iterator Pattern (correct)" {
+    direction: down
+    style.fill: "#f0fff0"
+    style.stroke: "#007700"
+    style.border-radius: 8
+    row_a1: "" {
+      direction: right
+      style.stroke: transparent
+      style.fill: transparent
+      seq_engine: "seq_file Engine" {
+        shape: sql_table
+        label: "struct seq_file (include/linux/seq_file.h)"
+        f1: "0x00 | char*       | buf         // growing kernel buffer"
+        f2: "0x08 | size_t      | size        // current buffer capacity"
+        f3: "0x10 | size_t      | count       // bytes written so far"
+        f4: "0x18 | loff_t      | index       // iterator position"
+        f5: "0x20 | loff_t      | read_pos    // userspace read offset"
+        f6: "0x28 | void*       | private     // driver private data"
+        f7: "Total: ~64 bytes per open fd"
+        style.fill: "#ccffcc"
+      }
+      seq_ops: "seq_operations (your callbacks)" {
+        shape: class
+        label: "struct seq_operations (fs/seq_file.h)"
+        +start(m, pos): "void* iterator_token"
+        +next(m, v, pos): "void* next_token"
+        +stop(m, v): "void"
+        +show(m, v): "int (use seq_printf)"
+        style.fill: "#aaffaa"
+      }
+    }
+    code_after: "Correct seq_file Handler" {
+      width: 480
+      label: "seq_file: automatic buffering + offset"
+      code: |'c
+        /* CORRECT: seq_file handles ALL the complexity */
+        static int mydevice_proc_show(
+                struct seq_file *m, void *v) {
+          seq_printf(m, "buffer_size: %zu\n",
+                     buffer_size);
+          seq_printf(m, "bytes_used:  %zu\n",
+                     buffer_data_len);
+          seq_printf(m, "open_count:  %d\n",
+                     atomic_read(&open_count));
+          return 0; /* seq_file handles rest */
+        }
+        static int mydevice_proc_open(
+                struct inode *n, struct file *f) {
+          return single_open(f,
+                    mydevice_proc_show, NULL);
+        }
+      '|
+      style.fill: "#eeffee"
+      style.stroke: "#007700"
+    }
+  }
+}
+row_call_sequence: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  call_seq: "seq_file Call Sequence: cat /proc/mydevice" {
+    direction: down
+    style.fill: "#f0f4ff"
+    style.stroke: "#3333cc"
+    style.border-radius: 8
+    reg_step: "Registration (module_init)" {
+      shape: sql_table
+      label: "proc_create wires everything (fs/proc/generic.c)"
+      r1: "proc_create(name='mydevice', mode=0444, parent=NULL, proc_ops)"
+      r2: "struct proc_ops { .proc_open=mydevice_proc_open,"
+      r3: "                  .proc_read=seq_read,   <- kernel provided"
+      r4: "                  .proc_lseek=seq_lseek, <- kernel provided"
+      r5: "                  .proc_release=single_release } <- kernel provided"
+      style.fill: "#e0e8ff"
+    }
+    row_steps: "" {
+      direction: right
+      style.stroke: transparent
+      style.fill: transparent
+      step1: "Step 1: open()" {
+        shape: sql_table
+        label: "cat opens /proc/mydevice"
+        s1: "VFS calls mydevice_proc_open(inode, filp)"
+        s2: "single_open() allocates struct seq_file"
+        s3: "stores mydevice_proc_show as the show fn"
+        s4: "seq_file.index = 0, buf = NULL"
+        style.fill: "#d8e4ff"
+      }
+      step2: "Step 2: read() — first call" {
+        shape: sql_table
+        label: "seq_read() called (kernel fs/seq_file.c)"
+        s1: "v = start(m, pos=0) → returns SEQ_START_TOKEN"
+        s2: "show(m, SEQ_START_TOKEN) → calls your proc_show"
+        s3: "proc_show: seq_printf writes to m->buf"
+        s4: "next(m, v, pos) → returns NULL (no more items)"
+        s5: "stop(m, NULL) → cleanup (no-op for single_open)"
+        s6: "copy_to_user(ubuf, m->buf, min(m->count, len))"
+        style.fill: "#d0dcff"
+      }
+      step3: "Step 3: partial read support" {
+        shape: sql_table
+        label: "If cat reads 128 bytes at a time"
+        s1: "seq_file tracks read_pos across multiple read() calls"
+        s2: "kernel only re-invokes start/show if pos advanced past buffer"
+        s3: "No re-invocation of your show fn for same data"
+        s4: "Line boundaries preserved — never splits mid-word"
+        s5: "Buffer grows automatically via kvmalloc if needed"
+        style.fill: "#c8d4ff"
+      }
+    }
+    step4_eof: "Step 4: EOF and release()" {
+      shape: sql_table
+      label: "Termination sequence"
+      e1: "read() returns 0 → cat sees EOF → exits"
+      e2: "VFS calls single_release(inode, filp)"
+      e3: "single_release frees struct seq_file and its buf"
+      e4: "All memory returned: zero leak"
+      style.fill: "#c0ccff"
+    }
+  }
+  invariants: "seq_file Guarantees vs Raw proc_read" {
+    direction: down
+    style.fill: "#fffff0"
+    style.stroke: "#888800"
+    style.border-radius: 8
+    guarantee_table: "What seq_file Handles For You" {
+      shape: sql_table
+      label: "Automatic vs Manual"
+      g1: "Offset tracking     | AUTO  | Manual in old API"
+      g2: "Buffer size limit   | NONE  | 4096 byte page cap"
+      g3: "Partial read safety | AUTO  | Driver's problem"
+      g4: "Memory management   | AUTO  | Driver's problem"
+      g5: "seek (lseek) support| AUTO  | Broken in most drivers"
+      g6: "Thread safety       | AUTO  | No guarantees"
+      style.fill: "#ffffe8"
+    }
+    single_open_note: "single_open() Shortcut" {
+      shape: sql_table
+      label: "For single-block output (your driver)"
+      n1: "single_open() provides trivial start/next/stop"
+      n2: "start: returns SEQ_START_TOKEN once, then NULL"
+      n3: "next:  immediately returns NULL (one item only)"
+      n4: "stop:  no-op"
+      n5: "You only implement: show(seq_file*, void*)"
+      n6: "Result: zero boilerplate for statistics files"
+      style.fill: "#ffffe0"
+      style.stroke: "#aaa800"
+    }
+    when_full_iter: "When to Use Full Iterator (not single_open)" {
+      shape: sql_table
+      label: "Use start/next/stop when output is a list"
+      w1: "Example: /proc/net/dev — one row per interface"
+      w2: "start(pos): return net_device at index pos"
+      w3: "next(v, pos): return next net_device"
+      w4: "show(v): seq_printf one interface's stats"
+      w5: "Scales to thousands of items, zero copying"
+      style.fill: "#fffff0"
+    }
+  }
+}
+before_arrow: "raw proc_read" {
+  shape: sql_table
+  label: "Failure Mode (before)"
+  a1: "Output truncated at 4096 bytes — silent data loss"
+  a2: "Concurrent reads return inconsistent state"
+  a3: "Offset miscalculation: repeated or skipped lines"
+  style.fill: "#ffdddd"
+  style.stroke: "#cc0000"
+}
+after_arrow: "seq_file result" {
+  shape: sql_table
+  label: "Correct Behavior (after)"
+  a1: "Output of any size delivered correctly"
+  a2: "Concurrent readers each get complete snapshots"
+  a3: "lseek works; repeated reads idempotent"
+  style.fill: "#ddffdd"
+  style.stroke: "#007700"
+}
+row_before_after.before.row_b1.proc_read_fn -> row_before_after.before.broken_problems: "writes to fixed page"
+row_before_after.before.broken_problems -> row_before_after.before.code_before: "driver must fix manually"
+row_before_after.after.row_a1.seq_engine -> row_before_after.after.row_a1.seq_ops: "seq_file* m passed to all callbacks"
+row_before_after.after.row_a1.seq_ops -> row_before_after.after.code_after: "only show() needed (single_open)"
+row_before_after.before -> before_arrow: "fails silently" {
+  style.stroke: "#cc0000"
+  style.stroke-dash: 4
+}
+row_before_after.after -> after_arrow: "correct always" {
+  style.stroke: "#007700"
+}
+row_call_sequence.call_seq.reg_step -> row_call_sequence.call_seq.row_steps.step1: "cat runs"
+row_call_sequence.call_seq.row_steps.step1 -> row_call_sequence.call_seq.row_steps.step2: "open() → seq allocated"
+row_call_sequence.call_seq.row_steps.step2 -> row_call_sequence.call_seq.row_steps.step3: "read() → show() called"
+row_call_sequence.call_seq.row_steps.step3 -> row_call_sequence.call_seq.step4_eof: "last read() → 0 bytes"
+row_call_sequence.call_seq.row_steps.step2 -> row_call_sequence.invariants.guarantee_table: "seq_printf | write" {
+  style.stroke: "#3333cc"
+  style.stroke-dash: 3
+}

@@ -1,0 +1,378 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 104
+  }
+}
+title: "Full Connection Lifecycle with Timers (reactor.c)" {
+  shape: rectangle
+  style: {
+    fill: transparent
+    stroke: transparent
+    font-size: 20
+    bold: true
+  }
+}
+title.near: top-center
+phase_accept: "PHASE 1 — ACCEPT" {
+  direction: down
+  style: {
+    fill: "#e8f4e8"
+    stroke: "#4caf50"
+    stroke-width: 2
+    border-radius: 8
+  }
+  accept_row: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    accept_call: {
+      label: "accept4(listen_fd)"
+      shape: rectangle
+      style: {
+        fill: "#c8e6c9"
+        stroke: "#388e3c"
+        font: mono
+        bold: true
+      }
+    }
+    conn_struct: {
+      shape: sql_table
+      label: "conn_state_t (reactor.h)"
+      f0: "0x00 | int          | fd"
+      f1: "0x04 | uint32_t     | events"
+      f2: "0x08 | void*        | user_data"
+      f3: "0x10 | Callback*    | on_event"
+      f4: "0x18 | char*        | read_buf  // 4096B heap"
+      f5: "0x20 | write_buf_t* | write_buf // 64KB heap"
+      f6: "0x28 | int          | timer_id  // heap index"
+      f7: "0x2C | bool         | zombie    // close guard"
+      sz: "Total: 48 bytes (3 cache lines)"
+    }
+  }
+  flags_note: {
+    label: "SOCK_NONBLOCK | SOCK_CLOEXEC | SOCK_STREAM"
+    shape: rectangle
+    style: {
+      fill: "#f1f8e9"
+      stroke: "#8bc34a"
+      font: mono
+      font-size: 12
+    }
+  }
+  accept_row.accept_call -> accept_row.conn_struct: "alloc + init"
+}
+phase_register: "PHASE 2 — REGISTER WITH EPOLL + TIMER" {
+  direction: down
+  style: {
+    fill: "#e3f2fd"
+    stroke: "#1976d2"
+    stroke-width: 2
+    border-radius: 8
+  }
+  reg_row: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    epoll_add: {
+      label: "epoll_ctl(EPOLL_CTL_ADD)"
+      shape: rectangle
+      style: {
+        fill: "#bbdefb"
+        stroke: "#1565c0"
+        font: mono
+        bold: true
+      }
+    }
+    epoll_ev: {
+      shape: sql_table
+      label: "struct epoll_event (epoll.h)"
+      f0: "0x00 | uint32_t    | events = EPOLLIN | EPOLLET"
+      f1: "0x04 | epoll_data  | data.ptr = conn_state_t*"
+      sz: "Total: 12 bytes | data.ptr avoids fd array lookup"
+    }
+  }
+  timer_row: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    timer_insert: {
+      label: "timer_insert(heap, fd, now_ms()+30000)"
+      shape: rectangle
+      style: {
+        fill: "#fff9c4"
+        stroke: "#f9a825"
+        font: mono
+        bold: true
+      }
+    }
+    heap_entry: {
+      shape: sql_table
+      label: "timer_entry_t (reactor.h)"
+      f0: "0x00 | uint64_t        | expiry_ms  // abs MONOTONIC"
+      f1: "0x08 | int             | fd"
+      f2: "0x0C | int             | heap_idx   // for O(log n) cancel"
+      sz: "Total: 16 bytes | heap root = nearest expiry"
+    }
+    timer_insert -> heap_entry: "sift_up O(log n)"
+  }
+  reg_row.epoll_add -> reg_row.epoll_ev: "struct"
+  reg_row -> timer_row: "then"
+}
+phase_active: "PHASE 3 — ACTIVE: DATA ARRIVES" {
+  direction: down
+  style: {
+    fill: "#f3e5f5"
+    stroke: "#7b1fa2"
+    stroke-width: 2
+    border-radius: 8
+  }
+  data_row: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    epoll_wait_ev: {
+      label: "epoll_wait() returns EPOLLIN"
+      shape: rectangle
+      style: {
+        fill: "#e1bee7"
+        stroke: "#6a1b9a"
+        font: mono
+        bold: true
+      }
+    }
+    read_call: {
+      label: "read() — drain to EAGAIN"
+      shape: rectangle
+      style: {
+        fill: "#ce93d8"
+        stroke: "#4a148c"
+        font: mono
+        bold: true
+      }
+    }
+  }
+  timer_reset_row: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    cancel_old: {
+      label: "timer_cancel(heap, conn.timer_id)"
+      shape: rectangle
+      style: {
+        fill: "#ffccbc"
+        stroke: "#e64a19"
+        font: mono
+      }
+    }
+    insert_new: {
+      label: "timer_insert(heap, fd, now_ms()+30000)"
+      shape: rectangle
+      style: {
+        fill: "#fff9c4"
+        stroke: "#f9a825"
+        font: mono
+      }
+    }
+    cancel_old -> insert_new: "reset deadline"
+  }
+  et_note: {
+    label: "ET MODE: read() loop until EAGAIN — missing drain = silent data loss"
+    shape: rectangle
+    style: {
+      fill: "#ffebee"
+      stroke: "#c62828"
+      font-size: 12
+      bold: true
+    }
+  }
+  data_row.epoll_wait_ev -> data_row.read_call: "EPOLLIN"
+  data_row -> timer_reset_row: "on each EPOLLIN"
+}
+phase_timeout: "PHASE 4 — TIMEOUT: 30s NO DATA" {
+  direction: down
+  style: {
+    fill: "#fff3e0"
+    stroke: "#e65100"
+    stroke-width: 2
+    border-radius: 8
+  }
+  timeout_row: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    epoll_timeout: {
+      label: "epoll_wait(timeout=next_expiry-now)"
+      shape: rectangle
+      style: {
+        fill: "#ffe0b2"
+        stroke: "#bf360c"
+        font: mono
+        bold: true
+      }
+    }
+    timer_fire: {
+      label: "timer_expire_all(): heap[0].expiry <= now"
+      shape: rectangle
+      style: {
+        fill: "#ffcc80"
+        stroke: "#e65100"
+        font: mono
+        bold: true
+      }
+    }
+  }
+  timeout_formula: {
+    label: "timeout_ms = max(0, heap[0].expiry_ms - now_ms())"
+    shape: rectangle
+    style: {
+      fill: "#fff8e1"
+      stroke: "#f9a825"
+      font: mono
+      font-size: 12
+    }
+  }
+  timeout_row.epoll_timeout -> timeout_row.timer_fire: "time elapsed"
+}
+phase_close: "PHASE 5 — MANDATORY CLOSE SEQUENCE (ORDER IS CRITICAL)" {
+  direction: down
+  style: {
+    fill: "#ffebee"
+    stroke: "#b71c1c"
+    stroke-width: 3
+    border-radius: 8
+  }
+  close_seq: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    step1: {
+      label: "① conn.zombie = true"
+      shape: rectangle
+      style: {
+        fill: "#ffcdd2"
+        stroke: "#c62828"
+        bold: true
+      }
+    }
+    step2: {
+      label: "② epoll_ctl(EPOLL_CTL_DEL, fd, NULL)"
+      shape: rectangle
+      style: {
+        fill: "#ef9a9a"
+        stroke: "#b71c1c"
+        font: mono
+        bold: true
+      }
+    }
+    step3a: {
+      label: "③a free(conn.read_buf)"
+      shape: rectangle
+      style: {
+        fill: "#ffccbc"
+        stroke: "#bf360c"
+        font: mono
+      }
+    }
+    step3b: {
+      label: "③b free(conn.write_buf)"
+      shape: rectangle
+      style: {
+        fill: "#ffccbc"
+        stroke: "#bf360c"
+        font: mono
+      }
+    }
+    step4: {
+      label: "④ close(fd)"
+      shape: rectangle
+      style: {
+        fill: "#d32f2f"
+        stroke: "#b71c1c"
+        font: mono
+        bold: true
+        font-color: white
+      }
+    }
+    step1 -> step2: "mark first"
+    step2 -> step3a: "DEL before close"
+    step2 -> step3b: "DEL before close"
+    step3a -> step4: "then close"
+    step3b -> step4: "then close"
+  }
+  order_warning: {
+    label: "WARNING: epoll DEL MUST precede close(fd) — fd reuse race if reversed"
+    shape: rectangle
+    style: {
+      fill: "#b71c1c"
+      stroke: "#7f0000"
+      font-color: white
+      bold: true
+      font-size: 13
+    }
+  }
+  fd_reuse_note: {
+    label: "fd_reuse race: close(fd) → OS recycles fd → new accept() reuses same fd number → stale epoll entry watches wrong conn"
+    shape: rectangle
+    style: {
+      fill: "#ffebee"
+      stroke: "#e53935"
+      font-size: 11
+    }
+  }
+}
+legend: "" {
+  direction: right
+  style: {
+    fill: "#fafafa"
+    stroke: "#bdbdbd"
+    border-radius: 6
+  }
+  l_green: "GREEN = alloc / register" {
+    shape: rectangle
+    style.fill: "#c8e6c9"
+    style.stroke: "#388e3c"
+  }
+  l_blue: "BLUE = epoll ops" {
+    shape: rectangle
+    style.fill: "#bbdefb"
+    style.stroke: "#1565c0"
+  }
+  l_yellow: "YELLOW = timer heap" {
+    shape: rectangle
+    style.fill: "#fff9c4"
+    style.stroke: "#f9a825"
+  }
+  l_purple: "PURPLE = active I/O" {
+    shape: rectangle
+    style.fill: "#e1bee7"
+    style.stroke: "#6a1b9a"
+  }
+  l_red: "RED = close / free (ordered)" {
+    shape: rectangle
+    style.fill: "#ffcdd2"
+    style.stroke: "#c62828"
+  }
+}
+legend.near: bottom-right
+title -> phase_accept: ""
+phase_accept -> phase_register: "conn_state_t* ready"
+phase_register -> phase_active: "watching EPOLLIN | EPOLLET"
+phase_active -> phase_active: "repeat on each packet" {
+  style.stroke-dash: 4
+  style.stroke: "#7b1fa2"
+}
+phase_active -> phase_timeout: "30s silence" {
+  style.stroke: "#e65100"
+  style.stroke-width: 2
+}
+phase_timeout -> phase_close: "timer fires → close_conn()" {
+  style.stroke: "#b71c1c"
+  style.stroke-width: 3
+  style.animated: true
+}
+phase_active -> phase_close: "EOF or error → close_conn()" {
+  style.stroke-dash: 4
+  style.stroke: "#c62828"
+}

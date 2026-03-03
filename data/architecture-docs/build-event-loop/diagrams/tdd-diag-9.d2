@@ -1,0 +1,224 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+title: |md
+  # Hardware Soul: Cache & Syscall Cost — One epoll_wait Cycle
+| {near: top-center}
+classes: {
+  hot: {
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2980B9"
+      stroke-width: 2
+      font-size: 13
+      bold: true
+    }
+  }
+  cost_warm: {
+    style: {
+      fill: "#EAF7EA"
+      stroke: "#27AE60"
+      stroke-width: 2
+      font-size: 12
+    }
+  }
+  cost_cold: {
+    style: {
+      fill: "#FEF9E7"
+      stroke: "#F39C12"
+      stroke-width: 2
+      font-size: 12
+    }
+  }
+  cost_syscall: {
+    style: {
+      fill: "#F5EEF8"
+      stroke: "#8E44AD"
+      stroke-width: 2
+      font-size: 12
+    }
+  }
+  cost_free: {
+    style: {
+      fill: "#EAFAF1"
+      stroke: "#1ABC9C"
+      stroke-width: 2
+      font-size: 12
+    }
+  }
+  branch: {
+    style: {
+      fill: "#FDFEFE"
+      stroke: "#566573"
+      stroke-width: 1
+      stroke-dash: 4
+      font-size: 12
+    }
+  }
+  summary: {
+    style: {
+      fill: "#EBF5FB"
+      stroke: "#1A5276"
+      stroke-width: 3
+      font-size: 13
+      bold: true
+    }
+  }
+  legend_item: {
+    style: {
+      fill: "#FAFAFA"
+      stroke: "#BDC3C7"
+      stroke-width: 1
+      font-size: 11
+    }
+  }
+}
+# ── PHASE 0: epoll_wait ──────────────────────────────────────────────
+phase0: "PHASE 0 — epoll_wait(epfd, events, 1024, timeout_ms)" {
+  class: hot
+  sleep: "Thread sleep\n[scheduler descheduled]" {
+    class: cost_free
+  }
+  nic_irq: "NIC raises hardware interrupt\n[packet DMA into kernel socket recv_buf]" {
+    class: cost_free
+  }
+  kernel_wake: "Kernel: readiness queue → wake thread" {
+    class: cost_free
+  }
+  copy: "copy_to_user: events[0..nready-1]\n12 bytes × nready events\n→ sequential write, prefetch-friendly\n~1024 events = 12 KB = 192 cache lines\nL2 fill: ~12,000 cycles (bulk)" {
+    class: cost_warm
+  }
+  sleep -> nic_irq: "0 CPU cycles while asleep"
+  nic_irq -> kernel_wake: "interrupt handler"
+  kernel_wake -> copy: "nready returned"
+}
+# ── PHASE 1: Dispatch loop ───────────────────────────────────────────
+phase1: "PHASE 1 — Dispatch Loop  for i = 0 .. nready-1" {
+  class: hot
+  read_fd: "events[i].data.fd\n[stack array access]\nAlways L1 hit: ~4 cycles" {
+    class: cost_warm
+  }
+  conn_get: "conn_get(fd)\n= &conn_table[fd]\n[array index, no pointer chase]" {
+    class: hot
+    l1: "L1 hit (active conn, recent)\n~4 cycles" { class: cost_warm }
+    l3: "L3 miss (cold conn, idle)\n~200 cycles" { class: cost_cold }
+    dram: "DRAM miss (10K conn, working set > L3)\n~200 cycles + TLB miss ~50 cycles" { class: cost_cold }
+    l1 -> l3: "if evicted from cache"
+    l3 -> dram: "if evicted from L3"
+  }
+  branch_listen: "Branch: fd == listen_fd ?" {
+    class: branch
+    b_yes: "YES → accept_connections()\n[rare: ~1 in 10K events]\nPredictor accuracy: >99%" { class: cost_warm }
+    b_no: "NO → client handler\n[almost always taken]\nPredictor accuracy: >99%" { class: cost_warm }
+    b_yes -> b_no: "branch resolves"
+  }
+  branch_err: "Branch: ev & (EPOLLERR | EPOLLHUP) ?" {
+    class: branch
+    e_yes: "YES → conn_close()\n[rare: error path]" { class: cost_cold }
+    e_no: "NO → continue\n[almost always]\nPredictor accuracy: >99%" { class: cost_warm }
+  }
+  branch_in: "Branch: ev & EPOLLIN ?" {
+    class: branch
+    in_yes: "YES → handle_read(epfd, fd)\n[common path]" { class: cost_warm }
+    in_no: "NO (no data, only EPOLLOUT)\n[rare without write buffer]" { class: cost_warm }
+  }
+  read_fd -> conn_get
+  conn_get -> branch_listen
+  branch_listen -> branch_err
+  branch_err -> branch_in
+}
+# ── PHASE 2: read() syscall ──────────────────────────────────────────
+phase2: "PHASE 2 — read(fd, buf, BUF_SIZE)" {
+  class: hot
+  ring_entry: "User → Kernel ring transition\n[SYSCALL instruction]\n~150 cycles overhead" {
+    class: cost_syscall
+  }
+  kern_copy: "kernel memcpy: recv_buf → userspace buf\n~1 cycle/byte at L1 speed\n4096 bytes = ~4,096 cycles\n512 bytes  = ~512 cycles" {
+    class: cost_warm
+  }
+  ring_exit: "Kernel → User ring exit\n[SYSRET instruction]\n~50 cycles overhead" {
+    class: cost_syscall
+  }
+  branch_eagain: "Branch: errno == EAGAIN ?" {
+    class: branch
+    ea_yes: "YES → buffer drained, break\n[true once per drain loop]\nPredictable after iteration 1" { class: cost_warm }
+    ea_no: "NO → process bytes\n[true every iteration except last]\nPredictor accuracy: ~90% warm" { class: cost_warm }
+  }
+  ring_entry -> kern_copy: "kernel executes"
+  kern_copy -> ring_exit: "data in userspace"
+  ring_exit -> branch_eagain
+}
+# ── PHASE 3: write() (echo path) ────────────────────────────────────
+phase3: "PHASE 3 — write(fd, buf, n)  [echo path]" {
+  class: hot
+  w_ring: "User → Kernel ring transition\n~150 cycles" {
+    class: cost_syscall
+  }
+  w_copy: "kernel memcpy: userspace buf → send_buf\n~1 cycle/byte\n[identical to read path]" {
+    class: cost_warm
+  }
+  w_exit: "Kernel → User ring exit\n~50 cycles" {
+    class: cost_syscall
+  }
+  w_sched: "Kernel TCP stack schedules transmit\nNIC DMA: async, 0 CPU cycles" {
+    class: cost_free
+  }
+  w_ring -> w_copy -> w_exit -> w_sched
+}
+# ── BRANCH PREDICTION TABLE ──────────────────────────────────────────
+bp_table: "Branch Prediction Summary" {
+  class: branch
+  bp1: "fd == listen_fd\nExpected: FALSE (~1 in 10K)\nAccuracy: >99%\nMisprediction cost: ~15 cycles × <0.01 = negligible" {
+    class: cost_warm
+  }
+  bp2: "ev & (EPOLLERR | EPOLLHUP)\nExpected: FALSE (errors rare)\nAccuracy: >99%\nMisprediction cost: negligible" {
+    class: cost_warm
+  }
+  bp3: "errno == EAGAIN in read loop\nExpected: FALSE until last iteration\nAccuracy: ~90% (loop depth varies)\nMisprediction cost: ~15 cycles × 0.1 = 1.5 cycles/iter" {
+    class: cost_warm
+  }
+  bp4: "conn->state == CONN_STATE_FREE\nExpected: FALSE (almost always active)\nAccuracy: >99%\nMisprediction cost: negligible" {
+    class: cost_warm
+  }
+  bp1 -> bp2 -> bp3 -> bp4: ""
+}
+# ── HOT PATH COST SUMMARY ────────────────────────────────────────────
+summary: "Hot-Path Cost Estimate per Event" {
+  class: summary
+  warm: "WARM PATH (L1/L2 hit, small msg)\nconn_get:      ~4 cycles   [L1 hit]\nread() syscall: ~350 cycles [150+~50+150]\ndata copy 512B: ~512 cycles [L1 memcpy]\nwrite() syscall:~350 cycles\nbranch overhead: ~10 cycles\n─────────────────────────────\nTOTAL: ~1,226 cycles ≈ 400–600 ns @ 3 GHz" {
+    class: cost_warm
+  }
+  cold: "COLD PATH (L3/DRAM miss, large msg)\nconn_get:        ~250 cycles  [DRAM+TLB miss]\nread() syscall:  ~350 cycles\ndata copy 4096B: ~4,096 cycles [L1 memcpy]\nwrite() syscall: ~350 cycles\nbranch overhead: ~10 cycles\n─────────────────────────────\nTOTAL: ~5,056 cycles ≈ 1,500–2,000 ns @ 3 GHz" {
+    class: cost_cold
+  }
+  tlb: "TLB PRESSURE NOTE\n10K conn_t × 26KB = 260MB working set\n> L3 (typical 8–32MB)\nTLB entries needed: 260MB/4KB = 65K pages\nL1 TLB: 64 entries → frequent misses\nMitigation: huge pages (2MB) → 130 entries" {
+    class: cost_cold
+  }
+  warm -> cold: "connection cold → warm after 2nd access"
+  cold -> tlb: "scales with connection count"
+}
+# ── LEGEND ───────────────────────────────────────────────────────────
+legend: "Cost Legend" {
+  near: bottom-right
+  l_free: "0 cycles (async / sleeping)" {
+    class: cost_free
+  }
+  l_warm: "< 600 cycles (L1/L2 warm)" {
+    class: cost_warm
+  }
+  l_cold: "> 600 cycles (L3/DRAM miss)" {
+    class: cost_cold
+  }
+  l_sys: "~150–200 cycles (syscall ring transition)" {
+    class: cost_syscall
+  }
+}
+# ── CONNECTIONS ──────────────────────────────────────────────────────
+phase0 -> phase1: "epoll_wait returns nready"
+phase1 -> phase2: "EPOLLIN fires → handle_read"
+phase2 -> phase3: "n > 0: echo data"
+phase1 -> summary: "per-event accounting"
+bp_table -> summary: "branch overhead input"

@@ -1,0 +1,302 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## Static File Serving Path with MIME Types (data_walk)
+  HTTP GET → parse → sanitize → stat → read → headers → write buffer
+| {near: top-center}
+row0: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  incoming: "Incoming HTTP GET (http_conn.c)" {
+    shape: sql_table
+    label: "http_request_t (http_conn.h)"
+    r0: "method  | char[16]            | GET"
+    r1: "path    | char[1024]          | /assets/style.css"
+    r2: "http_minor | int             | 1"
+    r3: "keep_alive | int             | 1"
+    r4: "content_length | ssize_t     | -1 (no body)"
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  parse_path: "Step 1: Parse & Validate Path (http_server.c)" {
+    label: "parse path"
+    width: 320
+    code: |'c
+      if (strcmp(req->method, "GET") != 0
+          && !is_head) {
+        http_send_error(conn, 405,
+          "Method Not Allowed");
+        return;
+      }
+    '|
+  }
+  mime_table: "MIME Type Lookup Table (http_server.c)" {
+    shape: sql_table
+    label: "MIME_TABLE[] (static)"
+    e0: ".html  | text/html; charset=utf-8"
+    e1: ".htm   | text/html; charset=utf-8"
+    e2: ".css   | text/css"
+    e3: ".js    | application/javascript"
+    e4: ".json  | application/json"
+    e5: ".png   | image/png"
+    e6: ".jpg   | image/jpeg"
+    e7: ".svg   | image/svg+xml"
+    e8: ".ico   | image/x-icon"
+    e9: ".wasm  | application/wasm"
+    e10: "*     | application/octet-stream"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  sanitize: "Step 2: Path Sanitization — reject traversal (http_server.c)" {
+    label: "sanitize path"
+    width: 420
+    code: |'c
+      char candidate[4096];
+      snprintf(candidate, sizeof(candidate),
+               "%s%s", serve_root, req_path);
+      char *real = realpath(candidate, NULL);
+      if (!real) return -1;
+      if (strncmp(real, serve_root,
+                  strlen(serve_root)) != 0) {
+        free(real);
+        return -1; /* path escaped root → 404 */
+      }
+    '|
+    style.stroke: "#cc0000"
+    style.stroke-width: 2
+  }
+  reject_box: "REJECTED: path traversal (http_server.c)" {
+    shape: diamond
+    label: "strncmp fails?"
+    style.fill: "#ffe0e0"
+    style.stroke: "#cc0000"
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  build_path: "Step 3: Build Absolute Path (http_server.c)" {
+    label: "absolute path"
+    width: 380
+    code: |'c
+      /* candidate = serve_root + req_path  */
+      /* realpath() resolves symlinks + ..  */
+      /* e.g. /var/www/html/assets/style.css */
+      if (S_ISDIR(st.st_mode)) {
+        snprintf(index_path, sizeof(index_path),
+                 "%s/index.html", real);
+        real = realpath(index_path, NULL);
+      }
+    '|
+  }
+  stat_box: "Step 4: stat() — existence + size (syscall)" {
+    shape: sql_table
+    label: "struct stat st"
+    s0: "st.st_size  | off_t  | 2847 (bytes)"
+    s1: "st.st_mode  | mode_t | S_ISREG = true"
+    s2: "st.st_mtime | time_t | last modified"
+    s3: "return      | int    | 0 = success"
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  open_read: "Step 5: open() + read() file into buffer (http_server.c)" {
+    label: "file I/O"
+    width: 400
+    code: |'c
+      int file_fd = open(real_path,
+                         O_RDONLY | O_CLOEXEC);
+      /* fstat to confirm regular file */
+      fstat(file_fd, &st);
+      const char *mime = get_mime_type(real_path);
+      /* read file into fbuf (userspace) */
+      ssize_t total = 0;
+      while (total < file_size) {
+        ssize_t rd = read(file_fd,
+          fbuf + total, file_size - total);
+        if (rd <= 0) break;
+        total += rd;
+      }
+      close(file_fd);
+    '|
+  }
+  sendfile_note: "Production Opt: sendfile() (kernel path)" {
+    shape: sql_table
+    label: "sendfile() — skipped here"
+    n0: "sendfile(conn_fd, file_fd, offset, size)"
+    n1: "path: page_cache → socket_buf (no userspace)"
+    n2: "avoids: read() syscall + userspace memcpy"
+    n3: "TCP_CORK: batch headers + body → 1 segment"
+    n4: "status: NOT implemented in M4 (clarity)"
+    style.stroke: "#888888"
+    style.fill: "#f5f5f5"
+    style.font-color: "#666666"
+  }
+}
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  build_headers: "Step 6: Build HTTP Response Headers (http_server.c)" {
+    label: "build headers"
+    width: 440
+    code: |'c
+      int header_len = snprintf(header_buf,
+        sizeof(header_buf),
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: %s\r\n"
+        "Content-Length: %lld\r\n"
+        "Connection: %s\r\n"
+        "\r\n",
+        mime,          /* text/css           */
+        (long long)file_size, /* 2847         */
+        req->keep_alive ? "keep-alive":"close");
+    '|
+    style.stroke: "#006600"
+    style.stroke-width: 2
+  }
+  header_example: "Example: .css Response Headers" {
+    shape: sql_table
+    label: "wire bytes (header_buf)"
+    h0: "HTTP/1.1 200 OK\\r\\n"
+    h1: "Content-Type: text/css\\r\\n"
+    h2: "Content-Length: 2847\\r\\n"
+    h3: "Connection: keep-alive\\r\\n"
+    h4: "\\r\\n"
+    h5: "... 2847 bytes of CSS body ..."
+    style.stroke: "#006600"
+    style.fill: "#e8f5e9"
+  }
+}
+row6: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  write_buf: "Step 7: Enqueue to Write Buffer (M2: write_buf.c)" {
+    shape: sql_table
+    label: "write_buf_t (conn->write_buf)"
+    w0: "0x00 | uint8_t* | data          → [headers][body]"
+    w1: "0x08 | size_t   | capacity      → 65536 (64KB)"
+    w2: "0x10 | size_t   | write_offset  → 0 (start)"
+    w3: "0x18 | size_t   | write_len     → header_len + 2847"
+    w4: "Total: 32 bytes struct + heap data"
+  }
+  append_ops: "http_write_append() calls (http_server.c)" {
+    label: "append calls"
+    width: 360
+    code: |'c
+      /* 1. Append response headers */
+      http_write_append(conn,
+        (uint8_t*)header_buf, header_len);
+      /* 2. Append file body */
+      http_write_append(conn,
+        (uint8_t*)fbuf, total);
+      /* 3. Attempt immediate flush */
+      http_handle_write(conn);
+    '|
+  }
+}
+row7: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  write_path: "Step 8: M2 Write Path — flush to kernel (write_buf.c)" {
+    label: "write path"
+    width: 440
+    code: |'c
+      while (write_offset < write_len) {
+        ssize_t w = write(conn->fd,
+          data + write_offset,
+          write_len - write_offset);
+        if (w < 0 && errno == EAGAIN) {
+          /* send buffer full: arm EPOLLOUT */
+          reactor_register(r, conn->fd,
+            REACTOR_READ | REACTOR_WRITE,
+            http_io_callback, conn);
+          conn->epollout_armed = 1;
+          return; /* retry on EPOLLOUT */
+        }
+        write_offset += w;
+      }
+      /* buffer drained: disarm EPOLLOUT */
+      conn_disarm_epollout(conn);
+    '|
+    style.stroke: "#0000cc"
+    style.stroke-width: 2
+  }
+  kernel_buf: "Kernel: Socket Send Buffer" {
+    shape: cylinder
+    label: "SO_SNDBUF (~87KB default)"
+    style.fill: "#e3f2fd"
+    style.stroke: "#0000cc"
+  }
+}
+row8: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  nic: "NIC → Client: TCP Segments" {
+    shape: queue
+    label: "wire: headers + CSS body | keep-alive"
+    style.fill: "#e8f5e9"
+    style.stroke: "#006600"
+  }
+  state_after: "Connection State After Write (http_conn.h)" {
+    shape: sql_table
+    label: "http_conn_t state after flush"
+    a0: "state       | KEEP_ALIVE (waiting next req)"
+    a1: "write_offset| 0 (buffer reset)"
+    a2: "write_len   | 0"
+    a3: "read_len    | 0"
+    a4: "idle_timer  | reset → 30,000ms"
+    style.fill: "#e8f5e9"
+  }
+}
+row0 -> row1: "http_process_request() | dispatch"
+row1.parse_path -> row2.sanitize: "req->path | forward"
+row1.parse_path -> row1.mime_table: "get_mime_type(path) | lookup"
+row1.mime_table -> row5.build_headers: "const char* mime | result"
+row2.sanitize -> row2.reject_box: "realpath() | check"
+row2.reject_box -> row3.build_path: "safe | pass" {
+  style.stroke: "#006600"
+}
+row2.reject_box -> row2.sanitize: "404 | reject" {
+  style.stroke: "#cc0000"
+  style.stroke-dash: 4
+  style.font-color: "#cc0000"
+}
+row3.build_path -> row3.stat_box: "candidate path | stat()"
+row3.stat_box -> row4.open_read: "st.st_size + S_ISREG | ok"
+row3.stat_box -> row2.reject_box: "ENOENT | 404" {
+  style.stroke: "#cc0000"
+  style.stroke-dash: 4
+  style.font-color: "#cc0000"
+}
+row4.open_read -> row4.sendfile_note: "production path | skipped" {
+  style.stroke: "#888888"
+  style.stroke-dash: 5
+}
+row4.open_read -> row5.build_headers: "fbuf[] + file_size | body ready"
+row5.build_headers -> row5.header_example: "snprintf() | bytes"
+row5.build_headers -> row6.append_ops: "header_buf | enqueue"
+row4.open_read -> row6.append_ops: "fbuf[] | enqueue"
+row6.append_ops -> row6.write_buf: "http_write_append() | memcpy"
+row6.write_buf -> row7.write_path: "write_len = hdr+body | flush"
+row7.write_path -> row7.kernel_buf: "write(fd) | copy"
+row7.kernel_buf -> row8.nic: "TCP stack | transmit"
+row7.write_path -> row8.state_after: "drained | KEEP_ALIVE"

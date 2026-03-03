@@ -1,0 +1,246 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: "Kernel FD and Socket Buffer Model — Wire to Application" {
+  near: top-center
+  style: {
+    font-size: 20
+    bold: true
+  }
+}
+# ─── ROW 1: Hardware Layer ───────────────────────────────────────────
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  hw: "Hardware Layer (NIC + DMA)" {
+    direction: right
+    style.fill: "#f5f0ff"
+    style.stroke: "#8b5cf6"
+    style.border-radius: 8
+    wire: "Network Wire" {
+      shape: oval
+      style.fill: "#ddd6fe"
+      style.stroke: "#7c3aed"
+    }
+    nic: "NIC (eth0)" {
+      shape: rectangle
+      style.fill: "#ede9fe"
+      style.stroke: "#7c3aed"
+      style.3d: true
+      label: "NIC (eth0)\nRx Ring Buffer\n[desc0][desc1]...[descN]"
+    }
+    napi_note: "NAPI soft-IRQ path" {
+      shape: rectangle
+      style.fill: "#f3e8ff"
+      style.stroke: "#a855f7"
+      style.stroke-dash: 4
+      label: "NAPI soft-IRQ path\nnet_rx_action()\nnetif_receive_skb()\nTCP stack reassembly"
+    }
+    wire -> nic: "Ethernet frame\n64B–1518B" {
+      style.stroke: "#7c3aed"
+      style.bold: true
+    }
+    nic -> napi_note: "DMA → sk_buff\nhardware IRQ\nclears NAPI poll" {
+      style.stroke: "#a855f7"
+      style.animated: true
+    }
+  }
+}
+# ─── ROW 2: Kernel Socket Structures ────────────────────────────────
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  sk_layer: "Kernel Socket Structures" {
+    direction: right
+    style.fill: "#eff6ff"
+    style.stroke: "#2563eb"
+    style.border-radius: 8
+    sk_rcvbuf: "struct sock — Receive Buffer" {
+      shape: sql_table
+      label: "struct sock — Receive Buffer (net/sock.h)"
+      sk_rcvbuf_row: "sk_rcvbuf   | int        | max bytes (default ~87KB)"
+      sk_rmem_alloc: "sk_rmem_alloc | atomic_t  | bytes currently used"
+      sk_receive_queue: "sk_receive_queue | sk_buff_head | head of skb chain"
+      sk_data_ready: "sk_data_ready | func*     | wakeup callback → epoll"
+      sk_state: "sk_state    | int        | TCP_ESTABLISHED etc."
+      total: "Kernel object — NOT in user address space"
+    }
+    sk_sndbuf: "struct sock — Send Buffer" {
+      shape: sql_table
+      label: "struct sock — Send Buffer (net/sock.h)"
+      sk_sndbuf_row: "sk_sndbuf   | int        | max bytes (default ~16KB)"
+      sk_wmem_alloc: "sk_wmem_alloc | atomic_t  | bytes in-flight"
+      sk_write_queue: "sk_write_queue | sk_buff_head | unsent/unacked data"
+      sk_write_space: "sk_write_space | func*    | wakeup callback → EPOLLOUT"
+      tcp_window: "snd_wnd     | u32        | peer's TCP receive window"
+      total2: "Filled by TCP stack — drained by NIC Tx DMA"
+    }
+    sk_rcvbuf -> sk_sndbuf: "same sock\nfull-duplex" {
+      style.stroke-dash: 4
+      style.stroke: "#93c5fd"
+    }
+  }
+}
+# ─── ROW 3: Process FD Table ─────────────────────────────────────────
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  fd_layer: "Per-Process FD Table + File Descriptions" {
+    direction: right
+    style.fill: "#f0fdf4"
+    style.stroke: "#16a34a"
+    style.border-radius: 8
+    fd_table: "Process FD Table (task_struct)" {
+      shape: sql_table
+      label: "Process FD Table (fs/file.c)"
+      fd0: "fd=0  | file* | → stdin"
+      fd1: "fd=1  | file* | → stdout"
+      fd2: "fd=2  | file* | → stderr"
+      fd3: "fd=3  | file* | → epoll instance"
+      fd4: "fd=4  | file* | → listen socket"
+      fd5: "fd=5  | file* | → client socket ← your conn_t"
+      fdN: "fd=N  | file* | → ... (up to ulimit -n)"
+      total: "Index = small int returned by socket()/accept4()"
+    }
+    file_desc: "struct file (kernel file description)" {
+      shape: sql_table
+      label: "struct file — shared on dup/fork (fs.h)"
+      f_op: "f_op        | file_ops*  | .read=sock_read, .write=sock_write"
+      f_flags: "f_flags     | int        | O_NONBLOCK set by SOCK_NONBLOCK"
+      private_data: "private_data | void*     | → struct socket"
+      f_count: "f_count     | atomic_t   | refcount (dup/fork share this)"
+      total2: "FD table entry points here — close() decrements f_count"
+    }
+    socket_struct: "struct socket → struct sock" {
+      shape: sql_table
+      label: "struct socket (include/linux/net.h)"
+      sk: "sk          | sock*      | → TCP sock with buffers above"
+      ops: "ops         | proto_ops* | → inet_stream_ops"
+      state: "state       | int        | SS_CONNECTED"
+      flags: "flags       | ulong      | non-blocking flag propagates here"
+      total3: "Bridge: VFS layer → network layer"
+    }
+    fd_table -> file_desc: "fd index\ndereference" {
+      style.stroke: "#16a34a"
+    }
+    file_desc -> socket_struct: "private_data\npointer chase" {
+      style.stroke: "#16a34a"
+    }
+    socket_struct -> row2.sk_layer.sk_rcvbuf: "sk pointer\n→ sock buffers" {
+      style.stroke: "#2563eb"
+      style.bold: true
+    }
+  }
+}
+# ─── ROW 4: User Code read() Path ────────────────────────────────────
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  user_layer: "User Space — Application Code" {
+    direction: right
+    style.fill: "#fefce8"
+    style.stroke: "#ca8a04"
+    style.border-radius: 8
+    read_call: "read(fd=5, buf, 4096)" {
+      shape: rectangle
+      style.fill: "#fef9c3"
+      style.stroke: "#ca8a04"
+      style.border-radius: 6
+      label: "read(fd=5, buf, 4096)\n\nUser stack frame:\n  char buf[4096]  ← destination\n  n = read(5, buf, 4096)\n  if (n < 0 && errno==EAGAIN) → return, wait for epoll"
+    }
+    eagain_box: "EAGAIN: Why it happens" {
+      shape: rectangle
+      style.fill: "#fef3c7"
+      style.stroke: "#d97706"
+      style.border-radius: 6
+      style.stroke-dash: 4
+      label: "EAGAIN — Physical Cause:\n\n  sk_receive_queue is EMPTY\n  (no sk_buff nodes in the chain)\n\n  Kernel has no bytes to copy\n  → returns -1, errno=EAGAIN\n\n  NOT an error — retry after\n  epoll signals EPOLLIN again\n\n  (O_NONBLOCK flag on f_flags\n   enables this path)"
+    }
+    success_box: "Successful read path" {
+      shape: rectangle
+      style.fill: "#dcfce7"
+      style.stroke: "#16a34a"
+      style.border-radius: 6
+      label: "Successful read:\n\n  sk_receive_queue has sk_buff(s)\n  kernel copy_to_user(buf, skb->data, n)\n  sk_buff consumed, sk_rmem_alloc decremented\n  TCP sends ACK advancing peer send window\n  returns n > 0 to user code"
+    }
+    read_call -> eagain_box: "receive buf\nempty path" {
+      style.stroke: "#dc2626"
+      style.stroke-dash: 4
+    }
+    read_call -> success_box: "receive buf\nhas data" {
+      style.stroke: "#16a34a"
+      style.bold: true
+    }
+  }
+}
+# ─── ROW 5: epoll Integration ────────────────────────────────────────
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  epoll_layer: "epoll Integration — Interest Set and Readiness Queue" {
+    direction: right
+    style.fill: "#fff1f2"
+    style.stroke: "#e11d48"
+    style.border-radius: 8
+    epoll_interest: "epoll Interest Set (red-black tree)" {
+      shape: sql_table
+      label: "epoll instance — interest set (fs/eventpoll.c)"
+      ep0: "entry: fd=4 | EPOLLIN       | listen socket"
+      ep1: "entry: fd=5 | EPOLLIN|EPOLLET | client socket ← our conn"
+      ep2: "entry: fd=6 | EPOLLIN|EPOLLET | ..."
+      epN: "entry: fd=N | ...           | ..."
+      total: "O(log n) insert via epoll_ctl(EPOLL_CTL_ADD/MOD/DEL)"
+    }
+    epoll_ready: "Readiness Queue (linked list)" {
+      shape: rectangle
+      style.fill: "#ffe4e6"
+      style.stroke: "#e11d48"
+      style.border-radius: 6
+      label: "Readiness Queue — populated by sk_data_ready()\n\n  When NIC delivers packet → TCP stack → sock recv buf fills\n  → sk_data_ready() called by kernel\n  → walks epoll interest set (via socket wait queue)\n  → appends matching entries to readiness list\n\n  epoll_wait() copies readiness list → user events[]\n  If list empty → thread sleeps (zero CPU)\n  If list non-empty → returns immediately"
+    }
+    epoll_interest -> epoll_ready: "sk_data_ready\ntrigger" {
+      style.stroke: "#e11d48"
+      style.animated: true
+    }
+  }
+}
+# ─── CROSS-LAYER CONNECTIONS ─────────────────────────────────────────
+row1.hw.napi_note -> row2.sk_layer.sk_rcvbuf: "sk_buff enqueued\ninto sk_receive_queue\nsk_data_ready() called" {
+  style.stroke: "#7c3aed"
+  style.bold: true
+  style.animated: true
+}
+row2.sk_layer.sk_rcvbuf -> row5.epoll_layer.epoll_ready: "sk_data_ready()\n→ wake_up epoll\nwaiters" {
+  style.stroke: "#e11d48"
+  style.bold: true
+}
+row5.epoll_layer.epoll_ready -> row4.user_layer.read_call: "epoll_wait() returns\nevents[i].data.fd=5\nEPOLLIN set" {
+  style.stroke: "#ca8a04"
+  style.bold: true
+}
+row4.user_layer.success_box -> row2.sk_layer.sk_sndbuf: "write(fd, resp, n)\ncopy_from_user\n→ send buffer\n→ TCP Tx → NIC" {
+  style.stroke: "#2563eb"
+  style.stroke-dash: 4
+}
+row3.fd_layer.fd_table -> row5.epoll_layer.epoll_interest: "epoll_ctl(epfd,\n EPOLL_CTL_ADD,\n fd=5, EPOLLIN)" {
+  style.stroke: "#e11d48"
+  style.stroke-dash: 4
+}
+# ─── LEGEND ──────────────────────────────────────────────────────────
+legend: "Legend" {
+  near: bottom-right
+  shape: rectangle
+  style.fill: "#f8fafc"
+  style.stroke: "#94a3b8"
+  style.border-radius: 6
+  label: "Legend\n\n━━  Data path (bytes moving)\n╌╌  Control / pointer path\n🟣  NIC/DMA layer\n🔵  Kernel socket buffers\n🟢  FD table / VFS layer\n🟡  User-space application\n🔴  epoll readiness\n\nEAGAIN = recv buf empty = no bytes to copy\nEPOLLIN fires ONLY when buf: empty→non-empty"
+}

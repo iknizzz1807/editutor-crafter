@@ -1,0 +1,237 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: "Partial Write Buffer: Offset Tracking vs memmove (write_buf.c)" {
+  near: top-center
+  style: {
+    font-size: 18
+    bold: true
+    stroke: transparent
+    fill: transparent
+  }
+}
+row0: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  struct_layout: {
+    label: "struct write_buf_t (write_buf.h)"
+    shape: sql_table
+    f0: "0x00 | uint8_t*  | data          // heap-allocated flat array"
+    f1: "0x08 | size_t    | capacity      // total allocated bytes"
+    f2: "0x10 | size_t    | write_offset  // bytes already sent (head ptr)"
+    f3: "0x18 | write_len | write_len     // total bytes appended"
+    f4: "——   | pending   | = write_len - write_offset (unsent bytes)"
+    sz: "Total: 32 bytes — fits in 1 cache line (64B)"
+  }
+  approach_compare: {
+    label: "Two Approaches: Offset vs memmove"
+    shape: sql_table
+    h:  "Approach         | Head Advance | Copy Cost | When to Use"
+    r1: "Offset pointer   | O(1)         | zero      | hot path — preferred"
+    r2: "memmove compact  | O(n)         | O(pending)| when offset > capacity/2"
+    r3: "Decision rule    | always try   | on append | reclaim wasted prefix"
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  byte_array: {
+    label: "Flat Byte Array — Offset Pointer Approach (preferred, zero-copy)"
+    style.fill: "#eef4ff"
+    style.stroke: "#5577cc"
+    state1: {
+      label: "State A: After first write() partial — n=3200 of 8192 sent"
+      shape: sql_table
+      a0: "byte[0..3199]   | SENT (gray)   | already transmitted — space wasted"
+      a1: "byte[3200]      | ^ write_offset| ← next write() starts HERE"
+      a2: "byte[3200..8191]| PENDING (blue)| 4992 bytes still to send"
+      a3: "write_offset=3200 | write_len=8192 | pending=4992"
+    }
+    state2: {
+      label: "State B: After second EPOLLOUT — write(&data[offset], pending)"
+      shape: sql_table
+      b0: "byte[0..3199]   | SENT (gray)   | still wasted prefix"
+      b1: "byte[3200..6143]| SENT (gray)   | just sent 2944 bytes"
+      b2: "byte[6144]      | ^ write_offset| offset advanced by 2944"
+      b3: "byte[6144..8191]| PENDING (blue)| 2048 bytes remain"
+      b4: "write_offset=6144 | write_len=8192 | pending=2048"
+    }
+    state3: {
+      label: "State C: Buffer drained — offset == write_len"
+      shape: sql_table
+      c0: "byte[0..8191]   | ALL SENT      | buffer fully transmitted"
+      c1: "write_offset=0  | write_len=0   | RESET: both → 0"
+      c2: "EPOLLOUT deregistered via epoll_ctl(EPOLL_CTL_MOD, EPOLLIN only)"
+      c3: "Invariant: EPOLLOUT MUST be removed or busy-loop occurs (100% CPU)"
+    }
+    state1 -> state2: "EPOLLOUT fires | write() returns 2944"
+    state2 -> state3: "EPOLLOUT fires | write() returns 2048"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  memmove_path: {
+    label: "memmove Compaction — Triggered on Append when offset > capacity/2"
+    style.fill: "#fff8ee"
+    style.stroke: "#cc7700"
+    before_compact: {
+      label: "Before memmove: offset=33000, capacity=65536"
+      shape: sql_table
+      p0: "byte[0..32999]      | WASTED PREFIX (gray)  | offset > capacity/2 ✓"
+      p1: "byte[33000..65535]  | PENDING (blue)        | 32536 pending bytes"
+      p2: "write_offset=33000  | write_len=65536       | pending=32536"
+      p3: "Trigger: new append() would fill capacity — must compact first"
+    }
+    compact_op: {
+      label: "memmove Operation (write_buf.c:write_buf_append)"
+      width: 520
+      code: |'c
+        size_t pending = wb->write_len - wb->write_offset;
+        memmove(wb->data,
+                wb->data + wb->write_offset,
+                pending);          // shift left: O(pending) copy
+        wb->write_len    = pending;
+        wb->write_offset = 0;      // head reset to 0
+      '|
+    }
+    after_compact: {
+      label: "After memmove: offset=0, capacity reclaimed"
+      shape: sql_table
+      q0: "byte[0..32535]      | PENDING (blue)        | shifted to front"
+      q1: "byte[32536..65535]  | FREE SPACE (green)    | 33000 bytes reclaimed"
+      q2: "write_offset=0      | write_len=32536       | pending=32536 (unchanged)"
+      q3: "New data can now be appended without realloc"
+    }
+    before_compact -> compact_op: "memmove | O(pending)"
+    compact_op -> after_compact: "reclaimed | 33000 bytes free"
+  }
+  epollout_lifecycle: {
+    label: "EPOLLOUT Lifecycle — The Critical Invariant (reactor.c)"
+    style.fill: "#fff0f0"
+    style.stroke: "#cc2200"
+    arm_condition: {
+      label: "ARM EPOLLOUT: write() returns EAGAIN or short count"
+      shape: sql_table
+      e0: "Trigger: write() == EAGAIN → send buffer full"
+      e1: "Trigger: write() returned n < pending → partial write"
+      e2: "Action: epoll_ctl(MOD, fd, EPOLLIN | EPOLLOUT)"
+      e3: "epollout_armed = 1   // track state to prevent double-arm"
+    }
+    danger_box: {
+      label: "DANGER: Always-Armed EPOLLOUT = Busy Loop"
+      style.fill: "#ffdddd"
+      style.stroke: "#cc0000"
+      shape: sql_table
+      d0: "If EPOLLOUT registered when write_buf is EMPTY:"
+      d1: "  send buffer has space → EPOLLOUT fires immediately"
+      d2: "  handler runs, no data to write, returns"
+      d3: "  EPOLLOUT fires again immediately (still armed)"
+      d4: "  Result: epoll_wait() returns every iteration → 100% CPU"
+      d5: "Symptom: top shows 100% CPU, zero throughput"
+    }
+    disarm_condition: {
+      label: "DISARM EPOLLOUT: write buffer fully drained"
+      shape: sql_table
+      f0: "Condition: write_offset == write_len (pending == 0)"
+      f1: "Action: epoll_ctl(MOD, fd, EPOLLIN)  // remove EPOLLOUT"
+      f2: "epollout_armed = 0   // clear tracking flag"
+      f3: "Rule: EPOLLOUT registered ONLY while write buffer non-empty"
+    }
+    arm_condition -> danger_box: "VIOLATION: forget to disarm"
+    arm_condition -> disarm_condition: "CORRECT: disarm on drain"
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  write_func: {
+    label: "conn_write() — Full Write Path (write_buf.c)"
+    width: 560
+    code: |'c
+      int conn_write(int epfd, conn_t *c,
+                     const uint8_t *src, size_t len) {
+        // Rule: if pending data exists, NEVER write directly
+        // (would violate TCP ordering — bypass queued bytes)
+        if (write_buf_pending(c->wb) > 0) {
+          return write_buf_append(c->wb, src, len);
+          // EPOLLOUT already armed from previous backpressure
+        }
+        // Fast path: attempt direct write first
+        size_t sent = 0;
+        while (sent < len) {
+          ssize_t w = write(c->fd, src+sent, len-sent);
+          if (w < 0 && errno == EAGAIN) {
+            // Buffer remaining bytes; arm EPOLLOUT
+            write_buf_append(c->wb, src+sent, len-sent);
+            conn_arm_epollout(epfd, c);  // epoll_ctl MOD
+            return 0;
+          }
+          if (w <= 0) return -1;   // real error
+          sent += (size_t)w;
+        }
+        return 0; // all sent, EPOLLOUT stays disarmed
+      }
+    '|
+  }
+  flush_func: {
+    label: "conn_flush_write_buf() — Called on EPOLLOUT (write_buf.c)"
+    width: 500
+    code: |'c
+      int conn_flush_write_buf(int epfd, conn_t *c) {
+        write_buf_t *wb = c->wb;
+        while (write_buf_pending(wb) > 0) {
+          const uint8_t *p = wb->data + wb->write_offset;
+          size_t rem       = write_buf_pending(wb);
+          ssize_t w = write(c->fd, p, rem);
+          if (w < 0) {
+            if (errno == EAGAIN) return 0; // wait for next EPOLLOUT
+            return -1;  // error: caller closes conn
+          }
+          write_buf_consume(wb, (size_t)w);
+          // write_offset += w; if offset==len → reset both to 0
+        }
+        // Buffer empty: MUST deregister EPOLLOUT
+        conn_disarm_epollout(epfd, c);
+        return 0;
+      }
+    '|
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  memory_cost: {
+    label: "Memory Cost Analysis"
+    shape: sql_table
+    h:  "Component         | Size      | Per-conn at 10K conns"
+    r0: "write_buf_t struct| 32 bytes  | 320 KB total"
+    r1: "data[] heap alloc | 65536 B   | 640 MB worst-case (all armed)"
+    r2: "data[] typical    | ~4096 B   | ~40 MB (most bufs empty)"
+    r3: "memmove cost      | O(pending)| only when offset > cap/2"
+    r4: "EPOLLOUT syscall  | ~200 cyc  | arm + disarm = 2 syscalls/burst"
+    r5: "write() syscall   | ~150 cyc  | per flush iteration"
+  }
+  ordering_rule: {
+    label: "TCP Ordering Invariant — Never Bypass the Queue"
+    shape: sql_table
+    h:  "Scenario                        | Action              | Why"
+    r0: "write_buf empty + new data      | write() directly    | fast path OK"
+    r1: "write_buf non-empty + new data  | append to buf ONLY  | preserve order"
+    r2: "EAGAIN from write()             | append remainder    | retry via EPOLLOUT"
+    r3: "Violation: direct write bypasses| FORBIDDEN           | TCP sees wrong order"
+  }
+}
+row0 -> row1: "write_buf_t layout | instantiated"
+row1 -> row2: "states | transitions"
+row2 -> row3: "functions | implementation"
+row3 -> row4: "analysis | constraints"

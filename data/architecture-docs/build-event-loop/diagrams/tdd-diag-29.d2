@@ -1,0 +1,376 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+direction: right
+title: |md
+  ## HTTP Request Parser Data Flow
+  `read_buf[0..read_len-1]` → `http_request_t`
+| {near: top-center}
+
+# ── Input ────────────────────────────────────────────────────────────
+input: {
+  label: "read_buf[0..read_len-1]"
+  shape: rectangle
+  style: {
+    fill: "#B5AFF6"
+    font-color: "#1a0050"
+    bold: true
+  }
+}
+
+input_meta: |md
+  **Raw bytes from kernel**
+  Size: 0 → 16384 bytes
+  Accumulated across N read() calls
+| {
+  shape: text
+}
+
+# ── Stage 1: find_header_end ─────────────────────────────────────────
+stage1: "Stage 1: find_header_end()" {
+  style: {
+    fill: "#dbeafe"
+    stroke: "#3b82f6"
+    stroke-width: 2
+    border-radius: 8
+  }
+  fn: |go
+    for i := 0; i <= len-4; i++ {
+      if buf[i]=='\r' && buf[i+1]=='\n' &&
+         buf[i+2]=='\r' && buf[i+3]=='\n' {
+        return buf + i + 4
+      }
+    }
+    return NULL
+  |
+}
+
+out_incomplete1: "PARSE_INCOMPLETE" {
+  shape: diamond
+  style: {
+    fill: "#fef9c3"
+    stroke: "#ca8a04"
+    font-color: "#713f12"
+  }
+}
+
+body_start: "body_start pointer\n(first byte after \\r\\n\\r\\n)" {
+  shape: rectangle
+  style: {
+    fill: "#bbf7d0"
+    stroke: "#16a34a"
+    font-color: "#14532d"
+    bold: true
+  }
+}
+
+# ── Stage 2: parse_request_line ──────────────────────────────────────
+stage2: "Stage 2: parse_request_line()" {
+  style: {
+    fill: "#dbeafe"
+    stroke: "#3b82f6"
+    stroke-width: 2
+    border-radius: 8
+  }
+  fn: |go
+    // input: read_buf[0..first_CRLF]
+    space1 = memchr(line, ' ', len)
+    space2 = memchr(path_start, ' ', rem)
+    // validate "HTTP/1.x"
+  |
+}
+
+out_error2: "PARSE_ERROR" {
+  shape: diamond
+  style: {
+    fill: "#fee2e2"
+    stroke: "#dc2626"
+    font-color: "#7f1d1d"
+  }
+}
+
+req_line_out: {
+  style: {
+    fill: "#e0f2fe"
+    stroke: "#0284c7"
+    border-radius: 6
+  }
+  label: "req->method[16]\nreq->path[1024]\nreq->http_minor (0|1)"
+  shape: rectangle
+}
+
+# ── Stage 3: parse_headers ───────────────────────────────────────────
+stage3: "Stage 3: parse_headers()" {
+  style: {
+    fill: "#dbeafe"
+    stroke: "#3b82f6"
+    stroke-width: 2
+    border-radius: 8
+  }
+  fn: |go
+    // input: read_buf[first_CRLF+2 .. body_start]
+    for each header line:
+      colon = memchr(p, ':', eol-p)
+      trim name & value
+      copy → header_buf arena
+      if strcasecmp(name,"Content-Length")
+        req->content_length = strtol(val)
+      if strcasecmp(name,"Connection")
+        req->keep_alive = ...
+  |
+}
+
+out_toolarge3: "PARSE_TOO_LARGE" {
+  shape: diamond
+  style: {
+    fill: "#fce7f3"
+    stroke: "#db2777"
+    font-color: "#831843"
+  }
+}
+
+req_headers_out: {
+  style: {
+    fill: "#e0f2fe"
+    stroke: "#0284c7"
+    border-radius: 6
+  }
+  label: "req->headers[0..N]\nreq->content_length (-1 | n)\nreq->keep_alive (0|1)"
+  shape: rectangle
+}
+
+# ── String Arena ─────────────────────────────────────────────────────
+arena: "conn->header_buf\nString Arena [8192 bytes]" {
+  style: {
+    fill: "#fef3c7"
+    stroke: "#d97706"
+    stroke-width: 2
+    border-radius: 8
+  }
+  slot_names: |md
+    `headers[0].name`  →  `"Host"`
+    `headers[0].value` →  `"localhost"`
+    `headers[1].name`  →  `"Content-Length"`
+    `headers[1].value` →  `"42"`
+    `headers[2].name`  →  `"Connection"`
+    `headers[2].value` →  `"close"`
+    … (null-terminated strings, packed)
+    Used: 0 → 8192 bytes
+  |
+}
+
+arena_note: |md
+  **Arena lifetime = connection lifetime**
+  Pointers valid until keep-alive reset
+  (memset on state transition)
+| {shape: text}
+
+# ── Body Handling ─────────────────────────────────────────────────────
+body_check: "content_length > 0?" {
+  shape: diamond
+  style: {
+    fill: "#f3f4f6"
+    stroke: "#6b7280"
+  }
+}
+
+body_path: "Advance state →\nREADING_BODY\nmemmove remaining bytes\nto read_buf[0..]" {
+  shape: rectangle
+  style: {
+    fill: "#fef3c7"
+    stroke: "#d97706"
+    border-radius: 6
+  }
+}
+
+nobody_path: "Preserve pipelined bytes\nmemmove to read_buf[0..]\nread_len = pipelined_len" {
+  shape: rectangle
+  style: {
+    fill: "#fef3c7"
+    stroke: "#d97706"
+    border-radius: 6
+  }
+}
+
+# ── Output ────────────────────────────────────────────────────────────
+output: "http_request_t\n(fully populated)" {
+  shape: rectangle
+  style: {
+    fill: "#6d28d9"
+    font-color: "#ffffff"
+    bold: true
+    border-radius: 8
+    shadow: true
+  }
+}
+
+result_complete: "PARSE_COMPLETE\nconn->state = PROCESSING" {
+  shape: rectangle
+  style: {
+    fill: "#dcfce7"
+    stroke: "#16a34a"
+    font-color: "#14532d"
+    bold: true
+    border-radius: 6
+  }
+}
+
+# ── Error sink ───────────────────────────────────────────────────────
+error_sink: "http_send_error()\n→ 400 / 413 / 414" {
+  shape: rectangle
+  style: {
+    fill: "#fee2e2"
+    stroke: "#dc2626"
+    font-color: "#7f1d1d"
+    border-radius: 6
+  }
+}
+
+# ── Connections ───────────────────────────────────────────────────────
+# Note: ELK uses connections to define relative positioning. 
+# Replaced 'near' with invisible or explicit edges.
+
+input_meta -> input: { style.opacity: 0 }
+
+input -> stage1: "scan 4-byte sliding window\nO(n) linear scan" {
+  style: {
+    stroke: "#6366f1"
+    stroke-width: 2
+  }
+}
+
+stage1 -> out_incomplete1: "NULL returned\n(no \\r\\n\\r\\n yet)" {
+  style: {
+    stroke: "#ca8a04"
+    stroke-dash: 4
+    font-color: "#713f12"
+  }
+}
+
+stage1 -> body_start: "non-NULL\n(\\r\\n\\r\\n found)" {
+  style: {
+    stroke: "#16a34a"
+    stroke-width: 2
+  }
+}
+
+body_start -> stage2: "read_buf[0..first_CRLF]\npassed as line + len" {
+  style: {
+    stroke: "#6366f1"
+    stroke-width: 2
+  }
+}
+
+body_start -> stage3: "read_buf[first_CRLF+2..body_start]\npassed as headers range" {
+  style: {
+    stroke: "#6366f1"
+    stroke-width: 2
+    stroke-dash: 2
+  }
+}
+
+stage2 -> out_error2: "no 2nd space\nbad method len\ninvalid HTTP/1.x" {
+  style: {
+    stroke: "#dc2626"
+    stroke-dash: 4
+    font-color: "#7f1d1d"
+  }
+}
+
+stage2 -> req_line_out: "PARSE_COMPLETE\nmethod / path / minor" {
+  style: {
+    stroke: "#0284c7"
+    stroke-width: 2
+  }
+}
+
+stage3 -> out_toolarge3: "header_buf exhausted\n(hused + name + val > 8192)" {
+  style: {
+    stroke: "#db2777"
+    stroke-dash: 4
+    font-color: "#831843"
+  }
+}
+
+stage3 -> req_headers_out: "PARSE_COMPLETE\nheaders[] / content_length / keep_alive" {
+  style: {
+    stroke: "#0284c7"
+    stroke-width: 2
+  }
+}
+
+stage3 -> arena: "memcpy name & value\nnull-terminate each\nadvance hused ptr" {
+  style: {
+    stroke: "#d97706"
+    stroke-width: 2
+    stroke-dash: 3
+  }
+}
+
+arena_note -> arena: { style.stroke-dash: 2 }
+
+arena -> req_headers_out: "headers[i].name =\npointers into arena" {
+  style: {
+    stroke: "#d97706"
+    stroke-dash: 3
+    font-color: "#92400e"
+  }
+}
+
+req_line_out -> body_check
+req_headers_out -> body_check
+
+body_check -> body_path: "yes →\nstate = READING_BODY" {
+  style: {
+    stroke: "#d97706"
+    font-color: "#92400e"
+  }
+}
+
+body_check -> nobody_path: "no (GET/HEAD)\nstate = PROCESSING" {
+  style: {
+    stroke: "#16a34a"
+    font-color: "#14532d"
+  }
+}
+
+body_path -> result_complete: "body fully received\n(body_received >= content_length)" {
+  style: {
+    stroke: "#16a34a"
+    stroke-width: 2
+  }
+}
+
+nobody_path -> result_complete: "immediate" {
+  style: {
+    stroke: "#16a34a"
+    stroke-width: 2
+  }
+}
+
+result_complete -> output: "conn->state = PROCESSING\nhttp_request_t valid" {
+  style: {
+    stroke: "#6d28d9"
+    stroke-width: 3
+    bold: true
+  }
+}
+
+out_incomplete1 -> error_sink: { style.opacity: 0 }
+
+out_error2 -> error_sink: "send 400 Bad Request" {
+  style: {
+    stroke: "#dc2626"
+    stroke-dash: 4
+  }
+}
+
+out_toolarge3 -> error_sink: "send 413 Too Large" {
+  style: {
+    stroke: "#dc2626"
+    stroke-dash: 4
+  }
+}

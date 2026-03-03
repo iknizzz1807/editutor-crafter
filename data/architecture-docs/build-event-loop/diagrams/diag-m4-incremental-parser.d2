@@ -1,0 +1,327 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: "Incremental HTTP Parser: Accumulation Across read() Events"
+  style: {
+    font-size: 20
+    bold: true
+  }
+}
+title.near: top-center
+legend: {
+  label: "Color Legend"
+  style: {
+    fill: "#f5f5f5"
+    stroke: "#cccccc"
+    font-size: 13
+  }
+  l1: "Blue  = data bytes flowing in" {
+    style.fill: "#dbeafe"
+    style.stroke: "#3b82f6"
+  }
+  l2: "Yellow = incomplete / waiting" {
+    style.fill: "#fef9c3"
+    style.stroke: "#ca8a04"
+  }
+  l3: "Green  = success / transition" {
+    style.fill: "#dcfce7"
+    style.stroke: "#16a34a"
+  }
+  l4: "Red    = guard / defense" {
+    style.fill: "#fee2e2"
+    style.stroke: "#dc2626"
+  }
+  l5: "Purple = parsed output" {
+    style.fill: "#ede9fe"
+    style.stroke: "#7c3aed"
+  }
+}
+legend.near: bottom-right
+row0: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  conn_state: {
+    label: "http_conn_t (http_conn.h)"
+    shape: sql_table
+    style.fill: "#f0f9ff"
+    style.stroke: "#0284c7"
+    f0: "0x00 | int              | fd"
+    f1: "0x04 | http_conn_state_t| state = READING_HEADERS"
+    f2: "0x08 | char[16384]      | read_buf"
+    f3: "0x4008| size_t           | read_len = 0 (initially)"
+    f4: "0x4010| size_t           | write_len"
+    f5: "0x4018| http_request_t   | request"
+    sz: "Total: ~26 KB per connection"
+  }
+  buf_detail: {
+    label: "read_buf memory model"
+    shape: sql_table
+    style.fill: "#eff6ff"
+    style.stroke: "#2563eb"
+    b0: "capacity = HTTP_READ_BUF_SIZE = 16384 bytes"
+    b1: "read_len = bytes currently valid"
+    b2: "buf[0..read_len-1] = accumulated data"
+    b3: "buf[read_len..capacity-1] = unused"
+    b4: "new read() appends at buf+read_len"
+    b5: "guard: if read_len >= capacity → PARSE_TOO_LARGE"
+  }
+}
+row0.conn_state -> row0.buf_detail: "owns"
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  read1_box: {
+    label: "read() #1 — 39 bytes received"
+    style.fill: "#dbeafe"
+    style.stroke: "#3b82f6"
+    style.border-radius: 6
+    r1_syscall: {
+      label: "Syscall (reactor.c)"
+      width: 340
+      code: |'c
+        n = read(fd, read_buf + 0, 16384);
+        /* n = 39 */
+        read_len += 39;   /* read_len = 39 */
+      '|
+    }
+    r1_content: {
+      label: "Bytes [0..38] in read_buf"
+      shape: sql_table
+      style.fill: "#bfdbfe"
+      style.stroke: "#1d4ed8"
+      b00: "0x00 | 'G' 'E' 'T' ' '  /index.html HTTP/1.1"
+      b01: "0x1B | '\\r' '\\n' 'H' 'o' 's' 't' ':' ' '"
+      b02: "0x23 | 'l' 'o' 'c'  ← buffer ends here (39 B)"
+      b03: "scan for \\r\\n\\r\\n → NOT FOUND"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  parse1: {
+    label: "Parse Attempt #1 → PARSE_INCOMPLETE"
+    style.fill: "#fef9c3"
+    style.stroke: "#ca8a04"
+    style.border-radius: 6
+    p1_code: {
+      label: "http_try_parse() (http_server.c)"
+      width: 420
+      code: |'c
+        body_start = find_header_end(buf, 39);
+        /* returns NULL — no \\r\\n\\r\\n in 39 bytes */
+        if (read_len >= HTTP_READ_BUF_SIZE)
+            return PARSE_TOO_LARGE;   /* guard */
+        return PARSE_INCOMPLETE;
+      '|
+    }
+    p1_state: {
+      label: "State after attempt #1"
+      shape: sql_table
+      style.fill: "#fef08a"
+      style.stroke: "#a16207"
+      s0: "state     | READING_HEADERS (unchanged)"
+      s1: "read_len  | 39"
+      s2: "result    | PARSE_INCOMPLETE"
+      s3: "action    | return to epoll_wait()"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  read2_box: {
+    label: "read() #2 — 30 bytes received (next REACTOR_READ)"
+    style.fill: "#dbeafe"
+    style.stroke: "#3b82f6"
+    style.border-radius: 6
+    r2_syscall: {
+      label: "Syscall (reactor.c)"
+      width: 340
+      code: |'c
+        n = read(fd, read_buf + 39, 16384 - 39);
+        /* n = 30 */
+        read_len += 30;   /* read_len = 69 */
+      '|
+    }
+    r2_content: {
+      label: "Bytes [39..68] appended to read_buf"
+      shape: sql_table
+      style.fill: "#bfdbfe"
+      style.stroke: "#1d4ed8"
+      b10: "0x27 | 'a' 'l' 'h' 'o' 's' 't' '\\r' '\\n'"
+      b11: "0x2F | 'C' 'o' 'n' 'n' 'e' 'c' 't' 'i'"
+      b12: "0x37 | 'o' 'n' ':' ' ' 'k' 'e' 'e' 'p'"
+      b13: "0x3F | '-' 'a' 'l' 'i' 'v' 'e' '\\r'  ← 69 B"
+      b14: "scan for \\r\\n\\r\\n → NOT FOUND (need '\\n\\r\\n')"
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  parse2: {
+    label: "Parse Attempt #2 → PARSE_INCOMPLETE"
+    style.fill: "#fef9c3"
+    style.stroke: "#ca8a04"
+    style.border-radius: 6
+    p2_code: {
+      label: "http_try_parse() (http_server.c)"
+      width: 420
+      code: |'c
+        body_start = find_header_end(buf, 69);
+        /* returns NULL — sequence incomplete at offset 66..68 */
+        /* buf[66]='\\r' buf[67]='\\n' buf[68]='\\r' — 1 byte short */
+        return PARSE_INCOMPLETE;
+      '|
+    }
+    p2_state: {
+      label: "State after attempt #2"
+      shape: sql_table
+      style.fill: "#fef08a"
+      style.stroke: "#a16207"
+      s0: "state     | READING_HEADERS (unchanged)"
+      s1: "read_len  | 69"
+      s2: "result    | PARSE_INCOMPLETE"
+      s3: "action    | return to epoll_wait()"
+    }
+  }
+}
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  read3_box: {
+    label: "read() #3 — 3 bytes received (next REACTOR_READ)"
+    style.fill: "#dbeafe"
+    style.stroke: "#3b82f6"
+    style.border-radius: 6
+    r3_syscall: {
+      label: "Syscall (reactor.c)"
+      width: 340
+      code: |'c
+        n = read(fd, read_buf + 69, 16384 - 69);
+        /* n = 3 */
+        read_len += 3;    /* read_len = 72 */
+      '|
+    }
+    r3_content: {
+      label: "Bytes [69..71] complete the header block"
+      shape: sql_table
+      style.fill: "#bbf7d0"
+      style.stroke: "#15803d"
+      b20: "0x45 | '\\n' '\\r' '\\n'  ← completes \\r\\n\\r\\n"
+      b21: "full sequence: buf[66..71] = \\r\\n\\r\\n"
+      b22: "find_header_end() returns buf + 72"
+      b23: "total read_buf valid: 72 bytes"
+    }
+  }
+}
+row6: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  parse3: {
+    label: "Parse Attempt #3 → PARSE_COMPLETE"
+    style.fill: "#dcfce7"
+    style.stroke: "#16a34a"
+    style.border-radius: 6
+    p3_code: {
+      label: "http_try_parse() — full parse (http_server.c)"
+      width: 500
+      code: |'c
+        body_start = find_header_end(buf, 72);
+        /* returns buf + 72 — boundary found at offset 68 */
+        /* Step 2: parse_request_line(buf, req_line_len=26, req) */
+        /*   method = "GET"                                       */
+        /*   path   = "/index.html"                              */
+        /*   http_minor = 1  (HTTP/1.1)                          */
+        /* Step 3: parse_headers(crlf+1, body_start, conn)       */
+        /*   Host: localhost      → stored in header_buf          */
+        /*   Connection: keep-alive → req->keep_alive = 1         */
+        /*   content_length = -1  (no body)                       */
+        /* Step 4: no body — ready to process                     */
+        conn->read_len = 0;
+        conn->state    = HTTP_STATE_PROCESSING;
+        return PARSE_COMPLETE;
+      '|
+    }
+  }
+}
+row7: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  parsed_req: {
+    label: "http_request_t (populated, http_server.c)"
+    shape: sql_table
+    style.fill: "#ede9fe"
+    style.stroke: "#7c3aed"
+    q0: "method         | GET"
+    q1: "path           | /index.html"
+    q2: "http_minor     | 1  (HTTP/1.1)"
+    q3: "headers[0]     | Host: localhost"
+    q4: "headers[1]     | Connection: keep-alive"
+    q5: "header_count   | 2"
+    q6: "content_length | -1  (no body)"
+    q7: "keep_alive     | 1"
+  }
+  guard_box: {
+    label: "Header Flood Defense"
+    style.fill: "#fee2e2"
+    style.stroke: "#dc2626"
+    style.border-radius: 6
+    g1: {
+      label: "Max-size check (http_server.c)"
+      width: 360
+      code: |'c
+        if (conn->read_len >= HTTP_READ_BUF_SIZE) {
+            /* 16384 bytes — no \\r\\n\\r\\n found */
+            return PARSE_TOO_LARGE;
+            /* → http_send_error(conn, 413, ...) */
+        }
+      '|
+    }
+    g2: {
+      label: "Constants (http_conn.h)"
+      shape: sql_table
+      style.fill: "#fecaca"
+      style.stroke: "#b91c1c"
+      g2a: "HTTP_READ_BUF_SIZE    | 16384 bytes (16 KB)"
+      g2b: "HTTP_MAX_HEADERS      | 32 entries"
+      g2c: "HTTP_MAX_HEADER_LEN   | 8192 bytes"
+      g2d: "HTTP_MAX_PATH_LEN     | 1024 bytes"
+      g2e: "HTTP_HEADER_TIMEOUT_MS| 10000 ms (slow loris)"
+    }
+  }
+}
+transition: {
+  label: "State Transition → HTTP_STATE_PROCESSING"
+  style.fill: "#dcfce7"
+  style.stroke: "#16a34a"
+  style.border-radius: 8
+  style.font-size: 15
+  style.bold: true
+}
+row0 -> row1: "REACTOR_READ fires (ET drain loop)"
+row1 -> row2: "39 bytes | append+parse"
+row2 -> row3: "PARSE_INCOMPLETE | wait"
+row3 -> row4: "REACTOR_READ fires again"
+row4 -> row5: "PARSE_INCOMPLETE | wait"
+row5 -> row6: "REACTOR_READ fires again"
+row6 -> row7: "PARSE_COMPLETE | http_request_t filled"
+row7 -> transition: "reactor_defer(http_process_request)"
+row2.parse1.p1_state -> row7.guard_box: "16384 B limit enforced here" {
+  style.stroke-dash: 4
+  style.stroke: "#dc2626"
+}

@@ -1,0 +1,114 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+title: |md
+  ## Callback Re-entrancy: Iterator Invalidation Bug vs Mark-and-Skip Fix
+| {near: top-center}
+bug_side: "❌ BUG: Immediate epoll_ctl in Callback" {
+  style: {
+    fill: "#2d1b1b"
+    stroke: "#cc3333"
+    stroke-width: 2
+    border-radius: 8
+  }
+  bug_seq: {
+    shape: sequence_diagram
+    kernel: "Linux Kernel"
+    loop_: "Dispatch Loop\n(dispatching=1)"
+    cb5: "fd=5 Callback"
+    reactor_: "Reactor Internals"
+    os_: "OS fd Table"
+    step0: "epoll_wait returns\nevents=[fd5(EPOLLIN), fd5(EPOLLIN)]" {
+      kernel -> loop_: "nready=2  events[0].data.fd=5\nevents[1].data.fd=5"
+    }
+    step1: "Iteration i=0: dispatch first event" {
+      loop_ -> cb5: "h->callback(fd=5, REACTOR_READ, udata)"
+    }
+    step2: "Callback closes own connection" {
+      cb5 -> reactor_: "reactor_deregister(r, fd=5)"
+      reactor_ -> reactor_: "dispatching==1? NO CHECK\nepoll_ctl(DEL, fd=5) ← immediate" {
+        style.stroke: red
+        style.bold: true
+      }
+      reactor_ -> os_: "close(fd=5)"
+      os_ -> os_: "fd=5 FREED\nOS recycles fd=5 for\nnew accept4() call" {
+        style.stroke: red
+        style.fill: "#4d1111"
+      }
+    }
+    step3: "Iteration i=1: stale events[1].data.fd still=5" {
+      loop_ -> reactor_: "h = &handlers[5]"
+      reactor_ -> reactor_: "handlers[5] is either:\n• zeroed (callback=NULL) → CRASH\n• new connection's handler → WRONG FD\n• partially init → CORRUPTION" {
+        style.stroke: red
+        style.fill: "#4d1111"
+      }
+      reactor_ -> cb5: "h->callback(fd=5, ...) ← WRONG or NULL" {
+        style.stroke: red
+      }
+    }
+    result_: "RESULT: undefined behavior" {
+      cb5."💀 double-free / wrong connection closed / segfault"
+    }
+  }
+}
+fix_side: "✅ FIX: Deferred DEL with Mark-and-Skip" {
+  style: {
+    fill: "#1b2d1b"
+    stroke: "#33cc33"
+    stroke-width: 2
+    border-radius: 8
+  }
+  fix_seq: {
+    shape: sequence_diagram
+    kernel2: "Linux Kernel"
+    loop2: "Dispatch Loop\n(dispatching=1)"
+    cb5f: "fd=5 Callback"
+    reactor2: "Reactor Internals"
+    phase2: "Phase 2\n(pending ops)"
+    stepf0: "epoll_wait returns\nevents=[fd5(EPOLLIN), fd5(EPOLLIN)]" {
+      kernel2 -> loop2: "nready=2  events[0].data.fd=5\nevents[1].data.fd=5"
+    }
+    stepf1: "Iteration i=0: dispatch first event" {
+      loop2 -> cb5f: "h->callback(fd=5, REACTOR_READ, udata)"
+    }
+    stepf2: "Callback calls deregister — SAFE path" {
+      cb5f -> reactor2: "reactor_deregister(r, fd=5)"
+      reactor2 -> reactor2: "dispatching==1 → DEFER\nh->closing = 1  ← mark\nenqueue PENDING_DEL(fd=5)\nRETURN 0 (no epoll_ctl yet)" {
+        style.stroke: "#33cc33"
+        style.fill: "#1a3d1a"
+      }
+      reactor2 -> cb5f: "return 0"
+      cb5f -> loop2: "callback returns"
+    }
+    stepf3: "Iteration i=1: guard check prevents re-dispatch" {
+      loop2 -> reactor2: "h = &handlers[5]\nif (!h->registered || h->closing)"
+      reactor2 -> reactor2: "h->closing == 1\n→ SKIP EVENT ✓" {
+        style.stroke: "#33cc33"
+        style.fill: "#1a3d1a"
+      }
+      loop2 -> loop2: "continue  ← fd=5 skipped safely"
+    }
+    stepf4: "END Phase 1 → dispatching = 0" {
+      loop2 -> loop2: "r->dispatching = 0"
+    }
+    stepf5: "Phase 2: apply all pending ops atomically" {
+      loop2 -> phase2: "process pending_ops[0]: PENDING_DEL fd=5"
+      phase2 -> phase2: "epoll_ctl(DEL, fd=5, NULL)\nmemset(&handlers[5], 0)\n← slot cleared AFTER iteration" {
+        style.stroke: "#33cc33"
+        style.fill: "#1a3d1a"
+      }
+      phase2 -> loop2: "pending_count = 0"
+    }
+    resultf: "RESULT: correct, safe teardown" {
+      phase2."✅ handlers[5] cleared only after dispatch loop completes\n✅ no stale pointer dereference\n✅ OS fd=5 reuse cannot corrupt dispatcher"
+    }
+  }
+}
+bug_side -> fix_side: "dispatching guard\nprevents immediate\nepoll_ctl" {
+  style.stroke-dash: 4
+  style.font-size: 13
+  style.bold: true
+}

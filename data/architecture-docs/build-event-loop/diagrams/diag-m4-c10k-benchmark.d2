@@ -1,0 +1,263 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # C10K Benchmark Architecture and Expected Results
+  Single-threaded epoll server vs. Apache prefork at 10,000 simultaneous connections
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  client_machine: "Client Machine (wrk/ab)" {
+    direction: down
+    style.fill: "#e8f4e8"
+    style.stroke: "#2d6a2d"
+    style.border-radius: 8
+    wrk_cmd: {
+      label: "wrk benchmark command"
+      width: 420
+      code: |'bash
+        # System prep (run before benchmarking)
+        ulimit -n 65535
+        sysctl -w net.core.somaxconn=65535
+        sysctl -w net.ipv4.tcp_tw_reuse=1
+        echo "1024 65535" > /proc/sys/net/ipv4/ip_local_port_range
+        # C10K benchmark: 12 threads, 10,000 connections, 60s
+        wrk -t12 -c10000 -d60s --latency \
+          http://server:8080/index.html
+        # Alternative with ab
+        ab -n 1000000 -c10000 -k -t 60 \
+          http://server:8080/index.html
+      '|
+    }
+    wrk_internals: "wrk Internals" {
+      shape: class
+      label: "wrk (C, epoll-based)"
+      -threads: "12 x pthread_t"
+      -connections_per_thread: "~833 conn each"
+      -total_connections: "10,000 TCP sockets"
+      -pipeline_depth: "int (default 1)"
+      +run(url, duration): "void"
+      +open_connections(n): "int"
+      +report_latency(): "histogram_t"
+    }
+  }
+  network: "Network Path" {
+    direction: down
+    style.fill: "#e8eaf6"
+    style.stroke: "#3f51b5"
+    style.border-radius: 8
+    nic_client: {
+      shape: sql_table
+      label: "Client NIC (loopback or 1GbE)"
+      throughput: "Bandwidth | 1–10 Gbps"
+      latency: "RTT | ~0.1ms loopback / 1ms LAN"
+      tcp_stack: "TCP | 10K concurrent streams"
+      syn_backlog: "SYN backlog | somaxconn=65535"
+    }
+    arrow_note: "TCP 3-way handshake × 10,000" {
+      shape: parallelogram
+      style.fill: "#c5cae9"
+      style.font-size: 13
+    }
+  }
+  server_box: "Server Under Test (Linux x86-64)" {
+    direction: down
+    style.fill: "#fff3e0"
+    style.stroke: "#e65100"
+    style.border-radius: 8
+    server_sysconfig: {
+      shape: sql_table
+      label: "Kernel / OS Config (server)"
+      fd_limit: "ulimit -n | 65535 file descriptors"
+      somaxconn: "net.core.somaxconn | 65535"
+      tcp_reuse: "net.ipv4.tcp_tw_reuse | 1"
+      port_range: "ip_local_port_range | 1024-65535"
+      rcvbuf: "SO_RCVBUF | 87,380 bytes (default)"
+      sndbuf: "SO_SNDBUF | 16,384 bytes (default)"
+    }
+    epoll_engine: {
+      shape: sql_table
+      label: "epoll Event Loop (reactor.c)"
+      epfd: "epoll_create1(EPOLL_CLOEXEC) | 1 epoll fd"
+      interest_set: "Red-black tree (kernel) | 10,001 fds (1 listen + 10K conn)"
+      readiness_q: "Linked list (kernel) | active fds only"
+      wait_call: "epoll_wait(epfd, events, 1024, timeout_ms)"
+      batch_size: "MAX_EVENTS | 1024 per epoll_wait() call"
+      mode: "EPOLLIN | EPOLLET (edge-triggered)"
+    }
+  }
+}
+row1.client_machine.wrk_cmd -> row1.network.arrow_note: "10K TCP conns | HTTP/1.1 keep-alive"
+row1.network.arrow_note -> row1.server_box.epoll_engine: "EPOLLIN events | kernel wakes thread"
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  conn_state_machines: "10,000 Connection State Machines" {
+    direction: down
+    style.fill: "#fce4ec"
+    style.stroke: "#880e4f"
+    style.border-radius: 8
+    http_conn_struct: {
+      shape: sql_table
+      label: "http_conn_t (per connection)"
+      f0: "0x00 | http_conn_state_t | state"
+      f1: "0x04 | int | fd"
+      f2: "0x08 | int | idle_timer_id"
+      f3: "0x0C | int | header_timer_id"
+      f4: "0x10 | reactor_t* | reactor"
+      f5: "0x18 | uint8_t* | write_buf (64KB heap)"
+      f6: "0x20 | size_t | write_len"
+      f7: "0x28 | size_t | write_offset"
+      f8: "0x30 | int | epollout_armed"
+      f9: "0x38 | char[16384] | read_buf (on struct)"
+      fa: "0x4038 | http_request_t | request (parsed)"
+      fb: "0x4438 | char[8192] | header_buf"
+      total: "Total struct: ~26 KB | × 10K = 260 MB heap"
+    }
+    state_enum: {
+      shape: sql_table
+      label: "http_conn_state_t (state machine nodes)"
+      s0: "0 | READING_HEADERS | accumulate until CRLF-CRLF"
+      s1: "1 | READING_BODY | accumulate Content-Length bytes"
+      s2: "2 | PROCESSING | open file, build response"
+      s3: "3 | WRITING_RESPONSE | flush write_buf to socket"
+      s4: "4 | KEEP_ALIVE | wait for next request (30s timer)"
+      s5: "5 | CLOSING | cancel timers, deregister, close(fd)"
+    }
+    timer_heap: {
+      shape: sql_table
+      label: "Min-Heap Timer (timer_heap_t)"
+      structure: "Binary heap | array of timer_entry_t"
+      idle_timers: "10,000 idle timers | 30s each"
+      header_timers: "10,000 header timers | 10s each"
+      total_entries: "Up to 20,000 entries | O(log 20000) ≈ 14 ops"
+      clock: "CLOCK_MONOTONIC | no NTP jump risk"
+      integration: "epoll_wait(timeout_ms) | = next_expiry - now_ms()"
+    }
+  }
+  memory_model: "Memory Model" {
+    direction: down
+    style.fill: "#e0f2f1"
+    style.stroke: "#004d40"
+    style.border-radius: 8
+    epoll_server_mem: {
+      shape: sql_table
+      label: "epoll Server Memory (10K connections)"
+      conn_structs: "http_conn_t × 10K | 10K × 26KB = 260 MB"
+      write_bufs: "write_buf heap × 10K | 10K × 64KB = 640 MB"
+      read_bufs: "embedded in conn_t | included in 260 MB"
+      timer_heap: "timer_entry_t × 20K | 20K × 32B = 640 KB"
+      epoll_interest: "kernel rbtree × 10K | ~10K × 160B ≈ 1.6 MB (kernel)"
+      fd_handler_arr: "fd_handler_t × 65535 | 65535 × 40B ≈ 2.6 MB"
+      total_practical: "Practical total | ~900 MB (write bufs dominate)"
+      note: "Reduce write_buf to 8KB | => ~340 MB for 10K conns"
+    }
+    apache_prefork_mem: {
+      shape: sql_table
+      label: "Apache prefork Memory (10K connections) — INFEASIBLE"
+      processes: "10K connections | requires 10K worker processes"
+      stack_per_proc: "Default stack | 8 MB per process"
+      stack_total: "Stack alone | 10K × 8MB = 80 GB RAM"
+      heap_per_proc: "Apache heap per worker | ~4-16 MB"
+      heap_total: "Heap total | 10K × 8MB = 80 GB minimum"
+      verdict: "INFEASIBLE | typical server has 32-128 GB RAM"
+      context_switches: "Scheduler overhead | 10K threads × context switch cost"
+    }
+  }
+}
+row1 -> row2: "10K events dispatched"
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  benchmark_results: "Expected Benchmark Results" {
+    direction: down
+    style.fill: "#f3e5f5"
+    style.stroke: "#4a148c"
+    style.border-radius: 8
+    results_table: {
+      shape: sql_table
+      label: "wrk Output: wrk -t12 -c10000 -d60s --latency"
+      metric_connections: "Connections | 10,000 simultaneous"
+      metric_throughput: "Throughput | 50,000 – 100,000 req/sec"
+      metric_p50: "p50 Latency | 1 – 5 ms"
+      metric_p75: "p75 Latency | 2 – 10 ms"
+      metric_p90: "p90 Latency | 5 – 20 ms"
+      metric_p99: "p99 Latency | < 100 ms (TARGET)"
+      metric_p999: "p99.9 Latency | < 200 ms"
+      metric_errors: "Errors | 0 (connection resets, timeouts)"
+      metric_cpu: "CPU usage | single core < 80%"
+      metric_threads: "Server threads | 1 (single-threaded reactor)"
+    }
+    failure_modes: {
+      shape: sql_table
+      label: "Failure Modes to Diagnose (if results are poor)"
+      fm1: "p99 > 500ms | Check: EPOLLOUT busy loop (CPU 100%)"
+      fm2: "Connection errors | Check: ulimit -n not increased"
+      fm3: "Hangs / timeouts | Check: ET mode missing drain-to-EAGAIN"
+      fm4: "High CPU idle | Check: epoll_wait timeout = 0 (polling)"
+      fm5: "Memory OOM | Check: write_buf not freed on close"
+      fm6: "fd exhaustion | Check: conn not freed after close"
+    }
+  }
+  sysctl_setup: "Pre-Benchmark System Setup" {
+    direction: down
+    style.fill: "#e8f5e9"
+    style.stroke: "#1b5e20"
+    style.border-radius: 8
+    setup_code: {
+      label: "Required sysctl and ulimit (both client and server)"
+      width: 420
+      code: |'bash
+        # File descriptor limits
+        ulimit -n 65535
+        echo "fs.file-max = 65535" >> /etc/sysctl.conf
+        # TCP connection queue depth
+        sysctl -w net.core.somaxconn=65535
+        sysctl -w net.ipv4.tcp_max_syn_backlog=65535
+        # Enable TIME_WAIT socket reuse (client side)
+        sysctl -w net.ipv4.tcp_tw_reuse=1
+        # Expand ephemeral port range (client side)
+        sysctl -w net.ipv4.ip_local_port_range="1024 65535"
+        # Verify: check current limits
+        cat /proc/sys/fs/file-max
+        ss -s   # socket summary
+        # Expected: 10000+ sockets in ESTABLISHED state
+      '|
+    }
+    comparison_table: {
+      shape: sql_table
+      label: "Architecture Comparison at 10K Connections"
+      header: "Metric | epoll Reactor | Apache prefork"
+      row_mem: "RAM for connections | ~900 MB | 80+ GB (infeasible)"
+      row_cpu: "CPU for idle conns | 0 (blocked in epoll_wait) | 10K sleeping threads"
+      row_ctx: "Context switches/sec | 0 (single thread) | ~1M+/sec scheduler"
+      row_fd: "File descriptors | 10,001 total | 10K processes × FDs"
+      row_scale: "Scaling model | I/O bound by NIC | CPU/RAM bound"
+      row_latency: "p99 at 10K | < 100ms | N/A (OOM before 10K)"
+    }
+  }
+}
+row2 -> row3: "reactor_run() dispatches | callbacks process reqs"
+legend: {
+  near: bottom-right
+  style.fill: "#fafafa"
+  style.stroke: "#9e9e9e"
+  style.border-radius: 6
+  content: |md
+    **Color Key**
+    - 🟢 Green: client / safe path
+    - 🟠 Orange: server hot path
+    - 🔴 Red: connection state / danger
+    - 🔵 Blue: memory model
+    - 🟣 Purple: benchmark results
+    - ⚪ Teal: system setup
+  |
+}

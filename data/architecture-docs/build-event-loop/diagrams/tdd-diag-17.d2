@@ -1,0 +1,297 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+title: "Full Connection Lifecycle: Write Buffer + Timer" {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 20
+    bold: true
+  }
+}
+legend: |md
+  **Transitions:** trigger → [function call sequence]
+  **●** = initial  **◼** = terminal  **Red** = mandatory cleanup order
+| {
+  near: bottom-left
+  style.font-size: 13
+}
+##############################################
+# CONNECTION STATE MACHINE
+##############################################
+conn_states: "Connection States" {
+  style: {
+    fill: "#1a1a2e"
+    stroke: "#7c3aed"
+    stroke-width: 2
+    font-color: "#e2e8f0"
+    font-size: 14
+    bold: true
+  }
+  initial: "●" {
+    shape: circle
+    width: 28
+    height: 28
+    style.fill: "#e2e8f0"
+    style.stroke: "#e2e8f0"
+  }
+  ACCEPT: "ACCEPT\n[accept4() returned fd]" {
+    shape: rectangle
+    style: {
+      fill: "#6d28d9"
+      stroke: "#a78bfa"
+      stroke-width: 2
+      font-color: "#f5f3ff"
+      font-size: 13
+      bold: true
+      border-radius: 6
+    }
+  }
+  ACTIVE: "ACTIVE\n[EPOLLIN watching]\n[idle timer armed]\nconn→state = CONN_ACTIVE\nepollout_armed = 0" {
+    shape: rectangle
+    style: {
+      fill: "#1d4ed8"
+      stroke: "#60a5fa"
+      stroke-width: 2
+      font-color: "#eff6ff"
+      font-size: 12
+      border-radius: 6
+    }
+  }
+  BACKPRESSURE: "BACKPRESSURE\n[EPOLLIN|EPOLLOUT watching]\nwrite_buf_pending > 0\nepollout_armed = 1" {
+    shape: rectangle
+    style: {
+      fill: "#b45309"
+      stroke: "#fbbf24"
+      stroke-width: 2
+      font-color: "#fffbeb"
+      font-size: 12
+      border-radius: 6
+    }
+  }
+  DRAINING: "DRAINING\n[flush in progress]\nconn_flush_write_buf()\nwrite() loop until EAGAIN" {
+    shape: rectangle
+    style: {
+      fill: "#065f46"
+      stroke: "#34d399"
+      stroke-width: 2
+      font-color: "#ecfdf5"
+      font-size: 12
+      border-radius: 6
+    }
+  }
+  CLOSED: "CLOSED ◼\n[ALL 4 steps mandatory — missing any = resource leak]\n① timer_cancel(heap, conn→timer_id)\n② epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL)\n③ write_buf_free(conn→write_buf)\n④ close(fd)   →   conn_free(fd)" {
+    shape: rectangle
+    style: {
+      fill: "#7f1d1d"
+      stroke: "#f87171"
+      stroke-width: 3
+      font-color: "#fef2f2"
+      font-size: 12
+      bold: true
+      border-radius: 6
+    }
+  }
+  initial -> ACCEPT: "" {
+    style.stroke: "#e2e8f0"
+    style.stroke-width: 2
+  }
+  ACCEPT -> ACTIVE: "conn_new(fd)\nconn→write_buf = write_buf_new()\ntimer_insert(heap, fd, now+30s)\nepoll_ctl(ADD, EPOLLIN)" {
+    style.stroke: "#a78bfa"
+    style.stroke-width: 2
+    style.font-size: 11
+  }
+  ACTIVE -> ACTIVE: "EPOLLIN: data received\n① timer_cancel(heap, conn→timer_id)\n② read() drain loop → EAGAIN\n③ timer_insert(heap, fd, now+30s)" {
+    style.stroke: "#60a5fa"
+    style.stroke-width: 2
+    style.stroke-dash: 3
+    style.font-size: 11
+  }
+  ACTIVE -> BACKPRESSURE: "write() → EAGAIN or partial\n① write_buf_append(wb, remaining, len)\n② conn_arm_epollout():\n   epoll_ctl(MOD, EPOLLIN|EPOLLOUT)\n   conn→epollout_armed = 1" {
+    style.stroke: "#fbbf24"
+    style.stroke-width: 2
+    style.font-size: 11
+  }
+  BACKPRESSURE -> DRAINING: "EPOLLOUT fires\nconn_flush_write_buf(epfd, conn)" {
+    style.stroke: "#34d399"
+    style.stroke-width: 2
+    style.font-size: 11
+  }
+  DRAINING -> ACTIVE: "write_buf_pending == 0\nconn_disarm_epollout():\nepoll_ctl(MOD, EPOLLIN)\nconn→epollout_armed = 0" {
+    style.stroke: "#60a5fa"
+    style.stroke-width: 2
+    style.font-size: 11
+  }
+  DRAINING -> BACKPRESSURE: "write() → EAGAIN mid-flush\nbuffer still pending\nwait for next EPOLLOUT" {
+    style.stroke: "#fbbf24"
+    style.stroke-width: 2
+    style.stroke-dash: 5
+    style.font-size: 11
+  }
+  ACTIVE -> CLOSED: "EOF: read()=0\nor EPOLLERR|EPOLLHUP\nor write() error\nconn_close(epfd, fd)" {
+    style.stroke: "#f87171"
+    style.stroke-width: 2
+    style.font-size: 11
+  }
+  BACKPRESSURE -> CLOSED: "EPOLLERR|EPOLLHUP\nor write_buf overflow\nconn_close(epfd, fd)" {
+    style.stroke: "#f87171"
+    style.stroke-width: 2
+    style.font-size: 11
+  }
+  DRAINING -> CLOSED: "write() real error\n(errno != EAGAIN)\nconn_close(epfd, fd)" {
+    style.stroke: "#f87171"
+    style.stroke-width: 2
+    style.font-size: 11
+  }
+}
+##############################################
+# TIMER SWIMLANE
+##############################################
+timer_lane: "Timer Heap Swimlane (g_timer_heap)" {
+  style: {
+    fill: "#0f172a"
+    stroke: "#475569"
+    stroke-width: 2
+    font-color: "#cbd5e1"
+    font-size: 14
+    bold: true
+  }
+  T_ABSENT: "ABSENT\ntimer_id = TIMER_ID_NONE (-1)" {
+    shape: rectangle
+    style: {
+      fill: "#1e293b"
+      stroke: "#475569"
+      stroke-width: 2
+      font-color: "#94a3b8"
+      font-size: 12
+      border-radius: 6
+    }
+  }
+  T_ACTIVE: "IN HEAP\nentries[idx].expiry = now + 30s\nentries[idx].fd = conn→fd\nconn→timer_id = idx" {
+    shape: rectangle
+    style: {
+      fill: "#164e63"
+      stroke: "#22d3ee"
+      stroke-width: 2
+      font-color: "#cffafe"
+      font-size: 12
+      border-radius: 6
+    }
+  }
+  T_FIRED: "FIRED\nexpiry_ms ≤ now_ms()\ntimer_expire_all() called" {
+    shape: rectangle
+    style: {
+      fill: "#7f1d1d"
+      stroke: "#f87171"
+      stroke-width: 2
+      font-color: "#fee2e2"
+      font-size: 12
+      border-radius: 6
+    }
+  }
+  T_ABSENT -> T_ACTIVE: "ACCEPT: timer_insert(heap, fd, now_ms()+30000)\nheap_sift_up() restores min-heap\nconn→timer_id = final_heap_idx" {
+    style.stroke: "#22d3ee"
+    style.stroke-width: 2
+    style.font-size: 11
+  }
+  T_ACTIVE -> T_ACTIVE: "EPOLLIN data (reset):\n① timer_cancel(heap, conn→timer_id)\n   heap_swap(idx, last); sift_up+down\n   conn→timer_id = TIMER_ID_NONE\n② timer_insert(heap, fd, now_ms()+30000)\n   conn→timer_id = new_idx" {
+    style.stroke: "#22d3ee"
+    style.stroke-width: 2
+    style.stroke-dash: 3
+    style.font-size: 11
+  }
+  T_ACTIVE -> T_FIRED: "now_ms() ≥ expiry_ms\ntimer_expire_all(epfd, heap)" {
+    style.stroke: "#f87171"
+    style.stroke-width: 2
+    style.font-size: 11
+  }
+  T_ACTIVE -> T_ABSENT: "Explicit close path:\ntimer_cancel(heap, conn→timer_id)\n→ conn→timer_id = TIMER_ID_NONE" {
+    style.stroke: "#fb923c"
+    style.stroke-width: 2
+    style.font-size: 11
+  }
+  T_FIRED -> T_ABSENT: "After fire:\ntimer_cancel(heap, 0) removes root\nconn→timer_id = TIMER_ID_NONE\nthen conn_close(epfd, fired_fd)" {
+    style.stroke: "#f87171"
+    style.stroke-width: 2
+    style.font-size: 11
+  }
+}
+##############################################
+# ILLEGAL TRANSITION CALLOUTS
+##############################################
+illegal1: "ILLEGAL: close(fd) before epoll_ctl(DEL)\n→ fd-reuse race: new accept gets same fd\n   number; old DEL deregisters new conn" {
+  shape: rectangle
+  style: {
+    fill: "#450a0a"
+    stroke: "#dc2626"
+    stroke-width: 2
+    stroke-dash: 5
+    font-color: "#fca5a5"
+    font-size: 12
+    bold: true
+    border-radius: 4
+  }
+}
+illegal2: "ILLEGAL: EPOLLOUT always-armed\n(epollout_armed=1, write_buf_pending=0)\n→ epoll_wait() returns immediately forever\n   100% CPU busy loop" {
+  shape: rectangle
+  style: {
+    fill: "#450a0a"
+    stroke: "#dc2626"
+    stroke-width: 2
+    stroke-dash: 5
+    font-color: "#fca5a5"
+    font-size: 12
+    bold: true
+    border-radius: 4
+  }
+}
+illegal3: "ILLEGAL: timer_cancel on wrong idx after heap_swap\n→ removes different connection's timer\n   heap corruption; use-after-free on expiry" {
+  shape: rectangle
+  style: {
+    fill: "#450a0a"
+    stroke: "#dc2626"
+    stroke-width: 2
+    stroke-dash: 5
+    font-color: "#fca5a5"
+    font-size: 12
+    bold: true
+    border-radius: 4
+  }
+}
+conn_states.CLOSED -> illegal1: "ordering violation" {
+  style.stroke: "#dc2626"
+  style.stroke-dash: 5
+  style.stroke-width: 1
+  style.font-size: 10
+}
+conn_states.BACKPRESSURE -> illegal2: "if disarm skipped" {
+  style.stroke: "#dc2626"
+  style.stroke-dash: 5
+  style.stroke-width: 1
+  style.font-size: 10
+}
+timer_lane.T_ACTIVE -> illegal3: "if heap_swap skips conn→timer_id update" {
+  style.stroke: "#dc2626"
+  style.stroke-dash: 5
+  style.stroke-width: 1
+  style.font-size: 10
+}
+##############################################
+# CROSS-LANE LINKS: timer fires → conn close
+##############################################
+timer_lane.T_FIRED -> conn_states.CLOSED: "timer_expire_all():\n① timer_cancel(heap, 0)\n② conn_close(epfd, fired_fd)\n   [steps ①②③④ execute]" {
+  style.stroke: "#f87171"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+  style.font-size: 11
+  style.bold: true
+}
+conn_states.ACTIVE -> timer_lane.T_ABSENT: "explicit close:\ntimer_cancel → ABSENT\nthen epoll DEL → write_buf_free → close" {
+  style.stroke: "#fb923c"
+  style.stroke-width: 1
+  style.stroke-dash: 4
+  style.font-size: 10
+}

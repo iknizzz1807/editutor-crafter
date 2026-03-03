@@ -1,0 +1,297 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+direction: down
+title: |md
+  ## Write Path Decision Tree: `conn_write(fd, src, len)`
+  Direct Write vs Buffer vs EPOLLOUT
+| {near: top-center}
+entry: "conn_write(fd, src, len) called" {
+  shape: rectangle
+  style.fill: "#E8D5F5"
+  style.stroke: "#7B2D8B"
+  style.bold: true
+  style.font-size: 14
+}
+check_pending: "write_buf_pending(conn→write_buf) > 0?" {
+  shape: diamond
+  style.fill: "#FFF9C4"
+  style.stroke: "#F9A825"
+  style.font-size: 13
+}
+# ── Branch 1: Buffer already has data ──────────────────────────────────
+b1_append: "write_buf_append(wb, src, len)" {
+  shape: rectangle
+  style.fill: "#BBDEFB"
+  style.stroke: "#1565C0"
+  style.font-size: 13
+}
+b1_note: |md
+  **Must preserve ordering:**
+  direct write would deliver
+  src bytes BEFORE queued
+  bytes → TCP corruption
+| {
+  shape: rectangle
+  style.fill: "#E3F2FD"
+  style.stroke: "#90CAF9"
+  style.font-size: 11
+  style.italic: true
+}
+b1_overflow: "append returns -1\n(buffer overflow)?" {
+  shape: diamond
+  style.fill: "#FFF9C4"
+  style.stroke: "#F9A825"
+  style.font-size: 13
+}
+b1_ret0: "return 0\n(bytes queued)" {
+  shape: rectangle
+  style.fill: "#C8E6C9"
+  style.stroke: "#2E7D32"
+  style.font-size: 13
+}
+b1_ret_err: "return -1\n(buffer overflow)" {
+  shape: rectangle
+  style.fill: "#FFCDD2"
+  style.stroke: "#C62828"
+  style.font-size: 13
+}
+# ── Branch 2: Buffer empty — attempt direct write ──────────────────────
+b2_init: "sent = 0\nDirect write loop begins" {
+  shape: rectangle
+  style.fill: "#E8D5F5"
+  style.stroke: "#6A1B9A"
+  style.font-size: 13
+}
+b2_loop_top: "write(fd, src+sent, len-sent)" {
+  shape: rectangle
+  style.fill: "#BBDEFB"
+  style.stroke: "#1565C0"
+  style.font-size: 13
+  style.bold: true
+}
+b2_check_w: "write() return value w?" {
+  shape: diamond
+  style.fill: "#FFF9C4"
+  style.stroke: "#F9A825"
+  style.font-size: 13
+}
+# Sub-branch A: full success
+sub_a_check: "sent == len?" {
+  shape: diamond
+  style.fill: "#FFF9C4"
+  style.stroke: "#F9A825"
+  style.font-size: 13
+}
+sub_a_advance: "sent += w\nContinue loop" {
+  shape: rectangle
+  style.fill: "#E8D5F5"
+  style.stroke: "#6A1B9A"
+  style.font-size: 12
+}
+sub_a_done: "return 0\n(all bytes sent directly)\nEPOLLOUT stays DISARMED" {
+  shape: rectangle
+  style.fill: "#C8E6C9"
+  style.stroke: "#2E7D32"
+  style.font-size: 13
+  style.bold: true
+}
+sub_a_note: |md
+  **Fast path:**
+  kernel send buffer had
+  room for all bytes.
+  No EPOLLOUT registered.
+| {
+  shape: rectangle
+  style.fill: "#F1F8E9"
+  style.stroke: "#AED581"
+  style.font-size: 11
+  style.italic: true
+}
+# Sub-branch B: EAGAIN
+sub_b_eagain: "errno == EAGAIN\nor EWOULDBLOCK" {
+  shape: rectangle
+  style.fill: "#FFE0B2"
+  style.stroke: "#E65100"
+  style.font-size: 13
+}
+sub_b_buf: "write_buf_append(wb,\n  src+sent, len-sent)" {
+  shape: rectangle
+  style.fill: "#BBDEFB"
+  style.stroke: "#1565C0"
+  style.font-size: 13
+}
+sub_b_buf_fail: "append\nfailed (-1)?" {
+  shape: diamond
+  style.fill: "#FFF9C4"
+  style.stroke: "#F9A825"
+  style.font-size: 12
+}
+sub_b_arm: "conn_arm_epollout(epfd, c)" {
+  shape: rectangle
+  style.fill: "#F3E5F5"
+  style.stroke: "#7B1FA2"
+  style.font-size: 13
+  style.bold: true
+}
+arm_detail: {
+  label: "conn_arm_epollout internals"
+  style.fill: "#FAF3FF"
+  style.stroke: "#CE93D8"
+  arm_check: "epollout_armed == 1?" {
+    shape: diamond
+    style.fill: "#FFF9C4"
+    style.stroke: "#F9A825"
+    style.font-size: 12
+  }
+  arm_noop: "return\n(already armed,\nno-op)" {
+    shape: rectangle
+    style.fill: "#F5F5F5"
+    style.stroke: "#9E9E9E"
+    style.font-size: 12
+    style.italic: true
+  }
+  arm_epollctl: "epoll_ctl(epfd, EPOLL_CTL_MOD, fd,\n  {EPOLLIN | EPOLLOUT [| EPOLLET]})" {
+    shape: rectangle
+    style.fill: "#BBDEFB"
+    style.stroke: "#1565C0"
+    style.font-size: 12
+  }
+  arm_setflag: "c→epollout_armed = 1" {
+    shape: rectangle
+    style.fill: "#C8E6C9"
+    style.stroke: "#2E7D32"
+    style.font-size: 12
+  }
+  arm_check -> arm_noop: "YES" {
+    style.stroke: "#9E9E9E"
+    style.font-size: 11
+  }
+  arm_check -> arm_epollctl: "NO" {
+    style.stroke: "#1565C0"
+    style.font-size: 11
+  }
+  arm_epollctl -> arm_setflag
+}
+sub_b_ret0: "return 0\n(remainder buffered)" {
+  shape: rectangle
+  style.fill: "#C8E6C9"
+  style.stroke: "#2E7D32"
+  style.font-size: 13
+}
+sub_b_ret_err2: "return -1\n(buffer overflow)" {
+  shape: rectangle
+  style.fill: "#FFCDD2"
+  style.stroke: "#C62828"
+  style.font-size: 13
+}
+# Sub-branch C: real error
+sub_c_err: "errno ≠ EAGAIN\n(ECONNRESET, EPIPE, etc.)" {
+  shape: rectangle
+  style.fill: "#FFCDD2"
+  style.stroke: "#C62828"
+  style.font-size: 13
+}
+sub_c_ret: "return -1\n(caller must call conn_close)" {
+  shape: rectangle
+  style.fill: "#FFCDD2"
+  style.stroke: "#C62828"
+  style.font-size: 13
+  style.bold: true
+}
+sub_c_note: |md
+  **Caller responsibility:**
+  `if (conn_write(...) < 0)`
+  `  conn_close(epfd, fd);`
+| {
+  shape: rectangle
+  style.fill: "#FFEBEE"
+  style.stroke: "#EF9A9A"
+  style.font-size: 11
+  style.italic: true
+}
+# ── Terminal outcome legend ────────────────────────────────────────────
+legend: {
+  near: bottom-right
+  label: "Outcome Key"
+  style.fill: "#FAFAFA"
+  style.stroke: "#BDBDBD"
+  ok: "return 0 = success (all bytes queued)" {
+    style.fill: "#C8E6C9"
+    style.stroke: "#2E7D32"
+    style.font-size: 11
+  }
+  err: "return -1 = error (caller closes conn)" {
+    style.fill: "#FFCDD2"
+    style.stroke: "#C62828"
+    style.font-size: 11
+  }
+}
+# ── Connections ────────────────────────────────────────────────────────
+entry -> check_pending
+check_pending -> b1_append: "YES\n(pending > 0)" {
+  style.stroke: "#1565C0"
+  style.bold: true
+  style.font-size: 12
+}
+check_pending -> b2_init: "NO\n(buffer empty)" {
+  style.stroke: "#2E7D32"
+  style.bold: true
+  style.font-size: 12
+}
+b1_append -> b1_note
+b1_append -> b1_overflow
+b1_note -> b1_overflow: {style.opacity: 0}
+b1_overflow -> b1_ret0: "NO" {
+  style.stroke: "#2E7D32"
+  style.font-size: 11
+}
+b1_overflow -> b1_ret_err: "YES" {
+  style.stroke: "#C62828"
+  style.font-size: 11
+}
+b2_init -> b2_loop_top
+b2_loop_top -> b2_check_w
+b2_check_w -> sub_a_advance: "w > 0\n(partial or full write)" {
+  style.stroke: "#2E7D32"
+  style.font-size: 11
+}
+b2_check_w -> sub_b_eagain: "w == -1\nEAGAIN" {
+  style.stroke: "#E65100"
+  style.font-size: 11
+}
+b2_check_w -> sub_c_err: "w == -1\nother errno" {
+  style.stroke: "#C62828"
+  style.font-size: 11
+}
+sub_a_advance -> sub_a_check
+sub_a_check -> b2_loop_top: "NO\n(more to send)" {
+  style.stroke: "#6A1B9A"
+  style.stroke-dash: 5
+  style.font-size: 11
+}
+sub_a_check -> sub_a_done: "YES\n(sent == len)" {
+  style.stroke: "#2E7D32"
+  style.font-size: 11
+}
+sub_a_done -> sub_a_note
+sub_a_note -> sub_a_done: {style.opacity: 0}
+sub_b_eagain -> sub_b_buf
+sub_b_buf -> sub_b_buf_fail
+sub_b_buf_fail -> sub_b_ret_err2: "YES" {
+  style.stroke: "#C62828"
+  style.font-size: 11
+}
+sub_b_buf_fail -> sub_b_arm: "NO" {
+  style.stroke: "#7B1FA2"
+  style.font-size: 11
+}
+sub_b_arm -> arm_detail
+arm_detail -> sub_b_ret0
+sub_b_ret0 -> sub_b_arm: {style.opacity: 0}
+sub_c_err -> sub_c_ret
+sub_c_ret -> sub_c_note
+sub_c_note -> sub_c_ret: {style.opacity: 0}

@@ -1,0 +1,73 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+shape: sequence_diagram
+UserCode: "User Code\n(Event Loop)"
+Kernel: "Linux Kernel\n(epoll + socket)"
+OS: "OS FD Allocator"
+step1: {
+  UserCode -> Kernel: "accept4(listen_fd, NULL, NULL, SOCK_NONBLOCK)\n→ returns fd=7"
+  Kernel -> UserCode: "fd=7 (new client connection)"
+}
+step2: {
+  UserCode -> Kernel: "epoll_ctl(epfd, EPOLL_CTL_ADD, fd=7,\n{EPOLLIN, data.fd=7})\n→ fd=7 added to interest set"
+}
+step3: {
+  UserCode -> Kernel: "epoll_wait(epfd, events, MAX, -1)"
+  Kernel -> UserCode: "returns: events[0].data.fd=7, events=EPOLLIN\n[data available in receive buffer]"
+  UserCode -> Kernel: "read(fd=7, buf, BUF_SIZE) → n=512"
+  UserCode -> Kernel: "write(fd=7, buf, 512) → echo"
+}
+step4: {
+  UserCode -> Kernel: "epoll_wait(...)"
+  Kernel -> UserCode: "returns: events[0].data.fd=7, events=EPOLLIN"
+  UserCode -> Kernel: "read(fd=7, buf, BUF_SIZE) → n=0 (EOF)\npeer closed write side"
+}
+safe_del: "⚠ MANDATORY ORDER: DEL before close" {
+  style: {
+    fill: "#fff3cd"
+    stroke: "#f0a500"
+    stroke-width: 3
+    font-color: "#7a4f00"
+    bold: true
+  }
+}
+step5: {
+  UserCode -> Kernel: "epoll_ctl(epfd, EPOLL_CTL_DEL, fd=7, NULL)\n→ fd=7 removed from interest set ✓"
+  Kernel -> UserCode: "return 0 (success)"
+}
+step6: {
+  UserCode -> Kernel: "close(fd=7)\n→ kernel decrements file-description refcount"
+  Kernel -> OS: "refcount reaches 0:\nfile description freed"
+  OS -> Kernel: "fd=7 slot returned to\nfree list (lowest available)"
+}
+step7: {
+  UserCode -> Kernel: "accept4(listen_fd, ...) [new client connects]"
+  Kernel -> OS: "allocate lowest free fd"
+  OS -> Kernel: "fd=7 (recycled!)"
+  Kernel -> UserCode: "returns fd=7 (NEW connection)"
+  UserCode -> Kernel: "epoll_ctl(EPOLL_CTL_ADD, fd=7, {EPOLLIN})\n→ new connection registered ✓"
+}
+trap_warning: |md
+  ## 🔴 fd-Reuse Trap: The Silent Bug
+  **Scenario if step 5 (DEL) is SKIPPED:**
+  1. `close(fd=7)` — old connection closed
+  2. `accept4()` → OS recycles fd=7 for new client
+  3. `epoll_ctl(EPOLL_CTL_ADD, fd=7, ...)` → **EEXIST** (fd=7 still in interest set!)
+  4. OR: later `epoll_ctl(EPOLL_CTL_DEL, fd=7, NULL)` **removes the NEW connection**
+  **Why hard to reproduce:** Only triggers when OS recycles fd numbers
+  between the skip and the subsequent ADD/DEL — requires high connection
+  churn. Works fine under low load; corrupts state under C10K benchmark.
+  **Fix:** Always call `epoll_ctl(DEL, fd, NULL)` **before** `close(fd)`.
+| {
+  near: bottom-center
+  style: {
+    fill: "#fff0f0"
+    stroke: "#cc0000"
+    stroke-width: 3
+    font-color: "#4a0000"
+  }
+}

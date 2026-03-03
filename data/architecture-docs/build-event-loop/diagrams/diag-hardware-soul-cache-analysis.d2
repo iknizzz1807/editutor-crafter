@@ -1,0 +1,284 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: "Cache Line Heat Map — epoll Dispatch Hot Path (reactor.c)" {
+  near: top-center
+  style: {
+    font-size: 18
+    bold: true
+  }
+}
+legend: {
+  near: bottom-right
+  style: {
+    stroke: "#555555"
+    fill: "#1a1a2e"
+    font-color: white
+    border-radius: 6
+  }
+  l1: "L1 HIT  ~1ns  (sequential, prefetch)" {
+    style.font-color: "#00ff88"
+    style.bold: true
+  }
+  l2: "L2 HIT  ~5ns  (recently active)" {
+    style.font-color: "#88ff00"
+    style.bold: true
+  }
+  l3: "L3 HIT  ~40ns (warm connection)" {
+    style.font-color: "#ffcc00"
+    style.bold: true
+  }
+  dram: "DRAM    ~100ns (cold connection, idle)" {
+    style.font-color: "#ff4444"
+    style.bold: true
+  }
+  syscall: "SYSCALL ~1000ns (kernel ctx switch)" {
+    style.font-color: "#ff00ff"
+    style.bold: true
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  phase1: "PHASE 1 — epoll_wait() returns nready events" {
+    direction: down
+    style: {
+      fill: "#0d1b2a"
+      stroke: "#00ff88"
+      stroke-width: 2
+      border-radius: 6
+    }
+    events_array: {
+      shape: sql_table
+      label: "events[MAX_EVENTS] — stack (reactor.c:run)"
+      e0: "0x00  | epoll_event[0]  | fd=42  events=EPOLLIN  | L1-HIT"
+      e1: "0x0C  | epoll_event[1]  | fd=107 events=EPOLLIN  | L1-HIT"
+      e2: "0x18  | epoll_event[2]  | fd=8   events=EPOLLOUT | L1-HIT"
+      e3: "0x24  | epoll_event[3]  | fd=519 events=EPOLLIN  | L1-HIT"
+      e4: "0xC00 | epoll_event[1024]  ...  | L1-HIT"
+      note: "12B per entry | 1024 entries = 12 288 B = 192 cache lines"
+      cost: "COST: L1 HIT — kernel copy_to_user is sequential prefetch-friendly"
+      style.fill: "#003300"
+      style.stroke: "#00ff88"
+    }
+    events_array.cost.style.font-color: "#00ff88"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  phase2: "PHASE 2 — fd_handler_t lookup: handlers[fd]" {
+    direction: down
+    style: {
+      fill: "#1a0d00"
+      stroke: "#ff4444"
+      stroke-width: 2
+      border-radius: 6
+    }
+    handlers_array: {
+      shape: sql_table
+      label: "r->handlers[MAX_FDS] — heap (reactor.c)"
+      h0:  "0x00000 | handlers[0]    | fd=0   registered=0 | (free)"
+      h42: "0x00A80 | handlers[42]   | fd=42  cb=http_io_cb | DRAM-MISS"
+      h107:"0x01AC0 | handlers[107]  | fd=107 cb=http_io_cb | DRAM-MISS"
+      h8:  "0x00140 | handlers[8]    | fd=8   cb=http_io_cb | L3-HIT"
+      h519:"0x082A0 | handlers[519]  | fd=519 cb=accept_cb  | DRAM-MISS"
+      sz:  "40 B per fd_handler_t | 65536 slots = 2.56 MB >> L2 (256 KB)"
+      cost: "COST: RANDOM fd values = random cache miss per event = ~100ns each"
+      style.fill: "#2d0000"
+      style.stroke: "#ff4444"
+    }
+    handlers_array.cost.style.font-color: "#ff4444"
+    fd_handler_layout: {
+      shape: sql_table
+      label: "fd_handler_t layout (reactor.c) — 40 bytes"
+      f0: "0x00 | int        | registered    | 4 B"
+      f1: "0x04 | int        | closing       | 4 B"
+      f2: "0x08 | int        | fd            | 4 B"
+      f3: "0x0C | uint32_t   | events        | 4 B"
+      f4: "0x10 | reactor_io_cb | callback   | 8 B  (fn ptr)"
+      f5: "0x18 | void*      | udata         | 8 B  (ptr to http_conn_t)"
+      f6: "0x20 | uint8_t[8] | (padding)     | 8 B"
+      sz: "Total: 40 B — does NOT fit in single 64-B cache line"
+      note: "HOT fields: callback+udata = 16 B at offset 0x10-0x1F"
+      style.fill: "#1a0a00"
+      style.stroke: "#ff8800"
+    }
+    fd_handler_layout.note.style.font-color: "#ffcc00"
+  }
+  phase2b: "PHASE 2b — void* udata pointer chase: http_conn_t*" {
+    direction: down
+    style: {
+      fill: "#1a0d00"
+      stroke: "#ff8800"
+      stroke-width: 2
+      border-radius: 6
+    }
+    conn_struct: {
+      shape: sql_table
+      label: "http_conn_t — heap (http_server.c) ~26 KB"
+      c0:  "0x0000 | int               | fd               | 4 B"
+      c1:  "0x0004 | reactor_t*        | reactor          | 8 B"
+      c2:  "0x000C | int               | idle_timer_id    | 4 B"
+      c3:  "0x0010 | int               | header_timer_id  | 4 B"
+      c4:  "0x0014 | http_conn_state_t | state            | 4 B"
+      c5:  "0x0018 | char[16384]       | read_buf         | 16 KB  COLD"
+      c6:  "0x4018 | size_t            | read_len         | 8 B"
+      c7:  "0x4020 | uint8_t*          | write_buf        | 8 B  (ptr)"
+      c8:  "0x4028 | size_t            | write_len        | 8 B"
+      c9:  "0x4030 | int               | epollout_armed   | 4 B"
+      ca:  "0x4034 | http_request_t    | request          | var"
+      sz:  "Total: ~26 KB | scattered across ~406 cache lines"
+      cost: "COST: 2nd pointer chase after handlers[fd].udata — DRAM if cold"
+      style.fill: "#2d1a00"
+      style.stroke: "#ff8800"
+    }
+    conn_struct.cost.style.font-color: "#ff8800"
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  phase3: "PHASE 3 — read(fd, conn->read_buf, space) syscall" {
+    direction: down
+    style: {
+      fill: "#1a0027"
+      stroke: "#ff00ff"
+      stroke-width: 2
+      border-radius: 6
+    }
+    syscall_cost: {
+      shape: sql_table
+      label: "read() syscall breakdown (x86-64 Linux)"
+      s0: "user->kernel  | SYSCALL instr   | ~50  cycles  (~17  ns)"
+      s1: "TLB flush     | CR3 switch      | ~200 cycles  (~67  ns)"
+      s2: "kernel copy   | copy_to_user    | ~1   cycle/B (~1   ns/B)"
+      s3: "kernel->user  | SYSRET instr    | ~50  cycles  (~17  ns)"
+      s4: "cache cold    | conn->read_buf  | ~100-200 ns  (DRAM miss)"
+      total: "TOTAL per read(): ~1 000 ns (dominates if data < 1 KB)"
+      note: "At 100 K events/sec: 100 000 x 1000 ns = 100 ms/sec of syscall overhead"
+      style.fill: "#2d0040"
+      style.stroke: "#ff00ff"
+    }
+    syscall_cost.total.style.font-color: "#ff00ff"
+    syscall_cost.note.style.font-color: "#ffcc00"
+    kernel_buf: {
+      shape: sql_table
+      label: "Kernel Socket Receive Buffer (sk_buff chain)"
+      kb0: "sk_buff[0]  | 1448 B (MSS)  | page cache   | ~40 ns L3"
+      kb1: "sk_buff[1]  | 1448 B (MSS)  | page cache   | ~40 ns L3"
+      kb2: "sk_buff[2]  | partial       | page cache   | ~40 ns L3"
+      note: "copy_to_user copies sk_buff chain → conn->read_buf sequentially"
+      cost: "Sequential pages → hardware prefetcher fires → stays in L3"
+      style.fill: "#150020"
+      style.stroke: "#cc00cc"
+    }
+    kernel_buf.cost.style.font-color: "#88ff00"
+  }
+  phase4: "PHASE 4 — timer heap access (reactor.c:expire_timers)" {
+    direction: down
+    style: {
+      fill: "#001a1a"
+      stroke: "#00cccc"
+      stroke-width: 2
+      border-radius: 6
+    }
+    timer_heap: {
+      shape: sql_table
+      label: "timer_heap[MAX_TIMERS] int array — root always hot"
+      th0: "heap[0]     | slot_idx=7   | root (min expiry) | L1-HIT"
+      th1: "heap[1]     | slot_idx=23  | level 1 left      | L2-HIT"
+      th2: "heap[2]     | slot_idx=11  | level 1 right     | L2-HIT"
+      th3: "heap[3..6]  | level 2      |                   | L2/L3"
+      th4: "heap[7..14] | level 3      |                   | L3"
+      th5: "heap[n]     | deep nodes   | rarely touched    | DRAM"
+      note: "int array: 4 B per entry | 65536 entries = 256 KB = L3"
+      cost: "COST: sift_up/down touches O(log n)=13 nodes per insert/cancel"
+      style.fill: "#002020"
+      style.stroke: "#00cccc"
+    }
+    timer_heap.cost.style.font-color: "#00cccc"
+    timer_pool: {
+      shape: sql_table
+      label: "timer_pool[slot] — timer_entry_t — 32 B each"
+      tp0: "0x00 | int      | active      | 4 B"
+      tp1: "0x04 | int      | timer_id    | 4 B"
+      tp2: "0x08 | int      | heap_idx    | 4 B"
+      tp3: "0x0C | int      | (pad)       | 4 B"
+      tp4: "0x10 | uint64_t | expiry_ms   | 8 B  (CLOCK_MONOTONIC)"
+      tp5: "0x18 | void*    | udata       | 8 B"
+      sz:  "32 B fits in half a cache line (64 B) — 2 entries per line"
+      cost: "Sift touches 13 entries x 32 B = 416 B = ~7 cache lines"
+      style.fill: "#001515"
+      style.stroke: "#009999"
+    }
+    timer_pool.cost.style.font-color: "#00cccc"
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  optimization: "OPTIMIZATION STRATEGIES" {
+    direction: down
+    style: {
+      fill: "#0d1a0d"
+      stroke: "#00ff44"
+      stroke-width: 3
+      border-radius: 6
+    }
+    opt_table: {
+      shape: sql_table
+      label: "Cache Optimization Techniques (implementation-ready)"
+      o0: "PROBLEM: handlers[] 2.56 MB >> L2 | RANDOM fd = cache miss per event"
+      o1: "FIX A:   Sort events[] by fd after epoll_wait → spatial locality"
+      o2: "FIX B:   Pack hot fields (cb+udata) in first 16 B of fd_handler_t"
+      o3: "PROBLEM: http_conn_t 26 KB scattered | cold ptr chase per event"
+      o4: "FIX C:   Hot/cold split: struct hot_fields {fd,state,cb,udata} 32 B"
+      o5: "FIX D:   Huge pages (mmap MAP_HUGETLB) for handlers[] → TLB hits"
+      o6: "PROBLEM: conn->read_buf 16 KB cold | DRAM miss after idle period"
+      o7: "FIX E:   Prefetch next conn: __builtin_prefetch(&handlers[events[i+1].data.fd])"
+      o8: "PROBLEM: 100 K events/sec x 100 ns miss = 10 ms/sec in cache stalls"
+      o9: "FIX F:   Limit active connections to L3-fitting set (~8192 at 26 KB)"
+      style.fill: "#001a00"
+      style.stroke: "#00ff44"
+    }
+  }
+  cost_summary: "HOT PATH COST SUMMARY — 100K events/sec steady state" {
+    direction: down
+    style: {
+      fill: "#1a1a00"
+      stroke: "#ffcc00"
+      stroke-width: 3
+      border-radius: 6
+    }
+    cost_table: {
+      shape: sql_table
+      label: "Per-event cost breakdown (one EPOLLIN on one fd)"
+      c0: "events[i] load         | L1 HIT   |  ~1 ns  | sequential array"
+      c1: "handlers[fd] load      | DRAM MISS | ~100 ns | random fd scatter"
+      c2: "h->udata ptr chase     | DRAM MISS | ~100 ns | heap-alloc conn"
+      c3: "conn->read_buf access  | DRAM MISS | ~100 ns | 16 KB cold buffer"
+      c4: "read() syscall         | SYSCALL   | ~1000 ns| user-kernel switch"
+      c5: "parse (sequential buf) | L1 HIT   |  ~10 ns | just-filled buffer"
+      c6: "timer_reset (heap)     | L2/L3    |  ~20 ns | ~7 cache lines"
+      c7: "write() syscall        | SYSCALL   | ~1000 ns| kernel copy out"
+      total: "TOTAL dominant cost: 2x SYSCALL (~2 us) + 3x DRAM (~300 ns)"
+      note: "At 100K events/sec SYSCALL overhead = 200ms/sec CPU (20% of 1 core)"
+      style.fill: "#2d2d00"
+      style.stroke: "#ffcc00"
+    }
+    cost_table.total.style.font-color: "#ff4444"
+    cost_table.note.style.font-color: "#ffcc00"
+  }
+}
+row1 -> row2: "dispatch loop i=0..nready-1"
+row2 -> row3: "callback(fd, events, udata)"
+row3 -> row4: "post-dispatch analysis"

@@ -1,0 +1,281 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## EPOLLOUT Busy Loop Anti-Pattern — Before vs After
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  before: "BEFORE: EPOLLOUT Always Registered (reactor.c)" {
+    direction: down
+    style.fill: "#fff0f0"
+    style.stroke: "#cc0000"
+    style.stroke-width: 2
+    b_reg: {
+      shape: sql_table
+      label: "epoll interest set (initial registration)"
+      fd5: "fd=5 | EPOLLIN | EPOLLOUT | EPOLLET"
+      note: "EPOLLOUT registered at accept() — NEVER removed"
+    }
+    b_loop: "Event Loop (hot path)" {
+      direction: down
+      style.fill: "#ffe8e8"
+      style.stroke: "#ff4444"
+      b_wait: "epoll_wait() returns" {
+        style.fill: "#ff4444"
+        style.font-color: white
+        style.bold: true
+      }
+      b_check: "events[i].events == EPOLLOUT" {
+        style.fill: "#ffcccc"
+      }
+      b_wbuf: "write_buf_pending() == 0" {
+        style.fill: "#ffcccc"
+      }
+      b_noop: "Nothing to write → return" {
+        style.fill: "#ffaaaa"
+        style.italic: true
+      }
+      b_again: "Loop back to epoll_wait()" {
+        style.fill: "#ff4444"
+        style.font-color: white
+      }
+      b_wait -> b_check: "EPOLLOUT fired"
+      b_check -> b_wbuf: "events & EPOLLOUT"
+      b_wbuf -> b_noop: "buffer empty"
+      b_noop -> b_again: "no-op"
+      b_again -> b_wait: "send buf has space → fires again"
+    }
+    b_reg -> b_loop: "fd registered"
+    b_perf: {
+      shape: sql_table
+      label: "perf stat output (BEFORE)"
+      r1: "epoll_wait() calls/sec  | ~1,100,000"
+      r2: "Useful work per call    | 0 bytes"
+      r3: "CPU core utilization    | 99.8%"
+      r4: "Instructions/cycle      | 0.11  (pipeline stalled)"
+      r5: "context-switches        | 0  (never sleeps)"
+      r6: "cache-misses            | very high  (thrashing)"
+      r7: "Throughput              | 0 req/sec  (starved)"
+    }
+    b_loop -> b_perf: "result"
+    b_warning: "BUG: 100% CPU, 0% Useful Work" {
+      style.fill: "#cc0000"
+      style.font-color: white
+      style.bold: true
+      style.border-radius: 4
+    }
+    b_perf -> b_warning
+  }
+  after: "AFTER: EPOLLOUT Registered Only When write_buf Non-Empty (reactor.c)" {
+    direction: down
+    style.fill: "#f0fff0"
+    style.stroke: "#007700"
+    style.stroke-width: 2
+    a_reg: {
+      shape: sql_table
+      label: "epoll interest set (correct lifecycle)"
+      fd5_init: "fd=5 | EPOLLIN | EPOLLET          (initial)"
+      fd5_arm:  "fd=5 | EPOLLIN | EPOLLOUT | EPOLLET (armed on EAGAIN)"
+      fd5_dis:  "fd=5 | EPOLLIN | EPOLLET          (disarmed on drain)"
+    }
+    a_loop: "Event Loop (correct path)" {
+      direction: down
+      style.fill: "#e8ffe8"
+      style.stroke: "#00aa00"
+      a_wait: "epoll_wait() BLOCKS" {
+        style.fill: "#006600"
+        style.font-color: white
+        style.bold: true
+      }
+      a_epollin: "EPOLLIN fires — data arrived" {
+        style.fill: "#ccffcc"
+      }
+      a_read: "read() → try write() directly" {
+        style.fill: "#ccffcc"
+      }
+      a_eagain: "write() returns EAGAIN?" {
+        shape: diamond
+        style.fill: "#ffffcc"
+      }
+      a_buf: "Append to write_buf" {
+        style.fill: "#ccffcc"
+      }
+      a_arm: "epoll_ctl(MOD, EPOLLIN|EPOLLOUT)" {
+        style.fill: "#88cc88"
+        style.bold: true
+      }
+      a_drain: "EPOLLOUT fires — drain write_buf" {
+        style.fill: "#ccffcc"
+      }
+      a_empty: "write_buf empty?" {
+        shape: diamond
+        style.fill: "#ffffcc"
+      }
+      a_disarm: "epoll_ctl(MOD, EPOLLIN only)" {
+        style.fill: "#88cc88"
+        style.bold: true
+      }
+      a_sleep: "epoll_wait() BLOCKS again" {
+        style.fill: "#006600"
+        style.font-color: white
+      }
+      a_wait -> a_epollin: "event ready"
+      a_epollin -> a_read: "REACTOR_READ"
+      a_read -> a_eagain: "partial / full?"
+      a_eagain -> a_buf: "yes: EAGAIN"
+      a_eagain -> a_sleep: "no: sent OK"
+      a_buf -> a_arm: "buffer non-empty"
+      a_arm -> a_drain: "EPOLLOUT fires (space freed)"
+      a_drain -> a_empty: "flushed?"
+      a_empty -> a_disarm: "yes: empty"
+      a_empty -> a_drain: "no: more pending"
+      a_disarm -> a_sleep: "EPOLLOUT removed"
+      a_sleep -> a_wait: "kernel wakes on next event"
+    }
+    a_reg -> a_loop: "fd registered"
+    a_perf: {
+      shape: sql_table
+      label: "perf stat output (AFTER)"
+      r1: "epoll_wait() calls/sec  | ~12,000"
+      r2: "Useful work per call    | ~8 requests dispatched"
+      r3: "CPU core utilization    | 4–18%  (idle most of time)"
+      r4: "Instructions/cycle      | 3.2  (well-utilized)"
+      r5: "context-switches        | frequent  (healthy sleep)"
+      r6: "cache-misses            | low  (hot working set)"
+      r7: "Throughput              | 101,000+ req/sec"
+    }
+    a_loop -> a_perf: "result"
+    a_ok: "CORRECT: CPU sleeps until real work exists" {
+      style.fill: "#006600"
+      style.font-color: white
+      style.bold: true
+      style.border-radius: 4
+    }
+    a_perf -> a_ok
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  timeline_before: "CPU Timeline — BEFORE (1 second window)" {
+    direction: down
+    style.fill: "#fff0f0"
+    style.stroke: "#cc0000"
+    tbl: {
+      shape: sql_table
+      label: "epoll_wait() call trace (BEFORE)"
+      t0: "t=0.000ms | epoll_wait returns | EPOLLOUT | 0 bytes written"
+      t1: "t=0.001ms | epoll_wait returns | EPOLLOUT | 0 bytes written"
+      t2: "t=0.002ms | epoll_wait returns | EPOLLOUT | 0 bytes written"
+      t3: "t=0.003ms | epoll_wait returns | EPOLLOUT | 0 bytes written"
+      td: "...        | 1,100,000 calls/sec | all EPOLLOUT no-ops"
+      t4: "t=1000ms   | CPU%=99.8  user=99.8  sys=0.1  idle=0.1"
+    }
+    b_cpu_bar: "CPU Utilization: ████████████████████ 100%" {
+      style.fill: "#cc0000"
+      style.font-color: white
+      style.bold: true
+    }
+    tbl -> b_cpu_bar
+  }
+  timeline_after: "CPU Timeline — AFTER (1 second window)" {
+    direction: down
+    style.fill: "#f0fff0"
+    style.stroke: "#007700"
+    tal: {
+      shape: sql_table
+      label: "epoll_wait() call trace (AFTER)"
+      t0: "t=0.000ms  | epoll_wait BLOCKS       | sleeping..."
+      t1: "t=0.082ms  | EPOLLIN on 8 fds        | 8 requests read+processed"
+      t2: "t=0.083ms  | epoll_wait BLOCKS       | sleeping..."
+      t3: "t=0.165ms  | EPOLLIN on 12 fds       | 12 requests processed"
+      td: "...         | ~12,000 calls/sec       | each call does real work"
+      t4: "t=1000ms    | CPU%=11.2  user=11.0  sys=0.2  idle=88.8"
+    }
+    a_cpu_bar: "CPU Utilization: ██ 11%   (idle 89% — sleeping in epoll_wait)" {
+      style.fill: "#006600"
+      style.font-color: white
+      style.bold: true
+    }
+    tal -> a_cpu_bar
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  invariant: "The EPOLLOUT Invariant (reactor.c — enforced in conn_arm_epollout / conn_disarm_epollout)" {
+    direction: down
+    style.fill: "#f0f4ff"
+    style.stroke: "#3333aa"
+    style.stroke-width: 2
+    inv_table: {
+      shape: sql_table
+      label: "State vs EPOLLOUT Registration"
+      h: "write_buf state          | EPOLLOUT registered? | epoll_ctl call"
+      r1: "write_buf empty (0 bytes) | NO                  | none (initial) or MOD to remove"
+      r2: "write_buf non-empty       | YES                 | MOD EPOLLIN|EPOLLOUT"
+      r3: "write() returns EAGAIN    | YES (arm now)       | MOD EPOLLIN|EPOLLOUT"
+      r4: "drain completes (empty)   | NO  (disarm now)    | MOD EPOLLIN only"
+      r5: "connection closes         | N/A                 | DEL (removes all)"
+    }
+    fix_code: {
+      label: "Fix (reactor.c)"
+      width: 520
+      code: |'c
+        /* ARM: only when buffer has data */
+        static void conn_arm_epollout(int epfd, conn_t *c) {
+            if (c->epollout_armed) return;   /* idempotent */
+            struct epoll_event ev = {
+                .events  = EPOLLIN | EPOLLOUT | EPOLLET,
+                .data.fd = c->fd,
+            };
+            epoll_ctl(epfd, EPOLL_CTL_MOD, c->fd, &ev);
+            c->epollout_armed = 1;
+        }
+        /* DISARM: immediately when buffer drains to 0 */
+        static void conn_disarm_epollout(int epfd, conn_t *c) {
+            if (!c->epollout_armed) return;  /* idempotent */
+            struct epoll_event ev = {
+                .events  = EPOLLIN | EPOLLET,
+                .data.fd = c->fd,
+            };
+            epoll_ctl(epfd, EPOLL_CTL_MOD, c->fd, &ev);
+            c->epollout_armed = 0;
+        }
+      '|
+    }
+    inv_table -> fix_code: "enforced by"
+  }
+  diag_tool: "Diagnosis: How to Detect the Bug (shell)" {
+    direction: down
+    style.fill: "#fffaf0"
+    style.stroke: "#aa6600"
+    diag_table: {
+      shape: sql_table
+      label: "Symptoms and Detection Commands"
+      s1: "top / htop            | one CPU core at 100%, no load spike"
+      s2: "perf stat -p PID      | very low IPC (< 0.3), high branch-misses"
+      s3: "strace -p PID -e epoll_wait | epoll_wait returning 1 at ~1M/sec"
+      s4: "ss -ti                | rcv_buf=0 for all connections (no reads pending)"
+      s5: "perf top              | epoll_wait hot, no application symbols"
+      s6: "cat /proc/PID/status  | voluntary_ctxt_switches stays at 0"
+    }
+    fix_note: "Root cause: grep codebase for EPOLLOUT in EPOLL_CTL_ADD calls" {
+      style.fill: "#ffcc88"
+      style.bold: true
+      style.border-radius: 4
+    }
+    diag_table -> fix_note: "diagnosis → fix"
+  }
+}
+row1 -> row2: "CPU impact"
+row2 -> row3: "fix + verification"

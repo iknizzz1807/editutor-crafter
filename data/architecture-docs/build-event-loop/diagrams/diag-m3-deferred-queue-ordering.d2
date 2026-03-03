@@ -1,0 +1,171 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 104
+  }
+}
+title: |md
+  ## Deferred Task Queue: Execution Order Within One Event Loop Tick
+| {near: top-center}
+phase_row: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  phase_io: "PHASE 1 — I/O Dispatch (dispatching=1)" {
+    direction: down
+    style.fill: "#dbeafe"
+    style.stroke: "#3b82f6"
+    style.border-radius: 8
+    style.bold: true
+    ep_return: "epoll_wait() returns" {
+      shape: step
+      style.fill: "#1d4ed8"
+      style.font-color: white
+      style.bold: true
+    }
+    cb1: "I/O Callback 1" {
+      shape: rectangle
+      style.fill: "#bfdbfe"
+      style.stroke: "#3b82f6"
+      label: "I/O Callback 1\nfd=5 EPOLLIN"
+    }
+    cb2: "I/O Callback 2" {
+      shape: rectangle
+      style.fill: "#fef08a"
+      style.stroke: "#ca8a04"
+      label: "I/O Callback 2  ★\nfd=7 EPOLLIN\nqueues deferred task A"
+    }
+    cb3: "I/O Callback 3" {
+      shape: rectangle
+      style.fill: "#bfdbfe"
+      style.stroke: "#3b82f6"
+      label: "I/O Callback 3\nfd=12 EPOLLOUT"
+    }
+    ep_return -> cb1: "dispatch loop i=0"
+    cb1 -> cb2: "dispatch loop i=1"
+    cb2 -> cb3: "dispatch loop i=2"
+  }
+  phase_pending: "PHASE 2 — Apply Pending epoll_ctl (dispatching=0)" {
+    direction: down
+    style.fill: "#ede9fe"
+    style.stroke: "#7c3aed"
+    style.border-radius: 8
+    style.bold: true
+    pending_note: "pending_ops[]" {
+      shape: sql_table
+      label: "pending_ops[] accumulated during Phase 1"
+      op1: "PENDING_MOD | fd=7 | EPOLLIN only (remove EPOLLOUT)"
+      op2: "PENDING_DEL | fd=15 | (connection closed in cb1)"
+      applied: "epoll_ctl() calls execute NOW — safe, no active iteration"
+    }
+  }
+  phase_timer: "PHASE 4 — Expire Timers" {
+    direction: down
+    style.fill: "#fee2e2"
+    style.stroke: "#dc2626"
+    style.border-radius: 8
+    style.bold: true
+    tcb1: "Timer Callback 1  ★" {
+      shape: rectangle
+      style.fill: "#fca5a5"
+      style.stroke: "#dc2626"
+      label: "Timer Callback 1\nidle timeout fd=9\nqueues deferred task B"
+    }
+    tcb2: "Timer Callback 2" {
+      shape: rectangle
+      style.fill: "#fee2e2"
+      style.stroke: "#dc2626"
+      label: "Timer Callback 2\nheader deadline fd=22"
+    }
+    tcb1 -> tcb2: "while heap[0].expiry <= now"
+  }
+}
+phase_deferred: "PHASE 3 — Run Deferred Tasks (drain_until snapshot)" {
+  direction: right
+  style.fill: "#dcfce7"
+  style.stroke: "#16a34a"
+  style.border-radius: 8
+  style.bold: true
+  snap_note: "snapshot_tail = deferred_tail (taken before loop)" {
+    shape: rectangle
+    style.fill: "#bbf7d0"
+    style.stroke: "#16a34a"
+    style.italic: true
+  }
+  def_a: "Deferred Task A" {
+    shape: rectangle
+    style.fill: "#86efac"
+    style.stroke: "#16a34a"
+    label: "Deferred Task A runs\n(queued by I/O cb2 in Phase 1)\nprocesses pipelined HTTP request"
+  }
+  def_b: "Deferred Task B" {
+    shape: rectangle
+    style.fill: "#86efac"
+    style.stroke: "#16a34a"
+    label: "Deferred Task B runs\n(queued by timer cb1 in Phase 4)\ncleans up conn resources"
+  }
+  new_def: "New tasks queued here → next tick" {
+    shape: rectangle
+    style.fill: "#f0fdf4"
+    style.stroke: "#86efac"
+    style.italic: true
+    label: "Any reactor_defer() called from\ndeferred tasks runs in NEXT tick\n(tail moved past snapshot)"
+  }
+  snap_note -> def_a: "head != snapshot_tail"
+  def_a -> def_b: "head != snapshot_tail"
+  def_b -> new_def: "head == snapshot_tail → stop"
+}
+next_tick: "NEXT TICK — epoll_wait() called again" {
+  shape: step
+  style.fill: "#1e293b"
+  style.font-color: white
+  style.bold: true
+  label: "epoll_wait(epfd, events, MAX_EVENTS, timeout_ms)\ntimeout_ms = next timer expiry − now_ms()"
+}
+nodejs_map: "Node.js Phase Mapping" {
+  shape: sql_table
+  label: "Node.js Phase Mapping (Reactor → libuv)"
+  p1: "PHASE 1 I/O dispatch        | Node.js: poll phase (I/O callbacks)"
+  p2: "PHASE 2 pending epoll_ctl   | Node.js: pending callbacks phase"
+  p4: "PHASE 4 timer expiry        | Node.js: timers phase (setTimeout/setInterval)"
+  p3: "PHASE 3 deferred tasks      | Node.js: process.nextTick() queue"
+  rule: "nextTick drains BETWEEN phases — highest priority deferred mechanism"
+}
+invariant: "KEY INVARIANTS" {
+  shape: sql_table
+  label: "Key Correctness Invariants"
+  i1: "dispatching=1 during Phase 1 only — all epoll_ctl deferred to Phase 2"
+  i2: "deferred tasks see ALL Phase 1 + Phase 4 side-effects before running"
+  i3: "snapshot trick: tasks queued IN Phase 3 run next tick, not this one"
+  i4: "timer cancel in deferred task takes effect before next Phase 4"
+  i5: "EPOLLOUT busy-loop impossible: disarmed in Phase 2 after write drain"
+}
+phase_row.phase_io -> phase_row.phase_pending: "dispatching = 0\napply pending_ops[]" {
+  style.stroke: "#7c3aed"
+  style.stroke-width: 2
+  style.bold: true
+}
+phase_row.phase_pending -> phase_row.phase_timer: "pending_count = 0\nrun timer expiry" {
+  style.stroke: "#dc2626"
+  style.stroke-width: 2
+  style.bold: true
+}
+phase_row -> phase_deferred: "Phase 4 complete\nrun deferred queue" {
+  style.stroke: "#16a34a"
+  style.stroke-width: 2
+  style.bold: true
+}
+phase_deferred -> next_tick: "deferred queue drained\nloop back to epoll_wait" {
+  style.stroke: "#1e293b"
+  style.stroke-width: 3
+  style.bold: true
+}
+next_tick -> nodejs_map: "reference" {
+  style.stroke-dash: 4
+  style.stroke: "#64748b"
+}
+next_tick -> invariant: "enforced by" {
+  style.stroke-dash: 4
+  style.stroke: "#64748b"
+}

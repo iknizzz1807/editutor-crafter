@@ -1,0 +1,437 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+title: |md
+  ## Four-Phase Dispatch Loop: Control Flow, Phase Boundaries, and dispatching Flag Lifecycle
+  One iteration of `reactor_run()` — per-tick execution order
+| {near: top-center}
+classes: {
+  phase: {
+    style: {
+      border-radius: 4
+      bold: true
+      font-size: 13
+    }
+  }
+  decision: {
+    shape: diamond
+    style: {
+      font-size: 12
+      bold: true
+    }
+  }
+  annotation: {
+    shape: text
+    style: {
+      font-size: 11
+      italic: true
+    }
+  }
+  terminal: {
+    style: {
+      border-radius: 24
+      bold: true
+      font-size: 13
+    }
+  }
+  flag_on: {
+    style: {
+      fill: "#e74c3c"
+      font-color: white
+      bold: true
+      font-size: 12
+      border-radius: 4
+    }
+  }
+  flag_off: {
+    style: {
+      fill: "#27ae60"
+      font-color: white
+      bold: true
+      font-size: 12
+      border-radius: 4
+    }
+  }
+  io_event: {
+    style: {
+      fill: "#2980b9"
+      font-color: white
+      font-size: 11
+      border-radius: 4
+    }
+  }
+  side_queue: {
+    style: {
+      fill: "#f39c12"
+      font-color: white
+      font-size: 11
+      border-radius: 4
+      stroke-dash: 3
+    }
+  }
+}
+# ─── PRE-LOOP ──────────────────────────────────────────────────────────────────
+loop_start: "while (r->running)" {
+  class: terminal
+  style.fill: "#1a252f"
+  style.font-color: white
+  style.border-radius: 20
+}
+compute_timeout: "compute_epoll_timeout(r)\n→ returns -1 | 0 | ms_until_next_expiry" {
+  class: phase
+  style.fill: "#ecf0f1"
+  style.stroke: "#7f8c8d"
+}
+epoll_wait_call: "epoll_wait(r→epfd, events,\nMAX_EVENTS_PER_TICK, timeout_ms)" {
+  class: phase
+  style.fill: "#d5e8f7"
+  style.stroke: "#2980b9"
+  style.stroke-width: 2
+}
+eintr_check: "nready == -1?" {
+  class: decision
+  style.fill: "#ecf0f1"
+  style.stroke: "#7f8c8d"
+}
+eintr_branch: "errno == EINTR?" {
+  class: decision
+  style.fill: "#ecf0f1"
+  style.stroke: "#7f8c8d"
+}
+expire_retry: "reactor_expire_timers(r)\ncontinue → top of while" {
+  class: phase
+  style.fill: "#fef9e7"
+  style.stroke: "#f39c12"
+}
+fatal_error: "perror(\"epoll_wait\")\nbreak — exit reactor_run" {
+  style.fill: "#fadbd8"
+  style.stroke: "#e74c3c"
+  style.border-radius: 4
+  style.font-size: 12
+}
+# ─── PHASE 1 ──────────────────────────────────────────────────────────────────
+phase1_box: "PHASE 1 — I/O Dispatch" {
+  style.fill: "#e8daef"
+  style.stroke: "#8e44ad"
+  style.stroke-width: 3
+  style.border-radius: 6
+  set_dispatching_on: "r→dispatching = 1" {
+    class: flag_on
+  }
+  event_loop: "for i = 0 .. nready-1" {
+    style.fill: "#d2b4de"
+    style.stroke: "#8e44ad"
+    style.border-radius: 4
+    style.font-size: 12
+  }
+  lookup_handler: "fd = events[i].data.fd\nh = &r→handlers[fd]" {
+    style.fill: "#f4ecf7"
+    style.stroke: "#8e44ad"
+    style.font-size: 11
+    style.border-radius: 4
+  }
+  skip_check: "!h→registered\n|| h→closing?" {
+    class: decision
+    style.fill: "#f4ecf7"
+    style.stroke: "#8e44ad"
+  }
+  translate_flags: "rev = from_epoll_events(ep_ev)\nREACTOR_READ | WRITE | ERROR" {
+    style.fill: "#f4ecf7"
+    style.stroke: "#8e44ad"
+    style.font-size: 11
+    style.border-radius: 4
+  }
+  call_callback: "h→callback(fd, rev, h→udata)" {
+    style.fill: "#8e44ad"
+    style.font-color: white
+    style.border-radius: 4
+    style.bold: true
+    style.font-size: 12
+  }
+  callback_may_register: "callback may call\nreactor_register() /\nreactor_deregister() /\nreactor_defer()" {
+    class: side_queue
+  }
+  set_dispatching_on -> event_loop
+  event_loop -> lookup_handler
+  lookup_handler -> skip_check
+  skip_check -> translate_flags: "no — process"
+  skip_check -> event_loop: "yes — continue\n(skip this fd)"
+  translate_flags -> call_callback
+  call_callback -> callback_may_register: "side effects\nduring dispatch" {
+    style.stroke-dash: 4
+    style.stroke: "#f39c12"
+    style.font-color: "#f39c12"
+    style.font-size: 10
+  }
+  callback_may_register -> event_loop: "queued to\npending_ops\nor deferred[]" {
+    style.stroke-dash: 4
+    style.stroke: "#f39c12"
+    style.font-color: "#f39c12"
+    style.font-size: 10
+  }
+  call_callback -> event_loop: "next i"
+}
+set_dispatching_off: "r→dispatching = 0" {
+  class: flag_off
+}
+dispatching_note: "MUST be cleared BEFORE Phase 2\nso that deferred callbacks in Phase 3\ncall epoll_ctl() immediately (not re-queued)" {
+  class: annotation
+  style.fill: "#e8f8e8"
+  style.stroke: "#27ae60"
+  style.border-radius: 4
+}
+# ─── PHASE 2 ──────────────────────────────────────────────────────────────────
+phase2_box: "PHASE 2 — Apply Pending Modifications" {
+  style.fill: "#d6eaf8"
+  style.stroke: "#1a5276"
+  style.stroke-width: 3
+  style.border-radius: 6
+  pending_loop: "for i = 0 .. pending_count-1\np = &r→pending_ops[i]" {
+    style.fill: "#aed6f1"
+    style.stroke: "#1a5276"
+    style.font-size: 12
+    style.border-radius: 4
+  }
+  op_check: "p→op?" {
+    class: decision
+    style.fill: "#ebf5fb"
+    style.stroke: "#1a5276"
+  }
+  apply_del: "epoll_ctl(DEL, p→fd, NULL)\nmemset(&r→handlers[p→fd], 0)" {
+    style.fill: "#ebf5fb"
+    style.stroke: "#1a5276"
+    style.font-size: 11
+    style.border-radius: 4
+  }
+  apply_add_mod: "ev.events = p→events\nop = ADD or MOD\nepoll_ctl(op, p→fd, &ev)\nif EEXIST on ADD → retry as MOD" {
+    style.fill: "#ebf5fb"
+    style.stroke: "#1a5276"
+    style.font-size: 11
+    style.border-radius: 4
+  }
+  reset_pending: "r→pending_count = 0" {
+    style.fill: "#1a5276"
+    style.font-color: white
+    style.border-radius: 4
+    style.bold: true
+    style.font-size: 12
+  }
+  pending_loop -> op_check
+  op_check -> apply_del: "PENDING_DEL"
+  op_check -> apply_add_mod: "PENDING_ADD\nor PENDING_MOD"
+  apply_del -> pending_loop: "next i"
+  apply_add_mod -> pending_loop: "next i"
+  pending_loop -> reset_pending: "all ops applied"
+}
+# ─── PHASE 3 ──────────────────────────────────────────────────────────────────
+phase3_box: "PHASE 3 — Deferred Tasks" {
+  style.fill: "#e8f8e8"
+  style.stroke: "#1e8449"
+  style.stroke-width: 3
+  style.border-radius: 6
+  snapshot: "drain_until = r→deferred_tail\n← snapshot BEFORE draining" {
+    style.fill: "#a9dfbf"
+    style.stroke: "#1e8449"
+    style.font-size: 12
+    style.border-radius: 4
+    style.bold: true
+  }
+  deferred_check: "r→deferred_head\n!= drain_until?" {
+    class: decision
+    style.fill: "#eafaf1"
+    style.stroke: "#1e8449"
+  }
+  pop_task: "dt = &r→deferred[deferred_head]\ndeferred_head = (head+1) % MAX_DEFERRED" {
+    style.fill: "#eafaf1"
+    style.stroke: "#1e8449"
+    style.font-size: 11
+    style.border-radius: 4
+  }
+  call_deferred: "dt→callback(dt→udata)\n[dispatching==0: ops execute immediately]" {
+    style.fill: "#1e8449"
+    style.font-color: white
+    style.border-radius: 4
+    style.bold: true
+    style.font-size: 12
+  }
+  new_defer_note: "if callback calls\nreactor_defer() again →\nnewly-added task has\nindex >= drain_until\n→ runs NEXT tick only" {
+    class: annotation
+    style.fill: "#eafaf1"
+    style.stroke: "#1e8449"
+    style.border-radius: 4
+  }
+  snapshot -> deferred_check
+  deferred_check -> pop_task: "yes — tasks remain"
+  deferred_check -> end_phase3: "no — done"
+  pop_task -> call_deferred
+  call_deferred -> new_defer_note: "re-defer\nsafety" {
+    style.stroke-dash: 4
+    style.stroke: "#1e8449"
+    style.font-size: 10
+  }
+  call_deferred -> deferred_check: "next task"
+  end_phase3: "Phase 3 complete" {
+    style.fill: "#a9dfbf"
+    style.stroke: "#1e8449"
+    style.border-radius: 20
+    style.font-size: 11
+  }
+}
+# ─── PHASE 4 ──────────────────────────────────────────────────────────────────
+phase4_box: "PHASE 4 — Expire Timers" {
+  style.fill: "#fef9e7"
+  style.stroke: "#b7770d"
+  style.stroke-width: 3
+  style.border-radius: 6
+  expire_loop: "while heap_size > 0\n&& entries[0].expiry_ms <= now_ms()" {
+    style.fill: "#fdebd0"
+    style.stroke: "#b7770d"
+    style.font-size: 12
+    style.border-radius: 4
+  }
+  get_root: "slot = timer_heap[0]\nCapture: tid, interval, cb, udata" {
+    style.fill: "#fef9e7"
+    style.stroke: "#b7770d"
+    style.font-size: 11
+    style.border-radius: 4
+  }
+  one_shot_check: "interval_ms > 0\n(repeating)?" {
+    class: decision
+    style.fill: "#fef9e7"
+    style.stroke: "#b7770d"
+  }
+  reschedule: "entry.expiry_ms += interval\nheap_sift_down(0)\n[reschedule BEFORE calling cb]" {
+    style.fill: "#fef9e7"
+    style.stroke: "#b7770d"
+    style.font-size: 11
+    style.border-radius: 4
+  }
+  remove_one_shot: "heap_cancel_at_slot(slot)\n[remove BEFORE calling cb]" {
+    style.fill: "#fef9e7"
+    style.stroke: "#b7770d"
+    style.font-size: 11
+    style.border-radius: 4
+  }
+  fire_cb: "cb(tid, udata)\nnow = now_ms()  ← refresh after cb" {
+    style.fill: "#b7770d"
+    style.font-color: white
+    style.border-radius: 4
+    style.bold: true
+    style.font-size: 12
+  }
+  ordering_note: "Fire order matters:\nreschedule/remove BEFORE cb\nso cancel inside cb works correctly" {
+    class: annotation
+    style.fill: "#fef9e7"
+    style.stroke: "#b7770d"
+    style.border-radius: 4
+  }
+  expire_loop -> get_root: "timer expired"
+  expire_loop -> end_phase4: "heap empty or\ntop not expired"
+  get_root -> one_shot_check
+  one_shot_check -> reschedule: "yes"
+  one_shot_check -> remove_one_shot: "no (one-shot)"
+  reschedule -> fire_cb
+  remove_one_shot -> fire_cb
+  fire_cb -> ordering_note: "design\nrationale" {
+    style.stroke-dash: 4
+    style.stroke: "#b7770d"
+    style.font-size: 10
+  }
+  fire_cb -> expire_loop: "check next"
+  end_phase4: "Phase 4 complete\n→ continue while(running)" {
+    style.fill: "#fdebd0"
+    style.stroke: "#b7770d"
+    style.border-radius: 20
+    style.font-size: 11
+  }
+}
+# ─── SIDE QUEUES (inputs to phases) ──────────────────────────────────────────
+pending_ops_queue: "pending_ops[]\nMAX_PENDING_OPS = 256\nADD | MOD | DEL entries\nenqueued during Phase 1" {
+  class: side_queue
+  style.fill: "#e67e22"
+}
+deferred_queue: "deferred[] ring buffer\nMAX_DEFERRED = 1024\ncallbacks enqueued\nduring Phase 1 or earlier" {
+  class: side_queue
+  style.fill: "#d68910"
+}
+timer_heap_input: "timer_heap[]\nmin-heap ordered by expiry_ms\nroot = soonest-firing timer" {
+  style.fill: "#b7770d"
+  style.font-color: white
+  style.border-radius: 4
+  style.font-size: 11
+}
+# ─── TOP-LEVEL CONNECTIONS ────────────────────────────────────────────────────
+loop_start -> compute_timeout
+compute_timeout -> epoll_wait_call: "timeout_ms\n(-1 | 0 | n)"
+epoll_wait_call -> eintr_check
+eintr_check -> phase1_box: "nready >= 0\n(events ready)"
+eintr_check -> eintr_branch: "nready == -1"
+eintr_branch -> expire_retry: "EINTR"
+eintr_branch -> fatal_error: "other errno"
+expire_retry -> compute_timeout: "retry loop"
+phase1_box -> set_dispatching_off
+set_dispatching_off -> dispatching_note: "critical ordering" {
+  style.stroke-dash: 4
+  style.stroke: "#27ae60"
+  style.font-size: 10
+}
+set_dispatching_off -> phase2_box
+phase1_box.callback_may_register -> pending_ops_queue: "enqueue_pending()" {
+  style.stroke-dash: 5
+  style.stroke: "#e67e22"
+  style.font-color: "#e67e22"
+  style.font-size: 10
+}
+phase1_box.callback_may_register -> deferred_queue: "reactor_defer()" {
+  style.stroke-dash: 5
+  style.stroke: "#d68910"
+  style.font-color: "#d68910"
+  style.font-size: 10
+}
+pending_ops_queue -> phase2_box: "consumed\nin Phase 2" {
+  style.stroke-dash: 3
+  style.stroke: "#e67e22"
+  style.font-color: "#e67e22"
+  style.font-size: 10
+}
+deferred_queue -> phase3_box: "consumed\nin Phase 3" {
+  style.stroke-dash: 3
+  style.stroke: "#d68910"
+  style.font-color: "#d68910"
+  style.font-size: 10
+}
+timer_heap_input -> compute_timeout: "entries[0].expiry_ms\n→ timeout value" {
+  style.stroke-dash: 3
+  style.stroke: "#b7770d"
+  style.font-color: "#b7770d"
+  style.font-size: 10
+}
+timer_heap_input -> phase4_box: "heap scanned\nfor expired entries" {
+  style.stroke-dash: 3
+  style.stroke: "#b7770d"
+  style.font-color: "#b7770d"
+  style.font-size: 10
+}
+phase2_box -> phase3_box
+phase3_box -> phase4_box
+phase4_box -> loop_start: "next iteration" {
+  style.stroke-width: 2
+  style.stroke: "#1a252f"
+}
+# ─── ORDERING INVARIANT ANNOTATION ───────────────────────────────────────────
+ordering_invariant: |md
+  **Phase Ordering Rationale**
+  1→2: epoll_ctl must not run while iterating events[]
+  2→3: deferred cbs see dispatching=0; ops execute immediately
+  3→4: cancel_timer in deferred cb prevents spurious timer fire
+  4→1: I/O processed first; data resets timer before expiry check
+| {
+  near: bottom-right
+  style.fill: "#f8f9fa"
+  style.stroke: "#6c757d"
+  style.border-radius: 6
+  style.font-size: 11
+}

@@ -1,0 +1,463 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: "Event Dispatch Loop — Reactor Main Iteration (reactor.c)"
+  shape: rectangle
+  style: {
+    fill: "#1a1a2e"
+    font-color: "#e0e0ff"
+    font-size: 18
+    bold: true
+    border-radius: 6
+    stroke: "#4444aa"
+    stroke-width: 2
+  }
+}
+legend: {
+  label: "Legend"
+  shape: rectangle
+  style: {
+    fill: "#f0f0f0"
+    stroke: "#999999"
+    font-size: 12
+    border-radius: 4
+  }
+  hot: "🔴 Red  = hot path / critical"
+  safe: "🟢 Green = safe zone (no dispatch)"
+  defer: "🟡 Yellow = deferred / pending"
+  skip: "⬜ Gray  = skip / no-op"
+}
+legend.near: bottom-right
+loop_start: "while (r->running)" {
+  shape: hexagon
+  style: {
+    fill: "#1a1a2e"
+    font-color: "#ffffff"
+    font-size: 14
+    bold: true
+    stroke: "#6666cc"
+    stroke-width: 3
+  }
+}
+step1: {
+  label: "STEP 1 — Compute epoll_wait Timeout"
+  style: {
+    fill: "#1e3a5f"
+    font-color: "#aaddff"
+    font-size: 13
+    bold: true
+    stroke: "#336699"
+    border-radius: 6
+  }
+  s1_code: {
+    label: "timeout_ms = compute_timeout(r)"
+    width: 380
+    code: |'c
+      if (r->timer_heap_size == 0) return -1;
+      uint64_t now    = now_ms();
+      uint64_t expiry = timer_pool[timer_heap[0]].expiry_ms;
+      if (expiry <= now) return 0;
+      return (int)(expiry - now);  // ms until next timer
+    '|
+  }
+  s1_note: {
+    shape: sql_table
+    label: "Timeout Values"
+    val_neg: "timeout = -1  |  no timers pending — block forever"
+    val_zero: "timeout = 0   |  timer overdue — poll immediately"
+    val_pos: "timeout = N   |  block up to N ms"
+  }
+}
+step2: {
+  label: "STEP 2 — epoll_wait (Block for I/O Events)"
+  style: {
+    fill: "#1a1a2e"
+    font-color: "#ff9966"
+    font-size: 13
+    bold: true
+    stroke: "#cc4400"
+    stroke-width: 2
+    border-radius: 6
+  }
+  s2_call: {
+    label: "n = epoll_wait(...)"
+    width: 420
+    code: |'c
+      n = epoll_wait(r->epfd,
+                     events,        // struct epoll_event[MAX_EVENTS]
+                     MAX_EVENTS,    // 1024
+                     timeout_ms);   // computed above
+      // Thread sleeps here until:
+      //   (a) ≥1 fd becomes ready, OR
+      //   (b) timeout_ms elapses, OR
+      //   (c) signal interrupts (errno=EINTR → continue)
+    '|
+  }
+  s2_eintr: "EINTR? → continue (retry)" {
+    shape: diamond
+    style: {
+      fill: "#3a1a1a"
+      font-color: "#ffaaaa"
+      stroke: "#cc3333"
+    }
+  }
+  s2_struct: {
+    shape: sql_table
+    label: "struct epoll_event[n] — kernel → userspace copy"
+    f0: "events[i].events  | uint32_t | EPOLLIN / EPOLLOUT / EPOLLERR / EPOLLHUP"
+    f1: "events[i].data.fd | int      | fd that is ready (or .ptr in M3)"
+    sz: "Size: n × 12 bytes  (max: 1024 × 12 = 12 KB)"
+  }
+}
+step3: {
+  label: "STEP 3 — Dispatch I/O Events  [dispatching = 1]"
+  style: {
+    fill: "#3a0000"
+    font-color: "#ffcccc"
+    font-size: 13
+    bold: true
+    stroke: "#cc0000"
+    stroke-width: 3
+    border-radius: 6
+  }
+  s3_set_flag: {
+    label: "r->dispatching = 1"
+    style: {
+      fill: "#660000"
+      font-color: "#ffdddd"
+      stroke: "#ff4444"
+      bold: true
+      border-radius: 4
+    }
+  }
+  s3_loop: "for i in 0 .. n-1" {
+    shape: hexagon
+    style: {
+      fill: "#4a0000"
+      font-color: "#ffbbbb"
+      stroke: "#cc2222"
+    }
+  }
+  s3_lookup: {
+    label: "fd = events[i].data.fd"
+    width: 380
+    code: |'c
+      fd_handler_t *h = &r->handlers[fd];
+      // Guard: skip if not registered or marked closing
+      if (!h->registered || h->closing) continue;
+    '|
+  }
+  s3_closed_check: "h->closing == 1?" {
+    shape: diamond
+    style: {
+      fill: "#555555"
+      font-color: "#cccccc"
+      stroke: "#888888"
+    }
+  }
+  s3_skip: "SKIP — fd was deregistered\nduring this dispatch batch" {
+    shape: rectangle
+    style: {
+      fill: "#444444"
+      font-color: "#aaaaaa"
+      stroke: "#666666"
+      border-radius: 4
+    }
+  }
+  s3_translate: {
+    label: "Translate epoll → reactor flags"
+    width: 380
+    code: |'c
+      uint32_t rev = 0;
+      if (ep_ev & (EPOLLERR|EPOLLHUP)) rev |= REACTOR_ERROR;
+      if (ep_ev & EPOLLIN)             rev |= REACTOR_READ;
+      if (ep_ev & EPOLLOUT)            rev |= REACTOR_WRITE;
+    '|
+  }
+  s3_callback: {
+    label: "h->callback(fd, rev, h->udata)"
+    style: {
+      fill: "#660000"
+      font-color: "#ffeeee"
+      stroke: "#ff0000"
+      bold: true
+      border-radius: 4
+      font-size: 13
+    }
+  }
+  s3_cb_note: {
+    shape: sql_table
+    label: "Callback may call (safely deferred while dispatching=1)"
+    n0: "reactor_register()    | queues PENDING_ADD or PENDING_MOD"
+    n1: "reactor_deregister()  | sets h->closing=1 + queues PENDING_DEL"
+    n2: "reactor_defer()       | enqueues to deferred ring buffer"
+    n3: "reactor_set_timeout() | inserts into timer heap (safe — no epoll touch)"
+  }
+  s3_unset_flag: {
+    label: "r->dispatching = 0"
+    style: {
+      fill: "#1a4a1a"
+      font-color: "#aaffaa"
+      stroke: "#44cc44"
+      bold: true
+      border-radius: 4
+    }
+  }
+  s3_set_flag -> s3_loop
+  s3_loop -> s3_lookup
+  s3_lookup -> s3_closed_check
+  s3_closed_check -> s3_skip: "yes"
+  s3_closed_check -> s3_translate: "no"
+  s3_translate -> s3_callback
+  s3_callback -> s3_loop: "next i"
+  s3_loop -> s3_unset_flag: "i == n"
+}
+why_after: {
+  label: "WHY steps 4/5/6 run AFTER step 3 — not interleaved"
+  style: {
+    fill: "#2a2a00"
+    font-color: "#ffff88"
+    stroke: "#aaaa00"
+    stroke-width: 2
+    border-radius: 6
+    font-size: 12
+    italic: true
+  }
+  w1: "During Step 3, the events[] array is being iterated."
+  w2: "Calling epoll_ctl() during iteration can reuse fd numbers"
+  w3: "if a DEL+close triggers OS fd recycling → stale pointer bug."
+  w4: "The dispatching=1 flag forces all mutations to be QUEUED,"
+  w5: "then safely applied in Steps 4/5/6 after the loop completes."
+}
+step4: {
+  label: "STEP 4 — Apply Pending epoll Modifications  [safe: dispatching=0]"
+  style: {
+    fill: "#1a3a1a"
+    font-color: "#aaffaa"
+    font-size: 13
+    bold: true
+    stroke: "#44aa44"
+    stroke-width: 2
+    border-radius: 6
+  }
+  s4_loop: "for i in 0 .. pending_count-1" {
+    shape: hexagon
+    style: {
+      fill: "#1a4a1a"
+      font-color: "#ccffcc"
+      stroke: "#33cc33"
+    }
+  }
+  s4_switch: "pending_ops[i].op" {
+    shape: diamond
+    style: {
+      fill: "#225522"
+      font-color: "#ccffcc"
+      stroke: "#55aa55"
+    }
+  }
+  s4_add: {
+    label: "PENDING_ADD"
+    width: 340
+    code: |'c
+      ev.events  = pending_ops[i].events;
+      ev.data.fd = pending_ops[i].fd;
+      epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
+    '|
+  }
+  s4_mod: {
+    label: "PENDING_MOD"
+    width: 340
+    code: |'c
+      ev.events  = pending_ops[i].events;
+      ev.data.fd = pending_ops[i].fd;
+      epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &ev);
+    '|
+  }
+  s4_del: {
+    label: "PENDING_DEL"
+    width: 340
+    code: |'c
+      epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+      // Clear handler slot NOW (safe — loop is done)
+      memset(&handlers[fd], 0, sizeof(fd_handler_t));
+    '|
+  }
+  s4_reset: {
+    label: "r->pending_count = 0"
+    style: {
+      fill: "#335533"
+      font-color: "#ccffcc"
+      stroke: "#55aa55"
+      border-radius: 4
+    }
+  }
+  s4_loop -> s4_switch
+  s4_switch -> s4_add: "ADD"
+  s4_switch -> s4_mod: "MOD"
+  s4_switch -> s4_del: "DEL"
+  s4_add -> s4_loop: "next"
+  s4_mod -> s4_loop: "next"
+  s4_del -> s4_loop: "next"
+  s4_loop -> s4_reset: "done"
+}
+step5: {
+  label: "STEP 5 — Process Expired Timers"
+  style: {
+    fill: "#1a1a3a"
+    font-color: "#aaaaff"
+    font-size: 13
+    bold: true
+    stroke: "#4444aa"
+    stroke-width: 2
+    border-radius: 6
+  }
+  s5_heap: {
+    shape: sql_table
+    label: "Min-Heap State Before Expiry Scan"
+    h0: "heap[0]  | timer_pool[slot].expiry_ms  | MINIMUM (root)"
+    h1: "heap[1]  | ..."
+    h2: "heap[2]  | ..."
+    hN: "heap[N]  | ..."
+  }
+  s5_while: "while heap[0].expiry_ms <= now_ms()" {
+    shape: hexagon
+    style: {
+      fill: "#222255"
+      font-color: "#ccccff"
+      stroke: "#4444cc"
+    }
+  }
+  s5_oneshot: "interval_ms == 0?" {
+    shape: diamond
+    style: {
+      fill: "#1a1a44"
+      font-color: "#ccccff"
+      stroke: "#3333aa"
+    }
+  }
+  s5_remove: {
+    label: "One-Shot: Remove from heap"
+    width: 340
+    code: |'c
+      // Swap root with last entry
+      timer_heap[0] = timer_heap[--timer_heap_size];
+      timer_pool[timer_heap[0]].heap_idx = 0;
+      heap_sift_down(r, 0);
+      memset(&timer_pool[slot], 0, sizeof(*));
+    '|
+  }
+  s5_reschedule: {
+    label: "Repeating: Reschedule BEFORE firing"
+    width: 360
+    code: |'c
+      // Update expiry IN PLACE before callback
+      // so cancel() inside callback correctly removes it
+      e->expiry_ms = now_ms() + e->interval_ms;
+      heap_sift_down(r, 0);
+    '|
+  }
+  s5_fire: {
+    label: "e->callback(timer_id, udata)"
+    style: {
+      fill: "#333366"
+      font-color: "#ddddff"
+      stroke: "#5555cc"
+      bold: true
+      border-radius: 4
+    }
+  }
+  s5_heap -> s5_while
+  s5_while -> s5_oneshot: "expired"
+  s5_oneshot -> s5_remove: "yes"
+  s5_oneshot -> s5_reschedule: "no"
+  s5_remove -> s5_fire
+  s5_reschedule -> s5_fire
+  s5_fire -> s5_while: "check next"
+}
+step6: {
+  label: "STEP 6 — Run Deferred Task Queue"
+  style: {
+    fill: "#3a2a00"
+    font-color: "#ffdd88"
+    font-size: 13
+    bold: true
+    stroke: "#aa8800"
+    stroke-width: 2
+    border-radius: 6
+  }
+  s6_snapshot: {
+    label: "Snapshot tail before draining"
+    width: 380
+    code: |'c
+      // Snapshot prevents tasks deferred DURING this phase
+      // from running in the same tick (avoids infinite loops)
+      int drain_until = r->deferred_tail;
+    '|
+  }
+  s6_while: "while deferred_head != drain_until" {
+    shape: hexagon
+    style: {
+      fill: "#4a3a00"
+      font-color: "#ffeeaa"
+      stroke: "#cc9900"
+    }
+  }
+  s6_dequeue: {
+    label: "Dequeue and fire"
+    width: 380
+    code: |'c
+      deferred_task_t *dt = &deferred[deferred_head];
+      deferred_head = (deferred_head + 1) % MAX_DEFERRED;
+      dt->callback(dt->udata);
+      // dt->callback may call reactor_defer() — new tasks
+      // land at deferred_tail > drain_until → next tick
+    '|
+  }
+  s6_nexttick: "Tasks added during phase 6\n→ run next iteration" {
+    style: {
+      fill: "#2a1a00"
+      font-color: "#ffcc66"
+      stroke: "#886600"
+      border-radius: 4
+    }
+  }
+  s6_snapshot -> s6_while
+  s6_while -> s6_dequeue: "pending"
+  s6_dequeue -> s6_while: "loop"
+  s6_while -> s6_nexttick: "done"
+}
+loop_back: "→ back to while(r->running)" {
+  style: {
+    fill: "#1a1a2e"
+    font-color: "#8888cc"
+    stroke: "#4444aa"
+    border-radius: 4
+  }
+}
+ordering_note: {
+  label: "Execution Order Invariants"
+  shape: sql_table
+  i0: "Step 3 (dispatch)  | dispatching=1 | callbacks queue mutations — never call epoll_ctl directly"
+  i1: "Step 4 (apply ops) | dispatching=0 | epoll_ctl DEL clears handler slots — fd reuse is now safe"
+  i2: "Step 5 (timers)    | dispatching=0 | timer callbacks see consistent handler table"
+  i3: "Step 6 (deferred)  | dispatching=0 | reactor_register() inside deferred CB → immediate epoll_ctl"
+  i4: "Snapshot trick     | drain_until   | new reactor_defer() calls land in NEXT tick only"
+}
+title -> loop_start: "enter"
+loop_start -> step1: "tick start"
+step1 -> step2: "timeout_ms"
+step2 -> step3: "n events ready"
+step2.s2_eintr -> step1: "EINTR → retry"
+step3 -> why_after: "loop done"
+why_after -> step4: "proceed"
+step4 -> step5: "pending_count = 0"
+step5 -> step6: "timers expired"
+step6 -> loop_back: "deferred drained"
+loop_back -> loop_start: "next iteration"
+loop_back -> ordering_note

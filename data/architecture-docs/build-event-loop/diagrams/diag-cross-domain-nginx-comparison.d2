@@ -1,0 +1,264 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## This Project vs. NGINX Worker Architecture
+  Single-threaded event loop (left) vs. multi-process scaled reactor (right)
+| {near: top-center}
+row_main: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  left_col: "THIS PROJECT" {
+    direction: down
+    style.fill: "#e8f4fd"
+    style.stroke: "#2980b9"
+    style.stroke-width: 2
+    style.border-radius: 8
+    proc: "Single Process (echo_server / http_server)" {
+      shape: rectangle
+      style.fill: "#2980b9"
+      style.font-color: white
+      style.bold: true
+    }
+    epoll_inst: "Single epoll Instance" {
+      shape: cylinder
+      style.fill: "#85c1e9"
+      style.stroke: "#2980b9"
+      label: "epoll fd (EPOLL_CLOEXEC)"
+    }
+    event_loop: "reactor_run() — Event Loop" {
+      direction: down
+      style.fill: "#d6eaf8"
+      style.stroke: "#2980b9"
+      style.border-radius: 6
+      phase1: "Phase 1: epoll_wait() dispatch" {
+        shape: rectangle
+        style.fill: "#aed6f1"
+      }
+      phase2: "Phase 2: Apply pending epoll_ctl ops" {
+        shape: rectangle
+        style.fill: "#aed6f1"
+      }
+      phase3: "Phase 3: Deferred Task Queue" {
+        shape: rectangle
+        style.fill: "#f9e79f"
+        style.stroke: "#f39c12"
+        label: "Phase 3: Deferred Queue\n(reactor_defer / process.nextTick equiv)"
+      }
+      phase4: "Phase 4: Expire Timers (Min-Heap)" {
+        shape: rectangle
+        style.fill: "#f9e79f"
+        style.stroke: "#f39c12"
+        label: "Phase 4: Timers\n(timer_heap — O(log n) min-heap)"
+      }
+      phase1 -> phase2: "deferred ops"
+      phase2 -> phase3: "clean context"
+      phase3 -> phase4: "tasks done"
+    }
+    conn_table: "Connection Table — 10K http_conn_t" {
+      shape: sql_table
+      label: "conn_table[MAX_CONNS] (http_conn.h)"
+      f0: "fd         | int             | file descriptor"
+      f1: "state      | http_conn_state | READING/WRITING/KEEP_ALIVE"
+      f2: "read_buf   | char[16384]     | 16KB accumulation buffer"
+      f3: "write_buf  | uint8_t*        | 64KB heap write buffer"
+      f4: "idle_tid   | int             | timer_heap slot id"
+      f5: "hdr_tid    | int             | header deadline timer"
+      f6: "request    | http_request_t  | parsed method/path/headers"
+      sz: "Total: ~26KB per conn × 10K = ~260MB working set"
+    }
+    timer_impl: "Timer Implementation" {
+      shape: rectangle
+      style.fill: "#fdebd0"
+      style.stroke: "#e67e22"
+      label: "Min-Heap (timer_heap.c)\nInsert O(log n) | Find-min O(1) | Cancel O(log n)\nCLOCK_MONOTONIC — no NTP jumps"
+    }
+    deferred_impl: "Deferred Queue Implementation" {
+      shape: rectangle
+      style.fill: "#fdebd0"
+      style.stroke: "#e67e22"
+      label: "Ring buffer — deferred[MAX_DEFERRED]\nSnapshot tail before drain\nPrevents infinite re-defer loops"
+    }
+    proc -> epoll_inst: "epoll_create1(EPOLL_CLOEXEC)"
+    epoll_inst -> event_loop: "epoll_wait() | timeout_ms"
+    event_loop -> conn_table: "data.ptr → http_conn_t*"
+    event_loop -> timer_impl: "compute_epoll_timeout()"
+    event_loop -> deferred_impl: "reactor_defer(cb, udata)"
+  }
+  gap: "" {
+    style.stroke: transparent
+    style.fill: transparent
+    width: 60
+    vs: "≡ IDENTICAL\nPER-WORKER\nLOOP" {
+      shape: oval
+      style.fill: "#27ae60"
+      style.font-color: white
+      style.bold: true
+      width: 120
+    }
+  }
+  right_col: "NGINX ARCHITECTURE" {
+    direction: down
+    style.fill: "#eafaf1"
+    style.stroke: "#27ae60"
+    style.stroke-width: 2
+    style.border-radius: 8
+    master: "nginx Master Process (nginx.c)" {
+      shape: rectangle
+      style.fill: "#27ae60"
+      style.font-color: white
+      style.bold: true
+      label: "Master Process\nnginx.c: ngx_master_process_cycle()"
+    }
+    accept_method: "Accept Balancing Strategy" {
+      shape: diamond
+      style.fill: "#a9dfbf"
+      style.stroke: "#27ae60"
+      label: "Kernel >= 4.5?\nEPOLLEXCLUSIVE\nor SO_REUSEPORT"
+    }
+    workers: "N Worker Processes (one per CPU core)" {
+      direction: right
+      style.fill: "#d5f5e3"
+      style.stroke: "#27ae60"
+      style.border-radius: 6
+      w1: "Worker 0\n(CPU 0)" {
+        direction: down
+        style.fill: "#a9dfbf"
+        style.border-radius: 4
+        w1_epoll: "epoll instance" {
+          shape: cylinder
+          style.fill: "#82e0aa"
+        }
+        w1_loop: "ngx_process_events_and_timers()" {
+          shape: rectangle
+          style.fill: "#d5f5e3"
+        }
+        w1_posted: "ngx_event_process_posted()" {
+          shape: rectangle
+          style.fill: "#f9e79f"
+          style.stroke: "#f39c12"
+          label: "ngx_event_process_posted()\n≡ reactor Phase 3 deferred queue"
+        }
+        w1_timer: "ngx_event_timer_rbtree" {
+          shape: rectangle
+          style.fill: "#fdebd0"
+          style.stroke: "#e67e22"
+          label: "ngx_event_timer_rbtree\n≡ your timer_heap (red-black tree\nvs min-heap — both O(log n))"
+        }
+        w1_epoll -> w1_loop: "epoll_wait"
+        w1_loop -> w1_posted: "after I/O dispatch"
+        w1_loop -> w1_timer: "compute timeout"
+      }
+      w2: "Worker 1\n(CPU 1)" {
+        direction: down
+        style.fill: "#a9dfbf"
+        style.border-radius: 4
+        w2_epoll: "epoll instance" {
+          shape: cylinder
+          style.fill: "#82e0aa"
+        }
+        w2_loop: "ngx_process_events_and_timers()" {
+          shape: rectangle
+          style.fill: "#d5f5e3"
+        }
+        w2_posted: "ngx_event_process_posted()" {
+          shape: rectangle
+          style.fill: "#f9e79f"
+          style.stroke: "#f39c12"
+          label: "ngx_event_process_posted()\n≡ reactor Phase 3 deferred queue"
+        }
+        w2_timer: "ngx_event_timer_rbtree" {
+          shape: rectangle
+          style.fill: "#fdebd0"
+          style.stroke: "#e67e22"
+          label: "ngx_event_timer_rbtree\n≡ your timer_heap (red-black tree)"
+        }
+        w2_epoll -> w2_loop: "epoll_wait"
+        w2_loop -> w2_posted: "after I/O dispatch"
+        w2_loop -> w2_timer: "compute timeout"
+      }
+      wN: "Worker N-1\n(CPU N-1)" {
+        direction: down
+        style.fill: "#a9dfbf"
+        style.border-radius: 4
+        wN_epoll: "epoll instance" {
+          shape: cylinder
+          style.fill: "#82e0aa"
+        }
+        wN_loop: "ngx_process_events_and_timers()" {
+          shape: rectangle
+          style.fill: "#d5f5e3"
+        }
+        wN_posted: "ngx_event_process_posted()" {
+          shape: rectangle
+          style.fill: "#f9e79f"
+          style.stroke: "#f39c12"
+          label: "ngx_event_process_posted()\n≡ reactor Phase 3 deferred queue"
+        }
+        wN_timer: "ngx_event_timer_rbtree" {
+          shape: rectangle
+          style.fill: "#fdebd0"
+          style.stroke: "#e67e22"
+          label: "ngx_event_timer_rbtree\n≡ your timer_heap"
+        }
+        wN_epoll -> wN_loop: "epoll_wait"
+        wN_loop -> wN_posted: "after I/O dispatch"
+        wN_loop -> wN_timer: "compute timeout"
+      }
+    }
+    nginx_conn: "Per-Worker Connection Pool (ngx_connection_t)" {
+      shape: sql_table
+      label: "ngx_connection_t (src/core/ngx_connection.h)"
+      n0: "fd          | ngx_socket_t   | file descriptor"
+      n1: "read        | ngx_event_t*   | read event (≡ REACTOR_READ cb)"
+      n2: "write       | ngx_event_t*   | write event (≡ REACTOR_WRITE cb)"
+      n3: "recv        | ngx_recv_pt    | recv handler fn ptr"
+      n4: "send        | ngx_send_pt    | send handler fn ptr"
+      n5: "pool        | ngx_pool_t*    | per-conn memory pool"
+      n6: "log         | ngx_log_t*     | per-conn log"
+      sz: "~10K/N conns per worker | sendfile() for static files"
+    }
+    nginx_diff: "NGINX-Only Features" {
+      shape: rectangle
+      style.fill: "#d5f5e3"
+      style.stroke: "#27ae60"
+      style.border-radius: 4
+      label: "sendfile() + TCP_CORK (zero-copy static)\nSO_REUSEPORT per worker (kernel 3.9+)\nEPOLLEXCLUSIVE anti-thundering-herd (kernel 4.5+)\nngx_pool_t slab allocator (no malloc per request)\nnginx.conf directive system"
+    }
+    master -> accept_method: "fork() N workers"
+    accept_method -> workers: "EPOLLEXCLUSIVE: wake 1 worker\nSO_REUSEPORT: per-worker listen fd"
+    workers -> nginx_conn: "ngx_get_connection(fd)"
+    workers -> nginx_diff: "production extras"
+  }
+}
+row_legend: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  legend: "Equivalence Map" {
+    shape: sql_table
+    label: "Component Equivalence: This Project ↔ NGINX"
+    e1: "reactor_run() phases 1-4           | ngx_process_events_and_timers()"
+    e2: "reactor Phase 3 deferred queue     | ngx_event_process_posted() posted list"
+    e3: "timer_heap (min-heap, O(log n))    | ngx_event_timer_rbtree (red-black tree)"
+    e4: "http_conn_t on heap                | ngx_connection_t + ngx_pool_t"
+    e5: "reactor_register / deregister      | ngx_add_event / ngx_del_event"
+    e6: "write_buf + EPOLLOUT lifecycle     | ngx_chain_t + write filter chain"
+    e7: "conn->idle_timer_id                | ev->timer (ngx_event_t timer field)"
+    e8: "single process, 10K conns          | N workers x 10K/N conns = same total"
+    e9: "read()+write() file serving        | sendfile()+TCP_CORK zero-copy"
+  }
+  scale_note: "Scaling Difference" {
+    shape: rectangle
+    style.fill: "#fadbd8"
+    style.stroke: "#e74c3c"
+    style.border-radius: 6
+    label: "This Project: 1 CPU core\n10K conns on 1 thread\n~100K req/sec (small static)\n\nNGINX: N CPU cores\n10K/N conns per worker\n~N x 100K req/sec\nLinear scaling via process isolation\n(no shared mutable state between workers)"
+  }
+}
+row_main -> row_legend: "architecture layers"

@@ -1,0 +1,150 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+direction: down
+title: |md
+  ## compute_epoll_timeout() — epoll_wait Timeout Integration
+| {near: top-center}
+# ─── INPUT ───────────────────────────────────────────────────────────────────
+input: "timer_heap_t *h" {
+  shape: rectangle
+  style.fill: "#B5AFF6"
+  style.font-color: "#1a0044"
+  style.bold: true
+}
+# ─── DECISION: heap_size == 0 ────────────────────────────────────────────────
+d_empty: "h->size == 0 ?" {
+  shape: diamond
+  style.fill: "#DEE1EB"
+  style.font-color: "#222"
+}
+ret_neg1: "return -1\n(block indefinitely;\nno timers pending)" {
+  shape: rectangle
+  style.fill: "#88DCF7"
+  style.font-color: "#00213a"
+  style.bold: true
+}
+# ─── GET ROOT EXPIRY ─────────────────────────────────────────────────────────
+get_expiry: "expiry_ms =\nh->entries[0].expiry_ms\n(heap root = minimum)" {
+  shape: rectangle
+  style.fill: "#C7F1FF"
+  style.font-color: "#003344"
+}
+# ─── GET NOW ─────────────────────────────────────────────────────────────────
+get_now: "now = now_ms()\nvia clock_gettime\n(CLOCK_MONOTONIC)\n[vDSO: ~20 ns, no syscall]" {
+  shape: rectangle
+  style.fill: "#C7F1FF"
+  style.font-color: "#003344"
+}
+# ─── DECISION: already overdue ───────────────────────────────────────────────
+d_overdue: "expiry_ms ≤ now ?" {
+  shape: diamond
+  style.fill: "#DEE1EB"
+  style.font-color: "#222"
+}
+ret_0: "return 0\n(poll immediately;\ntimer already overdue)" {
+  shape: rectangle
+  style.fill: "#f1a64f"
+  style.font-color: "#1a0000"
+  style.bold: true
+}
+# ─── COMPUTE DIFF ────────────────────────────────────────────────────────────
+compute_diff: "diff = expiry_ms − now\n(uint64_t; positive)" {
+  shape: rectangle
+  style.fill: "#C7F1FF"
+  style.font-color: "#003344"
+}
+# ─── DECISION: overflow guard ────────────────────────────────────────────────
+d_overflow: "diff > (uint64_t)INT_MAX ?" {
+  shape: diamond
+  style.fill: "#DEE1EB"
+  style.font-color: "#222"
+}
+ret_intmax: "return INT_MAX\n(~24.8 days; prevents\nint overflow on cast)" {
+  shape: rectangle
+  style.fill: "#88DCF7"
+  style.font-color: "#00213a"
+  style.bold: true
+}
+ret_diff: "return (int)diff\n(milliseconds until\neareliest timer fires)" {
+  shape: rectangle
+  style.fill: "#ACE1AF"
+  style.font-color: "#001a00"
+  style.bold: true
+}
+# ─── CONNECTIONS: main flow ──────────────────────────────────────────────────
+input -> d_empty
+d_empty -> ret_neg1: "YES" {style.stroke: "#0077aa"; style.bold: true}
+d_empty -> get_expiry: "NO" {style.stroke: "#333"}
+get_expiry -> get_now
+get_now -> d_overdue
+d_overdue -> ret_0: "YES" {style.stroke: "#e07000"; style.bold: true}
+d_overdue -> compute_diff: "NO" {style.stroke: "#333"}
+compute_diff -> d_overflow
+d_overflow -> ret_intmax: "YES" {style.stroke: "#0077aa"; style.bold: true}
+d_overflow -> ret_diff: "NO" {style.stroke: "#2a7a2a"; style.bold: true}
+# ─── TIMELINE SECTION ────────────────────────────────────────────────────────
+timeline: "epoll_wait() Timeline — Three-Call Sequence" {
+  style.fill: "#f8f6ff"
+  style.stroke: "#B5AFF6"
+  style.stroke-width: 2
+  style.bold: true
+  call1: "CALL 1\ncompute_epoll_timeout() → 5000 ms\n(next timer expires in ~5 s)\n\nepoll_wait(epfd, events, 1024, 5000)\n  blocks 4800 ms ◄── client data arrives early\n  returns nready = 3  (3 connections readable)" {
+    shape: rectangle
+    style.fill: "#E4DBFE"
+    style.font-color: "#1a0044"
+  }
+  call2: "CALL 2\ntimer_expire_all() → 0 timers expired (4.8 s elapsed)\ncompute_epoll_timeout() → 200 ms  (timer now 200 ms away)\n\nepoll_wait(epfd, events, 1024, 200)\n  blocks 200 ms  ◄── NO I/O events\n  returns nready = 0  (pure timeout wakeup)" {
+    shape: rectangle
+    style.fill: "#E4DBFE"
+    style.font-color: "#1a0044"
+  }
+  call3: "CALL 3\ntimer_expire_all() runs:\n  h->entries[0].expiry_ms ≤ now  →  timer expired!\n  fd = 7  →  conn_close(epfd, 7)\n  log: \"Idle timeout: fd=7\"\n  heap_size shrinks by 1\n\ncompute_epoll_timeout() → next timer or -1\nepoll_wait(epfd, events, 1024, …)  ◄── continues" {
+    shape: rectangle
+    style.fill: "#fce7c6"
+    style.font-color: "#1a0000"
+  }
+  call1 -> call2: "4800 ms elapsed\nnready=3 returned" {style.stroke-dash: 4}
+  call2 -> call3: "200 ms elapsed\nnready=0 returned" {style.stroke-dash: 4; style.stroke: "#e07000"}
+}
+# ─── ANNOTATIONS ─────────────────────────────────────────────────────────────
+note_clock: |md
+  **CLOCK_MONOTONIC invariant**
+  Never jumps backward (NTP-safe).
+  CLOCK_REALTIME can step backward → corrupts diff → wrong timeouts.
+| {
+  shape: rectangle
+  near: bottom-left
+  style.fill: "#fff9c9"
+  style.stroke: "#b8a000"
+  style.font-color: "#333"
+}
+note_eagain: |md
+  **Return value contract**
+  `-1` → epoll_wait blocks forever
+  `0` → epoll_wait polls (returns instantly)
+  `n` → epoll_wait blocks at most n ms
+  Passed directly: `epoll_wait(epfd, ev, MAX, timeout_ms)`
+| {
+  shape: rectangle
+  near: bottom-right
+  style.fill: "#fff9c9"
+  style.stroke: "#b8a000"
+  style.font-color: "#333"
+}
+# ─── LEGEND ──────────────────────────────────────────────────────────────────
+legend: {
+  near: top-right
+  shape: rectangle
+  style.fill: "#f0f0f0"
+  style.stroke: "#999"
+  l_input: "Input / Computation" {style.fill: "#C7F1FF"; style.stroke: "#88DCF7"}
+  l_decision: "Decision (diamond)" {style.fill: "#DEE1EB"; style.stroke: "#aaa"}
+  l_ret_block: "return -1 / INT_MAX" {style.fill: "#88DCF7"; style.stroke: "#0077aa"}
+  l_ret_poll: "return 0 (overdue)" {style.fill: "#f1a64f"; style.stroke: "#c06000"}
+  l_ret_ok: "return diff (normal)" {style.fill: "#ACE1AF"; style.stroke: "#2a7a2a"}
+  l_timeline: "Timeline event" {style.fill: "#E4DBFE"; style.stroke: "#B5AFF6"}
+}

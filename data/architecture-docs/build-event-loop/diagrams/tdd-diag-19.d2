@@ -1,0 +1,256 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |'md
+# Reactor Pattern: Component Architecture
+*Demultiplexer → Dispatcher → Handler Table → Concrete Handlers*
+'| {near: top-center}
+
+reactor_boundary: "reactor internals" {
+  style: {
+    fill: "#E8EAF6"
+    stroke: "#5C6BC0"
+    stroke-width: 2
+    stroke-dash: 0
+    border-radius: 8
+    font-size: 13
+    font-color: "#3949AB"
+    bold: true
+  }
+
+  demux: "Event Demultiplexer" {
+    style: {
+      fill: "#7B1FA2"
+      font-color: white
+      border-radius: 6
+      shadow: true
+    }
+    label: |'md
+**Event Demultiplexer**
+`epoll_wait(epfd, events, MAX_EVENTS, timeout_ms)`
+- Blocks until ≥1 fd is ready
+- Returns `nready` (0–1024) `epoll_event` structs
+- Each struct: `{uint32_t events, epoll_data_t data}`
+- Timeout from timer heap: `compute_epoll_timeout()`
+- `EINTR` → retry; other error → fatal
+'|
+    width: 380
+  }
+
+  dispatcher: "Dispatcher" {
+    style: {
+      fill: "#1565C0"
+      font-color: white
+      border-radius: 6
+      shadow: true
+    }
+    label: |'md
+**Dispatcher**
+`for (i = 0; i < nready; i++) { … }`
+1. Extract `fd = events[i].data.fd`
+2. Check `h->registered && !h->closing`
+3. Translate epoll flags → `REACTOR_READ | WRITE | ERROR`
+4. Call `h->callback(fd, rev, h->udata)`
+5. Guard: `dispatching = 1` during loop
+'|
+    width: 380
+  }
+
+  handler_table: "Handler Registration Table" {
+    style: {
+      fill: "#E65100"
+      font-color: white
+      border-radius: 6
+      shadow: true
+    }
+    label: |'md
+**Handler Registration Table**
+`fd_handler_t handlers[max_fds]`
+
+| Field | Type | Notes |
+|---|---|---|
+| `registered` | int | 0=free, 1=active |
+| `closing` | int | mark-and-skip guard |
+| `fd` | int | for assertions |
+| `events` | uint32_t | EPOLLIN\|OUT\|ET |
+| `callback` | fn ptr | user I/O cb |
+| `udata` | void* | opaque user data |
+
+*sizeof(fd_handler_t) = 32 bytes (1 cache line)*
+'|
+    width: 440
+  }
+
+  demux -> dispatcher: "nready epoll_events\n(12 bytes each, stack array)" {
+    style.stroke: "#5C6BC0"
+    style.stroke-width: 2
+    style.bold: true
+  }
+  dispatcher -> handler_table: "handlers[fd] lookup\n(O(1) array index)" {
+    style.stroke: "#5C6BC0"
+    style.stroke-width: 2
+    style.bold: true
+  }
+}
+
+user_boundary: "user code  (zero epoll symbols)" {
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#388E3C"
+    stroke-width: 2
+    stroke-dash: 4
+    border-radius: 8
+    font-size: 13
+    font-color: "#2E7D32"
+    bold: true
+  }
+
+  accept_handler: "accept_handler()" {
+    style: {
+      fill: "#1B5E20"
+      font-color: white
+      border-radius: 5
+    }
+    label: |'md
+**accept_handler**
+`reactor_io_cb` registered on `listen_fd`
+- Drains accept queue until `EAGAIN`
+- Calls `reactor_register(r, conn_fd, REACTOR_READ, …)`
+- Sets idle + header timers via `reactor_set_timeout`
+- Allocates `http_conn_t` via `calloc`
+'|
+    width: 330
+  }
+
+  echo_handler: "echo_handler()" {
+    style: {
+      fill: "#33691E"
+      font-color: white
+      border-radius: 5
+    }
+    label: |'md
+**echo_handler**
+`reactor_io_cb` registered per connection
+- `REACTOR_ERROR` → `echo_conn_close(c)`
+- `REACTOR_READ` → drain loop until `EAGAIN`
+  → `write(fd, buf, n)`
+- Resets idle timer on each `read()` > 0
+'|
+    width: 330
+  }
+
+  http_io_callback: "http_io_callback()" {
+    style: {
+      fill: "#558B2F"
+      font-color: white
+      border-radius: 5
+    }
+    label: |'md
+**http_io_callback**
+`reactor_io_cb` — HTTP/1.1 state machine dispatcher
+- `REACTOR_ERROR` → `http_conn_close(conn)`
+- `REACTOR_READ` → `http_handle_read(conn)`
+  → `http_try_parse()` → `http_process_request()`
+- `REACTOR_WRITE` → `http_handle_write(conn)`
+  → `write_buf` drain → EPOLLOUT lifecycle
+- Defers `free(conn)` via `reactor_defer`
+'|
+    width: 330
+  }
+}
+
+kernel: "Linux Kernel" {
+  style: {
+    fill: "#212121"
+    font-color: white
+    border-radius: 6
+    shadow: true
+    bold: true
+  }
+  label: |'md
+**Linux Kernel**
+NIC interrupt → DMA → socket receive buffer
+→ epoll readiness queue entry added
+→ `epoll_wait()` wakes calling thread
+*Event sources: TCP data, EOF, RST, send-buffer drain*
+'|
+  width: 360
+}
+
+pending_ops: "Deferred Modification Queue" {
+  style: {
+    fill: "#F57F17"
+    font-color: white
+    border-radius: 5
+    shadow: false
+  }
+  label: |'md
+**Pending Ops Queue** *(re-entrancy safety)*
+`pending_mod_t pending_ops[256]`
+During dispatch (`dispatching=1`):
+`reactor_register` → enqueues `PENDING_ADD/MOD`
+`reactor_deregister` → enqueues `PENDING_DEL`, sets `closing=1`
+Phase 2 (after dispatch): applies all ops via `epoll_ctl`
+Phase 2 clears handler slots for `PENDING_DEL`
+'|
+  width: 360
+}
+
+kernel -> reactor_boundary.demux: "Hardware interrupt\n→ socket buffer filled\n→ fd added to readiness queue" {
+  style.stroke: "#880E4F"
+  style.stroke-width: 2
+  style.bold: true
+  style.font-color: "#880E4F"
+}
+
+reactor_boundary.handler_table -> user_boundary.accept_handler: "callback(listen_fd, REACTOR_READ, NULL)" {
+  style.stroke: "#388E3C"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+}
+
+reactor_boundary.handler_table -> user_boundary.echo_handler: "callback(conn_fd, REACTOR_READ|WRITE|ERROR, echo_conn_t*)" {
+  style.stroke: "#388E3C"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+}
+
+reactor_boundary.handler_table -> user_boundary.http_io_callback: "callback(conn_fd, REACTOR_READ|WRITE|ERROR, http_conn_t*)" {
+  style.stroke: "#388E3C"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+}
+
+user_boundary.accept_handler -> reactor_boundary.handler_table: "reactor_register(r, fd, events, cb, udata)\n→ enqueues PENDING_ADD if dispatching==1" {
+  style.stroke: "#E65100"
+  style.stroke-width: 1
+  style.stroke-dash: 5
+  style.font-color: "#E65100"
+}
+
+user_boundary.http_io_callback -> pending_ops: "reactor_deregister(r, fd)\nsets closing=1, enqueues PENDING_DEL" {
+  style.stroke: "#F57F17"
+  style.stroke-width: 1
+  style.stroke-dash: 5
+  style.font-color: "#BF360C"
+}
+
+pending_ops -> reactor_boundary.handler_table: "Phase 2: epoll_ctl(ADD|MOD|DEL)\nclears handler slot on DEL" {
+  style.stroke: "#F57F17"
+  style.stroke-width: 2
+}
+
+boundary_note: |'md
+**Boundary Invariant**
+User code (green zone) contains **zero** `epoll_*` symbols.
+All kernel interaction is mediated by the reactor (blue zone).
+The orange deferred queue makes callbacks re-entrancy-safe.
+'| {
+  near: bottom-center
+  style.font-size: 11
+  style.font-color: "#37474F"
+}

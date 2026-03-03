@@ -1,0 +1,249 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+title: |md
+  # Level-Triggered vs Edge-Triggered: Kernel Notification State Machine
+| {
+  near: top-center
+}
+
+lt_machine: "Level-Triggered (LT)" {
+  style: {
+    fill: "#2d1b4e"
+    stroke: "#9b59b6"
+    stroke-width: 2
+    border-radius: 8
+  }
+
+  lt_initial: ● {
+    shape: circle
+    width: 24
+    height: 24
+    style: {
+      fill: "#e8e8e8"
+      stroke: "#e8e8e8"
+    }
+  }
+
+  lt_empty: "EMPTY\n─────────────\ninvariant:\nrecv_buf == 0 bytes" {
+    shape: rectangle
+    style: {
+      fill: "#1a472a"
+      stroke: "#27ae60"
+      stroke-width: 2
+      font-color: "#ecf0f1"
+      border-radius: 6
+    }
+  }
+
+  lt_has_data: "HAS_DATA\n─────────────\ninvariant:\nrecv_buf > 0 bytes\nepoll readiness: ACTIVE" {
+    shape: rectangle
+    style: {
+      fill: "#1a3a5c"
+      stroke: "#2980b9"
+      stroke-width: 2
+      font-color: "#ecf0f1"
+      border-radius: 6
+    }
+  }
+
+  lt_initial -> lt_empty
+  lt_empty -> lt_has_data: "data arrives\n[kernel copies\nbytes to recv_buf]"
+  
+  lt_has_data -> lt_has_data: "epoll_wait called\n→ fd reported ready\n[EVERY call until drained]" {
+    style: {
+      stroke: "#f39c12"
+      font-color: "#f39c12"
+      stroke-dash: 0
+    }
+  }
+  
+  lt_has_data -> lt_has_data: "partial read\n(n < pending)\n→ re-reported NEXT\nepoll_wait" {
+    style: {
+      stroke: "#3498db"
+      font-color: "#3498db"
+    }
+  }
+  
+  lt_has_data -> lt_empty: "drain to EAGAIN\n(recv_buf == 0)\n→ removed from\nreadiness queue" {
+    style: {
+      stroke: "#27ae60"
+      font-color: "#27ae60"
+    }
+  }
+
+  lt_safe_note: |md
+    ✓ **Safe to partial-read**
+    epoll re-notifies on next
+    `epoll_wait()` call if
+    bytes remain in buffer
+  | {
+    style: {
+      fill: "#1a472a"
+      stroke: "#27ae60"
+      font-color: "#2ecc71"
+      border-radius: 4
+    }
+  }
+}
+
+et_machine: "Edge-Triggered (ET)" {
+  style: {
+    fill: "#2d1b4e"
+    stroke: "#8e44ad"
+    stroke-width: 2
+    border-radius: 8
+  }
+
+  et_initial: ● {
+    shape: circle
+    width: 24
+    height: 24
+    style: {
+      fill: "#e8e8e8"
+      stroke: "#e8e8e8"
+    }
+  }
+
+  et_empty: "EMPTY\n─────────────\ninvariant:\nrecv_buf == 0 bytes\nno readiness entry" {
+    shape: rectangle
+    style: {
+      fill: "#1a472a"
+      stroke: "#27ae60"
+      stroke-width: 2
+      font-color: "#ecf0f1"
+      border-radius: 6
+    }
+  }
+
+  et_has_data: "HAS_DATA\n─────────────\ninvariant:\nrecv_buf > 0 bytes" {
+    shape: rectangle
+    style: {
+      fill: "#1a3a5c"
+      stroke: "#2980b9"
+      stroke-width: 2
+      font-color: "#ecf0f1"
+      border-radius: 6
+    }
+  }
+
+  et_delivered: "DELIVERED\n─────────────\nfd reported ready\nONCE to userspace\nno re-notification\nunless new data" {
+    shape: rectangle
+    style: {
+      fill: "#4a2800"
+      stroke: "#e67e22"
+      stroke-width: 2
+      font-color: "#ecf0f1"
+      border-radius: 6
+    }
+  }
+
+  et_stranded: "STRANDED ⚠\n─────────────\nrecv_buf > 0 bytes\nNO readiness entry\nclient BLOCKED\nforever" {
+    shape: rectangle
+    style: {
+      fill: "#5c1010"
+      stroke: "#e74c3c"
+      stroke-width: 3
+      font-color: "#ffcccc"
+      border-radius: 6
+      bold: true
+    }
+  }
+
+  et_initial -> et_empty
+  
+  et_empty -> et_delivered: "data arrives\n[empty→non-empty\nTRANSITION]\n→ added to readiness\nqueue ONCE" {
+    style: {
+      stroke: "#e67e22"
+      font-color: "#e67e22"
+      stroke-width: 2
+    }
+  }
+  
+  et_delivered -> et_empty: "drain to EAGAIN\n(read loop until\nerrno==EAGAIN)\n→ recv_buf == 0" {
+    style: {
+      stroke: "#27ae60"
+      font-color: "#27ae60"
+    }
+  }
+  
+  et_delivered -> et_stranded: "PARTIAL READ\n(single read,\nexit without EAGAIN)\n→ NO new transition\n→ NO re-notification" {
+    style: {
+      stroke: "#e74c3c"
+      font-color: "#e74c3c"
+      stroke-width: 3
+      stroke-dash: 5
+    }
+  }
+  
+  et_has_data -> et_delivered: "NEW data arrives\n[another empty→non-empty\nor non-empty transition\nif re-armed]" {
+    style: {
+      stroke: "#9b59b6"
+      font-color: "#9b59b6"
+      stroke-dash: 5
+    }
+  }
+  
+  et_stranded -> et_has_data: "data arrives\n(client sends more)" {
+    style: {
+      stroke: "#e74c3c"
+      stroke-dash: 3
+      font-color: "#e74c3c"
+    }
+  }
+
+  et_danger_note: |md
+    ### ✗ SILENT DATA LOSS BUG
+    Bytes in `recv_buf` after partial read wait forever.
+    Connection appears alive but is frozen.
+    Diagnose: `ss -ti` shows non-zero `rcv_buf`.
+  | {
+    style: {
+      fill: "#5c1010"
+      stroke: "#e74c3c"
+      font-color: "#ff6b6b"
+      border-radius: 4
+    }
+  }
+}
+
+comparison: "Notification Contract Comparison" {
+  near: bottom-center
+  style: {
+    fill: "#1a1a2e"
+    stroke: "#7f8c8d"
+    stroke-width: 1
+    border-radius: 8
+  }
+  table: ||md
+    | Property              | Level-Triggered          | Edge-Triggered              |
+    |-----------------------|--------------------------|-----------------------------|
+    | **Re-notify on data** | Yes — every epoll_wait   | No — only on transition     |
+    | **Partial read safe** | ✓ Safe                   | ✗ Data stranded forever     |
+    | **Read strategy**     | One chunk per event OK   | MUST drain to EAGAIN        |
+    | **Notification**      | Condition = trigger      | Transition = trigger        |
+    | **NGINX / libuv**     | Optional fallback        | Default (EPOLLET flag)      |
+    | **Bug detection**     | Fails loudly             | Fails silently              |
+    | **Registration flag** | *(default, no flag)*     | `EPOLLET` added to events   |
+  ||
+}
+
+lt_machine -> comparison: "register without EPOLLET" {
+  style: {
+    stroke: "#27ae60"
+    stroke-dash: 3
+    font-color: "#27ae60"
+  }
+}
+
+et_machine -> comparison: "register with EPOLLET flag" {
+  style: {
+    stroke: "#e67e22"
+    stroke-dash: 3
+    font-color: "#e67e22"
+  }
+}

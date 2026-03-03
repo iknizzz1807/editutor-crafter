@@ -1,0 +1,266 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# Rule A: Wrap title in a container
+header: {
+  style.stroke: transparent
+  style.fill: transparent
+  title: |md
+    ## EPOLLHUP & EPOLLERR — Kernel Error Event Dispatcher
+    `epoll_event.events` bitmask dispatcher decision tree
+  |
+}
+
+input: {
+  label: "Dispatcher Entry (reactor.c)"
+  shape: sql_table
+  ev_field: "0x00 | uint32_t | events[i].events // epoll bitmask"
+  fd_field: "0x04 | int      | events[i].data.fd // file descriptor"
+  note: "EPOLLERR and EPOLLHUP are always delivered"
+}
+
+row_legend: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  always_on: "Always-On Flags (Kernel-Enforced)" {
+    shape: sql_table
+    style.fill: "#fff3cd"
+    style.stroke: "#e6a817"
+    r1: "EPOLLERR | kernel always delivers"
+    r2: "EPOLLHUP | kernel always delivers"
+    r3: "EPOLLRDHUP | must set explicit flag"
+    r4: "EPOLLIN | registered in EPOLL_CTL_ADD"
+    r5: "EPOLLOUT | registered for write flow"
+  }
+}
+
+# Decision Tree Flow
+check_err: "ev & EPOLLERR?" {
+  shape: diamond
+  style.fill: "#f8d7da"
+  style.stroke: "#dc3545"
+}
+
+check_hup: "ev & EPOLLHUP?" {
+  shape: diamond
+  style.fill: "#f8d7da"
+  style.stroke: "#dc3545"
+}
+
+check_rdhup: "ev & EPOLLRDHUP?" {
+  shape: diamond
+  style.fill: "#fff3cd"
+  style.stroke: "#e6a817"
+}
+
+check_in: "ev & EPOLLIN?" {
+  shape: diamond
+  style.fill: "#d1ecf1"
+  style.stroke: "#17a2b8"
+}
+
+check_out: "ev & EPOLLOUT?" {
+  shape: diamond
+  style.fill: "#d4edda"
+  style.stroke: "#28a745"
+}
+
+# Dispatcher Row
+row_dispatch: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  dispatch_err: "REACTOR_ERROR (EPOLLERR)" {
+    shape: rectangle
+    style.fill: "#f8d7da"
+    style.stroke: "#dc3545"
+    style.bold: true
+    width: 280
+    code: |'c
+      int err = 0;
+      socklen_t len = sizeof(err);
+      getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
+      // err: ECONNRESET, ETIMEDOUT, etc.
+      cb(fd, REACTOR_ERROR, udata);
+    '|
+  }
+  
+  dispatch_hup: "REACTOR_HANGUP (EPOLLHUP)" {
+    shape: rectangle
+    style.fill: "#f8d7da"
+    style.stroke: "#dc3545"
+    style.bold: true
+    width: 280
+    code: |'c
+      // Peer sent FIN+RST
+      // Read any remaining data,
+      // then close the FD.
+      cb(fd, REACTOR_ERROR, udata);
+    '|
+  }
+  
+  dispatch_rdhup: "REACTOR_HALF_CLOSE (EPOLLRDHUP)" {
+    shape: rectangle
+    style.fill: "#fff3cd"
+    style.stroke: "#e6a817"
+    style.bold: true
+    width: 280
+    code: |'c
+      // Peer called shutdown(SHUT_WR)
+      // We can still write; drain
+      // remaining reads first.
+      cb(fd, REACTOR_READ, udata);
+    '|
+  }
+}
+
+row_io: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  dispatch_in: "REACTOR_READ (EPOLLIN)" {
+    shape: rectangle
+    style.fill: "#d1ecf1"
+    style.stroke: "#17a2b8"
+    style.bold: true
+    width: 280
+    code: |'c
+      // ET mode: drain to EAGAIN.
+      // Call read() in a loop.
+      cb(fd, REACTOR_READ, udata);
+    '|
+  }
+
+  dispatch_out: "REACTOR_WRITE (EPOLLOUT)" {
+    shape: rectangle
+    style.fill: "#d4edda"
+    style.stroke: "#28a745"
+    style.bold: true
+    width: 280
+    code: |'c
+      // Space in kernel send buf.
+      // Flush write_buf; disarm
+      // when fully drained.
+      cb(fd, REACTOR_WRITE, udata);
+    '|
+  }
+}
+
+# Terminal Actions
+row_actions: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  action_close: "conn_close(epfd, fd)" {
+    shape: rectangle
+    style.fill: "#dc3545"
+    style.font-color: white
+    style.bold: true
+    code: |'c
+      epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+      write_buf_free(conn->write_buf);
+      close(fd);
+    '|
+  }
+  
+  action_read_loop: "ET Drain Loop" {
+    shape: rectangle
+    style.fill: "#17a2b8"
+    style.font-color: white
+    code: |'c
+      while ((n = read(fd, buf, BUF)) > 0)
+        process(buf, n);
+      // n==0: EOF, errno==EAGAIN: drained
+    '|
+  }
+}
+
+# Rule D: Block string delimiter surviving pipes
+warning_box: "CRITICAL: Priority Ranking" {
+  shape: rectangle
+  style.fill: "#343a40"
+  style.font-color: white
+  style.bold: true
+  width: 560
+  note: |'md
+    **Rule**: Always test `EPOLLERR | EPOLLHUP` before `EPOLLIN | EPOLLOUT`.
+    A single event can carry EPOLLIN and EPOLLERR simultaneously.
+    Data after an error is unreliable — close immediately.
+
+    c
+    uint32_t rev = 0;
+    if (ep & (EPOLLERR | EPOLLHUP)) rev |= REACTOR_ERROR;
+    if (ep & EPOLLIN)               rev |= REACTOR_READ;
+    if (ep & EPOLLOUT)              rev |= REACTOR_WRITE;
+    if (rev & REACTOR_ERROR) { conn_close(epfd, fd); continue; }
+    
+  '|
+}
+
+# Reference Metadata
+row_ref: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  epoll_flags_ref: "Event Flag Reference" {
+    shape: sql_table
+    style.fill: "#e9ecef"
+    style.stroke: "#6c757d"
+    r1: "EPOLLIN    | 0x001 | recv buf ready"
+    r2: "EPOLLOUT   | 0x004 | send buf ready"
+    r3: "EPOLLERR   | 0x008 | error condition"
+    r4: "EPOLLHUP   | 0x010 | peer hung up"
+    r5: "EPOLLRDHUP | 0x2000| peer closed write"
+    r6: "EPOLLET    | edge  | signal modifier"
+  }
+  
+  human_readable: "Practical Implementation" {
+    shape: sql_table
+    style.fill: "#f8f9fa"
+    r1: "EPOLLERR only        | getsockopt + close"
+    r2: "EPOLLHUP only        | drain remaining + close"
+    r3: "EPOLLERR + EPOLLIN   | close immediately"
+    r4: "EPOLLHUP + EPOLLIN   | drain, then close"
+    r5: "EPOLLRDHUP + EPOLLIN | half-close drain"
+    r6: "EPOLLIN only         | loop until EAGAIN"
+    r7: "EPOLLOUT only        | flush + disarm"
+  }
+}
+
+# Connections
+header -> input
+input -> row_legend
+row_legend -> check_err
+
+check_err -> row_dispatch.dispatch_err: "YES | EPOLLERR"
+check_err -> check_hup: "NO"
+check_hup -> row_dispatch.dispatch_hup: "YES | EPOLLHUP"
+check_hup -> check_rdhup: "NO"
+check_rdhup -> row_dispatch.dispatch_rdhup: "YES | EPOLLRDHUP"
+check_rdhup -> check_in: "NO"
+check_in -> row_io.dispatch_in: "YES | EPOLLIN"
+check_in -> check_out: "NO"
+check_out -> row_io.dispatch_out: "YES | EPOLLOUT"
+check_out -> warning_box: "NO | IDLE"
+
+row_dispatch.dispatch_err -> action_actions.action_close
+row_dispatch.dispatch_hup -> action_actions.action_close
+row_dispatch.dispatch_rdhup -> row_actions.action_read_loop
+row_io.dispatch_in -> row_actions.action_read_loop
+
+row_actions.action_close -> warning_box
+row_actions.action_read_loop -> warning_box
+warning_box -> row_ref
+
+epoll_flags_ref.near: bottom-left
+human_readable.near: bottom-right

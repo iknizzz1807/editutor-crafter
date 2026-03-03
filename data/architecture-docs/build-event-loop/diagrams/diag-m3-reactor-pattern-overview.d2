@@ -1,0 +1,277 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title_node: {
+  label: "Reactor Pattern: Architecture and Component Roles (reactor.c)"
+  near: top-center
+  style: {
+    font-size: 18
+    bold: true
+    fill: transparent
+    stroke: transparent
+  }
+}
+
+loop: {
+  label: "Single-Threaded Event Loop (reactor_run)"
+  style: {
+    fill: "#e8f4f8"
+    stroke: "#2c7bb6"
+    stroke-width: 2
+    border-radius: 8
+  }
+
+  phase1: {
+    label: "Phase 1 — Event Demultiplexer"
+    style: {
+      fill: "#d0e8ff"
+      stroke: "#1a6fb5"
+      stroke-width: 2
+      border-radius: 6
+    }
+    epoll_api: {
+      shape: class
+      label: "epoll_wait() (sys/epoll.h)"
+      style: {
+        fill: "#b3d4ff"
+        stroke: "#1a6fb5"
+      }
+      -epfd: "int"
+      -events: "epoll_event[1024]"
+      -timeout_ms: "int"
+      "+epoll_wait(epfd, events, maxevents, timeout)": "int nready"
+    }
+    interest_set: {
+      shape: sql_table
+      label: "Kernel Interest Set (red-black tree)"
+      style: { fill: "#cce0ff"; stroke: "#1a6fb5" }
+      r1: "0x00 | fd=3 | EPOLLIN | EPOLLET | data.ptr=conn_a"
+      r2: "0x08 | fd=7 | EPOLLIN | EPOLLET | data.ptr=conn_b"
+      r3: "0x10 | fd=11 | EPOLLIN / EPOLLOUT | data.ptr=conn_c"
+      r4: "0x18 | fd=N  | RESERVED | RESERVED"
+      note: "O(log n) insert/delete via epoll_ctl()"
+    }
+    readiness_q: {
+      shape: sql_table
+      label: "Kernel Readiness Queue (linked list)"
+      style: { fill: "#ddeeff"; stroke: "#1a6fb5" }
+      r1: "fd=3  | EPOLLIN  (NIC DMA filled recv buffer)"
+      r2: "fd=11 | EPOLLOUT (send buffer drained)"
+      r3: "fd=7  | EPOLLERR (RST received)"
+      note: "O(1) append by kernel interrupt handler"
+    }
+    interest_set -> readiness_q: "HW | interrupt"
+    epoll_api -> readiness_q: "syscall | wait"
+  }
+
+  phase2: {
+    label: "Phase 2 — Dispatcher (dispatching=1)"
+    style: {
+      fill: "#fff0cc"
+      stroke: "#e6a817"
+      stroke-width: 2
+      border-radius: 6
+    }
+    dispatcher: {
+      shape: class
+      label: "Dispatcher (reactor.c:reactor_run)"
+      style: { fill: "#fff3b0"; stroke: "#e6a817" }
+      -dispatching: "int"
+      -handlers: "fd_handler_t*"
+      -pending_ops: "pending_mod_t[256]"
+      -pending_count: "int"
+      "+dispatch_events(events, nready)": "void"
+      "+enqueue_pending(op, fd, events)": "int"
+    }
+    handler_table: {
+      shape: sql_table
+      label: "fd_handler_t[] — Handler Registration Table"
+      style: { fill: "#fff5cc"; stroke: "#e6a817" }
+      r1: "0x00 | fd=3  | reg=1 | cb=http_io_cb | udata=conn_a*"
+      r2: "0x20 | fd=7  | reg=1 | cb=http_io_cb | udata=conn_b*"
+      r3: "0x40 | fd=11 | reg=1 | cb=http_io_cb | udata=conn_c*"
+      r4: "0x60 | fd=1  | reg=1 | cb=accept_cb  | udata=NULL"
+      sz: "Total: 64 bytes per entry"
+    }
+    pending_ops_tbl: {
+      shape: sql_table
+      label: "pending_mod_t[] — Deferred epoll_ctl Queue"
+      style: { fill: "#fffadd"; stroke: "#e6a817" }
+      r1: "PENDING_DEL | fd=11 | events=0"
+      r2: "PENDING_MOD | fd=7  | EPOLLIN / EPOLLOUT"
+      note: "Applied in Phase 2b after dispatching=0"
+    }
+    dispatcher -> handler_table: "handlers[fd] | lookup"
+    dispatcher -> pending_ops_tbl: "dispatching=1 | defer"
+  }
+
+  phase2b: {
+    label: "Phase 2b — Apply Pending epoll_ctl Ops (dispatching=0)"
+    style: {
+      fill: "#ffe8cc"
+      stroke: "#cc7700"
+      stroke-width: 2
+      border-radius: 6
+    }
+    apply_ops: {
+      shape: sql_table
+      label: "Pending Op Execution"
+      style: { fill: "#ffddb3"; stroke: "#cc7700" }
+      r1: "PENDING_DEL: epoll_ctl(DEL, fd=11)"
+      r2: "PENDING_MOD: epoll_ctl(MOD, fd=7, EV)"
+      r3: "PENDING_ADD: epoll_ctl(ADD, fd=15, EV)"
+      note: "Safe: loop finished iteration"
+    }
+  }
+
+  phase3: {
+    label: "Phase 3 — Deferred Task Queue"
+    style: {
+      fill: "#e8ffe8"
+      stroke: "#2a9a2a"
+      stroke-width: 2
+      border-radius: 6
+    }
+    defer_q: {
+      shape: sql_table
+      label: "deferred_task_t[] — Ring Buffer"
+      style: { fill: "#ccffcc"; stroke: "#2a9a2a" }
+      r1: "cb=http_deferred_parse | udata=conn_b*"
+      r2: "cb=log_flush_cb        | udata=logger*"
+      note: "Snapshot tail before drain"
+    }
+    defer_semantics: {
+      shape: sql_table
+      label: "Semantics (reactor.c)"
+      style: { fill: "#ddffdd"; stroke: "#2a9a2a" }
+      r1: "Runs after ALL I/O in current tick"
+      r2: "Before next epoll_wait call"
+      r3: "dispatching is zero: epoll_ctl is immediate"
+    }
+    defer_q -> defer_semantics: "O(n) drain"
+  }
+
+  phase4: {
+    label: "Phase 4 — Timer Dispatcher"
+    style: {
+      fill: "#ffe8f0"
+      stroke: "#cc2255"
+      stroke-width: 2
+      border-radius: 6
+    }
+    timer_heap: {
+      shape: sql_table
+      label: "Min-Heap Timer Table"
+      style: { fill: "#ffd0e0"; stroke: "#cc2255" }
+      r1: "idx=0 | expiry=T+1200ms | fd=3 | cb=idle_timeout_cb"
+      r2: "idx=1 | expiry=T+8400ms | fd=7 | cb=idle_timeout_cb"
+      r3: "idx=2 | expiry=T+30s     | fd=9 | cb=heartbeat_cb"
+      note: "Root = soonest expiry"
+    }
+    timer_ops: {
+      shape: class
+      label: "Timer Operations"
+      style: { fill: "#ffcce0"; stroke: "#cc2255" }
+      "+set_timeout(delay, cb, data)": "int"
+      "+expire_all(now)": "void"
+      "+compute_timeout()": "int ms"
+    }
+    timer_heap -> timer_ops: "heap[0] | peek"
+  }
+}
+
+handlers_row: {
+  label: ""
+  style: { stroke: transparent; fill: transparent }
+  direction: right
+  
+  accept_handler: {
+    label: "Accept Handler (accept_cb)"
+    style: { fill: "#f0f0ff"; stroke: "#5555cc"; border-radius: 6 }
+    accept_impl: {
+      shape: class
+      label: "accept_cb (http_server.c)"
+      style: { fill: "#e0e0ff"; stroke: "#5555cc" }
+      "+accept_cb(fd, flags, data)": "void"
+      "+accept4(fd, addr, len, flags)": "int"
+      "+reactor_register(r, fd, EV, cb, c)": "int"
+    }
+  }
+
+  io_handler: {
+    label: "I/O Handler (http_io_cb)"
+    style: { fill: "#fff0f5"; stroke: "#cc3366"; border-radius: 6 }
+    io_impl: {
+      shape: class
+      label: "http_io_cb (http_server.c)"
+      style: { fill: "#ffe0ec"; stroke: "#cc3366" }
+      "+http_io_cb(fd, flags, conn)": "void"
+      "-read_loop_et()": "void"
+      "-http_try_parse(conn)": "res_t"
+      "-http_handle_write(conn)": "void"
+    }
+    event_flags: {
+      shape: sql_table
+      label: "Flag Translation"
+      style: { fill: "#fff0f8"; stroke: "#cc3366" }
+      r1: "EPOLLIN  -> REACTOR_READ"
+      r2: "EPOLLOUT -> REACTOR_WRITE"
+      r3: "EPOLLERR -> REACTOR_ERROR"
+    }
+  }
+
+  timer_handler: {
+    label: "Timer Handler (idle_timeout_cb)"
+    style: { fill: "#fff8e8"; stroke: "#cc8800"; border-radius: 6 }
+    timer_impl: {
+      shape: class
+      label: "idle_timeout_cb (http_server.c)"
+      style: { fill: "#fff0cc"; stroke: "#cc8800" }
+      "+idle_timeout_cb(id, conn)": "void"
+      "+http_conn_close(conn)": "void"
+    }
+  }
+}
+
+proactor_contrast: {
+  label: "Reactor vs. Proactor Contrast"
+  style: {
+    fill: "#f5f5f5"
+    stroke: "#888888"
+    stroke-width: 1
+    border-radius: 6
+  }
+  comparison: {
+    shape: sql_table
+    label: "Dispatch Model Comparison"
+    style: { fill: "#ececec"; stroke: "#888888" }
+    r1: "REACTOR  | Readiness: fd ready -> app reads"
+    r2: "PROACTOR | Completion: app asks -> kernel notifies finish"
+    r3: "REACTOR  | Used by: NGINX, Redis, libuv"
+    r4: "PROACTOR | Used by: io_uring, Windows IOCP"
+  }
+}
+
+loop.phase1 -> loop.phase2: "epoll_event[] | copy"
+loop.phase2 -> loop.phase2b: "apply | sync"
+loop.phase2b -> loop.phase3: "drain | tasks"
+loop.phase3 -> loop.phase4: "expire | check"
+loop.phase4 -> loop.phase1: "wait(ms) | tick"
+
+loop.phase2 -> handlers_row.accept_handler.accept_impl: "listen_fd | dispatch" {
+  style: { stroke: "#5555cc"; stroke-dash: 3 }
+}
+loop.phase2 -> handlers_row.io_handler.io_impl: "conn_fd | dispatch" {
+  style: { stroke: "#cc3366"; stroke-dash: 3 }
+}
+loop.phase4 -> handlers_row.timer_handler.timer_impl: "timer_id | expire" {
+  style: { stroke: "#cc8800"; stroke-dash: 3 }
+}
+handlers_row.io_handler.event_flags -> proactor_contrast.comparison: "readiness | info" {
+  style: { stroke: "#888888"; stroke-dash: 5 }
+}

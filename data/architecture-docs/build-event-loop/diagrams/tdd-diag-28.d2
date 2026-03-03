@@ -1,0 +1,234 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+direction: down
+title: |md
+  ## Incremental HTTP Parser: Accumulation Across Multiple Read Events
+  Parser is stateless between calls — always scans from buf\[0\]; resumability is free from the accumulation model
+| {near: top-center}
+# ─── SCENARIO A: Three Read Events ───────────────────────────────────────────
+scenA: Scenario A — Headers Arrive in Three Chunks {
+  style.fill: "#f0f4ff"
+  style.stroke: "#4455aa"
+  style.border-radius: 8
+  direction: down
+  ev1: Event 1 — REACTOR\_READ {
+    style.fill: "#e8eaf6"
+    style.border-radius: 6
+    label: "Event 1 — REACTOR\_READ"
+    r1: read() → n=400 bytes {style.fill: "#bbdefb"}
+    buf1: |md
+      **read\_buf\[0..399\]** — 400 bytes valid
+      `GET /index.html HTTP/1.1\r\nHost: localh...`
+    | {
+      style.fill: "#e3f2fd"
+      style.stroke: "#1565c0"
+    }
+    rl1: read\_len = 400 {
+      style.fill: "#fff9c4"
+      style.font: mono
+    }
+    scan1: find\_header\_end(buf, 400) → NULL {
+      style.fill: "#ffebee"
+      style.stroke: "#c62828"
+    }
+    res1: PARSE\_INCOMPLETE → return, wait for more data {
+      style.fill: "#fce4ec"
+      style.stroke: "#880e4f"
+      style.italic: true
+    }
+    r1 -> buf1: "appended to read\_buf"
+    buf1 -> rl1
+    rl1 -> scan1: "\\r\\n\\r\\n not found"
+    scan1 -> res1
+  }
+  ev2: Event 2 — REACTOR\_READ {
+    style.fill: "#e8eaf6"
+    style.border-radius: 6
+    r2: read() → n=300 bytes {style.fill: "#bbdefb"}
+    buf2: |md
+      **read\_buf\[0..699\]** — 700 bytes valid
+      `...Host: localhost\r\nUser-Agent: curl/7...\r\nAccept: */*\r\nCach...`
+    | {
+      style.fill: "#e3f2fd"
+      style.stroke: "#1565c0"
+    }
+    rl2: read\_len = 700 {
+      style.fill: "#fff9c4"
+      style.font: mono
+    }
+    scan2: find\_header\_end(buf, 700) → NULL {
+      style.fill: "#ffebee"
+      style.stroke: "#c62828"
+    }
+    res2: PARSE\_INCOMPLETE → return, wait for more data {
+      style.fill: "#fce4ec"
+      style.stroke: "#880e4f"
+      style.italic: true
+    }
+    r2 -> buf2: "appended at offset 400"
+    buf2 -> rl2
+    rl2 -> scan2: "\\r\\n\\r\\n not found"
+    scan2 -> res2
+  }
+  ev3: Event 3 — REACTOR\_READ {
+    style.fill: "#e8f5e9"
+    style.border-radius: 6
+    r3: read() → n=150 bytes {style.fill: "#c8e6c9"}
+    buf3: |md
+      **read\_buf\[0..849\]** — 850 bytes valid
+      `...Connection: keep-alive\r\n\r\n` ← terminator at offset 840
+    | {
+      style.fill: "#e8f5e9"
+      style.stroke: "#2e7d32"
+    }
+    rl3: read\_len = 850 {
+      style.fill: "#fff9c4"
+      style.font: mono
+    }
+    scan3: find\_header\_end(buf, 850) → body\_start = buf\+840 {
+      style.fill: "#c8e6c9"
+      style.stroke: "#1b5e20"
+    }
+    parse_steps: Parse Pipeline {
+      style.fill: "#f1f8e9"
+      style.border-radius: 4
+      prl: "① parse\_request\_line(buf\[0..N\])" {style.fill: "#dcedc8"}
+      phdr: "② parse\_headers(buf\[N+1\]..buf\[840\])" {style.fill: "#dcedc8"}
+      pcl: "③ Content-Length: 0 — no body" {style.fill: "#dcedc8"}
+      pst: "④ conn→state = HTTP\_STATE\_PROCESSING" {
+        style.fill: "#a5d6a7"
+        style.bold: true
+      }
+      prl -> phdr -> pcl -> pst
+    }
+    res3: PARSE\_COMPLETE — conn ready for http\_process\_request() {
+      style.fill: "#a5d6a7"
+      style.stroke: "#1b5e20"
+      style.bold: true
+    }
+    r3 -> buf3: "appended at offset 700"
+    buf3 -> rl3
+    rl3 -> scan3: "\\r\\n\\r\\n FOUND"
+    scan3 -> parse_steps
+    parse_steps -> res3
+  }
+  ev1 -> ev2: "read\_buf preserved; read\_len accumulated"
+  ev2 -> ev3: "read\_buf preserved; read\_len accumulated"
+}
+# ─── SCENARIO B: Boundary-Spanning \r\n\r\n ───────────────────────────────
+scenB: Scenario B — Terminator Spans Chunk Boundary {
+  style.fill: "#fff8e1"
+  style.stroke: "#f57f17"
+  style.border-radius: 8
+  direction: down
+  note: |md
+    Edge case: the **\\r** of **\\r\\n\\r\\n** arrives at the end of Event 2;
+    the **\\n\\r\\n** arrives at the start of Event 3.
+    `find_header_end()` correctly finds it only after Event 3.
+  | {style.fill: "#fffde7"}
+  bev2: Event 2 ends — buf\[last byte\] = '\\r' {
+    style.fill: "#fff3e0"
+    style.border-radius: 4
+    bscan2: find\_header\_end(buf, read\_len) → NULL {
+      style.fill: "#ffccbc"
+      style.stroke: "#bf360c"
+    }
+    bwhy2: "Scans all accumulated bytes; '\\r\\n\\r' at tail — no '\\n' yet" {
+      style.fill: "#fbe9e7"
+      style.italic: true
+    }
+    bscan2 -> bwhy2
+  }
+  bev3: Event 3 arrives — appends '\\n\\r\\n...' {
+    style.fill: "#fff3e0"
+    style.border-radius: 4
+    bscan3: find\_header\_end(buf, read\_len) → found {
+      style.fill: "#c8e6c9"
+      style.stroke: "#1b5e20"
+    }
+    bwhy3: "Full \\r\\n\\r\\n now in buffer at correct offset — PARSE\_COMPLETE" {
+      style.fill: "#f1f8e9"
+      style.italic: true
+    }
+    bscan3 -> bwhy3
+  }
+  key_insight: |md
+    **Why it works without sub-state:**
+    Parser rescans from `buf[0]` on every call.
+    No saved "last byte seen" pointer needed.
+    The scan cost is O(read\_len) per event — acceptable at 16KB max.
+  | {
+    style.fill: "#fffde7"
+    style.stroke: "#f9a825"
+    style.border-radius: 4
+  }
+  note -> bev2
+  bev2 -> bev3: "append to read\_buf; read\_len +="
+  bev3 -> key_insight
+}
+# ─── Buffer State Visual Timeline ─────────────────────────────────────────
+bufviz: Buffer Growth Timeline (read\_buf\[0..read\_len-1\]) {
+  style.fill: "#fafafa"
+  style.stroke: "#9e9e9e"
+  style.border-radius: 6
+  direction: right
+  b0: "▏ 0B" {
+    style.fill: "#eceff1"
+    style.font: mono
+    width: 60
+  }
+  b400: "▓▓▓▓▏ 400B\nfind→NULL" {
+    style.fill: "#bbdefb"
+    style.font: mono
+    width: 120
+  }
+  b700: "▓▓▓▓▓▓▓▏ 700B\nfind→NULL" {
+    style.fill: "#90caf9"
+    style.font: mono
+    width: 160
+  }
+  b850: "▓▓▓▓▓▓▓▓▓▏ 850B\nfind→840 ✓" {
+    style.fill: "#43a047"
+    style.font: mono
+    style.font-color: white
+    width: 200
+  }
+  b0 -> b400: "Event 1\n+400B"
+  b400 -> b700: "Event 2\n+300B"
+  b700 -> b850: "Event 3\n+150B"
+}
+# ─── State Machine per Call ───────────────────────────────────────────────
+fsm: http\_try\_parse() Return Value State Machine {
+  style.fill: "#f3e5f5"
+  style.stroke: "#7b1fa2"
+  style.border-radius: 6
+  direction: right
+  s_incomplete: PARSE\_INCOMPLETE {
+    style.fill: "#ffe0b2"
+    style.stroke: "#e65100"
+  }
+  s_complete: PARSE\_COMPLETE {
+    style.fill: "#a5d6a7"
+    style.stroke: "#1b5e20"
+    style.bold: true
+  }
+  s_error: PARSE\_ERROR {
+    style.fill: "#ef9a9a"
+    style.stroke: "#b71c1c"
+  }
+  s_toolarge: PARSE\_TOO\_LARGE {
+    style.fill: "#ef9a9a"
+    style.stroke: "#b71c1c"
+  }
+  s_incomplete -> s_incomplete: "more bytes arrive\nread\_len < threshold"
+  s_incomplete -> s_complete: "\\r\\n\\r\\n found +\nlines parse OK"
+  s_incomplete -> s_error: "malformed\nrequest line\nor version"
+  s_incomplete -> s_toolarge: "read\_len ==\nHTTP\_READ\_BUF\_SIZE\nbefore \\r\\n\\r\\n"
+}
+scenA -> scenB: "same parser; different arrival pattern"
+scenA -> bufviz
+scenB -> fsm

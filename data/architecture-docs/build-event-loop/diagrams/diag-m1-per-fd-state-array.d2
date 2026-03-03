@@ -1,0 +1,203 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title_box: "Per-FD State Array — conn_t Memory Layout (reactor.h)" {
+  shape: rectangle
+  style: {
+    fill: "#1a1a2e"
+    stroke: "#4a9eff"
+    stroke-width: 2
+    font-color: "#e0e0e0"
+    bold: true
+    font-size: 16
+  }
+}
+row_structs: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  conn_struct: {
+    label: "struct conn_t (reactor.h)"
+    shape: sql_table
+    style: {
+      fill: "#0d1b2a"
+      stroke: "#4a9eff"
+      stroke-width: 2
+      font-color: "#ffffff"
+    }
+    f0: "0x00 | int          | fd               // file descriptor number"
+    f1: "0x04 | int          | state            // conn_state_t enum"
+    f2: "0x08 | uint8_t*     | read_buf         // ptr to heap read buffer"
+    f3: "0x10 | size_t       | read_buf_len     // bytes in read buffer"
+    f4: "0x18 | uint8_t*     | write_buf        // ptr to heap write buffer"
+    f5: "0x20 | size_t       | write_buf_len    // total bytes queued"
+    f6: "0x28 | size_t       | write_buf_offset // bytes already sent"
+    f7: "0x30 | timer_id_t   | timer_id         // heap index, -1=none"
+    total: "Total: 56 bytes per conn_t (padded to 64B cache line)"
+  }
+  cache_analysis: {
+    direction: down
+    style.stroke: transparent
+    style.fill: transparent
+    hot_line: {
+      label: "Cache Line Analysis (64B)"
+      shape: sql_table
+      style: {
+        fill: "#0d2a1a"
+        stroke: "#00cc66"
+        stroke-width: 2
+        font-color: "#ffffff"
+      }
+      l0: "Byte  0–7  | fd + state          | HOT — checked every event"
+      l1: "Byte  8–15 | read_buf ptr        | HOT — dereffed on EPOLLIN"
+      l2: "Byte 16–23 | read_buf_len        | HOT — bounds check"
+      l3: "Byte 24–31 | write_buf ptr       | HOT — dereffed on EPOLLOUT"
+      l4: "Byte 32–39 | write_buf_len       | HOT — flush loop"
+      l5: "Byte 40–47 | write_buf_offset    | HOT — sent-bytes cursor"
+      l6: "Byte 48–55 | timer_id            | HOT — cancel on data recv"
+      l7: "ALL 56 bytes fit in ONE 64-byte cache line"
+    }
+    cold_note: {
+      label: "Heap Buffers (separate allocations)"
+      shape: sql_table
+      style: {
+        fill: "#2a1a0d"
+        stroke: "#cc6600"
+        stroke-width: 2
+        font-color: "#ffffff"
+      }
+      c0: "read_buf  | malloc(4096)  | COLD — only loaded on read"
+      c1: "write_buf | malloc(65536) | COLD — only loaded on write"
+      c2: "Pointer chase = 1 cache miss per dereference"
+      c3: "Trade-off: struct stays in 1 cache line; data on demand"
+    }
+  }
+}
+row_array: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  array_diagram: {
+    label: "conn_t conn_table[MAX_CONNS] — Flat Array Indexed by fd"
+    shape: sql_table
+    style: {
+      fill: "#1a0d2a"
+      stroke: "#9966ff"
+      stroke-width: 2
+      font-color: "#ffffff"
+    }
+    idx0: "fd=0  | conn_table[0]  | offset 0x000000 | O(1) lookup: &conn_table[fd]"
+    idx1: "fd=1  | conn_table[1]  | offset 0x000038 | 56 bytes stride"
+    idx2: "fd=2  | conn_table[2]  | offset 0x000070 | CPU prefetch: sequential"
+    idx3: "fd=3  | conn_table[3]  | offset 0x0000A8 | ..."
+    idxN: "fd=N  | conn_table[N]  | offset N * 56   | MAX_CONNS = 10240"
+    mem:  "Total array: 10240 * 56 = 573,440 bytes (~560 KB)"
+  }
+  hashmap_contrast: {
+    label: "Hash Map Alternative — Pointer Chasing (AVOID)"
+    shape: sql_table
+    style: {
+      fill: "#2a0d0d"
+      stroke: "#cc0000"
+      stroke-width: 2
+      font-color: "#ffffff"
+    }
+    h0: "Lookup: hash(fd) -> bucket -> linked list node"
+    h1: "Step 1: hash_table[hash(fd)]  — L1/L2 miss likely"
+    h2: "Step 2: node->next ptr chase   — L2/L3 miss"
+    h3: "Step 3: node->conn_t ptr chase — L3/DRAM miss (~200 cycles)"
+    h4: "3 cache misses vs 1 cache miss for flat array"
+    h5: "Flat array O(1): conn_table + fd * sizeof(conn_t)"
+    h6: "No pointer chasing — single DRAM fetch, CPU prefetches next"
+  }
+}
+row_lifecycle: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  conn_states: {
+    shape: class
+    label: "conn_state_t (reactor.h)"
+    style: {
+      fill: "#0d1a2a"
+      stroke: "#4a9eff"
+      stroke-width: 2
+      font-color: "#ffffff"
+    }
+    CONN_STATE_FREE: "= 0  // slot unused, state field zeroed"
+    CONN_STATE_ACTIVE: "= 1  // fd open, I/O in progress"
+  }
+  access_pattern: {
+    label: "Hot-Path Access Pattern per epoll_wait() Event"
+    shape: sql_table
+    style: {
+      fill: "#0d2a0d"
+      stroke: "#00cc44"
+      stroke-width: 2
+      font-color: "#ffffff"
+    }
+    a0: "1. conn_t *c = conn_table + fd    // 1 multiply + 1 add — no cache miss if hot"
+    a1: "2. if c->state == FREE: skip      // byte 0–3, already in cache line"
+    a2: "3. if EPOLLIN: read into c->read_buf  // byte 8–15, same cache line"
+    a3: "4. update c->read_buf_len         // byte 16–23, same cache line"
+    a4: "5. if EPOLLOUT: flush c->write_buf // byte 24–39, same cache line"
+    a5: "6. timer_reset(c->timer_id)       // byte 48–55, same cache line"
+    a6: "All 6 steps: ONE cache line loaded once — ~4 cycles after L1 hit"
+  }
+}
+title_box -> row_structs: "" {
+  style.stroke: transparent
+}
+row_structs -> row_array: "array of" {
+  style: {
+    stroke: "#9966ff"
+    stroke-width: 2
+    animated: true
+  }
+}
+row_array -> row_lifecycle: "state + access" {
+  style: {
+    stroke: "#00cc66"
+    stroke-width: 2
+  }
+}
+row_structs.conn_struct -> row_structs.cache_analysis.hot_line: "fits in" {
+  style: {
+    stroke: "#00cc66"
+    stroke-width: 2
+    bold: true
+  }
+}
+row_structs.conn_struct -> row_structs.cache_analysis.cold_note: "heap ptrs to" {
+  style: {
+    stroke: "#cc6600"
+    stroke-width: 2
+    stroke-dash: 4
+  }
+}
+row_array.array_diagram -> row_array.hashmap_contrast: "vs" {
+  style: {
+    stroke: "#cc0000"
+    stroke-width: 2
+    stroke-dash: 4
+  }
+}
+legend: {
+  shape: sql_table
+  label: "Color Legend"
+  style: {
+    fill: "#1a1a1a"
+    stroke: "#555555"
+    font-color: "#cccccc"
+  }
+  l1: "Green border  | HOT path — fits in L1 cache (< 4 cycles)"
+  l2: "Blue border   | Struct definition / array layout"
+  l3: "Purple border | Array indexing — O(1) no pointer chase"
+  l4: "Orange border | Heap allocations — cold, 1 miss per deref"
+  l5: "Red border    | Anti-pattern — hash map pointer chasing"
+}
+legend.near: bottom-right

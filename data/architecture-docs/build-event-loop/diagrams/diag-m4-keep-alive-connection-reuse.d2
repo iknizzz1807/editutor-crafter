@@ -1,0 +1,374 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # HTTP/1.1 Keep-Alive vs HTTP/1.0: FD Reuse and State Machine
+| {near: top-center}
+row0: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  http11_label: "HTTP/1.1 — 1 fd, N requests" {
+    style.fill: "#d4edda"
+    style.stroke: "#28a745"
+    style.font-size: 14
+    style.bold: true
+  }
+  vs_spacer: "vs" {
+    style.fill: transparent
+    style.stroke: transparent
+    style.font-color: "#888888"
+    style.font-size: 18
+    style.bold: true
+  }
+  http10_label: "HTTP/1.0 — 1 fd per request" {
+    style.fill: "#f8d7da"
+    style.stroke: "#dc3545"
+    style.font-size: 14
+    style.bold: true
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  http11: "HTTP/1.1 Keep-Alive (fd=7, single TCP connection)" {
+    direction: down
+    style.fill: "#f0fff4"
+    style.stroke: "#28a745"
+    style.border-radius: 8
+    accept_box: {
+      shape: sql_table
+      label: "accept4() — fd=7 created"
+      ev0: "epoll_ctl(ADD, fd=7, EPOLLIN)"
+      ev1: "conn_new(fd=7) → state=READING_HEADERS"
+      ev2: "timer_insert(idle=30s, header=10s)"
+      ev3: "26 KB http_conn_t allocated on heap"
+    }
+    req1: "Request 1: GET /index.html HTTP/1.1" {
+      direction: down
+      style.fill: "#e8f5e9"
+      style.stroke: "#43a047"
+      style.border-radius: 6
+      r1_read: {
+        shape: sql_table
+        label: "READING_HEADERS (fd=7)"
+        f0: "REACTOR_READ fires"
+        f1: "read(fd=7) → 312 bytes into read_buf"
+        f2: "find_header_end() → found \\r\\n\\r\\n"
+        f3: "parse_request_line() → GET /index.html HTTP/1.1"
+        f4: "parse_headers() → Connection: keep-alive"
+        f5: "req.keep_alive = 1, content_length = -1"
+        f6: "state → PROCESSING"
+      }
+      r1_proc: {
+        shape: sql_table
+        label: "PROCESSING → WRITING_RESPONSE (fd=7)"
+        f0: "resolve_path() → ./static/index.html"
+        f1: "open(file) fstat() → 42 bytes"
+        f2: "snprintf() → HTTP/1.1 200 OK headers"
+        f3: "http_write_append(headers + body)"
+        f4: "write(fd=7) → 200 OK, Content-Length: 42"
+        f5: "write() succeeds immediately (no backpressure)"
+        f6: "write_offset == write_len → buffer drained"
+      }
+      r1_reset: {
+        shape: sql_table
+        label: "State Reset — keep_alive=1 (fd=7 RETAINED)"
+        f0: "state → KEEP_ALIVE → READING_HEADERS"
+        f1: "read_len = 0  write_offset = 0  write_len = 0"
+        f2: "memset(request, 0) — request cleared"
+        f3: "timer_cancel(idle_timer_id)"
+        f4: "timer_insert(idle=30s) — deadline reset"
+        f5: "fd=7 stays in epoll interest set"
+        f6: "0 bytes heap freed, 0 syscalls for new connection"
+      }
+    }
+    req2: "Request 2: GET /style.css HTTP/1.1" {
+      direction: down
+      style.fill: "#e3f2fd"
+      style.stroke: "#1976d2"
+      style.border-radius: 6
+      r2_read: {
+        shape: sql_table
+        label: "READING_HEADERS (fd=7, same conn_t)"
+        f0: "REACTOR_READ fires — new data on same fd"
+        f1: "read(fd=7) → 287 bytes into read_buf"
+        f2: "parse_headers() → Connection: keep-alive"
+        f3: "state → PROCESSING"
+      }
+      r2_proc: {
+        shape: sql_table
+        label: "WRITING_RESPONSE (fd=7)"
+        f0: "open(style.css) fstat() → 1,204 bytes"
+        f1: "HTTP/1.1 200 OK, Content-Type: text/css"
+        f2: "write(fd=7) → success"
+        f3: "state reset → READING_HEADERS (fd=7 held)"
+        f4: "timer_cancel + timer_insert(idle=30s)"
+      }
+    }
+    req3: "Request 3: GET /data.json HTTP/1.1 + Connection: close" {
+      direction: down
+      style.fill: "#fff3e0"
+      style.stroke: "#ef6c00"
+      style.border-radius: 6
+      r3_read: {
+        shape: sql_table
+        label: "READING_HEADERS (fd=7)"
+        f0: "read(fd=7) → 298 bytes"
+        f1: "parse_headers() → Connection: close"
+        f2: "req.keep_alive = 0"
+        f3: "state → PROCESSING"
+      }
+      r3_proc: {
+        shape: sql_table
+        label: "WRITING_RESPONSE (fd=7)"
+        f0: "HTTP/1.1 200 OK, Connection: close"
+        f1: "write(fd=7) → success"
+        f2: "keep_alive == 0 → state = CLOSING"
+      }
+      r3_close: {
+        shape: sql_table
+        label: "CLOSING — Teardown (fd=7 released)"
+        f0: "timer_cancel(idle_timer_id)"
+        f1: "timer_cancel(header_timer_id)"
+        f2: "reactor_deregister(reactor, fd=7)"
+        f3: "epoll_ctl(DEL, fd=7)"
+        f4: "close(fd=7) — OS recycles fd slot"
+        f5: "free(write_buf)  free(conn)"
+        f6: "26 KB http_conn_t returned to heap"
+      }
+    }
+  }
+  gap: "" {
+    style.stroke: transparent
+    style.fill: transparent
+    width: 40
+  }
+  http10: "HTTP/1.0 — New Connection Per Request" {
+    direction: down
+    style.fill: "#fff0f0"
+    style.stroke: "#dc3545"
+    style.border-radius: 8
+    h10_req1: "Request 1: GET /index.html HTTP/1.0" {
+      direction: down
+      style.fill: "#ffeef0"
+      style.stroke: "#e53935"
+      style.border-radius: 6
+      h10_r1_accept: {
+        shape: sql_table
+        label: "New TCP handshake → fd=7"
+        f0: "SYN → SYN-ACK → ACK (3 round trips)"
+        f1: "accept4() → fd=7"
+        f2: "epoll_ctl(ADD, fd=7, EPOLLIN)"
+        f3: "conn_new(fd=7) — 26 KB allocated"
+      }
+      h10_r1_serve: {
+        shape: sql_table
+        label: "PROCESSING → WRITING_RESPONSE (fd=7)"
+        f0: "parse GET /index.html HTTP/1.0"
+        f1: "HTTP/1.0 200 OK (no keep-alive by default)"
+        f2: "write(fd=7) → response sent"
+      }
+      h10_r1_close: {
+        shape: sql_table
+        label: "Mandatory Close after Response"
+        f0: "epoll_ctl(DEL, fd=7)"
+        f1: "close(fd=7) — TCP FIN sent"
+        f2: "TCP TIME_WAIT: fd=7 blocked ~60s"
+        f3: "free(conn) — 26 KB freed"
+      }
+    }
+    h10_req2: "Request 2: GET /style.css HTTP/1.0" {
+      direction: down
+      style.fill: "#fce4ec"
+      style.stroke: "#d81b60"
+      style.border-radius: 6
+      h10_r2_accept: {
+        shape: sql_table
+        label: "NEW TCP handshake → fd=8"
+        f0: "SYN → SYN-ACK → ACK (again, 3 RTTs)"
+        f1: "accept4() → fd=8 (new fd number)"
+        f2: "conn_new(fd=8) — another 26 KB allocated"
+        f3: "epoll_ctl(ADD, fd=8, EPOLLIN)"
+      }
+      h10_r2_serve: {
+        shape: sql_table
+        label: "PROCESSING → WRITING_RESPONSE (fd=8)"
+        f0: "HTTP/1.0 200 OK, Content-Type: text/css"
+        f1: "write(fd=8) → success"
+      }
+      h10_r2_close: {
+        shape: sql_table
+        label: "Mandatory Close (fd=8)"
+        f0: "close(fd=8) — TCP FIN"
+        f1: "free(conn) — 26 KB freed"
+      }
+    }
+    h10_req3: "Request 3: GET /data.json HTTP/1.0" {
+      direction: down
+      style.fill: "#f3e5f5"
+      style.stroke: "#8e24aa"
+      style.border-radius: 6
+      h10_r3_accept: {
+        shape: sql_table
+        label: "NEW TCP handshake → fd=9"
+        f0: "SYN → SYN-ACK → ACK (3rd time)"
+        f1: "accept4() → fd=9"
+        f2: "conn_new(fd=9) — 26 KB allocated"
+      }
+      h10_r3_serve: {
+        shape: sql_table
+        label: "PROCESSING → WRITING_RESPONSE (fd=9)"
+        f0: "HTTP/1.0 200 OK, Content-Type: application/json"
+        f1: "write(fd=9) → success"
+      }
+      h10_r3_close: {
+        shape: sql_table
+        label: "Mandatory Close (fd=9)"
+        f0: "close(fd=9)"
+        f1: "free(conn)"
+      }
+    }
+    h10_cost: {
+      shape: sql_table
+      label: "HTTP/1.0 Cost: 3 Requests"
+      f0: "accept4() calls: 3"
+      f1: "TCP handshakes: 3 x 3 RTTs = 9 RTTs"
+      f2: "epoll_ctl(ADD): 3  epoll_ctl(DEL): 3"
+      f3: "conn alloc/free: 3 x 26 KB = 78 KB churn"
+      f4: "10K clients = 10K active fds at ALL times"
+      f5: "Burst: new fd per request → fd exhaustion risk"
+      style.fill: "#ffcdd2"
+      style.stroke: "#c62828"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  comparison: "Quantitative Comparison: 10K Clients x 100 Requests Each" {
+    direction: right
+    style.fill: "#fafafa"
+    style.stroke: "#455a64"
+    style.border-radius: 8
+    cost_11: {
+      shape: sql_table
+      label: "HTTP/1.1 Keep-Alive (this milestone)"
+      f0: "fds open simultaneously: 10,000"
+      f1: "accept4() calls: 10,000"
+      f2: "TCP handshakes: 10,000"
+      f3: "state resets (free): 990,000"
+      f4: "heap alloc/free cycles: 10,000"
+      f5: "fd exhaustion at 10K: NO (fds reused)"
+      f6: "memory: 10K x 26KB = ~254 MB steady-state"
+      style.fill: "#e8f5e9"
+      style.stroke: "#2e7d32"
+    }
+    cost_10: {
+      shape: sql_table
+      label: "HTTP/1.0 (comparison)"
+      f0: "fds open simultaneously: up to 1,000,000"
+      f1: "accept4() calls: 1,000,000"
+      f2: "TCP handshakes: 1,000,000"
+      f3: "state resets: 0 (no reuse)"
+      f4: "heap alloc/free cycles: 1,000,000"
+      f5: "fd exhaustion at 10K rps: YES (ulimit hit)"
+      f6: "TIME_WAIT sockets block fd reuse for ~60s"
+      style.fill: "#ffebee"
+      style.stroke: "#c62828"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  fd_reuse_insight: "FD Budget: Why Keep-Alive Is the Only Viable Model at Scale" {
+    shape: sql_table
+    label: "FD Budget Analysis (ulimit -n 65536)"
+    f0: "HTTP/1.1: 10K clients hold 10K fds → 55,536 fds free for files/timers/pipes"
+    f1: "HTTP/1.0: 10K rps x 60s TIME_WAIT = 600K phantom fds → EXHAUSTED in seconds"
+    f2: "TIME_WAIT: OS holds fd in TIME_WAIT ~2*MSL (60s) after close() — fd unusable"
+    f3: "SO_REUSEADDR: allows bind() reuse but does NOT free TIME_WAIT fds faster"
+    f4: "tcp_tw_reuse=1: allows reuse for outgoing connections only, not listening"
+    f5: "Keep-alive eliminates TIME_WAIT accumulation: fd never closes between requests"
+    f6: "NGINX default: keepalive_timeout 65s — matches typical browser idle behavior"
+    style.fill: "#e8eaf6"
+    style.stroke: "#3949ab"
+  }
+}
+row0 -> row1: ""  {
+  style.stroke: transparent
+}
+row1 -> row2: "" {
+  style.stroke: transparent
+}
+row2 -> row3: "" {
+  style.stroke: transparent
+}
+http11.accept_box -> http11.req1: "EPOLLIN: bytes arrive" {
+  style.stroke: "#28a745"
+  style.animated: true
+}
+http11.req1.r1_read -> http11.req1.r1_proc: "PARSE_COMPLETE" {
+  style.stroke: "#43a047"
+}
+http11.req1.r1_proc -> http11.req1.r1_reset: "keep_alive=1" {
+  style.stroke: "#43a047"
+  style.bold: true
+}
+http11.req1.r1_reset -> http11.req2: "fd=7 retained | new request data" {
+  style.stroke: "#1976d2"
+  style.animated: true
+  style.stroke-dash: 3
+}
+http11.req2.r2_read -> http11.req2.r2_proc: "PARSE_COMPLETE" {
+  style.stroke: "#1976d2"
+}
+http11.req2.r2_proc -> http11.req3: "fd=7 retained | Connection: close incoming" {
+  style.stroke: "#ef6c00"
+  style.animated: true
+  style.stroke-dash: 3
+}
+http11.req3.r3_read -> http11.req3.r3_proc: "keep_alive=0" {
+  style.stroke: "#ef6c00"
+}
+http11.req3.r3_proc -> http11.req3.r3_close: "CLOSING" {
+  style.stroke: "#c62828"
+  style.bold: true
+}
+http10.h10_req1.h10_r1_accept -> http10.h10_req1.h10_r1_serve: "fd=7 ready" {
+  style.stroke: "#e53935"
+}
+http10.h10_req1.h10_r1_serve -> http10.h10_req1.h10_r1_close: "no keep-alive" {
+  style.stroke: "#c62828"
+}
+http10.h10_req1.h10_r1_close -> http10.h10_req2.h10_r2_accept: "new TCP connect" {
+  style.stroke: "#d81b60"
+  style.stroke-dash: 5
+}
+http10.h10_req2.h10_r2_accept -> http10.h10_req2.h10_r2_serve: "fd=8 ready" {
+  style.stroke: "#d81b60"
+}
+http10.h10_req2.h10_r2_serve -> http10.h10_req2.h10_r2_close: "no keep-alive" {
+  style.stroke: "#c62828"
+}
+http10.h10_req2.h10_r2_close -> http10.h10_req3.h10_r3_accept: "new TCP connect" {
+  style.stroke: "#8e24aa"
+  style.stroke-dash: 5
+}
+http10.h10_req3.h10_r3_accept -> http10.h10_req3.h10_r3_serve: "fd=9 ready" {
+  style.stroke: "#8e24aa"
+}
+http10.h10_req3.h10_r3_serve -> http10.h10_req3.h10_r3_close: "mandatory close" {
+  style.stroke: "#c62828"
+}
+http10.h10_req3.h10_r3_close -> http10.h10_cost: "tally" {
+  style.stroke: "#c62828"
+}

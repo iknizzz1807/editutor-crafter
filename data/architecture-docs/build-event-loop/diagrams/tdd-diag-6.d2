@@ -1,0 +1,218 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  ## ET Drain Loop: Correct vs Incorrect Control Flow
+  Edge-Triggered mode requires draining the kernel receive buffer to EAGAIN
+| {near: top-center}
+
+direction: right
+
+wrong: "WRONG — Single Read Per Event" {
+  style: {
+    fill: "#fff0f0"
+    stroke: "#cc0000"
+    stroke-width: 2
+    border-radius: 8
+  }
+
+  w_start: "EPOLLIN fires\n(client sent 8192 bytes)" {
+    shape: oval
+    style.fill: "#f4b76c"
+    style.stroke: "#e07000"
+  }
+  w_read: "read(fd, buf, 4096)" {
+    shape: rectangle
+    style.fill: "#fce7c6"
+    style.stroke: "#e07000"
+  }
+  w_check: "n > 0?" {
+    shape: diamond
+    style.fill: "#fce7c6"
+    style.stroke: "#cc0000"
+  }
+  w_echo: "write(fd, buf, n)\n[echo 4096 bytes]" {
+    shape: rectangle
+    style.fill: "#fce7c6"
+    style.stroke: "#e07000"
+  }
+  w_return: "RETURN to event loop" {
+    shape: rectangle
+    style.fill: "#ffcccc"
+    style.stroke: "#cc0000"
+    style.bold: true
+  }
+  w_hang: "⚠ HANG FOREVER\n4096 bytes stranded\nin kernel recv buffer.\nNo new EPOLLIN fires.\nClient waits for echo\nthat never comes." {
+    shape: rectangle
+    style.fill: "#cc0000"
+    style.font-color: white
+    style.bold: true
+    style.border-radius: 6
+  }
+  w_close: "close(conn)" {
+    shape: rectangle
+    style.fill: "#ffcccc"
+    style.stroke: "#cc0000"
+  }
+
+  w_start -> w_read
+  w_read -> w_check
+  w_check -> w_echo: "yes" {
+    style.stroke: "#cc0000"
+    style.stroke-width: 2
+  }
+  w_echo -> w_return {
+    style.stroke: "#cc0000"
+    style.stroke-width: 3
+    style.stroke-dash: 0
+  }
+  w_return -> w_hang: "← BUG: exits\nwithout EAGAIN" {
+    style.stroke: "#cc0000"
+    style.stroke-width: 3
+    style.font-color: "#cc0000"
+    style.bold: true
+  }
+  w_check -> w_close: "n==0 or error"
+}
+
+wrong_annotation: |md
+  **Root cause of the bug:**
+  Kernel receive buffer state after single read:
+  - Read: 4096 bytes → echoed ✓
+  - Remaining: 4096 bytes → **stranded** ✗
+  In ET mode, the kernel only enqueues an fd
+  in epoll's readiness queue on a **state
+  transition** (empty → non-empty). If 4096
+  bytes remain and no new data arrives,
+  **no transition occurs → no EPOLLIN**.
+  The data waits forever. The client's echo
+  never arrives. The connection is frozen
+  but appears alive. Detectable via:
+  `ss -ti` showing non-zero `rcv_buf`.
+| {
+  style: {
+    fill: "#fff8f8"
+    stroke: "#cc0000"
+    stroke-dash: 3
+    border-radius: 6
+  }
+}
+
+correct: "CORRECT — Drain Loop Until EAGAIN" {
+  style: {
+    fill: "#f0fff0"
+    stroke: "#006600"
+    stroke-width: 2
+    border-radius: 8
+  }
+
+  c_start: "EPOLLIN fires\n(client sent 8192 bytes)" {
+    shape: oval
+    style.fill: "#adf1c6"
+    style.stroke: "#006600"
+  }
+  c_loop_top: "LOOP TOP\n[must run until EAGAIN]" {
+    shape: rectangle
+    style.fill: "#e0ffe0"
+    style.stroke: "#006600"
+    style.stroke-dash: 5
+    style.italic: true
+  }
+  c_read: "read(fd, buf, 4096)" {
+    shape: rectangle
+    style.fill: "#e0ffe0"
+    style.stroke: "#006600"
+  }
+  c_check: "result?" {
+    shape: diamond
+    style.fill: "#e0ffe0"
+    style.stroke: "#006600"
+  }
+  c_echo: "write(fd, buf, n)\n[echo n bytes]" {
+    shape: rectangle
+    style.fill: "#e0ffe0"
+    style.stroke: "#006600"
+  }
+  c_continue: "continue loop\n[may be more data]" {
+    shape: rectangle
+    style.fill: "#c8f0c8"
+    style.stroke: "#006600"
+    style.italic: true
+  }
+  c_eagain: "BREAK out of loop\n[buffer fully drained]" {
+    shape: rectangle
+    style.fill: "#adf1c6"
+    style.stroke: "#006600"
+    style.bold: true
+  }
+  c_close: "close(conn)" {
+    shape: rectangle
+    style.fill: "#e0ffe0"
+    style.stroke: "#006600"
+  }
+  c_return: "RETURN to event loop\n[awaiting next EPOLLIN\nwhen new data arrives]" {
+    shape: oval
+    style.fill: "#006600"
+    style.font-color: white
+    style.bold: true
+  }
+
+  c_start -> c_loop_top
+  c_loop_top -> c_read
+  c_read -> c_check
+  c_check -> c_echo: "n > 0\n[data read]" {
+    style.stroke: "#006600"
+    style.stroke-width: 2
+  }
+  c_echo -> c_continue {
+    style.stroke: "#006600"
+    style.stroke-width: 2
+  }
+  c_continue -> c_read: "back to loop top" {
+    style.stroke: "#006600"
+    style.stroke-width: 2
+    style.stroke-dash: 3
+  }
+  c_check -> c_eagain: "EAGAIN\n[no more data]" {
+    style.stroke: "#006600"
+    style.stroke-width: 3
+    style.bold: true
+  }
+  c_eagain -> c_return {
+    style.stroke: "#006600"
+    style.stroke-width: 3
+  }
+  c_check -> c_close: "n==0 EOF\nor error"
+}
+
+correct_annotation: |md
+  **Why draining to EAGAIN is mandatory:**
+  Kernel receive buffer state across reads:
+  - read() call 1: 4096 bytes returned
+  - read() call 2: 4096 bytes returned
+  - read() call 3: **EAGAIN** (buffer empty ✓)
+  EAGAIN is **not an error** — it is the
+  confirmation that you have consumed all
+  available data. Only after EAGAIN can
+  you safely return and wait for the next
+  kernel-triggered EPOLLIN event.
+  The ET contract: **one EPOLLIN per
+  transition**. Always drain completely.
+| {
+  style: {
+    fill: "#f8fff8"
+    stroke: "#006600"
+    stroke-dash: 3
+    border-radius: 6
+  }
+}
+
+wrong -> correct: "fix: add drain loop\n+ check EAGAIN" {
+  style.stroke: "#666666"
+  style.stroke-dash: 4
+  style.font-color: "#444444"
+}

@@ -1,0 +1,100 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+direction: right
+title: ||md
+  ## Accept Loop Under High Load: Draining Multiple Queued Connections
+  _LT mode re-notifies across epoll_wait cycles; ET mode requires explicit drain — both benefit from looping to EAGAIN_
+|| {near: top-center}
+shape: sequence_diagram
+clients: "50 Clients"
+kernel: "Linux Kernel\n(TCP Stack)"
+epoll: "epoll\n(Interest Set + Readiness Queue)"
+loop: "accept4() Loop\n(User Space)"
+conn_table: "conn_table[]\n(fd → conn_t)"
+t0: {
+  clients -> kernel: "TCP SYN ×50\n[T=0ms]" {
+    style.stroke: "#5B8CFF"
+    style.animated: true
+  }
+}
+t1_hs: {
+  kernel -> kernel: "3-way handshake ×50\n→ queue in accept backlog\n[T=0ms → T=1ms]" {
+    style.stroke: "#5B8CFF"
+  }
+}
+t1_epoll: {
+  kernel -> epoll: "append listen_fd\nto readiness queue\n(EPOLLIN)" {
+    style.stroke: "#5B8CFF"
+  }
+  epoll -> loop: "epoll_wait() returns\nnready=1, fd=listen_fd\n[T=1ms]" {
+    style.stroke: "#5B8CFF"
+    style.stroke-width: 2
+  }
+}
+iter_1: {
+  loop -> kernel: "accept4(listen_fd, NULL, NULL,\nSOCK_NONBLOCK|SOCK_CLOEXEC)\n← iteration 1" {
+    style.stroke: "#22C55E"
+  }
+  kernel -> loop: "→ conn_fd=4  (fd recycled from OS)" {
+    style.stroke: "#22C55E"
+    style.stroke-dash: 5
+  }
+  loop -> conn_table: "conn_new(4)\nstate=ACTIVE\n[offset 0: FREE→ACTIVE]" {
+    style.stroke: "#F97316"
+  }
+}
+iter_2: {
+  loop -> kernel: "accept4() ← iteration 2" {
+    style.stroke: "#22C55E"
+  }
+  kernel -> loop: "→ conn_fd=5" {
+    style.stroke: "#22C55E"
+    style.stroke-dash: 5
+  }
+  loop -> conn_table: "conn_new(5)" {
+    style.stroke: "#F97316"
+  }
+}
+iter_ellipsis: {
+  loop -> kernel: "accept4() ← iterations 3 … 50" {
+    style.stroke: "#22C55E"
+    style.stroke-dash: 3
+  }
+  kernel -> loop: "→ conn_fd=6 … 53" {
+    style.stroke: "#22C55E"
+    style.stroke-dash: 5
+  }
+  loop -> conn_table: "conn_new(6..53)\n[50 slots initialized]" {
+    style.stroke: "#F97316"
+    style.stroke-dash: 3
+  }
+}
+iter_51: {
+  loop -> kernel: "accept4() ← iteration 51" {
+    style.stroke: "#EF4444"
+    style.stroke-width: 2
+  }
+  kernel -> loop: "→ -1  errno=EAGAIN\n(backlog empty)" {
+    style.stroke: "#EF4444"
+    style.stroke-width: 2
+    style.stroke-dash: 5
+  }
+}
+exit_loop: {
+  loop -> loop: "BREAK — drain complete\n50 connections registered\nwith epoll (EPOLLIN)" {
+    style.stroke: "#A855F7"
+  }
+}
+annotation: ||md
+  **LT vs ET behaviour at the accept loop**
+  | Mode | Re-notification | Loop requirement |
+  |------|----------------|-----------------|
+  | **Level-Triggered** | epoll_wait re-fires listen_fd until EAGAIN | Loop recommended; correct without it |
+  | **Edge-Triggered** | epoll fires ONCE per new-connection burst | Loop to EAGAIN is **mandatory** |
+  `ECONNABORTED` (client RST before accept) → `continue`; never crash.
+  `EMFILE`/`ENFILE` → log warning, `break`; server survives.
+|| {near: bottom-center}

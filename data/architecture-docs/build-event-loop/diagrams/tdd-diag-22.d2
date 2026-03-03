@@ -1,0 +1,177 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+title: |md
+  # Deferred Task Queue: Ring Buffer Layout and Snapshot-Based Bounded Drain
+| {near: top-center}
+
+# ─── 1. Physical Memory Layout ───────────────────────────────────────────────
+ring_layout: "Ring Buffer Physical Layout (reactor_t embedded)" {
+  style.fill: "#1a1a2e"
+  style.stroke: "#7c3aed"
+  style.stroke-width: 2
+
+  mem_map: {
+    # CORRECTED: Removed 'shape: grid' which is not a valid D2 shape.
+    # Grid layout is controlled by these properties:
+    grid-columns: 3
+    grid-gap: 0
+    
+    # Header Row
+    h1: "Offset" { style.bold: true; style.fill: "#4c1d95"; style.font-color: white }
+    h2: "Field [16 Bytes Per Slot]" { style.bold: true; style.fill: "#4c1d95"; style.font-color: white }
+    h3: "Size" { style.bold: true; style.fill: "#4c1d95"; style.font-color: white }
+
+    # Slot 0
+    s0_off1: "0x00" { style.font-color: "#9ca3af" }
+    s0_field1: "slot[0].callback (fn ptr)" { style.fill: "#1e3a8a"; style.font-color: "#bfdbfe" }
+    s0_sz1: "8B"
+    s0_off2: "0x08" { style.font-color: "#9ca3af" }
+    s0_field2: "slot[0].udata (void*)" { style.fill: "#1e40af"; style.font-color: "#bfdbfe" }
+    s0_sz2: "8B"
+
+    # Slot 1
+    s1_off1: "0x10" { style.font-color: "#9ca3af" }
+    s1_field1: "slot[1].callback (fn ptr)" { style.fill: "#1e3a8a"; style.font-color: "#bfdbfe" }
+    s1_sz1: "8B"
+    s1_off2: "0x18" { style.font-color: "#9ca3af" }
+    s1_field2: "slot[1].udata (void*)" { style.fill: "#1e40af"; style.font-color: "#bfdbfe" }
+    s1_sz2: "8B"
+
+    # Dots
+    d1: "..." { style.font-color: "#4b5563" }
+    d2: "slots 2–1022" { style.fill: "#0f172a"; style.font-color: "#4b5563" }
+    d3: "..."
+
+    # Slot 1023
+    sn_off1: "0x3FF0" { style.font-color: "#9ca3af" }
+    sn_field1: "slot[1023].callback" { style.fill: "#1e3a8a"; style.font-color: "#bfdbfe" }
+    sn_sz1: "8B"
+    sn_off2: "0x3FF8" { style.font-color: "#9ca3af" }
+    sn_field2: "slot[1023].udata" { style.fill: "#1e40af"; style.font-color: "#bfdbfe" }
+    sn_sz2: "8B"
+  }
+
+  annotation: |md
+    **sizeof(deferred_task_t) = 16**
+    **Total Memory = 1024 * 16 = 16,384 Bytes (16KB)**
+    - Embedded array in `reactor_t` to avoid heap fragmentation.
+    - Cache-line friendly (4 slots per 64B cache line).
+  | {
+    style.fill: "#0f0f1a"
+    style.stroke: "#4338ca"
+    style.font-color: "#c4b5fd"
+  }
+}
+
+# ─── 2. Scenario A: Normal Drain ─────────────────────────────────────────────
+scenario_a: "Scenario A: Normal Drain (No Re-Entrancy)" {
+  style.fill: "#0f2027"
+  style.stroke: "#10b981"
+  style.stroke-width: 2
+
+  initial: "Step 1: Initial State" {
+    head_ptr: "deferred_head = 0" { style.stroke: orange; style.fill: "#065f46" }
+    tail_ptr: "deferred_tail = 3" { style.stroke: orange; style.fill: "#065f46" }
+    
+    tasks: {
+      t0: "Task 0" { style.fill: "#10b981"; style.font-color: black }
+      t1: "Task 1" { style.fill: "#10b981"; style.font-color: black }
+      t2: "Task 2" { style.fill: "#10b981"; style.font-color: black }
+      t0 -> t1 -> t2
+    }
+    head_ptr -> tasks.t0: "Read Point"
+    tail_ptr -> tasks.t2: "Write Boundary"
+  }
+
+  processing: "Step 2: Snapshot Bounded Execution" {
+    snapshot: "drain_until = 3" { style.bold: true; style.stroke: orange }
+    loop: {
+      step1: "1. Exec Task 0 -> head=1"
+      step2: "2. Exec Task 1 -> head=2"
+      step3: "3. Exec Task 2 -> head=3"
+      step1 -> step2 -> step3
+    }
+    snapshot -> loop: "Limits Loop"
+    exit: "head (3) == drain_until (3) -> STOP" { style.fill: "#064e3b" }
+    loop.step3 -> exit
+  }
+  
+  initial -> processing: "Phase 3 Trigger"
+}
+
+# ─── 3. Scenario B: Re-Entrant Defer ─────────────────────────────────────────
+scenario_b: "Scenario B: Re-Entrant Defer (Snapshot Safety)" {
+  style.fill: "#1c0a00"
+  style.stroke: "#f59e0b"
+  style.stroke-width: 2
+
+  state: "Execution Flow" {
+    s1: "Snapshot: drain_until = tail (2)" { style.fill: "#78350f" }
+    s2: "Execute Task 0" { style.fill: "#b45309" }
+    s3: "⚠ Re-entrant: Task 0 calls reactor_defer()" { 
+      style.fill: "#991b1b"
+      style.font-color: white 
+      style.bold: true
+    }
+    s4: "Tail advances: 2 -> 3" { style.stroke: red }
+    s5: "Execute Task 1" { style.fill: "#b45309" }
+    s6: "Exit: head(2) == drain_until(2)" { 
+      style.fill: "#064e3b"
+      style.bold: true 
+    }
+    s7: "Task 2 (New) remains in queue for next tick" { style.font-color: "#fcd34d" }
+
+    s1 -> s2 -> s3 -> s4 -> s5 -> s6 -> s7
+  }
+}
+
+# ─── 4. Logic & Danger ───────────────────────────────────────────────────────
+danger_zone: "DANGER: Logic Contrast" {
+  broken: "BROKEN: while(head != tail)" {
+    style.fill: "#450a0a"
+    style.stroke: red
+    label: |md
+      If a task always defers a new task:
+      1. `head` advances (+1)
+      2. `tail` advances (+1)
+      3. `head` NEVER catches `tail`
+      4. **Infinite Loop: Server Hangs**
+    |
+  }
+  
+  correct: "CORRECT: while(head != snapshot)" {
+    style.fill: "#064e3b"
+    style.stroke: "#10b981"
+    label: |cpp
+      int drain_until = r->deferred_tail;
+      while (r->deferred_head != drain_until) {
+          deferred_task_t *dt = &r->deferred[r->deferred_head];
+          r->deferred_head = (r->deferred_head + 1) % MAX;
+          dt->callback(dt->udata); // tail moves, snapshot stays
+      }
+    |
+  }
+}
+
+# ─── 5. Phase Context ────────────────────────────────────────────────────────
+phases: "Reactor Tick Phases" {
+  p1: "1. I/O Polling (epoll_wait)"
+  p2: "2. I/O Callbacks (may defer)"
+  p3: "3. Deferred Tasks (Snapshot Drain)" { style.stroke-width: 4; style.stroke: "#a78bfa" }
+  p4: "4. Timers (Min-heap)"
+  
+  p1 -> p2 -> p3 -> p4
+  p4 -> p1: "Next Tick"
+}
+
+# Global Connections
+ring_layout -> scenario_a: "Physical to Logic"
+scenario_a -> scenario_b: "Add Re-entrancy"
+scenario_b -> danger_zone: "Why Snapshot?"
+danger_zone -> phases: "Execution Context"

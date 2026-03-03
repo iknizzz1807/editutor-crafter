@@ -1,0 +1,194 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## Syscall Timing: What You Actually Measure vs True Cost
+  *ptrace introduces 50–500× overhead per syscall — useful for relative comparison, not absolute measurement*
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  native: "NATIVE (No Tracer)" {
+    direction: down
+    style.fill: "#e8f5e9"
+    style.stroke: "#388e3c"
+    style.stroke-width: 2
+    timeline_n: {
+      shape: sql_table
+      label: "getpid() — Native Execution (linux/kernel/sys.c)"
+      t0: "T+0ns    | User: syscall instruction executes"
+      t1: "T+20ns   | Ring-3→Ring-0: MSR_LSTAR jump, stack switch"
+      t2: "T+60ns   | Kernel: task_tgid_vnr() — 1 function call"
+      t3: "T+80ns   | Ring-0→Ring-3: SYSRET, restore registers"
+      t4: "T+100ns  | User: rax = PID value, execution continues"
+      total: "TOTAL: ~100ns (L1/L2 cache warm)"
+    }
+    cost_n: {
+      shape: sql_table
+      label: "Cost Breakdown — Native"
+      c1: "Ring transition (x2)  |  ~40ns  | MSR_LSTAR + SYSRET"
+      c2: "Kernel function        |  ~40ns  | task_tgid_vnr()"
+      c3: "Register save/restore  |  ~20ns  | pt_regs push/pop"
+      c4: "TLB impact             |  ~0ns   | same page table (no switch)"
+      c5: "Context switch         |  0      | none — stays in process"
+      ctotal: "TOTAL TRUE COST    |  ~100ns | 1 cache line of work"
+    }
+  }
+  gap: "" {
+    width: 40
+    style.stroke: transparent
+    style.fill: transparent
+  }
+  traced: "PTRACE-TRACED (Your strace)" {
+    direction: down
+    style.fill: "#fff3e0"
+    style.stroke: "#e65100"
+    style.stroke-width: 2
+    timeline_t: {
+      shape: sql_table
+      label: "getpid() — Under ptrace (your tracer measuring)"
+      e0: "T+0μs    | [TRACEE] syscall instruction fires"
+      e1: "T+0.1μs  | [KERNEL] TIF_SYSCALL_TRACE set → stop tracee"
+      e2: "T+0.5μs  | [KERNEL] TASK_TRACED: context switch to TRACER"
+      e3: "T+1.5μs  | [TRACER] waitpid(-1) returns → you run"
+      e4: "T+1.6μs  | [TRACER] ★ clock_gettime(entry_time) ← ENTRY MARK"
+      e5: "T+1.7μs  | [TRACER] ptrace(PTRACE_GETREGS) — 168 bytes copied"
+      e6: "T+2.0μs  | [TRACER] ptrace(PTRACE_SYSCALL) — resume tracee"
+      e7: "T+2.5μs  | [KERNEL] context switch back to TRACEE"
+      e8: "T+3.0μs  | [TRACEE] kernel executes getpid() — ~100ns real work"
+      e9: "T+3.1μs  | [KERNEL] syscall done: stop tracee again (exit stop)"
+      e10: "T+3.6μs  | [KERNEL] context switch to TRACER again"
+      e11: "T+4.5μs  | [TRACER] waitpid(-1) returns (exit stop)"
+      e12: "T+4.6μs  | [TRACER] ★ clock_gettime(exit_time)  ← EXIT MARK"
+      e13: "T+4.7μs  | [TRACER] ptrace(PTRACE_GETREGS) — read rax (retval)"
+      e14: "T+5.0μs  | [TRACER] ptrace(PTRACE_SYSCALL) — resume tracee"
+      e15: "T+5.5μs  | [TRACEE] rax delivered — execution resumes"
+      etotal: "MEASURED: exit_time - entry_time ≈ 3.0μs (range: 1–50μs)"
+    }
+    cost_t: {
+      shape: sql_table
+      label: "Cost Breakdown — ptrace-Traced (what you measure)"
+      ct1: "Actual getpid() work    |  ~0.1μs  | 0.1ns true cost hidden here"
+      ct2: "Context switch #1       |  ~1.0μs  | tracee→kernel→tracer"
+      ct3: "PTRACE_GETREGS entry    |  ~0.1μs  | 168B copy_to_user"
+      ct4: "PTRACE_SYSCALL resume   |  ~0.5μs  | kernel schedules tracee"
+      ct5: "Context switch #2       |  ~1.0μs  | tracer→kernel→tracee"
+      ct6: "Context switch #3       |  ~1.0μs  | tracee→kernel→tracer"
+      ct7: "PTRACE_GETREGS exit     |  ~0.1μs  | 168B copy_to_user"
+      ct8: "Scheduler overhead      |  ~0.2μs  | run-queue rbtree ops"
+      ct9: "TLB pressure            |  ~0.3μs  | CR3 switches flush TLB"
+      cttotal: "MEASURED 'COST'     |  ~4.3μs  | 43× inflation from overhead"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  breakdown: "Overhead Breakdown (Stacked)" {
+    direction: down
+    style.fill: "#fafafa"
+    style.stroke: "#9e9e9e"
+    bars: {
+      shape: sql_table
+      label: "What 4.3μs Measured Time Contains"
+      b0: "████░░░░░░░░░░░░░░░░░░░░░░  0.1μs  |  2%  | True syscall work"
+      b1: "░░░░██████████████░░░░░░░░  2.0μs  | 47%  | Context switches (x3)"
+      b2: "░░░░░░░░░░░░░░░░████░░░░░░  0.6μs  | 14%  | TLB + cache misses"
+      b3: "░░░░░░░░░░░░░░░░░░░░██████  1.6μs  | 37%  | ptrace bookkeeping"
+      note1: "★ True cost = 0.1μs  |  Measured = 4.3μs  |  Inflation = 43×"
+      note2: "Range: fast=1μs (TLB warm) → slow=50μs (heavy scheduler load)"
+    }
+  }
+  guidance: "What ptrace Timing IS vs IS NOT Good For" {
+    direction: down
+    style.fill: "#fafafa"
+    style.stroke: "#9e9e9e"
+    useful: {
+      shape: sql_table
+      label: "✅ VALID: Relative Comparison"
+      u1: "read() measures 200μs,  write() measures 20μs"
+      u2: "→ read() does 10× more REAL work (disk I/O wait)"
+      u3: "Blocked syscalls (read waiting on disk) dominate"
+      u4: "→ 500ms blocked read = ~500ms measured (overhead negligible)"
+      u5: "Call counts                → always exact"
+      u6: "Error counts               → always exact"
+      u7: "Hot syscall identification → ratios are reliable"
+    }
+    invalid: {
+      shape: sql_table
+      label: "❌ INVALID: Absolute Measurement"
+      i1: "getpid() measures 5μs  ≠  getpid() costs 5μs"
+      i2: "Absolute ns values are tracer overhead, not syscall cost"
+      i3: "Cannot compare to un-traced runs (10× program slowdown)"
+      i4: "Cannot compare to hardware counter measurements"
+      i5: "Low-overhead alternative: perf_event_open() — ~1ns overhead"
+      i6: "Low-overhead alternative: eBPF tracepoints — ~200ns overhead"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  why_ebpf: "Why eBPF/perf_events Exist — Direct Engineering Response" {
+    direction: down
+    style.fill: "#e8eaf6"
+    style.stroke: "#3949ab"
+    style.stroke-width: 2
+    comparison: {
+      shape: sql_table
+      label: "Profiling Tool Overhead Comparison (getpid benchmark)"
+      r0: "Tool              | Overhead/syscall | Mechanism            | Context switches"
+      r1: "ptrace (yours)    |   1–50μs         | waitpid loop         | 2 per syscall"
+      r2: "strace -c         |   1–50μs         | ptrace               | 2 per syscall"
+      r3: "ltrace            |   2–100μs        | ptrace + PLT hooks   | 2+ per call"
+      r4: "perf stat         |   ~10ns          | PMU counters         | 0 per syscall"
+      r5: "eBPF tracepoint   |   ~200ns         | in-kernel BPF VM     | 0 per syscall"
+      r6: "perf_event_open   |   ~1ns           | hardware PMU         | 0 per syscall"
+      r7: "ftrace (kernel)   |   ~50ns          | static tracepoints   | 0 per syscall"
+    }
+    ebpf_why: {
+      shape: sql_table
+      label: "eBPF Architecture — Why 0 Context Switches"
+      e1: "ptrace:  syscall → stop tracee → wake tracer → read regs → resume"
+      e2: "eBPF:    syscall → kernel runs BPF program inline → continue"
+      e3: "BPF program runs in ring-0, same context as the syscall handler"
+      e4: "BPF writes to ring buffer shared with userspace (no ptrace ioctls)"
+      e5: "Userspace reads ring buffer asynchronously — no per-event wakeup"
+      e6: "bpftrace -e 'tp:syscalls:sys_enter_openat { @c = count(); }'"
+      e7: "→ counts openat with ~0.01% overhead vs ptrace's 10× slowdown"
+    }
+  }
+  key_rule: "The Rule for Systems Engineers" {
+    direction: down
+    style.fill: "#fce4ec"
+    style.stroke: "#c62828"
+    style.stroke-width: 2
+    rule_box: {
+      shape: sql_table
+      label: "When to Use Each Tool"
+      r1: "ptrace/strace  → debugging, protocol inspection, correctness"
+      r2: "strace -c      → RELATIVE hotspot identification only"
+      r3: "perf stat      → absolute syscall counts with hardware precision"
+      r4: "eBPF/bpftrace  → production profiling, low overhead tracing"
+      r5: "perf_event     → nanosecond-precision hardware counter access"
+      r6: "─────────────────────────────────────────────────────────────"
+      r7: "NEVER use ptrace absolute times to benchmark syscall cost"
+      r8: "ALWAYS state overhead when sharing ptrace timing data"
+      r9: "The 43× inflation is not a bug — it is fundamental to ptrace"
+    }
+  }
+}
+row1 -> row2: "overhead dominates measurement"
+row2 -> row3: "motivates low-overhead alternatives"
+native.cost_n -> traced.cost_t: "same syscall — 43× different measurement" {
+  style.stroke: "#e65100"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+}

@@ -1,0 +1,247 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## Output Formatting Pipeline: Raw Registers → strace-style Line
+  *data_walk — single syscall transformation (orig_rax=2, rdi=0x7ffd3400, rsi=0x0, rax=3)*
+| {near: top-center}
+raw_regs: {
+  label: "Raw Registers (struct user_regs_struct)"
+  style.fill: "#1a1a2e"
+  style.font-color: white
+  style.stroke: "#4a4aff"
+  style.stroke-width: 2
+  style.border-radius: 6
+  reg_table: {
+    shape: sql_table
+    label: "PTRACE_GETREGS result (sys/user.h)"
+    orig_rax: "orig_rax | unsigned long long | 2         // syscall nr (preserved)"
+    rax:      "rax      | unsigned long long | 3         // return value"
+    rdi:      "rdi      | unsigned long long | 0x7ffd3400 // arg1: char* path"
+    rsi:      "rsi      | unsigned long long | 0x0        // arg2: int flags"
+    rdx:      "rdx      | unsigned long long | 0x0        // arg3: mode_t (unused)"
+    r10:      "r10      | unsigned long long | 0x0        // arg4: (unused)"
+    note:     "Captured at ENTRY stop (in_syscall=1)"
+  }
+}
+row_steps: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step1: {
+    label: "Step 1 — Syscall Name Lookup"
+    style.fill: "#0d2137"
+    style.stroke: "#2196F3"
+    style.stroke-width: 2
+    style.border-radius: 6
+    width: 320
+    lookup_table: {
+      shape: sql_table
+      label: "syscall_names[] (syscall_table.h)"
+      e0: "[0]  | const char* | \"read\""
+      e1: "[1]  | const char* | \"write\""
+      e2: "[2]  | const char* | \"open\"   ← HIT"
+      e3: "[3]  | const char* | \"close\""
+      e4: "...  | ...         | ..."
+    }
+    result1: {
+      label: "syscall_name(2) = \"open\""
+      style.fill: "#0a3d0a"
+      style.stroke: "#4CAF50"
+      style.font-color: "#4CAF50"
+      style.border-radius: 4
+    }
+  }
+  step2: {
+    label: "Step 2 — String Arg Decode (PTRACE_PEEKDATA)"
+    style.fill: "#1a0d37"
+    style.stroke: "#9C27B0"
+    style.stroke-width: 2
+    style.border-radius: 6
+    width: 370
+    peekdata_loop: {
+      shape: sql_table
+      label: "read_string_from_tracee(pid, 0x7ffd3400, buf, 32)"
+      w0: "Call 1 | PTRACE_PEEKDATA(pid, 0x7ffd3400) | word=0x6374652f6f74652f"
+      w1: "       | bytes[] scan                       | \"/etc/etc/\" prefix"
+      w2: "Call 2 | PTRACE_PEEKDATA(pid, 0x7ffd3408) | word=0x647773736170"
+      w3: "       | bytes[] scan → null at byte[6]    | \"passwd\\0\""
+      w4: "errno=0 before each call  |  -1 ambiguity guard"
+    }
+    result2: {
+      label: "buf = \"/etc/passwd\"  (12 bytes)"
+      style.fill: "#0a3d0a"
+      style.stroke: "#4CAF50"
+      style.font-color: "#4CAF50"
+      style.border-radius: 4
+    }
+  }
+  step3: {
+    label: "Step 3 — Flags Decode (bitmask)"
+    style.fill: "#2d1a00"
+    style.stroke: "#FF9800"
+    style.stroke-width: 2
+    style.border-radius: 6
+    width: 310
+    flags_decode: {
+      shape: sql_table
+      label: "print_open_flags(rsi=0x0)"
+      f_accmode: "rsi & O_ACCMODE | 0x0 & 0x3 | = 0 → O_RDONLY"
+      f_rdonly:  "O_RDONLY = 0   | special case | printed first"
+      f_rest:    "rsi & ~O_ACCMODE | 0x0        | no further bits set"
+      f_result:  "output string  | \"O_RDONLY\"  | no pipe-separated flags"
+    }
+    result3: {
+      label: "flags_str = \"O_RDONLY\""
+      style.fill: "#0a3d0a"
+      style.stroke: "#4CAF50"
+      style.font-color: "#4CAF50"
+      style.border-radius: 4
+    }
+  }
+}
+step4: {
+  label: "Step 4 — Return Value Classification (EXIT stop)"
+  style.fill: "#0d2137"
+  style.stroke: "#00BCD4"
+  style.stroke-width: 2
+  style.border-radius: 6
+  retval_check: {
+    shape: sql_table
+    label: "print_syscall_exit(rax=3)"
+    check:    "is_error_return(3) | 3 >= -4095L && 3 < 0 | FALSE"
+    classify: "retval >= 0        | success path         | print as decimal"
+    format:   "snprintf(buf, ...) | \") = 3\\n\"          | appended to outbuf"
+    note:     "Error range: [-4095, -1] — avoids mmap MAP_FAILED=-1 collision"
+  }
+  result4: {
+    label: "retval_str = \"= 3\""
+    style.fill: "#0a3d0a"
+    style.stroke: "#4CAF50"
+    style.font-color: "#4CAF50"
+    style.border-radius: 4
+  }
+}
+assembly: {
+  label: "Step 5 — Line Assembly (pid_state_t.outbuf)"
+  style.fill: "#1a1a00"
+  style.stroke: "#FFEB3B"
+  style.stroke-width: 2
+  style.border-radius: 6
+  buf_table: {
+    shape: sql_table
+    label: "outbuf[512] — built across entry + exit stops (handle_syscall_stop)"
+    entry_write:  "ENTRY stop  | snprintf(outbuf, 512, \"[pid %d] %s(\", ...) | \"[pid 1234] open(\""
+    arg1_append:  "arg decode  | print_string_arg() → append                | + \"\\\"etc/passwd\\\"\""
+    arg2_append:  "arg decode  | print_open_flags() → append                | + \", O_RDONLY\""
+    exit_append:  "EXIT stop   | snprintf(outbuf+len, ...) → append         | + \") = 3\\n\""
+    atomic_write: "fputs()     | single write() call → atomic line          | no interleaving"
+  }
+}
+output_line: {
+  label: "Final Output Line"
+  style.fill: "#003300"
+  style.stroke: "#00FF00"
+  style.stroke-width: 3
+  style.font-color: "#00FF00"
+  style.border-radius: 8
+  line_display: {
+    shape: sql_table
+    label: "stderr / g_output (unbuffered, atomic)"
+    rendered: "TEXT | [pid 1234] open(\"/etc/passwd\", O_RDONLY) = 3"
+    size:    "SIZE | 49 bytes  (< PIPE_BUF=4096, guaranteed atomic on write)"
+    timing:  "NOTE | printed at EXIT stop only — entry half buffered in outbuf"
+  }
+}
+filter_gate: {
+  label: "Filter Gate (syscall_filter_t)"
+  style.fill: "#2a0000"
+  style.stroke: "#F44336"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+  style.border-radius: 6
+  filter_logic: {
+    shape: sql_table
+    label: "filter_matches(nr=2) — checked AFTER stats_record()"
+    g_filter:  "g_filter.count | 0 → no filter set | PASS (show all)"
+    match:     "strcmp(\"open\", names[i]) | if filter active | checked per name"
+    suppress:  "no match → outbuf_len = 0 | discard buffered entry | suppress print"
+    note:      "timing+stats ALWAYS recorded regardless of filter result"
+  }
+}
+stats_accumulate: {
+  label: "Stats Accumulation (g_stats[2])"
+  style.fill: "#001a2a"
+  style.stroke: "#03A9F4"
+  style.stroke-width: 2
+  style.border-radius: 6
+  stats_table: {
+    shape: sql_table
+    label: "syscall_stats_t g_stats[400] — indexed by syscall_nr=2"
+    call_count:  "call_count  | uint64_t | g_stats[2].call_count++  → 1"
+    error_count: "error_count | uint64_t | is_error_return(3)=false → no incr"
+    total_ns:    "total_ns    | uint64_t | += timespec_diff_ns(entry, exit)"
+    note:        "CLOCK_MONOTONIC — never goes backward (NTP-safe)"
+  }
+}
+raw_regs -> row_steps.step1: "orig_rax=2 | lookup" {
+  style.stroke: "#4a4aff"
+  style.stroke-width: 2
+}
+raw_regs -> row_steps.step2: "rdi=0x7ffd3400 | PEEKDATA" {
+  style.stroke: "#9C27B0"
+  style.stroke-width: 2
+}
+raw_regs -> row_steps.step3: "rsi=0x0 | flags" {
+  style.stroke: "#FF9800"
+  style.stroke-width: 2
+}
+raw_regs -> step4: "rax=3 | retval" {
+  style.stroke: "#00BCD4"
+  style.stroke-width: 2
+}
+row_steps.step1.result1 -> assembly: "\"open\"" {
+  style.stroke: "#4CAF50"
+}
+row_steps.step2.result2 -> assembly: "\"/etc/passwd\"" {
+  style.stroke: "#4CAF50"
+}
+row_steps.step3.result3 -> assembly: "\"O_RDONLY\"" {
+  style.stroke: "#4CAF50"
+}
+step4.result4 -> assembly: "\"= 3\"" {
+  style.stroke: "#4CAF50"
+}
+assembly -> filter_gate: "outbuf ready" {
+  style.stroke: "#FFEB3B"
+}
+assembly -> stats_accumulate: "elapsed_ns | always" {
+  style.stroke: "#03A9F4"
+  style.stroke-dash: 4
+}
+filter_gate -> output_line: "PASS → fputs(outbuf)" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 3
+}
+filter_gate -> output_line: "FAIL → discard" {
+  style.stroke: "#F44336"
+  style.stroke-dash: 5
+}
+legend: {
+  near: bottom-right
+  style.stroke: "#555"
+  style.fill: "#111"
+  style.font-color: white
+  style.border-radius: 6
+  l1: "Blue  = register / kernel data source" {style.font-color: "#4a4aff"}
+  l2: "Purple = PTRACE_PEEKDATA cross-process read" {style.font-color: "#9C27B0"}
+  l3: "Orange = bitmask flag decode" {style.font-color: "#FF9800"}
+  l4: "Cyan  = return value classification" {style.font-color: "#00BCD4"}
+  l5: "Green = success / assembled output" {style.font-color: "#4CAF50"}
+  l6: "Red   = filter suppress path (dashed)" {style.font-color: "#F44336"}
+  l7: "Yellow = line buffer assembly" {style.font-color: "#FFEB3B"}
+}

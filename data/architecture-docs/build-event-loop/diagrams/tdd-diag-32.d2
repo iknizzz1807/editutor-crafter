@@ -1,0 +1,118 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+shape: sequence_diagram
+client: "Client\nTCP Peer"
+kernel: "Kernel Socket\nBuffers"
+reactor: "reactor_t\nPhase 1 Dispatch"
+handle_read: "http_handle_read()\nET Drain Loop"
+try_parse: "http_try_parse()\nIncremental Parser"
+process1: "http_process_request()\nRequest 1"
+handle_write1: "http_handle_write()\nFlush + KA Reset"
+defer_queue: "reactor_t\nDeferred Queue"
+deferred_parse: "http_deferred_parse()\nPhase 3 Callback"
+process2: "http_process_request()\nRequest 2"
+
+# Incorrect recursion participants
+wrong_caller: "handle_write()\n[caller]" { style.fill: "#ffd6d6" }
+wrong_parse: "http_try_parse()\n[WRONG]" { style.fill: "#ffd6d6" }
+wrong_process: "http_process_request()\n[WRONG]" { style.fill: "#ffd6d6" }
+wrong_write: "http_handle_write()\n[RECURSIVE]" { style.fill: "#ff8888" }
+
+pipeline_segment: "Pipelining: Two Requests in One TCP Segment" {
+  client -> kernel: "sendall(req1[400B] + req2[450B])\ntotal 850 bytes; one TCP segment"
+  kernel -> reactor: "EPOLLIN fires\n(ET: single transition event)"
+  reactor -> handle_read: "http_io_callback()\nevents=REACTOR_READ ▼ LOCK"
+}
+
+read_and_parse_req1: "REACTOR_READ Phase: ET Drain → Parse Request 1" {
+  handle_read -> kernel: "read(fd, read_buf, 16384)\n→ n=850"
+  kernel -> handle_read: "850 bytes\nreq1[0..399] + req2[400..849]"
+  handle_read -> try_parse: "http_try_parse(conn)\nread_len=850"
+  try_parse -> try_parse: "find_header_end()\nfinds \\r\\n\\r\\n at byte 400"
+  try_parse -> try_parse: "parse_request_line()\nparse_headers()\nRequest 1 COMPLETE"
+  try_parse -> try_parse: "**memmove(read_buf, body_start+400, 450)**\nread_len = 450" {
+    style.font-color: red
+  }
+  try_parse -> handle_read: "PARSE_COMPLETE\nstate → HTTP_STATE_PROCESSING"
+  handle_read -> reactor: "return\n(state==PROCESSING detected)"
+}
+
+process_and_write_req1: "PROCESSING Phase: Generate + Flush Response 1" {
+  reactor -> process1: "http_process_request(conn)\ncancel header_timer"
+  process1 -> process1: "resolve_path()\nopen() + fstat()\nbuild 200 OK headers"
+  process1 -> process1: "http_write_append()\nheader + file body → write_buf"
+  process1 -> handle_write1: "http_handle_write(conn)\nattempt immediate flush"
+  handle_write1 -> kernel: "write(fd, write_buf, pending)\n→ w=full (fast loopback)"
+  kernel -> handle_write1: "all bytes accepted\nno EAGAIN"
+  handle_write1 -> client: "HTTP/1.1 200 OK [Response 1]\nContent-Length: N"
+}
+
+keepalive_reset: "Keep-Alive State Reset: Preserve Pipelined Bytes" {
+  handle_write1 -> handle_write1: "write_buf fully drained\nconn->request.keep_alive == 1"
+  handle_write1 -> handle_write1: "state = READING_HEADERS\nbody_received = 0\nmemset(&request, 0)"
+  handle_write1 -> handle_write1: "reactor_cancel_timer(idle_timer)\nreactor_set_timeout(30s, idle_cb)"
+  handle_write1 -> handle_write1: "**read_len=450 > 0**\n→ PIPELINE DETECTED" {
+    style.font-color: red
+  }
+  handle_write1 -> defer_queue: "reactor_defer(http_deferred_parse, conn)\nenqueue in Phase 3 ring buffer"
+  handle_write1 -> reactor: "return ▲ UNLOCK"
+}
+
+wrong_path: "WRONG PATH (shown for contrast): Direct Recursion via handle_write" {
+  wrong_caller -> wrong_parse: "WRONG: call http_try_parse()\ndirectly inside handle_write" {
+    style.stroke: red
+    style.stroke-dash: 5
+  }
+  wrong_parse -> wrong_process: "PARSE_COMPLETE\n→ call http_process_request()" {
+    style.stroke: red
+    style.stroke-dash: 5
+  }
+  wrong_process -> wrong_write: "http_handle_write() AGAIN\n→ handle_write inside handle_write\nstack depth unbounded" {
+    style.stroke: red
+    style.stroke-dash: 5
+  }
+  wrong_note: |'md
+    **Stack Overflow Risk**
+    - N pipelined requests = N recursive calls
+    - Default stack: 8MB
+    - 1000 pipelined = crash
+  '| {
+    style.fill: "#fff0f0"
+    style.stroke: red
+  }
+}
+
+phase3_deferred: "PHASE 3: Deferred Queue Execution (dispatching == 0)" {
+  reactor -> reactor: "Phase 1 complete (dispatching=0)\nPhase 2: apply pending_ops"
+  reactor -> deferred_parse: "http_deferred_parse(conn)\ndispatching == 0"
+  deferred_parse -> deferred_parse: "guard: state==READING_HEADERS ✓\nguard: read_len=450 > 0 ✓"
+  deferred_parse -> try_parse: "http_try_parse(conn)\nread_buf[0..449] = req2"
+  try_parse -> try_parse: "parse_request_line()\nparse_headers()\nRequest 2 COMPLETE"
+  try_parse -> try_parse: "read_len = 0\nstate → HTTP_STATE_PROCESSING"
+  try_parse -> deferred_parse: "PARSE_COMPLETE"
+  deferred_parse -> process2: "http_process_request(conn)"
+  process2 -> process2: "resolve_path()\nbuild response 2"
+  process2 -> kernel: "http_handle_write()\nwrite(fd, resp2)\n→ full send"
+  kernel -> client: "HTTP/1.1 200 OK [Response 2]\nContent-Length: N"
+  deferred_parse -> reactor: "return\nPhase 4: expire timers"
+}
+
+ordering_note: |'md
+  **Why reactor_defer() is Correct**
+  | Property | Direct Call (WRONG) | reactor_defer (CORRECT) |
+  | :--- | :--- | :--- |
+  | Call site | Inside handle_write | Phase 3, after dispatch |
+  | dispatching flag | 1 (inside Phase 1) | 0 (Phase 3) |
+  | reactor_register | → enqueued (deferred) | → immediate |
+  | Stack depth | Unbounded recursion | O(1) per request |
+  | N=1000 pipelined | Stack overflow | 1000 Phase 3 ticks |
+
+  **Timing guarantee**: deferred parse runs BEFORE next epoll_wait.
+  Client receives Response 2 within the same reactor tick as Response 1.
+'| {
+  near: bottom-center
+}

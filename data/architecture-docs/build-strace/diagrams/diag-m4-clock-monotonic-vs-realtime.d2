@@ -1,0 +1,188 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## CLOCK_MONOTONIC vs CLOCK_REALTIME — Why the Wrong Clock Breaks Profiling
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  realtime_col: "CLOCK_REALTIME (WRONG)" {
+    direction: down
+    style.fill: "#fff0f0"
+    style.stroke: "#cc0000"
+    style.stroke-width: 2
+    rt_header: {
+      shape: sql_table
+      label: "struct timespec — clock_gettime(CLOCK_REALTIME)"
+      f0: "0x00 | time_t | tv_sec   // wall-clock seconds"
+      f1: "0x08 | long   | tv_nsec  // 0..999999999 nanoseconds"
+      sz: "Total: 16 bytes — SUBJECT TO NTP JUMPS"
+    }
+    rt_entry: "T_entry = 1000.000000000s" {
+      shape: rectangle
+      style.fill: "#ffd6d6"
+      style.stroke: "#cc0000"
+    }
+    rt_ntp: "NTP STEP: -200ms jump" {
+      shape: diamond
+      style.fill: "#ff4444"
+      style.font-color: white
+      style.stroke: "#880000"
+    }
+    rt_exit: "T_exit  = 0999.801000000s" {
+      shape: rectangle
+      style.fill: "#ffd6d6"
+      style.stroke: "#cc0000"
+    }
+    rt_result: "elapsed = T_exit - T_entry = -199ms" {
+      shape: callout
+      style.fill: "#ff0000"
+      style.font-color: white
+      style.stroke: "#880000"
+    }
+    rt_corrupt: "stats.total_ns += NEGATIVE VALUE" {
+      shape: rectangle
+      style.fill: "#880000"
+      style.font-color: white
+      style.stroke: "#440000"
+    }
+    rt_header -> rt_entry: "syscall entry stop"
+    rt_entry -> rt_ntp: "kernel executes syscall"
+    rt_ntp -> rt_exit: "NTP corrects drift"
+    rt_exit -> rt_result: "T5 - T1"
+    rt_result -> rt_corrupt: "CORRUPT | accumulate"
+    rt_corrupt.style.stroke-dash: 4
+  }
+  monotonic_col: "CLOCK_MONOTONIC (CORRECT)" {
+    direction: down
+    style.fill: "#f0fff0"
+    style.stroke: "#007700"
+    style.stroke-width: 2
+    mo_header: {
+      shape: sql_table
+      label: "struct timespec — clock_gettime(CLOCK_MONOTONIC)"
+      f0: "0x00 | time_t | tv_sec   // seconds since boot (never jumps)"
+      f1: "0x08 | long   | tv_nsec  // 0..999999999 nanoseconds"
+      sz: "Total: 16 bytes — GUARANTEED MONOTONE, vDSO fast path ~5ns"
+    }
+    mo_entry: "T_entry = 42000.000000000s" {
+      shape: rectangle
+      style.fill: "#d6ffd6"
+      style.stroke: "#007700"
+    }
+    mo_ntp: "NTP STEP: adjusts CLOCK_REALTIME only" {
+      shape: diamond
+      style.fill: "#88cc88"
+      style.stroke: "#007700"
+    }
+    mo_exit: "T_exit  = 42000.001000000s" {
+      shape: rectangle
+      style.fill: "#d6ffd6"
+      style.stroke: "#007700"
+    }
+    mo_result: "elapsed = T_exit - T_entry = +1ms" {
+      shape: callout
+      style.fill: "#00aa00"
+      style.font-color: white
+      style.stroke: "#007700"
+    }
+    mo_correct: "stats.total_ns += 1000000ns" {
+      shape: rectangle
+      style.fill: "#007700"
+      style.font-color: white
+      style.stroke: "#004400"
+    }
+    mo_header -> mo_entry: "syscall entry stop"
+    mo_entry -> mo_ntp: "kernel executes syscall"
+    mo_ntp -> mo_exit: "MONOTONIC unaffected"
+    mo_exit -> mo_result: "T5 - T1"
+    mo_result -> mo_correct: "VALID | accumulate"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  call_pattern: "clock_gettime() Call Pattern (tracer.c)" {
+    direction: down
+    style.fill: "#f8f8ff"
+    style.stroke: "#333377"
+    width: 560
+    cp_entry: {
+      label: "Entry Stop Handler"
+      width: 540
+      code: |'c
+        /* At syscall-entry stop — record start */
+        clock_gettime(CLOCK_MONOTONIC, &state->entry_time);
+        /* entry_time.tv_sec  = seconds since boot */
+        /* entry_time.tv_nsec = nanoseconds [0..999999999] */
+      '|
+    }
+    cp_exit: {
+      label: "Exit Stop Handler"
+      width: 540
+      code: |'c
+        struct timespec exit_time;
+        clock_gettime(CLOCK_MONOTONIC, &exit_time);
+        uint64_t elapsed_ns = timespec_diff_ns(
+            &state->entry_time, &exit_time);
+        stats_record(state->current.syscall_nr,
+                     retval, elapsed_ns);
+      '|
+    }
+    cp_diff: {
+      label: "timespec_diff_ns() — handle sub-second borrow"
+      width: 540
+      code: |'c
+        uint64_t sec  = end->tv_sec  - start->tv_sec;
+        uint64_t nsec = end->tv_nsec - start->tv_nsec;
+        if (end->tv_nsec < start->tv_nsec) {
+            sec -= 1;
+            nsec += 1000000000ULL; /* borrow 1s */
+        }
+        return sec * 1000000000ULL + nsec;
+      '|
+    }
+    cp_entry -> cp_exit: "ptrace stop pair"
+    cp_exit -> cp_diff: "calls"
+  }
+  overhead_box: "Observer Effect: What elapsed_ns Actually Measures" {
+    direction: down
+    style.fill: "#fffff0"
+    style.stroke: "#aaaa00"
+    style.stroke-width: 2
+    oh_table: {
+      shape: sql_table
+      label: "Timeline Breakdown — one syscall under ptrace"
+      t0: "T0 | tracee executes syscall instr  | entry stop fires"
+      t1: "T1 | clock_gettime(entry_time)       | YOU RECORD HERE"
+      t2: "T2 | ptrace(PTRACE_SYSCALL)          | ctx-switch to tracee"
+      t3: "T3 | kernel executes syscall         | actual work"
+      t4: "T4 | syscall done, exit stop fires   | ctx-switch to tracer"
+      t5: "T5 | clock_gettime(exit_time)        | YOU RECORD HERE"
+      blank: "---"
+      e1: "T5-T1 = (T2-T1) + (T4-T2) + (T5-T4)"
+      e2: "(T2-T1) = tracer overhead   ~1-5 us"
+      e3: "(T4-T2) = real syscall cost ~0.1-500 us"
+      e4: "(T5-T4) = tracer overhead   ~1-5 us"
+      warn: "getpid() real=100ns, measured=5-50us: 50-500x inflation"
+    }
+    oh_valid: "What IS valid in statistics" {
+      shape: sql_table
+      label: "Measurement Validity Table"
+      r0: "call_count   | EXACT     | one increment per exit stop"
+      r1: "error_count  | EXACT     | is_error_return() check"
+      r2: "relative pct | VALID     | ratios cancel out overhead"
+      r3: "long IO waits | VALID    | 500ms read >> 10us overhead"
+      r4: "abs ns values | INVALID  | includes 2x ctx-switch cost"
+    }
+    oh_table -> oh_valid: "interpretation"
+  }
+}
+row1 -> row2: "feeds statistics into"

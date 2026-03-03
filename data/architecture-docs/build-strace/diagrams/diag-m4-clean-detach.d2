@@ -1,0 +1,250 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+title: |md
+  # Clean Detach on SIGINT — The Cleanup Dance
+  **Without cleanup: tracee stuck in T state (SIGKILL only)**
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  user_node: "User (Terminal)" {
+    shape: person
+    style.fill: "#e8d5f5"
+    style.stroke: "#7b2fa8"
+  }
+  tracer_node: "Tracer Process" {
+    shape: rectangle
+    style.fill: "#dbeafe"
+    style.stroke: "#2563eb"
+    style.border-radius: 6
+  }
+  kernel_node: "Linux Kernel" {
+    shape: rectangle
+    style.fill: "#fef3c7"
+    style.stroke: "#d97706"
+    style.border-radius: 6
+  }
+  tracee_node: "Tracee (pid N)" {
+    shape: rectangle
+    style.fill: "#dcfce7"
+    style.stroke: "#16a34a"
+    style.border-radius: 6
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  sig_handler: "Signal Handler" {
+    shape: rectangle
+    label: "sigint_handler()"
+    style.fill: "#f3e8ff"
+    style.stroke: "#9333ea"
+    style.border-radius: 4
+    code: |'c
+      static volatile sig_atomic_t
+        g_interrupted = 0;
+      void sigint_handler(int sig) {
+        (void)sig;
+        g_interrupted = 1;  /* ONLY this */
+      }
+      /* NOT async-signal-safe:
+         malloc, fprintf, ptrace */
+    '|
+    width: 340
+  }
+  flag_state: "Global Flag" {
+    shape: sql_table
+    label: "Shared State (tracer.c)"
+    f0: "g_interrupted | volatile sig_atomic_t | 0 → 1"
+    f1: "g_output      | FILE*                 | stderr or file"
+    f2: "g_pid_map     | pid_map_t             | 64-slot hash map"
+    f3: "g_stats[]     | syscall_stats_t[400]  | accumulated times"
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  detach_fn: "Detach Logic" {
+    shape: rectangle
+    label: "detach_all() (tracer.c)"
+    style.fill: "#dbeafe"
+    style.stroke: "#2563eb"
+    style.border-radius: 4
+    code: |'c
+      for each pid in pid_map:
+        rc = ptrace(PTRACE_DETACH, pid, 0, 0);
+        if (rc < 0 && errno == ESRCH) {
+          /* pid is RUNNING — must stop first */
+          kill(pid, SIGSTOP);
+          waitpid(pid, &status, 0);
+          ptrace(PTRACE_DETACH, pid, 0, 0);
+        }
+        /* PTRACE_DETACH resumes the tracee */
+        fprintf(stderr, "Detached from %d\n", pid);
+    '|
+    width: 440
+  }
+  good_vs_bad: "" {
+    direction: down
+    style.stroke: transparent
+    style.fill: transparent
+    good_outcome: "With Cleanup" {
+      shape: rectangle
+      style.fill: "#dcfce7"
+      style.stroke: "#16a34a"
+      style.border-radius: 6
+      label: "With Cleanup (CORRECT)"
+      r1: "1. PTRACE_DETACH sent to each PID"
+      r2: "2. Tracee transitions: T → R (running)"
+      r3: "3. Statistics printed to g_output"
+      r4: "4. Tracer exits cleanly"
+      r5: "ps shows tracee: R or S (normal)"
+    }
+    bad_outcome: "Without Cleanup" {
+      shape: rectangle
+      style.fill: "#fee2e2"
+      style.stroke: "#dc2626"
+      style.border-radius: 6
+      label: "WITHOUT Cleanup (BROKEN)"
+      r1: "1. Tracer exits — kernel auto-detaches"
+      r2: "2. BUT tracee was at ptrace stop (T state)"
+      r3: "3. Auto-detach leaves tracee FROZEN"
+      r4: "4. ps shows T (stopped) — SIGTERM ignored"
+      r5: "5. Only SIGKILL can terminate it"
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  main_loop: "Main Event Loop" {
+    shape: rectangle
+    label: "run_tracer() — SIGINT Integration"
+    style.fill: "#f0f9ff"
+    style.stroke: "#0369a1"
+    style.border-radius: 4
+    code: |'c
+      while (num_active > 0) {
+        if (g_interrupted) {          /* (3) flag detected */
+          detach_all(&g_pid_map);     /* (4) per-PID detach */
+          break;
+        }
+        pid = waitpid(-1, &status, 0);
+        if (pid < 0 && errno == EINTR)
+          continue; /* SIGINT interrupted waitpid → re-check flag */
+        /* ... normal dispatch ... */
+      }
+      if (g_show_stats)
+        print_statistics(g_output);  /* (6) */
+    '|
+    width: 440
+  }
+  ptrace_detach_cost: "PTRACE_DETACH Cost" {
+    shape: sql_table
+    label: "ptrace(PTRACE_DETACH) Internals"
+    f0: "Requires  | tracee must be in T (stopped) state"
+    f1: "Effect    | clears PT_PTRACED in task_struct"
+    f2: "Effect    | transitions tracee T → R (running)"
+    f3: "Signal    | pass 0 — no signal injected on resume"
+    f4: "If ESRCH  | tracee is running — SIGSTOP it first"
+    f5: "Cost      | ~1 syscall + 1 context switch (~5us)"
+  }
+}
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  stats_table: "Statistics Output" {
+    shape: rectangle
+    label: "print_statistics() — strace -c format"
+    style.fill: "#f8fafc"
+    style.stroke: "#64748b"
+    style.border-radius: 4
+    code: |'c
+      /* Sort g_stats[400] by total_ns descending */
+      /* qsort with compare_by_time_desc */
+      /* Output:
+        syscall         calls  errors  usecs/total  %time
+        ----------  ---------  ------  -----------  -----
+        read             1234       0       823456  45.23%
+        write             891       0       412891  22.68%
+        openat            156      12        89234   4.90%
+        ...
+        total            3891      23      1820432 100.00%
+      NOTE: times include ptrace context-switch overhead (~2-10us each)
+      Relative ratios meaningful; absolute values are NOT wall-clock cost */
+    '|
+    width: 500
+  }
+  observer_note: "Observer Effect Warning" {
+    shape: rectangle
+    style.fill: "#fef9c3"
+    style.stroke: "#ca8a04"
+    style.border-radius: 6
+    label: "Timing Accuracy Caveat"
+    r1: "Measured: T_exit_stop - T_entry_stop"
+    r2: "Includes: 2x context switch (~1-10us each)"
+    r3: "getpid() real: ~100ns | measured: ~10us (100x)"
+    r4: "Use ratios for comparison, NOT absolute ns"
+    r5: "eBPF avoids this: runs inside kernel (~200ns)"
+  }
+}
+row1.user_node -> row1.tracer_node: "Ctrl+C → SIGINT" {
+  style.stroke: "#dc2626"
+  style.stroke-width: 2
+}
+row1.tracer_node -> row2.sig_handler: "kernel delivers" {
+  style.stroke: "#9333ea"
+  style.stroke-dash: 4
+}
+row2.sig_handler -> row2.flag_state: "g_interrupted = 1" {
+  style.stroke: "#9333ea"
+  style.stroke-width: 2
+}
+row1.kernel_node -> row1.tracee_node: "ptrace stop (T state)" {
+  style.stroke: "#d97706"
+  style.stroke-dash: 3
+}
+row2.flag_state -> row4.main_loop: "flag check on each iteration" {
+  style.stroke: "#2563eb"
+  style.stroke-dash: 3
+}
+row4.main_loop -> row3.detach_fn: "detach_all()" {
+  style.stroke: "#2563eb"
+  style.stroke-width: 2
+}
+row3.detach_fn -> row1.kernel_node: "ptrace(PTRACE_DETACH, pid, 0, 0)" {
+  style.stroke: "#d97706"
+  style.stroke-width: 2
+}
+row1.kernel_node -> row1.tracee_node: "T → R (resume)" {
+  style.stroke: "#16a34a"
+  style.stroke-width: 2
+}
+row3.detach_fn -> row3.good_vs_bad.good_outcome: "success path" {
+  style.stroke: "#16a34a"
+}
+row3.detach_fn -> row3.good_vs_bad.bad_outcome: "if skipped" {
+  style.stroke: "#dc2626"
+  style.stroke-dash: 5
+}
+row4.main_loop -> row5.stats_table: "after detach_all()" {
+  style.stroke: "#0369a1"
+}
+row4.ptrace_detach_cost -> row3.detach_fn: "constraints" {
+  style.stroke: "#64748b"
+  style.stroke-dash: 3
+}
+row5.stats_table -> row5.observer_note: "caveat" {
+  style.stroke: "#ca8a04"
+  style.stroke-dash: 3
+}

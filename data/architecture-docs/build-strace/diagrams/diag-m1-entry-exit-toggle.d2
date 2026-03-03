@@ -1,0 +1,273 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+title: |md
+  ## Syscall Entry/Exit Double-Stop State Machine
+  Every `PTRACE_SYSCALL` resume produces TWO stops per syscall. Toggle tracks which stop you are at.
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  states: "State Machine (per-PID toggle)" {
+    direction: down
+    style.fill: "#1a1a2e"
+    style.stroke: "#7b68ee"
+    style.stroke-width: 3
+    idle: "IDLE\n(no syscall in flight)" {
+      shape: circle
+      style.fill: "#2d2d4e"
+      style.stroke: "#7b68ee"
+      style.stroke-width: 2
+      style.font-color: "#e0e0ff"
+    }
+    entry: "ENTRY STOP\nin_syscall = 1" {
+      shape: oval
+      style.fill: "#1a3a1a"
+      style.stroke: "#44ff44"
+      style.stroke-width: 3
+      style.font-color: "#88ff88"
+    }
+    exit: "EXIT STOP\nin_syscall = 0" {
+      shape: oval
+      style.fill: "#3a1a1a"
+      style.stroke: "#ff6644"
+      style.stroke-width: 3
+      style.font-color: "#ffaa88"
+    }
+    idle -> entry: "PTRACE_SYSCALL fires\ntracee calls syscall inst" {
+      style.stroke: "#44ff44"
+      style.stroke-width: 2
+    }
+    entry -> exit: "PTRACE_SYSCALL fires\nkernel returns from syscall" {
+      style.stroke: "#ff6644"
+      style.stroke-width: 2
+    }
+    exit -> entry: "next syscall entry\n(loop continues)" {
+      style.stroke: "#aaaaff"
+      style.stroke-dash: 4
+    }
+  }
+  registers: "Register State at Each Stop" {
+    direction: down
+    style.fill: "#1a1a1a"
+    style.stroke: "#888888"
+    style.stroke-width: 2
+    entry_regs: {
+      shape: sql_table
+      label: "ENTRY STOP — registers (x86_64)"
+      orig_rax: "orig_rax | syscall number | e.g. 2 = open"
+      rax: "rax      | syscall number | same as orig_rax (not yet clobbered)"
+      rdi: "rdi      | arg1           | e.g. filename ptr"
+      rsi: "rsi      | arg2           | e.g. flags"
+      rdx: "rdx      | arg3           | e.g. mode"
+      r10: "r10      | arg4           | NOT rcx"
+      r8:  "r8       | arg5           | -"
+      r9:  "r9       | arg6           | -"
+      note: "READ: orig_rax for syscall#   WRITE: none"
+      style.fill: "#1a3a1a"
+    }
+    exit_regs: {
+      shape: sql_table
+      label: "EXIT STOP — registers (x86_64)"
+      orig_rax2: "orig_rax | syscall number | PRESERVED by kernel (use this)"
+      rax2: "rax      | return value   | e.g. 3 (fd) or -2 (ENOENT)"
+      rdi2: "rdi      | arg1           | MAY be clobbered by kernel"
+      rsi2: "rsi      | arg2           | MAY be clobbered by kernel"
+      rdx2: "rdx      | arg3           | MAY be clobbered by kernel"
+      r10b: "r10      | arg4           | MAY be clobbered by kernel"
+      rcx:  "rcx      | DESTROYED      | kernel used for return address"
+      r11:  "r11      | DESTROYED      | kernel saved RFLAGS here"
+      note2: "READ: rax for retval  USE: orig_rax for syscall# (still valid)"
+      style.fill: "#3a1a1a"
+    }
+    action_entry: "ACTION AT ENTRY STOP" {
+      style.fill: "#1a3a1a"
+      style.stroke: "#44ff44"
+      code: |'c
+        state->current_syscall_nr = (long)regs.orig_rax;
+        extract_args(&regs, &state->current);
+        clock_gettime(CLOCK_MONOTONIC, &state->entry_time);
+        format_opening_into_buf(pid, state);
+        /* NO newline yet — wait for exit stop */
+      '|
+      width: 420
+    }
+    action_exit: "ACTION AT EXIT STOP" {
+      style.fill: "#3a1a1a"
+      style.stroke: "#ff6644"
+      code: |'c
+        long retval  = (long)regs.rax;        /* return value */
+        long syscall = state->current_syscall_nr; /* saved at entry */
+        clock_gettime(CLOCK_MONOTONIC, &t_exit);
+        stats_record(syscall, retval, diff_ns(&state->entry_time, &t_exit));
+        complete_and_flush_buf(retval); /* appends " = N\n" */
+      '|
+      width: 420
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  correct_trace: "CORRECT OUTPUT — toggle maintained" {
+    direction: down
+    style.fill: "#0a1a0a"
+    style.stroke: "#44ff44"
+    style.stroke-width: 2
+    correct_code: {
+      label: "Tracing open('/etc/passwd', O_RDONLY)"
+      width: 480
+      code: |'c
+        /* stop 1: ENTRY  in_syscall flips 0→1 */
+        orig_rax=2 (open), rdi=0x7fff...(path), rsi=0
+        → print: open("/etc/passwd", O_RDONLY
+        /* stop 2: EXIT   in_syscall flips 1→0 */
+        orig_rax=2 (preserved), rax=3 (fd returned)
+        → print:  = 3\n
+        /* FINAL: open("/etc/passwd", O_RDONLY) = 3  ✓ */
+      '|
+    }
+  }
+  bug_trace: "BUG SCENARIO — toggle missing or desynchronised" {
+    direction: down
+    style.fill: "#1a0a0a"
+    style.stroke: "#ff4444"
+    style.stroke-width: 3
+    bug_code: {
+      label: "Same open() — but in_syscall never toggled"
+      width: 580
+      code: |'c
+        /* stop 1: tracer thinks this is EXIT (in_syscall stuck at 0) */
+        reads rax → value is 2 (syscall# still there, kernel hasn't run yet)
+        → prints: syscall(???) = 2   ← WRONG: 2 is open's number, not retval
+        /* stop 2: tracer thinks this is ENTRY (in_syscall stuck at 0→1 wrong) */
+        reads orig_rax → value is 2 (correct number accidentally)
+        → prints: open(  ← incomplete, waits for "exit" that already passed
+        /* OUTPUT: garbled, syscall numbers misidentified as return values */
+        /* open returning ENOENT shows as "syscall(2) = -2"  NOT "-1 ENOENT" */
+      '|
+    }
+    bug_rax_swap: {
+      label: "Bug variant 2: reading rax at entry (before kernel runs)"
+      width: 580
+      code: |'c
+        /* ENTRY stop — rax holds syscall# (same as orig_rax) */
+        if you read rax here: rax = 2 (open)  — looks correct THIS time
+        /* But after execve() or signal, rax may hold PRIOR retval: */
+        /* e.g., prior syscall returned fd=7, rax=7 at next entry stop */
+        /* Reading rax at entry → thinks syscall# is 7 (pread64) — WRONG */
+        /* Rule: ALWAYS use orig_rax for syscall number, at BOTH stops */
+      '|
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  toggle_impl: "Toggle Implementation (tracee_state_t)" {
+    direction: down
+    style.fill: "#1a1a2e"
+    style.stroke: "#7b68ee"
+    style.stroke-width: 2
+    state_struct: {
+      shape: sql_table
+      label: "tracee_state_t (per PID — ptrace.h)"
+      f0: "0x00 | pid_t          | pid"
+      f1: "0x04 | int            | in_syscall     // 0=at exit, 1=at entry"
+      f2: "0x08 | long           | current_syscall_nr"
+      f3: "0x10 | syscall_info_t | current        // args + retval"
+      f4: "0x50 | struct timespec| entry_time     // CLOCK_MONOTONIC"
+      f5: "0x60 | int            | active         // slot in use"
+      f6: "0x68 | char[512]      | outbuf         // partial line buffer"
+      f7: "Total: ~600 bytes per PID slot"
+    }
+    toggle_code: {
+      label: "Toggle logic in handle_stop() (tracer.c)"
+      width: 420
+      code: |'c
+        /* Called on every SIGTRAP|0x80 stop (PTRACE_O_TRACESYSGOOD set) */
+        pid_state_t *s = pid_map_get(map, pid);
+        s->in_syscall = !s->in_syscall;   /* flip FIRST */
+        if (s->in_syscall) {
+            /* now == 1 → this is an ENTRY stop */
+            handle_entry(pid, s, &regs);
+        } else {
+            /* now == 0 → this is an EXIT stop */
+            handle_exit(pid, s, &regs);
+        }
+      '|
+    }
+  }
+  error_range: "Return Value Error Detection" {
+    direction: down
+    style.fill: "#1a1a1a"
+    style.stroke: "#888888"
+    err_table: {
+      shape: sql_table
+      label: "rax interpretation at EXIT stop"
+      r1: "rax in [-4095, -1]  | ERROR  | negate → errno code"
+      r2: "rax == -2           | ENOENT | No such file or directory"
+      r3: "rax == -13          | EACCES | Permission denied"
+      r4: "rax == -11          | EAGAIN | Resource temporarily unavailable"
+      r5: "rax >= 0            | SUCCESS| value depends on syscall"
+      r6: "rax == 0            | OK     | e.g. close(), write() partial"
+      r7: "rax == 3            | fd=3   | e.g. open() returned fd"
+      r8: "rax < -4095         | VALID  | large negative = valid data (mmap)"
+      r9: "Rule: (rax >= -4095L && rax < 0) → error"
+    }
+    err_code: {
+      label: "is_error_return() (tracer.c)"
+      width: 360
+      code: |'c
+        static int is_error_return(long retval) {
+            /* Kernel encodes errno as negative in [-4095, -1].
+             * Values outside this range are valid returns.
+             * NOT simply (retval < 0) — that misclassifies
+             * valid large-negative mmap/lseek returns. */
+            return (retval >= -4095L && retval < 0);
+        }
+      '|
+    }
+  }
+}
+row1 -> row2: "event loop iteration" {
+  style.stroke: "#7b68ee"
+  style.stroke-dash: 3
+}
+row2 -> row3: "implementation details" {
+  style.stroke: "#7b68ee"
+  style.stroke-dash: 3
+}
+row1.states.entry -> row1.registers.entry_regs: "registers readable here" {
+  style.stroke: "#44ff44"
+  style.stroke-dash: 4
+}
+row1.states.exit -> row1.registers.exit_regs: "registers readable here" {
+  style.stroke: "#ff6644"
+  style.stroke-dash: 4
+}
+legend: "COLOR KEY" {
+  near: bottom-right
+  shape: rectangle
+  style.fill: "#111111"
+  style.stroke: "#555555"
+  l1: "Green border = ENTRY stop (syscall about to execute)" {
+    style.font-color: "#44ff44"
+  }
+  l2: "Red border   = EXIT stop  (syscall just completed)" {
+    style.font-color: "#ff6644"
+  }
+  l3: "Red bg       = BUG / wrong register / missing toggle" {
+    style.font-color: "#ff4444"
+  }
+  l4: "orig_rax     = ALWAYS safe for syscall number (both stops)" {
+    style.font-color: "#aaaaff"
+  }
+}

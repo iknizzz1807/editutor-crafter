@@ -1,0 +1,292 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+direction: down
+title: |md
+  ### Static File Serving Path: resolve_path(), MIME Detection, and Response Construction
+  `http_process_request()` → response pipeline
+| {near: top-center}
+entry: "http_process_request(conn)" {
+  style.fill: "#B5AFF6"
+  style.font-color: "#1a0050"
+  style.bold: true
+}
+s1_method: "Step 1: Validate Method" {
+  style.fill: "#C7F1FF"
+  style.bold: true
+}
+s1_check: {
+  shape: diamond
+  label: "method == GET\nor HEAD?"
+}
+s1_err: "http_send_error(405\nMethod Not Allowed)" {
+  style.fill: "#f9d8a7"
+  style.font-color: "#7a3000"
+}
+s2_resolve: "Step 2: resolve_path()" {
+  style.fill: "#C7F1FF"
+  style.bold: true
+  s2a: "snprintf candidate =\nserve_root + req_path" {
+    style.fill: "#DEE1EB"
+    style.font: mono
+  }
+  s2b: "realpath(candidate, NULL)\nResolves symlinks, normalizes '..'" {
+    style.fill: "#DEE1EB"
+    style.font: mono
+  }
+  s2c: {
+    shape: diamond
+    label: "realpath()\nsucceeded?"
+  }
+  s2d: {
+    shape: diamond
+    label: "strncmp(result,\nserve_root, root_len)\n== 0  AND\nresult[root_len] == '/'\nor '\\0'?"
+  }
+  s2e: {
+    shape: diamond
+    label: "S_ISDIR\n(result)?"
+  }
+  s2f: "Append /index.html\nrealpath() again\nRe-check prefix" {
+    style.fill: "#DEE1EB"
+    style.font: mono
+  }
+  s2_fail: "Return -1\n(traversal or missing)" {
+    style.fill: "#f9d8a7"
+    style.font-color: "#7a3000"
+  }
+  s2_ok: "real_path[] populated\nReturn 0" {
+    style.fill: "#ACE1AF"
+  }
+  s2a -> s2b
+  s2b -> s2c
+  s2c -> s2d: "yes"
+  s2c -> s2_fail: "no"
+  s2d -> s2e: "yes (inside root)"
+  s2d -> s2_fail: "no (escaped)"
+  s2e -> s2f: "yes"
+  s2e -> s2_ok: "no (regular file)"
+  s2f -> s2d: "re-check"
+}
+s2_err404_resolve: "http_send_error\n(404 Not Found)" {
+  style.fill: "#f9d8a7"
+  style.font-color: "#7a3000"
+}
+s3_open: "Step 3: Open File + fstat()" {
+  style.fill: "#C7F1FF"
+  style.bold: true
+  s3a: "open(real_path,\nO_RDONLY | O_CLOEXEC)" {
+    style.fill: "#DEE1EB"
+    style.font: mono
+  }
+  s3b: {
+    shape: diamond
+    label: "open()\nsucceeded?"
+  }
+  s3c: "fstat(file_fd, &st)" {
+    style.fill: "#DEE1EB"
+    style.font: mono
+  }
+  s3d: {
+    shape: diamond
+    label: "S_ISREG\n(st.st_mode)?"
+  }
+  s3_ok: "file_fd valid\nst.st_size known" {
+    style.fill: "#ACE1AF"
+  }
+  s3a -> s3b
+  s3b -> s3c: "yes"
+  s3b -> s3_open_fail: "no"
+  s3c -> s3d
+  s3d -> s3_ok: "yes"
+  s3d -> s3_not_reg: "no\n(dir, device, FIFO)"
+  s3_open_fail: "close() n/a\nReturn 404" {
+    style.fill: "#f9d8a7"
+    style.font-color: "#7a3000"
+  }
+  s3_not_reg: "close(file_fd)\nReturn 404" {
+    style.fill: "#f9d8a7"
+    style.font-color: "#7a3000"
+  }
+}
+s3_err404_open: "http_send_error\n(404 Not Found)" {
+  style.fill: "#f9d8a7"
+  style.font-color: "#7a3000"
+}
+s4_mime: "Step 4: MIME Type Detection" {
+  style.fill: "#C7F1FF"
+  style.bold: true
+  s4a: "dot = strrchr(real_path, '.')" {
+    style.fill: "#DEE1EB"
+    style.font: mono
+  }
+  s4b: {
+    shape: diamond
+    label: "dot found?"
+  }
+  s4c: |md
+    Linear scan MIME_TABLE[]
+    `.html` → `text/html; charset=utf-8`
+    `.css`  → `text/css`
+    `.js`   → `application/javascript`
+    `.json` → `application/json`
+    `.png`  → `image/png`
+    `.jpg`  → `image/jpeg`
+    `.svg`  → `image/svg+xml`
+    `.wasm` → `application/wasm`
+  | {
+    style.fill: "#DEE1EB"
+  }
+  s4d: "Return\napplication/octet-stream" {
+    style.fill: "#DEE1EB"
+    style.font: mono
+  }
+  s4_ok: "mime = matched type\nor octet-stream" {
+    style.fill: "#ACE1AF"
+  }
+  s4a -> s4b
+  s4b -> s4c: "yes"
+  s4b -> s4d: "no"
+  s4c -> s4_ok
+  s4d -> s4_ok
+}
+s5_header: "Step 5: Build Response Header" {
+  style.fill: "#C7F1FF"
+  style.bold: true
+  s5a: |md
+    c
+    snprintf(header_buf, sizeof(header_buf),
+      "%s 200 OK\r\n"
+      "Content-Type: %s\r\n"
+      "Content-Length: %lld\r\n"
+      "Connection: %s\r\n"
+      "\r\n",
+      http_ver, mime,
+      (long long)file_size,
+      conn_str);
+    
+  | {
+    style.fill: "#DEE1EB"
+  }
+}
+s6_append_hdr: "Step 6: http_write_append(conn, header_buf, header_len)" {
+  style.fill: "#C7F1FF"
+  style.bold: true
+  style.font: mono
+  s6a: {
+    shape: diamond
+    label: "append\nsucceeded?"
+  }
+  s6_fail: "close(file_fd)\nhttp_conn_close(conn)" {
+    style.fill: "#f9d8a7"
+    style.font-color: "#7a3000"
+  }
+  s6_ok: "Header in write_buf" {
+    style.fill: "#ACE1AF"
+  }
+  s6a -> s6_ok: "yes"
+  s6a -> s6_fail: "no (overflow)"
+}
+s7_body: "Step 7: Read File Body (GET only)" {
+  style.fill: "#C7F1FF"
+  style.bold: true
+  s7a: {
+    shape: diamond
+    label: "method == HEAD\nor file_size == 0?"
+  }
+  s7b: "rd = read(file_fd, chunk, 65536)\n[stack buffer, loop until rd ≤ 0]" {
+    style.fill: "#DEE1EB"
+    style.font: mono
+  }
+  s7c: {
+    shape: diamond
+    label: "http_write_append\n(chunk, rd) == 0?"
+  }
+  s7_skip: "Skip body\n(HEAD or empty)" {
+    style.fill: "#ACE1AF"
+  }
+  s7_fail: "close(file_fd)\nhttp_conn_close(conn)" {
+    style.fill: "#f9d8a7"
+    style.font-color: "#7a3000"
+  }
+  s7_ok: "close(file_fd)\nAll bytes in write_buf" {
+    style.fill: "#ACE1AF"
+  }
+  s7a -> s7_skip: "yes"
+  s7a -> s7b: "no (GET + body)"
+  s7b -> s7c: "rd > 0"
+  s7b -> s7_ok: "rd ≤ 0 (EOF)"
+  s7c -> s7b: "yes (loop)"
+  s7c -> s7_fail: "no (overflow)"
+}
+s8_flush: "Step 8: http_handle_write(conn)\nAttempt Immediate Flush" {
+  style.fill: "#C7F1FF"
+  style.bold: true
+  s8a: "write(conn->fd, pending_data, pending_len)" {
+    style.fill: "#DEE1EB"
+    style.font: mono
+  }
+  s8b: {
+    shape: diamond
+    label: "write()\nresult?"
+  }
+  s8_full: "Arm EPOLLOUT\nepollout_armed = 1\nReturn; wait for drain" {
+    style.fill: "#88DCF7"
+  }
+  s8_error: "http_conn_close(conn)" {
+    style.fill: "#f9d8a7"
+    style.font-color: "#7a3000"
+  }
+  s8_drain: {
+    shape: diamond
+    label: "write_buf_pending\n== 0?"
+  }
+  s8_keepalive: {
+    shape: diamond
+    label: "keep_alive == 1?"
+  }
+  s8_reset: "State → READING_HEADERS\nReset read_len, request{}\nReset idle + header timers\nreactor_defer(deferred_parse)\nif read_len > 0" {
+    style.fill: "#ACE1AF"
+  }
+  s8_close: "http_conn_close(conn)" {
+    style.fill: "#f9d8a7"
+    style.font-color: "#7a3000"
+  }
+  s8a -> s8b
+  s8b -> s8_full: "EAGAIN"
+  s8b -> s8_error: "error"
+  s8b -> s8_drain: "w > 0\n(advance consume ptr)"
+  s8_drain -> s8a: "no\n(more pending)"
+  s8_drain -> s8_keepalive: "yes\n(fully drained)"
+  s8_keepalive -> s8_reset: "yes"
+  s8_keepalive -> s8_close: "no"
+}
+traversal_note: |md
+  **Path Traversal Prevention**
+  `GET /../../../etc/passwd HTTP/1.1`
+  1. candidate = `/var/www/../../../etc/passwd`
+  2. `realpath()` → `/etc/passwd`
+  3. `strncmp("/etc/passwd", "/var/www", 8)` **≠ 0**
+  4. Return -1 → **HTTP 404** (not 403; do not reveal serve root)
+| {
+  near: bottom-right
+  style.fill: "#ffe6d5"
+  style.stroke: "#ed800c"
+  style.stroke-width: 2
+}
+entry -> s1_method
+s1_method -> s1_check
+s1_check -> s2_resolve: "yes"
+s1_check -> s1_err: "no"
+s2_resolve.s2_ok -> s3_open
+s2_resolve.s2_fail -> s2_err404_resolve
+s3_open.s3_ok -> s4_mime
+s3_open.s3_open_fail -> s3_err404_open
+s3_open.s3_not_reg -> s3_err404_open
+s4_mime.s4_ok -> s5_header
+s5_header -> s6_append_hdr
+s6_append_hdr.s6_ok -> s7_body
+s7_body.s7_ok -> s8_flush
+s7_body.s7_skip -> s8_flush

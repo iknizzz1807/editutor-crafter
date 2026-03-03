@@ -1,0 +1,195 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## Signal Delivery in Traced Processes — Suppress vs Re-inject
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  wrong_side: "WRONG: Signal Suppressed" {
+    direction: down
+    style.fill: "#fff0f0"
+    style.stroke: "#cc0000"
+    style.stroke-width: 2
+    w_signal_stop: "waitpid returns" {
+      shape: rectangle
+      style.fill: "#ffcccc"
+      style.stroke: "#cc0000"
+    }
+    w_decode: "Decode stop" {
+      shape: rectangle
+      style.fill: "#ffe0e0"
+      style.stroke: "#cc0000"
+      w_code: |'c
+        int sig = WSTOPSIG(status);
+        // sig == SIGALRM (14)
+        // sig != SIGTRAP — signal stop
+      '|
+      width: 320
+    }
+    w_bad_resume: "WRONG Resume" {
+      shape: rectangle
+      style.fill: "#ff4444"
+      style.stroke: "#990000"
+      w_bad_code: |'c
+        ptrace(PTRACE_SYSCALL,
+               pid, 0,
+               0);   // <-- signal=0 SUPPRESSES it
+      '|
+      width: 320
+    }
+    w_consequence: "Consequence" {
+      shape: rectangle
+      style.fill: "#cc0000"
+      style.stroke: "#880000"
+      w_cons_code: |'c
+        // SIGALRM never delivered
+        // alarm() timeout never fires
+        // program hangs waiting for
+        // timeout that never comes
+        // timer callbacks skipped
+      '|
+      width: 320
+      style.font-color: "#ffffff"
+    }
+    w_broken: "Program Broken" {
+      shape: oval
+      style.fill: "#880000"
+      style.font-color: "#ffffff"
+      style.stroke: "#550000"
+      width: 280
+    }
+    w_signal_stop -> w_decode: "WIFSTOPPED"
+    w_decode -> w_bad_resume: "sig=14 (SIGALRM)"
+    w_bad_resume -> w_consequence: "signal dropped"
+    w_consequence -> w_broken: "silent failure"
+  }
+  correct_side: "CORRECT: Signal Re-injected" {
+    direction: down
+    style.fill: "#f0fff0"
+    style.stroke: "#006600"
+    style.stroke-width: 2
+    c_signal_stop: "waitpid returns" {
+      shape: rectangle
+      style.fill: "#ccffcc"
+      style.stroke: "#006600"
+    }
+    c_decode: "Decode stop" {
+      shape: rectangle
+      style.fill: "#e0ffe0"
+      style.stroke: "#006600"
+      c_code: |'c
+        int sig = WSTOPSIG(status);
+        // sig == SIGALRM (14)
+        // sig != SIGTRAP — signal stop
+      '|
+      width: 320
+    }
+    c_good_resume: "CORRECT Resume" {
+      shape: rectangle
+      style.fill: "#44cc44"
+      style.stroke: "#005500"
+      c_good_code: |'c
+        ptrace(PTRACE_SYSCALL,
+               pid, 0,
+               sig);  // <-- re-inject signal
+                      //     sig == SIGALRM
+      '|
+      width: 320
+    }
+    c_consequence: "Consequence" {
+      shape: rectangle
+      style.fill: "#006600"
+      style.stroke: "#004400"
+      c_cons_code: |'c
+        // SIGALRM delivered to tracee
+        // alarm() handler fires
+        // timeout logic runs normally
+        // program behaves correctly
+        // under tracing
+      '|
+      width: 320
+      style.font-color: "#ffffff"
+    }
+    c_working: "Program Works" {
+      shape: oval
+      style.fill: "#004400"
+      style.font-color: "#ffffff"
+      style.stroke: "#002200"
+      width: 280
+    }
+    c_signal_stop -> c_decode: "WIFSTOPPED"
+    c_decode -> c_good_resume: "sig=14 (SIGALRM)"
+    c_good_resume -> c_consequence: "signal forwarded"
+    c_consequence -> c_working: "correct behavior"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  rule_box: "Dispatch Rule (tracer event loop)" {
+    direction: down
+    style.fill: "#f8f8ff"
+    style.stroke: "#334499"
+    style.stroke-width: 2
+    width: 700
+    rule_code: |'c
+      if (WIFSTOPPED(status)) {
+          int sig   = WSTOPSIG(status);
+          int event = (status >> 16) & 0xff;
+          if (event != 0) {
+              // PTRACE_EVENT stop — always resume with signal=0
+              // (kernel notification, NOT a real signal)
+              ptrace(PTRACE_SYSCALL, pid, 0, 0);
+          } else if (sig == (SIGTRAP | 0x80)) {
+              // Syscall stop (PTRACE_O_TRACESYSGOOD) — no signal to deliver
+              handle_syscall_stop(pid, state);
+              ptrace(PTRACE_SYSCALL, pid, 0, 0);
+          } else if (sig == SIGTRAP) {
+              // Initial exec stop or breakpoint — no signal to deliver
+              ptrace(PTRACE_SYSCALL, pid, 0, 0);
+          } else {
+              // Real signal-delivery stop: MUST re-inject
+              ptrace(PTRACE_SYSCALL, pid, 0, sig);  // <-- sig, NOT 0
+          }
+      }
+    '|
+    width: 680
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  signals_table: "Signals That Break Programs If Suppressed" {
+    shape: sql_table
+    label: "Signals That Break Programs If Suppressed"
+    r1: "SIGALRM  | 14 | alarm() / setitimer() timeouts — never fire"
+    r2: "SIGTERM  | 15 | Graceful shutdown — process never terminates cleanly"
+    r3: "SIGCHLD  |  17 | Parent never learns child exited — wait() hangs"
+    r4: "SIGHUP   |  1  | Daemon config reload — never triggered"
+    r5: "SIGPIPE  | 13 | Write to closed pipe — EPIPE never delivered"
+    r6: "SIGUSR1  | 10 | App-defined signal — custom handler never runs"
+    r7: "SIGWINCH | 28 | Terminal resize — UI never redraws"
+    r8: "NOTE: suppress ONLY ptrace-synthetic SIGTRAPs (initial exec stop)"
+  }
+  ptrace_stop_types: "ptrace Stop Type Reference" {
+    shape: sql_table
+    label: "ptrace Stop Type Reference"
+    h1: "Stop Type          | sig value          | Resume signal arg"
+    h2: "Syscall-entry/exit | SIGTRAP | 0x80=0x85 | 0 (no signal)"
+    h3: "PTRACE_EVENT stop  | SIGTRAP, event!=0  | 0 (no signal)"
+    h4: "Initial exec stop  | SIGTRAP, event==0  | 0 (no signal)"
+    h5: "Signal-delivery    | actual signal nr   | sig (re-inject!)"
+    h6: "Group stop SIGSTOP | SIGSTOP            | 0 (first attach)"
+  }
+}
+row1 -> row2: "signal stop triggers"
+row2 -> row3: "reference"

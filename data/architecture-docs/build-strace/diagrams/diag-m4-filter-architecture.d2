@@ -1,0 +1,196 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+row0: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  cli_parse: {
+    label: "Argument Parser (main.c)"
+    shape: rectangle
+    style.fill: "#E4DBFE"
+    style.stroke: "#7c5cbf"
+    style.border-radius: 6
+    parse_e: {
+      shape: sql_table
+      label: "parse_filter() — -e trace=open,read,write"
+      r0: "input  | char*  | 'open,read,write'"
+      r1: "strtok | splits | 'open' 'read' 'write'"
+      r2: "lookup | table  | nr 2, 0, 1"
+      r3: "output | bitmask set bits 0,1,2"
+    }
+  }
+  bitmask_struct: {
+    label: "Filter Bitmask (filter.h)"
+    shape: sql_table
+    style.fill: "#C7F1FF"
+    style.stroke: "#1a7fa8"
+    label: "syscall_filter_t — 64 bytes = 1 cache line"
+    f0: "0x00 | uint64_t | word[0]  bits 0..63   (read,write,open...)"
+    f1: "0x08 | uint64_t | word[1]  bits 64..127"
+    f2: "0x10 | uint64_t | word[2]  bits 128..191"
+    f3: "0x18 | uint64_t | word[3]  bits 192..255"
+    f4: "0x20 | uint64_t | word[4]  bits 256..319"
+    f5: "0x28 | uint64_t | word[5]  bits 320..383"
+    f6: "0x30 | uint64_t | word[6]  bits 384..447"
+    f7: "0x38 | uint64_t | word[7]  bits 448..511"
+    sz: "Total: 64 bytes (fits in one L1 cache line)"
+  }
+  filter_api: {
+    label: "Filter API (filter.h)"
+    shape: class
+    style.fill: "#DEE1EB"
+    style.stroke: "#555"
+    +filter_set(nr): "void"
+    +filter_matches(nr): "int"
+    note1: "filter_matches: word[nr>>6] >> (nr&63) & 1"
+    note2: "Single shift+AND — no branch, no loop"
+  }
+}
+row0.cli_parse -> row0.bitmask_struct: "nr → bit index"
+row0.bitmask_struct -> row0.filter_api: "uint64_t[8]"
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  why_no_skip: {
+    label: "WHY You Cannot Skip Unmatched Syscalls at ptrace Level"
+    shape: rectangle
+    style.fill: "#fff3cd"
+    style.stroke: "#b8860b"
+    style.border-radius: 6
+    width: 420
+    reason1: {
+      label: "Reason 1: Entry/Exit Toggle Must Stay Synced"
+      shape: rectangle
+      style.fill: "#ffe8a0"
+      style.stroke: "#b8860b"
+      style.border-radius: 4
+      toggle_table: {
+        shape: sql_table
+        label: "per-PID toggle — MUST flip on EVERY stop"
+        e0: "stop N   | in_syscall=0 | ENTRY — read orig_rax"
+        e1: "stop N+1 | in_syscall=1 | EXIT  — read rax"
+        e2: "skip mmap entry → toggle=1 | next stop=mmap EXIT | reads as ENTRY → WRONG nr"
+        e3: "one missed stop corrupts all subsequent syscalls forever"
+      }
+    }
+    reason2: {
+      label: "Reason 2: ptrace Has No Per-Syscall Intercept"
+      shape: rectangle
+      style.fill: "#ffe8a0"
+      style.stroke: "#b8860b"
+      style.border-radius: 4
+      r2body: "PTRACE_SYSCALL = stop on ALL syscall boundaries.\nNo kernel API to say 'only stop on open/read/write'.\nPTRACE_SYSEMU (Linux 5.3+) skips execution, not stops.\nOnly seccomp-BPF can filter at the kernel level."
+    }
+  }
+  timing_always: {
+    label: "Timing: Recorded for ALL Syscalls, Filter Applied After"
+    shape: rectangle
+    style.fill: "#d4edda"
+    style.stroke: "#155724"
+    style.border-radius: 6
+    width: 420
+    timing_order: {
+      shape: sql_table
+      label: "Correct Order of Operations at EXIT Stop"
+      s0: "1 | clock_gettime(CLOCK_MONOTONIC, exit_t)  | always"
+      s1: "2 | elapsed = exit_t - state->entry_time    | always"
+      s2: "3 | stats_record(nr, retval, elapsed)        | always"
+      s3: "4 | if (!filter_matches(nr)) return          | filter here"
+      s4: "5 | format line into outbuf                  | matched only"
+      s5: "6 | fputs(outbuf, g_output)                  | matched only"
+      note: "Stats table counts ALL syscalls regardless of filter"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  kernel_side: {
+    label: "Kernel (Linux): ptrace Intercept Layer"
+    shape: rectangle
+    style.fill: "#f8d7da"
+    style.stroke: "#721c24"
+    style.border-radius: 6
+    entry_exit: {
+      shape: sql_table
+      label: "Every Syscall — Two Stops — No Exceptions"
+      k0: "ENTRY stop | tracee executes syscall insn | orig_rax=nr, rdi-r9=args"
+      k1: "kernel executes syscall                   | (tracer resumes with PTRACE_SYSCALL)"
+      k2: "EXIT stop  | kernel returns to userspace  | rax=retval, orig_rax preserved"
+      k3: "TIF_SYSCALL_TRACE set for ALL syscalls    | cannot be selective per-nr"
+    }
+  }
+  tracer_loop: {
+    label: "Tracer Event Loop (tracer.c)"
+    shape: rectangle
+    style.fill: "#cce5ff"
+    style.stroke: "#004085"
+    style.border-radius: 6
+    loop_class: {
+      shape: class
+      label: "handle_syscall_stop(pid, state)"
+      note_entry: "ENTRY: clock_gettime → entry_time"
+      note_exit1: "EXIT:  clock_gettime → exit_time"
+      note_exit2: "EXIT:  stats_record(nr, retval, ns)"
+      note_exit3: "EXIT:  if filter_matches → print"
+      note_exit4: "EXIT:  always: PTRACE_SYSCALL resume"
+    }
+  }
+  stats_global: {
+    label: "Global Statistics Table (stats.c)"
+    shape: sql_table
+    label: "syscall_stats_t g_stats[400] — 9.6KB fits in L1"
+    g0: "index | field       | size | notes"
+    g1: "nr    | call_count  | u64  | incremented every exit"
+    g2: "nr    | error_count | u64  | incremented if retval in [-4095,-1]"
+    g3: "nr    | total_ns    | u64  | += elapsed_ns every exit"
+    g4: "Total: 24 bytes/entry × 400 = 9,600 bytes"
+    g5: "Sorted by total_ns desc at session end for -c output"
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  output_path: {
+    label: "Output Path — Matched Syscalls Only"
+    shape: rectangle
+    style.fill: "#E4DBFE"
+    style.stroke: "#7c5cbf"
+    style.border-radius: 6
+    per_pid_buf: {
+      shape: sql_table
+      label: "Per-PID Output Buffer (pid_state_t.outbuf)"
+      b0: "ENTRY stop: snprintf('[pid %d] name(args', ...) → outbuf"
+      b1: "EXIT stop:  if (!filter_matches) { outbuf_len=0; return; }"
+      b2: "EXIT stop:  snprintf(') = retval\\n') → outbuf + len"
+      b3: "EXIT stop:  fputs(outbuf, g_output)  ← single write(), atomic"
+      b4: "Atomic write prevents interleaving across concurrent PIDs"
+    }
+  }
+  legend: {
+    label: "Color Legend"
+    shape: rectangle
+    style.fill: "#f8f9fa"
+    style.stroke: "#999"
+    style.border-radius: 6
+    l0: "Purple = filter / output control"
+    l1: "Blue   = data path / timing"
+    l2: "Green  = statistics accumulation"
+    l3: "Red    = kernel-level constraint (cannot bypass)"
+    l4: "Yellow = correctness invariant (must obey)"
+  }
+}
+row0 -> row1: "filter ready at startup"
+row1 -> row2: "tracer loop running"
+row2.kernel_side -> row2.tracer_loop: "ptrace stop | ALL nrs"
+row2.tracer_loop -> row2.stats_global: "stats_record | ALL nrs"
+row2.tracer_loop -> row3.output_path: "filter_matches | matched only"
+row2.tracer_loop -> row2.kernel_side: "PTRACE_SYSCALL | always resume"

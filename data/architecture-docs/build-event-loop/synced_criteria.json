@@ -1,0 +1,165 @@
+[
+  {
+    "milestone_id": "build-event-loop-m1",
+    "criteria": [
+      "Create the epoll instance using epoll_create1(EPOLL_CLOEXEC) and verify epfd >= 0; never use the deprecated epoll_create() without CLOEXEC",
+      "Set the listening socket to non-blocking mode at creation time using SOCK_NONBLOCK flag in socket() call, or via fcntl(F_SETFL, O_NONBLOCK) if using the two-step approach",
+      "Set all client sockets to non-blocking mode using accept4() with SOCK_NONBLOCK | SOCK_CLOEXEC flags — a single atomic syscall rather than accept() + fcntl()",
+      "Register the listening socket with epoll_ctl(EPOLL_CTL_ADD) for EPOLLIN events before entering the event loop",
+      "Implement the accept loop: call accept4() in a while(1) loop, break on EAGAIN/EWOULDBLOCK, continue on ECONNABORTED, and register each accepted fd with epoll before returning",
+      "Implement level-triggered (LT) mode event loop: read one chunk per EPOLLIN event, return to epoll_wait() without draining; verify epoll re-notifies if data remains in the receive buffer",
+      "Implement edge-triggered (ET) mode event loop by adding EPOLLET to the event flags; read in a while(1) loop inside the event handler, breaking only on EAGAIN/EWOULDBLOCK to fully drain the kernel receive buffer",
+      "Demonstrate the ET silent data loss bug: a version that reads only once per ET event loses data when a client sends more than one buffer-size worth of data in a single burst",
+      "Treat EAGAIN and EWOULDBLOCK as non-errors on all read() and write() calls — neither should close the connection or print an error",
+      "Handle EPOLLERR and EPOLLHUP events by calling epoll_ctl(EPOLL_CTL_DEL) before close(fd) to avoid fd-reuse bugs",
+      "Allocate per-connection state using a flat array indexed by file descriptor number; conn_new() initializes state and conn_free() zeroes it on close",
+      "Echo server correctly echoes all received bytes back to the client in both LT and ET modes, verified with payloads larger than the read buffer size (> 4096 bytes)",
+      "Handle EINTR from epoll_wait() with a continue, not an error exit",
+      "Call epoll_ctl(EPOLL_CTL_DEL, fd, NULL) before close(fd) on every connection teardown path (error, EOF, EPOLLHUP)"
+    ]
+  },
+  {
+    "milestone_id": "build-event-loop-m2",
+    "criteria": [
+      "When write() returns EAGAIN (errno EAGAIN or EWOULDBLOCK) on a non-blocking socket, all unsent bytes are appended to a per-connection write buffer and no bytes are silently dropped",
+      "When write() returns a positive value less than len (partial write), the write_offset is advanced by the returned count and the remaining bytes are queued in the write buffer",
+      "EPOLLOUT is registered via epoll_ctl(EPOLL_CTL_MOD) only when the write buffer transitions from empty to non-empty; it is never set in the initial EPOLL_CTL_ADD registration",
+      "When conn_flush_write_buf() drains the write buffer completely (write_buf_pending() == 0), epoll_ctl(EPOLL_CTL_MOD) is called to remove EPOLLOUT from the interest mask, preventing the busy-loop anti-pattern",
+      "The epollout_armed flag is maintained as canonical truth: arm/disarm functions check this flag before calling epoll_ctl to prevent double-registration and double-deregistration",
+      "When the write buffer already contains pending data, conn_write() appends new data to the buffer rather than attempting a direct write(), preserving TCP byte ordering",
+      "A min-heap timer data structure is implemented with correct sift-up and sift-down operations; heap_swap() updates both heap_idx in the entries array and timer_id in the corresponding conn_t simultaneously",
+      "timer_insert() inserts a new timer in O(log n) time using CLOCK_MONOTONIC for expiry timestamps; timer_cancel() removes a timer in O(log n) time using the swap-with-last technique followed by sift-up and sift-down",
+      "On each EPOLLIN event where data is received, timer_reset() cancels the connection's existing timer and inserts a new one with expiry = now_ms() + IDLE_TIMEOUT_MS (30 seconds)",
+      "compute_epoll_timeout() returns -1 when the heap is empty, 0 when the earliest timer is already overdue, and (expiry_ms - now_ms()) otherwise; this value is passed directly to epoll_wait()",
+      "timer_expire_all() uses a while loop (not if) to process ALL timers with expiry_ms <= now_ms() after every epoll_wait() return, calling conn_close() for each expired connection",
+      "conn_close() cancels the connection's timer (if timer_id >= 0), calls epoll_ctl(EPOLL_CTL_DEL) before close(), frees the write_buf_t heap allocation, and clears the conn_t entry — all steps in every close path including error and timeout",
+      "After handling EPOLLIN in the event dispatch loop, the conn_t state is re-checked before handling EPOLLOUT on the same fd, preventing write operations on a connection that the read handler already closed",
+      "epoll_wait() returning with errno == EINTR causes the loop to call timer_expire_all() and retry rather than exiting",
+      "Idle connections that send no data for 30 seconds are closed: verified by connecting with netcat, waiting 30 seconds without sending data, and observing the server close the connection"
+    ]
+  },
+  {
+    "milestone_id": "build-event-loop-m3",
+    "criteria": [
+      "Implement reactor_t struct with epoll fd, fd_handler_t array indexed by fd number, min-heap timer structures, ring-buffer deferred task queue, and pending_ops array for deferred epoll modifications",
+      "reactor_register(r, fd, events, cb, udata) adds or modifies an fd's interest using REACTOR_READ | REACTOR_WRITE flags; when called during dispatch (dispatching==1), enqueues PENDING_ADD or PENDING_MOD instead of calling epoll_ctl directly",
+      "reactor_deregister(r, fd) marks fd_handler_t.closing=1 and enqueues PENDING_DEL when called during dispatch; when called outside dispatch, immediately calls epoll_ctl(EPOLL_CTL_DEL) and clears the handler slot",
+      "Dispatch loop sets dispatching=1 before iterating events, sets dispatching=0 after, skips events for fds where h->closing==1 or h->registered==0, and translates EPOLLIN/EPOLLOUT/EPOLLERR/EPOLLHUP to REACTOR_READ/REACTOR_WRITE/REACTOR_ERROR before invoking callbacks",
+      "reactor_set_timeout(r, delay_ms, cb, udata) schedules a one-shot timer returning a non-negative timer_id; timer fires exactly once after delay_ms milliseconds using CLOCK_MONOTONIC",
+      "reactor_set_interval(r, interval_ms, cb, udata) schedules a repeating timer returning a non-negative timer_id; timer reschedules itself before invoking the callback to handle self-cancellation correctly",
+      "reactor_cancel_timer(r, timer_id) removes the timer from the min-heap using swap-with-last plus sift-up/sift-down; returns 0 on success, -1 if timer_id not found",
+      "reactor_defer(r, cb, udata) enqueues cb to a ring buffer; deferred callbacks run in Phase 3 (after Phase 1 I/O dispatch and Phase 2 pending-ops application); callbacks added during Phase 3 run in the NEXT tick via drain_until snapshot",
+      "Four-phase dispatch loop executes in order: Phase 1 (I/O dispatch with dispatching=1), Phase 2 (apply pending_ops: PENDING_ADD/MOD via epoll_ctl, PENDING_DEL clears handler slot), Phase 3 (drain deferred queue up to snapshot), Phase 4 (expire all timers whose expiry_ms <= now_ms())",
+      "epoll_wait timeout is computed as max(0, nearest_timer_expiry_ms - now_ms()); returns -1 (infinite) when no timers are pending",
+      "EPOLLHUP and EPOLLERR kernel events are always delivered to the registered callback as REACTOR_ERROR regardless of whether the user subscribed to them",
+      "User code (echo server or HTTP server) contains zero epoll symbols: no epoll_ctl, no epoll_wait, no EPOLLIN/EPOLLOUT/EPOLLET constants; all I/O registration goes through reactor_register/reactor_deregister",
+      "reactor_run(r) blocks until reactor_stop(r) is called; reactor_stop sets running=0 which causes the loop to exit after the current tick completes",
+      "Demonstrate re-entrancy safety: a callback that calls reactor_deregister on its own fd does not cause use-after-free or processing of subsequent events for that fd in the same epoll_wait batch",
+      "All registered callbacks receive (int fd, uint32_t events, void *udata) arguments where udata is the pointer passed to reactor_register, unchanged"
+    ]
+  },
+  {
+    "milestone_id": "build-event-loop-m4",
+    "criteria": [
+      "Implement an incremental HTTP parser that accumulates bytes in conn->read_buf and calls http_try_parse() after each read(), returning PARSE_INCOMPLETE (not an error) when headers have not yet arrived completely — verified by sending a request one byte at a time and confirming correct response",
+      "Implement the six-state HTTP connection state machine: HTTP_STATE_READING_HEADERS, HTTP_STATE_READING_BODY, HTTP_STATE_PROCESSING, HTTP_STATE_WRITING_RESPONSE, HTTP_STATE_KEEP_ALIVE, HTTP_STATE_CLOSING — each state transition must be explicit and all six states must be reachable in normal operation",
+      "Detect the HTTP header-body boundary by scanning for \\r\\n\\r\\n in the accumulated read buffer; correctly handle requests where this delimiter spans multiple read() calls",
+      "Parse the HTTP request line (method, path, HTTP version) and all header fields (Content-Length, Connection, and arbitrary headers) from the accumulated buffer using null-terminated storage in conn->header_buf",
+      "Handle partial writes using the write buffer from M2: when write() returns EAGAIN or a short count, buffer remaining bytes, call reactor_register() to add REACTOR_WRITE interest, and deregister REACTOR_WRITE via reactor_register() with REACTOR_READ only when the buffer drains completely",
+      "Implement HTTP/1.1 keep-alive: after flushing the response, if request.keep_alive == 1, reset conn->state to HTTP_STATE_READING_HEADERS, zero conn->read_len, conn->write_offset, conn->write_len, and conn->request, and reset the idle timer — connection fd must NOT be closed",
+      "Implement Connection: close semantics: when request.keep_alive == 0 (HTTP/1.0 default, or Connection: close header present), close the connection after the response is fully sent",
+      "Implement pipelining: if conn->read_len > 0 after transitioning to KEEP_ALIVE state (a subsequent request arrived while the previous response was being sent), schedule parsing via reactor_defer() and process the buffered request in Phase 3 without waiting for another REACTOR_READ event",
+      "Implement a 10-second header deadline timer (header_timer_id) separate from the idle timer: fire http_header_timeout_cb() if headers are not fully received within 10 seconds of connection creation, send a 408 response and close",
+      "Implement a 30-second idle timeout timer (idle_timer_id) that resets on every REACTOR_READ event with received data, and fires http_idle_timeout_cb() to close the connection if no data arrives for 30 seconds",
+      "Serve static files from a configured serve root directory: open the file with O_RDONLY | O_CLOEXEC, call fstat() to get Content-Length, detect MIME type from file extension using a lookup table with at least 8 entries, and send correct HTTP/1.1 response headers",
+      "Implement path sanitization using realpath() to resolve the requested path and verify it starts with the configured serve root — reject paths that escape the root with a 404 response",
+      "Return appropriate HTTP error responses: 400 Bad Request for malformed requests, 404 Not Found for missing files, 405 Method Not Allowed for non-GET/HEAD methods, 408 Request Timeout on header deadline, 413 Request Entity Too Large when the read buffer fills before headers complete",
+      "Implement complete connection cleanup on all exit paths (client EOF, REACTOR_ERROR, idle timeout, header timeout, write buffer overflow): cancel idle_timer_id, cancel header_timer_id, call reactor_deregister(), close(fd), free(conn->write_buf), free(conn) — in that order, with a state == HTTP_STATE_CLOSING guard to prevent double-free",
+      "Benchmark with wrk or ab demonstrating 10,000+ concurrent connections with p99 latency under 100ms for a small static file response — report wrk -t12 -c10000 -d60s --latency output including Requests/sec and latency percentiles",
+      "Increase system limits before benchmarking: ulimit -n 65536, and verify the server runs without 'too many open files' errors at 10K connections",
+      "The accept loop calls accept4() with SOCK_NONBLOCK | SOCK_CLOEXEC in a loop until EAGAIN, allocates http_conn_t with calloc(), arms both idle and header timers, and calls reactor_register() for REACTOR_READ — dropping connections gracefully when allocation fails",
+      "Zero wrk-reported errors (connection resets, timeouts, non-2xx responses) during the 60-second benchmark run at 10K concurrent connections serving a static file"
+    ]
+  },
+  {
+    "module_id": "build-event-loop-m1",
+    "criteria": [
+      "Create epoll instance with epoll_create1(EPOLL_CLOEXEC) and register the listening socket for EPOLLIN events",
+      "Set ALL sockets (listening and client) to non-blocking mode using SOCK_NONBLOCK flag on socket() and accept4()",
+      "Accept new connections in a loop calling accept4() until EAGAIN, registering each client fd with epoll",
+      "Implement level-triggered (LT) mode: read one chunk per EPOLLIN event; verify epoll re-notifies when data remains unread",
+      "Implement edge-triggered (ET) mode with EPOLLET flag: read in a loop until EAGAIN to drain the socket completely",
+      "Demonstrate the ET correctness requirement: reading only once per event in ET mode loses data for payloads > BUF_SIZE",
+      "Handle EAGAIN/EWOULDBLOCK on all non-blocking read() and write() calls without treating them as errors",
+      "Handle ECONNABORTED on accept4() by continuing the accept loop rather than exiting",
+      "Handle EINTR on epoll_wait() by retrying rather than treating it as a fatal error",
+      "Handle EPOLLERR and EPOLLHUP by calling conn_close() to tear down the connection cleanly",
+      "Call epoll_ctl(EPOLL_CTL_DEL) before close(fd) for every connection teardown to avoid fd-reuse races",
+      "Build a basic echo server using the event loop: read data from client, write it back",
+      "Use a flat array conn_t[MAX_CONNS] indexed by file descriptor number to store per-connection state",
+      "conn_new() initializes a slot to CONN_STATE_ACTIVE; conn_free() resets it to CONN_STATE_FREE (zero)",
+      "Drop connections gracefully when fd >= MAX_CONNS rather than crashing or corrupting the table",
+      "Pass integration test: LT and ET modes both correctly echo a 32KB payload (8x the 4KB read buffer)"
+    ]
+  },
+  {
+    "module_id": "build-event-loop-m2",
+    "criteria": [
+      "Create epoll instance with epoll_create1(EPOLL_CLOEXEC) and register the listening socket for EPOLLIN events",
+      "Set ALL sockets (listening and client) to non-blocking mode using fcntl(O_NONBLOCK)",
+      "Accept new connections in a loop (accept until EAGAIN) and register each with epoll",
+      "Implement level-triggered (LT) mode first: epoll re-notifies if data remains unread; read can process one chunk per event",
+      "Then implement edge-triggered (ET) mode (EPOLLET flag): read in a loop until EAGAIN to drain the socket completely, because epoll will NOT re-notify for already-available data",
+      "Demonstrate the difference: in ET mode, reading only once per event loses data; in LT mode, it works but may cause redundant wakeups",
+      "Handle EAGAIN/EWOULDBLOCK on all non-blocking read() and write() calls without treating them as errors",
+      "Build a basic echo server as the test application: read data from client, echo it back",
+      "Use an array or hash map indexed by file descriptor to store per-connection state",
+      "When write() returns EAGAIN (socket send buffer full), buffer the remaining data in a per-connection write queue",
+      "Register interest in EPOLLOUT for that fd; when EPOLLOUT fires, attempt to flush the write buffer",
+      "When the write buffer is fully flushed, DEREGISTER EPOLLOUT interest to avoid busy-spinning on write-ready events",
+      "Handle partial writes: write() may send fewer bytes than requested; advance the buffer offset and retry on next EPOLLOUT",
+      "Implement timer management using a min-heap (priority queue) or single-level timer wheel with configurable resolution",
+      "Support connection idle timeouts: if no data is received for N seconds, close the connection and free its state",
+      "Use epoll_wait timeout parameter set to the time until the next timer expiration; when no timers are pending, use -1 (infinite wait)",
+      "Timer cancellation: when a connection receives data, reset its idle timer; when a connection closes, cancel its timer"
+    ]
+  },
+  {
+    "module_id": "build-event-loop-m3",
+    "criteria": [
+      "reactor_t struct is opaque: user code includes only reactor.h and never accesses internal fields directly",
+      "reactor_register called during dispatch (dispatching==1) enqueues PENDING_ADD or PENDING_MOD and does not call epoll_ctl",
+      "reactor_deregister called during dispatch sets handlers[fd].closing=1, enqueues PENDING_DEL, and does not call epoll_ctl",
+      "Dispatch loop skips any fd where handlers[fd].closing==1, preventing use-after-free when a callback deregisters its own fd",
+      "Phase 2 applies all pending_ops in FIFO order after dispatching is reset to 0; PENDING_DEL clears the handlers[] slot",
+      "Phase 3 uses a drain_until snapshot of deferred_tail taken before the drain loop; deferred callbacks added during Phase 3 run in the next tick only",
+      "Phase 4 calls reactor_expire_timers after Phase 3; a connection that resets its timer in Phase 1 is NOT expired in Phase 4 of the same tick",
+      "reactor_set_timeout callback fires exactly once; the timer_id is invalid after firing and reactor_cancel_timer on it returns -1",
+      "reactor_set_interval reschedules to prev_expiry + interval_ms BEFORE calling the callback so self-cancellation from within the callback works correctly",
+      "reactor_cancel_timer returns -1 for unknown or already-fired timer IDs without corrupting the heap",
+      "reactor_defer returns -1 when the ring buffer is full (MAX_DEFERRED-1 entries pending)",
+      "EPOLLERR and EPOLLHUP are always translated to REACTOR_ERROR and delivered to the registered callback regardless of the event mask used at registration",
+      "echo_reactor.c contains zero epoll_* symbols (verified by grep)",
+      "All registered fds use EPOLLET (edge-triggered); the reactor never registers an fd without the EPOLLET flag",
+      "reactor_destroy does not call close() on user-registered fds; it only closes the epoll fd itself",
+      "Compile with -O2 -Wall -Wextra -Werror -g with zero warnings"
+    ]
+  },
+  {
+    "module_id": "build-event-loop-m4",
+    "criteria": [
+      "Create http_conn_t struct with read_buf (16KB), write_buf pointer (M2), state enum, two timer IDs (idle + header), epollout_armed flag, and http_request_t with header_buf storage; add _Static_assert for all field offsets",
+      "Implement find_header_end() scanning for \\r\\n\\r\\n returning pointer to byte after terminator or NULL; implement parse_request_line() extracting method/path/http_minor with PARSE_ERROR on malformed input",
+      "Implement parse_headers() with case-insensitive Content-Length and Connection extraction, whitespace trimming, default keep_alive based on HTTP version, storage of name/value pairs into header_buf with null terminators",
+      "Implement http_try_parse() as top-level incremental parser: calls find_header_end, parse_request_line, parse_headers in sequence; handles body accumulation; preserves pipelined bytes via memmove after headers consumed; returns PARSE_INCOMPLETE/COMPLETE/ERROR/TOO_LARGE",
+      "Implement http_handle_read() with ET drain-until-EAGAIN loop; calls http_try_parse after each read(); resets idle timer on every n>0 read; handles buffer-full (413) and EOF cases",
+      "Implement resolve_path() using realpath() to prevent directory traversal; verifies resolved path starts with serve_root followed by '/' or '\\0'; appends /index.html for directories; frees realpath() malloc result internally",
+      "Implement http_process_request(): cancel header timer; validate method (GET/HEAD only → 405); resolve_path → 404 on failure; open/fstat → 404 if not regular file; build response header with snprintf; append file body in chunks; call http_handle_write",
+      "Implement http_handle_write() with write loop until write_buf_pending==0 or EAGAIN; arm EPOLLOUT via reactor_register(REACTOR_READ|REACTOR_WRITE) on EAGAIN; disarm via reactor_register(REACTOR_READ) on drain; on drain with keep_alive=1 reset state/request/timers; on drain with keep_alive=0 call http_conn_close",
+      "Implement pipelining: after response sent with keep_alive=1, if conn->read_len>0 call reactor_defer(http_deferred_parse, conn); http_deferred_parse calls http_try_parse and dispatches to http_process_request in Phase 3",
+      "Implement two-tier timeouts: http_idle_timeout_cb closes connection after 30s inactivity; http_header_timeout_cb sends 408 after 10s if headers incomplete; both timer IDs set in http_accept_cb; idle resets on every data receipt; header timer cancelled when parse completes",
+      "Implement http_conn_close() with state=CLOSING guard as first action for double-close prevention; cancels both timers; calls reactor_deregister; closes fd; uses reactor_defer(http_deferred_free) to free write_buf and conn after current dispatch phase",
+      "Benchmark with wrk -t12 -c10000 -d60s --latency; demonstrate 10K concurrent connections; report p99 latency < 100ms; verify zero epoll symbols in http_*.c files via grep"
+    ]
+  }
+]

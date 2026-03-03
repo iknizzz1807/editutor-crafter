@@ -1,0 +1,115 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+title: "Two-Tier Timeout Protection: Idle Timer vs Header Deadline Timer" {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 18
+    bold: true
+  }
+}
+
+# Renamed from 'scenarios' to 'logic_scenarios' to avoid reserved keyword conflict
+logic_scenarios: {
+  shape: sequence_diagram
+  client_a: "Client A\n(Normal)"
+  client_b: "Client B\n(Slow Loris)"
+  client_c: "Client C\n(Zombie)"
+  server: "Server\n(http_accept_cb)"
+  idle_timer: "idle_timer\n(30s deadline)"
+  header_timer: "header_timer\n(10s deadline)"
+
+  # ── SCENARIO A: Normal connection ────────────────────────────────────
+  scenario_a_group: "SCENARIO A — Normal Request (T=0..62s)" {
+    client_a -> server: "TCP connect (T=0)"
+    server -> idle_timer: "reactor_set_timeout(30s) → idle_timer_id armed"
+    server -> header_timer: "reactor_set_timeout(10s) → header_timer_id armed"
+    client_a -> server: "GET /index.html HTTP/1.1\r\n... (T=2s)" {
+      style.stroke: green
+    }
+    server -> idle_timer: "reactor_cancel_timer(idle_timer_id)" {
+      style.stroke: green
+    }
+    server -> idle_timer: "reactor_set_timeout(30s) → reset to T+32s" {
+      style.stroke: green
+    }
+    server -> header_timer: "reactor_cancel_timer(header_timer_id) — headers complete" {
+      style.stroke: green
+    }
+    server -> client_a: "HTTP/1.1 200 OK\r\n...\r\n\r\n<body> (T=2s)" {
+      style.stroke: green
+    }
+    server -> idle_timer: "reactor_cancel_timer + reset → T+62s (keep-alive wait)"
+    idle_timer -> server: "timer fires at T=62s — idle_timer_cb()" {
+      style.stroke-dash: 4
+    }
+    server -> client_a: "close(fd) — idle connection closed (T=62s)" {
+      style.stroke: "#cc3333"
+    }
+  }
+
+  # ── SCENARIO B: Slow Loris ───────────────────────────────────────────
+  scenario_b_group: "SCENARIO B — Slow Loris (T=0..10s)" {
+    client_b -> server: "TCP connect (T=0)"
+    server -> idle_timer: "reactor_set_timeout(30s) → idle_timer_id armed"
+    server -> header_timer: "reactor_set_timeout(10s) → header_timer_id armed"
+    client_b -> server: "single byte b'G' (T=9s) — resets idle_timer only" {
+      style.stroke: "#e07b00"
+    }
+    server -> idle_timer: "cancel + reset → T+39s (idle_timer extended)" {
+      style.stroke: "#e07b00"
+    }
+    header_timer -> server: "header_timer fires at T=10s — header_timer_cb()\nheader_timer_id = -1\nHeaders NEVER completed regardless of recent byte" {
+      style.stroke: "#cc3333"
+      style.bold: true
+    }
+    server -> client_b: "HTTP/1.1 408 Request Timeout\r\n...\r\n\r\n" {
+      style.stroke: "#cc3333"
+    }
+    server -> idle_timer: "reactor_cancel_timer(idle_timer_id) in http_conn_close" {
+      style.stroke: "#cc3333"
+    }
+    server -> client_b: "close(fd) — slow loris killed (T=10s)" {
+      style.stroke: "#cc3333"
+    }
+  }
+
+  # ── SCENARIO C: Zombie / No data ────────────────────────────────────
+  scenario_c_group: "SCENARIO C — Zombie Connection (T=0..10s)" {
+    client_c -> server: "TCP connect (T=0) — sends NOTHING"
+    server -> idle_timer: "reactor_set_timeout(30s) → idle_timer_id armed"
+    server -> header_timer: "reactor_set_timeout(10s) → header_timer_id armed"
+    client_c."[silence — no bytes ever arrive]"
+    header_timer -> server: "header_timer fires at T=10s — header_timer_cb()" {
+      style.stroke: "#cc3333"
+    }
+    server -> client_c: "HTTP/1.1 408 Request Timeout\r\n...\r\n\r\n" {
+      style.stroke: "#cc3333"
+    }
+    server -> idle_timer: "reactor_cancel_timer(idle_timer_id) in http_conn_close" {
+      style.stroke: "#cc3333"
+    }
+    server -> client_c: "close(fd) — zombie killed (T=10s)" {
+      style.stroke: "#cc3333"
+    }
+  }
+}
+
+annotation: ||md
+  **Key Insight — Why Two Timers Are Required**
+
+  | Timer | Deadline | Resets On | Stops | Defends Against |
+  |-------|----------|-----------|-------|-----------------|
+  | `idle_timer` (30s) | last byte received | every `read()` returning n > 0 | conn close | truly idle connections |
+  | `header_timer` (10s) | connection open (T=0) | **NEVER** — wall-clock deadline | `http_process_request` cancels it | **slow loris** (trickles bytes to keep idle_timer alive without completing headers) |
+
+  `idle_timer` alone **cannot** stop slow loris: attacker sends 1 byte every 29s, perpetually
+  resetting the 30s deadline. `header_timer` is absolute — 10s from connect, unconditionally.
+|| {
+  near: bottom-center
+}

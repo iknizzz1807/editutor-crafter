@@ -1,0 +1,208 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## PTRACE_PEEKDATA: The -1 Ambiguity Problem
+  `ptrace(PTRACE_PEEKDATA, pid, addr, NULL)` — -1 is both valid data AND error sentinel
+| {near: top-center}
+row0: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  scenario_valid: "Scenario A — VALID DATA" {
+    direction: down
+    style.fill: "#e8f5e9"
+    style.stroke: "#388e3c"
+    style.stroke-width: 2
+    mem_a: {
+      shape: sql_table
+      label: "Tracee Memory (valid_addr)"
+      b0: "0x00 | 0xFF | byte[0]"
+      b1: "0x01 | 0xFF | byte[1]"
+      b2: "0x02 | 0xFF | byte[2]"
+      b3: "0x03 | 0xFF | byte[3]"
+      b4: "0x04 | 0xFF | byte[4]"
+      b5: "0x05 | 0xFF | byte[5]"
+      b6: "0x06 | 0xFF | byte[6]"
+      b7: "0x07 | 0xFF | byte[7]"
+      total: "word = 0xFFFFFFFFFFFFFFFF = -1L"
+    }
+    result_a: {
+      shape: sql_table
+      label: "PTRACE_PEEKDATA Result"
+      r1: "return value | -1L (0xFFFFFFFFFFFFFFFF)"
+      r2: "errno        | 0  (UNCHANGED — success)"
+      r3: "meaning      | VALID 8-byte data from tracee"
+    }
+  }
+  scenario_err: "Scenario B — ERROR (bad address)" {
+    direction: down
+    style.fill: "#ffebee"
+    style.stroke: "#c62828"
+    style.stroke-width: 2
+    mem_b: {
+      shape: sql_table
+      label: "Tracee Memory (invalid_addr)"
+      b0: "0x00 | ??? | page NOT mapped"
+      b1: "0x01 | ??? | page NOT mapped"
+      b2: "0x02 | ??? | page NOT mapped"
+      b3: "0x03 | ??? | page NOT mapped"
+      b4: "0x04 | ??? | page NOT mapped"
+      b5: "0x05 | ??? | page NOT mapped"
+      b6: "0x06 | ??? | page NOT mapped"
+      b7: "0x07 | ??? | page NOT mapped"
+      total: "kernel: EFAULT — no physical page"
+    }
+    result_b: {
+      shape: sql_table
+      label: "PTRACE_PEEKDATA Result"
+      r1: "return value | -1L (identical!)"
+      r2: "errno        | EIO or EFAULT (SET by kernel)"
+      r3: "meaning      | READ FAILURE — invalid address"
+    }
+  }
+}
+row0.scenario_valid.mem_a -> row0.scenario_valid.result_a: "PEEKDATA returns"
+row0.scenario_err.mem_b -> row0.scenario_err.result_b: "PEEKDATA returns"
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  wrong_approach: "WRONG Approach — Bug!" {
+    direction: down
+    style.fill: "#fff3e0"
+    style.stroke: "#e65100"
+    style.stroke-width: 3
+    wrong_label: "check return == -1 ONLY" {
+      style.fill: "#ffccbc"
+      style.stroke: "#bf360c"
+    }
+    wrong_code: {
+      width: 420
+      label: "Bug: misidentifies valid 0xFFFF...FF as error"
+      code: |'c
+        /* WRONG — -1 might be valid data! */
+        long word = ptrace(PTRACE_PEEKDATA,
+                           pid,
+                           (void *)addr,
+                           NULL);
+        if (word == -1L) {
+            /* BUG: also fires when word IS -1 */
+            break; /* aborts string read prematurely */
+        }
+        /* process bytes of word... */
+      '|
+    }
+    wrong_consequence: {
+      shape: callout
+      label: "String read ABORTS early if tracee\nmemory contains 0xFF...FF bytes.\nSilent data corruption — no crash!"
+      style.fill: "#ffccbc"
+      style.stroke: "#c62828"
+      style.font-color: "#b71c1c"
+    }
+  }
+  correct_approach: "CORRECT Approach" {
+    direction: down
+    style.fill: "#e8f5e9"
+    style.stroke: "#1b5e20"
+    style.stroke-width: 3
+    correct_label: "clear errno BEFORE, check errno AFTER" {
+      style.fill: "#c8e6c9"
+      style.stroke: "#2e7d32"
+    }
+    correct_code: {
+      width: 480
+      label: "Correct: errno disambiguates -1"
+      code: |'c
+        /* CORRECT — errno protocol */
+        errno = 0;            /* MUST clear before call */
+        long word = ptrace(PTRACE_PEEKDATA,
+                           pid,
+                           (void *)addr,
+                           NULL);
+        if (word == -1L && errno != 0) {
+            /* errno set → genuine read error */
+            return -1;
+        }
+        /* word == -1L && errno == 0:
+           -1 is VALID DATA — continue! */
+        /* process bytes of word... */
+      '|
+    }
+    correct_consequence: {
+      shape: callout
+      label: "Correctly distinguishes:\n-1 + errno==0  → valid data 0xFFFF..FF\n-1 + errno!=0  → read error (EFAULT/EIO)"
+      style.fill: "#c8e6c9"
+      style.stroke: "#2e7d32"
+      style.font-color: "#1b5e20"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  protocol_box: "errno Disambiguation Protocol (peekdata_loop.c)" {
+    direction: down
+    style.fill: "#e3f2fd"
+    style.stroke: "#1565c0"
+    style.stroke-width: 2
+    proto_table: {
+      shape: sql_table
+      label: "Decision Matrix"
+      h:    "return val | errno | Interpretation"
+      r1:   "any != -1  |   0   | SUCCESS — use return value as data"
+      r2:   "    -1L    |   0   | SUCCESS — data IS 0xFFFFFFFFFFFFFFFF"
+      r3:   "    -1L    |  !=0  | FAILURE — errno holds error code (EIO/EFAULT)"
+    }
+    proto_note: {
+      shape: sql_table
+      label: "Key Rules"
+      n1: "1 | Set errno=0 immediately before ptrace() call"
+      n2: "2 | No other calls between clear and check (they may set errno)"
+      n3: "3 | Check errno ONLY when return value is -1"
+      n4: "4 | errno is thread-local — safe across threads"
+    }
+  }
+  word_scan: "Word-by-Word Loop (read_string_from_tracee)" {
+    direction: down
+    style.fill: "#f3e5f5"
+    style.stroke: "#6a1b9a"
+    style.stroke-width: 2
+    scan_code: {
+      width: 460
+      label: "complete loop with errno protocol"
+      code: |'c
+        unsigned long long aligned = addr & ~7ULL;
+        int skip = (int)(addr - aligned);
+        while (bytes_read < max_len) {
+            errno = 0;
+            long word = ptrace(PTRACE_PEEKDATA,
+                               pid,
+                               (void *)(uintptr_t)aligned,
+                               NULL);
+            if (word == -1L && errno != 0)
+                return -1; /* real error */
+            /* -1 with errno==0 → valid 0xFF..FF */
+            unsigned char *b = (unsigned char *)&word;
+            for (int i = skip; i < 8; i++) {
+                if (bytes_read >= max_len) goto done;
+                if (b[i] == '\0') goto done;
+                out[bytes_read++] = (char)b[i];
+            }
+            aligned += 8;
+            skip = 0;
+        }
+        done: out[bytes_read] = '\0';
+      '|
+    }
+  }
+}
+row0 -> row1: "return value is identical in both cases"
+row1 -> row2: "protocol detail"
+row1.wrong_approach.wrong_label.style.fill: "#ffccbc"
+row1.correct_approach.correct_label.style.fill: "#c8e6c9"

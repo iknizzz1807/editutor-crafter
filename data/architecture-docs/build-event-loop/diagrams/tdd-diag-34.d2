@@ -1,0 +1,191 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+title: |md
+  ## Resource Cleanup on Connection Close: All Exit Paths and Cleanup Order
+| {near: top-center}
+classes: {
+  exit_path: {
+    style: {
+      fill: "#4a1a6b"
+      stroke: "#9b59b6"
+      font-color: white
+      border-radius: 6
+    }
+  }
+  guard: {
+    shape: diamond
+    style: {
+      fill: "#8b0000"
+      stroke: "#ff4444"
+      font-color: white
+    }
+  }
+  step: {
+    style: {
+      fill: "#1a3a5c"
+      stroke: "#3498db"
+      font-color: white
+      border-radius: 4
+    }
+  }
+  annotation: {
+    shape: text
+    style: {
+      font-color: "#f39c12"
+      italic: true
+      font-size: 11
+    }
+  }
+  terminal: {
+    style: {
+      fill: "#1a4a1a"
+      stroke: "#27ae60"
+      font-color: white
+      border-radius: 6
+    }
+  }
+  return_node: {
+    style: {
+      fill: "#4a0000"
+      stroke: "#e74c3c"
+      font-color: white
+      border-radius: 4
+    }
+  }
+}
+# ── EXIT PATHS (sources) ──────────────────────────────────────────────
+path1: "① Normal Close\n(keep_alive = 0)" {class: exit_path}
+path2: "② Idle Timer Fires\n(30s no activity)" {class: exit_path}
+path3: "③ Header Timer Fires\n(10s, headers incomplete)" {class: exit_path}
+path4: "④ Client EOF\nread() returns 0" {class: exit_path}
+path5: "⑤ REACTOR_ERROR\nEPOLLERR / EPOLLHUP" {class: exit_path}
+# ── ENTRY POINT ───────────────────────────────────────────────────────
+entry: "http_conn_close(conn)" {
+  style: {
+    fill: "#2c3e50"
+    stroke: "#95a5a6"
+    font-color: white
+    border-radius: 8
+    bold: true
+  }
+}
+# ── GUARD ─────────────────────────────────────────────────────────────
+guard: "conn→state\n== HTTP_STATE_CLOSING ?" {class: guard}
+already_closing: "return\n(no-op)" {class: return_node}
+guard_note: |'md
+  *Double-free guard: fires when idle timer*
+  *and REACTOR_ERROR arrive in same tick*
+'| {
+  style.font-color: "#e74c3c"
+  style.font-size: 11
+}
+# ── CLEANUP SEQUENCE ─────────────────────────────────────────────────
+step1: "① state = HTTP_STATE_CLOSING" {
+  class: step
+  style.fill: "#5d2d91"
+  style.stroke: "#9b59b6"
+}
+step2: "② reactor_cancel_timer(idle_timer_id)\n[if idle_timer_id ≠ -1]" {class: step}
+step3: "③ reactor_cancel_timer(header_timer_id)\n[if header_timer_id ≠ -1]" {class: step}
+step4: "④ reactor_deregister(reactor, fd)\n[deferred via PENDING_DEL if dispatching == 1]" {
+  class: step
+  style.fill: "#7b3f00"
+  style.stroke: "#e67e22"
+}
+step5: "⑤ close(fd)" {
+  class: step
+  style.fill: "#1a3a5c"
+  style.stroke: "#2980b9"
+}
+step6: "⑥ reactor_defer(reactor,\n   http_deferred_free, conn)" {
+  class: step
+  style.fill: "#1a3a3a"
+  style.stroke: "#16a085"
+}
+step7: "⑦ [Phase 3] free(write_buf)\nfree(conn)" {class: terminal}
+# ── ANNOTATIONS ──────────────────────────────────────────────────────
+ann_timers: |'md
+  *Cancel timers FIRST — prevents re-entry*
+  *from timer callback after fd is closed*
+'| {
+  style.font-color: "#f39c12"
+  style.font-size: 11
+  style.italic: true
+}
+ann_deregister: |'md
+  *reactor_deregister BEFORE close(fd)*
+  *— prevents fd reuse race condition*
+  *(OS may recycle fd number immediately)*
+'| {
+  style.font-color: "#e67e22"
+  style.font-size: 11
+  style.italic: true
+}
+ann_free: |'md
+  *free(conn) LAST — conn fields*
+  *accessed until final instruction*
+'| {
+  style.font-color: "#27ae60"
+  style.font-size: 11
+  style.italic: true
+}
+# ── CONNECTIONS: exit paths → entry point ────────────────────────────
+path1 -> entry: "write_buf drained;\nkeep_alive = 0" {
+  style.stroke: "#9b59b6"
+  style.stroke-dash: 3
+}
+path2 -> entry: "http_idle_timeout_cb()\ntimer_id = -1 first" {
+  style.stroke: "#9b59b6"
+  style.stroke-dash: 3
+}
+path3 -> entry: "http_header_timeout_cb()\n→ http_send_error(408)\n→ [write drain] → close" {
+  style.stroke: "#9b59b6"
+  style.stroke-dash: 3
+}
+path4 -> entry: "http_handle_read():\nn == 0 (EOF)" {
+  style.stroke: "#9b59b6"
+  style.stroke-dash: 3
+}
+path5 -> entry: "http_io_callback():\nevents & REACTOR_ERROR" {
+  style.stroke: "#9b59b6"
+  style.stroke-dash: 3
+}
+# ── CONNECTIONS: guard ────────────────────────────────────────────────
+entry -> guard: "check guard"
+guard -> already_closing: "YES" {
+  style.stroke: "#e74c3c"
+  style.font-color: "#e74c3c"
+  style.bold: true
+}
+guard -> step1: "NO" {
+  style.stroke: "#27ae60"
+  style.font-color: "#27ae60"
+  style.bold: true
+}
+already_closing -> guard_note
+# ── CONNECTIONS: cleanup sequence ────────────────────────────────────
+step1 -> step2
+step2 -> ann_timers {
+  style.stroke: "#f39c12"
+  style.stroke-dash: 5
+}
+step2 -> step3
+step3 -> step4
+step4 -> ann_deregister {
+  style.stroke: "#e67e22"
+  style.stroke-dash: 5
+}
+step4 -> step5
+step5 -> step6
+step6 -> ann_free {
+  style.stroke: "#27ae60"
+  style.stroke-dash: 5
+}
+step6 -> step7: "reactor Phase 3\ndeferred execution" {
+  style.stroke: "#16a085"
+  style.animated: true
+}

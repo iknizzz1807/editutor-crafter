@@ -1,0 +1,336 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+
+title: ||md
+  ## Hardware Soul: HTTP GET Hot Path — Cycle & Cache Cost Analysis
+  **One request: REACTOR_READ → write() completion**
+|| {near: top-center}
+
+classes: {
+  phase: {
+    style: {
+      fill: "#EEF2FF"
+      stroke: "#6366F1"
+      stroke-width: 2
+      border-radius: 6
+      font-size: 13
+    }
+  }
+  syscall: {
+    style: {
+      fill: "#FEF3C7"
+      stroke: "#D97706"
+      stroke-width: 2
+      border-radius: 6
+      font-size: 13
+    }
+  }
+  hot: {
+    style: {
+      fill: "#FEE2E2"
+      stroke: "#DC2626"
+      stroke-width: 2
+      border-radius: 6
+      font-size: 13
+    }
+  }
+  cold: {
+    style: {
+      fill: "#DCFCE7"
+      stroke: "#16A34A"
+      stroke-width: 2
+      border-radius: 6
+      font-size: 13
+    }
+  }
+  annotation: {
+    shape: text
+    style: {
+      font-size: 12
+      italic: true
+      font-color: "#6B7280"
+    }
+  }
+  cost_warm: {
+    style: {
+      fill: "#F0FDF4"
+      stroke: "#86EFAC"
+      stroke-width: 1
+      border-radius: 4
+      font-size: 11
+      font-color: "#166534"
+    }
+  }
+  cost_cold: {
+    style: {
+      fill: "#FFF7ED"
+      stroke: "#FED7AA"
+      stroke-width: 1
+      border-radius: 4
+      font-size: 11
+      font-color: "#9A3412"
+    }
+  }
+  legend_item: {
+    style: {
+      fill: white
+      stroke: "#D1D5DB"
+      border-radius: 3
+      font-size: 11
+    }
+  }
+}
+
+# ── LEGEND ─────────────────────────────────────────────────────────────
+legend: {
+  near: bottom-right
+  label: "Legend"
+  style: {
+    fill: "#F9FAFB"
+    stroke: "#9CA3AF"
+    border-radius: 6
+  }
+  l1: "Kernel / Syscall boundary" {class: syscall}
+  l2: "Cold path (L3/DRAM miss)" {class: hot}
+  l3: "Warm path (L1/L2 hit)" {class: cold}
+  l4: "Pure computation" {class: phase}
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# STAGE 0 — SLEEP (zero cost)
+# ══════════════════════════════════════════════════════════════════════
+s0: "epoll_wait() — SLEEPING" {
+  style: {
+    fill: "#F3F4F6"
+    stroke: "#9CA3AF"
+    stroke-dash: 4
+    border-radius: 8
+    font-size: 13
+  }
+  label: "epoll_wait() — SLEEPING\n(thread descheduled by scheduler)"
+  cost0: "0 cycles — no CPU consumed" {class: cost_warm}
+}
+
+interrupt: "NIC Hardware Interrupt" {
+  style: {
+    fill: "#EDE9FE"
+    stroke: "#7C3AED"
+    stroke-width: 2
+    border-radius: 6
+    font-size: 13
+  }
+  label: "NIC Hardware Interrupt\n(TCP segment arrives, DMA → kernel rcv buf)"
+  cost_i: "~500 cycles — interrupt handler\n+ TCP stack processing\n(runs on any CPU core)" {class: cost_cold}
+}
+
+wake: "Scheduler: Thread Wake" {class: syscall}
+wake.label: "Scheduler: Thread Wake\n(kernel adds thread to run queue)\nepoll readiness queue → events[]"
+wake.cost_w: "~200–500 cycles — context switch\nTSC-based, kernel to user mode" {class: cost_cold}
+
+s0 -> interrupt: "packet arrives" {
+  style.stroke: "#7C3AED"
+  style.stroke-width: 2
+  style.animated: true
+}
+interrupt -> wake: "epoll readiness queue updated" {
+  style.stroke: "#7C3AED"
+  style.stroke-width: 2
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# STAGE 1 — DISPATCH (handler lookup)
+# ══════════════════════════════════════════════════════════════════════
+s1: "Stage 1: Handler Dispatch" {
+  style: {
+    fill: "#EFF6FF"
+    stroke: "#3B82F6"
+    stroke-width: 2
+    border-radius: 8
+  }
+  lookup: "handlers[fd] lookup" {class: phase}
+  lookup.label: "handlers[fd]\narray index into reactor_t.handlers[]"
+  cost_l1: "WARM (L1 hit): 4 cycles\n→ recently-active connection" {class: cost_warm}
+  cost_l3: "COLD (L3 miss): 200 cycles\n→ idle connection, 40 bytes × 10K = 400 KB array" {class: cost_cold}
+  cost_dram: "COLD (DRAM miss): ~200 cycles\n→ fd_handler_t evicted from all caches" {class: cost_cold}
+  cb_call: "http_io_callback(fd, events, udata)" {class: phase}
+  cb_call.label: "http_io_callback(fd, events, udata)\nindirect call through function pointer"
+  cb_call.cost_cb: "~5 cycles — well-predicted indirect branch\n(same cb for all connections)" {class: cost_warm}
+  
+  tlb_note: ||md
+    **TLB Pressure (10K connections)**
+    - conn_t ≈ 26 KB each → ~65,000 × 4KB pages
+    - L2 TLB: ~1,500 entries on typical x86
+    - Result: frequent TLB misses for cold connections
+    - **Mitigation:** `mmap(MAP_HUGETLB)` → 2MB pages → only ~130 TLB entries needed
+  ||
+  tlb_note.style: {
+    fill: "#FFFBEB"
+    stroke: "#F59E0B"
+    stroke-width: 1
+    border-radius: 4
+    font-size: 11
+  }
+  
+  lookup -> cb_call
+}
+wake -> s1: "epoll_wait returns nready > 0"
+
+# ══════════════════════════════════════════════════════════════════════
+# STAGE 2 — READ SYSCALL
+# ══════════════════════════════════════════════════════════════════════
+s2: "Stage 2: read() Syscall" {
+  style: {
+    fill: "#FEF3C7"
+    stroke: "#D97706"
+    stroke-width: 2
+    border-radius: 8
+  }
+  ring_transition: "user → kernel (ring 0)" {class: syscall}
+  ring_transition.label: "user → kernel ring transition\nsyscall entry: SYSCALL instruction"
+  ring_transition.cost_rt: "~150 cycles — ring transition\n(PCID flush if KPTI enabled: +200 cycles)" {class: cost_cold}
+  memcpy_rcvbuf: "kernel memcpy: rcv_buf → read_buf" {class: syscall}
+  memcpy_rcvbuf.label: "kernel memcpy\nrcv_buf (kernel) → conn->read_buf (userspace)\n500-byte HTTP request"
+  memcpy_rcvbuf.cost_mc: "~500 cycles — memcpy at L1 speed\n(1 cycle/byte, buffer warm from NIC DMA)" {class: cost_warm}
+  ring_return: "kernel → user return" {class: syscall}
+  ring_return.cost_rr: "~50 cycles — iret / sysret" {class: cost_warm}
+  ring_transition -> memcpy_rcvbuf -> ring_return
+}
+s1 -> s2: "handle_read(conn): read(fd, buf, space)"
+
+# ══════════════════════════════════════════════════════════════════════
+# STAGE 3 — INCREMENTAL HTTP PARSER
+# ══════════════════════════════════════════════════════════════════════
+s3: "Stage 3: Incremental HTTP Parser" {
+  style: {
+    fill: "#EFF6FF"
+    stroke: "#2563EB"
+    stroke-width: 2
+    border-radius: 8
+  }
+  fhe: "find_header_end()" {class: phase}
+  fhe.label: "find_header_end(buf, 500)\nsequential scan for \\r\\n\\r\\n"
+  fhe.cost_fhe: "~500 cycles — 500 byte scan, 1 cmp/byte\nAll in L1 (just written by read())" {class: cost_warm}
+  prl: "parse_request_line()" {class: phase}
+  prl.label: "parse_request_line()\n3× memchr + memcpy for method/path/version"
+  prl.cost_prl: "~200 cycles — hot in L1 (same buffer)" {class: cost_warm}
+  ph: "parse_headers()" {class: phase}
+  ph.label: "parse_headers()\nline-by-line name:value extraction\nstrcasecmp for known headers"
+  ph.cost_ph: "~500 cycles — 2–4 headers typical\nL1 cache hot throughout" {class: cost_warm}
+  fhe -> prl -> ph
+}
+s2 -> s3: "conn->read_len += n; http_try_parse(conn)"
+
+# ══════════════════════════════════════════════════════════════════════
+# STAGE 4 — FILE SYSTEM ACCESS
+# ══════════════════════════════════════════════════════════════════════
+s4: "Stage 4: File System Access" {
+  style: {
+    fill: "#FEF3C7"
+    stroke: "#D97706"
+    stroke-width: 2
+    border-radius: 8
+  }
+  resolve: "resolve_path()" {class: phase}
+  resolve.label: "resolve_path(serve_root, path, out)\nrealpath() → boundary check"
+  resolve.cost_res: "~200 cycles (path in L1)\n+ realpath: 1–2 stat() syscalls" {class: cost_warm}
+  open_sc: "open(real_path, O_RDONLY)" {class: syscall}
+  open_sc.label: "open(real_path, O_RDONLY | O_CLOEXEC)\nsyscall: vfs_open → dentry lookup"
+  open_sc.cost_open_warm: "WARM (inode cached): 3,000–5,000 cycles" {class: cost_warm}
+  open_sc.cost_open_cold: "COLD (inode not cached): ~100 µs\n= 250,000 cycles at 2.5 GHz" {class: cost_cold}
+  fstat_sc: "fstat(file_fd, &st)" {class: syscall}
+  fstat_sc.label: "fstat(file_fd, &st)\nverify S_ISREG; read st.st_size"
+  fstat_sc.cost_fstat: "3,000–5,000 cycles (inode cached)\n~100 µs cold" {class: cost_warm}
+  read_file: "read(file_fd, chunk, file_size)" {class: syscall}
+  read_file.label: "read(file_fd, chunk, 100)\npage cache → userspace memcpy"
+  read_file.cost_rf_warm: "WARM (page cache hit): ~100 cycles for 100B\n= 1 cycle/byte at L1 speed" {class: cost_warm}
+  read_file.cost_rf_cold: "COLD (page fault): ~100 µs\n= 250,000 cycles + disk I/O" {class: cost_cold}
+  resolve -> open_sc -> fstat_sc -> read_file
+}
+s3 -> s4: "PARSE_COMPLETE → http_process_request(conn)"
+
+# ══════════════════════════════════════════════════════════════════════
+# STAGE 5 — RESPONSE ASSEMBLY
+# ══════════════════════════════════════════════════════════════════════
+s5: "Stage 5: Response Assembly" {
+  style: {
+    fill: "#EFF6FF"
+    stroke: "#2563EB"
+    stroke-width: 2
+    border-radius: 8
+  }
+  snpr: "snprintf(header_buf, ...)" {class: phase}
+  snpr.label: "snprintf(header_buf, sizeof(header_buf),\n\"HTTP/1.1 200 OK\\r\\n...\", ...)\nBuilds ~150-byte response header"
+  snpr.cost_snpr: "~300 cycles — string formatting\nStack allocation, always L1" {class: cost_warm}
+  wba: "http_write_append(conn, header, len)" {class: phase}
+  wba.label: "http_write_append(conn, ...)\nwrite_buf_append → memcpy to write_buf->data"
+  wba.cost_wba: "~150 cycles — memcpy 250 bytes\n(header 150B + file 100B)" {class: cost_warm}
+  snpr -> wba
+}
+s4 -> s5: "close(file_fd); build response"
+
+# ══════════════════════════════════════════════════════════════════════
+# STAGE 6 — WRITE SYSCALL
+# ══════════════════════════════════════════════════════════════════════
+s6: "Stage 6: write() Syscall" {
+  style: {
+    fill: "#FEF3C7"
+    stroke: "#D97706"
+    stroke-width: 2
+    border-radius: 8
+  }
+  write_ring: "user → kernel (ring 0)" {class: syscall}
+  write_ring.label: "write(conn->fd, pending_data, pending_len)\nSYSCALL → tcp_sendmsg()"
+  write_ring.cost_wr: "~150 cycles — ring transition" {class: cost_cold}
+  memcpy_sndbuf: "kernel memcpy: write_buf → snd_buf" {class: syscall}
+  memcpy_sndbuf.label: "kernel memcpy\nwrite_buf (userspace) → socket snd_buf (kernel)\n250 bytes total"
+  memcpy_sndbuf.cost_ms: "~250 cycles — memcpy at L1 speed\n1 cycle/byte" {class: cost_warm}
+  nic_dma: "NIC DMA Transmit (async)" {
+    style: {
+      fill: "#F5F3FF"
+      stroke: "#7C3AED"
+      stroke-dash: 3
+      border-radius: 4
+      font-size: 12
+    }
+  }
+  nic_dma.label: "NIC DMA: snd_buf → wire\n(asynchronous — CPU moves on immediately)"
+  nic_dma.cost_dma: "0 cycles for CPU — NIC handles independently" {class: cost_warm}
+  write_return: "kernel → user; conn_disarm_epollout" {class: phase}
+  write_return.label: "write() returns bytes_sent\nIf sent == pending: conn_disarm_epollout()\n→ epoll_ctl(MOD, EPOLLIN only)"
+  write_return.cost_wr2: "~50 cycles return + 500 cycles epoll_ctl\n(only on first write after EAGAIN — rare on loopback)" {class: cost_warm}
+  write_ring -> memcpy_sndbuf -> nic_dma
+  write_ring -> write_return
+}
+s5 -> s6: "http_handle_write(conn): write(fd, buf, len)"
+
+# ══════════════════════════════════════════════════════════════════════
+# STAGE 7 — SUMMARY
+# ══════════════════════════════════════════════════════════════════════
+summary: {
+  near: bottom-left
+  style: {
+    fill: "#F0FDF4"
+    stroke: "#16A34A"
+    stroke-width: 2
+    border-radius: 8
+  }
+  label: "Hot-Path Cycle Budget Summary"
+  total: ||md
+    | Stage | Warm Cache | Cold Cache |
+    |---|---|---|
+    | Dispatch (lookup + call) | 10 cycles | 200+ cycles |
+    | read() syscall | 700 cycles | 700 + KPTI cycles |
+    | Parser (find+parse) | 1,200 cycles | 1,200 cycles |
+    | open() + fstat() | 6,000–10,000 cycles | ~500,000 cycles |
+    | read(file) | 100 cycles | ~250,000 cycles |
+    | snprintf + memcpy | 450 cycles | 450 cycles |
+    | write() syscall | 450 cycles | 450 cycles |
+    | **TOTAL (warm, small file)** | **~10,000–15,000 cycles** | **≫ 1M cycles** |
+    | **At 2.5 GHz** | **~4–6 µs** | **> 400 µs** |
+  ||
+}
+s6 -> summary: "request complete; back to epoll_wait"

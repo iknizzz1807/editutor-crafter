@@ -1,0 +1,623 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+row_m1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_m1_kernel: {
+    direction: down
+    label: "KERNEL LAYER  [M1: epoll Basics]"
+    style.fill: "#f0f4ff"
+    style.stroke: "#6688cc"
+    epoll_instance: {
+      shape: sql_table
+      label: "epoll instance (kernel)  [M1]"
+      epfd: "int | epoll_create1(EPOLL_CLOEXEC)"
+      interest_set: "rb-tree | (fd, event_mask) pairs"
+      readiness_q: "linked list | fds ready since last wait"
+      note: "O(1) event delivery regardless of fd count"
+    }
+    kernel_sock_buf: {
+      shape: sql_table
+      label: "Kernel Socket Buffers  [M1]"
+      recv_buf: "char[] | ~87KB default; epoll watches this"
+      send_buf: "char[] | ~16KB default; fills on write()"
+      eagain: "signal | recv empty or send full"
+      note: "EAGAIN = not an error; try again on next event"
+    }
+    epoll_event: {
+      shape: sql_table
+      label: "struct epoll_event (sys/epoll.h)  [M1]"
+      events: "uint32_t | EPOLLIN|EPOLLOUT|EPOLLET|EPOLLERR"
+      data_fd: "int | data.fd used in M1"
+      data_ptr: "void* | data.ptr used in M3"
+      sz: "Total: 12 bytes"
+    }
+  }
+  layer_m1_conn: {
+    direction: down
+    label: "CONNECTION TABLE  [M1: conn.c]"
+    style.fill: "#fff8f0"
+    style.stroke: "#cc8844"
+    conn_state_enum: {
+      shape: sql_table
+      label: "enum conn_state_t (echo_server.h)  [M1]"
+      FREE: "0 | slot unused; zero sentinel"
+      ACTIVE: "1 | live connection"
+      note: "FREE=0 so memset clears state"
+    }
+    conn_t_m1: {
+      shape: sql_table
+      label: "struct conn_t (echo_server.h)  [M1]"
+      state: "conn_state_t | offset 0, size 4"
+      fd: "int | offset 4, size 4"
+      read_buf: "char[4096] | offset 8, size 4096"
+      read_len: "size_t | offset 4104, size 8"
+      sz: "Total: 4112 bytes = 64.25 cache lines"
+    }
+    conn_table_arr: {
+      shape: sql_table
+      label: "conn_table[] global (conn.c)  [M1]"
+      storage: "BSS | zero-init; no heap cost"
+      capacity: "MAX_CONNS=10240 slots"
+      index: "fd number is array index (O(1) lookup)"
+      total_mem: "10240 x 4112 = ~40MB (demand-paged)"
+    }
+    conn_api: {
+      shape: class
+      label: "conn API (conn.c)  [M1]"
+      +conn_get(fd): "conn_t*"
+      +conn_new(fd): "conn_t*"
+      +conn_free(fd): "void"
+      +conn_close(epfd, fd): "void"
+      +set_nonblocking(fd): "int"
+    }
+  }
+  layer_m1_loop: {
+    direction: down
+    label: "EVENT LOOPS  [M1: echo_lt.c / echo_et.c]"
+    style.fill: "#f0fff4"
+    style.stroke: "#44aa66"
+    lt_loop: {
+      shape: class
+      label: "Level-Triggered Loop (echo_lt.c)  [M1]"
+      -MAX_EVENTS: "1024 | epoll_wait batch; 12KB stack"
+      +run_event_loop_lt(epfd, listen_fd): "void"
+      +accept_connections(epfd, listen_fd, use_et): "void"
+      +handle_read_lt(epfd, fd): "void"
+      note: "read once per event; epoll re-notifies if data remains"
+    }
+    et_loop: {
+      shape: class
+      label: "Edge-Triggered Loop (echo_et.c)  [M1]"
+      +run_event_loop_et(epfd, listen_fd): "void"
+      +handle_read_et(epfd, fd): "void"
+      note: "MUST drain to EAGAIN; single read = silent data loss"
+    }
+    lt_vs_et: {
+      shape: sql_table
+      label: "LT vs ET Decision  [M1]"
+      lt_renotify: "LT | yes, if data remains in buffer"
+      et_renotify: "ET | no, only on state transition"
+      lt_drain: "LT | one chunk per event (safe)"
+      et_drain: "ET | loop until EAGAIN (required)"
+      used_by: "ET | NGINX, Node.js libuv, this project M3+"
+    }
+    setup_server: {
+      shape: class
+      label: "Server Setup (main.c)  [M1]"
+      +setup_server(out_epfd, out_listen_fd, use_et): "int"
+      -SO_REUSEADDR: "setsockopt | prevents 60s TIME_WAIT bind fail"
+      -SOCK_NONBLOCK: "socket() flag | listen socket must be non-blocking"
+      -SOCK_CLOEXEC: "socket() flag | no fd leak on fork/exec"
+      -EPOLL_CLOEXEC: "epoll_create1 flag | no fd leak on exec"
+      -BACKLOG: "128 | kernel queued connections; not conn limit"
+    }
+  }
+}
+row_m2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_m2_write: {
+    direction: down
+    label: "WRITE BUFFERING  [M2: write_buf.c]"
+    style.fill: "#fff0f8"
+    style.stroke: "#cc44aa"
+    write_buf_t: {
+      shape: sql_table
+      label: "struct write_buf_t (write_buf.h)  [M2]"
+      data: "uint8_t* | offset 0, size 8 — heap-allocated"
+      capacity: "size_t | offset 8, size 8 — WRITE_BUF_CAPACITY=65536"
+      write_offset: "size_t | offset 16, size 8 — consume pointer"
+      write_len: "size_t | offset 24, size 8 — fill pointer"
+      sz: "Total: 32 bytes — 1 cache line"
+    }
+    write_buf_api: {
+      shape: class
+      label: "write_buf API (write_buf.c)  [M2]"
+      +write_buf_new(): "write_buf_t*"
+      +write_buf_free(wb): "void"
+      +write_buf_pending(wb): "size_t"
+      +write_buf_append(wb, src, len): "int"
+      +write_buf_consume(wb, n): "void"
+      note: "append compact triggers memmove when offset > capacity/2"
+    }
+    conn_write_api: {
+      shape: class
+      label: "Write Path API (conn_write.c)  [M2]"
+      +conn_write(epfd, c, src, len): "int"
+      +conn_flush_write_buf(epfd, c): "int"
+      +conn_arm_epollout(epfd, c): "void"
+      +conn_disarm_epollout(epfd, c): "void"
+      note: "CRITICAL: if pending>0, never direct-write (ordering)"
+    }
+    epollout_lifecycle: {
+      shape: sql_table
+      label: "EPOLLOUT Lifecycle (conn_write.c)  [M2]"
+      arm_when: "write() EAGAIN or partial: arm EPOLLOUT"
+      disarm_when: "write_buf drains to 0: MUST disarm EPOLLOUT"
+      bug_busy_loop: "EPOLLOUT armed + empty buf = 100% CPU"
+      invariant: "armed IFF write_buf_pending > 0"
+    }
+  }
+  layer_m2_conn_ext: {
+    direction: down
+    label: "CONN_T EXTENSION  [M2: echo_server.h]"
+    style.fill: "#fffff0"
+    style.stroke: "#aaaa00"
+    conn_t_m2: {
+      shape: sql_table
+      label: "struct conn_t extended (echo_server.h)  [M2]"
+      state: "conn_state_t | offset 0, size 4"
+      fd: "int | offset 4, size 4"
+      read_buf: "char[4096] | offset 8, size 4096"
+      read_len: "size_t | offset 4104, size 8"
+      write_buf: "write_buf_t* | offset 4112, size 8"
+      epollout_armed: "int | offset 4120, size 4"
+      timer_id: "int | offset 4124, size 4 — TIMER_ID_NONE=-1"
+      sz: "Total: 4128 bytes"
+    }
+    conn_close_m2: {
+      shape: class
+      label: "conn_close ordering (conn.c)  [M2]"
+      step1: "timer_cancel(h, c->timer_id)"
+      step2: "epoll_ctl(EPOLL_CTL_DEL, fd, NULL)"
+      step3: "write_buf_free(c->write_buf)"
+      step4: "memset(c, 0) → state=FREE"
+      step5: "close(fd)"
+      note: "ORDER IS MANDATORY — prevents fd-reuse race"
+    }
+  }
+  layer_m2_timer: {
+    direction: down
+    label: "TIMER HEAP  [M2: timer_heap.c]"
+    style.fill: "#f0f8ff"
+    style.stroke: "#4488cc"
+    timer_entry_t: {
+      shape: sql_table
+      label: "struct timer_entry_t (timer_heap.h)  [M2]"
+      expiry_ms: "uint64_t | offset 0, size 8 — CLOCK_MONOTONIC"
+      fd: "int | offset 8, size 4"
+      heap_idx: "int | offset 12, size 4 — back-pointer"
+      sz: "Total: 16 bytes"
+    }
+    timer_heap_t: {
+      shape: sql_table
+      label: "struct timer_heap_t (timer_heap.h)  [M2]"
+      entries: "timer_entry_t[10240] | 10240 x 16 = 160KB"
+      size: "int | active entries"
+      g_timer_heap: "global BSS | ~160KB total"
+    }
+    timer_heap_api: {
+      shape: class
+      label: "Timer Heap API (timer_heap.c)  [M2]"
+      +now_ms(): "uint64_t"
+      +timer_insert(h, fd, expiry_ms): "int"
+      +timer_cancel(h, idx): "int"
+      +timer_reset(h, fd): "int"
+      +timer_expire_all(epfd, h): "void"
+      +compute_epoll_timeout(h): "int"
+      note: "heap_swap MUST update heap_idx AND conn->timer_id"
+    }
+    event_loop_m2: {
+      shape: class
+      label: "Updated Event Loop (event_loop.c)  [M2]"
+      +run_event_loop(epfd, listen_fd, use_et): "void"
+      phase_io: "Phase 1 | dispatch EPOLLIN/EPOLLOUT/EPOLLERR"
+      phase_timer: "Phase 2 | timer_expire_all after all I/O"
+      timeout: "compute_epoll_timeout → epoll_wait timeout param"
+      note: "I/O before timers: data receipt resets timer first"
+    }
+  }
+}
+row_m3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_m3_types: {
+    direction: down
+    label: "REACTOR INTERNALS  [M3: reactor_internal.h]"
+    style.fill: "#f8f0ff"
+    style.stroke: "#8844cc"
+    fd_handler_t: {
+      shape: sql_table
+      label: "struct fd_handler_t (reactor_internal.h)  [M3]"
+      registered: "int | 0=free, 1=active"
+      closing: "int | 1=deferred DEL pending"
+      fd: "int | redundant; for assertions"
+      events: "uint32_t | epoll interest mask"
+      callback: "reactor_io_cb | function pointer"
+      udata: "void* | opaque user data"
+      sz: "Total: 32 bytes — 1 cache line"
+    }
+    timer_entry_m3: {
+      shape: sql_table
+      label: "struct timer_entry_t (reactor_internal.h)  [M3]"
+      active: "int | 0=slot unused"
+      timer_id: "int | opaque ID returned to caller"
+      heap_idx: "int | position in timer_heap[] array"
+      _pad: "int | alignment"
+      expiry_ms: "uint64_t | CLOCK_MONOTONIC absolute"
+      interval_ms: "uint32_t | 0=one-shot, >0=repeating"
+      callback: "reactor_timer_cb | function pointer"
+      udata: "void* | opaque user data"
+      sz: "Total: 48 bytes — 1 cache line"
+    }
+    pending_mod_t: {
+      shape: sql_table
+      label: "struct pending_mod_t (reactor_internal.h)  [M3]"
+      op: "pending_op_t | PENDING_ADD=0, MOD=1, DEL=2"
+      fd: "int | target file descriptor"
+      events: "uint32_t | epoll event mask"
+      _pad: "int | alignment"
+      sz: "Total: 16 bytes"
+    }
+    deferred_task_t: {
+      shape: sql_table
+      label: "struct deferred_task_t (reactor_internal.h)  [M3]"
+      callback: "reactor_defer_cb | function pointer"
+      udata: "void* | opaque user data"
+      sz: "Total: 16 bytes"
+    }
+  }
+  layer_m3_reactor: {
+    direction: down
+    label: "REACTOR STRUCT  [M3: reactor.h / reactor_run.c]"
+    style.fill: "#e8f8e8"
+    style.stroke: "#228822"
+    reactor_t: {
+      shape: sql_table
+      label: "struct reactor (reactor.h opaque)  [M3]"
+      epfd: "int | epoll fd; offset 0"
+      running: "int | loop control; offset 4"
+      dispatching: "int | re-entrancy guard; offset 8"
+      handlers: "fd_handler_t* | heap array[max_fds]; offset 16"
+      max_fds: "int | array dimension"
+      timer_pool: "timer_entry_t* | heap array[max_timers]"
+      timer_heap: "int* | min-heap of pool indices"
+      timer_heap_size: "int | active entries"
+      next_timer_id: "int | monotonically increasing"
+      deferred: "deferred_task_t[1024] | embedded ring buf"
+      deferred_head: "int | consume pointer"
+      deferred_tail: "int | produce pointer"
+      pending_ops: "pending_mod_t[256] | embedded array"
+      pending_count: "int | ops enqueued this tick"
+      sz: "Total: ~20KB fixed + heap arrays"
+    }
+    reactor_dispatch: {
+      shape: class
+      label: "Four-Phase Dispatch (reactor_run.c)  [M3]"
+      phase1: "I/O Dispatch | dispatching=1; call cb per event"
+      phase2: "Apply Pending | epoll_ctl ADD/MOD/DEL; clear slots"
+      phase3: "Deferred Tasks | snapshot drain_until=tail first"
+      phase4: "Expire Timers | while root.expiry <= now_ms()"
+      note: "dispatching=0 in phases 2-4; ops execute immediately"
+    }
+    reentrancy_guard: {
+      shape: sql_table
+      label: "Re-entrancy Safety (reactor_io.c)  [M3]"
+      guard: "dispatching==1 during Phase 1"
+      on_register: "enqueue PENDING_ADD or PENDING_MOD"
+      on_deregister: "set closing=1; enqueue PENDING_DEL"
+      on_dispatch: "if closing==1: skip event"
+      bug_prevented: "iterator invalidation / use-after-free"
+    }
+  }
+  layer_m3_api: {
+    direction: down
+    label: "REACTOR PUBLIC API  [M3: reactor.h]"
+    style.fill: "#fff4e8"
+    style.stroke: "#cc6600"
+    reactor_lifecycle: {
+      shape: class
+      label: "Reactor Lifecycle (reactor_create.c)  [M3]"
+      +reactor_create(max_fds, max_timers): "reactor_t*"
+      +reactor_destroy(r): "void"
+      +reactor_run(r): "void"
+      +reactor_stop(r): "void"
+    }
+    reactor_io_api: {
+      shape: class
+      label: "I/O Registration (reactor_io.c)  [M3]"
+      +reactor_register(r, fd, events, cb, udata): "int"
+      +reactor_deregister(r, fd): "int"
+      note: "EPOLLET always set; user code never calls epoll_ctl"
+    }
+    reactor_timer_api: {
+      shape: class
+      label: "Timer API (reactor_timer.c)  [M3]"
+      +reactor_set_timeout(r, delay_ms, cb, udata): "int"
+      +reactor_set_interval(r, interval_ms, cb, udata): "int"
+      +reactor_cancel_timer(r, timer_id): "int"
+      note: "repeating: reschedule BEFORE calling cb"
+    }
+    reactor_defer_api: {
+      shape: class
+      label: "Deferred Tasks (reactor_defer.c)  [M3]"
+      +reactor_defer(r, cb, udata): "int"
+      note: "ring buf; snapshot tail before drain; re-deferred runs next tick"
+    }
+    cb_types: {
+      shape: sql_table
+      label: "Callback Types (reactor.h)  [M3]"
+      io_cb: "void (*)(int fd, uint32_t events, void* udata)"
+      timer_cb: "void (*)(int timer_id, void* udata)"
+      defer_cb: "void (*)(void* udata)"
+      event_flags: "REACTOR_READ=1, WRITE=2, ERROR=4"
+    }
+  }
+}
+row_m4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_m4_structs: {
+    direction: down
+    label: "HTTP DATA MODEL  [M4: http_conn.h / http_parser.h]"
+    style.fill: "#fff0f0"
+    style.stroke: "#cc2222"
+    http_conn_state_enum: {
+      shape: sql_table
+      label: "enum http_conn_state_t (http_conn.h)  [M4]"
+      READING_HEADERS: "0 | accumulating; searching for CRLF CRLF"
+      READING_BODY: "1 | headers done; collecting body bytes"
+      PROCESSING: "2 | request complete; generate response"
+      WRITING_RESPONSE: "3 | draining write_buf to socket"
+      KEEP_ALIVE: "4 | response sent; wait for next request"
+      CLOSING: "5 | teardown; no further callbacks"
+    }
+    http_request_t: {
+      shape: sql_table
+      label: "struct http_request_t (http_conn.h)  [M4]"
+      method: "char[16] | GET, HEAD, POST"
+      path: "char[1024] | URL path, null-terminated"
+      http_minor: "int | 0=HTTP/1.0, 1=HTTP/1.1"
+      keep_alive: "int | 1=persist, 0=close"
+      content_length: "ssize_t | -1 if not present"
+      header_count: "int | up to HTTP_MAX_HEADERS=32"
+      headers: "struct{char*name;char*value}[32] | points into header_buf"
+    }
+    http_conn_t: {
+      shape: sql_table
+      label: "struct http_conn_t (http_conn.h)  [M4]"
+      fd: "int | offset 0, size 4"
+      idle_timer_id: "int | offset 4, size 4 — -1=none"
+      header_timer_id: "int | offset 8, size 4 — -1=none"
+      epollout_armed: "int | offset 12, size 4"
+      reactor: "reactor_t* | offset 16, size 8"
+      state: "http_conn_state_t | offset 24, size 4"
+      write_buf: "write_buf_t* | offset 32, size 8"
+      read_len: "size_t | offset 40, size 8"
+      read_buf: "char[16384] | offset 48, size 16384"
+      body_received: "size_t | offset 16432, size 8"
+      request: "http_request_t | offset 16440, ~1120 bytes"
+      header_buf: "char[8192] | ~17560, parsed name/value storage"
+      sz: "Total: ~25800 bytes = ~403 cache lines"
+    }
+    parse_result_t: {
+      shape: sql_table
+      label: "enum parse_result_t (http_parser.h)  [M4]"
+      INCOMPLETE: "0 | need more bytes"
+      COMPLETE: "1 | full request parsed"
+      ERROR: "2 | malformed → 400"
+      TOO_LARGE: "3 | buffer full → 413"
+    }
+    mime_table: {
+      shape: sql_table
+      label: "MIME Table (http_mime.c)  [M4]"
+      html: ".html | text/html; charset=utf-8"
+      css: ".css | text/css"
+      js: ".js | application/javascript"
+      json: ".json | application/json"
+      png: ".png | image/png"
+      jpg: ".jpg | image/jpeg"
+      svg: ".svg | image/svg+xml"
+      wasm: ".wasm | application/wasm"
+      default: "* | application/octet-stream"
+    }
+  }
+  layer_m4_parser: {
+    direction: down
+    label: "HTTP PARSER  [M4: http_parser.c]"
+    style.fill: "#f0f8f0"
+    style.stroke: "#228844"
+    http_parser_api: {
+      shape: class
+      label: "HTTP Parser API (http_parser.c)  [M4]"
+      +find_header_end(buf, len): "const char*"
+      +parse_request_line(line, len, req): "parse_result_t"
+      +parse_headers(hdr_start, hdr_end, conn): "parse_result_t"
+      +http_try_parse(conn): "parse_result_t"
+      note: "stateless: examines entire read_buf on every call"
+    }
+    parser_invariants: {
+      shape: sql_table
+      label: "Parser Invariants (http_parser.c)  [M4]"
+      no_read: "parser never calls read(); only examines read_buf"
+      resumable: "call after any number of bytes appended"
+      memmove: "pipelined bytes moved to read_buf[0] on COMPLETE"
+      hdr_delim: "CRLF CRLF = header-body boundary"
+    }
+    http_path_api: {
+      shape: class
+      label: "Path Resolution (http_path.c)  [M4]"
+      +resolve_path(serve_root, req_path, out, out_size): "int"
+      note: "realpath + prefix check + boundary char check"
+    }
+  }
+  layer_m4_handlers: {
+    direction: down
+    label: "HTTP HANDLERS  [M4: http_handlers.c / http_process.c]"
+    style.fill: "#f0f0ff"
+    style.stroke: "#4444cc"
+    http_conn_lifecycle: {
+      shape: class
+      label: "Connection Lifecycle (http_conn.c)  [M4]"
+      +http_conn_new(fd, reactor): "http_conn_t*"
+      +http_conn_close(conn): "void"
+      +http_write_append(conn, src, len): "int"
+      note: "close: state=CLOSING FIRST; deferred free via reactor_defer"
+    }
+    http_io_cb: {
+      shape: class
+      label: "I/O Callback (http_handlers.c)  [M4]"
+      +http_io_callback(fd, events, udata): "void"
+      +http_handle_read(conn): "void"
+      +http_handle_write(conn): "void"
+      note: "REACTOR_ERROR → REACTOR_READ → REACTOR_WRITE order"
+    }
+    http_process: {
+      shape: class
+      label: "Request Processor (http_process.c)  [M4]"
+      +http_process_request(conn): "void"
+      +http_send_error(conn, status, reason): "void"
+      +http_deferred_parse(udata): "void"
+      +http_idle_timeout_cb(timer_id, udata): "void"
+      +http_header_timeout_cb(timer_id, udata): "void"
+      note: "pipelined: reactor_defer(http_deferred_parse) if read_len>0"
+    }
+    two_tier_timeouts: {
+      shape: sql_table
+      label: "Two-Tier Timeouts (http_conn.h)  [M4]"
+      idle_ms: "30000ms | reset on every read() n>0"
+      header_ms: "10000ms | fires if CRLF CRLF never arrives"
+      slow_loris: "header_timer kills slow-byte attackers"
+      keep_alive_reset: "both timers reset after response sent"
+    }
+    http_server_main: {
+      shape: class
+      label: "Server Main (http_server.c)  [M4]"
+      +main(argc, argv): "int"
+      +http_accept_cb(listen_fd, events, udata): "void"
+      -g_serve_root: "char[1024] | global serve root path"
+      -g_reactor: "reactor_t* | global reactor instance"
+      -tune_system(): "void"
+    }
+    c10k_targets: {
+      shape: sql_table
+      label: "C10K Benchmark Targets  [M4]"
+      connections: "10000 concurrent"
+      throughput: "100K+ req/sec on loopback"
+      p50: "< 5ms"
+      p99: "< 100ms"
+      cpu_idle: "< 0.1% at 10K idle connections"
+      mem_per_conn: "25800 conn + 65536 write_buf = ~90KB"
+      zero_epoll: "grep -c epoll http_*.c == 0"
+    }
+  }
+}
+row_xdomain: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_hw: {
+    direction: down
+    label: "HARDWARE SOUL  [All Milestones]"
+    style.fill: "#fafafa"
+    style.stroke: "#888888"
+    hw_costs: {
+      shape: sql_table
+      label: "Syscall and Cache Costs"
+      epoll_wait: "epoll_wait() | ~0 cycles while sleeping"
+      read_write: "read()/write() syscall | ~150-200 cycles"
+      l1_hit: "L1 cache hit | ~4 cycles"
+      l3_miss: "L3 miss / DRAM | ~200 cycles"
+      now_ms_vdso: "clock_gettime vDSO | ~20ns; no ring transition"
+      heap_swap: "heap_swap | ~50ns; 2 struct copies + 4 ptr stores"
+      epoll_ctl_mod: "epoll_ctl MOD | ~200 cycles; EPOLLOUT arm/disarm"
+    }
+    hw_cache: {
+      shape: sql_table
+      label: "Cache Line Analysis (64 bytes)"
+      conn_t: "4128 bytes = 64.5 cache lines per connection"
+      fd_handler: "32 bytes = 0.5 cache lines — fits in L1"
+      timer_entry: "48 bytes = 0.75 cache lines"
+      write_buf_t: "32 bytes = 0.5 cache lines — metadata only"
+      reactor_fixed: "~20KB fixed embedded arrays — L1/L2 hot"
+      working_set_10k: "10K conns x ~90KB = ~900MB — exceeds L3"
+    }
+  }
+  layer_xdomain: {
+    direction: down
+    label: "CROSS-DOMAIN ANALOGIES"
+    style.fill: "#f8f8f0"
+    style.stroke: "#888800"
+    analogies: {
+      shape: sql_table
+      label: "Cross-Domain Knowledge Transfer"
+      nodejs_libuv: "uv_run() = reactor_run(); nextTick = reactor_defer"
+      nginx_loop: "ngx_process_events_and_timers = four-phase dispatch"
+      redis_net: "processInputBuffer = http_try_parse (incremental)"
+      go_timers: "runtime/time.go min-heap = timer_heap_t"
+      react_setstate: "setState batching = deferred modification queue"
+      rust_borrow: "borrow checker = dispatching flag (runtime vs compile)"
+      io_uring: "completion model vs readiness; same reactor_t API"
+      sendfile: "zero-copy: page_cache → send_buf, no userspace copy"
+      tcp_backpressure: "EAGAIN chain: slow_peer → recv_buf → window → EAGAIN"
+    }
+  }
+}
+milestone_index: {
+  shape: sql_table
+  label: "Milestone Index — Event Loop with epoll"
+  m1: "M1 | build-event-loop-m1 | epoll Basics LT and ET echo server"
+  m2: "M2 | build-event-loop-m2 | Write Buffering and Timer Heap"
+  m3: "M3 | build-event-loop-m3 | Reactor API and Callback Dispatch"
+  m4: "M4 | build-event-loop-m4 | HTTP/1.1 Server — C10K Benchmark"
+}
+row_m1.layer_m1_kernel.epoll_instance -> row_m1.layer_m1_conn.conn_table_arr: "fd index | O(1)"
+row_m1.layer_m1_kernel.kernel_sock_buf -> row_m1.layer_m1_loop.lt_loop: "EPOLLIN | readable"
+row_m1.layer_m1_conn.conn_t_m1 -> row_m1.layer_m1_loop.et_loop: "conn_t* | per event"
+row_m1.layer_m1_loop.et_loop -> row_m1.layer_m1_kernel.epoll_instance: "epoll_ctl | ADD/DEL"
+row_m1.layer_m1_conn.conn_t_m1 -> row_m2.layer_m2_conn_ext.conn_t_m2: "extends | M2 adds fields"
+row_m2.layer_m2_write.write_buf_t -> row_m2.layer_m2_conn_ext.conn_t_m2: "write_buf* | owned ptr"
+row_m2.layer_m2_timer.timer_entry_t -> row_m2.layer_m2_conn_ext.conn_t_m2: "timer_id | back-ptr"
+row_m2.layer_m2_write.conn_write_api -> row_m2.layer_m2_write.epollout_lifecycle: "EAGAIN | arm EPOLLOUT"
+row_m2.layer_m2_timer.timer_heap_api -> row_m2.layer_m2_timer.event_loop_m2: "timeout_ms | epoll_wait param"
+row_m2.layer_m2_conn_ext.conn_t_m2 -> row_m3.layer_m3_api.cb_types: "void* udata | opaque conn ptr"
+row_m3.layer_m3_reactor.reactor_t -> row_m3.layer_m3_types.fd_handler_t: "handlers[] | indexed by fd"
+row_m3.layer_m3_reactor.reactor_t -> row_m3.layer_m3_types.timer_entry_m3: "timer_pool[] | flat array"
+row_m3.layer_m3_reactor.reactor_t -> row_m3.layer_m3_types.pending_mod_t: "pending_ops[] | embedded"
+row_m3.layer_m3_reactor.reactor_t -> row_m3.layer_m3_types.deferred_task_t: "deferred[] | ring buf"
+row_m3.layer_m3_reactor.reactor_dispatch -> row_m3.layer_m3_reactor.reentrancy_guard: "dispatching flag"
+row_m3.layer_m3_api.reactor_io_api -> row_m3.layer_m3_reactor.reactor_t: "register | ADD/MOD epoll"
+row_m3.layer_m3_api.reactor_timer_api -> row_m3.layer_m3_reactor.reactor_t: "timer_id | pool slot"
+row_m3.layer_m3_api.reactor_defer_api -> row_m3.layer_m3_reactor.reactor_t: "deferred_tail | enqueue"
+row_m3.layer_m3_api.reactor_io_api -> row_m4.layer_m4_handlers.http_io_cb: "cb | http_io_callback"
+row_m4.layer_m4_structs.http_conn_t -> row_m4.layer_m4_parser.http_parser_api: "read_buf | parse attempt"
+row_m4.layer_m4_parser.http_parser_api -> row_m4.layer_m4_structs.http_request_t: "COMPLETE | fills struct"
+row_m4.layer_m4_handlers.http_io_cb -> row_m4.layer_m4_handlers.http_process: "PROCESSING state"
+row_m4.layer_m4_handlers.http_process -> row_m4.layer_m4_parser.http_path_api: "req.path | resolve"
+row_m4.layer_m4_handlers.http_conn_lifecycle -> row_m4.layer_m4_handlers.http_io_cb: "http_conn_t* | udata"
+row_m4.layer_m4_structs.http_conn_t -> row_m2.layer_m2_write.write_buf_t: "write_buf* | owned"
+row_m4.layer_m4_handlers.http_io_cb -> row_m3.layer_m3_api.reactor_io_api: "reactor_register | EPOLLOUT"
+row_m4.layer_m4_handlers.http_process -> row_m3.layer_m3_api.reactor_timer_api: "set_timeout | idle/hdr"
+row_m4.layer_m4_handlers.http_process -> row_m3.layer_m3_api.reactor_defer_api: "defer | pipeline parse"
+row_m4.layer_m4_structs.two_tier_timeouts -> row_m4.layer_m4_handlers.http_conn_lifecycle: "fires | http_conn_close"
+row_m4.layer_m4_handlers.http_server_main -> row_m3.layer_m3_api.reactor_lifecycle: "reactor_run | blocks"

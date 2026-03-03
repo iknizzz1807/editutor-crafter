@@ -1,0 +1,74 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+shape: sequence_diagram
+client: "Client (TCP Socket)"
+reactor: "reactor_t\n(epoll ET)"
+conn: "http_conn_t"
+wbuf: "write_buf_t"
+
+# ── Request 1 ──────────────────────────────────────────────────────────
+req1: "Request 1 — GET /index.html" {
+  client -> reactor: "TCP SYN/SYN-ACK/ACK\n(three-way handshake — paid ONCE)"
+  reactor -> conn: "http_conn_new(fd, reactor)\nstate=READING_HEADERS\nidle_timer_id=set_timeout(30s)\nheader_timer_id=set_timeout(10s)"
+  client -> reactor: "GET /index.html HTTP/1.1\r\nConnection: keep-alive\r\n\r\n"
+  reactor -> conn: "http_io_callback(fd, REACTOR_READ, conn)"
+  conn -> conn: "http_handle_read()\nread() drain loop → EAGAIN\nread_len += n\nreset idle_timer\nhttp_try_parse() → PARSE_COMPLETE\nstate = PROCESSING"
+  conn -> conn: "http_process_request()\ncancel header_timer_id\nresolve_path() → /var/www/index.html\nopen() + fstat()\nsnprintf response headers\nhttp_write_append(headers)\nhttp_write_append(body)\nhttp_handle_write()"
+  conn -> wbuf: "write_buf_append(headers + body)"
+  conn -> reactor: "write() → partial send\nEAGAIN\nreactor_register(REACTOR_READ|REACTOR_WRITE)"
+  reactor -> conn: "http_io_callback(fd, REACTOR_WRITE, conn)"
+  conn -> wbuf: "write_buf_consume(n)\nwrite_buf_pending() → 0"
+  conn -> reactor: "reactor_register(REACTOR_READ)\nepollout_armed = 0"
+  reactor -> client: "HTTP/1.1 200 OK\r\nContent-Length: ...\r\nConnection: keep-alive\r\n\r\n<body>"
+}
+
+# ── State Reset ─────────────────────────────────────────────────────────
+reset: "Keep-Alive State Reset (fd stays open — NO new TCP connection)" {
+  conn -> conn: "check request.keep_alive == 1\nstate           = READING_HEADERS\nread_len        = 0\nbody_received   = 0\nwrite_offset    = 0  ← write_buf_consume reset\nwrite_len       = 0\nmemset(&request, 0, sizeof(request))"
+  conn -> reactor: "reactor_cancel_timer(idle_timer_id)\nidle_timer_id = reactor_set_timeout(30s, idle_cb)\nreactor_cancel_timer(header_timer_id)\nheader_timer_id = reactor_set_timeout(10s, header_cb)"
+  conn -> conn: "if read_len > 0:\n  reactor_defer(http_deferred_parse)\n→ read_len == 0: wait for next REACTOR_READ"
+}
+
+reset_note: |md
+  ### TCP Survival Invariant
+  **fd remains open. TCP connection survives.**
+  No SYN/FIN/RST. No kernel TCP state machine transition.
+  No new file descriptor allocated.
+  The OS three-way handshake cost (~1 RTT) was paid once for N requests.
+|
+
+# ── Request 2 ──────────────────────────────────────────────────────────
+req2: "Request 2 — GET /style.css (same fd, same conn)" {
+  client -> reactor: "GET /style.css HTTP/1.1\r\nConnection: close\r\n\r\n"
+  reactor -> conn: "http_io_callback(fd, REACTOR_READ, conn)\nconn->state == READING_HEADERS"
+  conn -> conn: "http_handle_read()\nread() drain → EAGAIN\nread_len += n\nreset idle_timer\nhttp_try_parse() → PARSE_COMPLETE\nrequest.keep_alive = 0  ← Connection: close\nstate = PROCESSING"
+  conn -> conn: "http_process_request()\ncancel header_timer_id\nresolve_path() → /var/www/style.css\nopen() + fstat()\nsnprintf headers (Connection: close)\nhttp_write_append(headers + body)\nhttp_handle_write()"
+  conn -> wbuf: "write_buf_append()"
+  conn -> reactor: "write() succeeds fully\nwrite_buf_pending() → 0\nEPOLLOUT stays disarmed"
+  reactor -> client: "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n<css>"
+}
+
+# ── Connection Close ────────────────────────────────────────────────────
+closing: "Connection Close (keep_alive == 0)" {
+  conn -> conn: "write buffer drained\ncheck request.keep_alive == 0\n→ http_conn_close(conn)"
+  conn -> conn: "state = HTTP_STATE_CLOSING\nreactor_cancel_timer(idle_timer_id)\nreactor_cancel_timer(header_timer_id)\nreactor_deregister(reactor, fd)\nclose(fd)\nreactor_defer(http_deferred_free, conn)"
+  reactor -> conn: "Phase 3: http_deferred_free()\nwrite_buf_free(conn->write_buf)\nfree(conn)"
+  reactor -> client: "TCP FIN (kernel sends on close(fd))"
+  client -> reactor: "TCP FIN-ACK"
+}
+
+# ── Performance Metrics ─────────────────────────────────────────────────
+timing_note: |md
+  ### Critical Path Timing
+  **TCP connection lifespan covers both requests:**
+  - **Handshake RTT:** paid once (~1ms LAN, ~50ms WAN)
+  - **Request 1 round-trip:** ~0.5ms (loopback)
+  - **State reset overhead:** ~200ns (memset + 2 timer ops)
+  - **Request 2 round-trip:** ~0.5ms
+  - **Efficiency:** saves 1 RTT + kernel TCP setup cost per subsequent request.
+  - At 10K req/s with keep-alive: saves ~10K RTTs/s.
+|

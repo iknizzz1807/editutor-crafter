@@ -1,0 +1,142 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## waitpid Status Word — 32-bit Bit Layout
+| {near: top-center}
+row0: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  status_word: {
+    shape: sql_table
+    label: "uint32_t status (waitpid output)"
+    b31_16: "bits 31–16 | PTRACE_EVENT_* | status >> 16 (M3 preview)"
+    b15_08: "bits 15–08 | stop_sig or exit_code | WSTOPSIG / WEXITSTATUS"
+    b07_07: "bit  7     | core dump flag | WCOREDUMP (if WIFSIGNALED)"
+    b06_00: "bits  6–00 | term_sig or 0x7f | WTERMSIG / WIFSTOPPED sentinel"
+    sz:     "Total: 32 bits — one int returned by waitpid(2)"
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  exited: {
+    shape: sql_table
+    label: "WIFEXITED — normal exit"
+    style.fill: "#d4edda"
+    cond:  "condition | (status & 0x7f) == 0"
+    b31_16: "bits 31–16 | unused (0)"
+    b15_08: "bits 15–08 | exit code (0–255)"
+    b07_07: "bit  7     | 0"
+    b06_00: "bits  6–00 | 0x00 sentinel"
+    extract: "WEXITSTATUS | (status >> 8) & 0xff"
+  }
+  signaled: {
+    shape: sql_table
+    label: "WIFSIGNALED — killed by signal"
+    style.fill: "#f8d7da"
+    cond:  "condition | low7 != 0 AND low7 != 0x7f"
+    b31_16: "bits 31–16 | unused (0)"
+    b15_08: "bits 15–08 | 0"
+    b07_07: "bit  7     | core dump flag"
+    b06_00: "bits  6–00 | signal number (1–126)"
+    extract: "WTERMSIG   | status & 0x7f"
+  }
+  stopped: {
+    shape: sql_table
+    label: "WIFSTOPPED — process stopped (ptrace)"
+    style.fill: "#fff3cd"
+    cond:  "condition | (status & 0xff) == 0x7f"
+    b31_16: "bits 31–16 | PTRACE_EVENT_* or 0"
+    b15_08: "bits 15–08 | stop signal (see below)"
+    b07_07: "bit  7     | 0x7f low byte: bits 6-0 = 0x7f"
+    b06_00: "bits  6–00 | 0x7f sentinel"
+    extract: "WSTOPSIG   | (status >> 8) & 0xff"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  syscall_stop: {
+    shape: sql_table
+    label: "Syscall Stop (PTRACE_O_TRACESYSGOOD)"
+    style.fill: "#cce5ff"
+    sig_raw:  "stop signal  | SIGTRAP = 0x05"
+    bit7_set: "bit 7 OR'd   | 0x05 | 0x80 = 0x85"
+    wstopsig: "WSTOPSIG     | 0x85 (= SIGTRAP | 0x80)"
+    check:    "test         | sig == (SIGTRAP | 0x80)"
+    note:     "Note: WITHOUT option → sig == 0x05 (ambiguous)"
+  }
+  plain_sigtrap: {
+    shape: sql_table
+    label: "Plain SIGTRAP Stop (no 0x80)"
+    style.fill: "#e2d9f3"
+    sig_raw:  "stop signal  | SIGTRAP = 0x05"
+    bit7_set: "bit 7 OR'd   | NOT set (0x05 unchanged)"
+    wstopsig: "WSTOPSIG     | 0x05"
+    check:    "test         | sig == SIGTRAP (breakpoint / exec stop)"
+    note:     "Note: exec stop, attach stop, INT3 breakpoint"
+  }
+  ptrace_event: {
+    shape: sql_table
+    label: "PTRACE_EVENT Stop (M3) — bits 31–16"
+    style.fill: "#fde2e4"
+    event_ex: "PTRACE_EVENT_FORK  | 0x01 << 16 = 0x00010000"
+    event_ex2: "PTRACE_EVENT_EXEC  | 0x04 << 16 = 0x00040000"
+    event_ex3: "PTRACE_EVENT_EXIT  | 0x06 << 16 = 0x00060000"
+    extract:  "extract      | event = (status >> 16) & 0xff"
+    check:    "test         | event != 0 → handle before syscall check"
+    note:     "Note: WSTOPSIG still == SIGTRAP; event is in high byte"
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  dispatch_order: {
+    shape: sql_table
+    label: "Correct Stop Dispatch Order (handle_stop)"
+    style.fill: "#d1ecf1"
+    s1: "1st check | event = (status >> 16) & 0xff"
+    s2: "if event != 0 | PTRACE_EVENT stop → handle_ptrace_event()"
+    s3: "2nd check | sig = WSTOPSIG(status)"
+    s4: "if sig == 0x85 | syscall stop (entry or exit) → handle_syscall_stop()"
+    s5: "if sig == SIGTRAP | plain trap → resume, no action"
+    s6: "if sig == SIGSTOP | new child initial stop → resume with 0"
+    s7: "else | signal-delivery stop → re-inject: PTRACE_SYSCALL(pid, sig)"
+    warn: "WARNING: never re-inject event stops; always pass 0"
+  }
+}
+row0 -> row1: "decode by sentinel"
+row1.stopped -> row2: "further classify stop signal"
+row2 -> row3: "dispatch priority"
+row1.exited.cond -> row1.exited.extract: "use macro"
+row1.signaled.cond -> row1.signaled.extract: "use macro"
+row1.stopped.cond -> row1.stopped.extract: "use macro"
+row2.syscall_stop.bit7_set -> row2.syscall_stop.check: "test 0x85" {
+  style.stroke: blue
+  style.stroke-dash: 3
+}
+row2.ptrace_event.event_ex -> row2.ptrace_event.extract: "shift right 16" {
+  style.stroke: "#9b2226"
+  style.stroke-dash: 3
+}
+legend: {
+  shape: sql_table
+  label: "Color Legend"
+  g: "Green  | WIFEXITED — normal exit path"
+  r: "Red    | WIFSIGNALED — killed by signal"
+  y: "Yellow | WIFSTOPPED — ptrace / job-control stop"
+  b: "Blue   | Syscall stop (PTRACE_O_TRACESYSGOOD | 0x80)"
+  p: "Purple | Plain SIGTRAP (exec, breakpoint, attach)"
+  pk: "Pink   | PTRACE_EVENT stop (M3 fork/exec/exit events)"
+  c: "Cyan   | Dispatch order table"
+}
+legend.near: bottom-right

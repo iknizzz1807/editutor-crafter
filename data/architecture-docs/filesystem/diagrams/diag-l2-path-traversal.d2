@@ -1,0 +1,163 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- Data Structures Definitions ---
+
+structs: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  inode_struct: {
+    shape: sql_table
+    label: "struct bitfs_inode_t (128 bytes)"
+    f0: "0x00 | uint16_t | mode // S_IFDIR or S_IFREG"
+    f1: "0x02 | uint16_t | nlink"
+    f2: "0x04 | uint32_t | size"
+    f3: "0x18 | uint32_t | direct[12] // Block pointers"
+    f4: "0x48 | uint32_t | indirect"
+    f5: "0x4C | uint32_t | db_indirect"
+  }
+
+  dirent_struct: {
+    shape: sql_table
+    label: "struct bitfs_dirent_t (Variable)"
+    d0: "0x00 | uint32_t | inode_num"
+    d1: "0x04 | uint16_t | rec_len // Offset to next"
+    d2: "0x06 | uint8_t  | name_len"
+    d3: "0x07 | uint8_t  | file_type"
+    d4: "0x08 | char[]   | name // e.g., 'home'"
+  }
+}
+
+# --- Trace Logic ---
+
+path_trace: {
+  label: "Path Resolution: '/home/user/notes.txt'"
+  
+  level_0: {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    
+    root_ino: {
+      shape: sql_table
+      label: "Inode #1 (Root)"
+      mode: "S_IFDIR"
+      direct0: "Block #50"
+    }
+
+    scan_root: {
+      label: "Scan Block #50"
+      code: |'c
+        while (curr < BLOCK_SIZE) {
+          dirent = (bitfs_dirent_t*)(buf + curr);
+          if (strcmp(dirent->name, "home") == 0)
+            return dirent->inode_num;
+          curr += dirent->rec_len;
+        }
+      '|
+    }
+    
+    root_ino -> scan_root: "direct[0] | read"
+  }
+
+  level_1: {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+
+    home_ino: {
+      shape: sql_table
+      label: "Inode #5 (home/)"
+      mode: "S_IFDIR"
+      direct0: "Block #88"
+    }
+
+    scan_home: {
+      label: "Scan Block #88"
+      code: |'c
+        // Token: "user"
+        // Find entry "user"
+        // Target -> Inode 12
+      '|
+    }
+    
+    home_ino -> scan_home: "direct[0] | read"
+  }
+
+  level_2: {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+
+    user_ino: {
+      shape: sql_table
+      label: "Inode #12 (user/)"
+      mode: "S_IFDIR"
+      direct0: "Block #1024"
+    }
+
+    scan_user: {
+      label: "Scan Block #1024"
+      code: |'c
+        // Token: "notes.txt"
+        // Find entry "notes.txt"
+        // Target -> Inode 500
+      '|
+    }
+    
+    user_ino -> scan_user: "direct[0] | read"
+  }
+
+  level_3: {
+    target_inode: {
+      shape: sql_table
+      label: "Inode #500 (notes.txt)"
+      mode: "S_IFREG"
+      size: "15420 bytes"
+      direct0: "Block #2000"
+    }
+  }
+
+  # Transitions between levels
+  level_0.scan_root -> level_1.home_ino: "ID: 5"
+  level_1.scan_home -> level_2.user_ino: "ID: 12"
+  level_2.scan_user -> level_3.target_inode: "ID: 500"
+}
+
+# --- Implementation Signatures ---
+
+api: {
+  shape: class
+  label: "Path Resolution API (namei.c)"
+  +resolve_path(path): "int (inode_id)"
+  -find_in_dir(dir_ino, name): "int (inode_id)"
+  -get_next_token(path, saveptr): "char*"
+}
+
+# --- Global Flow ---
+
+structs -> path_trace: "Memory Layouts"
+path_trace -> api: "Logic implemented in"
+
+legend: {
+  shape: sql_table
+  label: "Legend"
+  r: "Red = Path Traversal"
+  b: "Blue = Data Block Read"
+}
+legend.near: bottom-right
+
+path_trace.level_0.scan_root: { style.stroke: blue }
+path_trace.level_1.scan_home: { style.stroke: blue }
+path_trace.level_2.scan_user: { style.stroke: blue }
+
+(level_0.scan_root -> level_1.home_ino)[0].style.stroke: red
+(level_1.scan_home -> level_2.user_ino)[0].style.stroke: red
+(level_2.scan_user -> level_3.target_inode)[0].style.stroke: red

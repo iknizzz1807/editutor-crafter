@@ -1,0 +1,715 @@
+{
+  "project_id": "filesystem",
+  "meta": {
+    "id": "filesystem",
+    "name": "Filesystem Implementation",
+    "description": "Inode-based filesystem with block allocation, directories, FUSE integration, and write-ahead journaling",
+    "difficulty": "advanced",
+    "estimated_hours": "65-85",
+    "essence": "Block-level storage abstraction layered with inode-based metadata structures for file organization, directory tree traversal through linked entries, and crash consistency achieved through write-ahead journaling that serializes filesystem operations to a sequential log before applying changes to primary data structures.\n",
+    "why_important": "Building a filesystem teaches you how operating systems manage persistent storage at the lowest level \u2014 skills directly applicable to database internals, storage systems engineering, and understanding performance bottlenecks in any I/O-intensive application.\n",
+    "learning_outcomes": [
+      "Design and implement on-disk layout with superblock, bitmaps, inode table, and data blocks",
+      "Implement inode-based file metadata with direct and indirect block pointers",
+      "Build directory tree operations with path resolution and entry management",
+      "Implement file read, write, truncate, and sparse file handling",
+      "Integrate with FUSE to mount the filesystem as a real mount point",
+      "Implement write-ahead journaling for crash consistency and recovery",
+      "Build mkfs formatter initializing filesystem structures on a raw image"
+    ],
+    "skills": [
+      "Block I/O",
+      "Inode structures",
+      "Directory entries",
+      "Write-ahead journaling",
+      "FUSE interface",
+      "Crash recovery",
+      "On-disk layout design"
+    ],
+    "tags": [
+      "advanced",
+      "directories",
+      "inodes",
+      "journaling",
+      "vfs",
+      "fuse"
+    ],
+    "architecture_doc": "architecture-docs/filesystem/index.md",
+    "languages": {
+      "recommended": [
+        "C",
+        "Rust",
+        "Go"
+      ],
+      "also_possible": []
+    },
+    "resources": [
+      {
+        "name": "Writing a FUSE Filesystem Tutorial",
+        "url": "https://www.cs.nmsu.edu/~pfeiffer/fuse-tutorial/",
+        "type": "tutorial"
+      },
+      {
+        "name": "Operating Systems: Three Easy Pieces (OSTEP)",
+        "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/",
+        "type": "book"
+      },
+      {
+        "name": "OSTEP - File System Implementation",
+        "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/file-implementation.pdf",
+        "type": "book"
+      },
+      {
+        "name": "OSTEP - Crash Consistency and Journaling",
+        "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/file-journaling.pdf",
+        "type": "book"
+      },
+      {
+        "name": "libfuse API Documentation",
+        "url": "https://libfuse.github.io/doxygen/",
+        "type": "documentation"
+      }
+    ],
+    "prerequisites": [
+      {
+        "type": "skill",
+        "name": "File I/O (read, write, seek)"
+      },
+      {
+        "type": "skill",
+        "name": "Data structures (linked lists, trees, bitmaps)"
+      },
+      {
+        "type": "skill",
+        "name": "C or Rust programming"
+      }
+    ],
+    "milestones": [
+      {
+        "id": "filesystem-m1",
+        "name": "Block Layer and mkfs",
+        "description": "Implement raw block device abstraction, on-disk layout design, free block bitmap, and mkfs formatter to initialize a fresh filesystem.\n",
+        "acceptance_criteria": [
+          "Block device abstraction provides read_block(block_num) and write_block(block_num, data) over a fixed 4KB block size backed by a disk image file",
+          "On-disk layout is defined: superblock (block 0), block bitmap, inode bitmap, inode table, journal region, data blocks \u2014 all positions derived from superblock metadata",
+          "Superblock stores magic number, filesystem version, total blocks, total inodes, block size, free block/inode counts, and journal region location",
+          "Block bitmap tracks free/used status for all data blocks; allocation returns the first free block and marks it used; deallocation clears the bit",
+          "Inode bitmap tracks free/used status for all inodes independently from blocks",
+          "mkfs tool initializes a raw file: writes superblock, zeroes bitmaps, initializes inode table, creates root directory (inode 0 or 1) with . and .. entries",
+          "After mkfs, the filesystem image can be read back and all metadata is consistent"
+        ],
+        "pitfalls": [
+          "Not initializing the superblock magic number; mounting without validation risks interpreting garbage as filesystem metadata",
+          "Bitmap corruption from not flushing writes; a crash between allocation and data write leaves orphaned blocks",
+          "Off-by-one in bitmap indexing; block 0 is the superblock, data blocks start at a different offset",
+          "Writing beyond the disk image size without validation; check total_blocks boundary"
+        ],
+        "concepts": [
+          "Block-level I/O and sector alignment",
+          "On-disk layout design",
+          "Bitmap-based allocation",
+          "Filesystem formatting (mkfs)"
+        ],
+        "skills": [
+          "Block I/O abstraction",
+          "Bitmap manipulation",
+          "On-disk serialization"
+        ],
+        "deliverables": [
+          "Block device abstraction with read/write operations on a file-backed image",
+          "Superblock structure and serialization",
+          "Block bitmap allocator and deallocator",
+          "Inode bitmap allocator and deallocator",
+          "mkfs tool creating a formatted filesystem image with root directory"
+        ],
+        "estimated_hours": "10-14"
+      },
+      {
+        "id": "filesystem-m2",
+        "name": "Inode Management",
+        "description": "Implement inode structure for file metadata with direct and indirect block pointers for variable-size files.\n",
+        "acceptance_criteria": [
+          "Inode structure contains: file type (regular, directory), size, permissions (mode), link count, timestamps (atime, mtime, ctime), direct block pointers (e.g., 12), single-indirect pointer, and double-indirect pointer",
+          "Direct block pointers address the first N blocks of a file (e.g., first 12 \u00d7 4KB = 48KB)",
+          "Single-indirect pointer references a block containing an array of block pointers, extending file capacity (e.g., +4MB)",
+          "Double-indirect pointer references a block of single-indirect pointers, further extending capacity (e.g., +4GB)",
+          "Inode allocation from the inode bitmap returns a free inode number; deallocation frees all associated data blocks AND indirect blocks",
+          "Inode read/write serializes inode structure to/from the inode table region on disk",
+          "Null/zero block pointers in the inode indicate unallocated blocks (holes for sparse files)",
+          "Timestamps are updated on inode modification (mtime, ctime) and access (atime)"
+        ],
+        "pitfalls": [
+          "Leaking indirect blocks when freeing an inode; must traverse and free single-indirect and double-indirect blocks recursively",
+          "Off-by-one in block offset calculations when transitioning from direct to indirect pointers",
+          "Not distinguishing between zero block pointer (hole/unallocated) and block 0 (superblock); block 0 should never be a data block",
+          "Forgetting to update link count and timestamps on inode operations"
+        ],
+        "concepts": [
+          "Inode metadata structure",
+          "Direct and indirect block addressing",
+          "Sparse file representation with null pointers",
+          "Reference counting (link count)"
+        ],
+        "skills": [
+          "Inode structure design and serialization",
+          "Multi-level pointer traversal",
+          "Block offset calculation"
+        ],
+        "deliverables": [
+          "Inode structure with all metadata fields",
+          "Direct block pointer access for small files",
+          "Single-indirect and double-indirect pointer traversal for large files",
+          "Inode allocation and full deallocation (including indirect blocks)",
+          "Inode serialization to/from disk"
+        ],
+        "estimated_hours": "10-14"
+      },
+      {
+        "id": "filesystem-m3",
+        "name": "Directory Operations",
+        "description": "Implement directory entries, path resolution, and directory management.\n",
+        "acceptance_criteria": [
+          "Directory is a special file whose data blocks contain an array of directory entries; each entry has inode number, entry length, name length, and name",
+          "add_entry(dir_inode, name, target_inode) appends a new entry to the directory; fails if name already exists",
+          "remove_entry(dir_inode, name) removes the entry and decrements the target inode's link count; if link count reaches 0 and no open file descriptors, inode is freed",
+          "Path resolution traverses '/' separated components from root (or cwd): \"for path 'a/b/c', look up 'a' in root, then 'b' in a's inode, then 'c' in b's inode\"",
+          "'.' entry always points to the directory's own inode; '..' entry points to parent directory's inode (root's '..' points to itself)",
+          "mkdir creates a new directory inode with '.' and '..' entries; parent's link count is incremented (because '..' in child points to parent)",
+          "rmdir removes a directory only if it's empty (contains only '.' and '..')",
+          "Hard link creation (link) adds a new directory entry pointing to an existing inode and increments link count"
+        ],
+        "pitfalls": [
+          "Not validating name uniqueness before adding an entry; duplicate names cause ambiguous lookups",
+          "Forgetting to increment parent link count on mkdir (for child's '..' entry) and decrement on rmdir",
+          "Not handling the root directory's '..' correctly (it must point to itself)",
+          "Race conditions in concurrent directory modifications; for FUSE, multiple threads may modify simultaneously",
+          "Maximum filename length must be enforced; long names can overflow entry structures"
+        ],
+        "concepts": [
+          "Directory entry format",
+          "Path traversal algorithm",
+          "Hard links and link counting",
+          "Directory consistency"
+        ],
+        "skills": [
+          "Directory entry management",
+          "Path parsing and traversal",
+          "Link count tracking"
+        ],
+        "deliverables": [
+          "Directory entry structure and serialization",
+          "add_entry and remove_entry operations",
+          "Path-to-inode resolution function",
+          "mkdir and rmdir with link count management",
+          "Hard link (link) operation"
+        ],
+        "estimated_hours": "10-14"
+      },
+      {
+        "id": "filesystem-m4",
+        "name": "File Read/Write Operations",
+        "description": "Implement file creation, reading, writing, truncation, and sparse file support.\n",
+        "acceptance_criteria": [
+          "create_file(parent_dir_inode, name, mode) allocates a new inode, adds a directory entry, and returns the inode number",
+          "read(inode, offset, length) reads data from the file's blocks via inode pointers; reading unallocated blocks (holes) returns zero bytes",
+          "write(inode, offset, data) writes data to allocated blocks; allocates new blocks as needed for growth; updates inode size if writing past current end",
+          "truncate(inode, new_size) either extends the file (zero-filling conceptually via holes) or shrinks it (freeing blocks beyond new_size and updating pointers)",
+          "Sparse file support: writing at a high offset without writing intermediate positions does not allocate blocks for the gap; those blocks read as zeros",
+          "Append operation writes data at the current end of file and extends inode size",
+          "File metadata (size, mtime, ctime) is updated correctly on every write and truncate operation",
+          "Unit tests verify round-trip: write data, read it back, compare byte-for-byte"
+        ],
+        "pitfalls": [
+          "Not zero-filling partial blocks when writing doesn't align to block boundaries",
+          "Forgetting to free indirect pointer blocks when truncating below their range",
+          "Memory leaks from caching block data without eviction",
+          "Off-by-one in calculating which block index corresponds to a given file offset"
+        ],
+        "concepts": [
+          "File offset to block mapping",
+          "Sparse file representation",
+          "Block allocation on write",
+          "Truncation and deallocation"
+        ],
+        "skills": [
+          "File I/O implementation",
+          "Block-level data management",
+          "Offset arithmetic"
+        ],
+        "deliverables": [
+          "create_file operation allocating inode and adding directory entry",
+          "read operation mapping file offset to blocks and returning data",
+          "write operation allocating blocks and writing data",
+          "truncate operation shrinking or extending files",
+          "Sparse file handling with zero-filled reads for holes",
+          "Unit test suite for file operations"
+        ],
+        "estimated_hours": "10-14"
+      },
+      {
+        "id": "filesystem-m5",
+        "name": "FUSE Integration",
+        "description": "Mount the filesystem via FUSE for real-world testing with standard Unix tools (ls, cat, cp, etc.).\n",
+        "acceptance_criteria": [
+          "Filesystem mounts via FUSE appearing as a regular mount point accessible by the OS",
+          "FUSE callbacks implemented: getattr, readdir, lookup, create, open, read, write, release, mkdir, rmdir, unlink, rename, truncate, chmod, utimens",
+          "Standard tools work: \"'ls -la' lists directory contents with correct sizes/permissions; 'cat' reads files; 'cp' copies files into the mount; 'echo > file' writes\"",
+          "Concurrent access from multiple processes does not corrupt filesystem state (proper locking around shared structures)",
+          "Unmount flushes all pending data to the disk image and cleans up resources",
+          "rename operation moves entries between directories atomically"
+        ],
+        "pitfalls": [
+          "Not implementing getattr correctly causes ls and every other tool to fail (it's called on every path operation)",
+          "Deadlocks in FUSE callbacks when holding locks and calling back into the filesystem",
+          "FUSE passes paths, not inodes, to most callbacks; each callback must resolve the path, which is expensive without caching",
+          "Forgetting to implement 'create' vs 'mknod'; FUSE calls create for O_CREAT opens",
+          "Not flushing dirty data on unmount loses recently written data"
+        ],
+        "concepts": [
+          "FUSE callback interface",
+          "VFS abstraction layer",
+          "User-space vs kernel-space filesystem"
+        ],
+        "skills": [
+          "FUSE API integration",
+          "System test with real tools",
+          "Concurrent access handling"
+        ],
+        "deliverables": [
+          "FUSE operation callback registration",
+          "All required callbacks (getattr, readdir, create, read, write, mkdir, rmdir, unlink, rename, truncate, etc.)",
+          "Locking strategy for thread-safe access",
+          "Mount/unmount lifecycle with flush-on-unmount",
+          "Integration test running standard Unix commands against mounted filesystem"
+        ],
+        "estimated_hours": "10-14"
+      },
+      {
+        "id": "filesystem-m6",
+        "name": "Write-Ahead Journaling and Crash Recovery",
+        "description": "Implement a write-ahead journal for crash consistency. Metadata operations are journaled so the filesystem can recover from crashes without corruption.\n",
+        "acceptance_criteria": [
+          "Journal region occupies a fixed set of blocks on disk (configured in superblock); journal entries are written sequentially with wrap-around",
+          "Each filesystem operation (create, write metadata, mkdir, unlink, etc.) is wrapped in a transaction: begin \u2192 journal writes \u2192 commit \u2192 apply to data structures \u2192 end",
+          "Transaction commit writes a commit record to the journal; without a commit record, the transaction is considered incomplete on recovery",
+          "Recovery (fsck/replay): on mount, scan the journal for committed transactions and replay their operations; discard uncommitted transactions",
+          "Metadata journaling mode: only metadata changes (inode updates, bitmap changes, directory entries) are journaled; data blocks are written directly",
+          "Crash simulation test: kill the filesystem process mid-operation, remount, verify recovery produces a consistent filesystem with no orphaned inodes or leaked blocks",
+          "Journal checkpoint: \"after all committed transactions are applied, the journal is marked as clean so it doesn't replay stale entries\""
+        ],
+        "pitfalls": [
+          "Not writing the commit record atomically (or at least ensuring it's fully flushed); a partial commit record looks uncommitted on recovery",
+          "Replaying a transaction that was already applied (idempotency): operations must be safe to apply multiple times",
+          "Journal wrap-around overwriting uncommitted transactions; must checkpoint before the journal fills",
+          "Data journaling (journaling data blocks too) doubles write amplification; metadata-only journaling is the practical default",
+          "Not fsyncing the journal before writing to the main data structures; reorder by the OS can defeat the write-ahead guarantee"
+        ],
+        "concepts": [
+          "Write-ahead logging (WAL)",
+          "Transaction begin/commit/abort",
+          "Crash recovery and replay",
+          "Journaling modes (metadata-only vs full)"
+        ],
+        "skills": [
+          "Transaction design",
+          "Crash recovery implementation",
+          "Atomic write guarantees",
+          "Idempotent operation design"
+        ],
+        "deliverables": [
+          "Journal region with sequential log entries and wrap-around",
+          "Transaction API (begin, journal_write, commit, end)",
+          "Journal replay on mount for crash recovery",
+          "Checkpoint operation marking journal as clean after replay",
+          "Crash simulation test verifying filesystem consistency after interrupted operations"
+        ],
+        "estimated_hours": "12-16"
+      }
+    ],
+    "domain": "systems"
+  },
+  "blueprint": {
+    "title": "BitByBit: Building a Journaled Inode Filesystem",
+    "overview": "A deep dive into the guts of persistent storage. This project guides you through building a complete, FUSE-compatible filesystem from the ground up\u2014starting with raw block manipulation and ending with a crash-consistent journaling system. You will bridge the gap between the OS's expectations (files and directories) and the hardware's reality (fixed-size 4KB blocks).",
+    "design_philosophy": "This project prioritizes the 'Hardware Soul'\u2014understanding how data layout on disk affects performance and reliability. By manually implementing inodes, indirect pointers, and a write-ahead journal, you learn why databases and OS kernels are designed the way they are, moving beyond the abstraction of 'files' into the physical reality of sectors and blocks.",
+    "is_build_your_own": true,
+    "implementation": {
+      "primary_language": "C",
+      "rationale": "C provides the most direct mapping to on-disk structures (struct packing), mimics the Linux kernel environment, and is the native language for libfuse. It forces manual memory and block management which is essential for learning filesystem internals.",
+      "style_guide": "Kernel-style C (tabs for indentation, snake_case, explicit error return codes, structs for all on-disk layouts with __attribute__((packed))).",
+      "build_system": "Makefile",
+      "alternatives": [
+        "Rust (for memory safety in metadata handling)",
+        "Go (using cgofuse)"
+      ]
+    },
+    "prerequisites": {
+      "assumed_known": [
+        "Pointer arithmetic",
+        "Struct alignment/padding",
+        "Bitwise operations",
+        "Basic Unix I/O (open/read/write/lseek)"
+      ],
+      "must_teach_first": [
+        {
+          "concept": "Block vs Byte Addressing",
+          "depth": "intermediate",
+          "when": "Milestone 1"
+        },
+        {
+          "concept": "VFS (Virtual File System) abstraction",
+          "depth": "basic",
+          "when": "Milestone 5"
+        }
+      ]
+    },
+    "milestones": [
+      {
+        "id": "filesystem-m1",
+        "title": "Block Layer and mkfs",
+        "anchor_id": "m1-block-layer",
+        "summary": "Establish the physical foundation: a block-device abstraction over a file and the 'mkfs' tool to format it with a superblock and allocation bitmaps.",
+        "misconception": "Developers often think of the disk as a flat, infinite sea of bytes where you can insert data anywhere.",
+        "reveal": "Disk is a rigid grid of fixed-size blocks (usually 4KB). Changing one byte means reading 4096, modifying one, and writing 4096 back (Read-Modify-Write).",
+        "cascade": [
+          "Alignment \u2014 why 4KB-aligned writes are 10x faster.",
+          "Internal Fragmentation \u2014 why a 1-byte file still takes 4KB of space.",
+          "Metadata Overhead \u2014 how much space is 'lost' to bitmaps before the first file is even saved.",
+          "Database Paging \u2014 why Postgres and MySQL also use 8KB/16KB pages."
+        ],
+        "yaml_acceptance_criteria": [
+          "Block device abstraction provides read_block(block_num) and write_block(block_num, data) over a fixed 4KB block size backed by a disk image file",
+          "On-disk layout is defined: superblock (block 0), block bitmap, inode bitmap, inode table, journal region, data blocks \u2014 all positions derived from superblock metadata",
+          "Superblock stores magic number, filesystem version, total blocks, total inodes, block size, free block/inode counts, and journal region location",
+          "Block bitmap tracks free/used status for all data blocks; allocation returns the first free block and marks it used; deallocation clears the bit",
+          "Inode bitmap tracks free/used status for all inodes independently from blocks",
+          "mkfs tool initializes a raw file: writes superblock, zeroes bitmaps, initializes inode table, creates root directory (inode 0 or 1) with . and .. entries",
+          "After mkfs, the filesystem image can be read back and all metadata is consistent"
+        ]
+      },
+      {
+        "id": "filesystem-m2",
+        "title": "Inode Management",
+        "anchor_id": "m2-inode-management",
+        "summary": "Implement the 'In-memory Node' structure, managing metadata like permissions and the mapping of logical file offsets to physical disk blocks via indirect pointers.",
+        "misconception": "The file's name and its data are stored together in the same structure.",
+        "reveal": "The Inode is the file; it has no name. It only has an ID and a list of blocks. Names are just 'aliases' stored elsewhere in directory entries.",
+        "cascade": [
+          "Hard Links \u2014 how multiple names can point to the exact same data.",
+          "Indirection \u2014 how a tiny 128-byte inode can reference a 4GB file using multi-level pointer trees.",
+          "Inode Exhaustion \u2014 why you can 'run out of space' even when the disk is half empty (no inodes left)."
+        ],
+        "yaml_acceptance_criteria": [
+          "Inode structure contains: file type (regular, directory), size, permissions (mode), link count, timestamps (atime, mtime, ctime), direct block pointers (e.g., 12), single-indirect pointer, and double-indirect pointer",
+          "Direct block pointers address the first N blocks of a file (e.g., first 12 \u00d7 4KB = 48KB)",
+          "Single-indirect pointer references a block containing an array of block pointers, extending file capacity (e.g., +4MB)",
+          "Double-indirect pointer references a block of single-indirect pointers, further extending capacity (e.g., +4GB)",
+          "Inode allocation from the inode bitmap returns a free inode number; deallocation frees all associated data blocks AND indirect blocks",
+          "Inode read/write serializes inode structure to/from the inode table region on disk",
+          "Null/zero block pointers in the inode indicate unallocated blocks (holes for sparse files)",
+          "Timestamps are updated on inode modification (mtime, ctime) and access (atime)"
+        ]
+      },
+      {
+        "id": "filesystem-m3",
+        "title": "Directory Operations",
+        "anchor_id": "m3-directory-ops",
+        "summary": "Turn files into a hierarchy by treating directory data as a table of entries mapping names to inode numbers.",
+        "misconception": "Directories are special folders managed by the OS kernel.",
+        "reveal": "A directory is just a normal file whose 'data blocks' happen to contain a list of strings and numbers (filename -> inode_id).",
+        "cascade": [
+          "Path Resolution \u2014 why 'ls -R' triggers thousands of random disk reads.",
+          "Dentry Caching \u2014 why the OS caches these names in RAM to avoid disk thrashing.",
+          "Atomic Rename \u2014 how moving a file is just updating a directory entry, not moving data blocks."
+        ],
+        "yaml_acceptance_criteria": [
+          "Directory is a special file whose data blocks contain an array of directory entries; each entry has inode number, entry length, name length, and name",
+          "add_entry(dir_inode, name, target_inode) appends a new entry to the directory; fails if name already exists",
+          "remove_entry(dir_inode, name) removes the entry and decrements the target inode's link count; if link count reaches 0 and no open file descriptors, inode is freed",
+          "Path resolution traverses '/' separated components from root (or cwd): \"for path 'a/b/c', look up 'a' in root, then 'b' in a's inode, then 'c' in b's inode\"",
+          "'.' entry always points to the directory's own inode; '..' entry points to parent directory's inode (root's '..' points to itself)",
+          "mkdir creates a new directory inode with '.' and '..' entries; parent's link count is incremented (because '..' in child points to parent)",
+          "rmdir removes a directory only if it's empty (contains only '.' and '..')",
+          "Hard link creation (link) adds a new directory entry pointing to an existing inode and increments link count"
+        ]
+      },
+      {
+        "id": "filesystem-m4",
+        "title": "File Read/Write Operations",
+        "anchor_id": "m4-file-io",
+        "summary": "Implement the core I/O logic, mapping file offsets to physical blocks, handling sparse files, and growing files dynamically.",
+        "misconception": "Reading a file from offset 500 to 1000 is a single 500-byte operation.",
+        "reveal": "The filesystem must calculate: Which block does offset 500 fall in? Does it span across block boundaries? If so, load two 4KB blocks and slice the requested 500 bytes.",
+        "cascade": [
+          "Sparse Files \u2014 how a 1PB file can exist on a 1TB disk by only allocating 'dirty' blocks.",
+          "Write Amplification \u2014 why updating a single byte in the middle of a file involves a Read-Modify-Write cycle.",
+          "Block Fragmentation \u2014 how non-sequential block allocation kills HDD performance (and hurts SSDs via FTL)."
+        ],
+        "yaml_acceptance_criteria": [
+          "create_file(parent_dir_inode, name, mode) allocates a new inode, adds a directory entry, and returns the inode number",
+          "read(inode, offset, length) reads data from the file's blocks via inode pointers; reading unallocated blocks (holes) returns zero bytes",
+          "write(inode, offset, data) writes data to allocated blocks; allocates new blocks as needed for growth; updates inode size if writing past current end",
+          "truncate(inode, new_size) either extends the file (zero-filling conceptually via holes) or shrinks it (freeing blocks beyond new_size and updating pointers)",
+          "Sparse file support: writing at a high offset without writing intermediate positions does not allocate blocks for the gap; those blocks read as zeros",
+          "Append operation writes data at the current end of file and extends inode size",
+          "File metadata (size, mtime, ctime) is updated correctly on every write and truncate operation",
+          "Unit tests verify round-trip: write data, read it back, compare byte-for-byte"
+        ]
+      },
+      {
+        "id": "filesystem-m5",
+        "title": "FUSE Integration",
+        "anchor_id": "m5-fuse-integration",
+        "summary": "Bridge your implementation to the real world using FUSE (Filesystem in Userspace), allowing you to mount your disk image and use standard tools like 'ls' and 'cp'.",
+        "misconception": "Building a filesystem requires writing a complex Linux Kernel Module in C.",
+        "reveal": "FUSE allows the Kernel to 'hand off' filesystem requests to your C program via a character device (/dev/fuse), making your app the 'VFS driver'.",
+        "cascade": [
+          "User/Kernel Context Switches \u2014 why FUSE is slower than Ext4/XFS.",
+          "Abstracting the Disk \u2014 how you could swap your block-file with a Cloud S3 bucket or a database table.",
+          "Locking & Concurrency \u2014 handling multiple processes trying to write to your filesystem simultaneously."
+        ],
+        "yaml_acceptance_criteria": [
+          "Filesystem mounts via FUSE appearing as a regular mount point accessible by the OS",
+          "FUSE callbacks implemented: getattr, readdir, lookup, create, open, read, write, release, mkdir, rmdir, unlink, rename, truncate, chmod, utimens",
+          "Standard tools work: 'ls -la' lists directory contents; 'cat' reads; 'cp' copies; 'echo > file' writes",
+          "Concurrent access from multiple processes does not corrupt filesystem state (proper locking around shared structures)",
+          "Unmount flushes all pending data to the disk image and cleans up resources",
+          "rename operation moves entries between directories atomically"
+        ]
+      },
+      {
+        "id": "filesystem-m6",
+        "title": "Write-Ahead Journaling and Crash Recovery",
+        "anchor_id": "m6-journaling",
+        "summary": "Ensure crash consistency by logging metadata changes to a sequential journal before applying them to the main structures.",
+        "misconception": "The 'fsync()' call means your data is safe on the platter.",
+        "reveal": "The OS and Disk Hardware often reorder writes for performance. Without a journal, a power cut during a 'rename' could leave an inode with no name or a directory with a ghost entry.",
+        "cascade": [
+          "WAL (Write Ahead Log) \u2014 why every database (SQLite, Postgres) uses the same technique.",
+          "Idempotency \u2014 why recovery operations must be safe to run twice.",
+          "The Atomic Commit \u2014 the one single disk write (the 'commit record') that makes a multi-step operation 'real'."
+        ],
+        "yaml_acceptance_criteria": [
+          "Journal region occupies a fixed set of blocks on disk; journal entries are written sequentially with wrap-around",
+          "Each filesystem operation is wrapped in a transaction: begin \u2192 journal writes \u2192 commit \u2192 apply to data structures \u2192 end",
+          "Transaction commit writes a commit record to the journal; without it, transaction is discarded on recovery",
+          "Recovery (fsck/replay): on mount, scan journal for committed transactions and replay them",
+          "Metadata journaling mode: only metadata changes are journaled; data blocks are written directly",
+          "Crash simulation test: kill the process mid-op, remount, verify consistency",
+          "Journal checkpoint: journal marked clean after all committed transactions are applied"
+        ]
+      }
+    ],
+    "diagrams": [
+      {
+        "id": "diag-l0-global-map",
+        "title": "Satellite View: The 4KB Grid",
+        "description": "The L0 master map showing the static partitioning of the disk image: Superblock (Block 0), Bitmaps, Inode Table, Journal, and Data Blocks.",
+        "anchor_target": "m1-block-layer",
+        "level": "satellite"
+      },
+      {
+        "id": "diag-l1-bitmap-zoom",
+        "title": "Microscopic: The Allocator Bit-Flip",
+        "description": "Visualization of a single byte in the Block Bitmap. Shows how the 3rd bit corresponds to the 3rd data block relative to the Data Region offset.",
+        "anchor_target": "m1-block-layer",
+        "level": "microscopic"
+      },
+      {
+        "id": "diag-l1-inode-struct",
+        "title": "Street View: Inode Anatomy",
+        "description": "The layout of an Inode in memory and disk, showing metadata fields (UID, GID, Size) and the array of block pointers.",
+        "anchor_target": "m2-inode-management",
+        "level": "street"
+      },
+      {
+        "id": "diag-l2-indirection-tree",
+        "title": "Microscopic: The Indirect Pointer Walk",
+        "description": "A trace of finding the 2000th block of a file by traversing Inode -> Double Indirect Block -> Single Indirect Block -> Data Block.",
+        "anchor_target": "m2-inode-management",
+        "level": "microscopic"
+      },
+      {
+        "id": "diag-l1-dir-table",
+        "title": "Street View: Directory Entry Layout",
+        "description": "How a directory's data block is formatted as a sequence of (Inode ID, Name Length, Name String) records.",
+        "anchor_target": "m3-directory-ops",
+        "level": "street"
+      },
+      {
+        "id": "diag-l2-path-traversal",
+        "title": "Microscopic: Path Resolution Trace",
+        "description": "The step-by-step logic of resolving '/home/user/notes.txt' starting from the Root Inode (Inode 1).",
+        "anchor_target": "m3-directory-ops",
+        "level": "microscopic"
+      },
+      {
+        "id": "diag-l1-rmw-cycle",
+        "title": "Street View: The Read-Modify-Write Cycle",
+        "description": "What happens when you write 10 bytes to offset 4090: The 'Straddle' problem where two physical blocks must be updated.",
+        "anchor_target": "m4-file-io",
+        "level": "street"
+      },
+      {
+        "id": "diag-l1-fuse-flow",
+        "title": "Satellite View: The FUSE Request Loop",
+        "description": "The architectural journey of a 'ls' command: User App -> syscall -> Kernel VFS -> /dev/fuse -> Your C Program -> Disk Image.",
+        "anchor_target": "m5-fuse-integration",
+        "level": "satellite"
+      },
+      {
+        "id": "diag-l1-journal-tx",
+        "title": "Street View: The Transaction Lifecycle",
+        "description": "Before/After visualization of a file creation: Journal (Log: Add Inode, Log: Add Dir Entry, Log: Commit) -> Main Disk Update.",
+        "anchor_target": "m6-journaling",
+        "level": "street"
+      },
+      {
+        "id": "diag-l2-journal-replay",
+        "title": "Microscopic: Crash Recovery Replay",
+        "description": "The logic used during mount to scan the journal, identify the last commit record, and apply pending changes to the disk structures.",
+        "anchor_target": "m6-journaling",
+        "level": "microscopic"
+      }
+    ]
+  },
+  "primary_language": "C",
+  "accumulated_md": "# BitByBit: Building a Journaled Inode Filesystem\n\nA deep dive into the guts of persistent storage. This project guides you through building a complete, FUSE-compatible filesystem from the ground up\u2014starting with raw block manipulation and ending with a crash-consistent journaling system. You will bridge the gap between the OS's expectations (files and directories) and the hardware's reality (fixed-size 4KB blocks).\n\n\n\n<!-- MS_ID: filesystem-m1 -->\n# Milestone 1: The 4KB Grid \u2014 Block Layer and mkfs\n\nWelcome to the foundation of persistent storage. In this first milestone, you are going to bridge the gap between the volatile world of RAM and the rigid, block-oriented world of the disk. \n\nYour mission is to build the **Block Abstraction Layer** and a **mkfs (Make Filesystem)** utility. By the end of this chapter, you will have a raw file on your host machine that has been logically carved into a structured filesystem layout, ready to store its first inode.\n\n## The Fundamental Tension: The Rigid Grid\n\nAs a programmer, you are used to the \"infinite sea of bytes\" model. You want to write 3 bytes to the middle of a file? You call `seek()` and `write()`. The OS makes it look easy. But the hardware\u2014the physical spinning platter or the NAND flash cells\u2014doesn't know what a \"byte\" is. It knows **Blocks**.\n\n\n> **\ud83d\udd11 Foundation: Block vs Byte Addressing is the fundamental shift from granular memory access to coarse-grained storage chunks.**\n> \n> **1. What it IS**\nByte addressing is how RAM operates: every single byte of memory has a unique address, allowing the CPU to grab a single character or integer directly. Block addressing is how secondary storage (SSDs, HDDs) operates: data is organized into fixed-size \"buckets\" (blocks or sectors), usually 4KB or 8KB. To read a single byte from a disk, the hardware must read the entire 4096-byte block into a buffer and then extract the byte you want.\n\n**2. Why you need it right now**\nWhen building high-performance systems or databases, you cannot treat a disk like a giant array of bytes. If you write 10 bytes to random locations, the disk performs 10 separate block-sized operations. Understanding this shift is the key to optimizing I/O: you want your software's data structures to align with these physical blocks to minimize \"read amplification\" and maximize throughput.\n\n**3. Key Insight**\n**The \"Shipping Container\" Model:** RAM is like a grocery store where you can pick up a single apple (byte). Disk storage is like a shipping port where you can only move entire containers (blocks). If you want one apple from the port, you have to unload the whole container.\n\n\nHardware provides a fixed grid, usually **4096 bytes (4KB)**. If you want to change a single bit on the disk, you cannot just \"target\" that bit. You must:\n1. Read the entire 4KB block into a memory buffer.\n2. Modify the specific byte in that buffer.\n3. Write the entire 4KB block back to the hardware.\n\nThis is the **Read-Modify-Write (RMW) cycle**, and it is the source of almost every performance bottleneck and consistency nightmare in storage engineering.\n\n{{DIAGRAM:diag-l1-rmw-cycle}}\n\n### Why 4KB?\nModern CPUs use 4KB pages for virtual memory. Modern hard drives use 4KB physical sectors (Advanced Format). By aligning our filesystem blocks to 4KB, we ensure that a single filesystem \"read\" maps exactly to a single OS \"page\" and a single hardware \"sector.\" This alignment prevents **I/O amplification**, where a single logical read triggers two physical reads because the data straddles a boundary.\n\n## 1. The Block Device Abstraction\n\nWe aren't writing a kernel driver (yet). We will simulate a disk using a regular file (a \"disk image\"). Your first task is to wrap this file in an API that forbids byte-level access and enforces the 4KB grid.\n\n### The Storage Context\nIn C, we'll define a structure to represent our \"device.\"\n\n```c\n#include <stdint.h>\n#include <stdio.h>\n#include <unistd.h>\n#include <fcntl.h>\n\n#define BLOCK_SIZE 4096\n\ntypedef struct {\n    int fd;\n    uint64_t total_blocks;\n} block_device_t;\n\n// Open the disk image and return the context\nblock_device_t* device_open(const char* path);\n\n// The only two ways to move data\nint device_read_block(block_device_t* dev, uint32_t block_num, void* buffer);\nint device_write_block(block_device_t* dev, uint32_t block_num, const void* buffer);\n```\n\n### Implementation Notes:\n- **`lseek` is your friend**: To read block `N`, you seek to `N * 4096`.\n- **Atomicity**: On most modern systems, a 4KB write to a 4KB-aligned offset is considered \"atomic\" by the drive, but don't count on it for crash consistency\u2014that's why we'll need journaling later.\n- **Error Handling**: You must check if `block_num < total_blocks`. Writing past the end of the file is a catastrophic metadata failure.\n\n## 2. Designing the On-Disk Layout\n\nNow that we have a grid, we need a map. We are building an **Inode-based Filesystem**. This requires us to divide our blocks into functional regions. \n\n### The Global Map\nWe will partition our disk image into five distinct zones:\n\n1.  **Superblock (Block 0)**: The \"God Object.\" It contains the metadata about the filesystem itself.\n2.  **Bitmaps (Block 1 - X)**: Binary arrays tracking which blocks and inodes are free.\n3.  **Inode Table (Block Y - Z)**: A fixed-size array of `struct inode` entries.\n4.  **Journal (Block J1 - J2)**: The write-ahead log for crash recovery.\n5.  **Data Blocks (Block M - End)**: The actual content of your files.\n\n\n![Satellite View: The 4KB Grid](./diagrams/diag-l0-global-map.svg)\n\n\n### The Superblock (Block 0)\nThe Superblock is the first thing the OS reads. If it's corrupted or missing, the disk is just a pile of random bits.\n\n```c\n#define FS_MAGIC 0x42495442 // \"BITB\" in hex\n\ntypedef struct {\n    uint32_t magic;          // Magic number to identify the FS\n    uint32_t version;        // For future upgrades\n    uint32_t total_blocks;   // Size of the disk in blocks\n    uint32_t block_size;     // Always 4096 for us\n    \n    uint32_t free_blocks;    // Fast lookup for 'df' command\n    uint32_t free_inodes;    // Fast lookup\n    \n    // Offsets to our regions\n    uint32_t block_bitmap_start;\n    uint32_t inode_bitmap_start;\n    uint32_t inode_table_start;\n    uint32_t journal_start;\n    uint32_t data_block_start;\n    \n    uint32_t num_inodes;     // Total possible files\n} superblock_t;\n```\n\n> \u26a0\ufe0f **Hardware Soul: Struct Packing**\n> Compilers love to add \"padding\" bytes between struct members to align them to 64-bit boundaries for faster CPU access. On disk, this is a disaster. If your compiler adds 4 bytes of padding, your \"on-disk\" format changes based on the compiler version! Always use `__attribute__((packed))` or explicit padding to ensure your C struct matches the disk bytes exactly.\n> \n> **\ud83d\udd11 Foundation: Struct packing prevents the compiler from inserting invisible gaps for CPU alignment.**\n> \n> **1. What it IS**\nBy default, compilers insert \"padding\" (invisible empty bytes) between members of a `struct`. This ensures that data types align with CPU word boundaries (e.g., a 4-byte integer starting at an address divisible by 4), which makes memory access faster. Struct packing is a directive (like `#pragma pack(1)`) that tells the compiler to strip away these gaps, laying the fields out exactly side-by-side in memory.\n\n**2. Why you need it right now**\nWhile padding is good for CPU performance, it is disastrous for data portability. If you save a struct to a file or send it over a network, the padding might differ between a 32-bit and 64-bit system, or between different compilers. Packing ensures that your memory layout matches your binary file format or network protocol exactly, byte-for-byte.\n\n**3. Key Insight**\n**Padding is a \"Speed-Space Tradeoff\":** Compilers sacrifice space to give the CPU a \"smooth ride.\" Packing retracts that sacrifice, giving you a compact, predictable layout at the cost of slightly more complex CPU instructions to read the unaligned data.\n\n\n## 3. Allocation: The Bitmaps\n\nHow do we know which of the 1,000,000 data blocks are free? We could use a linked list, but that's slow. Instead, we use a **Bitmap**.\n\nA bitmap uses 1 bit to represent the state of 1 block. \n- `0` = Free\n- `1` = Used\n\n\n![Microscopic: The Allocator Bit-Flip](./diagrams/diag-l1-bitmap-zoom.svg)\n\n\n**The Math of Bitmaps:**\n- A single 4KB block contains 32,768 bits ($4096 \\times 8$).\n- Therefore, one bitmap block can track 32,768 data blocks.\n- 32,768 blocks $\\times$ 4KB = 128MB of storage.\n- If your disk image is 1GB, you'll need 8 blocks just for the block bitmap.\n\n### The Allocation Algorithm\nTo find a free block:\n1. Read a bitmap block.\n2. Iterate through every byte.\n3. If a byte is not `0xFF`, find the first zero bit using a bitwise operation like `~byte & (byte + 1)` or the `ffs()` (find first set) instruction.\n4. Flip the bit to `1`.\n5. Write the bitmap block back to disk.\n\n## 4. Building `mkfs.bitfs`\n\nThe `mkfs` utility is the \"factory reset\" for your filesystem. It takes a file (or a partition) and initializes the structures above.\n\n### The mkfs Sequence:\n1.  **Calculate Geometry**: Based on the file size, decide how many inodes you want (a good rule of thumb is 1 inode per 32KB of space) and how many blocks the bitmaps and inode table will occupy.\n2.  **Zero Out**: Clear the metadata regions. This prevents old data from being interpreted as valid inodes.\n3.  **Write Superblock**: Fill in the `superblock_t` with the calculated offsets and the `FS_MAGIC`.\n4.  **Initialize Root Directory**: Every filesystem needs a starting point.\n    - Allocate Inode #0 (or #1, depending on your convention).\n    - Set its type to `S_IFDIR` (Directory).\n    - Initialize its first data block with two entries: `.` (pointing to itself) and `..` (also pointing to itself for the root).\n5.  **Flush**: Ensure all `write_block` calls are flushed to the underlying storage.\n\n### Internal Fragmentation\nSince our minimum unit of storage is 4KB, a file containing only the letter \"A\" (1 byte) will still consume 4KB of disk space. This is **Internal Fragmentation**. If you have 1,000 small files, you lose nearly 4MB of space. This is a deliberate tradeoff: we sacrifice space for the simplicity and speed of block alignment.\n\n> **\ud83d\udd11 Foundation: Internal fragmentation is the wasted space inside a fixed-size block when the data is smaller than the block.**\n> \n> **1. What it IS**\nInternal fragmentation is the \"dead space\" that occurs when you allocate a fixed-size slot for data, but the data doesn't fill it completely. Because the allocator has marked that entire slot as \"in use,\" the remaining empty space cannot be used for anything else. It is \"internal\" because the waste is trapped inside the allocated boundary.\n\n**2. Why you need it right now**\nIn any system using block addressing or fixed-size memory pools, internal fragmentation is your primary source of waste. For example, if your file system uses 4KB blocks and you save a 1KB file, you have 3KB of internal fragmentation. If your project involves designing a custom allocator or a database page format, you must balance block size: larger blocks are faster for bulk transfers but increase the percentage of wasted space.\n\n**3. Key Insight**\n**The \"Large Pizza Box\" Problem:** If you put a single slice of pizza in a box designed for a whole pie, the box takes up the same amount of space in the fridge, but it's mostly full of air. That air is internal fragmentation\u2014reserved space that serves no purpose.\n\n\n## Three-Level View: Creating a File\n\nTo understand how this layer interacts with the whole system, look at what happens when an application calls `touch hello.txt`:\n\n1.  **Application (Level 1)**: Calls `open(\"hello.txt\", O_CREAT)`.\n2.  **OS/Kernel (Level 2)**: The VFS (Virtual File System) identifies your mounted BitFS. It asks your code to create an entry. Your code finds a free bit in the **Inode Bitmap**, initializes a `struct inode` in the **Inode Table**, and adds an entry to the parent directory's **Data Block**.\n3.  **Hardware (Level 3)**: The disk controller receives multiple 4KB write commands. It maps these logical block numbers to physical flash sectors. It might perform \"wear leveling\" internally, but to you, it's just a stable grid of 4KB slots.\n\n## The Hardware Soul: Cache Line Alignment\n\nWhen you are searching the block bitmap for a free block, your CPU isn't reading bits. It's reading **Cache Lines (64 Bytes)**. \n\nIf your bitmap functions are sloppy, you might cause the CPU to fetch a 64B cache line, check one bit, and discard it. To optimize:\n- Process the bitmap in `uint64_t` chunks. Checking 64 bits at once with a single `if (val != 0xFFFFFFFFFFFFFFFF)` is significantly faster than checking 64 individual bits.\n- This effectively uses the CPU's registers as a \"mini-cache\" for the bitmap.\n\n## Knowledge Cascade: Surface Connections\n\n1.  **Database Paging**: High-performance databases like PostgreSQL and MySQL also use fixed-size pages (usually 8KB or 16KB). They do this for the same reason we do: to align with hardware limits and manage their own \"internal\" filesystem-like structures for performance.\n2.  **Virtual Memory**: The OS kernel manages RAM in 4KB \"Pages.\" Your filesystem's 4KB blocks are the perfect partner for **Memory Mapping (mmap)**, allowing the OS to swap file content directly into RAM pages without expensive translation.\n3.  **Alignment & SIMD**: Modern CPUs have instructions (AVX/SSE) that can process 256 or 512 bits at once. If your bitmap is properly aligned to 64-byte boundaries, you can use these SIMD instructions to search for free blocks at lightning speeds\u2014scanning gigabytes of bitmap per second.\n\n---\n\n### Acceptance Criteria for Milestone 1\n\nYour implementation will be verified against these requirements:\n\n1.  **Block Abstraction**: A module that can `read_block` and `write_block` specifically at 4KB offsets using an underlying file.\n2.  **Superblock Integrity**: The `mkfs` tool must write a superblock at Block 0. If you `hexedit` the resulting file, you should see your `FS_MAGIC` at the very beginning.\n3.  **Correct Offsets**: The superblock must correctly report the start of the Inode Table and Data Blocks. The Inode Table must follow the bitmaps.\n4.  **Bitmap Logic**:\n    - `alloc_block()` correctly finds the first `0` bit, flips it to `1`, and returns the block index.\n    - `free_block()` flips the bit back to `0`.\n    - Both functions must persist changes to the disk image.\n5.  **Root Initialization**: After running `mkfs`, Inode 0 must be marked as \"Used\" in the inode bitmap, and the Inode Table must contain a valid directory entry for the root.\n6.  **Boundary Safety**: Any attempt to read or write a block index `>= total_blocks` must return a clear error.\n<!-- END_MS -->\n\n\n<!-- MS_ID: filesystem-m2 -->\n# Milestone 2: The Identity Core \u2014 Inode Management\n\nIn the previous milestone, you carved a raw file into a grid of 4KB blocks. You have a way to track which blocks are \"alive\" using bitmaps. But a grid of blocks is just a pile of bricks; you need a blueprint to turn those bricks into a house.\n\nIn this milestone, you will implement the **Inode** (Index Node). If the block layer is the \"physical\" reality of the disk, the Inode is the \"logical\" soul of a file. It is the most important data structure you will write.\n\n## The Revelation: The Nameless File\n\nBefore you write a single line of code, we must shatter a common misconception. You likely think of a file as \"that thing named `notes.txt`.\" In the world of filesystem engineering, **files do not have names.**\n\nAn Inode is the file. It has an ID (the Inode Number), a size, permissions, and a list of blocks where the data lives. It knows everything about the file *except* what it is called and where it sits in the directory tree. \n\nImagine a social security number. The number is the unique identifier (the Inode). You might have a legal name, a nickname, and a username on a website\u2014all of these point to the same SSN. In a filesystem, these \"nicknames\" are **Directory Entries**, and they simply map a string like `notes.txt` to an Inode ID.\n\nThis distinction is what allows for **Hard Links**: multiple names in different folders pointing to the exact same Inode. If you delete one name, the Inode (and its data) remains until the last name is gone.\n\n## The Fundamental Tension: The Scalability Paradox\n\nWe have a massive engineering conflict to resolve:\n1.  **Uniformity**: For performance, the OS wants to find an Inode instantly. This requires a fixed-size structure stored in a predictable array (the Inode Table).\n2.  **Elasticity**: Files vary wildly in size. One file might be 10 bytes (a config setting); another might be 10GB (a database disk image).\n\nHow do you design a fixed-size 128-byte structure that can efficiently describe a file of any size without wasting gigabytes of metadata space?\n\nThe answer is **Indirection**. We use a tree-like structure where the Inode contains direct pointers for small files and \"pointers to pointers\" for large ones.\n\n\n![Street View: Inode Anatomy](./diagrams/diag-l1-inode-struct.svg)\n\n\n## 1. The Inode Structure (The 128-Byte Blueprint)\n\nWe will define our Inode to be exactly 128 bytes. This is a magic number in systems programming because $128 \\times 32 = 4096$. Exactly 32 Inodes fit into a single 4KB block, meaning the Inode Table is perfectly aligned with the hardware's sectors.\n\n```c\n#include <stdint.h>\n\n#define DIRECT_PTRS 12\n#define INODE_SIZE 128\n\ntypedef struct {\n    uint16_t mode;          // File type (dir, reg) + Permissions\n    uint16_t nlink;         // Number of hard links pointing to this inode\n    uint32_t uid;           // User ID of owner\n    uint32_t gid;           // Group ID of owner\n    uint32_t size;          // Current file size in bytes\n    \n    uint32_t atime;         // \n> **\ud83d\udd11 Foundation: Unix Epoch Timestamps**\n> \n> **1. What it IS**\nThe Unix Epoch Timestamp is a single integer representing the total number of seconds that have elapsed since January 1, 1970, at 00:00:00 UTC (the \"Epoch\"). It does not count leap seconds and is independent of time zones. For example, the moment `1715856000` represents May 16, 2024, at exactly 10:40:00 AM UTC.\n\n**2. Why you need it right now**\nIn technical environments, \"human-readable\" time is a nightmare. Time zones, Daylight Saving Time, and regional formatting (DD/MM vs MM/DD) make it nearly impossible to compare dates across different systems. The Epoch timestamp acts as a \"Universal Language\" for time. Because it is a simple integer, your code can calculate the duration between two events with a simple subtraction (`TimeB - TimeA`) rather than complex calendar logic. It is the gold standard for logging, database indexing, and API communication.\n\n**3. Key Insight**\n**Time is a distance, not a label.** Think of the Epoch timestamp as a universal odometer for the universe. Instead of describing a location by subjective landmarks (\"Past the oak tree, left at the store\"), you are providing a precise meter count from a fixed starting line.\n\n    uint32_t mtime;         // Last modification time\n    uint32_t ctime;         // Last status change time\n    \n    uint32_t direct[DIRECT_PTRS]; // Direct pointers to data blocks\n    uint32_t indirect;            // Pointer to a block of pointers\n    uint32_t db_indirect;         // Pointer to a block of blocks of pointers\n    \n    uint8_t reserved[44];         // Padding to reach 128 bytes exactly\n} __attribute__((packed)) bitfs_inode_t;\n```\n\n### Metadata Fields\n- **`mode`**: Uses the standard \n> **\ud83d\udd11 Foundation: POSIX Permission Bitmask**\n> \n> **1. What it IS**\nA POSIX permission bitmask is a numeric representation (usually octal) of the access rights assigned to a file or directory. It defines who can **Read (r)**, **Write (w)**, or **Execute (x)** a file for three distinct categories: the Owner, the Group, and Everyone Else. Each permission is assigned a specific \"weight\" based on powers of two:\n*   **4** (Binary `100`): Read\n*   **2** (Binary `010`): Write\n*   **1** (Binary `001`): Execute\n\n**2. Why you need it right now**\nWhen setting up servers, deploying code, or configuring Docker containers, you will encounter three-digit codes like `755` or `644`. These are sums. To \"read\" these, you add the weights together for each category. \n*   `7` (4+2+1) means Full Access.\n*   `5` (4+0+1) means Read and Execute only. \nKnowing this allows you to quickly set precise security boundaries without guessing. For instance, `chmod 755 script.sh` ensures you can edit and run a script, while others can only run it.\n\n**3. Key Insight**\n**The \"Light Switch\" Model.** Imagine three light switches for each user: one for Read, one for Write, one for Execute. A \"1\" means the switch is ON, and a \"0\" means it's OFF. The octal number (like 7) is simply the value of those switches combined. Because the values are powers of two, every possible combination of permissions results in a unique sum between 0 and 7\u2014there is never any ambiguity.\n. It tells the OS if this is a directory (`S_IFDIR`) or a regular file (`S_IFREG`).\n- **`nlink`**: This is your \"garbage collection\" counter. Every time you create a name (link) for this file, increment this. When it hits zero, the file is truly deleted.\n- **`size`**: Files are byte-addressable, but disk blocks are 4KB. A file with `size = 10` still occupies one 4KB block.\n\n## 2. Multi-Level Indirection: The Pointer Tree\n\nTo resolve the scalability paradox, we use a tiered addressing system. Think of it as a hierarchy of maps.\n\n### Tier 1: Direct Pointers (The \"Fast Path\")\nThe `direct[12]` array holds 12 block numbers. If each block is 4KB, these pointers cover the first **48 KB** of the file. Most files on a typical Linux system (like `.bashrc`, small scripts, or icons) are smaller than 48KB. For these, the Inode provides \"instant\" access to the data.\n\n### Tier 2: Single Indirect (The \"Neighborhood Map\")\nIf the file grows past 48KB, we allocate a new block from the block bitmap. This block doesn't store file data; it stores **an array of 32-bit block pointers**.\n- A 4KB block can hold $4096 / 4 = 1024$ pointers.\n- $1024 \\text{ pointers} \\times 4\\text{KB} = \\mathbf{4 \\text{ MB}}$.\nBy adding just one level of indirection, our file capacity jumps from 48KB to 4MB.\n\n### Tier 3: Double Indirect (The \"Regional Map\")\nFor massive files, the `db_indirect` pointer points to a block. That block contains 1024 pointers to *other* blocks. Each of those 1024 blocks contains 1024 pointers to data blocks.\n- $1024 \\times 1024 \\times 4\\text{KB} = \\mathbf{4 \\text{ GB}}$.\n\n\n![Microscopic: The Indirect Pointer Walk](./diagrams/diag-l2-indirection-tree.svg)\n\n\n**The Math of Seeking:**\nTo find the byte at offset $2,000,000$ (approx 2MB):\n1.  Target Block Index = $2,000,000 / 4096 = 488$.\n2.  $488$ is $> 12$ (Direct), so it's in the Indirect block.\n3.  Relative index in indirect block = $488 - 12 = 476$.\n4.  Read the `indirect` block, find the 476th entry, and that is your physical data block.\n\n## 3. Sparse Files: The Magic of Zero\n\nWhat happens if you `seek` to 1GB and write a single byte, but the file was previously empty?\nIn a naive system, you'd have to allocate all the blocks in between. In an Inode system, you simply leave the pointers as **0 (NULL)**.\n\n**Holes** are ranges of a file that have no physical blocks assigned to them. \n- When **Reading**: If the pointer tree leads to a `0`, your code returns a buffer of zeros to the user.\n- When **Writing**: You only allocate the specific block at the 1GB mark.\n\nThis allows you to have a \"10TB file\" that only consumes 4KB of actual disk space. This is a core feature of high-performance databases and virtual machine images.\n\n## 4. Inode Lifecycle & Serialization\n\nInodes live in two places: the **Inode Table** on disk (the \"Source of Truth\") and the **Inode Cache** in memory (the \"Working Copy\").\n\n### Serialization: ID to Disk Offset\nWhen the OS asks for Inode #500, how do you find it?\nThe Inode Table starts at a block offset defined in your Superblock.\n\n```c\nuint32_t get_inode_block(uint32_t inode_num, superblock_t *sb) {\n    uint32_t inodes_per_block = BLOCK_SIZE / INODE_SIZE;\n    return sb->inode_table_start + (inode_num / inodes_per_block);\n}\n\nuint32_t get_inode_offset(uint32_t inode_num) {\n    uint32_t inodes_per_block = BLOCK_SIZE / INODE_SIZE;\n    return (inode_num % inodes_per_block) * INODE_SIZE;\n}\n```\n\n### The Inode Read Operation\n1.  Calculate which 4KB block Inode #N lives in.\n2.  `device_read_block()` that block into a temporary 4KB buffer.\n3.  `memcpy` the 128 bytes at the correct offset into your `bitfs_inode_t` struct.\n\n### The Inode Write Operation (RMW Cycle)\n1.  Read the 4KB block containing the Inode.\n2.  Modify only the 128 bytes for that specific Inode.\n3.  Write the entire 4KB block back to disk.\n*Failure to do this properly will wipe out the other 31 Inodes sharing that block!*\n\n## 5. Allocation and Deallocation\n\n### Allocation\nTo create a new file:\n1.  Scan the **Inode Bitmap** for the first `0`.\n2.  Mark it `1`.\n3.  Initialize a new `bitfs_inode_t` with `nlink=1`, `size=0`, and all pointers set to `0`.\n4.  Write it to the Inode Table.\n\n### Deallocation (The Recursive Tear-down)\nWhen a file is deleted (`nlink` reaches 0):\n1.  Iterate through `direct[0..11]`. For every non-zero pointer, call `free_block()` in the block bitmap.\n2.  If `indirect` is non-zero:\n    - Read the indirect block.\n    - Free every block pointed to inside it.\n    - Free the indirect block itself.\n3.  Repeat for `db_indirect` (this requires a nested loop).\n4.  Clear the bit in the **Inode Bitmap**.\n\n> \u26a0\ufe0f **Pitfall: The Orphan Block**\n> If you free the Inode *before* you free the data blocks and the system crashes, you have \"Orphan Blocks\"\u2014blocks marked \"Used\" in the bitmap that no Inode owns. They are leaked forever until a filesystem check (`fsck`) is run. This is why the order of operations matters.\n\n## Three-Level View: Accessing a Block\n\nWhat happens when you read the 50th block of a file?\n\n1.  **Application (Level 1)**: Calls `pread(fd, buf, 4096, 50 * 4096)`.\n2.  **OS/Kernel (Level 2)**: \n    - Looks up the cached Inode for this file descriptor.\n    - Determines that block 50 is too large for the `direct` array (which only handles 0-11).\n    - It goes to the `indirect` pointer.\n    - It reads the indirect block from disk (Level 3 access).\n    - It finds the entry at index $50 - 12 = 38$.\n    - It gets the physical block number from that entry.\n3.  **Hardware (Level 3)**: The disk controller receives the command to read the physical block found in step 2.\n\n## The Hardware Soul: Inode Exhaustion\n\nA common \"junior sysadmin\" panic occurs when a server says \"No space left on device,\" but `df -h` shows the disk is only 50% full.\n\nThis happens because of the **Inode Table size**. When you ran `mkfs`, you decided exactly how many Inodes the filesystem would ever have (e.g., 100,000). If you create 100,000 empty files, you have **exhausted your Inodes**. \n\nThe hardware soul reminds us that metadata is not \"free.\" It occupies physical rows in the Inode Table. In high-performance systems (like a mail server or a CI/O cache), choosing the right \"Inode Density\" during formatting is a critical design decision.\n\n## Knowledge Cascade: Surface Connections\n\n1.  **Hard Links vs. Soft Links**: Now you see the truth! A Hard Link is just another directory entry pointing to the same Inode ID. A Soft Link (Symbolic Link) is a special file whose *data block* contains the string path of another file. This is why Hard Links don't work across different disks (Inode #50 on Disk A isn't Inode #50 on Disk B), but Soft Links do.\n2.  **Page Tables**: The way we use Indirect Pointers is almost identical to how CPUs use **Multi-level Page Tables** to map virtual memory to physical RAM. The `db_indirect` is effectively a \"Page Directory.\"\n3.  **Git Internals**: Git uses \"Blobs\" and \"Trees.\" A Git Blob is essentially an Inode\u2014it stores file content and is identified by a hash (ID) rather than a name. Git's \"Tree\" objects act like our directory entries.\n4.  **Database B-Trees**: While our Inode pointers form a simple tree, databases use B-Trees to index data. The logic of \"traversing pointers to find a leaf (data block)\" is the fundamental pattern of all persistent storage.\n\n---\n\n### Acceptance Criteria for Milestone 2\n\nYour implementation must satisfy these technical requirements:\n\n1.  **Inode Definition**: A C struct named `bitfs_inode_t` that is exactly 128 bytes, using `__attribute__((packed))`.\n2.  **Capacity Math**:\n    - Files up to 48KB must use only `direct` pointers.\n    - Files up to ~4MB must use the `indirect` pointer.\n    - Files up to 4GB must use `db_indirect`.\n3.  **Serialization**:\n    - `inode_read(uint32_t ino, bitfs_inode_t *inode)` correctly calculates the block and offset, reads from disk, and populates the struct.\n    - `inode_write(uint32_t ino, bitfs_inode_t *inode)` performs a safe Read-Modify-Write to update only that Inode's bytes.\n4.  **Allocation**:\n    - `inode_alloc()` finds a free bit in the Inode Bitmap, initializes all fields to zero/defaults, and returns the ID.\n5.  **Clean Deallocation**:\n    - `inode_free(uint32_t ino)` must recursively free all data blocks, the single indirect block, and both levels of the double indirect blocks.\n    - Verify with a test: allocate a 10MB file, delete it, and ensure the `free_blocks` count in the Superblock returns to its previous state.\n6.  **Sparse Support**: `inode_get_block(inode, logical_block_index)` must return `0` if the pointer in the tree is null, without error.\n<!-- END_MS -->\n\n\n<!-- MS_ID: filesystem-m3 -->\n<!-- MS_ID: filesystem-m3 -->\n# Milestone 3: The Map of the Labyrinth \u2014 Directory Operations\n\nIn the previous milestones, you built the foundation (blocks) and the identity (inodes). You can now store data and metadata. But your filesystem is currently a flat, featureless plain. You have Inode #1, Inode #2, and Inode #500, but no way to know that Inode #500 is actually `/home/user/notes.txt`.\n\nIn this milestone, you will implement **Directories**. You are about to turn a collection of numbered objects into a hierarchical tree that a human can actually navigate.\n\n## The Revelation: The \"Folder\" Illusion\n\nBefore you write code, we must shatter the most persistent illusion in computing: **Directories do not exist.**\n\nAs a user, you think of a \"folder\" as a physical container that \"holds\" files. In reality, a directory is nothing more than a **special type of file**. Its \"data\" isn't a poem or a picture; its data is a simple table\u2014a list of pairs mapping a string (the filename) to an integer (the Inode ID).\n\nWhen you \"move\" a file from folder A to folder B, you are not moving any data blocks on the disk. You are simply:\n1. Deleting a row from the table in Directory A.\n2. Adding a row to the table in Directory B.\n\nThe file's Inode stays exactly where it was. This is why moving a 100GB file within the same partition is instantaneous, while moving it to a different drive takes minutes.\n\n## The Fundamental Tension: The Search Bottleneck\n\nIn Milestone 2, we saw that finding an Inode is $O(1)$\u2014you just calculate an offset in the Inode Table. But finding a file by *name* is a different story.\n\nTo find `/usr/local/bin/python`, the OS must:\n1. Load the Inode for the root directory (`/`).\n2. Read the root's data blocks and search for the string `usr`.\n3. Get the Inode for `usr`, read its data blocks, and search for `local`.\n4. Repeat until it finds the Inode for `python`.\n\n**The Tension:** Path resolution is an $O(N \\times M)$ operation, where $N$ is the depth of the path and $M$ is the number of files in each directory. Every single `/` in a path represents at least one disk I/O operation. If you have a deep directory structure, simply opening a file could trigger dozens of random disk seeks, killing performance.\n\n{{DIAGRAM:diag-l2-path-traversal}}\n\n## 1. Designing the Directory Entry (dirent)\n\nSince a directory is just a file, we need to define the format of the data inside its blocks. We will use a simplified version of the Linux `ext4` directory entry.\n\nWe face a trade-off: **Fixed vs. Variable length.** \n- If entries are fixed-size (e.g., always 256 bytes), searching is easy, but we waste massive amounts of space on short filenames like `a.txt`.\n- If entries are variable-length, we save space but searching becomes a \"linked-list\" walk through the block.\n\nWe will choose the **Variable Length** approach, as it is the industry standard for minimizing [[EXPLAIN:internal-fragmentation|space wasted inside blocks]].\n\n```c\n#include <stdint.h>\n\n#define MAX_FILENAME 255\n\ntypedef struct {\n    uint32_t inode_num;    // The Inode this name points to\n    uint16_t rec_len;      // Total length of this record (for skipping)\n    uint8_t  name_len;     // Length of the name string\n    uint8_t  file_type;    // 1 for reg file, 2 for directory\n    char     name[];       // The actual name (Flexible Array Member)\n} __attribute__((packed)) bitfs_dirent_t;\n```\n\n### The \"Record Length\" Trick\nThe `rec_len` field is the secret to efficient directory management. It doesn't just store the length of the name; it stores the distance to the *next* entry. When you delete a file, you don't shift all the other entries (which would be slow). Instead, you simply increase the `rec_len` of the *previous* entry so it \"jumps over\" the deleted one.\n\n\n![Street View: Directory Entry Layout](./diagrams/diag-l1-dir-table.svg)\n\n\n## 2. Path Resolution: The `namei` Function\n\nThe most important internal function you will write is often called `namei` (Name-to-Inode). It takes a string path like `/a/b/c` and returns the Inode ID.\n\n**The Algorithm:**\n1. Start at the Root Inode (usually Inode #1).\n2. Tokenize the path by the `/` delimiter.\n3. For each component (e.g., \"a\"):\n    - Read the current Inode's data blocks.\n    - Iterate through the `bitfs_dirent_t` entries.\n    - Compare `name` with \"a\".\n    - If found, update \"current Inode\" to the `inode_num` from the entry and move to the next path component.\n    - If not found, return `ENOENT` (Error: No such file or directory).\n\n> \u26a0\ufe0f **Hardware Soul: Random I/O and Dentry Caching**\n> Because every path component requires a disk read, modern OS kernels use a **Dentry Cache** (Directory Entry Cache) in RAM. This cache stores the results of previous lookups. Without it, your CPU would spend 99% of its time waiting for the disk to find where `/bin/ls` lives. In your implementation, since we aren't building a full kernel cache yet, you will feel the raw cost of these reads.\n\n## 3. Directory Lifecycle: `mkdir` and `rmdir`\n\n### Creating a Directory (`mkdir`)\nWhen you create a directory, you aren't just allocating an Inode. You must initialize its \"Identity\":\n1. Allocate a new Inode (Type: `S_IFDIR`).\n2. Allocate one data block for it.\n3. Create two default entries in that block:\n    - **`.` (Dot)**: Points to the new Inode itself.\n    - **`..` (Dot-Dot)**: Points to the *parent* directory's Inode.\n4. **Link Count Increment**: You must increment the *parent* directory's `nlink` count. Why? Because the `..` entry in the child is a new hard link to the parent.\n\n### Removing a Directory (`rmdir`)\nA directory cannot be removed if it contains files (this prevents accidental orphaning).\n1. Search the directory's blocks.\n2. If any entry other than `.` and `..` exists, return `ENOTEMPTY`.\n3. If empty:\n    - Decrement the parent's `nlink`.\n    - Free the directory's data blocks.\n    - Free the directory's Inode.\n\n## 4. Hard Links: One Inode, Many Names\n\nSince the \"name\" lives in the directory and the \"data\" lives in the Inode, we can have multiple names pointing to the same Inode. This is a **Hard Link**.\n\nWhen you call `link(\"old_file\", \"new_link\")`:\n1. Find the Inode ID of `old_file`.\n2. Add a new entry to the directory mapping \"new_link\" to that Inode ID.\n3. Increment the Inode's `nlink` field.\n\nThis is why `rm` (unlink) doesn't always delete data. It just removes the name and decrements `nlink`. Only when `nlink == 0` does the filesystem trigger the block deallocation logic you wrote in Milestone 2.\n\n## 5. Implementation Logic: `add_entry` and `remove_entry`\n\nYour code for modifying directories must be robust against fragmentation.\n\n### `add_entry(dir_inode, name, target_ino)`\n1. Iterate through existing blocks of `dir_inode`.\n2. Look for a \"gap\" in the `rec_len`. If an entry has a `rec_len` much larger than its actual data (because a previous entry was deleted), you can \"carve\" your new entry out of that gap.\n3. If no gap is found, append to the end of the last block.\n4. If the last block is full, allocate a **new data block** using the logic from Milestone 1 and add it to the Inode's pointer tree.\n\n### `remove_entry(dir_inode, name)`\n1. Find the entry with the matching name.\n2. If it's the first entry in a block, you can't easily merge it backward. Most simple filesystems just mark the `inode_num` as `0`.\n3. If it's not the first, add its `rec_len` to the `rec_len` of the *preceding* entry. This effectively \"swallows\" the deleted entry.\n\n## Three-Level View: Looking up a File\n\nLet's trace what happens when an app calls `stat(\"/home/user/doc.txt\")`:\n\n1.  **Application (Level 1)**: Calls `stat()`. The OS starts the path walk.\n2.  **OS/Kernel (Level 2)**:\n    - The [[EXPLAIN:vfs-layer|Virtual File System (VFS)]] looks at the root Inode.\n    - It calls your filesystem's `lookup` function for \"home\".\n    - Your code reads the root's data block, finds \"home\" -> Inode 5.\n    - The VFS calls `lookup` on Inode 5 for \"user\".\n    - Your code reads Inode 5's data block, finds \"user\" -> Inode 12.\n    - This continues until \"doc.txt\" is resolved to Inode 102.\n3.  **Hardware (Level 3)**: Each `lookup` triggers a `device_read_block`. If the directory is large, this might involve reading multiple blocks. The disk head jumps between the Inode Table (to find where the directory blocks are) and the Data Blocks (to read the names).\n\n## The Hardware Soul: The \"ls -R\" Storm\n\nHave you ever noticed that running `ls -R` (recursive list) on a cold disk makes the drive \"grind\"? \n\nEach directory is a separate file. Each file has its own Inode. To list a directory tree, the hardware must perform a \"ping-pong\" seek pattern:\n1. Seek to Inode Table (Read Dir Inode).\n2. Seek to Data Region (Read Dir Entries).\n3. Seek to Inode Table (Read Inodes of all files in that Dir to get their sizes).\n4. Repeat for every subdirectory.\n\nThis is why **Metadata Locality** matters. Some advanced filesystems (like Btrfs or ZFS) try to store Inodes and their directory entries close together on the physical disk to minimize this seek storm. In our BitFS, we accept the seeking as the price of our simple, partitioned layout.\n\n## Knowledge Cascade: Surface Connections\n\n1.  **URL Routing**: Modern web frameworks (like Express or Django) use a \"Router\" that works exactly like `namei`. It splits the URL `/api/v1/users` by slashes and traverses a tree of handler functions. The \"Inode\" in this case is the function that handles the request.\n2.  **DNS (Domain Name System)**: DNS is a global, distributed filesystem. To resolve `www.google.com`, your computer asks the `.` (root) servers, then the `.com` servers, then the `google.com` servers. Each level is a \"directory\" that points you to the next \"Inode\" (IP address).\n3.  **Atomic Rename**: The `rename(old, new)` system call is famous for being atomic. If the system crashes during a rename, the file is either at the old path or the new path, never both and never gone. You'll implement this later with journaling, but now you see the mechanism: it's just swapping entries in directory data blocks.\n4.  **Dentry Caching**: This is why the second time you run `find /` it is 100x faster than the first time. The OS has moved the \"Directory Table\" from the slow disk into the fast RAM.\n\n---\n\n### Acceptance Criteria for Milestone 3\n\nYour directory implementation must satisfy these requirements:\n\n1.  **Directory Format**: Directory data blocks must use variable-length `bitfs_dirent_t` structures.\n2.  **Path Resolution**: The `resolve_path(char *path)` function must correctly handle absolute paths, traversing from the root Inode to the target.\n3.  **Special Entries**: Every directory created via `mkdir` must automatically contain `.` and `..`.\n    - `..` for the root directory must point back to the root Inode.\n4.  **Link Count Management**:\n    - Creating a file/directory increments the parent's `nlink`.\n    - Creating a hard link increments the target Inode's `nlink`.\n    - Removing a file/directory decrements the counts and frees resources only when `nlink == 0`.\n5.  **Empty Directory Check**: `rmdir` must fail with `ENOTEMPTY` if the directory contains any entries other than `.` and `..`.\n6.  **Name Uniqueness**: `add_entry` must return an error if a file with the same name already exists in that directory.\n7.  **Variable Length Integrity**: When adding a new entry, your code should prioritize filling \"gaps\" in existing blocks before allocating a new block.\n\n\n<!-- END_MS -->\n<!-- END_MS -->\n\n\n<!-- MS_ID: filesystem-m4 -->\n<!-- MS_ID: filesystem-m4 -->\n# Milestone 4: The Byte Bridge \u2014 File Read/Write Operations\n\nYou have built the skeleton (the Block Layer), the soul (Inodes), and the map (Directories). Now, it is time to build the engine. \n\nIn this milestone, you will implement the core I/O logic: `read`, `write`, and `truncate`. This is where the \"infinite sea of bytes\" requested by a user meets the \"4KB grid\" of the hardware. You are about to build the logic that translates a request for \"10 bytes at offset 500\" into a sequence of block-level operations.\n\n## The Revelation: The Slicing Illusion\n\nBefore we dive into the code, we must shatter a common programmer's misconception.\n\n**The Misconception:** When you call `read(fd, buf, 500)` starting at offset 100, you might think the filesystem just \"grabs\" those 500 bytes from the disk.\n\n**The Reality:** The hardware cannot see offset 100. It only sees Block 0, Block 1, and so on. To satisfy a 500-byte read starting at offset 100, your filesystem must:\n1.  Identify that offset 100 falls inside **Block 0**.\n2.  Identify that the read ends at offset 600, which also falls inside **Block 0**.\n3.  Load the **entire 4096-byte Block 0** into a temporary memory buffer (the [[EXPLAIN:bounce-buffer|temporary staging area for I/O]]).\n4.  Copy bytes 100 through 600 from that buffer into the user's memory.\n5.  Discard the rest of the 4KB block.\n\nIf that read started at offset 4000 and requested 500 bytes, it would **straddle a boundary**. You would have to load Block 0, grab the last 96 bytes, then load Block 1 and grab the first 404 bytes. \n\n**Every I/O operation is a slicing operation.** You are constantly mapping a linear byte-stream onto a staggered grid of blocks.\n\n## The Fundamental Tension: The Granularity Gap\n\nThe core conflict in filesystem I/O is the **Granularity Gap**. \n- **Software** wants byte-level precision (1 byte, 17 bytes, 1.2MB).\n- **Hardware** provides block-level precision (4096 bytes, 8192 bytes).\n\nThis gap creates **Write Amplification**. If you want to change a single character in the middle of a 1GB file, the filesystem cannot just \"zapping\" that byte on the disk. It must perform a **Read-Modify-Write (RMW) cycle**: read the 4KB block, change one byte in RAM, and write the 4KB block back. This means a 1-byte logical write becomes a 4096-byte physical write\u2014a 4000x overhead.\n\n{{DIAGRAM:diag-l1-rmw-cycle}}\n\n## 1. Mapping Offsets to Blocks\n\nThe first tool you need is a mathematical translator. Given a `struct bitfs_inode_t` and a file `offset`, you must find the physical block number on disk.\n\n```c\n// Internal helper: Map a logical file block index to a physical disk block number.\n// logical_index 0 = the first 4KB of the file.\n// returns 0 if the block is not allocated (a hole).\nuint32_t bmap(bitfs_inode_t *inode, uint32_t logical_index) {\n    if (logical_index < DIRECT_PTRS) {\n        return inode->direct[logical_index];\n    }\n    \n    uint32_t indirect_idx = logical_index - DIRECT_PTRS;\n    if (indirect_idx < (BLOCK_SIZE / sizeof(uint32_t))) {\n        if (inode->indirect == 0) return 0; // Hole\n        \n        uint32_t indirect_block[BLOCK_SIZE / 4];\n        device_read_block(dev, inode->indirect, indirect_block);\n        return indirect_block[indirect_idx];\n    }\n    \n    // ... Double indirect logic follows similar tree-walking ...\n    return 0; \n}\n```\n\n### The Magic of Sparse Files\nNote the `return 0` for unallocated pointers. This is how we support **Sparse Files**. If a user creates a file and seeks to 1 Terabyte before writing a single byte, we don't allocate any blocks for the intervening \"empty\" space. We simply leave the pointers in the Inode (and indirect blocks) as zero.\n\nWhen the user reads from a \"hole\" (a pointer that is 0), your `read` function shouldn't error. It should simply return a buffer filled with zeros. This allows files to be logically massive while consuming almost no physical space.\n\n> \ud83d\udd2d **Deep Dive**: Sparse files are used extensively by virtual machine disk images (`.qcow2`, `.vmdk`) and databases. For a detailed look at how the Linux kernel handles these at the VFS level, see *The Design and Implementation of the FreeBSD Operating System* (McKusick et al.) Chapter 8, \"File Systems.\"\n\n## 2. Implementing `bitfs_read`\n\nA `read` operation can be complex because it might span multiple blocks and start/end at arbitrary offsets within those blocks.\n\n**The Algorithm:**\n1.  **Bounds Check**: Ensure the `offset` is within the `inode->size`. You cannot read past the end of a file.\n2.  **The Loop**: While `bytes_read < requested_length`:\n    - Calculate `logical_block = current_offset / BLOCK_SIZE`.\n    - Calculate `internal_offset = current_offset % BLOCK_SIZE`.\n    - Calculate `bytes_to_copy`: The minimum of (remaining requested bytes) and (bytes left in the current 4KB block).\n    - **Physical Lookup**: Call `bmap` to find the physical block `P`.\n    - **Handle Holes**: If `P == 0`, just zero-fill the user buffer for `bytes_to_copy`.\n    - **Perform I/O**: If `P > 0`, read the physical block into a [[EXPLAIN:page-cache|system-level memory cache]] (or a local buffer).\n    - **Slice**: Copy the relevant segment from the 4KB buffer to the user's buffer.\n    - Update `current_offset` and `bytes_read`.\n\n```c\nint bitfs_read(uint32_t inode_num, void *buf, size_t len, off_t offset) {\n    bitfs_inode_t inode;\n    inode_read(inode_num, &inode);\n\n    if (offset >= inode.size) return 0; // EOF\n    if (offset + len > inode.size) len = inode.size - offset;\n\n    size_t bytes_completed = 0;\n    uint8_t bounce_buffer[BLOCK_SIZE];\n\n    while (bytes_completed < len) {\n        uint32_t l_block = (offset + bytes_completed) / BLOCK_SIZE;\n        uint32_t block_off = (offset + bytes_completed) % BLOCK_SIZE;\n        uint32_t p_block = bmap(&inode, l_block);\n        \n        size_t chunk = BLOCK_SIZE - block_off;\n        if (chunk > (len - bytes_completed)) chunk = len - bytes_completed;\n\n        if (p_block == 0) {\n            memset((uint8_t*)buf + bytes_completed, 0, chunk);\n        } else {\n            device_read_block(dev, p_block, bounce_buffer);\n            memcpy((uint8_t*)buf + bytes_completed, bounce_buffer + block_off, chunk);\n        }\n        bytes_completed += chunk;\n    }\n    \n    // Update atime\n    inode.atime = time(NULL);\n    inode_write(inode_num, &inode);\n    \n    return bytes_completed;\n}\n```\n\n## 3. Implementing `bitfs_write`\n\nWriting is significantly more dangerous than reading. It involves changing the block bitmap, potentially allocating new indirect blocks, and updating the Inode size.\n\n### The Read-Modify-Write Requirement\nIf the user is writing 100 bytes into the middle of a block, you **cannot** just write those 100 bytes to disk. You would overwrite the other 3996 bytes in that block with garbage. You must read the existing block, modify the 100 bytes in memory, and write the whole 4KB block back.\n\n**The Write Algorithm:**\n1.  **Allocation Check**: If `offset + len > inode.size`, the file is growing. You will need to allocate new blocks using your block bitmap allocator.\n2.  **The Loop**: While `bytes_written < requested_length`:\n    - Calculate `l_block` and `block_off`.\n    - Find `p_block` via `bmap`.\n    - **Allocation**: If `p_block == 0`, call `balloc()` to get a new block. Update the Inode (or indirect blocks) to point to it.\n    - **The RMW Cycle**:\n        - If the write is \"partial\" (doesn't cover the full 4KB), read the existing block into a buffer first.\n        - Copy the user's data into the buffer at `block_off`.\n        - Write the buffer back to disk.\n3.  **Metadata Update**: Update `inode->size`, `mtime`, and `ctime`.\n\n> \u26a0\ufe0f **Hardware Soul: Alignment and Performance**\n> If a user writes exactly 4096 bytes starting at a 4096-aligned offset, you can skip the \"Read\" part of the RMW cycle. This is called a **Full Block Write**. It is the fastest possible I/O. High-performance databases (like MongoDB or Cassandra) go to great lengths to ensure their writes are block-aligned to avoid the penalty of reading old data just to overwrite it.\n\n## 4. Truncation: The Shrinking Act\n\nTruncation is the process of changing a file's size. \n- **Extending**: If you truncate a 1KB file to 10MB, you just update the `size` field. The new space becomes a \"hole.\"\n- **Shrinking**: If you truncate a 10MB file to 1KB, you must **release** all blocks that are no longer needed back to the free block bitmap.\n\nThis is a recursive operation. If you shrink a file so that it no longer needs its `db_indirect` or `indirect` blocks, you must free those metadata blocks too, or you will leak disk space.\n\n```c\nvoid bitfs_truncate(bitfs_inode_t *inode, uint32_t new_size) {\n    uint32_t old_block_count = (inode->size + BLOCK_SIZE - 1) / BLOCK_SIZE;\n    uint32_t new_block_count = (new_size + BLOCK_SIZE - 1) / BLOCK_SIZE;\n\n    if (new_block_count < old_block_count) {\n        // We are shrinking.\n        for (uint32_t i = new_block_count; i < old_block_count; i++) {\n            uint32_t p_block = bmap(inode, i);\n            if (p_block > 0) {\n                bfree(p_block);\n                // Important: You must also zero out the pointer in the \n                // inode/indirect block so it doesn't point to a freed block!\n                bmap_set_zero(inode, i); \n            }\n        }\n    }\n    inode->size = new_size;\n    inode->mtime = inode->ctime = time(NULL);\n}\n```\n\n## 5. Persistence and Consistency\n\nWhen you write data, you are changing multiple things:\n1.  The Data Block itself.\n2.  The Block Bitmap (if a new block was allocated).\n3.  The Inode (to update size and pointers).\n\nIn a naive implementation, if the power goes out between step 1 and step 3, you end up with an **Inconsistent State**. The data is on disk, but the Inode doesn't know about it. Or worse, the Block Bitmap says a block is \"Used,\" but no Inode points to it (a leak).\n\nFor now, your goal is to make these operations correct under normal conditions. In Milestone 6, we will introduce **Journaling** to make them atomic.\n\n## Three-Level View: Writing a String\n\nLet's look at the lifecycle of `write(fd, \"Hello\", 5)` at offset 0 of a new file.\n\n1.  **Application (Level 1)**: Calls the `write` system call.\n2.  **OS/Kernel (Level 2)**:\n    - Your `bitfs_write` starts.\n    - It sees offset 0 is block 0. `bmap` returns 0 (unallocated).\n    - It calls `balloc()`, which flips a bit in the **Block Bitmap** (Disk Write #1).\n    - It updates `inode->direct[0]` with the new block ID.\n    - It puts \"Hello\" into a 4KB buffer (zero-filled).\n    - It writes that 4KB buffer to the disk (Disk Write #2).\n    - It updates `inode->size = 5` and `inode->mtime`.\n    - It writes the Inode back to the **Inode Table** (Disk Write #3).\n3.  **Hardware (Level 3)**: The disk controller receives three distinct block write commands. It uses its internal volatile cache to reorder them for efficiency before committing them to the physical NAND or platters.\n\n## The Hardware Soul: Sequential vs. Random I/O\n\nWhy did we spend so much time on block offsets? Because of the **Seek Penalty**.\n\nIf you allocate blocks for a file sequentially (Block 100, 101, 102...), the disk head (on an HDD) doesn't have to move, and the flash controller (on an SSD) can perform massive multi-plane writes. This is **Sequential I/O**, and it is fast.\n\nIf your allocator is \"fragmented\" and returns blocks 100, 5000, 20, the hardware must \"hunt\" for the data. This is **Random I/O**. Even on modern NVMe SSDs, random I/O is significantly slower than sequential because it prevents the hardware from [[EXPLAIN:read-ahead|pre-fetching data into internal buffers]]. \n\nBy aligning your file logic to 4KB blocks, you give the hardware the best possible chance to optimize these accesses.\n\n## Knowledge Cascade: Surface Connections\n\n1.  **Database Page Size**: You might wonder why databases like SQLite use 4KB pages by default. It's to match the exact \"Slicing\" logic you just wrote. If the DB page size matches the FS block size, there is zero waste\u2014one DB write equals exactly one FS write.\n2.  **Write-Ahead Logging (WAL)**: In your `write` logic, you noticed that changing one byte requires writing 4096. Databases solve this by writing the \"change\" (e.g., \"Change byte 10 to 'A'\") to a sequential log file (the WAL) first. This turns a slow random RMW cycle into a fast sequential append.\n3.  **Copy-on-Write (CoW)**: Filesystems like ZFS or Btrfs never perform a Read-Modify-Write. Instead of modifying Block 100, they write the *new* data to an entirely empty Block 200, and then update the Inode to point there. This makes the \"Old\" version of the file still exist, which is how **Snapshots** work.\n4.  **Memory Mapping (`mmap`)**: When you `mmap` a file, the OS uses your `bmap` logic to connect a range of Virtual Memory directly to the physical disk blocks. When you touch a memory address, the CPU triggers a \"Page Fault,\" and the kernel uses your `read` logic to pull that block into RAM.\n\n---\n\n### Acceptance Criteria for Milestone 4\n\nYour file I/O implementation must satisfy these technical requirements:\n\n1.  **Correct `bmap`**: The mapping function must correctly traverse direct, single-indirect, and double-indirect pointers to find physical block IDs.\n2.  **Sparse File Support**:\n    - Reading from an unallocated block (pointer is 0) must return a buffer of zeros.\n    - Writing to a high offset must not allocate blocks for the intermediate \"gap.\"\n3.  **Precise `read`**: `bitfs_read` must handle reads that start at non-block-aligned offsets and span across multiple blocks.\n4.  **Safe `write` (RMW)**:\n    - `bitfs_write` must implement the Read-Modify-Write cycle for partial block writes to avoid data corruption.\n    - It must correctly allocate new data and metadata (indirect) blocks as the file grows.\n5.  **Truncation Logic**: \n    - `bitfs_truncate` must properly release blocks to the block bitmap when shrinking.\n    - It must handle the recursion required to free indirect blocks that are no longer referenced.\n6.  **Metadata Accuracy**: Every write must update `st_size`, `st_mtime` ([[EXPLAIN:st_mtime-vs-st_ctime|Modification vs Status change]]), and `st_ctime`.\n7.  **Append Mode**: Implementing an append (writing at `offset = size`) must work seamlessly, growing the file block-by-block.\n\n\n<!-- END_MS -->\n<!-- END_MS -->\n\n\n<!-- MS_ID: filesystem-m5 -->\n<!-- MS_ID: filesystem-m5 -->\n# Milestone 5: The Interface Bridge \u2014 FUSE Integration\n\nUntil this moment, your filesystem has been a laboratory experiment. You can read and write blocks to a file-backed image using your own custom functions, but the rest of your computer has no idea it exists. You cannot `cd` into it, you cannot `ls` its contents, and you cannot open its files in a text editor.\n\nIn this milestone, you are going to bridge that gap. You will integrate your C code with **FUSE (Filesystem in Userspace)**. By the end of this chapter, your disk image will mount as a real directory on your machine, appearing to the Linux or macOS kernel as just another valid storage device.\n\n## The Revelation: The Kernel-Space Myth\n\nBefore we write the \"glue\" code, we must shatter a terrifying misconception that keeps many systems engineers away from filesystem development.\n\n**The Misconception:** To build a real, mountable filesystem, you must write a Linux Kernel Module in C, handle kernel panics, and deal with the restrictive, high-stakes environment of \"Ring 0\" code where a single pointer error crashes the entire computer.\n\n**The Reality:** **FUSE** allows you to write the entire filesystem as a standard, \"Ring 3\" user application. When you mount a FUSE filesystem, the Kernel's [[EXPLAIN:vfs-layer|Virtual File System (VFS) abstraction]] doesn't talk to a hardware driver; it talks to a special kernel module called `/dev/fuse`. \n\nThat module effectively \"pauses\" the kernel's request and forwards it over a socket to **your** program. Your program does the work, sends a response back, and the kernel hands that response to the user. To the user, it looks like a native filesystem. To you, it\u2019s just another C program you can debug with `gdb` or `valgrind`.\n\n{{DIAGRAM:diag-l1-fuse-flow}}\n\n## The Fundamental Tension: The Context-Switch Tax\n\nThis architectural elegance comes with a heavy price: **Latency**.\n\nIn a native filesystem like Ext4, a `read()` call happens almost entirely within the kernel. In FUSE, a single `read()` triggers a chain reaction of transitions:\n1.  **User App** calls `read()` (Transition: User \u2192 Kernel).\n2.  **VFS** identifies the mount and sends the request to the **FUSE Kernel Module**.\n3.  **FUSE Kernel Module** puts the calling process to sleep and wakes up **Your FUSE Daemon**.\n4.  **Your FUSE Daemon** receives the request (Transition: Kernel \u2192 User).\n5.  **Your Code** runs, performs the block I/O on your disk image.\n6.  **Your Code** sends the result back to `/dev/fuse` (Transition: User \u2192 Kernel).\n7.  **FUSE Kernel Module** wakes up the **User App**.\n8.  **User App** receives data (Transition: Kernel \u2192 User).\n\nEach of these transitions is a **[[EXPLAIN:context-switch|Context Switch]]**. On a modern CPU, a context switch can cost anywhere from 1,000 to 10,000 clock cycles. It flushes parts of the CPU's [[EXPLAIN:tlb-cache|Translation Lookaside Buffer (TLB)]] and pollutes the L1 cache. While Ext4 might handle a metadata request in 500ns, FUSE might take 10,000ns.\n\n**The Tension:** We are trading massive amounts of performance (10x-20x latency overhead) for safety, ease of development, and the ability to use high-level libraries. This is why FUSE is the king of \"Cloud Storage\" drivers (like Google Drive or S3 mounts) where network latency dwarfs context-switch overhead, but it is rarely used for primary OS boot drives.\n\n## 1. The `fuse_operations` Struct: The V-Table of the OS\n\nFUSE works by having you fill out a \"dispatch table.\" This is a C struct full of function pointers. When the kernel wants to know the size of a file, it looks for your `getattr` pointer; when it wants to list a directory, it calls your `readdir` pointer.\n\n```c\n#define FUSE_USE_VERSION 31\n#include <fuse.h>\n#include <errno.h>\n\nstatic struct fuse_operations bitfs_oper = {\n    .getattr    = bitfs_getattr,\n    .readdir    = bitfs_readdir,\n    .open       = bitfs_open,\n    .read       = bitfs_read_fuse,\n    .write      = bitfs_write_fuse,\n    .mkdir      = bitfs_mkdir_fuse,\n    .rmdir      = bitfs_rmdir_fuse,\n    .create     = bitfs_create_fuse,\n    .unlink     = bitfs_unlink_fuse,\n    .truncate   = bitfs_truncate_fuse,\n    .utimens    = bitfs_utimens_fuse,\n};\n```\n\nYou are essentially providing the \"Implementation\" for an Interface defined by the Linux Kernel.\n\n## 2. Implementing `getattr`: The Heartbeat of FUSE\n\nThe most important function you will write is `getattr`. The OS calls this constantly\u2014whenever you `ls`, whenever you `cd`, and even before every `open()`. If `getattr` is slow, the whole filesystem feels \"laggy.\"\n\nYour job is to translate your internal `bitfs_inode_t` into the standard Linux `struct stat`.\n\n```c\nstatic int bitfs_getattr(const char *path, struct stat *stbuf) {\n    memset(stbuf, 0, sizeof(struct stat));\n    \n    // 1. Resolve path to Inode ID (using your namei logic from MS3)\n    int ino = resolve_path(path);\n    if (ino < 0) return -ENOENT;\n\n    // 2. Read Inode from disk\n    bitfs_inode_t inode;\n    inode_read(ino, &inode);\n\n    // 3. Map internal fields to POSIX stat fields\n    stbuf->st_ino   = ino;\n    stbuf->st_mode  = inode.mode;\n    stbuf->st_nlink = inode.nlink;\n    stbuf->st_size  = inode.size;\n    stbuf->st_uid   = inode.uid;\n    stbuf->st_gid   = inode.gid;\n    stbuf->st_atime = inode.atime;\n    stbuf->st_mtime = inode.mtime;\n    stbuf->st_ctime = inode.ctime;\n\n    return 0;\n}\n```\n\n> \u26a0\ufe0f **Hardware Soul: The Path Resolution Storm**\n> Note that `getattr` takes a **string path** (`/home/user/file.txt`), but your filesystem operates on **Inodes**. This means for every `getattr`, you are potentially re-traversing your directory tree from the root. This is why an [[EXPLAIN:dentry-cache|in-memory Directory Entry Cache]] is the first optimization any real-world FUSE driver implements. Without it, `ls -R` will trigger an exponential number of disk reads.\n\n## 3. Implementing `readdir`: Streaming the Map\n\n`readdir` is how `ls` gets its data. FUSE provides a \"filler\" function\u2014a callback that you use to feed filenames back to the kernel one by one.\n\n```c\nstatic int bitfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,\n                         off_t offset, struct fuse_file_info *fi) {\n    int ino = resolve_path(path);\n    if (ino < 0) return -ENOENT;\n\n    bitfs_inode_t inode;\n    inode_read(ino, &inode);\n    if (!S_ISDIR(inode.mode)) return -ENOTDIR;\n\n    // Iterate through all blocks of the directory (logic from MS3)\n    for (int i = 0; i < (inode.size / BLOCK_SIZE); i++) {\n        uint32_t p_block = bmap(&inode, i);\n        uint8_t data[BLOCK_SIZE];\n        device_read_block(dev, p_block, data);\n\n        // Walk the variable-length directory entries\n        uint32_t curr = 0;\n        while (curr < BLOCK_SIZE) {\n            bitfs_dirent_t *entry = (bitfs_dirent_t *)(data + curr);\n            if (entry->inode_num != 0) {\n                // Feed the name to the kernel\n                // filler(buffer, name, stat_struct, offset_to_next)\n                filler(buf, entry->name, NULL, 0);\n            }\n            curr += entry->rec_len;\n        }\n    }\n    return 0;\n}\n```\n\n## 4. Concurrency: The Multi-Threaded Nightmare\n\nBy default, `libfuse` is **multi-threaded**. If three different programs try to write to your filesystem at the same time, `libfuse` will call your `write` function from three different POSIX threads simultaneously.\n\nIf you don't protect your shared data structures, you will experience **Bit Corruption**:\n1.  **Thread A** finds a free block in the bitmap.\n2.  **Thread B** finds the *same* free block because Thread A hasn't flipped the bit yet.\n3.  Both threads write to the same block, corrupting each other's files.\n\nYou MUST use a **[[EXPLAIN:mutex-locking|Mutual Exclusion (Mutex) lock]]** around any operation that modifies your metadata (bitmaps, Inode Table, Directory blocks).\n\n```c\npthread_mutex_t fs_lock = PTHREAD_MUTEX_INITIALIZER;\n\nstatic int bitfs_write_fuse(const char *path, const char *buf, size_t size, \n                            off_t offset, struct fuse_file_info *fi) {\n    pthread_mutex_lock(&fs_lock);\n    \n    // Perform the write logic from Milestone 4...\n    int result = internal_write(path, buf, size, offset);\n    \n    pthread_mutex_unlock(&fs_lock);\n    return result;\n}\n```\n\n> \u26a0\ufe0f **Optimization Ladder: Coarse vs. Fine-Grained Locking**\n> - **Naive (Coarse)**: One giant mutex for the whole filesystem. This is safe but turns your filesystem into a single-lane highway. Only one process can do anything at a time.\n> - **Optimized (Fine-Grained)**: A separate lock for each Inode and a lock for the Block Bitmap. This allows Process A to write to File 1 while Process B reads from File 2 simultaneously. This is significantly more complex to implement (beware of deadlocks!). For this project, start with a Global Mutex.\n\n## 5. Persistence: The `release` and `flush` logic\n\nIn Milestone 1, we talked about the 4KB grid. When an application calls `close()`, the kernel calls your `release` callback. This is your last chance to ensure all cached data is written to the disk image.\n\n```c\nstatic int bitfs_release(const char *path, struct fuse_file_info *fi) {\n    // Ensure all blocks are flushed to the disk image file\n    fsync(dev->fd); \n    return 0;\n}\n```\n\nWithout an explicit `fsync()` or `fflush()`, your changes might sit in the host OS's [[EXPLAIN:page-cache|Page Cache]] and never actually hit the physical disk image, making your filesystem look \"empty\" if the process is killed.\n\n## Three-Level View: A Real-World `cat`\n\nLet's trace `cat /mnt/bitfs/hello.txt` through the stack:\n\n1.  **Application (Level 1)**: `cat` calls `open()`, then `read()`.\n2.  **OS/Kernel (Level 2)**: \n    - VFS receives the `open`. It calls your `getattr` to see if the file exists.\n    - VFS calls your `open` callback to check permissions.\n    - VFS calls your `read` callback for the first 4KB.\n3.  **Your FUSE Daemon (Level 2.5)**: \n    - Your `bitfs_read_fuse` code runs.\n    - It uses your `bmap` and `device_read_block` functions.\n4.  **Hardware (Level 3)**: The host OS performs a `pread()` on your disk image file. The physical drive reads the sectors and returns them to your app.\n\n## The Hardware Soul: The Instruction Gap\n\nWhen you run a native filesystem, the CPU stays in \"Kernel Mode\" for the duration of the I/O. When you run FUSE, the CPU must:\n1. Save registers.\n2. Swap the Page Tables (CR3 register in x86).\n3. Jump to the FUSE daemon.\n4. Do the work.\n5. Save registers again.\n6. Swap Page Tables back.\n\nThis is the **Instruction Gap**. For a simple 4KB read, the \"work\" might take 2,000 instructions, but the \"switching\" might take 5,000 instructions. This is why high-performance userspace filesystems (like those used in HFT or massive databases) sometimes skip FUSE entirely and use **UIO (Userspace I/O)** or **DPDK/SPDK** to talk directly to the hardware, bypassing the kernel entirely to avoid the tax you are currently paying.\n\n## Knowledge Cascade: Surface Connections\n\n1.  **Abstracting the Disk**: Because your code is just a user app, your `device_read_block` doesn't have to talk to a file. It could talk to an **S3 Bucket (AWS)**. This is how `s3fs` works: it maps Inode 5 to `s3://my-bucket/object_5`. FUSE makes the \"where\" of the data irrelevant to the OS.\n2.  **Network Filesystems (NFS)**: FUSE is conceptually very similar to NFS. In NFS, the \"FUSE Daemon\" is a server on a different computer. The latency of the network replaces the latency of the context switch.\n3.  **Microservices**: FUSE is a perfect example of a **Microkernel** architecture. Instead of putting everything in the monolithic kernel, we move the \"service\" (the filesystem) into its own process. This is exactly how operating systems like **QNX** or **Minix** work\u2014they are basically a collection of FUSE-like daemons.\n4.  **Container Runtimes**: Tools like Docker use special filesystems (OverlayFS) to stack layers. FUSE is often used in unprivileged containers (like Rootless Docker) to provide filesystem features that would normally require root access to the kernel.\n\n---\n\n### Acceptance Criteria for Milestone 5\n\nYour FUSE integration must satisfy these technical requirements:\n\n1.  **Mountability**: The filesystem must mount successfully using `fuse_main`. You should see it in the output of the `mount` command.\n2.  **Metadata Accuracy (`getattr`)**:\n    - `ls -l` must show the correct file size, permissions, and timestamps.\n    - `ls -i` must show the correct Inode numbers.\n3.  **Directory Listing (`readdir`)**:\n    - `ls -a` must show `.` and `..` plus any files you created during `mkfs`.\n4.  **Read/Write Round-Trip**:\n    - `echo \"hello\" > /mnt/bitfs/test.txt` followed by `cat /mnt/bitfs/test.txt` must return the exact string.\n    - Use `md5sum` to verify that a large file (e.g., 1MB) copied into the mount remains byte-identical.\n5.  **Thread Safety**: You must implement a locking strategy (at least a global mutex) that prevents corruption when two `cp` commands are run into the mount simultaneously.\n6.  **Atomicity of Rename**: The `rename` callback must be implemented such that a file move within the same directory or between directories is handled correctly (updating the directory entries).\n7.  **Resource Cleanup**: When the filesystem is unmounted (`fusermount -u`), all file descriptors to the disk image must be closed, and the image must be left in a consistent state.\n\n\n<!-- END_MS -->\n<!-- END_MS -->\n\n\n<!-- MS_ID: filesystem-m6 -->\n<!-- MS_ID: filesystem-m6 -->\n# Milestone 6: The Immortal Ledger \u2014 Write-Ahead Journaling and Crash Recovery\n\nYou have built a filesystem that can store, organize, and retrieve data. It is a complex machine of pointers, bitmaps, and directory entries. But it has a fatal flaw: it is a \"fair-weather\" system. If you pull the plug while the system is halfway through a `rename()` or a large `write()`, your filesystem might wake up with \"brain damage\"\u2014an Inode pointing to a block that the Bitmap thinks is free, or a directory entry pointing to a ghost Inode.\n\nIn this final milestone, you will implement **Write-Ahead Journaling (WAL)**. You are about to move from building a data structure to building a **transactional system**. You will ensure that your filesystem can survive a sudden power loss and recover to a consistent state in milliseconds.\n\n## The Fundamental Tension: The Atomic Illusion vs. Physical Reality\n\nIn software, we crave **Atomicity**. We want an operation like \"Move file A to folder B\" to be a single, indivisible event. It either happens completely, or it doesn't happen at all.\n\nHowever, **Hardware** is stubbornly non-atomic. A single `rename()` operation in your BitFS actually requires multiple distinct disk writes:\n1.  Read the source directory block, remove the entry, write it back.\n2.  Read the destination directory block, add the entry, write it back.\n3.  Read the Inode, update its `mtime` and `ctime`, write it back.\n\nIf the power fails after step 1 but before step 2, the file has vanished from the universe. If it fails after step 2 but before step 3, the file exists in the new location, but its metadata is lies.\n\n**The Tension:** The OS and the Disk Hardware frequently **reorder writes** to improve performance. Even if your code calls `write(Block A)` then `write(Block B)`, the disk's internal controller might decide to write B first because the head was closer to that sector. Without a journal, the physical reality of the disk is a chaotic race where the finish line can be cut at any microsecond.\n\n{{DIAGRAM:diag-l1-journal-tx}}\n\n## The Revelation: The Lie of the `fsync()`\n\nBefore we build the solution, we must shatter a dangerous professional misconception.\n\n**The Misconception:** When you call `write()` followed by `fsync()`, your data is safely etched onto the physical platter or NAND flash.\n\n**The Reality:** `fsync()` is more of a \"polite suggestion\" than a guarantee. \n1.  **The OS Cache**: The kernel might acknowledge the `fsync` but the data is still in the drive's volatile on-board RAM cache.\n2.  **The Disk Controller**: Modern SSDs and HDDs have their own complex logic. They reorder writes to minimize \"wear\" or \"seek time.\" If the power dies, that volatile cache vanishes.\n3.  **[[EXPLAIN:torn-writes|Torn Writes]]**: A 4KB block might be halfway through being written when the voltage drops. The disk might successfully write the first 2KB and leave the last 2KB as old data or garbage.\n\n**The Reveal:** To achieve true durability, we cannot rely on the *order* in which we write to the main filesystem. Instead, we must write a **prophecy** of what we are about to do to a separate, sequential log. This is the Journal.\n\n## 1. The Journaling Architecture\n\nWe will implement **Metadata Journaling**. In this mode, we only log changes to the filesystem's structural integrity (Bitmaps, Inodes, Directory Entries). We write the actual file data blocks directly to their final destination. This provides a balance between performance and safety.\n\n### The Journal Region\nIn Milestone 1, you reserved a fixed set of blocks for the Journal. We will treat this region as a **[[EXPLAIN:circular-buffer|Circular Buffer]]**.\n\n```c\n#include <stdint.h>\n\n#define JOURNAL_MAGIC 0x4A524E4C // \"JRNL\"\n\ntypedef struct {\n    uint32_t magic;\n    uint32_t head;          // Offset of the oldest transaction\n    uint32_t tail;          // Offset where the next transaction starts\n    uint32_t sequence_num;  // Monotonically increasing ID\n} bitfs_journal_header_t;\n\ntypedef struct {\n    uint32_t transaction_id;\n    uint32_t block_count;   // How many blocks are in this TX\n    uint64_t checksum;      // To detect [[EXPLAIN:torn-writes|torn writes]]\n} bitfs_transaction_start_t;\n```\n\n## 2. The Transaction Lifecycle\n\nEvery metadata-modifying operation (like `mkdir`, `unlink`, or `write` metadata updates) must now follow the **Transaction Protocol**:\n\n1.  **Journal Begin**: Record the start of a transaction in memory.\n2.  **Log Blocks**: For every metadata block you *intend* to change, write a copy of that block into the Journal region on disk first.\n3.  **Commit**: Write a special **Commit Record** to the Journal. \n    > **\ud83d\udd11 Foundation: The Atomic Commit is the single point of truth that turns a multi-step process into a reality.**\n    > \n    > **1. What it IS**\n    > In a system involving multiple steps (like updating a database or a filesystem), an \"Atomic Commit\" is the specific moment\u2014usually a single write to a disk\u2014that marks the entire operation as \"Done.\" Before this write, the system treats the whole operation as if it never happened. After this write, the system treats it as permanent.\n    > \n    > **2. Why you need it right now**\n    > When you're updating an Inode, a Bitmap, and a Directory entry, you can't write them all at the exact same instant. If you crash halfway through, your filesystem is corrupted. By writing all those changes to a \"Journal\" first and then writing one single \"Commit\" bit, you ensure that during recovery, the system only applies the changes if that one bit is present.\n    > \n    > **3. Key Insight**\n    > **The \"Signed Contract\" Model:** You can discuss a deal and write drafts of a contract for hours (the journaled blocks), but nothing is legally binding until the single moment the pen hits the paper (the Commit). If you lose the drafts before the signature, there is no deal. If you have the signature, the drafts become the law.\n4.  **Checkpoint (Apply)**: Now, and only now, write those blocks to their actual locations in the Inode Table or Bitmaps.\n5.  **End/Clear**: Once the checkpoint is finished, the journal entries are no longer needed.\n\n### Why this works\nIf the system crashes during step 2, there is no \"Commit\" record. On reboot, the filesystem sees an incomplete transaction and ignores it. The main filesystem remains in its old, consistent state.\n\nIf the system crashes during step 4, the \"Commit\" record exists. On reboot, the filesystem sees the commit and **replays** the blocks from the journal into the main filesystem. The operation is completed as intended.\n\n## 3. Implementing the Journal in C\n\nYour Journal needs a simple API that wraps your existing block I/O.\n\n```c\n// Wrapper for metadata modification\nvoid journal_log_metadata_block(uint32_t physical_block_num) {\n    uint8_t buffer[BLOCK_SIZE];\n    device_read_block(dev, physical_block_num, buffer);\n    \n    // 1. Write the target block number so we know where this goes during replay\n    // 2. Write the 4KB of data into the journal's 'tail'\n    // 3. Advance the journal tail\n}\n\nvoid journal_commit(uint32_t tx_id) {\n    // Write the Commit Record\n    // MANDATORY: Call fdatasync() here!\n    // We must ensure the commit record hits the platter before we \n    // touch the main filesystem. This is a [[EXPLAIN:write-barrier|Write Barrier]].\n}\n```\n\n### The Checkpoint\nA \"Checkpoint\" is the act of cleaning the journal. Because the journal has a fixed size, you will eventually run out of space.\n- Periodically (or when the journal is 80% full), you must ensure all journaled changes have been written to the primary data structures.\n- Use `fsync()` to ensure the primary structures are safe.\n- Update the `head` pointer in the `bitfs_journal_header_t` to effectively \"delete\" the old transactions.\n\n## 4. Recovery: The \"Resurrection\" Algorithm\n\nWhen your filesystem mounts, the first thing it should do isn't reading the root directory\u2014it's checking the journal.\n\n**The Recovery Algorithm:**\n1.  Read the `bitfs_journal_header_t` from the journal start.\n2.  Start at the `head` and walk towards the `tail`.\n3.  For each transaction:\n    - Validate the `checksum`. If it fails, the transaction is \"torn\" (corrupted) and must be discarded.\n    - Check for a `Commit Record`. \n    - If **Committed**: Iterate through the logged blocks in the transaction and write them to their `physical_block_num` in the main filesystem. This is called **Replaying**.\n    - If **Not Committed**: Stop. Discard this and all subsequent transactions.\n4.  Once the scan is complete, perform a `checkpoint()` to zero out the journal.\n\n> **\ud83d\udd11 Foundation: Idempotency is the property of an operation that can be applied multiple times without changing the result beyond the initial application.**\n> \n> **1. What it IS**\n    > In systems programming, an idempotent operation is one where `f(x)` is the same as `f(f(x))`. For example, setting a bit to `1` is idempotent (doing it twice doesn't change the bit to anything else). Incrementing a counter by `1` is **not** idempotent (doing it twice results in a different value).\n    > \n    > **2. Why you need it right now**\n    > During crash recovery, you might be replaying a journal entry that was *already* partially written to the disk before the crash. If your replay logic isn't idempotent, you might double-apply a change (like incrementing a link count), leading to a corrupted filesystem.\n    > \n    > **3. Key Insight**\n    > **The \"Light Switch\" vs. \"The Toggle\":** A light switch with \"ON\" and \"OFF\" positions is idempotent. No matter how many times you hit \"ON,\" the light stays on. A single \"Toggle\" button is not idempotent\u2014hitting it twice leaves the light in the original state. In recovery, you always want \"ON/OFF\" logic.\n\n{{DIAGRAM:diag-l2-journal-replay}}\n\n## Three-Level View: A Journaled `mkdir`\n\nLet's see what happens at each level when you run `mkdir /new_dir`:\n\n1.  **Application (Level 1)**: Calls `mkdir()`.\n2.  **OS/Kernel (Level 2)**:\n    - Your code starts a Transaction.\n    - It reads the **Inode Bitmap** (Block 2). It logs Block 2 to the Journal.\n    - It reads the **Inode Table** block (Block 10) where the new Inode will live. It logs Block 10 to the Journal.\n    - It logs the **Parent Directory's Data Block** (Block 500) where the new entry will go.\n    - It writes a **Commit Record** to the Journal.\n    - **(Crash Happens Here!)**\n3.  **Hardware (Level 3)**:\n    - On reboot, the recovery code sees the Commit Record in the Journal.\n    - It \"replays\" Blocks 2, 10, and 500 from the Journal into the main filesystem.\n    - Even though the crash happened before the \"real\" blocks were updated, the Journal ensures the `mkdir` is completed.\n\n## The Hardware Soul: Write Amplification and Barriers\n\nJournaling introduces a massive hardware penalty: **Write Amplification**. \n\nEvery metadata write now happens **twice**\u2014once in the journal and once in the main filesystem. For small files, this can double the I/O load. This is the price we pay for immortality.\n\nTo minimize this, we use **Write Barriers**. In C, this is `fdatasync()` or `open` with `O_DIRECT | O_SYNC`. This tells the disk: \"Do not reorder writes across this boundary.\" \n\nIf your disk ignores barriers (common in cheap consumer SSDs), your journal is useless. Systems engineers must often choose hardware based on whether it has **Power-Loss Protection (PLP)**\u2014on-board capacitors that provide just enough energy to flush the volatile cache to the NAND if the power is cut.\n\n## Knowledge Cascade: Surface Connections\n\n1.  **Databases (WAL)**: Every modern database (PostgreSQL, MySQL/InnoDB, SQLite) uses this exact technique. In SQLite, it's literally called \"WAL Mode.\" It's faster for databases because it turns random B-Tree updates into sequential log appends.\n2.  **Distributed Systems (Raft/Paxos)**: In a distributed database (like Etcd or CockroachDB), the \"Journal\" isn't just on one disk\u2014it's replicated across 3 or 5 servers. A transaction is only \"Committed\" when it has been written to the journal of a majority of the servers.\n3.  **SSD FTL (Flash Translation Layer)**: Internally, your SSD is doing its own journaling! Because NAND flash cannot be overwritten (it must be erased in large blocks), the SSD controller keeps a log of where it moved your data. This is why SSDs are so much faster than HDDs but also more complex to recover when they fail.\n4.  **Event Sourcing**: In high-level application architecture, \"Event Sourcing\" is just journaling for business logic. Instead of storing the \"Current State\" of a bank account, you store a journal of every transaction. The current balance is just a \"replay\" of the journal.\n\n## Design Decisions: Metadata vs. Full Journaling\n\n| Mode | What is Journaled | Pros | Cons |\n|------|-------------------|------|------|\n| **Metadata \u2713** | Inodes, Bitmaps, Dirs | Fast, protects FS integrity. | File data can still be corrupted. |\n| **Full** | Metadata + File Data | Total consistency. | 2x Write Amplification on everything. |\n| **Ordered** | Metadata only (strict order) | Prevents \"garbage data\" in files. | Default for `ext4`. |\n\nWe chose **Metadata Journaling** because it is the standard for general-purpose filesystems. It ensures that after a crash, the filesystem is always \"valid,\" even if a file you were currently writing contains a mix of old and new data.\n\n---\n\n### Acceptance Criteria for Milestone 6\n\nYour journaling and recovery implementation must satisfy these requirements:\n\n1.  **Journal Persistence**: The journal header and transaction records must be stored in the dedicated journal region defined in the superblock.\n2.  **Atomic Transactions**: \n    - Every metadata-modifying function (create, unlink, mkdir, etc.) must be wrapped in a transaction.\n    - A transaction is only valid if a complete `Commit Record` is found.\n3.  **Checksum Validation**: Each transaction must include a checksum. The recovery logic must discard any transaction where the checksum doesn't match (detecting torn writes).\n4.  **Idempotent Replay**: The recovery logic must be safe to run multiple times. Replaying a transaction that was already partially or fully applied to the main filesystem must not cause corruption.\n5.  **Crash Recovery Success**: \n    - **Test Case**: Run a script that creates 1000 files. While it's running, `kill -9` the filesystem process. \n    - On remount, the recovery code must run automatically.\n    - `fsck` (or your equivalent verification tool) must show zero orphaned inodes and zero bitmap inconsistencies.\n6.  **Journal Wrap-around**: The journal must correctly handle the circular buffer logic, overwriting the oldest checkpointed transactions when space is needed.\n7.  **Write Barriers**: Your commit logic must use `fdatasync()` or an equivalent to ensure the journal is durable before the main filesystem is modified.\n\n\n\n# Congratulations, Architect.\nYou have built a complete, journaled, inode-based filesystem from the raw blocks up. You have moved from the \"infinite sea of bytes\" to the rigid, immortal reality of the 4KB grid. Your BitFS is now ready for the real world.\n<!-- END_MS -->\n",
+  "current_ms_index": 6,
+  "diagrams_to_generate": [
+    {
+      "id": "diag-l2-path-traversal",
+      "title": "Microscopic: Path Resolution Trace",
+      "description": "The step-by-step logic of resolving '/home/user/notes.txt' starting from the Root Inode (Inode 1).",
+      "anchor_target": "m3-directory-ops",
+      "level": "microscopic"
+    },
+    {
+      "id": "diag-l1-rmw-cycle",
+      "title": "Street View: The Read-Modify-Write Cycle",
+      "description": "What happens when you write 10 bytes to offset 4090: The 'Straddle' problem where two physical blocks must be updated.",
+      "anchor_target": "m4-file-io",
+      "level": "street"
+    },
+    {
+      "id": "diag-l1-fuse-flow",
+      "title": "Satellite View: The FUSE Request Loop",
+      "description": "The architectural journey of a 'ls' command: User App -> syscall -> Kernel VFS -> /dev/fuse -> Your C Program -> Disk Image.",
+      "anchor_target": "m5-fuse-integration",
+      "level": "satellite"
+    },
+    {
+      "id": "diag-l1-journal-tx",
+      "title": "Street View: The Transaction Lifecycle",
+      "description": "Before/After visualization of a file creation: Journal (Log: Add Inode, Log: Add Dir Entry, Log: Commit) -> Main Disk Update.",
+      "anchor_target": "m6-journaling",
+      "level": "street"
+    },
+    {
+      "id": "diag-l2-journal-replay",
+      "title": "Microscopic: Crash Recovery Replay",
+      "description": "The logic used during mount to scan the journal, identify the last commit record, and apply pending changes to the disk structures.",
+      "anchor_target": "m6-journaling",
+      "level": "microscopic"
+    }
+  ],
+  "diagram_attempt": 0,
+  "current_diagram_code": null,
+  "current_diagram_meta": null,
+  "last_error": null,
+  "status": "visualizing",
+  "phase": "atlas",
+  "tdd_blueprint": {},
+  "tdd_accumulated_md": "",
+  "tdd_current_mod_index": 0,
+  "tdd_diagrams_to_generate": [],
+  "external_reading": "",
+  "running_criteria": [
+    {
+      "milestone_id": "filesystem-m1",
+      "criteria": [
+        "Block device provides read_block and write_block over a fixed 4KB block size backed by a disk image file",
+        "Superblock is stored at Block 0 and contains the FS_MAGIC and correct region offsets",
+        "Block bitmap correctly tracks free/used status and persists changes to the disk image",
+        "Inode bitmap correctly tracks free/used status independently from blocks",
+        "mkfs tool initializes the root directory at Inode 0 with '.' and '..' entries",
+        "The filesystem layout is contiguous: Superblock -> Block Bitmap -> Inode Bitmap -> Inode Table -> Journal -> Data Blocks",
+        "Structs are packed or padded to ensure platform-independent on-disk alignment"
+      ]
+    },
+    {
+      "milestone_id": "filesystem-m2",
+      "criteria": [
+        "Inode structure is exactly 128 bytes with packed attribute",
+        "Implements 12 direct pointers for small file optimization",
+        "Implements single and double indirect pointer traversal logic",
+        "Inode read/write functions correctly map Inode ID to block/offset",
+        "Inode allocation correctly updates inode bitmap and initializes metadata",
+        "Inode deallocation recursively frees all data and indirect blocks without leaks",
+        "Timestamps (mtime/atime/ctime) are updated during metadata and data modifications",
+        "Supports sparse files by handling null pointers in the indirection tree"
+      ]
+    },
+    {
+      "milestone_id": "filesystem-m3",
+      "criteria": [
+        "Directory blocks use bitfs_dirent_t with rec_len for variable-length entry management",
+        "resolve_path() correctly traverses '/' separated components starting from the root inode",
+        "mkdir() initializes new directories with '.' (self) and '..' (parent) entries",
+        "mkdir() and rmdir() correctly increment/decrement the parent directory's nlink count",
+        "Hard link creation increments the target inode's nlink count and adds a new directory entry",
+        "rmdir() validates that a directory is empty (only contains '.' and '..') before deletion",
+        "add_entry() prevents duplicate filenames within the same directory",
+        "Directory search handles multi-block directories by traversing the inode's block pointer tree"
+      ]
+    },
+    {
+      "milestone_id": "filesystem-m4",
+      "criteria": [
+        "Implement bmap function for direct and multi-level indirect pointer resolution",
+        "Implement bitfs_read with support for block-straddling and zero-filled holes",
+        "Implement bitfs_write with Read-Modify-Write logic for partial block updates",
+        "Ensure bitfs_write dynamically allocates blocks from bitmap and updates inode pointers",
+        "Implement bitfs_truncate to release blocks and clear pointers when shrinking files",
+        "Verify file growth updates inode size and timestamps (mtime, ctime) correctly",
+        "Pass round-trip unit tests: write X bytes at offset Y and read them back identically"
+      ]
+    },
+    {
+      "milestone_id": "filesystem-m5",
+      "criteria": [
+        "Filesystem mounts via fuse_main and is visible to the 'mount' command",
+        "getattr correctly maps bitfs_inode_t fields to struct stat for ls -l",
+        "readdir correctly iterates through directory blocks and uses the filler() callback",
+        "Implement a global pthread_mutex_t to ensure thread-safety for multi-threaded FUSE requests",
+        "File creation (create/mknod) correctly allocates an inode and adds a directory entry",
+        "Unlink and rmdir properly decrement link counts and free resources via the Inode layer",
+        "Verify large-file integrity by performing md5sum on a file copied into the FUSE mount"
+      ]
+    },
+    {
+      "milestone_id": "filesystem-m6",
+      "criteria": [
+        "Journal header and transaction records use a fixed on-disk region with circular buffer logic.",
+        "Metadata operations (mkdir, unlink, etc.) are atomized via begin/commit transaction wrappers.",
+        "Commit records are written using fdatasync to ensure write ordering/barriers.",
+        "Recovery logic successfully identifies and replays committed transactions from the journal.",
+        "Recovery logic detects and ignores uncommitted or torn transactions using checksums.",
+        "Filesystem remains consistent (no leaked blocks or orphaned inodes) after a simulated crash mid-operation.",
+        "Journal checkpointing successfully clears old transactions to allow for wrap-around space."
+      ]
+    }
+  ],
+  "explained_concepts": [
+    "internal-fragmentation",
+    "epoch-timestamp",
+    "block-vs-byte-addressing",
+    "struct-packing",
+    "posix-permissions-bitmask"
+  ],
+  "system_diagram_d2": null,
+  "system_diagram_iteration": 0,
+  "system_diagram_done": false,
+  "project_structure_md": "",
+  "project_charter_md": ""
+}

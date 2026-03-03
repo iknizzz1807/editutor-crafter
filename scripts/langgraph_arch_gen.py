@@ -144,14 +144,19 @@ def init_llm_provider():
         os.getenv("USE_MIXED_HEAVY_CLAUDE", "false").lower() == "true"
     )
     USE_ARCHITECT_CLAUDE = os.getenv("USE_ARCHITECT_CLAUDE", "false").lower() == "true"
+    USE_CLAUDE_ARTIST_GEMINI = (
+        os.getenv("USE_CLAUDE_ARTIST_GEMINI", "false").lower() == "true"
+    )
     CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "sonnet")
     MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", MISTRAL_MODEL)
 
-    if USE_MIXED_CLAUDE_GEMINI or USE_MIXED_HEAVY_CLAUDE or USE_ARCHITECT_CLAUDE:
+    if USE_MIXED_CLAUDE_GEMINI or USE_MIXED_HEAVY_CLAUDE or USE_ARCHITECT_CLAUDE or USE_CLAUDE_ARTIST_GEMINI:
         if USE_MIXED_CLAUDE_GEMINI:
             LLM_PROVIDER = "mixed-claude-gemini"
         elif USE_MIXED_HEAVY_CLAUDE:
             LLM_PROVIDER = "mixed-heavy-claude"
+        elif USE_CLAUDE_ARTIST_GEMINI:
+            LLM_PROVIDER = "claude-artist-gemini"
         else:
             LLM_PROVIDER = "architect-claude"
         print(f">>> Provider: MIXED ({LLM_PROVIDER})", flush=True)
@@ -162,6 +167,9 @@ def init_llm_provider():
             temperature=1,
             max_completion_tokens=64000,
         )
+        if USE_CLAUDE_ARTIST_GEMINI:
+            LLM_FALLBACK = LLM
+            print(">>> Gemini fallback initialized for artist nodes", flush=True)
     elif USE_MISTRAL:
         LLM_PROVIDER = "mistral"
         print(f">>> Provider: MISTRAL ({MISTRAL_MODEL})", flush=True)
@@ -758,7 +766,7 @@ def writer_node(state: GraphState):
                 state["accumulated_md"] = before + after
 
     print(f"  [Agent: Educator] Writing Atlas Node: {ms_title}...")
-    is_claude = LLM_PROVIDER == "mixed-heavy-claude" or LLM_PROVIDER == "claude-cli"
+    is_claude = LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini")
 
     full_yaml_meta = yaml.dump(
         state["meta"], allow_unicode=True, default_flow_style=False
@@ -1114,7 +1122,7 @@ Output ONLY the corrected D2 code."""
         ],
         node_label=f"Artist (Diag: {diag.get('title')})",
         project_id=state["project_id"],
-        provider_override="local-proxy" if is_retry else None,
+        provider_override="local-proxy" if (is_retry or LLM_PROVIDER == "claude-artist-gemini") else None,
     )
     code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
     return {
@@ -1128,7 +1136,7 @@ Output ONLY the corrected D2 code."""
 def tdd_planner_node(state: GraphState):
     if state.get("tdd_blueprint"):
         return {"status": "tdd_writing", "phase": "tdd"}
-    is_claude = LLM_PROVIDER == "mixed-heavy-claude" or LLM_PROVIDER == "claude-cli"
+    is_claude = LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini")
     print(f"  [Agent: TDD Orchestrator] Planning TDD...")
     full_yaml_meta = yaml.dump(
         state["meta"], allow_unicode=True, default_flow_style=False
@@ -1272,6 +1280,7 @@ End with [[CRITERIA_JSON: {{"module_id": "{mod_id}", "criteria": [...]}} ]]
         [HumanMessage(content=prompt)],
         node_label=f"TDD Writer (Mod: {mod_name})",
         project_id=state["project_id"],
+        provider_override="claude-cli" if LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini") else None,
     )
     raw_content = str(res.content).strip()
 
@@ -1405,7 +1414,7 @@ Output ONLY the corrected D2 code."""
         ],
         node_label=f"TDD Artist (Diag: {diag.get('title')})",
         project_id=state["project_id"],
-        provider_override="local-proxy" if is_retry else None,
+        provider_override="local-proxy" if (is_retry or LLM_PROVIDER == "claude-artist-gemini") else None,
     )
     code = re.sub(r"```d2\n?|```", "", str(res.content)).strip()
     return {
@@ -1469,7 +1478,7 @@ REQUIREMENTS:
 
 Output ONLY valid D2 code. No markdown fences, no explanations."""
 
-    is_claude = LLM_PROVIDER == "mixed-heavy-claude" or LLM_PROVIDER == "claude-cli"
+    is_claude = LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini")
     res = safe_invoke(
         [HumanMessage(content=prompt)],
         node_label="System Diagram Writer",
@@ -1709,6 +1718,7 @@ No other text outside these blocks."""
         [HumanMessage(content=prompt)],
         node_label="Explainer",
         project_id=state["project_id"],
+        provider_override="claude-cli" if LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini") else None,
     )
 
     # Parse explanations
@@ -1767,6 +1777,7 @@ TASK: Output ONLY the Project Charter markdown. Start directly with `# 🎯 Proj
         [HumanMessage(content=prompt)],
         node_label="Project Charter",
         project_id=state["project_id"],
+        provider_override="claude-cli" if LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini") else None,
     )
     charter_md = strip_code_fence(str(res.content))
     print(f"  [Agent: Project Charter] Generated {len(charter_md)} chars")
@@ -1806,6 +1817,7 @@ Rules:
         [HumanMessage(content=prompt)],
         node_label="Engineering Overview",
         project_id=state["project_id"],
+        provider_override="claude-cli" if LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini") else None,
     )
     overview_md = strip_code_fence(str(res.content))
     print(f"  [Agent: Engineering Overview] Generated {len(overview_md)} chars")
@@ -1836,6 +1848,7 @@ TASK: Output ONLY the project structure markdown (no preamble, no conversation).
         [HumanMessage(content=prompt)],
         node_label="Project Structure",
         project_id=state["project_id"],
+        provider_override="claude-cli" if LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini") else None,
     )
     structure_md = str(res.content).strip()
     print(f"  [Agent: Project Structure] Generated {len(structure_md)} chars")
@@ -1848,6 +1861,7 @@ def bibliographer_node(state: GraphState):
     res = safe_invoke(
         [HumanMessage(content=prompt)],
         node_label="Bibliographer",
+        provider_override="claude-cli" if LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini") else None,
     )
     return {"external_reading": str(res.content).strip(), "status": "done"}
 
@@ -2170,6 +2184,11 @@ if __name__ == "__main__":
         help="Architect=Claude CLI, All other nodes=Gemini Proxy",
     )
     parser.add_argument(
+        "--claude-artist-gemini",
+        action="store_true",
+        help="All nodes=Claude CLI except Artist=Gemini Proxy",
+    )
+    parser.add_argument(
         "--claude-model", default="sonnet", help="Claude CLI model (default: sonnet)"
     )
     parser.add_argument(
@@ -2213,6 +2232,8 @@ if __name__ == "__main__":
         os.environ["USE_MIXED_HEAVY_CLAUDE"] = "true"
     if args.architect_claude:
         os.environ["USE_ARCHITECT_CLAUDE"] = "true"
+    if args.claude_artist_gemini:
+        os.environ["USE_CLAUDE_ARTIST_GEMINI"] = "true"
 
     if args.anthropic_model:
         os.environ["ANTHROPIC_MODEL"] = args.anthropic_model

@@ -587,7 +587,7 @@ For each milestone: misconception, reveal, cascade (3-5 connections, 1+ cross-do
         provider_override=(
             "claude-cli"
             if LLM_PROVIDER
-            and (LLM_PROVIDER.startswith("mixed") or LLM_PROVIDER == "architect-claude")
+            and (LLM_PROVIDER.startswith("mixed") or LLM_PROVIDER in ("architect-claude", "claude-artist-gemini"))
             else None
         ),
         model_override="default[1m]" if USE_1M else "default",
@@ -632,7 +632,7 @@ For each milestone: misconception, reveal, cascade (3-5 connections, 1+ cross-do
             invoke_kwargs=invoke_args,
             provider_override=(
                 "claude-cli"
-                if LLM_PROVIDER and str(LLM_PROVIDER).startswith("mixed")
+                if LLM_PROVIDER and (str(LLM_PROVIDER).startswith("mixed") or LLM_PROVIDER == "claude-artist-gemini")
                 else None
             ),
         )

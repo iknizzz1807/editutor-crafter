@@ -1,0 +1,87 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+shape: sequence_diagram
+tracer: "Tracer (Parent Process)"
+kernel: "Linux Kernel"
+tracee: "Tracee (Child Process)"
+fork_call: {
+  tracer -> kernel: "fork() syscall"
+  kernel -> tracer: "returns child_pid"
+  kernel -> tracee: "creates new task_struct\nPID assigned, memory COW-copied"
+}
+traceme_setup: {
+  tracee -> kernel: "ptrace(PTRACE_TRACEME, 0, NULL, NULL)\n[MUST precede exec — sets PT_PTRACED in task_struct]"
+  kernel -> tracee: "sets task->ptrace |= PT_PTRACED\nparent becomes tracer"
+}
+exec_phase: {
+  tracee -> kernel: "execvp(argv[0], argv)\n[replaces process image]"
+  kernel -> tracee: "loads ELF, resets stack/heap/libs\nmaps new page tables"
+  kernel -> tracer: "delivers SIGTRAP to tracee\n[auto-stops tracee before first instruction]\nwakes tracer's wait queue"
+}
+initial_stop: {
+  tracer -> kernel: "waitpid(child_pid, &status, 0)\n[blocks until SIGTRAP stop]"
+  kernel -> tracer: "returns child_pid\nWIFSTOPPED(status)==true\nWSTOPSIG(status)==SIGTRAP"
+  tracer -> tracer: "STEP 1 COMPLETE\nDO NOT flip in_syscall toggle\nDO NOT call PTRACE_GETREGS\n[this stop is setup, not a syscall stop]"
+}
+options_setup: {
+  tracer -> kernel: "ptrace(PTRACE_SETOPTIONS, child_pid, 0,\n  PTRACE_O_TRACESYSGOOD |\n  PTRACE_O_TRACEFORK |\n  PTRACE_O_TRACECLONE |\n  PTRACE_O_TRACEEXEC)"
+  kernel -> tracer: "sets ptrace_flags in task_struct\nfuture syscall stops → SIGTRAP|0x80"
+}
+loop_entry: {
+  tracer -> tracer: "Initialize: state.in_syscall=0\nnum_active=1"
+}
+resume_1: {
+  tracer -> kernel: "ptrace(PTRACE_SYSCALL, child_pid, NULL, 0)\n[resumes tracee; stop at next syscall boundary]"
+  kernel -> tracee: "sets TIF_SYSCALL_TRACE\ntransitions to TASK_RUNNING"
+  tracee -> kernel: "executes instructions...\nhits syscall instruction"
+  kernel -> tracee: "saves registers to pt_regs\nsets TASK_TRACED\n[ENTRY STOP]"
+  kernel -> tracer: "wakes tracer wait queue\nSIGTRAP|0x80 (0x85)"
+}
+entry_stop: {
+  tracer -> kernel: "waitpid(-1, &status, 0)"
+  kernel -> tracer: "returns pid\nWIFSTOPPED\nWSTOPSIG==0x85"
+  tracer -> tracer: "event=0, sig=0x85 → SYSCALL STOP\nin_syscall: 0→1 (entry)\nptrace(PTRACE_GETREGS) → reads orig_rax\nsave syscall_nr\nprint '[pid N] name(args' → outbuf"
+}
+resume_2: {
+  tracer -> kernel: "ptrace(PTRACE_SYSCALL, child_pid, NULL, 0)"
+  kernel -> tracee: "kernel executes syscall\nwrites return value to rax\n[EXIT STOP]"
+  kernel -> tracer: "wakes tracer wait queue\nSIGTRAP|0x80 (0x85)"
+}
+exit_stop: {
+  tracer -> kernel: "waitpid(-1, &status, 0)"
+  kernel -> tracer: "returns pid\nWIFSTOPPED\nWSTOPSIG==0x85"
+  tracer -> tracer: "in_syscall: 1→0 (exit)\nptrace(PTRACE_GETREGS) → reads rax\nclock_gettime → elapsed_ns\nstats_record(nr, retval, elapsed_ns)\nfilter_matches? → fputs(outbuf) to g_output\n') = retval\\n'"
+}
+signal_delivery: {
+  tracer -> kernel: "ptrace(PTRACE_SYSCALL, child_pid, NULL, 0)"
+  kernel -> tracee: "...tracee runs, receives SIGUSR1..."
+  kernel -> tracer: "WIFSTOPPED, WSTOPSIG==SIGUSR1 (not 0x85)"
+  tracer -> tracer: "sig != 0x85, event==0\n→ SIGNAL-DELIVERY STOP\nDO NOT flip in_syscall toggle"
+  tracer -> kernel: "ptrace(PTRACE_SYSCALL, child_pid, NULL, SIGUSR1)\n[RE-INJECT: pass signal to tracee on resume]\nNEVER pass 0 — that suppresses the signal"
+}
+loop_repeat: {
+  tracer -> tracer: "LOOP: back to ptrace(PTRACE_SYSCALL)\nRepeat entry/exit pairs\nnum_active tracks live processes"
+}
+termination: {
+  kernel -> tracer: "tracee calls exit_group()\nWIFEXITED(status)==true"
+  tracer -> kernel: "waitpid(-1, &status, 0)"
+  kernel -> tracer: "returns pid\nWIFEXITED==true\nWEXITSTATUS(status)==exit_code"
+  tracer -> tracer: "pid_map_remove(pid)\nnum_active--\nprint '+++ exited with N +++'\nDO NOT call PTRACE_SYSCALL\n[process is gone]"
+  tracer -> tracer: "num_active==0 → break loop\nif show_stats: print_statistics(g_output)\nif attach_pid: detach_all()\ncleanup: fclose(g_output)"
+}
+why_traceme_first: {
+  tracer -> tracer: |md
+    **Why PTRACE_TRACEME must precede exec:**
+    - After exec, the process image is replaced — setup code is gone
+    - The PT_PTRACED flag must be set BEFORE exec so the kernel knows
+      to deliver SIGTRAP at exec completion
+    - If PTRACE_TRACEME is called after exec, the initial SIGTRAP
+      has already fired and been lost — the tracer's first waitpid
+      would block forever
+    - Correct order: fork() → PTRACE_TRACEME → execvp()
+  |
+}

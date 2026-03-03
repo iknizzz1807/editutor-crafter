@@ -1,0 +1,338 @@
+layout-engine: elk
+theme-id: 6
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+title: |'md
+## waitpid Stop-Type Classification Decision Tree
+Every return from `waitpid(-1, &status, 0)` traverses this tree.
+Leaf nodes show exact `ptrace(PTRACE_SYSCALL, pid, 0, SIG)` call.
+'| {near: top-center}
+
+# ─── Entry Node ───────────────────────────────────────────────
+entry: "waitpid(-1, &status, 0) returns pid" {
+  shape: rectangle
+  style: {
+    fill: "#2d2d5e"
+    font-color: white
+    bold: true
+    border-radius: 6
+    font-size: 14
+  }
+}
+
+# ─── Decode Block ─────────────────────────────────────────────
+decode: |'md
+**Decode status word**
+`sig   = WSTOPSIG(status)`  ← bits [15:8]
+`event = (status >> 16) & 0xff`  ← bits [23:16]
+'| {
+  shape: rectangle
+  style: {
+    fill: "#1a1a3e"
+    font-color: "#c8c8ff"
+    border-radius: 4
+    font-size: 13
+  }
+}
+entry -> decode
+
+# ─── Q1: WIFEXITED? ───────────────────────────────────────────
+q1: "WIFEXITED(status)?" {
+  shape: diamond
+  style: {
+    fill: "#4a2060"
+    font-color: white
+    bold: true
+    font-size: 13
+  }
+}
+decode -> q1
+
+leaf_exited: "WIFEXITED path" {
+  shape: rectangle
+  style: {
+    fill: "#7b1f1f"
+    font-color: white
+    border-radius: 6
+    font-size: 12
+  }
+  action: |'md
+c
+fprintf(g_output, "[pid %d] +++ exited with %d +++\n", 
+        pid, WEXITSTATUS(status));
+pid_map_remove(&g_pid_map, pid);
+num_active--;
+// NO ptrace(PTRACE_SYSCALL) — process is gone
+continue;  // → next waitpid(-1)
+
+'|
+}
+q1 -> leaf_exited: "YES"
+
+# ─── Q2: WIFSIGNALED? ─────────────────────────────────────────
+q2: "WIFSIGNALED(status)?" {
+  shape: diamond
+  style: {
+    fill: "#4a2060"
+    font-color: white
+    bold: true
+    font-size: 13
+  }
+}
+q1 -> q2: "NO"
+
+leaf_signaled: "WIFSIGNALED path" {
+  shape: rectangle
+  style: {
+    fill: "#7b1f1f"
+    font-color: white
+    border-radius: 6
+    font-size: 12
+  }
+  action: |'md
+c
+fprintf(g_output, "[pid %d] +++ killed by signal %d (%s) +++\n",
+        pid, WTERMSIG(status), strsignal(WTERMSIG(status)));
+pid_map_remove(&g_pid_map, pid);
+num_active--;
+// NO ptrace(PTRACE_SYSCALL) — process is gone
+continue;  // → next waitpid(-1)
+
+'|
+}
+q2 -> leaf_signaled: "YES"
+
+# ─── Q3: WIFSTOPPED? ──────────────────────────────────────────
+q3: "WIFSTOPPED(status)?" {
+  shape: diamond
+  style: {
+    fill: "#4a2060"
+    font-color: white
+    bold: true
+    font-size: 13
+  }
+}
+q2 -> q3: "NO"
+
+leaf_ignored: "Ignore (WIFCONTINUED or unknown)" {
+  shape: rectangle
+  style: {
+    fill: "#2a2a2a"
+    font-color: "#aaaaaa"
+    border-radius: 6
+    font-size: 12
+  }
+  action: |'md
+Not expected under ptrace.
+Loop back to `waitpid(-1)`.
+'|
+}
+q3 -> leaf_ignored: "NO"
+
+# ─── Q4: event != 0? ─────────────────────────────────────────
+q4: "event != 0?\n(PTRACE_EVENT_* stop)" {
+  shape: diamond
+  style: {
+    fill: "#4a2060"
+    font-color: white
+    bold: true
+    font-size: 13
+  }
+}
+q3 -> q4: "YES\n(process stopped)"
+
+leaf_event: "PTRACE_EVENT stop" {
+  shape: rectangle
+  style: {
+    fill: "#1e3a5f"
+    font-color: white
+    border-radius: 6
+    font-size: 12
+  }
+  detail: |'md
+**Dispatch on event value:**
+
+| event | Constant | Action |
+|-------|----------|--------|
+| 1 | `PTRACE_EVENT_FORK` | `PTRACE_GETEVENTMSG` → new PID |
+| 2 | `PTRACE_EVENT_VFORK` | same as FORK |
+| 3 | `PTRACE_EVENT_CLONE` | same as FORK |
+| 4 | `PTRACE_EVENT_EXEC` | reset `in_syscall=1`; `outbuf_len=0` |
+| 6 | `PTRACE_EVENT_EXIT` | log pending exit |
+
+**DO NOT flip `in_syscall` toggle — not a syscall stop.**
+'|
+  resume: |'md
+c
+// Always resume with signal = 0
+ptrace(PTRACE_SYSCALL, pid, 0, 0);
+
+Signal arg = **0** (synthetic event).
+'|
+}
+q4 -> leaf_event: "YES\n(event > 0)"
+
+# ─── Q5: sig == (SIGTRAP | 0x80)? ───────────────────────────
+q5: "sig == (SIGTRAP | 0x80)?\n(sig == 0x85)" {
+  shape: diamond
+  style: {
+    fill: "#4a2060"
+    font-color: white
+    bold: true
+    font-size: 13
+  }
+}
+q4 -> q5: "NO\n(event == 0)"
+
+leaf_syscall: "Syscall stop (entry or exit)" {
+  shape: rectangle
+  style: {
+    fill: "#1a4a1a"
+    font-color: white
+    border-radius: 6
+    font-size: 12
+  }
+  detail: |'md
+**Enabled by `PTRACE_O_TRACESYSGOOD`:**
+Bit 7 set on SIGTRAP for syscall stops.
+Distinguishes from genuine SIGTRAP.
+
+c
+pid_state_t *state = pid_map_get(&g_pid_map, pid);
+state->in_syscall = !state->in_syscall;
+handle_syscall_stop(pid, state);
+
+'|
+  resume: |'md
+c
+// Resume with signal = 0
+ptrace(PTRACE_SYSCALL, pid, 0, 0);
+
+'|
+}
+q5 -> leaf_syscall: "YES\n(0x85)"
+
+# ─── Q6: sig == SIGTRAP? ─────────────────────────────────────
+q6: "sig == SIGTRAP?\n(sig == 0x05)" {
+  shape: diamond
+  style: {
+    fill: "#4a2060"
+    font-color: white
+    bold: true
+    font-size: 13
+  }
+}
+q5 -> q6: "NO\n(sig != 0x85)"
+
+leaf_sigtrap: "Plain SIGTRAP stop" {
+  shape: rectangle
+  style: {
+    fill: "#3a3a1a"
+    font-color: white
+    border-radius: 6
+    font-size: 12
+  }
+  detail: |'md
+**Possible causes:**
+- Initial post-exec stop
+- Software breakpoint (`INT3`)
+- Exec stop without `O_TRACESYSGOOD`
+
+**DO NOT flip `in_syscall` toggle.**
+'|
+  resume: |'md
+c
+// Resume with signal = 0
+ptrace(PTRACE_SYSCALL, pid, 0, 0);
+
+'|
+}
+q6 -> leaf_sigtrap: "YES\n(0x05)"
+
+# ─── Q7: sig == SIGSTOP? ─────────────────────────────────────
+q7: "sig == SIGSTOP?\n(sig == 19)" {
+  shape: diamond
+  style: {
+    fill: "#4a2060"
+    font-color: white
+    bold: true
+    font-size: 13
+  }
+}
+q6 -> q7: "NO\n(sig != SIGTRAP)"
+
+leaf_sigstop: "SIGSTOP stop" {
+  shape: rectangle
+  style: {
+    fill: "#3a2a00"
+    font-color: white
+    border-radius: 6
+    font-size: 12
+  }
+  detail: |'md
+**Two cases:**
+(a) **Synthetic** — initial stop of new child.
+(b) **Genuine** — `kill(pid, SIGSTOP)`.
+
+**Decision: swallow all SIGSTOPs.**
+'|
+  resume: |'md
+c
+// Resume with signal = 0 (suppress)
+ptrace(PTRACE_SYSCALL, pid, 0, 0);
+
+'|
+}
+q7 -> leaf_sigstop: "YES\n(sig == 19)"
+
+# ─── Leaf: Signal-delivery stop ───────────────────────────────
+leaf_signal: "Signal-delivery stop\n(any other signal)" {
+  shape: rectangle
+  style: {
+    fill: "#5c1a1a"
+    font-color: white
+    border-radius: 6
+    font-size: 12
+  }
+  detail: |'md
+**Real signal intercepted before delivery.**
+Intercepts `SIGTERM`, `SIGINT`, `SIGUSR1`, etc.
+Passing `0` would **suppress** the signal.
+**DO NOT flip `in_syscall` toggle.**
+'|
+  resume: |'md
+c
+// Re-inject: deliver signal on resume
+ptrace(PTRACE_SYSCALL, pid, 0, stop_sig);
+
+'|
+}
+q7 -> leaf_signal: "NO\n(other signal)"
+
+# ─── Summary Legend ───────────────────────────────────────────
+legend: "Signal Argument Reference" {
+  near: bottom-center
+  shape: rectangle
+  style: {
+    fill: "#1a1a1a"
+    font-color: "#cccccc"
+    border-radius: 8
+    font-size: 11
+  }
+  content: |'md
+| Stop Type | `ptrace(PTRACE_SYSCALL, ...)` | Flip toggle? |
+|-----------|-------------------------------|--------------|
+| `WIFEXITED` | **not called** | — |
+| `PTRACE_EVENT_*` | SIG = **0** | **NO** |
+| Syscall stop | SIG = **0** | **YES** |
+| Plain `SIGTRAP` | SIG = **0** | **NO** |
+| `SIGSTOP` | SIG = **0** (swallow) | **NO** |
+| Other signal | SIG = **stop_sig** (re-inject) | **NO** |
+'|
+}

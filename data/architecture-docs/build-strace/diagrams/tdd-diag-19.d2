@@ -1,0 +1,93 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+title: "PTRACE_EVENT_FORK Sequence: Parent Stop → Child Birth → Dual Resume" {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 18
+    bold: true
+  }
+}
+
+shape: sequence_diagram
+
+tracer: "Tracer Process"
+kernel: "Linux Kernel"
+parent: "Parent Tracee (PID 1234)"
+child: "Child Tracee (PID 1235)"
+
+step1: "① SYSCALL-ENTRY STOP  —  fork() entry" {
+  parent -> kernel: "syscall(SYS_fork)\n[orig_rax = 57]"
+  kernel -> tracer: "WIFSTOPPED · WSTOPSIG = SIGTRAP|0x80 (0x85)\nstatus >> 16 == 0  →  syscall stop"
+  tracer -> tracer: "state[1234].in_syscall: 0 → 1\nextract_args: syscall_nr = 57 (fork)\nclock_gettime(entry_time)\nbuild outbuf: \"[pid 1234] fork(\""
+}
+
+step2: "② PTRACE_SYSCALL → resume parent for kernel to execute fork()" {
+  tracer -> kernel: "ptrace(PTRACE_SYSCALL, 1234, 0, 0)"
+  kernel -> parent: "resume · kernel begins fork() execution\ncopy page tables (COW) · allocate task_struct for PID 1235\nauto-attach child via PTRACE_O_TRACEFORK\ndeliver SIGSTOP to child BEFORE any instruction runs"
+}
+
+step3: "③ PTRACE_EVENT_FORK STOP  —  parent stops BEFORE syscall-exit" {
+  kernel -> tracer: "WIFSTOPPED · WSTOPSIG = SIGTRAP (0x05)\nstatus >> 16 == PTRACE_EVENT_FORK (1)\n⚠ event != 0  →  NOT a syscall stop"
+  tracer -> tracer: "handle_stop dispatch:\n  event = (status >> 16) & 0xff = 1\n  ✓ event != 0 branch fires FIRST\n  ✗ in_syscall toggle NOT flipped\n  state[1234].in_syscall remains = 1"
+}
+
+step4: "④ PTRACE_GETEVENTMSG → retrieve child PID" {
+  tracer -> kernel: "ptrace(PTRACE_GETEVENTMSG, 1234, 0, &new_pid_ul)"
+  kernel -> tracer: "new_pid_ul = 1235\n(task_struct.ptrace_message field)"
+  tracer -> tracer: "new_pid = (pid_t)1235\nfprintf: \"[pid 1234] fork() = 1235\""
+}
+
+step5: "⑤ pid_map_get(1235) — initialize child state" {
+  tracer -> tracer: "child_state = pid_map_get(&g_pid_map, 1235)\n  hash slot allocated (Fibonacci hash)\n  child_state->pid = 1235\n  child_state->active = 1\n  child_state->in_syscall = 0   ← clean start\n  child_state->outbuf_len = 0\nnum_active += 1  (now = 2)"
+}
+
+step6: "⑥ PTRACE_SETOPTIONS on new child" {
+  tracer -> kernel: "ptrace(PTRACE_SETOPTIONS, 1235, 0,\n  PTRACE_O_TRACESYSGOOD |\n  PTRACE_O_TRACEFORK    |\n  PTRACE_O_TRACEVFORK   |\n  PTRACE_O_TRACECLONE   |\n  PTRACE_O_TRACEEXEC)"
+  kernel -> tracer: "0 (success)\noptions set in task_struct[1235].ptrace_flags"
+}
+
+step7: "⑦ PTRACE_SYSCALL → resume child (consume its initial SIGSTOP)" {
+  tracer -> kernel: "ptrace(PTRACE_SYSCALL, 1235, 0, 0)\n[signal arg = 0: do NOT re-inject SIGSTOP]"
+  kernel -> child: "child transitions TASK_TRACED → TASK_RUNNING\nruns to first syscall boundary"
+  child -> tracer: "child's INITIAL SIGSTOP stop:\n  WIFSTOPPED · WSTOPSIG = SIGSTOP (19)\n  → handle_stop: sig == SIGSTOP branch\n  → swallow (do not re-inject)\n  → ptrace(PTRACE_SYSCALL, 1235, 0, 0)"
+}
+
+step8: "⑧ PTRACE_SYSCALL → resume parent past PTRACE_EVENT_FORK" {
+  tracer -> kernel: "ptrace(PTRACE_SYSCALL, 1234, 0, 0)\n[signal arg = 0: PTRACE_EVENT has no signal to deliver]"
+  kernel -> parent: "resume · complete fork() syscall-exit path\nwrite child PID (1235) into rax"
+}
+
+step9: "⑨ SYSCALL-EXIT STOP  —  fork() returns child_pid in parent" {
+  kernel -> tracer: "WIFSTOPPED · WSTOPSIG = SIGTRAP|0x80 (0x85)\nstatus >> 16 == 0  →  syscall stop"
+  tracer -> tracer: "handle_stop:\n  event = 0  →  not PTRACE_EVENT\n  sig = 0x85  →  syscall stop\n  state[1234].in_syscall: 1 → 0\n  PTRACE_GETREGS: rax = 1235 (child PID)\n  orig_rax = 57 (fork — saved from entry)\n  elapsed_ns = clock_gettime() - entry_time\n  stats_record(57, 1235, elapsed_ns)\n  filter_matches(57) → print\n  complete outbuf: \"[pid 1234] fork() = 1235\\n\"\n  fputs(outbuf, g_output)  ← single atomic write\n  outbuf_len = 0"
+  tracer -> kernel: "ptrace(PTRACE_SYSCALL, 1234, 0, 0)"
+}
+
+step10: "⑩ Child runs to first syscall  —  both processes now fully traced" {
+  child -> kernel: "child executes first instruction\nruns until syscall boundary"
+  kernel -> tracer: "child: WIFSTOPPED · WSTOPSIG = 0x85\n  state[1235].in_syscall: 0 → 1  ← entry stop\n  (child's first normal syscall entry)"
+  tracer -> tracer: "Both PIDs active in g_pid_map:\n  state[1234]: in_syscall=0 (between syscalls)\n  state[1235]: in_syscall=1 (first entry)\nnum_active = 2\nwaitpid(-1) dispatches by PID"
+}
+
+note_toggle: "Toggle Invariant Summary" {
+  shape: text
+  style: {
+    font-size: 13
+  }
+  label: |'md
+| Stop | PID | Event? | Toggle Flip? | in_syscall after |
+|------|-----|--------|-------------|-----------------|
+| fork() entry (0x85) | 1234 | No | **YES** | 1 |
+| PTRACE_EVENT_FORK (SIGTRAP, event=1) | 1234 | **Yes** | **NO** | 1 (unchanged) |
+| fork() exit (0x85) | 1234 | No | **YES** | 0 |
+| child SIGSTOP (sig=19) | 1235 | No | **NO** (SIGSTOP branch) | 0 (unchanged) |
+| child first syscall entry (0x85) | 1235 | No | **YES** | 1 |
+'|
+  near: bottom-center
+}

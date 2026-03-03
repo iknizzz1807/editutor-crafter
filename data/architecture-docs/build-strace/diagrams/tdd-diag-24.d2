@@ -1,0 +1,208 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: right
+
+title: |md
+  ## CLOCK_MONOTONIC vs CLOCK_REALTIME
+  ### Why the Wrong Clock Breaks Profiling
+| {near: top-center}
+
+timeline: {
+  style.fill: "#f0f4ff"
+  style.border-radius: 8
+
+  axis: "Time →  (wall clock ms)" {
+    shape: text
+    style.font-size: 13
+    style.bold: true
+  }
+
+  realtime_lane: CLOCK_REALTIME {
+    style.fill: "#fff0f0"
+    style.border-radius: 6
+
+    rt_t0: T=0ms\nentry_time\nread() enters {
+      style.fill: "#e74c3c"
+      style.font-color: white
+      style.border-radius: 4
+      style.bold: true
+    }
+
+    rt_ntp: ⚡ NTP STEP\n−50ms jump\n(T=150ms wall) {
+      style.fill: "#c0392b"
+      style.font-color: white
+      style.border-radius: 4
+      style.bold: true
+      style.stroke: "#7b241c"
+      style.stroke-width: 3
+    }
+
+    rt_t1: T=100ms\n(reported as 50ms\nafter NTP step)\nexit_time {
+      style.fill: "#e74c3c"
+      style.font-color: white
+      style.border-radius: 4
+      style.bold: true
+    }
+
+    rt_result: elapsed = exit_time − entry_time\n= 50ms − 100ms\n= −50ms ❌ NEGATIVE DURATION {
+      shape: text
+      style.font-color: "#c0392b"
+      style.bold: true
+      style.font-size: 13
+    }
+
+    rt_t0 -> rt_ntp: "+150ms real time\n(advancing normally)" {
+      style.stroke: "#e74c3c"
+      style.stroke-width: 2
+    }
+    rt_ntp -> rt_t1: "NTP rewinds clock\n−50ms → now reads\nas if only 50ms elapsed" {
+      style.stroke: "#c0392b"
+      style.stroke-width: 3
+      style.stroke-dash: 5
+    }
+    rt_t1 -> rt_result
+  }
+
+  mono_lane: CLOCK_MONOTONIC {
+    style.fill: "#f0fff4"
+    style.border-radius: 6
+
+    mono_t0: T=0ns\nentry_time\nread() enters {
+      style.fill: "#27ae60"
+      style.font-color: white
+      style.border-radius: 4
+      style.bold: true
+    }
+
+    mono_ntp: NTP event\n(zero effect on\nCLOCK_MONOTONIC) {
+      style.fill: "#7dcea0"
+      style.font-color: "#1e8449"
+      style.border-radius: 4
+      style.stroke: "#7dcea0"
+      style.stroke-dash: 4
+    }
+
+    mono_t1: T=300,000,000ns\n(300ms)\nexit_time {
+      style.fill: "#27ae60"
+      style.font-color: white
+      style.border-radius: 4
+      style.bold: true
+    }
+
+    mono_result: elapsed = exit_time − entry_time\n= 300,000,000ns − 0ns\n= 300ms ✓ CORRECT {
+      shape: text
+      style.font-color: "#1e8449"
+      style.bold: true
+      style.font-size: 13
+    }
+
+    mono_t0 -> mono_ntp: "strictly increasing\n(guaranteed by POSIX)" {
+      style.stroke: "#27ae60"
+      style.stroke-width: 2
+    }
+    mono_ntp -> mono_t1: "continues increasing\nNTP has NO effect" {
+      style.stroke: "#27ae60"
+      style.stroke-width: 2
+    }
+    mono_t1 -> mono_result
+  }
+}
+
+vdso_box: vDSO Fast Path (Both Clocks) {
+  style.fill: "#fffbe6"
+  style.border-radius: 8
+  style.stroke: "#f39c12"
+  style.stroke-width: 2
+
+  vdso_desc: ||md
+    **clock_gettime(CLOCK_MONOTONIC, &ts)**
+    Kernel maps a read-only page into every process's address space.
+    Contains pre-computed time values updated by kernel timer interrupts.
+    **No ring-0 transition required** — pure userspace memory read.
+    Cost: **~5–20 ns** per call (vs ~100 ns for a real syscall)
+  ||
+
+  vdso_compare: |'md
+    | Method | Cost | Kernel transition? |
+    |--------|------|--------------------|
+    | `clock_gettime` (vDSO) | 5–20 ns | **No** |
+    | `gettimeofday` (vDSO) | 5–20 ns | **No** |
+    | `time(NULL)` (vDSO) | 5–20 ns | **No** — but 1s resolution |
+    | Direct `syscall` | ~100 ns | Yes (ring-0) |
+  '|
+}
+
+concrete_example: Concrete Example: read() Blocked on Disk I/O {
+  style.fill: "#f4f4f4"
+  style.border-radius: 8
+  style.stroke: "#7f8c8d"
+
+  ex_entry: Entry Stop\nclock_gettime → entry_time\norig_rax = SYS_read (0)\nblocks in kernel waiting for disk {
+    style.fill: "#3498db"
+    style.font-color: white
+    style.border-radius: 4
+  }
+
+  ex_disk: Kernel executes read()\nDisk I/O in progress...\n~300ms actual wait {
+    style.fill: "#95a5a6"
+    style.border-radius: 4
+    style.stroke-dash: 4
+  }
+
+  ex_exit: Exit Stop\nclock_gettime → exit_time\nrax = 4096 (bytes read) {
+    style.fill: "#3498db"
+    style.font-color: white
+    style.border-radius: 4
+  }
+
+  ex_calc: "Accurate Calculation Result" {
+    shape: text
+    label: ||md
+    **timespec_diff_ns(&entry_time, &exit_time)**
+    = 300,000,000 ns  →  reported as **300ms**
+    **Accurate** because disk I/O wait (300ms) completely
+    dominates tracer overhead (~2–10µs context switches).
+    NTP step of ±50ms would corrupt CLOCK_REALTIME result.
+    ||
+  }
+
+  ex_entry -> ex_disk: "PTRACE_SYSCALL resumes tracee" {
+    style.stroke: "#3498db"
+    style.animated: true
+  }
+  ex_disk -> ex_exit: "disk returns data\nexit stop fires" {
+    style.stroke: "#3498db"
+    style.animated: true
+  }
+  ex_exit -> ex_calc
+}
+
+rule: ||md
+  **The Rule:**
+  - `CLOCK_REALTIME` → "What time is it?" → Use for user-visible timestamps
+  - `CLOCK_MONOTONIC` → "How long did this take?" → **Always use for duration measurement**
+|| {
+  near: bottom-center
+  style.font-size: 14
+  style.bold: true
+  style.fill: "#eaf2ff"
+  style.border-radius: 6
+  style.stroke: "#2980b9"
+}
+
+timeline.realtime_lane -> timeline.mono_lane: "Same NTP event\nzero effect →" {
+  style.stroke: "#e67e22"
+  style.stroke-width: 2
+  style.font-color: "#e67e22"
+  style.bold: true
+}
+
+vdso_box -> concrete_example: "used by both clocks\nfor elapsed measurement" {
+  style.stroke: "#f39c12"
+  style.stroke-dash: 3
+}

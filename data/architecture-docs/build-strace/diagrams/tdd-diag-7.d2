@@ -1,0 +1,105 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+title: |md
+  ## Signal Re-injection vs Suppression: Tracer Decision Flow
+  _Real SIGTERM intercepted at syscall boundary — re-inject or suppress?_
+| {near: top-center}
+signal_flow: {
+  shape: sequence_diagram
+  kernel: "Kernel\n(ptrace machinery)"
+  tracer: "Tracer Process\n(waitpid loop)"
+  tracee: "Tracee Process\n(traced program)"
+  # ── Phase 1: External signal arrives ──────────────────────────────────
+  phase1: "① SIGTERM sent (e.g. kill -TERM PID)" {
+    tracer -> kernel: "PTRACE_SYSCALL(pid, 0, 0)\n[last resume — no signal]" {
+      style.stroke-dash: 0
+      style.stroke: "#5B8DD9"
+    }
+    tracee -> kernel: "tracee running in user-space\n→ executes instructions normally" {
+      style.stroke-dash: 3
+      style.stroke: "#888888"
+    }
+    kernel -> tracee: "external SIGTERM delivered\nto tracee's signal queue" {
+      style.stroke: "#E05C4B"
+      style.bold: true
+    }
+  }
+  # ── Phase 2: Kernel intercepts ────────────────────────────────────────
+  phase2: "② Kernel intercepts — signal-delivery stop" {
+    kernel -> kernel: "tracee transitions to\nTASK_TRACED state\n(SIGTERM pending, not yet delivered)" {
+      style.stroke: "#E05C4B"
+    }
+    kernel -> tracer: "waitpid(-1) returns\nWIFSTOPPED(status) = true\nWSTOPSIG(status) = SIGTERM (15)" {
+      style.stroke: "#E8A838"
+      style.bold: true
+    }
+  }
+  # ── Phase 3: Tracer classification ───────────────────────────────────
+  phase3: "③ Tracer classifies the stop" {
+    tracer -> tracer: "sig = WSTOPSIG(status) = 15\nevent = (status >> 16) & 0xff = 0\nIF sig == (SIGTRAP | 0x80): SYSCALL STOP → skip\nIF event != 0:              PTRACE_EVENT  → skip\nELSE: SIGNAL-DELIVERY STOP → must decide" {
+      style.stroke: "#5B8DD9"
+      style.fill: "#1E2A45"
+    }
+  }
+  # ── Branch A: RE-INJECT (CORRECT) ────────────────────────────────────
+  branch_reinject: "④-A  RE-INJECT PATH (correct)" {
+    tracer -> kernel: "ptrace(PTRACE_SYSCALL, pid, 0, SIGTERM)\n                               ↑\n                    signal passed as 4th arg" {
+      style.stroke: "#4CAF82"
+      style.bold: true
+      style.stroke-width: 3
+    }
+    kernel -> tracee: "tracee resumes AND\nSIGTERM is delivered\n→ default action: terminate" {
+      style.stroke: "#4CAF82"
+      style.bold: true
+    }
+    tracee -> tracer: "waitpid returns WIFSIGNALED\nWTERMSIG = 15 (SIGTERM)" {
+      style.stroke: "#4CAF82"
+    }
+    tracer -> tracer: "print '+++ killed by signal 15 (Terminated) +++'\nbreak loop" {
+      style.stroke: "#4CAF82"
+      style.fill: "#1A2F22"
+    }
+  }
+  # ── Branch B: SUPPRESS (WRONG) ───────────────────────────────────────
+  branch_suppress: "④-B  SUPPRESS PATH (BUG — do not do this)" {
+    tracer -> kernel: "ptrace(PTRACE_SYSCALL, pid, 0, 0)\n                               ↑\n                 signal arg = 0 → SUPPRESS" {
+      style.stroke: "#E05C4B"
+      style.bold: true
+      style.stroke-width: 3
+      style.stroke-dash: 4
+    }
+    kernel -> tracee: "tracee resumes but\nSIGTERM is DISCARDED\n→ tracee never terminates" {
+      style.stroke: "#E05C4B"
+      style.bold: true
+      style.stroke-dash: 4
+    }
+    tracee -> tracee: "tracee hangs indefinitely\n(waiting for signal that\nwill never arrive)" {
+      style.stroke: "#E05C4B"
+      style.fill: "#2F1A1A"
+    }
+  }
+  # ── Stop-type annotation table ────────────────────────────────────────
+  annotation: "⑤ Stop-type decision table: re-inject vs suppress" {
+    tracer -> tracer: "SIGTRAP | 0x80  (syscall stop)    → ptrace(PTRACE_SYSCALL, pid, 0,   0 )  NO signal\nevent != 0      (PTRACE_EVENT)    → ptrace(PTRACE_SYSCALL, pid, 0,   0 )  NO signal\nSIGTRAP (plain) (exec/breakpoint) → ptrace(PTRACE_SYSCALL, pid, 0,   0 )  NO signal\nSIGSTOP         (auto-attach)     → ptrace(PTRACE_SYSCALL, pid, 0,   0 )  NO signal\nANY OTHER sig   (real signal)     → ptrace(PTRACE_SYSCALL, pid, 0, sig)  RE-INJECT" {
+      style.stroke: "#B39DDB"
+      style.fill: "#1C1830"
+      style.font: mono
+    }
+  }
+}
+legend: |md
+  **Key rules**
+  - `SIGTRAP`-based stops (syscall, event, exec) are **ptrace artifacts** — no signal to deliver → pass `0`
+  - All other `WSTOPSIG` values are **real signals intercepted before delivery** → pass `stop_sig`
+  - Passing `0` for a real signal = **silent suppression** (SIGTERM, SIGCHLD, SIGALRM all break the program)
+  - Passing `stop_sig` for a ptrace artifact = **spurious signal injection** (delivers a SIGTRAP the program did not expect)
+| {
+  near: bottom-center
+  style.fill: "#1A1A2E"
+  style.stroke: "#5B8DD9"
+  style.font-size: 14
+}

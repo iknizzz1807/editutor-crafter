@@ -1,0 +1,241 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+direction: right
+
+title: "PTRACE_ATTACH Lifecycle: Attach → Stop → Options → Mid-Syscall State" {
+  shape: text
+  near: top-center
+  style: {
+    font-size: 20
+    bold: true
+  }
+}
+
+sd: {
+  shape: sequence_diagram
+  
+  tracer: "Tracer\n./my_strace -p 1234" {
+    style.fill: "#E4DBFE"
+    style.stroke: "#7C3AED"
+  }
+  kernel: "Linux Kernel\nptrace subsystem" {
+    style.fill: "#DEE1EB"
+    style.stroke: "#4B5563"
+  }
+  python: "Python Process\npid=1234" {
+    style.fill: "#C7F1FF"
+    style.stroke: "#0369A1"
+  }
+
+  tracer.note_init: "User calls: ./my_strace -p 1234"
+
+  step1: "── STEP 1: Initiate Attach ──" {
+    style.stroke-dash: 5
+    style.fill: "#F3F0FF"
+    
+    tracer -> kernel: "ptrace(PTRACE_ATTACH, 1234, 0, 0)" {
+      style.stroke: "#7C3AED"
+      style.stroke-width: 2
+    }
+    kernel -> python: "enqueue SIGSTOP\n(async delivery)" {
+      style.stroke-dash: 4
+      style.stroke: "#DC2626"
+      style.animated: true
+    }
+    kernel -> tracer: "returns 0 (success)\n[IMMEDIATE return — Python NOT yet stopped]" {
+      style.stroke: "#16A34A"
+      style.stroke-dash: 5
+    }
+    tracer.note_flag: "set PT_PTRACED flag in\ntask_struct for pid 1234"
+  }
+
+  step2: "── STEP 2: Wait for SIGSTOP ──" {
+    style.stroke-dash: 5
+    style.fill: "#F3F0FF"
+    
+    tracer -> kernel: "waitpid(1234, &status, 0)\n[BLOCKS — Python not stopped yet]" {
+      style.stroke: "#7C3AED"
+      style.stroke-width: 2
+    }
+    python.note_sig: "SIGSTOP delivered\nwakes from current blocking call\n(e.g. read() returns EINTR internally)"
+    python -> kernel: "TASK_STOPPED state\nnotify tracer wait queue" {
+      style.stroke: "#DC2626"
+      style.stroke-width: 2
+    }
+    kernel -> tracer: "waitpid returns pid=1234\nWIFSTOPPED(status)=true\nWSTOPSIG(status)=SIGSTOP(19)" {
+      style.stroke: "#16A34A"
+      style.stroke-width: 2
+    }
+    tracer.note_assert: "assert WIFSTOPPED(status)\nlog: Attached to PID 1234"
+  }
+
+  step3: "── STEP 3: Set Tracing Options ──" {
+    style.stroke-dash: 5
+    style.fill: "#F3F0FF"
+    
+    tracer -> kernel: "ptrace(PTRACE_SETOPTIONS, 1234, 0,\n  PTRACE_O_TRACESYSGOOD\n  | PTRACE_O_TRACEFORK\n  | PTRACE_O_TRACEVFORK\n  | PTRACE_O_TRACECLONE\n  | PTRACE_O_TRACEEXEC)" {
+      style.stroke: "#7C3AED"
+      style.stroke-width: 2
+    }
+    kernel -> tracer: "returns 0\nOption bits stored in task_struct.ptrace_flags" {
+      style.stroke: "#16A34A"
+      style.stroke-dash: 5
+    }
+  }
+
+  step4: "── STEP 4: Initialize Per-PID State ──" {
+    style.stroke-dash: 5
+    style.fill: "#F3F0FF"
+    tracer.init_state: |md
+      pid_map_get(&g_pid_map, 1234)
+      → new pid_state_t slot created
+        .pid        = 1234
+        .active     = 1
+        .in_syscall = 0  ← may be WRONG if mid-syscall
+        .outbuf_len = 0
+        .entry_time = {0,0}  (unset)
+    | {
+      style.fill: "#FEF3C7"
+      style.stroke: "#D97706"
+      style.font-size: 13
+    }
+  }
+
+  step5: "── STEP 5: First PTRACE_SYSCALL Resume ──" {
+    style.stroke-dash: 5
+    style.fill: "#F3F0FF"
+    
+    tracer -> kernel: "ptrace(PTRACE_SYSCALL, 1234, 0, 0)\n[resume Python — stop at next syscall boundary]" {
+      style.stroke: "#7C3AED"
+      style.stroke-width: 2
+    }
+    kernel -> python: "TASK_RUNNING\nTIF_SYSCALL_TRACE set" {
+      style.stroke: "#16A34A"
+      style.stroke-dash: 5
+    }
+  }
+
+  step6: "── STEP 6: First Event — Two Possible Paths ──" {
+    style.stroke-dash: 5
+    style.fill: "#F3F0FF"
+    
+    python -> kernel: "syscall boundary stop\n(entry OR exit — unknown which)" {
+      style.stroke: "#DC2626"
+      style.stroke-width: 2
+      style.animated: true
+    }
+    kernel -> tracer: "waitpid(-1) returns pid=1234\nWIFSTOPPED, sig=SIGTRAP|0x80 (0x85)" {
+      style.stroke: "#16A34A"
+      style.stroke-width: 2
+    }
+    tracer.handle_note: "handle_stop() dispatches:\nsig == (SIGTRAP|0x80) → syscall stop\nflip in_syscall: 0 → 1\ncall handle_syscall_stop(1234, state)"
+
+    path_normal: "PATH A: Normal case\n(Python stopped at fresh ENTRY stop)" {
+      style.fill: "#DCFCE7"
+      style.stroke: "#16A34A"
+      style.stroke-dash: 3
+      tracer.path_a_logic: |md
+        in_syscall==1 → ENTRY path
+        extract_args(&regs, &state->current)
+        clock_gettime(CLOCK_MONOTONIC, &entry_time)
+        build outbuf: '[pid 1234] read('
+        outbuf_len > 0
+        → WAIT for exit stop to complete line
+      | {
+        style.fill: "#DCFCE7"
+      }
+    }
+
+    path_midsyscall: "PATH B: Mid-syscall attach\n(Python was blocked in read() when SIGSTOP hit)" {
+      style.fill: "#FEE2E2"
+      style.stroke: "#DC2626"
+      style.stroke-dash: 3
+      tracer.path_b_logic: |md
+        in_syscall==1 → ENTRY path
+        BUT: kernel interrupted read() at
+        syscall ENTRY point before kernel executed it
+        Kernel delivers SIGSTOP → read() never ran
+        Result: we see the EXIT stop first
+        next stop will be EXIT (toggle → 0)
+      | {
+        style.fill: "#FEF3C7"
+      }
+      tracer -> kernel: "ptrace(PTRACE_SYSCALL, 1234, 0, 0)\n[resume to exit stop of interrupted read]" {
+        style.stroke: "#DC2626"
+      }
+      kernel -> tracer: "waitpid returns: EXIT stop\nsig=SIGTRAP|0x80\nWSTOPSIG=0x85" {
+        style.stroke: "#DC2626"
+      }
+      tracer.midsys_detect: |md
+        flip in_syscall: 1 → 0
+        call handle_syscall_stop(1234, state)
+        in_syscall==0 → EXIT path
+        BUT outbuf_len == 0  ← NO entry was buffered!
+
+        MID-SYSCALL ATTACH DETECTION:
+        if (state->outbuf_len == 0) {
+          retval = (long)regs.rax;   ← EINTR = -4
+          nr     = (long)regs.orig_rax;  ← read = 0
+          fprintf(g_output, '[pid 1234] <... read resumed>) = -1 EINTR\n');
+          return;
+        }
+      | {
+        style.fill: "#FEE2E2"
+        style.stroke: "#DC2626"
+        style.font-size: 12
+      }
+    }
+  }
+
+  resync: "── Toggle Re-synchronization After PATH B ──" {
+    style.stroke-dash: 5
+    style.fill: "#F3F0FF"
+    tracer.resync_note: |md
+      After mid-syscall exit handled:
+        state->in_syscall = 0
+        state->outbuf_len = 0
+      NEXT stop will be a genuine ENTRY stop
+        → toggle: 0 → 1  ✓  (ENTRY path)
+      NEXT+1 stop will be EXIT stop
+        → toggle: 1 → 0  ✓  (EXIT path)
+      Toggle is now synchronized with Python's
+      actual syscall progression. All subsequent
+      pairs decoded correctly.
+    | {
+      style.fill: "#DCFCE7"
+      style.stroke: "#16A34A"
+      style.font-size: 13
+    }
+  }
+
+  legend: "── Observer Effect Note ──" {
+    style.stroke-dash: 5
+    style.fill: "#F3F0FF"
+    tracer.legend_note: |md
+      Mid-syscall first exit stop:
+        entry_time = {0, 0}  (never set)
+        elapsed_ns would = time since boot  ← INVALID
+        → stats_record() NOT called for this stop
+        → stats_record() resumes normally from next full pair
+
+      Time measurement for first complete pair
+      after attach includes:
+        (b) tracer context-switch cost  ~1–5µs
+        (c) PTRACE_GETREGS overhead     ~1µs
+        (d) context-switch back          ~1–5µs
+        (e) ptrace stop overhead         ~1µs
+      Fast syscalls (getpid ~100ns real) measure
+      as ~10–50µs under ptrace — 100–500× inflated.
+      Only relative comparisons and call counts
+      are meaningful from -c statistics.
+    | {
+      style.fill: "#FEF9C3"
+      style.font-size: 12
+    }
+  }
+}

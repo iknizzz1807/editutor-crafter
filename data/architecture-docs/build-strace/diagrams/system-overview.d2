@@ -1,0 +1,493 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+row_shared: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_m1: {
+    direction: down
+    label: "M1 — Basic ptrace Intercept  [build-strace-m1]"
+    tracee_state: {
+      shape: sql_table
+      label: "struct tracee_state_t (my_strace.c)  [M1]"
+      in_syscall: "int        | 0=exit 1=entry"
+      current_syscall_nr: "long       | from orig_rax"
+      sz: "Total: 16 bytes (1 cache line)"
+    }
+    user_regs: {
+      shape: sql_table
+      label: "struct user_regs_struct (sys/user.h)  [M1]"
+      orig_rax: "u64  offset 0x78  | syscall nr"
+      rax: "u64  offset 0x50  | return val"
+      rdi: "u64  offset 0x70  | arg1"
+      rsi: "u64  offset 0x68  | arg2"
+      rdx: "u64  offset 0x60  | arg3"
+      r10: "u64  offset 0x38  | arg4 NOT rcx"
+      r8: "u64  offset 0x48  | arg5"
+      r9: "u64  offset 0x40  | arg6"
+      sz: "Total: 216 bytes (struct)"
+    }
+    run_child: {
+      shape: class
+      label: "run_child()  my_strace.c  [M1]"
+      +run_child(argv): "void"
+      -ptrace_traceme(): "void"
+      -execvp(argv): "noreturn"
+    }
+    run_tracer_m1: {
+      shape: class
+      label: "run_tracer()  my_strace.c  [M1]"
+      +run_tracer(child_pid): "void"
+      +handle_syscall_stop(pid, state): "void"
+      +print_syscall_result(nr, retval): "void"
+      -is_error_return(retval): "int"
+      -errno_name(err): "const char*"
+    }
+    waitpid_status: {
+      shape: sql_table
+      label: "waitpid status word  (sys/wait.h)  [M1]"
+      bits_31_16: "PTRACE_EVENT_*  | high byte"
+      bits_15_8: "stop signal / 0x7f sentinel"
+      bit_7: "core dump flag"
+      bits_6_0: "term signal or 0"
+      WIFEXITED: "macro | (status and 0x7f)==0"
+      WIFSTOPPED: "macro | (status and 0xff)==0x7f"
+      WSTOPSIG: "macro | (status>>8) and 0xff"
+    }
+    tracee_state -> user_regs: "PTRACE_GETREGS"
+    run_child -> run_tracer_m1: "fork | child_pid"
+    run_tracer_m1 -> tracee_state: "state*"
+    run_tracer_m1 -> waitpid_status: "decodes"
+  }
+  layer_m2: {
+    direction: down
+    label: "M2 — Argument Decoding  [build-strace-m2]"
+    syscall_info: {
+      shape: sql_table
+      label: "struct syscall_info_t (arg_types.h)  [M2]"
+      syscall_nr: "long       offset 0x00 | orig_rax"
+      args_0: "u64        offset 0x08 | rdi arg1"
+      args_1: "u64        offset 0x10 | rsi arg2"
+      args_2: "u64        offset 0x18 | rdx arg3"
+      args_3: "u64        offset 0x20 | r10 arg4"
+      args_4: "u64        offset 0x28 | r8  arg5"
+      args_5: "u64        offset 0x30 | r9  arg6"
+      retval: "long       offset 0x38 | rax"
+      sz: "Total: 64 bytes (1 cache line)"
+    }
+    arg_type_enum: {
+      shape: sql_table
+      label: "enum arg_type_t (arg_types.h)  [M2]"
+      ARG_NONE: "0  | unused"
+      ARG_INT: "1  | signed decimal"
+      ARG_UINT: "2  | unsigned decimal"
+      ARG_FD: "3  | file descriptor"
+      ARG_STR: "4  | PTRACE_PEEKDATA string"
+      ARG_HEX: "5  | 0xVALUE"
+      ARG_PTR: "6  | alias HEX"
+      ARG_OPEN_FLAGS: "7  | O_RDONLY|O_CREAT..."
+      ARG_MMAP_PROT: "8  | PROT_READ|..."
+      ARG_MMAP_FLAGS: "9  | MAP_PRIVATE|..."
+      ARG_OCTAL: "10 | 0644"
+    }
+    syscall_sig: {
+      shape: sql_table
+      label: "struct syscall_sig_t (arg_types.h)  [M2]"
+      name: "const char*  | syscall name"
+      nargs: "int          | 0-6"
+      args_arr: "arg_type_t[6] offset 0x10 | types"
+      sz: "Total: 40 bytes per entry"
+    }
+    flag_entry: {
+      shape: sql_table
+      label: "struct flag_entry_t (arg_types.h)  [M2]"
+      value: "unsigned long | bitmask value"
+      name: "const char*   | symbol name"
+      sz: "Total: 16 bytes per entry"
+    }
+    string_reader: {
+      shape: class
+      label: "string_reader.h  [M2]"
+      STRING_MAX_LEN: "32 bytes default"
+      +read_string_from_tracee(pid, addr, out, max_len): "int"
+      +print_string_arg(pid, addr, out): "void"
+    }
+    arg_formatter: {
+      shape: class
+      label: "arg_formatter.h  [M2]"
+      +print_arg(pid, type, value, out): "void"
+      +print_syscall_entry(pid, info, out): "void"
+      +print_syscall_exit(info, out): "void"
+      +decode_flags(value, flags, nflags, out): "void"
+      +print_open_flags(flags, out): "void"
+      -lookup_sig(syscall_nr): "const syscall_sig_t*"
+    }
+    syscall_table: {
+      shape: sql_table
+      label: "syscall_names[]  syscall_table.h  [M2]"
+      size: "SYSCALL_TABLE_SIZE = 400 entries"
+      index_0: "[0]  = read"
+      index_1: "[1]  = write"
+      index_2: "[2]  = open"
+      index_257: "[257]= openat"
+      index_231: "[231]= exit_group"
+      mem: "400*8 = 3200 bytes ptr array"
+      +syscall_name(nr): "const char*"
+    }
+    tracee_state_m2: {
+      shape: sql_table
+      label: "struct tracee_state_t M2 (my_strace.c)  [M2]"
+      in_syscall: "int            offset 0x00"
+      current: "syscall_info_t  offset 0x08 | 64 bytes"
+      sz: "Total: 72 bytes (2 cache lines)"
+    }
+    syscall_info -> arg_type_enum: "args[] uses"
+    syscall_sig -> arg_type_enum: "args[6]"
+    arg_formatter -> string_reader: "ARG_STR path"
+    arg_formatter -> flag_entry: "flag tables"
+    arg_formatter -> syscall_table: "name lookup"
+    tracee_state_m2 -> syscall_info: "current field"
+    string_reader -> syscall_info: "peekdata addr"
+  }
+}
+row_m3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_m3: {
+    direction: down
+    label: "M3 — Multi-Process Fork Following  [build-strace-m3]"
+    pid_state: {
+      shape: sql_table
+      label: "struct pid_state_t (pid_map.h)  [M3]"
+      pid: "pid_t    offset 0x000 | 4 bytes"
+      active: "int      offset 0x004 | 0=free 1=used"
+      in_syscall: "int      offset 0x008 | toggle"
+      outbuf_len: "int      offset 0x00C | partial line"
+      current: "syscall_info_t offset 0x010 | 64 bytes"
+      outbuf: "char[512] offset 0x050 | line buffer"
+      sz: "Total: 592 bytes per slot"
+    }
+    pid_map: {
+      shape: sql_table
+      label: "struct pid_map_t (pid_map.h)  [M3]"
+      slots: "pid_state_t[64] | 64*592 = 37888 bytes"
+      PID_MAP_CAPACITY: "64 slots (power of 2)"
+      PID_MAP_MASK: "0x3F for & masking"
+      mem: "Total: ~37KB fits in L2 cache"
+    }
+    pid_map_ops: {
+      shape: class
+      label: "pid_map functions (pid_map.h)  [M3]"
+      +pid_map_init(map): "void"
+      +pid_map_get(map, pid): "pid_state_t*"
+      +pid_map_remove(map, pid): "void"
+      -pid_hash(pid): "size_t"
+    }
+    event_dispatch: {
+      shape: class
+      label: "event_dispatch.h  [M3]"
+      +handle_stop(pid, status, map, num_active): "void"
+      +handle_ptrace_event(pid, event, map, num_active): "void"
+      -handle_exec_event(pid, map): "void"
+    }
+    stop_type_table: {
+      shape: sql_table
+      label: "Stop Type Dispatch  (event_dispatch.h)  [M3]"
+      event_nonzero: "PTRACE_EVENT stop | status>>16"
+      sig_0x85: "SIGTRAP|0x80 | syscall stop"
+      sig_SIGTRAP: "plain SIGTRAP | exec/breakpt"
+      sig_SIGSTOP: "new child auto-attach"
+      sig_other: "signal-delivery | reinject"
+    }
+    ptrace_events: {
+      shape: sql_table
+      label: "PTRACE_EVENT constants  [M3]"
+      PTRACE_EVENT_FORK: "1 | fork() child"
+      PTRACE_EVENT_VFORK: "2 | vfork() child"
+      PTRACE_EVENT_CLONE: "3 | clone/thread"
+      PTRACE_EVENT_EXEC: "4 | execve done"
+      PTRACE_EVENT_VFORK_DONE: "5 | vfork parent unblock"
+      PTRACE_EVENT_EXIT: "6 | about to exit"
+    }
+    trace_options: {
+      shape: sql_table
+      label: "TRACE_OPTIONS bitmask  [M3]"
+      TRACESYSGOOD: "bit7 | syscall=SIGTRAP|0x80"
+      TRACEFORK: "fork() auto-attach child"
+      TRACEVFORK: "vfork() auto-attach child"
+      TRACECLONE: "clone() auto-attach thread"
+      TRACEEXEC: "execve() event stop"
+    }
+    run_tracer_m3: {
+      shape: class
+      label: "run_tracer()  my_strace.c  [M3]"
+      g_pid_map: "pid_map_t | global"
+      num_active: "int | live process counter"
+      +run_tracer(initial_pid, map, consume_stop): "void"
+      -handle_syscall_stop(pid, state): "void"
+    }
+    pid_map -> pid_state: "slots[64]"
+    pid_map_ops -> pid_map: "operates on"
+    event_dispatch -> pid_map_ops: "pid_map_get"
+    event_dispatch -> stop_type_table: "dispatch"
+    event_dispatch -> ptrace_events: "event cases"
+    run_tracer_m3 -> event_dispatch: "calls"
+    run_tracer_m3 -> trace_options: "setoptions"
+    pid_state -> pid_map: "value type"
+  }
+  layer_m3b: {
+    direction: down
+    label: "M3 — Output Buffer + Hash Map Detail"
+    hash_algo: {
+      shape: sql_table
+      label: "Fibonacci Hash  pid_map.h  [M3]"
+      formula: "h = pid * 2654435769u"
+      shift: "top 6 bits: h >> 26"
+      result: "index in [0, 63]"
+      collision: "avg 1.5 probes at 50% load"
+      probe: "linear probing on collision"
+    }
+    outbuf_protocol: {
+      shape: sql_table
+      label: "Per-PID Output Buffer Protocol  [M3]"
+      entry_stop: "open_memstream -> outbuf"
+      entry_content: "[pid N] name(arg1, arg2"
+      exit_stop: "append ) = retval\n"
+      emit: "fputs(outbuf, g_output)"
+      atomicity: "single write() call"
+      max_line: "512 bytes per syscall line"
+    }
+    pid_lifecycle: {
+      shape: sql_table
+      label: "PID Lifecycle  [M3]"
+      fork_event: "num_active += 1"
+      wifexited: "pid_map_remove + num_active--"
+      wifsignaled: "pid_map_remove + num_active--"
+      loop_exit: "while num_active > 0"
+      echild: "safety break"
+    }
+    hash_algo -> outbuf_protocol: "slot found"
+    outbuf_protocol -> pid_lifecycle: "on exit"
+  }
+}
+row_m4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_m4a: {
+    direction: down
+    label: "M4 — Timing and Statistics  [build-strace-m4]"
+    pid_state_m4: {
+      shape: sql_table
+      label: "struct pid_state_t M4 (pid_map.h)  [M4]"
+      pid: "pid_t           offset 0x000"
+      active: "int             offset 0x004"
+      in_syscall: "int             offset 0x008"
+      outbuf_len: "int             offset 0x00C"
+      current: "syscall_info_t  offset 0x010 | 64B"
+      entry_time: "struct timespec offset 0x050 | 16B"
+      outbuf: "char[512]       offset 0x060"
+      sz: "Total: 608 bytes per slot"
+    }
+    syscall_stats: {
+      shape: sql_table
+      label: "struct syscall_stats_t (stats.h)  [M4]"
+      call_count: "uint64_t offset 0x00 | 8 bytes"
+      error_count: "uint64_t offset 0x08 | 8 bytes"
+      total_ns: "uint64_t offset 0x10 | 8 bytes"
+      sz: "Total: 24 bytes per entry"
+      array: "g_stats[400] = 9600 bytes fits L1"
+    }
+    stats_ops: {
+      shape: class
+      label: "stats.h  [M4]"
+      g_stats: "syscall_stats_t[400]"
+      +stats_record(syscall_nr, retval, elapsed_ns): "void"
+      +print_statistics(out): "void"
+      -compare_by_time_desc(a, b): "int"
+    }
+    timing_h: {
+      shape: class
+      label: "timing.h  [M4]"
+      +timespec_diff_ns(start, end): "uint64_t"
+      note: "CLOCK_MONOTONIC never goes backward"
+      note2: "vDSO path: 5-20ns per call"
+    }
+    sort_entry: {
+      shape: sql_table
+      label: "struct sort_entry_t (stats.h)  [M4]"
+      syscall_nr: "int      offset 0x00"
+      total_ns: "uint64_t offset 0x08"
+      sz: "Total: 16 bytes | stack-alloc[400]"
+    }
+    observer_note: {
+      shape: sql_table
+      label: "Observer Effect  [M4]"
+      measured: "T_exit - T_entry includes tracer"
+      context_sw: "2x ctx switch per syscall ~2-10us"
+      getregs: "PTRACE_GETREGS ~1us"
+      fast_syscall: "getpid ~100ns real vs ~10us traced"
+      useful: "relative ranking and call counts"
+    }
+    timing_h -> pid_state_m4: "entry_time field"
+    stats_ops -> syscall_stats: "g_stats[]"
+    stats_ops -> sort_entry: "qsort scratch"
+    timing_h -> stats_ops: "elapsed_ns"
+  }
+  layer_m4b: {
+    direction: down
+    label: "M4 — Filter, Options, Attach  [build-strace-m4]"
+    filter_t: {
+      shape: sql_table
+      label: "struct syscall_filter_t (filter.h)  [M4]"
+      names: "const char** | heap array of names"
+      count: "int           | 0=no filter"
+      note: "g_filter global; applied after stats"
+    }
+    filter_ops: {
+      shape: class
+      label: "filter.h  [M4]"
+      g_filter: "syscall_filter_t | global"
+      +parse_filter(filter_str): "void"
+      +filter_matches(syscall_nr): "int"
+    }
+    tracer_opts: {
+      shape: sql_table
+      label: "struct tracer_opts_t (opts.h)  [M4]"
+      attach_pid: "pid_t        | 0=fork new"
+      show_stats: "int          | -c flag"
+      output_file: "const char*  | -o path"
+      filter_str: "const char*  | -e trace=..."
+      sz: "Total: 24 bytes"
+    }
+    opts_ops: {
+      shape: class
+      label: "opts.h  [M4]"
+      +parse_args(argc, argv, opts): "void"
+      note: "getopt with + prefix stops at cmd"
+    }
+    attach_ops: {
+      shape: class
+      label: "attach.h  [M4]"
+      +attach_to_process(target_pid, map): "int"
+      +detach_all(map): "void"
+      note1: "PTRACE_ATTACH + waitpid sequence"
+      note2: "PTRACE_DETACH + SIGSTOP retry loop"
+    }
+    sigint_state: {
+      shape: sql_table
+      label: "SIGINT Handler  my_strace.c  [M4]"
+      g_interrupted: "volatile sig_atomic_t | flag"
+      handler: "sets g_interrupted=1 only"
+      sa_flags: "0 not SA_RESTART"
+      loop_check: "if g_interrupted: detach_all"
+      safety: "no fprintf/malloc in handler"
+    }
+    g_output: {
+      shape: sql_table
+      label: "Output Redirection  [M4]"
+      g_output: "FILE* | default stderr"
+      redirect: "-o file: fopen(file, w)"
+      all_writes: "fputs(outbuf, g_output)"
+      flush: "fclose on tracer exit"
+    }
+    mid_syscall: {
+      shape: sql_table
+      label: "Mid-Syscall Attach  attach.h  [M4]"
+      detection: "outbuf_len==0 at exit stop"
+      output: "resumed name = retval"
+      no_stats: "elapsed_ns bogus; skip record"
+      toggle: "in_syscall=0 correct for next pair"
+    }
+    filter_ops -> filter_t: "g_filter"
+    opts_ops -> tracer_opts: "populates"
+    attach_ops -> sigint_state: "called by"
+    attach_ops -> mid_syscall: "handles"
+    g_output -> filter_ops: "output gated by"
+  }
+}
+row_exit_flow: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  exit_flow: {
+    direction: down
+    label: "M4 — handle_syscall_stop Exit Stop Order"
+    exit_order: {
+      shape: sql_table
+      label: "Exit Stop Sequence (my_strace.c M4)"
+      step1: "1. PTRACE_GETREGS -> retval=rax"
+      step2: "2. clock_gettime(CLOCK_MONOTONIC)"
+      step3: "3. timespec_diff_ns -> elapsed_ns"
+      step4: "4. stats_record() ALWAYS"
+      step5: "5. filter_matches() AFTER stats"
+      step6: "6. if no match: discard outbuf return"
+      step7: "7. if outbuf_len==0: print resumed"
+      step8: "8. snprintf append ) = retval\n"
+      step9: "9. fputs(outbuf, g_output)"
+      step10: "10. outbuf_len = 0"
+    }
+    invariant_table: {
+      shape: sql_table
+      label: "Key Invariants Across All Milestones"
+      toggle: "in_syscall strictly alternates 0<->1"
+      orig_rax: "read only at entry stop"
+      rax_retval: "read only at exit stop"
+      errno_clear: "errno=0 before PTRACE_PEEKDATA"
+      stats_first: "stats_record before filter check"
+      reinject: "non-SIGTRAP stops get signal reinjected"
+      detach_seq: "ATTACH -> waitpid -> setoptions"
+    }
+  }
+  peekdata_detail: {
+    direction: down
+    label: "M2 — PTRACE_PEEKDATA Word Walk"
+    peekdata_algo: {
+      shape: sql_table
+      label: "read_string_from_tracee  string_reader.h  [M2]"
+      align: "aligned_addr = addr and ~7ULL"
+      offset: "byte_offset = addr - aligned_addr"
+      loop: "while bytes_read < max_len"
+      clear_errno: "errno = 0  MANDATORY before call"
+      call: "ptrace(PTRACE_PEEKDATA, pid, addr)"
+      disambig: "if word==-1 and errno!=0 -> error"
+      scan: "unsigned char* bytes = &word"
+      null: "if bytes[i]==0 -> found_null"
+      advance: "aligned_addr += 8; byte_offset=0"
+      cost: "1-5us per 8-byte word (ctx switch)"
+    }
+    peekdata_cost: {
+      shape: sql_table
+      label: "PTRACE_PEEKDATA Cost  [M2]"
+      per_word: "1-5us per call (kernel transition)"
+      page_walk: "TLB miss + page table walk"
+      vs_local: "2ns local memcpy vs 1000ns peekdata"
+      string_32b: "4 calls = 4-20us for filename"
+      alternative: "proc-pid-mem for bulk reads"
+    }
+  }
+}
+milestone_index: {
+  shape: sql_table
+  label: "Milestone Index"
+  m1: "M1 | build-strace-m1 | Basic ptrace Syscall Intercept"
+  m2: "M2 | build-strace-m2 | Argument Decoding"
+  m3: "M3 | build-strace-m3 | Multi-Process and Fork Following"
+  m4: "M4 | build-strace-m4 | Filtering and Statistics"
+}
+row_shared.layer_m1.tracee_state -> row_m3.layer_m3.pid_state: "extends to"
+row_shared.layer_m2.tracee_state_m2 -> row_m3.layer_m3.pid_state: "embedded current"
+row_m3.layer_m3.pid_state -> row_m4.layer_m4a.pid_state_m4: "adds entry_time"
+row_shared.layer_m2.syscall_info -> row_m3.layer_m3.pid_state: "current field"
+row_shared.layer_m2.arg_formatter -> row_m3.layer_m3.run_tracer_m3: "print_syscall_entry"
+row_m3.layer_m3.run_tracer_m3 -> row_m4.layer_m4a.stats_ops: "stats_record"
+row_m3.layer_m3.run_tracer_m3 -> row_m4.layer_m4b.filter_ops: "filter_matches"
+row_m4.layer_m4b.attach_ops -> row_m3.layer_m3.pid_map_ops: "pid_map_get"
+row_m4.layer_m4b.opts_ops -> row_m4.layer_m4b.attach_ops: "attach_pid"
+row_m4.layer_m4b.sigint_state -> row_m4.layer_m4b.attach_ops: "triggers detach_all"

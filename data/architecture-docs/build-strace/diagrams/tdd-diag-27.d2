@@ -1,0 +1,176 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: down
+
+title: |md
+  # print_statistics() Pipeline
+  **Collection → Sort → Format → Emit**
+| {near: top-center}
+
+# --- MODULE 1: COLLECTION ---
+step1: "Step 1: Scan g_stats[]" {
+  style.fill: "#C7F1FF"
+  style.stroke: "#2c7da0"
+  style.border-radius: 6
+  
+  content: ||md
+    ### State: Initialization
+    - **Input**: `g_stats[400]` (Memory Offset: `0x0000`)
+    - **Action**: Iterative scan for `call_count > 0`
+    - **Created State**:
+      - <span style="color:red">**entries[count]**</span>: Filtered syscall IDs + times
+      - <span style="color:red">**total_time_ns**</span>: Sum of all syscall durations
+    
+    c
+    for (int i = 0; i < 400; i++) {
+        if (g_stats[i].call_count > 0) {
+            entries[count].syscall_nr = i;
+            entries[count].total_ns   = g_stats[i].total_ns;
+            count++;
+            total_time_ns += g_stats[i].total_ns;
+        }
+    }
+    
+  ||
+}
+
+# --- MODULE 2: TRANSFORMATION ---
+step2: "Step 2: Descending qsort" {
+  style.fill: "#B5AFF6"
+  style.stroke: "#5e548e"
+  style.border-radius: 6
+  
+  content: ||md
+    ### State: Reordering
+    - **Algorithm**: `qsort` (O(N log N))
+    - **Changed**: <span style="color:red">**entries[] order**</span>
+    
+    c
+    // Comparison Logic (Total Time Descending)
+    if (sb->total_ns > sa->total_ns) return  1;
+    if (sb->total_ns < sa->total_ns) return -1;
+    
+    **Safety**: Explicit comparison used instead of subtraction to prevent `uint64` to `int` overflow.
+  ||
+}
+
+# --- MODULE 3: EMISSION ---
+step3: "Step 3: Print Header" {
+  style.fill: "#DEE1EB"
+  style.stroke: "#6c757d"
+  style.border-radius: 6
+  
+  content: ||md
+    ### State: Output Stream Start
+    - **Action**: `fprintf` fixed-width dividers.
+    
+    | Column | Width | Format |
+    | :--- | :--- | :--- |
+    | % time | 6 | `%6.2f` |
+    | seconds | 11 | `%11.6f` |
+    | syscall | 16 | `%-16s` |
+  ||
+}
+
+step4: "Step 4: Format Data Rows" {
+  style.fill: "#C7F1FF"
+  style.stroke: "#2c7da0"
+  style.border-radius: 6
+  
+  content: ||md
+    ### State: Row Iteration
+    - **Pointer**: `s = &g_stats[entries[i].syscall_nr]`
+    - **Logic**:
+      - <span style="color:red">**pct**</span> = `100.0 * s->total_ns / total_time_ns`
+      - <span style="color:red">**up_c**</span> = `s->total_ns / 1000 / s->call_count` (latency)
+    - **Emit**: Sorted row stream to `stdout/file`.
+  ||
+}
+
+step5: "Step 5: Print Footer" {
+  style.fill: "#DEE1EB"
+  style.stroke: "#6c757d"
+  style.border-radius: 6
+  
+  content: ||md
+    ### State: Final Accumulation
+    - **Hardcoded**: `% time = 100.00`
+    - **Computed**: `total_secs`, `total_avg_latency`
+    - **Action**: Close output table.
+  ||
+}
+
+# --- DATA STRUCTURE LAYOUTS ---
+note_data_types: {
+  label: "Memory Layout: x86_64"
+  style.fill: "#f0f4ff"
+  style.stroke: "#4361ee"
+  
+  layout: ||md
+    #### `syscall_stats_t` (24 Bytes)
+    - `0x00`: `call_count` (uint64) | 8B
+    - `0x08`: `error_count` (uint64) | 8B
+    - `0x10`: `total_ns` (uint64) | 8B
+    
+    #### `sort_entry_t` (16 Bytes)
+    - `0x00`: `syscall_nr` (int32) | 4B
+    - `0x04`: <span style="color:gray">Padding</span> | 4B
+    - `0x08`: `total_ns` (uint64) | 8B
+    
+    *Cache Line Efficiency*: `g_stats` fits in 150 cache lines.
+  ||
+  near: bottom-left
+}
+
+note_observer: {
+  label: "⚠️ Tracer Overhead Analysis"
+  style.fill: "#fff3cd"
+  style.stroke: "#ffc107"
+  
+  content: ||md
+    - **Context Switch**: ~2-5µs per entry/exit
+    - **PTRACE_GETREGS**: ~1µs overhead
+    - **Skew**: Fast syscalls (<500ns) appear **10x-50x slower**
+    - **Validity**: Accurate for **Ranking** and **I/O Bound** calls.
+  ||
+  near: bottom-right
+}
+
+# --- STATE COMPARISON ---
+comparison: {
+  before: "BEFORE: Scan Order" {
+    style.stroke-dash: 3
+    data: ||md
+      [0] read  : 800ms
+      [1] write : 400ms
+      [9] mmap  : 900ms
+    ||
+  }
+
+  after: "AFTER: Sort Order" {
+    style.stroke: red
+    data: ||md
+      [9] mmap  : 900ms <span style="color:red">**(Pos 0)**</span>
+      [0] read  : 800ms <span style="color:red">**(Pos 1)**</span>
+      [1] write : 400ms <span style="color:red">**(Pos 2)**</span>
+    ||
+  }
+}
+
+# --- CONNECTIONS ---
+step1 -> step2: "Entries + Total Time"
+step2 -> step3: "Sorted List"
+step3 -> step4: "Header Written"
+step4 -> step5: "Rows Complete"
+
+before -> step2: "Input: Index-based"
+step2 -> after: "Output: Time-based" {
+  style.stroke: "#5e548e"
+  style.animated: true
+}

@@ -1,0 +1,453 @@
+layout-engine: elk
+direction: right
+vars: {
+  d2-config: {
+    theme-id: 4
+  }
+}
+
+title: |md
+  ### Syscall Filter Architecture: Trace All, Print Selectively
+  **Invariant**: 100% of syscalls are intercepted — the entry/exit toggle is maintained for every stop.
+  Filtering is output-only, applied at exit stop after timing and stats accumulation.
+|
+title.shape: text
+title.near: top-center
+
+# ── Tracee ──────────────────────────────────────────────────────────
+tracee: "Tracee Process" {
+  style: {
+    fill: "#E8F4FD"
+    stroke: "#2196F3"
+    stroke-width: 2
+    border-radius: 6
+  }
+
+  syscall_inst: {
+    label: |md
+      **syscall instruction**
+      `int 0x80` / `syscall`
+      All 335 syscall numbers
+    |
+    shape: rectangle
+    style: {
+      fill: "#BBDEFB"
+      stroke: "#1565C0"
+    }
+  }
+}
+
+# ── Kernel ptrace ────────────────────────────────────────────────────
+kernel: "Kernel ptrace Layer" {
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#9C27B0"
+    stroke-width: 2
+    border-radius: 6
+  }
+
+  entry_stop: {
+    label: |md
+      **Entry Stop**
+      `SIGTRAP | 0x80`
+      Tracee frozen before
+      kernel executes syscall
+      `orig_rax` = syscall nr
+      args in rdi, rsi, rdx
+    |
+    shape: rectangle
+    style: {
+      fill: "#E1BEE7"
+      stroke: "#6A1B9A"
+    }
+  }
+
+  kernel_exec: {
+    label: |md
+      **Kernel executes syscall**
+      File I/O, network, memory…
+      Return value → `rax`
+      Duration: 100ns–500ms
+    |
+    shape: rectangle
+    style: {
+      fill: "#D1C4E9"
+      stroke: "#4527A0"
+    }
+  }
+
+  exit_stop: {
+    label: |md
+      **Exit Stop**
+      `SIGTRAP | 0x80`
+      Tracee frozen after
+      kernel returns
+      `rax` = return value
+      `orig_rax` still = syscall nr
+    |
+    shape: rectangle
+    style: {
+      fill: "#E1BEE7"
+      stroke: "#6A1B9A"
+    }
+  }
+
+  entry_stop -> kernel_exec: "tracer calls\nPTRACE_SYSCALL"
+  kernel_exec -> exit_stop: "tracer calls\nPTRACE_SYSCALL"
+}
+
+# ── Tracer event loop ────────────────────────────────────────────────
+tracer: "Tracer Event Loop" {
+  style: {
+    fill: "#FFF8E1"
+    stroke: "#FF8F00"
+    stroke-width: 2
+    border-radius: 6
+  }
+
+  waitpid_call: {
+    label: |md
+      **`waitpid(-1, &status, 0)`**
+      Blocks until ANY traced PID stops
+      Returns PID + packed status word
+      `WSTOPSIG = 0x85 (SIGTRAP|0x80)`
+    |
+    shape: rectangle
+    style: {
+      fill: "#FFECB3"
+      stroke: "#E65100"
+    }
+  }
+
+  toggle: {
+    label: |md
+      **Entry/Exit Toggle**
+      `state->in_syscall = !state->in_syscall`
+      **EVERY stop flips the toggle**
+      No exceptions — filter cannot skip
+      without desynchronizing state
+    |
+    shape: rectangle
+    style: {
+      fill: "#FFE082"
+      stroke: "#E65100"
+      bold: true
+    }
+  }
+
+  entry_handler: {
+    label: |md
+      **Entry Stop Handler**
+      `in_syscall == 1`
+      `extract_args(&regs, &current)`
+      `clock_gettime(MONOTONIC, &entry_time)`
+      Build `"[pid N] name(args"`
+      **No output yet**
+    |
+    shape: rectangle
+    style: {
+      fill: "#FFF9C4"
+      stroke: "#F9A825"
+    }
+  }
+
+  exit_handler: {
+    label: |md
+      **Exit Stop Handler**
+      `in_syscall == 0`
+      `PTRACE_GETREGS` → `retval = rax`
+    |
+    shape: rectangle
+    style: {
+      fill: "#FFF9C4"
+      stroke: "#F9A825"
+    }
+  }
+
+  waitpid_call -> toggle: "WIFSTOPPED &&\nsig == 0x85"
+  toggle -> entry_handler: "in_syscall == 1"
+  toggle -> exit_handler: "in_syscall == 0"
+  entry_handler -> waitpid_call: "PTRACE_SYSCALL"
+}
+
+# ── Exit stop pipeline ────────────────────────────────────────────────
+exit_pipeline: "Exit Stop Processing Pipeline" {
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#388E3C"
+    stroke-width: 2
+    border-radius: 6
+  }
+
+  step1_clock: {
+    label: |md
+      **① clock_gettime(CLOCK_MONOTONIC)**
+      `exit_time` captured
+      `elapsed_ns = diff(entry_time, exit_time)`
+    |
+    shape: rectangle
+    style: {
+      fill: "#C8E6C9"
+      stroke: "#1B5E20"
+    }
+  }
+
+  step2_stats: {
+    label: |md
+      **② stats_record(nr, retval, elapsed_ns)**
+      ALWAYS called — no filter check here
+      `g_stats[nr].call_count++`
+      `g_stats[nr].total_ns += elapsed_ns`
+    |
+    shape: rectangle
+    style: {
+      fill: "#A5D6A7"
+      stroke: "#1B5E20"
+      bold: true
+    }
+  }
+
+  step3_filter: {
+    label: |md
+      **③ filter_matches(syscall_nr)**
+      Check `g_filter` names array
+      `count == 0` → always true
+    |
+    shape: diamond
+    style: {
+      fill: "#81C784"
+      stroke: "#1B5E20"
+    }
+  }
+
+  step1_clock -> step2_stats: "elapsed_ns calculated"
+  step2_stats -> step3_filter: "stats updated"
+}
+
+# ── Filter TRUE path ─────────────────────────────────────────────────
+print_path: "Print Path (filter_matches = TRUE)" {
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1565C0"
+    stroke-width: 2
+    border-radius: 6
+  }
+
+  complete_line: {
+    label: |md
+      **Complete the buffered line**
+      Append to `outbuf`:
+      `) = retval\n`
+    |
+    shape: rectangle
+    style: {
+      fill: "#BBDEFB"
+      stroke: "#0D47A1"
+    }
+  }
+
+  emit: {
+    label: |md
+      **`fputs(state->outbuf, g_output)`**
+      Single `write()` syscall
+      Atomic per PID
+    |
+    shape: rectangle
+    style: {
+      fill: "#90CAF9"
+      stroke: "#0D47A1"
+      bold: true
+    }
+  }
+
+  reset: {
+    label: "Reset: outbuf_len = 0"
+    shape: rectangle
+    style: {
+      fill: "#BBDEFB"
+      stroke: "#0D47A1"
+    }
+  }
+
+  complete_line -> emit
+  emit -> reset
+}
+
+# ── Filter FALSE path ─────────────────────────────────────────────────
+suppress_path: "Suppress Path (filter_matches = FALSE)" {
+  style: {
+    fill: "#FBE9E7"
+    stroke: "#BF360C"
+    stroke-width: 2
+    border-radius: 6
+  }
+
+  discard: {
+    label: |md
+      **Discard buffered entry**
+      `state->outbuf_len = 0`
+      Silently dropped
+    |
+    shape: rectangle
+    style: {
+      fill: "#FFCCBC"
+      stroke: "#BF360C"
+    }
+  }
+
+  return_early: {
+    label: "return early"
+    shape: rectangle
+    style: {
+      fill: "#FFAB91"
+      stroke: "#BF360C"
+    }
+  }
+
+  discard -> return_early
+}
+
+# ── WHY toggle cannot be skipped ─────────────────────────────────────
+why_box: |md
+  **⚠ WHY Filtering Cannot Skip Interception**
+  The toggle is a two-phase protocol — both phases are mandatory to maintain PID state.
+  If the tracer skipped `PTRACE_SYSCALL` for a "filtered" syscall,
+  the tracee would remain FROZEN at the entry stop forever.
+|
+why_box.shape: rectangle
+why_box.near: bottom-center
+why_box.style: {
+  fill: "#FCE4EC"
+  stroke: "#880E4F"
+  font-size: 14
+}
+
+# ── g_output destination ─────────────────────────────────────────────
+output_dest: "Output Destination" {
+  style: {
+    fill: "#ECEFF1"
+    stroke: "#546E7A"
+    border-radius: 6
+  }
+
+  stderr_dest: "stderr (default)" {
+    shape: cylinder
+    style: {
+      fill: "#CFD8DC"
+      stroke: "#37474F"
+    }
+  }
+  file_dest: "file (-o filename)" {
+    shape: cylinder
+    style: {
+      fill: "#CFD8DC"
+      stroke: "#37474F"
+    }
+  }
+}
+
+# ── Stats table ───────────────────────────────────────────────────────
+stats_table: "Global Statistics Array" {
+  style: {
+    fill: "#F9FBE7"
+    stroke: "#827717"
+    border-radius: 6
+  }
+
+  accum: {
+    label: |md
+      **g_stats[400]**
+      `call_count`, `error_count`, `total_ns`
+      Full stats regardless of filter
+    |
+    shape: rectangle
+    style: {
+      fill: "#F0F4C3"
+      stroke: "#827717"
+    }
+  }
+}
+
+# ── Connections ───────────────────────────────────────────────────────
+tracee.syscall_inst -> kernel.entry_stop: "syscall instruction" {
+  style: {
+    stroke: "#2196F3"
+    stroke-width: 2
+  }
+}
+
+kernel.exit_stop -> tracer.waitpid_call: "SIGTRAP event" {
+  style: {
+    stroke: "#9C27B0"
+    stroke-width: 2
+    stroke-dash: 3
+  }
+}
+
+kernel.entry_stop -> tracer.waitpid_call: "SIGTRAP event" {
+  style: {
+    stroke: "#9C27B0"
+    stroke-width: 2
+    stroke-dash: 3
+  }
+}
+
+tracer.exit_handler -> exit_pipeline.step1_clock: "exit stop handling" {
+  style: {
+    stroke: "#FF8F00"
+    stroke-width: 2
+  }
+}
+
+exit_pipeline.step3_filter -> print_path.complete_line: "TRUE" {
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 2
+    font-color: "#1565C0"
+  }
+}
+
+exit_pipeline.step3_filter -> suppress_path.discard: "FALSE" {
+  style: {
+    stroke: "#BF360C"
+    stroke-width: 2
+    font-color: "#BF360C"
+  }
+}
+
+exit_pipeline.step2_stats -> stats_table.accum: "accumulate" {
+  style: {
+    stroke: "#827717"
+    stroke-width: 2
+    stroke-dash: 5
+  }
+}
+
+print_path.emit -> output_dest.stderr_dest: "fputs" {
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 2
+  }
+}
+
+print_path.emit -> output_dest.file_dest: "fputs" {
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 2
+    stroke-dash: 3
+  }
+}
+
+suppress_path.return_early -> tracer.waitpid_call: "resume tracee" {
+  style: {
+    stroke: "#BF360C"
+    stroke-width: 2
+  }
+}
+
+print_path.reset -> tracer.waitpid_call: "resume tracee" {
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 2
+  }
+}

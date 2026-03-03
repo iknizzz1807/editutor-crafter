@@ -1,0 +1,83 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+direction: right
+title: |md
+  ## Entry/Exit Output Assembly: One strace Line Across Two ptrace Stops
+| {near: top-center}
+shape: sequence_diagram
+tracer: "Tracer Process"
+kernel: "Linux Kernel"
+outbuf: "pid_state_t.outbuf[512]"
+stderr_fd: "stderr (fd 2)"
+entry_stop: {
+  tracer -> kernel: "PTRACE_SYSCALL(pid, 0, 0)  →  tracee resumes"
+  kernel -> tracer: "waitpid(-1) returns  [WIFSTOPPED, sig=0x85 (SIGTRAP|0x80)]"
+  tracer -> kernel: "PTRACE_GETREGS(pid, &regs)"
+  kernel -> tracer: "regs: orig_rax=2 (open), rdi=0x7fff.., rsi=0, rdx=0x1a4"
+  tracer -> tracer: "state->in_syscall=1 → ENTRY STOP\nextract_args(): syscall_nr=2, args[0]=rdi, args[1]=rsi, args[2]=rdx\nclock_gettime(CLOCK_MONOTONIC, &state->entry_time)"
+  tracer -> kernel: "PTRACE_PEEKDATA(pid, args[0]=0x7fff..)  [read filename string]"
+  kernel -> tracer: 'word = "/etc/pas"  (8 bytes, little-endian)'
+  tracer -> kernel: "PTRACE_PEEKDATA(pid, addr+8)"
+  kernel -> tracer: 'word = "swd\\0\\0\\0\\0\\0"  (null at byte 3 → stop)'
+  tracer -> tracer: 'decode_flags(args[1]=0): O_RDONLY\nopen_memstream(&buf_ptr, &buf_sz)'
+  tracer -> outbuf: 'snprintf → outbuf = "[pid 1234] open(\\"/etc/passwd\\", O_RDONLY, 0644"\noutbuf_len = 44\nNO newline written yet\nNO fputs yet'
+}
+pause: {
+  tracer -> kernel: "PTRACE_SYSCALL(pid, 0, 0)  →  tracee resumes; kernel executes open()"
+  kernel -> tracer: "waitpid(-1) returns  [WIFSTOPPED, sig=0x85]  ← EXIT STOP"
+}
+exit_stop: {
+  tracer -> kernel: "PTRACE_GETREGS(pid, &regs)"
+  kernel -> tracer: "regs: rax=3 (fd), orig_rax=2 (preserved)"
+  tracer -> tracer: "state->in_syscall=0 → EXIT STOP\nstate->current.retval = (long)regs.rax = 3\nclock_gettime(CLOCK_MONOTONIC, &exit_time)\nelapsed_ns = timespec_diff_ns(&entry_time, &exit_time) → ~3800 ns\nstats_record(2, 3, 3800)\nfilter_matches(2) → 1 (no filter active)"
+  tracer -> outbuf: 'snprintf(outbuf+44, 512-44, ") = 3\\n")\noutbuf = "[pid 1234] open(\\"/etc/passwd\\", O_RDONLY, 0644) = 3\\n"\noutbuf_len → 53 bytes total'
+  tracer -> stderr_fd: "fputs(state->outbuf, stderr)\n→ single write(2, outbuf, 53)\n← ATOMIC: 53 bytes < PIPE_BUF (4096)\nNo interleave possible"
+  tracer -> tracer: "state->outbuf_len = 0  [reset for next syscall]"
+}
+wrong: {
+  wrong_label: |md
+    **WRONG: Two separate fprintf calls (no outbuf)**
+  | {shape: text; style.font-color: "#c0392b"; style.bold: true}
+  wrong_label -> wrong_entry: "entry stop"
+  wrong_entry: 'fprintf(stderr, "[pid 1234] open(\\"/etc/passwd\\", O_RDONLY")' {
+    style.font-color: "#c0392b"
+  }
+  wrong_label -> wrong_interleave: "another PID fires here"
+  wrong_interleave: 'write(2) from pid 5678: "[pid 5678] read(3, ...) = 512\\n"' {
+    style.font-color: "#e67e22"
+  }
+  wrong_label -> wrong_exit: "exit stop"
+  wrong_exit: 'fprintf(stderr, ") = 3\\n")' {
+    style.font-color: "#c0392b"
+  }
+  wrong_result: |md
+    **Corrupted output:**
+    `[pid 1234] open("/etc/passwd", O_RDONLY[pid 5678] read(3, ...) = 512`
+    `) = 3`
+  | {
+    style.font-color: "#c0392b"
+    style.fill: "#fdecea"
+    style.stroke: "#c0392b"
+  }
+  wrong_exit -> wrong_result: "interleaved ← unparseable"
+}
+atomicity_note: |md
+  **write() atomicity guarantee (Linux):**
+  - `write(fd, buf, n)` where `n ≤ PIPE_BUF` (4096 bytes) is atomic
+    for pipes and FIFOs; for regular files (including `/dev/stderr`
+    pointing to a terminal), the kernel serializes within a single
+    process because the tracer is **single-threaded** — no concurrent
+    writer exists. One `fputs()` → one `write()` syscall → no split.
+  - A complete strace line is always ≤ 512 bytes (outbuf size).
+  - **Single-threaded tracer invariant**: `waitpid(-1)` serializes
+    all PID events; only one `handle_syscall_stop()` executes at a time.
+    The buffer is the guard against logical interleaving across entry/exit stops.
+| {
+  near: bottom-center
+  style.fill: "#e8f4fd"
+  style.stroke: "#2980b9"
+}

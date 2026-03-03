@@ -1,0 +1,326 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+title: |md
+  ## waitpid(-1) Multi-Process Event Dispatch
+  `num_active > 0` loop — decodes every stop before resuming
+| {near: top-center}
+direction: down
+classes: {
+  entry: {
+    style: {
+      fill: "#3d1f6b"
+      font-color: white
+      stroke: "#7c3aed"
+      stroke-width: 2
+      bold: true
+      border-radius: 4
+    }
+  }
+  decode: {
+    style: {
+      fill: "#1e3a5f"
+      font-color: white
+      stroke: "#3b82f6"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  action_exit: {
+    style: {
+      fill: "#1a1a2e"
+      font-color: "#ef4444"
+      stroke: "#ef4444"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  action_continue: {
+    style: {
+      fill: "#0f2027"
+      font-color: "#6ee7b7"
+      stroke: "#059669"
+      stroke-width: 1
+      border-radius: 4
+    }
+  }
+  action_resume: {
+    style: {
+      fill: "#0f2027"
+      font-color: "#a78bfa"
+      stroke: "#7c3aed"
+      stroke-width: 1
+      border-radius: 4
+    }
+  }
+  terminal_ok: {
+    style: {
+      fill: "#064e3b"
+      font-color: "#6ee7b7"
+      stroke: "#059669"
+      stroke-width: 3
+      bold: true
+      border-radius: 4
+    }
+  }
+  terminal_err: {
+    style: {
+      fill: "#450a0a"
+      font-color: "#fca5a5"
+      stroke: "#dc2626"
+      stroke-width: 3
+      bold: true
+      border-radius: 4
+    }
+  }
+  diamond: {
+    shape: diamond
+    style: {
+      fill: "#1e293b"
+      font-color: "#f1f5f9"
+      stroke: "#94a3b8"
+      stroke-width: 2
+    }
+  }
+  note: {
+    shape: text
+    style: {
+      font-color: "#94a3b8"
+      font-size: 11
+      italic: true
+    }
+  }
+}
+# ── Loop header ──────────────────────────────────────────────
+loop_guard: "while (num_active > 0)" {
+  class: entry
+}
+# ── SIGINT fast-path check ───────────────────────────────────
+chk_interrupted: "g_interrupted == 1?" {
+  class: diamond
+}
+do_detach_all: "detach_all(&g_pid_map)\nprint summary if -c" {
+  class: action_exit
+}
+# ── waitpid(-1) call ─────────────────────────────────────────
+wp_call: "pid = waitpid(-1, &status, 0)\n[blocks until any child event]" {
+  class: decode
+}
+# ── waitpid return decode ────────────────────────────────────
+chk_pid_err: "pid < 0?" {
+  class: diamond
+}
+chk_eintr: "errno == EINTR?" {
+  class: diamond
+}
+handle_eintr: "continue\n[signal to tracer; retry]" {
+  class: action_continue
+}
+chk_echild: "errno == ECHILD?" {
+  class: diamond
+}
+handle_echild: "break\n[no more children]" {
+  class: action_exit
+}
+handle_perror: "perror(\"waitpid\")\nbreak" {
+  class: terminal_err
+}
+# ── Primary status dispatch ──────────────────────────────────
+chk_exited: "WIFEXITED(status)?" {
+  class: diamond
+}
+chk_signaled: "WIFSIGNALED(status)?" {
+  class: diamond
+}
+chk_stopped: "WIFSTOPPED(status)?" {
+  class: diamond
+}
+# ── WIFEXITED branch ─────────────────────────────────────────
+act_exited: |md
+  **WIFEXITED path**
+  fprintf: "[pid N] +++ exited with %d +++"
+  pid_map_remove(&g_pid_map, pid)
+  num_active--
+  continue → next waitpid
+| {
+  class: action_exit
+}
+note_exited: "No PTRACE_SYSCALL: process is gone" {
+  class: note
+}
+# ── WIFSIGNALED branch ───────────────────────────────────────
+act_signaled: |md
+  **WIFSIGNALED path**
+  fprintf: "[pid N] +++ killed by signal N (name) +++"
+  pid_map_remove(&g_pid_map, pid)
+  num_active--
+  continue → next waitpid
+| {
+  class: action_exit
+}
+note_signaled: "No PTRACE_SYSCALL: process is gone" {
+  class: note
+}
+# ── WIFSTOPPED decode ────────────────────────────────────────
+decode_stop: "sig = WSTOPSIG(status)  [low 8 bits]\nevent = (status >> 16) & 0xff  [high byte]" {
+  class: decode
+}
+# ── Event check (MUST come before sig checks) ────────────────
+chk_event: "event != 0?\n(PTRACE_EVENT_FORK/VFORK/CLONE/EXEC/EXIT)" {
+  class: diamond
+}
+act_event: |md
+  **handle_ptrace_event(pid, event, map, &num_active)**
+  FORK/VFORK/CLONE:
+    PTRACE_GETEVENTMSG → new_pid
+    pid_map_get(new_pid) → fresh state
+    num_active++
+    PTRACE_SETOPTIONS(new_pid, TRACE_OPTIONS)
+    PTRACE_SYSCALL(new_pid, 0, 0) ← resume child
+  EXEC:
+    state→in_syscall = 1; outbuf_len = 0
+    memset(current); log completion
+  EXIT:
+    PTRACE_GETEVENTMSG → exit_status preview
+    (do NOT pid_map_remove — process still alive)
+| {
+  class: action_resume
+}
+note_event: "⚠ NEVER flip in_syscall toggle\n  for PTRACE_EVENT stops" {
+  class: note
+}
+resume_after_event: "PTRACE_SYSCALL(pid, 0, 0)\n[resume parent; signal=0]" {
+  class: action_resume
+}
+# ── Syscall stop check ───────────────────────────────────────
+chk_syscall: "sig == (SIGTRAP | 0x80) == 0x85?\n[PTRACE_O_TRACESYSGOOD set]" {
+  class: diamond
+}
+act_syscall: |md
+  **Syscall entry/exit stop**
+  state = pid_map_get(&g_pid_map, pid)
+  state→in_syscall = !state→in_syscall  ← toggle
+  handle_syscall_stop(pid, state)
+    Entry (in_syscall==1):
+      extract_args; clock_gettime(entry_time)
+      build outbuf: "[pid N] name(args"
+    Exit (in_syscall==0):
+      clock_gettime(exit_time); elapsed_ns
+      stats_record(nr, retval, elapsed_ns)   ← always
+      if !filter_matches(nr): discard, return
+      append ") = retval\n"; fputs(outbuf, g_output)
+| {
+  class: action_resume
+}
+resume_after_syscall: "PTRACE_SYSCALL(pid, 0, 0)\n[resume; signal=0]" {
+  class: action_resume
+}
+# ── Plain SIGTRAP check ──────────────────────────────────────
+chk_plain_trap: "sig == SIGTRAP == 0x05?\n[no event, no 0x80 bit]" {
+  class: diamond
+}
+act_plain_trap: |md
+  **Plain SIGTRAP**
+  (exec initial stop, breakpoint, or
+  post-attach stop — not a syscall stop)
+  Do NOT flip in_syscall toggle
+| {
+  class: action_resume
+}
+resume_after_trap: "PTRACE_SYSCALL(pid, 0, 0)\n[resume; signal=0]" {
+  class: action_resume
+}
+# ── SIGSTOP check ─────────────────────────────────────────────
+chk_sigstop: "sig == SIGSTOP == 0x13?" {
+  class: diamond
+}
+act_sigstop: |md
+  **SIGSTOP stop**
+  Likely: initial stop of auto-attached child
+  (synthetic — no real signal to deliver)
+  Swallow: do NOT re-inject SIGSTOP
+  (avoids freezing child waiting for SIGCONT)
+| {
+  class: action_resume
+}
+resume_after_sigstop: "PTRACE_SYSCALL(pid, 0, 0)\n[resume; signal=0]" {
+  class: action_resume
+}
+# ── Default: real signal delivery ───────────────────────────
+act_signal_reinject: |md
+  **Signal-delivery stop** (SIGTERM, SIGUSR1, …)
+  Re-inject: pass sig to PTRACE_SYSCALL
+  ⚠ Passing 0 would SUPPRESS the signal
+| {
+  class: action_resume
+}
+resume_after_signal: "PTRACE_SYSCALL(pid, 0, sig)\n[resume; deliver signal to tracee]" {
+  class: action_resume
+}
+note_reinject: "sig = SIGTERM(15), SIGUSR1(10), etc.\nNever suppress real signals" {
+  class: note
+}
+# ── Ignore unknown status ────────────────────────────────────
+act_unknown: "WIFCONTINUED or other\nignore; loop back" {
+  class: action_continue
+}
+# ── Loop exit terminals ──────────────────────────────────────
+term_zero: "num_active == 0\n→ exit main loop\n→ print_statistics if -c\n→ cleanup" {
+  class: terminal_ok
+}
+term_break: "break on error /\nECHILD / interrupt\n→ detach_all\n→ cleanup" {
+  class: terminal_err
+}
+# ═══════════════════════════════════════════════════════════
+# Connections
+# ═══════════════════════════════════════════════════════════
+loop_guard -> chk_interrupted: "check at top of each iteration"
+chk_interrupted -> do_detach_all: "yes\n(SIGINT)"
+chk_interrupted -> wp_call: "no"
+do_detach_all -> term_break
+wp_call -> chk_pid_err
+chk_pid_err -> chk_eintr: "yes (pid < 0)"
+chk_pid_err -> chk_exited: "no (pid > 0)"
+chk_eintr -> handle_eintr: "yes"
+chk_eintr -> chk_echild: "no"
+handle_eintr -> loop_guard: "retry waitpid\nno new PTRACE_SYSCALL" {style.stroke-dash: 4}
+chk_echild -> handle_echild: "yes"
+chk_echild -> handle_perror: "no"
+handle_echild -> term_break
+handle_perror -> term_break
+chk_exited -> act_exited: "yes"
+chk_exited -> chk_signaled: "no"
+act_exited -> note_exited
+act_exited -> loop_guard: "continue" {style.stroke-dash: 4}
+chk_signaled -> act_signaled: "yes"
+chk_signaled -> chk_stopped: "no"
+act_signaled -> note_signaled
+act_signaled -> loop_guard: "continue" {style.stroke-dash: 4}
+chk_stopped -> decode_stop: "yes"
+chk_stopped -> act_unknown: "no"
+act_unknown -> loop_guard: "back to top" {style.stroke-dash: 4}
+decode_stop -> chk_event
+chk_event -> act_event: "yes\n[check event FIRST\nbefore any sig check]" {style.stroke-width: 3; style.stroke: "#f59e0b"}
+chk_event -> chk_syscall: "no (event==0)"
+act_event -> note_event
+act_event -> resume_after_event
+resume_after_event -> loop_guard: "back to top" {style.stroke-dash: 4}
+chk_syscall -> act_syscall: "yes (0x85)" {style.stroke-width: 3; style.stroke: "#22d3ee"}
+chk_syscall -> chk_plain_trap: "no"
+act_syscall -> resume_after_syscall
+resume_after_syscall -> loop_guard: "back to top" {style.stroke-dash: 4}
+chk_plain_trap -> act_plain_trap: "yes (0x05)"
+chk_plain_trap -> chk_sigstop: "no"
+act_plain_trap -> resume_after_trap
+resume_after_trap -> loop_guard: "back to top" {style.stroke-dash: 4}
+chk_sigstop -> act_sigstop: "yes (0x13)"
+chk_sigstop -> act_signal_reinject: "no\n(any other signal)"
+act_sigstop -> resume_after_sigstop
+resume_after_sigstop -> loop_guard: "back to top" {style.stroke-dash: 4}
+act_signal_reinject -> note_reinject
+act_signal_reinject -> resume_after_signal
+resume_after_signal -> loop_guard: "back to top" {style.stroke-dash: 4}
+loop_guard -> term_zero: "num_active == 0" {style.stroke-width: 3; style.stroke: "#6ee7b7"}

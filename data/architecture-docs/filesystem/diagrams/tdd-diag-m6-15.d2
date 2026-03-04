@@ -1,0 +1,224 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# Classes for Consistency and Professional Styling
+# ---------------------------------------------------------------------------------------
+classes: {
+  state_node: {
+    style: {
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  transition_label: {
+    style: {
+      font-size: 14
+      italic: true
+    }
+  }
+  critical_path: {
+    style: {
+      stroke: "#c0392b"
+      stroke-width: 3
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# State Machine: Journal Recovery & Consistency Check
+# ---------------------------------------------------------------------------------------
+
+START: "" {
+  shape: circle
+  style: {
+    fill: black
+    stroke: black
+  }
+  width: 20
+  height: 20
+}
+
+READ_JOURNAL_HEADER: "READ_JOURNAL_HEADER" {
+  class: state_node
+  tooltip: "Read 4KB block at sb.journal_start"
+  label: |md
+    ### 01: READ_JOURNAL_HEADER
+    **Byte Offset:** `sb.journal_start` (Sector 2048+)
+    **Invariant:** 
+    - Block device FD is valid and positioned.
+    **Action:**
+    - `dev.read_block(journal_start, buffer, 4096)`
+    - Identify current `tail` and `head` pointers.
+  |
+}
+
+VALIDATE_MAGIC: "VALIDATE_MAGIC" {
+  class: state_node
+  label: |md
+    ### 02: VALIDATE_MAGIC
+    **Invariants:**
+    - `header.magic == 0x4A524E4C` (JRNL)
+    - `header.version == 0x01`
+    - `header.checksum` == `CRC32C(buffer[0:4088])`
+    **Field Map:**
+    - `0x00-0x03`: Magic (4B)
+    - `0x04-0x07`: Version (4B)
+    - `0x08-0x0F`: Tail Ptr (8B)
+  |
+}
+
+SCAN_JOURNAL: "SCAN_JOURNAL" {
+  class: state_node
+  label: |md
+    ### 03: SCAN_JOURNAL
+    **Invariants:**
+    - `current_offset` iterates `tail` -> `head`.
+    - Buffer contains `JournalEntry` (32B header).
+    **Logic:**
+    - If `checksum_verify(entry)` fails -> **ERROR**
+    - Else -> Parse `entry_type` (JE_COMMIT, JE_DATA).
+  |
+}
+
+REPLAY_TRANSACTION: "REPLAY_TRANSACTION" {
+  class: state_node
+  style: {
+    bold: true
+    stroke-width: 4
+    fill: "#e8f4fd"
+  }
+  label: |md
+    ### 04: REPLAY_TRANSACTION
+    **Guard:**
+    - `JE_COMMIT` (0x09) detected for `sequence_id`.
+    **Atomic Action:**
+    - Locate all `JE_DATA` with matching `seq_id`.
+    - Perform `bio_write()` to disk destinations.
+    - **Constraint:** Redo operations must be idempotent.
+  |
+}
+
+CHECKPOINT: "CHECKPOINT" {
+  class: state_node
+  label: |md
+    ### 05: CHECKPOINT
+    **Persistence Action:**
+    - `sb.journal_tail = sb.journal_head`
+    - `write_block(sb_location, sb_buffer)`
+    - `fsync(dev.fd)`
+    **Status:** Closing transaction window.
+  |
+}
+
+MOUNTED: "MOUNTED" {
+  shape: rectangle
+  style: {
+    double-border: true
+    stroke: "#2ecc71"
+    stroke-width: 4
+    fill: "#f0fff4"
+  }
+  label: |md
+    ### 06: MOUNTED
+    **System Status:** `CONSISTENT`
+    **Post-Condition:**
+    - Journal cleared and pointers reset.
+    - User space access enabled.
+  |
+}
+
+ERROR: "RECOVERY_FAILED" {
+  class: state_node
+  style: {
+    fill: "#ffcccc"
+    stroke: "#c0392b"
+    stroke-width: 3
+  }
+  label: |md
+    ### ERROR: RECOVERY_FAILED
+    **Failure Modes:**
+    - `0x01`: Magic Mismatch (Corruption)
+    - `0x02`: Checksum Failure (Bit rot)
+    - `0x03`: I/O Error (Hardware failure)
+    **Resolution:** Manual `fsck.jfs` required.
+  |
+}
+
+# ---------------------------------------------------------------------------------------
+# Transitions
+# ---------------------------------------------------------------------------------------
+
+START -> READ_JOURNAL_HEADER: "Mount(disk_image)"
+
+READ_JOURNAL_HEADER -> VALIDATE_MAGIC: "Block read success"
+READ_JOURNAL_HEADER -> ERROR: "EIO / Block unreadable" {
+  class: critical_path
+}
+
+VALIDATE_MAGIC -> SCAN_JOURNAL: "Header integrity verified"
+VALIDATE_MAGIC -> ERROR: "CORRUPTION / Magic mismatch" {
+  class: critical_path
+}
+
+SCAN_JOURNAL -> REPLAY_TRANSACTION: "found JE_COMMIT record" {
+  label: "Sequence Match"
+}
+
+REPLAY_TRANSACTION -> SCAN_JOURNAL: "txn replayed successfully" {
+  label: "Next Descriptor"
+}
+
+SCAN_JOURNAL -> CHECKPOINT: "offset == head" {
+  label: "Log EOF"
+}
+
+SCAN_JOURNAL -> SCAN_JOURNAL: "entry sequence != commit" {
+  label: "Buffer non-commit"
+}
+
+CHECKPOINT -> MOUNTED: "Superblock flush success"
+CHECKPOINT -> ERROR: "fsync failure" {
+  class: critical_path
+}
+
+# ---------------------------------------------------------------------------------------
+# Illegal Transitions (Constraint Enforcement)
+# ---------------------------------------------------------------------------------------
+
+MOUNTED -> SCAN_JOURNAL: "ILLEGAL" {
+  style: {
+    stroke: "#c0392b"
+    stroke-dash: 3
+    opacity: 0.5
+  }
+}
+
+ERROR -> MOUNTED: "ILLEGAL" {
+  style: {
+    stroke: "#c0392b"
+    stroke-dash: 3
+    opacity: 0.5
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# Metadata / Legend
+# ---------------------------------------------------------------------------------------
+
+LEGEND: "Recovery Protocol Specification" {
+  near: bottom-right
+  style: {
+    fill: "#f9f9f9"
+    stroke: "#cccccc"
+  }
+  JE_COMMIT: "Commit Sentinel (Type: 0x09)"
+  REPLAY: "Redo-style Idempotent Replay"
+  CRC32C: "Poly: 0x1EDC6F41 (Castagnoli)"
+  ALIGN: "4KB Block Alignment Required"
+}

@@ -1,0 +1,166 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    pad: 20
+  }
+}
+
+# FILE CREATE WITH JOURNALING - IMPLEMENTATION SPECIFICATION
+# Component: Virtual File System (VFS) / Journaled Storage
+# TDD Milestone: M6 (fs_create_journaled)
+# Byte Offsets: SB=0x0, Journal=0x1000, InodeTable=0x200000
+
+shape: sequence_diagram
+
+app: Application {
+  style.fill: "#f8f9fa"
+  style.stroke: "#212529"
+  style.stroke-width: 2
+}
+
+fs: FileSystem {
+  description: "VFS Layer Logic Controller"
+  style.fill: "#e7f5ff"
+  style.stroke: "#1971c2"
+}
+
+jn: Journal {
+  description: "JBD2-style Write-Ahead Log (WAL)"
+  style.fill: "#fff4e6"
+  style.stroke: "#e67700"
+}
+
+im: InodeManager {
+  description: "Metadata & Bitmap Handler"
+  style.fill: "#f3f0ff"
+  style.stroke: "#6f42c1"
+}
+
+dm: DirectoryManager {
+  description: "Namespace & Dentry Handler"
+  style.fill: "#ebfbee"
+  style.stroke: "#2f9e44"
+}
+
+bd: BlockDevice {
+  description: "Raw Storage (LBA Addressing)"
+  style.fill: "#f1f3f5"
+  style.stroke: "#495057"
+}
+
+# --- 0. Call Initiation ---
+app.exec -> fs.call: "fs_create_journaled(path: '/new.txt', mode: 0644): uint64_t" {
+  style.bold: true
+}
+
+# --- 1. Begin Transaction ---
+fs.call -> jn.begin: "journal_begin(seq_id=0x4A2): txn_ptr"
+jn.begin -> jn.lock: "▼ ACQUIRE journal_lock (Spinlock)"
+jn.begin -> bd.read: "read_block(LBA:1, OFF:0x1000): 4KB"
+bd.read -> jn.begin: "RET: JournalHeader { head: 12, tail: 0 }"
+jn.begin -> jn.begin: "STATE: TXN_ACTIVE | BUFFER_ALLOC(16KB)"
+jn.begin -> fs.call: "txn_ptr(0xFFFF8880)"
+
+# --- 2. Resource Resolution ---
+fs.call -> dm.resolve: "path_resolve_parent('/new.txt'): parent_id"
+dm.resolve -> fs.call: "inode_num = 2 (Root Dir)"
+
+fs.call -> im.alloc: "alloc_inode(): inode_num"
+im.alloc -> bd.read_bm: "read_block(LBA:512, InodeBM): 4KB"
+im.alloc -> im.alloc: "SCAN: find_first_free_bit() -> Offset: 42"
+im.alloc -> fs.call: "inode_num = 42"
+
+# --- 3. Logging Phase (In-Memory Transaction Buffer) ---
+"Logging Phase [In-Memory Buffer]": {
+  fs.call -> jn.log: "journal_log_inode_alloc(id: 42)"
+  fs.call -> im.init: "inode_init(mode: 0644, uid: 1000)"
+  fs.call -> jn.log: "journal_log_inode_update(42, &inode_data)"
+  fs.call -> jn.log: "journal_log_dir_add(parent: 2, 'new.txt', 42)"
+  fs.call -> jn.log: "journal_log_sb_update(&sb)"
+}
+
+# --- 4. Commit Phase (Persistence Barrier) ---
+"Commit Phase [Atomic Persistence]": {
+  fs.call -> jn.commit: "journal_commit(): int"
+  jn.commit -> bd.write_log: "write_block(head++, tx_entries[]): 16KB"
+  jn.commit -> bd.write_commit: "write_block(head++, JE_COMMIT_MARKER)"
+  
+  # Hardware Barrier
+  jn.commit -> bd.sync: "fsync(fd) [FLUSH_CACHE]" {
+    tooltip: "CRITICAL: If this fails, transaction is rolled back. Ensures JE_COMMIT_MARKER is physical."
+    style: {
+      stroke: red
+      stroke-width: 4
+      animated: true
+    }
+  }
+  
+  jn.commit."TXN 0x4A2 is now DURABLE"
+  jn.commit -> fs.call: "0 (SUCCESS)"
+}
+
+# --- 5. Apply Phase (Main Storage Updates) ---
+"Apply Phase [Idempotent Updates]": {
+  fs.call -> im.set_bm: "inode_bitmap_set(42, 1)"
+  im.set_bm -> bd.persist: "write_block(LBA:512, buf)"
+  
+  fs.call -> im.write_in: "write_inode(42, &inode_data)"
+  im.write_in -> bd.persist: "write_block(LBA:1024 + 41, buf)"
+  
+  fs.call -> dm.add: "dir_add_entry(2, 'new.txt', 42)"
+  dm.add -> bd.persist: "write_block(LBA:2048, buf)"
+  
+  fs.call -> bd.sb: "write_block(LBA:0, &sb_data)"
+}
+
+# --- 6. Cleanup ---
+fs.call -> jn.end: "journal_end()"
+jn.end -> jn.lock: "▲ RELEASE journal_lock"
+jn.end -> jn.end: "free(txn_ptr)"
+
+fs.call -> app.exec: "return 42 (new_inode_num)"
+
+# --- Documentation & Metadata ---
+jn.metadata: |md
+  ### Journaling Invariants (POSIX Compliance)
+  1. **Write-Ahead Logging (WAL)**: The `JE_COMMIT_MARKER` must be flushed via `fsync` before the *Apply Phase* begins.
+  2. **Metadata Integrity**: If a crash occurs after Commit but before Apply, the recovery daemon replays TXN `0x4A2`.
+  3. **Idempotency**: All `bd.persist` operations are address-stable and safe to repeat.
+|
+
+legend: {
+  shape: package
+  near: bottom-right
+  label: "Legend & Spec Symbols"
+  
+  l1: "▼ / ▲ : Mutex/Lock State Change (In-Kernel)" {
+    style.font-size: 11
+  }
+  l2: "Red Pulsing Line : FSYNC / I/O Hardware Barrier" {
+    style.font-size: 11
+    style.font-color: red
+  }
+  l3: "Addressing: LBA 1=Journal, 512=Bitmap, 1024=Inodes" {
+    style.font-size: 11
+  }
+}
+
+# Global Styling for Spec-grade Diagram
+***.style.font: mono
+(*** -> bd)[*]: {
+  style: {
+    stroke: "#495057"
+    stroke-dash: 2
+  }
+}
+
+# Highlight the main return path
+(fs.call -> app.exec)[0]: {
+  style: {
+    stroke: "#2f9e44"
+    stroke-width: 3
+    bold: true
+  }
+}

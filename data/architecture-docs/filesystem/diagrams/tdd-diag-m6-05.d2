@@ -1,139 +1,155 @@
+layout-engine: elk
 vars: {
   d2-config: {
     layout-engine: elk
     theme-id: 4
+    sketch: false
+    pad: 20
+  }
+  colors: {
+    header: "#E1D5E7"
+    journal: "#D5E8D4"
+    txn: "#FFF2CC"
+    storage: "#F8CECC"
+    kernel: "#DAE8FC"
+    io_blue: "#0000FF"
+    error_red: "#FF0000"
   }
 }
 
 journal_commit_sequence: {
   shape: sequence_diagram
-
+  
+  # --- ACTOR DEFINITIONS (Order Established Left-to-Right) ---
   FS: FileSystem {
-    tooltip: "High-level VFS layer"
+    tooltip: "High-level Virtual File System layer (ext4/xfs)"
+    style.fill: ${colors.header}
   }
   J: Journal {
-    tooltip: "JBD2-style logging sub-system"
+    tooltip: "JBD2 (Journaling Block Device) sub-system"
+    style.fill: ${colors.journal}
   }
   TXN: Transaction {
-    tooltip: "In-memory transaction descriptor"
-  }
-  DEV: BlockDevice {
-    tooltip: "Physical storage / NVMe / SSD"
+    tooltip: "In-memory Running/Commit Transaction Handle"
+    style.fill: ${colors.txn}
   }
   OS: Kernel {
-    tooltip: "I/O Scheduler & Driver stack"
+    tooltip: "Block I/O Layer & Scheduler (Bio/Request)"
+    style.fill: ${colors.kernel}
+  }
+  DEV: BlockDevice {
+    tooltip: "Physical storage (NVMe/SSD/HDD) - Non-Volatile Media"
+    style.fill: ${colors.storage}
   }
 
-  # MAIN SUCCESS PATH
-  FS -> J: "journal_commit(Journal *j)" {
-    J -> J: "▼ pthread_mutex_lock(&j->lock)"
-
-    J -> TXN: "check txn->state == TXN_ACTIVE"
-    TXN -> J: "Confirmed"
-
-    group "Write Logged Entries" {
-      J -> J: "for each entry in txn->entries"
-      J -> J: "checksum = crc32(0, entry, entry_size)"
-      J -> J: "journal_write_entry(j, entry)"
-      
-      J -> DEV: "write_block(j->dev, phys_block, j->block_buffer)" {
-        style: {
-          stroke: blue
-          stroke-width: 2
-        }
-      }
-      DEV -> J: "0 (Success)"
+  # --- INITIALIZATION PHASE ---
+  init: "Step 1: Transaction Closure" {
+    FS -> J: "journal_commit(Journal *j)"
+    J -> J: "▼ pthread_mutex_lock(&j->lock)" {
+      style.stroke: "#333333"
     }
-
-    group "Atomic Commit Point" {
-      J -> J: "create JE_COMMIT entry"
-      J -> J: "commit_entry.checksum = crc32(...)"
-      J -> J: "journal_write_entry(j, &commit_entry)"
-      
-      J -> DEV: "write_block(j->dev, commit_block, j->block_buffer)" {
-        style: {
-          stroke: blue
-          stroke-width: 3
-        }
-      }
-      DEV -> J: "0 (Success)"
-    }
-
-    group "Durability Barrier (Hardware Sync)" {
-      OS."CRITICAL: Ensure commit record reaches non-volatile storage"
-      
-      J -> OS: "fsync(j->dev->fd)" {
-        style: {
-          stroke: "#0000FF"
-          stroke-width: 4
-          animated: true
-        }
-      }
-      OS -> DEV: "Flush Write Cache / REQ_FUA"
-      DEV -> OS: "Success (Data Persistent)"
-      OS -> J: "0 (Success)"
-    }
-
-    group "Update Memory & Metadata" {
-      J -> J: "j->header.committed_txn_count++"
-      J -> J: "j->header_dirty = true"
-      
-      J -> TXN: "txn->state = TXN_COMMITTED" {
-        style: {
-          font-color: red
-          bold: true
-        }
-      }
-    }
-
-    J -> J: "▲ pthread_mutex_unlock(&j->lock)"
-    J -> FS: "0 (Success)"
+    J -> TXN: "check txn->state == T_RUNNING"
+    TXN -> J: "State Transition: T_LOCKED"
   }
 
-  # ERROR HANDLING PATH
-  group "Exception: IO Failure during Durability Barrier" {
-    J -> OS: "fsync(j->dev->fd) [Retry]"
-    OS -> J: "return -1 (EIO)" {
+  # --- LOGGING PHASE ---
+  logging: "Step 2: Log Descriptor & Data Write-out" {
+    J -> J: "Checksum Log Set: crc32c(txn_uuid, entries)"
+    J -> J: "Generate JBD2_DESCRIPTOR_BLOCK"
+    
+    J -> OS: "submit_bio(WRITE | REQ_SYNC, descriptor_block)"
+    OS -> DEV: "LBA Write [Log Area]" {
+      style.stroke: ${colors.io_blue}
+      style.stroke-width: 2
+    }
+    DEV -> OS: "DMA Transfer Complete"
+    OS -> J: "bio_endio() Callback"
+  }
+
+  # --- COMMIT PHASE ---
+  commit_point: "Step 3: Atomic Commit Record (Point of No Return)" {
+    J -> J: "Construct JBD2_COMMIT_BLOCK (8-byte Tail)"
+    J -> J: "Set header.block_type = JBD2_COMMIT_BLOCK"
+    
+    J -> OS: "submit_bio(WRITE | REQ_FUA, commit_block)" {
       style: {
-        stroke: red
+        stroke: ${colors.io_blue}
+        stroke-width: 3
+      }
+    }
+    OS -> DEV: "REQ_PREFLUSH | REQ_FUA (Force Unit Access)"
+    DEV -> OS: "Commit Record Persistent"
+    OS -> J: "I/O Completion: Success"
+  }
+
+  # --- DURABILITY BARRIER ---
+  durability: "Step 4: Durability & Hardware Cache Flush" {
+    OS."CRITICAL: Pipeline Flush (Ensure Metadata/Log separation)"
+    
+    J -> OS: "fsync(j->dev->fd)" {
+      style: {
+        stroke: "#0000FF"
+        stroke-width: 4
+        animated: true
+      }
+    }
+    OS -> DEV: "Issue FLUSH CACHE command"
+    DEV -> OS: "NVM Write Completion"
+    OS -> J: "0 (Barrier Synchronized)"
+  }
+
+  # --- FINALIZATION ---
+  finalize: "Step 5: Memory State Transition" {
+    J -> J: "j->header.committed_txn_count++"
+    J -> TXN: "txn->state = T_FINISHED" {
+      style: {
+        font-color: ${colors.error_red}
+        bold: true
+      }
+    }
+    J -> J: "▲ pthread_mutex_unlock(&j->lock)"
+    J -> FS: "return 0 (E_SUCCESS)"
+  }
+
+  # --- ERROR HANDLING ---
+  error_handling: "Exception: I/O Device Failure during Commit" {
+    J -> OS: "fsync(j->dev->fd) [RETRY_1]"
+    OS -> J: "EIO (Input/Output Error)" {
+      style: {
+        stroke: ${colors.error_red}
         stroke-dash: 3
         bold: true
       }
     }
     
-    J -> J: "journal_abort(j)" {
+    J -> J: "journal_abort(j, -EIO)" {
       style: {
-        stroke: red
+        stroke: ${colors.error_red}
         stroke-width: 2
       }
     }
     
-    J -> FS: "-EIO (Transaction Aborted)" {
-      style.font-color: red
+    J -> FS: "-EIO (Filesystem Forced Read-Only)" {
+      style.font-color: ${colors.error_red}
     }
   }
 }
 
 legend: {
   near: bottom-right
-  note: |md
-    ### Implementation Details (Intel Manual Spec)
-    - **fsync()**: Barrier required to prevent out-of-order execution of the commit record relative to the log entries.
-    - **Atomicity**: The `JE_COMMIT` block (Atomic Commit Point) defines the transaction validity. 
-    - **Checksums**: crc32 is used to detect partial writes during power-loss events.
-    - **Locking**: `j->lock` protects the journal head/tail pointers and the descriptor list.
+  label: |md
+    ### Technical Specification (JBD2/EXT4 Compliance)
+    - **T_LOCKED**: Transaction is closed to new handles but not yet persistent.
+    - **JBD2_COMMIT_BLOCK**: The 512B/4KB block that makes the txn valid.
+    - **FUA (Force Unit Access)**: Bypasses volatile drive cache; writes directly to platter/NAND.
+    - **Atomic Commit Point**: If the system crashes *before* the Commit Record ACK, the entire txn is discarded during recovery.
+    - **Checksum**: crc32c used to verify log integrity during the `journal_recover` phase.
   |
   
   style: {
     stroke: "#333333"
     fill: "#f9f9f9"
     shadow: true
+    border-radius: 4
   }
 }
-
-# Technical Styling for sequence actors
-journal_commit_sequence.FS.style.fill: "#E1D5E7"
-journal_commit_sequence.J.style.fill: "#D5E8D4"
-journal_commit_sequence.TXN.style.fill: "#FFF2CC"
-journal_commit_sequence.DEV.style.fill: "#F8CECC"
-journal_commit_sequence.OS.style.fill: "#DAE8FC"

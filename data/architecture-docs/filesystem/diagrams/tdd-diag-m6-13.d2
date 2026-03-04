@@ -1,0 +1,217 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    sketch: false
+    pad: 20
+  }
+}
+
+checkpoint_process: {
+  label: "FS ALGORITHM: journal_checkpoint (Implementation Spec)"
+
+  # ---------------------------------------------------------------------------
+  # STATE T=0: BEFORE (Journal contains uncommitted/dirty transactional data)
+  # ---------------------------------------------------------------------------
+  before: {
+    label: "STATE: BEFORE (Dirty Journal Log)"
+    
+    memory: "DRAM: Journal Control Block (Shadow Copy)" {
+      style.fill: "#8e44ad"
+      style.font-color: white
+      
+      fields: {
+        shape: sql_table
+        seq: "u64 sequence | 100"
+        tail: "u32 tail_ptr | 4096"
+        head: "u32 head_ptr | 12288"
+        crc: "u32 checksum | 0xDEADBEEF"
+      }
+      
+      annotation: "sizeof=64B (Cache Line Aligned)" {
+        style.stroke-dash: 3
+        style.font-size: 10
+      }
+    }
+
+    disk: "DISK: Physical Journal Partition" {
+      header_block: "BLOCK 0: Journal Header (LBA 0)" {
+        style.fill: "#8e44ad"
+        style.font-color: white
+        style.double-border: true
+        content: "SEQ: 100\nTAIL: 4096\nHEAD: 12288"
+        offset: "Offset: 0B (Size: 4096B)" {
+          style.font-size: 10
+          style.stroke-width: 0
+        }
+      }
+
+      payload_region: {
+        grid-columns: 4
+        grid-gap: 10
+        
+        b1: "BLOCK 1: Txn 101" { 
+          style.fill: "#3498db"
+          style.font-color: white
+          "4096B - 8191B" { style.font-size: 8 }
+        }
+        b2: "BLOCK 2: Txn 102" { 
+          style.fill: "#3498db"
+          style.font-color: white
+          "8192B - 12287B" { style.font-size: 8 }
+        }
+        b3: "BLOCK 3: Free" { 
+          style.fill: "#27ae60"
+          style.font-color: white
+          "12288B - 16383B" { style.font-size: 8 }
+        }
+        b4: "BLOCK 4: Free" { 
+          style.fill: "#27ae60"
+          style.font-color: white
+          "16384B - 20479B" { style.font-size: 8 }
+        }
+      }
+      
+      # Page boundaries
+      payload_region.b1.style.stroke-width: 4
+      payload_region.b2.style.stroke-width: 4
+      payload_region.b3.style.stroke-width: 4
+      payload_region.b4.style.stroke-width: 4
+    }
+
+    tail_ptr: "TAIL" { shape: parallelogram; style.fill: "#e67e22" }
+    head_ptr: "HEAD" { shape: parallelogram; style.fill: "#e67e22" }
+
+    tail_ptr -> disk.payload_region.b1: "0x1000" {
+      style.stroke: "#e67e22"
+      style.stroke-width: 2
+    }
+    head_ptr -> disk.payload_region.b3: "0x3000" {
+      style.stroke: "#e67e22"
+      style.stroke-width: 2
+    }
+  }
+
+  # ---------------------------------------------------------------------------
+  # ATOMIC TRANSITION LOGIC
+  # ---------------------------------------------------------------------------
+  transition: {
+    label: "ATOMIC EXECUTION SEQUENCE"
+    step1: "1. DATA BARRIER: Wait for Inode/Bitmap I/O to hit main storage."
+    step2: "2. UPDATE TAIL: set memory->tail = memory->head (12288)."
+    step3: "3. INC SEQUENCE: set memory->seq = 101."
+    step4: "4. RECALC CRC: Compute parity for new header state."
+    step5: "5. COMMIT: pwrite() memory->buffer to Disk LBA 0."
+    step6: "6. DRAIN: fsync(fd) ensure durability."
+
+    style: {
+      stroke: "#7f8c8d"
+      fill: "#fdfefe"
+      stroke-width: 2
+    }
+  }
+
+  # ---------------------------------------------------------------------------
+  # STATE T=1: AFTER (Atomic update complete, journal tail advanced)
+  # ---------------------------------------------------------------------------
+  after: {
+    label: "STATE: AFTER (Post-Checkpoint Clean)"
+
+    memory: "DRAM: Journal Control Block (Updated)" {
+      style.fill: "#8e44ad"
+      style.font-color: white
+      
+      fields: {
+        shape: sql_table
+        seq: "u64 sequence | **101**" { style.font-color: "#e74c3c" }
+        tail: "u32 tail_ptr | **12288**" { style.font-color: "#e74c3c" }
+        head: "u32 head_ptr | 12288"
+        crc: "u32 checksum | **0x63A1D2B4**" { style.font-color: "#e74c3c" }
+      }
+    }
+
+    disk: "DISK: Physical Journal Partition" {
+      header_block: "BLOCK 0: Journal Header (LBA 0)" {
+        style.fill: "#8e44ad"
+        style.font-color: white
+        style.stroke: "#e74c3c"
+        style.stroke-width: 6
+        content: "SEQ: **101**\nTAIL: **12288**\nHEAD: 12288"
+      }
+
+      payload_region: {
+        grid-columns: 4
+        grid-gap: 10
+        
+        b1: "STALE: Txn 101" { 
+          style.fill: "#95a5a6"
+          style.font-color: white
+          style.stroke-dash: 5
+        }
+        b2: "STALE: Txn 102" { 
+          style.fill: "#95a5a6"
+          style.font-color: white
+          style.stroke-dash: 5
+        }
+        b3: "BLOCK 3: Free" { 
+          style.fill: "#27ae60"
+          style.font-color: white
+          style.double-border: true
+        }
+        b4: "BLOCK 4: Free" { 
+          style.fill: "#27ae60"
+          style.font-color: white 
+        }
+      }
+    }
+
+    sync_ptr: "TAIL & HEAD" { 
+      shape: parallelogram
+      style.fill: "#e67e22"
+      style.bold: true
+      style.stroke: "#e74c3c"
+      style.stroke-width: 3
+    }
+    
+    sync_ptr -> disk.payload_region.b3: "0x3000 (CLEAN)" { 
+      style.stroke: "#e74c3c"
+      style.stroke-width: 4
+      style.animated: true
+    }
+  }
+
+  # Control Flow
+  before -> transition: "Initiate Checkpoint"
+  transition -> after: "Log Committed"
+}
+
+# ---------------------------------------------------------------------------
+# GLOBAL SPECIFICATIONS & INVARIANTS
+# ---------------------------------------------------------------------------
+specs: {
+  label: ||md
+    ### Journaling Technical Specifications
+    - **Sector Alignment**: All writes performed at 4KB page boundaries.
+    - **Barrier Semantics**: `fsync()` must return 0 before sequence increment is considered durable.
+    - **Header Safety**: Double-buffered header write is recommended to prevent corruption during power loss.
+    - **Recovery Logic**: Recovery starts at `tail`. Since `tail == head`, recovery scans 0 blocks.
+
+    | Field | Size | Offset | Alignment |
+    | :--- | :--- | :--- | :--- |
+    | Header | 4096B | 0 | 4KB |
+    | Payload | Variable | 4096 | 4KB |
+    | Padding | 64B | Internal | Cache Line |
+  ||
+  near: bottom-center
+  style: {
+    fill: "#fdfefe"
+    stroke: "#2c3e50"
+    stroke-width: 2
+    font-size: 12
+  }
+}
+
+# Styling Globs
+checkpoint_process.**.style.font: mono
+checkpoint_process.transition.**.style.bold: true

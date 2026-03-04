@@ -1,0 +1,144 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# Journal Replay Algorithm: journal_recover
+# Coordinates recovery from tail to head in the circular buffer
+
+recovery_process: {
+  step_1: {
+    label: "1. Read Journal Header"
+    state: {
+      label: "In-Memory State"
+      magic: "0x4A524E4C"
+      tail: "4096"
+      head: "16384"
+      status: "RECOVERING" {
+        style: { font-color: red; bold: true }
+      }
+    }
+    action: "Validate magic/checksum from Block 0 of Journal Region"
+  }
+
+  step_2: {
+    label: "2. Initialize Scan Pointer"
+    state: {
+      label: "Scan Context"
+      offset: "4096 (tail)" {
+        style: { font-color: red; bold: true }
+      }
+      limit: "16384 (head)"
+      txn_map: "{ }"
+    }
+    action: "Set scan start to oldest non-checkpointed transaction"
+  }
+
+  step_3: {
+    label: "3. While offset < head: Read Entry"
+    state: {
+      label: "Current Entry"
+      type: "JE_INODE_ALLOC (1)"
+      seq: "42"
+      len: "8"
+      checksum: "0xDEADBEEF" {
+        style: { font-color: red; bold: true }
+      }
+    }
+    action: "Load JournalEntry header + payload from disk at offset"
+  }
+
+  step_4: {
+    shape: diamond
+    label: "CRC32 Matches?"
+  }
+
+  step_5: {
+    label: "5. Process Record"
+    state: {
+      label: "Transaction Cache"
+      map: "[42] -> { entries: [JE_INODE_ALLOC], committed: false }"
+    }
+    action: "If type == JE_COMMIT, mark seq as durable. Else append to txn entry list."
+  }
+
+  step_6: {
+    label: "6. Replay Committed Transactions"
+    state: {
+      label: "FS Invariants"
+      inode_bitmap: "UPDATED" {
+        style: { font-color: red; bold: true }
+      }
+      inode_table: "UPDATED" {
+        style: { font-color: red; bold: true }
+      }
+      status: "CONSISTENT"
+    }
+    action: "Iterate cache: For each sequence with JE_COMMIT, call apply_entry() idempotently"
+  }
+
+  step_7: {
+    label: "7. Advance Offset"
+    state: {
+      label: "Scan Context"
+      offset: "offset + entry_size" {
+        style: { font-color: red; bold: true }
+      }
+    }
+    action: "Move to next record in circular buffer"
+  }
+
+  step_8: {
+    label: "8. Final Checkpoint"
+    state: {
+      label: "Journal Header (Disk)"
+      tail: "16384 (new head)" {
+        style: { font-color: red; bold: true }
+      }
+      committed_count: "0" {
+        style: { font-color: red; bold: true }
+      }
+      status: "CLEAN"
+    }
+    action: "Set tail = head, update checksum, and fsync header to Block 0"
+  }
+
+  step_1 -> step_2 -> step_3 -> step_4
+  step_4 -> step_5: "Valid"
+  step_4 -> step_8: "Corrupt / Partial" {
+    style: { stroke: red; font-color: red }
+  }
+  step_5 -> step_6 -> step_7
+  step_7 -> step_3: "Next Record"
+  step_6 -> step_8: "Scan Complete"
+}
+
+# Legend and Annotations
+legend: {
+  near: bottom-right
+  note: |md
+    ### Journal Recovery Invariants
+    - **Idempotency**: `apply_entry` must allow repeated calls.
+    - **Commit Barrier**: Transactions without `JE_COMMIT` are discarded.
+    - **Atomic Header**: Tail only advances *after* replay is successful.
+  |
+}
+
+# Styling
+recovery_process.step_4.style.fill: "#fff2cc"
+recovery_process.step_8.style.fill: "#d9ead3"
+
+# Background formatting for internal state blocks to look like tables
+recovery_process.** .state: {
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#dee2e6"
+    border-radius: 4
+  }
+}
+
+# Specific error marker from original spec
+recovery_process.step_1.state.status.style.stroke: red

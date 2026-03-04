@@ -1,0 +1,175 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Journaling Mode Architecture Comparison
+  ## Implementation Choice: Metadata-only (Standard ext4/XFS behavior)
+| {
+  near: top-center
+  shape: text
+}
+
+comparison: {
+  grid-columns: 2
+  grid-gap: 50
+
+  metadata_only: Metadata-only Journaling {
+    style: {
+      stroke: "#6772E5"
+      stroke-width: 4
+      fill: "#F6F9FC"
+      border-radius: 8
+    }
+
+    journal_region: Journal Region {
+      style.fill: "#E1D5E7"
+      
+      je_meta: JE_METADATA {
+        shape: sql_table
+        style.stroke: purple
+        0x00: "type: uint16_t" {constraint: "2B"}
+        0x02: "len: uint32_t" {constraint: "4B"}
+        0x06: "payload: Inode/Bitmap" {constraint: "Variable"}
+      }
+      
+      je_commit: JE_COMMIT {
+        shape: sql_table
+        style.stroke: purple
+        0x00: "seq: uint64_t" {constraint: "8B"}
+        0x08: "checksum: uint32_t" {constraint: "4B"}
+      }
+    }
+
+    main_fs: Main Filesystem Region {
+      style.fill: "#DAE8FC"
+      
+      data_block: Data Block {
+        shape: square
+        label: "Data Block\n(4096B Offset)"
+        style.fill: "#B5D2F2"
+      }
+      
+      inode_table: Inode Table {
+        shape: square
+        label: "Inode Table\n(Metadata Store)"
+        style.fill: "#B5D2F2"
+      }
+    }
+
+    write_op: Write Operation Sequence {
+      step1: "1. Log Metadata Changes"
+      step2: "2. Atomic Commit (fsync)"
+      step3: "3. Write Data Directly"
+      step4: "4. Apply Metadata to FS"
+
+      step1 -> _._.journal_region.je_meta: "Append Entry"
+      step2 -> _._.journal_region.je_commit: "Close Transaction"
+      step3 -> _._.main_fs.data_block: "Bypass Journal" {
+        style.stroke: blue
+        style.stroke-width: 3
+        style.animated: true
+      }
+      step4 -> _._.main_fs.inode_table: "Checkpoint"
+    }
+
+    metrics: |md
+      ### Performance Metrics
+      - **Write Amplification:** 1.0x (Metadata logged + Data written once)
+      - **Safety:** Filesystem structure (consistency) guaranteed.
+      - **Risk:** User data blocks may contain stale data if crash occurs after metadata commit but before data write completes.
+    | {
+      shape: text
+      style.font-color: "#167C3C"
+      style.font-size: 14
+    }
+  }
+
+  full_data: Full Data Journaling {
+    style: {
+      stroke: "#D0D0D0"
+      stroke-dash: 5
+      fill: "#F9F9F9"
+      border-radius: 8
+    }
+
+    journal_region: Journal Region {
+      style.fill: "#E1D5E7"
+      
+      je_meta: JE_METADATA {
+        shape: sql_table
+        style.stroke: purple
+        0x00: "type: uint16_t"
+      }
+      
+      je_data: JE_DATA_PAYLOAD {
+        shape: sql_table
+        style.stroke: purple
+        0x00: "data: char[4096]" {constraint: "4KB Block"}
+      }
+      
+      je_commit: JE_COMMIT {
+        shape: sql_table
+        style.stroke: purple
+        0x00: "seq: uint64_t"
+      }
+    }
+
+    main_fs: Main Filesystem Region {
+      style.fill: "#DAE8FC"
+      data_block: Data Block (4096B)
+      inode_table: Inode Table (4096B)
+    }
+
+    write_op: Write Operation Sequence {
+      w1: "1. Log Data + Metadata"
+      w2: "2. Atomic Commit"
+      w3: "3. Checkpoint to Main FS"
+
+      w1 -> _._.journal_region.je_data: "Full Block Copy"
+      w1 -> _._.journal_region.je_meta: "Header"
+      w2 -> _._.journal_region.je_commit: "linearization point"
+      w3 -> _._.main_fs.data_block: "Background Sync"
+    }
+
+    metrics: |md
+      ### Performance Metrics
+      - **Write Amplification:** 2.0x (All data written to journal THEN to disk)
+      - **Safety:** Full data integrity. Atomic "all or nothing" for data blocks.
+      - **Risk:** Significant I/O throughput penalty (usually >50% reduction).
+    | {
+      shape: text
+      style.font-color: "#7939A8"
+      style.font-size: 14
+    }
+  }
+}
+
+# Implementation Invariants
+invariants: |md
+  ### Critical Technical Requirements
+  1. **Ordering Invariant:** Metadata logs MUST reach stable storage in the journal and be closed by a `JE_COMMIT` (Step 2) before the metadata is permitted to be applied to the Main FS `inode_table` (Step 4).
+  2. **Idempotency:** Replaying the journal during recovery (scanning from last valid `JE_COMMIT` backwards) must result in a consistent state even if interrupted and restarted.
+  3. **Atomic Block Unit:** The 4096B block write remains the atomic unit of the underlying block device; journal entries spanning blocks must use checksums to verify partial writes.
+| {
+  near: bottom-center
+  shape: text
+  style.stroke: "#F69E03"
+  style.fill: "#FFF2CC"
+  style.border-radius: 5
+}
+
+# Visual Connections for Ordering
+(comparison.metadata_only.write_op.step2 -> comparison.metadata_only.write_op.step3): "Ordering Requirement" {
+  style.stroke: red
+  style.stroke-dash: 2
+}
+
+# Memory Field Overrides for Clarity
+comparison.metadata_only.journal_region.je_meta.style.fill: "#FDF0FF"
+comparison.metadata_only.journal_region.je_commit.style.fill: "#FDF0FF"
+comparison.full_data.journal_region.je_data.style.fill: "#FDF0FF"

@@ -1,0 +1,233 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+classes: {
+  step_container: {
+    style: {
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  field_header: {
+    style: {
+      fill: "#E1D5E7" # Purple (Header)
+      bold: true
+      font-size: 14
+    }
+  }
+  field_data: {
+    style: {
+      fill: "#DAE8FC" # Blue (Data)
+      font-size: 14
+    }
+  }
+  field_checksum: {
+    style: {
+      fill: "#FFF2CC" # Yellow/Orange (Pointers/Meta)
+      font-size: 14
+    }
+  }
+  changed: {
+    style: {
+      stroke: "#FF0000"
+      stroke-width: 5
+      font-color: "#FF0000"
+      bold: true
+    }
+  }
+  memory_label: {
+    style: {
+      font: mono
+      font-size: 12
+    }
+  }
+}
+
+PHASE_A: "PHASE A: WRITE - GENERATING CHECKSUM" {
+  grid-columns: 3
+  
+  "Step 1: Prepare Entry": {
+    class: step_container
+    
+    layout: {
+      shape: sql_table
+      "Offset | Field": "Type | Size" {class: field_header}
+      "00..01 | type": "uint16_t | 2B" {class: field_header}
+      "02..03 | flags": "uint16_t | 2B" {class: field_header}
+      "04..07 | length": "uint32_t | 4B" {class: field_header}
+      "08..15 | sequence": "uint64_t | 8B" {class: field_header}
+      "16..19 | checksum": "0x00000000 | 4B" {class: field_checksum}
+      "20..XX | payload": "uint8_t[] | Var" {class: field_data}
+    }
+    
+    label: |md
+      ### 1. Initialization
+      - Memory allocated in heap
+      - Metadata populated
+      - **Checksum field zeroed** to prevent circular dependency during hash calculation
+    |
+  }
+
+  "Step 2: CRC32 Calculation": {
+    class: step_container
+    
+    calculation: {
+      shape: parallelogram
+      label: "CRC-32/ISO-HDLC\nPoly: 0xEDB88320\nInit: 0xFFFFFFFF"
+      style.fill: "#D5E8D4" # Green
+    }
+    
+    range: {
+      shape: package
+      label: "Hashed Memory Segments"
+      h1: "Header [0..15]" {style.fill: "#E1D5E7"}
+      h2: "Payload [20..End]" {style.fill: "#DAE8FC"}
+      h1 -- h2: "Concat" {style.stroke-dash: 3}
+    }
+    
+    range -> calculation: "Stream Bytes"
+    
+    label: |md
+      ### 2. Digest Computation
+      Calculate CRC32 over the binary 
+      representation of the header and 
+      payload, skipping the 4 bytes 
+      reserved for the checksum itself.
+    |
+  }
+
+  "Step 3: Finalize Header": {
+    class: step_container
+    
+    entry_final: {
+      shape: sql_table
+      "Offset | Field": "Value (Hex)" {class: field_header}
+      "00..01 | type": "0x0003" {class: field_header}
+      "02..03 | flags": "0x0000" {class: field_header}
+      "04..07 | length": "0x00001008" {class: field_header}
+      "08..15 | sequence": "0x00...002A" {class: field_header}
+      "16..19 | checksum": "0xAF32B1C4" {class: [field_checksum; changed]}
+      "20..XX | payload": "[Binary Data]" {class: field_data}
+    }
+    
+    label: |md
+      ### 3. Commit Hash
+      The calculated digest is written 
+      into the checksum field. The 
+      entry is now **self-consistent** 
+      and ready for persistence.
+    |
+  }
+}
+
+PHASE_B: "PHASE B: READ - VERIFYING INTEGRITY" {
+  grid-columns: 2
+  
+  "Step 4: Recalculate": {
+    class: step_container
+    
+    read_buf: {
+      shape: cylinder
+      label: "Storage Device\n(Sector 0x88)"
+      style.fill: "#F5F5F5"
+    }
+    
+    local_calc: "Local CRC32 Logic" {
+      shape: parallelogram
+      style.fill: "#D5E8D4"
+    }
+    
+    read_buf -> local_calc: "DMA Transfer"
+    
+    label: |md
+      ### 4. Verification Pass
+      Read raw bytes from disk into 
+      volatile buffer. Run same 
+      CRC32 algorithm on the range 
+      [0..15] and [20..N].
+    |
+  }
+
+  "Step 5: Compare": {
+    class: step_container
+    
+    comparison: {
+      shape: diamond
+      label: "Digest Match?"
+    }
+    
+    stored: "Stored: 0xAF32B1C4" { class: field_checksum }
+    local: "Computed: 0xAF32B1C4" { class: field_checksum }
+    
+    local -> comparison: "Input A"
+    stored -> comparison: "Input B"
+    
+    comparison -> OK: "TRUE" {
+      style: {
+        stroke: green
+        stroke-width: 3
+      }
+    }
+    comparison -> ERROR: "FALSE" {
+      style: {
+        stroke: red
+        stroke-dash: 5
+        stroke-width: 3
+      }
+    }
+    
+    OK: "Pass to App" {style.fill: "#D5E8D4"}
+    ERROR: "Panic / Corrupt" {style.fill: "#F8CECC"}
+    
+    label: |md
+      ### 5. Validation
+      Compare computed value against 
+      the value stored at offset 16.
+      Abort transaction on mismatch.
+    |
+  }
+}
+
+PHASE_A -> PHASE_B: "Disk Write / Read Lifecycle" {
+  style: {
+    stroke-width: 6
+    stroke: "#666666"
+    animated: true
+  }
+}
+
+legend: {
+  shape: package # Fixed unknown shape "sticky_note"
+  label: |md
+    # Journal Entry Checksum Specification
+    - **Total Size:** 20 Bytes + N (Payload)
+    - **Alignment:** 8-byte aligned
+    - **Algorithm:** CRC-32 (POSIX)
+    
+    ## Invariants
+    1. Checksum field must be 0 during calculation.
+    2. Any modification to sequence or flags requires recalculation.
+    3. Payload length must match 'length' field exactly.
+  |
+  near: bottom-right
+  style: {
+    fill: "#FFF2CC"
+    stroke: "#D6B656"
+    shadow: true
+  }
+}
+
+# Documentation Annotations
+annotations: |md
+  ## Engineer Implementation Notes
+  - Offsets 0-19 constitute the primary header.
+  - CRC32 is Little-Endian when stored in the entry.
+  - The `flags` field (Offset 02) includes an `is_compressed` bit which alters the data range.
+| {
+  near: top-left
+  style.font-size: 10
+}

@@ -1,0 +1,170 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 50
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# CRASH SIMULATION TEST FLOW
+# ---------------------------------------------------------------------------------------
+crash_simulation_flow: {
+  shape: sequence_diagram
+  
+  harness: TestHarness\n(Parent Process) {
+    style: {
+      fill: "#E1D5E7"
+      stroke: "#9673A6"
+      stroke-width: 2
+    }
+  }
+  daemon: FSDaemon\n(Child Process) {
+    style: {
+      fill: "#DAE8FC"
+      stroke: "#6C8EBF"
+      stroke-width: 2
+    }
+  }
+  journal: JournalRegion\n(Block 5123+) {
+    style: {
+      fill: "#FFF2CC"
+      stroke: "#D6B656"
+      stroke-width: 2
+    }
+  }
+  main_fs: MetadataRegion\n(Inodes/Bitmaps) {
+    style: {
+      fill: "#D5E8D4"
+      stroke: "#82B366"
+      stroke-width: 2
+    }
+  }
+
+  # --- INITIALIZATION ---
+  harness -> daemon: "fork()"
+  harness."PID: 8922 assigned to child process (Namespace: PID, MNT)"
+
+  # --- WRITE PHASE ---
+  transaction_phase: {
+    daemon.t1 -> journal: "journal_begin(seq=42)"
+    journal."+0x00: [Header] SEQ_ID=42 | Flags=0x01 (DIRTY)"
+    
+    daemon.t1 -> journal: "journal_log(JE_INODE_ALLOC, 501)"
+    journal."+0x10: [Data] OP=ALLOC | Inode=501 | Block=N/A"
+    
+    daemon.t1 -> journal: "journal_log(JE_DIR_ADD, 'test.txt')"
+    journal."+0x40: [Data] OP=DIR_ADD | Data='test.txt' | Parent=2"
+    
+    daemon.t1 -> journal: "journal_commit()"
+    journal."+0x80: [Commit] OP=JE_COMMIT (Pending Flush)"
+
+    daemon.t1 -> journal: "fsync(fd)" {
+      source-arrowhead: diamond
+      source-arrowhead.label: "▼ LOCK ACQUIRE (VFS_MUTEX)"
+    }
+    journal."Stable Storage Write: CRC32 valid | I/O Barrier Passed"
+    daemon.t1 <- journal: "commit_success" {
+      target-arrowhead: triangle
+    }
+  }
+
+  harness -> harness: "usleep(random_ms)"
+  harness."Jitter injection: simulate race condition in flush window"
+
+  # --- FAULT INJECTION ---
+  harness -> daemon: "kill(pid, SIGKILL)" {
+    style: {
+      stroke: "#FF0000"
+      stroke-width: 6
+      animated: true
+    }
+  }
+
+  daemon."⚡ PROCESS TERMINATED (SIGKILL: Panic/Dirty Exit)" {
+    style: {
+      fill: "#FF0000"
+      font-color: "#FFFFFF"
+      bold: true
+    }
+  }
+
+  # --- RECOVERY PHASE ---
+  recovery_init: {
+    harness -> journal: "journal_open()"
+    harness <- journal: "JournalHeader [head=0x1200, tail=0x1000]"
+    harness."Status: DIRTY_BIT=1 (Recovery Required)"
+  }
+
+  recovery_execution: {
+    harness.recovery -> journal: "scan(tail..head)"
+    harness.recovery <- journal: "Found [Entry: seq=42, type=JE_COMMIT]"
+
+    harness.replay -> main_fs: "apply_entry(JE_INODE_ALLOC, 42)" {
+      style: {
+        stroke: "#FF0000"
+        bold: true
+        stroke-width: 3
+      }
+    }
+    main_fs."+ REDRAW: Bitmap[Inode 501] = 1 (Occupied)" {
+      style.font-color: "#FF0000"
+    }
+
+    harness.replay -> main_fs: "apply_entry(JE_DIR_ADD, 'test.txt')" {
+      style: {
+        stroke: "#FF0000"
+        bold: true
+        stroke-width: 3
+      }
+    }
+    main_fs."+ REDRAW: B-Tree Insert 'test.txt' @ Parent_Node=2" {
+      style.font-color: "#FF0000"
+    }
+
+    harness.recovery -> journal: "journal_checkpoint()"
+    journal."Checkpoint: Set Tail = 0x1200 | Clear DIRTY_BIT"
+  }
+
+  # --- VALIDATION ---
+  harness.verify -> main_fs: "check_consistency(Full Scan)"
+  harness.verify -> harness: "ASSERT(file_exists('/test.txt') == TRUE)"
+  harness.verify -> harness: "ASSERT(inode_501.nlink == 1)"
+
+  harness."Test PASSED: Journal-Ledger Integrity Verified" {
+    style: {
+      fill: "#228B22"
+      font-color: "#FFFFFF"
+      bold: true
+      stroke: "#006400"
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# IMPLEMENTATION METADATA & BYTE LAYOUT
+# ---------------------------------------------------------------------------------------
+annotation: ||md
+  ### Crash Invariants & Byte Layout
+
+  | Field | Offset | Size | Description |
+  | :--- | :--- | :--- | :--- |
+  | `SEQ_ID` | 0x00 | 8B | Monotonic transaction counter |
+  | `OP_CODE` | 0x08 | 4B | Entry type (ALLOC, ADD, COMMIT) |
+  | `DATA` | 0x0C | Var | Payload (Inode ID or Filename) |
+  | `CHECKSUM`| End | 4B | CRC32 of entry block |
+
+  #### Rule 1: COMMIT Record Presence
+  If the `JE_COMMIT` record (Offset +0x80) is successfully written to the JournalRegion block (verified by CRC32) before `SIGKILL`, the recovery agent **MUST** replay all preceding logged operations within that `SEQ_ID`.
+
+  #### Rule 2: Replay Idempotency
+  `apply_entry` implementations utilize `bit_set` and `dir_insert_if_not_exists`. In the event of a secondary crash during the recovery phase, subsequent replay attempts will result in a consistent state without block leakage or duplicate directory entries.
+|| {
+  near: bottom-center
+}
+
+# Global Style Overrides
+***.style.font: mono
+(*** -> ***)[*]: {
+  style.stroke-width: 2
+}

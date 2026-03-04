@@ -1,0 +1,243 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ----------------------------------------------------------------------------
+# LOGIC UNIT: JOURNAL RECOVERY PROCESSOR
+# ----------------------------------------------------------------------------
+JournalProcessor: {
+  shape: class
+  label: "Journal Recovery Processor\nsizeof=64 bytes (Cache Line Aligned)"
+  
+  # Fields with explicit byte offsets for implementation reference
+  "journal_base [0x00]": "uint64_t"
+  "write_cursor [0x08]": "uint32_t"
+  "recovery_mode [0x0C]": "bool"
+  "padding [0x10]": "uint8_t[48]"
+  
+  # Methods with full signatures
+  "apply_entry(fs: *FileSystem, entry: *JournalEntry)": "int"
+  "journal_recover(j: *Journal, fs: *FileSystem)": "int"
+  "bitmap_set(fs: *FileSystem, idx: uint64, val: int)": "void"
+  
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#9b59b6" # Header Purple
+    stroke-width: 2
+    font-size: 14
+  }
+}
+
+# ----------------------------------------------------------------------------
+# COMPONENT: IDEMPOTENT OPERATIONS (SAFE)
+# ----------------------------------------------------------------------------
+IdempotentPath: {
+  label: "SAFE OPERATION: idempotent_set(idx, 1)"
+  style: {
+    stroke: "#27ae60" # Green for Safe
+    stroke-width: 4
+    fill: "#fafffa"
+  }
+
+  Step0: {
+    label: "T0: Initial State (Pre-Crash)"
+    Bitmap: {
+      shape: sql_table
+      "Offset": "Bit State"
+      "0x00": "0x0000"
+      "0x05": "Bit 42: 0 (Free)" {
+        style.fill: "#bdc3c7" # Padding/Free Gray
+      }
+    }
+  }
+
+  Step1: {
+    label: "T1: Normal Apply (Allocation)"
+    Bitmap: {
+      shape: sql_table
+      "Offset": "Bit State"
+      "0x00": "0x0200"
+      "0x05": "Bit 42: 1 (Used)" {
+        style: {
+          fill: "#3498db" # Data Blue
+          font-color: "#ffffff"
+          bold: true
+        }
+      }
+    }
+    Annotation: ||md
+      ### Logic: OR Operation
+      `bits[idx] |= (1 << n);`
+
+      State transitions **0 -> 1**.
+      Persistence written to WAL.
+    ||
+  }
+
+  Step2: {
+    label: "T2: Recovery Replay (Post-Crash)"
+    Bitmap: {
+      shape: sql_table
+      "Offset": "Bit State"
+      "0x00": "0x0200"
+      "0x05": "Bit 42: 1 (Used)" {
+        style: {
+          fill: "#3498db" # Data Blue
+          double-border: true
+          bold: true
+        }
+      }
+    }
+    Annotation: |md
+      ### Replay Result
+      `1 OR 1 = 1`
+      
+      The state remains consistent regardless of 
+      how many times the operation is re-run.
+      **RESULT: IDEMPOTENT**
+    |
+  }
+
+  Step0 -> Step1: "write(JE_ALLOC)" {
+    style.stroke: "#3498db"
+  }
+  Step1 -> Step2: "REPLAY(JE_ALLOC)" {
+    style: {
+      stroke: "#27ae60"
+      stroke-dash: 5
+    }
+  }
+}
+
+# ----------------------------------------------------------------------------
+# COMPONENT: NON-IDEMPOTENT OPERATIONS (UNSAFE)
+# ----------------------------------------------------------------------------
+NonIdempotentPath: {
+  label: "UNSAFE OPERATION: bit_flip(idx)"
+  style: {
+    stroke: "#c0392b" # Red for Unsafe
+    stroke-width: 4
+    fill: "#fffafa"
+  }
+
+  Step0: {
+    label: "T0: Initial State (Pre-Crash)"
+    Bitmap: {
+      shape: sql_table
+      "Offset": "Bit State"
+      "0x00": "0x0000"
+      "0x05": "Bit 42: 0 (Free)" {
+        style.fill: "#bdc3c7"
+      }
+    }
+  }
+
+  Step1: {
+    label: "T1: Normal Apply (Allocation)"
+    Bitmap: {
+      shape: sql_table
+      "Offset": "Bit State"
+      "0x00": "0x0200"
+      "0x05": "Bit 42: 1 (Used)" {
+        style.fill: "#3498db"
+      }
+    }
+    Annotation: |md
+      ### Logic: XOR Operation
+      `bits[idx] ^= (1 << n);`
+      
+      State toggles **0 -> 1**.
+    |
+  }
+
+  Step2: {
+    label: "T2: Recovery Replay (Post-Crash)"
+    Bitmap: {
+      shape: sql_table
+      "Offset": "Bit State"
+      "0x00": "0x0000"
+      "0x05": "Bit 42: 0 (CORRUPTED)" {
+        style: {
+          fill: "#c0392b" # Failure Red
+          font-color: "#ffffff"
+          bold: true
+        }
+      }
+    }
+    Annotation: |md
+      ### Replay Result
+      `1 XOR 1 = 0`
+      
+      The replay **reversed** the valid allocation.
+      The filesystem is now corrupted.
+      **FATAL ERROR: NOT IDEMPOTENT**
+    |
+  }
+
+  Step0 -> Step1: "write(JE_TOGGLE)"
+  Step1 -> Step2: "REPLAY(JE_TOGGLE)" {
+    style: {
+      stroke: "#c0392b"
+      stroke-dash: 5
+    }
+  }
+}
+
+# ----------------------------------------------------------------------------
+# RELATIONSHIPS & METADATA
+# ----------------------------------------------------------------------------
+
+JournalProcessor -> IdempotentPath: "Valid WAL Strategy" {
+  style: {
+    stroke: "#27ae60"
+    stroke-dash: 3
+  }
+}
+
+JournalProcessor -> NonIdempotentPath: "ILLEGAL SEMANTICS" {
+  style: {
+    stroke: "#c0392b"
+    stroke-dash: 3
+  }
+}
+
+Legend: {
+  near: bottom-right
+  "Inode/Meta": {
+    style.fill: "#9b59b6"
+  }
+  "Valid Allocation": {
+    style.fill: "#3498db"
+  }
+  "Corrupted State": {
+    style.fill: "#c0392b"
+  }
+}
+
+DesignRule: |md
+  # Recovery Constraint
+  All journal apply logic must satisfy:  
+  $f(f(x)) = f(x)$
+  
+  **Safe for Write-Ahead Logging (WAL):**
+  - Block Write: `memcpy(target, src, size)`
+  - Absolute Bit Set: `bits[n] = 1`
+  - Version Clamping: `if (v < in) v = in`
+  
+  **Forbidden (Side-Effect Heavy):**
+  - Incremental: `counter++`
+  - Relative: `size += delta`
+  - Toggle: `bit ^= 1`
+|
+
+DesignRule.near: bottom-right
+DesignRule.shape: rectangle
+
+# Styling overrides for annotation clarity
+IdempotentPath.Step1.Annotation.style.font-size: 11
+NonIdempotentPath.Step1.Annotation.style.font-size: 11
+IdempotentPath.Step2.Annotation.style.font-size: 11
+NonIdempotentPath.Step2.Annotation.style.font-size: 11

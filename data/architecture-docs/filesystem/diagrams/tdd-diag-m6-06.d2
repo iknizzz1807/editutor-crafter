@@ -1,0 +1,252 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# ----------------------------------------------------------------------------
+# CLASS DEFINITIONS: Intel Manual Standards
+# ----------------------------------------------------------------------------
+classes: {
+  memory_block: {
+    style: {
+      stroke-width: 2
+      font-size: 14
+      font: mono
+    }
+  }
+  header_field: {
+    style: {
+      fill: "#E1D5E7" # Purple
+      stroke: "#9673A6"
+      bold: true
+    }
+  }
+  data_field: {
+    style: {
+      fill: "#DAE8FC" # Blue
+      stroke: "#6C8EBF"
+    }
+  }
+  commit_field: {
+    style: {
+      fill: "#D5E8D4" # Green
+      stroke: "#82B366"
+      bold: true
+    }
+  }
+  padding_field: {
+    style: {
+      fill: "#F5F5F5" # Gray
+      stroke: "#666666"
+      stroke-dash: 3
+    }
+  }
+  crash_event: {
+    shape: diamond
+    style: {
+      fill: "#FF0000"
+      font-color: "#FFFFFF"
+      bold: true
+      stroke-width: 4
+    }
+  }
+  state_node: {
+    shape: rectangle
+    style: {
+      border-radius: 5
+      stroke-width: 2
+    }
+  }
+}
+
+# ----------------------------------------------------------------------------
+# CORE SPECIFICATION: Journal Write-Ahead Protocol
+# ----------------------------------------------------------------------------
+journal_protocol_analysis: {
+  label: "Journal Write-Ahead Protocol: Atomic Recovery Specification (v1.2.0)"
+  
+  # SCENARIO A: DIRECT-WRITE FAILURE (THE "ORPHAN" PROBLEM)
+  # FIXED: Renamed 'steps' to 'timeline' to avoid reserved keyword collision
+  unsafe: "SCENARIO A: NON-ATOMIC DIRECT WRITE" {
+    style: {
+      stroke: "#FF0000"
+      stroke-width: 4
+      fill: "#FFF5F5"
+    }
+
+    timeline: {
+      grid-rows: 1
+      grid-gap: 50
+      
+      t1: "1. UPDATE BITMAP" {
+        shape: sql_table
+        class: memory_block
+        style.fill: "#F8CECC"
+        0x400: "Block 42 Status: **BUSY** (1)" {style.font-color: red}
+      }
+      
+      failure: "⚡ POWER LOSS" {
+        class: crash_event
+      }
+      
+      t2: "2. WRITE INODE" {
+        shape: sql_table
+        class: memory_block
+        style.opacity: 0.3
+        0x800: "Inode 102 Pointer: [STALE/NULL]"
+      }
+    }
+
+    timeline.t1 -> timeline.failure: "Interrupt @ t+15ms" {style.stroke: red; style.stroke-width: 2}
+    timeline.failure -> timeline.t2: "ILLEGAL TRANSITION" {
+      style: {
+        stroke: red
+        stroke-dash: 5
+      }
+    }
+  }
+
+  # SCENARIO B: JOURNALED WRITE (THE WAL INVARIANT)
+  safe: "SCENARIO B: JOURNALED ATOMIC TRANSACTION" {
+    style: {
+      stroke: "#228B22"
+      stroke-width: 4
+      fill: "#F5FFF5"
+    }
+
+    # PHYSICAL MEMORY LAYOUT (INTEL-STYLE SPEC)
+    memory_spec: "Journal Entry Byte Layout (sizeof=4096B)" {
+      journal_header: {
+        shape: sql_table
+        class: header_field
+        label: "JE_DESCRIPTOR (Offset 0x00)"
+        0x00: "magic_val: uint32" {constraint: "0x4A524E4C"}
+        0x04: "sequence_id: uint64" {constraint: "8 Bytes"}
+        0x0C: "entry_count: uint32" {constraint: "N Blocks"}
+      }
+
+      data_payload: {
+        shape: sql_table
+        class: data_field
+        label: "JE_DATA_BLOCKS (Offset 0x10)"
+        0x10: "target_block_addr: uint64" {constraint: "0x00000400"}
+        0x18: "payload_bytes: [4064]byte" {constraint: "Bitmap Data"}
+      }
+
+      cache_line_pad: "--- L1 Cache Line Boundary (64B Alignment Check) ---" {
+        style.stroke-dash: 5
+        style.stroke: gray
+      }
+
+      journal_footer: {
+        shape: sql_table
+        class: commit_field
+        label: "JE_COMMIT (Offset 0xFF8)"
+        0xFF8: "**commit_flag: uint32**" {constraint: "0x1 (VALID)"; style.font-color: "#006600"}
+        0xFFC: "checksum_crc32: uint32" {constraint: "Integrity"}
+      }
+    }
+
+    # RECOVERY ALGORITHM STATE MACHINE
+    recovery_sm: "Recovery State Transition" {
+      grid-columns: 3
+      grid-gap: 40
+
+      state_scan: "STATE: RECOVERY_SCAN" {
+        class: state_node
+        label: "1. Scan Log"
+        body: "Locate High Watermark (Tail)"
+      }
+
+      state_verify: "STATE: VERIFY_COMMIT" {
+        class: state_node
+        label: "2. Check JE_COMMIT"
+        body: "If flag != 1, Discard Entry"
+      }
+
+      state_replay: "STATE: REPLAY_DATA" {
+        class: state_node
+        label: "3. Idempotent Write"
+        body: "**REPLAY** Data to Disk Offset 0x400"
+        style.stroke: "#228B22"
+        style.stroke-width: 3
+      }
+      
+      state_scan -> state_verify: "Valid Descriptor"
+      state_verify -> state_replay: "Commit Flag Present"
+    }
+
+    # PHYSICAL LINKAGE
+    recovery_sm.state_replay -> memory_spec.data_payload: "Extract Source Data" {
+      style.stroke: orange
+      style.stroke-dash: 3
+    }
+  }
+}
+
+# ----------------------------------------------------------------------------
+# RESULTS & ANNOTATIONS
+# ----------------------------------------------------------------------------
+
+fs_failure_report: |md
+  ### FS INVARIANT VIOLATION (Scenario A)
+  **Result:** `CRITICALLY CORRUPT`
+  - **Inconsistency:** Bitmap marks block as used, but Inode does not point to it.
+  - **Leak:** 1 Block leaked until `fsck` run.
+| {
+  shape: rectangle
+  label.near: top-center
+  style: {
+    fill: "#FFCCCC"
+    stroke: "#FF0000"
+    stroke-width: 3
+  }
+}
+
+fs_success_report: |md
+  ### ATOMICITY GUARANTEE (Scenario B)
+  **Result:** `CONSISTENT`
+  - **Atomicity:** `JE_COMMIT` block ensures all-or-nothing durability.
+  - **MTTR:** < 100ms (O(Journal Log Size)).
+| {
+  shape: rectangle
+  label.near: top-center
+  style: {
+    fill: "#D5E8D4"
+    stroke: "#228B22"
+    stroke-width: 3
+  }
+}
+
+# MANUAL LEGEND
+legend_block: "Specification Legend" {
+  header: "Metadata/Intent (Header)" { class: header_field }
+  data: "Payload (Data Region)" { class: data_field }
+  commit: "Durability Checkpoint" { class: commit_field }
+  pointer: "Orange = Replay Vector" { style.stroke: orange; style.stroke-width: 2 }
+  crash: "System Interrupt Point" { class: crash_event }
+}
+
+# ----------------------------------------------------------------------------
+# POSITIONING OVERRIDES
+# ----------------------------------------------------------------------------
+
+# Using invisible connections for relative positioning in ELK
+journal_protocol_analysis.unsafe -> fs_failure_report: {style.opacity: 0}
+journal_protocol_analysis.safe -> fs_success_report: {style.opacity: 0}
+
+legend_block.near: top-right
+fs_failure_report.near: bottom-left
+fs_success_report.near: bottom-right
+
+# ----------------------------------------------------------------------------
+# GLOBAL STYLE OVERRIDES
+# ----------------------------------------------------------------------------
+***.style.font: mono
+(*** -> ***)[*]: {
+  style.stroke-width: 2
+}

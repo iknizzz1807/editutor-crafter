@@ -1,0 +1,229 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+header: {
+  label: "Fault Tolerance: Why Message Consumers Must Be Idempotent"
+  shape: parallelogram
+  style: {
+    fill: "#1A237E"
+    font-color: white
+    bold: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# SCENARIO: NON-IDEMPOTENT FAILURE (The Problem)
+# -----------------------------------------------------------------------------
+
+r1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  s1: "T0: Initial Delivery" {
+    style.fill: "#E3F2FD"
+    direction: down
+    broker: "Message Broker" {
+      shape: hexagon
+      style.fill: "#BBDEFB"
+    }
+    cons_a: "Consumer A" {
+      shape: rectangle
+      style.fill: "#C8E6C9"
+    }
+    broker -> cons_a: "Msg #42 | deliver" {
+      style.animated: true
+    }
+  }
+
+  s2: "T1: Logic Execution" {
+    style.fill: "#E8F5E9"
+    direction: down
+    logic: {
+      label: "Process(Msg #42)"
+      width: 300
+      code: |'go
+        // Non-idempotent logic
+        // Bal: \$500 -> \$400
+        db.Exec("UPDATE accounts 
+                 SET bal = bal - 100 
+                 WHERE id = 123")
+      '|
+    }
+    status: "Success in DB" {
+      shape: oval
+      style.fill: "#81C784"
+    }
+    logic -> status: "Commit"
+  }
+}
+
+r2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  s3: "T2: Process Crash" {
+    style.fill: "#FFEBEE"
+    direction: down
+    dead_cons: "Consumer A" {
+      label: "Consumer A\n(CRASHED 💀)"
+      style: {
+        fill: "#FFCDD2"
+        stroke: "#B71C1C"
+        stroke-width: 3
+        stroke-dash: 5
+      }
+    }
+    dead_cons -> ack_failure: "No ACK sent"
+    ack_failure: "ACK LOST" {
+      shape: diamond
+      style.fill: "#EF5350"
+    }
+  }
+
+  s4: "T3: Redelivery Trigger" {
+    style.fill: "#FFF3E0"
+    direction: down
+    broker_timeout: "Broker" {
+      shape: hexagon
+      label: "Broker\n(Visibility Timeout)"
+      style.fill: "#FFE0B2"
+    }
+    decision: "Redeliver" {
+      shape: diamond
+      style.fill: "#FFF59D"
+    }
+    broker_timeout -> decision: "Wait > 30s"
+  }
+}
+
+r3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  s5: "T4: Duplicate Processing" {
+    style.fill: "#FCE4EC"
+    direction: down
+    cons_b: "Consumer B" {
+      shape: rectangle
+      style.fill: "#F8BBD0"
+    }
+    dup_logic: {
+      label: "Process(Msg #42)"
+      width: 300
+      code: |'go
+        // DUPLICATE EXECUTION
+        // Bal: \$400 -> \$300
+        db.Exec("UPDATE accounts 
+                 SET bal = bal - 100 
+                 WHERE id = 123")
+      '|
+      style.stroke: "#C2185B"
+    }
+    cons_b -> dup_logic: "Msg #42"
+  }
+
+  s6: "RESULT: Data Corruption" {
+    style.fill: "#B71C1C"
+    direction: down
+    corrupt_db: {
+      shape: sql_table
+      label: "Account State (CORRUPT)"
+      style.fill: "#EF5350"
+      row1: "ID: 123"
+      row2: "BAL: \$300 (WRONG)"
+      note: "Should be \$400"
+    }
+    s5.dup_logic -> corrupt_db: "Double Deduction" {
+      style.stroke: white
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# THE SOLUTION: IDEMPOTENT IMPLEMENTATION
+# -----------------------------------------------------------------------------
+
+r4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  solution: "THE SOLUTION: Check-and-Set Pattern" {
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    style.stroke-width: 3
+
+    direction: right
+    
+    db_schema: {
+      shape: sql_table
+      label: "Idempotent Schema"
+      r1: "PK | UUID | message_id // Dedup key"
+      r2: "FK | INT  | account_id"
+      r3: "     | INT  | amount"
+      size: "Ensures Atomic Execution"
+    }
+
+    impl: {
+      label: "Idempotent Consumer Logic"
+      width: 450
+      code: |'go
+        func Handle(msg Msg) error {
+          // 1. Transactional Guard
+          tx := db.Begin()
+          defer tx.Rollback()
+
+          // 2. Check dedup log
+          if exists(tx, msg.ID) { return nil }
+
+          // 3. Atomic Mutation
+          tx.Exec("UPDATE acc SET bal=bal-100 WHERE id=?", msg.UID)
+          tx.Exec("INSERT INTO processed_msgs VALUES (?)", msg.ID)
+
+          return tx.Commit()
+        }
+      '|
+    }
+    
+    db_schema -> impl: "Constraint Check"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# CONNECTIONS & LEGEND
+# -----------------------------------------------------------------------------
+
+r1 -> r2 -> r3 -> r4: "Time / State Evolution" {
+  style.stroke-dash: 5
+}
+
+legend: {
+  near: bottom-right
+  direction: down
+  
+  l1: "Red: State Corruption / Crash" {
+    shape: rectangle
+    style.fill: "#FFCDD2"
+  }
+  l2: "Blue: Standard Delivery" {
+    shape: rectangle
+    style.fill: "#BBDEFB"
+  }
+  l3: "Green: Safe Idempotent Path" {
+    shape: rectangle
+    style.fill: "#C8E6C9"
+  }
+}
+
+r1.s1.broker -> r1.s1.cons_a: "Msg"
+r2.s3.dead_cons -> r2.s3.ack_failure: "Lost"
+r3.s5.cons_b -> r3.s5.dup_logic: "Duplicate"
+r4.solution.impl -> r4.solution.db_schema: "Log Write"

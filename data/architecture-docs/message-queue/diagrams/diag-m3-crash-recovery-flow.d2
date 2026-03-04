@@ -1,0 +1,211 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Crash Recovery: Replay from Consumer Offset
+| {near: top-center}
+recovery_flow: {
+  direction: down
+  label: "Recovery Sequence (broker.go:Recover)"
+  step1_restart: {
+    label: "T0: Broker Restart"
+    width: 340
+    code: |'go
+      // Broker restarts after crash
+      // All in-memory state is lost:
+      // - In-flight messages
+      // - Pending queues
+      // - Consumer connections
+    '|
+  }
+  step2_load_offsets: {
+    label: "T1: Load Committed Offsets"
+    width: 340
+    code: |'go
+      offsets := offsetStore.GetAllOffsets()
+      // Reads consumer_offsets.json
+      // Returns: {group -> topic -> offset}
+      // e.g., "order-workers": {"orders": 47}
+    '|
+  }
+  step3_replay_log: {
+    label: "T2: Replay Log Entries"
+    width: 340
+    code: |'go
+      for _, entry := range logEntries {
+        if entry.Offset > minCommittedOffset {
+          RequeueFromRecovery(entry)
+        }
+      }
+      // Skip already-acknowledged messages
+    '|
+  }
+  step4_resume: {
+    label: "T3: Resume Normal Operation"
+    width: 340
+    code: |'go
+      // In-flight messages re-queued
+      // Consumers reconnect and compete
+      // New messages accepted
+      server.Start()
+    '|
+  }
+  step1_restart -> step2_load_offsets: "Load"
+  step2_load_offsets -> step3_replay_log: "Offsets"
+  step3_replay_log -> step4_resume: "Recover"
+}
+log_state: {
+  direction: down
+  label: "Log File State (orders.log)"
+  log_entries: {
+    shape: sql_table
+    label: "Append-Only Log Entries"
+    e0: "0x00 | 0        | orders | msg-a | CRC32"
+    e1: "0x18 | 1        | orders | msg-b | CRC32"
+    e2: "0x30 | 2        | orders | msg-c | CRC32"
+    e3: "0x48 | 3        | orders | msg-d | CRC32"
+    e4: "0x60 | 4        | orders | msg-e | CRC32"
+    e5: "0x78 | 5        | orders | msg-f | CRC32"
+    e6: "0x90 | 6        | orders | msg-g | CRC32"
+    e7: "0xA8 | 7        | orders | msg-h | CRC32"
+    note: "Recovery reads from disk"
+  }
+}
+offset_file: {
+  direction: down
+  label: "Committed Offsets (consumer_offsets.json)"
+  offset_data: {
+    shape: class
+    label: "OffsetStore (offset.go)"
+    groups: "map[string]map[string]uint64"
+    note: "JSON persisted atomically"
+    -order_workers: "map[string]uint64"
+    -payments_group: "map[string]uint64"
+    +GetOffset: "(group, topic) uint64"
+    +CommitOffset: "(group, topic, offset) error"
+  }
+  json_example: {
+    label: "consumer_offsets.json"
+    width: 280
+    code: |'json
+      {
+        "groups": {
+          "order-workers": {
+            "orders": 3
+          },
+          "payments-group": {
+            "orders": 5
+          }
+        }
+      }
+    '|
+  }
+  offset_data -> json_example: "persists to"
+}
+recovery_logic: {
+  direction: down
+  label: "Recovery Decision Logic"
+  decision_table: {
+    shape: sql_table
+    label: "Message Recovery Decision (recovery.go)"
+    row1: "Offset 0-2 | <= 3 (min committed) | SKIP | Already processed"
+    row2: "Offset 3   | == 3 (committed)     | SKIP | Acknowledged"
+    row3: "Offset 4   | > 3, <= 5            | REQUEUE | In-flight at crash"
+    row4: "Offset 5   | > 3, <= 5            | REQUEUE | In-flight to payments"
+    row5: "Offset 6-7 | > 5 (max committed)  | REQUEUE | Never delivered"
+    note: "minCommittedOffset = min(3, 5) = 3"
+  }
+  min_offset_calc: {
+    label: "Minimum Committed Offset Calculation"
+    width: 360
+    code: |'go
+      // Find min across ALL consumer groups
+      // This ensures no consumer misses messages
+      minCommittedOffset := uint64(0)
+      for _, groupOffsets := range committedOffsets {
+          if offset, ok := groupOffsets[topic]; ok {
+              if minCommittedOffset == 0 || 
+                 offset < minCommittedOffset {
+                  minCommittedOffset = offset
+              }
+          }
+      }
+      // minCommittedOffset = 3
+    '|
+  }
+  decision_table -> min_offset_calc: "uses"
+}
+message_classification: {
+  direction: right
+  label: "Message Classification at Recovery"
+  acknowledged: {
+    label: "ACKNOWLEDGED\n(Skip)"
+    style.fill: "#90EE90"
+    style.stroke: "#228B22"
+    msg_a: "Offset 0\nmsg-a"
+    msg_b: "Offset 1\nmsg-b"
+    msg_c: "Offset 2\nmsg-c"
+    msg_d: "Offset 3\nmsg-d"
+  }
+  in_flight: {
+    label: "IN-FLIGHT AT CRASH\n(Requeue)"
+    style.fill: "#FFD700"
+    style.stroke: "#DAA520"
+    msg_e: "Offset 4\nmsg-e"
+    msg_f: "Offset 5\nmsg-f"
+  }
+  pending: {
+    label: "PENDING\n(Requeue)"
+    style.fill: "#87CEEB"
+    style.stroke: "#4169E1"
+    msg_g: "Offset 6\nmsg-g"
+    msg_h: "Offset 7\nmsg-h"
+  }
+  acknowledged -> in_flight: "Crash boundary"
+  in_flight -> pending: "Never delivered"
+}
+recovery_result: {
+  direction: down
+  label: "Post-Recovery State"
+  recovered_state: {
+    shape: class
+    label: "Recovered Broker State"
+    -pending_queue: "[]PendingMessage{4,5,6,7}"
+    -in_flight: "map[uint64]*InFlightMessage{}"
+    -consumer_offsets: "loaded from JSON"
+    -next_offset: "8 (last + 1)"
+    +DeliverToAvailableConsumers: "()"
+    +AcceptNewConnections: "()"
+  }
+  pending_queue: {
+    shape: sql_table
+    label: "PendingQueue (Recovered)"
+    r1: "msg-e | Offset 4 | Partition 2"
+    r2: "msg-f | Offset 5 | Partition 7"
+    r3: "msg-g | Offset 6 | Partition 0"
+    r4: "msg-h | Offset 7 | Partition 5"
+    note: "4 messages recovered for redelivery"
+  }
+  recovered_state -> pending_queue: "rebuilds"
+}
+log_state -> offset_file: "correlates with"
+offset_file -> recovery_logic: "drives"
+recovery_logic -> message_classification: "classifies"
+message_classification -> recovery_result: "produces"
+legend: {
+  near: bottom-center
+  label: "Color Legend"
+  acknowledged_legend: "Green = Already acknowledged, skip recovery" {
+    style.fill: "#90EE90"
+  }
+  in_flight_legend: "Yellow = In-flight at crash, must requeue" {
+    style.fill: "#FFD700"
+  }
+  pending_legend: "Blue = Pending delivery, must requeue" {
+    style.fill: "#87CEEB"
+  }
+}

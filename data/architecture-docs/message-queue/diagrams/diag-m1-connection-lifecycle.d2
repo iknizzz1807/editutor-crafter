@@ -1,0 +1,179 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Connection Lifecycle State Machine
+  Client connection states and cleanup procedures
+| {near: top-center}
+
+states: {
+  connecting: {
+    shape: circle
+    label: "CONNECTING"
+    style: {
+      fill: "#FFF3CD"
+      stroke: "#856404"
+      stroke-width: 2
+    }
+  }
+  connected: {
+    shape: circle
+    label: "CONNECTED"
+    style: {
+      fill: "#D4EDDA"
+      stroke: "#155724"
+      stroke-width: 2
+    }
+  }
+  subscribed: {
+    shape: circle
+    label: "SUBSCRIBED"
+    style: {
+      fill: "#D1ECF1"
+      stroke: "#0C5460"
+      stroke-width: 2
+    }
+  }
+  disconnected: {
+    shape: circle
+    label: "DISCONNECTED"
+    style: {
+      fill: "#F8D7DA"
+      stroke: "#721C24"
+      stroke-width: 2
+    }
+  }
+}
+
+transitions: {
+  states.connecting -> states.connected: "TCP Accept"
+  states.connected -> states.subscribed: "SUBSCRIBE"
+  states.subscribed -> states.subscribed: "HEARTBEAT"
+  states.connected -> states.disconnected: "Read Error" {
+    style: {
+      stroke-dash: 4
+      stroke: "#721C24"
+    }
+  }
+  states.subscribed -> states.disconnected: "Timeout | Close" {
+    style: {
+      stroke-dash: 4
+      stroke: "#721C24"
+    }
+  }
+}
+
+# Renamed 'steps' to 'workflow' to avoid board composition conflict
+cleanup: {
+  label: "DISCONNECTED Cleanup (server/connection.go)"
+  workflow: {
+    direction: down
+    step1: {
+      label: "1. Unsubscribe Topics"
+      width: 380
+      code: |'go
+        client.subMu.RLock()
+        topics := getKeys(client.Subscriptions)
+        client.subMu.RUnlock()
+        for _, topic := range topics {
+            s.router.Unsubscribe(topic, client)
+        }
+      '|
+      style.fill: "#E8F5E9"
+    }
+    step2: {
+      label: "2. Unregister Manager"
+      width: 380
+      code: |'go
+        s.connManager.Unregister(client.ID)
+      '|
+      style.fill: "#E3F2FD"
+    }
+    step3: {
+      label: "3. Close Socket"
+      width: 380
+      code: |'go
+        conn.Close()
+      '|
+      style.fill: "#FCE4EC"
+    }
+  }
+}
+
+inflight_handling: {
+  label: "In-Flight Recovery"
+  direction: down
+
+  row1: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    
+    consumer_group: {
+      shape: class
+      label: "Consumer Group (consumer_group.go)"
+      -inFlight: "map[uint64]*InFlightMessage"
+      -members: "map[string]*ConsumerState"
+      +Leave(consumerID): "void"
+    }
+
+    recovery: {
+      label: "Timeout Recovery Logic"
+      width: 380
+      code: |'go
+        for msgID, inFlight := range cg.inFlight {
+            if inFlight.ConsumerID == targetID {
+                inFlight.VisibleAfter = time.Now()
+            }
+        }
+      '|
+      style.fill: "#FFF8E1"
+    }
+  }
+
+  redelivery: {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    
+    inflight_msg: {
+      shape: sql_table
+      label: "struct InFlightMessage"
+      f0: "0x00 | uint64    | MsgID"
+      f1: "0x08 | []byte    | Payload"
+      f2: "0x10 | string    | ConsumerID"
+      f3: "0x18 | time.Time | DeliveredAt"
+      f4: "0x20 | time.Time | VisibleAfter"
+      sz: "Total: 56 bytes"
+    }
+    
+    pending_msg: {
+      shape: sql_table
+      label: "struct PendingMessage"
+      f0: "0x00 | uint64    | MsgID"
+      f1: "0x08 | []byte    | Payload"
+      f2: "0x10 | int       | Partition"
+      f3: "0x18 | time.Time | AddedAt"
+      sz: "Total: 40 bytes"
+    }
+    
+    inflight_msg -> pending_msg: "re-queue"
+  }
+}
+
+states.disconnected -> cleanup: "triggers"
+cleanup -> inflight_handling: "affects"
+
+legend: {
+  label: "State Definitions"
+  connecting_leg: "CONNECTING: Pending handshake" {style.fill: "#FFF3CD"}
+  connected_leg: "CONNECTED: Idle/Active" {style.fill: "#D4EDDA"}
+  subscribed_leg: "SUBSCRIBED: Message stream" {style.fill: "#D1ECF1"}
+  disconnected_leg: "DISCONNECTED: Terminal" {style.fill: "#F8D7DA"}
+}
+legend.near: bottom-right

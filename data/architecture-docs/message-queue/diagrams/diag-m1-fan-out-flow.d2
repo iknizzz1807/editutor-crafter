@@ -5,236 +5,297 @@ vars: {
     theme-id: 4
   }
 }
-title: |md
-  # Pub/Sub Fan-Out Message Flow
-  PUBLISH → Topic Router → Parallel Delivery to ALL Subscribers
-| {near: top-center}
+
+# --- LAYER 1: PUBLISHER ---
 row1: "" {
   direction: right
   style.stroke: transparent
   style.fill: transparent
+
   publisher: {
-    label: "Publisher"
+    label: "Publisher (client.go)"
+    icon: https://icons.terrastruct.com/essentials%2F005-programmer.svg
     style.fill: "#E8F5E9"
     style.stroke: "#4CAF50"
-    icon: {
-      shape: image
-      icon: https://icons.terrastruct.com/essentials%2F005-programmer.svg
-    }
+
     publish_cmd: {
-      label: "PUBLISH Command"
-      width: 280
+      label: "PUBLISH Command Structure"
+      width: 320
       code: |'go
-  // Frame: 4-byte length prefix
-  // Payload:
-  //   0x01          // CmdPublish
-  //   0x0006        // TopicLen = 6
-  //   "orders"      // Topic
-  //   0x0005        // PayloadLen = 5
-  //   "order"       // Message
-  '|
+  // Wire format (23 bytes total)
+  // [4B len][0x01][2B topicLen][orders]
+  // [2B payLen][order-123]
+  cmd := &protocol.Command{
+    Type:    protocol.CmdPublish,
+    Topic:   "orders",
+    Payload: []byte("order-123"),
+  }
+      '|
     }
   }
 }
+
+# --- LAYER 2: BROKER CORE ---
 row2: "" {
   direction: right
   style.stroke: transparent
   style.fill: transparent
-  broker: {
-    label: "Message Broker (broker/server.go)"
-    style.fill: "#E3F2FD"
-    style.stroke: "#1976D2"
-    frame_reader: {
-      label: "FrameReader"
+
+  server: {
+    label: "Broker Server (server.go)"
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+
+    conn_handler: {
+      label: "Connection Handler"
       shape: class
-      label: "FrameReader (protocol/frame.go)"
-      -reader: "*bufio.Reader"
-      +ReadFrame(): "([]byte, error)"
+      -conn: "net.Conn"
+      -reader: "*FrameReader"
+      -writer: "*FrameWriter"
+      +handleCommand(cmd): "void"
     }
-    parser: {
-      label: "Command Parser"
-      shape: class
-      label: "Parser (protocol/command.go)"
-      +ParseCommand(payload): "(*Command, error)"
-      -cmdType: "CommandType"
-      -topic: "string"
-      -payload: "[]byte"
-    }
+
     topic_router: {
-      label: "Topic Router"
+      label: "Topic Router (router.go)"
       shape: class
-      label: "TopicRouter (broker/router.go)"
       -topics: "map[string]*TopicState"
       -msgIDCounter: "uint64 (atomic)"
       +Publish(topic, payload, msgID): "int"
       +Subscribe(topic, client): "void"
       +Unsubscribe(topic, client): "void"
+      style.fill: "#E3F2FD"
     }
-    frame_reader -> parser: "[]byte | parse"
-    parser -> topic_router: "Command{Type, Topic, Payload}"
+
+    topic_state: {
+      label: "TopicState (orders topic)"
+      shape: class
+      -subscribers: "map[string]*SubscriberState"
+      -mu: "sync.RWMutex"
+      style.fill: "#FCE4EC"
+    }
   }
 }
+
+# --- LAYER 3: SUBSCRIBER STATE MACHINE (FAN-OUT) ---
 row3: "" {
   direction: right
   style.stroke: transparent
   style.fill: transparent
-  topic_state: {
-    label: "TopicState: orders"
-    style.fill: "#FFF3E0"
-    style.stroke: "#FF9800"
-    struct_layout: {
-      shape: sql_table
-      label: "TopicState (broker/router.go)"
-      f0: "subscribers | map[string]*SubscriberState | client_id → state"
-      f1: "mu | sync.RWMutex | per-topic lock"
-      note: "All subscribers receive ALL messages"
+
+  sub_state_a: {
+    label: "Subscriber State A"
+    style.fill: "#E8F5E9"
+    
+    fields: {
+      shape: class
+      +client: "*Client"
+      +deliver: "chan *Command (buf=100)"
+      +stop: "chan struct{}"
+    }
+    
+    delivery_loop_a: {
+      label: "Delivery Goroutine A"
+      width: 300
+      code: |'go
+  for {
+    select {
+    case <-stop: return
+    case cmd := <-deliver:
+      sendCommand(client, cmd)
+    }
+  }
+      '|
+    }
+  }
+
+  sub_state_b: {
+    label: "Subscriber State B"
+    style.fill: "#E3F2FD"
+    
+    fields: {
+      shape: class
+      +client: "*Client"
+      +deliver: "chan *Command (buf=100)"
+      +stop: "chan struct{}"
+    }
+
+    delivery_loop_b: {
+      label: "Delivery Goroutine B"
+      width: 300
+      code: |'go
+  for {
+    select {
+    case <-stop: return
+    case cmd := <-deliver:
+      sendCommand(client, cmd)
+    }
+  }
+      '|
+    }
+  }
+
+  sub_state_c: {
+    label: "Subscriber State C (SLOW)"
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    
+    fields: {
+      shape: class
+      +client: "*Client"
+      +deliver: "chan *Command (buf=100)"
+      +stop: "chan struct{}"
+      style.fill: "#FFEBEE"
+    }
+
+    delivery_loop_c: {
+      label: "Delivery Goroutine C (Blocked)"
+      width: 300
+      code: |'go
+  for {
+    select {
+    case <-stop: return
+    case cmd := <-deliver:
+      // BLOCKED on slow network
+      sendCommand(client, cmd) 
+    }
+  }
+      '|
     }
   }
 }
+
+# --- LAYER 4: PHYSICAL SUBSCRIBERS ---
 row4: "" {
   direction: right
   style.stroke: transparent
   style.fill: transparent
-  delivery_buffers: {
-    label: "Per-Subscriber Delivery Buffers (Prevents Head-of-Line Blocking)"
-    style.fill: "#F3E5F5"
-    style.stroke: "#9C27B0"
-    sub_state: {
-      shape: sql_table
-      label: "SubscriberState (broker/router.go)"
-      f0: "client | *Client | subscriber connection"
-      f1: "deliver | chan *Command | buffered, size=100"
-      f2: "stop | chan struct{} | shutdown signal"
-      sz: "Each subscriber has independent goroutine"
-    }
-  }
-}
-row5: "" {
-  direction: right
-  style.stroke: transparent
-  style.fill: transparent
-  sub1: {
+
+  subscriber_a: {
     label: "Subscriber A"
+    icon: https://icons.terrastruct.com/essentials%2F005-programmer.svg
     style.fill: "#E8F5E9"
     style.stroke: "#4CAF50"
-    icon1: {
-      shape: image
-      icon: https://icons.terrastruct.com/essentials%2F005-programmer.svg
-    }
-    buffer1: {
-      label: "chan *Command"
-      shape: queue
-      style.fill: "#C8E6C9"
-      style.multiple: true
-    }
-    goroutine1: {
-      label: "deliveryLoop()"
-      shape: oval
-      style.fill: "#A5D6A7"
-    }
-    goroutine1 -> buffer1: "read"
   }
-  sub2: {
+  subscriber_b: {
     label: "Subscriber B"
-    style.fill: "#E8F5E9"
-    style.stroke: "#4CAF50"
-    icon2: {
-      shape: image
-      icon: https://icons.terrastruct.com/essentials%2F005-programmer.svg
-    }
-    buffer2: {
-      label: "chan *Command"
-      shape: queue
-      style.fill: "#C8E6C9"
-      style.multiple: true
-    }
-    goroutine2: {
-      label: "deliveryLoop()"
-      shape: oval
-      style.fill: "#A5D6A7"
-    }
-    goroutine2 -> buffer2: "read"
+    icon: https://icons.terrastruct.com/essentials%2F005-programmer.svg
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
   }
-  sub3: {
-    label: "Subscriber C (slow)"
+  subscriber_c: {
+    label: "Subscriber C (SLOW)"
+    icon: https://icons.terrastruct.com/essentials%2F005-programmer.svg
     style.fill: "#FFEBEE"
     style.stroke: "#F44336"
-    icon3: {
-      shape: image
-      icon: https://icons.terrastruct.com/essentials%2F005-programmer.svg
-    }
-    buffer3: {
-      label: "chan *Command"
-      shape: queue
-      style.fill: "#FFCDD2"
-      style.multiple: true
-    }
-    goroutine3: {
-      label: "deliveryLoop()"
-      shape: oval
-      style.fill: "#EF9A9A"
-    }
-    goroutine3 -> buffer3: "blocked on write"
   }
 }
-row6: "" {
-  direction: right
-  style.stroke: transparent
-  style.fill: transparent
-  deliver_code: {
-    label: "Delivery Loop (Non-Blocking Send)"
-    width: 420
+
+# --- FLOW LOGIC (SIDEBAR/FOOTER) ---
+publish_flow: {
+  label: "Algorithm: Non-Blocking Fan-Out"
+  
+  step1: {
+    label: "1. Publisher TCP Write"
+    width: 280
     code: |'go
-  // broker/router.go:deliveryLoop
-  func (r *TopicRouter) deliveryLoop(sub *SubscriberState) {
-    for {
-      select {
-      case <-sub.stop:
-        return
-      case cmd := <-sub.deliver:
-        if err := r.sendCommand(sub.client, cmd); err != nil {
-          return // Client disconnected
-        }
-      }
+  // TCP write with length-prefix
+  frame := encodeLength(len(payload))
+  conn.Write(frame)
+  conn.Write(payload)
+    '|
+  }
+  
+  step2: {
+    label: "2. Router Fan-out"
+    width: 380
+    code: |'go
+  // Non-blocking select to all channels
+  for _, subState := range subscribers {
+    select {
+    case subState.deliver <- msg:
+      delivered++ 
+    default:
+      log.Printf("buffer full, drop msg")
     }
   }
-  // broker/router.go:Publish (non-blocking)
-  select {
-  case subState.deliver <- msg:
-    delivered++  // Successfully queued
-  default:
-    log.Printf("buffer full, dropping msg")
+    '|
   }
-  '|
+  
+  step3: {
+    label: "3. Parallel Delivery"
+    width: 350
+    code: |'go
+  // Each sub has own goroutine
+  // Slow sub C blocks only its own loop
+  // Channel buffer prevents HOL blocking
+    '|
   }
 }
-publisher.publish_cmd -> broker.frame_reader: "TCP | PUBLISH frame"
-row2.topic_router -> row3.topic_state: "Publish(\"orders\", payload, msgID)"
-row3.topic_state -> row4.delivery_buffers: "Fan-out: iterate subscribers"
-row4.delivery_buffers -> row5.sub1.buffer1: "MESSAGE | non-blocking send"
-row4.delivery_buffers -> row5.sub2.buffer2: "MESSAGE | non-blocking send"
-row4.delivery_buffers -> row5.sub3.buffer3: "MESSAGE | non-blocking send"
-row5.sub1.goroutine1 -> row5.sub1.icon1: "TCP | MESSAGE frame"
-row5.sub2.goroutine2 -> row5.sub2.icon2: "TCP | MESSAGE frame"
-row5.sub3.goroutine3 -> row5.sub3.icon3: "TCP | blocked" {
-  style.stroke-dash: 4
-  style.stroke: "#F44336"
-}
+
+# --- LEGEND ---
 legend: {
-  near: bottom-right
-  style.fill: "#FAFAFA"
-  style.stroke: "#BDBDBD"
-  key1: "Green = Fast subscriber, receives immediately"
-  key1.style.fill: "#C8E6C9"
-  key2: "Red = Slow subscriber, buffered (doesn't block others)"
-  key2.style.fill: "#FFCDD2"
-  key3: "Dashed line = Blocked, but others still receive"
-  key3.style.stroke-dash: 4
-  key3.style.stroke: "#F44336"
+  shape: package
+  fast: {
+    label: "Fast Path (A, B)"
+    style.fill: "#E8F5E9"
+  }
+  slow: {
+    label: "Slow Path (C) - Non-Blocking"
+    style.fill: "#FFEBEE"
+    style.stroke-dash: 3
+  }
+  buffer: {
+    label: "Buffered chan (100 msgs)"
+    style.fill: "#FFF9C4"
+  }
 }
-flow_note: |md
-  **Key Insight**: Per-subscriber goroutines with buffered channels
-  prevent slow subscribers (C) from blocking fast subscribers (A, B).
-  Each subscriber has a 100-message buffer. If full, messages are
-  dropped rather than blocking the entire fan-out.
-| {near: bottom-center}
+legend.near: bottom-right
+
+# --- CONNECTIONS ---
+publisher.publish_cmd -> server.conn_handler: "PUBLISH | 23 bytes" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 3
+}
+
+server.conn_handler -> server.topic_router: "route(topic, payload)" {
+  style.stroke: "#FF9800"
+}
+
+server.topic_router -> server.topic_state: "sync.RWMutex.RLock" {
+  style.stroke: "#2196F3"
+}
+
+server.topic_state -> sub_state_a.fields.deliver: "chan send" {
+  style.stroke: "#4CAF50"
+  style.animated: true
+}
+
+server.topic_state -> sub_state_b.fields.deliver: "chan send" {
+  style.stroke: "#2196F3"
+  style.animated: true
+}
+
+server.topic_state -> sub_state_c.fields.deliver: "chan send (drop if full)" {
+  style.stroke: "#F44336"
+  style.stroke-dash: 3
+}
+
+sub_state_a.delivery_loop_a -> subscriber_a: "TCP | MsgID=1" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+}
+
+sub_state_b.delivery_loop_b -> subscriber_b: "TCP | MsgID=1" {
+  style.stroke: "#2196F3"
+  style.stroke-width: 2
+}
+
+sub_state_c.delivery_loop_c -> subscriber_c: "TCP | MsgID=1 (BLOCKED)" {
+  style.stroke: "#F44336"
+  style.stroke-dash: 5
+}
+
+server.conn_handler -> publisher: "PUBLISH_ACK" {
+  style.stroke: "#4CAF50"
+  style.stroke-dash: 3
+}

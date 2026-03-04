@@ -1,0 +1,264 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: Retention Policies {
+  near: top-center
+  style: {
+    font-size: 32
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  time_based: {
+    direction: down
+    label: "Time-Based Retention"
+    tb_before: {
+      label: "BEFORE (MaxAge=24h)"
+      style: {
+        fill: "#E8F5E9"
+        stroke: "#4CAF50"
+        stroke-width: 2
+      }
+      tb_log_before: {
+        shape: sql_table
+        label: "orders.log"
+        style.fill: "#E8F5E9"
+        e0: "0x0000 | 26h ago | msg-A | KEEP"
+        e1: "0x0001 | 26h ago | msg-B | KEEP"
+        e2: "0x0002 | 25h ago | msg-C | KEEP"
+        e3: "0x0003 | 20h ago | msg-D | ✓ within 24h"
+        e4: "0x0004 | 10h ago | msg-E | ✓ within 24h"
+        e5: "0x0005 |  2h ago | msg-F | ✓ within 24h"
+        note1: "────────────────────────"
+        cutoff: "cutoff: now - 24h"
+      }
+    }
+    tb_after: {
+      label: "AFTER Cleanup"
+      style: {
+        fill: "#C8E6C9"
+        stroke: "#388E3C"
+        stroke-width: 2
+      }
+      tb_log_after: {
+        shape: sql_table
+        label: "orders.log (compacted)"
+        style.fill: "#C8E6C9"
+        e3: "0x0003 | 20h ago | msg-D | ✓"
+        e4: "0x0004 | 10h ago | msg-E | ✓"
+        e5: "0x0005 |  2h ago | msg-F | ✓"
+        note2: "────────────────────────"
+        result: "Deleted: 3 entries (msg-A,B,C)"
+      }
+    }
+  }
+  size_based: {
+    direction: down
+    label: "Size-Based Retention"
+    sb_before: {
+      label: "BEFORE (MaxSize=1GB)"
+      style: {
+        fill: "#FFF3E0"
+        stroke: "#FF9800"
+        stroke-width: 2
+      }
+      sb_log_before: {
+        shape: sql_table
+        label: "events.log (1.2GB > 1GB limit)"
+        style.fill: "#FFF3E0"
+        old1: "0x0000 | 100KB | old-1 | DELETE"
+        old2: "0x0001 | 100KB | old-2 | DELETE"
+        old3: "0x0002 | 100KB | old-3 | DELETE"
+        old4: "0x0003 | 100KB | old-4 | DELETE"
+        note3: "────────────────────────"
+        keep1: "0x0100 | recent data..."
+        keep2: "0x0101 | recent data..."
+        note4: "... 200MB of data ..."
+        current: "0xFFFF | latest msg"
+      }
+    }
+    sb_after: {
+      label: "AFTER Cleanup"
+      style: {
+        fill: "#FFE0B2"
+        stroke: "#F57C00"
+        stroke-width: 2
+      }
+      sb_log_after: {
+        shape: sql_table
+        label: "events.log (800KB < 1GB)"
+        style.fill: "#FFE0B2"
+        keep1b: "0x0100 | recent data..."
+        keep2b: "0x0101 | recent data..."
+        note5: "... remaining data ..."
+        currentb: "0xFFFF | latest msg"
+        note6: "────────────────────────"
+        result2: "Deleted: oldest 200KB"
+      }
+    }
+  }
+}
+time_based.tb_before -> time_based.tb_after: "cleanup sweep\ndeletes entries\nolder than 24h" {
+  style: {
+    stroke: "#4CAF50"
+    stroke-width: 2
+    animated: true
+  }
+}
+size_based.sb_before -> size_based.sb_after: "cleanup sweep\ndeletes oldest\nuntil < 1GB" {
+  style: {
+    stroke: "#FF9800"
+    stroke-width: 2
+    animated: true
+  }
+}
+row2: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  retention_logic: {
+    label: "Retention Cleanup Algorithm"
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#2196F3"
+      stroke-width: 2
+    }
+    width: 400
+    code: |'go
+  func (rm *RetentionManager) cleanupTopic(
+      topic string, 
+      policy RetentionPolicy,
+  ) (int, error) {
+    entries := readAllEntries(topic)
+    cutoffIdx := -1
+    for i, entry := range entries {
+      // Time-based check
+      if policy.MaxAge > 0 {
+        age := time.Since(entry.Timestamp)
+        if age > policy.MaxAge {
+          cutoffIdx = i
+          continue  // keep scanning
+        }
+      }
+      // Size-based check
+      remaining := totalSize - sum(entries[:i])
+      if policy.MaxSize > 0 && 
+         remaining > policy.MaxSize {
+        cutoffIdx = i
+        continue
+      }
+      break  // entry passes, stop
+    }
+    if cutoffIdx >= 0 {
+      return compactLog(topic, entries[cutoffIdx+1:])
+    }
+    return 0, nil
+  }
+'|
+  }
+  safety_check: {
+    label: "⚠️ Safety: Never Delete Unconsumed"
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#F44336"
+      stroke-width: 2
+    }
+    width: 380
+    safety_code: |'go
+  // CRITICAL: Check consumer offsets
+  // before deleting anything
+  minOffset := getMinCommittedOffset(
+    allConsumerGroups(topic),
+  )
+  for _, entry := range entries {
+    // NEVER delete if still needed
+    if entry.Offset >= minOffset {
+      break  // stop deletion
+    }
+    // ... safe to consider for deletion
+  }
+'|
+  }
+}
+row3: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  config_table: {
+    shape: sql_table
+    label: "RetentionPolicy Configuration"
+    style.fill: "#F3E5F5"
+    field1: "MaxAge | time.Duration | 0 = no limit"
+    field2: "MaxSize | int64 (bytes) | 0 = no limit"
+    note7: "────────────────────────"
+    example1: "Example: 24h retention"
+    example2: "  MaxAge: 24 * time.Hour"
+    example3: "  MaxSize: 0"
+    note8: "────────────────────────"
+    example4: "Example: 1GB size limit"
+    example5: "  MaxAge: 0"
+    example6: "  MaxSize: 1024 * 1024 * 1024"
+  }
+  scheduler: {
+    label: "Retention Scheduler"
+    style: {
+      fill: "#E0F7FA"
+      stroke: "#00BCD4"
+      stroke-width: 2
+    }
+    width: 350
+    sched_code: |'go
+  // Run cleanup periodically
+  func (rm *RetentionManager) 
+      StartRetentionScheduler(
+        interval time.Duration,
+      ) {
+    go func() {
+      ticker := time.NewTicker(interval)
+      defer ticker.Stop()
+      for range ticker.C {
+        deleted, err := rm.RunCleanup()
+        if deleted > 0 {
+          log.Printf(
+            "Retention: deleted %d msgs",
+            deleted,
+          )
+        }
+      }
+    }()
+  }
+  // Typical: interval = 5 * time.Minute
+'|
+  }
+}
+legend: {
+  near: bottom-center
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#9E9E9E"
+    stroke-dash: 3
+  }
+  green: "✓ Within retention window" {
+    style.fill: "#C8E6C9"
+  }
+  red: "DELETE Outside retention" {
+    style.fill: "#FFCDD2"
+  }
+  orange: "Size pressure - delete oldest" {
+    style.fill: "#FFE0B2"
+  }
+}

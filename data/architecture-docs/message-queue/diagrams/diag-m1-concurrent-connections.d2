@@ -1,0 +1,231 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: Concurrent Connection Architecture {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+  }
+}
+clients: {
+  label: "Client Connections"
+  style.fill: "#E8F4FD"
+  style.stroke: "#2196F3"
+  direction: right
+  c1: {
+    label: "Client 1"
+    shape: person
+  }
+  c2: {
+    label: "Client 2"
+    shape: person
+  }
+  c3: {
+    label: "Client 3"
+    shape: person
+    style.multiple: true
+  }
+  cn: {
+    label: "Client N"
+    shape: person
+    style.multiple: true
+  }
+}
+connections_row: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  conn_handlers: {
+    direction: down
+    label: "Connection Handlers\n(1 Goroutine per Connection)"
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    handler1: {
+      label: "Handler 1\ngo handleConnection()"
+      width: 160
+      code: |'go
+  reader := NewFrameReader(conn)
+  for {
+    frame, _ := reader.ReadFrame()
+    cmd, _ := ParseCommand(frame)
+    handleCommand(client, cmd)
+  }
+'|
+    }
+    handler2: {
+      label: "Handler 2\ngo handleConnection()"
+      width: 160
+      code: |'go
+  reader := NewFrameReader(conn)
+  for {
+    frame, _ := reader.ReadFrame()
+    cmd, _ := ParseCommand(frame)
+    handleCommand(client, cmd)
+  }
+'|
+    }
+    handlerN: {
+      label: "Handler N\ngo handleConnection()"
+      width: 160
+      style.multiple: true
+      code: |'go
+  // ~2KB stack per goroutine
+  // 1000 connections = ~2MB
+  reader := NewFrameReader(conn)
+  for {
+    frame, _ := reader.ReadFrame()
+    cmd, _ := ParseCommand(frame)
+    handleCommand(client, cmd)
+  }
+'|
+    }
+  }
+  send_channels: {
+    direction: down
+    label: "Per-Connection Send Channels"
+    style.fill: "#F3E5F5"
+    style.stroke: "#9C27B0"
+    ch1: {
+      label: "chan *Command\nbuffer=100"
+      shape: queue
+    }
+    ch2: {
+      label: "chan *Command\nbuffer=100"
+      shape: queue
+    }
+    chN: {
+      label: "chan *Command\nbuffer=100"
+      shape: queue
+      style.multiple: true
+    }
+  }
+}
+topic_manager: {
+  label: "Topic Manager\n(thread-safe routing)"
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+  width: 600
+  tm_desc: |md
+    Manages all topic subscriptions with mutex-protected maps.
+    Supports both fan-out and consumer-group delivery modes.
+|
+  tm_struct: {
+    shape: class
+    label: "TopicManager (topic_manager.go)"
+    -mu: "sync.RWMutex"
+    -topics: "map[string]*TopicConfig"
+    -groups: "map[string]*ConsumerGroup"
+    -router: "*TopicRouter"
+    +Publish(topic, payload, msgID): "error"
+    +Subscribe(topic, client): "void"
+    +Unsubscribe(topic, client): "void"
+    +GetGroup(name): "*ConsumerGroup"
+  }
+  topic_state: {
+    direction: right
+    label: "Topic State (mutex-protected)"
+    orders_topic: {
+      shape: sql_table
+      label: "Topic: orders"
+      subscribers: "map[string]*Client | mutex-protected"
+      pending: "*PendingQueue | ordered"
+      inFlight: "map[uint64]*InFlightMsg"
+    }
+    subs_list: {
+      label: "Subscriber List\n(RWMutex protected)"
+      style.fill: "#FFEBEE"
+      sub_entry1: "client-001 → *Client{ID, Conn, Subscriptions}"
+      sub_entry2: "client-002 → *Client{ID, Conn, Subscriptions}"
+      sub_entry3: "client-N   → *Client{ID, Conn, Subscriptions}"
+      sub_entryn: "... (dynamic map)"
+    }
+  }
+}
+router_box: {
+  label: "Topic Router (Fan-Out Engine)"
+  style.fill: "#FFF8E1"
+  style.stroke: "#FFC107"
+  width: 600
+  router_desc: |md
+    Broadcasts each message to ALL subscribers of a topic.
+    Per-subscriber goroutines prevent head-of-line blocking.
+|
+  router_struct: {
+    shape: class
+    label: "TopicRouter (router.go)"
+    -topics: "map[string]*TopicState"
+    -msgIDCounter: "uint64 (atomic)"
+    -mu: "sync.RWMutex"
+    +Publish(topic, payload, msgID): "int"
+    +Subscribe(topic, client): "void"
+    +Unsubscribe(topic, client): "void"
+    +NextMessageID(): "uint64"
+  }
+  publish_flow: {
+    direction: right
+    label: "Publish Flow (per-topic serialization)"
+    step1: {
+      label: "1. Acquire RLock"
+      code: |'go
+  r.mu.RLock()
+  state := r.topics[topic]
+  r.mu.RUnlock()
+'|
+      width: 140
+    }
+    step2: {
+      label: "2. Copy Subscriber Snapshot"
+      code: |'go
+  state.mu.RLock()
+  subs := make([]*Client, 0)
+  for _, c := range state.subscribers {
+    subs = append(subs, c)
+  }
+  state.mu.RUnlock()
+'|
+      width: 200
+    }
+    step3: {
+      label: "3. Fan-Out (no lock held)"
+      code: |'go
+  for _, client := range subs {
+    // Non-blocking send
+    select {
+    case client.deliver <- msg:
+    default: // buffer full
+    }
+  }
+'|
+      width: 200
+    }
+  }
+}
+legend: {
+  near: bottom-right
+  label: "Key Design Decisions"
+  style.fill: "#FAFAFA"
+  style.stroke: "#9E9E9E"
+  l1: "• Goroutine per connection: cheap (~2KB stack), scales to 100K+"
+  l2: "• RWMutex: allows concurrent reads, serializes writes"
+  l3: "• Per-subscriber channels: slow client A doesn't block client B"
+  l4: "• Copy-on-read for subscriber lists: safe iteration without lock"
+  l5: "• Atomic msgID counter: no lock needed for ID generation"
+}
+clients -> connections_row.conn_handlers: "TCP\nconnect"
+connections_row.conn_handlers -> connections_row.send_channels: "cmd"
+connections_row.send_channels -> topic_manager: "PUBLISH\nSUBSCRIBE"
+topic_manager -> router_box: "route"
+router_box -> connections_row.send_channels: "MESSAGE\ndelivery" {
+  style.stroke-dash: 4
+  style.animated: true
+}
+connections_row.send_channels -> clients: "deliver" {
+  style.stroke: "#9C27B0"
+  style.stroke-dash: 3
+}

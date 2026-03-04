@@ -1,0 +1,259 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: "On-Demand Second-Level Table Allocation" {
+  near: top-center
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  step1: "Step 1: First Access to Region" {
+    width: 380
+    desc: |md
+      Process accesses virtual address **0x10000000**
+      - Extract `dir_index = 0x40` (bit 22-31)
+      - Look up `page_directory[0x40]`
+      - **PDE.present = false** — no page table exists!
+    |
+    style.fill: "#E8F4FD"
+    style.stroke: "#2E86AB"
+    style.stroke-width: 2
+  }
+  arrow1: "→" {
+    shape: text
+    style: {
+      font-size: 32
+      bold: true
+      font-color: "#2E86AB"
+    }
+  }
+  step2: "Step 2: Allocate New Page Table" {
+    width: 380
+    desc: |md
+      OS page fault handler:
+      c
+      pfn = allocate_frame(phys_mem);
+      // pfn = 0x17 (example)
+      new_table = calloc(1024, sizeof(pte_t));
+      // All entries: valid = false
+      
+    |
+    style.fill: "#FFF3E0"
+    style.stroke: "#E65100"
+    style.stroke-width: 2
+  }
+}
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  step3: "Step 3: Link PDE to New Table" {
+    width: 380
+    desc: |md
+      Update page directory entry:
+      c
+      pde[0x40].page_table_pfn = 0x17;
+      pde[0x40].present = true;
+      pde[0x40].writable = true;
+      
+    |
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    style.stroke-width: 2
+  }
+  arrow2: "→" {
+    shape: text
+    style: {
+      font-size: 32
+      bold: true
+      font-color: "#2E7D32"
+    }
+  }
+  step4: "Step 4: Continue Walk to PTE" {
+    width: 380
+    desc: |md
+      Resume page table walk:
+      c
+      table_index = (va >> 12) & 0x3FF;
+      pte = page_table[0x17][table_index];
+      // pte.valid = false → page fault
+      // (allocate user data frame)
+      
+    |
+    style.fill: "#F3E5F5"
+    style.stroke: "#7B1FA2"
+    style.stroke-width: 2
+  }
+}
+row3: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  before_state: "Before: Sparse Region Unmapped" {
+    direction: down
+    style.fill: "#FFEBEE"
+    style.stroke: "#C62828"
+    before_desc: |md
+      **Virtual Address Space Layout:**
+      - Directory 0x00-0x3F: Empty (no tables)
+      - Directory 0x40: **NULL** (no allocation)
+      - Directory 0x41-0x3FF: Empty (no tables)
+      **Memory Used:** 4 KB (page directory only)
+    |
+    before_table: {
+      shape: sql_table
+      label: "Page Directory Entry 0x40"
+      f0: "0x00 | uint32_t | page_table_pfn"
+      f1: "0x04 | bool     | present = false"
+      f2: "0x05 | bool     | writable = false"
+      f3: "0x06 | bool     | user_accessible = false"
+      note: "No second-level table allocated"
+    }
+  }
+  spacer: "" {
+    width: 80
+    style: {
+      stroke: transparent
+      fill: transparent
+    }
+  }
+  after_state: "After: On-Demand Allocation" {
+    direction: down
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    after_desc: |md
+      **Virtual Address Space Layout:**
+      - Directory 0x00-0x3F: Empty (no tables)
+      - Directory 0x40: **PFN 0x17** (allocated!)
+      - Directory 0x41-0x3FF: Empty (no tables)
+      **Memory Used:** 4 KB + 4 KB = 8 KB
+    |
+    after_table: {
+      shape: sql_table
+      label: "Page Directory Entry 0x40"
+      f0: "0x00 | uint32_t | page_table_pfn = 0x17"
+      f1: "0x04 | bool     | present = true"
+      f2: "0x05 | bool     | writable = true"
+      f3: "0x06 | bool     | user_accessible = true"
+      note: "Second-level table now at PFN 0x17"
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  allocation_flow: "Allocation Flow (simulator.c)" {
+    direction: down
+    width: 800
+    style.fill: "#FAFAFA"
+    style.stroke: "#424242"
+    flow_title: "Code: allocate_page_table()" {
+      style: {
+        bold: true
+        font-size: 18
+      }
+    }
+    code: |'c
+      uint32_t allocate_page_table(
+          pde_t *page_directory,
+          uint32_t dir_index,
+          physical_memory_t *phys_mem)
+      {
+          pde_t *pde = &page_directory[dir_index];
+          if (pde->present) {
+              return pde->page_table_pfn;  // Already exists
+          }
+          // Allocate a frame for the new page table
+          int32_t pfn = allocate_frame(phys_mem);
+          if (pfn < 0) {
+              return (uint32_t)-1;  // OOM
+          }
+          // Initialize: all 1024 PTEs are invalid
+          pte_t *new_table = phys_mem->frames[pfn];
+          for (int i = 0; i < 1024; i++) {
+              new_table[i].valid = false;
+              new_table[i].pfn = 0;
+          }
+          // Link into directory
+          pde->page_table_pfn = pfn;
+          pde->present = true;
+          pde->writable = true;
+          printf("[Allocated Page Table] Dir %u -> PFN %u\n", 
+                 dir_index, pfn);
+          return pfn;
+      }
+    '|
+  }
+}
+row5: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  savings_box: "Memory Savings Comparison" {
+    direction: down
+    width: 800
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    savings_title: "Why On-Demand Allocation Matters" {
+      style: {
+        bold: true
+        font-size: 18
+      }
+    }
+    comparison: {
+      shape: sql_table
+      label: "Memory Overhead: Sparse vs Dense"
+      r1: "Scenario | Flat Table | Multi-Level (Eager) | Multi-Level (On-Demand)"
+      r2: "Sparse (3 regions) | 4 MB | 4 MB | 16 KB (256× savings)"
+      r3: "Dense (64 regions) | 4 MB | 4 MB | 260 KB (16× savings)"
+      r4: "Fully populated | 4 MB | 4 MB | 4 MB (no savings)"
+    }
+    savings_note: |md
+      **Key Insight:** A process with code at 0x00400000, heap at 0x01000000, 
+      and stack at 0x7FFF0000 only touches **3 directory entries**.
+      - Flat table: Always 4 MB
+      - On-demand: 4 KB + (3 × 4 KB) = **16 KB**
+      Real processes are typically **0.001% dense** — multi-level tables win big.
+    |
+  }
+}
+step1 -> step2: "PDE missing"
+step2 -> step3: "Frame allocated"
+step3 -> step4: "PDE updated"
+before_state -> after_state: "On-demand allocation" {
+  style: {
+    stroke-dash: 5
+    animated: true
+    stroke: "#2E7D32"
+  }
+}
+legend: "Legend" {
+  near: bottom-right
+  style.fill: "#FAFAFA"
+  style.stroke: "#BDBDBD"
+  l1: "Blue: Initial access detection"
+  l2: "Orange: Frame allocation"
+  l3: "Green: PTE/PDE update"
+  l4: "Purple: Walk continuation"
+}

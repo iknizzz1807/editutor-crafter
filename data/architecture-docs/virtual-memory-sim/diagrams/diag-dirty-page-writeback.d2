@@ -1,0 +1,253 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  shape: rectangle
+  label: "Dirty Page Write-Back Path (pte.h / swap.c)"
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+    stroke: transparent
+    fill: transparent
+  }
+}
+title.near: top-center
+
+row1: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  
+  victim_select: {
+    direction: down
+    label: "1. Eviction Decision"
+    victim_vpn: {
+      shape: sql_table
+      label: "Victim Selection (page_table.c)"
+      vpn: "VPN | uint32_t | victim_vpn"
+      pte_ptr: "PTE* | pointer | entry"
+      algorithm: "Type | Clock / LRU"
+    }
+  }
+
+  pte_check: {
+    direction: down
+    label: "2. PTE Inspection"
+    pte_struct: {
+      shape: sql_table
+      label: "struct PTE (pte.h)"
+      pfn: "0x00 | uint32_t | pfn"
+      valid: "0x04 | bool     | valid"
+      readable: "0x05 | bool     | r"
+      writable: "0x06 | bool     | w"
+      dirty: "0x07 | bool     | dirty (CHECK)"
+      referenced: "0x08 | bool     | ref"
+      sz: "Total: 9 bytes"
+    }
+  }
+}
+
+row2: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  
+  decision_node: {
+    shape: diamond
+    label: "pte->dirty == true?"
+    style: {
+      fill: "#FFF3CD"
+      stroke: "#856404"
+      stroke-width: 2
+    }
+  }
+}
+
+row3: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+
+  dirty_path: {
+    direction: down
+    label: "3a. DIRTY PATH (Expensive)"
+    style: {
+      fill: "#F8D7DA"
+      stroke: "#721C24"
+      stroke-width: 2
+    }
+    
+    frame_data: {
+      shape: sql_table
+      label: "Physical Frame (frame_pool.c)"
+      addr: "0x00 | phys_addr | mem[pfn << 12]"
+      size: "0x00 | size_t    | 4096 bytes"
+      data: "0x00 | byte[]    | page_payload"
+    }
+
+    memcpy_op: {
+      label: "memcpy() to swap"
+      width: 320
+      code: |'c
+        // 4KB Block Transfer
+        void* src = phys_mem + (pte->pfn << 12);
+        void* dst = swap_disk + (slot << 12);
+        memcpy(dst, src, PAGE_SIZE);
+        stats.swap_writes++;
+      '|
+    }
+
+    swap_write: {
+      shape: cylinder
+      label: "Swap Slot (Disk)"
+      style: {
+        fill: "#F5C6CB"
+        stroke: "#721C24"
+      }
+    }
+  }
+
+  clean_path: {
+    direction: down
+    label: "3b. CLEAN PATH (Cheap)"
+    style: {
+      fill: "#D4EDDA"
+      stroke: "#155724"
+      stroke-width: 2
+    }
+    
+    reasoning: {
+      label: "Clean Discard Logic"
+      width: 300
+      note: |md
+        **Why skip the write?**
+        - Data exists on Disk (File-backed)
+        - Anonymous: remains all zeros
+        - Prior Eviction: Swap copy exists
+        **Action:** Deallocate frame only
+      |
+    }
+
+    stats_update: {
+      shape: class
+      label: "stats (simulator.c)"
+      +swap_discards: "uint64_t"
+      +total_evictions: "uint64_t"
+    }
+  }
+}
+
+row4: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+
+  finalize: {
+    direction: down
+    label: "4. Finalize Invalidation"
+    
+    pte_clear: {
+      label: "PTE Update (pte.h)"
+      width: 320
+      code: |'c
+        pte->valid = false;
+        pte->pfn = 0;
+        pte->dirty = false;
+        pte->referenced = false;
+        TLB_flush(vpn);
+      '|
+    }
+
+    swap_map: {
+      shape: sql_table
+      label: "swap_map[vpn] (swap.c)"
+      slot: "0x00 | int32_t | slot_index"
+      status: "0x04 | bool    | in_swap = true"
+      sz: "Mapping persist"
+    }
+  }
+}
+
+cost_comparison: {
+  grid-columns: 2
+  grid-gap: 20
+  
+  dirty_cost: {
+    label: "DIRTY EVICTION"
+    style: {
+      fill: "#F8D7DA"
+      stroke: "#721C24"
+      stroke-width: 3
+    }
+    details: |md
+      **Latency: ~5-10ms**
+      1. Swap Allocation
+      2. 4KB Memory Copy
+      3. Block I/O (Blocking)
+      4. PTE Invalidation
+    |
+  }
+  
+  clean_cost: {
+    label: "CLEAN EVICTION"
+    style: {
+      fill: "#D4EDDA"
+      stroke: "#155724"
+      stroke-width: 3
+    }
+    details: |md
+      **Latency: ~100ns**
+      1. Logic Check (Bitwise)
+      2. PTE Invalidation
+      *Result: 50,000x Faster*
+    |
+  }
+}
+cost_comparison.near: bottom-center
+
+legend: {
+  label: "Cost Legend"
+  style: {
+    fill: "#F8F9FA"
+    stroke: "#DEE2E6"
+  }
+  slow: "Dirty Path (Blocking I/O)" {
+    style: { font-color: "#DC3545"; bold: true }
+  }
+  fast: "Clean Path (Zero I/O)" {
+    style: { font-color: "#28A745"; bold: true }
+  }
+}
+legend.near: bottom-right
+
+# Connections
+row1.victim_select -> row1.pte_check: "VPN Lookup"
+row1.pte_check -> row2.decision_node: "Check Dirty Bit"
+
+row2.decision_node -> row3.dirty_path: "Dirty | true" {
+  style: { stroke: "#DC3545"; stroke-width: 3 }
+}
+row2.decision_node -> row3.clean_path: "Clean | false" {
+  style: { stroke: "#28A745"; stroke-width: 3; stroke-dash: 4 }
+}
+
+row3.dirty_path -> row4.finalize: "I/O Finish"
+row3.clean_path -> row4.finalize: "Discard"
+
+row3.dirty_path.frame_data -> row3.dirty_path.memcpy_op: "Source"
+row3.dirty_path.memcpy_op -> row3.dirty_path.swap_write: "4KB Block"
+row4.finalize.pte_clear -> row4.finalize.swap_map: "Update Store"

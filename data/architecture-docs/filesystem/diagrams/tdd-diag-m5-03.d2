@@ -1,0 +1,257 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    pad: 25
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# MEMORY LAYOUT DEFINITIONS (Intel Manual / Technical Grade)
+# ---------------------------------------------------------------------------------------
+
+fuse_file_info: {
+  shape: sql_table
+  style: {
+    fill: "#E1D5E7" # Purple Header
+    stroke: "#7030A0"
+    stroke-width: 2
+  }
+  header: "struct fuse_file_info | Total Size: 40 bytes | Alignment: 8B"
+  
+  "0x00": "int flags | offset: +0, size: 4B"
+  "0x04": "unsigned int writepage | offset: +4, size: 4B"
+  "0x08": "direct_io : 1 | Bitfield packed @ +8"
+  "0x0C": "keep_cache : 1 | Bitfield packed @ +12"
+  "0x10": "flush : 1 | Bitfield packed @ +16"
+  "0x14": "nonseekable : 1 | Bitfield packed @ +20"
+  "0x18": "flock_release : 1 | Bitfield packed @ +24"
+  "0x1C": "cache_readdir : 1 | Bitfield packed @ +28"
+  "0x20": "padding : 24 | Alignment Padding" { 
+    style: {
+      fill: "#D3D3D3" 
+      stroke-dash: 3
+    }
+  }
+  "0x28": "uint64_t fh (File Handle) | offset: +40, size: 8B" {
+    style: {
+      fill: "#FF8C00" # Orange Handle/Pointer
+      bold: true
+      stroke: "#D79B00"
+      stroke-width: 2
+    }
+  }
+  "0x30": "uint64_t lock_owner | offset: +48, size: 8B"
+  "0x38": "uint32_t poll_events | offset: +56, size: 4B"
+}
+
+Inode: {
+  shape: sql_table
+  style: {
+    fill: "#DAE8FC" # Blue Data
+    stroke: "#4F81BD"
+    stroke-width: 2
+  }
+  header: "Inode Metadata Structure | Total Size: 128 bytes (2x Cache Lines)"
+  
+  "0x00": "uint64_t inode_num (PRIMARY KEY) | 8B" {
+    style: {
+      stroke: "#D79B00"
+      stroke-width: 4
+      bold: true
+    }
+  }
+  "0x08": "uint16_t mode | Permissions | 2B"
+  "0x0A": "uint16_t nlink | Reference Count | 2B"
+  "0x0C": "uint32_t uid | User ID | 4B"
+  "0x10": "uint32_t gid | Group ID | 4B"
+  "0x14": "uint64_t size | Logical Size | 8B"
+  "0x1C": "struct timespec atime | 16B"
+  "0x2C": "uint64_t direct_ptrs[12] | Data Blocks | 96B" {
+    style.fill: "#F5F5F5"
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# ALGORITHM STATE / LOGIC FLOWS (Sequential Steps)
+# ---------------------------------------------------------------------------------------
+
+Open_Sequence: "M1: fs_open() Initialization" {
+  style: {
+    stroke: "#7030A0"
+    fill: "#FDFBFF"
+  }
+  
+  step1: "1. VFS calls open('/data/f1.txt')"
+  step2: "2. path_resolve('/data/f1.txt')" {
+    style.stroke: "#6C8EBF"
+    style.stroke-width: 2
+  }
+  step3: "3. Locate Inode 104 in cache/disk" {
+    style: {
+      fill: "#DAE8FC"
+      bold: true
+    }
+  }
+  step4: "4. fi->fh = 104 (Pin Inode context)" {
+    style: {
+      fill: "#FF8C00"
+      stroke: "#D79B00"
+      bold: true
+    }
+  }
+
+  step1 -> step2 -> step3 -> step4: "Next Step"
+}
+
+Read_Sequence: "M2: fs_read() Optimization (O(1))" {
+  style: {
+    stroke: "#82B366"
+    stroke-width: 3
+    fill: "#FBFFFB"
+  }
+
+  check_fh: "CHECK: Is fi->fh != 0?" {
+    shape: diamond
+  }
+  
+  fast_path: "FAST PATH: Direct Inode Mapping" {
+    style: {
+      fill: "#D5E8D4" # Green Success/Free
+      bold: true
+      stroke: "#2D7D32"
+    }
+  }
+  
+  slow_path: "SLOW PATH: Full Path Resolve" {
+    style: {
+      stroke-dash: 3
+      opacity: 0.5
+    }
+  }
+
+  check_fh -> fast_path: "VALID (Handle Extracted)"
+  check_fh -> slow_path: "INVALID (Fallback)"
+}
+
+Release_Sequence: "M3: fs_release() Cleanup" {
+  style: {
+    stroke: "#B20000"
+    fill: "#FFFBFB"
+  }
+  
+  rel1: "1. VFS close() / FUSE release()"
+  rel2: "2. CLEAR: fi->fh = 0" {
+    style: {
+      fill: "#F8CECC" # Red Warning
+      stroke: "#B20000"
+      bold: true
+    }
+  }
+  rel3: "3. Decrement Inode refcount"
+  
+  rel1 -> rel2 -> rel3: "Cleanup Chain"
+}
+
+# ---------------------------------------------------------------------------------------
+# INTER-DEPENDENCIES & DATA MAPPING (Logic Glue)
+# ---------------------------------------------------------------------------------------
+
+# Step 3 identifies the Inode in memory
+Open_Sequence.step3 -> Inode."0x00": "Resolves Inode 104" {
+  style: {
+    stroke: "#4F81BD"
+    stroke-dash: 5
+  }
+}
+
+# Step 4 saves mapping into FUSE struct
+Open_Sequence.step4 -> fuse_file_info."0x28": "Store ID in Handle" {
+  style: {
+    stroke: "#D79B00"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+# Read process extracts handle
+fuse_file_info."0x28" -> Read_Sequence.check_fh: "Load fi->fh" {
+  style: {
+    stroke: "#FF8C00"
+    stroke-dash: 5
+  }
+}
+
+# Fast path provides O(1) access
+Read_Sequence.fast_path -> Inode: "DMA/Direct Index" {
+  style: {
+    stroke: "#2D7D32"
+    stroke-width: 4
+  }
+  target-arrowhead: triangle
+}
+
+# ---------------------------------------------------------------------------------------
+# PERFORMANCE ANNOTATIONS & LEGEND
+# ---------------------------------------------------------------------------------------
+
+Note: |md
+  ### Performance Impact (TDD Analysis)
+  By storing the **Inode Number** in `fi->fh` during `fs_open`, we bypass the O(depth) cost 
+  of `path_resolve` for every `read()` and `write()` call. 
+  
+  **VFS Path Resolve Cost:** 
+  Multiple directory block reads + string comparisons. Latency: **O(N)**.
+  
+  **FUSE File Handle Cost:** 
+  Direct index into kernel Inode table. Bypass dcache. Latency: **O(1)**.
+| {
+  near: top-right
+  style: {
+    fill: "#F9F9F9"
+    stroke: "#CCCCCC"
+    border-radius: 8
+  }
+}
+
+legend: "Diagram Implementation Key" {
+  near: bottom-right
+  
+  open_clr: "Process: Open (Context Initialization)" {
+    style.fill: "#FFF2CC"
+    style.stroke: "#D79B00"
+  }
+  read_clr: "Process: Read (Optimization Path)" {
+    style.fill: "#D5E8D4"
+    style.stroke: "#2D7D32"
+  }
+  struct_clr: "Memory: Struct Layout (C99)" {
+    style.fill: "#E1D5E7"
+    style.stroke: "#7030A0"
+  }
+  padding_clr: "Buffer Padding (64B Boundary)" {
+    style.fill: "#D3D3D3"
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# GLOBAL STYLING & GLOBS
+# ---------------------------------------------------------------------------------------
+
+***.style.font: mono
+***.style.font-size: 14
+
+# Global Connection Style (Corrected Syntax)
+(*** -> ***)[*]: {
+  style: {
+    stroke: "#333333"
+    stroke-width: 1
+  }
+}
+
+# Highlight critical path
+(Read_Sequence.check_fh -> Read_Sequence.fast_path)[0].style: {
+  stroke: "#2D7D32"
+  stroke-width: 3
+}

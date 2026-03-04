@@ -1,0 +1,196 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#6a0dad"
+    data: "#0077be"
+    success: "#228b22"
+    padding: "#808080"
+    pointers: "#ffa500"
+    changed: "#FF4444"
+  }
+}
+
+title: {
+  label: "High-Water Mark Tracking Algorithm\nprofiler-m3 | AllocationTracker::record_malloc"
+  shape: text
+  near: top-center
+}
+
+# --- STEP 1 ---
+step1: {
+  label: "1. Initial State"
+  style.stroke: ${colors.header}
+  
+  state: {
+    label: |md
+    ### Memory Context
+    - **live_bytes**: 1,048,576 (1MB)
+    - **peak_bytes**: 2,097,152 (2MB)
+    - **new_alloc**: 1,572,864 (1.5MB)
+    |
+    style.fill: ${colors.data}
+  }
+  
+  anno: "Atomic variables before mutation" {
+    shape: text
+  }
+}
+
+# --- STEP 2 ---
+step2: {
+  label: "2. Atomic Addition"
+  style.stroke: ${colors.changed}
+
+  op: |md
+  rust
+  let new_live = self.live_bytes
+      .fetch_add(size, Ordering::Relaxed) 
+      + size;
+  
+  | {
+    style.fill: "#0d1117"
+    style.stroke: ${colors.changed}
+  }
+
+  state: {
+    label: |md
+    ### State After Addition
+    - **live_bytes**: <b style="color:red">2,621,440</b>
+    - **new_live**: <b style="color:red">2,621,440</b>
+    - **peak_bytes**: 2,097,152
+    |
+    style.fill: ${colors.data}
+  }
+
+  op -> state: "Atomically adds size" {
+    style.stroke: ${colors.changed}
+  }
+}
+
+# --- STEP 3 ---
+step3: {
+  label: "3. CAS Comparison"
+  style.stroke: ${colors.pointers}
+
+  check: {
+    label: |md
+    **new_live > peak_bytes?**
+    2.5MB > 2.0MB
+    |
+    shape: diamond
+    style.fill: "#2d1f3d"
+  }
+
+  load_peak: {
+    label: |md
+    rust
+    let mut current_peak = 
+        self.peak_bytes.load(Ordering::Relaxed);
+    
+    |
+    style.fill: "#0d1117"
+  }
+
+  load_peak -> check: "compare"
+}
+
+# --- STEP 4 ---
+step4: {
+  label: "4. Compare-and-Swap"
+  style.stroke: ${colors.changed}
+
+  cas: {
+    label: |md
+    rust
+    self.peak_bytes.compare_exchange_weak(
+        current_peak, // 2097152
+        new_live,     // 2621440
+        Ordering::Relaxed,
+        Ordering::Relaxed
+    )
+    
+    |
+    style.fill: "#0d1117"
+  }
+
+  ok: {
+    label: |md
+    **SUCCESS (Ok)**
+    peak_bytes: <b style="color:red">2,621,440</b>
+    |
+    style.fill: ${colors.success}
+  }
+
+  err: {
+    label: |md
+    **RETRY (Err)**
+    Another thread updated peak.
+    Update `current_peak` and loop.
+    |
+    style.fill: "#4e1414"
+  }
+
+  cas -> ok: "Match"
+  cas -> err: "Mismatch"
+}
+
+# --- STEP 5 ---
+step5: {
+  label: "5. Record Contributor"
+  style.stroke: ${colors.header}
+
+  record: {
+    label: |md
+    ### PeakContributor Store
+    - **alloc_id**: 42
+    - **size**: 1.5MB
+    - **live_at_peak**: 2.6MB
+    |
+    style.fill: ${colors.data}
+  }
+}
+
+# --- FINAL ---
+final: {
+  label: "6. Final State"
+  style.stroke: ${colors.success}
+  style.stroke-width: 4
+
+  state: {
+    label: |md
+    ### Invariants Maintained
+    - **live_bytes**: 2,621,440
+    - **peak_bytes**: 2,621,440
+    - **Status**: Monotonic Increase ✓
+    |
+    style.fill: ${colors.success}
+  }
+}
+
+# Connections
+step1 -> step2: "record_malloc(size)"
+step2 -> step3: "if new_live > peak"
+step3.check -> step4: "Yes"
+step4.ok -> step5: "Peak Updated"
+step4.err -> step3: "CAS Loop" {
+  style.stroke-dash: 3
+  style.stroke: ${colors.changed}
+}
+step5 -> final
+
+# Legend
+legend: {
+  near: bottom-right
+  changed: {
+    label: "RED = Modified state"
+    style.fill: ${colors.changed}
+  }
+  data: {
+    label: "BLUE = Immutable / Base data"
+    style.fill: ${colors.data}
+  }
+}

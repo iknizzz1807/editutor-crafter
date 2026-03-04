@@ -1,0 +1,220 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+# ==========================================================
+# FILESYSTEM VERIFICATION STATE MACHINE
+# Based on TDD Milestone M1 and M3 Invariants
+# ==========================================================
+
+INIT: ● {
+  shape: circle
+  width: 25
+  height: 25
+  style: {
+    fill: black
+    stroke-width: 0
+  }
+}
+
+STATE_READ_SB: "READ_SUPERBLOCK" {
+  tooltip: "Initial block I/O - Reading LBA 0"
+  |md
+    ### Invariant: Physical Read
+    - **Buffer**: `mem_addr[0..4095]`
+    - **Source**: `LBA 0` (Sector 0)
+    - **Size**: 4096 Bytes (1 Physical Block)
+    - **Register**: `EAX` = 0x00 (Block Index)
+  |
+  style.fill: "#f3f4f6"
+}
+
+STATE_VALIDATE_SB: "VALIDATE_SUPERBLOCK" {
+  tooltip: "Header signature and CRC validation"
+  |md
+    ### Invariant: Logical Integrity
+    - `off(0x00)` : `magic == 0x46534D4B` (FSMK)
+    - `off(0x08)` : `sb.ver >= 1` (Min Compatibility)
+    - `off(0x10)` : `checksum == crc64(sb_struct[0..511])`
+  |
+  style.fill: "#f3f4f6"
+}
+
+STATE_COUNT_BLOCKS: "COUNT_FREE_BLOCKS" {
+  tooltip: "Iterative scan of block allocation bitmap"
+  |md
+    ### Invariant: Bitmap Consistency
+    - **Cursor**: `curr_blk_idx` (0 to N-1)
+    - **Limit**: `sb.total_blocks`
+    - **Logic**: `free_count += (!test_bit(bitmap, i))`
+    - **Parallel**: Can be SIMD optimized
+  |
+  style.fill: "#f3f4f6"
+}
+
+STATE_COMPARE_COUNTS: "COMPARE_COUNTS" {
+  tooltip: "Cross-reference bitmap scan with SB metadata"
+  |md
+    ### Invariant: Summary Validation
+    - `computed_free == sb.free_blocks_count`
+    - Ensure `sb.dirty_flag == 0` (Clean Unmount Check)
+  |
+  style.fill: "#f3f4f6"
+}
+
+STATE_READ_ROOT: "READ_ROOT_INODE" {
+  tooltip: "Loading VFS Entry Point"
+  |md
+    ### Invariant: Inode 1 Discovery
+    - **Lookup**: `inode_table[1]` (System Reserved)
+    - **Metadata**: Loaded into `struct vfs_inode`
+    - **Location**: `sb.inode_table_offset + (1 * sizeof(inode))`
+  |
+  style.fill: "#f3f4f6"
+}
+
+STATE_VALIDATE_DIR: "VALIDATE_DIRECTORY" {
+  tooltip: "Sanity check of root directory entries"
+  |md
+    ### Invariant: Root Dir Structure
+    - `inode.mode & S_IFDIR == 1` (Must be Directory)
+    - `inode.nlink >= 2` (Self + Parent Reference)
+    - `data[0].name == '.'` (Current Dir Entry)
+    - `data[1].name == '..'` (Parent Dir Entry)
+  |
+  style.fill: "#f3f4f6"
+}
+
+STATE_PASS: "VERIFICATION_PASSED" {
+  tooltip: "Mount successful - Filesystem ready"
+  style: {
+    fill: "#d4edda"
+    stroke: "#28a745"
+    stroke-width: 4
+    double-border: true
+  }
+}
+
+STATE_FAIL: "VERIFICATION_FAILED" {
+  tooltip: "Mount aborted - Kernel panic or Error return"
+  style: {
+    fill: "#f8d7da"
+    stroke: "#dc3545"
+    stroke-width: 4
+    font-color: "#721c24"
+    bold: true
+  }
+}
+
+# --- Transitions ---
+
+INIT -> STATE_READ_SB: "mount() / sys_read(blk=0)"
+
+STATE_READ_SB -> STATE_VALIDATE_SB: "I/O Success [retval == 4096]"
+STATE_READ_SB -> STATE_FAIL: "I/O Error [EIO / ENXIO]" {
+  style: {
+    stroke: red
+    font-color: red
+    bold: true
+  }
+}
+
+STATE_VALIDATE_SB -> STATE_COUNT_BLOCKS: "Header Valid [magic match]"
+STATE_VALIDATE_SB -> STATE_FAIL: "Corruption [EBADFSMK]" {
+  style: {
+    stroke: red
+    font-color: red
+    bold: true
+  }
+}
+
+STATE_COUNT_BLOCKS -> STATE_COMPARE_COUNTS: "Scan Complete [EOF Bitmap]"
+
+STATE_COMPARE_COUNTS -> STATE_READ_ROOT: "Match [Consistency OK]"
+STATE_COMPARE_COUNTS -> STATE_FAIL: "Mismatch [EFS_CORRUPT]" {
+  style: {
+    stroke: red
+    font-color: red
+    bold: true
+  }
+}
+
+STATE_READ_ROOT -> STATE_VALIDATE_DIR: "I/O Success [read_inode(1)]"
+STATE_READ_ROOT -> STATE_FAIL: "Bad Root [ENOENT]" {
+  style: {
+    stroke: red
+    font-color: red
+    bold: true
+  }
+}
+
+STATE_VALIDATE_DIR -> STATE_PASS: "Validated [Standard Compliant]"
+STATE_VALIDATE_DIR -> STATE_FAIL: "Invalid [ENOTDIR]" {
+  style: {
+    stroke: red
+    font-color: red
+    bold: true
+  }
+}
+
+# --- Illegal Transitions (Security/Logic Boundary) ---
+
+STATE_PASS -> STATE_READ_SB: "ILLEGAL RE-ENTRY" {
+  style: {
+    stroke: red
+    stroke-dash: 5
+    opacity: 0.6
+  }
+}
+
+STATE_FAIL -> STATE_COUNT_BLOCKS: "ILLEGAL BYPASS" {
+  style: {
+    stroke: red
+    stroke-dash: 5
+    opacity: 0.6
+  }
+}
+
+# --- Legend & Metadata ---
+
+# Fixed: ELK does not support near: <id>. Using constant 'bottom-right'.
+LEGEND: {
+  shape: package
+  near: bottom-right
+  label: "FS Verification Specs"
+  
+  M1: "M1: Superblock Integrity (Magic/CRC)"
+  M2: "M2: Bitmap Scans (Free Block Parity)"
+  M3: "M3: Root Directory VFS Hooks (Mode/Nlink)"
+  
+  M1.style.font-size: 11
+  M2.style.font-size: 11
+  M3.style.font-size: 11
+  
+  style: {
+    stroke: "#6c757d"
+    fill: "#fdfd96"
+    stroke-width: 2
+  }
+}
+
+# Implementation Details
+STATE_VALIDATE_SB.checksum_details: "CRC-64-ECMA (0x42F0E1EBA9EA3693)" {
+  shape: text
+  style.font-size: 10
+  style.italic: true
+}
+
+STATE_PASS.result_code: "EXIT_SUCCESS (0)" {
+  shape: text
+  style.font-size: 10
+}
+
+STATE_FAIL.result_code: "EXIT_FAILURE (1)" {
+  shape: text
+  style.font-size: 10
+}

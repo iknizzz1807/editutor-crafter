@@ -1,0 +1,147 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# CONCURRENT ACCESS ANALYSIS: MKDIR RACE CONDITION
+# Engineering Spec: Atomicity and Serialization of Metadata Updates
+
+Concurrent_Access_Analysis: {
+  shape: sequence_diagram
+  
+  Thread_A: "Thread A (mkdir /dir1)" {
+    shape: person
+    style: {
+      fill: "#C7F1FF"
+      stroke: "#2196F3"
+    }
+  }
+  Thread_B: "Thread B (mkdir /dir2)" {
+    shape: person
+    style: {
+      fill: "#E4DBFE"
+      stroke: "#673AB7"
+    }
+  }
+  Global_Lock: "pthread_mutex_t\nglobal_lock" {
+    style.fill: "#DEE1EB"
+  }
+  Inode_Bitmap: "Inode Bitmap\n(Block 2)" {
+    style.fill: "#B5AFF6"
+  }
+  Inode_Table: "Inode Table\n(Block 3...N)" {
+    style.fill: "#88DCF7"
+  }
+  Parent_Dir: "Directory Data\n(Inode 1)" {
+    style.fill: "#ACE1AF"
+  }
+
+  Race_Condition_Scenario: {
+    label: "|'md **SCENARIO 1: UNPROTECTED RACE CONDITION**'|"
+    
+    Thread_A -> Parent_Dir: "1. dir_lookup('dir1'): NOT_FOUND"
+    Thread_B -> Parent_Dir: "2. dir_lookup('dir2'): NOT_FOUND"
+    
+    Thread_A -> Inode_Bitmap: "3. read_block(): [00000000...]"
+    Thread_B -> Inode_Bitmap: "4. read_block(): [00000000...]"
+    
+    Thread_B.Race_Note: "|'md **RACE POINT:** Both threads read the same state. Inode 10 is seen as free (0).'|"
+    
+    Thread_A -> Inode_Bitmap: "5. write_block(bit 10=1): SUCCESS"
+    Thread_B -> Inode_Bitmap: "6. write_block(bit 10=1): SUCCESS" {
+      style: {
+        stroke: red
+        stroke-width: 4
+      }
+    }
+    
+    Thread_A -> Inode_Table: "7. write_inode(10, /dir1_meta): OK"
+    Thread_B -> Inode_Table: "8. write_inode(10, /dir2_meta): OK" {
+      style.stroke: red
+    }
+    
+    Thread_B.Corruption_Note: "|'md <span style=\"color:red\">**CORRUPTION:** Inode 10 metadata overwritten. /dir1 is now orphaned.</span>'|"
+  }
+
+  Serialized_Success_Scenario: {
+    label: "|'md **SCENARIO 2: SERIALIZED VIA GLOBAL MUTEX**'|"
+    
+    Thread_A -> Global_Lock: "1. ▼ pthread_mutex_lock()" {
+      style.stroke: blue
+    }
+    
+    # Activation span for Thread A
+    Thread_A.alloc: {
+      Thread_A -> Inode_Bitmap: "2. inode_bitmap_alloc(): Inode 11"
+      Thread_A -> Inode_Table: "3. inode_init(11, S_IFDIR): OK"
+      Thread_A -> Parent_Dir: "4. dir_add_entry('dir1', 11): OK"
+    }
+    
+    Thread_B -> Global_Lock: "5. ▼ pthread_mutex_lock()" {
+      style.stroke-dash: 5
+    }
+    
+    Thread_B.Blocking_Note: "|'md **BLOCKING:** Thread B suspended in futex_wait queue.'|"
+    
+    Thread_A -> Global_Lock: "6. ▲ pthread_mutex_unlock()" {
+      style.stroke: blue
+    }
+    
+    Global_Lock -> Thread_B: "7. (Lock Acquired - Context Switch)" {
+      style.animated: true
+    }
+    
+    # Activation span for Thread B
+    Thread_B.alloc: {
+      Thread_B -> Inode_Bitmap: "8. inode_bitmap_alloc(): Inode 12"
+      Thread_B -> Inode_Table: "9. inode_init(12, S_IFDIR): OK"
+      Thread_B -> Parent_Dir: "10. dir_add_entry('dir2', 12): OK"
+    }
+    
+    Thread_B -> Global_Lock: "11. ▲ pthread_mutex_unlock()"
+  }
+}
+
+Legend: {
+  near: bottom-right
+  Race_Text: "|'md <span style=\"color:red\">**Red**</span>: Concurrent write conflict / Data corruption'|" {
+    shape: text
+  }
+  Lock_Text: "|'md **▼ / ▲**: Lock Acquisition / Release (Atomic Primitives)'|" {
+    shape: text
+  }
+  Invariant_Text: "|'md **INVARIANT:** No two directory entries may map to the same Inode index.'|" {
+    shape: text
+    style: {
+      bold: true
+      font-color: "#2E7D32"
+    }
+  }
+}
+
+# Metadata Layout Reference (Intel Manual Quality)
+Memory_Map: {
+  near: bottom-left
+  shape: sql_table
+  style.fill: "#F5F5F5"
+  
+  "0x0000 (0)": "Superblock" {constraint: "1024 bytes (Purple)"}
+  "0x0400 (1024)": "Group Descriptor" {constraint: "4096 bytes"}
+  "0x1400 (5120)": "Inode Bitmap" {constraint: "Block 2 (Free=0/Used=1)"}
+  "0x2400 (9216)": "Data Bitmap" {constraint: "Block 3"}
+  "0x3400 (13312)": "Inode Table" {constraint: "sizeof=256B * N"}
+  "0xXXXX": "Padding / Reserved" {style.fill: gray}
+}
+
+Annotation: |md
+  ### Implementation Notes for File System Engineers:
+  1. **Lock Granularity:** This diagram assumes a VFS-level global lock. For production, use per-directory inode locks or Range Locks.
+  2. **Atomic Bitops:** The bitmap modification `bit 10=1` should use `set_bit()` atomic instructions if the lock is not held.
+  3. **FUSE/Kernel Integration:** Ensure `mkdir` call returns `EEXIST` if `dir_lookup` finds the entry after acquiring the lock.
+  4. **Journaling:** All metadata writes shown must be wrapped in a `jbd2` transaction handle to ensure consistency after power-loss.
+| {
+  near: bottom-center
+}

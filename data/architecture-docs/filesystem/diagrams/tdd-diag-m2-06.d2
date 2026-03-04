@@ -1,0 +1,175 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# --- STYLE DEFINITIONS ---
+classes: {
+  logical_data: {
+    style: {
+      fill: "#C7F1FF" # Blue: Data
+      stroke: "#3f87a6"
+      stroke-width: 2
+    }
+  }
+  logical_hole: {
+    style: {
+      fill: "#ACE1AF" # Green: Free/Hole
+      stroke: "#306a4a"
+      stroke-dash: 5
+    }
+  }
+  metadata_header: {
+    style: {
+      fill: "#E4DBFE" # Purple: Header
+      stroke: "#B5AFF6"
+      bold: true
+    }
+  }
+  pointer: {
+    style: {
+      stroke: "#ff9900" # Orange: Pointers
+      stroke-width: 2
+    }
+  }
+}
+
+# --- MEMORY LAYOUT: LOGICAL VIEW ---
+memory_map: "Sparse File Logical Address Space" {
+  style.stroke-width: 4
+  
+  # Byte offset markers (Left Margin)
+  offsets: {
+    grid-columns: 1
+    grid-gap: 60
+    style.stroke-width: 0
+    t0: "0x00000" {shape: text}
+    t1: "0x01000" {shape: text}
+    t2: "0x100000" {shape: text}
+    t3: "0x101000" {shape: text}
+  }
+
+  file_logical_view: "File Layout (Size: 1028 KB)" {
+    grid-columns: 1
+    grid-gap: 0
+    
+    block_0: "ALLOCATED DATA" {
+      class: logical_data
+      tooltip: "Logical Block 0 (Mapped to Phys 0x123)"
+      height: 80
+    }
+
+    hole_middle: "SPARSE HOLE (SYNTHETIC ZEROES)" {
+      class: logical_hole
+      tooltip: "Unallocated Range (4KB to 1MB)"
+      height: 120
+    }
+
+    block_last: "ALLOCATED DATA" {
+      class: logical_data
+      tooltip: "Logical Block 256 (Mapped to Phys 0x456)"
+      height: 80
+    }
+  }
+}
+
+# --- ARCHITECTURE: INODE STRUCTURE ---
+# Corrected: Inodes represented as a composite container to allow pointer connections
+inode_metadata: "Inode Metadata Structure (On-Disk)" {
+  style.fill: "#f8f8f8"
+  
+  header: "Metadata Fields" {
+    shape: sql_table
+    class: metadata_header
+    i_size: "uint64_t i_size" {constraint: "1052672 (1MB+4KB)"}
+    i_blocks: "uint64_t i_blocks" {constraint: "16 (Physical Sectors)"}
+    i_mode: "uint16_t i_mode" {constraint: "S_IFREG | 0644"}
+  }
+
+  pointer_table: "Extent / Block Map" {
+    shape: sql_table
+    style.fill: "#ffffff"
+    # Row keys for direct pointer identification
+    direct_0: "i_block[0]" {constraint: "0x123 (DATA)"}
+    direct_1: "i_block[1]" {constraint: "0x000 (HOLE)"}
+    direct_2: "i_block[2..11]" {constraint: "0x000 (HOLE)"}
+    indirect_12: "i_block[12] (Single Ind)" {constraint: "0x000 (NULL)"}
+    double_ind_13: "i_block[13] (Double Ind)" {constraint: "0x789 (L1_PT)"}
+  }
+}
+
+# --- ALGORITHM: SEQUENCE DIAGRAM ---
+hole_detection_logic: "Read Logic: syscall_read()" {
+  shape: sequence_diagram
+  
+  app: Application
+  vfs: VFS / fs_read
+  ptr_resolver: ext4_bmap
+  disk: Block Device
+  buffer: Page Cache / User Buffer
+
+  app -> vfs: read(fd, buf, 4096, 4096)
+  vfs -> vfs: lock_inode() ▼
+  
+  vfs -> ptr_resolver: get_phys_addr(blk_idx: 1)
+  
+  branch: "BRANCH: Hole Detection" {
+    ptr_resolver -> vfs: returns 0 (Unmapped)
+    vfs -> buffer: memset(dst, 0, 4096)
+    vfs."SYNTHETIC ZERO FILL (CPU-ONLY)" {
+      style.font-color: green
+      style.bold: true
+    }
+    
+    ptr_resolver -> vfs: returns 0x456 (Mapped)
+    vfs -> disk: req_block(0x456)
+    disk -> vfs: DMA transfer complete
+    vfs -> buffer: memcpy(dst, dma_ptr, 4096)
+    vfs."PHYSICAL DISK I/O (SATA/NVMe)" {
+      style.font-color: blue
+    }
+  }
+  
+  vfs -> vfs: unlock_inode() ▲
+  vfs -> app: 4096 bytes
+}
+
+# --- CROSS-LAYER POINTERS (ORANGE) ---
+# Logical blocks pointing to metadata resolution
+memory_map.file_logical_view.block_0 -> inode_metadata.pointer_table.direct_0: "Resolves to 0x123" {
+  class: pointer
+}
+
+memory_map.file_logical_view.hole_middle -> inode_metadata.pointer_table.direct_1: "NULL entry triggers hole synthesis" {
+  style.stroke: "#ff0000"
+  style.stroke-dash: 4
+}
+
+memory_map.file_logical_view.block_last -> inode_metadata.pointer_table.double_ind_13: "Deep block resolution" {
+  class: pointer
+}
+
+# --- DOCUMENTATION ---
+annotation: |md
+  ### Sparse File Hole Detection Implementation
+  1. **Logical Sparse Representation**: The OS allows files to have a larger logical `i_size` than the blocks physically allocated on disk.
+  2. **Metadata Invariant**: A block address of `0` in the inode block map (or missing extent in ext4) signifies a "hole".
+  3. **Read Path Optimization**: When `bmap` returns 0, the kernel bypasses the Block I/O layer entirely.
+  4. **Memory Synthesis**: The requested buffer is populated using a fast `memset` operation, significantly reducing Latency and Power consumption.
+| {
+  near: bottom-center
+  style: {
+    stroke: "#306a4a"
+    fill: "#f9fff9"
+    font-size: 14
+  }
+}
+
+# Styling Row Specifics
+inode_metadata.header.style.stroke: "#B5AFF6"
+inode_metadata.pointer_table.direct_1.style.font-color: red
+inode_metadata.pointer_table.direct_1.style.bold: true

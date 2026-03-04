@@ -1,0 +1,194 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: Async/Await Transformation {
+  shape: rectangle
+  near: top-center
+  style: {
+    font-size: 24
+    bold: true
+    stroke-width: 0
+    fill: transparent
+  }
+}
+
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  source_code: {
+    direction: down
+    label: "Source Code (handle.rs)"
+    width: 380
+    code_view: {
+      width: 360
+      code: |'rust
+      async fn handle_req(conn: TcpStream) {
+        let req = read(&conn).await?;
+        // yield point 0
+        let parsed = parse(req).await?;
+        // yield point 1
+        let resp = process(parsed).await?;
+        write(&conn, resp).await
+      }
+      '|
+    }
+    await_points: {
+      shape: sql_table
+      label: "Await Suspension Points"
+      a0: "0 | read().await | Suspend 0"
+      a1: "1 | parse().await | Suspend 1"
+      a2: "2 | process().await | Suspend 2"
+    }
+  }
+
+  compiler: "Compiler Transform" {
+    shape: parallelogram
+    style.fill: "#E1F5FE"
+  }
+
+  statemachine_def: {
+    direction: down
+    label: "Generated State Machine"
+    width: 480
+    enum_view: {
+      width: 460
+      code: |'rust
+      enum HandleReq {
+        S0 { conn: TcpStream },
+        S1 { conn: TcpStream, req: Req },
+        S2 { conn: TcpStream, p: Parsed },
+        S3 { conn: TcpStream, r: Resp },
+        Complete,
+      }
+      '|
+    }
+    poll_fn: {
+      label: "poll() Logic"
+      width: 460
+      code: |'rust
+      match self.state {
+        S0 { conn } => {
+          match read(conn).poll(cx) {
+            Ready(req) => self.state = S1 { conn, req },
+            Pending => return Pending,
+          }
+        }
+      }
+      '|
+    }
+  }
+}
+
+row1.source_code -> row1.compiler
+row1.compiler -> row1.statemachine_def
+
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  memory: {
+    direction: down
+    label: "Memory Representation"
+    task_layout: {
+      shape: sql_table
+      label: "struct Task<F> (Heap)"
+      f0: "0x00 | *mut vtable    | poll/drop/wake"
+      f1: "0x08 | state: u8     | HandleReq Variant"
+      f2: "0x10 | conn: Stream  | Shared Local"
+      f3: "0x28 | req:  Option  | Saved State"
+      f4: "0x40 | parsed: Option | Saved State"
+      f5: "0x70 | waker: Waker  | Callback Handle"
+      sz: "Total: 128 bytes (2 Cache Lines)"
+    }
+  }
+
+  fsm: {
+    direction: down
+    label: "State Evolution"
+    s0: "S0 (Init)" { shape: circle; style.fill: "#E8F5E9" }
+    s1: "S1 (Read)" { shape: circle; style.fill: "#E3F2FD" }
+    s2: "S2 (Parse)" { shape: circle; style.fill: "#FFF3E0" }
+    s3: "S3 (Proc)" { shape: circle; style.fill: "#FCE4EC" }
+    done: "Done" { 
+      shape: oval
+      style.double-border: true
+      style.fill: "#F3E5F5" 
+    }
+
+    s0 -> s1: "Ready | next"
+    s1 -> s2: "Ready | next"
+    s2 -> s3: "Ready | next"
+    s3 -> done: "Ready | fin"
+
+    s0 -> s0: "Pending | yield" { style.stroke-dash: 3 }
+    s1 -> s1: "Pending | yield" { style.stroke-dash: 3 }
+  }
+}
+
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  stack_usage: {
+    direction: down
+    label: "Thread Stack during Poll"
+    stack_table: {
+      shape: sql_table
+      label: "OS Thread Stack"
+      f0: "0x7ff...f0 | [Runtime Frame] | executor::run"
+      f1: "0x7ff...e0 | [Poll Frame]    | HandleReq::poll"
+      f2: "0x7ff...d0 | &mut Context    | task pointer"
+      f3: "0x7ff...c0 | task_ptr        | Pin pointer"
+      note: "Locals are on HEAP in Task struct"
+    }
+    explanation: {
+      label: "Suspension Model"
+      style.fill: "#FFFDE7"
+      info: |md
+      Each `.await` suspends by 
+      returning `Pending`. Locals 
+      live in the `Task` struct 
+      on the heap.
+      |
+    }
+  }
+
+  runtime_flow: {
+    direction: down
+    label: "Runtime Interaction"
+    width: 450
+    seq: {
+      shape: sequence_diagram
+      Tokio: Executor
+      Future: HandleReq
+      Reactor: Epoll
+      
+      Tokio -> Future: poll()
+      Future -> Reactor: register(fd, waker)
+      Future -> Tokio: Pending
+      Reactor -> Tokio: wake()
+      Tokio -> Future: poll() (resume)
+      Future -> Future: S(n) -> S(n+1)
+    }
+  }
+}
+
+row1.statemachine_def -> row2.memory: "Layout"
+row2.memory -> row3.stack_usage: "Reference"
+row2.fsm -> row3.runtime_flow: "Triggers"
+
+legend: {
+  direction: right
+  near: bottom-right
+  l1: "Pending (Yield)" { style.fill: "#ECEFF1" }
+  l2: "Ready (Progress)" { style.fill: "#C8E6C9" }
+}

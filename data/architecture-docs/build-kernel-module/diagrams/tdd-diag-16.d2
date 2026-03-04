@@ -1,0 +1,313 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# HEADER & TITLE
+# ──────────────────────────────────────────────────────────────────────────
+title: {
+  label: |md
+    # `mydevice_ioctl_resize()` Implementation Specification
+    **Kernel-level buffer reallocation with Allocate-Copy-Swap-Free pattern.**
+    **IOC Command:** `MYDEVICE_IOC_RESIZE` | `_IOW('k', 0, unsigned long)`
+  |
+  near: top-center
+  style: {
+    stroke-width: 0
+    fill: transparent
+    font-size: 18
+  }
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# COMPONENT CLASSES
+# ──────────────────────────────────────────────────────────────────────────
+classes: {
+  state_container: {
+    style: {
+      stroke-width: 4
+      border-radius: 12
+    }
+  }
+  buffer_ptr: {
+    shape: rectangle
+    style: {
+      fill: "#FFB74D"
+      stroke: "#E65100"
+      bold: true
+      font-size: 14
+    }
+  }
+  memory_block: {
+    style: {
+      fill: "#90CAF9"
+      stroke: "#1565C0"
+      stroke-dash: 0
+    }
+  }
+  step_box: {
+    style: {
+      stroke-width: 2
+      border-radius: 4
+      font-size: 12
+    }
+  }
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# BEFORE STATE: Stable kernel buffer
+# ──────────────────────────────────────────────────────────────────────────
+before: {
+  label: "BEFORE STATE (Steady State)"
+  class: state_container
+  style.fill: "#F5F5F5"
+  
+  ptr: {
+    label: "kernel_buffer (PTR)"
+    class: buffer_ptr
+  }
+
+  slab_old: {
+    label: "Slab Block (4096B)"
+    grid-columns: 2
+    style.fill: "#BBDEFB"
+    
+    data: {
+      label: "Valid Data (50B)"
+      style.fill: "#42A5F5"
+      style.font-color: white
+    }
+    stale: {
+      label: "Remaining Space (4046B)"
+      style.fill: "#E3F2FD"
+      style.stroke-dash: 2
+    }
+  }
+
+  ptr -> slab_old: "dereference" {
+    style.stroke: orange
+    source-arrowhead: circle
+  }
+
+  meta: {
+    label: |md
+      ### Current Context
+      - `buffer_size` = 4096
+      - `buffer_data_len` = 50
+      - `mutex` = UNLOCKED
+    |
+    style.stroke-width: 0
+    style.fill: transparent
+  }
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROW PATH: Resizing 4096 -> 8192
+# ──────────────────────────────────────────────────────────────────────────
+grow: {
+  label: "GROW PATH (new_size = 8192)"
+  class: state_container
+  style.fill: "#E3F2FD"
+
+  s1: {
+    label: |md
+      ### Step 1: Ingest Argument
+      c
+      unsigned long new_size;
+      copy_from_user(&new_size, (void*)arg, sizeof(u_long));
+      
+      **Validated:** `8192` in kernel stack.
+    |
+    class: step_box
+  }
+
+  s2: {
+    label: |md
+      ### Step 2: Validation
+      **Checks:**
+      1. `new_size > 0` (8192 > 0)
+      2. `new_size < LIMIT` (8192 < 1MB)
+      **Result:** Proceed.
+    |
+    class: step_box
+  }
+
+  s3: {
+    label: |md
+      ### Step 3: New Allocation
+      c
+      char *new_buf = kzalloc(8192, GFP_KERNEL);
+      
+      **Status:** `new_buf` points to fresh 8KB zeroed slab.
+      **Note:** Allocation occurs *before* mutex to minimize latency.
+    |
+    class: step_box
+    style.fill: "#FFF9C4"
+  }
+
+  s4: {
+    label: |md
+      ### Step 4: Mutex Entry
+      c
+      mutex_lock_interruptible(&my_mutex);
+      
+      Critical section begins. If interrupted, `kfree(new_buf)` and exit.
+    |
+    class: step_box
+    style.stroke: red
+  }
+
+  s5: {
+    label: |md
+      ### Step 5: Data Migration
+      c
+      memcpy(new_buf, kernel_buffer, 50);
+      
+      `old_data` copied to start of `new_buf`.
+    |
+    class: step_box
+  }
+
+  s6: {
+    label: |md
+      ### Step 6: Atomic Swap & Free
+      c
+      char *old_buf = kernel_buffer;
+      kernel_buffer = new_buf;
+      buffer_size = 8192;
+      kfree(old_buf);
+      
+      Old pointer released, new pointer installed.
+    |
+    class: step_box
+    style.fill: "#C8E6C9"
+  }
+
+  s1 -> s2 -> s3 -> s4 -> s5 -> s6
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# AFTER STATE: Reallocated buffer
+# ──────────────────────────────────────────────────────────────────────────
+after_grow: {
+  label: "AFTER STATE (Grow Success)"
+  class: state_container
+  style.fill: "#E8F5E9"
+
+  ptr_new: {
+    label: "kernel_buffer (UPDATED)"
+    class: buffer_ptr
+    style.fill: "#66BB6A"
+  }
+
+  slab_new: {
+    label: "New Slab Block (8192B)"
+    grid-columns: 2
+    style.fill: "#A5D6A7"
+    
+    data: {
+      label: "Preserved Data (50B)"
+      style.fill: "#2E7D32"
+      style.font-color: white
+    }
+    new_space: {
+      label: "New Capacity (8142B)"
+      style.fill: "#C8E6C9"
+      style.stroke-dash: 5
+    }
+  }
+
+  ptr_new -> slab_new: "dereference" {
+    style.stroke: "#2E7D32"
+    source-arrowhead: circle
+  }
+
+  meta: {
+    label: |md
+      ### New Context
+      - `buffer_size` = 8192
+      - `buffer_data_len` = 50
+      - `mutex` = RELEASED
+    |
+    style.stroke-width: 0
+    style.fill: transparent
+  }
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# ERROR TRANSITIONS
+# ──────────────────────────────────────────────────────────────────────────
+errors: {
+  label: "ERROR HANDLING & INVARIANTS"
+  class: state_container
+  style.fill: "#FFEBEE"
+
+  e1: {
+    label: "kzalloc Fails (-ENOMEM): Return immediately. kernel_buffer remains untouched."
+    style.fill: "#FFCDD2"
+  }
+
+  e2: {
+    label: "Mutex Interrupted (-ERESTARTSYS): kfree(new_buf) before return to prevent leak."
+    style.fill: "#FFCDD2"
+  }
+  
+  invariant: {
+    label: "SAFETY INVARIANT: Never kfree(kernel_buffer) until new_buf is ready for swap."
+    style.bold: true
+    style.stroke: red
+  }
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# HIGH LEVEL FLOW
+# ──────────────────────────────────────────────────────────────────────────
+before -> grow: "ioctl(fd, RESIZE, 8192)" {
+  style.stroke-width: 4
+}
+
+grow -> after_grow: "Swap success" {
+  style.stroke: green
+  style.stroke-width: 4
+}
+
+grow -> errors: "Allocation or Lock Failure" {
+  style.stroke: red
+  style.stroke-dash: 5
+}
+
+errors -> before: "Rollback (No change)" {
+  style.stroke: "#9E9E9E"
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# ANNOTATIONS & LEGEND
+# ──────────────────────────────────────────────────────────────────────────
+shrink_note: {
+  label: |md
+    ### Shrink Behavior (e.g., 50B -> 30B)
+    - If `new_size < buffer_data_len`:
+    - `copy_len = min(50, 30) = 30`
+    - Result: Bytes [30-49] are **truncated**.
+    - `buffer_data_len` is updated to `30`.
+  |
+  shape: sticky_note
+  near: after_grow
+}
+
+legend: {
+  label: |md
+    ### Legend
+    - **ORANGE BOX**: Pointers (`char*`)
+    - **BLUE/GREEN BLOCKS**: Slab memory
+    - **DASHED EDGES**: Unused/Padding space
+    - **RED EDGES**: Mutex protection zone
+  |
+  near: before
+  style.fill: "#FFF3E0"
+  style.stroke: "#FFE0B2"
+}

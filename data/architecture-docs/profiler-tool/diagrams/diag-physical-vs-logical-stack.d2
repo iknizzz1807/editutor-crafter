@@ -1,0 +1,178 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Physical vs Logical Call Stack in Async Code
+  The profiler sees disjoint physical stacks; the logical flow spans multiple polls
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  physical: {
+    direction: down
+    label: "Physical Stack (What Profiler Sees)"
+    poll1: {
+      label: "Poll at t=0ms"
+      width: 320
+      code: |'rust
+tokio::runtime::task::raw::poll
+tokio::runtime::task::harness::poll_future
+core::future::Future::poll
+handle_request::{{closure}}      // visible
+read_request::{{closure}}        // visible
+tcp_stream::read::{{closure}}    // leaf
+      '|
+      style.fill: "#ffcccc"
+    }
+    await1: {
+      label: "Await Gap (t=0ms → t=50ms)"
+      width: 320
+      note: |md
+**Task yields** → returns `Poll::Pending`
+- No stack frames exist
+- Task state machine on heap
+- Thread executes other tasks
+- **Profiler sees nothing**
+      |
+      style.fill: "#ffffcc"
+      style.stroke-dash: 3
+    }
+    poll2: {
+      label: "Poll at t=50ms (I/O ready)"
+      width: 320
+      code: |'rust
+tokio::runtime::task::raw::poll
+tokio::runtime::task::harness::poll_future
+core::future::Future::poll
+handle_request::{{closure}}      // same task
+parse_request::{{closure}}       // NEW state!
+json::from_slice::{{closure}}    // leaf
+      '|
+      style.fill: "#ffcccc"
+    }
+    await2: {
+      label: "Await Gap (t=50ms → t=55ms)"
+      width: 320
+      note: |md
+Another yield for parse completion
+Task migrated to Thread 3
+(work-stealing)
+      |
+      style.fill: "#ffffcc"
+      style.stroke-dash: 3
+    }
+    poll3: {
+      label: "Poll at t=55ms"
+      width: 320
+      code: |'rust
+tokio::runtime::task::raw::poll
+tokio::runtime::task::harness::poll_future
+core::future::Future::poll
+handle_request::{{closure}}
+process_query::{{closure}}       // NEW state!
+database::execute::{{closure}}   // leaf
+      '|
+      style.fill: "#ffcccc"
+    }
+  }
+  logical: {
+    direction: down
+    label: "Logical Stack (Developer Mental Model)"
+    timeline: {
+      width: 340
+      code: |'rust
+// One continuous logical flow:
+async fn handle_request(conn) {
+    let req = read_request(&conn).await;  // ─┐
+    //         ──────────────────────────────┘ 50ms I/O
+    let parsed = parse_request(req).await; // ─┐
+    //         ───────────────────────────────┘ 5ms CPU
+    let resp = process_query(parsed).await; // ─┐
+    //         ─────────────────────────────────┘ 100ms DB
+    write_response(&conn, resp).await;      // ─┐
+    //         ─────────────────────────────────┘ 2ms I/O
+}
+      '|
+    }
+    logical_stack: {
+      label: "Logical Call Stack (Full Context)"
+      shape: class
+      main: "()"
+      spawn_handler: "spawn_handler"
+      handle_request: "handle_request"
+      read_request: "read_request"
+      parse_request: "parse_request"
+      process_query: "process_query"
+      write_response: "write_response"
+    }
+    continuity: {
+      width: 340
+      note: |md
+**Key Insight:**
+The logical stack shows **who called whom**,
+even across await boundaries.
+Profiler must track:
+- Task ID (identity)
+- Spawn context (caller)
+- State transitions
+      |
+      style.fill: "#ccffcc"
+    }
+  }
+}
+row1.physical.poll1 -> row1.logical.timeline: "sample" {
+  style.stroke: red
+  style.stroke-dash: 3
+}
+row1.physical.poll2 -> row1.logical.timeline: "sample" {
+  style.stroke: red
+  style.stroke-dash: 3
+}
+row1.physical.poll3 -> row1.logical.timeline: "sample" {
+  style.stroke: red
+  style.stroke-dash: 3
+}
+legend: {
+  near: bottom-center
+  direction: right
+  phys_box: {
+    label: "Physical Stack"
+    style.fill: "#ffcccc"
+    width: 100
+  }
+  await_box: {
+    label: "Await Gap"
+    style.fill: "#ffffcc"
+    style.stroke-dash: 3
+    width: 100
+  }
+  logical_box: {
+    label: "Logical View"
+    style.fill: "#ccffcc"
+    width: 100
+  }
+}
+problem: {
+  near: bottom-center
+  label: "The Profiler's Blind Spot"
+  width: 700
+  problem: |md
+## Why Traditional Profilers Fail on Async Code
+1. **Discontinuous stacks**: Each poll is a fresh stack — no link to previous polls
+2. **Lost spawn context**: When `handle_request` was spawned, the spawner's stack is gone
+3. **Time gaps invisible**: The 50ms I/O wait doesn't appear in any sample
+4. **Thread migration**: Task may resume on different thread — TLS-based tracking fails
+## Solution: Async-Aware Profiling
+Track **task identity** across polls using:
+- Task IDs from the runtime
+- Spawn-time stack capture
+- Logical stack reconstruction from state machine
+  |
+  style.fill: white
+  style.stroke: "#666666"
+}

@@ -1,0 +1,227 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ------------------------------------------------------------------------------------------
+# Block Allocation During Write Sequence
+# Scenario: Logical write triggering multi-zone allocation cascade
+# Documentation for engineers implementing filesystem drivers (fs_write.c / block_ptr.c)
+# ------------------------------------------------------------------------------------------
+
+write_sequence: {
+  shape: sequence_diagram
+  style: {
+    stroke: "#333333"
+    stroke-width: 2
+    fill: "#FFFFFF"
+  }
+  
+  # Participant Definitions (Lifelines)
+  app: "User Application\n(Ring 3)" {
+    style: {
+      fill: "#E1D5E7"
+      stroke: "#9673A6"
+      stroke-width: 2
+    }
+  }
+  fs: "FileSystem\n(fs_write.c)" {
+    style: {
+      fill: "#DAE8FC"
+      stroke: "#6C8EBF"
+      stroke-width: 2
+    }
+  }
+  im: "InodeManager\n(block_ptr.c)" {
+    style: {
+      fill: "#D5E8D4"
+      stroke: "#82B366"
+      stroke-width: 2
+    }
+  }
+  ba: "BlockAllocator\n(bitmap.c)" {
+    style: {
+      fill: "#FFF2CC"
+      stroke: "#D6B656"
+      stroke-width: 2
+    }
+  }
+  bd: "BlockDevice\n(block.c)" {
+    style: {
+      fill: "#F8CECC"
+      stroke: "#B85450"
+      stroke-width: 2
+    }
+  }
+
+  # --- Sequence Start ---
+
+  app -> fs: "fs_write(inode_num=2, offset=50KB, len=4KB)"
+  
+  fs.t1: "pthread_mutex_lock(&inode_2) ▼" {
+    style: {
+      font-color: "#D79B00"
+      bold: true
+      stroke: "#D79B00"
+    }
+  }
+
+  group: "Path A: Zone Calculation" {
+    fs.t1 -> im: "locate_block(offset=51200)"
+    im -> fs.t1: "BlockLocation{zone=SINGLE_IND, idx=0}" {
+      tooltip: |md
+        ### Logical Block Addressing (LBA)
+        - **Target Offset**: 51200 bytes
+        - **Block Size**: 4096 bytes (4KB)
+        - **Logical Block ID**: 12 (51200 / 4096)
+        - **Inode Layout**:
+          - Direct Blocks: 0-11 (Total 12)
+          - Single Indirect: Starts at Block 12
+        - **Result**: Needs Indirect Block entry 0
+      |
+    }
+  }
+
+  group: "Path B: Single-Indirect Block (Metadata) Allocation" {
+    fs.t1 -> fs.t1: "Check inode.indirect == 0 [MISS]"
+    
+    fs.t1 -> ba: "block_bitmap_alloc()"
+    ba -> bd: "read_block(bitmap_start)"
+    bd -> ba: "void* bitmap_buffer (4096B)"
+    ba -> ba: "scan: __builtin_ctzll(~bits)"
+    ba -> bd: "write_block(bitmap_start, updated_bits)"
+    ba -> fs.t1: "phys_block=500 (Meta)"
+    
+    fs.t1 -> bd: "write_block(500, zero_buffer)" {
+      tooltip: |md
+        **Security Requirement: Zero-Fill**
+        - Prevents Information Leakage from deleted files
+        - Ensures all 512 pointers (4096/8) are NULL
+      |
+    }
+    fs.t1 -> fs.t1: "inode.indirect = 500"
+    fs.t1 -> fs.t1: "inode.blocks += 8" {
+      tooltip: |md
+        **Stat update**
+        - Unit: 512B Sectors
+        - Delta: 1 Page = 8 Sectors
+      |
+    }
+  }
+
+  group: "Path C: Data Block Allocation & Pointer Linking" {
+    fs.t1 -> ba: "block_bitmap_alloc()"
+    ba -> fs.t1: "phys_block=1024 (Data)"
+    
+    fs.t1 -> bd: "read_block(500, indirect_buf)"
+    fs.t1 -> fs.t1: "((uint64_t*)indirect_buf)[0] = 1024" {
+      tooltip: |md
+        **Pointer Persistence Structure**
+        - **Offset**: 0x00
+        - **Encoding**: Little-Endian (x86_64)
+        - **Address**: 0x0000000000000400 (Block 1024)
+      |
+    }
+    fs.t1 -> bd: "write_block(500, indirect_buf)"
+    
+    fs.t1 -> fs.t1: "inode.blocks += 8"
+  }
+
+  group: "Path D: Persistence & Commit" {
+    fs.t1 -> bd: "write_block(1024, user_data_buf)" {
+      style: {
+        stroke: "#6C8EBF"
+        stroke-width: 3
+      }
+    }
+    
+    fs.t1 -> fs.t1: "inode.size = max(current, 54KB)"
+    fs.t1 -> bd: "write_block(inode_block_addr, inode_buf)" {
+      tooltip: |md
+        **Final Commit**
+        - Update: mtime/ctime timestamps
+        - Flush: i_size, i_blocks, i_block[SINGLE_IND]
+      |
+    }
+  }
+
+  fs.t1: "pthread_mutex_unlock(&inode_2) ▲" {
+    style: {
+      font-color: "#D79B00"
+      bold: true
+      stroke: "#D79B00"
+    }
+  }
+
+  fs -> app: "return 4096 (SUCCESS)"
+
+}
+
+# Performance and Engineering Annotations
+# Fixed: Using absolute positioning for ELK compatibility
+notes: {
+  near: top-right
+  shape: text
+  style: {
+    font: mono
+    font-size: 14
+    fill: "#F5F5F5"
+    border-radius: 4
+    stroke: "#CCCCCC"
+  }
+  label: |md
+    ### ⚡ PERFORMANCE SPECS (NVMe Gen4)
+    - **L1 Cache Lookup**: ~3ns
+    - **Bitmap Atomic Scan**: ~45ns
+    - **DMA Write (4KB)**: ~22µs
+    - **Context Switch Latency**: ~2µs
+    - **Estimated Synchronous IO**: 280µs
+    
+    ### 🛡️ DATA INTEGRITY & CRASH RELIABILITY
+    - **Mode**: Write-Back (Ordered)
+    - **Journal**: Disabled for this trace
+    - **Failure Atomicity**: If power fails during 
+      *Path C*, Block 1024 is leaked in bitmap but
+      the inode remains consistent (orphaned block).
+  |
+}
+
+# Legend for Engineers
+# Fixed: Using absolute positioning for ELK compatibility
+legend: {
+  near: bottom-right
+  label: "Implementation Legend"
+  style: {
+    stroke: "#333333"
+    fill: "#FFFFFF"
+    stroke-width: 1
+    font-size: 14
+  }
+  
+  l1: "▼ Lock Acquire (Mutex)" {
+    style: {
+      font-color: "#D79B00"
+      stroke: "#D79B00"
+      bold: true
+    }
+  }
+  l2: "▲ Lock Release (Mutex)" {
+    style: {
+      font-color: "#D79B00"
+      stroke: "#D79B00"
+      bold: true
+    }
+  }
+  l3: "--- Metadata Control Path" {
+    style.stroke-dash: 3
+  }
+  l4: "Data Payload Path (Solid Blue)" {
+    style: {
+      stroke: "#6C8EBF"
+      stroke-width: 3
+    }
+  }
+}

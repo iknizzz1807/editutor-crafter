@@ -1,0 +1,185 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# Step 1: Input and Physical Baseline
+# -----------------------------------------------------------------------------------------
+Step 1: Input Mapping {
+  style.stroke-width: 4
+  style.fill: "#F3E5F5"
+  
+  Input: {
+    shape: sql_table
+    style.fill: "#D1C4E9"
+    header: "Target Block Address" {style.fill: "#673AB7"; style.font-color: white}
+    "block_num": uint64_t {label: "5125 (0x1405)"}
+  }
+
+  Superblock_Context: {
+    shape: sql_table
+    style.fill: "#B3E5FC"
+    header: "FS Superblock Metadata" {style.fill: "#0288D1"; style.font-color: white}
+    "data_start": uint64_t {label: "5123 (0x1403)"}
+    "block_bitmap_start": uint64_t {label: "1 (0x01)"}
+  }
+
+  Calculation: |md
+    ### 1. Physical to Logical
+    Convert absolute physical block number
+    to a relative index within the 
+    data region.
+  |
+}
+
+# -----------------------------------------------------------------------------------------
+# Step 2: Logical Block Index
+# -----------------------------------------------------------------------------------------
+Step 2: Relative Offset {
+  style.stroke-width: 4
+  style.fill: "#FFFDE7"
+
+  Intermediate: {
+    shape: sql_table
+    style.fill: "#FFF9C4"
+    header: "Relative Data Block Index" {style.fill: "#FBC02D"}
+    "data_block_idx": uint64_t {label: "**2**"; style.font-color: red; style.bold: true}
+  }
+
+  Logic: |md
+    **Formula:**
+    `idx = block_num - data_start`
+    
+    **Evaluation:**
+    `5125 - 5123 = 2`
+  |
+}
+
+# -----------------------------------------------------------------------------------------
+# Step 3: Bitmap Block Selection
+# -----------------------------------------------------------------------------------------
+Step 3: Bitmap Block Index {
+  style.stroke-width: 4
+  style.fill: "#E8F5E9"
+
+  Addressing: {
+    shape: sql_table
+    style.fill: "#C8E6C9"
+    header: "Block Addressing" {style.fill: "#388E3C"; style.font-color: white}
+    "bitmap_block_idx": uint64_t {label: "**0**"; style.font-color: red}
+    "phys_bitmap_block": uint64_t {label: "**1**"; style.font-color: red}
+  }
+
+  Logic: |md
+    **Bitmap Block Calculation:**
+    `idx / 32768 (bits per 4KB)`
+    `2 / 32768 = 0`
+    
+    **Physical Destination:**
+    `block_bitmap_start + 0 = 1`
+  |
+}
+
+# -----------------------------------------------------------------------------------------
+# Step 4: Word and Bit Targeting
+# -----------------------------------------------------------------------------------------
+Step 4: Bit-Level Resolution {
+  style.stroke-width: 4
+  style.fill: "#FFF3E0"
+
+  Final_Addressing: {
+    shape: sql_table
+    style.fill: "#FFE0B2"
+    header: "Memory Offsets" {style.fill: "#F57C00"; style.font-color: white}
+    "word_idx": int {label: "**0**"; style.font-color: red; style.bold: true}
+    "bit_pos": int {label: "**2**"; style.font-color: red; style.bold: true}
+  }
+
+  Logic: |md
+    **Word (64-bit) in Block:**
+    `(2 % 32768) / 64 = 0`
+    
+    **Bit within Word:**
+    `2 % 64 = 2`
+  |
+}
+
+# -----------------------------------------------------------------------------------------
+# Memory Visualization (Implementation Grade)
+# -----------------------------------------------------------------------------------------
+Memory_Layout: {
+  style.fill: "#EEEEEE"
+  style.stroke-dash: 2
+  
+  Bitmap_Block_1: {
+    shape: sql_table
+    style.fill: white
+    header: "Physical Block 1: Bitmap Region (4096B)" {style.fill: "#9575CD"; style.font-color: white}
+    
+    offset_0000: "0x0000 | uint64_t Word 0 [bits 0-63]" {style.fill: "#E3F2FD"; style.stroke: "#2196F3"; style.stroke-width: 3}
+    offset_0008: "0x0008 | uint64_t Word 1 [bits 64-127]"
+    offset_0010: "0x0010 | uint64_t Word 2 [bits 128-191]"
+    padding: " ... | 509 more words ... " {style.stroke-dash: 5; style.fill: "#F5F5F5"}
+    offset_4088: "0x0FF8 | uint64_t Word 511 [bits 32704-32767]"
+  }
+
+  Target_Word: {
+    label: "Word 0 Register View (CPU LE)"
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+    
+    Register: "| 63 | ... | 3 | **[BIT 2]** | 1 | 0 |" {
+      style.font: mono
+      style.bold: true
+      style.font-size: 20
+    }
+    
+    Annotation: "Bit 2 offset: 2nd block from data_start is marked here" {
+      style.font-color: red
+      style.italic: true
+    }
+  }
+}
+
+# Connections (Flow Control)
+Step 1 -> Step 2: "Subtract phys_base" {style.stroke: "#673AB7"; style.animated: true}
+Step 2 -> Step 3: "Calc block offset" {style.stroke: "#FBC02D"; style.animated: true}
+Step 3 -> Step 4: "Calc bit/word offset" {style.stroke: "#388E3C"; style.animated: true}
+Step 4 -> Memory_Layout: "Memory Write (SET/CLR)" {style.stroke: "#F57C00"; style.stroke-width: 4}
+
+# Field-to-Field Mapping
+Step 1.Input.block_num -> Step 2.Intermediate.data_block_idx: "normalize"
+Step 2.Intermediate.data_block_idx -> Step 3.Addressing.bitmap_block_idx: "div 32768"
+Step 3.Addressing.bitmap_block_idx -> Step 4.Final_Addressing.word_idx: "div 64"
+Step 4.Final_Addressing.bit_pos -> Memory_Layout.Target_Word.Register: "target_bit"
+
+# -----------------------------------------------------------------------------------------
+# Invariants and Constants
+# -----------------------------------------------------------------------------------------
+"System Constants": |md
+  ### Invariant Check
+  - **Block Size**: 4096 Bytes
+  - **Word Size**: 8 Bytes (64-bit)
+  - **Bits per Block**: `4096 * 8 = 32,768`
+  - **Words per Block**: `32,768 / 64 = 512`
+  
+  *Note: Implementation assumes Little-Endian bit ordering within words.*
+| {
+  # FIX: ELK only supports constant values for near
+  near: bottom-right
+  style.fill: "#FAFAFA"
+  style.stroke: "#BDBDBD"
+  style.shadow: true
+}
+
+# Footer Annotation
+"sizeof_bitmap": "sizeof(block_bitmap) = 4096 bytes (one cache-aligned page)" {
+  near: bottom-center
+  style.font-size: 14
+  style.font: mono
+}

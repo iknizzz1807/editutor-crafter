@@ -1,0 +1,212 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+direction: right
+title: |md
+  # Lock/Wait Ordering: Blocking Read — Correct vs. Deadlock
+  **FIFO buffer, single mutex (`mydevice_mutex`), two wait queues**
+| {near: top-center}
+wrong: WRONG — Deadlock Ordering {
+  style: {
+    fill: "#3d0000"
+    stroke: "#cc0000"
+    stroke-width: 3
+    border-radius: 8
+    font-color: "#ffcccc"
+    bold: true
+  }
+  wrong_seq: {
+    shape: sequence_diagram
+    Reader
+    Writer
+    Reader -> Reader: "① mydevice_read() called\n(buffer empty, blocking mode)"
+    step2: {
+      Reader -> Reader: "② mutex_lock_interruptible\n(&mydevice_mutex)"
+      Reader -> Reader: "LOCK ACQUIRED ▼"
+    }
+    step3: {
+      Reader -> Reader: "③ check buffer_data_len == 0\n→ TRUE, need to sleep"
+    }
+    wrong_sleep: {
+      Reader -> Reader: "④ wait_event_interruptible(\n   read_queue, buffer_data_len > 0)\nCALLED WHILE HOLDING MUTEX" {
+        style.stroke: red
+        style.bold: true
+      }
+      Reader -> Reader: "set_current_state(\nTASK_INTERRUPTIBLE)" {
+        style.stroke: red
+      }
+    }
+    Writer -> Writer: "⑤ mydevice_write()\nattempts to add data"
+    Writer -> Reader: "mutex_lock_interruptible\n(&mydevice_mutex)\n→ BLOCKS — Reader holds it" {
+      style.stroke: "#ff4444"
+      style.stroke-width: 3
+      style.animated: true
+    }
+    deadlock: {
+      Reader -> Reader: "Reader: sleeping,\nwaiting for data,\nstill HOLDS mutex" {
+        style.stroke: red
+        style.fill: "#5c0000"
+        style.font-color: "#ffaaaa"
+      }
+      Writer -> Writer: "Writer: blocked on mutex,\ncannot call wake_up,\ncannot add data" {
+        style.stroke: red
+        style.fill: "#5c0000"
+        style.font-color: "#ffaaaa"
+      }
+      Reader -> Writer: "DEADLOCK: Reader needs Writer\nto call wake_up_interruptible.\nWriter needs Reader to release\nmutex. Neither can proceed." {
+        style.stroke: "#ff0000"
+        style.stroke-width: 4
+        style.font-color: "#ff4444"
+        style.bold: true
+      }
+    }
+  }
+}
+correct: CORRECT — Signal-Safe Ordering {
+  style: {
+    fill: "#003d00"
+    stroke: "#00cc00"
+    stroke-width: 3
+    border-radius: 8
+    font-color: "#ccffcc"
+    bold: true
+  }
+  correct_seq: {
+    shape: sequence_diagram
+    Reader
+    Writer
+    Scheduler
+    Reader -> Reader: "① mydevice_read() called\n(buffer empty, blocking mode)"
+    no_mutex: {
+      Reader -> Reader: "② check O_NONBLOCK flag\n→ not set, blocking mode"
+      Reader -> Reader: "③ wait_event_interruptible(\n   mydevice_read_queue,\n   buffer_data_len > 0)\nNO MUTEX HELD" {
+        style.stroke: "#00cc44"
+        style.bold: true
+      }
+      Reader -> Reader: "prepare_to_wait()\nset_current_state(\nTASK_INTERRUPTIBLE)" {
+        style.stroke: "#00aa33"
+      }
+    }
+    sleep_phase: {
+      Reader -> Scheduler: "④ schedule()\n→ Reader yields CPU,\nNO LOCK HELD" {
+        style.stroke: "#aaaaff"
+        style.stroke-dash: 5
+      }
+      Scheduler -> Reader: "context switch out" {
+        style.stroke: "#aaaaff"
+        style.stroke-dash: 5
+        style.animated: true
+      }
+    }
+    writer_works: {
+      Writer -> Writer: "⑤ mydevice_write() called\nwith new data"
+      Writer -> Writer: "mutex_lock_interruptible\n(&mydevice_mutex)\n→ SUCCEEDS (Reader holds nothing) ▼" {
+        style.stroke: "#00cc44"
+      }
+      Writer -> Writer: "copy_from_user(kernel_buffer\n  + buffer_data_len, buf, n)"
+      Writer -> Writer: "buffer_data_len += n"
+      Writer -> Writer: "⑥ wake_up_interruptible(\n   &mydevice_read_queue)\n→ sets Reader TASK_RUNNING" {
+        style.stroke: "#00cc44"
+        style.bold: true
+      }
+      Writer -> Writer: "mutex_unlock(&mydevice_mutex) ▲\natomic_inc(&write_count)"
+    }
+    wakeup: {
+      Writer -> Scheduler: "notify scheduler:\nReader is now runnable" {
+        style.stroke: "#aaaaff"
+        style.stroke-dash: 5
+      }
+      Scheduler -> Reader: "⑦ context switch in\nReader resumes after schedule()" {
+        style.stroke: "#aaaaff"
+        style.stroke-dash: 5
+        style.animated: true
+      }
+      Reader -> Reader: "finish_wait(): remove from\nwait queue, TASK_RUNNING"
+    }
+    signal_check: {
+      Reader -> Reader: "⑧ check: signal_pending()?\n→ NO (normal wakeup)\n→ loop: recheck condition" {
+        style.stroke: "#ccaa00"
+      }
+    }
+    acquire_lock: {
+      Reader -> Reader: "⑨ mutex_lock_interruptible\n(&mydevice_mutex)\n→ Writer released, SUCCEEDS ▼" {
+        style.stroke: "#00cc44"
+      }
+    }
+    mandatory_recheck: {
+      Reader -> Reader: "⑩ RECHECK UNDER MUTEX:\nif (buffer_data_len == 0):\n  → spurious/thundering-herd\n  → mutex_unlock; return -EAGAIN" {
+        style.stroke: "#ffaa00"
+        style.fill: "#2a2000"
+        style.font-color: "#ffdd88"
+        style.bold: true
+      }
+      Reader -> Reader: "buffer_data_len > 0 ✓\nto_copy = min(count,\n  buffer_data_len)" {
+        style.stroke: "#00cc44"
+      }
+    }
+    consume: {
+      Reader -> Reader: "⑪ copy_to_user(buf,\n   kernel_buffer, to_copy)"
+      Reader -> Reader: "buffer_data_len -= to_copy\nmemmove(kernel_buffer,\n   kernel_buffer + to_copy,\n   buffer_data_len)"
+      Reader -> Writer: "wake_up_interruptible(\n&mydevice_write_queue)\n→ space now available" {
+        style.stroke: "#00cc44"
+        style.stroke-dash: 3
+      }
+      Reader -> Reader: "atomic_inc(&read_count)\nmutex_unlock(&mydevice_mutex) ▲\nreturn (ssize_t)to_copy"
+    }
+  }
+}
+signal_interrupt: Signal Interrupts Blocked Reader {
+  style: {
+    fill: "#1a1a00"
+    stroke: "#cc9900"
+    stroke-width: 2
+    border-radius: 8
+    font-color: "#ffee88"
+  }
+  sig_seq: {
+    shape: sequence_diagram
+    Reader
+    Kernel_Signal
+    Reader -> Reader: "① wait_event_interruptible(\n   read_queue, condition)\nNo mutex held — sleeping"
+    Kernel_Signal -> Reader: "② SIGINT (Ctrl+C)\ndelivered to process" {
+      style.stroke: "#ffaa00"
+      style.stroke-width: 3
+    }
+    Reader -> Reader: "③ signal_pending(current)\n→ TRUE inside wait loop\nwait_event_interruptible\nreturns -ERESTARTSYS" {
+      style.stroke: "#ffaa00"
+      style.bold: true
+    }
+    propagate: {
+      Reader -> Reader: "④ mydevice_read MUST return\n-ERESTARTSYS immediately\n\nDO NOT convert to 0\nDO NOT convert to -EINTR\nDO NOT return byte count" {
+        style.stroke: "#ff8800"
+        style.fill: "#2a1500"
+        style.font-color: "#ffcc66"
+        style.bold: true
+      }
+    }
+    vfs: {
+      Reader -> Kernel_Signal: "⑤ VFS syscall layer receives\n-ERESTARTSYS" {
+        style.stroke: "#ccaa00"
+        style.stroke-dash: 5
+      }
+      Kernel_Signal -> Kernel_Signal: "Check signal handler:\nSA_RESTART set?\n  YES → restart read() silently\n  NO  → return -EINTR to userspace\n         errno = EINTR" {
+        style.stroke: "#ccaa00"
+      }
+    }
+  }
+}
+annotation: |md
+  ## Mandatory Recheck (Step ⑩) — Why It Cannot Be Omitted
+  **Thundering Herd scenario:**
+  - 4 readers sleeping on `mydevice_read_queue`
+  - Writer adds 64 bytes → `wake_up_interruptible` wakes ALL 4 readers
+  - Reader 0 wins the mutex first → consumes 64 bytes → `buffer_data_len = 0`
+  - Readers 1, 2, 3 acquire mutex in turn → find `buffer_data_len == 0`
+  - **Without recheck:** readers access `to_copy = min(count, 0) = 0`; return 0 (EOF confusion)
+  - **With recheck:** readers detect empty → release mutex → return `-EAGAIN` → caller retries
+  **Key invariant:** Every wakeup from a wait queue is a *hint*, not a guarantee.
+  The condition must always be verified under the protecting lock.
+| {near: bottom-center}

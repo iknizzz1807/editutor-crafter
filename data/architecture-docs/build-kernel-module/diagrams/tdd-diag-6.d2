@@ -1,0 +1,168 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 50
+  }
+}
+
+direction: down
+
+title: |md
+  # VFS Dispatch Chain: open('/dev/mydevice') → mydevice_open()
+  ### Ring 3 → Ring 0 → Inode → cdev lookup → file_operations → Driver
+| {
+  near: top-center
+  style: {
+    font-size: 20
+    bold: true
+  }
+}
+
+# --- SEQUENCE OF OPERATIONS ---
+vfs_dispatch_sequence: {
+  shape: sequence_diagram
+
+  # Actors / Participants
+  userspace: "Userspace Process\n(ring 3)" {
+    style.fill: "#f8fafc"
+    style.stroke: "#64748b"
+  }
+  vfs: "VFS Layer\n(ring 0: do_open)" {
+    style.fill: "#f3e8ff"
+    style.stroke: "#7c3aed"
+  }
+  dentry_cache: "Dcache / Inode\n(VFS Metadata)" {
+    style.fill: "#dbeafe"
+    style.stroke: "#2563eb"
+  }
+  cdev_table: "chrdevs[] Hash\n(Major Lookup)" {
+    style.fill: "#dbeafe"
+    style.stroke: "#2563eb"
+  }
+  fops_table: "mydevice_fops\n(struct file_operations)" {
+    style.fill: "#f3e8ff"
+    style.stroke: "#7c3aed"
+  }
+  driver: "mydevice_open()\n(Kernel Module)" {
+    style.fill: "#dcfce7"
+    style.stroke: "#059669"
+  }
+
+  # Transitions - Technical notes integrated into labels for Intel-manual grade detail
+  userspace.t1 -> vfs.t1: "① open('/dev/mydevice', O_RDWR)\n[Syscall: SYSCALL_DEFINE3(open,...)]\n[Privilege: Ring 3 → Ring 0]" {
+    style.stroke: "#2563eb"
+    style.stroke-width: 2
+  }
+
+  vfs.t1 -> dentry_cache.t1: "② path_openat() → lookup_fast()\n[Resolve path component string]\n[Verify dentry exists in cache]" {
+    style.stroke: "#2563eb"
+  }
+
+  dentry_cache.t1 -> vfs.t1: "③ inode pointer returned\n[i_mode has S_IFCHR (0x2000) set]\n[Indicates Character Device]" {
+    style.stroke-dash: 4
+    style.stroke: "#7c3aed"
+  }
+
+  vfs.t1 -> vfs.t1: "④ Extract Major Number\n[Read inode->i_rdev]\n[major = MAJOR(i_rdev) (e.g. 251)]"
+
+  vfs.t1 -> cdev_table.t1: "⑤ kobj_lookup(chrdevs, major)\n[Iterate chrdevs[major % 255]]\n[Locate registered cdev instance]" {
+    style.stroke: "#2563eb"
+  }
+
+  cdev_table.t1 -> vfs.t1: "⑥ struct cdev* returned\n[cdev->ops points to &mydevice_fops]\n[Ownership context established]" {
+    style.stroke-dash: 4
+    style.stroke: "#7c3aed"
+  }
+
+  vfs.t1 -> vfs.t1: "⑦ Allocate struct file (filp)\n[filp->f_op = cdev->ops]\n[Install driver ops into file handle]"
+
+  vfs.t1 -> fops_table.t1: "⑧ filp->f_op->open(inode, filp)\n[Indirect call via fops vtable]\n[Pointer Dispatch]" {
+    style.stroke: "#f97316"
+    style.stroke-width: 3
+  }
+
+  fops_table.t1 -> driver.t1: "⑨ Execute driver entry" {
+    style.stroke: "#059669"
+    style.stroke-width: 2
+  }
+
+  driver.t1 -> driver.t1: "⑩ Module Logic\n[try_module_get(THIS_MODULE)]\n[Setup private_data; Return 0]"
+
+  driver.t1 -> fops_table.t1: "return 0" {
+    style.stroke-dash: 4
+    style.stroke: "#059669"
+  }
+
+  fops_table.t1 -> vfs.t1: "return 0" {
+    style.stroke-dash: 4
+    style.stroke: "#059669"
+  }
+
+  vfs.t1 -> userspace.t1: "⑪ fd = 3 returned\n[Success: File descriptor installed]\n[Ring 0 → Ring 3 transition]" {
+    style.stroke-dash: 4
+    style.stroke: "#2563eb"
+    style.stroke-width: 2
+  }
+}
+
+# --- SIDEBAR: DATA LAYOUT ---
+chrdev_hash_layout: {
+  label: |||md
+    ### chrdevs[] Hash Table (Sidebar)
+    *Keys: major % CHRDEV_MAJOR_HASH_SIZE*
+
+    | Slot | Major | Driver Name | cdev->ops |
+    | :--- | :---- | :---------- | :-------- |
+    | ...  | 1     | mem         | mem_fops  |
+    | ...  | 4     | tty         | tty_fops  |
+    | **→** | **251** | **mydevice** | **&mydevice_fops** |
+    | ...  | 252   | ...         | ...       |
+
+    **Registration Call:**
+    `cdev_add(cdev, dev_num, 1)`
+  |||
+  near: center-right
+  style: {
+    fill: "#fef9c3"
+    stroke: "#ca8a04"
+    stroke-width: 1
+    border-radius: 8
+    font-size: 14
+  }
+}
+
+# --- LEGEND ---
+legend_container: {
+  label: ||md
+    ### VFS Lookup Legend
+    - **Solid Blue (→)**: Direct Kernel Call
+    - **Dashed Purple (⤳)**: Metadata / Return Data
+    - **Solid Orange (→)**: Indirect Dispatch (f_op pointer)
+    - **Solid Green (→)**: Driver Execution Code
+    
+    **Kernel Structures:**
+    - `struct inode`: The file on disk (i_rdev major/minor)
+    - `struct file`: The open instance (f_op, f_pos)
+    - `struct cdev`: The device registration object
+  ||
+  near: bottom-center
+  style: {
+    fill: "#f8fafc"
+    stroke: "#94a3b8"
+    border-radius: 4
+  }
+}
+
+# --- FOOTER ANNOTATION ---
+post_open_state: |md
+  **Post-Open State:**  
+  Subsequent `read(3, ...)` or `write(3, ...)` calls will skip the major/minor lookup 
+  and jump directly to `filp->f_op->read()` or `filp->f_op->write()`.
+| {
+  near: bottom-right
+  style: {
+    font-size: 12
+    font-color: "#475569"
+  }
+}

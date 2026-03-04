@@ -1,0 +1,247 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+classes: {
+  step_box: {
+    style: {
+      fill: "white"
+      stroke: "#222222"
+      stroke-width: 1
+      border-radius: 4
+      shadow: true
+    }
+  }
+  header: {
+    style: {
+      fill: "#E1D5E7"
+      bold: true
+    }
+  }
+  data_field: {
+    style: {
+      fill: "#DAE8FC"
+    }
+  }
+  free_slot: {
+    style: {
+      fill: "#D5E8D4"
+    }
+  }
+  padding_gray: {
+    style: {
+      fill: "#F5F5F5"
+    }
+  }
+  changed: {
+    style: {
+      stroke: "#FF0000"
+      stroke-width: 4
+      bold: true
+      font-color: "#FF0000"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 1: VALIDATION
+# -----------------------------------------------------------------------------
+step1: "01: Initial State & Validation" {
+  class: step_box
+  
+  params: |md
+    ### Inputs (Memory Stack)
+    - `name`: "file.c\0" (7 bytes)
+    - `target_inode`: 0x32 (50)
+    - `file_type`: 0x01 (DT_REG)
+  |
+
+  dir_inode: "Inode #10 (Parent Directory)" {
+    shape: sql_table
+    style.fill: "#E1D5E7"
+    "Offset | Field": "Value | Size"
+    "0x00": "i_mode | 040755 (DIR) | 2B"
+    "0x04": "i_size | 4096 | 4B"
+    "0x08": "i_blocks | 8 | 4B"
+    "0x10": "i_mtime | 1709548800 | 8B"
+    "0x28": "i_direct[0] | 1000 (LBA) | 4B"
+    "0x2C": "i_direct[1] | 0 | 4B"
+  }
+
+  op: "dir_lookup(fs, 10, 'file.c')" {
+    shape: diamond
+    style.fill: "#FFF2CC"
+  }
+
+  dir_inode -> op: "Verify existence"
+  op -> fail: "EEXIST" {
+    style: {
+      stroke: red
+      stroke-dash: 3
+    }
+  }
+  op -> step2: "ENOENT" {
+    style.stroke: green
+    style.stroke-width: 2
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 2: SCANNING
+# -----------------------------------------------------------------------------
+step2: "02: Scanning Data Blocks" {
+  class: step_box
+
+  data_block_1000: "Data Block @1000 (512B)" {
+    shape: sql_table
+    style.fill: "#DAE8FC"
+    "Offset | Entry (Inode, Type, Name)": "Len"
+    "0x00": "10, DT_DIR, '.' | 12B"
+    "0x0C": "1, DT_DIR, '..' | 12B"
+    "0x18": "**0, DT_UNKNOWN (FREE)** | **12B**" {class: free_slot}
+    "0x24": "15, DT_REG, 'old.txt' | 20B"
+    "...": "Remaining Slots | 456B"
+  }
+
+  scan_ptr: "Scan cursor" {
+    shape: circle
+    style: {
+      fill: "#F4A261"
+      stroke-width: 2
+    }
+  }
+
+  scan_ptr -> data_block_1000."0x18": "Found ino == 0" {
+    style.animated: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 3A: SLOT FOUND
+# -----------------------------------------------------------------------------
+step3a: "03A: Write to Existing Slot" {
+  class: step_box
+
+  data_block_1000_after: "Data Block @1000 (Updated)" {
+    shape: sql_table
+    style.fill: "#DAE8FC"
+    "Offset | Entry (Inode, Type, Name)": "Len"
+    "0x00": "10, DT_DIR, '.' | 12B"
+    "0x0C": "1, DT_DIR, '..' | 12B"
+    "0x18": "**50, DT_REG, 'file.c'** | **12B**" {class: changed}
+    "0x24": "15, DT_REG, 'old.txt' | 20B"
+  }
+
+  write_op: "vfs_write_block(dev, 1000, buf)" {
+    shape: rectangle
+    style: {
+      fill: "#B6DDF6"
+      stroke-width: 2
+      double-border: true
+    }
+  }
+
+  data_block_1000_after -> write_op: "Commit to disk"
+}
+
+# -----------------------------------------------------------------------------
+# STEP 3B: NO SLOT
+# -----------------------------------------------------------------------------
+step3b: "03B: Extend Directory" {
+  class: step_box
+
+  alloc: "block_bitmap_alloc(fs)" {
+    shape: rectangle
+    style: {
+      fill: "#D5E8D4"
+      stroke-width: 2
+      double-border: true
+    }
+  }
+
+  new_block: "New Block @2000" {
+    shape: sql_table
+    style.fill: "#DAE8FC"
+    "Offset | Entry": "State"
+    "0x00": "**50, DT_REG, 'file.c'** | **NEW**" {class: changed}
+    "0x18": "0, UNUSED | FREE" {class: free_slot}
+    "0x30": "Padding/Zeros | 0x00" {class: padding_gray}
+  }
+
+  alloc -> new_block: "Assign LBA 2000"
+}
+
+# -----------------------------------------------------------------------------
+# STEP 4: METADATA
+# -----------------------------------------------------------------------------
+step4: "04: Metadata Update" {
+  class: step_box
+
+  dir_inode_final: "Inode #10 (Final State)" {
+    shape: sql_table
+    style.fill: "#E1D5E7"
+    "Field | Value": "Meta"
+    "i_size": "**8192** | Updated" {class: changed}
+    "i_blocks": "**16** | Updated" {class: changed}
+    "i_mtime": "**T_NOW** | Timestamp" {class: changed}
+    "i_direct[1]": "**2000** | New Block" {class: changed}
+  }
+
+  sb_update: "Superblock" {
+    shape: sql_table
+    style.fill: "#F8CECC"
+    "s_free_blocks": "N - 1" {class: changed}
+    "s_wtime": "T_NOW" {class: changed}
+  }
+}
+
+# -----------------------------------------------------------------------------
+# GLOBAL FLOW
+# -----------------------------------------------------------------------------
+step1 -> step2: "Start Scan"
+step2 -> step3a: "Slot Found"
+step2 -> step3b: "Block Full"
+
+step3a -> step4: "Sync Metadata"
+step3b -> step4: "Update Pointers"
+
+# -----------------------------------------------------------------------------
+# ANNOTATIONS
+# -----------------------------------------------------------------------------
+legend: {
+  near: bottom-right
+  l1: "RED BOLD" {
+    class: changed
+    label: "Red: Modified Memory/Disk"
+  }
+  l2: "ORANGE CIRCLE" {
+    style.fill: "#F4A261"
+    label: "Orange: Active Cursor"
+  }
+  l3: "PURPLE HEADER" {
+    class: header
+    label: "Purple: Inode/SB Header"
+  }
+}
+
+explanation: |md
+  ### Implementation Notes for Engineers: `dir_add_entry`
+  
+  **1. Alignment & Padding**
+  Directory entries must be 4-byte aligned. The `rec_len` (Len) column reflects the distance to the next valid record, not just the name length.
+  
+  **2. Atomicity**
+  - Scenario A (Slot Found) requires 2 writes: Data Block -> Inode.
+  - Scenario B (Extend) requires 4 writes: Bitmap -> New Block -> Data Block -> Inode.
+  - Failure after `block_bitmap_alloc` but before `i_direct` update causes a block leak (fsck required).
+
+  **3. Scanning Logic**
+  Pointer `scan_ptr` must handle the end-of-block boundary by checking `i_size`. If `curr_offset + sizeof(dirent) > BLOCK_SIZE`, the scan must transition to the next physical block via the `i_direct` mapping table.
+| {
+  near: top-left
+}

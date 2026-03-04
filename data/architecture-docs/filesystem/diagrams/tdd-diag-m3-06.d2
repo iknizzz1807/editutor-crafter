@@ -1,0 +1,171 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+mkdir_sequence: {
+  shape: sequence_diagram
+  label: "mkdir(2) - Filesystem Operation Trace"
+
+  # Participant Declarations
+  VFS: "Kernel VFS" {
+    tooltip: "Virtual File System Layer"
+    style: {
+      fill: "#E1D5E7"
+      stroke: "#9673a6"
+      stroke-width: 2
+    }
+  }
+  FS: "FileSystem Logic" {
+    tooltip: "Ext-style FS Implementation"
+    style: {
+      fill: "#D5E8D4"
+      stroke: "#82b366"
+      stroke-width: 2
+    }
+  }
+  Bitmap: "Bitmap Manager" {
+    tooltip: "Inode/Block Allocation Bitmaps"
+    style: {
+      fill: "#FFE6CC"
+      stroke: "#d79b00"
+      stroke-width: 2
+    }
+  }
+  Table: "Inode Table" {
+    tooltip: "On-disk Inode Metadata Structures"
+    style: {
+      fill: "#E1D5E7"
+      stroke: "#9673a6"
+      stroke-width: 2
+    }
+  }
+  Dir: "Directory Manager" {
+    tooltip: "Directory Entry & Path Management"
+    style: {
+      fill: "#D5E8D4"
+      stroke: "#82b366"
+      stroke-width: 2
+    }
+  }
+  Disk: "Block Device" {
+    tooltip: "Physical Storage / LBA Address Space"
+    style: {
+      fill: "#F8CECC"
+      stroke: "#b85450"
+      stroke-width: 2
+    }
+  }
+
+  # --- Sequence Start ---
+  VFS -> FS: "fs_mkdir(path='/home/docs', mode=0755)" {
+    style.stroke: "#0000FF"
+  }
+  FS."POSIX mkdir(2) entry point"
+
+  FS.t1 -> FS.t1: "path_resolve_parent('/home/docs')"
+  FS."Returns parent_ino=42, name='docs'"
+
+  # --- Allocation Phase ---
+  FS.t2 -> Bitmap.t1: "inode_bitmap_alloc()"
+  Bitmap.t1 -> Disk: "read_block(sb.inode_bitmap_start)"
+  Bitmap.t1 -> Disk: "write_block(sb.inode_bitmap_start)"
+  FS <- Bitmap.t1: "return new_ino=105"
+
+  FS.t3 -> Bitmap.t2: "block_bitmap_alloc()"
+  Bitmap.t2 -> Disk: "read_block(sb.block_bitmap_start)"
+  Bitmap.t2 -> Disk: "write_block(sb.block_bitmap_start)"
+  FS <- Bitmap.t2: "return data_blk=8092"
+
+  # --- New Inode Initialization ---
+  FS.t4 -> Table.t1: "inode_init(105, S_IFDIR | 0755)"
+  Table."sizeof=4096 bytes"
+
+  Table.t1 -> FS: "set link_count = 2 ('.' + parent entry)"
+  Table.t1 -> FS: "set blocks = 8 (one 4KB block)"
+  Table.t1 -> FS: "set direct[0] = 8092"
+  FS.t4 -> Table.t1: "write_inode(105, inode_data)"
+  Table.t1 -> Disk: "write_block(inode_table_start + 104, buf)"
+
+  # --- Directory Entry Initialization ---
+  FS.t5 -> Dir.t1: "dir_init_special(ino=105, parent=42)"
+  Dir."Entry 0: '.' -> 105\nEntry 1: '..' -> 42"
+
+  Dir.t1 -> Dir.t1: "format_block(buf)"
+  Dir.t1 -> Disk: "write_block(8092, dir_buf)"
+
+  # --- Parent Linkage ---
+  FS.t6 -> Dir.t2: "dir_add_entry(parent=42, name='docs', target=105)"
+  Dir.t2 -> Disk: "read_block(parent_data_blk)"
+  Dir.t2 -> Disk: "write_block(parent_data_blk)"
+
+  FS.t7 -> Table.t2: "read_inode(42)"
+  Table.t2 -> FS: "return parent_inode"
+  FS.t7 -> FS: "parent_inode.link_count++"
+  FS."Incremented for child's '..' reference"
+
+  FS.t7 -> Table.t2: "write_inode(42, parent_inode)"
+  Table.t2 -> Disk: "write_block(parent_inode_blk, buf)"
+
+  # --- Superblock Update ---
+  FS.t8 -> Disk: "write_block(0, superblock)"
+  Disk."Update free_blocks and free_inodes counts"
+
+  VFS <- FS: "return 0 (Success)" {
+    style.stroke: "#0000FF"
+  }
+}
+
+# Documentation & Annotation Container
+annotations: |md
+  ### mkdir(2) Implementation Invariants
+  - **Link Count Initialization**: A new directory inode must initialize with `i_nlink = 2` (one for the entry in the parent, one for the `.` entry within itself).
+  - **Parent Integrity**: The parent directory inode's `i_nlink` must be incremented by 1 to represent the child's back-reference (`..`).
+  - **Atomic Commits**: In a journaled filesystem (e.g. ext4), steps t2 through t8 are wrapped in a `jbd2` transaction handle to ensure consistency across crashes.
+  - **Metadata Locality**: The Inode Table write (t4) and Directory Entry write (t5) should ideally target blocks in the same block group to minimize disk seek latency.
+| {
+  near: bottom-center
+  style: {
+    stroke: "#666666"
+    stroke-dash: 3
+    fill: "#F5F5F5"
+  }
+}
+
+# Technical Legend
+legend: {
+  near: top-right
+  direction: down
+  
+  title: "Operation Class" {
+    shape: text
+    style.bold: true
+  }
+  
+  L1: "Write Sequence (IO)" {
+    style: {
+      stroke: "#0000FF"
+      stroke-width: 2
+    }
+  }
+  L2: "Metadata Sync (Journal)" {
+    style: {
+      stroke: "#000000"
+      stroke-dash: 3
+    }
+  }
+  L3: "Physical Storage Access" {
+    style: {
+      fill: "#F8CECC"
+      stroke: "#b85450"
+    }
+  }
+}
+
+# Style Overrides (Targeting sequences by index)
+(mkdir_sequence.FS.t4 -> mkdir_sequence.Table.t1)[0].style.stroke: "#FF0000"
+(mkdir_sequence.Table.t1 -> mkdir_sequence.Disk)[0].style.stroke: "#FF0000"
+(mkdir_sequence.Dir.t1 -> mkdir_sequence.Disk)[0].style.stroke: "#FF0000"

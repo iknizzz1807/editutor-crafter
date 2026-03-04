@@ -1,0 +1,450 @@
+direction: down
+# Profiler Tool - System Blueprint
+# Theme: 3 (light)
+title: {
+  label: "Profiler Tool System Architecture\nM1-M5 Complete Blueprint"
+  shape: text
+}
+# Milestone Navigation Panel
+nav: {
+  shape: class
+  label: "Milestone Index"
+  m1: "M1: Sampling CPU Profiler"
+  m2: "M2: Call Graph & Flame Graph"
+  m3: "M3: Memory Allocation Tracking"
+  m4: "M4: Async/Aware Profiling"
+  m5: "M5: Profile Export & Integration"
+}
+# ============================================
+# ROW 1: M1 - Sampling-Based CPU Profiler
+# ============================================
+m1_layer: {
+  label: "M1: Sampling-Based CPU Profiler"
+  sampler: {
+    shape: class
+    label: "Sampler\n[sampler/mod.rs]"
+    fields: |
+    config: SamplerConfig
+    handler: SignalHandler
+    active: AtomicBool
+  }
+  sampler_config: {
+    shape: sql_table
+    label: "SamplerConfig [sampler/config.rs]"
+    fields: |
+      frequency_hz: u64 @ 0x00
+      max_depth: usize @ 0x08
+      signal: c_int @ 0x10
+      cpu_mask: CpuMask @ 0x14
+  }
+  raw_sample: {
+    shape: sql_table
+    label: "RawSample [sampler/sample.rs]"
+      fields: |
+          thread_id: u64 @ 0x00
+          timestamp_ns: u64 @ 0x08
+          cpu_id: u32 @ 0x10
+          depth: u16 @ 0x14
+          flags: SampleFlags @ 0x16
+          addresses: u64_array_128 @ 0x18
+  }
+  unwinder: {
+    shape: class
+    label: "Unwinder\n[unwinder/mod.rs]"
+    fields: |
+    cache: FrameCache
+    eh_hdr: Option_EhHeader
+  }
+  ring_buffer: {
+    shape: sql_table
+    label: "RingBuffer_T [buffer/ring.rs]"
+      fields: |
+          data: Box_AtomicPtr_T @ 0x00
+          capacity: usize @ 0x08
+          head: AtomicUsize @ 0x10
+          tail: AtomicUsize @ 0x14
+  }
+  profiler_state: {
+    shape: sql_table
+    label: "ProfilerState [state/global.rs]"
+      fields: |
+          buffer_ptr: AtomicPtr_RingBuffer @ 0x00
+          config_ptr: AtomicPtr_Config @ 0x08
+          generation: AtomicU64 @ 0x10
+          flags: AtomicU32 @ 0x18
+  }
+}
+# M1 Connections
+m1_layer.sampler -> m1_layer.sampler_config: {
+  label: "reads config\n24 bytes"
+}
+m1_layer.sampler -> m1_layer.raw_sample: {
+  label: "produces\n1048 bytes/sample"
+}
+m1_layer.sampler -> m1_layer.ring_buffer: {
+  label: "writes async-signal-safe\nlock-free push"
+}
+m1_layer.unwinder -> m1_layer.raw_sample: {
+  label: "populates addresses[]\nup to 128 frames"
+}
+m1_layer.ring_buffer -> m1_layer.profiler_state: {
+  label: "referenced by\natomic pointer"
+}
+nav -> m1_layer: { label: "profiler-m1" }
+# ============================================
+# ROW 2: M2 - Call Graph & Flame Graph
+# ============================================
+m2_layer: {
+  label: "M2: Call Graph & Flame Graph Generation"
+  callgraph_builder: {
+    shape: class
+    label: "CallGraphBuilder\n[callgraph/builder.rs]"
+    fields: |
+    nodes: HashMap_u64_CallGraphNode
+    edges: HashMap<(u64, u64), EdgeInfo>
+    total_samples: uint64
+  }
+  callgraph_node: {
+    shape: sql_table
+    label: "CallGraphNode [callgraph/node.rs]"
+      fields: |
+          function_name: InternedString @ 0x00
+          address: u64 @ 0x08
+          total_samples: u64 @ 0x10
+          self_samples: u64 @ 0x18
+          callees: Vec_Edge @ 0x20
+          callers: Vec_Edge @ 0x28
+  }
+  collapsed_stack: {
+    shape: class
+    label: "CollapsedStackWriter\n[collapsed/writer.rs]"
+    fields: |
+    buffer: Vec_u8
+    separator: uint8
+  }
+  flamegraph_renderer: {
+    shape: class
+    label: "FlameGraphRenderer\n[flamegraph/svg.rs]"
+    fields: |
+    config: FlameConfig
+    palette: ColorPalette
+  }
+  flame_config: {
+    shape: sql_table
+    label: "FlameConfig [flamegraph/config.rs]"
+      fields: |
+          width: f64 @ 0x00
+          row_height: f64 @ 0x08
+          min_width: f64 @ 0x10
+          font_size: u32 @ 0x18
+          title: String @ 0x20
+  }
+  differential_analyzer: {
+    shape: class
+    label: "DifferentialAnalyzer\n[differential/compare.rs]"
+  }
+}
+# M2 Connections
+m2_layer.callgraph_builder -> m2_layer.callgraph_node: {
+  label: "creates nodes\n48+ bytes each"
+}
+m2_layer.callgraph_builder -> m2_layer.collapsed_stack: {
+  label: "converts to\ncollapsed format"
+}
+m2_layer.collapsed_stack -> m2_layer.flamegraph_renderer: {
+  label: "stack data\nformat: a;b;c 42"
+}
+m2_layer.flamegraph_renderer -> m2_layer.flame_config: {
+  label: "reads config"
+}
+m2_layer.differential_analyzer -> m2_layer.callgraph_builder: {
+  label: "compares profiles\ndelta calculation"
+}
+m1_layer.raw_sample -> m2_layer.callgraph_builder: {
+  label: "samples feed\nbuilder"
+}
+nav -> m2_layer: { label: "profiler-m2" }
+# ============================================
+# ROW 3: M3 - Memory Allocation Tracking
+# ============================================
+m3_layer: {
+  label: "M3: Memory Allocation Tracking"
+  memory_interpose: {
+    shape: class
+    label: "MemoryInterpose\n[memory/interpose.rs]"
+  }
+  allocation_info: {
+    shape: sql_table
+    label: "AllocationInfo [memory/tracker.rs]"
+      fields: |
+          address: u64 @ 0x00
+          size: usize @ 0x08
+          timestamp_ns: u64 @ 0x10
+          thread_id: u64 @ 0x18
+          allocation_id: u64 @ 0x20
+          call_stack: u64_array @ 0x28
+  }
+  memory_tracker: {
+    shape: class
+    label: "MemoryTracker\n[memory/tracker.rs]"
+    fields: |
+    allocations: HashMap<u64, AllocationInfo>
+    total_allocated: AtomicU64
+    total_freed: AtomicU64
+    peak_usage: AtomicU64
+  }
+  leak_detector: {
+    shape: class
+    label: "LeakDetector\n[memory/leak.rs]"
+    fields: |
+    candidates: Vec_LeakCandidate
+    threshold_bytes: usize
+    threshold_age: Duration
+  }
+  leak_report: {
+    shape: sql_table
+    label: "LeakReport [memory/leak.rs]"
+      fields: |
+          address: u64 @ 0x00
+          size: usize @ 0x08
+          age_ms: u64 @ 0x10
+          call_stack: Vec_u64 @ 0x18
+          classification: LeakClass @ 0x28
+  }
+  hotspot_analyzer: {
+    shape: class
+    label: "HotspotAnalyzer\n[memory/hotspot.rs]"
+  }
+}
+# M3 Connections
+m3_layer.memory_interpose -> m3_layer.memory_tracker: {
+  label: "LD_PRELOAD hooks\nalloc/free events"
+}
+m3_layer.memory_tracker -> m3_layer.allocation_info: {
+  label: "stores records\n264 bytes each"
+}
+m3_layer.memory_tracker -> m3_layer.leak_detector: {
+  label: "queries live\nallocations"
+}
+m3_layer.leak_detector -> m3_layer.leak_report: {
+  label: "generates\nleak reports"
+}
+m3_layer.memory_tracker -> m3_layer.hotspot_analyzer: {
+  label: "aggregates\nallocation data"
+}
+nav -> m3_layer: { label: "profiler-m3" }
+# ============================================
+# ROW 4: M4 - Async/Aware Profiling
+# ============================================
+m4_layer: {
+  label: "M4: Async/Aware Profiling"
+  async_lifecycle: {
+    shape: sql_table
+    label: "AsyncTaskLifecycle [async_profiler/lifecycle.rs]"
+      fields: |
+          task_id: TaskId @ 0x00
+          spawn_timestamp: u64 @ 0x08
+          spawn_stack: Vec_u64 @ 0x10
+          poll_count: u32 @ 0x20
+          total_poll_time_ns: u64 @ 0x28
+          total_await_time_ns: u64 @ 0x30
+          state: TaskState @ 0x38
+  }
+  task_state: {
+    shape: sql_table
+    label: "TaskState [async_profiler/state.rs]"
+      fields: |
+      status: Status @ 0x00
+      current_waker: WakerId @ 0x04
+      last_poll_start: Option_u64 @ 0x08
+  }
+  spawn_tracker: {
+    shape: class
+    label: "SpawnTracker\n[async_profiler/spawn.rs]"
+    fields: |
+    tasks: HashMap<TaskId, AsyncTaskLifecycle>
+    spawn_points: HashMap<u64, u64>
+  }
+  context_tracker: {
+    shape: class
+    label: "ContextTracker\n[async_profiler/context.rs]"
+    fields: |
+    current_task: ThreadLocal_Option_TaskId
+    context_switches: Vec_ContextSwitch
+  }
+  poll_record: {
+    shape: sql_table
+    label: "PollRecord [async_profiler/poll.rs]"
+      fields: |
+          task_id: TaskId @ 0x00
+          start_ns: u64 @ 0x08
+          end_ns: u64 @ 0x10
+          poll_number: u32 @ 0x18
+          result: PollResult @ 0x1C
+  }
+  await_chain: {
+    shape: class
+    label: "AwaitChainAnalyzer\n[async_profiler/await.rs]"
+  }
+}
+# M4 Connections
+m4_layer.spawn_tracker -> m4_layer.async_lifecycle: {
+  label: "manages lifecycles\n64+ bytes each"
+}
+m4_layer.spawn_tracker -> m4_layer.poll_record: {
+  label: "records polls\n32 bytes each"
+}
+m4_layer.context_tracker -> m4_layer.spawn_tracker: {
+  label: "correlates\ncontext switches"
+}
+m4_layer.async_lifecycle -> m4_layer.task_state: {
+  label: "transitions\nstate machine"
+}
+m4_layer.await_chain -> m4_layer.async_lifecycle: {
+  label: "analyzes\nawait chains"
+}
+nav -> m4_layer: { label: "profiler-m4" }
+# ============================================
+# ROW 5: M5 - Profile Export & Integration
+# ============================================
+m5_layer: {
+  label: "M5: Profile Export & Integration"
+  pprof_builder: {
+    shape: class
+    label: "PprofBuilder\n[export/pprof.rs]"
+    fields: |
+    strings: StringInterner
+    functions: HashMap<u64, Function>
+    locations: HashMap<u64, Location>
+    samples: Vec_Sample
+  }
+  string_interner: {
+    shape: sql_table
+    label: "StringInterner [export/intern.rs]"
+      fields: |
+          strings: Vec_String @ 0x00
+          indices: HashMap<String, u64> @ 0x08
+  }
+  symbol_resolver: {
+    shape: class
+    label: "SymbolResolver\n[symbols/resolver.rs]"
+    fields: |
+    cache: HashMap<u64, SymbolInfo>
+    debug_info: Option_DebugInfo
+  }
+  symbol_info: {
+    shape: sql_table
+    label: "SymbolInfo [symbols/info.rs]"
+      fields: |
+          name: String @ 0x00
+          demangled: String @ 0x18
+          file: Option_String @ 0x30
+          line: Option_u32 @ 0x48
+          start_addr: u64 @ 0x50
+          size: usize @ 0x58
+  }
+  profile_merger: {
+    shape: class
+    label: "ProfileMerger\n[merge/merger.rs]"
+  }
+  cli_handler: {
+    shape: class
+    label: "CliHandler\n[cli/main.rs]"
+  }
+  http_server: {
+    shape: class
+    label: "HttpServer\n[http/server.rs]"
+    fields: |
+    port: uint16
+    collector: ProfileCollector
+  }
+  record_config: {
+    shape: sql_table
+    label: "RecordConfig [cli/config.rs]"
+      fields: |
+          target_pid: Option<u32> @ 0x00
+          frequency: u64 @ 0x08
+          duration: Duration @ 0x10
+          output_path: PathBuf @ 0x18
+          memory_tracking: bool @ 0x30
+          async_tracking: bool @ 0x31
+  }
+}
+# M5 Connections
+m5_layer.pprof_builder -> m5_layer.string_interner: {
+  label: "interns strings\nfor protobuf"
+}
+m5_layer.pprof_builder -> m5_layer.symbol_resolver: {
+  label: "resolves addresses\nto symbols"
+}
+m5_layer.symbol_resolver -> m5_layer.symbol_info: {
+  label: "returns\nsymbol details"
+}
+m5_layer.profile_merger -> m5_layer.pprof_builder: {
+  label: "merges multiple\npprof profiles"
+}
+m5_layer.cli_handler -> m5_layer.record_config: {
+  label: "parses CLI args"
+}
+m5_layer.cli_handler -> m5_layer.pprof_builder: {
+  label: "exports profiles"
+}
+m5_layer.http_server -> m5_layer.pprof_builder: {
+  label: "continuous\nprofiling endpoint"
+}
+nav -> m5_layer: { label: "profiler-m5" }
+# ============================================
+# Cross-Milestone Connections
+# ============================================
+m1_layer.ring_buffer -> m2_layer.callgraph_builder: {
+  label: "samples stream\n~100 samples/sec at 99Hz"
+  style.stroke-dash: 3
+}
+m2_layer.callgraph_node -> m5_layer.pprof_builder: {
+  label: "call graph to\npprof format"
+  style.stroke-dash: 3
+}
+m3_layer.allocation_info -> m5_layer.pprof_builder: {
+  label: "memory profile\nexport"
+  style.stroke-dash: 3
+}
+m4_layer.async_lifecycle -> m5_layer.pprof_builder: {
+  label: "async profile\nexport"
+  style.stroke-dash: 3
+}
+m1_layer.unwinder -> m5_layer.symbol_resolver: {
+  label: "address resolution\nELF/DWARF lookup"
+  style.stroke-dash: 3
+}
+m3_layer.memory_interpose -> m4_layer.context_tracker: {
+  label: "correlate allocs\nwith async tasks"
+  style.stroke-dash: 3
+}
+# ============================================
+# Scale & Metrics Panel
+# ============================================
+metrics: {
+  shape: class
+  label: "Performance Metrics"
+  sampling: "99 Hz prime frequency (~100 samples/sec)"
+  buffer_size: "65,536 sample slots"
+  sample_size: "1,048 bytes per RawSample"
+  max_stack: "128 frames max depth"
+  alloc_tracking: "264 bytes per allocation"
+  async_tasks: "64+ bytes per task lifecycle"
+  pprof_overhead: "< 1% CPU overhead target"
+}
+# ============================================
+# Legend
+# ============================================
+legend: {
+  shape: class
+  label: "Diagram Legend"
+  sql_table: "Struct definitions with byte offsets"
+  class: "Module/implementation with methods"
+  solid_arrow: "Direct data flow"
+  dashed_arrow: "Cross-milestone dependency"
+  offset: "Byte offset in struct"
+}
+# Theme configuration
+theme-id: 3

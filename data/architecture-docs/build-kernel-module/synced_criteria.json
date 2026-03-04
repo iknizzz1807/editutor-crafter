@@ -1,0 +1,140 @@
+[
+  {
+    "milestone_id": "build-kernel-module-m1",
+    "criteria": [
+      "Module compiles with 'make EXTRA_CFLAGS=\"-Werror\"' against the running kernel's headers (linux-headers-$(uname -r)) using a Kbuild Makefile with obj-m syntax; compilation produces zero warnings and zero errors",
+      "The Kbuild Makefile uses 'obj-m += hello.o', sets KDIR to /lib/modules/$(shell uname -r)/build, and provides both 'all' and 'clean' targets using $(MAKE) -C $(KDIR) M=$(PWD)",
+      "sudo insmod hello.ko succeeds with exit code 0; dmesg immediately afterward shows a KERN_INFO message containing the module name and 'loaded' (or equivalent) confirming module_init ran",
+      "sudo rmmod hello succeeds; dmesg shows a KERN_INFO message confirming module_exit ran with cleanup message",
+      "modinfo hello.ko output contains all four fields: license (GPL), author, description, and version; all set to non-empty strings",
+      "MODULE_LICENSE is exactly \"GPL\" (not empty, not \"Proprietary\"); module loads without tainting the kernel (dmesg shows no 'module license' taint warning)",
+      "Module declares at least one integer parameter using module_param() macro (e.g., buffer_size with default 4096); parameter accepts int type and has sysfs permissions 0444",
+      "After insmod, the parameter is visible at /sys/module/<modname>/parameters/<param_name> and cat on that path returns the correct default value",
+      "sudo insmod hello.ko buffer_size=8192 correctly overrides the default; /sys/module/<modname>/parameters/buffer_size reads 8192; dmesg shows the overridden value in the init message",
+      "module_init function validates the parameter (rejects non-positive values with -EINVAL, or enforces a maximum) and logs KERN_ERR with descriptive message before returning the error code",
+      "The __init annotation is applied to the init function and __exit to the exit function; both module_init() and module_exit() macros register the functions",
+      "Running insmod with an invalid parameter (e.g., buffer_size=-1) causes insmod to fail with a non-zero exit code and produces a KERN_ERR message in dmesg"
+    ]
+  },
+  {
+    "milestone_id": "build-kernel-module-m2",
+    "criteria": [
+      "alloc_chrdev_region() allocates a dynamic major number; major and minor numbers are visible in /proc/devices under the name 'mydevice' after insmod",
+      "class_create() and device_create() are called in module_init; udev automatically creates /dev/mydevice without any manual mknod command; the node is removed automatically on rmmod",
+      "file_operations struct defines .owner, .open, .release, .read, and .write function pointers; all four handlers are implemented and registered via cdev_init/cdev_add",
+      "kzalloc() allocates the kernel buffer in module_init with GFP_KERNEL; return value is checked for NULL and -ENOMEM is returned to insmod on failure; kfree() is called unconditionally in module_exit",
+      "write handler uses copy_from_user() to copy data from the userspace __user buffer into the kernel buffer; if copy_from_user returns non-zero, the handler returns -EFAULT; data is silently truncated to buffer_size if count exceeds capacity",
+      "read handler uses copy_to_user() to copy kernel buffer contents to the userspace __user buffer; if copy_to_user returns non-zero, the handler returns -EFAULT; handler returns 0 when *f_pos >= buffer_data_len (EOF), preventing infinite cat loops",
+      "read handler reads *f_pos to determine the start offset, advances *f_pos by the number of bytes copied, and subsequent read calls resume from the updated position rather than re-reading from the beginning",
+      "echo 'hello' | sudo tee /dev/mydevice followed by sudo cat /dev/mydevice outputs 'hello' and cat terminates cleanly",
+      "open handler atomically increments an open_count (using atomic_t) and logs it via printk; release handler atomically decrements open_count and logs it; try_module_get/module_put prevent rmmod while device is open",
+      "module_init uses goto-based reverse-order error unwinding: if any registration step fails, all previously-completed steps are cleaned up before returning the error code",
+      "IS_ERR() and PTR_ERR() are used (not NULL checks) to detect errors from class_create() and device_create()",
+      "The __user annotation appears on all userspace pointer parameters in read and write signatures; copy_from_user/copy_to_user are the only mechanisms used to access userspace memory",
+      "Module compiles with no warnings when built with -Werror"
+    ]
+  },
+  {
+    "milestone_id": "build-kernel-module-m3",
+    "criteria": [
+      "Implement unlocked_ioctl handler registered in file_operations with exactly three custom commands: MYDEVICE_IOC_RESIZE (buffer resize via _IOW), MYDEVICE_IOC_CLEAR (no-arg clear via _IO), and MYDEVICE_IOC_STATUS (status query via _IOR)",
+      "Define ioctl command numbers using _IOW/_IOR/_IO macros with a unique 8-bit magic number (e.g. 'k'); each command encodes direction, argument size, magic, and sequential number in the 32-bit command value",
+      "Place all ioctl definitions (magic number, command macros, struct mydevice_status) in a shared header file that compiles without error both as part of the kernel module build and as part of a plain gcc userspace build",
+      "ioctl handler validates magic number using _IOC_TYPE(cmd) and sequential number using _IOC_NR(cmd) against MYDEVICE_IOC_MAXNR, returning -ENOTTY for any command that fails either check",
+      "ioctl data transfer for RESIZE uses copy_from_user to read the new size (unsigned long) from userspace; STATUS uses copy_to_user to write struct mydevice_status to userspace; CLEAR uses no pointer argument and never dereferences arg",
+      "access_ok() is called before copy_from_user/copy_to_user in the ioctl handler for pointer-type arguments, with the correct size derived from _IOC_SIZE(cmd)",
+      "MYDEVICE_IOC_RESIZE allocates new buffer with kzalloc before freeing old buffer (allocate-copy-swap-free ordering), handles new_size == 0 and new_size > 1MB with -EINVAL, and truncates existing data when shrinking",
+      "struct mydevice_status contains at minimum: buffer_size, bytes_used, open_count, read_count, write_count; all counters reflect accurate runtime values accumulated since module load",
+      "Create /proc/mydevice entry using proc_create() with a seq_file implementation using single_open() + seq_printf() showing all five statistics fields",
+      "/proc read handler uses seq_read and single_release from the seq_file infrastructure (not a raw proc_read callback), correctly handling partial reads of any byte size including 1-byte chunks",
+      "proc_ops (kernel >= 5.6) or file_operations (kernel < 5.6) structure correctly wires proc_open, seq_read, seq_lseek, and single_release for the /proc entry",
+      "proc_remove() is called in module_exit before device_destroy() to prevent access to freed driver state during concurrent /proc reads at unload time",
+      "Userspace test program opens /dev/mydevice, writes data, calls all three ioctl commands in sequence, verifies CLEAR zeroes bytes_used, verifies RESIZE changes buffer_size as reported by STATUS, and reads /proc/mydevice; compiles with gcc using the shared header",
+      "Unknown ioctl commands (valid magic, out-of-range number) return -ENOTTY; ioctl commands with wrong magic number also return -ENOTTY",
+      "Module compiles with -Werror producing no warnings; all __user annotations present on userspace pointer parameters in ioctl helpers"
+    ]
+  },
+  {
+    "milestone_id": "build-kernel-module-m4",
+    "criteria": [
+      "Declare DEFINE_MUTEX(mydevice_mutex) and use mutex_lock_interruptible/mutex_unlock around all accesses to kernel_buffer, buffer_data_len, and buffer_size in read, write, and all ioctl handlers; concurrent operations do not corrupt buffer data",
+      "Blocking read uses wait_event_interruptible(mydevice_read_queue, buffer_data_len > 0) to sleep when the buffer is empty; the process wakes up when a writer calls wake_up_interruptible after adding data",
+      "wait_event_interruptible returns -ERESTARTSYS when interrupted by a signal; the read handler propagates -ERESTARTSYS immediately without converting it to 0 or a byte count; Ctrl+C terminates a blocked reader cleanly without leaving an unkillable process",
+      "The condition buffer_data_len > 0 is rechecked under the mutex after waking from wait_event_interruptible to handle spurious wakeups and thundering herd; if data was consumed by another reader, the handler returns -EAGAIN rather than proceeding with stale state",
+      "Read handler checks filp->f_flags & O_NONBLOCK before sleeping; when set and buffer is empty, returns -EAGAIN (errno EAGAIN) immediately without calling wait_event_interruptible",
+      "Write handler checks filp->f_flags & O_NONBLOCK before sleeping; when set and buffer is full (buffer_data_len >= buffer_size), returns -EAGAIN immediately without calling wait_event_interruptible",
+      "Write handler implements blocking mode: when buffer is full in blocking mode, sleeps via wait_event_interruptible(mydevice_write_queue, buffer_data_len < buffer_size) and returns -ERESTARTSYS on signal",
+      "Write handler calls wake_up_interruptible(&mydevice_read_queue) after successfully adding data to the buffer while holding the mutex; readers blocked on the read queue wake up within 200ms of a write",
+      "The .poll file operation is implemented and registered in file_operations; it calls poll_wait() with both mydevice_read_queue and mydevice_write_queue before checking any state",
+      ".poll returns POLLIN|POLLRDNORM when buffer_data_len > 0, returns POLLOUT|POLLWRNORM when buffer_data_len < buffer_size; select()/poll() correctly identifies the fd as readable after a write and writable when space is available",
+      "ioctl handlers for MYDEVICE_IOC_RESIZE and MYDEVICE_IOC_CLEAR acquire mydevice_mutex before modifying buffer state; MYDEVICE_IOC_RESIZE allocates the new buffer before acquiring the mutex and frees the allocation if mutex_lock_interruptible is interrupted",
+      "Stress test with 4 concurrent writer processes and 4 concurrent reader processes runs without data corruption, deadlocks, or kernel oops; verified by SHA256 checksums on all messages written and read",
+      "Module compiles with -Werror and no warnings including the poll handler using __poll_t return type",
+      "rmmod succeeds cleanly after all file descriptors are closed; try_module_get/module_put correctly prevent unloading while readers are blocked in wait_event_interruptible"
+    ]
+  },
+  {
+    "module_id": "build-kernel-module-m1",
+    "criteria": [
+      "Module compiles against current running kernel headers using a Kbuild Makefile",
+      "insmod loads the module; module_init function runs and printk(KERN_INFO ...) message appears in dmesg",
+      "rmmod cleanly unloads the module; module_exit function runs with cleanup message in dmesg",
+      "Module declares MODULE_LICENSE(\"GPL\"), MODULE_AUTHOR, and MODULE_DESCRIPTION; all visible via modinfo command",
+      "Module accepts at least one parameter via module_param() macro (e.g., buffer_size integer with default); parameter is visible in /sys/module/<name>/parameters/ and settable at load time via insmod",
+      "Module compiles with -Werror and produces no warnings"
+    ]
+  },
+  {
+    "module_id": "build-kernel-module-m2",
+    "criteria": [
+      "Module compiles against current running kernel headers using a Kbuild Makefile with obj-m += mydevice.o, KDIR pointing to /lib/modules/$(shell uname -r)/build, and TAB-indented recipe lines; make EXTRA_CFLAGS=-Werror produces zero warnings and zero errors",
+      "alloc_chrdev_region() is called with first_minor=0 and count=1; the returned dev_t major number is visible in /proc/devices under the name 'mydevice'; MAJOR(dev_num) and MINOR(dev_num) are logged via pr_info on successful allocation",
+      "class_create() and device_create() are called in module_init after cdev_add; udev creates /dev/mydevice as a character special file automatically without manual mknod; the node disappears on rmmod",
+      "struct file_operations mydevice_fops is declared const and contains .owner=THIS_MODULE, .open=mydevice_open, .release=mydevice_release, .read=mydevice_read, .write=mydevice_write; cdev_init is called with this struct and cdev_add registers it with the kernel",
+      "kzalloc(buffer_size, GFP_KERNEL) is called in module_init; return value is checked with !kernel_buffer and -ENOMEM is returned on failure; kfree(kernel_buffer) is called in module_exit and in all error unwind paths",
+      "mydevice_write copies data FROM userspace using copy_from_user(); the return value (bytes not copied) is checked and -EFAULT is returned on non-zero result; write silently truncates if count > buffer_size and returns to_copy bytes written",
+      "mydevice_read copies data TO userspace using copy_to_user(); the return value is checked and -EFAULT is returned on non-zero result; read returns 0 when *f_pos >= buffer_data_len (EOF) preventing infinite read loops",
+      "mydevice_read uses and updates *f_pos on every call: advances *f_pos by to_copy bytes after successful copy_to_user so subsequent reads continue from the correct offset",
+      "Userspace verification: 'echo \"hello\" > /dev/mydevice' followed by 'cat /dev/mydevice' outputs 'hello' and cat terminates without looping",
+      "mydevice_open increments atomic_t open_count and calls try_module_get(THIS_MODULE) returning -ENODEV if it fails; mydevice_release decrements open_count and calls module_put(THIS_MODULE); rmmod fails with EBUSY while any fd is open",
+      "module_init implements reverse-order goto error unwinding: kzalloc failure returns -ENOMEM with no unwind; alloc_chrdev_region failure goes to err_free_buf; cdev_add failure goes to err_unreg_region; class_create ERR_PTR goes to err_del_cdev; device_create ERR_PTR goes to err_destroy_class",
+      "IS_ERR() is used to check class_create and device_create return values (not NULL check); PTR_ERR() is used to extract the errno for logging and return",
+      "module_exit calls device_destroy, class_destroy, cdev_del, unregister_chrdev_region, and kfree in that exact reverse-initialization order",
+      "Module declares MODULE_LICENSE(\"GPL\"), MODULE_AUTHOR, MODULE_DESCRIPTION, MODULE_VERSION; all visible via modinfo; buffer_size parameter declared with module_param(buffer_size, ulong, 0444) and visible in /sys/module/mydevice/parameters/buffer_size"
+    ]
+  },
+  {
+    "module_id": "build-kernel-module-m3",
+    "criteria": [
+      "Module compiles against current running kernel headers using a Kbuild Makefile with ccflags-y := -I$(PWD) so mydevice.h is found during kernel build",
+      "mydevice.h defines MYDEVICE_IOC_MAGIC as 'k', MYDEVICE_IOC_RESIZE using _IOW, MYDEVICE_IOC_CLEAR using _IO, MYDEVICE_IOC_STATUS using _IOR, MYDEVICE_IOC_MAXNR as 2, and struct mydevice_status with buffer_size/bytes_used/open_count/read_count/write_count fields; header compiles in both kernel and userspace contexts",
+      "unlocked_ioctl handler validates _IOC_TYPE(cmd) != MYDEVICE_IOC_MAGIC returns -ENOTTY, validates _IOC_NR(cmd) > MYDEVICE_IOC_MAXNR returns -ENOTTY, and validates userspace pointer range with access_ok() before any data transfer",
+      "ioctl handler returns -ENOTTY for any command with wrong magic number or out-of-range command number, with no state modification occurring before validation completes",
+      "MYDEVICE_IOC_RESIZE copies new_size from userspace with copy_from_user, returns -EINVAL for size=0 or size>1048576, allocates new buffer with kzalloc before freeing old buffer (allocate-copy-swap-free order), copies existing data truncating if new_size < buffer_data_len, returns -ENOMEM if kzalloc fails with old buffer preserved intact",
+      "MYDEVICE_IOC_CLEAR calls memset on kernel_buffer and sets buffer_data_len=0, always returns 0, with a subsequent read() returning 0 bytes (EOF)",
+      "MYDEVICE_IOC_STATUS assembles struct mydevice_status on kernel stack with current buffer_size/buffer_data_len/open_count/read_count/write_count values, then copies to userspace with a single copy_to_user call, returns -EFAULT if copy fails",
+      "read_count atomic_t is incremented in mydevice_read before returning, write_count atomic_t is incremented in mydevice_write before returning, both are reflected in STATUS query and /proc output",
+      "/proc/mydevice entry created with proc_create() using proc_ops struct (not file_operations), 0444 permissions, NULL parent (root of /proc)",
+      "proc_ops registered with .proc_open=mydevice_proc_open using single_open, .proc_read=seq_read, .proc_lseek=seq_lseek, .proc_release=single_release",
+      "mydevice_proc_show uses seq_printf to output exactly five fields: buffer_size, bytes_used, open_count, read_count, write_count, returns 0",
+      "/proc/mydevice handles partial reads correctly via seq_file infrastructure: dd if=/proc/mydevice bs=1 delivers all data without corruption",
+      "proc_remove(proc_entry) is called as the first operation in mydevice_exit, before device_destroy/class_destroy/cdev_del/kfree",
+      "mydevice_init goto unwind chain extends M2's chain with proc_create failure going to err_destroy_device label, triggering full reverse cleanup of all six initialization steps",
+      "Userspace test program compiles with gcc -Wall -Wextra -I. and exercises all three ioctl commands (RESIZE, CLEAR, STATUS), verifies ENOTTY for wrong magic and wrong command number, reads /proc/mydevice and verifies all five field names are present",
+      "Module compiles with -Werror producing zero warnings from both Kbuild (kernel module) and gcc (test program)"
+    ]
+  },
+  {
+    "module_id": "build-kernel-module-m4",
+    "criteria": [
+      "Module compiles against current running kernel headers using a Kbuild Makefile with -Werror producing zero warnings",
+      "Protect the shared kernel buffer with mutex_lock/mutex_unlock around all read and write operations; concurrent readers and writers do not corrupt data",
+      "Implement blocking read: when buffer is empty, read blocks using wait_event_interruptible() until data is written by another process",
+      "wait_event_interruptible returns -ERESTARTSYS when interrupted by a signal; the read handler must propagate this return value to userspace",
+      "Handle O_NONBLOCK flag on open: when set, read returns -EAGAIN instead of blocking when buffer is empty; write returns -EAGAIN instead of blocking when buffer is full",
+      "Implement .poll file operation: call poll_wait() with the wait queue, then return a mask with POLLIN|POLLRDNORM when data is available and POLLOUT|POLLWRNORM when buffer has space",
+      "Write handler calls wake_up_interruptible() on the wait queue after adding data to the buffer",
+      "Stress test: 4 concurrent writer processes and 4 concurrent reader processes operating simultaneously with no data corruption, deadlocks, or kernel oops; verified by checksumming data written vs data read"
+    ]
+  }
+]

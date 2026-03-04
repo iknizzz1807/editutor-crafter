@@ -1,0 +1,229 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 0
+    layout-engine: elk
+    pad: 50
+  }
+}
+
+# --- GLOBAL STYLES & CLASSES ---
+classes: {
+  header_field: {
+    style: {
+      fill: "#e1d5e7" # Purple (Metadata/Header)
+      stroke: "#9673a6"
+      stroke-width: 2
+      font-color: "#2d2d2d"
+    }
+  }
+  data_field: {
+    style: {
+      fill: "#dae8fc" # Blue (Active Data)
+      stroke: "#6c8ebf"
+      stroke-width: 2
+    }
+  }
+  free_field: {
+    style: {
+      fill: "#d5e8d4" # Green (Free/Unallocated)
+      stroke: "#82b366"
+      stroke-width: 2
+    }
+  }
+  pointer_field: {
+    style: {
+      fill: "#ffe6cc" # Orange (Disk Pointers)
+      stroke: "#d79b00"
+      stroke-width: 2
+    }
+  }
+  padding_field: {
+    style: {
+      fill: "#f5f5f5" # Gray (Structure Padding)
+      stroke: "#666666"
+      stroke-dash: 3
+    }
+  }
+}
+
+# --- DIAGRAM TITLE ---
+title: |'md
+  # FS Design: Directory as a Special File
+  ### VFS Mapping of Logical Blocks to Physical Sectors (Inode i_mode Dispatch)
+'| {
+  near: top-center
+  style.font-size: 20
+  style.bold: true
+}
+
+# --- THE INODE (PHYSICAL PAGE CONTEXT) ---
+# Total size = 4096B (Aligned to Page Boundary)
+inode: "Inode Structure (Disk Object Metadata)" {
+  shape: sql_table
+  style: {
+    stroke: black
+    stroke-width: 4 
+    shadow: true
+  }
+  tooltip: "sizeof = 4096 bytes (Physical Page Alignment)"
+
+  # Column Labels
+  header: "Byte Offset | Member Variable | Size | Interpretation" { class: header_field }
+  
+  # Metadata Segment
+  mode: "0x0000 | uint16_t i_mode | 2 bytes | S_IFDIR vs S_IFREG" {
+    class: header_field
+    tooltip: "Bitmask: 0x4000 = Directory, 0x8000 = Regular File"
+  }
+  u_g_id: "0x0002 | uint32_t i_uid_gid | 4 bytes | Owner Identity" { class: header_field }
+  size: "0x0006 | uint64_t i_size | 8 bytes | Logical EOF" { class: header_field }
+  
+  # Cache Line Enforcement
+  cache_bound: "--- L1 Cache Line Boundary (64B Offset) ---" {
+    style: {
+      stroke: red
+      stroke-dash: 4
+      font-color: red
+      bold: true
+    }
+  }
+
+  # Pointer Segment (Addressing Physical Block 0xFA2)
+  direct0: "0x0040 | uint64_t i_block[0] | 8 bytes | Physical Ptr (0xFA2)" {
+    class: pointer_field
+    tooltip: "Address of the first data block"
+  }
+  direct1: "0x0048 | uint64_t i_block[1] | 8 bytes | Physical Ptr (0xFA3)" {
+    class: pointer_field
+  }
+  
+  # Remaining page content
+  indir: "0x00A0 | uint64_t i_block[12] | 8 bytes | Indirect Block" {
+    class: pointer_field
+  }
+  
+  padding: "0x00A8 | struct_padding[3928] | 3928 bytes | UNUSED" {
+    class: padding_field
+  }
+}
+
+# --- DUAL INTERPRETATION LAYERS ---
+
+Interpretations: {
+  style.stroke-width: 0
+  style.fill: transparent
+
+  # CASE A: REGULAR FILE SCHEMA
+  reg: "SCHEMA A: Regular File (Raw Byte Stream)" {
+    style.stroke: "#6c8ebf"
+    style.stroke-width: 2
+    
+    raw_block: "Physical Block 0xFA2 (Binary Content)" {
+      style: {
+        fill: "#dae8fc"
+        double-border: true
+      }
+      content: |'md
+        **Logical Format: No Internal Record Schema**
+        - `0x00`: 7f 45 4c 46 (.ELF)
+        - `0x04`: 02 01 01 00 (Format Class)
+        - `0x08`: 00 00 00 00 (Padding)
+        - ... Application Managed Bytes ...
+      '|
+    }
+  }
+
+  # CASE B: DIRECTORY SCHEMA
+  dir: "SCHEMA B: Directory (Table of Records)" {
+    style.stroke: "#9673a6"
+    style.stroke-width: 2
+    
+    dir_entries: "Physical Block 0xFA2 (Record-Based Content)" {
+      grid-columns: 1
+      grid-gap: 10
+      
+      entry0: "Record[0]: Self Reference" {
+        shape: sql_table
+        class: data_field
+        ino: "inode_ptr: 124 (uint64_t)"
+        name: "d_name: '.' (char[256])"
+      }
+      
+      entry1: "Record[1]: Parent Reference" {
+        shape: sql_table
+        class: data_field
+        ino: "inode_ptr: 2 (uint64_t)"
+        name: "d_name: '..' (char[256])"
+      }
+      
+      entry2: "Record[2]: YAML Config File" {
+        shape: sql_table
+        class: data_field
+        ino: "inode_ptr: 556 (uint64_t)"
+        name: "d_name: 'config.yaml' (char[256])"
+      }
+      
+      unused: "Free Segment (Unallocated Space)" {
+        class: free_field
+        label: "--- Block Available for Next Entry ---"
+      }
+    }
+  }
+}
+
+# --- LOGIC FLOW & DISPATCH ---
+
+# The Mode bit determines the dispatcher behavior
+inode.mode -> Interpretations: "VFS Context Dispatch" {
+  style: {
+    stroke: "#666666"
+    stroke-width: 2
+    stroke-dash: 5
+  }
+}
+
+# Pointer mapping for File
+inode.direct0 -> Interpretations.reg.raw_block: "i_mode == S_IFREG" {
+  source-arrowhead: 1
+  target-arrowhead: triangle
+  style: {
+    stroke: "#6c8ebf"
+    stroke-width: 3
+  }
+}
+
+# Pointer mapping for Directory
+inode.direct0 -> Interpretations.dir.dir_entries: "i_mode == S_IFDIR" {
+  source-arrowhead: 1
+  target-arrowhead: triangle
+  style: {
+    stroke: "#9673a6"
+    stroke-width: 4
+  }
+}
+
+# --- DOCUMENTATION & LEGEND ---
+
+legend: "Intel-Style Memory Map Legend" {
+  near: bottom-right
+  h: "Metadata / Header" { class: header_field }
+  p: "Disk Pointer" { class: pointer_field }
+  d: "Active Data Record" { class: data_field }
+  f: "Unallocated / Free" { class: free_field }
+}
+
+annotation: |'md
+  ### TDD Specification: VFS Block Interpretation
+  1. **Uniform Block Handling**: Disk hardware operates on 4KB physical sectors without knowledge of content type.
+  2. **Metadata Contract**: The Inode `i_mode` serves as the schema definition for all blocks associated with the inode.
+  3. **Record Alignment**: In Directory mode (B), records are aligned to 8-byte boundaries to facilitate direct memory-mapped access.
+  4. **Bounds Enforcement**: The `i_size` field defines the valid byte-range for the Raw Stream (A), preventing reading into uninitialized sector padding.
+'| {
+  near: bottom-left
+  style: {
+    stroke: "#d79b00"
+    fill: "#fff2cc"
+    stroke-width: 2
+  }
+}

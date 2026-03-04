@@ -1,0 +1,276 @@
+layout-engine: elk
+direction: right
+vars: {
+  d2-config: {
+    theme-id: 0
+    sketch: false
+    center: true
+  }
+}
+
+# --- Technical Specification Classes ---
+classes: {
+  user_module: {
+    style: {
+      fill: "#f3e5f5"
+      stroke: "#6a1b9a"
+      stroke-width: 2
+    }
+  }
+  kernel_module: {
+    style: {
+      fill: "#fce4ec"
+      stroke: "#c2185b"
+      stroke-width: 2
+    }
+  }
+  hardware_interface: {
+    style: {
+      fill: "#eceff1"
+      stroke: "#455a64"
+      stroke-width: 2
+    }
+  }
+  system_call: {
+    style: {
+      stroke: "#d32f2f"
+      stroke-width: 2
+      stroke-dash: 5
+    }
+  }
+  memory_field: {
+    style: {
+      font: mono
+      font-size: 14
+    }
+  }
+}
+
+# --- USER SPACE DEFINITION (Ring 3) ---
+user_space: "USER SPACE (Ring 3)" {
+  style: {
+    stroke-width: 4
+    fill: "#f8f9fa"
+    stroke: "#6a1b9a"
+    stroke-dash: 0
+  }
+
+  app: "Application Instance (Process Context)" {
+    shape: class
+    class: user_module
+    
+    # Register/Stack Context
+    fd: "int (File Descriptor)"
+    buffer: "void* (User-space pointer)"
+    bytes_read: "ssize_t"
+    
+    # Interface Implementation
+    "open(const char *path, int flags)": "int"
+    "read(int fd, void *buf, size_t count)": "ssize_t"
+    "write(int fd, const void *buf, size_t count)": "ssize_t"
+    
+    # sizeof=48 bytes
+  }
+
+  daemon: "FUSE Daemon (Implementation Layer)" {
+    shape: class
+    class: user_module
+    style.fill: "#6a1b9a"
+    style.font-color: white
+    
+    # Daemon Internal State
+    "g_fuse": "struct fuse_global*"
+    "mount_point": "char*"
+    "max_read": "uint32_t (128 KB)"
+    
+    # Operations Vector
+    "fs_fuse_read(path, buf, size, off, fi)": "int"
+    "fs_fuse_write(path, buf, size, off, fi)": "int"
+    "fs_fuse_getattr(path, stbuf, fi)": "int"
+    "fs_fuse_readdir(path, buf, filler, off, fi)": "int"
+    
+    # sizeof=128 bytes (two cache lines)
+  }
+
+  lib: "FS Logic Library (Internal API)" {
+    shape: class
+    class: user_module
+    style.fill: "#1565c0"
+    style.font-color: white
+    
+    # Business Logic / Byte-Level Logic
+    "path_resolve(struct fs*, const char*)": "uint64_t (inode)"
+    "fs_read(struct fs*, uint64_t inode, off_t, void*, size_t)": "ssize_t"
+    "fs_write(struct fs*, uint64_t inode, off_t, const void*, size_t)": "ssize_t"
+    "alloc_block(struct fs*)": "uint64_t (LBA)"
+  }
+}
+
+# --- KERNEL SPACE DEFINITION (Ring 0) ---
+kernel_space: "KERNEL SPACE (Ring 0)" {
+  style: {
+    stroke-width: 4
+    fill: "#fce4ec"
+    stroke: "#c2185b"
+  }
+
+  vfs: "Virtual File System (VFS)" {
+    shape: class
+    class: kernel_module
+    
+    # In-memory Kernel Structures
+    "file_operations": "struct file_operations*"
+    "inode": "struct inode*"
+    "dentry": "struct dentry*"
+    
+    # VFS Hooks (Kernel Internal)
+    "vfs_read(struct file*, char*, size_t, loff_t*)": "ssize_t"
+    "vfs_write(struct file*, const char*, size_t, loff_t*)": "ssize_t"
+    "lookup_dentry(const char *name)": "struct dentry*"
+  }
+
+  fuse_ko: "FUSE Kernel Driver (fuse.ko)" {
+    shape: class
+    class: kernel_module
+    
+    # Request State Management
+    "request_queue": "struct list_head (FIFO)"
+    "pending_pool": "struct fuse_req* (Pre-allocated)"
+    "fc": "struct fuse_conn*"
+    
+    # Driver Methods
+    "fuse_request_send(struct fuse_mount*, struct fuse_args*)": "void"
+    "fuse_dispatch_read()": "int"
+  }
+}
+
+# --- INTERFACE LAYER ---
+interface: "CHARACTER DEVICE INTERFACE" {
+  dev_fuse: "/dev/fuse (Protocol Bridge)" {
+    shape: cylinder
+    class: hardware_interface
+    
+    # Block/Byte Streaming Interface
+    "read()": "Fetches FUSE_REQ from kernel queue"
+    "write()": "Sends FUSE_OUT_HEADER + result"
+    "poll()": "Wait for kernel request availability"
+    "ioctl()": "FUSE_DEV_IOC_CLONE (Multiplexing)"
+  }
+}
+
+# --- Mapped Memory / Packet Layout (Byte Offsets) ---
+# FIXED: Removed newline in label to prevent compiler error
+fuse_packet: "FUSE Request Header: Fixed 40 Bytes" {
+  shape: sql_table
+  style.fill: "#e0f2f1"
+  
+  "Offset 0x00": "len (uint32_t)" {constraint: "4 Bytes"}
+  "Offset 0x04": "opcode (uint32_t)" {constraint: "4 Bytes"}
+  "Offset 0x08": "unique (uint64_t)" {constraint: "8 Bytes"}
+  "Offset 0x10": "nodeid (uint64_t)" {constraint: "8 Bytes"}
+  "Offset 0x18": "uid (uint32_t)" {constraint: "4 Bytes"}
+  "Offset 0x1C": "gid (uint32_t)" {constraint: "4 Bytes"}
+  "Offset 0x20": "pid (uint32_t)" {constraint: "4 Bytes"}
+  "Offset 0x24": "padding (uint32_t)" {style.fill: gray; constraint: "4 Bytes"}
+}
+
+# --- Logic Flow and Sequence ---
+
+user_space.app -> kernel_space.vfs: "1. System Call (read)" {
+  class: system_call
+}
+
+kernel_space.vfs -> kernel_space.fuse_ko: "2. i_op->read_iter()" {
+  style.stroke: "#1565c0"
+  style.stroke-width: 2
+}
+
+kernel_space.fuse_ko -> interface.dev_fuse: "3. Enqueue Req" {
+  style.stroke: "#1565c0"
+}
+
+interface.dev_fuse -> user_space.daemon: "4. Protocol Read /dev/fuse" {
+  style: {
+    stroke-dash: 5
+    stroke: "#ef6c00"
+    stroke-width: 2
+  }
+}
+
+user_space.daemon -> user_space.lib: "5. Resolve Logic" {
+  style.stroke: "#6a1b9a"
+  style.stroke-width: 2
+}
+
+user_space.lib -> user_space.daemon: "6. Return Data Payload" {
+  style.stroke: "#6a1b9a"
+  style.stroke-width: 2
+}
+
+user_space.daemon -> interface.dev_fuse: "7. Protocol Write /dev/fuse" {
+  style: {
+    stroke-dash: 5
+    stroke: "#ef6c00"
+    stroke-width: 2
+  }
+}
+
+interface.dev_fuse -> kernel_space.fuse_ko: "8. Wakeup / Complete Req" {
+  style.stroke: "#1565c0"
+}
+
+kernel_space.vfs -> user_space.app: "9. Syscall Return to C Library" {
+  class: system_call
+}
+
+# --- Functional Context Annotations ---
+
+context_switch_1: |md
+  ### CONTEXT SWITCH (A)
+  **User Process -> Kernel Mode**
+  - Save Trap Frame (RIP/RSP/RFLAGS)
+  - Stack switch (PL3 -> PL0)
+  - Execution: `entry_SYSCALL_64`
+| {
+  near: top-left
+}
+
+context_switch_2: |md
+  ### CONTEXT SWITCH (B)
+  **Kernel -> Daemon Process**
+  - `dev_fuse_read` blocks calling thread
+  - Daemon thread scheduled via `TASK_RUNNING`
+  - TLB Flush (Context-dependent)
+| {
+  near: top-right
+}
+
+# --- Documentation Legend ---
+
+legend: {
+  near: bottom-right
+  
+  ctrl_path: "FUSE Daemon Logic Path" {
+    style.stroke: "#6a1b9a"
+  }
+  kernel_internal: "Kernel Internal Routing" {
+    style.stroke: "#1565c0"
+  }
+  syscall_boundary: "Ring 3 / Ring 0 Boundary" {
+    style.stroke: red
+    style.stroke-dash: 5
+  }
+  wire_proto: "Binary Protocol Struct" {
+    style.fill: "#e0f2f1"
+  }
+}
+
+control_summary: |md
+  **Architectural Implementation Summary**
+  - **I/O Strategy:** Synchronization occurs via the `fuse_ko` request queue.
+  - **Memory:** Zero-copy supported via `splice()` on specific kernels.
+  - **Latency:** Double context switch per I/O operation (App -> Kernel -> Daemon).
+  - **Isolation:** Filesystem crashes in the `Daemon` do not panic the Host Kernel.
+| {
+  near: bottom-center
+}

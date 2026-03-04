@@ -1,0 +1,234 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    sketch: false
+    pad: 20
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# TECHNICAL DESIGN SPEC: Block Allocation (alloc_block)
+# Implementation-grade bitmap scanning and bit manipulation logic.
+# -----------------------------------------------------------------------------------------
+
+classes: {
+  header_style: {
+    style: {
+      fill: "#f3e5f5"
+      stroke: "#7b1fa2"
+      stroke-width: 2
+      bold: true
+      font-size: 16
+    }
+  }
+  memory_block_data: {
+    style: {
+      fill: "#e3f2fd" # Blue (Data)
+      stroke: "#1565c0"
+      font-size: 12
+      font: mono
+    }
+  }
+  memory_block_hit: {
+    style: {
+      fill: "#fff9c4" # Yellow (Target/Hit)
+      stroke: "#fbc02d"
+      stroke-width: 3
+      bold: true
+      font-size: 12
+      font: mono
+    }
+  }
+  register_hex: {
+    style: {
+      fill: "#eceff1"
+      stroke: "#455a64"
+      font: mono
+      bold: true
+    }
+  }
+  state_changed: {
+    style: {
+      fill: "#ffebee"
+      stroke: "#c62828"
+      font-color: "#b71c1c"
+      bold: true
+    }
+  }
+}
+
+# STEP 1: BITMAP REGION SCAN
+Step 1: {
+  label: "1. BITMAP REGION SCAN (LBA: 0x2000)"
+  class: header_style
+  
+  info: |md
+    ### Operation: Sequential Word Scan
+    - **Base Address**: `sb.block_bitmap_start`
+    - **Scan Step**: `sizeof(uint64_t)`
+    - **Termination**: `word != ~0ULL` (Find first word with at least one zero bit)
+  |
+  
+  In_Memory_Buffer: {
+    label: "Physical Bitmap Block (4096B Page Boundary)"
+    style.stroke-width: 4
+    
+    table_header: "Byte Offset | Data Value (64-bit Word) | Status" {
+      style.font-size: 11
+      style.italic: true
+      style.fill: "#f3e5f5"
+    }
+
+    w0: "0x0000 | 0xFFFFFFFFFFFFFFFF | FULL" {class: memory_block_data}
+    w1: "0x0008 | 0xFFFFFFFFFFFFFFFF | FULL" {class: memory_block_data}
+    w2: "0x0010 | 0x7FFFFFFFFFFFFFFF | **HIT**" {class: memory_block_hit}
+    w3: "0x0018 | 0xFFFFFFFFFFFFFFFF | FULL" {class: memory_block_data}
+    
+    # scan_ptr is Orange as per "Pointers=Orange" rule
+    scan_ptr: "Current word_idx [2]" {
+      shape: circle
+      style.fill: orange
+      style.stroke: "#e65100"
+    }
+    scan_ptr -> w2: "MATCH FOUND" {
+      style.stroke: orange
+      style.animated: true
+    }
+
+    annotation_step1: "Scan Logic: bits != ~0ULL" {
+      style: {
+        font-color: "#fbc02d"
+        bold: true
+        stroke: "#fbc02d"
+        fill: "#fffde7"
+      }
+    }
+  }
+}
+
+# STEP 2: FIND FIRST FREE BIT
+Step 2: {
+  label: "2. LOGIC: BIT SCAN FORWARD"
+  class: header_style
+  
+  info: |md
+    ### Bit Extraction Pipeline
+    - **Input**: Word `0x7FFFFFFFFFFFFFFF`
+    - **Operation**: `NOT` RAX then `CTZ` (Count Trailing Zeros)
+    - **CPU Intrinsic**: `_bit_scan_forward64` / `bsfq`
+  |
+
+  ALU_Pipeline: {
+    RAX: "RAX (Input): 0x7FFFFFFFFFFFFFFF" {class: register_hex}
+    NOT_RAX: "NOT RAX: 0x8000000000000000" {class: register_hex}
+    
+    RAX -> NOT_RAX: "BITWISE NOT" {style.stroke-dash: 3}
+    
+    Result_Index: {
+      label: "**FREE BIT INDEX: 63**"
+      class: state_changed
+    }
+    NOT_RAX -> Result_Index: "CTZ / BSF"
+  }
+}
+
+# STEP 3: MARK ALLOCATED (ALGORITHM STATE CHANGE)
+Step 3: {
+  label: "3. STATE TRANSITION: ATOMIC BIT SET"
+  class: header_style
+
+  # Side-by-side Before/After as per TDD Algorithm Rules
+  Before: {
+    label: "PRE-ALLOCATION (Word 2)"
+    val: "0x7FFFFFFFFFFFFFFF"
+    binary: "01111111 11111111 ... 11111111"
+    style.stroke: "#1565c0"
+  }
+
+  After: {
+    label: "POST-ALLOCATION (Word 2)"
+    # MSB Changed to 1: RED + BOLD as per Technical spec rules
+    val: "**0xFFFFFFFFFFFFFFFF**"
+    binary: "|'**1**1111111 11111111 ... 11111111'|"
+    class: state_changed
+  }
+
+  Before -> After: "bits |= (1ULL << 63)" {
+    style: {
+      stroke: red
+      stroke-width: 3
+      animated: true
+    }
+  }
+}
+
+# STEP 4: PHYSICAL ADDRESS CALCULATION
+Step 4: {
+  label: "4. ADDRESS TRANSLATION LOGIC"
+  class: header_style
+  
+  Address_Logic: {
+    shape: sql_table
+    label: "LBA Derivation Formula"
+    
+    "Input Parameter" : "Value / Computed Offset"
+    "Region Base" : "0x1400 (LBA Start)"
+    "Word Offset" : "2 * 64 bits = 128 Blocks"
+    "Bit Position" : "63"
+    "Result LBA" : "**LBA: 5311**" {constraint: "Absolute Address"}
+  }
+}
+
+# STEP 5: COMMIT AND METADATA UPDATE
+Step 5: {
+  label: "5. PERSISTENT COMMIT"
+  class: header_style
+
+  Journal_Stream: {
+    label: "WAL / Journal Write"
+    log_entry: "TX_START | ALLOC | LBA: 5311 | TX_END"
+    style.fill: "#e8f5e9" # Green (Success/Free transition)
+    style.stroke: "#2e7d32"
+  }
+
+  Superblock_Update: {
+    label: "Superblock Metadata Update"
+    field: "sb.free_blocks_count"
+    # Transition marked explicitly
+    transition: "20477 -> **20476**"
+    style.stroke: orange # Metadata Pointer Color
+    style.stroke-width: 2
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# GLOBAL RELATIONSHIPS & DATA FLOW
+# -----------------------------------------------------------------------------------------
+
+Step 1 -> Step 2: "Word Load"
+Step 2 -> Step 3: "Free Bit Index"
+Step 3 -> Step 4: "Allocation Signal"
+Step 4 -> Step 5: "Resolved LBA"
+
+# Detailed byte-level callouts
+(Step 1.In_Memory_Buffer.w2 -> Step 2.ALU_Pipeline.RAX): "MOV RAX, [RDI + 16]" {
+  style.stroke: orange
+  style.stroke-dash: 5
+}
+
+(Step 4.Address_Logic."Result LBA" -> Step 5.Journal_Stream): "Final Mapping" {
+  style.stroke: "#2e7d32"
+  style.stroke-width: 2
+}
+
+# FOOTER ANNOTATIONS
+footer: |md
+  ## Implementation Architecture Notes
+  - **Ordering**: Bitmap utilizes Little-Endian word-major, bit-minor storage.
+  - **Atomic Safety**: Bit updates must use `LOCK BTS` or architectural spinlocks.
+  - **Memory Alignment**: 8-byte aligned word access required for AVX/SSE optimizations.
+  - **LBA Mapping**: Result = `Base + (WordIdx * 64) + BitIdx`.
+| {
+  near: bottom-center
+}

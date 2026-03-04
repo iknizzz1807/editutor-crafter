@@ -1,0 +1,136 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ALGORITHM: BLOCK ALLOCATION CASCADE (get_or_alloc_block)
+# Objective: Map logical block_offset to physical block, allocating missing levels.
+
+Step_1: {
+  label: "1. Check Existing (Lookup)"
+  State: {
+    Inode: {
+      shape: sql_table
+      direct_0_11: "0x00...0x00"
+      indirect: "0 (NULL)" {style.stroke: orange; style.stroke-width: 3}
+      blocks: "0"
+    }
+    Request: {
+      shape: sql_table
+      logical_offset: "12 (Single Indirect Zone)"
+      result: "**0 (Hole)**" {style.font-color: red}
+    }
+  }
+  Explanation: |md
+    ### Step 1: Lookup Phase
+    - `get_file_block(inode, 12)` is called.
+    - Offset 12 falls outside the direct block range (0-11).
+    - The `indirect` pointer is checked and found to be `NULL`.
+    - **Result:** Allocation required to resolve the hole.
+  |
+}
+
+Step_2: {
+  label: "2. Allocate Data Block"
+  State: {
+    Bitmap: {
+      shape: sql_table
+      block_4998: "1"
+      block_4999: "0"
+      block_5000: "**1 (ALLOCATED)**" {style.font-color: red; style.bold: true}
+      block_5001: "0"
+    }
+    Temporary: {
+      shape: sql_table
+      new_phys_block: "**5000**" {style.font-color: red; style.bold: true}
+    }
+  }
+  Explanation: |md
+    ### Step 2: Physical Allocation
+    - `block_bitmap_alloc(fs)` searches for the first free bit.
+    - Physical Block **5000** is selected and marked as used.
+    - This block will store the actual file data.
+  |
+}
+
+Step_3: {
+  label: "3. Ensure Indirect Block"
+  State: {
+    Inode: {
+      shape: sql_table
+      direct_0_11: "..."
+      indirect: "**4999 (NEW)**" {style.font-color: red; style.bold: true; style.stroke: orange; style.stroke-width: 3}
+      blocks: "**8**" {style.font-color: red}
+    }
+    Indirect_Block_4999: {
+      shape: sql_table
+      header: "BLOCK 4999 (METADATA)" {style.fill: purple}
+      content: "ZEROED (4096 bytes)"
+    }
+  }
+  Explanation: |md
+    ### Step 3: Metadata Infrastructure
+    - Logical offset 12 requires a translation table (Single Indirect).
+    - Since `inode->indirect == 0`, we allocate **Block 4999** for this purpose.
+    - Block is initialized with zeros to prevent garbage pointers.
+    - `inode->blocks` incremented by 8 (assuming 512B sectors).
+  |
+}
+
+Step_4: {
+  label: "4. Link Data Pointer"
+  State: {
+    Indirect_Block_4999: {
+      shape: sql_table
+      ptr_0: "**5000**" {style.font-color: red; style.bold: true; style.stroke: orange; style.stroke-width: 3}
+      ptr_1_511: "0 (NULL)"
+    }
+    Inode: {
+      shape: sql_table
+      indirect: "4999"
+      blocks: "**16**" {style.font-color: red; style.bold: true}
+      size: "..."
+    }
+  }
+  Explanation: |md
+    ### Step 4: Pointer Linking
+    - The physical address of the data block (**5000**) is stored in the first slot (`ptr_0`) of the indirect block (**4999**).
+    - `inode->blocks` updated to 16 to count both data and indirect metadata.
+  |
+}
+
+Step_5: {
+  label: "5. Final State & Flush"
+  State: {
+    On_Disk_Layout: {
+      shape: sql_table
+      Block_0: "Superblock"
+      Block_4999: "Indirect Index (ptrs[0]=5000)" {style.fill: "#E1D5E7"}
+      Block_5000: "User Data Content" {style.fill: "#DAE8FC"}
+    }
+  }
+  Explanation: |md
+    ### Step 5: Persistence
+    - Buffers marked dirty in the cache.
+    - `fsync()` triggers write-back of metadata (4999 and Inode) and data (5000).
+    - The block is now accessible via standard lookup.
+  |
+}
+
+Step_1 -> Step_2: "Result is 0"
+Step_2 -> Step_3: "Target: Indirect Zone"
+Step_3 -> Step_4: "Update Index"
+Step_4 -> Step_5: "fsync()"
+
+# Legend
+Legend: {
+  shape: sql_table
+  near: bottom-right
+  Header: "Metadata/Header" {style.fill: purple; style.font-color: white}
+  Data: "User Data" {style.fill: "#DAE8FC"; style.font-color: black}
+  Pointers: "Block Pointers" {style.stroke: orange; style.stroke-width: 3}
+  Change: "Modified in Step" {style.font-color: red; style.bold: true}
+}

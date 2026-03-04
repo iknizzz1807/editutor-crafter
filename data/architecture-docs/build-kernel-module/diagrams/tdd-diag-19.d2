@@ -1,0 +1,399 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Lost Update Without Mutex — buffer_data_len Race Condition
+  *Two CPUs interleave on shared state, breaking the FIFO invariant*
+| {near: top-center}
+
+# ─────────────────────────────────────────────
+# SCENARIO A: Writer vs Reader — Lost Update
+# ─────────────────────────────────────────────
+scenario_a: "Scenario A: Writer (CPU 0) vs Reader (CPU 1) — Lost Update" {
+  style: {
+    fill: "#F5F0FF"
+    stroke: "#7B5EA7"
+    stroke-width: 2
+    border-radius: 8
+    font-size: 15
+    bold: true
+  }
+
+  # Time axis annotation (Removed 'near' to fix compilation error)
+  time_axis: |md
+    **Time Flow →** (Steps executed top-to-bottom; interleaving creates the bug)
+  | {
+    shape: text
+    style.font-size: 13
+    style.italic: true
+  }
+
+  # ── CPU 0 column ──
+  cpu0_col: "CPU 0 — mydevice_write()" {
+    style: {
+      fill: "#D6EAF8"
+      stroke: "#2874A6"
+      stroke-width: 2
+      border-radius: 6
+      font-size: 14
+      bold: true
+    }
+    s0a: "Step 1\nLOAD buffer_data_len" {
+      style.fill: "#AED6F1"
+      style.border-radius: 4
+      style.font-size: 13
+    }
+    s0a.annotation: |md
+      `reg0 = buffer_data_len`
+      **reg0 = 50**
+      (reads from shared memory)
+    | { shape: text; style.font-size: 12 }
+
+    s0b: "Step 2\ncopy_from_user() → 10 bytes" {
+      style.fill: "#AED6F1"
+      style.border-radius: 4
+      style.font-size: 13
+    }
+    s0b.annotation: |md
+      Copies 10 new bytes into
+      `kernel_buffer[50..60)`
+      *(memory is correct)*
+    | { shape: text; style.font-size: 12 }
+
+    s0c: "Step 3\nCompute new_len = reg0 + 10" {
+      style.fill: "#AED6F1"
+      style.border-radius: 4
+      style.font-size: 13
+    }
+    s0c.annotation: |md
+      `new_len = 50 + 10 = 60`
+    | { shape: text; style.font-size: 12 }
+
+    s0d: "Step 4\nSTORE buffer_data_len = 60" {
+      style.fill: "#AED6F1"
+      style.border-radius: 4
+      style.font-size: 13
+    }
+    s0d.annotation: |md
+      `buffer_data_len = 60`
+      *(briefly correct)*
+    | { shape: text; style.font-size: 12 }
+
+    s0e: "Step 5\n(observes final state)" {
+      style.fill: "#FADBD8"
+      style.stroke: "#C0392B"
+      style.border-radius: 4
+      style.font-size: 13
+    }
+    s0e.annotation: |md
+      **Sees buffer_data_len = 0**
+      10 bytes written to buffer
+      are NOW UNREACHABLE
+      — **orphaned data**
+    | { shape: text; style.font-size: 12 }
+
+    s0a -> s0b -> s0c -> s0d -> s0e
+  }
+
+  # ── CPU 1 column ──
+  cpu1_col: "CPU 1 — mydevice_read()" {
+    style: {
+      fill: "#D5F5E3"
+      stroke: "#1E8449"
+      stroke-width: 2
+      border-radius: 6
+      font-size: 14
+      bold: true
+    }
+    s1a: "Step 1\nLOAD buffer_data_len" {
+      style.fill: "#A9DFBF"
+      style.border-radius: 4
+      style.font-size: 13
+    }
+    s1a.annotation: |md
+      `reg1 = buffer_data_len`
+      **reg1 = 50**
+      (reads stale value — CPU 0
+      has not stored yet)
+    | { shape: text; style.font-size: 12 }
+
+    s1b: "Step 2\ncopy_to_user(buf, kernel_buf, 50)" {
+      style.fill: "#A9DFBF"
+      style.border-radius: 4
+      style.font-size: 13
+    }
+    s1b.annotation: |md
+      Reads 50 bytes assuming
+      50 bytes are valid.
+      *(correct at this instant)*
+    | { shape: text; style.font-size: 12 }
+
+    s1c: "Step 3\nbuffer_data_len -= 50" {
+      style.fill: "#A9DFBF"
+      style.border-radius: 4
+      style.font-size: 13
+    }
+    s1c.annotation: |md
+      `new_val = reg1 - 50 = 0`
+    | { shape: text; style.font-size: 12 }
+
+    s1d: "Step 4\nSTORE buffer_data_len = 0" {
+      style.fill: "#FADBD8"
+      style.stroke: "#C0392B"
+      style.stroke-width: 2
+      style.border-radius: 4
+      style.font-size: 13
+    }
+    s1d.annotation: |md
+      **OVERWRITES CPU 0's store of 60**
+      `buffer_data_len = 0`
+      CPU 0's 10 new bytes
+      are now invisible to all readers
+    | { shape: text; style.font-size: 12 }
+
+    s1a -> s1b -> s1c -> s1d
+  }
+
+  # ── Interleave arrows ──
+  cpu0_col.s0a -> cpu1_col.s1a: "concurrent\n(no lock)" {
+    style.stroke: "#E74C3C"
+    style.stroke-dash: 4
+    style.font-size: 11
+    style.font-color: "#C0392B"
+  }
+  cpu1_col.s1d -> cpu0_col.s0e: "CPU 1 stores 0,\noverwriting CPU 0's 60" {
+    style.stroke: "#E74C3C"
+    style.stroke-width: 3
+    style.font-size: 11
+    style.font-color: "#C0392B"
+    style.bold: true
+  }
+
+  # ── Final broken state ──
+  broken_state_a: "❌ INVARIANT BROKEN" {
+    style: {
+      fill: "#FADBD8"
+      stroke: "#C0392B"
+      stroke-width: 3
+      border-radius: 6
+      font-size: 14
+      bold: true
+    }
+  }
+  broken_state_a.detail: |md
+    `buffer_data_len = 0`  ← says "empty"
+    `kernel_buffer[50..60)` contains 10 bytes ← data exists
+    **bytes_used=0 but data is unaccounted for**
+    Next write overwrites the orphaned bytes silently.
+    Next read returns EOF even though bytes were written.
+  | { shape: text; style.font-size: 12 }
+
+  cpu0_col.s0e -> broken_state_a
+  cpu1_col.s1d -> broken_state_a
+}
+
+# ─────────────────────────────────────────────
+# SCENARIO B: CLEAR vs Read — Torn Buffer
+# ─────────────────────────────────────────────
+scenario_b: "Scenario B: CLEAR (CPU 0) vs Read (CPU 1) — Torn / Half-Zeroed Buffer" {
+  style: {
+    fill: "#FEF9E7"
+    stroke: "#B7950B"
+    stroke-width: 2
+    border-radius: 8
+    font-size: 15
+    bold: true
+  }
+  cpu0b: "CPU 0 — MYDEVICE_IOC_CLEAR" {
+    style: {
+      fill: "#FDEBD0"
+      stroke: "#CA6F1E"
+      stroke-width: 2
+      border-radius: 6
+      font-size: 14
+      bold: true
+    }
+    b0a: "memset begins\n(zeroing kernel_buffer[0..4096))" {
+      style.fill: "#FAD7A0"
+      style.border-radius: 4
+      style.font-size: 13
+    }
+    b0b: "Zeroed bytes 0..2047\n(half done)" {
+      style.fill: "#FAD7A0"
+      style.border-radius: 4
+      style.font-size: 13
+    }
+    b0c: "Zeroed bytes 2048..4095\n(complete)" {
+      style.fill: "#FAD7A0"
+      style.border-radius: 4
+      style.font-size: 13
+    }
+    b0d: "buffer_data_len = 0" {
+      style.fill: "#FAD7A0"
+      style.border-radius: 4
+      style.font-size: 13
+    }
+    b0a -> b0b -> b0c -> b0d
+  }
+  cpu1b: "CPU 1 — mydevice_read()" {
+    style: {
+      fill: "#EAF4FB"
+      stroke: "#1A5276"
+      stroke-width: 2
+      border-radius: 6
+      font-size: 14
+      bold: true
+    }
+    b1a: "Reads buffer_data_len = 4096\n(before CLEAR updates it)" {
+      style.fill: "#AED6F1"
+      style.border-radius: 4
+      style.font-size: 13
+    }
+    b1b: "copy_to_user(buf, kernel_buf, 4096)\n— EXECUTES DURING memset" {
+      style.fill: "#FADBD8"
+      style.stroke: "#C0392B"
+      style.stroke-width: 2
+      style.border-radius: 4
+      style.font-size: 13
+    }
+    b1b.annotation: |md
+      Bytes 0..2047 → **all zeros** (already cleared)
+      Bytes 2048..4095 → **original data** (not yet cleared)
+      Reader sees a **torn mix** of zeros and real data!
+    | { shape: text; style.font-size: 12 }
+    b1a -> b1b
+  }
+  cpu0b.b0b -> cpu1b.b1b: "reader reads\nduring memset" {
+    style.stroke: "#E74C3C"
+    style.stroke-dash: 4
+    style.font-size: 11
+    style.font-color: "#C0392B"
+  }
+  broken_state_b: "❌ TORN READ — SILENT DATA CORRUPTION" {
+    style: {
+      fill: "#FADBD8"
+      stroke: "#C0392B"
+      stroke-width: 3
+      border-radius: 6
+      font-size: 14
+      bold: true
+    }
+  }
+  broken_state_b.detail: |md
+    Reader receives 4096 bytes that are half-zero, half-original.
+    No crash. No error. Checksums fail. Protocol parsers corrupt.
+    The bug is *silent* — hardest class of concurrency bug.
+  | { shape: text; style.font-size: 12 }
+  cpu1b.b1b -> broken_state_b
+  cpu0b.b0d -> broken_state_b
+}
+
+# ─────────────────────────────────────────────
+# THE FIX: Mutex Makes It Sequential
+# ─────────────────────────────────────────────
+fix: "✅ THE FIX: mutex_lock_interruptible() Makes Operations Sequential" {
+  style: {
+    fill: "#EAFAF1"
+    stroke: "#1E8449"
+    stroke-width: 3
+    border-radius: 8
+    font-size: 15
+    bold: true
+  }
+  seq_write: "CPU 0 — write() with mutex" {
+    style: {
+      fill: "#D5F5E3"
+      stroke: "#1E8449"
+      stroke-width: 2
+      border-radius: 6
+      font-size: 13
+    }
+    w1: "mutex_lock_interruptible()" { style.fill: "#A9DFBF"; style.border-radius: 4 }
+    w2: "copy_from_user() → append bytes" { style.fill: "#A9DFBF"; style.border-radius: 4 }
+    w3: "buffer_data_len += to_copy" { style.fill: "#A9DFBF"; style.border-radius: 4 }
+    w4: "wake_up_interruptible(read_queue)" { style.fill: "#A9DFBF"; style.border-radius: 4 }
+    w5: "mutex_unlock()" { style.fill: "#A9DFBF"; style.border-radius: 4 }
+    w1 -> w2 -> w3 -> w4 -> w5
+  }
+  seq_read: "CPU 1 — read() with mutex" {
+    style: {
+      fill: "#EBF5FB"
+      stroke: "#2874A6"
+      stroke-width: 2
+      border-radius: 6
+      font-size: 13
+    }
+    r1: "mutex_lock_interruptible()\n(BLOCKS until CPU 0 unlocks)" {
+      style.fill: "#AED6F1"
+      style.stroke: "#2874A6"
+      style.border-radius: 4
+    }
+    r2: "recheck: buffer_data_len > 0 ✓" { style.fill: "#AED6F1"; style.border-radius: 4 }
+    r3: "copy_to_user() from index 0" { style.fill: "#AED6F1"; style.border-radius: 4 }
+    r4: "buffer_data_len -= to_copy\nmemmove() remaining bytes" { style.fill: "#AED6F1"; style.border-radius: 4 }
+    r5: "wake_up_interruptible(write_queue)" { style.fill: "#AED6F1"; style.border-radius: 4 }
+    r6: "mutex_unlock()" { style.fill: "#AED6F1"; style.border-radius: 4 }
+    r1 -> r2 -> r3 -> r4 -> r5 -> r6
+  }
+  seq_write.w5 -> seq_read.r1: "unlock releases mutex;\nreader now acquires it" {
+    style.stroke: "#1E8449"
+    style.stroke-width: 2
+    style.font-size: 11
+    style.font-color: "#1E8449"
+  }
+  invariant_holds: "✅ INVARIANT HOLDS AT ALL TIMES" {
+    style: {
+      fill: "#D5F5E3"
+      stroke: "#1E8449"
+      stroke-width: 3
+      border-radius: 6
+      font-size: 13
+      bold: true
+    }
+  }
+  invariant_holds.detail: |md
+    Outside every critical section:
+    `buffer_data_len` ≤ `buffer_size`
+    `kernel_buffer[0..buffer_data_len)` → valid FIFO data
+    `kernel_buffer[buffer_data_len..buffer_size)` → free space
+    **No torn reads. No orphaned writes. No lost updates.**
+  | { shape: text; style.font-size: 12 }
+  seq_read.r6 -> invariant_holds
+}
+
+# ─────────────────────────────────────────────
+# Key Rule Annotation
+# ─────────────────────────────────────────────
+key_rule: |md
+  ## The One Rule That Prevents Both Scenarios
+  **Never call `wait_event_interruptible()` while holding `mydevice_mutex`.**
+  Sleep → outside the lock. Modify state → inside the lock. Wake → inside the lock (safe).
+  
+  wait_event_interruptible(queue, condition)   ← OUTSIDE mutex
+  mutex_lock_interruptible(&mydevice_mutex)    ← acquire AFTER waking
+      ... copy_from/to_user, update buffer_data_len ...
+      wake_up_interruptible(other_queue)       ← INSIDE critical section
+  mutex_unlock(&mydevice_mutex)               ← release
+| {
+  near: bottom-center
+  style.font-size: 12
+}
+
+# ─── Cross-scenario flows ───
+scenario_a -> scenario_b: "same root cause:\nno mutex on shared state" {
+  style.stroke: "#E74C3C"
+  style.stroke-dash: 3
+  style.font-size: 11
+  style.font-color: "#C0392B"
+}
+scenario_b -> fix: "M4 solution:\nDEFINE_MUTEX(mydevice_mutex)" {
+  style.stroke: "#1E8449"
+  style.stroke-width: 2
+  style.font-size: 12
+  style.font-color: "#1E8449"
+  style.bold: true
+}

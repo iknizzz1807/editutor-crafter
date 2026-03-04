@@ -1,0 +1,294 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  source: {
+    direction: down
+    label: "Source Code (Rust)"
+    code: {
+      label: "handler.rs"
+      width: 400
+      code: |'rust
+fn process(data: &Data) -> Result<()> {
+    let validated = validate(data)?;  // Call site
+    transform(validated)?;            // Call site
+    Ok(())
+}
+#[inline]  // Hint to compiler
+fn validate(data: &Data) -> Result<Data> {
+    if data.id == 0 {
+        return Err(InvalidId);
+    }
+    Ok(data.clone())
+}
+      '|
+    }
+  }
+  compiler: {
+    direction: down
+    label: "Compiler (rustc -O2)"
+    arrow: {
+      shape: diamond
+      label: "Inlining\nDecision"
+      style.fill: "#FFE4B5"
+    }
+    decision: {
+      width: 200
+      code: |'text
+Checks:
+• Function size < threshold
+• Call frequency (hot path)
+• #[inline] attribute
+• LTO visibility
+      '|
+    }
+    result: {
+      label: "Result: Inline expand"
+      style.fill: "#90EE90"
+      style.stroke: "#228B22"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  before: {
+    direction: down
+    label: "BEFORE Optimization"
+    style.stroke: "#4A90D9"
+    style.fill: "#F0F8FF"
+    asm_before: {
+      label: "Assembly (no optimization)"
+      width: 420
+      code: |'asm
+process:
+    push   rbp
+    mov    rbp, rsp
+    ; Call validate()
+    call   validate         ; <-- Separate function
+    test   al, al
+    js     .error
+    ; Call transform()
+    call   transform        ; <-- Separate function
+    pop    rbp
+    ret
+validate:                   ; <-- Visible in symbol table
+    cmp    [rdi+0], 0
+    je     .invalid_id
+    ; ... validation logic ...
+    ret
+      '|
+    }
+    symtab_before: {
+      label: "Symbol Table (.symtab)"
+      shape: sql_table
+      f0: "0x401000 | process   | T | 64"
+      f1: "0x401050 | validate  | T | 32"
+      f2: "0x401080 | transform | T | 48"
+      note: "All functions visible"
+    }
+  }
+  after: {
+    direction: down
+    label: "AFTER Optimization (-O2)"
+    style.stroke: "#D94A4A"
+    style.fill: "#FFF0F0"
+    asm_after: {
+      label: "Assembly (inlined)"
+      width: 420
+      code: |'asm
+process:
+    push   rbp
+    mov    rbp, rsp
+    ; === validate() body inlined here ===
+    cmp    [rdi+0], 0       ; Inlined check
+    je     .invalid_id      ; Inlined branch
+    ; No call instruction!
+    ; === end inlined validate ===
+    ; === transform() body inlined ===
+    ; ... transform code ...
+    ; === end inlined transform ===
+    pop    rbp
+    ret
+; validate and transform NO LONGER EXIST
+      '|
+    }
+    symtab_after: {
+      label: "Symbol Table (.symtab)"
+      shape: sql_table
+      f0: "0x401000 | process | T | 128"
+      note: "validate/transform GONE"
+      style.fill: "#FFE4E1"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  profile_expected: {
+    direction: down
+    label: "Expected Profile (developer mental model)"
+    style.stroke: "#4A90D9"
+    style.fill: "#F0F8FF"
+    flame_expected: {
+      width: 380
+      label: "Flame Graph (what you WANT to see)"
+      code: |'text
+┌──────────────────────────────────┐
+│            main                  │
+├─────────────┬────────────────────┤
+│   process   │      process       │
+├─────────────┼────────────────────┤
+│  validate   │    transform       │
+│  (15%)      │     (25%)          │
+└─────────────┴────────────────────┘
+      '|
+    }
+    expected_note: {
+      label: "Shows validation and transformation as separate hotspots"
+      shape: rectangle
+      style.fill: transparent
+      style.stroke-dash: 3
+      style.font-color: "#4A90D9"
+    }
+  }
+  profile_actual: {
+    direction: down
+    label: "Actual Profile (with inlining)"
+    style.stroke: "#D94A4A"
+    style.fill: "#FFF0F0"
+    flame_actual: {
+      width: 380
+      label: "Flame Graph (what you ACTUALLY see)"
+      code: |'text
+┌──────────────────────────────────┐
+│            main                  │
+├──────────────────────────────────┤
+│         process (40%)            │
+│                                  │
+│  [validate+transform collapsed]  │
+└──────────────────────────────────┘
+      '|
+    }
+    actual_note: {
+      label: "All time attributed to process() - hotspots invisible!"
+      shape: rectangle
+      style.fill: transparent
+      style.stroke-dash: 3
+      style.font-color: "#D94A4A"
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  solutions: {
+    direction: down
+    label: "Solutions"
+    style.fill: "#E8F5E9"
+    sol1: {
+      label: "Option 1: Disable Inlining"
+      width: 320
+      code: |'bash
+# For profiling builds only
+RUSTFLAGS="-C inline=never" \
+  cargo build --release
+# Or per-function
+#[inline(never)]
+fn validate(data: &Data) -> ...
+      '|
+    }
+    sol2: {
+      label: "Option 2: Debug Info + DWARF Inlines"
+      width: 320
+      code: |'bash
+# Compile with debug info
+rustc -g -O2 handler.rs
+# Use profiler with inline support
+perf record --call-graph=dwarf
+perf report --inline
+# DWARF .debug_info contains:
+# - Abstract origin (original function)
+# - Inlined subroutine ranges
+      '|
+    }
+    sol3: {
+      label: "Option 3: Sampling at Inlined Boundaries"
+      width: 320
+      code: |'bash
+# Some profilers can attribute
+# samples to inlined functions
+# using .debug_info sections
+# Requires:
+# 1. Binary compiled with -g
+# 2. Profiler with DWARF support
+# 3. Not stripped binary
+# Tools: perf --inline, async-profiler
+      '|
+    }
+  }
+  dwarf_detail: {
+    direction: down
+    label: "DWARF Debug Info for Inlines"
+    dwarf_structure: {
+      shape: sql_table
+      label: ".debug_info (DWARF entries)"
+      e0: "DIE | Tag | Attributes"
+      e1: "0x01 | DW_TAG_subprogram | name='process'"
+      e2: "0x02 | DW_TAG_inlined_subroutine | abstract_origin=0x03"
+      e3: "0x03 | DW_TAG_subprogram | name='validate' (abstract)"
+      e4: "0x04 | DW_TAG_inlined_subroutine | abstract_origin=0x05"
+      e5: "0x05 | DW_TAG_subprogram | name='transform' (abstract)"
+      note: "Inlined subroutines reference abstract origins"
+    }
+    dwarf_note: {
+      label: "DWARF preserves the mapping: address range → original function name"
+      shape: rectangle
+      style.fill: "#FFF9C4"
+      style.stroke: "#F9A825"
+    }
+  }
+}
+row1 -> row2: "Compiler transforms" {
+  style.stroke: "#666"
+  style.stroke-dash: 5
+}
+row2 -> row3: "Profiler samples" {
+  style.stroke: "#666"
+  style.stroke-dash: 5
+}
+row3 -> row4: "How to fix" {
+  style.stroke: "#228B22"
+  style.stroke-dash: 5
+}
+legend: {
+  near: bottom-right
+  label: "Key Insight"
+  insight: {
+    shape: rectangle
+    style.fill: "#FFF9C4"
+    style.stroke: "#F9A825"
+    label: |md
+      **Inlining erases function boundaries at the machine level.**
+      - The compiler physically copies the code
+      - No `call` instruction = no stack frame
+      - Symbol table has no entry for inlined function
+      - Even with `-g`, the *address* range is gone
+      DWARF `.debug_info` can map instruction ranges back to
+      original function names, but this requires:
+      1. Profiler support for DWARF inline expansion
+      2. Significant overhead (DWARF parsing is slow)
+      3. Binary not stripped of debug sections
+    |
+  }
+}

@@ -1,0 +1,292 @@
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+title: {
+  shape: text
+  label: |md
+    # Filesystem Thread Locking Strategy
+    **Intel-Grade Implementation Spec: M5-06**
+    *Target Architecture: x86_64 | Page Size: 4096B | Cache Line: 64B*
+  |
+  near: top-center
+}
+
+# --- STYLING CLASSES ---
+classes: {
+  mutex: {
+    style: {
+      fill: "#c084fc"
+      stroke: "#7e22ce"
+      bold: true
+    }
+  }
+  data_field: {
+    style: {
+      fill: "#93c5fd"
+      stroke: "#1d4ed8"
+    }
+  }
+  padding_field: {
+    style: {
+      fill: "#d1d5db"
+      stroke: "#374151"
+      stroke-dash: 3
+    }
+  }
+  header_purple: {
+    style: {
+      fill: "#f3e8ff"
+      stroke: "#7e22ce"
+    }
+  }
+  state_node: {
+    style: {
+      stroke-width: 2
+      border-radius: 5
+    }
+  }
+  illegal_transition: {
+    style: {
+      stroke: "#ef4444"
+      stroke-dash: 5
+      font-color: "#b91c1c"
+      bold: true
+    }
+  }
+}
+
+# --- STRATEGY A: COARSE ---
+CoarseGrained: {
+  label: "Strategy A: Coarse-Grained Locking (Single Mutex)"
+  style: {
+    stroke-width: 2
+    fill: "#f8f9fa"
+    stroke: "#4b5563"
+  }
+
+  FuseGlobal: {
+    shape: class
+    class: header_purple
+    
+    # [Offset] | [Field] : [Type] | [Size]
+    "0x00 | global_lock": "pthread_mutex_t (40B)"
+    "0x28 | fs": "*FileSystem (8B)"
+    "0x30 | op_count": "uint64_t (8B)"
+    "0x38 | padding": "char[8] (8B)"
+    
+    # Methods
+    + lock(): "pthread_mutex_lock(&global_lock)"
+    + unlock(): "pthread_mutex_unlock(&global_lock)"
+  }
+  
+  # Footer metadata as a sub-shape to avoid syntax errors inside class
+  FuseGlobal.footer: "sizeof=64 bytes (1 cache line)" {
+    style.font-size: 10
+    style.italic: true
+  }
+}
+
+# Apply styles to class members via targeting
+CoarseGrained.FuseGlobal."0x00 | global_lock".class: mutex
+CoarseGrained.FuseGlobal."0x28 | fs".class: data_field
+CoarseGrained.FuseGlobal."0x30 | op_count".class: data_field
+CoarseGrained.FuseGlobal."0x38 | padding".class: padding_field
+
+CoarseGrainedImplementationNotes: {
+  shape: text
+  label: |md
+    ### Strategy A Performance Metrics
+    - **Critical Path Complexity**: O(1)
+    - **Thread Contention**: 100% on concurrent syscalls.
+    - **CPU Utilization**: Sub-optimal. N-1 cores idle during FS I/O.
+    - **Cache Behavior**: High "Bus Lock" penalty.
+  |
+  near: bottom-left
+}
+
+# --- STRATEGY B: FINE ---
+FineGrained: {
+  label: "Strategy B: Fine-Grained Locking (High Parallelism)"
+  style: {
+    stroke-width: 2
+    fill: "#eef2ff"
+    stroke: "#1d4ed8"
+  }
+
+  LockManager: {
+    shape: class
+    class: header_purple
+    
+    # 64-byte Alignment Strategy to avoid False Sharing
+    "0x00 | sb_lock": "pthread_mutex_t (40B)"
+    "0x28 | pad0": "char[24] (24B) -> CACHE_ALIGN"
+    
+    "0x40 | bitmap_lock": "pthread_mutex_t (40B)"
+    "0x68 | pad1": "char[24] (24B) -> CACHE_ALIGN"
+    
+    "0x80 | journal_lock": "pthread_mutex_t (40B)"
+    "0xA8 | pad2": "char[24] (24B) -> CACHE_ALIGN"
+    
+    "0xC0 | inode_locks": "mutex_pool (MAX_INODES * 64B)"
+    
+    + acquire_path(path: *char): "void"
+    + release_path(path: *char): "void"
+    + lock_inode_pair(id1: uint64, id2: uint64): "void"
+  }
+  
+  LockManager.footer: "sizeof = (3 * 64B) + (MAX_INODES * 64B)" {
+    style.font-size: 10
+    style.italic: true
+  }
+
+  Hierarchy: {
+    label: "Lock Acquisition Ordering (L1 -> L4)"
+    direction: down
+    
+    Level1: "1. Superblock Lock" {
+      style.fill: "#d1fae5"
+      tooltip: "Invariant: Must be held for mount/unmount"
+    }
+    Level2: "2. Bitmap Lock" {
+      style.fill: "#dcfce7"
+      tooltip: "Block allocation critical section"
+    }
+    Level3: "3. Journal Lock" {
+      style.fill: "#fef9c3"
+      tooltip: "Serializes transaction commits"
+    }
+    Level4: "4. Inode Lock(s)" {
+      style.fill: "#fee2e2"
+      tooltip: "Data consistency per file"
+    }
+
+    Level1 -> Level2: "Atomic Step 1"
+    Level2 -> Level3: "Atomic Step 2"
+    Level3 -> Level4: "Atomic Step 3"
+  }
+}
+
+# Apply styles to FineGrained members
+FineGrained.LockManager."0x00 | sb_lock".class: mutex
+FineGrained.LockManager."0x40 | bitmap_lock".class: mutex
+FineGrained.LockManager."0x80 | journal_lock".class: mutex
+FineGrained.LockManager."0x28 | pad0".class: padding_field
+FineGrained.LockManager."0x68 | pad1".class: padding_field
+FineGrained.LockManager."0xA8 | pad2".class: padding_field
+FineGrained.LockManager."0xC0 | inode_locks".style.fill: "#ffedd5"
+FineGrained.LockManager."0xC0 | inode_locks".style.multiple: true
+
+FineGrainedLockRule: {
+  shape: text
+  label: |md
+    **Deadlock Prevention Protocol**:
+    1. **Strict Ordering**: Always acquire L1 -> L2 -> L3 -> L4.
+    2. **Sibling Ordering**: Inode locks must follow `ascending_id` rule.
+    
+    c
+    if (a->id < b->id) { 
+      pthread_mutex_lock(&a->lock); 
+      pthread_mutex_lock(&b->lock); 
+    } else { 
+      pthread_mutex_lock(&b->lock); 
+      pthread_mutex_lock(&a->lock); 
+    }
+    
+  |
+  near: bottom-right
+}
+
+# --- LOCKING STATE MACHINE ---
+LockStateMachine: {
+  label: "FUSE Callback Lifecycle & State Invariants"
+  
+  Idle: "● READY" {
+    class: state_node
+    tooltip: "No Mutexes Held"
+  }
+  
+  Resolving: "PATH_LOOKUP" {
+    class: state_node
+    tooltip: "Read-Lock on Parent Dir"
+  }
+  
+  PathLocked: "CRITICAL_PATH" {
+    class: state_node
+    tooltip: "SB_LOCK + INODE_LOCK"
+  }
+  
+  Processing: "I/O_EXEC" {
+    class: state_node
+    style.stroke-width: 4
+    style.fill: "#dbeafe"
+  }
+  
+  Applying: "JOURNAL_SYNC" {
+    class: state_node
+    tooltip: "JOURNAL_LOCK Held"
+  }
+  
+  Error: "DEADLOCK_DETECTION" {
+    style.fill: "#fee2e2"
+    style.font-color: "#b91c1c"
+    style.stroke: "#ef4444"
+    style.double-border: true
+  }
+
+  Idle -> Resolving: "VFS Open Request"
+  Resolving -> PathLocked: "MutexAcquire(inode)"
+  PathLocked -> Processing: "Verify Permissions"
+  Processing -> Applying: "journal_start()"
+  Applying -> Idle: "FS_RELEASE_ALL" {
+    style.stroke: "#16a34a"
+    style.bold: true
+    style.stroke-width: 3
+  }
+  
+  Processing -> Error: "Wait > 5000ms" {
+    class: illegal_transition
+    label: "ILLEGAL (TIMEOUT)"
+  }
+}
+
+# --- GLOBAL CONNECTIONS ---
+CoarseGrained -> FineGrained: "Migration Path: Vertical Scaling" {
+  style.stroke-dash: 5
+  style.stroke: "#f59e0b"
+}
+
+# --- LEGEND ---
+legend: {
+  near: bottom-center
+  direction: right
+  
+  MutexInfo: "pthread_mutex_t" {
+    class: mutex
+  }
+  DataInfo: "Data / Field" {
+    class: data_field
+  }
+  PadInfo: "Alignment Padding" {
+    class: padding_field
+  }
+}
+
+# --- HARDWARE ANALYSIS ---
+HardwareAnalysis: {
+  shape: text
+  label: |md
+    ### Hardware Performance Characteristics
+    - **Coarse Lock**: High "Cache Line Bouncing" on global_lock under high load.
+    - **Fine Lock**: Eliminates "False Sharing" via explicit padding to 64B boundary.
+    - **Bus Traffic**: Reduced via Inode Hash Partitioning (Bucket-based locks).
+    - **Memory Overheard**: Increased (~128B per Inode structure).
+  |
+  near: top-right
+}

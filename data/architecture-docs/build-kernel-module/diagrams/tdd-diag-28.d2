@@ -1,0 +1,290 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ─── CLASSES ──────────────────────────────────────────────────────────────────
+classes: {
+  outside_mutex: {
+    style: {
+      fill: "#E1F5FE"
+      stroke: "#01579B"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  inside_mutex: {
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#B71C1C"
+      stroke-width: 3
+      border-radius: 8
+    }
+  }
+  error_node: {
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#4A148C"
+      border-radius: 8
+      font: mono
+    }
+  }
+  annotation: {
+    style: {
+      font-size: 12
+      font: mono
+      border-radius: 4
+      stroke-dash: 2
+    }
+  }
+  memory_block: {
+    style: {
+      font: mono
+      stroke-width: 1
+    }
+  }
+}
+
+# ─── HEADER ───────────────────────────────────────────────────────────────────
+header: {
+  shape: text
+  label: |md
+    # IOCTL RESIZE Under Mutex: Pre-Alloc Pattern
+    **Target:** `mydevice_ioctl_resize(unsigned long arg)`
+    **Design Rule:** Allocate memory *before* acquiring mutex to avoid sleeping while holding locks.
+  |
+  near: top-center
+}
+
+# ─── BEFORE STATE ─────────────────────────────────────────────────────────────
+before_state: "RAM STATE: BEFORE IOCTL" {
+  grid-columns: 1
+  style: {
+    fill: "#F8F9FA"
+    stroke: "#455A64"
+    double-border: true
+  }
+
+  mem_layout: {
+    shape: sql_table
+    style.fill: "#ECEFF1"
+    
+    0x00: "char *kernel_buffer" {constraint: "0xAAAA0000"}
+    0x08: "size_t buffer_size" {constraint: "4096"}
+  }
+
+  mutex_icon: "MUTEX: UNLOCKED" {
+    shape: circle
+    style: {
+      fill: "#C8E6C9"
+      stroke: "#2E7D32"
+    }
+  }
+}
+
+# ─── ALGORITHM STEPS ─────────────────────────────────────────────────────────
+algorithm: "Execution Flow" {
+  
+  step1: {
+    class: outside_mutex
+    label: |md
+      ### 1. copy_from_user 🔵
+      c
+      unsigned long new_size;
+      if (copy_from_user(&new_size, arg, sizeof(new_size)))
+          return -EFAULT;
+      
+    |
+  }
+
+  step2: {
+    class: outside_mutex
+    label: |md
+      ### 2. Validation 🔵
+      c
+      if (new_size == 0 || new_size > MAX_BUF)
+          return -EINVAL;
+      
+    |
+  }
+
+  step3: {
+    class: outside_mutex
+    label: |md
+      ### 3. kzalloc (Sleepable) 🔵
+      *Alloc happens here so we can sleep.*
+      c
+      char *new_buf = kzalloc(new_size, GFP_KERNEL);
+      if (!new_buf) return -ENOMEM;
+      
+    |
+    rationale: |md
+      **Intel Guideline:**
+      `GFP_KERNEL` allows the
+      allocator to sleep/reclaim.
+      Never call inside mutex!
+    | {
+      style.fill: "#FFF9C4"
+      style.font-size: 10
+    }
+  }
+
+  step4: {
+    class: inside_mutex
+    label: |md
+      ### 4. Acquire Mutex 🔴
+      c
+      if (mutex_lock_interruptible(&m)) {
+          kfree(new_buf); 
+          return -ERESTARTSYS;
+      }
+      
+    |
+  }
+
+  critical_section: "CRITICAL SECTION (Atomic Swap)" {
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#C62828"
+      stroke-width: 4
+    }
+    
+    step5: {
+      class: inside_mutex
+      label: |md
+        ### 5. Atomic Pointer Update 🔴
+        *Fast path: No sleeping allowed.*
+        c
+        char *old = kernel_buffer;
+        kernel_buffer = new_buf;
+        buffer_size = new_size;
+        kfree(old);
+        
+      |
+    }
+    
+    step6: {
+      class: inside_mutex
+      label: |md
+        ### 6. Wake Waiters 🔴
+        c
+        wake_up_interruptible(&rq);
+        
+      |
+    }
+  }
+
+  step7: {
+    label: |md
+      ### 7. Release & Exit ✅
+      c
+      mutex_unlock(&m);
+      return 0;
+      
+    |
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+    }
+  }
+}
+
+# ─── AFTER STATE ──────────────────────────────────────────────────────────────
+after_state: "RAM STATE: AFTER SUCCESS" {
+  grid-columns: 1
+  style: {
+    fill: "#F1F8E9"
+    stroke: "#2E7D32"
+    double-border: true
+  }
+
+  mem_layout: {
+    shape: sql_table
+    style.fill: "#DCEDC8"
+    
+    0x00: "char *kernel_buffer" {constraint: "0xBBBB0000"}
+    0x08: "size_t buffer_size" {constraint: "new_size"}
+  }
+
+  mutex_icon: "MUTEX: UNLOCKED" {
+    shape: circle
+    style: {
+      fill: "#C8E6C9"
+      stroke: "#2E7D32"
+    }
+  }
+}
+
+# ─── ERROR PATHS ──────────────────────────────────────────────────────────────
+error_paths: "Exit Handlers" {
+  style: {
+    fill: "#EEEEEE"
+    stroke: "#9E9E9E"
+  }
+  
+  efault: "-EFAULT" { class: error_node }
+  einval: "-EINVAL" { class: error_node }
+  enomem: "-ENOMEM" { class: error_node }
+  erestart: "-ERESTARTSYS" { 
+    class: error_node
+    style.fill: "#F3E5F5"
+    style.bold: true
+  }
+}
+
+# ─── CONNECTIONS ──────────────────────────────────────────────────────────────
+before_state -> algorithm.step1: "IOCTL Call"
+
+algorithm.step1 -> algorithm.step2: "Success"
+algorithm.step2 -> algorithm.step3: "Valid"
+algorithm.step3 -> algorithm.step4: "Memory Ready"
+algorithm.step4 -> algorithm.critical_section.step5: "Lock Acquired"
+algorithm.critical_section.step5 -> algorithm.critical_section.step6
+algorithm.critical_section.step6 -> algorithm.step7: "Finalize"
+algorithm.step7 -> after_state: "Return 0"
+
+# Error transitions
+algorithm.step1 -> error_paths.efault: "Bad User Ptr" { style.stroke: red }
+algorithm.step2 -> error_paths.einval: "Size OOB" { style.stroke: red }
+algorithm.step3 -> error_paths.enomem: "OOM" { style.stroke: red }
+algorithm.step4 -> error_paths.erestart: "Signal Recv" {
+  style: {
+    stroke: purple
+    stroke-dash: 3
+  }
+}
+
+# ─── LEGEND ───────────────────────────────────────────────────────────────────
+legend: {
+  near: bottom-right
+  label: |md
+    ### Legend
+    - 🔵 **Outside Lock**: Sleeping is OK (IO/Alloc)
+    - 🔴 **Inside Lock**: Atomic only (No sleeping)
+    - ⚠️ **Error Path**: Must clean up pre-allocs
+  |
+  style.fill: "#FFFFFF"
+}
+
+# ─── ANALYSIS TABLE ───────────────────────────────────────────────────────────
+analysis: {
+  label: |md
+    ## Technical Implementation Summary
+    | Metric | Pre-Lock Stage | Critical Section |
+    | :--- | :--- | :--- |
+    | **Function** | Resource Preparation | State Modification |
+    | **Alloc Flag** | `GFP_KERNEL` | N/A (Already Alloc'd) |
+    | **Copy Flag** | `copy_from_user` | N/A (Already Copied) |
+    | **Latency** | High (Variable) | Low (Deterministic) |
+    | **Priority** | Low | High |
+  |
+  near: bottom-center
+  style: {
+    fill: "#FFFDE7"
+    stroke: "#FBC02D"
+    border-radius: 10
+  }
+}

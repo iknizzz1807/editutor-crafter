@@ -1,0 +1,138 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# Global Classes for Manual-Quality Consistency
+classes: {
+  header_purple: { style: { fill: "#E1D5E7"; stroke: "#9673A6"; font-color: "#000000"; bold: true } }
+  data_blue: { style: { fill: "#DAE8FC"; stroke: "#6C8EBF"; font-color: "#000000" } }
+  free_green: { style: { fill: "#D5E8D4"; stroke: "#82B366"; font-color: "#000000"; stroke-dash: 3 } }
+  pointer_orange: { style: { fill: "#FFE6CC"; stroke: "#D79B00"; font-color: "#000000" } }
+  padding_gray: { style: { fill: "#F5F5F5"; stroke: "#666666"; font-color: "#666666" } }
+}
+
+file_allocation_comparison: "FS_BLOCK_ALLOC_SPEC: Sparse vs Dense Layouts" {
+  style.stroke-width: 2
+  
+  sparse_file: "CASE_01: SPARSE_FILE (Logical=1GB, Physical=12KB)" {
+    
+    inode: {
+      shape: sql_table
+      label: "Inode 42 (Sparse Metadata)"
+      "Offset | Field": "Value/Physical Pointer"
+      "0x00 | i_mode": "S_IFREG | 0644"
+      "0x04 | i_size": "1,073,741,824 Bytes"
+      "0x0C | i_blocks": "24 (512B Stat Units)"
+      "0x10 | i_block[0]": "PTR -> 0x1388 (Block 5000)"
+      "0x14 | i_block[1..11]": "0x00000000 (HOLE)"
+      "0x40 | i_block[12]": "NULL (Indirect)"
+      "0x44 | i_block[13]": "PTR -> 0x1B58 (Block 7000)"
+    }
+    
+    # Applying styles to rows via post-targeting
+    inode.style.fill: "#E1D5E7" # Header color
+    inode."0x04 | i_size".style.font-color: "#FF0000"
+    inode."0x04 | i_size".style.bold: true
+    inode."0x10 | i_block[0]".style.fill: "#FFE6CC"
+    inode."0x14 | i_block[1..11]".style.fill: "#D5E8D4"
+    inode."0x44 | i_block[13]".style.fill: "#FFE6CC"
+
+    physical_layout: Physical Storage Representation {
+      grid-columns: 1
+      block_0: "LB_0: [DATA_0] (Phys: 5000)" { class: data_blue }
+      hole_region: "LB_1 to LB_262142: [UNALLOCATED HOLE]" { 
+        class: free_green
+        tooltip: "VFS returns zeros without read I/O"
+      }
+      block_n: "LB_262143: [DATA_LAST] (Phys: 7000)" { class: data_blue }
+      
+      mechanics: |md
+        ### Sparse Storage Logic
+        - **Allocated:** Only blocks containing non-zero data or tail.
+        - **Overhead:** ~12KB data + ~256 bytes inode metadata.
+        - **Seeking:** lseek() updates file position without triggering block reservation.
+      |
+    }
+    
+    inode."0x10 | i_block[0]" -> physical_layout.block_0: "vfs_read(off=0)"
+    inode."0x44 | i_block[13]" -> physical_layout.block_n: "vfs_read(off=1GB-4KB)"
+  }
+
+  dense_file: "CASE_02: DENSE_FILE (Logical=1GB, Physical=1GB)" {
+    
+    inode: {
+      shape: sql_table
+      label: "Inode 43 (Dense Metadata)"
+      "Offset | Field": "Value/Physical Pointer"
+      "0x00 | i_mode": "S_IFREG | 0644"
+      "0x04 | i_size": "1,073,741,824 Bytes"
+      "0x0C | i_blocks": "2,097,152 (Stat Units)"
+      "0x10 | i_block[0-11]": "Extents 0x2000-0x200B"
+      "0x40 | i_block[12]": "PTR -> 0x4000 (Indirect)"
+      "0x44 | i_block[13]": "PTR -> 0x5000 (D-Indirect)"
+    }
+    
+    inode.style.fill: "#E1D5E7"
+    inode."0x04 | i_size".style.font-color: "#FF0000"
+    inode."0x10 | i_block[0-11]".style.fill: "#FFE6CC"
+
+    physical_layout: Physical Storage Representation {
+      grid-columns: 1
+      full_alloc: "LB_0 to LB_262143: [CONTIGUOUSLY ALLOCATED]" { 
+        class: data_blue 
+        height: 120
+      }
+      
+      mechanics: |md
+        ### Dense Storage Logic
+        - **Allocated:** Total block count = Logical Size / Block Size.
+        - **Disk Usage:** 1.07 GB strictly occupied.
+        - **Performance:** Deterministic I/O latency for all offsets.
+      |
+    }
+    
+    inode."0x10 | i_block[0-11]" -> physical_layout.full_alloc: "Full Disk Reservation"
+  }
+}
+
+# Legend moved to root to fix "near" constraint error
+legend: {
+  label: "DIAGRAM_LEGEND"
+  p: "Purple: Inode Header / Metadata" { class: header_purple }
+  b: "Blue: Allocated Physical Data" { class: data_blue }
+  g: "Green: Logical Hole (Implicit \0)" { class: free_green }
+  o: "Orange: Indirection / Pointer" { class: pointer_orange }
+}
+legend.near: bottom-center
+
+# Implementation Logic for Engineers
+note: |md
+  ## Filesystem Block Mapping (M4 Implementation)
+  c
+  // VFS Read Path Logic
+  uint64_t get_phys_addr(inode_t *node, uint64_t logical_block) {
+      pointer_t ptr = resolve_indirection(node, logical_block);
+      
+      if (ptr == NULL_ADDR) {
+          // Sparse Logic: Do not go to disk
+          return 0; 
+      }
+      return ptr;
+  }
+
+  ssize_t fs_read(inode_t *node, char *buf, size_t count, off_t offset) {
+      uint64_t l_block = offset / BLOCK_SIZE;
+      uint64_t p_block = get_phys_addr(node, l_block);
+      
+      if (p_block == 0) {
+          memset(buf, 0, BLOCK_SIZE); // Hole resolution
+          return BLOCK_SIZE;
+      }
+      return disk_read(p_block, buf); // Hardware I/O
+  }
+  
+| {near: center-right}

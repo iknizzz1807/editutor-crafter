@@ -1,0 +1,185 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    pad: 40
+  }
+}
+
+# MKFS Initialization Sequence - Engineering Specification
+# Protocol: Block-Level Synchronous I/O
+# Block Size: 4096 Bytes | Sector Size: 512 Bytes
+# Alignment Requirement: 4KB Page Boundaries
+
+mkfs_init: {
+  shape: sequence_diagram
+  
+  style: {
+    stroke: "#4B0082"
+    stroke-width: 2
+  }
+
+  # --- Participant Definitions ---
+  
+  Tool: "mkfs Tool (CLI)" {
+    shape: person
+    width: 120
+    style: {
+      stroke: "#4B0082"
+      stroke-width: 2
+    }
+  }
+  
+  Lib: "libfs_init.a\n(Logic Layer)" {
+    tooltip: "Filesystem Geometry & Metadata Logic"
+    style: {
+      fill: "#E6E6FA"
+      stroke: "#4B0082"
+      stroke-width: 2
+    }
+  }
+  
+  BDev: "block_driver (HAL)\n(I/O Abstraction)" {
+    tooltip: "Abstraction for Block-Device I/O"
+    style: {
+      fill: "#F0F8FF"
+      stroke: "#4682B4"
+      stroke-width: 2
+    }
+  }
+  
+  Disk: "vdisk_file (Storage)\n(Persistence)" {
+    shape: cylinder
+    tooltip: "Raw persistence layer (LBA addressable)"
+    style: {
+      fill: "#D3D3D3"
+      stroke: "#696969"
+      stroke-width: 2
+    }
+  }
+
+  # --- Sequence Start ---
+
+  "Phase 1: Environment Setup": {
+    Tool -> Lib: "fs_format(path, size_mb)"
+    Lib -> BDev: "bdev_open(path, O_CREAT)"
+    BDev -> Disk: "open(path, O_RDWR | O_CREAT | O_TRUNC)"
+    BDev -> Disk: "ftruncate(fd, size_bytes)"
+    Disk -> BDev: "0 (Success)"
+    BDev -> Lib: "struct bdev* handle"
+  }
+
+  "Phase 2: Superblock (LBA 0)": {
+    Lib -> Lib: "calc_layout(total_blocks)\noffsets: SB=0, B_BM=1, I_BM=2, I_TBL=3"
+    Lib -> BDev: "bdev_write(0, sb_buffer, 4096)"
+    BDev -> Disk: "lseek(0, SEEK_SET) + write(4096)"
+    BDev -> Disk: "fsync(fd) [commit SB]"
+    Disk -> Lib: "IO_DONE (Superblock persist)"
+  }
+
+  "Phase 3: Bitmaps (LBA 1, 2)": {
+    Lib."Mark blocks [0 to data_start-1] as USED"
+    Lib -> BDev: "bdev_write(sb.b_bitmap_lba, buffer)"
+    BDev -> Disk: "lseek(0x1000) + write(4096)"
+    Disk -> Lib: "IO_DONE (Block Bitmap)"
+
+    Lib."Mark Inode 1 (Root) as ALLOCATED"
+    Lib -> BDev: "bdev_write(sb.i_bitmap_lba, buffer)"
+    BDev -> Disk: "lseek(0x2000) + write(4096)"
+    Disk -> Lib: "IO_DONE (Inode Bitmap)"
+  }
+
+  "Phase 4: Inode Table Prep (LBA 3 to N)": {
+    Lib -> BDev: "bdev_write(sb.i_table_lba + i, zeros)"
+    BDev -> Disk: "pwrite(fd, zeros, 4096, off)"
+    Disk -> Lib: "IO_DONE (Table Zeroed)"
+  }
+
+  "Phase 5: Root Directory Construction": {
+    Lib."Init Inode 1: mode=S_IFDIR, links=2, blks=1"
+    Lib -> BDev: "bdev_write(sb.i_table_lba, root_inode_ptr)"
+    BDev -> Disk: "pwrite(fd, root_ptr, 4096, 0x3000)"
+    Disk -> Lib: "IO_DONE (Inode 1 Persisted)"
+
+    Lib."Payload: '.' (ino 1), '..' (ino 1)"
+    Lib -> BDev: "bdev_write(sb.data_lba, dir_block_buf)"
+    BDev -> Disk: "pwrite(fd, payload, 4096, data_off)"
+    Disk -> Lib: "IO_DONE (Data Block 0)"
+  }
+
+  "Phase 6: Journal Reset": {
+    Lib -> BDev: "bdev_write(sb.j_start + i, zeros)"
+    BDev -> Disk: "write(4096 bytes journal head)"
+    Disk -> Lib: "IO_DONE (Journal Init)"
+  }
+
+  "Phase 7: Finalization": {
+    Lib -> BDev: "bdev_close(handle)"
+    BDev -> Disk: "fsync(fd) + close(fd)"
+    Disk -> Tool: "0 (Success: FS Created)"
+  }
+}
+
+# --- Documentation & Layout Metadata ---
+
+Annotations: {
+  near: bottom-center
+  
+  Spec: {
+    label: ||md
+### Implementation Constraints:
+- **Physical Sector Size**: 512 bytes.
+- **Logical Block Size**: 4096 bytes (8 sectors).
+- **Alignment**: Every `bdev_write` must land on a `4096 * N` byte boundary.
+- **Inode 1**: Hard-coded root directory. Inode 0 is reserved/NULL.
+- **Data Start**: LBA calculated as `sb + b_bitmap + i_bitmap + i_table`.
+
+### Disk Layout Map (LBA):
+| LBA | Content | Size | Offset |
+|---|---|---|---|
+| 0 | Superblock | 4KB | 0x0000 |
+| 1 | Block Bitmap | 4KB | 0x1000 |
+| 2 | Inode Bitmap | 4KB | 0x2000 |
+| 3-N | Inode Table | N*4KB | 0x3000 |
+| M-Z | Data Region | ... | ... |
+||
+    style: {
+      stroke: "#4B0082"
+      fill: "#FDF5E6"
+      stroke-width: 2
+    }
+  }
+  
+  Legend: {
+    grid-columns: 3
+    Metadata: "Metadata Logic (Lib)" {
+      style.fill: "#E6E6FA"
+      style.stroke: "#4B0082"
+    }
+    IO: "Block HAL Layer (BDev)" {
+      style.fill: "#F0F8FF"
+      style.stroke: "#4682B4"
+    }
+    Hardware: "Persistence (Disk)" {
+      style.fill: "#D3D3D3"
+      style.stroke: "#696969"
+    }
+  }
+}
+
+# Apply global formatting rules
+***.style.font: mono
+(mkfs_init -> **)[*]: {
+  style: {
+    stroke: "#4B0082"
+    font-size: 14
+  }
+}
+
+# Highlight Disk I/O connections
+(mkfs_init -> Disk)[*]: {
+  style: {
+    stroke: "#696969"
+    stroke-width: 2
+  }
+}

@@ -1,0 +1,355 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## kmalloc GFP Flag Decision Tree
+  **GFP_KERNEL vs GFP_ATOMIC: Choose Based on Execution Context**
+| {near: top-center}
+# ─── ROOT DECISION ───────────────────────────────────────────────────────────
+root: "Are you in process context?\n(syscall handler, workqueue,\nkernel thread)" {
+  shape: diamond
+  style: {
+    fill: "#E8EAF6"
+    stroke: "#3949AB"
+    stroke-width: 3
+    font-size: 15
+    bold: true
+  }
+}
+# ─── INTERRUPT CONTEXT BRANCH (NO from root) ─────────────────────────────────
+irq_ctx: "Interrupt / Softirq /\nTasklet Context" {
+  shape: rectangle
+  style: {
+    fill: "#FFCDD2"
+    stroke: "#C62828"
+    stroke-width: 2
+    font-size: 14
+    bold: true
+  }
+}
+gfp_atomic_only: "GFP_ATOMIC  ONLY" {
+  shape: rectangle
+  style: {
+    fill: "#EF9A9A"
+    stroke: "#B71C1C"
+    stroke-width: 3
+    font-size: 16
+    bold: true
+  }
+}
+irq_note: |md
+  **Why:** Scheduler cannot be invoked.
+  Sleeping is physically impossible.
+  `GFP_KERNEL` here → immediate BUG()
+| {
+  shape: rectangle
+  style: {
+    fill: "#FFEBEE"
+    stroke: "#C62828"
+    stroke-width: 1
+    font-size: 12
+    italic: true
+  }
+}
+# ─── PROCESS CONTEXT BRANCH (YES from root) ──────────────────────────────────
+proc_ctx: "Process Context\nConfirmed" {
+  shape: rectangle
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#2E7D32"
+    stroke-width: 2
+    font-size: 14
+    bold: true
+  }
+}
+can_sleep: "Are you holding a spinlock\nor in an atomic section?" {
+  shape: diamond
+  style: {
+    fill: "#FFF8E1"
+    stroke: "#F57F17"
+    stroke-width: 3
+    font-size: 14
+    bold: true
+  }
+}
+# ─── CAN SLEEP → GFP_KERNEL ──────────────────────────────────────────────────
+gfp_kernel: "GFP_KERNEL" {
+  shape: rectangle
+  style: {
+    fill: "#A5D6A7"
+    stroke: "#1B5E20"
+    stroke-width: 3
+    font-size: 18
+    bold: true
+  }
+}
+kernel_props: |md
+  **Behavior:**
+  - May call `schedule()` — puts caller to sleep
+  - Triggers page reclaim (kswapd)
+  - May wait for writeback / compaction
+  - Draws from full memory pool
+  **Success rate:** Highest
+  **Latency:** Variable (µs – ms under pressure)
+  **Valid contexts:** Syscall handlers, `work_struct`
+  callbacks, kernel threads, `module_init`
+| {
+  shape: rectangle
+  style: {
+    fill: "#C8E6C9"
+    stroke: "#2E7D32"
+    stroke-width: 1
+    font-size: 12
+  }
+}
+# ─── CANNOT SLEEP → GFP_ATOMIC ───────────────────────────────────────────────
+atomic_ctx: "Spinlock Held /\nAtomic Section" {
+  shape: rectangle
+  style: {
+    fill: "#FFE0B2"
+    stroke: "#E65100"
+    stroke-width: 2
+    font-size: 14
+    bold: true
+  }
+}
+gfp_atomic: "GFP_ATOMIC" {
+  shape: rectangle
+  style: {
+    fill: "#FFCC80"
+    stroke: "#BF360C"
+    stroke-width: 3
+    font-size: 18
+    bold: true
+  }
+}
+atomic_props: |md
+  **Behavior:**
+  - Never calls `schedule()` — returns immediately
+  - Draws from pre-reserved emergency memory pool
+  - Returns `NULL` when pool is exhausted
+  - No page reclaim, no waiting
+  **Success rate:** Lower under memory pressure
+  **Latency:** Deterministic (nanoseconds)
+  **Valid contexts:** IRQ handlers, softirqs,
+  tasklets, spinlock-held regions
+| {
+  shape: rectangle
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#E65100"
+    stroke-width: 1
+    font-size: 12
+  }
+}
+# ─── MANDATORY NULL CHECK ─────────────────────────────────────────────────────
+null_check: "ALWAYS check return value" {
+  shape: rectangle
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#6A1B9A"
+    stroke-width: 3
+    font-size: 15
+    bold: true
+    border-radius: 8
+  }
+}
+null_check_code: |go
+  ptr = kmalloc(size, GFP_KERNEL /* or GFP_ATOMIC */);
+  if (!ptr)
+      return -ENOMEM;   /* propagate up — do NOT crash */
+| {
+  shape: rectangle
+  style: {
+    fill: "#EDE7F6"
+    stroke: "#6A1B9A"
+    stroke-width: 1
+    font-size: 12
+    font: mono
+  }
+}
+# ─── PITFALL BOXES ────────────────────────────────────────────────────────────
+pitfall_kernel_in_atomic: |md
+  ⚠️  **PITFALL: GFP_KERNEL in atomic context**
+  Kernel detects this and calls `BUG()`:
+  
+  BUG: sleeping function called from
+  invalid context at mm/slab.c:...
+  in_atomic(): 1, irqs_disabled(): 0
+  
+  Machine panics immediately.
+| {
+  shape: rectangle
+  style: {
+    fill: "#FFEBEE"
+    stroke: "#B71C1C"
+    stroke-width: 2
+    font-size: 12
+    italic: false
+  }
+}
+pitfall_atomic_everywhere: |md
+  ⚠️  **PITFALL: GFP_ATOMIC everywhere "to be safe"**
+  - Depletes the emergency memory pool
+  - Increases `NULL` return frequency system-wide
+  - Other drivers / kernel subsystems fail to allocate
+  - Higher fragmentation, worse system stability
+  - **Not conservative — it is wasteful and harmful**
+| {
+  shape: rectangle
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#E65100"
+    stroke-width: 2
+    font-size: 12
+  }
+}
+# ─── QUICK REFERENCE RULE ─────────────────────────────────────────────────────
+golden_rule: |md
+  **The One Rule:**
+  *"Can the current execution context sleep?"*
+  - **YES →** `GFP_KERNEL`
+  - **NO  →** `GFP_ATOMIC`
+  GFP flags describe **your context**, not the memory.
+| {
+  shape: rectangle
+  near: bottom-center
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#0D47A1"
+    stroke-width: 2
+    font-size: 13
+    bold: true
+    border-radius: 8
+  }
+}
+# ─── CONNECTIONS ──────────────────────────────────────────────────────────────
+root -> irq_ctx: "NO\n(interrupt / softirq / tasklet)" {
+  style: {
+    stroke: "#C62828"
+    stroke-width: 2
+    font-size: 13
+    bold: true
+    font-color: "#C62828"
+  }
+}
+root -> proc_ctx: "YES\n(syscall, workqueue,\nkernel thread)" {
+  style: {
+    stroke: "#2E7D32"
+    stroke-width: 2
+    font-size: 13
+    bold: true
+    font-color: "#2E7D32"
+  }
+}
+irq_ctx -> gfp_atomic_only {
+  style: {
+    stroke: "#B71C1C"
+    stroke-width: 2
+  }
+}
+gfp_atomic_only -> irq_note {
+  style: {
+    stroke: "#C62828"
+    stroke-width: 1
+    stroke-dash: 4
+  }
+}
+proc_ctx -> can_sleep {
+  style: {
+    stroke: "#2E7D32"
+    stroke-width: 2
+  }
+}
+can_sleep -> gfp_kernel: "NO — not in atomic section\n(free to sleep)" {
+  style: {
+    stroke: "#1B5E20"
+    stroke-width: 2
+    font-size: 13
+    bold: true
+    font-color: "#1B5E20"
+  }
+}
+can_sleep -> atomic_ctx: "YES — spinlock held\nor preemption disabled" {
+  style: {
+    stroke: "#E65100"
+    stroke-width: 2
+    font-size: 13
+    bold: true
+    font-color: "#E65100"
+  }
+}
+gfp_kernel -> kernel_props {
+  style: {
+    stroke: "#2E7D32"
+    stroke-width: 1
+    stroke-dash: 4
+  }
+}
+atomic_ctx -> gfp_atomic {
+  style: {
+    stroke: "#BF360C"
+    stroke-width: 2
+  }
+}
+gfp_atomic -> atomic_props {
+  style: {
+    stroke: "#E65100"
+    stroke-width: 1
+    stroke-dash: 4
+  }
+}
+# Both paths converge on null check
+gfp_kernel -> null_check: "always" {
+  style: {
+    stroke: "#6A1B9A"
+    stroke-width: 2
+    font-size: 12
+    font-color: "#6A1B9A"
+  }
+}
+gfp_atomic_only -> null_check: "always\n(NULL more likely)" {
+  style: {
+    stroke: "#6A1B9A"
+    stroke-width: 2
+    font-size: 12
+    font-color: "#6A1B9A"
+  }
+}
+gfp_atomic -> null_check: "always\n(NULL more likely)" {
+  style: {
+    stroke: "#6A1B9A"
+    stroke-width: 2
+    font-size: 12
+    font-color: "#6A1B9A"
+  }
+}
+null_check -> null_check_code {
+  style: {
+    stroke: "#6A1B9A"
+    stroke-width: 1
+    stroke-dash: 3
+  }
+}
+# Pitfall connections
+pitfall_kernel_in_atomic -> gfp_atomic_only: "results in →" {
+  style: {
+    stroke: "#B71C1C"
+    stroke-width: 1
+    stroke-dash: 5
+    font-size: 11
+    font-color: "#B71C1C"
+  }
+}
+pitfall_atomic_everywhere -> gfp_atomic: "misuse of →" {
+  style: {
+    stroke: "#E65100"
+    stroke-width: 1
+    stroke-dash: 5
+    font-size: 11
+    font-color: "#E65100"
+  }
+}

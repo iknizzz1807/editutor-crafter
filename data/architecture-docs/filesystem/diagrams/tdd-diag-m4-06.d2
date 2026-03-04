@@ -1,0 +1,133 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+# State Machine: File Size vs. Allocated Blocks
+# This diagram tracks the relationship between Inode.size (logical) 
+# and Inode.blocks (physical allocation).
+
+INIT: ● {
+  shape: circle
+  style.fill: black
+}
+
+FILE_EMPTY: "EMPTY FILE" {
+  |md
+    ### Invariants
+    - `size == 0`
+    - `blocks == 0`
+    - `all pointers == 0`
+  |
+  style.fill: "#f8f9fa"
+}
+
+FILE_DENSE: "DENSE FILE" {
+  |md
+    ### Invariants
+    - `size > 0`
+    - `blocks == (contiguous_alloc * 8)`
+    - `no holes in [0, size]`
+  |
+  style.fill: "#e7f3ff"
+}
+
+FILE_SPARSE: "SPARSE FILE" {
+  |md
+    ### Invariants
+    - `size > (allocated_data_blocks * 4096)`
+    - `blocks < ceil(size / 512)`
+    - `contains >= 1 hole (null ptr)`
+  |
+  style.fill: "#fff4e5"
+}
+
+ERROR_CORRUPT: "CORRUPT STATE" {
+  |md
+    ### Invariants
+    - `blocks > total_filesystem_blocks`
+    - OR `pointer points to free bit`
+  |
+  style.fill: "#ff8787"
+  style.stroke: red
+}
+
+# Transitions
+
+INIT -> FILE_EMPTY: "mkfs / fs_create()"
+
+FILE_EMPTY -> FILE_DENSE: "fs_write(off=0, len=N)" {
+  tooltip: "Standard sequential write"
+  label: "trigger: write\nguard: off == 0\naction: alloc_block(), size+=N, blocks+=8"
+}
+
+FILE_DENSE -> FILE_DENSE: "fs_write(append)" {
+  label: "trigger: write\nguard: off == size\naction: get_or_alloc(), size+=len"
+}
+
+FILE_DENSE -> FILE_SPARSE: "fs_truncate(larger)" {
+  label: "trigger: truncate\nguard: new > old\naction: size=new, blocks unchanged"
+  style.stroke: "#ffa94d"
+  style.stroke-width: 3
+}
+
+FILE_EMPTY -> FILE_SPARSE: "fs_write(off >> 0)" {
+  label: "trigger: write\nguard: off > 0\naction: alloc_indirect(), size=off+len"
+}
+
+FILE_SPARSE -> FILE_SPARSE: "fs_write(into_hole)" {
+  label: "trigger: write\nguard: is_hole(off)\naction: alloc_block(), blocks+=8"
+}
+
+FILE_SPARSE -> FILE_DENSE: "fs_truncate(smaller)" {
+  label: "trigger: truncate\nguard: new < first_hole\naction: free_blocks(), blocks--"
+  style.stroke: "#228be6"
+}
+
+FILE_DENSE -> FILE_EMPTY: "fs_truncate(0)" {
+  label: "trigger: truncate\naction: free_all(), size=0, blocks=0"
+}
+
+FILE_SPARSE -> FILE_EMPTY: "fs_truncate(0)" {
+  label: "trigger: truncate\naction: free_all(), size=0, blocks=0"
+}
+
+# Illegal / Error paths
+FILE_DENSE -> ERROR_CORRUPT: "write_block_direct" {
+  style.stroke-dash: 5
+  style.stroke: red
+  label: "ILLEGAL: Manual block bypass"
+}
+
+FILE_EMPTY -> ERROR_CORRUPT: "bit_flip" {
+  style.stroke-dash: 5
+  style.stroke: red
+  label: "ILLEGAL: Bitmap corruption"
+}
+
+# Annotations
+legend: {
+  shape: package
+  near: bottom-right
+  
+  logical: Logical Size (size) {
+    style.fill: "#e7f3ff"
+  }
+  physical: Physical Allocation (blocks) {
+    style.fill: "#d3f9d8"
+  }
+  
+  logical -> physical: "Mapping" {style.stroke-dash: 3}
+}
+
+note: |md
+  **Implementation Rules:**
+  1. `Truncate Grow`: Only updates the metadata `size`. Logic: `inode->size = new_size`.
+  2. `Truncate Shrink`: Must walk the indirect tree. Logic: `if (ptr != 0) free_block(ptr)`.
+  3. `Sparse Write`: The `blocks` count includes indirect and double-indirect overhead blocks.
+| {
+  near: top-left
+}

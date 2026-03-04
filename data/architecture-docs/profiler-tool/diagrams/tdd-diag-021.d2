@@ -1,0 +1,135 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+
+LD_PRELOAD_Interposition_Mechanism: {
+  shape: sequence_diagram
+
+  # Participants (Actors)
+  Application: "Application" {
+    tooltip: "Caller: User-space binary"
+  }
+  Dynamic_Linker: "Dynamic Linker\n(ld-linux.so)" {
+    tooltip: "ELF Interpreter"
+  }
+  Profiler_Lib: "Profiler Library\n(libprofiler_preload.so)" {
+    style.fill: "#DDA0DD" # Purple for logic header
+  }
+  Real_Malloc: "Real malloc\n(libc.so.6)" {
+    style.fill: "#ADD8E6" # Blue for data provider
+  }
+  Tracker: "Allocation Tracker\n(Thread-Local)" {
+    style.fill: "#90EE90" # Green for tracking
+  }
+
+  # Step 1: Application calls malloc
+  Application -> Dynamic_Linker: "malloc(size)" {
+    tooltip: "1. Application initiates memory allocation request"
+    style.stroke: blue
+  }
+
+  # Step 2: Dynamic linker checks LD_PRELOAD first
+  Dynamic_Linker -> Dynamic_Linker: "Check LD_PRELOAD\nenvironment variable" {
+    tooltip: "2. LD_PRELOAD libraries have highest symbol resolution priority"
+  }
+
+  # Step 3: Redirect to our malloc wrapper
+  Dynamic_Linker -> Profiler_Lib: "Resolve to\nprofiler_malloc()" {
+    tooltip: "3. Symbol intercepted by preloaded library"
+    style.stroke: blue
+  }
+
+  # Step 4: Our malloc runs - check recursion guard
+  Profiler_Lib -> Tracker: "▼ check_recursion_guard()" {
+    tooltip: "4. Prevent infinite recursion during tracking operations"
+    style.stroke: blue
+  }
+  Tracker -> Profiler_Lib: "guard == false\n(in_tracking == 0)" {
+    tooltip: "4a. Safe to proceed with tracking"
+    style.stroke-dash: 5
+  }
+
+  # Step 5: Set recursion guard
+  Profiler_Lib -> Tracker: "set_recursion_guard()\nin_tracking = 1" {
+    tooltip: "5. Mark thread as in-tracking state"
+    style.stroke: blue
+  }
+
+  # Step 6: Resolve real malloc via dlsym
+  Profiler_Lib -> Dynamic_Linker: "dlsym(RTLD_NEXT, \"malloc\")" {
+    tooltip: "6. Find next malloc in symbol chain (libc)"
+    style.stroke: orange
+  }
+  Dynamic_Linker -> Profiler_Lib: "returns libc_malloc_ptr" {
+    tooltip: "6a. Pointer to real malloc function"
+    style.stroke-dash: 5
+  }
+
+  # Step 7: Call real malloc
+  Profiler_Lib -> Real_Malloc: "libc_malloc(size)" {
+    tooltip: "7. Invoke actual memory allocation"
+    style.stroke: blue
+  }
+  Real_Malloc -> Profiler_Lib: "returns ptr" {
+    tooltip: "7a. Allocated memory pointer"
+    style.stroke-dash: 5
+  }
+
+  # Step 8: Track allocation
+  Profiler_Lib -> Tracker: "record_allocation(ptr, size)" {
+    tooltip: "8. Log allocation metadata"
+    style.stroke: blue
+  }
+  Tracker -> Profiler_Lib: "recorded" {
+    tooltip: "8a. Allocation logged to ring buffer"
+    style.stroke-dash: 5
+  }
+
+  # Step 9: Clear recursion guard
+  Profiler_Lib -> Tracker: "▲ clear_recursion_guard()\nin_tracking = 0" {
+    tooltip: "9. Reset thread-local guard"
+    style.stroke: blue
+  }
+
+  # Step 10: Return to application
+  Profiler_Lib -> Application: "return ptr" {
+    tooltip: "10. Control returns to caller"
+    style.stroke: blue
+  }
+
+  # Grouping
+  interposition_layer: {
+    label: "Symbol Interposition Layer"
+    Dynamic_Linker -> Profiler_Lib
+  }
+
+  tracking_infrastructure: {
+    label: "Tracking Infrastructure"
+    Tracker
+  }
+}
+
+# Legend and Technical Specs
+footer: {
+  near: bottom-center
+
+  legend: {
+    label: "Symbol Resolution Priority"
+    shape: sequence_diagram
+    p1: "1. LD_PRELOAD libs"
+    p2: "2. DT_NEEDED libs"
+    p3: "3. Default search"
+    p1 -> p2: "Priority 0"
+    p2 -> p3: "Priority 1"
+  }
+
+  notes: |md
+    ### Implementation Specs
+    - **RTLD_NEXT**: finds next symbol in resolution order, skipping current library.
+    - **Recursion Guard**: Thread-local `__thread bool` prevents `malloc` -> `tracker` -> `malloc` loop.
+    - **Performance**: dlsym() cached after first call; tracking uses lock-free ring buffer.
+  |
+}

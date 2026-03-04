@@ -1,0 +1,181 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# AGENT: TECHNICAL DESIGN ARTIST
+# Specification: Sparse File Allocation Sequence
+# Operation: Write 100 bytes at 10MB offset in size=0 file
+# Addressing Path: Inode -> Double-Indirect [3] -> Indirect [500] -> Data Block
+
+classes: {
+  inode_box: {
+    shape: sql_table
+    style: {
+      fill: "#DDA0DD"
+      stroke: "#000000"
+      stroke-width: 2
+    }
+  }
+  block_box: {
+    shape: sql_table
+    style: {
+      fill: "#ADD8E6"
+      stroke: "#000000"
+    }
+  }
+  data_box: {
+    shape: sql_table
+    style: {
+      fill: "#90EE90"
+      stroke: "#000000"
+    }
+  }
+  changed: {
+    style: {
+      font-color: "#FF0000"
+      bold: true
+      stroke: "#FF0000"
+      stroke-width: 3
+    }
+  }
+  ptr_edge: {
+    style: {
+      stroke: "#FFA500"
+      stroke-width: 3
+      animated: true
+    }
+  }
+}
+
+title: |md
+  # Logical Block Addressing (LBA) Calculation
+  - **Byte Offset:** 10,485,760 (10 MiB)
+  - **Block Size:** 4,096 Bytes
+  - **LBA:** 10,485,760 / 4,096 = **2560**
+  - **Addressing Tier:** Double Indirect (Direct: 0-11, Single: 12-523, Double: 524-262659)
+  - **Relative Double Index:** 2560 - 524 = 2036
+  - **Path:** Double[2036 / 512 = **3**] -> Indirect[2036 % 512 = **500**]
+| {near: top-center}
+
+steps: {
+  direction: right
+
+  step_1: "1. Allocate Double-Indirect Block" {
+    inode: "Inode (vnode #45)" {
+      shape: sql_table
+      "0x00: mode": "S_IFREG | 0644"
+      "0x04: size": "0"
+      "0x08: blocks": "0"
+      "0x30: double_ind": "Phys #100"
+    }
+    inode."0x30: double_ind".class: changed
+
+    bitmap: {
+      label: |md
+        ### Block Bitmap
+        - Block 100: **SET** (Allocated)
+        - Block 101: FREE
+        - Block 102: FREE
+      |
+      style.fill: "#90EE90"
+    }
+
+    b100: "Double-Indirect Block (Phys #100)" {
+      shape: sql_table
+      "Offset 0x00": "0x00000000"
+      "Offset 0x04": "0x00000000"
+      "Offset 0x08": "0x00000000"
+      "Offset 0x0C": "0x00000000"
+      "[...]": "..."
+    }
+
+    inode -> b100: "double_ptr" {class: ptr_edge}
+  }
+
+  step_2: "2. Allocate Secondary Indirect" {
+    inode: "Inode (vnode #45)" {
+      shape: sql_table
+      "0x00: mode": "S_IFREG | 0644"
+      "0x04: size": "0"
+      "0x08: blocks": "8 (512B Sectors)"
+      "0x30: double_ind": "Phys #100"
+    }
+    inode."0x08: blocks".class: changed
+
+    b100: "Double-Indirect Block (Phys #100)" {
+      shape: sql_table
+      "Offset 0x00 [0]": "0"
+      "Offset 0x04 [1]": "0"
+      "Offset 0x08 [2]": "0"
+      "Offset 0x0C [3]": "Phys #101"
+      "[...]": "..."
+    }
+    b100."Offset 0x0C [3]".class: changed
+
+    b101: "Indirect Block (Phys #101)" {
+      shape: sql_table
+      "Idx 0": "0"
+      "Idx ...": "..."
+      "Idx 500": "0"
+    }
+
+    inode -> b100
+    b100 -> b101: "level2_ptr" {class: ptr_edge}
+  }
+
+  step_3: "3. Commit Data & Update Size" {
+    inode: "Inode (vnode #45)" {
+      shape: sql_table
+      "0x00: mode": "S_IFREG | 0644"
+      "0x04: size": "10,485,860 Bytes"
+      "0x08: blocks": "24 (Sectors)"
+      "0x30: double_ind": "Phys #100"
+    }
+    inode."0x04: size".class: changed
+    inode."0x08: blocks".class: changed
+
+    b101: "Indirect Block (Phys #101)" {
+      shape: sql_table
+      "Idx 0": "0"
+      "Idx ...": "..."
+      "Idx 500": "Phys #102"
+    }
+    b101."Idx 500".class: changed
+
+    b102: "Data Block (Phys #102)" {
+      shape: sql_table
+      "0x00": "User Data (100 Bytes)"
+      "0x64": "Padding/Slack (3996 Bytes)"
+    }
+    b102."0x00".class: changed
+
+    inode -> b100: "double"
+    b100 -> b101: "ind"
+    b101 -> b102: "data_ptr" {class: ptr_edge}
+  }
+}
+
+step_1 -> step_2: "VFS: vfs_alloc_ind()"
+step_2 -> step_3: "VFS: vfs_write_block()"
+
+legend: {
+  near: bottom-right
+  class: inode_box
+  label: "Memory Map Legend"
+  
+  l1: "Inode / Metadata" { style.fill: "#DDA0DD" }
+  l2: "Indirect Index Blocks" { style.fill: "#ADD8E6" }
+  l3: "Final Data Block" { style.fill: "#90EE90" }
+  l4: "Modified This Step" { style.font-color: red; style.bold: true }
+}
+
+annotation: |md
+  ## Final Layout Analysis (Ext2/3/4 Legacy Style)
+  - **Logical Holes:** Blocks 0 through 2559 contain no physical allocation. `ls -ls` will report 10MB size but only 12KB (3 blocks) of disk usage.
+  - **Pointers:** 32-bit (4-byte) physical block addresses.
+  - **Overhead:** 2 metadata blocks (Phys #100, #101) required to address the sparse write.
+| {near: bottom-center}

@@ -1,0 +1,379 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    pad: 40
+  }
+  colors: {
+    header_bg: "#333333"
+    entry_fill: "#E1F5FE"
+    logic_yellow: "#FFF9C4"
+    blocking_blue: "#E3F2FD"
+    nonblock_orange: "#FFF3E0"
+    shared_green: "#E8F5E9"
+    error_red: "#FFEBEE"
+    text_main: "#212121"
+    border_dark: "#424242"
+    mem_header: "#9C27B0"
+    mem_data: "#2196F3"
+    mem_free: "#4CAF50"
+    mem_pad: "#9E9E9E"
+  }
+}
+
+title: |md
+  # Technical Design: `mydevice_read()` Implementation
+  **Reference:** Linux Kernel Character Driver Implementation (f_ops.read)
+  **Logic:** Handling `O_NONBLOCK` via `filp->f_flags` and Atomic Buffer State.
+| {
+  near: top-center
+  style: {
+    font-size: 24
+    bold: true
+  }
+}
+
+# ─── SYMBOL LEGEND ───────────────────────────────────────────────────────────
+legend: {
+  near: top-right
+  direction: right
+  blocking: "Blocking Path" {
+    style: {
+      fill: "#1565C0"
+      font-color: white
+    }
+  }
+  nonblocking: "O_NONBLOCK Path" {
+    style: {
+      fill: "#E65100"
+      font-color: white
+    }
+  }
+  shared: "Shared Critical Section" {
+    style: {
+      fill: "#2E7D32"
+      font-color: white
+    }
+  }
+}
+
+# ─── MEMORY LAYOUT DEFINITION ────────────────────────────────────────────────
+mem_layout: "Device Context Structure (RAM Layout)" {
+  near: bottom-right
+  tooltip: "struct mydevice_dev representation"
+  grid-columns: 1
+  grid-gap: 0
+
+  header: "0x00: Mutex Object (struct mutex)" {
+    style.fill: ${colors.mem_header}
+    style.font-color: white
+    label: "0x00 | struct mutex lock | size: 32B"
+  }
+  
+  wait_q: "0x20: Wait Queue (wait_queue_head_t)" {
+    style.fill: "#7E57C2"
+    style.font-color: white
+    label: "0x20 | wait_queue_head_t read_q | size: 24B"
+  }
+
+  buffer_meta: "0x38: Buffer Metadata" {
+    style.fill: "#FFB300"
+    label: "0x38 | size_t buffer_data_len | size: 8B"
+  }
+
+  data_ptr: "0x40: Pointer to K-Buffer" {
+    style.fill: "#FB8C00"
+    label: "0x40 | char *k_buffer_ptr | size: 8B"
+  }
+
+  padding: "0x48: Padding" {
+    style.fill: ${colors.mem_pad}
+    label: "0x48 | alignment padding | size: 56B"
+  }
+  
+  cache_line_boundary: "" {
+    style.stroke-dash: 5
+    label: "---------------- L1 CACHE LINE BOUNDARY (128B) ----------------"
+  }
+}
+
+# ─── ENTRY POINT ─────────────────────────────────────────────────────────────
+entry: "ENTRY: mydevice_read()" {
+  shape: rectangle
+  tooltip: "ssize_t (*read) (struct file *, char __user *, size_t, loff_t *)"
+  style: {
+    fill: ${colors.entry_fill}
+    stroke: "#01579B"
+    stroke-width: 4
+    double-border: true
+  }
+}
+
+flag_check: "Branch: O_NONBLOCK Set?" {
+  shape: diamond
+  tooltip: "if (filp->f_flags & O_NONBLOCK)"
+  style: {
+    fill: ${colors.logic_yellow}
+    stroke: "#F9A825"
+    stroke-width: 2
+  }
+}
+
+flag_annotation: |md
+  ### Flag Inspection
+  `filp->f_flags` contains bitmask
+  set during `open()` or via `fcntl`.
+| {
+  near: flag_check
+  style: {
+    stroke: "#FBC02D"
+    fill: "#FFFDE7"
+    font-size: 11
+  }
+}
+
+entry -> flag_check: "Invoke via read(2)"
+
+# ─── BLOCKING LOGIC ──────────────────────────────────────────────────────────
+blocking_path: "BLOCKING EXECUTION (Default)" {
+  style: {
+    fill: ${colors.blocking_blue}
+    stroke: "#1565C0"
+    stroke-width: 2
+  }
+
+  b_check: "buffer_data_len == 0?" {
+    shape: diamond
+    style.fill: "#BBDEFB"
+  }
+
+  b_wait: "wait_event_interruptible(\n  read_queue, \n  buffer_data_len > 0\n)" {
+    shape: rectangle
+    style.fill: "#90CAF9"
+  }
+
+  b_note_sleep: |md
+    **Process State Change:**
+    `TASK_INTERRUPTIBLE`
+    Context switch occurs.
+    Woken by: `mydevice_write`
+  | {
+    near: blocking_path.b_wait
+    style: {
+      font-size: 10
+      stroke: "#1976D2"
+      fill: "#E1F5FE"
+    }
+  }
+
+  b_sig: "signal_pending(current)?" {
+    shape: diamond
+    style.fill: "#BBDEFB"
+  }
+
+  b_err_sig: "return -ERESTARTSYS" {
+    shape: rectangle
+    style: {
+      fill: ${colors.error_red}
+      stroke: "#C62828"
+      bold: true
+    }
+  }
+
+  b_check -> b_wait: "YES (Empty)" {
+    style: {
+      stroke: "#C62828"
+      stroke-width: 2
+      font-color: "#C62828"
+    }
+  }
+
+  b_wait -> b_sig: "WAKEUP"
+  b_sig -> b_err_sig: "YES" {
+    style.stroke: "#C62828"
+  }
+  b_sig -> b_check: "NO (Spurious)" {
+    style.stroke-dash: 3
+  }
+}
+
+# ─── NON-BLOCKING LOGIC ──────────────────────────────────────────────────────
+nonblock_path: "O_NONBLOCK EXECUTION" {
+  style: {
+    fill: ${colors.nonblock_orange}
+    stroke: "#E65100"
+    stroke-width: 2
+  }
+
+  n_check: "buffer_data_len == 0?" {
+    shape: diamond
+    style.fill: "#FFE0B2"
+  }
+
+  n_eagain: "return -EAGAIN" {
+    shape: rectangle
+    style: {
+      fill: "#FFCC80"
+      stroke: "#E65100"
+      stroke-width: 3
+      bold: true
+    }
+  }
+
+  n_note: |md
+    **Userspace Contract:**
+    Caller must poll/select
+    until device is ready.
+  | {
+    near: nonblock_path.n_eagain
+    style: {
+      font-size: 10
+      fill: "#FFF8E1"
+      stroke: "#FFB300"
+    }
+  }
+
+  n_check -> n_eagain: "YES" {
+    style: {
+      stroke: "#E65100"
+      stroke-width: 3
+    }
+  }
+}
+
+# ─── SHARED CRITICAL SECTION ─────────────────────────────────────────────────
+shared_logic: "SHARED: Data Transfer Sequence" {
+  style: {
+    fill: ${colors.shared_green}
+    stroke: "#2E7D32"
+    stroke-width: 2
+  }
+
+  s_lock: "mutex_lock_interruptible(\n  &mydevice_mutex\n)" {
+    shape: rectangle
+    style.fill: "#A5D6A7"
+  }
+
+  s_recheck: "RECHECK: Data > 0?" {
+    shape: diamond
+    style.fill: "#C8E6C9"
+  }
+
+  s_recheck_note: |md
+    **Thundering Herd Guard:**
+    Another reader may have 
+    won the race for data
+    while we slept on mutex.
+  | {
+    near: shared_logic.s_recheck
+    style: {
+      font-size: 10
+      fill: "#F1F8E9"
+      stroke: "#689F38"
+    }
+  }
+
+  s_copy: "copy_to_user(buf, kbuf, len)" {
+    shape: rectangle
+    style: {
+      fill: "#81C784"
+      stroke: "#1B5E20"
+      stroke-width: 3
+      bold: true
+    }
+  }
+
+  s_fault: "return -EFAULT" {
+    shape: rectangle
+    style: {
+      fill: ${colors.error_red}
+      stroke: "#B71C1C"
+    }
+  }
+
+  s_update: "Shift Buffer (memmove)\nWake Writers" {
+    shape: rectangle
+    style.fill: "#A5D6A7"
+  }
+
+  s_unlock: "mutex_unlock()\nreturn bytes_read" {
+    shape: rectangle
+    style: {
+      fill: "#4CAF50"
+      stroke: "#1B5E20"
+      bold: true
+      font-color: white
+    }
+  }
+
+  s_lock -> s_recheck
+  s_recheck -> s_copy: "Valid"
+  s_recheck -> s_unlock: "Empty (Spurious)" {
+    style.stroke: "#F9A825"
+  }
+  s_copy -> s_fault: "Failure" {
+    style.stroke: "#B71C1C"
+  }
+  s_copy -> s_update: "Success"
+  s_update -> s_unlock
+}
+
+# ─── TOP LEVEL FLOW ──────────────────────────────────────────────────────────
+flag_check -> blocking_path.b_check: "NO" {
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 3
+    font-color: "#1565C0"
+    bold: true
+  }
+}
+
+flag_check -> nonblock_path.n_check: "YES" {
+  style: {
+    stroke: "#E65100"
+    stroke-width: 3
+    font-color: "#E65100"
+    bold: true
+  }
+}
+
+# Paths to Critical Section
+blocking_path.b_check -> shared_logic.s_lock: "NO (Data)" {
+  style.stroke: "#2E7D32"
+}
+blocking_path.b_sig -> shared_logic.s_lock: "NO (Data)" {
+  style.stroke: "#2E7D32"
+}
+nonblock_path.n_check -> shared_logic.s_lock: "NO (Data)" {
+  style.stroke: "#2E7D32"
+}
+
+# ─── USERSPACE PATTERN ───────────────────────────────────────────────────────
+userspace_example: "Userspace: High-Performance Poll Pattern" {
+  shape: rectangle
+  label: |md
+    c
+    // Non-blocking consumption loop
+    while ( (n = read(fd, buf, BUF_SIZE)) > 0 ) {
+        handle_data(buf, n);
+    }
+    if (n < 0 && errno == EAGAIN) {
+        // Yield to epoll/select
+        waitForEvent(fd);
+    }
+    
+  |
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#7B1FA2"
+    border-radius: 8
+  }
+}
+
+nonblock_path.n_eagain -> userspace_example: "errno: EAGAIN" {
+  style: {
+    stroke: "#7B1FA2"
+    stroke-dash: 5
+  }
+}

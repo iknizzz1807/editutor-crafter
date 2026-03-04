@@ -1,0 +1,340 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: "Dynamic Library Address Resolution"
+  near: top-center
+  shape: text
+  style: {
+    font-size: 32
+    bold: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  proc_maps: {
+    direction: down
+    label: "/proc/self/maps"
+    maps_content: {
+      width: 420
+      label: "Memory Mappings"
+      code: |'text
+7f8a001000-7f8a020000 r--p 00000000 fd:01 12345 /usr/lib/libc.so.6
+7f8a020000-7f8a060000 r-xp 00010000 fd:01 12345 /usr/lib/libc.so.6
+7f8a060000-7f8a070000 r--p 00050000 fd:01 12345 /usr/lib/libc.so.6
+7f8a080000-7f8a100000 r--p 00000000 fd:01 67890 /usr/lib/libcrypto.so
+7f8a100000-7f8a200000 r-xp 00080000 fd:01 67890 /usr/lib/libcrypto.so
+7f8a400000-7f8a420000 r-xp 00000000 fd:01 11111 /app/plugin.so
+      '|
+    }
+    parse: {
+      label: "Parse Lines"
+      code: |'rust
+for line in maps.lines() {
+  let (addr_range, perms, offset, path) = 
+    parse_mapping_line(line);
+  // addr_range: "7f8a001000-7f8a020000"
+  // perms: "r--p" or "r-xp"
+  // path: "/usr/lib/libc.so.6"
+}
+      '|
+    }
+  }
+  modules: {
+    direction: down
+    label: "Loaded Modules Table"
+    module_table: {
+      shape: sql_table
+      label: "ModuleInfo[] (symbol_resolver.rs)"
+      f1: "0x00 | path      | string  | /usr/lib/libc.so.6"
+      f2: "0x08 | start     | u64     | 0x7f8a00100000"
+      f3: "0x10 | end       | u64     | 0x7f8a07000000"
+      f4: "0x18 | offset    | u64     | varies by segment"
+      f5: "0x20 | build_id  | Option<String>"
+      f6: "0x28 | symbols   | Vec<Symbol>"
+    }
+    segment_note: {
+      width: 350
+      label: "Multi-Segment Handling"
+      code: |'text
+libc.so.6 appears 3 times (RO, RX, RW)
+→ Merge into single ModuleInfo
+→ start = min(all starts)
+→ end = max(all ends)
+→ Only RX segment has code symbols
+      '|
+    }
+  }
+}
+row1.proc_maps.parse -> row1.modules.module_table: "Mapping[] | build"
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  sample: {
+    direction: down
+    label: "Sample Address"
+    raw_addr: {
+      shape: hexagon
+      label: "0x7f8a032a40"
+      style: {
+        fill: "#FFE0B2"
+        stroke: "#F57C00"
+      }
+    }
+    lookup: {
+      label: "Module Lookup"
+      code: |'rust
+fn find_module(addr: u64) -> Option<&Module> {
+  modules.iter()
+    .find(|m| addr >= m.start && addr < m.end)
+}
+// 0x7f8a032a40 falls in libc.so.6
+// start = 0x7f8a001000
+// offset_in_module = 0x7f8a032a40 
+//                  - 0x7f8a001000 
+//                  = 0x21a40
+      '|
+    }
+  }
+  resolution: {
+    direction: down
+    label: "Resolution Pipeline"
+    elf_lookup: {
+      shape: class
+      label: "SymbolResolver (symbol_resolver.rs)"
+      -modules: "Vec<ModuleInfo>"
+      -cache: "FxHashMap<u64, SymbolInfo>"
+      +lookup(addr): "Option<SymbolInfo>"
+      +lookup_full(addr): "Option<SymbolInfo>"
+      +find_module(addr): "Option<&ModuleInfo>"
+    }
+    offset_calc: {
+      label: "Offset Calculation"
+      code: |'rust
+// Virtual Address → File Offset
+let file_offset = if segment.is_file_backed {
+  (vaddr - segment.vaddr) + segment.offset
+} else {
+  // Anonymous mapping, no file
+  return None;
+};
+// For 0x7f8a032a40:
+// vaddr_base = 0x7f8a001000
+// file_offset_base = 0x10000 (RX segment)
+// relative = 0x7f8a032a40 - 0x7f8a020000
+//          = 0x12a40
+// file_offset = 0x10000 + 0x12a40 = 0x22a40
+      '|
+    }
+  }
+  result: {
+    direction: down
+    label: "Resolved Symbol"
+    symbol_info: {
+      shape: sql_table
+      label: "SymbolInfo"
+      f1: "0x00 | name     | String | malloc"
+      f2: "0x08 | address  | u64    | 0x22a40"
+      f3: "0x10 | size     | u64    | 256"
+      f4: "0x18 | file     | Option<String>"
+      f5: "0x20 | line     | Option<u32>"
+      f6: "0x24 | inlined  | bool   | false"
+    }
+    final_result: {
+      shape: class
+      label: "Resolution Result"
+      +module: "/usr/lib/libc.so.6"
+      +symbol: "malloc"
+      +offset: "0x22a40"
+      +source: "malloc.c:4802"
+    }
+  }
+}
+row2.sample.raw_addr -> row2.resolution.elf_lookup: "u64 | lookup"
+row2.resolution.elf_lookup -> row2.result.symbol_info: "SymbolInfo"
+row2.result.symbol_info -> row2.result.final_result: "resolve"
+row3: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  plugin_example: {
+    direction: down
+    label: "Plugin Scenario"
+    plugin_code: {
+      width: 380
+      label: "Application with Plugins"
+      code: |'rust
+// Main app loads plugins dynamically
+fn main() {
+  let plugin = unsafe { 
+    dlopen("./plugin.so", RTLD_NOW) 
+  };
+  // Plugin registers callback
+  let callback = dlsym(plugin, "on_event");
+  callback(event);  // <-- Sample here!
+  // Address might be: 0x7f8a401234
+  // Which module owns it?
+}
+      '|
+    }
+    plugin_maps: {
+      label: "Plugin in /proc/self/maps"
+      code: |'text
+7f8a400000-7f8a420000 r-xp 00000000 fd:01 22222 /app/plugin.so
+                      ↑ sample 0x7f8a401234 falls here
+      '|
+    }
+  }
+  aslr: {
+    direction: down
+    label: "ASLR Consideration"
+    aslr_note: {
+      width: 400
+      label: "Address Space Layout Randomization"
+      code: |'text
+Run 1: libc loaded at 0x7f8a001000
+Run 2: libc loaded at 0x7f3b552000
+Run 3: libc loaded at 0x7fcc123000
+Same binary, different addresses each run!
+→ Must rebuild module table per execution
+→ Symbol OFFSETS stay constant (relative)
+→ Only base address changes
+File: malloc at file offset 0x22a40
+Run 1: vaddr = 0x7f8a001000 + 0x21a40 = 0x7f8a022a40
+Run 2: vaddr = 0x7f3b552000 + 0x21a40 = 0x7f3b573a40
+      '|
+    }
+    build_id: {
+      label: "Build ID for Matching"
+      code: |'rust
+// .note.gnu.build-id section
+let build_id = read_build_id(binary)?;
+// "abc123def456..." (unique hash)
+// Use to find matching debug file:
+// /usr/lib/debug/.build-id/ab/c123def456.debug
+      '|
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  debuglink: {
+    direction: down
+    label: "Separate Debug Files"
+    debuglink_flow: {
+      label: ".gnu_debuglink Resolution"
+      code: |'rust
+// 1. Check for .gnu_debuglink section
+let link = obj.section_by_name(".gnu_debuglink")?;
+let debug_filename = link.data(); // e.g., "libc.so.6.debug"
+// 2. Search paths (in order):
+//    - Same directory as binary
+//    - ./debug/ subdirectory
+//    - /usr/lib/debug/
+//    - /usr/lib/debug/.build-id/<prefix>/<suffix>.debug
+fn find_debug_file(bin_path: &str, link: &str) -> PathBuf {
+  let bin_dir = Path::new(bin_path).parent()?;
+  for search_path in &[
+    bin_dir,
+    &bin_dir.join(".debug"),
+    &Path::new("/usr/lib/debug"),
+  ] {
+    let candidate = search_path.join(link);
+    if candidate.exists() { return candidate; }
+  }
+  PathBuf::new()
+}
+      '|
+    }
+  }
+  cache_layer: {
+    direction: down
+    label: "Resolution Cache"
+    cache_impl: {
+      shape: class
+      label: "SymbolCache (symbol_resolver.rs)"
+      -cache: "FxHashMap<u64, SymbolInfo>"
+      -hits: "AtomicU64"
+      -misses: "AtomicU64"
+      +lookup(addr): "Option<&SymbolInfo>"
+      +insert(addr, sym): "void"
+      +clear(): "void"
+      +stats(): "CacheStats"
+    }
+    cache_perf: {
+      label: "Performance Impact"
+      code: |'text
+Without cache:
+  Binary search symbols: ~100 cycles
+  DWARF lookup: ~500-1000 cycles
+  10000 samples × 50 addrs = 500K lookups
+With cache (90% hit rate):
+  Cache hit: ~10 cycles (hash lookup)
+  Cache miss: ~500 cycles + insert
+  Effective: ~50 cycles average
+  → 10× faster resolution
+      '|
+    }
+  }
+  error_cases: {
+    direction: down
+    label: "Error Handling"
+    error_table: {
+      shape: sql_table
+      label: "Resolution Failures"
+      e1: "\"address not in any module\" | JIT code, stack"
+      e2: "\"no symbols in module\" | Stripped binary"
+      e3: "\"debug file not found\" | Missing dbgsym"
+      e4: "\"invalid ELF\" | Corrupted binary"
+      e5: "\"address < symbol start\" | Bug in binary search"
+    }
+    fallback: {
+      label: "Fallback Strategy"
+      code: |'rust
+match resolver.lookup(addr) {
+  Some(sym) => format!("{} @ {}:{}", 
+    sym.name, sym.file.unwrap_or("??"), 
+    sym.line.unwrap_or(0)),
+  None => format!("0x{:016x} [??]", addr),
+}
+      '|
+    }
+  }
+}
+legend: {
+  near: bottom-center
+  label: "Legend"
+  legend_content: {
+    grid-columns: 4
+    grid-gap: 20
+    item1: "Purple = Metadata/Headers" {
+      style.fill: "#E1BEE7"
+    }
+    item2: "Orange = Sample Data" {
+      style.fill: "#FFE0B2"
+    }
+    item3: "Green = Resolution Success" {
+      style.fill: "#C8E6C9"
+    }
+    item4: "Blue = Data Flow" {
+      style.fill: "#BBDEFB"
+    }
+  }
+}

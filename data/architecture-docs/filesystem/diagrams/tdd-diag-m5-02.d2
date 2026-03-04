@@ -1,0 +1,96 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+shape: sequence_diagram
+
+# Actor Definitions with mandatory quoting for multi-word labels
+VFS: "Kernel VFS [vfs_interface]" {
+  shape: person
+}
+FUSEK: "fuse.ko [LKM]" {
+  style.fill: "#E4DBFE"
+}
+Daemon: "FUSE Daemon [Process]" {
+  style.fill: "#C7F1FF"
+}
+Storage: "Block Device [disk.img]" {
+  shape: cylinder
+}
+
+# PHASE 1: cat triggers path lookup and attribute retrieval
+"Phase 1: Get Attributes": {
+  VFS -> FUSEK: "vfs_getattr(path='/file.txt') -> int"
+  FUSEK -> Daemon: "fuse_getattr(path='/file.txt', stbuf) -> int" {
+    style.stroke: "#0000FF"
+    style.stroke-width: 2
+  }
+  
+  Daemon."Syscall -> Context Switch [~1000 cycles]"
+
+  Daemon.lock -> Daemon.lock: "pthread_mutex_lock(&global_lock) ▼"
+  Daemon -> Daemon: "path_resolve(path='/file.txt') -> inode_num=2"
+
+  # Daemon must read directory blocks to find filename mapping
+  Daemon -> Storage: "read_block(num=sb.data_start, buf) -> int"
+  Storage."Lookup O(depth) - IO Latency [~25µs NVMe]"
+  Storage -> Daemon: "return 0 (DirEntry: name='file.txt', inode=2)"
+
+  # Daemon reads the actual inode to get file size and permissions
+  Daemon -> Storage: "read_block(num=sb.inode_table_start + 1, buf) -> int"
+  Storage -> Daemon: "return 0 (Inode struct)"
+
+  Daemon.lock -> Daemon.lock: "pthread_mutex_unlock(&global_lock) ▲"
+
+  Daemon -> FUSEK: "return 0 (st_ino=2, st_mode=S_IFREG, st_size=4096)"
+  FUSEK -> VFS: "return 0"
+}
+
+# PHASE 2: Open file
+"Phase 2: Open": {
+  VFS -> FUSEK: "vfs_open(path='/file.txt', flags=O_RDONLY) -> int"
+  FUSEK -> Daemon: "fuse_open(path='/file.txt', fi) -> int"
+  Daemon -> Daemon: "fi->fh = 0x2 (store inode_num in file handle)"
+  Daemon -> FUSEK: "return 0"
+  FUSEK -> VFS: "return fd=3"
+}
+
+# PHASE 3: Read content
+"Phase 3: Read": {
+  VFS -> FUSEK: "vfs_read(fd=3, buf, len=4096) -> ssize_t"
+  FUSEK -> Daemon: "fuse_read(fh=0x2, offset=0, len=4096) -> int" {
+    style.stroke: "#0000FF"
+    style.stroke-width: 2
+  }
+
+  Daemon.lock -> Daemon.lock: "pthread_mutex_lock(&global_lock) ▼"
+  Daemon -> Daemon: "get_file_block(inode=2, logical_idx=0) -> phys_block=5124"
+
+  # Read actual data block from storage
+  Daemon -> Storage: "read_block(num=5124, buf) -> int"
+  Storage -> Daemon: "return 0 (file_content_bytes)"
+
+  Daemon.lock -> Daemon.lock: "pthread_mutex_unlock(&global_lock) ▲"
+
+  Daemon -> FUSEK: "return 4096 (data_payload)"
+  FUSEK -> VFS: "return 4096"
+}
+
+# PHASE 4: Close / Release
+"Phase 4: Release": {
+  VFS -> FUSEK: "vfs_close(fd=3) -> int"
+  FUSEK -> Daemon: "fuse_release(fh=0x2) -> int"
+  Daemon."Cleanup file handles and flush caches"
+  Daemon -> FUSEK: "return 0"
+  FUSEK -> VFS: "return 0"
+}
+
+# Metadata annotations for engineers
+legend: {
+  near: bottom-right
+  note: "Blue Arrows: FUSE Context Switches"
+  lock_sym: "▼/▲ : Mutex Acquire/Release"
+}

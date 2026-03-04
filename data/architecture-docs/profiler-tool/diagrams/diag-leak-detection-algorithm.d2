@@ -1,0 +1,191 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Leak Detection: Reachability Analysis
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  left_panel: {
+    direction: down
+    label: "ROOT SET (GC Starting Points)"
+    roots: {
+      shape: sql_table
+      label: "Root Sources"
+      r1: "globals | .data/.bss | Static variables, lazy statics"
+      r2: "stack    | registers  | Thread-local, function locals"
+      r3: "handles  | kernel    | File descriptors, sockets"
+    }
+    roots_note: {
+      label: "Roots are always reachable by definition"
+      width: 280
+      code: |'c
+        // These are NEVER leaks:
+        static CACHE: Mutex<HashMap<...>>;
+        thread_local! { static BUF: Vec<u8> };
+      '|
+    }
+  }
+  mid_panel: {
+    direction: down
+    label: "REACHABILITY TRAVERSAL"
+    traversal: {
+      label: "Mark Phase Algorithm"
+      width: 300
+      code: |'c
+        // Same algorithm as GC mark phase
+        void mark_reachable(RootSet roots) {
+            Queue q = roots.as_queue();
+            while (!q.empty()) {
+                void* obj = q.dequeue();
+                if (is_marked(obj)) continue;
+                mark(obj);
+                for (ptr in get_references(obj)) {
+                    q.enqueue(ptr);
+                }
+            }
+        }
+      '|
+    }
+    arrow_down: {
+      shape: text
+      label: "↓ traverse pointers ↓"
+    }
+  }
+  right_panel: {
+    direction: down
+    label: "ALLOCATION GRAPH"
+    alloc_graph: {
+      direction: down
+      label: "Heap Memory Layout"
+      reachable: {
+        label: "REACHABLE (LIVE)"
+        style.fill: "#a8e6cf"
+        style.stroke: "#2d5a3d"
+        obj_a: "Object A\nrefcount: 1"
+        obj_b: "Object B\nrefcount: 2"
+        obj_c: "Object C\nrefcount: 1"
+      }
+      unreachable: {
+        label: "UNREACHABLE (LEAKED)"
+        style.fill: "#ff8b8b"
+        style.stroke: "#8b2d2d"
+        obj_x: "Object X\nNO REFERENCES"
+        obj_y: "Object Y\norphaned chain"
+        obj_z: "Object Z\nNO REFERENCES"
+      }
+      false_positive: {
+        label: "FALSE POSITIVE\n(Intentional long-lived)"
+        style.fill: "#ffd93d"
+        style.stroke: "#8b752d"
+        style.stroke-dash: 4
+        cache_entry: "Cache Entry\nNever freed by design"
+      }
+    }
+  }
+}
+row1.left_panel.roots -> row1.right_panel.alloc_graph.reachable.obj_a: "global ptr" {
+  style.stroke: "#2d5a3d"
+  style.stroke-width: 3
+}
+row1.left_panel.roots -> row1.right_panel.alloc_graph.reachable.obj_b: "stack ptr" {
+  style.stroke: "#2d5a3d"
+  style.stroke-width: 3
+}
+row1.right_panel.alloc_graph.reachable.obj_a -> row1.right_panel.alloc_graph.reachable.obj_c: "owns" {
+  style.stroke: "#2d5a3d"
+}
+row1.right_panel.alloc_graph.reachable.obj_b -> row1.right_panel.alloc_graph.reachable.obj_c: "borrows" {
+  style.stroke: "#2d5a3d"
+  style.stroke-dash: 3
+}
+row1.right_panel.alloc_graph.reachable.obj_b -> row1.right_panel.alloc_graph.false_positive.cache_entry: "cached" {
+  style.stroke: "#8b752d"
+  style.stroke-dash: 4
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  comparison: {
+    direction: down
+    label: "COMPARISON: Leak Detector vs GC"
+    gc_vs_leak: {
+      shape: sql_table
+      label: "Algorithm Comparison"
+      row1: "Phase     | GC Mark        | Leak Detector"
+      row2: "Input     | Root set       | Root set (globals, stack)"
+      row3: "Traverse  | Follow refs    | Follow refs (requires ptr tracking)"
+      row4: "Mark      | Set mark bit   | Record as reachable"
+      row5: "Sweep     | Free unmarked  | REPORT unmarked (no auto-free)"
+      row6: "Result    | Reclaimed mem  | List of potential leaks"
+    }
+  }
+  false_positives: {
+    direction: down
+    label: "FALSE POSITIVES: Why Leak Reports Lie"
+    fp_examples: {
+      shape: sql_table
+      label: "Common False Positive Patterns"
+      row1: "Pattern           | Why Not a Leak"
+      row2: "Global cache      | Intentionally lives forever"
+      row3: "Singleton         | One-time alloc, freed at exit"
+      row4: "Connection pool   | Long-lived by design"
+      row5: "Static buffer     | Pre-allocated, reused"
+      row6: "Lazy init state   | Allocated once on first use"
+    }
+    fp_note: {
+      label: "Leak = unfreed AND programmer INTENDED to free"
+      width: 320
+      code: |'c
+        // NOT a leak (intentional):
+        static LOGGER: OnceLock<Logger> = OnceLock::new();
+        // ACTUAL leak (bug):
+        fn process() {
+            let v = Box::leak(Box::new(vec
+![1000])); 
+            // v never freed, memory grows
+        }
+      '|
+    }
+  }
+  detection_result: {
+    direction: down
+    label: "LEAK DETECTION OUTPUT"
+    leak_report: {
+      shape: sql_table
+      label: "LeakReport Structure"
+      row1: "call_stack      | Vec<usize>  | Who allocated"
+      row2: "size            | usize       | Bytes leaked"
+      row3: "count           | usize       | How many of this type"
+      row4: "age_range_ns    | (u64, u64)  | Oldest to newest"
+      row5: "is_false_pos    | bool        | Heuristic flag"
+    }
+    result_note: {
+      label: "Human judgment required — tools can only flag candidates"
+      width: 280
+    }
+  }
+}
+legend: {
+  near: bottom-right
+  direction: right
+  live: "● Live (reachable)" {
+    shape: text
+    style.font-color: "#2d5a3d"
+  }
+  leaked: "● Leaked (unreachable)" {
+    shape: text
+    style.font-color: "#8b2d2d"
+  }
+  fp: "● False positive" {
+    shape: text
+    style.font-color: "#8b752d"
+  }
+}

@@ -1,0 +1,183 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # .poll Implementation: poll_wait Subscription + Readiness Mask Return
+  *Call Sequence, Synchronization Logic, and Common Implementation Pitfalls*
+| {
+  near: top-center
+}
+
+shape: sequence_diagram
+
+# ─── Participants (Kernel & Userspace) ───
+user_proc: "Userspace Process\n(epoll/wait)" {
+  shape: person
+}
+vfs: "Kernel VFS\ndo_sys_poll / ep_poll" {
+  style.fill: "#E1F5FE"
+}
+poll_fn: "Driver Implementation\nmydevice_poll(filp, wait)" {
+  style.fill: "#F3E5F5"
+}
+poll_infra: "Poll Infrastructure\n(poll_table internals)" {
+  style.stroke-dash: 3
+}
+read_q: "Device Read Queue\n(wait_queue_head_t)" {
+  style.fill: "#E8F5E9"
+}
+write_q: "Device Write Queue\n(wait_queue_head_t)" {
+  style.fill: "#E8F5E9"
+}
+buf_state: "Device Hardware/Buffer\n(Shared State)" {
+  shape: cylinder
+  style.fill: "#FFF3E0"
+}
+writer: "Concurrent Context\n(Interrupt/Write Syscall)" {
+  style.fill: "#FFEBEE"
+}
+
+# ─── Scenario 1: Correct Implementation (Happy Path) ───
+happy_path: "PHASE 1 & 2: CORRECT IMPLEMENTATION" {
+  
+  subscription: "Step 1: Subscription Phase" {
+    user_proc -> vfs: "epoll_wait(epfd, ...)"
+    vfs -> poll_fn: "f_op->poll(filp, poll_table)"
+    
+    poll_fn -> poll_infra: "poll_wait(filp, &read_q, wait)"
+    poll_infra -> read_q: "add_wait_queue(read_q, &entry)"
+    poll_infra -> poll_fn: "returns"
+    
+    poll_fn -> poll_infra: "poll_wait(filp, &write_q, wait)"
+    poll_infra -> write_q: "add_wait_queue(write_q, &entry)"
+    poll_infra -> poll_fn: "returns"
+  }
+
+  readiness: "Step 2: Readiness Snapshot" {
+    poll_fn -> buf_state: "READ buffer_data_len (Atomic/Volatile)"
+    poll_fn."NO MUTEX used here to avoid\nLivelock/Deadlock with wakeup"
+    buf_state -> poll_fn: "data_len=0, size=1024"
+    
+    poll_fn -> vfs: "return 0 (NOT READY)"
+    vfs -> vfs: "Task state = TASK_INTERRUPTIBLE\nschedule()"
+    vfs -> user_proc: "blocks..."
+  }
+
+  wakeup: "Step 3: Wakeup & Re-poll" {
+    writer -> buf_state: "LOCK mutex -> write data -> UNLOCK"
+    writer -> read_q: "wake_up_interruptible(&read_q)"
+    
+    read_q -> poll_infra: "wake_up() callbacks"
+    poll_infra -> vfs: "mark_fd_ready() -> wake process"
+    
+    vfs -> poll_fn: "RE-POLL: f_op->poll(filp, NULL)"
+    poll_fn."wait argument is NULL\nSubscription skipped on re-poll"
+    
+    poll_fn -> buf_state: "RE-READ buffer_data_len"
+    buf_state -> poll_fn: "data_len=256"
+    
+    poll_fn -> vfs: "return (POLLIN | POLLRDNORM)"
+    vfs -> user_proc: "return events [fd ready]"
+  }
+}
+
+# ─── Scenario 2: Fatal Bug (Missing Subscription) ───
+bug_a: "BUG A: MISSING poll_wait() CALL" {
+  user_proc -> vfs: "poll(...)"
+  vfs -> poll_fn: "f_op->poll(filp, poll_table)"
+  
+  poll_fn -> poll_fn: "MISSING: poll_wait() !!"
+  poll_fn."No link established between\nread_q and this waiter"
+  
+  poll_fn -> buf_state: "check data_len"
+  buf_state -> poll_fn: "0"
+  poll_fn -> vfs: "return 0"
+  
+  vfs -> vfs: "schedule()"
+  
+  writer -> read_q: "wake_up_interruptible()"
+  read_q -> read_q: "Queue empty (No subscribers)"
+  
+  vfs -> user_proc: "HANGS UNTIL TIMEOUT / SIGKILL" {
+    style: {
+      stroke: red
+      stroke-width: 4
+    }
+  }
+}
+
+# ─── Scenario 3: Performance Bug (Missing Readiness Check) ───
+bug_b: "BUG B: MASK ALWAYS ZERO (BUSY-SPIN)" {
+  user_proc -> vfs: "epoll_wait()"
+  vfs -> poll_fn: "f_op->poll(filp, poll_table)"
+  
+  poll_fn -> poll_infra: "poll_wait(...) [OK]"
+  
+  poll_fn -> poll_fn: "MISSING: mask logic (returns 0)"
+  poll_fn -> vfs: "return 0"
+  
+  writer -> read_q: "wake_up_interruptible()"
+  read_q -> vfs: "wakeup process"
+  
+  vfs -> poll_fn: "RE-POLL"
+  poll_fn -> poll_fn: "return 0 (Logic error: still says not ready)"
+  vfs -> vfs: "schedule() (returns to sleep immediately)"
+  
+  vfs -> poll_fn: "RE-POLL"
+  poll_fn -> vfs: "return 0"
+  
+  poll_fn."BUSY-SPIN: Wakeup -> Poll -> Sleep -> Wakeup": {
+    style.font-color: red
+  }
+}
+
+# ─── Implementation Specification ───
+spec_label: |'md'
+  ### Implementation Rules for `f_op->poll`
+  
+  c
+  __poll_t my_poll(struct file *filp, poll_table *wait) {
+      __poll_t mask = 0;
+      struct my_dev *dev = filp->private_data;
+
+      /* 1. Add wait queues to poll_table */
+      /* This is ONLY done when 'wait' is non-NULL */
+      poll_wait(filp, &dev->read_q,  wait);
+      poll_wait(filp, &dev->write_q, wait);
+
+      /* 2. Check current hardware/buffer state */
+      /* Note: Stale reads are okay; write path must wake_up() */
+      if (dev->buffer_len > 0)
+          mask |= POLLIN | POLLRDNORM;
+      
+      if (dev->buffer_len < dev->buffer_size)
+          mask |= POLLOUT | POLLWRNORM;
+
+      /* 3. Return bitmask of ready operations */
+      return mask;
+  }
+  
+  
+  **Synchronization Note:** 
+  Do **NOT** acquire `mutex_lock` inside `poll`. 
+  - If `poll` sleeps on a mutex held by the `write` path...
+  - And the `write` path is waiting for space...
+  - **Deadlock** occurs. 
+  - Spurious wakeups (returning ready when not) are safe because 
+    the subsequent `read()` will check the mutex and return `-EAGAIN`.
+'| {
+  near: bottom-center
+  style.stroke: orange
+  style.fill: "#FFFDE7"
+}
+
+# ─── Styling ───
+(happy_path.wakeup.writer -> happy_path.wakeup.read_q)[0].style.stroke: "#4CAF50"
+(bug_a.writer -> bug_a.read_q)[0].style.stroke: "#F44336"
+(bug_b.vfs -> bug_b.poll_fn)[0].style.stroke: red
+(bug_b.vfs -> bug_b.poll_fn)[1].style.stroke: red
+(bug_b.vfs -> bug_b.poll_fn)[2].style.stroke: red

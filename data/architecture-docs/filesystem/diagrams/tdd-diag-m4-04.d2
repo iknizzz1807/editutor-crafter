@@ -1,0 +1,170 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 30
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 1. MEMORY & STORAGE MAPPING (INTEL MANUAL STYLE)
+# -----------------------------------------------------------------------------
+mapping_context: "Memory & Storage Mapping: Sparse File Hole Detection" {
+  
+  logical_file: "Logical Address Space (VFS View)" {
+    grid-columns: 4
+    l_block_0: "Block 0\nOffset: 0x0000\n[ DATA ]" { 
+      style.fill: "#dae8fc"
+      style.stroke: "#6c8ebf" 
+      style.stroke-width: 2
+    }
+    l_block_1: "Block 1\nOffset: 0x1000\n[ HOLE ]" { 
+      style.fill: "#f5f5f5"
+      style.stroke: "#666666"
+      style.stroke-dash: 5
+      style.font-color: "#666666"
+    }
+    l_block_2: "Block 2\nOffset: 0x2000\n[ DATA ]" { 
+      style.fill: "#dae8fc"
+      style.stroke: "#6c8ebf" 
+    }
+    l_block_3: "Block 3\nOffset: 0x3000\n[ DATA ]" { 
+      style.fill: "#dae8fc"
+      style.stroke: "#6c8ebf" 
+    }
+  }
+
+  inode_structure: "Inode #42 Struct (ext4_inode_info)" {
+    shape: sql_table
+    style.fill: "#e1d5e7"
+    style.stroke: "#9673a6"
+    style.stroke-width: 2
+    
+    0x00: "i_mode: S_IFREG | 0644" {label: "2B"}
+    0x0A: "i_size: 16384" {label: "8B"}
+    0x32: "i_block[0]: 0x00000500" {style.fill: "#ffe6cc"; label: "8B (Ptr)"}
+    0x3A: "i_block[1]: 0x00000000" {style.fill: "#f8cecc"; label: "8B (NULL/Sparse)"}
+    0x42: "i_block[2]: 0x00000501" {style.fill: "#ffe6cc"; label: "8B (Ptr)"}
+    0x4A: "i_block[3]: 0x00000502" {style.fill: "#ffe6cc"; label: "8B (Ptr)"}
+  }
+
+  physical_disk: "Physical Storage (LBA Sectors)" {
+    grid-columns: 3
+    p_block_500: "LBA: 0x500\nSector Range: [N..N+7]\n(Data Block 0)" { 
+      style.fill: "#dae8fc"
+      style.stroke: "#6c8ebf"
+    }
+    p_block_501: "LBA: 0x501\nSector Range: [M..M+7]\n(Data Block 2)" { 
+      style.fill: "#dae8fc"
+      style.stroke: "#6c8ebf"
+    }
+    p_block_502: "LBA: 0x502\nSector Range: [K..K+7]\n(Data Block 3)" { 
+      style.fill: "#dae8fc"
+      style.stroke: "#6c8ebf"
+    }
+  }
+
+  # Mapping Logic
+  logical_file.l_block_0 -> inode_structure.0x32: "Get Phys Block"
+  logical_file.l_block_1 -> inode_structure.0x3A: "EXT4_HOLE_BLOCK" {
+    style: {
+      stroke: "#b85450"
+      stroke-width: 4
+      animated: true
+    }
+  }
+  
+  # Pointer Connections
+  inode_structure.0x32 -> physical_disk.p_block_500: "LBA Mapping" { 
+    style.stroke: "#d79b00" 
+    style.stroke-width: 2
+    target-arrowhead: diamond
+  }
+  inode_structure.0x42 -> physical_disk.p_block_501: "LBA Mapping" { 
+    style.stroke: "#d79b00" 
+    target-arrowhead: diamond
+  }
+  inode_structure.0x4A -> physical_disk.p_block_502: "LBA Mapping" { 
+    style.stroke: "#d79b00" 
+    target-arrowhead: diamond
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 2. KERNEL EXECUTION FLOW (SEQUENCE DIAGRAM)
+# -----------------------------------------------------------------------------
+execution_logic: "Kernel sparse_read() State Machine" {
+  shape: sequence_diagram
+  
+  user: "User Process\n(Context: syscall)"
+  fs: "ext4 / VFS Layer\n(Kernel Space)"
+  block_layer: "I/O Stack\n(Block/NVMe)"
+  
+  user -> fs: "read(fd, buf, 4096) offset=4k"
+  
+  fs.lock_acquire: "▼ mutex_lock(&inode->i_rwsem)" {
+    style.stroke: "#b85450"
+  }
+
+  fs.lookup: "Lookup Logic" {
+    fs -> fs: "ext4_get_block(idx=1)"
+    
+    fs.path_hole: "BRANCH: Sparse Block Detected" {
+      style.fill: "#d5e8d4"
+      style.stroke: "#2D7D32"
+      style.stroke-width: 2
+
+      fs -> fs: "memset(page_cache, 0, 4096)"
+      fs -> fs: "set_buffer_uptodate()"
+      fs -> fs: "Bypass disk submission"
+    }
+    
+    fs.path_data: "BRANCH: Data Present" {
+      style.stroke-dash: 3
+      fs -> block_layer: "submit_bio(READ, LBA_501)"
+      block_layer -> fs: "DMA Completion IRQ"
+    }
+  }
+  
+  fs.lock_release: "▲ mutex_unlock(&inode->i_rwsem)" {
+    style.stroke: "#2D7D32"
+  }
+
+  fs -> user: "Return 4096 (Bytes Synthesized)" {
+    style: {
+      stroke: "#0000FF"
+      stroke-width: 3
+      bold: true
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 3. TECHNICAL DOCUMENTATION (FIXED NEAR CONSTANT)
+# -----------------------------------------------------------------------------
+annotation_box: |md
+  ## Sparse Hole Detection Logic (ext4)
+  
+  **Data Structure Representation:**
+  - `i_block[]` entries or Extent Tree leaves marked with `block_id = 0`.
+  - No physical block is allocated on the backing store.
+  
+  **Read Operation (sparse_read):**
+  1. **VFS Lookup**: Translates file offset 4096 to block index 1.
+  2. **Mapping check**: `bmap` returns physical address 0.
+  3. **Zero Synthesis**: The kernel's `read` implementation detects the hole and performs a `memset` on the destination buffer instead of issuing a `BIO` (Block I/O) request.
+  
+  **Performance Characteristics:**
+  - **I/O Latency**: Effectively 0ms (CPU-bound memory operation).
+  - **Storage**: Actual disk footprint is 0 sectors for the hole region.
+| {
+  near: top-right
+  style.font-size: 14
+}
+
+# Global Diagram Styling
+***.style.font-size: 12
+(mapping_context.logical_file.l_block_1 -> mapping_context.inode_structure.0x3A)[0].source-arrowhead: triangle
+
+execution_logic.fs.path_hole.style.double-border: true

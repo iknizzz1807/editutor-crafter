@@ -1,0 +1,203 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+
+# --- STYLING CLASSES (Intel Manual Standard) ---
+classes: {
+  logic: {
+    style: {
+      fill: "#f3e5f5"
+      stroke: "#7b1fa2"
+      stroke-width: 2
+    }
+  }
+  syscall: {
+    style: {
+      fill: "#e3f2fd"
+      stroke: "#1976d2"
+      stroke-width: 2
+      stroke-dash: 3
+    }
+  }
+  data_buffer: {
+    shape: package
+    style: {
+      fill: "#bbdefb"
+      stroke: "#0d47a1"
+    }
+  }
+  storage: {
+    shape: cylinder
+    style: {
+      fill: "#cfd8dc"
+      stroke: "#37474f"
+    }
+  }
+  memory_meta: {
+    style: {
+      font: mono
+      fill: "#f5f5f5"
+      stroke: "#9e9e9e"
+    }
+  }
+}
+
+# --- TOP LEVEL ANNOTATIONS ---
+title: |md
+  # Block Write Data Flow (4KB Atomic)
+  **Specification**: POSIX-compliant synchronous block I/O
+| {
+  near: top-center
+}
+
+# --- DATA STRUCTURE DEFINITIONS ---
+BlockDevice_Struct: {
+  shape: sql_table
+  near: top-right
+  style.fill: "#f8f9fa"
+  
+  header: "struct BlockDevice"
+  0x00: "int fd" {constraint: "File Descriptor"}
+  0x08: "uint64_t size" {constraint: "Total Bytes"}
+  0x10: "uint64_t num_blocks" {constraint: "Capacity"}
+  0x18: "uint32_t block_size" {constraint: "4096 (Fixed)"}
+}
+
+# --- EXECUTION ZONES ---
+
+user_space: "User Space (Filesystem Library)" {
+  caller: "Application/Caller" {
+    buffer: "void* data_ptr" {
+      class: data_buffer
+      tooltip: "Base Address: 4KB Aligned"
+    }
+  }
+
+  implementation: "write_block(dev, block_num, data)" {
+    class: logic
+    
+    validation: "1. Bounds Check" {
+      shape: diamond
+      label: "block_num < dev->num_blocks?"
+    }
+
+    calc: "2. Address Translation" {
+      label: "LBA = block_num << 12\n(Offset = LBA)"
+    }
+  }
+}
+
+kernel_boundary: "--- System Call Interface (VFS Layer) ---" {
+  style: {
+    stroke-dash: 5
+    stroke: "#78909c"
+    font-color: "#546e7a"
+    bold: true
+  }
+}
+
+kernel_space: "Kernel Space" {
+  lseek_call: "sys_lseek(fd, offset, SEEK_SET)" {
+    class: syscall
+    tooltip: "Update File Pointer in File Description"
+  }
+  write_call: "sys_write(fd, buf, 4096)" {
+    class: syscall
+    tooltip: "Invokes copy_from_user()"
+  }
+  fsync_call: "sys_fsync(fd)" {
+    class: syscall
+    tooltip: "Flush dirty pages to storage controller"
+  }
+  
+  page_cache: "OS Page Cache" {
+    shape: rectangle
+    style: {
+      fill: "#e8f5e9"
+      stroke: "#2e7d32"
+      double-border: true
+    }
+    label: "Dirty Page (4096B)\n[Inode Data Buffer]"
+  }
+}
+
+disk_subsystem: "Physical Storage Controller" {
+  controller: "NVMe/SATA Controller" {
+    shape: rectangle
+    style.fill: "#eceff1"
+  }
+  backing_file: "disk.img (Sector 0...N)" {
+    class: storage
+  }
+}
+
+# --- DATA PATHS & CONTROL FLOW ---
+
+# 1. Logic flow within user library
+user_space.caller.buffer -> user_space.implementation: "0x01: Reference Pointer" {
+  style: {
+    stroke: orange
+    stroke-width: 2
+    bold: true
+  }
+}
+
+user_space.implementation.validation -> user_space.implementation.calc: "VALID" {
+  style.stroke: "#2e7d32"
+}
+user_space.implementation.validation -> user_space.caller: "0xEE: EINVAL" {
+  style: {
+    stroke: red
+    stroke-dash: 2
+  }
+}
+
+# 2. Transition to Kernel
+user_space.implementation.calc -> kernel_space.lseek_call: "0x02: Set Offset"
+kernel_space.lseek_call -> kernel_space.write_call: "0x03: Call write()"
+
+# 3. Kernel Buffer Management
+user_space.caller.buffer -> kernel_space.write_call: "0x04: copy_from_user" {
+  style: {
+    stroke: "#1976d2"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+kernel_space.write_call -> kernel_space.page_cache: "0x05: Set Page Dirty"
+kernel_space.page_cache -> kernel_space.fsync_call: "0x06: fsync() block"
+
+# 4. Persistence
+kernel_space.fsync_call -> disk_subsystem.controller: "0x07: BIO_WRITE"
+disk_subsystem.controller -> disk_subsystem.backing_file: "0x08: DMA to Media" {
+  label: "Atomic 4096B Write"
+  style: {
+    stroke: "#1b5e20"
+    stroke-width: 4
+  }
+}
+
+# --- DOCUMENTATION NOTES ---
+notes: |md
+  ### block_write Implementation Notes
+  1. **Memory Alignment**: `data_ptr` should be 512-byte or 4KB aligned to avoid RMW overhead if using `O_DIRECT`.
+  2. **Error Handling**: Errors in `sys_write` may reflect memory faults (EFAULT); errors in `sys_fsync` reflect physical I/O failure (EIO).
+  3. **Concurrency**: VFS takes `i_rwsem` during `sys_write` to protect file pointer consistency.
+| {
+  near: bottom-left
+}
+
+# --- STATE LEGEND ---
+legend: {
+  near: bottom-right
+  logic_type: "Logic/Diamond" { class: logic }
+  call_type: "Syscall/Dash" { class: syscall }
+  data_type: "Data/Pointer" { 
+    style: { stroke: orange; stroke-width: 2 }
+  }
+}

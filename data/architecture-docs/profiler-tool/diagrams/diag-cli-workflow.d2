@@ -1,0 +1,223 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: |md
+    # CLI Profiling Workflow
+    Complete pipeline from attach to visualization
+  |
+}
+title.near: top-center
+
+r1: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  phase1: Phase 1 - Attach {
+    direction: down
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    cli_attach: {
+      label: "CLI Command"
+      code: |'bash
+        profiler profile -p 12345 -f 99 -d 10
+      '|
+    }
+    attach_flow: {
+      direction: down
+      pid_lookup: "Lookup /proc/12345"
+      ptr_attach: "ptrace(PTRACE_ATTACH)"
+      wait_stop: "Wait for SIGSTOP"
+      pid_lookup -> ptr_attach -> wait_stop
+    }
+    state: "Process State: STOPPED | Attached via ptrace"
+  }
+}
+
+r2: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  phase2: Phase 2 - Sampling {
+    direction: down
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    cli_sample: {
+      label: "CLI Command"
+      code: |'bash
+        profiler record -f 99 -d 10 -- ./my_app
+      '|
+    }
+    sample_loop: {
+      direction: down
+      timer: {
+        label: "setitimer(ITIMER_PROF)"
+        note: "99 Hz = 10,101 μs interval"
+      }
+      signal: "SIGPROF -> Handler"
+      handler: {
+        label: "sigprof_handler()"
+        code: |'c
+          // 1. Capture ucontext
+          // 2. Walk frame pointers
+          // 3. Write to ring buffer
+        '|
+      }
+      timer -> signal -> handler
+    }
+    buffer: {
+      label: "Lock-Free Ring Buffer"
+      shape: cylinder
+      width: 200
+    }
+    sample_loop.handler -> buffer: "RawSample[] | write"
+  }
+}
+
+r3: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  phase3: Phase 3 - Detach {
+    direction: down
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+    cli_detach: {
+      label: "Trigger Event"
+      code: |'md
+        Duration elapsed (10s)
+        or Ctrl+C received
+      '|
+    }
+    detach_flow: {
+      direction: down
+      stop_timer: "setitimer(0)"
+      uninstall: "sigaction(SIG_DFL)"
+      ptr_detach: "ptrace(PTRACE_DETACH)"
+      stop_timer -> uninstall -> ptr_detach
+    }
+    state2: "Process State: RUNNING | Profiler detached"
+  }
+}
+
+r4: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  phase4: Phase 4 - Export {
+    direction: down
+    style.fill: "#F3E5F5"
+    style.stroke: "#9C27B0"
+    cli_export: {
+      label: "CLI Command"
+      code: |'bash
+        profiler record -o profile.pb.gz --format pprof
+      '|
+    }
+    export_flow: {
+      direction: down
+      read_buffer: "Read Ring Buffer | 64k samples"
+      resolve: {
+        label: "Symbol Resolution"
+        code: |'md
+          • /proc/self/maps
+          • ELF .symtab/.dynsym
+          • DWARF .debug_info
+        '|
+      }
+      build: "Build Export Format"
+      read_buffer -> resolve -> build
+    }
+    formats: {
+      direction: right
+      pprof: "pprof.pb | Protobuf"
+      collapsed: "collapsed.txt | Stacks"
+      json_out: "speedscope.json | JSON"
+      pprof -> collapsed -> json_out
+    }
+    export_flow.build -> formats
+  }
+}
+
+r5: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  phase5: Phase 5 - Visualize {
+    direction: down
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    cli_viz: {
+      label: "CLI Command"
+      code: |'bash
+        profiler flamegraph -i profile.pb -o flame.svg
+      '|
+    }
+    viz_flow: {
+      direction: down
+      load_step: "Import Format | Parse"
+      aggregate: "Aggregate | Path to Count"
+      tree: "Build Flame Tree | Hierarchical"
+      render: "Render SVG | rect frames"
+      load_step -> aggregate -> tree -> render
+    }
+    outputs: {
+      direction: right
+      svg: "flamegraph.svg"
+      top_view: "top view"
+      web: "pprof -http"
+      svg -> top_view -> web
+    }
+    viz_flow.tree -> outputs
+  }
+}
+
+r1.phase1 -> r2.phase2: "Attach OK" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 3
+}
+r2.phase2 -> r3.phase3: "10s Elapsed" {
+  style.stroke: "#FF9800"
+  style.stroke-width: 3
+}
+r3.phase3 -> r4.phase4: "Detach OK" {
+  style.stroke: "#2196F3"
+  style.stroke-width: 3
+}
+r4.phase4 -> r5.phase5: "Export Ready" {
+  style.stroke: "#9C27B0"
+  style.stroke-width: 3
+}
+
+legend: {
+  style.fill: "#FAFAFA"
+  style.stroke: "#E0E0E0"
+  label: "CLI Flags Reference"
+  flag_p: "-p, --pid UINT      Target process ID"
+  flag_f: "-f, --frequency UINT Sampling Hz (99)"
+  flag_d: "-d, --duration UINT  Profile duration (s)"
+  flag_o: "-o, --output PATH    Output file path"
+  flag_fmt: "    --format FORMAT  pprof|collapsed|json"
+}
+legend.near: bottom-right
+
+overhead_note: {
+  label: "Overhead Budget"
+  width: 280
+  cost_table: |'md
+    **Per-Sample Cost Breakdown:**
+    | Component | Cost |
+    |-----------|------|
+    | Timer interrupt | ~500 ns |
+    | Signal delivery | ~200 ns |
+    | Stack unwinding | ~200 ns/frame |
+    | Buffer write | ~50 ns |
+    **Total at 99 Hz:** ~0.05% overhead
+  '|
+}
+overhead_note.near: bottom-left

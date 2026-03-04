@@ -1,0 +1,421 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+direction: down
+title: |md
+  ## `-ERESTARTSYS` Signal Flow: Blocked `read()` → Userspace `errno`
+  *How Ctrl+C reaches userspace — and what goes wrong when drivers get it wrong*
+| {near: top-center}
+# ── Swimlane containers ──────────────────────────────────────────
+userspace: USERSPACE (ring 3) {
+  style: {
+    fill: "#1a1a2e"
+    stroke: "#e94560"
+    stroke-width: 2
+    border-radius: 8
+    font-color: "#e0e0ff"
+    bold: true
+    font-size: 14
+  }
+  ctrl_c: "① User presses Ctrl+C" {
+    shape: oval
+    style: {
+      fill: "#e94560"
+      stroke: "#ff6b8a"
+      font-color: white
+      bold: true
+      font-size: 13
+    }
+  }
+  blocked_read: "Process P: blocked in read(fd, buf, N)" {
+    style: {
+      fill: "#16213e"
+      stroke: "#0f3460"
+      font-color: "#a0c4ff"
+      font-size: 12
+    }
+  }
+  sa_restart_check: "⑤ SA_RESTART flag check\non SIGINT handler registration" {
+    shape: diamond
+    style: {
+      fill: "#0f3460"
+      stroke: "#a0c4ff"
+      stroke-width: 2
+      font-color: "#a0c4ff"
+      font-size: 12
+      bold: true
+    }
+  }
+  restart_path: "⑤a SA_RESTART SET\nSyscall restarted transparently\nProcess re-enters read() blocked" {
+    style: {
+      fill: "#1a472a"
+      stroke: "#2ecc71"
+      stroke-width: 2
+      font-color: "#2ecc71"
+      font-size: 12
+    }
+  }
+  eintr_path: "⑤b SA_RESTART NOT SET\nConvert → -EINTR\nReturn to userspace" {
+    style: {
+      fill: "#4a2800"
+      stroke: "#f39c12"
+      stroke-width: 2
+      font-color: "#f39c12"
+      font-size: 12
+    }
+  }
+  errno_eintr: "⑥ read() returns -1\nerrno = EINTR\nSignal handler runs" {
+    shape: oval
+    style: {
+      fill: "#f39c12"
+      stroke: "#f1c40f"
+      stroke-width: 2
+      font-color: "#1a1a2e"
+      bold: true
+      font-size: 13
+    }
+  }
+}
+kernel: KERNEL SPACE (ring 0) {
+  style: {
+    fill: "#0d0d1a"
+    stroke: "#7b2d8b"
+    stroke-width: 2
+    border-radius: 8
+    font-color: "#e0e0ff"
+    bold: true
+    font-size: 14
+  }
+  signal_queue: "① SIGINT queued for process P\n(kernel signal delivery)" {
+    style: {
+      fill: "#2d0a3e"
+      stroke: "#7b2d8b"
+      font-color: "#c39bd3"
+      font-size: 12
+    }
+  }
+  wait_macro: "② wait_event_interruptible(\n   mydevice_read_queue,\n   buffer_data_len > 0\n)" {
+    style: {
+      fill: "#1a0a2e"
+      stroke: "#9b59b6"
+      stroke-width: 2
+      font-color: "#c39bd3"
+      font-size: 12
+      font: mono
+    }
+  }
+  signal_pending: "signal_pending(current) == true\n→ break out of sleep loop" {
+    shape: diamond
+    style: {
+      fill: "#3d0a4e"
+      stroke: "#e74c3c"
+      stroke-width: 2
+      font-color: "#e74c3c"
+      font-size: 12
+      bold: true
+    }
+  }
+  macro_returns: "wait_event_interruptible\nreturns -ERESTARTSYS" {
+    style: {
+      fill: "#2d0000"
+      stroke: "#e74c3c"
+      stroke-width: 3
+      font-color: "#e74c3c"
+      bold: true
+      font-size: 13
+      font: mono
+    }
+  }
+  driver_returns: "③ mydevice_read()\nreturns -ERESTARTSYS\nto VFS layer" {
+    style: {
+      fill: "#2d0000"
+      stroke: "#c0392b"
+      stroke-width: 2
+      font-color: "#e74c3c"
+      bold: true
+      font-size: 12
+      font: mono
+    }
+  }
+  syscall_layer: "④ Kernel syscall layer\n(do_syscall_64 / entry_SYSCALL_64)\nDetects: ret == -ERESTARTSYS" {
+    style: {
+      fill: "#1a1a0a"
+      stroke: "#f1c40f"
+      stroke-width: 2
+      font-color: "#f1c40f"
+      font-size: 12
+    }
+  }
+}
+# ── Bug contrast boxes ─────────────────────────────────────────────
+bugs: COMMON BUGS — What Goes Wrong {
+  style: {
+    fill: "#1a0000"
+    stroke: "#e74c3c"
+    stroke-width: 3
+    stroke-dash: 4
+    border-radius: 6
+    font-color: "#e74c3c"
+    bold: true
+    font-size: 13
+  }
+  bug1: |md
+    **🐛 BUG: Return `0` instead of `-ERESTARTSYS`**
+    c
+    // WRONG:
+    if (wait_event_interruptible(...))
+        return 0;  // ← looks like EOF!
+    
+    **Effect:** `read()` returns 0 → userspace thinks file ended (EOF).
+    Signal handler still runs. Process confused about read state.
+    `cat` exits silently printing nothing. Data lost.
+  | {
+    style: {
+      fill: "#2d0000"
+      stroke: "#e74c3c"
+      font-size: 12
+    }
+  }
+  bug2: |md
+    **🐛 WORSE BUG: Use `wait_event` (not `_interruptible`)**
+    c
+    // CATASTROPHICALLY WRONG:
+    wait_event(mydevice_read_queue,   // ← TASK_UNINTERRUPTIBLE
+               buffer_data_len > 0);
+    
+    **Effect:** Process enters **D state** (uninterruptible sleep).
+    SIGKILL is **ignored**. Process cannot be killed.
+    Machine may require reboot if many such processes accumulate.
+    Visible in `ps aux` as state `D`.
+  | {
+    style: {
+      fill: "#2d0000"
+      stroke: "#8b0000"
+      font-size: 12
+    }
+  }
+  bug3: |md
+    **🐛 SUBTLE BUG: Convert to `-EINTR` before returning**
+    c
+    // WRONG:
+    if (wait_event_interruptible(...))
+        return -EINTR;  // ← bypasses SA_RESTART!
+    
+    **Effect:** Programs using `SA_RESTART` expect transparent restart.
+    Returning `-EINTR` bypasses the restart mechanism entirely.
+    Every signal causes a visible `EINTR` even with `SA_RESTART` set.
+  | {
+    style: {
+      fill: "#2d0a00"
+      stroke: "#e67e22"
+      font-size: 12
+    }
+  }
+}
+# ── Correct code reference ──────────────────────────────────────────
+correct_code: CORRECT Implementation {
+  style: {
+    fill: "#001a00"
+    stroke: "#2ecc71"
+    stroke-width: 2
+    border-radius: 6
+    font-color: "#2ecc71"
+    bold: true
+    font-size: 13
+  }
+  code: |go
+    static ssize_t mydevice_read(...) {
+        /* Step 1: sleep OUTSIDE mutex */
+        if (wait_event_interruptible(
+                mydevice_read_queue,
+                buffer_data_len > 0))
+            return -ERESTARTSYS;  /* ← CORRECT: propagate immediately */
+        /* Step 2: acquire mutex AFTER waking */
+        if (mutex_lock_interruptible(&mydevice_mutex))
+            return -ERESTARTSYS;  /* ← CORRECT: propagate here too */
+        /* Step 3: recheck condition under mutex */
+        if (buffer_data_len == 0) {
+            mutex_unlock(&mydevice_mutex);
+            return -EAGAIN;
+        }
+        /* ... copy data, unlock ... */
+    }
+  | {
+    style: {
+      fill: "#001a00"
+      stroke: "#27ae60"
+      font-size: 11
+    }
+  }
+}
+# ── Connections: Happy path ─────────────────────────────────────────
+userspace.ctrl_c -> kernel.signal_queue: "SIGINT delivered to process P" {
+  style: {
+    stroke: "#e94560"
+    stroke-width: 3
+    font-color: "#e94560"
+    bold: true
+    animated: true
+  }
+}
+userspace.blocked_read -> kernel.wait_macro: "blocked inside kernel\n(process context, ring 0)" {
+  style: {
+    stroke: "#7b2d8b"
+    stroke-width: 2
+    stroke-dash: 4
+    font-color: "#9b59b6"
+    font-size: 11
+  }
+}
+kernel.signal_queue -> kernel.wait_macro: "kernel wakes process P\n(set TASK_RUNNING)" {
+  style: {
+    stroke: "#e74c3c"
+    stroke-width: 2
+    font-color: "#e74c3c"
+    animated: true
+  }
+}
+kernel.wait_macro -> kernel.signal_pending: "schedule() returns\nloop iteration" {
+  style: {
+    stroke: "#9b59b6"
+    stroke-width: 2
+    font-color: "#c39bd3"
+  }
+}
+kernel.signal_pending -> kernel.macro_returns: "TRUE" {
+  style: {
+    stroke: "#e74c3c"
+    stroke-width: 3
+    font-color: "#e74c3c"
+    bold: true
+  }
+}
+kernel.signal_pending -> kernel.wait_macro: "FALSE\n(spurious wakeup)\nloop again" {
+  style: {
+    stroke: "#3498db"
+    stroke-dash: 5
+    font-color: "#3498db"
+    font-size: 11
+  }
+}
+kernel.macro_returns -> kernel.driver_returns: "-ERESTARTSYS\npropagated up" {
+  style: {
+    stroke: "#e74c3c"
+    stroke-width: 3
+    font-color: "#e74c3c"
+    bold: true
+    animated: true
+  }
+}
+kernel.driver_returns -> kernel.syscall_layer: "-ERESTARTSYS\nreaches VFS/syscall boundary" {
+  style: {
+    stroke: "#f1c40f"
+    stroke-width: 3
+    font-color: "#f1c40f"
+    bold: true
+    animated: true
+  }
+}
+kernel.syscall_layer -> userspace.sa_restart_check: "check sigaction flags\nfor SIGINT handler" {
+  style: {
+    stroke: "#f1c40f"
+    stroke-width: 2
+    font-color: "#f1c40f"
+  }
+}
+userspace.sa_restart_check -> userspace.restart_path: "SA_RESTART\nset" {
+  style: {
+    stroke: "#2ecc71"
+    stroke-width: 3
+    font-color: "#2ecc71"
+    bold: true
+  }
+}
+userspace.restart_path -> userspace.blocked_read: "re-enter read()\ntransparent to process" {
+  style: {
+    stroke: "#2ecc71"
+    stroke-dash: 5
+    font-color: "#2ecc71"
+    font-size: 11
+    animated: true
+  }
+}
+userspace.sa_restart_check -> userspace.eintr_path: "SA_RESTART\nnot set" {
+  style: {
+    stroke: "#f39c12"
+    stroke-width: 3
+    font-color: "#f39c12"
+    bold: true
+  }
+}
+userspace.eintr_path -> userspace.errno_eintr: "-ERESTARTSYS converted\nto -EINTR for userspace" {
+  style: {
+    stroke: "#f39c12"
+    stroke-width: 2
+    font-color: "#f39c12"
+    animated: true
+  }
+}
+# ── Bug connections (dashed red) ────────────────────────────────────
+bugs.bug1 -> kernel.driver_returns: "instead of -ERESTARTSYS" {
+  style: {
+    stroke: "#e74c3c"
+    stroke-dash: 6
+    font-color: "#e74c3c"
+    font-size: 11
+  }
+  target-arrowhead: {
+    shape: cross
+  }
+}
+bugs.bug2 -> kernel.wait_macro: "replaces wait_event_interruptible" {
+  style: {
+    stroke: "#8b0000"
+    stroke-dash: 6
+    font-color: "#8b0000"
+    font-size: 11
+  }
+  target-arrowhead: {
+    shape: cross
+  }
+}
+bugs.bug3 -> kernel.driver_returns: "converts before returning" {
+  style: {
+    stroke: "#e67e22"
+    stroke-dash: 6
+    font-color: "#e67e22"
+    font-size: 11
+  }
+  target-arrowhead: {
+    shape: cross
+  }
+}
+correct_code -> kernel.driver_returns: "correct pattern" {
+  style: {
+    stroke: "#2ecc71"
+    stroke-width: 2
+    font-color: "#2ecc71"
+    font-size: 11
+  }
+}
+# ── Legend ──────────────────────────────────────────────────────────
+legend: |md
+  **Signal Flow Legend**
+  → Animated red: SIGINT delivery path
+  → Animated yellow: `-ERESTARTSYS` propagation
+  → Green: SA_RESTART transparent restart
+  → Orange: SA_RESTART absent → EINTR to userspace
+  ╌ Blue dashed: spurious wakeup loop-back
+  ✕ Red dashed: BUG paths
+| {
+  near: bottom-right
+  style: {
+    fill: "#0d0d1a"
+    stroke: "#444466"
+    font-color: "#a0a0cc"
+    font-size: 11
+  }
+}

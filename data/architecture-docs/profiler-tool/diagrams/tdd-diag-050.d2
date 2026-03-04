@@ -1,0 +1,542 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    cpu_primary: "#3B82F6"
+    cpu_secondary: "#1D4ED8"
+    signal_color: "#EF4444"
+    timer_color: "#10B981"
+    buffer_color: "#8B5CF6"
+    stack_color: "#F59E0B"
+    header_purple: "#6D28D9"
+    padding_gray: "#9CA3AF"
+    pointer_orange: "#F59E0B"
+  }
+}
+
+title: |md
+  # Sampling-Based CPU Profiler Architecture
+  Milestone 1: Core Infrastructure
+| {near: top-center}
+
+direction: right
+
+ProfilerInit: Profiler Initialization {
+  style.fill: "${colors.cpu_primary}"
+  style.stroke: "${colors.cpu_secondary}"
+  style.font-color: white
+  Config: Configuration {
+    sample_rate: "Sample Rate (Hz)"
+    prime_freq: "Prime Frequency Mode"
+    max_stack_depth: "Max Stack Depth (128)"
+    buffer_size: "Ring Buffer Size"
+  }
+  StateInit: State Initialization {
+    PROFILER_STATE: "Global Atomic Ptr"
+    active: "Active Flag"
+    recursion_guard: "Recursion Guard"
+  }
+}
+
+SignalHandler: Signal Handler Context {
+  style.fill: "${colors.signal_color}"
+  style.stroke: "#B91C1C"
+  style.font-color: white
+  SigAction: sigaction Setup {
+    SA_SIGINFO: "SA_SIGINFO flag"
+    SA_RESTART: "SA_RESTART flag"
+  }
+  Handler: SIGPROF Handler {
+    check_active: "Check Active State"
+    check_recursion: "Check Recursion Guard"
+    collect_sample: "Collect Sample"
+  }
+  SafetyConstraints: "Async-Signal-Safe Only" {
+    style.fill: "#FEE2E2"
+    style.stroke: "${colors.signal_color}"
+    style.font-color: "#991B1B"
+  }
+}
+
+Timer: Timer Subsystem {
+  style.fill: "${colors.timer_color}"
+  style.stroke: "#047857"
+  style.font-color: white
+  TimerCreate: timer_create {
+    CLOCK_MONOTONIC: "CLOCK_MONOTONIC"
+    SIGEV_SIGNAL: "SIGEV_SIGNAL"
+  }
+  TimerSet: timer_settime {
+    interval: "Interval (1/sample_rate)"
+    value: "Initial Value"
+  }
+  PrimeGenerator: Prime Frequency Generator {
+    primes: "[2, 3, 5, 7, 11, 13, ...]"
+    modulo: "Modulo Operation"
+    jitter: "Jitter Application"
+  }
+}
+
+StackUnwinder: Stack Unwinding {
+  style.fill: "${colors.stack_color}"
+  style.stroke: "#B45309"
+  style.font-color: white
+  LibUnwind: libunwind {
+    cursor_init: "unw_init_local()"
+    cursor_step: "unw_step()"
+    get_reg: "unw_get_reg()"
+    get_proc_name: "unw_get_proc_name()"
+  }
+  FrameInfo: Frame Information {
+    ip: "Instruction Pointer"
+    sp: "Stack Pointer"
+    symbol: "Symbol Name"
+    offset: "Symbol Offset"
+  }
+  StackWalk: Stack Walk Loop {
+    style.stroke-dash: 3
+    depth_check: "depth < max_stack_depth"
+    step_result: "unw_step() > 0"
+  }
+}
+
+RingBuffer: Ring Buffer {
+  style.fill: "${colors.buffer_color}"
+  style.stroke: "#6D28D9"
+  style.font-color: white
+  shape: cylinder
+  BufferLayout: Memory Layout {
+    head: "Head Index (atomic)"
+    tail: "Tail Index"
+    capacity: "Capacity (power of 2)"
+    mask: "capacity - 1"
+  }
+  Sample: Sample Entry {
+    timestamp: "Timestamp (ns)"
+    tid: "Thread ID"
+    depth: "Stack Depth"
+    frames: "Frame Array [128]"
+  }
+  Operations: {
+    write: "write_sample()"
+    read: "read_sample()"
+    is_full: "is_full()"
+    is_empty: "is_empty()"
+  }
+}
+
+ProfilerInit.Config -> Timer.TimerCreate: configure
+Timer.TimerSet -> SignalHandler.SigAction: arm timer
+SignalHandler.Handler -> StackUnwinder.LibUnwind: unwind
+StackUnwinder.FrameInfo -> RingBuffer.Sample: populate
+SignalHandler.Handler -> RingBuffer.Operations.write: store
+
+CollectorThread: Collector Thread {
+  style.fill: "#E5E7EB"
+  style.stroke: "#6B7280"
+  Loop: Collection Loop {
+    read_batch: "Read Batch"
+    process: "Process Samples"
+    aggregate: "Aggregate Counts"
+  }
+  Aggregation: Sample Aggregation {
+    style.fill: "${colors.buffer_color}"
+    style.stroke: "#6D28D9"
+    LocationMap: "HashMap<LocationKey, Count>"
+    FunctionMap: "HashMap<FunctionKey, Count>"
+  }
+}
+
+RingBuffer.Operations.read -> CollectorThread.Loop.read_batch: consume
+CollectorThread.Aggregation -> Output: export
+
+Output: Profile Output {
+  style.fill: "#F3F4F6"
+  style.stroke: "#9CA3AF"
+  PprofFormat: pprof Protocol Buffer {
+    samples: "Sample Messages"
+    locations: "Location Messages"
+    functions: "Function Messages"
+    mappings: "Mapping Messages"
+  }
+  CollapseFormat: "Collapsed Stack" {
+    style.fill: "#FEF3C7"
+    parent_child: "parent;child count"
+  }
+}
+
+StateDiagramContainer: {
+  label: |md
+    # Profiler State Machine
+    Lifecycle & Transitions
+  |
+  label.near: top-center
+  
+  Idle: ● IDLE {
+    style.fill: "#E5E7EB"
+  }
+  Initializing: INITIALIZING {
+    style.fill: "#FEF3C7"
+  }
+  Active: ACTIVE {
+    style.fill: "#D1FAE5"
+    invariant: "PROFILER_STATE != NULL"
+  }
+  Collecting: COLLECTING {
+    style.fill: "#DBEAFE"
+    invariant: "RecursionGuard == 1"
+  }
+  Stopping: STOPPING {
+    style.fill: "#FEE2E2"
+  }
+  Error: ERROR {
+    style.fill: "#FEE2E2"
+    style.stroke: "#EF4444"
+  }
+
+  Idle -> Initializing: profiler_init()
+  Initializing -> Active: init_success
+  Initializing -> Error: init_failed
+  Active -> Collecting: SIGPROF_received
+  Collecting -> Active: sample_stored
+  Active -> Stopping: profiler_stop()
+  Collecting -> Stopping: profiler_stop()
+  Stopping -> Idle: cleanup_complete
+  Error -> Idle: profiler_reset()
+}
+
+ContextSwitchContainer: {
+  label: |md
+    # Signal Handler Context Switch
+    From User Code to Profiler
+  |
+  label.near: top-center
+  direction: down
+
+  UserCode: User Application Code {
+    style.fill: "#D1FAE5"
+    executing: "Executing user code"
+    registers: "CPU Registers"
+    stack: "User Stack"
+  }
+  Interrupt: Timer Interrupt {
+    style.fill: "#FEF3C7"
+    kernel_timer: "Kernel Timer Fires"
+    signal_delivery: "SIGPROF queued"
+    context_save: "Register state saved ▼"
+  }
+  SignalFrame: Signal Frame {
+    style.fill: "#DBEAFE"
+    ucontext: "ucontext_t"
+    siginfo: "siginfo_t"
+    stack_pointer: "Modified SP"
+    return_addr: "Signal return address"
+  }
+  ProfilerHandler: Profiler Signal Handler {
+    style.fill: "#EDE9FE"
+    entry: "handler(int sig, siginfo_t*, void*)"
+    guard_check: "if (in_profiler) return"
+    state_check: "if (!active) return"
+    stack_capture: "capture_stack(ucontext)"
+    buffer_write: "ring_buffer_write(sample)"
+  }
+  ReturnPath: Signal Return {
+    style.fill: "#FCE7F3"
+    sigreturn: "sigreturn() ▲"
+    restore_context: "Restore registers"
+    resume_user: "Resume user code"
+  }
+
+  UserCode.executing -> Interrupt.kernel_timer
+  Interrupt.signal_delivery -> SignalFrame.ucontext
+  SignalFrame -> ProfilerHandler.entry
+  ProfilerHandler.buffer_write -> ReturnPath.sigreturn
+  ReturnPath.resume_user -> UserCode.executing
+}
+
+MemoryDiagramContainer: {
+  label: |md
+    # Ring Buffer Memory Layout
+    Lock-Free Single Producer Single Consumer
+  |
+  label.near: top-center
+  direction: right
+
+  MemoryLayout: {
+    style.fill: transparent
+    style.stroke: "#374151"
+    BufferArray: "Sample Buffer [CAPACITY]" {
+      shape: rectangle
+      style.fill: "#E5E7EB"
+      width: 400
+    }
+    Index0: "[0]" { style.fill: "#DBEAFE" }
+    Index1: "[1]" { style.fill: "#DBEAFE" }
+    Index2: "[2]" { style.fill: "#D1FAE5" }
+    Index3: "[3]" { style.fill: "#D1FAE5" }
+    IndexN: "[N-1]" { style.fill: "#E5E7EB" }
+    HeadPtr: "HEAD (atomic)" {
+      style.fill: "#FEE2E2"
+      shape: diamond
+    }
+    TailPtr: "TAIL" {
+      style.fill: "#FEF3C7"
+      shape: diamond
+    }
+  }
+
+  Operations: {
+    Write: Write Operation {
+      logic: "slot = head.fetch_add(1) & mask; buffer[slot] = sample"
+      actor: "Producer: Signal Handler"
+    }
+    Read: Read Operation {
+      logic: "if tail < head { sample = buffer[tail & mask]; tail++ }"
+      actor: "Consumer: Collector Thread"
+    }
+    Full: Full Check {
+      logic: "head - tail >= capacity"
+    }
+    Empty: Empty Check {
+      logic: "head == tail"
+    }
+  }
+
+  MemoryLayout.HeadPtr -> MemoryLayout.Index2: points to
+  MemoryLayout.TailPtr -> MemoryLayout.Index0: points to
+
+  SampleStructure: Sample Entry (64 bytes) {
+    style.fill: "#F3F4F6"
+    style.stroke: "${colors.header_purple}"
+    tooltip: "sizeof=64 bytes (one cache line)"
+    Field0: "00: timestamp    | u64 | 8 bytes" { style.fill: "${colors.cpu_primary}" }
+    Field1: "08: thread_id    | u64 | 8 bytes" { style.fill: "${colors.cpu_primary}" }
+    Field2: "16: stack_depth  | u32 | 4 bytes" { style.fill: "${colors.cpu_primary}" }
+    Field3: "20: flags        | u32 | 4 bytes" { style.fill: "${colors.cpu_primary}" }
+    Field4: "24: frames_ptr   | ptr | 8 bytes" { style.fill: "${colors.pointer_orange}" }
+    Padding: "32: reserved    | -   | 32 bytes" { style.fill: "${colors.padding_gray}"; style.stroke-dash: 3 }
+  }
+}
+
+JitterContainer: {
+  label: |md
+    # Prime Frequency Sampling
+    Avoiding Lockstep with Jitter
+  |
+  label.near: top-center
+  direction: right
+
+  PrimeSequence: Prime Number Sequence {
+    style.fill: "#EDE9FE"
+    primes: "[2, 3, 5, 7, 11, 13, 17, 19, 23, 29]"
+    Properties: Prime Properties {
+      coprime: "Coprimality ensures non-overlapping periods"
+      distribution: "Natural distribution avoids aliasing"
+    }
+  }
+  JitterGenerator: Jitter Generator {
+    style.fill: "#DBEAFE"
+    BaseInterval: "base_interval = 1_000_000_000 / sample_rate"
+    JitterRange: "jitter = base_interval * 0.1"
+    RandomOffset: "offset = random_in_range(-jitter, +jitter)"
+  }
+  SamplingAlgorithm: Sampling Algorithm {
+    style.fill: "#D1FAE5"
+    Init: "prime_index = 0"
+    Loop: "for each sample:" {
+      logic: "prime = primes[prime_index % len(primes)]; adj = base * (1 + 0.1 * sin(p * count)); next = now + adj; p_idx++"
+    }
+  }
+  Timeline: Sampling Timeline {
+    style.fill: "#FEF3C7"
+    T0: "t=0ms"
+    T1: "t=99ms" { style.fill: "#FEE2E2" }
+    T2: "t=203ms" { style.fill: "#DBEAFE" }
+    T3: "t=298ms" { style.fill: "#D1FAE5" }
+    T4: "t=412ms" { style.fill: "#FEE2E2" }
+    T5: "t=501ms" { style.fill: "#DBEAFE" }
+    Note: "Non-uniform intervals avoid synchronization with periodic workloads"
+  }
+  PrimeSequence -> JitterGenerator: select prime
+  JitterGenerator -> SamplingAlgorithm: apply jitter
+  SamplingAlgorithm -> Timeline: generate samples
+}
+
+StackUnwindContainer: {
+  label: |md
+    # Stack Unwinding Process
+    Frame-by-Frame Capture
+  |
+  label.near: top-center
+  direction: down
+
+  Registers: CPU State (from ucontext) {
+    style.fill: "#FEE2E2"
+    RIP: "RIP (Instruction Pointer)"
+    RSP: "RSP (Stack Pointer)"
+    RBP: "RBP (Frame Pointer)"
+    RAX: "RAX, RBX, RCX, ..."
+  }
+  UnwindInit: Initialize Cursor {
+    style.fill: "#FEF3C7"
+    cursor: "unw_cursor_t cursor"
+    init_local: "unw_init_local(&cursor, context)"
+    set_reg: "unw_set_reg(&cursor, UNW_REG_IP, rip)"
+  }
+  FrameLoop: Frame Capture Loop {
+    style.fill: "#DBEAFE"
+    LoopCondition: "while (depth < MAX_DEPTH)" {
+      style.stroke-dash: 3
+    }
+    GetIP: "unw_get_reg(&cursor, UNW_REG_IP, &ip)"
+    GetProcName: "unw_get_proc_name(&cursor, buf, len, &offset)"
+    StoreFrame: "frames[depth++] = {ip, name, offset}"
+    Step: "unw_step(&cursor)"
+    LoopCondition -> GetIP -> GetProcName -> StoreFrame -> Step
+    Step -> LoopCondition: "if > 0"
+  }
+  FrameInfo: Captured Frame Info {
+    style.fill: "#D1FAE5"
+    IP: "instruction_pointer: u64"
+    Symbol: "symbol_name: String (interned)"
+    Offset: "symbol_offset: u32"
+    Module: "module_name: String"
+  }
+  StackMemory: Stack Memory View {
+    style.fill: "#E5E7EB"
+    Frame0: "Frame 0 (top)" { style.fill: "#FEE2E2" }
+    Frame1: "Frame 1" { style.fill: "#FEF3C7" }
+    Frame2: "Frame 2" { style.fill: "#DBEAFE" }
+    Frame3: "Frame 3" { style.fill: "#D1FAE5" }
+    FrameN: "Frame N (bottom)" { style.fill: "#E5E7EB" }
+  }
+  Registers -> UnwindInit: initialize
+  UnwindInit -> FrameLoop: start
+  FrameLoop.StoreFrame -> FrameInfo: populate
+  Registers.RBP -> StackMemory.Frame0: points to
+}
+
+ConfigContainer: {
+  label: |md
+    # Profiler Configuration Structure
+    User-Configurable Parameters
+  |
+  label.near: top-center
+  direction: right
+
+  ConfigStruct: ProfilerConfig {
+    style.fill: "#E5E7EB"
+    style.stroke: "#374151"
+    Sampling: Sampling Configuration {
+      sample_rate_hz: "sample_rate_hz: u64\nDefault: 99"
+      prime_frequency: "prime_frequency: bool\nDefault: true"
+      max_stack_depth: "max_stack_depth: usize\nDefault: 128"
+    }
+    Buffer: Buffer Configuration {
+      buffer_size: "buffer_size: usize\nDefault: 65536"
+      batch_size: "batch_size: usize\nDefault: 256"
+    }
+    Output: Output Configuration {
+      format: "format: OutputFormat\n{Pprof, Collapse, Json}"
+      filename: "filename: PathBuf"
+      interval: "flush_interval: Duration"
+    }
+    Filtering: Filtering Configuration {
+      include_filters: "include_filters: Vec<String>"
+      exclude_filters: "exclude_filters: Vec<String>"
+      min_samples: "min_samples: u64"
+    }
+  }
+  Validation: Configuration Validation {
+    style.fill: "#FEF3C7"
+    RateCheck: "sample_rate <= 10000"
+    DepthCheck: "max_stack_depth <= 1024"
+    BufferCheck: "buffer_size is power of 2"
+    FilterCheck: "regex patterns valid"
+  }
+  ConfigStruct.Sampling -> Validation.RateCheck: validate
+  ConfigStruct.Buffer -> Validation.BufferCheck: validate
+  ConfigStruct.Filtering -> Validation.FilterCheck: validate
+  Defaults: Default Values {
+    style.fill: "#D1FAE5"
+    Table: ||md
+      | Parameter | Default | Range |
+      |-----------|---------|-------|
+      | sample_rate_hz | 99 | 1-10000 |
+      | max_stack_depth | 128 | 16-1024 |
+      | buffer_size | 65536 | 1024-1048576 |
+      | batch_size | 256 | 32-4096 |
+    ||
+  }
+}
+
+AggregationContainer: {
+  label: |md
+    # Sample Aggregation Flow
+    From Raw Samples to Profile Data
+  |
+  label.near: top-center
+  direction: right
+
+  RawSample: Raw Sample {
+    style.fill: "#E5E7EB"
+    timestamp: "timestamp: 1640000000123456789"
+    thread_id: "thread_id: 12345"
+    frames: "main;foo;bar;baz"
+  }
+  StringIntern: String Interning {
+    style.fill: "#DBEAFE"
+    InternTable: "InternTable<String>" {
+      style.fill: "#BFDBFE"
+      Entry0: '"main" -> id: 0'
+      Entry1: '"foo" -> id: 1'
+      Entry2: '"bar" -> id: 2'
+      Entry3: '"baz" -> id: 3'
+    }
+    Lookup: "O(1) lookup via HashMap"
+    Dedup: "Deduplicate common strings"
+  }
+  LocationKey: Location Key {
+    style.fill: "#D1FAE5"
+    Structure: ||md
+      struct LocationKey {
+        frame_ids: [u32; MAX_DEPTH],
+        depth: u8,
+      }
+    ||
+    Hash: "Hash for HashMap key"
+  }
+  CountMap: Sample Count Map {
+    style.fill: "#FEF3C7"
+    HashMap: "HashMap<LocationKey, u64>" {
+      style.fill: "#FDE68A"
+      Entry0: "main;foo;bar;baz -> 1523"
+      Entry1: "main;foo;qux -> 892"
+      Entry2: "main;poll -> 456"
+    }
+  }
+  RawSample.frames -> StringIntern: intern strings
+  StringIntern -> LocationKey: build key
+  LocationKey -> CountMap: increment count
+  ProfileBuilder: Profile Builder {
+    style.fill: "#EDE9FE"
+    PprofBuilder: "PprofBuilder" {
+      add_sample_type: "add_sample_type()"
+      add_sample: "add_sample()"
+      add_location: "add_location()"
+      add_function: "add_function()"
+    }
+    FinalOutput: "Final Profile" {
+      style.fill: "#DDD6FE"
+      protobuf: "Encoded Protocol Buffer"
+    }
+  }
+  CountMap -> ProfileBuilder.PprofBuilder: iterate
+  ProfileBuilder.FinalOutput -> FinalProfile: write
+  FinalProfile: profile.pprof {
+    style.fill: "#F3F4F6"
+    shape: page
+  }
+}

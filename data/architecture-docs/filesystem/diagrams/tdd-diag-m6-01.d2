@@ -1,0 +1,218 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    pad: 40
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# TECHNICAL SPECIFICATION: JOURNAL REGION MEMORY LAYOUT
+# Target: Physical Memory | Block Alignment: 4096B | Word Size: 64-bit (8B)
+# Intel Manual Reference Style
+# -----------------------------------------------------------------------------------------
+
+journal_region: "PHYSICAL MEMORY: JOURNAL REGION (4MB)" {
+  style: {
+    stroke: "#000000"
+    stroke-width: 2
+    fill: "#FFFFFF"
+    font-size: 18
+  }
+
+  header_page: "PAGE 0: JOURNAL CONTROL BLOCK (OFFSET 0x0000)" {
+    style: {
+      stroke: "#000000"
+      stroke-width: 6 # Bold Page Boundary
+    }
+
+    header_table: {
+      shape: sql_table
+      style: {
+        stroke: "#333333"
+        stroke-width: 2
+      }
+
+      # OFFSET (Left) | FIELD (Center) | SIZE (Right)
+      magic: "0x000 | magic_val (0x4A524E4C) | 4B" {
+        style.fill: "#E1BEE7" # Purple (Header)
+      }
+      version: "0x004 | version_major | 2B" {
+        style.fill: "#E1BEE7"
+      }
+      v_minor: "0x006 | version_minor | 2B" {
+        style.fill: "#E1BEE7"
+      }
+      sequence: "0x008 | sequence_id (Global) | 8B" {
+        style.fill: "#E1BEE7"
+      }
+      head_ptr: "0x010 | head_offset (Current Write) | 8B" {
+        style.fill: "#FFE0B2" # Orange (Pointers)
+        style.bold: true
+      }
+      tail_ptr: "0x018 | tail_offset (Oldest Valid) | 8B" {
+        style.fill: "#FFE0B2"
+        style.bold: true
+      }
+      txn_count: "0x020 | committed_txn_count | 8B" {
+        style.fill: "#E1BEE7"
+      }
+      ckpt_seq: "0x028 | last_checkpoint_seq | 8B" {
+        style.fill: "#E1BEE7"
+      }
+      checksum: "0x030 | header_crc64_fixed | 8B" {
+        style.fill: "#E1BEE7"
+        style.stroke: "#9C27B0"
+        style.stroke-width: 3
+      }
+      padding: "0x038 | reserved_zero_padding | 4024B" {
+        style.fill: "#F5F5F5" # Gray (Padding)
+      }
+    }
+
+    cache_line_separator: "" {
+      shape: text
+      label: "------------------ 64B CACHE LINE BOUNDARY ------------------"
+      style: {
+        font-size: 10
+        font-color: "#757575"
+        stroke-dash: 4
+      }
+    }
+  }
+
+  data_region: "PAGE 1..N: CIRCULAR ENTRY SLOTS (OFFSET 0x1000)" {
+    style: {
+      stroke: "#000000"
+      stroke-width: 4
+    }
+
+    buffer_grid: {
+      grid-columns: 1
+      vertical-gap: 0
+
+      committed_zone: "REGION: REPLAYABLE (COMMITTED)" {
+        style: {
+          fill: "#BBDEFB" # Blue (Data)
+          stroke-width: 2
+          stroke: "#1976D2"
+        }
+        e41_header: "ENTRY 41: [TYPE: INODE_ALLOC] [LEN: 128B] | OFFSET: 0x1400"
+        e41_data: "DATA PAYLOAD: { inode: 1024, mode: 0644, uid: 0, gid: 0 }"
+        e41_commit: "JE_COMMIT_MARKER | Seq: 41 | CRC32: 0xAB82" {
+          style: {
+            bold: true
+            double-border: true
+            fill: "#90CAF9"
+          }
+        }
+      }
+
+      active_zone: "REGION: IN-FLIGHT (UNCOMMITTED)" {
+        style: {
+          fill: "#C8E6C9" # Green (Active/Free Logic)
+          stroke-dash: 5
+          stroke: "#388E3C"
+        }
+        e42_header: "ENTRY 42: [TYPE: BLOCK_MAP] [LEN: 64B] | OFFSET: 0x14C0"
+        e42_partial: "DATA PAYLOAD: { lba: 0x5500, pba: 0x9900 } [PARTIAL]"
+        
+        cursor_container: {
+          label: ""
+          style.stroke-width: 0
+          write_cursor: "HEAD: NEXT_FREE_ADDR (0x1500)" {
+            shape: rectangle
+            style: {
+              fill: "#FFB74D" # Orange (Pointer Target)
+              bold: true
+              stroke-width: 3
+              stroke: "#E65100"
+            }
+          }
+        }
+      }
+
+      free_space: "REGION: AVAILABLE / ZEROED" {
+        style: {
+          fill: "#F5F5F5"
+          stroke-dash: 2
+          stroke: "#9E9E9E"
+        }
+        null_blocks: "0x00000000... (ZERO FILL TO EOF)" {
+          style: {
+            font-color: "#9E9E9E"
+            italic: true
+          }
+        }
+      }
+
+      recovery_anchor: {
+        label: ""
+        style.stroke-width: 0
+        tail_cursor: "TAIL: RECOVERY_START (0x1400)" {
+          shape: rectangle
+          style: {
+            fill: "#FFB74D"
+            bold: true
+            stroke-width: 3
+            stroke: "#E65100"
+          }
+        }
+      }
+    }
+  }
+}
+
+# --- POINTER LOGIC & ADDR MAPPING ---
+# High-visibility orange arrows representing physical memory references
+
+(journal_region.header_page.header_table.head_ptr -> journal_region.data_region.buffer_grid.active_zone.cursor_container.write_cursor): "PTR_MAP: Current Write Head" {
+  style: {
+    stroke: "#E65100"
+    stroke-width: 4
+    animated: true
+  }
+}
+
+(journal_region.header_page.header_table.tail_ptr -> journal_region.data_region.buffer_grid.recovery_anchor.tail_cursor): "PTR_MAP: Replay/GC Tail" {
+  style: {
+    stroke: "#E65100"
+    stroke-width: 4
+  }
+}
+
+# --- CACHE ALIGNMENT VISUAL GUIDE ---
+# Boundary crossing between metadata and reserved padding
+(journal_region.header_page.header_table.checksum -> journal_region.header_page.header_table.padding): "64B Cache Line Overlap" {
+  style: {
+    stroke: "#757575"
+    stroke-dash: 4
+    font-size: 11
+  }
+}
+
+# --- IMPLEMENTATION SPECIFICATION ---
+spec_notes: |md
+  ### Journal Specification (v1.2.4)
+  - **Memory Alignment**: All entries must be aligned to 8-byte boundaries.
+  - **Atomic Updates**: Header `head_ptr` and `tail_ptr` MUST be updated via atomic `MOV` (x86_64) to ensure consistency during concurrent recovery.
+  - **Header Integrity**: CRC64 (polynomial: 0x42F0E1EBA9EA3693) covers offsets 0x000 through 0x02F.
+  - **Circular Buffer Logic**: 
+    - `IsFull = ((head + 1) % size == tail)`
+    - `RecoveryRange = [tail, head)`
+  - **Page Boundary**: Bold borders denote 4KB physical page frame boundaries.
+| {
+  near: bottom-right
+  style: {
+    fill: "#FFF9C4"
+    stroke: "#FBC02D"
+    stroke-width: 1
+    font-size: 14
+  }
+}
+
+# --- GLOBAL STYLING ---
+style: {
+  fill: "#FAFAFA"
+}

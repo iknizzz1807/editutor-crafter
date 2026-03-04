@@ -1,0 +1,245 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+title: |md
+  ## seq_file Mechanics: Why `proc_read` Breaks vs. Why `seq_file` Works
+  *Milestone 3 — /proc/mydevice via seq_file*
+| {near: top-center}
+# ─── LEFT SIDE: BROKEN NAIVE APPROACH ───────────────────────────────────────
+broken: "❌  NAIVE: proc_read Callback" {
+  style: {
+    fill: "#3d1a1a"
+    stroke: "#cc3333"
+    stroke-width: 3
+    border-radius: 8
+  }
+  step_b1: "Step 1 — Kernel Invokes Callback" {
+    style: { fill: "#5a2020"; stroke: "#cc3333"; border-radius: 6 }
+    label: |md
+      **`proc_read(buf, start, offset, count, eof, data)`**
+      - `buf` = fixed kernel-supplied char buffer
+      - **Hard limit: 4096 bytes (1 page)**
+      - `offset` = byte position to resume from
+      - `count` = userspace read() request size
+    |
+  }
+  step_b2: "Step 2 — Driver Generates Output" {
+    style: { fill: "#5a2020"; stroke: "#cc3333"; border-radius: 6 }
+    label: |md
+      c
+      /* DANGEROUS — naive pattern */
+      int len = sprintf(buf,
+        "buffer_size: %zu\n"
+        "bytes_used:  %zu\n"
+        /* ... more fields ... */
+        "field_50: %s\n",   /* 50 fields */
+        ...);
+      *eof = 1;
+      return len;
+      
+    |
+  }
+  step_b3: "Step 3 — Silent Truncation Bug" {
+    style: { fill: "#7a1515"; stroke: "#ff4444"; stroke-width: 2; border-radius: 6 }
+    label: |md
+      **⚠ OUTPUT > 4096 BYTES?**
+      `sprintf` overwrites beyond `buf` end
+      → **buffer overflow in kernel memory**
+      → OR `snprintf` silently truncates at 4096
+      → userspace `cat` sees incomplete data
+      → **no error returned — silent failure**
+    |
+  }
+  step_b4: "Step 4 — Broken Partial-Read Offset Logic" {
+    style: { fill: "#7a1515"; stroke: "#ff4444"; stroke-width: 2; border-radius: 6 }
+    label: |md
+      **When userspace calls `read(fd, buf, 512)` multiple times:**
+      `offset` parameter must track position.
+      Driver must manually slice output string.
+      Historical bugs (thousands of drivers):
+      - Off-by-one in offset calculation
+      - Infinite loop: `read()` never returns 0
+      - Data duplication across chunk boundaries
+      - `cat` hangs or produces garbled output
+    |
+  }
+  bug_box: "🐛  Root Cause" {
+    style: { fill: "#4a0000"; stroke: "#ff2222"; stroke-width: 3; border-radius: 8 }
+    label: |md
+      **Fixed-size buffer + manual offset tracking**
+      is fundamentally incompatible with
+      arbitrary-length kernel output delivered
+      in arbitrary-sized userspace `read()` chunks.
+      **This API was deprecated. Do not use it.**
+    |
+  }
+  step_b1 -> step_b2: "kernel calls back"
+  step_b2 -> step_b3: "output > 4096?"
+  step_b3 -> step_b4: "multi-chunk reads"
+  step_b4 -> bug_box: "systemic failure"
+}
+# ─── RIGHT SIDE: CORRECT SEQ_FILE APPROACH ───────────────────────────────────
+correct: "✅  CORRECT: seq_file with single_open" {
+  style: {
+    fill: "#0d2e1a"
+    stroke: "#33cc66"
+    stroke-width: 3
+    border-radius: 8
+  }
+  # ── single_open internals ──
+  single_open_box: "single_open() — Setup Phase" {
+    style: { fill: "#1a4a2a"; stroke: "#33cc66"; border-radius: 6 }
+    label: |md
+      **`single_open(filp, mydevice_proc_show, NULL)`**
+      Allocates `struct seq_file` on the heap.
+      Stores in `filp->private_data`.
+      c
+      struct seq_file {
+        char          *buf;      /* dynamic page list  */
+        size_t         size;     /* current buf size   */
+        size_t         from;     /* offset within buf  */
+        size_t         count;    /* bytes in buf       */
+        loff_t         index;    /* iterator position  */
+        void          *private;  /* = NULL (our data)  */
+        struct seq_operations *op;  /* start/next/stop/show */
+      };
+      
+      Sets `op->show = mydevice_proc_show`.
+    |
+  }
+  # ── seq_read handles fragmentation ──
+  seq_read_box: "seq_read() — Fragment Manager (provided by kernel)" {
+    style: { fill: "#1a4a2a"; stroke: "#33cc66"; border-radius: 6 }
+    label: |md
+      **Called by VFS on every `read(fd, buf, N)` userspace call.**
+      Internal logic:
+      
+      if internal_buffer is empty:
+          call show(seq_file, v)   ← fills internal buf
+      copy min(N, count) bytes → userspace
+      advance seq_file.from by bytes copied
+      if all bytes delivered:
+          set EOF flag
+      return bytes copied (or 0 for EOF)
+      
+      Handles **any N** transparently.
+      No driver code needed for fragmentation.
+    |
+  }
+  # ── show function ──
+  show_box: "mydevice_proc_show() — Your Code" {
+    style: { fill: "#1a4a2a"; stroke: "#33cc66"; border-radius: 6 }
+    label: |md
+      c
+      static int mydevice_proc_show(
+              struct seq_file *m, void *v)
+      {
+          seq_printf(m, "buffer_size:  %zu\n",
+                     buffer_size);
+          seq_printf(m, "bytes_used:   %zu\n",
+                     buffer_data_len);
+          seq_printf(m, "open_count:   %d\n",
+                     atomic_read(&open_count));
+          seq_printf(m, "read_count:   %d\n",
+                     atomic_read(&read_count));
+          seq_printf(m, "write_count:  %d\n",
+                     atomic_read(&write_count));
+          return 0;  /* always */
+      }
+      
+      **Never check `seq_printf` return value.**
+      Buffer overflow is handled internally
+      by allocating additional pages.
+    |
+  }
+  # ── seq_printf internals ──
+  seq_printf_box: "seq_printf() — Dynamic Buffer Growth" {
+    style: { fill: "#0f3320"; stroke: "#22aa44"; border-radius: 6 }
+    label: |md
+      **On each `seq_printf(m, fmt, ...)`:**
+      1. `vsnprintf` into `m->buf + m->count`
+      2. If remaining space < needed bytes:
+         → `seq_buf_alloc()` doubles buffer size
+         → copies existing content to new allocation
+         → retries the printf
+      3. `m->count += bytes_written`
+      **Result: buffer grows to fit any output.**
+      No driver-visible size limit.
+      No driver-visible truncation.
+    |
+  }
+  # ── delivery sequence ──
+  delivery_box: "Delivery to Userspace — Any Chunk Size" {
+    style: { fill: "#0f3320"; stroke: "#22aa44"; border-radius: 6 }
+    label: |md
+      **`cat /proc/mydevice`** calls read() with 4096-byte buf:
+      → `seq_read` calls `show()` once → ~80 bytes generated
+      → copies 80 bytes → userspace
+      → next read() returns 0 → cat exits ✓
+      **`dd if=/proc/mydevice bs=1`** calls read() 1 byte at a time:
+      → `seq_read` calls `show()` once → 80 bytes in internal buf
+      → delivers 1 byte per call, tracking `from` offset
+      → after 80 calls, returns 0 → dd exits ✓
+      **No driver code changes needed between these cases.**
+    |
+  }
+  proc_ops_box: "proc_ops Registration" {
+    style: { fill: "#1a4a2a"; stroke: "#33cc66"; border-radius: 6 }
+    label: |md
+      c
+      static const struct proc_ops mydevice_proc_ops = {
+          .proc_open    = mydevice_proc_open,
+          /* provided by seq_file infrastructure: */
+          .proc_read    = seq_read,
+          .proc_lseek   = seq_lseek,
+          .proc_release = single_release,
+      };
+      proc_create("mydevice", 0444, NULL,
+                  &mydevice_proc_ops);
+      
+      **Only `proc_open` and `show()` are yours.**
+      Everything else: kernel provides.
+    |
+  }
+  single_open_box -> show_box: "registers show callback"
+  show_box -> seq_printf_box: "seq_printf() calls"
+  seq_printf_box -> seq_read_box: "fills internal buffer"
+  seq_read_box -> delivery_box: "delivers any chunk size"
+  proc_ops_box -> single_open_box: "open() triggers"
+}
+# ─── COMPARISON CONNECTORS ────────────────────────────────────────────────────
+vs_label: "VS" {
+  shape: circle
+  style: {
+    fill: "#444444"
+    stroke: "#888888"
+    font-size: 22
+    bold: true
+    font-color: "#ffffff"
+  }
+}
+broken -> vs_label: "" {
+  style: { stroke: "#cc3333"; stroke-dash: 3; stroke-width: 2 }
+}
+vs_label -> correct: "" {
+  style: { stroke: "#33cc66"; stroke-width: 2 }
+}
+# ─── BOTTOM SUMMARY ──────────────────────────────────────────────────────────
+summary: |md
+  **Key Rule:** Call `proc_create("mydevice", 0444, NULL, &mydevice_proc_ops)` in `mydevice_init`.
+  Call `proc_remove(proc_entry)` **first** in `mydevice_exit` — before `kfree(kernel_buffer)` — because a concurrent `cat` reader
+  may still be inside `mydevice_proc_show` accessing `buffer_data_len`. `proc_remove` blocks until all readers finish.
+  On kernel ≥ 5.6: use `struct proc_ops`. On kernel < 5.6: use `struct file_operations` for `/proc` entries.
+| {
+  near: bottom-center
+  style: {
+    fill: "#1a1a2e"
+    stroke: "#555599"
+    stroke-width: 2
+    border-radius: 8
+    font-size: 13
+  }
+}

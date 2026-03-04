@@ -1,0 +1,224 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Tokio Runtime Integration Points
+  Profiler injection hooks for async task lifecycle tracking
+|
+title.near: top-center
+
+row_app: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  user_code: {
+    direction: down
+    label: "User Application Code (app.rs)"
+    style.fill: "#E8F5E9"
+    spawn_call: {
+      label: "tokio::spawn(handle_request())"
+      width: 200
+    }
+    async_fn: {
+      label: "T1: Async Logic"
+      code: |'rust
+        let data = socket.read().await;
+        let res = process(data).await;
+        socket.write(res).await;
+      '|
+      width: 220
+    }
+  }
+}
+
+row_runtime: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  tokio_runtime: {
+    direction: down
+    label: "Tokio Runtime (runtime.rs)"
+    style.fill: "#E3F2FD"
+    spawn_queue: {
+      label: "Task Injector Queue"
+      shape: queue
+      width: 180
+    }
+    scheduler: {
+      label: "Multi-threaded Scheduler"
+      width: 180
+    }
+    task: {
+      label: "struct Task (task.rs)"
+      shape: class
+      +id: "TaskId (u64)"
+      +future: "Box<dyn Future>"
+      +state: "AtomicUsize"
+      +waker: "Waker"
+    }
+    poll_loop: {
+      label: "Worker Poll Loop"
+      width: 200
+      code: |'rust
+        while let Some(task) = queue.pop() {
+          let cx = Context::from_waker(&task.waker);
+          task.future.poll(cx);
+        }
+      '|
+    }
+  }
+}
+
+row_hooks: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  profiler_hooks: {
+    direction: down
+    label: "Profiler Instrumentation (hooks.rs)"
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    style.stroke-width: 2
+    hook_spawn: {
+      label: "INTERCEPT: OnSpawn"
+      code: |'rust
+        let tid = tracker.next_id();
+        let stack = backtrace::capture();
+        tracker.record_spawn(tid, stack);
+      '|
+      width: 220
+      style.fill: "#FFE0B2"
+    }
+    hook_poll_start: {
+      label: "INTERCEPT: OnPollStart"
+      code: |'rust
+        tracker.begin_poll(current_task_id());
+        timing.start_timer();
+      '|
+      width: 220
+      style.fill: "#FFE0B2"
+    }
+    hook_poll_end: {
+      label: "INTERCEPT: OnPollEnd"
+      code: |'rust
+        let dur = timing.elapsed();
+        tracker.end_poll(tid, dur, status);
+      '|
+      width: 220
+      style.fill: "#FFE0B2"
+    }
+    hook_drop: {
+      label: "INTERCEPT: OnDrop"
+      code: |'rust
+        tracker.record_drop(task_id);
+        tracker.finalize_stats(task_id);
+      '|
+      width: 220
+      style.fill: "#FFE0B2"
+    }
+  }
+}
+
+row_tracker: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  task_tracker: {
+    direction: down
+    label: "AsyncTaskTracker (tracker.rs)"
+    style.fill: "#F3E5F5"
+    lifecycle: {
+      label: "struct TaskLifecycle"
+      shape: class
+      +task_id: "AsyncTaskId"
+      +spawn_stack: "Vec<usize>"
+      +spawn_time_ns: "u64"
+      +poll_count: "u64"
+      +total_poll_time: "u64"
+    }
+    relationships: {
+      label: "struct TaskHierarchy"
+      shape: class
+      +parents: "DashMap<TaskId, TaskId>"
+      +children: "DashMap<TaskId, Vec<TaskId>>"
+    }
+    logical_stack: {
+      label: "Stack Reconstruction"
+      code: |'rust
+        fn get_logical_stack(id: TaskId) {
+          let mut path = vec![id];
+          while let Some(p) = tree.get_parent(id) {
+            path.push(p);
+          }
+          format_symbols(path)
+        }
+      '|
+      width: 240
+    }
+  }
+}
+
+legend: {
+  legend_title: "Instrumentation Points"
+  timing: |'md
+    | Hook | Trigger Event | Data Captured |
+    |------|---------------|---------------|
+    | SPAWN | `tokio::spawn` | Callstack, Parent ID, Time |
+    | POLL START | Worker pops task | Thread ID, CPU cycles |
+    | POLL END | Future returns | Duration, Pending/Ready |
+    | DROP | Deallocation | Final stats, end time |
+  '|
+}
+legend.near: bottom-center
+
+# Connections using Row-scoped IDs
+row_app.user_code.spawn_call -> row_runtime.tokio_runtime.spawn_queue: "Task | enqueue" {
+  style.stroke: "#2196F3"
+  style.stroke-width: 2
+}
+
+row_app.user_code.spawn_call -> row_hooks.profiler_hooks.hook_spawn: "Control | intercept" {
+  style.stroke: "#FF9800"
+  style.stroke-dash: 4
+}
+
+row_runtime.tokio_runtime.spawn_queue -> row_runtime.tokio_runtime.scheduler: "schedule"
+row_runtime.tokio_runtime.scheduler -> row_runtime.tokio_runtime.poll_loop: "pop"
+
+row_runtime.tokio_runtime.poll_loop -> row_hooks.profiler_hooks.hook_poll_start: "Control | begin" {
+  style.stroke: "#FF9800"
+  style.stroke-dash: 4
+}
+
+row_runtime.tokio_runtime.poll_loop -> row_runtime.tokio_runtime.task: "poll(cx)"
+row_runtime.tokio_runtime.task -> row_app.user_code.async_fn: "execute" {
+  style.stroke: "#4CAF50"
+  style.stroke-dash: 3
+}
+
+row_runtime.tokio_runtime.poll_loop -> row_hooks.profiler_hooks.hook_poll_end: "Control | end" {
+  style.stroke: "#FF9800"
+  style.stroke-dash: 4
+}
+
+row_runtime.tokio_runtime.task -> row_hooks.profiler_hooks.hook_drop: "Drop | intercept" {
+  style.stroke: "#FF9800"
+  style.stroke-dash: 4
+}
+
+row_hooks.profiler_hooks.hook_spawn -> row_tracker.task_tracker.lifecycle: "record" {
+  style.stroke: "#9C27B0"
+}
+
+row_hooks.profiler_hooks.hook_poll_end -> row_tracker.task_tracker.lifecycle: "update" {
+  style.stroke: "#9C27B0"
+}
+
+row_hooks.profiler_hooks.hook_spawn -> row_tracker.task_tracker.relationships: "Link | parent->child" {
+  style.stroke: "#9C27B0"
+}

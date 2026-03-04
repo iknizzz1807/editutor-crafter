@@ -1,0 +1,120 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+file_write_logic: "fs_write(inode_num, offset, *data, length) Data Flow" {
+  style: {
+    stroke-width: 2
+  }
+
+  user_space: "User Space Memory" {
+    user_buffer: "User Data Buffer" {
+      shape: queue
+      style.fill: "#dae8fc"
+    }
+  }
+
+  kernel_buffer_cache: "FS Library / Memory Buffer" {
+    style.fill: "#f5f5f5"
+    
+    inode_cache: "Active Inode Structure" {
+      shape: sql_table
+      style.fill: "#e1d5e7"
+      0x00_mode: "uint16_t: mode"
+      0x0A_size: "uint64_t: **size**" {style.font-color: red; style.bold: true}
+      0x12_blocks: "uint64_t: **blocks**" {style.font-color: red; style.bold: true}
+      0x22_mtime: "uint64_t: **mtime**" {style.font-color: red; style.bold: true}
+      0x32_direct: "uint64_t[12]: pointers" {style.fill: "#ffe6cc"}
+    }
+
+    block_buffer: "4KB Page Buffer" {
+      style.stroke-dash: 5
+      style.fill: "#dae8fc"
+      |md
+        ### 4096 Byte Cache Line
+        (Offset 0...4095)
+      |
+    }
+  }
+
+  storage_layer: "Storage Layer (Disk Image)" {
+    inode_table: "Inode Table" {
+      shape: cylinder
+      style.fill: "#e1d5e7"
+    }
+    block_bitmap: "Block Bitmap" {
+      shape: cylinder
+      style.fill: "#d5e8d4"
+    }
+    data_region: "Data Blocks" {
+      shape: cylinder
+      style.fill: "#dae8fc"
+    }
+  }
+
+  # --- CONTROL FLOW ---
+
+  step1: "1. read_inode()"
+  step1 -> kernel_buffer_cache.inode_cache: "Load Metadata"
+  storage_layer.inode_table -> step1
+
+  step2: "2. Block Loop Start"
+  kernel_buffer_cache.inode_cache -> step2: "Calculate block_idx"
+
+  step3: "3. get_or_alloc_block()"
+  step2 -> step3
+  step3 <-> storage_layer.block_bitmap: "Find/Set Free Bit" {
+    style.stroke: "#228b22"
+    style.animated: true
+  }
+
+  step4: "4. Partial Block?" {
+    shape: diamond
+    style.fill: "#fff2cc"
+  }
+  step3 -> step4
+
+  step5: "5. read_block()"
+  step4 -> step5: "Yes (offset > 0 OR len < 4KB)"
+  storage_layer.data_region -> step5
+  step5 -> kernel_buffer_cache.block_buffer: "Populate RMW Buffer"
+
+  step6: "6. Modify Buffer"
+  step4 -> step6: "No (Full Block Overwrite)"
+  user_space.user_buffer -> step6: "memcpy(buffer + off, data, to_write)"
+  step6 -> kernel_buffer_cache.block_buffer
+
+  step7: "7. write_block()"
+  kernel_buffer_cache.block_buffer -> step7
+  step7 -> storage_layer.data_region: "Commit Page" {
+    style.stroke: "#0000ff"
+    style.stroke-width: 3
+  }
+
+  step8: "8. Update Metadata"
+  step7 -> step8: "Loop increments"
+  step8 -> kernel_buffer_cache.inode_cache: "Set size, mtime, ctime"
+
+  step9: "9. write_inode()"
+  kernel_buffer_cache.inode_cache -> step9
+  step9 -> storage_layer.inode_table: "Finalize Transaction" {
+    style.stroke: "#7f00ff"
+    style.stroke-width: 3
+  }
+}
+
+# Annotations
+legend: {
+  near: bottom-right
+  note: |md
+    ### Implementation Details
+    - **Header**: Purple (Inode Metadata)
+    - **Data**: Blue (User Content)
+    - **Allocation**: Green (Bitmaps)
+    - **Red/Bold**: Modified State
+  |
+}

@@ -1,0 +1,310 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+
+title: |md
+  # Profiler Core Architecture
+| {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+  }
+}
+
+# Component definitions
+Timer_Setup: {
+  label: "Timer Setup"
+  shape: rectangle
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1565C0"
+    stroke-width: 2
+    font-color: "#0D47A1"
+    shadow: true
+  }
+  fields: {
+    shape: rectangle
+    label: |md
+      **Fields**
+      - interval_ms: `uint64`
+      - timer_type: `itimer_type`
+      - sampling_hz: `uint32`
+      - configured: `bool`
+    |
+  }
+  methods: {
+    shape: rectangle
+    label: |md
+      **Methods**
+      - `init(config: *Config)`
+      - `set_interval(ms: uint64)`
+      - `arm()`
+      - `disarm()`
+    |
+  }
+}
+
+Signal_Handler: {
+  label: "Signal Handler"
+  shape: rectangle
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#E65100"
+    stroke-width: 2
+    font-color: "#BF360C"
+    shadow: true
+  }
+  fields: {
+    shape: rectangle
+    label: |md
+      **Fields**
+      - handler_fn: `*fn(siginfo_t)`
+      - signal_num: `SIGPROF (27)`
+      - sa_flags: `SA_RESTART`
+      - installed: `bool`
+    |
+  }
+  methods: {
+    shape: rectangle
+    label: |md
+      **Methods**
+      - `install()`
+      - `uninstall()`
+      - `handle(sig, info, ctx)`
+    |
+  }
+}
+
+Stack_Walker: {
+  label: "Stack Walker"
+  shape: rectangle
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#2E7D32"
+    stroke-width: 2
+    font-color: "#1B5E20"
+    shadow: true
+  }
+  fields: {
+    shape: rectangle
+    label: |md
+      **Fields**
+      - frame_ptr: `*uint64`
+      - stack_base: `*uint8`
+      - stack_limit: `*uint8`
+      - max_depth: `128`
+    |
+  }
+  methods: {
+    shape: rectangle
+    label: |md
+      **Methods**
+      - `unwind(ctx)`
+      - `get_fp(ctx)`
+      - `validate_frame(fp)`
+    |
+  }
+}
+
+Ring_Buffer: {
+  label: "Ring Buffer"
+  shape: rectangle
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#7B1FA2"
+    stroke-width: 2
+    font-color: "#4A148C"
+    shadow: true
+  }
+  fields: {
+    shape: rectangle
+    label: |md
+      **Fields**
+      - samples: `[65536]RawSample`
+      - head/tail: `AtomicU64`
+      - capacity: `65536`
+      - mask: `0xFFFF`
+    |
+  }
+  methods: {
+    shape: rectangle
+    label: |md
+      **Methods**
+      - `try_push(sample)`
+      - `pop_batch(out, n)`
+    |
+  }
+}
+
+Aggregator: {
+  label: "Aggregator"
+  shape: rectangle
+  style: {
+    fill: "#E0F7FA"
+    stroke: "#00838F"
+    stroke-width: 2
+    font-color: "#006064"
+    shadow: true
+  }
+  fields: {
+    shape: rectangle
+    label: |md
+      **Fields**
+      - call_paths: `HashMap`
+      - total_samples: `u64`
+      - hash_fn: `fn(*Sample)`
+    |
+  }
+  methods: {
+    shape: rectangle
+    label: |md
+      **Methods**
+      - `consume_batch()`
+      - `aggregate()`
+      - `get_flame_data()`
+    |
+  }
+}
+
+# Data structures for context
+RawSample: {
+  label: "RawSample (48 bytes)"
+  shape: rectangle
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#424242"
+    stroke-dash: 3
+  }
+  layout: {
+    shape: rectangle
+    label: |md
+      
+      00: [ tid: u32 ] [ depth: u16 ] [ flags: u16 ]
+      08: [       timestamp: uint64              ]
+      16: [       frames[0]: uint64              ]
+      24: [       frames[1]: uint64              ]
+      ...
+      40: [       frames[127]: uint64            ]
+      
+    |
+    style.fill: "#BBDEFB"
+  }
+}
+
+AggEntry: {
+  label: "AggEntry"
+  shape: rectangle
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#424242"
+    stroke-dash: 3
+  }
+  fields: {
+    shape: rectangle
+    label: |md
+      - call_path_hash: u64
+      - count: AtomicU64
+      - first_seen: Instant
+    |
+  }
+}
+
+# Data flow connections
+Timer_Setup -> Signal_Handler: "1. register handler\nSIGPROF (27)" {
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 2
+    animated: true
+  }
+}
+Signal_Handler -> Stack_Walker: "2. ucontext_t*\nframe pointer" {
+  style: {
+    stroke: "#E65100"
+    stroke-width: 2
+    animated: true
+  }
+}
+Stack_Walker -> Ring_Buffer: "3. RawSample (48B)\ntry_push()" {
+  style: {
+    stroke: "#2E7D32"
+    stroke-width: 2
+    animated: true
+  }
+}
+Ring_Buffer -> Aggregator: "4. batch consume\npop_batch()" {
+  style: {
+    stroke: "#7B1FA2"
+    stroke-width: 2
+    animated: true
+  }
+}
+
+# Feedback/Control connections
+Aggregator -> Timer_Setup: "control loop" {
+  style: {
+    stroke: "#00838F"
+    stroke-width: 1
+    stroke-dash: 4
+  }
+}
+
+# External interfaces
+Application: "Target Application" {
+  style: {
+    fill: "#FFEBEE"
+    stroke: "#C62828"
+    stroke-width: 2
+  }
+}
+Application -> Timer_Setup: "prof_init(config)" {
+  style.stroke-dash: 3
+}
+Application <- Signal_Handler: "SIGPROF\ninterrupt" {
+  style.stroke-dash: 3
+}
+
+Output: "Export / UI" {
+  style: {
+    fill: "#F1F8E9"
+    stroke: "#558B2F"
+    stroke-width: 2
+  }
+}
+Aggregator -> Output: "flame_graph_data()"
+
+# Legend and Notes
+Legend: {
+  shape: rectangle
+  style.fill: white
+  near: bottom-left
+  label: |md
+    ### Legend
+    - **Solid blue**: Registration
+    - **Dashed**: Control/Ref
+    - **Animated**: High freq hot path
+  |
+}
+
+Perf_Note: {
+  shape: rectangle
+  near: bottom-right
+  style: {
+    fill: "#FFFDE7"
+    stroke: "#F9A825"
+    italic: true
+  }
+  label: |md
+    ### Performance Constraints
+    - **Signal Handler**: async-signal-safe only
+    - **Ring Buffer**: Lock-free SPMC
+    - **Sampling**: 99Hz prime frequency
+    - **Latency**: <10μs in handler
+    - **Memory**: Zero allocations in hot path
+  |
+}

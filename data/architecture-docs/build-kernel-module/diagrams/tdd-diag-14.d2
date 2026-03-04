@@ -1,0 +1,111 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+direction: right
+shape: sequence_diagram
+# ── Participants ──────────────────────────────────────────────────────────────
+user_prog: "Userspace Program\n(test_mydevice.c)"
+libc:      "glibc / syscall\ninstruction"
+vfs:       "VFS Layer\nsys_ioctl / do_vfs_ioctl"
+dispatch:  "mydevice_ioctl()\nfilp, cmd, arg"
+status_fn: "mydevice_ioctl_status()\nuser_status __user *"
+kstack:    "Kernel Stack\nstruct mydevice_status"
+uaccess:   "copy_to_user()\nSMAP: STAC→copy→CLAC"
+# ── Happy-path call ───────────────────────────────────────────────────────────
+happy_path: Happy Path — MYDEVICE_IOC_STATUS {
+  user_prog -> libc: "ioctl(fd, MYDEVICE_IOC_STATUS, &status)\nMYDEVICE_IOC_STATUS = _IOR('k', 2, struct mydevice_status)"
+  libc -> vfs: "syscall NR=16 (ioctl)\narg0=fd  arg1=cmd  arg2=(ulong)&status\nring 3 → ring 0  (no TLB flush)"
+  vfs -> vfs: "do_vfs_ioctl():\ncheck FIONREAD / FIOASYNC / TIOCGWINSZ…\n→ none match → fall through to vfs_ioctl()" {
+    style.stroke-dash: 3
+  }
+  vfs -> dispatch: "f_op->unlocked_ioctl(filp, cmd, arg)\n[indirect call through file_operations .rodata ptr]\ncmd=0x80286B02  arg=0x7ffc…(user &status)"
+}
+# ── Validation layer 1 ────────────────────────────────────────────────────────
+val1: "Layer 1 — Magic Number Check" {
+  dispatch -> dispatch: "_IOC_TYPE(cmd) → bits[15:8] = 0x6B = 'k'\nMYDEVICE_IOC_MAGIC = 'k'  →  MATCH ✓" {
+    style.stroke-dash: 3
+  }
+}
+# ── Wrong-magic early-exit alt ────────────────────────────────────────────────
+wrong_magic: Wrong Magic → Early Exit {
+  dispatch -> dispatch: "if wrong magic: _IOC_TYPE(cmd) != 'k'\nexample: cmd from another driver, type='T'" {
+    style.stroke: red
+    style.stroke-dash: 3
+  }
+  dispatch -> vfs: "return -ENOTTY\n(POSIX: 'Inappropriate ioctl for device')" {
+    style.stroke: red
+  }
+  vfs -> libc: "syscall returns -ENOTTY" {
+    style.stroke: red
+  }
+  libc -> user_prog: "ioctl() = -1\nerrno = ENOTTY" {
+    style.stroke: red
+  }
+}
+# ── Validation layer 2 ────────────────────────────────────────────────────────
+val2: "Layer 2 — Command Number Range Check" {
+  dispatch -> dispatch: "_IOC_NR(cmd) → bits[7:0] = 2\nMYDEVICE_IOC_MAXNR = 2  →  2 <= 2  PASS ✓" {
+    style.stroke-dash: 3
+  }
+}
+# ── Wrong-nr early-exit alt ───────────────────────────────────────────────────
+wrong_nr: Wrong NR → Early Exit {
+  dispatch -> dispatch: "if _IOC_NR(cmd) > MYDEVICE_IOC_MAXNR (e.g. nr=99)\nexample: _IO('k', 99) — unsupported command" {
+    style.stroke: red
+    style.stroke-dash: 3
+  }
+  dispatch -> vfs: "return -ENOTTY" {
+    style.stroke: red
+  }
+  vfs -> user_prog: "errno = ENOTTY" {
+    style.stroke: red
+  }
+}
+# ── Validation layer 3 ────────────────────────────────────────────────────────
+val3: "Layer 3 — Userspace Pointer Validation" {
+  dispatch -> dispatch: "_IOC_DIR(STATUS) = _IOC_READ (bit 1 set)\n→ kernel will write to userspace → validate ptr\naccess_ok((void __user *)arg, _IOC_SIZE(cmd))\n_IOC_SIZE(STATUS) = sizeof(struct mydevice_status) = 40" {
+    style.stroke-dash: 3
+  }
+  dispatch -> dispatch: "access_ok() range check:\narg ∈ [0, TASK_SIZE_MAX)?\nNULL or kernel addr (0xffff…) → FALSE → -EFAULT\nvalid user stack addr (0x7ffc…) → TRUE → PASS ✓" {
+    style.stroke-dash: 3
+  }
+}
+# ── switch dispatch ───────────────────────────────────────────────────────────
+sw: Switch Dispatch {
+  dispatch -> dispatch: "switch (cmd):\ncase MYDEVICE_IOC_RESIZE  (0): …\ncase MYDEVICE_IOC_CLEAR   (1): …\ncase MYDEVICE_IOC_STATUS  (2): ← MATCH\ndefault: -ENOTTY (unreachable after layer-2 check)" {
+    style.stroke-dash: 3
+  }
+  dispatch -> status_fn: "mydevice_ioctl_status(\n  (struct mydevice_status __user *)arg)"
+}
+# ── kernel-stack assembly ─────────────────────────────────────────────────────
+assemble: Assemble Status on Kernel Stack {
+  status_fn -> kstack: "struct mydevice_status status;\nstatus.buffer_size  = buffer_size;         // size_t → unsigned long\nstatus.bytes_used   = buffer_data_len;\nstatus.open_count   = (uint)atomic_read(&open_count);\nstatus.read_count   = (ulong)atomic_read(&read_count);\nstatus.write_count  = (ulong)atomic_read(&write_count);\n// 40 bytes on kernel stack; all fields populated atomically" {
+    style.stroke-dash: 3
+  }
+}
+# ── copy_to_user ──────────────────────────────────────────────────────────────
+xfer: copy_to_user Transfer {
+  status_fn -> uaccess: "copy_to_user(user_status, &status, sizeof(status))\n// sizeof(struct mydevice_status) = 40 bytes"
+  uaccess -> uaccess: "1. STAC — CPU AC flag set; SMAP disabled for this window\n2. validate user_status range (already done by access_ok)\n3. exception-table-guarded stores: 40 bytes → user page\n   (page-fault if page swapped → handled, copy resumes)\n4. CLAC — SMAP re-enabled\n5. return residual (0 = full success)" {
+    style.stroke-dash: 3
+  }
+  uaccess -> status_fn: "returns 0 (all 40 bytes copied)"
+}
+# ── return chain ──────────────────────────────────────────────────────────────
+ret: Return Chain {
+  status_fn -> dispatch: "return 0"
+  dispatch -> vfs: "return 0 (long)"
+  vfs -> libc: "syscall returns 0\nring 0 → ring 3"
+  libc -> user_prog: "ioctl() = 0\n*status populated:\n  buffer_size, bytes_used,\n  open_count, read_count, write_count"
+}
+# ── Style overrides ───────────────────────────────────────────────────────────
+user_prog.style.fill: "#E8F4FD"
+libc.style.fill:      "#FFF3CD"
+vfs.style.fill:       "#E8D5F5"
+dispatch.style.fill:  "#D5E8D4"
+status_fn.style.fill: "#D5E8D4"
+kstack.style.fill:    "#F5F5F5"
+uaccess.style.fill:   "#FFE6CC"

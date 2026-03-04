@@ -1,0 +1,230 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: Task Identity Across Thread Migration {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 32
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  thread_a: Thread A {
+    direction: down
+    style.fill: "#E8F5E9"
+    spawn_frame: {
+      label: "Spawn Context"
+      width: 320
+      code: |'rust
+  tokio::spawn(async {
+      handle_request().await
+  })
+      '|
+    }
+    spawn_state: {
+      shape: sql_table
+      label: "Task Metadata (spawn)"
+      f0: "0x00 | u64      | task_id = 42"
+      f1: "0x08 | Vec<usize> | spawn_stack"
+      f2: "0x20 | u64      | spawn_thread = A"
+      sz: "Stored at spawn"
+    }
+    poll1: {
+      label: "Poll #1 (t=0ms)"
+      width: 320
+      code: |'rust
+  // Task 42 begins polling
+  // Returns Poll::Pending
+  // Registers waker with I/O
+      '|
+    }
+  }
+  thread_b: Thread B {
+    direction: down
+    style.fill: "#E3F2FD"
+    wake_event: {
+      label: "Wake Event (t=50ms)"
+      width: 320
+      code: |'rust
+  // I/O completes
+  // Waker::wake() called
+  // Task queued to Thread B
+      '|
+    }
+    poll2: {
+      label: "Poll #2 (t=51ms)"
+      width: 320
+      code: |'rust
+  // Task 42 resumes HERE
+  // Different thread!
+  // Same task_id = 42
+      '|
+    }
+    resume_state: {
+      shape: sql_table
+      label: "Task Metadata (resume)"
+      f0: "0x00 | u64      | task_id = 42"
+      f1: "0x08 | Vec<usize> | spawn_stack"
+      f2: "0x20 | u64      | current_thread = B"
+      sz: "task_id persists!"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  problem: The Problem {
+    direction: down
+    style.fill: "#FFEBEE"
+    width: 400
+    p1: {
+      label: "Physical Stack at Resume"
+      code: |'rust
+  // Thread B stack:
+  tokio::runtime::task::raw::poll
+  tokio::runtime::task::harness::poll_future
+  handle_request::{{closure}}
+  // Where is spawn context?
+  // GONE - not on this stack!
+      '|
+    }
+    p2: {
+      label: "Lost Information"
+      code: |'rust
+  // Who spawned this task?
+  // What was the original call site?
+  // Which thread started it?
+  // NONE of this is on the stack!
+      '|
+    }
+  }
+  solution: The Solution {
+    direction: down
+    style.fill: "#E8F5E9"
+    width: 400
+    s1: {
+      label: "Task ID Must Travel"
+      code: |'rust
+  // Task struct carries identity:
+  struct Task {
+      id: TaskId,           // u64
+      spawn_stack: Vec<usize>,
+      spawn_thread: ThreadId,
+      // ... future state ...
+  }
+      '|
+    }
+    s2: {
+      label: "Lookup at Any Poll"
+      code: |'rust
+  // In signal handler:
+  let task_id = get_current_task_id();
+  let spawn_ctx = tracker
+      .get_task(task_id)
+      .spawn_stack;
+  // Now we know origin!
+      '|
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  lifecycle: Task Lifecycle Tracking {
+    direction: down
+    style.fill: "#FFF8E1"
+    state_machine: {
+      shape: class
+      label: "AsyncTaskLifecycle"
+      -task_id: "AsyncTaskId"
+      -function_name: "Option<String>"
+      -spawn_stack: "Vec<usize>"
+      -spawn_thread_id: "u64"
+      -threads_seen: "Vec<u64>"
+      -total_poll_time_ns: "u64"
+      -total_await_time_ns: "u64"
+      -poll_count: "u64"
+      +record_poll(thread_id): "void"
+      +get_spawn_context(): "Vec<usize>"
+    }
+    tracking: {
+      label: "Thread Migration Tracking"
+      code: |'rust
+  // Each poll records which thread
+  if !lifecycle.threads_seen.contains(thread_id) {
+      lifecycle.threads_seen.push(thread_id);
+  }
+  // Detect migration:
+  let migrated = threads_seen.len() > 1;
+      '|
+    }
+  }
+  waker_chain: Wake Chain Detail {
+    direction: down
+    style.fill: "#F3E5F5"
+    chain: {
+      label: "Waker Propagation"
+      code: |'rust
+  // 1. Task yields on Thread A
+  //    Waker stored in I/O driver
+  cx.waker().clone() // captures task_id
+  // 2. I/O completes (any thread)
+  //    Waker::wake() called
+  waker.wake_by_ref()
+  // 3. Runtime schedules task
+  //    May pick Thread B (work-stealing)
+  scheduler.schedule(task)
+  // 4. Thread B polls task
+  //    task_id preserved throughout!
+      '|
+    }
+    key_insight: {
+      label: "Key Insight"
+      style.fill: "#FFCDD2"
+      code: |'rust
+  // The waker IS the identity link
+  // It carries task_id across threads
+  // Without it: each poll looks independent
+  // With it: continuous task lifecycle
+      '|
+    }
+  }
+}
+thread_a.spawn_state -> thread_a.poll1: "creates"
+thread_a.poll1 -> thread_b.wake_event: "yields\n50ms await" {
+  style.stroke-dash: 5
+  style.animated: true
+  style.stroke: blue
+}
+thread_b.wake_event -> thread_b.poll2: "schedules"
+thread_b.poll2 -> lifecycle.state_machine: "updates"
+thread_a.spawn_frame -> lifecycle.state_machine: "initializes\n(task_id=42)"
+thread_a.spawn_frame -> problem.p1: "context\nlost?" {
+  style.stroke: red
+  style.stroke-dash: 3
+}
+solution.s2 -> lifecycle.state_machine: "queries"
+legend: {
+  near: bottom-right
+  style.fill: "#FAFAFA"
+  l1: "Green box = preserved context"
+  l2: "Red box = lost without tracking"
+  l3: "Blue arrow = task migration"
+}

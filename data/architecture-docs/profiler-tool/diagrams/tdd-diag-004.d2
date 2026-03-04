@@ -1,0 +1,184 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+
+classes: {
+  frame_header: {
+    style: {
+      fill: "#6030A0"
+      font-color: white
+      bold: true
+    }
+  }
+  frame_data: {
+    style: {
+      fill: "#2060C0"
+      font-color: white
+    }
+  }
+  pointer: {
+    style: {
+      fill: "#E07020"
+      font-color: white
+      bold: true
+    }
+  }
+  cache_line: {
+    style: {
+      stroke-dash: 4
+      stroke: "#808080"
+      stroke-width: 2
+      fill: transparent
+    }
+  }
+  padding: {
+    style: {
+      fill: "#808080"
+      font-color: white
+    }
+  }
+}
+
+title: "Stack Frame Pointer Chaining: x86-64 Memory Layout & Traversal" {
+  shape: text
+  style: {
+    font-size: 24
+    bold: true
+    underline: true
+  }
+}
+
+memory_layout: {
+  label: "Memory Segment (0x7fff0000 - 0x7fff1200)"
+  
+  stack: {
+    grid-columns: 1
+    
+    # Frame 3 (main)
+    frame_main_hdr: "0x7fff1010 | Frame: main() | [Header]" { class: frame_header }
+    main_saved_rbp: "0x7fff1008 | saved_rbp: NULL (0x0) | [8B]" { 
+      class: pointer 
+      tooltip: "Base of stack"
+    }
+    main_return: "0x7fff1000 | return_addr: 0x401120 | [8B]" { class: pointer }
+    main_locals: "0x7fff0ff0 | local_vars | [16B]" { class: frame_data }
+    
+    # Cache Line Boundary
+    cl1: "--- CACHE LINE BOUNDARY (64B) ---" { class: cache_line }
+
+    # Frame 2 (foo)
+    frame_foo_hdr: "0x7fff0fe8 | Frame: foo() | [Header]" { class: frame_header }
+    foo_saved_rbp: "0x7fff0fe0 | saved_rbp: 0x7fff1008 | [8B]" { class: pointer }
+    foo_return: "0x7fff0fd8 | return_addr: 0x401150 | [8B]" { class: pointer }
+    foo_local1: "0x7fff0fd0 | x: 100 (param) | [8B]" { class: frame_data }
+    foo_locals: "0x7fff0f90 | buffer | [64B]" { class: frame_data }
+
+    # Frame 1 (bar) - current
+    frame_bar_hdr: "0x7fff0f88 | Frame: bar() [CURRENT] | [Header]" { 
+      class: frame_header 
+      style.stroke: red
+      style.stroke-width: 4
+    }
+    bar_saved_rbp: "0x7fff0f80 | saved_rbp: 0x7fff0fe0 | [8B]" { class: pointer }
+    bar_return: "0x7fff0f78 | return_addr: 0x4011A0 | [8B]" { class: pointer }
+    bar_locals: "0x7fff0f68 | tmp/result | [16B]" { class: frame_data }
+  }
+
+  offsets: ||md
+    ### Byte Offsets (RBP Relative)
+    | Offset | Field | Size |
+    | :--- | :--- | :--- |
+    | `+0x08` | Return Address | 8B |
+    | `+0x00` | **Saved RBP** | 8B |
+    | `-0x08` | Local Var 1 | 8B |
+    | `-0x10` | Local Var 2 | 8B ||
+
+  
+}
+
+fp_chain: {
+  label: "Frame Pointer Chain (Logical View)"
+  
+  node_bar: "bar() Frame\nrbp: 0x7fff0f80" {
+    shape: hexagon
+    style: { fill: "#E07020"; font-color: white }
+  }
+  
+  node_foo: "foo() Frame\nrbp: 0x7fff0fe0" {
+    shape: hexagon
+    style: { fill: "#6030A0"; font-color: white }
+  }
+  
+  node_main: "main() Frame\nrbp: 0x7fff1008" {
+    shape: hexagon
+    style: { fill: "#2060C0"; font-color: white }
+  }
+  
+  terminator: "NULL" {
+    shape: circle
+    style: { fill: "#808080"; font-color: white }
+  }
+  
+  node_bar -> node_foo: "deref(rbp)"
+  node_foo -> node_main: "deref(rbp)"
+  node_main -> terminator: "0x0"
+}
+
+assembly_logic: {
+  label: "Procedure Control Flow"
+  
+  prologue: |asm
+    push rbp          ; Save caller's frame pointer
+    mov  rbp, rsp     ; Establish new frame base
+    sub  rsp, 32      ; Allocate space for locals
+  |
+  prologue.shape: code
+  
+  epilogue: |asm
+    leave             ; mov rsp, rbp; pop rbp
+    ret               ; pop rip
+  |
+  epilogue.shape: code
+  
+  register_state: {
+    shape: sql_table
+    RBP: "Frame Pointer" {constraint: "Callee-Saved"}
+    RSP: "Stack Pointer" {constraint: "Callee-Saved"}
+    RIP: "Instruction Pointer" {constraint: "Volatile"}
+    RAX: "Return Value" {constraint: "Caller-Saved"}
+  }
+}
+
+algorithm: {
+  label: "Stack Unwinding (Python)"
+  
+  pseudocode: |python
+    def unwind(rbp):
+      while rbp != 0:
+        # saved_rbp is at [rbp+0]
+        saved_rbp = read_mem_u64(rbp)
+        # ret_addr is at [rbp+8]
+        ret_addr  = read_mem_u64(rbp + 8)
+        print(f"Frame: {ret_addr:x}")
+        rbp = saved_rbp
+  |
+  pseudocode.shape: code
+  
+  complexity: {
+    shape: sql_table
+    Time: "O(N)" {constraint: "N=Stack Depth"}
+    Space: "O(1)" {constraint: "Iterative"}
+  }
+}
+
+# Pointer Links
+memory_layout.stack.bar_saved_rbp -> memory_layout.stack.foo_saved_rbp: "Linked" {
+  style: { stroke: "#E07020"; stroke-width: 3; animated: true }
+}
+memory_layout.stack.foo_saved_rbp -> memory_layout.stack.main_saved_rbp: "Linked" {
+  style: { stroke: "#E07020"; stroke-width: 3; animated: true }
+}

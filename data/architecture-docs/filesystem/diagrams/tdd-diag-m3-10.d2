@@ -1,0 +1,165 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# RENAME ATOMIC MOVE - KERNEL IMPLEMENTATION (EXT4/VFS)
+# Technical specification for engineers to implement syscall rename(2)
+# -----------------------------------------------------------------------------------------
+
+rename_sequence: {
+  shape: sequence_diagram
+
+  # Participants with explicit implementation types and memory metadata
+  VFS: "Kernel VFS Layer\n(vfs_rename_caller)" {
+    style.fill: "#E1D5E7"
+  }
+  FS: "ext4_rename API\n(inode.c)" {
+    style.stroke: "#6C8EBF"
+    style.stroke-width: 4
+  }
+  Path: "namei: path_resolver\n(type: path_lookup_struct)"
+  Dir: "dir_ops: Directory Manager\n(ext4_dx_ops)"
+  Inode: "inode_manager\n(sizeof=160B)"
+  Disk: "bio_layer: Block Device\n(Sector Size: 512B)" {
+    style.fill: "#DAE8FC"
+  }
+
+  # 1. Initialization and Lock Acquisition
+  VFS -> FS: "sys_rename(old_path, new_path): int"
+  
+  # 2. Critical Section: Global Filesystem Mutex Acquisition
+  # Note: Required to prevent directory loops and concurrent link modifications
+  FS.lock_span: {
+    FS.lock_span -> FS.lock_span: "pthread_mutex_lock(&fs_lock) ▼"
+    
+    # 3. Path Resolution and Inode Identification
+    FS -> Path: "path_resolve_parent(old_path): (parent_inode, old_name)"
+    Path -> Dir: "dir_lookup(old_parent, old_name): inode_num"
+    Dir -> Path: "return inode_index=102"
+    Path -> FS: "return (inode_10, 102)"
+
+    FS -> Path: "path_resolve_parent(new_path): (new_parent_inode, new_name)"
+    Path -> FS: "return (inode_20, 'target_file')"
+
+    # 4. Target Validation (Atomicity Prerequisite)
+    FS -> Dir: "dir_lookup(new_parent, 'target_file'): int"
+    Dir -> FS: "return 0 (ENOENT)"
+    
+    FS."STATE: Target validated as available.\nInvariant: New path does not exist." {
+      style.font-color: blue
+    }
+
+    # 5. Metadata Preparation
+    FS -> Inode: "read_inode(102): struct ext4_inode"
+    Inode -> Disk: "bread(block_idx: 0x880, size: 4096B): buffer_head"
+    Disk -> Inode: "return binary_stream (inode_table_offset + 102)"
+    Inode -> FS: "return inode_data {mode: 0755, links: 1, size: 4KB}"
+
+    # 6. The Atomic Link Swap (Critical Modification)
+    # Step A: Link the existing inode to the NEW directory entry
+    FS -> Dir: "dir_add_entry(new_parent, 'target_file', 102): int"
+    Dir -> Disk: "submit_bio(REQ_OP_WRITE, lba: 0x200): success"
+    Disk -> Dir: "ack"
+    Dir -> FS: "return 0 (Success)"
+    
+    FS."INVARIANT: Inode 102 is now accessible via NEW name.\nReference count technically increased." {
+      style.bold: true
+      style.font-color: "#D32F2F"
+    }
+
+    # Step B: Remove the link from the OLD directory entry
+    FS -> Dir: "dir_remove_entry(old_parent, 'old_name'): int"
+    Dir -> Disk: "submit_bio(REQ_OP_WRITE, lba: 0x100): success"
+    Disk -> Dir: "ack"
+    Dir -> FS: "return 0 (Success)"
+
+    FS."INVARIANT: Inode 102 link removed from OLD name.\nAtomic move complete at dir-entry level." {
+      style.bold: true
+      style.font-color: "#D32F2F"
+    }
+
+    # 7. Directory-Specific Structural Integrity (Handling '..')
+    directory_logic_group: "Conditional Logic: S_ISDIR(inode.mode)" {
+      FS -> Inode: "verify_type(102): S_IFDIR"
+      Inode -> FS: "return true"
+      
+      FS -> Disk: "bread(inode_102->i_block[0]): struct ext4_dir_entry"
+      Disk -> FS: "return block_data (Contains '.' and '..')"
+      
+      FS -> FS: "update_dotdot_entry(new_parent_inode_num=20)"
+      
+      FS."STATE CHANGE: Inode 102 internal '..' pointer\nnow points to parent Inode 20." {
+        style.font-color: red
+        style.bold: true
+      }
+      
+      FS -> Disk: "bwrite(inode_102->i_block[0], modified_data)"
+      Disk -> FS: "return 0 (Success)"
+
+      # Adjust link counts on parent directories
+      FS -> Inode: "ext4_dec_count(old_parent)"
+      FS -> Inode: "ext4_inc_count(new_parent)"
+      Inode -> Disk: "sync_inode_metadata(parents): void"
+    }
+
+    # 8. Persistence (Journaling / Fsync)
+    FS -> Disk: "jbd2_journal_commit_transaction(): void"
+    Disk -> FS: "ack (Metadata flushed to stable storage)"
+
+    FS.lock_span -> FS.lock_span: "pthread_mutex_unlock(&fs_lock) ▲"
+  }
+  
+  FS -> VFS: "return 0 (Success)"
+}
+
+# -----------------------------------------------------------------------------------------
+# TECHNICAL SPECIFICATION ANNOTATIONS
+# -----------------------------------------------------------------------------------------
+
+documentation: |'md
+  ### Rename Invariants & Byte Offsets
+  | Field | Offset | Size | Description |
+  | :--- | :--- | :--- | :--- |
+  | `i_mode` | 0x00 | 2B | File type/permissions |
+  | `i_links_count` | 0x1A | 2B | Number of directory entries pointing to inode |
+  | `i_block[0]` | 0x28 | 4B | Pointer to first data block (Direct) |
+
+  **Implementation Notes:**
+  1. **Locking**: `i_mutex` must be held on both `old_dir` and `new_dir`. To avoid deadlock, lock by inode memory address order (lower address first).
+  2. **Atomicity**: The system call ensures that a crash during the move leaves the file in either the source or destination, never both and never neither.
+  3. **Cross-Directory**: If moving a directory, the `..` entry must be updated, necessitating a write to the child's data block.
+'|
+documentation.near: rename_sequence
+
+# -----------------------------------------------------------------------------------------
+# STYLING GLOBS
+# -----------------------------------------------------------------------------------------
+
+(rename_sequence.FS -> rename_sequence.Dir)[*]: {
+  style.stroke: "#1976D2"
+  style.stroke-width: 2
+}
+
+(rename_sequence.FS -> rename_sequence.FS)[*]: {
+  style.font-color: "#B71C1C"
+  style.bold: true
+}
+
+rename_sequence.directory_logic_group: {
+  style: {
+    stroke: "#F57C00"
+    stroke-dash: 4
+    fill: "#FFF3E0"
+  }
+}
+
+# Highlight the atomic steps specifically: Add and Remove Entry (Indices 1 and 2 of FS -> Dir)
+(rename_sequence.FS -> rename_sequence.Dir)[1].style.stroke: red
+(rename_sequence.FS -> rename_sequence.Dir)[1].style.stroke-width: 5
+(rename_sequence.FS -> rename_sequence.Dir)[2].style.stroke: red
+(rename_sequence.FS -> rename_sequence.Dir)[2].style.stroke-width: 5

@@ -1,0 +1,190 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+
+# --- ARCHITECTURAL COMPONENT DEFINITIONS ---
+# Pre-defining shapes to attach rich metadata (tooltips, colors, shapes)
+cpu: "Intel x86_64 CPU\n(Execution Core)" {
+  shape: person
+  style: {
+    fill: "#E1D5E7"
+    stroke: "#9673A6"
+    stroke-width: 2
+  }
+  tooltip: "Active Pipeline executing context switch logic in Ring 0 (Kernel Mode)"
+}
+
+proc_a: "PCB_A\n(Process A State)" {
+  shape: rectangle
+  style: {
+    fill: "#F5F5F5"
+    stroke: "#666666"
+    stroke-dash: 2
+  }
+  tooltip: "Process being descheduled; architecture state saved to PCB_A in kernel memory"
+}
+
+cr3: "CR3 Register\n(PDBR)" {
+  shape: cylinder
+  style: {
+    fill: "#FFF2CC"
+    stroke: "#D6B656"
+    stroke-width: 3
+  }
+  tooltip: "Control Register 3: Holds the physical address of the 4KB-aligned PML4 table"
+}
+
+tlb: "TLB Unit\n(PCID Tagged)" {
+  shape: package
+  style: {
+    fill: "#DAE8FC"
+    stroke: "#6C8EBF"
+  }
+  tooltip: "Translation Lookaside Buffer: Virtual-to-Physical mapping cache"
+}
+
+pml4_b: "PML4_B\n(New Address Space)" {
+  shape: rectangle
+  style: {
+    fill: "#D5E8D4"
+    stroke: "#82B366"
+    double-border: true
+  }
+  tooltip: "Root of the hierarchical page table structure for Process B"
+}
+
+proc_b: "PCB_B\n(Process B State)" {
+  shape: rectangle
+  style: {
+    fill: "#F5F5F5"
+    stroke: "#666666"
+    stroke-dash: 2
+  }
+  tooltip: "Incoming process; state restored from PCB_B and TSS"
+}
+
+# --- MAIN SEQUENCE: CR3 UPDATE & CONTEXT SWITCH ---
+Context_Switch_CR3: {
+  shape: sequence_diagram
+  style.fill: "#FFFFFF"
+  
+  # Participant Ordering (Left to Right)
+  cpu; proc_a; cr3; tlb; pml4_b; proc_b
+
+  # --- Phase 1: Context Save ---
+  Phase_1: "Phase 1: Architecture State Preservation" {
+    cpu -> proc_a: "MOV [PCB_A.RSP], RSP; PUSH_ALL_REGS"
+    proc_a -> cpu: "Registers Saved (Context A Stored)"
+    cpu -> cpu: "Update TSS.ESP0 / Load KSP_B" {
+      style.stroke: "#333333"
+      style.stroke-dash: 3
+    }
+  }
+
+  # --- Phase 2: CR3 Update (Atomic Hardware Switch) ---
+  Phase_2: "Phase 2: PML4 Base Pointer Update" {
+    cpu -> cr3: "READ: current_pfn"
+    cpu -> cr3: "MOV CR3, rbx (PML4_B_Phys_Addr)" {
+      style: {
+        stroke: "#B20000"
+        stroke-width: 4
+        bold: true
+      }
+    }
+    # Direct pointer representation to memory structure
+    cr3 -> pml4_b: "PDBR Pointer: 0x00000001B4001000" {
+      style.stroke: "#FF8C00"
+      style.animated: true
+    }
+  }
+
+  # --- Phase 3: Coherency & PCID Logic ---
+  TLB_Coherency: "Phase 3: TLB Consistency Management" {
+    
+    PCID_Logic: "Case A: PCID Support (CR4.PCIDE=1)" {
+        cpu -> tlb: "MOV CR3, rax (PCID_NO_FLUSH=1)"
+        tlb -> tlb: "Switch ASID/PCID Tag: 0x01 -> 0x02" {
+          style.stroke: "#0000FF"
+        }
+    }
+
+    Legacy_Logic: "Case B: Non-PCID (Full Flush)" {
+        cpu -> tlb: "CR3 Write Detected"
+        tlb -> tlb: "INV_ALL_ENTRIES (G=0)" {
+          style: {
+            stroke: "#FF0000"
+            bold: true
+          }
+        }
+    }
+  }
+
+  # --- Phase 4: Execution Recovery ---
+  Phase_4: "Phase 4: Pipeline Recovery & Resume" {
+    cpu -> proc_b: "POP_ALL_REGS; MOV RSP, [PCB_B.RSP]"
+    cpu -> proc_b: "IRETQ (Ring 3 Resume: RIP_B)"
+    
+    # Post-switch memory access validation
+    proc_b -> tlb: "MOV EAX, [0x401000] (Virtual Load)" {
+      style.animated: true
+      style.stroke: "#0066CC"
+    }
+    tlb -> pml4_b: "Page Table Walk (TLB MISS)" {
+      style.stroke: "#666666"
+    }
+    pml4_b -> tlb: "Return PTE_B (Physical Page)"
+    tlb -> proc_b: "Translation Cached (TLB HIT)"
+  }
+}
+
+# --- Technical Specification Legend ---
+# Fixed syntax using double-pipe (||) to allow inner pipes in markdown table
+legend: ||md
+  ### Intel x86_64 CR3 Switch Specification
+  
+  | Field | Bit Range | Description |
+  | :--- | :--- | :--- |
+  | **PML4 Base** | 51:12 | Physical address bits of root page table (4KB aligned) |
+  | **PCID** | 11:0 | Process Context ID (used if CR4.PCIDE=1) |
+  | **No-Flush** | 63 | If set, CR3 write does not invalidate TLB entries |
+  
+  **Coherency Invariant**: Any change to `CR3` without `PCID_NO_FLUSH` (Bit 63) triggers 
+  hardware-mediated invalidation of all non-global TLB entries.
+|| {
+  near: Context_Switch_CR3
+  style: {
+    font-size: 14
+    fill: "#FCFCFC"
+    stroke: "#CCCCCC"
+  }
+}
+
+# --- Styling & Internal Annotations ---
+
+# Highlight the atomic switch group
+Context_Switch_CR3.Phase_2.style: {
+  bold: true
+  fill: "#FFF5EE"
+  stroke: "#FF8C00"
+}
+
+# Apply tooltips to sequence internal logic for engineer reference
+Context_Switch_CR3.Phase_2.tooltip: "Atomic hardware operation: loading a new root page table base"
+Context_Switch_CR3.Phase_4.tooltip: "First instruction fetch in new address space will typically trigger a TLB miss and Page Walk"
+
+# Color code for architectural paths
+(Context_Switch_CR3.Phase_4.proc_b -> Context_Switch_CR3.Phase_4.tlb)[0].style.stroke: "#004C99"
+(Context_Switch_CR3.Phase_4.tlb -> Context_Switch_CR3.Phase_4.pml4_b)[0].style.stroke: "#4D4D4D"
+
+# Page Boundary Annotation
+page_boundary: "" {
+  near: pml4_b
+  shape: text
+  label: "------------------ 4KB Boundary ------------------"
+  style.font-color: "#888888"
+  style.bold: true
+}

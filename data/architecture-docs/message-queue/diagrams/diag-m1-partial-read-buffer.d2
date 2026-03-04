@@ -1,0 +1,212 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  near: top-center
+  shape: rectangle
+  label: |md
+    # Partial Read Buffering: The #1 Networking Bug
+    **TCP delivers a 100-byte message as 3 fragments. Buffer accumulates until complete.**
+  |
+}
+
+row_top: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  sender: {
+    label: "SENDER (client.go)"
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    style.stroke-width: 2
+    
+    msg: {
+      label: "Original Message (100 bytes)"
+      shape: rectangle
+      width: 350
+      style.fill: "#C8E6C9"
+      content: |md
+        `[0x01][0x00][0x00][0x00][0x64]`
+        **Length Prefix (5 bytes)**
+        `[... 95 bytes of payload ...]`
+      |
+    }
+  }
+
+  network: {
+    label: "TCP STACK (Layer 4)"
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    style.stroke-width: 2
+    
+    frag: {
+      label: "TCP Fragmentation"
+      shape: diamond
+      style.fill: "#FFE0B2"
+    }
+    
+    chunks: {
+      direction: down
+      style.fill: transparent
+      style.stroke: transparent
+      c1: "Segment 1 (37 bytes)" { style.fill: "#FFCCBC" }
+      c2: "Segment 2 (40 bytes)" { style.fill: "#FFCCBC" }
+      c3: "Segment 3 (23 bytes)" { style.fill: "#FFCCBC" }
+    }
+    
+    frag -> chunks: "Splits stream"
+  }
+
+  sender.msg -> network.frag: "send(100)"
+}
+
+receiver: {
+  label: "RECEIVER (FrameReader)"
+  style.fill: "#E3F2FD"
+  style.stroke: "#2196F3"
+  style.stroke-width: 2
+  direction: right
+
+  c1: {
+    label: "T1: Initial Read"
+    style.fill: "#BBDEFB"
+    width: 350
+    buf1: {
+      shape: sql_table
+      label: "Buffer (37/100 bytes)"
+      r0: "0x00 | byte | cmd: 0x01"
+      r1: "0x01 | byte | len[0]: 0x00"
+      r2: "0x02 | byte | len[1]: 0x00"
+      r3: "0x03 | byte | len[2]: 0x00"
+      r4: "0x04 | byte | len[3]: 0x64"
+      r5: "0x05 | byte[] | data[0:31]"
+      note: "Status: Partial"
+    }
+    code1: {
+      label: "handler.go"
+      code: |'go
+        // n = 37 (Partial!)
+        n, _ := conn.Read(buf)
+        buffered = n
+      '|
+    }
+  }
+
+  c2: {
+    label: "T2: Accumulation"
+    style.fill: "#BBDEFB"
+    width: 350
+    buf2: {
+      shape: sql_table
+      label: "Buffer (77/100 bytes)"
+      r0: "0x00 | byte[] | data[0:36]"
+      r1: "0x25 | byte[] | data[37:76]"
+      note: "Status: Partial"
+    }
+    code2: {
+      label: "handler.go"
+      code: |'go
+        // n = 40 (Accumulated)
+        n, _ := conn.Read(buf[37:])
+        buffered += n
+      '|
+    }
+  }
+
+  c3: {
+    label: "T3: Completion"
+    style.fill: "#BBDEFB"
+    width: 350
+    buf3: {
+      shape: sql_table
+      label: "Buffer (100/100 bytes)"
+      r0: "0x00 | byte[] | data[0:76]"
+      r1: "0x4D | byte[] | data[77:99]"
+      ok: "Status: Complete"
+    }
+    code3: {
+      label: "handler.go"
+      code: |'go
+        // n = 23 (Full Frame)
+        n, _ := conn.Read(buf[77:])
+        buffered += n
+        // Frame ready!
+      '|
+    }
+  }
+
+  c1 -> c2: "Next segment"
+  c2 -> c3: "Final segment"
+}
+
+row_bottom: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  complete_imp: {
+    label: "CORRECT (Production Standard)"
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    style.stroke-width: 3
+    logic: {
+      label: "reader.go"
+      code: |'go
+        func ReadFrame(r io.Reader) ([]byte, error) {
+          lenBuf := make([]byte, 4)
+          // Guarantees all bytes
+          io.ReadFull(r, lenBuf)
+          
+          size := binary.BigEndian.Uint32(lenBuf)
+          payload := make([]byte, size)
+          io.ReadFull(r, payload)
+          return payload, nil
+        }
+      '|
+    }
+  }
+
+  buggy_imp: {
+    label: "BUGGY (Naive Implementation)"
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    style.stroke-width: 2
+    logic: {
+      label: "handler.go"
+      code: |'go
+        func handle(c net.Conn) {
+          buf := make([]byte, 1024)
+          for {
+            // BUG: Assumes full msg
+            n, _ := c.Read(buf)
+            // Processes partial data
+            process(buf[:n]) 
+          }
+        }
+      '|
+    }
+  }
+}
+
+row_top -> receiver: "TCP Byte Stream"
+receiver -> row_bottom: "Implementation Comparison"
+
+legend: {
+  near: bottom-right
+  style.fill: "#FAFAFA"
+  style.stroke: "#9E9E9E"
+  label: "Key Technical Insight"
+  content: |md
+    **TCP is a BYTE STREAM, not a message stream.**
+    - `send(100)` does NOT mean `recv()` gets 100.
+    - Result depends on MTU, Nagle's Algorithm, and OS buffers.
+    - **ALWAYS use `io.ReadFull`** for fixed-size headers.
+    - **NEVER assume `Read()` returns a complete packet.**
+  |
+}

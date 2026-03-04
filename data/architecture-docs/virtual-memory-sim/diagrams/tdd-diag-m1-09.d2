@@ -1,0 +1,150 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+shape: sequence_diagram
+
+Process: {
+  shape: person
+  style.fill: "#DAE8FC"
+}
+PageTable: Page Table {
+  style.fill: "#E1D5E7"
+  tooltip: "MMU Managed Structure"
+}
+PhysMem: Physical Memory {
+  style.fill: "#D5E8D4"
+}
+Stats: Statistics {
+  style.fill: "#FFF2CC"
+}
+
+title: |'md
+### Demand Paging Timeline
+**Technical Spec:** Lifecycle of a virtual page from initial Page Fault through frame allocation, PTE synchronization, and subsequent hardware-accelerated translation hits.
+'| {
+  near: top-center
+}
+
+# ==========================================================
+# PHASE 1: FIRST ACCESS (PAGE FAULT)
+# ==========================================================
+"PHASE 1: Traps & Faults" {
+  Process.t1 -> PageTable.t1: "MMU: translate(0x00401234)\n[VPN=1, Offset=0x234]" {
+    style.stroke: red
+    style.bold: true
+  }
+
+  PageTable.note_fault: |'md
+  **MMU Logic:**
+  1. Index PTE by VPN (1)
+  2. **Read Control Bits:**
+     - Valid: **0** (FAULT)
+     - Present: **0**
+  '|
+
+  PageTable.t1 -> Stats.t1: "count_fault()"
+  Stats.t1 -> PageTable.t1: "return FAULT_ACK"
+}
+
+# ==========================================================
+# PHASE 2: KERNEL FRAME ALLOCATION
+# ==========================================================
+"PHASE 2: Frame Management" {
+  Process.t2 -> PhysMem.t2: "OS_Alloc: pop_free_list()"
+
+  PhysMem.note_alloc: |'md
+  **PhysMem Internal State:**
+  - Frame Size: 4096B
+  - Selected PFN: **0x42**
+  - Action: zero_init(0x42)
+  '|
+
+  PhysMem.t2 -> PhysMem.t2_clear: "bzero(4096)" {
+    style.stroke: "#666666"
+  }
+  PhysMem.t2_clear -> Process.t2: "PFN=0x42"
+}
+
+# ==========================================================
+# PHASE 3: PTE SYNCHRONIZATION
+# ==========================================================
+"PHASE 3: PTE Hardware Update" {
+  Process.t3 -> PageTable.t3: "Update PTE[1]" {
+    style.stroke: "#FF8000"
+  }
+
+  PageTable.t3 -> PageTable.t3_write: |'md
+  **New PTE State:**
+  - PFN: **0x42**
+  - Valid: **1**
+  - R/W/X: **1/1/0**
+  - Dirty: **0**
+  - Ref: **0**
+  '|
+
+  PageTable.t3_write -> Stats.t3: "inc_resident_set()"
+}
+
+# ==========================================================
+# PHASE 4: SUBSEQUENT ACCESS (HARDWARE HIT)
+# ==========================================================
+"PHASE 4: Translation Success" {
+  Process.t4 -> PageTable.t4: "MMU: translate(0x00401238)\n[VPN=1, Offset=0x238]" {
+    style.stroke: blue
+  }
+
+  PageTable.note_hit: |'md
+  **MMU Path (O(1)):**
+  - PTE[1].valid == 1
+  - Target PFN: 0x42
+  - **Result:** HIT
+  '|
+
+  PageTable.t4 -> PageTable.t4_bit: "Set Ref=1"
+  PageTable.t4_bit -> Process.t4: "PhysAddr: 0x42238" {
+    style.bold: true
+  }
+}
+
+# ==========================================================
+# PHASE 5: WRITE SEMANTICS
+# ==========================================================
+"PHASE 5: Dirty Propagation" {
+  Process.t5 -> PageTable.t5: "STORE (0x42234, val)"
+
+  PageTable.t5 -> PageTable.t5_dirty: |'md
+  **Bit Transition:**
+  - Dirty: 0 -> **1**
+  - Ref: 1
+  '|
+
+  PageTable.note_dirty: |'md
+  **Policy Impact:**
+  This page now requires 
+  write-back to disk 
+  before frame eviction.
+  '|
+
+  PageTable.t5_dirty -> Process.t5: "Write Commit"
+}
+
+# ==========================================================
+# SUMMARY TABLE
+# ==========================================================
+Summary: |'md
+### Implementation Summary
+| Access Sequence | Result | CPU Cycles | Bit Changes |
+| :--- | :--- | :--- | :--- |
+| **1st Read** | FAULT | ~10k (Trap) | Valid: 0 -> 1, PFN Set |
+| **2nd Read** | HIT | ~1 (TLB) | Ref: 0 -> 1 |
+| **3rd Write** | HIT | ~1 (TLB) | Dirty: 0 -> 1 |
+
+**Hardware Invariant:** TLB entries are flushed (invlpg) if PTE protection bits decrease.
+'| {
+  near: bottom-center
+}

@@ -1,0 +1,224 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+  colors: {
+    header: "#8B5CF6"
+    data: "#3B82F6"
+    free: "#10B981"
+    padding: "#94A3B8"
+    pointer: "#F59E0B"
+    changed: "#EF4444"
+    background: "#F8FAFC"
+  }
+}
+
+title: |md
+  # ARCHITECTURE SPECIFICATION: ON-DEMAND PAGE TABLE ALLOCATION
+  ## MODULE: Virtual Memory Manager (VMM) - Fault Handler Subsystem
+  **TDD Reference**: M3-04 handled by `vmm_allocate_table_on_demand()`
+| {near: top-center}
+
+direction: right
+
+# ==================== STEP 1: INITIAL FAULT DETECTION ====================
+step1: {
+  label: "STEP 1: PAGE WALK PDE MISS"
+  style.fill: ${colors.background}
+  
+  page_directory: {
+    label: "Page Directory Base (CR3)"
+    shape: sql_table
+    style.fill: ${colors.header}
+    entry_0: "Entry [0]" {constraint: "present=1"}
+    entry_1: "Entry [1]" {
+      constraint: "PRESENT=0"
+      style.fill: ${colors.changed}
+      style.bold: true
+    }
+    entry_2: "Entry [2]" {constraint: "present=1"}
+    ellipsis: "..." {constraint: ""}
+  }
+}
+
+step1_note: |||md
+  ### Translation Failure
+  - **Target VA**: `0x00401234`
+  - **PD Index**: `(VA >> 22) & 0x3FF` = `1`
+  - **Fault**: `PDE[1].present == 0`
+  - **Status**: Table for 4MB range missing.
+||| {near: top-right}
+
+# ==================== STEP 2: FRAME SEQUESTRATION ====================
+step2: {
+  label: "STEP 2: PHYSICAL FRAME ALLOCATION"
+  style.fill: ${colors.background}
+  
+  phys_mem: {
+    label: "Physical RAM"
+    frame_0: "PFN 0: OS Kernel" {style.fill: ${colors.padding}}
+    frame_1: "PFN 1: App Code" {style.fill: ${colors.data}}
+    frame_2: "PFN 2: App Stack" {style.fill: ${colors.data}}
+    allocated_frame: "PFN 3: NEW TABLE" {
+      style.fill: ${colors.free}
+      style.stroke: ${colors.free}
+      style.stroke-width: 4
+      style.double-border: true
+    }
+    frame_4: "PFN 4: Free" {style.fill: "#D1FAE5"; style.stroke-dash: 3}
+  }
+}
+
+step2_logic: |||md
+  ### Frame Allocator
+  c
+  // get_free_frame returns physical address
+  paddr_t table_phys = pmm_alloc_frame(); 
+  // Result: 0x00003000 (PFN 3)
+  
+||| {near: bottom-left}
+
+# ==================== STEP 3: DATA STRUCTURE INIT ====================
+step3: {
+  label: "STEP 3: PAGE TABLE INITIALIZATION"
+  style.fill: ${colors.background}
+  
+  page_table_new: {
+    label: "New L2 Page Table @ PFN 3"
+    shape: sql_table
+    style.fill: ${colors.data}
+    style.stroke: ${colors.changed}
+    style.stroke-width: 3
+    pte_0: "PTE [0]" {constraint: "V=0; PFN=0"}
+    pte_1: "PTE [1]" {constraint: "V=0; PFN=0"}
+    ellipsis: "..." {constraint: "V=0"}
+    pte_1023: "PTE [1023]" {constraint: "V=0; PFN=0"}
+  }
+}
+
+step3_init_code: |||md
+  ### Security Invariant
+  Must zero memory to prevent 
+  information leakage between 
+  address spaces.
+  c
+  memset(table_ptr, 0, PAGE_SIZE);
+  
+||| {near: bottom-center}
+
+# ==================== STEP 4: HIERARCHY LINKING ====================
+step4: {
+  label: "STEP 4: DIRECTORY ATOMIC LINK"
+  style.fill: ${colors.background}
+  
+  page_directory_updated: {
+    label: "Page Directory (Post-Update)"
+    shape: sql_table
+    style.fill: ${colors.header}
+    entry_0: "Entry [0]" {constraint: ""}
+    link_point: "Entry [1]" {
+      constraint: "PRESENT=1 | ADDR=0x3"
+      style.fill: ${colors.changed}
+      style.bold: true
+    }
+    entry_2: "Entry [2]" {constraint: ""}
+  }
+
+  target_table: {
+    label: "Mapped Table"
+    shape: rectangle
+    style.fill: ${colors.data}
+    style.opacity: 0.7
+  }
+
+  page_directory_updated.link_point -> target_table: "PDE.PFN = 3" {
+    style: {
+      stroke: ${colors.pointer}
+      stroke-width: 4
+      animated: true
+    }
+  }
+}
+
+# ==================== STEP 5: RESUME EXECUTION ====================
+step5: {
+  label: "STEP 5: RESTART PAGE WALK"
+  style.fill: ${colors.background}
+  
+  logic_flow: {
+    mmu_restart: "MMU Restarts Walk" {shape: oval}
+    check_pde: "PDE[1].present?" {shape: diamond; style.fill: ${colors.free}}
+    traverse: "Access L2 Table" {shape: rectangle; style.fill: ${colors.data}}
+    check_pte: "PTE[idx].valid?" {shape: diamond}
+    
+    mmu_restart -> check_pde: "Retry VA 0x00401234"
+    check_pde -> traverse: "YES (PFN 3)"
+    traverse -> check_pte
+  }
+}
+
+step5_note: |||md
+  ### Walk Completion
+  1. PDE is now valid.
+  2. MMU descends to L2.
+  3. PTE[73] checked (0x401234 >> 12).
+  4. Usually results in a **Soft Page Fault** 
+     to load the actual data page.
+||| {near: bottom-right}
+
+# ==================== GLOBAL TOPOLOGY ====================
+
+step1 -> step2: "1. PDE Missing" {style.stroke: ${colors.changed}}
+step2 -> step3: "2. Frame Obtained" {style.stroke: ${colors.free}}
+step3 -> step4: "3. Zeroed & Ready" {style.stroke: ${colors.pointer}}
+step4 -> step5: "4. Link Success" {style.stroke: ${colors.free}}
+
+# ==================== DATA SUMMARY ====================
+summary: {
+  label: "ALLOCATION METRICS & INVARIANTS"
+  
+  stats_box: {
+    shape: rectangle
+    style.fill: ${colors.background}
+    style.stroke: "#64748B"
+    style.double-border: true
+    
+    content: |||md
+      | Component | Transition | Delta |
+      | :--- | :--- | :--- |
+      | **Physical Memory** | Free -> PT_System | -4 KB |
+      | **PD Entry 1** | 0x00000000 -> 0x00003003 | PT Link |
+      | **Address Space** | Unmapped -> Mappable | +4 MB |
+      | **Performance** | Fault -> Resume | ~2.5k cycles |
+
+      **Invariant**: `CR3` remains constant; only memory contents and PDE bits change.
+      **Atomic**: PDE update must be atomic to prevent race conditions in SMP.
+    |||
+  }
+}
+summary.near: bottom-center
+
+# ==================== LEGEND ====================
+legend: {
+  label: "Manual Reference"
+  
+  l1: "Header / Control" {
+    shape: rectangle
+    style.fill: ${colors.header}
+  }
+  l2: "User Data / Tables" {
+    shape: rectangle
+    style.fill: ${colors.data}
+  }
+  l3: "Allocation Change" {
+    shape: rectangle
+    style.fill: ${colors.changed}
+  }
+  l4: "Free Physical" {
+    shape: rectangle
+    style.fill: ${colors.free}
+  }
+}
+legend.near: top-right

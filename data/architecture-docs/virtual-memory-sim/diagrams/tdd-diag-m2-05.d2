@@ -1,0 +1,264 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: |'md
+# TLB Miss Slow Path: Hardware/Software Page Table Walk
+**Specification:** x86-64 / RISC-V 4-Level Radix Walk Implementation
+  '|
+  near: top-center
+}
+
+# Global Classes for Intel Manual Quality Styling
+classes: {
+  state_decision: {
+    shape: diamond
+    style: {
+      fill: "#FFF9C4"
+      stroke: "#FBC02D"
+      stroke-width: 2
+    }
+  }
+  process_step: {
+    shape: rectangle
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1976D2"
+      border-radius: 4
+    }
+  }
+  fault_state: {
+    shape: rectangle
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#D32F2F"
+      font-color: "#B71C1C"
+      double-border: true
+    }
+  }
+  memory_region: {
+    style: {
+      stroke-dash: 5
+      fill: "#F5F5F5"
+    }
+  }
+}
+
+# Entry point: Memory Management Unit (MMU) Trigger
+start: "CORE REQUEST\n(VA Translation)" {
+  shape: circle
+  style: {
+    fill: "#2E7D32"
+    stroke: "#1B5E20"
+    font-color: white
+  }
+}
+
+# TLB Miss received
+tlb_miss: "L1 TLB MISS\n(Exception/Trap)" {
+  class: state_decision
+}
+
+# Page Table Walk Logic Container
+page_table_walk: {
+  label: "RADIX PAGE TABLE WALK (Control Logic)"
+  style: {
+    fill: "#E1F5FE"
+    stroke: "#0288D1"
+    stroke-width: 3
+  }
+
+  extract_vpn: "Extract VPN bits\n[47:12] from CR3/SATP" {
+    class: process_step
+  }
+
+  lookup_pte: "Memory Access:\nPTE = *(TableBase + VPN*8)" {
+    class: process_step
+    tooltip: "Triggers Cache Access or DRAM Read"
+  }
+
+  extract_vpn -> lookup_pte: "Index Level 4..1"
+}
+
+# Valid bit check
+valid_check: "PTE.V (Valid Bit)\n== 0?" {
+  class: state_decision
+}
+
+# Page fault branch
+page_fault: "PAGE FAULT HANDLER\n(OS Signal/Swap In)" {
+  class: fault_state
+}
+
+# Permission check container
+permission_check: {
+  label: "Protection Unit (PUE)"
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#7B1FA2"
+  }
+
+  write_check: "is_write AND\n!PTE.W (Writable)?" {
+    class: state_decision
+  }
+
+  read_check: "!is_write AND\n!PTE.R (Readable)?" {
+    class: state_decision
+  }
+
+  write_check -> read_check: "False"
+}
+
+# Protection fault
+protection_fault: "GENERAL PROTECTION\nFAULT (SIGSEGV)" {
+  class: fault_state
+}
+
+# Update PTE bits logic
+update_bits: {
+  label: "Atomic PTE Metadata Update"
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#388E3C"
+  }
+
+  set_ref: "Set A-bit\n(Accessed = 1)" {
+    class: process_step
+  }
+
+  check_write: "Transaction\nis_write?" {
+    class: state_decision
+  }
+
+  set_dirty: "Set D-bit\n(Dirty = 1)" {
+    class: process_step
+  }
+
+  set_ref -> check_write
+  check_write -> set_dirty: "True"
+}
+
+# TLB Insert logic
+tlb_insert: {
+  label: "L1/L2 TLB FILL"
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#E65100"
+  }
+
+  find_slot: "Select Victim Slot\n(PLRU/FIFO Algorithm)" {
+    class: process_step
+  }
+
+  write_entry: "Commit Translation\n{VPN, PFN, Metadata}" {
+    class: process_step
+  }
+
+  find_slot -> write_entry
+}
+
+# Return PFN
+return_pfn: "PHYSICAL FRAME NUMBER\n(Translation Resolved)" {
+  shape: rectangle
+  style: {
+    fill: "#C8E6C9"
+    stroke: "#2E7D32"
+    font-color: "#1B5E20"
+    bold: true
+    stroke-width: 4
+  }
+}
+
+# Exit point
+end: "PIPELINE RESUME" {
+  shape: circle
+  style: {
+    fill: "#C62828"
+    stroke: "#B71C1C"
+    font-color: white
+  }
+}
+
+# Sequence Logic Connections
+start -> tlb_miss: "VA Provided"
+tlb_miss -> page_table_walk.extract_vpn: "Trigger Walk\n(Microcode/Software)"
+page_table_walk.lookup_pte -> valid_check: "Fetch PTE"
+
+valid_check -> page_fault: "True\n(Missing Page)"
+valid_check -> permission_check.write_check: "False"
+
+permission_check.write_check -> protection_fault: "True"
+permission_check.read_check -> protection_fault: "True"
+permission_check.read_check -> update_bits.set_ref: "False\n(Perms OK)"
+
+update_bits.check_write -> tlb_insert.find_slot: "False"
+update_bits.set_dirty -> tlb_insert.find_slot
+
+tlb_insert.write_entry -> return_pfn: "Cache Updated"
+return_pfn -> end: "SUCCESS\n(1 cycle hit following)"
+page_fault -> end: "ABORT"
+protection_fault -> end: "ABORT"
+
+# Rich Technical Metadata Annotations
+performance_specs: {
+  label: |'md
+### Microarchitectural Cost
+| Operation | Cycles (est.) |
+| :--- | :--- |
+| **TLB Hit** | 1 - 4 |
+| **L1 Cache Walk** | 10 - 40 |
+| **DRAM Walk** | 150 - 400 |
+| **TLB Fill** | 2 - 12 |
+
+*Hardware walkers reduce latency by bypassing OS trap overhead.*
+  '|
+  near: bottom-right
+  shape: rectangle
+  style: {
+    fill: "#F5F5F5"
+    stroke: "#9E9E9E"
+    font-size: 11
+  }
+}
+
+statistics_counter: {
+  label: |'md
+### Performance Counters
+- `itlb.misses` / `dtlb.misses`
+- `page_walker_cycles`
+- `page_faults` (Major/Minor)
+- `tlb_flush_requested`
+  '|
+  near: top-right
+  shape: rectangle
+  style: {
+    fill: "#F5F5F5"
+    stroke: "#9E9E9E"
+    font-size: 11
+  }
+}
+
+legend: {
+  near: bottom-left
+  decision: Decision Node
+  decision.class: state_decision
+  step: Operational Step
+  step.class: process_step
+  error: Fault Condition
+  error.class: fault_state
+}
+
+# PTE Byte Layout Detail
+pte_layout: "64-bit PTE Format (x86-64)" {
+  shape: sql_table
+  style.fill: "#D1C4E9"
+  0_11: "Ignored/Metadata" {constraint: "12 bits"}
+  12_51: "Physical Page Base" {constraint: "40 bits"}
+  52_62: "Reserved" {constraint: "11 bits"}
+  63: "NX (No-Execute)" {constraint: "1 bit"}
+  near: bottom-center
+}

@@ -1,0 +1,240 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Pub/Sub Fan-Out Message Flow
+  PUBLISH → Topic Router → Parallel Delivery to ALL Subscribers
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  publisher: {
+    label: "Publisher"
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    icon: {
+      shape: image
+      icon: https://icons.terrastruct.com/essentials%2F005-programmer.svg
+    }
+    publish_cmd: {
+      label: "PUBLISH Command"
+      width: 280
+      code: |'go
+  // Frame: 4-byte length prefix
+  // Payload:
+  //   0x01          // CmdPublish
+  //   0x0006        // TopicLen = 6
+  //   "orders"      // Topic
+  //   0x0005        // PayloadLen = 5
+  //   "order"       // Message
+  '|
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  broker: {
+    label: "Message Broker (broker/server.go)"
+    style.fill: "#E3F2FD"
+    style.stroke: "#1976D2"
+    frame_reader: {
+      label: "FrameReader"
+      shape: class
+      label: "FrameReader (protocol/frame.go)"
+      -reader: "*bufio.Reader"
+      +ReadFrame(): "([]byte, error)"
+    }
+    parser: {
+      label: "Command Parser"
+      shape: class
+      label: "Parser (protocol/command.go)"
+      +ParseCommand(payload): "(*Command, error)"
+      -cmdType: "CommandType"
+      -topic: "string"
+      -payload: "[]byte"
+    }
+    topic_router: {
+      label: "Topic Router"
+      shape: class
+      label: "TopicRouter (broker/router.go)"
+      -topics: "map[string]*TopicState"
+      -msgIDCounter: "uint64 (atomic)"
+      +Publish(topic, payload, msgID): "int"
+      +Subscribe(topic, client): "void"
+      +Unsubscribe(topic, client): "void"
+    }
+    frame_reader -> parser: "[]byte | parse"
+    parser -> topic_router: "Command{Type, Topic, Payload}"
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  topic_state: {
+    label: "TopicState: orders"
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    struct_layout: {
+      shape: sql_table
+      label: "TopicState (broker/router.go)"
+      f0: "subscribers | map[string]*SubscriberState | client_id → state"
+      f1: "mu | sync.RWMutex | per-topic lock"
+      note: "All subscribers receive ALL messages"
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  delivery_buffers: {
+    label: "Per-Subscriber Delivery Buffers (Prevents Head-of-Line Blocking)"
+    style.fill: "#F3E5F5"
+    style.stroke: "#9C27B0"
+    sub_state: {
+      shape: sql_table
+      label: "SubscriberState (broker/router.go)"
+      f0: "client | *Client | subscriber connection"
+      f1: "deliver | chan *Command | buffered, size=100"
+      f2: "stop | chan struct{} | shutdown signal"
+      sz: "Each subscriber has independent goroutine"
+    }
+  }
+}
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  sub1: {
+    label: "Subscriber A"
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    icon1: {
+      shape: image
+      icon: https://icons.terrastruct.com/essentials%2F005-programmer.svg
+    }
+    buffer1: {
+      label: "chan *Command"
+      shape: queue
+      style.fill: "#C8E6C9"
+      style.multiple: true
+    }
+    goroutine1: {
+      label: "deliveryLoop()"
+      shape: oval
+      style.fill: "#A5D6A7"
+    }
+    goroutine1 -> buffer1: "read"
+  }
+  sub2: {
+    label: "Subscriber B"
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    icon2: {
+      shape: image
+      icon: https://icons.terrastruct.com/essentials%2F005-programmer.svg
+    }
+    buffer2: {
+      label: "chan *Command"
+      shape: queue
+      style.fill: "#C8E6C9"
+      style.multiple: true
+    }
+    goroutine2: {
+      label: "deliveryLoop()"
+      shape: oval
+      style.fill: "#A5D6A7"
+    }
+    goroutine2 -> buffer2: "read"
+  }
+  sub3: {
+    label: "Subscriber C (slow)"
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    icon3: {
+      shape: image
+      icon: https://icons.terrastruct.com/essentials%2F005-programmer.svg
+    }
+    buffer3: {
+      label: "chan *Command"
+      shape: queue
+      style.fill: "#FFCDD2"
+      style.multiple: true
+    }
+    goroutine3: {
+      label: "deliveryLoop()"
+      shape: oval
+      style.fill: "#EF9A9A"
+    }
+    goroutine3 -> buffer3: "blocked on write"
+  }
+}
+row6: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  deliver_code: {
+    label: "Delivery Loop (Non-Blocking Send)"
+    width: 420
+    code: |'go
+  // broker/router.go:deliveryLoop
+  func (r *TopicRouter) deliveryLoop(sub *SubscriberState) {
+    for {
+      select {
+      case <-sub.stop:
+        return
+      case cmd := <-sub.deliver:
+        if err := r.sendCommand(sub.client, cmd); err != nil {
+          return // Client disconnected
+        }
+      }
+    }
+  }
+  // broker/router.go:Publish (non-blocking)
+  select {
+  case subState.deliver <- msg:
+    delivered++  // Successfully queued
+  default:
+    log.Printf("buffer full, dropping msg")
+  }
+  '|
+  }
+}
+publisher.publish_cmd -> broker.frame_reader: "TCP | PUBLISH frame"
+row2.topic_router -> row3.topic_state: "Publish(\"orders\", payload, msgID)"
+row3.topic_state -> row4.delivery_buffers: "Fan-out: iterate subscribers"
+row4.delivery_buffers -> row5.sub1.buffer1: "MESSAGE | non-blocking send"
+row4.delivery_buffers -> row5.sub2.buffer2: "MESSAGE | non-blocking send"
+row4.delivery_buffers -> row5.sub3.buffer3: "MESSAGE | non-blocking send"
+row5.sub1.goroutine1 -> row5.sub1.icon1: "TCP | MESSAGE frame"
+row5.sub2.goroutine2 -> row5.sub2.icon2: "TCP | MESSAGE frame"
+row5.sub3.goroutine3 -> row5.sub3.icon3: "TCP | blocked" {
+  style.stroke-dash: 4
+  style.stroke: "#F44336"
+}
+legend: {
+  near: bottom-right
+  style.fill: "#FAFAFA"
+  style.stroke: "#BDBDBD"
+  key1: "Green = Fast subscriber, receives immediately"
+  key1.style.fill: "#C8E6C9"
+  key2: "Red = Slow subscriber, buffered (doesn't block others)"
+  key2.style.fill: "#FFCDD2"
+  key3: "Dashed line = Blocked, but others still receive"
+  key3.style.stroke-dash: 4
+  key3.style.stroke: "#F44336"
+}
+flow_note: |md
+  **Key Insight**: Per-subscriber goroutines with buffered channels
+  prevent slow subscribers (C) from blocking fast subscribers (A, B).
+  Each subscriber has a 100-message buffer. If full, messages are
+  dropped rather than blocking the entire fan-out.
+| {near: bottom-center}

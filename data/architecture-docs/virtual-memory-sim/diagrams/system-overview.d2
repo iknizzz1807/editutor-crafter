@@ -1,0 +1,539 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+title: |md
+  # Virtual Memory Simulator
+  **Complete System Blueprint — Implementation-Ready**
+| {near: top-center}
+# =============================================================================
+# ROW 1: DATA STRUCTURES (Core Types)
+# =============================================================================
+row_data_structures: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  # ---------------------------------------------------------------------------
+  # Layer: Page Table Entry (M1, M2, M3, M4)
+  # ---------------------------------------------------------------------------
+  layer_pte: {
+    direction: down
+    label: "PAGE TABLE ENTRY"
+    pte: {
+      shape: sql_table
+      label: "struct pte_t (types.h) [M1-M4]"
+      pfn: "uint32_t | Physical Frame Number"
+      valid: "bool | Page present in memory"
+      readable: "bool | Read permission"
+      writable: "bool | Write permission"
+      dirty: "bool | Modified by write"
+      referenced: "bool | Accessed (read/write)"
+      sz: "Total: ~12 bytes (with padding)"
+    }
+    pte_operations: {
+      shape: class
+      label: "PTE Operations (translate.c)"
+      +extract_vpn(va): "uint32_t"
+      +extract_offset(va): "uint32_t"
+      +compose_pa(pfn, offset): "uint32_t"
+    }
+    pte -> pte_operations: "operates on"
+  }
+  # ---------------------------------------------------------------------------
+  # Layer: TLB Entry (M2)
+  # ---------------------------------------------------------------------------
+  layer_tlb_entry: {
+    direction: down
+    label: "TLB ENTRY [M2]"
+    tlb_entry: {
+      shape: sql_table
+      label: "struct tlb_entry_t (tlb_types.h) [M2]"
+      vpn: "uint32_t | Virtual Page Number (tag)"
+      pfn: "uint32_t | Physical Frame Number"
+      asid: "uint32_t | Address Space ID"
+      last_used: "uint64_t | LRU timestamp"
+      valid: "bool | Entry is valid"
+      readable: "bool | Cached read permission"
+      writable: "bool | Cached write permission"
+      dirty: "bool | Written since load"
+      referenced: "bool | Accessed since load"
+      sz: "Total: 32 bytes (cache-aligned)"
+    }
+    tlb_entry_note: {
+      shape: callout
+      label: "32-byte alignment ensures\nTLB array fits in L1 cache"
+    }
+  }
+  # ---------------------------------------------------------------------------
+  # Layer: Page Directory Entry (M3)
+  # ---------------------------------------------------------------------------
+  layer_pde: {
+    direction: down
+    label: "PAGE DIRECTORY [M3]"
+    pde: {
+      shape: sql_table
+      label: "struct pde_t (mlpt_types.h) [M3]"
+      page_table_pfn: "uint32_t | PFN of 2nd-level table"
+      present: "bool | Table allocated for region"
+      writable: "bool | Write permission for region"
+      user_accessible: "bool | User-mode access"
+      sz: "Total: 8 bytes"
+    }
+    pde_coverage: {
+      shape: callout
+      label: "Each PDE covers 4 MB\n(1024 pages × 4KB)"
+    }
+  }
+  # ---------------------------------------------------------------------------
+  # Layer: Swap Structures (M4)
+  # ---------------------------------------------------------------------------
+  layer_swap: {
+    direction: down
+    label: "SWAP STRUCTURES [M4]"
+    swap_slot: {
+      shape: sql_table
+      label: "struct swap_slot_t (swap_types.h) [M4]"
+      data: "uint8_t[4096] | Page contents"
+      vpn: "uint32_t | Virtual Page Number"
+      process_id: "uint32_t | Owning process"
+      occupied: "bool | Slot in use"
+      sz: "Total: 4108 bytes"
+    }
+    swap_mapping: {
+      shape: sql_table
+      label: "struct swap_mapping_t [M4]"
+      swap_slot: "swap_slot_id_t | Slot index"
+      in_swap: "bool | Has swap copy"
+      sz: "Total: 8 bytes"
+    }
+    swap_slot -> swap_mapping: "tracks"
+  }
+}
+# =============================================================================
+# ROW 2: REPLACEMENT ALGORITHMS (M4)
+# =============================================================================
+row_replacement: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_fifo: {
+    direction: down
+    label: "FIFO REPLACEMENT [M4]"
+    fifo_state: {
+      shape: sql_table
+      label: "struct fifo_state_t [M4]"
+      queue: "uint32_t* | VPN circular buffer"
+      capacity: "uint32_t | Buffer size"
+      head: "uint32_t | Oldest entry index"
+      tail: "uint32_t | Next insertion index"
+      count: "uint32_t | Current entries"
+      sz: "Total: 24 bytes + queue"
+    }
+    fifo_class: {
+      shape: class
+      label: "FIFO Operations (repl_fifo.c)"
+      +fifo_init(capacity): "bool"
+      +fifo_on_load(vpn): "void"
+      +fifo_select_victim(): "uint32_t"
+    }
+  }
+  layer_lru: {
+    direction: down
+    label: "LRU REPLACEMENT [M4]"
+    lru_state: {
+      shape: sql_table
+      label: "struct lru_state_t [M4]"
+      vpns: "uint32_t* | Loaded VPNs"
+      timestamps: "uint64_t* | Last access times"
+      count: "uint32_t | Entry count"
+      capacity: "uint32_t | Array capacity"
+      clock: "uint64_t | Monotonic timestamp"
+      sz: "Total: 32 bytes + arrays"
+    }
+    lru_class: {
+      shape: class
+      label: "LRU Operations (repl_lru.c)"
+      +lru_init(capacity): "bool"
+      +lru_on_load(vpn): "void"
+      +lru_on_access(vpn, is_write): "void"
+      +lru_select_victim(): "uint32_t"
+    }
+  }
+  layer_clock: {
+    direction: down
+    label: "CLOCK REPLACEMENT [M4]"
+    clock_state: {
+      shape: sql_table
+      label: "struct clock_state_t [M4]"
+      vpns: "uint32_t* | Loaded VPNs"
+      referenced: "bool* | Reference bits"
+      count: "uint32_t | Entry count"
+      capacity: "uint32_t | Array capacity"
+      hand: "uint32_t | Clock hand position"
+      sz: "Total: 28 bytes + arrays"
+    }
+    clock_class: {
+      shape: class
+      label: "Clock Operations (repl_clock.c)"
+      +clock_init(capacity): "bool"
+      +clock_on_load(vpn): "void"
+      +clock_on_access(vpn): "void"
+      +clock_select_victim(): "uint32_t"
+    }
+  }
+  layer_optimal: {
+    direction: down
+    label: "OPTIMAL [M4]"
+    optimal_state: {
+      shape: sql_table
+      label: "struct optimal_state_t [M4]"
+      trace: "const void* | Trace pointer"
+      trace_length: "size_t | Trace size"
+      current_pos: "size_t | Current position"
+      sz: "Total: 24 bytes"
+    }
+    optimal_note: {
+      shape: callout
+      label: "Requires future knowledge\nUsed for benchmarking only"
+    }
+  }
+}
+# =============================================================================
+# ROW 3: CORE SUBSYSTEMS
+# =============================================================================
+row_subsystems: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  # ---------------------------------------------------------------------------
+  # Physical Memory Manager
+  # ---------------------------------------------------------------------------
+  layer_phys_mem: {
+    direction: down
+    label: "PHYSICAL MEMORY [M1]"
+    phys_mem: {
+      shape: sql_table
+      label: "struct physical_memory_t (types.h) [M1]"
+      frames: "uint8_t** | Array of frame pointers"
+      total_frames: "uint32_t | Frame pool capacity"
+      free_list: "uint32_t* | Stack of free PFNs"
+      free_count: "uint32_t | Available frames"
+      sz: "Total: ~32 bytes + arrays"
+    }
+    phys_mem_class: {
+      shape: class
+      label: "Physical Memory Ops (translate.c)"
+      +allocate_frame(sim): "int32_t | PFN or -1"
+      +free_frame(sim, pfn): "void"
+      -handle_page_fault(sim, vpn): "bool"
+    }
+    frame_layout: {
+      shape: rectangle
+      label: "Frame Layout\n─────────────────\nFrame 0: 4KB data\nFrame 1: 4KB data\n...\nFrame N: 4KB data\n─────────────────\nTotal: N × 4KB"
+    }
+  }
+  # ---------------------------------------------------------------------------
+  # TLB Subsystem
+  # ---------------------------------------------------------------------------
+  layer_tlb: {
+    direction: down
+    label: "TLB SUBSYSTEM [M2]"
+    tlb: {
+      shape: sql_table
+      label: "struct tlb_t (tlb_types.h) [M2]"
+      entries: "tlb_entry_t* | Entry array"
+      capacity: "uint32_t | Number of entries"
+      current_asid: "uint32_t | Active ASID"
+      clock: "uint64_t | LRU timestamp counter"
+      stats: "tlb_stats_t | Performance counters"
+      page_table: "pte_t* | Back-reference"
+      sz: "Total: ~64 bytes + entries"
+    }
+    tlb_class: {
+      shape: class
+      label: "TLB Operations (tlb.c)"
+      +tlb_create(capacity, page_table): "tlb_t*"
+      +tlb_destroy(tlb): "void"
+      +tlb_lookup(tlb, vpn): "tlb_entry_t*"
+      +tlb_insert(tlb, vpn, pfn, pte): "bool"
+      +tlb_flush(tlb): "void"
+      +tlb_flush_asid(tlb, asid): "void"
+      +tlb_invalidate_entry(tlb, vpn, asid): "void"
+      +tlb_context_switch(tlb, new_asid): "void"
+    }
+    tlb_stats: {
+      shape: sql_table
+      label: "struct tlb_stats_t [M2]"
+      hits: "uint64_t | TLB hits"
+      misses: "uint64_t | TLB misses"
+      flushes: "uint64_t | Full flushes"
+      evictions: "uint64_t | Entries evicted"
+      partial_flushes: "uint64_t | Single-entry invalidations"
+      dirty_writebacks: "uint64_t | Dirty bit propagations"
+    }
+  }
+  # ---------------------------------------------------------------------------
+  # Multi-Level Page Tables
+  # ---------------------------------------------------------------------------
+  layer_mlpt: {
+    direction: down
+    label: "MULTI-LEVEL PAGE TABLES [M3]"
+    mlpt_sim: {
+      shape: sql_table
+      label: "struct mlpt_simulator_t [M3]"
+      directories: "pde_t** | Page directories by PFN"
+      page_tables: "pte_t** | Page tables by PFN"
+      phys_mem: "physical_memory_t | Frame pool"
+      processes: "process_t* | Process array"
+      num_processes: "uint32_t | Process count"
+      current_pid: "uint32_t | Running process"
+      cr3: "uint32_t | Current CR3 value"
+      tlb: "tlb_t* | TLB reference"
+      sz: "Total: varies"
+    }
+    process_t: {
+      shape: sql_table
+      label: "struct process_t [M3]"
+      pid: "uint32_t | Process ID"
+      cr3: "uint32_t | Page directory PFN"
+      name: "char[32] | Process name"
+      page_directory: "pde_t* | Directory pointer"
+      sz: "Total: 48 bytes"
+    }
+    mlpt_class: {
+      shape: class
+      label: "MLPT Operations (mlpt_walk.c)"
+      +mlpt_simulator_create(frames, procs): "mlpt_simulator_t*"
+      +mlpt_simulator_destroy(sim): "void"
+      +mlpt_walk(sim, va, is_write): "walk_output_t"
+      +allocate_page_directory(sim): "uint32_t"
+      +allocate_page_table(sim, dir, idx): "uint32_t"
+      +mlpt_process_create(sim, name): "process_t*"
+      +mlpt_context_switch(sim, pid): "bool"
+    }
+  }
+}
+# =============================================================================
+# ROW 4: ADDRESS TRANSLATION PIPELINE
+# =============================================================================
+row_translation: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_addr_decomp: {
+    direction: down
+    label: "ADDRESS DECOMPOSITION [M1]"
+    va_layout: {
+      shape: rectangle
+      label: "32-bit Virtual Address\n─────────────────────────────────\n┌──────────────┬──────────────┬───────────┐\n│ Dir (10 bits)│ Table (10 b) │ Offset(12)│\n├──────────────┼──────────────┼───────────┤\n│ bits 31-22   │ bits 21-12   │ bits 11-0 │\n└──────────────┴──────────────┴───────────┘\n\nVPN = va >> 12\nOffset = va & 0xFFF"
+    }
+    addr_extract: {
+      shape: class
+      label: "Bit Extraction (mlpt_walk.c)"
+      +extract_directory_index(va): "uint32_t"
+      +extract_table_index(va): "uint32_t"
+      +extract_offset(va): "uint32_t"
+    }
+  }
+  layer_translation_flow: {
+    direction: down
+    label: "TRANSLATION PIPELINE [M1-M4]"
+    translation_flow: {
+      shape: class
+      label: "Translation Pipeline (translate.c, tlb_translate.c)"
+      step1: "1. Extract VPN and offset from VA"
+      step2: "2. TLB lookup (M2)"
+      step3: "3. If TLB miss: Page table walk"
+      step4: "4. Check valid bit → Page fault?"
+      step5: "5. Check permissions → Protection fault?"
+      step6: "6. Update access bits (dirty, ref)"
+      step7: "7. Compose physical address"
+      step8: "8. Return PA or fault code"
+    }
+    trans_result: {
+      shape: sql_table
+      label: "enum trans_result_t [M1]"
+      TRANS_OK: "Translation successful"
+      TRANS_PAGE_FAULT: "valid=0, not in memory"
+      TRANS_PROTECTION_FAULT: "Permission violation"
+    }
+  }
+  layer_walk_result: {
+    direction: down
+    label: "WALK OUTPUT [M3]"
+    walk_output: {
+      shape: sql_table
+      label: "struct walk_output_t [M3]"
+      result: "walk_result_t | Status code"
+      physical_address: "uint32_t | Valid if WALK_OK"
+      dir_index: "uint32_t | For debugging"
+      table_index: "uint32_t | For debugging"
+      offset: "uint32_t | For debugging"
+    }
+    walk_result_enum: {
+      shape: sql_table
+      label: "enum walk_result_t [M3]"
+      WALK_OK: "Success"
+      WALK_DIR_NOT_PRESENT: "PDE present=0"
+      WALK_PAGE_FAULT: "PTE valid=0"
+      WALK_PROTECTION: "Permission denied"
+      WALK_OUT_OF_MEMORY: "No frames for allocation"
+    }
+  }
+}
+# =============================================================================
+# ROW 5: STATISTICS & WORKING SET
+# =============================================================================
+row_stats: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_stats: {
+    direction: down
+    label: "STATISTICS [M1-M4]"
+    stats_t: {
+      shape: sql_table
+      label: "struct stats_t (types.h) [M1-M4]"
+      total_accesses: "uint64_t | All translation attempts"
+      page_faults: "uint64_t | valid=0 encounters"
+      protection_faults: "uint64_t | Permission violations"
+      frames_used: "uint64_t | Currently allocated"
+      tlb_hits: "uint64_t | TLB cache hits [M2]"
+      tlb_misses: "uint64_t | TLB cache misses [M2]"
+      swap_writes: "uint64_t | Dirty page evictions [M4]"
+      swap_reads: "uint64_t | Page reloads [M4]"
+      swap_discards: "uint64_t | Clean page evictions [M4]"
+      evictions: "uint64_t | Total pages evicted [M4]"
+      thrashing_warnings: "uint64_t | Working set > frames [M4]"
+    }
+  }
+  layer_working_set: {
+    direction: down
+    label: "WORKING SET [M4]"
+    working_set_t: {
+      shape: sql_table
+      label: "struct working_set_t [M4]"
+      recent_vpns: "uint32_t* | Circular buffer"
+      window_size: "uint32_t | Window size"
+      head: "uint32_t | Write position"
+      count: "uint32_t | Valid entries"
+    }
+    thrashing_result: {
+      shape: sql_table
+      label: "struct thrashing_result_t [M4]"
+      is_thrashing: "bool | WS > frames"
+      working_set_size: "uint32_t | Distinct pages"
+      available_frames: "uint32_t | Physical frames"
+      pressure_ratio: "double | WS / frames"
+    }
+    working_set_class: {
+      shape: class
+      label: "Working Set Ops (working_set.c)"
+      +working_set_init(ws, window_size): "bool"
+      +working_set_record(ws, vpn): "void"
+      +working_set_size(ws): "uint32_t"
+      +check_thrashing(ws, num_frames): "thrashing_result_t"
+    }
+  }
+  layer_overhead: {
+    direction: down
+    label: "MEMORY OVERHEAD [M3]"
+    memory_overhead_t: {
+      shape: sql_table
+      label: "struct memory_overhead_t [M3]"
+      directory_bytes: "uint64_t | Always 8 KB"
+      page_table_bytes: "uint64_t | Sum of 2nd-level tables"
+      total_overhead: "uint64_t | directory + tables"
+      num_page_tables: "uint32_t | Tables allocated"
+      flat_table_bytes: "uint64_t | 4 MB (flat table)"
+      savings_factor: "double | flat / multi-level"
+      savings_percent: "double | % reduction"
+    }
+    overhead_class: {
+      shape: class
+      label: "Overhead Measurement (memory_overhead.c)"
+      +measure_memory_overhead(sim): "memory_overhead_t"
+      +print_overhead_comparison(sim): "void"
+    }
+  }
+}
+# =============================================================================
+# ROW 6: CONFIGURATION CONSTANTS
+# =============================================================================
+row_config: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_page_config: {
+    direction: down
+    label: "PAGE CONFIG [M1]"
+    page_config: {
+      shape: rectangle
+      label: "config.h Constants\n─────────────────────\nPAGE_SHIFT = 12\nPAGE_SIZE = 4096 bytes\nPAGE_MASK = 0xFFF\n\nVIRTUAL_ADDRESS_BITS = 32\nMAX_VPN = 2^20 = 1,048,576\n\nDEFAULT_NUM_FRAMES = 64"
+    }
+  }
+  layer_mlpt_config: {
+    direction: down
+    label: "MLPT CONFIG [M3]"
+    mlpt_config: {
+      shape: rectangle
+      label: "mlpt_config.h Constants\n─────────────────────────────\nDIR_SHIFT = 22\nDIR_ENTRIES = 1024\nDIR_MASK = 0x3FF\n\nTABLE_SHIFT = 12\nTABLE_ENTRIES = 1024\nTABLE_MASK = 0x3FF\n\nBYTES_PER_DIR_ENTRY = 4 MB\nTOTAL_ADDRESS_SPACE = 4 GB"
+    }
+  }
+  layer_tlb_config: {
+    direction: down
+    label: "TLB CONFIG [M2]"
+    tlb_config: {
+      shape: rectangle
+      label: "tlb_config.h Constants\n─────────────────────────────\nDEFAULT_TLB_CAPACITY = 32\nMAX_TLB_CAPACITY = 256\n\nASID_BITS = 8\nMAX_ASID = 255\n\nTLB_TIMESTAMP_INITIAL = 1"
+    }
+  }
+  layer_swap_config: {
+    direction: down
+    label: "SWAP CONFIG [M4]"
+    swap_config: {
+      shape: rectangle
+      label: "swap_config.h Constants\n─────────────────────────────\nDEFAULT_SWAP_SLOTS = 256\nMAX_SWAP_SLOTS = 4096\nSWAP_SLOT_INVALID = -1"
+    }
+  }
+}
+# =============================================================================
+# CONNECTIONS
+# =============================================================================
+# M1: Basic translation
+row_data_structures.layer_pte.pte -> row_subsystems.layer_phys_mem.phys_mem: "maps to frame"
+# M2: TLB caching
+row_data_structures.layer_tlb_entry.tlb_entry -> row_subsystems.layer_tlb.tlb: "contained in"
+row_subsystems.layer_tlb.tlb -> row_data_structures.layer_pte.pte: "fallback on miss"
+# M3: Multi-level tables
+row_data_structures.layer_pde.pde -> row_subsystems.layer_mlpt.mlpt_sim: "top-level"
+row_data_structures.layer_pte.pte -> row_subsystems.layer_mlpt.mlpt_sim: "second-level"
+row_subsystems.layer_mlpt.process_t -> row_subsystems.layer_mlpt.mlpt_sim: "owned by"
+# M4: Replacement and swap
+row_data_structures.layer_swap.swap_slot -> row_replacement.layer_fifo.fifo_state: "victim → swap"
+row_data_structures.layer_swap.swap_mapping -> row_data_structures.layer_swap.swap_slot: "references"
+row_replacement.layer_lru.lru_state -> row_data_structures.layer_swap.swap_slot: "eviction triggers write"
+# Translation flow
+row_translation.layer_addr_decomp.va_layout -> row_translation.layer_translation_flow.translation_flow: "decomposed VA"
+row_translation.layer_translation_flow.translation_flow -> row_translation.layer_walk_result.walk_output: "produces"
+# Statistics connections
+row_stats.layer_stats.stats_t -> row_stats.layer_working_set.thrashing_result: "tracks"
+row_subsystems.layer_mlpt.mlpt_sim -> row_stats.layer_overhead.memory_overhead_t: "measures"
+# Cross-row key relationships
+row_subsystems.layer_tlb.tlb_class -> row_subsystems.layer_mlpt.mlpt_class: "invalidates on switch"
+row_replacement.layer_fifo.fifo_class -> row_subsystems.layer_phys_mem.phys_mem_class: "triggers eviction"
+# =============================================================================
+# MILESTONE INDEX
+# =============================================================================
+milestone_index: {
+  shape: sql_table
+  label: "Milestone Index"
+  m1: "M1 | virtual-memory-sim-m1 | Single-Level Page Table, Address Translation, Demand Paging"
+  m2: "M2 | virtual-memory-sim-m2 | TLB Caching, ASID Tagging, LRU Replacement"
+  m3: "M3 | virtual-memory-sim-m3 | Multi-Level Page Tables, CR3 Register, On-Demand Allocation"
+  m4: "M4 | virtual-memory-sim-m4 | Page Replacement (FIFO/LRU/Clock/Optimal), Swap Simulation, Thrashing Detection"
+}
+milestone_index.near: bottom-center

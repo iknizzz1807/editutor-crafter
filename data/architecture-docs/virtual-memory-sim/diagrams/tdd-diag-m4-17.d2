@@ -1,0 +1,324 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#E8D5E8"
+    data: "#D5E8F5"
+    free: "#D5F5D5"
+    padding: "#E5E5E5"
+    pointer: "#FFE8CC"
+    action: "#FFF2CC"
+    fault: "#F8CECC"
+    success: "#D5E8D4"
+    border: "#666666"
+  }
+}
+
+title: |md
+  # MMU: Translation with Replacement Pipeline
+  **Architecture**: x86-64 / 4KB Pages
+  **Logic Flow**: TLB → Page Walk → Fault Management → Page Replacement → Load
+| {near: top-center}
+
+direction: right
+
+# -----------------------------------------------------------------------------
+# STAGE 1: CPU REQUEST
+# -----------------------------------------------------------------------------
+stage1: "1. ADDRESS REQUEST" {
+  style.fill: ${colors.header}
+  
+  virtual_addr: "Virtual Address (VA)" {
+    shape: sql_table
+    bits_31_12: "VPN [31:12]" {constraint: "20 bits"}
+    bits_11_0: "Offset [11:0]" {constraint: "12 bits"}
+    style.stroke: ${colors.border}
+  }
+
+  request_info: |md
+    **Requestor**: CPU Core 0
+    **ASID**: 0x01
+    **Addr**: 0x00401234
+  | {
+    shape: rectangle
+    style.fill: ${colors.data}
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STAGE 2: TLB LOOKUP
+# -----------------------------------------------------------------------------
+stage2: "2. TLB LOOKUP" {
+  style.fill: ${colors.header}
+
+  tlb_check: {
+    shape: diamond
+    label: "TLB Hit?"
+  }
+
+  tlb_hit: "TLB HIT" {
+    style.fill: ${colors.success}
+    label: |md
+      **Path**: L1/L2 TLB Cache
+      **Action**: 
+      1. Extract PFN from TLB Entry
+      2. Concatenate with VA.offset
+      **Cycles**: ~1-4
+    |
+  }
+
+  tlb_miss: "TLB MISS" {
+    style.fill: ${colors.fault}
+    label: |md
+      **Path**: MMU Page Walker
+      **Action**: Trigger hardware walk
+      **Cycles**: ~50-200
+    |
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STAGE 3: PAGE TABLE WALK
+# -----------------------------------------------------------------------------
+stage3: "3. PAGE TABLE WALK" {
+  style.fill: ${colors.header}
+
+  walk_logic: "CR3 → PGD → PUD → PMD → PTE" {
+    style.fill: ${colors.data}
+    shape: rectangle
+  }
+
+  pte_check: {
+    shape: diamond
+    label: "PTE.Present?"
+  }
+
+  pte_valid: "PTE VALID" {
+    style.fill: ${colors.success}
+    label: |md
+      ✓ PFN found in memory
+      ✓ Check RW/NX permissions
+      ✓ Update Access/Dirty bits
+    |
+  }
+
+  pte_invalid: "PTE INVALID" {
+    style.fill: ${colors.fault}
+    label: |md
+      ✗ **SEGFAULT/FAULT**
+      *Raise Interrupt 14*
+    |
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STAGE 4: FRAME MANAGEMENT
+# -----------------------------------------------------------------------------
+stage4: "4. PAGE FAULT HANDLER" {
+  style.fill: ${colors.header}
+
+  frame_check: {
+    shape: diamond
+    label: "Mem Free?"
+  }
+
+  frames_available: "AVAILABLE" {
+    style.fill: ${colors.success}
+    label: |md
+      ✓ `get_free_page()`
+      ✓ pfn = free_list.pop()
+    |
+  }
+
+  frames_full: "OOM / REPLACING" {
+    style.fill: ${colors.fault}
+    label: |md
+      ✗ **REPLACEMENT REQ**
+      *Invoke kswapd/reclaim*
+    |
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STAGE 5: REPLACEMENT LOGIC
+# -----------------------------------------------------------------------------
+stage5: "5. REPLACEMENT ALGORITHM" {
+  style.fill: ${colors.header}
+
+  select_victim: "Select Victim" {
+    style.fill: ${colors.action}
+    label: |md
+      **Algorithm**: CLOCK / LRU-Approx
+      **Target**: VPN 0x008A
+    |
+  }
+
+  dirty_check: {
+    shape: diamond
+    label: "Victim.Dirty?"
+  }
+
+  is_dirty: "DIRTY" {
+    style.fill: ${colors.fault}
+    label: |md
+      ✗ **DISK WRITE**
+      `swap_writepage(victim)`
+      I/O Wait: High
+    |
+  }
+
+  is_clean: "CLEAN" {
+    style.fill: ${colors.success}
+    label: |md
+      ✓ **DISCARD**
+      PFN ready immediately
+    |
+  }
+
+  invalidate: "INVALIDATION" {
+    style.fill: ${colors.action}
+    label: |md
+      1. `pte[victim].v = 0`
+      2. `tlb_flush(victim)`
+      3. `invlpg` instruction
+    |
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STAGE 6: DISK I/O / LOAD
+# -----------------------------------------------------------------------------
+stage6: "6. LOAD PAGE DATA" {
+  style.fill: ${colors.header}
+
+  load_source: {
+    shape: diamond
+    label: "Swap Map?"
+  }
+
+  from_swap: "SWAP-IN" {
+    style.fill: ${colors.data}
+    label: |md
+      **Source**: `/dev/sda1` (Offset 0x2)
+      **Action**: DMA Transfer to RAM
+    |
+  }
+
+  from_zero: "ZERO-FILL" {
+    style.fill: ${colors.free}
+    label: |md
+      **Source**: New Heap Allocation
+      **Action**: `memset(frame, 0)`
+    |
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STAGE 7: COMMIT
+# -----------------------------------------------------------------------------
+stage7: "7. UPDATE MMU STATE" {
+  style.fill: ${colors.header}
+
+  update_pte: "Update PTE" {
+    style.fill: ${colors.data}
+    label: |md
+      `pte->pfn = allocated_pfn`
+      `pte->v = 1; pte->d = 0`
+    |
+  }
+
+  update_tlb: "Update TLB Cache" {
+    style.fill: ${colors.data}
+    label: |md
+      `tlb_fill(vpn, pfn)`
+      *Restart instruction*
+    |
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STAGE 8: COMPLETION
+# -----------------------------------------------------------------------------
+stage8: "8. RESULT" {
+  style.fill: ${colors.success}
+  
+  pa_out: "Physical Address (PA)" {
+    shape: sql_table
+    pfn: "PFN (Allocated)" {constraint: "0x42000"}
+    offset: "Offset (Original VA)" {constraint: "0x234"}
+    style.stroke: ${colors.border}
+  }
+
+  done_note: |md
+    **Final PA**: 0x42000234
+    **Status**: COMPLETED
+  | {
+    shape: rectangle
+    style.fill: ${colors.success}
+  }
+}
+
+# -----------------------------------------------------------------------------
+# CONNECTIONS
+# -----------------------------------------------------------------------------
+stage1.virtual_addr -> stage2.tlb_check: "VA Request"
+stage2.tlb_check -> stage2.tlb_hit: "Yes" {style.stroke: "#2D8A2D"}
+stage2.tlb_check -> stage2.tlb_miss: "No" {style.stroke: "#A52A2A"}
+
+stage2.tlb_miss -> stage3.walk_logic
+stage3.walk_logic -> stage3.pte_check
+stage3.pte_check -> stage3.pte_valid: "Yes" {style.stroke: "#2D8A2D"}
+stage3.pte_check -> stage3.pte_invalid: "No" {style.stroke: "#A52A2A"}
+
+stage3.pte_invalid -> stage4.frame_check: "Page Fault"
+stage4.frame_check -> stage4.frames_available: "Yes" {style.stroke: "#2D8A2D"}
+stage4.frame_check -> stage4.frames_full: "No" {style.stroke: "#A52A2A"}
+
+stage4.frames_full -> stage5.select_victim
+stage5.select_victim -> stage5.dirty_check
+stage5.dirty_check -> stage5.is_dirty: "Dirty"
+stage5.dirty_check -> stage5.is_clean: "Clean"
+stage5.is_dirty -> stage5.invalidate
+stage5.is_clean -> stage5.invalidate
+
+stage5.invalidate -> stage6.load_source
+stage4.frames_available -> stage6.load_source
+stage6.load_source -> stage6.from_swap: "In Swap"
+stage6.load_source -> stage6.from_zero: "Anonymous"
+
+stage6.from_swap -> stage7.update_pte
+stage6.from_zero -> stage7.update_pte
+
+stage3.pte_valid -> stage7.update_tlb: "Fill TLB"
+stage7.update_pte -> stage7.update_tlb
+stage7.update_tlb -> stage8.pa_out
+
+stage2.tlb_hit -> stage8.pa_out: "FAST PATH" {
+  style.stroke-dash: 5
+  style.stroke: "#2D8A2D"
+}
+
+# -----------------------------------------------------------------------------
+# LEGEND & STATS
+# -----------------------------------------------------------------------------
+legend: {
+  near: bottom-center
+  
+  # Using Advanced Block String |'md ... '| to prevent internal table pipes
+  # from being interpreted as the end of the block string.
+  performance_table: |'md
+    ### Cost Analysis (Typical x86)
+    | Scenario | Path | Cycles |
+    | :--- | :--- | :--- |
+    | **L1 TLB Hit** | VA -> PA | 1 |
+    | **L2 TLB Hit** | VA -> PA | 7-12 |
+    | **Page Walk** | TLB Miss -> RAM | 50-200 |
+    | **Minor Fault**| Zero-Fill | ~2,000 |
+    | **Major Fault**| Disk / Swap | 1,000,000+ |
+  '| {
+    shape: rectangle
+    style.stroke: "#333333"
+  }
+}

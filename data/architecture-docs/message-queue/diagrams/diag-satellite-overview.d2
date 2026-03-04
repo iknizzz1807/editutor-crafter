@@ -1,0 +1,500 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  shape: rectangle
+  label: |'md
+    # Message Queue Architecture: Satellite View
+    Production-grade message broker with pub/sub fan-out and consumer group patterns
+  '|
+  style.stroke: transparent
+  style.fill: transparent
+}
+
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  clients: {
+    direction: down
+    label: "Client Layer"
+    style.fill: "#E8F4FD"
+    style.stroke: "#2E86AB"
+    producers: {
+      label: "Producers"
+      shape: rectangle
+      style.fill: "#C5E8B7"
+      style.stroke: "#4CAF50"
+      p1: "Producer 1"
+      p2: "Producer 2"
+      pn: "Producer N"
+      style.multiple: true
+    }
+    consumers: {
+      label: "Consumers"
+      shape: rectangle
+      style.fill: "#FFE0B2"
+      style.stroke: "#FF9800"
+      c1: "Consumer 1"
+      c2: "Consumer 2"
+      cn: "Consumer N"
+      style.multiple: true
+    }
+  }
+  tcp_layer: {
+    direction: down
+    label: "Network Layer (server.go)"
+    style.fill: "#F3E5F5"
+    style.stroke: "#7B1FA2"
+    tcp_listener: {
+      label: "TCP Listener\n:9090"
+      shape: rectangle
+      style.fill: "#E1BEE7"
+    }
+    conn_manager: {
+      label: "Connection Manager (conn_manager.go)"
+      shape: class
+      -connections: "map[string]*Client"
+      -maxConnections: "int = 1000"
+      +Register(client): "void"
+      +Unregister(id): "void"
+      +CloseAll(): "void"
+    }
+  }
+}
+
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  protocol_layer: {
+    direction: down
+    label: "Protocol Layer (protocol/)"
+    style.fill: "#FFF3E0"
+    style.stroke: "#E65100"
+    frame_reader: {
+      label: "FrameReader"
+      shape: class
+      -reader: "*bufio.Reader"
+      +ReadFrame(): "([]byte, error)"
+    }
+    frame_writer: {
+      label: "FrameWriter"
+      shape: class
+      -writer: "io.Writer"
+      +WriteFrame(payload): "error"
+    }
+    command_parser: {
+      label: "Command Parser"
+      shape: class
+      +ParseCommand(data): "(*Command, error)"
+      +EncodeCommand(cmd): "([]byte, error)"
+    }
+    wire_protocol: {
+      label: "Wire Protocol Spec"
+      shape: rectangle
+      style.fill: "#FFE0B2"
+      width: 280
+      spec: |'md
+        **Length-Prefixed Framing:**
+        ┌────────────┬─────────────┐
+        │ 4 bytes    │ N bytes     │
+        │ Length(BE) │ Payload     │
+        └────────────┴─────────────┘
+        **Commands:** 
+        0x01 PUBLISH | 0x02 PUBLISH_ACK
+        0x03 SUBSCRIBE | 0x04 SUBSCRIBE_ACK
+        0x07 MESSAGE | 0x11 ACK | 0x12 NACK
+        0x20 THROTTLE | 0x08 HEARTBEAT
+      '|
+    }
+  }
+  core_layer: {
+    direction: down
+    label: "Core Broker (broker/)"
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    topic_manager: {
+      label: "TopicManager (topic_manager.go)"
+      shape: class
+      -topics: "map[string]*TopicConfig"
+      -groups: "map[string]*ConsumerGroup"
+      -router: "*TopicRouter"
+      +CreateTopic(config): "error"
+      +Publish(topic, payload): "error"
+      +GetGroup(name): "*ConsumerGroup"
+    }
+    topic_router: {
+      label: "TopicRouter (fan-out)"
+      shape: class
+      -topics: "map[string]*TopicState"
+      -msgIDCounter: "uint64 (atomic)"
+      +Subscribe(topic, client): "void"
+      +Unsubscribe(topic, client): "void"
+      +Publish(topic, payload, msgID): "int"
+    }
+    consumer_group: {
+      label: "ConsumerGroup (consumer_group.go)"
+      shape: class
+      -members: "map[string]*ConsumerState"
+      -pending: "*PendingQueue"
+      -inFlight: "map[uint64]*InFlightMessage"
+      -retryCount: "map[uint64]int"
+      -assignment: "*PartitionAssignment"
+      +Join(consumerID, client): "error"
+      +Leave(consumerID): "void"
+      +HandleAck(msgID): "error"
+      +HandleNack(msgID, reason): "error"
+      +DeliverToConsumer(id, max): "int"
+    }
+  }
+}
+
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  persistence_layer: {
+    direction: down
+    label: "Persistence Layer (log/)"
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    log_writer: {
+      label: "LogWriter (writer.go)"
+      shape: class
+      -topics: "map[string]*topicLog"
+      -nextOffset: "uint64 (atomic)"
+      -config: "WriterConfig"
+      +Append(topic, payload): "(uint64, error)"
+      +Flush(): "error"
+      +Close(): "error"
+    }
+    log_entry: {
+      shape: sql_table
+      label: "struct LogEntry (log/entry.go)"
+      f0: "0x00 | uint64 | Offset (BE)"
+      f1: "0x08 | int64  | Timestamp (BE)"
+      f2: "0x10 | uint16 | TopicLen (BE)"
+      f3: "0x12 | []byte | Topic"
+      f4: "var  | uint32 | PayloadLen (BE)"
+      f5: "var  | []byte | Payload"
+      f6: "var  | uint32 | CRC32 (BE)"
+      sz: "Total: HeaderSize + len(Topic) + len(Payload) + 8"
+    }
+    offset_store: {
+      label: "OffsetStore (offset/)"
+      shape: class
+      -filePath: "string"
+      -offsets: "map[string]map[string]uint64"
+      +GetOffset(group, topic): "uint64"
+      +CommitOffset(group, topic, offset): "error"
+    }
+    durability_config: {
+      label: "Durability Modes"
+      shape: rectangle
+      style.fill: "#C8E6C9"
+      width: 240
+      modes: |'md
+        **DurabilityPerWrite**: fsync every write
+        **DurabilityBatched**: fsync every N writes or M ms
+        **DurabilityOSManaged**: let OS handle it
+        Default: BatchSize=1000, BatchTimeout=100ms
+      '|
+    }
+  }
+  coordination_layer: {
+    direction: down
+    label: "Coordination (broker/)"
+    style.fill: "#FCE4EC"
+    style.stroke: "#C2185B"
+    partition_assignment: {
+      label: "PartitionAssignment"
+      shape: class
+      -partitionToConsumer: "map[int]string"
+      -consumerToPartitions: "map[string][]int"
+      -partitionCount: "int = 16"
+      +Rebalance(members): "[]string"
+      +GetConsumer(partition): "string"
+      +GetPartitions(consumerID): "[]int"
+    }
+    visibility_scanner: {
+      label: "Visibility Timeout Scanner"
+      shape: rectangle
+      style.fill: "#F8BBD9"
+      width: 220
+      desc: |'md
+        Runs every 1 second
+        Scans in-flight messages for
+        visibility timeout expiration
+        Default: 30 second visibility timeout
+        Timed out messages -> re-queued
+      '|
+    }
+    heartbeat_manager: {
+      label: "HeartbeatManager"
+      shape: class
+      -consumers: "map[string]*ConsumerHeartbeat"
+      -timeout: "time.Duration = 30s"
+      -onDeath: "func(consumerID)"
+      +Register(id, group): "void"
+      +RecordHeartbeat(id): "void"
+      +GetDeadConsumers(): "[]string"
+    }
+  }
+}
+
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  backpressure_layer: {
+    direction: down
+    label: "Flow Control (broker/)"
+    style.fill: "#FFF8E1"
+    style.stroke: "#F57C00"
+    backpressure_manager: {
+      label: "BackpressureManager"
+      shape: class
+      -latestOffset: "int64 (atomic)"
+      -groups: "map[string]*GroupLag"
+      -lagThresholdHigh: "int64 = 10000"
+      -lagThresholdLow: "int64 = 5000"
+      -throttling: "int32 (atomic)"
+      +CalculateLag(): "int64"
+      +ShouldThrottle(): "bool"
+      +GetThrottleDelay(): "time.Duration"
+    }
+    throttle_cmd: {
+      shape: sql_table
+      label: "struct ThrottleResponse (0x20)"
+      f0: "0x00 | uint8  | Cmd = 0x20"
+      f1: "0x01 | uint16 | DelayMs (BE)"
+      f2: "0x03 | uint32 | CurrentLag (BE)"
+      sz: "Total: 7 bytes"
+    }
+  }
+  dlq_layer: {
+    direction: down
+    label: "Dead Letter Queue (broker/)"
+    style.fill: "#FFEBEE"
+    style.stroke: "#D32F2F"
+    dlq_manager: {
+      label: "DLQManager (dlq.go)"
+      shape: class
+      -topicManager: "*TopicManager"
+      -logWriter: "*log.Writer"
+      -dlqTopics: "map[string]bool"
+      +MoveToDLQ(topic, offset, payload, retries, reason): "error"
+      +GetDLQTopicName(topic): "string"
+    }
+    dlq_message: {
+      shape: sql_table
+      label: "struct DLQMessage (dlq.go)"
+      f0: "0x00 | string | OriginalTopic"
+      f1: "0x08 | uint64 | OriginalOffset"
+      f2: "var  | []byte | OriginalPayload"
+      f3: "var  | int    | RetryCount"
+      f4: "var  | string | LastFailureReason"
+      f5: "var  | int64  | FailedAt"
+      f6: "var  | string | ConsumerID"
+      sz: "Stored in {topic}.dlq log"
+    }
+  }
+}
+
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  api_layer: {
+    direction: down
+    label: "Monitoring API (api/)"
+    style.fill: "#E0F7FA"
+    style.stroke: "#00838F"
+    inspection_api: {
+      label: "InspectionAPI :8081"
+      shape: class
+      -broker: "*PersistentBroker"
+      -dlqManager: "*DLQManager"
+      -httpServer: "*http.Server"
+      +Start(): "error"
+      +Stop(ctx): "error"
+    }
+    endpoints: {
+      label: "REST Endpoints"
+      shape: rectangle
+      style.fill: "#B2EBF2"
+      width: 280
+      routes: |'md
+        **DLQ Operations:**
+        GET  /api/v1/dlq/
+        GET  /api/v1/dlq/{topic}/messages
+        POST /api/v1/dlq/{topic}/replay
+        **Metrics:**
+        GET  /metrics
+        GET  /api/v1/topics
+        GET  /api/v1/topics/{topic}/metrics
+      '|
+    }
+  }
+  metrics_layer: {
+    direction: down
+    label: "Observability (api/)"
+    style.fill: "#F1F8E9"
+    style.stroke: "#558B2F"
+    metrics_collector: {
+      label: "MetricsCollector"
+      shape: class
+      -publishCount: "uint64 (atomic)"
+      -consumeCount: "uint64 (atomic)"
+      -errorCount: "uint64 (atomic)"
+      -publishRate: "float64"
+      -consumeRate: "float64"
+      +RecordPublish(): "void"
+      +RecordConsume(): "void"
+      +RecordError(): "void"
+    }
+    health_checker: {
+      label: "HealthChecker"
+      shape: class
+      -broker: "*PersistentBroker"
+      -dlqThreshold: "int = 1000"
+      -lagThreshold: "int64 = 10000"
+      +Check(): "*HealthResponse"
+      -checkLogWritable(): "CheckResult"
+      -checkConsumerGroups(): "CheckResult"
+      -checkDLQGrowth(): "CheckResult"
+    }
+    health_status: {
+      label: "HealthStatus"
+      shape: rectangle
+      style.fill: "#DCEDC8"
+      states: |'md
+        **HEALTHY** -> HTTP 200
+        **DEGRADED** -> HTTP 200
+        **UNHEALTHY** -> HTTP 503
+        Checks: log_writable, groups,
+                dlq, lag
+      '|
+    }
+  }
+}
+
+row6: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  storage_layer: {
+    direction: down
+    label: "Storage (data/)"
+    style.fill: "#ECEFF1"
+    style.stroke: "#455A64"
+    log_files: {
+      label: "Log Files"
+      shape: cylinder
+      style.multiple: true
+      style.fill: "#CFD8DC"
+    }
+    offset_file: {
+      label: "consumer_offsets.json"
+      shape: document
+      style.fill: "#B0BEC5"
+    }
+    dlq_files: {
+      label: "*.dlq.log"
+      shape: cylinder
+      style.multiple: true
+      style.fill: "#FFCDD2"
+    }
+  }
+  recovery_layer: {
+    direction: down
+    label: "Recovery (broker/)"
+    style.fill: "#F3E5F5"
+    style.stroke: "#6A1B9A"
+    recovery_manager: {
+      label: "RecoveryManager"
+      shape: class
+      -logWriter: "*log.Writer"
+      -offsetStore: "*offset.OffsetStore"
+      -topicManager: "*TopicManager"
+      +Recover(): "(int, error)"
+      -discoverTopics(): "[]string"
+      -recoverTopic(topic, offsets): "(int, error)"
+    }
+    recovery_flow: {
+      label: "Crash Recovery Flow"
+      shape: rectangle
+      style.fill: "#E1BEE7"
+      width: 260
+      flow: |'md
+        1. Load consumer offsets from disk
+        2. Scan *.log files for each topic
+        3. Read entries, verify CRC32
+        4. Rebuild in-memory structures
+        5. Resume normal operation
+      '|
+    }
+  }
+}
+
+row1.clients.producers -> row1.tcp_layer.tcp_listener: "TCP Connect"
+row1.clients.consumers <- row1.tcp_layer.tcp_listener: "TCP Connect"
+row1.tcp_layer.conn_manager -> row2.protocol_layer.frame_reader: "Read"
+row2.protocol_layer.frame_writer <- row1.tcp_layer.conn_manager: "Write"
+row2.protocol_layer.command_parser -> row2.core_layer.topic_manager: "Route Command"
+row2.core_layer.topic_manager -> row2.core_layer.topic_router: "Fan-out"
+row2.core_layer.topic_manager -> row2.core_layer.consumer_group: "Consumer Group"
+row2.core_layer.topic_router -> row3.persistence_layer.log_writer: "Append"
+row2.core_layer.consumer_group -> row3.persistence_layer.log_writer: "Append"
+row2.core_layer.consumer_group -> row3.coordination_layer.partition_assignment: "Rebalance"
+row2.core_layer.consumer_group -> row3.coordination_layer.visibility_scanner: "Scan"
+row2.core_layer.consumer_group -> row3.coordination_layer.heartbeat_manager: "Track"
+row2.core_layer.topic_manager -> row4.backpressure_layer.backpressure_manager: "Check Lag"
+row4.backpressure_layer.throttle_cmd -> row2.protocol_layer.frame_writer: "THROTTLE"
+row2.core_layer.consumer_group -> row4.dlq_layer.dlq_manager: "Move to DLQ"
+row4.dlq_layer.dlq_manager -> row5.api_layer.inspection_api: "Inspect"
+row5.api_layer.endpoints -> row5.metrics_layer.metrics_collector: "Collect"
+row5.api_layer.endpoints -> row5.metrics_layer.health_checker: "Check Health"
+row3.persistence_layer.log_writer -> row6.storage_layer.log_files: "Write"
+row3.persistence_layer.offset_store -> row6.storage_layer.offset_file: "Persist"
+row4.dlq_layer.dlq_manager -> row6.storage_layer.dlq_files: "Write"
+row6.recovery_layer.recovery_manager -> row6.storage_layer.log_files: "Read"
+row6.recovery_layer.recovery_manager -> row6.storage_layer.offset_file: "Load"
+row6.recovery_layer.recovery_manager -> row2.core_layer.topic_manager: "Rebuild"
+
+legend: {
+  near: bottom-right
+  label: "Legend"
+  shape: rectangle
+  style.fill: "#FAFAFA"
+  style.stroke: "#9E9E9E"
+  l1: "Green = Producers"
+  l1.style.fill: "#C8E6C9"
+  l2: "Orange = Backpressure"
+  l2.style.fill: "#FFE0B2"
+  l3: "Red = DLQ / Errors"
+  l3.style.fill: "#FFCDD2"
+  l4: "Purple = Network / Recovery"
+  l4.style.fill: "#E1BEE7"
+  l5: "Blue = Broker Core"
+  l5.style.fill: "#BBDEFB"
+  l6: "Gray = Storage"
+  l6.style.fill: "#CFD8DC"
+}
+
+footer: {
+  shape: rectangle
+  label: |'md
+    **Package Structure:** `broker/` | `protocol/` | `log/` | `offset/` | `api/`
+    **Ports:** TCP Broker :9090 | HTTP API :8081 | Metrics :8081/metrics
+  '|
+  style.stroke: transparent
+  style.fill: transparent
+  near: bottom-center
+}

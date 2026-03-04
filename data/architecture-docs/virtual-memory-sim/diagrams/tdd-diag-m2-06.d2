@@ -1,0 +1,304 @@
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+title: |md
+  # LRU Page Replacement Algorithm
+  ### Victim Selection & Write-Back Logic Engineering Spec
+  **Ref: VM-SUBSYSTEM-PAGING-REV2.0**
+  **Page Size: 4096B (4KB)**
+| {near: top-center}
+
+direction: right
+
+# ============================================
+# CLASSES & STYLING (Intel Manual Quality)
+# ============================================
+classes: {
+  header_style: {
+    style: {
+      fill: "#7B1FA2"
+      font-color: white
+      bold: true
+      stroke-width: 2
+    }
+  }
+  data_style: {
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1976D2"
+    }
+  }
+  logic_diamond: {
+    shape: diamond
+    style: {
+      fill: "#FFF9C4"
+      stroke: "#FBC02D"
+      stroke-width: 2
+    }
+  }
+  action_box: {
+    shape: rectangle
+    style: {
+      fill: "#F5F5F5"
+      stroke: "#424242"
+      border-radius: 4
+      font-size: 14
+    }
+  }
+  alert_box: {
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#C62828"
+      stroke-width: 3
+      bold: true
+    }
+  }
+  memory_header: {
+    style: {
+      fill: "#E0E0E0"
+      bold: true
+      font: mono
+    }
+  }
+}
+
+# ============================================
+# PHASE 1: TRAP & METADATA
+# ============================================
+phase1: {
+  label: "PHASE 1: TRAP ENTRY"
+  style.fill: "#F3E5F5"
+  
+  trap: "MMU Page Fault\n(Exception 14)" {
+    shape: diamond
+    class: logic_diamond
+  }
+
+  lru_meta: "LRU Metadata Struct" {
+    shape: sql_table
+    class: header_style
+    0x00: "uint64_t clock_counter" {constraint: "8B"}
+    0x08: "uint32_t active_pages" {constraint: "4B"}
+    0x0C: "vpn_t vpn_list[N]" {constraint: "N*4B"}
+    0x10: "uint64_t ts[N]" {constraint: "N*8B"}
+  }
+
+  trap -> lru_meta: "Invoke victim_select()"
+}
+
+# ============================================
+# PHASE 2: O(N) LEAST RECENTLY USED SCAN
+# ============================================
+phase2: {
+  label: "PHASE 2: O(N) LINEAR SEARCH"
+  style.fill: "#E1F5FE"
+  
+  init_scan: {
+    label: "INIT SCAN STATE\noldest = curr_clock\nvictim_idx = -1"
+    class: action_box
+  }
+
+  loop_iter: "FOR EACH i ∈ [0, active_pages)" {
+    shape: parallelogram
+    style.fill: "#B3E5FC"
+  }
+
+  is_older: "ts[i] < oldest?" {
+    class: logic_diamond
+  }
+
+  update_victim: "SET CANDIDATE\noldest = ts[i]\nvictim_idx = i" {
+    style.fill: "#C8E6C9"
+    style.stroke: "#2E7D32"
+    style.bold: true
+  }
+
+  next_i: "Increment i" {
+    shape: oval
+    style.fill: "#BBDEFB"
+  }
+
+  init_scan -> loop_iter
+  loop_iter -> is_older
+  is_older -> update_victim: "YES"
+  is_older -> next_i: "NO"
+  update_victim -> next_i
+  next_i -> loop_iter: "i < N"
+}
+
+# ============================================
+# PHASE 3: PTE DIRTY EVALUATION
+# ============================================
+phase3: {
+  label: "PHASE 3: DIRTY BIT & SWAP-OUT"
+  style.fill: "#FFF3E0"
+  
+  fetch_pte: "Fetch PTE from\nPage Table Root" {
+    class: action_box
+  }
+
+  pte_layout: "PTE Bitfield (IA-32 Pattern)" {
+    shape: sql_table
+    header: "31 : 12 | 11 : 9 | 8 | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0"
+    fields: "PFN (20b) | AVL (3b) | G | S | D | A | C | W | U | R | V"
+    valid: "V = 1 (Present)"
+    dirty: "D = 1 (Dirty)" {style.fill: "#FFCDD2"; style.bold: true}
+    access: "A = 1 (Accessed)"
+  }
+
+  eval_dirty: "IF (PTE.D == 1)" {
+    class: logic_diamond
+  }
+
+  write_back: "BLOCKING DISK I/O\nWRITE_TO_SWAP(PFN)" {
+    class: alert_box
+  }
+
+  fast_discard: "NO-OP\nDiscard Clean Page" {
+    style.fill: "#C8E6C9"
+  }
+
+  fetch_pte -> pte_layout
+  pte_layout -> eval_dirty
+  eval_dirty -> write_back: "DIRTY\n(Expensive)"
+  eval_dirty -> fast_discard: "CLEAN\n(Optimal)"
+}
+
+# ============================================
+# PHASE 4: EVICTION COMPLETION
+# ============================================
+phase4: {
+  label: "PHASE 4: CRITICAL SECTION"
+  style.fill: "#E8F5E9"
+
+  pte_clear: "Atomic PTE Clear\nValid=0, PFN=0" {
+    class: action_box
+  }
+
+  flush: "INVLPG Instruction\n(TLB Invalidate)" {
+    style.fill: "#FFECB3"
+    style.stroke: "#FFA000"
+    style.stroke-dash: 2
+  }
+
+  metadata_sync: "LRU Update\nPop(victim_idx)" {
+    class: action_box
+  }
+
+  return_pfn: "PFN Released to\nFree List Pool" {
+    shape: circle
+    style.fill: "#00796B"
+    style.font-color: white
+    style.bold: true
+  }
+
+  pte_clear -> flush -> metadata_sync -> return_pfn
+}
+
+# ============================================
+# MEMORY VISUALIZATION (OOD)
+# ============================================
+lru_visual: {
+  label: "Physical Memory Management View"
+  
+  grid_container: {
+    grid-rows: 5
+    grid-gap: 0
+    
+    header_row: {
+      grid-columns: 4
+      class: memory_header
+      c1: "Index"
+      c2: "VPN"
+      c3: "Timestamp"
+      c4: "Dirty"
+    }
+    
+    row_0: {
+      grid-columns: 4
+      style.fill: "#FFCDD2"
+      c1: "0 (Victim)"
+      c2: "0x00AF"
+      c3: "1002"
+      c4: "1"
+    }
+    
+    row_1: {
+      grid-columns: 4
+      c1: "1"
+      c2: "0x01BC"
+      c3: "4401"
+      c4: "0"
+    }
+    
+    row_2: {
+      grid-columns: 4
+      c1: "2"
+      c2: "0x0012"
+      c3: "3122"
+      c4: "0"
+    }
+    
+    row_dots: {
+      grid-columns: 4
+      c1: "..."
+      c2: "..."
+      c3: "..."
+      c4: "..."
+    }
+  }
+}
+
+# Fix for Error 2: Reference phase3 instead of the grid directly
+victim_marker: "CRITICAL: Victim Identified" {
+  shape: text
+  style.font-color: "#C62828"
+  style.bold: true
+  near: phase3
+}
+
+# ============================================
+# INTER-PHASE CONNECTORS
+# ============================================
+phase1.trap -> phase2.init_scan: "Evict trigger"
+phase2.loop_iter -> phase3.fetch_pte: "Search Finished\n(Index Found)" {
+  style.stroke: "#E65100"
+  style.stroke-width: 4
+}
+phase3.write_back -> phase4.pte_clear: "I/O Done"
+phase3.fast_discard -> phase4.pte_clear: "Immediate"
+
+# ============================================
+# IMPLEMENTATION NOTES
+# ============================================
+performance: |md
+  ### Performance Profile
+  - **Latency**: Variable based on Dirty Bit (Disk Seek Penalty)
+  - **Memory Overhead**: 12B per resident page
+  - **Instruction Count**: ~15 cycles + N * 5 cycles
+| {
+  near: bottom-left
+  style.fill: "#F5F5F5"
+}
+
+concurrency: |md
+  ### Locking & Atomicity
+  - **Page Table Lock**: Must be held during Phase 3-4.
+  - **I/O Parallelism**: Phase 3 write-back can be async if hardware allows page pinning.
+  - **Interrupts**: Masked during critical TLB flush.
+| {
+  near: bottom-right
+  style.fill: "#F5F5F5"
+}
+
+# Global Arrow Styling
+***.style.stroke: "#37474F"
+(*** -> ***)[*].style.stroke-width: 2
+(phase2.loop_iter -> phase3.fetch_pte)[0].style.animated: true

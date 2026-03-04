@@ -1,0 +1,223 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+  colors: {
+    header: "#6a1b9a"
+    data: "#2196f3"
+    free: "#4caf50"
+    padding: "#9e9e9e"
+    logic: "#eceff1"
+    pointer: "#ff9800"
+    warning: "#d32f2f"
+  }
+}
+
+title: "M4-13: Thrashing Detection Logic & Memory Layout" {
+  shape: text
+  near: top-center
+  style: {
+    font-size: 28
+    bold: true
+  }
+}
+
+# --- STEP 1: INGESTION (Memory Buffer Update) ---
+step_1: "1. Update Working Set Window" {
+  style.stroke: "#37474f"
+  style.stroke-dash: 4
+  style.fill: "#f5f5f5"
+
+  ws_window: "Working Set Circular Buffer | Base: 0x2000" {
+    shape: sql_table
+    style.fill: ${colors.header}
+    style.font-color: white
+    
+    # Left Margin: Offset | Value: VPN & TS | Right Margin: Size
+    0x00: "VPN: 0x00A | TS: 1002" {constraint: "4B"}
+    0x04: "VPN: 0x1BC | TS: 1003" {constraint: "4B"}
+    0x08: "VPN: 0x00A | TS: 1004" {constraint: "4B"}
+    0x0C: "VPN: 0x4E2 | TS: 1005" {constraint: "4B"}
+    0x10: "VPN: 0x99F | TS: 1006" {
+      style.font-color: red
+      style.bold: true
+      style.fill: "#ffffff"
+      constraint: "4B (MODIFIED)"
+    }
+  }
+
+  cache_line_boundary: "" {
+    shape: text
+    label: "------------------ L1 CACHE LINE BOUNDARY (64B) ------------------"
+    style: {
+      font-color: ${colors.padding}
+      stroke-dash: 5
+    }
+  }
+}
+
+# Absolute position moved to root level to fix D2 compiler error
+near_info: |md
+  ### Step 1: Buffer Write
+  - **Current Cycle**: 1006
+  - **Tail Pointer**: `&ws_window + 0x10`
+  - **Operation**: `MOV [RDI+16], RDX` (VPN + TS)
+  - **Status**: Atomic Update
+| {near: bottom-right}
+
+# --- STEP 2: PROCESSING (Cardinality Logic) ---
+step_2: "2. Working Set Size (WSS) Calculation" {
+  style.stroke: "#37474f"
+  style.stroke-dash: 4
+  style.fill: "#f5f5f5"
+
+  logic: "Cardinality Estimator Unit" {
+    shape: cloud
+    label: "Distinct VPNs: {0x00A, 0x1BC, 0x4E2, 0x99F}"
+    style.fill: ${colors.logic}
+  }
+
+  calc_unit: "WSS Accumulator" {
+    style.fill: white
+    op: "COUNT(DISTINCT VPN) over Window"
+    result: "CUR_WSS = 4" {
+      style.bold: true
+      style.fill: ${colors.data}
+      style.font-color: white
+    }
+  }
+  
+  logic -> calc_unit: "Pipe cardinality stream"
+}
+
+# --- STEP 3: THRESHOLD CHECK (Hardware Comparator) ---
+step_3: "3. Thrashing Condition Analysis" {
+  style.stroke: "#37474f"
+  style.stroke-dash: 4
+  style.fill: "#f5f5f5"
+
+  comparator: "ALU Comparator" {
+    shape: hexagon
+    label: "ASSERT (WSS > Frames_Allocated)"
+    style.fill: "#fff3e0"
+    style.stroke: "#fb8c00"
+  }
+
+  registers: "MMU Control Registers" {
+    shape: sql_table
+    style.fill: "#455a64"
+    style.font-color: white
+    f_total: "0xCF0 | REG_MAX_FRAMES | 3" {constraint: "Val: 3"}
+    wss_val: "0xCF4 | REG_CUR_WSS | 4" {
+      style.fill: ${colors.data}
+      constraint: "Val: 4"
+    }
+  }
+
+  registers.wss_val -> comparator: "Input A"
+  registers.f_total -> comparator: "Input B"
+}
+
+# --- STEP 4: OUTPUT & INTERRUPT (Status Register Update) ---
+step_4: "4. Warning Generation & IRQ" {
+  style.stroke: "#37474f"
+  style.stroke-dash: 4
+  style.fill: "#f5f5f5"
+
+  thrashing_warning: "SYSTEM_ALERT: THRASHING_DETECTED" {
+    style.fill: ${colors.warning}
+    style.font-color: white
+    style.bold: true
+    style.animated: true
+  }
+
+  stats_table: "MMU Performance Counters" {
+    shape: sql_table
+    style.fill: "#eceff1"
+    pressure: "Pressure Ratio | 1.33" {
+      style.font-color: red
+      style.bold: true
+    }
+    fault_freq: "PFN Interrupt Rate | 0.85"
+    action: "Policy | BLOCK_ALLOC"
+  }
+
+  warning_bit: "MMU_STATUS_REGISTER (64-bit)" {
+    shape: sql_table
+    style.fill: white
+    bit_63_32: "[63:32] RESERVED | 0x00000000" {style.fill: ${colors.padding}}
+    bit_31: "[31] THRASH_DET_FLAG | 1" {
+      style.fill: "#ffcdd2"
+      style.font-color: red
+      style.bold: true
+    }
+    bits_0_30: "[0:30] SYSTEM_FLAGS | 0x7A4F12" {style.fill: "#f5f5f5"}
+  }
+}
+
+# --- LOGICAL DATA FLOW ---
+step_1.ws_window -> step_2.logic: "SMMU Data Bus" {
+  style.stroke-width: 3
+}
+
+step_2.calc_unit -> step_3.registers.wss_val: "Write-Back (WB)" {
+  style.stroke: ${colors.pointer}
+  style.stroke-width: 3
+  target-arrowhead: triangle {
+    style.filled: true
+  }
+}
+
+step_3.comparator -> step_4.thrashing_warning: "BRANCH_IF_GREATER" {
+  style: {
+    stroke: red
+    stroke-width: 4
+    bold: true
+  }
+}
+
+step_4.thrashing_warning -> step_4.warning_bit.bit_31: "SET_BIT" {
+  style.animated: true
+  style.stroke: red
+  style.stroke-width: 3
+}
+
+# Implementation Specification
+spec: |md
+  ## MMU Implementation Specs (M4-Thrash)
+  - **Memory Pressure Calculation**: 
+    `ratio = (REG_CUR_WSS << 8) / REG_MAX_FRAMES`
+  - **Interrupt Vector**: `0x1A` (IRQ_THRASH)
+  - **Invariants**: 
+    1. Threshold violation must persist for > 3 clock cycles.
+    2. MMU_STATUS_REGISTER[31] is read-only for userspace.
+  - **Hardware Interface**:
+    `volatile uint64_t *mmu_reg = 0xFEE00000;`
+| {near: bottom-center}
+
+# Global Styling Standards
+***.style.font-size: 14
+(*** -> ***)[*]: {
+  style.stroke: "#455a64"
+  style.stroke-width: 2
+}
+
+# Specific Edge Labels
+(step_3.comparator -> step_4.thrashing_warning)[0].label: "VIOLATION: 4 > 3" {
+  style.font-color: red
+  style.bold: true
+}
+
+# Pointer Annotations
+tail_ptr: "Tail" {
+  shape: text
+  style.font-color: ${colors.pointer}
+  style.bold: true
+}
+tail_ptr -> step_1.ws_window.0x10: "Writes To" {
+  style.stroke: ${colors.pointer}
+  style.stroke-dash: 2
+}

@@ -1,0 +1,211 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#9371C6"
+    data: "#7A5CC6"
+    pte: "#E4dbfe"
+    swap: "#f1a64f"
+    free: "#e0ed80"
+    pointer: "#f4a261"
+  }
+}
+
+classes: {
+  memory_box: {
+    style: {
+      stroke: "#CBD6E0"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  logic_block: {
+    style: {
+      fill: "#f6f9fc"
+      stroke-dash: 3
+    }
+  }
+  pte_entry: {
+    style: {
+      fill: "#E4dbfe"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# TOP LEVEL: VIRTUAL ADDRESS
+# -----------------------------------------------------------------------------
+Virtual_Address: {
+  shape: sql_table
+  style.fill: "#9371C6"
+  
+  header: "32-bit Virtual Address"
+  "VPN[0]": "10 bits (Page Directory Index)" {constraint: "bits 31-22"}
+  "VPN[1]": "10 bits (Page Table Index)" {constraint: "bits 21-12"}
+  "Offset": "12 bits (Page Offset)" {constraint: "bits 11-0"}
+}
+
+# -----------------------------------------------------------------------------
+# TRANSLATION PIPELINE
+# -----------------------------------------------------------------------------
+Pipeline: {
+  label: "Translation Pipeline & Memory Hierarchy"
+  
+  TLB: {
+    shape: sql_table
+    label: "TLB (Translation Lookaside Buffer)"
+    style.fill: "#b5aff6"
+    
+    Entry_0: "VPN: 0x001 | PFN: 0x42 | V:1 | D:0"
+    Entry_1: "VPN: 0x005 | PFN: 0x1A | V:1 | D:1"
+    Entry_2: "VPN: 0x008 | PFN: 0x0C | V:1 | D:0"
+    "..." : "..."
+  }
+
+  MMU_Logic: {
+    label: "MMU Control Logic"
+    class: logic_block
+    
+    Operations: |md
+      **TLB Lookup**
+      - Parallel Search
+      - If Hit: Check permissions -> Physical Address
+      - If Miss: Trigger Page Table Walk
+      
+      **PTW (Page Table Walk)**
+      1. Use **CR3** for Directory Root
+      2. Fetch PDE using VPN[0]
+      3. Fetch PTE using VPN[1]
+    |
+  }
+
+  CR3: "CR3 Register (Page Directory Base)" {
+    shape: rectangle
+    style.fill: "#9e2146"
+    style.font-color: white
+  }
+}
+
+# -----------------------------------------------------------------------------
+# MEMORY STRUCTURES (2-LEVEL)
+# -----------------------------------------------------------------------------
+Memory_Subsystem: {
+  
+  Page_Directory: {
+    shape: sql_table
+    header: "Page Directory (4KB)"
+    style.fill: "#9371C6"
+    
+    PDE_0: "PT PFN: 0x100 | Present: 1 | R/W: 1"
+    PDE_1: "PT PFN: 0x101 | Present: 1 | R/W: 0"
+    PDE_N: "PT PFN: 0x000 | Present: 0 | R/W: 0"
+  }
+
+  Page_Table: {
+    shape: sql_table
+    header: "Page Table (Level 2)"
+    style.fill: "#E4dbfe"
+    
+    PTE_0: "PFN: 0x42 | V: 1 | D: 0 | R: 1"
+    PTE_1: "PFN: 0x00 | V: 0 | D: 0 | R: 0 (Swap)"
+    PTE_N: "PFN: 0x1A | V: 1 | D: 1 | R: 1"
+  }
+
+  Physical_RAM: {
+    label: "Physical Memory (RAM)"
+    grid-rows: 4
+    style.fill: "#F6C889"
+    
+    Frame_0: "Frame 0 (Reserved)"
+    Frame_42: "Frame 42 (Process Data)" {style.fill: "#ACE1AF"}
+    Frame_Free: "Frame 43 (Free Pool)" {style.fill: "#e0ed80"}
+    Frame_100: "Frame 100 (Page Table)" {style.fill: "#E4dbfe"}
+  }
+}
+
+# -----------------------------------------------------------------------------
+# SWAP SPACE
+# -----------------------------------------------------------------------------
+Storage: {
+  Swap_Space: {
+    shape: sql_table
+    header: "Swap Space (Disk)"
+    style.fill: "#7A5CC6"
+    style.font-color: white
+    
+    Slot_0: "VPN: 0x005 | Data: [Page Content]"
+    Slot_1: "VPN: 0x00A | Data: [Page Content]"
+    Slot_Free: "Available Slot" {style.fill: "#e0ed80"; style.font-color: black}
+  }
+}
+
+# -----------------------------------------------------------------------------
+# FAULT & REPLACEMENT LOGIC
+# -----------------------------------------------------------------------------
+Replacement_Manager: {
+  label: "Page Replacement (LRU / Clock)"
+  class: logic_block
+  
+  Algo: |md
+    **Page Fault Handler**
+    1. Trap to OS
+    2. Find Victim Frame (LRU)
+    3. If Dirty: Write back to Swap
+    4. Load requested Page from Swap
+    5. Update PTE and Resume
+  |
+}
+
+# -----------------------------------------------------------------------------
+# CONNECTIONS (THE TRANSLATION PATH)
+# -----------------------------------------------------------------------------
+# 1. Start lookup
+Virtual_Address -> Pipeline.TLB: "1. Search VPN"
+
+# 2. TLB Hit Path
+Pipeline.TLB -> Memory_Subsystem.Physical_RAM.Frame_42: "Hit: Direct Access" {
+  style.stroke: green
+  style.stroke-width: 4
+}
+
+# 3. TLB Miss Path
+Pipeline.TLB -> Pipeline.MMU_Logic: "2. Miss" {style.stroke: red}
+Pipeline.CR3 -> Memory_Subsystem.Page_Directory: "3. Pointer to Root" {style.stroke: orange}
+Virtual_Address."VPN[0]" -> Memory_Subsystem.Page_Directory.PDE_0: "4. Index"
+
+# 4. Walk Second Level
+Memory_Subsystem.Page_Directory.PDE_0 -> Memory_Subsystem.Page_Table: "5. Resolve PT" {style.stroke: orange}
+Virtual_Address."VPN[1]" -> Memory_Subsystem.Page_Table.PTE_0: "6. Index"
+
+# 5. Result
+Memory_Subsystem.Page_Table.PTE_0 -> Memory_Subsystem.Physical_RAM.Frame_42: "7. Map to Frame" {style.stroke: green}
+
+# 6. Page Fault path
+Memory_Subsystem.Page_Table.PTE_1 -> Replacement_Manager: "Fault: Present bit = 0"
+Replacement_Manager -> Storage.Swap_Space: "Fetch from Disk"
+Replacement_Manager -> Memory_Subsystem.Physical_RAM: "Evict/Load Frame"
+
+# -----------------------------------------------------------------------------
+# ANNOTATIONS
+# -----------------------------------------------------------------------------
+Stats: {
+  shape: rectangle
+  near: bottom-right
+  label: |md
+    ### System Stats
+    - Page Size: 4 KB
+    - ASID Enabled: Yes
+    - TLB Slots: 32
+    - Replacement: LRU
+  |
+}
+
+Legend: {
+  near: bottom-left
+  PD: Page Directory {style.fill: "#9371C6"}
+  PT: Page Table {style.fill: "#E4dbfe"}
+  RAM: Physical RAM {style.fill: "#F6C889"}
+  Swap: Disk {style.fill: "#7A5CC6"}
+}

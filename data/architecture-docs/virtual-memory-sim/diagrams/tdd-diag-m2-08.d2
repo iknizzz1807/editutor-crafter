@@ -1,0 +1,227 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |'md'
+  # TLB Coherency Problem
+  ## Stale Entry After PTE Modification Without Invalidation
+  ** Hazard:** Memory Isolation Breach & Data Corruption
+'| {
+  near: top-center
+}
+
+direction: right
+
+timeline: "Timeline: Stale TLB Entry Bug" {
+  style.fill: "#F8F9FA"
+  style.stroke: "#DEE2E6"
+  style.stroke-width: 2
+
+  step1: "Step 1: TLB Entry Created" {
+    style.fill: "#D4EDDA"
+    style.stroke: "#28A745"
+
+    tlb_before: {
+      label: "TLB (Cache Line)"
+      style.fill: white
+      style.stroke: "#28A745"
+      
+      header: "Tag | Physical Address | Control" { 
+        style.fill: "#E1BEE7" 
+      }
+      entry1: "Entry [Index 5]" {
+        style.fill: "#E3F2FD"
+        details: |'md'
+          **VPN:** 0x001 [bits 31:12]
+          **PFN:** 0x42  [bits 31:12]
+          **V:** 1 | **D:** 0 | **ASID:** 0xFF
+        '|
+      }
+    }
+
+    pte_before: "Page Table (In RAM)" {
+      style.fill: white
+      style.stroke: "#6C757D"
+      row1: "PTE @ 0x1000[0x001]" {
+        style.fill: "#FFF9C4"
+        details: |'md'
+          **PFN:** 0x42
+          **Valid:** 1
+          **Dirty:** 0
+          **Prot:** R/W
+        '|
+      }
+    }
+
+    note1: |'md'
+      **State:** Consistent.
+      VPN 0x001 matches PFN 0x42 in both.
+      CPU can access memory at high speed.
+    '| { shape: text }
+  }
+
+  step2: "Step 2: Page Evicted" {
+    style.fill: "#FFF3CD"
+    style.stroke: "#FFC107"
+
+    warning: "⚠️ BUG: OS MISSED INVALIDATION" {
+      style.fill: "#F8D7DA"
+      style.stroke: "#DC3545"
+      style.font-color: "#DC3545"
+      style.bold: true
+    }
+
+    tlb_stale: {
+      label: "TLB (STALE CACHE!)"
+      style.fill: "#F8D7DA"
+      style.stroke: "#DC3545"
+      style.stroke-width: 3
+      entry2: "Entry [Index 5]" {
+        style.fill: "#F8D7DA"
+        details: |'md'
+          **VPN:** 0x001
+          **PFN:** <span style="color:red">**0x42 (STALE)**</span>
+          **V:** 1 (Should be 0!)
+        '|
+      }
+    }
+
+    pte_modified: "Page Table (Updated)" {
+      style.fill: white
+      style.stroke: "#6C757D"
+      row2: "PTE @ 0x1000[0x001]" {
+        style.fill: "#D4EDDA"
+        details: |'md'
+          **PFN:** 0x00
+          **Valid:** <span style="color:red">**0 (SWAPPED OUT)**</span>
+          **Dirty:** 0
+        '|
+      }
+    }
+
+    note2: |'md'
+      **State:** INCOHERENT.
+      OS modified RAM but forgot to 
+      broadcast `INVLPG` or `TLB_FLUSH`.
+    '| { shape: text }
+  }
+
+  step3: "Step 3: CPU Memory Request" {
+    style.fill: "#F8D7DA"
+    style.stroke: "#DC3545"
+
+    access: "MMU: Load VA 0x001A80" {
+      style.fill: "#E2E3E5"
+      style.stroke: "#6C757D"
+    }
+
+    tlb_lookup: "TLB Comparator" {
+      shape: diamond
+      style.fill: "#F8D7DA"
+      style.stroke: "#DC3545"
+    }
+    
+    tlb_result: "HIT! Returns PFN 0x42" {
+      style.fill: "#DC3545"
+      style.font-color: white
+      style.bold: true
+    }
+
+    note3: |'md'
+      **Logic Error:** MMU never checks RAM
+      because TLB provided a fast (but wrong)
+      translation. **No Page Fault occurs.**
+    '| { shape: text }
+  }
+
+  step4: "Step 4: CRITICAL FAILURE" {
+    style.fill: "#DC3545"
+    style.stroke: "#721C24"
+    style.font-color: white
+
+    corruption: "Physical Frame 0x42" {
+      style.fill: "#721C24"
+      style.stroke: "#721C24"
+      style.font-color: white
+      content: |'md'
+        **Previous Use:** Process A (Page 0x001)
+        **Current Use:** Kernel (File Buffer)
+        **Result:** Process A reads Kernel data!
+      '|
+    }
+
+    note4: |'md'
+      **Data Corruption:** Process writes to 
+      reallocated memory.
+      **Security:** Violation of process 
+      boundary (Privilege Escalation).
+    '| { shape: text }
+  }
+
+  step1 -> step2: "OS modifies PTE\nmissing TLB_INVAL" {
+    style.stroke: "#FFC107"
+    style.stroke-width: 2
+    style.bold: true
+  }
+  step2 -> step3: "MMU attempts VA->PA" {
+    style.stroke: "#6C757D"
+  }
+  step3 -> step4: "Stale PFN used" {
+    style.stroke: "#DC3545"
+    style.stroke-width: 3
+    style.bold: true
+  }
+}
+
+correct_flow: "CORRECT Flow: Strict Serialization" {
+  style.fill: "#D4EDDA"
+  style.stroke: "#28A745"
+  style.stroke-width: 2
+  
+  header: "Call Sequence (Atomic from CPU perspective)" {
+    style.fill: "#28A745"
+    style.font-color: white
+    style.bold: true
+  }
+  
+  code_snippet: |go
+    // 1. Mark PTE as busy/invalid
+    pte.valid = 0; 
+    
+    // 2. FORCED INVALIDATION (Synchronous)
+    // CPU executes TLBSYNC/INVLPG
+    __native_flush_tlb_single(vpn);
+    
+    // 3. Now frame 0x42 is safe to reallocate
+    free_page_frame(0x42);
+  | { shape: code }
+
+  result_note: "✓ Flush-before-free\n✓ No transient stale window" {
+    style.fill: "#E3F2FD"
+    style.stroke: "#28A745"
+  }
+}
+
+invariant_box: "MMU COHERENCY INVARIANT" {
+  style.fill: "#FFF3CD"
+  style.stroke: "#856404"
+  style.stroke-width: 2
+  rule_text: |'md'
+    **Rule:** For any Virtual Address V, the TLB must 
+    only contain a translation V -> P if 
+    the current Page Table also maps V -> P.
+    
+    **Transition Constraint:** TLB must be cleared 
+    *before* the PTE modification is visible to 
+    any instruction fetch or load/store.
+  '| { shape: text }
+}
+
+step1 -> correct_flow: "Correct Implementation" {
+  style.stroke: "#28A745"
+  style.stroke-dash: 5
+  style.animated: true
+}

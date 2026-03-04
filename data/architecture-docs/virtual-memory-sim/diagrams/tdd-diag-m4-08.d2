@@ -1,0 +1,255 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#7C3AED"
+    data: "#3B82F6"
+    pointer: "#F59E0B"
+    free: "#22C55E"
+    padding: "#9CA3AF"
+    dirty: "#EF4444"
+    clean: "#10B981"
+    swap: "#8B5CF6"
+    decision: "#F59E0B"
+  }
+}
+
+title: |md
+  # Virtual Memory System: Dirty Page Write-Back Path
+  **TDD Module 4.08**: Eviction Logic and PTE Invalidation
+| {near: top-center}
+
+direction: right
+
+# -----------------------------------------------------------------------------
+# FLOW OF EXECUTION
+# -----------------------------------------------------------------------------
+
+start: {
+  shape: circle
+  style.fill: ${colors.header}
+  label: "Eviction\nTriggered"
+}
+
+get_pte: {
+  label: "Get PTE for\nVictim VPN"
+  style.fill: ${colors.data}
+  tooltip: "Locate Page Table Entry for the Virtual Page Number chosen by clock/LRU"
+}
+
+check_dirty: {
+  shape: diamond
+  label: "pte->dirty\n== true?"
+  style.fill: ${colors.decision}
+}
+
+clean_path: {
+  label: "Clean Page\n(Discard)"
+  style.fill: ${colors.clean}
+  stats_discard: "stats.swap_discards++"
+}
+
+allocate_slot: {
+  label: "Allocate Swap\nSlot"
+  style.fill: ${colors.swap}
+  tooltip: "Search swap bitmap for contiguous free bit"
+}
+
+swap_full: {
+  shape: diamond
+  label: "Slot\nAvailable?"
+  style.fill: ${colors.decision}
+}
+
+fatal_error: {
+  label: "FATAL:\nSwap Full"
+  shape: diamond
+  style.fill: "#DC2626"
+  style.font-color: white
+}
+
+memcpy_write: {
+  label: "memcpy()\nFrame → Swap"
+  style.fill: ${colors.swap}
+  code: |c
+    /* Write modified contents to disk backing */
+    swap_write_page(
+      swap_dev,
+      slot_id,
+      pfn_to_virt(victim_pfn),
+      victim_vpn,
+      target_pid
+    );
+  |
+}
+
+update_swap_map: {
+  label: "Update\nswap_map"
+  style.fill: ${colors.swap}
+  details: ||md
+    - `swap_map[vpn].slot = slot`
+    - `swap_map[vpn].in_swap = true`
+  ||
+}
+
+invalidate_pte: {
+  label: "Invalidate PTE"
+  style.fill: ${colors.header}
+  pte_updates: ||md
+    - `pte->valid = false`
+    - `pte->pfn = 0`
+    - `pte->dirty = false`
+    - `pte->referenced = false`
+  ||
+}
+
+invalidate_tlb: {
+  label: "Invalidate TLB\nEntry"
+  style.fill: ${colors.header}
+  action: "TLB_INVAL_VPN(vpn)"
+}
+
+update_stats: {
+  label: "Update Statistics"
+  style.fill: ${colors.data}
+  stats: ||md
+    - `stats.swap_writes++`
+    - `stats.dirty_evictions++`
+    - `stats.evictions++`
+  ||
+}
+
+return_frame: {
+  shape: circle
+  style.fill: ${colors.free}
+  label: "Return\nFreed PFN"
+}
+
+# -----------------------------------------------------------------------------
+# LOGICAL CONNECTIONS
+# -----------------------------------------------------------------------------
+
+start -> get_pte: "1. victim_vpn"
+get_pte -> check_dirty: "2. Check Dirty Bit"
+
+check_dirty -> clean_path: "NO\n(clean)"
+check_dirty -> allocate_slot: "YES\n(dirty)"
+
+clean_path -> invalidate_pte: "3. Discard"
+
+allocate_slot -> swap_full: "4. swap_alloc()"
+swap_full -> fatal_error: "NO\n(OOM)"
+swap_full -> memcpy_write: "YES\n(slot_id)"
+
+memcpy_write -> update_swap_map: "5. I/O Commit"
+update_swap_map -> invalidate_pte: "6. Mark Swapped"
+
+invalidate_pte -> invalidate_tlb: "7. Hardware sync"
+invalidate_tlb -> update_stats: "8. Complete"
+update_stats -> return_frame: "9. Frame Available"
+
+# -----------------------------------------------------------------------------
+# ARCHITECTURAL STATE VISUALIZATION
+# -----------------------------------------------------------------------------
+
+memory_state: {
+  label: "Architectural Memory Layout (Write-Back State)"
+  
+  physical_frame: {
+    label: "Physical Frame (PFN 0x42)"
+    style.fill: ${colors.data}
+    
+    0x0000: "Header/Metadata (Internal)"
+    0x0040: "[ 4032 Bytes of Dirty User Data ]"
+    0x0FFF: "Frame Boundary"
+    
+    style.stroke-dash: 0
+  }
+
+  swap_slot: {
+    label: "Disk Swap Device"
+    style.fill: ${colors.swap}
+    
+    sector_n: "Slot #1024" {
+      data: "[ 4 KB Clean Copy on Disk ]"
+    }
+    sector_m: "Slot #1025 (Free)" {
+      style.fill: ${colors.free}
+    }
+  }
+
+  page_table_entry: {
+    label: "PTE Transition"
+    style.fill: ${colors.header}
+    
+    before: ||md
+      **STATE: ACTIVE**
+      - Valid: 1
+      - Dirty: 1
+      - PFN: 0x42
+    ||
+    
+    transition: "→" {style.stroke-width: 0}
+    
+    after: ||md
+      **STATE: SWAPPED**
+      - Valid: 0
+      - Dirty: 0
+      - PFN: 0 (NULL)
+    ||
+  }
+
+  swap_mapping: {
+    label: "Swap Metadata Table"
+    style.fill: ${colors.pointer}
+    mapping: ||md
+      | VPN | InSwap | SlotID |
+      | :--- | :--- | :--- |
+      | 0x01 | true | 1024 |
+    ||
+  }
+
+  physical_frame -> swap_slot.sector_n: "Disk Write (DMA/PIO)" {
+    style.stroke: ${colors.swap}
+    style.stroke-width: 4
+    style.animated: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# CONSTRAINTS AND PERFORMANCE
+# -----------------------------------------------------------------------------
+
+invariant: {
+  label: "⚠️ CRITICAL SYSTEM INVARIANT"
+  style.fill: "#FEF3C7"
+  style.stroke: "#F59E0B"
+  style.stroke-width: 2
+  
+  text: ||md
+    **ATOMICITY REQUIREMENT**
+    Dirty pages **MUST** be written to swap before the PFN is recycled.
+    
+    1. Write content to persistent storage.
+    2. Flush metadata (`swap_map`).
+    3. Update page tables.
+    4. **Flush TLB** to ensure no stale translations allow CPU writes to the freed frame.
+  ||
+}
+
+timing: {
+  label: "Cost Estimation (Simulation)"
+  style.fill: ${colors.padding}
+  
+  table: ||md
+    | Operation | CPU Cycles | Real-World Latency |
+    | :--- | :--- | :--- |
+    | Swap Slot Alloc | ~15 | ~1.2 μs |
+    | Page Write (SSD) | ~25,000 | ~120 μs |
+    | PTE Invalidation | ~10 | ~5 ns |
+    | TLB Flush | ~100 | ~50 ns |
+    | **Total Overhead** | **~25,125** | **~121.2 μs** |
+  ||
+}

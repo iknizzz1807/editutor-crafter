@@ -1,0 +1,267 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+classes: {
+  process: {
+    shape: rectangle
+    style.fill: "#E8F4FD"
+    style.stroke: "#2E86AB"
+  }
+  decision: {
+    shape: diamond
+    style.fill: "#FFF3CD"
+    style.stroke: "#856404"
+  }
+  data: {
+    shape: cylinder
+    style.fill: "#D4EDDA"
+    style.stroke: "#155724"
+  }
+  layer: {
+    shape: rectangle
+    style.fill: "#F8D7DA"
+    style.stroke: "#721C24"
+    style.stroke-width: 2
+  }
+  start_end: {
+    shape: oval
+    style.fill: "#E2E3E5"
+    style.stroke: "#383D41"
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  upper_layer: {
+    class: start_end
+    label: "Upper Layer\n(TCP/UDP/ICMP)"
+  }
+  ip_layer: {
+    label: "IP Layer (ip_output.c)"
+    class: layer
+    direction: down
+    recv_payload: {
+      class: process
+      label: "1. Receive Payload"
+      width: 180
+      code: |'c
+        // Payload from upper layer
+        payload = tcp_segment;  // or udp, icmp
+        payload_len = tcp_seg_len;
+      '|
+    }
+    set_proto: {
+      class: process
+      label: "2. Set Protocol Field"
+      width: 180
+      code: |'c
+        ip->proto = IPPROTO_TCP;  // 6
+        // or UDP=17, ICMP=1
+      '|
+    }
+    set_addrs: {
+      class: process
+      label: "3. Set Source/Dest IP"
+      width: 180
+      code: |'c
+        ip->src_ip = route->src_ip;
+        ip->dst_ip = dest_ip;
+      '|
+    }
+    set_id: {
+      class: process
+      label: "4. Set Identification"
+      width: 180
+      code: |'c
+        ip->id = htons(next_ip_id++);
+        // Unique per datagram
+      '|
+    }
+    set_ttl: {
+      class: process
+      label: "5. Set TTL"
+      width: 180
+      code: |'c
+        ip->ttl = IP_DEFAULT_TTL;  // 64
+        // Routers decrement each hop
+      '|
+    }
+    frag_check: {
+      class: decision
+      label: "Payload > MTU?\n(> 1500 bytes)"
+      width: 140
+    }
+    fragment: {
+      class: process
+      label: "6. Fragment Datagram"
+      width: 180
+      style.fill: "#FCE4D6"
+      style.stroke: "#C65911"
+      code: |'c
+        // Split into MTU-sized chunks
+        // Set MF flag on all but last
+        // Set fragment offset (8-byte units)
+      '|
+    }
+    no_frag: {
+      class: process
+      label: "Single Datagram"
+      width: 180
+      code: |'c
+        // No fragmentation needed
+        // Clear MF flag, offset = 0
+      '|
+    }
+    calc_cksum: {
+      class: process
+      label: "7. Calculate Checksum"
+      width: 180
+      code: |'c
+        ip->checksum = 0;
+        ip->checksum = ip_checksum(ip, 
+                         ip->ihl * 4);
+      '|
+    }
+    route_lookup: {
+      class: process
+      label: "8. Route Lookup"
+      width: 180
+      code: |'c
+        route = route_table_lookup(
+                    dst_ip);
+        next_hop = route->gateway 
+                 ?: dst_ip;
+      '|
+    }
+    arp_resolve: {
+      class: process
+      label: "9. ARP Resolution"
+      width: 180
+      code: |'c
+        mac = arp_cache_lookup(
+                  next_hop);
+        if (!mac) 
+          arp_send_request(next_hop);
+      '|
+    }
+    hand_eth: {
+      class: process
+      label: "10. Hand to Ethernet"
+      width: 180
+      code: |'c
+        eth->dst_mac = next_hop_mac;
+        eth->src_mac = our_mac;
+        eth->ethertype = 0x0800;
+      '|
+    }
+  }
+  eth_layer: {
+    class: layer
+    label: "Ethernet Layer (eth_output.c)"
+    direction: down
+    eth_send: {
+      class: process
+      label: "Build Frame & Transmit"
+      width: 180
+      code: |'c
+        // Prepend Ethernet header
+        // DMA to NIC ring buffer
+        tap_write(fd, frame, len);
+      '|
+    }
+  }
+  wire: {
+    class: start_end
+    label: "Wire/Network"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  cache_box: {
+    label: "State & Caches"
+    direction: down
+    style.fill: "#F5F5F5"
+    style.stroke: "#666666"
+    route_cache: {
+      shape: sql_table
+      label: "Routing Table (route.h)"
+      r1: "0x00 | uint32_t | network"
+      r2: "0x04 | uint32_t | mask"
+      r3: "0x08 | uint32_t | gateway"
+      r4: "0x0C | int      | prefix_len"
+      r5: "0x10 | int      | interface"
+      r6: "Total: 20 bytes/entry"
+    }
+    arp_cache: {
+      shape: sql_table
+      label: "ARP Cache (arp.h)"
+      r1: "0x00 | uint32_t | ip"
+      r2: "0x04 | uint8_t[6]| mac"
+      r3: "0x0A | time_t   | expires_at"
+      r4: "0x12 | int      | valid"
+      r5: "Total: 22 bytes/entry"
+    }
+    ip_state: {
+      shape: sql_table
+      label: "IP Output State"
+      r1: "next_ip_id: uint16_t"
+      r2: "default_ttl: uint8_t = 64"
+      r3: "mtu: uint16_t = 1500"
+    }
+  }
+}
+upper_layer -> ip_layer.recv_payload: "payload + len"
+ip_layer.recv_payload -> ip_layer.set_proto: "payload"
+ip_layer.set_proto -> ip_layer.set_addrs: "proto set"
+ip_layer.set_addrs -> ip_layer.set_id: "addrs set"
+ip_layer.set_id -> ip_layer.set_ttl: "id set"
+ip_layer.set_ttl -> ip_layer.frag_check: "TTL set"
+ip_layer.frag_check -> ip_layer.fragment: "YES\n> MTU" {
+  style.stroke: "#C65911"
+  style.stroke-dash: 4
+}
+ip_layer.frag_check -> ip_layer.no_frag: "NO\n<= MTU" {
+  style.stroke: "#155724"
+}
+ip_layer.fragment -> ip_layer.calc_cksum: "N fragments"
+ip_layer.no_frag -> ip_layer.calc_cksum: "1 datagram"
+ip_layer.calc_cksum -> ip_layer.route_lookup: "IP header ready"
+ip_layer.route_lookup -> ip_layer.arp_resolve: "next_hop IP"
+ip_layer.arp_resolve -> ip_layer.hand_eth: "next_hop MAC"
+ip_layer.hand_eth -> eth_layer.eth_send: "IP packet"
+eth_layer.eth_send -> wire: "Ethernet frame"
+cache_box.route_cache -> ip_layer.route_lookup: "longest-prefix match" {
+  style.stroke-dash: 3
+  style.stroke: "#666666"
+}
+cache_box.arp_cache -> ip_layer.arp_resolve: "IP→MAC lookup" {
+  style.stroke-dash: 3
+  style.stroke: "#666666"
+}
+legend: {
+  near: bottom-right
+  shape: rectangle
+  style.fill: white
+  style.stroke: black
+  label: "Legend"
+  proc_legend: "Rectangle = Process Step" {
+    class: process
+  }
+  dec_legend: "Diamond = Decision" {
+    class: decision
+  }
+  data_legend: "Cylinder = Data/Cache" {
+    class: data
+  }
+}
+title: |md
+  # IP Layer Send Processing Path
+  Flow from upper-layer payload to Ethernet transmission
+| {near: top-center}

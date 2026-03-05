@@ -1,0 +1,174 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+classes: {
+  memory_struct: {
+    shape: sql_table
+    style: {
+      stroke: "#333333"
+      fill: "#f8f8f8"
+    }
+  }
+  logic_module: {
+    shape: class
+    style: {
+      stroke: "#2b5797"
+      fill: "#eff4ff"
+    }
+  }
+  process_step: {
+    shape: step
+    style: {
+      fill: "#fff2cc"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ROW 1: MEMORY LAYOUTS & DATA STRUCTURES
+# -----------------------------------------------------------------------------
+row_memory: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+
+  tcp_conn: {
+    class: memory_struct
+    label: "struct tcp_conn (tcp.h)"
+    f0: "0x00 | uint32_t   | saddr // Source IP"
+    f1: "0x04 | uint32_t   | daddr // Destination IP"
+    f2: "0x08 | uint16_t   | sport // Source Port"
+    f3: "0x0A | uint16_t   | dport // Dest Port"
+    f4: "0x0C | int        | state // TCP_ESTABLISHED, etc"
+    f5: "0x10 | uint32_t   | snd_nxt // Next sequence to send"
+    f6: "0x14 | uint32_t   | rcv_nxt // Next sequence expected"
+    f7: "0x18 | uint32_t   | snd_wnd // Send window size"
+    f8: "0x1C | uint32_t   | cwnd    // Congestion window"
+    f9: "0x20 | timer_t    | retransmit_timer"
+    sz: "Total: 36 bytes (per connection state)"
+  }
+
+  tcp_header: {
+    class: memory_struct
+    label: "struct tcp_hdr (tcp_hdr.h)"
+    h0: "0x00 | uint16_t   | sport"
+    h1: "0x02 | uint16_t   | dport"
+    h2: "0x04 | uint32_t   | seq"
+    h3: "0x08 | uint32_t   | ack"
+    h4: "0x0C | uint16_t   | flags // SYN, ACK, FIN, RST"
+    h5: "0x0E | uint16_t   | win"
+    h6: "0x10 | uint16_t   | csum"
+    sz: "Total: 20 bytes (min header size)"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ROW 2: PROCESSING LOGIC & STATE MACHINE
+# -----------------------------------------------------------------------------
+row_logic: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+
+  tcp_stack: {
+    class: logic_module
+    label: "TCP Processor (tcp.c)"
+    +tcp_v4_rcv(skb): "int"
+    +tcp_process_state(conn, seg): "void"
+    +tcp_send_ack(conn): "void"
+    +tcp_retransmit_handler(data): "void"
+    -tcp_check_checksum(seg): "bool"
+    -tcp_update_cwnd(conn, ack): "void"
+  }
+
+  retransmit_logic: {
+    label: "Exponential Backoff (timer.c)"
+    width: 400
+    code: |'c
+      void on_timeout(struct tcp_conn *c) {
+        c->rto *= 2; // Exponential backoff
+        if (c->rto > TCP_RTO_MAX) c->rto = TCP_RTO_MAX;
+        tcp_resend_segment(c, c->retransmit_queue.head);
+        timer_mod(&c->retransmit_timer, jiffies + c->rto);
+      }
+    '|
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ROW 3: PACKET FLOW WALKTHROUGH
+# -----------------------------------------------------------------------------
+row_flow: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+
+  ingress: {
+    class: process_step
+    label: "1. Ingress Frame"
+    note: "Raw Ethernet -> TAP Device"
+  }
+
+  parsing: {
+    class: process_step
+    label: "2. Protocol Decapsulation"
+    note: "Verify L3/L4 Checksums"
+  }
+
+  state_eval: {
+    class: process_step
+    label: "3. State Machine lookup"
+    note: "Match 4-tuple to TCB"
+  }
+
+  dispatch: {
+    class: process_step
+    label: "4. Socket Dispatch"
+    note: "Wake up waiting syscall"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# CONNECTIONS & DATA WALK
+# -----------------------------------------------------------------------------
+
+row_memory.tcp_header -> row_logic.tcp_stack: "Raw Segment | Parse"
+
+row_flow.ingress -> row_flow.parsing: "eth_frame | decapsulate"
+row_flow.parsing -> row_flow.state_eval: "ipv4_packet | route"
+row_flow.state_eval -> row_flow.dispatch: "tcp_segment | notify"
+
+row_logic.tcp_stack -> row_memory.tcp_conn: "TCB | update state"
+row_logic.tcp_stack -> row_logic.retransmit_logic: "Timer | arm/cancel"
+
+# Annotations
+legend: {
+  shape: callout
+  label: "Packet Flow Constraints:\n1. MTU must be checked at L3\n2. Seq wraparound handled via RFC1323\n3. Retransmit uses Karn's Algorithm"
+}
+legend.near: top-right
+
+row_flow.parsing -> legend: "Style: blue" {
+  style.stroke-dash: 5
+}
+
+# Summary Row for engineers
+total_path: "Segment Processing Latency < 50µs (Kernel Bypass Path)" {
+  near: bottom-center
+  style: {
+    stroke: "#cc0000"
+    fill: "#ffeeee"
+    bold: true
+  }
+}

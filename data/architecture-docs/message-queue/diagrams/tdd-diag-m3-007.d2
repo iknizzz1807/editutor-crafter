@@ -1,0 +1,231 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Data Flow: Persistent Publish Flow
+  M3 Persistence Module - Message durability with configurable fsync
+| {near: top-center}
+direction: right
+# Entry point
+entry: PUBLISH Command Received {
+  shape: oval
+  style.fill: "#E8F5E9"
+  style.stroke: "#2E7D32"
+}
+# Backpressure check
+backpressure_check: Backpressure Check {
+  style.fill: "#FFF3E0"
+  style.stroke: "#EF6C00"
+  should_throttle: ShouldThrottle()? {
+    shape: diamond
+    style.fill: "#FFE0B2"
+  }
+}
+# Throttle path
+throttle_response: Send THROTTLE Response {
+  shape: oval
+  style.fill: "#FFCDD2"
+  style.stroke: "#C62828"
+  throttle_cmd: |md
+    **THROTTLE (0x20)**
+    
+    ┌──────────┬─────────────┬──────────────┐
+    │ 1 byte   │ 2 bytes     │ 4 bytes      │
+    │ Cmd=0x20 │ DelayMs(BE) │ CurrentLag   │
+    └──────────┴─────────────┴──────────────┘
+    
+  |
+}
+# Log Writer
+log_writer: LogWriter.Append(topic, payload) {
+  style.fill: "#E3F2FD"
+  style.stroke: "#1565C0"
+  assign_offset: |md
+    **1. Assign Offset**
+    
+    offset = atomic.AddUint64(&nextOffset, 1) - 1
+    
+    Monotonically increasing, globally unique
+  |
+  create_entry: |md
+    **2. Create LogEntry**
+    
+    LogEntry{
+      Offset:    offset
+      Timestamp: time.Now().UnixNano()
+      Topic:     topic
+      Payload:   payload
+    }
+    
+  |
+}
+# Entry Encoding
+entry_encoding: Entry Encoding {
+  style.fill: "#E8EAF6"
+  style.stroke: "#3F51B5"
+  encode: |md
+    **LogEntry.Encode()**
+    
+    ┌────────────┬────────────┬─────────────┐
+    │ 8 bytes    │ 8 bytes    │ 2 bytes     │
+    │ Offset(BE) │ Timestamp  │ TopicLen(BE)│
+    └────────────┴────────────┴─────────────┘
+    ┌─────────────┬────────────┬────────────┐
+    │ Topic       │ 4 bytes    │ Payload    │
+    │ (TopicLen)  │ PayloadLen │ (Var)      │
+    └─────────────┴────────────┴────────────┘
+    ┌────────────┐
+    │ 4 bytes    │
+    │ CRC32(BE)  │
+    └────────────┘
+    
+  |
+}
+# File Write
+file_write: File Write {
+  style.fill: "#F3E5F5"
+  style.stroke: "#7B1FA2"
+  write_op: |md
+    **topicLog.file.Write(encoded)**
+    Append to per-topic log file:
+    `{data_dir}/{topic}.log`
+    Sequential write (fastest I/O)
+  |
+  update_state: |md
+    **Update State**
+    
+    currentSize += written
+    writeCount++
+    
+  |
+}
+# Fsync Decision
+fsync_decision: Fsync Decision {
+  style.fill: "#FFF8E1"
+  style.stroke: "#F9A825"
+  check_mode: DurabilityMode? {
+    shape: diamond
+    style.fill: "#FFECB3"
+  }
+  per_write: Per-Write Fsync {
+    style.fill: "#C8E6C9"
+    style.stroke: "#388E3C"
+  }
+  batched: Batched Fsync {
+    style.fill: "#B3E5FC"
+    style.stroke: "#0288D1"
+    batch_check: |md
+      **Check thresholds (OR logic)**
+      
+      writeCount >= BatchSize (1000)
+      OR
+      time.Since(lastFsync) >= BatchTimeout (100ms)
+      
+    |
+  }
+  os_managed: OS-Managed {
+    style.fill: "#FFCCBC"
+    style.stroke: "#E64A19"
+    no_fsync: |md
+      **No fsync**
+      Rely on OS page cache
+      *Risk: data loss on crash*
+    |
+  }
+}
+# Update Latest Offset
+update_latest: Update Latest Offset {
+  style.fill: "#E0F7FA"
+  style.stroke: "#00838F"
+  update: |md
+    **BackpressureManager.UpdateLatestOffset(offset)**
+    
+    atomic.StoreInt64(&latestOffset, offset)
+    
+    Used for lag calculation
+  |
+}
+# Route to Subscribers
+route_subscribers: Route to Subscribers {
+  style.fill: "#F1F8E9"
+  style.stroke: "#689F38"
+  topic_router: |md
+    **TopicRouter.Publish(topic, payload, msgID)**
+    Fan-out delivery to all subscribers
+    (see M1 fan-out flow)
+  |
+}
+# Publish ACK
+publish_ack: Send PUBLISH_ACK {
+  shape: oval
+  style.fill: "#C8E6C9"
+  style.stroke: "#2E7D32"
+  ack_format: |md
+    **PUBLISH_ACK (0x02)**
+    
+    ┌──────────┬────────────────┐
+    │ 1 byte   │ 8 bytes        │
+    │ Cmd=0x02 │ MsgID (BE)     │
+    └──────────┴────────────────┘
+    
+    Sent ONLY after successful append
+  |
+}
+# Connections
+entry -> backpressure_check.should_throttle: "1. Check backpressure"
+backpressure_check.should_throttle -> throttle_response: "YES\n(lag > threshold)" {
+  style.stroke: "#C62828"
+  style.stroke-dash: 3
+}
+backpressure_check.should_throttle -> log_writer.assign_offset: "NO\n(proceed)" {
+  style.stroke: "#2E7D32"
+}
+log_writer.assign_offset -> log_writer.create_entry: "2"
+log_writer.create_entry -> entry_encoding.encode: "3. Encode"
+entry_encoding.encode -> file_write.write_op: "4. Write bytes"
+file_write.write_op -> file_write.update_state: "5"
+file_write.update_state -> fsync_decision.check_mode: "6. Fsync?"
+fsync_decision.check_mode -> fsync_decision.per_write: "PerWrite"
+fsync_decision.check_mode -> fsync_decision.batched.batch_check: "Batched"
+fsync_decision.check_mode -> fsync_decision.os_managed.no_fsync: "OSManaged"
+fsync_decision.per_write -> update_latest.update: "fsync()"
+fsync_decision.batched.batch_check -> update_latest.update: "if threshold met:\nfsync()"
+fsync_decision.os_managed.no_fsync -> update_latest.update: "skip fsync"
+update_latest.update -> route_subscribers.topic_router: "7. Route"
+route_subscribers.topic_router -> publish_ack: "8. ACK to producer"
+# Legend
+legend: {
+  near: bottom-right
+  style.fill: "#FAFAFA"
+  style.stroke: "#BDBDBD"
+  title: Legend
+  durable: Durable Operation {
+    style.fill: "#C8E6C9"
+  }
+  conditional: Conditional Path {
+    style.fill: "#FFF3E0"
+  }
+  risk: Risk/Tradeoff {
+    style.fill: "#FFCCBC"
+  }
+  atomic: Atomic Operation {
+    shape: circle
+    style.fill: "#E0F7FA"
+  }
+}
+# Timing annotations
+timing: {
+  near: bottom-center
+  style.fill: transparent
+  style.stroke: transparent
+  content: |md
+    **Timing Targets:**
+    - Encode: < 1μs
+    - Write (OS-managed): 500K+ msg/s
+    - Write (batched fsync): 50K+ msg/s  
+    - Write (per-write fsync): 500+ msg/s
+  |
+}

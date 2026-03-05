@@ -1,0 +1,329 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+  colors: {
+    header: "#4A5568"
+    send_buf: "#E8DBFE"
+    recv_buf: "#C7F1FF"
+    rto: "#B5AFF6"
+    cc: "#E4DBFE"
+    timer: "#DEE1EB"
+    ooo: "#F6C889"
+    window: "#88DCF7"
+    success: "#ACE1AF"
+    error: "#F56565"
+    padding: "#E2E8F0"
+  }
+}
+
+title_main: "TCP Reliable Delivery & Flow Control Implementation" {
+  shape: text
+  near: top-center
+  style: {
+    font-size: 32
+    bold: true
+    italic: true
+  }
+}
+
+# 1. ARCHITECTURE COMPONENTS
+components: {
+  label: "Control Plane & Buffer Architecture"
+  style.fill: "#F7FAFC"
+  style.stroke-width: 2
+
+  send_buf: "Sender Buffer (SND.BUF)" {
+    shape: rectangle
+    style.fill: "${colors.send_buf}"
+    tooltip: "Stores segments until ACKed or timed out"
+    sizeof: "64KB - 4MB"
+  }
+
+  recv_buf: "Receiver Buffer (RCV.BUF)" {
+    shape: rectangle
+    style.fill: "${colors.recv_buf}"
+    tooltip: "Stores in-order and OOO segments"
+  }
+
+  rto_engine: "RTO State (RFC 6298)" {
+    style.fill: "${colors.rto}"
+    SRTT: "SRTT (Smoothed RTT)"
+    RTTVAR: "RTTVAR (Variation)"
+    RTO_VAL: "Current RTO (ms)"
+  }
+
+  cc_logic: "Congestion Control (Tahoe/Reno)" {
+    style.fill: "${colors.cc}"
+    cwnd: "cwnd (Congestion Window)"
+    ssthresh: "Slow Start Threshold"
+  }
+
+  timer_heap: "Retransmission Timer Heap" {
+    style.fill: "${colors.timer}"
+    shape: cylinder
+  }
+
+  # Logic flows
+  send_buf -> recv_buf: "Segments (SEQ, Data)"
+  recv_buf -> send_buf: "ACKs (ACK, Win)"
+  send_buf -> rto_engine: "RTT Samples"
+  rto_engine -> cc_logic: "RTO Update"
+  cc_logic -> send_buf: "Window Limit"
+  
+  zero_window: "Zero Window Probe State" {
+    shape: diamond
+    style.fill: "#FBD38D"
+  }
+  
+  cc_logic -> zero_window: "rwnd == 0"
+  zero_window -> timer_heap: "Start Persist Timer"
+}
+
+# 2. FAST RETRANSMIT SEQUENCE
+fast_retransmit_flow: {
+  shape: sequence_diagram
+  style.fill: transparent
+  
+  sender: "TCP Stack (Sender)" {
+    shape: person
+  }
+  network: "IP Network Path" {
+    style.stroke-dash: 3
+  }
+  receiver: "TCP Stack (Receiver)" {
+    shape: person
+  }
+
+  sender -> receiver: "SEQ=100 (LEN=1000)"
+  sender -> network: "SEQ=1100 (LEN=1000) - LOST" {
+    style.stroke: "${colors.error}"
+    style.stroke-width: 4
+  }
+  sender -> receiver: "SEQ=2100 (LEN=1000)"
+  receiver -> sender: "ACK=1100 (Duplicate ACK 1)"
+  sender -> receiver: "SEQ=3100 (LEN=1000)"
+  receiver -> sender: "ACK=1100 (Duplicate ACK 2)"
+  sender -> receiver: "SEQ=4100 (LEN=1000)"
+  receiver -> sender: "ACK=1100 (Duplicate ACK 3)"
+  
+  sender.retransmit: "Fast Retransmit Logic (3 Dup ACKs)" {
+    style.fill: "${colors.error}"
+    style.bold: true
+  }
+  
+  sender -> receiver: "SEQ=1100 (Retransmit)" {
+    style.stroke: "${colors.success}"
+    style.stroke-width: 4
+    style.animated: true
+  }
+}
+
+# 3. CONGESTION WINDOW GROWTH
+congestion_growth: {
+  near: top-right
+  label: "Congestion Control State Transitions"
+  
+  grid-rows: 2
+  grid-columns: 2
+  style.fill: white
+  
+  slow_start: {
+    label: |md
+      ### Phase 1: Slow Start
+      *cwnd < ssthresh*
+      Exponential growth: `cwnd += 1` per ACK
+    |
+    style.stroke: "${colors.window}"
+    style.stroke-width: 3
+  }
+  
+  avoidance: {
+    label: |md
+      ### Phase 2: Avoidance
+      *cwnd >= ssthresh*
+      Linear growth: `cwnd += 1/cwnd` per ACK
+    |
+    style.stroke: "${colors.cc}"
+    style.stroke-width: 3
+  }
+}
+
+# 4. SLIDING WINDOW MEMORY LAYOUT
+sliding_window: {
+  direction: right
+  label: "Memory Layout: Sender Sliding Window Buffer"
+  
+  # Byte Offsets
+  offsets: {
+    shape: text
+    label: |md
+      0x00
+      0x04
+      0x08
+      0x0C
+      0x10
+      0x14
+      0x18
+      0x1C
+      0x20
+      0x24
+    |
+  }
+
+  buffer_strip: {
+    grid-columns: 10
+    grid-gap: 0
+    
+    s0: "ACKed"
+    s1: "ACKed"
+    s2: "Sent\nUnACKed"
+    s3: "Sent\nUnACKed"
+    s4: "Usable\nNot Sent"
+    s5: "Usable\nNot Sent"
+    s6: "Outside\nWindow"
+    s7: "Outside\nWindow"
+    s8: "Padding"
+    s9: "Padding"
+    
+    s0.style.fill: "${colors.padding}"
+    s1.style.fill: "${colors.padding}"
+    s2.style.fill: "${colors.window}"
+    s3.style.fill: "${colors.window}"
+    s4.style.fill: "${colors.send_buf}"
+    s5.style.fill: "${colors.send_buf}"
+    s6.style.fill: "white"
+    s7.style.fill: "white"
+    s8.style.fill: "#EDF2F7"
+    s9.style.fill: "#EDF2F7"
+    
+    *.style.font-size: 10
+  }
+
+  mem_0: "SND.UNA" {
+    shape: circle
+    style.fill: "${colors.rto}"
+    tooltip: "Send Unacknowledged"
+  }
+  
+  mem_1: "SND.NXT" {
+    shape: circle
+    style.fill: "${colors.window}"
+    tooltip: "Send Next"
+  }
+  
+  mem_2: "Tail" {
+    shape: circle
+    style.fill: "${colors.timer}"
+  }
+
+  mem_0 -> buffer_strip.s2: "Start of Window"
+  mem_1 -> buffer_strip.s4: "Boundary"
+  mem_2 -> buffer_strip.s6: "Write Offset"
+  
+  formula: "Effective Window = min(cwnd, rwnd) - (SND.NXT - SND.UNA)" {
+    shape: text
+    style.bold: true
+    style.font-color: "#2D3748"
+  }
+}
+
+# 5. RTO ALGORITHM (JACOBSON/KARELS)
+rto_algo: {
+  label: "Jacobson/Karels Algorithm (RFC 6298)"
+  direction: right
+  style.fill: "#EDF2F7"
+  
+  step1: "1. Update RTTVAR" {
+    label: "RTTVAR = (1-β) * RTTVAR + β * |SRTT - R'|"
+  }
+  step2: "2. Update SRTT" {
+    label: "SRTT = (1-α) * SRTT + α * R'"
+  }
+  step3: "3. Calculate RTO" {
+    label: "RTO = SRTT + max(G, K*RTTVAR)"
+  }
+  
+  step1 -> step2 -> step3
+  
+  karns_rule: "Karn's Rule: Retransmissions MUST NOT be used for RTT sampling" {
+    shape: text
+    style.font-color: "${colors.error}"
+    style.bold: true
+  }
+}
+
+# 6. NAGLE ALGORITHM LOGIC
+nagle_logic: {
+  label: "Nagle's Algorithm Decision Tree"
+  
+  start: "Packet Arrival"
+  
+  cond: "Can Segment be sent?" { 
+    shape: diamond 
+    style.fill: "#FFF5F5"
+  }
+  
+  c1: "Is Segment Size == MSS?"
+  c2: "Is all out-standing data ACKed?"
+  c3: "Is TCP_NODELAY (Nagle Disabled) enabled?"
+  
+  action_send: "SEND_NOW" { 
+    style.fill: "${colors.success}"
+    style.bold: true
+  }
+  action_wait: "QUEUE_IN_BUFFER" { 
+    style.fill: "${colors.timer}"
+    style.bold: true
+  }
+  
+  start -> c1
+  c1 -> cond: "Yes"
+  c1 -> c2: "No"
+  c2 -> cond: "Yes"
+  c2 -> c3: "No"
+  c3 -> cond: "Yes"
+  c3 -> action_wait: "No"
+  
+  cond -> action_send: "TRUE"
+}
+
+# 7. INTEGRITY VERIFICATION
+e2e_transfer: {
+  label: "End-to-End Data Integrity Check"
+  direction: right
+  
+  sender_app: "Sender\nApplication" {
+    shape: person
+  }
+  
+  sha_src: "SHA-256 (Source)" { 
+    shape: hexagon 
+    style.fill: "${colors.cc}"
+  }
+  
+  net: "Unreliable Network\n(Dropped/Reordered)" {
+    shape: cloud
+    style.stroke-dash: 5
+    style.fill: "#F7FAFC"
+  }
+  
+  sha_dst: "SHA-256 (Sink)" { 
+    shape: hexagon 
+    style.fill: "${colors.cc}"
+  }
+  
+  verifier: "Verified Byte Stream" {
+    shape: oval
+    style.fill: "${colors.success}"
+    style.double-border: true
+  }
+  
+  sender_app -> sha_src
+  sha_src -> net: "Raw TCP Stream"
+  net -> sha_dst: "Reassembled Stream"
+  sha_dst -> verifier: "Hash Match (OK)"
+}

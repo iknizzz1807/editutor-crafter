@@ -1,0 +1,288 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#8B5CF6"
+    data: "#3B82F6"
+    free: "#10B981"
+    padding: "#6B7280"
+    pointer: "#F59E0B"
+    text: "#1F2937"
+    accent: "#EC4899"
+    kernel_bg: "#F5F3FF"
+    user_bg: "#EFF6FF"
+  }
+}
+
+title: |md
+  # eBPF Observability Platform
+  ### Multi-Source Dashboard Architecture & Probe Lifecycle
+| {
+  near: top-center
+  style.font-size: 24
+}
+
+direction: right
+
+# --- SYSTEM OVERVIEW (ARCHITECTURE) ---
+System: {
+  style.fill: white
+  style.stroke: "${colors.header}"
+  style.stroke-width: 3
+
+  Kernel: {
+    label: "KERNEL SPACE"
+    style.fill: "${colors.kernel_bg}"
+    style.stroke-width: 2
+    style.stroke-dash: 5
+    
+    BPF_VM: BPF Virtual Machine (In-Kernel) {
+      style.fill: "#DDD6FE"
+      
+      Syscall_Probes: Syscall Probes {
+        style.fill: "${colors.data}"
+        style.font-color: white
+        read_entry: kprobe/read_entry { tooltip: "Entry offset: 0x00" }
+        read_exit: kretprobe/read_exit { tooltip: "Exit offset: 0x08" }
+        write_entry: kprobe/write_entry
+        write_exit: kretprobe/write_exit
+      }
+      
+      TCP_Tracepoint: TCP Tracepoint {
+        style.fill: "${colors.data}"
+        style.font-color: white
+        inet_sock: "tracepoint/inet_sock_set_state"
+      }
+      
+      Sched_Tracepoint: Scheduler Tracepoint {
+        style.fill: "${colors.data}"
+        style.font-color: white
+        sched_switch: tracepoint/sched_switch
+      }
+    }
+
+    Maps: BPF Maps (Shared Memory) {
+      style.fill: "#FEF3C7"
+      Percpu_Array: Per-CPU Histogram {
+        shape: cylinder
+        style.fill: "${colors.free}"
+        label: "BPF_MAP_TYPE_PERCPU_ARRAY\n(sizeof=16KB)"
+      }
+      Hash_Map: Connection Hash {
+        shape: cylinder
+        style.fill: "${colors.pointer}"
+        label: "BPF_MAP_TYPE_HASH\n(max_entries=10240)"
+      }
+      Ring_Buffer: Ring Buffer {
+        shape: cylinder
+        style.fill: "${colors.accent}"
+        label: "BPF_MAP_TYPE_RINGBUF\n(size=16MB)"
+      }
+    }
+
+    Verifier: BPF Verifier {
+      style.fill: "#FCA5A5"
+      instruction_limit: "Max 1M instructions"
+      dag_check: "Control Flow Graph Analysis"
+      Verified: ✓ Verified { style.fill: "#BBF7D0" }
+      Rejected: ✗ Rejected { style.fill: "#FECACA" }
+    }
+  }
+
+  Userspace: {
+    label: "USERSPACE (Go/C++ Controller)"
+    style.fill: "${colors.user_bg}"
+    style.stroke-width: 2
+    
+    Probe_Manager: Probe Manager {
+      style.fill: "${colors.header}"
+      style.font-color: white
+      enable: probe_enable(id int) error
+      disable: probe_disable(id int) error
+      links: "map[int]*bpf_link"
+    }
+
+    Percpu_Agg: Per-CPU Aggregator {
+      style.fill: "${colors.free}"
+      init: "aggregator_init(map_fd)"
+      sum: "aggregator_sum() []uint64"
+    }
+
+    Event_Loop: Event Loop (Async) {
+      style.fill: "${colors.accent}"
+      style.font-color: white
+      epoll: epoll_wait()
+      timer: "timerfd_create(CLOCK_MONOTONIC)"
+      ringbuf: ring_buffer__poll(timeout_ms)
+    }
+
+    Terminal_UI: Terminal UI (BubbleTea/TUI) {
+      style.fill: "#F3E8FF"
+      histograms: Histogram Display
+      connections: TCP Table
+      processes: Process Stats
+    }
+  }
+}
+
+# --- DATA FLOW CONNECTIONS ---
+System.Kernel.BPF_VM.Syscall_Probes -> System.Kernel.Maps.Percpu_Array: "atomic_inc(bucket)"
+System.Kernel.BPF_VM.TCP_Tracepoint -> System.Kernel.Maps.Hash_Map: "update_elem(conn_info)"
+System.Kernel.Maps.Hash_Map -> System.Kernel.Maps.Ring_Buffer: "ringbuf_reserve/submit"
+System.Kernel.Maps.Percpu_Array -> System.Userspace.Percpu_Agg: "bpf_map_lookup_elem (Periodic)"
+System.Kernel.Maps.Ring_Buffer -> System.Userspace.Event_Loop: "poll() / event_cb"
+System.Userspace.Percpu_Agg -> System.Userspace.Terminal_UI.histograms: "draw()"
+System.Userspace.Event_Loop -> System.Userspace.Terminal_UI.connections: "update()"
+System.Userspace.Event_Loop -> System.Userspace.Terminal_UI.processes: "refresh()"
+
+# --- PROBE LIFECYCLE (STATE MACHINE) ---
+Probe_Lifecycle: {
+  label: "### Probe State Machine"
+  label.near: top-center
+  near: top-right
+  style.fill: "#F9FAFB"
+  style.stroke: "${colors.header}"
+  style.stroke-width: 2
+
+  Unloaded -> Loaded: bpf_object__open()
+  Loaded -> Verified: bpf_object__load()
+  Verified -> Attached: bpf_program__attach()
+  Attached -> Running: "Program execution starts"
+  Running -> Detached: bpf_link__destroy()
+  Detached -> Attached: "probe_enable() [re-attach]"
+
+  Unloaded: {
+    shape: circle
+    style.fill: "${colors.padding}"
+    label: "● UNLOADED\n(On Disk)"
+  }
+  Loaded: {
+    shape: circle
+    style.fill: "${colors.data}"
+    label: "LOADED\n(ELF Parsed)"
+  }
+  Verified: {
+    shape: circle
+    style.fill: "${colors.free}"
+    label: "VERIFIED\n(Safe)"
+  }
+  Attached: {
+    shape: circle
+    style.fill: "${colors.header}"
+    style.font-color: white
+    label: "ATTACHED\n(FD Created)"
+  }
+  Running: {
+    shape: circle
+    style.fill: "${colors.accent}"
+    style.font-color: white
+    label: "RUNNING\n(Active)"
+  }
+  Detached: {
+    shape: circle
+    style.fill: "${colors.padding}"
+    label: "DETACHED\n(Zombie FD)"
+  }
+}
+
+# --- PER-CPU MEMORY LAYOUT (TECHNICAL SPEC) ---
+Memory_Layout: {
+  label: "### Per-CPU Histogram Memory Layout"
+  label.near: top-center
+  near: bottom-left
+  style.fill: "#F9FAFB"
+  style.stroke: "${colors.data}"
+  style.stroke-width: 2
+
+  # Offset Column
+  Offsets: {
+    shape: sql_table
+    style.stroke-width: 0
+    "0x00": "Entry 0"
+    "0x40": "Entry 1"
+    "0x80": "Entry 2"
+    "0xC0": "Entry 3"
+  }
+
+  Data_Block: {
+    grid-columns: 4
+    grid-gap: 5
+    CPU0: "CPU 0\n(8B)" { style.fill: "#E0E7FF" }
+    CPU1: "CPU 1\n(8B)" { style.fill: "#E0E7FF" }
+    CPU2: "CPU 2\n(8B)" { style.fill: "#E0E7FF" }
+    CPU3: "CPU 3\n(8B)" { style.fill: "#E0E7FF" }
+  }
+
+  Sum_Logic: {
+    shape: diamond
+    label: "Userspace Summation\nΣ(CPUs) / Interval"
+    style.fill: "${colors.free}"
+  }
+
+  Data_Block -> Sum_Logic
+}
+
+# --- RESOURCE MANAGEMENT (CRITICAL PATH) ---
+Resource_Lifecycle: {
+  label: "### FD Lifecycle (Resource Tracking)"
+  label.near: top-center
+  near: bottom-right
+  style.fill: "#F9FAFB"
+  style.stroke: "${colors.accent}"
+  style.stroke-width: 2
+
+  Attach: "bpf_program__attach()" {
+    style.fill: "${colors.free}"
+  }
+  Link_Created: "bpf_link created\nalloc_fd()" {
+    style.fill: "${colors.pointer}"
+  }
+  Store: "Track in LinkManager\n(ref_count++)" {
+    style.fill: "${colors.data}"
+  }
+  Destroy: "bpf_link__destroy()\nclose(fd)" {
+    style.fill: "#FCA5A5"
+  }
+  FD_Closed: "Kernel Free\nMem Recycled" {
+    style.fill: "${colors.free}"
+  }
+  Leak: "LEAK DETECTED\n(Ghost Probe)" {
+    style.fill: "#EF4444"
+    style.font-color: white
+    style.bold: true
+  }
+
+  Attach -> Link_Created -> Store
+  Store -> Destroy -> FD_Closed
+  Store -> Leak: "Context Exit\nw/o Cleanup" {
+    style.stroke: red
+    style.stroke-dash: 3
+  }
+}
+
+# --- LEGEND ---
+Legend: {
+  label: "Legend"
+  label.near: top-center
+  near: bottom-center
+  style.fill: white
+  style.stroke: "${colors.padding}"
+  
+  kernel_color: "Kernel Structure" {
+    style.fill: "${colors.header}"
+    style.font-color: white
+  }
+  userspace_color: "Userspace Module" {
+    style.fill: "${colors.data}"
+    style.font-color: white
+  }
+  percpu_color: "Per-CPU Map Storage" {
+    style.fill: "${colors.free}"
+  }
+  ringbuf_color: "Ring Buffer Pipeline" {
+    style.fill: "${colors.accent}"
+    style.font-color: white
+  }
+}

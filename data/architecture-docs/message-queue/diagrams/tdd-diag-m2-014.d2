@@ -1,0 +1,96 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# SEQUENCE: CONSUMER JOIN AND INITIAL DELIVERY
+# Implementation-grade coordination spec for partitioned message distribution
+
+shape: sequence_diagram
+
+# Participants Definition
+Consumer: {
+  shape: person
+  icon: https://icons.terrastruct.com/essentials%2F005-programmer.svg
+}
+Broker: {
+  style.fill: "#dae8fc"
+  icon: https://icons.terrastruct.com/aws%2FApplication%20Integration%2FAmazon-MQ_light-bg.svg
+}
+ConsumerGroup: Group Coordinator {
+  style.fill: "#fff2cc"
+  style.bold: true
+}
+PartitionAssignment: Assignment Strategy {
+  style.stroke-dash: 3
+}
+PendingQueue: Persistent Store {
+  shape: cylinder
+  style.fill: "#f8cecc"
+}
+
+# PHASE 1: INITIAL JOIN
+# -----------------------------------------------------------------------------
+Consumer.active -> Broker: "JOIN_REQUEST {group: 'orders-group', consumer_id: 'consumer-1'}"
+
+# PHASE 2-5: COORDINATOR REGISTRATION & REBALANCE TRIGGER
+# -----------------------------------------------------------------------------
+Broker -> ConsumerGroup.membership: "Join('consumer-1', client_ref)"
+ConsumerGroup.membership -> ConsumerGroup.membership: "UpdateMemberMap(id, metadata)"
+ConsumerGroup.membership -> ConsumerGroup.membership: "RecordHeartbeat(timestamp::now)"
+
+# Async trigger for rebalance logic
+ConsumerGroup.membership -> ConsumerGroup.rebalance: "rebalance() trigger [async]" {
+  style.stroke-dash: 5
+}
+ConsumerGroup.rebalance -> ConsumerGroup.rebalance: "GetMembers() -> ['consumer-1', 'consumer-2']"
+
+# PHASE 6-8: PARTITION ASSIGNMENT CALCULATIONS
+# -----------------------------------------------------------------------------
+ConsumerGroup.rebalance -> PartitionAssignment: "CalculateAssignments(members, total_partitions: 16)"
+PartitionAssignment -> PartitionAssignment: "Assign [0-7] -> consumer-1"
+PartitionAssignment -> PartitionAssignment: "Assign [8-15] -> consumer-2"
+PartitionAssignment -> ConsumerGroup.rebalance: "Result: {changed: true, delta: 16}"
+
+# PHASE 9-10: ASSIGNMENT FINALIZATION
+# -----------------------------------------------------------------------------
+ConsumerGroup.rebalance -> ConsumerGroup.delivery: "CommitAssignments(epoch_id: 102)"
+ConsumerGroup.delivery -> PartitionAssignment: "GetPartitions('consumer-1') -> [0,1,2,3,4,5,6,7]"
+ConsumerGroup.delivery -> ConsumerGroup.delivery: "Verify: InFlightCount(0) < PrefetchLimit(10)"
+
+# PHASE 11-13: MESSAGE PRE-FETCH & LOCKING
+# -----------------------------------------------------------------------------
+ConsumerGroup.delivery -> PendingQueue: "PopBatch(partitions: [0...7], limit: 3)"
+PendingQueue -> ConsumerGroup.delivery: "batch: [msg1@p2, msg2@p5, msg3@p0]"
+
+group Message Locking {
+  ConsumerGroup.delivery -> ConsumerGroup.delivery: "Generate InFlightRecord {msg_id, ack_id}"
+  ConsumerGroup.delivery -> ConsumerGroup.delivery: "Calculate VisibilityTimeout (now + 30s)"
+  ConsumerGroup.delivery -> ConsumerGroup.delivery: "AtomicIncrement: InFlightCount"
+}
+
+# PHASE 14-15: ACKNOWLEDGEMENT AND ASYNC DELIVERY
+# -----------------------------------------------------------------------------
+ConsumerGroup.delivery -> Broker: "NotifyAssignments(epoch: 102)"
+Broker -> Consumer.active: "JOIN_ACK {assigned_partitions: [0,1,2,3,4,5,6,7]}"
+
+# Message streaming to the Broker for final delivery to TCP client
+ConsumerGroup.delivery -> Broker: "MESSAGE_WRAPPER {topic: 'orders', payload: msg1, msgID: 101}"
+Broker -> Consumer: "TCP_PUSH: msg1"
+ConsumerGroup.delivery -> Broker: "MESSAGE_WRAPPER {topic: 'orders', payload: msg2, msgID: 102}"
+Broker -> Consumer: "TCP_PUSH: msg2"
+ConsumerGroup.delivery -> Broker: "MESSAGE_WRAPPER {topic: 'orders', payload: msg3, msgID: 103}"
+Broker -> Consumer: "TCP_PUSH: msg3"
+
+# CONTINUITY CHECK
+# -----------------------------------------------------------------------------
+ConsumerGroup.delivery -> ConsumerGroup.delivery: "StateCheck: InFlightCount=3 < 10 (Continue)"
+
+# ANNOTATIONS
+# -----------------------------------------------------------------------------
+Consumer."State: Joined | In-Flight: 3/10 | Partitions: [0-7]" {
+  style.fill: "#d5e8d4"
+  style.font-size: 14
+}

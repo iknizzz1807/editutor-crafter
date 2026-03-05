@@ -1,0 +1,207 @@
+direction: down
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  shape: rectangle
+  label: |'md
+    # TCP/IP Stack: Data Transfer Lifecycle
+    **Complete path from application write() to reliable byte delivery**
+  '|
+  style: {
+    stroke-width: 0
+    fill: transparent
+  }
+}
+
+intro_context: {
+  label: "TAP Device & Userspace Context"
+  description: |'md
+    ## Userspace Program (TCP/IP implementation)
+    - **TAP File Descriptor**: The bridge between userspace and the kernel tunnel.
+    - **Connection Lookup**: 4-tuple matching (src_ip, src_port, dst_ip, dst_port).
+    - **Packet Processing**: Decapsulation from Ethernet -> IP -> TCP.
+  '|
+  
+  stack_logic: {
+    shape: code
+    label: "Process Loop (main.c)"
+    code: |'c
+      int tap_fd = open("/dev/net/tun", O_RDWR);
+      while (poll(&pfd, 1, -1)) {
+        nread = read(tap_fd, buf, sizeof(buf));
+        eth = (struct eth_hdr *)buf;
+        if (ntohs(eth->proto) == ETH_P_IP) {
+          tcp_input(buf + sizeof(struct eth_hdr), nread);
+        }
+      }
+    '|
+  }
+}
+
+row1: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  application_layer: {
+    label: "Application Layer"
+    app_buf: {
+      shape: queue
+      label: "User Data Buffer\n(100KB)"
+    }
+    write_syscall: {
+      label: "syscall: write()"
+    }
+    read_syscall: {
+      label: "syscall: read()"
+    }
+    app_buf -> write_syscall: "data copy"
+  }
+
+  transport_layer: {
+    label: "TCP Transport Layer"
+    send_buf: {
+      shape: queue
+      label: "TCP Send Buffer"
+    }
+    tcp_output: {
+      label: "tcp_output_segment()"
+      code: |'c
+        if (snd_nxt < snd_una + swnd) {
+          seg = tcp_build(snd_nxt, mss);
+          ip_output(seg);
+          snd_nxt += seg.len;
+        }
+      '|
+    }
+    ooo_queue: {
+      shape: queue
+      label: "Out-of-Order Queue"
+    }
+    recv_buf: {
+      shape: queue
+      label: "TCP Receive Buffer"
+    }
+    
+    send_buf -> tcp_output: "mtu-sized chunks"
+    ooo_queue -> recv_buf: "sequence gap fill"
+  }
+}
+
+row2: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  network_layer: {
+    label: "IP/Network Layer"
+    route_lookup: {
+      shape: diamond
+      label: "Route Lookup"
+    }
+    ip_frag: {
+      shape: queue
+      label: "Fragmentation Engine"
+    }
+    checksum: {
+      label: "IP Checksum (RFC 791)"
+    }
+    
+    checksum -> route_lookup: "valid header"
+    route_lookup -> ip_frag: "exceeds MTU"
+  }
+
+  link_layer: {
+    label: "Ethernet / Link Layer"
+    arp_table: {
+      shape: sql_table
+      label: "ARP Cache"
+      r1: "IP Address | MAC Address"
+      r2: "192.168.1.1 | 00:0a:95:9d:68:16"
+    }
+    mac_resolve: {
+      label: "MAC Resolution"
+    }
+    tap_device: {
+      shape: parallelogram
+      label: "TAP Device (/dev/tap0)"
+    }
+    
+    mac_resolve -> arp_table: "lookup"
+    arp_table -> tap_device: "encapsulated frame"
+  }
+}
+
+# Cross-layer Data Structures (Implementation Ready)
+row3: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  tcp_conn_struct: {
+    shape: sql_table
+    label: "struct tcp_conn (tcp.h)"
+    f0: "0x00 | uint16_t | local_port"
+    f1: "0x02 | uint16_t | remote_port"
+    f2: "0x04 | uint32_t | snd_una // Oldest unacknowledged"
+    f3: "0x08 | uint32_t | snd_nxt // Next sequence to send"
+    f4: "0x0C | uint32_t | snd_wnd // Peer receive window"
+    f5: "0x10 | uint32_t | rcv_nxt // Expected next seq"
+    f6: "0x14 | uint32_t | rcv_wnd // Local receive window"
+    f7: "0x18 | uint32_t | cwnd    // Congestion window"
+    sz: "Total: 28 bytes"
+  }
+
+  rto_state: {
+    shape: sql_table
+    label: "struct tcp_rto (tcp.h)"
+    f0: "0x00 | int32_t  | srtt   // Smoothed RTT"
+    f1: "0x04 | int32_t  | rttvar // RTT Variation"
+    f2: "0x08 | int32_t  | rto    // Retransmission Timeout"
+    sz: "Total: 12 bytes"
+  }
+}
+
+# Core Flow Connections
+application_layer.write_syscall -> transport_layer.send_buf: "copy_from_user"
+transport_layer.tcp_output -> network_layer.checksum: "struct sk_buff"
+network_layer.route_lookup -> link_layer.mac_resolve: "dst_ip"
+link_layer.tap_device -> transport_layer.ooo_queue: "TCP Segment | RX"
+transport_layer.recv_buf -> application_layer.read_syscall: "copy_to_user"
+
+# Legend and Notes
+legend: {
+  near: bottom-center
+  label: "Protocol Logic Annotations"
+  
+  flow_control: {
+    label: "Flow Control (Blue)"
+    description: "Receiver advertises rcv_wnd to prevent sender overflow."
+    style.stroke: blue
+    style.fill: "#E1F5FE"
+  }
+  
+  congestion_control: {
+    label: "Congestion Control (Purple)"
+    description: "Sender adjusts cwnd based on packet loss/ACKs."
+    style.stroke: purple
+    style.fill: "#F3E5F5"
+  }
+  
+  reliability: {
+    label: "Reliability (Orange)"
+    description: "Retransmission timers and OOO sequencing."
+    style.stroke: orange
+    style.fill: "#FFF3E0"
+  }
+}
+
+(application_layer.write_syscall -> transport_layer.send_buf).style.stroke: blue
+(transport_layer.tcp_output -> network_layer.checksum).style.stroke: purple
+(link_layer.tap_device -> transport_layer.ooo_queue).style.stroke: orange

@@ -1,0 +1,182 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# Main container for the sequence to allow root-level annotations
+DLQ_Selective_Replay: {
+  shape: sequence_diagram
+  style: {
+    stroke: "#2b2b2b"
+    stroke-width: 4
+    fill: "#ffffff"
+  }
+
+  # Participants Definition
+  Client: {
+    shape: person
+    icon: https://icons.terrastruct.com/essentials/005-programmer.svg
+    style.stroke: "#007bff"
+  }
+  API: {
+    label: "Order Management API\nv1.4.2"
+    shape: rectangle
+    icon: https://icons.terrastruct.com/aws/Compute/Amazon-API-Gateway_light-bg.svg
+    style.fill: "#e3f2fd"
+  }
+  DLQLog: {
+    label: "orders.dlq.log\n(Persistent Store)"
+    shape: cylinder
+    style.fill: "#f5f5f5"
+  }
+  OrdersTopic: {
+    label: "orders.topic\n(SNS/PubSub)"
+    icon: https://icons.terrastruct.com/aws/Application%20Integration/Amazon-Simple-Notification-Service_light-bg.svg
+    style.fill: "#fff3e0"
+  }
+
+  # Phase 1: DLQ Inspection
+  Phase1: "Phase 1: DLQ Inspection" {
+    style: {
+      stroke: "#6a0dad"
+      fill: "#f3e5f5"
+      stroke-width: 2
+      stroke-dash: 5
+    }
+    Client -> API: "GET /dlq/orders.dlq/messages\noffset=0, limit=50" {
+      style.bold: true
+      style.font-color: "#6a0dad"
+    }
+    API -> DLQLog: "read_entries(offset=0, limit=50)"
+    DLQLog -> API: "entries[0..49] + checksums"
+    API -> API: "parse failure metadata\nbase64 decode payloads"
+    API -> Client: "DLQMessagesResponse{\n  messages: [...],\n  total: 150,\n  offset: 0\n}"
+  }
+
+  # Phase 2: Paginated Navigation
+  "Pagination Loop": {
+    style.stroke: "#9e9e9e"
+    Client -> API: "GET /dlq/orders.dlq/messages\noffset=50, limit=50"
+    API -> DLQLog: "read_entries(50, 50)"
+    DLQLog -> API: "entries[50..99]"
+    API -> Client: "DLQMessagesResponse{ offset: 50 }"
+  }
+
+  # Phase 3: Selective Replay
+  Phase3: "Phase 3: Selective Replay" {
+    style: {
+      stroke: "#d32f2f"
+      fill: "#ffebee"
+      stroke-width: 2
+    }
+    Client -> API: "POST /dlq/orders.dlq/replay\n{\n  \"dlq_offsets\": [12, 27, 45]\n}" {
+      style: {
+        stroke: "#d32f2f"
+        stroke-width: 2
+        bold: true
+      }
+    }
+    
+    # Message 1 Replay Logic
+    API -> DLQLog: "read_entry(offset=12)"
+    DLQLog -> API: "DLQEntry{original_offset: 1001}"
+    API -> API: "inject replay headers\nx-replay-count: 1"
+    API -> OrdersTopic: "PUBLISH (offset: 12)" {
+      style.animated: true
+      style.stroke: "#d32f2f"
+    }
+    OrdersTopic -> API: "ACK: new_offset: 5432"
+
+    # Message 2 Replay Logic
+    API -> DLQLog: "read_entry(offset=27)"
+    DLQLog -> API: "DLQEntry{original_offset: 1002}"
+    API -> OrdersTopic: "PUBLISH (offset: 27)" {
+      style.animated: true
+      style.stroke: "#d32f2f"
+    }
+    OrdersTopic -> API: "ACK: new_offset: 5433"
+
+    # Message 3 Replay Logic
+    API -> DLQLog: "read_entry(offset=45)"
+    DLQLog -> API: "DLQEntry{original_offset: 1003}"
+    API -> OrdersTopic: "PUBLISH (offset: 45)" {
+      style.animated: true
+      style.stroke: "#d32f2f"
+    }
+    OrdersTopic -> API: "ACK: new_offset: 5434"
+
+    API -> Client: "ReplayResponse{\n  replay_count: 3,\n  new_offsets: [5432, 5433, 5434]\n}"
+  }
+}
+
+# Annotations (Now root-level shapes, fixing the 'near' error)
+Annotation_Client: |md
+  ### Client Actions:
+  - **QUERY:** List DLQ contents with pagination.
+  - **AUDIT:** Review failure reasons and retry counts.
+  - **SELECT:** Pick specific indices for recovery.
+  - **EXECUTE:** Trigger replay for selected batch.
+| {
+  near: top-left
+  style: {
+    fill: "#fff9c4"
+    stroke: "#fbc02d"
+    border-radius: 8
+    font-size: 12
+  }
+}
+
+Annotation_API: |md
+  ### API Internal Logic:
+  - **Auth:** Validate user replay permissions.
+  - **Parse:** Handle Base64 encoded byte arrays.
+  - **Decorate:** Add `x-replayed: true` headers.
+  - **Atomic:** Publish to target topic via SNS.
+  - **Report:** Aggregate success/failure of batch.
+| {
+  near: top-right
+  style: {
+    fill: "#fff9c4"
+    stroke: "#fbc02d"
+    border-radius: 8
+    font-size: 12
+  }
+}
+
+Annotation_Topic_Insight: |md
+  ### Engineering Note:
+  Replayed messages are treated as **NEW** 
+  events by the message broker.
+  - Offset 12 -> 5432
+  - Offset 27 -> 5433
+  - Offset 45 -> 5434
+  Consumer must be **IDEMPOTENT**.
+| {
+  near: bottom-right
+  style: {
+    fill: "#fff9c4"
+    stroke: "#fbc02d"
+    border-radius: 8
+    font-size: 12
+  }
+}
+
+Annotation_Storage: |md
+  ### DLQ Persistence:
+  Log files are structured as 
+  append-only immutable files.
+  Entries contain:
+  - Original Payload
+  - Exception Stacktrace
+  - Dead Letter Timestamp
+| {
+  near: bottom-left
+  style: {
+    fill: "#fff9c4"
+    stroke: "#fbc02d"
+    border-radius: 8
+    font-size: 12
+  }
+}

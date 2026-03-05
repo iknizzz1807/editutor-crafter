@@ -1,0 +1,242 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    sketch: false
+    pad: 30
+  }
+}
+
+# --- HEADER SECTION ---
+Title_Block: {
+  shape: text
+  label: |md
+    # RTT Measurement and RTO Calculation
+    ## Jacobson's Algorithm & Karn's Algorithm (RFC 6298 Implementation)
+  |
+  style: {
+    font-size: 24
+    bold: true
+    stroke-width: 0
+  }
+}
+
+# --- MODULE 1: TCP CONTROL BLOCK MEMORY LAYOUT ---
+# Intel Manual Style: Byte offsets left, field sizes right
+TCB_Memory: {
+  label: "TCP Control Block (TCB) - Timer Segment (sizeof=16B)"
+  shape: sql_table
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#7B1FA2"
+    stroke-width: 2
+  }
+  
+  "0x00": "SRTT (Smoothed RTT)" {
+    type: "uint32_t"
+    constraint: "4 Bytes"
+    style.fill: "#BBDEFB"
+  }
+  "0x04": "RTTVAR (RTT Variance)" {
+    type: "uint32_t"
+    constraint: "4 Bytes"
+    style.fill: "#BBDEFB"
+  }
+  "0x08": "RTO (Retransmit Timeout)" {
+    type: "uint32_t"
+    constraint: "4 Bytes"
+    style.fill: "#E1F5FE"
+  }
+  "0x0C": "G (Clock Granularity)" {
+    type: "uint16_t"
+    constraint: "2 Bytes"
+    style.fill: "#C8E6C9"
+  }
+  "0x0E": "Padding / Reserved" {
+    type: "uint16_t"
+    constraint: "2 Bytes"
+    style.fill: "#EEEEEE"
+  }
+}
+Cache_Line_Boundary: "64B Cache Line Align" {
+  shape: text
+  style.stroke-dash: 5
+}
+TCB_Memory -- Cache_Line_Boundary
+
+# --- MODULE 2: NETWORK MEASUREMENT SEQUENCE ---
+Timeline: {
+  label: "1. Sample Collection (R)"
+  direction: right
+  
+  Send_Point: {
+    shape: circle
+    label: "t₀"
+  }
+  
+  Packet: "Data Segment (Seq=N)" {
+    shape: rectangle
+    style.fill: "#E3F2FD"
+  }
+  
+  Network: {
+    shape: cloud
+    label: "Network Path"
+  }
+  
+  ACK: "ACK (Ack=N+1)" {
+    shape: rectangle
+    style.fill: "#E8F5E9"
+  }
+  
+  Recv_Point: {
+    shape: circle
+    label: "t₁"
+  }
+
+  Send_Point -> Packet -> Network -> ACK -> Recv_Point
+  
+  Calculation: "R Sample = t₁ - t₀" {
+    shape: callout
+    style.fill: "#FFF9C4"
+    style.bold: true
+  }
+  Recv_Point -> Calculation
+}
+
+# --- MODULE 3: JACOBSON'S ALGORITHM STATE MACHINE ---
+Jacobson_Engine: {
+  label: "2. Algorithm Core Logic"
+  
+  Initial_State: {
+    label: |md
+      ### Initial R Step
+      - **SRTT** = R
+      - **RTTVAR** = R / 2
+      - **RTO** = SRTT + max(G, K * RTTVAR)
+    |
+    style.fill: "#E1F5FE"
+  }
+
+  Update_Logic: {
+    label: |md
+      ### Subsequent Updates
+      1. **RTTVAR** = (1 - β) * RTTVAR + β * |SRTT - R|
+      2. **SRTT** = (1 - α) * SRTT + α * R
+      3. **RTO** = SRTT + K * RTTVAR
+    |
+    style.fill: "#E8F5E9"
+  }
+
+  Constants: {
+    label: |md
+      **RFC 6298 Parameters**
+      - α = 1/8 (0.125)
+      - β = 1/4 (0.25)
+      - K = 4
+    |
+    style.fill: "#FFF3E0"
+  }
+
+  Initial_State -> Update_Logic: "N > 1 Samples"
+}
+
+# --- MODULE 4: KARN'S ALGORITHM DECISION TREE ---
+Karns_Filter: {
+  label: "3. Karn's Ambiguity Resolution"
+  
+  Decision: {
+    shape: diamond
+    label: "Is this ACK for a\nretransmitted segment?"
+    style.fill: "#FFF9C4"
+  }
+
+  Backoff: {
+    label: "**RTO = RTO * 2**\n(Exponential Backoff)"
+    style: {
+      fill: "#FFCDD2"
+      stroke: "#D32F2F"
+      bold: true
+    }
+  }
+
+  Discard: {
+    label: "Ignore Sample R\n(Ambiguous Timing)"
+    style.stroke-dash: 3
+  }
+
+  Process: {
+    label: "Pass R to Jacobson"
+    style.fill: "#C8E6C9"
+  }
+
+  Decision -> Backoff: "Yes"
+  Backoff -> Discard
+  Decision -> Process: "No"
+}
+
+# --- MODULE 5: ARITHMETIC OPTIMIZATION ---
+Arithmetic: {
+  label: "4. Kernel Optimization"
+  
+  C_Code: |c
+    /* Integer arithmetic avoids FPU latency */
+    delta = R - tp->srtt;
+    tp->srtt += delta >> 3;  /* SRTT += delta * 1/8 */
+    
+    if (delta < 0) delta = -delta;
+    delta -= tp->rttvar;
+    tp->rttvar += delta >> 2; /* RTTVAR += delta * 1/4 */
+  |
+  style: {
+    font: mono
+    fill: "#ECEFF1"
+  }
+}
+
+# --- MODULE 6: EXECUTION TRACE ---
+Trace: {
+  label: "5. Real-time Calculation Trace (ms)"
+  Table: |md
+    | Step | R Sample | SRTT (S) | RTTVAR (V) | RTO (S+4V) |
+    | :--- | :--- | :--- | :--- | :--- |
+    | 0    | -    | 0.0  | 0.0  | 1000 (Init)|
+    | 1    | 100  | 100.0| 50.0 | 300        |
+    | 2    | 120  | 102.5| 42.5 | 272        |
+    | 3    | 80   | 99.7 | 41.8 | 267        |
+  |
+  style.fill: "#FFFFFF"
+}
+
+# --- ANNOTATIONS & LEGEND ---
+Glossary: {
+  label: |md
+    ### Operational Bounds
+    - **RTO_MIN**: 200ms (Linux Default)
+    - **RTO_MAX**: 60s (RFC 6298)
+    - **G**: 1ms (Timer Resolution)
+  |
+  style: {
+    stroke-dash: 2
+    fill: "#F5F5F5"
+  }
+}
+
+# --- GLOBAL CONNECTIONS ---
+Timeline.Calculation -> Karns_Filter.Decision: "Sample R"
+Karns_Filter.Process -> Jacobson_Engine.Initial_State: "Valid Data"
+Jacobson_Engine.Update_Logic -> Trace: "Update Trace"
+Jacobson_Engine.Update_Logic -> TCB_Memory: "Update Memory" {
+  style.stroke: orange
+  style.animated: true
+}
+
+# --- POSITIONING ---
+Title_Block.near: top-center
+TCB_Memory.near: top-left
+Timeline.near: center-left
+Jacobson_Engine.near: center-center
+Karns_Filter.near: center-right
+Arithmetic.near: bottom-left
+Trace.near: bottom-right
+Glossary.near: bottom-center

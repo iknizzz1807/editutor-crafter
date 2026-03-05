@@ -1,0 +1,241 @@
+direction: right
+vars: {
+  d2-config: {
+    theme-id: 4
+    layout-engine: elk
+    pad: 20
+  }
+}
+
+title: |md
+  # Start Times Hash Map Keying Strategy
+  ## Memory Safety and Race Condition Analysis for eBPF Latency Tracers
+| {near: top-center}
+
+# === 1. MEMORY LAYOUT: bpf_get_current_pid_tgid() ===
+# Return value: u64 (8 bytes)
+# Upper 32 bits: TGID (Process ID)
+# Lower 32 bits: PID (Thread ID)
+pid_tgid_layout: {
+  shape: sql_table
+  label: "u64 pid_tgid (BPF Return Value Layout)"
+  style: {
+    stroke: "#9C27B0"
+    stroke-width: 3
+    fill: "#F3E5F5"
+  }
+  
+  # Row syntax: row_name: data_type { constraint: "additional_info" }
+  "Offset +4 (Upper 32)": "TGID (Userspace PID)" {
+    constraint: "Shared across threads"
+    style.fill: "#E1F5FE"
+  }
+  "Offset +0 (Lower 32)": "PID (Userspace TID)" {
+    constraint: "Unique per thread"
+    style.fill: "#E8F5E9"
+  }
+}
+
+classes: {
+  thread_box: {
+    shape: person
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2196F3"
+      stroke-width: 2
+    }
+  }
+  timestamp: {
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#FF9800"
+      font: mono
+      font-size: 11
+    }
+  }
+  hash_map: {
+    shape: cylinder
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#9C27B0"
+      stroke-width: 2
+    }
+  }
+  op_base: {
+    style: {
+      border-radius: 4
+      stroke-width: 2
+      font-size: 12
+    }
+  }
+  wrong_style: {
+    style: {
+      fill: "#FFCDD2"
+      stroke: "#E53935"
+      font-color: "#B71C1C"
+      bold: true
+    }
+  }
+  correct_style: {
+    style: {
+      fill: "#C8E6C9"
+      stroke: "#43A047"
+      font-color: "#1B5E20"
+    }
+  }
+}
+
+# === SCENARIO 1: PROBLEM WITH PROCESS ID KEYING ===
+problem_scenario: "❌ SCENARIO A: Keying by TGID (Process ID)" {
+  style.fill: "#FAFAFA"
+  style.stroke: "#BDBDBD"
+  style.stroke-width: 2
+  
+  process: "Multi-threaded Process (TGID: 1000)" {
+    style.fill: "#ECEFF1"
+    thread_a: "Thread A (TID: 1001)" { class: thread_box }
+    thread_b: "Thread B (TID: 1002)" { class: thread_box }
+  }
+
+  ops: "Execution Trace (Race Condition)" {
+    style.stroke: transparent
+    style.fill: transparent
+    
+    t1: "T+0: Thread A read() entry" {
+      class: [op_base; wrong_style]
+      label: "1. Update Map\nKey: 1000\nVal: Ts_A"
+    }
+    t2: "T+1: Thread B write() entry" {
+      class: [op_base; wrong_style]
+      label: "2. Update Map\nKey: 1000\nVal: Ts_B\n(OVERWRITE!)"
+    }
+    t3: "T+5: Thread A read() exit" {
+      class: [op_base; wrong_style]
+      label: "3. Lookup Map\nKey: 1000\nResult: Ts_B\n(CORRUPT DATA)"
+    }
+  }
+
+  map: "BPF Hash Map (TGID Keyed)" {
+    class: hash_map
+    slot: "Slot [Key: 1000]" {
+      style.fill: "#FFCDD2"
+      style.stroke: "#D32F2F"
+      style.double-border: true
+      label: "Current Value: Ts_B\n(Ts_A was lost)"
+    }
+  }
+
+  process.thread_a -> ops.t1
+  process.thread_b -> ops.t2
+  ops.t1 -> map.slot: "Write Ts_A" {style.stroke: "#E53935"}
+  ops.t2 -> map.slot: "Overwrites with Ts_B" {
+    style: {
+      stroke: "#E53935"
+      stroke-width: 4
+      animated: true
+    }
+  }
+  ops.t3 -> map.slot: "Reads WRONG timestamp" {style.stroke: "#E53935"; style.stroke-dash: 5}
+}
+
+# === SCENARIO 2: CORRECT WITH THREAD ID KEYING ===
+solution_scenario: "✅ SCENARIO B: Keying by PID (Thread ID)" {
+  style.fill: "#FAFAFA"
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+
+  process2: "Multi-threaded Process (TGID: 1000)" {
+    style.fill: "#ECEFF1"
+    thread_a2: "Thread A (TID: 1001)" { class: thread_box }
+    thread_b2: "Thread B (TID: 1002)" { class: thread_box }
+  }
+
+  ops2: "Execution Trace (Thread Isolation)" {
+    style.stroke: transparent
+    style.fill: transparent
+
+    t1b: "T+0: Thread A read() entry" {
+      class: [op_base; correct_style]
+      label: "1. Update Map\nKey: 1001\nVal: Ts_A"
+    }
+    t2b: "T+1: Thread B write() entry" {
+      class: [op_base; correct_style]
+      label: "2. Update Map\nKey: 1002\nVal: Ts_B"
+    }
+    t3b: "T+5: Thread A read() exit" {
+      class: [op_base; correct_style]
+      label: "3. Lookup Map\nKey: 1001\nResult: Ts_A\n(SUCCESS)"
+    }
+  }
+
+  map2: "BPF Hash Map (TID Keyed)" {
+    class: hash_map
+    slot_a: "Slot [Key: 1001]" {
+      style.fill: "#C8E6C9"
+      label: "Value: Ts_A"
+    }
+    slot_b: "Slot [Key: 1002]" {
+      style.fill: "#C8E6C9"
+      label: "Value: Ts_B"
+    }
+  }
+
+  process2.thread_a2 -> ops2.t1b
+  process2.thread_b2 -> ops2.t2b
+  ops2.t1b -> map2.slot_a: "Isolated Write" {style.stroke: "#43A047"}
+  ops2.t2b -> map2.slot_b: "Isolated Write" {style.stroke: "#43A047"}
+  ops2.t3b -> map2.slot_a: "Correct Read" {style.stroke: "#43A047"}
+}
+
+# === TECHNICAL IMPLEMENTATION DETAILS ===
+key_insight: |md
+  ## 🔍 Kernel-Level Implementation
+  To avoid the race condition, extract the **lower 32 bits** of the `bpf_get_current_pid_tgid()` return value.
+
+  c
+  // 1. Get the 64-bit combined ID
+  u64 pid_tgid = bpf_get_current_pid_tgid();
+  
+  // 2. Correct extraction (Userspace TID is lower 32 bits)
+  u32 tid = (u32)pid_tgid; 
+  
+  // 3. Store with Thread-Level Isolation
+  bpf_map_update_elem(&start_times, &tid, &ts, BPF_ANY);
+  
+
+  **Why TGID Fails:** In Linux, all threads in a process share the same `tgid`. Using `tgid` as a key creates a **Shared Resource Race Condition** where concurrent syscall entries from different threads overwrite each other's state.
+| {
+  near: bottom-center
+  style: {
+    fill: "#FFF8E1"
+    stroke: "#FFA000"
+    stroke-width: 2
+    border-radius: 8
+  }
+}
+
+# Structural Connections
+pid_tgid_layout."Offset +0 (Lower 32)" -> solution_scenario: "Correct Key Source (Lower 32 bits)" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+  style.animated: true
+}
+
+problem_scenario -> solution_scenario: "Fix: Shift to TID Keying" {
+  style.stroke: "#2196F3"
+  style.stroke-width: 4
+  style.animated: true
+}
+
+# Add legend for memory layout colors
+legend: {
+  near: bottom-left
+  p1: TGID / Process {
+    style.fill: "#E1F5FE"
+    style.stroke: "#0288D1"
+  }
+  p2: PID / Thread {
+    style.fill: "#E8F5E9"
+    style.stroke: "#388E3C"
+  }
+}

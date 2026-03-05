@@ -1,0 +1,288 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: "Ethernet Send/Receive Data Path" {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 32
+    bold: true
+    underline: true
+  }
+}
+row_receive: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  recv_path: "RECEIVE PATH" {
+    direction: down
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1976D2"
+      stroke-width: 2
+    }
+    recv_step1: "T1: poll() Blocks" {
+      width: 280
+      code: |'c
+        struct pollfd pfd = {
+          .fd = tap_fd,
+          .events = POLLIN
+        };
+        int ret = poll(&pfd, 1, timeout_ms);
+      '|
+    }
+    recv_step2: "T2: read() from TAP fd" {
+      width: 280
+      code: |'c
+        uint8_t frame[MTU];
+        ssize_t n = read(tap_fd, frame, MTU);
+        // n = bytes received
+        // frame[] owned by kernel → userspace
+      '|
+    }
+    recv_step3: "T3: Parse Ethernet Header" {
+      width: 280
+      code: |'c
+        struct eth_hdr *eth = (void*)frame;
+        uint16_t type = ntohs(eth->ethertype);
+        // dst_mac[6], src_mac[6]
+      '|
+    }
+    recv_step4: "T4: Dispatch by EtherType" {
+      width: 280
+      shape: diamond
+      code: |'c
+        switch (type) {
+          case 0x0806: arp_handler();
+          case 0x0800: ip_handler();
+          default: drop();
+        }
+      '|
+    }
+    recv_step5_arp: "ARP Handler" {
+      width: 130
+      style.fill: "#FFF3E0"
+      code: |'c
+        parse arp_hdr
+        update cache
+        send reply
+      '|
+    }
+    recv_step5_ip: "IP Handler" {
+      width: 130
+      style.fill: "#E8F5E9"
+      code: |'c
+        verify checksum
+        check dst_ip
+        forward/deliver
+      '|
+    }
+    recv_step1 -> recv_step2: "POLLIN\nready"
+    recv_step2 -> recv_step3: "frame[]\n14+ bytes"
+    recv_step3 -> recv_step4: "ethertype\n0x0806|0x0800"
+    recv_step4 -> recv_step5_arp: "0x0806\nARP"
+    recv_step4 -> recv_step5_ip: "0x0800\nIPv4"
+  }
+  buffer_state_recv: "BUFFER OWNERSHIP (Receive)" {
+    direction: down
+    style: {
+      fill: "#FFF8E1"
+      stroke: "#FF8F00"
+    }
+    width: 220
+    b1: "NIC DMA Buffer" {
+      style.fill: "#FFECB3"
+      code: |'c
+        // Kernel-owned
+        // ring buffer slot
+        uint8_t *dma_buf;
+      '|
+    }
+    b2: "TAP Queue Buffer" {
+      style.fill: "#FFE082"
+      code: |'c
+        // Kernel-owned
+        // queued for userspace
+        // ref: tap_read_queue
+      '|
+    }
+    b3: "Userspace Frame Buffer" {
+      style.fill: "#FFD54F"
+      code: |'c
+        // Process-owned
+        uint8_t frame[1500];
+        // After read() returns
+      '|
+    }
+    b1 -> b2: "DMA\ncopy"
+    b2 -> b3: "read()\ncopy"
+  }
+}
+row_send: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  send_path: "SEND PATH" {
+    direction: down
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+      stroke-width: 2
+    }
+    send_step1: "S1: Upper Layer Request" {
+      width: 280
+      code: |'c
+        // ARP: resolve IP->MAC
+        // IP: route lookup, check MTU
+        // TCP: segment construction
+        upper_layer_send(data, len);
+      '|
+    }
+    send_step2: "S2: Resolve Destination MAC" {
+      width: 280
+      code: |'c
+        // ARP cache lookup
+        const uint8_t *dst_mac = 
+          arp_cache_lookup(dst_ip);
+        if (!dst_mac) send_arp_request();
+      '|
+    }
+    send_step3: "S3: Assemble Ethernet Frame" {
+      width: 280
+      code: |'c
+        struct eth_hdr *eth = (void*)buf;
+        memcpy(eth->dst_mac, dst_mac, 6);
+        memcpy(eth->src_mac, our_mac, 6);
+        eth->ethertype = htons(type);
+        memcpy(buf+14, payload, len);
+      '|
+    }
+    send_step4: "S4: write() to TAP fd" {
+      width: 280
+      code: |'c
+        ssize_t n = write(tap_fd, 
+          frame, sizeof(*eth) + len);
+        // frame[] copied to kernel
+        // userspace retains ownership
+      '|
+    }
+    send_step5: "S5: Kernel TAP Transmission" {
+      width: 280
+      style.fill: "#E1BEE7"
+      code: |'c
+        // Kernel: tap_netif_tx()
+        // Frame appears on tap0
+        // Visible to other processes
+      '|
+    }
+    send_step1 -> send_step2: "dst_ip\npayload"
+    send_step2 -> send_step3: "dst_mac\npayload"
+    send_step3 -> send_step4: "frame[]\n14+len bytes"
+    send_step4 -> send_step5: "syscall\nwrite()"
+  }
+  buffer_state_send: "BUFFER OWNERSHIP (Send)" {
+    direction: down
+    style: {
+      fill: "#E8EAF6"
+      stroke: "#3F51B5"
+    }
+    width: 220
+    s1: "Upper Layer Buffer" {
+      style.fill: "#C5CAE9"
+      code: |'c
+        // Process-owned
+        uint8_t payload[1460];
+        // Application data
+      '|
+    }
+    s2: "Frame Assembly Buffer" {
+      style.fill: "#9FA8DA"
+      code: |'c
+        // Process-owned
+        uint8_t frame[1514];
+        // eth_hdr + payload
+      '|
+    }
+    s3: "Kernel TAP Buffer" {
+      style.fill: "#7986CB"
+      code: |'c
+        // Kernel-owned
+        // Copy of frame[]
+        // In tap write queue
+      '|
+    }
+    s1 -> s2: "memcpy()\nprepend hdr"
+    s2 -> s3: "write()\nkernel copy"
+  }
+}
+row_memory: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  memory_layout: "Memory Layout: Ethernet Frame" {
+    direction: down
+    shape: sql_table
+    style.fill: "#FAFAFA"
+    f0: "0x00 | uint8_t[6] | dst_mac"
+    f1: "0x06 | uint8_t[6] | src_mac"
+    f2: "0x0C | uint16_t   | ethertype (BE)"
+    f3: "0x0E | uint8_t[N] | payload"
+    note: "N = 46-1500 bytes (MTU - 14)"
+    total: "Frame: 64-1518 bytes on wire"
+  }
+  key_ops: "Key Operations" {
+    direction: down
+    style.fill: "#ECEFF1"
+    op1: "tap_open()" {
+      code: |'c
+        fd = open("/dev/net/tun");
+        ioctl(fd, TUNSETIFF, &ifr);
+        // ifr.ifr_flags = IFF_TAP
+      '|
+    }
+    op2: "tap_read()" {
+      code: |'c
+        n = read(fd, buf, MTU);
+        // Blocks if no data
+        // Returns frame length
+      '|
+    }
+    op3: "tap_write()" {
+      code: |'c
+        n = write(fd, buf, len);
+        // Non-blocking (usually)
+        // Returns bytes written
+      '|
+    }
+  }
+}
+recv_path -> send_path: "Full Duplex\non same fd" {
+  style: {
+    stroke-dash: 4
+    stroke: "#616161"
+  }
+}
+legend: "Legend" {
+  near: bottom-center
+  direction: right
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#BDBDBD"
+  }
+  l1: "Kernel Space" {
+    style.fill: "#E0E0E0"
+    shape: rectangle
+  }
+  l2: "Userspace" {
+    style.fill: "#FFFFFF"
+    shape: rectangle
+  }
+  l3: "Buffer Copy" {
+    style.stroke-dash: 3
+    shape: rectangle
+  }
+}

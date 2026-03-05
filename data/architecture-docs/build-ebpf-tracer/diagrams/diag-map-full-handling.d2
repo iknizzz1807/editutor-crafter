@@ -1,0 +1,265 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: Hash Map Full Graceful Degradation {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  entry_probe: {
+    direction: down
+    label: "Entry Kprobe"
+    syscall_arrives: {
+      label: "Syscall Entry"
+      shape: oval
+      style.fill: "#E8F5E9"
+    }
+    get_timestamp: {
+      label: "bpf_ktime_get_ns()"
+      code: |'c
+        u64 start = bpf_ktime_get_ns();
+      '|
+      width: 280
+    }
+    update_attempt: {
+      label: "bpf_map_update_elem()"
+      code: |'c
+        int ret = bpf_map_update_elem(
+          &start_times, &tid, &start, BPF_ANY
+        );
+      '|
+      width: 300
+    }
+    syscall_arrives -> get_timestamp: "capture"
+    get_timestamp -> update_attempt: "store"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  decision: {
+    label: "Map Full?"
+    shape: diamond
+    style.fill: "#FFF3E0"
+    width: 140
+  }
+  update_attempt -> decision: "ret value"
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  success_path: {
+    direction: down
+    label: "Success Path"
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    entry_stored: {
+      label: "Entry Stored"
+      shape: rectangle
+      style.fill: "#C8E6C9"
+    }
+    return_success: {
+      label: "return 0"
+      shape: rectangle
+      style.fill: "#C8E6C9"
+    }
+    entry_stored -> return_success
+  }
+  drop_path: {
+    direction: down
+    label: "Drop Path (ret = -E2BIG)"
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    drop_entry: {
+      label: "Drop This Sample"
+      shape: rectangle
+      style.fill: "#FFCDD2"
+      code: |'c
+        if (ret) {
+          // Map full, drop measurement
+          // Syscall still works!
+          return 0;
+        }
+      '|
+      width: 260
+    }
+    no_crash: {
+      label: "No Crash\nNo Panic"
+      shape: rectangle
+      style.fill: "#FFCDD2"
+    }
+    return_drop: {
+      label: "return 0"
+      shape: rectangle
+      style.fill: "#FFCDD2"
+    }
+    drop_entry -> no_crash
+    no_crash -> return_drop
+  }
+}
+decision -> success_path.entry_stored: "ret == 0" {
+  label: "No"
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+}
+decision -> drop_path.drop_entry: "ret == -E2BIG" {
+  label: "Yes"
+  style.stroke: "#F44336"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  syscall_completes: {
+    label: "Syscall Completes\n(Normal Execution)"
+    shape: rectangle
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+    width: 200
+  }
+  histogram: {
+    label: "Histogram Updated\n(Later on Exit Probe)"
+    shape: rectangle
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+    width: 200
+  }
+}
+success_path.return_success -> syscall_completes: "continue"
+drop_path.return_drop -> syscall_completes: "continue" {
+  style.stroke-dash: 4
+}
+syscall_completes -> histogram
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  why_acceptable: {
+    label: "Why Dropping Is Acceptable"
+    shape: rectangle
+    style.fill: "#F3E5F5"
+    style.stroke: "#9C27B0"
+    width: 700
+    reason1: {
+      label: |md
+        ### 1. Statistical Sampling
+        - Latency histograms need **representative samples**, not every event
+        - Dropping 1% of samples doesn't change p50/p99 significantly
+        - 100K samples/sec vs 99K samples/sec = same distribution shape
+      |
+    }
+    reason2: {
+      label: |md
+        ### 2. System Stability Priority
+        - **Production system must not crash** due to observability
+        - Better to lose data than panic the kernel
+        - Graceful degradation > hard failure
+      |
+    }
+    reason3: {
+      label: |md
+        ### 3. Configurable Trade-off
+        - Increase `max_entries` for larger working sets
+        - Monitor map fill rate in userspace
+        - Alert when drop rate exceeds threshold
+      |
+    }
+  }
+}
+syscall_completes -> why_acceptable: "observation"
+row6: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  map_structure: {
+    label: "Hash Map Structure"
+    shape: rectangle
+    style.fill: "#ECEFF1"
+    width: 350
+    map_def: {
+      label: "BPF_MAP_TYPE_HASH"
+      code: |'c
+        struct {
+          __uint(type, BPF_MAP_TYPE_HASH);
+          __uint(max_entries, 10240);
+          __type(key, u32);    // thread ID
+          __type(value, u64);  // timestamp
+        } start_times SEC(".maps");
+      '|
+      width: 320
+    }
+    capacity: {
+      label: "Capacity: 10,240 concurrent syscalls"
+      shape: rectangle
+      style.fill: "#CFD8DC"
+    }
+    overflow: {
+      label: "Overflow: New entries fail with -E2BIG"
+      shape: rectangle
+      style.fill: "#FFCDD2"
+    }
+    map_def -> capacity
+    capacity -> overflow
+  }
+  userspace_monitor: {
+    label: "Userspace Monitoring"
+    shape: rectangle
+    style.fill: "#ECEFF1"
+    width: 350
+    monitor_code: {
+      label: "Track Drop Rate"
+      code: |'c
+        // Read map count periodically
+        __u32 count = 0;
+        bpf_map_lookup_elem(count_fd, &key, &count);
+        float fill_pct = count / 10240.0 * 100;
+        if (fill_pct > 80) {
+          log_warn("Map %.1f%% full, "
+                   "samples may drop", fill_pct);
+        }
+      '|
+      width: 320
+    }
+    sizing_advice: {
+      label: "Size for peak concurrent syscalls"
+      shape: rectangle
+      style.fill: "#C8E6C9"
+    }
+    monitor_code -> sizing_advice
+  }
+}
+legend: {
+  near: bottom-right
+  label: "Legend"
+  shape: rectangle
+  style.fill: white
+  style.stroke: "#9E9E9E"
+  green: "Success path" {
+    shape: rectangle
+    style.fill: "#C8E6C9"
+  }
+  red: "Drop path (graceful)" {
+    shape: rectangle
+    style.fill: "#FFCDD2"
+  }
+  blue: "Normal execution" {
+    shape: rectangle
+    style.fill: "#BBDEFB"
+  }
+}

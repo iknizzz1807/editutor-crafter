@@ -1,0 +1,276 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    stack_used: "#E74C3C"
+    stack_free: "#2ECC71"
+    overflow: "#F39C12"
+    text: "#2C3E50"
+    border: "#BDC3C7"
+  }
+}
+title: |md
+  # eBPF Stack Constraints
+  **512-byte limit with overflow mitigation pattern**
+| {near: top-center}
+direction: right
+eBPF_Stack: {
+  label: "eBPF Program Stack\n(Total: 512 bytes)"
+  style.fill: transparent
+  style.stroke: ${colors.border}
+  style.stroke-width: 2
+  Stack_Memory: {
+    label: ""
+    style.fill: transparent
+    style.stroke: transparent
+    # Stack visualization - growing downward
+    Frame_0: {
+      label: "Return Address\n8 bytes"
+      style.fill: ${colors.stack_used}
+      style.stroke: ${colors.border}
+      width: 180
+      height: 30
+    }
+    Frame_1: {
+      label: "Saved Registers\n32 bytes"
+      style.fill: ${colors.stack_used}
+      style.stroke: ${colors.border}
+      width: 180
+      height: 40
+    }
+    Frame_2: {
+      label: "struct event e\n328 bytes"
+      style.fill: ${colors.stack_used}
+      style.stroke: ${colors.border}
+      width: 180
+      height: 100
+    }
+    Frame_3: {
+      label: "char comm[16]\n16 bytes"
+      style.fill: ${colors.stack_used}
+      style.stroke: ${colors.border}
+      width: 180
+      height: 35
+    }
+    Frame_4: {
+      label: "char filename[256]\n❌ REJECTED\nExceeds 512B"
+      style.fill: ${colors.overflow}
+      style.stroke: "#C0392B"
+      style.stroke-width: 3
+      style.stroke-dash: 4
+      width: 180
+      height: 60
+    }
+    Stack_Free: {
+      label: "Remaining\n~128 bytes free"
+      style.fill: ${colors.stack_free}
+      style.fill-pattern: lines
+      style.stroke: ${colors.border}
+      width: 180
+      height: 80
+    }
+  }
+  Stack_Layout: {
+    label: |md
+      **Stack Layout (grows down)**
+      
+      0x000: Return addr    (8B)
+      0x008: Saved regs     (32B)
+      0x028: event struct   (328B)
+      0x148: comm[16]       (16B)
+      0x158: [filename]     REJECT
+      0x200: ─────────────
+             512B LIMIT
+      
+    |
+    shape: text
+    style.font: mono
+    style.font-size: 11
+  }
+}
+Overflow_Pattern: {
+  label: "Overflow Mitigation Pattern"
+  style.fill: transparent
+  style.stroke: ${colors.border}
+  style.stroke-width: 2
+  Wrong_Code: {
+    label: |md
+      **❌ WRONG: Stack Overflow**
+      c
+      SEC("kprobe/do_sys_open")
+      int trace_open(struct pt_regs *ctx) {
+          char filename[256];  // REJECTED
+          char comm[16];
+          struct event e;      // 328B
+          // Total: 600B > 512B
+      }
+      
+    |
+    shape: text
+    style.fill: "#FADBD8"
+    style.stroke: "#E74C3C"
+    style.font: mono
+    style.font-size: 10
+  }
+  Arrow: {
+    label: "Fix"
+    shape: text
+    style.font-size: 16
+    style.bold: true
+    style.font-color: ${colors.overflow}
+  }
+  Right_Code: {
+    label: |md
+      **✓ CORRECT: Per-CPU Array**
+      c
+      struct {
+          __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+          __uint(max_entries, 1);
+          __type(key, u32);
+          __type(value, struct event);
+      } heap SEC(".maps");
+      SEC("kprobe/do_sys_open")
+      int trace_open(struct pt_regs *ctx) {
+          u32 key = 0;
+          struct event *e = 
+              bpf_map_lookup_elem(&heap, &key);
+          if (!e) return 0;
+          // Use e->filename[256] safely
+      }
+      
+    |
+    shape: text
+    style.fill: "#D5F5E3"
+    style.stroke: ${colors.stack_free}
+    style.font: mono
+    style.font-size: 10
+  }
+}
+Legend: {
+  label: |md
+    **Legend**
+    - 🔴 Used stack space
+    - 🟢 Free stack space
+    - 🟠 Overflow (rejected)
+    **Stack Constraints**
+    - Maximum: 512 bytes
+    - No dynamic allocation
+    - No alloca()
+    - All locals must fit
+    **Mitigation Strategies**
+    1. Per-CPU arrays for large structs
+    2. BPF maps for temporary storage
+    3. Reduce struct sizes
+    4. Reuse stack variables
+  |
+  shape: text
+  style.fill: "#FDFEFE"
+  style.stroke: ${colors.border}
+  style.font-size: 11
+}
+Warning_Box: {
+  label: |md
+    **⚠️ Verifier Error**
+    
+    BPF program is too large. 
+    Processed 1000000 insn
+    Stack depth 600 > 512
+    
+    Solution: Move large allocations to maps
+  |
+  shape: text
+  style.fill: "#FCF3CF"
+  style.stroke: ${colors.overflow}
+  style.stroke-width: 2
+  style.font: mono
+  style.font-size: 10
+}
+Map_Alternatives: {
+  label: "Map-Based Alternatives"
+  style.fill: transparent
+  style.stroke: ${colors.border}
+  Percpu_Array: {
+    label: |md
+      **Per-CPU Array**
+      c
+      // One copy per CPU
+      // No synchronization needed
+      BPF_MAP_TYPE_PERCPU_ARRAY
+      
+      - Fastest access
+      - No contention
+      - Each CPU has private copy
+    |
+    shape: text
+    style.fill: "#D6EAF8"
+    style.stroke: "#3498DB"
+    style.font-size: 10
+  }
+  Hash_Map: {
+    label: |md
+      **Hash Map**
+      c
+      // Keyed by thread ID
+      // Shared across CPUs
+      BPF_MAP_TYPE_HASH
+      
+      - Thread-local storage
+      - Must handle contention
+      - Good for correlation
+    |
+    shape: text
+    style.fill: "#E8DAEF"
+    style.stroke: "#9B59B6"
+    style.font-size: 10
+  }
+  Ringbuf: {
+    label: |md
+      **Ring Buffer**
+      c
+      // Reserve, fill, submit
+      // Zero-copy to userspace
+      BPF_MAP_TYPE_RINGBUF
+      
+      - For large events
+      - Efficient streaming
+      - Variable-length records
+    |
+    shape: text
+    style.fill: "#D5F5E3"
+    style.stroke: "#27AE60"
+    style.font-size: 10
+  }
+}
+Size_Comparison: {
+  label: |md
+    **Common Struct Sizes**
+    
+    struct task_struct:  ~9KB  (use BPF_CORE_READ)
+    struct sock:         ~2KB  (use pointers only)
+    struct event:        328B  (fits in stack)
+    char[16] comm:       16B   (fits in stack)
+    char[256] path:      256B  (needs map)
+    u64 timestamp:       8B    (fits in stack)
+    
+  |
+  shape: text
+  style.fill: "#FDFEFE"
+  style.stroke: ${colors.border}
+  style.font: mono
+  style.font-size: 10
+}
+# Connections
+Overflow_Pattern.Wrong_Code -> Overflow_Pattern.Arrow: "refactor" {
+  style.stroke-dash: 3
+  style.animated: true
+}
+Overflow_Pattern.Arrow -> Overflow_Pattern.Right_Code: "solution" {
+  style.stroke-dash: 3
+  style.animated: true
+}
+eBPF_Stack.Frame_4 -> Warning_Box: "triggers" {
+  style.stroke: "#E74C3C"
+  style.stroke-dash: 4
+}

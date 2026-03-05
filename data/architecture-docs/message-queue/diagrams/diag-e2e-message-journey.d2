@@ -1,0 +1,296 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# Diagram Title
+title: {
+  label: "End-to-End Message Journey: PUBLISH to ACK (Implementation Blueprint)"
+  shape: package
+  style.fill: "#F5F5F5"
+}
+
+# ==========================================
+# LAYER 1: PRODUCER & NETWORK (M1)
+# ==========================================
+layer_m1_ingress: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  producer: {
+    label: "Producer Client (M1)"
+    shape: person
+    style.fill: "#E8F5E9"
+  }
+
+  tcp_layer: {
+    label: "M1: TCP Ingress"
+    wire_format: {
+      shape: sql_table
+      label: "struct Frame (protocol.go)"
+      f1: "0x00 | uint32 | length // BigEndian"
+      f2: "0x04 | byte   | cmd    // 0x01=PUB"
+      f3: "0x05 | uint16 | tLen"
+      f4: "0x07 | []byte | topic"
+      f5: "N+0  | uint16 | pLen"
+      f6: "N+2  | []byte | payload"
+      sz: "Total: 9 + tLen + pLen bytes"
+    }
+    
+    frame_reader: {
+      label: "FrameReader (transport.go)"
+      code: |'go
+        lenBuf := make([]byte, 4)
+        io.ReadFull(conn, lenBuf)
+        size := binary.BigEndian.Uint32(lenBuf)
+        buf := make([]byte, size)
+        io.ReadFull(conn, buf)
+      '|
+      width: 320
+    }
+  }
+}
+
+# ==========================================
+# LAYER 2: COMMAND PROCESSING (M1)
+# ==========================================
+layer_m1_server: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  server_logic: {
+    label: "Broker Core (broker/server.go)"
+    shape: class
+    -listener: "net.Listener"
+    -router: "*TopicRouter"
+    -topics: "map[string]*Topic"
+    +HandleConn(c): "void"
+    +ProcessPub(c, cmd): "error"
+    +Dispatch(msg): "void"
+  }
+
+  cmd_parser: {
+    label: "Command Parser"
+    code: |'go
+      func Parse(b []byte) (*Cmd, error) {
+        c := &Cmd{Type: CmdType(b[0])}
+        if c.Type == CmdPublish {
+          return decodePub(b[1:])
+        }
+        return nil, ErrUnknown
+      }
+    '|
+    width: 320
+  }
+}
+
+# ==========================================
+# LAYER 3: PERSISTENCE (M3)
+# ==========================================
+layer_m3_persistence: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  log_store: {
+    label: "M3: Write Ahead Log (WAL)"
+    entry_format: {
+      shape: sql_table
+      label: "LogEntry (log/segment.go)"
+      e1: "0x00 | uint64 | offset"
+      e2: "0x08 | int64  | ts"
+      e3: "0x10 | uint32 | crc"
+      e4: "0x14 | uint32 | pLen"
+      e5: "0x18 | []byte | data"
+      sz: "Header: 24 bytes"
+    }
+    
+    fsync_policy: {
+      label: "Durability Strategy"
+      shape: class
+      +Strict: "fsync on every write"
+      +Buffered: "fsync every 500ms"
+      +Lazy: "OS handles flush"
+    }
+  }
+}
+
+# ==========================================
+# LAYER 4: ROUTING & DELIVERY (M2)
+# ==========================================
+layer_m2_routing: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  router: {
+    label: "M1/M2: Topic Router"
+    decision: {
+      shape: diamond
+      label: "Topic Mode?"
+    }
+  }
+
+  fanout: {
+    label: "M1: Broadcast"
+    queue: {
+      label: "Fan-Out Buffer"
+      shape: queue
+    }
+  }
+
+  consumer_group: {
+    label: "M2: Consumer Group"
+    balancer: {
+      shape: diamond
+      label: "Assign Partition?"
+    }
+    
+    in_flight: {
+      shape: sql_table
+      label: "InFlightMsg (state.go)"
+      i1: "0x00 | uint64 | id"
+      i2: "0x08 | string | owner"
+      i3: "0x10 | Time   | deadline"
+      sz: "Default Timeout: 30s"
+    }
+  }
+}
+
+# ==========================================
+# LAYER 5: CONSUMER & ACK (M2/M3)
+# ==========================================
+layer_m2_egress: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  consumer: {
+    label: "Consumer Client (M2)"
+    shape: person
+    style.fill: "#FFF3E0"
+  }
+
+  ack_handler: {
+    label: "ACK/NACK Logic"
+    ack_wire: {
+      shape: sql_table
+      label: "ACK Packet (0x11)"
+      a1: "0x00 | byte   | cmd=0x11"
+      a2: "0x01 | uint64 | msg_id"
+      sz: "Total: 9 bytes"
+    }
+  }
+
+  offset_store: {
+    label: "M3: Offset Tracking"
+    storage: {
+      shape: sql_table
+      label: "consumer_offsets.db"
+      r1: "GroupID  | Topic | Offset"
+      r2: "orders-1 | pay   | 45021"
+      sz: "Atomic Move-Rename write"
+    }
+  }
+}
+
+# ==========================================
+# LAYER 6: DLQ & OBSERVABILITY (M4)
+# ==========================================
+layer_m4_dlq: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  dlq_manager: {
+    label: "M4: Dead Letter Queue"
+    dlq_record: {
+      shape: sql_table
+      label: "DLQ Metadata"
+      d1: "original_topic | string"
+      d2: "retry_count    | int"
+      d3: "error_reason   | string"
+    }
+  }
+
+  admin_api: {
+    label: "Broker API (M4)"
+    shape: class
+    +GetDLQ(topic): "[]Message"
+    +ReplayDLQ(msgID): "error"
+    +GetMetrics(): "JSON"
+  }
+}
+
+# ==========================================
+# CONNECTIONS (THE JOURNEY)
+# ==========================================
+
+producer -> layer_m1_ingress.tcp_layer: "1. PUBLISH" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 4
+}
+
+layer_m1_ingress.tcp_layer -> layer_m1_server.cmd_parser: "2. Stream Read"
+layer_m1_server.cmd_parser -> layer_m1_server.server_logic: "3. Command Struct"
+
+layer_m1_server.server_logic -> layer_m3_persistence.log_store: "4. Sync Write (M3)" {
+  style.stroke: "#7B1FA2"
+  style.stroke-width: 3
+}
+
+layer_m1_server.server_logic -> layer_m2_routing.router: "5. Dispatch"
+
+layer_m2_routing.router -> layer_m2_routing.fanout: "Broadcast" {
+  style.stroke-dash: 3
+}
+
+layer_m2_routing.router -> layer_m2_routing.consumer_group: "Direct/Group"
+
+layer_m2_routing.consumer_group -> layer_m2_egress.consumer: "6. Deliver (M2)" {
+  style.stroke: "#E65100"
+  style.stroke-width: 4
+}
+
+layer_m2_egress.consumer -> layer_m2_egress.ack_handler: "7. ACK (Success)" {
+  style.stroke: "#2E7D32"
+}
+
+layer_m2_egress.ack_handler -> layer_m2_egress.offset_store: "8. Commit (M3)"
+
+layer_m2_egress.consumer -> layer_m4_dlq.dlq_manager: "7b. NACK (Max Retries)" {
+  style.stroke: "#C62828"
+  style.stroke-dash: 5
+}
+
+# ==========================================
+# LEGEND & NOTES
+# ==========================================
+
+legend: {
+  label: "Milestone Map"
+  near: bottom-right
+  m1: { label: "M1: Wire & Fanout"; style.fill: "#E3F2FD" }
+  m2: { label: "M2: Groups & ACK"; style.fill: "#E8F5E9" }
+  m3: { label: "M3: Persistence"; style.fill: "#F3E5F5" }
+  m4: { label: "M4: DLQ & API"; style.fill: "#FFEBEE" }
+}
+
+reliability_note: {
+  label: "Reliability Guarantee"
+  description: "ACK is only sent to producer AFTER M3 persistence flush is confirmed."
+  shape: callout
+  near: top-left
+}
+
+idempotency_note: {
+  label: "Consumer Warning"
+  description: "M2 visibility timeouts can cause duplicates. Consumers MUST be idempotent."
+  shape: callout
+  near: bottom-left
+}

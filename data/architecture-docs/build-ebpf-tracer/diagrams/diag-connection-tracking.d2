@@ -1,0 +1,199 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: TCP Connection Duration Tracking {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  timeline: {
+    direction: down
+    label: ""
+    t0: {
+      label: "T0: Connection Initiated"
+      width: 200
+    }
+    t1: {
+      label: "T1: ESTABLISHED"
+      width: 200
+      code: |'c
+        // State transition fires
+        newstate == TCP_ESTABLISHED
+      '|
+      style.fill: "#d4edda"
+    }
+    t2: {
+      label: "T2: Data Transfer"
+      width: 200
+      code: |'c
+        // Application I/O
+        read(fd, buf, len);
+        write(fd, buf, len);
+      '|
+      style.fill: "#fff3cd"
+    }
+    t3: {
+      label: "T3: CLOSE/TIME_WAIT"
+      width: 200
+      code: |'c
+        // State transition fires
+        newstate == TCP_TIME_WAIT
+          || newstate == TCP_CLOSE
+      '|
+      style.fill: "#f8d7da"
+    }
+    t0 -> t1 -> t2 -> t3: "time →"
+  }
+  actions: {
+    direction: down
+    label: "eBPF Probe Actions"
+    action1: {
+      label: ""
+      width: 320
+    }
+    action2: {
+      label: "Record Start"
+      width: 320
+      code: |'c
+        u64 skaddr = (u64)ctx->skaddr;
+        struct conn_info info = {};
+        info.established_ts = bpf_ktime_get_ns();
+        info.pid = pid;
+        // ... capture addrs/ports ...
+        bpf_map_update_elem(&connections,
+          &skaddr, &info, BPF_ANY);
+      '|
+      style.fill: "#d4edda"
+    }
+    action3: {
+      label: "(No probe activity)"
+      width: 320
+      style.fill: "#fff3cd"
+      style.stroke-dash: 3
+    }
+    action4: {
+      label: "Compute + Emit"
+      width: 320
+      code: |'c
+        struct conn_info *info =
+          bpf_map_lookup_elem(&connections,
+            &skaddr);
+        u64 duration_ns =
+          bpf_ktime_get_ns()
+          - info->established_ts;
+        // Submit to ringbuf
+        bpf_ringbuf_submit(e, 0);
+        // Cleanup
+        bpf_map_delete_elem(
+          &connections, &skaddr);
+      '|
+      style.fill: "#f8d7da"
+    }
+    action1 -> action2 -> action3 -> action4
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  hash_map: {
+    label: "connections hash map (BPF_MAP_TYPE_HASH)"
+    shape: class
+    style.fill: "#e2e3e5"
+    key: "u64 skaddr"
+    value: "struct conn_info"
+    note1: "├─ established_ts: u64"
+    note2: "├─ pid: u32"
+    note3: "├─ sport, dport: u16"
+    note4: "└─ saddr, daddr: u8[16]"
+  }
+  correlation: {
+    label: "Correlation Key"
+    width: 280
+    socket_ptr: {
+      label: "Socket Pointer (skaddr)"
+      shape: hexagon
+      style.fill: "#cce5ff"
+      style.stroke: "#004085"
+      width: 200
+    }
+    explanation: |md
+      **Why socket pointer?**
+      - Unique per connection (not reused)
+      - Same value at ESTABLISHED and CLOSE
+      - No IP/port tuple matching needed
+      - Works for both client and server side
+    |
+  }
+  event: {
+    label: "Ring Buffer Event"
+    shape: class
+    style.fill: "#d4edda"
+    e_timestamp: "timestamp: u64"
+    e_duration: "duration_ns: u64"
+    e_pid: "pid: u32"
+    e_comm: "comm: char[16]"
+    e_addrs: "saddr, daddr: u8[16]"
+    e_ports: "sport, dport: u16"
+    e_states: "oldstate, newstate: u16"
+  }
+}
+row1.timeline.t1 -> row1.actions.action2: "probe fires" {
+  style.stroke: "#28a745"
+  style.stroke-width: 2
+}
+row1.timeline.t3 -> row1.actions.action4: "probe fires" {
+  style.stroke: "#dc3545"
+  style.stroke-width: 2
+}
+row1.actions.action2 -> row2.hash_map: "skaddr → info" {
+  label: "INSERT"
+  style.stroke: "#28a745"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+}
+row2.hash_map -> row1.actions.action4: "skaddr → info" {
+  label: "LOOKUP"
+  style.stroke: "#dc3545"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+}
+row1.actions.action4 -> row2.event: "submit" {
+  label: "RINGBUF"
+  style.stroke: "#17a2b8"
+  style.stroke-width: 2
+}
+row2.correlation.socket_ptr -> row2.hash_map: "key" {
+  style.stroke: "#004085"
+  style.stroke-dash: 4
+}
+legend: {
+  near: bottom-center
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  l1: "● ESTABLISHED" {
+    style.fill: "#d4edda"
+  }
+  l2: "● Data Transfer" {
+    style.fill: "#fff3cd"
+  }
+  l3: "● CLOSE/TIME_WAIT" {
+    style.fill: "#f8d7da"
+  }
+  l4: "→ Probe Flow" {
+    style.stroke: "#666"
+  }
+}

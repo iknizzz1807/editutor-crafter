@@ -1,0 +1,190 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# Main container for the sequence to allow root-level annotations
+DLQ_Selective_Replay: {
+  shape: sequence_diagram
+  style: {
+    stroke: "#2b2b2b"
+    stroke-width: 4
+    fill: "#ffffff"
+  }
+
+  # Participants Definition
+  Client: {
+    shape: person
+    label: "DevOps Operator\n(IAM: ReplayAdmin)"
+    style.stroke: "#007bff"
+  }
+  
+  # Note for Client - Attached inside sequence diagram scope
+  Client.Annotation: |md
+    ### [0x01] Operator Actions
+    - **QUERY:** Read-only access to DLQ partition.
+    - **AUDIT:** Inspect `exception_stack` metadata.
+    - **SELECTION:** Identify specific message offsets for recovery.
+    - **EXECUTION:** POST request triggers atomic re-publication.
+  | {
+    style: {
+      fill: "#fff9c4"
+      stroke: "#fbc02d"
+      border-radius: 4
+      font-size: 11
+    }
+  }
+
+  API: {
+    label: "Order Management API\nv1.4.2 (K8s Service)"
+    shape: rectangle
+    style: {
+      fill: "#e3f2fd"
+      stroke: "#1565c0"
+      stroke-width: 2
+    }
+  }
+
+  # Note for API
+  API.Annotation: |md
+    ### [0x02] API Transformation Logic
+    - **AuthZ:** Verify caller has `REPLAY_DLQ` permission.
+    - **Decoding:** Handles Avro/Protobuf to JSON conversion for UI.
+    - **Header Injection:** Decorates messages with `x-replayed: true` to prevent recursive DLQ loops.
+    - **Batching:** Processes replay requests in sequential or parallel streams.
+  | {
+    style: {
+      fill: "#e1f5fe"
+      stroke: "#0288d1"
+      border-radius: 4
+      font-size: 11
+    }
+  }
+
+  DLQLog: {
+    label: "orders.dlq.log\n(Persistent S3 Store)"
+    shape: cylinder
+    style: {
+      fill: "#f5f5f5"
+      stroke: "#424242"
+    }
+  }
+
+  # Note for DLQLog
+  DLQLog.Annotation: |md
+    ### [0x04] DLQ Persistence Schema
+    Entries are stored as immutable records containing:
+    - `raw_payload`: Base64 encoded byte array.
+    - `failure_context`: Error code (e.g., 504 Timeout).
+    - `retry_count`: Previous attempts before DLQ.
+    - `timestamp`: Arrival in DLQ log.
+  | {
+    style: {
+      fill: "#f5f5f5"
+      stroke: "#616161"
+      border-radius: 4
+      font-size: 11
+    }
+  }
+
+  OrdersTopic: {
+    label: "orders.topic\n(SNS/PubSub Broker)"
+    shape: rectangle
+    style: {
+      fill: "#fff3e0"
+      stroke: "#e65100"
+      double-border: true
+    }
+  }
+
+  # Note for OrdersTopic
+  OrdersTopic.Annotation: |md
+    ### [0x03] Message Broker State
+    - Replayed messages receive **NEW** sequence IDs.
+    - Broker Treates these as standard ingress.
+    - **CRITICAL:** Downstream consumers MUST be **idempotent** to handle duplicate OrderIDs.
+  | {
+    style: {
+      fill: "#ffe0b2"
+      stroke: "#ef6c00"
+      border-radius: 4
+      font-size: 11
+    }
+  }
+
+  # Phase 1: DLQ Inspection
+  Phase1: "Phase 1: DLQ Inspection" {
+    style: {
+      stroke: "#6a0dad"
+      fill: "#f3e5f5"
+      stroke-width: 2
+      stroke-dash: 5
+    }
+    Client -> API: "GET /dlq/orders.dlq/messages?offset=0&limit=50" {
+      style.bold: true
+      style.font-color: "#6a0dad"
+    }
+    API -> DLQLog: "FS_READ(path='orders/dlq/', offset=0, size=50)"
+    DLQLog -> API: "RawBytes[0..49] + Metadata"
+    API -> API: "Logic: Parse JSON Payloads\nVerify Integrity Checksums"
+    API -> Client: "200 OK (DLQMessagesResponse)\n{ messages: 50, total: 150 }"
+  }
+
+  # Phase 2: Paginated Navigation
+  Pagination_Loop: "Phase 2: Pagination / Audit" {
+    style.stroke: "#9e9e9e"
+    style.stroke-dash: 3
+    Client -> API: "GET /dlq/orders.dlq/messages?offset=50&limit=50"
+    API -> DLQLog: "FS_READ(offset=50, size=50)"
+    DLQLog -> API: "RawBytes[50..99]"
+    API -> Client: "200 OK (offset: 50)"
+  }
+
+  # Phase 3: Selective Replay
+  Phase3: "Phase 3: Selective Replay & Header Injection" {
+    style: {
+      stroke: "#d32f2f"
+      fill: "#ffebee"
+      stroke-width: 2
+    }
+    Client -> API: "POST /dlq/orders.dlq/replay\n{ 'dlq_offsets': [12, 27, 45] }" {
+      style: {
+        stroke: "#d32f2f"
+        stroke-width: 2
+        bold: true
+      }
+    }
+    
+    # Message 1 Replay Logic
+    API -> DLQLog: "READ_SINGLE(offset=12)"
+    DLQLog -> API: "Payload: { orderId: 'TX-99' }"
+    API -> API: "Transform: Add Headers\nx-replay-source: DLQ\nx-replay-ts: 1715892000"
+    API -> OrdersTopic: "PUBLISH (TX-99)" {
+      style.animated: true
+      style.stroke: "#d32f2f"
+    }
+    OrdersTopic -> API: "200 ACK (BrokerID: 5432)"
+
+    # Message 2 Replay Logic
+    API -> DLQLog: "READ_SINGLE(offset=27)"
+    DLQLog -> API: "Payload: { orderId: 'TX-102' }"
+    API -> OrdersTopic: "PUBLISH (TX-102)" {
+      style.animated: true
+      style.stroke: "#d32f2f"
+    }
+    OrdersTopic -> API: "200 ACK (BrokerID: 5433)"
+
+    # Message 3 Replay Logic
+    API -> DLQLog: "READ_SINGLE(offset=45)"
+    DLQLog -> API: "Payload: { orderId: 'TX-115' }"
+    API -> OrdersTopic: "PUBLISH (TX-115)" {
+      style.animated: true
+      style.stroke: "#d32f2f"
+    }
+    OrdersTopic -> API: "200 ACK (BrokerID: 5434)"
+
+    API -> Client: "202 Accepted (ReplayResponse)\n{ replayed: 3, broker_offsets: [5432..] }"
+  }
+}

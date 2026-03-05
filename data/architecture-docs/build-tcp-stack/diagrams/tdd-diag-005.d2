@@ -1,0 +1,236 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+title: |'md
+  # Ethernet Frame Parsing State Machine
+  ### Decision tree for frame validation and extraction
+'|
+title.near: top-center
+
+# Define classes for visual consistency and Intel-manual grade specs
+classes: {
+  start_state: {
+    shape: circle
+    style: {
+      fill: "#4CAF50"
+      stroke: "#2E7D32"
+      font-color: white
+    }
+    width: 40
+  }
+  process_state: {
+    shape: rectangle
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1565C0"
+      stroke-width: 2
+    }
+  }
+  decision: {
+    shape: diamond
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#EF6C00"
+      stroke-width: 2
+    }
+  }
+  success_state: {
+    shape: rectangle
+    style: {
+      fill: "#C8E6C9"
+      stroke: "#2E7D32"
+      stroke-width: 2
+      double-border: true
+    }
+  }
+  error_state: {
+    shape: rectangle
+    style: {
+      fill: "#FFCDD2"
+      stroke: "#C62828"
+      stroke-width: 2
+    }
+  }
+  extract_state: {
+    shape: rectangle
+    style: {
+      fill: "#E1BEE7"
+      stroke: "#7B1FA2"
+      stroke-width: 2
+    }
+  }
+}
+
+# Start node
+start: "●" {
+  class: start_state
+  tooltip: "Frame Ingress"
+}
+
+# Initial length check
+check_min_len: "Check Length\n>= 14 bytes?" {
+  class: decision
+}
+
+# Error path
+error_short: "DROP: Frame Too Short" {
+  class: error_state
+  tooltip: "len < ETH_HDR_LEN (14 bytes)"
+}
+
+# Extract MACs
+extract_macs: "Extract MACs & EtherType" {
+  class: extract_state
+  dst_mac: |'md
+    **dst_mac[6]**
+    Offset: 0 | Size: 6B
+  '|
+  src_mac: |'md
+    **src_mac[6]**
+    Offset: 6 | Size: 6B
+  '|
+  ethertype_raw: |'md
+    **ethertype (raw)**
+    Offset: 12 | Size: 2B
+    Network byte order
+  '|
+}
+
+# Check EtherType for VLAN
+check_ethertype: "EtherType == 0x8100\n(802.1Q)?" {
+  class: decision
+}
+
+# VLAN tag handling
+check_vlan_len: "Length OK for VLAN?\n(>= 18 bytes)" {
+  class: decision
+}
+
+error_vlan_trunc: "DROP: VLAN Tag Truncated" {
+  class: error_state
+  tooltip: "len < 18 bytes with VLAN tag"
+}
+
+# Extract VLAN tag
+extract_vlan: "Extract VLAN Tag" {
+  class: extract_state
+  vlan_tci: |'md
+    **TCI (2 bytes)**
+    Offset: 14 | PCP(3)+DEI(1)+VID(12)
+  '|
+  inner_ethertype: |'md
+    **Inner EtherType (2 bytes)**
+    Offset: 16 | Actual protocol
+  '|
+}
+
+# Calculate payload offset
+calc_payload_no_vlan: "Calculate Payload Offset" {
+  class: process_state
+  tooltip: "header_len = 14 bytes"
+  logic: |'md
+    **payload** = buffer + 14
+    **payload_len** = len - 14
+    **vlan_id** = 0
+  '|
+}
+
+calc_payload_vlan: "Calculate Payload Offset (VLAN)" {
+  class: process_state
+  tooltip: "header_len = 18 bytes"
+  logic: |'md
+    **payload** = buffer + 18
+    **payload_len** = len - 18
+    **vlan_id** = TCI & 0x0FFF
+  '|
+}
+
+# Final validation
+check_payload: "Payload Valid?" {
+  class: decision
+  tooltip: "payload_len >= 0 && total_len consistent"
+}
+
+# Error: invalid payload
+error_payload: "DROP: Invalid Payload" {
+  class: error_state
+  tooltip: "payload_len < 0 or truncated"
+}
+
+# Success output
+parse_complete: "PARSE COMPLETE" {
+  class: success_state
+  output: |'md
+    **Metadata Structure:**
+    - `hdr_ptr` -> buffer[0]
+    - `data_ptr` -> buffer[14|18]
+    - `vlan_tag` -> ID or NULL
+    - `protocol` -> Host Order
+  '|
+}
+
+# Convert EtherType to host order
+convert_ethertype: "Convert EtherType" {
+  class: process_state
+  tooltip: "ntohs(hdr->ethertype)"
+  conversion: |'md
+    **ethertype** = ntohs(ethertype)
+    Network (Big-Endian) -> Host
+  '|
+}
+
+# Transitions
+start -> check_min_len
+
+check_min_len -> error_short: "len < 14" {
+  style.stroke: red
+  style.font-color: red
+}
+
+check_min_len -> extract_macs: "len >= 14"
+
+extract_macs -> check_ethertype
+
+check_ethertype -> check_vlan_len: "YES (0x8100)"
+
+check_ethertype -> calc_payload_no_vlan: "NO (Other)"
+
+# VLAN path
+check_vlan_len -> error_vlan_trunc: "len < 18" {
+  style.stroke: red
+  style.font-color: red
+}
+
+check_vlan_len -> extract_vlan: "len >= 18"
+
+extract_vlan -> calc_payload_vlan
+
+# Convergence
+calc_payload_no_vlan -> convert_ethertype
+calc_payload_vlan -> convert_ethertype
+
+convert_ethertype -> check_payload
+
+check_payload -> error_payload: "INVALID" {
+  style.stroke: red
+  style.font-color: red
+}
+
+check_payload -> parse_complete: "VALID"
+
+# Legend
+legend: {
+  near: bottom-right
+  label: "State Logic Legend"
+  
+  l_start: Start Node { class: start_state }
+  l_proc: Process / Math { class: process_state }
+  l_dec: Decision Gate { class: decision }
+  l_ext: Field Extraction { class: extract_state }
+  l_ok: Success / Valid { class: success_state }
+  l_err: Error / Drop { class: error_state }
+}

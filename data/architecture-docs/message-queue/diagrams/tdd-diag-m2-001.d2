@@ -1,0 +1,237 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+direction: right
+
+title: |md
+  # Module Architecture: Consumer Group Components
+  ## M2 - Consumer Groups, ACK/NACK & Poison Detection
+  ### sizeof(ConsumerGroup) ≈ 256 bytes (Header + Map descriptors)
+| {near: top-center}
+
+# Core Coordinator
+# Memory Layout: Packed for cache-line alignment where possible
+ConsumerGroup: {
+  shape: class
+  label: "ConsumerGroup\n(Coordinator)"
+  
+  # Fields with byte offsets for implementation reference
+  "[0x00] +Name": "string (16B)"
+  "[0x10] +Topic": "string (16B)"
+  "[0x20] +Config": "ConsumerGroupConfig (ptr: 8B)"
+  "[0x28] +members": "map[string]*ConsumerState (8B)"
+  "[0x30] +pending": "*PendingQueue (8B)"
+  "[0x38] +inFlight": "*InFlightTracker (8B)"
+  "[0x40] +retryCounter": "*RetryCounter (8B)"
+  "[0x48] +poisonQueue": "*PoisonQueue (8B)"
+  "[0x50] +assignment": "*PartitionAssignment (8B)"
+  
+  # Methods
+  "+Join(consumerID: string, client: *Client)": error
+  "+Leave(consumerID: string)": void
+  "+Publish(payload: []byte, msgID: uint64)": error
+  "+HandleAck(msgID: uint64, consumerID: string)": error
+  "+HandleNack(msgID: uint64, consumerID: string, reason: string)": error
+  "+DeliverToConsumer(consumerID: string, maxMessages: int)": "(int, error)"
+  "+rebalance()": void
+  
+  style: {
+    fill: "#DBEAFE"
+    stroke: "#3B82F6"
+    stroke-width: 2
+  }
+}
+
+# Consumer State Session
+ConsumerState: {
+  shape: class
+  label: "ConsumerState\n(Session Metadata)"
+  
+  "[0x00] +ID": "string (16B)"
+  "[0x10] +Client": "*Client (8B)"
+  "[0x18] +JoinedAt": "time.Time (24B)"
+  "[0x30] +LastHeartbeat": "time.Time (24B)"
+  "[0x48] +Assignments": "[]int (24B slice)"
+  "[0x60] +InFlightCount": "int (8B)"
+  "[0x68] +done": "chan struct{} (8B)"
+  
+  style: {
+    fill: "#D1FAE5"
+    stroke: "#10B981"
+  }
+}
+
+# In-Flight Tracking
+InFlightMessage: {
+  shape: class
+  label: "InFlightMessage\n(Lease Metadata)"
+  
+  "+MsgID": uint64
+  "+Payload": "[]byte"
+  "+ConsumerID": string
+  "+Partition": int
+  "+DeliveredAt": time.Time
+  "+VisibleAfter": time.Time
+  "+DeliveryCount": int
+  
+  style: {
+    fill: "#FEF3C7"
+    stroke: "#F59E0B"
+  }
+}
+
+# Poison Message Quarantine
+PoisonMessage: {
+  shape: class
+  label: "PoisonMessage\n(Quarantine)"
+  
+  "+MsgID": uint64
+  "+Payload": "[]byte"
+  "+Topic": string
+  "+RetryCount": int
+  "+LastFailureReason": string
+  "+FirstDeliveredAt": time.Time
+  "+FailedAt": time.Time
+  "+LastConsumerID": string
+  
+  style: {
+    fill: "#FEE2E2"
+    stroke: "#EF4444"
+  }
+}
+
+# Partition Assignment Algorithm
+PartitionAssignment: {
+  shape: class
+  label: "PartitionAssignment\n(Sticky Load Balancer)"
+  
+  "+partitionToConsumer": "map[int]string"
+  "+consumerToPartitions": "map[string][]int"
+  
+  "+Rebalance(members: []string)": "[]string"
+  "+GetConsumer(partition: int)": string
+  "+GetPartitions(consumerID: string)": "[]int"
+  
+  style: {
+    fill: "#E0E7FF"
+    stroke: "#6366F1"
+  }
+}
+
+# Relationships with Cardinality
+ConsumerGroup -- ConsumerState: manages {
+  source-arrowhead: 1
+  target-arrowhead: *
+  style.stroke: "#6B7280"
+}
+
+ConsumerGroup -- PartitionAssignment: uses {
+  source-arrowhead: 1
+  target-arrowhead: 1
+  style.stroke: "#6B7280"
+}
+
+ConsumerGroup -- InFlightMessage: tracks {
+  label: "lease active"
+  source-arrowhead: 1
+  target-arrowhead: *
+  style.stroke: "#F59E0B"
+}
+
+ConsumerGroup -- PoisonMessage: quarantines {
+  label: "DLQ threshold"
+  source-arrowhead: 1
+  target-arrowhead: *
+  style.stroke: "#EF4444"
+}
+
+# Supporting Structures Container
+SupportingStructures: {
+  label: "Internal Storage Engines"
+  style: {
+    fill: "#F9FAFB"
+    stroke: "#9CA3AF"
+    stroke-dash: 5
+  }
+
+  InFlightTracker: {
+    shape: class
+    "+messages": "map[uint64]*InFlightMessage"
+    "+Add(msg: *InFlightMessage)": error
+    "+Get(msgID: uint64)": "*InFlightMessage"
+    "+Remove(msgID: uint64)": "*InFlightMessage"
+    "+GetTimedOut(now: time.Time)": "[]*InFlightMessage"
+    "+GetForConsumer(consumerID: string)": "[]*InFlightMessage"
+    "+CountForConsumer(consumerID: string)": int
+    style.fill: "#FFFFFF"
+  }
+
+  RetryCounter: {
+    shape: class
+    "+counts": "map[uint64]int"
+    "+Increment(msgID: uint64)": int
+    "+Get(msgID: uint64)": int
+    "+Clear(msgID: uint64)": void
+    style.fill: "#FFFFFF"
+  }
+
+  PoisonQueue: {
+    shape: class
+    "+messages": "[]*PoisonMessage"
+    "+Add(msg: *PoisonMessage)": void
+    "+GetAll()": "[]*PoisonMessage"
+    "+Len()": int
+    style.fill: "#FFFFFF"
+  }
+}
+
+# Component Composition
+ConsumerGroup -> SupportingStructures.InFlightTracker: owns
+ConsumerGroup -> SupportingStructures.RetryCounter: owns
+ConsumerGroup -> SupportingStructures.PoisonQueue: owns
+
+# Data Flow Legend
+legend: {
+  shape: rectangle
+  near: bottom-right
+  label: "Implementation Details"
+  
+  members: "ConsumerState: Heartbeat-based membership tracking (TTL=30s)"
+  in_flight: "InFlightMessage: Handles VisibilityTimeout redelivery logic"
+  poison: "PoisonMessage: Quarantined for manual DLQ inspection via Admin API"
+  partitions: "PartitionAssignment: Sticky sessions for data locality and performance"
+  
+  style: {
+    fill: "#FEF9C3"
+    stroke: "#EAB308"
+    stroke-dash: 0
+    border-radius: 4
+    shadow: true
+  }
+}
+
+# Engineering Annotation
+annotation: |md
+  ## Key Invariants for Engineering
+  1. **At-Least-Once Delivery**: Unacked messages are redelivered after `VisibilityTimeout`.
+  2. **Membership**: Rebalance occurs on any `Join()` or `Leave()` call within 5s grace period.
+  3. **Poison Control**: `RetryCounter.Get(msgID) > MaxRetries` triggers immediate move to `PoisonQueue`.
+  4. **Concurrency**: All internal maps must be protected by a `RWMutex` or a serialized command channel.
+| {near: bottom-center}
+
+# Growth/Memory Directions
+# Fix: Changed shape from invalid 'arrow' to 'parallelogram'
+MemoryGrowth: {
+  label: "Heap Growth Direction"
+  near: top-right
+  shape: parallelogram
+  style: {
+    stroke-width: 4
+    stroke: "#F97316"
+  }
+}

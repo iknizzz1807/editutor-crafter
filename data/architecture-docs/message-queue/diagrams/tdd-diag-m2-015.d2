@@ -1,0 +1,144 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Sequence: NACK with Retry and Eventual Poison
+  **Technical Specification: M2-015**
+  *Engineers: Reference this for Dead Letter Queue (DLQ) state transitions.*
+| {
+  near: top-center
+  style: {
+    font-size: 18
+    bold: true
+  }
+}
+
+# --- Global Styling ---
+***.style.font: mono
+
+mq_processing_flow: {
+  shape: sequence_diagram
+
+  # Participant Definitions
+  Consumer: "Message Consumer\n(Worker Node)" {
+    shape: person
+    style.fill: "#C7F1FF"
+  }
+  ConsumerGroup: "Group Coordinator\n(Orchestrator)" {
+    style.fill: "#DEE1EB"
+  }
+  InFlightTracker: "Redis Cache\n(In-Flight Registry)" {
+    shape: cylinder
+    style.fill: "#B5AFF6"
+  }
+  RetryCounter: "Policy Engine\n(Retry Logic)" {
+    style.fill: "#E4DBFE"
+  }
+  PendingQueue: "RabbitMQ\n(Pending)" {
+    shape: queue
+    style.fill: "#ACE1AF"
+  }
+  PoisonQueue: "Dead Letter Queue\n(Poison)" {
+    shape: queue
+    style.fill: "#FE7070"
+  }
+
+  # --- Execution Sequence ---
+
+  # Step 1: Processing Start & Failure
+  Consumer."Processing message [ID: 0xAF32]" {
+    style.font-color: red
+  }
+  
+  Consumer -> ConsumerGroup: NACK(msgID, reason="Timeout") {
+    style: {
+      stroke: red
+      stroke-width: 2
+    }
+  }
+
+  # Step 2: Resource Cleanup
+  ConsumerGroup -> InFlightTracker: Remove(msgID)
+  InFlightTracker -> ConsumerGroup: 200 OK (Cleaned)
+
+  # Step 3: Threshold Calculation
+  ConsumerGroup -> RetryCounter: Increment(msgID)
+  RetryCounter -> ConsumerGroup: retryCount: int
+
+  # Step 4: Conditional Logic (D2 Groups used for ALT/ELSE logic)
+  # Case A: Retry Possible
+  Retry_Logic: {
+    label: "ALT: [retryCount < MaxRetries]"
+    style: {
+      stroke: "#B5AFF6"
+      stroke-dash: 3
+    }
+    
+    ConsumerGroup -> PendingQueue: Requeue(msg) {
+      style.animated: true
+    }
+    ConsumerGroup -> Consumer: "Status: RE_QUEUED" {
+      style.stroke-dash: 5
+    }
+  }
+
+  # Case B: Maximum Retries Reached
+  Poison_Logic: {
+    label: "ALT: [retryCount >= MaxRetries]"
+    style: {
+      stroke: red
+      stroke-dash: 3
+      fill: "#FFF5F5"
+    }
+    
+    ConsumerGroup -> PoisonQueue: Add(poisonMsg) {
+      style: {
+        stroke: red
+        stroke-width: 2
+      }
+    }
+    
+    ConsumerGroup -> Consumer: "Status: POISONED" {
+      style.font-color: red
+    }
+
+    # Implementation Note
+    PoisonQueue."M4 Spec: DLQ requires TTL of 72h" {
+      style: {
+        italic: true
+        font-color: "#555555"
+      }
+    }
+  }
+}
+
+# Documentation Overlay
+legend: {
+  near: bottom-right
+  
+  retry_style: "Normal Flow" {
+    style: {
+      stroke: blue
+    }
+  }
+  error_style: "Terminal State" {
+    style: {
+      stroke: red
+      stroke-width: 3
+    }
+  }
+}
+
+# --- State Invariants ---
+annotations: |md
+  ### State Invariants
+  1. **Atomics**: `InFlightTracker.Remove` must succeed before `PendingQueue.Requeue`.
+  2. **Visibility**: Re-queued messages must respect `visibility_timeout` configured in `M2-Config`.
+  3. **DLQ Context**: `poisonMsg` must include `X-Original-Reason` and `X-Retry-Count` headers.
+| {
+  near: bottom-left
+}

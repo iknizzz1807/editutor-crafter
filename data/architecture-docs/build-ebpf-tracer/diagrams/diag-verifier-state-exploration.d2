@@ -1,0 +1,281 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # BPF Verifier: Abstract Interpretation & Path Exploration
+  How the kernel mathematically proves eBPF safety before execution
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  source: {
+    direction: down
+    label: "eBPF Source (C)"
+    code: {
+      width: 380
+      label: "example.bpf.c"
+      code: |'c
+        SEC("kprobe/do_read")
+        int trace_read(struct pt_regs *ctx) {
+          int i = 0;
+          int sum = 0;
+          // VERIFIER REJECTS THIS:
+          while (i < 1000) {  // Unbounded!
+            sum += i;
+            i++;
+          }
+          // Would be accepted if bounded:
+          // for (i = 0; i < 10; i++)
+          return sum;
+        }
+      '|
+    }
+    compile: {
+      shape: step
+      label: "clang -target bpf"
+    }
+    bytecode: {
+      label: "eBPF Bytecode"
+      width: 360
+      code: |'
+         0: (b7) r1 = 0          # i = 0
+         1: (b7) r0 = 0          # sum = 0
+         2: (bf) r2 = r1         # loop check
+         3: (15) if r2 == 1000 goto +4  # branch
+         4: (0f) r0 += r1        # sum += i
+         5: (07) r1 += 1         # i++
+         6: (05) goto -5         # loop back
+         7: (95) exit            # return sum
+      '|
+    }
+    code -> compile -> bytecode
+  }
+  verifier: {
+    direction: down
+    label: "BPF Verifier (kernel/verify.c)"
+    abstract_interp: {
+      label: "Abstract Interpretation Engine"
+      width: 480
+      reg_state: {
+        shape: sql_table
+        label: "Register State Table (at instruction 3)"
+        r0: "R0 | scalar | range: [0, 0] | init"
+        r1: "R1 | scalar | range: [0, 999] | loop var"
+        r2: "R2 | scalar | range: [0, 999] | copy of R1"
+        r3: "R3 | unknown | - | unused"
+        note: "Verifier tracks: type, bounds, alignment"
+      }
+      path_state: {
+        shape: sql_table
+        label: "Path Exploration Stack"
+        p0: "Path 0 | entry → inst 0-2 | exploring"
+        p1: "Path 1 | branch true (loop) | forked"
+        p2: "Path 2 | branch false (exit) | forked"
+        note: "Branches cause state bifurcation"
+      }
+    }
+    branches: {
+      label: "Branch Point Analysis"
+      direction: right
+      true_path: {
+        label: "Loop Taken"
+        style.fill: "#fff3cd"
+        width: 200
+        code: |'
+          Inst 3: r2 != 1000
+          → goto inst 4
+          → inst 5 (i++)
+          → inst 6 (goto -5)
+          → back to inst 2
+          ITERATION 1: r1 ∈ [0,999]
+          ITERATION 2: r1 ∈ [1,999]
+          ...
+          ITERATION N: r1 ∈ [N,999]
+        '|
+      }
+      false_path: {
+        label: "Loop Exit"
+        style.fill: "#d4edda"
+        width: 200
+        code: |'
+          Inst 3: r2 == 1000
+          → goto inst 7
+          → exit
+          PROVABLE: terminates
+          when r1 reaches 1000
+        '|
+      }
+    }
+    complexity: {
+      label: "Verifier Complexity Limits"
+      direction: right
+      limit_table: {
+        shape: sql_table
+        label: "Enforced Bounds"
+        insns: "Max instructions | 1,000,000"
+        paths: "Max explored paths | 64K states"
+        loops: "Max loop iterations | bounded only"
+        stack: "Stack depth | 512 bytes"
+      }
+    }
+  }
+  source.bytecode -> verifier.abstract_interp: "submit for\nverification"
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  rejection: {
+    direction: down
+    label: "VERIFIER REJECTION PATH"
+    style.stroke: "#dc3545"
+    style.fill: "#f8d7da"
+    loop_analysis: {
+      width: 420
+      label: "Loop State Evolution"
+      code: |'
+        Iter 1:   R1 ∈ [0, 999]     → continue
+        Iter 10:  R1 ∈ [9, 999]     → continue
+        Iter 100: R1 ∈ [99, 999]    → continue
+        Iter 500: R1 ∈ [499, 999]   → continue
+        ...
+        PROBLEM: Verifier cannot prove:
+        - Upper bound on iterations
+        - R1 will eventually equal 1000
+        - Loop will terminate
+        The 'while' condition depends on
+        runtime value, not compile-time constant.
+      '|
+    }
+    error_msg: {
+      width: 420
+      label: "Kernel Verifier Error"
+      code: |'
+        Error: 
+          infinite loop detected
+          last idx 6, cur idx 2
+          2: (bf) r2 = r1
+          3: (15) if r2 == 1000 goto pc+4
+        Hint: Use bounded loop with constant:
+          #pragma unroll
+          for (int i = 0; i < 100; i++) { }
+      '|
+      style.fill: "#f5c6cb"
+    }
+    loop_analysis -> error_msg
+  }
+  acceptance: {
+    direction: down
+    label: "ACCEPTED PROGRAM (Fixed)"
+    style.stroke: "#28a745"
+    style.fill: "#d4edda"
+    fixed_code: {
+      width: 380
+      label: "Fixed: Bounded Loop"
+      code: |'c
+        SEC("kprobe/do_read")
+        int trace_read(struct pt_regs *ctx) {
+          int sum = 0;
+          // VERIFIER ACCEPTS: constant bound
+          #pragma unroll
+          for (int i = 0; i < 10; i++) {
+            sum += i;  // clang unrolls
+          }
+          return sum;  // Returns 45
+        }
+      '|
+    }
+    why_accepted: {
+      width: 380
+      label: "Why This Passes"
+      code: |'
+        1. Loop bound is compile-time constant
+        2. Clang unrolls into straight-line code
+        3. No backward jumps in bytecode
+        4. Verifier sees 10 additions, no loop
+        5. Instruction count: ~15 (well under 1M)
+      '|
+    }
+    fixed_code -> why_accepted
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  state_machine: {
+    direction: down
+    label: "Verifier State Machine"
+    states: {
+      direction: right
+      init: {
+        shape: circle
+        label: "Entry"
+        style.fill: "#cce5ff"
+      }
+      exploring: {
+        shape: rectangle
+        label: "Exploring\nPaths"
+        style.fill: "#fff3cd"
+      }
+      branch: {
+        shape: diamond
+        label: "Branch?"
+        style.fill: "#e2e3e5"
+      }
+      accept: {
+        shape: circle
+        label: "Accept"
+        style.fill: "#d4edda"
+      }
+      reject: {
+        shape: circle
+        label: "Reject"
+        style.fill: "#f8d7da"
+      }
+    }
+    init -> exploring: "load bytecode"
+    exploring -> branch: "conditional found"
+    branch -> exploring: "fork both paths"
+    branch -> accept: "all paths safe"
+    branch -> reject: "any path unsafe"
+  }
+  rules: {
+    direction: down
+    label: "Safety Properties Verified"
+    props: {
+      shape: class
+      label: "Verifier Proves These Properties"
+      +memory_safety: "All pointer accesses bounds-checked"
+      +termination: "All loops have provable upper bound"
+      +no_null_deref: "Pointers validated before use"
+      +stack_safety: "No stack overflow (512B limit)"
+      +no_leaks: "All map lookups checked for NULL"
+      +type_safety: "Register types track correctly"
+      +no_uninit: "No reads from uninitialized memory"
+    }
+  }
+}
+legend: {
+  near: bottom-center
+  direction: right
+  l1: "✓ Accepted" {
+    shape: text
+    style.font-color: "#28a745"
+  }
+  l2: "✗ Rejected" {
+    shape: text
+    style.font-color: "#dc3545"
+  }
+  l3: "⚠ Exploring" {
+    shape: text
+    style.font-color: "#856404"
+  }
+}
+row1.verifier -> row2.rejection: "cannot prove\nboundedness"
+row1.verifier -> row2.acceptance: "all paths\nprovably safe"

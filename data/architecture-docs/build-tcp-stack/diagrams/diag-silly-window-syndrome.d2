@@ -1,0 +1,182 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# SATELLITE MAP: SWS PREVENTION ARCHITECTURE
+satellite: {
+  label: "TCP/IP Stack Architecture (SWS Prevention)"
+  direction: right
+  style.stroke-width: 2
+  
+  application_layer: "Application Layer" {
+    shape: rectangle
+    style.fill: "#DEE1EB"
+  }
+  
+  transport_layer: "Transport Layer (TCP)" {
+    shape: rectangle
+    style.fill: "#C7F1FF"
+    nagle: "Nagle's Algorithm"
+    clark: "Clark's Solution"
+  }
+  
+  network_layer: "Network Layer (IP)" {
+    shape: rectangle
+    style.fill: "#E4DBFE"
+  }
+  
+  application_layer -> transport_layer: "1-byte writes"
+  transport_layer -> network_layer: "Coalesced Segments"
+}
+
+# IMPLEMENTATION: DATA STRUCTURES
+structs: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  tcp_pcb: {
+    shape: sql_table
+    label: "struct tcp_pcb (tcp.h)"
+    f0: "0x00 | uint32_t | snd_una // Unacknowledged seq"
+    f1: "0x04 | uint32_t | snd_nxt // Next sequence to send"
+    f2: "0x08 | uint32_t | snd_wnd // Last advertised window"
+    f3: "0x0C | uint32_t | rcv_nxt // Next expected sequence"
+    f4: "0x10 | uint32_t | rcv_wnd // Current receive window"
+    f5: "0x14 | uint16_t | mss     // Maximum Segment Size"
+    f6: "0x16 | uint8_t  | flags   // TF_NODELAY, TF_SWS_PREVENT"
+    sz: "Total: 24 bytes (Simplified)"
+  }
+
+  ooo_queue: {
+    shape: sql_table
+    label: "struct tcp_seg (ooo_queue.h)"
+    f0: "0x00 | struct tcp_seg* | next"
+    f1: "0x08 | uint32_t        | seqno"
+    f2: "0x0C | uint16_t        | len"
+    f3: "0x10 | struct pbuf*    | p // Payload pointer"
+    sz: "Total: 20 bytes"
+  }
+}
+
+# BEFORE/AFTER MUTATION: SILLY WINDOW SYNDROME
+sws_comparison: {
+  direction: down
+  style.stroke: transparent
+  style.fill: transparent
+
+  before: "BEFORE: SWS (The Problem)" {
+    direction: right
+    style.fill: "#FFE7CB"
+    
+    sender: {
+      label: "Sender (Writes 1B)"
+      stack: {
+        code: |'c
+          // Immediate transmission
+          // 40B Header + 1B Data
+          tcp_output(pcb);
+        '|
+      }
+    }
+    
+    receiver: {
+      label: "Receiver (Reads 1B)"
+      stack: {
+        code: |'c
+          // Advertises small window
+          pcb->rcv_wnd = 1; 
+          tcp_ack(pcb);
+        '|
+      }
+    }
+    
+    sender -> receiver: "41B Packet | 1B Data" {style.stroke: red}
+    receiver -> sender: "40B ACK | Win=1" {style.stroke: red}
+    
+    note: {
+      shape: callout
+      label: "Inefficient: 97.5% Overhead\n(40 bytes header for 1 byte data)"
+    }
+  }
+
+  after: "AFTER: Prevention (The Solution)" {
+    direction: right
+    style.fill: "#E8F3E6"
+    
+    clarks: {
+      label: "Clark's Solution (Receiver)"
+      code: |'c
+        // Don't advertise small window
+        uint32_t space = available_buffer();
+        if (space < mss && space < (max_buf/2)) {
+            pcb->rcv_wnd = 0; // Forced Zero Window
+        }
+      '|
+    }
+    
+    nagle: {
+      label: "Nagle's Algorithm (Sender)"
+      code: |'c
+        if (len >= mss || !has_unacked_data) {
+            send_segment();
+        } else {
+            buffer_data(); // Wait for full MSS or ACK
+        }
+      '|
+    }
+    
+    clarks -> nagle: "ACK | Win=0 (Wait)" {style.stroke: green}
+    nagle -> clarks: "MSS Packet | 1460B Data" {style.stroke: green}
+
+    note: {
+      shape: callout
+      label: "Efficiency: 2.6% Overhead\n(40 bytes header for 1460 bytes data)"
+    }
+  }
+
+  before -> after: "APPLY: Nagle + Clark's"
+}
+
+# LOGIC FLOW: FAST RETRANSMIT (Implementation logic)
+fast_retransmit_logic: {
+  label: "TCP Fast Retransmit Strategy"
+  direction: right
+  
+  input: "Incoming ACK" {shape: oval}
+  
+  check: "Is Duplicate ACK?" {shape: diamond}
+  
+  counter: {
+    shape: class
+    label: "ACK Counter"
+    -dup_acks: "uint8_t"
+    +increment(): "void"
+    +reset(): "void"
+  }
+  
+  trigger: "Retransmit snd_una" {
+    shape: step
+    style.fill: "#FFC7C7"
+  }
+  
+  input -> check
+  check -> counter: "Yes"
+  counter -> trigger: "dup_acks == 3"
+  check -> counter: "No | Reset counter"
+}
+
+# LEGEND
+legend: {
+  shape: sql_table
+  label: "Legend & Scale"
+  red: "Inefficient Path / High Overhead"
+  green: "Optimized Path / Flow Control"
+  blue: "Metadata / State Control"
+  scale: "MSS: 1460 Bytes (Standard Ethernet)"
+}
+legend.near: bottom-right

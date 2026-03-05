@@ -1,0 +1,234 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # eBPF Probe Lifecycle & Resource Correlation
+  **System Architecture: Temporal Event Correlation via BPF Hash Maps**
+| {near: top-center}
+
+# -----------------------------------------------------------------------------------------
+# Row 1: Kernel Context & Entry Probes
+# -----------------------------------------------------------------------------------------
+row_entry: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  kprobe_entry: "Kprobe context (tracer.c)" {
+    definition: {
+      shape: class
+      label: "Syscall Entry Probe"
+      +tid: "u32 (bpf_get_current_pid_tgid)"
+      +timestamp: "u64 (bpf_ktime_get_ns)"
+      +record_entry(tid, ts): "int"
+    }
+    implementation: {
+      shape: code
+      label: "bpf_kprobe_handler"
+      code: |'c
+        u32 tid = (u32)bpf_get_current_pid_tgid();
+        u64 start = bpf_ktime_get_ns();
+        bpf_map_update_elem(&start_times, &tid, &start, BPF_ANY);
+        return 0;
+      '|
+    }
+  }
+
+  tracepoint_tcp: "Tracepoint context (tracer.c)" {
+    definition: {
+      shape: class
+      label: "TCP State Probe"
+      +skaddr: "u64 (sock pointer)"
+      +family: "u16"
+      +handle_established(ctx): "void"
+    }
+    implementation: {
+      shape: code
+      label: "tp_tcp_set_state"
+      code: |'c
+        if (newstate == TCP_ESTABLISHED) {
+          struct conn_info info = {.ts = bpf_ktime_get_ns()};
+          bpf_map_update_elem(&conns, &skaddr, &info, BPF_ANY);
+        }
+      '|
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# Row 2: BPF Storage Layer (Correlation Bridge)
+# -----------------------------------------------------------------------------------------
+row_maps: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  map_start_times: {
+    shape: sql_table
+    label: "BPF_MAP_TYPE_HASH: start_times"
+    f0: "0x00 | u32     | Key: Thread ID (TID)"
+    f1: "0x04 | u64     | Value: Entry Timestamp (ns)"
+    sz: "Capacity: 10240 entries"
+  }
+
+  map_connections: {
+    shape: sql_table
+    label: "BPF_MAP_TYPE_HASH: connections"
+    f0: "0x00 | u64     | Key: skaddr (Socket Ptr)"
+    f1: "0x08 | struct  | Value: conn_info (Metadata)"
+    sz: "Capacity: 65535 entries"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# Row 3: Exit Logic & Computation
+# -----------------------------------------------------------------------------------------
+row_exit: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  kretprobe_exit: "Kretprobe context (tracer.c)" {
+    definition: {
+      shape: class
+      label: "Syscall Exit Probe"
+      +tid: "u32"
+      +lookup_start(): "u64*"
+      +calculate_latency(): "u64"
+      +update_histogram(): "void"
+    }
+    implementation: {
+      shape: code
+      label: "bpf_kretprobe_handler"
+      code: |'c
+        u64 *start = bpf_map_lookup_elem(&start_times, &tid);
+        if (start) {
+          u64 delta = bpf_ktime_get_ns() - *start;
+          update_histogram(SYS_READ, delta);
+          bpf_map_delete_elem(&start_times, &tid);
+        }
+      '|
+    }
+  }
+
+  tcp_close_logic: "TCP Term context (tracer.c)" {
+    definition: {
+      shape: class
+      label: "TCP Termination Handler"
+      +skaddr: "u64"
+      +emit_event(tcp_event): "int"
+    }
+    implementation: {
+      shape: code
+      label: "tp_tcp_close"
+      code: |'c
+        struct conn_info *i = bpf_map_lookup_elem(&conns, &skaddr);
+        if (i) {
+          u64 duration = bpf_ktime_get_ns() - i->ts;
+          submit_ringbuf(i, duration);
+          bpf_map_delete_elem(&conns, &skaddr);
+        }
+      '|
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# Row 4: Data Structures (Memory Layouts)
+# -----------------------------------------------------------------------------------------
+row_structs: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  conn_info: {
+    shape: sql_table
+    label: "struct conn_info (vmlinux.h)"
+    f0: "0x00 | u64      | established_ts"
+    f1: "0x08 | u32      | pid"
+    f2: "0x0C | u32      | tid"
+    f3: "0x10 | char[16] | comm // process name"
+    f4: "0x20 | u16      | sport"
+    f5: "0x22 | u16      | dport"
+    sz: "Total: 36 bytes"
+  }
+
+  tcp_event: {
+    shape: sql_table
+    label: "struct tcp_event (user.h)"
+    f0: "0x00 | u64      | timestamp"
+    f1: "0x08 | u64      | duration_ns"
+    f2: "0x10 | u32      | pid"
+    f3: "0x14 | u16      | family"
+    f4: "0x16 | u16      | sport"
+    sz: "Total: 24 bytes"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# Row 5: Final Output (Ring Buffer)
+# -----------------------------------------------------------------------------------------
+output_layer: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  ring_buf: {
+    shape: cylinder
+    label: "BPF_MAP_TYPE_RINGBUF"
+    info: "Lockless MPSC Queue"
+    capacity: "16MB (Default Page aligned)"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# Connections & Data Flow
+# -----------------------------------------------------------------------------------------
+
+# Entry Path: Storing context
+row_entry.kprobe_entry.definition -> row_maps.map_start_times: "u32 tid | store ts" {
+  style.stroke: "#3498db"
+}
+row_entry.tracepoint_tcp.definition -> row_maps.map_connections: "u64 skaddr | store metadata" {
+  style.stroke: "#3498db"
+}
+
+# Exit Path: Correlating with stored context
+row_maps.map_start_times -> row_exit.kretprobe_exit.definition: "u64 ts | lookup" {
+  style.stroke-dash: 4
+}
+row_maps.map_connections -> row_exit.tcp_close_logic.definition: "struct conn_info | lookup" {
+  style.stroke-dash: 4
+}
+
+# Computation to Struct Serialization
+row_exit.tcp_close_logic.definition -> row_structs.tcp_event: "serialize"
+
+# Output Flow to Userspace via Ringbuf
+row_exit.tcp_close_logic.implementation -> output_layer.ring_buf: "bpf_ringbuf_submit" {
+  style.stroke: "#2ecc71"
+}
+
+# Per-CPU local aggregation
+row_exit.kretprobe_exit.implementation -> row_exit.kretprobe_exit.implementation: "update per-CPU hist" {
+  style.stroke: "#f1c40f"
+}
+
+# Legend
+legend: {
+  label: "System Legend"
+  near: bottom-right
+  direction: down
+  k: "Kprobe: Dynamic kernel hook (entry/exit)"
+  t: "Tracepoint: Static kernel hook (stable)"
+  m: "BPF Map: Cross-probe temporal state bridge"
+  r: "Ringbuf: High-performance userspace channel"
+  style.stroke: "#333333"
+  style.fill: "#f9f9f9"
+  style.bold: true
+}

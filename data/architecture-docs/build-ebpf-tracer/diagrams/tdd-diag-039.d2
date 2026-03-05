@@ -1,0 +1,214 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: right
+
+title: |md
+  # Userspace Event Formatting Pipeline
+  TCP event processing from ring buffer to formatted output
+| {near: top-center}
+
+# 1. Memory Layout: Raw Ring Buffer Event
+ring_buffer: "Ring Buffer\n(BPF_MAP_TYPE_RINGBUF)" {
+  style: {
+    fill: "#E8F4FD"
+    stroke: "#2196F3"
+    stroke-width: 2
+  }
+  
+  raw_event: "Raw Event Binary Blob" {
+    shape: sql_table
+    style.fill: "#BBDEFB"
+    
+    0x00: "family (u16)" {constraint: "2 bytes"}
+    0x02: "sport (u16)" {constraint: "2 bytes"}
+    0x04: "dport (u16)" {constraint: "2 bytes"}
+    0x06: "saddr (u8[16])" {constraint: "16 bytes"}
+    0x16: "daddr (u8[16])" {constraint: "16 bytes"}
+    0x26: "oldstate (u32)" {constraint: "4 bytes"}
+    0x2A: "newstate (u32)" {constraint: "4 bytes"}
+    0x2E: "duration_ns (u64)" {constraint: "8 bytes"}
+    0x36: "pid (u32)" {constraint: "4 bytes"}
+    0x3A: "comm (char[16])" {constraint: "16 bytes"}
+    0x4A: "padding/extra" {constraint: "20 bytes"}
+    
+    # Total size = 92 bytes
+  }
+}
+
+# 2. Processing Stages
+formatting_pipeline: "Event Formatting Pipeline" {
+  direction: right
+  style: {
+    fill: "#F5F5F5"
+    stroke: "#9E9E9E"
+    stroke-dash: 3
+  }
+
+  stage1_receive: "1. Receive Stage" {
+    style.fill: "#C8E6C9"
+    receive_cb: "ring_buffer__poll()\n→ callback(data, len)" {
+      style.fill: white
+      tooltip: "Registered via ring_buffer__new()"
+    }
+    validate: "Validation Gate" {
+      shape: diamond
+      label: "len >= 92?"
+      style.fill: white
+    }
+  }
+
+  stage2_extract: "2. Extraction Stage" {
+    style.fill: "#FFF9C4"
+    cast_struct: "Cast to C-Struct:\nstruct tcp_event *e = data" {
+      style.fill: white
+    }
+    field_copy: "Field extraction into\nUserspace Local Memory" {
+      style.fill: white
+    }
+  }
+
+  stage3_format: "3. Formatting Stage" {
+    style.fill: "#FFCCBC"
+    
+    ip_format: "Network Address Translation" {
+      style.fill: "#FFAB91"
+      ipv4_logic: "AF_INET: inet_ntop(4)"
+      ipv6_logic: "AF_INET6: inet_ntop(16)"
+    }
+    
+    duration_calc: "Duration Logic" {
+      style.fill: "#FFAB91"
+      logic: |md
+        c
+        if (ns < 1000) sprintf("%ldns")
+        else if (ns < 1000000) sprintf("%.2fµs")
+        else sprintf("%.2fms")
+        
+      |
+    }
+    
+    state_lookup: "TCP State Mapper" {
+      style.fill: "#FFAB91"
+      table: "1:ESTABLISHED\n2:SYN_SENT\n..."
+    }
+  }
+
+  stage4_output: "4. Output Stage" {
+    style.fill: "#D1C4E9"
+    build_line: "String Buffer Assembly:\nsnprintf(buf, 256, ...)" {
+      style.fill: white
+    }
+    printf_out: "IO Write:\nfwrite(stdout, line)" {
+      style.fill: "#B39DDB"
+    }
+  }
+}
+
+# 3. Final Formatted Output
+terminal_output: "Terminal Output (stdout)" {
+  style: {
+    fill: "#263238"
+    font-color: "#80CBC4"
+    font: mono
+    border-radius: 4
+  }
+  header: "PID    COMM        SRC                    DST                    STATE                 DURATION" {
+    style: {
+      font-color: "#78909C"
+      underline: true
+    }
+  }
+  line1: "1234   nginx       192.168.1.10:443       10.0.0.5:52341         ESTABLISHED → TIME_WAIT   234.56ms" {
+    style.font-color: "#80CBC4"
+  }
+  line2: "5678   curl        192.168.1.10:45678     93.184.216.34:443      ESTABLISHED → CLOSE      1.23s" {
+    style.font-color: "#80CBC4"
+  }
+}
+
+# 4. Error Handling Branch
+error_handling: "Exception Logic" {
+  style: {
+    fill: "#FFEBEE"
+    stroke: "#EF5350"
+    stroke-dash: 3
+  }
+  undersized: "ERR_SHORT_READ\nLog & Drop Event" {
+    style.fill: "#FFCDD2"
+  }
+  unknown_family: "ERR_UNSUPPORTED_AF\nDefault to '???'" {
+    style.fill: "#FFCDD2"
+  }
+  inet_ntop_fail: "ERR_DECODE_FAIL\nFallback: 0.0.0.0" {
+    style.fill: "#FFCDD2"
+  }
+}
+
+# 5. Pipeline Connections
+ring_buffer.raw_event -> formatting_pipeline.stage1_receive.receive_cb: "BPF RingBuf Segment" {
+  style: {
+    stroke: "#2196F3"
+    stroke-width: 2
+    animated: true
+  }
+}
+
+formatting_pipeline.stage1_receive.validate -> formatting_pipeline.stage2_extract: "PASS" {
+  style.stroke: green
+}
+
+formatting_pipeline.stage2_extract -> formatting_pipeline.stage3_format: "Pointer offset\n+0x00"
+
+formatting_pipeline.stage3_format -> formatting_pipeline.stage4_output: "Char array[256]"
+
+formatting_pipeline.stage4_output.printf_out -> terminal_output: "system_write()" {
+  style: {
+    stroke: "#4CAF50"
+    stroke-width: 2
+  }
+}
+
+# 6. Error Paths
+formatting_pipeline.stage1_receive.validate -> error_handling.undersized: "FAIL (len < 92)" {
+  style: {
+    stroke: "#EF5350"
+    stroke-dash: 3
+  }
+}
+
+formatting_pipeline.stage3_format.ip_format -> error_handling.unknown_family: "AF_UNSPEC" {
+  style: {
+    stroke: "#EF5350"
+    stroke-dash: 3
+  }
+}
+
+# 7. Documentation Annotation
+data_flow_note: |md
+  ### Data Transformation Logic
+  1. **Raw bytes**: Direct memory access from shared ring buffer.
+  2. **Struct fields**: Fixed offset calculation `(base + offset)`.
+  3. **Strings**: Heap-allocated buffers for human-readable conversion.
+  4. **Line**: Concatenation of formatted segments.
+
+  **Critical System Calls:**
+  - `ring_buffer__poll()`
+  - `inet_ntop()`
+  - `snprintf()`
+| {
+  near: bottom-right
+  style: {
+    stroke: orange
+    stroke-width: 1
+    fill: "#FFF3E0"
+  }
+}
+
+# Styling Globs
+***.style.font: mono
+(*** -> ***)[*].style.font-size: 14

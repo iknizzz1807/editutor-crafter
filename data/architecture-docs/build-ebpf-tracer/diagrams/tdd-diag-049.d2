@@ -1,0 +1,202 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # TCP Connection Tracer: Tracepoint Handler
+  ## sock:inet_sock_set_state Event Processing
+| {near: top-center}
+direction: right
+// Tracepoint Context
+tracepoint_context: {
+  label: "Tracepoint Context\n(Stable ABI)"
+  style.fill: "#E8E8E8"
+  style.stroke: "#666666"
+  common: "Common Fields\n─────────────\ntype: u16\nflags: u8\npreempt_count: u8\npid: int"
+  specific: "Tracepoint-Specific\n─────────────────────\nskaddr: void* ◀ CORRELATION KEY\noldstate: int (1-11)\nnewstate: int (1-11)\nsport: u16 ◀ NETWORK ORDER\ndport: u16 ◀ NETWORK ORDER\nfamily: u16 (2=IPv4, 10=IPv6)\nsaddr: u8[16]\ndaddr: u8[16]"
+  common -> specific
+}
+// State Machine
+state_machine: {
+  label: "TCP State Machine\nDecision Logic"
+  style.fill: "#F0F4FF"
+  style.stroke: "#4A6CF7"
+  check_state: {
+    shape: diamond
+    label: "newstate == ?"
+  }
+  established: {
+    style.fill: "#90EE90"
+    label: "TCP_ESTABLISHED\n(state 1)"
+  }
+  close: {
+    style.fill: "#FFB6C1"
+    label: "TCP_TIME_WAIT\n(state 6)\nor TCP_CLOSE\n(state 7)"
+  }
+  other: {
+    style.fill: "#D3D3D3"
+    label: "Other States\n(SYN_SENT, etc.)\n→ IGNORE"
+  }
+  check_state -> established: "= 1"
+  check_state -> close: "= 6 or 7"
+  check_state -> other: "else"
+}
+// ESTABLISHED Flow
+established_flow: {
+  label: "ESTABLISHED Path\n(Record Connection Start)"
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+  get_process: {
+    label: "Get Process Info\n─────────────────\npid = pid_tgid >> 32\ntid = pid_tgid & 0xFFFFFFFF\nbpf_get_current_comm()"
+    style.fill: "#C8E6C9"
+  }
+  read_addrs: {
+    label: "Read Addresses\n(family dispatch)\n─────────────────────"
+    style.fill: "#C8E6C9"
+    ipv4: {
+      label: "IF AF_INET (2):\n─────────────────\nprobe_read(saddr, 4)\nprobe_read(daddr, 4)\n○ Bytes 4-15: GARBAGE\n○ Must read ONLY 4!"
+      style.fill: "#FFF9C4"
+    }
+    ipv6: {
+      label: "IF AF_INET6 (10):\n─────────────────────\nprobe_read(saddr, 16)\nprobe_read(daddr, 16)\n○ All 16 bytes valid"
+      style.fill: "#E1BEE7"
+    }
+    unknown: {
+      label: "ELSE:\n─────────\nRETURN 0\n(unknown family)"
+      style.fill: "#FFCDD2"
+    }
+    ipv4 -> ipv6 -> unknown
+  }
+  convert_ports: {
+    label: "Convert Ports\n(ntohs equivalent)\n─────────────────────────\nsport = ((raw >> 8) | (raw << 8))\ndport = ((raw >> 8) | (raw << 8))\n\nExample: 0x5000 → 0x0050 = 80"
+    style.fill: "#C8E6C9"
+  }
+  check_filter: {
+    shape: diamond
+    label: "Filter\nMatch?"
+    style.fill: "#BBDEFB"
+  }
+  store_conn: {
+    label: "Store in Hash Map\n─────────────────────\nKEY: skaddr (socket ptr)\nVALUE: conn_info\n  • established_ts\n  • pid, tid, comm\n  • sport, dport\n  • saddr, daddr\n  • family"
+    style.fill: "#B3E5FC"
+  }
+  drop: {
+    label: "DROP\n(filtered out)"
+    style.fill: "#FFCDD2"
+  }
+  get_process -> read_addrs -> convert_ports -> check_filter
+  check_filter -> store_conn: "YES"
+  check_filter -> drop: "NO"
+}
+// CLOSE Flow
+close_flow: {
+  label: "TIME_WAIT/CLOSE Path\n(Report Connection Duration)"
+  style.fill: "#FFF3E0"
+  style.stroke: "#FF9800"
+  lookup_conn: {
+    shape: diamond
+    label: "Lookup\nskaddr in\nhash map?"
+    style.fill: "#FFE0B2"
+  }
+  compute_duration: {
+    label: "Compute Duration\n─────────────────────────\nend_ts = bpf_ktime_get_ns()\nduration_ns = end_ts - established_ts\n\n○ Monotonic time\n○ Immune to NTP jumps"
+    style.fill: "#FFCC80"
+  }
+  reserve_event: {
+    shape: diamond
+    label: "Reserve\nringbuf\nspace?"
+    style.fill: "#FFE0B2"
+  }
+  fill_event: {
+    label: "Fill tcp_event\n─────────────────────\n• timestamp\n• duration_ns\n• skaddr\n• pid, tid, comm\n• sport, dport\n• saddr, daddr\n• oldstate, newstate\n• family"
+    style.fill: "#FFCC80"
+  }
+  submit: {
+    label: "bpf_ringbuf_submit()"
+    style.fill: "#C8E6C9"
+  }
+  cleanup: {
+    label: "CLEANUP (ALWAYS)\n─────────────────────\nbpf_map_delete_elem(&connections, &skaddr)\n\n○ Prevents memory leak\n○ Must delete even on error!"
+    style.fill: "#FFCDD2"
+    style.stroke: "#F44336"
+    style.stroke-width: 3
+  }
+  miss: {
+    label: "MISS\n(no entry)\n○ Started before trace\n○ Filtered at ESTAB\nIncrement stats[map_misses]"
+    style.fill: "#FFCDD2"
+  }
+  buf_full: {
+    label: "BUFFER FULL\n○ Drop event\n○ Still cleanup!"
+    style.fill: "#FFCDD2"
+  }
+  lookup_conn -> compute_duration: "FOUND"
+  lookup_conn -> miss: "NOT FOUND"
+  compute_duration -> reserve_event
+  reserve_event -> fill_event: "OK"
+  reserve_event -> buf_full: "NULL"
+  fill_event -> submit -> cleanup
+  buf_full -> cleanup
+}
+// Maps
+maps: {
+  label: "BPF Maps"
+  style.fill: "#F5F5F5"
+  style.stroke: "#9E9E9E"
+  connections_map: {
+    label: "connections\n(BPF_MAP_TYPE_HASH)\n─────────────────────────\nKEY: u64 (skaddr)\nVALUE: conn_info (70+ bytes)\nMAX: 65,536 entries\n\nLIFESPAN:\n○ Created: ESTABLISHED\n○ Deleted: TIME_WAIT/CLOSE"
+    style.fill: "#B3E5FC"
+  }
+  events_ringbuf: {
+    label: "events\n(BPF_MAP_TYPE_RINGBUF)\n─────────────────────────\nSIZE: 16 MB\n\n○ Variable-length records\n○ Lock-free consumption\n○ Ordered across CPUs"
+    style.fill: "#C8E6C9"
+  }
+  config_map: {
+    label: "config\n(BPF_MAP_TYPE_ARRAY)\n─────────────────────────\nKEY: 0 (single entry)\nVALUE: filter_config\n\n○ enabled: u32\n○ filter_pid: u32\n○ filter_dport: u16\n○ filter_daddr[16]\n○ daddr_mask: u8"
+    style.fill: "#FFF9C4"
+  }
+  stats_map: {
+    label: "stats\n(PERCPU_ARRAY)\n─────────────────────────\n[0] total_events\n[1] established_count\n[2] closed_count\n[3] filtered_out\n[4] map_misses\n[5] map_full_drops"
+    style.fill: "#E1BEE7"
+  }
+}
+// Connections
+tracepoint_context -> state_machine: "ctx"
+state_machine -> established_flow: "ESTABLISHED"
+state_machine -> close_flow: "TIME_WAIT/CLOSE"
+state_machine -> other: "ignore"
+established_flow -> connections_map: "bpf_map_update_elem"
+established_flow -> config_map: "lookup filter"
+established_flow -> stats_map: "increment"
+close_flow -> connections_map: "lookup/delete"
+close_flow -> events_ringbuf: "submit event"
+close_flow -> stats_map: "increment"
+// Legend
+legend: {
+  near: bottom-right
+  style.fill: transparent
+  title: "LEGEND"
+  item1: {
+    label: "○ CO-RE Access: BPF_CORE_READ()"
+    shape: text
+  }
+  item2: {
+    label: "○ Network byte order → host order"
+    shape: text
+  }
+  item3: {
+    label: "○ Monotonic time: bpf_ktime_get_ns()"
+    shape: text
+  }
+  item4: {
+    label: "○ Socket pointer = unique correlation key"
+    shape: text
+  }
+  item5: {
+    label: "○ CRITICAL: Always cleanup hash map!"
+    shape: text
+    style.font-color: red
+    style.bold: true
+  }
+}

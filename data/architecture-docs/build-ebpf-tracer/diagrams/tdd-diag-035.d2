@@ -1,0 +1,290 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#8B5CF6"
+    data: "#3B82F6"
+    kernel: "#10B981"
+    userspace: "#F59E0B"
+    pointer: "#F97316"
+  }
+}
+title: Runtime Filter Configuration Map {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+direction: right
+# BPF Map Definition
+filter_map: BPF_MAP_TYPE_ARRAY {
+  style: {
+    fill: "${colors.kernel}"
+    stroke: "#059669"
+    stroke-width: 3
+    border-radius: 8
+    font-color: white
+  }
+  map_header: Map Metadata {
+    shape: rectangle
+    style: {
+      fill: "${colors.header}"
+      font-color: white
+      border-radius: 4
+    }
+    type_field: "type: BPF_MAP_TYPE_ARRAY"
+    max_entries: "max_entries: 1"
+    key_size: "key_size: 4 (u32)"
+    value_size: "value_size: 48 (filter_config)"
+  }
+  entries: Map Entries {
+    shape: rectangle
+    style: {
+      fill: "#1E293B"
+      font-color: "#94A3B8"
+      font: mono
+      border-radius: 4
+    }
+    entry_0: |md
+      **Key: 0** (single config entry)
+      
+      struct filter_config {
+        u32 enabled;         // 0x00
+        u32 filter_pid;      // 0x04
+        u16 filter_dport;    // 0x08
+        u16 filter_sport;    // 0x0A
+        u8  filter_daddr[16];// 0x0C
+        u8  filter_saddr[16];// 0x1C
+        u8  daddr_mask;      // 0x2C
+        u8  saddr_mask;      // 0x2D
+        u8  family;          // 0x2E
+        u8  pad;             // 0x2F
+      }; // Total: 48 bytes
+      
+    |
+  }
+}
+# Userspace Control Application
+userspace_ctrl: Userspace Control {
+  style: {
+    fill: "${colors.userspace}"
+    stroke: "#D97706"
+    stroke-width: 2
+    border-radius: 8
+  }
+  control_app: filter_update {
+    shape: rectangle
+    style: {
+      fill: "#FEF3C7"
+      font-color: "#92400E"
+      border-radius: 4
+    }
+    cli: |md
+      bash
+      # Set PID filter
+      ./filter_update /sys/fs/bpf/tcp_config -p 1234
+      # Set port filter
+      ./filter_update /sys/fs/bpf/tcp_config -P 443
+      # Clear all filters
+      ./filter_update /sys/fs/bpf/tcp_config -c
+      
+    |
+  }
+  update_func: bpf_map_update_elem() {
+    shape: rectangle
+    style: {
+      fill: "${colors.data}"
+      font-color: white
+      font: mono
+      border-radius: 4
+    }
+    signature: |md
+      c
+      int bpf_map_update_elem(
+        int map_fd,         // FD from bpf_obj_get()
+        const void *key,    // &key (u32 = 0)
+        const void *value,  // &cfg (filter_config)
+        __u64 flags         // BPF_ANY
+      );
+      
+    |
+  }
+}
+# Map Access Path (Pinned)
+pinned_path: Pinned Map Path {
+  style: {
+    fill: "#1E293B"
+    stroke: "#475569"
+    stroke-dash: 3
+    border-radius: 4
+    font: mono
+    font-color: "#94A3B8"
+  }
+  path: "/sys/fs/bpf/tcp_config"
+  pin_op: "bpf_map__pin() or bpftool map pin"
+}
+# BPF Program Consumer
+bpf_consumer: eBPF Tracepoint Handler {
+  style: {
+    fill: "${colors.kernel}"
+    stroke: "#059669"
+    stroke-width: 2
+    border-radius: 8
+  }
+  lookup_func: bpf_map_lookup_elem() {
+    shape: rectangle
+    style: {
+      fill: "${colors.header}"
+      font-color: white
+      font: mono
+      border-radius: 4
+    }
+    code: |md
+      c
+      // In handle_tcp_state_change()
+      __u32 key = 0;
+      struct filter_config *cfg;
+      cfg = bpf_map_lookup_elem(&config, &key);
+      if (!cfg) {
+        // Use defaults
+        return trace_all;
+      }
+      
+    |
+  }
+  filter_check: Filter Evaluation {
+    shape: diamond
+    style: {
+      fill: "#FBBF24"
+      stroke: "#B45309"
+      font-color: "#1F2937"
+    }
+    logic: |md
+      
+      if (!cfg->enabled)
+        return true;  // Trace all
+      if (cfg->filter_pid != 0 && 
+          pid != cfg->filter_pid)
+        return false;
+      if (cfg->filter_dport != 0 && 
+          dport != cfg->filter_dport)
+        return false;
+      // IP prefix matching...
+      return true;
+      
+    |
+  }
+  action_trace: Trace Connection {
+    shape: rectangle
+    style: {
+      fill: "#10B981"
+      font-color: white
+      border-radius: 4
+    }
+    label: "Store in connections\nhash map"
+  }
+  action_skip: Skip Connection {
+    shape: rectangle
+    style: {
+      fill: "#EF4444"
+      font-color: white
+      border-radius: 4
+    }
+    label: "filtered_out++\nreturn 0"
+  }
+}
+# Update Flow
+userspace_ctrl.update_func -> pinned_path: "1. Write new config" {
+  style: {
+    stroke: "${colors.userspace}"
+    stroke-width: 3
+    animated: true
+  }
+}
+pinned_path -> filter_map: "2. Update map value" {
+  style: {
+    stroke: "${colors.pointer}"
+    stroke-width: 2
+    stroke-dash: 5
+  }
+}
+filter_map -> bpf_consumer.lookup_func: "3. Read on each event" {
+  style: {
+    stroke: "${colors.kernel}"
+    stroke-width: 2
+  }
+}
+bpf_consumer.lookup_func -> bpf_consumer.filter_check: "4. Evaluate filter" {
+  style: {
+    stroke: "#6B7280"
+    stroke-width: 2
+  }
+}
+bpf_consumer.filter_check -> bpf_consumer.action_trace: "matches" {
+  style: {
+    stroke: "#10B981"
+    stroke-width: 2
+  }
+}
+bpf_consumer.filter_check -> bpf_consumer.action_skip: "no match" {
+  style: {
+    stroke: "#EF4444"
+    stroke-width: 2
+  }
+}
+# Memory Layout Detail
+memory_layout: Filter Config Memory Layout {
+  near: bottom-center
+  shape: rectangle
+  style: {
+    fill: "#0F172A"
+    stroke: "#334155"
+    border-radius: 8
+    font: mono
+    font-color: "#E2E8F0"
+  }
+  layout: |md
+    
+    Offset  Field              Size   Description
+    ─────────────────────────────────────────────────────
+    0x00    enabled            4      1=filter active, 0=trace all
+    0x04    filter_pid         4      PID to match (0=any)
+    0x08    filter_dport       2      Dest port to match (0=any)
+    0x0A    filter_sport       2      Src port to match (0=any)
+    0x0C    filter_daddr[16]   16     Dest IP prefix to match
+    0x1C    filter_saddr[16]   16     Src IP prefix to match
+    0x2C    daddr_mask         1      CIDR prefix (0=any, 24=/24)
+    0x2D    saddr_mask         1      CIDR prefix (0=any)
+    0x2E    family             1      AF_INET/AF_INET6 for filter
+    0x2F    pad                1      Alignment padding
+    ─────────────────────────────────────────────────────
+    Total: 48 bytes (0x30)
+    
+  |
+}
+# Legend
+legend: Legend {
+  near: bottom-right
+  shape: rectangle
+  style: {
+    fill: "#1E293B"
+    stroke: "#475569"
+    border-radius: 4
+    font-color: "#94A3B8"
+  }
+  items: |md
+    **Data Flow:**
+    - 🟠 Orange dashed: Map pin/update path
+    - 🟢 Green solid: Kernel-side read path
+    - 🔵 Blue: Function/data definitions
+    **Key Points:**
+    - Single entry map (key always 0)
+    - Update without program reload
+    - Checked on ESTABLISHED only
+  |
+}

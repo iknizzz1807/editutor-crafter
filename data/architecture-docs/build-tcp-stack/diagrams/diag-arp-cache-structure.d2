@@ -1,0 +1,215 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # ARP Cache Data Structure
+  Hash table with IP→MAC mapping, state machine, and pending queue
+| {near: top-center}
+
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  hashtable: {
+    direction: down
+    label: "ARP Cache Hash Table (arp_cache.c)"
+    
+    bucket_header: {
+      shape: sql_table
+      label: "struct arp_entry"
+      f0: "0x00 | uint32_t   | ip"
+      f1: "0x04 | uint8_t[6] | mac"
+      f2: "0x0A | time_t     | expires_at"
+      f3: "0x12 | uint8_t    | state"
+      f4: "0x13 | uint8_t    | valid"
+      sz: "Total: 20 bytes per entry"
+    }
+
+    buckets: {
+      direction: right
+      label: "Hash Buckets (ARP_CACHE_SIZE=256)"
+      
+      b0: {
+        shape: sql_table
+        label: "bucket[0]"
+        e0: "ip=10.0.0.1"
+        e1: "mac=aa:bb:cc:dd:ee:ff"
+        e2: "state=RESOLVED"
+      }
+      b1: {
+        shape: sql_table
+        label: "bucket[1]"
+        e0: "ip=10.0.0.5"
+        e1: "mac=??"
+        e2: "state=PENDING"
+      }
+      b2: {
+        shape: sql_table
+        label: "bucket[2]"
+        e0: "ip=192.168.1.1"
+        e1: "mac=11:22:33:44:55:66"
+        e2: "state=STALE"
+      }
+      bn: {
+        shape: sql_table
+        label: "bucket[255]"
+        e0: "(empty)"
+      }
+    }
+  }
+
+  statemachine: {
+    direction: down
+    label: "Entry State Machine"
+    
+    resolved: {
+      shape: circle
+      label: "RESOLVED"
+      style.fill: "#90EE90"
+    }
+    pending: {
+      shape: circle
+      label: "PENDING"
+      style.fill: "#FFFFE0"
+    }
+    stale: {
+      shape: circle
+      label: "STALE"
+      style.fill: "#FFB6C1"
+    }
+
+    resolved -> stale: "TTL expired | 60s"
+    stale -> resolved: "ARP reply | update"
+    pending -> resolved: "ARP reply | update"
+    pending -> pending: "Retry | timeout"
+  }
+}
+
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  pending_queue: {
+    direction: down
+    label: "Pending Packet Queue (attached to PENDING entries)"
+    
+    queue_struct: {
+      shape: sql_table
+      label: "struct pending_queue"
+      q0: "0x00 | uint32_t     | ip"
+      q1: "0x04 | pkt[16]      | packets"
+      q2: "0x44 | int          | head"
+      q3: "0x48 | int          | count"
+      q4: "0x4C | time_t       | request_sent"
+      q5: "0x54 | int          | retry_count"
+      sz: "Total: 88 bytes"
+    }
+
+    queue_visual: {
+      direction: right
+      label: "Ring Buffer (PENDING_QUEUE_MAX=16)"
+      
+      pkt0: {
+        label: "pkt[0]"
+        style.fill: "#E6E6FA"
+      }
+      pkt1: {
+        label: "pkt[1]"
+        style.fill: "#E6E6FA"
+      }
+      pkt2: {
+        label: "pkt[2]"
+        style.fill: "#F5F5F5"
+      }
+      pkt_n: {
+        label: "pkt[3-15]"
+        style.fill: "#F5F5F5"
+      }
+      
+      head_ptr: "head pointer" {
+        shape: parallelogram
+      }
+      head_ptr -> pkt0: "references"
+    }
+  }
+
+  timer: {
+    direction: down
+    label: "TTL Timer Sweep"
+    
+    timer_logic: {
+      label: "Timer Callback (periodic)"
+      width: 380
+      code: |'c
+        void arp_cache_cleanup(struct arp_cache *cache) {
+          time_t now = time(NULL);
+          for (int i = 0; i < 256; i++) {
+            struct arp_entry *e = &cache->entries[i];
+            if (e->valid && e->expires_at < now) {
+              if (e->state == RESOLVED) e->state = STALE;
+              else e->valid = 0;
+            }
+          }
+        }
+      '|
+    }
+
+    timeline: {
+      direction: right
+      label: "Entry Lifecycle"
+      t0: "NEW" { shape: circle; style.fill: "#87CEEB" }
+      t1: "60s" { shape: circle; style.fill: "#90EE90" }
+      t2: "120s" { shape: circle; style.fill: "#FFB6C1" }
+      t3: "DEL" { shape: circle; style.fill: "#D3D3D3" }
+      
+      t0 -> t1: "RESOLVED"
+      t1 -> t2: "STALE"
+      t2 -> t3: "expired"
+    }
+  }
+}
+
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  lookup_flow: {
+    direction: down
+    label: "Lookup Algorithm (O(1))"
+    lookup_code: {
+      width: 420
+      code: |'c
+        const uint8_t* arp_lookup(struct arp_cache *cache, uint32_t ip) {
+          uint32_t idx = hash_ip(ip) % 256;
+          struct arp_entry *e = &cache->entries[idx];
+          if (e->valid && e->ip == ip) {
+            if (time(NULL) < e->expires_at) return e->mac;
+            e->state = STALE;
+          }
+          return NULL;
+        }
+      '|
+    }
+  }
+}
+
+hashtable.buckets.b1 -> row2.pending_queue: "ip_match | holds ref" {
+  style.stroke: "#FF6347"
+  style.stroke-dash: 4
+}
+
+legend: {
+  near: bottom-right
+  direction: down
+  l1: "RESOLVED: MAC known, valid" { style.fill: "#90EE90" }
+  l2: "PENDING: Awaiting ARP reply" { style.fill: "#FFFFE0" }
+  l3: "STALE: TTL expired, revalidating" { style.fill: "#FFB6C1" }
+}

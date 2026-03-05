@@ -1,0 +1,351 @@
+direction: right
+layout-engine: elk
+theme-id: 4
+title: |md
+  # Common BPF Verifier Rejection Patterns
+  Visual examples of unsafe code patterns that fail verification
+| {near: top-center}
+# Pattern 1: Unbounded Loop
+rejection_1: {
+  label: "Pattern 1: Unbounded Loop"
+  code_box: {
+    shape: rectangle
+    style.fill: "#2d2d2d"
+    style.stroke: "#666"
+    style.font: mono
+    style.font-color: "#f8f8f2"
+    code_content: |md
+      c
+      SEC("kprobe/do_sys_openat2")
+      int bad_loop(void *ctx) {
+          int i = 0;
+          int sum = 0;
+          // REJECTED: Verifier can't prove termination
+          while (i < 1000) {
+              sum += i;
+              i++;
+          }
+          return sum;
+      }
+      
+    |
+  }
+  verifier_state: {
+    label: "Verifier State Machine"
+    state_0: "R0=ctx R1=0 R2=0\nLoop iteration: 0" {
+      style.fill: "#3c763d"
+      style.font-color: white
+    }
+    state_1: "R0=ctx R1=1 R2=0\nLoop iteration: 1" {
+      style.fill: "#3c763d"
+      style.font-color: white
+    }
+    state_2: "R0=ctx R1=2 R2=0\nLoop iteration: 2" {
+      style.fill: "#3c763d"
+      style.font-color: white
+    }
+    state_n: "R0=ctx R1=? R2=?\nLoop iteration: N..." {
+      style.fill: "#fcf8e3"
+      style.font-color: "#8a6d3b"
+    }
+    state_overflow: "COMPLEXITY LIMIT\nEXCEEDED" {
+      style.fill: "#a94442"
+      style.font-color: white
+      style.bold: true
+    }
+    state_0 -> state_1: "explore path"
+    state_1 -> state_2: "explore path"
+    state_2 -> state_n: "continue..."
+    state_n -> state_overflow: "1M instructions"
+  }
+  error_message: {
+    shape: rectangle
+    label: |md
+      **Verifier Error:**
+      
+      0: (b7) r0 = 0
+      1: (b7) r1 = 0
+      2: (07) r1 += 1
+      3: (15) if r1 == 1000 goto pc+0
+      4: (05) goto pc-3
+      infinite loop detected
+      
+    |
+    style.fill: "#f2dede"
+    style.stroke: "#a94442"
+    style.font: mono
+    style.font-size: 12
+  }
+  code_box -> verifier_state: "Verification\nAttempt"
+  verifier_state -> error_message: "REJECT"
+}
+# Pattern 2: Out-of-Bounds Access
+rejection_2: {
+  label: "Pattern 2: Out-of-Bounds Array Access"
+  code_box: {
+    shape: rectangle
+    style.fill: "#2d2d2d"
+    style.stroke: "#666"
+    style.font: mono
+    style.font-color: "#f8f8f2"
+    code_content: |md
+      c
+      SEC("kprobe/do_sys_openat2")
+      int bad_access(void *ctx) {
+          int array[10];  // Size: 10 elements
+          // idx could be 0-255!
+          int idx = bpf_get_current_pid_tgid() & 0xFF;
+          // REJECTED: No bounds check
+          // Verifier tracks: idx ∈ [0, 255]
+          // Array bounds: [0, 9]
+          return array[idx];  // Potential OOB!
+      }
+      
+    |
+  }
+  memory_layout: {
+    label: "Memory & Verifier Tracking"
+    array_box: {
+      label: "array[10] - 40 bytes"
+      style.fill: "#e8f4f8"
+      cell_0: "[0]" {style.fill: "#d4edda"}
+      cell_1: "[1]" {style.fill: "#d4edda"}
+      cell_2: "[2]" {style.fill: "#d4edda"}
+      cell_9: "[9]" {style.fill: "#d4edda"}
+      cell_10: "[10]" {style.fill: "#f8d7da"; style.stroke: "#dc3545"; style.bold: true}
+      cell_n: "[255]" {style.fill: "#f8d7da"; style.stroke: "#dc3545"; style.bold: true}
+      cell_0 -> cell_1 -> cell_2
+      cell_2 -> cell_9: "..."
+      cell_9 -> cell_10
+      cell_10 -> cell_n: "..."
+    }
+    idx_tracker: {
+      label: "Verifier Register State"
+      style.fill: "#fff3cd"
+      r1_state: |md
+        **R1 (idx) Analysis:**
+        - Source: `pid_tgid & 0xFF`
+        - Min value: 0
+        - Max value: 255
+        - Type: SCALAR_VALUE
+      |
+    }
+    access_check: {
+      label: "Bounds Check"
+      style.fill: "#f8d7da"
+      check_text: |md
+        **Access:** `array[idx]`
+        - Array size: 10 elements (40 bytes)
+        - idx max: 255 → offset: 1020
+        - **VIOLATION:** 1020 > 40
+      |
+    }
+  }
+  error_message: {
+    shape: rectangle
+    label: |md
+      **Verifier Error:**
+      
+      4: (61) r1 = *(u32 *)(r10 -4)
+      5: (67) r1 &= 255
+      6: (67) r1 <<= 2
+      7: (0f) r0 += r1
+      invalid access to map value, value_size=40 off=1020 size=4
+      R0 max value is outside of the allowed memory range
+      
+    |
+    style.fill: "#f2dede"
+    style.stroke: "#a94442"
+    style.font: mono
+    style.font-size: 12
+  }
+  code_box -> memory_layout: "Analyze\nAccess"
+  memory_layout -> error_message: "REJECT"
+}
+# Pattern 3: Uninitialized Variable
+rejection_3: {
+  label: "Pattern 3: Uninitialized Variable Read"
+  code_box: {
+    shape: rectangle
+    style.fill: "#2d2d2d"
+    style.stroke: "#666"
+    style.font: mono
+    style.font-color: "#f8f8f2"
+    code_content: |md
+      c
+      SEC("kprobe/do_sys_openat2")
+      int bad_uninit(void *ctx) {
+          int value;  // NOT initialized!
+          u32 pid = bpf_get_current_pid_tgid() >> 32;
+          if (pid > 1000) {
+              value = 42;  // Only set on THIS path
+          }
+          // What if pid <= 1000?
+          // value is UNINITIALIZED here!
+          return value;  // REJECTED
+      }
+      
+    |
+  }
+  control_flow: {
+    label: "Control Flow Graph"
+    entry: "Entry\npid = ?" {
+      style.fill: "#d4edda"
+    }
+    branch: "Branch\npid > 1000?" {
+      shape: diamond
+      style.fill: "#fff3cd"
+    }
+    path_true: "value = 42" {
+      style.fill: "#d4edda"
+      label: "TRUE PATH\nvalue ✓ initialized"
+    }
+    path_false: "(no assignment)" {
+      style.fill: "#f8d7da"
+      label: "FALSE PATH\nvalue ✗ UNINITIALIZED"
+      style.bold: true
+    }
+    merge: "return value" {
+      style.fill: "#f8d7da"
+      style.bold: true
+    }
+    entry -> branch
+    branch -> path_true: "yes"
+    branch -> path_false: "no"
+    path_true -> merge
+    path_false -> merge: "UNINIT!"
+  }
+  stack_state: {
+    label: "Stack State Tracking"
+    stack_before: {
+      label: "Before if-statement"
+      style.fill: "#e8e8e8"
+      slot_0: "stack[0]: ??? (uninit)"
+    }
+    stack_true: {
+      label: "After TRUE path"
+      style.fill: "#d4edda"
+      slot_0_true: "stack[0]: 42 ✓"
+    }
+    stack_false: {
+      label: "After FALSE path"
+      style.fill: "#f8d7da"
+      slot_0_false: "stack[0]: ??? ✗"
+    }
+    stack_before -> stack_true: "pid > 1000"
+    stack_before -> stack_false: "pid <= 1000"
+  }
+  error_message: {
+    shape: rectangle
+    label: |md
+      **Verifier Error:**
+      
+      2: (bf) r1 = r0
+      3: (77) r1 >>= 32
+      4: (b7) r2 = 0
+      5: (15) if r1 == 0 goto pc+1
+      6: (b7) r2 = 42
+      7: (61) r0 = *(u32 *)(r10 -4)
+      read from uninitialized stack at offset -4
+      
+    |
+    style.fill: "#f2dede"
+    style.stroke: "#a94442"
+    style.font: mono
+    style.font-size: 12
+  }
+  code_box -> control_flow: "Analyze\nPaths"
+  control_flow -> stack_state
+  stack_state -> error_message: "REJECT"
+}
+# Corrected versions
+corrected: {
+  label: "Corrected Patterns"
+  style.fill: "#d4edda"
+  style.stroke: "#28a745"
+  fix_1: {
+    label: "Fix 1: Bounded Loop"
+    style.fill: "#e8f5e9"
+    code: |md
+      c
+      // Use bounded loop with constant limit
+      // Compiler unrolls, verifier accepts
+      for (int i = 0; i < 10; i++) {
+          sum += i;
+      }
+      
+    |
+  }
+  fix_2: {
+    label: "Fix 2: Bounds Check"
+    style.fill: "#e8f5e9"
+    code: |md
+      c
+      // Add explicit bounds check
+      if (idx >= 0 && idx < 10) {
+          return array[idx];  // Safe!
+      }
+      return 0;
+      
+    |
+  }
+  fix_3: {
+    label: "Fix 3: Initialize All Paths"
+    style.fill: "#e8f5e9"
+    code: |md
+      c
+      int value = 0;  // Initialize!
+      if (pid > 1000) {
+          value = 42;
+      }
+      return value;  // Always defined
+      
+    |
+  }
+  fix_1 -> fix_2 -> fix_3
+}
+# Verifier mental model
+verifier_summary: {
+  label: "Verifier Mental Model"
+  style.fill: "#f0f0f0"
+  principle: |md
+    ## The Verifier Proves Safety for ALL Possible Inputs
+    **Not just your test cases.** If there exists ANY input that could cause:
+    - Memory corruption
+    - Infinite loops
+    - Null pointer dereference
+    - Out-of-bounds access
+    The program is REJECTED.
+  |
+  techniques: {
+    label: "Verification Techniques"
+    technique_1: {
+      label: "Abstract Interpretation"
+      desc: |md
+        Tracks possible values (min/max/type)
+        for every register at every instruction
+      |
+    }
+    technique_2: {
+      label: "Path Exploration"
+      desc: |md
+        Explores ALL branches
+        Merges states at join points
+        Conservative: assumes worst case
+      |
+    }
+    technique_3: {
+      label: "Termination Proof"
+      desc: |md
+        Must prove loop terminates
+        Limited instruction count (1M)
+        Bounded complexity
+      |
+    }
+    technique_1 -> technique_2 -> technique_3
+  }
+  principle -> techniques
+}
+rejection_1 -> rejection_2 -> rejection_3
+rejection_3 -> corrected: "How to\nFix"
+rejection_1 -> verifier_summary: "Why?"

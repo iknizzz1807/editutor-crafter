@@ -1,0 +1,216 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  shape: text
+  near: top-center
+  label: |md
+    # Module Architecture: Recovery Manager
+    **Crash recovery pipeline for rebuilding broker state from persisted data**
+    *Version: 1.2.0 | Security: Internal Engineering Spec*
+  |
+}
+
+direction: right
+
+# Recovery Sequence Container
+recovery_sequence_flow: {
+  label: "Recovery Orchestration Sequence"
+  style.stroke-dash: 3
+  
+  step1: "1. Load Offsets" {
+    style.fill: "#E8D5F2"
+    tooltip: "Fetches last committed positions from OffsetStore"
+  }
+  step2: "2. Discover Topics" {
+    style.fill: "#D5E8F2"
+    tooltip: "Scans data directory for existing .log files"
+  }
+  step3: "3. Scan Logs" {
+    style.fill: "#D5F2E8"
+    tooltip: "Parallel read of log entries using log.Reader"
+  }
+  step4: "4. Rebuild State" {
+    style.fill: "#F2E8D5"
+    tooltip: "Re-queues uncommitted messages to TopicManager"
+  }
+
+  step1 -> step2: "Load Success"
+  step2 -> step3: "IO Ready"
+  step3 -> step4: "Entries Validated"
+}
+
+# Core Logic Components
+RecoveryManager: {
+  shape: class
+  label: "RecoveryManager\nsizeof=128 bytes"
+  style.fill: "#E8D5F2"
+  style.stroke: "#8B5CF6"
+  style.stroke-width: 2
+
+  "+Recover()": "(total_recovered int, err error)"
+  "-recoverTopic(topic string, offsets map[string]uint64)": "error"
+  
+  dependencies: {
+    shape: text
+    label: |md
+      ### Dependencies
+      - `logWriter`: `*log.Writer` (Primary WAL)
+      - `offsetStore`: `*OffsetStore` (Committed state)
+      - `topicManager`: `*TopicManager` (Ingestion)
+      - `dataDir`: `string` (Path to logs)
+    |
+  }
+}
+
+OffsetStore: {
+  shape: class
+  label: "OffsetStore (JSON Persistence)"
+  style.fill: "#D5E8F2"
+  style.stroke: "#3B82F6"
+  style.stroke-width: 2
+
+  "+GetOffset(group, topic)": "uint64"
+  "+GetAllOffsets()": "map[string]map[string]uint64"
+  "+CommitOffset(group, topic, offset)": "error"
+
+  storage_spec: {
+    shape: text
+    label: |md
+      **File**: `consumer_offsets.json`
+      **Encoding**: UTF-8 JSON
+      json
+      {
+        "groups": {
+          "svc-orders": { "orders": 12345 }
+        }
+      }
+      
+    |
+  }
+}
+
+TopicManager: {
+  shape: class
+  label: "TopicManager (In-Memory Index)"
+  style.fill: "#D5F2E8"
+  style.stroke: "#10B981"
+  style.stroke-width: 2
+
+  "+RequeueFromRecovery(topic, payload, offset)": "void"
+  "+CreateTopic(config)": "*Topic"
+  "+GetConsumerGroup(name)": "*ConsumerGroup"
+}
+
+# IO Interface Layer
+LogIO: {
+  LogWriter: {
+    shape: class
+    label: "log.Writer (WAL)"
+    style.fill: "#F2E8D5"
+    style.stroke: "#F59E0B"
+    style.stroke-width: 2
+    "+DiscoverTopics()": "([]string, error)"
+    "+SetNextOffset(offset uint64)": "void"
+    "+Append(topic, payload)": "(uint64, error)"
+  }
+
+  LogReader: {
+    shape: class
+    label: "log.Reader (Recovery Scanner)"
+    style.fill: "#F2E8D5"
+    style.stroke: "#F59E0B"
+    style.stroke-width: 2
+    "+OpenReader(path string)": "(*Reader, error)"
+    "+ReadNext()": "(*LogEntry, error)"
+    "+ReadAll()": "([]*LogEntry, error)"
+  }
+}
+
+# Physical Storage Layout
+DataDirectory: {
+  label: "Physical Storage Layout"
+  shape: cylinder
+  style.fill: "#F5F5F5"
+  style.stroke: "#666666"
+  
+  hierarchy: {
+    shape: text
+    label: |md
+      `/var/lib/broker/data/`
+      ├── [0644] orders.log
+      ├── [0644] orders.log.dlq
+      ├── [0644] payments.log
+      ├── [0600] consumer_offsets.json
+      └── [0600] consumer_offsets.json.tmp
+    |
+  }
+}
+
+# Binary Layout Map
+LogEntry: {
+  label: "LogEntry Binary Layout (IEEE 754 / Big Endian)"
+  shape: sql_table
+  style.fill: "#FFFFFF"
+  style.stroke: "#333333"
+
+  "0x00_Offset": "uint64 (8B)" {constraint: "PK / Monotonic"}
+  "0x08_Timestamp": "int64 (8B)" {constraint: "Unix Nano"}
+  "0x10_TopicLen": "uint16 (2B)"
+  "0x12_Topic": "UTF-8 [TopicLen]byte"
+  "0x12+N_PayloadLen": "uint32 (4B)"
+  "0x16+N_Payload": "[PayloadLen]byte"
+  "0x16+N+M_CRC32": "uint32 (4B)" {constraint: "Checksum"}
+}
+
+# Connections
+RecoveryManager -> OffsetStore: "1. Load commit map" {
+  style.stroke: "#3B82F6"
+  style.stroke-width: 2
+}
+RecoveryManager -> LogIO.LogWriter: "2. Scan for .log files" {
+  style.stroke: "#F59E0B"
+  style.stroke-width: 2
+}
+RecoveryManager -> LogIO.LogReader: "3. Init sector reads" {
+  style.stroke: "#F59E0B"
+  style.stroke-dash: 3
+}
+LogIO.LogReader -> LogEntry: "4. Deserialize / Validate" {
+  style.stroke: "#666666"
+}
+RecoveryManager -> TopicManager: "5. Re-inject unacked data" {
+  style.stroke: "#10B981"
+  style.stroke-width: 2
+}
+RecoveryManager -> LogIO.LogWriter: "6. Sync LSN (lastOffset + 1)" {
+  style.stroke: "#F59E0B"
+  style.stroke-width: 2
+}
+
+LogIO.LogWriter -> DataDirectory: "Writes WAL"
+LogIO.LogReader -> DataDirectory: "Reads WAL"
+OffsetStore -> DataDirectory: "Reads offsets"
+
+# Algorithm Logic Description
+recovery_algorithm: {
+  label: "Recovery Algorithm Logic"
+  near: top-right
+  
+  algorithm_steps: {
+    shape: text
+    label: |md
+      ### Per-Topic Recovery Routine
+      1.  **Iterate** `discovered_topics` via `logWriter.DiscoverTopics()`.
+      2.  **Lookup** `minCommittedOffset` from `offsetStore.GetAllOffsets()`.
+      3.  **Instantiate** `logReader` at `minCommittedOffset`.
+      4.  **Replay** uncommitted logs to `TopicManager.Requeue()`.
+      5.  **Seal** recovery by updating `logWriter` write-head.
+    |
+  }
+}

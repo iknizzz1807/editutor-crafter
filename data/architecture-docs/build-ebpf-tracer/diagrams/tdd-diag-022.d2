@@ -1,0 +1,321 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+  colors: {
+    wall-clock: "#E74C3C"
+    wall-clock-light: "#FDEDEC"
+    monotonic: "#27AE60"
+    monotonic-light: "#EAFAF1"
+    ntp-adjust: "#F39C12"
+    ntp-adjust-light: "#FEF9E7"
+    jump-forward: "#E67E22"
+    jump-backward: "#C0392B"
+    latency-bar: "#3498DB"
+    dark-bg: "#1A1A2E"
+    border-grey: "#D5D8DC"
+  }
+}
+
+title: |md
+  # Monotonic vs Wall-Clock Time
+  ## Why eBPF Latency Measurement Requires Monotonic Time
+  *Observability Engineering Technical Specification*
+| {
+  near: top-center
+  style: {
+    font-size: 24
+    bold: true
+  }
+}
+
+direction: down
+
+# Wall-Clock Time Timeline
+wall_clock: {
+  label: "WALL-CLOCK TIME (CLOCK_REALTIME) - SYSTEM DATE/TIME"
+  style: {
+    fill: "${colors.wall-clock-light}"
+    stroke: "${colors.wall-clock}"
+    stroke-width: 2
+  }
+  
+  timeline: {
+    direction: right
+    style.stroke-width: 0
+    
+    t0: "T₀: 10:00:00.000" {
+      style.font-color: "${colors.wall-clock}"
+      style.bold: true
+      style.fill: "#FFFFFF"
+    }
+    
+    t1: "T₁: 10:00:00.050" {
+      style.font-color: "${colors.wall-clock}"
+      style.bold: true
+      style.fill: "#FFFFFF"
+    }
+    
+    ntp_event: "NTP ADJUSTMENT\n(Step Back)" {
+      shape: diamond
+      style.fill: "${colors.ntp-adjust}"
+      style.stroke: "${colors.ntp-adjust}"
+      style.font-color: "#FFFFFF"
+    }
+    
+    t2: "T₂: 10:00:00.030\n(CORRUPTED TIMESTAMP)" {
+      style.font-color: "${colors.jump-backward}"
+      style.bold: true
+      style.fill: "#FFFFFF"
+      style.stroke: "${colors.jump-backward}"
+    }
+    
+    t0 -> t1: "Step 1: 50ms elapsed" {
+      style.stroke: "${colors.wall-clock}"
+      style.font-color: "${colors.wall-clock}"
+      style.bold: true
+    }
+    
+    t1 -> ntp_event: "Step 2: External Sync" {
+      style.stroke: "${colors.ntp-adjust}"
+      style.stroke-dash: 3
+    }
+    
+    ntp_event -> t2: "Step 3: CLOCK JUMP" {
+      style.stroke: "${colors.jump-backward}"
+      style.stroke-dash: 4
+      style.font-color: "${colors.jump-backward}"
+      style.bold: true
+    }
+  }
+}
+
+# Monotonic Time Timeline
+monotonic_time: {
+  label: "MONOTONIC TIME (bpf_ktime_get_ns) - UPTIME NANOSECONDS"
+  style: {
+    fill: "${colors.monotonic-light}"
+    stroke: "${colors.monotonic}"
+    stroke-width: 2
+  }
+  
+  timeline: {
+    direction: right
+    style.stroke-width: 0
+    
+    m0: "M₀: 0ns" {
+      style.font-color: "${colors.monotonic}"
+      style.bold: true
+      style.fill: "#FFFFFF"
+    }
+    
+    m1: "M₁: 50,000,000ns" {
+      style.font-color: "${colors.monotonic}"
+      style.bold: true
+      style.fill: "#FFFFFF"
+    }
+    
+    processing: "Processing Continues..." {
+      style.italic: true
+      style.fill: "transparent"
+      style.stroke-width: 0
+    }
+    
+    m2: "M₂: 80,000,000ns\n(CONTINUOUS & ACCURATE)" {
+      style.font-color: "${colors.monotonic}"
+      style.bold: true
+      style.fill: "#FFFFFF"
+      style.stroke: "${colors.monotonic}"
+    }
+    
+    m0 -> m1: "+50,000,000ns" {
+      style.stroke: "${colors.monotonic}"
+      style.font-color: "${colors.monotonic}"
+      style.bold: true
+    }
+    
+    m1 -> processing: "Interval" {
+      style.stroke: "${colors.monotonic}"
+      style.stroke-dash: 2
+    }
+    
+    processing -> m2: "+30,000,000ns" {
+      style.stroke: "${colors.monotonic}"
+      style.font-color: "${colors.monotonic}"
+      style.bold: true
+    }
+  }
+  
+  guarantee: |md
+    ### Monotonic Guarantees:
+    - **No Regressions**: `T(n) >= T(n-1)` always holds.
+    - **NTP Immune**: NTP can adjust frequency (slewing) but never steps the counter.
+    - **Execution Linear**: Reflects actual CPU/System time passed since boot.
+  | {
+    style: {
+      fill: "#FFFFFF"
+      stroke: "${colors.monotonic}"
+    }
+  }
+}
+
+# Analysis Breakdown
+analysis: {
+  direction: right
+  
+  ntp_effect: {
+    label: "NTP IMPACT ON CALCULATION"
+    style.fill: "${colors.ntp-adjust-light}"
+    
+    math: |md
+      ## Wall-Clock Calculation (WRONG)
+      - **Start**: 10:00:00.000
+      - **End**: 10:00:00.030
+      - **Result**: <span style="color:red">**-30ms**</span>
+      - **Error**: NTP step back corrupted interval.
+      
+      ## Monotonic Calculation (RIGHT)
+      - **Start**: 0ns
+      - **End**: 80,000,000ns
+      - **Result**: <span style="color:green">**80ms**</span>
+      - **Status**: 100% Accurate
+    | {
+      style.fill: "#FFFFFF"
+    }
+  }
+  
+  latency_problem: {
+    label: "SYSTEM HAZARD: NEGATIVE LATENCY"
+    style.fill: "#FADBD8"
+    
+    hazard: |md
+      ### The eBPF Corruption Scenario:
+      If NTP steps the clock backward during a syscall:
+      1. `start = 100.050`
+      2. `NTP Step Back (-20ms)`
+      3. `end = 100.040`
+      4. `latency = -10ms`
+      
+      **Impact**:
+      - `log2(-10)` causes kernel/userspace math errors.
+      - Histogram bucket logic fails.
+      - Percentiles become mathematically impossible.
+    | {
+      style.fill: "#FFFFFF"
+      style.stroke: "${colors.wall-clock}"
+    }
+  }
+}
+
+# Implementation Specification
+implementation: {
+  direction: right
+  
+  bpf_func: "bpf_ktime_get_ns()" {
+    style: {
+      fill: "${colors.monotonic}"
+      font-color: "#FFFFFF"
+      bold: true
+    }
+    tooltip: "The standard helper for eBPF timing"
+    
+    desc: |md
+      ### Helper Spec
+      - **Returns**: ns since boot.
+      - **Clock**: `CLOCK_MONOTONIC`.
+      - **Resolution**: High (nanoseconds).
+      - **Overhead**: Extremely low (reads VDSO or system register).
+    |
+  }
+  
+  code_example: {
+    label: "BPF LATENCY PATTERN"
+    code: |c
+      // Entry Probe: Record start
+      u64 start = bpf_ktime_get_ns();
+      bpf_map_update_elem(&start_map, &pid, &start, BPF_ANY);
+
+      // Exit Probe: Calculate delta
+      u64 *start = bpf_map_lookup_elem(&start_map, &pid);
+      u64 end = bpf_ktime_get_ns();
+      if (start) {
+          // Safety: Invariant (end >= start) is guaranteed
+          u64 delta = end - *start; 
+          bpf_map_update_elem(&hist_map, &bucket, &delta, BPF_ANY);
+      }
+    | {
+      style.font: mono
+    }
+  }
+}
+
+# Comparison Matrix
+clock_comparison: {
+  grid-columns: 4
+  grid-gap: 0
+  style.fill: "#F4F6F7"
+  
+  # Header Row
+  h1: "Clock Source" { style.bold: true; style.fill: "#D5DBDB" }
+  h2: "Backing Mechanism" { style.bold: true; style.fill: "#D5DBDB" }
+  h3: "Jumps Backward?" { style.bold: true; style.fill: "#D5DBDB" }
+  h4: "Use for Latency?" { style.bold: true; style.fill: "#D5DBDB" }
+  
+  # Row 1: CLOCK_REALTIME
+  r1_c1: "CLOCK_REALTIME" { style.font-color: "${colors.wall-clock}"; style.bold: true }
+  r1_c2: "System Date (RTC/NTP)"
+  r1_c3: "YES (Admin/NTP Step)" { style.fill: "#FADBD8" }
+  r1_c4: "NEVER" { style.bold: true; style.font-color: "${colors.wall-clock}" }
+  
+  # Row 2: CLOCK_MONOTONIC
+  r2_c1: "CLOCK_MONOTONIC" { style.font-color: "${colors.monotonic}"; style.bold: true }
+  r2_c2: "Kernel Uptime"
+  r2_c3: "NO" { style.fill: "#D4EFDF" }
+  r2_c4: "YES (Standard)" { style.bold: true; style.font-color: "${colors.monotonic}" }
+  
+  # Row 3: CLOCK_MONOTONIC_RAW
+  r3_c1: "MONOTONIC_RAW" { style.font-color: "${colors.monotonic}"; style.bold: true }
+  r3_c2: "Hardware (TSC/HPET)"
+  r3_c3: "NO" { style.fill: "#D4EFDF" }
+  r3_c4: "YES (High-Precision)" { style.bold: true; style.font-color: "${colors.monotonic}" }
+}
+
+# Apply border styling to the grid
+clock_comparison.** {
+  style: {
+    stroke: "${colors.border-grey}"
+    stroke-width: 1
+  }
+}
+
+# Key Insight Anchored to bottom
+key_insight: {
+  label: "🔑 ARCHITECTURAL INVARIANT"
+  near: bottom-center
+  insight: |md
+    **Wall-clock time** is for user-facing timestamps (the "When").
+    **Monotonic time** is for measuring intervals (the "Duration").
+    In eBPF observability, using `bpf_ktime_get_ns()` is mandatory to prevent 
+    statistical corruption from NTP adjustments.
+  | {
+    style: {
+      fill: "#FCF3CF"
+      stroke: "#F1C40F"
+      stroke-width: 3
+    }
+  }
+}
+
+# Higher level connections
+wall_clock -> analysis.ntp_effect: "Causes\nCorruption" {
+  style.stroke: "${colors.wall-clock}"
+  style.bold: true
+}
+monotonic_time -> implementation.bpf_func: "Implementation\nStandard" {
+  style.stroke: "${colors.monotonic}"
+  style.bold: true
+}
+analysis.latency_problem -> clock_comparison: "Mitigated By\nClock Selection"
+implementation.code_example -> key_insight: "Final\nVerdict"

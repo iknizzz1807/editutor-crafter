@@ -1,0 +1,252 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # DLQ Replay: New Message, New Offset
+  Replay publishes a **brand new message** — it does NOT restore to original position
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  dlq_state: {
+    direction: down
+    label: "DLQ State (orders.dlq)"
+    dlq_log: {
+      shape: sql_table
+      label: "DLQ Log File"
+      e0: "0 | DLQMsg | {orig_offset: 100, ...}"
+      e1: "1 | DLQMsg | {orig_offset: 150, ...}"
+      e2: "2 | DLQMsg | {orig_offset: 200, ...} ← selected"
+    }
+    selected: {
+      label: "Selected for Replay"
+      width: 320
+      code: |'json
+        {
+          "original_topic": "orders",
+          "original_offset": 200,
+          "original_payload": [order bytes],
+          "retry_count": 5,
+          "last_failure_reason": "schema mismatch",
+          "is_replayed": false
+        }
+      '|
+    }
+  }
+  arrow1: {
+    shape: text
+    label: "POST /api/v1/dlq/orders/replay\n{\"dlq_offsets\": [2]}"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  replay_process: {
+    direction: down
+    label: "Replay Process"
+    step1: {
+      label: "1. Read DLQ Entry"
+      width: 350
+      code: |'go
+        dlqMsg := parseDLQMessage(entry.Payload)
+        // Extract original payload
+        payload := dlqMsg.OriginalPayload
+      '|
+    }
+    step2: {
+      label: "2. Wrap with Replay Metadata"
+      width: 350
+      code: |'go
+        replayPayload := map[string]interface{}{
+          "original_payload":  dlqMsg.OriginalPayload,
+          "replayed":          true,
+          "original_offset":   dlqMsg.OriginalOffset,
+          "dlq_offset":        entry.Offset,
+          "replay_count":      dlqMsg.ReplayCount + 1,
+          "replayed_at":       time.Now().UnixNano(),
+        }
+      '|
+    }
+    step3: {
+      label: "3. Publish as NEW Message"
+      width: 350
+      code: |'go
+        // This gets a NEW offset!
+        newOffset, _ := broker.Publish(
+          dlqMsg.OriginalTopic,  // "orders"
+          replayPayload,
+        )
+        // newOffset = 500 (end of queue)
+      '|
+    }
+    step1 -> step2 -> step3
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  original_topic: {
+    direction: down
+    label: "Original Topic (orders)"
+    before: {
+      label: "Before Replay"
+      shape: sql_table
+      b1: "100 | order-100"
+      b2: "101 | order-101"
+      b3: "102 | order-102"
+      b4: "..."
+      b5: "499 | order-499"
+    }
+    after: {
+      label: "After Replay"
+      shape: sql_table
+      a1: "100 | order-100"
+      a2: "101 | order-101"
+      a3: "102 | order-102"
+      a4: "..."
+      a5: "499 | order-499"
+      a6: "500 | {replayed: true, original_offset: 200, ...}"
+      a6.style.fill: "#FFF9C6"
+    }
+    before -> after: "replay appends\nat END"
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  ordering_implications: {
+    direction: down
+    label: "Ordering Implications"
+    scenario: {
+      label: "Scenario: offset 200 failed, 201-499 succeeded"
+      width: 400
+      code: |'text
+        Original order:  100 → 200 (FAIL) → 201 → ... → 499
+        After replay:    100 → 201 → ... → 499 → 500 (replay of 200)
+        Consumer sees:   order-100, order-201, ..., order-499, 
+                         THEN order-200-replayed
+      '|
+    }
+    implications: {
+      shape: class
+      label: "Key Implications"
+      ordering_lost: "Ordering NOT preserved"
+      consumers_see_new: "Consumers see replay as brand new message"
+      idempotency_required: "Consumers MUST be idempotent"
+      partial_work_repeated: "Partial work from original attempt repeated"
+    }
+    scenario -> implications
+  }
+  consumer_view: {
+    direction: down
+    label: "Consumer Perspective"
+    consumer: {
+      shape: class
+      label: "OrderConsumer (consumer.go)"
+      -topic: "string"
+      -processed_ids: "map[uint64]bool"
+      +handleMessage(msg): "void"
+    }
+    handler: {
+      label: "Message Handler"
+      width: 380
+      code: |'go
+        func (c *OrderConsumer) handleMessage(msg Message) {
+          var payload map[string]interface{}
+          json.Unmarshal(msg.Payload, &payload)
+          // Check if this is a replay
+          if replayed, ok := payload["replayed"].(bool); replayed {
+            origOffset := payload["original_offset"].(uint64)
+            log.Printf("Processing replay of offset %d", origOffset)
+          }
+          // Extract actual order data
+          orderData := payload["original_payload"]
+          c.processOrder(orderData)  // Must be idempotent!
+        }
+      '|
+    }
+    consumer -> handler
+  }
+}
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  tradeoffs: {
+    direction: down
+    label: "Trade-offs"
+    choice: {
+      shape: class
+      label: "Replay Design Decision"
+      chosen: "✓ New message, new offset (chosen)"
+      alt1: "✗ Restore to original position"
+      reason1: "Why not restore? Complex coordination required"
+      reason2: "  - Must pause all consumers"
+      reason3: "  - Must shift all subsequent offsets"
+      reason4: "  - Breaks committed offset tracking"
+      reason5: "New offset is safer: no coordination, no corruption"
+    }
+    when_ok: {
+      label: "When New-Offset Replay is OK"
+      shape: class
+      case1: "Bug was fixed — replay after fix deployed"
+      case2: "Transient failure resolved — retry makes sense"
+      case3: "Order doesn't matter — firehose pattern"
+      case4: "Consumer is idempotent — safe to reprocess"
+    }
+    when_not_ok: {
+      label: "When New-Offset Replay is NOT OK"
+      shape: class
+      case1: "Strict ordering required (state machine events)"
+      case2: "Consumer is NOT idempotent (creates duplicates)"
+      case3: "Cross-message dependencies exist"
+      solution: "Solution: 'reprocess from offset X' with checkpoint"
+    }
+  }
+}
+row6: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  flow_summary: {
+    direction: down
+    label: "Replay Flow Summary"
+    flow: {
+      shape: sequence_diagram
+      operator: Operator
+      api: InspectionAPI
+      dlq_log: DLQ Log
+      broker: Broker
+      topic: orders Topic
+      consumer: Consumer
+      operator -> api: "POST /replay {offsets: [2]}"
+      api -> dlq_log: "Read entry at offset 2"
+      dlq_log -> api: "DLQMessage {orig_offset: 200}"
+      api -> api: "Wrap with replay metadata"
+      api -> broker: "Publish('orders', replayPayload)"
+      broker -> topic: "Append as offset 500"
+      broker -> api: "return newOffset=500"
+      api -> operator: "{replay_count: 1, new_offsets: [500]}"
+      broker -> consumer: "Deliver msg 500 normally"
+    }
+  }
+}
+dlq_state -> replay_process: "1. select"
+replay_process -> original_topic: "2. append as new"
+original_topic -> ordering_implications: "3. ordering lost"
+original_topic -> consumer_view: "4. delivered normally"
+legend: {
+  near: bottom-right
+  label: "Legend"
+  new_msg: "Yellow = newly appended message"
+  new_msg.style.fill: "#FFF9C6"
+  imp: "Replay = NEW offset, end of queue"
+}

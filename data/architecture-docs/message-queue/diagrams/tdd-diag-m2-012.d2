@@ -1,0 +1,180 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    pending: "#E8F5E9"
+    inFlight: "#FFF3E0"
+    acknowledged: "#E3F2FD"
+    poison: "#FFEBEE"
+    action: "#4CAF50"
+    timeout: "#FF9800"
+    error: "#F44336"
+  }
+}
+
+title: |'md
+  # Algorithm: Visibility Timeout Scanner
+  **Ticker Interval: 1 second** | **Max Retries: 5**
+'| {near: top-center}
+
+direction: right
+
+before: "BEFORE SCAN (T+29s)" {
+  style.fill: ${colors.pending}
+  style.stroke: "#81C784"
+  style.stroke-width: 2
+  
+  content: |'md
+    ## In-Flight Map
+    | MsgID | Consumer | VisibleAfter | Retry |
+    |-------|----------|--------------|-------|
+    | 101   | cons-A   | T+30s        | 2     |
+    | 102   | cons-B   | T+30s        | 1     |
+    | 103   | cons-C   | T+28s ⚠️     | 4     |
+    | 104   | cons-D   | T+32s        | 0     |
+  '|
+}
+
+step1: "STEP 1: Iterate In-Flight Map" {
+  style.fill: "#F5F5F5"
+  style.stroke: "#9E9E9E"
+  
+  timer: "now = T+29s" {
+    shape: diamond
+    style.fill: "#FFC107"
+    style.stroke: "#FF8F00"
+  }
+  
+  check1: "Check 101:\nnow(29) < VisibleAfter(30)\n✓ NOT EXPIRED" {
+    style.fill: ${colors.inFlight}
+    style.stroke: ${colors.action}
+  }
+  check2: "Check 102:\nnow(29) < VisibleAfter(30)\n✓ NOT EXPIRED" {
+    style.fill: ${colors.inFlight}
+    style.stroke: ${colors.action}
+  }
+  check3: "Check 103:\nnow(29) > VisibleAfter(28)\n⚠️ EXPIRED!" {
+    style.fill: ${colors.timeout}
+    style.stroke: ${colors.error}
+    style.bold: true
+  }
+  check4: "Check 104:\nnow(29) < VisibleAfter(32)\n✓ NOT EXPIRED" {
+    style.fill: ${colors.inFlight}
+    style.stroke: ${colors.action}
+  }
+}
+
+step2: "STEP 2: Process Expired Message 103" {
+  style.fill: ${colors.timeout}
+  style.stroke: ${colors.error}
+  style.stroke-width: 3
+  
+  remove: "1. REMOVE from In-Flight Map" {
+    style.fill: "#FFFFFF"
+    style.stroke: ${colors.error}
+  }
+  decrement: "2. DECREMENT cons-C.InFlightCount" {
+    style.fill: "#FFFFFF"
+    style.stroke: ${colors.error}
+  }
+  increment: "3. INCREMENT RetryCounter\nretryCount[103]++ → 5" {
+    style.fill: "#BBDEFB"
+    style.stroke: "#1976D2"
+    style.bold: true
+  }
+}
+
+decision: "STEP 3: Poison Check" {
+  shape: diamond
+  style.fill: "#FFC107"
+  style.stroke: "#FF8F00"
+  label: "retryCount(5) >= MaxRetries(5)?"
+}
+
+poison_path: "YES → POISON" {
+  style.fill: ${colors.poison}
+  style.stroke: ${colors.error}
+  poison_action: "Move to PoisonQueue" {
+    style.fill: "#FFFFFF"
+    style.stroke: ${colors.error}
+  }
+  poison_log: "LOG: Message 103 → Poison Queue\n(exceeded 5 retries)" {
+    style.fill: "#FFFFFF"
+    style.font: mono
+    style.font-size: 11
+  }
+}
+
+retry_path: "NO → RETRY" {
+  style.fill: ${colors.pending}
+  style.stroke: ${colors.action}
+  requeue: "Re-add to PendingQueue" {
+    style.fill: "#FFFFFF"
+    style.stroke: ${colors.action}
+  }
+  retry_log: "LOG: Message 103 re-queued" {
+    style.fill: "#FFFFFF"
+    style.font: mono
+    style.font-size: 11
+  }
+}
+
+after: "AFTER SCAN" {
+  style.fill: ${colors.pending}
+  style.stroke: "#81C784"
+  style.stroke-width: 2
+  
+  inFlightAfter: "Updated In-Flight Map" {
+    style.fill: ${colors.inFlight}
+    content: |'md
+      | MsgID | Consumer | VisibleAfter | Retry |
+      |-------|----------|--------------|-------|
+      | 101   | cons-A   | T+30s        | 2     |
+      | 102   | cons-B   | T+30s        | 1     |
+      | 104   | cons-D   | T+32s        | 0     |
+    '|
+  }
+  
+  poisonAfter: "Poison Queue (+1)" {
+    style.fill: ${colors.poison}
+    style.multiple: true
+  }
+}
+
+# Sequence Logic
+before -> step1
+step1.timer -> step1.check1
+step1.timer -> step1.check2
+step1.timer -> step1.check3
+step1.timer -> step1.check4
+
+step1.check3 -> step2
+step2.remove -> step2.decrement
+step2.decrement -> step2.increment
+step2.increment -> decision
+
+decision -> poison_path: "YES" {
+  style.stroke: ${colors.error}
+  style.bold: true
+}
+decision -> retry_path: "NO" {
+  style.stroke: ${colors.action}
+}
+
+poison_path.poison_action -> poison_path.poison_log
+retry_path.requeue -> retry_path.retry_log
+
+step1 -> after
+poison_path -> after.poisonAfter
+retry_path -> after
+
+legend: |'md
+  ## Legend & Invariants
+  - **Green Border**: Valid / Success state.
+  - **Orange Fill**: Visibility expired (requires intervention).
+  - **Red Border**: Destructive action (DLQ or Remove).
+  - **Scanner Interval**: 1s (Deterministic).
+  - **Visibility Window**: Default 30s per message.
+'| {near: bottom-center}

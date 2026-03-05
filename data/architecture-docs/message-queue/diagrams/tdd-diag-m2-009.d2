@@ -1,0 +1,228 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    sketch: false
+    pad: 20
+  }
+  colors: {
+    pending: "#3B82F6"
+    in_flight: "#8B5CF6"
+    acknowledged: "#10B981"
+    poison: "#EF4444"
+    retry: "#F59E0B"
+    border: "#1F2937"
+    text: "#111827"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# TITLE AND SPECIFICATION
+# -----------------------------------------------------------------------------------------
+title: |md
+  # State Machine: Message Lifecycle (Consumer Group)
+  **Specification v1.2.0**
+  - Delivery Semantics: At-least-once
+  - Mechanism: Visibility Timeout + Retry Counter
+  - Terminal States: ACKNOWLEDGED, POISON
+| {
+  near: top-center
+  shape: rectangle
+  style: {
+    stroke-width: 0
+    font-size: 18
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# DATA STRUCTURES (Memory Layout Representation)
+# -----------------------------------------------------------------------------------------
+MessageStateStruct: {
+  shape: sql_table
+  label: "sizeof(MsgHeader) = 64 bytes"
+  near: top-left
+  style.fill: "#F3F4F6"
+  
+  offset_00: "UUID (16B)" {constraint: "MessageID"}
+  offset_16: "UINT32 (4B)" {constraint: "RetryCount"}
+  offset_20: "INT64 (8B)" {constraint: "VisibleAfter (UnixTS)"}
+  offset_28: "ENUM (1B)" {constraint: "CurrentState"}
+  offset_29: "BYTES (35B)" {constraint: "Padding / Metadata"}
+}
+
+# -----------------------------------------------------------------------------------------
+# STATE DEFINITIONS
+# -----------------------------------------------------------------------------------------
+states: {
+  START: ● {
+    style.fill: "${colors.border}"
+  }
+
+  PENDING: {
+    label: "PENDING\nInvariant: VisibleAfter <= now\nRetryCount >= 0"
+    style: {
+      fill: "${colors.pending}"
+      stroke: "${colors.border}"
+      stroke-width: 2
+      font-color: white
+      bold: true
+    }
+  }
+
+  IN_FLIGHT: {
+    label: "IN_FLIGHT\nInvariant: VisibleAfter > now\nOwnerID != NULL"
+    style: {
+      fill: "${colors.in_flight}"
+      stroke: "${colors.border}"
+      stroke-width: 2
+      font-color: white
+      bold: true
+    }
+  }
+
+  RETRY_DECISION: {
+    shape: diamond
+    label: "RETRY LIMIT CHECK\nGuard: count < Max"
+    style: {
+      fill: "${colors.retry}"
+      stroke: "${colors.border}"
+      stroke-width: 2
+      bold: true
+    }
+  }
+
+  ACKNOWLEDGED: {
+    shape: circle
+    label: "ACKNOWLEDGED\nTerminal: SUCCESS"
+    style: {
+      fill: "${colors.acknowledged}"
+      stroke: "${colors.border}"
+      stroke-width: 4
+      double-border: true
+      font-color: white
+      bold: true
+    }
+  }
+
+  POISON: {
+    shape: circle
+    label: "POISON (DLQ)\nTerminal: FATAL"
+    style: {
+      fill: "${colors.poison}"
+      stroke: "${colors.border}"
+      stroke-width: 4
+      double-border: true
+      font-color: white
+      bold: true
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# TRANSITIONS
+# -----------------------------------------------------------------------------------------
+states.START -> states.PENDING: "PUBLISH\n[Action: Set VisibleAfter=now]"
+
+states.PENDING -> states.IN_FLIGHT: "POLL / FETCH\n[Trigger: Consumer available]\n[Action: Set VisibleAfter = now + Timeout]" {
+  style.stroke-width: 2
+}
+
+states.IN_FLIGHT -> states.ACKNOWLEDGED: "ACK (0x11)\n[Trigger: Client Commit]\n[Action: Delete message from storage]" {
+  style.stroke: "${colors.acknowledged}"
+  style.stroke-width: 3
+}
+
+states.IN_FLIGHT -> states.RETRY_DECISION: "NACK (0x12) or TIMEOUT\n[Trigger: Client Reject or now > VisibleAfter]\n[Action: RetryCount++]" {
+  style.stroke: "${colors.retry}"
+  style.stroke-dash: 4
+}
+
+states.RETRY_DECISION -> states.PENDING: "YES\n[Guard: count < 5]\n[Action: Re-queue, Clear OwnerID]" {
+  style.stroke: "${colors.pending}"
+}
+
+states.RETRY_DECISION -> states.POISON: "NO\n[Guard: count >= 5]\n[Action: Move to {Topic}.dlq]" {
+  style.stroke: "${colors.poison}"
+  style.stroke-width: 3
+}
+
+# ILLEGAL TRANSITION TRACKING
+states.PENDING -> states.ACKNOWLEDGED: "ILLEGAL" {
+  style: {
+    stroke: red
+    stroke-dash: 2
+    opacity: 0.3
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# TECHNICAL ANNOTATIONS
+# -----------------------------------------------------------------------------------------
+visibility_logic: |md
+  ### Visibility Algorithm
+  1. **T0**: Message arrives in PENDING.
+  2. **T1**: Consumer pulls message.
+     - `VisibleAfter` = `T1 + 30s`
+  3. **T2**: If `now > VisibleAfter` and state is `IN_FLIGHT`:
+     - Transition to `RETRY_DECISION`
+     - Logic: *Background sweeper process*
+| {
+  near: top-right
+  shape: rectangle
+  style: {
+    fill: "#F9FAFB"
+    stroke: "${colors.in_flight}"
+    stroke-dash: 5
+  }
+}
+
+retry_specs: |md
+  ### Retry Constraints
+  - **MaxRetries**: 5 (Configurable per topic)
+  - **Backoff**: Fixed 10s (current impl)
+  - **Metadata**: Retry count must persist in Header
+| {
+  near: bottom-left
+  shape: rectangle
+  style: {
+    fill: "#FFFBEB"
+    stroke: "${colors.retry}"
+  }
+}
+
+dlq_specs: |md
+  ### Dead Letter Queue (POISON)
+  - Target: `system.dead_letter_storage`
+  - Retention: 14 Days
+  - Required Header: `X-Original-Error`
+| {
+  near: bottom-right
+  shape: rectangle
+  style: {
+    fill: "#FEF2F2"
+    stroke: "${colors.poison}"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# LEGEND
+# -----------------------------------------------------------------------------------------
+legend: {
+  near: bottom-center
+  direction: right
+  
+  sync: "Client-Driven" {
+    style.stroke-width: 2
+  }
+  async: "System-Driven (Timeout)" {
+    style.stroke-dash: 4
+  }
+  illegal: "Illegal Transition" {
+    style.stroke: red
+    style.stroke-dash: 2
+  }
+  
+  sync -> async: {style.opacity: 0}
+  async -> illegal: {style.opacity: 0}
+}

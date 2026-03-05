@@ -1,0 +1,178 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ROOT HEADER
+# -----------------------------------------------------------------------------
+header: {
+  label: "TCP Reliable Delivery & Congestion Control Specification (RFC 793, 5681, 6298)"
+  style.font-size: 24
+  style.bold: true
+  style.fill: "#f8f9fa"
+}
+
+# -----------------------------------------------------------------------------
+# MEMORY STRUCTURES (IMPLEMENTATION READY)
+# -----------------------------------------------------------------------------
+memory_layout: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  tcp_conn_vars: {
+    shape: sql_table
+    label: "struct tcp_conn_vars (tcp.h)"
+    f0: "0x00 | uint32_t | snd_una // Oldest unacknowledged byte"
+    f1: "0x04 | uint32_t | snd_nxt // Next byte to send"
+    f2: "0x08 | uint32_t | snd_wnd // Peer's advertised window"
+    f3: "0x0C | uint32_t | snd_up  // Send urgent pointer"
+    f4: "0x10 | uint32_t | iss     // Initial send sequence"
+    f5: "0x14 | uint32_t | rcv_nxt // Next expected byte"
+    f6: "0x18 | uint32_t | rcv_wnd // Our advertised window"
+    f7: "0x1C | uint32_t | irs     // Initial receive sequence"
+    total: "Total: 32 bytes"
+  }
+
+  tcp_congestion: {
+    shape: sql_table
+    label: "struct tcp_congestion (cc.h)"
+    f0: "0x00 | uint32_t | cwnd     // Congestion window (MSS units)"
+    f1: "0x04 | uint32_t | ssthresh // Slow start threshold"
+    f2: "0x08 | uint32_t | state    // enum cc_state"
+    f3: "0x0C | uint32_t | dup_acks // Duplicate ACK counter"
+    f4: "0x10 | uint32_t | rec_seq  // Recovery sequence marker"
+    total: "Total: 20 bytes"
+  }
+
+  tcp_rto_state: {
+    shape: sql_table
+    label: "struct tcp_rto_state (timer.h)"
+    f0: "0x00 | int32_t  | srtt     // Smoothed RTT"
+    f1: "0x04 | int32_t  | rttvar   // RTT Variation"
+    f2: "0x08 | int32_t  | rto      // Current Timeout Value"
+    f3: "0x0C | int      | init     // Boolean flag"
+    total: "Total: 16 bytes"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STATE EVOLUTION: CONNECTION FSM
+# -----------------------------------------------------------------------------
+fsm_row: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  conn_fsm: {
+    label: "TCP Connection State Machine (RFC 793)"
+    style.fill: "#eef2f3"
+    
+    CLOSED: {shape: circle}
+    LISTEN: {shape: circle}
+    SYN_SENT: {shape: circle}
+    SYN_RCVD: {shape: circle}
+    ESTABLISHED: {shape: circle; style.fill: "#ACE1AF"}
+    FIN_WAIT_1: {shape: circle}
+    FIN_WAIT_2: {shape: circle}
+    CLOSE_WAIT: {shape: circle}
+    LAST_ACK: {shape: circle}
+    TIME_WAIT: {shape: circle; style.fill: "#F6C889"}
+
+    CLOSED -> LISTEN: "PASSIVE OPEN"
+    CLOSED -> SYN_SENT: "ACTIVE OPEN | SYN"
+    LISTEN -> SYN_RCVD: "SYN | SYN+ACK"
+    SYN_SENT -> ESTABLISHED: "SYN+ACK | ACK"
+    SYN_RCVD -> ESTABLISHED: "ACK"
+    ESTABLISHED -> FIN_WAIT_1: "CLOSE | FIN"
+    ESTABLISHED -> CLOSE_WAIT: "FIN | ACK"
+    FIN_WAIT_1 -> FIN_WAIT_2: "ACK"
+    CLOSE_WAIT -> LAST_ACK: "CLOSE | FIN"
+    LAST_ACK -> CLOSED: "ACK"
+    FIN_WAIT_2 -> TIME_WAIT: "FIN | ACK"
+    TIME_WAIT -> CLOSED: "2MSL Timeout"
+  }
+
+  cc_fsm: {
+    label: "Congestion Control States (RFC 5681)"
+    style.fill: "#fff3e0"
+    
+    SLOW_START: {
+      shape: oval
+      style.fill: "#ffe0b2"
+    }
+    CONG_AVOIDANCE: {
+      shape: oval
+      style.fill: "#fff9c4"
+    }
+    FAST_RECOVERY: {
+      shape: oval
+      style.fill: "#ffccbc"
+    }
+
+    SLOW_START -> CONG_AVOIDANCE: "cwnd > ssthresh"
+    CONG_AVOIDANCE -> SLOW_START: "RTO Timeout"
+    CONG_AVOIDANCE -> FAST_RECOVERY: "3 Dup ACKs"
+    FAST_RECOVERY -> CONG_AVOIDANCE: "New Data ACK"
+    FAST_RECOVERY -> SLOW_START: "RTO Timeout"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# IMPLEMENTATION LOGIC SNIPPETS
+# -----------------------------------------------------------------------------
+logic_row: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  ack_handling: {
+    label: "ACK Processing Logic"
+    code: |'c
+      if (ack > snd_una) {
+          snd_una = ack;
+          if (state == SLOW_START) 
+              cwnd += MSS;
+          else 
+              cwnd += (MSS * MSS) / cwnd;
+          dup_acks = 0;
+      } else {
+          dup_acks++;
+      }
+    '|
+    width: 350
+  }
+
+  rto_update: {
+    label: "Jacobson/Karels RTO Calc"
+    code: |'c
+      diff = sample_rtt - srtt;
+      srtt += (diff >> 3);
+      rttvar += (abs(diff) - rttvar) >> 2;
+      rto = srtt + max(G, 4 * rttvar);
+    '|
+    width: 350
+  }
+}
+
+# -----------------------------------------------------------------------------
+# CROSS-COMPONENT INTERACTIONS
+# -----------------------------------------------------------------------------
+memory_layout.tcp_congestion -> fsm_row.cc_fsm: "state update"
+fsm_row.conn_fsm.ESTABLISHED -> logic_row.ack_handling: "triggers"
+logic_row.ack_handling -> memory_layout.tcp_congestion: "mutates cwnd"
+logic_row.rto_update -> memory_layout.tcp_rto_state: "updates rto"
+
+# Root-level legend
+legend: {
+  shape: package
+  label: "Diagram Legend"
+  success: "Green: Active/Stable State"
+  warning: "Yellow: Transient State"
+  action: "Blue: Data Modification"
+}
+legend.near: bottom-right

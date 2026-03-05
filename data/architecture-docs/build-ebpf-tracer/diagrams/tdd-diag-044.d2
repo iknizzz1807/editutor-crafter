@@ -1,0 +1,375 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # bpf_link Lifecycle Management
+  **Technical Specification: Attach → Store → Destroy → NULL**
+| {near: top-center}
+
+direction: right
+
+classes: {
+  process: {
+    shape: rectangle
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2563EB"
+      stroke-width: 2
+    }
+  }
+  link_obj: {
+    shape: hexagon
+    style: {
+      fill: "#FEF3C7"
+      stroke: "#D97706"
+      stroke-width: 2
+    }
+  }
+  fd_state: {
+    shape: oval
+    style: {
+      fill: "#D1FAE5"
+      stroke: "#059669"
+      stroke-width: 2
+    }
+  }
+  kernel: {
+    shape: diamond
+    style: {
+      fill: "#FEE2E2"
+      stroke: "#DC2626"
+      stroke-width: 2
+    }
+  }
+  null_state: {
+    shape: circle
+    style: {
+      fill: "#F3F4F6"
+      stroke: "#6B7280"
+      stroke-dash: 3
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# Memory Layout Specification
+# ---------------------------------------------------------------------------------------
+bpf_link_memory: {
+  label: "struct bpf_link (Kernel Layout)"
+  shape: sql_table
+  style.fill: "#F3F4F6"
+  
+  0: "ops: const struct bpf_link_ops *" {constraint: "8 bytes"; style.fill: "#E4DBFE"}
+  8: "prog: struct bpf_prog *" {constraint: "8 bytes (Pointer)"; style.fill: "#C7F1FF"}
+  16: "refcnt: atomic64_t" {constraint: "8 bytes"; style.fill: "#C7F1FF"}
+  24: "id: u32" {constraint: "4 bytes"; style.fill: "#C7F1FF"}
+  28: "padding" {constraint: "4 bytes"; style.fill: "#D1D5DB"}
+  32: "--- Cache Line Boundary (32/64B) ---" {style.stroke-dash: 5}
+}
+
+# ---------------------------------------------------------------------------------------
+# Phase 1: Probe Enable - Attach Operation
+# ---------------------------------------------------------------------------------------
+enable_flow: {
+  label: "Phase 1: probe_enable() Implementation"
+  style.fill: transparent
+  
+  userspace: "Userspace Process" {
+    class: process
+    probe_info: "probe_info_t {\n  name: \"syscall_read\"\n  link: NULL\n  status: DISABLED\n}" {
+      style: {
+        fill: white
+        font: mono
+        stroke: "#9CA3AF"
+      }
+    }
+  }
+
+  step1: "1. bpf_program__attach_kprobe()" {
+    shape: text
+    style: {
+      font-color: "#2563EB"
+      bold: true
+    }
+  }
+
+  kernel_attach: "Kernel BPF Subsystem" {
+    class: kernel
+    attach_op: "Attach Operation:\n• Validate program\n• Create perf event\n• Link program to kprobe\n• Return bpf_link FD"
+  }
+
+  step2: "2. Returns bpf_link*" {
+    shape: text
+    style: {
+      font-color: "#D97706"
+      bold: true
+    }
+  }
+
+  link_created: "bpf_link Object" {
+    class: link_obj
+    link_struct: "struct bpf_link {\n  fd: 7        \n  prog: *bpf_program\n  refcount: 1\n}"
+  }
+
+  step3: "3. Store link in probe_info" {
+    shape: text
+    style: {
+      font-color: "#059669"
+      bold: true
+    }
+  }
+
+  updated_probe: "probe_info_t {\n  name: \"syscall_read\"\n  link: 0x7fff1234 ──► bpf_link\n  status: ENABLED\n}" {
+    class: process
+  }
+
+  fd_open: "File Descriptor\nState: OPEN (fd=7)" {
+    class: fd_state
+  }
+
+  userspace.step1 -> kernel_attach: "attach request"
+  kernel_attach -> link_created: "allocates"
+  link_created -> updated_probe: "stored"
+  updated_probe -> fd_open: "owns"
+}
+
+# ---------------------------------------------------------------------------------------
+# Phase 2: Active State
+# ---------------------------------------------------------------------------------------
+active_state: {
+  label: "Phase 2: Active Probe State (Steady State)"
+  style.fill: transparent
+  
+  active_probe: "probe_info_t {\n  link: 0x7fff1234\n  status: ENABLED\n}" {
+    class: process
+    style: {
+      fill: "#D1FAE5"
+    }
+  }
+  
+  active_link: "bpf_link {\n  fd: 7\n  prog: attached\n}" {
+    class: link_obj
+    style: {
+      fill: "#FEF3C7"
+    }
+  }
+  
+  kprobe_active: "Kprobe Active\non __x64_sys_read" {
+    class: kernel
+    style: {
+      fill: "#FEE2E2"
+    }
+  }
+  
+  fd_active: "FD 7: OPEN\n/proc/self/fd/7 → anon_inode:bpf-link" {
+    class: fd_state
+  }
+
+  active_probe -> active_link: "holds ref"
+  active_link -> kprobe_active: "attached to"
+  active_link -> fd_active: "owns"
+}
+
+# ---------------------------------------------------------------------------------------
+# Phase 3: Probe Disable - Destroy Operation
+# ---------------------------------------------------------------------------------------
+disable_flow: {
+  label: "Phase 3: probe_disable() Logic"
+  style.fill: transparent
+
+  disable_call: "probe_disable(\"syscall_read\")" {
+    shape: text
+    style: {
+      font-color: "#DC2626"
+      bold: true
+      font-size: 20
+    }
+  }
+
+  step4: "4. bpf_link__destroy(link)" {
+    shape: text
+    style: {
+      font-color: "#DC2626"
+      bold: true
+    }
+  }
+
+  destroy_ops: "Destroy Operations:\n\n1. Detach from kprobe\n   bpf_link_detach()\n\n2. Close file descriptor\n   close(fd=7)\n\n3. Free bpf_link memory\n   free(link)" {
+    class: kernel
+    style: {
+      fill: "#FEE2E2"
+    }
+  }
+
+  step5: "5. Set probe->link = NULL" {
+    shape: text
+    style: {
+      font-color: "#6B7280"
+      bold: true
+    }
+  }
+
+  cleaned_probe: "probe_info_t {\n  name: \"syscall_read\"\n  link: NULL\n  status: DISABLED\n}" {
+    class: process
+    style: {
+      fill: "#F3F4F6"
+    }
+  }
+
+  null_ptr: "NULL\n(no dangling pointer)" {
+    class: null_state
+  }
+
+  fd_closed: "FD 7: CLOSED\n/proc/self/fd/7 → ENOENT" {
+    class: fd_state
+    style: {
+      fill: "#F3F4F6"
+      stroke-dash: 3
+    }
+  }
+
+  freed_link: "bpf_link memory\nFREED" {
+    shape: text
+    style: {
+      font-color: "#059669"
+      fill: "#D1FAE5"
+    }
+  }
+
+  disable_call -> step4
+  step4 -> destroy_ops
+  destroy_ops -> step5
+  step5 -> cleaned_probe
+  cleaned_probe -> null_ptr
+  destroy_ops -> fd_closed
+  destroy_ops -> freed_link
+}
+
+# ---------------------------------------------------------------------------------------
+# Phase 4: Resource Leak Prevention
+# ---------------------------------------------------------------------------------------
+leak_prevention: {
+  label: "Phase 4: Resource Verification"
+  style.fill: transparent
+  
+  # FIX: Single quotes bypass substitution for shell variables like $PID
+  check: 'lsof -p $PID | grep bpf' {
+    shape: text
+    style: {
+      font: mono
+      fill: "#F3F4F6"
+    }
+  }
+
+  correct: "✓ CORRECT BEHAVIOR:\n\nAfter probe_disable():\n  • FD count unchanged\n  • No stale bpf-link entries\n  • Probe can be re-enabled\n  • bpf_link__destroy() called" {
+    shape: rectangle
+    style: {
+      fill: "#D1FAE5"
+      stroke: "#059669"
+    }
+  }
+
+  leak: "✗ LEAK (if destroy skipped):\n\nSymptoms:\n  • FD count grows each enable\n  • Eventually: EMFILE error\n  • \"Too many open files\"\n  • Probes remain attached\n  • Memory leak in kernel" {
+    shape: rectangle
+    style: {
+      fill: "#FEE2E2"
+      stroke: "#DC2626"
+    }
+  }
+
+  check -> correct: "no growth"
+  check -> leak: "FDs accumulate"
+}
+
+# ---------------------------------------------------------------------------------------
+# Complete Lifecycle State Machine
+# ---------------------------------------------------------------------------------------
+lifecycle: {
+  label: "Complete Lifecycle State Machine"
+  style.fill: transparent
+
+  state_disabled: "● DISABLED\nlink = NULL" {
+    class: null_state
+  }
+
+  state_enabling: "ENABLING\nbpf_program__attach()" {
+    class: process
+    style: {
+      fill: "#E0E7FF"
+    }
+  }
+
+  state_enabled: "ENABLED\nlink = 0x...\nfd = open" {
+    class: process
+    style: {
+      fill: "#D1FAE5"
+    }
+  }
+
+  state_disabling: "DISABLING\nbpf_link__destroy()" {
+    class: process
+    style: {
+      fill: "#FEF3C7"
+    }
+  }
+
+  state_error: "ERROR\nattach failed" {
+    class: kernel
+    style: {
+      fill: "#FEE2E2"
+    }
+  }
+
+  state_disabled -> state_enabling: "trigger: probe_enable()"
+  state_enabling -> state_enabled: "guard: success"
+  state_enabling -> state_error: "guard: attach returns NULL"
+  state_enabled -> state_disabling: "trigger: probe_disable()"
+  state_disabling -> state_disabled: "action: link = NULL"
+  state_error -> state_disabled: "action: cleanup"
+
+  illegal: "ILLEGAL:\nENABLED → DISABLED\nwithout bpf_link__destroy()" {
+    shape: text
+    style: {
+      fill: "#FEE2E2"
+      stroke: "#DC2626"
+      stroke-dash: 3
+      font-color: "#DC2626"
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# Final Global Annotations
+# ---------------------------------------------------------------------------------------
+annotation: |md
+  ## Resource Management Contract
+  **Every `bpf_program__attach_*()` creates:**
+  - `bpf_link` struct (heap allocated)
+  - File descriptor (kernel resource)
+
+  **`bpf_link__destroy()` MUST be called to:**
+  1. Detach probe from kernel
+  2. Close the file descriptor
+  3. Free the bpf_link memory
+
+  **Common mistake:**
+  c
+  // WRONG - leaks FD
+  probe->link = NULL;
+
+  // CORRECT - full cleanup
+  bpf_link__destroy(probe->link);
+  probe->link = NULL;
+  
+| {near: bottom-center}
+
+# Connections between phases for flow
+enable_flow -> active_state: "Post-Attach"
+active_state -> disable_flow: "Detach Request"
+disable_flow -> leak_prevention: "Verification"
+bpf_link_memory -> enable_flow: "Internal Layout" {style.stroke-dash: 3}

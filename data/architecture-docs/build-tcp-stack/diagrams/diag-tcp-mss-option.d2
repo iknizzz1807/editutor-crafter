@@ -1,0 +1,204 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: "TCP MSS Option Negotiation"
+title.near: top-center
+title.shape: text
+title.style.font-size: 28
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  client: {
+    direction: down
+    label: "Client (Sender)"
+    style.fill: "#E8F4E8"
+    local_mss: {
+      shape: sql_table
+      label: "Local Config (tcp.h)"
+      f1: "0x00 | uint16_t | rcv_mss"
+      f2: "0x02 | uint16_t | snd_mss"
+      f3: "0x04 | uint16_t | mtu = 1500"
+      calc: "rcv_mss = mtu - 40 = 1460"
+    }
+  }
+  server: {
+    direction: down
+    label: "Server (Receiver)"
+    style.fill: "#E8E8F4"
+    remote_mss: {
+      shape: sql_table
+      label: "Local Config (tcp.h)"
+      f1: "0x00 | uint16_t | rcv_mss"
+      f2: "0x02 | uint16_t | snd_mss"
+      f3: "0x04 | uint16_t | mtu = 1500"
+      calc: "rcv_mss = mtu - 40 = 1460"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  syn_frame: {
+    label: "SYN Segment (Frame 1)"
+    width: 420
+    tcp_header: {
+      shape: sql_table
+      label: "TCP Header (syn_sent)"
+      f0: "0x00 | uint16_t | src_port = 45678"
+      f1: "0x02 | uint16_t | dst_port = 80"
+      f2: "0x04 | uint32_t | seq_num = ISS"
+      f3: "0x08 | uint32_t | ack_num = 0"
+      f4: "0x0C | uint8_t  | data_off = 6 (24 bytes)"
+      f5: "0x0D | uint8_t  | flags = SYN (0x02)"
+      f6: "0x0E | uint16_t | window = 65535"
+    }
+    mss_option: {
+      shape: sql_table
+      label: "MSS Option (Kind=2)"
+      f0: "0x00 | uint8_t  | kind = 2 (MSS)"
+      f1: "0x01 | uint8_t  | length = 4"
+      f2: "0x02 | uint16_t | mss_value = 1460"
+    }
+    note: "Options start at offset 20 (TCP_HDR_MIN_LEN)"
+  }
+  parse_logic: {
+    label: "tcp_parse_options()"
+    width: 380
+    code: |'c
+      while (i < opts_len) {
+        uint8_t kind = opts[i];
+        if (kind == TCP_OPT_MSS) {
+          result->mss = (opts[i+2] << 8) | opts[i+3];
+        }
+        i += opts[i+1];  // skip by length
+      }
+    '|
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  synack_frame: {
+    label: "SYN-ACK Segment (Frame 2)"
+    width: 420
+    tcp_header2: {
+      shape: sql_table
+      label: "TCP Header (syn_received)"
+      f0: "0x00 | uint16_t | src_port = 80"
+      f1: "0x02 | uint16_t | dst_port = 45678"
+      f2: "0x04 | uint32_t | seq_num = ISS_S"
+      f3: "0x08 | uint32_t | ack_num = ISS+1"
+      f4: "0x0C | uint8_t  | data_off = 6"
+      f5: "0x0D | uint8_t  | flags = SYN|ACK (0x12)"
+      f6: "0x0E | uint16_t | window = 65535"
+    }
+    mss_option2: {
+      shape: sql_table
+      label: "MSS Option (Kind=2)"
+      f0: "0x00 | uint8_t  | kind = 2 (MSS)"
+      f1: "0x01 | uint8_t  | length = 4"
+      f2: "0x02 | uint16_t | mss_value = 1460"
+    }
+  }
+  state_update: {
+    label: "State Update (tcp_process_synack)"
+    width: 380
+    code: |'c
+      // After parsing SYN-ACK options
+      if (seg->mss > 0) {
+        conn->vars.snd_mss = seg->mss;  // 1460
+      } else {
+        conn->vars.snd_mss = 536;  // RFC default
+      }
+      conn->vars.rcv_mss = calc_mss(1500);
+    '|
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  negotiation: {
+    label: "Effective MSS Calculation"
+    width: 420
+    formula: {
+      shape: class
+      label: "MSS Selection Logic"
+      +tcp_calculate_mss: "uint16_t(mtu)"
+      +tcp_effective_mss: "min(snd_mss, rcv_mss)"
+      -local_mss: "1460 (advertised)"
+      -remote_mss: "1460 (received)"
+      -effective: "1460 bytes max payload"
+    }
+  }
+  send_segment: {
+    label: "Segment Construction (tcp_send_more)"
+    width: 380
+    code: |'c
+      size_t seg_len = chunk_avail;
+      if (seg_len > conn->vars.snd_mss)
+        seg_len = conn->vars.snd_mss;  // 1460
+      if (seg_len > to_send)
+        seg_len = to_send;
+      // Build segment with payload <= 1460
+      tcp_send_data_segment(conn, ..., seg_len);
+    '|
+  }
+}
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  default_case: {
+    label: "Default When MSS Absent"
+    width: 420
+    style.fill: "#FFF5E6"
+    default_logic: {
+      shape: sql_table
+      label: "RFC 879 Default"
+      f0: "0x00 | const | IP_MTU_MIN = 576"
+      f1: "0x04 | const | IP_HDR_LEN = 20"
+      f2: "0x08 | const | TCP_HDR_LEN = 20"
+      f3: "0x0C | const | DEFAULT_MSS = 536"
+      note: "576 - 20 - 20 = 536 bytes"
+    }
+  }
+  comparison: {
+    label: "MSS Comparison"
+    width: 380
+    style.fill: "#E6F3FF"
+    comp_table: {
+      shape: sql_table
+      label: "Payload Limits"
+      f0: "No MSS option | 536 bytes"
+      f1: "MSS=1460     | 1460 bytes"
+      f2: "MSS mismatch | min(local, remote)"
+      f3: "MTU 9000     | MSS up to 8960"
+    }
+  }
+}
+client -> syn_frame: "1. Build SYN with MSS=1460"
+syn_frame -> server: "2. Transmit (eth0)"
+server -> synack_frame: "3. Parse, store snd_mss=1460"
+server -> synack_frame: "4. Build SYN-ACK with MSS=1460"
+synack_frame -> client: "5. Transmit (eth0)"
+client -> state_update: "6. Parse, store snd_mss=1460"
+state_update -> negotiation: "7. Both sides have effective MSS"
+negotiation -> send_segment: "8. Send data in <=1460 byte chunks"
+legend: {
+  near: bottom-center
+  style.fill: "#F5F5F5"
+  label: "Key Insight"
+  content: |md
+    **MSS negotiation is asymmetric**: Each side advertises what it can *receive*, not what it will *send*.
+    The sender's `snd_mss` is set from the **receiver's advertised MSS** in SYN-ACK.
+    Effective payload = min(what receiver can accept, what sender can generate).
+  |
+}

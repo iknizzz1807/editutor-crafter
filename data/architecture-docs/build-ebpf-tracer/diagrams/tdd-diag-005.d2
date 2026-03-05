@@ -1,0 +1,251 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  # Technical Design Artist Palette
+  colors: {
+    # Functional Mapping
+    header-bg: "#E8D5E0" # Purple (Header)
+    header-text: "#5D4A5C"
+    data-bg: "#E3F2FD"   # Blue (Data)
+    free-bg: "#E8F5E9"   # Green (Free)
+    padding-bg: "#F5F5F5" # Gray (Padding)
+    ptr-orange: "#FB8C00" # Orange (Pointers)
+    
+    # Internal UI
+    producer: "#0288D1"
+    consumer: "#D84315"
+    record-header: "#90CAF9"
+    border-dark: "#37474F"
+    text-main: "#263238"
+  }
+}
+
+title: |md
+  # BPF Ring Buffer Memory Layout
+  ## High-Performance Shared Memory Architecture (Zero-Copy)
+| {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 32
+    bold: true
+    font-color: "#263238"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# MAIN MEMORY LAYOUT (Linear View)
+# -----------------------------------------------------------------------------
+
+ring_buffer: "Linear Address Space (16MB Virtual Mapping)" {
+  style: {
+    fill: "#FFFFFF"
+    stroke: "#37474F"
+    stroke-width: 4
+    border-radius: 8
+  }
+
+  control_page: "Control Page (4 KB Page Boundary)" {
+    tooltip: "Non-data page containing atomic indices"
+    style: {
+      fill: ${vars.colors.header-bg}
+      stroke: ${vars.colors.header-text}
+      stroke-width: 2
+    }
+    
+    header_table: {
+      grid-columns: 3
+      grid-gap: 0
+      style.fill: transparent
+      
+      off: "Offset" { style.bold: true; style.underline: true }
+      field: "Field" { style.bold: true; style.underline: true }
+      size: "Size" { style.bold: true; style.underline: true }
+      
+      o1: "0x00"
+      f1: "producer_pos" { style.fill: ${vars.colors.ptr-orange}; style.font-color: white }
+      s1: "8 Bytes"
+      
+      o2: "0x08"
+      f2: "consumer_pos" { style.fill: ${vars.colors.ptr-orange}; style.font-color: white }
+      s2: "8 Bytes"
+      
+      o3: "0x10"
+      f3: "..." { style.opacity: 0.5 }
+      s3: "4080 B"
+    }
+  }
+
+  data_region: "Data Pages (16MB Region | Double-Mapped)" {
+    style: {
+      fill: "#FAFAFA"
+      stroke: ${vars.colors.border-dark}
+      stroke-dash: 5
+      border-radius: 4
+    }
+    
+    data_layout: {
+      grid-columns: 1
+      grid-gap: 15
+      style.fill: transparent
+      
+      committed_zone: "Committed Area (Readable)" {
+        style: {
+          fill: ${vars.colors.data-bg}
+          stroke: ${vars.colors.producer}
+          stroke-width: 2
+        }
+        
+        record_stream: {
+          grid-columns: 3
+          grid-gap: 5
+          style.fill: transparent
+          
+          r1: "Record [N]" {
+            style.fill: white
+            viz: {
+              grid-columns: 4
+              grid-gap: 0
+              h: "HDR\n(8B)" { style.fill: ${vars.colors.record-header} }
+              l: "TLEN\n(4B)" { style.fill: "#BBDEFB" }
+              d: "DLEN\n(4B)" { style.fill: "#BBDEFB" }
+              p: "Payload" { style.fill: "#E1F5FE" }
+            }
+          }
+          
+          r2: "Record [N+1]" {
+            style.fill: white
+            viz: {
+              grid-columns: 4
+              grid-gap: 0
+              h: "HDR\n(8B)" { style.fill: ${vars.colors.record-header} }
+              l: "TLEN\n(4B)" { style.fill: "#BBDEFB" }
+              d: "DLEN\n(4B)" { style.fill: "#BBDEFB" }
+              p: "Payload" { style.fill: "#E1F5FE" }
+            }
+          }
+          
+          r3: "..." { style.opacity: 0.5; shape: text }
+        }
+      }
+      
+      reserved_zone: "Reserved Area (Writing/Free)" {
+        style: {
+          fill: ${vars.colors.free-bg}
+          stroke: ${vars.colors.consumer}
+          stroke-dash: 4
+        }
+        content: "Pending Submit / Available for Reserve" {
+          shape: text
+          style.italic: true
+        }
+      }
+    }
+  }
+
+  footer: "Note: Virtual memory allows (pos % size) calculation without branching" {
+    shape: text
+    style: {
+      font-size: 12
+      italic: true
+      bold: true
+      font-color: "#D84315"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# BREAKOUTS & DOCUMENTATION (FIXED NEAR POSITIONS)
+# -----------------------------------------------------------------------------
+
+record_detail: "Record Header Bitfield (64-bit u64)" {
+  near: top-right
+  style: {
+    fill: "#FFFFFF"
+    stroke: ${vars.colors.border-dark}
+    shadow: true
+  }
+  
+  bits: {
+    grid-columns: 1
+    style.fill: transparent
+    
+    b1: "Bits [0..29]: LEN" { style.fill: "#E3F2FD"; tooltip: "8-byte aligned total size" }
+    b2: "Bit [30]: DISCARD" { style.fill: "#FFEBEE"; tooltip: "1 if discard() was called" }
+    b3: "Bit [31]: BUSY" { style.fill: "#FFF9C4"; tooltip: "1 during write, 0 on submit" }
+    b4: "Bits [32..63]: DATA_LEN" { style.fill: "#E8F5E9"; tooltip: "Exact payload size" }
+  }
+}
+
+operations: "API / Protocol Flow" {
+  near: center-right
+  style: {
+    fill: "#F5F5F5"
+    stroke: "#78909C"
+  }
+  
+  steps: |md
+    ### Operation Sequence
+    1. **bpf_ringbuf_reserve()**:
+       - `producer_pos` += aligned_len
+       - Header marked `BUSY`
+    2. **Write**: Direct memory copy to payload
+    3. **bpf_ringbuf_submit()**:
+       - `BUSY` bit cleared
+       - IRQ triggered for userland
+    4. **ring_buffer__consume()**:
+       - User reads `LEN` data
+       - `consumer_pos` += aligned_len
+  |
+}
+
+size_summary: "Address Space Summary" {
+  near: bottom-left
+  summary: |md
+    - **Total Pages**: (RingSize / 4096) + 1 (Control)
+    - **Double Mapping**: Virtual range [0..Size] mirrors [Size..2Size]
+    - **Alignment**: Strict 8-byte boundary enforced by kernel
+    - **State**: Lockless Single-Producer / Single-Consumer (per buffer)
+  |
+}
+
+legend: "Symbol Legend" {
+  near: bottom-right
+  items: {
+    grid-columns: 2
+    grid-gap: 10
+    h: "Control/Header" { style.fill: ${vars.colors.header-bg} }
+    d: "Committed Data" { style.fill: ${vars.colors.data-bg} }
+    f: "Free/Reserved" { style.fill: ${vars.colors.free-bg} }
+    p: "Ptr / Atomic" { style.fill: ${vars.colors.ptr-orange} }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# LOGICAL CONNECTIONS
+# -----------------------------------------------------------------------------
+
+ring_buffer.control_page.header_table.f1 -> ring_buffer.data_region.data_layout.reserved_zone: "next write target" {
+  style: {
+    stroke: ${vars.colors.ptr-orange}
+    stroke-width: 3
+    animated: true
+  }
+}
+
+ring_buffer.control_page.header_table.f2 -> ring_buffer.data_region.data_layout.committed_zone: "next read target" {
+  style: {
+    stroke: ${vars.colors.consumer}
+    stroke-width: 3
+    stroke-dash: 4
+  }
+}
+
+(ring_buffer.data_region.data_layout.committed_zone.record_stream.r1 -> record_detail)[0]: {
+  style: {
+    stroke: "#90A4AE"
+    stroke-dash: 2
+  }
+}

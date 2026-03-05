@@ -1,0 +1,290 @@
+layout-engine: elk
+theme-id: 4
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  ### Algorithm State Diagram: Log Entry Publish Flow
+  **Spec:** TDD-M3-MESSAGE-QUEUE-PUBLISH
+  **Logic:** Backpressure -> Persistence -> Routing -> Ack
+| {
+  near: top-center
+  style.stroke-width: 0
+}
+
+# --- STYLING CLASSES ---
+classes: {
+  step_container: {
+    style: {
+      stroke: "#2C3E50"
+      stroke-width: 2
+      fill: "#FBFCFC"
+      border-radius: 10
+    }
+  }
+  logic_node: {
+    shape: rectangle
+    width: 300
+    style: {
+      fill: "#EBF5FB"
+      stroke: "#2980B9"
+      stroke-width: 2
+      font-size: 14
+    }
+  }
+  state_snapshot: {
+    shape: sql_table
+    style: {
+      fill: "#F4F6F7"
+      stroke: "#7F8C8D"
+    }
+  }
+  delta_active: {
+    style: {
+      fill: "#FDEDEC"
+      stroke: "#C0392B"
+      stroke-width: 3
+      bold: true
+      font-color: "#C0392B"
+    }
+  }
+  changed_field: {
+    style: {
+      font-color: "#C0392B"
+      bold: true
+      stroke: "#C0392B"
+      stroke-width: 2
+    }
+  }
+  annotation_box: {
+    style: {
+      fill: "#FEF9E7"
+      stroke: "#F1C40F"
+      stroke-dash: 2
+      font-size: 12
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 1: INITIAL RECEPTION
+# -----------------------------------------------------------------------------
+STEP_01: "1. Receive Command" {
+  class: step_container
+  
+  logic: "Parse PUBLISH Cmd\nTopic: 'sys/logs'\nPayload: [0xDE, 0xAD]" {
+    class: logic_node
+  }
+
+  state: "Server State @ T+0" {
+    class: state_snapshot
+    Offset: "1024 (uint64)"
+    BackpressureLag: "450 (uint32)"
+    Status: "IDLE"
+    PendingAcks: "0 (int)"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 2: BACKPRESSURE EVALUATION
+# -----------------------------------------------------------------------------
+STEP_02: "2. Backpressure Check" {
+  class: step_container
+
+  logic: "eval s.backpressureManager.ShouldThrottle()\nThreshold = 1000" {
+    class: [logic_node; delta_active]
+  }
+
+  state: "Server State @ T+1" {
+    class: state_snapshot
+    Offset: "1024"
+    BackpressureLag: "450"
+    Status: "THROTTLING_CHECK" { class: changed_field }
+    PendingAcks: "0"
+  }
+
+  # Fixed: Moved inside container to associate with Step 2 without using 'near: object'
+  backpressure_logic: |md
+    **Backpressure Rule**
+    - If Lag > 1000:
+      - Return `ThrottleResponse`
+      - Terminate Flow
+  | {
+    class: annotation_box
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 3: THROTTLE DECISION (FALSE)
+# -----------------------------------------------------------------------------
+STEP_03: "3. Throttle Result" {
+  class: step_container
+
+  logic: "Result: FALSE\nLag (450) < 1000\nProceeding to Append" {
+    class: logic_node
+  }
+
+  state: "Server State @ T+2" {
+    class: state_snapshot
+    Offset: "1024"
+    BackpressureLag: "450"
+    Status: "PROCEEDING" { class: changed_field }
+    PendingAcks: "0"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 4: LOG APPEND
+# -----------------------------------------------------------------------------
+STEP_04: "4. Log Persistence" {
+  class: step_container
+
+  logic: "s.logWriter.Append()\nWrite to Segment 001.log" {
+    class: [logic_node; delta_active]
+  }
+
+  state: "Server State @ T+3" {
+    class: state_snapshot
+    Offset: "1025" { class: changed_field }
+    BackpressureLag: "450"
+    Status: "I/O_WAIT" { class: changed_field }
+    PendingAcks: "1" { class: changed_field }
+  }
+
+  # Fixed: Moved inside container to associate with Step 4 without using 'near: object'
+  append_logic: |md
+    **Persistence Durability**
+    - synchronous write
+    - `fsync()` called before Step 5
+  | {
+    class: annotation_box
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 5: OFFSET UPDATE
+# -----------------------------------------------------------------------------
+STEP_05: "5. Update Manager" {
+  class: step_container
+
+  logic: "UpdateLatestOffset(1025)\nRecalculate Backpressure" {
+    class: logic_node
+  }
+
+  state: "Server State @ T+4" {
+    class: state_snapshot
+    Offset: "1025"
+    BackpressureLag: "451" { class: changed_field }
+    Status: "TRACKING_UPDATED" { class: changed_field }
+    PendingAcks: "1"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 6: TOPIC ROUTING
+# -----------------------------------------------------------------------------
+STEP_06: "6. Internal Publish" {
+  class: step_container
+
+  logic: "s.topicManager.Publish()\nBroadcast to 3 subscr." {
+    class: [logic_node; delta_active]
+  }
+
+  state: "Server State @ T+5" {
+    class: state_snapshot
+    Offset: "1025"
+    BackpressureLag: "451"
+    Status: "FAN_OUT" { class: changed_field }
+    PendingAcks: "1"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 7: ACKNOWLEDGEMENT
+# -----------------------------------------------------------------------------
+STEP_07: "7. Send Publish ACK" {
+  class: step_container
+
+  logic: "s.sendPublishAck(client, 1025)\nTCP Flush" {
+    class: logic_node
+  }
+
+  state: "Server State @ T+6" {
+    class: state_snapshot
+    Offset: "1025"
+    BackpressureLag: "451"
+    Status: "ACK_SENT" { class: changed_field }
+    PendingAcks: "0" { class: changed_field }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 8: FINAL STATE
+# -----------------------------------------------------------------------------
+STEP_08: "8. Clean Closure" {
+  class: step_container
+
+  logic: "Routine Complete\nReady for next Command" {
+    class: logic_node
+  }
+
+  state: "Server State @ T+7" {
+    class: state_snapshot
+    Offset: "1025"
+    BackpressureLag: "451"
+    Status: "IDLE" { class: changed_field }
+    PendingAcks: "0"
+  }
+}
+
+# --- ERROR BRANCHES ---
+
+THROTTLE_TRAP: "ERROR: Throttle Active" {
+  shape: diamond
+  style.fill: "#FADBD8"
+  style.stroke: "#E74C3C"
+}
+
+LOG_ERR_TRAP: "ERROR: Append Failure" {
+  shape: diamond
+  style.fill: "#FADBD8"
+  style.stroke: "#E74C3C"
+}
+
+# --- FLOW CONNECTIONS ---
+
+STEP_01 -> STEP_02
+STEP_02 -> STEP_03: "is_throttled == false"
+STEP_02 -> THROTTLE_TRAP: "is_throttled == true" {
+  style.stroke: red
+  style.stroke-dash: 3
+}
+
+STEP_03 -> STEP_04
+STEP_04 -> STEP_05: "err == nil"
+STEP_04 -> LOG_ERR_TRAP: "err != nil" {
+  style.stroke: red
+  style.stroke-dash: 3
+}
+
+STEP_05 -> STEP_06
+STEP_06 -> STEP_07
+STEP_07 -> STEP_08
+
+# Legend for changed state
+legend: {
+  shape: rectangle
+  near: bottom-right
+  label: |md
+    ### Legend
+    - **Blue/Grey**: Logic/State Nodes
+    - <span style="color:#C0392B">**Red/Bold**</span>: Active Delta / Changed State
+    - **Diamond**: Decision Point / Trap
+    - **Yellow Box**: Implementation Constraints
+  |
+}

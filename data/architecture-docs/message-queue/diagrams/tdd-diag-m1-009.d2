@@ -1,0 +1,326 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#6B5B95"
+    data: "#4A90D9"
+    free: "#7CB342"
+    pointer: "#FF8C00"
+    changed: "#E53935"
+    border: "#37474F"
+  }
+}
+
+title: |md
+  # Algorithm Steps: FrameReader.ReadFrame
+  ### Step-by-step partial read handling with buffer state visualization
+| {near: top-center}
+
+direction: right
+
+Step_0_Initial: {
+  label: "STEP 0: Initial State"
+  style.fill: "#F5F5F5"
+  style.stroke: "${colors.border}"
+  style.stroke-width: 2
+  buffer_0: {
+    label: |md
+      **Read Buffer**
+      
+      ┌────┬────┬────┬────┬────┬────┬────┬────┐
+      │    │    │    │    │    │    │    │    │
+      └────┴────┴────┴────┴────┴────┴────┴────┘
+      
+      **Empty - awaiting data**
+    |
+    style.fill: white
+    style.stroke: "${colors.border}"
+  }
+  state_0: |md
+    **State:**
+    - `reader`: bufio.Reader connected to TCP
+    - `lengthBuf[4]`: allocated, empty
+    - `payload`: not yet allocated
+    **Invariant:** Buffer always contains complete bytes
+  |
+}
+
+Step_1a_ReadPrefix: {
+  label: "STEP 1a: Read Length Prefix (4 bytes)"
+  style.fill: "#FFF3E0"
+  style.stroke: "${colors.changed}"
+  style.stroke-width: 3
+  tcp_segment_1: {
+    label: |md
+      **TCP Segment Arrives (partial)**
+      
+      Wire: **[0x00 0x00]**  ← Only 2 of 4 bytes
+      
+      TCP may deliver 1, 2, 3, or 4 bytes
+      **No guarantee of message boundaries!**
+    |
+    style.fill: "#FFECB3"
+    style.stroke: "${colors.changed}"
+  }
+  buffer_1a: {
+    label: |md
+      **Read Buffer After Partial Read**
+      
+      ┌────┬────┬────┬────┬────┬────┬────┬────┐
+      │**0x00**│**0x00**│    │    │    │    │    │    │
+      └────┴────┴────┴────┴────┴────┴────┴────┘
+        ▲
+        │
+      **pos=2** (waiting for 2 more)
+      
+      **io.ReadFull blocks until 4 bytes received**
+    |
+    style.fill: white
+    style.stroke: "${colors.changed}"
+    style.stroke-width: 2
+  }
+  callout_1a: |md
+    **io.ReadFull Behavior:**
+    go
+    // NOT this (unreliable):
+    n, _ := reader.Read(buf)  // May return n < 4
+    // THIS (correct):
+    _, err := io.ReadFull(reader, lengthBuf)
+    // Guarantees exactly 4 bytes or error
+    
+  |
+}
+
+Step_1b_CompletePrefix: {
+  label: "STEP 1b: Complete Length Prefix"
+  style.fill: "#E8F5E9"
+  style.stroke: "${colors.free}"
+  style.stroke-width: 2
+  tcp_segment_2: {
+    label: |md
+      **Second TCP Segment Arrives**
+      
+      Wire: [0x00 0x10]  ← Remaining 2 bytes
+      
+      Total: 4 bytes = Length Prefix
+    |
+    style.fill: "#C8E6C9"
+    style.stroke: "${colors.free}"
+  }
+  buffer_1b: {
+    label: |md
+      **Read Buffer - Complete Prefix**
+      
+      ┌────┬────┬────┬────┬────┬────┬────┬────┐
+      │0x00│0x00│**0x00**│**0x10**│    │    │    │    │
+      └────┴────┴────┴────┴────┴────┴────┴────┘
+                           ▲
+                           │
+                     **pos=4** (complete)
+      
+      **Decode: length = 0x00000010 = 16 bytes**
+    |
+    style.fill: "#C8E6C9"
+    style.stroke: "${colors.free}"
+    style.stroke-width: 2
+  }
+  decode_box: {
+    label: |md
+      **Decode Length (Big-Endian)**
+      go
+      length := binary.BigEndian.Uint32(lengthBuf)
+      // length = 16
+      // Validate:
+      if length > MaxFrameSize {
+          return ErrFrameTooLarge
+      }
+      if length == 0 {
+          return ErrInvalidLength
+      }
+      
+    |
+    style.fill: "${colors.header}"
+    style.font-color: white
+  }
+}
+
+Step_2a_ReadPayload: {
+  label: "STEP 2a: Read Payload (N bytes)"
+  style.fill: "#FFF3E0"
+  style.stroke: "${colors.changed}"
+  style.stroke-width: 3
+  tcp_segment_3: {
+    label: |md
+      **Payload TCP Segments (fragmented)**
+      
+      Wire: [byte0..byte7]   ← First 8 of 16
+      Wire: [byte8..byte11]  ← Next 4
+      Wire: [byte12..byte15] ← Final 4
+      
+      16-byte payload arrives in 3 chunks
+    |
+    style.fill: "#FFECB3"
+    style.stroke: "${colors.changed}"
+  }
+  buffer_2a: {
+    label: |md
+      **Payload Buffer (partial)**
+      
+      payload[16] allocated:
+      ┌────┬────┬────┬────┬────┬────┬────┬────┐
+      │**b0** │**b1** │**b2** │**b3** │**b4** │**b5** │**b6** │**b7** │
+      ├────┼────┼────┼────┼────┼────┼────┼────┤
+      │**b8** │**b9** │**b10**│**b11**│    │    │    │    │
+      └────┴────┴────┴────┴────┴────┴────┴────┘
+                           ▲
+                           │
+                     **pos=12** (waiting for 4)
+      
+      **io.ReadFull continues buffering**
+    |
+    style.fill: white
+    style.stroke: "${colors.changed}"
+    style.stroke-width: 2
+  }
+}
+
+Step_2b_CompletePayload: {
+  label: "STEP 2b: Complete Payload"
+  style.fill: "#E8F5E9"
+  style.stroke: "${colors.free}"
+  style.stroke-width: 2
+  buffer_2b: {
+    label: |md
+      **Payload Buffer - Complete**
+      
+      ┌────┬────┬────┬────┬────┬────┬────┬────┐
+      │b0 │b1 │b2 │b3 │b4 │b5 │b6 │b7 │
+      ├────┼────┼────┼────┼────┼────┼────┼────┤
+      │b8 │b9 │b10│b11│**b12**│**b13**│**b14**│**b15**│
+      └────┴────┴────┴────┴────┴────┴────┴────┘
+                                       ▲
+                                       │
+                                 **pos=16** (complete)
+      
+      **Exactly 16 bytes received**
+    |
+    style.fill: "#C8E6C9"
+    style.stroke: "${colors.free}"
+    style.stroke-width: 2
+  }
+  complete_check: |md
+    **Completion Check:**
+    go
+    // io.ReadFull guarantees:
+    // n == len(payload) OR error
+    // At this point:
+    // - lengthBuf contains 4 bytes
+    // - payload contains 16 bytes
+    // - Ready to parse command
+    
+  |
+}
+
+Step_3_Return: {
+  label: "STEP 3: Return Complete Frame"
+  style.fill: "#E3F2FD"
+  style.stroke: "${colors.data}"
+  style.stroke-width: 3
+  frame_structure: {
+    label: |md
+      **Complete Frame Structure**
+      
+      ┌─────────────────┬──────────────────────────┐
+      │ 4 bytes         │ 16 bytes                 │
+      │ Length Prefix   │ Frame Payload            │
+      │ [0x00000010]    │ [b0...b15]               │
+      │ (big-endian)    │ (command + data)         │
+      └─────────────────┴──────────────────────────┘
+      
+      **Return: payload[16], nil**
+    |
+    style.fill: "${colors.data}"
+    style.font-color: white
+  }
+  return_code: {
+    label: |md
+      **Function Return**
+      go
+      return payload, nil
+      // payload = complete 16-byte frame
+      // Ready for ParseCommand(payload)
+      
+      **Next frame starts fresh**
+      - New length prefix read
+      - New payload allocation
+      - No state carried over
+      
+    |
+    style.fill: "#BBDEFB"
+    style.stroke: "${colors.data}"
+  }
+}
+
+error_paths: {
+  label: "Error Handling Paths"
+  style.fill: "#FFEBEE"
+  style.stroke: "#C62828"
+  style.stroke-dash: 3
+  error_io: {
+    label: |md
+      **io.EOF / io.ErrUnexpectedEOF**
+      
+      Connection closed cleanly or mid-frame
+      → Return error, close connection
+    |
+    style.fill: "#FFCDD2"
+  }
+  error_size: {
+    label: |md
+      **ErrFrameTooLarge**
+      
+      length > 10,485,760 bytes (10MB)
+      → Reject to prevent OOM attacks
+    |
+    style.fill: "#FFCDD2"
+  }
+  error_zero: {
+    label: |md
+      **ErrInvalidLength**
+      
+      length == 0
+      → Invalid frame, reject
+    |
+    style.fill: "#FFCDD2"
+  }
+}
+
+key_insight: {
+  near: bottom-center
+  # Using |' syntax to handle internal pipes in Markdown table
+  label: |'md
+    ### 🔑 Key Insight: io.ReadFull vs Read
+    
+    | Method | Guarantee | Use Case |
+    |--------|-----------|----------|
+    | `Read()` | Returns 1-N bytes | General reading |
+    | `io.ReadFull()` | Returns exactly N bytes | **Protocol framing** |
+    
+    **TCP is a byte stream** — `io.ReadFull` provides the message boundary semantics that TCP lacks.
+  '|
+  style.fill: "#FFF8E1"
+  style.stroke: "#FF8F00"
+  style.stroke-width: 2
+}
+
+Step_0_Initial -> Step_1a_ReadPrefix: "1. Request 4 bytes"
+Step_1a_ReadPrefix -> Step_1b_CompletePrefix: "2. Buffer until 4 complete"
+Step_1b_CompletePrefix -> Step_2a_ReadPayload: "3. Decode length=16\nAllocate payload[16]"
+Step_2a_ReadPayload -> Step_2b_CompletePayload: "4. Buffer until 16 complete"
+Step_2b_CompletePayload -> Step_3_Return: "5. Return payload"
+
+Step_1a_ReadPrefix -> error_paths: "timeout/error" {style.stroke-dash: 3; style.stroke: "#C62828"}
+Step_1b_CompletePrefix -> error_paths: "length invalid" {style.stroke-dash: 3; style.stroke: "#C62828"}
+Step_2a_ReadPayload -> error_paths: "connection lost" {style.stroke-dash: 3; style.stroke: "#C62828"}

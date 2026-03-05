@@ -1,0 +1,234 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Efficient Multi-Source Ring Buffer Polling
+  **epoll-based architecture vs. busy-waiting anti-pattern**
+| {near: top-center}
+row_epi: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  epi_good: {
+    direction: down
+    label: "✓ CORRECT: epoll-based polling"
+    style.fill: "#e8f5e9"
+    style.stroke: "#2e7d32"
+    rb1: {
+      label: "Ring Buffer FD 1\n(syscall events)"
+      shape: cylinder
+      style.fill: "#c8e6c9"
+    }
+    rb2: {
+      label: "Ring Buffer FD 2\n(TCP events)"
+      shape: cylinder
+      style.fill: "#c8e6c9"
+    }
+    rb3: {
+      label: "Ring Buffer FD 3\n(sched events)"
+      shape: cylinder
+      style.fill: "#c8e6c9"
+    }
+    epoll: {
+      label: "epoll instance\n(epoll_fd)"
+      shape: diamond
+      style.fill: "#81c784"
+      style.stroke: "#2e7d32"
+    }
+    wait: {
+      label: "epoll_wait()\nblocks until data"
+      shape: oval
+      style.fill: "#66bb6a"
+      style.font-color: white
+    }
+    dispatch: {
+      label: "Dispatch to\nhandler callback"
+      shape: parallelogram
+      style.fill: "#a5d6a7"
+    }
+    rb1 -> epoll: "EPOLL_CTL_ADD"
+    rb2 -> epoll: "EPOLL_CTL_ADD"
+    rb3 -> epoll: "EPOLL_CTL_ADD"
+    epoll -> wait: "monitors all FDs"
+    wait -> dispatch: "returns ready FD"
+  }
+  epi_bad: {
+    direction: down
+    label: "✗ ANTI-PATTERN: busy-waiting"
+    style.fill: "#ffebee"
+    style.stroke: "#c62828"
+    bad_rb1: {
+      label: "Ring Buffer 1"
+      shape: cylinder
+      style.fill: "#ffcdd2"
+    }
+    bad_rb2: {
+      label: "Ring Buffer 2"
+      shape: cylinder
+      style.fill: "#ffcdd2"
+    }
+    bad_rb3: {
+      label: "Ring Buffer 3"
+      shape: cylinder
+      style.fill: "#ffcdd2"
+    }
+    bad_poll: {
+      label: "while(1) {\n  poll(rb1);\n  poll(rb2);\n  poll(rb3);\n}"
+      shape: code
+      style.fill: "#ef9a9a"
+    }
+    bad_result: {
+      label: "Result:\n• 100% CPU on one core\n• Latency between polls\n• Misses burst events"
+      shape: rectangle
+      style.fill: "#ffcdd2"
+      style.stroke-dash: 3
+    }
+    bad_rb1 -> bad_poll
+    bad_rb2 -> bad_poll
+    bad_rb3 -> bad_poll
+    bad_poll -> bad_result
+  }
+}
+row_code: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  code_good: {
+    label: "epoll Setup Code"
+    width: 420
+    code: |'c
+      // Create epoll instance
+      int epoll_fd = epoll_create1(0);
+      // Register each ring buffer FD
+      struct epoll_event ev = { .events = EPOLLIN };
+      ev.data.fd = ring_buffer__fd(rb_syscall);
+      epoll_ctl(epoll_fd, EPOLL_CTL_ADD, ev.data.fd, &ev);
+      ev.data.fd = ring_buffer__fd(rb_tcp);
+      epoll_ctl(epoll_fd, EPOLL_CTL_ADD, ev.data.fd, &ev);
+      // Single blocking call wakes when ANY FD ready
+      while (!exiting) {
+        int n = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
+        for (int i = 0; i < n; i++) {
+          ring_buffer__consume(events[i].data.ptr);
+        }
+      }
+    '|
+  }
+  code_bad: {
+    label: "Busy-Wait Anti-Pattern"
+    width: 420
+    code: |'c
+      // BAD: Spins even when no data
+      while (!exiting) {
+        // Each poll may return immediately
+        // with no data, burning CPU cycles
+        ring_buffer__poll(rb_syscall, 0);  // 0 = no wait
+        ring_buffer__poll(rb_tcp, 0);
+        ring_buffer__poll(rb_sched, 0);
+        // No sleep = 100% CPU usage!
+      }
+      // WORSE: Fixed sleep adds latency
+      while (!exiting) {
+        poll_all_buffers();
+        usleep(10000);  // 10ms latency!
+      }
+    '|
+  }
+}
+row_benefits: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  benefits: {
+    label: "epoll Benefits"
+    style.fill: "#e3f2fd"
+    b1: "• Zero CPU when idle (kernel blocks)" {shape: text}
+    b2: "• Sub-millisecond response latency" {shape: text}
+    b3: "• Scales to hundreds of FDs" {shape: text}
+    b4: "• Single thread handles all sources" {shape: text}
+  }
+  timer: {
+    direction: down
+    label: "Adding Timer for Periodic Tasks"
+    style.fill: "#fff3e0"
+    timer_create: {
+      label: "timerfd_create()\nCLOCK_MONOTONIC"
+      shape: oval
+      style.fill: "#ffcc80"
+    }
+    timer_reg: {
+      label: "Register timer FD\nwith epoll"
+      shape: rectangle
+      style.fill: "#ffe0b2"
+    }
+    timer_handler: {
+      label: "Timer fires →\nupdate histograms,\nrefresh display"
+      shape: parallelogram
+      style.fill: "#ffcc80"
+    }
+    timer_create -> timer_reg -> timer_handler
+  }
+  combined: {
+    label: "Combined Event Loop"
+    width: 450
+    code: |'c
+      // Both ring buffers AND timer in one loop
+      int timer_fd = timerfd_create(CLOCK_MONOTONIC, 0);
+      struct itimerspec ts = {
+        .it_interval = {1, 0},  // 1 second
+        .it_value = {1, 0}
+      };
+      timerfd_settime(timer_fd, 0, &ts, NULL);
+      // Add timer to same epoll instance
+      ev.events = EPOLLIN;
+      ev.data.fd = timer_fd;
+      epoll_ctl(epoll_fd, EPOLL_CTL_ADD, timer_fd, &ev);
+      // Single epoll_wait handles everything
+      while (!exiting) {
+        int n = epoll_wait(epoll_fd, events, MAX, -1);
+        for (int i = 0; i < n; i++) {
+          if (events[i].data.fd == timer_fd) {
+            update_dashboard();  // Periodic
+          } else {
+            ring_buffer__consume(/*...*/);  // Event
+          }
+        }
+      }
+    '|
+  }
+}
+row_legend: {
+  direction: right
+  style.fill: "#f5f5f5"
+  leg1: "Ring Buffer FD" {shape: cylinder; style.fill: "#c8e6c9"}
+  leg2: "epoll Instance" {shape: diamond; style.fill: "#81c784"}
+  leg3: "Blocking Call" {shape: oval; style.fill: "#66bb6a"; style.font-color: white}
+  leg4: "Callback" {shape: parallelogram; style.fill: "#a5d6a7"}
+}
+row_flow: {
+  direction: down
+  label: "Event Flow: Kernel → Userspace"
+  kernel: {
+    label: "Kernel Space"
+    style.fill: "#e1f5fe"
+    style.stroke: "#0288d1"
+    kprobe: "kprobe fires" {shape: rectangle}
+    kdata: "Data written to\nring buffer" {shape: rectangle}
+    kwakeup: "Kernel wakes\nblocked epoll_wait()" {shape: rectangle}
+    kprobe -> kdata -> kwakeup
+  }
+  user: {
+    label: "User Space"
+    style.fill: "#f3e5f5"
+    style.stroke: "#7b1fa2"
+    uwait: "epoll_wait() returns" {shape: rectangle}
+    uconsume: "ring_buffer__consume()\nreads all events" {shape: rectangle}
+    uhandler: "Handler callback\nprocesses each event" {shape: rectangle}
+    uwait -> uconsume -> uhandler
+  }
+  kernel -> user: "context switch\n(only when data available)"
+}

@@ -1,0 +1,337 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header_purple: "#F3E5F5"
+    data_blue: "#E3F2FD"
+    free_green: "#E8F5E9"
+    padding_gray: "#F5F5F5"
+    pointer_orange: "#FFF3E0"
+    error_red: "#FFEBEE"
+  }
+}
+
+direction: right
+
+title: |md
+  # ACK Success Path: Message Acknowledgment Flow
+  **Protocol Specification v2.4**
+  *Intel Manual Quality Technical Layout*
+| {near: top-center}
+
+# -----------------------------------------------------------------------------
+# 1. THE PARTICIPANT: CONSUMER
+# -----------------------------------------------------------------------------
+Consumer: {
+  shape: person
+  label: "Consumer Node\n(Active Worker)"
+  tooltip: "The client processing tasks and issuing terminal ACKs"
+  style: {
+    fill: "${colors.free_green}"
+    stroke: "#4CAF50"
+    stroke-width: 2
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 2. MEMORY LAYOUT: ACK FRAME (9 BYTES TOTAL)
+# -----------------------------------------------------------------------------
+ACK_Frame: {
+  label: "Memory Layout: ACK_FRAME_T"
+  style.fill: "${colors.padding_gray}"
+  style.stroke: "#607D8B"
+  style.stroke-dash: 3
+  
+  # Technical Byte Mapping
+  offsets: {
+    shape: sql_table
+    label: "Byte Offsets"
+    0x00: "CMD_ID" {constraint: "1 Byte"}
+    0x01: "MSG_ID_0" {constraint: "8 Bytes (Big Endian)"}
+    0x09: "PADDING" {constraint: "7 Bytes (Alignment)"}
+  }
+
+  Layout: {
+    grid-columns: 2
+    grid-gap: 0
+    
+    # Row 1: CMD
+    b0_label: "0x00" { shape: text; style.font-size: 10 }
+    Byte_0: "CMD_ID (0x11)" {
+      tooltip: "ACK Command Identifier"
+      style: {
+        fill: "${colors.header_purple}"
+        stroke: "#9C27B0"
+        bold: true
+      }
+    }
+    
+    # Row 2: MessageID
+    b1_label: "0x01" { shape: text; style.font-size: 10 }
+    Bytes_1_8: "MessageID (uint64)" {
+      tooltip: "Unique correlation ID for message state"
+      width: 400
+      style: {
+        fill: "${colors.data_blue}"
+        stroke: "#2196F3"
+      }
+    }
+    
+    # Styling for manual-style alignment
+    Byte_0.label.near: top-center
+    Bytes_1_8.label.near: top-center
+  }
+}
+
+Consumer -> ACK_Frame.Layout.Byte_0: "1. syscall: write()" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 4
+}
+
+# -----------------------------------------------------------------------------
+# 3. SERVER PROCESSING: COMMAND HANDLER
+# -----------------------------------------------------------------------------
+Server_Handler: {
+  label: "Server::ACK_Handler"
+  shape: hexagon
+  style: {
+    fill: "${colors.data_blue}"
+    stroke: "#2196F3"
+    shadow: true
+  }
+}
+
+ACK_Frame.Layout.Bytes_1_8 -> Server_Handler: "2. memcpy(&buf, reg, 8)" {
+  style.stroke: "#2196F3"
+  style.animated: true
+}
+
+# -----------------------------------------------------------------------------
+# 4. LOGIC ENGINE: VALIDATION & DECISION
+# -----------------------------------------------------------------------------
+Validation: {
+  label: "Logic::Validate(msgID)"
+  style.fill: "${colors.header_purple}"
+  style.stroke: "#9C27B0"
+  
+  Internal_Checks: |md
+    **State Guard Invariants**
+    1. `lookup(cg.inFlight, msgID)`
+    2. `assert(msg.ConsumerID == req.ConsumerID)`
+    3. `assert(msg.State == DELIVERED)`
+  |
+  Internal_Checks.shape: text
+}
+
+Server_Handler -> Validation: "3. CheckGuard()" {
+  style.stroke: "#9C27B0"
+  style.stroke-dash: 3
+}
+
+Decision: {
+  shape: diamond
+  label: "Valid ACK?"
+  style.fill: "#FFF9C4"
+  style.stroke: "#FBC02D"
+}
+
+Validation -> Decision
+
+# -----------------------------------------------------------------------------
+# 5. THE SUCCESS PATH: ATOMIC MUTATIONS
+# -----------------------------------------------------------------------------
+Success_Path: {
+  label: "Commit Phase (Atomic)"
+  style.fill: "${colors.free_green}"
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+
+  Step_4: {
+    label: |md
+      **4. State Transition**
+      `SET msg.State = ACKED`
+    |
+    shape: text
+    style.fill: "#C8E6C9"
+  }
+  
+  Step_5: {
+    label: |md
+      **5. Drop Timer**
+      `timer_stop(msg.RetryTask)`
+    |
+    shape: text
+    style.fill: "#C8E6C9"
+  }
+  
+  Step_6: {
+    label: |md
+      **6. Resource Release**
+      `consumer.SlotsAvailable++`
+    |
+    shape: text
+    style.fill: "#C8E6C9"
+  }
+  
+  Step_4 -> Step_5 -> Step_6: { style.stroke: "#4CAF50" }
+}
+
+Decision -> Success_Path.Step_4: "YES (Authenticated)" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 4
+}
+
+# -----------------------------------------------------------------------------
+# 6. THE ERROR PATH
+# -----------------------------------------------------------------------------
+Error_Path: {
+  label: "Exception::Handler"
+  style.fill: "${colors.error_red}"
+  style.stroke: "#F44336"
+  
+  Failure_Logic: |md
+    **Return 0x05 (E_INFLIGHT)**
+    - Log: "Invalid message state"
+    - Metrics: `ack_fault_total++`
+  |
+  Failure_Logic.shape: text
+}
+
+Decision -> Error_Path: "NO (Illegal)" {
+  style.stroke: "#F44336"
+  style.stroke-dash: 5
+}
+
+# -----------------------------------------------------------------------------
+# 7. FLOW CONTROL: PREFETCH TRIGGER
+# -----------------------------------------------------------------------------
+Prefetch_Gate: {
+  shape: diamond
+  label: "Prefetch\nAvailable?"
+  style.fill: "#FFF9C4"
+  style.stroke: "#FBC02D"
+}
+
+Success_Path.Step_6 -> Prefetch_Gate: "7. Check Slot Availability"
+
+Trigger_Delivery: {
+  label: "8. Dispatch Next"
+  shape: oval
+  style: {
+    fill: "${colors.data_blue}"
+    stroke: "#2196F3"
+    double-border: true
+  }
+  
+  delivery_logic: |md
+    go
+    // Fetch and Stream
+    if c.InFlight < c.Prefetch {
+       task := queue.Pop()
+       go c.Deliver(task)
+    }
+    
+  |
+  delivery_logic.shape: code
+  delivery_logic.style.fill: "#BBDEFB"
+  delivery_logic.label.near: top-center
+}
+
+Wait_State: {
+  label: "Idle::Block"
+  shape: circle
+  style.fill: "${colors.padding_gray}"
+  style.stroke: "#9E9E9E"
+}
+
+Prefetch_Gate -> Trigger_Delivery: "Available" {
+  style.stroke: "#2196F3"
+  style.stroke-width: 2
+}
+
+Prefetch_Gate -> Wait_State: "Full" {
+  style.stroke: "#9E9E9E"
+  style.stroke-dash: 3
+}
+
+# -----------------------------------------------------------------------------
+# 8. STATE TRANSITION VIEW (BEFORE/AFTER)
+# -----------------------------------------------------------------------------
+State_Comparison: {
+  label: "Heap State Mutation"
+  style.fill: "#F5F5F5"
+  style.stroke: "#424242"
+  near: bottom-left
+
+  Before: {
+    label: "STATE: T-0 (IN_FLIGHT)"
+    style.fill: "${colors.error_red}"
+    b_map: "Index: { [msg_01]: PTR_STATE_DELIVERED }"
+    b_cnt: "Slots_Used: 10/10"
+  }
+  
+  After: {
+    label: "STATE: T+1 (TERMINAL)"
+    style.fill: "${colors.free_green}"
+    # Changed elements in RED + BOLD as per spec
+    a_map: "**<nil>** (Free)" { style.font-color: red }
+    a_cnt: "Slots_Used: **9**/10" { style.font-color: red }
+  }
+  
+  Before -> After: "Atomic SWAP" {
+    style.stroke: "#4CAF50"
+    style.stroke-width: 3
+    style.animated: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 9. DATA STRUCTURES (TECHNICAL SPEC)
+# -----------------------------------------------------------------------------
+Metadata: {
+  label: "System::Metadata_Definitions"
+  style.fill: "${colors.padding_gray}"
+  style.stroke: "#607D8B"
+  near: bottom-center
+
+  InFlight_Table: {
+    shape: sql_table
+    label: "Heap::InFlight_Map"
+    msg_id: "uint64 [PK]"
+    cons_id: "uuid [IDX]"
+    expiry_ts: "int64"
+  }
+  
+  Consumer_Object: {
+    shape: class
+    label: "Consumer_t"
+    uuid: "ID: uuid"
+    inflight_count: "+SlotsActive: atomic.Int32"
+    prefetch_limit: "+MaxPrefetch: int32"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 10. LEGEND
+# -----------------------------------------------------------------------------
+Legend: {
+  label: "Technical Legend"
+  style.fill: "#FFFFFF"
+  style.stroke: "#BDBDBD"
+  near: bottom-right
+  
+  Success: "Control Flow (Success)" {
+    style.stroke: "#4CAF50"
+    style.stroke-width: 3
+  }
+  Error: "Exception Path" {
+    style.stroke: "#F44336"
+    style.stroke-dash: 5
+  }
+  Transition: "State Mutation" {
+    style.stroke: "#9C27B0"
+    style.stroke-dash: 2
+  }
+}

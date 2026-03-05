@@ -1,0 +1,234 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: |md
+    # Syscall Latency Measurement Flow
+    Entry/Exit correlation → Log2 histogram → Userspace aggregation
+  | {near: top-center}
+}
+# Row 1: Entry kprobe
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  kernel_space: {
+    direction: down
+    label: "KERNEL SPACE"
+    style.fill: "#E8F4F8"
+    style.stroke: "#2B6CB0"
+    entry_kprobe: {
+      label: "T0: Entry Kprobe"
+      width: 380
+      code: |'c
+        SEC("kprobe/__x64_sys_read")
+        int trace_read_entry(struct pt_regs *ctx) {
+          u32 tid = (u32)bpf_get_current_pid_tgid();
+          u64 start = bpf_ktime_get_ns();
+          bpf_map_update_elem(&start_times, 
+                              &tid, &start, BPF_ANY);
+          return 0;
+        }
+      '|
+      style.fill: "#C6F6D5"
+      style.stroke: "#38A169"
+    }
+  }
+}
+# Row 2: Hash map (correlation)
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  hash_map: {
+    label: "Start Times Hash Map\nBPF_MAP_TYPE_HASH"
+    shape: cylinder
+    style.fill: "#FED7AA"
+    style.stroke: "#DD6B20"
+    width: 280
+    entry: {
+      shape: sql_table
+      label: "Map Entry"
+      f0: "0x00 | u32 | tid (thread ID)"
+      f1: "0x04 | u64 | start_ts (ns)"
+      sz: "16 bytes/entry"
+    }
+  }
+  annotation1: {
+    label: |md
+      **Correlation Key:** Thread ID
+      - NOT process ID (multi-threaded races)
+      - Max 10,240 concurrent syscalls
+      - Cleanup on exit probe
+    |
+    style.fill: transparent
+    style.stroke: transparent
+  }
+}
+# Row 3: Exit kprobe
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  exit_kprobe: {
+    label: "T1: Exit Kprobe"
+    width: 420
+    code: |'c
+      SEC("kretprobe/__x64_sys_read")
+      int trace_read_exit(struct pt_regs *ctx) {
+        u32 tid = (u32)bpf_get_current_pid_tgid();
+        u64 *start = bpf_map_lookup_elem(&start_times, &tid);
+        if (!start) return 0;
+        u64 end = bpf_ktime_get_ns();
+        u64 latency_ns = end - *start;
+        // Log2 bucket: floor(log2(latency_us))
+        u64 latency_us = latency_ns / 1000;
+        int bucket = 64 - __builtin_clzll(latency_us);
+        // Increment histogram bucket
+        u64 *count = bpf_map_lookup_elem(&histograms, &bucket);
+        if (count) (*count)++;
+        bpf_map_delete_elem(&start_times, &tid);
+        return 0;
+      }
+    '|
+    style.fill: "#C6F6D5"
+    style.stroke: "#38A169"
+  }
+}
+# Row 4: Histogram map
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  histogram_map: {
+    label: "Latency Histogram\nBPF_MAP_TYPE_ARRAY"
+    shape: cylinder
+    style.fill: "#E9D8FD"
+    style.stroke: "#805AD5"
+    width: 300
+    buckets: {
+      shape: sql_table
+      label: "64 Buckets (log2 scale)"
+      b0: "bucket[0]  | 0-1 μs    | u64 count"
+      b1: "bucket[1]  | 1-2 μs    | u64 count"
+      b2: "bucket[2]  | 2-4 μs    | u64 count"
+      b3: "bucket[3]  | 4-8 μs    | u64 count"
+      b10: "bucket[10] | 512μs-1ms | u64 count"
+      b20: "bucket[20] | 0.5-1s    | u64 count"
+      note: "... covers 0 to 18 hours"
+      total: "Total: 512 bytes (64 × 8)"
+    }
+  }
+  annotation2: {
+    label: |md
+      **Log2 Bucketing:**
+      - 64 buckets cover 6 orders of magnitude
+      - Each bucket: 2× range of previous
+      - No floating point (verifier-safe)
+      - `__builtin_clzll()` for efficiency
+    |
+    style.fill: transparent
+    style.stroke: transparent
+  }
+}
+# Row 5: Userspace
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  user_space: {
+    direction: down
+    label: "USERSPACE"
+    style.fill: "#FFF5F5"
+    style.stroke: "#C53030"
+    poll: {
+      label: "T2: Poll Histogram Map (1 Hz)"
+      width: 400
+      code: |'c
+        // Read all 64 buckets
+        u64 hist[64];
+        for (int b = 0; b < 64; b++) {
+          bpf_map_lookup_elem(fd, &b, &hist[b]);
+        }
+        // Calculate percentiles
+        u64 total = sum(hist);
+        u64 p50 = find_percentile(hist, 50);
+        u64 p99 = find_percentile(hist, 99);
+      '|
+      style.fill: "#FED7E2"
+      style.stroke: "#D53F8C"
+    }
+    format: {
+      label: "T3: Format & Display"
+      width: 400
+      code: |'c
+        printf("read() latency (n=%llu)\n", total);
+        for (int b = 0; b < 64; b++) {
+          if (hist[b] == 0) continue;
+          double pct = hist[b] * 100.0 / total;
+          printf("  %2d-%-4dus: %8llu (%5.1f%%) %s\n",
+                 1<<b, (1<<(b+1))-1, hist[b], pct, bar(pct));
+        }
+      '|
+      style.fill: "#FED7E2"
+      style.stroke: "#D53F8C"
+    }
+  }
+}
+# Arrows with timing annotations
+kernel_space.entry_kprobe -> hash_map: "tid → start_ts\n~50ns write" {
+  style.stroke: "#38A169"
+  style.stroke-width: 2
+}
+hash_map -> exit_kprobe: "lookup tid\n~30ns read" {
+  style.stroke: "#DD6B20"
+  style.stroke-width: 2
+}
+exit_kprobe -> histogram_map: "bucket++\n~40ns increment" {
+  style.stroke: "#805AD5"
+  style.stroke-width: 2
+}
+histogram_map -> user_space.poll: "bpf_map_lookup_elem()\n64 × ~100ns = ~6μs" {
+  style.stroke: "#C53030"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+}
+user_space.poll -> user_space.format: "aggregate &\ncalculate p50/p99" {
+  style.stroke: "#D53F8C"
+  style.stroke-width: 2
+}
+# Timing legend
+legend: {
+  near: bottom-right
+  label: "Timing Summary"
+  style.fill: "#F7FAFC"
+  style.stroke: "#A0AEC0"
+  t: {
+    shape: sql_table
+    label: "End-to-End Latency"
+    e0: "T0 → T1 | syscall duration | variable"
+    e1: "T1 → T2 | poll interval | ~1 second"
+    e2: "T2 → T3 | format + display | ~1ms"
+    note: "Per-probe overhead: ~100-150ns"
+  }
+}
+# Data flow summary
+flow_summary: {
+  near: bottom-left
+  label: |md
+    **Data Flow:**
+    1. **Entry kprobe** → Write (tid, timestamp) to hash map
+    2. **Exit kprobe** → Read timestamp, compute latency, increment histogram bucket
+    3. **Userspace poll** → Read all 64 buckets (1 Hz)
+    4. **Display** → Format histogram with percentile annotations
+    **Key Insight:** Histogram computed entirely in kernel.
+    Only 512 bytes transferred per poll (vs. 16 bytes per event).
+    At 100K syscalls/sec: **300× reduction** in data transfer.
+  |
+  style.fill: "#EBF8FF"
+  style.stroke: "#3182CE"
+}

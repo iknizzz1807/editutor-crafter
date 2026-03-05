@@ -1,0 +1,142 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- HEADER SECTION ---
+header: {
+  shape: package
+  label: "Timer Wheel Architecture (timer.h / timer.c)"
+  style.fill: "#f8f9fa"
+  
+  title: |md
+    # Timer Wheel for Efficient TCP Retransmission
+    Implementation of an O(1) timer management system using a circular buffer of buckets.
+  |
+}
+
+# --- DATA STRUCTURES (Memory Layouts) ---
+data_layer: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  timer_entry_t: {
+    shape: sql_table
+    label: "struct timer_entry_t (timer.h)"
+    f0: "0x00 | uint32_t | seq // Sequence number"
+    f1: "0x04 | uint32_t | padding"
+    f2: "0x08 | uint64_t | transmit_time"
+    f3: "0x10 | uint64_t | first_tx_time // Karn's algorithm"
+    f4: "0x18 | int      | valid // Occupancy flag"
+    f5: "0x1C | uint32_t | padding"
+    total: "Total: 32 bytes"
+  }
+
+  timer_wheel_t: {
+    shape: sql_table
+    label: "struct timer_wheel_t (timer.h)"
+    f0: "0x00 | timer_entry_t*[N] | wheel // Bucket array"
+    f1: "0x08 | int               | current_bucket"
+    f2: "0x0C | int               | padding"
+    f3: "0x10 | uint64_t          | current_tick"
+    sz: "Total: 24 bytes (on 64-bit)"
+  }
+}
+
+# --- LOGIC & ALGORITHM SECTION ---
+logic_layer: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  TimerManager: {
+    shape: class
+    label: "Timer Manager (timer.c)"
+    "+init(wheel: timer_wheel_t*)": "void"
+    "+add(wheel: timer_wheel_t*, seq: uint32_t)": "int"
+    "+tick(wheel: timer_wheel_t*)": "void"
+    "-process_expired(idx: int)": "void"
+    "-calculate_hash(seq: uint32_t)": "uint32_t"
+  }
+
+  tick_algorithm: {
+    label: "Algorithm: timer_wheel_tick"
+    width: 400
+    code: |'c
+      wheel->current_tick++;
+      int b = wheel->current_bucket;
+      timer_entry_t* entries = wheel->wheel[b];
+      for (int i=0; i < BUCKET_SIZE; i++) {
+        if (entries[i].valid) {
+          entries[i].valid = 0;
+          retransmit_handler(entries[i].seq);
+        }
+      }
+      wheel->current_bucket = (b + 1) % N_BUCKETS;
+    '|
+  }
+}
+
+# --- SYSTEM INTEGRATION ---
+integration_layer: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  tcp_connection: {
+    shape: class
+    label: "TCP Connection (conn.c)"
+    "-wheel": "timer_wheel_t*"
+    "-rto_state": "RTOState"
+    "-send_buf": "SendBuffer"
+    "+conn_send(data: uint8_t*, len: size_t)": "int"
+    "+conn_on_ack(seq: uint32_t)": "void"
+    "+conn_tick()": "void"
+  }
+
+  rto_state: {
+    shape: sql_table
+    label: "struct RTOState (rto.h)"
+    srtt: "0x00 | int32_t | Smoothed RTT"
+    rttvar: "0x04 | int32_t | RTT Variance"
+    rto: "0x08 | int32_t | Current Timeout"
+    total: "Total: 12 bytes"
+  }
+}
+
+# --- CONNECTIONS & FLOW ---
+
+data_layer.timer_wheel_t.f0 -> data_layer.timer_entry_t: "points to"
+
+logic_layer.TimerManager -> data_layer.timer_wheel_t: "manages"
+logic_layer.TimerManager -> logic_layer.tick_algorithm: "implements"
+
+integration_layer.tcp_connection -> logic_layer.TimerManager: "calls"
+integration_layer.tcp_connection -> integration_layer.rto_state: "contains"
+
+# Arrow annotations
+logic_layer.TimerManager -> data_layer.timer_entry_t: "uint32_t | add" {
+  style.stroke: "#2ecc71"
+}
+
+integration_layer.tcp_connection -> logic_layer.TimerManager: "void | tick" {
+  style.stroke: "#3498db"
+}
+
+# Legend and Constraints
+legend: {
+  shape: package
+  label: "Performance Characteristics"
+  
+  metrics: |md
+    - **Add/Cancel**: O(1)
+    - **Tick Processing**: O(1) avg
+    - **Memory**: O(N * BUCKET_SIZE)
+    - **Granularity**: 1ms (standard)
+  |
+}
+legend.near: bottom-right

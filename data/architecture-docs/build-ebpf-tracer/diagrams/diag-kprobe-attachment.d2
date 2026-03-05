@@ -1,0 +1,288 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Kprobe Attachment Mechanics
+  Street-level view of dynamic kernel instrumentation
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  normal_flow: {
+    direction: down
+    label: "Normal Execution (No Kprobe)"
+    kernel_func: {
+      label: "do_sys_openat2 (kernel symbol)"
+      width: 400
+      prologue: {
+        label: "Function Prologue"
+        code: |'c
+          push   rbp
+          mov    rbp, rsp
+          sub    rsp, 0x40
+        '|
+        width: 380
+        style.fill: "#E8F5E9"
+      }
+      body_instr: {
+        label: "Function Body"
+        code: |'c
+          // ... syscall implementation ...
+          copy_from_user(filename, ...)
+          getname_flags(filename, ...)
+          // ... file open logic ...
+        '|
+        width: 380
+        style.fill: "#E3F2FD"
+      }
+      epilogue: {
+        label: "Function Epilogue"
+        code: |'c
+          add    rsp, 0x40
+          pop    rbp
+          ret
+        '|
+        width: 380
+        style.fill: "#FFF3E0"
+      }
+    }
+    flow_normal: {
+      label: "Instruction Flow"
+      width: 400
+      style.fill: transparent
+      style.stroke: transparent
+      n1: "Caller" {shape: circle}
+      n2: "Entry\n(0x0)" {shape: circle; style.fill: "#C8E6C9"}
+      n3: "Body" {shape: circle; style.fill: "#BBDEFB"}
+      n4: "Ret\n(0x1A8)" {shape: circle; style.fill: "#FFE0B2"}
+      n5: "Return to Caller" {shape: circle}
+      n1 -> n2: "call"
+      n2 -> n3
+      n3 -> n4
+      n4 -> n5: "ret"
+    }
+  }
+  kprobe_flow: {
+    direction: down
+    label: "With Kprobe Attached"
+    kprobe_arch: {
+      label: "Kprobe Infrastructure"
+      width: 400
+      breakpoint: {
+        label: "Instruction Patch (at entry)"
+        code: |'c
+          // Original:  push rbp
+          // Patched:   int3 (0xCC)
+          // Saved:     push rbp (in kprobe struct)
+        '|
+        width: 380
+        style.fill: "#FFCDD2"
+      }
+      kprobe_handler: {
+        label: "Kprobe Handler Chain"
+        code: |'c
+          // 1. Save registers (pt_regs)
+          // 2. Call kprobe->pre_handler()
+          // 3. Single-step original instr
+          // 4. Call kprobe->post_handler()
+          // 5. Resume execution
+        '|
+        width: 380
+        style.fill: "#F3E5F5"
+      }
+    }
+    ebpf_entry: {
+      label: "Entry Kprobe → eBPF Program"
+      width: 400
+      ebpf_prog_entry: {
+        label: "trace_openat2 (eBPF)"
+        code: |'c
+          SEC("kprobe/do_sys_openat2")
+          int BPF_KPROBE(trace_openat2, int dfd,
+                         const char *filename) {
+            // 1. Get PID/TID
+            u64 pid_tgid = bpf_get_current_pid_tgid();
+            // 2. Record timestamp
+            u64 start = bpf_ktime_get_ns();
+            // 3. Store in hash map (key=tid)
+            bpf_map_update_elem(&start_times,
+                                &tid, &start, BPF_ANY);
+            return 0;  // Continue execution
+          }
+        '|
+        width: 380
+        style.fill: "#E1F5FE"
+      }
+    }
+    ebpf_exit: {
+      label: "Exit Kprobe (Kretprobe) → eBPF Program"
+      width: 400
+      ebpf_prog_exit: {
+        label: "trace_openat2_ret (eBPF)"
+        code: |'c
+          SEC("kretprobe/do_sys_openat2")
+          int BPF_KRETPROBE(trace_openat2_ret, int ret) {
+            // 1. Lookup start time by tid
+            u64 *start = bpf_map_lookup_elem(
+                            &start_times, &tid);
+            // 2. Compute latency
+            u64 latency = bpf_ktime_get_ns() - *start;
+            // 3. Update histogram, cleanup
+            update_histogram(SYS_OPENAT, latency);
+            bpf_map_delete_elem(&start_times, &tid);
+            return 0;
+          }
+        '|
+        width: 380
+        style.fill: "#FFF8E1"
+      }
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  timing_diagram: {
+    direction: down
+    label: "Timing: Entry + Exit Kprobe Sequence"
+    width: 800
+    timeline: {
+      shape: sequence_diagram
+      userspace
+      kernel_func: "do_sys_openat2()"
+      kprobe_entry: "kprobe handler"
+      ebpf_entry: "eBPF program"
+      ebpf_exit: "eBPF program (ret)"
+      kprobe_exit: "kretprobe handler"
+      entry_phase: {
+        userspace -> kernel_func: "syscall entry"
+        kernel_func -> kprobe_entry: "int3 trap"
+        kprobe_entry -> ebpf_entry: "pre_handler callback"
+        ebpf_entry.t1 -> ebpf_entry.t1: "record start time"
+        ebpf_entry -> kprobe_entry: "return 0"
+        kprobe_entry -> kernel_func: "single-step, resume"
+      }
+      body_phase: {
+        kernel_func.t1 -> kernel_func.t1: "function body executes"
+        kernel_func.t1.tooltip: "Open file, check permissions, etc."
+      }
+      exit_phase: {
+        kernel_func.t2 -> kprobe_exit: "function return (ret instr)"
+        kprobe_exit -> ebpf_exit: "handler callback"
+        ebpf_exit.t1 -> ebpf_exit.t1: "compute latency"
+        ebpf_exit -> kprobe_exit: "return 0"
+        kprobe_exit -> userspace: "return to caller"
+      }
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  struct_layout: {
+    direction: down
+    label: "Kprobe Data Structures"
+    kprobe_struct: {
+      shape: sql_table
+      label: "struct kprobe (linux/kprobes.h)"
+      f0: "0x00 | struct list_head | list"
+      f1: "0x10 | const char *     | symbol_name"
+      f2: "0x18 | kprobe_opcode_t *| addr"
+      f3: "0x20 | kprobe_opcode_t  | opcode (saved)"
+      f4: "0x21 | kprobe_opcode_t  | insn[4]"
+      f5: "0x28 | kprobe_pre_handler_t | pre_handler"
+      f6: "0x30 | kprobe_post_handler_t| post_handler"
+      sz: "Total: ~56 bytes + handlers"
+    }
+    pt_regs: {
+      shape: sql_table
+      label: "struct pt_regs (arch/x86)"
+      f0: "0x00 | unsigned long | r15"
+      f1: "0x08 | unsigned long | r14"
+      f2: "0x10 | unsigned long | r13"
+      f3: "0x18 | unsigned long | r12"
+      f4: "0x20 | unsigned long | bp"
+      f5: "0x28 | unsigned long | bx"
+      f6: "0x30 | unsigned long | r11"
+      f7: "0x38 | unsigned long | r10"
+      f8: "0x40 | unsigned long | r9"
+      f9: "0x48 | unsigned long | r8"
+      f10: "0x50 | unsigned long | ax"
+      f11: "0x58 | unsigned long | cx"
+      f12: "0x60 | unsigned long | dx"
+      f13: "0x68 | unsigned long | si"
+      f14: "0x70 | unsigned long | di"
+      f15: "0x78 | unsigned long | orig_ax"
+      f16: "0x80 | unsigned long | ip"
+      f17: "0x88 | unsigned long | cs"
+      f18: "0x90 | unsigned long | flags"
+      f19: "0x98 | unsigned long | sp"
+      f20: "0xA0 | unsigned long | ss"
+      sz: "Total: 168 bytes (saved on trap)"
+    }
+  }
+  attachment_flow: {
+    direction: down
+    label: "Attachment Flow"
+    attach_steps: {
+      label: "libbpf Attachment Sequence"
+      code: |'c
+        // 1. Find BPF program by section name
+        prog = bpf_object__find_program_by_name(
+                   obj, "trace_openat2");
+        // 2. Attach kprobe (creates kprobe struct internally)
+        link = bpf_program__attach_kprobe(
+                   prog, false, "do_sys_openat2");
+        //             is_ret=0 (entry)  ^symbol
+        // 3. For kretprobe:
+        link_ret = bpf_program__attach_kprobe(
+                   prog, true, "do_sys_openat2");
+        //              is_ret=1 (exit)
+        // Internally:
+        // - perf_event_open() with PERF_TYPE_TRACEPOINT
+        // - ioctl(PERF_EVENT_IOC_SET_BPF, prog_fd)
+        // - ioctl(PERF_EVENT_IOC_ENABLE)
+      '|
+      width: 380
+    }
+    arg_extraction: {
+      label: "Argument Extraction via pt_regs"
+      code: |'c
+        // BPF_KPROBE macro expands to:
+        #define BPF_KPROBE(name, args...) \
+          name(struct pt_regs *ctx) { \
+            return ____##name(ctx, \
+              _BPF_KPROBE_READ_ARGS(args)); \
+          }
+        // PT_REGS_PARM macros read registers:
+        // x86-64 calling convention:
+        //   arg1 = rdi, arg2 = rsi, arg3 = rdx
+        //   arg4 = rcx, arg5 = r8,  arg6 = r9
+        #define PT_REGS_PARM1(x) ((x)->di)
+        #define PT_REGS_PARM2(x) ((x)->si)
+        #define PT_REGS_PARM3(x) ((x)->dx)
+      '|
+      width: 380
+    }
+  }
+}
+legend: {
+  near: bottom-center
+  label: "Color Legend"
+  style.fill: "#FAFAFA"
+  colors: {
+    direction: right
+    normal_code: "Normal Code" {style.fill: "#E8F5E9"}
+    breakpoint: "Breakpoint Patch" {style.fill: "#FFCDD2"}
+    kprobe_infra: "Kprobe Handler" {style.fill: "#F3E5F5"}
+    ebpf_entry_color: "eBPF Entry Probe" {style.fill: "#E1F5FE"}
+    ebpf_exit_color: "eBPF Exit Probe" {style.fill: "#FFF8E1"}
+  }
+}

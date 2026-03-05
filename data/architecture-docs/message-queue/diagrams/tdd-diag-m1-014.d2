@@ -1,0 +1,131 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Sequence: Connection Cleanup on Disconnect
+  Critical ordering prevents message routing to dead connections
+| {near: top-center}
+
+shape: sequence_diagram
+
+# Participants Definitions
+Client: Client Terminal
+Server: "Server\n(Connection Handler)"
+Router: "TopicRouter\n(Subscriptions)"
+ConnMgr: "ConnectionManager\n(Registry)"
+TCP: "TCP Socket"
+
+# Step 1: Detection - either path triggers cleanup
+DETECTION_PHASE: {
+  label: "DETECTION PHASE"
+  Client -> Server: "network activity"
+  Server."**Two detection paths:**\n1. Read error (connection reset, EOF)\n2. Heartbeat timeout (60s inactivity)"
+}
+
+# Path A: Read Error Detection
+PATH_A: {
+  label: "PATH A: Read Error"
+  TCP -> Server: "ReadFrame() returns error" {
+    style: {
+      stroke: red
+      stroke-dash: 3
+    }
+  }
+  Server -> Server: "detect: net.Error or io.EOF"
+}
+
+# Path B: Heartbeat Timeout
+PATH_B: {
+  label: "PATH B: Heartbeat Timeout"
+  Server -> Server: "heartbeatMonitor checks" {
+    style.stroke-dash: 3
+  }
+  Server."LastActivity > 60s\n→ timeout detected"
+}
+
+# Both paths converge to cleanup
+ATOMIC_CLEANUP_SEQUENCE: {
+  label: "CRITICAL: ATOMIC CLEANUP SEQUENCE"
+  
+  Server."**⚠️ ORDER IS CRITICAL**\nSteps must execute in this exact sequence\nto prevent race conditions"
+
+  # Step 1: Get subscription snapshot FIRST
+  Server -> Router: "client.GetSubscriptions()"
+  Router -> Server: "topics[]" {
+    style: {
+      stroke: "#4A90D9"
+      bold: true
+    }
+  }
+  Server."1. CAPTURE subscriptions\n(snapshot under lock)"
+
+  # Step 2: Unsubscribe from ALL topics
+  UNSUB_PHASE: {
+    Server -> Router: "Unsubscribe(topic[0], client)"
+    Router -> Router: "remove from subscriber map"
+    Router -> Router: "stop delivery goroutine" {
+      style: {
+        stroke: "#E67E22"
+        bold: true
+      }
+    }
+    
+    Server -> Router: "Unsubscribe(topic[1], client)"
+    Router -> Router: "remove from subscriber map"
+    Router -> Router: "stop delivery goroutine"
+    
+    Server -> Router: "Unsubscribe(topic[N], client)" {
+      style.multiple: true
+    }
+  }
+  Router."2. REMOVE all subscriptions\n(stops message routing)"
+
+  # Step 3: Unregister from connection manager
+  Server -> ConnMgr: "Unregister(client.ID)" {
+    style: {
+      stroke: "#8E44AD"
+      bold: true
+    }
+  }
+  ConnMgr -> ConnMgr: "delete(connections, ID)"
+  ConnMgr."3. UNREGISTER from registry\n(connection no longer tracked)"
+
+  # Step 4: Close socket LAST
+  Server -> TCP: "conn.Close()" {
+    style: {
+      stroke: "#C0392B"
+      bold: true
+    }
+  }
+  TCP."4. CLOSE socket\n(connection terminated)"
+}
+
+# Verification: No messages to dead connection
+INVARIANT_VERIFICATION: {
+  label: "INVARIANT VERIFICATION"
+  Server."**Guaranteed state after cleanup:**\n✅ No topic has this client in subscriber map\n✅ No delivery goroutines running for client\n✅ ConnectionManager has no record\n✅ TCP socket closed\n\n**Result:** Future Publish() calls cannot\nroute messages to this dead client"
+}
+
+# Legend and Annotations
+legend: |md
+  ### Color Key & Implementation Details
+  - 🔵 **Blue**: Subscription snapshot capture (Atomic Read)
+  - 🟠 **Orange**: Goroutine lifecycle (Resource Reclamation)
+  - 🟣 **Purple**: Registry update (Metadata Sync)
+  - 🔴 **Red**: Socket closure (Physical Termination)
+
+  **Implementation Rule:**
+  Steps 1 → 2 → 3 → 4 **MUST** be sequential.
+  Closing the socket (4) before unsubscribing (2) allows 
+  the Router to attempt writes to a closed file descriptor.
+| {near: bottom-center}
+
+# Global Styles
+***.style.font-size: 14
+(*** -> ***)[*]: {
+  style.font-size: 12
+}

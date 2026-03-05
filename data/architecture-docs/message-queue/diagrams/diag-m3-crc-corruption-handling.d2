@@ -1,0 +1,351 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: CRC Corruption Detection & Recovery {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 32
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  log_file: {
+    direction: down
+    label: "Log File (orders.log)"
+    style.fill: "#E8F4F8"
+    entry0: {
+      label: "Entry 0"
+      shape: rectangle
+      width: 200
+      style.fill: "#90EE90"
+    }
+    entry1: {
+      label: "Entry 1"
+      shape: rectangle
+      width: 200
+      style.fill: "#FF6B6B"
+      tooltip: "Corrupted: bit flip in payload"
+    }
+    entry2: {
+      label: "Entry 2"
+      shape: rectangle
+      width: 200
+      style.fill: "#90EE90"
+    }
+    entry3: {
+      label: "Entry 3"
+      shape: rectangle
+      width: 200
+      style.fill: "#90EE90"
+    }
+    entry0 -> entry1 -> entry2 -> entry3: {style.stroke: transparent}
+  }
+  recovery_flow: {
+    direction: down
+    label: "Recovery Process"
+    style.fill: "#FFF8DC"
+    width: 400
+    step1_read: {
+      label: "1. Read Entry 0"
+      width: 360
+      code: |'go
+        entry, err := reader.ReadNext()
+        // offset: 0, payload: "order-1"
+        // CRC: calculated=0xABC123, stored=0xABC123 ✓
+      '|
+      style.fill: "#90EE90"
+    }
+    step2_read: {
+      label: "2. Read Entry 1"
+      width: 360
+      code: |'go
+        entry, err := reader.ReadNext()
+        // CRC: calculated=0xDEF456, stored=0xDEF000
+        // err == ErrCRCMismatch ✗
+      '|
+      style.fill: "#FF6B6B"
+    }
+    step3_skip: {
+      label: "3. Skip & Warn"
+      width: 360
+      code: |'go
+        log.Printf("WARNING: Corrupted entry")
+        corruptedCount++
+        r.skipToNextValid()
+      '|
+      style.fill: "#FFD93D"
+    }
+    step4_scan: {
+      label: "4. Scan Forward"
+      width: 360
+      code: |'go
+        // Scan byte-by-byte looking for
+        // valid header pattern
+        for offset := pos; ; offset++ {
+          if looksLikeValidHeader(buf) {
+            return offset // Found Entry 2
+          }
+        }
+      '|
+      style.fill: "#87CEEB"
+    }
+    step5_continue: {
+      label: "5. Continue Recovery"
+      width: 360
+      code: |'go
+        // Resume from Entry 2
+        entry, err := reader.ReadNext()
+        // Recovery continues normally
+      '|
+      style.fill: "#90EE90"
+    }
+    step1_read -> step2_read -> step3_skip -> step4_scan -> step5_continue: {
+      style.stroke: "#666"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  entry_format: {
+    label: "Log Entry Binary Format"
+    direction: down
+    style.fill: "#F5F5F5"
+    width: 380
+    format_desc: {
+      width: 360
+      label: ""
+      code: |'text
+        ┌────────┬───────────┬──────┬───────┬────────────┬───────┐
+        │ Offset │ Timestamp │ TLen │ Topic │ PayloadLen │ Pay   │ CRC32 │
+        │ 8B BE  │   8B BE   │ 2B   │  N B  │    4B BE   │ M B   │ 4B BE │
+        └────────┴───────────┴──────┴───────┴────────────┴───────┴───────┘
+        CRC32 covers: [Offset → End of Payload]
+        Does NOT include: the CRC field itself
+      '|
+    }
+    valid_example: {
+      label: "Valid Entry (Entry 0)"
+      width: 360
+      code: |'text
+        Offset:    0x0000000000000000
+        Timestamp: 0x018F3A2B4C5D6E7F
+        TopicLen:  0x0006 ("orders")
+        PayloadLen:0x00000007
+        Payload:   "order-1"
+        ─────────────────────────────
+        CRC Calc:  0xABC123DE
+        CRC Stored:0xABC123DE  ✓ MATCH
+      '|
+      style.fill: "#90EE90"
+    }
+    corrupt_example: {
+      label: "Corrupted Entry (Entry 1)"
+      width: 360
+      code: |'text
+        Offset:    0x0000000000000001
+        Timestamp: 0x018F3A2B4C5D6E80
+        TopicLen:  0x0006 ("orders")
+        PayloadLen:0x00000007
+        Payload:   "ordEr-2"  ← bit flip!
+        ─────────────────────────────
+        CRC Calc:  0xDEF45678
+        CRC Stored:0xDEF00000  ✗ MISMATCH
+      '|
+      style.fill: "#FF6B6B"
+    }
+  }
+  detection_logic: {
+    label: "CRC Verification Logic"
+    direction: down
+    style.fill: "#FFF8DC"
+    width: 420
+    verify_func: {
+      label: "Decode() in log/entry.go"
+      width: 400
+      code: |'go
+        func Decode(data []byte) (*LogEntry, error) {
+          // ... parse offset, timestamp, topic, payload ...
+          pos := HeaderSize + topicLen + payloadLen
+          // Verify CRC (covers all bytes BEFORE the CRC field)
+          storedCRC := binary.BigEndian.Uint32(data[pos:pos+4])
+          calculatedCRC := crc32.ChecksumIEEE(data[:pos])
+          if storedCRC != calculatedCRC {
+            return nil, ErrCRCMismatch
+          }
+          return entry, nil
+        }
+      '|
+    }
+    recovery_func: {
+      label: "Recovery with Corruption Handling"
+      width: 400
+      code: |'go
+        func (r *Reader) ReadAllWithRecovery() ([]*LogEntry, int) {
+          var validEntries []*LogEntry
+          var corruptedCount int
+          for {
+            entry, err := r.ReadNext()
+            if err == io.EOF {
+              break
+            }
+            if err == ErrCRCMismatch {
+              corruptedCount++
+              log.Printf("WARNING: Corrupted entry at pos %d",
+                r.currentPosition())
+              // Scan forward to find next valid entry
+              if !r.skipToNextValid() {
+                break // No more recoverable data
+              }
+              continue
+            }
+            if err != nil {
+              log.Printf("ERROR: Unrecoverable: %v", err)
+              break
+            }
+            validEntries = append(validEntries, entry)
+          }
+          return validEntries, corruptedCount
+        }
+      '|
+    }
+    scan_func: {
+      label: "Heuristic: Find Next Valid Entry"
+      width: 400
+      code: |'go
+        func (r *Reader) skipToNextValid() bool {
+          scanBuf := make([]byte, 1024)
+          for {
+            n, err := r.reader.Read(scanBuf)
+            if err != nil {
+              return false
+            }
+            // Look for plausible header pattern:
+            // - Offset roughly sequential
+            // - Timestamp within reasonable range
+            // - TopicLen < 256
+            // - PayloadLen < 10MB
+            for i := 0; i < n-HeaderSize; i++ {
+              if r.looksLikeValidHeader(scanBuf[i:]) {
+                r.seekTo(r.currentPos() + i)
+                return true
+              }
+            }
+          }
+        }
+      '|
+    }
+    verify_func -> recovery_func -> scan_func: {style.stroke: transparent}
+  }
+}
+row3: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  outcome: {
+    label: "Recovery Outcome"
+    direction: down
+    style.fill: "#E8F4E8"
+    width: 400
+    success_log: {
+      label: "Successful Recovery Log Output"
+      width: 380
+      code: |'text
+        2024-03-05 14:23:45 INFO  Starting crash recovery...
+        2024-03-05 14:23:45 INFO  Topic orders: read 4 log entries
+        2024-03-05 14:23:45 WARN  Corrupted entry at position 156
+        2024-03-05 14:23:45 WARN  Scanning for next valid entry...
+        2024-03-05 14:23:45 INFO  Found valid entry at position 312
+        2024-03-05 14:23:45 INFO  Topic orders: recovered 3 messages
+        2024-03-05 14:23:45 INFO  Recovery complete: 3 entries read,
+                                    1 corrupted entries skipped
+      '|
+    }
+    design_principle: {
+      label: "Design Principle"
+      width: 380
+      code: |'text
+        ╔════════════════════════════════════════════════════════╗
+        ║  CORRUPTION SHOULDN'T HALT THE ENTIRE BROKER          ║
+        ╠════════════════════════════════════════════════════════╣
+        ║  • Skip the bad entry with a warning                   ║
+        ║  • Continue recovery from next valid entry             ║
+        ║  • Operators can investigate corrupted data later      ║
+        ║  • Partial data is better than no data                 ║
+        ╚════════════════════════════════════════════════════════╝
+      '|
+      style.fill: "#FFFACD"
+    }
+    success_log -> design_principle: {style.stroke: transparent}
+  }
+  corruption_causes: {
+    label: "Corruption Causes Detected by CRC"
+    direction: down
+    style.fill: "#FFF0F0"
+    width: 400
+    causes: {
+      label: ""
+      shape: sql_table
+      width: 380
+      cause1: "Bit flip | Cosmic rays, failing RAM, ECC memory errors"
+      cause2: "Partial write | Power loss during write() syscall"
+      cause3: "Media degradation | Bad sectors on aging disk"
+      cause4: "Controller error | Disk firmware bugs, cable issues"
+      cause5: "OS bug | Kernel filesystem corruption"
+    }
+  }
+}
+log_file.entry0 -> recovery_flow.step1_read: "read" {
+  style.stroke: "#90EE90"
+  style.stroke-width: 2
+}
+log_file.entry1 -> recovery_flow.step2_read: "read" {
+  style.stroke: "#FF6B6B"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+}
+recovery_flow.step4_scan -> log_file.entry2: "found valid" {
+  style.stroke: "#87CEEB"
+  style.stroke-width: 2
+}
+legend: {
+  near: bottom-center
+  direction: right
+  style.fill: transparent
+  valid: "Valid Entry" {
+    shape: rectangle
+    width: 80
+    style.fill: "#90EE90"
+  }
+  corrupt: "Corrupted Entry" {
+    shape: rectangle
+    width: 80
+    style.fill: "#FF6B6B"
+  }
+  warning: "Warning/Skip" {
+    shape: rectangle
+    width: 80
+    style.fill: "#FFD93D"
+  }
+  scan: "Scanning" {
+    shape: rectangle
+    width: 80
+    style.fill: "#87CEEB"
+  }
+}

@@ -1,0 +1,786 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+title: |md
+  # Message Queue System Architecture
+  **Production-grade message broker in Go**
+  Implements pub/sub fan-out and consumer-group competitive consumption over TCP
+  with persistent append-only log storage, backpressure, and DLQ support.
+| {near: top-center}
+row_protocol: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_wire: {
+    direction: down
+    label: "WIRE PROTOCOL LAYER  [M1]"
+    frame: {
+      shape: sql_table
+      label: "struct Frame (frame.go)  [M1]"
+      length_prefix: "uint32 | 4 bytes BE"
+      payload: "[]byte | N bytes (max 10MB)"
+      sz: "Total: 4 + N bytes"
+    }
+    command: {
+      shape: sql_table
+      label: "struct Command (commands.go)  [M1]"
+      type: "CommandType | 1 byte"
+      topic: "string | 2-byte len prefix"
+      payload: "[]byte | 2-byte len prefix"
+      msg_id: "uint64 | 8 bytes BE"
+      error: "string | for ERROR cmd"
+      sz: "Variable size"
+    }
+    frame_reader: {
+      shape: class
+      label: "FrameReader (frame.go)  [M1]"
+      -reader: "*bufio.Reader"
+      +ReadFrame(): "([]byte, error)"
+    }
+    frame_writer: {
+      shape: class
+      label: "FrameWriter (frame.go)  [M1]"
+      -writer: "io.Writer"
+      +WriteFrame(payload []byte): "error"
+    }
+    frame_reader -> command: "parses"
+    frame_writer -> command: "encodes"
+  }
+  layer_commands: {
+    direction: down
+    label: "COMMAND TYPES  [M1-M4]"
+    cmd_types: {
+      shape: sql_table
+      label: "CommandType enum (commands.go)"
+      cmd_publish: "0x01 | PUBLISH"
+      cmd_publish_ack: "0x02 | PUBLISH_ACK"
+      cmd_subscribe: "0x03 | SUBSCRIBE"
+      cmd_subscribe_ack: "0x04 | SUBSCRIBE_ACK"
+      cmd_unsubscribe: "0x05 | UNSUBSCRIBE"
+      cmd_unsubscribe_ack: "0x06 | UNSUBSCRIBE_ACK"
+      cmd_message: "0x07 | MESSAGE delivery"
+      cmd_heartbeat: "0x08 | HEARTBEAT"
+      cmd_heartbeat_ack: "0x09 | HEARTBEAT_ACK"
+      cmd_error: "0x10 | ERROR"
+      cmd_ack: "0x11 | ACK [M2]"
+      cmd_nack: "0x12 | NACK [M2]"
+      cmd_throttle: "0x20 | THROTTLE [M3]"
+    }
+  }
+}
+row_broker: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_server: {
+    direction: down
+    label: "TCP SERVER  [M1]"
+    server: {
+      shape: class
+      label: "Server (server.go)  [M1]"
+      -addr: "string"
+      -listener: "net.Listener"
+      -router: "*TopicRouter"
+      -connMgr: "*ConnectionManager"
+      -maxConn: "int (default 1000)"
+      -running: "bool"
+      +Start(): "error"
+      +Stop(): "void"
+      +Addr(): "string"
+      +ConnectionCount(): "int"
+      -acceptLoop(): "void"
+      -handleConnection(conn): "void"
+    }
+    client: {
+      shape: class
+      label: "Client (client.go)  [M1]"
+      -ID: "string | client-{nano}-{rand8}"
+      -Conn: "net.Conn"
+      -RemoteAddr: "string"
+      -Subscriptions: "map[string]bool"
+      -LastActivity: "time.Time"
+      -writeMu: "sync.Mutex"
+      -writer: "*FrameWriter"
+      +NewClient(conn): "*Client"
+      +Close(): "void"
+      +AddSubscription(topic): "bool"
+      +RemoveSubscription(topic): "bool"
+      +SendCommand(cmd): "error"
+    }
+    conn_mgr: {
+      shape: class
+      label: "ConnectionManager (connection_manager.go)  [M1]"
+      -connections: "map[string]*Client"
+      -mu: "sync.RWMutex"
+      +Register(client): "void"
+      +Unregister(id): "void"
+      +Count(): "int"
+      +GetClient(id): "*Client"
+      +CloseAll(): "void"
+    }
+    server -> client: "manages"
+    server -> conn_mgr: "uses"
+  }
+  layer_router: {
+    direction: down
+    label: "TOPIC ROUTING  [M1-M2]"
+    topic_router: {
+      shape: class
+      label: "TopicRouter (topic_router.go)  [M1]"
+      -topics: "map[string]*topicState"
+      -msgIDCounter: "uint64 (atomic)"
+      +NextMessageID(): "uint64"
+      +Subscribe(topic, client): "void"
+      +Unsubscribe(topic, client): "void"
+      +Publish(topic, payload, msgID): "int"
+      -deliveryLoop(subState, topic): "void"
+    }
+    topic_state: {
+      shape: sql_table
+      label: "struct topicState (topic_router.go)  [M1]"
+      subscribers: "map[string]*subscriberState"
+      mu: "sync.RWMutex"
+    }
+    subscriber_state: {
+      shape: sql_table
+      label: "struct subscriberState  [M1]"
+      client: "*Client"
+      deliver: "chan *Command (buffer=100)"
+      stop: "chan struct{}"
+    }
+    topic_router -> topic_state: "contains"
+    topic_state -> subscriber_state: "contains"
+  }
+  layer_consumer: {
+    direction: down
+    label: "CONSUMER GROUPS  [M2]"
+    consumer_group: {
+      shape: class
+      label: "ConsumerGroup (consumer_group.go)  [M2]"
+      -Name: "string"
+      -Topic: "string"
+      -Config: "ConsumerGroupConfig"
+      -members: "map[string]*ConsumerState"
+      -pending: "*PendingQueue"
+      -inFlight: "*InFlightTracker"
+      -retryCounter: "*RetryCounter"
+      -poisonQueue: "*PoisonQueue"
+      -assignment: "*PartitionAssignment"
+      +Join(consumerID, client): "error"
+      +Leave(consumerID): "void"
+      +Publish(payload, msgID): "error"
+      +HandleAck(msgID, consumerID): "error"
+      +HandleNack(msgID, consumerID, reason): "error"
+      +DeliverToConsumer(consumerID, max): "int"
+      -visibilityScanner(): "void"
+      -rebalance(): "void"
+    }
+    partition_assign: {
+      shape: class
+      label: "PartitionAssignment (partition_assignment.go)  [M2]"
+      -partitionToConsumer: "map[int]string"
+      -consumerToPartitions: "map[string][]int"
+      +Rebalance(members): "[]string"
+      +GetConsumer(partition): "string"
+      +GetPartitions(consumerID): "[]int"
+    }
+    in_flight: {
+      shape: class
+      label: "InFlightTracker (in_flight_tracker.go)  [M2]"
+      -messages: "map[uint64]*InFlightMessage"
+      +Add(msg): "error"
+      +Get(msgID): "*InFlightMessage"
+      +Remove(msgID): "*InFlightMessage"
+      +GetTimedOut(now): "[]*InFlightMessage"
+    }
+    in_flight_msg: {
+      shape: sql_table
+      label: "struct InFlightMessage  [M2]"
+      MsgID: "uint64"
+      Payload: "[]byte"
+      ConsumerID: "string"
+      DeliveredAt: "time.Time"
+      VisibleAfter: "time.Time"
+      Partition: "int"
+    }
+    pending_queue: {
+      shape: class
+      label: "PendingQueue (pending_queue.go)  [M2]"
+      -messages: "[]*PendingMessage"
+      +Add(msg): "void"
+      +PopForPartition(partition): "*PendingMessage"
+      +PopForPartitions(partitions): "*PendingMessage"
+      +Len(): "int"
+    }
+    retry_counter: {
+      shape: class
+      label: "RetryCounter (retry_counter.go)  [M2]"
+      -counts: "map[uint64]int"
+      +Increment(msgID): "int"
+      +Get(msgID): "int"
+      +Clear(msgID): "void"
+    }
+    poison_queue: {
+      shape: class
+      label: "PoisonQueue (poison_queue.go)  [M2]"
+      -messages: "[]*PoisonMessage"
+      +Add(msg): "void"
+      +GetAll(): "[]*PoisonMessage"
+      +Len(): "int"
+    }
+    consumer_group -> partition_assign: "uses"
+    consumer_group -> in_flight: "uses"
+    consumer_group -> pending_queue: "uses"
+    consumer_group -> retry_counter: "uses"
+    consumer_group -> poison_queue: "uses"
+    in_flight -> in_flight_msg: "contains"
+  }
+}
+row_persistence: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_log: {
+    direction: down
+    label: "PERSISTENT LOG  [M3]"
+    log_entry: {
+      shape: sql_table
+      label: "struct LogEntry (log/entry.go)  [M3]"
+      offset: "uint64 | 8 bytes BE @ 0x00"
+      timestamp: "int64 | 8 bytes BE @ 0x08"
+      topic_len: "uint16 | 2 bytes BE @ 0x10"
+      topic: "string | N bytes"
+      payload_len: "uint32 | 4 bytes BE"
+      payload: "[]byte | M bytes"
+      crc32: "uint32 | 4 bytes BE"
+      sz: "Total: 22 + N + M + 4 bytes"
+    }
+    log_writer: {
+      shape: class
+      label: "Writer (log/writer.go)  [M3]"
+      -config: "WriterConfig"
+      -topics: "map[string]*topicLog"
+      -nextOffset: "uint64 (atomic)"
+      +Append(topic, payload): "(uint64, error)"
+      +Flush(): "error"
+      +Close(): "error"
+      +SetNextOffset(offset): "void"
+      +DiscoverTopics(): "([]string, error)"
+    }
+    durability_mode: {
+      shape: sql_table
+      label: "DurabilityMode enum  [M3]"
+      per_write: "fsync every write"
+      batched: "fsync every N or M ms"
+      os_managed: "never fsync"
+    }
+    writer_config: {
+      shape: sql_table
+      label: "WriterConfig defaults  [M3]"
+      BatchSize: "1000 writes"
+      BatchTimeout: "100ms"
+      MaxSegmentSize: "1GB"
+    }
+    log_reader: {
+      shape: class
+      label: "Reader (log/reader.go)  [M3]"
+      -file: "*os.File"
+      -reader: "*bufio.Reader"
+      +ReadNext(): "(*LogEntry, error)"
+      +ReadAll(): "([]*LogEntry, error)"
+      +Close(): "error"
+    }
+    log_writer -> log_entry: "writes"
+    log_reader -> log_entry: "reads"
+    log_writer -> durability_mode: "configures"
+    log_writer -> writer_config: "uses"
+  }
+  layer_offsets: {
+    direction: down
+    label: "OFFSET STORAGE  [M3]"
+    offset_store: {
+      shape: class
+      label: "OffsetStore (offset/store.go)  [M3]"
+      -filePath: "string"
+      -offsets: "map[string]map[string]uint64"
+      +GetOffset(group, topic): "uint64"
+      +CommitOffset(group, topic, offset): "error"
+      +GetAllOffsets(): "map[string]map[string]uint64"
+      -persist(): "error (atomic temp-rename)"
+    }
+    offset_data: {
+      shape: sql_table
+      label: "OffsetData JSON format  [M3]"
+      groups: "map[string]map[string]uint64"
+      example: '"groups": {"g1": {"topic": 42}}'
+    }
+    offset_store -> offset_data: "serializes"
+  }
+  layer_backpressure: {
+    direction: down
+    label: "BACKPRESSURE  [M3]"
+    backpressure_mgr: {
+      shape: class
+      label: "BackpressureManager (backpressure/manager.go)  [M3]"
+      -config: "BackpressureConfig"
+      -latestOffset: "int64 (atomic)"
+      -throttling: "int32 (atomic)"
+      -groups: "map[string]*GroupLag"
+      +UpdateLatestOffset(offset): "void"
+      +UpdateCommittedOffset(group, offset): "void"
+      +CalculateLag(): "int64"
+      +ShouldThrottle(): "bool"
+      +GetThrottleDelay(): "time.Duration"
+    }
+    bp_config: {
+      shape: sql_table
+      label: "BackpressureConfig  [M3]"
+      LagThresholdHigh: "10000 | start throttle"
+      LagThresholdLow: "5000 | stop throttle"
+      ThrottleDelay: "100ms"
+    }
+    throttle_cmd: {
+      shape: sql_table
+      label: "THROTTLE Command (0x20)  [M3]"
+      cmd: "1 byte | 0x20"
+      delay_ms: "uint16 | 2 bytes BE"
+      current_lag: "uint32 | 4 bytes BE"
+      sz: "Total: 7 bytes"
+    }
+    backpressure_mgr -> bp_config: "configured by"
+    backpressure_mgr -> throttle_cmd: "triggers"
+  }
+  layer_retention: {
+    direction: down
+    label: "RETENTION  [M3]"
+    retention_mgr: {
+      shape: class
+      label: "RetentionManager (retention/manager.go)  [M3]"
+      -dataDir: "string"
+      -policies: "map[string]RetentionPolicy"
+      +SetPolicy(topic, policy): "void"
+      +RunCleanup(): "(int, error)"
+      +StartRetentionScheduler(interval): "chan struct{}"
+    }
+    retention_policy: {
+      shape: sql_table
+      label: "RetentionPolicy  [M3]"
+      MaxAge: "time.Duration | 0=none"
+      MaxSize: "int64 | 0=none"
+    }
+    retention_mgr -> retention_policy: "applies"
+  }
+}
+row_dlq: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_dlq: {
+    direction: down
+    label: "DEAD LETTER QUEUE  [M4]"
+    dlq_manager: {
+      shape: class
+      label: "DLQManager (broker/dlq_manager.go)  [M4]"
+      -topicManager: "*TopicManager"
+      -logWriter: "*log.Writer"
+      -dlqTopics: "map[string]bool"
+      +MoveToDLQ(topic, offset, payload, retries, reason, consumerID): "(uint64, error)"
+      +GetDLQTopicName(topic): "string"
+      +IsDLQTopic(topic): "bool"
+    }
+    dlq_message: {
+      shape: sql_table
+      label: "struct DLQMessage (JSON)  [M4]"
+      original_topic: "string"
+      original_offset: "uint64"
+      original_payload: "[]byte (base64)"
+      retry_count: "int"
+      last_failure_reason: "string"
+      failed_at: "int64 (unix nano)"
+      consumer_id: "string"
+      is_replayed: "bool"
+      replay_count: "int"
+    }
+    dlq_manager -> dlq_message: "wraps"
+  }
+  layer_heartbeat: {
+    direction: down
+    label: "HEARTBEAT MONITOR  [M4]"
+    heartbeat_mgr: {
+      shape: class
+      label: "HeartbeatManager (broker/heartbeat_manager.go)  [M4]"
+      -consumers: "map[string]*ConsumerHeartbeat"
+      -timeout: "time.Duration (default 30s)"
+      -onDeath: "func(consumerID string)"
+      +Start(): "void"
+      +Stop(): "void"
+      +Register(consumerID, group): "void"
+      +Unregister(consumerID): "void"
+      +RecordHeartbeat(consumerID): "void"
+      +SetOnDeath(callback): "void"
+      +GetAliveConsumers(): "[]string"
+      +GetDeadConsumers(): "[]string"
+    }
+    consumer_hb: {
+      shape: sql_table
+      label: "ConsumerHeartbeat  [M4]"
+      ID: "string"
+      LastHeartbeat: "time.Time"
+      ConsumerGroup: "string"
+      IsAlive: "bool"
+    }
+    heartbeat_mgr -> consumer_hb: "tracks"
+  }
+  layer_api: {
+    direction: down
+    label: "INSPECTION API  [M4]"
+    inspection_api: {
+      shape: class
+      label: "InspectionAPI (api/inspection_api.go)  [M4]"
+      -broker: "BrokerInterface"
+      -dlqManager: "DLQManagerInterface"
+      -httpServer: "*http.Server"
+      -port: "int"
+      +Start(): "error"
+      +Stop(ctx): "error"
+    }
+    api_endpoints: {
+      shape: sql_table
+      label: "HTTP Endpoints  [M4]"
+      dlq_list: "GET /api/v1/dlq/"
+      dlq_messages: "GET /api/v1/dlq/{topic}/messages"
+      dlq_replay: "POST /api/v1/dlq/{topic}/replay"
+      topics_list: "GET /api/v1/topics"
+      topic_metrics: "GET /api/v1/topics/{topic}/metrics"
+      health: "GET /health"
+      metrics: "GET /metrics"
+    }
+    replay_req: {
+      shape: sql_table
+      label: "ReplayRequest JSON  [M4]"
+      dlq_offsets: "[]uint64 | specific msgs"
+      all: "bool | replay all"
+    }
+    replay_resp: {
+      shape: sql_table
+      label: "ReplayResponse JSON  [M4]"
+      original_topic: "string"
+      replay_count: "int"
+      new_offsets: "[]uint64"
+      errors: "[]string"
+    }
+    inspection_api -> api_endpoints: "serves"
+    api_endpoints -> replay_req: "accepts"
+    api_endpoints -> replay_resp: "returns"
+  }
+  layer_health: {
+    direction: down
+    label: "HEALTH & METRICS  [M4]"
+    health_checker: {
+      shape: class
+      label: "HealthChecker (api/health_checker.go)  [M4]"
+      -broker: "BrokerInterface"
+      -dlqThreshold: "int (default 1000)"
+      -lagThreshold: "int64 (default 10000)"
+      +Check(): "*HealthResponse"
+      -checkLogWritable(): "CheckResult"
+      -checkConsumerGroups(): "CheckResult"
+      -checkDLQGrowth(): "CheckResult"
+      -checkConsumerLag(): "CheckResult"
+    }
+    health_status: {
+      shape: sql_table
+      label: "HealthStatus enum  [M4]"
+      healthy: "HTTP 200 | all OK"
+      degraded: "HTTP 200 | warnings"
+      unhealthy: "HTTP 503 | failures"
+    }
+    health_response: {
+      shape: sql_table
+      label: "HealthResponse JSON  [M4]"
+      status: "HealthStatus"
+      timestamp: "int64"
+      checks: "map[string]CheckResult"
+      warnings: "[]string"
+    }
+    metrics_collector: {
+      shape: class
+      label: "MetricsCollector (api/metrics_handlers.go)  [M4]"
+      -publishCount: "uint64 (atomic)"
+      -consumeCount: "uint64 (atomic)"
+      -errorCount: "uint64 (atomic)"
+      -startTime: "time.Time"
+      -publishRate: "float64"
+      -consumeRate: "float64"
+      +RecordPublish(): "void"
+      +RecordConsume(): "void"
+      +RecordError(): "void"
+      +GetRates(): "(float64, float64)"
+    }
+    broker_metrics: {
+      shape: sql_table
+      label: "BrokerMetrics JSON  [M4]"
+      uptime_seconds: "int64"
+      total_published: "uint64"
+      total_consumed: "uint64"
+      total_errors: "uint64"
+      publish_rate: "float64"
+      consume_rate: "float64"
+      connection_count: "int"
+      topics: "map[string]TopicMetrics"
+    }
+    health_checker -> health_status: "returns"
+    health_checker -> health_response: "produces"
+    metrics_collector -> broker_metrics: "aggregates"
+  }
+}
+row_recovery: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_recovery: {
+    direction: down
+    label: "CRASH RECOVERY  [M3]"
+    recovery_mgr: {
+      shape: class
+      label: "RecoveryManager (broker/recovery.go)  [M3]"
+      -logWriter: "*log.Writer"
+      -offsetStore: "*offset.OffsetStore"
+      -topicManager: "*TopicManager"
+      -dataDir: "string"
+      +Recover(): "(int, error)"
+      -recoverTopic(topic, committedOffsets): "(int, error)"
+      -discoverTopics(): "[]string"
+    }
+    recovery_flow: {
+      shape: rectangle
+      label: |md
+        **Recovery Sequence:**
+        1. Load committed offsets from `consumer_offsets.json`
+        2. Discover all `*.log` files in data directory
+        3. For each topic log:
+           - Read all entries (skip corrupted with CRC warning)
+           - Find min committed offset across groups
+           - Re-queue messages where `offset > minCommittedOffset`
+        4. Update `Writer.nextOffset = lastOffset + 1`
+        5. Resume normal operation
+      |
+    }
+    recovery_mgr -> recovery_flow: "executes"
+  }
+  layer_integration: {
+    direction: down
+    label: "BROKER INTEGRATION  [M3-M4]"
+    persistent_broker: {
+      shape: class
+      label: "PersistentBroker (broker/persistent_broker.go)  [M3-M4]"
+      -server: "*Server"
+      -logWriter: "*log.Writer"
+      -offsetStore: "*offset.OffsetStore"
+      -backpressure: "*BackpressureManager"
+      -retention: "*RetentionManager"
+      -recovery: "*RecoveryManager"
+      -dlqManager: "*DLQManager"
+      -heartbeatManager: "*HeartbeatManager"
+      -inspectionAPI: "*InspectionAPI"
+      +Start(): "error"
+      +Stop(): "void"
+      +Publish(topic, payload): "(uint64, error)"
+      +GetMetrics(): "*BrokerMetrics"
+    }
+    broker_config: {
+      shape: sql_table
+      label: "BrokerConfig  [M3]"
+      ListenAddr: "string (default :9090)"
+      DataDir: "string (default ./data)"
+      DurabilityMode: "DurabilityMode"
+      BatchSize: "int (default 1000)"
+      BatchTimeout: "time.Duration (default 100ms)"
+      BackpressureConfig: "BackpressureConfig"
+      RetentionInterval: "time.Duration (default 5m)"
+    }
+    persistent_broker -> broker_config: "configured by"
+  }
+}
+row_dataflow: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_pub_flow: {
+    direction: down
+    label: "PUBLISH FLOW (Fan-Out)  [M1]"
+    producer_shape: {
+      shape: person
+      label: "Producer"
+    }
+    server_shape: {
+      shape: rectangle
+      label: "Server"
+    }
+    log_writer_shape: {
+      shape: cylinder
+      label: "LogWriter\n[persist]"
+    }
+    router_shape: {
+      shape: hexagon
+      label: "TopicRouter\n[fan-out]"
+    }
+    sub1: {
+      shape: person
+      label: "Subscriber 1"
+    }
+    sub2: {
+      shape: person
+      label: "Subscriber 2"
+    }
+    producer_shape -> server_shape: "PUBLISH cmd"
+    server_shape -> log_writer_shape: "Append()"
+    server_shape -> router_shape: "Publish()"
+    router_shape -> sub1: "MESSAGE"
+    router_shape -> sub2: "MESSAGE"
+    server_shape -> producer_shape: "PUBLISH_ACK"
+  }
+  layer_cg_flow: {
+    direction: down
+    label: "CONSUMER GROUP FLOW  [M2]"
+    cg_producer: {
+      shape: person
+      label: "Producer"
+    }
+    cg_server: {
+      shape: rectangle
+      label: "Server"
+    }
+    cg_group: {
+      shape: rectangle
+      label: "ConsumerGroup"
+    }
+    cg_pending: {
+      shape: queue
+      label: "PendingQueue"
+    }
+    cg_consumer1: {
+      shape: person
+      label: "Consumer 1\n(partitions 0-7)"
+    }
+    cg_consumer2: {
+      shape: person
+      label: "Consumer 2\n(partitions 8-15)"
+    }
+    cg_producer -> cg_server: "PUBLISH"
+    cg_server -> cg_group: "Publish()"
+    cg_group -> cg_pending: "Add()"
+    cg_pending -> cg_consumer1: "DeliverToConsumer()"
+    cg_pending -> cg_consumer2: "DeliverToConsumer()"
+    cg_consumer1 -> cg_server: "ACK/NACK"
+    cg_consumer2 -> cg_server: "ACK/NACK"
+  }
+  layer_dlq_flow: {
+    direction: down
+    label: "DLQ FLOW  [M2-M4]"
+    dlq_consumer: {
+      shape: person
+      label: "Consumer"
+    }
+    dlq_server: {
+      shape: rectangle
+      label: "Server"
+    }
+    dlq_cg: {
+      shape: rectangle
+      label: "ConsumerGroup"
+    }
+    dlq_retry: {
+      shape: diamond
+      label: "RetryCounter\n>= MaxRetries?"
+    }
+    dlq_manager_shape: {
+      shape: rectangle
+      label: "DLQManager"
+    }
+    dlq_topic: {
+      shape: cylinder
+      label: "topic.dlq\nlog file"
+    }
+    dlq_consumer -> dlq_server: "NACK (reason)"
+    dlq_server -> dlq_cg: "HandleNack()"
+    dlq_cg -> dlq_retry: "check"
+    dlq_retry -> dlq_cg: "re-queue"
+    dlq_retry -> dlq_manager_shape: "poison"
+    dlq_manager_shape -> dlq_topic: "MoveToDLQ()"
+  }
+}
+row_connections: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_m1_connections: {
+    direction: down
+    label: "M1 CONNECTIONS"
+    row_protocol.layer_wire.frame_reader -> row_protocol.layer_wire.command: "parses into"
+    row_protocol.layer_wire.frame_writer -> row_protocol.layer_wire.command: "encodes from"
+    row_broker.layer_server.server -> row_broker.layer_router.topic_router: "routes via"
+    row_broker.layer_server.server -> row_broker.layer_server.conn_mgr: "tracks clients"
+    row_broker.layer_router.topic_router -> row_broker.layer_server.client: "delivers to"
+  }
+  layer_m2_connections: {
+    direction: down
+    label: "M2 CONNECTIONS"
+    row_broker.layer_router.topic_router -> row_broker.layer_consumer.consumer_group: "routes to (if consumer-group mode)"
+    row_broker.layer_consumer.consumer_group -> row_broker.layer_consumer.partition_assign: "distributes via"
+    row_broker.layer_consumer.consumer_group -> row_broker.layer_consumer.in_flight: "tracks in"
+    row_broker.layer_consumer.consumer_group -> row_broker.layer_consumer.pending_queue: "queues in"
+    row_broker.layer_consumer.consumer_group -> row_broker.layer_consumer.retry_counter: "counts retries"
+    row_broker.layer_consumer.consumer_group -> row_broker.layer_consumer.poison_queue: "moves poison to"
+  }
+  layer_m3_connections: {
+    direction: down
+    label: "M3 CONNECTIONS"
+    row_broker.layer_server.server -> row_persistence.layer_log.log_writer: "persists via"
+    row_persistence.layer_log.log_writer -> row_persistence.layer_log.log_entry: "writes"
+    row_broker.layer_consumer.consumer_group -> row_persistence.layer_offsets.offset_store: "commits offsets to"
+    row_persistence.layer_backpressure.backpressure_mgr -> row_persistence.layer_backpressure.throttle_cmd: "triggers"
+    row_persistence.layer_retention.retention_mgr -> row_persistence.layer_log.log_entry: "cleans up"
+    row_recovery.recovery_mgr -> row_persistence.layer_log.log_reader: "reads during recovery"
+    row_recovery.recovery_mgr -> row_persistence.layer_offsets.offset_store: "loads offsets"
+  }
+  layer_m4_connections: {
+    direction: down
+    label: "M4 CONNECTIONS"
+    row_broker.layer_consumer.poison_queue -> row_dlq.layer_dlq.dlq_manager: "feeds"
+    row_dlq.layer_dlq.dlq_manager -> row_dlq.layer_dlq.dlq_message: "creates"
+    row_dlq.layer_api.inspection_api -> row_dlq.layer_dlq.dlq_manager: "inspects"
+    row_dlq.layer_api.inspection_api -> row_dlq.layer_health.health_checker: "uses"
+    row_dlq.layer_api.inspection_api -> row_dlq.layer_health.metrics_collector: "uses"
+    row_dlq.layer_heartbeat.heartbeat_mgr -> row_broker.layer_consumer.consumer_group: "triggers rebalance on death"
+  }
+}
+milestone_index: {
+  shape: sql_table
+  label: "Milestone Index"
+  m1: "M1 | message-queue-m1 | Wire Protocol & Pub/Sub Fan-out"
+  m2: "M2 | message-queue-m2 | Consumer Groups, ACK/NACK & Poison Detection"
+  m3: "M3 | message-queue-m3 | Persistence, Crash Recovery & Backpressure"
+  m4: "M4 | message-queue-m4 | Dead Letter Queue & Monitoring API"
+}
+legend: {
+  shape: rectangle
+  label: |md
+    **Shape Legend:**
+    - `sql_table` = Data structures with fields and types
+    - `class` = Modules/classes with methods
+    - `person` = External actors (producers, consumers)
+    - `cylinder` = Persistent storage
+    - `queue` = Message queues
+    - `hexagon` = Routing/processing components
+    - `diamond` = Decision points
+    **File References:**
+    - All struct/class labels include file path (e.g., "server.go")
+    - Milestone markers [M1], [M2], [M3], [M4] indicate implementation phase
+  |
+}
+legend.near: bottom-right

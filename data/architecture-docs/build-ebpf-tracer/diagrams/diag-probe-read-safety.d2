@@ -1,0 +1,217 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: "Safe Kernel Memory Access Pattern"
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  unsafe: {
+    direction: down
+    label: "UNSAFE: Direct Dereference"
+    unsafe_code: {
+      label: "Verifier Rejects This"
+      width: 320
+      code: |'c
+        // REJECTED by verifier
+        const char *filename = 
+            (char *)PT_REGS_PARM2(ctx);
+        // Direct pointer dereference
+        // - No bounds check
+        // - Pointer could be NULL
+        // - Could be userspace addr
+        char first = *filename;  // REJECT!
+      '|
+      style.stroke: "#c0392b"
+      style.fill: "#fdeaea"
+    }
+    unsafe_verdict: {
+      shape: diamond
+      label: "VERIFIER\nREJECTS"
+      style.fill: "#e74c3c"
+      style.font-color: white
+      style.stroke: "#c0392b"
+    }
+    unsafe_code -> unsafe_verdict: "analyzes"
+  }
+  safe: {
+    direction: down
+    label: "SAFE: bpf_probe_read_kernel"
+    safe_code: {
+      label: "Verifier Accepts This"
+      width: 320
+      code: |'c
+        // ACCEPTED by verifier
+        const char *filename = 
+            (char *)PT_REGS_PARM2(ctx);
+        char buf[256];
+        // Safe copy with bounds
+        int ret = bpf_probe_read_kernel_str(
+            buf,           // eBPF stack
+            sizeof(buf),   // max bytes
+            filename       // kernel ptr
+        );
+        if (ret < 0) {
+            // Handle error gracefully
+            buf[0] = '\0';
+        }
+      '|
+      style.stroke: "#27ae60"
+      style.fill: "#e8f8f0"
+    }
+    safe_verdict: {
+      shape: diamond
+      label: "VERIFIER\nACCEPTS"
+      style.fill: "#27ae60"
+      style.font-color: white
+      style.stroke: "#1e8449"
+    }
+    safe_code -> safe_verdict: "analyzes"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  mem_layout: {
+    direction: down
+    label: "Memory Layout & Data Flow"
+    kernel_space: {
+      label: "Kernel Address Space"
+      style.fill: "#e8e8e8"
+      style.stroke: "#666"
+      kdata: {
+        shape: sql_table
+        label: "struct file (kernel memory)"
+        f0: "0x00 | char *   | f_path"
+        f1: "0x08 | loff_t  | f_pos"
+        f2: "0x10 | u32     | f_flags"
+        f3: "0x14 | void *  | private_data"
+        f4: "..."
+        f5: "Address: 0xffff8880_12345678"
+      }
+      kstr: {
+        label: "filename string\n\"/etc/passwd\\0\"\n@ 0xffff8880_abcdef00"
+        shape: rectangle
+        style.fill: "#d5dbdb"
+      }
+    }
+    arrow_copy: {
+      label: "bpf_probe_read_kernel()\n  • Bounds-checked\n  • NULL-safe\n  • Returns error code"
+      shape: rectangle
+      style.fill: "#3498db"
+      style.font-color: white
+      style.stroke: "#2980b9"
+    }
+    ebpf_stack: {
+      label: "eBPF Program Stack (512 bytes max)"
+      style.fill: "#fef9e7"
+      style.stroke: "#f39c12"
+      stack_vars: {
+        shape: sql_table
+        label: "Local Variables"
+        s0: "buf[0-63]   | first 64 chars"
+        s1: "buf[64-127] | next 64 chars"
+        s2: "buf[128-255]| remaining"
+        s3: "ret         | return code (4B)"
+        s4: "Stack ptr: r10 (read-only)"
+      }
+    }
+    kernel_space.kstr -> arrow_copy: "src ptr\n0xffff...ef00"
+    arrow_copy -> ebpf_stack.stack_vars: "dst ptr\nr10-264"
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  checks: {
+    direction: down
+    label: "What Verifier Proves"
+    check1: {
+      label: "1. Bounds Check"
+      code: |'c
+        // Verifier tracks:
+        // - buf is 256 bytes
+        // - sizeof(buf) = 256
+        // - Copy limited to 256
+      '|
+      width: 280
+      style.fill: "#d5f5e3"
+    }
+    check2: {
+      label: "2. Pointer Validity"
+      code: |'c
+        // Helper checks internally:
+        // - NULL pointer → returns -EFAULT
+        // - Invalid addr → returns -EFAULT
+        // - Userspace ptr → returns -EFAULT
+      '|
+      width: 280
+      style.fill: "#d5f5e3"
+    }
+    check3: {
+      label: "3. Return Value Handling"
+      code: |'c
+        // MUST check return value
+        // before using buffer:
+        if (ret < 0) { /* error */ }
+        // Now buf is guaranteed valid
+      '|
+      width: 280
+      style.fill: "#d5f5e3"
+    }
+  }
+  helpers: {
+    direction: down
+    label: "Related Helper Functions"
+    helper_table: {
+      shape: sql_table
+      label: "Memory Read Helpers (bpf_helpers.h)"
+      h0: "bpf_probe_read_kernel      | Read kernel memory"
+      h1: "bpf_probe_read_kernel_str  | Read kernel string"
+      h2: "bpf_probe_read_user        | Read userspace memory"
+      h3: "bpf_probe_read_user_str    | Read userspace string"
+      h4: "bpf_core_read              | CO-RE aware read"
+      h5: "BPF_CORE_READ()            | CO-RE macro wrapper"
+    }
+  }
+}
+legend: {
+  near: bottom-center
+  direction: right
+  red_box: {
+    label: "Red = Rejected"
+    shape: rectangle
+    width: 100
+    style.fill: "#e74c3c"
+    style.font-color: white
+  }
+  green_box: {
+    label: "Green = Accepted"
+    shape: rectangle
+    width: 100
+    style.fill: "#27ae60"
+    style.font-color: white
+  }
+  blue_box: {
+    label: "Blue = Helper"
+    shape: rectangle
+    width: 100
+    style.fill: "#3498db"
+    style.font-color: white
+  }
+}

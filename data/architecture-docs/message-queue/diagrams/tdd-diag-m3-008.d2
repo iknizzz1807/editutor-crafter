@@ -1,0 +1,286 @@
+layout-engine: elk
+theme-id: 4
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Data Flow: Crash Recovery Sequence
+  Messages persisted before crash are recovered by replaying the log.
+  *Invariant: Offset > minCommitted are requeued to restore state.*
+| {
+  near: top-center
+  style.font-size: 18
+}
+
+direction: right
+
+# -----------------------------------------------------------------------------------------
+# Phase 1: Broker Startup
+# -----------------------------------------------------------------------------------------
+broker_start: "Broker.Start()" {
+  style.fill: "#E8D5B7"
+  style.stroke: "#8B7355"
+  style.font: mono
+  
+  step1: "1. Initialize components" {
+    style.fill: "#F5E6D3"
+    style.stroke: "#8B7355"
+    tooltip: "Init memory buffers, network stack, and storage handles"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# Phase 2: Recovery Manager
+# -----------------------------------------------------------------------------------------
+recovery_manager: "RecoveryManager.Recover()" {
+  style.fill: "#B5D8EB"
+  style.stroke: "#4A90A4"
+  
+  load_offsets: "2. Load committed offsets" {
+    style.fill: "#C5E3F0"
+    offset_file: "consumer_offsets.json" {
+      shape: cylinder
+      style.fill: "#FFE4B5"
+    }
+  }
+  
+  discover_topics: "3. Discover topic logs" {
+    style.fill: "#C5E3F0"
+    glob_scan: "*.log files" {
+      tooltip: "Scan storage-root/topics/**/*.log"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# Phase 3: Log Reader & Memory Layout
+# -----------------------------------------------------------------------------------------
+log_reader: "LogReader (per topic)" {
+  style.fill: "#D4EDDA"
+  style.stroke: "#28A745"
+  
+  open_reader: "4. OpenReader(topic.log)" {
+    style.fill: "#C3E6CB"
+  }
+  
+  read_loop: "5. ReadAll() loop" {
+    style.fill: "#C3E6CB"
+    
+    read_entry: "ReadNext()" {
+      style.fill: "#D4EDDA"
+    }
+    
+    crc_check: "CRC32 verify" {
+      style.fill: "#FFF3CD"
+      style.stroke: "#856404"
+      
+      valid: "✓ Valid" {
+        style.fill: "#D4EDDA"
+      }
+      corrupt: "✗ Skip + warn" {
+        style.fill: "#F8D7DA"
+        style.stroke: "#DC3545"
+      }
+    }
+  }
+  
+  # PHYSICAL MEMORY LAYOUT SPECIFICATION
+  entries: "LogEntry Binary Structure" {
+    shape: class
+    style.fill: "#E8F5E9"
+    
+    # [Offset] | [Label] | [Size]
+    "00-07": "Offset (uint64)" { tooltip: "Absolute log position" }
+    "08-15": "Timestamp (int64)" { tooltip: "Unix nanoseconds" }
+    "16-19": "TopicLen (uint32)" { tooltip: "N bytes" }
+    "20-20+N": "TopicName (string)" { tooltip: "UTF-8 encoded" }
+    "Var": "Payload ([]byte)" { tooltip: "Opaque message data" }
+    "End": "Checksum (uint32)" { tooltip: "CRC32 of preceding bytes" }
+    
+    "sizeof": "28 + N bytes"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# Phase 4: Offset Comparison
+# -----------------------------------------------------------------------------------------
+offset_compare: "6. Find minCommittedOffset" {
+  style.fill: "#E2D5F0"
+  style.stroke: "#6B4C9A"
+}
+
+explanation_compare: |md
+  **Offset Filter Logic**
+  Compare each entry's offset
+  against minimum committed
+  offset across all groups.
+| {
+  near: top-right
+  style.fill: transparent
+  style.font-size: 11
+}
+
+# -----------------------------------------------------------------------------------------
+# Phase 5: Requeue Decision
+# -----------------------------------------------------------------------------------------
+requeue_decision: "7. Requeue decision" {
+  shape: diamond
+  style.fill: "#FFF3CD"
+  style.stroke: "#856404"
+  
+  yes_path: "offset > minCommitted" {
+    style.fill: "#D4EDDA"
+    requeue: "Requeue to pending" {
+      style.fill: "#C3E6CB"
+      style.bold: true
+    }
+  }
+  
+  no_path: "offset <= minCommitted" {
+    style.fill: "#E2E3E5"
+    skip: "Skip (already processed)"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# Phase 6: Resume
+# -----------------------------------------------------------------------------------------
+resume: "8. Resume normal operation" {
+  style.fill: "#D4EDDA"
+  style.stroke: "#28A745"
+  style.bold: true
+  
+  set_counter: "Set nextOffset" {
+    style.fill: "#C3E6CB"
+    detail: "lastOffset + 1"
+  }
+  
+  start_server: "Start accept loop" {
+    tooltip: "Bind TCP/gRPC listener"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# Data stores
+# -----------------------------------------------------------------------------------------
+data_stores: {
+  style.fill: transparent
+  style.stroke: transparent
+  
+  log_file: "topic.log" {
+    shape: cylinder
+    style.fill: "#B5D8EB"
+    style.stroke: "#4A90A4"
+  }
+}
+
+entries_viz: |md
+  ### Log File Physical Layout
+  ┌─────────────────────┐
+  │ Entry 0 (committed) │
+  ├─────────────────────┤
+  │ Entry 1 (committed) │
+  ├─────────────────────┤
+  │ Entry 2 ← REQUEUE   │
+  ├─────────────────────┤
+  │ Entry 3 ← REQUEUE   │
+  └─────────────────────┘
+| {
+  near: bottom-left
+  style.fill: "#F8F9FA"
+  style.font: mono
+  style.font-size: 11
+}
+
+# -----------------------------------------------------------------------------------------
+# Flow connections
+# -----------------------------------------------------------------------------------------
+broker_start.step1 -> recovery_manager: "trigger recovery"
+recovery_manager.load_offsets -> recovery_manager.load_offsets.offset_file: "read"
+recovery_manager.discover_topics -> log_reader.open_reader: "for each topic"
+log_reader.open_reader -> log_reader.read_loop
+log_reader.read_loop.read_entry -> log_reader.read_loop.crc_check
+log_reader.read_loop.crc_check.valid -> log_reader.entries: "append"
+log_reader.read_loop.crc_check.corrupt -> log_reader.read_loop: "continue"
+log_reader.entries -> offset_compare
+offset_compare -> requeue_decision
+requeue_decision.yes_path.requeue -> resume.set_counter: "update pending queue"
+requeue_decision.no_path.skip -> resume.set_counter
+resume.set_counter -> resume.start_server: "counter initialized"
+
+# Log file connection
+data_stores.log_file -> log_reader.open_reader: "mmap/read"
+
+# -----------------------------------------------------------------------------------------
+# Legend
+# -----------------------------------------------------------------------------------------
+legend: {
+  near: bottom-right
+  style.fill: "#F8F9FA"
+  style.stroke: "#DEE2E6"
+  style.border-radius: 8
+  
+  title: "Legend" {
+    style.bold: true
+    style.underline: true
+  }
+  healthy: "Green = Success path" {
+    style.fill: "#D4EDDA"
+  }
+  warning: "Yellow = Check/decision" {
+    style.fill: "#FFF3CD"
+  }
+  error: "Red = Error handling" {
+    style.fill: "#F8D7DA"
+  }
+  data: "Blue = Data/component" {
+    style.fill: "#B5D8EB"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# Annotations (Sticky Notes) - ELK requires constant near values
+# -----------------------------------------------------------------------------------------
+annotation_crc: |md
+  **CRC32 Checksum**
+  Detects: bit flips, partial writes,
+  disk corruption.
+  Action: skip with warning, continue.
+| {
+  near: top-right
+  style.fill: "#FFF9E6"
+  style.stroke: "#FFD700"
+  style.border-radius: 4
+  style.font-size: 11
+}
+
+annotation_offset: |md
+  **Offset Comparison**
+  minCommittedOffset = minimum
+  across all consumer groups
+  for this topic.
+| {
+  near: center-right
+  style.fill: "#F0E6FF"
+  style.stroke: "#9370DB"
+  style.border-radius: 4
+  style.font-size: 11
+}
+
+annotation_recovery: |md
+  **Recovery Invariant**
+  Messages at or before committed
+  offset are NOT requeued (already
+  processed by at least one consumer).
+| {
+  near: bottom-center
+  style.fill: "#E6F3FF"
+  style.stroke: "#4169E1"
+  style.border-radius: 4
+  style.font-size: 11
+}

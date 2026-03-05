@@ -1,0 +1,240 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: right
+
+title: |md
+  # Module Architecture: Topic Router
+  Per-topic subscriber management with isolated delivery channels
+| {near: top-center}
+
+# Core Struct: TopicRouter
+TopicRouter: {
+  style.fill: "#E8E8E8"
+  style.stroke: "#666666"
+  style.stroke-width: 2
+
+  header: |md
+    **TopicRouter**
+    `sizeof ≈ 48 bytes`
+  | {
+    shape: text
+  }
+
+  fields: {
+    shape: class
+    "- topics: map[string]*TopicState": "Registry of all topics"
+    "- topicsMu: sync.RWMutex": "Protects topics map"
+    "- msgIDCounter: uint64": "Atomic message ID counter"
+  }
+
+  methods: {
+    shape: class
+    "+ Subscribe(topic, *Client)": "Add client to topic"
+    "+ Unsubscribe(topic, *Client)": "Remove client from topic"
+    "+ Publish(topic, payload, msgID) int": "Fan-out to all subscribers"
+    "+ NextMessageID() uint64": "Atomic ID generation"
+    "- getOrCreateTopic(topic) *TopicState": "Lazy topic creation"
+    "- deliveryLoop(*SubscriberState, topic)": "Per-subscriber goroutine"
+    "- maybeDeleteEmptyTopic(topic)": "Memory cleanup"
+  }
+
+  header -> fields -> methods: {style.stroke-width: 0}
+}
+
+# TopicState struct
+TopicState: {
+  style.fill: "#E8F4FD"
+  style.stroke: "#2196F3"
+  style.stroke-width: 2
+
+  header: |md
+    **TopicState**
+    `sizeof ≈ 40 bytes`
+  | {
+    shape: text
+  }
+
+  fields: {
+    shape: class
+    "- subscribers: map[string]*SubscriberState": "clientID → state"
+    "- mu: sync.RWMutex": "Per-topic lock"
+  }
+
+  note: |md
+    One TopicState per topic.
+    Independent locking allows concurrent
+    operations on different topics.
+  | {
+    shape: text
+    style.italic: true
+    style.font-size: 12
+  }
+
+  header -> fields -> note: {style.stroke-width: 0}
+}
+
+# SubscriberState struct
+SubscriberState: {
+  style.fill: "#FFF3E0"
+  style.stroke: "#FF9800"
+  style.stroke-width: 2
+
+  header: |md
+    **SubscriberState**
+    `sizeof ≈ 64 bytes`
+  | {
+    shape: text
+  }
+
+  fields: {
+    shape: class
+    "- client: *Client": "Back-reference to client"
+    "- deliver: chan *Command": "Buffered channel (size=100)"
+    "- stop: chan struct{}": "Signal goroutine shutdown"
+  }
+
+  constants: |md
+    **DeliveryBufferSize = 100**
+    Prevents slow subscribers from blocking
+    fast subscribers (head-of-line blocking prevention)
+  | {
+    shape: text
+    style.italic: true
+    style.font-size: 12
+    style.fill: "#FFE0B2"
+  }
+
+  header -> fields -> constants: {style.stroke-width: 0}
+}
+
+# Client reference
+Client: {
+  style.fill: "#F3E5F5"
+  style.stroke: "#9C27B0"
+  style.stroke-width: 2
+  
+  fields: {
+    shape: class
+    "+ ID: string": "Unique client identifier"
+    "+ Conn: net.Conn": "TCP connection"
+    "- writeMu: sync.Mutex": "Serializes writes"
+    "- writer: *FrameWriter": "Protocol encoder"
+  }
+}
+
+# Delivery channel detail
+DeliveryChannel: {
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+
+  buffer: {
+    shape: sequence_diagram
+    producer: "Publish()"
+    channel: "deliver chan"
+    consumer: "deliveryLoop()"
+    producer -> channel: "msg 1 (non-blocking)"
+    producer -> channel: "msg 2 (non-blocking)"
+    producer -> channel: "msg 3 (non-blocking)"
+    channel -> consumer: "msg 1 (serialized)"
+    channel -> consumer: "msg 2 (serialized)"
+    channel -> consumer: "msg 3 (serialized)"
+  }
+
+  note: |md
+    **Non-blocking send pattern:**
+    go
+    select {
+    case subState.deliver <- msg:
+      delivered++
+    default:
+      // Buffer full - drop and log
+    }
+    
+  | {
+    shape: text
+    style.font: mono
+    style.font-size: 11
+  }
+
+  buffer -> note: {style.stroke-width: 0}
+}
+
+# Relationships
+TopicRouter.fields -> TopicState.fields: "1:N\nper topic" {
+  style.stroke: "#2196F3"
+  style.stroke-width: 2
+}
+TopicState.fields -> SubscriberState: "1:N\nper subscriber" {
+  style.stroke: "#FF9800"
+  style.stroke-width: 2
+}
+SubscriberState.fields -> Client: "references" {
+  style.stroke: "#9C27B0"
+  style.stroke-dash: 3
+}
+SubscriberState.fields -> DeliveryChannel: "buffered\nchan *Command" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+}
+
+# Goroutine model annotation
+GoroutineModel: {
+  near: bottom-right
+  style.fill: "#FFFDE7"
+  style.stroke: "#FBC02D"
+  content: |md
+    ## Goroutine Model
+    **Per broker:**
+    - 1 accept loop
+    - 2N per client (read + heartbeat)
+    - S per subscriber (delivery loop)
+    **Example:** 100 clients × 3 topics = ~600 goroutines
+    Each `Subscribe()` spawns a `deliveryLoop()` 
+    that serializes writes to that subscriber.
+  | {
+    shape: text
+  }
+}
+
+# Invariants box
+Invariants: {
+  near: bottom-left
+  style.fill: "#FFEBEE"
+  style.stroke: "#F44336"
+  content: |md
+    ## Invariants
+    1. **Ordering**: All subscribers receive messages
+       for a topic in publication order
+    2. **Isolation**: Slow subscriber cannot block
+       delivery to other subscribers
+    3. **Atomicity**: Subscribe/Unsubscribe are
+       atomic wrt concurrent Publish calls
+    4. **No blocking**: Publish never blocks on
+       network I/O (channel buffer absorbs burst)
+  | {
+    shape: text
+  }
+}
+
+# Lock hierarchy
+LockHierarchy: {
+  near: top-right
+  style.fill: "#E1F5FE"
+  style.stroke: "#03A9F4"
+  content: |md
+    ## Lock Hierarchy
+    Acquire in order to prevent deadlock:
+    1. `TopicRouter.topicsMu`
+    2. `TopicState.mu`
+    3. `Client.writeMu`
+    **Never hold TopicState.mu during I/O**
+  | {
+    shape: text
+  }
+}

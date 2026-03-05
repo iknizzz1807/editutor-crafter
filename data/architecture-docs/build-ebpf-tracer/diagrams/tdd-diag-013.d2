@@ -1,0 +1,175 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+
+userspace_loader_sequence: {
+  shape: sequence_diagram
+  label: "eBPF Userspace Loader Lifecycle & Event Pipeline"
+
+  # ---------------------------------------------------------------------------
+  # Participant Definitions (Technical Specifications)
+  # ---------------------------------------------------------------------------
+  Loader: "Userspace Loader\n(C11/POSIX)" {
+    shape: person
+    tooltip: "Main orchestrator thread using libbpf"
+    style.stroke-width: 3
+    style.fill: "#D0E1F9"
+  }
+  
+  Skel: "dashboard_bpf\n(Skeleton Struct)" {
+    tooltip: "libbpf generated header mapping to eBPF ELF sections"
+    style.fill: "#E1D5E7"
+  }
+  
+  PM: "Probe Manager\n(K/Uprobes)" {
+    tooltip: "Tracks perf_event file descriptors and BPF links"
+    style.fill: "#FFF2CC"
+  }
+  
+  Agg: "Per-CPU Aggregator\n(Map Iterator)" {
+    tooltip: "Logic for summing BPF_MAP_TYPE_PERCPU_ARRAY values"
+    style.fill: "#D5E8D4"
+  }
+  
+  Epoll: "Epoll Reactor\n(I/O Multiplexer)" {
+    icon: https://icons.terrastruct.com/dev%2Flinux.svg
+    tooltip: "Linux epoll_wait instance for MPSC event handling"
+    style.fill: "#F8CECC"
+  }
+  
+  RingBuf: "BPF Ring Buffer\n(Lockless MPSC)" {
+    tooltip: "Kernel-to-Userspace circular memory buffer"
+    style.fill: "#D0E1F9"
+  }
+  
+  Term: "Terminal UI\n(ncurses)" {
+    tooltip: "UI rendering engine for dashboard visualization"
+    style.fill: "#F5F5F5"
+  }
+
+  # ---------------------------------------------------------------------------
+  # 1. Initialization Phase - Memory Allocation & Object Loading
+  # ---------------------------------------------------------------------------
+  "PHASE 1: Initialization": {
+    Loader -> Skel: "dashboard_bpf__open()"
+    Skel -> Loader: "struct dashboard_bpf *obj"
+    
+    Loader -> Skel: "dashboard_bpf__load()"
+    Skel -> Loader: "int return_code (BPF_PROG_LOAD)"
+    
+    Loader -> PM: "probe_manager_init(&state->probe_mgr)"
+    PM -> Loader: "bool success"
+  }
+
+  # ---------------------------------------------------------------------------
+  # 2. Attachment and Setup Phase
+  # ---------------------------------------------------------------------------
+  "PHASE 2: Setup & Attachment": {
+    Loader.t1 -> PM.t1: "attach_all_probes(state->probe_mgr)"
+    
+    "Link Acquisition": {
+      PM.t1 -> PM.t1: "bpf_program__attach_kprobe(skel->progs.prog_x)"
+      PM.t1 -> PM.t1: "perf_event_open(attr, -1, 0, ...)"
+    }
+    PM.t1 -> Loader.t1: "int num_links_active"
+
+    Loader -> Epoll: "epoll_create1(EPOLL_CLOEXEC)"
+    Epoll -> Loader: "int epoll_fd"
+
+    Loader -> RingBuf: "ring_buffer__new(skel->maps.rb, handle_event)"
+    Loader -> Epoll: "epoll_ctl(EPOLL_CTL_ADD, rb_fd, EPOLLIN)"
+  }
+
+  # ---------------------------------------------------------------------------
+  # 3. Execution Loop - High-Frequency Event Processing
+  # ---------------------------------------------------------------------------
+  "PHASE 3: Runtime Reactor Loop": {
+    Loader.t2 -> Epoll.t2: "epoll_wait(timeout=100ms)"
+    
+    "Event Consumption Path": {
+      Epoll.t2 -> Loader.t2: "struct epoll_event event_buffer[]"
+      Loader.t2 -> RingBuf.t2: "ring_buffer__consume(state->rb)"
+      RingBuf.t2 -> Loader.t2: "callback(struct bpf_event *e)"
+    }
+    
+    "Map Summation Strategy": {
+      Loader.t2 -> Agg.t2: "percpu_aggregator_sum(&state->agg, map_fd)"
+      
+      "Iterative Aggregation": {
+        Agg.t2 -> Agg.t2: "bpf_map_lookup_percpu_elem(fd, key, values[])"
+        Agg.t2 -> Agg.t2: "for(i=0; i<nr_cpus; i++) { global_sum += values[i] }"
+      }
+      Agg.t2 -> Loader.t2: "uint64_t total_count"
+    }
+
+    "UI Refresh Logic": {
+      Loader.t2 -> Term.t2: "render_dashboard(state->agg_data)"
+      Term.t2 -> Term.t2: "wrefresh(main_win)"
+    }
+  }
+
+  # ---------------------------------------------------------------------------
+  # 4. Termination Sequence - Graceful Teardown
+  # ---------------------------------------------------------------------------
+  "PHASE 4: Cleanup & Exit": {
+    Loader.t3 -> Term.t3: "endwin() // Restore terminal state" {
+      style.stroke: red
+      style.bold: true
+    }
+    
+    Loader.t3 -> Epoll.t3: "close(epoll_fd)" { style.stroke: red }
+    
+    Loader.t3 -> Agg.t3: "percpu_aggregator_free(&state->agg)" { style.stroke: red }
+    Agg.t3 -> Loader.t3: "void"
+    
+    Loader.t3 -> PM.t3: "probe_manager_cleanup(&state->probe_mgr)" { 
+      style.stroke: red 
+    }
+    PM.t3 -> PM.t3: "bpf_link__destroy(links[])"
+    PM.t3 -> Loader.t3: "void"
+    
+    Loader.t3 -> RingBuf.t3: "ring_buffer__free(state->rb)" { style.stroke: red }
+    
+    Loader.t3 -> Skel.t3: "dashboard_bpf__destroy(state->skel)" { 
+      style.stroke: red 
+      label: "Release ELF Mappings"
+    }
+    Skel.t3 -> Loader.t3: "return (0)"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Documentation & Metadata Block (Fixed compiler error)
+# ---------------------------------------------------------------------------
+annotation: |md
+  ### Dashboard Loader Logic & Lifecycle
+  
+  **1. Concurrency Model**
+  The userspace loader uses a single-threaded `epoll` reactor pattern to avoid mutex contention 
+  between event processing and UI rendering. Periodic map aggregation is triggered by `timeout` 
+  parameters in the `epoll_wait` syscall.
+  
+  **2. Map Aggregation Strategy**
+  Since eBPF `BPF_MAP_TYPE_PERCPU_ARRAY` provides unique buffers per core, the aggregator 
+  manually iterates through `NR_CPUS` using `bpf_map_lookup_percpu_elem` to compute consistent 
+  global totals.
+  
+  **3. Resource Ownership**
+  - **BPF Skeleton**: Owned by `Loader`, provides access to compiled bytecode and map offsets.
+  - **Probe Manager**: Manages `fd` lifetimes for `perf_event` and `bpf_link` objects to prevent kernel leaks.
+  - **Ring Buffer**: Shared memory region between kernel and userspace for lockless MPSC streaming.
+| {
+  near: bottom-center
+}
+
+# ---------------------------------------------------------------------------
+# Global Styling & Overrides
+# ---------------------------------------------------------------------------
+userspace_loader_sequence.style.stroke-width: 2
+userspace_loader_sequence.Loader.style.bold: true
+(userspace_loader_sequence.** -> userspace_loader_sequence.**)[*]: {
+  style.font-size: 14
+}

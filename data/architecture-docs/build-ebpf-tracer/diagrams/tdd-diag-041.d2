@@ -1,0 +1,243 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+# -----------------------------------------------------------------------------
+# DOCUMENT HEADER
+# -----------------------------------------------------------------------------
+title: |md
+  # eBPF Tracer System Architecture
+  ## Per-CPU Aggregation & Event Processing Pipeline
+  **Implementation Grade Specification v1.1.0**
+|
+title.shape: text
+title.near: top-center
+
+# -----------------------------------------------------------------------------
+# GLOBAL STYLING & CLASSES
+# -----------------------------------------------------------------------------
+classes: {
+  kernel_obj: {
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#FF9800"
+      stroke-width: 2
+    }
+  }
+  ebpf_prog: {
+    shape: hexagon
+    style: {
+      fill: "#E1F5FE"
+      stroke: "#0288D1"
+      stroke-width: 2
+    }
+  }
+  bpf_map: {
+    shape: cylinder
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+    }
+  }
+  userspace_node: {
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+    }
+  }
+  memory_header: {
+    style: {
+      fill: "#9C27B0"
+      font-color: white
+      bold: true
+    }
+  }
+}
+
+***.style.font: mono
+
+# -----------------------------------------------------------------------------
+# LAYER 1: LINUX KERNEL SUBSYSTEM
+# -----------------------------------------------------------------------------
+kernel: Linux Kernel {
+  class: kernel_obj
+  style.stroke-dash: 5
+
+  syscall: Syscall Entry {
+    shape: parallelogram
+    style.fill: "#FFE0B2"
+    tooltip: "Entry: __x64_sys_openat"
+  }
+
+  kprobe: "Kprobe: do_sys_openat2" {
+    shape: circle
+    style.fill: "#FFCC80"
+    label.near: bottom-center
+  }
+
+  tracepoint: "Tracepoint: inet_sock_set_state" {
+    shape: circle
+    style.fill: "#FFCC80"
+    label.near: bottom-center
+  }
+
+  subsystems: {
+    tcp_stack: TCP Stack
+    vfs: VFS Layer
+    style.stroke-width: 1
+  }
+
+  syscall -> subsystems.vfs: IRQ/Trap
+  subsystems.vfs -> kprobe: instrumentation_hook
+  subsystems.tcp_stack -> tracepoint: static_hook
+}
+
+# -----------------------------------------------------------------------------
+# LAYER 2: EBPF EXECUTION CONTEXT
+# -----------------------------------------------------------------------------
+ebpf_runtime: eBPF Execution Environment {
+  style.fill: "#F0F4F8"
+  
+  bpf_prog: {
+    class: ebpf_prog
+    label: "Tracing Program\n(Section: kprobe/openat2)"
+    
+    verifier: Verifier {
+      shape: diamond
+      style.fill: "#B3E5FC"
+    }
+    jit: JIT Compiler {
+      style.fill: "#B3E5FC"
+    }
+    jit -> verifier: "Static Analysis"
+  }
+
+  maps: BPF Map Storage {
+    hash_map: "Hash Map: StartTimes" {
+      class: bpf_map
+      tooltip: "Key: u32 TID | Val: u64 StartNS"
+    }
+    
+    percpu_arr: "Per-CPU Array: Histograms" {
+      class: bpf_map
+      tooltip: "Array of BPF_HIST_MAX buckets per CPU core"
+    }
+    
+    ringbuf: "BPF Ring Buffer: Events" {
+      class: bpf_map
+      # FIXED: double-border is only valid on squares, rectangles, circles, ovals. 
+      # We override the cylinder shape from the class to a rectangle to represent the memory buffer.
+      shape: rectangle
+      style.double-border: true
+      tooltip: "MMap-able Shared Memory (64KB)"
+    }
+  }
+
+  bpf_prog -> maps.hash_map: "bpf_map_update_elem" {style.stroke: orange}
+  bpf_prog -> maps.percpu_arr: "bpf_map_lookup_elem" {style.stroke: blue}
+  bpf_prog -> maps.ringbuf: "bpf_ringbuf_submit" {style.stroke: green}
+}
+
+# -----------------------------------------------------------------------------
+# MEMORY LAYOUT: EVENT STRUCTURE (INTEL MANUAL QUALITY)
+# -----------------------------------------------------------------------------
+event_struct: {
+  shape: sql_table
+  label: "Struct Event (sizeof=64B, align=64B)"
+  style.stroke: "#333333"
+
+  # Table Definition: Byte Offset | Field Definition | Size/Constraint
+  "Offset": "Field (Type)" {class: memory_header}
+  "0x00": "u64 timestamp_ns" {constraint: "8 Bytes (Data: Blue)"; style.fill: "#BBDEFB"}
+  "0x08": "u32 process_id" {constraint: "4 Bytes (Data: Blue)"; style.fill: "#BBDEFB"}
+  "0x0C": "u32 cpu_index" {constraint: "4 Bytes (Data: Blue)"; style.fill: "#BBDEFB"}
+  "0x10": "char comm[16]" {constraint: "16 Bytes (Data: Blue)"; style.fill: "#BBDEFB"}
+  "0x20": "u64 delta_latency" {constraint: "8 Bytes (Data: Blue)"; style.fill: "#BBDEFB"}
+  "0x28": "byte padding[24]" {constraint: "24 Bytes (Padding: Gray)"; style.fill: "#E0E0E0"}
+}
+
+# -----------------------------------------------------------------------------
+# LAYER 3: USERSPACE PROCESSING
+# -----------------------------------------------------------------------------
+userspace: Userspace Pipeline {
+  class: userspace_node
+  
+  libbpf: "libbpf Loader" {
+    style.fill: "#E1BEE7"
+  }
+
+  aggregator: "Aggregator" {
+    tooltip: "Merge BPF_MAP_TYPE_PERCPU_ARRAY buckets"
+    style.fill: "#E1BEE7"
+  }
+
+  poll_loop: "epoll() Loop" {
+    style.fill: "#CE93D8"
+  }
+
+  tui: "Ncurses Dashboard" {
+    style: {
+      fill: "#4A148C"
+      font-color: white
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# CROSS-LAYER CALL SEQUENCES
+# -----------------------------------------------------------------------------
+kernel.kprobe -> ebpf_runtime.bpf_prog: "1. Trigger (Trap)" {
+  style: { stroke: red; animated: true; stroke-width: 3 }
+}
+
+ebpf_runtime.maps.ringbuf -> userspace.poll_loop: "2. Signal (irq_work)" {
+  style.stroke-dash: 5
+}
+
+userspace.aggregator -> ebpf_runtime.maps.percpu_arr: "3. Dump (Iterate NR_CPUS)" {
+  style: { stroke: blue; stroke-width: 2 }
+}
+
+userspace.poll_loop -> userspace.tui: "4. Refresh Display" {
+  style.stroke-width: 4
+}
+
+# Structural Reference
+ebpf_runtime.maps.ringbuf -> event_struct: "Delineates" {
+  style.stroke-dash: 3
+}
+
+# -----------------------------------------------------------------------------
+# LEGEND & CONVENTIONS
+# -----------------------------------------------------------------------------
+Legend: {
+  near: bottom-right
+  style.fill: white
+  
+  K: Kernel Object { class: kernel_obj; shape: circle }
+  E: eBPF Logic { class: ebpf_prog; shape: hexagon }
+  M: Data Store { class: bpf_map; shape: cylinder }
+  
+  notes: |md
+    - **Red Arrow**: High-frequency execution path
+    - **Blue Arrow**: Control plane / Polling
+    - **Dashed Line**: Async signaling
+  |
+  notes.shape: text
+}
+
+# Apply triple glob styling for consistency
+***: {
+  &class: memory_header
+  style.fill: "#9C27B0"
+}
+
+***: {
+  &class: kernel_obj
+  style.stroke: "#FF9800"
+}

@@ -1,0 +1,344 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: "IP Fragment Reassembly Buffer Structure" {
+  style: {
+    font-size: 24
+    bold: true
+  }
+  near: top-center
+}
+row_main: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  frag_table: {
+    label: "Fragment Hash Table (frag_reassembler.c)"
+    style.fill: "#E8F4FD"
+    table_header: {
+      shape: sql_table
+      label: "struct frag_reassembler"
+      f0: "contexts[64] | frag_context[] | hash slots"
+      sz: "Size: 64 × sizeof(frag_context)"
+    }
+    hash_func: {
+      label: "Hash Function"
+      width: 280
+      code: |'c
+        uint32_t hash = src_ip ^ dst_ip ^ id ^ proto;
+        return hash % FRAG_TABLE_SIZE;  // 64
+      '|
+    }
+    table_header -> hash_func: "index = hash()"
+  }
+  context_detail: {
+    label: "Reassembly Context (per datagram)"
+    style.fill: "#FFF9E6"
+    context_struct: {
+      shape: sql_table
+      label: "struct frag_context"
+      f0: "0x00 | uint32_t | src_ip"
+      f1: "0x04 | uint32_t | dst_ip"
+      f2: "0x08 | uint16_t | id"
+      f3: "0x0A | uint8_t  | proto"
+      f4: "0x0C | time_t   | expires_at"
+      f5: "0x14 | uint16_t | total_len"
+      f6: "0x16 | uint8_t  | have_last_frag"
+      f7: "0x17 | uint8_t  | in_use"
+      f8: "0x18 | frag_node* | frags (linked list)"
+      sz: "Total: ~28 bytes + frag_node chain"
+    }
+  }
+}
+frag_table -> context_detail: "contexts[hash]"
+row_frags: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  frag_node_struct: {
+    label: "Fragment Node (linked list)"
+    style.fill: "#F0FFF0"
+    node_def: {
+      shape: sql_table
+      label: "struct frag_node"
+      f0: "0x00 | uint16_t | offset (bytes)"
+      f1: "0x02 | uint16_t | len (bytes)"
+      f2: "0x04 | uint8_t* | data"
+      f3: "0x08 | int      | is_last (MF=0)"
+      f4: "0x0C | frag_node* | next"
+      sz: "Total: 20 bytes + payload"
+    }
+  }
+  data_buffer: {
+    label: "Reassembly Data Buffer"
+    style.fill: "#FFF0F5"
+    buffer_layout: {
+      shape: sql_table
+      label: "Reassembly Buffer (max 65535 bytes)"
+      r0: "0x0000-0x01FF | Fragment 0 | 512 bytes"
+      r1: "0x0200-0x03FF | [HOLE]     | 512 bytes"
+      r2: "0x0400-0x05FF | Fragment 2 | 512 bytes"
+      r3: "0x0600-0x07FF | Fragment 3 | 512 bytes"
+      r4: "0x0800-0x0FFF | [HOLE]     | 2048 bytes"
+      r5: "0x1000-0x17FF | Fragment 5 | 2048 bytes"
+      sz: "Total: 65535 bytes max"
+    }
+  }
+}
+frag_node_struct -> data_buffer: "data points into buffer"
+row_algorithm: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  hole_filling: {
+    label: "Hole-Filling Algorithm"
+    width: 420
+    style.fill: "#F5F5DC"
+    step1: {
+      label: "1. Fragment Arrival"
+      code: |'c
+        // Parse fragment offset (in 8-byte units)
+        uint16_t byte_offset = frag_offset * 8;
+        // Check for overflow
+        if (byte_offset + len > 65535) return -1;
+      '|
+    }
+    step2: {
+      label: "2. Insert Sorted"
+      code: |'c
+        // Insert into sorted linked list by offset
+        struct frag_node **pp = &ctx->frags;
+        while (*pp && (*pp)->offset < offset) {
+          pp = &(*pp)->next;
+        }
+        // Skip duplicates
+        if (*pp && (*pp)->offset == offset) return 0;
+      '|
+    }
+    step3: {
+      label: "3. Check Completeness"
+      code: |'c
+        if (!ctx->have_last_frag) return 0;  // Wait
+        uint16_t expected = 0;
+        for (node = ctx->frags; node; node = node->next) {
+          if (node->offset > expected) return 0;  // Gap!
+          if (node->offset + node->len > expected)
+            expected = node->offset + node->len;
+        }
+        return (expected >= ctx->total_len);
+      '|
+    }
+    step4: {
+      label: "4. Reassemble"
+      code: |'c
+        // Copy each fragment into final position
+        for (node = ctx->frags; node; node = node->next) {
+          memcpy(out_buf + node->offset, node->data, node->len);
+        }
+        *out_len = ctx->total_len;
+      '|
+    }
+    step1 -> step2 -> step3 -> step4
+  }
+  state_diagram: {
+    label: "Reassembly State Machine"
+    style.fill: "#E6E6FA"
+    waiting: {
+      shape: circle
+      label: "WAITING"
+      style.fill: "#FFD700"
+    }
+    partial: {
+      shape: circle
+      label: "PARTIAL"
+      style.fill: "#FFA500"
+    }
+    complete: {
+      shape: circle
+      label: "COMPLETE"
+      style.fill: "#32CD32"
+    }
+    expired: {
+      shape: diamond
+      label: "EXPIRED"
+      style.fill: "#FF6347"
+    }
+    waiting -> partial: "first frag\narrives"
+    partial -> partial: "more frags\n(gaps remain)"
+    partial -> complete: "all frags\n(no gaps)"
+    partial -> expired: "timeout\n(30s)"
+    waiting -> expired: "timeout"
+    complete -> waiting: "deliver &\nfree context"
+  }
+}
+row_example: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  example_scenario: {
+    label: "Example: 3000-byte Datagram Fragmented"
+    style.fill: "#E0FFFF"
+    original: {
+      shape: rectangle
+      label: "Original Datagram\nID=0x1234, Total=3000 bytes"
+      style.fill: "#ADD8E6"
+    }
+    frag0: {
+      shape: rectangle
+      label: "Fragment 0\nOffset=0, Len=1000, MF=1"
+      style.fill: "#90EE90"
+    }
+    frag1: {
+      shape: rectangle
+      label: "Fragment 1\nOffset=1000, Len=1000, MF=1"
+      style.fill: "#FFB6C1"
+    }
+    frag2: {
+      shape: rectangle
+      label: "Fragment 2\nOffset=2000, Len=1000, MF=0"
+      style.fill: "#DDA0DD"
+    }
+    original -> frag0: "split" {style.stroke-dash: 3}
+    original -> frag1: "split" {style.stroke-dash: 3}
+    original -> frag2: "split" {style.stroke-dash: 3}
+  }
+  reassembly_order: {
+    label: "Out-of-Order Arrival Example"
+    style.fill: "#FFE4E1"
+    arrival_timeline: {
+      shape: rectangle
+      width: 400
+      code: |'text
+        Time  Event                    Buffer State
+        ────  ─────                    ────────────
+        T+0   Frag 2 arrives (2000)    [....][....][XXXX]
+        T+5   Frag 0 arrives (0)       [XXXX][....][XXXX]
+        T+12  Frag 1 arrives (1000)    [XXXX][XXXX][XXXX] → COMPLETE
+        T+15  Deliver to IP layer
+      '|
+    }
+    note: {
+      label: |md
+        **Key Insight**: Fragments can arrive in ANY order.
+        The receiver must buffer all until the gap is filled.
+        Only the last fragment (MF=0) tells us total_len.
+      |
+    }
+  }
+}
+row_gaps: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  gap_detection: {
+    label: "Gap Detection Logic"
+    style.fill: "#F0E68C"
+    gap_visual: {
+      label: "Fragment Coverage Bitmap"
+      width: 450
+      code: |'c
+        // After receiving fragments at offsets: 0, 1000, 2000
+        // Coverage check:
+        //   expected = 0, node->offset = 0  → OK, advance to 1000
+        //   expected = 1000, node->offset = 1000  → OK, advance to 2000
+        //   expected = 2000, node->offset = 2000  → OK, advance to 3000
+        //   expected = 3000, total_len = 3000  → COMPLETE!
+        // After receiving fragments at offsets: 0, 2000 (missing 1000)
+        // Coverage check:
+        //   expected = 0, node->offset = 0  → OK, advance to 1000
+        //   expected = 1000, node->offset = 2000  → GAP! node->offset > expected
+        //   Return 0 (not complete, waiting for more)
+      '|
+    }
+  }
+  overlap_handling: {
+    label: "Overlap Handling (RFC 791)"
+    style.fill: "#E6E6FA"
+    overlap_code: {
+      width: 380
+      code: |'c
+        // RFC 791: If fragments overlap, prefer newer data
+        // Simplified approach: skip exact duplicates
+        if (*pp && (*pp)->offset == offset) {
+          // Duplicate offset - could check length
+          // For simplicity, skip duplicate
+          return 0;  
+        }
+        // Production: handle partial overlaps
+        // by trimming existing fragment
+      '|
+    }
+  }
+}
+row_timers: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  timer_mgmt: {
+    label: "Timer & Cleanup"
+    style.fill: "#FFEFD5"
+    timer_code: {
+      width: 400
+      code: |'c
+        #define FRAG_REASSEMBLY_TIMEOUT 30  // seconds
+        void frag_cleanup(struct frag_reassembler *fr) {
+          time_t now = time(NULL);
+          for (int i = 0; i < FRAG_TABLE_SIZE; i++) {
+            struct frag_context *ctx = &fr->contexts[i];
+            if (ctx->in_use && ctx->expires_at < now) {
+              // Free all fragment nodes
+              struct frag_node *node = ctx->frags;
+              while (node) {
+                struct frag_node *next = node->next;
+                free(node->data);
+                free(node);
+                node = next;
+              }
+              ctx->in_use = 0;
+            }
+          }
+        }
+      '|
+    }
+  }
+  memory_layout: {
+    label: "Memory Layout"
+    style.fill: "#E0FFFF"
+    layout_visual: {
+      shape: sql_table
+      label: "Memory Allocation per Context"
+      r0: "frag_context | 28 bytes | fixed"
+      r1: "frag_node × N | 20 bytes each | per fragment"
+      r2: "data buffers | offset+len bytes | per fragment"
+      r3: "Total | ~100-65535 bytes | varies"
+      note: "Peak memory: 64 contexts × 65535 bytes ≈ 4MB"
+    }
+  }
+}
+legend: {
+  near: bottom-right
+  style.fill: white
+  style.stroke: black
+  l1: "[XXXX] = received fragment data"
+  l2: "[....] = hole (not yet received)"
+  l3: "MF=1 = More Fragments follow"
+  l4: "MF=0 = Last fragment (determines total_len)"
+  l1.style.fill: "#90EE90"
+  l2.style.fill: "#FFB6C1"
+}

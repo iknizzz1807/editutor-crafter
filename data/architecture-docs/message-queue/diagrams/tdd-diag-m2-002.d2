@@ -1,0 +1,222 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#E8D5E8"
+    data: "#B8D4E8"
+    pointer: "#F5D5A8"
+    free: "#C8E6C8"
+    padding: "#D0D0D0"
+    critical: "#FFDADA"
+    text_dim: "#777777"
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# TITLE & HEADER
+# ---------------------------------------------------------------------------------
+
+title: {
+  shape: text
+  label: |md
+    # Module Architecture: Pending Queue with Partition Affinity
+    **Internal Spec v1.4 | Memory Alignment: 64B (Cache Line)**
+  |
+  near: top-center
+}
+
+# ---------------------------------------------------------------------------------
+# SECTION 1: Class Definitions (Architecture)
+# ---------------------------------------------------------------------------------
+
+PendingMessage: {
+  shape: class
+  label: "PendingMessage\nsizeof=64 bytes"
+  style.fill: ${colors.header}
+  
+  +MsgID: "uint64"
+  +Payload: "[]byte (slice header: 24B)"
+  +Partition: "int"
+  +AddedAt: "time.Time (struct: 24B)"
+  
+  style.stroke-width: 2
+  tooltip: "Aligned to 64B boundary to prevent false sharing"
+}
+
+PendingQueue: {
+  shape: class
+  style.fill: ${colors.header}
+  
+  -messages: "[]*PendingMessage"
+  -mu: "sync.RWMutex"
+  
+  +Add(msg: *PendingMessage): void
+  +PopForPartition(partition: int): *PendingMessage
+  +PopAny(): *PendingMessage
+  +PopForPartitions(parts: []int): *PendingMessage
+  +Len(): int
+}
+
+PendingQueue -> PendingMessage: "owns pointers" {
+  source-arrowhead: 1
+  target-arrowhead: "*" {
+    shape: diamond
+  }
+  style.stroke-width: 2
+}
+
+# ---------------------------------------------------------------------------------
+# SECTION 2: Physical Memory Layout (Intel Manual Style)
+# ---------------------------------------------------------------------------------
+
+PhysicalMemory: {
+  label: "Physical Layout: PendingMessage (64B Chunk)"
+  
+  Layout: {
+    grid-columns: 3
+    grid-gap: 0
+    
+    # Header Row
+    H1: "Byte Offset" { style.bold: true; style.fill: "#D0D0D0" }
+    H2: "Field Mapping" { style.bold: true; style.fill: "#D0D0D0" }
+    H3: "Width" { style.bold: true; style.fill: "#D0D0D0" }
+    
+    # 0-8: MsgID
+    O00: "0x00"
+    F00: "MsgID (Unique ID)" { style.fill: ${colors.data} }
+    S00: "8B"
+    
+    # 8-16: Payload Pointer
+    O08: "0x08"
+    F08: "Payload.Data (Pointer)" { style.fill: ${colors.pointer} }
+    S08: "8B"
+    
+    # 16-24: Payload Len
+    O16: "0x10"
+    F16: "Payload.Len" { style.fill: ${colors.data} }
+    S16: "8B"
+    
+    # 24-32: Payload Cap
+    O24: "0x18"
+    F24: "Payload.Cap" { style.fill: ${colors.data} }
+    S24: "8B"
+    
+    # 32-40: Partition
+    O32: "0x20"
+    F32: "Partition ID" { style.fill: ${colors.data} }
+    S32: "8B"
+    
+    # 40-48: Time Wall
+    O40: "0x28"
+    F40: "AddedAt.wall" { style.fill: ${colors.data} }
+    S40: "8B"
+    
+    # 48-64: Time Ext
+    O48: "0x30"
+    F48: "AddedAt.ext (Monotonic)" { style.fill: ${colors.data} }
+    S48: "16B"
+  }
+  
+  PhysicalMemory.Layout.F48.style.bold: true
+  
+  Footer: "TOTAL SIZE: 64 Bytes | Alignment: 0B Padding" {
+    near: PhysicalMemory.Layout
+    style.fill: ${colors.free}
+    style.stroke-dash: 3
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# SECTION 3: Algorithm Logic
+# ---------------------------------------------------------------------------------
+
+AlgorithmFlow: {
+  label: "PendingQueue::PopForPartition(P_ID) Logic"
+  
+  Step1: "1. Acquire RWMutex.Lock()" {
+    shape: rectangle
+    style.fill: ${colors.header}
+  }
+  
+  Step2: "2. Scan slice from head" {
+    shape: rectangle
+  }
+  
+  Step3: "3. Msg.Partition == P_ID?" {
+    shape: diamond
+    style.fill: ${colors.pointer}
+  }
+  
+  Step4_Found: "4a. Extract & Reslice" {
+    style.fill: ${colors.free}
+    style.bold: true
+  }
+  
+  Step4_Missing: "4b. Continue Scan" {
+    style.fill: ${colors.critical}
+  }
+  
+  Step5: "5. Release Lock & Return" {
+    shape: oval
+    style.fill: ${colors.header}
+  }
+
+  Step1 -> Step2
+  Step2 -> Step3
+  Step3 -> Step4_Found: "Yes"
+  Step3 -> Step4_Missing: "No"
+  Step4_Missing -> Step2: "Next Index"
+  Step4_Found -> Step5
+}
+
+# ---------------------------------------------------------------------------------
+# SECTION 4: Affinitized Distribution
+# ---------------------------------------------------------------------------------
+
+AffinityMap: {
+  label: "Partition Affinity Worker Mapping"
+  
+  grid-rows: 2
+  grid-columns: 4
+  grid-gap: 15
+  
+  C1: "Consumer 1\n(IDs 0, 4, 8, 12)" { style.fill: ${colors.data} }
+  C2: "Consumer 2\n(IDs 1, 5, 9, 13)" { style.fill: ${colors.data} }
+  C3: "Consumer 3\n(IDs 2, 6, 10, 14)" { style.fill: ${colors.data} }
+  C4: "Consumer 4\n(IDs 3, 7, 11, 15)" { style.fill: ${colors.data} }
+}
+
+AffinityDesc: {
+  shape: text
+  label: |md
+    ### Routing Formula
+    `partition = msgID % 16`
+    
+    ### Implementation Constants
+    - **Scanning:** O(N) linear search per partition.
+    - **Mutex:** `sync.RWMutex` for concurrent Add/Pop.
+    - **Cache:** Aligned to 64B to avoid **False Sharing**.
+  |
+  near: AffinityMap
+}
+
+# ---------------------------------------------------------------------------------
+# GLOBAL STYLING
+# ---------------------------------------------------------------------------------
+
+***.style.font-size: 14
+
+PendingQueue.mu: {
+  style.font-color: ${colors.text_dim}
+  style.italic: true
+}
+
+# Visual connection for cache line growth
+PhysicalMemory -> PhysicalMemory: "Next Cache Line Boundary (64B)" {
+  style.stroke: orange
+  style.stroke-width: 3
+  style.stroke-dash: 5
+}

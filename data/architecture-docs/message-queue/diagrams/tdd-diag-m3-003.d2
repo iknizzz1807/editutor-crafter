@@ -1,0 +1,264 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    pad: 40
+  }
+  colors: {
+    header: "#DDA0DD"
+    data: "#ADD8E6"
+    free: "#90EE90"
+    padding: "#D3D3D3"
+    pointers: "#FFD580"
+    stroke: "#333333"
+  }
+}
+
+title: |md
+  # Module Architecture: Backpressure Manager
+  **Technical Specification v1.2**
+  *Implementation-grade structural layout and state transition logic*
+| {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 34
+    bold: true
+    underline: true
+  }
+}
+
+direction: right
+
+# --- DATA STRUCTURE LAYOUTS (INTEL MANUAL STYLE) ---
+
+BackpressureConfig: {
+  shape: class
+  label: "BackpressureConfig\nsizeof=24 bytes"
+  
+  "00: LagThresholdHigh (int64)": "8 bytes"
+  "08: LagThresholdLow (int64)": "8 bytes"
+  "16: ThrottleDelay (Duration)": "8 bytes"
+  
+  "00: LagThresholdHigh (int64)".style.fill: ${vars.colors.data}
+  "08: LagThresholdLow (int64)".style.fill: ${vars.colors.data}
+  "16: ThrottleDelay (Duration)".style.fill: ${vars.colors.data}
+  
+  style: {
+    stroke: ${vars.colors.stroke}
+    stroke-width: 2
+    font-size: 14
+  }
+}
+
+BackpressureManager: {
+  shape: class
+  label: "BackpressureManager\nsizeof=80 bytes (cache-aligned)"
+  
+  # Field Layout (Intel manual style)
+  "00: config (*BackpressureConfig)": "8 bytes"
+  "08: latestOffset (int64) [ATOMIC]": "8 bytes"
+  "16: throttling (int32) [ATOMIC]": "4 bytes"
+  "20: _padding [ALIGNMENT]": "4 bytes"
+  "24: groupsMu (sync.RWMutex)": "24 bytes"
+  "48: groups (map[string]*GroupLag)": "8 bytes"
+  "56: _trailing_pad": "24 bytes"
+  
+  # Method Signatures
+  "UpdateLatestOffset(offset uint64)": "void"
+  "UpdateCommittedOffset(g string, o uint64)": "void"
+  "CalculateLag()": "int64"
+  "ShouldThrottle()": "bool"
+  "GetThrottleDelay()": "time.Duration"
+  "IsThrottling()": "bool"
+  "GetLagMetrics()": "map[string]int64"
+
+  # Styles
+  "00: config (*BackpressureConfig)".style.fill: ${vars.colors.pointers}
+  "08: latestOffset (int64) [ATOMIC]".style.fill: ${vars.colors.data}
+  "16: throttling (int32) [ATOMIC]".style.fill: ${vars.colors.data}
+  "20: _padding [ALIGNMENT]".style.fill: ${vars.colors.padding}
+  "24: groupsMu (sync.RWMutex)".style.fill: ${vars.colors.header}
+  "48: groups (map[string]*GroupLag)".style.fill: ${vars.colors.pointers}
+  "56: _trailing_pad".style.fill: ${vars.colors.padding}
+
+  style: {
+    stroke: ${vars.colors.stroke}
+    stroke-width: 2
+    font-size: 14
+  }
+}
+
+GroupLag: {
+  shape: class
+  label: "GroupLag\nsizeof=24 bytes"
+  "00: committedOffset (int64)": "8 bytes"
+  "08: lastUpdate (time.Time)": "16 bytes"
+
+  "00: committedOffset (int64)".style.fill: ${vars.colors.data}
+  "08: lastUpdate (time.Time)".style.fill: ${vars.colors.data}
+
+  style: {
+    stroke: ${vars.colors.stroke}
+    stroke-width: 2
+    font-size: 14
+  }
+}
+
+# --- SYSTEM RELATIONSHIPS ---
+
+BackpressureConfig -> BackpressureManager: "Dependency Injection" {
+  style.stroke-dash: 3
+}
+
+BackpressureManager -> GroupLag: "1:N Ownership" {
+  source-arrowhead: * {
+    shape: diamond
+    style.filled: true
+  }
+}
+
+# --- ALGORITHM STATE: LagCalculation ---
+
+LagCalculation: {
+  label: "CalculateLag(): Concurrent Aggregation Routine"
+  
+  step1: "1. Load latestOffset via atomic.LoadInt64" {
+    style.fill: ${vars.colors.data}
+  }
+  step2: "2. Acquire groupsMu.RLock()" {
+    style.fill: ${vars.colors.header}
+  }
+  step3: "3. Iterate map: maxLag = MAX(maxLag, latest - committed)" {
+    style.bold: true
+  }
+  step4: "4. Release groupsMu.RUnlock()" {
+    style.fill: ${vars.colors.header}
+  }
+  step5: "5. RETURN maxLag" {
+    style.fill: ${vars.colors.free}
+  }
+  
+  step1 -> step2 -> step3 -> step4 -> step5
+}
+
+# --- STATE MACHINE: HYSTERESIS LOGIC ---
+
+HysteresisLogic: {
+  label: "ShouldThrottle() State Machine"
+  
+  INITIAL_STATE: "" {
+    shape: circle
+    style.fill: black
+    width: 15
+    height: 15
+  }
+  
+  CHECK_STATE: "Read throttling atomic" {
+    shape: diamond
+  }
+  
+  NOMINAL: "STATE: NOMINAL (0)" {
+    style.fill: ${vars.colors.free}
+    tooltip: "System is processing normally"
+  }
+  
+  THROTTLED: "STATE: THROTTLED (1)" {
+    style.fill: "#FFCCCC"
+    tooltip: "Ingress is being delayed"
+  }
+  
+  # Transitions
+  INITIAL_STATE -> CHECK_STATE
+  CHECK_STATE -> NOMINAL: "Val == 0"
+  CHECK_STATE -> THROTTLED: "Val == 1"
+  
+  NOMINAL -> THROTTLED: "lag > HighThreshold\nAction: StoreInt32(1)" {
+    style.stroke: red
+    style.bold: true
+  }
+  
+  THROTTLED -> NOMINAL: "lag < LowThreshold\nAction: StoreInt32(0)" {
+    style.stroke: green
+    style.bold: true
+  }
+  
+  NOMINAL -> NOMINAL: "lag <= HighThreshold\nNo-op"
+  THROTTLED -> THROTTLED: "lag >= LowThreshold\nNo-op"
+}
+
+# --- VISUAL THRESHOLD REFERENCE ---
+
+ThresholdVisual: {
+  label: "Memory/Lag Hysteresis Window"
+  
+  Scale: {
+    shape: rectangle
+    width: 500
+    height: 30
+    label: ""
+    style: {
+      fill: "linear-gradient(to right, #90EE90 0%, #FFFFE0 50%, #FFB6C1 100%)"
+    }
+  }
+  
+  LowMark: "Low Threshold (5k)" {
+    near: ThresholdVisual.Scale
+    style.font-color: green
+  }
+  
+  HighMark: "High Threshold (10k)" {
+    near: ThresholdVisual.Scale
+    style.font-color: red
+  }
+  
+  Safe: "Nominal Range" {
+    near: ThresholdVisual.Scale
+    label.near: outside-bottom-left
+  }
+  
+  Danger: "Throttle Range" {
+    near: ThresholdVisual.Scale
+    label.near: outside-bottom-right
+  }
+}
+
+# --- COMPONENT CONNECTIONS ---
+
+BackpressureManager -> LagCalculation: "Read-Only Access"
+BackpressureManager -> HysteresisLogic: "State Mutation"
+
+# --- LEGEND ---
+
+Legend: {
+  near: bottom-right
+  label: "Legend: Byte Layout & Semantics"
+  
+  L1: "Header / Mutex" {
+    style.fill: ${vars.colors.header}
+  }
+  L2: "Data Field" {
+    style.fill: ${vars.colors.data}
+  }
+  L3: "Pointer / Map" {
+    style.fill: ${vars.colors.pointers}
+  }
+  L4: "Padding / Alignment" {
+    style.fill: ${vars.colors.padding}
+  }
+  
+  L1; L2; L3; L4
+}
+
+# --- SPECIFICATION FOOTER ---
+
+Spec: |md
+  ### Implementation Notes
+  - **Memory Alignment**: `_padding` ensures `groupsMu` starts on an 8-byte boundary for optimal cache line performance.
+  - **Atomics**: All reads of `latestOffset` and `throttling` MUST use `sync/atomic` to prevent race conditions during `CalculateLag`.
+  - **Hysteresis**: The 5,000 message gap between High and Low thresholds prevents oscillation (thrashing) of the throttle state.
+  - **Cache Line Dash**: Structural fields 00-56 fit within a standard 64B line; padding at 56 completes the 80B allocation.
+| {
+  near: bottom-left
+  style.font-size: 12
+}

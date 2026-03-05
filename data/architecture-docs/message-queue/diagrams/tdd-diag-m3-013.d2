@@ -1,0 +1,230 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#9B7ED9"
+    data: "#5C9DED"
+    success: "#4CAF50"
+    warning: "#FF9800"
+    transition: "#607D8B"
+    text_dark: "#1A1A2E"
+    text_light: "#FFFFFF"
+  }
+}
+
+title: ||md
+  # State Machine: Log File Lifecycle
+  Persistence Layer State Transitions
+|| {near: top-center}
+
+direction: right
+
+states: {
+  EMPTY: {
+    label: "EMPTY\n┌─────────────────────┐\n│ • New log file      │\n│ • Size: 0 bytes     │\n│ • No entries        │\n│ • Ready for writes  │\n└─────────────────────┘"
+    shape: rectangle
+    style: {
+      fill: "${colors.data}"
+      stroke: "${colors.header}"
+      stroke-width: 3
+      font-color: "${colors.text_light}"
+      font-size: 14
+      border-radius: 8
+    }
+  }
+  WRITING: {
+    label: "WRITING\n┌─────────────────────┐\n│ • Active append mode│\n│ • Size < MaxSegSize │\n│ • Entries flowing   │\n│ • Buffer accumulating│\n└─────────────────────┘"
+    shape: rectangle
+    style: {
+      fill: "${colors.success}"
+      stroke: "${colors.header}"
+      stroke-width: 3
+      font-color: "${colors.text_light}"
+      font-size: 14
+      border-radius: 8
+    }
+  }
+  ROTATING: {
+    label: "ROTATING\n┌─────────────────────┐\n│ • Size ≥ MaxSegSize │\n│ • Final fsync()     │\n│ • Close current file│\n│ • Rename to .archived│\n│ • Create new file   │\n└─────────────────────┘"
+    shape: rectangle
+    style: {
+      fill: "${colors.warning}"
+      stroke: "#E65100"
+      stroke-width: 3
+      font-color: "${colors.text_dark}"
+      font-size: 14
+      border-radius: 8
+      font: mono
+    }
+  }
+}
+
+# Transitions
+states.EMPTY -> states.WRITING: "First Append()\n│\n│ Trigger: Writer.Append()\n│ Action: Write entry to file\n│ Guard: currentSize == 0\n│" {
+  label: ||md
+    **Trigger:** First `Writer.Append()`
+    **Guard:** `currentSize == 0`
+    **Action:**
+    - Write log entry
+    - Update `currentSize`
+    - Check fsync policy
+  ||
+  style: {
+    stroke: "${colors.transition}"
+    stroke-width: 2
+    font-size: 11
+    font-color: "${colors.text_dark}"
+  }
+}
+
+states.WRITING -> states.WRITING: "Append Entry\n│\n│ Trigger: Writer.Append()\n│ Guard: currentSize < MaxSegmentSize\n│ Action: Write + maybe fsync()\n│" {
+  label: ||md
+    **Trigger:** `Writer.Append()`
+    **Guard:** `currentSize < MaxSegmentSize`
+    **Action:**
+    - Write entry to file
+    - `currentSize += entrySize`
+    - `writeCount++`
+    - `maybeFsync()` per policy
+  ||
+  style: {
+    stroke: "${colors.success}"
+    stroke-width: 2
+    font-size: 10
+    font-color: "${colors.text_dark}"
+  }
+}
+
+states.WRITING -> states.ROTATING: "Size Threshold\n│\n│ Trigger: Append complete\n│ Guard: currentSize ≥ MaxSegmentSize\n│ Action: Begin rotation\n│" {
+  label: ||md
+    **Trigger:** Post-append size check
+    **Guard:** `currentSize >= MaxSegmentSize`
+    (default: 1GB)
+    **Action:**
+    - Final `fsync()` on current file
+    - Close file handle
+    - Begin rotation sequence
+  ||
+  style: {
+    stroke: "#E65100"
+    stroke-width: 3
+    font-size: 11
+    font-color: "${colors.text_dark}"
+    animated: true
+  }
+}
+
+states.ROTATING -> states.WRITING: "Rotation Complete\n│\n│ Trigger: New file created\n│ Guard: rename() success\n│ Action: Reset counters\n│" {
+  label: ||md
+    **Trigger:** New file created
+    **Guard:** `os.Rename()` successful
+    **Action:**
+    - `currentSize = 0`
+    - `writeCount = 0`
+    - `lastFsync = time.Now()`
+    - Resume accepting writes
+  ||
+  style: {
+    stroke: "${colors.success}"
+    stroke-width: 2
+    font-size: 11
+    font-color: "${colors.text_dark}"
+  }
+}
+
+# Legend
+legend: {
+  label: ||md
+    ## Fsync Policy Checkpoints
+    | Mode | When Fsync Occurs |
+    |------|-------------------|
+    | `PerWrite` | Every `Append()` |
+    | `Batched` | `writeCount >= 1000` OR `time >= 100ms` |
+    | `OSManaged` | Never (OS decides) |
+    
+    ### Entry Size Calculation
+    
+    entrySize = 22 + len(topic) + len(payload) + 4
+              = HeaderSize + TopicLen + PayloadLen + CRC32
+    
+    ### Rotation Threshold
+    Default: `MaxSegmentSize = 1,073,741,824 bytes (1GB)`
+  ||
+  shape: rectangle
+  style: {
+    fill: "#F5F5F5"
+    stroke: "${colors.header}"
+    stroke-width: 2
+    font-size: 12
+    border-radius: 6
+  }
+  near: bottom-right
+}
+
+# Illegal transitions note
+illegal_note: {
+  label: ||md
+    ## ⚠️ ILLEGAL Transitions
+    - `ROTATING → EMPTY` — Rotation always creates new WRITING state
+    - `WRITING → EMPTY` — Cannot unwrite entries
+    - `EMPTY → ROTATING` — Must write before rotating
+  ||
+  shape: rectangle
+  style: {
+    fill: "#FFEBEE"
+    stroke: "#C62828"
+    stroke-width: 2
+    font-size: 11
+    font-color: "#B71C1C"
+    border-radius: 6
+  }
+  near: bottom-left
+}
+
+# State invariants
+invariants: {
+  label: ||md
+    ## State Invariants
+    **EMPTY:**
+    - `currentSize == 0`
+    - `file != nil` (file exists, empty)
+    **WRITING:**
+    - `0 < currentSize < MaxSegmentSize`
+    - `file` is open for append
+    **ROTATING:**
+    - `currentSize >= MaxSegmentSize`
+    - Old file being renamed
+    - New file being created
+    - **No writes accepted** (brief window)
+  ||
+  shape: rectangle
+  style: {
+    fill: "#E3F2FD"
+    stroke: "${colors.data}"
+    stroke-width: 2
+    font-size: 11
+    border-radius: 6
+  }
+  near: top-right
+}
+
+# Initial state marker
+initial: {
+  label: "●"
+  shape: circle
+  width: 20
+  height: 20
+  style: {
+    fill: "${colors.header}"
+    stroke: "${colors.header}"
+  }
+}
+
+initial -> states.EMPTY: "" {
+  style: {
+    stroke: "${colors.header}"
+    stroke-width: 2
+  }
+}

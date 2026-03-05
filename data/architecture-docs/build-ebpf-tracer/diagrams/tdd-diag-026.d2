@@ -1,0 +1,135 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Nested Syscall Edge Case
+  ### Why Thread-ID Keying Can Overwrite Start Timestamps
+| {near: top-center}
+direction: right
+# Normal case (most common)
+normal: Normal Flow {
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+  normal_timeline: {
+    shape: sequence_diagram
+    Thread_1234: Thread 1234
+    Kernel: Kernel
+    Thread_1234 -> Kernel: read() entry
+    Kernel.time_1: "Store: start_times[1234] = T1"
+    Thread_1234.note1: |md
+      [syscall executes]
+    |
+    Thread_1234 <- Kernel: read() exit
+    Kernel.time_2: "Lookup: start_times[1234] = T1"
+    Kernel.compute: "Duration = T2 - T1 ✓"
+  }
+  normal_result: Result: Correct {
+    style.fill: "#C8E6C9"
+    style.font-color: "#2E7D32"
+  }
+}
+# Nested case (rare)
+nested: Nested Syscall (Edge Case) {
+  style.fill: "#FFEBEE"
+  style.stroke: "#F44336"
+  nested_timeline: {
+    shape: sequence_diagram
+    Thread_1234: Thread 1234
+    Kernel: Kernel
+    Thread_1234 -> Kernel: "read() entry (outer)"
+    Kernel.store1: "Store: start_times[1234] = T1"
+    Kernel.handler: "Syscall handler calls\nvfs_read() → triggers\nanother syscall entry"
+    Thread_1234 -> Kernel: "write() entry (inner)"
+    Kernel.store2: |md
+      **OVERWRITE:**
+      start_times[1234] = T2
+    | {
+      style.stroke: "#D32F2F"
+      style.stroke-width: 3
+    }
+    Thread_1234 <- Kernel: "write() exit (inner)"
+    Kernel.lookup1: "Lookup: start_times[1234] = T2"
+    Kernel.delete1: "Delete: start_times[1234]"
+    Thread_1234 <- Kernel: "read() exit (outer)"
+    Kernel.lookup2: |md
+      **MISSING:**
+      start_times[1234] = NULL
+    | {
+      style.stroke: "#D32F2F"
+      style.stroke-width: 3
+    }
+  }
+  nested_result: Result: Lost Measurement {
+    style.fill: "#FFCDD2"
+    style.font-color: "#C62828"
+  }
+}
+# Memory state visualization
+memory_state: Hash Map State {
+  style.fill: "#FFF3E0"
+  style.stroke: "#FF9800"
+  key_1234: "Key: 1234 (Thread ID)" {
+    shape: rectangle
+    style.stroke-dash: 3
+  }
+  arrow1: "T1 (read entry)" {
+    shape: text
+    style.font-color: "#4CAF50"
+  }
+  overwrite_arrow: "T2 (write entry)" {
+    shape: text
+    style.font-color: "#F44336"
+    style.bold: true
+  }
+  key_1234 -> arrow1: "Initial"
+  key_1234 -> overwrite_arrow: "Overwritten"
+}
+# Root cause explanation
+root_cause: Root Cause {
+  style.fill: "#E3F2FD"
+  style.stroke: "#2196F3"
+  cause: |md
+    ## Why This Happens
+    1. **Same Thread ID**: Both syscalls execute on thread 1234
+    2. **BPF_ANY flag**: `bpf_map_update_elem(..., BPF_ANY)` overwrites existing entry
+    3. **No nesting detection**: Entry probe doesn't check if entry already exists
+    ## Why It's Rare
+    - Most syscalls don't invoke other syscalls
+    - VFS layer usually uses internal functions, not syscall entry points
+    - Kernel paths are optimized to avoid recursion
+    ## Mitigation Options
+    c
+    // Option 1: Use stack of timestamps (complex)
+    struct {
+      __uint(type, BPF_MAP_TYPE_HASH);
+      __type(key, u32);  // tid
+      __type(value, u64[MAX_NESTING]);
+    } start_times;
+    // Option 2: Accept data loss (current approach)
+    // Stats map tracks "orphan exits"
+    
+  |
+}
+normal -> memory_state: Uses
+nested -> memory_state: Corrupts
+# Statistics showing the impact
+stats: Impact Tracking {
+  style.fill: "#F3E5F5"
+  style.stroke: "#9C27B0"
+  stat_entries: Stats Map {
+    shape: sql_table
+    dropped_no_start: "dropped_no_start counter"
+    nested_overwrites: "nested_overwrites (if tracked)"
+  }
+  stat_note: |md
+    The `dropped_no_start` stat increments when:
+    - Probe attached mid-syscall
+    - Nested syscall overwrote entry
+    - Hash map was full at entry time
+    Typical value: <0.01% of events
+  |
+}
+memory_state -> stats: Logs to

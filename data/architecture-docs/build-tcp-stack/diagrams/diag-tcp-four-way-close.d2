@@ -1,0 +1,205 @@
+direction: down
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # TCP 4-Way Connection Teardown
+  Reference: RFC 793, RFC 1122
+|
+
+# -----------------------------------------------------------------------------------------
+# TOP ROW: THE STATE MACHINE EVOLUTION
+# -----------------------------------------------------------------------------------------
+main_flow: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  active_closer: {
+    direction: down
+    label: "Active Closer (Client/tcp_input.c)"
+    
+    est1: ESTABLISHED {
+      style.fill: "#ACE1AF"
+      width: 150
+    }
+    fin_w1: FIN_WAIT_1 {
+      style.fill: "#FFF9C4"
+      width: 150
+    }
+    fin_w2: FIN_WAIT_2 {
+      style.fill: "#FFECB3"
+      width: 150
+    }
+    time_w: TIME_WAIT (2*MSL) {
+      style.fill: "#FFCDD2"
+      width: 150
+    }
+    closed1: CLOSED {
+      style.fill: "#E0E0E0"
+      width: 150
+    }
+
+    est1 -> fin_w1: "app close() | send FIN"
+    fin_w1 -> fin_w2: "TCP | recv ACK"
+    fin_w2 -> time_w: "TCP | recv FIN"
+    time_w -> closed1: "Timer | 2*MSL"
+  }
+
+  packet_transit: {
+    direction: down
+    label: "Network (Wire)"
+    style.stroke-dash: 3
+    
+    p1: "1. FIN | seq=U" {
+      shape: parallelogram
+      style.fill: "#FFCDD2"
+    }
+    p2: "2. ACK | ack=U+1" {
+      shape: parallelogram
+      style.fill: "#C8E6C9"
+    }
+    p3: "3. FIN | seq=V" {
+      shape: parallelogram
+      style.fill: "#FFCDD2"
+    }
+    p4: "4. ACK | ack=V+1" {
+      shape: parallelogram
+      style.fill: "#C8E6C9"
+    }
+  }
+
+  passive_closer: {
+    direction: down
+    label: "Passive Closer (Server/tcp_output.c)"
+    
+    est2: ESTABLISHED {
+      style.fill: "#ACE1AF"
+      width: 150
+    }
+    close_w: CLOSE_WAIT {
+      style.fill: "#B3E5FC"
+      width: 150
+    }
+    last_ack: LAST_ACK {
+      style.fill: "#D1C4E9"
+      width: 150
+    }
+    closed2: CLOSED {
+      style.fill: "#E0E0E0"
+      width: 150
+    }
+
+    est2 -> close_w: "TCP | recv FIN"
+    close_w -> last_ack: "app close() | send FIN"
+    last_ack -> closed2: "TCP | recv ACK"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# INTER-NODE DATA FLOW (The "4-Way" Trace)
+# -----------------------------------------------------------------------------------------
+main_flow.active_closer.fin_w1 -> main_flow.packet_transit.p1: "FIN | U"
+main_flow.packet_transit.p1 -> main_flow.passive_closer.close_w: "FIN | U"
+
+main_flow.passive_closer.close_w -> main_flow.packet_transit.p2: "ACK | U+1"
+main_flow.packet_transit.p2 -> main_flow.active_closer.fin_w2: "ACK | U+1"
+
+main_flow.passive_closer.last_ack -> main_flow.packet_transit.p3: "FIN | V"
+main_flow.packet_transit.p3 -> main_flow.active_closer.time_w: "FIN | V"
+
+main_flow.active_closer.time_w -> main_flow.packet_transit.p4: "ACK | V+1"
+main_flow.packet_transit.p4 -> main_flow.passive_closer.closed2: "ACK | V+1"
+
+# -----------------------------------------------------------------------------------------
+# TECHNICAL SPECIFICATIONS (Implementation-Ready Tables)
+# -----------------------------------------------------------------------------------------
+specs: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  timewait_logic: {
+    shape: sql_table
+    label: "TIME_WAIT Purpose (RFC 793 Logic)"
+    r1: "1 | Reliability | Ensure final ACK (4) reaches passive closer"
+    r2: "2 | Drainage | Allow delayed segments to expire in network"
+    r3: "3 | Security | Prevent 'Old Duplicate' packets from new connection"
+    r4: "4 | Standard | Duration set to 2 * Maximum Segment Lifetime"
+    total: "Duration: 60s (Linux default)"
+  }
+
+  msl_config: {
+    shape: sql_table
+    label: "Implementation MSL Values"
+    linux: "Linux | 30s | net.ipv4.tcp_fin_timeout"
+    bsd: "FreeBSD | 30s | net.inet.tcp.msl"
+    win: "Windows | 120s | TcpTimedWaitDelay"
+    rfc: "RFC 793 | 120s | Original Specification"
+    note: "Size: MSL is typically 30s - 120s"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# STATE PATHS (Class Representation)
+# -----------------------------------------------------------------------------------------
+state_definitions: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  ActivePath: {
+    shape: class
+    label: "ActivePath (struct tcp_out)"
+    -S1_EST: "Established"
+    -S2_FW1: "Sent FIN"
+    -S3_FW2: "Recv ACK, Wait FIN"
+    -S4_TW: "Recv FIN, Sent ACK"
+    +get_msl(): "uint32_t"
+  }
+
+  PassivePath: {
+    shape: class
+    label: "PassivePath (struct tcp_in)"
+    -S1_EST: "Established"
+    -S2_CW: "Recv FIN, Wait App"
+    -S3_LA: "Sent FIN"
+    -S4_CL: "Recv ACK, Delete TCB"
+    +notify_app(): "void"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# CORNER CASES & NOTES
+# -----------------------------------------------------------------------------------------
+simultaneous_close: {
+  label: "Simultaneous Close Logic"
+  style.fill: "#FFF8E1"
+  note: |md
+    If both sides send FIN at once:
+    1. Both enter **FIN_WAIT_1**
+    2. Both receive FIN and enter **CLOSING**
+    3. Both receive ACK and enter **TIME_WAIT**
+    4. Both enter **CLOSED** after 2*MSL
+  |
+}
+
+seq_consumption: {
+  label: "Sequence Number Accounting"
+  style.fill: "#E8F5E9"
+  logic: |md
+    **Rule**: FIN occupies exactly 1 byte of sequence space.
+    If `FIN` is sent with `seq=U`, the `ACK` must be `U+1`.
+    This ensures that the `FIN` itself is reliably acknowledged
+    even if no data is present in the segment.
+  |
+}
+
+# Position notes at bottom
+simultaneous_close.near: bottom-left
+seq_consumption.near: bottom-right

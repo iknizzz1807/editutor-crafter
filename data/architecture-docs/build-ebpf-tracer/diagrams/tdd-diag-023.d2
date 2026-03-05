@@ -1,0 +1,390 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # eBPF Tracer: Multi-Source Dashboard Architecture
+  ## Technical Implementation Specification v2.1
+| {near: top-center}
+
+direction: right
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# KERNEL SPACE: eBPF Programs & Maps
+# ═══════════════════════════════════════════════════════════════════════════════
+kernel_space: "KERNEL SPACE (Ring 0)" {
+  style: {
+    fill: "#1a1a2e"
+    stroke: "#4a4a6a"
+    stroke-width: 4
+    font-color: "#e0e0ff"
+    border-radius: 12
+  }
+
+  programs: "eBPF Programs (Instruction Set)" {
+    style: {
+      fill: "#16213e"
+      stroke: "#0f3460"
+      border-radius: 8
+    }
+
+    syscall_entry: "syscall_entry\nkprobe (x86_64)" {
+      shape: hexagon
+      style.fill: "#e94560"
+      style.font-color: white
+      tooltip: "SEC(\"kprobe/__x64_sys_*\")"
+    }
+
+    syscall_exit: "syscall_exit\nkretprobe" {
+      shape: hexagon
+      style.fill: "#e94560"
+      style.font-color: white
+      tooltip: "SEC(\"kretprobe/__x64_sys_*\")"
+    }
+
+    tcp_tracepoint: "tcp_state\ntracepoint" {
+      shape: hexagon
+      style.fill: "#0f4c75"
+      style.font-color: white
+      tooltip: "SEC(\"tracepoint/sock/inet_sock_set_state\")"
+    }
+
+    sched_tracepoint: "sched_switch\ntracepoint" {
+      shape: hexagon
+      style.fill: "#3282b8"
+      style.font-color: white
+      tooltip: "SEC(\"tracepoint/sched/sched_switch\")"
+    }
+  }
+
+  maps: "BPF Maps (Global Shared Memory)" {
+    style: {
+      fill: "#16213e"
+      stroke: "#0f3460"
+      border-radius: 8
+    }
+
+    percpu_section: "Per-CPU Storage (No Locks)" {
+      style: {
+        fill: "#0d1b2a"
+        border-radius: 6
+      }
+      
+      percpu_label: |md
+        **BPF_MAP_TYPE_PERCPU_ARRAY**
+        - Isolated memory per core
+        - Zero atomic contention
+      | 
+
+      syscall_hist: "syscall_histograms\n[8B × 64 Buckets × 16 Syscalls]" {
+        shape: cylinder
+        style.fill: "#1b4332"
+        style.font-color: "#d8f3dc"
+        tooltip: "BPF_MAP_TYPE_PERCPU_ARRAY\nStored as __u64 counters"
+      }
+
+      syscall_total: "syscall_totals\nKey: __u32 | Val: __u64" {
+        shape: cylinder
+        style.fill: "#2d6a4f"
+        style.font-color: "#d8f3dc"
+      }
+
+      proc_stats: "proc_stats\nHASH: PID → {ctx, ns}" {
+        shape: cylinder
+        style.fill: "#40916c"
+        style.font-color: "#d8f3dc"
+        tooltip: "BPF_MAP_TYPE_PERCPU_HASH"
+      }
+    }
+
+    corr_section: "Correlation Table" {
+      style: {
+        fill: "#0d1b2a"
+        border-radius: 6
+      }
+
+      start_times: "start_times\nHASH: TID → TS_ns" {
+        shape: cylinder
+        style.fill: "#7b2cbf"
+        style.font-color: "#e0aaff"
+        tooltip: "Entry/Exit correlation buffer"
+      }
+
+      connections: "connections\nKey: skaddr | Val: info" {
+        shape: cylinder
+        style.fill: "#9d4edd"
+        style.font-color: "#e0aaff"
+      }
+    }
+
+    ringbuf: "tcp_events\nRINGBUF (16MB MMAP)" {
+      shape: stored_data
+      style.fill: "#ff6b35"
+      style.font-color: white
+      tooltip: "BPF_MAP_TYPE_RINGBUF\nShared userspace mmap"
+    }
+
+    config_map: "config\nBPF_MAP_TYPE_ARRAY" {
+      shape: page
+      style.fill: "#6c757d"
+      style.font-color: white
+    }
+  }
+
+  programs.syscall_entry -> maps.corr_section.start_times: "bpf_map_update_elem" {
+    style.stroke: "#bb86fc"
+    style.stroke-dash: 3
+  }
+  programs.syscall_exit -> maps.corr_section.start_times: "bpf_map_lookup_and_delete" {
+    style.stroke: "#bb86fc"
+    style.stroke-dash: 3
+  }
+  programs.syscall_exit -> maps.percpu_section.syscall_hist: "update_hist" {
+    style.stroke: "#03dac6"
+  }
+  programs.syscall_exit -> maps.percpu_section.syscall_total: "atomic_add" {
+    style.stroke: "#03dac6"
+  }
+  programs.tcp_tracepoint -> maps.corr_section.connections: "state_track" {
+    style.stroke: "#cf6679"
+    style.stroke-dash: 3
+  }
+  programs.tcp_tracepoint -> maps.ringbuf: "bpf_ringbuf_submit" {
+    style.stroke: "#ff6b35"
+    style.animated: true
+  }
+  programs.sched_tracepoint -> maps.percpu_section.proc_stats: "update_task_stats" {
+    style.stroke: "#3282b8"
+  }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# USERSPACE: Dashboard Application
+# ═══════════════════════════════════════════════════════════════════════════════
+userspace: "USERSPACE (Ring 3)" {
+  style: {
+    fill: "#0d1117"
+    stroke: "#30363d"
+    stroke-width: 4
+    font-color: "#c9d1d9"
+    border-radius: 12
+  }
+
+  event_loop: "Async Event Dispatcher" {
+    style: {
+      fill: "#161b22"
+      border-radius: 8
+    }
+
+    epoll: "epoll_wait()" {
+      shape: circle
+      style.fill: "#238636"
+      style.font-color: white
+    }
+
+    ringbuf_consumer: "ring_buffer_poll" {
+      shape: queue
+      style.fill: "#ff6b35"
+      style.font-color: white
+    }
+
+    timer: "timerfd (1Hz)" {
+      shape: circle
+      style.fill: "#1f6feb"
+      style.font-color: white
+    }
+
+    epoll -> ringbuf_consumer: "DATA_READY" {
+      style.stroke: "#ff6b35"
+    }
+    epoll -> timer: "TICK" {
+      style.stroke: "#1f6feb"
+    }
+  }
+
+  processors: "Transformation Layer" {
+    style: {
+      fill: "#161b22"
+      border-radius: 8
+    }
+
+    percpu_agg: "Aggregator_t" {
+      shape: class
+      style.fill: "#1b4332"
+      style.font-color: "#d8f3dc"
+      "init()": "void"
+      "sum_all_cpus(map_fd, key)": "uint64"
+      "batch_read(map_fd)": "uint64[]"
+    }
+
+    percpu_agg_note: |md
+      **MEM ALLOC**: 
+      `malloc(sizeof(uint64) * n_cpus)`
+      Required for each map lookup.
+    | {
+      shape: text
+      style.font-size: 11
+      style.font-color: "#ffa500"
+      near: top-right
+    }
+
+    histogram_proc: "HistProcessor_t" {
+      shape: class
+      style.fill: "#2d6a4f"
+      style.font-color: "#d8f3dc"
+      "calc_p95(buckets)": "double"
+      "render_bars()": "string"
+    }
+
+    tcp_handler: "NetEventHandler_t" {
+      shape: class
+      style.fill: "#cf6679"
+      style.font-color: white
+      "on_event(data)": "void"
+      "resolve_dns(addr)": "string"
+    }
+
+    proc_aggregator: "ProcProcessor_t" {
+      shape: class
+      style.fill: "#3282b8"
+      style.font-color: white
+      "calc_usage()": "float"
+    }
+  }
+
+  probe_manager: "Runtime Manager" {
+    style: {
+      fill: "#161b22"
+      border-radius: 8
+    }
+
+    probe_mgr: "ProbeController_t" {
+      shape: class
+      style.fill: "#6e40c9"
+      style.font-color: white
+      "attach_all()": "int"
+      "detach_all()": "int"
+    }
+
+    lifecycle_note: |md
+      **FD LIMIT**: 
+      Watch RLIMIT_NOFILE
+      Attached probes consume FDs.
+    | {
+      shape: text
+      style.font-size: 11
+      style.font-color: "#ff6b6b"
+      near: bottom-right
+    }
+  }
+
+  terminal_ui: "Dashboard (TUI)" {
+    style: {
+      fill: "#161b22"
+      border-radius: 8
+    }
+
+    display: "ANSI Grid Renderer" {
+      shape: rectangle
+      style.fill: "#21262d"
+      style.border-radius: 6
+
+      header: "System Stats Bar" {
+        shape: rectangle
+        style.fill: "#30363d"
+      }
+      hists: "Latency Histograms (Log2)" {
+        shape: rectangle
+        style.fill: "#1b4332"
+      }
+      tcp_list: "Net Traffic Table" {
+        shape: rectangle
+        style.fill: "#4a1942"
+      }
+      proc_list: "Process Top List" {
+        shape: rectangle
+        style.fill: "#0d3b66"
+      }
+    }
+  }
+
+  event_loop.ringbuf_consumer -> processors.tcp_handler: "dispatch"
+  event_loop.timer -> processors.percpu_agg: "trigger"
+  processors.percpu_agg -> processors.histogram_proc
+  processors.percpu_agg -> processors.proc_aggregator
+  processors.histogram_proc -> terminal_ui.display
+  processors.tcp_handler -> terminal_ui.display
+  processors.proc_aggregator -> terminal_ui.display
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CROSS-BOUNDARY COMMUNICATION
+# ═══════════════════════════════════════════════════════════════════════════════
+kernel_space.maps.ringbuf -> userspace.event_loop.ringbuf_consumer: "Memory Mapped Buffer" {
+  style.stroke: "#ff6b35"
+  style.stroke-width: 4
+  style.animated: true
+}
+
+kernel_space.maps.percpu_section.syscall_hist -> userspace.processors.percpu_agg: "Syscall Read (Map FD)" {
+  style.stroke: "#03dac6"
+  style.stroke-width: 2
+}
+
+kernel_space.maps.config_map <- userspace.probe_manager.probe_mgr: "Update Filters" {
+  style.stroke: "#6c757d"
+  style.stroke-dash: 5
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DOCUMENTATION PANELS
+# ═══════════════════════════════════════════════════════════════════════════════
+perf_targets: |md
+  ### 📊 PERFORMANCE TARGETS
+  | Target | Value |
+  | :--- | :--- |
+  | **CPU Overhead** | < 1.5% |
+  | **Buffer Size** | 16 MB |
+  | **Latency** | < 500ns |
+  | **Refresh** | 1000ms |
+| {
+  shape: rectangle
+  style.fill: "#111"
+  style.font-color: "#0f0"
+  near: top-right
+}
+
+kernel_state_diagram: {
+  style.fill: "#222"
+  label: "Packet Flow Machine"
+  near: bottom-center
+
+  idle: "WAIT_EVENT"
+  kprobe: "TRAP_SYSCALL"
+  verify: "RUN_VERIFIER"
+  exec: "EXEC_PROG"
+  
+  idle -> kprobe: "Syscall"
+  kprobe -> verify: "First run"
+  verify -> exec: "Pass"
+  exec -> idle: "bpf_exit(0)"
+}
+
+percpu_safety_notice: |md
+  ## 🛡️ PER-CPU AGGREGATION PATTERN
+  c
+  // Userspace Logic
+  int n_cpus = libbpf_num_possible_cpus();
+  __u64 values[n_cpus];
+  bpf_map_lookup_elem(fd, &key, values);
+  for(int i=0; i<n_cpus; i++) sum += values[i];
+  
+| {
+  shape: rectangle
+  style.fill: "#2d1b1b"
+  style.font-color: "#ff8c00"
+  near: bottom-left
+}

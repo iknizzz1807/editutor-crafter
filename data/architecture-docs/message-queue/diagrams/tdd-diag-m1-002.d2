@@ -1,0 +1,263 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Module Architecture: Server Core Components
+  ## M1 Wire Protocol & Pub/Sub Fan-out
+| {near: top-center}
+
+direction: right
+
+classes: {
+  struct: {
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2E86AB"
+      stroke-width: 2
+      font: mono
+    }
+  }
+  goroutine: {
+    shape: hexagon
+    style: {
+      fill: "#FFF3CD"
+      stroke: "#856404"
+      stroke-dash: 3
+    }
+  }
+  channel: {
+    style: {
+      stroke: "#6C757D"
+      stroke-dash: 5
+      animated: true
+    }
+  }
+}
+
+# --- 1. MEMORY LAYOUT: WIRE PROTOCOL FRAME ---
+# Intel Manual Quality Layout - Byte-aligned Bitfields
+WireProtocol: {
+  label: "Binary Frame Layout (Network Byte Order)"
+  
+  BinaryLayout: {
+    grid-columns: 5
+    grid-gap: 0
+    
+    # Header Row: Offsets
+    h0: "0" { style.stroke-width: 0; style.font-size: 10; style.font-color: gray }
+    h1: "1" { style.stroke-width: 0; style.font-size: 10; style.font-color: gray }
+    h2: "2-3" { style.stroke-width: 0; style.font-size: 10; style.font-color: gray }
+    h4: "4-7" { style.stroke-width: 0; style.font-size: 10; style.font-color: gray }
+    h8: "8+" { style.stroke-width: 0; style.font-size: 10; style.font-color: gray }
+
+    # Data Row: Fields
+    f_type: "Type\n(8-bit)" {
+      tooltip: "0x01: PUB, 0x02: SUB, 0x03: UNSUB, 0x04: PING"
+      style.fill: "#DDBBFF" # Purple Header
+    }
+    f_flags: "Flags\n(8-bit)" {
+      tooltip: "bit 0: QoS, bit 1: Retain"
+      style.fill: "#DDBBFF"
+    }
+    f_rsvd: "RSVD\n(16-bit)" {
+      width: 120
+      style.fill: "#E0E0E0" # Padding Gray
+    }
+    f_len: "Payload Length\n(32-bit)" {
+      width: 180
+      style.fill: "#DDBBFF"
+    }
+    f_payload: "Variable Length Payload Data\n(N-Bytes)" {
+      width: 350
+      style.fill: "#B3E5FC" # Data Blue
+    }
+  }
+  
+  Metadata: {
+    label: |md
+      ### Field Specification (Big Endian)
+      - **Type**: Message discriminator. Required for routing.
+      - **Flags**: Control bits. [7:2] Reserved, [1] Retain, [0] QoS Level.
+      - **Payload Length**: Unsigned 32-bit integer. Max 4GB.
+    |
+    shape: rectangle
+    style.stroke-width: 0
+    style.fill: transparent
+  }
+}
+
+# --- 2. CORE ARCHITECTURE CLASSES ---
+# To fix "class fields cannot have children", the 'class' attribute is defined inside the block.
+Server: {
+  shape: class
+  class: struct
+  label: "Server\nsizeof=128B"
+  
+  -addr: string
+  -listener: net.Listener
+  -router: "*TopicRouter"
+  -connMgr: "*ConnectionManager"
+  -mu: sync.RWMutex
+  -wg: sync.WaitGroup
+  
+  +NewServer(addr string): "*Server"
+  +Start(): error
+  +Stop(): void
+  -handleCommand(c *Client, cmd *Command): void
+}
+
+Client: {
+  shape: class
+  class: struct
+  label: "Client\nsizeof=256B"
+  
+  +ID: string
+  -Conn: net.Conn
+  -Subscriptions: "map[string]bool"
+  -subMu: sync.RWMutex
+  -writeMu: sync.Mutex
+  -done: "chan struct{}"
+  
+  +NewClient(conn net.Conn): "*Client"
+  +Close(): error
+  +AddSubscription(t string): bool
+  +SendCommand(cmd *Command): error
+}
+
+ConnectionManager: {
+  shape: class
+  class: struct
+  label: "ConnectionManager"
+  
+  -connections: "map[string]*Client"
+  -mu: sync.RWMutex
+  
+  +Register(c *Client): void
+  +Unregister(id string): void
+  +GetClient(id string): "*Client"
+}
+
+# --- 3. CONCURRENCY MODEL ---
+Concurrency: {
+  label: "Concurrency Model (M:N Scheduler Mapping)"
+  style.fill: "#F8F9FA"
+  
+  accept_loop: {
+    class: goroutine
+    label: "acceptLoop()"
+  }
+  
+  Handlers: {
+    label: "Per-Connection Handlers"
+    h1: { class: goroutine; label: "handleConn(0x1)" }
+    h2: { class: goroutine; label: "handleConn(0x2)" }
+    hN: { class: goroutine; label: "handleConn(N)"; style.multiple: true }
+  }
+
+  Monitors: {
+    label: "Liveness Monitors"
+    m1: { class: goroutine; label: "monitor(0x1)" }
+    m2: { class: goroutine; label: "monitor(0x2)" }
+    mN: { class: goroutine; label: "monitor(N)"; style.multiple: true }
+  }
+
+  accept_loop -> Handlers.h1: "go spawn"
+  Handlers.h1 -> Monitors.m1: "go spawn"
+  
+  Handlers.h2 -> Monitors.m2
+  Handlers.hN -> Monitors.mN
+}
+
+# --- 4. LIFECYCLE SEQUENCE ---
+Lifecycle: {
+  label: "Connection Lifecycle & Handshake"
+  
+  Workflow: {
+    shape: sequence_diagram
+    Network: "TCP Socket"
+    Srv: "Server Instance"
+    Mgr: "ConnManager"
+    
+    Network -> Srv: "Accept() / SYN-ACK"
+    Srv -> Mgr: "Register(ClientID)"
+    
+    group Process Loop {
+      Network -> Srv: "Binary Frame (PUB/SUB)"
+      Srv -> Srv: "Validate Checksum"
+      Srv -> Mgr: "Lookup Route"
+    }
+    
+    Network <- Srv: "FIN / TCP Close"
+    Srv -> Mgr: "Unregister()"
+  }
+}
+
+# --- 5. OWNERSHIP & CARDINALITY ---
+Relationships: {
+  label: "Ownership & Cardinality (UML 2.0)"
+  
+  Server -> ConnectionManager: "composition" {
+    source-arrowhead: * {
+      shape: diamond
+      style.filled: true
+    }
+    source-arrowhead.label: "1"
+    target-arrowhead.label: "1"
+  }
+  
+  ConnectionManager -> Client: "manages" {
+    source-arrowhead.label: "1"
+    target-arrowhead.label: "0..N"
+    target-arrowhead: * {
+      shape: cf-many
+    }
+  }
+  
+  Client -> Server: "async notification" {
+    style.stroke-dash: 5
+    target-arrowhead: * {
+      shape: arrow
+    }
+  }
+}
+
+# --- 6. DATA FLOW PATH ---
+DataFlow: {
+  label: "Pub/Sub Data Path"
+  direction: right
+  
+  TCP: { shape: cloud; label: "Ingress Stream" }
+  Parser: { shape: rectangle; label: "Frame Parser" }
+  Router: { shape: parallelogram; label: "Topic Router" }
+  Queue: { shape: queue; label: "Fan-out Queue" }
+
+  TCP -> Parser: "Raw Bytes"
+  Parser -> Router: "Decoded Command"
+  Router -> Queue: "Topic Matches"
+}
+
+# --- 7. TECHNICAL SPECIFICATIONS ---
+Specifications: {
+  label: "System Invariants & Constraints"
+  
+  Doc: {
+    shape: text
+    label: |md
+      ### Operational Constraints
+      1. **Thread Safety**: All concurrent map access MUST be protected by `sync.RWMutex`.
+      2. **Memory Leak Protection**: Every spawned goroutine must defer cleanup logic.
+      3. **Socket Config**: TCP KeepAlives should be tuned to 60s for early dead-peer detection.
+      4. **Optimization**: Use `sync.Pool` for `[]byte` buffers during frame parsing to mitigate GC latency.
+    |
+  }
+  style.fill: "#F1F3F5"
+}
+
+# Global structural layout connections (non-functional, for layout guiding)
+Server -- Concurrency: "manages" { style.stroke-dash: 3; style.opacity: 0.5 }
+WireProtocol -- Server: "implements" { style.stroke-dash: 3; style.opacity: 0.5 }
+Lifecycle -- Relationships: "defines" { style.stroke-dash: 3; style.opacity: 0.5 }

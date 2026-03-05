@@ -1,0 +1,215 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    sketch: false
+    pad: 20
+  }
+}
+
+direction: right
+
+# --- GLOBAL STYLING (TECHNICAL SPEC GRADE) ---
+***: {
+  style: {
+    font: mono
+    stroke-width: 2
+  }
+}
+
+# --- HEADER & TITLE ---
+title: ||md
+  # ARCHITECTURAL SPECIFICATION: HoL BLOCKING PREVENTION
+  ## SUB-SYSTEM: ASYNC FAN-OUT BROKER (V2.4.0)
+  ### PATTERN: PER-SUBSCRIBER ISOLATED BUFFERING
+||
+title.near: top-center
+title.style.font-size: 24
+title.style.bold: true
+
+# --- PUBLISHERS (INGRESS) ---
+fast_publisher: Fast Publisher {
+  shape: rectangle
+  style.fill: "#E8F5E9"
+  icon: https://icons.terrastruct.com/essentials%2F092-graph%20bar.svg
+  
+  # Memory Layout Definition for Message Header
+  mem_layout: {
+    label: "Message Header (72B Total Binary Layout)"
+    "0x00": "MsgType (uint8)" { style.fill: "#D1C4E9" }
+    "0x01": "Flags (uint8)" { style.fill: "#D1C4E9" }
+    "0x02": "Length (uint16)" { style.fill: "#D1C4E9" }
+    "0x04": "Payload Offset (uint32)" { style.fill: "#BBDEFB" }
+    "0x08": "Payload [64B Data]" { 
+      style.fill: "#BBDEFB"
+      style.stroke-dash: 3
+    }
+  }
+  
+  message_1: "DATA_FRAME_001"
+  message_2: "DATA_FRAME_002"
+}
+
+fast_publisher.message_1 -> broker.input: "PUSH (TLS 1.3)" { 
+  style.stroke: green
+  style.animated: true 
+}
+fast_publisher.message_2 -> broker.input: "PUSH (TLS 1.3)" { 
+  style.stroke: green
+  style.animated: true 
+}
+
+slow_publisher: Slow Publisher {
+  shape: rectangle
+  style.fill: "#FFF3E0"
+  icon: https://icons.terrastruct.com/essentials%2F095-download.svg
+  
+  slow_message: "DATA_FRAME_LOW_PRI"
+}
+slow_publisher.slow_message -> broker.input: "PUSH (TCP)" { 
+  style.stroke: orange 
+}
+
+# --- BROKER INTERNAL ARCHITECTURE ---
+broker: Message Broker Engine {
+  style.fill: "#F8F9FA"
+  style.stroke: "#0366D6"
+  style.stroke-width: 2
+  
+  input: "Ingress Gateway\n(epoll/kqueue)" {
+    shape: hexagon
+    style.fill: "#BBDEFB"
+    tooltip: "Non-blocking Socket Acceptor"
+  }
+
+  topic_router: Topic Router {
+    style.fill: "#E1F5FE"
+    sub_registry: "Sub_Registry\n(Lock-Free Radix Tree)" {
+      style.fill: "#90CAF9"
+      style.font: mono
+    }
+  }
+
+  fast_sub_delivery: "Goroutine: Delivery_A" {
+    style.fill: "#C8E6C9"
+    buffer_1: "RingBuffer_A" {
+      shape: queue
+      style.fill: "#A5D6A7"
+      # Memory alignment detail
+      "0x00": "Read_Index (atomic)"
+      "0x08": "Write_Index (atomic)"
+      "0x10": "Cache_Line_Padding" { style.fill: "#E0E0E0" }
+      "0x50": "Data_Slots[1024]" { style.fill: "#BBDEFB" }
+    }
+  }
+
+  slow_sub_delivery: "Goroutine: Delivery_B" {
+    style.fill: "#FFCDD2"
+    buffer_2: "RingBuffer_B" {
+      shape: queue
+      style.fill: "#EF9A9A"
+      style.stroke: red
+      style.stroke-width: 2
+      # State Simulation
+      "0x00": "Read_Index [STALLED]"
+      "0x08": "Write_Index [TAIL=HEAD]"
+      "0x10": "STATE: BUFFER_FULL" { 
+        style.font-color: red
+        style.bold: true 
+      }
+    }
+  }
+
+  input -> topic_router: "Dispatch(Pointer<Msg>)"
+  topic_router -> fast_sub_delivery.buffer_1: "Non-blocking Send"
+  topic_router -> slow_sub_delivery.buffer_2: "Select { default: Drop }" {
+    style.stroke: red
+    style.stroke-dash: 3
+  }
+}
+
+# --- CONSUMERS (EGRESS) ---
+fast_subscriber: Fast Subscriber {
+  shape: person
+  icon: https://icons.terrastruct.com/essentials%2F092-graph%20bar.svg
+  style.fill: "#E8F5E9"
+  style.stroke: green
+}
+
+slow_subscriber: Slow Subscriber {
+  shape: person
+  icon: https://icons.terrastruct.com/essentials%2F095-download.svg
+  style.fill: "#FFEBEE"
+  style.stroke: red
+  style.stroke-dash: 5
+}
+
+# --- ANNOTATIONS ---
+backlog_warning: ||md
+  ### CHANNEL SATURATION
+  - Latency: > 1200ms
+  - Status: Flow Control Active
+  - Action: Dropping L-Pri Packets
+||
+backlog_warning.near: slow_subscriber
+backlog_warning.style.fill: "#FFCDD2"
+backlog_warning.style.stroke: red
+
+# --- DELIVERY PIPELINES ---
+broker.fast_sub_delivery.buffer_1 -> fast_subscriber: "Stream [ACKed]" {
+  style.stroke: green
+  style.stroke-width: 3
+  style.animated: true
+}
+
+broker.slow_sub_delivery.buffer_2 -> slow_subscriber: "HEAD-OF-LINE BLOCK" {
+  style.stroke: red
+  style.stroke-width: 4
+  target-arrowhead: cross
+}
+
+# --- TECHNICAL SPECS ---
+legend: ||md
+  ### IMPLEMENTATION INVARIANTS
+  1. **Memory Alignment**: Buffers are aligned to 64-byte boundaries (L1 Cache Line) to prevent "False Sharing" between delivery goroutines.
+  2. **Zero-Copy**: Topic Router passes `*Message` pointers via channels; reference counting prevents premature deallocation.
+  3. **Non-Blocking Ingress**: The Ingress Gateway uses a `select` with `default` case to ensure a slow channel does not block the Router.
+  
+  | Type | Offset | Alignment |
+  | :--- | :--- | :--- |
+  | Header | 0x00 | 8B |
+  | Payload | 0x08 | 64B (Cache Line) |
+  | Footer | 0x48 | 4B |
+||
+legend.near: bottom-left
+legend.style.fill: "#FFF9C4"
+legend.style.stroke: "#FBC02D"
+
+code_impl: ||go
+// Core Non-blocking Fan-out Implementation
+func (b *Broker) FanOut(msg *Message) {
+    for _, sub := range b.subscribers {
+        // PER-SUBSCRIBER ISOLATION
+        select {
+        case sub.ch <- msg:
+            // Delivered to per-sub buffer
+        default:
+            // Buffer Full. Handle HoL situation:
+            // 1. Drop low-priority message
+            // 2. Or disconnect slow consumer
+            b.metrics.IncDropped(sub.ID)
+        }
+    }
+}
+||
+code_impl.near: bottom-right
+code_impl.style.fill: "#F5F5F5"
+code_impl.style.font: mono
+
+# --- COLOR MAP LEGEND ---
+color_map: {
+  near: top-left
+  header_color: "Header/Meta" { style.fill: "#D1C4E9" }
+  data_color: "Payload Data" { style.fill: "#BBDEFB" }
+  error_color: "Blocking/Fault" { style.fill: "#FFCDD2" }
+}

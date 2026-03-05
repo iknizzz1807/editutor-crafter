@@ -1,0 +1,250 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: "RTT Measurement & RTO Calculation (RFC 6298)"
+  near: top-center
+  style: {
+    font-size: 24
+    bold: true
+  }
+}
+
+# ROW 1: System Architecture
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  
+  sender: "Sender (Primary Node)" {
+    direction: down
+    style.fill: "#E8F5E9"
+    
+    snd_buf: {
+      shape: sql_table
+      label: "struct tcp_send_buf"
+      f0: "0x00 | uint32_t | snd_una // Unacknowledged"
+      f1: "0x04 | uint32_t | snd_nxt // Next to send"
+      f2: "0x08 | uint32_t | snd_wnd // Window size"
+      f3: "0x0C | void*    | data_ptr"
+      sz: "Total: 16 bytes + buffer"
+    }
+    
+    rtt_tracker: {
+      shape: sql_table
+      label: "struct tcp_rtt_sample"
+      f0: "0x00 | uint32_t | seq_num"
+      f1: "0x04 | uint32_t | tx_time"
+      f2: "0x08 | uint8_t  | is_retx"
+      f3: "0x09 | uint8_t  | valid"
+      note: "Karn Rule: Ignore if is_retx == 1"
+    }
+  }
+
+  network: "Network Fabric" {
+    style.fill: "#FFF3E0"
+    delay_box: {
+      label: "Variable Latency Channel"
+      shape: rectangle
+      style.stroke-dash: 3
+      note: "RTT = Propagation + Queuing"
+    }
+  }
+
+  receiver: "Receiver (Remote)" {
+    direction: down
+    style.fill: "#E3F2FD"
+    
+    rcv_pcb: {
+      shape: sql_table
+      label: "struct tcp_rcv_pcb"
+      f0: "0x00 | uint32_t | rcv_nxt"
+      f1: "0x04 | uint16_t | rcv_wnd"
+    }
+    
+    ack_gen: {
+      shape: class
+      label: "ACK Generator"
+      +build_ack(seq): "Packet"
+      -calculate_window(): "uint16_t"
+    }
+  }
+}
+
+# ROW 2: Logic and Calculation
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  
+  timeline: "RTT Timing Loop" {
+    direction: down
+    
+    t1: "T1: Transmission" {
+      code: |'c
+        // Start sample for seq_num
+        sample->tx_time = tcp_now();
+        sample->is_retx = 0;
+        send_packet(seq_num);
+      '|
+    }
+    
+    t1_note: {
+      label: |'md
+        **Event:** Segment sent
+        **Seq:** 1000
+        **Time:** 1000ms
+      '|
+    }
+    
+    t2: "T2: Acknowledgment" {
+      code: |'c
+        // Calculate measured RTT
+        uint32_t r = tcp_now() - sample->tx_time;
+        if (!sample->is_retx) {
+            update_rto(r);
+        }
+      '|
+    }
+    
+    t2_note: {
+      label: |'md
+        **Event:** ACK received
+        **Ack:** 1001
+        **Time:** 1150ms
+        **Sample (R):** 150ms
+      '|
+    }
+    
+    t1 -> t2: "150ms Delta" {
+      style.stroke: "#1976D2"
+      style.animated: true
+    }
+  }
+
+  jacobson: "Jacobson's Algorithm" {
+    direction: down
+    style.fill: "#F3E5F5"
+    
+    state: {
+      shape: sql_table
+      label: "struct tcp_rto_vars"
+      f0: "srtt   | int32_t | Smoothed RTT"
+      f1: "rttvar | int32_t | Variation"
+      f2: "rto    | int32_t | Timeout"
+    }
+    
+    formula_box: {
+      # Using block string with |' to survive the | in the math formula
+      label: |'md
+        **Update Rules (RFC 6298)**
+        1. Diff = |SRTT - R|
+        2. RTTVAR = (1-β)*RTTVAR + β*Diff
+        3. SRTT = (1-α)*SRTT + α*R
+        4. RTO = SRTT + 4*RTTVAR
+      '|
+    }
+    
+    example: {
+      shape: class
+      label: "Calculation Example"
+      -input_r: "150ms"
+      -current_srtt: "150ms"
+      -current_rto: "450ms"
+    }
+  }
+}
+
+# ROW 3: Edge Cases & Congestion
+row3: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  
+  karn: "Karn's Algorithm" {
+    direction: down
+    style.fill: "#FFEBEE"
+    
+    ambiguity: "Ambiguity Problem" {
+      label: |'md
+        **Retransmission Ambiguity:**
+        If we retransmit at T=1000 and get 
+        ACK at T=1050, is RTT 1050 or 50?
+      '|
+    }
+    
+    decision: "The Solution" {
+      shape: diamond
+      style.fill: "#FFCDD2"
+      label: "Is this a re-tx?"
+    }
+    
+    decision -> ignore: "Yes"
+    decision -> update: "No"
+    
+    ignore: "Ignore Sample" {
+      style.stroke: red
+    }
+    update: "Update SRTT" {
+      style.stroke: green
+    }
+  }
+
+  backoff: "Exponential Backoff" {
+    direction: down
+    style.fill: "#E0F7FA"
+    
+    logic: {
+      label: "Timeout Handler"
+      code: |'c
+        void on_timeout(pcb) {
+          pcb->rto <<= 1; // Double RTO
+          if (pcb->rto > 60000) pcb->rto = 60000;
+          retransmit(pcb->snd_una);
+        }
+      '|
+    }
+    
+    limits: {
+      shape: sql_table
+      label: "Static Bounds"
+      min: "RTO_MIN | 1000ms"
+      max: "RTO_MAX | 60000ms"
+    }
+  }
+}
+
+# Data Flow Connections
+row1.sender.snd_buf -> row1.network.delay_box: "TCP Seg | Seq 1000"
+row1.network.delay_box -> row1.receiver.rcv_pcb: "TCP Seg | Seq 1000"
+row1.receiver.ack_gen -> row1.network.delay_box: "TCP ACK | Ack 1001"
+row1.network.delay_box -> row1.sender.rtt_tracker: "TCP ACK | Ack 1001"
+
+# Algorithm links
+row2.timeline.t2 -> row2.jacobson.state: "Sample (R)"
+row3.karn.decision -> row2.jacobson.example: "Sample Guard"
+row3.backoff.logic -> row1.sender.snd_buf: "Retransmission"
+
+legend: {
+  near: bottom-right
+  style.fill: "#F5F5F5"
+  direction: right
+  
+  l1: "Data Path" {
+    style.fill: "#C8E6C9"
+  }
+  l2: "ACK Path" {
+    style.fill: "#BBDEFB"
+  }
+}

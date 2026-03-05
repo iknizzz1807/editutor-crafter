@@ -1,0 +1,285 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  shape: text
+  label: |md
+    # Connection Tracking by Socket Pointer
+    Hash map correlation between TCP state transitions using BPF_MAP_TYPE_HASH
+  |
+  near: top-center
+  style.font-size: 24
+}
+
+direction: right
+
+# --- Shape Definitions ---
+
+socket_pointer: {
+  label: "Socket Pointer\n(u64 skaddr)"
+  shape: hexagon
+  style: {
+    fill: "#E8D4F8"
+    stroke: "#7B2D8E"
+    stroke-width: 3
+  }
+  tooltip: "The memory address of the struct sock in kernel space"
+}
+
+socket_annotation: {
+  shape: text
+  label: |md
+    ### Key Property: skaddr
+    - **Unique**: Per-socket pointer is guaranteed unique in the kernel.
+    - **Persistent**: Valid from allocation to RCU destruction.
+    - **Efficient**: Direct lookup without complex multi-key hashing.
+  |
+  near: socket_pointer
+  style.font-size: 12
+}
+
+# --- Connection Information Structure ---
+
+conn_info: {
+  shape: class
+  label: "struct conn_info\nsizeof = 80 bytes"
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1565C0"
+    stroke-width: 2
+  }
+  
+  # Fields using UML visibility
+  "+ established_ts": "u64 // nanoseconds"
+  "+ pid": "u32"
+  "+ tid": "u32"
+  "+ comm": "char[16]"
+  "+ sport": "u16"
+  "+ dport": "u16"
+  "+ family": "u16"
+  "+ saddr": "u8[16]"
+  "+ daddr": "u8[16]"
+  "+ padding": "u8[10]"
+}
+
+# --- BPF Map Representation ---
+
+connections_map: {
+  label: "BPF_MAP_TYPE_HASH: connections"
+  style: {
+    fill: "#FFF8E1"
+    stroke: "#F57C00"
+    stroke-width: 2
+    border-radius: 8
+  }
+
+  table_header: {
+    shape: text
+    label: ||md
+      | Key (u64 skaddr) | Value (struct conn_info) |
+      | :--- | :--- |
+    ||
+  }
+
+  entry1: "Key: 0xffff888123...\nValue: {ts: 1234, pid: 456...}" {
+    shape: rectangle
+    style.fill: "#C8E6C9"
+  }
+  entry2: "Key: 0xffff888245...\nValue: {ts: 5678, pid: 789...}" {
+    shape: rectangle
+    style.fill: "#C8E6C9"
+  }
+  entry_n: "..." {
+    shape: rectangle
+    style.fill: "#F5F5F5"
+    style.stroke-dash: 3
+  }
+
+  table_header -> entry1 -> entry2 -> entry_n
+}
+
+# --- State Machine / Lifecycle ---
+
+lifecycle: {
+  label: "Entry Lifecycle"
+  style.stroke: "#424242"
+  
+  created: "ESTABLISHED" {
+    shape: circle
+    style.fill: "#81C784"
+    style.stroke: "#2E7D32"
+  }
+  
+  active: "TRACKING" {
+    shape: circle
+    style.fill: "#64B5F6"
+    style.stroke: "#1565C0"
+    style.multiple: true
+  }
+  
+  deleted: "CLOSED / TIME_WAIT" {
+    shape: circle
+    style.fill: "#EF5350"
+    style.stroke: "#C62828"
+  }
+
+  created -> active: "Map Update"
+  active -> deleted: "Map Delete"
+}
+
+# --- Memory Layout Table ---
+
+memory_layout: {
+  label: "Memory Layout (Detailed)"
+  style.fill: "#FAFAFA"
+  
+  table: {
+    shape: text
+    label: ||md
+      | Offset | Field | Size | Type |
+      | :--- | :--- | :--- | :--- |
+      | 0x00 | established_ts | 8 | u64 |
+      | 0x08 | pid | 4 | u32 |
+      | 0x0C | tid | 4 | u32 |
+      | 0x10 | comm[16] | 16 | char[] |
+      | 0x20 | sport | 2 | u16 |
+      | 0x22 | dport | 2 | u16 |
+      | 0x24 | family | 2 | u16 |
+      | 0x26 | saddr[16] | 16 | u8[] |
+      | 0x36 | daddr[16] | 16 | u8[] |
+      | 0x46 | padding | 10 | u8[] |
+      | **0x50**| **Total** | **80** | |
+    ||
+    style.font: mono
+  }
+}
+
+# --- Key Logic Blocks ---
+
+logic: {
+  label: "eBPF Logic Implementation"
+  
+  on_est: {
+    shape: code
+    label: |c
+      SEC("kprobe/tcp_set_state")
+      int handle_tcp_state(struct pt_regs *ctx) {
+          struct sock *sk = (struct sock *)PT_REGS_PARM1(ctx);
+          int newstate = (int)PT_REGS_PARM2(ctx);
+          
+          if (newstate != TCP_ESTABLISHED) return 0;
+
+          u64 skaddr = (u64)sk;
+          struct conn_info info = {};
+          info.established_ts = bpf_ktime_get_ns();
+          
+          bpf_map_update_elem(&connections, &skaddr, &info, BPF_ANY);
+          return 0;
+      }
+    |
+  }
+
+  on_close: {
+    shape: code
+    label: |c
+      SEC("kprobe/tcp_close")
+      int handle_tcp_close(struct pt_regs *ctx) {
+          struct sock *sk = (struct sock *)PT_REGS_PARM1(ctx);
+          u64 skaddr = (u64)sk;
+          
+          struct conn_info *info = bpf_map_lookup_elem(&connections, &skaddr);
+          if (info) {
+              u64 duration = bpf_ktime_get_ns() - info->established_ts;
+              bpf_map_delete_elem(&connections, &skaddr);
+          }
+          return 0;
+      }
+    |
+  }
+}
+
+# --- Critical Metadata ---
+
+critical_invariant: {
+  label: "⚠️ CRITICAL INVARIANT"
+  shape: diamond
+  style: {
+    fill: "#FFEB3B"
+    stroke: "#F57F17"
+    stroke-width: 4
+  }
+}
+
+invariant_desc: {
+  shape: text
+  label: |md
+    ### Map Cleanup Requirement
+    Entries **MUST** be deleted on `tcp_close` or `tcp_done`.
+    **Failure to delete results in:**
+    1. Kernel memory leakage.
+    2. Map overflow (`max_entries` reached).
+    3. Collision/Shadowing of new sockets reusing the same pointer address.
+  |
+  near: critical_invariant
+}
+
+map_stats: {
+  label: "Map Configuration"
+  shape: cylinder
+  style.fill: "#F3E5F5"
+  
+  max_entries: "Max Entries: 65,536"
+  key_size: "Key Size: 8 (u64)"
+  val_size: "Value Size: 80"
+  mem_est: "Footprint: ~5.2 MB"
+}
+
+# --- Global Connections/Flow ---
+
+socket_pointer -> connections_map: "1. skaddr as Key" {
+  style: {
+    stroke: "#7B2D8E"
+    stroke-width: 2
+    animated: true
+  }
+}
+
+connections_map -> conn_info: "2. Encapsulates" {
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 2
+  }
+}
+
+logic.on_est -> lifecycle.created: "Triggers"
+logic.on_close -> lifecycle.deleted: "Cleanup"
+
+# --- Styling Legend ---
+
+legend: {
+  near: bottom-right
+  shape: rectangle
+  label: "Legend"
+  style.fill: "#FFFFFF"
+  
+  key_type: "u64 Key" {
+    shape: hexagon
+    style.fill: "#E8D4F8"
+  }
+  val_type: "conn_info Value" {
+    shape: class
+    style.fill: "#E3F2FD"
+  }
+  op_create: "Creation" {
+    shape: circle
+    style.fill: "#81C784"
+  }
+  op_delete: "Deletion" {
+    shape: circle
+    style.fill: "#EF5350"
+  }
+}

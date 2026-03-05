@@ -1,0 +1,245 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 40
+  }
+}
+
+title: |md
+  # Main Event Loop State Machine
+  ## Technical Specification: Ethernet Frame Processor
+| {
+  near: top-center
+  shape: text
+}
+
+classes: {
+  state_normal: {
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+      stroke-width: 2
+      font-color: "#1B5E20"
+      border-radius: 8
+    }
+  }
+  state_processing: {
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#E65100"
+      stroke-width: 2
+      font-color: "#BF360C"
+      border-radius: 8
+    }
+  }
+  state_dispatch: {
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1565C0"
+      stroke-width: 2
+      font-color: "#0D47A1"
+      border-radius: 8
+    }
+  }
+  transition_normal: {
+    style: {
+      stroke: "#455A64"
+      stroke-width: 2
+      animated: false
+    }
+  }
+  transition_dispatch: {
+    style: {
+      stroke: "#1976D2"
+      stroke-width: 2
+      animated: true
+    }
+  }
+  transition_error: {
+    style: {
+      stroke: "#D32F2F"
+      stroke-width: 2
+      stroke-dash: 4
+    }
+  }
+  initial_state: {
+    shape: circle
+    style: {
+      fill: "#1B5E20"
+      stroke: "#1B5E20"
+    }
+  }
+  invariant_note: {
+    shape: text
+    style: {
+      font-size: 11
+      font-color: "#424242"
+      italic: true
+    }
+  }
+}
+
+# Initial state indicator
+start: {
+  class: initial_state
+  label: ""
+}
+
+# -----------------------------------------------------------------------------
+# Main Operational States
+# -----------------------------------------------------------------------------
+
+IDLE: {
+  label: "IDLE\n(wait_for_event)"
+  class: state_normal
+  tooltip: "Base state. CPU in low-power halt if supported."
+}
+
+POLLING: {
+  label: "POLLING\n(poll_with_timeout)"
+  class: state_processing
+  description: "Executing syscall: poll(2) on tap_fd"
+}
+
+READING: {
+  label: "READING\n(tap_read_frame)"
+  class: state_processing
+  details: "DMA or sync read into rx_buffer"
+}
+
+PARSING_ETH: {
+  label: "PARSING_ETHERNET\n(eth_parse_hdr)"
+  class: state_processing
+}
+
+CHECKING_DEST: {
+  label: "CHECK_DESTINATION\n(l2_filter)"
+  class: state_processing
+}
+
+DISPATCH: {
+  label: "DISPATCH\n(eth_type_switch)"
+  class: state_dispatch
+}
+
+# -----------------------------------------------------------------------------
+# Protocol Handlers
+# -----------------------------------------------------------------------------
+
+HANDLE_ARP: {
+  label: "HANDLE_ARP\n(arp_handle_packet)"
+  class: state_dispatch
+}
+
+HANDLE_IPV4: {
+  label: "HANDLE_IPV4\n(ip_process_packet)"
+  class: state_dispatch
+}
+
+HANDLE_UNKNOWN: {
+  label: "HANDLE_UNKNOWN\n(drop_and_log)"
+  class: state_normal
+}
+
+# -----------------------------------------------------------------------------
+# Timer & Cleanup States
+# -----------------------------------------------------------------------------
+
+TIMER_EXPIRED: {
+  label: "TIMER_EXPIRED\n(timer_wheel_tick)"
+  class: state_processing
+}
+
+TIME_WAIT_CLEANUP: {
+  label: "TIME_WAIT_CLEANUP\n(tcp_cleanup_zombies)"
+  class: state_normal
+}
+
+# -----------------------------------------------------------------------------
+# Transitions (FSM Logic)
+# -----------------------------------------------------------------------------
+
+start -> IDLE: "initialize\nstack_init()" {class: transition_normal}
+
+IDLE -> POLLING: "main_loop_start" {class: transition_normal}
+
+POLLING -> READING: "POLLIN\n(fd_ready)" {class: transition_normal}
+POLLING -> TIMER_EXPIRED: "timeout\n(errno == 0)" {class: transition_normal}
+POLLING -> IDLE: "error\n(errno == EINTR)" {class: transition_error}
+
+READING -> PARSING_ETH: "bytes_read > 0" {class: transition_normal}
+READING -> IDLE: "read_error / EOF" {class: transition_error}
+
+PARSING_ETH -> CHECKING_DEST: "len >= 14 &&\nchecksum_ok" {class: transition_normal}
+PARSING_ETH -> IDLE: "malformed_frame" {class: transition_error}
+
+CHECKING_DEST -> DISPATCH: "dest == self ||\ndest == BCAST" {class: transition_normal}
+CHECKING_DEST -> IDLE: "promiscuous_off &&\nnot_for_us" {class: transition_error}
+
+DISPATCH -> HANDLE_ARP: "Type == 0x0806" {class: transition_dispatch}
+DISPATCH -> HANDLE_IPV4: "Type == 0x0800" {class: transition_dispatch}
+DISPATCH -> HANDLE_UNKNOWN: "unsupported_proto" {class: transition_dispatch}
+
+HANDLE_ARP -> IDLE: "tx_arp_reply ||\ncache_updated" {class: transition_normal}
+HANDLE_IPV4 -> IDLE: "l3_process_done" {class: transition_normal}
+HANDLE_UNKNOWN -> IDLE: "kFreePacket" {class: transition_normal}
+
+TIMER_EXPIRED -> TIME_WAIT_CLEANUP: "tick_count++" {class: transition_normal}
+TIME_WAIT_CLEANUP -> IDLE: "reap_complete" {class: transition_normal}
+
+# -----------------------------------------------------------------------------
+# Metadata and Implementation Details
+# -----------------------------------------------------------------------------
+
+# Fixed positioning for ELK: Using connections to associate invariants instead of 'near: Object'
+IDLE -- IDLE_invariant: {style.stroke-dash: 5; target-arrowhead: none}
+IDLE_invariant: |md
+  **Invariants:**
+  - TAP device state: UP/RUNNING
+  - ARP cache: Valid ptr
+  - RX Ring Buffer: Head == Tail
+| {class: invariant_note}
+
+DISPATCH -- DISPATCH_invariant: {style.stroke-dash: 5; target-arrowhead: none}
+DISPATCH_invariant: |md
+  **Protocol Map:**
+  - 0x0806: Address Resolution
+  - 0x0800: Internet Protocol v4
+  - 0x86DD: IPv6 (Pending)
+| {class: invariant_note}
+
+# Explicit Illegal Transition Marker for Implementation Safety
+HANDLE_ARP -> PARSING_ETH: "ILLEGAL RE-ENTRY" {
+  style: {
+    stroke: red
+    stroke-width: 4
+    stroke-dash: 2
+  }
+  label: "PROTECTED"
+}
+
+perf_note: |md
+  ### Performance Requirements (SLA)
+  - **Max Interrupt Latency:** 50μs
+  - **Parsing Throughput:** 1.48 Mpps (64B frames)
+  - **Memory Footprint:** < 2MB (Excluding buffers)
+| {
+  near: bottom-right
+  shape: text
+  style.font-size: 13
+}
+
+# Legend for Engineers
+Legend: {
+  near: bottom-left
+  NormalState: "Stable State" {class: state_normal}
+  ProcessState: "Transient Processing" {class: state_processing}
+  DispatchState: "Branching Logic" {class: state_dispatch}
+  ErrorPath: "Error/Drop Path" {
+    style: {
+      stroke: red
+      stroke-dash: 4
+    }
+  }
+}

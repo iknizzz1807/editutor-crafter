@@ -1,0 +1,210 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Data Flow: Poison Message to DLQ
+  NACK with retry=max → DLQ persistence pipeline
+| {near: top-center}
+
+# Consumer Group Layer
+consumer_group: ConsumerGroup {
+  style.fill: "#E8F4FD"
+  style.stroke: "#2E86AB"
+  
+  handleNack: HandleNack(msgID, reason) {
+    shape: class
+    style.fill: "#FFE4B5"
+    style.stroke: "#D4A574"
+    "-msgID": uint64
+    "-reason": string
+    "+retryCount": int
+  }
+
+  retry_check: Retry Count Check {
+    shape: diamond
+    style.fill: "#FFE4B5"
+    width: 140
+    height: 100
+  }
+
+  move_to_dlq_call: MoveToDLQ() {
+    shape: class
+    style.fill: "#90EE90"
+    style.stroke: "#228B22"
+    style.bold: true
+    # FIX: Quoted single-line key to prevent "unexpected text after array" and multi-line key errors
+    "+DLQManager.MoveToDLQ(topic: string, offset: uint64, payload: []byte, retries: int, reason: string, id: string)": "(dlqOffset, error)"
+  }
+
+  requeue: Re-queue for redelivery {
+    shape: rectangle
+    style.fill: "#87CEEB"
+  }
+}
+
+# DLQ Manager Layer
+dlq_manager: DLQManager {
+  style.fill: "#F0FFF0"
+  style.stroke: "#228B22"
+  
+  wrap_message: Wrap in DLQMessage {
+    shape: sql_table
+    style.fill: "#98FB98"
+    Header: "Internal Wrapper" {constraint: "Purple"}
+    OriginalTopic: string {constraint: "Blue"}
+    OriginalOffset: uint64 {constraint: "Blue"}
+    OriginalPayload: "[]byte" {constraint: "Blue"}
+    RetryCount: int {constraint: "Data"}
+    LastFailureReason: string {constraint: "Data"}
+    FailedAt: timestamp {constraint: "Data"}
+    ConsumerID: string {constraint: "Data"}
+  }
+
+  json_serialize: JSON Serialize {
+    shape: rectangle
+    style.fill: "#98FB98"
+    label: |md
+      **Serialization Strategy**
+      1. Base64 encode `OriginalPayload`
+      2. Marshal struct to JSON bytes
+      3. UTF-8 Validation
+    |
+  }
+
+  ensure_topic: Ensure DLQ Topic {
+    shape: rectangle
+    style.fill: "#98FB98"
+    label: |md
+      **Topic Management**
+      - Check if `{topic}.dlq` exists
+      - Auto-create with same partition count
+      - Replication Factor >= 3
+    |
+  }
+
+  append_log: Append to Log {
+    shape: rectangle
+    style.fill: "#98FB98"
+    style.bold: true
+    label: |md
+      `logWriter.Append(topic, jsonBytes)`
+      Returns: `dlqOffset`
+    |
+  }
+}
+
+# Log Writer Layer
+log_writer: LogWriter {
+  style.fill: "#FFF8DC"
+  style.stroke: "#DAA520"
+  
+  encode_entry: Encode LogEntry {
+    shape: sql_table
+    style.fill: "#F5DEB3"
+    # Technical byte layout for engineers
+    00-07: uint64 {label: "offset (Big-Endian)"}
+    08-15: uint64 {label: "timestamp (Big-Endian)"}
+    16-17: uint16 {label: "topicLen (Big-Endian)"}
+    18-XX: string {label: "topic (Variable)"}
+    XX-XY: uint32 {label: "payloadLen (Big-Endian)"}
+    XY-XZ: "[]byte" {label: "JSON payload"}
+    XZ-ZZ: uint32 {label: "CRC32 (checksum)"}
+  }
+
+  write_file: Write to File {
+    shape: cylinder
+    style.fill: "#DEB887"
+    label: "{topic}.dlq.log\n(Append Only)"
+  }
+
+  maybe_fsync: Maybe Fsync {
+    shape: diamond
+    style.fill: "#F5DEB3"
+    width: 100
+    height: 80
+  }
+}
+
+# Final States
+success: Log Success {
+  shape: rectangle
+  style.fill: "#90EE90"
+  style.stroke: "#228B22"
+  style.bold: true
+  label: |md
+    ### Success State
+    - [x] Return `dlqOffset` to Consumer
+    - [x] Clear Local In-Memory Retries
+    - [x] Commit original offset to Main Topic
+  |
+}
+
+error_sink: Return Error {
+  shape: rectangle
+  style.fill: "#FFB6C1"
+  style.stroke: red
+  label: |md
+    ### ✗ DLQ FAILURE
+    - Log Critical: "DLQ Sink Unavailable"
+    - Panic or Backoff based on policy
+    - **Warning:** Message potential loss
+  |
+}
+
+# Connections within ConsumerGroup
+consumer_group.handleNack -> consumer_group.retry_check: "Increment retryCount"
+
+consumer_group.retry_check -> consumer_group.move_to_dlq_call: "retries >= Max" {
+  style.stroke: red
+  style.stroke-width: 3
+  label: "POISON DETECTED"
+}
+
+consumer_group.retry_check -> consumer_group.requeue: "retries < Max" {
+  style.stroke: "#228B22"
+  label: "requeue"
+}
+
+# Cross-Layer Transitions
+consumer_group.move_to_dlq_call -> dlq_manager.wrap_message: "Pass Payload + Metadata" {
+  style.stroke: orange
+  style.stroke-width: 2
+}
+
+# DLQ Internal Flow
+dlq_manager.wrap_message -> dlq_manager.json_serialize
+dlq_manager.json_serialize -> dlq_manager.ensure_topic
+dlq_manager.ensure_topic -> dlq_manager.append_log
+
+# Log Writing Flow
+dlq_manager.append_log -> log_writer.encode_entry: "Raw Bytes Stream"
+log_writer.encode_entry -> log_writer.write_file: "pwrite()"
+log_writer.write_file -> log_writer.maybe_fsync: "Check flush policy"
+
+log_writer.maybe_fsync -> success: "fsync() OK" {
+  style.stroke: "#228B22"
+  style.stroke-width: 2
+}
+
+log_writer.write_file -> error_sink: "I/O Error" {
+  style.stroke: red
+  style.stroke-dash: 3
+}
+
+# Documentation / Legend
+data_flow_note: |md
+  **Implementation Requirements:**
+  - `ConsumerGroup`: Must not block heartbeats during DLQ write.
+  - `DLQManager`: Must ensure topic existence before write.
+  - `LogWriter`: Use `O_APPEND` and pre-allocate file space to minimize fragmentation.
+  - `CRC32`: Must use IEEE polynomial for compatibility.
+| {
+  near: bottom-center
+  shape: rectangle
+  style.fill: "#F5F5F5"
+  style.stroke: "#808080"
+}

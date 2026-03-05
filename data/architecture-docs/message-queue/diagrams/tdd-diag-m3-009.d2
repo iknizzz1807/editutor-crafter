@@ -1,0 +1,270 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: |md
+    # Data Flow: Consumer Offset Commit
+    **Atomic persistence sequence ensuring crash recovery**
+  |
+  near: top-center
+}
+
+direction: right
+
+# ---------------------------------------------------------------------------------------
+# ACK Processing Entry
+# ---------------------------------------------------------------------------------------
+ack_entry: "ACK(msgID=42)" {
+  shape: rectangle
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#4CAF50"
+    stroke-width: 2
+    double-border: true
+  }
+  tooltip: "Incoming acknowledgement from consumer group"
+}
+
+# ---------------------------------------------------------------------------------------
+# Step 1: In-memory update (Offset Store)
+# ---------------------------------------------------------------------------------------
+step1: "Step 1: In-Memory State Update" {
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1976D2"
+    stroke-width: 2
+  }
+  
+  inmemory: "OffsetStore.offsets" {
+    shape: sql_table
+    style.fill: "#BBDEFB"
+    "group_id": string
+    "topic_name": string
+    "offset": int {constraint: "NEW=42"}
+  }
+
+  map_visual: {
+    label: |md
+      json
+      {
+        "orders-group": {
+          "orders": 42
+        }
+      }
+      
+    |
+    shape: text
+    style: {
+      font: mono
+      font-size: 12
+    }
+  }
+
+  metadata: |md
+    **Memory Details:**
+    - `Concurrency`: sync.RWMutex
+    - `Access`: O(1) Hash Map
+  | {
+    near: bottom-center
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# Step 2: JSON Serialization
+# ---------------------------------------------------------------------------------------
+step2: "Step 2: JSON Serialization" {
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#F57C00"
+    stroke-width: 2
+  }
+  serialize: "json.MarshalIndent\n(offsetData)" {
+    shape: rectangle
+    style: {
+      fill: "#FFE0B2"
+      font: mono
+    }
+  }
+  json_output: {
+    label: |md
+      json
+      {
+        "groups": {
+          "orders-group": {
+            "orders": 42
+          }
+        }
+      }
+      
+    |
+    shape: text
+    style: {
+      font: mono
+      font-size: 11
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# Step 3: Temp File Write
+# ---------------------------------------------------------------------------------------
+step3: "Step 3: IO Preparation" {
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#7B1FA2"
+    stroke-width: 2
+  }
+  tmp_write: "os.WriteFile(\n  consumer_offsets.json.tmp,\n  jsonData, 0644\n)" {
+    shape: rectangle
+    style: {
+      fill: "#E1BEE7"
+      font: mono
+    }
+  }
+  tmp_file: "consumer_offsets.json.tmp" {
+    shape: page
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+      stroke-dash: 4
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# Step 4: Atomic Rename (The Commit Point)
+# ---------------------------------------------------------------------------------------
+step4: "Step 4: Atomic Commit" {
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#388E3C"
+    stroke-width: 3
+  }
+  
+  note_atomic: {
+    label: |md
+      ### POSIX ATOMIC BOUNDARY
+      *VFS-level inode swap*
+    |
+    shape: text
+    style: {
+      italic: true
+      font-size: 10
+      font-color: "#1B5E20"
+    }
+    near: top-center
+  }
+
+  rename_op: "syscall.Rename(\n  .tmp → .json\n)" {
+    shape: rectangle
+    style: {
+      fill: "#C8E6C9"
+      font: mono
+      bold: true
+      stroke-width: 2
+    }
+  }
+
+  final_file: "consumer_offsets.json" {
+    shape: rectangle
+    style: {
+      fill: "#A5D6A7"
+      stroke: "#388E3C"
+      bold: true
+      double-border: true
+    }
+  }
+
+  commit_note: "← COMMIT POINT\nPersistence Guaranteed" {
+    shape: text
+    style: {
+      font-color: "#2E7D32"
+      bold: true
+      font-size: 12
+    }
+    near: bottom-center
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# Crash Scenarios & Invariants
+# ---------------------------------------------------------------------------------------
+crash_scenarios: {
+  label: ||md
+    ## Crash Safety & Atomicity Analysis
+    **Design Pattern: Write-Ahead-Shadowing**
+    - `os.Rename()` utilizes the underlying filesystem's atomic inode swap.
+    - **Invariants:**
+      1. Corruption is impossible because we never overwrite the target file in-place.
+      2. Partial writes are isolated to the `.tmp` file.
+
+    | Step | Failure Condition | Recovery State |
+    | :--- | :--- | :--- |
+    | **1-2** | Process crash | Persistent `.json` remains at previous offset (e.g., 41). |
+    | **3** | Disk Full / Crash | `.tmp` is partial. Main `.json` is untouched. System discards `.tmp` on restart. |
+    | **4** | System Halt | Atomic Swap: Either the pointer moved to new inode or it didn't. No middle state. |
+  ||
+  shape: rectangle
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#9E9E9E"
+    stroke-dash: 5
+    border-radius: 10
+  }
+  near: bottom-center
+}
+
+# ---------------------------------------------------------------------------------------
+# Connections (Data Flow)
+# ---------------------------------------------------------------------------------------
+ack_entry -> step1.inmemory: "1. Update store" {
+  style: {
+    stroke: "#4CAF50"
+    stroke-width: 2
+  }
+}
+step1.inmemory -> step2.serialize: "2. Trigger serialization" {
+  style: {
+    stroke: "#1976D2"
+    stroke-width: 2
+  }
+}
+step2.serialize -> step3.tmp_write: "3. Flush to IO" {
+  style: {
+    stroke: "#F57C00"
+    stroke-width: 2
+  }
+}
+step3.tmp_write -> step3.tmp_file: "FS: Write syscall" {
+  style: {
+    stroke: "#7B1FA2"
+    stroke-dash: 3
+  }
+}
+step3.tmp_file -> step4.rename_op: "4. Initiate swap" {
+  style: {
+    stroke: "#7B1FA2"
+    stroke-width: 2
+  }
+}
+step4.rename_op -> step4.final_file: "ATOMIC SYSCALL" {
+  style: {
+    stroke: "#388E3C"
+    stroke-width: 4
+    bold: true
+  }
+}
+
+# Implementation Metadata
+meta_footer: |md
+  **Implementation Details:**
+  - `File Mode`: 0644 (Owner RW, Group/Other R)
+  - `Encoding`: UTF-8 JSON
+  - `Filesystem`: Ext4 / XFS / ZFS (Atomic Rename Supported)
+| {
+  near: bottom-right
+}

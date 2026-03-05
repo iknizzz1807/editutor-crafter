@@ -1,0 +1,139 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## ICMP Echo Request/Reply (Ping) Flow
+  Timeline showing ping exchange and RTT calculation
+| {near: top-center}
+ping_flow: {
+  shape: sequence_diagram
+  client: Client (10.0.0.1)
+  router: IP Router
+  server: Server (10.0.0.5)
+  client."t0: start_timer"
+  client.t1 -> server.t1: "ICMP Echo Request\nType=8, Code=0\nID=0x1234, Seq=1\nData: abcdefgh..."
+  server.t1 -> server.t1: "Process ICMP\nType 8 → Generate Reply\nEcho Data → Echo Reply Data"
+  server.t2 -> client.t2: "ICMP Echo Reply\nType=0, Code=0\nID=0x1234, Seq=1\nData: abcdefgh..."
+  client."t2: stop_timer\nRTT = t2 - t1"
+}
+icmp_request: {
+  shape: sql_table
+  label: "ICMP Echo Request (ping.h)"
+  f0: "0x00 | uint8_t  | type = 8 (Echo Request)"
+  f1: "0x01 | uint8_t  | code = 0"
+  f2: "0x02 | uint16_t | checksum"
+  f3: "0x04 | uint16_t | id (match request/reply)"
+  f4: "0x06 | uint16_t | seq (increment per ping)"
+  f5: "0x08 | uint8_t[] | data (timestamp + padding)"
+  sz: "Header: 8 bytes + variable data"
+}
+icmp_reply: {
+  shape: sql_table
+  label: "ICMP Echo Reply (ping.h)"
+  f0: "0x00 | uint8_t  | type = 0 (Echo Reply)"
+  f1: "0x01 | uint8_t  | code = 0"
+  f2: "0x02 | uint16_t | checksum"
+  f3: "0x04 | uint16_t | id (copied from request)"
+  f4: "0x06 | uint16_t | seq (copied from request)"
+  f5: "0x08 | uint8_t[] | data (echoed back)"
+  sz: "Header: 8 bytes + variable data"
+}
+rtt_calc: {
+  label: "RTT Calculation (rtt.c)"
+  width: 400
+  code: |'c
+    // Client-side RTT measurement
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    send_echo_request(sock, seq, payload);
+    recv_echo_reply(sock, &reply);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    // RTT in milliseconds
+    uint32_t rtt_ms = (t1.tv_sec - t0.tv_sec) * 1000 +
+                      (t1.tv_nsec - t0.tv_nsec) / 1000000;
+    printf("64 bytes: rtt=%.3f ms\n", rtt_ms / 1000.0);
+  '|
+}
+traceroute_section: {
+  label: "Traceroute: Exploiting TTL for Path Discovery"
+  traceroute_flow: {
+    shape: sequence_diagram
+    client: Client
+    r1: Router 1
+    r2: Router 2
+    server: Server
+    probe_1: "TTL=1 Probe" {
+      client.t1 -> r1.t1: "ICMP Echo\nTTL=1"
+      r1.t1 -> r1.t1: "Decrement TTL\nTTL becomes 0"
+      r1.t1 -> client.t1: "ICMP Time Exceeded\nType=11, Code=0\nRouter IP included"
+    }
+    probe_2: "TTL=2 Probe" {
+      client.t2 -> r1.t2: "ICMP Echo\nTTL=2"
+      r1.t2 -> r2.t2: "Forward (TTL=1)"
+      r2.t2 -> r2.t2: "Decrement TTL\nTTL becomes 0"
+      r2.t2 -> client.t2: "ICMP Time Exceeded\nType=11, Code=0"
+    }
+    probe_3: "TTL=3 Probe" {
+      client.t3 -> r1.t3: "ICMP Echo\nTTL=3"
+      r1.t3 -> r2.t3: "Forward (TTL=2)"
+      r2.t3 -> server.t3: "Forward (TTL=1)"
+      server.t3 -> server.t3: "Destination reached!\nSend Echo Reply"
+      server.t3 -> client.t3: "ICMP Echo Reply\nType=0"
+    }
+  }
+}
+ttl_expired: {
+  shape: sql_table
+  label: "ICMP Time Exceeded (icmp.h)"
+  f0: "0x00 | uint8_t  | type = 11 (Time Exceeded)"
+  f1: "0x01 | uint8_t  | code = 0 (TTL expired)"
+  f2: "0x02 | uint16_t | checksum"
+  f3: "0x04 | uint32_t | unused (must be 0)"
+  f4: "0x08 | IP hdr   | original IP header"
+  f5: "0x1C | 8 bytes  | first 8 bytes of original payload"
+  sz: "Total: 8 + 20 + 8 = 36 bytes"
+}
+handler_code: {
+  label: "ICMP Handler (icmp.c)"
+  width: 420
+  code: |'c
+    void icmp_handle_echo_request(int tap_fd, struct ip_hdr *ip,
+                                   struct icmp_echo *req, size_t data_len,
+                                   uint8_t *our_mac, uint32_t our_ip) {
+        // Build Echo Reply: same ID, seq, data
+        struct icmp_echo reply = {
+            .type = ICMP_TYPE_ECHO_REPLY,  // 0
+            .code = 0,
+            .id = req->id,
+            .seq = req->seq
+        };
+        memcpy(reply + 1, req + 1, data_len);  // Echo data back
+        // Calculate checksum over entire message
+        reply.checksum = 0;
+        reply.checksum = icmp_checksum(&reply, sizeof(reply) + data_len);
+        // Send via IP layer (proto = ICMP, dst = ip->src)
+        ip_send(tap_fd, our_ip, ip->src_ip, IP_PROTO_ICMP, &reply);
+    }
+  '|
+}
+ping_flow -> icmp_request
+icmp_request -> icmp_reply
+icmp_reply -> rtt_calc
+rtt_calc -> traceroute_section
+traceroute_section -> ttl_expired
+ttl_expired -> handler_code
+legend: {
+  near: bottom-center
+  icmp_types: |md
+    **ICMP Types:**
+    - Type 0 = Echo Reply
+    - Type 8 = Echo Request  
+    - Type 11 = Time Exceeded (TTL=0)
+    **Traceroute Mechanism:**
+    Incrementing TTL causes each router to reveal itself via ICMP Time Exceeded
+  |
+}

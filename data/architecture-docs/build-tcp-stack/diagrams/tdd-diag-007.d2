@@ -1,0 +1,248 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+title: |md
+  # ARP Cache Data Structure (Intel 82599 Style)
+  ## Hash Table with IP→MAC Mapping, Expiration, and Eviction
+| {
+  near: top-center
+  style: {
+    font-size: 24
+    bold: true
+  }
+}
+
+# 1. Main Table Structure
+ARP_Cache: {
+  label: "ARP Cache Structure (Global)"
+  style: {
+    fill: "#E8F4FD"
+    stroke: "#2B6CB0"
+    stroke-width: 3
+  }
+  
+  definition: |c
+    struct arp_cache {
+        struct arp_entry *buckets[256];
+        uint32_t size;
+        pthread_rwlock_t table_lock;
+    };
+  | {
+    style: {
+      stroke-width: 0
+      fill: transparent
+      font-size: 14
+    }
+  }
+
+  buckets: {
+    grid-rows: 8
+    grid-gap: 0
+    b0: "Bucket[0x00]" {style.fill: "#BEE3F8"}
+    b1: "Bucket[0x01]" {style.fill: "#BEE3F8"}
+    b2: "Bucket[0x02]" {style.fill: "#BEE3F8"}
+    b3: "..." {style.fill: "#E2E8F0"}
+    b4: "Bucket[idx]" {
+      style: {
+        fill: "#FED7D7"
+        stroke: "#E53E3E"
+        bold: true
+      }
+    }
+    b5: "..." {style.fill: "#E2E8F0"}
+    b6: "Bucket[0xFE]" {style.fill: "#BEE3F8"}
+    b7: "Bucket[0xFF]" {style.fill: "#BEE3F8"}
+  }
+}
+
+# 2. Detailed Memory Layout of Entry
+# sizeof = 24 bytes (Aligned to 8 bytes)
+Entry_Detail: {
+  label: "ARP Entry Struct (Physical Layout)"
+  style: {
+    fill: "#FFF5F5"
+    stroke: "#C53030"
+  }
+  
+  fields: {
+    shape: sql_table
+    style.stroke: "#C53030"
+    
+    ip: "uint32_t ip" {constraint: "PK Offset 0 (4B)"; style.fill: "#BEE3F8"}
+    mac: "uint8_t mac[6]" {constraint: "Data Offset 4 (6B)"; style.fill: "#C6F6D5"}
+    padding: "uint8_t _pad[2]" {constraint: "Padding Offset 10 (2B)"; style.fill: "#E2E8F0"}
+    expires: "time_t expires_at" {constraint: "Time Offset 12 (8B)"; style.fill: "#FEFCBF"}
+    valid: "int valid" {constraint: "Flags Offset 20 (4B)"; style.fill: "#FED7D7"}
+  }
+  
+  annotation: |md
+    *Memory Alignment: 8-byte boundary alignment enforced for `time_t` on x86_64.*
+    *Sizeof(struct arp_entry) = 24 Bytes.*
+  | {
+    shape: text
+    style.font-size: 12
+  }
+}
+
+# 3. Collision Handling
+Collision_Chain: {
+  label: "Collision Resolution: Singly Linked List"
+  style: {
+    fill: "#FFFAF0"
+    stroke: "#DD6B20"
+  }
+  
+  bucket_head: "Buckets[idx]" {
+    shape: rectangle
+    style.fill: "#FED7D7"
+  }
+  
+  node1: "Entry A\nIP: 192.168.1.10\nMAC: 00:0C:..." {
+    shape: rectangle
+    style.fill: "#C6F6D5"
+  }
+  
+  node2: "Entry B\nIP: 10.0.0.5\nMAC: 52:54:..." {
+    shape: rectangle
+    style.fill: "#C6F6D5"
+  }
+  
+  node3: "Entry C\nIP: 172.16.0.1\nMAC: 08:00:..." {
+    shape: rectangle
+    style.fill: "#C6F6D5"
+  }
+  
+  null_ptr: "NULL" {
+    shape: circle
+    style.fill: "#E2E8F0"
+  }
+  
+  bucket_head -> node1: "head_ptr"
+  node1 -> node2: "next_ptr" {style.stroke: "#DD6B20"; style.stroke-width: 2}
+  node2 -> node3: "next_ptr" {style.stroke: "#DD6B20"; style.stroke-width: 2}
+  node3 -> null_ptr: "next_ptr"
+}
+
+# 4. State Machine: Cache Lifecycle
+Lifecycle: {
+  label: "Entry Lifecycle States"
+  style.fill: "#FAF5FF"
+  
+  S_EMPTY: "EMPTY" {shape: circle; style.fill: "#E2E8F0"}
+  S_PENDING: "PENDING\n(ARP REQ SENT)" {shape: circle; style.fill: "#FEFCBF"}
+  S_REACHABLE: "REACHABLE" {
+    shape: circle
+    style: {
+      fill: "#C6F6D5"
+      stroke: "#2F855A"
+      stroke-width: 3
+    }
+  }
+  S_STALE: "STALE\n(TTL EXPIRED)" {shape: circle; style.fill: "#FED7D7"}
+  S_EVICTED: "EVICTED" {shape: circle; style.fill: "#F56565"}
+
+  S_EMPTY -> S_PENDING: "Lookup Miss"
+  S_PENDING -> S_REACHABLE: "ARP Reply Received"
+  S_REACHABLE -> S_STALE: "Clock > expires_at"
+  S_STALE -> S_PENDING: "Re-validate (Egress Traffic)"
+  S_STALE -> S_EVICTED: "GC / LRU Sweep"
+  S_REACHABLE -> S_REACHABLE: "Traffic (Reset TTL)"
+}
+
+# 5. Algorithm: Hash Fold
+Hash_Function: {
+  label: "Hash Function implementation"
+  code: |c
+    /**
+     * folds 32-bit IP into 8-bit index
+     */
+    uint32_t hash_ip(uint32_t ip) {
+        ip ^= (ip >> 16);
+        ip ^= (ip >> 8);
+        return ip & 0xFF;
+    }
+  | {
+    style.font-size: 14
+  }
+}
+
+# 6. Lookup Logic Flow
+Lookup_Sequence: {
+  shape: sequence_diagram
+  Network_Thread: "NIC Driver Thread"
+  ARP_Table: "ARP Data Structure"
+  
+  Network_Thread -> ARP_Table: "get_mac(target_ip)"
+  
+  ARP_Table -> ARP_Table: "idx = hash_ip(target_ip)"
+  
+  "Critical Section": {
+    ARP_Table -> ARP_Table: "pthread_rwlock_rdlock(&table_lock)"
+    ARP_Table -> ARP_Table: "Traverse buckets[idx] chain"
+    
+    Validation: {
+      ARP_Table -> ARP_Table: "if (node->ip == target_ip && node->valid)"
+    }
+    
+    ARP_Table -> ARP_Table: "pthread_rwlock_unlock(&table_lock)"
+  }
+  
+  ARP_Table -> Network_Thread: "return MAC_ADDR or NULL"
+}
+
+# 7. Memory Hierarchy Context
+Memory_Analysis: {
+  label: "Performance Context"
+  content: ||md
+    ### Cache Line Optimization
+    - **Hardware Cache Line**: 64 Bytes
+    - **Entry Size**: 24 Bytes
+    - **Density**: 2.66 entries per cache line
+    - **L1 Latency**: ~4 cycles
+    - **Total Table Footprint**: 256 * 8B (pointers) + N * 24B
+    
+    *Implementation Note: For high-concurrency, use per-bucket spinlocks to avoid global table contention.*
+  ||
+}
+
+# 8. Metadata / Stats
+Statistics: {
+  label: "Implementation Metadata"
+  style: {
+    fill: "#F7FAFC"
+    stroke: "#4A5568"
+  }
+  # Using block string with || to handle internal | characters in markdown table
+  stats: ||md
+    | Parameter | Specification |
+    | :--- | :--- |
+    | Hash Method | XOR Folding |
+    | Buckets | 256 |
+    | Entry Size | 24 Bytes |
+    | Alignment | 8-byte |
+    | Collision | Chaining |
+    | Thread Safety | RW Lock / Atomic Flags |
+  ||
+}
+
+# Link components
+ARP_Cache.buckets.b4 -> Collision_Chain.bucket_head: "Target Index Reference" {
+  style: {
+    stroke-dash: 5
+    stroke: "#E53E3E"
+  }
+}
+
+Hash_Function -> ARP_Cache.buckets: "Index Resolution" {
+  style.stroke: "#2D3748"
+}
+
+Entry_Detail -> Collision_Chain.node1: "Logical Template" {
+  style.stroke-dash: 3
+}

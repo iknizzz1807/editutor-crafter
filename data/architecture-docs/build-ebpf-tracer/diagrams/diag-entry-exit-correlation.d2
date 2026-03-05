@@ -1,0 +1,250 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Entry/Exit Probe Correlation via Hash Map
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  entry_side: {
+    direction: down
+    label: "SYSCALL ENTRY PATH"
+    syscall_entry: {
+      label: "Thread calls read()"
+      shape: oval
+      style.fill: "#E8F5E9"
+      style.stroke: "#4CAF50"
+    }
+    entry_probe: {
+      label: "Entry Kprobe Fires"
+      shape: rectangle
+      style.fill: "#C8E6C9"
+      style.stroke: "#388E3C"
+    }
+    get_tid: {
+      label: "Get Thread ID (tid)"
+      width: 200
+      code: |'c
+        u64 pid_tgid = bpf_get_current_pid_tgid();
+        u32 tid = (u32)pid_tgid;
+      '|
+    }
+    get_time: {
+      label: "Get Monotonic Timestamp"
+      width: 200
+      code: |'c
+        u64 start = bpf_ktime_get_ns();
+      '|
+    }
+    hash_write: {
+      label: "Write to Hash Map"
+      width: 200
+      code: |'c
+        bpf_map_update_elem(
+          &start_times, 
+          &tid, &start, 
+          BPF_ANY
+        );
+      '|
+    }
+    syscall_entry -> entry_probe: "kernel trap"
+    entry_probe -> get_tid
+    get_tid -> get_time
+    get_time -> hash_write
+  }
+  hash_map: {
+    direction: down
+    label: "CORRELATION MAP\nstart_times"
+    map_struct: {
+      shape: sql_table
+      label: "BPF_MAP_TYPE_HASH"
+      f0: "key   | u32  | Thread ID"
+      f1: "value | u64  | Start Timestamp (ns)"
+      f2: "max   |      | 10,240 entries"
+      sz: "Total: 16 bytes/entry"
+    }
+    map_visual: {
+      label: "Live Map State"
+      shape: class
+      tid_1234: "1234 | 1709234567890123"
+      tid_5678: "5678 | 1709234567891456"
+      tid_9012: "9012 | 1709234567892789"
+      ellipsis: "... | ..."
+    }
+    note: {
+      label: "Key Insight"
+      width: 220
+      code: |'c
+        // Hash map bridges TWO SEPARATE
+        // eBPF program invocations
+        // 
+        // Entry probe writes, exit probe reads
+        // Same tid = same thread = same syscall
+      '|
+    }
+  }
+  entry_side.hash_write -> hash_map.map_visual: "tid=1234\nstart=...ns" {
+    style.stroke: "#4CAF50"
+    style.stroke-width: 2
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  kernel_exec: {
+    direction: down
+    label: "KERNEL SYSCALL EXECUTION"
+    exec_box: {
+      label: "Syscall Executes in Kernel"
+      shape: rectangle
+      width: 300
+      style.fill: "#FFF3E0"
+      style.stroke: "#FF9800"
+      note: |md
+        - Validate arguments
+        - Perform file/network I/O  
+        - Copy data to/from userspace
+        - Handle errors
+        - Return result
+      |
+    }
+    time_arrow: {
+      label: "Duration: 50μs - 500ms"
+      shape: text
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  exit_side: {
+    direction: down
+    label: "SYSCALL EXIT PATH"
+    syscall_exit: {
+      label: "Syscall Returns"
+      shape: oval
+      style.fill: "#E3F2FD"
+      style.stroke: "#2196F3"
+    }
+    exit_probe: {
+      label: "Exit Kretprobe Fires"
+      shape: rectangle
+      style.fill: "#BBDEFB"
+      style.stroke: "#1976D2"
+    }
+    get_tid2: {
+      label: "Get Thread ID (tid)"
+      width: 200
+      code: |'c
+        u64 pid_tgid = bpf_get_current_pid_tgid();
+        u32 tid = (u32)pid_tgid;
+      '|
+    }
+    hash_read: {
+      label: "Lookup in Hash Map"
+      width: 200
+      code: |'c
+        u64 *start = bpf_map_lookup_elem(
+          &start_times, &tid
+        );
+        if (!start) return 0; // missing
+      '|
+    }
+    compute: {
+      label: "Compute Duration"
+      width: 200
+      code: |'c
+        u64 end = bpf_ktime_get_ns();
+        u64 latency = end - *start;
+      '|
+    }
+    cleanup: {
+      label: "Delete Hash Entry"
+      width: 200
+      code: |'c
+        bpf_map_delete_elem(
+          &start_times, &tid
+        );
+      '|
+    }
+    syscall_exit -> exit_probe: "return"
+    exit_probe -> get_tid2
+    get_tid2 -> hash_read
+    hash_read -> compute
+    compute -> cleanup
+  }
+  hash_map2: {
+    direction: down
+    label: "LOOKUP"
+    lookup_arrow: {
+      shape: text
+      label: "← tid=1234\n→ start=...ns"
+    }
+  }
+  histogram_side: {
+    direction: down
+    label: "AGGREGATION"
+    bucket_calc: {
+      label: "Calculate Bucket"
+      width: 200
+      code: |'c
+        u64 latency_us = latency / 1000;
+        int bucket = 64 - 
+          __builtin_clzll(latency_us);
+        if (bucket >= 64) bucket = 63;
+      '|
+    }
+    hist_update: {
+      label: "Update Histogram"
+      width: 200
+      code: |'c
+        u64 (*hist)[64] = 
+          bpf_map_lookup_elem(
+            &histograms, &syscall_nr);
+        if (hist) (*hist)[bucket]++;
+      '|
+    }
+    histogram: {
+      shape: sql_table
+      label: "PERCPU_ARRAY: histograms"
+      b0: "bucket[0]  | 0-1μs     | 12,340"
+      b1: "bucket[1]  | 1-2μs     | 15,678"
+      b2: "bucket[2]  | 2-4μs     | 8,901"
+      b3: "bucket[3]  | 4-8μs     | 4,123"
+      b4: "bucket[4]  | 8-16μs    | 2,456"
+      ellipsis: "...        | ...       | ..."
+      total: "Total: 64 buckets (covers 0-18hrs)"
+    }
+    bucket_calc -> hist_update
+    hist_update -> histogram
+  }
+}
+hash_map.map_visual -> hash_map2.lookup_arrow: "correlation" {
+  style.stroke-dash: 4
+  style.stroke: "#9C27B0"
+}
+exit_side.hash_read -> hash_map2.lookup_arrow: "lookup\ntid=1234" {
+  style.stroke: "#2196F3"
+  style.stroke-width: 2
+}
+exit_side.cleanup -> histogram_side.bucket_calc: "latency" {
+  style.stroke: "#2196F3"
+}
+legend: {
+  near: bottom-right
+  label: "Correlation Pattern"
+  entry: "Entry Kprobe → Writes start[tid]"
+  exit: "Exit Kretprobe → Reads start[tid]"
+  key: "Key: Thread ID (not Process ID!)"
+  reason: "Why tid? Multiple threads share pid"
+  style.fill: "#F5F5F5"
+  style.stroke: "#9E9E9E"
+}

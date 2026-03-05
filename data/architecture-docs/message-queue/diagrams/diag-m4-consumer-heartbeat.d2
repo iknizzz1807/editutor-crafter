@@ -1,0 +1,175 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- MODULES LAYER ---
+
+modules_row: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  monitor: {
+    shape: class
+    label: "ConsumerMonitor (monitor.go)"
+    -heartbeat_timeout: "time.Duration"
+    -check_interval: "time.Duration"
+    -active_consumers: "map[string]*ConsumerState"
+    +Start(ctx): "void"
+    +RecordHeartbeat(id): "void"
+    +EvictDead(): "[]string"
+    +ShouldThrottle(lag): "bool"
+  }
+
+  dlq_manager: {
+    shape: class
+    label: "DLQManager (dlq.go)"
+    -log_writer: "*LogWriter"
+    -max_retries: "int"
+    +MoveToDLQ(msg, reason): "error"
+    +Inspect(topic, offset): "[]DLQEntry"
+    +Replay(topic, offsets): "int"
+  }
+}
+
+# --- DATA STRUCTURES LAYER ---
+
+structs_row: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  dlq_msg: {
+    shape: sql_table
+    label: "struct DLQMessage (types.go)"
+    f0: "0x00 | uint64    | original_offset"
+    f1: "0x08 | uint64    | failed_at_unix"
+    f2: "0x10 | uint16    | retry_count"
+    f3: "0x12 | uint16    | topic_len"
+    f4: "0x14 | char[]    | original_topic"
+    f5: "0x.. | uint32    | payload_len"
+    f6: "0x.. | byte[]    | payload"
+    f7: "0x.. | char[]    | last_error"
+    sz: "Total: 24 bytes + payload"
+  }
+
+  consumer_state: {
+    shape: sql_table
+    label: "struct ConsumerState (monitor.go)"
+    f0: "0x00 | string    | id"
+    f1: "0x10 | time.Time | last_heartbeat"
+    f2: "0x20 | int64     | current_lag"
+    f3: "0x28 | bool      | is_throttled"
+    sz: "Total: 48 bytes"
+  }
+}
+
+# --- LOGIC & FLOW LAYER ---
+
+logic_row: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  heartbeat_loop: {
+    label: "Heartbeat Loop (monitor.go)"
+    width: 380
+    code: |'go
+      ticker := time.NewTicker(s.check_interval)
+      for range ticker.C {
+        dead := s.EvictDead()
+        if len(dead) > 0 {
+          s.triggerRebalance(dead)
+          log.Printf("Evicted: %v", dead)
+        }
+      }
+    '|
+  }
+
+  throttle_logic: {
+    label: "Throttling Guard (monitor.go)"
+    width: 380
+    code: |'go
+      func (s *Monitor) ShouldThrottle(lag int64) bool {
+        if lag > s.threshold_high {
+          s.status = StatusDegraded
+          return true
+        }
+        return false
+      }
+    '|
+  }
+}
+
+# --- STATE EVOLUTION LAYER ---
+
+state_machine: {
+  label: "Consumer Health State Machine"
+  direction: right
+
+  S1: HEALTHY {
+    shape: circle
+    style.fill: "#DFFFD6"
+  }
+  S2: DEGRADED {
+    shape: circle
+    style.fill: "#FFF3D6"
+  }
+  S3: UNHEALTHY {
+    shape: circle
+    style.fill: "#FFD6D6"
+  }
+  S4: DEAD {
+    shape: circle
+    style.fill: "#E0E0E0"
+    style.double-border: true
+  }
+
+  S1 -> S2: "Lag > 10k | throttle"
+  S2 -> S3: "Lag > 50k | reject"
+  S1 -> S4: "H-Beat > 30s | evict"
+  S3 -> S1: "Lag < 1k | recover"
+}
+
+# --- API EXPOSURE LAYER ---
+
+api: {
+  shape: package
+  label: "Monitoring API (http.go)"
+  
+  health_endpoint: "/api/v1/health" {
+    tooltip: "Returns system status"
+    style.fill: "#F0F4F6"
+  }
+  dlq_inspect: "/api/v1/dlq/messages" {
+    tooltip: "Paginated inspection"
+  }
+  dlq_replay: "/api/v1/dlq/replay" {
+    tooltip: "Trigger replay"
+  }
+}
+
+# --- GLOBAL CONNECTIONS ---
+
+modules_row.monitor -> structs_row.consumer_state: "ptr | manages"
+modules_row.dlq_manager -> structs_row.dlq_msg: "io | persists"
+logic_row.heartbeat_loop -> state_machine: "updates status"
+logic_row.throttle_logic -> modules_row.monitor: "sets is_throttled"
+api.dlq_inspect -> modules_row.dlq_manager: "Inspect()"
+api.dlq_replay -> modules_row.dlq_manager: "Replay()"
+
+# --- ANNOTATIONS ---
+
+legend: {
+  shape: sql_table
+  label: "Global Thresholds & Envelopes"
+  t1: "Heartbeat Timeout | 30s"
+  t2: "Degraded Lag (High) | 10,000 msgs"
+  t3: "Unhealthy Lag (Crit) | 50,000 msgs"
+  t4: "Rebalance Grace Prd | 5,000ms"
+}
+legend.near: bottom-right

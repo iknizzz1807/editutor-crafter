@@ -1,0 +1,225 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    sketch: false
+    pad: 20
+  }
+}
+
+title: |md
+  # Consumer Heartbeat State Machine (v2.1.0)
+  ### Implementation Spec: Death Detection & Group Rebalance Logic
+| {
+  near: top-center
+}
+
+# Define State Classes for consistent styling
+classes: {
+  state_base: {
+    style: {
+      stroke-width: 3
+      border-radius: 10
+      font-size: 14
+      shadow: true
+    }
+  }
+  illegal_state: {
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#C62828"
+      stroke-dash: 3
+    }
+  }
+  transition_label: {
+    style: {
+      font-size: 11
+      bold: true
+    }
+  }
+}
+
+# Initial state - Standard UML start node
+initial: {
+  shape: circle
+  style.fill: "#4CAF50"
+  style.stroke: "#2E7D32"
+  width: 25
+  height: 25
+  label: ""
+}
+
+# -----------------------------------------------------------------------------
+# STATE DEFINITIONS
+# -----------------------------------------------------------------------------
+
+ALIVE: {
+  class: state_base
+  label: |md
+    **ALIVE** [StateID: 0x01]
+    ---
+    **Invariants:**
+    • `LastHeartbeat` < `session_timeout`
+    • `IsAlive` == `true`
+    • Partition assignment active
+  |
+  style.fill: "#C8E6C9"
+  style.stroke: "#4CAF50"
+}
+
+SUSPECTED: {
+  class: state_base
+  label: |md
+    **SUSPECTED** [StateID: 0x02]
+    ---
+    **Invariants:**
+    • `LastHeartbeat` > `timeout / 2`
+    • `IsAlive` == `true`
+    • `WarningStatus` = `PENDING_TIMEOUT`
+  |
+  style.fill: "#FFF9C4"
+  style.stroke: "#FBC02D"
+  style.stroke-dash: 5
+}
+
+DEAD: {
+  class: state_base
+  label: |md
+    **DEAD** [StateID: 0x0F]
+    ---
+    **Invariants:**
+    • `LastHeartbeat` > `session_timeout`
+    • `IsAlive` == `false`
+    • Consumer generation invalidated
+  |
+  style.fill: "#FFCDD2"
+  style.stroke: "#C62828"
+}
+
+# -----------------------------------------------------------------------------
+# TRANSITIONS
+# -----------------------------------------------------------------------------
+
+# Registration
+initial -> ALIVE: "Register(consumerID, group)\n[Action: Start Heartbeat Thread]" {
+  style.stroke-width: 2
+}
+
+# Normal Operation (Self-Loop)
+ALIVE -> ALIVE: "HeartbeatRequest\n━━━━━━━━━━━━━━\nAction: Reset Timer\nState: IsAlive=true" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+  target-arrowhead: circle
+}
+
+# Warning Path (Graceful Degradation)
+ALIVE -> SUSPECTED: "T > timeout/2\n━━━━━━━━━━━━\nAction: Log(WARN)\nMetric: inc(suspected)" {
+  style.stroke: "#FBC02D"
+  style.stroke-dash: 3
+}
+
+SUSPECTED -> ALIVE: "HeartbeatResponse\n━━━━━━━━━━━━━━\nAction: Clear(WARN)" {
+  style.stroke: "#4CAF50"
+}
+
+# Failure Paths
+SUSPECTED -> DEAD: "T > session_timeout\n━━━━━━━━━━━━━━━\nAction: TriggerRebalance()" {
+  style.stroke: "#C62828"
+  style.stroke-width: 2
+}
+
+# Direct Path (Primary Failure Route)
+ALIVE -> DEAD: "T > session_timeout\n━━━━━━━━━━━━━━━\nAction: ConsumerGroup.Leave()\nAction: MarkInFlightVisible()" {
+  style.stroke: "#C62828"
+  style.stroke-width: 3
+  source-arrowhead: cross
+}
+
+# -----------------------------------------------------------------------------
+# ANNOTATION BLOCKS (Fixed 'near' values for ELK compliance)
+# -----------------------------------------------------------------------------
+
+# Rebalance logic / Callback chain
+callback: |md
+  ### **onDeath Callback Chain:**
+  1. `HeartbeatManager` detects T > 30s
+  2. Emit `onDeath(consumerID)`
+  3. `ConsumerGroup.Leave(consumerID)`
+  4. **State Cleanup:**
+     - Mark current batch as 'Visible'
+     - Flush local state offsets
+     - Execute `Rebalance()` via Orchestrator
+| {
+  near: bottom-left
+  shape: rectangle
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#FF9800"
+    stroke-width: 2
+  }
+}
+
+# System Invariants / Illegal moves
+illegals: |md
+  ### **ILLEGAL Transitions (Error Logic):**
+  - `DEAD` → `ALIVE`: Prohibited. (Must instantiate new `ConsumerID`).
+  - `DEAD` → `SUSPECTED`: Terminal state logic failure.
+  - Skip Heartbeat: Check interval must be `timeout / 3`.
+| {
+  near: center-right
+  shape: rectangle
+  class: illegal_state
+}
+
+# Legend & Constants
+legend: |md
+  ### **System Constants & Legend:**
+  - 🟢 **ALIVE**: Active connection, processing.
+  - 🟡 **SUSPECTED**: Network jitter or GC pause.
+  - 🔴 **DEAD**: Eviction from group, rebalance start.
+  ---
+  - `session_timeout`: 30,000ms (default)
+  - `heartbeat_interval`: 10,000ms
+  - `rebalance_timeout`: 60,000ms
+| {
+  near: bottom-right
+  shape: rectangle
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#9E9E9E"
+  }
+}
+
+# Timing Context
+timing: |md
+  ### **Timeout Detection Timeline:**
+  text
+  T=0s         T=15s         T=30s         T=31s
+   │            │             │             │
+  [H] Received [H] Missing   [H] Expired   [D] Detected
+   │            │             │             │
+   └────────────┴─────────────┴─────────────┘
+      Window-1      Window-2      Deadline
+  
+| {
+  near: top-right
+  shape: rectangle
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1976D2"
+    stroke-width: 1
+  }
+}
+
+# -----------------------------------------------------------------------------
+# GLOBAL STYLING
+# -----------------------------------------------------------------------------
+
+***: {
+  style: {
+    font: mono
+  }
+}
+
+(ALIVE -> DEAD)[0].style.animated: true
+(ALIVE -> SUSPECTED)[0].style.animated: true

@@ -1,0 +1,221 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Ring Buffer Reserve/Submit Flow
+  Step-by-step event lifecycle in eBPF
+| {near: top-center}
+classes: {
+  step: {
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1976D2"
+      stroke-width: 2
+      font: mono
+    }
+  }
+  success: {
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#388E3C"
+    }
+  }
+  error: {
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#D32F2F"
+    }
+  }
+  data: {
+    shape: cylinder
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#F57C00"
+    }
+  }
+  decision: {
+    shape: diamond
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+    }
+  }
+}
+# Step 1: Probe fires
+step1: "STEP 1: Probe Fires" {
+  class: step
+  desc: |md
+    kprobe/tracepoint handler invoked
+    Need to emit event to userspace
+  |
+}
+# Step 2: Reserve space
+step2: "STEP 2: Reserve Space" {
+  class: step
+  code: |go
+    event = bpf_ringbuf_reserve(
+      &events,
+      sizeof(*event),
+      0  // flags
+    );
+  |
+}
+step1 -> step2: "Need buffer\nfor event"
+# Decision: Reserve succeeded?
+decision1: "Reserve\nOK?" {class: decision}
+step2 -> decision1
+# Error path
+error_path: "ERROR PATH" {
+  class: error
+  discard_step: "STEP 3a: Discard" {
+    class: error
+    desc: |md
+      **Ring buffer full**
+      - Cannot reserve space
+      - Must handle gracefully
+      - No crash, no corruption
+    |
+    code: |go
+      // NULL returned
+      // Increment drop counter
+      stats.dropped++;
+      return 0;  // Safe exit
+    |
+  }
+}
+decision1 -> error_path.discard_step: "NULL\n(buffer full)" {
+  style: {
+    stroke: "#D32F2F"
+    stroke-width: 2
+    animated: true
+  }
+}
+error_path.discard_step -> exit_error: "Return 0\n(event dropped)" {
+  style: {stroke: "#D32F2F"}
+}
+# Success path
+success_path: "SUCCESS PATH" {
+  class: success
+  fill_step: "STEP 3: Fill Event" {
+    class: success
+    desc: |md
+      Memory reserved, now populate:
+      - Valid pointer received
+      - Fill all fields safely
+      - Use probe_read for kernel memory
+    |
+    code: |go
+      // event is valid pointer
+      event->timestamp = ktime;
+      event->pid = pid_tgid >> 32;
+      event->tid = (u32)pid_tgid;
+      bpf_probe_read_kernel_str(
+        event->filename, 256, ptr);
+      event->flags = BPF_CORE_READ(how, flags);
+    |
+  }
+}
+decision1 -> success_path.fill_step: "Non-NULL\n(pointer)" {
+  style: {
+    stroke: "#388E3C"
+    stroke-width: 2
+  }
+}
+# Step 4: Submit
+submit_step: "STEP 4: Submit Event" {
+  class: success
+  desc: |md
+    Commit event to ring buffer:
+    - Makes event visible to userspace
+    - Cannot modify after submit
+    - Memory ownership transferred
+  |
+  code: |go
+    bpf_ringbuf_submit(event, 0);
+    // Event now visible to
+    // userspace consumer
+  |
+}
+success_path.fill_step -> submit_step: "Event\npopulated"
+# Step 5: Userspace receives
+userspace: "USERSPACE CONSUMER" {
+  class: data
+  poll_step: "Poll & Consume" {
+    class: data
+    code: |go
+      // In userspace:
+      ring_buffer__poll(rb, timeout);
+      // Callback receives:
+      // - void *data
+      // - size_t len
+    |
+  }
+}
+submit_step -> userspace.poll_step: "Event visible\nin buffer" {
+  style: {
+    stroke: "#388E3C"
+    stroke-dash: 3
+    animated: true
+  }
+}
+# Success exit
+exit_success: "Return 0\n(event delivered)" {
+  class: success
+}
+submit_step -> exit_success
+userspace.poll_step -> exit_success
+# Ring buffer state visualization
+buffer_state: "Ring Buffer State Transitions" {
+  near: top-right
+  free: "FREE\n(available)" {
+    shape: circle
+    style.fill: "#E8F5E9"
+  }
+  reserved: "RESERVED\n(owned by BPF)" {
+    shape: circle
+    style.fill: "#E3F2FD"
+  }
+  committed: "COMMITTED\n(visible)" {
+    shape: circle
+    style.fill: "#C8E6C9"
+  }
+  consumed: "CONSUMED\n(recycled)" {
+    shape: circle
+    style.fill: "#FFECB3"
+  }
+  free -> reserved: "reserve()" {
+    style: {stroke: "#1976D2"}
+  }
+  reserved -> committed: "submit()" {
+    style: {stroke: "#388E3C"}
+  }
+  committed -> consumed: "userspace\nread" {
+    style: {stroke: "#F57C00"}
+  }
+  consumed -> free: "recycle" {
+    style: {stroke: "#7B1FA2"; stroke-dash: 3}
+  }
+  reserved -> free: "discard()\n(on error)" {
+    style: {stroke: "#D32F2F"; stroke-dash: 3}
+  }
+}
+# Invariant callout
+invariants: |md
+  ## Critical Invariants
+  1. **Reserve MUST be paired** with either:
+     - `submit()` (success)
+     - `discard()` (error)
+  2. **Never use pointer after submit**:
+     - Memory ownership transferred
+     - Access causes undefined behavior
+  3. **Check return value**:
+     - `reserve()` may return NULL
+     - Always NULL-check before filling
+  4. **Fill atomically**:
+     - No partial events in buffer
+     - Either full event or nothing
+| {near: bottom-right}

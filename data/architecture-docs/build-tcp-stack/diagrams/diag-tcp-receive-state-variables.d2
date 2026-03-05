@@ -1,0 +1,166 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  shape: text
+  label: "TCP Receiver Stack: Variable State & Ingress Logic (tcp_input.c)"
+  style: {
+    font-size: 24
+    bold: true
+  }
+}
+
+# --- DATA STRUCTURES LAYER ---
+memory_layout: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  recv_buf: {
+    shape: sql_table
+    label: "struct tcp_recv_buf (recv_buf.h)"
+    f0: "0x00 | uint8_t*  | data      // Circular buffer pointer"
+    f1: "0x08 | uint32_t  | head      // App read pointer"
+    f2: "0x0C | uint32_t  | tail      // Stack write pointer"
+    f3: "0x10 | uint32_t  | size      // Total capacity (256KB)"
+    f4: "0x14 | uint32_t  | free_spc  // Advertised Window"
+    sz: "Total: 24 bytes"
+  }
+
+  ooo_manager: {
+    shape: sql_table
+    label: "struct tcp_ooo_queue (ooo.h)"
+    f0: "0x00 | list_head | segments  // Sorted list of gaps"
+    f1: "0x08 | uint32_t  | count     // Current OOO count"
+    f2: "0x0C | uint32_t  | max_segs  // Limit (Default: 32)"
+    f3: "0x10 | uint32_t  | mem_usage // Current bytes in OOO"
+    sz: "Total: 20 bytes"
+  }
+}
+
+# --- CONTROL BLOCK ---
+tcp_pcb: {
+  shape: class
+  label: "struct tcp_pcb (tcp.h)"
+  +state: "tcp_state_t"
+  +rcv_nxt: "uint32_t // Next expected sequence"
+  +rcv_wnd: "uint32_t // Receive window"
+  +rcv_ann_wnd: "uint32_t // Announced window"
+  +rcv_ann_right_edge: "uint32_t"
+  +irs: "uint32_t // Initial Receive Sequence"
+  +flags: "uint16_t // ACK_NOW, PENDING_DATA"
+  +tcp_process(seg, pcb): "err_t"
+  +tcp_receive(seg, pcb): "void"
+}
+
+# --- INGRESS PIPELINE ---
+ingress_flow: {
+  label: "Packet Ingress Pipeline"
+  
+  segment_in: {
+    shape: rectangle
+    label: "Incoming TCP Segment"
+    style.fill: "#C7F1FF"
+  }
+
+  validation: {
+    label: "Step 1: Validation"
+    code: |'c
+      if (tcp_checksum(p) != 0) goto drop;
+      if (TCPH_FLAGS(hdr) & TCP_SYN) handle_syn();
+      pcb = tcp_lookup(src_ip, src_port);
+    '|
+  }
+
+  seq_check: {
+    label: "Step 2: Sequence Analysis"
+    code: |'c
+      seq = seg->seq;
+      len = seg->len;
+      if (seq == pcb->rcv_nxt) {
+          accept_in_order(seg);
+      } else if (seq > pcb->rcv_nxt) {
+          buffer_ooo(seg);
+      }
+    '|
+  }
+
+  buffer_ooo_logic: {
+    label: "Step 3: OOO Buffering"
+    code: |'c
+      // Insert into sorted linked list
+      ooo_insert_sorted(pcb->ooo_queue, seg);
+      tcp_send_ack(pcb); // Duplicate ACK
+    '|
+    style.stroke-dash: 3
+  }
+
+  drain_ooo: {
+    label: "Step 4: Drain OOO Queue"
+    code: |'c
+      while (next_ooo_seq == pcb->rcv_nxt) {
+          move_to_recv_buf(ooo_head);
+          pcb->rcv_nxt += ooo_head->len;
+          pop_ooo_queue(pcb);
+      }
+    '|
+    style.fill: "#D5F5E3"
+  }
+}
+
+# --- STATE EVOLUTION ---
+tcp_fsm: {
+  label: "Receiver State Machine (Simplified)"
+  direction: right
+  
+  LISTEN: {shape: oval; style.fill: "#F4F6F7"}
+  SYN_RCVD: {shape: oval; style.fill: "#FEF9E7"}
+  ESTABLISHED: {shape: oval; style.fill: "#D5F5E3"}
+  CLOSE_WAIT: {shape: oval; style.fill: "#FDEDEC"}
+  LAST_ACK: {shape: oval; style.fill: "#FDEDEC"}
+  CLOSED: {
+    shape: oval
+    style.fill: "#EAECEE"
+    style.double-border: true
+  }
+
+  LISTEN -> SYN_RCVD: "SYN | SYN+ACK"
+  SYN_RCVD -> ESTABLISHED: "ACK"
+  ESTABLISHED -> CLOSE_WAIT: "FIN | ACK"
+  CLOSE_WAIT -> LAST_ACK: "Close() | FIN"
+  LAST_ACK -> CLOSED: "ACK"
+}
+
+# --- CONNECTIONS ---
+ingress_flow.segment_in -> ingress_flow.validation: "raw_pkt"
+ingress_flow.validation -> ingress_flow.seq_check: "tcp_seg"
+ingress_flow.seq_check -> ingress_flow.buffer_ooo_logic: "seq > rcv_nxt"
+ingress_flow.seq_check -> memory_layout.recv_buf: "seq == rcv_nxt"
+ingress_flow.buffer_ooo_logic -> memory_layout.ooo_manager: "segment_t"
+memory_layout.ooo_manager -> ingress_flow.drain_ooo: "hole_filled"
+ingress_flow.drain_ooo -> memory_layout.recv_buf: "contiguous_data"
+
+tcp_pcb -> tcp_fsm: "updates state"
+
+# --- LEGEND ---
+legend: {
+  shape: rectangle
+  direction: down
+  label: "Diagram Keys"
+  
+  k1: "Blue: Normal Path" {
+    style.stroke: blue
+  }
+  k2: "Dashed: OOO Path" {
+    style.stroke-dash: 3
+  }
+  k3: "Green: Commitment" {
+    style.fill: "#D5F5E3"
+  }
+}
+legend.near: bottom-right

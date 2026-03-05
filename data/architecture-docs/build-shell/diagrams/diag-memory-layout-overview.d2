@@ -1,0 +1,294 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Shell Process Memory Layout & Fork() Mechanics
+  Fork copies the virtual address space — COW (Copy-On-Write) defers physical page allocation until the first write.
+| {
+  near: top-center
+  style.font-size: 18
+}
+
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  parent_shell: "Parent Shell Process (PID 1234)" {
+    direction: down
+    style.fill: "#F5F5F5"
+    
+    mem_parent: "Virtual Address Space (mm_struct)" {
+      direction: down
+      
+      code_seg: "Text Segment (read-only) [0x00400000]" {
+        shape: rectangle
+        code: |'c
+          // Executable code (shared)
+          int main(int argc, char** argv) { ... }
+          void execute_ast(ASTNode* node) { ... }
+          void parse_input(Parser* p) { ... }
+        '|
+        width: 350
+        style.fill: "#E8F5E9"
+        style.stroke: "#2E7D32"
+      }
+
+      data_seg: {
+        label: "Data Segment (Initialized/BSS) [0x00600000]"
+        shape: sql_table
+        f0: "0x00 | char*     | shell_name        // 'bash'"
+        f1: "0x08 | int       | last_exit_status"
+        f2: "0x0C | bool      | errexit_enabled"
+        f3: "0x10 | pid_t     | shell_pgid"
+        f4: "0x14 | jmp_buf   | loop_break_env    // for longjmp"
+        sz: "Total Size: ~124 KB"
+        style.fill: "#E3F2FD"
+        style.stroke: "#1565C0"
+      }
+
+      heap_seg: "Heap (Dynamic Allocation) [grows ↑]" {
+        direction: down
+        style.fill: "#FFF3E0"
+        style.stroke: "#E65100"
+        
+        ast_store: {
+          label: "AST Node Pool (malloc'd)"
+          shape: rectangle
+          code: |'c
+            struct ASTNode {
+              NodeType type;
+              char** argv;
+              struct ASTNode* next;
+            };
+          '|
+          width: 320
+        }
+      }
+
+      stack_seg: "Stack (Function Frames) [grows ↓]" {
+        direction: down
+        style.fill: "#F3E5F5"
+        style.stroke: "#7B1FA2"
+        
+        main_frame: {
+          shape: sql_table
+          label: "main() stack frame"
+          f0: "0x7FFFF0 | RIP | ret to libc_start"
+          f1: "0x7FFFF8 | RBP | saved frame ptr"
+          f2: "0x7FF000 | loc | char* cmd_line"
+          f3: "0x7FF008 | loc | int is_interactive"
+        }
+        
+        exec_frame: {
+          shape: sql_table
+          label: "execute_ast() stack frame"
+          f0: "0x7FEE00 | RIP | ret to main+0x42"
+          f1: "0x7FEE08 | RBP | saved frame ptr"
+          f2: "0x7FEE10 | arg | ASTNode* current"
+        }
+      }
+    }
+  }
+}
+
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  fork_logic: "Kernel fork() syscall" {
+    shape: rectangle
+    width: 200
+    style.fill: "#FFEBEE"
+    style.stroke: "#C62828"
+    style.bold: true
+    label: "sys_fork()"
+  }
+}
+
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  child_shell: "Child Process / Subshell (PID 1235)" {
+    direction: down
+    style.fill: "#F5F5F5"
+
+    mem_child: "Virtual Address Space (COW Copy)" {
+      direction: down
+      
+      code_seg_c: "Text Segment (Shared Physical Pages)" {
+        shape: rectangle
+        code: |'c
+          // IDENTICAL to parent
+          // Shared via COW (read-only)
+          // No physical copy allocated
+        '|
+        width: 350
+        style.fill: "#E8F5E9"
+        style.stroke: "#2E7D32"
+        style.stroke-dash: 3
+      }
+
+      data_seg_c: {
+        label: "Data Segment (Private on Write)"
+        shape: sql_table
+        f0: "0x00 | char*     | shell_name"
+        f1: "0x08 | int       | last_exit_status"
+        f2: "0x0C | bool      | errexit_enabled"
+        f3: "0x10 | pid_t     | shell_pgid        // UPDATED to 1235"
+        f4: "0x14 | jmp_buf   | loop_break_env"
+        note: "Note: pgid write triggers physical copy"
+        style.fill: "#E3F2FD"
+        style.stroke: "#1565C0"
+      }
+
+      heap_seg_c: "Heap (COW Pages)" {
+        direction: down
+        style.fill: "#FFF3E0"
+        style.stroke: "#E65100"
+        
+        ast_copy: {
+          label: "AST Data (Lazy Allocation)"
+          shape: rectangle
+          code: |'c
+            // Initially points to same physical pages
+            // as PID 1234. If child modifies AST, 
+            // a page fault occurs.
+          '|
+          width: 320
+        }
+      }
+
+      stack_seg_c: "Stack (COW Copy)" {
+        direction: down
+        style.fill: "#F3E5F5"
+        style.stroke: "#7B1FA2"
+        
+        child_frame: {
+          shape: sql_table
+          label: "fork() return frame"
+          f0: "0x7FEE10 | RAX | 0 (return val for child)"
+          note: "Parent RAX would be 1235"
+        }
+      }
+    }
+  }
+}
+
+kernel_space: "Kernel State (task_struct / PCB)" {
+  direction: right
+  style.fill: "#ECEFF1"
+  style.stroke: "#546E7A"
+
+  fd_tables: "File Descriptor Tables" {
+    direction: down
+    p_fds: {
+      shape: sql_table
+      label: "PID 1234 FD Table"
+      f0: "0 | stdin  | → file[tty0]"
+      f1: "1 | stdout | → file[tty0]"
+      f2: "2 | stderr | → file[tty0]"
+      f3: "3 | pipe_in| → file[pipe:1]"
+    }
+    c_fds: {
+      shape: sql_table
+      label: "PID 1235 FD Table"
+      f0: "0 | stdin  | → file[tty0]"
+      f1: "1 | stdout | → file[tty0]"
+      f2: "2 | stderr | → file[tty0]"
+      f3: "3 | pipe_in| → file[pipe:1]"
+      note: "FD Table is copied, but FILE OBJECTS are shared"
+    }
+  }
+
+  process_ctrl: "Process Control Blocks" {
+    direction: down
+    p_pcb: {
+      shape: sql_table
+      label: "task_struct (PID 1234)"
+      f0: "pid   | 1234"
+      f1: "ppid  | 1000"
+      f2: "state | TASK_RUNNING"
+      f3: "cwd   | /home/user"
+    }
+    c_pcb: {
+      shape: sql_table
+      label: "task_struct (PID 1235)"
+      f0: "pid   | 1235"
+      f1: "ppid  | 1234"
+      f2: "state | TASK_RUNNING"
+      f3: "cwd   | /home/user (copy)"
+    }
+  }
+}
+
+# Connections
+row1.parent_shell.mem_parent -> row2.fork_logic: "syscall"
+row2.fork_logic -> row3.child_shell.mem_child: "clone address space"
+
+# Legends and isolation maps
+isolation_map: "Subshell Isolation Map" {
+  direction: down
+  iso_table: {
+    shape: sql_table
+    label: "What is Shared vs Private"
+    r1: "Virtual Memory | Private (COW)  | Changes don't leak"
+    r2: "Environment    | Private (COW)  | export x=1 only local"
+    r3: "Work Directory | Private (PCB)  | cd only affects child"
+    r4: "File Offsets   | SHARED (File)  | lseek affects both"
+    r5: "Signal Mask    | Private (PCB)  | Copied, then independent"
+    r6: "Global Vars    | Private (Data) | Internal shell state"
+  }
+  style.fill: "#E8EAF6"
+  style.stroke: "#3F51B5"
+}
+isolation_map.near: bottom-left
+
+cow_explanation: "Copy-on-Write Logic" {
+  direction: down
+  code_block: {
+    label: "Kernel Page Fault Handler (mm/memory.c)"
+    code: |'c
+      void do_cow_fault(struct vm_fault *vmf) {
+        old_page = vmf->page;
+        new_page = alloc_page(GFP_HIGHUSER_MOVABLE);
+        copy_user_highpage(new_page, old_page, ...);
+        // Break link to shared physical page
+        set_pte_at(vmf->vma->vm_mm, vmf->address, ...);
+      }
+    '|
+    width: 380
+  }
+  trigger_table: {
+    shape: sql_table
+    label: "Trigger Scenarios"
+    t1: "read PATH      | Read access  | NO fault (shared)"
+    t2: "PATH=/usr/bin | Write access | YES (page copy)"
+    t3: "cd /tmp       | PCB update   | NO (kernel write)"
+    t4: "malloc(1024)  | Heap expansion| YES (new page)"
+  }
+  style.fill: "#FFFDE7"
+  style.stroke: "#F9A825"
+}
+cow_explanation.near: bottom-right
+
+fork_costs: "Immediate Fork Costs" {
+  shape: sql_table
+  label: "Creation Overhead"
+  c1: "task_struct   | ~9 KB        | New allocation"
+  c2: "Kernel Stack  | ~8 KB        | New allocation"
+  c3: "Page Tables   | ~4 KB/4 MB   | Pointer copies"
+  c4: "FD Table      | ~512 bytes   | Bit-copy"
+  total: "Total Cost: ~18 KB physical memory"
+  style.fill: "#FBE9E7"
+  style.stroke: "#D84315"
+}
+fork_costs.near: bottom-center

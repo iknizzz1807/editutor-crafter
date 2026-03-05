@@ -1,0 +1,267 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- HEADER SECTION ---
+header: {
+  label: |'md
+    # File Descriptor Table Evolution: `cmd1 | cmd2`
+    ### Tracing Process Isolation, Resource Inheritance, and FD Redirection
+  '|
+}
+header.near: top-center
+
+# --- LEGEND ---
+legend: {
+  shape: sql_table
+  label: "FD Reference Legend"
+  stdin: "0 | STDIN  | Standard Input (Default: Terminal)"
+  stdout: "1 | STDOUT | Standard Output (Default: Terminal)"
+  stderr: "2 | STDERR | Standard Error (Default: Terminal)"
+  pipe_r: "3 | PIPE_R | Pipe Read End (Created via pipe())"
+  pipe_w: "4 | PIPE_W | Pipe Write End (Created via pipe())"
+}
+legend.near: top-right
+
+# --- STAGE 0: INITIAL ---
+row0: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  stage0_info: {
+    label: "Stage 0: Parent Shell State"
+    explanation: |'md
+      **Context:** Shell is idle, waiting for command input.
+      - FDs 0, 1, 2 point to the controlling terminal (`/dev/tty`).
+      - No inter-process communication (IPC) channels allocated.
+    '|
+  }
+
+  shell_initial: {
+    shape: sql_table
+    label: "Shell Process (PID: 1000)"
+    f0: "0 | STDIN  | /dev/tty"
+    f1: "1 | STDOUT | /dev/tty"
+    f2: "2 | STDERR | /dev/tty"
+    note: "Status: Awaiting pipe() syscall"
+  }
+}
+
+# --- STAGE 1: PIPE CREATION ---
+row1: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  stage1_info: {
+    label: "Stage 1: Resource Allocation"
+    explanation: |'md
+      **Action:** `pipe(pipefd)` called by Shell.
+      - Kernel allocates an internal buffer.
+      - Returns two new FDs in the Shell's table.
+      - **FD 3:** Read end of the buffer.
+      - **FD 4:** Write end of the buffer.
+    '|
+  }
+
+  shell_after_pipe: {
+    shape: sql_table
+    label: "Shell Process (PID: 1000)"
+    f0: "0 | STDIN  | /dev/tty"
+    f1: "1 | STDOUT | /dev/tty"
+    f2: "2 | STDERR | /dev/tty"
+    f3: "3 | PIPE_R | [Kernel Buffer Read]"
+    f4: "4 | PIPE_W | [Kernel Buffer Write]"
+  }
+}
+
+# --- STAGE 2: FORK CHILD 1 ---
+row2: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  stage2_info: {
+    label: "Stage 2: Process Multiplication (Writer)"
+    explanation: |'md
+      **Action:** `fork()` creates Child 1.
+      - Child 1 inherits a *complete copy* of Shell's FD table.
+      - Both Shell and Child 1 now hold references to the pipe.
+      - **Risk:** If references aren't closed, EOF will never be sent.
+    '|
+  }
+
+  shell_mid: {
+    shape: sql_table
+    label: "Shell (PID: 1000)"
+    f0: "0 | STDIN  | /dev/tty"
+    f1: "1 | STDOUT | /dev/tty"
+    f2: "2 | STDERR | /dev/tty"
+    f3: "3 | PIPE_R | [Buffer]"
+    f4: "4 | PIPE_W | [Buffer]"
+  }
+
+  child1_init: {
+    shape: sql_table
+    label: "Child 1 (PID: 1001) - Writer"
+    f0: "0 | STDIN  | /dev/tty"
+    f1: "1 | STDOUT | /dev/tty"
+    f2: "2 | STDERR | /dev/tty"
+    f3: "3 | PIPE_R | [Buffer]"
+    f4: "4 | PIPE_W | [Buffer]"
+    style.stroke: "#4CAF50"
+  }
+}
+
+# --- STAGE 3: CHILD 1 REDIRECTION ---
+row3: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  stage3_info: {
+    label: "Stage 3: FD Rebinding (Writer)"
+    explanation: |'md
+      **Action:** Child 1 prepares for `exec(cmd1)`.
+      - `dup2(4, 1)`: Overwrites FD 1 with FD 4.
+      - `close(3)` & `close(4)`: Removes redundant pipe refs.
+      - **Result:** cmd1's stdout now feeds directly into the pipe.
+    '|
+  }
+
+  child1_ready: {
+    shape: sql_table
+    label: "Child 1 (PID: 1001) - Ready"
+    f0: "0 | STDIN  | /dev/tty"
+    f1: "1 | STDOUT | -> [PIPE WRITE]"
+    f2: "2 | STDERR | /dev/tty"
+    f3: "3 | CLOSED |"
+    f4: "4 | CLOSED |"
+    style.stroke: "#4CAF50"
+  }
+}
+
+# --- STAGE 4: FORK CHILD 2 & LEAK AWARENESS ---
+row4: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  stage4_info: {
+    label: "Stage 4: Reader Setup & Leak Warning"
+    explanation: |'md
+      **Action:** `fork()` creates Child 2.
+      - Child 2 also inherits FDs 3 and 4 from the Parent Shell.
+      - **CRITICAL:** If Child 2 forgets to `close(4)`, it holds an open write end.
+      - **The Hang:** Even if cmd1 finishes, the pipe stays "open" because Child 2 could theoretically write to it. cmd2 hangs waiting for EOF.
+    '|
+  }
+
+  child2_leaked: {
+    shape: sql_table
+    label: "Child 2 (PID: 1002) - Reader"
+    f0: "0 | STDIN  | /dev/tty"
+    f1: "1 | STDOUT | /dev/tty"
+    f2: "2 | STDERR | /dev/tty"
+    f3: "3 | PIPE_R | [Buffer]"
+    f4: "4 | PIPE_W | [Buffer] <-- LEAK!"
+    style.stroke: "#F44336"
+  }
+}
+
+# --- STAGE 5: FINAL CLEANUP & EXEC ---
+row5: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  stage5_info: {
+    label: "Stage 5: Final Steady State"
+    explanation: |'md
+      **Action:** Shell closes its pipe FDs. Child 2 rebinds stdin.
+      - Shell: `close(3)`, `close(4)`.
+      - Child 2: `dup2(3, 0)`, `close(3)`, `close(4)`.
+      - **Success:** Only Child 1 can write; Only Child 2 can read.
+    '|
+  }
+
+  shell_final: {
+    shape: sql_table
+    label: "Shell (PID: 1000)"
+    f0: "0 | STDIN  | /dev/tty"
+    f1: "1 | STDOUT | /dev/tty"
+    f2: "2 | STDERR | /dev/tty"
+    f3: "3 | CLOSED |"
+    f4: "4 | CLOSED |"
+  }
+
+  child1_exec: {
+    shape: sql_table
+    label: "Process: cmd1"
+    f0: "0 | STDIN  | /dev/tty"
+    f1: "1 | STDOUT | -> PIPE_W"
+    f2: "2 | STDERR | /dev/tty"
+  }
+
+  child2_exec: {
+    shape: sql_table
+    label: "Process: cmd2"
+    f0: "0 | STDIN  | <- PIPE_R"
+    f1: "1 | STDOUT | /dev/tty"
+    f2: "2 | STDERR | /dev/tty"
+  }
+}
+
+# --- CODE COMPARISON ---
+row6: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  correct_impl: {
+    label: "Implementation (shell.c)"
+    code: |'c
+      int p[2];
+      pipe(p); 
+      if (fork() == 0) { // Writer
+        dup2(p[1], 1);
+        close(p[0]); close(p[1]);
+        execvp(cmd1, args1);
+      }
+      if (fork() == 0) { // Reader
+        dup2(p[0], 0);
+        close(p[0]); close(p[1]);
+        execvp(cmd2, args2);
+      }
+      close(p[0]); close(p[1]); // Parent Cleanup
+      wait(NULL); wait(NULL);
+    '|
+  }
+
+  pitfall: {
+    label: "The 'Broken Pipe' Pitfall"
+    note: |'md
+      If the **Parent Shell** forgets to `close(p[1])`:
+      1. `cmd1` finishes and exits.
+      2. Kernel checks "Who has Write Ends open?"
+      3. It sees the **Parent Shell** still has `p[1]`.
+      4. It does **not** send EOF to `cmd2`.
+      5. `cmd2` blocks on `read()` forever.
+    '|
+    style.stroke: "#F44336"
+    style.fill: "#FFEBEE"
+  }
+}
+
+# --- CONNECTIONS ---
+row0 -> row1: "pipe()"
+row1 -> row2: "fork() writer"
+row2 -> row3: "dup2() + close()"
+row3 -> row4: "fork() reader"
+row4 -> row5: "shell close() + child2 dup2()"
+row5 -> row6: "Code Pattern"

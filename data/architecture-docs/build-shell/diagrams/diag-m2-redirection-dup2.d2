@@ -1,0 +1,197 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Redirection via dup2(): The Order Matters
+  `> file 2>&1` vs `2>&1 > file`
+| {near: top-center}
+row_correct: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  correct: {
+    direction: down
+    label: "CORRECT: `cmd > file 2>&1`"
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    c_step0: {
+      label: "Step 0: Initial State"
+      width: 280
+      code: |'c
+        // Process file descriptor table
+        fd 0 (stdin)  → terminal
+        fd 1 (stdout) → terminal
+        fd 2 (stderr) → terminal
+      '|
+    }
+    c_step1: {
+      label: "Step 1: open(file, O_WRONLY|O_CREAT)"
+      width: 280
+      code: |'c
+        // Kernel allocates next free fd
+        int fd = open("file", ...);
+        // fd = 3 (lowest available)
+        fd 0 → terminal
+        fd 1 → terminal
+        fd 2 → terminal
+        fd 3 → "file"  ← NEW
+      '|
+    }
+    c_step2: {
+      label: "Step 2: dup2(3, 1)"
+      width: 280
+      code: |'c
+        // Atomically close fd 1,
+        // then copy fd 3 → fd 1
+        dup2(fd, STDOUT_FILENO);
+        fd 0 → terminal
+        fd 1 → "file"  ← REDIRECTED
+        fd 2 → terminal
+        fd 3 → "file"
+      '|
+    }
+    c_step3: {
+      label: "Step 3: dup2(1, 2)"
+      width: 280
+      code: |'c
+        // Copy current fd 1 → fd 2
+        dup2(STDOUT_FILENO, STDERR_FILENO);
+        fd 0 → terminal
+        fd 1 → "file"
+        fd 2 → "file"  ← REDIRECTED
+        fd 3 → "file"
+      '|
+    }
+    c_step4: {
+      label: "Step 4: close(3)"
+      width: 280
+      code: |'c
+        // Clean up temporary fd
+        close(fd);
+        fd 0 → terminal
+        fd 1 → "file"  ✓
+        fd 2 → "file"  ✓
+        // fd 3 closed
+        // Both stdout/stderr → file!
+      '|
+    }
+    c_result: {
+      label: "Result: stdout + stderr → file"
+      shape: diamond
+      style.fill: "#C8E6C9"
+      style.stroke: "#2E7D32"
+      style.font-color: "#1B5E20"
+    }
+    c_step0 -> c_step1: "open()"
+    c_step1 -> c_step2: "dup2(3,1)"
+    c_step2 -> c_step3: "dup2(1,2)"
+    c_step3 -> c_step4: "close(3)"
+    c_step4 -> c_result: "exec cmd"
+  }
+}
+row_wrong: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  wrong: {
+    direction: down
+    label: "WRONG: `cmd 2>&1 > file`"
+    style.fill: "#FFEBEE"
+    style.stroke: "#C62828"
+    w_step0: {
+      label: "Step 0: Initial State"
+      width: 280
+      code: |'c
+        // Process file descriptor table
+        fd 0 (stdin)  → terminal
+        fd 1 (stdout) → terminal  ← REMEMBER THIS
+        fd 2 (stderr) → terminal
+      '|
+    }
+    w_step1: {
+      label: "Step 1: dup2(1, 2)"
+      width: 280
+      code: |'c
+        // Copy fd 1 → fd 2
+        // fd 1 STILL points to terminal!
+        dup2(STDOUT_FILENO, STDERR_FILENO);
+        fd 0 → terminal
+        fd 1 → terminal  ← STILL TERMINAL
+        fd 2 → terminal  ← same as fd 1
+        // stderr now points to WHERE
+        // stdout CURRENTLY points
+      '|
+    }
+    w_step2: {
+      label: "Step 2: open(file)"
+      width: 280
+      code: |'c
+        int fd = open("file", ...);
+        // fd = 3
+        fd 0 → terminal
+        fd 1 → terminal
+        fd 2 → terminal
+        fd 3 → "file"
+      '|
+    }
+    w_step3: {
+      label: "Step 3: dup2(3, 1)"
+      width: 280
+      code: |'c
+        dup2(fd, STDOUT_FILENO);
+        fd 0 → terminal
+        fd 1 → "file"   ← NOW redirected
+        fd 2 → terminal  ← UNCHANGED!
+        fd 3 → "file"
+        // stderr still → terminal!
+      '|
+    }
+    w_step4: {
+      label: "Step 4: close(3)"
+      width: 280
+      code: |'c
+        close(fd);
+        fd 0 → terminal
+        fd 1 → "file"
+        fd 2 → terminal  ← STILL TERMINAL!
+        // fd 3 closed
+        // Only stdout → file
+        // stderr → terminal (BUG!)
+      '|
+    }
+    w_result: {
+      label: "Result: stdout → file, stderr → terminal"
+      shape: diamond
+      style.fill: "#FFCDD2"
+      style.stroke: "#C62828"
+      style.font-color: "#B71C1C"
+    }
+    w_step0 -> w_step1: "dup2(1,2)"
+    w_step1 -> w_step2: "open()"
+    w_step2 -> w_step3: "dup2(3,1)"
+    w_step3 -> w_step4: "close(3)"
+    w_step4 -> w_result: "exec cmd"
+  }
+}
+legend: {
+  near: bottom-center
+  label: "Key Insight"
+  width: 600
+  insight: |md
+    **`2>&1` copies WHERE fd 1 points NOW, not WHERE it WILL point.**
+    - `2>&1` means: "make fd 2 point to the same thing fd 1 currently points to"
+    - It does NOT create a permanent link — it's a one-time copy
+    - Process redirections **left-to-right** to avoid this trap
+  |
+  style.fill: "#FFF8E1"
+  style.stroke: "#F9A825"
+  shape: callout
+}
+row_correct -> row_wrong: "Compare with wrong order" {
+  style.stroke-dash: 4
+  style.stroke: "#9E9E9E"
+}

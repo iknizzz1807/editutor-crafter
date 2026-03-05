@@ -1,0 +1,256 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Here-Document Implementation
+  `cat <<EOF` → parser → executor → pipe → dup2 → exec
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  parser: {
+    direction: down
+    label: "1. PARSER PHASE"
+    parse_input: {
+      label: "Parse Command Line"
+      width: 280
+      code: |'bash
+        cat <<EOF
+        hello
+        world
+        EOF
+      '|
+    }
+    detect_heredoc: {
+      label: "Detect << operator"
+      width: 280
+      code: |'c
+        // lexer sees << followed by delimiter
+        if (strcmp(token, "<<") == 0) {
+          delimiter = next_token();  // "EOF"
+          state = HEREDOC_PENDING;
+        }
+      '|
+    }
+    read_content: {
+      label: "Read Until Delimiter"
+      width: 280
+      code: |'c
+        while (fgets(line, fp)) {
+          if (strcmp(line, delimiter) == 0)
+            break;
+          strcat(content, line);
+        }
+        // content = "hello\nworld\n"
+      '|
+    }
+    store_heredoc: {
+      shape: sql_table
+      label: "HereDoc struct (parser.c)"
+      f0: "0x00 | char*      | delimiter"
+      f1: "0x08 | char*      | content"
+      f2: "0x10 | bool       | expand_vars"
+      f3: "0x18 | bool       | strip_tabs"
+      sz: "Total: 32 bytes"
+    }
+    parse_input -> detect_heredoc: "tokenize"
+    detect_heredoc -> read_content: "delimiter found"
+    read_content -> store_heredoc: "content stored"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  executor: {
+    direction: down
+    label: "2. EXECUTOR PHASE"
+    create_pipe: {
+      label: "Create Pipe"
+      width: 280
+      code: |'c
+        int pipefd[2];
+        pipe(pipefd);
+        // pipefd[0] = read end (fd 3)
+        // pipefd[1] = write end (fd 4)
+      '|
+    }
+    write_content: {
+      label: "Write Content to Pipe"
+      width: 280
+      code: |'c
+        // Parent writes BEFORE fork
+        write(pipefd[1], content, len);
+        close(pipefd[1]);  // CRITICAL: close write end
+      '|
+    }
+    fork_child: {
+      label: "Fork Child Process"
+      width: 280
+      code: |'c
+        pid_t pid = fork();
+        if (pid == 0) {
+          // CHILD: set up stdin
+          dup2(pipefd[0], STDIN_FILENO);
+          close(pipefd[0]);
+          execvp("cat", argv);
+          _exit(127);
+        }
+      '|
+    }
+    create_pipe -> write_content: "pipefd[2]"
+    write_content -> fork_child: "content in buffer"
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  fd_tables: {
+    direction: down
+    label: "3. FILE DESCRIPTOR TABLES"
+    parent_fds: {
+      shape: sql_table
+      label: "Parent FD Table"
+      fd0: "0 | stdin  | terminal"
+      fd1: "1 | stdout | terminal"
+      fd2: "2 | stderr | terminal"
+      fd3: "3 | pipe[0] | CLOSED after write"
+      fd4: "4 | pipe[1] | CLOSED after write"
+    }
+    child_fds: {
+      shape: sql_table
+      label: "Child FD Table (after dup2)"
+      cfd0: "0 | stdin  | pipe read end"
+      cfd1: "1 | stdout | terminal"
+      cfd2: "2 | stderr | terminal"
+      note: "pipe[0] closed after dup2"
+    }
+    parent_fds -> child_fds: "fork + dup2" {
+      style.stroke: blue
+      style.stroke-width: 2
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  data_flow: {
+    direction: down
+    label: "4. DATA FLOW"
+    pipe_buffer: {
+      shape: cylinder
+      label: "Kernel Pipe Buffer\n64KB (Linux default)"
+      style.fill: "#E8F5E9"
+    }
+    flow: {
+      direction: right
+      writer: {
+        label: "Parent\nwrite()"
+        shape: rectangle
+        style.fill: "#BBDEFB"
+      }
+      buffer: {
+        label: "Pipe Buffer\n\"hello\\nworld\\n\""
+        shape: rectangle
+        width: 150
+        style.fill: "#C8E6C9"
+      }
+      reader: {
+        label: "Child\ncat process\nread() from fd 0"
+        shape: rectangle
+        style.fill: "#BBDEFB"
+      }
+      writer -> buffer: "write(fd[1])"
+      buffer -> reader: "read(fd[0])"
+    }
+    pipe_buffer -> flow: "data stored here"
+  }
+}
+parser -> executor: "ASTNode with\nHereDoc* attached"
+executor -> fd_tables: "process state"
+fd_tables -> data_flow: "I/O configured"
+alternative: {
+  near: bottom-right
+  label: "ALTERNATIVE: Large Here-Docs"
+  style.fill: "#FFF3E0"
+  style.stroke: "#FF9800"
+  style.stroke-dash: 3
+  temp_file: {
+    label: "Temp File Approach"
+    width: 300
+    code: |'c
+      // For content > 64KB
+      int fd = mkstemp("/tmp/shXXXXXX");
+      write(fd, content, len);
+      lseek(fd, 0, SEEK_SET);
+      dup2(fd, STDIN_FILENO);
+      unlink(path);  // Delete when done
+    '|
+  }
+  memfd: {
+    label: "memfd_create (Linux)"
+    width: 300
+    code: |'c
+      // Better: no filesystem footprint
+      int fd = memfd_create("heredoc", 0);
+      write(fd, content, len);
+      lseek(fd, 0, SEEK_SET);
+      dup2(fd, STDIN_FILENO);
+    '|
+  }
+  temp_file -> memfd: "modern alternative"
+  comparison: {
+    shape: sql_table
+    label: "Approach Comparison"
+    pipe: "Pipe | 64KB limit | No cleanup | Secure"
+    temp: "Temp File | Unlimited | Cleanup needed | Visible in /tmp"
+    memfd: "memfd | Unlimited | Auto cleanup | Linux only"
+  }
+}
+critical: {
+  near: bottom-left
+  label: "CRITICAL DETAILS"
+  style.fill: "#FFEBEE"
+  style.stroke: "#F44336"
+  close_write: {
+    label: "Close Write End"
+    width: 280
+    code: |'c
+      // MUST close write end in parent
+      // OR child hangs on read()
+      close(pipefd[1]);
+    '|
+    style.fill: "#FFCDD2"
+  }
+  ordering: {
+    label: "Write Before Fork"
+    width: 280
+    code: |'c
+      // Write BEFORE fork for small content
+      // OR fork twice: writer + reader
+      write(pipefd[1], content, len);
+      close(pipefd[1]);
+      fork();  // Child only reads
+    '|
+    style.fill: "#FFCDD2"
+  }
+  expansion: {
+    label: "Variable Expansion Timing"
+    width: 280
+    code: |'c
+      // Expand BEFORE writing to pipe
+      if (heredoc->expand_vars) {
+        expanded = expand_vars(content);
+        write(pipefd[1], expanded, len);
+      }
+    '|
+    style.fill: "#FFCDD2"
+  }
+}

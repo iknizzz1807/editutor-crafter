@@ -1,0 +1,200 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: "SIGCHLD Handler Structure"
+  near: top-center
+  shape: text
+  style: {
+    font-size: 32
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  kernel: {
+    direction: down
+    label: "Kernel"
+    style.fill: "#E8E8E8"
+    style.stroke: "#666666"
+    child_exit: {
+      label: "Child Process\nTerminates"
+      shape: oval
+      style.fill: "#FFE4E1"
+      style.stroke: "#CD5C5C"
+    }
+    sigchld_delivery: {
+      label: "SIGCHLD\nDelivery"
+      shape: diamond
+      style.fill: "#FFFACD"
+      style.stroke: "#DAA520"
+    }
+  }
+  handler: {
+    direction: down
+    label: "Signal Handler\n(Async-Signal-Safe Only)"
+    style.fill: "#E6F3FF"
+    style.stroke: "#4169E1"
+    loop_start: {
+      label: "while (1)"
+      shape: diamond
+      style.fill: "#F0F8FF"
+    }
+    waitpid_call: {
+      label: "waitpid(-1, &status,\nWNOHANG | WUNTRACED)"
+      width: 280
+      code: |'c
+        // Non-blocking wait
+        // -1 = any child process
+        // WNOHANG = return immediately
+        // WUNTRACED = report stopped children
+      '|
+    }
+    check_result: {
+      label: "pid <= 0?"
+      shape: diamond
+      style.fill: "#FFFACD"
+    }
+    write_pipe: {
+      label: "write(pipe[1], &c, 1)"
+      width: 260
+      code: |'c
+        // ASYNC-SIGNAL-SAFE
+        // Wake up main loop
+        // Single byte notification
+      '|
+      style.fill: "#90EE90"
+      style.stroke: "#228B22"
+    }
+    loop_end: {
+      label: "break"
+      shape: oval
+      style.fill: "#D3D3D3"
+    }
+  }
+  self_pipe: {
+    direction: down
+    label: "Self-Pipe"
+    style.fill: "#FFF8DC"
+    style.stroke: "#DAA520"
+    pipe_write: {
+      label: "pipe[1]\nWrite End"
+      shape: parallelogram
+      style.fill: "#98FB98"
+    }
+    pipe_buffer: {
+      label: "64KB\nKernel Buffer"
+      shape: cylinder
+      style.fill: "#F5DEB3"
+    }
+    pipe_read: {
+      label: "pipe[0]\nRead End"
+      shape: parallelogram
+      style.fill: "#87CEEB"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  main_loop: {
+    direction: down
+    label: "Main Loop\n(Safe Context)"
+    style.fill: "#F0FFF0"
+    style.stroke: "#228B22"
+    select_call: {
+      label: "select() on\npipe[0] + stdin"
+      width: 200
+      code: |'c
+        FD_SET(pipe[0], &fds);
+        FD_SET(STDIN, &fds);
+        select(maxfd+1, &fds, ...);
+      '|
+    }
+    read_pipe: {
+      label: "read(pipe[0], buf, N)"
+      width: 200
+      code: |'c
+        // Drain pipe
+        // Now in safe context
+      '|
+    }
+    reap_children: {
+      label: "reap_children()"
+      width: 240
+      code: |'c
+        // CAN use printf, malloc
+        // Update job table
+        // Report completed jobs
+      '|
+      style.fill: "#90EE90"
+    }
+  }
+  job_table: {
+    direction: down
+    label: "Job Table"
+    shape: sql_table
+    style.fill: "#FFFACD"
+    job1: "int | job_id | Job identifier"
+    job2: "pid_t | pgid | Process group"
+    job3: "enum | state | RUNNING|STOPPED|DONE"
+    job4: "char* | command | Command string"
+    job5: "bool | needs_report | Notify at prompt"
+  }
+}
+kernel.child_exit -> kernel.sigchld_delivery: "exit(N)"
+kernel.sigchld_delivery -> handler.loop_start: "interrupt"
+handler.loop_start -> handler.waitpid_call
+handler.waitpid_call -> handler.check_result
+handler.check_result -> handler.write_pipe: "pid > 0\nchild found"
+handler.write_pipe -> handler.loop_start: "continue\nloop"
+handler.check_result -> handler.loop_end: "pid <= 0\nno more"
+handler.write_pipe -> self_pipe.pipe_write: "byte"
+self_pipe.pipe_write -> self_pipe.pipe_buffer
+self_pipe.pipe_buffer -> self_pipe.pipe_read
+self_pipe.pipe_read -> main_loop.select_call: "wakes"
+main_loop.select_call -> main_loop.read_pipe: "FD_ISSET"
+main_loop.read_pipe -> main_loop.reap_children
+main_loop.reap_children -> job_table: "update"
+legend: {
+  near: bottom-right
+  label: "Legend"
+  style.fill: "#F5F5F5"
+  style.stroke: "#A9A9A9"
+  safe: {
+    label: "Async-Signal-Safe\n(write, _exit, etc.)"
+    style.fill: "#90EE90"
+    style.stroke: "#228B22"
+  }
+  unsafe: {
+    label: "NOT Safe in Handler\n(printf, malloc, etc.)"
+    style.fill: "#FFB6C1"
+    style.stroke: "#DC143C"
+  }
+}
+critical_note: {
+  near: bottom-center
+  label: |md
+    **Critical Rules:**
+    1. Handler MUST loop until `waitpid()` returns 0 (multiple children may exit per signal)
+    2. Only async-signal-safe functions in handler (write, NOT printf)
+    3. All complex work deferred to main loop via self-pipe
+    4. Block SIGCHLD when modifying job table
+  |
+  shape: rectangle
+  width: 500
+  style.fill: "#FFFACD"
+  style.stroke: "#DAA520"
+}

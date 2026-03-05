@@ -1,0 +1,252 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- ROOT LEVEL CONTAINERS ---
+
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  user_input: "1. User Input" {
+    direction: down
+    user_actor: {
+      shape: person
+      label: "User"
+    }
+    action: "Keyboard Action" {
+      label: "Press Ctrl+Z"
+      width: 180
+      code: |'c
+        // Hardware sends scan code
+        // TTY line discipline 
+        // detects ISIG and V_SUSP
+      '|
+    }
+    user_actor -> action: "INT 0x21"
+  }
+
+  terminal_driver: "2. Terminal Driver" {
+    direction: down
+    driver: {
+      shape: class
+      label: "tty_driver (kernel/tty.c)"
+      -tty: "struct tty_struct"
+      -fg_pgid: "int"
+      +receive_char(c): "void"
+      +lookup_fg_pgrp(): "pid_t"
+      +send_signal(pgid, sig): "void"
+    }
+    dispatch: "Signal Dispatch" {
+      label: "SIGTSTP Logic"
+      width: 280
+      code: |'c
+        pgid = tty->foreground_pgrp;
+        if (pgid > 0) {
+          kill_pgrp(pgid, SIGTSTP, 1);
+        }
+      '|
+    }
+    driver -> dispatch: "match SUSP"
+  }
+}
+
+row1.user_input.action -> row1.terminal_driver.driver: "char 0x1A"
+
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  fg_job: "3. Foreground Job (PGID 12345)" {
+    direction: down
+    pipeline: "Pipeline Layout" {
+      p1: "cat file" {
+        shape: rectangle
+        style.fill: "#B6DDF6"
+      }
+      p2: "grep foo" {
+        shape: rectangle
+        style.fill: "#B6DDF6"
+      }
+      p1 -> p2: "pipe"
+    }
+    transition: "State Transition" {
+      label: "Stop Request"
+      width: 320
+      code: |'c
+        // Kernel puts process into
+        // TASK_STOPPED. Signal 20
+        // (SIGTSTP) default action
+        // occurs in schedule().
+      '|
+    }
+    pipeline -> transition: "SIGTSTP"
+  }
+
+  kernel_notification: "4. Kernel Signal to Shell" {
+    direction: down
+    sigchld_emit: "SIGCHLD Generation" {
+      label: "do_notify_parent"
+      width: 280
+      code: |'c
+        // Shell (PID 999) is parent
+        siginfo.si_signo = SIGCHLD;
+        siginfo.si_code = CLD_STOPPED;
+        send_sig(SIGCHLD, shell_task);
+      '|
+    }
+  }
+}
+
+row1.terminal_driver.dispatch -> row2.fg_job.pipeline: "SIGTSTP | kill_pgrp"
+row2.fg_job.transition -> row2.kernel_notification.sigchld_emit: "state: STOPPED"
+
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  shell_signal: "5. Shell Signal Handler" {
+    direction: down
+    handler: {
+      shape: class
+      label: "sigchld_handler (sh.c)"
+      -signal_pipe: "int[2]"
+      +handler(sig): "void"
+    }
+    async_logic: "Self-Pipe Trick" {
+      label: "Async-Safe Logic"
+      width: 300
+      code: |'c
+        void sigchld_handler(int sig) {
+          int saved_errno = errno;
+          char msg = 'C';
+          write(self_pipe[1], &msg, 1);
+          errno = saved_errno;
+        }
+      '|
+    }
+    handler -> async_logic: "interrupt"
+  }
+
+  shell_reap: "6. Job Status Reap" {
+    direction: down
+    wait_call: "Status Collection" {
+      label: "waitpid(WUNTRACED)"
+      width: 320
+      code: |'c
+        pid = waitpid(-1, &status, 
+                WNOHANG | WUNTRACED);
+        if (WIFSTOPPED(status)) {
+          j = find_job(pid);
+          j->state = STOPPED;
+        }
+      '|
+    }
+  }
+}
+
+row2.kernel_notification.sigchld_emit -> row3.shell_signal.handler: "SIGCHLD"
+row3.shell_signal.async_logic -> row3.shell_reap.wait_call: "read() wakes"
+
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  tty_reclaim: "7. Terminal Control" {
+    direction: down
+    tc_logic: "tcsetpgrp reclaim" {
+      label: "Take Terminal"
+      width: 300
+      code: |'c
+        // Move TTY fg group 
+        // back to shell
+        tcsetpgrp(0, shell_pgid);
+        tcsetattr(0, TCSADRAIN, &orig);
+      '|
+    }
+  }
+
+  prompt_render: "8. User Feedback" {
+    direction: down
+    print_job: "Job Reporting" {
+      label: "printf status"
+      width: 280
+      code: |'c
+        printf("[%d]+ Stopped %s\n", 
+               j->id, j->cmd);
+        printf("$ ");
+      '|
+    }
+  }
+}
+
+row3.shell_reap.wait_call -> row4.tty_reclaim.tc_logic: "job stop detected"
+row4.tty_reclaim.tc_logic -> row4.prompt_render.print_job: "tty restored"
+
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  final_state: "Post Ctrl+Z System State" {
+    direction: right
+    style.fill: "#F1F1F1"
+    
+    job_table: {
+      shape: sql_table
+      label: "Shell Job Table"
+      j1: "ID: 1 | PGID: 12345 | State: STOPPED"
+      j2: "Cmd: 'cat file | grep foo'"
+      j3: "Foreground: false"
+    }
+    
+    proc_table: {
+      shape: sql_table
+      label: "Kernel Proc Table"
+      p1: "PID 100 | PGID 12345 | TASK_STOPPED"
+      p2: "PID 101 | PGID 12345 | TASK_STOPPED"
+      p3: "PID 999 | PGID 999   | TASK_RUNNING"
+    }
+
+    tty_state: {
+      shape: sql_table
+      label: "TTY State"
+      f1: "foreground_pgrp: 999 (Shell)"
+      f2: "tty_mode: CANONICAL"
+    }
+  }
+}
+
+row4.prompt_render.print_job -> row5.final_state: "Next input loop"
+
+# --- LEGEND AND METRICS ---
+
+legend: "Legend" {
+  near: bottom-left
+  direction: right
+  l1: "Running Process" { style.fill: "#B6DDF6" }
+  l2: "Stopped Process" { style.fill: "#FFE7CB" }
+  l3: "Kernel/Internal" { style.fill: "#E4DBFE" }
+}
+
+timing: "Latency Analysis" {
+  near: bottom-right
+  breakdown: {
+    shape: sql_table
+    label: "Trace Timing Breakdown"
+    t1: "Keyboard -> Driver | < 0.5ms"
+    t2: "Signal Propagation | < 1.0ms"
+    t3: "Process Cessation | < 1.0ms"
+    t4: "SIGCHLD -> Shell | < 0.2ms"
+    t5: "Waitpid/TTY Logic | < 1.0ms"
+    total: "Total Latency | ~3.7ms"
+  }
+}

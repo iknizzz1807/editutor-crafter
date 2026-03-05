@@ -1,0 +1,370 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Async-Signal-Safe Function Whitelist
+  **Which functions can be called from a signal handler without risking deadlock or corruption**
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  safe_col: {
+    direction: down
+    label: "SAFE TO CALL"
+    style.fill: "#e8f5e9"
+    style.stroke: "#2e7d32"
+    style.stroke-width: 2
+    safe_header: {
+      label: "✓ Async-Signal-Safe"
+      style.fill: "#2e7d32"
+      style.font-color: white
+      style.bold: true
+    }
+    safe_io: {
+      label: "I/O Operations"
+      shape: sql_table
+      f1: "write()"
+      f2: "read()"
+      f3: "pread()"
+      f4: "pwrite()"
+      f5: "send()"
+      f6: "recv()"
+      note: "Raw syscalls — no buffering"
+    }
+    safe_process: {
+      label: "Process Control"
+      shape: sql_table
+      f1: "_exit()"
+      f2: "fork()"
+      f3: "exec*()"
+      f4: "waitpid()"
+      f5: "wait()"
+      f6: "kill()"
+      f7: "getpid()"
+      f8: "getppid()"
+      note: "Process lifecycle primitives"
+    }
+    safe_signal: {
+      label: "Signal Operations"
+      shape: sql_table
+      f1: "signal()"
+      f2: "sigaction()"
+      f3: "sigprocmask()"
+      f4: "sigsuspend()"
+      f5: "sigpending()"
+      f6: "raise()"
+      note: "Signal mask manipulation"
+    }
+    safe_mem: {
+      label: "Memory/Data"
+      shape: sql_table
+      f1: "memcpy()"
+      f2: "memmove()"
+      f3: "strcpy()"
+      f4: "strncpy()"
+      f5: "strlen()"
+      f6: "strcat()"
+      note: "No heap allocation"
+    }
+    safe_other: {
+      label: "Other Safe Functions"
+      shape: sql_table
+      f1: "alarm()"
+      f2: "clock_gettime()"
+      f3: "gettimeofday()"
+      f4: "time()"
+      f5: "pause()"
+      f6: "select()"
+      f7: "pselect()"
+      f8: "poll()"
+      note: "Timing and multiplexing"
+    }
+    safe_atomic: {
+      label: "Atomic Flag Pattern"
+      width: 320
+      code: |'c
+        volatile sig_atomic_t flag = 0;
+        void handler(int sig) {
+            flag = 1;  // Safe: atomic store
+            write(STDOUT_FILENO, "!", 1);
+        }
+        // Main loop checks flag
+        if (flag) { handle_signal(); flag = 0; }
+      '|
+    }
+  }
+  unsafe_col: {
+    direction: down
+    label: "UNSAFE — DO NOT CALL"
+    style.fill: "#ffebee"
+    style.stroke: "#c62828"
+    style.stroke-width: 2
+    unsafe_header: {
+      label: "✗ NOT Async-Signal-Safe"
+      style.fill: "#c62828"
+      style.font-color: white
+      style.bold: true
+    }
+    unsafe_stdio: {
+      label: "stdio Functions"
+      shape: sql_table
+      f1: "printf()"
+      f2: "fprintf()"
+      f3: "sprintf()"
+      f4: "scanf()"
+      f5: "fgets()"
+      f6: "fputs()"
+      f7: "fopen()"
+      f8: "fclose()"
+      f9: "fflush()"
+      danger: "⚠ Use buffered I/O — lock deadlock"
+    }
+    unsafe_mem: {
+      label: "Memory Allocation"
+      shape: sql_table
+      f1: "malloc()"
+      f2: "free()"
+      f3: "realloc()"
+      f4: "calloc()"
+      f5: "mmap()"
+      f6: "munmap()"
+      f7: "brk()"
+      f8: "sbrk()"
+      danger: "⚠ Heap lock held by interrupted code"
+    }
+    unsafe_thread: {
+      label: "Threading"
+      shape: sql_table
+      f1: "pthread_*()"
+      f2: "mutex_lock()"
+      f3: "mutex_unlock()"
+      f4: "cond_wait()"
+      f5: "sem_wait()"
+      f6: "sem_post()"
+      danger: "⚠ All pthread functions unsafe"
+    }
+    unsafe_exit: {
+      label: "Cleanup Functions"
+      shape: sql_table
+      f1: "exit()"
+      f2: "atexit()"
+      f3: "abort()"
+      f4: "longjmp()"
+      danger: "⚠ exit() flushes buffers — deadlock"
+    }
+    unsafe_other: {
+      label: "Other Unsafe Functions"
+      shape: sql_table
+      f1: "strdup()"
+      f2: "strerror()"
+      f3: "perror()"
+      f4: "syslog()"
+      f5: "malloc_printf()"
+      f6: "getenv()"
+      danger: "⚠ May use static buffers or locks"
+    }
+    unsafe_example: {
+      label: "❌ DANGEROUS Pattern"
+      width: 320
+      code: |'c
+        // BUG: May deadlock!
+        void bad_handler(int sig) {
+            printf("Signal %d!\n", sig);  // LOCK HELD
+            // If main was in printf, its lock
+            // is already held → DEADLOCK
+        }
+      '|
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  deadlock_flow: {
+    direction: down
+    label: "Why stdio Causes Deadlock"
+    width: 400
+    step1: {
+      label: "1. Main thread calls printf()"
+      width: 380
+      code: |'c
+        printf("Processing: %d\n", x);
+        // → Acquires internal lock on stdout
+        // → LOCK_A is now held
+      '|
+    }
+    step2: {
+      label: "2. Signal arrives mid-printf"
+      width: 380
+      code: |'c
+        // Kernel interrupts printf execution
+        // → Main thread paused, LOCK_A still held
+        // → Signal handler invoked
+      '|
+    }
+    step3: {
+      label: "3. Handler calls printf()"
+      width: 380
+      code: |'c
+        void handler(int sig) {
+            printf("Signal!\n");  // BUG!
+            // → Tries to acquire LOCK_A
+            // → LOCK_A already held by main
+            // → DEADLOCK
+        }
+      '|
+    }
+    step4: {
+      label: "4. Result: Process hangs forever"
+      width: 380
+      code: |'c
+        // Main: waiting for handler to return
+        // Handler: waiting for LOCK_A
+        // Neither can proceed → HANG
+      '|
+      style.fill: "#ffcdd2"
+    }
+    step1 -> step2: "signal arrives"
+    step2 -> step3: "handler runs"
+    step3 -> step4: "lock conflict"
+  }
+  reentrancy_box: {
+    direction: down
+    label: "Reentrancy Explained"
+    style.fill: "#fff3e0"
+    style.stroke: "#e65100"
+    reentrancy_def: {
+      label: "Definition"
+      width: 380
+      code: |'c
+        // REENTRANT: Safe to call while already
+        // executing the same (or related) function
+        // Characteristics of reentrant functions:
+        // 1. No static/global mutable data
+        // 2. No locks or blocking operations
+        // 3. All data from parameters or stack
+        // 4. May modify caller-provided buffers
+      '|
+    }
+    reentrancy_example: {
+      label: "Reentrant vs Non-Reentrant"
+      width: 380
+      code: |'c
+        // REENTRANT (safe)
+        char* strcpy(char* dst, const char* src) {
+            char* d = dst;
+            while ((*d++ = *src++));
+            return dst;
+        }
+        // NON-REENTRANT (unsafe)
+        char* strerror(int errnum) {
+            static char buf[256];  // Shared buffer!
+            // If interrupted, buffer corrupted
+            snprintf(buf, sizeof(buf), "Error %d", errnum);
+            return buf;
+        }
+      '|
+    }
+    safe_pattern: {
+      label: "Self-Pipe Trick (Safe Pattern)"
+      width: 380
+      code: |'c
+        int signal_pipe[2];
+        void setup(void) {
+            pipe(signal_pipe);  // Create pipe
+        }
+        void handler(int sig) {
+            // SAFE: write() is async-signal-safe
+            char c = sig;
+            write(signal_pipe[1], &c, 1);
+        }
+        // Main loop: select() on pipe, handle
+        // in safe context where printf is OK
+      '|
+      style.fill: "#e8f5e9"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  exit_comparison: {
+    direction: down
+    label: "_exit() vs exit() — Critical Distinction"
+    width: 500
+    exit_table: {
+      shape: sql_table
+      label: "Exit Function Comparison"
+      f1: "Aspect | exit(int) | _exit(int)"
+      f2: "Buffer flush | Yes (stdio) | No"
+      f3: "atexit() handlers | Called | Not called"
+      f4: "tmpfile() cleanup | Yes | No"
+      f5: "Safe in child | NO | YES"
+      f6: "Use in handler | NO | YES"
+    }
+    exit_rule: {
+      label: "Rule for Shell Implementation"
+      width: 480
+      code: |'c
+        pid_t pid = fork();
+        if (pid == 0) {
+            // CHILD PROCESS
+            execvp(cmd, args);
+            // If exec fails:
+            perror("exec");  // Safe: writes to stderr
+            _exit(127);      // MUST use _exit, not exit!
+            // Why? exit() would flush parent's
+            // buffered stdout — duplicate output!
+        }
+      '|
+      style.fill: "#fff8e1"
+    }
+  }
+  quick_ref: {
+    direction: down
+    label: "Quick Reference"
+    style.fill: "#e3f2fd"
+    safe_checklist: {
+      label: "Handler Safety Checklist"
+      width: 320
+      code: |'c
+        // ✓ BEFORE writing a signal handler:
+        // 
+        // 1. Only use async-signal-safe functions
+        // 2. Set volatile sig_atomic_t flags
+        // 3. Use write() for output, not printf
+        // 4. Use _exit() to terminate, not exit
+        // 5. Don't modify shared data without
+        //    blocking signals first
+        // 6. Consider self-pipe for complex work
+        // 7. Test with stress-testing tools
+      '|
+    }
+    posix_ref: {
+      label: "POSIX Reference"
+      width: 320
+      code: |'c
+        // Full list in:
+        // man 7 signal-safety
+        // 
+        // POSIX.1-2008 defines ~140 safe functions
+        // When in doubt, check the man page
+      '|
+    }
+  }
+}
+legend: {
+  near: bottom-center
+  label: "Signal Handler Safety Rules"
+  safe_rule: "✓ SAFE: Raw syscalls, atomic ops, signal-specific functions"
+  unsafe_rule: "✗ UNSAFE: Buffered I/O, heap allocation, locks, atexit handlers"
+  style.fill: "#f5f5f5"
+  style.stroke: "#9e9e9e"
+}

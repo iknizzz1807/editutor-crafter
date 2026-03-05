@@ -1,0 +1,215 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: |md
+    # Why `cd` Must Be a Builtin
+    Child processes cannot modify parent state — `chdir()` only affects the calling process
+  |
+  near: top-center
+  shape: text
+}
+row_external: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  external_bad: {
+    label: "❌ External cd (Doesn't Work)"
+    style.stroke: "#cc0000"
+    style.stroke-width: 3
+    parent_before: {
+      label: "Shell Process (Parent)"
+      shape: rectangle
+      style.fill: "#e6f3ff"
+      style.stroke: "#0066cc"
+      parent_state_before: {
+        label: "State Before"
+        shape: sql_table
+        cwd_before: "cwd | /home/user"
+        pid_before: "pid | 1000"
+        env_before: "environ | {...}"
+      }
+    }
+    fork_arrow: {
+      label: "fork()"
+      shape: text
+    }
+    child_process: {
+      label: "Child Process"
+      shape: rectangle
+      style.fill: "#ffe6e6"
+      style.stroke: "#cc0000"
+      style.stroke-dash: 3
+      child_state: {
+        label: "Child State (Copy)"
+        shape: sql_table
+        cwd_child: "cwd | /home/user → /tmp"
+        pid_child: "pid | 1001"
+        note_child: "// chdir() affects ONLY child!"
+      }
+      exec_box: {
+        label: "execve(\"/bin/cd\", ...)"
+        shape: rectangle
+        style.fill: "#ffcccc"
+      }
+      exit_box: {
+        label: "exit(0)"
+        shape: rectangle
+        style.fill: "#ffcccc"
+      }
+    }
+    parent_after: {
+      label: "Shell Process (After Child Exits)"
+      shape: rectangle
+      style.fill: "#e6f3ff"
+      style.stroke: "#0066cc"
+      parent_state_after: {
+        label: "State After"
+        shape: sql_table
+        cwd_after: "cwd | /home/user"
+        note_after: "// UNCHANGED!"
+      }
+    }
+  }
+}
+parent_before -> fork_arrow: "1. fork()"
+fork_arrow -> child_process: "creates"
+child_process.exec_box -> child_process.exit_box: "2. chdir(/tmp)\n   exec fails"
+child_process.exit_box -> parent_after: "3. exit(0)"
+parent_before -> parent_after: "4. waitpid()\n   returns"
+problem_note: {
+  label: |md
+    **Problem**: Child's `chdir()` changed child's `cwd`,
+    but parent's `cwd` remains `/home/user`.
+    Shell's working directory is unchanged!
+  |
+  shape: rectangle
+  style.fill: "#ffeeee"
+  style.stroke: "#cc0000"
+}
+external_bad -> problem_note: {
+  style.stroke: "#cc0000"
+  style.stroke-dash: 3
+}
+row_builtin: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  builtin_good: {
+    label: "✅ Builtin cd (Works)"
+    style.stroke: "#009900"
+    style.stroke-width: 3
+    shell_before: {
+      label: "Shell Process"
+      shape: rectangle
+      style.fill: "#e6ffe6"
+      style.stroke: "#009900"
+      shell_state_before: {
+        label: "Before builtin_cd()"
+        shape: sql_table
+        cwd_sb: "cwd | /home/user"
+        pid_sb: "pid | 1000"
+      }
+    }
+    builtin_call: {
+      label: |md
+        c
+        // Inside shell process
+        int builtin_cd(char **argv) {
+            if (chdir(argv[1]) != 0) {
+                perror("cd");
+                return 1;
+            }
+            return 0;
+        }
+        
+      |
+      shape: rectangle
+      style.fill: "#ccffcc"
+      width: 320
+    }
+    shell_after: {
+      label: "Shell Process"
+      shape: rectangle
+      style.fill: "#e6ffe6"
+      style.stroke: "#009900"
+      shell_state_after: {
+        label: "After builtin_cd()"
+        shape: sql_table
+        cwd_sa: "cwd | /tmp"
+        note_sa: "// CHANGED!"
+      }
+    }
+  }
+}
+shell_before -> builtin_call: "chdir(/tmp)"
+builtin_call -> shell_after: "returns 0"
+success_note: {
+  label: |md
+    **Success**: `chdir()` called directly in shell process.
+    Kernel updates the shell's `cwd` — change persists!
+  |
+  shape: rectangle
+  style.fill: "#eeffee"
+  style.stroke: "#009900"
+}
+builtin_good -> success_note: {
+  style.stroke: "#009900"
+}
+kernel_section: {
+  label: "Kernel State (Per-Process)"
+  style.fill: "#f5f5f5"
+  style.stroke: "#666666"
+  kernel_note: {
+    label: |md
+      Each process has its own `cwd` in `task_struct`:
+      c
+      struct task_struct {
+          struct fs_struct *fs;  // Contains:
+          //   struct path pwd;  // Current cwd
+          //   struct path root; // Root directory
+      };
+      
+      `chdir()` only modifies `current->fs->pwd`.
+      Parent and child have **separate** `fs_struct`
+      after fork (copy-on-write).
+    |
+    shape: rectangle
+    width: 400
+  }
+  process_table: {
+    label: "Process Table View"
+    shape: sql_table
+    p1000: "PID 1000 | cwd: /home/user | (shell)"
+    p1001: "PID 1001 | cwd: /tmp       | (child - exited!)"
+    note_pt: "// Different entries, isolated state"
+  }
+}
+row_external -> row_builtin: "Compare"
+row_builtin -> kernel_section: "Why?"
+legend: {
+  near: bottom-right
+  legend_title: {
+    label: "Key Insight"
+    shape: text
+    style.bold: true
+    style.font-size: 20
+  }
+  legend_content: {
+    label: |md
+      **Fork creates an isolated copy.**
+      - Child gets its own `cwd`, `environ`, file descriptors
+      - Changes in child **never** propagate to parent
+      - `cd`, `export`, `unset` MUST be builtins
+      This is fundamental Unix process isolation.
+    |
+    shape: rectangle
+    style.fill: "#ffffee"
+    style.stroke: "#cccc00"
+    width: 280
+  }
+}

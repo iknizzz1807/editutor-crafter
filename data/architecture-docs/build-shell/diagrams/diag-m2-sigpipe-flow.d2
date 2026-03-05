@@ -1,0 +1,263 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: "SIGPIPE in Pipelines: The Backpressure Mechanism"
+  sub: "Trace of 'yes | head -1'"
+  near: top-center
+  style.stroke: transparent
+  style.fill: transparent
+  style.font-size: 24
+  style.bold: true
+}
+
+row1: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+
+  phase1: {
+    label: "T1: Both Processes Start"
+    style.fill: "#E8F5E9"
+    direction: down
+    
+    desc: {
+      shape: rectangle
+      style.fill: white
+      content: |'md
+        **Initial State (setup.c)**
+        - Pipe created (64KB ring buffer)
+        - Shell forks `yes` and `head`
+        - yes (PID 12345): stdout → pipe[1]
+        - head (PID 12346): stdin ← pipe[0]
+      '|
+    }
+
+    sub_row: "" {
+      direction: right
+      style.fill: transparent
+      style.stroke: transparent
+      
+      yes_proc: {
+        label: "yes process"
+        shape: rectangle
+        style.fill: "#FFCDD2"
+        f0: "PID: 12345"
+        f1: "FD 1: pipe[1]"
+      }
+      
+      kernel_pipe: {
+        label: "Kernel Pipe Buffer"
+        shape: cylinder
+        style.fill: "#BBDEFB"
+        style.stroke: "#1976D2"
+        note: "Capacity: 65536 bytes"
+      }
+      
+      head_proc: {
+        label: "head process"
+        shape: rectangle
+        style.fill: "#C8E6C9"
+        f0: "PID: 12346"
+        f1: "FD 0: pipe[0]"
+      }
+    }
+  }
+}
+
+row2: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+
+  phase2: {
+    label: "T2: yes Fills the Buffer"
+    style.fill: "#FFF3E0"
+    direction: down
+
+    desc: {
+      shape: rectangle
+      style.fill: white
+      content: |'md
+        **yes Produces Output**
+        - Producer writes aggressively
+        - Buffer fills until head consumes
+        - Buffer state: [y\n][y\n]...
+      '|
+    }
+
+    sub_row: "" {
+      direction: right
+      style.fill: transparent
+      style.stroke: transparent
+      
+      write_code: {
+        label: "In yes (write_loop.c)"
+        code: |'c
+          while (1) {
+            // write(1, "y\n", 2)
+            // blocks if buffer full
+            full_write(STDOUT_FILENO, "y\n", 2);
+          }
+        '|
+        width: 300
+      }
+
+      buffer_fill: {
+        label: "Pipe Buffer Status"
+        shape: sql_table
+        r1: "Offset 0x0000 | 'y' | '\\n'"
+        r2: "Offset 0x0002 | 'y' | '\\n'"
+        r3: "... | ... | ..."
+        status: "Buffer: 4096 / 65536 bytes full"
+      }
+    }
+  }
+}
+
+row3: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+
+  phase3: {
+    label: "T3: head Reads and Exits"
+    style.fill: "#E3F2FD"
+    direction: down
+
+    desc: {
+      shape: rectangle
+      style.fill: white
+      content: |'md
+        **Consumer Termination**
+        - head reads exactly 1 line
+        - Process calls exit(0)
+        - Kernel closes head's pipe[0]
+      '|
+    }
+
+    sub_row: "" {
+      direction: right
+      style.fill: transparent
+      style.stroke: transparent
+      
+      head_logic: {
+        label: "In head (head.c)"
+        code: |'c
+          // head -n 1
+          line = read_line(STDIN_FILENO);
+          printf("%s", line);
+          exit(0); // Closes all FDs
+        '|
+        width: 300
+      }
+
+      exit_event: {
+        label: "Read End Closed"
+        shape: diamond
+        style.fill: "#D32F2F"
+        style.font-color: white
+        event: "Readers -> 0"
+      }
+    }
+  }
+}
+
+row4: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+
+  phase4: {
+    label: "T4: Broken Pipe Detection"
+    style.fill: "#FFEBEE"
+    direction: down
+
+    desc: {
+      shape: rectangle
+      style.fill: white
+      content: |'md
+        **Kernel Enforcement**
+        - yes tries next write()
+        - pipe_write() checks readers
+        - Logic: if (readers == 0) -> SIGPIPE
+      '|
+    }
+
+    kernel_logic: {
+      label: "Kernel (fs/pipe.c)"
+      code: |'c
+        static ssize_t pipe_write(struct kiocb *iocb, ...) {
+          if (!pipe->readers) {
+            send_sig(SIGPIPE, current, 0);
+            return -EPIPE;
+          }
+        }
+      '|
+      width: 400
+    }
+  }
+}
+
+row5: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+
+  phase5: {
+    label: "T5: Pipeline Completion"
+    style.fill: "#F5F5F5"
+    direction: down
+
+    desc: {
+      shape: rectangle
+      style.fill: white
+      content: |'md
+        **Process Cleanup**
+        - yes terminated by signal
+        - Shell reaps status
+      '|
+    }
+
+    final_state: {
+      shape: sql_table
+      label: "Process Exit Status (sh)"
+      r1: "PID 12346 | head | exit 0 | success"
+      r2: "PID 12345 | yes  | signal 13 | SIGPIPE"
+      total: "Pipeline Status: 0 (head's status)"
+    }
+  }
+}
+
+# Connections
+phase1 -> phase2: "write | start"
+phase2 -> phase3: "read | consume"
+phase3 -> phase4: "exit | close"
+phase4 -> phase5: "signal | kill"
+
+insight: {
+  label: "Implementation Insight: The Backpressure Rule"
+  content: |'md
+    Unix pipes use SIGPIPE to prevent "zombie producers". 
+    If a consumer exits, the kernel proactively kills the producer
+    to prevent it from wasting CPU cycles and memory filling
+    a buffer that will never be drained.
+  '|
+  style.fill: "#FFF9C4"
+  style.stroke: "#FBC02D"
+  style.border-radius: 10
+}
+insight.near: bottom-right
+
+# Detailed Data Trace
+phase1.sub_row.yes_proc -> phase1.sub_row.kernel_pipe: "fd 1"
+phase1.sub_row.kernel_pipe -> phase1.sub_row.head_proc: "fd 0"
+phase3.sub_row.exit_event -> phase4.kernel_logic: "interrupt" {
+  style.stroke: red
+  style.stroke-dash: 3
+}

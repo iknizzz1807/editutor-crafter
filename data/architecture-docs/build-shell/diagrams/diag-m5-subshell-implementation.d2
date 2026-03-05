@@ -1,0 +1,334 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Subshell Implementation Details
+  **Parser → Executor → Fork Boundary → Isolation Model**
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  parse_phase: {
+    direction: down
+    label: "Phase 1: Parsing (parser.c)"
+    input: {
+      label: "( cmd1 ; cmd2 )"
+      shape: rectangle
+      style.fill: "#E8F4FD"
+      style.stroke: "#2196F3"
+    }
+    lexer: {
+      label: "Lexer"
+      shape: rectangle
+      f0: "TOK_LPAREN '('"
+      f1: "TOK_WORD 'cmd1'"
+      f2: "TOK_SEMICOLON ';'"
+      f3: "TOK_WORD 'cmd2'"
+      f4: "TOK_RPAREN ')'"
+      shape: class
+      style.fill: "#FFF3E0"
+    }
+    ast: {
+      label: "SubshellNode (AST)"
+      shape: rectangle
+      code: |'c
+        ASTNode* node = create_node(NODE_SUBSHELL);
+        node->data.unary.child = parse_compound_list();
+      '|
+      style.fill: "#E8F5E9"
+      style.stroke: "#4CAF50"
+      width: 320
+    }
+    input -> lexer: tokenize
+    lexer -> ast: build AST
+  }
+  exec_phase: {
+    direction: down
+    label: "Phase 2: Execution (executor.c)"
+    executor_entry: {
+      label: "execute_subshell(ASTNode* node)"
+      shape: rectangle
+      code: |'c
+        int execute_subshell(ASTNode* node) {
+          pid_t pid = fork();
+          if (pid == 0) {
+            // CHILD: isolated process
+            int status = execute_ast(node->data.unary.child);
+            _exit(status);
+          }
+          // PARENT: wait for child
+          int status;
+          waitpid(pid, &status, 0);
+          return WEXITSTATUS(status);
+        }
+      '|
+      style.fill: "#F3E5F5"
+      style.stroke: "#9C27B0"
+      width: 360
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  fork_boundary: {
+    direction: down
+    label: "Phase 3: Fork Boundary"
+    fork_call: {
+      label: "fork()"
+      shape: hexagon
+      style.fill: "#FFEBEE"
+      style.stroke: "#F44336"
+      style.font-color: "#C62828"
+      style.bold: true
+    }
+    parent: {
+      label: "PARENT PROCESS (shell)"
+      shape: rectangle
+      code: |'c
+        // Original shell continues
+        int status;
+        waitpid(pid, &status, 0);
+        // Child's exit status propagates back
+        return WEXITSTATUS(status);
+      '|
+      style.fill: "#E3F2FD"
+      style.stroke: "#1976D2"
+      width: 300
+    }
+    child: {
+      label: "CHILD PROCESS (subshell)"
+      shape: rectangle
+      code: |'c
+        // Isolated copy of shell
+        execute_ast(node->data.unary.child);
+        // MUST use _exit(), not exit()
+        // exit() would flush parent's stdio buffers!
+        _exit(status);
+      '|
+      style.fill: "#FFCDD2"
+      style.stroke: "#D32F2F"
+      width: 300
+    }
+    fork_call -> parent: "pid = child_pid\n(returns in parent)"
+    fork_call -> child: "pid = 0\n(returns in child)"
+    parent_note: {
+      label: "Parent has original state"
+      shape: callout
+      style.fill: "#BBDEFB"
+    }
+    child_note: {
+      label: "Child has COPY of state"
+      shape: callout
+      style.fill: "#FFCDD2"
+    }
+    parent -> parent_note
+    child -> child_note
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  inheritance: {
+    direction: down
+    label: "Phase 4: What Gets Inherited vs Isolated"
+    shared: {
+      label: "INHERITED (shared with parent)"
+      shape: rectangle
+      style.fill: "#C8E6C9"
+      style.stroke: "#388E3C"
+      env_vars: {
+        label: "Environment Variables"
+        shape: sql_table
+        label: "environ (copy at fork)"
+        e0: "HOME=/home/user"
+        e1: "PATH=/usr/bin:..."
+        e2: "USER=alice"
+        note: "Child gets COPY —\nchanges don't propagate back"
+      }
+      open_fds: {
+        label: "Open File Descriptors"
+        shape: sql_table
+        label: "fd table (duplicated)"
+        f0: "0 | stdin  | → same terminal"
+        f1: "1 | stdout | → same terminal"
+        f2: "2 | stderr | → same terminal"
+        f3: "3 | file   | → SHARED OFFSET!"
+        note: "File offsets are SHARED\nbetween parent and child"
+      }
+      signal_handlers: {
+        label: "Signal Dispositions"
+        shape: rectangle
+        code: |'c
+          // Copied at fork
+          // But pending signals NOT inherited
+          sigaction(SIGINT, &sa, NULL);
+        '|
+        style.fill: "#DCEDC8"
+        width: 280
+      }
+    }
+    isolated: {
+      label: "ISOLATED (child's own copy)"
+      shape: rectangle
+      style.fill: "#FFCDD2"
+      style.stroke: "#D32F2F"
+      cwd: {
+        label: "Current Working Directory"
+        shape: rectangle
+        code: |'c
+          // Child can cd without
+          // affecting parent
+          chdir("/tmp");
+          // Parent stays where it was!
+        '|
+        style.fill: "#EF9A9A"
+        width: 260
+      }
+      shell_vars: {
+        label: "Shell Variables"
+        shape: sql_table
+        label: "Variables in child memory"
+        v0: "x | outer value"
+        v1: "count | 42"
+        note: "Child can modify freely —\nparent sees original"
+      }
+      traps: {
+        label: "Signal Traps"
+        shape: rectangle
+        code: |'c
+          trap 'echo hi' INT
+          // Child's trap doesn't
+          // affect parent's traps
+        '|
+        style.fill: "#EF9A9A"
+        width: 260
+      }
+      jobs_table: {
+        label: "Job Table"
+        shape: rectangle
+        code: |'c
+          // Each shell has its own
+          // job list
+          // Background jobs in child
+          // are invisible to parent
+        '|
+        style.fill: "#EF9A9A"
+        width: 260
+      }
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  proof: {
+    direction: down
+    label: "Proof of Isolation"
+    before: {
+      label: "BEFORE subshell"
+      shape: rectangle
+      code: |'bash
+        x=outer
+        cd /home/user
+        echo "x=$x, pwd=$(pwd)"
+        # Output: x=outer, pwd=/home/user
+      '|
+      style.fill: "#E8F5E9"
+      width: 340
+    }
+    during: {
+      label: "INSIDE subshell"
+      shape: rectangle
+      code: |'bash
+        ( x=inner
+          cd /tmp
+          echo "x=$x, pwd=$(pwd)" )
+        # Output: x=inner, pwd=/tmp
+      '|
+      style.fill: "#FFCDD2"
+      width: 340
+    }
+    after: {
+      label: "AFTER subshell"
+      shape: rectangle
+      code: |'bash
+        echo "x=$x, pwd=$(pwd)"
+        # Output: x=outer, pwd=/home/user
+        # Changes inside () did NOT persist!
+      '|
+      style.fill: "#E8F5E9"
+      width: 340
+    }
+    before -> during: "fork()"
+    during -> after: "_exit(0)"
+  }
+}
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  critical_warning: {
+    label: "⚠️ CRITICAL: _exit() vs exit() in Child"
+    shape: rectangle
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    style.bold: true
+    width: 900
+    explanation: {
+      shape: rectangle
+      label: |md
+        **Why `_exit()` and NOT `exit()` after fork?**
+        `exit()` calls `atexit()` handlers and **flushes stdio buffers**.
+        The child inherited copies of the parent's buffered stdout/stderr.
+        If the child calls `exit()`, it may flush data that the **parent was buffering**.
+        Result: **double output** or corrupted files.
+        `_exit()` terminates immediately without touching stdio buffers.
+        This is the ONLY safe way to exit from a forked child.
+      |
+    }
+    code_right: {
+      shape: rectangle
+      code: |'c
+        // ❌ WRONG — may cause double output
+        if (pid == 0) {
+          execvp(cmd, args);
+          exit(1);  // DANGEROUS!
+        }
+        // ✅ CORRECT — clean exit
+        if (pid == 0) {
+          execvp(cmd, args);
+          _exit(1);  // Safe!
+        }
+      '|
+      style.fill: "#FFF3E0"
+      width: 380
+    }
+  }
+}
+parse_phase -> exec_phase: "AST ready"
+exec_phase -> fork_boundary: "execute_subshell()"
+inheritance -> proof: "isolation in action"
+legend: {
+  near: bottom-right
+  label: "Color Legend"
+  shape: rectangle
+  style.fill: "#FAFAFA"
+  style.stroke: "#9E9E9E"
+  l1: "Green = inherited/shared"
+  l1.style.fill: "#C8E6C9"
+  l2: "Red = isolated/local copy"
+  l2.style.fill: "#FFCDD2"
+  l3: "Purple = execution flow"
+  l3.style.fill: "#F3E5F5"
+  l4: "Orange = fork boundary"
+  l4.style.fill: "#FFEBEE"
+}

@@ -1,0 +1,161 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    sketch: false
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# 1. TCP CONTROL BLOCK (TCB) MEMORY LAYOUT
+# -----------------------------------------------------------------------------------------
+TCB_Memory: "RFC 793/5681: Transmission Control Block" {
+  shape: sql_table
+  style: {
+    stroke: "#333333"
+    fill: "#f8f9fa"
+  }
+
+  0x00: "snd_una (uint32_t)" {constraint: "First unacknowledged seq num"; style.fill: "#ffe5d9"}
+  0x04: "snd_nxt (uint32_t)" {constraint: "Next sequence number to send"; style.fill: "#ffe5d9"}
+  0x08: "snd_wnd (uint32_t)" {constraint: "Sender window (Receiver advertised)"; style.fill: "#ffe5d9"}
+  0x0C: "snd_wl1 (uint32_t)" {constraint: "Seq num used for last window update"; style.fill: "#eeeeee"}
+  0x10: "snd_wl2 (uint32_t)" {constraint: "Ack num used for last window update"; style.fill: "#eeeeee"}
+  0x14: "iss (uint32_t)" {constraint: "Initial Send Sequence number"; style.fill: "#eeeeee"}
+  
+  0x18: "rcv_nxt (uint32_t)" {constraint: "Next expected sequence number"; style.fill: "#d8e2dc"}
+  0x1C: "rcv_wnd (uint32_t)" {constraint: "Receive window"; style.fill: "#d8e2dc"}
+  0x20: "irs (uint32_t)" {constraint: "Initial Receive Sequence number"; style.fill: "#eeeeee"}
+
+  0x24: "cwnd (uint32_t)" {constraint: "Congestion Window (bytes)"; style.fill: "#bbd0ff"}
+  0x28: "ssthresh (uint32_t)" {constraint: "Slow Start Threshold"; style.fill: "#bbd0ff"}
+  0x2C: "dup_ack_cnt (uint8_t)" {constraint: "Duplicate ACK counter"; style.fill: "#ffadad"}
+  0x2D: "padding (3 bytes)" {style.fill: "#cccccc"}
+}
+
+# -----------------------------------------------------------------------------------------
+# 2. CONGESTION CONTROL STATE MACHINE (RFC 5681)
+# -----------------------------------------------------------------------------------------
+Congestion_States: "TCP Congestion Control Workflow" {
+  style.fill: "#f1f1f1"
+
+  SlowStart: "SLOW START" {
+    shape: rectangle
+    tooltip: "cwnd < ssthresh"
+    description: |md
+      - On each ACK: `cwnd += MSS`
+      - Exponential growth
+    |
+  }
+
+  CongAvoid: "CONGESTION AVOIDANCE" {
+    shape: rectangle
+    tooltip: "cwnd >= ssthresh"
+    description: |md
+      - On each RTT: `cwnd += MSS`
+      - Linear growth (Additive Increase)
+    |
+  }
+
+  FastRetransmit: "FAST RETRANSMIT" {
+    style.fill: "#ffadad"
+    style.bold: true
+    description: |md
+      **Trigger:** 3 Duplicate ACKs
+      **Action:** 
+      - `ssthresh = max(FlightSize/2, 2*MSS)`
+      - `Retransmit missing segment`
+    |
+  }
+
+  FastRecovery: "FAST RECOVERY" {
+    style.fill: "#ffd6a5"
+    description: |md
+      - `cwnd = ssthresh + 3*MSS`
+      - For each additional dupACK: `cwnd += MSS`
+    |
+  }
+
+  RTO_Timeout: "TIMEOUT (RTO)" {
+    shape: diamond
+    style.fill: "#ff595e"
+    style.font-color: white
+  }
+
+  # Transitions
+  SlowStart -> CongAvoid: "cwnd >= ssthresh"
+  SlowStart -> FastRetransmit: "3rd DupACK"
+  CongAvoid -> FastRetransmit: "3rd DupACK"
+  
+  FastRetransmit -> FastRecovery
+  FastRecovery -> CongAvoid: "New Data ACK"
+  
+  * -> RTO_Timeout: "Timer Expired"
+  RTO_Timeout -> SlowStart: "ssthresh = FlightSize/2\ncwnd = 1*MSS"
+}
+
+# -----------------------------------------------------------------------------------------
+# 3. FAST RETRANSMIT SEQUENCE (TRIPLE DUPLICATE ACK)
+# -----------------------------------------------------------------------------------------
+Fast_Retransmit_Sequence: {
+  shape: sequence_diagram
+  style.fill: "#ffffff"
+
+  Sender: "TCP Stack (Local)"
+  Receiver: "Remote Endpoint"
+
+  Sender -> Receiver: "Data (Seq=1000, Len=100)"
+  Sender -> Receiver: "Data (Seq=1100, Len=100)" {style.stroke: red; style.stroke-dash: 5; label: "LOST"}
+  Sender -> Receiver: "Data (Seq=1200, Len=100)"
+  
+  Receiver -> Sender: "ACK (Ack=1100)" {style.stroke: orange; label: "Dup ACK 1"}
+  
+  Sender -> Receiver: "Data (Seq=1300, Len=100)"
+  Receiver -> Sender: "ACK (Ack=1100)" {style.stroke: orange; label: "Dup ACK 2"}
+  
+  Sender -> Receiver: "Data (Seq=1400, Len=100)"
+  Receiver -> Sender: "ACK (Ack=1100)" {style.stroke: red; style.bold: true; label: "Dup ACK 3 (Trigger)"}
+
+  Sender.Algorithm_Execution: {
+    Sender -> Sender: "ssthresh = cwnd / 2"
+    Sender -> Sender: "cwnd = ssthresh + 3*MSS"
+    Sender -> Receiver: "RETRANSMIT (Seq=1100)" {style.stroke: blue; style.animated: true}
+  }
+
+  Receiver -> Sender: "Cumulative ACK (Ack=1500)" {style.stroke: green; label: "Recovery complete"}
+}
+
+# -----------------------------------------------------------------------------------------
+# 4. IMPLEMENTATION LOGIC (PSEUDO-CODE MAPPING)
+# -----------------------------------------------------------------------------------------
+Implementation_Logic: "Handler Logic: tcp_process_ack()" {
+  shape: rectangle
+  style.fill: "#fefae0"
+  
+  content: |md
+    ### Duplication Handling
+    c
+    if (ack_num == conn->snd_una) {
+        if (++conn->dup_ack_cnt == 3) {
+            tcp_enter_fast_retransmit(conn);
+        } else if (conn->dup_ack_cnt > 3) {
+            conn->cwnd += MSS; // Window inflation
+            tcp_send_more(conn);
+        }
+    }
+    
+    ### Fast Recovery Exit
+    c
+    if (ack_num > conn->recover_seq) {
+        conn->cwnd = conn->ssthresh;
+        conn->dup_ack_cnt = 0;
+        conn->in_fast_recovery = false;
+    }
+    
+  |
+}
+
+# Annotations
+TCB_Memory -> Congestion_States: "State variables" {style.stroke-dash: 3}
+Congestion_States -> Fast_Retransmit_Sequence: "Execution path" {style.stroke-dash: 3}
+Implementation_Logic.near: bottom-center

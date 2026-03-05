@@ -1,0 +1,139 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+cgroup_cleanup_logic: {
+  shape: sequence_diagram
+  
+  runtime: Container Runtime {
+    shape: person
+    style: {
+      fill: "#E4DBFE"
+      stroke: "#6A5ACD"
+      stroke-width: 2
+    }
+  }
+  vfs: VFS Layer {
+    style: {
+      fill: "#C7F1FF"
+      stroke: "#4682B4"
+      stroke-width: 2
+    }
+  }
+  cgroup_kern: Cgroup Subsystem {
+    style: {
+      fill: "#B5AFF6"
+      stroke: "#4B0082"
+      stroke-width: 2
+    }
+  }
+  procs: Process Group {
+    style: {
+      fill: "#DEE1EB"
+      stroke: "#708090"
+      stroke-dash: 2
+    }
+  }
+
+  failure_scenarios: "FAILURE MODES (Direct rmdir attempts)" {
+    runtime -> vfs: rmdir("/sys/fs/cgroup/ctr")
+    vfs -> cgroup_kern: cgroup_rmdir()
+    cgroup_kern -> cgroup_kern: Check cgroup.procs
+    
+    cgroup_kern."cgroup.procs contains [PID 12345]"
+    
+    cgroup_kern -> runtime: return -EBUSY (Device or resource busy) {
+      style: {
+        stroke: red
+        stroke-dash: 5
+        bold: true
+        font-color: red
+      }
+    }
+
+    runtime -> vfs: rmdir("/sys/fs/cgroup/ctr")
+    vfs -> cgroup_kern: cgroup_rmdir()
+    cgroup_kern -> cgroup_kern: Check subdirectories
+    
+    cgroup_kern."Sub-cgroup 'scoped_child' exists"
+    
+    cgroup_kern -> runtime: return -EBUSY (Sub-cgroups remain) {
+      style: {
+        stroke: red
+        stroke-dash: 5
+        bold: true
+        font-color: red
+      }
+    }
+  }
+
+  correct_sequence: "CORRECT CLEANUP ORDER (Hard Isolation)" {
+    
+    step_1: "1. Terminate All Processes" {
+      runtime -> cgroup_kern: open("/sys/fs/cgroup/ctr/cgroup.kill")
+      cgroup_kern -> procs: Send SIGKILL to all PIDs
+      procs -> cgroup_kern: Processes terminated {
+        style.stroke-dash: 5
+        style.stroke: gray
+      }
+      cgroup_kern -> runtime: Write success {
+        style.stroke-dash: 5
+        style.stroke: green
+      }
+    }
+
+    step_2: "2. Wait for Accounting to Clear" {
+      runtime.poll -> cgroup_kern: read("/sys/fs/cgroup/ctr/cgroup.procs")
+      cgroup_kern -> runtime.poll: "(Empty String)" {
+        style.stroke-dash: 5
+        style.stroke: green
+      }
+    }
+
+    step_3: "3. Depth-First Child Removal" {
+      runtime -> vfs: rmdir("/sys/fs/cgroup/ctr/scoped_child")
+      vfs -> cgroup_kern: cgroup_rmdir(child)
+      cgroup_kern -> runtime: return 0 (Success) {
+        style.stroke-dash: 5
+        style.stroke: green
+      }
+    }
+
+    step_4: "4. Parent Removal" {
+      runtime -> vfs: rmdir("/sys/fs/cgroup/ctr")
+      vfs -> cgroup_kern: cgroup_rmdir(parent)
+      cgroup_kern -> cgroup_kern: Release CSS structures
+      cgroup_kern -> runtime: return 0 (Success) {
+        style.stroke-dash: 5
+        style.stroke: green
+      }
+    }
+  }
+}
+
+explanation: |'md'
+### Cgroup Cleanup Invariants (Intel-Grade Spec)
+
+| Error Code | Trigger Condition | Kernel Check |
+| :--- | :--- | :--- |
+| **-EBUSY** | `cgroup.procs != ""` | `cgroup_has_tasks()` returns true |
+| **-EBUSY** | `subdirs > 0` | `list_empty(&cgrp->self.children)` is false |
+| **-ENOENT** | Path invalid | Lookup failed in dcache |
+
+#### Implementation Details
+1. **Atomic Kill:** `cgroup.kill` (introduced in Linux 5.14) is preferred over manually sending `SIGKILL` to individual PIDs to avoid race conditions with `clone()` calls in the target group.
+2. **Zombie Reclamation:** Even if a process is a zombie, it keeps a reference to the CSS (Cgroup Subsystem State). The parent process must `wait()` for the PID to clear the accounting.
+3. **VFS Locks:** `rmdir` holds the `i_mutex` on the parent directory. High-frequency cleanup should account for potential lock contention in the VFS layer.
+'|
+
+explanation.near: bottom-center
+explanation.style: {
+  stroke: "#708090"
+  fill: "#F8F8F8"
+  border-radius: 4
+}

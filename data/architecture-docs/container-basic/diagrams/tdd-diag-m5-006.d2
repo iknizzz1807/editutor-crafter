@@ -1,0 +1,143 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- PARTICIPANTS: EXACT TYPES AND PRIVILEGE LEVELS ---
+# Roles: Engineers determine state from diagram alone.
+host: Host Runtime Process {
+  shape: person
+  label: "Host Runtime (runc/containerd)\nUID: 1000 | GID: 1000\n[Unprivileged]"
+}
+
+kernel: Linux Kernel {
+  style: {
+    fill: "#e1d5e7"
+    stroke: "#9673a6"
+    stroke-width: 2
+  }
+  label: "Linux Kernel\n[Ring 0 | Trusted]"
+}
+
+procfs: /proc Filesystem {
+  label: "/proc/<pid>/ interface\n[VFS / procfs]"
+  style: {
+    fill: "#dae8fc"
+    stroke: "#6c8ebf"
+  }
+}
+
+child: Container Init {
+  label: "Container Init\nHost PID: 12345 | NS PID: 1\n[CAP_SYS_ADMIN in NS]"
+  style: {
+    fill: "#d5e8d4"
+    stroke: "#82b366"
+  }
+}
+
+# --- GLOBAL WRAPPER FOR SEQUENCE LOGIC ---
+integration_flow: {
+  shape: sequence_diagram
+
+  # --- INITIALIZATION PHASE (T+0ms) ---
+  host -> kernel: "pipe2(sync_fds, O_CLOEXEC) : [3, 4]"
+  kernel -> host: "return: 0"
+
+  # --- CREATION PHASE (T+2ms) ---
+  host -> kernel: "clone(flags=CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNS, ...) : 12345"
+  kernel -> child: "spawn_process(entrypoint, stack_top) : 0"
+
+  # --- SYNCHRONIZATION HANDSHAKE (LOCK ACQUIRE) ---
+  child -> kernel: "read(sync_fds[0], buf, 1) : [WAITING]"
+  kernel -> child: "▼ BLOCKED (Wait for UID/GID Mapping)" {
+    style: {
+      stroke: orange
+      stroke-width: 4
+      animated: true
+    }
+  }
+
+  # --- IDENTITY MAPPING PHASE (PARENT SETUP) (T+5ms) ---
+  host -> procfs: "write('deny') -> /proc/12345/setgroups"
+  procfs -> kernel: "atomic_update(USERNS_SETGROUPS_DENIED) : void"
+  procfs -> host: "return: 0 (OK)"
+
+  host -> procfs: "write('0 1000 1') -> /proc/12345/uid_map"
+  procfs -> kernel: "map_id(KUID_MAP, ns_root=0, host_uid=1000) : void"
+  procfs -> host: "return: 0 (OK)"
+
+  host -> procfs: "write('0 1000 1') -> /proc/12345/gid_map"
+  procfs -> kernel: "map_id(KGID_MAP, ns_gid=0, host_gid=1000) : void"
+  procfs -> host: "return: 0 (OK)"
+
+  # --- SYNCHRONIZATION HANDSHAKE (LOCK RELEASE) ---
+  host -> kernel: "write(sync_fds[1], 'G', 1) : 1 byte"
+  kernel -> child: "▲ UNBLOCKED (Mapping Applied)" {
+    style: {
+      stroke: orange
+      stroke-width: 4
+    }
+  }
+
+  # --- CONTAINER ISOLATION PHASE (T+10ms) ---
+  child -> child: "getuid() : 0 (EUID=0, GID=0)"
+  child."Identity Verified: Root inside UserNS"
+
+  child -> kernel: "sethostname('isolated-ctr', 12) : 0"
+  kernel -> kernel: "update current->nsproxy->uts_ns->nodename"
+
+  child -> kernel: "mount(NULL, '/', NULL, MS_REC|MS_PRIVATE, NULL) : 0"
+  child."Security: Set mount propagation to MS_PRIVATE"
+
+  child -> kernel: "mount(rootfs, rootfs, NULL, MS_BIND|MS_REC, NULL) : 0"
+  child."Setup: Bind-mount rootfs to itself for pivot_root"
+
+  child -> kernel: "pivot_root('.', 'old_root') : 0"
+  kernel -> kernel: "atomic_swap(vfsmount_root, old_root)"
+
+  child -> kernel: "mount('proc', '/proc', 'proc', MS_NOSUID|MS_NOEXEC|MS_NODEV, NULL) : 0"
+  child."Isolation: Mount private /proc for NS PID visibility"
+
+  child -> kernel: "umount2('/old_root', MNT_DETACH) : 0"
+  child."Isolation: Detach host filesystem (Lazy)"
+
+  # --- WORKLOAD EXECUTION (T+15ms) ---
+  child -> kernel: "execve('/bin/sh', args, envp) : [REPLACE IMAGE]"
+  kernel -> child: "mmap/load_elf : void" {
+    style: {
+      stroke: blue
+      stroke-width: 3
+    }
+  }
+
+  # --- CLEANUP PHASE (T+End) ---
+  child -> host: "exit(0) [SIGCHLD]" {
+    style.stroke-dash: 5
+  }
+  host -> kernel: "wait4(12345, &status, 0, NULL) : 12345"
+  kernel -> host: "task_struct reaped"
+
+  host -> host: "cleanup_veth_pair()"
+  host -> host: "rmdir(/sys/fs/cgroup/container_12345)"
+}
+
+# Timing and Critical Path Annotations
+legend: {
+  near: bottom-right
+  note: |md
+    ### TECHNICAL SPECIFICATION
+    - **Total Latency**: ~15ms - 50ms (I/O bound)
+    - **Security Invariant**: `CLONE_NEWUSER` enables unprivileged `CLONE_NEWNS`.
+    - **UID Mapping**: Host:1000 $\rightarrow$ Container:0 (Virtual Root).
+    - **Pivot**: `pivot_root` is used over `chroot` for superior namespace isolation.
+  |
+}
+
+# Layout Engine Style Tweaks
+***.style.font: mono
+(*** -> ***)[*]: {
+  style.font-size: 14
+}

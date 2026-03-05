@@ -1,0 +1,173 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+# cgroup OOM Killer Decision Flow
+# Implementation Grade Specification for Linux Kernel Resource Controller (memcg)
+
+legend: {
+  shape: rectangle
+  label: "OOM Invariant: Only processes within the specific cgroup hierarchy are considered for termination.\nHost-level processes are strictly excluded from selection. Selection scope is restricted to tasks linked via mem_cgroup structure."
+  near: top-center
+  style: {
+    fill: "#FFFFE0"
+    stroke: "#E6DB74"
+    stroke-width: 2
+    double-border: true
+  }
+}
+
+state_machine: {
+  label: "Linux Kernel memcg OOM Logic Flow"
+
+  # Initial trigger
+  START: ●
+  START -> ALLOC_REQ: "try_charge()" {
+    style.stroke-width: 2
+  }
+
+  ALLOC_REQ: Memory Allocation Request {
+    shape: rectangle
+    label: "ALLOC_REQ (mm/memcontrol.c)\n---------------------------\noffset 0x00: Update memory.current\noffset 0x08: Charge mem_cgroup\noffset 0x10: Check high/max watermarks"
+    tooltip: "Triggered by kmalloc() or User-space Page Fault"
+  }
+
+  LIMIT_CHECK: "Condition:\nmemory.current > memory.max?" {
+    shape: diamond
+    style.fill: "#E4DBFE"
+  }
+
+  ALLOC_REQ -> LIMIT_CHECK
+
+  # Path A: Within limits
+  LIMIT_CHECK -> ALLOC_SUCCESS: "No (<= max)" {
+    style.stroke: green
+    style.stroke-width: 2
+  }
+
+  ALLOC_SUCCESS: Allocation Granted {
+    shape: rectangle
+    style.fill: "#ACE1AF"
+    label: "SUCCESS\n---------------------------\nUpdate Page Tables (PTE)\nSet PG_charged flag\nReturn VM_FAULT_MAJOR/MINOR"
+  }
+
+  # Path B: Exceeds limits - Reclaim attempt
+  LIMIT_CHECK -> KERNEL_RECLAIM: "Yes (> max)" {
+    style.stroke: orange
+    style.bold: true
+    style.stroke-width: 3
+  }
+
+  KERNEL_RECLAIM: Kernel Reclaim Phase {
+    shape: rectangle
+    label: "RECLAIM ATTEMPT (shrink_node)\n---------------------------\n1. Drop Slab Caches\n2. Async Page Writeback\n3. File-backed Page Eviction\n4. Swap-out (if memsw enabled)"
+    style.fill: "#fce7c6"
+  }
+
+  POST_RECLAIM_CHECK: "Still over limit?" {
+    shape: diamond
+    style.fill: "#E4DBFE"
+  }
+
+  KERNEL_RECLAIM -> POST_RECLAIM_CHECK
+
+  POST_RECLAIM_CHECK -> ALLOC_SUCCESS: "No (Reclaim Succeeded)" {
+    style.stroke: green
+    style.stroke-width: 2
+  }
+
+  # Path C: Reclaim fails - OOM Trigger
+  POST_RECLAIM_CHECK -> OOM_INVOCATION: "Yes (Reclaim Failed)" {
+    style.stroke: red
+    style.stroke-width: 4
+  }
+
+  OOM_INVOCATION: Trigger cgroup OOM Killer {
+    shape: rectangle
+    style.fill: "#FE7070"
+    label: "OOM TRIGGERED (mem_cgroup_out_of_memory)\n---------------------------\nInc memory.events:oom counter\nSynchronous lock on memcg->oom_lock\nCheck for existing OOM_VICTIM"
+  }
+
+  SELECT_VICTIM: Select Process in Cgroup {
+    shape: rectangle
+    label: "VICTIM SELECTION (oom_evaluate_task)\n---------------------------\nIterate cgroup.procs hierarchy\nCalculate oom_score: usage / limit\nApply oom_score_adj [-1000, 1000]\nSum RSS + Swap + PGTables"
+    style.fill: "#FE7070"
+    style.stroke: red
+    style.stroke-width: 2
+  }
+
+  OOM_INVOCATION -> SELECT_VICTIM: "Scope: cgroup.procs ONLY" {
+    style.animated: true
+  }
+
+  HOST_PROC_CHECK: {
+    label: "Host Process Isolation Check"
+    style: {
+      stroke-dash: 5
+      fill: transparent
+    }
+    
+    check: "PID in target memcg?" {
+      shape: diamond
+      style.fill: white
+    }
+    
+    ignore: "PROTECT HOST PID" {
+      style.font-color: gray
+      style.stroke: gray
+      style.italic: true
+    }
+    
+    check -> ignore: "No (Foreign)" {
+      style.stroke: gray
+    }
+  }
+
+  SELECT_VICTIM -- HOST_PROC_CHECK: "Invariant Enforcement"
+
+  TERMINATE: Terminate Process {
+    shape: rectangle
+    label: "SIGKILL (oom_kill_process)\n---------------------------\nSend SIGKILL to PID\nIncrement memory.events:oom_kill\nSet TIF_MEMDIE for priority release\nLog kernel stack dump"
+    style.fill: red
+    style.font-color: white
+    style.bold: true
+  }
+
+  SELECT_VICTIM -> TERMINATE: "select max(oom_score)" {
+    style.stroke-width: 2
+  }
+
+  RELEASE: "Resources Released" {
+    shape: rectangle
+    label: "EXIT_MM HANDLER\n---------------------------\n__mmput(): release mm_struct\nFree Anonymous Pages\nUpdate memcg resource counters\nRelease oom_lock"
+    style.fill: "#ACE1AF"
+  }
+
+  TERMINATE -> RELEASE
+  RELEASE -> ALLOC_REQ: "Retry Allocation" {
+    style.stroke-dash: 3
+  }
+}
+
+# Detail Annotations - Fixed 'near' coordinate to constant for ELK compatibility
+annotations: |md
+  ### Selection Logic Specification (mm/oom_kill.c)
+  - **OOM Score:** Normalized usage against memcg limit (not node limit).
+  - **oom_score_adj:** Respected within cgroup tree scope.
+  - **memory.oom_group:** If set to 1, the kernel kills *all* tasks within the cgroup to ensure consistent state.
+  - **Isolation:** The selector uses `mem_cgroup_iter` to ensure zero visibility of tasks in sibling or parent cgroups.
+  - **Priority:** Processes with `oom_score_adj = -1000` are OOM-disabled and skipped.
+| {
+  near: bottom-right
+  style: {
+    font-size: 13
+    fill: "#f8f8f8"
+    stroke: "#cccccc"
+  }
+}
+
+state_machine.KERNEL_RECLAIM.style.stroke-dash: 3

@@ -1,0 +1,216 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    pad: 40
+  }
+}
+
+# --- GLOBAL STYLES & CLASSES ---
+# Role-based colors: Header=Purple, Data=Blue, Free=Green, Padding=Gray, Pointers=Orange
+classes: {
+  process: {
+    shape: rectangle
+    style: {
+      fill: "#e3f2fd"
+      stroke: "#1565c0"
+      stroke-width: 2
+      double-border: true
+    }
+  }
+  kernel_logic: {
+    shape: hexagon
+    style: {
+      fill: "#f3e5f5"
+      stroke: "#7b1fa2"
+      stroke-width: 2
+    }
+  }
+  data_store: {
+    shape: cylinder
+    style: {
+      fill: "#e1f5fe"
+      stroke: "#0288d1"
+    }
+  }
+  pids_resource: {
+    shape: sql_table
+    style: {
+      fill: "#fff3e0"
+      stroke: "#ef6c00"
+    }
+  }
+  error_state: {
+    style: {
+      fill: "#ffebee"
+      stroke: "#c62828"
+      stroke-width: 3
+      bold: true
+      font-color: "#b71c1c"
+    }
+  }
+  success_state: {
+    style: {
+      fill: "#e8f5e9"
+      stroke: "#2e7d32"
+      stroke-width: 2
+    }
+  }
+}
+
+# --- ARCHITECTURE LAYOUT ---
+
+Host: "Host Operating System (x86_64)" {
+  style: {
+    stroke-dash: 5
+    stroke: "#757575"
+    fill: "#fcfcfc"
+  }
+
+  Global_PID_Space: "Global PID Table (kernel/pid.c)" {
+    class: data_store
+    tooltip: "System-wide limit defined by /proc/sys/kernel/pid_max"
+    label: "Global PID Space"
+    stats: "Max: 4,194,304 | Current: 452"
+  }
+
+  Container_Context: "Cgroup v2: /sys/fs/cgroup/user.slice/user-1000.slice/..." {
+    style: {
+      fill: "#ffffff"
+      stroke: "#424242"
+      stroke-width: 2
+      double-border: true
+    }
+
+    Bomb: "Fork Bomb Instance [PID 402] (Generation N)" {
+      class: process
+      tooltip: "The process executing the fork loop"
+    }
+
+    Cgroup_Controller: "PIDs Controller Logic" {
+      style.fill: "#eceff1"
+      
+      Pids_Max: "pids.max (Resource Limit)" {
+        shape: sql_table
+        class: pids_resource
+        limit: "10 (Max Tasks)"
+      }
+      
+      Pids_Current: "pids.current (Current State)" {
+        shape: sql_table
+        class: pids_resource
+        current: "**10 (Limit Reached)**"
+        style: {
+          font-color: "#d32f2f"
+          stroke: "#d32f2f"
+          bold: true
+        }
+      }
+
+      Gate: "Policy Gate" {
+        shape: diamond
+        class: error_state
+        label: "Is pids.current < pids.max?"
+      }
+    }
+  }
+
+  Kernel: "Linux Kernel Interface" {
+    class: kernel_logic
+    
+    Fork_Handler: "kernel/fork.c: copy_process()" {
+      shape: sql_table
+      style: {
+        fill: "#f3e5f5"
+        stroke: "#7b1fa2"
+      }
+      
+      "0x0A": "dup_task_struct()"
+      "0x14": "cgroup_can_fork() -> Hook"
+      "0x1E": "alloc_pid(namespace)"
+      "0x28": "cgroup_post_fork()"
+    }
+  }
+}
+
+# --- DATA FLOW & TRANSITIONS ---
+
+# 1. Syscall invocation
+Host.Container_Context.Bomb -> Host.Kernel.Fork_Handler."0x0A": "1. syscall: fork()" {
+  style: {
+    stroke: "#1565c0"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+# 2. Kernel triggers cgroup validation
+Host.Kernel.Fork_Handler."0x14" -> Host.Container_Context.Cgroup_Controller.Gate: "2. pids_can_fork()" {
+  style: {
+    stroke: "#7b1fa2"
+    stroke-width: 2
+  }
+}
+
+# 3. Controller state inspection
+Host.Container_Context.Cgroup_Controller.Pids_Current -> Host.Container_Context.Cgroup_Controller.Gate: "3. inspect current_pids=10"
+Host.Container_Context.Cgroup_Controller.Pids_Max -> Host.Container_Context.Cgroup_Controller.Gate: "against limit=10"
+
+# 4. Rejection Logic
+Host.Container_Context.Cgroup_Controller.Gate -> Host.Kernel.Fork_Handler: "4. Result: -EAGAIN (Limit Reached)" {
+  style: {
+    stroke: "#c62828"
+    stroke-dash: 4
+    stroke-width: 3
+  }
+}
+
+# 5. Trap and error propagation
+Host.Kernel.Fork_Handler -> Host.Container_Context.Bomb: "5. Return -1, errno=EAGAIN" {
+  class: error_state
+}
+
+# 6. Invariant Verification
+Host.Global_PID_Space -- Host.Container_Context: "INVARIANT: Host Isolation" {
+  label: "Isolation Boundary Verified. Global PID table protected."
+  style: {
+    stroke: "#2e7d32"
+    stroke-width: 4
+    stroke-dash: 10
+  }
+}
+
+# --- TECHNICAL ANNOTATIONS ---
+
+Explanation: |md
+### [SEC-PIDS-001] Fork Bomb Containment Technical Spec
+
+| Field | Value | Implementation Detail |
+| :--- | :--- | :--- |
+| **Mechanism** | PIDs Cgroup | `struct pids_cgroup` in kernel |
+| **Hook** | `can_fork` | Called before PID allocation in `copy_process` |
+| **Error** | `EAGAIN` | Resource temporarily unavailable (limit hit) |
+
+**Control Logic:**
+- **Threshold**: Rejection occurs when `pids.current >= pids.max`.
+- **Outcome**: Atomic rejection of process creation prevents kernel stack exhaustion.
+- **Scope**: Applied recursively to all descendants in the cgroup hierarchy.
+- **Host Security**: Prevents PID exhaustion attacks against the init process and critical services.
+||
+
+Explanation.near: top-right
+Explanation.style: {
+  stroke: "#2e7d32"
+  fill: "#f1f8e9"
+  font-size: 14
+}
+
+# Legend for Specification Compliance
+Legend: {
+  near: bottom-right
+  Logic: "Kernel Code Block" { class: kernel_logic }
+  Storage: "System State" { class: pids_resource }
+  Error: "Policy Violation" { class: error_state }
+  Process: "Userland Process" { class: process }
+}

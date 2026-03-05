@@ -1,0 +1,176 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# NAT MASQUERADE Packet Flow: Implementation Grade Diagram
+# State: TCP_ESTABLISHED lookup / NF_NAT_MASQUERADE transformation
+
+packet_flow: {
+  shape: sequence_diagram
+
+  # ---------------------------------------------------------------------------
+  # Participant Definitions (Physical/Logical Hardware Layout)
+  # ---------------------------------------------------------------------------
+  container: "Container netns\n(PID 1042)" {
+    tooltip: "Isolated Net Namespace | IP: 10.200.0.2/24"
+    style: {
+      fill: "#dae8fc"
+      stroke: "#6c8ebf"
+      stroke-width: 2
+    }
+  }
+
+  bridge: "Linux Bridge\n(ctr0)" {
+    tooltip: "Virtual L2 Switch | IP: 10.200.0.1"
+    style: {
+      fill: "#d5e8d4"
+      stroke: "#82b366"
+      stroke-width: 2
+    }
+  }
+
+  netfilter: "Kernel Stack\n(iptables/conntrack)" {
+    tooltip: "nf_nat_masquerade.c | nf_conntrack_tuple"
+    style: {
+      fill: "#e1d5e7"
+      stroke: "#9673a6"
+      stroke-width: 2
+    }
+  }
+
+  eth0: "Host eth0\n(Physical NIC)" {
+    tooltip: "Default Route | IP: 192.168.1.100"
+    style: {
+      fill: "#ffe6cc"
+      stroke: "#d79b00"
+      stroke-width: 2
+    }
+  }
+
+  internet: "External Target\n(8.8.8.8:80)" {
+    tooltip: "Remote Endpoint"
+    style: {
+      fill: "#f8cecc"
+      stroke: "#b85450"
+      stroke-width: 2
+    }
+  }
+
+  # ---------------------------------------------------------------------------
+  # Outbound Sequence: Source NAT (SNAT/MASQUERADE)
+  # ---------------------------------------------------------------------------
+  outbound_request: "OUTBOUND: SNAT / MASQUERADE" {
+    container -> bridge: "1. TCP SYN [SEQ=0]\nSrc: 10.200.0.2:54321\nDst: 8.8.8.8:80" {
+      style: {
+        stroke: "#6c8ebf"
+        stroke-width: 3
+        animated: true
+      }
+    }
+    
+    bridge -> netfilter: "2. NF_INET_FORWARD\n(L3 Routing Decision)"
+
+    netfilter -> netfilter: "3. nf_nat_setup_info()\n(POSTROUTING: MASQUERADE)\nRewrite Src -> 192.168.1.100" {
+      style: {
+        font-color: "#d10000"
+        bold: true
+        stroke: "#d10000"
+      }
+    }
+
+    netfilter -> eth0: "4. egress(sk_buff)\nSrc: 192.168.1.100:54321"
+
+    eth0 -> internet: "5. Xmit to upstream gateway"
+  }
+
+  # ---------------------------------------------------------------------------
+  # Memory Layout Note (Intel Manual Quality)
+  # ---------------------------------------------------------------------------
+  netfilter.ct_tuple: ||md
+    ### `struct nf_conntrack_tuple` (State: SYN_SENT)
+    | Offset | Field | Size | Data (Hex/Value) |
+    | :--- | :--- | :--- | :--- |
+    | 0x00 | `src_ip` | 4B | `0x0AC80002` (10.200.0.2) |
+    | 0x04 | `dst_ip` | 4B | `0x08080808` (8.8.8.8) |
+    | 0x08 | `src_port`| 2B | `0xD431` (54321) |
+    | 0x0A | `dst_port`| 2B | `0x0050` (80) |
+    | 0x0C | `nat_ip`  | 4B | `0xC0A80164` (192.168.1.100) |
+    | --- | --- | --- | --- |
+    | **Cache** | **L1 Alignment** | **64B** | **Padding: 44B** |
+  ||
+
+  # ---------------------------------------------------------------------------
+  # Inbound Sequence: Destination NAT (DNAT/Un-MASQUERADE)
+  # ---------------------------------------------------------------------------
+  inbound_reply: "INBOUND: Automatic DNAT" {
+    internet -> eth0: "6. TCP SYN-ACK [ACK=1]\nSrc: 8.8.8.8:80\nDst: 192.168.1.100:54321" {
+      style: {
+        stroke: "#b85450"
+        stroke-width: 3
+        animated: true
+      }
+    }
+
+    eth0 -> netfilter: "7. NF_INET_PRE_ROUTING\n(nf_conntrack_find_get)"
+
+    netfilter -> netfilter: "8. nf_nat_packet()\nApply State Lookup\nRewrite Dst -> 10.200.0.2" {
+      style: {
+        font-color: "#0000FF"
+        bold: true
+        stroke: "#0000FF"
+      }
+    }
+
+    netfilter -> bridge: "9. Forward to ctr0\nDst: 10.200.0.2:54321"
+
+    bridge -> container: "10. veth_xmit(peer)\nDelivery to Net Namespace" {
+      style: {
+        stroke: "#82b366"
+        stroke-dash: 3
+      }
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Legend and Technical Specification
+# ---------------------------------------------------------------------------
+technical_spec: {
+  near: bottom-right
+  label: "NAT Implementation Mechanics"
+  notes: ||md
+    ### Packet Lifecycle Specifications:
+    - **MASQUERADE:** Alias for dynamic SNAT on the primary IP of the egress interface (`eth0`).
+    - **Tuple Persistence:** `conntrack` uses a 5-tuple hash (Proto, Sip, Sport, Dip, Dport) to identify return traffic.
+    - **Namespace Boundary:** The transition from `bridge` to `container` involves a `veth` pair crossing memory boundaries.
+    - **Performance:** Netfilter rules processed via `do_table()` in kernel context.
+  ||
+  style: {
+    fill: "#f5f5f5"
+    stroke: "#cccccc"
+    stroke-width: 1
+    font-size: 12
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Global Styling Overrides
+# ---------------------------------------------------------------------------
+packet_flow.** {
+  style: {
+    font-size: 14
+    font: mono
+  }
+}
+
+# Frame Annotation
+style: {
+  stroke: "#000000"
+  stroke-width: 4
+  fill: "#ffffff"
+}

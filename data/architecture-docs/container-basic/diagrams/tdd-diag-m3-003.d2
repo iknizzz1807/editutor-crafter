@@ -1,0 +1,255 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+# Network Namespace Lifecycle State Machine
+# Specification: container-basic-m3
+# Purpose: Formal validation of Linux Network Namespace (NetNS) provisioning sequence.
+
+# Legend/Invariants
+legend: {
+  shape: page
+  label: |'md
+    ### Network Namespace Invariants
+    - **Initial State**: Empty stack, lo is DOWN.
+    - **Veth Requirement**: Host must create/move veth end.
+    - **Ordering**: Loopback MUST be UP before IP assignment.
+    - **NAT**: Requires IP Forwarding on Host.
+    - **Cleanup**: Interfaces must be deleted or moved back to host.
+  '|
+  near: top-right
+  style: {
+    stroke: "#4B0082"
+    stroke-width: 2
+    fill: "#fef9e7"
+  }
+}
+
+# States
+START: "" {
+  shape: circle
+  style: {
+    fill: black
+    stroke-width: 0
+  }
+}
+
+CREATED: "NAMESPACE_CREATED" {
+  tooltip: "Initial state after unshare(CLONE_NEWNET)"
+  label: |'md
+    **STATE: CREATED**
+    ---
+    *Invariants:*
+    - lo: **DOWN**
+    - eth0: **ABSENT**
+    - Routes: 0
+    - NetNS ID: Allocated (inode)
+  '|
+}
+
+VETH_MOVED: "VETH_MOVED_IN" {
+  tooltip: "Parent moved eth0 into namespace via IFLA_NET_NS_PID"
+  label: |'md
+    **STATE: VETH_MOVED_IN**
+    ---
+    *Invariants:*
+    - lo: **DOWN**
+    - eth0: **DOWN** (Link Only)
+    - MAC: Assigned by host
+    - IP: **NONE**
+  '|
+}
+
+LO_UP: "LOOPBACK_UP" {
+  tooltip: "localhost connectivity established"
+  label: |'md
+    **STATE: LOOPBACK_UP**
+    ---
+    *Invariants:*
+    - lo: **UP** (127.0.0.1/8)
+    - eth0: **DOWN**
+    - Local Table: Populated with 127.0.0.1
+  '|
+}
+
+ETH0_UP: "ETH0_UP" {
+  tooltip: "Interface link active"
+  label: |'md
+    **STATE: ETH0_UP**
+    ---
+    *Invariants:*
+    - lo: **UP**
+    - eth0: **UP** (No IP)
+    - OperState: **LOWER_UP** (Carrier detected)
+  '|
+}
+
+IP_ASSIGNED: "IP_ASSIGNED" {
+  tooltip: "Namespace local IP set on eth0"
+  label: |'md
+    **STATE: IP_ASSIGNED**
+    ---
+    *Invariants:*
+    - eth0: **10.200.0.2/16**
+    - Scope: Global
+    - Broadcast: 10.200.255.255
+    - ARP: Active
+  '|
+}
+
+ROUTE_SET: "DEFAULT_ROUTE_SET" {
+  tooltip: "Gateway configured via bridge/host veth"
+  label: |'md
+    **STATE: DEFAULT_ROUTE_SET**
+    ---
+    *Invariants:*
+    - Dest: 0.0.0.0/0
+    - Next-Hop: **10.200.0.1**
+    - Dev: eth0
+    - Route Metric: 100
+  '|
+}
+
+CONNECTED: "FULLY_CONNECTED" {
+  shape: rectangle
+  tooltip: "Workload ready for L4-L7 traffic"
+  style: {
+    double-border: true
+    fill: "#d4f1f9"
+    stroke: "#2980b9"
+    stroke-width: 3
+  }
+  label: |'md
+    **STATE: FULLY_CONNECTED**
+    ---
+    *Invariants:*
+    - ICMP: Reachable from Host/Ext
+    - TCP/UDP: Established
+    - DNS: Resolved via /etc/resolv.conf
+    - MTU: 1500 (Standard Veth)
+  '|
+}
+
+ERROR_STATE: "CONFIG_ERROR" {
+  style: {
+    fill: "#ffcccc"
+    stroke: red
+    stroke-width: 4
+  }
+  label: |'md
+    **STATE: ERROR**
+    ---
+    *Failure Modes:*
+    - **EPERM**: Namespace count limit
+    - **ENODEV**: Device vanished
+    - **EADDRINUSE**: IP Conflict
+    - Action: **ROLLBACK REQ**
+  '|
+}
+
+# Transitions (Provisioning Path)
+START -> CREATED: "clone(CLONE_NEWNET)" {
+  style.stroke-width: 2
+}
+
+CREATED -> VETH_MOVED: "Parent: RTM_NEWLINK\n(IFLA_NET_NS_PID)" {
+  style.font-size: 11
+}
+
+VETH_MOVED -> LO_UP: "ip link set lo up" {
+  style: {
+    stroke: "#3498db"
+    font-color: "#3498db"
+    bold: true
+  }
+}
+
+LO_UP -> ETH0_UP: "ip link set eth0 up" {
+  label: "Link Set UP"
+}
+
+ETH0_UP -> IP_ASSIGNED: "ip addr add 10.200.0.2/16" {
+  label: "L3 Addressing"
+}
+
+IP_ASSIGNED -> ROUTE_SET: "ip route add default\nvia 10.200.0.1" {
+  label: "Routing Table Update"
+}
+
+ROUTE_SET -> CONNECTED: "Ping 8.8.8.8 (SUCCESS)" {
+  style: {
+    stroke: "#27ae60"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+# Cleanup Sequence (Dashed Reverse Path)
+CONNECTED -> ROUTE_SET: "SIGTERM / Close" {
+  style.stroke-dash: 3
+}
+
+ROUTE_SET -> CREATED: "ip link del eth0" {
+  label: "Cleanup Veth pair"
+  style: {
+    stroke-dash: 3
+    font-size: 11
+  }
+}
+
+CREATED -> START: "Namespace Destroy" {
+  style.stroke-dash: 3
+}
+
+# Error Handling
+CREATED -> ERROR_STATE: "EPERM / sysctl failure" {
+  style.stroke: red
+}
+
+ETH0_UP -> ERROR_STATE: "ENODEV (Veth unplugged)" {
+  style.stroke: red
+}
+
+IP_ASSIGNED -> ERROR_STATE: "RTNETLINK: File exists" {
+  style.stroke: red
+}
+
+# Illegal State Transitions (Verification Logic)
+CREATED -> CONNECTED: "ILLEGAL: No IP/Route" {
+  style: {
+    stroke: red
+    stroke-dash: 5
+    opacity: 0.6
+  }
+}
+
+VETH_MOVED -> IP_ASSIGNED: "ILLEGAL: lo is DOWN" {
+  style: {
+    stroke: red
+    stroke-dash: 5
+    opacity: 0.6
+  }
+}
+
+# Metadata / Performance Specs
+timing: {
+  label: |'md
+    ### Network Stack Performance SLAs
+    | Phase | Latency (P99) | syscall | Mechanism |
+    | :--- | :--- | :--- | :--- |
+    | NS Create | < 45μs | `unshare` | Kernel Alloc |
+    | Veth Setup | < 120μs | `netlink` | Parent Link |
+    | IP Stack | < 1.2ms | `ioctl` | Stack Init |
+    | **Total** | **< 2.5ms** | - | Handshake |
+  '|
+  near: bottom-center
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#dee2e6"
+    font-size: 10
+  }
+}

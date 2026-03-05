@@ -1,0 +1,154 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    sketch: false
+    pad: 20
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# NETWORK SETUP SEQUENCE DIAGRAM: CONTAINER NETWORKING (MILESTONE 3)
+# Goal: Bridge creation, Veth pair plumbing, and NetNS migration via Netlink (RTM)
+# ---------------------------------------------------------------------------------------
+
+network_setup: {
+  shape: sequence_diagram
+  label: "Container Network Namespace Initialization Sequence"
+
+  # Participants / Actors
+  parent: "Parent Process\n(Host PID Namespace)" {
+    shape: person
+    icon: https://icons.terrastruct.com/essentials%2F005-programmer.svg
+    style: {
+      fill: "#E1D5E7"
+      stroke: "#9673A6"
+      stroke-width: 2
+    }
+  }
+  
+  kernel: "Linux Kernel\n(RTNetlink / Stack)" {
+    shape: rectangle
+    icon: https://icons.terrastruct.com/tech%2F051-kernel.svg
+    style: {
+      fill: "#DAE8FC"
+      stroke: "#6C8EBF"
+      stroke-width: 2
+      double-border: true
+    }
+  }
+  
+  child: "Child Process\n(Target NetNS)" {
+    shape: person
+    icon: https://icons.terrastruct.com/essentials%2F003-user.svg
+    style: {
+      fill: "#D5E8D4"
+      stroke: "#82B366"
+      stroke-width: 2
+    }
+  }
+
+  # 1. Host Setup Phase
+  "Host Bridge & Veth Creation": {
+    parent -> kernel: "socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE): fd=3"
+    parent -> kernel: "RTM_NEWLINK (ctr0): ifinfomsg{type: BRIDGE, state: NEW}"
+    parent -> kernel: "RTM_NEWADDR (10.200.0.1/16): ifaddrmsg{dev: ctr0}"
+    parent -> kernel: "RTM_NEWLINK (ctr0): ifinfomsg{flags: IFF_UP}"
+    
+    parent -> kernel: "RTM_NEWLINK (veth_host <-> eth0): IFLA_INFO_KIND='veth'" {
+      style: {
+        stroke: "#6C8EBF"
+        bold: true
+      }
+    }
+    
+    parent -> kernel: "RTM_SETLINK (veth_host): { IFLA_MASTER: ctr0_idx }"
+    parent -> kernel: "RTM_NEWLINK (veth_host): { flags: IFF_UP }"
+  }
+
+  # 2. Namespace Migration
+  "Namespace Migration": {
+    parent -> kernel: "RTM_SETLINK (eth0): { IFLA_NET_NS_PID: child_pid }" {
+      style: {
+        stroke: "#D79B00"
+        stroke-width: 3
+      }
+    }
+    kernel -> child: "Link eth0 migration: [NETDEV_REGISTER event]"
+  }
+
+  # 3. Process Synchronization
+  "Process Synchronization": {
+    parent -> child: "write(sync_pipe, 'G', 1) -> child blocks on read()" {
+      style.stroke-dash: 5
+    }
+  }
+
+  # 4. Container Configuration Phase
+  "Container Interior Setup": {
+    child -> kernel: "RTM_NEWLINK (lo): { flags: IFF_UP }"
+    child -> kernel: "RTM_NEWLINK (eth0): { flags: IFF_UP }"
+    child -> kernel: "RTM_NEWADDR (10.200.0.2/16): { dev: eth0 }"
+    child -> kernel: "RTM_NEWROUTE: { RTA_GATEWAY: 10.200.0.1, RTA_DST: 0.0.0.0/0 }" {
+      style: {
+        stroke: "#82B366"
+        stroke-width: 2
+      }
+    }
+  }
+
+  # 5. Outbound Connectivity (NAT)
+  "NAT & IP Forwarding": {
+    parent -> kernel: "sysctl -w net.ipv4.ip_forward=1"
+    parent -> kernel: "iptables -t nat -A POSTROUTING -s 10.200.0.0/16 ! -o ctr0 -j MASQUERADE" {
+      tooltip: "Enable Source NAT for internal container subnet"
+    }
+  }
+
+  # Final State Note
+  child."Final State: Net Ready\nIP: 10.200.0.2\nGW: 10.200.0.1": {
+    style: {
+      fill: "#FFF2CC"
+      stroke: "#D6B656"
+      bold: true
+    }
+  }
+}
+
+# Documentation and Metadata
+metadata: |md
+  ### Network Implementation Specification (Milestone 3)
+  
+  | Component | Link Type | Netlink Attribute | Description |
+  | :--- | :--- | :--- | :--- |
+  | **Bridge (ctr0)** | Virtual L2 | `IFF_BRIDGE` | Virtual switch for the pod network |
+  | **veth_host** | Veth Endpoint | `IFLA_MASTER` | Bound to `ctr0` bridge |
+  | **eth0** | Veth Endpoint | `IFLA_NET_NS_PID` | Moved from Host to Child NetNS |
+  | **SNAT** | Iptables Rule | `MASQUERADE` | Rewrite source to Host IP for outbound |
+  
+  **Technical Invariant:** 
+  The child process MUST wait for the parent to complete the `RTM_SETLINK` migration of `eth0` 
+  before attempting to bind addresses or set the interface to `UP` state. Failure to sync 
+  results in `ENODEV`.
+|
+
+# FIX: Use constant value for near as ELK does not support relative object positioning
+metadata.near: bottom-center
+metadata.style: {
+  stroke: "#CCCCCC"
+  fill: "#F9F9F9"
+  border-radius: 5
+  font-size: 14
+}
+
+# Styling globs for sequence consistency
+network_setup.**.(** -> **)[*]: {
+  style.font-size: 12
+  style.font: mono
+}
+
+# Highlight the Kernel's role
+network_setup.kernel.style: {
+  fill: "linear-gradient(to bottom right, #DAE8FC, #B2C9EB)"
+}

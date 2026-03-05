@@ -1,0 +1,237 @@
+direction: right
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    sketch: false
+    pad: 20
+  }
+}
+
+title: {
+  shape: text
+  near: top-center
+  label: |md
+    # Bind-Mount-to-Self Mechanism
+    ### Required for `pivot_root()` in Linux Container Runtimes
+  |
+  style: {
+    font-size: 24
+    bold: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 1: BEFORE STATE
+# -----------------------------------------------------------------------------
+before: "STEP 1: INITIAL STATE (Normal Directory)" {
+  vfs: "VFS Path Tree" {
+    root: "/" {
+      shape: folder
+      style.fill: "#F3F4F6"
+    }
+    target: "/newroot" {
+      shape: folder
+      tooltip: "Standard Directory Node"
+      style: {
+        fill: "#E8F4FD"
+        stroke: "#2B6CB0"
+        stroke-width: 2
+      }
+    }
+    root -> target
+  }
+
+  mount_table: {
+    shape: class
+    label: |md
+      **Kernel Mount Table (struct mount)**
+      | Source | Mount Point | vfsmount_ptr | Flags |
+      | :--- | :--- | :--- | :--- |
+      | /dev/sda1 | / | 0xAAAA1111 | rw, relatime |
+      | (none) | **/newroot** | **0x00000000** | N/A |
+    |
+  }
+
+  status_note: {
+    shape: text
+    label: |md
+      **Status: pivot_root() failure**
+      `pivot_root("/newroot", ...)` 
+      Returns: `EINVAL` 
+      Reason: Path is not a mount point.
+    |
+    style: {
+      font-size: 14
+      italic: true
+      font-color: "#B94A48"
+      bold: true
+      stroke: "#F2DEDE"
+      fill: "#F2DEDE"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 2: THE KERNEL OPERATION
+# -----------------------------------------------------------------------------
+operation: "STEP 2: BIND-MOUNT EXECUTION" {
+  style: {
+    fill: "#FFFDF0"
+    stroke: "#F6E05E"
+  }
+
+  syscall: "Userland Syscall" {
+    shape: code
+    label: |c
+      mount("/newroot", "/newroot", NULL, MS_BIND, NULL);
+    |
+    style.fill: "#FFF3CD"
+  }
+
+  kernel_logic: "Kernel: do_loopback_mount()" {
+    shape: class
+    label: |md
+      **Execution Path**
+      1. `path_lookup("/newroot")` -> returns `path` struct
+      2. `lock_mount_hash()`
+      3. **alloc_vfsmount()**: Create new `struct mount`
+      4. `mnt->mnt_sb = path.mnt->mnt_sb`: Copy Superblock
+      5. `mnt->mnt_root = path.dentry`: Point to directory
+      6. `commit_tree(mnt)`: Attach to mount tree
+    |
+    style.fill: "#FFFFFF"
+  }
+  
+  syscall -> kernel_logic: "Trap to Ring 0"
+}
+
+# -----------------------------------------------------------------------------
+# STEP 3: AFTER STATE
+# -----------------------------------------------------------------------------
+after: "STEP 3: POST-BIND STATE (Mount Point Created)" {
+  vfs: "VFS Path Tree" {
+    root: "/" {
+      shape: folder
+      style.fill: "#F3F4F6"
+    }
+    target: "/newroot" {
+      shape: folder
+      label: "/newroot\n(Mount Point)"
+      style: {
+        fill: "#D4EDDA"
+        stroke: "#155724"
+        stroke-width: 4
+        double-border: true
+      }
+    }
+    root -> target
+  }
+
+  mount_table: {
+    shape: class
+    label: |md
+      **Kernel Mount Table (Updated)**
+      | Source | Mount Point | vfsmount_ptr | Flags |
+      | :--- | :--- | :--- | :--- |
+      | /dev/sda1 | / | 0xAAAA1111 | rw |
+      | **/newroot** | **/newroot** | **0xBBBB2222** | bind |
+    |
+    style.stroke: "#28A745"
+  }
+
+  status_note: {
+    shape: text
+    label: |md
+      **Status: pivot_root() Ready**
+      VFS node now associated with a `vfsmount` struct.
+    |
+    style: {
+      font-size: 14
+      italic: true
+      font-color: "#155724"
+      bold: true
+      stroke: "#D4EDDA"
+      fill: "#D4EDDA"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 4: RESULTING CAPABILITY
+# -----------------------------------------------------------------------------
+final_action: "STEP 4: EXECUTE PIVOT_ROOT" {
+  pivot_call: "pivot_root(\".\", \"old_root\")" {
+    shape: code
+    style.fill: "#D4EDDA"
+    style.stroke: "#28A745"
+  }
+  
+  verification: "Kernel Check (fs/namespace.c)" {
+    shape: list
+    label: |md
+      1. Is `new_root` a mount point? (0xBBBB2222 -> YES)
+      2. Does `new_root` have a parent? (root / -> YES)
+      3. **Result**: `current->fs->root = new_root`
+    |
+  }
+  
+  pivot_call -> verification: "Validates"
+}
+
+# -----------------------------------------------------------------------------
+# FLOW CONNECTIONS
+# -----------------------------------------------------------------------------
+
+before -> operation: "Invoke MS_BIND" {
+  style: {
+    stroke-width: 4
+    stroke: "#4A5568"
+  }
+}
+
+operation -> after: "vfsmount struct allocated" {
+  style: {
+    stroke: "#28A745"
+    stroke-width: 4
+  }
+}
+
+after -> final_action: "Capability Unlocked" {
+  style: {
+    stroke: "#28A745"
+    stroke-width: 4
+    animated: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# TECHNICAL LEGEND
+# -----------------------------------------------------------------------------
+legend: {
+  near: bottom-right
+  shape: text
+  label: |md
+    ### Implementation Logic Note
+    The `pivot_root` syscall requires that the target `new_root` is a **mount point**.
+    Normal directories in a rootfs do not have their own `vfsmount` entries in the kernel.
+    
+    A **bind-mount-to-self** (`mount --bind /dir /dir`) forces the kernel to:
+    1. Create a loopback mount entry.
+    2. Allocate a `struct mount` object for that path.
+    3. Satisfy the VFS check `path_has_submounts()` or equivalent mount-point checks.
+    
+    This is the standard pattern used by `runc` and `containerd` during the setup of a container's isolated root.
+  |
+  style: {
+    stroke-dash: 3
+    font-size: 12
+    fill: "#F7FAFC"
+  }
+}
+
+# Styling global rules
+***.style.font-size: 14
+(*** -> ***)[*].style.font-size: 12

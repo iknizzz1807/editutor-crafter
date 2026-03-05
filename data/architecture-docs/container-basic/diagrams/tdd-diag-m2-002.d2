@@ -1,0 +1,224 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    layout-engine: elk
+    pad: 40
+  }
+  colors: {
+    header: "#673AB7"
+    data: "#2196F3"
+    free: "#4CAF50"
+    padding: "#9E9E9E"
+    pointer: "#FF9800"
+    critical: "#D32F2F"
+  }
+}
+
+title: {
+  shape: text
+  label: ||md
+    # TECHNICAL SPECIFICATION: CHROOT ESCAPE VS. PIVOT_ROOT ISOLATION
+    ## Analysis of Mount Namespace Boundaries and VFS Traversal
+  ||
+  near: top-center
+}
+
+# 1. Memory-Mapped Filesystem Hierarchy (Host View)
+# Representing the VFS Inode tree as a layout for engineering analysis
+host_fs_layout: {
+  label: "Kernel VFS Node Layout (Host View)"
+  style: {
+    stroke-width: 2
+    fill: "#f9f9f9"
+    stroke-dash: 2
+  }
+
+  root_node: "VFS_ROOT (/)\nOffset: 0x0000" {
+    style: {
+      fill: ${colors.header}
+      font-color: white
+      stroke-width: 4
+      bold: true
+    }
+  }
+  
+  etc_node: "etc/\nOffset: 0x0800" {
+    style.fill: ${colors.data}
+  }
+  
+  var_node: "var/\nOffset: 0x1000" {
+    style.fill: ${colors.data}
+  }
+
+  jail_node: "CHROOT_JAIL\n(/var/lib/container)\nOffset: 0x2000" {
+    style: {
+      fill: ${colors.data}
+      stroke: ${colors.header}
+      stroke-width: 4
+      double-border: true
+    }
+    
+    bin: "bin/"
+    lib: "lib/"
+    malicious: "MALICIOUS_DIR\n(Attack Entry)\nOffset: 0x2300" {
+      style.fill: ${colors.critical}
+      style.font-color: white
+      style.bold: true
+    }
+  }
+
+  root_node -> etc_node: "Inode Reference"
+  root_node -> var_node: "Inode Reference"
+  var_node -> jail_node: "Mount/Subdir"
+  jail_node -> jail_node.malicious: "mkdir(2)"
+}
+
+# 2. Algorithm State: The Escape Primitive
+# Numbered steps matching technical exploit sequence
+attack_sequence: {
+  label: "Exploit State Machine: chroot(2) Jailbreak Sequence"
+  style.fill: "#fff4f4"
+
+  step_1: {
+    label: "1. INITIAL JAIL"
+    process: ||md
+      **PID 101 Context**
+      - `task_struct->fs->root`: `0x2000`
+      - `task_struct->fs->pwd`: `0x2000`
+    ||
+    style.fill: ${colors.data}
+  }
+
+  step_2: {
+    label: "2. NESTED CHROOT"
+    process: ||md
+      **Execution: chroot('0x2300')**
+      - *Process holds FD to 0x2000*
+      - *New Root: 0x2300*
+      - *CWD: 0x2000 (NOW OUTSIDE!)*
+    ||
+    style.fill: ${colors.critical}
+    style.bold: true
+    style.stroke: black
+    style.stroke-width: 3
+  }
+
+  step_3: {
+    label: "3. ESCAPE TRAVERSAL"
+    process: ||md
+      **Execution: chdir('../../../')**
+      - *Relative lookup ignores new root*
+      - Pointer resolved to **0x0000**
+    ||
+    style.fill: ${colors.pointer}
+  }
+
+  step_4: {
+    label: "4. CAPTURE HOST"
+    process: ||md
+      **Execution: chroot('.')**
+      - **Root set to 0x0000**
+      - **ACCESS: FULL_HOST_VFS**
+    ||
+    style.fill: ${colors.critical}
+    style.stroke-width: 5
+    style.double-border: true
+  }
+
+  step_1 -> step_2: "open(.) + chroot(subdir)"
+  step_2 -> step_3: "VFS Path Resolution"
+  step_3 -> step_4: "Final Boundary Break"
+}
+
+# 3. Technical Comparison Matrix
+feature_comparison: {
+  label: "Isolation Mechanism Comparison Matrix"
+  
+  comparison_table: {
+    shape: rectangle
+    label: ||md
+      | Feature | chroot(2) | pivot_root(2) |
+      | :--- | :--- | :--- |
+      | **Isolation Type** | Logical View Change | Mount Namespace Mutation |
+      | **CWD handling** | Process-specific, not updated | System-enforced move |
+      | **Host Root Visibility** | Accessible via `..` traversal | Unmounted from namespace |
+      | **Kernel Overhead** | Minimal (Pointer swap) | Higher (Mount manipulation) |
+      | **Security Boundary** | Advisory Only (NOT SECURE) | Strong (Container Grade) |
+      | **Namespace Support** | None | Required |
+    ||
+    style.fill: "#F5F5F5"
+    style.font: mono
+  }
+}
+
+# 4. pivot_root(2) Mechanical Process
+pivot_logic: {
+  label: "pivot_root(2) Correct Implementation Logic"
+  direction: right
+  
+  state_a: "STATE: PRE-PIVOT\n- Namespace Root: Host (/)\n- Target: Container FS (/mnt/iso)" {
+    style.fill: ${colors.padding}
+    style.stroke-dash: 5
+  }
+  
+  action: "pivot_root('.', 'old_root')" {
+    shape: parallelogram
+    style.fill: ${colors.pointer}
+    style.bold: true
+  }
+  
+  state_b: "STATE: POST-PIVOT\n- New Root: Container (/)\n- Host Root: Moved to (/old_root)" {
+    style.fill: ${colors.data}
+    style.stroke: ${colors.header}
+  }
+  
+  action_final: "umount -l /old_root" {
+    shape: parallelogram
+    style.fill: ${colors.critical}
+    style.font-color: white
+  }
+  
+  state_isolated: "STRICT ISOLATION\nHost Filesystem Physically Unreachable\nin this Mount Namespace" {
+    style.fill: ${colors.free}
+    style.bold: true
+    style.stroke-width: 4
+  }
+
+  state_a -> action: "Invoked by Runc/Containerd"
+  action -> state_b: "Atomic Mount Swap"
+  state_b -> action_final: "Detach Host FS"
+  action_final -> state_isolated: "Enforce Namespace Integrity"
+}
+
+# 5. Global Connectivity and Annotations
+host_fs_layout -> attack_sequence: "Vulnerability Path (Inode 0x2300)" {
+  style.stroke: ${colors.critical}
+  style.stroke-width: 3
+  style.animated: true
+}
+
+attack_sequence -> feature_comparison: "Security Audit Mapping"
+
+feature_comparison -> pivot_logic: "Recommended Isolation Fix" {
+  style.stroke: ${colors.free}
+  style.stroke-width: 4
+}
+
+# High-level summary annotation box
+annotation_box: {
+  shape: rectangle
+  label: ||md
+    ### SUMMARY OF VULNERABILITY
+    The `chroot` system call only updates the `task_struct->fs->root` pointer. It does not modify the mount namespace. If a process holds a file descriptor referencing a path outside the new root, or navigates up using relative paths before the kernel can re-verify the root boundary, the process can re-gain access to the host filesystem.
+    
+    **pivot_root** solves this by physically moving the mount point and allowing the host's old root to be unmounted entirely from the container's namespace.
+  ||
+  near: bottom-center
+  style: {
+    fill: "#FFF9C4"
+    stroke: "#FBC02D"
+    border-radius: 10
+    shadow: true
+  }
+}

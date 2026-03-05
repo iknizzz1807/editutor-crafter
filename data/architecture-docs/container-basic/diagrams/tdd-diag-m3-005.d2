@@ -1,0 +1,205 @@
+layout-engine: elk
+direction: down
+
+vars: {
+  d2-config: {
+    theme-id: 0
+    center: true
+    pad: 20
+  }
+}
+
+# --- STYLING CLASSES (Technical Grade) ---
+classes: {
+  application: {
+    style: {
+      fill: "#f3f4f6"
+      stroke: "#374151"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  kernel_mechanism: {
+    style: {
+      fill: "#eff6ff"
+      stroke: "#2563eb"
+      stroke-width: 2
+      font-color: "#1e40af"
+    }
+  }
+  filesystem: {
+    style: {
+      fill: "#faf5ff"
+      stroke: "#7c3aed"
+      stroke-width: 2
+    }
+  }
+  network_packet: {
+    style: {
+      stroke: "#f97316"
+      stroke-width: 4
+      animated: true
+      bold: true
+    }
+  }
+  boundary: {
+    style: {
+      stroke: "#9ca3af"
+      stroke-dash: 5
+      stroke-width: 2
+      fill: "#f9fafb"
+    }
+  }
+  success_path: {
+    style: {
+      stroke: "#10b981"
+      stroke-width: 4
+      animated: true
+    }
+  }
+}
+
+# --- DIAGRAM STRUCTURE ---
+
+Container: {
+  label: "Isolated Container Context (Mnt/Net/UTS Namespaces)"
+  class: boundary
+
+  App: "Container Application\n(Process ID: 1234)" {
+    class: application
+    tooltip: "Initiates syscall getaddrinfo()"
+  }
+
+  Glibc: "Standard Library (glibc/musl)\nShared Object (.so)" {
+    class: application
+    tooltip: "Logic for DNS resolution order"
+  }
+
+  RootFS: "Filesystem Layer (chroot/pivot_root)" {
+    class: boundary
+    ResolvConf: "/etc/resolv.conf" {
+      class: filesystem
+      label: |md
+        ### /etc/resolv.conf
+        - **nameserver:** 8.8.8.8
+        - **search:** localdomain
+        - **options:** ndots:5
+      |
+    }
+  }
+
+  NetNS: "Network Stack (Isolated Net Namespace)" {
+    class: boundary
+    UDP_Socket: "UDP Socket Handle\n(Src: 10.200.0.2:54321)" {
+      class: kernel_mechanism
+    }
+    Container_Eth0: "eth0 Interface\nMAC: 02:42:ac:11:00:02\nIP: 10.200.0.2/16" {
+      class: kernel_mechanism
+    }
+  }
+}
+
+Host: {
+  label: "Linux Host Node (Kernel Space)"
+  class: boundary
+
+  VethHost: "veth_c12345 (Host End)\nPeer of Container eth0" {
+    class: kernel_mechanism
+  }
+
+  Bridge: "Bridge Interface (ctr0)\nMAC: 02:42:7b:xx:xx:xx\nIP: 10.200.0.1 (GW)" {
+    class: kernel_mechanism
+  }
+
+  NAT: "Kernel Netfilter Engine\n(nf_conntrack / SNAT)" {
+    class: kernel_mechanism
+    label: |md
+      ### IPTABLES POSTROUTING
+      **Chain:** MASQUERADE
+      **State:** New/Established
+      **Map:** 10.200.0.2 -> Host_IP
+    |
+  }
+
+  PhysicalNIC: "Physical NIC (eth0)\nIP: 192.168.1.100\nMTU: 1500" {
+    class: kernel_mechanism
+  }
+}
+
+ExternalDNS: "Recursive Resolver\n(Google DNS 8.8.8.8:53)" {
+  shape: cloud
+  style: {
+    fill: "#fff7ed"
+    stroke: "#ea580c"
+  }
+}
+
+# --- DATA FLOW SEQUENCES ---
+
+# Step 1-3: Local Configuration Lookup
+Container.App -> Container.Glibc: "1. getaddrinfo(\"google.com\")"
+Container.Glibc -> Container.RootFS.ResolvConf: "2. stat() + open()"
+Container.RootFS.ResolvConf -> Container.Glibc: "3. Parse IP: 8.8.8.8"
+
+# Step 4-5: Packet Encapsulation
+Container.Glibc -> Container.NetNS.UDP_Socket: "4. sendto(fd, payload, ...)"
+Container.NetNS.UDP_Socket -> Container.NetNS.Container_Eth0: "5. L3 Packet Construction"
+
+# Step 6: Bridge Transit
+Container.NetNS.Container_Eth0 -> Host.VethHost: "6. L2 Frame Forward (Veth Pair)" {
+  class: network_packet
+}
+
+# Step 7-9: Routing and NAT
+Host.VethHost -> Host.Bridge: "7. Bridge Learning / Ingress"
+Host.Bridge -> Host.NAT: "8. IP Forwarding (Routing Table)"
+Host.NAT -> Host.PhysicalNIC: "9. SNAT Rewrite (Masquerade)" {
+  class: network_packet
+}
+
+# Step 10-11: External Network
+Host.PhysicalNIC -> ExternalDNS: "10. UDP Query (Port 53)" {
+  class: network_packet
+}
+ExternalDNS -> Host.PhysicalNIC: "11. DNS A-Record Response" {
+  class: success_path
+}
+
+# Step 12-15: Reverse Path
+Host.PhysicalNIC -> Host.NAT: "12. Reverse DNAT (Conntrack Table)"
+Host.NAT -> Host.Bridge: "13. Routing to Gateway Interface" {
+  class: success_path
+}
+Host.Bridge -> Host.VethHost: "14. L2 Broadcast to Port"
+Host.VethHost -> Container.NetNS.Container_Eth0: "15. Namespace Ingress" {
+  class: success_path
+}
+
+# Step 16-17: Application Delivery
+Container.NetNS.Container_Eth0 -> Container.Glibc: "16. recvfrom() Triggered"
+Container.Glibc -> Container.App: "17. Return IPv4: 142.250.x.x"
+
+# --- ANNOTATIONS ---
+Explanation: |md
+  ## DNS Resolution Technical Analysis
+  
+  ### Critical Path Metrics
+  - **Namespace Latency:** Context switching between NetNS and Host adds negligible (~10-20µs) overhead.
+  - **Memory Impact:** `glibc` resolution caches file handles internally; `/etc/resolv.conf` is checked for mtime changes.
+  
+  ### Implementation Notes for Engineers
+  1. **NSSwitch Configuration:** `/etc/nsswitch.conf` determines if `files` or `dns` is checked first.
+  2. **Socket Timeout:** Default UDP timeout is 5s (managed by `RES_TIMEOUT` in glibc).
+  3. **Conntrack Exhaustion:** High-frequency DNS queries can fill the host `nf_conntrack` table, leading to dropped packets at Step 9/12.
+
+  **Common Failure Modes:**
+  - **MTU Mismatch:** DNS responses over 1500 bytes (rare) might be dropped if host/container MTUs don't match.
+  - **Loops:** Search domains in Step 3 can cause N+1 queries for every single resolution.
+| {
+  near: bottom-center
+  style: {
+    stroke: "#3b82f6"
+    fill: "#f0f9ff"
+    font-size: 14
+  }
+}

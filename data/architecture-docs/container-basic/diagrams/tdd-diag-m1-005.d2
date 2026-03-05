@@ -1,0 +1,220 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: "/proc/self/status NSpid Field Analysis\nPID Namespace Visibility in Container Isolation"
+  shape: text
+  near: top-center
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+
+# 1. SPECIFICATION AND KERNEL STRUCTURE
+kernel_structures: {
+  label: "Kernel Memory Object: struct pid"
+  
+  pid_struct_layout: {
+    shape: sql_table
+    style.fill: "#E1F5FE"
+    
+    header: "Offset | Field | Size" {style.font-color: purple}
+    row1: "0x00 | count (atomic_t) | 4B"
+    row2: "0x04 | level (unsigned int) | 4B"
+    row3: "0x08 | tasks[3] (hlist_head) | 24B"
+    row4: "0x20 | rcu (rcu_head) | 16B"
+    padding: "0x30 | padding | 16B" {style.fill: "#EEEEEE"}
+    boundary: "--- 64B CACHE LINE BOUNDARY ---" {style.stroke-dash: 5}
+    row5: "0x40 | numbers[1] (struct upid) | 16B" {style.fill: "#BBDEFB"}
+  }
+
+  format_spec: {
+    label: |'md
+### Field Format: `NSpid: <NSpid> <HPid> ...`
+The NSpid field represents the process identifier translated into each successive PID namespace in the hierarchy.
+
+| Index | Context | Kernel Function | Description |
+|:---:|:---|:---|:---|
+| **[0]** | Leaf NS | `task_pid_nr_ns()` | PID as seen by the process itself. |
+| **[1]** | Parent NS | `ns_at_level(ns, 1)` | PID as seen by the parent namespace. |
+| **[N]** | Root NS | `task_tgid_nr()` | The global PID (Host PID). |
+'|
+    shape: rectangle
+    style.fill: "#FFFFFF"
+    style.stroke: "#90CAF9"
+  }
+}
+
+# 2. INSIDE CONTAINER VIEW
+inside_view: {
+  label: "VIEW: INSIDE CONTAINER (PID NAMESPACE LEVEL 1)"
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+  style.stroke-width: 4
+
+  proc_status: {
+    label: |'md
+**Source: `/proc/self/status`**
+text
+Name:   nginx
+State:  S (sleeping)
+Tgid:   1
+Ngid:   0
+Pid:    1
+PPid:   0
+...
+NSpid:  1	12345
+
+'|
+    shape: code
+    style.fill: "#1B1B1B"
+    style.font-color: "#00FF00"
+  }
+
+  field_analysis: {
+    label: "NSpid Vector Analysis (Depth=1)"
+    shape: sql_table
+    header: "Index | Value | Namespace"
+    idx0: "0 | 1 | Child (Level 1)" {style.fill: "#C8E6C9"}
+    idx1: "1 | 12345 | Root (Level 0)" {style.fill: "#BBDEFB"}
+    
+    style.fill: "#FFFFFF"
+  }
+
+  internal_note: {
+    label: |'md
+> **Logic:**
+> Kernel iterates from `ns->level` (1) 
+> up to `current_ns->level` (1). 
+> Result: `[1, 12345]`
+'|
+    shape: text
+    style.italic: true
+    style.font-size: 14
+  }
+
+  proc_status -> field_analysis: "Parsing Logic"
+}
+
+# 3. OUTSIDE CONTAINER VIEW
+outside_view: {
+  label: "VIEW: HOST SYSTEM (PID NAMESPACE LEVEL 0)"
+  style.fill: "#FFEBEE"
+  style.stroke: "#F44336"
+  style.stroke-width: 4
+
+  proc_status_host: {
+    label: |'md
+**Source: `/proc/12345/status`**
+text
+Name:   nginx
+State:  S (sleeping)
+Tgid:   12345
+Ngid:   0
+Pid:    12345
+PPid:   12340
+...
+NSpid:  12345
+
+'|
+    shape: code
+    style.fill: "#1B1B1B"
+    style.font-color: "#00FF00"
+  }
+
+  field_analysis_host: {
+    label: "NSpid Vector Analysis (Depth=0)"
+    shape: sql_table
+    header: "Index | Value | Namespace"
+    idx0: "0 | 12345 | Root (Level 0)" {style.fill: "#BBDEFB"}
+    
+    style.fill: "#FFFFFF"
+  }
+
+  internal_note_host: {
+    label: |'md
+> **Logic:**
+> From host context, the `current` 
+> process is in Level 0. Loop only 
+> prints the global PID.
+'|
+    shape: text
+    style.italic: true
+    style.font-size: 14
+  }
+
+  proc_status_host -> field_analysis_host: "Parsing Logic"
+}
+
+# 4. DATA TRANSITION MAPPING
+namespace_mapping: {
+  label: "PID Namespace Translation Map"
+  style.fill: "#FFF3E0"
+  style.stroke: "#FF9800"
+
+  host_pid: "Host Context\nPID: 12345" {
+    shape: circle
+    style.fill: "#2196F3"
+    style.font-color: "#FFFFFF"
+  }
+
+  container_pid: "Container Context\nPID: 1" {
+    shape: circle
+    style.fill: "#4CAF50"
+    style.font-color: "#FFFFFF"
+  }
+
+  host_pid -> container_pid: "Translation via upid.nr" {
+    style.stroke: "#FF9800"
+    style.stroke-width: 3
+    style.animated: true
+  }
+}
+
+# 5. KERNEL IMPLEMENTATION REFERENCE
+kernel_impl: {
+  label: "Kernel Source: fs/proc/array.c"
+  style.stroke: "#607D8B"
+  style.fill: "#ECEFF1"
+
+  code_snippet: |'c
+static void task_nspid(struct seq_file *m, struct task_struct *task)
+{
+    struct pid_namespace *ns = task_active_pid_ns(task);
+    int i;
+
+    seq_printf(m, "\nNSpid:");
+    /* i = starting level of the target task
+       looping up to the level of the reader (current) */
+    for (i = ns->level; i <= task_active_pid_ns(current)->level; i++)
+        seq_printf(m, "\t%d", task_tgid_nr_ns(task, ns_at_level(ns, i)));
+}
+'|
+    shape: code
+    style.fill: "#263238"
+    style.font-color: "#80CBC4"
+}
+
+# GLOBAL CONNECTIONS
+kernel_structures -> inside_view: "Specification"
+inside_view -> outside_view: "Context Comparison"
+outside_view -> namespace_mapping: "Data Resolution"
+namespace_mapping -> kernel_impl: "Source Implementation"
+
+# STYLING GLOBALS
+***: {
+  &shape: sql_table
+  style.stroke: "#0288D1"
+}
+
+***: {
+  &shape: code
+  style.border-radius: 5
+}

@@ -1,0 +1,288 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+title: {
+  label: "PID 1 Zombie Reaping State Machine\ncontainer-basic-m1: Namespace Isolation"
+  shape: text
+  near: top-center
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+
+# State definitions
+# Using "rectangle" with "border-radius" for standard UML state machine appearance
+states: {
+  running: {
+    label: "RUNNING"
+    shape: rectangle
+    style: {
+      fill: "#2E7D32"
+      stroke: "#1B5E20"
+      font-color: white
+      bold: true
+      border-radius: 12
+    }
+    desc: |'md'
+      **Normal Operation State**
+      - Container PID 1 executing main loop
+      - Children processes active in namespace
+      - Signal handler armed (SIGCHLD)
+      - `zombie_flag = 0` (volatile sig_atomic_t)
+    '|
+  }
+  sigchld_pending: {
+    label: "SIGCHLD\nPENDING"
+    shape: rectangle
+    style: {
+      fill: "#FF6F00"
+      stroke: "#E65100"
+      font-color: white
+      bold: true
+      border-radius: 12
+    }
+    desc: |'md'
+      **Signal Received**
+      - Child process terminated (exit/crash) or stopped
+      - Kernel delivers SIGCHLD to PID 1
+      - Handler executes: sets `zombie_flag = 1`
+      - Interrupts blocking syscalls (EINTR)
+    '|
+  }
+  entering_reap: {
+    label: "ENTERING\nREAP LOOP"
+    shape: rectangle
+    style: {
+      fill: "#1565C0"
+      stroke: "#0D47A1"
+      font-color: white
+      bold: true
+      border-radius: 12
+    }
+    desc: |'md'
+      **Loop Initialization**
+      - `zombie_flag = 0` (Atomic reset)
+      - Transition from signal context to main context
+      - Prepare non-blocking `waitpid` parameters
+    '|
+  }
+  reap_loop: {
+    label: "REAPING\nLOOP"
+    shape: rectangle
+    style: {
+      fill: "#C62828"
+      stroke: "#B71C1C"
+      font-color: white
+      bold: true
+      border-radius: 12
+    }
+    desc: |'md'
+      **Active Zombie Collection**
+      c
+      pid = waitpid(-1, &status, WNOHANG);
+      
+      - `-1`: Target any orphaned or direct child
+      - `WNOHANG`: Non-blocking check
+    '|
+  }
+  zombie_collected: {
+    label: "ZOMBIE\nCOLLECTED"
+    shape: rectangle
+    style: {
+      fill: "#6A1B9A"
+      stroke: "#4A148C"
+      font-color: white
+      bold: true
+      border-radius: 12
+    }
+    desc: |'md'
+      **Process Reaped**
+      - `pid > 0`: Descriptor retrieved
+      - Macros parse status:
+        - `WIFEXITED(s)`: Code returned
+        - `WIFSIGNALED(s)`: Killed by sig
+      - Resource table entry cleared by kernel
+    '|
+  }
+  check_complete: {
+    label: "CHECK\nCOMPLETE"
+    shape: diamond
+    style: {
+      fill: "#00695C"
+      stroke: "#004D40"
+      font-color: white
+      bold: true
+    }
+    desc: |'md'
+      **Iterator Logic**
+      - Check if `waitpid` returned > 0
+      - If yes: Jump back to `waitpid()`
+      - If no (0 or -1): Exit loop
+    '|
+  }
+  all_reaped: {
+    label: "ALL ZOMBIES\nREAPED"
+    shape: rectangle
+    style: {
+      fill: "#00838F"
+      stroke: "#006064"
+      font-color: white
+      bold: true
+      border-radius: 12
+    }
+    desc: |'md'
+      **Drain Complete**
+      - `waitpid` returned 0 (none left)
+      - Kernel table for namespace is clean
+      - No remaining defunct processes
+    '|
+  }
+}
+
+# Transitions
+states.running -> states.sigchld_pending: {
+  label: "Kernel: Child Exit"
+  style: {
+    stroke: "#FF6F00"
+    stroke-width: 3
+    animated: true
+  }
+}
+states.sigchld_pending -> states.entering_reap: {
+  label: "flag = 1"
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 2
+  }
+}
+states.entering_reap -> states.reap_loop: {
+  label: "reset flag"
+  style: {
+    stroke: "#C62828"
+    stroke-width: 2
+  }
+}
+states.reap_loop -> states.zombie_collected: {
+  label: "waitpid() > 0"
+  style: {
+    stroke: "#6A1B9A"
+    stroke-width: 3
+    animated: true
+  }
+}
+states.zombie_collected -> states.check_complete: {
+  label: "status parsed"
+  style: {
+    stroke: "#00695C"
+    stroke-width: 2
+  }
+}
+states.check_complete -> states.reap_loop: {
+  label: "iterate (pid > 0)"
+  style: {
+    stroke: "#C62828"
+    stroke-width: 3
+    animated: true
+    stroke-dash: 3
+  }
+}
+states.check_complete -> states.all_reaped: {
+  label: "break (pid <= 0)"
+  style: {
+    stroke: "#00838F"
+    stroke-width: 2
+  }
+}
+states.all_reaped -> states.running: {
+  label: "Return to blocking syscall"
+  style: {
+    stroke: "#2E7D32"
+    stroke-width: 2
+  }
+}
+
+# Code annotation box - Fixed: Using constant position for ELK
+code_reference: {
+  label: |'md'
+    ### Implementation Grade C Snippet
+    c
+    static volatile sig_atomic_t zombie_flag = 0;
+
+    void sigchld_handler(int sig) {
+        zombie_flag = 1;  // Handler context
+    }
+
+    static void reap_zombies(void) {
+        int status;
+        pid_t pid;
+        // The Reaping Loop (State: REAP_LOOP)
+        while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+            if (WIFEXITED(status)) {
+                log_exit(pid, WEXITSTATUS(status));
+            } else if (WIFSIGNALED(status)) {
+                log_signal(pid, WTERMSIG(status));
+            }
+        }
+    }
+    
+  '|
+  shape: rectangle
+  style: {
+    fill: "#1E1E1E"
+    stroke: "#424242"
+    font-color: "#E0E0E0"
+    multiple: true
+  }
+  near: top-right
+}
+
+# Legend - Fixed: Using constant position for ELK
+legend: {
+  label: |'md'
+    ### State Machine Invariants
+    | Color | Phase | Implementation Detail |
+    | :--- | :--- | :--- |
+    | 🟢 Green | Idle | Process blocking on `select()` or `epoll()` |
+    | 🟠 Orange | Interrupt | Kernel invokes `sigaction` handler |
+    | 🔵 Blue | Reset | `zombie_flag` cleared before syscall |
+    | 🔴 Red | Reaping | Non-blocking `waitpid` syscall in loop |
+    | 🟣 Purple | Harvest | Metadata extracted from child exit status |
+    | 🔷 Teal | Check | Loop termination logic based on PID return |
+
+    **Key Syscall Definitions:**
+    - `WNOHANG`: Do not block if no child has exited.
+    - `-1`: Wait for any child process in the current namespace.
+  '|
+  shape: rectangle
+  style: {
+    fill: "#263238"
+    stroke: "#37474F"
+    font-color: white
+  }
+  near: bottom-right
+}
+
+# Initial state indicator
+initial: {
+  label: "●"
+  shape: circle
+  style: {
+    fill: "#2E7D32"
+    stroke: "#1B5E20"
+  }
+  width: 25
+}
+initial -> states.running: {
+  label: "exec()"
+  style: {
+    stroke-width: 2
+    stroke: "#2E7D32"
+  }
+}

@@ -1,0 +1,193 @@
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    sketch: false
+    pad: 20
+  }
+}
+
+# CFS Bandwidth Controller: Algorithm State Diagram
+# Implementation logic for cpu.max = "50000 100000" (50% CPU limit)
+
+cfs_logic: {
+  label: "Linux CFS Bandwidth Controller Algorithm (50% Quota Allocation)"
+  style: {
+    stroke-width: 2
+    fill: "#f8f9fa"
+  }
+
+  step_1: "1. Period Start (T=0ms)" {
+    state: {
+      shape: sql_table
+      style.fill: "#6f42c1" # Purple Header
+      "Kernel Parameter": "Current Value" {constraint: "v5.x+"}
+      "cfs_b->quota": "50,000us (50ms)"
+      "cfs_b->period": "100,000us (100ms)"
+      "cfs_b->runtime": "50,000us" {style.font-color: "#007bff"}
+      "cfs_rq->throttled": "0 (FALSE)"
+      "task_struct->state": "TASK_RUNNING"
+    }
+    style.stroke: "#007bff"
+    style.stroke-width: 2
+  }
+
+  step_2: "2. Quota Exhaustion (T=50ms)" {
+    state: {
+      shape: sql_table
+      style.fill: "#d73a49" # Red Header
+      "Kernel Parameter": "Current Value" {constraint: "THROTTLED"}
+      "cfs_b->quota": "50,000us"
+      "cfs_b->period": "100,000us"
+      "cfs_b->runtime": "**-1,200us (Overrun)**" {style.font-color: red; style.bold: true}
+      "cfs_rq->throttled": "**1 (TRUE)**" {style.font-color: red; style.bold: true}
+      "task_struct->state": "**TASK_INTERRUPTIBLE**" {style.bold: true}
+    }
+    style.stroke: "#d73a49"
+    style.stroke-width: 4
+    style.shadow: true
+  }
+
+  step_3: "3. Throttled State (T=50ms to 100ms)" {
+    state: {
+      shape: sql_table
+      style.fill: "#6a737d" # Gray Header
+      "Kernel Parameter": "Current Value" {constraint: "DEQUEUED"}
+      "cfs_b->quota": "50,000us"
+      "cfs_b->period": "100,000us"
+      "throttled_time": "**+50,000us**" {style.bold: true}
+      "cfs_rq->nr_queued": "0"
+      "sched_entity->on_rq": "0"
+    }
+    style.fill: "#f6f8fa"
+    style.stroke-dash: 3
+  }
+
+  step_4: "4. Timer Interrupt & Refill (T=100ms)" {
+    state: {
+      shape: sql_table
+      style.fill: "#28a745" # Green Header
+      "Kernel Parameter": "Current Value" {constraint: "REFILLED"}
+      "cfs_b->quota": "50,000us"
+      "cfs_b->period": "100,000us"
+      "cfs_b->runtime": "**50,000us (Reset)**" {style.font-color: "#28a745"; style.bold: true}
+      "cfs_rq->throttled": "0 (FALSE)"
+      "task_struct->state": "**TASK_RUNNING**" {style.bold: true}
+    }
+    style.stroke: "#28a745"
+    style.stroke-width: 3
+  }
+
+  step_1 -> step_2: "update_curr() -> check_enqueue_throttle()" {
+    style.stroke: "#007bff"
+  }
+  step_2 -> step_3: "throttle_cfs_rq() -> dequeue_entity()" {
+    style.stroke: "#d73a49"
+  }
+  step_3 -> step_4: "sched_cfs_period_timer() -> distribute_cfs_runtime()" {
+    style.stroke: "#28a745"
+  }
+}
+
+timeline: {
+  label: "Physical CPU Execution Timeline (100ms Window)"
+  
+  p1: Period A {
+    grid-columns: 2
+    grid-gap: 0
+    
+    exec: "RUNNING\n(50ms Usage)" {
+      style: {
+        fill: "#cce5ff"
+        stroke: "#004085"
+        bold: true
+      }
+    }
+    wait: "THROTTLED\n(50ms Dequeued)" {
+      style: {
+        fill: "#f8d7da"
+        stroke: "#721c24"
+        stroke-dash: 5
+      }
+    }
+  }
+
+  boundary: "Period Boundary\n(sched_cfs_period_timer)" {
+    shape: hexagon
+    style.fill: "#fff3cd"
+    style.stroke: "#856404"
+  }
+
+  p2: Period B {
+    grid-columns: 2
+    grid-gap: 0
+    
+    exec: "RUNNING\n(50ms Usage)" {
+      style: {
+        fill: "#cce5ff"
+        stroke: "#004085"
+        bold: true
+      }
+    }
+    wait: "THROTTLED\n(50ms Dequeued)" {
+      style: {
+        fill: "#f8d7da"
+        stroke: "#721c24"
+        stroke-dash: 5
+      }
+    }
+  }
+
+  p1 -> boundary -> p2: "Time"
+}
+
+stats_container: {
+  label: "Exposed Metrics: /sys/fs/cgroup/cpu.stat"
+  near: bottom-center
+  
+  metrics: ||md
+| Metric Key | State Transition Logic | Value |
+| :--- | :--- | :--- |
+| `usage_usec` | Sum of execution time in `update_curr` | 100,000 |
+| `nr_periods` | Count of `sched_cfs_period_timer` fires | 2 |
+| `nr_throttled` | Incremented in `throttle_cfs_rq` | 2 |
+| `throttled_usec` | Time between `throttle` and `unthrottle` | 100,000 |
+| **Quota Cap** | **Effective CPU Ceiling** | **0.5 Core** |
+| **Bursting** | `cpu.max.burst` (not used here) | 0 |
+| **Idle** | `cpu.idle` policy | 0 |
+| **Weight** | `cpu.weight` (shares) | 100 |
+| **Max** | Configuration String | 50000 100000 |
+| **Stat Path** | cgroup v2 hierarchy | /sys/fs/cgroup/... |
+| **Timestamp** | Kernel Clock Monotonic | T=200ms |
+| **Core Count** | `sched_getaffinity` | 1 |
+| **Scheduler** | Policy Type | SCHED_NORMAL |
+||
+  style.font-size: 14
+}
+
+# Implementation Annotations for Engineers
+(cfs_logic.step_2.state -> stats_container.metrics): "Trigger: nr_throttled++" {
+  style.stroke-dash: 5
+  style.stroke: "#d73a49"
+  target-arrowhead: triangle
+}
+
+(timeline.p1.wait -> stats_container.metrics): "Accrues throttled_usec" {
+  style.stroke-dash: 5
+  style.stroke: "#d73a49"
+  target-arrowhead: triangle
+}
+
+notes: |md
+  ### Throttling Internals (Intel Manual Quality Reference)
+  - **Quota Monitoring**: `tg->cfs_b.runtime` is the global pool. Local `cfs_rq->runtime_remaining` is pulled from the global pool in batches (usually 5ms).
+  - **Throttling Path**: `update_curr()` -> `account_cfs_rq_runtime()` -> `__account_cfs_rq_runtime()`. If `runtime_remaining < 0`, the `cfs_rq` is throttled.
+  - **Refill Path**: The `period_timer` fires, resets `cfs_b->runtime` to `quota`, and calls `distribute_cfs_runtime()` to wake up throttled queues.
+  - **Critical Sections**: Protected by `cfs_b->lock`.
+  - **High Resolution Timers**: Uses `hrtimer` for precise period boundary enforcement.
+| {
+  near: cfs_logic.step_3
+  style.font-size: 12
+}

@@ -1,0 +1,145 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 40
+  }
+}
+
+uid_gid_mapping_protocol: {
+  shape: sequence_diagram
+  
+  parent: "Host Parent Process\n(PID: 4021)" {
+    tooltip: "Unprivileged User (UID: 1000, GID: 1000)"
+    style.stroke: "#666666"
+  }
+  kernel: "Linux Kernel\n(v5.0+ Namespaces)" {
+    style: {
+      fill: "#f8f0ff"
+      stroke: "#9673a6"
+      stroke-width: 4
+    }
+  }
+  child: "Container Process\n(PID: 4022)" {
+    tooltip: "Target User Namespace"
+    style.stroke: "#666666"
+  }
+
+  # --- INITIALIZATION ---
+  
+  parent.setup -> kernel: "clone(CLONE_NEWUSER | SIGCHLD)" {
+    tooltip: "Step 1: Create isolated user namespace."
+  }
+  
+  kernel -> child.init: "fork() execution starts"
+  
+  child.init -> child.init: "close(pipe[1])" {
+    tooltip: "Step 2: Close write-end of sync pipe."
+  }
+  
+  # --- SYNCHRONIZATION BARRIER ---
+  
+  child.init -> kernel: "read(pipe[0], &buf, 1)" {
+    tooltip: "Child enters blocking read, waiting for mapping configuration."
+  }
+  
+  kernel -> child.blocked: "BLOCK (Waiting for Map Data)" {
+    style: {
+      stroke: "#ff0000"
+      stroke-dash: 3
+      stroke-width: 2
+      bold: true
+    }
+  }
+
+  # --- PARENT CONFIGURATION PHASE ---
+  
+  parent.config -> parent.config: "usleep(10000)" {
+    tooltip: "Step 3: Await /proc/4022/ entry population."
+  }
+
+  parent.config -> kernel: "write('/proc/4022/setgroups', 'deny')" {
+    tooltip: "Step 4: Mandatory for unprivileged GID mapping (CVE-2014-8989)."
+  }
+
+  parent.config -> kernel: "write('/proc/4022/uid_map', '0 1000 1')" {
+    tooltip: "Step 5: Map Namespace Root (0) to Host User (1000). Length=1."
+  }
+
+  parent.config -> kernel: "write('/proc/4022/gid_map', '0 1000 1')" {
+    tooltip: "Step 6: Map Namespace Root (0) to Host Group (1000). Length=1."
+  }
+
+  # --- SIGNAL & UNBLOCK ---
+  
+  parent.config -> kernel: "write(pipe[1], 'G', 1)" {
+    tooltip: "Step 7: Signal mapping complete."
+  }
+  
+  kernel -> child.active: "read() returns 1 (RESUME)" {
+    style: {
+      stroke: "#007fff"
+      animated: true
+      stroke-width: 3
+    }
+  }
+
+  # --- VALIDATION & EXECUTION ---
+  
+  child.active -> child.active: "getuid() / getgid()" {
+    tooltip: "Step 8: Check identity transformation."
+  }
+  
+  child.active."Identity Finalized:\nUID: 0 (root)\nGID: 0 (root)\nCAPS: Scoped CAP_SYS_ADMIN" {
+    style: {
+      fill: "#d5e8d4"
+      stroke: "#82b366"
+      font-size: 14
+      bold: true
+    }
+  }
+
+  child.active -> kernel: "execvp(container_entrypoint)" {
+    tooltip: "Step 9: Start container logic with full privileges inside namespace."
+  }
+}
+
+logic_specification: ||md
+  ### Security Invariants & Byte Layouts
+  
+  #### 1. Map File Layout
+  The `uid_map` and `gid_map` files accept lines in the following ASCII format:
+
+  | ID-INSIDE-NS | ID-OUTSIDE-NS | LENGTH |
+  | :--- | :--- | :--- |
+  | `0` | `1000` | `1` |
+  
+  - **ID-INSIDE-NS**: The starting UID/GID within the new namespace.
+  - **ID-OUTSIDE-NS**: The starting UID/GID in the parent namespace (host).
+  - **LENGTH**: The number of IDs to map in a continuous range.
+  
+  #### 2. The One-Write Constraint
+  Kernel enforcement: `uid_map` and `gid_map` are **write-once**.
+  - Writing to an already initialized map returns `EPERM`.
+  - Mapping must be contiguous and non-overlapping.
+
+  #### 3. Unprivileged GID Barrier (CVE-2014-8989)
+  To prevent "Group Dropping" attacks where a user drops a restrictive group, the kernel requires:
+  1. `write(setgroups, "deny")` **MUST** occur before writing `gid_map`.
+  2. Failure to do so results in `EPERM` on the `gid_map` write attempt.
+
+  #### 4. Capability Context
+  The child process has **0 capabilities** in the host namespace, but **full capabilities** (e.g., `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`) within the newly created namespace.
+|| {
+  near: bottom-center
+  style: {
+    stroke: "#9673a6"
+    fill: "#fdfbff"
+    border-radius: 8
+  }
+}
+
+style: {
+  stroke-width: 2
+}

@@ -1,0 +1,221 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    pad: 20
+  }
+}
+
+# AGENT: TECHNICAL DESIGN ARTIST - ROOTLESS CONTAINER ARCHITECTURE
+# SPEC: LINUX USER NAMESPACE CAPABILITY SCOPING & WORKAROUNDS
+# TARGET: IMPLEMENTATION GRADE (INTEL MANUAL QUALITY)
+
+classes: {
+  works: {
+    style: {
+      fill: "#e3f2fd"
+      stroke: "#1565c0"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  fails: {
+    style: {
+      fill: "#ffebee"
+      stroke: "#c62828"
+      stroke-width: 2
+      stroke-dash: 4
+    }
+  }
+  workaround: {
+    style: {
+      fill: "#fff3e0"
+      stroke: "#ef6c00"
+      stroke-width: 2
+      double-border: true
+    }
+  }
+  kernel_core: {
+    style: {
+      fill: "#f3e5f5"
+      stroke: "#6a1b9a"
+      stroke-width: 3
+      shadow: true
+    }
+  }
+  field: {
+    style: {
+      font: mono
+      font-size: 12
+    }
+  }
+}
+
+container_isolation: Rootless Container (User Namespace Context) {
+  style.fill: "#fafafa"
+  style.stroke: "#9e9e9e"
+  
+  identity: Process Identity {
+    class: works
+    uid: "uid_t = 0 (mapped: host 1000)" { class: field }
+    gid: "gid_t = 0 (mapped: host 1000)" { class: field }
+    caps: "cap_effective = ~0ULL (Full Inside NS)" { class: field }
+    ns_id: "inode: [4026531837]" { class: field }
+  }
+
+  namespaces: Sub-Namespace Isolation {
+    pid_ns: PID Namespace {
+      class: works
+      details: "Isolated pid_t tree; proc/self/status: NSpid: 1"
+    }
+    uts_ns: UTS Namespace {
+      class: works
+      details: "sethostname(2) scoped to ns->uts_kernel_cap"
+    }
+    mnt_ns: Mount Namespace {
+      class: works
+      details: "MS_PRIVATE; pivot_root(2) into unprivileged dir"
+    }
+  }
+
+  allowed_ops: Valid Scoped Operations {
+    class: works
+    op1: "mount(tmpfs) -> OK"
+    op2: "unshare(CLONE_NEWNET) -> OK"
+    op3: "mknod(char_dev) -> OK (inside user_ns)"
+  }
+}
+
+kernel_logic: Linux Kernel Subsystem {
+  class: kernel_core
+  
+  capable_logic: |md
+    ### Capability Verification (LSM/Kernel)
+    
+    c
+    // Checks if current thread has 'cap' in a targeted namespace
+    bool ns_capable(struct user_namespace *ns, int cap) {
+        if (security_capable(current_cred(), ns, cap) == 0)
+            return true;
+        return false;
+    }
+
+    // Checks if current thread has 'cap' in the ROOT namespace
+    bool capable(int cap) {
+        // Points strictly to &init_user_ns
+        return ns_capable(&init_user_ns, cap);
+    }
+    
+    *Invariant: `ns_capable` succeeds for the container root.*
+    *Invariant: `capable` fails for the container root.*
+  |
+}
+
+limitations: Root-only Barriers (Global State) {
+  style.fill: "#ffffff"
+  style.stroke: "#b71c1c"
+
+  net_blocker: Networking Block {
+    class: fails
+    syscall: "RTM_NEWLINK / SIOCSIFFLAGS"
+    trigger: "dev_change_flags() -> capable(CAP_NET_ADMIN)"
+    error: "EPERM: Permission Denied"
+  }
+
+  cgroup_blocker: Resource Block {
+    class: fails
+    syscall: "write(2) /sys/fs/cgroup/..."
+    trigger: "cgroup_file_write() -> inode_permission(MAY_WRITE)"
+    error: "EACCES: Account is host-user 1000"
+  }
+
+  sysfs_blocker: Global FS Block {
+    class: fails
+    syscall: "mount(2) type 'sysfs'"
+    trigger: "sysfs_mount() -> capable(CAP_SYS_ADMIN)"
+    reason: "Exposes non-namespaced hardware state"
+  }
+}
+
+solutions: Mitigation Architectures {
+  class: workaround
+  
+  network_fix: slirp4netns {
+    class: workaround
+    desc: "TAP Device <-> User-mode TCP/IP <-> AF_INET Socket"
+    path: "Translates Ethernet frames to standard syscalls on host"
+  }
+
+  cgroup_fix: systemd delegation {
+    class: workaround
+    desc: "Delegate=yes"
+    path: "Host-root chowns cgroup sub-tree to UID 1000"
+  }
+
+  mount_fix: Fuse-Overlay/Bind {
+    class: workaround
+    desc: "Read-only Bind Mount"
+    path: "Masks host /sys with restricted views or fuse-nodes"
+  }
+}
+
+# --- LOGICAL FLOWS ---
+
+# Successful Check Flow
+container_isolation.allowed_ops -> kernel_logic.capable_logic: "ns_capable(task->ns, CAP_...)" {
+  style: {
+    stroke: "#2e7d32"
+    stroke-width: 2
+  }
+}
+
+# Failure Check Flow
+limitations.net_blocker -> kernel_logic.capable_logic: "capable(CAP_NET_ADMIN)" {
+  style: {
+    stroke: "#c62828"
+    stroke-width: 2
+    stroke-dash: 2
+  }
+}
+
+limitations.sysfs_blocker -> kernel_logic.capable_logic: "capable(CAP_SYS_ADMIN)" {
+  style: {
+    stroke: "#c62828"
+    stroke-width: 2
+    stroke-dash: 2
+  }
+}
+
+# Workaround Applications
+solutions.network_fix -> limitations.net_blocker: "Encapsulates via Sockets" {
+  style.stroke: "#ef6c00"
+  style.animated: true
+}
+solutions.cgroup_fix -> limitations.cgroup_blocker: "Changes Ownership" {
+  style.stroke: "#ef6c00"
+  style.animated: true
+}
+solutions.mount_fix -> limitations.sysfs_blocker: "Virtualizes View" {
+  style.stroke: "#ef6c00"
+  style.animated: true
+}
+
+# --- ANNOTATIONS AND LEGEND ---
+
+# Corrected 'near' usage for ELK: Using constant 'top-left' instead of object reference
+annotation_block: |md
+  ### Rootless Implementation Invariants
+  1. **User Namespace Mapping**: `uid_map` 0 1000 1. The kernel translates the container's `0` to host `1000` for all permission checks against the host filesystem.
+  2. **Security Context**: The process is a "root" process ONLY for resources governed by the new `user_namespace`.
+  3. **Global Resources**: Physical NICs, Global Cgroups, and hardware clocks are NOT governed by `user_namespace`.
+| {
+  near: top-left
+}
+
+legend: {
+  near: bottom-right
+  l1: Allowed (In-Namespace Privilege) { class: works }
+  l2: Denied (Initial-Namespace Required) { class: fails }
+  l3: Mitigation Strategy { class: workaround }
+}

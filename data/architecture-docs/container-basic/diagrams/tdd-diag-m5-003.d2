@@ -1,0 +1,203 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+
+# --- STYLING CLASSES ---
+classes: {
+  kernel_struct: {
+    shape: sql_table
+    style: {
+      stroke: "#333333"
+      stroke-width: 2
+      font-size: 14
+    }
+  }
+  ns_package: {
+    shape: package
+    style: {
+      stroke-width: 3
+    }
+  }
+}
+
+# --- KERNEL DATA STRUCTURES ---
+
+initial_ns: "Initial User Namespace (Host)" {
+  class: ns_package
+  style: {
+    fill: "#e1d5e7"
+    stroke: "#9673a6"
+  }
+  
+  struct_user_namespace: "struct user_namespace" {
+    class: kernel_struct
+    style.fill: "#f8cecc"
+    
+    0x00: "level: int = 0 (Root)" {constraint: "4B"}
+    0x04: "owner: kuid_t = 0 (Root)" {constraint: "4B"}
+    0x08: "parent: struct user_namespace* = NULL" {constraint: "8B"}
+    0x10: "uid_map: struct uid_gid_map (Identity)" {constraint: "1024B"}
+    0x410: "gid_map: struct uid_gid_map (Identity)" {constraint: "1024B"}
+  }
+
+  global_cap_mask: "Global Capability Set (init_cred)" {
+    class: kernel_struct
+    style.fill: "#dae8fc"
+    0x00: "effective: uint64_t = 0xFFFFFFFFFFFFFFFF" {constraint: "8B"}
+    0x08: "permitted: uint64_t = 0xFFFFFFFFFFFFFFFF" {constraint: "8B"}
+    0x10: "inheritable: uint64_t = 0x0000000000000000" {constraint: "8B"}
+  }
+}
+
+clone_op: "clone(CLONE_NEWUSER)" {
+  shape: step
+  style.stroke-dash: 3
+  style.fill: "#fff2cc"
+}
+
+container_ns: "Container User Namespace (Unprivileged)" {
+  class: ns_package
+  style: {
+    fill: "#dae8fc"
+    stroke: "#6c8ebf"
+  }
+
+  struct_user_namespace_v: "struct user_namespace" {
+    class: kernel_struct
+    style.fill: "#f8cecc"
+    
+    0x00: "level: int = 1" {constraint: "4B"}
+    0x04: "owner: kuid_t = 1000 (Host UID)" {constraint: "4B"}
+    0x08: "parent: *struct user_namespace (Host)" {constraint: "8B"}
+    0x10: "uid_map: 0:1000:1 (Mapped Root)" {constraint: "1024B"}
+    0x410: "gid_map: 0:1000:1 (Mapped Root)" {constraint: "1024B"}
+  }
+
+  scoped_cap_mask: "Namespace-Scoped Capability Set" {
+    class: kernel_struct
+    style.fill: "#d5e8d4"
+    0x00: "effective: (Full Scoped Set)" {constraint: "8B"}
+    0x08: "permitted: (Full Scoped Set)" {constraint: "8B"}
+    0x10: "comment: Relative to current USerns" {style.font-size: 10}
+  }
+}
+
+# --- CAPABILITY SCOPING LOGIC ---
+
+privilege_boundary: "Kernel Capability Verification (ns_capable)" {
+  style.stroke-dash: 5
+  style.fill: "#f9f9f9"
+  
+  global_restricted: "GLOBAL-ONLY (Host Interface Required)" {
+    style.fill: "#ffffff"
+    style.stroke: "#b85450"
+    
+    sys_module: "CAP_SYS_MODULE" {
+      tooltip: "Load/Unload Kernel Modules"
+      style.fill: "#f8cecc"
+    }
+    sys_time: "CAP_SYS_TIME" {
+      tooltip: "Modify System Clock"
+      style.fill: "#f8cecc"
+    }
+    sys_boot: "CAP_SYS_BOOT" {
+      tooltip: "Reboot/Kexec System"
+      style.fill: "#f8cecc"
+    }
+    sys_rawio: "CAP_SYS_RAWIO" {
+      tooltip: "Direct Hardware I/O Access"
+      style.fill: "#f8cecc"
+    }
+  }
+
+  namespace_scoped: "NAMESPACE-SCOPED (Safe within USerns)" {
+    style.fill: "#ffffff"
+    style.stroke: "#82b366"
+    
+    sys_admin: "CAP_SYS_ADMIN" {
+      tooltip: "mount, pivot_root, sethostname"
+      style.fill: "#d5e8d4"
+    }
+    net_admin: "CAP_NET_ADMIN" {
+      tooltip: "Configure Network Interfaces/Iptables"
+      style.fill: "#d5e8d4"
+    }
+    mknod: "CAP_MKNOD" {
+      tooltip: "Create Device Special Files (in ns)"
+      style.fill: "#d5e8d4"
+    }
+    sys_chroot: "CAP_SYS_CHROOT" {
+      tooltip: "Invoke chroot() to isolate FS"
+      style.fill: "#d5e8d4"
+    }
+  }
+}
+
+# --- CONNECTIONS & FLOWS ---
+
+initial_ns -> clone_op: "1. Parent credentials copied"
+clone_op -> container_ns: "2. NEWUSER flag: Creates mapping"
+
+container_ns.scoped_cap_mask -> privilege_boundary.namespace_scoped: "3a. Verified SUCCESS" {
+  label: "if (ns_capable(ns, CAP_...))"
+  style: {
+    stroke: "#2d7a32"
+    stroke-width: 4
+  }
+}
+
+container_ns.scoped_cap_mask -> privilege_boundary.global_restricted: "3b. Verified FAILURE" {
+  label: "EPERM (Global ns check)"
+  style: {
+    stroke: "#b85450"
+    stroke-dash: 3
+    stroke-width: 2
+  }
+}
+
+initial_ns.global_cap_mask -> privilege_boundary.global_restricted: "Direct kernel access" {
+  style: {
+    stroke: "#6c8ebf"
+    stroke-width: 2
+  }
+}
+
+# --- DOCUMENTATION & LEGEND ---
+
+metadata: |md
+  ### Capability Check Pseudocode (Kernel Internals)
+  c
+  /**
+   * ns_capable - Check if current task has a capability 
+   * in a specific user namespace.
+   */
+  bool ns_capable(struct user_namespace *ns, int cap) {
+      struct user_namespace *cur;
+      // 1. Check if user is root in target namespace
+      // 2. Walk up the namespace tree to parent
+      for (cur = ns; cur; cur = cur->parent) {
+          if (task_has_cap_in_ns(current, cur, cap))
+              return true;
+      }
+      return false;
+  }
+  
+| {
+  near: top-right
+}
+
+legend: {
+  near: bottom-right
+  global: "Global Protected Area (Host Root Required)" {
+    style.fill: "#f8cecc"
+    style.stroke: "#b85450"
+  }
+  scoped: "Namespaceable Area (Safe for Rootless)" {
+    style.fill: "#d5e8d4"
+    style.stroke: "#82b366"
+  }
+}

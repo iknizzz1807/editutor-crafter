@@ -1,0 +1,166 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    sketch: false
+    pad: 20
+  }
+}
+
+# State Machine: setgroups='deny' Security Requirement (CVE-2014-8989)
+# Engineers: Sequential dependency between setgroups and gid_map is enforced by kernel v3.19+ in user_namespace.c
+
+START: ● {
+  shape: circle
+  width: 30
+  height: 30
+  style: {
+    fill: black
+    stroke-width: 0
+  }
+}
+
+USER_NS_INITIALIZED: "STATE: User Namespace Initialized" {
+  style: {
+    stroke-width: 2
+    fill: "#f3f0ff"
+  }
+  details: |md
+    ### Kernel Invariants (Pre-Mapping)
+    - **UID/GID:** `65534` (nobody/nogroup)
+    - **Capabilities:** `CapEff: 0000000000000000`
+    - **ProcFS:** `/proc/self/setgroups` defaults to `"allow"`
+    - **ProcFS:** `/proc/self/gid_map` is empty
+  |
+}
+
+GROUPS_LOCKED: "STATE: Privilege Escalation Blocked" {
+  style: {
+    stroke-width: 4
+    fill: "#e7f5ff"
+    stroke: "#228be6"
+  }
+  details: |md
+    ### Security Lock Implementation
+    - **Action:** `write(fd, "deny", 4)` to `/proc/self/setgroups`
+    - **Result:** `setgroups(2)` and `init_groups(3)` now return `EPERM`
+    - **Requirement:** Must be set before unprivileged GID mapping
+  |
+}
+
+GID_MAPPED: "STATE: GID Mapping Finalized" {
+  style: {
+    stroke-width: 2
+    fill: "#ebfbee"
+    stroke: "#40c057"
+  }
+  details: |md
+    ### Resultant Context
+    - **Mapped GID:** `0` (Identity transformed)
+    - **Mapping Extent:** `0 -> [Host_GID] 1`
+    - **Privileges:** `CAP_SETGID` granted inside namespace
+    - **Lock:** `setgroups` is now immutable
+  |
+}
+
+EPERM_REJECTION: "KERNEL REJECTION: EPERM" {
+  shape: rectangle
+  style: {
+    fill: "#fff5f5"
+    stroke: "#fa5252"
+    stroke-width: 3
+    double-border: true
+  }
+  details: |md
+    ### Access Denied
+    - **Source:** `kernel/user_namespace.c:new_idmap_permitted()`
+    - **Constraint:** Unprivileged users cannot write `gid_map` 
+      without first disabling `setgroups`.
+    - **Attack Prevented:** Dropping group membership to gain 
+      file access (e.g., bypassing `rwxr-x---`).
+  |
+}
+
+# -----------------------------------------------------------------------------
+# Valid Transition Path (Intel/Manual Spec)
+# -----------------------------------------------------------------------------
+
+START -> USER_NS_INITIALIZED: "unshare(CLONE_NEWUSER)" {
+  style: {
+    stroke-width: 2
+  }
+}
+
+USER_NS_INITIALIZED -> GROUPS_LOCKED: "STEP 1: Write 'deny' to /proc/pid/setgroups" {
+  style: {
+    stroke-width: 4
+    bold: true
+    font-color: "#1971c2"
+  }
+}
+
+GROUPS_LOCKED -> GID_MAPPED: "STEP 2: Write mapping to /proc/pid/gid_map" {
+  style: {
+    stroke-width: 4
+    bold: true
+    font-color: "#2f9e44"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Illegal / Error Transition Path
+# -----------------------------------------------------------------------------
+
+USER_NS_INITIALIZED -> EPERM_REJECTION: "ILLEGAL: Write gid_map while 'allow' active" {
+  style: {
+    stroke: "#fa5252"
+    stroke-dash: 5
+    stroke-width: 2
+    font-color: "#fa5252"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Technical Documentation Section
+# -----------------------------------------------------------------------------
+
+EXPLANATION: |md
+  ## CVE-2014-8989 Mitigation Logic
+  
+  Historically, a user could join a user namespace, use `setgroups(2)` to drop 
+  supplementary groups, and then access files that were restricted to those groups. 
+  The kernel now enforces a strict state-machine ordering:
+  
+  1. **User Namespace** is created unprivileged.
+  2. **Setgroups** MUST be set to `deny` to prove the process will not abuse 
+     group-dropping for privilege escalation.
+  3. **GID Mapping** is then permitted, allowing the process to assume a new 
+     identity within the namespace boundaries.
+  
+  **Kernel Verification:** `kernel/user_namespace.c`
+  c
+  if (!cap_capable(cap, CAP_SETGID) && !ns->setgroups_denied)
+      return -EPERM;
+  
+| {
+  near: bottom-center
+  style: {
+    stroke: "#dee2e6"
+    fill: "#f8f9fa"
+    font-size: 14
+    stroke-width: 1
+  }
+}
+
+# Metadata / Legend for Engineering Review
+LEGEND: {
+  near: top-right
+  
+  Valid: "Valid Sequence" {
+    style: { stroke: "#1971c2"; stroke-width: 3 }
+  }
+  Forbidden: "Security Violation" {
+    style: { stroke: "#fa5252"; stroke-dash: 5; stroke-width: 2 }
+  }
+}

@@ -1,0 +1,216 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # SIGPIPE Generation in Pipelines
+  **Intel Manual Quality Technical Specification**
+  *Scenario: Reader closes → Kernel generates EPIPE/SIGPIPE → Writer terminates*
+| {
+  near: top-center
+  style.font-size: 24
+}
+
+# --- Shared Classes ---
+classes: {
+  process: {
+    shape: rectangle
+    style: {
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  kernel_obj: {
+    shape: hexagon
+    style: {
+      fill: "#E1BEE7"
+      stroke: "#7B1FA2"
+    }
+  }
+  buffer_obj: {
+    shape: cylinder
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#FF9800"
+    }
+  }
+  alert: {
+    style: {
+      fill: "#FFCDD2"
+      stroke: "#D32F2F"
+      font-color: "#B71C1C"
+      bold: true
+    }
+  }
+}
+
+# --- Step 1: Initial State ---
+step1: "1. INITIAL STEADY STATE" {
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+  
+  writer: "Writer Process (PID: 101)" {
+    class: process
+    style.fill: "#FFCDD2"
+    info: |md
+      **STDOUT (fd 1)**
+      - Connected to Pipe[1]
+      - Status: ACTIVE
+    |
+  }
+  
+  pipe: "Kernel Pipe Buffer" {
+    class: buffer_obj
+    offset_00: "Head: 0x4000 (R)"
+    offset_64: "Tail: 0x4100 (W)"
+    meta: "Size: 64KB (Ring)"
+  }
+  
+  reader: "Reader Process (PID: 102)" {
+    class: process
+    style.fill: "#BBDEFB"
+    info: |md
+      **STDIN (fd 0)**
+      - Connected to Pipe[0]
+      - Status: ACTIVE
+    |
+  }
+
+  writer -> pipe: "write(fd=1, buf, 4096)"
+  pipe -> reader: "read(fd=0, buf, 4096)"
+}
+
+# --- Step 2: Reader Termination ---
+step2: "2. READER EXIT / CLOSE" {
+  style.fill: "#FFF8E1"
+  style.stroke: "#FFC107"
+
+  trigger: "Reader Event" {
+    shape: diamond
+    label: "Process Exits\nor close(0)"
+  }
+
+  kernel_action: "VFS Layer Update" {
+    class: kernel_obj
+    state_change: |md
+      **Ref Count Update:**
+      - reader_count: 1 → **0**
+      - write_end: **BROKEN**
+    |
+  }
+
+  trigger -> kernel_action: "SIGCHLD / syscall"
+}
+
+# --- Step 3: Kernel Detection ---
+step3: "3. EPIPE DETECTION" {
+  style.fill: "#FCE4EC"
+  style.stroke: "#E91E63"
+
+  writer: "Writer Process" {
+    class: process
+    class: alert
+    label: "Writer: write() call"
+  }
+
+  kernel: "Pipe Write Logic" {
+    class: kernel_obj
+    logic: |md
+      **CheckPipe(pipe_ptr):**
+      - IF pipe->readers == 0:
+        - SET thread->errno = **EPIPE**
+        - SEND **SIGPIPE** to current
+        - RETURN -1
+    |
+  }
+
+  writer -> kernel: "SYSCALL: write()"
+  kernel -> writer: "RAISE SIGPIPE (13)" {
+    style.stroke: red
+    style.animated: true
+  }
+}
+
+# --- Step 4: Signal Delivery ---
+step4: "4. SIGNAL DELIVERY & TERMINATION" {
+  style.fill: "#F3E5F5"
+  style.stroke: "#9C27B0"
+
+  signal: "SIGPIPE (Signal 13)" {
+    shape: circle
+    style.fill: "#D32F2F"
+    style.font-color: white
+    style.bold: true
+  }
+
+  writer_state: "Writer Terminated" {
+    class: process
+    style.fill: "#B71C1C"
+    style.font-color: white
+    status: |md
+      **Exit Status: 141**
+      - Base: 128
+      - Signal: 13
+      - Mode: Core Default
+    |
+  }
+
+  signal -> writer_state: "Default Action: Term"
+}
+
+# --- Step 5: Final Result ---
+step5: "5. PIPELINE COMPLETE" {
+  style.fill: "#F5F5F5"
+  style.stroke: "#9E9E9E"
+
+  summary: "Final State" {
+    shape: rectangle
+    class: process
+    label: "Shell Reap"
+    content: |md
+      - Reader: Exit 0
+      - Writer: Killed (141)
+      - Pipe: Deallocated
+    |
+  }
+}
+
+# --- Sequence Flow ---
+step1 -> step2: "Reader closes read-end"
+step2 -> step3: "Writer attempts write"
+step3 -> step4: "Kernel kills writer"
+step4 -> step5: "Pipeline cleanup"
+
+# --- Technical Insight Overlay ---
+insight: |md
+  ### BACKPRESSURE ARCHITECTURE
+  SIGPIPE provides an **asynchronous backpressure mechanism**. 
+  Without it, a writer would block indefinitely if the reader exited 
+  or would continue to waste system resources generating unconsumed data.
+
+  **Memory Layout:**
+  - `pipe_inode_info`: 
+    - `readers`: unsigned int (Offset 0x24) -> **0**
+    - `writers`: unsigned int (Offset 0x28) -> **1**
+| {
+  near: bottom-center
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1976D2"
+    border-radius: 8
+    stroke-width: 2
+  }
+}
+
+# --- Legend ---
+legend: {
+  near: bottom-right
+  writer_clr: "Writer (Data Source)" { style.fill: "#FFCDD2" }
+  reader_clr: "Reader (Data Sink)" { style.fill: "#BBDEFB" }
+  kernel_clr: "Kernel/OS Logic" { style.fill: "#E1BEE7" }
+  error_clr: "Error/Signal State" { style.fill: "#B71C1C"; style.font-color: white }
+}

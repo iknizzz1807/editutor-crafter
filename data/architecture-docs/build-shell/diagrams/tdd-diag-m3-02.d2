@@ -1,0 +1,167 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # setpgid() Race Condition and Symmetrical Solution
+  **Technical Design: Atomic Process Group Initialization**
+  *Both parent AND child must call setpgid() to ensure group membership before execvp()*
+| {near: top-center}
+
+# Race Condition Visualized (The Failure Mode)
+# Scenario: Only parent calls setpgid()
+race: {
+  label: "FAILURE MODE: Unreliable Parent-Only PGID Initialization"
+  shape: sequence_diagram
+  
+  Parent: {
+    shape: person
+    style.stroke: "#DC143C"
+  }
+  Child: {
+    shape: person
+    style.stroke: "#DC143C"
+  }
+  
+  Parent.t1 -> Parent.t1: "1. fork()"
+  Parent.t1 -> Child.t1: "2. Process created (PID 2045)"
+  
+  # Context Switch happens here
+  Child.t1 -> Child.t2: "3. execvp('/usr/bin/vi')" {
+    style.stroke: red
+    style.bold: true
+    style.animated: true
+  }
+  
+  Child.t2: |md
+    ### ❌ DATA RACE TRIGGERED
+    **State**: Child is still in Shell's PGID.
+    **Action**: Instruction pointer reaches `exec`.
+    **Effect**: Process is now 'exec'd'. PGID cannot be 
+    changed by external processes (parent) anymore.
+  | {
+    style.fill: "#FFCDD2"
+  }
+  
+  Parent.t1 -> Parent.t2: "4. setpgid(2045, 2045)"
+  
+  Parent.t2: |md
+    ### 🛑 EACCES / EPERM
+    Parent call fails. Result: Child remains 
+    in Shell's group. `Ctrl+C` to Shell will 
+    now incorrectly kill this child process.
+  | {
+    style.fill: "#FFCDD2"
+    style.stroke: "#DC143C"
+  }
+}
+
+# The Correct Implementation (Symmetrical)
+solution: {
+  label: "SOLUTION: Symmetrical setpgid() for Atomic Grouping"
+  shape: sequence_diagram
+  
+  Parent: {
+    shape: person
+    style.stroke: "#4CAF50"
+  }
+  Child: {
+    shape: person
+    style.stroke: "#4CAF50"
+  }
+  
+  Parent.t1 -> Parent.t1: "1. fork()"
+  Parent.t1 -> Child.t1: "2. Process created (PID 2046)"
+  
+  # Race is handled via redundancy
+  Parent.t1 -> Parent.t2: "3a. setpgid(2046, 2046)" {
+    style.stroke: "#4CAF50"
+    style.stroke-dash: 3
+  }
+  Child.t1 -> Child.t2: "3b. setpgid(0, 0)" {
+    style.stroke: "#4CAF50"
+    style.stroke-dash: 3
+  }
+  
+  Parent.t2: |md
+    ### ✓ ATOMIC GUARANTEE
+    Whichever call executes first creates the group. 
+    The secondary call is a **harmless no-op** 
+    returning 0 because process is already in PGID.
+  | {
+    style.fill: "#C8E6C9"
+  }
+  
+  Child.t2 -> Child.t3: "4. execvp('/usr/bin/vi')"
+  
+  Child.t3: |md
+    ### ✅ SUCCESS
+    Child is in independent PGID (2046) 
+    **before** entering restricted exec state.
+    Signal isolation is preserved.
+  | {
+    style.fill: "#C8E6C9"
+  }
+}
+
+# Technical Implementation Insight
+insight: |md
+  ## Engineer's Implementation Reference
+  
+  c
+  pid_t pid = fork();
+  if (pid == 0) {
+      /* CHILD CONTEXT */
+      // 0, 0 translates to "Use my own PID as the PGID"
+      if (setpgid(0, 0) < 0) { perror("child setpgid"); }
+      
+      execvp(args[0], args);
+      _exit(1); 
+  } else if (pid > 0) {
+      /* PARENT CONTEXT */
+      // Forces child into its own group immediately
+      setpgid(pid, pid); 
+      
+      // Proceed to shell bookkeeping (tcsetpgrp etc.)
+      wait_for_job(pid);
+  }
+  
+  
+  ### Signal Mechanics
+  - **S-PGID**: Shell's Process Group ID.
+  - **C-PGID**: Child's Process Group ID.
+  - Without the child-side call, a fast-executing child enters a state where `setpgid` by the parent is forbidden, leaving the child susceptible to TTY signals intended for the shell.
+| {
+  near: bottom-center
+  style: {
+    fill: "#F4F9FF"
+    stroke: "#2196F3"
+    stroke-width: 2
+    border-radius: 8
+  }
+}
+
+# Component Styling
+race.style: {
+  fill: "#FFF9F9"
+  stroke: "#DC143C"
+  stroke-width: 4
+  stroke-dash: 0
+  shadow: true
+}
+
+solution.style: {
+  fill: "#F9FFF9"
+  stroke: "#4CAF50"
+  stroke-width: 4
+  stroke-dash: 0
+  shadow: true
+}
+
+# Global Glob styles for sequence paths
+(race -> race)[*].style.stroke: "#DC143C"
+(solution -> solution)[*].style.stroke: "#4CAF50"
+(solution -> solution)[*].style.stroke-width: 2

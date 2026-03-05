@@ -1,0 +1,251 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    sketch: false
+    pad: 20
+  }
+  colors: {
+    trace: "#F39C12"
+    exec: "#3498DB"
+    output: "#9B59B6"
+    error: "#E74C3C"
+    header: "#8E44AD"
+    data: "#2980B9"
+    padding: "#BDC3C7"
+    pointer: "#E67E22"
+  }
+}
+
+# --- 1. MEMORY LAYOUT: AST NODE STRUCTURE ---
+# High-fidelity layout for engineers to implement the C struct
+# Byte offsets left, field sizes right.
+ast_struct_layout: {
+  label: "Memory Layout: struct ast_node (sizeof=128)"
+  
+  grid-columns: 1
+  grid-gap: 0
+
+  header: {
+    grid-columns: 3
+    grid-gap: 0
+    
+    off: "Offset" { style.bold: true; style.fill: "#EEEEEE" }
+    field: "Field Descriptor" { style.bold: true; style.fill: "#EEEEEE" }
+    size: "Size" { style.bold: true; style.fill: "#EEEEEE" }
+  }
+
+  row1: {
+    grid-columns: 3
+    grid-gap: 0
+    off: "0x00"
+    field: "enum node_type type" { style.fill: ${colors.header}; style.font-color: white }
+    size: "8B"
+  }
+  row2: {
+    grid-columns: 3
+    grid-gap: 0
+    off: "0x08"
+    field: "uint32_t flags (XTRACE_BIT | ...)" { style.fill: ${colors.header}; style.font-color: white }
+    size: "8B"
+  }
+  row3: {
+    grid-columns: 3
+    grid-gap: 0
+    off: "0x10"
+    field: "int argc" { style.fill: ${colors.data}; style.font-color: white }
+    size: "8B"
+  }
+  row4: {
+    grid-columns: 3
+    grid-gap: 0
+    off: "0x18"
+    field: "char **argv" { style.fill: ${colors.pointer}; style.font-color: white }
+    size: "8B"
+  }
+  cache_line_padding: {
+    grid-columns: 3
+    grid-gap: 0
+    off: "0x20"
+    field: "--- Cache Line 1 Boundary (64B) ---" { style.fill: ${colors.padding}; style.stroke-dash: 3 }
+    size: "32B"
+  }
+  row6: {
+    grid-columns: 3
+    grid-gap: 0
+    off: "0x40"
+    field: "union data (redirections / subshells)" { style.fill: ${colors.padding}; style.bold: true }
+    size: "64B"
+  }
+}
+
+# --- 2. ARCHITECTURE OVERVIEW ---
+title: {
+  shape: text
+  label: |md
+    # set -x (XTRACE) Implementation Design
+    **Tracing Sequence:** AST Serialization → PS4 Expansion → Stderr Output → Execution
+  |
+  near: top-center
+}
+
+# Input AST State
+input: {
+  label: "Input AST Node"
+  shape: rectangle
+  style: {
+    fill: "#EBF5FB"
+    stroke: "#2E86AB"
+    stroke-width: 2
+  }
+  content: |md
+    **NODE_SIMPLE_CMD**
+    - argc: 3
+    - argv: ["echo", "hello", "world"]
+    - xtrace_enabled: true
+  |
+}
+
+# Phase 1: Serialization
+phase1: {
+  label: "Phase 1: ast_to_string()"
+  style: {
+    fill: "#FEF9E7"
+    stroke: ${colors.trace}
+    stroke-width: 2
+  }
+
+  conversion: {
+    shape: sequence_diagram
+    ast_node: AST Node
+    switch_stmt: Switch
+    cmd_handler: CMD Handler
+
+    ast_node -> switch_stmt: "get_type()"
+    switch_stmt -> cmd_handler: "NODE_SIMPLE_CMD"
+    cmd_handler -> cmd_handler: "iterate argv"
+    cmd_handler -> cmd_handler: "quote_if_needed()"
+    cmd_handler -> switch_stmt: "return str"
+  }
+
+  details: |md
+    **Serialization Logic**
+    - Handles quoting for shell metacharacters
+    - Recurses for `PIPELINE` or `AND_OR` nodes
+  |
+}
+
+# Phase 2: Prefix Expansion
+phase2: {
+  label: "Phase 2: PS4 Expansion"
+  style: {
+    fill: "#E8F8F5"
+    stroke: "#1ABC9C"
+    stroke-width: 2
+  }
+
+  ps4_logic: {
+    shape: sequence_diagram
+    shell: Shell
+    env: Environ
+    expand: Expander
+
+    shell -> env: "lookup('PS4')"
+    env -> shell: "val or '+'"
+    shell -> expand: "expand_str(val)"
+    expand -> expand: 'subst $0, $$, etc'
+    expand -> shell: "prefix_result"
+  }
+}
+
+# Phase 3: Trace Output (The Hook)
+phase3: {
+  label: "Phase 3: Stderr Sink"
+  style: {
+    fill: "#F5EEF8"
+    stroke: ${colors.output}
+    stroke-width: 2
+  }
+
+  output_logic: {
+    shape: sequence_diagram
+    hook: trace_command()
+    ser: ast_to_string()
+    ps4: expand_ps4()
+    io: fprintf(stderr)
+
+    hook -> ser: "serialize(node)"
+    ser -> hook: "cmd_str"
+    hook -> ps4: "get_prefix()"
+    ps4 -> hook: "p_str"
+    hook -> io: "write p + s"
+  }
+
+  source_code: |md
+    c
+    void trace_command(ASTNode* n) {
+        if (!is_set('x')) return;
+        char *s = ast_to_string(n);
+        char *p = expand_ps4();
+        fprintf(stderr, "%s%s\n", p, s);
+        free(s); free(p);
+    }
+    
+  |
+}
+
+# Phase 4: Integrated Execution
+phase4: {
+  label: "Phase 4: Execution Hook"
+  style: {
+    fill: "#FDEDEC"
+    stroke: ${colors.exec}
+    stroke-width: 2
+  }
+
+  exec_flow: {
+    shape: sequence_diagram
+    exec: execute_ast()
+    trace: trace_command()
+    proc: fork/exec
+
+    exec -> trace: "pre_exec_trace(n)"
+    trace."stderr: + echo hello world"
+    trace -> exec: "done"
+    exec -> proc: "launch_child()"
+    proc."stdout: hello world"
+  }
+}
+
+# --- 3. CONNECTIONS & FLOW ---
+input -> phase1: "AST Reference"
+phase1 -> phase2: "Command String"
+phase2 -> phase3: "Expanded PS4"
+phase3 -> phase4: "Trace Complete"
+
+# --- 4. LEGEND ---
+legend: {
+  near: bottom-right
+  label: "Implementation Legend"
+  
+  l1: "AST to String" {
+    style: { fill: "#FEF9E7"; stroke: ${colors.trace} }
+  }
+  l2: "PS4 Parameter Expansion" {
+    style: { fill: "#E8F8F5"; stroke: "#1ABC9C" }
+  }
+  l3: "I/O Trace (Fd 2)" {
+    style: { fill: "#F5EEF8"; stroke: ${colors.output} }
+  }
+  l4: "Process Lifecycle" {
+    style: { fill: "#FDEDEC"; stroke: ${colors.exec} }
+  }
+}
+
+# Glob styling for uniform appearance
+***.style.font: mono
+(*** -> ***)[*]: {
+  style: {
+    stroke-width: 2
+  }
+}

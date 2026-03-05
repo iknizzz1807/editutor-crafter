@@ -1,0 +1,263 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  shell_pgid: "1000"
+  child_pid: "2001"
+}
+
+direction: right
+
+title: |md
+  # Terminal Control Transfer Flow
+  ## Step-by-step: fork → setpgid → tcsetpgrp to job → wait → tcsetpgrp back to shell
+| {near: top-center}
+
+step1: "1. FORK" {
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+
+  parent_before: "Parent Process (Shell)" {
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+    pgid_before: "PGID: ${shell_pgid}"
+    tty_owner_before: "TTY Owner: Shell"
+  }
+
+  fork_arrow: "fork()" {
+    shape: text
+    style.font-size: 20
+    style.bold: true
+  }
+
+  parent_after: "Parent Process" {
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+    style.stroke-dash: 3
+    pid_var: "pid = fork()"
+    note1: |md
+      **Parent State**
+      - `pid` receives ${child_pid}
+      - Retains TTY control (foreground)
+    |
+  }
+
+  child: "Child Process" {
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    pid_zero: "pid = 0"
+    note2: |md
+      **Child State**
+      - `pid` is 0
+      - Inherits PGID ${shell_pgid}
+      - Background (cannot read TTY)
+    |
+  }
+
+  parent_before -> fork_arrow -> parent_after
+  fork_arrow -> child
+}
+
+step2: "2. SETPGID (Race Prevention)" {
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+
+  note_both: |md
+    ### Atomic Group Establishment
+    **Requirement**: BOTH parent AND child must call `setpgid()`.
+    - If Parent calls first: Group exists when child starts.
+    - If Child calls first: Group exists when parent tries to move child.
+    - Failure to call in parent results in race where child `execs` before being moved.
+  | {
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+  }
+
+  parent_setpgid: "PARENT SYSCALL" {
+    style.fill: "#E3F2FD"
+    code1: |c
+      // signature: setpgid(pid, pgid)
+      setpgid(child_pid, child_pid);
+    |
+  }
+
+  child_setpgid: "CHILD SYSCALL" {
+    style.fill: "#FFF3E0"
+    code2: |c
+      // 0,0 indicates 'self'
+      setpgid(0, 0); 
+    |
+  }
+
+  result: "State Invariant: New Process Group" {
+    style.fill: "#C8E6C9"
+    new_pgid: "PGID = ${child_pid}"
+    members: "Group Members: [ ${child_pid} ]"
+    leader: "Group Leader: ${child_pid}"
+  }
+}
+
+step3: "3. TCSETPGRP to Job" {
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+
+  parent_tcsetpgrp: "SHELL ACTION" {
+    style.fill: "#E3F2FD"
+    code3: |c
+      // Give terminal to child's group
+      tcsetpgrp(STDIN_FILENO, child_pid);
+    |
+    note_sigttou: |md
+      **Signal Handling**
+      Shell must ignore `SIGTTOU` (Signal 22)
+      otherwise writing to TTY while 
+      changing ownership stops the shell.
+    | {
+      style.fill: "#FFF8E1"
+      style.stroke: "#FFC107"
+    }
+  }
+
+  kernel: "KERNEL / TTY DRIVER" {
+    style.fill: "#E1BEE7"
+    style.stroke: "#9C27B0"
+    tty_struct: "tty->pgrp = ${child_pid}"
+    note_kernel: |md
+      Driver filtering: 
+      Input and signals (SIGINT/SIGQUIT)
+      now directed ONLY to PGID ${child_pid}.
+    |
+  }
+
+  job_running: "JOB (Foreground)" {
+    style.fill: "#C8E6C9"
+    style.stroke: "#4CAF50"
+    style.bold: true
+    has_tty: "✓ Foreground Status"
+    receives_sigint: "Signal 2 (SIGINT) -> PGID ${child_pid}"
+    receives_sigtstp: "Signal 20 (SIGTSTP) -> PGID ${child_pid}"
+  }
+}
+
+step4: "4. WAIT for Job" {
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+
+  parent_wait: "SHELL (Blocked)" {
+    style.fill: "#E3F2FD"
+    wait_loop: |c
+      // Block until child changes state
+      waitpid(child_pid, &status, WUNTRACED);
+    |
+    note_blocking: |md
+      **Shell Status**
+      Suspended execution.
+      TTY belongs to job.
+    | {
+      style.fill: "#FFEBEE"
+    }
+  }
+
+  job_executing: "JOB EXECUTION" {
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    style.animated: true
+    states: "RUNNING -> [Interrupt/Stop] -> EXIT/STOPPED"
+  }
+
+  terminal: "PHYSICAL TERMINAL" {
+    style.fill: "#F5F5F5"
+    ctrl_c: "Key: Ctrl+C"
+    ctrl_z: "Key: Ctrl+Z"
+    signals: "Kernel Map: Key -> Signal"
+    ctrl_c -> signals
+    ctrl_z -> signals
+  }
+
+  terminal.signals -> job_executing: "Delivery to PGID ${child_pid}"
+}
+
+step5: "5. TCSETPGRP Back to Shell" {
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+
+  trigger: "State Transition" {
+    style.fill: "#FFEBEE"
+    cases: |md
+      1. WIFEXITED(status)
+      2. WIFSIGNALED(status)
+      3. WIFSTOPPED(status)
+    |
+  }
+
+  parent_reclaim: "SHELL RESTORATION" {
+    style.fill: "#E3F2FD"
+    code4: |c
+      // Re-acquire TTY control
+      tcsetpgrp(STDIN_FILENO, shell_pgid);
+
+      // Sanitize Terminal State
+      tcsetattr(STDIN_FILENO, TCSADRAIN, &shell_modes);
+    |
+  }
+
+  shell_restored: "SHELL (Foreground)" {
+    style.fill: "#C8E6C9"
+    style.stroke: "#4CAF50"
+    style.bold: true
+    has_tty_back: "✓ PGID ${shell_pgid} Foreground"
+    prompt_ready: "Display Prompt"
+    can_read_input: "read(STDIN) OK"
+  }
+
+  job_state: "JOB POST-MORTEM" {
+    style.fill: "#F5F5F5"
+    if_done: "Cleanup: Remove from internal list"
+    if_stopped: "Update: Mark as 'Suspended' in list"
+  }
+}
+
+# Flow arrows
+step1 -> step2: "fork() completes"
+step2 -> step3: "Group invariant met"
+step3 -> step4: "Terminal handover"
+step4 -> step5: "Child status signal (SIGCHLD)"
+
+# Critical timing annotation
+timing_note: |md
+  ## ⚠️ Critical Path Invariants
+  1. **setpgid BEFORE exec**: Must occur in child before `execve()`. Parent also calls it to ensure PGID exists for `tcsetpgrp`.
+  2. **tcsetpgrp BEFORE wait**: Shell must transfer terminal before calling `waitpid` to allow job to handle signals properly.
+  3. **tcsetattr RESTORE**: Shell MUST save and restore `termios` structs; interactive jobs often corrupt terminal modes (raw vs cooked).
+| {
+  near: bottom-center
+  style.fill: "#FFF8E1"
+  style.stroke: "#FFC107"
+  style.stroke-width: 2
+}
+
+# Race condition details
+race_warning: |md
+  ## Race Condition: setpgid Logic
+  **Fail Case (Parent Only):**
+  Parent calls `setpgid`. Child calls `exec`. 
+  If `exec` finishes before `setpgid`, syscall fails (EACCES).
+
+  **Fail Case (Child Only):**
+  Child calls `setpgid`. Parent calls `tcsetpgrp`. 
+  If parent wins, `tcsetpgrp` fails (child not in group yet).
+
+  **Success Path:**
+  Both call. Atomic establishment guaranteed.
+| {
+  near: bottom-left
+  style.fill: "#FFEBEE"
+  style.stroke: "#F44336"
+  style.stroke-width: 2
+}

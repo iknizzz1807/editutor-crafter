@@ -1,0 +1,217 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Job Table Data Structure & Thread-Safe Management
+  *SIGCHLD blocking mechanisms for concurrent list access in POSIX shells*
+| {near: top-center}
+
+direction: right
+
+# =============================================================================
+# 1. MEMORY LAYOUT: JOB STRUCT
+# =============================================================================
+Job_Memory_Layout: {
+  label: "Job Struct Memory Layout (sizeof=64B, cache-aligned)"
+  
+  # Byte Map
+  layout: {
+    grid-columns: 1
+    grid-gap: 0
+    
+    header: "Offset | Field (Type) | Size" {
+      style: {
+        fill: "#E6E6FA" # Header Purple
+        bold: true
+      }
+    }
+    
+    row0: "0x00 | job_id (int) | 4B" { style.fill: "#E3F2FD" } # Data Blue
+    row1: "0x04 | pgid (pid_t) | 4B" { style.fill: "#E3F2FD" }
+    row2: "0x08 | state (enum) | 4B" { style.fill: "#E3F2FD" }
+    row3: "0x0C | exit_stat (int) | 4B" { style.fill: "#E3F2FD" }
+    row4: "0x10 | stop_sig (int) | 4B" { style.fill: "#E3F2FD" }
+    row5: "0x14 | [Internal Padding] | 4B" { style.fill: "#F5F5F5" } # Padding Gray
+    row6: "0x18 | command (char*) | 8B" { style.fill: "#FFF3E0"; style.stroke: orange } # Pointer Orange
+    row7: "0x20 | next (struct Job*) | 8B" { style.fill: "#FFF3E0"; style.stroke: orange } # Pointer Orange
+    row8: "0x28 | start (time_t) | 8B" { style.fill: "#E3F2FD" }
+    row9: "0x30 | flags (uint8_t[3]) | 3B" { style.fill: "#E3F2FD" }
+    row10: "0x33 | [Alignment Padding] | 5B" { style.fill: "#F5F5F5" }
+    
+    footer: "0x38 | [Cache Line Padding] | 8B" {
+      style: {
+        fill: "#BDBDBD" # Gray Padding
+        stroke-dash: 3
+      }
+    }
+  }
+
+  note: {
+    label: |md
+      **Implementation Note**:
+      Aligning the struct to 64 bytes prevents **false sharing** and ensures that a single 
+      cache-line fetch retrieves the entire metadata for traversal.
+    |
+    style.font-size: 12
+    style.fill: transparent
+  }
+}
+
+# =============================================================================
+# 2. CONTEXT: SIGNAL BLOCKING
+# =============================================================================
+Signal_Logic: {
+  Signal_Blocking: {
+    label: "SIGCHLD Blocking Context"
+    style.fill: "#FFF9C4"
+    style.stroke: "#FBC02D"
+    
+    block_code: |c
+      SignalBlockContext ctx;
+      signal_block_sigchld(&ctx);
+      // --- CRITICAL SECTION START ---
+      // Update job list / traverse / delete
+      // --- CRITICAL SECTION END ---
+      signal_unblock_sigchld(&ctx);
+    |
+  }
+
+  warning: {
+    label: |md
+      ### ⚠️ CONCURRENCY WARNING
+      SIGCHLD is delivered asynchronously. If the handler 
+      modifies `job_list` while `main()` is traversing it, 
+      **memory corruption** or **segfaults** will occur.
+    |
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#C62828"
+      font-color: "#C62828"
+    }
+  }
+}
+
+# =============================================================================
+# 3. GLOBAL STATE & LINKED LIST
+# =============================================================================
+Runtime_State: {
+  JobControl_Global: {
+    label: "JobControlState (Global)"
+    style.fill: "#E1F5FE"
+    
+    definition: |c
+      typedef struct {
+        pid_t shell_pgid;
+        Job*  job_list;     // Head pointer
+        int   next_job_id;
+        int   job_count;
+        bool  enabled;
+      } JobControlState;
+    |
+  }
+
+  Job_List_Viz: {
+    label: "Job Linked List Structure"
+    style.fill: "#F1F8E9"
+    
+    head: "g_job_control.job_list" { shape: parallelogram; style.fill: "#BBDEFB" }
+    
+    job1: "Job [1]\nRunning\npgid: 501" { style.fill: "#C8E6C9" }
+    job2: "Job [2]\nStopped\npgid: 505" { style.fill: "#FFCDD2" }
+    job3: "Job [3]\nRunning\npgid: 510" { style.fill: "#C8E6C9" }
+    null_term: "NULL" { shape: rectangle; style.fill: "#CFD8DC" }
+
+    head -> job1: "owns"
+    job1 -> job2: "next"
+    job2 -> job3: "next"
+    job3 -> null_term: "next"
+  }
+}
+
+# =============================================================================
+# 4. OPERATIONS & RACE CONDITIONS
+# =============================================================================
+Operations_Safe: {
+  label: "Atomic List Operations"
+  style.fill: "#FAFAFA"
+
+  job_add: |c
+    void job_add(Job* j) {
+      block_sigchld();
+      j->next = g_jobs.job_list;
+      g_jobs.job_list = j;
+      unblock_sigchld();
+    }
+  |
+
+  job_remove: |c
+    void job_remove(Job* target) {
+      block_sigchld();
+      // Unlink safely...
+      unblock_sigchld();
+      free(target);
+    }
+  |
+}
+
+Race_Scenario: {
+  label: "The 'Invisible' Race Condition"
+  style.fill: "#ECEFF1"
+
+  diag: |md
+    **Scenario: Removing a job**
+    1. `main` starts traversing `job_list`.
+    2. `main` reads `j = job_list` (Job A).
+    3. **INTERRUPT**: Process finishes, SIGCHLD fires.
+    4. `handler` calls `job_remove(Job A)`, freeing it.
+    5. `main` resumes, calls `j->next`. 
+    6. **CRASH**: Use-after-free on Job A.
+  |
+  
+  fix: {
+    label: "FIX: Block SIGCHLD around traversal loop."
+    style.fill: "#C8E6C9"
+    style.bold: true
+  }
+}
+
+# =============================================================================
+# 5. SIGNAL INTERNALS
+# =============================================================================
+Signal_Internals: {
+  label: "POSIX Implementation (sigprocmask)"
+  style.fill: "#EFEBE9"
+  
+  impl: |c
+    void block_sigchld() {
+      sigset_t mask;
+      sigemptyset(&mask);
+      sigaddset(&mask, SIGCHLD);
+      sigprocmask(SIG_BLOCK, &mask, &old_mask);
+    }
+    
+    void unblock_sigchld() {
+      sigprocmask(SIG_SETMASK, &old_mask, NULL);
+    }
+  |
+}
+
+# =============================================================================
+# CONNECTIONS & FLOW
+# =============================================================================
+
+Signal_Logic.Signal_Blocking -> Operations_Safe: "provides protection for"
+Runtime_State.JobControl_Global -> Runtime_State.Job_List_Viz: "points to head"
+Job_Memory_Layout -> Runtime_State.Job_List_Viz: "memory schema for nodes"
+Signal_Internals -> Signal_Logic.Signal_Blocking: "low-level implementation"
+Race_Scenario -> Signal_Logic.warning: "visualizes failure mode"
+Operations_Safe -> Runtime_State.Job_List_Viz: "mutates"
+
+# Globs for styling
+***.style.font: mono
+(*** -> ***)[*].style.stroke: "#455A64"
+(*** -> ***)[*].style.stroke-width: 2

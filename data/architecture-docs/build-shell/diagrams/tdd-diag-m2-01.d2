@@ -1,0 +1,267 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- GLOBAL STYLES & CLASSES ---
+classes: {
+  header: {
+    style: {
+      font-size: 18
+      bold: true
+      fill: "#B39DDB"
+      stroke: "#512DA8"
+    }
+  }
+  data_cell: {
+    style: {
+      fill: "#BBDEFB"
+      stroke: "#1976D2"
+    }
+  }
+  state_change: {
+    style: {
+      fill: "#FFCDD2"
+      stroke: "#B71C1C"
+      font-color: "#B71C1C"
+      bold: true
+    }
+  }
+  kernel_struct: {
+    style: {
+      stroke: "#2E7D32"
+      stroke-width: 2
+      stroke-dash: 5
+      fill: "#E8F5E9"
+    }
+  }
+}
+
+main_title: {
+  shape: text
+  label: |md
+    # Concurrent Pipeline Execution
+    **TDD Spec: `cmd1 | cmd2 | cmd3` with SIGPIPE Backpressure**
+  |
+  near: top-center
+}
+
+# --- TIMELINE AXIS (PHASES) ---
+timeline: {
+  grid-columns: 5
+  grid-gap: 20
+  
+  t0: "T₀: fork() Loop" { class: header }
+  t1: "T₁: Pipe Setup" { class: header }
+  t2: "T₂: Concurrency" { class: header }
+  t3: "T₃: SIGPIPE" { class: state_change }
+  t4: "T₄: Reap/Exit" { 
+    class: header
+    style.fill: "#C8E6C9" 
+  }
+}
+
+# --- SHELL PARENT PROCESS ---
+parent_proc: "Shell Process (Parent)\nPID: 4500" {
+  style: {
+    fill: "#E6E6FA"
+    stroke: "#483D8B"
+    stroke-width: 2
+  }
+  
+  grid-columns: 5
+  grid-gap: 15
+  
+  s0: "fork() calls x3" { class: data_cell }
+  s1: "pipe(p_fds)" { class: data_cell }
+  s2: "blocking waitpid()" { 
+    style: {
+      stroke-dash: 3
+      fill: "#F5F5F5"
+    }
+  }
+  s3: "SIGCHLD Handler" { class: state_change }
+  s4: "WEXITSTATUS(141)" { 
+    class: data_cell
+    style.fill: "#90EE90" 
+  }
+}
+
+# --- PROCESS GROUP CONTAINER ---
+pgroup: {
+  label: "Process Group (PGID: 4501)"
+  style: {
+    stroke: "#FF8C00"
+    stroke-dash: 8
+    stroke-width: 4
+    border-radius: 10
+  }
+
+  # Child 1: The Producer
+  child1: "cmd1 (Producer)\nPID: 4501" {
+    class: kernel_struct
+    grid-columns: 5
+    
+    c1_0: "fork -> 0"
+    c1_1: "dup2(p1[1], 1)"
+    c1_2: "write(STDOUT)" { 
+      style: {
+        fill: "#4169E1"
+        font-color: white 
+      }
+    }
+    c1_3: "EPIPE / SIGPIPE" {
+      class: state_change
+    }
+    c1_4: "_exit(141)"
+  }
+
+  # Child 2: The Terminator (head -1)
+  child2: "cmd2 (Terminator)\nPID: 4502" {
+    class: kernel_struct
+    grid-columns: 5
+    
+    c2_0: "fork -> 0"
+    c2_1: "dup2 streams"
+    c2_2: "read(STDIN)" { 
+      style: {
+        fill: "#2E7D32"
+        font-color: white 
+      }
+    }
+    c2_3: "close(fds)" {
+      class: state_change
+    }
+    c2_4: "ZOMBIE" { 
+      style.opacity: 0.5 
+    }
+  }
+
+  # Child 3: The Consumer
+  child3: "cmd3 (Consumer)\nPID: 4503" {
+    class: kernel_struct
+    grid-columns: 5
+    
+    c3_0: "fork -> 0"
+    c3_1: "dup2(p2[0], 0)"
+    c3_2: "poll(read)" { 
+      style: {
+        fill: "#7E57C2"
+        font-color: white 
+      }
+    }
+    c3_3: "read -> 0 (EOF)" { class: data_cell }
+    c3_4: "exit(0)"
+  }
+}
+
+# --- KERNEL PIPE BUFFER ---
+pipe_buffer: {
+  label: "VFS: Pipe Buffer Object"
+  class: kernel_struct
+  
+  grid-columns: 5
+  
+  b0: "Offset 0x00: Empty"
+  b1: "Alloc: 64KB" { class: data_cell }
+  b2: "R/W Active" { 
+    style: {
+      fill: "#64B5F6"
+      animated: true 
+    }
+  }
+  b3: "Broken Pipe" { class: state_change }
+  b4: "Dealloc"
+}
+
+# --- CONNECTIONS & DATA FLOW ---
+pgroup.child1.c1_2 -> pipe_buffer.b2: "syscall: write()" {
+  style: {
+    stroke: "#4169E1"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+pipe_buffer.b2 -> pgroup.child2.c2_2: "syscall: read()" {
+  style: {
+    stroke: "#2E7D32"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+# SIGPIPE Trigger - Logic Flow
+pgroup.child2.c2_3 -> pgroup.child1.c1_3: "Kernel: Deliver SIGPIPE" {
+  style: {
+    stroke: "#D32F2F"
+    stroke-width: 5
+    bold: true
+  }
+  source-arrowhead: circle
+  target-arrowhead: triangle
+}
+
+# --- TECHNICAL ANNOTATIONS ---
+
+sigflow: {
+  shape: text
+  near: bottom-center
+  label: |md
+    ### Backpressure & Signal Propagation
+    1. **Concurrent Start**: All children are active at **T₂**. `yes` fills pipe faster than `head` consumes.
+    2. **Reader Exit**: At **T₃**, `head -1` completes. The `exit()` syscall closes all file descriptors.
+    3. **The Break**: `pipe_buffer` now has 0 readers but 1 writer (`cmd1`).
+    4. **Signal**: Next time `cmd1` attempts `write()`, the Kernel trap identifies the broken pipe and delivers **SIGPIPE (13)**.
+    5. **Result**: Exit status is `128 + 13 = 141`.
+  |
+}
+
+memory_layout: {
+  shape: text
+  near: bottom-left
+  label: |md
+    ### Memory Layout: struct pipe_inode_info
+    | Offset | Field | Size | Description |
+    | :--- | :--- | :--- | :--- |
+    | 0x00 | `mutex` | 32B | Synchronization |
+    | 0x20 | `head` | 4B | Write Index |
+    | 0x24 | `tail` | 4B | Read Index |
+    | 0x28 | `readers` | 4B | Count of reader FDs |
+    | 0x2C | `writers` | 4B | Count of writer FDs |
+    | 0x30 | `bufs` | 8B | Pointer to pipe_buffer |
+    ---
+    **Total Size: 64B (Matches L1 Cache Line)**
+  |
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#9E9E9E"
+  }
+}
+
+key_insight: {
+  shape: text
+  near: top-right
+  label: |md
+    ### Engineering Manual: Wait Logic
+    The shell only waits for the **last process** 
+    in the pipeline for its return code. 
+    However, it must **reap** all children via 
+    `waitpid(-1)` to prevent zombie processes 
+    clogging the kernel process table.
+  |
+  style: {
+    fill: "#FFF9C4"
+    stroke: "#FBC02D"
+  }
+}
+
+# Define Page Boundaries
+pipe_buffer.style.stroke-width: 4
+pgroup.style.stroke-dash: 5
+
+# Highlight SIGPIPE Path
+(pgroup.child2.c2_3 -> pgroup.child1.c1_3)[0].style.animated: true
+(pgroup.child2.c2_3 -> pgroup.child1.c1_3)[0].style.stroke: "#B71C1C"

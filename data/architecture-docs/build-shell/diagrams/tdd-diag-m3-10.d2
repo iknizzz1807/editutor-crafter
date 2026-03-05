@@ -1,0 +1,156 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Signal Blocking Critical Section
+  Preventing SIGCHLD race conditions during job table modification
+| {near: top-center}
+# Main execution flow
+main_thread: {
+  label: "Main Thread"
+  style.fill: "#E8F4FD"
+  style.stroke: "#2E86AB"
+  step1: "1. Signal arrives\n(SIGCHLD pending)" {
+    shape: rectangle
+    style.fill: "#FFE4B5"
+    style.stroke: "#FF8C00"
+  }
+  step2: "2. Signal blocked\nsigprocmask(SIG_BLOCK)" {
+    shape: rectangle
+    style.fill: "#90EE90"
+    style.stroke: "#228B22"
+  }
+  step3: "3. Critical Section\nModify job table" {
+    shape: rectangle
+    style.fill: "#FFB6C1"
+    style.stroke: "#DC143C"
+    style.bold: true
+  }
+  step4: "4. Signal unblocked\nsigprocmask(SIG_SETMASK)" {
+    shape: rectangle
+    style.fill: "#90EE90"
+    style.stroke: "#228B22"
+  }
+  step5: "5. Pending SIGCHLD\ndelivered to handler" {
+    shape: rectangle
+    style.fill: "#DDA0DD"
+    style.stroke: "#8B008B"
+  }
+  step1 -> step2: "Enter critical section"
+  step2 -> step3: "Signals blocked"
+  step3 -> step4: "Modification complete"
+  step4 -> step5: "Signals unblocked"
+}
+# Signal handler (parallel timeline)
+signal_handler: {
+  label: "Signal Handler Context"
+  style.fill: "#F5F5F5"
+  style.stroke: "#696969"
+  style.stroke-dash: 3
+  blocked_state: "SIGCHLD BLOCKED\nHandler NOT invoked" {
+    shape: rectangle
+    style.fill: "#FFE4E1"
+    style.stroke: "#FF6347"
+  }
+  handler_invoked: "Handler invoked\nwrite(pipe_fd, 'C', 1)" {
+    shape: rectangle
+    style.fill: "#E6E6FA"
+    style.stroke: "#9370DB"
+  }
+  blocked_state -> handler_invoked: "After unblock" {style.stroke-dash: 3}
+}
+# Job table structure
+job_table: {
+  label: "Job Table (Protected Resource)"
+  style.fill: "#FFFACD"
+  style.stroke: "#DAA520"
+  job_list: "job_list → Job* → Job* → NULL" {
+    shape: rectangle
+    style.fill: "#FAFAD2"
+  }
+  modification: |md
+    **Protected Operations:**
+    - job_create()
+    - job_remove()
+    - job_update_status()
+    - Linked list pointer updates
+  | {
+    shape: rectangle
+    style.fill: "#FAFAD2"
+  }
+  job_list -> modification
+}
+# Race condition prevented
+race_prevented: {
+  label: "Race Condition PREVENTED"
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+  without_blocking: |md
+    **WITHOUT blocking:**
+    
+    Main: job->next = new_job
+    [SIGCHLD arrives]
+    Handler: reads job_list
+    Main: job_list = new_job
+    → CORRUPTION!
+    
+  | {
+    shape: rectangle
+    style.fill: "#FFCDD2"
+    style.stroke: "#F44336"
+  }
+  with_blocking: |md
+    **WITH blocking:**
+    
+    Main: block SIGCHLD
+    Main: job->next = new_job
+    Main: job_list = new_job
+    Main: unblock SIGCHLD
+    [SIGCHLD now delivered]
+    Handler: reads consistent list
+    → SAFE!
+    
+  | {
+    shape: rectangle
+    style.fill: "#C8E6C9"
+    style.stroke: "#4CAF50"
+  }
+  without_blocking -> with_blocking: "Solution"
+}
+# Code pattern
+code_pattern: |md
+  c
+  // CORRECT pattern for job table access:
+  void modify_job_table(void) {
+      SignalBlockContext ctx;
+      // Block SIGCHLD - handler will NOT interrupt
+      if (signal_block_sigchld(&ctx) < 0) {
+          return;  // Error handling
+      }
+      // === CRITICAL SECTION ===
+      // Safe to modify g_job_control.job_list
+      job->next = job_list;
+      job_list = job;
+      // ========================
+      // Unblock - pending SIGCHLD now delivered
+      signal_unblock_sigchld(&ctx);
+  }
+  // WRONG - Race condition!
+  void wrong_pattern(void) {
+      job->next = job_list;     // SIGCHLD could interrupt here!
+      job_list = job;           // Handler reads inconsistent state
+  }
+  
+| {
+  near: bottom-center
+  style.fill: "#F8F8FF"
+  style.stroke: "#4169E1"
+}
+# Connections
+main_thread.step2 -> signal_handler.blocked_state: "Blocks handler" {style.stroke: "#228B22"}
+main_thread.step4 -> signal_handler.handler_invoked: "Allows handler" {style.stroke: "#228B22"}
+main_thread.step3 -> job_table: "Modifies" {style.stroke: "#DC143C"}
+signal_handler.handler_invoked -> job_table: "Reads (after unblock)" {style.stroke-dash: 3; style.stroke: "#9370DB"}

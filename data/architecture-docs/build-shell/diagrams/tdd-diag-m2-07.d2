@@ -1,0 +1,202 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+shape: sequence_diagram
+
+# ---------------------------------------------------------------------------------------
+# Participants Definitions: Intel Manual / Technical Quality
+# ---------------------------------------------------------------------------------------
+Parent: "Parent Shell\n(PID: 1234)" {
+  style: {
+    fill: "#f3e5f5"
+    stroke: "#7b1fa2"
+    stroke-width: 2
+    font-size: 16
+    bold: true
+  }
+}
+
+Child: "Child Subshell\n(PID: 1235)" {
+  style: {
+    fill: "#e3f2fd"
+    stroke: "#1976d2"
+    stroke-width: 2
+    font-size: 16
+    bold: true
+  }
+  lexer: "Lexer" {
+    style.fill: "#bbdefb"
+  }
+  parser: "Parser" {
+    style.fill: "#90caf9"
+  }
+  executor: "Executor" {
+    style.fill: "#64b5f6"
+  }
+}
+
+Pipe: "Pipe Buffer\n(Kernel 64KB)" {
+  shape: cylinder
+  style: {
+    fill: "#e8f5e9"
+    stroke: "#2e7d32"
+    stroke-dash: 3
+    font-size: 16
+    bold: true
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# 1. Initialization Phase: Encountering Command Substitution
+# ---------------------------------------------------------------------------------------
+Parent.t1 -> Parent.t1: '1. expand_word($(cmd))' {
+  tooltip: "Encounter $(...) command substitution syntax during word expansion"
+  style.stroke: "#7b1fa2"
+}
+
+# ---------------------------------------------------------------------------------------
+# 2. Kernel Resource Allocation: Anonymous Pipe Creation
+# ---------------------------------------------------------------------------------------
+Parent.t2 -> Pipe.t1: "2. pipe(int fd[2])" {
+  tooltip: "Request kernel buffer for inter-process communication"
+  style: {
+    stroke: "#fb8c00"
+    stroke-width: 2
+  }
+}
+Pipe.t1 -> Parent.t2: "return {fd[0]=3, fd[1]=4}" {
+  style.stroke: "#fb8c00"
+}
+
+# ---------------------------------------------------------------------------------------
+# 3. Process Duplication: Recursive Shell Creation
+# ---------------------------------------------------------------------------------------
+Parent.t3 -> Child.t1: "3. fork()" {
+  tooltip: "Full process image duplication via COW (Copy-On-Write)"
+  style: {
+    bold: true
+    stroke-width: 3
+    stroke: "#d32f2f"
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# 4. Child Context Configuration: Redirection and Cleanup
+# ---------------------------------------------------------------------------------------
+Child.t1 -> Child.t2: "4. dup2(fd[1], STDOUT_FILENO)" {
+  tooltip: "Map pipe write-end to standard output (captured stream)"
+}
+
+Child."Note: Map pipe write-end to STDOUT"
+
+Child.t2 -> Pipe.t2: "close(fd[0])" {
+  tooltip: "Close unused read end in child to prevent descriptor leakage"
+  style.stroke: "#d32f2f"
+}
+
+# ---------------------------------------------------------------------------------------
+# 5. Parent Context Configuration
+# ---------------------------------------------------------------------------------------
+Parent.t3 -> Parent.t4: "5. close(fd[1])" {
+  tooltip: "Parent closes write-end to ensure EOF on read() once child exits"
+  style.stroke: "#d32f2f"
+}
+
+# ---------------------------------------------------------------------------------------
+# 6. Recursive Evaluation Cycle: Child Internal Lifecycle
+# ---------------------------------------------------------------------------------------
+Child.t2 -> Child.t3: "6. execute_command_string(cmd)" {
+  style.stroke: "#1976d2"
+}
+Child.t3 -> Child.lexer: "tokenize(char* cmd)"
+Child.lexer -> Child.parser: "token_stream"
+Child.parser -> Child.executor: "Abstract Syntax Tree (AST)"
+Child.executor -> Child.t4: "7. eval_ast()"
+
+# ---------------------------------------------------------------------------------------
+# 7. Data Transmission Path: Kernel-Bound Byte Stream
+# ---------------------------------------------------------------------------------------
+Child.t4 -> Pipe.t3: "write(STDOUT_FILENO, data, n)" {
+  tooltip: "Streaming output into the 64KB kernel buffer"
+  style: {
+    stroke: "#1976d2"
+    stroke-width: 2
+    animated: true
+  }
+}
+Pipe.t3 -> Parent.t4: "8. read(fd[0], buf, BUFSIZ)" {
+  tooltip: "Parent consumes data from pipe into a temporary buffer string"
+  style: {
+    stroke: "#2e7d32"
+    stroke-width: 2
+    animated: true
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# 8. Synchronization and Reaper Logic
+# ---------------------------------------------------------------------------------------
+Parent.t5 -> Child.t5: "9. waitpid(1235, &status, 0)" {
+  tooltip: "Blocking call until subshell termination"
+}
+Child.t5 -> Parent.t5: "SIGCHLD (exit_code=0)" {
+  target-arrowhead: arrow
+}
+
+# ---------------------------------------------------------------------------------------
+# 9. Result Integration: POSIX Compliance Normalization
+# ---------------------------------------------------------------------------------------
+Parent.t6 -> Parent.t6: "10. Post-processing" {
+  tooltip: "Buffer manipulation: Strip trailing newline characters (POSIX compliance)"
+  style.stroke: "#7b1fa2"
+}
+
+Parent.t7 -> Parent.t7: '11. Substitute Word' {
+  tooltip: "Final expansion: Replace $(cmd) with resulting data stream in CLI string"
+  style.stroke: "#7b1fa2"
+}
+
+# ---------------------------------------------------------------------------------------
+# Technical Specification and Engineering Design Notes
+# ---------------------------------------------------------------------------------------
+spec: {
+  shape: text
+  label: |md
+### Engineering Specification: Command Substitution Lifecycle
+
+**1. Recursive Invocation Model**
+Command substitution is implemented as a **recursive shell evaluation**. 
+The subshell (Child) performs a full `lex-parse-eval` loop. This supports:
+- **Nested substitution**: `$(echo $(date))`
+- **Arbitrary Pipelines**: `$(cat file | grep pattern | awk '{print $1}')`
+
+**2. Deadlock Prevention (Pipe Closure Protocol)**
+- **Parent Responsibility**: The parent process *must* `close(fd[1])` immediately after `fork()`. If the parent keeps the write end open, a `read(fd[0])` will block indefinitely even after the child exits, as the pipe never receives an End-of-File (EOF).
+- **Child Responsibility**: The child *must* `close(fd[0])` to prevent descriptor leakage and ensure resource cleanup.
+
+**3. Output Normalization**
+As per **POSIX.1-2017**, the shell captures standard output. 
+- Captured string undergoes **trailing newline removal**. 
+- Internal newlines are preserved within the expanded word.
+- The resulting string is subject to field splitting if not double-quoted.
+  |
+  near: bottom-center
+  style: {
+    stroke: "#7b1fa2"
+    fill: "#f3e5f5"
+    border-radius: 8
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# Global Connection Styling & Overrides
+# ---------------------------------------------------------------------------------------
+(Parent.t2 -> Pipe.t1)[0].style.stroke: "#ff9800"
+(Child.t4 -> Pipe.t3)[0].style.stroke: "#2196f3"
+(Pipe.t3 -> Parent.t4)[0].style.stroke: "#4caf50"

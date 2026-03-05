@@ -1,0 +1,136 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 50
+  }
+  # Defining variable to satisfy potential substitution checks in some D2 versions
+  job_pgid: "4201"
+}
+
+shape: sequence_diagram
+
+# --- Participants Definition ---
+User: {
+  shape: person
+  label: "User (TTY Input Source)"
+}
+
+Terminal_Driver: {
+  label: "Terminal Driver\n(n_tty.c / Line Discipline)"
+}
+
+Kernel: {
+  label: "Kernel\n(Signal & Process Management)"
+}
+
+Job_Processes: {
+  label: "Job Processes\n(Foreground PGID Group)"
+  style: {
+    fill: "#DEE1EB"
+    stroke-width: 2
+    double-border: true
+  }
+}
+
+Shell_Signal: {
+  label: "Shell SIGCHLD\nHandler (Async Context)"
+  style: {
+    stroke: "#FF4D4D"
+    stroke-dash: 3
+  }
+}
+
+Shell_Main: {
+  label: "Shell Main Loop\n(Event Loop / Synchronous)"
+  style: {
+    fill: "#E4DBFE"
+  }
+}
+
+Job_Table: {
+  label: "Internal Job Table\n(State Storage)"
+  shape: cylinder
+}
+
+# --- Interaction Trace Logic ---
+
+# Step 1: Input event
+User -> Terminal_Driver: "1. Press Ctrl+Z (0x1A)"
+
+# Step 2: Driver logic in TTY layer
+Terminal_Driver.t1 -> Terminal_Driver.t1: "Intercept char\n(L_ISIG bit active)"
+Terminal_Driver.t1 -> Kernel.t1: "Lookup foreground PGID for TTY"
+
+# Step 3: Kernel Signal Delivery
+# Using single quotes to safely include the dollar sign literal in the label
+Kernel.t1 -> Kernel.t1: 'Result: FG PGID = ${job_pgid}'
+
+Kernel.t1 -> Job_Processes.t1: "SIGTSTP → entire PGID group" {
+  style: {
+    stroke: "#FF0000"
+    animated: true
+    stroke-width: 3
+  }
+}
+
+# Step 4: Process State Transition
+Job_Processes.t1 -> Job_Processes.t1: "Receive SIGTSTP"
+Job_Processes.t1 -> Job_Processes.t1: "Action: TASK_STOPPED"
+Job_Processes.t1 -> Kernel.t2: "Update task_struct state"
+
+# Step 5: Parent Notification
+# Kernel notifies the parent (Shell) of the child state change
+Kernel.t2 -> Shell_Signal.t1: "SIGCHLD → Shell (Parent)" {
+  style: {
+    stroke: "#FFA500"
+    stroke-width: 2
+    animated: true
+  }
+}
+
+# Step 6: Shell Async-Signal Safety (Self-Pipe Trick)
+# The signal handler cannot do complex work, so it wakes up the main loop
+Shell_Signal.t1 -> Shell_Signal.t1: "write(pipe_fd, 'C', 1)"
+Shell_Signal.t1 -> Shell_Main.t1: "Wakeup from pselect()/poll()"
+
+# Step 7: Shell Main Processing
+Shell_Main.t1 -> Shell_Main.t1: "Drain self-pipe"
+Shell_Main.t1 -> Shell_Main.t1: "Enter reap_children() routine"
+
+# Step 8: Sync with Kernel status
+Shell_Main.t2 -> Kernel.t3: "waitpid(-1, &status, WUNTRACED)"
+Kernel.t3 -> Shell_Main.t2: "Returns: WIFSTOPPED == true"
+
+# Step 9: Update Internal State
+Shell_Main.t2 -> Job_Table.t1: "Update job status = STOPPED"
+
+# Step 10: TTY Management
+# Shell must regain control of the terminal to print the prompt
+Shell_Main.t2 -> Shell_Main.t2: "Check if job was FG"
+Shell_Main.t2 -> Shell_Main.t2: "take_terminal_back()"
+
+Shell_Main.t3 -> Kernel.t4: "tcsetpgrp(tty_fd, shell_pgid)"
+Shell_Main.t3 -> Shell_Main.t3: "tcsetattr(saved_modes)"
+
+# Step 11: Final UI Feedback
+# FIX: Using single quotes for 'shell prompt $ ' to prevent "substitutions must begin on {" error
+Shell_Main.t4 -> User: "[1]+ Stopped          sleep 100"
+Shell_Main.t4 -> User: 'shell prompt $ '
+
+# --- Global Styling & Annotations ---
+
+# Connection styling for clarity
+(Shell_Signal.t1 -> Shell_Main.t1)[0].style.stroke-dash: 5
+(Shell_Signal.t1 -> Shell_Main.t1)[0].label: "Async Wakeup"
+
+# Color Coding by Architectural Layer
+Terminal_Driver.style.fill: "#C7F1FF"
+Kernel.style.fill: "#B5AFF6"
+Shell_Main.style.fill: "#E4DBFE"
+Job_Table.style.fill: "#FDFD96"
+
+# Notes for Implementers
+Terminal_Driver.notes: "Line discipline processing happens in IRQ context"
+Shell_Signal.notes: "Only async-signal-safe functions used here"
+Shell_Main.notes: "Terminal modes restored to canonical mode"

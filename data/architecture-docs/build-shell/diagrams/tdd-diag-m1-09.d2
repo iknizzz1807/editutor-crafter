@@ -1,0 +1,294 @@
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+classes: {
+  process_box: {
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2E86AB"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  shell_box: {
+    style: {
+      fill: "#D4EDDA"
+      stroke: "#28A745"
+      stroke-width: 3
+      border-radius: 8
+      double-border: true
+    }
+  }
+  external_box: {
+    style: {
+      fill: "#FFF3CD"
+      stroke: "#FFC107"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  error_box: {
+    style: {
+      fill: "#F8D7DA"
+      stroke: "#DC3545"
+      stroke-width: 3
+      border-radius: 8
+      font-color: "#721c24"
+    }
+  }
+  success_box: {
+    style: {
+      fill: "#D4EDDA"
+      stroke: "#28A745"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  section_header: {
+    style: {
+      fill: "#f8f9fa"
+      stroke: "#6C757D"
+      stroke-width: 1
+      border-radius: 12
+    }
+  }
+  kernel_label: {
+    shape: parallelogram
+    style: {
+      fill: "#E2E3E5"
+      stroke: "#343a40"
+      font-size: 11
+    }
+  }
+}
+
+title: ||md
+  # Why `cd` Must Be a Shell Builtin
+  ### Technical Analysis: Unix Process Isolation & PCB State Persistence
+  **Engineering Guide:** Reference the memory isolation boundary and Task Structure (PCB) transitions below.
+|| {
+  near: top-center
+  style.font-size: 18
+}
+
+direction: right
+
+# --- SCENARIO A: EXTERNAL EXECUTION ---
+External_cd: {
+  class: section_header
+  label: "❌ Scenario A: External /bin/cd Execution Path"
+  
+  ExtFlow: {
+    direction: down
+    
+    # Fix: Escaped the $ character to prevent D2 from attempting variable substitution
+    Input: "SHELL INPUT\n\$ /bin/cd /tmp" {
+      class: process_box
+      style.fill: "#E2E3E5"
+    }
+    
+    Fork: "SYS_FORK\nCreates Copy of Parent PCB" {
+      class: process_box
+      
+    }
+    
+    PCB_Comparison: {
+      grid-columns: 2
+      ParentPCB: "PARENT (Shell)\nPID: 1000\nCWD: /home/user\nAddr: 0x8000" {
+        class: shell_box
+      }
+      ChildPCB: "CHILD (/bin/cd)\nPID: 1001\nCWD: /home/user\nAddr: 0x9000" {
+        class: external_box
+      }
+    }
+    
+    ChdirCall: "SYS_CHDIR('/tmp')\nUpdates Child task_struct" {
+      class: success_box
+    }
+    
+    ChildUpdated: "CHILD PCB PERSISTED\nPID 1001: CWD = /tmp" {
+      class: external_box
+      style.stroke-dash: 3
+    }
+    
+    Exit: "SYS_EXIT(0)\nDeallocates Child mm_struct" {
+      class: process_box
+      style.fill: "#E2E3E5"
+    }
+    
+    Failure: "PARENT STATE UNCHANGED\nPID 1000 CWD: /home/user\nResult: ❌ Directory not changed" {
+      class: error_box
+    }
+    
+    Input -> Fork -> PCB_Comparison
+    PCB_Comparison.ChildPCB -> ChdirCall -> ChildUpdated -> Exit -> Failure
+  }
+  
+  ExtNote: ||md
+    ### Memory Isolation Analysis (Scenario A)
+    - **Kernel Stack:** `chdir()` updates the `fs->pwd` field in the *current* `task_struct`.
+    - **Isolation Boundary:** PID 1001 and PID 1000 occupy distinct memory segments via VM paging.
+    - **Persistence:** Changes to PID 1001's process control block (PCB) do not propagate to the parent.
+    - **Data Flow:** The only communication channel on exit is the 8-bit integer returned via `waitpid()`.
+  || {
+    near: bottom-right
+    style.stroke-dash: 3
+    style.fill: "#fffcf0"
+    style.font-size: 12
+  }
+}
+
+# --- COMPARISON LABEL ---
+vs_label: "vs" {
+  shape: text
+  style: {
+    font-size: 48
+    bold: true
+    font-color: "#ADB5BD"
+  }
+}
+
+# --- SCENARIO B: BUILTIN EXECUTION ---
+Builtin_cd: {
+  class: section_header
+  label: "✅ Scenario B: Internal Shell Builtin Execution"
+  
+  BuiltFlow: {
+    direction: down
+    
+    # Fix: Escaped the $ character to prevent D2 from attempting variable substitution
+    Input: "SHELL INPUT\n\$ cd /tmp" {
+      class: process_box
+      style.fill: "#E2E3E5"
+    }
+    
+    Lookup: "BUILTIN TABLE LOOKUP\nMatch: cd -> builtin_cd()" {
+      class: process_box
+    }
+    
+    DirectExec: "IN-PROCESS EXECUTION\nNo context switch / No fork" {
+      class: success_box
+      style.bold: true
+    }
+    
+    CurrentState: "SINGLE PCB (Shell)\nPID: 1000\nCWD: /home/user" {
+      class: shell_box
+    }
+    
+    ChdirCall: "SYS_CHDIR('/tmp')\nUpdates Shell task_struct" {
+      class: success_box
+      style.stroke-width: 5
+    }
+    
+    Success: "SHELL STATE PERSISTS\nPID 1000 CWD: /tmp\nResult: ✅ Directory Changed" {
+      class: success_box
+      style.fill: "#C3E6CB"
+      style.bold: true
+    }
+    
+    Input -> Lookup -> DirectExec -> CurrentState -> ChdirCall -> Success
+  }
+  
+  BuiltNote: ||md
+    ### Persistence Analysis (Scenario B)
+    - **Execution Context:** The shell process executes the `chdir()` syscall within its own thread of execution.
+    - **State Change:** The kernel directly modifies the caller's `task_struct->fs->pwd` pointer.
+    - **Stack Frame:** Control returns to the shell's command loop, which now operates in the new environment.
+    - **Resource Efficiency:** Zero overhead from process creation (fork/exec) or memory duplication.
+  || {
+    near: bottom-right
+    style.stroke-dash: 3
+    style.fill: "#f0fff4"
+    style.font-size: 12
+  }
+}
+
+# --- KERNEL ISOLATION MATRIX ---
+State_Isolation: {
+  label: "Kernel-Level Process State Isolation Matrix"
+  style.font-size: 14
+  style.bold: true
+  
+  IsolationTable: {
+    shape: sql_table
+    style.fill: "#F8F9FA"
+    "State Attribute" : "Scope" {constraint: "Inheritance Logic"}
+    "Working Directory (CWD)" : "Isolated" {constraint: "fs_struct per PCB"}
+    "Address Space (Heap/Stack)" : "Isolated" {constraint: "mm_struct (Page Tables)"}
+    "Environment Variables" : "Copy-on-Write" {constraint: "Pointer to char** envp"}
+    "File Descriptors" : "Isolated" {constraint: "files_struct (fd table)"}
+    "Signal Handlers" : "Isolated" {constraint: "sighand_struct"}
+    "Exit Status" : "Propagated" {constraint: "Parent wait() syscall"}
+  }
+}
+
+# --- MEMORY BOUNDARY DIAGRAM ---
+ForkBoundary: {
+  label: "Process Fork Memory Boundary (Copy-on-Write)"
+  
+  ForkDiagram: {
+    direction: right
+    
+    ParentPre: "PARENT\nPID 1000\nPCB @ 0x8000" {
+      shape: rectangle
+      class: shell_box
+    }
+    
+    ForkOp: "fork()" {
+      shape: diamond
+      style.fill: "#FFE0B2"
+    }
+    
+    Split: {
+      direction: down
+      P: "PID 1000 (Parent)\n[State: /home/user]" {
+        class: shell_box
+      }
+      C: "PID 1001 (Child)\n[State: /home/user]" {
+        class: external_box
+      }
+    }
+    
+    IsolationWall: "UNIX ISOLATION WALL\nUnidirectional Exit Code Flow Only" {
+      shape: text
+      style: {
+        fill: "#F8D7DA"
+        stroke: "#DC3545"
+        stroke-width: 2
+        border-radius: 4
+        font-size: 12
+        bold: true
+      }
+    }
+    
+    ParentPre -> ForkOp
+    ForkOp -> Split.P: "Parent continues"
+    ForkOp -> Split.C: "Child created"
+    Split.C -> IsolationWall: "Attempts to update P" {style.stroke: red; style.stroke-dash: 3}
+  }
+}
+
+# --- IMPLEMENTATION SPECS TABLE ---
+Implementation_Specs: ||md
+  ## Shell Implementation Requirements
+  
+  | Category | Commands | Implementation Logic | Engineering Constraint |
+  | :--- | :--- | :--- | :--- |
+  | **Builtin** | `cd`, `pushd`, `popd` | `chdir()` in current PID context | Must persist CWD state |
+  | **Builtin** | `export`, `set` | Modify `environ` array in-process | Must persist environment state |
+  | **Builtin** | `exit`, `logout` | Call `exit()` on current PID | Terminates shell context |
+  | **Builtin** | `source`, `.` | Parse file in current stack frame | Executes code in-process |
+  | **External** | `ls`, `grep`, `mkdir` | `fork()` + `execve()` | No state leakage to shell |
+|| {
+  near: bottom-center
+  style.fill: "#f1f3f5"
+  style.border-radius: 8
+  style.stroke: "#6C757D"
+}

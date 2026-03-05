@@ -1,0 +1,250 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    signal: "#E74C3C"
+    pipe: "#3498DB"
+    main: "#2ECC71"
+    handler: "#F39C12"
+    reaper: "#9B59B6"
+    table: "#1ABC9C"
+    padding: "#BDC3C7"
+  }
+}
+
+title: {
+  label: "Self-Pipe Trick Architecture: Async-Signal-Safe Signal Handling"
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+
+Signal_Arrival: {
+  label: "Step 1: External Event"
+  style.fill: ${colors.signal}
+  style.stroke: "#C0392B"
+  style.font-color: white
+  
+  kernel: Kernel {
+    shape: hexagon
+    style.fill: "#E74C3C"
+    tooltip: "OS generates signal (e.g., SIGCHLD)"
+    label: |md
+    **SIGCHLD**
+    Child process state change
+    (exit, stop, continue)
+    |
+  }
+}
+
+Signal_Handler: {
+  style.fill: ${colors.handler}
+  style.stroke: "#D68910"
+  style.font-color: white
+  label: "Step 2: Restricted Context\nsizeof=stack frame"
+  
+  handler_code: |c
+    void sigchld_handler(int sig) {
+        char c = 'C';
+        // ONLY async-signal-safe calls allowed!
+        write(pipe_write_fd, &c, 1);
+    }
+  |
+  
+  handler_note: |md
+    **CRITICAL CONSTRAINT**
+    Handler can ONLY call async-signal-safe functions:
+    - `write()` ✓
+    - `_exit()` ✓
+    - `signal()` ✓
+    
+    **FORBIDDEN (causes deadlocks):**
+    - `printf()` ✗ (uses internal locks)
+    - `malloc()` ✗ (global heap lock)
+    - `waitpid()` ✗ (if not non-blocking)
+  |
+}
+
+Self_Pipe: {
+  label: "Step 3: The Inter-Context Bridge\nsizeof=65536 bytes"
+  style.fill: ${colors.pipe}
+  style.stroke: "#2980B9"
+  style.font-color: white
+  
+  pipe_fds: {
+    shape: sql_table
+    read_end: "fd[0] (Read)" {constraint: "O_CLOEXEC"}
+    write_end: "fd[1] (Write)" {constraint: "O_NONBLOCK"}
+  }
+  
+  kernel_buffer: "Kernel Pipe Buffer\n(Capacity: 64KB)" {
+    shape: cylinder
+    style.fill: "#5DADE2"
+    style.font-color: "#1A5276"
+    style.stroke-dash: 3
+  }
+}
+
+Main_Loop: {
+  style.fill: ${colors.main}
+  style.stroke: "#27AE60"
+  style.font-color: white
+  label: "Step 4: Synchronous Context"
+  
+  select_call: |c
+    fd_set read_fds;
+    FD_SET(self_pipe_read_fd, &read_fds);
+    FD_SET(STDIN_FILENO, &read_fds);
+    
+    // Select blocks until data arrives in pipe
+    select(max_fd + 1, &read_fds, NULL, NULL, NULL);
+  |
+  
+  safe_operations: |md
+    **SAFE CONTEXT**
+    Now in main thread, we can call anything:
+    - `waitpid()` ✓
+    - `printf()` ✓
+    - `malloc()` ✓
+    - `JobTable.update()` ✓
+  |
+}
+
+Child_Reaper: {
+  style.fill: ${colors.reaper}
+  style.stroke: "#7D3C98"
+  style.font-color: white
+  label: "Step 5: Process Management"
+  
+  reap_loop: |c
+    // Drains all pending child updates
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+        update_job_table(pid, status);
+    }
+  |
+  
+  status_types: {
+    shape: sql_table
+    WIFEXITED: "Normal termination"
+    WIFSIGNALED: "Killed by signal"
+    WIFSTOPPED: "Suspended (SIGSTOP)"
+    WIFCONTINUED: "Resumed (SIGCONT)"
+  }
+}
+
+Job_Table: {
+  style.fill: ${colors.table}
+  style.stroke: "#16A085"
+  label: "Persistent State\nsizeof=dynamic"
+  
+  jobs: {
+    shape: sql_table
+    job_id: int {constraint: PK}
+    pid: pid_t
+    state: enum {constraint: "RUNNING|STOPPED|EXITED"}
+    exit_code: int
+    command: string
+  }
+}
+
+Job_Memory_Map: {
+  label: "struct job_entry Layout"
+  shape: sql_table
+  style.fill: "#FDFEFE"
+  0x00: "job_id (int32)" {constraint: "4 Bytes"}
+  0x04: "pid (pid_t/int32)" {constraint: "4 Bytes"}
+  0x08: "state (uint8)" {constraint: "1 Byte"}
+  0x09: "padding" {constraint: "3 Bytes"; style.fill: ${colors.padding}}
+  0x0C: "exit_code (int32)" {constraint: "4 Bytes"}
+  0x10: "*command (char*)" {constraint: "8 Bytes (ptr)"}
+  "Total Size": "24 Bytes" {style.bold: true}
+}
+
+# Connections
+Signal_Arrival.kernel -> Signal_Handler: "Interruption\n(Signal Delivery)" {
+  style.stroke: ${colors.signal}
+  style.stroke-width: 4
+  style.animated: true
+}
+
+Signal_Handler.handler_code -> Self_Pipe.kernel_buffer: "write(1 byte)" {
+  label: "Non-blocking write"
+  style.stroke: ${colors.handler}
+  style.stroke-width: 2
+}
+
+Self_Pipe.kernel_buffer -> Main_Loop.select_call: "Pipe becomes readable" {
+  label: "select() / poll() wakes"
+  style.stroke: ${colors.pipe}
+  style.stroke-width: 3
+}
+
+Main_Loop -> Child_Reaper: "Safe to perform\nI/O and reaps" {
+  style.stroke: ${colors.main}
+  style.stroke-width: 2
+}
+
+Child_Reaper -> Job_Table.jobs: "Update status" {
+  style.stroke: ${colors.reaper}
+  style.stroke-dash: 5
+  target-arrowhead: diamond
+}
+
+Self_Pipe.pipe_fds.write_end -> Signal_Handler.handler_code: "References FD" {
+  style.stroke-dash: 5
+  style.opacity: 0.5
+}
+
+Self_Pipe.pipe_fds.read_end -> Main_Loop.select_call: "Monitors FD" {
+  style.stroke-dash: 5
+  style.opacity: 0.5
+}
+
+# Annotations
+Flow_Explanation: {
+  near: bottom-center
+  shape: text
+  label: |md
+  ### The Self-Pipe Mechanism Flow
+  1. **SIGCHLD Arrival:** Kernel interrupts any current execution to run handler.
+  2. **Minimal Handler:** Handler does only the bare minimum: `write` a byte to a pipe. This is *Async-Signal-Safe*.
+  3. **Main Loop Wakeup:** The `select()` call (part of the normal event loop) sees the read-end of the pipe is now ready.
+  4. **Context Switch:** Execution moves from the dangerous signal context back to the safe main-loop context.
+  5. **Heavy Lifting:** Main loop drains the pipe and reaps all children using `waitpid()`. Now it's safe to use `malloc`, `printf`, or complex data structures.
+  |
+  style: {
+    font-size: 14
+    fill: "#F8F9FA"
+    stroke: "#DEE2E6"
+    border-radius: 8
+    stroke-width: 1
+  }
+}
+
+The_Critical_Warning: {
+  near: top-right
+  shape: text
+  label: |md
+  ⚠️ **DESIGN INVARIANT**
+  A signal can arrive while `malloc()` is 
+  holding a lock. If the handler calls 
+  `malloc()` again, it will **DEADLOCK**.
+  
+  The Self-Pipe trick converts an 
+  **asynchronous** signal into a 
+  **synchronous** file-descriptor event.
+  |
+  style: {
+    fill: "#FDEDEC"
+    stroke: ${colors.signal}
+    border-radius: 12
+    font-size: 13
+    bold: true
+  }
+}

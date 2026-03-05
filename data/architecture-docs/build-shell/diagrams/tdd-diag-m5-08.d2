@@ -1,0 +1,311 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: down
+
+# ---------------------------------------------------------------------------------------
+# 1. MEMORY LAYOUT: SUBSHELL FORK & COW ANALYSIS
+# ---------------------------------------------------------------------------------------
+subshell_memory_analysis: {
+  label: "Memory Layout: Subshell fork() Context & COW Cost"
+  style: {
+    stroke: purple
+    stroke-width: 2
+    fill: "#f8f9fa"
+  }
+
+  mem_map: {
+    grid-columns: 1
+    grid-gap: 0
+    
+    # Page boundary - Bold Line
+    p_top: "--- PAGE BOUNDARY (4096B Alignment) ---" {
+      style: { stroke-width: 4; stroke: black; font-size: 10 }
+    }
+
+    header: "task_struct (Header)" {
+      label: "0x0000 | task_struct (v5.15) | 9,216 bytes"
+      style: { fill: purple; font-color: white }
+    }
+
+    # Cache line indicator
+    cl1: "- - - - - CACHE LINE (64B) - - - - -" {
+      style: { stroke-dash: 3; font-size: 8 }
+    }
+
+    kstack: "Kernel Stack" {
+      label: "0x2400 | thread_info + Stack | 8,192 bytes"
+      style: { fill: blue; font-color: white }
+    }
+
+    padding: "Alignment Padding" {
+      label: "0x4400 | Padding | 512 bytes"
+      style: { fill: gray; opacity: 0.5 }
+    }
+
+    # Page boundary
+    p_mid: "--- PAGE BOUNDARY ---" {
+      style: { stroke-width: 4; stroke: black; font-size: 10 }
+    }
+
+    pt: "Page Tables (PTEs)" {
+      label: "0x4600 | MMU Page Directory | 4 KB/MB"
+      style: { fill: orange; font-color: black }
+    }
+
+    data: "User Data (Heap/BSS)" {
+      label: "0x5600 | Copy-on-Write (COW) Target | Variable"
+      style: { fill: blue; font-color: white }
+    }
+  }
+
+  cow_logic: {
+    label: "COW Fault Mechanism"
+    style.fill: "#fff3e0"
+    
+    trap: "Memory Access" {
+      label: "Write to $VAR (Child)"
+      style.stroke: red
+    }
+    
+    fault: "Page Fault" {
+      label: "SIGSEGV Trapped by Kernel"
+      shape: diamond
+    }
+
+    alloc: "Duplicate Page" {
+      label: "Physical Copy (4096B)"
+      style.fill: green
+      style.font-color: white
+    }
+
+    trap -> fault: "Read-only PTE"
+    fault -> alloc: "Copy physical data"
+  }
+
+  cost_summary: |md
+    ### Cost Analysis (x86_64)
+    - **Initial Fork**: ~17.4 KB fixed kernel overhead.
+    - **PTE Overhead**: 8 bytes per 4KB page.
+    - **Optimization**: Use `{ cmd; }` to avoid `clone()` syscall overhead.
+  |
+}
+
+# ---------------------------------------------------------------------------------------
+# 2. ARCHITECTURE: ISOLATION BOUNDARY
+# ---------------------------------------------------------------------------------------
+isolation_boundary: {
+  label: "Architecture: Process Isolation Boundary Analysis"
+  style.fill: white
+
+  subshell: "Subshell: ( cmd )" {
+    style.stroke-width: 2
+    parent: "Parent ENV" {
+      style.fill: "#e8f5e8"
+      v1: "VAR_A=10"
+    }
+    fork: "--- syscall: clone() ---" {
+      style.stroke-dash: 5
+    }
+    child: "Child ENV" {
+      style.fill: "#fce4ec"
+      v1_copy: "VAR_A=20" {
+        style.bold: true
+        style.stroke: red
+      }
+    }
+    child.v1_copy -> parent.v1: "ILLEGAL: No Back-propagation" {
+      style.stroke: red
+      style.stroke-dash: 3
+    }
+  }
+
+  brace: "Brace Group: { cmd; }" {
+    style.stroke-width: 2
+    context: "Unified Context" {
+      style.fill: "#e3f2fd"
+      v2: "VAR_B=10"
+      v2_mod: "VAR_B=20" {
+        style.fill: "#ffeb3b"
+      }
+    }
+    context.v2 -> context.v2_mod: "In-place Mutation"
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# 3. JOB STATE MACHINE
+# ---------------------------------------------------------------------------------------
+job_state_machine: {
+  label: "Shell Job Control State Machine"
+  style.fill: "#f3e5f5"
+
+  init: "" { shape: circle; fill: black; width: 15 }
+
+  running: "Running (Foreground)" {
+    style.fill: "#c8e6c9"
+    tooltip: "Invariants: tcsetpgrp() set to job PGID"
+  }
+
+  stopped: "Stopped (Suspended)" {
+    style.fill: "#fff9c4"
+    tooltip: "Invariants: Terminal control returned to Shell"
+  }
+
+  bg_running: "Running (Background)" {
+    style.fill: "#e1f5fe"
+    tooltip: "Invariants: No access to STDIN"
+  }
+
+  done: "Terminated" {
+    shape: circle
+    style.double-border: true
+    style.fill: "#cfd8dc"
+  }
+
+  init -> running: "fork() + exec()"
+  running -> stopped: "SIGTSTP (Ctrl+Z)"
+  stopped -> running: "fg (SIGCONT)"
+  stopped -> bg_running: "bg (SIGCONT)"
+  bg_running -> running: "fg"
+  running -> done: "exit(0)"
+  stopped -> done: "kill %n" { style.stroke: red }
+  
+  bg_running -> stopped: "SIGSTOP / TTOU" {
+    style.stroke-dash: 3
+    label: "Background write trap"
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# 4. EXECUTION SEQUENCE
+# ---------------------------------------------------------------------------------------
+execution_sequence: {
+  shape: sequence_diagram
+  user: User { shape: person }
+  shell: Shell { style.fill: "#e0f2f1" }
+  tty: TTY Driver { style.fill: "#f5f5f5" }
+  job: Process Group { style.fill: "#fff3e0" }
+
+  user -> shell: "ls | grep 'txt'"
+  shell -> shell: "pipe(fds)"
+  shell -> job: "fork() x 2"
+  
+  shell -> tty: "tcsetpgrp(job_pgid)" {
+    tooltip: "Grant Foreground Control"
+  }
+  
+  user -> tty: "Ctrl+C"
+  tty -> job: "SIGINT" {
+    style.stroke: red
+    label: "Propagate to PGID"
+  }
+  
+  job -> shell: "SIGCHLD (Status Change)"
+  shell -> tty: "tcsetpgrp(shell_pgid)"
+  shell -> user: "Prompt (PS1)"
+}
+
+# ---------------------------------------------------------------------------------------
+# 5. EXPANSION PIPELINE
+# ---------------------------------------------------------------------------------------
+expansion_pipeline: {
+  label: "Word Expansion Pipeline (POSIX 2.6)"
+  style.fill: "#fafafa"
+
+  input: 'echo ~/$USER/*.log' { shape: parallelogram }
+
+  pipe: {
+    p1: "Tilde Expansion" { style.fill: "#f8bbd0" }
+    p2: "Parameter Expansion" { style.fill: "#e1bee7" }
+    p3: "Command Substitution" { style.fill: "#d1c4e9" }
+    p4: "Arithmetic Expansion" { style.fill: "#c5cae9" }
+    p5: "Field Splitting" { style.fill: "#bbdefb" }
+    p6: "Pathname Expansion (Glob)" { style.fill: "#b3e5fc" }
+    p7: "Quote Removal" { style.fill: "#b2dfdb" }
+
+    p1 -> p2 -> p3 -> p4 -> p5 -> p6 -> p7
+  }
+
+  input -> pipe.p1
+  pipe.p7 -> output: "echo /home/usr/usr/app.log" { shape: parallelogram }
+}
+
+# ---------------------------------------------------------------------------------------
+# 6. UML CLASS HIERARCHY: AST NODES
+# ---------------------------------------------------------------------------------------
+ast_hierarchy: {
+  label: "AST Node Implementation (sizeof=64 bytes)"
+  style.fill: "#ffffff"
+
+  ASTNode: {
+    shape: class
+    +type: NodeType
+    +lineno: int
+    +flags: uint32
+    #data: union_ptr
+    +visit(): int
+  }
+
+  CommandNode: {
+    shape: class
+    +argv: "char**"
+    +argc: int
+    +redirs: "List<Redirect>"
+    +execute(): int
+  }
+
+  PipelineNode: {
+    shape: class
+    +commands: "List<ASTNode>"
+    +is_bg: bool
+    +pipe_count: int
+  }
+
+  CommandNode -> ASTNode: {
+    target-arrowhead: { shape: triangle; style.filled: false }
+  }
+  PipelineNode -> ASTNode: {
+    target-arrowhead: { shape: triangle; style.filled: false }
+  }
+  PipelineNode -> CommandNode: "composes 1..*" {
+    source-arrowhead: { shape: diamond; style.filled: true }
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# 7. MODULAR ARCHITECTURE
+# ---------------------------------------------------------------------------------------
+modular_architecture: {
+  label: "Modular Architecture Overview"
+  
+  frontend: {
+    lexer: Lexer
+    parser: Parser
+    lexer -> parser: Tokens
+  }
+
+  execution: {
+    eval: Evaluator
+    exec_engine: "Exec Engine"
+    eval -> exec_engine: "AST Node"
+  }
+
+  os_bridge: {
+    signals: "Signal Handler"
+    fds: "FD Manager"
+    jobs: "Job Table"
+  }
+
+  frontend.parser -> execution.eval: "AST Root"
+  execution.exec_engine -> os_bridge.fds: "dup2()"
+  execution.exec_engine -> os_bridge.jobs: "add_job()"
+}
+
+# Root level positioning for labels if required
+subshell_memory_analysis_label: "TDD MODULE: MEMORY" { near: top-left; shape: text }
+ast_hierarchy_label: "TDD MODULE: UML" { near: top-right; shape: text }

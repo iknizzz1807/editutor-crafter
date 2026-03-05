@@ -1,0 +1,228 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#9B59B6"
+    data: "#3498DB"
+    shared: "#E67E22"
+    isolated: "#27AE60"
+    arrow: "#7F8C8D"
+  }
+}
+title: {
+  label: "Subshell Implementation Details\nFork Boundary Isolation"
+  near: top-center
+  shape: text
+  style: {
+    font-size: 32
+    bold: true
+    underline: true
+  }
+}
+Parent_Process: {
+  label: "Parent Shell Process"
+  style: {
+    fill: "#ECF0F1"
+    stroke: "#2C3E50"
+    stroke-width: 2
+    border-radius: 8
+  }
+  parent_fd_table: {
+    label: "File Descriptor Table\n(parent's copy)"
+    shape: rectangle
+    style.fill: "${colors.data}"
+    fd0_parent: "fd 0 → stdin (terminal)"
+    fd1_parent: "fd 1 → stdout (terminal)"
+    fd2_parent: "fd 2 → stderr (terminal)"
+    fd3_parent: "fd 3 → open_file_A\noffset: 1024"
+  }
+  parent_mem: {
+    label: "Process Memory"
+    shape: rectangle
+    style.fill: "${colors.isolated}"
+    cwd_parent: "cwd: /home/user"
+    env_parent: "environ: {PATH, HOME, ...}"
+    vars_parent: "shell vars: {x=outer, ...}"
+  }
+  parent_fd_table -> parent_mem: {
+    style.stroke: transparent
+  }
+}
+fork_boundary: {
+  shape: diamond
+  label: "fork()\n\n┌─────────────────┐\n│ COPY-ON-WRITE   │\n│ Pages shared    │\n│ until modified  │\n└─────────────────┘"
+  style: {
+    fill: "#F39C12"
+    stroke: "#D35400"
+    stroke-width: 3
+    font-size: 14
+    shadow: true
+  }
+  width: 200
+}
+Child_Process: {
+  label: "Child (Subshell) Process"
+  style: {
+    fill: "#ECF0F1"
+    stroke: "#C0392B"
+    stroke-width: 2
+    border-radius: 8
+    stroke-dash: 4
+  }
+  child_fd_table: {
+    label: "File Descriptor Table\n(child's COPY)"
+    shape: rectangle
+    style.fill: "${colors.data}"
+    fd0_child: "fd 0 → stdin (terminal)"
+    fd1_child: "fd 1 → stdout (terminal)"
+    fd2_child: "fd 2 → stderr (terminal)"
+    fd3_child: "fd 3 → open_file_A\noffset: 1024"
+  }
+  child_mem: {
+    label: "Process Memory (ISOLATED)"
+    shape: rectangle
+    style.fill: "${colors.isolated}"
+    cwd_child: "cwd: /tmp  ← CHANGED"
+    env_child: "environ: {PATH, ...}  ← MODIFIED"
+    vars_child: "shell vars: {x=inner}  ← MODIFIED"
+  }
+  child_fd_table -> child_mem: {
+    style.stroke: transparent
+  }
+}
+Parent_Process -> fork_boundary: "pid = fork()"
+fork_boundary -> Child_Process: "returns 0\n(in child)"
+# Isolation annotation
+isolation_box: {
+  label: |md
+    **ISOLATED (Copied at fork)**
+    - `cwd` — chdir() only affects child
+    - `environ` — setenv() only affects child  
+    - Shell variables — modifications lost
+    - File descriptor table — dup2() only affects child
+    - Signal dispositions — copied at fork
+    - Function definitions — copied at fork
+    - Job table — child has empty table
+  |
+  shape: rectangle
+  style: {
+    fill: "#E8F8F5"
+    stroke: "${colors.isolated}"
+    stroke-width: 2
+    border-radius: 4
+  }
+}
+# Shared annotation
+shared_box: {
+  label: |md
+    **SHARED (Same kernel structures)**
+    - Open file *offsets* — both point to same
+      kernel file structure
+    - If child writes to fd 3, parent sees
+      offset advance
+    - This is why `(cmd >file)` works but
+      `(cmd >file) ; cat file` might race
+  |
+  shape: rectangle
+  style: {
+    fill: "#FEF5E7"
+    stroke: "${colors.shared}"
+    stroke-width: 2
+    border-radius: 4
+  }
+}
+# Shared offset diagram
+kernel_file: {
+  label: "Kernel File Structure\n(open_file_A)"
+  shape: cylinder
+  style: {
+    fill: "${colors.shared}"
+    stroke: "#D35400"
+    stroke-width: 2
+  }
+  offset_ptr: "offset: 1024\n↑\nBoth processes\nshare this!"
+}
+# Exit status propagation
+exit_arrow: {
+  label: "Exit status propagates\nvia waitpid()"
+  shape: text
+  style: {
+    font-size: 14
+    italic: true
+  }
+}
+Child_Process -> exit_arrow: "_exit(status)"
+exit_arrow -> Parent_Process: "waitpid()\nWEXITSTATUS()" {
+  style: {
+    stroke: "${colors.shared}"
+    stroke-width: 2
+    animated: true
+  }
+}
+# Layout hints
+Parent_Process -- isolation_box: {
+  style.stroke: transparent
+}
+shared_box -- kernel_file: {
+  style.stroke: transparent
+}
+# Key insight box
+insight: {
+  label: |md
+    **Key Insight:**
+    c
+    // In child after fork:
+    chdir("/tmp");     // Only child's cwd changes
+    setenv("X", "1");  // Only child's environ changes
+    x = "inner";       // Only child's vars change
+    // But:
+    write(fd3, ...);   // Offset shared with parent!
+    _exit(status);     // Only exit status returns
+    
+  |
+  shape: rectangle
+  style: {
+    fill: "#FDEBD0"
+    stroke: "#E67E22"
+    border-radius: 4
+    font: mono
+  }
+  near: bottom-center
+}
+# Memory cost annotation
+memory_cost: {
+  label: |md
+    **Fork Cost:**
+    - `task_struct`: ~9KB (immediate)
+    - Kernel stack: ~8KB (immediate)
+    - Page tables: ~4KB per MB (COW fault)
+    - Data pages: On first write only
+  |
+  shape: rectangle
+  style: {
+    fill: "#EBF5FB"
+    stroke: "#3498DB"
+    border-radius: 4
+  }
+  near: top-right
+}
+# _exit vs exit critical note
+exit_note: {
+  label: |md
+    ⚠️ **CRITICAL**: Use `_exit()` not `exit()`
+    - `exit()` flushes stdio buffers
+    - Child has copy of parent's buffers
+    - Double flush = corrupted output
+    - `_exit()` terminates immediately
+  |
+  shape: rectangle
+  style: {
+    fill: "#FADBD8"
+    stroke: "#C0392B"
+    stroke-width: 2
+    border-radius: 4
+  }
+  near: bottom-right
+}

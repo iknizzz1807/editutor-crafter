@@ -1,0 +1,267 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+title: |md
+  # OS Internals: Redirection via `dup2()`
+  ### Step-by-step File Descriptor (fd) Table & Kernel Object Manipulation
+| {
+  near: top-center
+  style: {
+    font-size: 24
+    bold: true
+    stroke-width: 0
+  }
+}
+
+classes: {
+  process_box: {
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2E86AB"
+      stroke-width: 2
+      border-radius: 10
+    }
+  }
+  kernel_area: {
+    label: "Kernel Space"
+    style: {
+      fill: "#F5F5F5"
+      stroke: "#666666"
+      stroke-dash: 5
+    }
+  }
+  fd_highlight: {
+    style: {
+      fill: "#FFB6C1"
+      bold: true
+      stroke: "#D0021B"
+    }
+  }
+  fd_new: {
+    style: {
+      fill: "#90EE90"
+      bold: true
+    }
+  }
+  note_box: {
+    style: {
+      fill: "#FFFACD"
+      stroke: "#F5A623"
+      border-radius: 4
+      font-size: 12
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 1: INITIAL STATE
+# -----------------------------------------------------------------------------
+step1: {
+  label: "1. Initial State"
+  
+  process: {
+    class: process_box
+    fd_table: {
+      shape: sql_table
+      label: "File Descriptor Table"
+      0: "STDIN"
+      1: "STDOUT"
+      2: "STDERR"
+    }
+    
+    kernel: {
+      class: kernel_area
+      tty: "TTY Device (Terminal)" {
+        shape: cylinder
+      }
+    }
+    
+    fd_table.0 -> kernel.tty
+    fd_table.1 -> kernel.tty
+    fd_table.2 -> kernel.tty
+  }
+  
+  desc: |md
+    **Context:** Standard shell startup.
+    - `0`, `1`, `2` all point to the same TTY device.
+    - Writes to `STDOUT` (fd 1) appear on screen.
+  | {class: note_box}
+}
+
+# -----------------------------------------------------------------------------
+# STEP 2: OPEN() CALL
+# -----------------------------------------------------------------------------
+step2: {
+  label: "2. open(\"out.txt\", ...)"
+  
+  process: {
+    class: process_box
+    fd_table: {
+      shape: sql_table
+      label: "File Descriptor Table"
+      0: "STDIN"
+      1: "STDOUT"
+      2: "STDERR"
+      3: "out.txt" {class: fd_new}
+    }
+    
+    kernel: {
+      class: kernel_area
+      tty: "TTY Device" {shape: cylinder}
+      file_struct: "struct file: out.txt\nRefcount: 1\nOffset: 0" {
+        style.fill: "#90EE90"
+      }
+    }
+    
+    fd_table.1 -> kernel.tty
+    fd_table.3 -> kernel.file_struct: "New pointer"
+  }
+  
+  desc: ||md
+    **Action:** `int fd = open("out.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644);`
+    - Kernel finds lowest unused index (**3**).
+    - Allocates `struct file` in kernel memory.
+  || {class: note_box}
+}
+
+# -----------------------------------------------------------------------------
+# STEP 3: DUP2() REWIRING
+# -----------------------------------------------------------------------------
+step3: {
+  label: "3. dup2(3, 1)"
+  
+  process: {
+    class: process_box
+    fd_table: {
+      shape: sql_table
+      label: "File Descriptor Table"
+      0: "STDIN"
+      1: "out.txt" {class: fd_highlight}
+      2: "STDERR"
+      3: "out.txt"
+    }
+    
+    kernel: {
+      class: kernel_area
+      tty: "TTY Device" {shape: cylinder}
+      file_struct: "struct file: out.txt\nRefcount: 2\nOffset: 0" {
+        style.fill: "#FFB6C1"
+      }
+    }
+    
+    # Visualizing the rewire
+    fd_table.1 -> kernel.file_struct: "REDIRECTED" {
+      style: {
+        stroke: "#D0021B"
+        stroke-width: 4
+      }
+    }
+    fd_table.3 -> kernel.file_struct
+  }
+  
+  desc: |md
+    **Action:** `dup2(3, 1);`
+    1. Kernel closes old `fd 1` (terminal link).
+    2. Copies `fd 3` pointer into `fd 1` slot.
+    3. **Refcount** for `out.txt` increments to 2.
+    **Effect:** Any `printf` now goes to `out.txt`.
+  | {class: note_box}
+}
+
+# -----------------------------------------------------------------------------
+# STEP 4: CLOSE() CLEANUP
+# -----------------------------------------------------------------------------
+step4: {
+  label: "4. close(3)"
+  
+  process: {
+    class: process_box
+    fd_table: {
+      shape: sql_table
+      label: "File Descriptor Table"
+      0: "STDIN"
+      1: "out.txt" {style.fill: "#90EE90"}
+      2: "STDERR"
+      3: "[CLOSED]" {style.opacity: 0.3}
+    }
+    
+    kernel: {
+      class: kernel_area
+      tty: "TTY Device" {shape: cylinder}
+      file_struct: "struct file: out.txt\nRefcount: 1\nOffset: 0" {
+        style.fill: "#90EE90"
+      }
+    }
+    
+    fd_table.1 -> kernel.file_struct
+  }
+  
+  desc: |md
+    **Action:** `close(3);`
+    - Removes index 3 from the table.
+    - File remains open because `fd 1` still references it.
+    - **Redirection is now clean and transparent.**
+  | {class: note_box}
+}
+
+# -----------------------------------------------------------------------------
+# FLOW AND SUMMARY
+# -----------------------------------------------------------------------------
+
+step1 -> step2: "open()" {
+  style: {
+    stroke: "#4CAF50"
+    stroke-width: 2
+  }
+}
+step2 -> step3: "dup2()" {
+  style: {
+    stroke: "#D0021B"
+    stroke-width: 2
+  }
+}
+step3 -> step4: "close()" {
+  style: {
+    stroke: "#2196F3"
+    stroke-width: 2
+  }
+}
+
+summary: ||md
+  ### The dup2 Pattern
+  c
+  int fd = open("output.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644);
+  dup2(fd, STDOUT_FILENO); // STDOUT_FILENO is 1
+  close(fd);               // Clean up the temp fd
+  
+  **Key Fact:** `dup2` is atomic. It ensures that the redirection happens without a gap where the process might have no `stdout`.
+|| {
+  near: bottom-center
+  style.fill: "#F9F9F9"
+}
+
+legend: {
+  near: bottom-right
+  class: note_box
+  label: "Legend"
+  
+  item1: "Primary Redirection Path" {
+    style: {
+      stroke: "#D0021B"
+      stroke-width: 4
+    }
+  }
+  item2: "Modified Descriptor" {
+    style.fill: "#FFB6C1"
+  }
+  item3: "Kernel Managed Object" {
+    shape: cylinder
+    style.fill: "#F5F5F5"
+  }
+}

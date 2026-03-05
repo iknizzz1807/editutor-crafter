@@ -1,0 +1,218 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # PID Namespace: View Translation Architecture
+  *Same process, multiple valid identities across namespace boundaries*
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  host_view: {
+    direction: down
+    label: "Host Namespace View"
+    style.fill: "#E8F4E8"
+    style.stroke: "#2E7D32"
+    host_process_table: {
+      shape: sql_table
+      label: "Global Process Table (kernel)"
+      f1: "PID 1   | init/systemd"
+      f2: "PID 12344 | parent_process"
+      f3: "PID 12345 | container_init"
+      f4: "PID 12346 | container_worker"
+      note: "Single source of truth"
+    }
+    host_observation: {
+      label: "Host Observer"
+      width: 280
+      code: |'c
+        // Outside namespace
+        getpid();           // Returns 12344
+        ps aux | grep 12345 // Shows container
+        cat /proc/12345/status
+      '|
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  kernel_core: {
+    direction: down
+    label: "Kernel Translation Layer"
+    style.fill: "#FFF3E0"
+    style.stroke: "#E65100"
+    task_struct: {
+      shape: class
+      label: "struct task_struct (sched.h)"
+      -pid: "pid_t pid"
+      -tgid: "pid_t tgid"
+      -nsproxy: "struct nsproxy *"
+      +get_pid(): "pid_t"
+    }
+    nsproxy: {
+      shape: class
+      label: "struct nsproxy (nsproxy.h)"
+      -pid_ns_for_children: "struct pid_namespace *"
+      -uts_ns: "struct uts_namespace *"
+      -mnt_ns: "struct mnt_namespace *"
+      -net_ns: "struct net *"
+    }
+    pid_namespace: {
+      shape: class
+      label: "struct pid_namespace (pid_namespace.h)"
+      -level: "int"
+      -parent: "struct pid_namespace *"
+      -nr_hashed: "unsigned int"
+      -idr: "struct idr"
+    }
+    translation_logic: {
+      label: "PID Translation (kernel/pid.c)"
+      width: 350
+      code: |'c
+        // ns_of_pid() finds entry for current namespace
+        struct upid *upid = pid->numbers[ns->level];
+        if (upid->ns == ns)
+          return upid->nr;  // Virtual PID
+        // Walk up parent chain if needed
+      '|
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  container_view: {
+    direction: down
+    label: "Container Namespace View"
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    container_process_table: {
+      shape: sql_table
+      label: "Virtual Process Table (namespace)"
+      f1: "PID 1 | container_init"
+      f2: "PID 2 | container_worker"
+      note: "Namespace-local view only"
+    }
+    container_observation: {
+      label: "Container Observer (PID 1)"
+      width: 280
+      code: |'c
+        // Inside namespace
+        getpid();           // Returns 1 (!)
+        getppid();          // Returns 0 (outside NS)
+        cat /proc/self/status
+      '|
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  proc_verification: {
+    direction: down
+    label: "/proc Verification: Dual Identity Proof"
+    style.fill: "#F3E5F5"
+    style.stroke: "#7B1FA2"
+    proc_host: {
+      shape: sql_table
+      label: "/proc/12345/status (host view)"
+      name: "Name:   container_init"
+      umask: "Umask:  0022"
+      state: "State:  S (sleeping)"
+      pid: "Pid:    12345"
+      ppid: "PPid:   12344"
+      nspid: "NSpid:  12345  1"
+      note: "NSpid: host_id ns_id"
+    }
+    proc_container: {
+      shape: sql_table
+      label: "/proc/self/status (inside NS)"
+      name2: "Name:   container_init"
+      umask2: "Umask:  0022"
+      state2: "State:  S (sleeping)"
+      pid2: "Pid:    1"
+      ppid2: "PPid:   0"
+      nspid2: "NSpid:  1"
+      note2: "Only sees own namespace"
+    }
+  }
+}
+translation_flow: {
+  direction: down
+  label: "Translation Flow"
+  style.fill: transparent
+  style.stroke: "#666"
+  step1: {
+    label: "1. Process calls getpid()"
+    width: 320
+    code: |'c
+      // glibc wrapper
+      pid_t getpid(void) {
+        return syscall(__NR_getpid);
+      }
+    '|
+  }
+  step2: {
+    label: "2. Kernel: task_pid_nr_ns()"
+    width: 320
+    code: |'c
+      // kernel/pid.c
+      pid_t task_pid_nr_ns(struct task_struct *tsk,
+                           struct pid_namespace *ns) {
+        return pid_nr_ns(tsk->pids[PIDTYPE_PID].pid, ns);
+      }
+    '|
+  }
+  step3: {
+    label: "3. Namespace Level Lookup"
+    width: 320
+    code: |'c
+      // struct pid has array per level
+      struct pid {
+        unsigned int level;
+        struct upid numbers[1]; // Flexible array
+      };
+      // numbers[0] = host level
+      // numbers[1] = first nested NS
+    '|
+  }
+}
+legend: {
+  near: bottom-center
+  direction: right
+  style.fill: "#FAFAFA"
+  style.stroke: "#CCC"
+  legend_title: {
+    label: "Key Insight"
+    shape: text
+  }
+  insight: {
+    width: 500
+    code: |'c
+      // SAME process, DIFFERENT PIDs depending on observer
+      // Cost: ~10-20 cycles (cached lookup)
+      // No global lock needed - RCU protected
+      // NSpid field format: level0_id level1_id level2_id ...
+    '|
+  }
+}
+host_view.host_process_table -> kernel_core.task_struct: "task lookup"
+kernel_core.task_struct -> kernel_core.nsproxy: "nsproxy"
+kernel_core.nsproxy -> kernel_core.pid_namespace: "pid_ns"
+kernel_core.pid_namespace -> container_view.container_process_table: "translate" {
+  style.stroke: "#1565C0"
+  style.stroke-dash: 4
+  label: "numbers[level].nr"
+}
+host_view.host_observation -> proc_verification.proc_host: "reads"
+container_view.container_observation -> proc_verification.proc_container: "reads"
+translation_flow.step1 -> translation_flow.step2 -> translation_flow.step3

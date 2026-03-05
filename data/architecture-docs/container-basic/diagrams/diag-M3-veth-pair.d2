@@ -1,0 +1,313 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: |md
+    # veth Pair: Virtual Cable Mechanics
+    Packet flow through virtual ethernet pair with netlink orchestration
+  |
+  near: top-center
+  shape: text
+  style.font-size: 28
+}
+
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  step1: {
+    direction: down
+    label: "Step 1: Create veth Pair"
+    width: 450
+
+    host_ns_before: {
+      label: "Host Network Namespace (init_net)"
+      style.fill: "#E8F4FD"
+      style.stroke: "#2E86AB"
+
+      netlink_msg: {
+        shape: class
+        label: "Netlink RTM_NEWLINK"
+        +nlmsg_type: "RTM_NEWLINK"
+        +nlmsg_flags: "NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL"
+        +ifi_family: "AF_UNSPEC"
+      }
+
+      ifla_attrs: {
+        label: "IFLA Attributes (veth_setup)"
+        shape: sql_table
+        attr1: "IFLA_IFNAME | string | 'veth0'"
+        attr2: "IFLA_LINKINFO | nested | {...}"
+        attr3: "  IFLA_INFO_KIND | 'veth'"
+        attr4: "  IFLA_INFO_DATA | VETH_INFO_PEER"
+        attr5: "    IFLA_IFNAME | 'veth1'"
+        total: "Note: Atomic creation of both ends"
+      }
+    }
+
+    arrow_create: {
+      label: "netlink socket sendmsg()"
+      shape: diamond
+      style.fill: "#FFE4B5"
+    }
+
+    kernel_create: {
+      label: "Kernel: drivers/net/veth.c"
+      style.fill: "#F0E68C"
+      width: 400
+
+      veth_priv_struct: {
+        shape: sql_table
+        label: "struct veth_priv"
+        f0: "0x00 | net_device * | peer"
+        f1: "0x08 | net_device * | dev"
+        f2: "0x10 | struct net *  | net"
+        sz: "Total: 24 bytes"
+      }
+
+      create_code: {
+        label: "veth_newlink()"
+        code: |'c
+          dev1 = alloc_netdev(..., "veth0", ...);
+          dev2 = alloc_netdev(..., "veth1", ...);
+          // Link devices via priv
+          veth_priv(dev1)->peer = dev2;
+          veth_priv(dev2)->peer = dev1;
+          return register_netdevice(dev1);
+        '|
+        width: 380
+      }
+    }
+  }
+}
+
+step1_info: "Pair created in Host NS" {
+  shape: callout
+  style.stroke-dash: 3
+}
+
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  step2: {
+    direction: down
+    label: "Step 2: Namespace Migration"
+    width: 450
+
+    move_netlink: {
+      label: "Namespace Transfer Request"
+      style.fill: "#E8F4FD"
+      style.stroke: "#2E86AB"
+
+      move_msg: {
+        shape: class
+        label: "RTM_NEWLINK (Update)"
+        +nlmsg_type: "RTM_NEWLINK"
+        +nlmsg_flags: "NLM_F_REQUEST | NLM_F_ACK"
+        +ifi_index: "veth1_index"
+      }
+
+      move_attrs: {
+        shape: sql_table
+        label: "Move Attributes"
+        attr1: "IFLA_NET_NS_PID | u32 | container_pid"
+        attr2: "IFLA_IFNAME     | str | 'eth0' (rename)"
+        note: "Moves device and re-parents"
+      }
+    }
+
+    arrow_move: {
+      label: "ip link set veth1 netns <pid>"
+      shape: diamond
+      style.fill: "#FFE4B5"
+    }
+
+    namespace_move: {
+      label: "Kernel: dev_change_net_ns()"
+      style.fill: "#F0E68C"
+      width: 400
+
+      move_code: {
+        label: "Namespace Switch Logic"
+        code: |'c
+          // Detach from current namespace
+          dev_close(dev);
+          unlisted = __dev_get_by_index(net, ifindex);
+          // Re-attach to target netns
+          dev->nd_net = target_net;
+          return dev_register_netdevice(dev);
+        '|
+        width: 380
+      }
+    }
+  }
+}
+
+step2_info: "veth1 → Container eth0" {
+  shape: callout
+  style.stroke-dash: 3
+}
+
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  step3: {
+    direction: down
+    label: "Step 3: Packet Flow (Zero-Copy Transfer)"
+    width: 900
+
+    flow_container: {
+      direction: right
+      style.fill: transparent
+      style.stroke: transparent
+
+      host_side: {
+        label: "Host Namespace"
+        style.fill: "#E8F4FD"
+        style.stroke: "#2E86AB"
+        width: 320
+
+        veth0_dev: {
+          shape: class
+          label: "veth0 (net_device)"
+          +name: "veth0"
+          +ifindex: "42"
+          +"priv->peer": "veth1"
+        }
+
+        veth_xmit: {
+          label: "veth_xmit(skb, dev)"
+          style.fill: "#98FB98"
+          code: |'c
+            rcu_read_lock();
+            peer = rcu_dereference(priv->peer);
+            skb->dev = peer;
+            skb->pkt_type = PACKET_HOST;
+            // Crosses NS boundary here
+            netif_rx(skb);
+          '|
+          width: 300
+        }
+      }
+
+      flow_bridge: "L2 Virtual Wire" {
+        style.stroke: "#2E86AB"
+        style.stroke-width: 4
+      }
+
+      container_side: {
+        label: "Container Namespace"
+        style.fill: "#FFE4E1"
+        style.stroke: "#CD5C5C"
+        width: 320
+
+        veth1_dev: {
+          shape: class
+          label: "eth0 (veth1)"
+          +name: "eth0"
+          +ifindex: "2"
+          +"priv->peer": "veth0"
+        }
+
+        container_rx: {
+          label: "netif_receive_skb()"
+          style.fill: "#98FB98"
+          code: |'c
+            skb->protocol = eth_type_trans(skb, dev);
+            // Delivered to IP stack
+            ip_rcv(skb, dev, ...);
+            // Then up to socket
+            sock_queue_rcv_skb(sk, skb);
+          '|
+          width: 300
+        }
+      }
+    }
+  }
+}
+
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  data_structure: {
+    direction: down
+    label: "veth Pair Internal Structure"
+    width: 900
+    style.fill: "#F5F5F5"
+
+    veth_diagram: {
+      direction: right
+      
+      dev0_box: {
+        shape: sql_table
+        label: "veth0 (net_device)"
+        f1: "name    | 'veth0'"
+        f2: "net     | init_net"
+        f3: "peer_pt | &veth1"
+      }
+
+      veth_link: "veth_priv->peer" {
+        style.stroke-width: 2
+      }
+
+      dev1_box: {
+        shape: sql_table
+        label: "eth0 (net_device)"
+        f1: "name    | 'eth0'"
+        f2: "net     | container_net"
+        f3: "peer_pt | &veth0"
+      }
+    }
+
+    shared_priv: {
+      label: "Shared veth_priv Structure (Internal Memory)"
+      shape: sql_table
+      f1: "0x00 | struct net_device * | peer // Pointer to other end"
+      f2: "0x08 | struct net_device * | dev  // Pointer to self"
+      f3: "0x10 | struct veth_rq *    | rq   // Receive queue metadata"
+      sz: "Size: 24 bytes per interface"
+    }
+  }
+}
+
+legend: {
+  near: bottom-right
+  stats: {
+    label: "Cost Analysis"
+    shape: sql_table
+    c1: "Operation | Latency (Approx)"
+    c2: "Creation | ~20,000 cycles"
+    c3: "NS Move  | ~2,000 cycles"
+    c4: "Transmit | ~300 cycles (Cache-hot)"
+    note: "Performance: Wire-speed (Memory BW Limited)"
+  }
+}
+
+# Connections
+row1.step1.host_ns_before -> row1.step1.arrow_create: "Build Msg"
+row1.step1.arrow_create -> row1.step1.kernel_create: "netlink_rcv"
+
+row2.step2.move_netlink -> row2.step2.arrow_move: "Target NS"
+row2.step2.arrow_move -> row2.step2.namespace_move: "Ownership"
+
+row3.step3.flow_container.host_side.veth_xmit -> row3.step3.flow_container.container_side.container_rx: "sk_buff pointer transfer" {
+  style.stroke: "#2E86AB"
+  style.stroke-width: 4
+  style.animated: true
+}
+
+row1 -> step1_info -> row2
+row2 -> step2_info -> row3
+row3 -> row4: "Final State"

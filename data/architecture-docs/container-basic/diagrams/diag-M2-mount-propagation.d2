@@ -1,0 +1,248 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Mount Propagation: Shared vs Private
+  ## How mount events leak (or don't) between namespaces
+| {near: top-center}
+row_compare: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  shared_side: {
+    direction: down
+    label: "MS_SHARED (Default - DANGEROUS)"
+    shared_host_before: {
+      label: "Host Mount Table (Before)"
+      shape: sql_table
+      f1: "/ | ext4 | root mount | propagation: SHARED"
+      f2: "/mnt | ext4 | data mount | propagation: SHARED"
+      f3: "/proc | proc | process info"
+      note1: "Parent namespace has SHARED propagation"
+    }
+    shared_child_before: {
+      label: "Child Namespace (Before)"
+      shape: sql_table
+      f1: "/ | ext4 | inherited from host"
+      note1: "Child inherits SHARED propagation"
+    }
+    shared_host_before -> shared_child_before: "clone(CLONE_NEWNS)" {
+      style.stroke: blue
+    }
+    shared_child_mount: {
+      label: "Child Mounts tmpfs"
+      shape: rectangle
+      width: 280
+      code: |'bash
+        # Inside child namespace
+        mount -t tmpfs none /mnt/tmp
+        # Mount event propagates UP!
+      '|
+    }
+    shared_child_before -> shared_child_mount: "mount tmpfs" {
+      style.stroke: red
+      style.stroke-dash: 4
+    }
+    shared_host_after: {
+      label: "Host Mount Table (After - LEAKED!)"
+      shape: sql_table
+      style.fill: "#ffcccc"
+      f1: "/ | ext4 | root mount"
+      f2: "/mnt | ext4 | data mount"
+      f3: "/mnt/tmp | tmpfs | LEAKED! | propagation: SHARED"
+      f4: "/proc | proc | process info"
+      note1: "Mount appeared on host!"
+    }
+    shared_child_after: {
+      label: "Child Namespace (After)"
+      shape: sql_table
+      f1: "/ | ext4 | root"
+      f2: "/mnt/tmp | tmpfs | new mount"
+    }
+    shared_child_mount -> shared_host_after: "propagates UP" {
+      style.stroke: red
+      style.animated: true
+      style.bold: true
+    }
+    shared_child_mount -> shared_child_after: "local mount"
+    shared_warning: {
+      label: "⚠️ SECURITY ISSUE"
+      shape: callout
+      style.fill: "#ffdddd"
+      style.stroke: red
+      style.bold: true
+    }
+    shared_host_after -> shared_warning
+  }
+  private_side: {
+    direction: down
+    label: "MS_PRIVATE (Correct - ISOLATED)"
+    private_host_before: {
+      label: "Host Mount Table (Before)"
+      shape: sql_table
+      f1: "/ | ext4 | root mount | propagation: SHARED"
+      f2: "/mnt | ext4 | data mount"
+      f3: "/proc | proc | process info"
+    }
+    private_child_setup: {
+      label: "Child Namespace Setup"
+      shape: rectangle
+      width: 320
+      code: |'bash
+        # Inside child namespace
+        mount(NULL, "/", NULL, 
+              MS_REC | MS_PRIVATE, NULL)
+        # Break propagation chain!
+      '|
+    }
+    private_host_before -> private_child_setup: "clone(CLONE_NEWNS)" {
+      style.stroke: blue
+    }
+    private_child_before: {
+      label: "Child Namespace (After PRIVATE)"
+      shape: sql_table
+      f1: "/ | ext4 | root | propagation: PRIVATE"
+      note1: "Propagation chain broken"
+    }
+    private_child_setup -> private_child_before: "set PRIVATE" {
+      style.stroke: green
+    }
+    private_child_mount: {
+      label: "Child Mounts tmpfs"
+      shape: rectangle
+      width: 280
+      code: |'bash
+        # Inside child namespace
+        mount -t tmpfs none /mnt/tmp
+        # Mount event STAYS LOCAL
+      '|
+    }
+    private_child_before -> private_child_mount: "mount tmpfs" {
+      style.stroke: green
+    }
+    private_host_after: {
+      label: "Host Mount Table (After - UNCHANGED)"
+      shape: sql_table
+      style.fill: "#ccffcc"
+      f1: "/ | ext4 | root mount"
+      f2: "/mnt | ext4 | data mount"
+      f3: "/proc | proc | process info"
+      note1: "No leak - host unchanged!"
+    }
+    private_child_after: {
+      label: "Child Namespace (After)"
+      shape: sql_table
+      f1: "/ | ext4 | root | PRIVATE"
+      f2: "/mnt/tmp | tmpfs | isolated mount"
+    }
+    private_child_mount -> private_child_after: "local mount only" {
+      style.stroke: green
+    }
+    private_child_mount -> private_host_after: "NO propagation" {
+      style.stroke: gray
+      style.stroke-dash: 4
+      style.opacity: 0.5
+    }
+    private_success: {
+      label: "✓ PROPER ISOLATION"
+      shape: callout
+      style.fill: "#ddffdd"
+      style.stroke: green
+      style.bold: true
+    }
+    private_host_after -> private_success
+  }
+}
+legend: {
+  near: bottom-center
+  direction: right
+  style.fill: "#f5f5f5"
+  leak_arrow: {
+    label: ""
+    shape: rectangle
+    width: 40
+    height: 10
+    style.fill: red
+    style.stroke: red
+  }
+  leak_label: "Mount leaks to host"
+  isolated_arrow: {
+    label: ""
+    shape: rectangle
+    width: 40
+    height: 10
+    style.fill: green
+    style.stroke: green
+  }
+  isolated_label: "Mount stays isolated"
+  blocked_arrow: {
+    label: ""
+    shape: rectangle
+    width: 40
+    height: 10
+    style.fill: gray
+    style.stroke: gray
+    style.opacity: 0.5
+  }
+  blocked_label: "Propagation blocked"
+}
+kernel_box: {
+  label: "Kernel Mount Table State"
+  direction: right
+  shared_state: {
+    label: "MS_SHARED: Peer Group"
+    shape: rectangle
+    width: 280
+    code: |'c
+      struct mount {
+        struct list_head mnt_share;
+        // Points to peer mounts
+        // Events bidirectional
+      };
+      // mount --make-shared /
+    '|
+  }
+  private_state: {
+    label: "MS_PRIVATE: Isolated"
+    shape: rectangle
+    width: 280
+    code: |'c
+      struct mount {
+        struct list_head mnt_share;
+        // EMPTY - no peers
+        // No event propagation
+      };
+      // mount --make-private /
+    '|
+  }
+}
+code_example: {
+  label: "Required Code Pattern"
+  shape: rectangle
+  width: 500
+  code: |'c
+    // CRITICAL: Always set PRIVATE before mounts
+    int setup_mount_namespace(void) {
+        // Break propagation from host
+        if (mount(NULL, "/", NULL, 
+                  MS_REC | MS_PRIVATE, NULL) == -1) {
+            perror("mount --make-rprivate");
+            return -1;
+        }
+        // Now safe to create mounts
+        // They will NOT propagate to host
+        return 0;
+    }
+  '|
+}
+footer_note: {
+  near: bottom-center
+  label: "On systemd-based systems, / is mounted with SHARED by default. Always explicitly set PRIVATE for container isolation."
+  shape: text
+  style.italic: true
+  style.font-size: 14
+}

@@ -1,0 +1,241 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # cgroup OOM Killer Decision Flow
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  container_flow: {
+    direction: down
+    label: "Container cgroup Path"
+    step1: {
+      label: "1. Memory Allocation"
+      width: 340
+      code: |'c
+        // Process in cgroup allocates memory
+        void *p = malloc(50 * 1024 * 1024);
+        memset(p, 0, 50 * 1024 * 1024);  // touch pages
+      '|
+    }
+    step2: {
+      label: "2. Kernel Checks memory.current"
+      width: 340
+      mem_check: {
+        shape: sql_table
+        label: "/sys/fs/cgroup/mycontainer/"
+        f1: "memory.current | 95 MB"
+        f2: "memory.max     | 100 MB"
+        f3: "Status         | Approaching limit"
+      }
+    }
+    step3: {
+      label: "3. memory.high Exceeded?"
+      shape: diamond
+      width: 120
+      height: 80
+    }
+    step4: {
+      label: "4. Aggressive Reclaim"
+      width: 340
+      code: |'c
+        // Kernel reclaims pages:
+        // - Drop clean page cache
+        // - Swap out anonymous pages  
+        // - Shrink slab objects
+        try_to_free_mem_cgroup_pages();
+      '|
+    }
+    step5: {
+      label: "5. Reclaim Successful?"
+      shape: diamond
+      width: 120
+      height: 80
+    }
+    step6: {
+      label: "6. memory.max Exceeded"
+      width: 340
+      style.fill: "#FFE4E1"
+      style.stroke: "#DC143C"
+      code: |'c
+        // Hard limit hit, reclaim failed
+        if (memory.current > memory.max)
+          trigger_oom(memcg);
+      '|
+    }
+    step7: {
+      label: "7. cgroup OOM Triggered"
+      shape: hexagon
+      width: 200
+      style.fill: "#FF6B6B"
+      style.font-color: white
+    }
+    step8: {
+      label: "8. Select Victim in cgroup"
+      width: 340
+      code: |'c
+        // OOM killer scans ONLY this cgroup
+        // Picks process with highest score:
+        //   oom_score = (RSS + swap + page_table)
+        //               / total_memory * 1000
+        select_bad_process(memcg);
+      '|
+    }
+    step9: {
+      label: "9. Kill Process (SIGKILL)"
+      shape: oval
+      style.fill: "#DC143C"
+      style.font-color: white
+      width: 160
+    }
+    step10: {
+      label: "10. Update OOM Counters"
+      width: 340
+      oom_stats: {
+        shape: sql_table
+        label: "memory.events"
+        e1: "oom       | 1"
+        e2: "oom_kill  | 1"
+        e3: "oom_group | 0"
+      }
+    }
+  }
+  system_flow: {
+    direction: down
+    label: "System-wide OOM (Legacy)"
+    sys1: {
+      label: "System Memory Exhausted"
+      width: 300
+      style.fill: "#FFE4E1"
+      style.stroke: "#8B0000"
+    }
+    sys2: {
+      label: "Global OOM Killer"
+      shape: hexagon
+      width: 180
+      style.fill: "#8B0000"
+      style.font-color: white
+    }
+    sys3: {
+      label: "Scans ALL Processes"
+      width: 300
+      code: |'c
+        // Victim can be ANY process:
+        // - Your database
+        // - SSH daemon  
+        // - Random user app
+        // - System services
+        select_bad_process(system_wide);
+      '|
+    }
+    sys4: {
+      label: "Unpredictable Victim"
+      shape: oval
+      style.fill: "#8B0000"
+      style.font-color: white
+      width: 140
+    }
+    sys5: {
+      label: "Potential System Crash"
+      width: 300
+      style.fill: "#2F2F2F"
+      style.font-color: "#FF6B6B"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  comparison: {
+    direction: down
+    label: "Key Difference: Victim Scope"
+    cgroup_scope: {
+      label: "cgroup OOM"
+      scope: {
+        shape: sql_table
+        label: "Victim Selection"
+        s1: "Scope      | cgroup processes ONLY"
+        s2: "Host Risk  | ZERO"
+        s3: "Containment| Complete"
+      }
+    }
+    system_scope: {
+      label: "System OOM"
+      scope: {
+        shape: sql_table
+        label: "Victim Selection"
+        s1: "Scope      | ALL system processes"
+        s2: "Host Risk  | HIGH"
+        s3: "Containment| None"
+      }
+    }
+  }
+  legend_box: {
+    direction: down
+    label: "Legend"
+    leg1: {
+      label: "Normal Flow"
+      shape: rectangle
+      style.fill: "#E8F4E8"
+    }
+    leg2: {
+      label: "Decision Point"
+      shape: diamond
+      width: 60
+    }
+    leg3: {
+      label: "OOM Trigger"
+      shape: hexagon
+      width: 80
+      style.fill: "#FF6B6B"
+      style.font-color: white
+    }
+    leg4: {
+      label: "Process Killed"
+      shape: oval
+      width: 80
+      style.fill: "#DC143C"
+      style.font-color: white
+    }
+    leg5: {
+      label: "Danger Zone"
+      style.fill: "#FFE4E1"
+      style.stroke: "#DC143C"
+    }
+  }
+}
+step1 -> step2: "alloc"
+step2 -> step3: "check"
+step3 -> step4: "yes | reclaim" {
+  style.stroke: orange
+}
+step3 -> step6: "no | continue" {
+  style.stroke-dash: 4
+}
+step4 -> step5: "reclaimed"
+step5 -> step2: "success | continue" {
+  style.stroke: green
+}
+step5 -> step6: "failed | over limit" {
+  style.stroke: red
+  style.stroke-dash: 4
+}
+step6 -> step7: "trigger"
+step7 -> step8: "scan cgroup"
+step8 -> step9: "select victim"
+step9 -> step10: "update stats"
+sys1 -> sys2: "trigger"
+sys2 -> sys3: "scan all"
+sys3 -> sys4: "select"
+sys4 -> sys5: "kill"
+container_flow -> system_flow: "compare" {
+  style.stroke-dash: 3
+  style.stroke: gray
+}

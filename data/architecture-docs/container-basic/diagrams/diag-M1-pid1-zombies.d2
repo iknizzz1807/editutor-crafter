@@ -1,0 +1,264 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # PID 1 Zombie Reaping State Machine
+  Container init process responsibility for orphaned children
+| {near: top-center}
+row_running: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  child_running: {
+    shape: circle
+    label: "Child\nRunning"
+    style.fill: "#88DCF7"
+    style.stroke: "#2196F3"
+    style.stroke-width: 3
+  }
+}
+row_exit: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  exit_event: {
+    shape: diamond
+    label: "Child exits\n(exit() or\nsignal)"
+    style.fill: "#FFF9C4"
+    style.stroke: "#FBC02D"
+    style.stroke-width: 2
+  }
+}
+row_zombie: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  zombie_state: {
+    shape: circle
+    label: "ZOMBIE\nState"
+    style.fill: "#FFCDD2"
+    style.stroke: "#C62828"
+    style.stroke-width: 3
+    style.font-color: "#B71C1C"
+  }
+}
+row_decision: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  reap_decision: {
+    shape: diamond
+    label: "PID 1 calls\nwaitpid()?"
+    style.fill: "#E1BEE7"
+    style.stroke: "#7B1FA2"
+    style.stroke-width: 2
+  }
+}
+row_outcomes: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  reaped: {
+    shape: circle
+    label: "Reaped\n(Removed\nfrom table)"
+    style.fill: "#C8E6C9"
+    style.stroke: "#2E7D32"
+    style.stroke-width: 3
+    style.font-color: "#1B5E20"
+  }
+  accumulated: {
+    shape: circle
+    label: "ACCUMULATES\nForever!"
+    style.fill: "#FFCDD2"
+    style.stroke: "#C62828"
+    style.stroke-width: 4
+    style.font-color: "#B71C1C"
+    style.multiple: true
+  }
+}
+row_problem: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  problem_box: {
+    label: "The Problem: Unreaped Zombies"
+    style.fill: "#FFEBEE"
+    style.stroke: "#C62828"
+    problem_text: |md
+      ## What happens when PID 1 doesn't reap:
+      1. **Zombies persist indefinitely** — cannot be killed (already dead)
+      2. **Process table slots consumed** — each zombie uses kernel memory
+      3. **PID exhaustion** — system cannot create new processes
+      4. **No cleanup possible** — even `kill -9` has no effect on zombies
+      ### Why only PID 1?
+      - Orphaned children are reparented to PID 1
+      - PID 1 inherits ALL orphans in its namespace
+      - Only PID 1 can reap these inherited children
+    |
+  }
+}
+row_code: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  code_box: {
+    label: "Zombie Reaping Implementation (init.c)"
+    width: 600
+    code: |'c
+      // SIGCHLD handler - triggered on child state change
+      static volatile sig_atomic_t child_exited = 0;
+      static void sigchld_handler(int sig) {
+          (void)sig;
+          child_exited = 1;
+      }
+      // Non-blocking reaping loop
+      static void reap_zombies(void) {
+          int status;
+          pid_t pid;
+          // WNOHANG: return immediately if no child has exited
+          // -1: wait for any child process
+          while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+              if (WIFEXITED(status)) {
+                  printf("[init] Reaped PID %d, exit=%d\n",
+                         pid, WEXITSTATUS(status));
+              } else if (WIFSIGNALED(status)) {
+                  printf("[init] Reaped PID %d, signal=%d\n",
+                         pid, WTERMSIG(status));
+              }
+          }
+          // ECHILD means no children left — expected, not error
+          if (pid == -1 && errno != ECHILD) {
+              perror("waitpid");
+          }
+      }
+      // Main event loop in PID 1
+      int main(void) {
+          struct sigaction sa = {0};
+          sa.sa_handler = sigchld_handler;
+          sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+          sigaction(SIGCHLD, &sa, NULL);
+          while (!termination_requested) {
+              pause();  // Wait for signal
+              if (child_exited) {
+                  child_exited = 0;
+                  reap_zombies();
+              }
+          }
+      }
+    '|
+  }
+}
+row_kernel: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  kernel_box: {
+    label: "Kernel Process Table View"
+    kernel_content: {
+      direction: right
+      before: {
+        label: "Before Reaping"
+        style.fill: "#E3F2FD"
+        before_text: |md
+          
+          PID   STATE       PPID   COMM
+          1     S (sleep)   0      init
+          42    Z (zombie)  1      worker
+          43    Z (zombie)  1      worker
+          44    Z (zombie)  1      worker
+          
+          **Zombies occupy slots**
+        |
+      }
+      after: {
+        label: "After waitpid()"
+        style.fill: "#E8F5E9"
+        after_text: |md
+          
+          PID   STATE       PPID   COMM
+          1     S (sleep)   0      init
+          
+          **Slots freed, PIDs available**
+        |
+      }
+    }
+  }
+}
+legend_box: {
+  near: bottom-right
+  label: "State Color Legend"
+  style.fill: "#FAFAFA"
+  style.stroke: "#9E9E9E"
+  legend_content: {
+    direction: right
+    leg_running: {
+      label: "Running"
+      shape: circle
+      width: 40
+      height: 40
+      style.fill: "#88DCF7"
+    }
+    leg_zombie: {
+      label: "Zombie"
+      shape: circle
+      width: 40
+      height: 40
+      style.fill: "#FFCDD2"
+    }
+    leg_reaped: {
+      label: "Reaped"
+      shape: circle
+      width: 40
+      height: 40
+      style.fill: "#C8E6C9"
+    }
+    leg_decision: {
+      label: "Decision"
+      shape: diamond
+      width: 40
+      height: 40
+      style.fill: "#E1BEE7"
+    }
+  }
+}
+# Transitions
+child_running -> exit_event: "exit() or\nkill signal" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+}
+exit_event -> zombie_state: "Kernel marks\nas TASK_DEAD" {
+  style.stroke: "#C62828"
+  style.stroke-width: 3
+  style.animated: true
+}
+zombie_state -> reap_decision: "Zombie awaits\nparent" {
+  style.stroke: "#7B1FA2"
+  style.stroke-width: 2
+}
+reap_decision -> reaped: "YES\nwaitpid(-1, &status,\nWNOHANG)" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 3
+  style.bold: true
+}
+reap_decision -> accumulated: "NO\nPID 1 ignores\nSIGCHLD" {
+  style.stroke: "#C62828"
+  style.stroke-width: 3
+  style.stroke-dash: 4
+}
+# Self-loop for accumulation
+accumulated -> accumulated: "More zombies\naccumulate" {
+  style.stroke: "#C62828"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+  style.animated: true
+}
+# Loop back to running
+reaped -> child_running: "New child\nforked" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+}

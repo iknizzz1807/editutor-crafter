@@ -1,0 +1,231 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # pivot_root() Error Cases: EINVAL and EBUSY
+  Troubleshooting Flowchart
+| {near: top-center}
+flow: "" {
+  direction: down
+  row1: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    start: "pivot_root(new_root, put_old)" {
+      shape: oval
+      style.fill: "#E8F5E9"
+      style.stroke: "#4CAF50"
+    }
+  }
+  row2: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    check_mount: "Is new_root a mount point?" {
+      shape: diamond
+      style.fill: "#FFF3E0"
+      style.stroke: "#FF9800"
+      width: 200
+    }
+  }
+  row3: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    einval_box: "EINVAL\n'new_root is not a mount point'" {
+      shape: rectangle
+      style.fill: "#FFEBEE"
+      style.stroke: "#F44336"
+      style.stroke-dash: 4
+    }
+    check_busy: "Is put_old busy?" {
+      shape: diamond
+      style.fill: "#FFF3E0"
+      style.stroke: "#FF9800"
+      width: 180
+    }
+  }
+  row4: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    fix_bind: "Fix: bind-mount-to-self\nmount(new_root, new_root, MS_BIND)" {
+      shape: rectangle
+      style.fill: "#E3F2FD"
+      style.stroke: "#2196F3"
+    }
+    ebusy_box: "EBUSY\n'put_old is busy'" {
+      shape: rectangle
+      style.fill: "#FFEBEE"
+      style.stroke: "#F44336"
+      style.stroke-dash: 4
+    }
+    check_subtree: "Is put_old under new_root?" {
+      shape: diamond
+      style.fill: "#FFF3E0"
+      style.stroke: "#FF9800"
+      width: 200
+    }
+  }
+  row5: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    fix_busy: "Fix: Unmount/Lazy detach\numount2(put_old, MNT_DETACH)" {
+      shape: rectangle
+      style.fill: "#E3F2FD"
+      style.stroke: "#2196F3"
+    }
+    einval_subtree: "EINVAL\n'put_old not under new_root'" {
+      shape: rectangle
+      style.fill: "#FFEBEE"
+      style.stroke: "#F44336"
+      style.stroke-dash: 4
+    }
+    success: "SUCCESS\nRoot filesystem swapped" {
+      shape: oval
+      style.fill: "#E8F5E9"
+      style.stroke: "#4CAF50"
+    }
+  }
+}
+start -> check_mount: "syscall"
+check_mount -> einval_box: "NO" {
+  style.stroke: "#F44336"
+  style.stroke-dash: 3
+}
+check_mount -> check_busy: "YES" {
+  style.stroke: "#4CAF50"
+}
+einval_box -> fix_bind: "Resolve"
+fix_bind -> check_mount: "Retry" {
+  style.stroke: "#2196F3"
+  style.stroke-dash: 3
+}
+check_busy -> ebusy_box: "YES" {
+  style.stroke: "#F44336"
+  style.stroke-dash: 3
+}
+check_busy -> check_subtree: "NO" {
+  style.stroke: "#4CAF50"
+}
+ebusy_box -> fix_busy: "Resolve"
+fix_busy -> check_busy: "Retry" {
+  style.stroke: "#2196F3"
+  style.stroke-dash: 3
+}
+check_subtree -> einval_subtree: "NO" {
+  style.stroke: "#F44336"
+  style.stroke-dash: 3
+}
+check_subtree -> success: "YES" {
+  style.stroke: "#4CAF50"
+}
+einval_subtree -> success: "Fix path and retry" {
+  style.stroke: "#2196F3"
+  style.stroke-dash: 3
+}
+strace_section: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  strace_einval: {
+    label: "strace: EINVAL (not a mount point)"
+    width: 380
+    code: |'bash
+# strace output showing EINVAL
+pivot_root("/var/container", "/var/container/old") = -1 EINVAL (Invalid argument)
+# Cause: /var/container is just a directory
+$ mountpoint /var/container
+/var/container is not a mountpoint
+# Fix: bind-mount to self first
+$ mount --bind /var/container /var/container
+$ mountpoint /var/container
+/var/container is a mountpoint
+    '|
+  }
+  strace_ebusy: {
+    label: "strace: EBUSY (resource busy)"
+    width: 380
+    code: |'bash
+# strace output showing EBUSY
+pivot_root("/var/container", "/var/container/old") = -1 EBUSY (Device or resource busy)
+# Cause: process has cwd or open file in old root
+$ lsof +D /var/container/old
+COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
+bash     1234 root  cwd    DIR  253,0     4096   64 /var/container/old
+# Fix: change directory or lazy unmount
+$ cd /
+$ umount -l /var/container/old  # MNT_DETACH
+    '|
+  }
+}
+requirements: {
+  label: "pivot_root() Requirements (pivot_root(2))"
+  shape: rectangle
+  width: 500
+  style.fill: "#F3E5F5"
+  style.stroke: "#9C27B0"
+  req_list: |md
+    1. **new_root must be a mount point** — Use `mount --bind new_root new_root` first
+    2. **new_root must differ from current root** — Cannot pivot to `/`
+    3. **put_old must be under new_root** — Path must be `new_root/oldroot`
+    4. **put_old must exist as directory** — Create with `mkdir()`
+    5. **Caller needs CAP_SYS_ADMIN** — In the *user namespace* owning mount namespace
+  |
+}
+common_fixes: {
+  label: "Common Fix Sequence"
+  shape: rectangle
+  width: 500
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+  fix_code: |'c
+// Complete pivot_root setup sequence
+void setup_pivot_root(const char *new_root) {
+    // 1. Make new_root a mount point (fixes EINVAL)
+    mount(new_root, new_root, NULL, MS_BIND | MS_REC, NULL);
+    // 2. Create oldroot directory under new_root
+    char old_root[PATH_MAX];
+    snprintf(old_root, sizeof(old_root), "%s/oldroot", new_root);
+    mkdir(old_root, 0700);
+    // 3. Disable propagation to prevent leaks
+    mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL);
+    // 4. Pivot
+    if (pivot_root(new_root, old_root) == -1) {
+        perror("pivot_root");
+        exit(1);
+    }
+    // 5. Unmount old root (fixes EBUSY on future ops)
+    chdir("/");
+    umount2("/oldroot", MNT_DETACH);
+    rmdir("/oldroot");
+}
+  '|
+}
+legend: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  legend_good: "Success path" {
+    shape: rectangle
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+  }
+  legend_error: "Error case" {
+    shape: rectangle
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    style.stroke-dash: 4
+  }
+  legend_fix: "Resolution" {
+    shape: rectangle
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+  }
+}
+legend.near: bottom-right

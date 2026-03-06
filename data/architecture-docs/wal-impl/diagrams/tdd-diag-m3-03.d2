@@ -1,0 +1,252 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    sketch: false
+    pad: 20
+  }
+  colors: {
+    process_bg: "#E1F5FE"
+    process_stroke: "#01579B"
+    decision_bg: "#FFF3E0"
+    action_bg: "#C8E6C9"
+    action_stroke: "#2E7D32"
+    danger_red: "#FFEBEE"
+  }
+}
+
+title: |md
+  # Analysis Phase: Building Dirty Page Table (DPT)
+  ### WAL RECOVERY IMPLEMENTATION SPEC
+  **rec_lsn** (recovery log sequence number) = 64-bit LSN of the first log record that dirtied a page.
+  **Objective:** Determine `min_rec_lsn` to bound the REDO pass scan range.
+| {near: top-center}
+
+direction: right
+
+scan_process: {
+  label: "1. Log Scan Pipeline"
+  style: {
+    fill: "#F8F9FA"
+    stroke: "#2196F3"
+    stroke-width: 2
+  }
+
+  log_file: "WAL Log File\n(Physical Device)" {
+    shape: cylinder
+    style.fill: "#BBDEFB"
+  }
+
+  record_reader: "Fetch LogRecord\n@current_lsn" {
+    shape: rectangle
+    style: {
+      fill: ${colors.process_bg}
+      stroke: ${colors.process_stroke}
+      border-radius: 4
+    }
+  }
+
+  record_type_check: "Record Type\nDispatcher" {
+    shape: diamond
+    style.fill: ${colors.decision_bg}
+  }
+
+  update_handler: "UPDATE Record\nDetected" {
+    shape: rectangle
+    style: {
+      fill: ${colors.action_bg}
+      stroke: ${colors.action_stroke}
+      stroke-width: 3
+      bold: true
+      border-radius: 4
+    }
+  }
+
+  log_file -> record_reader: "Sequential I/O"
+  record_reader -> record_type_check: "Buffer Mapping"
+  record_type_check -> update_handler: "Type == 0x01 (UPDATE)"
+}
+
+dpt_logic: {
+  label: "2. DPT State Transition Logic"
+  style: {
+    fill: "#FDF7FF"
+    stroke: "#7B1FA2"
+    stroke-width: 2
+  }
+
+  page_check: "page_id ∈ DPT?" {
+    shape: diamond
+    style.fill: "#E1BEE7"
+  }
+
+  skip: "Ignore Record\n(Already Dirty)" {
+    shape: rectangle
+    style: {
+      fill: "#F5F5F5"
+      stroke: "#9E9E9E"
+      stroke-dash: 3
+      border-radius: 4
+    }
+  }
+
+  add_entry: "Register Dirty Page\nMap PageID -> rec_lsn" {
+    shape: rectangle
+    style: {
+      fill: ${colors.action_bg}
+      stroke: ${colors.action_stroke}
+      bold: true
+      border-radius: 4
+    }
+  }
+
+  page_check -> skip: "YES"
+  page_check -> add_entry: "NO\n(Set rec_lsn = current_lsn)"
+}
+
+scan_process.update_handler -> dpt_logic.page_check: "Evaluate Page Status"
+
+dpt_state: {
+  label: "3. In-Memory DPT Data Structure"
+  style: {
+    fill: "#FFFDE7"
+    stroke: "#FBC02D"
+  }
+
+  dpt_before: "DPT Instance (t-1)" {
+    shape: class
+    style.fill: "#FFF9C4"
+    "sizeof": "Variable (Hash Map)"
+    "+ entries: Map<uint32, uint64>"
+    "+ mutex: pthread_mutex_t"
+  }
+
+  dpt_after: "DPT Instance (t)" {
+    shape: class
+    style: {
+      fill: ${colors.action_bg}
+      stroke: ${colors.action_stroke}
+      stroke-width: 2
+      bold: true
+    }
+    "page_id P": "0xDEADBEEF"
+    "rec_lsn": "0x00000000000001F4"
+    "status": "DIRTY_TRACKED"
+  }
+
+  dpt_before -> dpt_after: "atomic_store"
+}
+
+dpt_logic.add_entry -> dpt_state.dpt_after: "DPT[P] = LSN"
+
+min_rec_lsn: {
+  label: "4. Recovery Boundary Determination"
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1565C0"
+  }
+
+  dpt_snapshot: "DPT Snapshot" {
+    shape: sql_table
+    style.fill: "#BBDEFB"
+    page_id: uint32 {constraint: PK}
+    rec_lsn: uint64
+  }
+
+  min_finder: "find_min(rec_lsn)" {
+    shape: rectangle
+    style: {
+      fill: "#90CAF9"
+      bold: true
+      border-radius: 4
+    }
+  }
+
+  redo_start: "REDO PASS START\nLower Bound LSN" {
+    shape: rectangle
+    style: {
+      fill: ${colors.action_stroke}
+      font-color: white
+      bold: true
+    }
+  }
+
+  dpt_snapshot -> min_finder
+  min_finder -> redo_start: "Result LSN"
+}
+
+example_timeline: {
+  label: "Example Execution Trace"
+  style: {
+    fill: "#FFFFFF"
+    stroke: "#BDBDBD"
+    stroke-dash: 2
+  }
+
+  timeline: {
+    grid-columns: 1
+    grid-gap: 10
+    
+    lsn100: "t=1: LSN 100 -> Page P1. Result: DPT[P1].rec_lsn = 100" {
+      style.fill: ${colors.action_bg}
+      style.stroke: ${colors.action_stroke}
+    }
+    lsn150: "t=2: LSN 150 -> Page P2. Result: DPT[P2].rec_lsn = 150" {
+      style.fill: ${colors.action_bg}
+      style.stroke: ${colors.action_stroke}
+    }
+    lsn200: "t=3: LSN 200 -> Page P1. Result: SKIP (Existing rec_lsn 100 preserved)" {
+      style.fill: "#FFE0B2"
+      style.stroke: "#F57C00"
+    }
+    lsn250: "t=4: LSN 250 -> Page P3. Result: DPT[P3].rec_lsn = 250" {
+      style.fill: ${colors.action_bg}
+      style.stroke: ${colors.action_stroke}
+    }
+    
+    summary: "Final State: min_rec_lsn = 100 (Safe Redo Boundary)" {
+      style.fill: "#388E3C"
+      style.font-color: white
+      style.bold: true
+    }
+  }
+}
+
+algorithm_pseudocode: |md
+  ### Analysis Implementation (C++ Pseudo)
+  cpp
+  // Iterate log from last Checkpoint LSN
+  while (log.has_next()) {
+      LogRecord record = log.next();
+      if (record.type() == RecordType::UPDATE) {
+          uint32_t pid = record.page_id();
+          // The FIRST time a page is seen in the log
+          // its LSN is recorded as the rec_lsn.
+          if (dpt.find(pid) == dpt.end()) {
+              dpt[pid] = record.lsn();
+          }
+      }
+  }
+
+  // Determine starting point for Redo Phase
+  uint64_t redo_start_lsn = UINT64_MAX;
+  for (const auto& [id, lsn] : dpt) {
+      redo_start_lsn = std::min(redo_start_lsn, lsn);
+  }
+  
+| {near: bottom-center}
+
+invariant: |md
+  **DATA INTEGRITY INVARIANT:** 
+  The `rec_lsn` for any page $P$ in the DPT must represent the $LSN$ of the earliest 
+  modification of $P$ that has not yet been flushed to the non-volatile data file.
+  Therefore, no redo work is required prior to $\min(\text{rec\_lsn})$.
+| {
+  near: bottom-center
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#FF9800"
+    border-radius: 8
+    font-size: 14
+  }
+}

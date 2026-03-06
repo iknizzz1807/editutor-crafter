@@ -1,0 +1,185 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- System Overview Legend ---
+legend: {
+  shape: sql_table
+  label: "WAL System Map"
+  row1: "Red Lines | Critical Path / Recovery"
+  row2: "Blue Lines | Data Flow"
+  row3: "Dashed Lines | Background/Periodic"
+}
+legend.near: top-right
+
+# --- DISK STRUCTURES ---
+row_disk: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  master_record: {
+    shape: sql_table
+    label: "Master Record (wal.master)"
+    f0: "0x00 | uint32_t | magic // 0x57414C4D"
+    f1: "0x04 | uint32_t | version // Schema version"
+    f2: "0x08 | uint64_t | last_checkpoint_lsn"
+    f3: "0x10 | uint64_t | checkpoint_count"
+    f4: "0x18 | uint32_t | crc32 // Header checksum"
+    sz: "Total: 28 bytes (Atomic Update)"
+  }
+
+  log_segments: {
+    label: "Segment Directory (./wal/)"
+    seg1: {
+      shape: sql_table
+      label: "wal.00000001 (Active)"
+      h0: "0x00 | uint64_t | base_lsn"
+      h1: "0x08 | uint32_t | format_id"
+      d: "0x0C | bytes[] | Log Records"
+      p: "EOF | zero | Padding to 64MB"
+    }
+  }
+}
+
+# --- CORE LOGIC MODULES ---
+row_logic: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  txn_manager: {
+    shape: class
+    label: "TransactionManager (txn.c)"
+    -txn_table: "TransactionTable*"
+    -dpt: "DirtyPageTable*"
+    +begin_txn(mgr): "uint32_t"
+    +write_txn(mgr, tid, pid, data): "int"
+    +commit_txn(mgr, tid): "void"
+    +abort_txn(mgr, tid): "void"
+  }
+
+  log_writer: {
+    shape: class
+    label: "WalWriter (log_writer.c)"
+    -log_fd: "int"
+    -buffer: "uint8_t[1MB]"
+    -next_lsn: "uint64_t"
+    +append(record, len): "uint64_t"
+    +flush(): "int"
+    +sync(): "int"
+  }
+
+  checkpoint_scheduler: {
+    shape: class
+    label: "CheckpointScheduler (chkpt.c)"
+    -last_chkpt_time: "uint64_t"
+    -chkpt_interval: "uint32_t"
+    +should_checkpoint(): "bool"
+    +take_fuzzy_checkpoint(): "int"
+    +truncate_segments(min_lsn): "void"
+  }
+}
+
+# --- ALGORITHM RECOVERY ---
+row_recovery: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  recovery_logic: {
+    label: "Crash Recovery (recovery.c)"
+    code: |'c
+    void crash_recovery(mgr, pool, chkpt_lsn) {
+      // 1. Analysis: Scan from chkpt_lsn
+      // 2. Redo: Repeat history from min_rec_lsn
+      // 3. Undo: Roll back uncommitted txns
+      analyze_phase(mgr, chkpt_lsn);
+      redo_phase(mgr);
+      undo_phase(mgr);
+    }
+    '|
+    width: 350
+  }
+
+  truncation_logic: {
+    label: "Safe Truncation Logic"
+    code: |'c
+    void truncate_segments(min_rec_lsn) {
+      // 1. Find segments where max_lsn < min_rec_lsn
+      // 2. Close file handles
+      // 3. unlink() segment files
+      for (seg : segments) {
+        if (seg.end_lsn < min_rec_lsn) unlink(seg.path);
+      }
+    }
+    '|
+    width: 350
+  }
+}
+
+# --- TEST SCENARIO ---
+test_fuzzy_checkpoint: {
+  label: "Fuzzy Checkpoint Test (test_wal.c)"
+  direction: right
+  style.fill: "#f8f9fa"
+  setup: {
+    label: "T1: Committed"
+    code: |'c
+    tid = begin_txn(mgr);
+    write_txn(mgr, tid, 1, "data");
+    commit_txn(mgr, tid);
+    '|
+  }
+  crash: {
+    label: "T2: Active (Crash)"
+    code: |'c
+    tid2 = begin_txn(mgr);
+    write_txn(mgr, tid2, 2, "temp");
+    // CRASH OCCURS HERE
+    '|
+  }
+  validation: {
+    label: "Recovery Result"
+    code: |'c
+    recover(mgr);
+    assert(page1 == "data");
+    assert(page2 == "old_val"); // T2 Undone
+    '|
+  }
+}
+
+# --- GLOBAL CONSTRAINTS ---
+constraints: {
+  label: "Implementation Constraints"
+  shape: callout
+  text: |md
+  1. **Atomicity**: Master record MUST be updated via `rename(temp, real)`.
+  2. **Sequence**: `fsync(log)` MUST complete before updating `wal.master`.
+  3. **Truncation**: `min_rec_lsn` in DPT is the absolute floor for deletion.
+  |
+}
+constraints.near: bottom-right
+
+# --- FLOWS & RELATIONSHIPS ---
+row_logic.txn_manager -> row_logic.log_writer: "LogRecord | write"
+row_logic.log_writer -> row_disk.log_segments.seg1: "64KB | append"
+
+row_logic.checkpoint_scheduler -> row_disk.master_record: "LSN | atomic rename"
+row_logic.checkpoint_scheduler -> row_disk.log_segments: "unlink | truncate"
+
+row_recovery.recovery_logic -> row_disk.master_record: "uint64_t | bootstrap LSN"
+row_recovery.recovery_logic -> row_disk.log_segments: "Scan | replay"
+
+row_recovery -> test_fuzzy_checkpoint: "Validated By" {
+  style.stroke-dash: 5
+}
+
+# Force layout order
+row_disk -> row_logic: {style.stroke: transparent}
+row_logic -> row_recovery: {style.stroke: transparent}
+row_recovery -> test_fuzzy_checkpoint: {style.stroke: transparent}

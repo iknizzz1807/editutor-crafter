@@ -1,0 +1,252 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# -----------------------------------------------------------------------------
+# GLOBAL STYLES & CLASSES
+# -----------------------------------------------------------------------------
+classes: {
+  hot_path: {
+    style: {
+      stroke: "#FF6B6B"
+      stroke-width: 4
+      shadow: true
+    }
+  }
+  metadata: {
+    style: {
+      fill: "#E4DBFE"
+      stroke: "#B5AFF6"
+    }
+  }
+}
+
+title: {
+  shape: rectangle
+  label: "ARIES Write-Ahead Logging (WAL) Architecture\nFuzzy Checkpoint & Concurrent Recovery"
+  style: {
+    font-size: 24
+    bold: true
+    fill: "#2980B9"
+    font-color: white
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ROW 1: DISK STORAGE & LOG SEGMENTS
+# -----------------------------------------------------------------------------
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  storage_layer: {
+    label: "Storage Layer (Disk)"
+    direction: right
+    log_files: {
+      label: "Log Segments (/var/lib/db/wal/)"
+      segment_0: {
+        shape: sql_table
+        label: "wal.00000001 (Closed)"
+        r1: "0x0000 | Header | LSN 0..1024"
+        r2: "0x0400 | Data   | Update Records"
+        r3: "0x0F00 | Footer | CRC Checksum"
+      }
+      segment_1: {
+        shape: sql_table
+        label: "wal.00000002 (Active)"
+        r1: "0x0000 | Header | LSN 1025.."
+        r2: "0x0100 | Record | BEGIN T1"
+        r3: "0x0140 | Record | UPDATE T1 P42"
+        style.stroke: "#FF6B6B"
+      }
+    }
+
+    master_record: {
+      shape: sql_table
+      label: "Master Record (master.dat)"
+      last_ckpt: "0x00 | uint64_t | last_checkpoint_lsn"
+      version: "0x08 | uint32_t | wal_version"
+      magic: "0x0C | uint32_t | 0xDEADBEEF"
+      sz: "Total: 16 bytes"
+    }
+  }
+
+  truncator: "Log Truncation Manager" {
+    code: |'c
+    min_lsn = min(min(DPT.RecLSN), min(TT.LastLSN));
+    delete_segments_before(min_lsn);
+    '|
+    width: 320
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ROW 2: DATA STRUCTURES (LOG RECORDS & TABLES)
+# -----------------------------------------------------------------------------
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  log_header: {
+    shape: sql_table
+    label: "struct LogRecordHeader (wal.h)"
+    f0: "0x00 | uint64_t | lsn"
+    f1: "0x08 | uint64_t | prev_lsn // tx-chain"
+    f2: "0x10 | uint32_t | txn_id"
+    f3: "0x14 | uint8_t  | type // BEGIN|UPDATE"
+    f4: "0x15 | uint8_t  | padding[3]"
+    f5: "0x18 | uint32_t | crc32"
+    sz: "Total: 28 bytes (32 aligned)"
+  }
+
+  txn_table: {
+    shape: sql_table
+    label: "Transaction Table (Memory)"
+    t1: "TXID: 101 | LastLSN: 0x450 | Status: RUNNING"
+    t2: "TXID: 102 | LastLSN: 0x480 | Status: COMMITTING"
+    t3: "TXID: 103 | LastLSN: 0x420 | Status: UNDOING"
+    note: "Used during Analysis/Undo phases"
+  }
+
+  dirty_page_table: {
+    shape: sql_table
+    label: "Dirty Page Table (DPT)"
+    p1: "PageID: 42  | RecLSN: 0x390 // 1st dirty"
+    p2: "PageID: 108 | RecLSN: 0x410"
+    p3: "PageID: 256 | RecLSN: 0x460"
+    sz: "Used to determine Redo start point"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ROW 3: RUNTIME MANAGEMENT (WRITER & CHECKPOINTER)
+# -----------------------------------------------------------------------------
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  wal_writer: {
+    shape: class
+    label: "WALWriter (wal_writer.c)"
+    -log_fd: "int"
+    -buffer: "uint8_t[1MB]"
+    -flush_lsn: "uint64_t"
+    +append(record): "uint64_t LSN"
+    +flush(target_lsn): "void"
+    +group_commit(): "void"
+  }
+
+  checkpointer: {
+    shape: class
+    label: "CheckpointManager (ckpt.c)"
+    -ckpt_interval: "int"
+    +trigger_fuzzy_checkpoint(): "LSN"
+    +write_begin_ckpt(): "void"
+    +write_end_ckpt(txn_table, dpt): "void"
+  }
+
+  logic_fuzzy: {
+    label: "Fuzzy Checkpoint Algorithm"
+    code: |'c
+    // 1. Write BEGIN_CKPT record
+    // 2. Snapshot TxnTable & DPT
+    // 3. Write END_CKPT with snapshots
+    // 4. Update master_record
+    // * Transactions NOT blocked
+    '|
+    width: 300
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ROW 4: RECOVERY PHASES (ARIES)
+# -----------------------------------------------------------------------------
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  phase1: {
+    label: "Phase 1: Analysis"
+    code: |'c
+    LSN start = master->last_ckpt;
+    scan_forward(start);
+    // Build TxnTable & DPT
+    // Find min(RecLSN) for Redo
+    '|
+    style.fill: "#FFF9C9"
+  }
+
+  phase2: {
+    label: "Phase 2: Redo (Repeat History)"
+    code: |'c
+    LSN redo_lsn = min(RecLSN in DPT);
+    scan_forward(redo_lsn);
+    if (page.LSN < record.LSN) 
+        apply_update(record);
+    '|
+    style.fill: "#D5F5E3"
+  }
+
+  phase3: {
+    label: "Phase 3: Undo (Rollback)"
+    code: |'c
+    for (txn : active_txns) {
+      LSN cur = txn.LastLSN;
+      while (cur > 0) {
+        CLR clr = compensate(cur);
+        wal_append(clr);
+        cur = record.prev_lsn;
+      }
+    }
+    '|
+    style.fill: "#FADBD8"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# CONNECTIONS & DATA FLOW
+# -----------------------------------------------------------------------------
+
+row3.wal_writer -> row1.storage_layer.log_files: "LSN | append"
+row1.storage_layer.master_record -> row4.phase1: "last_ckpt"
+row3.checkpointer -> row1.storage_layer.log_files: "END_CKPT | write"
+row3.checkpointer -> row2.txn_table: "snapshot"
+row3.checkpointer -> row2.dirty_page_table: "snapshot"
+
+row4.phase1 -> row4.phase2: "RedoLSN"
+row4.phase1 -> row4.phase3: "LoserSet"
+row4.phase2 -> row4.phase3: "Success"
+
+row4.phase3 -> row3.wal_writer: "CLR | log"
+row2.log_header -> row1.storage_layer.log_files: "serialize"
+
+# Hot path: Transaction writing
+txn_op: "Client Update"
+txn_op -> row3.wal_writer: "UPDATE record" {
+  style.stroke: "#FF6B6B"
+  style.stroke-width: 3
+}
+
+row1.truncator -> row1.storage_layer.log_files: "unlink()"
+
+# Legend
+legend: {
+  shape: rectangle
+  label: "ARIES Recovery Legend"
+  analysis: "Analysis Phase" { style.fill: "#FFF9C9" }
+  redo: "Redo Phase" { style.fill: "#D5F5E3" }
+  undo: "Undo Phase" { style.fill: "#FADBD8" }
+  hot: "Hot Path (Latency Sensitive)" { 
+    style.stroke: "#FF6B6B"
+    style.stroke-width: 4
+  }
+}
+legend.near: bottom-right

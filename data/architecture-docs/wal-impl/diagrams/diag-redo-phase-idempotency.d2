@@ -1,0 +1,263 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Redo Phase: pageLSN Skip Logic
+  **Idempotency via LSN Comparison**
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step1: {
+    direction: down
+    label: "Step 1: Read UPDATE Record"
+    width: 280
+    record: {
+      shape: sql_table
+      label: "UPDATE Record"
+      lsn: "0x00 | uint64 | lsn = 1500"
+      type: "0x08 | uint32 | type = UPDATE"
+      txn: "0x0C | uint32 | txn_id = 7"
+      page: "0x10 | uint64 | page_id = 42"
+      offset: "0x18 | uint32 | offset = 64"
+      old: "0x1C | bytes  | old_value = 'A'"
+      new: "0x.. | bytes  | new_value = 'B'"
+    }
+  }
+  arrow1: {
+    width: 60
+    label: ""
+    code: |'c
+      // Read record
+      // at LSN 1500
+    '|
+  }
+  step2: {
+    direction: down
+    label: "Step 2: Read Page from Disk"
+    width: 280
+    page_before: {
+      shape: sql_table
+      label: "Page 42 (on disk)"
+      lsn: "0x00 | uint64 | pageLSN = 1200"
+      data: "0x40 | bytes  | data[@64] = ?"
+      note: "pageLSN < 1500\nmay need redo"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  decision: {
+    label: "Compare LSNs"
+    shape: diamond
+    width: 200
+    height: 120
+    code: |'c
+      if (pageLSN >= record.lsn)
+        skip // already applied
+      else
+        apply // needs redo
+    '|
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  skip_branch: {
+    direction: down
+    label: "SKIP Path (Already Applied)"
+    width: 320
+    style.stroke: "#22c55e"
+    style.fill: "#dcfce7"
+    skip_condition: {
+      label: "pageLSN >= record.LSN"
+      shape: rectangle
+      width: 200
+      code: |'c
+        // Example:
+        // pageLSN = 1500
+        // record.lsn = 1500
+        // 1500 >= 1500 → TRUE
+        // This change already on disk!
+      '|
+    }
+    skip_result: {
+      label: "Result: No Modification"
+      shape: rectangle
+      width: 280
+      code: |'c
+        // Page unchanged
+        // pageLSN unchanged
+        // Continue to next record
+      '|
+    }
+    skip_arrow: skip_condition -> skip_result: "skip"
+  }
+  gap: {
+    width: 80
+    label: ""
+  }
+  apply_branch: {
+    direction: down
+    label: "APPLY Path (Needs Redo)"
+    width: 320
+    style.stroke: "#ef4444"
+    style.fill: "#fee2e2"
+    apply_condition: {
+      label: "pageLSN < record.LSN"
+      shape: rectangle
+      width: 200
+      code: |'c
+        // Example:
+        // pageLSN = 1200
+        // record.lsn = 1500
+        // 1200 < 1500 → TRUE
+        // Change not on disk yet!
+      '|
+    }
+    apply_action: {
+      label: "Apply Change + Update pageLSN"
+      shape: rectangle
+      width: 280
+      code: |'c
+        // 1. Write new_value to page
+        page.data[offset] = new_value;
+        // 2. Update pageLSN
+        page.pageLSN = record.lsn;
+        // Now pageLSN = 1500
+      '|
+    }
+    apply_result: {
+      shape: sql_table
+      label: "Page 42 (after redo)"
+      lsn: "0x00 | uint64 | pageLSN = 1500"
+      data: "0x40 | bytes  | data[@64] = 'B'"
+      note: "pageLSN updated!"
+    }
+    apply_condition -> apply_action: "apply"
+    apply_action -> apply_result: "write"
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  idempotency_box: {
+    direction: down
+    label: "Why This Is Idempotent"
+    width: 700
+    style.fill: "#e0f2fe"
+    style.stroke: "#0284c7"
+    scenario: {
+      label: "Scenario: Recovery Runs Twice"
+      shape: rectangle
+      width: 650
+      code: |'c
+        // FIRST RECOVERY:
+        //   Record LSN 1500, page.pageLSN = 1200
+        //   1200 < 1500 → APPLY change, set pageLSN = 1500
+        //   Page now has change, pageLSN = 1500
+        // SECOND RECOVERY (after another crash):
+        //   Record LSN 1500, page.pageLSN = 1500
+        //   1500 >= 1500 → SKIP (no-op)
+        //   Page unchanged, already correct!
+      '|
+    }
+    guarantee: {
+      label: "The Guarantee"
+      shape: rectangle
+      width: 650
+      code: |'c
+        // Running recovery 1 time, 10 times, or 1000 times
+        // produces IDENTICAL database state.
+        // This is "idempotency" — safe to repeat.
+      '|
+    }
+  }
+}
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  timeline: {
+    direction: down
+    label: "Timeline: Why pageLSN Tracking Matters"
+    width: 750
+    t1: {
+      label: "T1: Normal Operation"
+      shape: rectangle
+      width: 700
+      code: |'c
+        // Transaction T7 updates page 42
+        // Log: LSN 1500 = UPDATE(page=42, old='A', new='B')
+        // Buffer pool: page 42 dirty in memory (pageLSN=1500)
+      '|
+    }
+    t2: {
+      label: "T2: Buffer Pool Evicts Page (Steal Policy)"
+      shape: rectangle
+      width: 700
+      code: |'c
+        // Memory pressure → evict page 42 to disk
+        // Disk now has: page.data[@64]='B', page.pageLSN=1500
+        // Log still has LSN 1500 record
+      '|
+    }
+    t3: {
+      label: "T3: CRASH!"
+      shape: rectangle
+      width: 700
+      style.fill: "#fecaca"
+      style.stroke: "#dc2626"
+      code: |'c
+        // Power failure, process killed, etc.
+        // Disk state: page 42 has pageLSN=1500
+        // Log state: LSN 1500 record exists
+      '|
+    }
+    t4: {
+      label: "T4: Recovery Redo Phase"
+      shape: rectangle
+      width: 700
+      style.fill: "#bbf7d0"
+      style.stroke: "#16a34a"
+      code: |'c
+        // Scan log, encounter LSN 1500
+        // Read page 42: pageLSN = 1500
+        // Compare: 1500 >= 1500 → SKIP
+        // No unnecessary re-apply! Page already correct.
+      '|
+    }
+    t1 -> t2 -> t3 -> t4
+  }
+}
+legend: {
+  near: bottom-right
+  label: "Legend"
+  shape: rectangle
+  width: 200
+  green: "Green = Skip (no-op)" {
+    shape: text
+    style.fill: "#dcfce7"
+  }
+  red: "Red = Apply (redo)" {
+    shape: text
+    style.fill: "#fee2e2"
+  }
+  blue: "Blue = Explanation" {
+    shape: text
+    style.fill: "#e0f2fe"
+  }
+}
+step1 -> step2: "fetch page"
+step2 -> decision: "compare"
+decision -> skip_branch.skip_condition: "pageLSN >= LSN"
+decision -> apply_branch.apply_condition: "pageLSN < LSN"

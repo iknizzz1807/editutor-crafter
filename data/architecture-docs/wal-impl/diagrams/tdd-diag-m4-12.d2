@@ -1,0 +1,236 @@
+layout-engine: elk
+theme-id: 4
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+  colors: {
+    header: "#D1C4E9"
+    data: "#BBDEFB"
+    free: "#C8E6C9"
+    padding: "#E0E0E0"
+    pointer: "#FFE0B2"
+    lock_wait: "#FFCDD2"
+    lock_held: "#C8E6C9"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# GLOBAL CLASSES
+# -----------------------------------------------------------------------------------------
+classes: {
+  mem_block: {
+    style: {
+      stroke: "#333333"
+      stroke-width: 2
+      border-radius: 0
+    }
+  }
+  cache_line: {
+    style: {
+      stroke-dash: 5
+    }
+  }
+  active_thread: {
+    shape: person
+    style: {
+      fill: "#E1F5FE"
+      stroke: "#01579B"
+    }
+  }
+  txn_node: {
+    shape: circle
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# ARCHITECTURE DEFINITION
+# -----------------------------------------------------------------------------------------
+
+title: {
+  label: |md
+    # Snapshot Capture Under Concurrent Modification
+    ### Technical Specification: WAL Checkpoint Snapshot Implementation
+    **Constraint: Atomic copy of critical tables | Target Lock Hold: < 100µs**
+  |
+  near: top-center
+}
+
+# --- Shared Memory Physical Layout ---
+shared_memory: "Shared Memory Address Space (Global)" {
+  style.fill: "#FFFFFF"
+  style.stroke: "#000000"
+  style.stroke-width: 3
+
+  txn_table: "Transaction Table Block" {
+    class: mem_block
+    tooltip: "Base: 0x7F0000 | Size: 32,832 Bytes"
+    
+    header: "Header [0x00]" {
+      style.fill: ${vars.colors.header}
+      label: "uint32_t active_txns | LSN last_checkpoint | uint64_t mutex_state"
+    }
+    
+    entries: "Data [0x40]" {
+      style.fill: ${vars.colors.data}
+      label: "Array: txn_record_t[1024]\nSize per record: 32 bytes"
+    }
+    
+    padding: "Padding [0x8040]" {
+      style.fill: ${vars.colors.padding}
+      label: "Alignment Padding (64B boundary)"
+    }
+  }
+
+  dpt_map: "Dirty Page Table Block" {
+    class: mem_block
+    tooltip: "Base: 0x800000 | Size: 524,288 Bytes"
+    
+    meta: "Header [0x00]" {
+      style.fill: ${vars.colors.header}
+      label: "uint64_t entry_count | uint32_t bucket_mask"
+    }
+    
+    buckets: "Data [0x40]" {
+      style.fill: ${vars.colors.data}
+      label: "Hash Buckets: page_id -> rec_lsn\nConcurrency: Sharded (16 segments)"
+    }
+  }
+}
+
+# --- Active Participants ---
+checkpoint_mgr: "Checkpoint Thread (PID 102)" {
+  class: active_thread
+  
+  internal_buffer: "Private Buffer (Stack/Heap)" {
+    style.fill: "#FFF9C4"
+    label: "Local Copy [32KB]"
+  }
+}
+
+workload: "Concurrent Writers" {
+  style.stroke: transparent
+  style.fill: transparent
+
+  t4: "T4 (Writer)" { class: txn_node; tooltip: "UPDATE page_id: 505" }
+  t5: "T5 (Writer)" { class: txn_node; tooltip: "UPDATE page_id: 702" }
+  t6: "T6 (Writer)" { class: txn_node; tooltip: "COMMIT" }
+}
+
+# --- Checkpoint Output Packet ---
+final_packet: "Checkpoint Log Record" {
+  shape: sql_table
+  style.fill: ${vars.colors.free}
+  style.stroke: "#2E7D32"
+  style.stroke-width: 4
+  
+  "header": "PK_Snapshot_ID | timestamp_t | uint64_t"
+  "txn_snapshot": "Active Transactions: {T2, T3, T5}"
+  "dpt_snapshot": "Dirty Pages: {P505:1001, P702:1050}"
+  "flushed_lsn": "MinRecoveryLSN: 1001"
+}
+
+# -----------------------------------------------------------------------------------------
+# SEQUENCE & INTERACTION LOGIC
+# -----------------------------------------------------------------------------------------
+
+# Phase 1: Txn Table Capture
+checkpoint_mgr -> shared_memory.txn_table.header: "1. Mutex::lock()" {
+  style: {
+    stroke: "#E65100"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+shared_memory.txn_table.entries -> checkpoint_mgr.internal_buffer: "2. std::memcpy(local, shared, 32KB)" {
+  style: {
+    stroke: "#1B5E20"
+    stroke-width: 5
+    bold: true
+  }
+}
+
+checkpoint_mgr -> shared_memory.txn_table.header: "3. Mutex::unlock()" {
+  style.stroke: "#4CAF50"
+}
+
+# Phase 2: DPT Capture
+checkpoint_mgr -> shared_memory.dpt_map.meta: "4. Mutex::lock() [Segment 0..15]" {
+  style.stroke: "#E65100"
+}
+
+shared_memory.dpt_map.buckets -> checkpoint_mgr.internal_buffer: "5. Iterator::copy_active()" {
+  style.stroke: "#1B5E20"
+  style.stroke-width: 5
+}
+
+checkpoint_mgr -> shared_memory.dpt_map.meta: "6. Mutex::unlock()" {
+  style.stroke: "#4CAF50"
+}
+
+# Serialization
+checkpoint_mgr -> final_packet: "7. log_manager->append(CHECKPOINT_REC)" {
+  style: {
+    stroke: "#2E7D32"
+    stroke-width: 2
+    stroke-dash: 0
+  }
+}
+
+# Conflict Modeling
+workload.t4 -> shared_memory.txn_table: "WAIT (Locked by Chkpt)" {
+  style: {
+    stroke: red
+    stroke-dash: 2
+    font-color: red
+  }
+}
+
+workload.t5 -> shared_memory.dpt_map: "WAIT (Locked by Chkpt)" {
+  style: {
+    stroke: red
+    stroke-dash: 2
+    font-color: red
+  }
+}
+
+workload.t6 -> shared_memory.txn_table: "SUCCESS (t > Chkpt Unlock)" {
+  style: {
+    stroke: green
+    animated: true
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# TECHNICAL SPECIFICATION (ANNOTATIONS)
+# -----------------------------------------------------------------------------------------
+
+specs: {
+  label: |md
+    ### Implementation Logic & Invariants
+    1. **Pointer Stability**: Mutex must be held for the duration of `memcpy` to prevent `realloc` or entry modification by concurrent writers.
+    2. **Wait-Free Considerations**: Writers are blocked only during the memory move. On an 8-channel DDR4 bus, 32KB is moved in **< 10ns** of raw bus time; overhead is dominated by OS context switching.
+    3. **LSN Monotonicity**: Any record updated *after* step 3 is guaranteed to have an LSN > `flushed_lsn` captured in step 2.
+    4. **Atomic Boundary**: Checkpoint is considered "captured" at the moment Step 1 succeeds, but "persisted" only after Step 7 reaches stable storage.
+  |
+  near: bottom-center
+  style: {
+    fill: "#FFFBE0"
+    stroke: "#E0E0E0"
+    font-size: 11
+  }
+}
+
+# Layout constraints for technical clarity
+checkpoint_mgr.near: center-left
+shared_memory.near: center
+final_packet.near: center-right
+workload.near: top-left

@@ -1,0 +1,191 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- GLOBAL TITLE ---
+title: |md
+  # Crash During Undo Test: CLR-Based Recovery Resumption
+  **Implementation Spec: ARIES WAL Idempotency Strategy**
+| {near: top-center}
+
+# --- STYLE DEFINITIONS ---
+classes: {
+  active: {
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#4CAF50"
+      stroke-width: 2
+    }
+  }
+  completed: {
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#2196F3"
+      stroke-width: 2
+    }
+  }
+  interrupted: {
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#FF9800"
+      stroke-width: 2
+      stroke-dash: 4
+    }
+  }
+  error: {
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#F44336"
+      stroke-width: 2
+    }
+  }
+  record: {
+    style: {
+      font: mono
+      font-size: 16
+    }
+  }
+  logsegment: {
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#9C27B0"
+      stroke-width: 2
+    }
+  }
+}
+
+# --- TOP LEVEL COMPONENTS ---
+
+before_crash: "Before Crash: Partial Undo" {
+  style.fill: "#FAFAFA"
+  
+  log_before: "WAL Log Buffer (Memory Map)" {
+    class: logsegment
+    grid-rows: 6
+    
+    r100: "0x000: LSN 100 | BEGIN T1" {class: [record; completed]}
+    r150: "0x040: LSN 150 | UPDATE P1:O0 'A'->'B' | prev:100" {class: [record; completed]}
+    r200: "0x080: LSN 200 | UPDATE P1:O1 'C'->'D' | prev:150" {class: [record; completed]}
+    r250: "0x0C0: LSN 250 | UPDATE P1:O2 'E'->'F' | prev:200" {class: [record; completed]}
+    r300: "0x100: LSN 300 | CLR (Partial) P1:O2 UNDO='E' | UNEXT:200" {class: [record; interrupted]}
+    
+    note_crash: "CRASH POINT HERE" {
+      style: {
+        fill: red
+        font-color: white
+        bold: true
+      }
+    }
+  }
+
+  txn_state_before: "T1 Runtime Descriptor" {
+    class: active
+    status_before: "Status: ACTIVE"
+    chain_before: "last_lsn: 300"
+    remaining: "Pending Undo: [200, 150]"
+  }
+  
+  log_before.r300 -> txn_state_before: "Ref" {style.stroke-dash: 3}
+}
+
+after_crash: "Recovery Phase Logic" {
+  style.fill: "#FFF8E1"
+  
+  step1: "1. Analysis Phase" {
+    class: completed
+    label: |md
+      - Scan from Checkpoint
+      - Rebuild Dirty Page Table
+      - T1 found in Undo-List (last_lsn=300)
+    |
+  }
+  
+  step2: "2. Redo Phase" {
+    class: completed
+    label: |md
+      - 'Repeating History'
+      - Replay 100 to 300
+      - Page 1 restored to: [B, D, E]
+    |
+  }
+  
+  step3: "3. Undo Phase (Resumption)" {
+    class: active
+    label: |md
+      - Pop LSN 300 (CLR)
+      - **Logic**: if record == CLR:
+      - **Target LSN = record.undo_next_lsn** (200)
+      - Skip LSN 250 (already undone)
+    |
+  }
+  
+  step1 -> step2 -> step3
+}
+
+after_recovery: "Post-Recovery: Final State" {
+  style.fill: "#FAFAFA"
+  
+  log_after: "WAL Persistent Storage" {
+    class: logsegment
+    grid-rows: 8
+    
+    ar1: "LSN 100: BEGIN T1" {class: [record; completed]}
+    ar2: "LSN 150: UPDATE..." {class: [record; completed]}
+    ar3: "LSN 200: UPDATE..." {class: [record; completed]}
+    ar4: "LSN 250: UPDATE..." {class: [record; completed]}
+    ar5: "LSN 300: CLR (Old) UNEXT:200" {class: [record; completed]}
+    
+    # Red bold for new records during recovery undo
+    ar6: "**LSN 350: CLR (New) P1:O1 UNDO='C' | UNEXT:150**" {
+      class: [record; completed]
+      style.font-color: "#F44336"
+    }
+    ar7: "**LSN 400: CLR (New) P1:O0 UNDO='A' | UNEXT:100**" {
+      class: [record; completed]
+      style.font-color: "#F44336"
+    }
+    ar8: "LSN 450: ABORT T1 | prev:400" {class: [record; error]}
+  }
+
+  txn_state_after: "T1 Final State" {
+    class: error
+    status_after: "Status: ABORTED"
+    result: "Data Integrity: Page 1 restored to [A, C, E]"
+  }
+}
+
+# --- GLOBAL POSITIONED ANNOTATIONS ---
+
+legend: |md
+  ### CLR Logic Specification
+  - **CLR (Compensation Log Record)**: Never undone.
+  - **undo_next_lsn**: Pointer to the next record of the transaction that still needs to be undone.
+  - **Idempotency**: If system crashes during recovery, the presence of LSN 300 tells the next recovery to skip LSN 250.
+| {near: bottom-right}
+
+note_logic: |md
+  ### Resumption Pointer Difference
+  - **prev_lsn**: Physical backward link (350 -> 300).
+  - **undo_next_lsn**: Logical undo link (300 -> 200).
+  - Prevents the 'Undo-of-an-Undo' infinite loop.
+| {near: top-right}
+
+# --- CONNECTIONS ---
+before_crash -> after_crash: "SYSTEM FAILURE" {
+  style: {
+    stroke: "#F44336"
+    stroke-width: 4
+    animated: true
+  }
+}
+
+after_crash -> after_recovery: "RECOVERY SUCCESS" {
+  style: {
+    stroke: "#4CAF50"
+    stroke-width: 3
+  }
+}

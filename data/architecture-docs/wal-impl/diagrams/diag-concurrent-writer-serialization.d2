@@ -1,0 +1,266 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Concurrent Writer Serialization
+  ## Append-Only Log Protection Pattern
+| {near: top-center}
+row_before: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  before: {
+    direction: down
+    label: "BEFORE: Race Condition"
+    threads_before: {
+      direction: right
+      label: ""
+      style.stroke: transparent
+      style.fill: transparent
+      thread_a1: {
+        label: "Thread A"
+        shape: person
+        style.fill: "#FFE4E1"
+        style.stroke: "#DC143C"
+      }
+      thread_b1: {
+        label: "Thread B"
+        shape: person
+        style.fill: "#FFE4E1"
+        style.stroke: "#DC143C"
+      }
+    }
+    interleaved: {
+      label: "Interleaved Write (Corrupted)"
+      width: 450
+      style.fill: "#FFF0F0"
+      style.stroke: "#DC143C"
+      style.stroke-dash: 4
+      timeline: |'c
+        Time →
+        ─────────────────────────────────────────────────
+        T1: A seeks to 1000, starts writing record A (50 bytes)
+        T2: B seeks to 1000, starts writing record B (30 bytes)
+        T3: Both write to same offset!
+        ─────────────────────────────────────────────────
+        Result: Garbage interleaved bytes at offset 1000
+      '|
+    }
+    log_corrupt: {
+      label: "Log File (CORRUPTED)"
+      shape: cylinder
+      style.fill: "#FFB6C1"
+      style.stroke: "#DC143C"
+      region: {
+        shape: sql_table
+        label: "Offset 1000-1049"
+        row1: "1000-1009 | A header (partial)"
+        row2: "1010-1019 | B header (overwrites A!)"
+        row3: "1020-1039 | Mixed A/B payload"
+        row4: "1040-1049 | Garbage CRC"
+        status: "❌ UNRECOVERABLE"
+      }
+    }
+  }
+}
+row_after: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  after: {
+    direction: down
+    label: "AFTER: Mutex Serialization"
+    threads_after: {
+      direction: right
+      label: ""
+      style.stroke: transparent
+      style.fill: transparent
+      thread_a2: {
+        label: "Thread A"
+        shape: person
+        style.fill: "#E8F5E9"
+        style.stroke: "#2E7D32"
+      }
+      mutex: {
+        label: "🔒 mutex"
+        shape: diamond
+        style.fill: "#FFF9C4"
+        style.stroke: "#F57F17"
+      }
+      thread_b2: {
+        label: "Thread B"
+        shape: person
+        style.fill: "#E8F5E9"
+        style.stroke: "#2E7D32"
+      }
+    }
+    serialized: {
+      label: "Serialized Write (Correct)"
+      width: 450
+      style.fill: "#F0FFF0"
+      style.stroke: "#2E7D32"
+      timeline: |'c
+        Time →
+        ─────────────────────────────────────────────────
+        T1: A locks mutex, writes 50 bytes at 1000-1049
+        T2: B blocks on mutex (waits)
+        T3: A unlocks mutex, returns LSN=1000
+        T4: B locks mutex, writes 30 bytes at 1050-1079
+        T5: B unlocks mutex, returns LSN=1050
+        ─────────────────────────────────────────────────
+        Result: Clean sequential records
+      '|
+    }
+    log_clean: {
+      label: "Log File (VALID)"
+      shape: cylinder
+      style.fill: "#C8E6C9"
+      style.stroke: "#2E7D32"
+      region_a: {
+        shape: sql_table
+        label: "Record A: Offset 1000-1049"
+        r1: "1000-1027 | Header (lsn=1000, len=50)"
+        r2: "1028-1045 | Payload"
+        r3: "1046-1049 | CRC32 ✓"
+        status: "✓ VALID"
+      }
+      region_b: {
+        shape: sql_table
+        label: "Record B: Offset 1050-1079"
+        r1: "1050-1075 | Header (lsn=1050, len=30)"
+        r2: "1076-1079 | CRC32 ✓"
+        status: "✓ VALID"
+      }
+    }
+  }
+}
+row_code: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  code_section: {
+    direction: down
+    label: "Implementation (wal_writer.c)"
+    width: 500
+    code: |'c
+      typedef struct {
+        int log_fd;
+        uint64_t next_lsn;      // = current file offset
+        pthread_mutex_t append_lock;  // Serializes appends
+      } WalWriter;
+      uint64_t wal_append(WalWriter* w, uint8_t* rec, size_t len) {
+        pthread_mutex_lock(&w->append_lock);    // ← ENTER CRITICAL
+        uint64_t lsn = w->next_lsn;             // Allocate LSN
+        write(w->log_fd, rec, len);             // Atomic write
+        w->next_lsn += len;                     // Advance offset
+        pthread_mutex_unlock(&w->append_lock);  // ← EXIT CRITICAL
+        return lsn;
+      }
+    '|
+  }
+  lock_analysis: {
+    direction: down
+    label: "Lock Granularity Analysis"
+    critical_section: {
+      shape: sql_table
+      label: "Critical Section Duration"
+      op1: "pthread_mutex_lock | ~0.1 µs"
+      op2: "LSN allocation | ~0.01 µs"
+      op3: "write() syscall | ~1-5 µs (copies to page cache)"
+      op4: "next_lsn update | ~0.01 µs"
+      op5: "pthread_mutex_unlock | ~0.1 µs"
+      total: "TOTAL: ~2-6 µs per append"
+    }
+    note: {
+      label: "Key Insight"
+      width: 350
+      style.fill: "#FFF9C4"
+      style.stroke: "#F57F17"
+      content: |md
+        **Lock held for microseconds, not milliseconds**
+        The expensive `fsync()` (1-10ms) happens **outside** this lock via group commit.
+        This is why high-throughput is possible: many threads can append concurrently,
+        blocking only for the brief moment of the `write()` syscall.
+      |
+    }
+  }
+}
+row_ordering: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  ordering_rules: {
+    direction: down
+    label: "Writer Ordering Guarantees"
+    guarantee1: {
+      label: "1. LSN Monotonicity"
+      width: 400
+      style.fill: "#E3F2FD"
+      content: |md
+        LSNs are assigned in lock order, guaranteeing:
+        - LSN₁ < LSN₂ implies record₁ was written before record₂
+        - Recovery scans in LSN order = chronological order
+      |
+    }
+    guarantee2: {
+      label: "2. No Torn Records"
+      width: 400
+      style.fill: "#E3F2FD"
+      content: |md
+        Mutex ensures one thread writes complete record:
+        - Header, payload, and CRC are atomic unit
+        - No partial record visible to readers
+      |
+    }
+    guarantee3: {
+      label: "3. prev_lsn Consistency"
+      width: 400
+      style.fill: "#E3F2FD"
+      content: |md
+        Transaction chain remains valid:
+        - Thread reads `last_lsn` under lock
+        - Thread writes new record with that `prev_lsn`
+        - Chain is never broken by interleaving
+      |
+    }
+  }
+}
+thread_a1 -> interleaved: "write()" {
+  style.stroke: "#DC143C"
+  style.stroke-dash: 3
+}
+thread_b1 -> interleaved: "write()" {
+  style.stroke: "#DC143C"
+  style.stroke-dash: 3
+}
+thread_a2 -> mutex: "1. lock" {
+  style.stroke: "#2E7D32"
+}
+mutex -> thread_a2: "3. unlock" {
+  style.stroke: "#2E7D32"
+  style.stroke-dash: 3
+}
+thread_b2 -> mutex: "2. wait (blocked)" {
+  style.stroke: "#F57F17"
+  style.stroke-dash: 5
+}
+mutex -> thread_b2: "4. lock acquired" {
+  style.stroke: "#2E7D32"
+}
+before -> after: "Add mutex\nserialization" {
+  style.stroke: "#1565C0"
+  style.bold: true
+}
+legend: {
+  near: bottom-right
+  label: "Lock Granularity"
+  style.fill: "#FAFAFA"
+  style.stroke: "#BDBDBD"
+  in_lock: "🟥 In lock: write() to page cache (~2-6 µs)"
+  out_lock: "🟩 Out of lock: fsync() to disk (~1-10 ms)"
+  ratio: "Ratio: ~1000x difference in hold time"
+}

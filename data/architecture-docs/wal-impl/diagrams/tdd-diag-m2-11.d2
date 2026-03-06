@@ -1,0 +1,166 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # WAL Segment Rotation: Group Commit FD Update
+| {near: top-center}
+
+direction: right
+
+classes: {
+  segment: {
+    shape: cylinder
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2E86AB"
+      stroke-width: 2
+    }
+  }
+  fd_valid: {
+    style: {
+      fill: "#D4EDDA"
+      stroke: "#28A745"
+    }
+  }
+  fd_stale: {
+    style: {
+      fill: "#F8D7DA"
+      stroke: "#DC3545"
+    }
+  }
+  manager: {
+    shape: rectangle
+    style: {
+      fill: "#FFF3CD"
+      stroke: "#856404"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  warning: {
+    style: {
+      fill: "#F8D7DA"
+      stroke: "#DC3545"
+      stroke-dash: 4
+      bold: true
+    }
+  }
+  success: {
+    style: {
+      fill: "#D4EDDA"
+      stroke: "#28A745"
+      bold: true
+    }
+  }
+}
+
+Current_Segment: "Segment 000001\nfd=42" {
+  class: [segment; fd_valid]
+}
+
+GroupCommit: "GroupCommitManager\nlog_fd = 42" {
+  class: manager
+  Waiters: "Pending Waiters\n(Txn A, B, C)"
+}
+
+WalWriter: "WalWriter\nsegments.current.fd = 42" {
+  class: manager
+  Buffer: "Write Buffer\n512KB pending"
+}
+
+Current_Segment -> GroupCommit: "log_fd reference"
+Current_Segment -> WalWriter: "current.fd reference"
+GroupCommit <-> WalWriter: "shared fd=42"
+
+rotation_arrow: "Rotation\nTriggered" {
+  shape: text
+  style: {
+    fill: transparent
+    stroke: transparent
+    font-color: "#DC3545"
+    bold: true
+    font-size: 18
+  }
+}
+
+New_Segment: "Segment 000002\nfd=43" {
+  class: [segment; fd_valid]
+}
+
+New_Segment -> GroupCommit: "update log_fd = 43\nBEFORE fsync!" {
+  style: {
+    stroke: "#28A745"
+    stroke-width: 3
+    bold: true
+  }
+}
+
+New_Segment -> WalWriter: "current.fd = 43" {
+  style: {
+    stroke: "#2E86AB"
+  }
+}
+
+Error_Scenario: "ERROR: fsync(fd=42)\non CLOSED FD!" {
+  class: warning
+  near: bottom-center
+}
+
+Correct_Scenario: "CORRECT: fsync(fd=43)\non active segment" {
+  class: success
+  near: bottom-right
+}
+
+note1: |md
+  **Critical Sequence:**
+  1. Rotation triggers when segment exceeds size limit
+  2. Flush buffer to old segment (fd=42)
+  3. fsync old segment
+  4. **Close fd=42**
+  5. Create new segment (fd=43)
+  6. **Update GroupCommit.log_fd = 43**
+  7. Update WalWriter.segments.current.fd = 43
+  
+  *Safety Violation:* If step 6 is missed, concurrent commit
+  threads will fsync a closed file descriptor!
+| {near: bottom-left}
+
+note2: |md
+  **Pitfall Pattern:**
+  c
+  // WRONG - FD never updated
+  rotate_segment();
+  // GroupCommit still has fd=42
+  // Now closed! Next fsync fails!
+
+  // CORRECT
+  rotate_segment();
+  group_commit_update_fd(
+    &gcm, 
+    segments.current.fd
+  );
+  
+| {near: center-right}
+
+WalWriter -> rotation_arrow: "size >= 64MB"
+rotation_arrow -> New_Segment
+
+Current_Segment -> Error_Scenario: "if log_fd not updated\n" {
+  style: {
+    stroke: "#DC3545"
+    stroke-dash: 4
+    animated: true
+  }
+}
+
+New_Segment -> Correct_Scenario: "log_fd = 43\n" {
+  style: {
+    stroke: "#28A745"
+    stroke-width: 3
+  }
+}

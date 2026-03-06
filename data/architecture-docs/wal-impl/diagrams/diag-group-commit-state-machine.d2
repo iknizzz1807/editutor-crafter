@@ -1,0 +1,229 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- ROOT ANNOTATIONS ---
+title: "Group Commit Leader/Follower Protocol (gcm.c)" {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+  }
+}
+
+legend: {
+  near: bottom-right
+  style.fill: "#f8f9fa"
+  leader: "🟢 Leader Path (Performs I/O)" {
+    shape: text
+    style.font-color: "#198754"
+  }
+  follower: "🔵 Follower Path (Waits for Leader)" {
+    shape: text
+    style.font-color: "#0d6efd"
+  }
+  mutex: "🔒 Mutex Protected Section" {
+    shape: text
+    style.font-color: "#dc3545"
+  }
+}
+
+# --- CORE PROTOCOL LOGIC ---
+protocol: {
+  direction: down
+  
+  idle: IDLE {
+    shape: circle
+    style.fill: "#e9ecef"
+  }
+
+  ingress: {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    
+    commit_call: "TXN_COMMIT(lsn)" {
+      shape: oval
+      style.fill: "#fff3cd"
+    }
+    
+    lock_mutex: "pthread_mutex_lock(&gcm->mutex)" {
+      shape: rectangle
+      style.fill: "#f8d7da"
+      style.stroke: "#dc3545"
+      style.stroke-dash: 3
+    }
+  }
+
+  decide: "gcm->sync_in_progress?" {
+    shape: diamond
+    style.fill: "#e2e3e5"
+  }
+
+  # --- LEADER BRANCH ---
+  leader_path: {
+    label: "LEADER BRANCH"
+    style.fill: "#d1e7dd"
+    style.stroke: "#198754"
+    
+    init: "gcm->sync_in_progress = 1\ngcm->pending_lsn = my_lsn" {
+      shape: rectangle
+    }
+    
+    unlock: "pthread_mutex_unlock(&gcm->mutex)" {
+      shape: rectangle
+      style.stroke: "#dc3545"
+      style.stroke-dash: 3
+    }
+    
+    batch_wait: "Batch Window (1ms)" {
+      shape: step
+      style.fill: "#badbcc"
+      sub: "Wait for followers to join"
+    }
+    
+    io_op: "fsync(log_fd)" {
+      shape: rectangle
+      style.fill: "#ffc107"
+      style.stroke: "#ff6b00"
+      style.stroke-width: 3
+      style.bold: true
+      perf: "Est: 2-10ms"
+    }
+    
+    relock: "pthread_mutex_lock(&gcm->mutex)" {
+      shape: rectangle
+      style.stroke: "#dc3545"
+      style.stroke-dash: 3
+    }
+    
+    cleanup: "gcm->last_synced_lsn = sync_target\ngcm->sync_in_progress = 0" {
+      shape: rectangle
+    }
+    
+    notify: "pthread_cond_broadcast(&gcm->cv)" {
+      shape: rectangle
+      style.fill: "#cfe2ff"
+      style.stroke: "#0d6efd"
+    }
+  }
+
+  # --- FOLLOWER BRANCH ---
+  follower_path: {
+    label: "FOLLOWER BRANCH"
+    style.fill: "#cfe2ff"
+    style.stroke: "#0d6efd"
+    
+    join: "gcm->pending_lsn = max(pending, my_lsn)" {
+      shape: rectangle
+    }
+    
+    wait_cv: "pthread_cond_wait(&gcm->cv, &gcm->mutex)" {
+      shape: rectangle
+      sub: "Releases/Re-acquires mutex internally"
+    }
+    
+    verify: "gcm->last_synced_lsn >= my_lsn?" {
+      shape: diamond
+    }
+  }
+
+  finish: "COMMIT_SUCCESS" {
+    shape: circle
+    style.fill: "#198754"
+    style.font-color: white
+    style.bold: true
+  }
+}
+
+# --- DATA STRUCTURES ---
+data: {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  
+  gcm_struct: {
+    shape: sql_table
+    label: "struct GroupCommitManager (gcm.h)"
+    f0: "0x00 | pthread_mutex_t | mutex // Serializes state access"
+    f1: "0x28 | pthread_cond_t  | cv    // Wakes followers"
+    f2: "0x58 | int              | log_fd"
+    f3: "0x60 | uint64_t         | pending_lsn // Target of active sync"
+    f4: "0x68 | uint64_t         | last_synced_lsn // Global safe point"
+    f5: "0x70 | int              | sync_in_progress // 1 if leader active"
+    sz: "Total: 120 bytes (aligned)"
+  }
+}
+
+# --- TIMING SEQUENCE ---
+flow: {
+  label: "Timeline: Concurrent Batching"
+  shape: sequence_diagram
+  
+  TXN_A: "Txn A\n(Leader)"
+  TXN_B: "Txn B\n(Follower)"
+  TXN_C: "Txn C\n(Follower)"
+  DISK: "SATA/NVMe SSD"
+
+  TXN_A -> TXN_A: "write(log_fd, buf)"
+  TXN_A -> TXN_A: "Acquire Mutex"
+  TXN_A -> TXN_A: "Become Leader"
+  TXN_A -> TXN_A: "Release Mutex"
+  
+  TXN_B -> TXN_B: "write(log_fd, buf)"
+  TXN_B -> TXN_A: "Acquire Mutex"
+  TXN_B -> TXN_B: "Wait on CV"
+  
+  TXN_C -> TXN_C: "write(log_fd, buf)"
+  TXN_C -> TXN_A: "Acquire Mutex"
+  TXN_C -> TXN_C: "Wait on CV"
+
+  TXN_A -> DISK: "fsync()"
+  DISK -> TXN_A: "I/O Complete"
+  
+  TXN_A -> TXN_B: "Broadcast CV"
+  TXN_A -> TXN_A: "Finish"
+  TXN_B -> TXN_B: "Wake & Finish"
+  TXN_C -> TXN_C: "Wake & Finish"
+}
+
+# --- CONNECTIONS ---
+protocol.idle -> protocol.ingress.commit_call: "Thread Enters"
+protocol.ingress.commit_call -> protocol.ingress.lock_mutex
+protocol.ingress.lock_mutex -> protocol.decide
+
+protocol.decide -> protocol.leader_path.init: "NO | Start Batch" {
+  style.stroke: "#198754"
+  style.stroke-width: 2
+}
+protocol.decide -> protocol.follower_path.join: "YES | Join Batch" {
+  style.stroke: "#0d6efd"
+  style.stroke-width: 2
+}
+
+protocol.leader_path.init -> protocol.leader_path.unlock
+protocol.leader_path.unlock -> protocol.leader_path.batch_wait
+protocol.leader_path.batch_wait -> protocol.leader_path.io_op
+protocol.leader_path.io_op -> protocol.leader_path.relock
+protocol.leader_path.relock -> protocol.leader_path.cleanup
+protocol.leader_path.cleanup -> protocol.leader_path.notify
+protocol.leader_path.notify -> protocol.finish: "Unlock & Return"
+
+protocol.follower_path.join -> protocol.follower_path.wait_cv
+protocol.follower_path.wait_cv -> protocol.follower_path.verify: "Woken by Leader"
+protocol.follower_path.verify -> protocol.finish: "YES" {
+  style.stroke: "#198754"
+}
+protocol.follower_path.verify -> protocol.follower_path.wait_cv: "NO (Spurious)" {
+  style.stroke-dash: 3
+}
+
+protocol.leader_path.notify -> protocol.follower_path.wait_cv: "Signal" {
+  style.stroke: "#0d6efd"
+  style.stroke-dash: 5
+}

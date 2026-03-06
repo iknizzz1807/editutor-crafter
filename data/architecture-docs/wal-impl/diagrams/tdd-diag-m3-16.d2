@@ -1,0 +1,353 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # ARIES Recovery Flow: Complete Integration
+  Three-phase crash recovery with data dependencies
+| {near: top-center}
+
+direction: right
+
+# Phase containers
+phase0: "Phase 0: Pre-Recovery" {
+  style: {
+    fill: "#E8E8E8"
+    stroke: "#666666"
+    stroke-dash: 3
+  }
+  
+  detect_torn: "detect_torn_writes()" {
+    tooltip: "Check for partial page writes via checksums/torn-bit"
+    style.fill: "#FFE4E1"
+    style.stroke: "#CD5C5C"
+    style.stroke-width: 2
+  }
+  
+  truncate: "ftruncate()" {
+    tooltip: "Remove corrupted log suffixes"
+    style.fill: "#FFE4E1"
+    style.stroke: "#CD5C5C"
+  }
+  
+  last_valid_lsn: "last_valid_lsn\n(Log Boundary)" {
+    shape: diamond
+    style.fill: "#FFFACD"
+    style.stroke: "#DAA520"
+  }
+  
+  detect_torn -> truncate: "corrupted record found"
+  truncate -> last_valid_lsn: "valid endpoint"
+  detect_torn -> last_valid_lsn: "scan complete"
+}
+
+# Analysis Phase
+phase1: "Phase 1: Analysis" {
+  style: {
+    fill: "#E6F3FF"
+    stroke: "#4682B4"
+  }
+  
+  start_scan: "Start Scan\n(checkpoint_lsn or 0)" {
+    style.fill: "#B0E0E6"
+  }
+  
+  scan_loop: "Scan Log Records" {
+    style.fill: "#87CEEB"
+    style.stroke: "#4682B4"
+  }
+  
+  # Record type handlers
+  handlers: {
+    style.stroke-dash: 5
+    begin_handler: "BEGIN → Add Txn\n(ACTIVE)" { style.fill: "#98FB98" }
+    update_handler: "UPDATE → Update last_lsn\nAdd page to DPT" { style.fill: "#98FB98" }
+    commit_handler: "COMMIT → Mark\nCOMMITTED" { style.fill: "#98FB98" }
+    abort_handler: "ABORT → Mark\nABORTED" { style.fill: "#98FB98" }
+    checkpoint_handler: "CHECKPOINT → Init\ntables from snapshot" { style.fill: "#DDA0DD" }
+  }
+  
+  # Output tables
+  txn_table: "TransactionTable\n[txn_id, status,\nfirst_lsn, last_lsn]" {
+    shape: cylinder
+    style.fill: "#DEB887"
+    style.stroke: "#8B4513"
+  }
+  
+  dpt: "DirtyPageTable\n[page_id, rec_lsn]" {
+    shape: cylinder
+    style.fill: "#DEB887"
+    style.stroke: "#8B4513"
+  }
+  
+  active_count: "ACTIVE Txns\n(need undo)" {
+    shape: diamond
+    style.fill: "#FFA07A"
+    style.stroke: "#CD5C5C"
+  }
+  
+  start_scan -> scan_loop
+  scan_loop -> handlers.begin_handler: BEGIN
+  scan_loop -> handlers.update_handler: UPDATE/CLR
+  scan_loop -> handlers.commit_handler: COMMIT
+  scan_loop -> handlers.abort_handler: ABORT
+  scan_loop -> handlers.checkpoint_handler: CHECKPOINT
+  
+  handlers.begin_handler -> txn_table: "add entry"
+  handlers.update_handler -> txn_table: "update"
+  handlers.update_handler -> dpt: "add page"
+  handlers.commit_handler -> txn_table: "mark committed"
+  handlers.abort_handler -> txn_table: "mark aborted"
+  handlers.checkpoint_handler -> txn_table: "init"
+  handlers.checkpoint_handler -> dpt: "init"
+  
+  txn_table -> active_count: "filter ACTIVE"
+}
+
+# Redo Phase
+phase2: "Phase 2: Redo" {
+  style: {
+    fill: "#F0FFF0"
+    stroke: "#228B22"
+  }
+  
+  min_rec: "Find min_rec_lsn\n(from DPT)" {
+    style.fill: "#90EE90"
+  }
+  
+  redo_scan: "Scan from min_rec_lsn" {
+    style.fill: "#98FB98"
+  }
+  
+  page_check: "page_lsn >= record_lsn?" {
+    shape: diamond
+    style.fill: "#FFFACD"
+  }
+  
+  skip: "SKIP\n(already applied)" {
+    style.fill: "#D3D3D3"
+  }
+  
+  apply_after: "Apply after-image\n(new_value)" {
+    style.fill: "#90EE90"
+    style.stroke: "#228B22"
+    style.bold: true
+  }
+  
+  update_page_lsn: "Update page_lsn\n= record_lsn" {
+    style.fill: "#98FB98"
+  }
+  
+  redo_buffer: "BufferPool\n(Redo modifications)" {
+    shape: cylinder
+    style.fill: "#DEB887"
+  }
+  
+  min_rec -> redo_scan: "start point"
+  redo_scan -> page_check: "each UPDATE/CLR"
+  page_check -> skip: "YES"
+  page_check -> apply_after: "NO"
+  apply_after -> update_page_lsn
+  update_page_lsn -> redo_buffer
+  skip -> redo_buffer: "no change"
+}
+
+# Undo Phase
+phase3: "Phase 3: Undo" {
+  style: {
+    fill: "#FFF5EE"
+    stroke: "#D2691E"
+  }
+  
+  build_queue: "Build UndoQueue\n(last_lsn of ACTIVE txns)" {
+    style.fill: "#FFDAB9"
+  }
+  
+  priority_queue: "Priority Queue\n(max-heap by LSN)" {
+    shape: parallelogram
+    style.fill: "#FFDAB9"
+    style.stroke: "#D2691E"
+  }
+  
+  pop_max: "Pop highest LSN" {
+    style.fill: "#FFDAB9"
+  }
+  
+  record_type: "Record Type?" {
+    shape: diamond
+    style.fill: "#FFFACD"
+  }
+  
+  undo_update: "Undo UPDATE:\n1. Apply before-image\n2. Write CLR\n3. Update page_lsn" {
+    style.fill: "#FFA07A"
+    style.stroke: "#CD5C5C"
+    style.bold: true
+  }
+  
+  follow_clr: "Follow CLR:\nuse undo_next_lsn" {
+    style.fill: "#DDA0DD"
+  }
+  
+  reached_begin: "Reached BEGIN?\nWrite ABORT record" {
+    style.fill: "#FFB6C1"
+  }
+  
+  push_next: "Push prev_lsn\nto queue" {
+    style.fill: "#FFDAB9"
+  }
+  
+  undo_buffer: "BufferPool\n(Undo modifications)" {
+    shape: cylinder
+    style.fill: "#DEB887"
+  }
+  
+  clrs_written: "CLRs Written\n(crash-safe)" {
+    shape: diamond
+    style.fill: "#DDA0DD"
+  }
+  
+  build_queue -> priority_queue
+  priority_queue -> pop_max
+  pop_max -> record_type
+  
+  record_type -> undo_update: "UPDATE"
+  record_type -> follow_clr: "CLR"
+  record_type -> reached_begin: "BEGIN"
+  
+  undo_update -> push_next: "more to undo"
+  undo_update -> reached_begin: "prev_lsn = 0"
+  follow_clr -> push_next: "undo_next_lsn > 0"
+  follow_clr -> reached_begin: "undo_next_lsn = 0"
+  
+  push_next -> priority_queue
+  undo_update -> undo_buffer
+  undo_update -> clrs_written
+}
+
+# Final Phase
+phase_final: "Finalization" {
+  style: {
+    fill: "#F5F5F5"
+    stroke: "#2F4F4F"
+  }
+  
+  flush_pages: "buffer_pool_flush_all()" {
+    style.fill: "#B0C4DE"
+    style.stroke: "#4682B4"
+    style.bold: true
+  }
+  
+  sync_log: "fsync(log_fd)" {
+    style.fill: "#B0C4DE"
+    style.stroke: "#4682B4"
+    style.bold: true
+  }
+  
+  complete: "Recovery Complete\nDatabase Consistent" {
+    style: {
+      fill: "#90EE90"
+      stroke: "#228B22"
+      bold: true
+      font-color: "#006400"
+    }
+  }
+  
+  flush_pages -> sync_log
+  sync_log -> complete
+}
+
+# Inter-phase connections
+phase0.last_valid_lsn -> phase1.start_scan: "scan start" {
+  style: {
+    stroke: "#4682B4"
+    stroke-width: 2
+  }
+}
+
+phase1.txn_table -> phase2.min_rec: "DPT for redo start" {
+  style: {
+    stroke: "#228B22"
+    stroke-width: 2
+  }
+}
+
+phase1.dpt -> phase2.min_rec
+
+phase1.txn_table -> phase3.build_queue: "ACTIVE txns" {
+  style: {
+    stroke: "#D2691E"
+    stroke-width: 2
+  }
+}
+
+phase2.redo_buffer -> phase3.undo_buffer: "modified pages" {
+  style: {
+    stroke-dash: 5
+    stroke: "#666666"
+  }
+}
+
+phase3.undo_buffer -> phase_final.flush_pages: "dirty pages" {
+  style: {
+    stroke: "#4682B4"
+    stroke-width: 2
+  }
+}
+
+phase3.clrs_written -> phase_final.sync_log: "CLRs to sync" {
+  style: {
+    stroke: "#4682B4"
+    stroke-width: 2
+  }
+}
+
+# Annotations (Fixed near behavior for ELK)
+annotation_1: |md
+  **Key Invariants:**
+  - Redo replays ALL changes (committed + uncommitted)
+  - Undo processes in global LSN order (max-heap)
+  - Each undo writes a CLR before proceeding
+  - page_lsn updated after every modification
+| {
+  near: top-right
+  style: {
+    fill: "#FFFACD"
+    stroke: "#DAA520"
+    stroke-dash: 3
+  }
+}
+
+annotation_2: |md
+  **Crash Safety:**
+  - If crash during undo, CLRs enable resumption
+  - undo_next_lsn points to next record to undo
+  - Recovery is idempotent (N runs = same state)
+| {
+  near: bottom-right
+  style: {
+    fill: "#FFFACD"
+    stroke: "#DAA520"
+    stroke-dash: 3
+  }
+}
+
+# Legend
+legend: "Data Flow Legend" {
+  style.fill: white
+  style.stroke: black
+  
+  solid_line: "Direct data flow" {
+    style.fill: transparent
+  }
+  dashed_line: "State reference" {
+    style.fill: transparent
+    style.stroke-dash: 5
+  }
+  
+  solid_line -> dashed_line: {
+    style.opacity: 0
+  }
+}

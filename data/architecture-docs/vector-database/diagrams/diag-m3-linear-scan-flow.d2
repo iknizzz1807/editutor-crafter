@@ -1,0 +1,298 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |'md
+  ## Brute-Force Linear Scan Flow
+  Sequential memory access pattern with cache-efficient heap-based top-k selection
+'|
+title.near: top-center
+
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  storage: {
+    direction: down
+    label: "Vector Storage (M1)"
+    buffer: {
+      label: "Contiguous Aligned Buffer"
+      shape: rectangle
+      width: 350
+      style.fill: "#E8F4E8"
+      style.stroke: "#2E7D32"
+      vectors: |'md
+        **Sequential Layout in Memory:**
+        
+        [v0_dim0, v0_dim1, ..., v0_dim767]
+        [v1_dim0, v1_dim1, ..., v1_dim767]
+        [v2_dim0, v2_dim1, ..., v2_dim767]
+        ...
+        [vN_dim0, vN_dim1, ..., vN_dim767]
+        
+        Vector i starts at: `offset = i × padded_dim`
+      '|
+    }
+    cache_note: {
+      label: "CPU Prefetcher Prediction"
+      shape: callout
+      style.fill: "#FFF9C4"
+      style.stroke: "#F9A825"
+    }
+    buffer -> cache_note: "Sequential access | prefetch" {
+      style.stroke-dash: 3
+      style.stroke: "#F9A825"
+    }
+  }
+
+  pattern: {
+    direction: down
+    label: "Memory Access Pattern"
+    seq_access: {
+      label: "Sequential Access (Brute-Force)"
+      shape: rectangle
+      width: 280
+      style.fill: "#C8E6C9"
+      style.stroke: "#2E7D32"
+      seq_desc: |'md
+        **Access Pattern:**
+        
+        for i in 0..N:
+            vec = buffer[i * dim]
+            dist = distance(query, vec)
+        
+        **Memory Bandwidth:** 50+ GB/s
+        **Cache Behavior:**
+        - L1 hit rate: ~95%
+        - L2 hit rate: ~99%
+        - Sequential prefetch active
+      '|
+    }
+    rand_access: {
+      label: "Random Access (Naive HashMap)"
+      shape: rectangle
+      width: 280
+      style.fill: "#FFCDD2"
+      style.stroke: "#C62828"
+      rand_desc: |'md
+        **Access Pattern:**
+        
+        for id in ids:
+            vec = hashmap.get(id)
+            dist = distance(query, vec)
+        
+        **Memory Bandwidth:** <1 GB/s
+        **Cache Behavior:**
+        - L1 hit rate: ~30%
+        - L2 hit rate: ~60%
+        - Prefetcher gives up
+      '|
+    }
+  }
+}
+
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  scan_process: {
+    direction: down
+    label: "Linear Scan Process"
+    step1: {
+      label: "Step 1: Iterate Vectors"
+      width: 380
+      code: |'c
+        // Sequential iteration over contiguous storage
+        for (id, vector, metadata) in storage.iter_live() {
+            // vector points to aligned memory region
+            // No pointer chasing - pure sequential access
+            let dist = metric.distance(&query, vector);
+            selector.consider(id, dist);
+        }
+      '|
+    }
+    step2: {
+      label: "Step 2: SIMD Distance Computation"
+      width: 380
+      code: |'c
+        // Each distance call (M2):
+        // - 8 floats per AVX2 instruction
+        // - 768 dims = 96 vector ops
+        // - Accumulate in registers
+        // - Single horizontal sum at end
+        let dist = l2_distance_avx2(query, vector);
+      '|
+    }
+    step3: {
+      label: "Step 3: Heap-Based Top-K Update"
+      width: 380
+      code: |'c
+        // O(log k) per update, NOT O(log N)
+        // Max-heap keeps worst candidate at root
+        if (dist < heap.peek_max() || heap.len() < k) {
+            heap.push(candidate);
+            if (heap.len() > k) heap.pop_max();
+        }
+      '|
+    }
+    step1 -> step2: "Vector | process"
+    step2 -> step3: "Float | dist"
+    step3 -> step1: "Next | loop" {
+      style.stroke-dash: 3
+    }
+  }
+
+  heap_detail: {
+    direction: down
+    label: "Max-Heap Top-K Selector"
+    heap_state: {
+      shape: class
+      label: "TopKSelector (k=3)"
+      -heap: "BinaryHeap<MaxDistance>"
+      -k: "usize = 3"
+      -is_distance: "bool = true"
+      +consider(id, dist): "void"
+      +results(): "Vec<Candidate>"
+    }
+    heap_vis: {
+      label: "Heap Update Trace"
+      content: |'md
+        **Heap State (finding smallest 3 distances):**
+        
+        After vectors [v0...v5]:
+        - v0: dist=0.50 ✓
+        - v1: dist=0.30 ✓
+        - v2: dist=0.80 ✓ (worst, at root)
+        - v3: dist=0.20 ✓ (evicts v2)
+        - v4: dist=0.90 ✗ (worse than root 0.80)
+        - v5: dist=0.10 ✓ (evicts v1)
+        
+        Final heap: [v5=0.10, v0=0.50, v3=0.20]
+      '|
+      shape: rectangle
+      width: 320
+      style.fill: "#E3F2FD"
+      style.stroke: "#1565C0"
+    }
+    complexity: {
+      label: "Efficiency Metrics"
+      content: |'md
+        **Complexity Comparison:**
+        | Approach | Comparisons | Memory |
+        |----------|-------------|--------|
+        | Full Sort | O(N log N) | O(N) |
+        | **Heap** | **O(N log k)** | **O(k)** |
+        
+        For N=1M, k=10:
+        - Sort: ~20M ops
+        - Heap: ~3.3M ops
+        **Result: 6x faster selection**
+      '|
+      shape: rectangle
+      width: 320
+      style.fill: "#F3E5F5"
+      style.stroke: "#7B1FA2"
+    }
+    heap_state -> heap_vis
+    heap_vis -> complexity
+  }
+}
+
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  cache_flow: {
+    direction: down
+    label: "Cache Utilization During Scan"
+    cache_hierarchy: {
+      label: "Memory Hierarchy Usage"
+      shape: rectangle
+      width: 450
+      style.fill: "#FAFAFA"
+      style.stroke: "#9E9E9E"
+      content: |'md
+        **L1 Cache (32 KB, ~4 cycles)**
+        ┌─────────────────────────────────────┐
+        │ Query vector: 3 KB                  │
+        │ Current heap: ~40 bytes (k=10)      │
+        │ ~5 vectors prefetched               │
+        └─────────────────────────────────────┘
+        **L2 Cache (256 KB per core)**
+        ┌─────────────────────────────────────┐
+        │ Working set: query + heap +         │
+        │ ~80 vectors (768d × 80 = 240 KB)    │
+        └─────────────────────────────────────┘
+        **L3 Cache (Shared)**
+        ┌─────────────────────────────────────┐
+        │ Sequential read window stays hot    │
+        └─────────────────────────────────────┘
+      '|
+    }
+    bandwidth: {
+      label: "Bandwidth Visualization"
+      content: |'md
+        **Memory Bandwidth Utilization:**
+        
+        Sequential Scan:
+        ━━━━━━━━━━━━━━━━━━━━ 50+ GB/s
+        Random Access:
+        ╺ <1 GB/s
+        
+        **Efficiency Gain: 50x+**
+      '|
+      shape: rectangle
+      width: 450
+      style.fill: "#E8F5E9"
+      style.stroke: "#388E3C"
+    }
+    cache_hierarchy -> bandwidth
+  }
+
+  perf_comparison: {
+    direction: down
+    label: "Performance at Scale"
+    perf_table: {
+      shape: sql_table
+      label: "Brute-Force Latency (768d, k=10)"
+      r1: "10K vectors | ~5 ms | L2 resident"
+      r2: "100K vectors | ~50 ms | Linear scan"
+      r3: "1M vectors | ~500 ms | Scale threshold"
+      r4: "10M vectors | ~5 sec | HNSW required"
+    }
+    conclusion: {
+      label: "Strategic Recommendation"
+      content: |'md
+        **Key Insight:**
+        Brute-force is **production-ready** for 
+        datasets < 100K vectors. Latency 
+        remains sub-50ms on modern hardware.
+      '|
+      shape: callout
+      style.fill: "#FFF3E0"
+      style.stroke: "#E65100"
+    }
+    perf_table -> conclusion
+  }
+}
+
+storage.buffer -> scan_process.step1: "iter_live()" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 2
+}
+
+legend: {
+  label: |'md
+    **Color Legend:** 🟢 Cache-efficient | 🔴 Cache-inefficient | 🔵 Logic | 🟡 Hardware
+  '|
+  shape: text
+  style.font-size: 14
+}
+legend.near: bottom-center

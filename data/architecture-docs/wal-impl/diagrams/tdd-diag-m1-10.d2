@@ -1,0 +1,63 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+shape: sequence_diagram
+Client
+TransactionManager
+TransactionTable
+LogSerializer
+# Transaction Begin Sequence
+Client -> TransactionManager: begin_txn()
+TransactionManager -> TransactionManager: allocate_txn_id()
+TransactionManager -> TransactionManager: allocate_lsn()
+TransactionManager -> TransactionTable: add(txn_id, ACTIVE, first_lsn)
+TransactionTable -> TransactionManager: entry
+TransactionManager -> LogSerializer: serialize_begin(lsn, txn_id, prev_lsn=0)
+LogSerializer -> TransactionManager: record_bytes
+TransactionManager -> TransactionManager: entry.last_lsn = lsn
+TransactionManager -> Client: txn_id, record_bytes
+# First Write Sequence
+Client -> TransactionManager: write_txn(txn_id, page_id, offset, old_val, new_val)
+TransactionManager -> TransactionTable: find(txn_id)
+TransactionTable -> TransactionManager: entry (status=ACTIVE)
+TransactionManager -> TransactionManager: prev_lsn = entry.last_lsn
+TransactionManager -> TransactionManager: allocate_lsn()
+TransactionManager -> LogSerializer: serialize_update(lsn, txn_id, prev_lsn, page_id, offset, old_val, new_val)
+LogSerializer -> TransactionManager: record_bytes
+TransactionManager -> TransactionTable: update_last_lsn(txn_id, new_lsn)
+TransactionManager -> Client: lsn, record_bytes
+# Second Write Sequence (linked via prev_lsn)
+Client -> TransactionManager: write_txn(txn_id, page_id2, offset2, old_val2, new_val2)
+TransactionManager -> TransactionTable: find(txn_id)
+TransactionTable -> TransactionManager: entry (status=ACTIVE)
+TransactionManager -> TransactionManager: prev_lsn = entry.last_lsn
+Client.note: |md
+  prev_lsn links to
+  previous record
+|
+TransactionManager -> TransactionManager: allocate_lsn()
+TransactionManager -> LogSerializer: serialize_update(lsn, txn_id, prev_lsn, page_id2, ...)
+LogSerializer -> TransactionManager: record_bytes
+TransactionManager -> TransactionTable: update_last_lsn(txn_id, new_lsn)
+TransactionManager -> Client: lsn, record_bytes
+# Commit Sequence
+Client -> TransactionManager: commit_txn(txn_id)
+TransactionManager -> TransactionTable: find(txn_id)
+TransactionTable -> TransactionManager: entry (status=ACTIVE)
+TransactionManager -> TransactionManager: prev_lsn = entry.last_lsn
+TransactionManager -> LogSerializer: serialize_commit(lsn, txn_id, prev_lsn)
+LogSerializer -> TransactionManager: record_bytes
+TransactionManager -> TransactionTable: update_status(txn_id, COMMITTED)
+TransactionManager -> Client: success
+# Legend
+legend: |md
+  **Transaction API Sequence**
+  - **begin_txn()**: Creates BEGIN record with `prev_lsn=0`
+  - **write_txn()**: Creates UPDATE record with `prev_lsn` = previous record's LSN
+  - **commit_txn()**: Creates COMMIT record, marks transaction COMMITTED
+  The `prev_lsn` chain links all records within a transaction,
+  enabling efficient undo traversal during recovery.
+|

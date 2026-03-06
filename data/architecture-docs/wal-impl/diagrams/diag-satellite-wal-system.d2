@@ -1,0 +1,278 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # WAL System Architecture Map
+  Write-Ahead Logging: Transaction API → Recovery Pipeline
+| {near: top-center}
+# Row 1: Transaction Layer
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  txn_api: Transaction API (wal_txn.h) {
+    direction: down
+    shape: class
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    +begin_txn(mgr): TxnId
+    +write_txn(mgr, txn, page, off, old, new): int
+    +commit_txn(mgr, txn): int
+    +abort_txn(mgr, txn): int
+    notes: "Milestone 1\nEntry point for all\ntransaction operations"
+  }
+  txn_table: Transaction Table {
+    direction: down
+    shape: sql_table
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    label: "TransactionTable (recovery.h)"
+    f0: "txn_id | uint32_t | PK"
+    f1: "status | TxnStatus | ACTIVE/COMMITTED/ABORTED"
+    f2: "first_lsn | uint64_t | BEGIN record LSN"
+    f3: "last_lsn | uint64_t | Most recent record"
+    sz: "Per-transaction state"
+  }
+}
+# Row 2: Log Record Layer
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  record_format: Log Record Format {
+    direction: down
+    shape: sql_table
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+    label: "LogRecordHeader (28 bytes)"
+    h0: "0x00 | uint64_t | lsn (monotonic ID)"
+    h1: "0x08 | uint32_t | type (BEGIN/UPDATE/COMMIT/ABORT/CLR/CHECKPOINT)"
+    h2: "0x0C | uint32_t | txn_id"
+    h3: "0x10 | uint64_t | prev_lsn (chain within txn)"
+    h4: "0x18 | uint32_t | length (header + payload + CRC)"
+    h5: "... | uint8_t[] | payload (variable)"
+    h6: "end | uint32_t | crc32"
+    sz: "Milestone 1: Binary format"
+  }
+  record_types: Record Types {
+    direction: down
+    shape: class
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+    BEGIN: "32 bytes (header + CRC)"
+    UPDATE: "48 + old_len + new_len bytes"
+    COMMIT: "32 bytes"
+    ABORT: "32 bytes"
+    CLR: "56 + undo_len bytes"
+    CHECKPOINT: "variable (txn table snapshot)"
+    notes: "Milestone 1\nDiscriminated union\nby type field"
+  }
+}
+# Row 3: Log Writer Layer
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  log_writer: Log Writer (wal_writer.c) {
+    direction: down
+    shape: class
+    style.fill: "#F3E5F5"
+    style.stroke: "#9C27B0"
+    -log_fd: "int"
+    -next_lsn: "uint64_t"
+    -write_buffer: "WriteBuffer*"
+    -append_lock: "pthread_mutex_t"
+    +wal_append(writer, record, len): uint64_t
+    +wal_commit_sync(writer, lsn): int
+    +flush_buffer(writer): int
+    notes: "Milestone 2\nAppend-only writes\nLSN = file offset"
+  }
+  group_commit: Group Commit {
+    direction: down
+    shape: class
+    style.fill: "#F3E5F5"
+    style.stroke: "#9C27B0"
+    -sync_in_progress: "int"
+    -pending_sync_lsn: "uint64_t"
+    -last_synced_lsn: "uint64_t"
+    -sync_complete: "pthread_cond_t"
+    +commit_with_group_commit(gcm, lsn): int
+    -leader_do_fsync(gcm): void
+    notes: "Milestone 2\nLeader/follower model\n5x+ throughput gain"
+  }
+  segments: Log Segments {
+    direction: down
+    shape: class
+    style.fill: "#F3E5F5"
+    style.stroke: "#9C27B0"
+    -base_path: "char[256]"
+    -current_fd: "int"
+    -current_size: "uint64_t"
+    -segment_id: "uint32_t"
+    -size_limit: "uint64_t (64MB default)"
+    +rotate_if_needed(lsm): int
+    +find_segment_for_lsn(lsn): SegmentInfo*
+    notes: "Milestone 2\nBounded files\nRotation at threshold"
+  }
+}
+# Row 4: Recovery Layer
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  analysis: Analysis Phase {
+    direction: down
+    shape: class
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    +analysis_phase(log, checkpoint_lsn, txn_table, dpt): int
+    -process_begin_record(rec, txn_table): void
+    -process_update_record(rec, txn_table, dpt): void
+    -process_commit_record(rec, txn_table): void
+    outputs: "Builds: TransactionTable\n        DirtyPageTable"
+    notes: "Milestone 3\nScan from checkpoint\nIdentify active txns"
+  }
+  redo: Redo Phase {
+    direction: down
+    shape: class
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    +redo_phase(log, pool, dpt): int
+    -find_redo_start_lsn(dpt): uint64_t
+    -apply_update(pool, page_id, offset, data): void
+    -check_page_lsn(pool, page_id, lsn): bool
+    principle: "Replay ALL changes\n(committed + uncommitted)"
+    notes: "Milestone 3\nmin_rec_lsn → end\nIdempotent via pageLSN"
+  }
+  undo: Undo Phase {
+    direction: down
+    shape: class
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    +undo_phase(log, pool, txn_table, dpt): int
+    -build_undo_queue(txn_table): PriorityQueue
+    -write_clr(log, txn_id, page, off, undo_data, undo_next): uint64_t
+    -apply_before_image(pool, update): void
+    order: "Global LSN order\n(priority queue)"
+    notes: "Milestone 3\nRoll back ACTIVE txns\nCLRs enable crash-safety"
+  }
+}
+# Row 5: Checkpoint Layer
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  checkpoint_mgr: Checkpoint Manager {
+    direction: down
+    shape: class
+    style.fill: "#FFF8E1"
+    style.stroke: "#FFC107"
+    -state: "CheckpointState"
+    -begin_lsn: "uint64_t"
+    -scheduler: "CheckpointScheduler"
+    +take_fuzzy_checkpoint(cm, log, txn_table, dpt): int
+    +should_checkpoint(sched, log): int
+    notes: "Milestone 4\nFuzzy snapshot\nNo blocking"
+  }
+  master_record: Master Record {
+    direction: down
+    shape: sql_table
+    style.fill: "#FFF8E1"
+    style.stroke: "#FFC107"
+    label: "MasterRecord (wal.master)"
+    m0: "0x00 | uint64_t | magic (0x57414C5F)"
+    m1: "0x08 | uint64_t | version"
+    m2: "0x10 | uint64_t | last_checkpoint_lsn"
+    m3: "0x18 | uint64_t | checkpoint_count"
+    m4: "0x20 | uint32_t | crc32"
+    sz: "32 bytes total\nAtomic via temp+rename"
+  }
+  truncation: Log Truncation {
+    direction: down
+    shape: class
+    style.fill: "#FFF8E1"
+    style.stroke: "#FFC107"
+    +truncate_old_segments(lsm, min_rec_lsn, txn_table): int
+    -can_truncate_segment(seg_id, min_rec_lsn, txn_table): bool
+    rules: "1. segment.end_lsn < min_rec_lsn\n2. No active txn firstLSN in range"
+    notes: "Milestone 4\nReclaim disk space\nBound recovery time"
+  }
+}
+# Row 6: Dirty Page Table
+row6: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  dpt: Dirty Page Table {
+    direction: down
+    shape: sql_table
+    style.fill: "#ECEFF1"
+    style.stroke: "#607D8B"
+    label: "DirtyPageTable (recovery.h)"
+    d0: "page_id | uint64_t | PK"
+    d1: "rec_lsn | uint64_t | First dirtying record"
+    sz: "Determines redo start point\nmin(rec_lsn) across all entries"
+  }
+  page_lsn: Page Header {
+    direction: down
+    shape: sql_table
+    style.fill: "#ECEFF1"
+    style.stroke: "#607D8B"
+    label: "PageHeader (per data page)"
+    p0: "0x00 | uint64_t | page_lsn"
+    p1: "0x08 | uint32_t | page_id"
+    p2: "0x0C | uint32_t | checksum"
+    sz: "Idempotency check:\nif page_lsn >= record_lsn, skip"
+  }
+}
+# Connections: Data Flow
+txn_api -> record_format: "1. Serialize\noperation"
+record_format -> log_writer: "2. Append\nrecord bytes"
+log_writer -> group_commit: "3. Batch\ncommits"
+group_commit -> segments: "4. Write to\nsegment file"
+txn_api -> txn_table: "Update state\n(first_lsn, last_lsn)"
+record_format.prev_lsn -> txn_table.last_lsn: "Link chain"
+# Connections: Recovery Flow
+segments -> analysis: "5. Scan log\nfrom checkpoint"
+master_record -> analysis: "Bootstrap:\nlast_checkpoint_lsn"
+analysis -> redo: "6. Redo from\nmin_rec_lsn"
+redo -> undo: "7. Undo\nACTIVE txns"
+undo -> txn_table: "Roll back by\nstatus=ACTIVE"
+# Connections: Checkpoint Flow
+txn_table -> checkpoint_mgr: "Snapshot for\nCHECKPOINT record"
+checkpoint_mgr -> master_record: "Update after\nfsync"
+checkpoint_mgr -> truncation: "Trigger after\ncheckpoint"
+segments -> truncation: "Delete old\nsegment files"
+# Connections: Idempotency
+redo -> page_lsn: "Check page_lsn\nbefore applying"
+redo -> dpt: "Read rec_lsn\nto find start"
+# Annotations
+lsn_tracking: |md
+  ### LSN Tracking: The Connective Tissue
+  - **LSN as file offset**: O(1) record lookup
+  - **prev_lsn chain**: Undo traversal within transaction
+  - **page_lsn**: Idempotent redo check
+  - **rec_lsn**: Redo starting point per page
+  - **undo_next_lsn**: Crash-safe undo resumption
+| {
+  near: bottom-center
+  style.fill: "#FAFAFA"
+  style.stroke: "#BDBDBD"
+}
+legend: |md
+  **Color Key**
+  - 🟢 Green: Transaction API (Milestone 1)
+  - 🔵 Blue: Record Format (Milestone 1)
+  - 🟣 Purple: Log Writer + Group Commit (Milestone 2)
+  - 🔴 Red: Recovery Phases (Milestone 3)
+  - 🟡 Yellow: Checkpointing + Truncation (Milestone 4)
+  - ⚫ Gray: Shared Data Structures
+| {
+  near: bottom-right
+  style.fill: "#FAFAFA"
+  style.stroke: "#BDBDBD"
+}

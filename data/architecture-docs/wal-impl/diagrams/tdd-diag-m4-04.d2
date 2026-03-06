@@ -1,0 +1,205 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Master Record: Bootstrap Location & Layout
+  *Intel-Spec Physical Memory Mapping & Atomic Transition*
+| {near: top-center}
+
+direction: right
+
+# Physical Memory Layout of the Master Record (64B)
+# Colors: Header=Purple, Data=Blue, Free/Checkpoint=Green, Padding=Gray
+master_record: {
+  label: "wal.master (sizeof=64 bytes)"
+  shape: rectangle
+  style: {
+    stroke: "#7B4B94"
+    stroke-width: 4
+    font: mono
+  }
+
+  header: {
+    label: "Header Section [Offset 0x00]"
+    style.fill: "#D4B8D4" # Purple
+    
+    magic: "magic (4B): 0x57414C4D" {
+      style.fill: "#F5E6F5"
+      style.font: mono
+    }
+    version: "version (4B): 1" {
+      style.fill: "#F5E6F5"
+      style.font: mono
+    }
+  }
+
+  checkpoint_info: {
+    label: "Checkpoint Data [Offset 0x08]"
+    style.fill: "#B8E8FF" # Blue
+    
+    last_lsn: "last_checkpoint_lsn (8B)" {
+      tooltip: "The recovery start point"
+      style.fill: "#B8E8B8" # Green (Critical Pointer)
+      style.stroke: "#4B944B"
+      style.bold: true
+      style.font: mono
+    }
+    count: "checkpoint_count (8B)" {
+      style.fill: "#F0F8FF"
+      style.font: mono
+    }
+    create_time: "create_time (8B)" {
+      style.fill: "#F0F8FF"
+      style.font: mono
+    }
+    update_time: "update_time (8B)" {
+      style.fill: "#F0F8FF"
+      style.font: mono
+    }
+  }
+
+  integrity: {
+    label: "Integrity & Padding [Offset 0x28]"
+    
+    crc: "crc32 (4B)" {
+      style.fill: "#FFE6B8" # Orange (Pointer/Check)
+      style.stroke: "#B8944B"
+      style.font: mono
+    }
+    padding: "padding (20B)" {
+      style.fill: "#E8E8E8" # Gray (Padding)
+      style.stroke: "#949494"
+      style.font: mono
+    }
+  }
+}
+
+# Physical File System Structure
+log_directory: {
+  label: "/var/lib/db/wal/"
+  style: {
+    fill: "#F0F4F8"
+    stroke: "#6B8CB8"
+    stroke-dash: 3
+  }
+  
+  master: "wal.master\n(64B)" {
+    style.fill: "#E8D5E8"
+    style.double-border: true
+  }
+  
+  segment_1: "wal.000001" { style.fill: white }
+  segment_2: "wal.000002" { style.fill: white }
+  
+  segment_active: "wal.00000N\n(Active Segment)" {
+    style.fill: "#E8F4E8"
+    style.stroke: "#4B944B"
+    style.stroke-width: 2
+  }
+}
+
+# State Machine: Recovery Sequence
+recovery_fsm: {
+  label: "Recovery Logic"
+  shape: rectangle
+  style.fill: "#F1F8FF"
+
+  step1: "1. READ BOOTSTRAP\nLoad 64B from wal.master" {
+    style.fill: "#CCE5FF"
+  }
+  step2: "2. VALIDATE\nVerify Magic + CRC32" {
+    style.fill: "#CCE5FF"
+  }
+  step3: "3. EXTRACT POINTER\nGet last_checkpoint_lsn" {
+    style.fill: "#B8E8B8"
+    style.bold: true
+  }
+  step4: "4. INITIALIZE\nSeek to LSN in segments" {
+    style.fill: "#CCE5FF"
+  }
+
+  step1 -> step2 -> step3 -> step4
+}
+
+# Sequence: Atomic Persistence Pattern
+atomic_write_seq: {
+  label: "Atomic Update Protocol"
+  style.fill: "#FFF8E6"
+
+  tmp: "1. Write wal.master.tmp" { style.fill: "#FFF0CC" }
+  sync: "2. fsync(fd_tmp)" { style.fill: "#FFF0CC" }
+  swap: "3. rename(tmp, master)" { 
+    style.fill: "#B8E8B8"
+    style.bold: true 
+  }
+  dsync: "4. fsync(dir_fd)" { style.fill: "#FFF0CC" }
+
+  tmp -> sync -> swap -> dsync
+}
+
+# Logic Flow Connections
+master_record.checkpoint_info.last_lsn -> recovery_fsm.step3: "Bootstrap Parameter" {
+  style.stroke: "#4B944B"
+  style.stroke-width: 2
+}
+
+recovery_fsm.step4 -> log_directory.segment_active: "Jump to LSN" {
+  style.stroke: "#4B944B"
+  style.stroke-dash: 5
+  style.animated: true
+}
+
+atomic_write_seq.swap -> log_directory.master: "Atomic Overwrite" {
+  style.stroke: "#B8944B"
+  style.stroke-width: 3
+}
+
+# Byte Layout Reference Table
+# Fixed using advanced block string syntax to handle pipes
+byte_layout: ||md
+### Master Record Binary Specification
+| Offset | Size | Type | Field | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| **0x00** | 4 | uint32 | `magic` | Constant 0x57414C4D |
+| **0x04** | 4 | uint32 | `version` | File format version |
+| **0x08** | 8 | uint64 | `last_lsn` | LSN of last successful checkpoint |
+| **0x10** | 8 | uint64 | `count` | Monotonic checkpoint counter |
+| **0x18** | 8 | int64 | `create_ts` | File creation epoch |
+| **0x20** | 8 | int64 | `update_ts` | Last write epoch |
+| **0x28** | 4 | uint32 | `crc32` | Cyclic redundancy check of 0x00-0x27 |
+| **0x2C** | 20 | byte[20] | `padding` | Reserved for future expansion |
+|| {
+  near: bottom-center
+  style.font-size: 14
+}
+
+# Design Invariants
+annotations: |md
+## Implementation Requirements
+- **Alignment**: Struct must be packed or 8-byte aligned to ensure `last_lsn` does not cross cache lines.
+- **Atomicity**: The `rename()` syscall is the only point of failure allowed.
+- **Durability**: Two `fsync` calls are mandatory: first for data, second for metadata (directory entry).
+| {
+  near: top-right
+  style: {
+    fill: "#F9F9F9"
+    stroke: "#4B7BB8"
+    border-radius: 8
+  }
+}
+
+# Legend
+legend: {
+  near: bottom-right
+  shape: rectangle
+  label: "Manual Key"
+  
+  header_key: "File Header (Purple)" { style.fill: "#D4B8D4" }
+  data_key: "Payload (Blue)" { style.fill: "#B8E8FF" }
+  ptr_key: "Bootstrap Pointer (Green)" { style.fill: "#B8E8B8" }
+  pad_key: "Unused/Padding (Gray)" { style.fill: "#E8E8E8" }
+}

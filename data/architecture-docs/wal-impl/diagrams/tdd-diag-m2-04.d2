@@ -1,0 +1,261 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+direction: right
+
+title: |md
+  # Concurrent Writer Serialization (WAL Subsystem)
+  ### Implementation Specification: Atomic Append & LSN Sequencing
+  **Context**: Multiple worker threads serialized via `pthread_mutex_t`. 
+  **Invariant**: Lock held only during memory-to-kernel `write()`. `fsync()` handled asynchronously per group-commit policy.
+  *Reference: Intel Software Developer’s Manual, Vol 3, Section 11.2.1*
+| {near: top-center}
+
+# --- Style Definitions ---
+
+classes: {
+  thread_active: {
+    shape: rectangle
+    width: 150
+    height: 100
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2E86AB"
+      stroke-width: 3
+      shadow: true
+      font-color: "#2E86AB"
+      bold: true
+    }
+  }
+  thread_blocked: {
+    shape: rectangle
+    style: {
+      fill: "#F8F9FA"
+      stroke: "#6C757D"
+      stroke-dash: 5
+      opacity: 0.6
+    }
+  }
+  mutex: {
+    shape: diamond
+    style: {
+      fill: "#FFF3CD"
+      stroke: "#856404"
+      stroke-width: 4
+      bold: true
+    }
+  }
+  kernel_buffer: {
+    shape: sql_table
+    style: {
+      stroke: "#155724"
+      stroke-width: 2
+      fill: "#D4EDDA"
+    }
+  }
+  lsn_ptr: {
+    shape: circle
+    style: {
+      fill: "#F8D7DA"
+      stroke: "#721C24"
+      stroke-width: 2
+      font-size: 11
+      bold: true
+    }
+  }
+  timing_label: {
+    shape: text
+    style: {
+      font-size: 13
+      italic: true
+      font-color: "#495057"
+    }
+  }
+  hazard_zone: {
+    style: {
+      fill: "#FFF5F5"
+      stroke: "#C92A2A"
+      stroke-dash: 8
+      double-border: true
+    }
+  }
+}
+
+# --- Architectural Layout ---
+
+UserLand: {
+  style.fill: transparent
+  style.stroke-dash: 4
+
+  Worker_A: Thread 0x7F01 {
+    class: thread_active
+    label: "Thread A\n(OWNER)"
+  }
+  
+  Worker_B: Thread 0x7F02 {
+    class: thread_blocked
+    label: "Thread B\n(WAITING)"
+  }
+  
+  Worker_C: Thread 0x7F03 {
+    class: thread_blocked
+    label: "Thread C\n(WAITING)"
+  }
+}
+
+Serialization_Primitive: {
+  label: "Kernel Futex / Mutex"
+  Append_Lock: {
+    class: mutex
+    label: "wal_mutex\n(Locked)"
+  }
+}
+
+Memory_Layout: {
+  label: "Page Cache (Log Buffer)"
+  Log_Segment: {
+    shape: sql_table
+    class: kernel_buffer
+    
+    header: "0x00: MAGIC + CRC32" {
+      style.fill: purple
+      style.font-color: white
+    }
+    slot_1: "0x18: TX_100 (LSN 100)" {
+      style.fill: blue
+      style.font-color: white
+    }
+    slot_2: "0x90: TX_101 (LSN 150)" {
+      style.fill: blue
+      style.font-color: white
+    }
+    free: "0x120: UNALLOCATED" {
+      style.fill: green
+      style.font-color: white
+    }
+    padding: "0xFF: PADDING" {
+      style.fill: gray
+      style.font-color: white
+    }
+  }
+  
+  LSN_Tracker: {
+    label: "Global LSN State"
+    curr_lsn: "0x00000096" {class: lsn_ptr; label: "Current LSN"}
+  }
+}
+
+Performance_Bounds: {
+  near: bottom-left
+  write_perf: |md
+    ### T1: write() Phase
+    - **Scope**: Memory Copy
+    - **Hold Time**: < 15μs
+    - **Serialization**: STRICT
+  | {style.font-color: "#155724"}
+  
+  sync_perf: |md
+    ### T2: fsync() Phase
+    - **Scope**: I/O Barrier
+    - **Hold Time**: 2ms - 15ms
+    - **Serialization**: NONE
+  | {style.font-color: "#721C24"}
+}
+
+# --- Call Sequence & Interactions ---
+
+Worker_A -> Serialization_Primitive.Append_Lock: "1. pthread_mutex_lock()" {
+  style: {
+    stroke: "#2E86AB"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+Worker_B -> Serialization_Primitive.Append_Lock: "BLOCK" {
+  source-arrowhead: cross
+  style: {
+    stroke: "#6C757D"
+    stroke-dash: 2
+  }
+}
+
+Serialization_Primitive.Append_Lock -> Memory_Layout.Log_Segment: "2. write(fd, ptr, 128)" {
+  style: {
+    stroke: "#856404"
+    stroke-width: 4
+  }
+}
+
+Memory_Layout.Log_Segment -> Memory_Layout.LSN_Tracker.curr_lsn: "3. Atomic Add (64b)" {
+  style: {
+    stroke: "#721C24"
+    stroke-width: 2
+    stroke-dash: 3
+  }
+}
+
+Serialization_Primitive.Append_Lock -> Worker_A: "4. pthread_mutex_unlock()" {
+  style: {
+    stroke: "#28A745"
+    stroke-width: 2
+    stroke-dash: 5
+  }
+}
+
+# --- Failure Mode Analysis ---
+
+Corruption_Hazard: Race Condition Simulation {
+  class: hazard_zone
+  label: "RACE CONDITION: WITHOUT MUTEX"
+  
+  Thread_X_Data: "0xAA 0xBB" {style.fill: "#FFC9C9"}
+  Thread_Y_Data: "0x11 0x22" {style.fill: "#D0EBFF"}
+  
+  Interleaved_Result: "0xAA 0x11 0xBB 0x22" {
+    label: "CORRUPT WAL RECORD"
+    style: {
+      bold: true
+      font-color: red
+      fill: "#FFF5F5"
+    }
+  }
+  
+  Thread_X_Data -> Interleaved_Result: "Concurrent write()"
+  Thread_Y_Data -> Interleaved_Result: "Concurrent write()"
+}
+
+# --- Annotation Overlays ---
+
+Annotation_Block: |md
+  ### SERIALIZATION INVARIANT (WAL-04)
+  1. **Atomicity**: The mutex ensures that `write()` syscalls do not interleave bytes at the kernel page-cache level.
+  2. **LSN Monotonicity**: LSN is assigned inside the lock to guarantee that disk order matches sequence number order.
+  3. **Performance Optimization**: We release the lock *before* calling `fsync()`. This allows multiple writers to fill the page cache while a previous batch is being flushed to platter/SSD.
+| {
+  near: bottom-center
+  shape: rectangle
+  style: {
+    fill: "#F8F9FA"
+    stroke: "#DEE2E6"
+    stroke-dash: 3
+    border-radius: 8
+    font-size: 14
+  }
+}
+
+# Logic Path for Next Sequence
+Memory_Layout.Log_Segment -> Storage_Engine: "fsync() Async Trigger" {
+  style.stroke-dash: 5
+  style.stroke: orange
+}
+
+Storage_Engine: NVMe / SSD {
+  shape: cylinder
+  style.fill: "#E9ECEF"
+}

@@ -1,0 +1,188 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  shape: text
+  near: top-center
+  label: |`md
+# Three-Transaction Recovery Test Scenario
+**T1: Committed** (Should be present) | **T2: Aborted** (CLRs present) | **T3: Active** (Must be rolled back)
+  `|
+}
+
+timeline: {
+  shape: sequence_diagram
+
+  # Participants Definition
+  T1: "Transaction T1\n(Committed)" {
+    style.fill: "#90EE90"
+  }
+  T2: "Transaction T2\n(Aborted)" {
+    style.fill: "#FFB6C1"
+  }
+  T3: "Transaction T3\n(Active)" {
+    style.fill: "#FFD700"
+  }
+  Log: "WAL Log\n(LSN Persistence)" {
+    style.fill: "#E6E6FA"
+  }
+  Recovery: "Recovery Manager\n(ARIES Implementation)" {
+    style.fill: "#87CEEB"
+  }
+  Page1: "Page 1\n(Data)" {
+    style.fill: "#F5F5DC"
+  }
+  Page2: "Page 2\n(Data)" {
+    style.fill: "#F5F5DC"
+  }
+  Page3: "Page 3\n(Data)" {
+    style.fill: "#F5F5DC"
+  }
+
+  phase1: "PHASE 1: Normal Operation (Pre-Crash)" {
+    T1 -> Log: "BEGIN T1 [LSN=100]"
+    T2 -> Log: "BEGIN T2 [LSN=150]"
+    T3 -> Log: "BEGIN T3 [LSN=200]"
+    T1 -> Log: "UPDATE T1 | Page 1 | old='A' new='B' [LSN=250]"
+    Log -> Page1: "Write B, pageLSN=250"
+    T1 -> Log: "COMMIT T1 [LSN=300]"
+    T2 -> Log: "UPDATE T2 | Page 2 | old='X' new='Y' [LSN=350]"
+    Log -> Page2: "Write Y, pageLSN=350"
+    
+    # Internal Log transition for Abort
+    Log -> Log: "ABORT T2 initiated"
+    Log -> Log: "CLR T2 [LSN=400] | undo_next=150"
+    Log -> Log: "ABORT T2 [LSN=450]"
+    
+    T3 -> Log: "UPDATE T3 | Page 3 | old='P' new='Q' [LSN=500]"
+    Log -> Page3: "Write Q, pageLSN=500"
+    
+    Log."⚡ CRASH SYSTEM ⚡" {
+      style.stroke: red
+      style.bold: true
+      style.font-color: red
+    }
+  }
+
+  phase2: "PHASE 2: Recovery - Analysis" {
+    Recovery -> Log: "Scan from Start (LSN 0) to End"
+    Log -> Recovery: "Validate Checksums & Validate LSN 500"
+    
+    Recovery."BUILD TransactionTable:\nT1: COMMITTED\nT2: ABORTED\nT3: ACTIVE"
+    Recovery."BUILD DirtyPageTable:\nP1: recLSN=250\nP2: recLSN=350\nP3: recLSN=500"
+    
+    Recovery -> Recovery: "Identify Losers: {T3}"
+  }
+
+  phase3: "PHASE 3: Recovery - Redo (Repeating History)" {
+    Recovery -> Log: "Redo Scan from min_rec_lsn=250"
+    
+    Recovery -> Log: "Read LSN 250 (T1 Update)"
+    Recovery -> Page1: "Verify pageLSN (250 >= 250) -> Skip"
+    
+    Recovery -> Log: "Read LSN 350 (T2 Update)"
+    Recovery -> Page2: "Verify pageLSN (350 >= 350) -> Skip"
+    
+    Recovery -> Log: "Read LSN 400 (T2 CLR)"
+    Recovery."CLR indicates undo of 350 already persisted"
+    
+    Recovery -> Log: "Read LSN 500 (T3 Update)"
+    Recovery -> Page3: "Verify pageLSN (500 >= 500) -> Skip"
+    
+    Recovery."Redo Phase Complete"
+  }
+
+  phase4: "PHASE 4: Recovery - Undo (Rollback Losers)" {
+    Recovery."UndoQueue: [LSN 500]"
+    
+    Recovery -> Log: "Read LSN 500 (T3 Update)"
+    Recovery -> Page3: "Apply before-image (old='P')"
+    Page3 -> Recovery: "Update Success: Page 3 = 'P'"
+    
+    Recovery -> Log: "Write CLR T3 [LSN=550] | undo_next=200"
+    
+    Recovery -> Log: "Read LSN 200 (T3 Begin)"
+    Recovery -> Log: "Write ABORT T3 [LSN=600]"
+    
+    Recovery."Undo Complete. Database Consistent."
+  }
+}
+
+verification: {
+  near: bottom-left
+  direction: right
+  
+  v1: {
+    shape: rectangle
+    style.fill: "#90EE90"
+    label: |`md
+**T1: COMMITTED**
+- Page 1 = 'B'
+- LSN 300 persisted
+    `|
+  }
+  v2: {
+    shape: rectangle
+    style.fill: "#FFB6C1"
+    label: |`md
+**T2: ABORTED**
+- Page 2 = 'X'
+- Restored via CLR 400
+    `|
+  }
+  v3: {
+    shape: rectangle
+    style.fill: "#FFD700"
+    label: |`md
+**T3: ROLLED BACK**
+- Page 3 = 'P'
+- New CLR at LSN 550
+    `|
+  }
+  v1 -> v2 -> v3
+}
+
+state_matrix: {
+  near: bottom-right
+  grid-columns: 4
+  grid-gap: 0
+
+  h1: "Transaction" { style.fill: "#333"; style.font-color: white; style.bold: true }
+  h2: "At Crash" { style.fill: "#333"; style.font-color: white; style.bold: true }
+  h3: "Recovery Action" { style.fill: "#333"; style.font-color: white; style.bold: true }
+  h4: "Final Page State" { style.fill: "#333"; style.font-color: white; style.bold: true }
+
+  r1c1: "T1" { style.fill: "#90EE90" }
+  r1c2: "COMMITTED" { style.fill: "#90EE90" }
+  r1c3: "Redo (Skip)" { style.fill: "#90EE90" }
+  r1c4: "'B' (Preserved)" { style.fill: "#90EE90" }
+
+  r2c1: "T2" { style.fill: "#FFB6C1" }
+  r2c2: "ABORTED" { style.fill: "#FFB6C1" }
+  r2c3: "Redo CLR" { style.fill: "#FFB6C1" }
+  r2c4: "'X' (Restored)" { style.fill: "#FFB6C1" }
+
+  r3c1: "T3" { style.fill: "#FFD700" }
+  r3c2: "ACTIVE" { style.fill: "#FFD700" }
+  r3c3: "Undo + CLR" { style.fill: "#FFD700" }
+  r3c4: "'P' (Restored)" { style.fill: "#FFD700" }
+}
+
+invariants: {
+  near: bottom-center
+  shape: rectangle
+  style.fill: "#FFFACD"
+  style.stroke: "#DAA520"
+  style.double-border: true
+  label: |`md
+### ARIES Recovery Invariants
+1. **WAL Protocol:** Log entries 250, 350, 500 must reach disk before pages.
+2. **Idempotency:** `pageLSN` check ensures Redo can repeat multiple times.
+3. **CLRs:** Compensation Log Records ensure Undo never rolls back the same action twice.
+  `|
+}

@@ -1,0 +1,263 @@
+layout-engine: elk
+theme-id: 4
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    correct: "#2E7D32"
+    wrong: "#C62828"
+    header: "#1565C0"
+    page_bg: "#E3F2FD"
+    txn1: "#7B1FA2"
+    txn2: "#00695C"
+    page_fill: "#FFF9C4"
+  }
+}
+
+title: |md
+  # Undo Order: Why Global LSN Matters
+  When multiple transactions modify the same page, undo MUST proceed in reverse global LSN order.
+  This diagram demonstrates how improper ordering leads to database corruption.
+| {
+  near: top-center
+}
+
+direction: right
+
+# -----------------------------------------------------------------------------------------
+# INITIAL STATE: THE CRASH
+# -----------------------------------------------------------------------------------------
+initial_state: {
+  label: "1. Initial Scenario: Concurrent Updates & Crash"
+  style.fill: ${colors.page_bg}
+  style.stroke: ${colors.header}
+  
+  timeline: {
+    shape: sequence_diagram
+    T1: {
+      label: "Transaction 1"
+      style.fill: ${colors.txn1}
+      style.font-color: white
+    }
+    T2: {
+      label: "Transaction 2"  
+      style.fill: ${colors.txn2}
+      style.font-color: white
+    }
+    
+    T1 -> T1: "UPDATE page 5\n[LSN 100]\nOld='A', New='B'"
+    T2 -> T2: "UPDATE page 5\n[LSN 200]\nOld='B', New='C'"
+    
+    crash_marker: "SYSTEM CRASH (Active Txns)" {
+      style.stroke: red
+      style.bold: true
+    }
+  }
+
+  page_at_crash: {
+    label: "Page 5 Buffer"
+    shape: rectangle
+    style.fill: ${colors.page_fill}
+    style.double-border: true
+    
+    content: |md
+      **Physical State:**
+      - Current Data: `C`
+      - Header LSN: `200`
+      - Dirty: `True`
+    |
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# FAILURE PATH
+# -----------------------------------------------------------------------------------------
+wrong_order: {
+  label: "❌ FAILURE PATH: Undo T1 (Older) Before T2 (Newer)"
+  style.fill: "#FFEBEE"
+  style.stroke: ${colors.wrong}
+  style.stroke-width: 3
+  
+  step1: {
+    label: "Step 1: Process T1 Undo (LSN 100)"
+    style.fill: "#FFCDD2"
+    
+    logic: |md
+      **Input:** Page Data = `C`
+      **Log Action:** Restore `A`
+      **Resulting Page:** `A`
+    |
+    
+    page_state: {
+      label: "Page 5"
+      shape: rectangle
+      style.fill: "#EF9A9A"
+      content: "Value: 'A'\n(T2's Change 'B->C' Lost)"
+    }
+  }
+
+  step2: {
+    label: "Step 2: Process T2 Undo (LSN 200)"
+    style.fill: "#FFCDD2"
+    
+    logic: |md
+      **Input:** Page Data = `A`
+      **Log Action:** Restore `B` (Before-image)
+      **Resulting Page:** `B`
+    |
+    
+    page_state: {
+      label: "Page 5"
+      shape: rectangle
+      style.fill: "#EF9A9A"
+      content: "Value: 'B'\n(Final state is invalid)"
+    }
+  }
+
+  problem: {
+    label: |md
+      ## 🚨 DATABASE CORRUPTION
+      **Final Value:** `B`
+      **Expected Value:** `A` (Original state)
+      
+      **Root Cause:** T1's undo overwrote the state that 
+      T2's before-image relied upon. T2 restored `B` 
+      over `A`, but `B` was itself a temporary state 
+      that should have been undone.
+    |
+    shape: rectangle
+    style.fill: ${colors.wrong}
+    style.font-color: white
+    style.bold: true
+  }
+  
+  step1 -> step2 -> problem
+}
+
+# -----------------------------------------------------------------------------------------
+# SUCCESS PATH
+# -----------------------------------------------------------------------------------------
+correct_order: {
+  label: "✓ SUCCESS PATH: Reverse Global LSN Order (LSN 200 -> 100)"
+  style.fill: "#E8F5E9"
+  style.stroke: ${colors.correct}
+  style.stroke-width: 3
+  
+  step1: {
+    label: "Step 1: Undo Highest LSN (200)"
+    style.fill: "#C8E6C9"
+    
+    logic: |md
+      **Input:** Page Data = `C`
+      **Log Action:** Restore `B`
+    |
+    
+    page_state: {
+      label: "Page 5"
+      shape: rectangle
+      style.fill: "#A5D6A7"
+      content: "Value: 'B'\n(Ready for LSN 100 Undo)"
+    }
+  }
+
+  step2: {
+    label: "Step 2: Undo Next LSN (100)"
+    style.fill: "#C8E6C9"
+    
+    logic: |md
+      **Input:** Page Data = `B`
+      **Log Action:** Restore `A`
+    |
+    
+    page_state: {
+      label: "Page 5"
+      shape: rectangle
+      style.fill: "#A5D6A7"
+      content: "Value: 'A'\n(Full Clean Recovery)"
+    }
+  }
+
+  success: {
+    label: |md
+      ## ✓ SUCCESSFUL RECOVERY
+      **Final Value:** `A`
+      **Match:** Initial `A`
+      
+      **Why this works:** Undoing LSN 200 first returns 
+      the page to the EXACT physical state it was in 
+      at LSN 100, making T1's before-image valid.
+    |
+    shape: rectangle
+    style.fill: ${colors.correct}
+    style.font-color: white
+    style.bold: true
+  }
+  
+  step1 -> step2 -> success
+}
+
+# -----------------------------------------------------------------------------------------
+# CONNECTIONS & ANNOTATIONS
+# -----------------------------------------------------------------------------------------
+
+initial_state -> wrong_order: "Naïve Undo (Per-Txn)" {
+  style.stroke: ${colors.wrong}
+  style.stroke-width: 4
+}
+
+initial_state -> correct_order: "Global LSN Priority Queue" {
+  style.stroke: ${colors.correct}
+  style.stroke-width: 4
+}
+
+lsn_chain: {
+  label: "WAL Log Segment (LSN Chain)"
+  style.fill: "#FFF3E0"
+  style.stroke: "#E65100"
+  
+  log_view: {
+    shape: sequence_diagram
+    Log: {
+      label: "Log Manager"
+      style.fill: "#FFE0B2"
+    }
+    Log -> Log: "100: [T1] Page 5 (A -> B)\nPrevLSN: 0"
+    Log -> Log: "200: [T2] Page 5 (B -> C)\nPrevLSN: 0"
+  }
+  
+  priority_queue: {
+    label: "Priority Queue (Heap)"
+    shape: rectangle
+    content: |md
+      **Current Undo Queue:**
+      1. LSN 200 (Highest)
+      2. LSN 100
+    |
+    style.fill: "#FFCC80"
+  }
+}
+
+explanation: {
+  label: |md
+    ## The Rule: Global Reverse Order
+    The ARIES recovery algorithm mandates that UNDO proceeds in **descending LSN order** globally across the log.
+    
+    ### Implementation:
+    1.  Maintain a **Max-Heap** containing the `LastLSN` of all active transactions.
+    2.  Pop the largest LSN from the heap.
+    3.  Undo that log record's specific operation.
+    4.  Push that record's `PrevLSN` back into the heap.
+    5.  Continue until the heap is empty.
+    
+    *This ensures that "Newer" changes are peeled off before "Older" changes, maintaining the physical integrity of before-images.*
+  |
+  shape: rectangle
+  style.fill: "#EEEEEE"
+  style.stroke: ${colors.header}
+}
+
+explanation.near: bottom-center
+lsn_chain.near: top-right

@@ -1,0 +1,296 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    sketch: false
+    pad: 20
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Style Classes: Engineering Specs
+# -----------------------------------------------------------------------------
+classes: {
+  state: {
+    shape: rectangle
+    style: {
+      stroke-width: 2
+      border-radius: 8
+      font-size: 14
+    }
+  }
+  internal_logic: {
+    style: {
+      fill: "#f8f9fa"
+      stroke: "#ced4da"
+      stroke-dash: 3
+      font-size: 12
+    }
+  }
+  memory_struct: {
+    shape: sql_table
+    style: {
+      fill: "#e3f2fd"
+      stroke: "#1565c0"
+      stroke-width: 2
+    }
+  }
+  transition_label: {
+    style: {
+      font-size: 12
+      bold: true
+    }
+  }
+  error_state: {
+    style: {
+      fill: "#ffebee"
+      stroke: "#c62828"
+      font-color: "#c62828"
+      bold: true
+    }
+  }
+  header_text: {
+    shape: text
+    style: {
+      font-size: 24
+      bold: true
+    }
+  }
+  note: {
+    shape: rectangle
+    style: {
+      fill: "#fff9c4"
+      stroke: "#fbc02d"
+      stroke-dash: 0
+      border-radius: 2
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Documentation Header
+# -----------------------------------------------------------------------------
+Title: |md
+  # Bytecode VM Frame Lifecycle & Stack Layout
+  **Technical Specification: Module 4 (Frame Management)**
+  *Implementation-grade spec for interpreter loop (OP_CALL, OP_RETURN)*
+| {
+  near: top-center
+  class: header_text
+}
+
+# -----------------------------------------------------------------------------
+# Memory Layout Detail (Intel Manual Style)
+# -----------------------------------------------------------------------------
+Memory_Layout: {
+  label: "Memory Map: CallFrame Structure Alignment"
+  
+  CallFrame: {
+    shape: sql_table
+    style.fill: "#f3e5f5"
+    style.stroke: "#7b1fa2"
+    
+    header: "CallFrame Struct (24-Byte Padded)"
+    "0x00": "ObjFunction* function" {constraint: "8 Bytes (Ptr)"}
+    "0x08": "uint8_t* ip" {constraint: "8 Bytes (Ptr)"}
+    "0x10": "Value* slots" {constraint: "8 Bytes (Ptr)"}
+  }
+  
+  Annotation: |md
+    ### Sizeof Analysis
+    - **Total Size:** 24 Bytes
+    - **Alignment:** 8-byte boundary
+    - **Cache Usage:** 2.6 frames per 64B cache line
+  | {
+    class: note
+    near: Memory_Layout.CallFrame
+  }
+}
+
+# -----------------------------------------------------------------------------
+# State Machine: Frame Lifecycle
+# -----------------------------------------------------------------------------
+Lifecycle_Machine: {
+  label: "VM Frame Lifecycle State Machine"
+  
+  Start: ● {
+    shape: circle
+  }
+
+  UNINITIALIZED: {
+    class: state
+    invariant: "VM.frames == NULL"
+    style.fill: "#fafafa"
+  }
+
+  INITIALIZED: {
+    class: state
+    invariant: "frameCount=0, capacity=64"
+    tooltip: "Stack memory allocated via realloc()"
+  }
+
+  MAIN_ACTIVE: {
+    class: state
+    style.fill: "#fff9c4"
+    invariant: "frameCount=1, base=stack[0]"
+    details: |md
+      - Entry: `<script>`
+      - Global execution context
+    |
+  }
+
+  CALL_PREP: {
+    class: state
+    details: |md
+      **Step 1:** Pop `N` arguments
+      **Step 2:** Resolve function ptr
+      **Step 3:** Check Stack Depth
+    |
+  }
+
+  FRAME_PUSHED: {
+    class: state
+    style.fill: "#c8e6c9"
+    invariant: "frameCount > 1"
+    details: |md
+      - **new_frame.ip** = func->chunk.code
+      - **new_frame.slots** = vm.top - arg_count - 1
+    |
+  }
+
+  RETURNING: {
+    class: state
+    style.fill: "#bbdefb"
+    details: |md
+      **Step 1:** Capture Top Value
+      **Step 2:** `frameCount--`
+      **Step 3:** Restore `vm.ip`
+    |
+  }
+
+  HALTED: {
+    class: state
+    style.fill: "#eeeeee"
+    label: "EXIT_SUCCESS"
+  }
+
+  STACK_OVERFLOW: {
+    class: state
+    class: error_state
+    label: "FATAL: Stack Overflow"
+  }
+
+  # Transitions
+  Start -> UNINITIALIZED
+  
+  UNINITIALIZED -> INITIALIZED: "1. vm_init()" {
+    class: transition_label
+  }
+
+  INITIALIZED -> MAIN_ACTIVE: "2. interpret(script)" {
+    class: transition_label
+  }
+
+  MAIN_ACTIVE -> CALL_PREP: "3. OP_CALL" {
+    class: transition_label
+  }
+
+  CALL_PREP -> FRAME_PUSHED: "4. [count < MAX]" {
+    class: transition_label
+  }
+
+  CALL_PREP -> STACK_OVERFLOW: "4. [count == MAX]" {
+    class: transition_label
+    style: {
+      stroke: red
+      font-color: red
+      bold: true
+    }
+  }
+
+  FRAME_PUSHED -> FRAME_PUSHED: "5. Recursive OP_CALL" {
+    style.stroke-dash: 3
+  }
+
+  FRAME_PUSHED -> RETURNING: "6. OP_RETURN" {
+    class: transition_label
+  }
+
+  RETURNING -> FRAME_PUSHED: "7. [count > 1]" {
+    class: transition_label
+    label: "Restore Caller Context"
+  }
+
+  RETURNING -> MAIN_ACTIVE: "7. [count == 1]" {
+    class: transition_label
+  }
+
+  MAIN_ACTIVE -> HALTED: "8. OP_RETURN" {
+    class: transition_label
+  }
+
+  HALTED -> INITIALIZED: "9. vm_reset()"
+}
+
+# -----------------------------------------------------------------------------
+# Implementation Logic (C Reference)
+# -----------------------------------------------------------------------------
+Logic_Reference: {
+  label: "Interpreter Core Logic (C99)"
+  
+  OP_CALL_Impl: |go
+    case OP_CALL: {
+      int argCount = READ_BYTE();
+      if (!callValue(peek(argCount), argCount)) {
+        return INTERPRET_RUNTIME_ERROR;
+      }
+      frame = &vm.frames[vm.frameCount - 1];
+      break;
+    }
+  | {
+    class: internal_logic
+  }
+
+  OP_RETURN_Impl: |go
+    case OP_RETURN: {
+      Value result = pop();
+      vm.frameCount--;
+      if (vm.frameCount == 0) {
+        pop();
+        return INTERPRET_OK;
+      }
+      vm.stackTop = frame->slots;
+      push(result);
+      frame = &vm.frames[vm.frameCount - 1];
+      break;
+    }
+  | {
+    class: internal_logic
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Connectivity and Guards
+# -----------------------------------------------------------------------------
+Lifecycle_Machine.RETURNING -> Lifecycle_Machine.STACK_OVERFLOW: "ILLEGAL" {
+  style: {
+    stroke: red
+    stroke-dash: 4
+  }
+  source-arrowhead: cross
+}
+
+# Global Layout Rules
+Memory_Layout -> Lifecycle_Machine: "Governs State" {
+  style: {
+    stroke: gray
+    stroke-width: 1
+    opacity: 0.4
+    stroke-dash: 5
+  }
+}
+
+Logic_Reference.near: bottom-right
+Memory_Layout.near: top-left
+Lifecycle_Machine.near: center-right

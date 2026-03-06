@@ -1,0 +1,245 @@
+# Write-Ahead Log: System Architecture Map
+direction: right
+layout-engine: elk
+theme-id: 4
+
+title: |md
+  # ARIES Write-Ahead Logging (WAL) System Architecture
+  **Technical Specification for Recovery & Durability Implementation**
+| {near: top-center}
+
+# =====================================================
+# LEGEND & GLOBAL STYLES
+# =====================================================
+legend: {
+  near: bottom-right
+  M1: M1 - Log Records {
+    style.fill: "#E8DFF6"
+    style.stroke: "#9B59B6"
+  }
+  M2: M2 - Log Writer{
+    style.fill: "#BDE0FE"
+    style.stroke: "#3498DB"
+  }
+  M3: M3 - Recovery{
+    style.fill: "#FADBD9"
+    style.stroke: "#E74C3C"
+  }
+  M4: M4 - Checkpoint{
+    style.fill: "#D5F5E3"
+    style.stroke: "#27AE60"
+  }
+  Data: Data Structures{
+    style.fill: "#FFF9C4"
+    style.stroke: "#F1C40F"
+  }
+}
+
+# =====================================================
+# MODULE M1: LOG RECORD FORMAT & TXN API
+# =====================================================
+M1_Module: Log Record Format & Transaction API {
+  style.fill: "#E8DFF6"
+  style.stroke: "#9B59B6"
+  style.border-radius: 8
+
+  Header: LogRecordHeader {
+    shape: sql_table
+    style.fill: "#F5EEF8"
+    0x00: "LSN (uint64)" {constraint: "8 bytes"}
+    0x08: "PrevLSN (uint64)" {constraint: "8 bytes"}
+    0x10: "TxnID (uint32)" {constraint: "4 bytes"}
+    0x14: "Type (uint8)" {constraint: "1 byte"}
+    0x15: "Padding" {style.fill: gray}
+    0x18: "Length (uint32)" {constraint: "4 bytes"}
+    0x1C: "CRC32 (uint32)" {constraint: "4 bytes"}
+  }
+
+  Record_Types: Record Types {
+    style.fill: "#F5EEF8"
+    shape: class
+    + BEGIN: "Type 0x01"
+    + UPDATE: "Type 0x02"
+    + COMMIT: "Type 0x03"
+    + ABORT: "Type 0x04"
+    + CLR: "Type 0x05 (Compensating)"
+    + CHECKPOINT: "Type 0x06"
+  }
+
+  TxnAPI: Transaction API {
+    style.fill: "#F5EEF8"
+    begin: "txn_begin() -> txn_id"
+    write: "txn_write(txn_id, page_id, data)"
+    commit: "txn_commit(txn_id)"
+    abort: "txn_abort(txn_id)"
+  }
+
+  TxnTable: TransactionTable {
+    style.fill: "#F5EEF8"
+    shape: class
+    txn_id: "+ txn_id: uint32"
+    status: "+ status: {RUNNING, COMMITTED, ABORTED}"
+    last_lsn: "+ last_lsn: Lsn (Tail of undo chain)"
+  }
+}
+
+# =====================================================
+# MODULE M2: DURABILITY & LOG WRITER
+# =====================================================
+M2_Module: Log Writer with Group Commit {
+  style.fill: "#BDE0FE"
+  style.stroke: "#3498DB"
+  style.border-radius: 8
+
+  WriteBuffer: WriteBuffer {
+    style.fill: "#EBF5FB"
+    label: "Double Buffered Lock-free Ring"
+  }
+
+  SegmentMgr: LogSegmentManager {
+    style.fill: "#EBF5FB"
+    segment_size: "Fixed 64MB Segments"
+    naming: "wal.000001 ... wal.NNNNNN"
+  }
+
+  GroupCommit: GroupCommitManager {
+    style.fill: "#EBF5FB"
+    leader: "Leader (invokes fsync())"
+    followers: "Followers (wait on sync_lsn CV)"
+    batch_ms: "max_wait = 2ms"
+  }
+
+  TornWrite: Torn Write Detection {
+    style.fill: "#EBF5FB"
+    check: "Checksum validation at segment tail"
+  }
+}
+
+# =====================================================
+# MODULE M3: ARIES RECOVERY LOGIC
+# =====================================================
+M3_Module: ARIES Crash Recovery {
+  style.fill: "#FADBD9"
+  style.stroke: "#E74C3C"
+  style.border-radius: 8
+
+  Analysis: Analysis Phase {
+    style.fill: "#FDF2F2"
+    scan: "Scan from last Checkpoint"
+    reconstruct: "Identify Dirty Pages + Active Txns"
+  }
+
+  Redo: Redo Phase {
+    style.fill: "#FDF2F2"
+    logic: "Repeat History (Idempotent)"
+    condition: "if page.LSN < record.LSN"
+  }
+
+  Undo: Undo Phase {
+    style.fill: "#FDF2F2"
+    pq: "PriorityQueue by LSN Descending"
+    clr: "Write CLR per Undo step"
+  }
+}
+
+# =====================================================
+# MODULE M4: PERSISTENCE & CHECKPOINTING
+# =====================================================
+M4_Module: Fuzzy Checkpoint & Truncation {
+  style.fill: "#D5F5E3"
+  style.stroke: "#27AE60"
+  style.border-radius: 8
+
+  CheckpointMgr: CheckpointManager {
+    style.fill: "#E8F6EF"
+    master: "wal.master (LSN pointer)"
+    fuzzy: "Non-blocking Async Snapshot"
+  }
+
+  Truncator: LogTruncator {
+    style.fill: "#E8F6EF"
+    min_lsn: "min(active_txn.first_lsn, rec_lsn)"
+  }
+}
+
+# =====================================================
+# SHARED DATA STRUCTURES
+# =====================================================
+BufferPool: BufferPool {
+  style.fill: "#FFF9C4"
+  style.stroke: "#F1C40F"
+  style.border-radius: 8
+  pages: Pages {
+    style.fill: "#FFFEF0"
+    page_lsn: "pageLSN (Hardware Clock/Monotonic)"
+    dirty_bit: "IsDirty: bool"
+  }
+}
+
+LogFile: Log Storage {
+  style.fill: "#FFF9C4"
+  style.stroke: "#F1C40F"
+  style.multiple: true
+  wal_segments: "wal.[000001..NNNNNN]"
+  master_file: "wal.master (Binary)"
+}
+
+# =====================================================
+# DATA FLOW & RELATIONSHIPS
+# =====================================================
+M1_Module.Record_Types -> M2_Module.WriteBuffer: "Serialized Bytes"
+M2_Module.SegmentMgr -> LogFile.wal_segments: "O_DIRECT Append"
+M4_Module.CheckpointMgr -> LogFile.master_file: "Atomic Update"
+
+# Recovery Flow
+LogFile.wal_segments -> M3_Module.Analysis: "Read Sequential"
+M3_Module.Analysis -> M3_Module.Redo: "StartLSN"
+M3_Module.Redo -> BufferPool.pages: "Conditional Write"
+M3_Module.Undo -> M2_Module.WriteBuffer: "Emit CLRs"
+
+# Constraints
+BufferPool.pages -> M2_Module.WriteBuffer: "WAL Protocol Force" {
+  style.stroke: orange
+  style.stroke-width: 3
+}
+
+# =====================================================
+# RECOVERY NOTES (FIXED NEAR POSITIONS)
+# =====================================================
+note_m1: |md
+  ### M1: Log Foundation
+  - 28-byte fixed header overhead.
+  - CRC32 covers header + payload.
+  - PrevLSN creates back-link for Undo.
+| {
+  near: top-left
+  style.font-size: 12
+}
+
+note_m2: |md
+  ### M2: Log Writer
+  - Group Commit utilizes `fsync()` batching.
+  - Lock-free buffer handles concurrent appenders.
+| {
+  near: top-right
+  style.font-size: 12
+}
+
+note_m3: |md
+  ### M3: ARIES Phases
+  1. **Analysis**: Determines state at crash.
+  2. **Redo**: Repeats history to get to crash point.
+  3. **Undo**: Rolls back losers.
+| {
+  near: bottom-left
+  style.font-size: 12
+}
+
+note_m4: |md
+  ### M4: Checkpointing
+  - "Fuzzy" means we don't quiesce the system.
+  - Master record stores only the LSN of the start.
+| {
+  near: bottom-center
+  style.font-size: 12
+}

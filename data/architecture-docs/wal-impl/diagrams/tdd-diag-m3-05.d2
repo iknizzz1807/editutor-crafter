@@ -1,0 +1,241 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Redo Phase: pageLSN Skip Logic
+  Idempotent recovery - skip already-applied changes
+| {near: top-center}
+direction: right
+classes: {
+  step: {
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2563EB"
+      stroke-width: 2
+      font: mono
+    }
+  }
+  decision: {
+    shape: diamond
+    style: {
+      fill: "#FEF3C7"
+      stroke: "#D97706"
+      stroke-width: 2
+    }
+  }
+  action: {
+    style: {
+      fill: "#D1FAE5"
+      stroke: "#059669"
+      stroke-width: 2
+    }
+  }
+  skip: {
+    style: {
+      fill: "#FEE2E2"
+      stroke: "#DC2626"
+      stroke-width: 2
+    }
+  }
+  data: {
+    shape: cylinder
+    style: {
+      fill: "#F3E8FF"
+      stroke: "#7C3AED"
+      stroke-width: 2
+    }
+  }
+}
+// Step 1: Read UPDATE Record
+step1: "1. Read UPDATE Record" {
+  class: step
+  width: 180
+}
+step1_detail: |md
+  Parse log record at current_lsn
+  Extract: page_id, offset, new_value
+  Extract: record.lsn from header
+|
+// Step 2: Get Page from Buffer Pool
+step2: "2. Get Page" {
+  class: step
+  width: 180
+}
+step2_detail: |md
+  buffer_pool_get_page(page_id)
+  Load from disk if not cached
+|
+// Step 3: Read pageLSN
+step3: "3. Read pageLSN" {
+  class: step
+  width: 180
+}
+step3_detail: |md
+  page_lsn = page->header.page_lsn
+  This is the LSN of the last
+  modification applied to this page
+|
+// Data Structure: Page Header
+page_header: "Page Header" {
+  class: data
+  width: 200
+  page_lsn_field: "page_lsn: uint64_t"
+  page_id_field: "page_id: uint64_t"
+  free_space: "free_offset: uint32_t"
+}
+// Step 4: Compare pageLSN vs record.lsn
+step4: "4. Compare LSNs" {
+  class: decision
+  width: 200
+  height: 120
+}
+compare_logic: |md
+  **Idempotency Check:**
+  
+  if (page_lsn >= record.lsn):
+      SKIP  // Already on disk
+  else:
+      APPLY // Need to redo
+  
+|
+// Decision Branch: SKIP
+step5_skip: "SKIP" {
+  class: skip
+  width: 140
+}
+skip_reason: |md
+  **Why skip?**
+  - Change already applied
+  - page_lsn indicates a later
+    or equal modification
+  - Prevents double-application
+|
+skip_result: "Record Skipped\n(No change to page)" {
+  class: skip
+  shape: oval
+  width: 160
+}
+// Decision Branch: APPLY
+step5_apply: "APPLY" {
+  class: action
+  width: 140
+}
+// Step 6: Apply After-Image
+step6: "6. Apply After-Image" {
+  class: action
+  width: 180
+}
+apply_detail: |md
+  Write new_value to page:
+  
+  memcpy(page->data + offset,
+         new_value,
+         new_value_len)
+  
+|
+// Step 7: Update pageLSN
+step7: "7. Update pageLSN" {
+  class: action
+  width: 180
+}
+update_detail: |md
+  Record that this change is now applied:
+  
+  page->header.page_lsn = record.lsn
+  
+  **Critical for idempotency!**
+|
+// Step 8: Mark Dirty
+step8: "8. Mark Dirty" {
+  class: action
+  width: 180
+}
+dirty_detail: |md
+  page->is_dirty = true
+  Will be flushed to disk
+  at end of Redo phase
+|
+// Result: Applied
+apply_result: "Record Applied\n(Page modified)" {
+  class: action
+  shape: oval
+  width: 160
+}
+// Continue to Next Record
+step9: "9. Next Record" {
+  class: step
+  width: 180
+}
+step9_detail: |md
+  current_lsn += record.length
+  Continue scanning log
+|
+// Connections
+step1 -> step2
+step2 -> step3
+step3 -> step4
+step4 -> step5_skip: "page_lsn >= record.lsn"
+step4 -> step5_apply: "page_lsn < record.lsn"
+step5_skip -> skip_result
+skip_result -> step9
+step5_apply -> step6
+step6 -> step7
+step7 -> step8
+step8 -> apply_result
+apply_result -> step9
+// Example Timeline Box
+example: "Idempotency Example" {
+  style.fill: "#F8FAFC"
+  style.stroke: "#64748B"
+  style.stroke-dash: 3
+  scenario: |md
+    **Scenario: Recovery runs twice**
+    First recovery:
+    - Record at LSN 1000: UPDATE page 5
+    - page_lsn = 500 (old)
+    - 500 < 1000 → APPLY
+    - page_lsn updated to 1000
+    Second recovery (after another crash):
+    - Record at LSN 1000: UPDATE page 5
+    - page_lsn = 1000 (from first recovery)
+    - 1000 >= 1000 → SKIP
+    - No double-application!
+  |
+}
+// Legend
+legend: "Legend" {
+  style.fill: transparent
+  style.stroke: "#94A3B8"
+  step_node: "Process Step" {class: step; width: 100}
+  decision_node: "Decision" {class: decision; width: 80}
+  action_node: "Action" {class: action; width: 100}
+  skip_node: "Skip Path" {class: skip; width: 100}
+  data_node: "Data Structure" {class: data; width: 100}
+}
+// Key invariant box
+invariant: "Key Invariant" {
+  style.fill: "#FEF2F2"
+  style.stroke: "#B91C1C"
+  style.stroke-width: 3
+  inv_text: |md
+    **CRITICAL:** pageLSN is ALWAYS updated after
+    applying a change. This enables recovery to be
+    run multiple times with identical results.
+    
+    Recovery(page_state, log) = Recovery(Recovery(page_state, log), log)
+    
+  |
+}
+// Positioning
+step1_detail.near: top-right
+step3_detail.near: top-right
+compare_logic.near: top-right
+apply_detail.near: bottom-right
+update_detail.near: bottom-right
+example.near: bottom-center
+legend.near: bottom-left
+invariant.near: bottom-right
+page_header.near: top-right

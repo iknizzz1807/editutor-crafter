@@ -1,0 +1,248 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+title: {
+  shape: text
+  label: |md
+    # WAL Implementation Spec
+    ## CLR vs UPDATE Record Binary Specification
+  |
+  near: top-center
+  style: {
+    font-size: 24
+    bold: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 1. SHARED LOG RECORD HEADER
+# -----------------------------------------------------------------------------
+# sizeof = 24 bytes. Purple Header indicates shared metadata.
+LogRecordHeader: {
+  shape: sql_table
+  label: "LogRecordHeader (24B)"
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#7B1FA2"
+  }
+  
+  "0x00": lsn {
+    label: "lsn: uint64_t"
+    constraint: PK
+  }
+  "0x08": prev_lsn {
+    label: "prev_lsn: uint64_t"
+    constraint: "TX_CHAIN"
+  }
+  "0x10": xid {
+    label: "xid: uint32_t"
+    constraint: "TX_ID"
+  }
+  "0x14": type {
+    label: "type: uint8_t"
+    constraint: "1=UPD, 2=CLR"
+  }
+  "0x15": padding {
+    label: "padding: uint8_t[3]"
+    style.fill: "#EEEEEE"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 2. DETAILED BINARY LAYOUTS (IMPLEMENTATION GRADE)
+# -----------------------------------------------------------------------------
+
+UPDATE_Record: {
+  shape: sql_table
+  label: "UPDATE Record\n(sizeof = 52B + N + M)"
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1565C0"
+    double-border: true
+  }
+
+  "0x00": header_ref {
+    label: "Header: LogRecordHeader"
+    style.fill: "#D1C4E9"
+  }
+  "0x18": page_id {
+    label: "page_id: uint64_t"
+    style.fill: "#BBDEFB"
+  }
+  "0x20": offset {
+    label: "offset: uint32_t"
+    style.fill: "#BBDEFB"
+  }
+  "0x24": old_val_len {
+    label: "old_value_len: uint32_t"
+    style.fill: "#C8E6C9"
+  }
+  "0x28": old_val_data {
+    label: "old_value: uint8_t[N]"
+    style.fill: "#E8F5E9"
+  }
+  "0x28+N": new_val_len {
+    label: "new_value_len: uint32_t"
+    style.fill: "#C8E6C9"
+  }
+  "0x2C+N": new_val_data {
+    label: "new_value: uint8_t[M]"
+    style.fill: "#E8F5E9"
+  }
+  "0x2C+N+M": crc {
+    label: "checksum: uint32_t"
+    style.fill: "#FFCDD2"
+  }
+}
+
+CLR_Record: {
+  shape: sql_table
+  label: "Compensation Log Record (CLR)\n(sizeof = 56B + N)"
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#E65100"
+    double-border: true
+  }
+
+  "0x00": header_ref {
+    label: "Header: LogRecordHeader"
+    style.fill: "#D1C4E9"
+  }
+  "0x18": page_id {
+    label: "page_id: uint64_t"
+    style.fill: "#FFE0B2"
+  }
+  "0x20": offset {
+    label: "offset: uint32_t"
+    style.fill: "#FFE0B2"
+  }
+  "0x24": undo_len {
+    label: "undo_data_len: uint32_t"
+    style.fill: "#C8E6C9"
+  }
+  "0x28": undo_data {
+    label: "undo_data: uint8_t[N]"
+    style.fill: "#E8F5E9"
+  }
+  "0x28+N": undo_next {
+    label: "undo_next_lsn: uint64_t"
+    style.fill: "#F8BBD0"
+  }
+  "0x30+N": crc {
+    label: "checksum: uint32_t"
+    style.fill: "#FFCDD2"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 3. RELATIONSHIPS & TRAVERSAL LOGIC
+# -----------------------------------------------------------------------------
+
+UPDATE_Record."0x00" -> LogRecordHeader: "Includes Header" {
+  style.stroke-dash: 3
+  style.stroke: "#7B1FA2"
+}
+
+CLR_Record."0x00" -> LogRecordHeader: "Includes Header" {
+  style.stroke-dash: 3
+  style.stroke: "#7B1FA2"
+}
+
+# Critical Abort Logic Traversal
+# This pointer is used to bypass records that have already been compensated.
+CLR_Record."0x28+N" -> LogRecordHeader."0x00": "Skips undone records" {
+  label: "undo_next_lsn"
+  style: {
+    stroke: "#E65100"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+# Logical comparison mapping
+UPDATE_Record."0x28" <-> CLR_Record."0x28": "Before-Image Mapping" {
+  style.stroke: "#757575"
+  style.stroke-dash: 5
+}
+
+# -----------------------------------------------------------------------------
+# 4. IMPLEMENTATION NOTES (TECHNICAL DOCUMENTATION)
+# -----------------------------------------------------------------------------
+
+ComparisonTable: {
+  near: UPDATE_Record
+  label: |md
+    ### Field-Level Implementation Matrix
+
+    | Logical Component | UPDATE Record Field | CLR Record Field | Implementation Note |
+    | :--- | :--- | :--- | :--- |
+    | **Physical Target** | `page_id`, `offset` | `page_id`, `offset` | Identical addressing schema. |
+    | **Before-Image** | `old_value` | `undo_data` | Used to restore state during rollbacks. |
+    | **After-Image** | `new_value` | ❌ *None* | CLRs are REDO-only in ARIES. |
+    | **Redo Logic** | Apply `new_value` | Apply `undo_data` | During recovery, CLR payload is REDO. |
+    | **Abort Logic** | `prev_lsn` | `undo_next_lsn` | **CRITICAL:** Jump over work. |
+  |
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#BDBDBD"
+    font-size: 14
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 5. LEGEND & ANNOTATIONS
+# -----------------------------------------------------------------------------
+
+Legend: {
+  near: bottom-left
+  header: "Header Info"
+  header.style.fill: "#D1C4E9"
+  address: "Addressing (ID/Off)"
+  address.style.fill: "#BBDEFB"
+  data: "Payload / Length"
+  data.style.fill: "#E8F5E9"
+  traversal: "LSN Traversal"
+  traversal.style.fill: "#F8BBD0"
+  checksum: "Validation"
+  checksum.style.fill: "#FFCDD2"
+}
+
+# Growth Direction and alignment
+BinaryLayouts: {
+  label: "Serialization Alignment (Memory View)"
+  near: CLR_Record
+  
+  MemGrid: {
+    grid-rows: 2
+    grid-gap: 10
+    
+    update_row: "UPDATE [ 24B Header | 12B Addr | N Payload | M Payload | 4B CRC ]"
+    update_row.style.fill: "#E3F2FD"
+    update_row.style.font: mono
+    
+    clr_row: "CLR    [ 24B Header | 12B Addr | N Payload | 8B Link | 4B CRC ]"
+    clr_row.style.fill: "#FFF3E0"
+    clr_row.style.font: mono
+  }
+}
+
+# Page and Cache line annotations
+CacheInfo: {
+  near: Legend
+  label: |md
+    **Implementation Constraints:**
+    - Page Boundaries: 4096B (Bold)
+    - Cache Lines: 64B (Dashed)
+    - All LSNs must be 8-byte aligned for atomic loads.
+  |
+  style.font-size: 12
+}
+
+# Global constraints for engineering manual consistency
+***.style.font: mono

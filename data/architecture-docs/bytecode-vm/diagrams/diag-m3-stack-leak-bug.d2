@@ -1,0 +1,188 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title_node: {
+  shape: rectangle
+  label: |'md
+    # Condition Stack Leak Bug
+    ## JUMP_IF_FALSE must pop condition in BOTH branches
+  '|
+  style.stroke: transparent
+  style.fill: transparent
+}
+title_node.near: top-center
+
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  buggy: {
+    direction: down
+    label: "BUGGY Implementation (vm.c)"
+    style.stroke: red
+    style.fill: "#FFF0F0"
+    
+    buggy_code: {
+      label: "VM Dispatch Loop"
+      width: 320
+      code: |'c
+        case OP_JUMP_IF_FALSE: {
+          uint16_t target = read_operand(ip);
+          ip += 2;
+          Value cond = vm_peek(vm, 0);  // PEEK (Non-destructive)
+          if (cond == 0.0) {
+            vm_pop(vm);  // Only pops when jumping!
+            ip = target;
+          }
+          // BUG: cond remains on stack if Truthy!
+          break;
+        }
+      '|
+    }
+    
+    buggy_trace: {
+      label: "Execution Trace (Loop with Truthy Condition)"
+      shape: sql_table
+      iter0: "Iter 0  | [1.0]           | Stack Depth: 1"
+      iter1: "Iter 1  | [1.0, 1.0]      | Stack Depth: 2 (LEAK)"
+      iter2: "Iter 2  | [1.0, 1.0, 1.0] | Stack Depth: 3 (LEAK)"
+      iter_n: "Iter N  | [...]           | Growing..."
+      fatal: "ERROR   | STACK OVERFLOW  | Depth > 256"
+    }
+  }
+
+  correct: {
+    direction: down
+    label: "CORRECT Implementation (vm.c)"
+    style.stroke: green
+    style.fill: "#F0FFF0"
+    
+    correct_code: {
+      label: "VM Dispatch Loop"
+      width: 320
+      code: |'c
+        case OP_JUMP_IF_FALSE: {
+          uint16_t target = read_operand(ip);
+          ip += 2;
+          Value cond = vm_pop(vm);     // POP (Always removes)
+          if (cond == 0.0) {
+            ip = target;
+          }
+          // Condition is cleared in both branches
+          break;
+        }
+      '|
+    }
+    
+    correct_trace: {
+      label: "Execution Trace (Loop with Truthy Condition)"
+      shape: sql_table
+      iter0: "Iter 0  | [] | Balanced"
+      iter1: "Iter 1  | [] | Balanced"
+      iter2: "Iter 2  | [] | Balanced"
+      iter_n: "Iter N  | [] | Stable"
+      status: "OK      | STEADY STATE   | Depth: 0"
+    }
+  }
+}
+
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  key_diff: {
+    direction: down
+    label: "Root Cause Analysis"
+    style.fill: "#FFF8DC"
+    
+    comparison: {
+      shape: sql_table
+      label: "Logic Comparison"
+      op: "Operation | Buggy: Peek | Correct: Pop"
+      truthy: "If Truthy  | STAYS on stack | REMOVED from stack"
+      falsy: "If Falsy   | Removed in block | Already removed"
+      state: "Result    | Leak/Overflow | Memory Safe"
+    }
+    
+    insight: {
+      label: "The Rule of Stack Balance"
+      width: 400
+      code: |'md
+        The condition must be popped **before** the branch decision.
+        The stack transition is part of the instruction's base 
+        contract, not its conditional side-effects.
+
+        c
+        // Unconditional pop ensures safety
+        Value val = vm_pop(vm); 
+        if (is_falsy(val)) { 
+            ip = target; 
+        }
+        
+      '|
+    }
+  }
+
+  memory_view: {
+    direction: down
+    label: "Stack Physical Layout"
+    
+    stack_before: {
+      label: "Initial State"
+      shape: sql_table
+      s3: "0x18 | 0.0 | empty"
+      s2: "0x10 | 0.0 | empty"
+      s1: "0x08 | 0.0 | empty"
+      s0: "0x00 | 1.0 | <Condition>"
+      sp: "SP: 1 (Next available slot)"
+    }
+    
+    after_buggy: {
+      label: "Buggy After (Truthy)"
+      shape: sql_table
+      style.fill: "#FFE4E1"
+      s3b: "0x18 | 0.0 | empty"
+      s2b: "0x10 | 1.0 | LEAKED!"
+      s1b: "0x08 | 1.0 | LEAKED!"
+      s0b: "0x00 | 1.0 | LEAKED!"
+      spb: "SP: 3 (Leaking memory)"
+    }
+    
+    after_correct: {
+      label: "Correct After (Truthy)"
+      shape: sql_table
+      style.fill: "#E0FFE0"
+      s3c: "0x18 | 0.0 | empty"
+      s2c: "0x10 | 0.0 | empty"
+      s1c: "0x08 | 0.0 | empty"
+      s0c: "0x00 | 0.0 | Cleared"
+      spc: "SP: 0 (Correctly reset)"
+    }
+  }
+}
+
+row1.buggy -> row2.memory_view.after_buggy: "Resource Leak | depth++" {
+  style.stroke: red
+  style.stroke-dash: 4
+}
+
+row1.correct -> row2.memory_view.after_correct: "Balance | depth=0" {
+  style.stroke: green
+  style.stroke-dash: 4
+}
+
+legend: {
+  shape: sql_table
+  label: "Status Legend"
+  red_row: "Red    | Logic Error / Overflow Path"
+  green_row: "Green  | Correct VM State"
+  yellow_row: "Yellow | Architectural Note"
+}
+legend.near: bottom-right

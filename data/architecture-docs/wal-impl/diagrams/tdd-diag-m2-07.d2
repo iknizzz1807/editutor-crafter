@@ -1,0 +1,232 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#673AB7"
+    data: "#2196F3"
+    free: "#4CAF50"
+    padding: "#9E9E9E"
+    pointer: "#FF9800"
+    boundary: "#E91E63"
+    text: "#212121"
+    bg: "#FAFAFA"
+  }
+}
+
+title: {
+  shape: text
+  near: top-center
+  label: |'md
+    # Write Buffer Structure (WAL Implementation)
+    **Intel-Manual Quality Specification: Memory layout for batching log records before syscall**
+    `sizeof(WriteBuffer) = 1,048,616 bytes`
+  '|
+}
+
+direction: right
+
+WriteBuffer: {
+  label: "WriteBuffer Primary Memory Allocation"
+  style: {
+    stroke: "${colors.text}"
+    stroke-width: 4
+    fill: "${colors.bg}"
+  }
+
+  Metadata: {
+    label: "Control Block (Header)\n[0x0000 - 0x0027]"
+    style: {
+      fill: "${colors.header}"
+      font-color: white
+      stroke-width: 2
+    }
+    
+    cap: {
+      label: "0x0000: capacity (uint64_t) | 8 Bytes"
+      style.font: mono
+    }
+    used: {
+      label: "0x0008: used (size_t) | 8 Bytes"
+      style.font: mono
+    }
+    f_lsn: {
+      label: "0x0010: first_buffered_lsn (uint64_t) | 8 Bytes"
+      style.font: mono
+    }
+    l_lsn: {
+      label: "0x0018: last_buffered_lsn (uint64_t) | 8 Bytes"
+      style.font: mono
+    }
+    flags: {
+      label: "0x0020: needs_flush (uint8_t) | 1 Byte"
+      style.font: mono
+    }
+    pad: {
+      label: "0x0021: alignment_padding | 7 Bytes"
+      style: {
+        fill: "${colors.padding}"
+        font-color: "${colors.text}"
+        font: mono
+      }
+    }
+  }
+
+  CL_Boundary: {
+    label: "64B CACHE LINE BOUNDARY (0x40)"
+    style: {
+      stroke: "${colors.boundary}"
+      stroke-dash: 5
+      stroke-width: 3
+      fill: transparent
+      font-color: "${colors.boundary}"
+      bold: true
+    }
+  }
+
+  PhysicalMemory: {
+    label: "Log Buffer Payload Region\n[0x0028 - 0x100028]"
+    style: {
+      fill: white
+      stroke-width: 2
+    }
+
+    Record1: {
+      label: "0x0028: Record #1 [Size: 64B]\n[LSN: 1000 | HDR | PAYLOAD]"
+      style: {
+        fill: "${colors.data}"
+        font-color: white
+        font: mono
+      }
+    }
+    Record2: {
+      label: "0x0068: Record #2 [Size: 128B]\n[LSN: 1064 | HDR | PAYLOAD]"
+      style: {
+        fill: "${colors.data}"
+        font-color: white
+        font: mono
+      }
+    }
+    Record3: {
+      label: "0x00E8: Record #3 [Size: 32B]\n[LSN: 1192 | COMMIT_MARKER]"
+      style: {
+        fill: "${colors.data}"
+        font-color: white
+        font: mono
+      }
+    }
+    Unused: {
+      label: "0x0108: Unallocated Buffer Capacity\nRemaining: 1,048,352 Bytes"
+      style: {
+        fill: "${colors.free}"
+        fill-pattern: grain
+        stroke-dash: 3
+        font: mono
+      }
+    }
+  }
+}
+
+# Documentation Overlay
+memory_layout_table: {
+  shape: text
+  label: |'md
+    ### Memory Mapping Table
+    | Offset | Field | Type | Size | Alignment |
+    | :--- | :--- | :--- | :--- | :--- |
+    | `0x0000` | `capacity` | `uint64_t` | 8 | 8-byte |
+    | `0x0008` | `used` | `size_t` | 8 | 8-byte |
+    | `0x0010` | `first_lsn` | `uint64_t` | 8 | 8-byte |
+    | `0x0018` | `last_lsn` | `uint64_t` | 8 | 8-byte |
+    | `0x0020` | `needs_flush`| `uint8_t` | 1 | 1-byte |
+    | `0x0021` | `padding` | `uint8_t[7]`| 7 | 1-byte |
+    | `0x0028` | `buffer` | `uint8_t[]` | 1MB | 8-byte |
+  '|
+  style: {
+    fill: "#F8F9FA"
+    stroke: "#DEE2E6"
+    border-radius: 4
+  }
+}
+
+flush_mechanism: {
+  label: "Syscall Invocation Logic"
+  
+  State_A: {
+    label: "ACTIVE_BUFFER"
+    style: {
+      fill: "${colors.data}"
+      font-color: white
+      bold: true
+    }
+    tooltip: "Records are being appended to 0x28 + used"
+  }
+
+  Syscall: "write(wal_fd, buf->buffer, buf->used)" {
+    shape: rectangle
+    style: {
+      fill: "#FFF9C4"
+      stroke: "${colors.pointer}"
+      stroke-width: 3
+      bold: true
+      border-radius: 20
+    }
+  }
+
+  State_B: {
+    label: "BUFFER_RESET"
+    style: {
+      fill: "${colors.free}"
+      font-color: white
+      bold: true
+    }
+    tooltip: "used is set to 0, needs_flush = 0"
+  }
+
+  State_A -> Syscall: "needs_flush == 1 || used > threshold" {
+    style: {
+      stroke: "${colors.pointer}"
+      bold: true
+    }
+  }
+  Syscall -> State_B: "E_SUCCESS" {
+    style: {
+      stroke: "${colors.free}"
+      stroke-width: 2
+    }
+  }
+}
+
+triggers: {
+  style.fill: "#F3E5F5"
+  shape: text
+  label: |'md
+    ### IO Scheduler Flush Triggers
+    1. **Capacity Threshold**: `(used + record.len) > total_cap`
+    2. **Transaction Integrity**: `log_type == RECORD_COMMIT`
+    3. **Time Bound**: `last_flush_ts > max_latency (10ms)`
+  '|
+}
+
+rules: {
+  style: {
+    fill: "#FFEBEE"
+    stroke: "#EF5350"
+    stroke-width: 2
+  }
+  shape: text
+  label: |'md
+    ### Implementation Invariants
+    - **Memory Bounds**: All writes restricted to `[base+0x28, base+cap]`.
+    - **LSN Monotonicity**: Buffer must be flushed before writing lower LSN.
+    - **Page Alignment**: `mmap` allocation ensured at 4KB page boundary.
+    - **Concurreny**: Metadata protected by `pthread_mutex_t`.
+  '|
+}
+
+# Structural Traceability
+WriteBuffer.Metadata -> memory_layout_table: "Field Definition"
+WriteBuffer.PhysicalMemory -> flush_mechanism: "Data Source"
+triggers -> flush_mechanism: "Triggers Execution"
+rules -> WriteBuffer: "Constraints"

@@ -1,0 +1,182 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: CLR Prevents Recovery Loop {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 32
+    bold: true
+    underline: true
+  }
+}
+row_scenarios: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  scenario1: SCENARIO 1: NO CLR (Corruption Risk) {
+    direction: down
+    style.stroke: red
+    style.fill: "#FFF0F0"
+    width: 420
+    s1_initial: Initial State {
+      shape: rectangle
+      width: 380
+      init_code: |'c
+        T1 has UPDATE at LSN 200
+        Page P = "B" (T1's change)
+        T1 status = ACTIVE
+      '|
+    }
+    s1_step1: Step 1: Undo Begins {
+      shape: rectangle
+      width: 380
+      code: |'c
+        // Recovery undo phase
+        apply_before_image(P, "A");
+        // Page P now = "A"
+        // NO CLR written!
+      '|
+    }
+    s1_crash: CRASH! {
+      shape: diamond
+      style.fill: "#FF6B6B"
+      style.font-color: white
+      width: 120
+    }
+    s1_step2: Step 2: Recovery Restarts {
+      shape: rectangle
+      width: 380
+      code: |'c
+        // Redo phase
+        // Replays LSN 200
+        apply_after_image(P, "B");
+        // Page P = "B" again!
+      '|
+    }
+    s1_step3: Step 3: Undo Tries Again {
+      shape: rectangle
+      style.fill: "#FFE4E4"
+      width: 380
+      code: |'c
+        // Undo phase (second time!)
+        apply_before_image(P, "A");
+        // But what if another txn
+        // modified P after LSN 200?
+        // BEFORE-IMAGE MAY BE WRONG!
+      '|
+    }
+    s1_result: RESULT: Potential Corruption {
+      shape: rectangle
+      style.fill: "#FF4444"
+      style.font-color: white
+      style.bold: true
+      width: 380
+      label: "Database state may be incorrect"
+    }
+    s1_initial -> s1_step1: "undo starts"
+    s1_step1 -> s1_crash: "mid-undo"
+    s1_crash -> s1_step2: "recovery"
+    s1_step2 -> s1_step3: "undo again"
+    s1_step3 -> s1_result: "wrong!"
+  }
+  scenario2: SCENARIO 2: WITH CLR (Safe Recovery) {
+    direction: down
+    style.stroke: green
+    style.fill: "#F0FFF0"
+    width: 420
+    s2_initial: Initial State {
+      shape: rectangle
+      width: 380
+      init_code: |'c
+        T1 has UPDATE at LSN 200
+        Page P = "B" (T1's change)
+        T1 status = ACTIVE
+      '|
+    }
+    s2_step1: Step 1: Undo Begins + CLR Written {
+      shape: rectangle
+      width: 380
+      code: |'c
+        // Recovery undo phase
+        apply_before_image(P, "A");
+        // Write CLR at LSN 300
+        CLR {
+          undo_next_lsn = 100;  // skip 200!
+          undo_data = "A";
+        }
+      '|
+    }
+    s2_crash: CRASH! {
+      shape: diamond
+      style.fill: "#FF6B6B"
+      style.font-color: white
+      width: 120
+    }
+    s2_step2: Step 2: Recovery Restarts {
+      shape: rectangle
+      width: 380
+      code: |'c
+        // Redo phase
+        // Replays LSN 200: P = "B"
+        // Replays CLR at LSN 300
+        apply_undo_data(P, "A");
+        // Page P = "A" (correct!)
+      '|
+    }
+    s2_step3: Step 3: Undo Continues {
+      shape: rectangle
+      style.fill: "#E8F5E8"
+      width: 380
+      code: |'c
+        // Undo phase
+        // Sees CLR at LSN 300
+        // Follows undo_next_lsn = 100
+        // SKIPS LSN 200 entirely!
+        undo_from(100);  // next record
+      '|
+    }
+    s2_result: RESULT: Correct Recovery {
+      shape: rectangle
+      style.fill: "#4CAF50"
+      style.font-color: white
+      style.bold: true
+      width: 380
+      label: "Database state is correct"
+    }
+    s2_initial -> s2_step1: "undo + CLR"
+    s2_step1 -> s2_crash: "mid-undo"
+    s2_crash -> s2_step2: "recovery"
+    s2_step2 -> s2_step3: "undo resumes"
+    s2_step3 -> s2_result: "correct!"
+  }
+}
+legend_box: Key Insight {
+  near: bottom-center
+  direction: right
+  style: {
+    fill: "#F5F5F5"
+    stroke: "#666666"
+    stroke-dash: 3
+  }
+  clr_field: CLR.undo_next_lsn {
+    shape: rectangle
+    style.fill: "#E8E8FF"
+    width: 200
+    label: "Points to prev_lsn of\nthe UNDONE record"
+  }
+  arrow_explain: |md
+    **The Critical Difference:**
+    Without CLR: Recovery has no memory of
+    what was undone. It may re-undo or
+    use stale before-images.
+    With CLR: The `undo_next_lsn` field
+    tells recovery exactly where to resume,
+    preventing re-processing of already-
+    undone work.
+  |
+}

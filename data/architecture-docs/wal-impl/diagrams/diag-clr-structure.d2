@@ -1,0 +1,163 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # CLR Record Structure vs UPDATE Record
+  Compensation Log Records replace UPDATE records in the undo chain
+| {near: top-center}
+
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  update_record: {
+    direction: down
+    label: "UPDATE Record (wal.h)"
+    update_header: {
+      shape: sql_table
+      label: "LogRecordHeader"
+      f0: "0x00 | uint64_t | lsn"
+      f1: "0x08 | uint32_t | type = UPDATE (0x01)"
+      f2: "0x0C | uint32_t | txn_id"
+      f3: "0x10 | uint64_t | prev_lsn"
+      f4: "0x18 | uint32_t | length"
+      sz: "Header: 28 bytes"
+    }
+    update_payload: {
+      shape: sql_table
+      label: "UPDATE Payload"
+      p0: "0x1C | uint64_t | page_id"
+      p1: "0x24 | uint32_t | offset"
+      p2: "0x28 | uint32_t | old_value_len"
+      p3: "var  | uint8_t* | old_value (before-image)"
+      p4: "var  | uint32_t | new_value_len"
+      p5: "var  | uint8_t* | new_value (after-image)"
+      p6: "var  | uint32_t | crc32"
+      sz: "Total: 36 + Image Sizes"
+    }
+    update_header -> update_payload
+  }
+
+  clr_record: {
+    direction: down
+    label: "CLR Record (wal.h)"
+    clr_header: {
+      shape: sql_table
+      label: "LogRecordHeader"
+      f0: "0x00 | uint64_t | lsn"
+      f1: "0x08 | uint32_t | type = CLR (0x02)"
+      f2: "0x0C | uint32_t | txn_id"
+      f3: "0x10 | uint64_t | prev_lsn"
+      f4: "0x18 | uint32_t | length"
+      sz: "Header: 28 bytes"
+    }
+    clr_payload: {
+      shape: sql_table
+      label: "CLR Payload"
+      p0: "0x1C | uint64_t | page_id"
+      p1: "0x24 | uint32_t | offset"
+      p2: "0x28 | uint32_t | undo_data_len"
+      p3: "var  | uint8_t* | undo_data (before-image)"
+      p4: "var  | uint64_t | undo_next_lsn ⚡"
+      p5: "var  | uint32_t | crc32"
+      sz: "Total: 44 + Undo Size"
+    }
+    clr_header -> clr_payload
+  }
+}
+
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  legend: {
+    label: "Key Differences"
+    width: 300
+    details: |md
+      **UPDATE** records store images for both recovery phases:
+      - **Before-image**: Required for **UNDO**
+      - **After-image**: Required for **REDO**
+
+      **CLR** (Compensation) records:
+      - Store **undo_data** (the before-image of the undone action)
+      - **undo_next_lsn** ⚡: Pointer to the next record to undo in the transaction's history.
+      
+      *Crucial*: `undo_next_lsn` is NOT the same as `prev_lsn`. It skips the record that was just compensated to prevent infinite undo loops.
+    |
+  }
+
+  chain_diagram: {
+    direction: down
+    label: "Undo Chain Transformation"
+    before: {
+      direction: right
+      label: "Before Undo (UPDATE chain)"
+      u1: "UPDATE\nLSN 100\nprev=0" {
+        style.fill: "#FFCDD2"
+      }
+      u2: "UPDATE\nLSN 150\nprev=100" {
+        style.fill: "#FFCDD2"
+      }
+      u3: "UPDATE\nLSN 200\nprev=150" {
+        style.fill: "#FFCDD2"
+      }
+      u1 -> u2: "prev_lsn"
+      u2 -> u3: "prev_lsn"
+    }
+    arrow_down: {
+      shape: rectangle
+      label: "▼ Action: Undo LSN 200, write CLR ▼"
+      style.font-color: "#1976D2"
+      style.stroke: transparent
+      style.bold: true
+    }
+    after: {
+      direction: right
+      label: "After Undo (CLR inserted)"
+      u1b: "UPDATE\nLSN 100" {
+        style.fill: "#FFCDD2"
+      }
+      u2b: "UPDATE\nLSN 150" {
+        style.fill: "#FFCDD2"
+      }
+      u3b: "UPDATE\nLSN 200\n(skipped)" {
+        style.fill: "#FFCDD2"
+        style.opacity: 0.4
+      }
+      c1: "CLR\nLSN 250\nundo_next=150" {
+        style.fill: "#C8E6C9"
+        style.stroke: "#2E7D32"
+        style.stroke-width: 2
+      }
+      u1b -> u2b: "prev_lsn"
+      u2b -> u3b: "prev_lsn"
+      u3b -> c1: "prev_lsn"
+      c1 -> u2b: "undo_next_lsn" {
+        style.stroke: "#4CAF50"
+        style.stroke-width: 4
+        style.animated: true
+        label: "SKIP TO"
+      }
+    }
+  }
+}
+
+row1.update_record -> row2.legend: "Structural Diff"
+row1.clr_record -> row2.chain_diagram: "Logic Flow"
+
+footer: {
+  shape: callout
+  label: |md
+    **Idempotency & Recovery**: If a crash occurs during an undo operation, recovery reads the CLR (LSN 250), 
+    applies the undo data, and follows `undo_next_lsn=150`. This ensures the system resumes from the correct 
+    historical point without attempting to double-undo LSN 200.
+  |
+}
+footer.near: bottom-center

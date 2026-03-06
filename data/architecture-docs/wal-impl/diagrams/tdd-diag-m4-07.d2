@@ -1,0 +1,265 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    active-txn: "#E74C3C"
+    safe-truncate: "#27AE60"
+    blocked-truncate: "#F39C12"
+    checkpoint: "#3498DB"
+    segment-fill: "#ECF0F1"
+    segment-stroke: "#BDC3C7"
+    lsn-text: "#2C3E50"
+    header-bg: "#2E4053"
+    padding: "#D5DBDB"
+    pointer: "#E67E22"
+  }
+}
+
+title: |md
+  # TECHNICAL SPEC: Long Transaction Blocking Truncation
+  **Component:** Write-Ahead Log (WAL) Resource Manager
+  **Status:** RESOURCE_EXHAUSTION_RISK (Log Bloat)
+  **Constraint:** MinActiveLSN Pinning logic (Postgres/Oracle-style)
+| {
+  near: top-center
+  style: {
+    stroke-width: 0
+    font-size: 24
+    bold: true
+  }
+}
+
+direction: down
+
+# 1. PHYSICAL MEMORY LAYOUT (WAL SEGMENT)
+# Detailed byte-level mapping of the start of the log
+wal_header_detail: "00000001.log Byte Layout (Physical)" {
+  shape: sql_table
+  style.fill: white
+  
+  0x0000: "WAL_PAGE_HEADER" {constraint: "8B (Magic: 0xD201)"; style.fill: "#D7BDE2"}
+  0x0008: "XLOG_LONG_PAGE_HEADER" {constraint: "32B (SysID/TLI)"; style.fill: "#D7BDE2"}
+  0x0028: "PADDING / ALIGNMENT" {constraint: "60B"; style.fill: ${colors.padding}}
+  0x0064: "RECORD_1: TXN_START (T1)" {constraint: "128B (LSN 100)"; style.fill: ${colors.active-txn}; style.font-color: white}
+  0x00E4: "RECORD_2: DATA_INSERT" {constraint: "256B"; style.fill: "#AED6F1"}
+  0x01E4: "REMAINING_CAPACITY" {constraint: "16MB - Offset"; style.fill: white; style.stroke-dash: 3}
+}
+
+# 2. LOG SEGMENT SEQUENCE (GRID REPRESENTATION)
+# Visualizing the 16MB files on disk
+wal_storage: Log Segment Sequence {
+  style: {
+    fill: "#F2F4F4"
+    stroke: "#7F8C8D"
+    stroke-width: 2
+  }
+
+  segments: {
+    grid-columns: 4
+    grid-gap: 30
+
+    seg1: "00000001.log" {
+      style.fill: ${colors.segment-fill}
+      style.stroke: ${colors.active-txn}
+      style.stroke-width: 5
+      style.double-border: true
+      
+      content: |md
+        **BASE_LSN: 0**
+        ---
+        - [0x0064] **T1 START (LSN 100)**
+        - [0x0100] COMMIT_T0
+        ---
+        **PINNED BY T1 (MinLSN)**
+      |
+    }
+
+    seg2: "00000002.log" {
+      style.fill: ${colors.segment-fill}
+      style.stroke: ${colors.segment-stroke}
+      content: |md
+        **BASE_LSN: 1M**
+        ---
+        - DATA_B_INSERT
+        - DATA_C_UPDATE
+        ---
+        **STATUS: DIRTY**
+      |
+    }
+
+    seg3: "00000003.log" {
+      style.fill: ${colors.segment-fill}
+      style.stroke: ${colors.checkpoint}
+      content: |md
+        **BASE_LSN: 100M**
+        ---
+        - **CHECKPOINT (LSN 100M)**
+        - REDO_START_PTR
+        ---
+        **LOG_REDO_POINT**
+      |
+    }
+
+    seg4: "00000004.log" {
+      style.fill: "#FDEDEC"
+      style.stroke: ${colors.blocked-truncate}
+      style.stroke-dash: 3
+      content: |md
+        **BASE_LSN: 500M**
+        ---
+        - **LOG_BLOAT** ⚠️
+        - DISK_FULL_RISK
+        ---
+        **WAL_TAIL (Active)**
+      |
+    }
+  }
+}
+
+# 3. TRANSACTION STATE MACHINE
+# Representing the lifecycle of the culprit transaction
+txn_lifecycle: Transaction T1 State {
+  style.fill: white
+  style.stroke: ${colors.active-txn}
+
+  t1_begin: T1 START {
+    shape: circle
+    style.fill: ${colors.active-txn}
+    style.font-color: white
+    label: "LSN: 100\n(Offset 0x64)"
+  }
+  
+  t1_running: "IN_PROGRESS\n(Duration: 12h+)" {
+    shape: parallelogram
+    style.fill: "#FDEDEC"
+    style.stroke: ${colors.active-txn}
+    width: 250
+  }
+  
+  t1_current: "NO_COMMIT_DETECTED" {
+    shape: hexagon
+    style.fill: ${colors.active-txn}
+    style.font-color: white
+    label: "Current LSN: 1.2B"
+  }
+
+  t1_begin -> t1_running: "Begin Work"
+  t1_running -> t1_current: "Wait for client" {
+    style.stroke: ${colors.active-txn}
+    style.stroke-width: 2
+    style.animated: true
+  }
+}
+
+# 4. TRUNCATION DECISION LOGIC
+# The kernel logic that decides if a segment can be deleted
+truncation_logic: Truncation Evaluation {
+  direction: right
+  style.fill: "#FDFEFE"
+  
+  rule1: "Checkpoint Pass" {
+    shape: rectangle
+    style.fill: ${colors.safe-truncate}
+    style.font-color: white
+    label: "LSN 100M > Seg1.MaxLSN?\nPASS"
+  }
+  
+  rule2: "Active Txn Pass" {
+    shape: rectangle
+    style.fill: ${colors.blocked-truncate}
+    style.font-color: white
+    label: "Min(ActiveTxn) > Seg1.MaxLSN?\nFAIL: 100 < 1M"
+  }
+  
+  decision: "RESULT: ABORT" {
+    shape: hexagon
+    style.fill: ${colors.active-txn}
+    style.font-color: white
+    style.bold: true
+  }
+  
+  rule1 -> rule2: "OK"
+  rule2 -> decision: "BLOCK"
+}
+
+# 5. DIAGNOSTICS & REMEDIATION
+# Root cause analysis and automated playbook
+analysis: Diagnostic Report {
+  style.fill: "#FEF9E7"
+  style.stroke: ${colors.blocked-truncate}
+  
+  report: |md
+    ### WAL RECLAMATION FAILURE
+    - **Current Tail:** LSN 1.2B+
+    - **Minimum LSN Needed:** 100
+    - **Earliest Segment:** `00000001.log`
+    
+    **Root Cause:** 
+    Backend process `PID 4092` holds snapshot since 08:00 UTC.
+  |
+}
+
+remediation: Remediation Playbook {
+  style.fill: "#E8F8F5"
+  style.stroke: ${colors.safe-truncate}
+  
+  content: |md
+    ### Corrective Actions
+    1. Terminate PID 4092 (Superuser force).
+    2. Review `idle_in_transaction_timeout` setting.
+    3. Monitor `pg_stat_activity` for long-running xacts.
+  |
+}
+
+# GLOBAL ANNOTATIONS
+checkpoint_marker: "CKPT REDO START (100M)" {
+  shape: diamond
+  style.fill: ${colors.checkpoint}
+  style.font-color: white
+}
+
+# LEGEND
+legend_box: "Diagram Key" {
+  near: bottom-right
+  item1: Pinned Segment {
+    style.stroke: ${colors.active-txn}
+    style.stroke-width: 4
+  }
+  item2: Redo Checkpoint {
+    style.stroke: ${colors.checkpoint}
+    shape: diamond
+  }
+  item3: Resource Warning {
+    style.stroke: ${colors.blocked-truncate}
+    style.stroke-dash: 3
+  }
+}
+
+# POSITIONING FIXES FOR ELK ENGINE
+# ELK does not support near: <object>. Using constant directions.
+checkpoint_marker.near: top-right
+analysis.near: bottom-left
+remediation.near: bottom-right
+
+# CONNECTIONS & INTERDEPENDENCIES
+# Reference the byte offset to the physical segment diagram
+wal_header_detail.0x0064 -> txn_lifecycle.t1_begin: "Physical to Logical Link" {
+  style.stroke: ${colors.pointer}
+  style.stroke-width: 2
+}
+
+wal_storage.segments.seg1 -> truncation_logic.rule2: "MinLSN Pin detected" {
+  style.stroke: ${colors.active-txn}
+  style.stroke-width: 2
+  style.stroke-dash: 5
+}
+
+txn_lifecycle.t1_begin -> wal_storage.segments.seg1: "First WAL Pointer"
+
+analysis -> remediation: "Trigger Alert Flow" {
+  style.stroke: ${colors.blocked-truncate}
+  style.animated: true
+}

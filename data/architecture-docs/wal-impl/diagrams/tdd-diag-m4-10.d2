@@ -1,0 +1,291 @@
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    theme-id: 4
+    sketch: false
+    pad: 20
+  }
+}
+
+title: |md
+  # Background Checkpoint Thread Flow
+  **Component:** Write-Ahead Log (WAL) Manager
+  **Logic:** Periodic state persistence & log truncation
+  **Reference:** Intel Manual / Storage Engine Spec §4.12
+| {
+  near: top-center
+  shape: text
+}
+
+direction: right
+
+# --- Styling & Classes ---
+classes: {
+  state_node: {
+    style: {
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  decision_node: {
+    shape: diamond
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#FF9800"
+    }
+  }
+  process_node: {
+    shape: rectangle
+    style: {
+      fill: "#E8EAF6"
+      stroke: "#3F51B5"
+    }
+  }
+  terminal_node: {
+    shape: circle
+    style: {
+      stroke-width: 4
+    }
+  }
+  critical_path: {
+    style: {
+      stroke: "#2E7D32"
+      stroke-width: 3
+      bold: true
+    }
+  }
+}
+
+# --- Shared Memory Representation ---
+# Exact byte offsets, field sizes, and specific color coding
+# Header=Purple, Data=Blue, Free=Green, Padding=Gray, Pointers=Orange
+ThreadContext: {
+  label: "WAL_THREAD_CONTEXT (Global Memory Space)"
+  shape: sql_table
+  style: {
+    stroke: "#7B1FA2"
+    stroke-width: 2
+    fill: "#7B1FA2" # Header Purple
+    font-color: white
+  }
+  
+  "0x00": "last_checkpoint_lsn (uint64)" {constraint: "8 Bytes"; style.fill: "#E3F2FD"} # Data Blue
+  "0x08": "last_checkpoint_time (uint64)" {constraint: "8 Bytes"; style.fill: "#E3F2FD"} # Data Blue
+  "0x10": "checkpoint_state_ptr (*enum)" {constraint: "8 Bytes"; style.fill: "#FFF3E0"; style.stroke: "#FF9800"} # Pointers Orange
+  "0x18": "dirty_page_count (uint32)" {constraint: "4 Bytes"; style.fill: "#E3F2FD"}
+  "0x1C": "reserved_capacity" {constraint: "4 Bytes"; style.fill: "#E8F5E9"} # Free Green
+  "0x20": "padding_alignment" {constraint: "32 Bytes"; style.fill: "#EEEEEE"} # Padding Gray
+  
+  # Cache line boundary indication
+  footer: "sizeof(WAL_THREAD_CTX) = 64 bytes (aligned to L1 cache line)" {
+    near: bottom-center
+    shape: text
+    style.font-size: 10
+    style.italic: true
+  }
+}
+
+# --- Execution Flow ---
+
+start: "[1] START" {
+  class: [terminal_node; state_node]
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+}
+
+loop_start: "[2] LOOP_ENTRY" {
+  class: [decision_node; state_node]
+}
+
+sleep: "[3] Sleep(100ms)" {
+  class: [process_node; state_node]
+  style.fill: "#E3F2FD"
+  style.stroke: "#2196F3"
+}
+
+shutdown_check: "[4] SHUTDOWN_REQ?" {
+  class: [decision_node; state_node]
+  style.fill: "#FFEBEE"
+  style.stroke: "#F44336"
+}
+
+check_triggers: "[5] Check Triggers" {
+  class: [process_node; state_node]
+}
+
+trigger_check: "[6] TRIGGER_ACTIVE?" {
+  class: [decision_node; state_node]
+}
+
+state_check: "[7] STATE == IDLE?" {
+  class: [decision_node; state_node]
+}
+
+take_checkpoint: "[8] Execute Checkpoint" {
+  class: [process_node; state_node]
+  style: {
+    fill: "#C8E6C9"
+    stroke: "#2E7D32"
+    bold: true
+    double-border: true
+  }
+}
+
+attempt_truncate: "[9] Truncate WAL" {
+  class: [process_node; state_node]
+  style.fill: "#B2DFDB"
+  style.stroke: "#009688"
+}
+
+update_scheduler: "[10] Update Context" {
+  class: [process_node; state_node]
+  style.fill: "#DCEDC8"
+  style.stroke: "#8BC34A"
+}
+
+final_checkpoint: "[11] Final Checkpoint" {
+  class: [process_node; state_node]
+  style.fill: "#FFCDD2"
+  style.stroke: "#E53935"
+}
+
+exit: "[12] EXIT" {
+  class: [terminal_node; state_node]
+  style.fill: "#FFCDD2"
+  style.stroke: "#E53935"
+}
+
+# --- Connectivity & Logic ---
+
+start -> loop_start: "init_thread_affinity"
+
+loop_start -> sleep: "wait_for_timer"
+
+sleep -> shutdown_check: "wake_event"
+
+shutdown_check -> check_triggers: "N (Normal Run)" {
+  class: critical_path
+}
+
+shutdown_check -> final_checkpoint: "Y (Terminate)" {
+  style: {
+    stroke: "#F44336"
+    bold: true
+  }
+}
+
+check_triggers -> trigger_check: "load_thread_context"
+
+trigger_check -> state_check: "Y (Triggered)" {
+  class: critical_path
+}
+
+trigger_check -> loop_start: "N (Skip)" {
+  style: {
+    stroke: "#9E9E9E"
+    stroke-dash: 3
+  }
+}
+
+state_check -> take_checkpoint: "Y (Idle)" {
+  class: critical_path
+}
+
+state_check -> loop_start: "N (Busy/Retry)" {
+  style: {
+    stroke: "#FF9800"
+    stroke-dash: 3
+  }
+}
+
+take_checkpoint -> attempt_truncate: "wal_fsync_success" {
+  class: critical_path
+}
+
+attempt_truncate -> update_scheduler: "truncation_finished"
+
+update_scheduler -> loop_start: "reset_triggers"
+
+final_checkpoint -> exit: "release_mutex"
+
+# --- Technical Annotations ---
+
+annotation_time: |md
+  ### [A] Time Threshold
+  `NOW() - last_checkpoint_time >= 300s`
+  *Checked via monotonic clock*
+| {
+  near: top-right
+  shape: text
+  style.font-size: 11
+  style.font-color: "#455A64"
+}
+
+annotation_count: |md
+  ### [B] Volume Threshold
+  `current_lsn - last_lsn >= 1,073,741,824 bytes`
+  *Calculated against memory-mapped WAL index*
+| {
+  near: bottom-left
+  shape: text
+  style.font-size: 11
+  style.font-color: "#455A64"
+}
+
+annotation_checkpoint: |md
+  ### [C] Atomic Sequence
+  1. `XLOG_CHECKPOINT_SHUTDOWN` or `ONLINE`
+  2. `BufferSync()`: Flush all dirty buffers to OS
+  3. `ProcessRedoLog()`: Update control file LSN
+  4. `fsync()`: Ensure persistence on physical platter
+| {
+  near: center-right
+  shape: text
+  style.font-size: 11
+  style.font-color: "#1B5E20"
+}
+
+annotation_truncate: |md
+  ### [D] Safety Invariants
+  - `seg.max_lsn < min_active_tx_lsn`
+  - `seg.max_lsn < last_checkpoint_lsn`
+  - Cannot truncate segments required for streaming replication
+| {
+  near: bottom-right
+  shape: text
+  style.font-size: 11
+  style.font-color: "#006064"
+}
+
+# --- Legend ---
+
+legend: {
+  near: bottom-right
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#BDBDBD"
+    stroke-width: 1
+  }
+  
+  title: "Flow Legend" {
+    shape: text
+    style.bold: true
+  }
+  
+  l1: "Standard Execution" {
+    style.stroke: "#3F51B5"
+  }
+  l2: "Critical Execution Path" {
+    style: {
+      stroke: "#2E7D32"
+      stroke-width: 3
+    }
+  }
+  l3: "Backoff/Idle Branch" {
+    style: {
+      stroke: "#9E9E9E"
+      stroke-dash: 3
+    }
+  }
+}

@@ -1,0 +1,116 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Torn Write Detection via CRC
+  **Crash mid-write leaves partial record → CRC mismatch detected → truncate to last valid**
+| {near: top-center}
+row_before: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  before_crash: {
+    direction: down
+    label: "BEFORE CRASH"
+    log_file_before: {
+      label: "Log File (on disk)"
+      shape: cylinder
+      width: 280
+      rec1: "Record @ LSN 100\nCRC: 0xA7B3C2D1 ✓"
+      rec2: "Record @ LSN 200\nCRC: 0xF8E4D6C5 ✓"
+      rec3_partial: "Record @ LSN 300\n(INCOMPLETE)"
+    }
+    writer_state: {
+      label: "Writer Process"
+      shape: rectangle
+      width: 200
+      code: |'c
+        // Writing Record @ LSN 300
+        write(fd, header, 28);   // ✓ done
+        write(fd, payload, 48);  // ✓ done
+        // CRASH! CRC not written
+        // write(fd, &crc, 4);
+      '|
+    }
+  }
+}
+row_after: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  recovery: {
+    direction: down
+    label: "AFTER CRASH: Recovery Scan"
+    scan_step1: {
+      label: "Step 1: Read Record @ LSN 100"
+      width: 320
+      code: |'c
+        read(fd, buf, 80);       // Read full record
+        stored_crc = buf[76..79]; // 0xA7B3C2D1
+        computed = crc32(buf, 76);
+        // MATCH ✓ → Record valid
+      '|
+    }
+    scan_step2: {
+      label: "Step 2: Read Record @ LSN 200"
+      width: 320
+      code: |'c
+        read(fd, buf, 80);       // Read full record
+        stored_crc = buf[76..79]; // 0xF8E4D6C5
+        computed = crc32(buf, 76);
+        // MATCH ✓ → Record valid
+      '|
+    }
+    scan_step3: {
+      label: "Step 3: Read Record @ LSN 300"
+      width: 320
+      style.fill: "#FFE4E1"
+      style.stroke: "#CD5C5C"
+      code: |'c
+        read(fd, buf, 80);       // Read "80 bytes"
+        // But only 76 bytes on disk!
+        stored_crc = buf[76..79]; // GARBAGE: 0x???
+        computed = crc32(buf, 76);
+        // MISMATCH ✗ → TORN WRITE!
+      '|
+    }
+  }
+}
+row_truncate: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  truncate_action: {
+    label: "Truncate Action"
+    width: 360
+    style.fill: "#E6FFE6"
+    style.stroke: "#228B22"
+    code: |'c
+      // Detected torn write at LSN 300
+      uint64_t last_valid = 200 + 80; // End of LSN 200
+      // Truncate file to last valid position
+      ftruncate(log_fd, last_valid);
+      // Log now ends cleanly at LSN 200
+      // Recovery proceeds with valid data only
+    '|
+  }
+  final_state: {
+    label: "Recovery Result"
+    shape: cylinder
+    width: 260
+    style.fill: "#E6FFE6"
+    valid_rec1: "Record @ LSN 100 ✓"
+    valid_rec2: "Record @ LSN 200 ✓"
+    truncated: "(garbage truncated)"
+    style.stroke: "#228B22"
+  }
+}
+before_crash -> recovery: "Crash!"
+scan_step1 -> scan_step2: "valid"
+scan_step2 -> scan_step3: "valid"
+scan_step3 -> truncate_action: "CRC mismatch\n→ torn write"
+truncate_action -> final_state: "ftruncate()"

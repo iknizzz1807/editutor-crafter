@@ -1,0 +1,233 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+title: |'md
+# Master Record Atomic Update Pattern
+**POSIX `rename()` guarantees atomic visibility of filesystem changes**
+'| {
+  near: top-center
+  style.font-size: 24
+}
+
+direction: right
+
+# --- ALGORITHM STATE DIAGRAM ---
+steps_container: "Implementation Sequence" {
+  step1: "1. write()\nwal.master.tmp" {
+    shape: rectangle
+    tooltip: "Write new data to a hidden temporary file on the same partition"
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2196F3"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+
+  step2: "2. fsync()\ntemp file" {
+    shape: rectangle
+    tooltip: "Flush kernel buffers to physical media"
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2196F3"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+
+  step3: "3. rename()\n.tmp → master" {
+    shape: rectangle
+    tooltip: "Atomic system call: old file is replaced or new is created"
+    style: {
+      fill: "#4CAF50"
+      stroke: "#2E7D32"
+      stroke-width: 3
+      font-color: white
+      border-radius: 4
+      bold: true
+    }
+  }
+
+  step4: "4. Done\nAtomic Swap ✓" {
+    shape: diamond
+    style: {
+      fill: "#81C784"
+      stroke: "#2E7D32"
+      stroke-width: 2
+    }
+  }
+
+  step1 -> step2: "data durable in\ntemp buffer" {
+    style: {
+      stroke: "#2196F3"
+      stroke-width: 2
+    }
+  }
+  step2 -> step3: "flushed to\nnon-volatile storage" {
+    style: {
+      stroke: "#2196F3"
+      stroke-width: 2
+    }
+  }
+  step3 -> step4: "directory entry\nupdated" {
+    style: {
+      stroke: "#4CAF50"
+      stroke-width: 3
+      animated: true
+    }
+  }
+}
+
+# --- CRASH SAFETY ANALYSIS ---
+crash_scenarios: "Crash Safety Guarantees" {
+  style.fill: "#FAFAFA"
+  
+  crash_after_step1: "CRASH @ S1\n---\nTemp file: Partial/Corrupt\nMaster: Intact (Old)\nRecovery: Use old master" {
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#FF9800"
+      border-radius: 4
+    }
+  }
+  crash_after_step2: "CRASH @ S2\n---\nTemp file: Durable (New)\nMaster: Intact (Old)\nRecovery: Use old master" {
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#FF9800"
+      border-radius: 4
+    }
+  }
+  crash_after_step3: "CRASH @ S3\n---\nTemp file: Deleted\nMaster: Durable (New)\nRecovery: Use new master" {
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#4CAF50"
+      border-radius: 4
+    }
+  }
+}
+
+steps_container.step1 -> crash_scenarios.crash_after_step1: "Power Loss" {style.stroke-dash: 3; style.stroke: "#FF9800"}
+steps_container.step2 -> crash_scenarios.crash_after_step2: "Power Loss" {style.stroke-dash: 3; style.stroke: "#FF9800"}
+steps_container.step4 -> crash_scenarios.crash_after_step3: "Power Loss" {style.stroke-dash: 3; style.stroke: "#4CAF50"}
+
+# --- FILESYSTEM VIEW ---
+filesystem_view: "Filesystem Physical Layout" {
+  grid-columns: 3
+  
+  state_initial: "Initial State" {
+    style.fill: "#F5F5F5"
+    file_old: "wal.master\n(Inode: 101)" {
+      shape: cylinder
+      style: {
+        fill: "#E1BEE7"
+        stroke: "#7B1FA2"
+      }
+    }
+  }
+  
+  state_temp: "After Step 2 (Durable Tmp)" {
+    style.fill: "#F5F5F5"
+    file_old2: "wal.master\n(Inode: 101)" {
+      shape: cylinder
+      style: {
+        fill: "#E1BEE7"
+        stroke: "#7B1FA2"
+      }
+    }
+    file_temp: "wal.master.tmp\n(Inode: 102)" {
+      shape: cylinder
+      style: {
+        fill: "#C8E6C9"
+        stroke: "#388E3C"
+      }
+    }
+  }
+  
+  state_final: "After Step 3 (Atomic Swap)" {
+    style.fill: "#F5F5F5"
+    file_new: "wal.master\n(Inode: 102)" {
+      shape: cylinder
+      style: {
+        fill: "#81C784"
+        stroke: "#2E7D32"
+        bold: true
+      }
+    }
+    file_dead: "Inode 101\n(Unlinked)" {
+      shape: cylinder
+      style: {
+        fill: "#BDBDBD"
+        stroke: "#616161"
+        stroke-dash: 5
+        opacity: 0.5
+      }
+    }
+  }
+  
+  state_initial -> state_temp: "Write(102) + fsync" {style.stroke: "#2196F3"}
+  state_temp -> state_final: "Rename(102, master)" {
+    style: {
+      stroke: "#4CAF50"
+      stroke-width: 3
+      animated: true
+    }
+  }
+}
+
+# --- TECHNICAL EXPLANATION ---
+atomicity_note: |'md
+### POSIX `rename()` Atomicity Guarantee
+The `rename(oldpath, newpath)` system call is atomic:
+1. **Visibility**: Processes see either the old file or the new file, never both or neither.
+2. **Replacement**: If `newpath` exists, it is atomicaly replaced.
+3. **Recovery**: If the system crashes during the rename, the filesystem will recover to a state where either the old path or the new path exists.
+
+c
+// Atomic master record update implementation
+int master_record_atomic_update(const char* path, MasterRecord* rec) {
+    char temp_path[512];
+    snprintf(temp_path, sizeof(temp_path), "%s.tmp", path);
+
+    // 1. Create and Write to temporary file
+    int fd = open(temp_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return -1;
+    write(fd, rec, sizeof(MasterRecord));
+
+    // 2. IMPORTANT: Persist data to disk before rename
+    if (fsync(fd) != 0) {
+        close(fd);
+        return -1;
+    }
+    close(fd);
+
+    // 3. Atomic rename triggers metadata update in FS
+    if (rename(temp_path, path) != 0) {
+        return -1;
+    }
+    return 0; // Atomic swap successful
+}
+
+'| {
+  near: bottom-center
+}
+
+# --- LEGEND ---
+legend: {
+  near: bottom-right
+  old_file: "Old Record (V1)" {
+    shape: cylinder
+    style: {fill: "#E1BEE7"; stroke: "#7B1FA2"}
+  }
+  temp_file: "Temp Data (Durable)" {
+    shape: cylinder
+    style: {fill: "#C8E6C9"; stroke: "#388E3C"}
+  }
+  new_file: "Active Master (V2)" {
+    shape: cylinder
+    style: {fill: "#81C784"; stroke: "#2E7D32"}
+  }
+}

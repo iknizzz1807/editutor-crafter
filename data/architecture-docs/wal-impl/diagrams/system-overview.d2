@@ -1,0 +1,822 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+# =====================================
+# ROW 1: CORE DATA STRUCTURES (M1)
+# =====================================
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_records: {
+    direction: down
+    label: "LOG RECORD FORMAT  [M1]"
+    log_record_header: {
+      shape: sql_table
+      label: "struct LogRecordHeader (wal_record.h)  [M1]"
+      lsn: "uint64_t | byte offset 0x00"
+      type: "uint32_t | RecordType enum"
+      txn_id: "uint32_t | transaction ID"
+      prev_lsn: "uint64_t | chain link"
+      length: "uint32_t | total size"
+      sz: "Total: 28 bytes (0x1C)"
+    }
+    record_types: {
+      shape: class
+      label: "RecordType enum (wal_types.h)"
+      RECORD_INVALID: "0"
+      RECORD_BEGIN: "1 | 32 bytes total"
+      RECORD_UPDATE: "2 | var length"
+      RECORD_COMMIT: "3 | 32 bytes total"
+      RECORD_ABORT: "4 | 32 bytes total"
+      RECORD_CLR: "5 | min 56 bytes"
+      RECORD_CHECKPOINT: "6 | var length"
+    }
+  }
+  layer_update: {
+    direction: down
+    label: "UPDATE RECORD  [M1]"
+    update_record: {
+      shape: sql_table
+      label: "struct UpdateRecord (wal_record.h)  [M1]"
+      header: "LogRecordHeader | 28 bytes"
+      page_id: "uint64_t | 8 bytes"
+      offset: "uint32_t | 4 bytes"
+      old_value_len: "uint32_t | 4 bytes"
+      old_value: "uint8_t* | ptr to before-img"
+      new_value_len: "uint32_t | 4 bytes"
+      new_value: "uint8_t* | ptr to after-img"
+      min_size: "Min: 52 bytes"
+    }
+    update_layout: {
+      shape: class
+      label: "Serialized UPDATE Layout"
+      offset_00: "+0x00: header (28B)"
+      offset_1c: "+0x1C: page_id (8B)"
+      offset_24: "+0x24: offset (4B)"
+      offset_28: "+0x28: old_len + old_val"
+      offset_var: "+var: new_len + new_val"
+      offset_crc: "+end: CRC32 (4B)"
+    }
+  }
+  layer_clr: {
+    direction: down
+    label: "CLR RECORD  [M1]"
+    clr_record: {
+      shape: sql_table
+      label: "struct ClrRecord (wal_record.h)  [M1]"
+      header: "LogRecordHeader | 28 bytes"
+      page_id: "uint64_t | 8 bytes"
+      offset: "uint32_t | 4 bytes"
+      undo_data_len: "uint32_t | 4 bytes"
+      undo_data: "uint8_t* | before-image"
+      undo_next_lsn: "uint64_t | CRITICAL: next to undo"
+      min_size: "Min: 56 bytes"
+    }
+    clr_distinction: {
+      shape: class
+      label: "CLR Key Distinction"
+      header_prev_lsn: "header.prev_lsn: prev in txn"
+      undo_next_lsn: "undo_next_lsn: next to undo"
+      example: "UPDATE LSN=200, prev=150"
+      result: "CLR: prev=200, undo_next=150"
+    }
+  }
+}
+# =====================================
+# ROW 2: TRANSACTION API (M1)
+# =====================================
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_txn_table: {
+    direction: down
+    label: "TRANSACTION TABLE  [M1]"
+    txn_entry: {
+      shape: sql_table
+      label: "struct TransactionEntry (wal_transaction.h)  [M1]"
+      txn_id: "TxnId | uint32_t"
+      status: "TxnStatus | ACTIVE/COMMIT/ABORT"
+      first_lsn: "Lsn | BEGIN record LSN"
+      last_lsn: "Lsn | most recent record"
+      sz: "Total: 28 bytes"
+    }
+    txn_table: {
+      shape: class
+      label: "TransactionTable (wal_transaction.h)"
+      entries: "TransactionEntry* | array"
+      capacity: "size_t | max entries"
+      count: "size_t | current count"
+      +txn_table_init(table, cap): "int"
+      +txn_table_find(table, id): "TransactionEntry*"
+      +txn_table_add(table, ...): "TransactionEntry*"
+      +txn_table_remove(table, id): "int"
+    }
+  }
+  layer_txn_mgr: {
+    direction: down
+    label: "TRANSACTION MANAGER  [M1]"
+    txn_manager: {
+      shape: class
+      label: "TransactionManager (wal_transaction.h)  [M1]"
+      next_lsn: "Lsn | monotonically increasing"
+      txn_table: "TransactionTable | active txns"
+      write_record_fn: "int (*)(mgr, data, len)"
+      +txn_manager_create(): "TransactionManager*"
+      +txn_manager_destroy(mgr): "void"
+      +txn_begin(mgr, record): "TxnId"
+      +txn_write(mgr, id, page, off, ...): "int"
+      +txn_commit(mgr, id, record): "int"
+      +txn_abort_simple(mgr, id, rec): "int"
+    }
+    serialized_record: {
+      shape: sql_table
+      label: "struct SerializedRecord"
+      data: "uint8_t* | caller must free"
+      len: "size_t | record size"
+      lsn: "Lsn | assigned LSN"
+    }
+  }
+  layer_prev_lsn: {
+    direction: down
+    label: "PREV_LSN CHAIN  [M1]"
+    prev_lsn_example: {
+      shape: class
+      label: "prev_lsn Chain Example"
+      t1_begin: "T1 BEGIN: LSN=100, prev=0"
+      t2_begin: "T2 BEGIN: LSN=150, prev=0"
+      t1_update: "T1 UPDATE: LSN=200, prev=100"
+      t2_update: "T2 UPDATE: LSN=250, prev=150"
+      t1_commit: "T1 COMMIT: LSN=300, prev=200"
+      chain_t1: "T1 chain: 300->200->100->0"
+      chain_t2: "T2 chain: 250->150->0"
+    }
+    prev_lsn_invariant: {
+      shape: rectangle
+      label: |md
+        **Invariant**: prev_lsn points to previous
+        record of the SAME transaction, not the
+        previous record in the log.
+      |
+    }
+  }
+}
+# =====================================
+# ROW 3: LOG WRITER (M2)
+# =====================================
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_write_buffer: {
+    direction: down
+    label: "WRITE BUFFER  [M2]"
+    write_buffer: {
+      shape: sql_table
+      label: "struct WriteBuffer (wal_writer.h)  [M2]"
+      buffer: "uint8_t* | allocated memory"
+      capacity: "size_t | 1MB default"
+      used: "size_t | bytes in buffer"
+      first_buffered_lsn: "Lsn | first record LSN"
+      last_buffered_lsn: "Lsn | last record LSN"
+      needs_flush: "bool | COMMIT buffered"
+    }
+    write_buffer_fns: {
+      shape: class
+      label: "Write Buffer API (wal_writer.h)"
+      +write_buffer_init(buf, cap): "int"
+      +write_buffer_destroy(buf): "void"
+      +write_buffer_append(buf, data, len, lsn, is_commit): "int"
+      +write_buffer_needs_flush(buf): "bool"
+      +write_buffer_clear(buf): "void"
+    }
+  }
+  layer_segment: {
+    direction: down
+    label: "LOG SEGMENTS  [M2]"
+    log_segment: {
+      shape: sql_table
+      label: "struct LogSegment (wal_segment.h)  [M2]"
+      segment_id: "uint32_t | 1, 2, 3, ..."
+      fd: "int | file descriptor"
+      start_lsn: "uint64_t | first record LSN"
+      current_offset: "uint64_t | write position"
+      size_limit: "uint64_t | 64MB default"
+    }
+    segment_manager: {
+      shape: class
+      label: "LogSegmentManager (wal_segment.h)"
+      base_path: "char[256] | /data/wal"
+      current: "LogSegment | active segment"
+      segment_count: "uint32_t | total created"
+      segment_size_limit: "uint64_t | rotation threshold"
+      +segment_manager_init(mgr, path, limit): "int"
+      +segment_manager_write(mgr, data, len): "int"
+      +segment_manager_rotate(mgr): "int"
+      +segment_manager_get_fd(mgr): "int"
+    }
+    segment_naming: {
+      shape: rectangle
+      label: |md
+        **Naming Convention**:
+        
+        /data/wal.000001  [LSN 0-64MB]
+        /data/wal.000002  [LSN 64MB-128MB]
+        /data/wal.000003  [active]
+        
+      |
+    }
+  }
+  layer_group_commit: {
+    direction: down
+    label: "GROUP COMMIT  [M2]"
+    group_commit_mgr: {
+      shape: sql_table
+      label: "struct GroupCommitManager (wal_writer.h)  [M2]"
+      lock: "pthread_mutex_t | state protection"
+      sync_complete: "pthread_cond_t | signal waiters"
+      state: "GroupCommitState | INACTIVE/LEADER/..."
+      log_fd: "int | fd to fsync"
+      pending_sync_lsn: "uint64_t | max LSN needing sync"
+      last_synced_lsn: "uint64_t | confirmed durable"
+      waiter_count: "uint32_t | followers waiting"
+      total_syncs: "uint64_t | statistics"
+    }
+    group_commit_protocol: {
+      shape: class
+      label: "Group Commit Protocol"
+      leader_step1: "1. First caller becomes LEADER"
+      leader_step2: "2. Leader releases lock"
+      leader_step3: "3. Leader calls fsync(log_fd)"
+      leader_step4: "4. Leader updates last_synced_lsn"
+      leader_step5: "5. Leader broadcasts to waiters"
+      follower_step1: "Follower: increment waiter_count"
+      follower_step2: "Follower: wait on condition var"
+      follower_step3: "Follower: check last_synced >= my_lsn"
+    }
+  }
+}
+# =====================================
+# ROW 4: WAL WRITER (M2)
+# =====================================
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_wal_writer: {
+    direction: down
+    label: "WAL WRITER  [M2]"
+    wal_writer: {
+      shape: class
+      label: "WalWriter (wal_writer.h)  [M2]"
+      segments: "LogSegmentManager"
+      write_buffer: "WriteBuffer | 1MB default"
+      group_commit: "GroupCommitManager"
+      append_lock: "pthread_mutex_t | serializes appends"
+      next_lsn: "uint64_t | = current file offset"
+      fsync_interval: "uint64_t | auto-sync bytes"
+      is_shutdown: "bool"
+      +wal_writer_create(path, seg_sz, buf_sz): "WalWriter*"
+      +wal_writer_destroy(writer): "void"
+      +wal_append(writer, data, len, lsn): "int"
+      +wal_commit_sync(writer, commit_lsn, timeout): "GroupCommitResult"
+      +wal_flush_buffer(writer): "int"
+      +wal_force_sync(writer): "int"
+    }
+  }
+  layer_lsn_offset: {
+    direction: down
+    label: "LSN-AS-OFFSET  [M2]"
+    lsn_design: {
+      shape: sql_table
+      label: "LSN = Byte Offset Design"
+      next_lsn: "uint64_t | current file size"
+      after_append: "next_lsn += record_length"
+      invariant: "LSN is unique, monotonically increasing"
+      lookup: "LSN N -> seek to offset N"
+    }
+    append_flow: {
+      shape: class
+      label: "Append Flow"
+      step1: "1. Acquire append_lock"
+      step2: "2. lsn = next_lsn"
+      step3: "3. Add to write_buffer"
+      step4: "4. next_lsn += record_len"
+      step5: "5. Release append_lock"
+      step6: "6. Return assigned LSN"
+    }
+  }
+  layer_torn_write: {
+    direction: down
+    label: "TORN WRITE DETECTION  [M2]"
+    torn_write_algo: {
+      shape: class
+      label: "Torn Write Detection"
+      scan: "Scan log from beginning"
+      read_header: "Read 28-byte header"
+      validate_len: "Check length in valid range"
+      read_full: "Read full record"
+      verify_crc: "Compute CRC, compare stored"
+      truncate: "ftruncate at last valid offset"
+    }
+    torn_write_fn: {
+      shape: class
+      label: "API (wal_writer.h)"
+      +wal_detect_truncate_torn_writes(path, last_valid_lsn): "int"
+      +wal_validate_record(fd, lsn): "ssize_t"
+    }
+  }
+}
+# =====================================
+# ROW 5: RECOVERY STRUCTURES (M3)
+# =====================================
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_recovery_txn: {
+    direction: down
+    label: "RECOVERY TXN TABLE  [M3]"
+    recovery_txn_entry: {
+      shape: sql_table
+      label: "struct RecoveryTxnEntry (wal_recovery.h)  [M3]"
+      txn_id: "TxnId | uint32_t"
+      status: "TxnStatus | ACTIVE/COMMITTED/ABORTED"
+      first_lsn: "Lsn | BEGIN record LSN"
+      last_lsn: "Lsn | most recent record"
+    }
+    recovery_txn_table: {
+      shape: class
+      label: "RecoveryTxnTable (wal_recovery.h)"
+      entries: "RecoveryTxnEntry*"
+      capacity: "size_t | MAX_ACTIVE_TXNS"
+      count: "size_t"
+      hash_table: "uint32_t* | O(1) lookup"
+      +recovery_txn_table_init(table, cap): "int"
+      +recovery_txn_table_find(table, id): "RecoveryTxnEntry*"
+      +recovery_txn_table_count_active(table): "size_t"
+    }
+  }
+  layer_dpt: {
+    direction: down
+    label: "DIRTY PAGE TABLE  [M3]"
+    dirty_page_entry: {
+      shape: sql_table
+      label: "struct DirtyPageEntry (wal_recovery.h)  [M3]"
+      page_id: "PageId | uint64_t"
+      rec_lsn: "Lsn | first dirtying LSN"
+    }
+    dirty_page_table: {
+      shape: class
+      label: "DirtyPageTable (wal_recovery.h)"
+      entries: "DirtyPageEntry*"
+      capacity: "size_t | MAX_DIRTY_PAGES"
+      count: "size_t"
+      page_id_hash: "uint64_t* | O(1) lookup"
+      +dpt_init(dpt, cap): "int"
+      +dpt_find(dpt, page_id): "DirtyPageEntry*"
+      +dpt_add(dpt, page_id, rec_lsn): "int"
+      +dpt_min_rec_lsn(dpt): "Lsn"
+    }
+  }
+  layer_buffer_pool: {
+    direction: down
+    label: "BUFFER POOL  [M3]"
+    buffer_page: {
+      shape: sql_table
+      label: "struct BufferPage (wal_buffer_pool.h)  [M3]"
+      page_id: "PageId | 8 bytes"
+      data: "uint8_t[4096] | PAGE_SIZE"
+      page_lsn: "Lsn | last modification LSN"
+      is_dirty: "bool | modified flag"
+      is_valid: "bool | data loaded"
+      pin_count: "uint32_t | ref count"
+      sz: "Total: 4128 bytes"
+    }
+    buffer_pool: {
+      shape: class
+      label: "BufferPool (wal_buffer_pool.h)"
+      pages: "BufferPage*"
+      capacity: "size_t"
+      page_hash: "BufferPage** | lookup"
+      db_fd: "int | database file"
+      +buffer_pool_init(pool, cap, db_path): "int"
+      +buffer_pool_get_page(pool, page_id, page): "int"
+      +buffer_pool_flush_all(pool): "int"
+      +buffer_pool_get_page_lsn(page): "Lsn"
+      +buffer_pool_set_page_lsn(page, lsn): "void"
+    }
+  }
+}
+# =====================================
+# ROW 6: UNDO QUEUE (M3)
+# =====================================
+row6: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_undo_work: {
+    direction: down
+    label: "UNDO WORK  [M3]"
+    undo_work_item: {
+      shape: sql_table
+      label: "struct UndoWorkItem (wal_undo.h)  [M3]"
+      txn_id: "TxnId | transaction"
+      record_lsn: "Lsn | record to undo"
+      record_type: "RecordType | UPDATE or CLR"
+    }
+    undo_queue: {
+      shape: class
+      label: "UndoQueue - Max Heap (wal_undo.h)"
+      items: "UndoWorkItem*"
+      capacity: "size_t | MAX_UNDO_QUEUE_SIZE"
+      count: "size_t"
+      invariant: "max-heap: parent >= children"
+      +undo_queue_init(queue, cap): "int"
+      +undo_queue_push(queue, item): "int"
+      +undo_queue_pop(queue, out_item): "bool"
+      +undo_queue_is_empty(queue): "bool"
+    }
+  }
+  layer_undo_order: {
+    direction: down
+    label: "UNDO ORDER  [M3]"
+    undo_order_example: {
+      shape: class
+      label: "Why Global LSN Order?"
+      scenario: "T1: UPDATE page 5 at LSN 100"
+      scenario2: "T2: UPDATE page 5 at LSN 200"
+      wrong: "Wrong: undo T1 first, then T2"
+      wrong_result: "Result: wrong before-image"
+      correct: "Correct: undo LSN 200 first, then 100"
+      correct_result: "Result: correct rollback"
+    }
+    undo_priority: {
+      shape: rectangle
+      label: |md
+        **Undo uses max-heap ordered by LSN**
+        - Pop returns highest LSN first
+        - Ensures correct before-image application
+        - Works across all active transactions
+      |
+    }
+  }
+  layer_recovery_mgr: {
+    direction: down
+    label: "RECOVERY MANAGER  [M3]"
+    recovery_manager: {
+      shape: class
+      label: "RecoveryManager (wal_recovery.h)  [M3]"
+      state: "RecoveryState | ANALYZING/REDOING/..."
+      txn_table: "RecoveryTxnTable"
+      dpt: "DirtyPageTable"
+      pool: "BufferPool*"
+      log_base_path: "const char*"
+      undo_queue: "UndoQueue"
+      checkpoint_lsn: "Lsn | from M4"
+      records_analyzed: "uint64_t | statistics"
+      records_redone: "uint64_t"
+      records_undone: "uint64_t"
+      clrs_written: "uint64_t"
+      +recovery_manager_init(mgr, pool, log_path): "int"
+      +recovery_run(mgr): "int"
+      +recovery_analysis_phase(mgr): "int"
+      +recovery_redo_phase(mgr): "int"
+      +recovery_undo_phase(mgr): "int"
+    }
+  }
+}
+# =====================================
+# ROW 7: ARIES PHASES (M3)
+# =====================================
+row7: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_analysis: {
+    direction: down
+    label: "ANALYSIS PHASE  [M3]"
+    analysis_algo: {
+      shape: class
+      label: "Analysis Algorithm"
+      start: "Start at checkpoint_lsn (or 0)"
+      begin: "BEGIN: add txn, status=ACTIVE"
+      update: "UPDATE: update last_lsn, add page to DPT"
+      clr: "CLR: update last_lsn, add page to DPT"
+      commit: "COMMIT: mark status=COMMITTED"
+      abort: "ABORT: mark status=ABORTED"
+      result: "ACTIVE txns need undo"
+    }
+    analysis_output: {
+      shape: rectangle
+      label: |md
+        **Analysis Output**:
+        - Transaction Table: all active txns
+        - Dirty Page Table: pages needing redo
+        - min_rec_lsn: redo starting point
+      |
+    }
+  }
+  layer_redo: {
+    direction: down
+    label: "REDO PHASE  [M3]"
+    redo_algo: {
+      shape: class
+      label: "Redo Algorithm"
+      start: "Start at min_rec_lsn from DPT"
+      scan: "Scan forward through log"
+      check_dpt: "If page not in DPT: skip"
+      check_pagelsn: "If page_lsn >= record_lsn: skip"
+      apply: "Apply after-image to page"
+      update: "Update page_lsn = record_lsn"
+      flush: "Flush all modified pages"
+    }
+    redo_idempotent: {
+      shape: rectangle
+      label: |md
+        **Idempotency Check**:
+        
+        page_lsn = read_page_lsn(page)
+        if page_lsn >= record_lsn:
+            skip  # already applied
+        
+        Running redo N times = same result
+      |
+    }
+  }
+  layer_undo: {
+    direction: down
+    label: "UNDO PHASE  [M3]"
+    undo_algo: {
+      shape: class
+      label: "Undo Algorithm"
+      build: "Build queue from ACTIVE txns"
+      pop: "Pop highest LSN from queue"
+      read: "Read record at that LSN"
+      if_update: "UPDATE: apply before-image, write CLR"
+      if_clr: "CLR: follow undo_next_lsn"
+      if_begin: "BEGIN: write ABORT record"
+      push: "Push prev_lsn/undo_next_lsn to queue"
+      flush: "Flush pages, sync log"
+    }
+    undo_clr_write: {
+      shape: class
+      label: "CLR Generation"
+      apply_before: "1. Apply before-image to page"
+      write_clr: "2. Write CLR with undo_next_lsn"
+      set_pagelsn: "3. page_lsn = CLR's LSN"
+      continue: "4. If prev_lsn > 0: push to queue"
+      abort: "5. Else: write ABORT record"
+    }
+  }
+}
+# =====================================
+# ROW 8: CHECKPOINT (M4)
+# =====================================
+row8: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_master_record: {
+    direction: down
+    label: "MASTER RECORD  [M4]"
+    master_record: {
+      shape: sql_table
+      label: "struct MasterRecord (wal_master_record.h)  [M4]"
+      magic: "uint32_t | 0x57414C4D 'WALM'"
+      version: "uint32_t | format version"
+      last_checkpoint_lsn: "uint64_t | CHECKPOINT_END LSN"
+      checkpoint_count: "uint64_t | total checkpoints"
+      create_time: "uint64_t | Unix timestamp"
+      update_time: "uint64_t | last update"
+      crc32: "uint32_t | checksum"
+      padding: "uint8_t[20] | pad to 64B"
+      sz: "Total: 64 bytes"
+    }
+    master_record_fns: {
+      shape: class
+      label: "Master Record API"
+      +master_record_init(rec): "void"
+      +master_record_read(path, rec): "int"
+      +master_record_write(path, rec): "int"
+      +master_record_validate(rec): "bool"
+      atomic: "Write: temp file + rename"
+    }
+  }
+  layer_checkpoint_snapshot: {
+    direction: down
+    label: "CHECKPOINT SNAPSHOT  [M4]"
+    checkpoint_txn_entry: {
+      shape: sql_table
+      label: "CheckpointTxnEntry"
+      txn_id: "TxnId"
+      status: "TxnStatus"
+      first_lsn: "Lsn"
+      last_lsn: "Lsn"
+      sz: "24 bytes each"
+    }
+    checkpoint_dirty_entry: {
+      shape: sql_table
+      label: "CheckpointDirtyPageEntry"
+      page_id: "PageId"
+      rec_lsn: "Lsn"
+      sz: "16 bytes each"
+    }
+    checkpoint_snapshot: {
+      shape: class
+      label: "CheckpointSnapshot (wal_checkpoint.h)"
+      begin_lsn: "Lsn | CHECKPOINT_BEGIN"
+      end_lsn: "Lsn | CHECKPOINT_END"
+      num_active_txns: "uint32_t"
+      txn_entries: "CheckpointTxnEntry*"
+      num_dirty_pages: "uint32_t"
+      dirty_page_entries: "CheckpointDirtyPageEntry*"
+      capture_time_us: "uint64_t"
+    }
+  }
+  layer_checkpoint_mgr: {
+    direction: down
+    label: "CHECKPOINT MANAGER  [M4]"
+    checkpoint_manager: {
+      shape: class
+      label: "CheckpointManager (wal_checkpoint.h)  [M4]"
+      state: "CheckpointState | INACTIVE/..."
+      state_lock: "pthread_mutex_t"
+      current_snapshot: "CheckpointSnapshot"
+      time_interval_ms: "uint64_t | 30000 default"
+      record_count_interval: "uint64_t | 10000 default"
+      checkpoint_count: "uint64_t | statistics"
+      active_txn_table: "TransactionTable*"
+      active_dpt: "DirtyPageTable*"
+      wal_writer: "WalWriter*"
+      master_record_path: "char[256]"
+      +checkpoint_manager_init(mgr, ...): "int"
+      +checkpoint_take(mgr, trigger, lsn): "int"
+      +checkpoint_is_in_progress(mgr): "bool"
+    }
+    checkpoint_flow: {
+      shape: class
+      label: "Fuzzy Checkpoint Flow"
+      step1: "1. Write CHECKPOINT_BEGIN"
+      step2: "2. Capture txn_table snapshot (<100us)"
+      step3: "3. Capture DPT snapshot (<100us)"
+      step4: "4. Write CHECKPOINT_END"
+      step5: "5. fsync log"
+      step6: "6. Update master record (atomic)"
+      note: "Transactions continue during 2-6"
+    }
+  }
+}
+# =====================================
+# ROW 9: TRUNCATION (M4)
+# =====================================
+row9: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_truncator: {
+    direction: down
+    label: "LOG TRUNCATOR  [M4]"
+    segment_metadata: {
+      shape: sql_table
+      label: "struct SegmentMetadata (wal_truncate.h)  [M4]"
+      segment_id: "uint32_t"
+      file_path: "char[512]"
+      start_lsn: "uint64_t"
+      end_lsn: "uint64_t"
+      file_size: "uint64_t"
+      is_active: "bool"
+    }
+    log_truncator: {
+      shape: class
+      label: "LogTruncator (wal_truncate.h)"
+      base_path: "const char*"
+      segments: "SegmentMetadata*"
+      segment_count: "size_t"
+      +truncator_init(truncator, base_path): "int"
+      +truncator_scan_segments(truncator): "int"
+      +truncator_can_delete_segment(...): "bool"
+      +truncator_truncate(truncator, snapshot, result): "int"
+    }
+    truncation_result: {
+      shape: sql_table
+      label: "TruncationResult"
+      segments_deleted: "uint32_t"
+      bytes_freed: "uint64_t"
+      segments_blocked: "uint32_t"
+      blocking_txns: "uint32_t"
+    }
+  }
+  layer_truncation_rules: {
+    direction: down
+    label: "TRUNCATION SAFETY  [M4]"
+    truncation_rules: {
+      shape: class
+      label: "Safety Rules"
+      rule1: "Rule 1: segment.end_lsn < checkpoint.min_rec_lsn"
+      reason1: "Segment not needed for redo"
+      rule2: "Rule 2: No active txn first_lsn in segment"
+      reason2: "Segment not needed for undo"
+      active: "Active segment: never delete"
+      long_txn: "Long-running txn blocks truncation"
+    }
+    truncation_example: {
+      shape: rectangle
+      label: |md
+        **Example**:
+        - Checkpoint min_rec_lsn = 1500
+        - Segment 1: end_lsn = 1000, no active txns
+        - Segment 2: end_lsn = 2000
+        - Result: Segment 1 deleted, Segment 2 kept
+      |
+    }
+  }
+  layer_checkpoint_system: {
+    direction: down
+    label: "CHECKPOINT SYSTEM  [M4]"
+    checkpoint_system: {
+      shape: class
+      label: "CheckpointSystem (wal_checkpoint.h)  [M4]"
+      manager: "CheckpointManager"
+      scheduler: "CheckpointScheduler"
+      truncator: "LogTruncator"
+      checkpoint_thread: "pthread_t"
+      thread_running: "bool"
+      shutdown_requested: "bool"
+      check_interval_ms: "uint64_t"
+      +checkpoint_system_create(...): "CheckpointSystem*"
+      +checkpoint_system_destroy(sys): "void"
+      +checkpoint_system_force_checkpoint(sys, lsn): "int"
+    }
+    scheduler: {
+      shape: class
+      label: "CheckpointScheduler"
+      time_interval_ms: "uint64_t"
+      record_count_interval: "uint64_t"
+      last_checkpoint_time_ms: "uint64_t"
+      last_checkpoint_lsn: "Lsn"
+      records_since_checkpoint: "uint64_t"
+      +checkpoint_scheduler_should_checkpoint(...): "CheckpointTrigger"
+    }
+  }
+}
+# =====================================
+# CONNECTIONS
+# =====================================
+# M1 Connections
+layer_records.log_record_header -> layer_update.update_record: "header field"
+layer_records.log_record_header -> layer_clr.clr_record: "header field"
+layer_records.record_types -> layer_records.log_record_header: "type enum"
+layer_txn_table.txn_table -> layer_txn_mgr.txn_manager: "member"
+layer_txn_mgr.txn_manager -> layer_txn_mgr.serialized_record: "returns"
+layer_update.update_record -> layer_txn_mgr.txn_manager: "write_txn generates"
+layer_clr.clr_record -> layer_txn_mgr.txn_manager: "abort generates"
+layer_prev_lsn.prev_lsn_example -> layer_txn_table.txn_entry: "links via last_lsn"
+# M2 Connections
+layer_write_buffer.write_buffer -> layer_wal_writer.wal_writer: "member"
+layer_segment.segment_manager -> layer_wal_writer.wal_writer: "member"
+layer_group_commit.group_commit_mgr -> layer_wal_writer.wal_writer: "member"
+layer_wal_writer.wal_writer -> layer_lsn_offset.lsn_design: "implements"
+layer_wal_writer.wal_writer -> layer_torn_write.torn_write_fn: "uses on startup"
+layer_segment.segment_manager -> layer_segment.segment_naming: "creates files"
+layer_group_commit.group_commit_mgr -> layer_group_commit.group_commit_protocol: "implements"
+# M3 Connections
+layer_recovery_txn.recovery_txn_table -> layer_recovery_mgr.recovery_manager: "member"
+layer_dpt.dirty_page_table -> layer_recovery_mgr.recovery_manager: "member"
+layer_buffer_pool.buffer_pool -> layer_recovery_mgr.recovery_manager: "reference"
+layer_undo_work.undo_queue -> layer_recovery_mgr.recovery_manager: "member"
+layer_recovery_mgr.recovery_manager -> layer_analysis.analysis_algo: "runs"
+layer_recovery_mgr.recovery_manager -> layer_redo.redo_algo: "runs"
+layer_recovery_mgr.recovery_manager -> layer_undo.undo_algo: "runs"
+layer_undo.undo_order_example -> layer_undo_work.undo_queue: "justifies max-heap"
+layer_undo.undo_clr_write -> layer_clr.clr_record: "generates during undo"
+# M4 Connections
+layer_master_record.master_record -> layer_checkpoint_mgr.checkpoint_manager: "updates"
+layer_checkpoint_snapshot.checkpoint_snapshot -> layer_checkpoint_mgr.checkpoint_manager: "captures"
+layer_checkpoint_mgr.checkpoint_manager -> layer_checkpoint_system.checkpoint_system: "member"
+layer_truncator.log_truncator -> layer_checkpoint_system.checkpoint_system: "member"
+layer_scheduler.scheduler -> layer_checkpoint_system.checkpoint_system: "member"
+layer_checkpoint_mgr.checkpoint_flow -> layer_master_record.master_record_fns: "calls"
+layer_truncator.truncation_rules -> layer_truncator.log_truncator: "implemented by"
+layer_truncation_rules.truncation_example -> layer_truncation_result: "produces"
+# Cross-milestone connections
+layer_txn_mgr.txn_manager -> layer_wal_writer.wal_writer: "M1 -> M2 | writes via"
+layer_wal_writer.wal_writer -> layer_recovery_mgr.recovery_manager: "M2 -> M3 | log consumed by"
+layer_checkpoint_mgr.checkpoint_manager -> layer_recovery_mgr.recovery_manager: "M4 -> M3 | provides checkpoint_lsn"
+layer_segment.segment_manager -> layer_truncator.log_truncator: "M2 -> M4 | segments deleted by"
+# =====================================
+# MILESTONE INDEX
+# =====================================
+milestone_index: {
+  shape: sql_table
+  label: "Milestone Index"
+  m1: "M1 | wal-impl-m1 | Log Record Format & Transaction API"
+  m2: "M2 | wal-impl-m2 | Log Writer with Group Commit"
+  m3: "M3 | wal-impl-m3 | ARIES Crash Recovery with CLRs"
+  m4: "M4 | wal-impl-m4 | Fuzzy Checkpointing & Log Truncation"
+}

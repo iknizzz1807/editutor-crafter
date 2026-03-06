@@ -1,0 +1,249 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# --- INTERPRETER LOOP TECHNICAL SPECIFICATION ---
+# This diagram describes the instruction lifecycle of a register-based VM.
+# Engineering Note: Timing values (⏱) assume x86_64 target with 3GHz+ clock.
+
+InterpreterLoop: {
+  shape: sequence_diagram
+  style: {
+    stroke-width: 2
+  }
+
+  # --- Participant Definitions (Register & Memory Layout) ---
+  
+  BytecodeArray: "Bytecode Array\n(chunk->code[])" {
+    tooltip: "Sequential instruction stream"
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2E86AB"
+      stroke-width: 2
+      double-border: true
+    }
+  }
+  
+  IP: "Instruction Pointer\n(vm->ip)" {
+    shape: circle
+    tooltip: "Hardware or Virtual Register"
+    style: {
+      fill: "#FFE5B4"
+      stroke: "#FF8C00"
+      stroke-width: 2
+    }
+  }
+  
+  OpcodeDecoder: "Decoder\n(OpCode cast)" {
+    shape: diamond
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+      stroke-width: 2
+    }
+  }
+  
+  DispatchSwitch: "Dispatch Table\n(Jump Table)" {
+    shape: rectangle
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+      stroke-width: 2
+    }
+  }
+  
+  Handlers: "Exec Handlers\n(Opcode Logic)" {
+    shape: rectangle
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#E65100"
+      stroke-width: 2
+      multiple: true
+    }
+  }
+  
+  OperandStack: "Operand Stack\n(vm->stack[])" {
+    tooltip: "Hot L1 cache memory"
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1565C0"
+      stroke-width: 2
+    }
+  }
+  
+  ConstantPool: "Constant Pool\n(chunk->constants)" {
+    tooltip: "Random access metadata"
+    style: {
+      fill: "#FCE4EC"
+      stroke: "#C2185B"
+      stroke-width: 2
+    }
+  }
+
+  # --- FETCH PHASE ---
+  IP -> BytecodeArray: "1. FETCH: read [ip]" {
+    style: {
+      stroke: "#FF8C00"
+      stroke-width: 2
+    }
+  }
+  BytecodeArray."⏱ ~5ns (L1 hit)\n📍 Sequential access"
+
+  IP -> IP: "2. ADVANCE: ip++" {
+    style: {
+      stroke: "#FF8C00"
+      stroke-width: 2
+      stroke-dash: 3
+    }
+  }
+  IP."⏱ ~1ns (register update)"
+
+  # --- DECODE PHASE ---
+  BytecodeArray -> OpcodeDecoder: "3. DECODE: cast to enum" {
+    style: {
+      stroke: "#2E7D32"
+      stroke-width: 2
+    }
+  }
+  OpcodeDecoder."⏱ ~2ns (ALU cast)\n📍 No memory access"
+
+  # --- DISPATCH PHASE ---
+  OpcodeDecoder -> DispatchSwitch: "4. DISPATCH: switch(op)" {
+    style: {
+      stroke: "#7B1FA2"
+      stroke-width: 2
+    }
+  }
+  DispatchSwitch."⏱ ~10-50ns\n⚠ Branch predictor dependency"
+
+  # --- EXECUTE PHASE (Example: OP_LOAD_CONST) ---
+  ExecuteBlock: {
+    DispatchSwitch -> Handlers: "5. EXECUTE: case OP_LOAD_CONST" {
+      style: {
+        stroke: "#E65100"
+        stroke-width: 2
+      }
+    }
+    Handlers."⏱ ~5ns (indirect jump)"
+
+    Handlers -> BytecodeArray: "Fetch 16-bit Index" {
+      style: {
+        stroke: "#2E86AB"
+        stroke-width: 2
+      }
+    }
+    BytecodeArray."⏱ ~10ns (2x byte read)\n📍 Offset = ip + 1"
+
+    Handlers -> Handlers: "ip += 2 (operand skip)" {
+      style: {
+        stroke: "#E65100"
+        stroke-width: 2
+        stroke-dash: 3
+      }
+    }
+    Handlers."⏱ ~1ns"
+
+    Handlers -> ConstantPool: "constants.values[idx]" {
+      style: {
+        stroke: "#C2185B"
+        stroke-width: 2
+      }
+    }
+    ConstantPool."⏱ ~50ns+\n📍 Random access (L2/L3 miss risk) ⚠"
+
+    Handlers -> OperandStack: "push(val)" {
+      style: {
+        stroke: "#1565C0"
+        stroke-width: 2
+      }
+    }
+    OperandStack."⏱ ~5ns\n🔥 Stack Top in L1"
+  }
+
+  # --- LOOP PHASE ---
+  Handlers -> IP: "6. LOOP: Next instruction" {
+    style: {
+      stroke: "#666666"
+      stroke-width: 2
+      stroke-dash: 5
+      animated: true
+    }
+  }
+  IP."⏱ ~1ns\n🔁 Loop condition check"
+}
+
+# --- DOCUMENTATION COMPONENTS ---
+
+TimingSummary: |'md
+## Timing Summary per Iteration
+| Phase    | Latency    | Cache Characteristic |
+|----------|------------|----------------------|
+| FETCH    | ~5ns       | L1 Sequential Hit    |
+| DECODE   | ~2ns       | Zero-latency Register|
+| DISPATCH | ~10-50ns   | Pipeline Flush Risk  |
+| EXECUTE  | ~20-100ns  | Opcode Dependent     |
+| **Total**| **~40-160ns**| **~12.5M - 2.5M IPS** |
+
+**Critical Path**: Dispatch and Execution are the primary targets for optimization (Computed Goto / Tail Calls).
+'| {
+  near: bottom-right
+  style: {
+    fill: "#F5F5F5"
+    stroke: "#999999"
+    border-radius: 8
+  }
+}
+
+MemoryPattern: |'md
+## Memory Access Profile
+- **Bytecode Stream**: High spatial locality. Pre-fetcher friendly.
+- **Constant Pool**: Low locality. Causes TLB pressure if pool is large.
+- **Operand Stack**: Extremely high temporal locality. Usually fits entirely in L1.
+
+**Performance Trap**: OP_LOAD_CONST causes a pipeline stall while waiting for the constant pool pointer dereference.
+'| {
+  near: bottom-left
+  style: {
+    fill: "#F5F5F5"
+    stroke: "#999999"
+    border-radius: 8
+  }
+}
+
+OpcodeCategories: {
+  label: "Instruction Set Architecture (ISA) Map"
+  near: top-right
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#CCCCCC"
+  }
+  Control: "Control Flow (0x0*)\nHALT, JUMP, CALL" {
+    style.fill: "#FFEBEE"
+  }
+  Stack: "Stack Ops (0x1*)\nLOAD_CONST, PUSH, POP" {
+    style.fill: "#E3F2FD"
+  }
+  Arithmetic: "Arithmetic (0x2*)\nADD, SUB, MUL, DIV" {
+    style.fill: "#E8F5E9"
+  }
+  Comparison: "Comparison (0x3*)\nEQ, LT, GT, AND, OR" {
+    style.fill: "#FFF3E0"
+  }
+}
+
+Legend: {
+  near: bottom-center
+  style: {
+    fill: "#FFFFFF"
+    stroke: "#CCCCCC"
+  }
+  grid-columns: 2
+  timing: "⏱ = Estimated Latency"
+  access: "📍 = Access Pattern"
+  warning: "⚠ = Performance Warning"
+  hot: "🔥 = Hot Path Optimized"
+}

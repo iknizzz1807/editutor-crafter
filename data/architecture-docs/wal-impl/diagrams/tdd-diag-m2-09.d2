@@ -1,0 +1,321 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+direction: right
+
+title: {
+  label: |md
+    # WalWriter Component Architecture
+    **Milestone 2: Log Writer with Group Commit (High Performance Path)**
+    *Internal Technical Specification - Revision 1.0.4*
+  |
+  near: top-center
+}
+
+# ---------------------------------------------------------------------------------------
+# STYLING & CLASSES
+# ---------------------------------------------------------------------------------------
+classes: {
+  memory_struct: {
+    style: {
+      stroke-width: 2
+      border-radius: 4
+      font: mono
+    }
+  }
+  header_purple: {
+    style: {
+      fill: "#E1D5E7"
+      stroke: "#9673A6"
+    }
+  }
+  data_blue: {
+    style: {
+      fill: "#DAE8FC"
+      stroke: "#6C8EBF"
+    }
+  }
+  lock_red: {
+    style: {
+      fill: "#F8CECC"
+      stroke: "#B85450"
+    }
+  }
+  padding_gray: {
+    style: {
+      fill: "#D5D5D5"
+      stroke: "#999999"
+      stroke-dash: 2
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# WAL WRITER CORE COMPONENT
+# ---------------------------------------------------------------------------------------
+WalWriter: {
+  style: {
+    fill: "#F5F5F5"
+    stroke: "#333333"
+    stroke-width: 2
+  }
+
+  State: {
+    class: memory_struct
+    style.fill: "#FFF2CC"
+    label: "Control Block (In-Memory State) | sizeof=64B"
+    
+    next_lsn: {
+      label: |md
+        `+0x00` **next_lsn** (8B)
+        `uint64_t`
+        *Atomic Monotonic Counter*
+      |
+      shape: rectangle
+      style.fill: "#DAE8FC"
+    }
+    
+    is_shutdown: {
+      label: |md
+        `+0x08` **is_shutdown** (1B)
+        `bool`
+      |
+      shape: rectangle
+    }
+    
+    padding: {
+      label: "Padding (7B)"
+      class: padding_gray
+    }
+  }
+
+  AppendLock: {
+    label: |md
+      **append_lock**
+      `pthread_mutex_t` (40B)
+      --
+      *Serialization Point*
+      Critical Section:
+      1. Copy payload to WriteBuffer
+      2. Advance next_lsn atomic
+      3. Release to allow concurrent append
+    |
+    shape: rectangle
+    class: lock_red
+  }
+
+  # Write buffer component - Memory Layout Detail
+  WriteBuffer: {
+    class: memory_struct
+    style.fill: "#D5E8D4"
+    label: "WriteBuffer (1MB Slab, Cache Aligned) | sizeof=1024KB"
+    
+    buffer: {
+      label: "`+0x00` **ptr** (8B) [Pointer]"
+      shape: rectangle
+      style.stroke: orange
+      style.stroke-width: 3
+    }
+    capacity: {
+      label: "`+0x08` **cap** (8B) [size_t]"
+      shape: rectangle
+    }
+    used: {
+      label: "`+0x10` **used** (8B) [size_t]"
+      shape: rectangle
+      style.font-color: red
+      style.bold: true
+    }
+    
+    lsn_tracking: {
+      label: "LSN Range Tracking"
+      first: "`+0x18` **first_lsn** (8B)"
+      last: "`+0x20` **last_lsn** (8B)"
+      style.stroke-dash: 3
+    }
+    
+    flags: {
+      label: "Control Flags"
+      needs_flush: "`+0x28` **needs_flush** (1B)"
+    }
+  }
+
+  LogSegmentManager: {
+    class: memory_struct
+    style.fill: "#E1D5E7"
+    label: "LogSegmentManager (64MB segments)"
+    
+    config: {
+      base_path: "**base_path** (256B)"
+      limit: "**limit** (8B)"
+    }
+    
+    current: {
+      style.fill: "#F8F8F8"
+      label: "Active Segment Context"
+      fd: "**fd** (4B) [int]"
+      id: "**segment_id** (4B)"
+      off: "**current_offset** (8B)"
+    }
+  }
+
+  # Group commit manager - Leader/Follower Implementation
+  GroupCommitManager: {
+    class: memory_struct
+    style.fill: "#FFE6CC"
+    label: "GroupCommitManager"
+    
+    sync_primitives: {
+      lock: "**lock** (40B)"
+      cond: "**sync_complete** (48B)"
+    }
+    
+    counters: {
+      pending_sync: "**pending_lsn** (8B)"
+      last_synced: "**durable_lsn** (8B)"
+      waiters: "**waiter_count** (4B)"
+    }
+    
+    state_machine: {
+      label: "State: INACTIVE | LEADER | SHUTDOWN"
+      shape: rectangle
+      style.fill: "#FFF9E6"
+      style.stroke: "#D79B00"
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# DATA FLOW & RELATIONSHIPS
+# ---------------------------------------------------------------------------------------
+
+# 1. Thread enters
+ClientThread: {
+  shape: person
+  label: "User Thread\n(wal_append)"
+}
+
+ClientThread -> WalWriter.AppendLock: "1. Lock" {
+  style: {
+    stroke: red
+    stroke-width: 2
+  }
+}
+WalWriter.AppendLock -> WalWriter.State: "2. Get/Advance LSN"
+WalWriter.State -> WalWriter.WriteBuffer: "3. memcpy(payload)" {
+  style: {
+    stroke: "#285A90"
+    stroke-width: 2
+  }
+}
+WalWriter.WriteBuffer -> WalWriter.AppendLock: "4. Unlock" {
+  style: {
+    stroke: red
+    stroke-dash: 3
+  }
+}
+
+# 2. Flushing path
+WalWriter.WriteBuffer -> WalWriter.LogSegmentManager: "5. write(fd, buf, len)" {
+  label: "Flush Trigger"
+  style: {
+    stroke: purple
+    stroke-width: 2
+  }
+}
+
+# 3. Durability path
+WalWriter.LogSegmentManager -> WalWriter.GroupCommitManager: "6. Register for Sync" {
+  style: {
+    stroke: orange
+    stroke-width: 2
+  }
+}
+
+# 4. Physical Output
+LogFile: {
+  shape: cylinder
+  label: "WAL Segment Files\n/data/wal/00000001.log"
+  style.fill: "#F5F5F5"
+}
+WalWriter.LogSegmentManager.current -> LogFile: "Sequential pwrite()" {
+  style.stroke-width: 2
+}
+
+# ---------------------------------------------------------------------------------------
+# CONCURRENCY MODEL (Leader/Follower)
+# ---------------------------------------------------------------------------------------
+LeaderThread: {
+  shape: person
+  label: "Sync Leader\n(Executes fsync)"
+  style.fill: "#D5E8D4"
+}
+
+FollowerThreads: {
+  shape: rectangle
+  label: "Sync Followers\n(Blocking on CondVar)"
+  style.multiple: true
+  style.fill: "#DAE8FC"
+}
+
+LeaderThread -> WalWriter.GroupCommitManager: "Takes ownership"
+FollowerThreads -> WalWriter.GroupCommitManager: "Queue LSN request"
+
+# CORRECTED BLOCK BELOW: Removed the invalid "style" prefix inside the style map
+WalWriter.GroupCommitManager -> LogFile: "fdatasync(fd)" {
+  style: {
+    stroke: red
+    stroke-width: 3
+    animated: true
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# ANNOTATIONS & INVARIANTS
+# ---------------------------------------------------------------------------------------
+
+Invariants: |md
+  ### Key Architectural Invariants
+  1. **Write Barrier**: `next_lsn` is advanced *before* releasing `append_lock`.
+  2. **No Partial Writes**: The `WriteBuffer` must flush only complete log records.
+  3. **Non-Blocking Append**: `fsync` operations occur outside the `append_lock` critical section.
+  4. **Strict Ordering**: LSNs are monotonically increasing and correspond exactly to physical file offsets.
+  5. **Group Efficiency**: Leader flushes all data up to the *maximum* requested LSN by any current waiter.
+|
+
+Invariants.near: bottom-left
+Invariants.style.fill: "#FFFFE1"
+
+# Legend
+Legend: {
+  near: bottom-right
+  style.fill: white
+  
+  l1: "Lock/Mutex" {
+    class: lock_red
+  }
+  l2: "Memory Structure" {
+    class: memory_struct
+  }
+  l3: "Atomic Pointer" {
+    style.stroke: orange
+    style.stroke-width: 2
+  }
+  l4: "Padding/Reserved" {
+    class: padding_gray
+  }
+}
+
+# Rotation Mechanism
+WalWriter.LogSegmentManager.current.off -> WalWriter.LogSegmentManager: "Offset > 64MB\nTrigger rotate()" {
+  style: {
+    stroke: "#7B2CBF"
+    stroke-dash: 5
+  }
+}

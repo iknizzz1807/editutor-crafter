@@ -1,0 +1,218 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: ".bss Section Handling: File vs Memory Representation"
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+row_compare: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  file_view: {
+    direction: down
+    label: "FILE VIEW (on disk)"
+    style.fill: "#E8F4E8"
+    style.stroke: "#2E7D32"
+    elf_header_file: {
+      shape: sql_table
+      label: "ELF Header"
+      f0: "0x00 | e_ident[16] | Magic + Class"
+      f1: "0x10 | e_type     | ET_EXEC (2)"
+      f2: "0x12 | e_machine  | EM_X86_64"
+      f3: "0x18 | e_entry    | 0x401000"
+      f4: "0x1A | e_phoff    | 0x40"
+      note: "64 bytes total"
+    }
+    phdr_file: {
+      shape: sql_table
+      label: "Program Header (PT_LOAD data)"
+      p0: "0x00 | p_type   | PT_LOAD (1)"
+      p1: "0x04 | p_flags  | PF_R | PF_W"
+      p2: "0x08 | p_offset | 0x2000"
+      p3: "0x10 | p_vaddr  | 0x403000"
+      p4: "0x18 | p_filesz | 0x100"
+      p5: "0x20 | p_memsz  | 0x210"
+      p6: "0x28 | p_align  | 0x1000"
+      note: "p_memsz > p_filesz!"
+    }
+    data_section_file: {
+      shape: sql_table
+      label: ".data Section (in file)"
+      d0: "0x2000 | byte[0]   | 0x42 (initialized)"
+      d1: "0x2001 | byte[1]   | 0x00"
+      d2: "0x2002 | ...       | ..."
+      d3: "0x20FF | byte[255] | 0x00"
+      sz: "Size: 256 bytes (0x100)"
+    }
+    bss_gap: {
+      label: |md
+        **.bss Section**
+        ⚠️ **No bytes in file!**
+        Section header exists in SHT,
+        but `sh_offset` points to
+        nowhere meaningful.
+        `sh_type = SHT_NOBITS`
+      |
+      style: {
+        fill: "#FFF3E0"
+        stroke: "#E65100"
+        stroke-dash: 4
+      }
+      width: 280
+    }
+  }
+  memory_view: {
+    direction: down
+    label: "MEMORY VIEW (after loader)"
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    vaddr_space: {
+      shape: sql_table
+      label: "Virtual Address Space Layout"
+      v0: "0x400000 | .text     | Code segment (RX)"
+      v1: "0x401000 | .rodata   | Read-only data (R)"
+      v2: "0x402000 | (gap)     | Page alignment"
+      v3: "0x403000 | .data     | Initialized globals (RW)"
+      v4: "0x403100 | .bss      | Uninitialized (RW)"
+      v5: "0x403210 | (free)    | ..."
+      note: "Loader allocates full range"
+    }
+    data_mem: {
+      shape: sql_table
+      label: ".data in Memory"
+      m0: "0x403000 | byte[0]   | 0x42 (from file)"
+      m1: "0x403001 | byte[1]   | 0x00 (from file)"
+      m2: "0x403002 | ...       | ... (from file)"
+      m3: "0x4030FF | byte[255] | 0x00 (from file)"
+      sz: "256 bytes loaded from file"
+    }
+    bss_mem: {
+      shape: sql_table
+      label: ".bss in Memory (zero-filled)"
+      b0: "0x403100 | byte[0]   | 0x00 (loader zeros)"
+      b1: "0x403101 | byte[1]   | 0x00 (loader zeros)"
+      b2: "0x403102 | ...       | 0x00 (loader zeros)"
+      b3: "0x40320F | byte[271] | 0x00 (loader zeros)"
+      sz: "272 bytes — created by loader!"
+    }
+  }
+}
+section_table: {
+  direction: right
+  label: "Section Header Table Entry Comparison"
+  data_shdr: {
+    shape: sql_table
+    label: ".data Section Header"
+    s0: "sh_name     | 0x1F (.data)"
+    s1: "sh_type     | SHT_PROGBITS (1)"
+    s2: "sh_flags    | SHF_ALLOC | SHF_WRITE"
+    s3: "sh_addr     | 0x403000"
+    s4: "sh_offset   | 0x2000"
+    s5: "sh_size     | 0x100 (256)"
+    s6: "sh_addralign| 8"
+    note: "Has file content at sh_offset"
+  }
+  bss_shdr: {
+    shape: sql_table
+    label: ".bss Section Header"
+    s0: "sh_name     | 0x25 (.bss)"
+    s1: "sh_type     | SHT_NOBITS (8)"
+    s2: "sh_flags    | SHF_ALLOC | SHF_WRITE"
+    s3: "sh_addr     | 0x403100"
+    s4: "sh_offset   | 0x2100 (ignored!)"
+    s5: "sh_size     | 0x110 (272)"
+    s6: "sh_addralign| 8"
+    note: "SHT_NOBITS = no file content"
+    style.fill: "#FFF3E0"
+  }
+}
+loader_action: {
+  label: "Loader Actions for PT_LOAD Segment"
+  width: 600
+  code: |'c
+    // Loader pseudocode for PT_LOAD segment
+    void load_segment(Elf64_Phdr *phdr, int fd) {
+        // 1. Map file content
+        void *mem = mmap(
+            (void*)phdr->p_vaddr,    // Desired address
+            phdr->p_filesz,          // Bytes from file
+            PROT_READ | PROT_WRITE,  // Permissions
+            MAP_PRIVATE | MAP_FIXED,
+            fd,
+            phdr->p_offset           // File offset
+        );
+        // 2. Zero-fill the remainder (.bss area)
+        if (phdr->p_memsz > phdr->p_filesz) {
+            memset(
+                mem + phdr->p_filesz,  // Start after file data
+                0,                      // Fill with zeros
+                phdr->p_memsz - phdr->p_filesz  // .bss size
+            );
+        }
+    }
+  '|
+}
+key_insight: {
+  direction: right
+  label: "Key Insight"
+  insight_text: {
+    label: |md
+      ### Why .bss Has No File Content
+      **Purpose:** Uninitialized global variables don't need
+      stored values — they just need allocated memory.
+      **Benefit:** Saves disk space. A 1MB buffer costs
+      1MB of disk if in `.data`, but 0 bytes in `.bss`.
+      **The Loader's Job:**
+      - Reads `p_filesz` bytes from file
+      - Allocates `p_memsz` bytes total
+      - Zeros the difference (`p_memsz - p_filesz`)
+      This is why `p_memsz > p_filesz` for segments
+      containing `.bss` sections.
+    |
+    width: 400
+    style.fill: "#F3E5F5"
+    style.stroke: "#7B1FA2"
+  }
+  size_math: {
+    shape: sql_table
+    label: "Size Calculation"
+    row1: ".data file_size | 256 bytes (0x100)"
+    row2: ".bss file_size  | 0 bytes"
+    row3: ".data mem_size  | 256 bytes (0x100)"
+    row4: ".bss mem_size   | 272 bytes (0x110)"
+    row5: "Segment p_filesz| 256 bytes"
+    row6: "Segment p_memsz | 528 bytes (0x210)"
+    note: "p_memsz = .data + .bss"
+    note2: "p_filesz = .data only"
+  }
+}
+legend: {
+  near: bottom-center
+  direction: right
+  file_color: {
+    label: "File-backed data"
+    style.fill: "#E8F4E8"
+  }
+  bss_color: {
+    label: ".bss (no file content)"
+    style.fill: "#FFF3E0"
+    style.stroke-dash: 4
+  }
+  mem_color: {
+    label: "Memory allocation"
+    style.fill: "#E3F2FD"
+  }
+}

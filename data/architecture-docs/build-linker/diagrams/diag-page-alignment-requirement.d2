@@ -1,0 +1,209 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# TITLE & OVERVIEW
+# ---------------------------------------------------------------------------------------
+header: {
+  label: "Linker Pipeline: Page Alignment for PT_LOAD Segments"
+  shape: rectangle
+  style: {
+    font-size: 24
+    bold: true
+    fill: "#F3F4F6"
+    stroke-width: 2
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# PIPELINE STAGES
+# ---------------------------------------------------------------------------------------
+pipeline: {
+  direction: down
+  
+  s1: {
+    label: "Stage 1: Parse Object Files"
+    style.fill: "#E3F2FD"
+    content: {
+      shape: sql_table
+      label: "Task: ELF Deserialization"
+      row1: "Input | Elf64_Ehdr + Section Headers"
+      row2: "Action | Validate Magic & Arch"
+      row3: "Result | Loaded InputSection[]"
+    }
+    code: |'c
+      int parse_obj(const char *fn) {
+        fread(&ehdr, sizeof(Elf64_Ehdr), 1, f);
+        if (memcmp(ehdr.e_ident, ELFMAG, 4) != 0) return -1;
+        // Map sections into InputSection structs
+        return 0;
+      }
+    '|
+  }
+
+  s2: {
+    label: "Stage 2: Merge & Align Sections"
+    style.fill: "#F0F4EF"
+    content: {
+      shape: sql_table
+      label: "Task: Layout Calculation"
+      row1: "Group | .text, .data, .rodata"
+      row2: "Align | padding = (align - (off % align)) % align"
+      row3: "Logic | p_vaddr % p_align == p_offset % p_align"
+    }
+    code: |'c
+      uint64_t align_to(uint64_t off, uint64_t a) {
+        return (off + a - 1) & ~(a - 1);
+      }
+      // Group sections into PT_LOAD segments
+      // Ensure VMA and File Offset are congruent mod 4KB
+    '|
+  }
+
+  s3: {
+    label: "Stage 3: Resolve Symbols"
+    style.fill: "#FFF9E0"
+    content: {
+      shape: sql_table
+      label: "Task: Symbol Binding"
+      row1: "Scope | Global vs Local Binding"
+      row2: "Calc | sym.addr = sec.vaddr + sym.st_value"
+      row3: "Check | Detect undefined/duplicate symbols"
+    }
+    code: |'c
+      for (auto &sym : symtab) {
+        if (sym.is_undefined()) lookup_global(sym.name);
+        sym.vaddr = out_sec[sym.shndx].vaddr + sym.offset;
+      }
+    '|
+  }
+
+  s4: {
+    label: "Stage 4: Relocation Fixups"
+    style.fill: "#FCE4EC"
+    content: {
+      shape: sql_table
+      label: "Task: Binary Patching"
+      row1: "Type | R_X86_64_PC32, R_X86_64_64"
+      row2: "Patch | S + A - P or S + A"
+      row3: "Target | Write directly to output buffer"
+    }
+    code: |'c
+      void apply_reloc(Reloc *r, uint8_t *buf) {
+        uint64_t val = r->sym->vaddr + r->addend;
+        if (r->is_pc_relative()) val -= (sec_vaddr + r->offset);
+        memcpy(buf + r->offset, &val, r->size);
+      }
+    '|
+  }
+
+  s5: {
+    label: "Stage 5: Generate ELF Executable"
+    style.fill: "#E8F5E9"
+    content: {
+      shape: sql_table
+      label: "Task: Final Serialization"
+      row1: "Header | Finalize e_entry and e_phoff"
+      row2: "PHDR | Create PT_LOAD for RX and RW regions"
+      row3: "Layout | Write file according to PT_LOAD offsets"
+    }
+  }
+}
+
+pipeline.s1 -> pipeline.s2: "Elf64_Shdr[]"
+pipeline.s2 -> pipeline.s3: "MergedSections"
+pipeline.s3 -> pipeline.s4: "GlobalSymTab"
+pipeline.s4 -> pipeline.s5: "PatchedBuf"
+
+# ---------------------------------------------------------------------------------------
+# DATA STRUCTURES
+# ---------------------------------------------------------------------------------------
+row_structs: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  InputSection: {
+    shape: sql_table
+    label: "struct InputSection (linker.h)"
+    f0: "0x00 | char[64] | name"
+    f1: "0x40 | uint32_t | sh_type"
+    f2: "0x44 | uint32_t | padding"
+    f3: "0x48 | uint64_t | sh_flags"
+    f4: "0x50 | uint64_t | sh_addr // vaddr"
+    f5: "0x58 | uint64_t | sh_size"
+    f6: "0x60 | uint8_t* | data"
+    sz: "Total: 104 Bytes"
+    style.fill: "#E3F2FD"
+  }
+
+  OutputSegment: {
+    shape: sql_table
+    label: "struct Phdr (elf.h)"
+    p1: "0x00 | uint32_t | p_type   // PT_LOAD"
+    p2: "0x04 | uint32_t | p_flags  // PF_R|PF_W|PF_X"
+    p3: "0x08 | uint64_t | p_offset // File offset"
+    p4: "0x10 | uint64_t | p_vaddr  // Virtual addr"
+    p5: "0x18 | uint64_t | p_paddr  // Physical addr"
+    p6: "0x20 | uint64_t | p_filesz // On-disk size"
+    p7: "0x28 | uint64_t | p_memsz  // In-memory size"
+    p8: "0x30 | uint64_t | p_align  // 4KB or 2MB"
+    sz: "Total: 56 Bytes"
+    style.fill: "#E8F5E9"
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# MEMORY MAP & ALIGNMENT REQUIREMENT
+# ---------------------------------------------------------------------------------------
+memory_map: {
+  direction: right
+  label: "Memory Layout: Segment Page Alignment"
+  
+  null_gap: "Padding / Unmapped" {
+    style.fill: "#F5F5F5"
+    style.stroke-dash: 3
+  }
+
+  load_rx: "PT_LOAD (RX)" {
+    shape: sql_table
+    v: "Vaddr: 0x400000"
+    o: "Offset: 0x000000"
+    c: "Content: .text, .rodata"
+    a: "Align: 4096 (1 Page)"
+    style.fill: "#BBDEFB"
+  }
+
+  load_rw: "PT_LOAD (RW)" {
+    shape: sql_table
+    v: "Vaddr: 0x401000"
+    o: "Offset: 0x001000"
+    c: "Content: .data, .bss"
+    a: "Align: 4096 (1 Page)"
+    style.fill: "#C8E6C9"
+  }
+}
+
+pipeline.s2 -> memory_map: "Calculate Layout"
+pipeline.s5 -> row_structs.OutputSegment: "Serialize"
+
+# ---------------------------------------------------------------------------------------
+# LEGEND
+# ---------------------------------------------------------------------------------------
+legend: {
+  near: bottom-right
+  shape: sql_table
+  label: "Key / Legend"
+  t1: "Blue   | RX Segments (Code)"
+  t2: "Green  | RW Segments (Data)"
+  t3: "Yellow | Symbol Resolution"
+  t4: "Pink   | Relocations"
+}
+
+pipeline -> row_structs
+row_structs -> memory_map: "Layout Engine Input"

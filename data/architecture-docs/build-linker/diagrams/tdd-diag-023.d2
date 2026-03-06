@@ -1,0 +1,217 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: right
+
+# ============================================================================
+# TITLE & INTRO
+# ============================================================================
+title: |md
+  # Symbol Resolution: Local vs Global/Weak Bifurcation
+  **Implementation Spec:** ELF64 Symbol Resolution Logic
+  *LOCAL symbols → file-local cache only (Internal linkage)*
+  *GLOBAL/WEAK symbols → global table with resolution logic (External linkage)*
+| {
+  near: top-center
+  shape: text
+  style.font-size: 24
+  style.bold: true
+}
+
+# ============================================================================
+# MEMORY LAYOUT: Elf64_Sym (Intel Manual Style)
+# ============================================================================
+# Total size: 24 bytes
+Elf64_Sym: {
+  shape: sql_table
+  label: "struct Elf64_Sym (24 Bytes)"
+  style.fill: "#E1F5FE"
+  
+  0x00: "st_name (uint32_t)" {constraint: "String Table Offset (4B)"}
+  0x04: "st_info (unsigned char)" {constraint: "BIND [4-7] | TYPE [0-3] (1B)"}
+  0x05: "st_other (unsigned char)" {constraint: "Visibility (1B)"}
+  0x06: "st_shndx (uint16_t)" {constraint: "Section Index (2B)"}
+  0x08: "st_value (uint64_t)" {constraint: "Symbol Value / Offset (8B)"}
+  0x10: "st_size (uint64_t)" {constraint: "Symbol Size (8B)"}
+}
+
+Input: "Object File Stream\n.symtab section" {
+  shape: cylinder
+  style.fill: "#E8E8E8"
+}
+
+# ============================================================================
+# PROCESSING COMPONENTS
+# ============================================================================
+Classifier: "Symbol Classifier\n(st_info parsing)" {
+  style.fill: "#FFF9C4"
+  style.stroke: "#F9A825"
+  style.stroke-width: 2
+  
+  Logic: |md
+    **Binding Extraction:**
+    `#define ELF64_ST_BIND(i) ((i)>>4)`
+    
+    1. **STB_LOCAL (0)**: File scope.
+    2. **STB_GLOBAL (1)**: Strong external.
+    3. **STB_WEAK (2)**: Overridable external.
+  |
+}
+
+# ----------------------------------------------------------------------------
+# LOCAL PATH: IMMEDIATE BINDING
+# ----------------------------------------------------------------------------
+LocalPath: {
+  label: "LOCAL SYMBOL DOMAIN"
+  style.fill: "#C8E6C9"
+  style.stroke: "#43A047"
+  style.stroke-dash: 3
+  
+  LocalCache: "Object.LocalSymbols[]" {
+    shape: cylinder
+    style.fill: "#A5D6A7"
+  }
+  
+  LocalProcessor: "Static Resolver" {
+    style.fill: "#81C784"
+    Processing: |md
+      - Bypasses Global Symbol Table
+      - Scope: current translation unit only
+      - Linker maps directly to `.text` / `.data`
+      - **Addr:** `section_base + st_value`
+    |
+  }
+  
+  LocalCache -> LocalProcessor: "Internal Ref"
+}
+
+# ----------------------------------------------------------------------------
+# GLOBAL/WEAK PATH: CROSS-FILE RESOLUTION
+# ----------------------------------------------------------------------------
+GlobalPath: {
+  label: "GLOBAL/WEAK SYMBOL DOMAIN"
+  style.fill: "#BBDEFB"
+  style.stroke: "#1976D2"
+  
+  GlobalTable: "GlobalSymbolTable\n(Hash Map: Name -> Sym)" {
+    shape: cylinder
+    style.fill: "#90CAF9"
+  }
+  
+  ResolutionEngine: "Conflict Resolver" {
+    style.fill: "#64B5F6"
+    
+    States: {
+      Strong: "STB_GLOBAL" { style.fill: "#1565C0"; style.font-color: white }
+      Weak: "STB_WEAK" { style.fill: "#42A5F5"; style.font-color: white }
+      Common: "SHN_COMMON" { style.fill: "#0D47A1"; style.font-color: white }
+      Undef: "SHN_UNDEF" { style.fill: "#E3F2FD"; style.stroke-dash: 5 }
+    }
+  }
+  
+  GlobalTable -> ResolutionEngine.States: "Key Match Found"
+}
+
+# ----------------------------------------------------------------------------
+# RESOLUTION RULES (THE "TRUTH TABLE")
+# ----------------------------------------------------------------------------
+Rules: "Linker Resolution Rules" {
+  style.fill: "#F3E5F5"
+  style.stroke: "#7B1FA2"
+  grid-columns: 2
+  
+  r1: |md
+    **Strong + Strong**
+    *ERROR:* Linker exits with 
+    `multiple definition of '...'`
+  | { style.stroke: red; style.stroke-width: 2 }
+  
+  r2: |md
+    **Strong + Weak**
+    *RULE:* Strong symbol wins. 
+    Weak definition is discarded.
+  |
+  
+  r3: |md
+    **Weak + Weak**
+    *RULE:* First definition 
+    encountered wins.
+  |
+  
+  r4: |md
+    **COMMON + COMMON**
+    *RULE:* Largest size 
+    allocation wins.
+  |
+  
+  r5: |md
+    **Strong + Undefined**
+    *RULE:* Resolution success.
+    Relocations patched.
+  |
+  
+  r6: |md
+    **Weak Undef**
+    *RULE:* Resolves to NULL (0).
+    No error if not found.
+  |
+}
+
+# ============================================================================
+# OUTPUT
+# ============================================================================
+Output: "Linked Executable / SO\nResolved Addresses" {
+  style.fill: "#FFE0B2"
+  style.stroke: "#EF6C00"
+  style.double-border: true
+}
+
+# ============================================================================
+# CONNECTIONS
+# ============================================================================
+Input -> Elf64_Sym: "Parse"
+Elf64_Sym -> Classifier: "st_info byte"
+
+Classifier -> LocalPath.LocalCache: "STB_LOCAL (0)" {
+  style: {
+    stroke: "#2E7D32"
+    stroke-width: 4
+  }
+}
+
+Classifier -> GlobalPath.GlobalTable: "STB_GLOBAL / WEAK" {
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 4
+  }
+}
+
+GlobalPath.ResolutionEngine -> Rules: "Query Policy"
+Rules -> GlobalPath.ResolutionEngine: "Apply Winner"
+
+LocalPath.LocalProcessor -> Output: "Static Offset"
+GlobalPath.ResolutionEngine -> Output: "Final VAddr"
+
+# ============================================================================
+# LEGEND & NOTES
+# ============================================================================
+Legend: {
+  near: bottom-right
+  l1: "LOCAL: resolved per-file" { style.fill: "#A5D6A7" }
+  l2: "GLOBAL: cross-file visibility" { style.fill: "#90CAF9" }
+  l3: "Conflict: apply ELF rules" { style.fill: "#F3E5F5" }
+}
+
+BifurcationNote: |md
+  ### Binding Invariants:
+  1. **STB_LOCAL** symbols are excluded from the dynamic symbol table (.dynsym)
+  2. **STB_WEAK** allows libraries to define symbols that the application can override
+  3. **SHN_COMMON** is for uninitialized globals (BSS candidates)
+| {
+  near: bottom-left
+  shape: text
+}

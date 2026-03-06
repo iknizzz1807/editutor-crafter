@@ -1,0 +1,174 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Entry Point Resolution
+  **Finding where execution begins**
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  symtab: {
+    direction: down
+    label: "Global Symbol Table (linker state)"
+    symtab_struct: {
+      shape: sql_table
+      label: "GlobalSymbol entries"
+      f0: "0x00 | char[64]   | name"
+      f1: "0x40 | uint8_t    | binding"
+      f2: "0x41 | SymbolState| state"
+      f3: "0x48 | uint64_t   | final_address"
+      f4: "0x50 | int        | source_file_idx"
+      sz: "Total: 88 bytes per entry"
+    }
+    _start_entry: {
+      shape: sql_table
+      label: "_start (found)"
+      n0: "name | \"_start\""
+      n1: "binding | STB_GLOBAL"
+      n2: "state | SYM_RESOLVED"
+      n3: "final_address | 0x401000"
+    }
+    main_entry: {
+      shape: sql_table
+      label: "main (fallback)"
+      m0: "name | \"main\""
+      m1: "binding | STB_GLOBAL"
+      m2: "state | SYM_RESOLVED"
+      m3: "final_address | 0x401020"
+    }
+  }
+  resolution: {
+    direction: down
+    label: "Resolution Logic"
+    lookup: {
+      label: "lookup_symbol(ctx, \"_start\")"
+      width: 320
+      code: |'c
+        GlobalSymbol *sym;
+        sym = lookup_symbol(&ctx->global_syms, "_start");
+        if (sym && sym->state == SYM_RESOLVED) {
+            ehdr->e_entry = sym->final_address;
+            return 0;  // Success
+        }
+        // Try fallback...
+      '|
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  fallback: {
+    direction: down
+    label: "Fallback Chain"
+    chain: {
+      shape: class
+      label: "Resolution Order"
+      priority1: "_start (libc/crt0 entry)"
+      priority2: "main (user code entry)"
+      priority3: "ERROR: no entry point"
+    }
+    why: {
+      label: "Why _start, not main?"
+      width: 380
+      code: |'c
+        // _start does setup before main():
+        // 1. Set up frame pointer (%rbp)
+        // 2. Initialize libc (stdio, TLS)
+        // 3. Run C++ global constructors
+        // 4. Call main(argc, argv, envp)
+        // 5. Call exit(main_return_value)
+        //
+        // main() is just a function called by _start
+        // Jumping to main directly = crash (no setup)
+      '|
+    }
+  }
+  elf_result: {
+    direction: down
+    label: "ELF Header Result"
+    ehdr: {
+      shape: sql_table
+      label: "Elf64_Ehdr (final)"
+      f0: "0x00 | e_ident[16] | \"\\x7fELF...\""
+      f1: "0x10 | e_type      | ET_EXEC (2)"
+      f2: "0x12 | e_machine   | EM_X86_64 (62)"
+      f3: "0x18 | e_entry     | 0x401000 ✓"
+      f4: "0x20 | e_phoff     | 64"
+      f5: "0x28 | e_shoff     | 0"
+      sz: "e_entry = _start->final_address"
+    }
+    note: {
+      label: "Loader uses e_entry"
+      width: 300
+      code: |'c
+        // In kernel execve():
+        // After mmap'ing segments...
+        regs->rip = ehdr->e_entry;
+        // CPU jumps to 0x401000
+      '|
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  error_path: {
+    direction: down
+    label: "Error Cases"
+    error_check: {
+      label: "Entry Point Validation"
+      width: 400
+      code: |'c
+        if (!entry_sym || entry_sym->state == SYM_UNDEF) {
+            fprintf(stderr, 
+                "error: no entry point symbol "
+                "(_start or main)\n");
+            return -1;  // Link fails
+        }
+        if (entry_sym->final_address == 0) {
+            fprintf(stderr, 
+                "warning: entry point at address 0\n");
+        }
+      '|
+    }
+  }
+  freestanding: {
+    direction: down
+    label: "Freestanding _start"
+    asm_example: {
+      label: "Minimal _start (no libc)"
+      width: 380
+      code: |'asm
+        .global _start
+        _start:
+            xor    %rbp, %rbp      # Clear frame ptr
+            mov    %rsp, %rdi      # argc
+            lea    8(%rsp), %rsi   # argv
+            call   main            # User code
+            mov    %eax, %edi      # Return value
+            mov    $60, %eax       # syscall: exit
+            syscall                # exit(retval)
+      '|
+    }
+  }
+}
+symtab._start_entry -> resolution.lookup: "hash lookup\nO(1)"
+resolution.lookup -> elf_result.ehdr: "e_entry = 0x401000"
+symtab.main_entry -> resolution.lookup: "fallback if\n_start missing" {style.stroke-dash: 4}
+legend: {
+  near: bottom-right
+  style.fill: "#f0f0f0"
+  solid: "Primary resolution path"
+  dashed: "Fallback path (only if primary fails)"
+}
+legend.solid.style.stroke-dash: 0
+legend.dashed.style.stroke-dash: 4

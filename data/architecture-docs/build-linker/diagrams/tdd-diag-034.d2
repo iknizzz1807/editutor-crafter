@@ -1,0 +1,226 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 40
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# RELOCATION TYPE DISPATCHER STATE MACHINE
+# Target Architecture: x86_64 ELF (Executable and Linkable Format)
+# Invariants: 
+# S = Symbol Value (Address)
+# A = Addend (Relocation adjustment)
+# P = Place (Memory location being patched: SectionBase + r_offset)
+# ---------------------------------------------------------------------------------------
+
+states: {
+  START: "" {
+    shape: circle
+    width: 20
+    height: 20
+    style: {
+      fill: "#000000"
+      stroke: "#000000"
+    }
+  }
+
+  IDLE: "WAIT_FOR_ENTRY" {
+    shape: rectangle
+    tooltip: "Dispatcher waiting for next Elf64_Rela entry from relocation section."
+    style: {
+      fill: "#E1F5FE"
+      stroke: "#0288D1"
+      stroke-width: 2
+    }
+  }
+
+  FETCH: "FETCH_DESCRIPTOR" {
+    description: |md
+      ### Read Elf64_Rela (24 Bytes)
+      - **r_offset**: Offset from section start (8B)
+      - **r_info**: [SymIdx:32][Type:32] (8B)
+      - **r_addend**: Signed constant 'A' (8B)
+    |
+    style: {
+      fill: "#FFF9C4"
+      stroke: "#FBC02D"
+    }
+  }
+
+  DECODE: "DECODE_TYPE" {
+    tooltip: "Extract ELF64_R_TYPE(rela->r_info)"
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+    }
+  }
+
+  RESOLVE: "RESOLVE_SYMBOL" {
+    description: |md
+      **Lookup 'S'**
+      1. Get Index: `ELF64_R_SYM(info)`
+      2. Probe `.dynsym` table
+      3. **Result**: `S = st_value`
+    |
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#388E3C"
+    }
+  }
+
+  CALC_ABS: "CALC_ABSOLUTE\n(R_X86_64_64)" {
+    tooltip: "Direct 64-bit Address: S + A"
+    style: {
+      fill: "#E3F2FD"
+      bold: true
+      stroke: "#1976D2"
+    }
+  }
+
+  CALC_REL: "CALC_RELATIVE\n(R_X86_64_PC32)" {
+    tooltip: "PC-Relative 32-bit: S + A - P"
+    style: {
+      fill: "#E3F2FD"
+      bold: true
+      stroke: "#1976D2"
+    }
+  }
+
+  PATCH: "APPLY_PATCH" {
+    description: |md
+      ### Write to Buffer
+      1. Calculate target pointer `P = Base + r_offset`
+      2. **Operation**: `*P = (Type == 64) ? V64 : V32`
+      3. Flush cache line if applicable.
+    |
+    style: {
+      fill: "#CCFF90"
+      stroke: "#00C853"
+      stroke-width: 4
+    }
+  }
+
+  FAULT_UNKNOWN: "ERR_UNSUPPORTED_TYPE" {
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#D32F2F"
+      double-border: true
+    }
+  }
+
+  FAULT_UNDEFINED: "ERR_SYMBOL_NOT_FOUND" {
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#D32F2F"
+      double-border: true
+    }
+  }
+
+  DONE: "FINAL_STATE" {
+    shape: circle
+    style: {
+      fill: "#000000"
+      stroke: "#000000"
+      double-border: true
+    }
+  }
+}
+
+# --- TRANSITIONS ---
+
+states.START -> states.IDLE: "INITIALIZE_RELA_PTR"
+
+states.IDLE -> states.FETCH: "RELA_COUNT > 0" {
+  style.stroke: "#0288D1"
+}
+
+states.FETCH -> states.DECODE: "ENTRY_LOADED"
+
+states.DECODE -> states.RESOLVE: "IS_SUPPORTED(TYPE)"
+
+states.DECODE -> states.FAULT_UNKNOWN: "TYPE_INVALID" {
+  style: {
+    stroke: "#D32F2F"
+    stroke-width: 2
+    stroke-dash: 3
+  }
+}
+
+states.RESOLVE -> states.FAULT_UNDEFINED: "STB_GLOBAL && !SYMTAB[IDX]" {
+  style: {
+    stroke: "#D32F2F"
+    stroke-width: 2
+    stroke-dash: 3
+  }
+}
+
+states.RESOLVE -> states.CALC_ABS: "R_X86_64_64"
+states.RESOLVE -> states.CALC_REL: "R_X86_64_PC32"
+
+states.CALC_ABS -> states.PATCH: "V = S + A" {
+  style.bold: true
+}
+states.CALC_REL -> states.PATCH: "V = S + A - P" {
+  style.bold: true
+}
+
+states.PATCH -> states.IDLE: "RELA_PTR++" {
+  style.stroke: "#388E3C"
+}
+
+states.IDLE -> states.DONE: "RELA_COUNT == 0"
+
+# --- ILLEGAL TRANSITION GUARDS ---
+
+states.FETCH -> states.PATCH: "ILLEGAL_BYPASS" {
+  style: {
+    stroke: red
+    stroke-dash: 5
+  }
+}
+
+# --- DOCUMENTATION OVERLAYS ---
+
+MathLegend: {
+  label: |md
+    ### Linker Calculation Reference
+    | Variable | Definition |
+    | :--- | :--- |
+    | **S** | Value of symbol in symbol table |
+    | **A** | Addend field from relocation struct |
+    | **P** | Memory address of relocation site (r_offset + LoadBase) |
+    | **V** | Final value to be written to memory |
+  |
+  near: states.CALC_ABS
+  style: {
+    stroke: "#7B1FA2"
+    stroke-width: 1
+    fill: "#FDFBFF"
+  }
+}
+
+StructDefinition: {
+  label: |md
+    ### ELF64_Rela Structural Layout
+    c
+    typedef struct {
+        Elf64_Addr    r_offset; // [0x00] 8B: Address
+        Elf64_Xword   r_info;   // [0x08] 8B: Sym + Type
+        Elf64_Sxword  r_addend; // [0x10] 8B: Constant
+    } Elf64_Rela; // Total Size = 24 Bytes
+    
+  |
+  near: states.FETCH
+  style: {
+    stroke: "#FBC02D"
+    stroke-width: 1
+    fill: "#FFFDE7"
+  }
+}
+
+# Visual Polish: Annotate changed elements for State 5/6 transition
+(states.CALC_ABS -> states.PATCH)[0].label: "RESULT -> RED_BOLD"
+(states.CALC_REL -> states.PATCH)[0].label: "RESULT -> RED_BOLD"

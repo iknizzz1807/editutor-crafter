@@ -1,0 +1,195 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 30
+  }
+}
+
+# ADC: Asymmetric Distance Computation Logic
+# High-performance distance estimation without decompressing PQ codes
+# Intel Manual Style: Detailed byte-offsets and state transitions
+
+adc_process: {
+  label: "Asymmetric Distance Computation (ADC) Pipeline"
+  tooltip: "Estimating L2 distance between a query and a PQ-quantized database vector."
+
+  # --- PHASE 1: QUERY PREPROCESSING ---
+  preprocessing: "PHASE 1: Query Preprocessing (Once per Query)" {
+    style: {
+      fill: "#f3e5f5"
+      stroke: "#9c27b0"
+      stroke-width: 2
+    }
+    
+    query_vector: "Query Vector (q)\nf32[D]\nOffset: 0x00\nSize: D × 4B" {
+      shape: parallelogram
+      style: {
+        fill: "#e3f2fd"
+        stroke: "#1976d2"
+      }
+    }
+
+    subspace_splitter: "Subspace Splitter\nD → M subvectors\n(Pointer Arithmetic)" {
+      shape: queue
+      style.fill: "#bbdefb"
+    }
+
+    sub_vectors: "Subvectors (q⁰...qᴹ⁻¹)\nOffset: 0x40 (Aligned)\nSize: (D/M) × 4B" {
+      grid-columns: 4
+      q0: "q⁰ [Sub-0]"
+      q1: "q¹ [Sub-1]"
+      q_dots: "..."
+      q_m_1: "qᴹ⁻¹ [Sub-M-1]"
+      
+      q0.style.fill: "#ffffff"
+      q1.style.fill: "#ffffff"
+      q_m_1.style.fill: "#ffffff"
+    }
+
+    codebooks: "Codebooks (M Subspaces)\n[M, 256, D/M]\nCentroids Cᵐ[i]" {
+      style.fill: "#fff3e0"
+      cb0: "CB₀"
+      cb1: "CB₁"
+      cb_dots: "..."
+      cbm: "CBᴹ⁻¹"
+    }
+
+    lut_gen: "ADC Table Generator\nL2: ||qᵐ - Cᵐ[i]||²\nSIMD Parallel Compute" {
+      shape: diamond
+      style: {
+        fill: "#ffe0b2"
+        stroke: "#f57c00"
+      }
+    }
+
+    # Data Flow Phase 1
+    query_vector -> subspace_splitter: "Load q into Registers"
+    subspace_splitter -> sub_vectors: "Split into M slices"
+    sub_vectors.q0 -> lut_gen: "Sub-query input"
+    sub_vectors.q1 -> lut_gen
+    sub_vectors.q_m_1 -> lut_gen
+    codebooks -> lut_gen: "Centroid lookup"
+  }
+
+  # --- THE ADC LOOKUP TABLE ---
+  lookup_table: "ADC Lookup Table (LUT)\nMemory: M × 256 × 4B (Row-Major)\nTotal Size: M KB" {
+    grid-columns: 5
+    style: {
+      fill: "#e8f5e9"
+      stroke: "#2e7d32"
+      stroke-width: 3
+    }
+
+    header_sub: "Subspace (m)" { style.bold: true }
+    c0: "Code 0x00" { style.bold: true }
+    c1: "Code 0x01" { style.bold: true }
+    c_dots: "..." { style.bold: true }
+    c255: "Code 0xFF" { style.bold: true }
+
+    row0_label: "m=0"
+    val0_0: "d(q⁰, c₀,₀)"
+    val0_1: "d(q⁰, c₀,₁)"
+    dots0: "..."
+    val0_255: "d(q⁰, c₀,₂₅₅)"
+
+    row1_label: "m=1"
+    val1_0: "d(q¹, c₁,₀)"
+    val1_1: "d(q¹, c₁,₁)"
+    dots1: "..."
+    val1_255: "d(q¹, c₁,₂₅₅)"
+  }
+
+  preprocessing.lut_gen -> lookup_table: "Store Precomputed Distances" {
+    style: {
+      stroke: "#f57c00"
+      stroke-width: 2
+      animated: true
+    }
+  }
+
+  # --- PHASE 2: HOT LOOP SEARCH ---
+  search_phase: "PHASE 2: The Hot Loop (Once per Database Vector)" {
+    style: {
+      fill: "#fff9c4"
+      stroke: "#fbc02d"
+      stroke-width: 2
+    }
+
+    db_vector_quantized: "Quantized DB Vector (x)\nType: uint8[M]\nSize: M bytes" {
+      shape: rectangle
+      style: {
+        fill: "#bbdefb"
+        stroke: "#1976d2"
+      }
+      codes: "Byte Array: [i₀, i₁, ..., iₘ₋₁]"
+    }
+
+    gather_logic: "Gather Logic\n_mm256_gather_ps\nParallel Indexing" {
+      shape: rectangle
+      style: {
+        multiple: true
+        fill: "#e1f5fe"
+      }
+    }
+
+    accumulator: "SIMD Accumulator\n_mm256_add_ps\nΣ LUT[m][iₘ]" {
+      shape: circle
+      style: {
+        stroke-width: 3
+        fill: "#ffffff"
+        bold: true
+      }
+    }
+
+    final_dist: "ADC Result\nApproximate L2²\n32-bit Float" {
+      shape: parallelogram
+      style: {
+        fill: "#c8e6c9"
+        stroke: "#2e7d32"
+      }
+    }
+
+    db_vector_quantized.codes -> gather_logic: "Load M indices"
+    gather_logic -> lookup_table: "Random Access Lookups"
+    lookup_table -> gather_logic: "Fetch Float Distances"
+    gather_logic -> accumulator: "Sum Sub-distances"
+    accumulator -> final_dist: "Horizontal Add"
+  }
+}
+
+# Corrected Positioning for ELK Layout Engine
+math_note: |md
+  ### Technical Performance & Implementation Spec
+  - **Computation Complexity:** O(D) multiply-adds per query vector is reduced to O(M) additions during search.
+  - **SIMD Strategy:**
+    - `_mm256_gather_ps` used to load distances from LUT using the $i_m$ indices.
+    - `_mm256_add_ps` accumulates the values into a running sub-total.
+  - **Memory Alignment:** LUT is typically aligned to 64-byte cache line boundaries (DDR4/DDR5 optimization).
+  
+  **Distance Formula:**
+  $$ d(q, x) \approx \sum_{m=0}^{M-1} \text{LUT}[m][\text{index}_m(x)] $$
+  
+  **Optimization:** The LUT is small enough to reside in L1/L2 cache during the search phase, minimizing the impact of the gather instruction's memory latency.
+| {
+  near: bottom-center
+  style: {
+    stroke: "#757575"
+    stroke-dash: 2
+    fill: "#fafafa"
+    font-size: 14
+  }
+}
+
+# Tooltip for search phase detail
+adc_process.search_phase.gather_logic.tooltip: "VPGATHERDD/VPGATHERQD: Fetches sparse data from memory into a SIMD register using vector indices."
+
+# Styling for coherence
+adc_process.preprocessing.query_vector.style.font-color: "#0d47a1"
+adc_process.search_phase.db_vector_quantized.style.font-color: "#0d47a1"
+adc_process.lookup_table.style.font-color: "#1b5e20"
+adc_process.lookup_table.header_sub.style.bold: true
+adc_process.lookup_table.c0.style.bold: true
+adc_process.lookup_table.c1.style.bold: true
+adc_process.lookup_table.c255.style.bold: true

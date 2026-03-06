@@ -1,0 +1,210 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    layout-engine: elk
+    sketch: false
+  }
+}
+
+# --- GLOBAL CLASSES ---
+classes: {
+  slot_live: {
+    label: "LIVE DATA"
+    style: {
+      fill: "#b3d9ff"
+      stroke: "#004080"
+      stroke-width: 2
+      font-color: "#004080"
+      bold: true
+    }
+  }
+  slot_tomb: {
+    label: "TOMBSTONE"
+    style: {
+      fill: "#f8f9fa"
+      stroke: "#cc0000"
+      stroke-dash: 3
+      opacity: 0.6
+      font-color: "#cc0000"
+    }
+  }
+  mapping_table: {
+    style: {
+      fill: "#fff2cc"
+      stroke: "#d6b656"
+      font-size: 12
+    }
+  }
+  hashmap: {
+    style: {
+      fill: "#e1d5e7"
+      stroke: "#9673a6"
+      stroke-width: 2
+      double-border: true
+    }
+  }
+  action_arrow: {
+    style: {
+      stroke: "#d79b00"
+      stroke-width: 3
+      animated: true
+    }
+  }
+  header_text: {
+    shape: text
+    style: {
+      font-size: 18
+      bold: true
+      underline: true
+    }
+  }
+}
+
+# --- ALGORITHM WORKFLOW ---
+compaction_algorithm: {
+  
+  # ---------------------------------------------------------------------------
+  # STEP 1: INITIAL FRAGMENTED STATE
+  # ---------------------------------------------------------------------------
+  step_1: {
+    label: "1. Initial State (Fragmented Memory)"
+    grid-columns: 1
+    
+    id_map: "ID-to-Slot Map\n(Indirection Layer)" {
+      class: hashmap
+      content: |'md
+      | Object ID | Buffer Slot | Gen |
+      | :--- | :--- | :--- |
+      | **ID_10** | Slot 0 | 1 |
+      | **ID_25** | Slot 2 | 1 |
+      | **ID_42** | Slot 4 | 1 |
+      '|
+    }
+
+    buffer: "AlignedVectorBuffer<T>\n[Capacity: 5 | Utilization: 60%]" {
+      style.fill: "#f3f3f3"
+      # Byte Offsets for technical precision
+      s0: "0x00: [V10]" { class: slot_live }
+      s1: "0x40: [FREE]" { class: slot_tomb }
+      s2: "0x80: [V25]" { class: slot_live }
+      s3: "0xC0: [FREE]" { class: slot_tomb }
+      s4: "0x100: [V42]" { class: slot_live }
+    }
+    
+    id_map -> buffer.s0: "Ref: Slot 0"
+    id_map -> buffer.s2: "Ref: Slot 2"
+    id_map -> buffer.s4: "Ref: Slot 4"
+  }
+
+  # ---------------------------------------------------------------------------
+  # STEP 2: BUILD MAPPING ARRAY
+  # ---------------------------------------------------------------------------
+  step_2: {
+    label: "2. Generate Forwarding Index"
+    grid-columns: 1
+    
+    mapping: "Forwarding Table: old_to_new" {
+      class: mapping_table
+      content: |'md
+      | Old Index | New Index | Action |
+      | :--- | :--- | :--- |
+      | 0 | **0** | **KEEP** |
+      | 1 | *null* | **DISCARD** |
+      | 2 | **1** | **KEEP** |
+      | 3 | *null* | **DISCARD** |
+      | 4 | **2** | **KEEP** |
+      '|
+    }
+    
+    logic_desc: |'md
+    **Compaction Logic:**
+    1. Scan buffer bitmask for live slots.
+    2. Compute prefix sum of live bits.
+    3. `new_idx = prefix_sum(old_idx) - 1`.
+    '| {
+      shape: text
+      style.font-size: 14
+    }
+  }
+
+  # ---------------------------------------------------------------------------
+  # STEP 3: BUFFER REWRITE
+  # ---------------------------------------------------------------------------
+  step_3: {
+    label: "3. Linear Memory Compaction"
+    grid-columns: 2
+    
+    source_view: "Source (Fragmented)" {
+      os0: "Slot 0 (V10)" { class: slot_live }
+      os1: "Slot 1 (DEL)" { class: slot_tomb }
+      os2: "Slot 2 (V25)" { class: slot_live }
+      os3: "Slot 3 (DEL)" { class: slot_tomb }
+      os4: "Slot 4 (V42)" { class: slot_live }
+    }
+
+    dest_view: "Destination (Compacted)" {
+      ns0: "New Slot 0" { class: slot_live }
+      ns1: "New Slot 1" { class: slot_live }
+      ns2: "New Slot 2" { class: slot_live }
+    }
+
+    source_view.os0 -> dest_view.ns0: "memcpy(64B)" { class: action_arrow }
+    source_view.os2 -> dest_view.ns1: "memcpy(64B)" { class: action_arrow }
+    source_view.os4 -> dest_view.ns2: "memcpy(64B)" { class: action_arrow }
+    
+    # FIX: Removed 'near: bottom-center' as it is illegal within nested containers
+    ptr_info: "Linear compaction: sizeof(buffer) = 192 bytes (3 cache lines)" {
+      shape: text
+      style.font-color: "#666666"
+      style.italic: true
+    }
+  }
+
+  # ---------------------------------------------------------------------------
+  # STEP 4: FINAL COMPACTED STATE
+  # ---------------------------------------------------------------------------
+  step_4: {
+    label: "4. Post-Compaction State"
+    grid-columns: 1
+    
+    id_map_final: "ID-to-Slot Map (ATOMIC UPDATE)" {
+      class: hashmap
+      content: |'md
+      | Object ID | Buffer Slot | Status |
+      | :--- | :--- | :--- |
+      | **ID_10** | **Slot 0** | OK |
+      | **ID_25** | **Slot 1** | UPDATED |
+      | **ID_42** | **Slot 2** | UPDATED |
+      '|
+    }
+
+    buffer_final: "AlignedVectorBuffer\n[Size: 3 | Utilization: 100%]" {
+      fs0: "0x00: [V10]" { class: slot_live }
+      fs1: "0x40: [V25]" { class: slot_live }
+      fs2: "0x80: [V42]" { class: slot_live }
+    }
+    
+    id_map_final -> buffer_final.fs0
+    id_map_final -> buffer_final.fs1
+    id_map_final -> buffer_final.fs2
+    
+    result_metrics: |'md
+    ### Compaction Result:
+    - **Memory Reclaimed:** 128 Bytes (2 Slots)
+    - **Fragmentation:** 0%
+    - **Cache Locality:** Optimized for linear scan
+    '| {
+      shape: text
+    }
+  }
+}
+
+# --- SEQUENTIAL FLOW ---
+compaction_algorithm.step_1 -> compaction_algorithm.step_2: "Scan & Map"
+compaction_algorithm.step_2 -> compaction_algorithm.step_3: "Move Data"
+compaction_algorithm.step_3 -> compaction_algorithm.step_4: "Update Pointers"
+
+# --- GLOBAL STYLING OVERRIDES ---
+***.style.font: mono
+(*** -> ***)[*].style.font-size: 12

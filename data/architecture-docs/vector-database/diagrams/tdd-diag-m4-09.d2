@@ -1,0 +1,166 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    pad: 30
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# CLASS DEFINITIONS - Implementation Grade Styling
+# ---------------------------------------------------------------------------------
+classes: {
+  header_style: { 
+    style: { fill: "#9b59b6"; font-color: white; stroke: "#8e44ad"; stroke-width: 2 } 
+  }
+  config_style: { 
+    style: { fill: "#3498db"; font-color: white; stroke: "#2980b9"; stroke-width: 2 } 
+  }
+  state_style: { 
+    style: { fill: "#e67e22"; font-color: white; stroke: "#d35400"; stroke-width: 2 } 
+  }
+  nodes_style: { 
+    style: { fill: "#2ecc71"; font-color: white; stroke: "#27ae60"; stroke-width: 2 } 
+  }
+  ptr_style: { 
+    style: { fill: "#e67e22"; font-color: white; bold: true; stroke: "#d35400" } 
+  }
+  padding_style: { 
+    style: { fill: "#ecf0f1"; font-color: "#7f8c8d"; italic: true; stroke: "#bdc3c7"; stroke-dash: 3 } 
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# MAIN SERIALIZATION LAYOUT
+# ---------------------------------------------------------------------------------
+HNSW_Index_Serialization: {
+  shape: sql_table
+  label: "HNSW Index Serialization Format (Binary V1.0 Layout)"
+  style: { stroke-width: 4; border-radius: 4 }
+
+  # SECTION: HEADER (Offsets 0x00 - 0x3F)
+  "0x00: magic": "u8[8] (0x48 0x4E 0x53 0x57 0x5F 0x49 0x44 0x58)" {constraint: "8 Bytes"; class: header_style}
+  "0x08: version": "u32 (Little Endian - LE)" {constraint: "4 Bytes"; class: header_style}
+  "0x0C: metric_type": "u64 (0=L2, 1=IP, 2=COS)" {constraint: "8 Bytes"; class: header_style}
+  "0x14: metric_name_len": "u32 (N)" {constraint: "4 Bytes"; class: header_style}
+  "0x18: metric_name": "UTF-8 String Buffer" {constraint: "N Bytes"; class: header_style}
+  "0xXX: padding_head": "Alignment Padding (0x00)" {constraint: "To offset 0x40"; class: padding_style}
+
+  # SECTION: CONFIG (Offsets 0x40 - 0x67)
+  "0x40: m_max": "u64 (Max degree per node)" {constraint: "8 Bytes"; class: config_style}
+  "0x48: m_max0": "u64 (Max degree at Level 0)" {constraint: "8 Bytes"; class: config_style}
+  "0x50: ef_construction": "u64 (Construction beam width)" {constraint: "8 Bytes"; class: config_style}
+  "0x58: ef_search": "u64 (Default search beam width)" {constraint: "8 Bytes"; class: config_style}
+  "0x60: mult": "f64 (Level selection multiplier)" {constraint: "8 Bytes"; class: config_style}
+
+  # SECTION: STATE (Offsets 0x68 - 0x7F)
+  "0x68: entry_point": "u64 (Root Node Internal ID)" {constraint: "8 Bytes"; class: state_style}
+  "0x70: max_layer": "u64 (Highest active layer index)" {constraint: "8 Bytes"; class: state_style}
+  "0x78: node_count": "u64 (Total number of node entries)" {constraint: "8 Bytes"; class: state_style}
+
+  # SECTION: NODES (Offsets 0x80+)
+  "0x80: nodes_data": "Contiguous NodeElement Array" {constraint: "node_count * sizeof(Node)"; class: nodes_style}
+}
+
+# ---------------------------------------------------------------------------------
+# SUB-STRUCTURE DEFINITION
+# ---------------------------------------------------------------------------------
+Node_Element_Structure: {
+  shape: sql_table
+  label: "NodeElement (Memory-Mapped Representation)"
+  style: { stroke-width: 2; stroke-dash: 5 }
+
+  "0x00: vector_id": "u64 (Global Resource Identifier)" {constraint: "8 Bytes"; class: config_style}
+  "0x08: node_height": "u32 (0-indexed layer height)" {constraint: "4 Bytes"; class: config_style}
+  "0x0C: state_flags": "u32 (Bitmask: Deleted|Locked|Fixed)" {constraint: "4 Bytes"; class: config_style}
+  "0x10: adjacency_ptr": "u64 (Relative Offset to Lists)" {constraint: "8 Bytes"; class: ptr_style}
+  
+  # Adjacency lists (Sequential storage for cache locality)
+  "0x18: level_0_adj": "u64[m_max0] (Neighbor IDs)" {constraint: "m_max0 * 8B"; style.fill: "#ecf0f1"; style.font-color: black}
+  "0xXX: level_N_adj": "u64[m_max * node_height]" {constraint: "Var * 8B"; style.fill: "#ecf0f1"; style.font-color: black}
+}
+
+# ---------------------------------------------------------------------------------
+# CONNECTIONS & INTERRELATIONS
+# ---------------------------------------------------------------------------------
+HNSW_Index_Serialization."0x80: nodes_data" -> Node_Element_Structure: "Deserializes as Array of NodeElement" {
+  style: {
+    stroke: "#e67e22"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+(HNSW_Index_Serialization."0x80: nodes_data" -> Node_Element_Structure)[0]: {
+  source-arrowhead: triangle
+  target-arrowhead: diamond
+  target-arrowhead.style.filled: true
+}
+
+# ---------------------------------------------------------------------------------
+# TECHNICAL ANNOTATIONS (FIXED: Constant 'near' for ELK engine)
+# ---------------------------------------------------------------------------------
+Annotations: {
+  shape: page
+  near: top-right
+  label: "Implementation Invariants & Binary Specs"
+  content: |md
+    ### 1. Byte Order (Endianness)
+    - All numeric fields MUST be encoded in **Little Endian** format.
+    - Floating point values (`mult`) use standard **IEEE 754** 64-bit precision.
+
+    ### 2. Header Validation
+    - Offset `0x00` MUST strictly match `HNSW_IDX`.
+    - Offset `0x08` (Version) MUST be `>= 1` for this layout.
+
+    ### 3. Alignment Policy
+    - Data structures should be aligned to **64-byte** cache line boundaries.
+    - `nodes_data` array starts at exactly `0x80`.
+
+    ### 4. Memory Mapping
+    - This binary format is compatible with `mmap(2)` on Unix systems for zero-copy deserialization.
+  |
+  style: {
+    fill: "#fdfefe"
+    stroke: "#34495e"
+    stroke-width: 1
+    font-size: 14
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# LEGEND & VISUAL BOUNDARIES
+# ---------------------------------------------------------------------------------
+Legend: {
+  near: bottom-center
+  grid-columns: 2
+  grid-gap: 15
+  
+  Header_Leg: "Header Metadata" { class: header_style }
+  Config_Leg: "Index Configuration" { class: config_style }
+  State_Leg: "Runtime State" { class: state_style }
+  Nodes_Leg: "Index Payload" { class: nodes_style }
+  Padding_Leg: "Alignment Padding" { class: padding_style }
+  Pointer_Leg: "Offset/Pointers" { class: ptr_style }
+}
+
+boundary_info: |md
+  **CACHE LINE BOUNDARY**
+  *Offset 0x40 (64B)*
+| {
+  shape: text
+  near: top-left
+  style: {
+    font-size: 16
+    font-color: "#c0392b"
+    bold: true
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# GLOBAL STYLE OVERRIDES
+# ---------------------------------------------------------------------------------
+***.style.font: mono
+HNSW_Index_Serialization.style.shadow: true
+Node_Element_Structure.style.shadow: true

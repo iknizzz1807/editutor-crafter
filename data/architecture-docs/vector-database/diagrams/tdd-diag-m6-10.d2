@@ -1,0 +1,249 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    center: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# TECHNICAL STYLE CLASSES (Intel Manual Quality)
+# -----------------------------------------------------------------------------
+classes: {
+  reader_style: {
+    style: {
+      stroke: "#2563eb"
+      stroke-width: 2
+      font-color: "#1e3a8a"
+      fill: "#eff6ff"
+    }
+  }
+  writer_style: {
+    style: {
+      stroke: "#ea580c"
+      stroke-width: 2
+      font-color: "#7c2d12"
+      fill: "#fff7ed"
+    }
+  }
+  error_style: {
+    style: {
+      stroke: "#dc2626"
+      stroke-dash: 4
+      font-color: "#991b1b"
+      fill: "#fef2f2"
+    }
+  }
+  lock_op: {
+    style: {
+      bold: true
+      font-size: 14
+      font: mono
+    }
+  }
+  header_purple: {
+    style: {
+      fill: "#faf5ff"
+      stroke: "#7e22ce"
+      stroke-width: 2
+    }
+  }
+  memory_box: {
+    style: {
+      fill: "#f8fafc"
+      stroke: "#475569"
+      font: mono
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# DIAGRAM ANNOTATIONS
+# -----------------------------------------------------------------------------
+Title: |md
+  # TDD-M6-10: Concurrent Stress Test Logic
+  **Target:** `RwLock<VectorStorage>` Thread-Safety Verification
+  **Invariants:**
+  1. `Readers.count >= 0`
+  2. `Writers.count ∈ {0, 1}`
+  3. `(Writers.count == 1) ⇒ (Readers.count == 0)`
+  4. `Memory_Barrier: SeqCst`
+| {
+  near: top-center
+}
+
+# -----------------------------------------------------------------------------
+# MAIN SCENARIO
+# -----------------------------------------------------------------------------
+ConcurrentStressTest: {
+  shape: sequence_diagram
+  style: {
+    stroke: "#475569"
+    stroke-width: 1
+    fill: "#ffffff"
+  }
+  
+  # PARTICIPANT DEFINITIONS (ACTORS)
+  TestRunner: "TestRunner\n(TID: 0x00)" {
+    shape: person
+  }
+
+  Barrier: "std::sync::Barrier\n(Capacity: 10)" {
+    class: header_purple
+    shape: oval
+  }
+
+  Readers: "Reader Pool\n(Threads 0..4)" {
+    class: reader_style
+  }
+
+  Writers: "Writer Pool\n(Threads 5..9)" {
+    class: writer_style
+  }
+
+  Storage: "VectorStorage\n(64-byte Cache Aligned)" {
+    shape: cylinder
+    class: memory_box
+  }
+
+  Stats: "AtomicStats\n(Relaxed/SeqCst)" {
+    shape: rectangle
+    class: memory_box
+  }
+
+  # 1. INITIALIZATION PHASE
+  TestRunner -> Storage: "0x01: write_lock() ▼" {class: lock_op}
+  Storage -> TestRunner: "0x02: GNT (Exclusive)"
+  TestRunner -> Storage: "0x03: bulk_insert(1024_vecs)"
+  TestRunner -> Storage: "0x04: release ▲"
+
+  # 2. THREAD SPAWNING
+  TestRunner -> Readers: "0x05: spawn(R_0..4)" {
+    style.stroke-dash: 5
+  }
+  TestRunner -> Writers: "0x06: spawn(W_5..9)" {
+    style.stroke-dash: 5
+  }
+
+  # 3. SYNCHRONIZATION POINT (Barrier)
+  SyncPoint: {
+    label: "Barrier: Block until Threads=10"
+    Readers -> Barrier: "wait()"
+    Writers -> Barrier: "wait()"
+    Barrier -> Readers: "release(TID_ALL)"
+    Barrier -> Writers: "release(TID_ALL)"
+  }
+
+  # 4. CONCURRENT EXECUTION LOOP
+  StressLoop: {
+    label: "Concurrent Loop [Iteration 0..1000]"
+    
+    # Readers Logic (Shared Access)
+    Readers -> Storage: "0x07: read_lock() [SHR] ▼" {
+      class: reader_style
+      style.animated: true
+    }
+    Storage -> Readers: "0x08: search(q, k=10) -> ResultSet" {
+      class: reader_style
+    }
+    Readers -> Storage: "0x09: release ▲" {
+      class: reader_style
+    }
+
+    # Writers Logic (Exclusive Access)
+    Writers -> Storage: "0x0A: write_lock() [EXC] ▼" {
+      class: writer_style
+      style.animated: true
+    }
+    
+    Storage.Exclusive_Lock_State: |md
+      ### LOCK ARBITRATION (TID: 0x07)
+      * **Mode:** `Write_Exclusive`
+      * **Fence:** `std::sync::atomic::fence(Ordering::Acquire)`
+      * **Queue:** Readers parked in OS wait-queue
+      * **Starvation:** Writer-preference strategy active
+    |
+
+    Storage -> Writers: "0x0B: insert(id, vec, meta) -> Ack" {
+      class: writer_style
+    }
+    Writers -> Storage: "0x0C: release ▲" {
+      class: writer_style
+    }
+  }
+
+  # 5. SAFETY VERIFICATION
+  Verification: {
+    Readers -> Stats: "iterations.fetch_add(1, Relaxed)"
+    Writers -> Stats: "iterations.fetch_add(1, Relaxed)"
+
+    Readers -> Stats: "errors.fetch_add(1, SeqCst)" {
+      label: "IF Invariant_Check == FAIL"
+      class: error_style
+    }
+  }
+
+  # 6. SHUTDOWN PHASE
+  Readers -> TestRunner: "thread::join()"
+  Writers -> TestRunner: "thread::join()"
+
+  TestRunner -> Stats: "load_counters(Ordering::SeqCst)"
+  TestRunner -> TestRunner: "ASSERT!(error_rate < 10⁻⁶)" {
+    style: {
+      stroke: "#16a34a"
+      stroke-width: 3
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# LEGEND (Using constant 'near' for ELK compliance)
+# -----------------------------------------------------------------------------
+Legend: {
+  near: bottom-right
+  style: {
+    stroke: "#94a3b8"
+    fill: "#ffffff"
+    stroke-width: 2
+    double-border: true
+    shadow: true
+  }
+  
+  Title: "TEST SPECIFICATION SYMBOLS" {
+    shape: text
+    style.bold: true
+  }
+
+  grid-rows: 5
+  grid-gap: 12
+
+  L1: "▼ Lock Acquire (Request) / ▲ Lock Release (Drop)" {
+    shape: text
+  }
+  L2: "Blue Path: Concurrent Shared Read (RwLock::read)" {
+    shape: text
+    style: {
+      font-color: "#2563eb"
+      bold: true
+    }
+  }
+  L3: "Orange Path: Exclusive Sequential Write (RwLock::write)" {
+    shape: text
+    style: {
+      font-color: "#ea580c"
+      bold: true
+    }
+  }
+  L4: "Red Dashed: Invariant Violation / Critical Failure" {
+    shape: text
+    style: {
+      font-color: "#dc2626"
+      bold: true
+    }
+  }
+  L5: "0xNN: Sequential Sequence Identifier (Clock/TICK)" {
+    shape: text
+    style.font: mono
+  }
+}

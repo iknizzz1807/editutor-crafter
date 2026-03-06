@@ -1,0 +1,174 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 6
+    sketch: false
+    pad: 20
+  }
+}
+
+# -----------------------------------------------------------------------------
+# RUNTIME SIMD DISPATCH FLOW
+# Specification: Intel Manual Grade Runtime Feature Detection & Dispatch
+# -----------------------------------------------------------------------------
+
+simd_dispatch: {
+  shape: sequence_diagram
+  style: {
+    stroke: "#4A235A"
+    stroke-width: 2
+    fill: "#F4ECF7"
+  }
+
+  # --- Actor Definitions ---
+  caller: "M3: Search Engine\n(TopKSelector)" {
+    style.fill: "#E1D5E7"
+    style.stroke: "#9673A6"
+    style.bold: true
+  }
+  
+  runtime: "M2: Runtime Dispatcher\n(runtime.rs)" {
+    style.fill: "#DAE8FC"
+    style.stroke: "#6C8EBF"
+    style.bold: true
+  }
+
+  cpu: "Hardware Interface\n(CPUID/EAX=1/7)" {
+    shape: parallelogram
+    style.fill: "#FFF2CC"
+    style.stroke: "#D6B656"
+  }
+
+  avx2_module: "M2: AVX2 Backend\n(avx2.rs)" {
+    style.fill: "#D5E8D4"
+    style.stroke: "#82B366"
+    style.double-border: true
+  }
+
+  scalar_module: "M2: Scalar Backend\n(optimized.rs)" {
+    style.fill: "#F8CECC"
+    style.stroke: "#B85450"
+  }
+
+  # --- Sequence Execution ---
+
+  caller -> runtime: "compute_distance(vec_a: *f32, vec_b: *f32, len: usize) -> f32" {
+    style.bold: true
+    style.stroke: "#0000FF"
+    tooltip: "Stack frame allocated: 64B. Inputs: RDI, RSI, RDX"
+  }
+
+  # Internal Logic & Validation
+  runtime."Memory Alignment Check": "Verify (ptr_a | ptr_b) & 0x1F == 0" {
+    tooltip: "Critical check for 32-byte boundary (YMM register width)"
+  }
+
+  runtime -> cpu: "is_x86_feature_detected!(\"avx2\")" {
+    style.stroke-dash: 3
+    tooltip: "Probe EAX=7, EBX bit 5"
+  }
+  
+  cpu -> runtime: "FeatureFlags { avx2: 1, fma: 1, bmi2: 1 }"
+
+  # Logic Grouping for Branching
+  dispatch_logic: {
+    label: "Branch: Instruction Set Selection"
+    
+    avx2_branch: {
+      label: "if CPU_FEATURE_AVX2 && IS_ALIGNED_32"
+      
+      runtime -> avx2_module: "unsafe _dispatch_avx2(ptr_a, ptr_b, len)" {
+        style: {
+          stroke: "#2D7600"
+          stroke-width: 3
+          animated: true
+        }
+      }
+      
+      avx2_module."SIMD Pipeline": "VMOVUPS ymm0, [ptr_a] // Unaligned Load"
+      avx2_module."SIMD Pipeline": "VFMADD231PS ymm1, ymm0, [ptr_b] // FMA"
+      avx2_module."SIMD Pipeline": "VHADDPS (Horizontal Sum Reduction)"
+      
+      avx2_module -> runtime: "f32 result (via XMM0 lower bits)"
+    }
+
+    scalar_branch: {
+      label: "else: Fallback Path"
+      
+      runtime -> scalar_module: "scalar_dot_product(slice_a, slice_b)" {
+        style: {
+          stroke: "#B85450"
+          stroke-width: 2
+        }
+      }
+      
+      scalar_module."Loop Unroll": "8-way unrolled loop (avoid pipeline stall)"
+      scalar_module -> runtime: "f32 result"
+    }
+  }
+
+  runtime -> caller: "return dist: f32" {
+    style.bold: true
+    style.stroke-width: 3
+    tooltip: "Result returned in XMM0 register"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ANNOTATIONS & METADATA
+# -----------------------------------------------------------------------------
+
+implementation_notes: |md
+  ### M2 Implementation Specification (Intel Manual Reference)
+  - **Alignment Strategy**: While `VMOVUPS` (Unaligned) is used, peak throughput requires **32-byte alignment** to ensure `VMOVAPS` compatibility and avoid cache-line split penalties (-20% throughput).
+  - **Safety Contract**: AVX2 functions are marked `unsafe`. Execution must be gated by `is_x86_feature_detected` or `cpuid` bitmask checks to prevent `SIGILL`.
+  - **Intrinsic Usage**: 
+    - `_mm256_loadu_ps`: Load 256-bit vector
+    - `_mm256_fmadd_ps`: Fused Multiply-Add (requires FMA3 support)
+  - **Cost Profile**: 
+    - Dispatch overhead: **~8-12 cycles**.
+    - AVX2 inner loop: **1 vector per 0.5 cycles** (pipelined).
+| {
+  near: bottom-center
+  shape: text
+  style.font-size: 14
+}
+
+legend: {
+  near: bottom-left
+  avx_path: "AVX2 SIMD Path" {
+    style: {
+      stroke: "#2D7600"
+      stroke-width: 3
+      font-color: "#2D7600"
+      bold: true
+    }
+  }
+  fallback_path: "Scalar Fallback" {
+    style: {
+      stroke: "#B85450"
+      stroke-width: 2
+      font-color: "#B85450"
+    }
+  }
+  hw_check: "Hardware Probe" {
+    style.stroke-dash: 3
+  }
+}
+
+title: "Intel x86_64 Runtime SIMD Dispatch: M2 Technical Design" {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+    font-color: "#4A235A"
+  }
+}
+
+footer: "Classification: Technical / Low-Level Design | Latency: O(1) Dispatch | Size: ~64 Bytes Call Frame" {
+  near: bottom-right
+  shape: text
+  style.italic: true
+}

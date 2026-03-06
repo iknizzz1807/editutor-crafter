@@ -1,0 +1,219 @@
+direction: down
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  layer_api: {
+    direction: down
+    label: "LAYER 1: QUERY API & SERVER (M6)"
+
+    server_state: {
+      shape: class
+      label: "ApiState  api/state.rs [M6]"
+      +collections: "RwLock<HashMap<Id, Arc<ThreadSafeCollection>>>"
+      +start_time: "Instant"
+      +config: "ServerConfig"
+      +create_collection(id, config): "Result<(), ApiError>"
+      +get_collection(id): "Result<CollectionInfo, ApiError>"
+    }
+
+    collection_handle: {
+      shape: class
+      label: "ThreadSafeCollection  api/state.rs [M6]"
+      -inner: "Arc<Collection>"
+      +search(request): "Result<SearchResponse, SearchError>"
+      +batch_insert(request): "Result<BatchInsertResponse, InsertError>"
+      -search_with_index(req, storage, timeout): "Result<Vec<Res>, SearchErr>"
+    }
+
+    request_models: {
+      shape: sql_table
+      label: "SearchRequest  api/types.rs [M6]"
+      vector: "Vec<f32> | Query Embeddings"
+      k: "usize | Top-K count"
+      filter: "Option<FilterPredicate> | DSL"
+      strategy: "FilterStrategy | Pre/Post/Auto"
+      timeout_ms: "u64 | Backpressure"
+    }
+  }
+}
+
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  layer_search: {
+    direction: down
+    label: "LAYER 2: SEARCH & INDEXING (M3, M4)"
+
+    hnsw_index: {
+      shape: class
+      label: "HNSWIndex  hnsw/mod.rs [M4]"
+      -nodes: "RwLock<HashMap<NodeId, HNSWNode>>"
+      -entry_point: "RwLock<Option<NodeId>>"
+      -max_layer: "RwLock<usize>"
+      +search(query, storage, k): "Vec<HNSWResult>"
+      +insert(vector_id, storage, rng): "usize"
+      -search_layer(query, eps, ef, layer): "LayerSearchResult"
+    }
+
+    brute_force: {
+      shape: class
+      label: "BruteForceSearch  search/brute_force.rs [M3]"
+      -storage: "&VectorStorage"
+      -metric: "&dyn Metric"
+      +search(query, k): "Vec<SearchResult>"
+      +search_filtered(query, k, predicate): "Vec<SearchResult>"
+      +search_threshold(query, thresh): "Vec<SearchResult>"
+    }
+
+    topk_heap: {
+      shape: sql_table
+      label: "struct TopKSelector  search/topk_selector.rs [M3]"
+      heap: "BinaryHeap<T> | Max-Heap for Distance"
+      k: "usize | Bound size"
+      is_distance: "bool | Min vs Max flip"
+      total_sz: "Size: O(k) memory"
+    }
+  }
+}
+
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  layer_math: {
+    direction: down
+    label: "LAYER 3: DISTANCE & QUANTIZATION (M2, M5)"
+
+    metric_trait: {
+      shape: class
+      label: "trait Metric  distance/mod.rs [M2]"
+      +distance(a, b): "f32"
+      +is_similarity(): "bool"
+      +name(): "&str"
+      +batch_distance(query, vectors): "Vec<(u64, f32)>"
+    }
+
+    product_quantizer: {
+      shape: class
+      label: "ProductQuantizer  quantization/product_quantizer.rs [M5]"
+      -codebooks: "Vec<SubspaceCodebook>"
+      -num_subspaces: "usize | M"
+      -subspace_dim: "usize | D/M"
+      +train(vectors, M, iterations, seed): "Result<Self, PQError>"
+      +quantize(vector): "Vec<u8> | M-byte code"
+      +adc(): "ADCComputer"
+    }
+
+    adc_engine: {
+      shape: class
+      label: "ADCComputer  quantization/adc_computer.rs [M5]"
+      -lookup_table: "Vec<Vec<f32>> | M x 256"
+      +set_query(query): "void | Precompute Table"
+      +compute_distance(codes): "f32 | O(M) lookup"
+    }
+  }
+}
+
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  layer_storage: {
+    direction: down
+    label: "LAYER 4: STORAGE ENGINE (M1)"
+
+    vector_storage: {
+      shape: sql_table
+      label: "struct VectorStorage  storage/vector_storage.rs [M1]"
+      buffer: "AlignedVectorBuffer | Raw memory"
+      id_to_slot: "HashMap<u64, (usize, u32)> | Index"
+      slots: "Vec<Option<VectorSlot>> | Generation"
+      free_list: "Vec<usize> | Reclaimable"
+      live_count: "usize | Non-deleted"
+      padded_dim: "usize | 64-byte aligned"
+    }
+
+    aligned_buffer: {
+      shape: sql_table
+      label: "struct AlignedVectorBuffer  storage/aligned_buffer.rs [M1]"
+      ptr: "NonNull<f32> | 64-byte aligned"
+      capacity: "usize | Total f32s"
+      layout: "Layout | alloc::Layout"
+      alignment: "Fixed: 64 bytes"
+    }
+
+    file_format: {
+      shape: sql_table
+      label: "FileHeader (64 bytes)  storage/serialization.rs [M1]"
+      "0x00 Magic": "8 bytes | 'VECTORS1'"
+      "0x08 Version": "u32 LE | 1"
+      "0x0C raw_dim": "u32 LE"
+      "0x10 padded_dim": "u32 LE"
+      "0x14 capacity": "u32 LE"
+      "0x1C alignment": "u32 LE | 64"
+    }
+  }
+}
+
+# CONNECTIONS
+
+row1.layer_api.server_state -> row1.layer_api.collection_handle: "contains"
+row1.layer_api.collection_handle -> row2.layer_search.hnsw_index: "search/insert"
+row1.layer_api.collection_handle -> row2.layer_search.brute_force: "Linear Scan"
+
+row2.layer_search.hnsw_index -> row3.layer_math.metric_trait: "calls"
+row2.layer_search.brute_force -> row3.layer_math.metric_trait: "calls"
+row2.layer_search.brute_force -> row2.layer_search.topk_heap: "uses"
+
+row3.layer_math.product_quantizer -> row3.layer_math.adc_engine: "creates"
+row3.layer_math.adc_engine -> row4.layer_storage.vector_storage: "reads codes"
+
+row2.layer_search.hnsw_index -> row4.layer_storage.vector_storage: "fetches vectors"
+row2.layer_search.brute_force -> row4.layer_storage.vector_storage: "iter_live()"
+
+row4.layer_storage.vector_storage -> row4.layer_storage.aligned_buffer: "owns"
+row4.layer_storage.vector_storage -> row4.layer_storage.file_format: "serializes"
+
+# INFRASTRUCTURE / HARDWARE MAPPING
+
+infra: "" {
+  near: bottom-right
+  avx: "SIMD: AVX-512 / AVX2" {
+    shape: parallelogram
+    style.fill: "#DEE1EB"
+    label: "SIMD Execution | 64-byte chunks"
+  }
+  mmap: "Memory Mapped I/O" {
+    shape: cylinder
+    style.fill: "#DEE1EB"
+    label: "OS Page Cache | 4KB Pages"
+  }
+}
+
+row4.layer_storage.aligned_buffer -> infra.avx: "Aligned Access"
+row4.layer_storage.vector_storage -> infra.mmap: "Persistence"
+
+milestone_index: {
+  shape: sql_table
+  label: "Milestone Index"
+  m1: "M1 | vector-database-m1 | Vector Storage Engine (Contiguous / Aligned)"
+  m2: "M2 | vector-database-m2 | Distance Metrics (SIMD / Kahan Sum)"
+  m3: "M3 | vector-database-m3 | Brute Force KNN (Ground Truth Baseline)"
+  m4: "M4 | vector-database-m4 | HNSW Index (Hierarchical Graph ANN)"
+  m5: "M5 | vector-database-m5 | Vector Quantization (SQ8 / PQ / ADC)"
+  m6: "M6 | vector-database-m6 | Query API & Server (REST / Concurrency)"
+}

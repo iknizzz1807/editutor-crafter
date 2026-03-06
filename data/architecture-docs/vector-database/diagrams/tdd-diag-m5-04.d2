@@ -1,0 +1,166 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# PQ Codebook Training via K-Means: Algorithm State Progression
+# Implementation Spec: O(M * iterations * N * 256 * subspace_dim)
+
+subvector_extraction: {
+  label: "Step 1: Subvector Extraction"
+  
+  input_vectors: "Raw Vectors (FP32)" {
+    shape: sql_table
+    style.fill: "#D1C4E9"
+    row_0: "Vector 0" {constraint: "Offset 0x00 | D * 4B"}
+    row_1: "Vector 1" {constraint: "Offset 0x..."}
+    row_n: "N Vectors" {constraint: "Total: N * D * 4B"}
+  }
+
+  process: "Split into M Subspaces" {
+    shape: diamond
+    style.fill: "#E3F2FD"
+  }
+
+  subspace_buffers: "Subspace Buffers (Memory Mapping)" {
+    grid-columns: 2
+    s0: "Subspace 0" {
+      shape: sql_table
+      style.fill: "#E3F2FD"
+      d: "Sub-vectors [0..N-1]" {constraint: "Dim: D/M"}
+    }
+    sm: "Subspace M-1" {
+      shape: sql_table
+      style.fill: "#E3F2FD"
+      d: "Sub-vectors [0..N-1]" {constraint: "Dim: D/M"}
+    }
+  }
+
+  input_vectors -> process: "Stride: D/M"
+  process -> subspace_buffers: "Parallel Memory Write"
+}
+
+kmeans_init: {
+  label: "Step 2: K-Means++ Initialization"
+  
+  logic: "Probability Sampling Logic" {
+    shape: sql_table
+    style.fill: "#E1F5FE"
+    p1: "1. Pick random v_i as Centroid 0"
+    p2: "2. Compute D(x)² to nearest centroid"
+    p3: "3. Sample next centroid ∝ D(x)²"
+    p4: "4. Repeat until 256 centroids"
+  }
+
+  initial_codebook: "SubspaceCodebook (Init)" {
+    shape: sql_table
+    style.fill: "#FFE0B2"
+    c0: "Centroid 0" {constraint: "Size: Sub_D * 4B"}
+    c1: "Centroid 1"
+    c255: "Centroid 255"
+  }
+
+  logic -> initial_codebook: "k=256 Centroids"
+}
+
+assignment_step: {
+  label: "Step 3: Assignment (Expectation)"
+  
+  calc: {
+    shape: rectangle
+    label: |'md
+      ### L2 Distance Minimization
+      **FOR EACH** subvector $v_i$:
+      $idx_i = \text{argmin}_k ||v_i - c_k||^2$
+    '|
+  }
+
+  assignments: "Assignments Array (u8 mapping)" {
+    shape: sql_table
+    style.fill: "#E3F2FD"
+    a0: "Index: 42" {constraint: "1 Byte (uint8)"}
+    a1: "Index: 128" {constraint: "1 Byte (uint8)"}
+    an: "N entries" {constraint: "Total: N Bytes"}
+  }
+
+  calc -> assignments: "Quantization Output"
+}
+
+update_step: {
+  label: "Step 4: Centroid Update (Maximization)"
+  
+  mean_calc: {
+    shape: rectangle
+    label: |'md
+      ### Centroid Re-calculation
+      **FOR EACH** centroid $k \in [0, 255]$:
+      $c_k = \frac{1}{|S_k|} \sum_{v \in S_k} v$
+    '|
+  }
+
+  updated_codebook: "SubspaceCodebook (Updated State)" {
+    shape: sql_table
+    style.fill: "#FFCDD2"
+    c0: "Centroid 0 (New Mean)" {constraint: "0x00"}
+    c1: "Centroid 1 (New Mean)" {constraint: "0x20"}
+    c255: "Centroid 255 (New Mean)" {constraint: "0x1FE0"}
+  }
+  
+  updated_codebook.c0.style.font-color: "#D32F2F"
+  updated_codebook.c0.style.bold: true
+  
+  updated_codebook.c1.style.font-color: "#D32F2F"
+  updated_codebook.c1.style.bold: true
+  
+  updated_codebook.c255.style.font-color: "#D32F2F"
+  updated_codebook.c255.style.bold: true
+
+  mean_calc -> updated_codebook: "Compute O(N * Sub_D)"
+}
+
+convergence_check: {
+  label: "Step 5: Convergence & Termination"
+  
+  check: "Δ Centroids < ε?" {
+    shape: diamond
+  }
+
+  repeat: "Next Iteration" {
+    style.stroke: "#D32F2F"
+    style.stroke-dash: 5
+  }
+
+  done: "Training Complete (Codebook Locked)" {
+    shape: circle
+    style.fill: "#C8E6C9"
+  }
+
+  check -> repeat: "No (or < max_iter)"
+  check -> done: "Yes"
+}
+
+subvector_extraction -> kmeans_init: "M Subspace Jobs"
+kmeans_init -> assignment_step: "Iteration 0 Start"
+assignment_step -> update_step: "Map Subvectors to Centroids"
+update_step -> convergence_check: "Verify Delta Movement"
+(convergence_check -> assignment_step)[0]: {
+  label: "Loop back (Optimized Re-assignment)"
+  style: {
+    stroke: "#D32F2F"
+    stroke-dash: 3
+  }
+}
+
+notes: |'md
+  ### PQ Training Technical Invariants
+  1. **Centroids**: Strictly fixed at 256 for $2^8$ bit packing (uint8).
+  2. **Subspaces (M)**: Product Quantizer config must ensure $D \pmod M = 0$.
+  3. **Memory Alignment**: Sub-buffers use 32-byte alignment for AVX-512 SIMD argmin.
+  4. **ADC Path**: Post-training, centroids are used to precompute Asymmetric Distance Computation tables.
+'|
+
+notes.near: convergence_check
+notes.style.font-size: 14

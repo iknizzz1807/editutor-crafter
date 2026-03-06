@@ -1,0 +1,186 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    sketch: false
+    pad: 20
+  }
+}
+
+mmap_lifecycle: {
+  shape: sequence_diagram
+  
+  user: User Process {
+    shape: person
+    icon: https://icons.terrastruct.com/essentials%2F005-programmer.svg
+    style: {
+      fill: "#4baae5"
+      stroke-width: 2
+    }
+  }
+  kernel: OS Kernel {
+    icon: https://icons.terrastruct.com/aws%2FCompute%2FAmazon-EC2_Instance_light-bg.svg
+    style: {
+      fill: "#ACE1AF"
+      stroke-width: 2
+    }
+  }
+  mmu: "MMU/Page Table" {
+    style: {
+      fill: "#D3D3D3"
+      stroke-dash: 2
+    }
+  }
+  cache: "Page Cache (RAM)" {
+    style: {
+      fill: "#f4a261"
+      bold: true
+    }
+  }
+  disk: "Disk Storage" {
+    shape: cylinder
+    style: {
+      fill: "#B19CD9"
+    }
+  }
+
+  # --- PHASE 1: INITIALIZATION ---
+  # Creating the Virtual Memory Area (VMA)
+  Setup: {
+    user -> kernel: open("data.bin", O_RDWR)
+    kernel -> user: return fd (File Descriptor)
+    
+    user -> kernel: mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0)
+    kernel -> mmu: create_vma_region(addr_range)
+    kernel -> user: return base_ptr (Virtual Address)
+  }
+
+  # --- PHASE 2: LAZY LOADING & FAULT HANDLING ---
+  # Demonstrates demand paging upon first memory access
+  "Memory Access (Lazy Loading)": {
+    user -> user: dereference *ptr (READ)
+    user -> mmu: address_translation(ptr)
+    
+    # Critical Path: Hardware Trap to Kernel
+    mmu -> kernel: trigger_page_fault(SIGSEGV_INTERNAL) {
+      style: {
+        stroke: red
+        stroke-width: 3
+        animated: true
+        bold: true
+      }
+    }
+    
+    kernel -> cache: check_page_present(page_index)
+    cache -> kernel: MISS (Page Not In RAM)
+    
+    kernel -> disk: read_blocks(file_offset, 4KB) {
+      style: {
+        stroke: "#0000FF"
+        stroke-dash: 3
+      }
+    }
+    
+    # DMA transfer simulation: high bandwidth path
+    disk -> cache: DMA_transfer(data) {
+      style: {
+        stroke: "#ffa500"
+        stroke-width: 3
+        animated: true
+      }
+    }
+    
+    kernel -> mmu: update_page_table_entry(phys_addr, present=1)
+    kernel -> user: resume_instruction()
+  }
+
+  # --- PHASE 3: WRITE OPERATIONS ---
+  # Tracking modification state
+  "Write & Dirty Tracking": {
+    user -> cache: *ptr = 0xDEADBEEF (WRITE)
+    cache -> cache: mark_page_dirty(page_index)
+    note: "CPU HW sets 'dirty' bit in PTE via MMU" {
+      near: mmu
+    }
+  }
+
+  # --- PHASE 4: DURABILITY ---
+  # Explicitly flushing dirty pages to persistent storage
+  "Durability Sync (msync)": {
+    user.sync -> kernel.sync: msync(base_ptr, size, MS_SYNC)
+    
+    sync_note: "Blocking Call: Awaiting IO_COMPLETION" {
+      near: mmap_lifecycle.user.sync
+    }
+    
+    kernel.sync -> cache.sync: flush_dirty_pages()
+    cache.sync -> disk.sync: write_back_modified_blocks()
+    disk.sync -> kernel.sync: IO_COMPLETION
+    kernel.sync -> user.sync: return Success
+  }
+
+  # --- PHASE 5: CLEANUP ---
+  "Resource Cleanup": {
+    user -> kernel: munmap(base_ptr, size)
+    kernel -> mmu: invalidate_vma_range()
+    kernel -> cache: drop_page_references()
+    user -> kernel: close(fd)
+  }
+}
+
+# Technical Specification and Byte Layout Documentation
+legend: {
+  near: bottom-center
+  
+  # Using |'md ... '| to prevent the Markdown table pipes from closing the block string prematurely
+  content: |'md'
+    ### Memory-Mapped File Lifecycle - Technical Specification
+    
+    **1. Initialization**
+    - `mmap()` creates a Virtual Memory Area (VMA) in the process address space. 
+    - Physical memory is **not** allocated yet (Lazy Allocation).
+    
+    **2. The Page Fault Path**
+    - MMU detects missing 'Present' bit in Page Table Entry (PTE).
+    - Kernel intercepts trap, identifies the backing file via VMA.
+    - Data is paged in from Disk Storage to the Page Cache.
+    
+    **3. Write Operations**
+    - Writes target the Page Cache directly.
+    - The CPU sets the 'Dirty' bit in the PTE. 
+    - Physical disk write is deferred until `msync` or kernel pressure.
+    
+    **4. Synchronization**
+    - `MS_SYNC` forces an immediate write-back of all dirty pages in the range.
+    - DMA (Direct Memory Access) allows disk-to-cache transfer without CPU polling.
+    
+    | Offset | Field | Size |
+    | :--- | :--- | :--- |
+    | 0x00 | Page Header | 64B |
+    | 0x40 | Data Payload | 4032B |
+    | 0xFFF| Dirty Bit | 1b |
+  '|
+  
+  style: {
+    stroke: "#333333"
+    fill: "#f9f9f9"
+    font-size: 14
+    border-radius: 5
+    shadow: true
+  }
+}
+
+# Global connection styling for clarity and distinction of persistence layer
+(mmap_lifecycle.** -> mmap_lifecycle.disk)[*]: {
+  style: { 
+    stroke-width: 2
+    stroke: "#4B0082" 
+  }
+}
+
+# Manual overrides for node coloring consistency
+mmap_lifecycle.disk.style.fill: "#B19CD9"
+mmap_lifecycle.cache.style.fill: "#f4a261"
+mmap_lifecycle.kernel.style.fill: "#ACE1AF"
+mmap_lifecycle.user.style.fill: "#4baae5"

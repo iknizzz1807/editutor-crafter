@@ -1,0 +1,256 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# CLASSES & STYLING DEFINITIONS
+# ---------------------------------------------------------------------------------------
+classes: {
+  step_box: {
+    style: {
+      stroke: "#2c3e50"
+      stroke-width: 2
+      border-radius: 4
+      fill: "#ffffff"
+    }
+  }
+  memo_container: {
+    label.near: top-center
+    style: {
+      fill: "#f8f9fa"
+      stroke: "#bdc3c7"
+      stroke-width: 1
+    }
+  }
+  memo_entry: {
+    width: 320
+    height: 50
+    style: {
+      font-size: 13
+      text-transform: none
+      fill: "#ffffff"
+      stroke: "#dcdde1"
+    }
+  }
+  new_entry: {
+    style: {
+      stroke: "#e74c3c"
+      stroke-width: 4
+      bold: true
+      shadow: true
+    }
+  }
+  logic_node: {
+    shape: hexagon
+    style: {
+      fill: "#e3f2fd"
+      stroke: "#1565c0"
+      font-size: 12
+    }
+  }
+  algorithm_node: {
+    style: {
+      fill: "#fff3e0"
+      stroke: "#ef6c00"
+      stroke-dash: 3
+    }
+  }
+  final_winner: {
+    style: {
+      fill: "#c8e6c9"
+      stroke: "#2e7d32"
+      stroke-width: 5
+      bold: true
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# SELINGER DYNAMIC PROGRAMMING: JOIN ORDER SEARCH
+# ---------------------------------------------------------------------------------------
+
+STEP_1: "STEP 01: ACCESS PATH SELECTION (K=1)" {
+  class: step_box
+  
+  info: |md
+    ### Base Case Initialization
+    - Iterate over every relation $R \in \mathcal{R}$.
+    - Calculate cost for all physical access paths (SeqScan, IndexScan).
+    - Store the minimum cost plan for each relation in the DP Table.
+    - **Metric**: $Cost = (W_{io} \cdot Pages) + (W_{cpu} \cdot Tuples)$
+  | 
+
+  memo_table: "DP MEMO TABLE (t=1)" {
+    class: memo_container
+    grid-columns: 1
+    
+    Users: {
+      label: "Users -> PhysicalSeqScan | Cost: 1200.0"
+      class: [memo_entry; new_entry]
+    }
+    Orders: {
+      label: "Orders -> PhysicalIndexScan | Cost: 450.0"
+      class: [memo_entry; new_entry]
+    }
+    Items: {
+      label: "Items -> PhysicalSeqScan | Cost: 900.0"
+      class: [memo_entry; new_entry]
+    }
+  }
+
+  logic: "Cost Estimation Model" {
+    class: logic_node
+    Seq: "Analyze SeqScan"
+    Idx: "Analyze IndexScan"
+    Select: "min()"
+    
+    Seq -> Select
+    Idx -> Select
+    Select -> memo_table: "Commit Best Path"
+  }
+}
+
+STEP_2: "STEP 02: JOIN PAIR ENUMERATION (K=2)" {
+  class: step_box
+  
+  info: |md
+    ### Relation Size K=2
+    - For each pair $\{R_i, R_j\}$, find optimal join method.
+    - Prune non-optimal plans (e.g., if HashJoin is cheaper than NLJ).
+    - Checks for "Interesting Orders" (e.g., SortMergeJoin results).
+  | 
+
+  memo_table: "DP MEMO TABLE (t=2)" {
+    class: memo_container
+    grid-columns: 1
+    
+    Users: { label: "Users -> SeqScan | 1200.0"; class: memo_entry }
+    Orders: { label: "Orders -> IndexScan | 450.0"; class: memo_entry }
+    Items: { label: "Items -> SeqScan | 900.0"; class: memo_entry }
+    
+    # New entries for K=2
+    UO: {
+      label: "{Users, Orders} -> HashJoin | 1850.5"
+      class: [memo_entry; new_entry]
+    }
+    OI: {
+      label: "{Orders, Items} -> NLJoin | 1520.0"
+      class: [memo_entry; new_entry]
+    }
+  }
+
+  algorithm_box: "Physical Join Selector" {
+    class: algorithm_node
+    HJ: "Hash Join"
+    NLJ: "Nested Loop"
+    SMJ: "Sort Merge"
+    Select: "Cost Compare"
+    
+    HJ -> Select
+    NLJ -> Select
+    SMJ -> Select
+    
+    Select -> memo_table.UO: "Store {U,O}"
+    Select -> memo_table.OI: "Store {O,I}"
+  }
+}
+
+STEP_3: "STEP 03: N-WAY JOIN COMPLETION (K=N)" {
+  class: step_box
+  
+  info: |md
+    ### Global Optimum Discovery
+    - Combine optimal $K=2$ plans with remaining $K=1$ tables.
+    - Final split point analysis: 
+      - $(\{U,O\} \Join \{I\})$ vs $(\{O,I\} \Join \{U\})$
+  | 
+
+  memo_table: "DP MEMO TABLE (FINAL)" {
+    class: memo_container
+    grid-columns: 1
+    
+    UO: { label: "{Users, Orders} | 1850.5"; class: memo_entry }
+    OI: { label: "{Orders, Items} | 1520.0"; class: memo_entry }
+    
+    # Final Winning Entry
+    UOI: { 
+      label: "{Users, Orders, Items} -> HashJoin({O,I}, U) | 2940.2"
+      class: [memo_entry; final_winner] 
+    }
+  }
+
+  split_eval: "Cost-Based Split Evaluator" {
+    style.fill: "#f3e5f5"
+    S1: "({U,O} ⨝ {I})"
+    S2: "({O,I} ⨝ {U})"
+    Comparison: "Cost Comparison"
+    
+    S1 -> Comparison: "Cost: 3100"
+    S2 -> Comparison: "Cost: 2940.2" { 
+      style.stroke: "#27ae60"
+      style.stroke-width: 3 
+    }
+    
+    Comparison -> memo_table.UOI: "Optimal Plan Selected"
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# DATA FLOW & STATE TRANSITIONS
+# ---------------------------------------------------------------------------------------
+
+# Cross-container connections representing DP lookup logic
+STEP_1.memo_table.Users -> STEP_2.algorithm_box: "Subplan Lookup" {
+  style: { stroke: "#7f8c8d"; stroke-dash: 3; opacity: 0.6 }
+}
+STEP_1.memo_table.Orders -> STEP_2.algorithm_box: "Subplan Lookup"
+
+STEP_2.memo_table.OI -> STEP_3.split_eval.S2: "Fetch Optimal Pair" {
+  style: { stroke: "#2980b9"; stroke-width: 2; animated: true }
+}
+STEP_1.memo_table.Users -> STEP_3.split_eval.S2: "Fetch Base Table"
+
+# Step progression
+STEP_1 -> STEP_2: "Enumerate Pairs" { style.stroke-width: 4 }
+STEP_2 -> STEP_3: "Finalize Order" { style.stroke-width: 4 }
+
+# ---------------------------------------------------------------------------------------
+# ARCHITECTURE LEGEND
+# ---------------------------------------------------------------------------------------
+
+LEGEND: {
+  near: bottom-right
+  class: step_box
+  label: "Visualization Keys"
+  
+  size1: "Base Access (K=1)" { 
+    style.fill: "#ffffff"
+    style.stroke: "#dcdde1"
+  }
+  new: "Current Iteration Update" { 
+    style.stroke: "#e74c3c"
+    style.stroke-width: 4
+  }
+  best: "Global Optimal Plan" { 
+    style.fill: "#c8e6c9"
+    style.stroke: "#2e7d32"
+  }
+  lookup: "DP Table Reference" {
+    style.stroke-dash: 3
+  }
+}
+
+# Metadata Annotations for Implementation Engineers
+FOOTER: |md
+  **Implementation Notes:**
+  - Table IDs are 64-bit bitmasks to allow $O(1)$ set intersection checks.
+  - Pruning occurs at each K-level to prevent exponential state explosion.
+  - "Interesting Orders" are preserved if the cost delta is within $\epsilon$.
+| {
+  near: bottom-center
+  shape: text
+}

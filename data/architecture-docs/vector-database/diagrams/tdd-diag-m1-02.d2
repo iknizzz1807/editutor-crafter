@@ -1,0 +1,186 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+  colors: {
+    header_purple: "#674ea7"
+    data_blue: "#cfe2f3"
+    free_green: "#d9ead3"
+    padding_gray: "#f3f3f3"
+    pointer_orange: "#fce5cd"
+    error_red: "#f4cccc"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# ARCHITECTURE DEFINITION
+# -----------------------------------------------------------------------------------------
+
+VectorStorage: {
+  shape: class
+  label: "VectorStorage\nsizeof=128 bytes (on stack)"
+  tooltip: "High-performance vector management with SIMD alignment and ABA protection."
+  
+  style: {
+    stroke-width: 2
+    fill: ${colors.padding_gray}
+  }
+
+  # Scalar Fields
+  "raw_dim": "usize (original feature count)"
+  "padded_dim": "usize (64B cache-line aligned dimension)"
+  "capacity": "usize (max allocation slots)"
+  "live_count": "usize (atomic active vector count)"
+  "next_generation": "u32 (global ABA protection counter)"
+  
+  # Methods
+  "insert(id: u64, vec: &[f32], meta: Option<VM>)": "Result<(), InsertError>"
+  "get(id: u64)": "Result<VectorWithMetadata, RetrievalError>"
+  "delete(id: u64)": "Result<(), DeletionError>"
+  "compact()": "usize (reclaimed slots count)"
+  "iter_live()": "impl Iterator<Item=(u64, &[f32], &VM)>"
+}
+
+# Internal Components defined as separate shapes to allow nested children and styling
+VectorBuffer: {
+  shape: class
+  label: "AlignedVectorBuffer (Heap)"
+  "ptr": "NonNull<f32> (64-byte aligned)"
+  "capacity": "usize (total f32 elements)"
+  "layout": "std::alloc::Layout"
+  
+  "as_slice()": "&[f32]"
+  "vector_ptr(idx: usize)": "*const f32"
+
+  style.fill: ${colors.data_blue}
+}
+
+IDToSlotMap: {
+  label: "HashMap<u64, (usize, u32)>\nKey: External ID\nVal: (SlotIdx, Gen)"
+  style.fill: "#fff2cc"
+}
+
+SlotsRegistry: {
+  label: "Vec<Option<VectorSlot>>\nIndexed by: Slot Index"
+  style.fill: ${colors.free_green}
+}
+
+MetadataRegistry: {
+  label: "Vec<Option<VectorMetadata>>\nIndexed by: Slot Index"
+  style.fill: ${colors.free_green}
+}
+
+FreeList: {
+  label: "Vec<usize>\nStack of available slot indices"
+  style.fill: ${colors.error_red}
+}
+
+VectorSlot: {
+  shape: class
+  label: "VectorSlot\nsizeof=12 bytes"
+  "id": "u64 (8 bytes)"
+  "generation": "u32 (4 bytes)"
+  style.fill: ${colors.free_green}
+}
+
+VectorMetadata: {
+  shape: class
+  label: "VectorMetadata\nsizeof=~48 bytes"
+  "fields": "HashMap<String, MetadataValue>"
+  "created_at": "u64 (unix timestamp)"
+  "is_deleted": "bool (tombstone flag)"
+  style.fill: ${colors.data_blue}
+}
+
+MetadataValue: {
+  shape: class
+  label: "MetadataValue (Enum/Union)"
+  "String": "String"
+  "Int": "i64"
+  "Float": "f64"
+  "Bool": "bool"
+  style.fill: ${colors.pointer_orange}
+}
+
+# -----------------------------------------------------------------------------------------
+# OWNERSHIP AND COMPOSITION
+# -----------------------------------------------------------------------------------------
+
+# VectorStorage owns its internal containers
+VectorStorage -> VectorBuffer: "owns (1)" {
+  source-arrowhead: diamond
+  style.stroke-width: 2
+}
+VectorStorage -> IDToSlotMap: "owns (1)" {
+  source-arrowhead: diamond
+}
+VectorStorage -> SlotsRegistry: "owns (1)" {
+  source-arrowhead: diamond
+}
+VectorStorage -> MetadataRegistry: "owns (1)" {
+  source-arrowhead: diamond
+}
+VectorStorage -> FreeList: "owns (1)" {
+  source-arrowhead: diamond
+}
+
+# References and logical contains
+SlotsRegistry -> VectorSlot: "contains *" {
+  style.stroke-dash: 3
+}
+MetadataRegistry -> VectorMetadata: "contains *" {
+  style.stroke-dash: 3
+}
+VectorMetadata -> MetadataValue: "contains (map values)"
+
+IDToSlotMap -> SlotsRegistry: "points to index" {
+  style.stroke-dash: 5
+  target-arrowhead: arrow
+}
+
+# -----------------------------------------------------------------------------------------
+# TECHNICAL SPECIFICATION ANNOTATIONS
+# -----------------------------------------------------------------------------------------
+
+note_simd: |md
+  ### SIMD ALIGNMENT CONTRACT
+  - **Constraint**: AVX-512 instructions require 64-byte aligned boundaries for 0-latency load/store.
+  - **Padding Logic**: `padded_dim = (dim * sizeof(f32) + 63) & ~63 / sizeof(f32)`
+  - **Pointer Guarantee**: `buffer.ptr` is allocated via `std::alloc::alloc_aligned(layout)` where alignment=64.
+| {
+  near: VectorBuffer
+  style: {
+    stroke: orange
+    stroke-width: 2
+  }
+}
+
+note_aba: |md
+  ### ABA PROTECTION MECHANISM
+  - `generation` increments globally in `VectorStorage` and is copied to `VectorSlot` on every `insert` at a reused index.
+  - **Validation**: `get(external_id)` fetches `(idx, expected_gen)` from `id_to_slot`.
+  - **Failure**: If `slots[idx].generation != expected_gen`, the vector has been deleted/re-purposed (detects stale handles).
+| {
+  near: IDToSlotMap
+  style: {
+    stroke: blue
+    stroke-width: 2
+  }
+}
+
+note_mem_layout: |md
+  ### MEMORY FOOTPRINT (TCO)
+  - **Vector Data**: `capacity * padded_dim * 4 bytes`
+  - **Slot Registry**: `capacity * 12 bytes` (Fixed size)
+  - **Metadata**: `capacity * (sizeof(HashMap) + dynamic_heap_values)`
+  - **Management**: `O(1)` for insert/delete via `free_list` stack.
+| {
+  near: VectorStorage
+  style: {
+    stroke: gray
+    stroke-dash: 5
+  }
+}

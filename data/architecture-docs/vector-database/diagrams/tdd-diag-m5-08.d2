@@ -1,0 +1,140 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ACTORS: Pre-defined for Sequence Order
+# These represent implementation-grade components
+Client: User / External API {
+  shape: person
+}
+API: QueryAPI {
+  tooltip: "Orchestrates Phase 1 (PQ) and Phase 2 (SIMD)"
+}
+ADC: ADCComputer {
+  tooltip: "Asymmetric Distance Computation: M x 256 LUT"
+  style.fill: "#E1F5FE"
+}
+HNSW: HNSWIndex {
+  tooltip: "Hierarchical Navigable Small World Graph"
+  style.fill: "#E8EAF6"
+}
+PQ: PQStorage {
+  tooltip: "Product Quantization: M-byte codes"
+  style.fill: "#FFF9C4"
+}
+VS: VectorStorage {
+  tooltip: "Raw float32 vectors (64B Aligned)"
+  style.fill: "#F3E5F5"
+}
+Metric: EuclideanMetric {
+  tooltip: "SIMD AVX2/AVX512 Distance Kernel"
+}
+Heap: TopKSelector {
+  tooltip: "Fixed-size Max-Heap for result selection"
+  style.fill: "#E8F5E9"
+}
+
+# SEARCH LOGIC
+Two-Phase Search: {
+  shape: sequence_diagram
+
+  Client -> API: "search(query: f32[dim], k: 10, rerank_k: 100)"
+
+  # 1. ADC Initialization
+  API -> ADC: "set_query(query)" {
+    tooltip: "O(M * 256 * subspace_dim) precompute"
+  }
+  ADC -> ADC: "Precompute lookup_table[M][256]"
+  API <- ADC: "Ok"
+
+  # 2. Phase 1: HNSW Traversal (Approximate)
+  API -> HNSW: "search(query, rerank_k)" {
+    style.stroke: "#2196F3"
+    tooltip: "Phase 1: Navigation using PQ/ADC"
+  }
+
+  HNSW.t1 -> HNSW.t1: "Traverse layers (L_max -> L_1)"
+
+  Greedy_Search_L0: {
+    label: "Greedy Search at Layer 0"
+    HNSW -> PQ: "get_codes(node_id)"
+    PQ -> PQ: "▼ Read Lock (Memory Barrier)"
+    HNSW <- PQ: "u8[M] quantized_codes"
+    PQ -> PQ: "▲ Release"
+    
+    HNSW -> ADC: "compute_distance(codes)"
+    HNSW <- ADC: "approx_dist (f32)" {
+      tooltip: "O(M) table lookups + additions"
+    }
+    
+    HNSW -> HNSW: "Update candidate_queue (efSearch)"
+  }
+
+  API <- HNSW: "candidates: Vec<SearchResult>" {
+    tooltip: "Top rerank_k candidates based on PQ distance"
+  }
+
+  # 3. Phase 2: Re-ranking (Exact)
+  API -> Heap: "init(k: 10)"
+
+  Re-ranking_Loop: {
+    label: "Exact Distance Re-ranking"
+    API -> API: "For each candidate in candidates"
+    
+    API -> VS: "get(candidate.id)"
+    VS -> VS: "▼ Read Lock"
+    API <- VS: "raw_vector: f32[dim]" {
+      tooltip: "64-byte aligned for SIMD efficiency"
+    }
+    VS -> VS: "▲ Release"
+    
+    API -> Metric: "distance(query, raw_vector)"
+    API <- Metric: "exact_score (f32)" {
+      tooltip: "SIMD AVX2 Optimized Kernel"
+    }
+    
+    API -> Heap: "consider(id, exact_score)"
+    API <- Heap: "added: bool"
+  }
+
+  # 4. Final Result
+  API -> Heap: "into_sorted_vec()"
+  API <- Heap: "final_results: Vec<SearchResult>"
+
+  Client <- API: "200 OK (final_results)" {
+    style.stroke: "#4CAF50"
+    style.stroke-width: 2
+  }
+}
+
+# ANNOTATIONS & LEGEND
+Legend: {
+  near: bottom-right
+  
+  P1: "Phase 1 (Blue): Approximate search via HNSW + PQ/ADC" {
+    shape: text
+    style.font-color: "#2196F3"
+    style.bold: true
+  }
+  P2: "Phase 2 (Black): Exact re-ranking via float32 VectorStorage" {
+    shape: text
+    style.bold: true
+  }
+  Comp: "Complexity: O(log N * efSearch * M) + O(rerank_k * dim)" {
+    shape: text
+    style.italic: true
+  }
+  Memory: "Memory: PQ (M bytes/vec) + VS (dim * 4 bytes/vec)" {
+    shape: text
+    style.italic: true
+  }
+}
+
+# ANIMATIONS & DASHING
+(API -> HNSW)[*].style.animated: true
+(API -> VS)[*].style.stroke-dash: 3
+(API -> Metric)[*].style.stroke-dash: 1

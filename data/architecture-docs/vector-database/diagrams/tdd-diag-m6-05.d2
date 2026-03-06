@@ -1,0 +1,214 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+# --- Technical Implementation Classes ---
+classes: {
+  step_box: {
+    style: {
+      stroke-width: 2
+      border-radius: 4
+      font-size: 14
+      font: mono
+    }
+  }
+  metadata_op: {
+    label: "METADATA (M1)"
+    style: {
+      fill: "#e1d5e7"
+      stroke: "#9673a6"
+      double-border: true
+    }
+  }
+  vector_op: {
+    label: "VECTOR (V2)"
+    style: {
+      fill: "#dae8fc"
+      stroke: "#6c8ebf"
+      shadow: true
+    }
+  }
+  index_op: {
+    label: "HNSW INDEX"
+    style: {
+      fill: "#d5e8d4"
+      stroke: "#82b366"
+      stroke-width: 3
+    }
+  }
+  highlight: {
+    style: {
+      stroke: "#ff0000"
+      stroke-width: 4
+      bold: true
+      animated: true
+    }
+  }
+  data_structure: {
+    style: {
+      fill: "#fff2cc"
+      stroke: "#d6b656"
+      font: mono
+    }
+  }
+}
+
+# --- Strategy A Architecture ---
+pre_filter: "STRATEGY A: PRE-FILTERING (Selectivity Driven)" {
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#9673a6"
+    stroke-dash: 5
+    border-radius: 10
+  }
+
+  input: "1. Search Request\nVector: f32[D]\nPredicate: AST\n[Offset: 0x00 | Size: 1KB]" {
+    class: step_box
+  }
+
+  scan: "2. Metadata Scan\nB-Tree / Bitmap Index\nO(N_metadata)\n[I/O Bound Thread Pool]" {
+    class: [step_box; metadata_op]
+    tooltip: "Full scan of metadata indices for predicate matches"
+  }
+
+  subset: "3. Filtered ID List\nRoaringBitmap\nCardinality: S << N\n[Buffer: 0x400 | L1 Cache Friendly]" {
+    class: [step_box; data_structure]
+  }
+
+  search: "4. Restricted Search\nBrute Force on S\nMetric: L2 / IP\nComplexity: O(S * D)" {
+    class: [step_box; vector_op]
+    tooltip: "Distance computations limited to IDs in Bitset"
+  }
+
+  results: "5. Exact Top-K\nRecall=1.0\n[Priority Queue: sizeof=64B]" {
+    class: step_box
+    style: {
+      stroke: "#28a745"
+      stroke-width: 4
+      fill: "#d4edda"
+    }
+  }
+
+  # Operational Characteristics
+  analysis: |md
+    ### Pre-Filter Analysis
+    - **Recall (R)**: 1.0 (Mathematical Guarantee).
+    - **Latency (L)**: $O(\text{Scan}) + O(S \cdot D)$.
+    - **Execution**: Forced brute-force fallback.
+    - **Decision**: Selectivity ($S/N$) < 10%.
+  | {
+    near: bottom-center
+    style.font-size: 12
+  }
+
+  input -> scan: "Parse AST [Ptr: +0x10]"
+  scan -> subset: "Emit Bitset [Roaring]"
+  subset -> search: "Filter Mask [AND Op]"
+  search -> results: "Compute Dist [AVX-512]"
+}
+
+# --- Strategy B Architecture ---
+post_filter: "STRATEGY B: POST-FILTERING (Recall Driven)" {
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#6c8ebf"
+    stroke-dash: 5
+    border-radius: 10
+  }
+
+  input: "1. Search Request\nVector: f32[D]\nefSearch=K*10\n[Offset: 0x00 | Register Load]" {
+    class: step_box
+  }
+
+  ann: "2. HNSW Graph Walk\nBest-First Search\nO(log N)\n[Cache: L3 Prefetch Optimized]" {
+    class: [step_box; index_op]
+    tooltip: "Traverse HNSW graph ignoring metadata initially"
+  }
+
+  candidates: "3. Raw Top-K' Buffer\nHeap: [ID, Dist]\nSize: efSearch (K')\n[Memory: Page Aligned]" {
+    class: [step_box; data_structure]
+  }
+
+  verify: "4. Metadata Validation\nBatch Filter Match\nO(K' * I/O)\n[Random Access Scan]" {
+    class: [step_box; metadata_op]
+    tooltip: "Verify metadata for retrieved IDs"
+  }
+
+  results: "5. Filtered Top-K\nRecall < 1.0\n[Count: k_act <= K]" {
+    class: step_box
+    style: {
+      stroke: "#28a745"
+      stroke-width: 4
+      fill: "#d4edda"
+    }
+  }
+
+  # Operational Characteristics
+  analysis: |md
+    ### Post-Filter Analysis
+    - **Recall (R)**: Stochastic based on graph overlap.
+    - **Latency (L)**: $O(D \cdot M \cdot \log N) + O(K')$.
+    - **Conflict**: High risk of "Result Depletion".
+    - **Decision**: Selectivity ($S/N$) > 50%.
+  | {
+    near: bottom-center
+    style.font-size: 12
+  }
+
+  input -> ann: "Entry Node: 0xFF"
+  ann -> candidates: "Pop Heap [Top-K']"
+  candidates -> verify: "Load Metadata [Ptr: +0xA0]"
+  verify -> results: "Boolean Predicate Match"
+}
+
+# --- Comparison & Analysis ---
+pre_filter.results <-> post_filter.results: "Recall vs Latency Frontier" {
+  style: {
+    stroke-dash: 3
+    stroke: "#6c757d"
+    stroke-width: 2
+  }
+}
+
+# --- Legend & ADR ---
+legend: {
+  near: top-right
+  m: "Metadata Operation" { class: metadata_op }
+  v: "Vector Distance Calc" { class: vector_op }
+  i: "Graph/Index Traversal" { class: index_op }
+  ds: "Data Structure / Buffer" { class: data_structure }
+}
+
+notes: |md
+  ## Architecture Decision Record (ADR-M6): Hybrid Router Logic
+  To optimize the **Coordinator Execution Plan**, the engine must estimate selectivity $S$ via histogram:
+  
+  1. **Cost Model**: $C_{pre} = N \cdot \text{scan\_cost} + S \cdot \text{dist\_cost}$.
+  2. **Cost Model**: $C_{post} = \text{efSearch} \cdot \text{dist\_cost} + \text{efSearch} \cdot \text{verify\_cost}$.
+  3. **Heuristic Threshold**: Switch to Pre-Filter if $S < 0.15 \times N$.
+  4. **Dynamic Tuning**: Adjust `efSearch` as $K / S$ to mitigate recall drop in post-filtering.
+| {
+  near: bottom-left
+}
+
+# --- Global Style Injection ---
+***.style.font: mono
+(*** -> ***)[*].style.font-size: 11
+(*** -> ***)[*].style.stroke-width: 2
+
+# Byte-level annotations for the coordination layer
+coordination_meta: "COORDINATOR MEMORY MAP" {
+  near: top-center
+  layout-engine: elk
+  grid-columns: 4
+  
+  header: "0x00: REQ_HDR" { style.fill: "#D1C4E9" }
+  vec_ptr: "0x08: VEC_PTR" { style.fill: "#BBDEFB" }
+  filter_ptr: "0x10: FILT_PTR" { style.fill: "#C8E6C9" }
+  k_val: "0x18: K_INT" { style.fill: "#FFF9C4" }
+}

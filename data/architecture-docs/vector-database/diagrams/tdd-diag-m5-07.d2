@@ -1,0 +1,213 @@
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#582fba"
+    data: "#cfe2ff"
+    math: "#f8d7da"
+    success: "#d1e7dd"
+    bottleneck: "#dc3545"
+    pointer: "#f4a261"
+    padding: "#e2e3e5"
+  }
+}
+
+# --- NAIVE DECOMPRESSION PATH ---
+naive_path: "STRATEGY A: Naive Decompression (O(D) Complexity)" {
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#582fba"
+    stroke-width: 2
+  }
+
+  step_1: "1. Centroid Reconstruction" {
+    tooltip: "sizeof = D * sizeof(float32) = 3072 Bytes"
+    
+    input: "Quantized Codes (M bytes)" {
+      grid-columns: 4
+      c0: "Code 0" {
+        style.fill: ${colors.data}
+        label: "c₀ [+0B]"
+        tooltip: "Size: 1B"
+      }
+      c1: "Code 1" {
+        style.fill: ${colors.data}
+        label: "c₁ [+1B]"
+        tooltip: "Size: 1B"
+      }
+      cm: "..." {
+        style.fill: ${colors.data}
+      }
+      cl: "Code M-1" {
+        style.fill: ${colors.data}
+        label: "c₇ [+7B]"
+        tooltip: "Size: 1B"
+      }
+    }
+
+    pointer: "Codebook Lookup" {
+      shape: diamond
+      style.fill: ${colors.pointer}
+    }
+
+    output: "Full Reconstruction (3072B)" {
+      label: "Heap Allocation: f32[768]"
+      grid-columns: 1
+      v0: "Subvector 0 (dim=96)" {
+        style.fill: ${colors.padding}
+        label: "v₀ [+0B .. +383B]"
+        tooltip: "96 floats * 4B"
+      }
+      v1: "Subvector 1 (dim=96)" {
+        style.fill: ${colors.padding}
+        label: "v₁ [+384B .. +767B]"
+        tooltip: "96 floats * 4B"
+      }
+      vm: "..." {
+        style.fill: ${colors.padding}
+      }
+      vl: "Subvector M-1" {
+        style.fill: ${colors.padding}
+        label: "v₇ [+2688B .. +3071B]"
+        tooltip: "96 floats * 4B"
+      }
+    }
+
+    input.c0 -> pointer: "Index into Subspace 0"
+    pointer -> output.v0: "**RECPY: Centroid Copy**" {
+      style: {
+        stroke: red
+        stroke-width: 3
+        animated: true
+      }
+    }
+  }
+
+  step_2: "2. Full Euclidean Computation" {
+    query: "Query Vector Q (f32)" {
+      grid-columns: 1
+      style.fill: ${colors.success}
+      q0: "q[0..767]"
+    }
+
+    math: "L2 Distance" {
+      label: "**Σ (q_i - x_i)**\n768 sub, 768 mul, 767 add"
+      style: {
+        fill: ${colors.math}
+        font-color: red
+        bold: true
+      }
+    }
+
+    query -> math
+    step_1.output -> math: "Random Access Read (High Memory BW)"
+  }
+}
+
+# --- ADC PATH ---
+adc_path: "STRATEGY B: Asymmetric Distance Computation (O(M) Complexity)" {
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#198754"
+    stroke-width: 2
+  }
+
+  step_1: "1. Query-Centroid Precomputation" {
+    label: "EXECUTED ONCE PER QUERY"
+    table: "L1-Resident Lookup Table (LUT)" {
+      shape: sql_table
+      style.fill: ${colors.success}
+      row0: "Subspace 0" {label: "d(q₀, C₀₀) | d(q₀, C₀₁) | ... | d(q₀, C₀₂₅₅)"}
+      row1: "Subspace 1" {label: "d(q₁, C₁₀) | d(q₁, C₁₁) | ... | d(q₁, C₁₂₅₅)"}
+      rowm: "..." {label: "... | ... | ..."}
+    }
+  }
+
+  step_2: "2. Quantized Summation" {
+    codes: "Quantized Codes (8B)" {
+      grid-columns: 4
+      c0: "Code 0" {
+        style.fill: ${colors.data}
+        label: "c₀"
+      }
+      c1: "Code 1" {
+        style.fill: ${colors.data}
+        label: "c₁"
+      }
+      cm: "..." {
+        style.fill: ${colors.data}
+      }
+      cl: "Code M-1" {
+        style.fill: ${colors.data}
+        label: "c₇"
+      }
+    }
+
+    accumulator: "Scalar Accumulator" {
+      label: "**Σ LUT[m][code_m]**\n8 Table Lookups + 7 Scalar Adds"
+      style: {
+        fill: ${colors.success}
+        font-color: "#198754"
+        bold: true
+      }
+    }
+
+    codes.c0 -> step_1.table.row0: "Direct Indexing (u8)" {
+      style: {
+        stroke: orange
+        stroke-width: 2
+      }
+    }
+    step_1.table.row0 -> accumulator: "SIMD Add"
+  }
+}
+
+# --- LOGIC CONNECTIONS ---
+naive_path.step_1 -> naive_path.step_2: "Reconstructed Vector (f32)" {
+  style: {
+    stroke: red
+    stroke-dash: 3
+  }
+}
+adc_path.step_1 -> adc_path.step_2: "Distances to Query Components" {
+  style: {
+    stroke: green
+    stroke-dash: 0
+  }
+}
+
+# --- COMPARISON TABLE ---
+analysis: |'md
+### Architecture Spec: IVFPQ Decompression
+| Vector Dim (D) | Subspaces (M) | Code Size | Algorithm |
+| :--- | :--- | :--- | :--- |
+| 768 | 8 (96-dim each) | 8 Bytes | **ADC** |
+
+**Hardware Impact Analysis:**
+1. **Memory Traffic**: Naive strategy moves **3,072 Bytes** (vector) + **3,072 Bytes** (query) per record. ADC moves only **8 Bytes** (codes).
+2. **CPU Throughput**: Naive requires full L2 distance logic on reconstructed floats. ADC performs simple table lookups and scalar additions.
+3. **Cache Locality**: LUT (8x256 floats = 8KB) fits entirely in **L1 Data Cache**, eliminating DRAM bottlenecks found in Strategy A.
+'|
+
+analysis.shape: rectangle
+analysis.style.fill: "#ffffff"
+analysis.near: naive_path
+
+# --- LEGEND ---
+legend: {
+  near: bottom-right
+  f32: "Float32 (4 Bytes)" {style.fill: ${colors.padding}}
+  u8: "Quantized Byte (1 Byte)" {style.fill: ${colors.data}}
+  query: "Query-Dependent Data" {style.fill: ${colors.success}}
+  bottleneck: "Compute Bottleneck" {
+    style: {
+      fill: ${colors.math}
+      stroke: red
+      stroke-width: 3
+    }
+  }
+}

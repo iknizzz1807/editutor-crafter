@@ -1,0 +1,234 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# FilterStrategy::Auto Decision Logic
+# Objective: Dynamic selection between Pre-Filtering and Post-Filtering based on selectivity.
+# -----------------------------------------------------------------------------------------
+
+classes: {
+  step_container: {
+    style: {
+      stroke: "#2c3e50"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  state_table: {
+    shape: sql_table
+    style: {
+      fill: "#fdfefe"
+      stroke: "#333333"
+      header-fill: "#673ab7" # Purple Header for Memory structures
+    }
+  }
+  action_node: {
+    style: {
+      fill: "#e3f2fd"
+      stroke: "#1565c0"
+      bold: true
+      shadow: true
+    }
+  }
+  decision_node: {
+    shape: diamond
+    style: {
+      fill: "#fff3e0"
+      stroke: "#ef6c00"
+      bold: true
+    }
+  }
+  highlight_red: {
+    style: {
+      fill: "#ffebee"
+      font-color: "#d32f2f"
+      bold: true
+    }
+  }
+  highlight_green: {
+    style: {
+      fill: "#e8f5e9"
+      font-color: "#2e7d32"
+      bold: true
+    }
+  }
+  path_active: {
+    style: {
+      fill: "#e1f5fe"
+      stroke: "#01579b"
+      stroke-width: 5
+    }
+  }
+  path_inactive: {
+    style: {
+      fill: "#f5f5f5"
+      stroke: "#bdbdbd"
+      opacity: 0.5
+    }
+  }
+}
+
+# -- STEP 1: SAMPLING PHASE --
+# Memory: Stack allocated buffer for fast predicate checks
+step1: "Step 1: Sampling Phase" {
+  class: step_container
+  
+  state1: "Memory Layout: Initialized" {
+    shape: sql_table
+    style.fill: "#fdfefe"
+    style.stroke: "#333333"
+    
+    offset_00: "void*" {constraint: "VectorStorage (8B)"}
+    offset_08: "uint8[800]" {constraint: "SampleSet (EMPTY)"}
+    offset_16: "float32" {constraint: "Selectivity (0.0)"}
+    offset_24: "enum8" {constraint: "Strategy (NONE)"}
+  }
+
+  sampler: "Sampling Engine" {
+    shape: package
+    class: action_node
+    "Target": "100 Random Vectors"
+    "Logic": "iter_live().sample(100)"
+  }
+
+  state1.offset_08 -> sampler: "Fetch Request"
+  sampler -> state1.offset_08: "**[V₁...V₁₀₀]**" {
+    style: {
+      stroke: "#d32f2f"
+      stroke-width: 3
+      animated: true
+    }
+  }
+}
+
+# -- STEP 2: ESTIMATION PHASE --
+# Logic: Compute bitmask of matches to determine filter density
+step2: "Step 2: Estimation Phase" {
+  class: step_container
+
+  state2: "Memory Layout: Evaluating" {
+    shape: sql_table
+    style.fill: "#fdfefe"
+    style.stroke: "#333333"
+    
+    offset_00: "uint8[800]" {constraint: "SampleSet [V₁...V₁₀₀]"}
+    offset_08: "uint32" {constraint: "MatchCount: 62"}
+    offset_16: "float32" {constraint: "Selectivity: 0.62"}
+    offset_24: "enum8" {constraint: "Strategy (NONE)"}
+  }
+
+  # Applying styles to rows via path to avoid child-node compilation error
+  state2.offset_08.class: highlight_red
+  state2.offset_16.class: highlight_red
+
+  evaluator: "Predicate Evaluator" {
+    class: decision_node
+    Logic: "FilterPredicate::evaluate()"
+    Context: "Metadata Scan"
+  }
+
+  state2.offset_00 -> evaluator: "Vector Scan"
+  evaluator -> state2.offset_08: "Increment Match"
+}
+
+# -- STEP 3: THRESHOLD CHECK --
+# Heuristic: If selectivity > 50%, Pre-Filtering is O(N) vs Post-Filtering O(k log N)
+step3: "Step 3: Threshold Check" {
+  class: step_container
+
+  threshold: "Selectivity > 0.5?" {
+    class: decision_node
+    Comparison: "0.62 > 0.50"
+    Status: "HIGH_DENSITY"
+  }
+
+  state3: "Memory Layout: Decided" {
+    shape: sql_table
+    style.fill: "#fdfefe"
+    style.stroke: "#333333"
+    
+    offset_00: "float32" {constraint: "Selectivity: 0.62"}
+    offset_08: "enum8" {constraint: "Strategy: PRE_FILTER"}
+  }
+
+  state3.offset_08.class: highlight_green
+
+  threshold -> state3: "TRUE (Select Path A)" {
+    style.stroke: "#2e7d32"
+    style.stroke-width: 3
+  }
+}
+
+# -- STEP 4: EXECUTION ROUTING --
+# Execution: Path A selected. Memory layout is optimized for sequential ID scan.
+step4: "Step 4: Execution Routing" {
+  class: step_container
+
+  path_a: "Path A: Pre-Filter (Selected)" {
+    class: path_active
+    L1: "Scan Compressed Bitmap IDs"
+    L2: "Sequential SIMD Distance Calc"
+    Perf: "O(N_filtered)"
+  }
+
+  path_b: "Path B: Post-Filter (Discarded)" {
+    class: path_inactive
+    L1: "HNSW Graph Navigation"
+    L2: "Exhaustive Post-check"
+    Perf: "O(k log N)"
+  }
+
+  "ILLEGAL": "Direct to Post-Filter" {
+    style: {
+      stroke: red
+      stroke-dash: 5
+      font-color: red
+      bold: true
+    }
+  }
+}
+
+# -- GLOBAL FLOW --
+step1 -> step2: "1. Populate Stack Buffer"
+step2 -> step3: "2. Resolve Heuristics"
+step3 -> step4.path_a: "3. Commit Strategy" {
+  style: {
+    stroke: "#2e7d32"
+    stroke-width: 6
+    animated: true
+  }
+}
+
+step3 -.-> step4.path_b: "Rejected Path" {
+  style.stroke-dash: 3
+}
+
+# Illegal transition constraint check
+# FIX: target-arrowhead is a connection property, not a style property.
+step4."ILLEGAL" -> step4.path_b: "BYPASS_ATTEMPT" {
+  target-arrowhead: cross
+  style: {
+    stroke: red
+    stroke-dash: 2
+  }
+}
+
+# -- ANNOTATIONS --
+note: |md
+  ### Engineering Implementation Reference
+  - **Memory Safety**: `SampleSet` is allocated on the stack (L1 cache optimal). No heap `malloc` calls permitted in search hot-path.
+  - **Threshold Logic**: The 0.5 constant is derived from `vdb_constants.h`. When selectivity exceeds 50%, the cost of checking bits in a mask is lower than the cache misses incurred traversing HNSW graph nodes that will ultimately be filtered out.
+  - **SIMD Optimization**: `PRE_FILTER` path triggers `__builtin_prefetch` on vector pointers retrieved from the ID bitmap.
+| {
+  near: bottom-center
+  style: {
+    stroke: "#333333"
+    fill: "#fffde7"
+  }
+}

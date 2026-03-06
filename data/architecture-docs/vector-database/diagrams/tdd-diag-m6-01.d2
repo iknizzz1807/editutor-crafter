@@ -1,0 +1,250 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 30
+  }
+}
+
+# --- STYLING CLASSES ---
+classes: {
+  interface: {
+    style: {
+      stroke-width: 2
+      fill: "#f8f9fa"
+      font-size: 14
+    }
+  }
+  engine: {
+    style: {
+      fill: "#e7f3ff"
+      stroke: "#007bff"
+      stroke-width: 3
+      shadow: true
+    }
+  }
+  orchestrator: {
+    style: {
+      fill: "#f3e5f5"
+      stroke: "#6a1b9a"
+      stroke-width: 3
+      double-border: true
+    }
+  }
+  data_type: {
+    style: {
+      fill: "#fff3e0"
+      stroke: "#ef6c00"
+      stroke-dash: 3
+    }
+  }
+  memory_field: {
+    style: {
+      font: mono
+      font-size: 12
+    }
+  }
+}
+
+# --- EXTERNAL INTERFACE ---
+request_flow: "External Client Boundary" {
+  style.fill: "#f1f8e green"
+  style.stroke: "#2e7d32"
+  
+  http_req: "HTTP POST /search" {
+    shape: parallelogram
+    style.fill: "#ffffff"
+    style.stroke: "#4caf50"
+  }
+
+  json_body: "JSON Request Payload" {
+    label: |md
+      ### SearchRequest (JSON)
+      | Field | Type | Description |
+      | :--- | :--- | :--- |
+      | `vector` | `f32[]` | Dim=1536 |
+      | `k` | `usize` | Neighbors |
+      | `filter` | `String` | Metadata Predicate |
+    |
+  }
+
+  response: "JSON Response" {
+    shape: parallelogram
+    style.fill: "#ffffff"
+    style.stroke: "#4caf50"
+    label: |md
+      ### SearchResponse (DTO)
+      - `results`: SearchResult[k]
+      - `latency_ms`: f64
+      - `request_id`: UUID-v4
+    |
+  }
+
+  http_req -> json_body
+}
+
+# --- API LAYER ---
+api_layer: "API Handlers (Axum/Rust)" {
+  style.fill: "#fafafa"
+  style.stroke: "#bdbdbd"
+  
+  router: "Router /api/v1" {
+    shape: queue
+    style.fill: "#eeeeee"
+  }
+
+  handlers: {
+    style.stroke-dash: 2
+    search_handler: "search_handler" {
+      label: "search(State, Json<SearchRequest>) -> Result<Json<SearchResponse>>"
+    }
+    insert_handler: "insert_batch_handler" {
+      label: "insert_batch(State, Json<BatchInsert>) -> Result<Json<InsertResponse>>"
+    }
+  }
+
+  validation: "Request Validator" {
+    shape: diamond
+    label: "validate_request() -> DTO"
+  }
+
+  router -> handlers.search_handler: "Route Match"
+  handlers.search_handler -> validation: "Parse/Validate"
+}
+
+# --- CONCURRENCY & ORCHESTRATION ---
+collection_orchestrator: "Thread-Safe Orchestration" {
+  class: orchestrator
+  
+  thread_safe_col: "ThreadSafeCollection" {
+    shape: class
+    label: "Arc<Collection>\nsizeof=32B"
+    inner: "RwLock<InnerCollection>"
+    "+ search(req: SearchRequest)": "Result<SearchResponse>"
+    "+ batch_insert(batch: Batch)": "Result<InsertResponse>"
+    "- select_strategy()": "SearchStrategy"
+  }
+
+  timed_search: "TimedSearchTask" {
+    shape: class
+    label: "TimedSearchTask\nsizeof=48B"
+    deadline: "Instant"
+    is_cancelled: "Arc<AtomicBool>"
+    "+ execute(ctx: Context, req: SearchRequest)": "Result"
+  }
+
+  thread_safe_col -> timed_search: "Spawns scoped task"
+}
+
+# --- CORE STORAGE & INDEXING ENGINES ---
+core_engines: "Core Engines" {
+  storage: "VectorStorage (M1)" {
+    class: engine
+    shape: class
+    label: "VectorStorage\nsizeof=128B"
+    # Memory Layout Specification
+    "0x00": "buffer: AlignedVectorBuffer (24B)"
+    "0x18": "id_to_slot: HashMap<u64, (usize, u32)> (56B)"
+    "0x50": "metadata: MetadataStore (48B)"
+    
+    "+ iter_live()": "Iterator"
+    "+ get(id: u64)": "VectorWithMetadata"
+  }
+
+  index: "HNSWIndex (M4)" {
+    class: engine
+    shape: class
+    label: "HNSWIndex\nsizeof=64B"
+    # Alignment Specification
+    "0x00": "entry_point: NodeId (u32)"
+    "0x04": "nodes: Vec<HNSWNode> (24B)"
+    "0x1C": "params: IndexConfig (36B)"
+    
+    "+ search(q: f32[], k: usize)": "Vec<Result>"
+    "+ insert(id: u64, store: &Storage)": "usize"
+  }
+
+  metrics: "Distance Metric (M2)" {
+    class: interface
+    shape: class
+    label: "DistanceMetric (Stateless)"
+    "+ distance(a: &[f32], b: &[f32])": "f32"
+    "+ is_similarity()": "bool"
+  }
+}
+
+# --- DATA MODELS ---
+data_transfer: "Internal Models" {
+  predicate: "FilterPredicate" {
+    class: data_type
+    "+ evaluate(m: &Metadata)": "bool"
+  }
+  
+  topk: "TopKSelector" {
+    class: data_type
+    "- heap": "BinaryHeap<Reverse<Score>>"
+    "+ consider(id: u64, score: f32)": "bool"
+  }
+}
+
+# --- LOGICAL CONNECTIONS ---
+
+request_flow.json_body -> api_layer.router: "JSON Payload"
+
+api_layer.validation -> collection_orchestrator.thread_safe_col: "Validated Internal DTO"
+
+collection_orchestrator.timed_search -> core_engines.storage: "RwLock::read() ▼" {
+  style.stroke: blue
+  source-arrowhead: cross
+}
+collection_orchestrator.timed_search -> core_engines.index: "RwLock::read() ▼" {
+  style.stroke: blue
+  source-arrowhead: cross
+}
+collection_orchestrator.timed_search -> core_engines.metrics: "calls distance()" {
+  style.stroke-dash: 5
+}
+
+collection_orchestrator.timed_search -> data_transfer.predicate: "Filter Evaluation"
+collection_orchestrator.timed_search -> data_transfer.topk: "Heap Insertion"
+
+core_engines.index -> core_engines.storage: "references vector data" {
+  style.stroke-dash: 8
+  target-arrowhead: triangle
+}
+
+# --- RESPONSE DATA FLOW ---
+
+collection_orchestrator.thread_safe_col -> api_layer.handlers.search_handler: "Result<T, E>"
+api_layer.handlers.search_handler -> request_flow.response: "Serialize Response"
+
+# --- SYSTEM ANNOTATIONS ---
+
+note_concurrency: |md
+  ### Concurrency & Locking Invariants
+  1. **Reader/Writer Isolation**: 
+     - Unlimited concurrent reads via shared `RwLock::read()`.
+     - Exclusive updates via `RwLock::write()`.
+  2. **Memory Alignment**:
+     - `AlignedVectorBuffer` ensures SIMD-friendly offsets (AVX-512/NEON).
+  3. **Cancellation**:
+     - `TimedSearchTask` checks `is_cancelled` Atomic bit at every HNSW layer transition.
+|
+
+note_concurrency.near: top-right
+
+legend: "Diagram Notation" {
+  near: bottom-right
+  direction: right
+  
+  owns: "Solid = Ownership" {
+    style.stroke-width: 2
+  }
+  refs: "Dashed = Reference/Call" {
+    style.stroke-dash: 5
+  }
+  lock_acq: "▼ = Lock Acquire" {
+    style.font-color: blue
+  }
+}

@@ -1,0 +1,234 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# --- GLOBAL STYLES & CLASSES ---
+classes: {
+  header: {
+    style: {
+      fill: "#e1d5e7"
+      stroke: "#9673a6"
+      font-color: "#000000"
+      bold: true
+    }
+  }
+  data_block: {
+    style: {
+      fill: "#dae8fc"
+      stroke: "#6c8ebf"
+    }
+  }
+  process: {
+    style: {
+      fill: "#fff2cc"
+      stroke: "#d6b656"
+      border-radius: 4
+    }
+  }
+  simd_reg: {
+    style: {
+      fill: "#f8cecc"
+      stroke: "#b85450"
+      font: mono
+      bold: true
+    }
+  }
+  cache_line_boundary: {
+    style: {
+      stroke-dash: 5
+      stroke: "#82b366"
+      stroke-width: 2
+    }
+  }
+  offset_label: {
+    shape: text
+    style: {
+      font: mono
+      font-size: 10
+      font-color: "#666666"
+    }
+  }
+}
+
+title: |md
+  ### M2: Batch Distance Engine (1-vs-N Pattern)
+  **Constraint**: Single query norm calculation + Sequential SIMD access
+  *Intel AVX-256 / AVX-512 Implementation Grade Spec*
+| {
+  near: top-center
+  shape: text
+}
+
+# --- QUERY COMPONENT ---
+query_input: {
+  label: "Query Vector Input [f32; D]"
+  class: data_block
+  q_data: "[q₀, q₁, ..., q_D-1]" { 
+    style: {
+      font: mono
+      fill: "#dae8fc"
+    }
+  }
+  size_info: "sizeof = D * 4 bytes" { shape: text; style.italic: true }
+}
+
+preprocessing: {
+  label: "Step 1: Pre-computation (Batch Global)"
+  class: process
+  
+  norm_calc: "|q|² = Σ qᵢ²" {
+    tooltip: "Computed once per search batch to reuse for Cosine Similarity"
+    style.font: mono
+  }
+  inv_norm: "1 / |q|" {
+    style.font: mono
+  }
+}
+
+# --- STORAGE COMPONENT (M1) ---
+vector_storage: {
+  label: "M1: Aligned Vector Storage (Contiguous RAM)"
+  style.fill: "#f5f5f5"
+  style.stroke: "#cccccc"
+  
+  memory_map: {
+    grid-columns: 1
+    grid-gap: 0
+    
+    struct_header: "Vector Buffer (Memory-Aligned)" { class: header }
+    
+    row_0: {
+      grid-columns: 2
+      off_0: "0x00" { class: offset_label }
+      v0: "Vector 0 [f32; D] (64B Aligned)" { class: data_block }
+    }
+    
+    gap_1: "---------------- Cache Line Boundary (64B) ----------------" { class: cache_line_boundary }
+    
+    row_1: {
+      grid-columns: 2
+      off_1: "0x40" { class: offset_label }
+      v1: "Vector 1 [f32; D] (64B Aligned)" { class: data_block }
+    }
+    
+    gap_2: "---------------- Cache Line Boundary (64B) ----------------" { class: cache_line_boundary }
+    
+    row_2: {
+      grid-columns: 2
+      off_2: "0x80" { class: offset_label }
+      v2: "Vector 2 [f32; D] (64B Aligned)" { class: data_block }
+    }
+    
+    row_n: "... Linear Stream Vector N ..." { 
+      style: {
+        fill: "#eeeeee"
+        stroke-dash: 2
+      }
+    }
+  }
+}
+
+# --- EXECUTION ENGINE ---
+simd_engine: {
+  label: "SIMD Execution Unit (Inner Hot Loop)"
+  style.fill: "#ffffff"
+  style.stroke-width: 2
+  
+  reg_file: {
+    label: "Register Allocation"
+    q_reg: "YMM0 (Query Broadcast)" { 
+      class: simd_reg
+      tooltip: "Broadcasting q_i to 8 lanes for parallel FMA"
+    }
+    v_reg: "YMM1 (DB Vector Slice)" { 
+      class: simd_reg 
+      tooltip: "Loading 8 floats (256 bits) from memory per cycle"
+    }
+    acc_reg: "YMM2 (Dot Product Accumulator)" { 
+      class: simd_reg
+      tooltip: "Stores partial Σ(q_i * v_i)"
+    }
+  }
+  
+  loop_logic: |md
+    **Asymmetric Compute Strategy**
+    c
+    // 1. Broadcast Query once
+    __m256 ymm_q = _mm256_set1_ps(q[i]);
+    
+    // 2. Sequential Scan Loop
+    for (int j=0; j < N; j++) {
+       __m256 ymm_v = _mm256_load_ps(&db[j]);
+       ymm_acc = _mm256_fmadd_ps(ymm_q, ymm_v, ymm_acc);
+    }
+    
+    *Throughput: 1 vector slice / clock cycle*
+  | {
+    shape: text
+    style.font-size: 11
+  }
+}
+
+# --- RESULTS ---
+results: {
+  label: "Search Results Heap"
+  class: process
+  heap_sort: {
+    shape: rectangle
+    label: "Top-K Result Buffer"
+    content: "[ (ID₀, dist₀), (ID₁, dist₁), ... ]" 
+    style: {
+      font: mono
+      fill: "#ffffff"
+    }
+  }
+}
+
+# --- DATA FLOW CONNECTIONS ---
+query_input.q_data -> preprocessing.norm_calc: "1. Raw Query Transfer" {
+  style.stroke: "#6c8ebf"
+}
+
+preprocessing.norm_calc -> simd_engine.reg_file.q_reg: "2. Load Invariant" {
+  style: {
+    stroke: "#9673a6"
+    stroke-width: 2
+  }
+}
+
+vector_storage.memory_map.row_0.v0 -> simd_engine.reg_file.v_reg: "3. Sequential Load (DMA/L1)" {
+  style: {
+    stroke: "#ff8c00"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+simd_engine.reg_file.acc_reg -> results.heap_sort: "4. Writeback Score" {
+  style.stroke: "#82b366"
+}
+
+# --- ANNOTATIONS ---
+# FIXED: Changed 'near: vector_storage' to 'near: bottom-left' for ELK compatibility
+tech_notes: |md
+  ### Implementation Notes (Engineering)
+  - **Memory Alignment**: Vectors MUST be 32-byte (YMM) or 64-byte (ZMM) aligned to ensure `_mm256_load_ps` (vmovaps) instructions do not fault.
+  - **Prefetching**: Hardware prefetchers detect linear sequential access in `M1` and populate L1 cache before the SIMD unit requests the next address.
+  - **AVX-512 Upgrade**: To upgrade to ZMM, increase buffer alignment to 64B and switch to `_mm512_` intrinsics.
+  - **Cosine vs L2**: For L2, replace `_mm256_fmadd_ps` with `_mm256_sub_ps` + `_mm256_mul_ps`.
+| {
+  near: bottom-left
+  shape: text
+  style.font-size: 12
+}
+
+# Add visual indicators for growth
+vector_storage.memory_map.row_n -> bottom_ptr: "Memory Growth" {
+  style.stroke-dash: 3
+}
+bottom_ptr: "" { shape: circle; style.opacity: 0 }

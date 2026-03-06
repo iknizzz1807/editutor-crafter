@@ -1,0 +1,202 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- STYLING CLASSES ---
+classes: {
+  logic_node: {
+    style: {
+      fill: "#f8fafc"
+      stroke: "#475569"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  data_stream: {
+    style: {
+      stroke: "#3b82f6"
+      animated: true
+      stroke-width: 2
+    }
+  }
+  computation: {
+    style: {
+      fill: "#fdf4ff"
+      stroke: "#a21caf"
+      bold: true
+    }
+  }
+  memory_layout: {
+    style: {
+      font: mono
+      fill: "#f1f5f9"
+    }
+  }
+  header_purple: {
+    style.fill: "#d8b4fe"
+  }
+}
+
+# --- ARCHITECTURE COMPONENTS ---
+
+BF_Search: "BruteForceSearch::search(query: &[f32], k: usize)" {
+  class: [logic_node; header_purple]
+
+  Loop: "O(N) Exhaustive Scan" {
+    shape: rectangle
+    style: {
+      stroke-dash: 5
+      fill: "#ffffff"
+    }
+    
+    CurrentState: "Search Context (Stack Allocated)" {
+      shape: sql_table
+      class: memory_layout
+      # Memory Layout: Offsets + Types + Sizes
+      "0x00": "cursor: usize | 8 bytes" { style.fill: "#bfdbfe" }
+      "0x08": "worst_score: f32 | 4 bytes" { style.fill: "#bfdbfe" }
+      "0x0C": "padding: u32 | 4 bytes (alignment)" { style.fill: "#e2e8f0" }
+      "0x10": "total_found: u64 | 8 bytes" { style.fill: "#bfdbfe" }
+    }
+  }
+}
+
+M1_Storage: "M1: VectorStorage" {
+  class: logic_node
+  style.fill: "#e0e7ff"
+  
+  Iterator: "iter_live() -> Option<(u32, &[f32])>" {
+    shape: parallelogram
+    tooltip: "Filters out tombstones sequentially via bitmask scan"
+  }
+  
+  Mem: "AlignedVectorBuffer" {
+    shape: cylinder
+    style.fill: "#bfdbfe"
+    label: "Physical Layout: Row-Major\nAlignment: 64B (Cache-Line)"
+  }
+}
+
+M2_Distance: "M2: DistanceMetrics" {
+  class: logic_node
+  style.fill: "#fae8ff"
+  
+  SIMD_Kernels: "SIMD Core" {
+    class: computation
+    label: "distance_f32_avx512(a: *const f32, b: *const f32, d: usize) -> f32"
+    tooltip: "Uses _mm512_fmadd_ps for dot product accumulation"
+  }
+}
+
+M3_Selection: "M3: TopKSelector" {
+  class: logic_node
+  style.fill: "#ecfdf5"
+  
+  Heap: "Bounded Max-Heap" {
+    shape: queue
+    tooltip: "Root contains LARGEST distance (worst candidate in top-k set)"
+    style.fill: "#d1fae5"
+  }
+
+  HeapNode: "Node Layout" {
+    shape: sql_table
+    class: memory_layout
+    "0x00": "distance: f32 | 4 bytes" { style.fill: "#bfdbfe" }
+    "0x04": "internal_id: u32 | 4 bytes" { style.fill: "#bfdbfe" }
+    "sizeof": "8 bytes (Packed)" { style.fill: "#e2e8f0" }
+  }
+}
+
+# --- DATA FLOW SEQUENCING ---
+
+# Input Trigger
+"Query Input" -> BF_Search.Loop: "1. Init search(Q, k)" {
+  style.stroke: orange
+  style.stroke-width: 3
+}
+
+# Step 1: Sequential Fetch
+BF_Search.Loop -> M1_Storage.Iterator: "2. next()"
+M1_Storage.Iterator -> M1_Storage.Mem: "Access offset [cursor * dim]"
+M1_Storage.Mem -> BF_Search.Loop: "3. vector_v: &[f32]" {
+  class: data_stream
+}
+
+# Step 2: Distance Computation
+BF_Search.Loop -> M2_Distance.SIMD_Kernels: "4. compute(query_q, vector_v)" {
+  tooltip: "Hot Loop: O(d) per vector. Prefetching T0 next vector."
+}
+M2_Distance.SIMD_Kernels -> BF_Search.Loop: "5. score: f32"
+
+# Step 3: Selection and Pruning
+BF_Search.Loop -> M3_Selection.Heap: "6. consider(id, score)" {
+  tooltip: "Branchless comparison if score < current_max"
+}
+
+M3_Selection.Heap -> BF_Search.Loop: "7. update worst_score" {
+  style.stroke-dash: 3
+  label: "if heap_full: worst_score = heap.peek()"
+}
+
+# Loop termination check
+BF_Search.Loop -> BF_Search.Loop: "Repeat until Iterator == None" {
+  style.stroke-dash: 5
+}
+
+# Finalization
+BF_Search.Loop -> M3_Selection.Heap: "8. into_sorted_vec()"
+M3_Selection.Heap -> "Top-K Results": "9. Vec<SearchResult>" {
+  style.stroke: "#16a34a"
+  style.stroke-width: 3
+}
+
+# --- ANNOTATIONS ---
+
+ComplexityBox: |md
+  ### Algorithm Properties & Performance
+  - **Input**: Query $Q \in \mathbb{R}^d$, result count $k$
+  - **Memory Access**: Sequential Scan (Hardware Prefetcher Friendly)
+  - **Primary Loop**: $N$ iterations (Linear Complexity)
+  - **SIMD Throughput**: $16 \times 32$-bit floats per cycle (AVX-512)
+  - **Selection**: $O(\log k)$ using binary max-heap
+  - **Total Latency**: $O(N \cdot \frac{d}{SIMD\_width} + N \cdot \log k)$
+  - **Space**: $O(k)$ extra bytes for result accumulation
+| {
+  near: top-right
+  style.font-size: 13
+}
+
+Legend: {
+  near: bottom-left
+  direction: down
+  
+  blue_flow: "High-Bandwidth Data Transfer" {
+    style.stroke: "#3b82f6"
+    style.animated: true
+  }
+  orange_init: "External API Call / Entry" {
+    style.stroke: orange
+  }
+  green_final: "Result Delivery (Sorted)" {
+    style.stroke: "#16a34a"
+  }
+  dash_control: "Control Signal / State Update" {
+    style.stroke-dash: 3
+  }
+}
+
+EngineeringNote: |md
+  **Implementation Hardware Requirements:**
+  - **L1d Cache**: Should fit 1 query vector + 1 target vector ($2 \times 4d$ bytes).
+  - **SIMD**: AVX2 (256-bit) or AVX-512 (512-bit) supported for dot product/L2.
+  - **Prefetching**: `_mm_prefetch` used to load `cursor + 1` during `compute(cursor)`.
+  - **Alignment**: `vector_v` pointers must be 64-byte aligned for optimal SIMD loads.
+| {
+  near: bottom-right
+  style.fill: "#fffbeb"
+  style.stroke: "#f59e0b"
+}

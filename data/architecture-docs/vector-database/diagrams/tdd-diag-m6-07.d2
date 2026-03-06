@@ -1,0 +1,207 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    sketch: false
+    pad: 20
+  }
+}
+
+# --- IMPLEMENTATION GRADE MEMORY LAYOUT ---
+# Exact byte offsets and cache-line alignment (64B Total)
+memory_layout: {
+  shape: sql_table
+  label: "TimedSearch<V> Struct Memory Layout (64-bit Architecture)"
+  
+  # Offsets | Field Description | Size/Constraint
+  "0x00": "deadline: Instant (u64 nanos)" {
+    constraint: "8 Bytes"
+    style.fill: "#dae8fc"
+  }
+  "0x08": "is_cancelled: AtomicBool" {
+    constraint: "1 Byte"
+    style.fill: "#d5e8d4"
+  }
+  "0x09": "padding_0: [u8; 7]" {
+    label: "Alignment Padding (Internal)"
+    style.fill: "#cccccc"
+  }
+  "0x10": "storage_ptr: Arc<RwLock<VectorStorage>>" {
+    constraint: "8 Bytes"
+    style.fill: "#fff2cc"
+  }
+  "0x18": "k_limit: usize" {
+    constraint: "8 Bytes"
+    style.fill: "#dae8fc"
+  }
+  "0x20": "results_ptr: *mut TopKSelector" {
+    constraint: "8 Bytes"
+    style.fill: "#f8cecc"
+  }
+  "0x28": "reserved: [u8; 24]" {
+    label: "Cache-Line Padding / Future Extensions"
+    style.fill: "#eeeeee"
+  }
+  
+  style: {
+    stroke: "#f39c12"
+    stroke-width: 4
+    fill: "#ffffff"
+  }
+}
+
+# Page/Cache boundary annotation
+(memory_layout."0x28" -> memory_layout."0x00")[0]: "sizeof=64 Bytes (L1 Cache Line Alignment)" {
+  style: {
+    stroke-dash: 5
+    stroke: "#7f8c8d"
+  }
+  source-arrowhead: none
+  target-arrowhead: none
+}
+
+# --- SEARCH PATH SEQUENCE DIAGRAM ---
+search_flow: {
+  shape: sequence_diagram
+  label: "Query Timeout & SIMD Search Implementation Path"
+
+  # Participant Definitions (Exact Types for Implementation)
+  client: Client
+  api: "axum::Handler\n(REST Entry)" {
+    style.fill: "#e1d5e7"
+  }
+  wrapper: "TimedSearch<V>\n(Deadline Mgr)" {
+    style.fill: "#dae8fc"
+  }
+  lock: "RwLock<VectorStorage>" {
+    style.fill: "#fff2cc"
+  }
+  storage: "VectorStorage\n(Page Cache)" {
+    style.fill: "#d5e8d4"
+  }
+  metric: "DistanceMetric\n(AVX-512)" {
+    style.fill: "#f8cecc"
+  }
+  heap: "TopKSelector\n(Min-Heap)" {
+    style.fill: "#f5f5f5"
+  }
+
+  # --- Call Sequence ---
+
+  client -> api: "POST /search(req)" {
+    label: "SearchRequest { timeout_ms: 5000, k: 100 }"
+  }
+
+  api -> wrapper: "new(timeout)" {
+    label: "Initialize struct at 0x00"
+  }
+
+  wrapper -> lock: "try_read()" {
+    label: "▼ Acquire Shared Read Lock"
+  }
+  lock -> wrapper: "Ok(RwLockReadGuard)"
+
+  # Logical Group for Iterative Search Performance
+  search_loop: "Search Loop (SIMD Batching N=1000)" {
+    
+    wrapper -> wrapper: "is_expired()" {
+      label: "AtomicLoad(Relaxed)"
+    }
+    
+    # Deadline Control Branch
+    deadline_check: "Deadline Check & SIMD Execution" {
+      
+      # Failure Branch (Timeout)
+      wrapper -> api: "Err(SearchError::Timeout)" {
+        style: {
+          stroke: "#ff0000"
+          font-color: "#ff0000"
+          bold: true
+        }
+      }
+      api -> client: "408 Request Timeout" {
+        style: {
+          stroke: "#ff0000"
+          font-color: "#ff0000"
+          bold: true
+        }
+      }
+      
+      # Hot Path Branch (Normal Execution)
+      wrapper -> storage: "next_batch(1000)"
+      storage -> wrapper: "PageData<SIMD_Vector>"
+      
+      wrapper -> metric: "compute_batch(query, vectors)"
+      metric -> wrapper: "f32_scores[1000]"
+      
+      wrapper -> heap: "insert_many(scores)"
+      heap -> wrapper: "void"
+    }
+  }
+
+  # Finalization Phase
+  wrapper -> wrapper: "into_sorted_vec()" {
+    label: "Heap extraction O(k log k)"
+  }
+
+  wrapper -> api: "Ok(Results)" {
+    style: {
+      stroke: "#2980b9"
+      font-color: "#2980b9"
+      bold: true
+    }
+  }
+
+  api -> lock: "drop(Guard)" {
+    label: "▲ Release Read Lock"
+  }
+
+  api -> client: "200 OK (JSON)" {
+    label: "Latency-Header: <X-Search-Nanos>"
+    style: {
+      stroke: "#27ae60"
+      font-color: "#27ae60"
+      bold: true
+    }
+  }
+  
+  # Implementation Annotation
+  wrapper.invariants: |md
+    ### SEARCH ENGINE INVARIANTS
+    - **Memory Alignment**: `results_ptr` must be 32-byte aligned for AVX-512 `_mm512_load_ps`.
+    - **Atomic Latency**: `is_expired` uses `Relaxed` ordering to prevent cache-coherency stalls across cores.
+    - **SIMD Locality**: 1000 FP32 vectors ≈ 128KB, optimized for L2 data cache residency.
+    - **RAII**: `RwLockReadGuard` is dropped during `wrapper` consumption or early Err return.
+  |
+}
+
+# Positioning
+memory_layout.near: search_flow.client
+
+# Global Styling for Sequence Components
+search_flow.**: {
+  style.stroke-width: 2
+}
+
+(search_flow.api -> search_flow.client)[*]: {
+  style.bold: true
+}
+
+# Legend for Memory Layout
+legend: {
+  near: memory_layout
+  header: "Legend"
+  l1: "Purple = Struct Metadata" {
+    style.fill: "#e1d5e7"
+  }
+  l2: "Blue = Numerical Config" {
+    style.fill: "#dae8fc"
+  }
+  l3: "Yellow = Concurrency/Locks" {
+    style.fill: "#fff2cc"
+  }
+  l4: "Red = SIMD Pointers" {
+    style.fill: "#f8cecc"
+  }
+}

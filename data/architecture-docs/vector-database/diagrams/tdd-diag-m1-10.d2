@@ -1,0 +1,196 @@
+layout-engine: elk
+theme-id: 4
+
+# -----------------------------------------------------------------------------------------
+# GLOBAL CONFIGURATION & DOCUMENTATION
+# -----------------------------------------------------------------------------------------
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Generation Counter ABA Prevention
+  **System: Vector Storage Engine (Memory Safety Module)**
+  *Implementation Spec: Ensuring stale references are invalidated during slot reuse via generational tracking.*
+| {near: top-center}
+
+direction: right
+
+# -----------------------------------------------------------------------------------------
+# CLASSES & STYLING (Intel Manual Quality)
+# -----------------------------------------------------------------------------------------
+classes: {
+  memory_header: {
+    style: {
+      fill: "#673AB7" # Purple per instruction
+      font-color: white
+      bold: true
+      stroke-width: 2
+    }
+  }
+  data_field: {
+    style: {
+      fill: "#2196F3" # Blue per instruction
+      font-color: white
+    }
+  }
+  changed: {
+    style: {
+      stroke: "#FF0000"
+      stroke-width: 4
+      font-color: "#FF0000"
+      bold: true
+      shadow: true
+    }
+  }
+  ref_pointer: {
+    style: {
+      stroke: "#FF9800" # Orange per instruction
+      stroke-width: 3
+    }
+  }
+  padding: {
+    style: {
+      fill: "#E0E0E0" # Gray per instruction
+      font-color: "#757575"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# STEP 1: INITIAL ALLOCATION (0x00 - 0x40)
+# -----------------------------------------------------------------------------------------
+step_1: "1. Healthy Reference State" {
+  style.stroke-width: 2
+
+  client_handle: "Handle (64-bit)" {
+    shape: sql_table
+    style.fill: "#FFF3E0"
+    "0x00 [32-bit]": "Index: 3"
+    "0x04 [32-bit]": "Generation: 1"
+  }
+
+  physical_ram: "Memory Segment (Offset: 0x4000)" {
+    shape: sql_table
+    header: "Slot 3 Layout" {class: memory_header}
+    "0x00 [8B]": "Metadata Header" {class: padding}
+    "0x08 [4B]": "Gen Counter: 1" {class: data_field}
+    "0x0C [4B]": "Owner ID: 101" {class: data_field}
+    "0x10 [48B]": "Vector A Payload" {class: data_field}
+  }
+
+  client_handle -> physical_ram."0x08 [4B]": "Valid Match (1 == 1)" {class: ref_pointer}
+}
+
+# -----------------------------------------------------------------------------------------
+# STEP 2: DELETION & TOMBSTONING
+# -----------------------------------------------------------------------------------------
+step_2: "2. Vector Deletion (Tombstoning)" {
+  style.stroke-width: 2
+  
+  client_handle: "Handle (Stale)" {
+    shape: sql_table
+    style.opacity: 0.6
+    "0x00": "Index: 3"
+    "0x04": "Gen: 1"
+  }
+
+  physical_ram: "Memory Segment" {
+    shape: sql_table
+    header: "Slot 3 Layout" {style.fill: "#9E9E9E"}
+    "0x00": "TOMBSTONE_BIT = 1" {class: changed}
+    "0x08": "**Gen: 1**"
+    "0x0C": "**DEALLOCATED**" {class: padding}
+    "0x10": "0x00...0x00" {class: padding}
+  }
+
+  free_list: "Free Slot Queue" {
+    shape: queue
+    "Head -> [Idx 3]" {style.stroke: "#4CAF50"; style.bold: true}
+  }
+
+  physical_ram -> free_list: "Push Index 3" {style.stroke-dash: 3; style.stroke: "#4CAF50"}
+}
+
+# -----------------------------------------------------------------------------------------
+# STEP 3: SLOT REUSE (ABA SCENARIO)
+# -----------------------------------------------------------------------------------------
+step_3: "3. Slot Reuse (Index 3, Gen 2)" {
+  style.stroke-width: 2
+
+  client_handle: "Old Handle (Stale)" {
+    shape: sql_table
+    "0x00": "Index: 3"
+    "0x04": "**Gen: 1**" {style.stroke: red}
+  }
+
+  physical_ram: "Memory Segment" {
+    shape: sql_table
+    header: "Slot 3 Layout" {class: memory_header}
+    "0x00": "Metadata Header"
+    "0x08": "**Gen Counter: 2**" {class: changed}
+    "0x0C": "Owner ID: 999" {class: data_field}
+    "0x10": "Vector B Payload" {class: data_field}
+  }
+
+  client_handle -> physical_ram."0x08 [4B]": "ILLEGAL ACCESS" {
+    style.stroke: red
+    style.stroke-dash: 5
+    target-arrowhead.shape: cross
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# STEP 4: PREVENTION LOGIC
+# -----------------------------------------------------------------------------------------
+step_4: "4. Generational Validation" {
+  logic: "Validator::Check" {
+    shape: diamond
+    style.fill: "#FFF9C4"
+    label: "Handle.Gen == Slot.Gen?"
+  }
+
+  h_gen: "Handle Gen: 1" {class: ref_pointer}
+  s_gen: "Slot Gen: 2" {class: memory_header}
+
+  h_gen -> logic
+  s_gen -> logic
+
+  logic -> err: "FALSE (1 != 2)" {
+    style.stroke: red
+    style.bold: true
+  }
+
+  err: "EXCEPTION: STALE_REF_ERROR" {
+    shape: hexagon
+    style.fill: "#D32F2F"
+    style.font-color: white
+    style.bold: true
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# ROOT LEVEL ANNOTATIONS (Fixed compilation error)
+# -----------------------------------------------------------------------------------------
+validation_note: |md
+  ### Generational Memory Safety Implementation
+  1. **Allocation**: When a vector is stored, it is assigned a **Generation**.
+  2. **Deletion**: The memory slot is marked free, but the **Generation** remains or is zeroed.
+  3. **Re-Allocation**: When the slot is reused, the **Generation** is incremented (`Gen++`).
+  4. **Access**: Every pointer dereference compares the `Handle.Generation` with the `Slot.Generation`.
+  5. **ABA Prevention**: Even if the Index (A) is recycled (B) and returns to the same state (A), the Generation counter ensures they are logically distinct.
+| {near: bottom-right}
+
+# -----------------------------------------------------------------------------------------
+# SEQUENTIAL FLOW
+# -----------------------------------------------------------------------------------------
+step_1 -> step_2: "Vector::Free()"
+step_2 -> step_3: "Vector::Alloc()"
+step_3 -> step_4: "Mem::Read()"
+
+(step_1 -> step_2)[0].style.stroke-width: 6
+(step_2 -> step_3)[0].style.stroke-width: 6
+(step_3 -> step_4)[0].style.stroke-width: 6

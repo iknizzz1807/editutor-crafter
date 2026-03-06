@@ -1,0 +1,213 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# STATE DEFINITIONS: Collection Lifecycle Invariants
+# ---------------------------------------------------------------------------------------
+
+START: "" {
+  shape: circle
+  width: 30
+  height: 30
+  style.fill: "#000000"
+  tooltip: "Initial System Entry Point"
+}
+
+CREATING: "CREATING (PENDING_INIT)" {
+  shape: rectangle
+  style: {
+    stroke-width: 2
+    border-radius: 12
+    fill: "#f8f9fa"
+  }
+  content: |md
+    ### State Invariants
+    - **M6 (Registry)**: ID reserved in global `ApiState` map.
+    - **M1 (Storage)**: `AlignedVectorBuffer` allocation in-flight.
+    - **M4 (Index)**: Index pointer is `nullptr`.
+    - **Locks**: Exclusive `WriteLock` held on record segment.
+  |
+}
+
+ACTIVE: "ACTIVE (OPERATIONAL)" {
+  shape: rectangle
+  style: {
+    stroke-width: 3
+    border-radius: 12
+    fill: "#e6fffa" # Light teal
+    double-border: true
+  }
+  content: |md
+    ### State Invariants
+    - **M1 (Storage)**: `VectorStorage` handle initialized (mmap).
+    - **M4 (Index)**: `HNSWIndex` active (L2/Cosine metric).
+    - **M6 (Registry)**: Reference count > 0 in `LivePool`.
+    - **Access**: Full `CRUD` + `SEARCH` operations permitted.
+  |
+}
+
+DELETING: "DELETING (CLEANUP)" {
+  shape: rectangle
+  style: {
+    stroke-width: 2
+    border-radius: 12
+    fill: "#fff5f5" # Light red
+  }
+  content: |md
+    ### State Invariants
+    - **M6 (Registry)**: Removed from active `CollectionPool`.
+    - **M1 (Storage)**: `munmap` call pending or in-progress.
+    - **Locks**: Permanent `WriteLock` blocking new callers.
+    - **Access**: SEARCH=DENIED, DELETE=PENDING.
+  |
+}
+
+ERROR_STATE: "UNRECOVERABLE_ERROR" {
+  shape: rectangle
+  style: {
+    fill: "#ffe3e3"
+    stroke: "#e53e3e"
+    stroke-width: 3
+    font-color: "#e53e3e"
+    bold: true
+  }
+  content: |md
+    ### State Invariants
+    - **M1**: IO/Alignment parity fault detected.
+    - **M4**: Index structure corruption or OOM.
+    - **System**: Automated telemetry triggered via M7.
+  |
+}
+
+DELETED: "" {
+  shape: circle
+  style.double-border: true
+  width: 30
+  height: 30
+  tooltip: "Terminal State: Memory Freed"
+}
+
+# ---------------------------------------------------------------------------------------
+# TRANSITIONS: Trigger + Guard + Action
+# ---------------------------------------------------------------------------------------
+
+START -> CREATING: "POST /collections" {
+  style.bold: true
+  label: |md
+    **Trigger**: External RPC Call
+    **Action**: `Registry.reserve(id)`
+  |
+}
+
+CREATING -> ACTIVE: "INIT_SUCCESS" {
+  label: |md
+    **Guard**: `dim > 0` && `align % 32 == 0`
+    **Action**: `M1::new()`, `M4::init_index()`
+  |
+}
+
+CREATING -> ERROR_STATE: "ALLOC_FAILURE" {
+  style: {
+    stroke: "#e53e3e"
+    stroke-width: 2
+  }
+  label: |md
+    **Trigger**: `Out of Memory (OOM)`
+    **Action**: Rollback registry reservation
+  |
+}
+
+ACTIVE -> ACTIVE: "MUTATION / QUERY" {
+  label: |md
+    **Triggers**: `INSERT`, `SEARCH`, `COMPACT`
+    **Modules**: M1 (Store), M2 (Distance), M4 (HNSW)
+  |
+}
+
+ACTIVE -> DELETING: "DELETE /collections/{name}" {
+  label: |md
+    **Trigger**: External RPC Call
+    **Action**: `Registry.remove(id)`
+  |
+}
+
+ACTIVE -> ERROR_STATE: "IO_FAILURE" {
+  style: {
+    stroke: "#e53e3e"
+    stroke-width: 2
+  }
+  label: |md
+    **Trigger**: `fsync` error (Disk Full/HW Error)
+  |
+}
+
+DELETING -> DELETED: "CLEANUP_COMPLETE" {
+  label: |md
+    **Action**: `M1::Drop`, `M4::Drop`
+    **Result**: All virtual address space released
+  |
+}
+
+# ---------------------------------------------------------------------------------------
+# ILLEGAL TRANSITIONS (Security/Protocol Guarding)
+# ---------------------------------------------------------------------------------------
+
+DELETED -> ACTIVE: "ILLEGAL" {
+  style: {
+    stroke: "#e53e3e"
+    stroke-dash: 5
+    opacity: 0.6
+  }
+  label: "Double-activation prohibited"
+}
+
+ERROR_STATE -> ACTIVE: "ILLEGAL" {
+  style: {
+    stroke: "#e53e3e"
+    stroke-dash: 5
+    opacity: 0.6
+  }
+  label: |md
+    **Constraint**: Must re-create collection
+    from persistent journal (M1)
+  |
+}
+
+# ---------------------------------------------------------------------------------------
+# ANNOTATIONS & DOCUMENTATION BLOCKS
+# ---------------------------------------------------------------------------------------
+
+legend: {
+  near: bottom-right
+  Creating: "System Resource Allocation"
+  Active: "Searchable / Mutable State"
+  Deleting: "Graceful Resource Reclamation"
+  Error: "Unrecoverable IO/Mem Fault"
+}
+
+# FIXED: near set to constant for ELK compatibility
+annotation: |md
+  ## Implementation Architecture Note (M6)
+  State transitions must be atomic relative to the `CollectionRegistry` 
+  HashMap in M6. The `ACTIVE` state transition initiates asynchronous 
+  index warming in M4.
+| {
+  near: top-center
+  style: {
+    stroke: "#9b59b6"
+    stroke-dash: 2
+    fill: "#fdfaff"
+  }
+}
+
+title: |md
+  # TDD-M6-02: Collection Lifecycle State Machine
+| {
+  near: top-left
+  style.font-size: 24
+}

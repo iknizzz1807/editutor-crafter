@@ -1,0 +1,227 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    pad: 20
+  }
+}
+
+# ----------------------------------------------------------------------------
+# GLOBAL CLASSES: Technical Spec Styling
+# ----------------------------------------------------------------------------
+classes: {
+  action: {
+    style: {
+      fill: "#e1f5fe"
+      stroke: "#01579b"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  choice: {
+    shape: diamond
+    style: {
+      fill: "#fff9c4"
+      stroke: "#fbc02d"
+      stroke-width: 2
+    }
+  }
+  error: {
+    style: {
+      fill: "#ffebee"
+      stroke: "#b71c1c"
+      stroke-width: 2
+      font-color: "#b71c1c"
+      bold: true
+      italic: true
+    }
+  }
+  # Corrected: data_struct is a CLASS that sets shape to sql_table
+  data_struct: {
+    shape: sql_table
+    style: {
+      fill: "#f3e5f5"
+      stroke: "#4a148c"
+      stroke-width: 2
+    }
+  }
+}
+
+# ----------------------------------------------------------------------------
+# HEADER & METADATA
+# ----------------------------------------------------------------------------
+title: |md
+  ### M6: Search Request Processing Flow
+  **Architecture:** Vector Similarity Engine Path
+  **Call Chain:** API ➔ Lock ➔ Strategy ➔ SIMD Exec ➔ Stats
+| {
+  near: top-center
+}
+
+# ----------------------------------------------------------------------------
+# COMPONENT DEFINITIONS
+# ----------------------------------------------------------------------------
+API_Ingress: "REST Ingress" {
+  # Fix applied: changed 'shape: data_struct' to 'class: data_struct'
+  Request: SearchRequest {
+    class: data_struct
+    vector: "Vec<f32> (1536d)" {constraint: "6144 bytes"}
+    k: "usize" {constraint: "8 bytes"}
+    filter: "Option<Filter>" {constraint: "Heap Ref"}
+    mode: "SearchMode" {constraint: "Enum (1 byte)"}
+    deadline: "u64" {constraint: "Timestamp"}
+  }
+}
+
+Validation: "Step 1: Validation" {
+  dim_check: "Verify Dimension" {
+    class: choice
+  }
+  err_dim: "400: Dimension Mismatch" {
+    class: error
+  }
+  
+  dim_check -> err_dim: "len != collection_dim" {
+    style: {
+      stroke: red
+      font-color: red
+    }
+  }
+}
+
+Concurrency: "Step 2: Lock Acquisition" {
+  read_lock: "Acquire Shared Read Lock" {
+    class: action
+    tooltip: "RwLock::read() on Segment Manager"
+  }
+  lock_timeout: "408: Lock Timeout" {
+    class: error
+  }
+  
+  read_lock -> lock_timeout: "t > 500ms" {
+    style.stroke: red
+  }
+}
+
+Strategy: "Step 3: Mode & Strategy" {
+  mode_select: "Choose Search Mode" {
+    class: choice
+  }
+  
+  brute_path: "Linear Scan (M3)" {
+    class: action
+    tooltip: "Exhaustive O(N) search"
+  }
+  
+  hnsw_path: "Graph Traverse (M4)" {
+    class: action
+    tooltip: "Approximate O(log N) search"
+  }
+  
+  mode_select -> brute_path: "Auto (<10k) OR ForceBrute"
+  mode_select -> hnsw_path: "Auto (>10k) OR ForceHNSW"
+}
+
+Filtering: "Step 4: Filter Application" {
+  filter_type: "Selectivity Strategy?" {
+    class: choice
+  }
+  
+  pre_filter: "Pre-Filter" {
+    tooltip: "Evaluate predicate then compute distances (Bitset Mask)"
+    class: action
+  }
+  
+  post_filter: "Post-Filter" {
+    tooltip: "Search top-k*oversample then prune results"
+    class: action
+  }
+  
+  filter_type -> pre_filter: "Selectivity > 30%"
+  filter_type -> post_filter: "Selectivity <= 30%"
+}
+
+Execution: "Step 5: Search Execution" {
+  core_engine: "Compute Distances (M2)" {
+    class: action
+    style: {
+      stroke-dash: 5
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+    }
+    tooltip: "AVX-512 / FMA SIMD implementation"
+  }
+  heap_sort: "Top-K Bounded Heap" {
+    class: action
+    tooltip: "Binary Max-Heap prune to size K"
+  }
+}
+
+Finalization: "Step 6: Finalization" {
+  update_stats: "Update CollectionStats" {
+    class: action
+  }
+  resp_gen: "Build SearchResponse" {
+    class: action
+  }
+  
+  update_stats: |md
+    **Atomic Telemetry**
+    - atomic_count.fetch_add(1)
+    - p99_latency_track(t)
+    - cache_hit_ratio_update()
+  |
+}
+
+# ----------------------------------------------------------------------------
+# FLOW CONNECTIONS
+# ----------------------------------------------------------------------------
+# Link struct fields to logic steps
+API_Ingress.Request -> Validation.dim_check: "raw_buffer"
+
+Validation.dim_check -> Concurrency.read_lock: "Ok (Dimension Match)" {
+  style.stroke: green
+}
+
+Concurrency.read_lock -> Strategy.mode_select: "Lock Held (Shared)" {
+  style.stroke-width: 4
+}
+
+# Branching paths
+Strategy.brute_path -> Filtering.filter_type
+Strategy.hnsw_path -> Filtering.filter_type
+
+Filtering.pre_filter -> Execution.core_engine: "Masked Iteration"
+Filtering.post_filter -> Execution.core_engine: "Oversample (K*10)"
+
+Execution.core_engine -> Execution.heap_sort: "f32[] results"
+Execution.heap_sort -> Finalization.update_stats: "top-k IDs"
+
+Finalization.update_stats -> Finalization.resp_gen
+Finalization.resp_gen -> API_Ingress: "200 OK (SearchResponse)" {
+  style: {
+    stroke: green
+    animated: true
+  }
+}
+
+# ----------------------------------------------------------------------------
+# CROSS-LAYER ANNOTATIONS
+# ----------------------------------------------------------------------------
+API_Ingress.Request.vector -- Execution.core_engine: "SIMD Direct Access" {
+  style: {
+    stroke: orange
+    stroke-dash: 3
+    stroke-width: 2
+  }
+}
+
+# Constraint labels
+(Strategy.hnsw_path -> Filtering.filter_type): "ef_search optimization" {
+  style.font-size: 11
+}
+
+(Finalization.resp_gen -> API_Ingress): "Protobuf Serialization" {
+  style.font-size: 11
+}

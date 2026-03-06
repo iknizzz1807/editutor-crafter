@@ -1,0 +1,221 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 0
+    pad: 40
+  }
+  colors: {
+    header: "#f3e5f5"
+    data: "#e3f2fd"
+    free: "#e8f5e9"
+    padding: "#eeeeee"
+    pointer: "#fff3e0"
+    critical: "#ef5350"
+  }
+}
+
+# --- Module Participants (Technical Spec) ---
+M6: "M6: Query API Server" {
+  shape: package
+  style.fill: ${colors.header}
+  
+  Handler: {
+    shape: class
+    label: "SearchHandler"
+    "search(req: SearchRequest): Response"
+    "estimate_selectivity(filter: Predicate): float64"
+    sizeof: "Stack Allocated"
+  }
+}
+
+M1: "M1: Vector Storage" {
+  shape: cylinder
+  style.fill: ${colors.data}
+  
+  MemoryLayout: |md
+    ### VectorRecord Layout
+    **Total Size: 2064 Bytes**
+    | Offset | Field | Type | Size |
+    | :--- | :--- | :--- | :--- |
+    | 0x00 | GlobalID | uint64 | 8B |
+    | 0x08 | MetadataRef | *void | 8B |
+    | 0x10 | VectorData | f32[512] | 2048B |
+    | 0x810 | Padding | char[48] | 48B |
+    ---
+    *Page Boundary: 4KB aligned*
+  |
+}
+
+M3_M4: "Search Engine (M3/M4)" {
+  shape: package
+  style.fill: ${colors.pointer}
+  
+  TopK: "TopKSelector (M3)" {
+    shape: class
+    label: "BoundedMaxHeap<Node>"
+    "capacity: int (k)"
+    "push(node: Node): void"
+    "peek(): Node"
+    "finalize(): List<Node>"
+    style: {
+      stroke: ${colors.critical}
+      stroke-width: 3
+    }
+  }
+}
+
+# --- Data Structures ---
+Request: "SearchRequest" {
+  shape: parallelogram
+  label: "SearchRequest\n{query: f32[512], filter: 'color=blue', k: 100}"
+}
+
+# --- Control Flow ---
+Request -> M6.Handler: "1. Incoming RPC"
+
+M6.Handler -> Selectivity_Logic: "2. Optimizer Check"
+Selectivity_Logic: {
+  shape: diamond
+  label: "Is Selectivity > 30%?\n(Restrictive Filter)"
+}
+
+# --- PATH A: PRE-FILTERING (HIGH SELECTIVITY) ---
+# Executed when the metadata filter is highly specific
+Selectivity_Logic -> PreFilter_Path: "YES" {
+  style: {
+    stroke: "#2e7d32"
+    stroke-width: 4
+  }
+}
+
+PreFilter_Path: "Pre-Filtering Pipeline (Restrictive)" {
+  style: {
+    fill: "#f1f8e9"
+    stroke: "#2e7d32"
+  }
+
+  Metadata_Scan: "3a. Index Scan" {
+    shape: rectangle
+    style.fill: "#c8e6c9"
+    label: "M1.InvertedIndexLookup(filter)\nComplexity: O(N_filtered)"
+  }
+  
+  ID_List: "4a. Bitset Construction" {
+    shape: queue
+    label: "Candidate Bitset\nSparse ID List"
+  }
+  
+  Math_Execution: "5a. Exact Distance" {
+    shape: rectangle
+    style: {
+      fill: ${colors.critical}
+      font-color: white
+    }
+    label: "SIMD Compute\nfor id in bitset:\n  dist(Q, M1.vec[id])"
+  }
+  
+  Metadata_Scan -> ID_List: "Match"
+  ID_List -> Math_Execution: "ID Stream"
+}
+
+PreFilter_Path.Math_Execution -> M3_M4.TopK: "6a. Heap Push"
+
+# --- PATH B: POST-FILTERING (LOW SELECTIVITY) ---
+# Executed when most vectors match the filter; ANN navigation is faster
+Selectivity_Logic -> PostFilter_Path: "NO" {
+  style: {
+    stroke: "#1565c0"
+    stroke-dash: 3
+    stroke-width: 2
+  }
+}
+
+PostFilter_Path: "Post-Filtering Pipeline (Loose)" {
+  style: {
+    fill: "#e3f2fd"
+    stroke: "#1565c0"
+  }
+
+  Traversal: "3b. HNSW Search" {
+    shape: rectangle
+    style.fill: "#bbdefb"
+    label: "Graph Traversal (Full ANN)\nef_search = k * 10"
+  }
+  
+  Oversample: "4b. Candidate Buffer" {
+    shape: queue
+    label: "Top-k' Results\n(k' >> k)"
+  }
+  
+  Metadata_Check: "5b. Late Materialize" {
+    shape: rectangle
+    style.fill: "#fff9c4"
+    label: "Filter Validation\nfor res in k':\n  check M1.metadata[res.id]"
+  }
+  
+  Traversal -> Oversample: "Graph Exit"
+  Oversample -> Metadata_Check: "Refine"
+}
+
+PostFilter_Path.Metadata_Check -> M3_M4.TopK: "6b. Heap Push"
+
+# --- Final Output ---
+M3_M4.TopK -> Response_Shape: "7. Return Results"
+Response_Shape: "Response" {
+  shape: parallelogram
+  label: "SearchResponse\nTop-K Result Set"
+}
+
+# --- Technical Tradeoff Annotations ---
+Annotations: {
+  near: Selectivity_Logic
+  
+  Pre_Note: |md
+    ### Strategy: Pre-Filtering
+    - **Usage**: Highly restrictive filters.
+    - **Pros**: 100% Recall; avoids ANN graph "dead-ends".
+    - **Cons**: High I/O for large candidate sets.
+  |
+  
+  Post_Note: |md
+    ### Strategy: Post-Filtering
+    - **Usage**: Broad/Loose filters.
+    - **Pros**: Leverages logarithmic ANN speed.
+    - **Cons**: Recall collapse if filter excludes >90% of results.
+  |
+}
+
+Annotations.Pre_Note.style.stroke: "#2e7d32"
+Annotations.Post_Note.style.stroke: "#1565c0"
+
+# --- Legend ---
+Legend: {
+  shape: rectangle
+  label: "System Legend"
+  near: M1
+  style: {
+    stroke: "#fbc02d"
+    fill: "#fffde7"
+    stroke-width: 2
+  }
+  
+  Item1: "Logic/Decision" { 
+    shape: diamond
+    style.fill: ${colors.header} 
+  }
+  Item2: "Storage Access" { 
+    shape: cylinder
+    style.fill: ${colors.data}
+  }
+  Item3: "CPU Bottleneck" { 
+    shape: rectangle
+    style: {
+      fill: ${colors.critical}
+      font-color: white
+    }
+  }
+}
+
+# Layout constraints
+PreFilter_Path -> PostFilter_Path: { style.stroke-width: 0 }
+M6 -> M1: { style.stroke-width: 0 }

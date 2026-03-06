@@ -1,0 +1,222 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 30
+  }
+}
+
+# --- 1. MEMORY LAYOUT DIAGRAM (Intel Manual Quality) ---
+# Exact byte offsets and field alignment for implementation
+search_result_struct: "Data Structure: SearchResult (C-Packed)" {
+  shape: sql_table
+  style: {
+    stroke: "#333333"
+    fill: "#F5F5F5"
+    shadow: true
+    stroke-width: 2
+  }
+  
+  header: "SearchResult (sizeof=16 bytes)" {
+    style.fill: "#E4DBFE"
+  }
+  
+  "0x00": "u64 [8B]" {
+    label: "id: u64 (External Identifier)"
+    style.fill: "#C7F1FF"
+  }
+  "0x08": "f32 [4B]" {
+    label: "score: f32 (L2/Cosine Distance)"
+    style.fill: "#C7F1FF"
+  }
+  "0x0C": "u32 [4B]" {
+    label: "padding (Word Alignment)"
+    style.fill: "#DEE1EB"
+  }
+  
+  footer: ||md
+    ### Memory Specifications
+    - **Total Size:** 16 Bytes (aligned to 8B)
+    - **Buffer Pattern:** Array of Structs (AoS)
+    - **Cache Efficiency:** 4 results per 64B Cache Line
+    - **Alignment:** 0x0C is reserved for SIMD lane parity
+  ||
+}
+search_result_struct.footer.shape: text
+
+# --- 2. ALGORITHM STATE DIAGRAM ---
+# Shows transitions and specific state mutations during O(N) scan
+threshold_search_flow: "Process: Threshold-Based Scan (SIMD Optimized)" {
+  direction: down
+
+  input: "INPUT: QueryVec, Threshold θ" {
+    shape: parallelogram
+    style.fill: "#DEE1EB"
+  }
+
+  init: "1. Allocation & Initialization" {
+    shape: rectangle
+    label: ||md
+      **Step 1: Init Buffer**
+      `results = Vec::with_capacity(1024)`
+      `count = 0`
+    ||
+  }
+
+  iterator: "2. Fetch Memory Page" {
+    shape: rectangle
+    style.fill: "#E4DBFE"
+    label: "M1::Storage::next_page()"
+  }
+
+  calc: "3. Compute Distance" {
+    shape: rectangle
+    style.fill: "#C7F1FF"
+    label: ||md
+      **M2::Distance::compute**
+      `SIMD_FMA(q, v) -> score`
+    ||
+  }
+
+  check: "4. Threshold Filter" {
+    shape: diamond
+    label: "score <= θ?"
+  }
+
+  collect: "5. Push to Buffer" {
+    shape: rectangle
+    style: {
+      fill: "#B6DDF6"
+      stroke: "#FF0000"
+      stroke-width: 4
+    }
+    label: ||md
+      **STATE MUTATION**
+      **results[count] = {id, score}**
+      **count = count + 1**
+    ||
+  }
+
+  loop_check: "6. Stream Complete?" {
+    shape: diamond
+    label: "EOF reached?"
+  }
+
+  sort: "7. Post-Processing" {
+    shape: rectangle
+    label: ||md
+      **Sort results by score**
+      `pdqsort(results[0..count])`
+    ||
+  }
+
+  output: "OUTPUT: Filtered Vector Result" {
+    shape: parallelogram
+    style.fill: "#ACE1AF"
+  }
+
+  # Transitions with guard annotations
+  input -> init
+  init -> iterator
+  iterator -> calc
+  calc -> check
+  check -> collect: "s <= θ" {
+    style: {
+      stroke: green
+      bold: true
+    }
+  }
+  check -> loop_check: "s > θ" {
+    style: {
+      stroke: red
+    }
+  }
+  collect -> loop_check
+  loop_check -> iterator: "false (Next Vector)"
+  loop_check -> sort: "true (Finalize)"
+  sort -> output
+}
+
+# --- 3. ARCHITECTURE DIAGRAM ---
+# Component ownership and relationships
+internal_dependencies: "Architecture: Search Engine Internal" {
+  M3_Search: "M3: BruteForceScanner" {
+    style.fill: "#E4DBFE"
+    shape: class
+    definition: "sizeof=128B"
+    + scan(query, threshold)
+  }
+  M1_Storage: "M1: VectorSegment" {
+    style.fill: "#ACE1AF"
+    shape: class
+    + iter_live(): Iterator
+  }
+  M2_Distance: "M2: DistanceMetric" {
+    style.fill: "#C7F1FF"
+    shape: class
+    + compute(a, b): f32
+  }
+
+  M3_Search -> M1_Storage: "Owns (Arc<M1>)" {
+    source-arrowhead: 1
+    target-arrowhead: * { shape: diamond; style.filled: true }
+  }
+  M3_Search -> M2_Distance: "References" {
+    style.stroke-dash: 5
+  }
+  
+  implementation: ||rust
+    // Threshold Scan Logic
+    pub fn scan(&self, q: &Vec, th: f32) -> Vec<SearchResult> {
+        let mut buffer = Vec::new();
+        for (id, v) in self.storage.iter_live() {
+            let s = self.metric.compute(q, v);
+            if s <= th {
+                buffer.push(SearchResult { id, score: s });
+            }
+        }
+        buffer
+    }
+  ||
+}
+internal_dependencies.implementation.shape: text
+
+# --- 4. DATA TABLES ---
+# Comparison logic for engineers
+comparison_table: ||md
+  ### Search Complexity Analysis
+  | Metric | Top-K Search | Threshold Search |
+  | :--- | :--- | :--- |
+  | **Selection Logic** | Bounded Heap (Max-Heap) | Sequential Buffer (Vec) |
+  | **Time Complexity** | O(N log K) | O(N) |
+  | **Memory Bound** | Fixed (K * 16B) | Variable (up to N * 16B) |
+  | **SIMD Pipeline** | Periodic Interrupts | High Throughput Stream |
+||
+comparison_table.near: bottom-center
+comparison_table.shape: text
+
+# --- 5. TECHNICAL LEGEND ---
+legend: "Engineer Reference Legend" {
+  near: bottom-right
+  
+  colors: {
+    grid-columns: 2
+    header_col: "Metadata / Control Plane" { style.fill: "#E4DBFE" }
+    data_col: "SIMD Data / Payload" { style.fill: "#C7F1FF" }
+    io_col: "Physical Page / Input" { style.fill: "#DEE1EB" }
+    success_col: "Output / Committed State" { style.fill: "#ACE1AF" }
+    pointer_col: "Reference / Ownership" { style.stroke: "#F4A261" }
+    state_col: "CRITICAL: State Mutation" { style.stroke: "#FF0000"; style.stroke-width: 2 }
+  }
+}
+
+# Cross-container logical connections
+search_result_struct -> threshold_search_flow: "Record Type" {
+  style.stroke-dash: 3
+  style.opacity: 0.5
+}
+threshold_search_flow -> internal_dependencies: "Implements" {
+  style.stroke-dash: 3
+  style.opacity: 0.5
+}

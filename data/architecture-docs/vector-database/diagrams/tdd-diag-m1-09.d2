@@ -1,0 +1,263 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    pad: 40
+  }
+}
+
+# --- STYLE DEFINITIONS ---
+classes: {
+  step_container: {
+    style: {
+      stroke: "#2c3e50"
+      stroke-width: 2
+      border-radius: 12
+      fill: "#ffffff"
+      shadow: true
+    }
+  }
+  file_system_box: {
+    label: "KERNEL VFS / STORAGE LAYER"
+    style: {
+      fill: "#f8f9fa"
+      stroke: "#bdc3c7"
+      stroke-dash: 4
+      font-size: 14
+      bold: true
+    }
+  }
+  file_stable: {
+    shape: package
+    style: {
+      fill: "#bbdefb" # Data Blue
+      stroke: "#1976d2"
+      stroke-width: 2
+    }
+  }
+  file_temp: {
+    shape: package
+    style: {
+      fill: "#eeeeee"
+      stroke: "#9e9e9e"
+      stroke-dash: 2
+    }
+  }
+  op_call: {
+    shape: parallelogram
+    style: {
+      fill: "#fff9c4" # Operation Yellow
+      stroke: "#fbc02d"
+      font-size: 13
+      font: mono
+    }
+  }
+  status_marker: {
+    shape: text
+    style: {
+      font-size: 12
+      italic: true
+      font-color: "#455a64"
+    }
+  }
+  highlight_write: {
+    style: {
+      stroke: "#d32f2f" # Red Alert
+      stroke-width: 4
+      bold: true
+    }
+  }
+  persisted_green: {
+    style: {
+      fill: "#c8e6c9" # Safe Green
+      stroke: "#2e7d32"
+      bold: true
+    }
+  }
+}
+
+# --- HEADER ---
+header_title: |'md
+  # Algorithm: Crash-Safe Vector Persistence
+  **Implementation**: Write-Ahead-to-Temp + Fsync + Atomic Rename
+  **Goal**: Prevent index corruption during power-loss at any cycle T.
+'| {
+  shape: text
+  near: top-center
+}
+
+# --- ALGORITHM STEPS ---
+
+step1: "1. INITIALIZATION" {
+  class: step_container
+  
+  operation: |'md
+    `fd_old = open("idx.bin", O_RDONLY)`
+    `fd_tmp = open("idx.bin.tmp", O_CREAT|O_WRONLY)`
+  '| {
+    class: op_call
+  }
+
+  fs: {
+    class: file_system_box
+    v_bin: "idx.bin (v1.0)" {class: file_stable}
+    v_tmp: "idx.bin.tmp (EMPTY)" {class: file_temp}
+  }
+  
+  info: |'md
+    **State**: 
+    - `idx.bin` is immutable.
+    - New inode created for `.tmp`.
+  '| {
+    class: status_marker
+  }
+}
+
+step2: "2. SERIALIZATION" {
+  class: step_container
+  
+  operation: |'md
+    `pwrite(fd_tmp, header, 64, 0)`
+    `pwrite(fd_tmp, vectors, len, 64)`
+  '| {
+    class: op_call
+  }
+
+  fs: {
+    class: file_system_box
+    v_bin: "idx.bin (v1.0)" {class: file_stable}
+    v_tmp: "**idx.bin.tmp (v1.1 DIRTY)**" {
+      class: [file_temp; highlight_write]
+    }
+  }
+  
+  info: |'md
+    **Crash Logic**: 
+    If crash here, OS ignores `.tmp`. 
+    `idx.bin` remains original v1.0.
+  '| {
+    class: status_marker
+  }
+}
+
+step3: "3. PHYSICAL COMMIT" {
+  class: step_container
+  
+  operation: |'md
+    `fsync(fd_tmp)` 
+    `// Wait for hardware Ack`
+  '| {
+    class: op_call
+  }
+
+  fs: {
+    class: file_system_box
+    v_bin: "idx.bin (v1.0)" {class: file_stable}
+    v_tmp: "**idx.bin.tmp (v1.1 PERSISTED)**" {
+      class: [file_stable; persisted_green]
+    }
+  }
+  
+  info: |'md
+    **Barrier**: 
+    Data moved from OS Page Cache 
+    to physical NAND/Platters.
+  '| {
+    class: status_marker
+  }
+}
+
+step4: "4. ATOMIC SWAP" {
+  class: step_container
+  
+  operation: |'md
+    `rename("idx.bin.tmp", "idx.bin")`
+  '| {
+    class: op_call
+  }
+
+  fs: {
+    class: file_system_box
+    v_bin: "**idx.bin (v1.1 COMPLETE)**" {
+      class: file_stable
+      style: {
+        stroke-width: 4
+        fill: "#bbdefb"
+      }
+    }
+    v_old: "idx.bin (v1.0) [ORPHANED]" {
+      style: {
+        opacity: 0.3
+        stroke-dash: 2
+      }
+    }
+  }
+  
+  info: |'md
+    **Point of No Return**: 
+    FS Inode directory entry updated. 
+    V1.1 is now the legal file head.
+  '| {
+    class: status_marker
+  }
+}
+
+# --- CONTROL FLOW ---
+step1 -> step2: "Alloc Temp"
+step2 -> step3: "Buffer Flush"
+step3 -> step4: "Metadata Update"
+
+# --- MEMORY LAYOUT SPECIFICATION ---
+mem_spec: "BINARY LAYOUT: idx.bin (64B Cache-Aligned)" {
+  near: step1
+  style.fill: "#f3e5f5"
+  style.stroke: "#7b1fa2"
+  
+  layout: {
+    shape: sql_table
+    "0x00": "MAGIC_VEC" {constraint: "8B [Purple]"}
+    "0x08": "VERSION_1.1" {constraint: "4B [Purple]"}
+    "0x0C": "RAW_DIM" {constraint: "4B [Purple]"}
+    "0x10": "PADDED_DIM" {constraint: "4B [Purple]"}
+    "0x14": "PADDING" {constraint: "44B [Gray]"}
+    "---": "CACHE_LINE_64B" {style.stroke-dash: 3}
+    "0x40": "VECTOR_DATA" {constraint: "N*D [Blue]"}
+    "0x...": "ID_MAP" {constraint: "VAR [Blue]"}
+    "EOF": "CRC32" {constraint: "4B [Gray]"}
+  }
+  
+  # Styling specific rows for field identification
+  layout."0x00".style.fill: "#e1bee7"
+  layout."0x08".style.fill: "#e1bee7"
+  layout."0x0C".style.fill: "#e1bee7"
+  layout."0x10".style.fill: "#e1bee7"
+  layout."0x14".style.fill: "#eeeeee"
+  layout."0x40".style.fill: "#bbdefb"
+  layout."0x...".style.fill: "#bbdefb"
+}
+
+# --- LEGEND ---
+legend: "Diagram Legend" {
+  near: step4
+  style.fill: "#ffffff"
+  style.stroke: "#2c3e50"
+  
+  l1: "Header Metadata" {
+    style.fill: "#e1bee7"
+    label: "Header (Purple) - Offset 0x00"
+  }
+  l2: "Primary Data" {
+    style.fill: "#bbdefb"
+    label: "Vector Data (Blue)"
+  }
+  l3: "In-Flight Write" {
+    style.stroke: "#d32f2f"
+    style.stroke-dash: 4
+    label: "Unsafe Write (Red Dash)"
+  }
+  l4: "Committed" {
+    style.fill: "#c8e6c9"
+    style.stroke: "#2e7d32"
+    label: "On-Disk Confirmed (Green)"
+  }
+}

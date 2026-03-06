@@ -1,0 +1,213 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    center: true
+    pad: 20
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# M6 MODULE: ERROR RESPONSE ARCHITECTURE
+# -----------------------------------------------------------------------------------------
+
+M6_ApiError_Structure: {
+  label: "ApiError Struct: Memory Layout & Interface Specification"
+  
+  # Memory Layout Container (Intel-style Byte Mapping)
+  # Exact byte offsets left, field sizes right.
+  MemoryMap: {
+    label: "Physical Memory Layout (sizeof=112 bytes)"
+    grid-columns: 1
+    grid-gap: 0
+    
+    Header: "0x00 | vtable/Enum Discriminant | 16 bytes" {
+      style: {
+        fill: "#e9d5ff" # Purple: Header
+        bold: true
+        stroke-width: 2
+      }
+    }
+    
+    Message: "0x10 | String (Ptr, Len, Cap) | 24 bytes" {
+      style: {
+        fill: "#dbeafe" # Blue: Data
+        stroke-dash: 0
+      }
+    }
+    
+    RequestID: "0x28 | Option<String> | 24 bytes" {
+      style: {
+        fill: "#ffedd5" # Orange: Pointer/Optional
+        stroke-width: 2
+      }
+    }
+    
+    Details: "0x40 | HashMap<String, Value> | 48 bytes" {
+      style: {
+        fill: "#dbeafe" # Blue: Data
+      }
+    }
+    
+    # Page boundary/Alignment marker
+    Padding: "0x70 | Alignment Padding | 8 bytes" {
+      style: {
+        fill: "#f3f4f6" # Gray: Padding
+        stroke-dash: 3
+      }
+    }
+  }
+
+  # Object Interface (Architecture Diagram)
+  Struct: {
+    shape: class
+    label: "M6::ApiError"
+    
+    # Internal state with byte-offset annotations
+    "- [0x00] code": "ErrorCode"
+    "- [0x10] message": "String"
+    "- [0x28] request_id": "Option<String>"
+    "- [0x40] details": "HashMap<String, serde_json::Value>"
+    
+    # Implementation Methods
+    "+ new(code: ErrorCode, msg: impl Into<String>)": "Self"
+    "+ with_detail(key: &str, val: Value)": "Self"
+    "+ to_http_response()": "http::Response<Body>"
+    "+ log_error(trace_id: &Uuid)": "void"
+    
+    style.stroke-width: 2
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# COMPONENT DEFINITIONS
+# -----------------------------------------------------------------------------------------
+
+ErrorCode_Enum: {
+  label: "ErrorCode Definition (M6::types)"
+  shape: class
+  style.fill: "#fee2e2"
+  
+  # Mapped to HTTP Status Codes
+  INVALID_DIMENSION: "400 Bad Request"
+  COLLECTION_NOT_FOUND: "404 Not Found"
+  VECTOR_NOT_FOUND: "404 Not Found"
+  INDEX_NOT_READY: "503 Service Unavailable"
+  TIMEOUT: "408 Request Timeout"
+  INTERNAL_ERROR: "500 Internal Server Error"
+}
+
+JSON_Serialization: {
+  label: "HTTP Response Wire Format (JSON)"
+  shape: sql_table
+  style.fill: "#eff6ff"
+  
+  "error": "string" {constraint: "enum_key (e.g. 'INVALID_DIMENSION')"}
+  "message": "string" {constraint: "utf8_human_readable"}
+  "expected": "number" {constraint: "optional: context_logic.expected"}
+  "got": "number" {constraint: "optional: context_logic.got"}
+  "request_id": "uuid" {constraint: "X-Request-Id Link"}
+}
+
+Context_Logic: {
+  label: "Structured Debugging Context Generator"
+  shape: cylinder
+  style.fill: "#fef3c7"
+  
+  DimensionMismatch: |md
+    ### Context Mapping Logic
+    *   **Trigger**: `req.vector.len() != metadata.dimension`
+    *   **Detail Field 'expected'**: Value of `768` (from M1 Schema)
+    *   **Detail Field 'got'**: Value of `512` (from Client Payload)
+    *   **Trace Link**: `request_id` injected from actix-web middleware
+  |
+}
+
+# -----------------------------------------------------------------------------------------
+# RELATIONSHIPS
+# -----------------------------------------------------------------------------------------
+
+# Solid arrow = owns/contains
+M6_ApiError_Structure.Struct -> ErrorCode_Enum: "uses" {
+  style.stroke-width: 2
+}
+
+# Dashed = references/transforms
+M6_ApiError_Structure.Struct -> JSON_Serialization: "serializes to" {
+  style: {
+    stroke-dash: 5
+    animated: true
+  }
+}
+
+# Population logic mapping
+M6_ApiError_Structure.Struct -> Context_Logic.DimensionMismatch: "populates context" {
+  style: {
+    stroke: orange
+    stroke-width: 2
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# RUNTIME VALIDATION FLOW
+# -----------------------------------------------------------------------------------------
+
+Search_Validation_Flow: {
+  shape: sequence_diagram
+  label: "Runtime Error Generation: Search Validation Failure"
+  
+  Client: {
+    shape: person
+  }
+  Handler: "M6::QueryAPI" {
+    style.fill: "#bfdbfe"
+  }
+  Storage: "M1::VectorStorage" {
+    style.fill: "#bbf7d0"
+  }
+
+  Client -> Handler: "POST /search { 'vector': [0.1, ...], 'top_k': 10 }"
+  Handler -> Storage: "get_collection_metadata(coll_id)"
+  Storage -> Handler: "Metadata { dimension: 768 }"
+  
+  # Logic Block
+  Handler.validate: {
+    label: "Check Dimension Alignment"
+    Handler -> Handler: "validate_dim(512, 768) -> Err(INVALID_DIMENSION)"
+  }
+  
+  # Error Object Instantiation
+  Handler -> Handler: "ApiError::new(INVALID_DIMENSION)"
+  
+  # Response Transmission
+  Handler -> Client: "HTTP 400 Bad Request { 'error': 'INVALID_DIMENSION', 'expected': 768, 'got': 512 }" {
+    style: {
+      stroke: red
+      stroke-width: 3
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# TECHNICAL SPECIFICATION ANNOTATION
+# -----------------------------------------------------------------------------------------
+
+Annotation: |md
+  ## Implementation Specification v1.1
+  
+  ### 1. HTTP Interface Requirements
+  - **Headers**: Responses MUST include `Content-Type: application/json`.
+  - **Traceability**: `request_id` field in JSON MUST match the `X-Request-Id` HTTP Header for Sentry/Datadog cross-referencing.
+  
+  ### 2. Serialization Logic
+  - **Conditional Fields**: The `expected` and `got` fields are context-specific.
+  - **Serde Attribute**: Use `#[serde(flatten)]` for the `details` map to elevate context fields to the root of the JSON object.
+  - **Skip Nulls**: Use `#[serde(skip_serializing_if = "Option::is_none")]` for the `request_id` field.
+  
+  ### 3. Memory Safety
+  - The `ApiError` struct is designed for stack allocation (112 bytes). 
+  - Heap allocation only occurs during `String` or `HashMap` expansion.
+| {
+  near: bottom-center
+}

@@ -1,0 +1,249 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Batch Operation Efficiency: Vector Ingestion Pipeline
+  **Technical Specification: M6 Query API Optimization**
+  *Comparison of Naive O(N) vs. Optimized O(1) Amortized Insertion*
+| {
+  near: top-center
+}
+
+# --- STYLE DEFINITIONS ---
+classes: {
+  lock_state: {
+    style: {
+      fill: "#ffa8a8"
+      stroke: "#e03131"
+      bold: true
+    }
+  }
+  process_state: {
+    style: {
+      fill: "#74c0fc"
+      stroke: "#1971c2"
+    }
+  }
+  storage_state: {
+    style: {
+      fill: "#63e6be"
+      stroke: "#099268"
+    }
+  }
+  barrier_state: {
+    style: {
+      fill: "#fab005"
+      stroke: "#f08c00"
+      double-border: true
+    }
+  }
+  note_box: {
+    style: {
+      fill: "#fff9db"
+      stroke: "#f59f00"
+      font-size: 12
+    }
+  }
+  header_style: {
+    style: {
+      fill: "#d0bfff"
+      stroke: "#5f3dc4"
+      bold: true
+    }
+  }
+}
+
+# --- COMPARISON VIEW ---
+flows: {
+  grid-columns: 2
+  grid-gap: 50
+
+  individual_flow: Naive Vector Insertion (Sequential) {
+    style: {
+      fill: "#f8f9fa"
+      stroke: "#dee2e6"
+      stroke-dash: 3
+    }
+
+    client: Client App {
+      shape: person
+    }
+    api: M6 API Front {
+      shape: square
+    }
+
+    pipeline: "Loop: Iteration [0..N]" {
+      direction: right
+      style.fill: "#fff5f5"
+      
+      step1: "1. pthread_mutex_lock" {
+        class: lock_state
+        tooltip: "Heavy contention point for concurrent writers"
+      }
+      step2: "2. Boundary Check" {
+        class: process_state
+      }
+      step3: "3. pwrite(512B)" {
+        class: storage_state
+        label: "pwrite()\nOffset: i * 512"
+      }
+      step4: "4. pthread_mutex_unlock" {
+        class: lock_state
+      }
+      step5: "5. fsync(fd)" {
+        class: barrier_state
+        tooltip: "Synchronous blocking call per vector"
+      }
+
+      step1 -> step2 -> step3 -> step4 -> step5
+    }
+
+    client -> api: "Vector V_i (FP32[128])"
+    api -> pipeline.step1: "Blocking Call"
+
+    stats_naive: |md
+      ### Naive Performance Bottlenecks
+      - **Context Switches:** 2 * N (User <-> Kernel) for Mutex
+      - **I/O Pattern:** Random 512B writes; high IOPS overhead
+      - **Latency:** T = N * (Lock + IO + fsync)
+    | 
+  }
+
+  batch_flow: Optimized Batch Ingestion (SIMD/Sequential) {
+    style: {
+      fill: "#f8f9fa"
+      stroke: "#339af0"
+      stroke-width: 2
+    }
+
+    client: Client App {
+      shape: person
+    }
+    api: M6 API Front {
+      shape: square
+    }
+
+    batch_logic: "Atomic Batch Transaction" {
+      direction: right
+      style.fill: "#e3fafc"
+
+      lock: "1. Write-Intent Guard" {
+        class: lock_state
+        label: "Acquire Write Lock\n(Once per Batch)"
+      }
+      
+      validate: "2. SIMD Pre-Validate" {
+        class: process_state
+        style.multiple: true
+        label: "AVX-512 Scan\n[V1...VN]"
+      }
+      
+      write: "3. Sequential DMA" {
+        class: storage_state
+        style.stroke-width: 3
+        label: "pwritev(N * 512B)\nSequential Alignment"
+      }
+      
+      release: "4. Release Guard" {
+        class: lock_state
+      }
+      
+      fsync: "5. IO Barrier" {
+        class: barrier_state
+        label: "fsync() (Single)"
+      }
+
+      lock -> validate -> write -> release -> fsync
+    }
+
+    client -> api: "Batch [V1...VN]"
+    api -> batch_logic.lock
+
+    stats_optimized: |md
+      ### Optimization Gains
+      - **Amortized Locking:** 1 Lock Acquisition for N vectors
+      - **Throughput:** Sequential I/O saturates NVMe bandwidth
+      - **Efficiency:** Parallel validation via CPU vector units
+    |
+  }
+}
+
+# --- MEMORY LAYOUT SPECIFICATION ---
+memory_layout: Memory-Mapped Segment Structure (M1) {
+  direction: right
+  style.fill: "#e9ecef"
+  style.stroke: "#343a40"
+  
+  header: Header {
+    class: header_style
+    label: "0x00 | Magic: 0x564543 | 4B\n0x04 | Version: 1 | 4B"
+  }
+
+  padding: "Padding (64B)" {
+    style.fill: "#ced4da"
+    style.stroke-dash: 2
+    label: "0x08 | Reserved | 56B"
+  }
+
+  vector_0: "Vector 0" {
+    class: storage_state
+    label: "0x40 | V0: FP32[128] | 512B"
+  }
+  
+  vector_1: "Vector 1" {
+    class: storage_state
+    label: "0x240 | V1: FP32[128] | 512B"
+  }
+
+  vector_n: "Vector N" {
+    class: storage_state
+    style.stroke-dash: 5
+    label: "Base + (N*512) | VN | 512B"
+  }
+
+  header -> padding -> vector_0 -> vector_1 -> vector_n
+}
+
+# --- IMPLEMENTATION ANNOTATIONS ---
+engineering_notes: {
+  near: bottom-left
+  
+  m1_impl: |md
+    **Implementation Reference:**
+    The `BatchWriter` struct utilizes a non-blocking `TryLock` on the 
+    M1 segment. If locked, vectors are buffered in a L3-cache-aligned 
+    staging area (Ring Buffer) before a single `memcpy` flush.
+    
+    **I/O Math:**
+    - Individual: 1000 vectors = 1000 syscalls.
+    - Batch (N=100): 1000 vectors = 10 syscalls.
+  | {
+    class: note_box
+  }
+}
+
+legend: {
+  near: bottom-right
+  
+  table: {
+    shape: sql_table
+    sync: "Synchronization" {style.fill: "#ffa8a8"}
+    cpu: "CPU / Logic" {style.fill: "#74c0fc"}
+    io: "Disk I/O" {style.fill: "#63e6be"}
+    barrier: "Hardware Barrier" {style.fill: "#fab005"}
+  }
+}
+
+# Connection from Logic to Memory Segment
+flows.batch_flow.batch_logic.write -> memory_layout: "Sequential Flush (pwritev)" {
+  style: {
+    stroke: "#2f9e44"
+    stroke-width: 4
+    animated: true
+  }
+}

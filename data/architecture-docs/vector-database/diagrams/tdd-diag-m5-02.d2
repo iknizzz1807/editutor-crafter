@@ -1,0 +1,209 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# --- GLOBAL CLASSES: INTEL MANUAL SPEC STYLE ---
+classes: {
+  step_container: {
+    style: {
+      stroke-width: 2
+      border-radius: 8
+      fill: "#ffffff"
+    }
+  }
+  formula: {
+    shape: parallelogram
+    style: {
+      fill: "#f8f9fa"
+      stroke: "#202124"
+      stroke-dash: 3
+    }
+  }
+  highlight: {
+    style: {
+      stroke: "#d93025"
+      stroke-width: 3
+      font-color: "#d93025"
+      bold: true
+    }
+  }
+  memory_header: {
+    style: {
+      fill: "#e1d5e7" # Purple per instruction
+      bold: true
+    }
+  }
+  memory_data: {
+    style: {
+      fill: "#dae8fc" # Blue per instruction
+    }
+  }
+}
+
+# --- PHASE 1: CALIBRATION (TDD Training) ---
+# Goal: Compute static bounds for the distribution
+training: "PHASE 1: Offline Calibration (M5 Stats Generation)" {
+  class: step_container
+  
+  input_corpus: "Float32 Tensor (N, D)" {
+    shape: sql_table
+    style.fill: "#dae8fc"
+    "Row 0": "[ -1.2, 0.5, 0.8, -0.1, 1.1 ]"
+    "Row 1": "[ 0.0, 0.1, 0.2, 0.3, 0.4 ]"
+    "...": "N = 10,000 samples"
+  }
+
+  calc_engine: "Min/Max Reducer" {
+    shape: diamond
+    label: "Compute bounds\nper dimension"
+  }
+
+  dimension_stats: "M5: DimensionStats Struct (sizeof=12B)" {
+    shape: sql_table
+    "0x00": "min | f32 (-1.2)" { 
+      class: memory_data
+      style.stroke: "#ff8c00" # Orange Pointer per instruction
+    }
+    "0x04": "max | f32 (1.1)" { 
+      class: memory_data
+      style.stroke: "#ff8c00" 
+    }
+    "0x08": "range | f32 (2.3)" { 
+      style.fill: "#d5e8d4" # Green Free/Derived per instruction
+    }
+  }
+
+  input_corpus -> calc_engine: "F32 Stream"
+  calc_engine -> dimension_stats: "Set Invariants"
+}
+
+# --- PHASE 2: EXECUTION (Encoding Flow) ---
+encoding: "PHASE 2: Real-time Encoding (SIMD Path)" {
+  class: step_container
+
+  raw_input: "x = 0.75" {
+    shape: circle
+    style.fill: "#fff2cc"
+  }
+
+  step_normalize: "1. Normalization" {
+    formula: |md
+      $$norm = \frac{x - min}{range}$$
+    |
+    class: formula
+    label: "Result: 0.847826"
+  }
+
+  step_scale: "2. Discrete Scaling" {
+    formula: |md
+      $$scaled = norm \times 255$$
+    |
+    class: formula
+    label: "Result: 216.195"
+  }
+
+  step_quantize: "3. Cast & Clamp" {
+    label: "**uint8(round(scaled))**"
+    class: highlight
+  }
+
+  raw_input -> step_normalize -> step_scale -> step_quantize
+}
+
+# --- MEMORY LAYOUT: 1-BYTE ATOMIC STORAGE ---
+storage_layout: "Binary Representation" {
+  style.stroke-dash: 5
+  
+  byte_boundary: "64B Cache Line Boundary" {
+    style.stroke-dash: 5
+    style.stroke: gray
+  }
+
+  binary_val: "Code: 0xD8" {
+    shape: sql_table
+    class: memory_data
+    "Bits": "1 1 0 1 1 0 0 0"
+    "Value": "216"
+  }
+}
+
+# --- PHASE 3: RECONSTRUCTION (Decoding Flow) ---
+decoding: "PHASE 3: Reconstruction (Approximate Recovery)" {
+  class: step_container
+
+  stored_code: "UInt8: 216" {
+    shape: square
+    style.fill: "#d5e8d4"
+  }
+
+  step_reconstruct: "4. Dequantize" {
+    formula: |md
+      $$\hat{x} = min + (\frac{code}{255} \times range)$$
+    |
+    class: formula
+    label: "Result: 0.7482"
+  }
+
+  step_error: "5. Quantization Loss" {
+    label: |md
+      **Error: 0.0018**
+      <br/>
+      **SNR: +48.1 dB**
+    |
+    class: highlight
+  }
+
+  stored_code -> step_reconstruct -> step_error
+}
+
+# --- CONNECTIONS ---
+dimension_stats -> encoding: "Reference Stats" {
+  style.stroke-dash: 5
+  style.stroke: "#ff8c00"
+}
+
+encoding -> storage_layout: "MOV [EAX], DL" {
+  style.stroke-width: 4
+}
+
+storage_layout -> decoding: "MOV DL, [EAX]" {
+  style.stroke-width: 4
+}
+
+# --- METADATA & LEGEND (FIXED ERROR) ---
+# Error fixed: 'near' now uses constant positioning per ELK engine requirements.
+legend: "Protocol Specification" {
+  near: bottom-right
+  
+  content: |md
+    ### Memory Invariants
+    - **Header (Purple)**: Offset 0x00-0x07
+    - **Data (Blue)**: Payload Bytes
+    - **Pointers (Orange)**: Struct member access
+    - **Padding (Gray)**: Alignment to 4B
+    
+    ### Precision Constants
+    - **Max Error**: $\pm \frac{Range}{510}$
+    - **Throughput**: 4 cycles/vec (AVX2)
+  |
+}
+
+notes: "Implementation Notes" {
+  near: top-left
+  content: |md
+    - Scalar Quantization (SQ8)
+    - Total Size: 1 Byte per Dim
+    - Compression Ratio: 4:1 vs Float32
+    - Layout: [M5_Stats_Header][Quantized_Vector_Data]
+  |
+}
+
+# Global Style Overrides
+***.style.font: mono
+(encoding -> storage_layout)[0].style.animated: true
+(storage_layout -> decoding)[0].style.animated: true

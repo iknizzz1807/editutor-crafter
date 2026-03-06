@@ -1,0 +1,163 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# --- Batch Search Engine Core logic ---
+batch_processor: Batch Search Engine {
+  style.fill: "#f1f5f9"
+  style.stroke-width: 2
+  
+  lock_manager: Shared Read Lock {
+    shape: circle
+    style.fill: "#e9d5ff" 
+    tooltip: "Acquired once per batch to prevent ref-count churn"
+  }
+
+  iterator: Live Vector Extractor {
+    label: "Collect storage.iter_live()\ninto Vec<(u64, &[f32])>\nsizeof=24 bytes (Slice)"
+    style.fill: "#fed7aa"
+    style.double-border: true
+  }
+
+  query_loops: Query Execution Loop {
+    grid-columns: 3
+    style.stroke: "#94a3b8"
+    style.fill: white
+    
+    q1: "Query 1 Loop" {
+      style.stroke: "#3b82f6"
+      style.stroke-width: 4
+    }
+    q2: "Query 2 Loop" {
+      style.stroke: "#10b981"
+      style.stroke-width: 4
+      tooltip: "Cache Hot: Reuses vectors from L2/L3"
+    }
+    qn: "Query N Loop" {
+      style.stroke: "#64748b"
+      style.stroke-dash: 3
+    }
+  }
+}
+
+# --- Memory & Cache Hierarchy Detail ---
+memory_system: Cache Hierarchy & Alignment {
+  
+  l1_cache: L1 Cache (32KB) {
+    style.stroke-dash: 5
+    style.stroke-width: 2
+    v_hot: "Vector k (Active Line)" {
+      label: "Vector k\n64-byte Cache Line\n(AVX-512 Loaded)"
+      style.fill: "#ef4444"
+      style.bold: true
+      style.font-color: white
+    }
+  }
+
+  l2_l3_cache: L2/L3 Cache (Shared LLC) {
+    style.fill: "#dcfce7"
+    style.stroke-width: 2
+    v_cached: "Vectors k+1...k+N" {
+      style.fill: "#3b82f6"
+      style.font-color: white
+      style.multiple: true
+    }
+  }
+
+  main_ram: Main Memory (DDR5) {
+    shape: sql_table
+    style.fill: "#f3f4f6"
+    style.stroke-width: 4
+    
+    # Offset | Field           : Size         | Metadata
+    "0x0000 | Header: RefCount": "8 Bytes" {constraint: "Purple (Header)"}
+    "0x0008 | Vector [0..15]": "64 Bytes" {constraint: "Blue (Cache Line 1)"}
+    "0x0048 | Vector [16..31]": "64 Bytes" {constraint: "Blue (Cache Line 2)"}
+    "0x0088 | ...": "..."
+    "0x0C00 | SIMD Padding": "16 Bytes" {constraint: "Gray (Padding)"}
+    "0x0C10 | Vec 1 Header": "8 Bytes" {constraint: "Purple (Header)"}
+    "0x0C18 | Vec 1 Data": "3072 Bytes" {constraint: "Blue (Data)"}
+  }
+}
+
+# --- Interaction Flow ---
+client_requests: Client Request Batch {
+  q1: "Query 1"
+  q2: "Query 2"
+  qn: "Query N"
+}
+
+# 1. Batch Entry
+client_requests -> batch_processor.lock_manager: "1. Batch Entry" {
+  style.stroke-width: 2
+  style.stroke: "#6366f1"
+}
+
+# 2. Acquire shared lock once
+batch_processor.lock_manager -> batch_processor.iterator: "2. RAII Guard\nAcquire Once" {
+  style.font-size: 14
+}
+
+# 3. Sequential Scan of memory
+batch_processor.iterator -> memory_system.main_ram: "3. Sequential Scan" {
+  style.stroke: "#f97316"
+  style.stroke-width: 3
+  style.animated: true
+}
+
+# 4. Prefetcher behavior
+memory_system.main_ram -> memory_system.l2_l3_cache: "4. HW Prefetcher Loads" {
+  style.stroke-dash: 3
+}
+
+# 5. Cold vs Hot paths
+batch_processor.query_loops.q1 -> memory_system.l1_cache: "5. Compute (Cold Start)" {
+  style.stroke: "#3b82f6"
+}
+batch_processor.query_loops.q2 -> memory_system.l2_l3_cache: "6. Compute (L3 HIT)" {
+  style.stroke: "#10b981"
+  style.stroke-width: 4
+  style.animated: true
+}
+
+# --- Annotations ---
+# FIXED: ELK engine requires constant values for 'near'
+annotation: |md
+  ### Technical Implementation Details
+  - **Shared Lock Strategy**: By wrapping the entire query batch in a single RAII read-lock guard, we eliminate the O(N) atomic overhead of locking/unlocking per individual query.
+  - **Memory Alignment**: Vectors are 64-byte aligned (0x40 boundary) to ensure single-cycle cache line fills and prevent "split-load" penalties.
+  - **Temporal Locality**: As `Query 1` iterates through the segment, the hardware prefetcher populates L2/L3. `Query 2` (running in the same batch) finds data already in the high-speed cache.
+  - **SIMD Layout**: Padding at `0x0C00` ensures the subsequent `Vec 1 Header` starts on a clean cache line boundary.
+| {
+  near: top-left
+  style.stroke: "#3b82f6"
+  style.fill: "#f8fafc"
+}
+
+# Legend for Engineers
+# FIXED: Changed near to constant for ELK compatibility
+legend: Byte Layout Legend {
+  near: bottom-right
+  l_header: "Header/Metadata" { style.fill: "#e9d5ff" }
+  l_data: "Payload (f32)" { style.fill: "#3b82f6" }
+  l_ptr: "Memory Pointer" { style.fill: "#fed7aa" }
+  l_pad: "SIMD Padding" { style.fill: "#f3f4f6" }
+}
+
+# Styling Globs
+***.style.font: mono
+(batch_processor.iterator -> memory_system.main_ram)[0].style.stroke: orange
+(batch_processor.query_loops.q2 -> memory_system.l2_l3_cache)[0].style.stroke: "#10b981"
+
+# Memory Layout Color Overrides for main_ram
+memory_system.main_ram."0x0000 | Header: RefCount".style.fill: "#e9d5ff"
+memory_system.main_ram."0x0008 | Vector [0..15]".style.fill: "#3b82f6"
+memory_system.main_ram."0x0048 | Vector [16..31]".style.fill: "#3b82f6"
+memory_system.main_ram."0x0C00 | SIMD Padding".style.fill: "#f3f4f6"
+memory_system.main_ram."0x0C10 | Vec 1 Header".style.fill: "#e9d5ff"
+memory_system.main_ram."0x0C18 | Vec 1 Data".style.fill: "#3b82f6"

@@ -1,0 +1,227 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# M2: VECTOR DISTANCE MODULE - TECHNICAL SPECIFICATION (INTEL MANUAL GRADE)
+# -----------------------------------------------------------------------------------------
+
+M2: "M2: DISTANCE METRICS & SIMD FAST PATHS" {
+  style: {
+    stroke: "#6a1b9a"
+    stroke-width: 4
+    fill: "#f3e5f5"
+  }
+
+  # 1. ALGORITHM STATE MACHINE: PRE-NORMALIZED VECTOR FAST PATH
+  # ---------------------------------------------------------------------------------------
+  PreNormalizedFastPath: "Logic Flow: SIMD-Optimized Cosine Distance" {
+    style: {
+      stroke: "#6a1b9a"
+      stroke-width: 2
+      fill: "#ffffff"
+    }
+    
+    Input: {
+      shape: parallelogram
+      label: "INPUT REGISTER STATE:\n- [f32; D] Vector A (ZMM0-7)\n- [f32; D] Vector B (ZMM8-15)\n- 512-bit Aligned Data Source"
+      style.fill: "#fff3e0"
+      style.stroke: "#fb8c00"
+    }
+
+    Detection: "Stage 1: SIMD Magnitude Analysis" {
+      style.fill: "#e3f2fd"
+      ComputeNorms: {
+        shape: sql_table
+        label: "L2 Norm Computation Unit (AVX-512)"
+        SIMD_OP_1: "VMLTPS zmm1, zmm0, zmm0 | squares = va * va"
+        SIMD_OP_2: "VREDUCEADDPS xmm2, zmm1 | sum = horizontal_add(squares)"
+        SIMD_OP_3: "VSQRTSS xmm3, xmm3, xmm2 | norm = sqrt(sum)"
+        style.fill: "#e3f2fd"
+        style.stroke: "#1976d2"
+      }
+    }
+
+    Decision: "Precision Boundary Check" {
+      shape: diamond
+      label: "Unit Length Verification:\nIs |norm_A - 1.0| < ε AND |norm_B - 1.0| < ε?"
+      tooltip: "ε = 1e-4 for FP32 stability"
+      style.fill: "#fffde7"
+      style.stroke: "#fbc02d"
+    }
+
+    FastPath: "BRANCH A: PRE-NORMALIZED (OPTIMIZED)" {
+      style.fill: "#e8f5e9"
+      style.stroke: "#2e7d32"
+      
+      SkipNorm: "Bypass Normalization Kernel" {
+        label: "BYPASS: sqrt() + DIVPS pipeline"
+        style.stroke-dash: 3
+        style.font-size: 10
+      }
+      
+      DirectDot: "Result = 1.0 - SIMD_Dot_Product(A, B)" {
+        style.bold: true
+        style.font: mono
+        style.stroke: "#1b5e20"
+        style.stroke-width: 3
+        tooltip: "VFMADD231PS + VREDUCEADDPS"
+      }
+      
+      SkipNorm -> DirectDot
+    }
+
+    StandardPath: "BRANCH B: UNNORMALIZED (FALLBACK)" {
+      style.fill: "#eceff1"
+      style.stroke: "#455a64"
+      FullCompute: "Distance = 1.0 - (Dot(A,B) / (||A|| * ||B||))" {
+        style.font: mono
+        label: "EXECUTE FULL PIPELINE:\n1. Compute Dot(A,B)\n2. Multiply Norms (mulsd)\n3. Floating Point Division (divsd)"
+      }
+    }
+
+    Finalize: "Distance Score [0.0 - 2.0]" {
+      shape: circle
+      style.fill: "#e8f5e9"
+      style.stroke: "#2e7d32"
+      style.stroke-width: 3
+    }
+
+    Input -> Detection.ComputeNorms
+    Detection.ComputeNorms -> Decision: "L2 Norm Scalars"
+    Decision -> FastPath: "TRUE: PRE-NORMALIZED" {
+      style.stroke: "#2e7d32"
+      style.font-color: "#2e7d32"
+      style.bold: true
+    }
+    Decision -> StandardPath: "FALSE: RE-NORMALIZE" {
+      style.stroke-dash: 3
+      style.font-color: "#455a64"
+    }
+    
+    FastPath -> Finalize
+    StandardPath -> Finalize
+  }
+
+  # 2. MEMORY LAYOUT: SIMD-ALIGNED VECTOR OBJECT
+  # ---------------------------------------------------------------------------------------
+  # Fixed: Replacing grid-columns with standard container to allow 'near' positioning
+  MemoryLayout: "NormalizedVector Struct Memory Map" {
+    label.near: top-center
+    style.stroke: "#1976d2"
+    style.stroke-width: 2
+
+    Header: "0x00 | vtable_ptr / metadata" {
+      style.fill: "#f3e5f5"
+      width: 600
+      height: 40
+    }
+    Capacity: "0x08 | uint64_t capacity" {
+      style.fill: "#e3f2fd"
+      height: 40
+    }
+    Length: "0x10 | uint64_t length" {
+      style.fill: "#e3f2fd"
+      height: 40
+    }
+    Padding: "0x18 | Alignment Padding (40 Bytes)" {
+      style.fill: "#eeeeee"
+      style.stroke-dash: 5
+      height: 80
+      label: "0x18 - 0x3F | Padding for 64B Alignment\n(Prevents SIMD Unaligned Load General Protection Faults)"
+    }
+    SIMD_Data: "0x40 | float32_t data[length]" {
+      style.fill: "#bbdefb"
+      style.stroke: "#1976d2"
+      style.stroke-width: 4
+      height: 140
+      label: "0x40 | Vector Payload (f32)\nAligned to 512-bit Cache Line Boundary\nOptimized for VMOVAPS / VMOVNTPS"
+    }
+    Trailing: "EOF | Tail Padding / Guard" {
+      style.fill: "#eeeeee"
+      height: 30
+    }
+
+    Header -> Capacity -> Length -> Padding -> SIMD_Data -> Trailing: {style.stroke-width: 0}
+
+    # Technical Annotations fixed to point to container
+    Annotations: |md
+      ### Alignment Specification
+      - **SIMD Requirement**: AVX-512 `_mm512_load_ps` demands 64-byte boundary.
+      - **Cache Locality**: Struct metadata (0x00-0x17) resides in same cache line.
+      - **Page Efficiency**: Ensure vectors are allocated via `posix_memalign`.
+      
+      ### Register Map
+      - `ZMM0-ZMM15`: Hot vector storage.
+      - `K1-K7`: Mask registers for tail-end vector processing.
+    | {
+      near: M2.MemoryLayout
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# EXTERNAL INTEGRATION & INTER-MODULE COUPLING
+# -----------------------------------------------------------------------------------------
+
+M1: "M1: Global Vector Buffer" {
+  style.stroke: "#9e9e9e"
+  style.stroke-dash: 4
+  style.fill: "#fafafa"
+}
+
+M3: "M3: HNSW Index Traversal" {
+  style.fill: "#e0f2f1"
+  style.stroke: "#00796b"
+}
+
+# Data Streams
+M1 -> M2.PreNormalizedFastPath.Input: "Fetch Aligned f32*" {
+  style.stroke: "#ff9800"
+  style.stroke-width: 2
+  style.animated: true
+}
+
+M2.PreNormalizedFastPath.Finalize -> M3: "Distance Scalar (r11)" {
+  style.stroke: "#4caf50"
+  style.stroke-width: 3
+  target-arrowhead: triangle
+}
+
+# -----------------------------------------------------------------------------------------
+# REFINED STYLING & CONSTRAINTS
+# -----------------------------------------------------------------------------------------
+
+# Cache Line Boundary Definition
+M2.MemoryLayout.Padding -- M2.MemoryLayout.SIMD_Data: "CRITICAL 64-BYTE ALIGNMENT BOUNDARY" {
+  style.stroke: "#d32f2f"
+  style.stroke-dash: 3
+  style.stroke-width: 3
+  style.font-color: "#d32f2f"
+  style.bold: true
+}
+
+# Instruction Metadata
+M2.PreNormalizedFastPath.FastPath.DirectDot {
+  style.font: mono
+  tooltip: "Core Instruction: VFMADD213PS zmm1, zmm2, zmm3"
+}
+
+M2.PreNormalizedFastPath.Detection.ComputeNorms {
+  style.font-size: 12
+}
+
+# State Invariants
+M2.PreNormalizedFastPath.Decision {
+  style.multiple: true
+  style.stroke-width: 2
+}
+
+M2.PreNormalizedFastPath.StandardPath.FullCompute {
+  style.font: mono
+}

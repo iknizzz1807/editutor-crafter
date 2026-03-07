@@ -1,0 +1,241 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: |md
+    # Thundering Herd Prevention: Single-Flight Request Coalescing
+    **Technical Specification: `golang.org/x/sync/singleflight`**
+  |
+  near: top-center
+  shape: text
+}
+
+classes: {
+  container_box: {
+    style: {
+      fill: "#f8fafc"
+      stroke: "#1e293b"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  process_box: {
+    style: {
+      fill: "#eff6ff"
+      stroke: "#2563eb"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  memory_field: {
+    style: {
+      font: mono
+      font-size: 14
+    }
+  }
+  success_state: {
+    style: {
+      fill: "#f0fdf4"
+      stroke: "#16a34a"
+      stroke-width: 3
+    }
+  }
+  error_state: {
+    style: {
+      fill: "#fef2f2"
+      stroke: "#dc2626"
+      stroke-dash: 4
+    }
+  }
+  header_text: {
+    style: {
+      bold: true
+      font-size: 18
+    }
+  }
+}
+
+# --- PRIMARY LOGIC CONTAINER ---
+sf_system: {
+  class: container_box
+  
+  # --- MEMORY LAYOUT SECTION ---
+  memory: "Memory Layout: Group & call Structs" {
+    class: container_box
+    
+    sf_group: "struct Group (Registry)" {
+      shape: sql_table
+      style.fill: "#f1f5f9"
+      mu: "sync.Mutex" {constraint: "8 bytes"}
+      m: "map[string]*call" {constraint: "8 bytes"}
+    }
+
+    call_struct: "struct call (sizeof=64B - Single Cache Line)" {
+      shape: sql_table
+      style.fill: "#e0e7ff"
+      
+      "0x00": "wg sync.WaitGroup" {constraint: "24B (Internal State)"}
+      "0x18": "val interface{}" {constraint: "16B (Data Pointer + Type)"}
+      "0x28": "err error" {constraint: "16B (Data Pointer + Type)"}
+      "0x38": "dups int" {constraint: "8B (Counter)"}
+      "0x40": "padding" {style.stroke-dash: 2; style.fill: "#f3f4f6"}
+    }
+    
+    sf_group.m -> call_struct: "points to" {
+      style: {
+        stroke: orange
+        stroke-width: 2
+      }
+    }
+  }
+
+  # --- DUAL-PATH VISUALIZATION ---
+  scenarios: "Concurrency Comparison" {
+    direction: right
+    
+    herd: "Herd Scenario (No SingleFlight)" {
+      class: error_state
+      clients: "N Concurrent Clients" {shape: person}
+      db: "Database Engine" {
+        shape: cylinder
+        label: "DATABASE CRASH\nCPU: 100%\nConn: Exhausted"
+      }
+      
+      clients -> db: "1000 Queries" {
+        style: {
+          stroke: "#dc2626"
+          stroke-width: 4
+          animated: true
+        }
+      }
+    }
+
+    coalesced: "Coalesced Scenario (SingleFlight)" {
+      class: success_state
+      
+      leader: "Client 1 (Leader)" {shape: person}
+      waiters: "Clients 2..N (Waiters)" {shape: person; style.multiple: true}
+      
+      sf_logic: "SingleFlight.Do()" {
+        class: process_box
+        label: "Coalescing Barrier"
+      }
+      
+      db_ok: "Database Engine" {
+        shape: cylinder
+        label: "HEALTHY LOAD\nCPU: 2%\n1 Query Executing"
+      }
+
+      leader -> sf_logic: "Initial Key Lock"
+      waiters -> sf_logic: "Join existing WaitGroup"
+      
+      sf_logic -> db_ok: "SINGLE EXECUTION" {
+        style: {
+          stroke: "#16a34a"
+          stroke-width: 5
+        }
+      }
+    }
+  }
+
+  # --- ALGORITHM STATE MACHINE ---
+  algorithm: "Control Flow: Do(key, fn)" {
+    class: container_box
+    
+    start: "Entry" {shape: circle; style.fill: black}
+    
+    lock: "1. mu.Lock()" {class: process_box}
+    
+    check: "2. c, ok := g.m[key]" {shape: diamond}
+    
+    wait_path: "3a. Exists: Wait" {
+      label: "c.dups++\nmu.Unlock()\nc.wg.Wait()"
+      style.fill: "#fff7ed"
+      style.stroke: "#ea580c"
+    }
+    
+    exec_path: "3b. New: Execute" {
+      label: "c = new(call)\nc.wg.Add(1)\ng.m[key] = c\nmu.Unlock()\nc.val, c.err = fn()"
+      class: process_box
+    }
+    
+    cleanup: "4. Broadcast & Delete" {
+      label: "mu.Lock()\ndelete(g.m, key)\nmu.Unlock()\nc.wg.Done()"
+      class: success_state
+    }
+    
+    end: "Exit" {shape: double_circle; style.fill: "#1e293b"; font-color: white}
+
+    start -> lock
+    lock -> check
+    check -> wait_path: "ok == true"
+    check -> exec_path: "ok == false"
+    
+    exec_path -> cleanup: "fn() returns"
+    wait_path -> cleanup: "Unblocked"
+    
+    cleanup -> end: "Return result"
+  }
+}
+
+# --- PERFORMANCE ANALYSIS SECTION ---
+analysis: "Impact Analysis" {
+  class: container_box
+  direction: right
+
+  table_data: {
+    shape: rectangle
+    label: |md
+      ### Performance Metrics
+      | Metric | Before SF | After SF |
+      | :--- | :--- | :--- |
+      | **Upstream Load** | $O(N)$ | $O(1)$ per key |
+      | **Memory** | Stack only | Map entry + WaitGroup |
+      | **P99 Latency** | High (Congestion) | Low (Single Exec) |
+      | **Failure Mode** | Cascading | Result Isolation |
+    |
+  }
+
+  code: {
+    label: |go
+      // Canonical Usage Pattern
+      func (s *Service) GetData(ctx context.Context, id string) (any, error) {
+          v, err, _ := s.sfGroup.Do(id, func() (any, error) {
+              return s.repo.FetchLargeObject(ctx, id)
+          })
+          return v, err
+      }
+    |
+    style: {
+      font: mono
+      fill: "#f8fafc"
+    }
+  }
+}
+
+# Documentation & Legend
+legend_box: {
+  near: bottom-left
+  shape: text
+  label: |md
+    ### Diagram Legend
+    - **Orange Arrows**: Pointer References / Memory Offsets
+    - **Green Bold Paths**: Optimized Execution Route
+    - **Red Dashed Lines**: Risk / Error States
+    - **Memory alignment**: 8-byte word boundaries for x86_64
+  |
+}
+
+# Structural Links
+sf_system.memory -> sf_system.algorithm: "State definition"
+sf_system.algorithm -> analysis: "Performance Source"
+sf_system.scenarios.coalesced.sf_logic -> sf_system.algorithm: "Logic detail"
+
+style: {
+  fill: "#ffffff"
+}

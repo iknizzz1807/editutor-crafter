@@ -1,0 +1,407 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 25
+  }
+}
+
+direction: right
+
+# --- Global Style Glob ---
+***.style.font: mono
+***.style.stroke-width: 2
+
+# --- State Definitions and Protocol Parser Logic ---
+# Logic: Intel Manual Style Parser State Machine
+parser_logic: Protocol Parser {
+  START: {
+    shape: circle
+    style: {
+      stroke-width: 4
+      font-size: 18
+      fill: "#E1F5FE"
+    }
+  }
+
+  Quote: {
+    style: {
+      fill: "#FFF9C4"
+      stroke: "#C729C6"
+      double-border: true
+    }
+    tooltip: "Lexer state: Inside string literal"
+  }
+
+  Error: {
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#B91C09"
+      bold: true
+    }
+    label: "ERROR: Malformed"
+  }
+
+  Done: {
+    shape: circle
+    style: {
+      font-size: 18
+      fill: "#E8F5E9"
+      double-border: true
+    }
+    label: "SUCCESS: Parsed"
+  }
+
+  START -> Quote: "RECV 0x27 (')"
+  Quote -> Quote: "CHAR / ESC (\\)"
+  Quote -> Done: "RECV 0x27 (')"
+  Quote -> Error: "TIMEOUT / EOF"
+}
+
+# --- State Machine: Connection Cache Node Lifecycle ---
+connection_lifecycle: Connection Lifecycle {
+  direction: right
+  style: {
+    stroke: "#4A90E2"
+    stroke-width: 2
+    fill: "#F8F9FA"
+  }
+  
+  Healthy: Healthy {
+    style.fill: "#ACE1AF"
+    tooltip: "Invariants: RTT < 50ms; ErrorRate < 0.1%"
+  }
+  Suspect: Suspect {
+    style.fill: "#FFE082"
+    tooltip: "Invariants: Missed heartbeat; probing active"
+  }
+  Unhealthy: Unhealthy {
+    style.fill: "#FF8A80"
+    tooltip: "Invariants: Circuit breaker OPEN; requests failing"
+  }
+  Dead: Dead {
+    style: {
+      fill: "#212121"
+      font-color: white
+    }
+    tooltip: "Invariants: Node removed from consistent hash ring"
+  }
+
+  Healthy -> Suspect: "heartbeat missed" {
+    style.stroke: "#F57C00"
+  }
+  Suspect -> Unhealthy: "consecutive misses > 3" {
+    style.stroke: "#D32F2F"
+  }
+  Unhealthy -> Dead: "phi-accrual > 8.0" {
+    style.stroke: "#B91C09"
+    style.stroke-width: 3
+  }
+  Suspect -> Healthy: "heartbeat received" {
+    style.stroke: "#388E3C"
+  }
+  
+  # ILLEGAL Transitions (Red Dash)
+  Dead -> Healthy: "ILLEGAL: Manual Reset Required" {
+    style: {
+      stroke: "#D32F2F"
+      stroke-dash: 5
+    }
+  }
+  Healthy -> Dead: "ILLEGAL: Partial Failure Bypass" {
+    style: {
+      stroke: "#D32F2F"
+      stroke-dash: 5
+    }
+  }
+}
+
+# --- Invariants Table ---
+Invariants: |md
+  ### System Invariants (Intel Spec v2.1)
+  - **Memory:** Total usage $\leq$ MaxHeap - 512MB
+  - **Expiry:** $\forall e \in \text{Cache}: \text{Now} < e.\text{ExpiresAt}$
+  - **Complexity:** $O(1)$ for Get/Set operations via Hash Map
+  - **Consistency:** Eventually consistent across replication group
+  - **Atomicity:** CAS (Compare-And-Swap) supported for increments
+| {
+  near: bottom-center
+  style.fill: "#F5F5F5"
+}
+
+# --- Node Actions Structure ---
+actions: Node Lifecycle Actions {
+  style.fill: "#FFFDE7"
+  healthy: "01. Record heartbeat TS (Atomic TS)\n02. Reset failure counter"
+  suspect: "01. Mark Suspect; 02. Probe via UDP/7946"
+  unhealthy: "01. Increment ConsecutiveFails; 02. Evict local hot-keys"
+  dead: "01. Close TCP/6379; 02. Rebalance Hash Ring"
+}
+
+# --- Data Structures & Memory Layout ---
+# Intel Manual Quality: Byte offsets and sizes
+cache_structures: Cache Implementation Details {
+  style.stroke: "#C729C6"
+  
+  entry_class: Cache Entry Structure {
+    shape: sql_table
+    label: "Memory Layout: CacheEntry (128B Total)"
+    style.fill: "#F3E5F5"
+    
+    "Offset": "Field" {constraint: "Size (Bytes)"}
+    "0x00": "Key Pointer (heap addr)" {constraint: "8 (uint64)"}
+    "0x08": "Value Header (ptr + len + cap)" {constraint: "24 (slice)"}
+    "0x20": "Created Timestamp (UnixNano)" {constraint: "8 (int64)"}
+    "0x28": "Expires Timestamp (UnixNano)" {constraint: "8 (int64)"}
+    "0x30": "LRU Prev Pointer" {constraint: "8 (uintptr)"}
+    "0x38": "LRU Next Pointer" {constraint: "8 (uintptr)"}
+    "0x40": "Access Counter (LfuFreq)" {constraint: "8 (uint64)"}
+    "0x48": "Flags (Dirty/Locked/Sync)" {constraint: "8 (bitmap)"}
+    "0x50": "Padding (Cache Line Alignment)" {constraint: "48 (gray)"; style.fill: "#EEEEEE"}
+  }
+
+  cache_aside_logic: Cache Aside Algorithm {
+    style.stroke: "#4CAF50"
+    Get_Method: |go
+      // Thread-safe O(1) Lookup
+      func (c *Cache) Get(ctx context.Context, key string) ([]byte, bool) {
+        c.mu.RLock()
+        defer c.mu.RUnlock()
+        entry, exists := c.entries[key]
+        if !exists { return nil, false }
+        if entry.Expired() {
+          // Double-checked locking omitted for brevity
+          return nil, false
+        }
+        return entry.Value, true
+      }
+    |
+    
+    Set_Method: |go
+      // Eviction-aware Write
+      func (c *Cache) Set(key string, val []byte, ttl time.Duration) {
+        c.mu.Lock()
+        defer c.mu.Unlock()
+        for c.CurrentSize() + len(val) > c.Max {
+          c.evictLRU()
+        }
+        c.entries[key] = newEntry(val, ttl)
+      }
+    |
+  }
+}
+
+# --- Connection Pool State Machine ---
+pool_states: Connection Pool State Machine {
+  direction: right
+  style.fill: "#FFFFFF"
+  
+  Idle: {
+    style: {
+      fill: "#FAFAFA"
+      stroke-dash: 2
+    }
+  }
+  "Acquire": {
+    style: {
+      fill: "#F1F8E9"
+      stroke-width: 2
+    }
+  }
+  "InUse": {
+    style: {
+      fill: "#C8E6C9"
+      stroke-width: 3
+    }
+  }
+  "WaitQueue": {
+    style: {
+      fill: "#FFF9C4"
+      stroke-dash: 4
+    }
+    label: "Queueing: Pool Exhausted"
+  }
+  Evicting: {
+    shape: circle
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#B71C1C"
+      font-color: "#B71C1C"
+    }
+  }
+
+  Idle -> "Acquire": "Checkout Request"
+  "Acquire" -> "WaitQueue": "Pool Limit Hit"
+  "WaitQueue" -> "InUse": "Semaphore Release"
+  Idle -> "InUse": "LIFO Reuse"
+  "InUse" -> Idle: "Checkin (valid)"
+  "InUse" -> Evicting: "Checkin (TTL Expired)"
+  Evicting -> Idle: "TCP Close & Replace"
+}
+
+# --- Pipelining Sequence ---
+pipeline_flow: Pipeline Lifecycle {
+  shape: sequence_diagram
+  
+  Client: {shape: person}
+  Buffer: "Pipeline Buffer" {style.fill: "#BBDEFB"}
+  Server: {shape: cylinder; style.fill: "#FFF9C4"}
+  
+  Client -> Buffer: "PUSH: SET k1 v1"
+  Client -> Buffer: "PUSH: GET k2"
+  
+  lock: Lock Acquire ▼ {
+    Buffer -> Buffer: "MutexLock(); Serialize()"
+  }
+  
+  Buffer -> Server: "FLUSH: MULTI [SET, GET]"
+  Server -> Buffer: "RES: [OK, 'v2']"
+  
+  unlock: Lock Release ▲ {
+    Buffer -> Buffer: "MutexUnlock()"
+  }
+  
+  Buffer -> Client: "Batch Response (Futures)"
+}
+
+# --- Distributed Hash Ring Visualization ---
+hash_ring_viz: Consistent Hashing {
+  ring: {
+    shape: circle
+    style: {
+      fill: transparent
+      stroke: "#1976D2"
+      stroke-width: 6
+      stroke-dash: 4
+    }
+    
+    NodeA: "Node A\n(0-90°)" {
+      style.fill: "#FFE0B2"
+    }
+    NodeB: "Node B\n(91-180°)" {
+      style.fill: "#FFE0B2"
+    }
+    NodeC: "Node C\n(181-270°)" {
+      style.fill: "#FFE0B2"
+    }
+    NodeD: "Node D\n(271-359°)" {
+      style.fill: "#FFE0B2"
+    }
+  }
+  
+  Request: "Key: 'u123'" {
+    shape: rectangle
+    style.fill: "#C8E6C9"
+    style.bold: true
+  }
+  
+  Request -> ring.NodeA: "CRC32(key) % 2^32" {
+    style: {
+      stroke: "#1976D2"
+      stroke-width: 3
+      animated: true
+    }
+  }
+}
+
+# --- Replication & Failover ---
+replication: Replication Group {
+  Primary: {
+    shape: circle
+    style: {
+      fill: "#43A047"
+      stroke-width: 4
+      font-color: white
+    }
+  }
+  Secondary1: "S1 (Follower)" {
+    shape: circle
+    style.fill: "#A5D6A7"
+  }
+  Secondary2: "S2 (Follower)" {
+    shape: circle
+    style.fill: "#A5D6A7"
+  }
+  
+  Primary -> Secondary1: "ASYNC: WAL Shipping" {
+    style.stroke-dash: 3
+  }
+  Primary -> Secondary2: "ASYNC: WAL Shipping" {
+    style.stroke-dash: 3
+  }
+  
+  FailureNode: "Health Check Failure" {
+    shape: diamond
+    style: {
+      fill: "#D32F2F"
+      stroke: "#B71C1C"
+      font-color: white
+    }
+  }
+  
+  FailureNode -> Secondary1: "RAFT Vote / Promotion" {
+    style: {
+      stroke: "#F57C00"
+      stroke-width: 4
+      animated: true
+    }
+  }
+}
+
+# --- Thundering Herd Protection ---
+singleflight: SingleFlight Coalescing {
+  direction: right
+  
+  RequestGroup: "Concurrent Requests\n(N=1000)" {
+    shape: rectangle
+    style.multiple: true
+    style.fill: "#E8F5E9"
+  }
+  
+  SF: "SingleFlight\nBarrier" {
+    shape: hexagon
+    style: {
+      fill: "#FFF9C4"
+      stroke-width: 2
+    }
+  }
+  
+  DB: "Backend DB" {
+    shape: cylinder
+    style.fill: "#FFE0B2"
+  }
+  
+  RequestGroup -> SF: "Wait on Key 'id:42'"
+  SF -> DB: "Unique Call" {
+    style: {
+      stroke: "#D32F2F"
+      stroke-width: 3
+      animated: true
+    }
+  }
+  DB -> SF: "Return Payload"
+  SF -> RequestGroup: "Fan-out to N waiters"
+}
+
+# --- Lock Granularity Comparison ---
+locks: Lock Strategy {
+  global: Global Mutex {
+    style.fill: "#FFCDD2"
+    Contention: "CRITICAL: Serialized Access" {
+      style.font-color: "#B71C1C"
+      style.bold: true
+    }
+  }
+  
+  sharded: Sharded Mutex (2^8) {
+    style.fill: "#C8E6C9"
+    Shard1: "Shard[0]" { style.fill: "#FFFDE7" }
+    Shard2: "Shard[128]" { style.fill: "#FFFDE7" }
+    Shard3: "Shard[255]" { style.fill: "#FFFDE7" }
+    Contention: "HIGH: Parallel Access" {
+      style.font-color: "#2E7D32"
+      style.bold: true
+    }
+  }
+}

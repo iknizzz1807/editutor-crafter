@@ -1,0 +1,310 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 20
+  }
+}
+
+title: |md
+  # Test Node Lifecycle State Machine & Protocol Specs
+  ## Technical Specification: Integration Testing Harness (M5)
+  *Engineers: Reference this for SWIM/Gossip state transitions and packet layouts.*
+| {
+  near: top-center
+  shape: text
+}
+
+# --- 1. MEMORY LAYOUT: GOSSIP PACKET (Binary Format) ---
+# Exact byte offsets left margin, field sizes right margin.
+GossipPacket: {
+  label: "SWIM Gossip Packet Layout (UDP Payload)"
+  shape: sql_table
+  style: {
+    stroke: "#E65100"
+    stroke-width: 2
+    fill: "#FFF3E0"
+  }
+  
+  "Offset | Field": "Size | Constraint"
+  "00": "Version (uint8)" {constraint: "0x01 (Current)"}
+  "01": "MsgType (uint8)" {constraint: "0=Ping, 1=Ack, 2=Join, 3=Leave"}
+  "02": "Incarnation (uint32)" {constraint: "4B | BigEndian"}
+  "06": "SourcePort (uint16)" {constraint: "2B | Ephemeral Range"}
+  "08": "IPv4Addr (uint32)" {constraint: "4B | Network Byte Order"}
+  "12": "Padding/Reserved" {style.fill: "#BDBDBD"; constraint: "4B | Zero-filled"}
+  
+  "TotalSize": "sizeof=16 Bytes (Fixed Width)"
+}
+
+# --- 2. STATE MACHINE ---
+
+# Initial state - standard ● representation
+initial: "" {
+  shape: circle
+  style.fill: "#212121"
+  width: 20
+  height: 20
+}
+
+# State: Created
+Created: {
+  shape: rectangle
+  style.fill: "#E3F2FD"
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+  label: |md
+    ### **CREATED**
+    **Invariants:**
+    - `TestNode` ptr != nil
+    - `NodeMetrics` memory zeroed
+    - `blockList` capacity: 1024
+    - `is_blocked`: **false**
+    - `incarnation`: 0
+  |
+}
+
+# State: Starting
+Starting: {
+  shape: rectangle
+  style.fill: "#FFF3E0"
+  style.stroke: "#E65100"
+  style.stroke-width: 2
+  label: |md
+    ### **STARTING**
+    **Subsystems Booting:**
+    1. Bind UDP/TCP Ports
+    2. Spawning `GossipRoutines`
+    3. Init `SWIMDetector`
+    4. Joining Seed List
+    5. Anti-Entropy Sync
+  |
+}
+
+# State: Running
+Running: {
+  shape: rectangle
+  style.fill: "#E8F5E9"
+  style.stroke: "#2E7D32"
+  style.stroke-width: 3
+  style.double-border: true
+  label: |md
+    ### **RUNNING (Operational)**
+    **Steady State:**
+    - `Node.IsAlive()`: **true**
+    - `MsgHandler` polling active
+    - `Incarnation` >= 1
+    - `PeerTable` synchronized
+  |
+
+  # Sub-states for partition simulation
+  Blocked: {
+    shape: rectangle
+    label: |md
+      ### **BLOCKED (Partitioned)**
+      **Network Condition:**
+      - `blockList` > 0
+      - `Drop(incoming)` **active**
+      - `Keep(outgoing)` **active**
+    |
+    style.fill: "#FFEBEE"
+    style.stroke: "#C62828"
+    style.stroke-dash: 3
+  }
+
+  Unblocked: {
+    shape: rectangle
+    label: |md
+      ### **UNBLOCKED**
+      **Network Condition:**
+      - `blockList` is empty
+      - Full duplex I/O active
+    |
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+  }
+}
+
+# State: Killed
+Killed: {
+  shape: rectangle
+  style.fill: "#FFEBEE"
+  style.stroke: "#C62828"
+  label: |md
+    ### **KILLED (Crashed)**
+    **State Summary:**
+    - `Node.Stop()` [Force SIGKILL]
+    - No LEAVE msg broadcast
+    - Socket closed (ABORT)
+  |
+}
+
+# State: Restarted
+Restarted: {
+  shape: rectangle
+  style.fill: "#FFF8E1"
+  style.stroke: "#F57F17"
+  label: |md
+    ### **RESTARTED**
+    **Recovery Sequence:**
+    - Reload config from disk
+    - `incarnation` = prev + 1
+    - Re-building local view
+  |
+}
+
+# State: Stopped
+Stopped: {
+  shape: rectangle
+  style.fill: "#ECEFF1"
+  style.stroke: "#455A64"
+  label: |md
+    ### **STOPPED (Terminal)**
+    - Graceful LEAVE sent
+    - Goroutines terminated
+    - FDs released
+  |
+}
+
+# Error state
+Error: {
+  shape: rectangle
+  style.fill: "#FFCDD2"
+  style.stroke: "#B71C1C"
+  style.double-border: true
+  label: |md
+    ### **FAULT ERROR**
+    - `errno: EADDRINUSE`
+    - Inconsistent log state
+    - Config validation fail
+  |
+}
+
+# --- 3. TRANSITIONS ---
+
+# Initialization
+initial -> Created: harness.NewHarness() {
+  style.stroke-width: 2
+}
+
+# Startup logic
+Created -> Starting: harness.Start() {
+  label: "allocate ports; spawn threads"
+}
+
+Starting -> Running: success {
+  label: "JOIN_ACK received"
+  style.stroke: "#2E7D32"
+}
+
+Starting -> Error: fail {
+  label: "timeout / collision"
+  style.stroke: "#B71C1C"
+}
+
+# Running transitions (Partition Sim)
+Running -> Running.Blocked: BlockIncoming(nodeIDs) {
+  label: "TRIGGER: Add to blacklist"
+}
+
+Running.Blocked -> Running.Unblocked: UnblockIncoming() {
+  label: "TRIGGER: Clear blacklist"
+  style.stroke: "#1565C0"
+}
+
+Running.Unblocked -> Running.Blocked: BlockAllIncoming() {
+  label: "TRIGGER: Total isolation"
+}
+
+# Lifecycle Management
+Running -> Killed: harness.KillNode(idx) {
+  label: "SIGKILL / Hard Stop"
+}
+
+Killed -> Restarted: harness.RestartNode(idx) {
+  label: "Recover thread"
+}
+
+Restarted -> Running: rejoin success {
+  label: "State re-sync"
+  style.stroke: "#2E7D32"
+}
+
+Restarted -> Error: rejoin fail {
+  label: "Gossip unreachable"
+  style.stroke: "#B71C1C"
+}
+
+# Graceful Exit
+Running -> Stopped: harness.Stop() {
+  label: "LEAVE(self) -> broadcast"
+}
+
+Killed -> Stopped: harness.Stop() {
+  label: "cleanup stale handles"
+}
+
+Error -> Stopped: harness.Stop() {
+  label: "force resource release"
+}
+
+# Illegal Transitions (Red Dashed)
+Created -> Running: "ILLEGAL: Skip Starting" {
+  style: {
+    stroke: "#D32F2F"
+    stroke-dash: 5
+  }
+}
+
+# Self-transitions (Periodic background work)
+Running -> Running: "SWIM Probe (T_ms)" {
+  style.stroke-dash: 2
+}
+
+# --- 4. DOCUMENTATION ANNOTATIONS ---
+
+# Elk requires constant positions for 'near'
+note_partition: |md
+  ### Partition Simulation Logic
+  1. **BlockIncoming**: `node.blockList.Add(target)`
+  2. **UnblockIncoming**: `node.blockList.Clear()`
+  3. **Logic**: `OnPacket(p): if p.Src in blockList: return`
+| {
+  near: center-right
+  style: {
+    fill: "#FFF8E1"
+    stroke: "#F57F17"
+    stroke-dash: 3
+    border-radius: 4
+  }
+}
+
+note_lifecycle: |md
+  ### Harness Implementation API
+  - `NewHarness()`: Heap allocation of test nodes.
+  - `Start()`: Binds random high ports (10000+).
+  - `KillNode()`: context.Cancel() + socket close.
+  - `Stop()`: Sends `SWIM_LEAVE` before exit.
+| {
+  near: bottom-left
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1565C0"
+    stroke-dash: 3
+    border-radius: 4
+  }
+}
+
+# Legend for quick reference
+legend: {
+  label: |md
+    ### State Color Legend
+    - 🟢 **Green**: Healthy / Operational
+    - 🟡 **Yellow**: Transitional / Recovering
+    - 🔴 **Red**: Critical / Inactive / Fault
+    - ⚪ **Gray**: Finalized (Terminal)
+  |
+  style.fill: "#FAFAFA"
+  style.stroke: "#9E9E9E"
+  near: bottom-right
+}

@@ -1,0 +1,214 @@
+shape: sequence_diagram
+
+layout-engine: elk
+theme-id: 4
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- Participants Definition ---
+
+"Test Runner": {
+  shape: person
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#2E7D32"
+    stroke-width: 2
+  }
+}
+
+Harness: {
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1565C0"
+    stroke-width: 2
+  }
+}
+
+"Node 0": {
+  label: "Node 0 (Seed)"
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#EF6C00"
+    stroke-width: 2
+  }
+}
+
+"Node 1..N": {
+  label: "Nodes 1..N"
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#EF6C00"
+    stroke-width: 2
+    multiple: true
+  }
+}
+
+Transport: {
+  label: "Simulated Transport"
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#7B1FA2"
+    stroke-width: 2
+  }
+}
+
+Metrics: {
+  style: {
+    fill: "#ECEFF1"
+    stroke: "#455A64"
+    stroke-width: 2
+  }
+}
+
+# --- Sequence Flow ---
+
+"Test Runner"."[Phase: Initialization]"
+
+"Setup Phase": {
+  style.stroke: "#2E7D32"
+  
+  "Test Runner".t1 -> Harness.t1: "NewHarness(config)"
+  Harness.t1 -> Harness.t1: "Initialize RNG with seed"
+  Harness.t1 -> Transport.t1: "NewSimulatedTransport(seed)"
+  Transport.t1 -> Transport.t1: "Create message queues"
+  
+  "Test Runner".t2 -> Harness.t2: "Start()"
+  Harness.t2 -> "Node 0".t2: "NewNode(config{seed: true})"
+  Harness.t2 -> "Node 1..N".t2: "NewNode(config{seeds: [node0]})"
+  
+  Harness.t2 -> "Node 0".t3: "Start()"
+  "Node 0".t3 -> Transport.t3: "Register('node-0')"
+  "Node 0".t3 -> "Node 0".t3: "Spawn gossip/anti-entropy/SWIM goroutines"
+  
+  Harness.t2 -> "Node 1..N".t3: "Start() [parallel]"
+  "Node 1..N".t3 -> Transport.t3: "Register('node-1'...'node-N')"
+  "Node 1..N".t3 -> "Node 1..N".t3: "Spawn protocol goroutines"
+}
+
+"Test Runner"."Status: Setup Complete"
+
+"Membership Convergence": {
+  style.stroke: "#1565C0"
+  
+  "Test Runner".t4 -> Harness.t4: "Wait for membership"
+  Harness.t4 -> Harness.t4: "Sleep(clusterSize/3 * second)"
+  
+  "Node 0".t4 -> "Node 1..N".t4: "JOIN requests via Transport"
+  "Node 1..N".t4 -> "Node 0".t4: "ACK + peer list"
+  
+  "Node 0".t4 -> "Node 0".t4: "PeerList.AddPeer() for each"
+  "Node 1..N".t4 -> "Node 1..N".t4: "PeerList.AddPeer() for each"
+  "Node 0".t4 -> Metrics.t4: "Record joins"
+}
+
+"Test Runner"."Action: Inject Updates"
+
+"Update Injection": {
+  style.stroke: "#EF6C00"
+  
+  "Test Runner".t5 -> Harness.t5: "InjectUpdates(100)"
+  Harness.t5 -> Harness.t5: "For each update:"
+  Harness.t5 -> Harness.t5: "Select random alive node"
+  Harness.t5 -> "Node 1..N".t5: "Set(key, value)"
+  
+  "Node 1..N".t5 -> "Node 1..N".t5: "Store.Set() increments clock"
+  "Node 1..N".t5 -> Metrics.t5: "UpdatesSent++"
+}
+
+"Test Runner"."Action: Monitor"
+
+"Gossip Dissemination": {
+  "Node 0".t6 -> "Node 1..N".t6: "GossipBody{entries, TTL=4}"
+  "Node 1..N".t6 -> "Node 1..N".t6: "Apply() with version check"
+  "Node 1..N".t6 -> "Node 0".t6: "Forward if TTL > 0"
+  
+  "Node 0".t6 -> Metrics.t6: "BytesSent, BytesReceived"
+  "Node 1..N".t6 -> Metrics.t6: "BytesSent, BytesReceived"
+  
+  "Test Runner".t7 -> Harness.t7: "Poll convergence every 100ms"
+  Harness.t7 -> "Node 0".t7: "Get(key) for all updates"
+  Harness.t7 -> "Node 1..N".t7: "Get(key) for all updates"
+  Harness.t7 -> Harness.t7: "Count converged nodes"
+  Harness.t7 -> "Test Runner".t7: "Converged: N/N nodes"
+}
+
+"Test Runner"."Action: Inject Fault"
+
+"Failure Injection": {
+  style.stroke: "#D32F2F"
+  
+  "Test Runner".t8 -> Harness.t8: "KillNode(5)"
+  Harness.t8 -> "Node 1..N".t8: "Stop() [victim only]"
+  "Node 1..N".t8 -> "Node 1..N".t8: "No graceful leave"
+  
+  "Node 0".t9 -> "Node 1..N".t9: "SWIM ping to victim"
+  "Node 1..N".t9 -> "Node 1..N".t9: "Ping timeout"
+  
+  "Node 0".t9 -> "Node 1..N".t9: "PingReq to k=3 helpers"
+  "Node 1..N".t9 -> "Node 1..N".t9: "All indirect probes fail"
+  
+  "Node 0".t9 -> "Node 1..N".t9: "Mark SUSPECT"
+  "Node 0".t9 -> Metrics.t9: "Suspicions++"
+  "Node 1..N".t9 -> "Node 1..N".t9: "Suspicion timer fires"
+  "Node 0".t9 -> "Node 1..N".t9: "Mark DEAD"
+  "Node 0".t9 -> Metrics.t9: "Confirmations++"
+}
+
+"Partition Test": {
+  "Test Runner".t10 -> Harness.t10: "Partition({0,1,2}, {3,4,5})"
+  Harness.t10 -> Transport.t10: "Set partitions map"
+  Transport.t10 -> Transport.t10: "Block cross-group messages"
+  
+  Harness.t10 -> "Node 0".t10: "Set('conflict-key', valueA)"
+  Harness.t10 -> "Node 1..N".t10: "Set('conflict-key', valueB)"
+  
+  "Node 0".t11 -> "Node 1..N".t11: "Gossip blocked by partition"
+  
+  "Test Runner".t12 -> Harness.t12: "Heal()"
+  Harness.t12 -> Transport.t12: "Clear partitions map"
+  
+  "Node 0".t13 -> "Node 1..N".t13: "Anti-entropy sync"
+  "Node 1..N".t13 -> "Node 0".t13: "Exchange digests"
+  "Node 0".t13 -> "Node 1..N".t13: "LWW resolves conflict"
+  "Node 1..N".t13 -> "Node 0".t13: "Apply() winning entry"
+  
+  "Test Runner".t14 -> Harness.t14: "Verify convergence"
+  Harness.t14 -> "Node 0".t14: "Get('conflict-key')"
+  Harness.t14 -> "Node 1..N".t14: "Get('conflict-key')"
+  Harness.t14 -> "Test Runner".t14: "All nodes: same value"
+}
+
+"Test Runner"."Action: Verify"
+
+"Bandwidth Verification": {
+  "Test Runner".t15 -> Harness.t15: "GetMetrics()"
+  Harness.t15 -> Metrics.t15: "GetAllStats()"
+  Metrics.t15 -> Harness.t15: "{BytesSent, BytesReceived}"
+  
+  Harness.t15 -> Harness.t15: "Calculate per-node bandwidth"
+  Harness.t15 -> Harness.t15: "Verify scaling factor < 1.5"
+  Harness.t15 -> "Test Runner".t15: "Bandwidth OK: O(1) scaling"
+}
+
+"Test Runner"."Action: Cleanup"
+
+"Teardown": {
+  style.stroke: "#455A64"
+  
+  "Test Runner".t16 -> Harness.t16: "Stop()"
+  Harness.t16 -> "Node 0".t16: "Stop()"
+  "Node 0".t16 -> "Node 1..N".t16: "BroadcastLeave()"
+  "Node 0".t16 -> "Node 0".t16: "Close UDP connection"
+  
+  Harness.t16 -> "Node 1..N".t16: "Stop() [parallel]"
+  "Node 1..N".t16 -> "Node 1..N".t16: "Close connections"
+  
+  Harness.t16 -> Transport.t16: "Close()"
+  Transport.t16 -> Transport.t16: "Close all queues"
+  Harness.t16 -> "Test Runner".t16: "Cleanup complete"
+}

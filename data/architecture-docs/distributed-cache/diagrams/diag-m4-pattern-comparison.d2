@@ -1,0 +1,359 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: "Cache Patterns: Aside vs Through vs Behind"
+  near: top-center
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+
+row_patterns: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+
+  pattern_aside: {
+    label: "Pattern: Cache-Aside"
+    direction: down
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    style.stroke-width: 2
+    
+    aside_label: "App Manages Cache" {
+      shape: rectangle
+      style.font-size: 14
+      style.italic: true
+      style.font-color: "#2E7D32"
+      style.fill: transparent
+      style.stroke: transparent
+    }
+    
+    aside_read: {
+      label: "Read Path"
+      shape: rectangle
+      style.fill: "#C8E6C9"
+      width: 220
+      code_read: |'go
+        // 1. Check cache
+        val := cache.Get(key)
+        if val == nil {
+          // 2. Load from DB
+          val = db.Query(key)
+          // 3. Populate cache
+          cache.Set(key, val)
+        }
+        return val
+      '|
+    }
+    
+    aside_write: {
+      label: "Write Path"
+      shape: rectangle
+      style.fill: "#C8E6C9"
+      width: 220
+      code_write: |'go
+        // 1. Update DB
+        db.Update(key, val)
+        // 2. Invalidate cache
+        cache.Delete(key)
+        // Next read reloads
+      '|
+    }
+    aside_read -> aside_write: "Cache Miss Flow"
+  }
+
+  pattern_through: {
+    label: "Pattern: Write-Through"
+    direction: down
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+    style.stroke-width: 2
+    
+    through_label: "Sync Dual Write" {
+      shape: rectangle
+      style.font-size: 14
+      style.italic: true
+      style.font-color: "#1565C0"
+      style.fill: transparent
+      style.stroke: transparent
+    }
+    
+    through_read: {
+      label: "Read Path"
+      shape: rectangle
+      style.fill: "#BBDEFB"
+      width: 220
+      code_trd: |'go
+        // Cache is source
+        val := cache.Get(key)
+        if val != nil {
+          return val // Fast path
+        }
+        // Fallback to DB
+        return db.Query(key)
+      '|
+    }
+    
+    through_write: {
+      label: "Write Path"
+      shape: rectangle
+      style.fill: "#BBDEFB"
+      width: 220
+      code_twr: |'go
+        // Atomic dual write
+        err := cache.Set(key, val)
+        if err != nil { return err }
+        err = db.Set(key, val)
+        if err != nil {
+          cache.Delete(key) // Rollback
+          return err
+        }
+      '|
+    }
+    through_read -> through_write: "Sync Update"
+  }
+
+  pattern_behind: {
+    label: "Pattern: Write-Behind"
+    direction: down
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    style.stroke-width: 2
+    
+    behind_label: "Async Buffer" {
+      shape: rectangle
+      style.font-size: 14
+      style.italic: true
+      style.font-color: "#E65100"
+      style.fill: transparent
+      style.stroke: transparent
+    }
+    
+    behind_read: {
+      label: "Read Path"
+      shape: rectangle
+      style.fill: "#FFE0B2"
+      width: 220
+      code_brd: |'go
+        // Read from cache
+        // (may be ahead of DB)
+        val := cache.Get(key)
+        if val != nil {
+          return val
+        }
+        return db.Query(key)
+      '|
+    }
+    
+    behind_write: {
+      label: "Write Path"
+      shape: rectangle
+      style.fill: "#FFE0B2"
+      width: 220
+      code_bwr: |'go
+        // Immediate cache write
+        cache.Set(key, val)
+        // Buffer for async DB
+        buffer.Append(key, val)
+        // ACK immediately!
+        return nil
+      '|
+    }
+    
+    behind_buffer: {
+      label: "Background Flush"
+      shape: rectangle
+      style.fill: "#FFCC80"
+      width: 220
+      style.stroke-dash: 3
+      code_buf: |'go
+        // Ticker runs async
+        for range ticker.C {
+          batch := buffer.Drain()
+          for _, w := range batch {
+            db.Set(w.key, w.val)
+          }
+        }
+      '|
+    }
+    behind_read -> behind_write
+    behind_write -> behind_buffer: "Async T1"
+  }
+}
+
+row_tradeoffs: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+
+  tradeoff_aside: {
+    label: "Aside Tradeoffs"
+    direction: down
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    width: 240
+    
+    ta_pros: {
+      label: "Pros"
+      shape: rectangle
+      style.fill: "#A5D6A7"
+      text: |'md
+        - Simple to implement
+        - Cache only hot data
+        - DB is source of truth
+      '|
+    }
+    ta_cons: {
+      label: "Cons"
+      shape: rectangle
+      style.fill: "#FFCDD2"
+      text: |'md
+        - Stale data risk
+        - Thundering herd on miss
+        - Cache stampedes
+      '|
+    }
+    ta_metrics: {
+      label: "Metrics"
+      shape: rectangle
+      style.fill: white
+      text: |'md
+        **Latency**: Low/High
+        **Consistency**: Eventual
+        **Data Loss**: None
+      '|
+    }
+    ta_pros -> ta_cons -> ta_metrics
+  }
+
+  tradeoff_through: {
+    label: "Through Tradeoffs"
+    direction: down
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+    width: 240
+    
+    tt_pros: {
+      label: "Pros"
+      shape: rectangle
+      style.fill: "#A5D6A7"
+      text: |'md
+        - Strong consistency
+        - No stale reads
+        - Atomic with rollback
+      '|
+    }
+    tt_cons: {
+      label: "Cons"
+      shape: rectangle
+      style.fill: "#FFCDD2"
+      text: |'md
+        - 2x write latency
+        - Cache must be warm
+        - Complexity in rollback
+      '|
+    }
+    tt_metrics: {
+      label: "Metrics"
+      shape: rectangle
+      style.fill: white
+      text: |'md
+        **Latency**: High (Sync)
+        **Consistency**: Strong
+        **Data Loss**: None
+      '|
+    }
+    tt_pros -> tt_cons -> tt_metrics
+  }
+
+  tradeoff_behind: {
+    label: "Behind Tradeoffs"
+    direction: down
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    width: 240
+    
+    tb_pros: {
+      label: "Pros"
+      shape: rectangle
+      style.fill: "#A5D6A7"
+      text: |'md
+        - Lowest write latency
+        - High throughput
+        - Batch DB writes
+      '|
+    }
+    tb_cons: {
+      label: "Cons"
+      shape: rectangle
+      style.fill: "#FFCDD2"
+      text: |'md
+        - Data loss window
+        - Complex recovery
+        - Buffer overflow risk
+      '|
+    }
+    tb_metrics: {
+      label: "Metrics"
+      shape: rectangle
+      style.fill: white
+      text: |'md
+        **Latency**: Lowest
+        **Consistency**: Eventual
+        **Data Loss**: Possible
+      '|
+    }
+    tb_pros -> tb_cons -> tb_metrics
+  }
+}
+
+row_patterns -> row_tradeoffs: "Compare Tradeoffs" {
+  style.stroke-dash: 3
+  style.stroke: "#666"
+}
+
+decision_matrix: {
+  label: "Architecture Decision Matrix"
+  direction: down
+  style.fill: "#FAFAFA"
+  style.stroke: "#9E9E9E"
+  
+  matrix_content: |'md
+    | Use Case | Pattern | Why |
+    |----------|---------|-----|
+    | User profiles | Cache-Aside | Stale OK for 30s |
+    | Financial txns | Write-Through | Consistency critical |
+    | View counters | Write-Behind | High write, OK to lose |
+    | Session store | Cache-Aside | Lazy load, TTL expire |
+    | Shopping cart | Write-Through | Don't lose items |
+    | Analytics | Write-Behind | Batch writes efficient |
+  '|
+}
+
+row_tradeoffs -> decision_matrix: "Implementation Guide"
+
+legend_box: {
+  label: "Legend"
+  near: bottom-right
+  style.fill: white
+  style.stroke: "#BDBDBD"
+  content: |'md
+    **Color Coding:**
+    - Green: Cache-Aside (Simple)
+    - Blue: Write-Through (Consistent)
+    - Orange: Write-Behind (High-Perf)
+  '|
+}

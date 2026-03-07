@@ -1,0 +1,252 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: "Leader Tracking: nextIndex & matchIndex" {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 32
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  init: "Initial State (After Election)" {
+    direction: down
+    width: 400
+    leader_init: {
+      shape: class
+      label: "Leader State (node L)"
+      -currentTerm: "int = 5"
+      -logLastIndex: "int = 10"
+      -commitIndex: "int = 0"
+      +initLeaderState(): "void"
+    }
+    tracking_init: {
+      shape: sql_table
+      label: "Leader's Follower Tracking"
+      f0: "Peer | nextIndex | matchIndex"
+      f1: "A    | 11        | 0"
+      f2: "B    | 11        | 0"
+      f3: "C    | 11        | 0"
+      f4: "D    | 11        | 0"
+      f5: "E    | 11        | 0"
+      note: "nextIndex = logLastIndex + 1 (optimistic)"
+      note2: "matchIndex = 0 (pessimistic, prove via success)"
+    }
+    leader_init -> tracking_init: "initializes"
+  }
+}
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  success: "After Successful AppendEntries" {
+    direction: down
+    width: 420
+    success_scenario: {
+      label: "Scenario: Send entries 11-15 to follower B"
+      width: 400
+      code: |'go
+        // Leader sends AppendEntries to B:
+        args := &AppendEntriesArgs{
+          PrevLogIndex: 10,
+          PrevLogTerm:  4,
+          Entries:      log[11:16],  // 5 entries
+          LeaderCommit: commitIndex,
+        }
+        // B accepts, appends, responds Success
+        // Leader updates:
+        matchIndex[B] = 15  // PrevLogIndex + len(entries)
+        nextIndex[B] = 16   // matchIndex + 1
+      '|
+    }
+    tracking_success: {
+      shape: sql_table
+      label: "Updated Tracking (B succeeded)"
+      f0: "Peer | nextIndex | matchIndex"
+      f1: "A    | 11        | 0"
+      f2: "B    | 16        | 15"
+      f3: "C    | 11        | 0"
+      f4: "D    | 11        | 0"
+      f5: "E    | 11        | 0"
+      note: "B: matchIndex=15 (confirmed)"
+      note2: "B: nextIndex=16 (next to send)"
+    }
+    success_scenario -> tracking_success: "on Success"
+  }
+}
+row3: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  failure: "After AppendEntries Failure" {
+    direction: down
+    width: 420
+    failure_scenario: {
+      label: "Scenario: Follower C rejects (log mismatch)"
+      width: 400
+      code: |'go
+        // Leader sends AppendEntries to C:
+        args := &AppendEntriesArgs{
+          PrevLogIndex: 10,
+          PrevLogTerm:  4,
+          Entries:      log[11:16],
+        }
+        // C rejects: log[10].Term != 4
+        // Reply includes ConflictTerm, ConflictIndex
+        // Leader backtracks:
+        nextIndex[C] = 7  // decremented via optimization
+      '|
+    }
+    tracking_failure: {
+      shape: sql_table
+      label: "Updated Tracking (C rejected)"
+      f0: "Peer | nextIndex | matchIndex"
+      f1: "A    | 11        | 0"
+      f2: "B    | 16        | 15"
+      f3: "C    | 7         | 0"
+      f4: "D    | 11        | 0"
+      f5: "E    | 11        | 0"
+      note: "C: nextIndex decremented"
+      note2: "C: matchIndex unchanged (no confirmation)"
+    }
+    failure_scenario -> tracking_failure: "on Failure" {
+      style.stroke-dash: 4
+      style.stroke: red
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  commit: "Commit Index Calculation" {
+    direction: down
+    width: 500
+    commit_logic: {
+      label: "Finding Highest Committable N"
+      width: 480
+      code: |'go
+        // maybeAdvanceCommitIndex() - Leader only
+        for N := logLastIndex; N > commitIndex; N-- {
+          // FIGURE 8: Only commit current-term entries
+          if log[N].Term != currentTerm {
+            continue
+          }
+          // Count followers with this entry
+          count := 1  // Leader has it
+          for i := range matchIndex {
+            if matchIndex[i] >= N {
+              count++
+            }
+          }
+          // Check majority (5 nodes: need 3)
+          if count >= 3 {
+            commitIndex = N  // Commit!
+            break
+          }
+        }
+      '|
+    }
+    commit_example: {
+      shape: sql_table
+      label: "Example: All Followers Caught Up"
+      f0: "Peer | matchIndex | >=15?"
+      f1: "A    | 15         | YES"
+      f2: "B    | 15         | YES"
+      f3: "C    | 15         | YES"
+      f4: "D    | 14         | NO"
+      f5: "E    | 12         | NO"
+      note: "3 nodes have entry 15 (majority!)"
+      note2: "log[15].Term == currentTerm -> commitIndex = 15"
+    }
+    commit_logic -> commit_example: "majority check"
+  }
+}
+row5: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  semantics: "Key Semantics" {
+    direction: down
+    width: 500
+    nextindex_semantic: {
+      shape: class
+      label: "nextIndex[i] (Optimistic)"
+      -meaning: "Index of next entry to send to peer i"
+      -initial: "logLastIndex + 1"
+      -onSuccess: "prevLogIndex + len(entries) + 1"
+      -onFailure: "decrement (or use ConflictIndex)"
+      +purpose: "What we TRY to replicate"
+    }
+    matchindex_semantic: {
+      shape: class
+      label: "matchIndex[i] (Conservative)"
+      -meaning: "Highest index known replicated on peer i"
+      -initial: "0"
+      -onSuccess: "prevLogIndex + len(entries)"
+      -onFailure: "unchanged"
+      +purpose: "What we KNOW is replicated"
+    }
+    tcp_analogy: {
+      label: "TCP Analogy"
+      width: 480
+      code: |'text
+        nextIndex  ≈  TCP Send Window (what to send next)
+        matchIndex ≈  TCP ACK Seq (what's confirmed)
+        AppendEntries success ≈ TCP ACK received
+        AppendEntries failure ≈ TCP retransmission
+        ConflictTerm/Index  ≈  TCP SACK (selective ack)
+      '|
+    }
+    nextindex_semantic -> matchindex_semantic -> tcp_analogy
+  }
+}
+row1 -> row2: "send AppendEntries" {
+  style.animated: true
+}
+row2 -> row3: "retry with backtracking" {
+  style.stroke-dash: 4
+}
+row3 -> row4: "update commitIndex" {
+  style.stroke: green
+  style.animated: true
+}
+row4 -> row5: "invariant" {
+  style.stroke-dash: 3
+  style.stroke: blue
+}
+legend: {
+  near: bottom-right
+  style.fill: transparent
+  green: "Green arrow = commit advancement" {
+    shape: text
+    style.font-color: green
+  }
+  red: "Red dashed = failure path" {
+    shape: text
+    style.font-color: red
+  }
+  blue: "Blue dashed = property/invariant" {
+    shape: text
+    style.font-color: blue
+  }
+}

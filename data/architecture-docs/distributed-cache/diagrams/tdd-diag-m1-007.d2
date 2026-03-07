@@ -1,0 +1,219 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+title: |md
+  # TTL Expiration: Lazy vs Active Cleanup
+  *Technical implementation guide for cache eviction strategies*
+| {
+  near: top-center
+  style: {
+    font-size: 24
+    bold: true
+  }
+}
+
+direction: down
+
+# ---------------------------------------------------------------------------------
+# Memory Struct Layout Definition (Intel Manual Quality)
+# ---------------------------------------------------------------------------------
+# Colors: Header=Purple, Data=Blue, Free=Green, Padding=Gray, Pointers=Orange.
+struct_layout: "Internal Cache Entry Layout (sizeof=32 bytes)" {
+  shape: sql_table
+  style.fill: "#F8F9FA"
+  
+  "0x00": "uint8_t" {
+    constraint: "Flags (Valid/Expired/Pinned) [1 Byte]"
+    style.fill: "#D1C4E9" # Header/Metadata
+  }
+  "0x01": "uint64_t" {
+    constraint: "Key Hash / Checksum [8 Bytes]"
+    style.fill: "#BBDEFB" # Data
+  }
+  "0x09": "int64_t" {
+    constraint: "TTL Expiry Timestamp (Unix Nano) [8 Bytes]"
+    style.fill: "#FFE0B2" # Pointers/Timing
+  }
+  "0x11": "void*" {
+    constraint: "Value Pointer [8 Bytes]"
+    style.fill: "#FFE0B2"
+  }
+  "0x19": "char[7]" {
+    constraint: "Padding / Reserved (Align to 32B) [7 Bytes]"
+    style.fill: "#EEEEEE" # Padding
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# Comparison Section
+# ---------------------------------------------------------------------------------
+strategies: {
+  direction: right
+
+  # Strategy A: Lazy Eviction
+  lazy_eviction: {
+    label: "STRATEGY A: LAZY EVICTION\n(Check on Access)"
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2196F3"
+      stroke-width: 2
+    }
+
+    timeline_lazy: {
+      label: "Timeline of Stale Existence"
+      direction: down
+      
+      t0: |md
+        **T=0ms: Expiry Event**
+        `Key:0xDEAD` reaches TTL 0.
+        State: **EXPIRED**
+      | {shape: text}
+      
+      t1: |md
+        **T=500ms: Memory Leak**
+        Entry still in index.
+        Waste: **32B Header + Data**
+      | {shape: text}
+      
+      t2: |md
+        **T=1000ms: Access Trigger**
+        `READ(0xDEAD)`
+        1. Check `0x09` Offset
+        2. `now > expiry` -> **TRUE**
+        3. **[FREE]** memory
+      | {shape: text}
+      
+      t2.style: {
+        fill: "#FFCDD2"
+        stroke: "#B71C1C"
+        bold: true
+      }
+      
+      t0 -> t1: {style.stroke: "#2196F3"}
+      t1 -> t2: {style.stroke: "#B71C1C"; label: "Access occurs here"}
+    }
+
+    analysis: {
+      pros: {
+        label: "PROS"
+        style.fill: "#C8E6C9"
+        p1: "Zero Background CPU"
+        p2: "O(1) complexity"
+      }
+      cons: {
+        label: "CONS"
+        style.fill: "#FFCDD2"
+        c1: "Memory Bloat (Stale data)"
+        c2: "Latency on user thread"
+      }
+    }
+  }
+
+  # Strategy B: Active Cleanup
+  active_cleanup: {
+    label: "STRATEGY B: ACTIVE CLEANUP\n(Periodic Scan)"
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#4CAF50"
+      stroke-width: 2
+    }
+
+    timeline_active: {
+      label: "Timeline of Proactive Pruning"
+      direction: down
+
+      ta0: |md
+        **T=0ms: Expiry Event**
+        `Key:0xCAFE` reaches TTL 0.
+      | {shape: text}
+      
+      ta1: |md
+        **T=100ms: Background Sweep**
+        Daemon thread wakes.
+        **EVICT(0xCAFE)**
+      | {shape: text}
+      
+      ta1.style: {
+        fill: "#C8E6C9"
+        stroke: "#2E7D32"
+        bold: true
+      }
+      
+      ta2: |md
+        **T=101ms: Request**
+        `READ(0xCAFE)`
+        Result: **CACHE_MISS**
+        Latency: **0.1ms (Immediate)**
+      | {shape: text}
+      
+      ta0 -> ta1: {style.stroke: "#4CAF50"}
+      ta1 -> ta2: {style.stroke: "#2E7D32"; label: "Freed before access"}
+    }
+
+    analysis: {
+      pros: {
+        label: "PROS"
+        style.fill: "#C8E6C9"
+        pa1: "High Memory Hygiene"
+        pa2: "Consistent GET Latency"
+      }
+      cons: {
+        label: "CONS"
+        style.fill: "#FFCDD2"
+        ca1: "Daemon CPU Overhead"
+        ca2: "Lock Contention"
+      }
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# Global Indicators & Synthesis
+# ---------------------------------------------------------------------------------
+
+strategies.lazy_eviction <-> strategies.active_cleanup: "Memory:CPU Trade-off" {
+  style: {
+    stroke: "#9C27B0"
+    stroke-width: 3
+    stroke-dash: 5
+  }
+}
+
+hybrid_strategy: {
+  label: "OPTIMAL IMPLEMENTATION: HYBRID"
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#FF9800"
+    stroke-width: 4
+    double-border: true
+  }
+
+  implementation_details: |md
+    ### Production Implementation (Redis/Memcached)
+    1. **Lazy:** Correctness fallback. Always check TTL on `READ`.
+    2. **Active:** Background sampling `N=20` keys every 100ms.
+    3. **Adaptive Scan:** If `>25%` of sample is expired, restart sweep immediately to handle high-churn TTL spikes.
+    
+    **Result:** Bounded memory overhead with deterministic background resource cap.
+  | {shape: text}
+}
+
+hybrid_strategy.near: bottom-center
+
+# Footnote/Metadata
+doc_meta: |md
+  **Reference:** Intel Optimization Manual Vol 1, Section 3.6 (Memory Alignment)
+  **State Transitions:** 
+  - Red: Mutating memory/Freeing
+  - Blue: Passive state
+  - Orange: Critical timing path
+| {
+  near: bottom-left
+  shape: text
+  style.font-size: 10
+}

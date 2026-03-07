@@ -1,0 +1,483 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+title: |md
+  # Gossip Protocol System Architecture
+  **Epidemic-Style Broadcast with SWIM Failure Detection**
+  Implementation-Ready Blueprint | Go
+| {near: top-center}
+# ============================================================================
+# ROW 1: SHARED PACKAGES (Protocol & Utilities)
+# ============================================================================
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  # --------------------------------------------------------------------------
+  # PROTOCOL LAYER - Wire Format Definitions
+  # --------------------------------------------------------------------------
+  layer_protocol: {
+    direction: down
+    label: "PROTOCOL LAYER  (protocol/)"
+    style.fill: "#E8F4FD"
+    style.stroke: "#2196F3"
+    style.stroke-width: 2
+    # Message Types Enum
+    msg_types: {
+      shape: sql_table
+      label: "MessageType (protocol/message.go)  [M1-M4]"
+      type: "MessageType | uint8"
+      JOIN: "0x01 | Join cluster"
+      LEAVE: "0x02 | Graceful leave"
+      SYNC: "0x03 | Membership sync"
+      ACK: "0x04 | Acknowledgment"
+      GOSSIP: "0x10 | Push gossip [M2]"
+      DIGEST_REQ: "0x20 | Anti-entropy [M3]"
+      DIGEST_RESP: "0x21 | Digest response"
+      STATE_REQ: "0x22 | State request"
+      STATE_RESP: "0x23 | State response"
+      PING: "0x30 | Direct probe [M4]"
+      PING_REQ: "0x31 | Indirect probe"
+      ACK_SWIM: "0x32 | SWIM ack"
+    }
+    # Wire Format Header
+    header: {
+      shape: sql_table
+      label: "Header (protocol/message.go)  [M1]"
+      length: "uint32 | 4 bytes | total msg len"
+      type: "MessageType | 1 byte | msg discriminator"
+      node_id_len: "uint8 | 1 byte | sender ID length"
+      node_id: "[]byte | variable | sender node ID"
+      timestamp: "int64 | 8 bytes | Unix nanoseconds"
+      total: "Total: 14 + node_id_len bytes"
+    }
+    # MemberEvent for Piggybacking
+    member_event: {
+      shape: sql_table
+      label: "MemberEvent (protocol/member_event.go)  [M4]"
+      node_id_len: "uint8 | 1 byte"
+      node_id: "string | variable"
+      address_len: "uint8 | 1 byte"
+      address: "string | variable"
+      port: "uint16 | 2 bytes"
+      state: "PeerState | 1 byte"
+      incarnation: "uint64 | 8 bytes"
+      timestamp: "int64 | 8 bytes"
+      total: "Total: ~21 + var bytes"
+    }
+  }
+  # --------------------------------------------------------------------------
+  # CACHE & UTILITIES
+  # --------------------------------------------------------------------------
+  layer_cache: {
+    direction: down
+    label: "CACHE & UTILITIES"
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    style.stroke-width: 2
+    seen_cache: {
+      shape: class
+      label: "SeenCache (cache/seen_cache.go)  [M2]"
+      -mu: "sync.Mutex"
+      -capacity: "int"
+      -entries: "map[uint64]*list.Element"
+      -order: "*list.List"
+      +Seen(id uint64): "bool"
+      +Add(id uint64): "void"
+      +Size(): "int"
+    }
+    piggyback: {
+      shape: class
+      label: "PiggybackBuffer (piggyback/buffer.go)  [M4]"
+      -mu: "sync.RWMutex"
+      -events: "[]MemberEvent"
+      -priority: "[]MemberEvent"
+      -maxSize: "int"
+      -seen: "map[string]uint64"
+      +AddEvent(event MemberEvent): "void"
+      +AddPriorityEvent(event MemberEvent): "void"
+      +GetEvents(): "[]MemberEvent"
+      +Size(): "int"
+    }
+  }
+}
+# ============================================================================
+# ROW 2: MEMBERSHIP & STATE MANAGEMENT
+# ============================================================================
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  # --------------------------------------------------------------------------
+  # MEMBERSHIP LAYER
+  # --------------------------------------------------------------------------
+  layer_membership: {
+    direction: down
+    label: "MEMBERSHIP LAYER  (membership/)  [M1]"
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    style.stroke-width: 2
+    peer_state: {
+      shape: sql_table
+      label: "PeerState (membership/peer.go)"
+      ALIVE: "0 | Node healthy"
+      SUSPECT: "1 | May be failing"
+      DEAD: "2 | Confirmed dead"
+      LEFT: "3 | Graceful leave"
+    }
+    peer: {
+      shape: sql_table
+      label: "struct Peer (membership/peer.go)"
+      id: "string | UUID or configured"
+      address: "string | IP or hostname"
+      port: "int | UDP port"
+      state: "PeerState | lifecycle state"
+      incarnation: "uint64 | version counter"
+      last_seen: "time.Time | last contact"
+      state_changed: "time.Time | state transition"
+      total: "Total: ~120 bytes"
+    }
+    peer_list: {
+      shape: class
+      label: "PeerList (membership/peer_list.go)"
+      -mu: "sync.RWMutex"
+      -peers: "map[string]*Peer"
+      -selfID: "string"
+      -deadTTL: "time.Duration"
+      +AddPeer(peer *Peer): "bool"
+      +GetPeer(id string): "*Peer, bool"
+      +GetRandomPeers(k int): "[]*Peer"
+      +UpdateLastSeen(id string): "bool"
+      +SetState(id string, state PeerState, inc uint64): "bool"
+      +RemovePeer(id string): "bool"
+      +ReapDeadPeers(): "[]string"
+      +CreateDigest(): "[]PeerDigest"
+      +MergeDigest(digest []PeerDigest): "added, updated int"
+      +Size(): "int"
+      +AliveCount(): "int"
+    }
+  }
+  # --------------------------------------------------------------------------
+  # STATE STORE
+  # --------------------------------------------------------------------------
+  layer_state: {
+    direction: down
+    label: "STATE STORE  (state/)  [M2-M3]"
+    style.fill: "#F3E5F5"
+    style.stroke: "#9C27B0"
+    style.stroke-width: 2
+    entry: {
+      shape: sql_table
+      label: "struct Entry (state/entry.go)"
+      key: "string | application key"
+      value: "[]byte | application data"
+      version: "uint64 | Lamport clock"
+      node_id: "string | origin node"
+      updated_at: "time.Time | local debug"
+      total: "Total: ~80 + value bytes"
+    }
+    store: {
+      shape: class
+      label: "Store (state/store.go)"
+      -mu: "sync.RWMutex"
+      -entries: "map[string]*Entry"
+      -clock: "uint64"
+      -nodeID: "string"
+      -lastSent: "uint64"
+      +Set(key string, value []byte): "uint64"
+      +Get(key string): "*Entry, bool"
+      +Apply(remote *Entry): "bool"
+      +GetDelta(sinceVersion uint64): "[]*Entry"
+      +GetAll(): "[]*Entry"
+      +CreateDigest(): "map[string]uint64"
+      +GetEntries(keys []string): "[]*Entry"
+      +Clock(): "uint64"
+      +Size(): "int"
+    }
+  }
+}
+# ============================================================================
+# ROW 3: GOSSIP & ANTI-ENTROPY
+# ============================================================================
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  # --------------------------------------------------------------------------
+  # PUSH GOSSIP
+  # --------------------------------------------------------------------------
+  layer_gossip: {
+    direction: down
+    label: "PUSH GOSSIP  (gossip/)  [M2]"
+    style.fill: "#FCE4EC"
+    style.stroke: "#E91E63"
+    style.stroke-width: 2
+    gossiper: {
+      shape: class
+      label: "Gossiper (gossip/gossiper.go)"
+      -config: "GossipConfig"
+      -nodeID: "string"
+      -store: "*Store"
+      -peerList: "*PeerList"
+      -conn: "*net.UDPConn"
+      -seenCache: "*SeenCache"
+      -lastSent: "uint64"
+      -done: "chan struct{}"
+      +Start(): "void"
+      +Stop(): "void"
+      +HandleGossip(msg *Message, addr *UDPAddr): "int, error"
+      -gossipRound(): "void"
+      -forwardGossip(body *GossipBody): "void"
+    }
+    gossip_config: {
+      shape: sql_table
+      label: "GossipConfig (gossip/config.go)"
+      fanout: "int | default 3"
+      interval: "time.Duration | 200ms-1s"
+      ttl_max: "uint8 | log_f(N)+2"
+      seen_cache_size: "int | N*updates*rounds"
+      max_delta_size: "int | 64KB"
+    }
+  }
+  # --------------------------------------------------------------------------
+  # ANTI-ENTROPY
+  # --------------------------------------------------------------------------
+  layer_antientropy: {
+    direction: down
+    label: "ANTI-ENTROPY  (antientropy/)  [M3]"
+    style.fill: "#E0F2F1"
+    style.stroke: "#009688"
+    style.stroke-width: 2
+    antientropy: {
+      shape: class
+      label: "AntiEntropy (antientropy/antientropy.go)"
+      -config: "AntiEntropyConfig"
+      -nodeID: "string"
+      -store: "*Store"
+      -peerList: "*PeerList"
+      -conn: "*net.UDPConn"
+      -merkleTree: "*merkle.Tree"
+      -merkleDirty: "atomic.Bool"
+      -metrics: "*SyncMetrics"
+      +Start(): "void"
+      +Stop(): "void"
+      +HandleDigestRequest(msg *Message, addr *UDPAddr): "error"
+      +HandleStateResponse(msg *Message): "int, error"
+      +GetMerkleTree(): "*Tree"
+    }
+    ae_config: {
+      shape: sql_table
+      label: "AntiEntropyConfig (antientropy/config.go)"
+      interval: "time.Duration | default 10s"
+      jitter_factor: "float64 | 0.1 (10%)"
+      merkle_enabled: "bool | true"
+      merkle_threshold: "int | 1000 keys"
+      sync_timeout: "time.Duration | 30s"
+      max_chunk_size: "int | 64KB"
+    }
+    lww_resolver: {
+      shape: class
+      label: "LWWResolver (conflict/lww.go)"
+      -localNodeID: "string"
+      +Resolve(local, remote *Entry): "*Entry"
+    }
+  }
+}
+# ============================================================================
+# ROW 4: SWIM FAILURE DETECTION
+# ============================================================================
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_swim: {
+    direction: down
+    label: "SWIM FAILURE DETECTION  (swim/)  [M4]"
+    style.fill: "#FFF8E1"
+    style.stroke: "#FFC107"
+    style.stroke-width: 2
+    fd: {
+      shape: class
+      label: "FailureDetector (swim/detector.go)"
+      -config: "Config"
+      -nodeID: "string"
+      -incarnation: "uint64"
+      -peerList: "*PeerList"
+      -conn: "*net.UDPConn"
+      -pendingPings: "sync.Map"
+      -pendingPingReqs: "sync.Map"
+      -suspicions: "sync.Map"
+      -piggybackBuffer: "*PiggybackBuffer"
+      -seqNum: "uint64"
+      -metrics: "*Metrics"
+      +Start(): "void"
+      +Stop(): "void"
+      +HandlePing(msg *Message, addr *UDPAddr): "void"
+      +HandlePingReq(msg *Message, addr *UDPAddr): "void"
+      +HandleAck(msg *Message): "void"
+      +Incarnation(): "uint64"
+      -protocolRound(): "void"
+      -sendIndirectProbes(target *Peer): "bool"
+      -markSuspect(nodeID string, inc uint64): "void"
+      -markDead(nodeID string, inc uint64): "void"
+      -refute(accusedInc uint64): "void"
+    }
+    swim_config: {
+      shape: sql_table
+      label: "Config (swim/config.go)"
+      protocol_period: "time.Duration | 1s"
+      ping_timeout: "time.Duration | 500ms"
+      indirect_fanout: "int | 3"
+      suspicion_timeout_mult: "int | 5"
+      piggyback_size: "int | 10"
+    }
+    suspicion: {
+      shape: class
+      label: "Suspicion (swim/suspicion.go)"
+      nodeID: "string"
+      suspectTime: "time.Time"
+      incarnation: "uint64"
+      confirmations: "map[string]bool"
+      timer: "*time.Timer"
+      done: "chan struct{}"
+    }
+  }
+}
+# ============================================================================
+# ROW 5: NODE & TEST INFRASTRUCTURE
+# ============================================================================
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_node: {
+    direction: down
+    label: "NODE (node/)  [M1-M4]"
+    style.fill: "#ECEFF1"
+    style.stroke: "#607D8B"
+    style.stroke-width: 2
+    node: {
+      shape: class
+      label: "Node (node/node.go)"
+      -config: "Config"
+      -store: "*Store"
+      -peerList: "*PeerList"
+      -gossiper: "*Gossiper"
+      -antiEntropy: "*AntiEntropy"
+      -failureDetector: "*FailureDetector"
+      -conn: "*net.UDPConn"
+      -metrics: "*BandwidthMetrics"
+      -done: "chan struct{}"
+      +Start(): "error"
+      +Stop(): "error"
+      +Set(key string, value []byte): "uint64"
+      +Get(key string): "[]byte, bool"
+      -receiveLoop(): "void"
+      -handleMessage(msg *Message, addr *UDPAddr): "void"
+      -joinCluster(): "error"
+    }
+    node_config: {
+      shape: sql_table
+      label: "Config (node/node.go)"
+      node_id: "string | UUID or configured"
+      address: "string | bind address"
+      port: "int | UDP port"
+      fanout: "int | default 3"
+      gossip_interval: "time.Duration | 200ms"
+      anti_entropy_interval: "time.Duration | 10s"
+      protocol_period: "time.Duration | 1s"
+      ping_timeout: "time.Duration | 500ms"
+      seed_nodes: "[]string | bootstrap addrs"
+    }
+  }
+  layer_test: {
+    direction: down
+    label: "TEST HARNESS  (test/)  [M5]"
+    style.fill: "#FBE9E7"
+    style.stroke: "#FF5722"
+    style.stroke-width: 2
+    harness: {
+      shape: class
+      label: "Harness (test/harness.go)"
+      -config: "HarnessConfig"
+      -nodes: "[]*TestNode"
+      -transport: "Transport"
+      -metrics: "*MetricsCollector"
+      -rng: "*rand.Rand"
+      +Start(): "error"
+      +Stop(): "void"
+      +GetNode(index int): "*TestNode"
+      +KillNode(index int): "error"
+      +RestartNode(index int): "error"
+      +Partition(groups ...[]int): "void"
+      +Heal(): "void"
+      +SetPacketLoss(rate float64): "void"
+    }
+    sim_transport: {
+      shape: class
+      label: "SimulatedTransport (test/simulated_transport.go)"
+      -mu: "sync.RWMutex"
+      -queues: "map[string]chan *envelope"
+      -partitions: "map[string]map[string]bool"
+      -packetLoss: "float64"
+      -delay: "time.Duration"
+      -rng: "*rand.Rand"
+      +Send(from, to string, data []byte): "error"
+      +Receive(ctx context.Context, nodeID string): "[]byte, string, error"
+      +Partition(groups ...[]string): "void"
+      +Heal(): "void"
+      +SetPacketLoss(rate float64): "void"
+    }
+  }
+}
+# ============================================================================
+# CROSS-LAYER DATA FLOWS
+# ============================================================================
+# Protocol to Membership (M1)
+layer_protocol.msg_types -> layer_membership.peer_list: "JOIN/LEAVE/SYNC"
+layer_protocol.header -> layer_membership.peer_list: "NodeID lookup"
+# Membership to Gossip (M1→M2)
+layer_membership.peer_list -> layer_gossip.gossiper: "GetRandomPeers(fanout)"
+layer_membership.peer -> layer_gossip.gossiper: "Address:Port | UDP target"
+# State to Gossip (M2)
+layer_state.store -> layer_gossip.gossiper: "GetDelta(lastSent)"
+layer_gossip.gossiper -> layer_state.store: "Apply(remote *Entry)"
+# Membership to Anti-Entropy (M1→M3)
+layer_membership.peer_list -> layer_antientropy.antientropy: "GetRandomPeers(1)"
+layer_state.store -> layer_antientropy.antientropy: "CreateDigest()"
+layer_antientropy.antientropy -> layer_state.store: "Apply() | merge"
+# Membership to SWIM (M1→M4)
+layer_membership.peer_list -> layer_swim.fd: "GetRandomPeers(1)"
+layer_swim.fd -> layer_membership.peer_list: "SetState(SUSPECT/DEAD)"
+layer_swim.fd -> layer_membership.peer_list: "UpdateLastSeen()"
+# Piggyback flow (M4)
+layer_swim.fd -> layer_cache.piggyback: "AddEvent(MemberEvent)"
+layer_cache.piggyback -> layer_swim.fd: "GetEvents() | on ping/ack"
+# Cache for gossip dedup (M2)
+layer_gossip.gossiper -> layer_cache.seen_cache: "Seen(msgID)"
+layer_cache.seen_cache -> layer_gossip.gossiper: "bool | drop if true"
+# Node composition (M1-M4)
+layer_node.node -> layer_membership.peer_list: "owns"
+layer_node.node -> layer_state.store: "owns"
+layer_node.node -> layer_gossip.gossiper: "owns"
+layer_node.node -> layer_antientropy.antientropy: "owns"
+layer_node.node -> layer_swim.fd: "owns"
+# Test harness (M5)
+layer_test.harness -> layer_node.node: "manages N instances"
+layer_test.sim_transport -> layer_node.node: "SimulatedTransport | UDP"
+# ============================================================================
+# MILESTONE INDEX
+# ============================================================================
+milestone_index: {
+  shape: sql_table
+  label: "Milestone Index"
+  m1: "M1 | gossip-protocol-m1 | Bootstrapping & Peer Management"
+  m2: "M2 | gossip-protocol-m2 | Push Gossip Dissemination"
+  m3: "M3 | gossip-protocol-m3 | Pull Gossip & Anti-Entropy"
+  m4: "M4 | gossip-protocol-m4 | SWIM-Style Failure Detection"
+  m5: "M5 | gossip-protocol-m5 | Integration Testing & Convergence"
+}

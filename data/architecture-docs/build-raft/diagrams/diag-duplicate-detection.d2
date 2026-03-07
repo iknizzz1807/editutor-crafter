@@ -1,0 +1,343 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: "Duplicate Detection: Exactly-Once Semantics" {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  client: {
+    label: "Client"
+    shape: person
+    style.fill: "#E8F4FD"
+    style.stroke: "#2196F3"
+    style.stroke-width: 2
+  }
+  retry_note: {
+    label: |md
+      **Network is unreliable:**
+      - Requests can be lost
+      - Responses can be lost  
+      - Clients **must retry**
+    |
+    width: 280
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    style.stroke-dash: 3
+  }
+}
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  request: {
+    label: "Client Request"
+    width: 400
+    code: |'go
+      ClientCommandArgs{
+        ClientId:       "abc-123",
+        SequenceNumber: 5,
+        Command:        PutCommand{
+          Key:   "x",
+          Value: "1",
+        },
+      }
+    '|
+    style.fill: "#E3F2FD"
+    style.stroke: "#1976D2"
+  }
+  problem: {
+    label: |md
+      ### The Problem
+      Without deduplication:
+      
+      T=0: Client sends "withdraw $100"
+      T=1: Server commits, applies
+      T=2: Response LOST
+      T=3: Client retries
+      T=4: $200 withdrawn!
+      
+      **Retries are NOT harmless!**
+    |
+    width: 320
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+  }
+}
+row3: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  session_state: {
+    shape: sql_table
+    label: "Session State (replicated via Raft)"
+    f0: "clientId (PK) | string"
+    f1: "lastSequence | int64"
+    f2: "lastResponse  | interface{}"
+    f3: "lastActive    | time.Time"
+    sz: "Survives leader changes!"
+    width: 320
+    style.fill: "#E8F5E9"
+  }
+  state_note: {
+    label: |md
+      **Why this works:**
+      Session state is part of the **replicated state machine**.
+      When leader crashes:
+      - New leader has same session state
+      - Duplicate detection survives
+      - Exactly-once guaranteed
+    |
+    width: 300
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+  }
+}
+row4: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  decision: {
+    label: "Duplicate Check"
+    shape: diamond
+    width: 200
+    style.fill: "#FFF9C4"
+    style.stroke: "#FBC02D"
+    style.stroke-width: 2
+  }
+  check_code: {
+    label: "Check Logic"
+    width: 380
+    code: |'go
+      session := sessions[cmd.ClientId]
+      if cmd.SequenceNumber <= session.LastSequence {
+        // DUPLICATE - return cached
+        return session.LastResponse
+      }
+      // NEW - execute and cache
+      response := applyCommand(cmd.Command)
+      session.LastSequence = cmd.SequenceNumber
+      session.LastResponse = response
+      return response
+    '|
+    style.fill: "#FFF9C4"
+    style.stroke: "#FBC02D"
+  }
+}
+row5: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  path_duplicate: {
+    label: "Path A: Duplicate Detected"
+    width: 340
+    style.fill: "#E1F5FE"
+    style.stroke: "#03A9F4"
+    dup_flow: {
+      direction: right
+      style.stroke: transparent
+      dup_seq: {
+        shape: class
+        label: "State Machine"
+        -lastSeq: "int64"
+        -lastResp: "interface{}"
+        +check(cmd): "response"
+      }
+      dup_result: {
+        label: |md
+          
+          seq=5 <= lastSeq=5?
+          YES → Return cached response
+          Command NOT re-executed!
+          
+        |
+        width: 200
+        style.fill: "#B3E5FC"
+      }
+    }
+  }
+  path_new: {
+    label: "Path B: New Command"
+    width: 340
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    new_flow: {
+      direction: right
+      style.stroke: transparent
+      new_seq: {
+        shape: class
+        label: "State Machine"
+        -data: "map[string]string"
+        +apply(cmd): "response"
+      }
+      new_result: {
+        label: |md
+          
+          seq=5 > lastSeq=4?
+          YES → Execute PUT x=1
+          Update: lastSeq=5
+          Cache: lastResp={OK}
+          
+        |
+        width: 200
+        style.fill: "#C8E6C9"
+      }
+    }
+  }
+}
+row6: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  timeline: {
+    label: "Timeline: Exactly-Once in Action"
+    width: 720
+    code: |'text
+      T=0    Client sends (clientId=abc, seq=5, cmd=PUT x=1)
+             │
+      T=1    Leader receives, appends to log at index 42
+             │
+      T=2    Leader replicates entry 42 to majority
+             │
+      T=3    Entry 42 committed, applied to state machine
+             │        State machine: sessions["abc"].lastSeq = 5
+             │                      sessions["abc"].lastResp = {OK}
+             │                      data["x"] = "1"
+             │
+      T=4    Leader crashes BEFORE sending response!
+             │
+      T=5    New leader elected (has entry 42 replicated)
+             │
+      T=6    Client times out, retries (clientId=abc, seq=5, cmd=PUT x=1)
+             │
+      T=7    New leader's state machine checks:
+             │        sessions["abc"].lastSeq = 5 (replicated!)
+             │        seq=5 <= lastSeq=5 → DUPLICATE
+             │
+      T=8    New leader returns cached response {OK}
+             │        Command NOT re-executed
+             │        data["x"] still = "1" (not "11")
+             │
+      RESULT: Exactly-once semantics ✓
+    '|
+    style.fill: "#F5F5F5"
+    style.stroke: "#9E9E9E"
+  }
+}
+row7: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  connection_patterns: {
+    label: "Connection to Industry Patterns"
+    width: 720
+    conn_content: {
+      direction: right
+      style.stroke: transparent
+      stripe: {
+        label: |md
+          ### Stripe API
+          
+          POST /charges
+          Idempotency-Key: abc-123
+          
+          Same pattern: client-provided
+          unique key for deduplication
+        |
+        width: 220
+        style.fill: "#635BFF"
+        style.font-color: white
+      }
+      kafka: {
+        label: |md
+          ### Kafka Exactly-Once
+          
+          (topic, partition, offset)
+          
+          Consumer tracks offset per
+          partition to avoid reprocessing
+        |
+        width: 220
+        style.fill: "#231F20"
+        style.font-color: white
+      }
+      http: {
+        label: |md
+          ### HTTP Idempotency
+          
+          PUT /resource/123
+          X-Request-ID: uuid
+          
+          Server tracks request IDs
+          to deduplicate retries
+        |
+        width: 220
+        style.fill: "#009688"
+        style.font-color: white
+      }
+    }
+  }
+}
+row8: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  snapshot_note: {
+    label: |md
+      ### ⚠️ Snapshot Must Include Sessions
+      Session state must be part of snapshots:
+      go
+      func (kv *KVStore) Snapshot() []byte {
+        return json.Marshal(struct{
+          Data     map[string]string
+          Sessions map[string]Session  // ← Critical!
+        }{kv.data, kv.sessions})
+      }
+      
+      If sessions are lost after snapshot:
+      - Client retries old seqNum
+      - No duplicate detected
+      - Command executed twice!
+    |
+    width: 720
+    style.fill: "#FFF8E1"
+    style.stroke: "#FFC107"
+    style.stroke-dash: 3
+  }
+}
+client -> request: "sends"
+request -> decision: "RPC to leader"
+decision -> path_duplicate: "seq <= lastSeq"
+decision -> path_new: "seq > lastSeq"
+decision -> check_code: "logic"
+session_state -> decision: "query"
+path_duplicate -> session_state: "return cached"
+path_new -> session_state: "update & cache"

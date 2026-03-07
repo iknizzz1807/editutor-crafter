@@ -1,0 +1,299 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+# ------------------------------------------------------------------------------------------
+# 1. MEMORY LAYOUT: LogEntry Structure
+# Intel-manual quality layout, cache-line aligned (64B)
+# Colors: Header=Purple, Data=Blue/Green, Padding=Gray
+# ------------------------------------------------------------------------------------------
+
+Memory_Layout: {
+  LogEntry_Memory: {
+    label: "Struct: LogEntry (sizeof=64 bytes, Cache-Line Aligned)"
+    tooltip: "Physical memory representation for O_DIRECT write-ahead logging"
+    
+    grid-rows: 8
+    grid-columns: 3
+    grid-gap: 0
+
+    # Header Row
+    H_Offset: "Offset" {style.bold: true; style.underline: true}
+    H_Field: "Field (Little-Endian)" {style.bold: true; style.underline: true}
+    H_Size: "Size" {style.bold: true; style.underline: true}
+
+    # 0x00 - 0x07: Term (8B)
+    off00: "0x00"
+    f00: "Term (Current Leader Term)" {
+      style.fill: "#DDA0DD" # Purple: Critical persistent state
+      tooltip: "Must be persisted before acknowledging AppendEntriesRPC"
+    }
+    sz00: "8B"
+
+    # 0x08 - 0x0F: Index (8B)
+    off08: "0x08"
+    f08: "Log Index (Sequence Number)" {
+      style.fill: "#DDA0DD" # Purple: Persistent
+    }
+    sz08: "8B"
+
+    # 0x10 - 0x13: Command Type (4B)
+    off10: "0x10"
+    f10: "CmdType (Internal Enum)" {
+      style.fill: "#ADD8E6" # Blue: Metadata
+    }
+    sz10: "4B"
+
+    # 0x14 - 0x17: Data Length (4B)
+    off14: "0x14"
+    f14: "DataLen (Payload bytes)" {
+      style.fill: "#ADD8E6"
+    }
+    sz14: "4B"
+
+    # 0x18 - 0x37: Data (32B)
+    off18: "0x18"
+    f18: "Serialized Command Payload" {
+      style.fill: "#90EE90" # Green: Application Data
+    }
+    sz18: "32B"
+
+    # 0x38 - 0x3F: Padding (8B)
+    off38: "0x38"
+    f38: "Zero Padding" {
+      style.fill: "#D3D3D3" # Gray: Padding
+    }
+    sz38: "8B"
+
+    style.stroke-width: 2
+    style.stroke: black
+  }
+
+  Cache_Boundary: "" {
+    label: "64-byte L1 Cache Line Boundary"
+    style: {
+      stroke: red
+      stroke-dash: 5
+      stroke-width: 2
+      font-color: red
+      fill: transparent
+    }
+  }
+}
+
+# ------------------------------------------------------------------------------------------
+# 2. ARCHITECTURE DIAGRAM: Raft Consensus Engine
+# ------------------------------------------------------------------------------------------
+
+System_Architecture: {
+  direction: right
+
+  User: "Client App" {
+    shape: person
+  }
+
+  RaftNode: "Raft Instance (Server)" {
+    RPC_Handler: {
+      shape: class
+      label: "ConsensusModule"
+      "AppendEntries(args)": "Result"
+      "RequestVote(args)": "Result"
+      "GetState()": "(term, isLeader)"
+    }
+    
+    LogStore: {
+      shape: cylinder
+      label: "Persistent WAL"
+      tooltip: "Stores LogEntry structs on disk"
+    }
+
+    StateMachine: {
+      shape: queue
+      label: "Replicated SM"
+    }
+
+    RPC_Handler -> LogStore: "fsync"
+    RPC_Handler -> StateMachine: "apply(cmd)"
+  }
+
+  Follower_A: "Follower A (Node 2)" {
+    style.fill: "#f8f9fa"
+  }
+  Follower_B: "Follower B (Node 3)" {
+    style.fill: "#f8f9fa"
+  }
+
+  User -> RaftNode.RPC_Handler: "SubmitCommand" {
+    style.stroke: "#ffa500"
+    style.animated: true
+  }
+
+  RaftNode.RPC_Handler -> Follower_A: "AppendEntriesRPC"
+  RaftNode.RPC_Handler -> Follower_B: "AppendEntriesRPC"
+}
+
+# ------------------------------------------------------------------------------------------
+# 3. ALGORITHM STATE: TDD Replication Steps
+# Showing Delta between Step 3 and Step 4
+# ------------------------------------------------------------------------------------------
+
+Replication_TDD: {
+  grid-columns: 2
+  grid-gap: 100
+
+  Step_3_Before: {
+    label: "Step 3: Quorum Confirmed (Indices 0..2)"
+    Log_Memory: {
+      shape: sql_table
+      Index: "0 | 1 | 2"
+      Term: "1 | 1 | 2"
+      Command: "SET A=1 | SET B=2 | DEL C"
+    }
+    nextIndex: "3" {style.font-size: 14; style.bold: true}
+  }
+
+  Step_4_After: {
+    label: "Step 4: New Log Entry Appended (Index 3)"
+    Log_Memory: {
+      shape: sql_table
+      Index: "0 | 1 | 2 | **3**"
+      Term: "1 | 1 | 2 | **2**"
+      Command: "SET A=1 | SET B=2 | DEL C | **SET D=4**"
+    }
+    nextIndex: "4" {
+      style.font-size: 16
+      style.font-color: red
+      style.bold: true
+    }
+  }
+
+  Step_3_Before -> Step_4_After: "Leader.Append(SET D=4)" {
+    style.stroke: red
+    style.stroke-width: 3
+    style.animated: true
+  }
+}
+
+# ------------------------------------------------------------------------------------------
+# 4. SEQUENCE DIAGRAM: Consensus Write Flow
+# Locking mechanics and persistence triggers
+# ------------------------------------------------------------------------------------------
+
+Consensus_Sequence: {
+  shape: sequence_diagram
+  
+  Client: "External App"
+  Leader: "Node 1 (Leader)"
+  Log: "Local Disk"
+  Peer: "Node 2 (Follower)"
+
+  Client -> Leader: "Propose(Cmd)"
+  
+  Leader: "▼ Mutex Lock"
+  Leader -> Log: "Write uncommitted entry"
+  Leader -> Peer: "AppendEntries(Index=10, Term=5)"
+  
+  Peer: "▼ Mutex Lock"
+  Peer -> Log: "FSync LogEntry" {
+    tooltip: "Critical for safety: node must not lose log on crash"
+  }
+  Peer -> Leader: "Success(MatchIndex=10)"
+  Peer: "▲ Mutex Unlock"
+
+  Leader -> Leader: "Advance CommitIndex"
+  Leader -> Log: "Mark Committed"
+  
+  Leader -> Client: "Success (Ack)" {
+    style.bold: true
+    style.stroke: green
+  }
+  Leader: "▲ Mutex Unlock"
+}
+
+# ------------------------------------------------------------------------------------------
+# 5. STATE MACHINE: Raft Lifecycle
+# State invariants and protocol rules
+# ------------------------------------------------------------------------------------------
+
+Consensus_FSM: {
+  direction: right
+  
+  Start: ● {shape: circle; style.fill: black}
+  
+  Follower: {
+    tooltip: "Invariant: votedFor is null or CandidateID"
+    style.fill: "#eef2f7"
+  }
+  
+  Candidate: {
+    tooltip: "Invariant: term++, votedFor=self"
+    style.fill: "#fff3cd"
+  }
+  
+  Leader: {
+    tooltip: "Invariant: sending heartbeats, matchIndex >= 0"
+    style.fill: "#d4edda"
+    style.double-border: true
+  }
+  
+  Halt: "Safety Violation" {
+    style.fill: "#f8d7da"
+    style.stroke: red
+  }
+
+  Start -> Follower: "Init"
+  
+  Follower -> Candidate: "Election Timeout" {
+    style.stroke: orange
+    style.animated: true
+  }
+  
+  Candidate -> Leader: "Majority Votes Received" {
+    style.stroke: green
+    style.stroke-width: 3
+  }
+  
+  Candidate -> Follower: "Leader Discovered / Split Vote"
+  Leader -> Follower: "Higher Term Observed"
+  
+  # Protocol Invariant Protection
+  Leader -> Candidate: "ILLEGAL" {
+    style.stroke: red
+    style.stroke-dash: 5
+    label.style.font-color: red
+  }
+  
+  Follower -> Halt: "Log Inconsistency / Disk Corruption"
+}
+
+# ------------------------------------------------------------------------------------------
+# DOCUMENTATION BLOCK
+# ------------------------------------------------------------------------------------------
+
+Docs_and_Legend: {
+  near: bottom-center
+  
+  Legend: {
+    label: "Protocol Color Key"
+    Persistent: "Purple: Critical Persistent (Term/Log)" {style.font-color: "#DDA0DD"}
+    Metadata: "Blue: Volatile Metadata" {style.font-color: "#ADD8E6"}
+    Data: "Green: Replicated Data Payload" {style.font-color: "#90EE90"}
+    Mutation: "Red: State transition in focus" {style.font-color: red}
+  }
+
+  Implementation_Spec: |md
+    ### RAFT IMPLEMENTATION SPEC V3.0
+    - **Persistence**: `Term` and `VotedFor` must be flushed to stable storage *before* responding to RPCs.
+    - **Log Alignment**: Members of `LogEntry` are ordered to prevent padding holes (8B, 8B, 4B, 4B, 32B, 8B).
+    - **Safety**: A leader never overwrites or deletes entries in its own log; it only appends.
+    - **Alignment**: The 64-byte size ensures a single entry fits exactly into a modern CPU cache line.
+  | {
+    style.fill: "#fafafa"
+    style.stroke: "#444"
+  }
+}

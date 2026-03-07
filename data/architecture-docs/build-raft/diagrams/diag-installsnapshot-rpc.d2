@@ -1,0 +1,323 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## InstallSnapshot RPC Flow
+  Replicating snapshots to lagging followers
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  leader: {
+    direction: down
+    label: "Leader (log.go)"
+    leader_state: {
+      shape: sql_table
+      label: "Leader State"
+      f1: "lastIncludedIndex | 10000"
+      f2: "lastIncludedTerm  | 3"
+      f3: "nextIndex[F]      | 5000"
+      f4: "snapshot.Data     | []byte"
+    }
+    detect: {
+      label: "Detect Lagging Follower"
+      width: 340
+      code: |'go
+        // In sendHeartbeatsOrSnapshot()
+        if nextIdx <= rf.lastIncludedIndex {
+          // Entry 5000 was snapshotted away
+          // Must send InstallSnapshot
+          rf.sendSnapshot(peerIdx)
+        }
+      '|
+    }
+  }
+  follower: {
+    direction: down
+    label: "Follower F (log.go)"
+    follower_state: {
+      shape: sql_table
+      label: "Follower State"
+      f1: "lastIncludedIndex | 2000"
+      f2: "lastIncludedTerm  | 2"
+      f3: "log               | [2001..4500]"
+      f4: "commitIndex       | 4500"
+    }
+    lag_note: {
+      label: "Follower is 5500 entries behind\nLeader has snapshotted past 5000"
+      shape: rectangle
+      style.fill: "#FFF3CD"
+      style.stroke: "#856404"
+    }
+  }
+}
+leader_state -> follower_state: "nextIndex[F]=5000 < lastIncludedIndex=10000" {
+  style.stroke: red
+  style.stroke-dash: 4
+  label: "Cannot use AppendEntries"
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  msg_format: {
+    direction: down
+    label: "InstallSnapshot Message Format"
+    request: {
+      shape: class
+      label: "InstallSnapshotArgs"
+      +Term: "int"
+      +LeaderId: "string"
+      +LastIncludedIndex: "int"
+      +LastIncludedTerm: "int"
+      +Offset: "int64"
+      +Data: "[]byte"
+      +Done: "bool"
+    }
+    response: {
+      shape: class
+      label: "InstallSnapshotReply"
+      +Term: "int"
+    }
+  }
+  chunk_flow: {
+    direction: down
+    label: "Chunked Transfer Sequence"
+    chunk1: {
+      label: "Chunk 1 (offset=0)"
+      width: 280
+      code: |'go
+        args := &InstallSnapshotArgs{
+          Term:              4,
+          LastIncludedIndex: 10000,
+          LastIncludedTerm:  3,
+          Offset:            0,
+          Data:              chunk[0:1MB],
+          Done:              false,
+        }
+      '|
+    }
+    chunk2: {
+      label: "Chunk 2 (offset=1MB)"
+      width: 280
+      code: |'go
+        args := &InstallSnapshotArgs{
+          Term:              4,
+          LastIncludedIndex: 10000,
+          LastIncludedTerm:  3,
+          Offset:            1048576,
+          Data:              chunk[1MB:2MB],
+          Done:              false,
+        }
+      '|
+    }
+    chunkN: {
+      label: "Chunk N (final)"
+      width: 280
+      code: |'go
+        args := &InstallSnapshotArgs{
+          Term:              4,
+          LastIncludedIndex: 10000,
+          LastIncludedTerm:  3,
+          Offset:            N*1MB,
+          Data:              chunk[last],
+          Done:              true,  // Signal completion
+        }
+      '|
+    }
+    chunk1 -> chunk2 -> chunkN
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  follower_handler: {
+    direction: down
+    label: "Follower: InstallSnapshot Handler"
+    step1: {
+      label: "1. Validate & Persist"
+      width: 380
+      code: |'go
+        func (rf *RaftNode) InstallSnapshot(
+            args *InstallSnapshotArgs, 
+            reply *InstallSnapshotReply) error {
+          rf.mu.Lock()
+          defer rf.mu.Unlock()
+          // Reject stale leaders
+          if args.Term < rf.currentTerm {
+            reply.Term = rf.currentTerm
+            return nil
+          }
+          // Save snapshot BEFORE modifying state
+          snapshot := &Snapshot{
+            Metadata: SnapshotMetadata{
+              LastIncludedIndex: args.LastIncludedIndex,
+              LastIncludedTerm:  args.LastIncludedTerm,
+            },
+            Data: args.Data,
+          }
+          rf.persister.SaveSnapshot(snapshot)
+      '|
+    }
+    step2: {
+      label: "2. Apply to State Machine"
+      width: 380
+      code: |'go
+          // Apply snapshot to state machine
+          rf.stateMachine.RestoreSnapshot(args.Data)
+          // Update snapshot metadata
+          rf.lastIncludedIndex = args.LastIncludedIndex
+          rf.lastIncludedTerm = args.LastIncludedTerm
+          rf.snapshot = snapshot
+      '|
+    }
+    step3: {
+      label: "3. Discard Old Log"
+      width: 380
+      code: |'go
+          // Case A: Snapshot covers everything
+          if args.LastIncludedIndex > rf.logLastIndex() {
+            rf.log = make([]LogEntry, 1) // dummy only
+          } else {
+            // Case B: Keep suffix beyond snapshot
+            newLog := make([]LogEntry, 1)
+            for i := args.LastIncludedIndex + 1; 
+                i <= rf.logLastIndex(); i++ {
+              entry, _ := rf.logEntry(i)
+              newLog = append(newLog, entry)
+            }
+            rf.log = newLog
+          }
+      '|
+    }
+    step4: {
+      label: "4. Update Indices"
+      width: 380
+      code: |'go
+          // Advance commit and apply indices
+          if rf.commitIndex < args.LastIncludedIndex {
+            rf.commitIndex = args.LastIncludedIndex
+          }
+          if rf.lastApplied < args.LastIncludedIndex {
+            rf.lastApplied = args.LastIncludedIndex
+          }
+          rf.persist()
+          reply.Term = rf.currentTerm
+          return nil
+        }
+      '|
+    }
+    step1 -> step2 -> step3 -> step4
+  }
+  state_transition: {
+    direction: down
+    label: "Follower State Transition"
+    before: {
+      shape: sql_table
+      label: "Before InstallSnapshot"
+      b1: "lastIncludedIndex | 2000"
+      b2: "lastIncludedTerm  | 2"
+      b3: "log               | [2001..4500]"
+      b4: "commitIndex       | 4500"
+      b5: "stateMachine      | {k1:v1, ...}"
+    }
+    arrow: {
+      label: "InstallSnapshot\nlastIncludedIndex=10000"
+      shape: diamond
+      style.fill: "#D4EDDA"
+      style.stroke: "#155724"
+    }
+    after: {
+      shape: sql_table
+      label: "After InstallSnapshot"
+      a1: "lastIncludedIndex | 10000"
+      a2: "lastIncludedTerm  | 3"
+      a3: "log               | [10001..10005]"
+      a4: "commitIndex       | 10000"
+      a5: "stateMachine      | {k1:v1, k2:v2, ...}"
+    }
+    before -> arrow -> after
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  leader_update: {
+    direction: down
+    label: "Leader: Update Tracking"
+    update_code: {
+      label: "After Successful InstallSnapshot"
+      width: 360
+      code: |'go
+        func (rf *RaftNode) handleInstallSnapshotReply(
+            peerIdx int, 
+            args *InstallSnapshotArgs,
+            reply *InstallSnapshotReply) {
+          rf.mu.Lock()
+          defer rf.mu.Unlock()
+          if reply.Term > rf.currentTerm {
+            rf.currentTerm = reply.Term
+            rf.votedFor = ""
+            rf.state = Follower
+            rf.persist()
+            return
+          }
+          // Update tracking arrays
+          rf.matchIndex[peerIdx] = args.LastIncludedIndex
+          rf.nextIndex[peerIdx] = args.LastIncludedIndex + 1
+        }
+      '|
+    }
+  }
+  safety_box: {
+    direction: down
+    label: "Safety Properties"
+    safety: {
+      shape: rectangle
+      style.fill: "#F8D7DA"
+      style.stroke: "#721C24"
+      width: 340
+      label: |md
+        **Critical Safety Rules:**
+        1. **Persist BEFORE apply**
+           Snapshot must reach disk before
+           modifying in-memory state
+        2. **Atomic transition**
+           Snapshot + log truncate + index update
+           must happen atomically under lock
+        3. **Idempotent handling**
+           Duplicate chunks with same offset
+           must not corrupt state
+        4. **Term validation**
+           Reject stale leaders (term < currentTerm)
+      |
+    }
+  }
+}
+legend: {
+  near: bottom-right
+  label: "Legend"
+  legend_items: {
+    shape: rectangle
+    style.fill: transparent
+    style.stroke: "#666"
+    width: 200
+    label: |md
+      - Red dashed: Cannot proceed
+      - Green: Success path
+      - Yellow: Warning/Note
+      - Pink: Safety critical
+    |
+  }
+}
+detect -> msg_format: "Send InstallSnapshot"
+chunkN -> follower_handler: "Done=true"
+follower_handler -> leader_update: "Reply{Term}"
+step4 -> leader_update: "Success"

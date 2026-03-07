@@ -1,0 +1,220 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Concurrent Access Pattern: PeerList
+  **Implementation Reference**: `internal/network/topology.go`
+  **Pattern**: Multiple Readers / Single Writer (sync.RWMutex)
+| {near: top-center}
+
+direction: right
+
+# PeerList Data Structure Definition
+peer_list: {
+  label: "PeerList Singleton\n(Protected Shared Memory)"
+  shape: cylinder
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#2E7D32"
+    stroke-width: 3
+    shadow: true
+  }
+  
+  mu: |md
+    ### mu: sync.RWMutex (Offset: 0x00)
+    **State Bitfield (8 Bytes):**
+    - `[00-00]` w (1 bit): Writer waiting
+    - `[00-31]` readerCount (31 bits): Active readers
+    - `[32-63]` readerWait (31 bits): Pending readers
+    
+    *Invariant: Writer-priority ensures no starvation under high read load.*
+  |
+  
+  peers: |md
+    ### peers: map[string]*Peer (Offset: 0x08)
+    **Key**: `NodeID` (sha256 hash string)
+    **Value**: `*Peer` (8-byte pointer)
+    
+    *Memory Alignment: 64B cache-line optimized.*
+    *Sizeof: 24 bytes (Descriptor)*
+  |
+}
+
+# Reader Goroutines Group
+readers: {
+  label: "CONCURRENT READERS\n(Shared RLock Access)"
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1976D2"
+    stroke-width: 2
+    border-radius: 8
+  }
+  
+  gossip_sender: {
+    label: "Gossip Sender"
+    shape: hexagon
+    style.fill: "#BBDEFB"
+    op1: "GetRandomPeers(k)"
+    freq1: "Every 200ms"
+  }
+  
+  anti_entropy: {
+    label: "Anti-Entropy"
+    shape: hexagon
+    style.fill: "#BBDEFB"
+    op2: "CreateDigest()"
+    freq2: "Every 10s"
+  }
+  
+  health_check: {
+    label: "Health Check"
+    shape: hexagon
+    style.fill: "#BBDEFB"
+    op3: "GetAllPeers()"
+    freq3: "On-Demand"
+  }
+}
+
+# Writer Goroutines Group
+writers: {
+  label: "EXCLUSIVE WRITERS\n(Blocking Lock Access)"
+  style: {
+    fill: "#FFEBEE"
+    stroke: "#C62828"
+    stroke-width: 2
+    border-radius: 8
+  }
+  
+  gossip_receiver: {
+    label: "Gossip Receiver"
+    shape: parallelogram
+    style.fill: "#FFCDD2"
+    op4: "UpdateLastSeen(id)"
+    freq4: "High Frequency (N/sec)"
+  }
+  
+  failure_detector: {
+    label: "Failure Detector"
+    shape: parallelogram
+    style.fill: "#FFCDD2"
+    op5: "SetState(id, SUSPECT)"
+    freq5: "Rare (on timeout)"
+  }
+  
+  join_handler: {
+    label: "Join Handler"
+    shape: parallelogram
+    style.fill: "#FFCDD2"
+    op6: "AddPeer(peer)"
+    freq6: "Low Frequency"
+  }
+  
+  leave_handler: {
+    label: "Leave Handler"
+    shape: parallelogram
+    style.fill: "#FFCDD2"
+    op7: "SetState(id, LEFT)"
+    freq7: "Low Frequency"
+  }
+}
+
+# Access Rules Documentation
+legend: {
+  near: bottom-center
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#9E9E9E"
+    stroke-dash: 3
+    border-radius: 8
+  }
+  title: "RWMutex Semantic Rules"
+  reader_rule: |md
+    **Readers (RLock)**
+    - Multi-hold: YES
+    - Blocks Writer: YES
+    - Starvation: Prevented by sync.RWMutex
+  |
+  writer_rule: |md
+    **Writers (Lock)**
+    - Multi-hold: NO (Exclusive)
+    - Blocks Reader: YES
+    - Blocks Writer: YES
+  |
+}
+
+# Access Pattern Connections
+readers.gossip_sender -> peer_list: {
+  label: "RLock O(k)"
+  style: {
+    stroke: "#1976D2"
+    stroke-width: 2
+    animated: true
+  }
+}
+readers.anti_entropy -> peer_list: {
+  label: "RLock O(n)"
+  style: { stroke: "#1976D2"; stroke-width: 2 }
+}
+readers.health_check -> peer_list: {
+  label: "RLock O(n)"
+  style: { stroke: "#1976D2"; stroke-width: 2 }
+}
+
+writers.gossip_receiver -> peer_list: {
+  label: "Lock O(1)"
+  style: {
+    stroke: "#C62828"
+    stroke-width: 3
+  }
+}
+writers.failure_detector -> peer_list: {
+  label: "Lock O(1)"
+  style: { stroke: "#C62828"; stroke-width: 3 }
+}
+writers.join_handler -> peer_list: {
+  label: "Lock O(1)"
+  style: { stroke: "#C62828"; stroke-width: 3 }
+}
+writers.leave_handler -> peer_list: {
+  label: "Lock O(1)"
+  style: { stroke: "#C62828"; stroke-width: 3 }
+}
+
+# Analytical Annotations
+# FIXED: Changed 'near: peer_list' to 'near: top-right' to comply with ELK constant-only near restriction
+contention: |md
+  **Contention Analysis:**
+  - `UpdateLastSeen` dominates writer lock time.
+  - `GetRandomPeers` dominates reader lock time.
+  - Under 10k nodes, lock acquisition latency < 100ns.
+| {
+  near: top-right
+  shape: text
+  style: {
+    font-size: 14
+    italic: true
+  }
+}
+
+blocking_note: |md
+  ### State Transition Timeline (FIFO)
+  text
+  R1: [====RLock====]
+  R2:     [==RLock==]     ✓ Concurrent
+  R3:        [==RLock==]  ✓ Concurrent
+  W1:         [--WAIT--][===Lock===]  ✗ Blocks W/R
+  R4:                   [--WAIT--][RLock]
+  
+| {
+  near: bottom-right
+  shape: text
+  style: {
+    font: mono
+    font-size: 12
+    fill: "#F5F5F5"
+  }
+}

@@ -1,0 +1,275 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Raft Persistence Flow
+  **Critical Invariant**: Vote is not cast until persisted
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  rpc_flow: RPC Flow (Normal Operation) {
+    direction: down
+    receive: {
+      label: "T1: Receive RequestVote RPC"
+      width: 320
+      code: |'go
+        args.Term = 5
+        args.CandidateId = "node-B"
+        args.LastLogIndex = 42
+      '|
+    }
+    receive -> validate
+    validate: {
+      label: "T2: Validate Vote Request"
+      width: 320
+      code: |'go
+        // Check conditions
+        if args.Term >= rf.currentTerm &&
+           (rf.votedFor == "" || 
+            rf.votedFor == args.CandidateId) &&
+           isLogUpToDate(...) {
+          // Can grant vote
+        }
+      '|
+    }
+    validate -> update_state
+  }
+  persistence: Persistence Layer {
+    direction: down
+    update_state: {
+      label: "T3: Update In-Memory State"
+      width: 320
+      code: |'go
+        rf.currentTerm = args.Term
+        rf.votedFor = args.CandidateId
+        // NOT YET SAFE!
+      '|
+    }
+    update_state -> persist
+    persist: {
+      label: "T4: Persist to Stable Storage"
+      width: 320
+      shape: cylinder
+      code: |'go
+        state := PersistentState{
+          CurrentTerm: rf.currentTerm,
+          VotedFor:    rf.votedFor,
+          Log:         rf.log,
+        }
+        data, _ := json.Marshal(state)
+      '|
+    }
+    persist -> fsync
+    fsync: {
+      label: "T5: fsync() - CRITICAL"
+      width: 320
+      style.fill: "#FFE4B5"
+      style.stroke: "#FF8C00"
+      style.stroke-width: 3
+      code: |'go
+        // Bypass OS cache, write to disk
+        file.Sync()  
+        // NOW SAFE TO RESPOND
+      '|
+    }
+    fsync -> respond
+  }
+  response: Response {
+    direction: down
+    respond: {
+      label: "T6: Respond to RPC"
+      width: 320
+      style.fill: "#90EE90"
+      code: |'go
+        reply.VoteGranted = true
+        reply.Term = rf.currentTerm
+        return nil
+      '|
+    }
+  }
+}
+row1.rpc_flow.receive -> row1.persistence.update_state
+row1.persistence.fsync -> row1.response.respond
+row2: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  crash_scenario: Without Persistence (BUG!) {
+    direction: down
+    style.stroke: "#FF6B6B"
+    style.stroke-dash: 4
+    bug1: {
+      label: "Node votes for Candidate A"
+      width: 280
+    }
+    bug1 -> crash1
+    crash1: {
+      label: "CRASH before persist"
+      width: 280
+      shape: diamond
+      style.fill: "#FFB6C1"
+    }
+    crash1 -> restart1
+    restart1: {
+      label: "Restart: votedFor is EMPTY"
+      width: 280
+    }
+    restart1 -> vote2
+    vote2: {
+      label: "Node votes for Candidate B"
+      width: 280
+      style.fill: "#FF6B6B"
+    }
+    vote2 -> split
+    split: {
+      label: "SPLIT BRAIN!\nTwo leaders in term T"
+      width: 280
+      shape: diamond
+      style.fill: "#FF0000"
+      style.font-color: white
+    }
+  }
+  correct_scenario: With Persistence (Correct) {
+    direction: down
+    style.stroke: "#32CD32"
+    style.stroke-width: 3
+    good1: {
+      label: "Node votes for Candidate A\nPersist to disk"
+      width: 280
+    }
+    good1 -> crash2
+    crash2: {
+      label: "CRASH after persist"
+      width: 280
+      shape: diamond
+      style.fill: "#90EE90"
+    }
+    crash2 -> restart2
+    restart2: {
+      label: "Restart: Read from disk\nvotedFor = 'Candidate A'"
+      width: 280
+    }
+    restart2 -> check
+    check: {
+      label: "Already voted in term T\nReject duplicate vote"
+      width: 280
+      style.fill: "#90EE90"
+    }
+    check -> safe
+    safe: {
+      label: "ELECTION SAFETY\nAt most one leader per term"
+      width: 280
+      shape: diamond
+      style.fill: "#228B22"
+      style.font-color: white
+    }
+  }
+}
+row2.crash_scenario -> row2.correct_scenario: "Fix: Persist\nBEFORE respond" {
+  style.stroke: "#4169E1"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+}
+row3: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  restart_flow: Recovery on Restart {
+    direction: down
+    boot: {
+      label: "Node Starts"
+      width: 300
+      shape: circle
+    }
+    boot -> read_disk
+    read_disk: {
+      label: "T1: Read from Disk"
+      width: 300
+      code: |'go
+        data, err := persister.ReadRaftState()
+        if err != nil {
+          // Fresh start
+          return
+        }
+      '|
+    }
+    read_disk -> deserialize
+    deserialize: {
+      label: "T2: Deserialize State"
+      width: 300
+      code: |'go
+        var state PersistentState
+        json.Unmarshal(data, &state)
+      '|
+    }
+    deserialize -> restore
+    restore: {
+      label: "T3: Restore In-Memory State"
+      width: 300
+      code: |'go
+        rf.currentTerm = state.CurrentTerm
+        rf.votedFor = state.VotedFor
+        rf.log = state.Log
+      '|
+    }
+    restore -> resume
+    resume: {
+      label: "T4: Resume as Follower"
+      width: 300
+      style.fill: "#87CEEB"
+      code: |'go
+        rf.state = Follower
+        rf.resetElectionTimer()
+        // Ready to process RPCs
+      '|
+    }
+  }
+  state_box: Persisted State Structure {
+    direction: down
+    persistent_state: {
+      shape: sql_table
+      label: "PersistentState (raft.state)"
+      f0: "0x00 | int    | currentTerm"
+      f1: "0x08 | string | votedFor"
+      f2: "0x10 | []LogEntry | log"
+      note: "Must survive crash"
+    }
+    disk: {
+      label: "On Disk: raft.state"
+      shape: cylinder
+      code: |'json
+        {
+          "currentTerm": 5,
+          "votedFor": "node-B",
+          "log": [...]
+        }
+      '|
+    }
+    persistent_state -> disk: "fsync"
+  }
+}
+legend: {
+  near: bottom-right
+  legend_title: Legend
+  critical: "Critical Step" {
+    style.fill: "#FFE4B5"
+    style.stroke: "#FF8C00"
+  }
+  safe: "Safe State" {
+    style.fill: "#90EE90"
+  }
+  danger: "Safety Violation" {
+    style.fill: "#FF6B6B"
+  }
+  note: |md
+    **Key Insight**: The FLP Impossibility 
+    forces us to choose: persist before 
+    respond, or risk safety violations.
+  |
+}

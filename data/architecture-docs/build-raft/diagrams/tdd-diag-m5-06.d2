@@ -1,0 +1,272 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+# --- GLOBAL CLASSES ---
+classes: {
+  header_style: {
+    style: {
+      fill: "#6b21a8" 
+      font-color: white
+      bold: true
+    }
+  }
+  data_field: {
+    style: {
+      fill: "#eff6ff"
+      stroke: "#2563eb"
+      stroke-width: 2
+    }
+  }
+  storage_class: {
+    style: {
+      fill: "#f0fdf4"
+      stroke: "#16a34a"
+      stroke-dash: 2
+    }
+  }
+  logic: {
+    style: {
+      fill: "#fff7ed"
+      stroke: "#ea580c"
+    }
+  }
+  error_state: {
+    style: {
+      fill: "#fef2f2"
+      stroke: "#dc2626"
+      font-color: "#991b1b"
+      bold: true
+    }
+  }
+  pointer: {
+    style: {
+      stroke: "#f59e0b"
+      stroke-width: 3
+    }
+  }
+}
+
+# --- 1. MEMORY & PERSISTENCE LAYOUT ---
+RaftState: {
+  shape: sql_table
+  label: "Persistent State Layout (Disk/WAL Offset Map)"
+  style.fill: "#f3e8ff"
+  style.stroke: "#6b21a8"
+  style.stroke-width: 3
+  
+  offset_00: "uint64 (Term)" {
+    label: "0x00: currentTerm | 8 Bytes"
+    constraint: "PERSISTENT_SYNC"
+  }
+  offset_08: "uint32 (VotedFor)" {
+    label: "0x08: votedFor    | 4 Bytes"
+    constraint: "PERSISTENT_SYNC"
+  }
+  offset_12: "Padding" {
+    label: "0x0C: alignment  | 4 Bytes"
+    style.fill: "#d1d5db"
+    style.stroke-dash: 2
+  }
+  offset_16: "ptr (LogEntries)" {
+    label: "0x10: logHeadPtr  | 8 Bytes"
+    constraint: "VOLATILE_REF"
+  }
+  
+  footer: |md
+    ### Memory/Disk Implementation Details
+    - **Header Size**: 24 Bytes (including pointer).
+    - **Alignment**: 8-byte word aligned.
+    - **Durability**: Must call `fsync()` on Term/Vote mutation before responding to RPC.
+  |
+}
+
+LogStructure: {
+  shape: sql_table
+  label: "Log Entry Binary Wire Format"
+  style.fill: "#e0f2fe"
+  style.stroke: "#0369a1"
+  
+  b0_7: "uint64" {label: "0x00: term"}
+  b8_15: "uint64" {label: "0x08: index"}
+  b16_19: "uint32" {label: "0x10: commandType"}
+  b20_23: "uint32" {label: "0x14: payloadSize (N)"}
+  b24_N: "byte[N]" {label: "0x18: payloadData"}
+}
+
+# --- 2. STATE MACHINE TRANSITIONS ---
+RaftFSM: {
+  label: "Node State Machine (Safety Invariants)"
+  style.stroke: "#4b5563"
+  style.fill: "#f8fafc"
+  
+  Follower: {
+    shape: circle
+    style.fill: "#f1f5f9"
+  }
+  
+  Candidate: {
+    shape: circle
+    style.stroke: "#ea580c"
+    style.stroke-width: 4
+    style.fill: "#fff7ed"
+  }
+  
+  Leader: {
+    shape: circle
+    style.double-border: true
+    style.fill: "#dcfce7"
+    style.stroke: "#16a34a"
+  }
+
+  Follower -> Candidate: "Election Timeout" {
+    label: "1. term++, voteSelf()"
+    style.bold: true
+    style.stroke: "#334155"
+  }
+  
+  Candidate -> Leader: "Quorum intersection" {
+    label: "2. recvdVotes > N/2"
+    style.stroke: "#16a34a"
+    style.stroke-width: 3
+  }
+  
+  Candidate -> Follower: "Discover higher term" {
+    style.stroke: "#dc2626"
+    style.stroke-dash: 3
+  }
+  
+  Leader -> Follower: "Step down (New term)" {
+    style.stroke: "#dc2626"
+    style.stroke-dash: 5
+  }
+  
+  Leader -> Candidate: "ILLEGAL TRANSITION" {
+    style.stroke: red
+    style.stroke-dash: 2
+    style.stroke-width: 2
+    label: "NOT PERMITTED"
+  }
+}
+
+# --- 3. RPC & DATA FLOWS ---
+RPC_Protocols: {
+  AppendEntries: {
+    shape: rectangle
+    class: logic
+    label: "AppendEntries (Heartbeat/Sync)"
+  }
+  
+  RequestVote: {
+    shape: rectangle
+    class: logic
+    label: "RequestVote (Election)"
+  }
+  
+  InstallSnapshot: {
+    shape: cylinder
+    class: storage_class
+    label: "InstallSnapshot (Catch-up)"
+  }
+}
+
+# --- 4. STRESS TEST TIMELINE & CHAOS ENGINE ---
+StressTestController: {
+  label: "Chaos Controller Deployment"
+  style.stroke: "#1e293b"
+  style.stroke-width: 2
+
+  Timeline: {
+    shape: sequence_diagram
+    
+    Client: {shape: person}
+    Leader_N1: Node 1 (Leader) {style.fill: "#bbf7d0"}
+    Follower_N2: Node 2 (Follower) {style.fill: "#bae6fd"}
+    ChaosMesh: Chaos Engine {class: error_state}
+    
+    Client -> Leader_N1: Put(Key, Val)
+    Leader_N1 -> Follower_N2: AppendEntries(T1, I10)
+    
+    ChaosMesh -> Leader_N1: PARTITION_NETWORK {
+      style.stroke: red
+      style.animated: true
+    }
+    
+    Leader_N1 -> Leader_N1: handle_term_mismatch() {
+      label: "Transition to Follower"
+    }
+    
+    Follower_N2 -> ChaosMesh: start_election()
+    ChaosMesh -> Follower_N2: SIMULATE_VOTE_QUORUM
+  }
+  
+  InvariantChecks: {
+    label: "Runtime Safety Assertions"
+    grid-columns: 2
+    
+    ElectionSafety: "Term Singleton Check" {class: data_field}
+    LogMatching: "Prefix Hash Match" {class: data_field}
+    LeaderCompleteness: "Commit Index Ptr" {class: data_field}
+    StateMachineSafety: "Execution Order" {class: data_field}
+  }
+}
+
+# --- 5. LOG INDEXING & SNAPSHOTS ---
+SnapshotLogic: {
+  direction: right
+  
+  PhysicalLog: "Active WAL Segments" {
+    grid-columns: 4
+    Entry_101: "Term 5" {style.fill: "#fee2e2"}
+    Entry_102: "Term 5" {style.fill: "#fee2e2"}
+    Entry_103: "Term 6" {style.fill: "#dcfce7"}
+    Entry_104: "Term 6" {style.fill: "#dcfce7"}
+  }
+  
+  LogIndexTranslation: |md
+    ### Addressing Logic
+    `PhysAddr = Base + (LogicalIdx - LastSnapIdx) * EntrySize`
+  |
+  
+  SnapshotFile: {
+    shape: cylinder
+    class: storage_class
+    label: "Snapshot (Idx: 102)"
+    Metadata: "LastIndex: 102, LastTerm: 5"
+    BytePayload: "FSM Image Bin"
+  }
+  
+  PhysicalLog -> LogIndexTranslation: "Logical Mapping"
+  LogIndexTranslation -> SnapshotFile: "Truncation Point"
+}
+
+# --- CONNECTIONS & ANNOTATIONS ---
+RaftState.offset_16 -> LogStructure: "Log Entry Head" {class: pointer}
+RPC_Protocols.AppendEntries -> RaftFSM.Leader: "Heartbeat Action"
+StressTestController.InvariantChecks -> RaftFSM: "Validates State"
+
+GlobalInvariants: |md
+  ## Raft Safety Properties (Specification Summary)
+  1. **Election Safety**: At most one leader can be elected in a given term.
+  2. **Leader Append-Only**: A leader never overwrites or deletes entries in its log; it only appends.
+  3. **Log Matching**: If two logs contain an entry with same index/term, logs are identical through that index.
+  4. **Leader Completeness**: If log entry is committed, it exists in leaders of all higher terms.
+  5. **State Machine Safety**: If a server applied an entry at index, no other server applies different entry at that index.
+| {
+  near: bottom-center
+  style: {
+    font-size: 14
+    fill: "#fffbeb"
+    stroke: "#f59e0b"
+  }
+}
+
+# Metadata / Tooltips
+RaftState.offset_00.tooltip: "Big-Endian int64. Incremented on every election start."
+RaftState.offset_08.tooltip: "UUID/Integer of the node voted for in current term."
+LogStructure.b20_23.tooltip: "Defines length of trailing byte array."

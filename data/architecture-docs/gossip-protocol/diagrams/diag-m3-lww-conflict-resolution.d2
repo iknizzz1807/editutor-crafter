@@ -1,0 +1,284 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Last-Write-Wins (LWW) Conflict Resolution
+  Concurrent updates resolved via logical timestamps + deterministic tiebreaker
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  scenario: {
+    direction: down
+    label: "Conflict Scenario"
+    context: {
+      width: 400
+      label: "Initial State"
+      code: |'text
+        Key: "config/timeout"
+        Value: "30s"
+        Version: 5
+        NodeID: "node-A"
+      '|
+    }
+    partition: {
+      width: 400
+      label: "Network Partition Occurs"
+      style.stroke-dash: 4
+      style.fill: "#FFF3CD"
+      code: |'text
+        ┌─────────────────┐    ┌─────────────────┐
+        │   Partition 1   │ ✕  │   Partition 2   │
+        │   {Node A, B}   │    │   {Node C, D}   │
+        └─────────────────┘    └─────────────────┘
+      '|
+    }
+  }
+  concurrent: {
+    direction: down
+    label: "Concurrent Writes"
+    write_a: {
+      width: 380
+      label: "Write on Node A (Partition 1)"
+      style.fill: "#E3F2FD"
+      code: |'go
+        // Local Lamport clock: 5 → 6
+        clock = clock + 1  // clock = 6
+        store.Set("config/timeout", "60s")
+        // Entry: {Key: "config/timeout",
+        //         Value: "60s",
+        //         Version: 6,
+        //         NodeID: "node-A"}
+      '|
+    }
+    write_c: {
+      width: 380
+      label: "Write on Node C (Partition 2)"
+      style.fill: "#FCE4EC"
+      code: |'go
+        // Local Lamport clock: 5 → 6
+        // (Same version! Partitioned, no sync)
+        clock = clock + 1  // clock = 6
+        store.Set("config/timeout", "90s")
+        // Entry: {Key: "config/timeout",
+        //         Value: "90s",
+        //         Version: 6,
+        //         NodeID: "node-C"}
+      '|
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  compare: {
+    direction: down
+    label: "Conflict Detection & Resolution"
+    entries: {
+      shape: sql_table
+      label: "Conflicting Entries"
+      width: 500
+      e1: "Entry A | Version: 6 | Value: \"60s\" | NodeID: \"node-A\""
+      e2: "Entry C | Version: 6 | Value: \"90s\" | NodeID: \"node-C\""
+      conflict: "CONFLICT: Same version, different values!"
+    }
+    resolver: {
+      shape: class
+      label: "ResolveConflict(local, remote) (state/store.go)"
+      width: 480
+      +ResolveConflict(local, remote): "*Entry"
+    }
+    rules: {
+      width: 480
+      label: "Resolution Rules"
+      code: |'go
+        func ResolveConflict(local, remote *Entry) *Entry {
+            // Rule 1: Higher version wins
+            if remote.Version > local.Version {
+                return remote  // remote is newer
+            }
+            if local.Version > remote.Version {
+                return local   // local is newer
+            }
+            // Rule 2: Versions equal → node ID tiebreaker
+            // Higher node ID wins (deterministic, all nodes agree)
+            if remote.NodeID > local.NodeID {
+                return remote
+            }
+            return local
+        }
+      '|
+    }
+  }
+  tiebreak: {
+    direction: down
+    label: "Tiebreaker Execution"
+    comparison: {
+      width: 450
+      label: "String Comparison"
+      style.fill: "#E8F5E9"
+      code: |'text
+        Entry A: NodeID = "node-A"
+        Entry C: NodeID = "node-C"
+        Comparison: "node-C" > "node-A"
+        Result: Entry C wins (higher NodeID)
+      '|
+    }
+    winner: {
+      shape: sql_table
+      label: "Winning Entry"
+      width: 450
+      style.fill: "#C8E6C9"
+      key: "Key | \"config/timeout\""
+      val: "Value | \"90s\""
+      ver: "Version | 6"
+      nid: "NodeID | \"node-C\""
+      note: "All nodes converge to this value"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  convergence: {
+    direction: down
+    label: "Convergence After Partition Heal"
+    heal: {
+      width: 900
+      label: "Anti-Entropy Exchange"
+      style.fill: "#E3F2FD"
+      code: |'text
+        Partition heals. Anti-entropy runs:
+        1. Node A sends digest: {"config/timeout": 6}
+        2. Node C sends digest: {"config/timeout": 6}
+        3. Both detect: same version, need full entry exchange
+        4. Both apply ResolveConflict():
+           - local.Version (6) == remote.Version (6)
+           - "node-C" > "node-A" → remote wins
+        5. Result: Both nodes store Entry C
+      '|
+    }
+    final_a: {
+      width: 420
+      label: "Node A Final State"
+      style.fill: "#C8E6C9"
+      code: |'go
+        // After conflict resolution
+        store.entries["config/timeout"] = &Entry{
+            Key:     "config/timeout",
+            Value:   []byte("90s"),  // Was "60s"
+            Version: 6,
+            NodeID:  "node-C",       // Origin tracked
+        }
+      '|
+    }
+    final_c: {
+      width: 420
+      label: "Node C Final State"
+      style.fill: "#C8E6C9"
+      code: |'go
+        // Already had winning entry
+        store.entries["config/timeout"] = &Entry{
+            Key:     "config/timeout",
+            Value:   []byte("90s"),  // Unchanged
+            Version: 6,
+            NodeID:  "node-C",
+        }
+      '|
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  properties: {
+    direction: down
+    label: "LWW Properties"
+    guarantees: {
+      shape: sql_table
+      label: "Guarantees"
+      width: 420
+      g1: "Determinism | All nodes reach same value"
+      g2: "Convergence | O(log N) rounds after partition heal"
+      g3: "No Coordination | No locks or consensus needed"
+      g4: "Simplicity | Single comparison operation"
+    }
+    tradeoffs: {
+      shape: sql_table
+      label: "Trade-offs"
+      width: 420
+      t1: "Data Loss | One concurrent write discarded"
+      t2: "No Causality | Logical time ≠ real time"
+      t3: "Tiebreaker Arbitrary | Node ID has no semantic meaning"
+      t4: "Not Suitable For | Counters, financial data"
+    }
+  }
+  alt: {
+    direction: down
+    label: "Alternative: Vector Clocks"
+    vc_explain: {
+      width: 450
+      label: "Detects Concurrency"
+      style.fill: "#FFF3CD"
+      style.stroke-dash: 4
+      code: |'text
+        Vector Clock: [A:2, B:1, C:3]
+        VC(A) < VC(B):  A happened-before B
+        VC(A) || VC(B): A and B are concurrent
+        Concurrent writes can be:
+        - Presented to application for merge
+        - Stored as siblings (CRDT approach)
+        - Merged via type-specific logic
+      '|
+    }
+    vc_cost: {
+      shape: sql_table
+      label: "Vector Clock Cost"
+      width: 450
+      c1: "Space | O(N) per key (N = cluster size)"
+      c2: "Complexity | Partial order comparison"
+      c3: "Churn | Vector grows with membership"
+    }
+  }
+}
+scenario.context -> concurrent.write_a: "Partition isolates"
+scenario.context -> concurrent.write_c: "Partition isolates"
+concurrent.write_a -> compare.entries: "Entry A"
+concurrent.write_c -> compare.entries: "Entry C"
+compare.rules -> tiebreak.comparison: "Versions equal, use tiebreaker"
+tiebreak.winner -> convergence.final_a: "Node A accepts"
+tiebreak.winner -> convergence.final_c: "Node C keeps"
+convergence.final_a -> properties.guarantees: "Both converge to \"90s\""
+legend: {
+  near: bottom-right
+  direction: right
+  blue: {
+    shape: rectangle
+    width: 20
+    height: 20
+    style.fill: "#E3F2FD"
+  }
+  blue_label: "Partition 1 / Node A"
+  pink: {
+    shape: rectangle
+    width: 20
+    height: 20
+    style.fill: "#FCE4EC"
+  }
+  pink_label: "Partition 2 / Node C"
+  green: {
+    shape: rectangle
+    width: 20
+    height: 20
+    style.fill: "#C8E6C9"
+  }
+  green_label: "Converged state"
+}

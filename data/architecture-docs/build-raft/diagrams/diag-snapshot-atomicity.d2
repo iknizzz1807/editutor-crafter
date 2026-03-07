@@ -1,0 +1,210 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## Snapshot Atomicity: The Critical Sequence
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  before: {
+    direction: down
+    label: "Before Snapshot"
+    log_before: {
+      shape: sql_table
+      label: "Log (in memory)"
+      e1: "1 | term:1 | cmd: set x=1"
+      e2: "2 | term:1 | cmd: set y=2"
+      e3: "3 | term:1 | cmd: set z=3"
+      e4: "4 | term:2 | cmd: set x=10"
+      e5: "5 | term:2 | cmd: set y=20"
+      note1: "... entries 6-10000"
+      sz: "Total: ~1MB in memory"
+    }
+    state_before: {
+      shape: class
+      label: "StateMachine"
+      data: "map[string]string"
+      x: "10"
+      y: "20"
+      z: "3"
+    }
+  }
+  arrow_start: {
+    shape: text
+    label: "→"
+    style.font-size: 40
+  }
+  step1: {
+    label: "Step 1: Create Snapshot"
+    width: 380
+    code: |'go
+      // Capture state machine at commitIndex
+      snapshot := &Snapshot{
+        Metadata: SnapshotMetadata{
+          LastIncludedIndex: 10000,
+          LastIncludedTerm:  2,
+        },
+        Data: stateMachine.Snapshot(),
+      }
+      // Snapshot now in memory
+      // Log still intact - recovery possible
+    '|
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step2: {
+    label: "Step 2: Persist to Disk"
+    width: 380
+    code: |'go
+      tmpPath := path + ".tmp"
+      file, _ := os.Create(tmpPath)
+      file.Write(snapshotBytes)
+      // CRITICAL: fsync before closing
+      file.Sync()  // ← Blocks until on disk
+      file.Close()
+      // Atomic rename makes it visible
+      os.Rename(tmpPath, path)
+    '|
+  }
+  arrow2: {
+    shape: text
+    label: "→"
+    style.font-size: 40
+  }
+  disk_state: {
+    direction: down
+    label: "Disk State After Step 2"
+    disk_snapshot: {
+      shape: cylinder
+      label: "snapshot.dat\n(index: 10000)"
+      style.fill: "#ACE1AF"
+    }
+    disk_log: {
+      shape: cylinder
+      label: "raft.state\n(log: 1-10000)"
+      style.fill: "#ACE1AF"
+    }
+    note_safe: {
+      shape: text
+      label: "✓ Both old log AND new snapshot exist\n✓ Recovery path preserved"
+      style.fill: "#ACE1AF"
+      style.stroke: green
+      style.stroke-width: 2
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step3: {
+    label: "Step 3: Truncate Log (Only After Persist!)"
+    width: 380
+    code: |'go
+      // NOW safe to truncate
+      newLog := make([]LogEntry, 1)
+      for i := 10001; i <= lastIndex; i++ {
+        newLog = append(newLog, log[i])
+      }
+      log = newLog
+      // Persist truncated log
+      persist()
+    '|
+  }
+  arrow3: {
+    shape: text
+    label: "→"
+    style.font-size: 40
+  }
+  after: {
+    direction: down
+    label: "After Atomic Snapshot"
+    log_after: {
+      shape: sql_table
+      label: "Log (compacted)"
+      dummy: "0 | — | (dummy)"
+      e10001: "10001 | term:3 | cmd: ..."
+      e10002: "10002 | term:3 | cmd: ..."
+      sz2: "Total: ~1KB in memory"
+    }
+    snapshot_meta: {
+      shape: sql_table
+      label: "Snapshot Metadata"
+      idx: "lastIncludedIndex: 10000"
+      term: "lastIncludedTerm: 2"
+      ptr: "data → snapshot.dat"
+    }
+    log_after.style.fill: "#E8F5E9"
+    snapshot_meta.style.fill: "#E8F5E9"
+  }
+}
+row1.step1 -> row2.step2: "snapshot ready\nin memory"
+row2.step2 -> row3.step3: "snapshot durable\non disk"
+danger_zone: {
+  label: "⚠️ DANGER ZONE: Truncating Before Persist"
+  width: 450
+  style.fill: "#FFEBEE"
+  style.stroke: red
+  style.stroke-width: 2
+  danger_flow: {
+    direction: right
+    style.fill: transparent
+    style.stroke: transparent
+    d1: {
+      shape: diamond
+      label: "Truncate log\nBEFORE persist?"
+      style.fill: "#FFCDD2"
+    }
+    d2: {
+      shape: diamond
+      label: "Crash?"
+      style.fill: "#FFCDD2"
+    }
+    d3: {
+      shape: diamond
+      label: "Restart?"
+      style.fill: "#FFCDD2"
+    }
+    d4: {
+      shape: rectangle
+      label: "SAFETY VIOLATION\n\n• Log entries 1-10000: GONE\n• Snapshot: DOES NOT EXIST\n• Committed data: LOST FOREVER"
+      style.fill: red
+      style.font-color: white
+    }
+    d1 -> d2: "yes"
+    d2 -> d3: "yes"
+    d3 -> d4: "Recovery fails"
+  }
+}
+safety_invariant: {
+  label: "✓ Safety Invariant"
+  width: 450
+  style.fill: "#E8F5E9"
+  style.stroke: green
+  style.stroke-width: 2
+  inv_text: {
+    shape: text
+    label: |md
+      **At any point in time, one of these must be true:**
+      1. Old log exists (recovery via replay)
+      2. New snapshot exists (recovery via restore)
+      3. Both exist (recovery via snapshot + remaining log)
+      **Never:** Neither exists → data loss
+    |
+  }
+}
+row3.after -> safety_invariant: "Correct sequence\npreserves invariant"
+danger_zone -> row2: "AVOID THIS\n" {
+  style.stroke: red
+  style.stroke-dash: 4
+  style.animated: true
+}

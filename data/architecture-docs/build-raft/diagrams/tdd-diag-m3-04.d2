@@ -1,0 +1,206 @@
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+  colors: {
+    success: "#2E7D32"
+    danger: "#C62828"
+    warning: "#F57C00"
+    info: "#1565C0"
+    purple: "#6A1B9A"
+    gray: "#546E7A"
+    header: "#6A1B9A"
+    data: "#1565C0"
+    free: "#2E7D32"
+    padding: "#9E9E9E"
+    pointer: "#EF6C00"
+    surface: "#FAFAFA"
+  }
+}
+
+title: |md
+  # Raft Persistence Spec: Snapshot Atomicity
+  ## Memory Layout, Sequence Invariants, and Recovery Logic
+| {
+  near: top-center
+  style.font-size: 24
+}
+
+direction: right
+
+# -----------------------------------------------------------------------------
+# 1. PHYSICAL MEMORY & DISK LAYOUT (Binary Specification)
+# -----------------------------------------------------------------------------
+snapshot_format: {
+  label: "BINARY SPECIFICATION: SNAPSHOT FILE v1.0"
+  shape: sql_table
+  style: {
+    fill: "white"
+    stroke: ${colors.purple}
+    stroke-width: 2
+  }
+  
+  "Offset" : "Field Name" {constraint: "Size (Bytes)"}
+  "0x00" : "MAGIC_BYTES (0x534E4150)" {constraint: "4B"}
+  "0x04" : "SCHEMA_VERSION" {constraint: "4B"}
+  "0x08" : "LAST_INCLUDED_INDEX (N)" {constraint: "8B (uint64)"}
+  "0x10" : "LAST_INCLUDED_TERM (T)" {constraint: "8B (uint64)"}
+  "0x18" : "CLUSTER_CONFIG_LENGTH" {constraint: "4B (uint32)"}
+  "0x1C" : "CLUSTER_CONFIG_VOTERS" {constraint: "Variable (Protobuf)"}
+  "0xXX" : "STATE_MACHINE_SNAPSHOT" {constraint: "Variable (Opaque)"}
+  "0xYY" : "CRC32_CHECKSUM" {constraint: "4B (IEEE)"}
+
+  *.style.font-size: 14
+}
+
+# -----------------------------------------------------------------------------
+# 2. ALGORITHM STATE TRANSITIONS (Workflow Logic)
+# -----------------------------------------------------------------------------
+algorithm_flow: {
+  label: "ATOMIC PERSISTENCE SEQUENCE"
+  style.fill: ${colors.surface}
+  style.stroke: ${colors.gray}
+  
+  step1: {
+    label: "1. SERIALIZE"
+    sm: "State Machine"
+    mem: "Buffer (RAM)"
+    sm -> mem: "snapshot_to_buffer()"
+    style.fill: "#E1F5FE"
+  }
+
+  step2: {
+    label: "2. PERSIST (Atomic)"
+    temp: "snapshot.tmp"
+    stable: "snapshot.bin"
+    temp -> stable: "fsync() then rename()"
+    style.fill: "#FFF9C4"
+    style.stroke: ${colors.warning}
+  }
+
+  step3: {
+    label: "3. UPDATE METADATA"
+    meta: "Raft State"
+    meta.last_idx: "N"
+    meta.last_term: "T"
+    style.fill: "#F3E5F5"
+  }
+
+  step4: {
+    label: "4. TRUNCATE LOG"
+    log: "Log Entries"
+    log.range: "Discard [0...N]"
+    style.fill: "#FFEBEE"
+    style.stroke: ${colors.danger}
+  }
+
+  step1 -> step2 -> step3 -> step4: "Ordering Requirement"
+}
+
+# -----------------------------------------------------------------------------
+# 3. FAILURE ANALYSIS (Crash Scenarios)
+# -----------------------------------------------------------------------------
+failure_scenarios: {
+  grid-columns: 2
+  grid-gap: 20
+  
+  scenario_a: {
+    label: "CASE: CRASH BEFORE TRUNCATE"
+    style.fill: "#E8F5E9"
+    crash: "💥 CRASH" {shape: diamond; style.fill: ${colors.danger}; style.font-color: white}
+    on_disk: "Disk: Log[1..M] + Snap[N]"
+    recovery: "SAFE" {
+      label: "Node reloads Snapshot N\nand replays Log from N+1."
+      style.fill: ${colors.success}
+      style.font-color: white
+    }
+    crash -> on_disk -> recovery
+  }
+
+  scenario_b: {
+    label: "CASE: BUG (PRE-TRUNCATE)"
+    style.fill: "#FFEBEE"
+    bug: "Truncate [1..N] First" {style.stroke: ${colors.danger}; style.bold: true}
+    crash: "💥 CRASH" {shape: diamond; style.fill: ${colors.danger}; style.font-color: white}
+    loss: "FATAL: DATA LOSS" {
+      label: "Snapshot N never finished fsync.\nLog entries 1..N are gone."
+      style.fill: ${colors.danger}
+      style.font-color: white
+    }
+    bug -> crash -> loss
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 4. RECOVERY SEQUENCE (Runtime Call Sequence)
+# -----------------------------------------------------------------------------
+recovery_flow: {
+  label: "RECOVERY CALL GRAPH"
+  shape: sequence_diagram
+  
+  Storage: {shape: cylinder}
+  Raft: {shape: person}
+  StateMachine: {shape: rectangle}
+
+  Raft -> Storage: "ReadMeta(raft_state.json)"
+  Storage -- Raft: "Return {Term, Vote, LastIdx}"
+  
+  Raft -> Storage: "FindLatestSnapshot()"
+  Storage -- Raft: "Snap_N.bin found"
+  
+  Raft -> StateMachine: "ApplySnapshot(Snap_N)"
+  StateMachine -> Raft: "Status: OK"
+  
+  Raft -> Storage: "SeekLog(Index = N+1)"
+  Storage -- Raft: "Entries [N+1...M]"
+  
+  loop: "Replay remaining log" {
+    Raft -> StateMachine: "Apply(Entry_i)"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 5. ATOMICITY RULES & ANNOTATIONS
+# -----------------------------------------------------------------------------
+# FIXED: Changed 'near' from relative object reference (illegal in ELK) to absolute constant.
+atomicity_note: |md
+  ### THE IRREVERSIBILITY RULE
+  Log truncation is **permanent**. Any entry discarded from the log 
+  **MUST** exist in a durable, fsynced snapshot file before `truncate()` is called.
+
+  **Implementation Steps:**
+  1. `snapshot.write(state_machine_data)`
+  2. `snapshot.fsync()`
+  3. `os.rename("snapshot.tmp", "snapshot.bin")`
+  4. `log.discard_prefix(N)`
+  5. `log.fsync_metadata()`
+| {
+  near: bottom-left
+  style: {
+    fill: "#FFFDE7"
+    stroke: ${colors.warning}
+    stroke-width: 2
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 6. LEGEND & COMPONENT METADATA
+# -----------------------------------------------------------------------------
+legend: {
+  near: bottom-right
+  l1: "Purple: Persistent Binary Format" {style.fill: ${colors.purple}; style.font-color: white}
+  l2: "Red: Irreversible / Danger Zone" {style.fill: ${colors.danger}; style.font-color: white}
+  l3: "Green: Correct / Safe State" {style.fill: ${colors.success}; style.font-color: white}
+  l4: "Yellow: Mutable / Temp State" {style.fill: ${colors.warning}; style.font-color: white}
+}
+
+# Structural Cross-References
+algorithm_flow.step2 -> snapshot_format: "Generates File" {style.stroke-dash: 3}
+algorithm_flow.step4 -> failure_scenarios.scenario_b: "Failure Point" {
+  style.stroke: ${colors.danger}
+  style.animated: true
+}

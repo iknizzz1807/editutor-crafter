@@ -1,0 +1,213 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    sketch: false
+    pad: 20
+  }
+}
+
+title: |md
+  # Cache Warming Priority Queue Architecture
+  **Technical Design Specification - Intel Manual Quality**
+  *Optimized for L3 Cache Alignment & High-Concurrency Throughput*
+| {
+  near: top-center
+  shape: text
+}
+
+# -----------------------------------------------------------------------------------------
+# 1. MEMORY LAYOUT DEFINITIONS
+# -----------------------------------------------------------------------------------------
+
+WarmingTask: {
+  shape: sql_table
+  label: "Memory Layout: warming_task_t (Aligned 64B)"
+  style: {
+    stroke: orange
+    stroke-width: 4
+    fill: "#f8f9fa"
+  }
+  
+  # Offsets | Field Name [Type] | Size/Constraint
+  "0x00": "Key Buffer [char[32]]" {constraint: "32B"}
+  "0x20": "Priority [uint8_t]" {constraint: "1B"}
+  "0x21": "Tier [uint8_t]" {constraint: "1B"}
+  "0x22": "Memory Padding" {constraint: "2B (Grey)"}
+  "0x24": "CreatedAt [int64_t]" {constraint: "8B"}
+  "0x2C": "Expiration TTL [int32_t]" {constraint: "4B"}
+  "0x30": "Metadata Ptr [uintptr_t]" {constraint: "8B"}
+  "0x38": "Cache Line Padding" {constraint: "8B"}
+
+  # Styling the specific layout cells
+  "0x00".style.fill: "#cfecff"
+  "0x20".style.fill: "#ffcfcf"
+  "0x21".style.fill: "#ffcfcf"
+  "0x22".style.fill: "#e0e0e0"
+  "0x24".style.fill: "#cfecff"
+  "0x30".style.fill: "#fff0cf"
+  "0x38".style.fill: "#e0e0e0"
+}
+
+# -----------------------------------------------------------------------------------------
+# 2. PRIORITY QUEUE TIERING & SCHEDULER
+# -----------------------------------------------------------------------------------------
+
+Warming_Scheduler: {
+  style.fill: "#f5f5f5"
+  
+  Priority_Queue: {
+    label: "Min-Max Heap Array\nCapacity: 10,000 Nodes"
+    style.stroke-width: 2
+    
+    P10: Critical Tier {
+      label: "Priority 10: Critical\nSLA: < 50ms\nTop 100 Hot-Keys"
+      style.fill: "#ffcfcf"
+      style.stroke: red
+      style.bold: true
+    }
+    
+    P5: Important Tier {
+      label: "Priority 5: Warm\nSLA: < 30s\nBatch Size: 500"
+      style.fill: "#fff0cf"
+      style.stroke: orange
+    }
+    
+    P1: Normal Tier {
+      label: "Priority 1: Background\nSLA: 5m\nLRU Candidates"
+      style.fill: "#cfecff"
+      style.stroke: blue
+    }
+    
+    P0: On_Access {
+      label: "Priority 0\nOn-Demand Only"
+      style.stroke-dash: 3
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# 3. EXECUTION ENGINE (WORKER POOL)
+# -----------------------------------------------------------------------------------------
+
+Execution_Engine: {
+  style.fill: "#eef2f3"
+  style.stroke: "#333333"
+  
+  Rate_Limiter: {
+    shape: hexagon
+    label: "Token Bucket\nRate Limiter"
+    tooltip: "100 TPS Hard Cap"
+    style.fill: "#6a0dad"
+    style.font-color: white
+  }
+
+  Worker_Pool: {
+    label: "Prefetch Worker Pool"
+    grid-columns: 2
+    W1: "Worker_01"
+    W2: "Worker_02"
+    W3: "Worker_03"
+    W_N: "Worker_10"
+    
+    style.multiple: true
+    style.fill: "#dae8fc"
+    style.stroke: "#6c8ebf"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# 4. EXTERNAL STORAGE LAYER
+# -----------------------------------------------------------------------------------------
+
+Storage_Layer: {
+  Distributed_Cache: {
+    shape: cylinder
+    label: "M1 Global Cache\n(Redis/Memcached)"
+    style.fill: "#d5e8d4"
+    style.stroke: "#82b366"
+  }
+  
+  Main_Database: {
+    shape: cylinder
+    label: "System of Record\n(PostgreSQL/NVMe)"
+    style.fill: "#f8cecc"
+    style.stroke: "#b85450"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# 5. DATA FLOW & SYSTEM INTERACTIONS
+# -----------------------------------------------------------------------------------------
+
+# Ingestion Flow
+"Ingest_Source: API/Metrics" -> Warming_Scheduler.Priority_Queue: "Push(Key, Prio)" {
+  style: {
+    stroke: orange
+    stroke-width: 3
+    animated: true
+  }
+}
+
+# Heap Pop
+Warming_Scheduler.Priority_Queue -> Execution_Engine.Worker_Pool: "Pop_Highest()" {
+  style.stroke-width: 2
+  label: "Atomic Move"
+}
+
+# Synchronization / Rate Limiting
+Execution_Engine.Worker_Pool -> Execution_Engine.Rate_Limiter: "AcquireToken()" {
+  style.stroke: purple
+}
+
+# Execution Logic
+Execution_Engine.Worker_Pool -> Storage_Layer.Distributed_Cache: "1. EXISTS?" {
+  style.stroke-dash: 3
+}
+
+Execution_Engine.Worker_Pool -> Storage_Layer.Main_Database: "2. FETCH_BLOB" {
+  style: {
+    stroke: red
+    stroke-width: 2
+  }
+}
+
+Storage_Layer.Main_Database -> Execution_Engine.Worker_Pool: "Data Payload"
+
+Execution_Engine.Worker_Pool -> Storage_Layer.Distributed_Cache: "3. PSETEX(Key, Val, TTL)" {
+  style: {
+    stroke: "#228b22"
+    stroke-width: 3
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# 6. SYSTEM SPECIFICATIONS (LEGEND)
+# -----------------------------------------------------------------------------------------
+
+System_Specs: {
+  near: bottom-right
+  
+  Technical_Constraints: |md
+    ### Operational Constants
+    - **struct_size:** 64 Bytes (64-bit platform)
+    - **alignment:** __attribute__((aligned(64)))
+    - **max_heap_depth:** 14 levels (16,384 nodes)
+    - **worker_timeout:** 5000ms (SIGALRM)
+    - **backpressure_policy:** 
+      - *Level 1:* Drop P0 tasks
+      - *Level 2:* Caller-runs for P1
+  |
+  
+  style: {
+    stroke: "#333333"
+    fill: "#ffffeb"
+    stroke-width: 2
+  }
+}
+
+# Global Formatting overrides
+***.style.font: mono
+(*** -> ***)[*].style.font-size: 11
+(*** -> ***)[*].style.bold: true

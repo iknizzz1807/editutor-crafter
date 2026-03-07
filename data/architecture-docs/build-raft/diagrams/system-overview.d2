@@ -1,0 +1,383 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_shared: {
+    direction: down
+    label: "SHARED PACKAGES"
+    types: {
+      shape: sql_table
+      label: "struct LogEntry (01_types.go) [M1]"
+      term: "int | term when entry received"
+      command: "interface{} | state machine command"
+      index: "int | logical position (1-indexed)"
+      sz: "Total: 32 bytes"
+    }
+    state_enum: {
+      shape: sql_table
+      label: "enum State (01_types.go) [M1]"
+      follower: "iota | default state"
+      candidate: "1 | seeking election"
+      leader: "2 | won election"
+      sz: "Total: 4 bytes"
+    }
+    persister: {
+      shape: class
+      label: "interface Persister (03_persister.go) [M1]"
+      +SaveRaftState: "error | state []byte"
+      +ReadRaftState: "([]byte, error)"
+      +SaveSnapshot: "error | snapshot *Snapshot"
+      +ReadSnapshot: "(*Snapshot, error)"
+      +SnapshotExists: "bool"
+    }
+    state_machine: {
+      shape: class
+      label: "interface StateMachine (22_kv_state_machine.go) [M4]"
+      +Apply: "interface{} | command interface{}"
+      +Snapshot: "[]byte"
+      +RestoreSnapshot: "error | data []byte"
+      +Get: "(interface{}, bool) | key string"
+    }
+  }
+  layer_persistence: {
+    direction: down
+    label: "PERSISTENCE LAYER"
+    file_persister: {
+      shape: class
+      label: "FilePersister (03_persister.go) [M1-M3]"
+      -raftStatePath: "string"
+      -snapshotPath: "string"
+      -mu: "sync.Mutex"
+      +SaveRaftState: "error | state []byte"
+      +ReadRaftState: "([]byte, error)"
+      +SaveSnapshot: "error | snapshot *Snapshot"
+      +ReadSnapshot: "(*Snapshot, error)"
+    }
+    persistent_state: {
+      shape: sql_table
+      label: "struct PersistentState (01_types.go) [M1]"
+      currentTerm: "int | json:currentTerm"
+      votedFor: "string | json:votedFor"
+      log: "[]LogEntry | json:log"
+      lastIncludedIndex: "int | json:lastIncludedIndex [M3]"
+      lastIncludedTerm: "int | json:lastIncludedTerm [M3]"
+      sz: "Total: 48+ bytes"
+    }
+    snapshot: {
+      shape: sql_table
+      label: "struct Snapshot (01_types.go) [M3]"
+      metadata: "SnapshotMetadata | lastIncludedIndex/Term"
+      data: "[]byte | state machine state"
+      sz: "Total: 16+len(data)"
+    }
+    snapshot_metadata: {
+      shape: sql_table
+      label: "struct SnapshotMetadata [M3]"
+      lastIncludedIndex: "int | json:lastIncludedIndex"
+      lastIncludedTerm: "int | json:lastIncludedTerm"
+      sz: "Total: 16 bytes"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_m1: {
+    direction: down
+    label: "M1: LEADER ELECTION"
+    raft_node_m1: {
+      shape: class
+      label: "struct RaftNode (04_node.go) [M1]"
+      -mu: "sync.RWMutex"
+      -currentTerm: "int | persistent"
+      -votedFor: "string | persistent"
+      -log: "[]LogEntry | persistent"
+      -commitIndex: "int | volatile"
+      -lastApplied: "int | volatile"
+      -id: "string | node identifier"
+      -peers: "[]string | peer IDs"
+      -state: "State | Follower/Candidate/Leader"
+      -electionTimeout: "time.Duration | randomized"
+      -electionTimer: "*time.Timer"
+      -heartbeatInterval: "time.Duration | 50ms default"
+      -persister: "Persister | stable storage"
+      +Start: "void"
+      +Stop: "void"
+      +RequestVote: "error | args, reply"
+      +AppendEntries: "error | args, reply"
+      +getCurrentTerm: "int"
+      +getState: "State"
+    }
+    request_vote_args: {
+      shape: sql_table
+      label: "struct RequestVoteArgs (07_requestvote.go) [M1]"
+      term: "int | candidate's term"
+      candidateId: "string | candidate ID"
+      lastLogIndex: "int | last log index"
+      lastLogTerm: "int | last log term"
+      sz: "Total: 40 bytes"
+    }
+    request_vote_reply: {
+      shape: sql_table
+      label: "struct RequestVoteReply [M1]"
+      term: "int | responder's term"
+      voteGranted: "bool | vote decision"
+      sz: "Total: 16 bytes"
+    }
+    append_entries_args: {
+      shape: sql_table
+      label: "struct AppendEntriesArgs (08_appendentries.go) [M1-M2]"
+      term: "int | leader's term"
+      leaderId: "string | for redirect"
+      prevLogIndex: "int | index before entries"
+      prevLogTerm: "int | term at prevLogIndex"
+      entries: "[]LogEntry | entries to store"
+      leaderCommit: "int | leader's commitIndex"
+      sz: "Total: 48+ bytes"
+    }
+  }
+  layer_m2: {
+    direction: down
+    label: "M2: LOG REPLICATION"
+    raft_node_m2: {
+      shape: class
+      label: "struct RaftNode Leader State [M2]"
+      -nextIndex: "[]int | per peer next entry"
+      -matchIndex: "[]int | per peer replicated"
+      -replicateCh: "chan struct{}"
+      -applyCond: "*sync.Cond"
+      +sendAppendEntriesToPeer: "void | peerIdx int"
+      +handleAppendEntriesReply: "void | peerIdx, args, reply"
+      +maybeAdvanceCommitIndex: "bool"
+      +isQuorumReplicated: "bool | index int"
+    }
+    append_entries_reply: {
+      shape: sql_table
+      label: "struct AppendEntriesReply [M2]"
+      term: "int | responder's term"
+      success: "bool | log matched"
+      conflictTerm: "int | conflicting term"
+      conflictIndex: "int | conflict position"
+      sz: "Total: 32 bytes"
+    }
+    apply_msg: {
+      shape: sql_table
+      label: "struct ApplyMsg (01_types.go) [M2]"
+      commandValid: "bool | true for command"
+      command: "interface{} | command to apply"
+      commandIndex: "int | log index"
+      response: "interface{} | result [M4]"
+      sz: "Total: 48 bytes"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_m3: {
+    direction: down
+    label: "M3: LOG COMPACTION"
+    raft_node_m3: {
+      shape: class
+      label: "struct RaftNode Snapshot State [M3]"
+      -snapshot: "*Snapshot | current snapshot"
+      -lastIncludedIndex: "int | snapshot boundary"
+      -lastIncludedTerm: "int | term at boundary"
+      -snapshotThreshold: "int | trigger threshold"
+      +maybeSnapshot: "bool"
+      +takeSnapshotLocked: "error | index int"
+      +logIndexToSlice: "int | logicalIndex int"
+      +sliceToLogIndex: "int | sliceIndex int"
+      +logEntry: "(LogEntry, bool) | logicalIndex"
+      +logTerm: "int | logicalIndex"
+      +logLastIndex: "int"
+      +logLength: "int"
+    }
+    install_snapshot_args: {
+      shape: sql_table
+      label: "struct InstallSnapshotArgs (17_installsnapshot.go) [M3]"
+      term: "int | leader's term"
+      leaderId: "string | leader ID"
+      lastIncludedIndex: "int | snapshot boundary"
+      lastIncludedTerm: "int | term at boundary"
+      data: "[]byte | snapshot data"
+      sz: "Total: 48+len(data)"
+    }
+    install_snapshot_reply: {
+      shape: sql_table
+      label: "struct InstallSnapshotReply [M3]"
+      term: "int | follower's term"
+      sz: "Total: 8 bytes"
+    }
+  }
+  layer_m4: {
+    direction: down
+    label: "M4: CLIENT INTERFACE"
+    client_command_args: {
+      shape: sql_table
+      label: "struct ClientCommandArgs (19_client_rpc.go) [M4]"
+      clientId: "string | unique client ID"
+      sequenceNumber: "int64 | monotonic per client"
+      command: "interface{} | application command"
+      sz: "Total: 32 bytes"
+    }
+    client_command_reply: {
+      shape: sql_table
+      label: "struct ClientCommandReply [M4]"
+      success: "bool | committed and applied"
+      leaderId: "string | for redirect"
+      wrongLeader: "bool | not leader"
+      response: "interface{} | app response"
+      error: "string | error message"
+      sz: "Total: 48 bytes"
+    }
+    raft_node_m4: {
+      shape: class
+      label: "struct RaftNode Client State [M4]"
+      -pendingCommands: "map[int]chan *CommandResult"
+      -knownLeaderId: "string | leader hint"
+      -readIndexPending: "map[int64]chan struct{}"
+      -sessionState: "*SessionState"
+      +SubmitCommand: "error | args, reply"
+      +SubmitCommandSync: "(*ClientCommandReply, error)"
+      +Read: "error | args, reply"
+      +confirmLeadership: "error | readIndex int"
+    }
+    session_state: {
+      shape: sql_table
+      label: "struct SessionState (20_dedup.go) [M4]"
+      sessions: "map[string]*ClientSession | clientId -> session"
+      sz: "Total: 8 bytes + entries"
+    }
+    client_session: {
+      shape: sql_table
+      label: "struct ClientSession [M4]"
+      lastSequence: "int64 | highest processed"
+      lastResponse: "interface{} | cached response"
+      lastActive: "time.Time | for expiration"
+      sz: "Total: 48 bytes"
+    }
+    kv_store: {
+      shape: class
+      label: "KVStore (22_kv_state_machine.go) [M4]"
+      -mu: "sync.RWMutex"
+      -data: "map[string]interface{}"
+      -sessions: "map[string]*ClientSession"
+      +Apply: "interface{} | command interface{}"
+      +Get: "(interface{}, bool) | key string"
+      +Snapshot: "[]byte"
+      +RestoreSnapshot: "error | data []byte"
+      -checkDuplicate: "(interface{}, bool)"
+      -recordCommand: "void"
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_m5: {
+    direction: down
+    label: "M5: TESTING INFRASTRUCTURE"
+    invariant_checker: {
+      shape: class
+      label: "InvariantChecker (03_invariant_checker.go) [M5]"
+      -mu: "sync.RWMutex"
+      -nodes: "[]*RaftNode"
+      -running: "bool"
+      -committedEntries: "map[int]LogEntry"
+      -violations: "[]Violation"
+      -checkCount: "int64"
+      +Start: "void"
+      +Stop: "void"
+      +CheckElectionSafety: "error"
+      +CheckLeaderCompleteness: "error"
+      +CheckLogMatching: "error"
+      +CheckStateMachineSafety: "error"
+      +HasViolations: "bool"
+      +GetViolations: "[]Violation"
+    }
+    chaos_controller: {
+      shape: class
+      label: "ChaosController (08_chaos_controller.go) [M5]"
+      -mu: "sync.Mutex"
+      -cluster: "*TestCluster"
+      -config: "ChaosConfig"
+      -killedNodes: "map[int]bool"
+      -partitions: "[][]int"
+      -rand: "*rand.Rand"
+      +Start: "void"
+      +Stop: "void"
+      +KillNode: "error | nodeIdx int"
+      +RestartNode: "error | nodeIdx int"
+      +CreatePartition: "error | groups [][]int"
+      +HealAllPartitions: "void"
+      +GetFailureHistory: "[]FailureEvent"
+    }
+    test_cluster: {
+      shape: class
+      label: "TestCluster (01_cluster.go) [M5]"
+      -mu: "sync.RWMutex"
+      -nodes: "[]*RaftNode"
+      -persisters: "[]*TestPersister"
+      -network: "*SimulatedNetwork"
+      -started: "bool"
+      +Start: "void"
+      +Stop: "void"
+      +StopNode: "error | nodeIdx int"
+      +StartNode: "error | nodeIdx int"
+      +FindLeader: "*RaftNode"
+      +FindAllLeaders: "[]*RaftNode"
+      +PartitionNode: "error | nodeIdx int"
+      +PartitionBetween: "error | groupA, groupB"
+      +HealAllPartitions: "void"
+    }
+    violation: {
+      shape: sql_table
+      label: "struct Violation (03_invariant_checker.go) [M5]"
+      id: "int64 | unique ID"
+      timestamp: "time.Time | when detected"
+      type: "ViolationType | which invariant"
+      message: "string | description"
+      state: "map[string]NodeState | snapshot"
+      sz: "Total: 80+ bytes"
+    }
+  }
+}
+layer_shared.types -> layer_persistence.persistent_state: "LogEntry[]"
+layer_persistence.persistent_state -> layer_m1.raft_node_m1: "persisted fields"
+layer_persistence.snapshot -> layer_m3.raft_node_m3: "Snapshot"
+layer_m1.raft_node_m1 -> layer_m2.raft_node_m2: "extends"
+layer_m2.raft_node_m2 -> layer_m3.raft_node_m3: "extends"
+layer_m3.raft_node_m3 -> layer_m4.raft_node_m4: "extends"
+layer_m1.request_vote_args -> layer_m1.raft_node_m1: "RequestVote RPC"
+layer_m1.raft_node_m1 -> layer_m1.request_vote_reply: "vote response"
+layer_m2.append_entries_args -> layer_m1.raft_node_m1: "AppendEntries RPC"
+layer_m1.raft_node_m1 -> layer_m2.append_entries_reply: "AE response"
+layer_m3.install_snapshot_args -> layer_m3.raft_node_m3: "InstallSnapshot RPC"
+layer_m3.raft_node_m3 -> layer_m3.install_snapshot_reply: "IS response"
+layer_m4.client_command_args -> layer_m4.raft_node_m4: "client command"
+layer_m4.raft_node_m4 -> layer_m4.client_command_reply: "command response"
+layer_m4.session_state -> layer_m4.kv_store: "dedup state"
+layer_m5.test_cluster -> layer_m5.invariant_checker: "nodes[]"
+layer_m5.test_cluster -> layer_m5.chaos_controller: "cluster"
+layer_shared.state_machine -> layer_m4.kv_store: "implemented by"
+layer_shared.persister -> layer_persistence.file_persister: "implemented by"
+milestone_index: {
+  shape: sql_table
+  label: "Milestone Index"
+  m1: "M1 | build-raft-m1 | Leader Election & Persistence"
+  m2: "M2 | build-raft-m2 | Log Replication"
+  m3: "M3 | build-raft-m3 | Log Compaction (Snapshotting)"
+  m4: "M4 | build-raft-m4 | Client Interface & Linearizability"
+  m5: "M5 | build-raft-m5 | Safety Verification & Stress Testing"
+}

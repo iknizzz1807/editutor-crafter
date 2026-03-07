@@ -1,0 +1,221 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: |md
+    # KVStateMachine Architecture
+    **Linearizable Key-Value Store with Session-Based Deduplication**
+    *Exactly-Once Semantics via Raft Log Interaction*
+  |
+  near: top-center
+}
+
+# --- PRIMARY COMPONENT ---
+
+KVStateMachine: {
+  tooltip: "Main State Machine logic container"
+  style: {
+    fill: "#E8F4FD"
+    stroke: "#2E86AB"
+    stroke-width: 2
+    border-radius: 8
+  }
+
+  mu: {
+    shape: hexagon
+    label: "sync.RWMutex\n(0x00: Concurrency Control)"
+    style: {
+      fill: "#FFE4B5"
+      stroke: "#D2691E"
+    }
+  }
+
+  state: {
+    label: "Internal Memory State"
+    
+    data_store: {
+      shape: sql_table
+      label: "data (KV Store)"
+      "offset 0x08: map[string][]byte": "Value Storage" {constraint: "Value"}
+      "offset 0x10: int64": "Version Counter" {constraint: "Internal"}
+      style.fill: "#E6F7E6"
+    }
+
+    session_table: {
+      shape: sql_table
+      label: "sessions (Deduplication Table)"
+      "offset 0x18: map[string]*ClientSession": "Client Contexts" {constraint: "Pointer"}
+      "offset 0x20: time.Duration": "GC TTL" {constraint: "Config"}
+      style.fill: "#FFF3E0"
+    }
+  }
+
+  mu -> state.data_store: "WLock/RLock" {
+    style: {
+      stroke: orange
+      stroke-dash: 3
+    }
+  }
+  mu -> state.session_table: "WLock/RLock" {
+    style: {
+      stroke: orange
+      stroke-dash: 3
+    }
+  }
+
+  Interface: {
+    shape: class
+    label: "KVStateMachine Implementation"
+    "Apply(cmd *CommandWrapper)": "KVResponse"
+    "Snapshot()": "([]byte, error)"
+    "RestoreSnapshot(b []byte)": "error"
+    "Get(key string)": "(Value, bool)"
+    
+    style: {
+      fill: "#BBDEFB"
+      stroke: "#1565C0"
+    }
+  }
+}
+
+# --- DATA STRUCTURES ---
+
+ClientSession: {
+  shape: class
+  label: "ClientSession (sizeof=48B)"
+  LastSequence: "int64 (offset 0x00)"
+  LastResponse: "KVResponse (offset 0x08)"
+  LastActive: "time.Time (offset 0x28)"
+  style: {
+    fill: "#FFF8E1"
+    stroke: "#F57C00"
+    border-radius: 4
+  }
+}
+
+CommandWrapper: {
+  shape: class
+  label: "RPC Command Payload (sizeof=32B)"
+  ClientId: "string (UUID)"
+  SequenceNumber: "int64 (Monotonic)"
+  Command: "KVCommand (Interface)"
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#7B1FA2"
+    border-radius: 4
+  }
+}
+
+KVCommand: {
+  shape: class
+  label: "KV Operation"
+  Op: "string (GET|PUT|APPEND)"
+  Key: "string"
+  Value: "[]byte"
+  style: {
+    fill: "#E0F7FA"
+    stroke: "#00838F"
+    border-radius: 4
+  }
+}
+
+KVResponse: {
+  shape: class
+  label: "Result Payload"
+  Success: "bool"
+  Value: "[]byte"
+  Err: "string"
+  style: {
+    fill: "#F1F8E9"
+    stroke: "#558B2F"
+    border-radius: 4
+  }
+}
+
+# --- FLOWS & RELATIONSHIPS ---
+
+Client: {shape: person}
+
+Client -> CommandWrapper: "1. Encapsulate"
+CommandWrapper -> KVStateMachine.Interface: "2. Apply() Call"
+KVStateMachine.state.session_table -> ClientSession: "Deduplication lookup"
+KVStateMachine.state.data_store -> KVCommand: "3. Execution"
+KVStateMachine.Interface -> KVResponse: "4. Return Result"
+
+# --- SNAPSHOT LAYOUT ---
+
+SnapshotData: {
+  shape: rectangle
+  style: {
+    fill: "#F5F5F5"
+    stroke: "#9E9E9E"
+    border-radius: 4
+    stroke-dash: 3
+  }
+  label: |md
+    ### Memory Layout: Snapshot Binary
+    | Offset | Field | Description |
+    | :--- | :--- | :--- |
+    | 0x00 | `Magic` | 0xDEADBEEF (Magic Header) |
+    | 0x04 | `DataLen` | uint32 size of KV map |
+    | 0x08 | `KVData` | Gob-encoded map data |
+    | 0xNN | `SessLen` | uint32 size of Session map |
+    | 0xMM | `SessData` | Gob-encoded session table |
+  |
+}
+
+KVStateMachine.Interface -> SnapshotData: "Serializes State"
+SnapshotData -> KVStateMachine.Interface: "Loads Memory"
+
+# --- ALGORITHM LOGIC ---
+
+ApplyFlow: {
+  label: "Linearizable Apply() Logic"
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#BDBDBD"
+    stroke-dash: 3
+  }
+  
+  start: ● {style.fill: green}
+  unwrap: "1. Lock mu; Extract ClientID & Seq"
+  check_dup: "2. Lookup sessionTable[id]"
+  is_dup: "Duplicate Request?" {shape: diamond}
+  
+  return_cache: "3a. Return cached LastResponse" {
+    style: { stroke: orange; bold: true }
+  }
+  apply_logic: "3b. Execute dataStore.Op()" {
+    style: { stroke: blue; bold: true }
+  }
+  
+  record: "4. Update sessionTable\n(lastSeq=Seq, lastResp=Res)"
+  end: "5. Unlock mu; Return"
+  
+  start -> unwrap -> check_dup -> is_dup
+  is_dup -> return_cache: "YES\n(Seq <= lastSeq)"
+  is_dup -> apply_logic: "NO\n(Seq > lastSeq)"
+  
+  apply_logic -> record -> end
+  return_cache -> end
+}
+
+# --- GLOBAL ANNOTATIONS ---
+
+Guarantees: {
+  near: bottom-right
+  shape: text
+  label: |md
+    ### Logic Invariants
+    - **Linearizability:** Operation occurs exactly once at index.
+    - **Idempotency:** Retries return cached response via Sequence ID.
+    - **Session Persistence:** Deduplication table survives node crashes via Snapshot.
+  |
+}
+
+style.fill: "#FAFAFA"

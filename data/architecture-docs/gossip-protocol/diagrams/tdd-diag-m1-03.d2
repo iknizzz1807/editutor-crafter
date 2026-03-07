@@ -1,0 +1,306 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 50
+  }
+}
+
+title: |md
+  # Peer Membership State Machine
+  **SWIM-style lifecycle with incarnation-based conflict resolution**
+  *Intel Specification Quality - Logic & Transitions*
+| {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# MEMORY LAYOUT SPECIFICATION
+# -----------------------------------------------------------------------------
+# Standardizing the binary representation of a membership entry for gossip wire protocol
+
+MembershipEntry: {
+  shape: sql_table
+  style.stroke: "#1976D2"
+  style.fill: "#E3F2FD"
+  
+  header: "struct PeerEntry (Size: 8 Bytes)"
+  
+  00: "Incarnation (uint32)" {constraint: "Offset 0x00"}
+  04: "State (uint8)" {constraint: "Offset 0x04"}
+  05: "Reserved/Padding (3B)" {constraint: "Offset 0x05"}
+  
+  # State Mapping Table
+  legend: |md
+    **State Values:**
+    - 0x01: ALIVE
+    - 0x02: SUSPECT
+    - 0x03: DEAD
+    - 0x04: LEFT
+  |
+}
+MembershipEntry.near: top-left
+
+# -----------------------------------------------------------------------------
+# STATE DEFINITIONS
+# -----------------------------------------------------------------------------
+
+ALIVE: {
+  shape: circle
+  tooltip: "Node is healthy and responding to pings"
+  style: {
+    fill: "#4CAF50"
+    stroke: "#1B5E20"
+    stroke-width: 4
+    font-color: white
+    shadow: true
+  }
+  
+  invariant: "LastSeen < (ProtocolPeriod * T)" {
+    shape: rectangle
+    style: {
+      font-size: 10
+      stroke-width: 0
+      italic: true
+      fill: transparent
+    }
+  }
+}
+
+SUSPECT: {
+  shape: circle
+  tooltip: "Ping failed; waiting for refutation or timeout"
+  style: {
+    fill: "#FF9800"
+    stroke: "#E65100"
+    stroke-width: 4
+    font-color: white
+    shadow: true
+  }
+}
+
+DEAD: {
+  shape: circle
+  tooltip: "Confirmed failed; metadata retained for gossip propagation"
+  style: {
+    fill: "#F44336"
+    stroke: "#B71C1C"
+    stroke-width: 4
+    font-color: white
+    shadow: true
+  }
+}
+
+"LEFT": {
+  label: "LEFT (Graceful Exit)"
+  shape: circle
+  tooltip: "Gracefully exited; metadata retained for gossip propagation"
+  style: {
+    fill: "#9E9E9E"
+    stroke: "#424242"
+    stroke-width: 4
+    font-color: white
+    shadow: true
+  }
+}
+
+REMOVED: {
+  shape: circle
+  tooltip: "Purged from local membership list"
+  style: {
+    fill: "#ECEFF1"
+    stroke: "#90A4AE"
+    stroke-width: 2
+    stroke-dash: 4
+    font-color: "#546E7A"
+  }
+}
+
+START_NODE: {
+  shape: circle
+  label: ""
+  style: {
+    fill: "#000000"
+    stroke: "#000000"
+  }
+  width: 20
+  height: 20
+}
+
+# -----------------------------------------------------------------------------
+# TRANSITIONS (LEGAL)
+# -----------------------------------------------------------------------------
+
+START_NODE -> ALIVE: "1. Join Event\nIncarnation=0" {
+  style: {
+    stroke-width: 2
+    font-size: 12
+  }
+}
+
+ALIVE -> SUSPECT: |md
+  **[2] Suspect Transition**
+  **Trigger:** Direct Timeout + Indirect Nack
+  **Guard:** Incarnation is current
+  **Action:** Start suspicion_timer
+| {
+  style: {
+    stroke: "#FF9800"
+    stroke-width: 4
+    animated: true
+  }
+}
+
+SUSPECT -> ALIVE: |md
+  **[3] Refutation (Self-Heal)**
+  **Trigger:** Gossip Msg Received
+  **Guard:** msg.incarnation > current
+  **Action:** Clear suspicion_timer
+| {
+  style: {
+    stroke: "#4CAF50"
+    stroke-width: 4
+    animated: true
+  }
+}
+
+SUSPECT -> DEAD: |md
+  **[4] Failure Confirmation**
+  **Trigger:** timer.expired()
+  **Guard:** No refutation within T_timeout
+  **Action:** Broadcast Failure Notification
+| {
+  style: {
+    stroke: "#F44336"
+    stroke-width: 4
+  }
+}
+
+ALIVE -> "LEFT": |md
+  **[5] Graceful Shutdown**
+  **Trigger:** SIGTERM / Syscall
+  **Action:** Broadcast LEAVE(fanout=k)
+| {
+  style: {
+    stroke: "#9E9E9E"
+    stroke-width: 3
+  }
+}
+
+DEAD -> REMOVED: |md
+  **[6] Garbage Collection**
+  **Trigger:** Periodic Reaper
+  **Guard:** age > CleanupTTL
+| {
+  style: {
+    stroke: "#90A4AE"
+    stroke-width: 2
+    stroke-dash: 4
+  }
+}
+
+"LEFT" -> REMOVED: |md
+  **[7] Final Purge**
+  **Trigger:** Periodic Reaper
+| {
+  style: {
+    stroke: "#90A4AE"
+    stroke-width: 2
+    stroke-dash: 4
+  }
+}
+
+# -----------------------------------------------------------------------------
+# TRANSITIONS (ILLEGAL / REJECTED)
+# -----------------------------------------------------------------------------
+
+DEAD -> ALIVE: "ILLEGAL RE-ENTRY" {
+  style: {
+    stroke: "#D32F2F"
+    stroke-width: 2
+    stroke-dash: 5
+  }
+  source-arrowhead: * {
+    shape: cross
+  }
+}
+
+"LEFT" -> ALIVE: "ILLEGAL RE-ENTRY" {
+  style: {
+    stroke: "#D32F2F"
+    stroke-width: 2
+    stroke-dash: 5
+  }
+  source-arrowhead: * {
+    shape: cross
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ANNOTATIONS AND SPECIFICATIONS
+# -----------------------------------------------------------------------------
+
+IncarnationRules: |md
+  ### Conflict Resolution (Incarnation)
+  1. **Self-Refutation:** If node receives SUSPECT(self) with incarnation $i$, it broadcasts ALIVE(self) with $i+1$.
+  2. **Monotonicity:** State updates with lower incarnation numbers are ignored.
+  3. **Precedence:** 
+     - **DEAD** overrides **ALIVE/SUSPECT** if $inc_{dead} \ge inc_{peer}$.
+     - **SUSPECT** overrides **ALIVE** if $inc_{suspect} \ge inc_{alive}$.
+     - **ALIVE** overrides **SUSPECT** ONLY if $inc_{alive} > inc_{suspect}$.
+| {
+  near: bottom-left
+  shape: rectangle
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1976D2"
+    border-radius: 8
+  }
+}
+
+StateInvariants: ||md
+### State Invariants & Internal Logic
+| State | Invariant Logic | Propagation |
+| :--- | :--- | :--- |
+| **ALIVE** | $LastSeen$ updated per protocol period | Broadcast via UDP |
+| **SUSPECT** | Suspicion timer MUST be active | Broadcast via UDP |
+| **DEAD** | Entity is unreachable | Retain in list for gossip |
+| **LEFT** | Entity signaled departure | Final gossip fanout |
+| **REMOVED** | Entry does not exist in local map | No propagation |
+|| {
+  near: bottom-right
+  shape: rectangle
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#7B1FA2"
+    border-radius: 8
+  }
+}
+
+Legend: {
+  near: top-right
+  
+  l1: "Authorized Path" {
+    style.stroke: "#4CAF50"
+    style.stroke-width: 3
+  }
+  l2: "Prohibited Transition" {
+    style: {
+      stroke: "#D32F2F"
+      stroke-dash: 5
+    }
+  }
+  l3: "Reaper Purge" {
+    style: {
+      stroke: "#90A4AE"
+      stroke-dash: 4
+    }
+  }
+}

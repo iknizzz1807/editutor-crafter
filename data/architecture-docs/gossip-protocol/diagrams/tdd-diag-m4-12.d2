@@ -1,0 +1,349 @@
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    theme-id: 4
+    sketch: false
+    center: true
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# 1. CORE ARCHITECTURE - CLASS DIAGRAM
+# Intel Manual Quality: Full Signatures, Ownerships, and Types
+# ---------------------------------------------------------------------------------
+Harness_System: {
+  label: "Gossip Protocol Test Harness Architecture"
+  tooltip: "Core components for simulating network topology and churn"
+  
+  Harness: {
+    shape: class
+    config: "HarnessConfig"
+    nodes: "[]*TestNode"
+    transport: "Transport"
+    metrics: "*MetricsCollector"
+    started: "atomic.Bool"
+    stopped: "atomic.Bool"
+    
+    "+ NewHarness(cfg: HarnessConfig)": "*Harness"
+    "+ Start()": "error"
+    "+ Stop()": "void"
+    "+ KillNode(index: int)": "error"
+    "+ RestartNode(index: int)": "error"
+    "+ Partition(groups: [][]int)": "void"
+  }
+
+  TestNode: {
+    shape: class
+    Node: "*node.Node"
+    ID: "string"
+    Address: "string"
+    Port: "int"
+    metrics: "*NodeMetrics"
+    blocked: "atomic.Bool"
+    
+    "+ Store()": "*state.Store"
+    "+ IsAlive()": "bool"
+    "+ BlockIncoming(ids: ...string)": "void"
+  }
+
+  Transport: {
+    shape: class
+    label: "«interface»\nTransport"
+    
+    "+ Send(from: string, to: string, data: []byte)": "error"
+    "+ Receive(nodeID: string)": "([]byte, string, error)"
+    "+ Partition(groups: [][]string)": "void"
+    "+ Heal()": "void"
+  }
+
+  SimulatedTransport: {
+    shape: class
+    mu: "sync.RWMutex"
+    queues: "map[string]chan *envelope"
+    partitions: "map[string]map[string]bool"
+    packetLoss: "float64"
+    delay: "time.Duration"
+    rng: "*rand.Rand"
+  }
+
+  RealTransport: {
+    shape: class
+    mu: "sync.RWMutex"
+    conns: "map[string]*net.UDPConn"
+  }
+
+  # Relationships & Ownership
+  Harness -> TestNode: "owns (1..N)" {
+    source-arrowhead: 1
+    target-arrowhead: "*"
+  }
+  Harness -> Transport: "manages"
+  Harness -> MetricsCollector: "aggregates"
+  
+  SimulatedTransport -> Transport: "implements" {
+    style.stroke-dash: 3
+    target-arrowhead: {
+      shape: triangle
+      style.filled: false
+    }
+  }
+  RealTransport -> Transport: "implements" {
+    style.stroke-dash: 3
+    target-arrowhead: {
+      shape: triangle
+      style.filled: false
+    }
+  }
+  TestNode -> NodeMetrics: "tracks"
+}
+
+# ---------------------------------------------------------------------------------
+# 2. MEMORY LAYOUT - ENVELOPE DATA STRUCTURE
+# Byte Offsets, Field Sizes, and Color-Coded Memory Regions
+# ---------------------------------------------------------------------------------
+Memory_Layout: {
+  label: "SimulatedTransport Envelope Memory Layout (80B)"
+  
+  envelope_struct: {
+    shape: sql_table
+    style.fill: "#f8f9fa"
+    
+    "Offset": "Field | Size | Category" {
+      style.fill: "#6f42c1"
+      style.font-color: white
+    }
+    
+    "0x00": "from (string.Data) | 8B | Header" {
+      style.fill: "#007bff"
+      style.font-color: white
+    }
+    "0x08": "from (string.Len) | 8B | Header" {
+      style.fill: "#007bff"
+      style.font-color: white
+    }
+    "0x10": "to (string.Data) | 8B | Header" {
+      style.fill: "#007bff"
+      style.font-color: white
+    }
+    "0x18": "to (string.Len) | 8B | Header" {
+      style.fill: "#007bff"
+      style.font-color: white
+    }
+    "0x20": "data_ptr (*[]byte) | 8B | Pointer" {
+      style.fill: "#fd7e14"
+      style.font-color: white
+    }
+    "0x28": "data_len (int) | 8B | Metadata" {
+      style.fill: "#28a745"
+      style.font-color: white
+    }
+    "0x30": "data_cap (int) | 8B | Metadata" {
+      style.fill: "#28a745"
+      style.font-color: white
+    }
+    "0x38": "sendAt (time.Time) | 24B | Scheduling" {
+      style.fill: "#6c757d"
+      style.font-color: white
+    }
+  }
+  
+  annotation: |md
+    ### Memory Alignment & Layout
+    - **Total Size**: 80 Bytes
+    - **Page Boundary**: Bold line indicates 4KB alignment potential
+    - **Colors**:
+      - Blue: Header / Identity
+      - Orange: Pointer / Heap Reference
+      - Green: Size / Capacity Metadata
+      - Gray: Timestamp / Payload Scheduling
+  | {
+    near: envelope_struct
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# 3. STATE MACHINE - NODE LIFECYCLE
+# Invariants, Guards, and Action Triggers
+# ---------------------------------------------------------------------------------
+Lifecycle: {
+  label: "TestNode State Transitions"
+  
+  Created: {
+    shape: circle
+    label: "●"
+  }
+  
+  Initialized: {
+    shape: rectangle
+    style.fill: "#e3f2fd"
+    tooltip: "Invariant: Node exists in Harness registry but socket not bound."
+  }
+  
+  Running: {
+    shape: rectangle
+    style.fill: "#e8f5e9"
+    tooltip: "Invariant: Gossip goroutines active, transport accepting packets."
+  }
+  
+  Stopped: {
+    shape: rectangle
+    style.fill: "#ffebee"
+    style.stroke: red
+    tooltip: "Invariant: State preserved, but all ingress/egress dropped."
+  }
+  
+  Created -> Initialized: "NewHarness() [alloc nodes]"
+  Initialized -> Running: "harness.Start() [bind ports]"
+  Running -> Stopped: "harness.KillNode() [close transport]"
+  Stopped -> Running: "harness.RestartNode() [respawn Node instance]"
+  Running -> Stopped: "harness.Stop() [global shutdown]"
+  
+  Stopped -> Initialized: "ILLEGAL" {
+    style.stroke: red
+    style.stroke-dash: 3
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# 4. SEQUENCE DIAGRAM - SIMULATED SEND LOGIC
+# Critical Path Timing and Resource Locking (RLock/RUnlock)
+# ---------------------------------------------------------------------------------
+SimulatedSend: {
+  shape: sequence_diagram
+  label: "SimulatedTransport.Send() Execution Flow"
+
+  SourceNode: "TestNode (From)"
+  Transport: "SimulatedTransport"
+  RNG: "Math/Rand"
+  Queue: "Node Queue (To)"
+
+  SourceNode -> Transport: "Send(from, to, data)"
+  Transport -> Transport: "RLock() ▼" {
+    tooltip: "Acquire read lock for partition mapping check"
+  }
+  
+  Transport -> Transport: "Check Partition Map"
+  
+  Partition_Logic: {
+    label: "ALT: Is Partitioned?"
+    Transport -> SourceNode: "return nil (Silent Drop)"
+  }
+  
+  Transport -> RNG: "Float64()"
+  RNG -> Transport: "0.04"
+  
+  Loss_Logic: {
+    label: "ALT: Packet Loss (rand < p)"
+    Transport -> SourceNode: "return nil (Silent Drop)"
+  }
+  
+  Transport -> Transport: "time.Sleep(latency)" {
+    tooltip: "Simulation delay path"
+  }
+  
+  Transport -> Queue: "Push(envelope)"
+  
+  Queue_Logic: {
+    label: "OPT: Queue Full Handling"
+    Transport -> SourceNode: "return error('buffer overflow')" {
+      style.stroke: red
+    }
+  }
+  
+  Transport -> SourceNode: "return nil (ACK)"
+  Transport -> Transport: "RUnlock() ▲"
+}
+
+# ---------------------------------------------------------------------------------
+# 5. TESTING MODULES & FAULT INJECTION
+# Organized Grid Layout for TDD Specification
+# ---------------------------------------------------------------------------------
+Test_Suite: {
+  label: "TDD Validation Modules"
+  grid-columns: 3
+  grid-gap: 20
+
+  Convergence: {
+    label: "Convergence Test"
+    tooltip: "Verify O(log N) propagation"
+    style.fill: "#fff3e0"
+  }
+  Detection: {
+    label: "Detection Test"
+    tooltip: "SWIM suspicion timeout verification"
+    style.fill: "#fff3e0"
+  }
+  Partition: {
+    label: "Partition Resilience"
+    tooltip: "LWW-element-set convergence after heal"
+    style.fill: "#fff3e0"
+  }
+  Bandwidth: {
+    label: "Scale Profiling"
+    tooltip: "Ensure O(1) per-node scaling"
+    style.fill: "#f3e5f5"
+  }
+  Consistency: {
+    label: "Linearizability Check"
+    tooltip: "Detect stale reads post-convergence"
+    style.fill: "#f3e5f5"
+  }
+  Chaos: {
+    label: "Chaos Engine"
+    tooltip: "Continuous kill/partition cycles"
+    style.fill: "#ffebee"
+    style.stroke: red
+    style.stroke-width: 3
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# 6. IMPLEMENTATION LOGIC & ERROR HANDLING
+# Renamed reserved 'steps' keyword to 'roadmap' to prevent compilation error.
+# ---------------------------------------------------------------------------------
+Error_Policies: {
+  shape: rectangle
+  near: Test_Suite
+  label: |'md
+| Error Class | Detection Mechanism | Recovery Strategy |
+|:---|:---|:---|
+| `StartupFail` | Node.Start() != nil | Teardown stack, return error |
+| `Congestion` | Transport channel full | Tail-drop oldest packets |
+| `StaleState` | Version mismatch | Force anti-entropy sync |
+| `Partition` | Transport lookup | Block IO, trigger suspicion |
+'|
+}
+
+Implementation_Phases: {
+  near: Lifecycle
+  label: "Implementation Roadmap"
+  
+  roadmap_table: {
+    shape: sql_table
+    "Phase": "Milestone | Component Detail"
+    "P1": "Harness Core | Factory & Config logic"
+    "P2": "Transport | Sim-Queues & Partition maps"
+    "P3": "Observability | Atomic metrics & Prom-export"
+    "P4": "Oracle | Cluster convergence predicates"
+    "P5": "Chaos | Random fault injection loop"
+  }
+}
+
+# Styling Globs - Global Intel-Grade Visual Configuration
+***.style.font: mono
+(*** -> ***)[*]: {
+  style.stroke-width: 2
+}
+"Harness_System.**": {
+  style.stroke: "#2c3e50"
+}
+"Memory_Layout.envelope_struct": {
+  style.stroke-width: 4
+}
+"Lifecycle.*": {
+  style.border-radius: 4
+}
+"SimulatedSend.**": {
+  style.font-size: 14
+}

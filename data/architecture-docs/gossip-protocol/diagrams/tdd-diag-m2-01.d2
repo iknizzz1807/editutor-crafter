@@ -1,0 +1,224 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    layout-engine: elk
+  }
+}
+
+# Module Architecture: Push Gossip (M2)
+title: |md
+  # Push Gossip Dissemination Module Architecture
+  **Epidemic broadcast with Lamport clock versioning and deterministic conflict resolution.**
+| {
+  near: top-center
+}
+
+# ----------------------------------------------------------------------------
+# 1. CORE COMPONENT DEFINITIONS
+# ----------------------------------------------------------------------------
+Store: {
+  shape: class
+  style.fill: "#E8F4FD"
+  style.stroke: "#2E86AB"
+  tooltip: "Thread-safe local state storage for Lamport-versioned entries."
+  
+  "+mu": "sync.RWMutex"
+  "+entries": "map[string]*Entry"
+  "+clock": "uint64"
+  "+nodeID": "string"
+  
+  "+Set(key, value)": "uint64 (new version)"
+  "+Get(key)": "(*Entry, bool)"
+  "+Apply(remote *Entry)": "bool (accepted?)"
+  "+GetDelta(since)": "[]*Entry"
+  "+CreateDigest()": "map[string]uint64"
+}
+
+Gossiper: {
+  shape: class
+  style.fill: "#FFF3E0"
+  style.stroke: "#E65100"
+  tooltip: "Active agent managing UDP transmission and peer discovery."
+  
+  "+config": "GossipConfig"
+  "+store": "*Store"
+  "+peerList": "*PeerList"
+  "+seenCache": "*SeenCache"
+  "+lastSentClock": "uint64"
+  
+  "+Start()": "void"
+  "+HandleGossip(msg)": "void"
+  "-gossipRound()": "void"
+  "-forward(msg)": "void"
+}
+
+SeenCache: {
+  shape: class
+  style.fill: "#F3E5F5"
+  style.stroke: "#7B1FA2"
+  tooltip: "LRU cache to prevent infinite message amplification."
+  
+  "-mu": "sync.Mutex"
+  "-data": "map[uint64]bool"
+  
+  "+Seen(id)": "bool"
+  "+Add(id)": "void"
+}
+
+Entry: {
+  shape: class
+  style.fill: "#E8F5E9"
+  style.stroke: "#388E3C"
+  "Key": "string"
+  "Value": "[]byte"
+  "Version": "uint64 (Lamport)"
+  "OriginNode": "string"
+}
+
+# ----------------------------------------------------------------------------
+# 2. WIRE FORMAT / MEMORY LAYOUT (Intel Manual Style)
+# ----------------------------------------------------------------------------
+GossipPacket: {
+  label: "Gossip UDP Packet Layout (Byte Offsets)"
+  grid-columns: 5
+  grid-gap: 0
+
+  # Header Row
+  h1: "Offset" {style.bold: true; style.fill: "#EEEEEE"}
+  h2: "Field" {style.bold: true; style.fill: "#EEEEEE"}
+  h3: "Size" {style.bold: true; style.fill: "#EEEEEE"}
+  h4: "Type" {style.bold: true; style.fill: "#EEEEEE"}
+  h5: "Description" {style.bold: true; style.fill: "#EEEEEE"}
+
+  # Data Rows
+  r1_1: "0x00"
+  r1_2: "Magic"
+  r1_3: "2B"
+  r1_4: "uint16"
+  r1_5: "Protocol ID (0x4750)"
+
+  r2_1: "0x02"
+  r2_2: "Count"
+  r2_3: "2B"
+  r2_4: "uint16"
+  r2_5: "Number of entries in payload"
+
+  r3_1: "0x04"
+  r3_2: "OriginClock"
+  r3_3: "8B"
+  r3_4: "uint64"
+  r3_5: "Lamport timestamp of sender"
+
+  r4_1: "0x0C"
+  r4_2: "TTL"
+  r4_3: "1B"
+  r4_4: "uint8"
+  r4_5: "Remaining hops (Max=16)"
+
+  r5_1: "0x0D"
+  r5_2: "Payload"
+  r5_3: "Var"
+  r5_4: "Bytes"
+  r5_5: "Serialized EntryDigest array"
+}
+
+# ----------------------------------------------------------------------------
+# 3. ALGORITHM SEQUENCE
+# ----------------------------------------------------------------------------
+MessageFlow: {
+  shape: sequence_diagram
+  
+  Sender: "Node A (Gossiper)"
+  Receiver: "Node B (Gossiper)"
+  SC: "Node B (SeenCache)"
+  ST: "Node B (Store)"
+  
+  Sender -> Receiver: "UDP: GossipPacket{Entries, OriginClock, TTL=16}" {
+    style.stroke: "#2E86AB"
+    style.animated: true
+  }
+  
+  Receiver -> SC: "Seen(msgHash)"
+  SC -> Receiver: "false"
+  
+  Receiver -> ST: "Apply(entry[0...N])"
+  
+  group Conflict Resolution: {
+    ST -> ST: "1. If remote.Version > local.Version -> ACCEPT"
+    ST -> ST: "2. If versions equal AND remote.NodeID > local.NodeID -> ACCEPT"
+    ST -> ST: "3. Else -> REJECT"
+  }
+  
+  ST -> Receiver: "accepted: true"
+  
+  Receiver -> Receiver: "Decr TTL (15)"
+  Receiver -> "Peers...": "Forward(msg)" {
+    style.stroke-dash: 5
+  }
+}
+
+# ----------------------------------------------------------------------------
+# 4. MODULE LOGIC & INVARIANTS
+# ----------------------------------------------------------------------------
+RulesAndLogic: {
+  style.stroke: "#9E9E9E"
+
+  LamportRules: {
+    shape: rectangle
+    style.fill: "#E3F2FD"
+    label: |md
+      ### Lamport Clock Synchronization
+      - **On Write:** `L = L + 1`
+      - **On Receive:** `L = max(L, remote_L) + 1`
+      
+      **Tie-Breaking:** 
+      Determinism is guaranteed by `(Version, NodeID)` tuple comparison.
+    |
+  }
+
+  Invariants: {
+    shape: rectangle
+    style.fill: "#FFEBEE"
+    style.stroke: "#D32F2F"
+    label: |md
+      ### Critical Invariants
+      1. **Convergence:** Every node eventually sees the highest version.
+      2. **Immutability:** Once a version is assigned to a key/value pair, the value cannot change for that version.
+      3. **Anti-Entropy:** TTL prevents broadcast storms; SeenCache prevents redundant I/O.
+    |
+  }
+}
+
+# ----------------------------------------------------------------------------
+# 5. RELATIONSHIPS
+# ----------------------------------------------------------------------------
+Store -> Gossiper: "provides data"
+Gossiper -> SeenCache: "deduplicates"
+Gossiper -> Entry: "marshals"
+Gossiper -> GossipPacket: "encapsulates"
+
+# Layout Positioning
+GossipPacket.near: bottom-center
+RulesAndLogic.near: center-right
+MessageFlow.near: bottom-left
+
+# Configuration Block
+GossipConfig: {
+  shape: class
+  style.fill: "#FAFAFA"
+  "Fanout": "int (default=3)"
+  "Interval": "Duration (default=500ms)"
+  "MaxPayload": "int (1400 bytes)"
+}
+Gossiper -> GossipConfig: "reads"
+
+# Legend/Annotations
+Note: |md
+  **Implementation Note:**
+  UDP is used for speed. Reliability is achieved 
+  through periodic re-broadcast (epidemic entropy).
+| {
+  near: Gossiper
+  style.font-size: 14
+}

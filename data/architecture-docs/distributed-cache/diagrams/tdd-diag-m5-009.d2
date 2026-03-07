@@ -1,0 +1,248 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    sketch: true
+    pad: 25
+  }
+  colors: {
+    purple_h: "#E1D5E7"
+    blue_d: "#DAE8FC"
+    green_f: "#D5E8D4"
+    gray_p: "#F5F5F5"
+    orange_ptr: "#FFE6CC"
+    red_err: "#F8CECC"
+    header_gray: "#CCCCCC"
+  }
+}
+
+title: |md
+  # Distributed Cache Client Architecture
+  **Technical Design Specification v1.0.0**
+  *Intel Manual Quality Layout - Implementation Grade*
+| {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+  }
+}
+
+# 1. CORE COMPONENT DEFINITIONS (UML CLASS MODULES)
+ReplicaManager: {
+  shape: class
+  label: "ReplicaManager\nsizeof=128 bytes (2 cache lines)"
+  style.fill: ${colors.purple_h}
+  
+  config: "DefaultClientConfig"
+  ring: "hashring.HashRing"
+  groups: "map[GroupID]*ReplicationGroup"
+  pools: "map[NodeID]*pool.Pool"
+  
+  "+WriteToPrimary(ctx: Context, key: string, val: []byte, ttl: int64)": "error"
+  "+ReadFromReplica(ctx: Context, key: string, preferPrimary: bool)": "([]byte, error)"
+  "-findOrCreateGroup(nodes: []*NodeInfo)": "*ReplicationGroup"
+  "-broadcastPrimaryChange(groupID: string, nodeID: string)": "void"
+}
+
+ReplicationGroup: {
+  shape: class
+  style.fill: ${colors.blue_d}
+  label: "ReplicationGroup\nAtomic Membership State"
+  
+  Primary: "*NodeInfo"
+  Secondaries: "[]*NodeInfo"
+  QuorumSize: "int"
+  mu: "sync.RWMutex"
+  
+  "+Failover(deadNodeID: string)": "(*NodeInfo, error)"
+  "+CheckQuorum()": "bool"
+}
+
+NodeInfo: {
+  shape: class
+  style.fill: ${colors.gray_p}
+  ID: "string"
+  Address: "string"
+  Weight: "int"
+  IsAlive: "bool"
+  IsPrimary: "bool"
+  LastSync: "time.Time"
+}
+
+HashRing: {
+  shape: class
+  style.fill: ${colors.green_f}
+  label: "Consistent Hasher\nFNV-1a 64-bit"
+  
+  Nodes: "[]*PhysicalNode"
+  Hasher: "Hasher"
+  ReplicationFactor: "int"
+  
+  "+GetNodes(key: string, count: int)": "([]*PhysicalNode, error)"
+  "+AddNode(node: *PhysicalNode)": "void"
+}
+
+# 2. MEMORY LAYOUT (Byte-Exact Specification)
+# Intel Manual Style: Exact offsets left, sizes right.
+MemoryLayout: {
+  label: "Cache Entry Binary Format\nTotal Size: 16+N Bytes | Alignment: 8-byte"
+  
+  grid-columns: 3
+  grid-gap: 0
+  
+  # Header Row
+  h_off: "Byte Offset" { style: { bold: true; fill: ${colors.header_gray} } }
+  h_field: "Field Description" { style: { bold: true; fill: ${colors.header_gray} } }
+  h_size: "Length (B)" { style: { bold: true; fill: ${colors.header_gray} } }
+  
+  # Row 1: Magic
+  r1_o: "0x00" { style.font: mono }
+  r1_f: "Magic Marker (0xCAFE)" { style.fill: ${colors.purple_h} }
+  r1_s: "2" { style.font: mono }
+  
+  # Row 2: Version
+  r2_o: "0x02" { style.font: mono }
+  r2_f: "Protocol Version" { style.fill: ${colors.purple_h} }
+  r2_s: "1" { style.font: mono }
+  
+  # Row 3: TTL
+  r3_o: "0x03" { style.font: mono }
+  r3_f: "TTL (Unix Epoch Nanoseconds)" { style.fill: ${colors.blue_d} }
+  r3_s: "8" { style.font: mono }
+  
+  # Row 4: Flags
+  r4_o: "0x0B" { style.font: mono }
+  r4_f: "Flags (Serialization Type / Compression)" { style.fill: ${colors.blue_d} }
+  r4_s: "1" { style.font: mono }
+  
+  # Row 5: Payload Len
+  r5_o: "0x0C" { style.font: mono }
+  r5_f: "Payload Length (N)" { style.fill: ${colors.orange_ptr} }
+  r5_s: "4" { style.font: mono }
+  
+  # Page Boundary Simulation
+  sep: "---" { grid-column-span: 3; style.stroke-dash: 5; label: "Data Segment Boundary" }
+
+  # Row 6: Payload
+  r6_o: "0x10" { style.font: mono }
+  r6_f: "Data Payload [N Bytes]" { style.fill: ${colors.green_f} }
+  r6_s: "N" { style.font: mono }
+  
+  # Row 7: Padding
+  r7_o: "0x10 + N" { style.font: mono }
+  r7_f: "Alignment Padding (Word Align)" { style.fill: ${colors.gray_p} }
+  r7_s: "Up to 7" { style.font: mono }
+}
+
+# 3. STATE TRANSITION: FAILOVER SEQUENCE
+FailoverProcess: {
+  shape: sequence_diagram
+  
+  Monitor: HealthCheckService
+  RM: ReplicaManager
+  Group: ReplicationGroup
+  Nodes: SecondaryNodeList
+  
+  Monitor -> RM: NotifyDead(Node_A)
+  RM -> Group: Failover(Node_A)
+  
+  group Promotion Critical Section {
+    Group -> Group: Lock(mu) ▼
+    Group -> Group: CheckQuorum() -> true
+    Group -> Group: SelectBestSecondary()
+    Group -> Nodes: Promote(Node_B) -> SetPrimary
+    Group -> Group: Unlock(mu) ▲
+  }
+  
+  Group -> RM: Return NewPrimary(Node_B)
+  RM -> Monitor: ACK_OK
+}
+
+# 4. EXTERNAL INTERFACES
+DatasetUI: "Admin Dashboard\n(Cluster Configuration)" {
+  # Remote icons disabled due to 403 error. 
+  # Shape used to distinguish from internal components.
+  shape: person
+  style.fill: ${colors.purple_h}
+}
+
+LangUnits: "Query DSL Parsers" {
+  style.fill: "#E4DBFE"
+  Regex: "RegexEngine" { shape: hexagon }
+  SQL: "SQLAdapter" { shape: hexagon }
+  langunit_n: {
+    style.multiple: true
+    style.stroke-dash: 3
+    label: "... dynamic extensions"
+  }
+}
+
+# 5. ORCHESTRATION & FLOW
+DatasetUI -> LangUnits: "Manage Schemas"
+LangUnits -> ReplicaManager: "Request Write (DSL Parsed)"
+ReplicaManager -> HashRing: "GetNodes(key_hash)"
+HashRing -> ReplicationGroup: "Lookup Group Context"
+ReplicationGroup -> NodeInfo: "Target Primary Instance"
+
+# 6. IMPLEMENTATION NOTES
+ImplementationNotes: |md
+  ### Critical Implementation Details
+  - **SingleFlight:** Used in `ReadFromReplica` to prevent cache stampedes during hot-key recovery.
+  - **Ring Hashing:** FNV-1a provides optimal distribution for 64-bit keys. Virtual nodes set to 256 per physical node.
+  - **Memory:** All entries are 8-byte aligned for `sync/atomic` safety on 64-bit architectures.
+  - **Zero-Copy:** Use `unsafe` to cast between byte slices and header structs where possible.
+| {
+  near: bottom-right
+  style.font-size: 14
+}
+
+GoSource: |go
+// Core replication logic for primary writes
+func (rm *ReplicaManager) WriteToPrimary(ctx context.Context, key string, val []byte) error {
+    // 1. Resolve nodes via HashRing
+    nodes, _ := rm.ring.GetNodes(key, rm.config.RF)
+    group := rm.findOrCreateGroup(nodes)
+    
+    // 2. Thread-safe primary lookup
+    group.mu.RLock()
+    primary := group.Primary
+    group.mu.RUnlock()
+    
+    // 3. IO Attempt with fallback
+    if err := rm.connPool.Get(primary).Write(val); err != nil {
+        log.Errorf("Primary %s failed, initiating failover", primary.ID)
+        return err // Trigger FailoverProcess sequence
+    }
+    return nil
+}
+| {
+  near: bottom-center
+  style: {
+    font-size: 12
+    stroke: "#AAAAAA"
+    fill: "#FAFAFA"
+  }
+}
+
+# GLOBAL STYLING
+***.style.stroke: "#333333"
+***.style.stroke-width: 2
+***.style.font: mono
+
+(*** -> ***)[*]: {
+  style.stroke: "#444444"
+  style.font-size: 14
+  style.animated: true
+}
+
+# Decision Patterns
+CachePatterns: {
+  label: "Runtime Policies"
+  WriteThrough: "Write-Through" { style.fill: ${colors.green_f}; style.multiple: true }
+  WriteBehind: "Write-Behind" { style.fill: ${colors.orange_ptr}; style.multiple: true }
+  SingleFlight: "Coalescing" { style.fill: ${colors.blue_d}; style.multiple: true }
+}
+
+ReplicaManager -> CachePatterns: "Configured Strategy" { style.stroke-dash: 5 }

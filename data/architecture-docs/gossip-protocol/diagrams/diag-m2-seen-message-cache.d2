@@ -1,0 +1,250 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: "Seen-Message LRU Cache (cache/seen_cache.go)" {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+row_layout: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  cache_structure: {
+    direction: down
+    label: "Cache Data Structure"
+    struct_def: {
+      shape: sql_table
+      label: "struct SeenCache"
+      f0: "0x00 | sync.Mutex    | mu"
+      f1: "0x08 | int           | capacity"
+      f2: "0x10 | map[uint64]*Element | entries"
+      f3: "0x18 | *list.List    | order (LRU order)"
+      sz: "Total: ~40 bytes + map/list overhead"
+    }
+    cache_entry: {
+      shape: sql_table
+      label: "struct cacheEntry"
+      e0: "0x00 | uint64 | id"
+      e1: "0x08 | int64  | seen (Unix timestamp)"
+      sz: "Total: 16 bytes"
+    }
+  }
+  hash_function: {
+    direction: down
+    label: "Message ID Generation"
+    hash_desc: {
+      width: 340
+      label: "SHA-256 Hash for Duplicate Detection"
+      code: |'go
+        func messageID(originID string, clock uint64) uint64 {
+          h := sha256.New()
+          h.Write([]byte(originID))
+          binary.Write(h, binary.BigEndian, clock)
+          hash := h.Sum(nil)
+          return binary.BigEndian.Uint64(hash[:8])
+        }
+      '|
+    }
+    input_fields: {
+      shape: sql_table
+      label: "Input Fields"
+      i0: "OriginID   | string  | Node that created message"
+      i1: "OriginClock| uint64  | Lamport clock at creation"
+      out: "Output: uint64 (first 8 bytes of SHA-256)"
+    }
+  }
+}
+lru_visual: {
+  direction: down
+  label: "LRU Order Visualization"
+  lru_diagram: {
+    direction: right
+    front: "Front (MRU)" {
+      shape: rectangle
+      style.fill: "#90EE90"
+    }
+    node1: "msg:0xA3\nnode-B:42" {
+      shape: rectangle
+    }
+    node2: "msg:0xF7\nnode-C:15" {
+      shape: rectangle
+    }
+    node3: "msg:0x21\nnode-A:88" {
+      shape: rectangle
+    }
+    node4: "msg:0xB9\nnode-D:3" {
+      shape: rectangle
+      style.fill: "#FFB6C1"
+    }
+    back: "Back (LRU)" {
+      shape: rectangle
+      style.fill: "#FFB6C1"
+    }
+    front -> node1 -> node2 -> node3 -> node4 -> back
+    eviction_arrow: "Evict when capacity reached" {
+      shape: text
+      style: {
+        font-color: red
+        italic: true
+      }
+    }
+    back -> eviction_arrow
+  }
+}
+flow_section: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  cache_hit_flow: {
+    direction: down
+    label: "Cache HIT Flow"
+    hit_incoming: "Incoming Gossip" {
+      shape: oval
+      style.fill: "#E6E6FA"
+    }
+    hit_extract: "Extract messageID:\n(originID, clock)" {
+      shape: rectangle
+      width: 200
+    }
+    hit_check: "Seen(id)?" {
+      shape: diamond
+      width: 140
+    }
+    hit_found: "Entry exists\nin entries map" {
+      shape: rectangle
+      style.fill: "#90EE90"
+    }
+    hit_move: "MoveToFront(elem)\nUpdate MRU position" {
+      shape: rectangle
+    }
+    hit_skip: "SKIP message\n(duplicate detected)" {
+      shape: rectangle
+      style.fill: "#FF6B6B"
+      style.font-color: white
+    }
+    hit_incoming -> hit_extract -> hit_check
+    hit_check -> hit_found: "YES"
+    hit_found -> hit_move -> hit_skip
+  }
+  cache_miss_flow: {
+    direction: down
+    label: "Cache MISS Flow"
+    miss_incoming: "Incoming Gossip" {
+      shape: oval
+      style.fill: "#E6E6FA"
+    }
+    miss_extract: "Extract messageID:\n(originID, clock)" {
+      shape: rectangle
+      width: 200
+    }
+    miss_check: "Seen(id)?" {
+      shape: diamond
+      width: 140
+    }
+    miss_notfound: "Entry NOT\nin map" {
+      shape: rectangle
+      style.fill: "#FFD700"
+    }
+    miss_capacity: "At capacity?" {
+      shape: diamond
+      width: 140
+    }
+    miss_evict: "Remove LRU from back:\ndelete(entries, oldest.id)" {
+      shape: rectangle
+      style.fill: "#FFB6C1"
+    }
+    miss_add: "Add(id):\nPushFront(new entry)\nentries[id] = elem" {
+      shape: rectangle
+      style.fill: "#90EE90"
+    }
+    miss_process: "PROCESS message\n(apply entries, forward)" {
+      shape: rectangle
+      style.fill: "#87CEEB"
+      style.font-color: white
+    }
+    miss_incoming -> miss_extract -> miss_check
+    miss_check -> miss_notfound: "NO"
+    miss_notfound -> miss_capacity
+    miss_capacity -> miss_evict: "YES"
+    miss_capacity -> miss_add: "NO"
+    miss_evict -> miss_add
+    miss_add -> miss_process
+  }
+}
+capacity_formula: {
+  label: "Capacity Sizing Formula"
+  width: 450
+  code: |'go
+    // Size cache to hold message IDs for at least one convergence period
+    // cache_size = cluster_size * updates_per_round * convergence_rounds
+    //
+    // Example: 100 nodes, 10 updates/round, 6 rounds to converge
+    // cache_size = 100 * 10 * 6 = 6000 entries (~48KB)
+    //
+    // Each entry: 8 bytes (uint64 hash) + list overhead
+  '|
+}
+api_reference: {
+  shape: class
+  label: "SeenCache API"
+  +Seen(capacity int): "*SeenCache"
+  +Seen(id uint64): "bool"
+  +Add(id uint64): "void"
+  +Size(): "int"
+  -mu: "sync.Mutex"
+  -entries: "map[uint64]*list.Element"
+  -order: "*list.List"
+  -capacity: "int"
+}
+edge_cases: {
+  direction: down
+  label: "Edge Cases & Thread Safety"
+  case1: {
+    label: "Concurrent Access"
+    code: |'go
+      // Multiple goroutines call Seen/Add simultaneously
+      // sync.Mutex ensures:
+      // - Map reads/writes are serialized
+      // - List operations are atomic
+      // - No race conditions on LRU order
+    '|
+    width: 380
+  }
+  case2: {
+    label: "Eviction Under Load"
+    code: |'go
+      // When at capacity and adding new entry:
+      // 1. Get oldest from order.Back()
+      // 2. Delete from entries map
+      // 3. Remove from order list
+      // 4. Then add new entry
+      // All under single lock - atomic
+    '|
+    width: 380
+  }
+  case3: {
+    label: "Bloom Filter Alternative"
+    code: |'go
+      // For very large clusters:
+      // - LRU cache: exact detection, grows with message rate
+      // - Bloom filter: ~1% false positive rate, constant space
+      // Trade-off: drop 1% of valid messages vs memory usage
+    '|
+    width: 380
+  }
+}
+cache_hit_flow -> api_reference
+capacity_formula -> edge_cases

@@ -1,0 +1,308 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    layout-engine: elk
+  }
+}
+
+# --- GLOBAL STYLING & CLASSES ---
+classes: {
+  module: {
+    style: {
+      stroke-width: 2
+      border-radius: 4
+      font-size: 16
+    }
+  }
+  data_struct: {
+    shape: cylinder
+    style: {
+      fill: "#f3e5f5"
+      stroke: "#7b1fa2"
+    }
+  }
+  wire_msg: {
+    style: {
+      fill: "#fff3e0"
+      stroke: "#f57c00"
+      stroke-width: 2
+    }
+  }
+}
+
+# --- DIAGRAM ELEMENTS ---
+
+title: {
+  shape: text
+  near: top-center
+  label: |md
+    # DATA FLOW: GOSSIP DISSEMINATION ROUND
+    **Component:** P2P Networking Layer | **Protocol:** Custom UDP Gossip
+    **Spec Version:** v2.1.0 | **Author:** Technical Design Artist
+  |
+}
+
+# 1. Timer Module
+timer_module: {
+  label: "Timer Module (M0)"
+  class: module
+  style.fill: "#e8f5e9"
+  style.stroke: "#388e3c"
+  
+  ticker: {
+    shape: rectangle
+    label: |md
+      ### Gossip Ticker
+      *Frequency:* 200ms
+      *Skew:* ±10ms Jitter
+    |
+  }
+}
+
+# 2. Gossiper Core Module
+gossiper: {
+  label: "Gossiper Node (Core)"
+  class: module
+  style.fill: "#e3f2fd"
+  style.stroke: "#1976d2"
+  
+  internal_state: {
+    shape: sql_table
+    label: "Runtime State"
+    node_id: "string" {constraint: UUIDv4}
+    sequence: "uint64" {constraint: Lamport}
+    peer_count: "int32"
+    last_gossip: "time.Time"
+  }
+}
+
+# 3. Membership Module
+membership: {
+  label: "Membership Module (M1)"
+  class: module
+  style.fill: "#f3e5f5"
+  style.stroke: "#7b1fa2"
+  
+  peer_map: {
+    class: data_struct
+    label: "PeerList: map[ID]*Peer"
+  }
+  
+  selector: {
+    label: "RandomSelect(k=3)"
+    style.fill: "#fff8e1"
+    tooltip: |md
+      **Selection Constraints:**
+      1. State == 'ALIVE'
+      2. Priority > Low
+      3. !Self
+    |
+  }
+}
+
+# 4. Storage & Delta Tracking
+storage: {
+  label: "State Store (M2)"
+  class: module
+  style.fill: "#f3e5f5"
+  style.stroke: "#7b1fa2"
+
+  db_entries: {
+    shape: sql_table
+    label: "Local Database (In-Mem)"
+    key: "string" {constraint: primary_key}
+    value: "blob"
+    version: "uint64" {constraint: "Version Index"}
+  }
+
+  delta_engine: {
+    label: "DeltaCalculator"
+    style.fill: "#fff8e1"
+    tooltip: |md
+      **Query:**
+      `SELECT * FROM entries`
+      `WHERE version > cursor`
+    |
+  }
+}
+
+# 5. Protocol Encoding
+protocol: {
+  label: "Protocol Engine"
+  class: module
+  style.fill: "#e3f2fd"
+  style.stroke: "#1976d2"
+
+  packet_layout: {
+    label: |md
+      ### UDP Packet Layout
+      | Offset | Field | Size | Description |
+      | :--- | :--- | :--- | :--- |
+      | 0x00 | Magic | 2B | 0xDEAD |
+      | 0x02 | Ver | 1B | Protocol Ver |
+      | 0x03 | Type | 1B | 0x01 (Gossip) |
+      | 0x04 | Len | 4B | Payload Size |
+      | 0x08 | Data | Var | Snappy Compressed |
+    |
+  }
+}
+
+# 6. Messaging / Wire
+gossip_wire: {
+  label: |md
+    **Serialized Payload:**
+    - Origin: [16]byte
+    - Epoch: uint64
+    - DeltaCount: uint16
+    - Deltas: []Byte
+  |
+  class: wire_msg
+}
+
+# 7. Network I/O
+network: {
+  label: "Network Stack"
+  class: module
+  style.fill: "#eceff1"
+  
+  socket: {
+    shape: circle
+    label: "SendTo()\nUDP:7946"
+  }
+}
+
+# 8. Fanout Targets
+fanout: {
+  label: "Peer Selection (Fanout)"
+  style.fill: "#f1f8e9"
+  style.stroke: "#388e3c"
+  
+  p1: {
+    label: "Node Alpha"
+    shape: person
+  }
+  p2: {
+    label: "Node Beta"
+    shape: person
+  }
+  p3: {
+    label: "Node Gamma"
+    shape: person
+  }
+}
+
+# 9. Observability
+metrics: {
+  label: |md
+    ### Prometheus Metrics
+    - `gossip_sent_total`
+    - `delta_size_bytes`
+    - `encoding_latency_ms`
+  |
+  style.fill: "#fce4ec"
+  style.stroke: "#c2185b"
+}
+
+# --- DATA FLOW CONNECTIONS ---
+
+timer_module.ticker -> gossiper.internal_state: "1. Interval Wakeup" {
+  style.stroke: "#388e3c"
+  style.animated: true
+}
+
+gossiper -> membership.selector: "2. Request Target IDs" {
+  style.stroke: "#1976d2"
+}
+
+membership.peer_map -> membership.selector: "Scan ALIVE" {
+  style.stroke-dash: 3
+}
+
+membership.selector -> gossiper: "Return TargetList" {
+  style.stroke: "#7b1fa2"
+  style.stroke-dash: 3
+}
+
+gossiper -> storage.delta_engine: "3. Request Diff(last_seq)" {
+  style.stroke: "#1976d2"
+}
+
+storage.db_entries -> storage.delta_engine: "Read v > cursor" {
+  style.stroke-dash: 2
+}
+
+storage.delta_engine -> gossiper: "Return []Update" {
+  style.stroke: "#7b1fa2"
+  style.stroke-dash: 3
+}
+
+gossiper -> protocol.packet_layout: "4. Marshal Data" {
+  style.stroke: "#1976d2"
+}
+
+protocol.packet_layout -> gossip_wire: "Encoded Bytes" {
+  style.stroke: "#f57c00"
+}
+
+gossip_wire -> network.socket: "5. Dispatch" {
+  style.stroke: "#f57c00"
+}
+
+network.socket -> fanout: "UDP Multicast/Unicast" {
+  style.stroke: "#1976d2"
+  style.animated: true
+}
+
+gossiper -> metrics: "6. Record Telemetry" {
+  style.stroke: "#c2185b"
+  style.stroke-dash: 3
+}
+
+# --- LEGEND & NOTES ---
+
+legend: {
+  near: bottom-right
+  grid-columns: 1
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#dee2e6"
+    padding: 10
+  }
+  
+  header: {
+    label: "LEGEND"
+    style.bold: true
+  }
+  
+  l1: {
+    grid-columns: 2
+    box: { label: ""; width: 20; height: 10; style.fill: "#e3f2fd"; style.stroke: "#1976d2" }
+    txt: { label: "Processing Module"; shape: text }
+  }
+  l2: {
+    grid-columns: 2
+    box: { label: ""; width: 20; height: 10; shape: cylinder; style.fill: "#f3e5f5"; style.stroke: "#7b1fa2" }
+    txt: { label: "State/Data Structure"; shape: text }
+  }
+  l3: {
+    grid-columns: 2
+    box: { label: ""; width: 20; height: 10; style.fill: "#fff3e0"; style.stroke: "#f57c00" }
+    txt: { label: "Wire Message"; shape: text }
+  }
+}
+
+annotations: {
+  near: bottom-left
+  note_box: {
+    shape: rectangle
+    style.fill: "#fffde7"
+    label: |md
+      ### Implementation Specs:
+      - **Convergence:** O(log N) rounds required for cluster-wide consistency.
+      - **Entropy:** Peer selection uses Fisher-Yates for uniform distribution.
+      - **Network:** UDP MTU capped at 1400B to avoid IP fragmentation.
+      - **Versioning:** Delta tracking based on monotonic version increments.
+    |
+  }
+}

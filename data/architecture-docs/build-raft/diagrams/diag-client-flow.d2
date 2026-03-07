@@ -1,0 +1,240 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Client Command Flow
+  Leader Discovery via Redirect • Timeout & Retry
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  client: Client {
+    shape: person
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+  }
+  follower: Follower\n(Node B) {
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+  }
+  leader: Leader\n(Node A) {
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+  }
+}
+row2: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  step1: Step 1: Discovery {
+    width: 280
+    label: "1. Command Submission"
+    code: |'go
+      args := ClientCommandArgs{
+        ClientId:       "client-123",
+        SequenceNumber: 42,
+        Command:        PutCommand{
+          Key:   "x",
+          Value: "100",
+        },
+      }
+      // Client sends to ANY node
+      client.SubmitCommand(args)
+    '|
+  }
+  step2: Step 2: Redirect {
+    width: 280
+    label: "2. Non-Leader Response"
+    code: |'go
+      // Follower checks leadership
+      if rf.state != Leader {
+        reply.WrongLeader = true
+        reply.LeaderId = "node-A"  // hint
+        return nil
+      }
+      // Not leader → redirect
+    '|
+  }
+}
+row3: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  step3: Step 3: Leader Submit {
+    width: 280
+    label: "3. Leader Appends to Log"
+    code: |'go
+      // Leader appends entry
+      entry := LogEntry{
+        Term:    rf.currentTerm,
+        Command: args,  // wrapped
+        Index:   rf.logLastIndex() + 1,
+      }
+      rf.log = append(rf.log, entry)
+      rf.persist()
+    '|
+  }
+  step4: Step 4: Replicate {
+    width: 280
+    label: "4. Replicate to Followers"
+    code: |'go
+      // Send AppendEntries to all
+      for _, peer := range peers {
+        go rf.sendAppendEntries(peer,
+          args, reply)
+      }
+      // Wait for majority ACK
+    '|
+  }
+}
+row5: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  step5: Step 5: Commit {
+    width: 280
+    label: "5. Commit Entry"
+    code: |'go
+      // Majority acknowledged
+      if matchCount >= majority {
+        rf.commitIndex = entry.Index
+        // Figure 8: current-term only
+        rf.maybeAdvanceCommitIndex()
+      }
+    '|
+  }
+  step6: Step 6: Apply {
+    width: 280
+    label: "6. Apply to State Machine"
+    code: |'go
+      // Apply in order
+      for rf.lastApplied < rf.commitIndex {
+        rf.lastApplied++
+        resp := rf.stateMachine.Apply(
+          rf.log[rf.lastApplied].Command)
+        // Notify waiting client
+      }
+    '|
+  }
+}
+row7: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  step7: Step 7: Response {
+    width: 580
+    label: "7. Respond to Client"
+    code: |'go
+      reply.Success = true
+      reply.Response = resp  // {Success: true, OldValue: "50"}
+      // Client receives acknowledgment
+      // Command is now durable and applied
+    '|
+  }
+}
+client_timeout: Client-Side Retry Logic {
+  width: 600
+  code: |'go
+    func (c *RaftClient) Command(cmd interface{}) (interface{}, error) {
+      c.sequenceNum++
+      args := &ClientCommandArgs{
+        ClientId:       c.clientId,
+        SequenceNumber: c.sequenceNum,
+        Command:        cmd,
+      }
+      for _, server := range c.serverOrder(c.leaderHint) {
+        ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+        defer cancel()
+        reply, err := c.sendCommand(ctx, server, args)
+        if err != nil { continue }  // Network error, try next
+        if reply.WrongLeader {
+          c.leaderHint = reply.LeaderId  // Update hint
+          continue  // Retry with suggested leader
+        }
+        if reply.Success {
+          c.leaderHint = server  // Remember for future
+          return reply.Response, nil
+        }
+      }
+      return nil, fmt.Errorf("no leader available")
+    }
+  '|
+}
+dedup: Duplicate Detection {
+  width: 600
+  label: "State Machine Deduplication"
+  code: |'go
+    type ClientSession struct {
+      LastSequence  int64
+      LastResponse  interface{}
+    }
+    func (kv *KVStore) Apply(cmd interface{}) interface{} {
+      clientCmd := cmd.(*ClientCommandArgs)
+      session := kv.sessions[clientCmd.ClientId]
+      // Duplicate check
+      if clientCmd.SequenceNumber <= session.LastSequence {
+        return session.LastResponse  // Cached!
+      }
+      // New command - apply and cache
+      resp := kv.applyCommand(clientCmd.Command)
+      session.LastSequence = clientCmd.SequenceNumber
+      session.LastResponse = resp
+      return resp
+    }
+  '|
+}
+legend: Legend {
+  legend_data: {
+    shape: sql_table
+    label: "Message Types"
+    row1: "ClientCommandArgs | clientId, seqNum, command"
+    row2: "ClientCommandReply | success, leaderId, response, wrongLeader"
+    row3: "AppendEntries | term, prevLogIndex, entries[], leaderCommit"
+  }
+}
+invariants: Key Properties {
+  invariants_data: {
+    shape: sql_table
+    label: "Correctness Guarantees"
+    row1: "Leader Redirect | Non-leader returns leaderId hint"
+    row2: "Exactly-Once | Dedup via (clientId, seqNum)"
+    row3: "Linearizable | Response only after commit+apply"
+    row4: "Timeout + Retry | Client handles network failures"
+  }
+}
+client -> follower: "1. SubmitCommand(args)" {
+  label: "ClientCommandArgs"
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+}
+follower -> client: "2. WrongLeader=true\nLeaderId=node-A" {
+  label: "ClientCommandReply"
+  style.stroke: "#FF9800"
+  style.stroke-dash: 3
+}
+client -> leader: "3. SubmitCommand(args)\n(retry with hint)" {
+  label: "ClientCommandArgs"
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+  style.animated: true
+}
+leader -> leader: "4. Append to log\n5. Replicate to majority\n6. Commit + Apply"
+leader -> client: "7. Success=true\nResponse={...}" {
+  label: "ClientCommandReply"
+  style.stroke: "#2196F3"
+  style.stroke-width: 2
+}
+step1 -> step2: "network"
+step2 -> step3: "redirect"
+step3 -> step4: "append"
+step4 -> step5: "majority ACK"
+step5 -> step6: "commitIndex updated"
+step6 -> step7: "applied"
+client_timeout -> dedup
+legend.near: bottom-left
+invariants.near: bottom-right

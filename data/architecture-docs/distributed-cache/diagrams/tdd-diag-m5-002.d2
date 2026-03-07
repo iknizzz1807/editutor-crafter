@@ -1,0 +1,279 @@
+layout-engine: tala
+vars: {
+  d2-config: {
+    layout-engine: tala
+    theme-id: 4
+    pad: 40
+  }
+}
+
+direction: right
+
+title: |md
+  # Distributed Cache Protocol (DCP) v1.2
+  ### Message Specification & Client Implementation
+| {
+  near: top-center
+  style: {
+    font-size: 32
+    bold: true
+  }
+}
+
+# 1. MESSAGE PROTOCOL SPECIFICATION (BYTE-LEVEL)
+# Exact byte offsets and field sizes for implementers.
+classes: {
+  protocol_base: {
+    style: {
+      stroke-width: 2
+      border-radius: 4
+      font: mono
+    }
+  }
+  header_field: {
+    style: {
+      fill: "#E1BEE7"
+      stroke: "#7B1FA2"
+      bold: true
+    }
+  }
+  payload_field: {
+    style: {
+      fill: "#BBDEFB"
+      stroke: "#1976D2"
+    }
+  }
+  delim_field: {
+    style: {
+      fill: "#F5F5F5"
+      stroke: "#9E9E9E"
+      stroke-dash: 2
+    }
+  }
+}
+
+ok_msg: '+OK\r\n' {
+  shape: sql_table
+  class: protocol_base
+  "Offset: 00": '[ 0x2B ] Type: SimpleString' {class: header_field}
+  "Offset: 01": '[ 0x4F ] "O"' {class: payload_field}
+  "Offset: 02": '[ 0x4B ] "K"' {class: payload_field}
+  "Offset: 03": '[ 0x0D 0x0A ] CRLF' {class: delim_field}
+}
+ok_desc: |md
+  ### Type: Simple String (+)
+  - **Invariants**: Payload cannot contain `\r` or `\n`.
+  - **Size**: 3 bytes + 2 bytes CRLF.
+  - **Usage**: Status messages and simple confirmations.
+| {near: ok_msg}
+
+bulk_msg: 'Bulk String Format' {
+  shape: sql_table
+  class: protocol_base
+  "Offset: 00": '[ 0x24 ] Type: BulkString' {class: header_field}
+  "Offset: 01": '[ Var ] Length (N) in ASCII' {class: payload_field}
+  "Offset: 1+L": '[ 0x0D 0x0A ] CRLF' {class: delim_field}
+  "Offset: 3+L": '[ Byte 1 ... Byte N ] Data' {class: payload_field}
+  "Offset: 3+L+N": '[ 0x0D 0x0A ] CRLF' {class: delim_field}
+}
+bulk_desc: |md
+  ### Type: Bulk String ($)
+  - **Max Payload**: 512 MiB.
+  - **Binary Safety**: Allows any byte sequence (including nulls).
+  - **Null Definition**: Represented as `$-1\r\n`.
+| {near: bulk_msg}
+
+arr_msg: '*<count>\r\n<msg1>...<msgN>' {
+  shape: sql_table
+  class: protocol_base
+  "Offset: 00": '[ 0x2A ] Type: Array' {class: header_field}
+  "Offset: 01": '[ Count ] Element count (ASCII)' {class: payload_field}
+  "Offset: 1+C": '[ 0x0D 0x0A ] CRLF' {class: delim_field}
+  "Offset: 3+C": '[ DCP Msg ] Element 1' {class: payload_field}
+  "Offset: ...": '[ DCP Msg ] Element N' {class: payload_field}
+}
+arr_desc: |md
+  ### Type: Array (*)
+  - **Recursive**: Elements can be any DCP type, including other arrays.
+  - **Pipelining**: Used for batching commands and multi-key responses.
+| {near: arr_msg}
+
+# 2. CONNECTION POOL STATE MACHINE
+# Numbered states for TDD alignment.
+pool_sm: "ConnPool Lifecycle & State Invariants" {
+  style.fill: "#FDFCF0"
+  style.stroke: "#BCB99B"
+  
+  IDLE: "1. IDLE" {
+    shape: circle
+    tooltip: "Invariants: tcp_state=ESTABLISHED, checked_out=0"
+    style.fill: "#C8E6C9"
+  }
+  
+  BUSY: "2. BUSY" {
+    shape: circle
+    tooltip: "Invariants: tcp_state=ESTABLISHED, deadline_set=true"
+    style.fill: "#BBDEFB"
+  }
+  
+  DRAINING: "3. DRAINING" {
+    shape: circle
+    style.fill: "#FFE0B2"
+  }
+  
+  CLOSED: "4. CLOSED" {
+    shape: circle
+    style.fill: "#FFCDD2"
+  }
+
+  IDLE -> BUSY: "Acquire() / [pool.sem > 0]"
+  BUSY -> IDLE: "Release() / [conn.is_alive == true]"
+  BUSY -> DRAINING: "Release() / [conn.is_alive == false]"
+  DRAINING -> CLOSED: "Socket.Close() / syscall"
+  IDLE -> CLOSED: "IdleTimeout / Context.Done"
+  CLOSED -> IDLE: "Dial() / TCP_Handshake"
+}
+
+# 3. EXPONENTIAL BACKOFF ALGORITHM
+# Algorithm step visualizer.
+backoff_logic: {
+  label: "Fault Tolerance: Exponential Backoff with Jitter"
+  grid-rows: 1
+  
+  a1: "Attempt 1" {
+    shape: square
+    style.fill: "#FFCDD2"
+  }
+  d1: "100ms" {shape: parallelogram; style.fill: "#EEEEEE"}
+  a2: "Attempt 2" {
+    shape: square
+    style.fill: "#FFCDD2"
+  }
+  d2: "200ms" {shape: parallelogram; style.fill: "#EEEEEE"}
+  a3: "Attempt 3" {
+    shape: square
+    style.fill: "#FFCDD2"
+  }
+  d3: "400ms" {shape: parallelogram; style.fill: "#EEEEEE"}
+  succ: "RETRY SUCCESS" {
+    shape: circle
+    style.fill: "#C8E6C9"
+    style.bold: true
+  }
+
+  a1 -> d1 -> a2 -> d2 -> a3 -> d3 -> succ
+}
+backoff_note: |md
+  **Full Jitter Formula (AWS style)**
+  go
+  temp := min(cap, base * 2^attempt)
+  sleep := random(0, temp)
+  
+| {near: backoff_logic}
+
+# 4. PIPELINE FLOW ARCHITECTURE
+pipeline: "Asynchronous Pipelining Architecture" {
+  direction: right
+  
+  client_app: "Client Thread" {shape: person}
+  
+  client_app -> req_buf: "1. Buffer Command"
+  req_buf: "Kernel TCP Send Buffer" {
+    style.fill: "#E0F2F1"
+    c1: 'GET k1\r\n'
+    c2: 'GET k2\r\n'
+    c3: 'SET k3 v3\r\n'
+  }
+  req_buf -> server_node: "2. Flush (syscall.writev)"
+  
+  server_node: "DCP Server" {shape: cylinder; style.fill: "#FFF59D"}
+  
+  server_node -> res_buf: "3. Process Batch"
+  res_buf: "Kernel TCP Recv Buffer" {
+    style.fill: "#FFF9C4"
+    r1: '$4\r\nval1\r\n'
+    r2: '$-1\r\n'
+    r3: '+OK\r\n'
+  }
+  res_buf -> client_app: "4. Batch Read / Dispatch"
+}
+
+# 5. COMMAND LEXER FINITE STATE AUTOMATON
+lexer: "Command Lexer (FSA) Transition Logic" {
+  style.stroke: "#3F51B5"
+  style.stroke-width: 2
+  
+  START: "● START"
+  IN_WORD: "IN_WORD"
+  IN_QUOTE: "IN_QUOTE"
+  ESCAPE: "ESCAPE_CHAR"
+  ERROR: "LEX_ERROR" {style.fill: "#FFEB3B"; style.stroke: red}
+
+  START -> IN_WORD: "char > 0x20"
+  START -> IN_QUOTE: "char == 0x22"
+  IN_WORD -> IN_WORD: "char > 0x20"
+  IN_WORD -> START: "char == 0x20 / EmitToken()"
+  IN_QUOTE -> ESCAPE: "char == 0x5C"
+  ESCAPE -> IN_QUOTE: "any_char"
+  IN_QUOTE -> START: "char == 0x22 / EmitToken()"
+  IN_WORD -> ERROR: "char == CRLF" {style.stroke: red; style.stroke-width: 2}
+}
+
+# 6. DISTRIBUTED ARCHITECTURE & HASHLOGIC
+architecture: {
+  client: "DCP SDK Node" {
+    shape: class
+    +ConsistentHasher: "RingBuffer"
+    +ConnectionMap: "Map<NodeAddr, Pool>"
+    +Execute(Cmd): "(Result, Error)"
+  }
+  
+  node_cluster: "DCP Cluster" {
+    n1: "Shard 0 (10.0.0.1)" {icon: server}
+    n2: "Shard 1 (10.0.0.2)" {icon: server}
+  }
+
+  client.ConsistentHasher -> client.ConnectionMap: "1. Route key to Shard"
+  client.ConnectionMap -> node_cluster.n1: "2. Acquire from Pool A"
+  client.ConnectionMap -> node_cluster.n2: "2. Acquire from Pool B"
+}
+
+# Layout Positioning for TALA Engine
+ok_msg.top: 150
+ok_msg.left: 50
+
+bulk_msg.top: 150
+bulk_msg.left: 450
+
+arr_msg.top: 150
+arr_msg.left: 850
+
+pool_sm.top: 500
+pool_sm.left: 50
+
+backoff_logic.top: 500
+backoff_logic.left: 550
+
+pipeline.top: 850
+pipeline.left: 50
+
+architecture.top: 1200
+architecture.left: 50
+
+lexer.top: 1200
+lexer.left: 650
+
+# Global Implementation Constraints
+protocol_note: |md
+  ## System-Level Constraints
+  - **Endianness**: Big-Endian (Network Byte Order).
+  - **Zero-Copy**: Bulk strings should use `sendfile` or `mmap` where possible for data > 64KB.
+  - **Memory Alignment**: Aligned to 64-byte cache lines to prevent false sharing in multi-threaded pools.
+  - **Timeouts**: Dial=500ms, Read=200ms, Write=200ms.
+| {
+  near: architecture
+  style: {
+    font-size: 14
+    fill: "#F5F5F5"
+  }
+}

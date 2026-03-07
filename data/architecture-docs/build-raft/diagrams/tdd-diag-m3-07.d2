@@ -1,0 +1,228 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+direction: right
+
+title: |md
+  # AppendEntries Consistency Check with Snapshot Boundary
+  ## Implementation Specification: Raft Log Matching Logic
+  ### Handling `prevLogIndex` and `prevLogTerm` relative to `lastIncludedIndex`
+| {near: top-center}
+
+# =============================================================================
+# 1. MEMORY & STORAGE LAYOUT (INTEL SPEC STYLE)
+# =============================================================================
+physical_layout: {
+  label: "Memory Layout: Physical vs Logical Mapping"
+  
+  # Legend/Metadata
+  info: |md
+    **Storage Constraints**
+    - `lastIncludedIndex`: End of persistent snapshot.
+    - `RAM Array`: Starts at `lastIncludedIndex + 1`.
+    - Cache alignment: 64B boundaries.
+  | {near: top-left}
+
+  # Physical Representation of Log
+  log_storage: {
+    grid-columns: 1
+    grid-gap: 0
+
+    header: "0x00: Log Control Block (LCB)" {
+      style.fill: "#9b59b6" # Purple Header
+      style.font-color: white
+      
+      meta: {
+        grid-columns: 2
+        grid-gap: 5
+        "lastIncludedIndex": "uint64 (8B)"
+        "lastIncludedTerm": "uint64 (8B)"
+        "commitIndex": "uint64 (8B)"
+        "firstLogIndex": "uint64 (8B)"
+      }
+    }
+
+    snapshot_space: "0x20: Snapshot Data (Persisted On Disk)" {
+      style.fill: "#95a5a6" # Gray Padding/Inactive
+      style.stroke-dash: 5
+      height: 80
+    }
+
+    cache_boundary: "" {
+      shape: line
+      style.stroke-dash: 3
+      style.stroke: "#e74c3c"
+      label: "---- 64B Cache Line Boundary ----"
+    }
+
+    active_buffer: "0x40: Volatile RAM Buffer (Entries[])" {
+      style.fill: "#3498db" # Blue Data
+      style.stroke-width: 4
+      
+      entries: {
+        grid-columns: 4
+        grid-gap: 2
+        e0: "Index: L+1\n(Phys: 0)" { style.fill: "#bdc3c7" }
+        e1: "Index: L+2\n(Phys: 1)" { style.fill: "#bdc3c7" }
+        e2: "..." { style.fill: "#bdc3c7" }
+        en: "Index: N\n(Phys: N-L-1)" { style.fill: "#bdc3c7" }
+      }
+    }
+  }
+
+  translation_rule: |md
+    ### Address Translation
+    **Mapping Logical Index $L_{idx}$ to Physical Offset $P_{off}$:**
+    `if (L_idx > lastIncludedIndex):`
+    `  P_off = L_idx - lastIncludedIndex - 1`
+    `else:`
+    `  TRAP: SnapshotBoundaryViolation`
+  | {near: bottom-center}
+}
+
+# =============================================================================
+# 2. ALGORITHM STATE MACHINE: APPENDENTRIES RPC
+# =============================================================================
+logic_flow: {
+  style.stroke: "#2c3e50"
+  style.fill: "#fdfefe"
+
+  start: ● { shape: circle; style.fill: "#2ecc71" }
+
+  rpc_ingress: "RPC Arrival\n{term, pIdx, pTerm, entries[]}" {
+    style.fill: "#ebf5fb"
+    style.stroke: "#2980b9"
+  }
+
+  # --- STEP 1: TERM VALIDATION ---
+  check_term: "args.term < currentTerm?" {
+    shape: diamond
+    style.fill: "#fef9e7"
+  }
+
+  reject_stale: "REJECT STALE\nsuccess=false" {
+    style.fill: "#f9ebeb"
+    style.stroke: "#c0392b"
+    style.font-color: "#c0392b"
+  }
+
+  # --- STEP 2: BOUNDARY DETERMINATION ---
+  boundary_check: "prevLogIndex vs\nlastIncludedIndex" {
+    shape: diamond
+    style.fill: "#f4faff"
+  }
+
+  # Case A: Boundary Overlap
+  is_at_boundary: "prevLogIndex ==\nlastIncludedIndex?" {
+    shape: diamond
+    style.fill: "#fdf2e9"
+  }
+
+  verify_boundary_term: "prevLogTerm ==\nlastIncludedTerm?" {
+    shape: diamond
+    style.fill: "#fdf2e9"
+  }
+
+  # Case B: Snapshot Underflow
+  is_underflow: "prevLogIndex <\nlastIncludedIndex?" {
+    shape: diamond
+    style.fill: "#fdf2e9"
+  }
+
+  # Case C: Active Log Check
+  standard_consistency: "STANDARD RAFT MATCH\n1. log.hasIndex(pIdx)\n2. log[pIdx].Term == pTerm" {
+    style.fill: "#eafaf1"
+    style.stroke: "#27ae60"
+  }
+
+  # Termination States
+  accept_append: "ACCEPT & APPEND\nPhysOffset = P_off\nUpdate commitIndex" {
+    style.fill: "#d4edda"
+    style.stroke: "#28a745"
+    style.bold: true
+  }
+
+  reject_conflict: "CONFLICT REJECT\nReturn Success=false\nConflictIndex = last+1" {
+    style.fill: "#fdedec"
+    style.stroke: "#e74c3c"
+  }
+
+  # Transitions
+  start -> rpc_ingress
+  rpc_ingress -> check_term
+  check_term -> reject_stale: "Yes" { style.stroke: "#e74c3c" }
+  check_term -> boundary_check: "No"
+
+  boundary_check -> is_at_boundary: "Test Boundary"
+  is_at_boundary -> verify_boundary_term: "Yes"
+  verify_boundary_term -> accept_append: "Match" { style.stroke: "#27ae60" }
+  verify_boundary_term -> reject_conflict: "Mismatch" { style.stroke: "#e74c3c" }
+
+  boundary_check -> is_underflow: "Test Underflow"
+  is_underflow -> reject_conflict: "Yes (Leader Stale)" { style.stroke: "#e74c3c" }
+
+  boundary_check -> standard_consistency: "pIdx > lastInclIndex"
+  standard_consistency -> accept_append: "Match"
+  standard_consistency -> reject_conflict: "Mismatch"
+}
+
+# =============================================================================
+# 3. SCENARIO TABLE (GRID VIEW)
+# =============================================================================
+scenarios: {
+  grid-columns: 3
+  grid-gap: 20
+  near: bottom-center
+
+  case_a: {
+    label: |md
+      ### CASE A: Overlap
+      **Match Point:** `log[0]`
+      The `prevLogIndex` points exactly to the snapshot tail. Verify term against `lastIncludedTerm`.
+    |
+    style.fill: "#e8f8f5"
+  }
+
+  case_b: {
+    label: |md
+      ### CASE B: Underflow
+      **Match Point:** `N/A`
+      Leader is trying to sync indices we have already discarded/compacted. Force sync to `lastIncludedIndex + 1`.
+    |
+    style.fill: "#fef5e7"
+  }
+
+  case_c: {
+    label: |md
+      ### CASE C: Active
+      **Match Point:** `RAM Array`
+      Standard consistency check. Translate logical index using `P = L - last - 1`.
+    |
+    style.fill: "#ebf5fb"
+  }
+}
+
+# =============================================================================
+# 4. GLOBAL STYLING & LEGEND
+# =============================================================================
+legend: {
+  near: bottom-right
+  
+  keys: {
+    grid-columns: 2
+    snapshot: "Persistent Log (Disk)" { style.fill: "#95a5a6" }
+    volatile: "Active Log (RAM)" { style.fill: "#3498db" }
+    success: "Success State" { style.fill: "#d4edda" }
+    failure: "Error/Conflict" { style.fill: "#f9ebeb" }
+  }
+}
+
+***.style.font: mono
+(logic_flow.boundary_check -> logic_flow.standard_consistency): "Index > Boundary"
+(logic_flow.is_underflow -> logic_flow.reject_conflict): "Conflict"
+(logic_flow.verify_boundary_term -> logic_flow.accept_append): "Boundary Match"

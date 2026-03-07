@@ -1,0 +1,267 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+title: {
+  shape: text
+  label: |md
+    # Gossiper Loop State Machine
+    ### Protocol Implementation Specification v1.2.4
+    *Target: Distributed Cluster State Sync*
+  |
+  near: top-center
+}
+
+# -----------------------------------------------------------------------------------------
+# STATE DEFINITIONS (Nested for ELK Compliance)
+# -----------------------------------------------------------------------------------------
+
+Idle: {
+  style.fill: "#E8F5E9"
+  style.stroke: "#2E7D32"
+  style.stroke-width: 3
+  
+  definition: |md
+    ## IDLE
+    **Entry:** `ticker.Start()`
+    **Wait:** `select { case <-ticker.C }`
+    ---
+    *Context:*
+    - `lastSent`: uint64
+    - `seenCache`: LRU[UUID]
+  |
+  
+  invariants: |md
+    ### [INV-01]
+    - `lastSent` watermark valid.
+    - `SeenCache` operational.
+    - Pending buffer is 0.
+  | {
+    style.stroke-dash: 3
+    style.font-size: 11
+  }
+}
+
+SelectingPeers: {
+  style.fill: "#E3F2FD"
+  style.stroke: "#1565C0"
+  style.stroke-width: 3
+  
+  definition: |md
+    ## SELECTING_PEERS
+    **Action:** `GetRandomPeers(fanout)`
+    ---
+    *Logic:*
+    - Exclude `Self`
+    - Probability: `1 / total`
+  |
+  
+  invariants: |md
+    ### [INV-02]
+    - Selection count `n <= fanout`.
+    - No duplicate entries.
+    - Selection bias < 0.01%.
+  | {
+    style.stroke-dash: 3
+    style.font-size: 11
+  }
+}
+
+BuildingDelta: {
+  style.fill: "#FFF3E0"
+  style.stroke: "#EF6C00"
+  style.stroke-width: 3
+  
+  definition: |md
+    ## BUILDING_DELTA
+    **Action:** `store.GetDelta(lastSent)`
+    ---
+    *Fields:*
+    - `MaxBatch`: 1400B
+    - `Consistency`: Eventual
+  |
+  
+  invariants: |md
+    ### [INV-03]
+    - Entry Version `v > lastSent`.
+    - Size <= `config.MaxUDPPayload`.
+  | {
+    style.stroke-dash: 3
+    style.font-size: 11
+  }
+}
+
+EncodingMessage: {
+  style.fill: "#F3E5F5"
+  style.stroke: "#7B1FA2"
+  style.stroke-width: 3
+  
+  definition: |md
+    ## ENCODING_MESSAGE
+    **Action:** `proto.Marshal(Gossip)`
+    ---
+    *Header:*
+    - `MsgType`: 0x01
+    - `Checksum`: CRC32
+  |
+  
+  invariants: |md
+    ### [INV-04]
+    - `OriginID` == `NodeID`.
+    - Serialization < 10ms.
+  | {
+    style.stroke-dash: 3
+    style.font-size: 11
+  }
+}
+
+Sending: {
+  style.fill: "#FFEBEE"
+  style.stroke: "#C62828"
+  style.stroke-width: 3
+  
+  definition: |md
+    ## SENDING
+    **Action:** `conn.WriteToUDP()`
+    ---
+    *Metrics:*
+    - `gossip_bytes_sent_total`
+  |
+  
+  invariants: |md
+    ### [INV-05]
+    - Update `lastSent` post-syscall.
+    - Handle `EAGAIN` correctly.
+  | {
+    style.stroke-dash: 3
+    style.font-size: 11
+  }
+}
+
+Waiting: {
+  style.fill: "#E0F7FA"
+  style.stroke: "#00838F"
+  style.stroke-width: 3
+  
+  definition: |md
+    ## WAITING
+    **Action:** `runtime.Gosched()`
+  |
+  
+  invariants: |md
+    ### [INV-06]
+    - Reset ticker if `ExecTime > Interval`.
+  | {
+    style.stroke-dash: 3
+    style.font-size: 11
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# MARKERS
+# -----------------------------------------------------------------------------------------
+
+Initial: {
+  shape: circle
+  style.fill: "#000000"
+  width: 30
+  height: 30
+}
+
+Terminal: {
+  shape: circle
+  style.fill: "#000000"
+  style.double-border: true
+  width: 30
+  height: 30
+}
+
+# -----------------------------------------------------------------------------------------
+# TRANSITIONS
+# -----------------------------------------------------------------------------------------
+
+Initial -> Idle: "InitNode(config)"
+
+Idle -> SelectingPeers: "GossipTick\n[!paused]" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 2
+  style.animated: true
+}
+
+SelectingPeers -> BuildingDelta: "PeersFound\n[len > 0]" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+}
+
+SelectingPeers -> Idle: "TableEmpty\n[log.Warn]" {
+  style.stroke: "#9E9E9E"
+  style.stroke-dash: 5
+}
+
+BuildingDelta -> EncodingMessage: "DataReady\n[len > 0]" {
+  style.stroke: "#EF6C00"
+  style.stroke-width: 2
+}
+
+BuildingDelta -> Idle: "NoUpdates" {
+  style.stroke: "#9E9E9E"
+  style.stroke-dash: 5
+}
+
+EncodingMessage -> Sending: "MarshalOK" {
+  style.stroke: "#7B1FA2"
+  style.stroke-width: 2
+}
+
+EncodingMessage -> Idle: "MarshalFail" {
+  style.stroke: "#B71C1C"
+  style.stroke-dash: 5
+}
+
+Sending -> Waiting: "SyscallDone" {
+  style.stroke: "#C62828"
+  style.stroke-width: 2
+}
+
+Waiting -> Idle: "BackoffExpired" {
+  style.stroke: "#00838F"
+  style.stroke-width: 2
+  style.animated: true
+}
+
+Idle -> Terminal: "SIGTERM / Cancel" {
+  style.stroke: "#000000"
+  style.stroke-width: 3
+}
+
+# -----------------------------------------------------------------------------------------
+# DOCS & LEGEND
+# -----------------------------------------------------------------------------------------
+
+IllegalTransitions: {
+  shape: rectangle
+  style.fill: "#FFCDD2"
+  style.stroke: "#B71C1C"
+  style.stroke-width: 3
+  near: bottom-left
+  label: |md
+    ### ⚠️ SAFETY RULES
+    - **No Direct Send:** `Idle -> Sending` is **ILLEGAL**. 
+    - **MTU Safety:** `BuildingDelta` must verify payload size.
+    - **Atomic Updates:** `lastSent` watermark updated ONLY after syscall.
+  |
+}
+
+Legend: {
+  shape: rectangle
+  style.fill: "#FAFAFA"
+  style.stroke: "#424242"
+  near: bottom-right
+  
+  L1: "────▶ Nominal Flow" { shape: text }
+  L2: "- - -▶ Optional/Early Return" { shape: text }
+  L3: "● Initial | ◎ Terminal" { shape: text }
+}

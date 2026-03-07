@@ -1,0 +1,153 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+InstallSnapshot_RPC_Flow: {
+  shape: sequence_diagram
+  style: {
+    stroke-width: 2
+    fill: "#f8f9fa"
+  }
+
+  # --- Participants (Intel Manual Quality) ---
+  leader: Raft Leader (L1) {
+    shape: person
+    style: {
+      fill: "#dae8fc"
+      stroke: "#6c8ebf"
+      stroke-width: 2
+    }
+  }
+  
+  follower: Raft Follower (F1) {
+    shape: person
+    style: {
+      fill: "#dae8fc"
+      stroke: "#6c8ebf"
+      stroke-width: 2
+    }
+  }
+  
+  disk: Persistent Storage {
+    shape: cylinder
+    style: {
+      fill: "#fff2cc"
+      stroke: "#d6b656"
+      stroke-width: 2
+    }
+  }
+  
+  sm: State Machine {
+    shape: rectangle
+    style: {
+      fill: "#d5e8d4"
+      stroke: "#82b366"
+      stroke-width: 2
+    }
+  }
+
+  # --- 1. Conflict Detection ---
+  leader -> follower: "AppendEntries { term: 3, prevLogIndex: 50, prevLogTerm: 2 }" {
+    style.stroke: "#6c8ebf"
+  }
+
+  follower."Evaluation Logic:\n- nextIndex[leader] = 51\n- my lastIncludedIndex = 100\n- INVARIANT: 51 <= 100\n- RESULT: Log Gap Found" {
+    style: {
+      font-color: "#d73a49"
+      stroke: "#d73a49"
+      stroke-dash: 3
+    }
+  }
+
+  follower -> leader: "Reject { ConflictIndex: 101, Term: 3 }" {
+    style: {
+      stroke: "#b85450"
+      font-color: "#b85450"
+      bold: true
+    }
+  }
+
+  leader -> leader: "State Transition:\n- detect nextIndex <= lastIncludedIndex\n- switch to InstallSnapshot RPC"
+
+  # --- 2. RPC Transmission (Byte Layout Context) ---
+  leader.t1 -> follower.t1: "InstallSnapshot {\n  [Offset 00] term: 3 (uint64)\n  [Offset 08] leaderId: \"L1\" (string)\n  [Offset 16] lastIdx: 100 (uint64)\n  [Offset 24] lastTerm: 2 (uint64)\n  [Offset 32] data: <raw_bytes>\n}" {
+    style.stroke-width: 3
+  }
+
+  # --- 3. Durability & State Reload ---
+  follower.t1 -> disk: "I/O Write: SaveSnapshotChunk(offset=0, size=N)" {
+    style.stroke: "#d6b656"
+  }
+  
+  follower.t1."FSYNC BARRIER:\nPersist snapshot to disk\nbefore memory mutation." {
+    style: {
+      bold: true
+      stroke: "#ff0000"
+      fill: "#ffe6e6"
+    }
+  }
+  
+  disk -> follower.t1: "ACK: Write Success (O_DIRECT)"
+
+  follower.t1 -> sm: "Load: RestoreSnapshot(stream)" {
+    style.stroke: "#82b366"
+  }
+  sm -> follower.t1: "STATUS: Memory Re-initialized"
+
+  # --- 4. Metadata & Log Management ---
+  follower.t1."Update Index Metadata:\n- lastIncludedIndex = 100\n- lastIncludedTerm = 2\n- commitIndex = max(ci, 100)" {
+    style: {
+      font-color: "#006600"
+      stroke: "#006600"
+    }
+  }
+
+  follower.t1."Truncation Logic:\n- if logLastIndex < 100:\n    log = [dummy_entry_100]\n- else:\n    log = log.slice(101..)" {
+    style: {
+      font-color: "#0000ff"
+      stroke: "#0000ff"
+    }
+  }
+
+  follower.t1 -> disk: "Fsync: persist_meta(term, votedFor, log_indices)"
+  
+  follower.t1 -> leader: "Reply { term: 3, success: true }" {
+    style.stroke-width: 2
+  }
+
+  # --- 5. Post-Condition ---
+  leader -> leader: "Update matchIndex[F1] = 100\nSet nextIndex[F1] = 101"
+}
+
+# --- Detailed Technical Annotations ---
+annotations: |md
+  ### InstallSnapshot Implementation Specification
+  
+  #### 1. Disk I/O Protocol
+  - **Alignment**: Snapshot chunks MUST be written at **4096-byte boundaries** to facilitate high-speed `O_DIRECT` access.
+  - **Integrity**: Each snapshot chunk should include a **CRC32C checksum** to verify data integrity before restoration.
+  
+  #### 2. Memory & State Invariants
+  - **Dummy Entry**: The log at index `lastIncludedIndex` is replaced by a placeholder entry with the correct term to support `prevLogTerm` checks for future `AppendEntries`.
+  - **Concurrency**: The `RestoreSnapshot` call must acquire a **Write Lock** on the State Machine, blocking all client read/write operations during the reload.
+  
+  #### 3. Error Recovery
+  - If `SaveSnapshot` fails, the follower must return `success: false` or timeout; the leader must retry from the last successful offset.
+| {
+  near: bottom-center
+  style: {
+    font-size: 14
+    stroke: "#6c8ebf"
+    fill: "#f5faff"
+  }
+}
+
+# Explicit sizing for Intel-manual look
+InstallSnapshot_RPC_Flow.leader.width: 140
+InstallSnapshot_RPC_Flow.follower.width: 140
+InstallSnapshot_RPC_Flow.disk.width: 180
+InstallSnapshot_RPC_Flow.sm.width: 160

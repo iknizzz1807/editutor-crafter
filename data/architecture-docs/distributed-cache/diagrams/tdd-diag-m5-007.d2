@@ -1,0 +1,219 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# 1. MEMORY LAYOUT: CACHE ENTRY STRUCT
+# Exact byte offsets left margin, field sizes/types as constraints.
+# Colors: Header=Purple, Data=Blue, Pointers=Orange, Padding/Meta=Gray.
+cache_entry_memory: "Cache Entry Memory Layout (sizeof=128 bytes)" {
+  shape: sql_table
+  style: {
+    stroke: "#333333"
+    fill: "#E6E7B3"
+  }
+  
+  # Offsets | Field Name | Type/Size
+  0x00: "Key Pointer" {constraint: "uintptr (8B)"; style.fill: orange}
+  0x08: "Key Length" {constraint: "int64 (8B)"; style.fill: blue}
+  0x10: "Key Capacity" {constraint: "int64 (8B)"; style.fill: gray}
+  0x18: "Value Pointer" {constraint: "uintptr (8B)"; style.fill: orange}
+  0x20: "Value Length" {constraint: "int64 (8B)"; style.fill: blue}
+  0x28: "Value Capacity" {constraint: "int64 (8B)"; style.fill: gray}
+  0x30: "CreatedAt.sec" {constraint: "int64 (8B)"; style.fill: blue}
+  0x38: "CreatedAt.nsec" {constraint: "int32 (4B)"; style.fill: blue}
+  0x3C: "Padding (Align)" {constraint: "4B"; style.fill: gray}
+  
+  # --- 64B CACHE LINE BOUNDARY ---
+  boundary: "--- 64B CACHE LINE BOUNDARY ---" {
+    style: {
+      stroke-dash: 5
+      bold: true
+      font-size: 11
+    }
+  }
+
+  0x40: "ExpiresAt.sec" {constraint: "int64 (8B)"; style.fill: blue}
+  0x48: "ExpiresAt.nsec" {constraint: "int32 (4B)"; style.fill: blue}
+  0x4C: "Padding (Align)" {constraint: "4B"; style.fill: gray}
+  0x50: "Size" {constraint: "int64 (8B)"; style.fill: blue}
+  0x58: "Frequency" {constraint: "uint64 (8B)"; style.fill: blue}
+  0x60: "Prev Node" {constraint: "*Entry (8B)"; style.fill: orange}
+  0x68: "Next Node" {constraint: "*Entry (8B)"; style.fill: orange}
+  0x70: "Internal Hash" {constraint: "uint64 (8B)"; style.fill: gray}
+  0x78: "Padding/Reserved" {constraint: "8B"; style.fill: gray}
+}
+
+# 2. ARCHITECTURE: LRU CACHE DATA STRUCTURES
+lru_architecture: "LRU Architecture: Hashmap + Doubly Linked List" {
+  hash_map: "Lookup Map (O(1) Access)" {
+    grid-columns: 1
+    style.fill: "#F5F5F5"
+    slot1: "Key: 'user_1' -> ptr_0x400" {style.font-size: 12}
+    slot2: "Key: 'user_2' -> ptr_0x480" {style.font-size: 12}
+    slot3: "Key: 'user_3' -> ptr_0x500" {style.font-size: 12}
+  }
+
+  doubly_linked_list: "Recency List (O(1) Reorder)" {
+    direction: right
+    style.fill: "#FFFFFF"
+    
+    Head: "Head (MRU)" {
+      shape: circle
+      style.fill: "#4CAF50"
+      style.font-color: white
+    }
+    EntryA: "Node A" {
+      shape: rectangle
+      style.fill: "#fce7c6"
+      style.double-border: true
+    }
+    EntryB: "Node B" {
+      shape: rectangle
+      style.fill: "#fce7c6"
+      style.double-border: true
+    }
+    EntryC: "Node C" {
+      shape: rectangle
+      style.fill: "#fce7c6"
+      style.double-border: true
+    }
+    Tail: "Tail (LRU)" {
+      shape: circle
+      style.fill: "#F44336"
+      style.font-color: white
+    }
+
+    Head -> EntryA
+    EntryA <-> EntryB
+    EntryB <-> EntryC
+    EntryC -> Tail: "Next for Eviction"
+  }
+
+  hash_map.slot1 -> doubly_linked_list.EntryA: "Value Ref" {style.stroke-dash: 3; style.stroke: orange}
+  hash_map.slot2 -> doubly_linked_list.EntryB: "Value Ref" {style.stroke-dash: 3; style.stroke: orange}
+  hash_map.slot3 -> doubly_linked_list.EntryC: "Value Ref" {style.stroke-dash: 3; style.stroke: orange}
+}
+
+# 3. ARCHITECTURE: LFU FREQUENCY BUCKETS
+lfu_buckets: "LFU Frequency Buckets (O(1) Freq Increment)" {
+  bucket_freq_1: "Freq: 1 (Lowest)" {
+    style.fill: "#E4DBFE"
+    style.stroke-width: 2
+    NodeX: "Entry X" {style.fill: white}
+    NodeY: "Entry Y" {style.fill: white}
+    NodeX <-> NodeY
+  }
+
+  bucket_freq_2: "Freq: 2" {
+    style.fill: "#B5AFF6"
+    style.stroke-width: 2
+    NodeZ: "Entry Z" {style.fill: white}
+  }
+
+  bucket_freq_1 -> bucket_freq_2: "Promote on Access" {
+    style.stroke: "#2196F3"
+    style.animated: true
+    style.bold: true
+  }
+}
+
+# 4. ALGORITHM: GET WITH LAZY TTL EVICTION
+get_flow: "Get(key) Implementation Logic" {
+  shape: sequence_diagram
+  
+  Client: "API Client"
+  Shard: "CacheShard"
+  Storage: "Map Store"
+
+  Client -> Shard: "Get(key string) (interface{}, bool)"
+  Shard -> Storage: "lookup(hash(key))"
+  Storage -> Shard: "return *Entry, exists"
+  
+  LogicGate: "Conditional Logic" {
+    Shard -> Shard: "if exists == true"
+    Shard -> Shard: "check: time.Now() > Entry.ExpiresAt"
+    
+    ExpiredBranch: "Case: Expired" {
+      Shard -> Storage: "delete(key)" {
+        style.stroke: "#D32F2F"
+      }
+      Shard -> Client: "return nil, false"
+    }
+    
+    ValidBranch: "Case: Valid" {
+      Shard -> Shard: "updateMetadata(Entry)" {
+        style.bold: true
+        style.stroke: "#388E3C"
+      }
+      Shard -> Client: "return Entry.Value, true"
+    }
+  }
+  
+  NotFound: "Case: !exists" {
+    Shard -> Client: "return nil, false"
+  }
+}
+
+# 5. BACKGROUND CLEANUP PROCESS
+background_process: "Active TTL Eviction State Machine" {
+  Idle: "WAITING" {
+    shape: circle
+    style.stroke-width: 4
+  }
+  Scan: "SCANNING_SHARD" {
+    style.fill: "#C7F1FF"
+    style.double-border: true
+  }
+  Evict: "EVICTING_NODE" {
+    style.fill: "#FF7070"
+    style.font-color: white
+    style.bold: true
+  }
+  Error: "PANIC_RECOVERY" {
+    style.fill: "#B71C1C"
+    style.font-color: white
+  }
+
+  Idle -> Scan: "Ticker.C Trigger (Tick=500ms)" {
+    style.stroke: "#1976D2"
+  }
+  Scan -> Evict: "Entry.IsExpired()" {
+    style.stroke: "#D32F2F"
+    style.bold: true
+  }
+  Evict -> Scan: "Release Node & Free Memory" {
+    style.stroke-dash: 3
+  }
+  Scan -> Idle: "Shard Exhausted / MaxScanReached" {
+    style.stroke: "#388E3C"
+  }
+  Scan -> Error: "Shard Locked (ILLEGAL)" {
+    style.stroke: red
+    style.stroke-dash: 5
+  }
+}
+
+# 6. ANNOTATIONS
+# FIXED: "near" set to constant value for ELK compatibility.
+explanation: |md
+  # Implementation Specification: Distributed Cache
+  
+  ## Critical Performance Metrics
+  - **Memory Alignment**: Structs are padded to align with **64B cache lines** to prevent false sharing during concurrent shard access.
+  - **Sharding Strategy**: Uses $2^n$ shards (default 1024) to minimize mutex contention. Hash algorithm is **FNV-1a**.
+  - **Eviction Algorithm**: Supports hybrid **LRU-LFU** or simple **TTL-Lazy**.
+  - **Safety**: Uses `sync.RWMutex` per shard for concurrent-safe read/write operations.
+| {
+  near: bottom-center
+  style.font-size: 14
+}
+
+# Global Styling
+***.style.font: mono
+(*** -> ***)[*]: {
+  style.stroke: "#444444"
+}

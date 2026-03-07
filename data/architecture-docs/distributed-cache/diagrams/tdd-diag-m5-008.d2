@@ -1,0 +1,259 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 6
+    sketch: false
+    pad: 20
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# CLASSES: Technical Specification Styles for Intel-Manual Quality
+# ---------------------------------------------------------------------------------------
+classes: {
+  mem_header: { 
+    style: { 
+      fill: "#9c27b0"
+      font-color: white
+      bold: true 
+      stroke: "#4a148c"
+    } 
+  }
+  mem_data: { 
+    style: { 
+      fill: "#2196f3"
+      font-color: white 
+      stroke: "#0d47a1"
+    } 
+  }
+  mem_padding: { 
+    style: { 
+      fill: "#eeeeee"
+      font-color: "#9e9e9e"
+      stroke-dash: 3 
+      stroke: "#bdbdbd"
+    } 
+  }
+  mem_ptr: { 
+    style: { 
+      fill: "#ff9800"
+      font-color: white 
+      stroke: "#e65100"
+    } 
+  }
+  
+  state_node: {
+    style: {
+      stroke-width: 2
+      border-radius: 8
+      fill: "#ffffff"
+    }
+  }
+  terminal: {
+    style: {
+      double-border: true
+      stroke-width: 3
+    }
+  }
+  err_node: {
+    style: {
+      fill: "#ffebee"
+      stroke: "#b71c1c"
+      font-color: "#b71c1c"
+      bold: true
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# MEMORY LAYOUT: Connection Control Block (CCB)
+# Exact byte offsets and field sizes for systems engineers.
+# ---------------------------------------------------------------------------------------
+CCB_Layout: {
+  shape: sql_table
+  label: "STRUCT: ConnectionControlBlock (64B Cache-Aligned)"
+  
+  # Offset | Field : Type | Size/Metadata
+  "00": "conn_id : uint64" { class: mem_header; constraint: "8 Bytes [Offset 0x00]" }
+  "08": "state_flags : uint8" { class: mem_data; constraint: "1 Byte [Atomic CAS]" }
+  "09": "retry_count : uint8" { class: mem_data; constraint: "1 Byte" }
+  "10": "padding_0 : uint16" { class: mem_padding; constraint: "2 Bytes [Alignment]" }
+  "12": "last_activity : int64" { class: mem_data; constraint: "8 Bytes [UnixNano]" }
+  "20": "remote_addr : byte[16]" { class: mem_data; constraint: "16 Bytes [IPv6]" }
+  "36": "buffer_ptr : uintptr" { class: mem_ptr; constraint: "8 Bytes [LE64]" }
+  "44": "mutex_state : uint32" { class: mem_data; constraint: "4 Bytes [Futex]" }
+  "48": "padding_1 : byte[16]" { class: mem_padding; constraint: "16 Bytes [CacheLine Tail]" }
+  
+  style: {
+    stroke: "#4527a0"
+    stroke-width: 2
+    shadow: true
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# STATE MACHINE: Connection Pool Lifecycle
+# Atomic transitions with guards and action triggers.
+# ---------------------------------------------------------------------------------------
+Connection_Lifecycle: {
+  label: "FSM: High-Concurrency Connection Manager"
+
+  # State Definitions
+  INITIAL: "● START" {
+    shape: circle
+    style: { fill: "#000000"; font-color: "#ffffff" }
+  }
+
+  DIALING: "DIALING\n(TCP_SYN_SENT)" {
+    class: state_node
+    tooltip: "Invariant: active_dialers < DialLimit"
+  }
+
+  IDLE: "IDLE\n(LIFO_QUEUE)" {
+    class: state_node
+    style.fill: "#e1f5fe"
+  }
+
+  IN_USE: "IN_USE\n(LEASED)" {
+    class: state_node
+    style: { 
+      fill: "#e8f5e9"
+      stroke: "#2e7d32"
+      bold: true 
+    }
+  }
+
+  RETRIYING: "RETRIYING\n(EXP_BACKOFF)" {
+    class: state_node
+    style: { 
+      fill: "#fff3e0"
+      stroke: "#ef6c00" 
+    }
+  }
+
+  CLOSED: "CLOSED\n(RECYCLED)" {
+    class: [state_node; terminal]
+    style.stroke: "#d32f2f"
+  }
+
+  FATAL: "FATAL_ERROR" {
+    shape: diamond
+    class: err_node
+  }
+
+  # Transitions
+  INITIAL -> DIALING: "Pool.Get() [capacity_available]"
+  
+  DIALING -> IDLE: "Success: HandshakeComplete" {
+    style: { stroke: "#2e7d32"; stroke-width: 3 }
+  }
+  
+  DIALING -> RETRIYING: "Failure: Timeout [retry < max]" {
+    style: { stroke: "#ef6c00"; stroke-dash: 3 }
+  }
+  
+  DIALING -> FATAL: "Failure: Auth / Exhaustion" {
+    style: { stroke: "#b71c1c"; bold: true }
+  }
+  
+  RETRIYING -> DIALING: "Next: Timer.Expiry()" { 
+    style.animated: true 
+  }
+  
+  IDLE -> IN_USE: "Req: Lease(ctx)" {
+    source-arrowhead: * { shape: diamond }
+    label: "Acquire Mutex"
+  }
+  
+  IDLE -> CLOSED: "Evict: IdleTimeout" {
+    style.stroke-dash: 5
+  }
+  
+  IN_USE -> IDLE: "Res: Return(conn)" {
+    label: "HealthCheck OK"
+  }
+  
+  IN_USE -> CLOSED: "Err: ProtocolViolation" {
+    style: { 
+      stroke: "#b71c1c"
+      stroke-width: 2
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# IMPLEMENTATION GUIDE
+# ---------------------------------------------------------------------------------------
+Implementation_Guide: |md
+  ## Engineering Specifications
+  
+  ### 1. Atomic State Transitions
+  Transitions must use `sync/atomic.CompareAndSwapUint32` on `state_flags`. 
+  Illegal state transitions must trigger a `panic` in debug builds to prevent memory leaks.
+  
+  ### 2. Exponential Backoff Logic
+  go
+  func calculateDelay(attempt int) time.Duration {
+      const base = 100 * time.Millisecond
+      // 2^attempt truncation for safety
+      delay := base * (1 << uint(attempt))
+      return delay + jitter(delay)
+  }
+  
+  
+  ### 3. Error Recovery Vectors
+  - `ECONNREFUSED`: Transition to `RETRIYING`
+  - `ETIMEDOUT`: Transition to `RETRIYING`
+  - `EBADF` / `EACCES`: Immediate transition to `FATAL`
+| 
+
+Implementation_Guide.style: {
+  stroke: "#6772e5"
+  fill: "#f6f9fc"
+  font-size: 14
+}
+Implementation_Guide.near: Connection_Lifecycle.IN_USE
+
+# ---------------------------------------------------------------------------------------
+# SYSTEM INVARIANTS & LEGEND
+# ---------------------------------------------------------------------------------------
+Metadata: {
+  Invariants: {
+    inv1: "POOL_CAP = Σ(IN_USE, IDLE, DIALING)" { shape: text; style.italic: true }
+    inv2: "MAX_IDLE_THREADS = 32" { shape: text; style.italic: true }
+    inv3: "CACHE_ALIGN = 64B" { shape: text; style.italic: true }
+  }
+  
+  Legend: |md
+    ### Visual Notation
+    - **Solid Green**: Nominal Success Path
+    - **Dashed Orange**: Recovery / Retry Loop
+    - **Double Border**: Terminal Resource Cleanup
+    - **Diamond**: Critical System Failure
+  |
+}
+
+Metadata.style: {
+  fill: "#fafafa"
+  stroke: "#bdbdbd"
+}
+# Fixed: Pointing to the main CCB_Layout shape instead of a specific sub-key for layout stability
+Metadata.near: CCB_Layout
+
+# ---------------------------------------------------------------------------------------
+# POSITIONING HINTS (ELK ENGINE)
+# ---------------------------------------------------------------------------------------
+# Fixed: Using style.opacity: 0 instead of invalid style.display: none
+CCB_Layout -> Connection_Lifecycle: "Updates flags in" { 
+  style: { 
+    opacity: 0 
+    stroke-width: 0
+  } 
+}
+
+Connection_Lifecycle -> Implementation_Guide: "Governs" { 
+  style: { 
+    opacity: 0 
+    stroke-width: 0
+  } 
+}

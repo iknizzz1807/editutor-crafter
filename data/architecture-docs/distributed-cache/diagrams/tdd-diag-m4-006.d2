@@ -1,0 +1,258 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+title: |md
+  # Write-Behind Flush State Machine
+  *Specification: High-Performance Asynchronous Persistence Layer*
+  **Implementation Context:** Golang dirty-page tracking with exponential backoff.
+| {near: top-center}
+
+# States with Implementation Invariants
+Idle: {
+  shape: circle
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+  style.stroke-width: 4
+  tooltip: "Quiescent State: dirty_map.len == 0"
+}
+
+Buffering: {
+  shape: rectangle
+  style.fill: "#E3F2FD"
+  style.stroke: "#2196F3"
+  style.stroke-width: 3
+  invariants: |md
+    ### Memory Layout
+    - ** dirty_map **: `map[K]V` (Last-Write-Wins)
+    - ** size_bytes **: `uint64` atomic counter
+    - ** limit **: `64MB` (Soft), `128MB` (Hard)
+    
+    **Behavior:**
+    `Set()` updates local cache + dirty_map and returns 200 OK.
+  |
+}
+
+Flushing: {
+  shape: hexagon
+  style.fill: "#FFF3E0"
+  style.stroke: "#FF9800"
+  style.stroke-width: 3
+  invariants: |md
+    ### Concurrency Spec
+    - Lock dirty_map
+    - Swap dirty_map with fresh map (Atomic)
+    - Unlock dirty_map
+    - Async write of extracted batch to DB
+    - Concurrent writes land in the *new* map
+  |
+}
+
+Retrying: {
+  shape: diamond
+  style.fill: "#FFEBEE"
+  style.stroke: "#F44336"
+  style.stroke-width: 3
+  invariants: |md
+    ### Backoff Logic
+    - **Attempts**: `1..MAX_RETRIES`
+    - **Delay**: `min(2^attempts * 100ms, 30s)`
+    - **Jitter**: `+/- 10%`
+  |
+}
+
+Dropped: {
+  shape: circle
+  style.fill: "#424242"
+  style.stroke: "#212121"
+  style.font-color: white
+  label: "DATA LOSS\n(Terminal)"
+}
+
+# Lifecycle / Initial Transition
+init: {
+  shape: circle
+  style.fill: "#4CAF50"
+  width: 20
+  height: 20
+  label: ""
+}
+
+init -> Idle: "System Boot [init_wal_recovery]" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+}
+
+# Logic Flows
+Idle -> Buffering: "Set(key, val)" {
+  label: |md
+    **T1: Ingest**
+    - Cache update (L1)
+    - Mark key dirty
+    - Start flush_timer
+  |
+  style.stroke: "#2196F3"
+  style.stroke-width: 2
+}
+
+Buffering -> Buffering: "Set(key, val)" {
+  label: |md
+    **T2: Update (LWW)**
+    - Upsert dirty_map
+    - Update L1 cache
+  |
+  style.stroke: "#2196F3"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+}
+
+Buffering -> Flushing: "flush_tick / Flush()" {
+  label: |md
+    **T3: Commit Initiation**
+    - Timer elapsed OR
+    - Buffer threshold reached
+  |
+  style.stroke: "#FF9800"
+  style.stroke-width: 3
+}
+
+Buffering -> Buffering: "Backpressure" {
+  label: |md
+    **T4: Hard Limit Exceeded**
+    - **Action:** Block calling thread
+    - **Condition:** `size_bytes > 128MB`
+  |
+  style.stroke: "#F44336"
+  style.stroke-width: 2
+  style.stroke-dash: 5
+}
+
+Flushing -> Buffering: "ACK (Success)" {
+  label: |md
+    **T5: Persistence Confirmed**
+    - Clear processing batch
+    - Reset retry_counter
+  |
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+}
+
+Flushing -> Retrying: "NACK / Timeout" {
+  label: |md
+    **T6: Transient Error**
+    - `current_attempts < 5`
+    - Schedule retry task
+  |
+  style.stroke: "#FF9800"
+  style.stroke-width: 2
+}
+
+Flushing -> Dropped: "Fatal / Max Retries" {
+  label: |md
+    **T7: Data Discarded**
+    - `attempts >= 5`
+    - Serialization failure
+  |
+  style.stroke: "#F44336"
+  style.stroke-width: 3
+}
+
+Retrying -> Flushing: "Backoff Expired" {
+  label: |md
+    **T8: Re-attempt**
+    - Submit batch to worker
+  |
+  style.stroke: "#FF9800"
+  style.stroke-width: 2
+}
+
+Retrying -> Dropped: "SIGTERM / Shutdown" {
+  label: |md
+    **T9: Panic Discard**
+    - No time for persistence
+    - Dump to DLQ log file
+  |
+  style.stroke: "#F44336"
+  style.stroke-width: 2
+}
+
+Buffering -> Idle: "Quiesce" {
+  label: |md
+    **T10: Cleanup**
+    - dirty_map is empty
+    - Cancel timers
+  |
+  style.stroke: "#9E9E9E"
+  style.stroke-dash: 4
+}
+
+# Reference Legend
+legend: {
+  near: bottom-right
+  style.fill: "#FAFAFA"
+  style.stroke: "#E0E0E0"
+  style.border-radius: 8
+  
+  info: |md
+    ### Transition Legend
+    `Trigger [Guard] / Action`
+  |
+
+  states: {
+    shape: rectangle
+    grid-columns: 2
+    grid-gap: 15
+    
+    s1: "● Initial" {style.fill: "#4CAF50"; shape: circle; width: 30; height: 30}
+    s2: "Passive State" {style.fill: "#E3F2FD"; shape: rectangle}
+    s3: "Active / IO" {style.fill: "#FFF3E0"; shape: hexagon}
+    s4: "Wait / Backoff" {style.fill: "#FFEBEE"; shape: diamond}
+    s5: "Fatal State" {style.fill: "#424242"; style.font-color: white; shape: circle}
+    s6: "State Definitions" {shape: text}
+  }
+
+  transitions: {
+    shape: rectangle
+    grid-columns: 2
+    grid-gap: 10
+    
+    t1: "Nominal Path" {style.stroke: "#4CAF50"; shape: rectangle}
+    t2: "API Ingestion" {style.stroke: "#2196F3"; shape: rectangle}
+    t3: "Critical Fail" {style.stroke: "#F44336"; shape: rectangle}
+    t4: "Retry Path" {style.stroke: "#FF9800"; shape: rectangle}
+  }
+}
+
+# Engineering Metadata
+system_metrics: {
+  near: bottom-left
+  style.fill: "#ECEFF1"
+  style.stroke: "#607D8B"
+  style.stroke-width: 2
+  header: "**System Observability**"
+  c1: "dirty_keys_gauge"
+  c2: "flush_latency_histogram"
+  c3: "persistence_errors_total"
+  c4: "buffer_overflow_blocks"
+}
+
+implementation_warning: {
+  near: top-right
+  style.fill: "#FFFDE7"
+  style.stroke: "#FBC02D"
+  style.border-radius: 4
+  content: |md
+    ### ⚠️ IMPLEMENTATION DETAIL
+    **Non-Blocking Guarantee:**
+    The `Set()` call must never block unless the 
+    Hard Limit (128MB) is hit. This provides 
+    determinism for the application thread.
+    
+    **Crash Safety:**
+    Non-persisted dirty_map data is **not** durable 
+    across crashes unless WAL is enabled on `Set()`.
+  |
+}

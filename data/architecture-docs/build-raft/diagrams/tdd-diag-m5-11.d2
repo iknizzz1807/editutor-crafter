@@ -1,0 +1,248 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    sketch: false
+    pad: 20
+  }
+}
+
+# --- GLOBAL CLASSES ---
+classes: {
+  state_node: {
+    style: {
+      stroke-width: 2
+      border-radius: 8
+      font-size: 14
+    }
+  }
+  violation: {
+    style: {
+      fill: "#ffcccc"
+      stroke: "#ff0000"
+      stroke-width: 4
+      bold: true
+      font-color: "#ff0000"
+    }
+  }
+  header_style: {
+    style: {
+      fill: "#634fa2"
+      font-color: "#ffffff"
+      bold: true
+    }
+  }
+  log_entry: {
+    style: {
+      stroke: "#444444"
+      fill: "#ffffff"
+      font: mono
+    }
+  }
+  memory_header: {
+    style: {
+      fill: "#e1d5e7"
+      stroke: "#9673a6"
+      bold: true
+    }
+  }
+}
+
+# --- RAFT SAFETY & STRESS TEST ARCHITECTURE ---
+"Raft Safety Check": {
+  style: {
+    stroke-width: 4
+  }
+  
+  # 1. State Machine: Leader Election with No-Op (M5-15, M5-17)
+  "Election Logic": {
+    label: "Leader Election & No-Op Entry Logic"
+    
+    Candidate: {
+      shape: circle
+      label: "CANDIDATE\n(Term T)"
+      style.fill: "#fff2cc"
+    }
+    
+    Leader: {
+      shape: circle
+      label: "LEADER\n(Term T)"
+      style.fill: "#C7F1FF"
+    }
+
+    Follower: {
+      shape: circle
+      label: "FOLLOWER"
+      style.fill: "#d9ead3"
+    }
+
+    Candidate -> Leader: "Receive Majority Votes" {
+      style.stroke: "#00ff00"
+      style.stroke-width: 3
+    }
+    
+    Leader -> Leader: "Immediate No-Op Append" {
+      tooltip: "Commit requirement for prior term entries"
+      label: "Commit Barrier (T, Index+1)"
+    }
+    
+    Leader -> Follower: "Discover Higher Term (T+N)" {
+      style.stroke: "#ff0000"
+      style.stroke-dash: 3
+      target-arrowhead.shape: triangle
+    }
+  }
+
+  # 2. Safety Invariants
+  "Safety Invariants": {
+    "Invariants Table": {
+      shape: sql_table
+      style.fill: "#f5f5f5"
+      
+      "Election Safety": "At most one leader per term" {
+        constraint: "INVARIANT"
+      }
+      "Log Matching": "Term/Index match implies identical prefix" {
+        constraint: "INVARIANT"
+      }
+      "Leader Completeness": "Committed entries exist in all future leaders" {
+        constraint: "INVARIANT"
+      }
+    }
+
+    "Violation Detector": {
+      label: "Violation Grouping (Type-Based)"
+      grid-columns: 2
+      vertical-gap: 10
+      horizontal-gap: 10
+      
+      C1: "Election Collisions" { class: violation }
+      C2: "Log Divergence" { class: violation }
+      C3: "State Machine Inconsistency" { class: violation }
+      C4: "Stale Read Detected" { class: violation }
+    }
+  }
+
+  # 3. Stress Test Infrastructure (M5-19, M5-20)
+  "StressTestModule": {
+    label: "Stress Test Component Architecture"
+    
+    ChaosMonkey: {
+      shape: class
+      "+ PartitionNetwork(nodes: []NodeID, duration: ms)"
+      "+ DropPackets(probability: float)"
+      "+ DelayRPC(latency: ms)"
+      "+ KillProcess(target: NodeID)"
+    }
+
+    Orchestrator: {
+      shape: class
+      "- current_term: uint64"
+      "- nodes: Map<ID, NodeState>"
+      "+ RunWorkflow(steps: []Scenario)"
+      "+ ValidateLogs(): bool"
+    }
+
+    ChaosMonkey -> Orchestrator: "Inject Faults"
+    Orchestrator -> "Safety Invariants"."Violation Detector": "Report Anomalies"
+  }
+}
+
+# --- ALGORITHM STATE: LOG MATCHING VIOLATION CHECK ---
+"Safety Verification Loop": {
+  label: "Concurrent Failure Verification Loop"
+  
+  Step1: "1. Initial State (Consistent)" {
+    direction: right
+    N1: "N1: Leader\nTerm: 2\nLog: [1, 2, 2]" { 
+      class: state_node
+      style.fill: "#88DCF7" 
+    }
+    N2: "N2: Follower\nTerm: 2\nLog: [1, 2, 2]" { class: state_node }
+    N3: "N3: Follower\nTerm: 2\nLog: [1, 2, 2]" { class: state_node }
+    N1 -> N2: "Heartbeat" { style.animated: true }
+    N1 -> N3: "Heartbeat" { style.animated: true }
+  }
+
+  Step2: "2. Fault Injection (Partition)" {
+    direction: right
+    N1_P: "**N1: PARTITIONED**" { 
+      class: violation 
+    }
+    N2_C: "N2: Candidate\nTerm: 3\nVotes: {N2, N3}" { 
+      class: state_node
+      style.fill: "#ffa500" 
+    }
+    N3_F: "N3: Follower\nTerm: 3\nVotedFor: N2" { class: state_node }
+    
+    N1_P -- N2_C: "X" { 
+      label: "RPC BLOCK"
+      style: {
+        stroke: "#ff0000" 
+        stroke-width: 4
+      }
+      source-arrowhead: cross
+      target-arrowhead: cross
+    }
+  }
+
+  Step3: "3. Violation Check" {
+    direction: right
+    Checker: "Invariant Checker" {
+      shape: hexagon
+      style.fill: "#ffff00"
+      style.bold: true
+    }
+    Result: "VERDICT" {
+      shape: parallelogram
+      style.fill: "#d9ead3"
+    }
+    Checker -> "Raft Safety Check"."Safety Invariants"."Invariants Table": "Verify Log Integrity"
+    Checker -> Result: "Log[N1] vs Log[N2]"
+  }
+
+  Step1 -> Step2: "T+100ms: Network Fault"
+  Step2 -> Step3: "T+250ms: Election Timeout"
+}
+
+# --- MEMORY LAYOUT SPECIFICATION ---
+"NodeState Memory Map": {
+  shape: sql_table
+  label: "Raft NodeState Memory Layout (C-Packed)"
+  style.stroke: "#e67e22"
+  
+  "0x00": "currentTerm" { constraint: "uint64 (8B)" }
+  "0x08": "votedFor" { constraint: "int32 (4B)" }
+  "0x0C": "padding" { constraint: "0x00 (4B)" }
+  "0x10": "commitIndex" { constraint: "uint64 (8B)" }
+  "0x18": "lastApplied" { constraint: "uint64 (8B)" }
+  "0x20": "log_ptr" { constraint: "*LogEntry (8B)" }
+  "0x28": "state_enum" { constraint: "uint8 (1B)" }
+  "0x29": "state_padding" { constraint: "0x00 (7B)" }
+  
+  near: "Raft Safety Check"
+}
+
+# --- DOCUMENTATION ANNOTATIONS (FIXED BLOCK STRING) ---
+Annotations: |'md
+  ### Raft TDD Implementation Notes:
+  - **M5-15/17 (No-Op)**: Leaders *must* append a No-Op entry immediately upon election. This ensures that the leader's `commitIndex` can advance even if no client requests are pending, satisfying the requirement that entries from prior terms cannot be committed by counting replicas alone.
+  - **M5-16 (Safety)**: The **Log Matching Property** is verified at every `AppendEntries` RPC. If `prevLogIndex` and `prevLogTerm` do not match the follower's log, the follower rejects the append, forcing the leader to decrement `nextIndex`.
+  - **M5-20 (Stress)**: The `StressTestModule` uses a deterministic PRNG seed. If a violation (C1-C4) is detected, the exact interleaving of RPC delays and partitions can be replayed for debugging.
+  
+  **Internal Memory Layout (NodeState):**
+  | Offset | Field | Type |
+  | :--- | :--- | :--- |
+  | 0x00 | currentTerm | uint64 |
+  | 0x08 | votedFor | int32 |
+  | 0x0C | log[] | EntryPtr |
+  | 0x14 | commitIndex | uint64 |
+'| {
+  near: "Raft Safety Check"
+}
+
+# Styling Globs
+(Step2 -> Step3)[0].style.stroke: "#ff0000"
+(Step2 -> Step3)[0].style.bold: true
+(Step1 -> Step2)[0].style.animated: true

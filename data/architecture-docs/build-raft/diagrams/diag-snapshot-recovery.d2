@@ -1,0 +1,235 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Recovery from Snapshot + Log
+  Complete state reconstruction on node restart
+| {near: top-center}
+row_persisted: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  disk_snapshot: {
+    label: "Snapshot File\n(raft.snapshot)"
+    shape: cylinder
+    width: 200
+    style.fill: "#E8D4F8"
+    style.stroke: "#8B5CF6"
+    meta: {
+      shape: sql_table
+      label: "SnapshotMetadata"
+      f0: "0x00 | int | lastIncludedIndex"
+      f1: "0x04 | int | lastIncludedTerm"
+      sz: "8 bytes"
+    }
+    data: {
+      shape: sql_table
+      label: "StateMachineData"
+      f0: "0x00 | []byte | serialized state"
+      sz: "variable size"
+    }
+  }
+  disk_log: {
+    label: "Log File\n(raft.state)"
+    shape: cylinder
+    width: 200
+    style.fill: "#DBEAFE"
+    style.stroke: "#3B82F6"
+    persistent: {
+      shape: sql_table
+      label: "PersistentState"
+      f0: "0x00 | int    | currentTerm"
+      f1: "0x04 | string | votedFor"
+      f2: "0x08 | []LogEntry | log"
+      sz: "variable size"
+    }
+  }
+}
+row_recovery: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  step1: {
+    label: "Step 1: Load Snapshot"
+    width: 280
+    style.fill: "#F3E8FF"
+    code: |'go
+      snapshot, err := persister.ReadSnapshot()
+      if err != nil { return err }
+      // Extract metadata
+      lastIncludedIndex = snapshot.Metadata.LastIncludedIndex
+      lastIncludedTerm = snapshot.Metadata.LastIncludedTerm
+      // Restore state machine
+      stateMachine.RestoreSnapshot(snapshot.Data)
+    '|
+  }
+  step2: {
+    label: "Step 2: Load Log Entries"
+    width: 280
+    style.fill: "#EFF6FF"
+    code: |'go
+      data, err := persister.ReadRaftState()
+      if err != nil { return err }
+      var state PersistentState
+      json.Unmarshal(data, &state)
+      currentTerm = state.CurrentTerm
+      votedFor = state.VotedFor
+      log = state.Log
+    '|
+  }
+}
+row_memory: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  memory_state: {
+    label: "In-Memory State After Recovery"
+    shape: rectangle
+    width: 600
+    style.fill: "#F0FDF4"
+    style.stroke: "#22C55E"
+    recovered_node: {
+      shape: class
+      label: "RaftNode (recovered)"
+      -currentTerm: "int"
+      -votedFor: "string"
+      -log: "[]LogEntry"
+      -snapshot: "*Snapshot"
+      -lastIncludedIndex: "int"
+      -lastIncludedTerm: "int"
+      -commitIndex: "int"
+      -lastApplied: "int"
+      +readPersistAndSnapshot(): "void"
+    }
+    state_machine: {
+      shape: class
+      label: "StateMachine (restored)"
+      -data: "map[string]string"
+      -sessions: "map[string]*Session"
+      +RestoreSnapshot(data): "error"
+      +Apply(command): "interface{}"
+    }
+  }
+}
+row_apply: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  apply_loop: {
+    label: "Step 3: Replay Log Entries"
+    width: 600
+    style.fill: "#FEF3C7"
+    logic: {
+      shape: rectangle
+      width: 580
+      header: |md
+        **Apply entries from lastIncludedIndex+1 onwards:**
+      |
+      code: |'go
+        // Snapshot covers entries 1..lastIncludedIndex
+        // Log contains entries from lastIncludedIndex+1 onwards
+        for lastApplied < commitIndex {
+          lastApplied++
+          entry := log[lastApplied - lastIncludedIndex]
+          stateMachine.Apply(entry.Command)
+        }
+      '|
+    }
+  }
+}
+row_timeline: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  timeline: {
+    label: "Recovery Timeline"
+    width: 600
+    t0: {
+      label: "T0: Node Starts"
+      shape: oval
+      style.fill: "#FEE2E2"
+    }
+    t1: {
+      label: "T1: Snapshot Loaded"
+      shape: oval
+      style.fill: "#E9D5FF"
+    }
+    t2: {
+      label: "T2: Log Loaded"
+      shape: oval
+      style.fill: "#DBEAFE"
+    }
+    t3: {
+      label: "T3: Log Replayed"
+      shape: oval
+      style.fill: "#D1FAE5"
+    }
+    t4: {
+      label: "T4: Ready"
+      shape: oval
+      style.fill: "#BBF7D0"
+    }
+    t0 -> t1: "read snapshot"
+    t1 -> t2: "read log"
+    t2 -> t3: "replay"
+    t3 -> t4: "start RPC"
+  }
+}
+row_example: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  example: {
+    label: "Example: Snapshot at Index 100"
+    width: 600
+    style.fill: "#F8FAFC"
+    before: {
+      label: "Before Crash"
+      shape: rectangle
+      width: 280
+      style.fill: "#FEF2F2"
+      state: |md
+        - **Snapshot**: entries 1-100 committed
+        - **Log**: entries 101-150 (100 committed, 50 uncommitted)
+        - **commitIndex**: 200
+        - **lastApplied**: 200
+      |
+    }
+    after: {
+      label: "After Recovery"
+      shape: rectangle
+      width: 280
+      style.fill: "#F0FDF4"
+      state: |md
+        1. Load snapshot → state machine has entries 1-100
+        2. Load log → entries 101-150 in memory
+        3. Replay entries 101-200 → state machine complete
+        4. Resume as Follower
+      |
+    }
+    before -> after: "restart" {
+      style.stroke-dash: 4
+    }
+  }
+}
+legend: {
+  near: bottom-right
+  label: "Color Legend"
+  style.fill: white
+  style.stroke: "#E5E7EB"
+  disk: "Disk Storage"
+  memory: "In-Memory State"
+  process: "Recovery Process"
+  disk.style.fill: "#F3F4F6"
+  memory.style.fill: "#F0FDF4"
+  process.style.fill: "#FEF3C7"
+}
+disk_snapshot -> step1: "1. Read"
+disk_log -> step2: "2. Read"
+step1 -> memory_state: "restore"
+step2 -> memory_state: "populate"
+memory_state -> apply_loop: "3. Replay"

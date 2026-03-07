@@ -1,0 +1,266 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+title: |'md
+  # CONNECTION POOL HEALTH CHECK & EVICTION STRATEGY
+  ### System Architecture: Maintenance Lifecycle & Memory Layout
+'| {
+  near: top-center
+  style: {
+    font-size: 28
+    bold: true
+  }
+}
+
+# --- STYLE CLASSES ---
+classes: {
+  memory_block: {
+    style: {
+      font: mono
+      fill: "#E3F2FD" # Data = Blue
+      stroke: "#1565C0"
+      stroke-width: 2
+    }
+  }
+  validation_gate: {
+    shape: diamond
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#E65100"
+      bold: true
+    }
+  }
+  terminal_state: {
+    shape: oval
+    style: {
+      stroke-width: 3
+    }
+  }
+  header_field: {
+    style: {
+      fill: "#D1C4E9" # Header = Purple
+      stroke: "#512DA8"
+    }
+  }
+  padding_field: {
+    style: {
+      fill: "#EEEEEE" # Padding = Gray
+      stroke: "#BDBDBD"
+      stroke-dash: 3
+    }
+  }
+}
+
+# --- 1. BACKGROUND SCHEDULER ---
+Scheduler: {
+  label: "HEALTH CHECK SCHEDULER (Thread: Maintenance)"
+  style: {
+    fill: "#F1F8E9"
+    stroke: "#33691E"
+    stroke-dash: 5
+  }
+
+  Ticker: "Interval Ticker" {
+    shape: circle
+    style.fill: "#81C784"
+    tooltip: "Default: 30 seconds (time.Ticker)"
+  }
+  
+  Check_Trigger: "Sweep Request" {
+    shape: parallelogram
+    style.fill: "#AED581"
+  }
+
+  Ticker -> Check_Trigger: "SIGALRM\n[0.1ms latency]" {
+    style.animated: true
+  }
+}
+
+# --- 2. POOL MEMORY LAYOUT (STRUCT DEFINITION) ---
+Pool_Memory: {
+  label: "POOL MEMORY LAYOUT (sizeof=4096B)"
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#455A64"
+    stroke-width: 2
+    double-border: true
+  }
+
+  Header: {
+    shape: sql_table
+    label: "PoolControlBlock (Offset: 0x00)"
+    class: header_field
+    
+    capacity: "0x00 | MaxActive [uint32]" {constraint: "50"}
+    size: "0x04 | CurrentActive [uint32]" {constraint: "6"}
+    idle_count: "0x08 | IdleCount [uint32]" {constraint: "3"}
+    _padding: "0x0C | AlignmentPadding [4B]" {class: padding_field}
+  }
+
+  Idle_Stack: {
+    label: "Idle Connections (LIFO Stack)"
+    style.fill: "#F5F5F5"
+    
+    conn1: "Conn[0]\nFD: 12\nOffset: +0x10" {
+      class: memory_block
+      tooltip: "CreatedAt: T-300s, LastUsed: T-240s"
+    }
+    conn2: "Conn[1]\nFD: 15\nOffset: +0x50" {
+      class: memory_block
+      tooltip: "CreatedAt: T-600s, LastUsed: T-120s"
+    }
+    conn3: "Conn[2]\nFD: 19\nOffset: +0x90" {
+      class: memory_block
+      style.stroke: "#D32F2F"
+      style.stroke-width: 4
+      tooltip: "CreatedAt: T-1800s, LastUsed: T-480s"
+    }
+
+    # Pointers (Orange)
+    conn1 -> conn2: "next_ptr (0x50)" { style.stroke: orange }
+    conn2 -> conn3: "next_ptr (0x90)" { style.stroke: orange }
+  }
+}
+
+# --- 3. VALIDATION PIPELINE (ALGORITHM STATE) ---
+Validation: {
+  label: "VALIDATION PIPELINE (Algorithm Step 2)"
+  style: {
+    fill: "#FFFDE7"
+    stroke: "#FBC02D"
+  }
+  
+  Lifetime: "Step 2.1: Check MaxLifetime" {
+    class: validation_gate
+    tooltip: "if (Now() - conn.CreatedAt > MaxLifetime) -> EVICT"
+  }
+  
+  Idle_Check: "Step 2.2: Check IdleTimeout" {
+    class: validation_gate
+    tooltip: "if (Now() - conn.LastUsedAt > IdleTimeout) -> EVICT"
+  }
+  
+  Ping_Check: "Step 2.3: Wire Validation" {
+    class: validation_gate
+    tooltip: "Execute 'SELECT 1' or TCP Zero-Byte Write"
+  }
+
+  Lifetime -> Idle_Check: "PASS (Age < 30m)" { 
+    style: { stroke: green; stroke-width: 2 } 
+  }
+  Idle_Check -> Ping_Check: "PASS (Idle < 10m)" { 
+    style: { stroke: green; stroke-width: 2 } 
+  }
+}
+
+# --- 4. DECISION OUTCOMES ---
+Outcomes: {
+  Valid: "STATE: REUSED\nReturn to Idle List" {
+    class: terminal_state
+    style.fill: "#C8E6C9" # Free/Available = Green
+    style.stroke: "#2E7D32"
+  }
+  
+  Invalid: "STATE: CLOSED\nRelease FD / SysCall" {
+    class: terminal_state
+    style.fill: "#FFCDD2" # Evicted = Red
+    style.stroke: "#C62828"
+  }
+  
+  Replenish: "Step 4: Spin Lock\nCreate New Conn" {
+    shape: rectangle
+    style.fill: "#E1BEE7"
+    style.stroke: "#7B1FA2"
+    style.double-border: true
+  }
+}
+
+# --- 5. METRICS & TELEMETRY ---
+Metrics: {
+  label: "POOL TELEMETRY (Prometheus Exporter)"
+  style.fill: "#ECEFF1"
+  Counter_Valid: "pool_reused_total" { shape: box; style.font: mono }
+  Counter_Evicted: "pool_evicted_total" { shape: box; style.font: mono }
+  Gauge_Current: "pool_size_bytes" { shape: box; style.font: mono }
+}
+
+# --- FLOW CONNECTIONS & EVICTION LOGIC ---
+Scheduler.Check_Trigger -> Pool_Memory.Idle_Stack: "1. Lock Mutex & Pop" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+}
+
+Pool_Memory.Idle_Stack.conn3 -> Validation.Lifetime: "2. Load Object Ptr" {
+  style.stroke: "#E65100"
+  style.animated: true
+}
+
+# Eviction Paths (Fixed: correct property targeting for arrowhead shapes)
+Validation.Lifetime -> Outcomes.Invalid: "FAIL (E01: Expired)" {
+  style.stroke: red
+  source-arrowhead.shape: box
+}
+Validation.Idle_Check -> Outcomes.Invalid: "FAIL (E02: Stale)" {
+  style.stroke: red
+  source-arrowhead.shape: box
+}
+Validation.Ping_Check -> Outcomes.Invalid: "FAIL (E03: Dead)" {
+  style.stroke: red
+  source-arrowhead.shape: box
+}
+
+# Success Path
+Validation.Ping_Check -> Outcomes.Valid: "PASS (All Invariants)" {
+  style.stroke: green
+  style.stroke-width: 3
+}
+
+# Replenishment Logic
+Outcomes.Invalid -> Outcomes.Replenish: "3. Cleanup Memory" {
+  style.stroke: "#7B1FA2"
+  style.stroke-dash: 3
+}
+
+Outcomes.Replenish -> Pool_Memory.Header: "4. Atomic Decrement/Update" {
+  style.stroke: "#7B1FA2"
+  style.animated: true
+}
+
+# Metrics Hooks
+Outcomes.Valid -> Metrics.Counter_Valid: "inc()" { style.stroke-dash: 3 }
+Outcomes.Invalid -> Metrics.Counter_Evicted: "inc()" { style.stroke-dash: 3 }
+
+# --- TECHNICAL ANNOTATIONS ---
+Config_Specs: |'md
+  ### Pool Invariants (Implementation Grade)
+  1. `PCB.size = len(Active) + len(Idle)`
+  2. `conn.age = time.Now() - conn.createdAt`
+  3. `conn.status ∈ {IDLE, BUSY, VALIDATING}`
+  
+  ### Timing Parameters
+  | Parameter | Value | Description |
+  | :--- | :--- | :--- |
+  | **HealthInterval** | 30s | Sweep frequency |
+  | **IdleTimeout** | 300s | Evict if unused |
+  | **MaxLifetime** | 1800s | Force rotate (Max Age) |
+  | **PingTimeout** | 1500ms | Wire-level deadline |
+'| {
+  near: bottom-right
+  style.fill: "#FFFDE7"
+  style.stroke: "#FBC02D"
+}
+
+# Visual Legend
+Legend: {
+  near: top-right
+  Header: "ENGINEERING LEGEND" { shape: text; style.bold: true }
+  Header_Col: "Header/Meta" { class: header_field }
+  Data_Col: "Data/Struct" { class: memory_block }
+  Padding_Col: "Padding/Free" { class: padding_field }
+  Logic: "Decision Gate" { shape: diamond; style.fill: "#FFF3E0" }
+}

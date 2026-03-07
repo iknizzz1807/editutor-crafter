@@ -1,0 +1,353 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    node: "#D0E1F9"
+    cluster: "#B5D5C5"
+    network: "#F9F1CF"
+    danger: "#FF6B6B"
+    legend: "#F1F1F1"
+    data: "#ACE1AF"
+    header: "#4D4D4D"
+    storage: "#FFD93D"
+    log: "#95E1D3"
+    padding: "#E0E0E0"
+    success: "#6BCB77"
+    term: "#FFD93D"
+    crash: "#FF6B6B"
+    leader: "#4D96FF"
+    follower: "#B5D5C5"
+    candidate: "#F9F1CF"
+    initial: "#000000"
+    quorum1: "#C7F1FF"
+    quorum2: "#E4DBFE"
+    intersection: "#FFD93D"
+    ae_req: "#D0E1F9"
+    ae_resp: "#B5D5C5"
+    field: "#FFFFFF"
+    timeline: "#E3E3E3"
+    metadata: "#C6EBC5"
+    available: "#DFFFD8"
+    unavailable: "#F9D5D3"
+    redirect: "#FFD93D"
+    cached: "#E3E3E3"
+    invariant: "#A0E7E5"
+    conflict: "#FF6B6B"
+    snapshot: "#95E1D3"
+    recovery: "#B5D5C5"
+    purple_header: "#E1BEE7"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Title Block
+# -----------------------------------------------------------------------------
+title: |md
+  # Raft Consensus System: Technical Specification
+  *Chaos Controller Architecture - Distributed State Machine Design*
+| {
+  near: top-center
+  style: {
+    font-size: 28
+    bold: true
+    italic: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 1. NODE ARCHITECTURE
+# -----------------------------------------------------------------------------
+raft_components: {
+  label: "Node Internal Components (sizeof=256 bytes)"
+  style.fill: ${colors.legend}
+  
+  state_machine: "State Machine Logic\n(Follower | Candidate | Leader)" {
+    style.fill: ${colors.data}
+    style.stroke: ${colors.header}
+    style.stroke-width: 2
+  }
+  
+  timers: {
+    election_timer: "Election Timer\n(150ms - 300ms randomized)"
+    heartbeat_timer: "Heartbeat Timer\n(~50ms fixed)"
+    style.stroke-dash: 3
+    style.fill: white
+  }
+  
+  persistence: "Persistent Storage (Stable Storage)" {
+    shape: cylinder
+    style.fill: ${colors.storage}
+    current_term: "currentTerm (int64)"
+    voted_for: "votedFor (int64)"
+    log: "log[] (LogEntry)"
+  }
+  
+  rpc_handlers: {
+    style.fill: white
+    append_entries: "HandleAppendEntries(AppendEntriesArgs) -> AppendEntriesReply"
+    request_vote: "HandleRequestVote(RequestVoteArgs) -> RequestVoteReply"
+    install_snapshot: "HandleInstallSnapshot(InstallSnapshotArgs) -> InstallSnapshotReply"
+  }
+
+  state_machine -> persistence: "1. Update term/log" { style.stroke: orange }
+  timers.election_timer -> state_machine: "2. Trigger Election" { style.stroke: red }
+}
+
+# -----------------------------------------------------------------------------
+# 2. LOG ENTRY MEMORY LAYOUT (FIXED Proximity)
+# -----------------------------------------------------------------------------
+log_memory_layout: {
+  log_structure: {
+    label: "Log Entry Memory Alignment (Intel SDM Style)"
+    
+    entry: {
+      shape: sql_table
+      style.fill: ${colors.log}
+      style.stroke: ${colors.header}
+      
+      header: "Offset | Field | Type | Size" {
+        style.fill: ${colors.purple_header}
+      }
+      row0: "0x00 | Term | int64 | 8 bytes" { style.fill: ${colors.data} }
+      row1: "0x08 | Index | int64 | 8 bytes" { style.fill: ${colors.data} }
+      row2: "0x10 | CommandType | uint32 | 4 bytes" { style.fill: ${colors.data} }
+      row3: "0x14 | Padding | uint32 | 4 bytes" { style.fill: ${colors.padding} }
+      row4: "0x18 | PayloadPtr | *void | 8 bytes" { style.fill: orange }
+    }
+  }
+
+  log_annotation: "Total Size: 32 bytes\nAligned to 8-byte boundary\nFits 2 entries per 64B Cache Line" {
+    near: bottom-center
+    style.font-size: 14
+    style.font-color: "#444444"
+    style.italic: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 3. LEADER ELECTION SEQUENCE
+# -----------------------------------------------------------------------------
+election_flow: {
+  shape: sequence_diagram
+  
+  follower_a: "Follower A"
+  candidate: "Candidate (Node B)" {
+    style.fill: ${colors.candidate}
+  }
+  follower_c: "Follower C"
+  
+  candidate.t1: "Election Timeout"
+  candidate -> candidate: "Increment currentTerm\nVote for self"
+  
+  candidate -> follower_a: "RequestVote(term=2, cand=B, lastIdx=10, lastTerm=1)"
+  candidate -> follower_c: "RequestVote(term=2, cand=B, lastIdx=10, lastTerm=1)"
+  
+  # Lock acquisitions for state updates
+  follower_a."▼ Lock State"
+  follower_a -> candidate: "VoteGranted=true" {
+    style.stroke: ${colors.success}
+    style.bold: true
+  }
+  follower_a."▲ Release State"
+
+  follower_c."▼ Lock State"
+  follower_c -> candidate: "VoteGranted=true" {
+    style.stroke: ${colors.success}
+    style.bold: true
+  }
+  follower_c."▲ Release State"
+  
+  candidate -> candidate: "Achieve Quorum (2/3)"
+  candidate.t2: "Become Leader" {
+    style.fill: ${colors.leader}
+    style.double-border: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 4. QUORUM INTERSECTION (Safety Proof)
+# -----------------------------------------------------------------------------
+quorum_safety: {
+  label: "Safety Invariant: Quorum Intersection"
+  grid-columns: 2
+  
+  visual: {
+    node_a: "Node A"
+    node_b: "Node B"
+    node_c: "Node C (Intersector)" { 
+      style.fill: ${colors.intersection}
+      style.bold: true
+      style.double-border: true
+    }
+    node_d: "Node D"
+    node_e: "Node E"
+    
+    q1: "Quorum 1 (Term N)" {
+      style.stroke: blue
+      style.fill: transparent
+      style.stroke-width: 3
+      node_a; node_b; node_c
+    }
+    
+    q2: "Quorum 2 (Term N+1)" {
+      style.stroke: green
+      style.fill: transparent
+      style.stroke-width: 3
+      node_c; node_d; node_e
+    }
+  }
+  
+  proof: |md
+    ### Safety Property: Election Safety
+    **Invariant**: $Q_a \cap Q_b \neq \emptyset$
+    - At most one leader can be elected in a given term.
+    - Node C acts as the **Stable Witness**.
+    - Node C's `votedFor` state prevents dual-granting.
+  | {
+    style.font-size: 14
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 5. STATE TRANSITION MACHINE
+# -----------------------------------------------------------------------------
+raft_fsm: {
+  label: "Raft State Transition Diagram"
+  style.fill: ${colors.legend}
+  
+  initial: ● { style.fill: ${colors.initial} }
+  
+  follower: Follower {
+    style.fill: ${colors.follower}
+    description: "Respond to RPCs\nInvariant: votedFor is null or Candidate"
+  }
+  
+  candidate: Candidate {
+    style.fill: ${colors.candidate}
+    description: "Timed out; requesting votes\nInvariant: self-voted"
+  }
+  
+  leader: Leader {
+    style.fill: ${colors.leader}
+    description: "Sending Heartbeats\nInvariant: log is authoritative"
+  }
+  
+  initial -> follower: "Initialize()"
+  follower -> candidate: "Election Timeout (T_e)" { style.stroke: red }
+  candidate -> leader: "Majority Votes Received" { style.stroke: green }
+  candidate -> follower: "Discovers Leader / Higher Term"
+  leader -> follower: "Discovers Higher Term (Step Down)" { style.stroke: orange }
+  
+  candidate -> candidate: "T_e expires; new term" {
+    style.stroke: ${colors.danger}
+    style.stroke-dash: 5
+  }
+  
+  # Error handling
+  follower -> error_state: "ILLEGAL" {
+    style.stroke: red
+    style.stroke-dash: 3
+  }
+  error_state: "Panic / Corruption" {
+    style.fill: red
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 6. APPEND_ENTRIES RPC PACKET LAYOUT
+# -----------------------------------------------------------------------------
+ae_rpc: {
+  label: "AppendEntries RPC (Packet Layout)"
+  
+  request: {
+    shape: sql_table
+    style.fill: ${colors.ae_req}
+    header: "Field | Description | Bit Offset" { style.fill: ${colors.purple_header} }
+    f1: "Term | Leader's current term | 0..63"
+    f2: "LeaderId | For client redirects | 64..127"
+    f3: "PrevLogIndex | Index of prior entry | 128..191"
+    f4: "PrevLogTerm | Term of prior entry | 192..255"
+    f5: "LeaderCommit | Commit index | 256..319"
+    f6: "EntriesCount | N entries to replicate | 320..351"
+  }
+  
+  response: {
+    shape: sql_table
+    style.fill: ${colors.ae_resp}
+    header: "Field | Description | Bit Offset" { style.fill: ${colors.purple_header} }
+    f1: "Term | CurrentTerm for leader update | 0..63"
+    f2: "Success | Boolean success | 64..71"
+    f3: "ConflictIdx | Backtrack helper | 72..135"
+    f4: "ConflictTerm | Backtrack helper | 136..199"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 7. LOG CONSISTENCY & SNAPSHOTTING
+# -----------------------------------------------------------------------------
+snapshot_mechanics: {
+  direction: right
+  label: "Log Compaction (Snapshotting)"
+  
+  log_before: {
+    label: "In-Memory Log (Pre-Compaction)"
+    grid-rows: 1
+    grid-gap: 0
+    e1: "Idx 1\nT1"; e2: "Idx 2\nT1"; e3: "Idx 3\nT2"; e4: "Idx 4\nT2"; e5: "Idx 5\nT3"
+  }
+  
+  snapshot: "State Snapshot\n(Stable Storage)" {
+    shape: rectangle
+    style.fill: ${colors.snapshot}
+    style.double-border: true
+    metadata: "LastIncludedIndex: 3\nLastIncludedTerm: 2"
+    data: "KV Store State binary"
+  }
+  
+  log_after: {
+    label: "Optimized Log (Post-Compaction)"
+    grid-rows: 1
+    grid-gap: 0
+    e_snap: "SNAPSHOT\n(Idx 3, T2)" { 
+      style.fill: ${colors.snapshot}
+      style.stroke-dash: 2
+    }
+    e4_a: "Idx 4\nT2"; e5_a: "Idx 5\nT3"
+  }
+  
+  log_before -> snapshot: "Trigger: Log > Threshold" { style.stroke: orange }
+  snapshot -> log_after: "Truncate Prefix" { style.stroke: blue }
+}
+
+# -----------------------------------------------------------------------------
+# 8. LINEARIZABLE READS (ReadIndex)
+# -----------------------------------------------------------------------------
+read_path: {
+  label: "Linearizable Read Path (ReadIndex)"
+  
+  step1: "1. Leader records commitIndex as 'readIndex'"
+  step2: "2. Confirm leadership via Heartbeat Quorum"
+  step3: "3. Wait for local 'lastApplied >= readIndex'"
+  step4: "4. Read local state & Return"
+  
+  step1 -> step2 -> step3 -> step4
+  
+  step2.style.stroke: ${colors.success}
+  step2.style.stroke-width: 4
+  step4.style.bold: true
+  step4.style.fill: ${colors.available}
+}
+
+# -----------------------------------------------------------------------------
+# Global Styling
+# -----------------------------------------------------------------------------
+***.style.font: mono
+***.style.border-radius: 4
+
+(election_flow -> *)[*].style.animated: true
+(read_path -> *)[*].style.stroke-width: 2
+(raft_fsm -> *)[*].style.stroke-width: 2
+(snapshot_mechanics -> *)[*].style.stroke-width: 2

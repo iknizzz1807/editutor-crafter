@@ -1,0 +1,259 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# GLOBAL LEGEND & METADATA
+# -----------------------------------------------------------------------------------------
+legend: {
+  near: top-right
+  label: |'md
+    ### Gossip Protocol: Suspicion Logic
+    **Engineers:** Follow these transitions for the failure detector implementation.
+    
+    | Sym | Transition Type |
+    | :--- | :--- |
+    | **→** | Normal State Shift |
+    | **⇢** | Failure Observation (UDP/Ping) |
+    | **⇶** | Timer Expiry (Deterministic) |
+    | **⤫** | **ILLEGAL** (Forbidden Path) |
+    
+    **Constants:**
+    - `SuspicionTimeoutMult`: 5 (Default)
+    - `DeadTTL`: 24h (Default)
+  '|
+  style: {
+    stroke: "#333333"
+    fill: "#F8F8F8"
+    stroke-width: 1
+    font-size: 14
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# STATES
+# -----------------------------------------------------------------------------------------
+
+initial: {
+  shape: circle
+  label: ●
+  style: {
+    fill: white
+    stroke: "#333333"
+  }
+}
+
+alive: {
+  label: |md
+    # ALIVE
+    ---
+    **State Invariants:**
+    - `Peer.Status == StatusAlive`
+    - `Incarnation == n`
+    - `LastSeen == timestamp_now`
+    ---
+    **Methods:**
+    - `onPing()`: Reset LastSeen
+    - `onSuspect(inc)`: If `inc >= n` transition to **SUSPECT**
+  |
+  style: {
+    fill: "#E1F5FE"
+    stroke: "#0288D1"
+    stroke-width: 4
+    border-radius: 10
+  }
+  
+  internal_logic: {
+    label: |md
+      **Incarnation Win Rule:**
+      A node can only refute suspicion by
+      broadcasting a higher incarnation number.
+    |
+    style: {
+      font-size: 10
+      fill: "#E1F5FE"
+      stroke-dash: 2
+    }
+  }
+}
+
+suspect: {
+  label: |'md
+    # SUSPECT (Suspicion State)
+    ---
+    **State Invariants:**
+    - `Peer.Status == StatusSuspect`
+    - `Timer.IsActive == true`
+    - `StateChanged == timestamp_now`
+    ---
+    **Suspicion Timeout Calculation:**
+    `T = SuspicionTimeoutMult * ProtocolPeriod`
+  '|
+  style: {
+    fill: "#FFF9C4"
+    stroke: "#FBC02D"
+    stroke-width: 4
+    border-radius: 10
+  }
+
+  timer_process: {
+    label: |'md
+      ### ⏱️ Internal Timer
+      - **OnStart:** `Schedule(T, expire_handler)`
+      - **OnRefute:** `Cancel()`
+    '|
+    style: {
+      fill: "#FEF9E7"
+      stroke: "#F1C40F"
+      stroke-dash: 3
+    }
+  }
+}
+
+dead: {
+  label: |md
+    # DEAD (Marked for Reaping)
+    ---
+    **State Invariants:**
+    - `Peer.Status == StatusDead`
+    - `IsDiscoverable == false`
+    ---
+    **Transition:**
+    Stays in Dead state for `DeadTTL` to ensure 
+    gossip propagation before removal.
+  |
+  style: {
+    fill: "#FFEBEE"
+    stroke: "#D32F2F"
+    stroke-width: 4
+    border-radius: 10
+  }
+}
+
+removed: {
+  shape: package
+  label: |md
+    # REMOVED
+    ---
+    `PeerList.Remove(node_id)`
+    Memory deallocated.
+  |
+  style: {
+    fill: "#B0BEC5"
+    stroke: "#455A64"
+    stroke-width: 2
+    stroke-dash: 5
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# TRANSITIONS
+# -----------------------------------------------------------------------------------------
+
+initial -> alive: "Node Join\n(Discovery)" {
+  style.stroke-width: 2
+}
+
+# Failure observation
+alive -> suspect: {
+  label: |'md
+    **Trigger:** `DirectProbe` timeout AND `k` `IndirectProbes` fail
+    **Guard:** `new_msg.inc >= current.inc`
+    **Action:** 
+    1. `timer.Start()`
+    2. `piggyback.Add(SUSPECT, inc)`
+  '|
+  style: {
+    stroke: "#FBC02D"
+    stroke-width: 3
+    stroke-dash: 5
+    animated: true
+  }
+}
+
+# Refutation path
+suspect -> alive: {
+  label: |md
+    **Trigger:** Received `ALIVE` broadcast for self
+    **Guard:** `msg.inc > current.inc` (Refutation)
+    **Action:** 
+    1. `timer.Stop()`
+    2. `incarnation = msg.inc`
+    3. `piggyback.Add(ALIVE, inc)`
+  |
+  style: {
+    stroke: "#388E3C"
+    stroke-width: 3
+  }
+  source-arrowhead: diamond
+}
+
+# Expiry path
+suspect -> dead: {
+  label: |'md
+    **Trigger:** `timer.OnExpire()`
+    **Guard:** No refutation received within `T`
+    **Action:** 
+    1. `status = StatusDead`
+    2. `piggyback.Add(DEAD, inc)`
+  '|
+  style: {
+    stroke: "#D32F2F"
+    stroke-width: 4
+  }
+  target-arrowhead: triangle
+}
+
+# Reaping
+dead -> removed: {
+  label: |md
+    **Trigger:** `now() - StateChanged > DeadTTL`
+  |
+  style: {
+    stroke: "#455A64"
+    stroke-width: 2
+    stroke-dash: 3
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# ERROR HANDLING / ILLEGAL STATES
+# -----------------------------------------------------------------------------------------
+
+# Explicitly showing illegal transition logic
+alive -> dead: {
+  label: |md
+    # ⤫ ILLEGAL
+    Cannot jump from **ALIVE** to **DEAD**
+    without refutation window (SUSPECT).
+  |
+  style: {
+    stroke: red
+    stroke-dash: 2
+    stroke-width: 4
+    opacity: 0.5
+  }
+  target-arrowhead: cross
+}
+
+# Global notes positioned via constant near values for ELK compliance
+failure_detection_logic: {
+  near: bottom-left
+  label: |'md
+    ### Failure Detection Protocol (SWIM-based)
+    1. **Direct Probe:** Ping node A.
+    2. **Indirect Probe:** If A fails, ask $k$ nodes to ping A.
+    3. **Suspicion:** If all fail, mark A as **SUSPECT**.
+    4. **Refutation:** A can prove it is **ALIVE** by increasing incarnation.
+  '|
+  style: {
+    fill: "#FDF2E9"
+    stroke: "#E67E22"
+    stroke-width: 1
+    border-radius: 5
+  }
+}

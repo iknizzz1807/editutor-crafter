@@ -1,0 +1,222 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Gossip Message Wire Format
+  **Protocol Version 1.0**
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  header_section: {
+    direction: down
+    label: "Message Header (12 bytes)"
+    header_table: {
+      shape: sql_table
+      label: "struct MsgHeader (protocol.go)"
+      f0: "0x00 | uint32 | Length"
+      f1: "0x04 | uint8  | Type"
+      f2: "0x05 | uint8  | TTL"
+      f3: "0x06 | uint16 | NodeIDLen"
+      f4: "0x08 | uint64 | OriginClock"
+      total: "Total: 16 bytes"
+    }
+    msg_types: {
+      label: "Message Types"
+      width: 280
+      code: |'go
+        const (
+          MsgTypeJoin   = 0x01
+          MsgTypeLeave  = 0x02
+          MsgTypeSync   = 0x03
+          MsgTypeAck    = 0x04
+          MsgTypeGossip = 0x10
+        )
+      '|
+    }
+  }
+  nodeid_section: {
+    direction: down
+    label: "Node ID (variable)"
+    nodeid_table: {
+      shape: sql_table
+      label: "Sender Identification"
+      f0: "0x00 | []byte | NodeID"
+      note: "UTF-8 encoded string"
+      note2: "Typical: 6-36 bytes"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  entries_section: {
+    direction: down
+    label: "Entry Array (GossipBody)"
+    entry_count: {
+      label: "Entry Count"
+      width: 200
+      code: |'go
+        uint16 | N entries follow
+        (max 65535 entries)
+      '|
+    }
+    entry_table: {
+      shape: sql_table
+      label: "EntryDigest (repeated N times)"
+      f0: "uint16 | KeyLen"
+      f1: "[]byte | Key"
+      f2: "uint64 | Version"
+      f3: "uint16 | NodeIDLen"
+      f4: "[]byte | OriginNodeID"
+      f5: "uint32 | ValueLen"
+      f6: "[]byte | Value"
+      total: "Per-entry: 22+ bytes"
+    }
+  }
+  example_section: {
+    direction: down
+    label: "Example: 3-Entry Message"
+    example_layout: {
+      shape: class
+      label: "Wire Layout (hex offsets)"
+      -offset_00: "0x00-0x03 | Length = 0x0000012C"
+      -offset_04: "0x04       | Type = 0x10 (GOSSIP)"
+      -offset_05: "0x05       | TTL = 0x04"
+      -offset_06: "0x06-0x07  | NodeIDLen = 0x0006"
+      -offset_08: "0x08-0x0F  | OriginClock = 0x00000042"
+      -offset_10: "0x10-0x15  | NodeID = node-0"
+      -offset_16: "0x16-0x17  | EntryCount = 0x0003"
+      -entry_1: "0x18+      | Entry[0] ..."
+      -entry_2: "...        | Entry[1] ..."
+      -entry_3: "...        | Entry[2] ..."
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  encode_func: {
+    label: "Serialization (protocol.go)"
+    width: 420
+    code: |'go
+      func Encode(msg *Message) ([]byte, error) {
+        var buf bytes.Buffer
+        // 1. Length prefix placeholder (filled later)
+        binary.Write(&buf, binary.BigEndian, uint32(0))
+        // 2. Message type
+        buf.WriteByte(byte(msg.Header.Type))
+        // 3. TTL (for gossip messages)
+        buf.WriteByte(msg.Header.TTL)
+        // 4. Node ID with length prefix
+        binary.Write(&buf, binary.BigEndian, uint16(len(msg.Header.NodeID)))
+        buf.WriteString(msg.Header.NodeID)
+        // 5. Origin clock (Lamport timestamp)
+        binary.Write(&buf, binary.BigEndian, msg.Header.Clock)
+        // 6. Body via gob encoding
+        encoder := gob.NewEncoder(&buf)
+        encoder.Encode(msg.Body)
+        // 7. Fill in length
+        data := buf.Bytes()
+        binary.BigEndian.PutUint32(data[:4], uint32(len(data)-4))
+        return data, nil
+      }
+    '|
+  }
+  decode_func: {
+    label: "Deserialization (protocol.go)"
+    width: 420
+    code: |'go
+      func Decode(data []byte) (*Message, error) {
+        if len(data) < 4 {
+          return nil, io.ErrShortBuffer
+        }
+        length := binary.BigEndian.Uint32(data[:4])
+        if len(data) < int(4+length) {
+          return nil, io.ErrShortBuffer
+        }
+        r := bytes.NewReader(data[4 : 4+length])
+        msg := &Message{}
+        // Read type, TTL, node ID, clock...
+        typeByte, _ := r.ReadByte()
+        msg.Header.Type = MessageType(typeByte)
+        ttl, _ := r.ReadByte()
+        msg.Header.TTL = ttl
+        // Decode body based on type
+        decoder := gob.NewDecoder(r)
+        switch msg.Header.Type {
+        case MsgTypeGossip:
+          var body GossipBody
+          decoder.Decode(&body)
+          msg.Body = body
+        }
+        return msg, nil
+      }
+    '|
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  size_table: {
+    direction: down
+    label: "Typical Message Sizes"
+    sizes: {
+      shape: sql_table
+      label: "Bandwidth Analysis"
+      header: "Component | Size | Notes"
+      h: "Header | 16 B | Fixed"
+      nid: "NodeID | 6-36 B | UUID=36, short=6"
+      count: "EntryCount | 2 B | Max 65535"
+      entry: "Per Entry | 22+ B | Key+Value variable"
+      small: "Small msg | ~100 B | 1 entry, small KV"
+      typical: "Typical msg | ~1 KB | 10 entries"
+      large: "Large msg | ~64 KB | UDP limit"
+    }
+  }
+  notes: {
+    direction: down
+    label: "Design Notes"
+    note1: {
+      width: 350
+      code: |'text
+        KEY DESIGN DECISIONS:
+        1. Length-prefixed: Enables streaming
+           parsers and buffer pre-allocation
+        2. Big-endian: Network byte order
+           for cross-platform compatibility
+        3. Gob for body: Self-describing,
+           handles complex types
+        4. TTL in header: Enables hop-count
+           limiting without parsing body
+        5. NodeID length-prefix: Supports
+           both short IDs and full UUIDs
+      '|
+    }
+    note2: {
+      width: 350
+      code: |'text
+        BANDWIDTH OPTIMIZATION:
+        • Delta encoding: Only send entries
+          with Version > lastSent watermark
+        • Entry batching: Multiple entries
+          per message amortizes header cost
+        • Variable-length integers: Could
+          use varint for smaller values
+        • Compression: Could add optional
+          Snappy/Zstd for large payloads
+      '|
+    }
+  }
+}
+header_section -> entries_section: "Body follows header | encode"
+entries_section -> encode_func: "gob.Encode | serialize"
+decode_func -> header_section: "gob.Decode | parse"

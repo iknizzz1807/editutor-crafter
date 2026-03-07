@@ -1,0 +1,216 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#673AB7"
+    data: "#2196F3"
+    padding: "#9E9E9E"
+    pointer: "#FF9800"
+    success: "#4CAF50"
+    failure: "#F44336"
+    state_bg: "#ECEFF1"
+  }
+}
+
+title: {
+  label: |md
+    # TECHNICAL SPECIFICATION: GetNodes Replication Strategy
+    **Algorithm**: Clockwise Linear Search with Physical Node Deduplication
+    **Context**: Distributed Hash Table (DHT) Preference List Generation
+  |
+  near: top-center
+}
+
+# -----------------------------------------------------------------------------
+# MEMORY LAYOUT REPRESENTATION
+# -----------------------------------------------------------------------------
+memory_layout: {
+  label: "VNODE RING MEMORY LAYOUT (Contiguous Array)"
+  near: top-left
+
+  vnode_array: {
+    grid-columns: 7
+    grid-gap: 0
+
+    header_off: "Offset (Bytes)" { style.fill: "#f0f0f0"; style.bold: true }
+    h100: "0x00" { style.fill: "#f0f0f0" }
+    h250: "0x18" { style.fill: "#f0f0f0" }
+    h400: "0x30" { style.fill: "#f0f0f0" }
+    h600: "0x48" { style.fill: "#f0f0f0" }
+    h750: "0x60" { style.fill: "#f0f0f0" }
+    h900: "0x78" { style.fill: "#f0f0f0" }
+
+    header_val: "VNode Value" { style.fill: "#f0f0f0"; style.bold: true }
+    v100: "A@100" { style.fill: ${colors.data} }
+    v250: "B@250" { style.fill: ${colors.data} }
+    v400: "A@400" { style.fill: ${colors.data} }
+    v600: "C@600" { style.fill: ${colors.data} }
+    v750: "B@750" { style.fill: ${colors.data} }
+    v900: "A@900" { style.fill: ${colors.data} }
+
+    header_phys: "Physical ID" { style.fill: "#f0f0f0"; style.bold: true }
+    p1: "ID: 1" { style.fill: "#e3f2fd" }
+    p2: "ID: 2" { style.fill: "#e3f2fd" }
+    p3: "ID: 1" { style.fill: "#e3f2fd" }
+    p4: "ID: 3" { style.fill: "#e3f2fd" }
+    p5: "ID: 2" { style.fill: "#e3f2fd" }
+    p6: "ID: 1" { style.fill: "#e3f2fd" }
+  }
+
+  sizeof_info: |md
+    **sizeof(VNode)** = 24 bytes
+    - Hash (uint64): 8B
+    - NodeID (uint64): 8B
+    - Flags (uint64): 8B
+  | {
+    near: bottom-center
+    shape: text
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 0: SYSTEM INPUTS
+# -----------------------------------------------------------------------------
+inputs: {
+  label: "INPUT PARAMETERS"
+  style.fill: ${colors.state_bg}
+  
+  params: {
+    shape: sql_table
+    target_key: "user:123"
+    key_hash: 350
+    requested_n: 3
+    ring_size: 6
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ALGORITHM STEPS
+# -----------------------------------------------------------------------------
+step_1_search: {
+  label: "1. BINARY SEARCH (Positioning)"
+  
+  code: |go
+    // Find index of first vnode >= 350
+    idx := sort.Search(len(ring), func(i int) bool {
+        return ring[i].Hash >= keyHash
+    })
+  |
+  
+  logic: |md
+    - `ring[0]=100 < 350`
+    - `ring[1]=250 < 350`
+    - `ring[2]=400 >= 350` (MATCH)
+    **Result Cursor**: `i = 2`
+  |
+}
+
+step_2_init: {
+  label: "2. STATE INITIALIZATION"
+  
+  registers: {
+    shape: sql_table
+    result_slice: "len=0, cap=3"
+    seen_map: "map[uint64]bool{}"
+    iterator: "i = 2"
+    step_counter: "0"
+  }
+}
+
+step_3_loop: {
+  label: "3. DEDUPLICATED WALK"
+  
+  iteration_0: {
+    label: "ITERATION 0 (i=2)"
+    style.fill: "#E8F5E9"
+    vnode: "A@400"
+    action: "Add A to Result; seen[A]=true"
+  }
+
+  iteration_1: {
+    label: "ITERATION 1 (i=3)"
+    style.fill: "#E8F5E9"
+    vnode: "C@600"
+    action: "Add C to Result; seen[C]=true"
+  }
+
+  iteration_2: {
+    label: "ITERATION 2 (i=4)"
+    style.fill: "#E8F5E9"
+    vnode: "B@750"
+    action: "Add B to Result; seen[B]=true"
+  }
+
+  iteration_3: {
+    label: "ITERATION 3 (i=5)"
+    style.stroke: ${colors.failure}
+    vnode: "A@900"
+    action: "seen[A] is TRUE -> SKIP"
+  }
+
+  iteration_0 -> iteration_1 -> iteration_2 -> iteration_3: "Next Index (i++)"
+}
+
+step_4_final: {
+  label: "4. FINAL PREFERENCE LIST"
+  
+  output: {
+    shape: sql_table
+    index_0: "Node A (Primary)"
+    index_1: "Node C (Replica)"
+    index_2: "Node B (Replica)"
+  }
+  
+  order_diag: {
+    a: "A" { shape: circle; style.fill: ${colors.success} }
+    c: "C" { shape: circle; style.fill: ${colors.success} }
+    b: "B" { shape: circle; style.fill: ${colors.success} }
+    a -> c -> b: "Rank"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# EXCEPTION HANDLING
+# -----------------------------------------------------------------------------
+exceptions: {
+  label: "GUARD CONDITIONS"
+  
+  insufficient_nodes: {
+    label: "ErrInsufficientNodes"
+    style.fill: "#FFEBEE"
+    desc: "Loop exceeds ring length before N distinct nodes found."
+  }
+  
+  empty_ring: {
+    label: "ErrNoNodesInRing"
+    style.fill: "#FFEBEE"
+    desc: "Hash ring length is zero."
+  }
+}
+
+# -----------------------------------------------------------------------------
+# FLOW CONTROL
+# -----------------------------------------------------------------------------
+inputs -> step_1_search: "Initialize"
+step_1_search -> step_2_init: "Success"
+step_2_init -> step_3_loop: "Begin Walk"
+step_3_loop -> step_4_final: "len(result) == N"
+
+step_3_loop -> exceptions.insufficient_nodes: "loop_count == ring_size" {
+  style.stroke: ${colors.failure}
+  style.stroke-dash: 5
+}
+
+# -----------------------------------------------------------------------------
+# ANNOTATIONS
+# -----------------------------------------------------------------------------
+legend: {
+  near: bottom-right
+  header: "LEGEND"
+  color_data: "Data Object" { style.fill: ${colors.data} }
+  color_success: "Added Node" { style.fill: ${colors.success} }
+  color_fail: "Error/Exception" { style.fill: ${colors.failure} }
+}

@@ -1,0 +1,216 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: "Slow Follower Catch-Up via Snapshot"
+  shape: rectangle
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+    stroke: transparent
+    fill: transparent
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# ROW 1: START & FAULT
+# -----------------------------------------------------------------------------------------
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  phase1: {
+    direction: down
+    label: "Phase 1: Normal Operation"
+    leader1: {
+      shape: sql_table
+      label: "Leader (leader.go)"
+      f1: "0x00 | uint64 | commitIndex: 15000"
+      f2: "0x08 | uint64 | lastIncluded: 0"
+      f3: "0x10 | Entry[] | log[1..15000]"
+      sz: "Total: No snapshot active"
+    }
+    follower1: {
+      shape: sql_table
+      label: "Follower (follower.go)"
+      f1: "0x00 | uint64 | commitIndex: 5000"
+      f2: "0x08 | uint64 | lastIncluded: 0"
+      f3: "0x10 | Entry[] | log[1..5000]"
+      sz: "Status: 10k entries behind"
+    }
+    leader1 -> follower1: "AppendEntries | sync" {
+      style.stroke: "#4CAF50"
+    }
+  }
+
+  spacer1: {
+    shape: text
+    label: "→"
+    width: 50
+  }
+
+  phase2: {
+    direction: down
+    label: "Phase 2: Network Partition"
+    partition_note: {
+      label: "CRITICAL: NETWORK PARTITION"
+      shape: callout
+      style.fill: "#FFCDD2"
+    }
+    leader2: {
+      shape: sql_table
+      label: "Leader (Snapshotting)"
+      f1: "0x00 | uint64 | commitIndex: 20000"
+      f2: "0x08 | uint64 | lastIncluded: 10000"
+      f3: "0x10 | Entry[] | log[10001..20000]"
+      sz: "Status: Truncated 1..10k"
+    }
+    follower2: {
+      shape: sql_table
+      label: "Follower (Isolated)"
+      f1: "0x00 | uint64 | commitIndex: 5000"
+      f2: "0x08 | uint64 | lastIncluded: 0"
+      style.stroke-dash: 5
+      style.fill: "#FFEBEE"
+      sz: "Status: Stuck at index 5k"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# ROW 2: DECISION LOGIC
+# -----------------------------------------------------------------------------------------
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  decision_logic: {
+    direction: down
+    label: "Snapshot Decision Logic"
+    check: {
+      shape: diamond
+      label: "nextIndex <= lastIncludedIndex?"
+      style.fill: "#FFF3E0"
+    }
+    explanation: |md
+      **Decision Point**
+      Leader checks peer index.
+      Index 5000 <= 10000.
+      **Action**: InstallSnapshot.
+    |
+  }
+
+  phase3: {
+    direction: down
+    label: "Phase 3: InstallSnapshot RPC"
+    rpc_state: {
+      shape: sql_table
+      label: "Snapshot Payload"
+      f1: "0x00 | uint64 | term: 3"
+      f2: "0x08 | uint64 | lastIndex: 10000"
+      f3: "0x10 | uint64 | lastTerm: 3"
+      f4: "0x18 | []byte | data: KV_Blob"
+      sz: "Protocol: Raft-6.1"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# ROW 3: CATCH UP & FINAL
+# -----------------------------------------------------------------------------------------
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  phase4: {
+    direction: down
+    label: "Phase 4: Follower Integration"
+    follower_apply: {
+      shape: sql_table
+      label: "Follower Update"
+      f1: "Persist Snapshot to Disk"
+      f2: "Load State Machine"
+      f3: "Discard log[1..10000]"
+      sz: "Result: Index 10k Reached"
+    }
+  }
+
+  spacer3: {
+    shape: text
+    label: "→"
+    width: 50
+  }
+
+  phase5: {
+    direction: down
+    label: "Phase 5: Sync Restored"
+    leader_final: {
+      shape: sql_table
+      label: "Leader State"
+      f1: "matchIndex[f]: 20000"
+      f2: "nextIndex[f]: 20001"
+      sz: "Status: Synchronized"
+    }
+    follower_final: {
+      shape: sql_table
+      label: "Follower State"
+      f1: "commitIndex: 20000"
+      f2: "lastIncluded: 10000"
+      sz: "Status: Caught up"
+    }
+    leader_final -> follower_final: "AppendEntries | log" {
+      style.stroke: "#4CAF50"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# GLOBAL CONNECTORS & ANNOTATIONS
+# -----------------------------------------------------------------------------------------
+
+row1.phase1 -> row1.phase2: "Partition | loss" {
+  style.stroke-dash: 5
+  style.stroke: "#F44336"
+}
+
+row1.phase2 -> row2.decision_logic.check: "Partition Heals | heal"
+
+row2.decision_logic.check -> row2.phase3.rpc_state: "InstallSnapshot | rpc" {
+  style.stroke: "#9C27B0"
+  style.stroke-width: 3
+}
+
+row2.phase3.rpc_state -> row3.phase4.follower_apply: "Apply | local"
+
+row3.phase4.follower_apply -> row3.phase5: "Catch up | success"
+
+summary_box: {
+  label: "Implementation Timeline (raft.c)"
+  code: |'md
+    1. T0: F@5000, partitioned.
+    2. T60: L compacts log, lastIncluded=10000.
+    3. T120: Partition heals. L.nextIndex[F]=5000.
+    4. Decision: 5000 < 10000 -> Trigger Snapshot.
+    5. F installs Snapshot, moves to 10k instantly.
+    6. Normal AppendEntries resume for 10001..20000.
+  '|
+}
+
+legend: {
+  direction: right
+  l1: "Normal Path" { style.fill: "#E8F5E9" }
+  l2: "Error Path" { style.fill: "#FFEBEE"; style.stroke-dash: 5 }
+  l3: "Snapshot Path" { style.fill: "#E1BEE7" }
+}
+
+legend.near: bottom-right
+summary_box.near: bottom-left

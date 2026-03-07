@@ -1,0 +1,248 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Raft: Log Consistency Check Algorithm
+  Detailed step-by-step logic for `AppendEntries` RPC validation.
+  *Engineers: Reference this for ConflictIndex/ConflictTerm optimization.*
+| {near: top-center}
+
+direction: down
+
+classes: {
+  step: {
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2196F3"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  success: {
+    style: {
+      fill: "#C8E6C9"
+      stroke: "#4CAF50"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  failure: {
+    style: {
+      fill: "#FFCDD2"
+      stroke: "#F44336"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  decision: {
+    shape: diamond
+    style: {
+      fill: "#FFF9C4"
+      stroke: "#FF9800"
+      stroke-width: 2
+    }
+  }
+  data: {
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#9C27B0"
+      stroke-width: 2
+      border-radius: 4
+      font: mono
+    }
+  }
+}
+
+# --- Input States ---
+
+args_box: "AppendEntriesArgs" {
+  class: data
+  |'md
+  **Term:**         int    // Leader's current term
+  **LeaderId:**     string // For redirecting clients
+  **PrevLogIndex:** int    // Index of log entry immediately preceding new ones
+  **PrevLogTerm:**  int    // Term of prevLogIndex entry
+  **Entries:**      []Log  // Log entries to store (empty for heartbeat)
+  **LeaderCommit:** int    // Leader's commitIndex
+  '|
+}
+
+follower_log: "Follower Log State" {
+  class: data
+  |'md
+  **currentTerm:** int
+  **log[]:**       Array of LogEntry
+  **commitIndex:** int
+  
+  *Example State:*
+  log[1] = {T:1}, log[2] = {T:1}
+  len(log) = 3
+  '|
+}
+
+# --- Algorithm Flow ---
+
+start: "Receive AppendEntries(args)" {
+  class: step
+  shape: circle
+}
+
+step1: "Validate Leader Term" {
+  class: step
+  |'md
+  Check if the sender is a valid leader for the current term.
+  go
+  if args.Term < currentTerm {
+      return false
+  }
+  
+  '|
+}
+
+decision_term: "args.Term <\ncurrentTerm?" {
+  class: decision
+}
+
+step2: "Bounds Check" {
+  class: step
+  |'md
+  Does the follower log even reach the index the leader is referencing?
+  go
+  if len(log)-1 < args.PrevLogIndex {
+      return REJECT
+  }
+  
+  '|
+}
+
+decision_bounds: "Log has entry at\nPrevLogIndex?" {
+  class: decision
+}
+
+step3: "Term Consistency" {
+  class: step
+  |'md
+  Compare follower's term at `PrevLogIndex` with leader's `PrevLogTerm`.
+  go
+  if log[args.PrevLogIndex].Term != args.PrevLogTerm {
+      return REJECT
+  }
+  
+  '|
+}
+
+decision_match: "Terms Match at\nPrevLogIndex?" {
+  class: decision
+}
+
+# --- Failure Handling / Optimization Logic ---
+
+fail_term: "REJECT: Stale Leader" {
+  class: failure
+  |'md
+  Follower ignores request. 
+  Step down if Candidate.
+  '|
+}
+
+fail_short: "REJECT: Gap in Log" {
+  class: failure
+  |'md
+  **Optimization Info:**
+  - ConflictIndex = len(log)
+  - ConflictTerm = -1
+  '|
+}
+
+fail_mismatch: "REJECT: Term Conflict" {
+  class: failure
+  |'md
+  **Optimization Info:**
+  - ConflictTerm = log[args.PrevLogIndex].Term
+  - ConflictIndex = first index of ConflictTerm in log
+  '|
+}
+
+step_find_first: "Find First Index of ConflictTerm" {
+  class: step
+  |'md
+  go
+  idx := args.PrevLogIndex
+  term := log[idx].Term
+  while idx > 0 && log[idx-1].Term == term {
+      idx--
+  }
+  ConflictIndex = idx
+  
+  '|
+}
+
+# --- Results ---
+
+success: "CONSISTENCY VERIFIED" {
+  class: success
+  |'md
+  1. Append new entries
+  2. Update commitIndex
+  3. Reset election timer
+  '|
+}
+
+reply_success: "Reply {Success: true}" {
+  class: success
+}
+
+reply_fail: "Reply {Success: false,\nConflictTerm, ConflictIndex}" {
+  class: failure
+}
+
+leader_hint: "Leader Optimization" {
+  class: data
+  |'md
+  **Leader receiving Reply:**
+  - If follower has ConflictTerm:
+    `nextIndex = lastIndexInLeaderLog(ConflictTerm) + 1`
+  - Else:
+    `nextIndex = ConflictIndex`
+  '|
+}
+
+# --- Connections ---
+
+args_box -> start
+follower_log -> decision_bounds
+
+start -> step1
+step1 -> decision_term
+decision_term -> fail_term: "Yes"
+decision_term -> step2: "No"
+
+step2 -> decision_bounds
+decision_bounds -> fail_short: "No (Log too short)"
+decision_bounds -> step3: "Yes"
+
+step3 -> decision_match
+decision_match -> step_find_first: "No (Mismatch)"
+decision_match -> success: "Yes"
+
+step_find_first -> fail_mismatch
+
+fail_term -> reply_fail
+fail_short -> reply_fail
+fail_mismatch -> reply_fail
+success -> reply_success
+
+reply_fail -> leader_hint: "Used to skip\nentire terms"
+
+# Styling specific edges
+(decision_term -> fail_term)[0].style.stroke: red
+(decision_bounds -> fail_short)[0].style.stroke: red
+(decision_match -> step_find_first)[0].style.stroke: red
+(decision_match -> success)[0].style.stroke: green
+(success -> reply_success)[0].style.stroke: green
+(fail_mismatch -> reply_fail)[0].style.stroke: red
+(fail_short -> reply_fail)[0].style.stroke: red

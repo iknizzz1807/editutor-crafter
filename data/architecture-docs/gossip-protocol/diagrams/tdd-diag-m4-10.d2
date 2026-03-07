@@ -1,0 +1,222 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    sketch: false
+    pad: 25
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# METADATA & SPECIFICATION
+# ---------------------------------------------------------------------------------
+"SWIM Protocol Spec": {
+  shape: package
+  near: top-left
+  
+  info: |md
+    ### SWIM Gossip State Machine
+    Intel-Grade Specification for Peer Lifecycle
+    
+    **State Transitions & Memory Layout**
+    - Protocol Period ($T$): 500ms
+    - Suspicion Timeout: $k \cdot \log(n) \cdot T$
+    - Memory Alignment: 8-byte boundaries
+    - Colors: Header=Purple, Data=Blue, Free=Green, Padding=Gray
+  |
+  
+  style: {
+    stroke-dash: 3
+    fill: "#fcfcfc"
+    stroke: "#444"
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# PEER STATES & MEMORY LAYOUTS
+# ---------------------------------------------------------------------------------
+# Memory Layout Diagrams: Exact byte offsets left margin, field sizes right margin.
+
+"start": {
+  shape: circle
+  label: "●"
+  style: {
+    fill: black
+    stroke: black
+  }
+}
+
+"alive": {
+  shape: sql_table
+  label: "STATE: ALIVE (sizeof=64B)"
+  
+  00: "incarnation (uint64)" {constraint: "8B"}
+  08: "last_seen_ts (int64)" {constraint: "8B"}
+  16: "state_changed (int64)" {constraint: "8B"}
+  24: "contact_addr (ipv6)" {constraint: "16B"}
+  40: "metadata_ptr (uint64)" {constraint: "8B"}
+  48: "padding (align64)" {constraint: "16B"}
+
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#2E7D32"
+    stroke-width: 3
+  }
+}
+
+"suspect": {
+  shape: sql_table
+  label: "STATE: SUSPECT (sizeof=64B)"
+  
+  00: "*timer_ref (uintptr)" {constraint: "8B"}
+  08: "*confirm_map (uintptr)" {constraint: "8B"}
+  16: "incarnation (uint64)" {constraint: "8B"}
+  24: "probe_failure_count (u32)" {constraint: "4B"}
+  28: "padding (align64)" {constraint: "36B"}
+
+  style: {
+    fill: "#FFF9C4"
+    stroke: "#FBC02D"
+    stroke-width: 3
+  }
+}
+
+"dead": {
+  shape: sql_table
+  label: "STATE: DEAD (sizeof=64B)"
+  
+  00: "dead_time_ts (int64)" {constraint: "8B"}
+  08: "incarnation (uint64)" {constraint: "8B"}
+  16: "reaper_lock (uint32)" {constraint: "4B"}
+  20: "padding (align64)" {constraint: "44B"}
+
+  style: {
+    fill: "#FFEBEE"
+    stroke: "#D32F2F"
+    stroke-width: 3
+  }
+}
+
+"left": {
+  shape: sql_table
+  label: "STATE: LEFT (sizeof=64B)"
+  
+  00: "leave_time_ts (int64)" {constraint: "8B"}
+  08: "incarnation (uint64)" {constraint: "8B"}
+  16: "padding (align64)" {constraint: "48B"}
+
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#7B1FA2"
+    stroke-width: 3
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# TRANSITIONS: trigger + guard + action
+# ---------------------------------------------------------------------------------
+
+"start" -> "alive": "01: JOIN_ACK [valid_creds] / init_incarnation(0)" {
+  label.near: outside-top-center
+  tooltip: "Seed node validates peer credentials and issues incarnation 0"
+}
+
+"alive" -> "suspect": "02: PROBE_TIMEOUT / start_timer(S_timeout)" {
+  style: {
+    stroke: "#F57C00"
+    stroke-width: 2
+  }
+}
+
+"suspect" -> "alive": "03: REFUTATION [new_inc > old_inc] / cancel_timer()" {
+  style: {
+    stroke: "#2E7D32"
+    stroke-dash: 4
+  }
+}
+
+"suspect" -> "dead": "04: TIMER_EXPIRED / broadcast_gossip(DEAD)" {
+  style: {
+    stroke: "#D32F2F"
+    stroke-width: 2
+  }
+}
+
+"alive" -> "left": "05: SIGTERM / broadcast_gossip(LEFT)" {
+  style: {
+    stroke: "#7B1FA2"
+    stroke-dash: 2
+  }
+}
+
+"suspect" -> "left": "06: LEAVE_RECV / cancel_timer()" {
+  style: {
+    stroke: "#7B1FA2"
+    stroke-dash: 2
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# ILLEGAL TRANSITIONS (Requirement 5)
+# ---------------------------------------------------------------------------------
+
+"dead" -> "suspect": "ILLEGAL: Tombstone Locked" {
+  style: {
+    stroke: red
+    stroke-dash: 5
+    animated: true
+  }
+  source-arrowhead: cross
+}
+
+"left" -> "alive": "ILLEGAL: Clean Exit Permanent" {
+  style: {
+    stroke: red
+    stroke-dash: 5
+    animated: true
+  }
+  source-arrowhead: cross
+}
+
+# ---------------------------------------------------------------------------------
+# TERMINATION LOGIC
+# ---------------------------------------------------------------------------------
+
+"GC_REAPER": {
+  shape: person
+  label: "Node Reaper Thread\n(Background Sync)"
+  style.fill: "#f0f0f0"
+}
+
+"removed": {
+  shape: cloud
+  label: "Memory Freed\n(Zeroed)"
+  style.stroke-dash: 5
+}
+
+"dead" -> "GC_REAPER": "TTL_EXPIRE [t > 24h]"
+"left" -> "GC_REAPER": "TTL_EXPIRE [t > 1h]"
+"GC_REAPER" -> "removed": "mem_free(node_id)"
+
+# ---------------------------------------------------------------------------------
+# ALGORITHM STATE ANNOTATIONS
+# FIXED: Changed 'near' to a constant value for ELK compatibility.
+# ---------------------------------------------------------------------------------
+
+Annotation: |md
+  ### State Invariants & Guards
+  1. **ALIVE**: `incarnation` must be strictly monotonic $\ge$ last known value.
+  2. **SUSPECT**: Transition triggers local timer $S_{timeout}$. Refutation requires higher incarnation.
+  3. **DEAD**: Node is unreachable; gossip continues for $k$ periods before eviction.
+  4. **LEFT**: Graceful exit; incarnation is incremented to override stale SUSPECT messages.
+| {
+  near: bottom-right
+}
+
+# ---------------------------------------------------------------------------------
+# LAYOUT HINTS
+# ---------------------------------------------------------------------------------
+"start" -- "alive": {style.opacity: 0}
+"alive" -- "suspect": {style.opacity: 0}
+"suspect" -- "dead": {style.opacity: 0}

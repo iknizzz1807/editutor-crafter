@@ -1,0 +1,317 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Thundering Herd: Cache Stampede Prevention
+  Hot key expiration with and without request coalescing
+| {near: top-center}
+row_before: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  scenario_bad: {
+    direction: down
+    label: "WITHOUT Single-Flight (Dangerous)"
+    timeline_bad: {
+      direction: down
+      label: "Timeline: Hot Key Expires"
+      t0_bad: {
+        label: "T=0ms"
+        width: 300
+        code: |'go
+          cache.Set("trending", data, 60s)
+          // ... key sits idle ...
+          // TTL expires at T=60000ms
+        '|
+      }
+      t60_bad: {
+        label: "T=60000ms (Expiration)"
+        width: 300
+        code: |'go
+          // Key expires
+          // 1000 concurrent requests arrive
+          // ALL see cache miss
+        '|
+        style.stroke: red
+        style.fill: "#FFE4E1"
+      }
+      db_storm: {
+        label: "Database Under Attack"
+        width: 300
+        code: |'go
+          // 1000 concurrent DB queries
+          // Query: SELECT * FROM products
+          // Query: SELECT * FROM products  
+          // Query: SELECT * FROM products
+          // ... (997 more identical queries)
+        '|
+        style.stroke: red
+        style.fill: "#FFB6C1"
+        style.font-color: "#8B0000"
+      }
+      result_bad: {
+        shape: diamond
+        label: "OUTCOME"
+        width: 300
+        note: |md
+          **Cache hit rate: 0%**
+          **DB load: 1000x normal**
+          **Latency: 500ms+ (timeouts)**
+          **Likely cascade failure**
+        |
+        style.fill: "#FF6B6B"
+        style.stroke: "#8B0000"
+        style.font-color: white
+      }
+    }
+    timeline_bad: {
+      direction: down
+    }
+    t0_bad -> t60_bad: "60s TTL\nexpires" {
+      style.stroke-dash: 3
+    }
+    t60_bad -> db_storm: "1000 parallel\nDB queries" {
+      style.stroke: red
+      style.stroke-width: 4
+      style.animated: true
+    }
+    db_storm -> result_bad: "DB\noverwhelmed" {
+      style.stroke: red
+      style.stroke-width: 3
+    }
+  }
+  scenario_good: {
+    direction: down
+    label: "WITH Single-Flight (Protected)"
+    timeline_good: {
+      direction: down
+      label: "Timeline: Same Scenario"
+      t0_good: {
+        label: "T=0ms"
+        width: 300
+        code: |'go
+          cache.Set("trending", data, 60s)
+          // Same initial state
+        '|
+      }
+      t60_good: {
+        label: "T=60000ms (Expiration)"
+        width: 300
+        code: |'go
+          // Key expires
+          // 1000 concurrent requests arrive
+          // ALL see cache miss
+          // BUT: SingleFlight activates!
+        '|
+        style.stroke: orange
+        style.fill: "#FFF3E0"
+      }
+      coalescing: {
+        label: "Request Coalescing"
+        width: 300
+        code: |'go
+          // Request #1: acquires lock
+          //   → proceeds to DB query
+          // Request #2-1000: see lock
+          //   → WAIT for #1's result
+          // Only 1 DB query issued!
+        '|
+        style.stroke: green
+        style.fill: "#E8F5E9"
+        style.font-color: "#1B5E20"
+      }
+      result_good: {
+        shape: diamond
+        label: "OUTCOME"
+        width: 300
+        note: |md
+          **Cache hit rate: 99.9%** (after warm)
+          **DB load: 1x normal**
+          **Latency: ~50ms (single query)**
+          **No cascade, graceful recovery**
+        |
+        style.fill: "#4CAF50"
+        style.stroke: "#1B5E20"
+        style.font-color: white
+      }
+    }
+    t0_good -> t60_good: "60s TTL\nexpires" {
+      style.stroke-dash: 3
+    }
+    t60_good -> coalescing: "SingleFlight\ndetects duplicate" {
+      style.stroke: orange
+      style.stroke-width: 2
+    }
+    coalescing -> result_good: "1 query\nserves all" {
+      style.stroke: green
+      style.stroke-width: 3
+    }
+  }
+}
+row_before.scenario_bad -> row_before.scenario_good: "Add\nSingleFlight" {
+  style.stroke-dash: 5
+  style.stroke: "#666"
+}
+row_detail: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  singleflight_impl: {
+    direction: down
+    label: "SingleFlight Implementation (cacheaside/singleflight.go)"
+    struct_sf: {
+      shape: class
+      label: "SingleFlight"
+      -mu: "sync.Mutex"
+      -calls: "map[string]*call"
+      +Do(ctx, key, fn): "(interface{}, error)"
+    }
+    struct_call: {
+      shape: class
+      label: "call"
+      -wg: "sync.WaitGroup"
+      -val: "interface{}"
+      -err: "error"
+      -complete: "bool"
+    }
+    struct_sf -> struct_call: "contains" {
+      style.stroke-dash: 3
+    }
+    flow_sf: {
+      direction: down
+      label: "Request Flow"
+      req1: {
+        label: "Request 1 (First)"
+        code: |'go
+          sf.mu.Lock()
+          c := &call{}
+          c.wg.Add(1)
+          sf.calls[key] = c
+          sf.mu.Unlock()
+          // Execute DB query
+          c.val, c.err = loadFromDB()
+          c.wg.Done()  // Signal waiters
+        '|
+        width: 280
+        style.fill: "#E3F2FD"
+      }
+      req_waiters: {
+        label: "Requests 2-1000 (Waiters)"
+        code: |'go
+          sf.mu.Lock()
+          if c, ok := sf.calls[key]; ok {
+            sf.mu.Unlock()
+            c.wg.Wait()  // Block until done
+            return c.val, c.err
+          }
+        '|
+        width: 280
+        style.fill: "#FFF8E1"
+      }
+    }
+    flow_sf.req1 -> flow_sf.req_waiters: "signals via\nWaitGroup" {
+      style.stroke: green
+      style.stroke-dash: 3
+    }
+  }
+  metrics_comparison: {
+    direction: down
+    label: "Impact Comparison"
+    metrics_table: {
+      shape: sql_table
+      label: "Performance Metrics"
+      m1: "Metric | Without | With"
+      m2: "DB Queries | 1000 | 1"
+      m3: "Cache Writes | 1000 | 1"
+      m4: "Peak Latency | 5000ms | 50ms"
+      m5: "P99 Latency | 3000ms | 55ms"
+      m6: "DB CPU Spike | 95% | 5%"
+      m7: "Failure Risk | HIGH | LOW"
+    }
+    visual: {
+      direction: right
+      label: "Request Distribution"
+      bad_bar: {
+        label: "Without Protection"
+        bar_bad: {
+          shape: rectangle
+          width: 200
+          height: 100
+          style.fill: "linear-gradient(to top, #ff6b6b, #ff0000)"
+        }
+        label_bad: "1000 DB queries\nat same instant"
+      }
+      good_bar: {
+        label: "With SingleFlight"
+        bar_good: {
+          shape: rectangle
+          width: 20
+          height: 100
+          style.fill: "linear-gradient(to top, #81c784, #4caf50)"
+        }
+        label_good: "1 DB query\nserves all"
+      }
+    }
+  }
+}
+row_detail.singleflight_impl -> row_detail.metrics_comparison: "Results in" {
+  style.stroke-dash: 3
+}
+legend: {
+  near: bottom-center
+  direction: right
+  label: "Color Legend"
+  bad_color: {
+    shape: rectangle
+    width: 20
+    height: 20
+    style.fill: "#FF6B6B"
+    style.stroke: "#8B0000"
+  }
+  bad_label: "Danger / Failure Path"
+  good_color: {
+    shape: rectangle
+    width: 20
+    height: 20
+    style.fill: "#4CAF50"
+    style.stroke: "#1B5E20"
+  }
+  good_label: "Safe / Protected Path"
+  warn_color: {
+    shape: rectangle
+    width: 20
+    height: 20
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+  }
+  warn_label: "Decision Point"
+}
+code_example: {
+  near: bottom-center
+  label: "Usage Example (cacheaside/cache_aside.go)"
+  code: |'go
+    func (ca *CacheAside) Get(ctx context.Context, key string, 
+        loadFunc func() (interface{}, error)) (interface{}, error) {
+        // Try cache first
+        cached, err := ca.cache.Get(ctx, key)
+        if err == nil {
+            return cached, nil
+        }
+        // Cache miss - SingleFlight prevents thundering herd
+        return ca.singleFlight.Do(ctx, key, func() (interface{}, error) {
+            // Only ONE goroutine executes this
+            val, err := loadFunc()  // DB query
+            if err != nil {
+                return nil, err
+            }
+            go ca.cache.Set(context.Background(), key, val, ca.defaultTTL)
+            return val, nil
+        })
+    }
+  '|
+  width: 600
+}

@@ -1,0 +1,277 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+title: |'md
+# Client-Side Sharding & Connection Pool Architecture
+**Implementation Specification: Hash-Ring Routing & LIFO Pool Management**
+'|
+title.near: top-center
+title.shape: text
+
+direction: right
+
+# --- DATA STRUCTURES & MEMORY LAYOUTS ---
+
+sharding: {
+  label: "Sharding Layer"
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#E65100"
+    stroke-width: 2
+  }
+
+  hash_ring: {
+    label: "Consistent Hash Ring\nsizeof=1.2MB (16k vnodes)"
+    style.fill: "#FFE0B2"
+    
+    memory_layout: {
+      shape: sql_table
+      "0x00": "Header: Magic + Version" {constraint: "8B"}
+      "0x08": "VNode Count: 16384" {constraint: "8B"}
+      "0x10": "VNodes Array Base Pointer" {constraint: "8B (Orange)"}
+      "0x18": "Sorted Index (uint64 array)" {constraint: "128KB"}
+      
+      style.stroke: orange
+      style.stroke-width: 3
+      style.stroke-dash: 5
+    }
+    memory_layout."0x00".style.fill: "#D1C4E9"
+    memory_layout."0x10".style.fill: "#FFE0B2"
+
+    lookup_logic: {
+      shape: diamond
+      label: "Binary Search Strategy\nFind First vnode.hash >= key.hash\nO(log N)"
+      style.fill: "#FFCC80"
+    }
+  }
+
+  key_routing: {
+    label: "Request Metadata"
+    style.fill: "#FFE0B2"
+    key_hash: "fnv1a(key) = 0x28A1..." {
+      style.fill: "#FFF8E1"
+      style.font: mono
+    }
+    target_node: "Result: Node B" {
+      style.fill: "#C8E6C9"
+      style.bold: true
+      style.double-border: true
+    }
+  }
+}
+
+pool_layer: {
+  label: "Connection Pool Manager"
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#2E7D32"
+  }
+
+  pool_struct: {
+    label: "Pool Configuration Struct\nsizeof=64B (Cache Line)"
+    shape: class
+    - max_idle: "int = 50"
+    - max_open: "int = 100"
+    - idle_timeout: "time.Duration = 5m"
+    + Get(ctx): "(*Conn, error)"
+    + Put(conn): "void"
+    style.fill: "#C8E6C9"
+  }
+
+  pool_b: {
+    label: "Pool[Node B]"
+    style.fill: "#A5D6A7"
+    
+    idle_stack: {
+      label: "LIFO Idle Stack (Hot Cache Path)"
+      tooltip: "Most recently used connection is at top to maximize warm cache"
+      style.fill: "#81C784"
+      
+      conn1: "conn[0xAF12]\nlastUsed: T - 2ms" {
+        style: {
+          fill: "#66BB6A"
+          stroke: white
+          stroke-width: 2
+        }
+      }
+      conn2: "conn[0xBC88]\nlastUsed: T - 45s" {
+        style.fill: "#66BB6A"
+        style.opacity: 0.8
+      }
+      conn_n: "..." {shape: text}
+    }
+    
+    stats: {
+      label: "Runtime State\nActive: 12 | Waiters: 0"
+      style.fill: "#E8F5E9"
+      style.font-size: 10
+    }
+  }
+}
+
+network: {
+  label: "Network Layer (TCP/RESP)"
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#7B1FA2"
+  }
+  
+  tcp_frame: {
+    shape: sql_table
+    "0x00": "Source Port (16b) | Dest Port (16b)" {constraint: "4B"}
+    "0x04": "Sequence Number" {constraint: "4B"}
+    "0x08": "Ack Number" {constraint: "4B"}
+    "0x0C": "Data Offset | Flags | Window" {constraint: "4B"}
+    "0x10": "Checksum | Urgent Pointer" {constraint: "4B"}
+    "0x14": "RESP Payload: *3\r\n$3\r\nSET\r\n..." {constraint: "Variable (Blue)"}
+    
+    style.stroke: "#7B1FA2"
+  }
+  tcp_frame."0x14".style.fill: "#BBDEFB"
+}
+
+node_b: {
+  label: "Cache Node B (v8.0.4)\nPage Boundary: 4KB Aligned"
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1565C0"
+    stroke-width: 4
+  }
+  
+  protocol: {
+    label: "RESP Parser (Zero-Copy)"
+    style.fill: "#BBDEFB"
+  }
+  
+  memory_store: {
+    label: "Main Hash Map"
+    style.fill: "#90CAF9"
+    lru_eviction: {
+      label: "LRU Eviction Index"
+      style: {
+        stroke: red
+        stroke-dash: 2
+      }
+    }
+    data_pages: {
+      label: "Slab Allocator (1MB Pages)"
+      style.multiple: true
+    }
+  }
+}
+
+# --- LOGICAL SEQUENCE FLOW ---
+
+request_flow: {
+  shape: sequence_diagram
+  style.fill: "#F5F5F5"
+
+  client: "Client Application"
+  router: "Sharding Router"
+  pool: "Conn Pool"
+  server: "Redis Node B"
+
+  client -> router: "GetNode(key='user:123')"
+  router -> router: "Calculate Hash (0x28A1)"
+  router -> router: "Binary Search Index (Upper Bound)"
+  router -> client: "Return node_info{id: 'B', addr: '...'}"
+  
+  client -> pool: "GetConnection(ctx)"
+  pool -> pool: "Lock Mutex"
+  pool -> pool: "Pop LIFO Stack (Check idle_timeout)"
+  pool -> client: "return *Conn{id: 0xAF12}"
+  
+  client -> server: "TCP Send [SET user:123 val]"
+  server -> server: "Lock Key Space"
+  server -> server: "Update LRU List"
+  server -> client: "TCP Recv [+OK]"
+  
+  client -> pool: "Release(*Conn)"
+  pool -> pool: "Push LIFO Stack"
+  pool -> pool: "Unlock Mutex"
+}
+
+# --- PHYSICAL PATH CONNECTIONS ---
+
+sharding.key_routing.target_node -> pool_layer.pool_b: "Assigns Target" {
+  style: {
+    stroke: "#E65100"
+    stroke-width: 3
+  }
+}
+
+pool_layer.pool_b.idle_stack.conn1 -> network.tcp_frame: "Binds to Socket" {
+  style: {
+    stroke: "#2E7D32"
+    animated: true
+  }
+}
+
+network.tcp_frame -> node_b.protocol: "Ingress Traffic" {
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 2
+  }
+}
+
+# --- ANNOTATIONS & LEGEND ---
+
+latencies: {
+  label: "Latency Analysis"
+  near: bottom-left
+  style: {
+    fill: "#FFFDE7"
+    stroke: "#F9A825"
+  }
+  
+  table: |'md
+| Operation | Typical Latency | P99 |
+| :--- | :--- | :--- |
+| Hash Calculation | 50ns | 120ns |
+| Ring Lookup | 800ns | 2.5µs |
+| Pool Get (Warm) | 1.2µs | 5µs |
+| Network RTT | 450µs | 1.2ms |
+| Redis Execution | 80µs | 300µs |
+'|
+  table.shape: text
+}
+
+legend: {
+  label: "Diagram Legend"
+  near: bottom-right
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#BDBDBD"
+  }
+
+  path_req: {
+    label: "Solid: Request Path"
+    shape: text
+  }
+  
+  path_resp: {
+    label: "Dashed: Response Path"
+    shape: text
+    style.stroke-dash: 3
+  }
+
+  active_anim: {
+    label: "Animated: Active Traffic"
+    shape: text
+    style.animated: true
+  }
+
+  pointer_note: {
+    label: "Orange: Memory Pointer"
+    shape: text
+    style.font-color: orange
+  }
+}
+
+sharding.hash_ring.lookup_logic -> sharding.key_routing.key_hash: "Map Key" {style.stroke: grey}
+node_b.protocol -> node_b.memory_store: "R/W Ops" {style.stroke: blue}

@@ -1,0 +1,264 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: "Raft Node State Machine (raft.go)"
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+states_row: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  follower: {
+    shape: circle
+    label: "Follower"
+    style: {
+      fill: "#B8D4E3"
+      stroke: "#2E86AB"
+      stroke-width: 3
+      font-color: "#1A5276"
+      bold: true
+      font-size: 18
+    }
+    width: 140
+  }
+  candidate: {
+    shape: circle
+    label: "Candidate"
+    style: {
+      fill: "#F9D56E"
+      stroke: "#E8A838"
+      stroke-width: 3
+      font-color: "#7D5A00"
+      bold: true
+      font-size: 18
+    }
+    width: 140
+  }
+  leader: {
+    shape: circle
+    label: "Leader"
+    style: {
+      fill: "#90EE90"
+      stroke: "#228B22"
+      stroke-width: 3
+      font-color: "#145A32"
+      bold: true
+      font-size: 18
+    }
+    width: 140
+  }
+}
+follower_state: {
+  label: "Follower State Behavior"
+  width: 300
+  style.fill: "#E8F4F8"
+  behavior: |'go
+    // Default state on startup
+    - Respond to RequestVote RPCs
+    - Respond to AppendEntries RPCs
+    - Reset election timer on valid RPC
+    - Forward client requests to leader
+  '|
+}
+candidate_state: {
+  label: "Candidate State Behavior"
+  width: 300
+  style.fill: "#FEF9E7"
+  behavior: |'go
+    // Entered on election timeout
+    - Increment currentTerm
+    - Vote for self (votedFor = self.id)
+    - Send RequestVote to all peers
+    - Collect votes until majority or timeout
+    - Respond to RPCs (may step down)
+  '|
+}
+leader_state: {
+  label: "Leader State Behavior"
+  width: 300
+  style.fill: "#E8F8E8"
+  behavior: |'go
+    // Entered on majority votes
+    - Initialize nextIndex[], matchIndex[]
+    - Send immediate heartbeats
+    - Periodic heartbeat loop
+    - Accept client commands
+    - Advance commitIndex on majority
+  '|
+}
+transitions: {
+  label: "State Transitions"
+  t1: {
+    label: "T1: Election Timeout"
+    width: 380
+    trigger: |'go
+      // electionTimer fires, no valid RPC received
+      if time.Since(lastHeartbeat) > electionTimeout {
+          startElection()  // T1 transition
+      }
+    '|
+    effects: |'go
+      Effects:
+      • currentTerm++
+      • state = Candidate
+      • votedFor = self.id
+      • persist() BEFORE proceeding
+      • Reset election timer
+      • Send RequestVote to all peers
+    '|
+  }
+  t2: {
+    label: "T2: Majority Votes Received"
+    width: 380
+    trigger: |'go
+      // In collectVotes(), after receiving votes
+      if votes >= majority && 
+         state == Candidate && 
+         currentTerm == electionTerm {
+          becomeLeader()  // T2 transition
+      }
+    '|
+    effects: |'go
+      Effects:
+      • state = Leader
+      • Initialize nextIndex[i] = lastLogIndex+1
+      • Initialize matchIndex[i] = 0
+      • Send immediate heartbeats
+      • Start heartbeatLoop()
+      • Commit no-op entry (M5 safety)
+    '|
+  }
+  t3: {
+    label: "T3: Discover Current/Lower Term Leader"
+    width: 380
+    trigger: |'go
+      // In AppendEntries handler
+      if args.Term >= currentTerm {
+          state = Follower  // T3 transition
+          currentTerm = args.Term
+      }
+    '|
+    effects: |'go
+      Effects:
+      • state = Follower
+      • Update currentTerm if higher
+      • Clear votedFor if term changed
+      • Reset election timer
+      • persist() if term changed
+    '|
+  }
+  t4: {
+    label: "T4: Discover Higher Term"
+    width: 380
+    trigger: |'go
+      // In any RPC handler or response
+      if reply.Term > currentTerm ||
+         args.Term > currentTerm {
+          stepDown()  // T4 transition
+      }
+    '|
+    effects: |'go
+      Effects:
+      • currentTerm = higherTerm
+      • state = Follower
+      • votedFor = "" (cleared)
+      • persist() BEFORE responding
+      • Reset election timer
+    '|
+  }
+}
+transition_arrows: {
+  follower_to_candidate: {
+    from_label: "Election Timeout\n(no heartbeat received)"
+    condition: "electionTimer.C fires"
+    side_effect: "term++, vote for self, send RequestVote"
+  }
+  candidate_to_leader: {
+    from_label: "Votes >= Majority\n(including self)"
+    condition: "votes >= (N/2 + 1)"
+    side_effect: "init nextIndex/matchIndex, send heartbeats"
+  }
+  candidate_to_follower: {
+    from_label: "Discover Higher Term\nOR Valid Leader AppendEntries"
+    condition: "args.Term >= currentTerm"
+    side_effect: "update term, reset timer, clear vote if term changed"
+  }
+  leader_to_follower: {
+    from_label: "Discover Higher Term\n(in RPC or response)"
+    condition: "term > currentTerm"
+    side_effect: "update term, step down, clear vote"
+  }
+}
+follower -> candidate: {
+  label: "T1: Election Timeout\n(no valid RPC for electionTimeout)"
+  style: {
+    stroke: "#E74C3C"
+    stroke-width: 2
+    animated: true
+  }
+  source-arrowhead: {
+    shape: triangle
+  }
+}
+candidate -> leader: {
+  label: "T2: Majority Votes\nvotes >= (N/2 + 1)"
+  style: {
+    stroke: "#27AE60"
+    stroke-width: 2
+  }
+  source-arrowhead: {
+    shape: triangle
+  }
+}
+candidate -> follower: {
+  label: "T3: Discover Higher Term\nOR valid AppendEntries"
+  style: {
+    stroke: "#3498DB"
+    stroke-width: 2
+    stroke-dash: 3
+  }
+  source-arrowhead: {
+    shape: triangle
+  }
+}
+leader -> follower: {
+  label: "T4: Discover Higher Term\n(args.Term > currentTerm)"
+  style: {
+    stroke: "#9B59B6"
+    stroke-width: 2
+    stroke-dash: 3
+  }
+  source-arrowhead: {
+    shape: triangle
+  }
+}
+follower_state -> follower: "Entry State" {
+  style.stroke-dash: 3
+  style.stroke: gray
+}
+legend: {
+  near: bottom-center
+  label: "Transition Legend"
+  t1_legend: "T1 (Red Arrow): Election timeout fires, no heartbeat received from leader"
+  t2_legend: "T2 (Green Arrow): Candidate receives votes from majority of cluster"
+  t3_legend: "T3 (Blue Dashed): Candidate discovers higher term or valid leader"
+  t4_legend: "T4 (Purple Dashed): Leader discovers higher term in RPC/response"
+  style: {
+    fill: "#F8F9FA"
+    stroke: "#DEE2E6"
+    font-size: 12
+  }
+}

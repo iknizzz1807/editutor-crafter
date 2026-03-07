@@ -1,0 +1,202 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- GLOBAL CLASSES ---
+classes: {
+  logic_component: {
+    shape: class
+    style: {
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  data_struct: {
+    shape: sql_table
+    style: {
+      fill: "#f8f9fa"
+      stroke: "#212529"
+    }
+  }
+  test_step: {
+    shape: step
+    style: {
+      fill: "#e7f5ff"
+      stroke: "#228be6"
+    }
+  }
+}
+
+title: |md
+  # Convergence Verification Test Flow
+  **System:** Gossip Protocol / Anti-Entropy
+  **Standard:** Implementation-Ready Technical Blueprint
+| {
+  near: top-center
+}
+
+# --- ROW 1: TEST ARCHITECTURE & DATA STRUCTURES ---
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  harness: {
+    shape: class
+    label: "TestHarness (harness_test.go)"
+    -nodes: "[]*TestNode"
+    -transport: "SimulatedTransport"
+    -metrics: "MetricCollector"
+    +Start(clusterSize): "error"
+    +InjectUpdate(nodeID, key, val): "void"
+    +Partition(groups): "void"
+    +Heal(): "void"
+    +VerifyConvergence(timeout): "Result"
+  }
+
+  state_entry: {
+    shape: sql_table
+    label: "struct GossipEntry (state.h)"
+    f0: "0x00 | uint64    | Incarnation"
+    f1: "0x08 | byte[16]  | NodeID"
+    f2: "0x18 | uint32    | Sequence"
+    f3: "0x1C | uint32    | ValueSize"
+    f4: "0x20 | byte*     | ValuePtr"
+    f5: "0x28 | int64     | Timestamp"
+    sz: "Total: 48 bytes (aligned)"
+  }
+}
+
+# --- ROW 2: PROTOCOL INTERNALS ---
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  node_logic: {
+    shape: class
+    label: "TestNode (node.go)"
+    -state: "map[string]GossipEntry"
+    -peers: "[]PeerState"
+    -suspicion: "SuspicionTimer"
+    +OnGossip(packet): "void"
+    +AntiEntropySync(peer): "void"
+    +ProcessFailure(deadID): "void"
+    +ReapDeadNodes(): "int"
+  }
+
+  packet_layout: {
+    shape: sql_table
+    label: "GossipPacket Layout (UDP)"
+    h0: "0x00 | uint8   | Type (Push/Pull/Ack)"
+    h1: "0x01 | uint8   | FanoutFactor"
+    h2: "0x02 | uint16  | PayloadLength"
+    h3: "0x04 | byte[4] | CRC32"
+    p0: "0x08 | byte[]  | CompressedStateDelta"
+    sz: "Max: 1400 bytes (MTU Safe)"
+  }
+}
+
+# --- ROW 3: CONVERGENCE VERIFICATION FLOW ---
+test_flow: "Verification Pipeline" {
+  direction: right
+  
+  step_init: {
+    label: "1. Cluster Init"
+    code: |'go
+      h := NewHarness(10)
+      h.Start() // Nodes 0-9
+      h.WaitMembership(4 * interval)
+    '|
+  }
+
+  step_mutate: {
+    label: "2. Fault Injection"
+    code: |'go
+      h.Partition({0,1,2}, {3,4,5,6,7,8,9})
+      h.InjectUpdate("node-0", "k1", "v1")
+      h.InjectUpdate("node-3", "k1", "v2") 
+    '|
+  }
+
+  step_heal: {
+    label: "3. State Resolution"
+    code: |'go
+      h.Heal() // Resume gossip
+      // Vector clocks / timestamps
+      // resolve v1 vs v2 conflict
+    '|
+  }
+
+  step_verify: {
+    label: "4. Assertions"
+    code: |'go
+      res := h.Verify(30 * time.Second)
+      assert.Equal(t, 10, res.Converged)
+      assert.Less(t, res.Rounds, log2(10)*3)
+    '|
+  }
+
+  step_init -> step_mutate: "Ready"
+  step_mutate -> step_heal: "Partitioned"
+  step_heal -> step_verify: "Healed"
+}
+
+# --- ROW 4: ANALYTICS & REAPER LOGIC ---
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  reaper_logic: {
+    label: "Node Reaper (reaper.c)"
+    width: 380
+    code: |'c
+      for (peer in dead_list) {
+        if (now() - peer->last_seen > DEAD_TTL) {
+          log_info("Reaping node: %s", peer->id);
+          hash_map_delete(peer_list, peer->id);
+          stats.total_reaped++;
+        }
+      }
+    '|
+  }
+
+  metrics: {
+    shape: sql_table
+    label: "Verification Metrics"
+    m1: "ConvergedNodes | count"
+    m2: "ConvergenceTime | ms"
+    m3: "RoundsRequired  | count"
+    m4: "BytesPerNode    | KB/s"
+    m5: "FalsePositives  | count"
+    note: "Scaling Target: O(log N)"
+  }
+}
+
+# --- CONNECTIONS ---
+row1.harness -> row2.node_logic: "Instantiates | 1:N"
+row2.node_logic -> row2.packet_layout: "Serializes | UDP"
+row2.node_logic -> row1.state_entry: "Updates | CRUD"
+
+row1 -> row2: "Data Plane"
+row2 -> test_flow: "Execution"
+test_flow -> row4: "Post-Verification"
+
+# Styling connections
+(row1.harness -> row2.node_logic).style.stroke-dash: 0
+(row2.node_logic -> row1.state_entry).style.stroke: blue
+
+legend: {
+  near: bottom-right
+  class_def: Logic Component {
+    shape: class
+  }
+  struct_def: Memory Layout {
+    shape: sql_table
+  }
+}

@@ -1,0 +1,271 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# --- GLOBAL STYLES & CLASSES ---
+classes: {
+  header_field: {
+    style: {
+      fill: "#A331FF" # Purple
+      stroke: "#553C9A"
+      stroke-width: 2
+      font-color: white
+      bold: true
+    }
+  }
+  data_field: {
+    style: {
+      fill: "#3182CE" # Blue
+      stroke: "#2A4365"
+      stroke-width: 2
+      font-color: white
+    }
+  }
+  free_space: {
+    style: {
+      fill: "#48BB78" # Green
+      stroke: "#22543D"
+      stroke-dash: 3
+      opacity: 0.4
+    }
+  }
+  padding_gray: {
+    style: {
+      fill: "#A0AEC0" # Gray
+      stroke: "#4A5568"
+    }
+  }
+  pointer_orange: {
+    style: {
+      stroke: "#ED8936" # Orange
+      stroke-width: 3
+      font-color: "#7B341E"
+      bold: true
+    }
+  }
+  error_red: {
+    style: {
+      stroke: "#E53E3E"
+      fill: "#FED7D7"
+      font-color: "#C53030"
+      bold: true
+      stroke-dash: 5
+    }
+  }
+  state_node: {
+    style: {
+      border-radius: 10
+      stroke-width: 2
+    }
+  }
+}
+
+# --- 1. MEMORY LAYOUT: RAFT PERSISTENT STATE ---
+raft_node_memory: "Raft Node Persistent State (On-Disk WAL Structure)" {
+  shape: sql_table
+  style: {
+    stroke: "#333"
+    stroke-width: 3
+  }
+  
+  # Offsets | Field Name | Size
+  "0x00": "currentTerm: uint64" {class: header_field; constraint: "8 bytes"}
+  "0x08": "votedFor: int64 (-1 if null)" {class: header_field; constraint: "8 bytes"}
+  
+  # Cache Line Boundary Annotation
+  cache_line_sep: "--------------------- 64B CACHE LINE BOUNDARY ---------------------" {
+    style: { stroke-dash: 5; font-size: 10; stroke: "#718096" }
+  }
+
+  "0x10": "logIndex: uint64 (tail index)" {class: pointer_orange; constraint: "8 bytes"}
+  "0x18": "logData: blob (variable length payload)" {class: data_field; constraint: "N bytes"}
+  "0x...": "padding: byte[4]" {class: padding_gray; constraint: "4 bytes"}
+  "0x...": "checksum: uint32 (CRC32C)" {class: padding_gray; constraint: "4 bytes"}
+  
+  footer: "Total Size: ~Variable (WAL Segment Max 64MB)" {
+    near: bottom-right
+    shape: text
+    style.font-size: 12
+  }
+}
+
+# --- 2. ARCHITECTURE: CONSENSUS MODULE ---
+consensus_module: "Raft Consensus Module (sizeof=128B)" {
+  Consensus: {
+    shape: class
+    state: "currentRole: Role" {class: header_field}
+    term: "currentTerm: uint64" {class: header_field}
+    votedFor: "int64"
+    
+    log: "LogEntries[]" {
+      class: data_field
+    }
+    
+    commitIndex: "uint64" {class: pointer_orange}
+    lastApplied: "uint64" {class: pointer_orange}
+    
+    "+ RequestVote(req: VoteRequest): VoteResponse"
+    "+ AppendEntries(req: AppendRequest): AppendResponse"
+    "+ InstallSnapshot(req: SnapshotRequest): SnapshotResponse"
+  }
+  
+  volatile_state: "Volatile Leader State" {
+    nextIndex: "Map<NodeID, uint64>" {class: pointer_orange}
+    matchIndex: "Map<NodeID, uint64>" {class: pointer_orange}
+  }
+
+  Consensus.log -> volatile_state: "references (leader-only)" {style.stroke-dash: 5}
+}
+
+# --- 3. ALGORITHM: STATE MACHINE ---
+raft_states: "Raft Node Lifecycle & Transitions" {
+  # Theme 6 simulation via manual styles (purple/pink)
+  Follower: {
+    class: state_node
+    style.fill: "#E9D8FD"
+    tooltip: "Responds to RPCs from candidates and leaders"
+  }
+  
+  Candidate: {
+    class: state_node
+    style.fill: "#FBB6CE"
+    style.stroke: "#D53F8C"
+    tooltip: "Increment term, vote for self, gather majority"
+  }
+  
+  Leader: {
+    class: state_node
+    style.fill: "#B2F5EA"
+    style.stroke: "#319795"
+    style.stroke-width: 4
+    tooltip: "Send heartbeats, manage log replication"
+  }
+
+  Follower -> Candidate: "▸ T1: Election Timeout" {
+    style: { font-size: 12; bold: true; stroke: "#805AD5" }
+  }
+  
+  Candidate -> Leader: "▸ T2: Majority of Votes Granted" {
+    style: { font-size: 12; stroke: "#319795"; stroke-width: 2 }
+  }
+  
+  Candidate -> Candidate: "▸ T3: Timeout (Split Vote)" {
+    style: { stroke-dash: 5; font-size: 10 }
+  }
+  
+  Leader -> Follower: "▸ T4: Discover higher Term" {
+    style: { stroke: "#E53E3E"; stroke-width: 2 }
+  }
+  
+  Candidate -> Follower: "▸ T5: Discover higher Term or Leader" {
+    style: { stroke: "#E53E3E"; stroke-dash: 3 }
+  }
+  
+  Leader -> Leader: "Heartbeat Loop" {
+    label: "Send AppendEntries (empty entries)"
+    style.animated: true
+  }
+}
+
+# --- 4. TEST CASE: PARTITION SCENARIOS ---
+test_scenarios: "Partition Test Matrix (TDD Verification)" {
+  grid-columns: 2
+  grid-gap: 20
+  
+  MinorityPartition: "Scenario: Minority Isolation" {
+    description: |md
+      - Nodes {A, B} isolated from {C, D, E}
+      - Term N -> N+1 in Majority Partition
+      - Minority remains at Term N (Leaderless)
+      - **Invariants:** 0 Committed on Minority.
+    |
+    style.fill: "#FED7D7"
+    style.stroke: "#E53E3E"
+  }
+  
+  HealRecovery: "Scenario: Partition Heal" {
+    description: |md
+      - Re-link {A, B} to Cluster
+      - Discover higher Term N+k
+      - Immediate Step Down to Follower
+      - Log match & overwrite uncommitted entries
+    |
+    style.fill: "#C6F6D5"
+    style.stroke: "#38A169"
+  }
+}
+
+# --- 5. COMPONENT: CHAOS CONTROLLER ---
+chaos_controller: "Chaos Controller (System Under Test)" {
+  style.fill: "#F7FAFC"
+  style.stroke: "#CBD5E0"
+  
+  loop: "Chaos Cycle" {
+    step1: "Select Target"
+    step2: "Apply Fault" {
+      style.fill: "#FEB2B2"
+      style.bold: true
+      tooltip: "Kill | Partition | Network Delay"
+    }
+    step3: "Verify State"
+    step4: "Heal & Reset"
+    
+    step1 -> step2 -> step3 -> step4 -> step1
+  }
+  
+  invariant_checker: "Safety Invariant Checker" {
+    election_safety: "Safety: Max 1 Leader / Term" {class: header_field}
+    log_matching: "Liveness: Log Consistency" {class: data_field}
+    leader_completeness: "Commit: Term Overlap" {class: data_field}
+    state_machine_safety: "Execution: Deterministic" {class: data_field}
+  }
+  
+  loop -> invariant_checker: "Continuous Monitoring" {style.stroke: "#3182CE"}
+}
+
+# --- 6. DATA FLOW: REPLICATION ---
+replication_flow: "Sequence: Log Replication (Fig 6)" {
+  shape: sequence_diagram
+  
+  Client: "User Client"
+  Leader: "Raft Leader (Term N)" {style.fill: "#D4EDDA"}
+  Follower: "Raft Follower" {style.fill: "#E2E8F0"}
+  
+  Client -> Leader: "Request: Put(Key, Val)"
+  Leader -> Leader: "Persist to WAL (Uncommitted)"
+  
+  lock_acquire: "▼ mutex.Lock()"
+  Leader -> Follower: "AppendEntries(Term, PrevIdx, [E])"
+  Follower -> Follower: "Verify PrevLogIndex"
+  Follower -> Leader: "ACK (Success=True)"
+  lock_release: "▲ mutex.Unlock()"
+  
+  Leader -> Leader: "Inc commitIndex (Quorum Met)"
+  Leader -> Client: "Response: OK"
+}
+
+# --- LEGEND ---
+legend: "Technical Legend" {
+  near: bottom-left
+  L1: "State/Header" {class: header_field}
+  L2: "Data/Log" {class: data_field}
+  L3: "Indices/Ptrs" {class: pointer_orange}
+  L4: "Invalid/Fault" {class: error_red}
+}
+
+footer_note: |md
+  ## Raft Implementation Requirements
+  - Term/Vote must flush to disk **before** acknowledging RPC.
+  - Snapshotting triggers at log size threshold (e.g., 512MB).
+  - Majority = (N/2) + 1 nodes must respond for commit.
+  - Linearizability: ReadIndex protocol or 50ms leader leases.
+| {
+  near: bottom-right
+  shape: text
+  style.font-size: 14
+}

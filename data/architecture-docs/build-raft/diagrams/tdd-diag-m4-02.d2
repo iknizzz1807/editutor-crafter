@@ -1,0 +1,254 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+
+title: |md
+  # Duplicate Detection Mechanism
+  **Subsystem: Idempotency Engine for Exactly-Once Semantics**
+  *Reference Implementation: Raft/Paxos State Machine Integration*
+| {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 24
+    bold: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 1. MEMORY & DATA LAYOUTS
+# -----------------------------------------------------------------------------
+Memory_Structures: {
+  label: "In-Memory Data Structures (O(1) Access)"
+  
+  ClientCommand: {
+    shape: class
+    label: "ClientCommandArgs (Network Wire Format)"
+    
+    "0x00: ClientId": "string [16B descriptor]"
+    "0x10: SequenceNumber": "int64 [8B]"
+    "0x18: CommandData": "interface{} [16B descriptor]"
+    "0x28: Checksum": "uint32 [4B]"
+    "0x2C: Padding": "byte[4] [Gray]"
+    
+    style: {
+      stroke: "#6B5B95"
+      fill: "#E4DBFE"
+      stroke-width: 2
+    }
+  }
+
+  SessionState: {
+    shape: class
+    label: "ClientSession (State Machine Layout)"
+    
+    "0x00: LastSequence": "int64 [8B]"
+    "0x08: LastResponse": "interface{} [16B descriptor]"
+    "0x18: LastActive": "time.Time [24B]"
+    "0x30: Mutex": "sync.Mutex [8B]"
+    
+    style: {
+      stroke: "#6B5B95"
+      fill: "#E4DBFE"
+      stroke-width: 2
+    }
+  }
+
+  SessionsMap: {
+    label: "kv.sessions\nmap[string]*ClientSession"
+    shape: cylinder
+    style.fill: "#B5AFF6"
+    style.stroke: "#6B5B95"
+  }
+
+  Layout_Note: |md
+    ### Size & Alignment
+    - **Total ClientCommand**: 48 bytes (aligned)
+    - **Total SessionState**: 56 bytes (fits in one 64B cache line)
+    - **Lookup Complexity**: O(1) average case
+  | {
+    shape: text
+    style.font-size: 10
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 2. ALGORITHM STATE TRANSITIONS
+# -----------------------------------------------------------------------------
+Logic_Flow: {
+  label: "Idempotency Filter: State Machine Apply Logic"
+  style: {
+    stroke: "#2E86AB"
+    fill: "#F0F9FF"
+    stroke-width: 2
+  }
+
+  Step1: "1. SM.Apply(LogEntry)" {
+    style.fill: "#C7F1FF"
+    style.stroke: "#2E86AB"
+  }
+  
+  Step2: "2. Decode Payload" {
+    tooltip: "Unwrap ClientCommandArgs from Raft Log"
+    style.fill: "#C7F1FF"
+  }
+
+  Step3: "3. Session Lookup" {
+    tooltip: "map access by clientId"
+    style.fill: "#FFF9C4"
+    style.stroke: "#F9A825"
+    style.bold: true
+  }
+
+  Step4_Decision: {
+    shape: diamond
+    label: "Sequence Check\nargs.seq <= sess.lastSeq?"
+    style.fill: "#ECEFF1"
+  }
+
+  Step5_Dup: "4a. DUPLICATE DETECTED\nLoad session.lastResponse" {
+    style.fill: "#FFCDD2"
+    style.stroke: "#C62828"
+    style.bold: true
+  }
+
+  Step5_New: "4b. NEW COMMAND\nExecute & Update session" {
+    style.fill: "#C8E6C9"
+    style.stroke: "#2E7D32"
+    style.bold: true
+  }
+
+  Step1 -> Step2: "entry.Data"
+  Step2 -> Step3: "args.ClientId"
+  Step3 -> Step4_Decision
+  
+  Step4_Decision -> Step5_Dup: "TRUE" {
+    style.stroke: "#C62828"
+    style.font-color: "#C62828"
+  }
+  
+  Step4_Decision -> Step5_New: "FALSE" {
+    style.stroke: "#2E7D32"
+    style.font-color: "#2E7D32"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 3. IMPLEMENTATION DETAILS
+# -----------------------------------------------------------------------------
+Implementation: {
+  CodeBlock: |go
+    // Internal idempotency check
+    func (kv *KVStore) checkDuplicate(args *ClientCommandArgs) (interface{}, bool) {
+        // Step 3: Lookup
+        session, exists := kv.sessions[args.ClientId]
+        if !exists {
+            return nil, false // New Client
+        }
+        
+        // Step 4: Compare sequence numbers
+        if args.SequenceNumber <= session.LastSequence {
+            // Step 5a: Return cached result
+            return session.LastResponse, true
+        }
+        
+        // Step 5b: Proceed with application
+        return nil, false
+    }
+  | {
+    shape: code
+    style.font-size: 11
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 4. EXECUTION TIMELINE & RETRIES
+# -----------------------------------------------------------------------------
+Timeline: {
+  label: "Protocol Timeline: Handling Network Partitions"
+  
+  T1: "T=0: Request" {
+    shape: circle
+    style.fill: "#E3F2FD"
+  }
+  T2: "T=1: Commit" {
+    shape: circle
+    style.fill: "#E8F5E9"
+  }
+  T3: "T=2: Drop" {
+    shape: circle
+    style.fill: "#FFEBEE"
+  }
+  T4: "T=3: Retry" {
+    shape: circle
+    style.fill: "#E8F5E9"
+  }
+
+  T1_d: "Client sends Put(x,1)\nSeq=5" { shape: text }
+  T2_d: "State Machine Appends\nSession.lastSeq = 5\nSession.lastResp = 'OK'" { shape: text }
+  T3_d: "Response dropped by NIC\nClient triggers retry" { shape: text; style.font-color: red }
+  T4_d: "SM detects duplicate (5 <= 5)\nReturns cached 'OK'\nNo state mutation" { shape: text; style.bold: true }
+
+  T1 -> T1_d: {style.stroke-dash: 2}
+  T2 -> T2_d: {style.stroke-dash: 2}
+  T3 -> T3_d: {style.stroke-dash: 2}
+  T4 -> T4_d: {style.stroke-dash: 2}
+
+  T1 -> T2 -> T3 -> T4
+}
+
+# -----------------------------------------------------------------------------
+# 5. DURABILITY & INVARIANTS
+# -----------------------------------------------------------------------------
+Persistence: {
+  label: "Snapshot Persistence"
+  
+  Snapshot: {
+    label: "Application Snapshot"
+    KV_Store: "User Data (B-Tree)"
+    Session_Table: "Idempotency Metadata"
+    style.fill: "#FFF3E0"
+    style.stroke: "#E65100"
+  }
+  
+  Disk: {
+    shape: cylinder
+    label: "Stable Storage\n(Raft Log + Snapshot)"
+    style.fill: "#EEEEEE"
+  }
+  
+  Snapshot -> Disk: "Binary.Marshal()"
+}
+
+Invariants: {
+  shape: rectangle
+  label: "System Safety Invariants"
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#7B1FA2"
+    border-radius: 8
+  }
+  
+  "Inv_1": "✓ Atomic: Sequence update + Command apply must be one transaction"
+  "Inv_2": "✓ Persistent: Sessions must be included in State Machine snapshots"
+  "Inv_3": "✓ Liveness: Session cleanup (TTL) must not prune active sequence chains"
+}
+
+# -----------------------------------------------------------------------------
+# STRUCTURAL RELATIONSHIPS
+# -----------------------------------------------------------------------------
+Memory_Structures.ClientCommand -> Logic_Flow.Step2: "Input"
+Logic_Flow.Step3 -> Memory_Structures.SessionsMap: "O(1) Access"
+Memory_Structures.SessionsMap -> Memory_Structures.SessionState: "Ref"
+Logic_Flow.Step5_New -> Persistence.Snapshot: "Updates State"
+
+# Global Layout Positioning (Using constant nears supported by ELK)
+Memory_Structures.near: top-left
+Logic_Flow.near: top-right
+Implementation.near: bottom-right
+Timeline.near: center-left
+Persistence.near: bottom-left
+Invariants.near: bottom-center

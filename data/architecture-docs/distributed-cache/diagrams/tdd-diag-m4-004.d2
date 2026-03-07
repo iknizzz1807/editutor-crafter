@@ -1,0 +1,181 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: right
+
+title: |md
+  # Write-Through Atomic Write Sequence
+  Cache-first write with DB sync and rollback on failure
+| {near: top-center}
+
+classes: {
+  participant: {
+    shape: rectangle
+    width: 140
+    height: 60
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2563EB"
+      stroke-width: 2
+      font-size: 14
+      bold: true
+    }
+  }
+  success_arrow: {
+    style: {
+      stroke: "#22C55E"
+      stroke-width: 2
+      animated: true
+    }
+  }
+  error_arrow: {
+    style: {
+      stroke: "#EF4444"
+      stroke-width: 2
+      stroke-dash: 4
+    }
+  }
+  rollback_arrow: {
+    style: {
+      stroke: "#F97316"
+      stroke-width: 2
+      stroke-dash: 4
+    }
+  }
+  note_box: {
+    shape: rectangle
+    style: {
+      fill: "#FEF3C7"
+      stroke: "#D97706"
+      stroke-width: 1
+      font-size: 11
+    }
+  }
+  state_box: {
+    shape: rectangle
+    style: {
+      fill: "#F3E8FF"
+      stroke: "#9333EA"
+      stroke-width: 1
+      font-size: 11
+    }
+  }
+}
+
+# Participants defined at root to be shared actors across all sequence blocks
+Client: "Client\n(Application)" {class: participant}
+Cache: "Cache\n(Memory)" {class: participant}
+DB: "Database\n(Durable)" {class: participant}
+
+# Success Flow Section
+success_section: "SUCCESS PATH" {
+  style.fill: "#F0FDF4"
+  style.stroke: "#22C55E"
+  style.stroke-width: 2
+
+  s1: "Step 1: SET Request" {
+    shape: sequence_diagram
+    Client.s1 -> Cache.s1: "SET key=\"user:123\"\nvalue=\"alice\"" {class: success_arrow}
+    Cache.s1.note: "Write to cache\n(T=0ms)" {class: note_box}
+  }
+  s2: "Step 2: Cache Write Success" {
+    shape: sequence_diagram
+    Cache.s2.state: "cache[key] = \"alice\"\nTTL = 3600s" {class: state_box}
+    Cache.s2 -> Cache.s2: "✓ Cache updated" {style.stroke: "#22C55E"}
+  }
+  s3: "Step 3: DB Write" {
+    shape: sequence_diagram
+    Cache.s3 -> DB.s3: "INSERT/UPDATE\nkey=\"user:123\"\nvalue=\"alice\"" {class: success_arrow}
+    DB.s3.note: "Persist to storage\n(T=5-50ms)" {class: note_box}
+  }
+  s4: "Step 4: DB Success" {
+    shape: sequence_diagram
+    DB.s4 -> Cache.s4: "✓ ACK" {class: success_arrow}
+    Cache.s4.state: "Sync complete\nCache & DB consistent" {class: state_box}
+  }
+  s5: "Step 5: Client ACK" {
+    shape: sequence_diagram
+    Cache.s5 -> Client.s5: "+OK" {class: success_arrow}
+    Client.s5.note: "Write acknowledged\nTotal: ~10-60ms" {class: note_box}
+  }
+}
+
+# Failure Flow Section  
+failure_section: "FAILURE & ROLLBACK PATH" {
+  style.fill: "#FEF2F2"
+  style.stroke: "#EF4444"
+  style.stroke-width: 2
+
+  f1: "Step 1: SET Request" {
+    shape: sequence_diagram
+    Client.f1 -> Cache.f1: "SET key=\"user:456\"\nvalue=\"bob\"" {class: success_arrow}
+    Cache.f1.note: "Write to cache\n(T=0ms)" {class: note_box}
+  }
+  f2: "Step 2: Cache Write Success" {
+    shape: sequence_diagram
+    Cache.f2.state: "cache[key] = \"bob\"\nTTL = 3600s" {class: state_box}
+    Cache.f2 -> Cache.f2: "✓ Cache updated" {style.stroke: "#22C55E"}
+  }
+  f3: "Step 3: DB Write Attempt" {
+    shape: sequence_diagram
+    Cache.f3 -> DB.f3: "INSERT/UPDATE\nkey=\"user:456\"\nvalue=\"bob\"" {class: error_arrow}
+    DB.f3.note: "Connection timeout\nor constraint violation\n(T=timeout)" {class: note_box}
+  }
+  f4: "Step 4: DB Failure" {
+    shape: sequence_diagram
+    DB.f4 -> Cache.f4: "✗ ERR: write failed" {class: error_arrow}
+    Cache.f4.state: "INCONSISTENT STATE\nCache has value\nDB does NOT" {class: state_box; style.fill: "#FEE2E2"}
+  }
+  f5: "Step 5: Rollback Triggered" {
+    shape: sequence_diagram
+    Cache.f5 -> Cache.f5: "DELETE key=\"user:456\"" {class: rollback_arrow}
+    Cache.f5.note: "Remove from cache\nRestore consistency" {class: note_box}
+  }
+  f6: "Step 6: Rollback Complete" {
+    shape: sequence_diagram
+    Cache.f6.state: "Cache: EMPTY\nDB: UNCHANGED\nConsistent!" {class: state_box}
+    Cache.f6 -> Client.f6: "-ERR write failed" {class: error_arrow}
+    Client.f6.note: "Client receives error\nCan retry operation" {class: note_box}
+  }
+}
+
+# Critical Error Path
+critical_section: "CRITICAL: ROLLBACK FAILURE" {
+  style.fill: "#FFF7ED"
+  style.stroke: "#F97316"
+  style.stroke-width: 2
+
+  c1: "If Rollback Also Fails" {
+    shape: sequence_diagram
+    Cache.c1 -> Cache.c1: "DELETE key..." {class: error_arrow}
+    Cache.c1.x: "✗ ERR: delete failed" {style.stroke: "#EF4444"; style.font-color: "#EF4444"}
+    Cache.c1.state: "CRITICAL STATE\nCache: HAS value\nDB: NO value\nMANUAL FIX REQUIRED" {class: state_box; style.fill: "#FED7AA"; style.font-color: "#C2410C"}
+    Cache.c1 -> Client.c1: "-ERR CRITICAL:\nrollback failed" {class: error_arrow}
+  }
+}
+
+# Connect sections visually for ELK ordering
+success_section -> failure_section -> critical_section {style.opacity: 0}
+
+# Legend - Positioned at Root
+legend: {
+  near: bottom-center
+  style.fill: white
+  style.stroke: "#94A3B8"
+  success: "──► Success" {style.stroke: "#22C55E"; style.font-size: 12}
+  error: "- -► Error/Failure" {style.stroke: "#EF4444"; style.font-size: 12; style.stroke-dash: 4}
+  rollback: "- -► Rollback" {style.stroke: "#F97316"; style.font-size: 12; style.stroke-dash: 4}
+}
+
+# Timing annotation - Positioned at Root
+timing: |md
+  **Latency Breakdown:**
+  - Cache write: ~0.1-1ms (in-memory)
+  - DB write: ~5-50ms (disk/network)
+  - Rollback: ~0.1-1ms (cache delete)
+  - **Total success: 2x DB latency** (cache + DB)
+| {near: bottom-right; shape: rectangle; style.fill: "#F8FAFC"; style.stroke: "#CBD5E1"}

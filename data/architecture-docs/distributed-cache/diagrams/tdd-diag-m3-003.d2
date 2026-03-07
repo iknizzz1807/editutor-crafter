@@ -1,0 +1,336 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+direction: right
+
+title: |md
+# Heartbeat Failure Detection Timing
+**Technical Specification**: State transitions based on missed heartbeats, threshold logic, and byte-level packet structure.
+Designed for implementation of a distributed failure detector (e.g., Gossip-style or Phi-Accrual).
+| {
+  near: top-center
+  style: {
+    font-size: 24
+    bold: true
+  }
+}
+
+# 1. MEMORY LAYOUT: HEARTBEAT PACKET
+# Intel-quality spec: Fixed-width fields, offsets, and logical grouping.
+# Purple=Header, Blue=Data, Gray=Padding
+heartbeat_packet: {
+  label: "Network Packet Specification (Big-Endian)"
+  shape: sql_table
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#7B1FA2"
+    stroke-width: 2
+    shadow: true
+  }
+  
+  # Row definitions fixed to comply with D2 sql_table requirements
+  # Columns: Field Name (Key), Type/Description (Type), Constraint (Constraint)
+  
+  off_00: "Version (8-bit)" {
+    constraint: "HEADER"
+    style.fill: "#D1C4E9"
+  }
+  off_01: "NodeID (16-bit)" {
+    constraint: "HEADER"
+    style.fill: "#D1C4E9"
+  }
+  off_03: "SequenceNumber (32-bit)" {
+    constraint: "DATA"
+    style.fill: "#BBDEFB"
+  }
+  off_07: "Checksum (8-bit)" {
+    constraint: "PADDING"
+    style.fill: "#E0E0E0"
+  }
+}
+
+# 2. CONFIGURATION PARAMETERS
+# Used by engineers to tune the detection sensitivity vs. false positive rate.
+config: {
+  label: "Detection Threshold Configuration"
+  shape: rectangle
+  style: {
+    fill: "#F5F5F5"
+    stroke: "#424242"
+    stroke-width: 2
+    border-radius: 8
+  }
+  
+  hb_interval: |md
+  ### T_hb: Interval
+  - **Value**: 100ms
+  - **Spec**: Expected periodicity of UDP packets.
+  |
+  
+  suspect_timeout: |md
+  ### T_s: Suspect
+  - **Value**: 200ms
+  - **Logic**: $2 \times T_{hb}$
+  - **Action**: Deprioritize routing.
+  |
+  
+  fail_timeout: |md
+  ### T_f: Failure
+  - **Value**: 500ms
+  - **Logic**: $5 \times T_{hb}$
+  - **Action**: Trigger failover.
+  |
+}
+
+# 3. SEQUENCE DIAGRAM: TIMING FLOW
+# Detailed event-log of a node transitioning through failure states.
+timeline: {
+  shape: sequence_diagram
+  label: "Failure Detection Timing Event Log"
+  
+  # Participants (Time Slices)
+  T0: 0ms
+  T100: 100ms
+  T200: 200ms
+  T300: 300ms
+  T500: 500ms
+  T_Recovery: >800ms
+
+  T0 -> T100: "Rx Heartbeat #101 (OK)" {
+    style: {
+      stroke: "#2E7D32"
+      stroke-width: 2
+    }
+  }
+  
+  T100 -> T200: "WAIT: Expected HB #102" {
+    style: {
+      stroke: "#F57C00"
+      stroke-dash: 3
+    }
+  }
+  
+  # MISS event leading to Suspect state
+  T200 -> T300: "MISS #1: Threshold T_s Reached" {
+    style: {
+      stroke: "#C62828"
+      stroke-width: 3
+      animated: true
+    }
+  }
+  
+  T300 -> T500: "MISS #2-#4: Progressive Accumulation" {
+    style: {
+      stroke: "#D32F2F"
+      stroke-dash: 2
+    }
+  }
+  
+  # Total failure declared
+  T500 -> T_Recovery: "TIMEOUT: Threshold T_f Reached" {
+    style: {
+      stroke: "#B71C1C"
+      stroke-width: 6
+    }
+  }
+  
+  note: |md
+    **State: DEAD**
+    Node evicted from
+    active membership.
+  | {
+    near: T500
+  }
+}
+
+# 4. STATE MACHINE: NODE HEALTH LIFECYCLE
+# State invariants and valid/invalid transitions.
+fsm: {
+  label: "Node Health State Machine"
+  style.fill: "#FAFAFA"
+  
+  healthy: HEALTHY {
+    shape: circle
+    style: {
+      fill: "#A5D6A7"
+      stroke: "#2E7D32"
+      stroke-width: 3
+      bold: true
+      shadow: true
+    }
+  }
+  
+  suspect: SUSPECT {
+    shape: circle
+    style: {
+      fill: "#FFF59D"
+      stroke: "#FBC02D"
+      stroke-width: 2
+      bold: true
+    }
+  }
+  
+  unhealthy: UNHEALTHY {
+    shape: circle
+    style: {
+      fill: "#FFCC80"
+      stroke: "#EF6C00"
+      stroke-width: 2
+      bold: true
+    }
+  }
+  
+  dead: DEAD {
+    shape: circle
+    style: {
+      fill: "#EF9A9A"
+      stroke: "#C62828"
+      stroke-width: 4
+      bold: true
+      font-color: "#B71C1C"
+    }
+  }
+
+  # Transitions with Guards (Step-by-step logic)
+  healthy -> suspect: "t > 200ms" {
+    source-arrowhead: triangle
+    style.stroke-dash: 3
+  }
+  suspect -> unhealthy: "t > 350ms"
+  unhealthy -> dead: "t > 500ms" {
+    style: {
+      stroke: "#B71C1C"
+      stroke-width: 3
+    }
+  }
+  
+  # ILLEGAL transition for validation
+  dead -> suspect: "ILLEGAL" {
+    style: {
+      stroke: red
+      stroke-dash: 5
+    }
+  }
+  
+  # Recovery Logic (Reset to Healthy)
+  suspect -> healthy: "Valid Packet Rx" {
+    style: {
+      stroke: "#2E7D32"
+      animated: true
+      stroke-width: 2
+    }
+  }
+  unhealthy -> healthy: "Valid Packet Rx" {
+    style: {
+      stroke: "#2E7D32"
+      animated: true
+    }
+  }
+}
+
+# 5. LOGIC FLOW: THRESHOLD COMPARATOR
+# Hardware/Kernel level representation of the detector logic.
+logic: {
+  label: "Comparator Logic (Pseudo-code implementation)"
+  direction: right
+  
+  ts: {shape: diamond; label: "Last Heartbeat\nTimestamp (ms)"}
+  
+  accumulator: {
+    shape: rectangle
+    label: "Accumulator\nΔt = Now() - ts"
+    style: {
+      fill-pattern: lines
+      fill: "#E1F5FE"
+    }
+  }
+  
+  ts -> accumulator: "Clock Cycle"
+  
+  cmp_s: {
+    shape: parallelogram
+    label: "IF Δt >= 200ms"
+  }
+  
+  cmp_f: {
+    shape: parallelogram
+    label: "IF Δt >= 500ms"
+  }
+  
+  accumulator -> cmp_s
+  cmp_s -> cmp_f: "True"
+  
+  emit_suspect: "EVENT: SUSPECT" {
+    style: {
+      fill: "#FFF176"
+      bold: true
+    }
+  }
+  
+  emit_dead: "EVENT: DEAD" {
+    style: {
+      fill: "#E57373"
+      bold: true
+    }
+  }
+  
+  cmp_s -> emit_suspect: "Interrupt"
+  cmp_f -> emit_dead: "Kernel Panic / Evict"
+}
+
+# 6. RULES AND STATISTICAL MODELS
+# Truth table for engineers to verify logic.
+rules: {
+  label: "State Transition Truth Table"
+  style.fill: "#F5F5F5"
+  content: ||md
+| Current State | Transition Condition | Target State | Priority | Node Visibility |
+|---------------|----------------------|--------------|----------|-----------------|
+| **HEALTHY**   | Δt > 100ms           | **SUSPECT**  | 3 (Low)  | Full            |
+| **SUSPECT**   | Δt > 250ms           | **UNHEALTHY**| 2 (Med)  | Limited         |
+| **UNHEALTHY** | Δt > 500ms           | **DEAD**     | 1 (High) | None            |
+| **DEAD**      | Admin Manual Reset   | **HEALTHY**  | 0 (Crit) | Initializing    |
+||
+}
+
+# Advanced extension for Phi Accrual Detection
+phi_extension: {
+  label: "Statistical Extension: Phi Accrual Detection"
+  style: {
+    fill: "#EDE7F6"
+    stroke: "#5E35B1"
+    border-radius: 5
+  }
+  content: |md
+  **Phi Value Implementation**:
+  Mathematical model for adaptive network detection.
+  
+  $\phi(t) = -\log_{10}(P_{later}(t))$
+  
+  - **Adaptivity**: Windowed mean and variance calculation of inter-arrival times.
+  - **Threshold**: $\phi > 8$ (Default for production environments).
+  - **Benefit**: Zero-config adaptation to high jitter / WiFi interference.
+  |
+}
+
+# Legend for Iconography
+legend: {
+  label: "Visual Encoding Key"
+  style.fill: "#FFFFFF"
+  l1: "● HEALTHY (Green)" {style.font-color: "#2E7D32"}
+  l2: "● SUSPECT (Yellow)" {style.font-color: "#FBC02D"}
+  l3: "● UNHEALTHY (Orange)" {style.font-color: "#E65100"}
+  l4: "● DEAD (Red)" {style.font-color: "#C62828"}
+}
+
+# 7. STRUCTURAL HINTS
+config -> fsm: "Configures Thresholds" {style.stroke-dash: 4}
+logic -> fsm: "Triggers State"
+fsm -> rules: "Governed By"
+rules -> phi_extension: "Model Extension"
+heartbeat_packet -> logic: "Raw Data Ingest"

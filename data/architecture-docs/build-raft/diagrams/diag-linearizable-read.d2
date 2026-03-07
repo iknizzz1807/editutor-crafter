@@ -1,0 +1,236 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# Header Section
+title_container: {
+  style.stroke: transparent
+  style.fill: transparent
+  title: "Linearizable Read via ReadIndex Protocol" {
+    shape: text
+    style: {
+      font-size: 28
+      bold: true
+      underline: true
+    }
+  }
+}
+
+# High-Level Sequence Logic
+row_seq: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  seq: {
+    shape: sequence_diagram
+    label: "Protocol Message Flow (raft.go)"
+    
+    client: Client {
+      shape: person
+      style.fill: "#E8F5E9"
+    }
+    leader: Leader {
+      style.fill: "#BBDEFB"
+    }
+    sm: State Machine {
+      shape: cylinder
+      style.fill: "#FFF9C4"
+    }
+
+    client -> leader: "Read(key)"
+    leader -> leader: "Record readIndex = commitIndex"
+    leader -> followers: "Heartbeat (leadership check)"
+    followers -> leader: "ACK (majority reached)"
+    leader -> sm: "Wait until lastApplied >= readIndex"
+    sm -> leader: "Value at index"
+    leader -> client: "Response(value)"
+  }
+}
+
+# Implementation Details Rows
+row_implementation: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  f1_group: {
+    label: "Phase 1: Recording Commit Point"
+    style.fill: "#F3E5F5"
+    
+    step1: {
+      label: "Request & ReadIndex Capture"
+      width: 350
+      code: |'go
+        func (rf *RaftNode) ReadIndex() (int, error) {
+          rf.mu.Lock()
+          if rf.state != Leader {
+            rf.mu.Unlock()
+            return 0, ErrNotLeader
+          }
+          ri := rf.commitIndex // Capture current state
+          rf.mu.Unlock()
+          return ri, nil
+        }
+      '|
+    }
+  }
+
+  f2_group: {
+    label: "Phase 2: Quorum Confirmation"
+    style.fill: "#E1F5FE"
+
+    step2: {
+      label: "Heartbeat Majority Check"
+      width: 350
+      code: |'go
+        func (rf *RaftNode) checkQuorum() bool {
+          acks := 1 // self
+          needed := (len(rf.peers)/2) + 1
+          for _, p := range rf.peers {
+            go func(id int) {
+              if rf.sendHeartbeat(id) { 
+                ackChan <- struct{}{} 
+              }
+            }(p)
+          }
+          return rf.waitQuorum(acks, needed)
+        }
+      '|
+    }
+  }
+}
+
+row_phases_2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  f3_group: {
+    label: "Phase 3: State Machine Catch-up"
+    style.fill: "#FFFDE7"
+
+    step3: {
+      label: "Wait for Apply"
+      width: 350
+      code: |'go
+        func (rf *RaftNode) waitApply(ri int) {
+          rf.mu.Lock()
+          for rf.lastApplied < ri {
+            // Wait for apply loop to signal
+            rf.applyCond.Wait()
+          }
+          rf.mu.Unlock()
+        }
+      '|
+    }
+  }
+
+  logic_note: {
+    label: "Quorum Proof"
+    width: 350
+    content: |'text
+      Linearizability Guard:
+      If a majority confirms leadership 
+      at T_now, then no other node 
+      could have been elected leader 
+      for the same or higher term 
+      without seeing the entries 
+      committed at readIndex.
+    '|
+  }
+}
+
+# Logic Analysis Section
+row_why: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  why_box: {
+    label: "Failure Scenario Without Quorum Check"
+    style.fill: "#FFEBEE"
+    problem: {
+      label: "The Split-Brain Stale Read"
+      width: 720
+      scenario: |'text
+        1. Cluster [A, B, C, D, E] with Leader A.
+        2. Partition: [A] | [B, C, D, E].
+        3. [B, C, D, E] elects B as Leader for Term+1.
+        4. B commits new write {x: 10}.
+        5. Client sends read {x} to A (unaware of partition).
+        6. A (deposed) returns old value {x: 5} because it thinks it is still leader.
+        RESULT: Stale read violates Linearizability.
+      '|
+    }
+  }
+}
+
+# Comparative Analysis
+row_alt: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  alt_approach: {
+    label: "Comparison: ReadIndex vs No-Op Log Entry"
+    style.fill: "#E8F5E9"
+    direction: right
+
+    noop_logic: {
+      label: "Alternative: No-Op Commit"
+      width: 350
+      code: |'go
+        // Simplified but heavier
+        func (rf *RaftNode) ReadNoOp() {
+          entry := LogEntry{Type: NoOp}
+          index := rf.startLog(entry)
+          rf.waitFor(index) // Full RTT + Disk
+          return rf.sm.Get(key)
+        }
+      '|
+    }
+
+    comparison: {
+      label: "Performance Trade-offs"
+      table: |"md
+        | Metric | ReadIndex Protocol | No-Op Commit |
+        | :--- | :--- | :--- |
+        | I/O | Memory only (no disk) | Disk Write (Log) |
+        | Traffic | Tiny Heartbeat (Ack) | Full Log Replication |
+        | Latency | 1 Network RTT | Disk Sync + RTT |
+        
+        ReadIndex is standard in production Raft 
+        (Etcd, TiKV) because it avoids the 
+        heavy cost of disk I/O for read-only ops.
+      "|
+    }
+  }
+}
+
+# Global Summary
+footer: {
+  label: "Implementation Checklist"
+  near: bottom-center
+  width: 750
+  style: {
+    fill: "#ECEFF1"
+    stroke: "#607D8B"
+    stroke-width: 2
+  }
+  checklist: |'text
+    - [ ] Leader must check 'rf.state == Leader' after recording readIndex.
+    - [ ] Quorum check MUST involve a fresh heartbeat exchange.
+    - [ ] State machine must signal via sync.Cond when lastApplied is incremented.
+    - [ ] If leadership is lost during wait, client must be redirected.
+  '|
+}
+
+# Global Arrows for Logic Flow
+f1_group.step1 -> f2_group.step2: "Capture Ri"
+f2_group.step2 -> f3_group.step3: "Quorum OK"
+f3_group.step3 -> footer: "Linearizable"

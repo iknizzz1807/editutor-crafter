@@ -1,0 +1,586 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+# ============================================================================
+# ROW 1: CORE DATA STRUCTURES & SINGLE NODE CACHE (M1)
+# ============================================================================
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  # --------------------------------------------------------------------------
+  # Layer: Entry & Config Types
+  # --------------------------------------------------------------------------
+  layer_types: {
+    direction: down
+    label: "CORE TYPES  cache/01-02"
+    entry: {
+      shape: sql_table
+      label: "struct Entry (entry.go)  [M1]"
+      key: "[]byte | lookup key"
+      value: "[]byte | cached data"
+      created_at: "time.Time | creation ts"
+      expires_at: "time.Time | TTL (zero=none)"
+      recency: "time.Time | LFU tie-break"
+      size: "int64 | total bytes"
+      prev: "*Entry | LRU list"
+      next: "*Entry | LRU list"
+      frequency: "uint64 | LFU count"
+      sz: "Total: ~120 bytes"
+    }
+    config: {
+      shape: sql_table
+      label: "struct Config (cache.go)  [M1]"
+      max_size_bytes: "int64 | REQUIRED > 0"
+      eviction_policy: "EvictionPolicy | LRU/LFU"
+      shards: "int | power of 2 or 1"
+      cleanup_interval: "time.Duration | 0=disabled"
+    }
+  }
+  # --------------------------------------------------------------------------
+  # Layer: Cache Shard
+  # --------------------------------------------------------------------------
+  layer_shard: {
+    direction: down
+    label: "CACHE SHARD  cache/03"
+    cache_shard: {
+      shape: class
+      label: "cacheShard  [M1-M4]"
+      -mu: "sync.RWMutex"
+      -entries: "map[string]*Entry"
+      -size: "int64"
+      -maxSize: "int64"
+      -policy: "EvictionPolicy"
+      -head: "*Entry | LRU MRU"
+      -tail: "*Entry | LRU LRU"
+      -buckets: "map[uint64]*FrequencyBucket"
+      -minBucket: "*FrequencyBucket"
+      +get(key): "([]byte, bool)"
+      +set(key, value, ttl): "error"
+      +delete(key): "bool"
+      +evict(): "void"
+    }
+  }
+  # --------------------------------------------------------------------------
+  # Layer: Frequency Bucket (LFU)
+  # --------------------------------------------------------------------------
+  layer_lfu: {
+    direction: down
+    label: "LFU BUCKETS  cache/05"
+    freq_bucket: {
+      shape: sql_table
+      label: "struct FrequencyBucket (entry.go)  [M1]"
+      frequency: "uint64 | access count"
+      entries: "*Entry | head of list"
+      prev: "*FrequencyBucket"
+      next: "*FrequencyBucket"
+      sz: "Total: 32 bytes"
+    }
+  }
+}
+# ============================================================================
+# ROW 2: DISTRIBUTED ROUTING & HASH RING (M2)
+# ============================================================================
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  # --------------------------------------------------------------------------
+  # Layer: Hash Ring Types
+  # --------------------------------------------------------------------------
+  layer_ring_types: {
+    direction: down
+    label: "HASH RING TYPES  hashring/01-02"
+    virtual_node: {
+      shape: sql_table
+      label: "struct VirtualNode (types.go)  [M2]"
+      hash: "uint32 | ring position"
+      node_id: "string | parent ref"
+      node_weight: "int | capacity hint"
+      sz: "Total: ~40 bytes"
+    }
+    physical_node: {
+      shape: sql_table
+      label: "struct PhysicalNode (types.go)  [M2]"
+      id: "string | unique identifier"
+      address: "string | host:port"
+      weight: "int | capacity multiplier"
+      metadata: "map[string]string"
+      sz: "Total: ~80 bytes"
+    }
+  }
+  # --------------------------------------------------------------------------
+  # Layer: Hash Ring
+  # --------------------------------------------------------------------------
+  layer_ring: {
+    direction: down
+    label: "HASH RING  hashring/03-06"
+    hash_ring: {
+      shape: class
+      label: "HashRing  [M2]"
+      -hasher: "Hasher"
+      -vnodes: "[]VirtualNode | sorted"
+      -vnodesByNode: "map[string][]int"
+      -nodes: "map[string]*PhysicalNode"
+      -vnodeCount: "int"
+      -mu: "sync.RWMutex"
+      +AddNode(node): "error"
+      +RemoveNode(nodeID): "error"
+      +GetNode(key): "(*PhysicalNode, error)"
+      +GetNodes(key, count): "([]*PhysicalNode, error)"
+    }
+  }
+  # --------------------------------------------------------------------------
+  # Layer: Hasher Interface
+  # --------------------------------------------------------------------------
+  layer_hasher: {
+    direction: down
+    label: "HASHER  hashring/01"
+    hasher: {
+      shape: class
+      label: "Hasher interface  [M2]"
+      +Hash(data []byte): "uint32"
+    }
+    fnv1a: {
+      shape: class
+      label: "FNV1aHasher  [M2]"
+      +Hash(data []byte): "uint32"
+    }
+  }
+}
+# ============================================================================
+# ROW 3: REPLICATION & FAILOVER (M3)
+# ============================================================================
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  # --------------------------------------------------------------------------
+  # Layer: Replication Types
+  # --------------------------------------------------------------------------
+  layer_repl_types: {
+    direction: down
+    label: "REPLICATION TYPES  replication/01"
+    node_info: {
+      shape: sql_table
+      label: "struct NodeInfo (types.go)  [M3]"
+      id: "string"
+      address: "string"
+      is_alive: "bool"
+      is_primary: "bool"
+      last_sync: "time.Time"
+      sync_offset: "int64"
+      sz: "Total: ~80 bytes"
+    }
+    node_status: {
+      shape: sql_table
+      label: "NodeStatus enum  [M3]"
+      healthy: "0 | receiving heartbeats"
+      suspect: "1 | missed 1-2 beats"
+      unhealthy: "2 | likely down"
+      dead: "3 | declared failed"
+    }
+  }
+  # --------------------------------------------------------------------------
+  # Layer: Failure Detection
+  # --------------------------------------------------------------------------
+  layer_detector: {
+    direction: down
+    label: "FAILURE DETECTION  replication/02-03"
+    failure_detector: {
+      shape: class
+      label: "FailureDetector  [M3]"
+      -config: "DetectorConfig"
+      -nodes: "map[string]*NodeHealth"
+      -mu: "sync.RWMutex"
+      +RecordHeartbeat(nodeID): "void"
+      +CheckAllNodes(): "[]string"
+      +GetNodeStatus(nodeID): "NodeStatus"
+    }
+    phi_detector: {
+      shape: class
+      label: "PhiAccrualDetector  [M3]"
+      -config: "PhiConfig"
+      -nodeStats: "map[string]*IntervalStats"
+      -mu: "sync.RWMutex"
+      +RecordHeartbeat(nodeID): "void"
+      +Phi(nodeID): "float64"
+    }
+  }
+  # --------------------------------------------------------------------------
+  # Layer: Leader Lease
+  # --------------------------------------------------------------------------
+  layer_lease: {
+    direction: down
+    label: "LEADER LEASE  replication/04"
+    leader_lease: {
+      shape: class
+      label: "LeaderLease  [M3]"
+      -nodeID: "string"
+      -expiresAt: "time.Time"
+      -leaseDuration: "time.Duration"
+      -stopRenewal: "chan struct{}"
+      +Acquire(): "bool"
+      +Renew(): "bool"
+      +StartAutoRenew(): "void"
+      +StopAutoRenew(): "void"
+      +IsValid(): "bool"
+    }
+  }
+  # --------------------------------------------------------------------------
+  # Layer: Replication Group
+  # --------------------------------------------------------------------------
+  layer_group: {
+    direction: down
+    label: "REPLICATION GROUP  replication/05"
+    repl_group: {
+      shape: class
+      label: "ReplicationGroup  [M3]"
+      -id: "string"
+      -nodes: "[]*NodeInfo"
+      -primary: "*NodeInfo"
+      -secondaries: "[]*NodeInfo"
+      -replicationFactor: "int"
+      -quorumSize: "int"
+      -mu: "sync.RWMutex"
+      +CanFailover(): "bool"
+      +Failover(deadNodeID): "(*NodeInfo, error)"
+    }
+  }
+}
+# ============================================================================
+# ROW 4: CACHE PATTERNS & STAMPEDE PREVENTION (M4)
+# ============================================================================
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  # --------------------------------------------------------------------------
+  # Layer: SingleFlight
+  # --------------------------------------------------------------------------
+  layer_singleflight: {
+    direction: down
+    label: "SINGLEFLIGHT  patterns/01"
+    singleflight: {
+      shape: class
+      label: "SingleFlight  [M4]"
+      -mu: "sync.Mutex"
+      -calls: "map[string]*call"
+      +Do(ctx, key, fn): "(interface{}, error)"
+    }
+    call: {
+      shape: sql_table
+      label: "struct call  [M4]"
+      wg: "sync.WaitGroup"
+      val: "interface{}"
+      err: "error"
+      complete: "bool"
+      sz: "Total: ~72 bytes"
+    }
+  }
+  # --------------------------------------------------------------------------
+  # Layer: Cache Patterns
+  # --------------------------------------------------------------------------
+  layer_patterns: {
+    direction: down
+    label: "CACHE PATTERNS  patterns/02-04"
+    cache_aside: {
+      shape: class
+      label: "CacheAside  [M4]"
+      -cache: "Cache"
+      -db: "Database"
+      -singleFlight: "*SingleFlight"
+      -defaultTTL: "time.Duration"
+      +Get(ctx, key, loadFunc): "(interface{}, error)"
+      +Update(ctx, key, value, invalidate): "error"
+    }
+    write_through: {
+      shape: class
+      label: "WriteThroughCache  [M4]"
+      -cache: "Cache"
+      -db: "Database"
+      -ttl: "time.Duration"
+      +Set(ctx, key, value): "error"
+      +Get(ctx, key): "([]byte, error)"
+    }
+    write_behind: {
+      shape: class
+      label: "WriteBehindCache  [M4]"
+      -cache: "Cache"
+      -db: "Database"
+      -buffer: "map[string]*Write"
+      -bufferMu: "sync.RWMutex"
+      -bufferLimit: "int"
+      -flushInterval: "time.Duration"
+      +Set(ctx, key, value): "error"
+      +Flush(): "error"
+      +Close(): "error"
+    }
+  }
+  # --------------------------------------------------------------------------
+  # Layer: Probabilistic & Warming
+  # --------------------------------------------------------------------------
+  layer_probabilistic: {
+    direction: down
+    label: "PROBABILISTIC & WARMING  patterns/05-06"
+    probabilistic: {
+      shape: class
+      label: "ProbabilisticCache  [M4]"
+      -cache: "Cache"
+      -db: "Database"
+      -singleFlight: "*SingleFlight"
+      -earlyFactor: "float64"
+      +GetWithEarlyRefresh(ctx, key, loadFunc): "(interface{}, error)"
+      -shouldRefreshEarly(entry): "bool"
+    }
+    warmer: {
+      shape: class
+      label: "Warmer  [M4]"
+      -cache: "Cache"
+      -db: "Database"
+      -warmQueue: "chan WarmRequest"
+      -workers: "int"
+      -rateLimit: "int"
+      +QueueWarm(keys, priority, ttl): "void"
+      +Close(): "void"
+    }
+  }
+}
+# ============================================================================
+# ROW 5: PROTOCOL & CLIENT LIBRARY (M5)
+# ============================================================================
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  # --------------------------------------------------------------------------
+  # Layer: Protocol Types
+  # --------------------------------------------------------------------------
+  layer_protocol_types: {
+    direction: down
+    label: "PROTOCOL TYPES  protocol/01"
+    response_type: {
+      shape: sql_table
+      label: "ResponseType enum  [M5]"
+      ok: "0 | +OK msg"
+      error: "1 | -ERR msg"
+      integer: "2 | :num"
+      bulk: "3 | $len data"
+      array: "4 | *count ..."
+      null: "5 | $-1"
+    }
+    command: {
+      shape: sql_table
+      label: "struct Command (types.go)  [M5]"
+      name: "string | GET/SET/DEL..."
+      args: "[]string | positional"
+      ttl: "time.Duration | EX/PX"
+      nx: "bool | set if not exists"
+      xx: "bool | set if exists"
+      sz: "Total: ~50+ bytes"
+    }
+  }
+  # --------------------------------------------------------------------------
+  # Layer: Protocol Parser/Writer
+  # --------------------------------------------------------------------------
+  layer_protocol_io: {
+    direction: down
+    label: "PROTOCOL I/O  protocol/02-05"
+    parser: {
+      shape: class
+      label: "Parser  [M5]"
+      -reader: "*bufio.Reader"
+      +ParseCommand(): "(*Command, error)"
+      +ReadBulkString(): "(string, error)"
+    }
+    writer: {
+      shape: class
+      label: "Writer  [M5]"
+      -writer: "*bufio.Writer"
+      +WriteResponse(resp): "error"
+      +WriteOK(): "error"
+      +WriteError(msg): "error"
+      +WriteBulk(data): "error"
+    }
+  }
+  # --------------------------------------------------------------------------
+  # Layer: Connection Pool
+  # --------------------------------------------------------------------------
+  layer_pool: {
+    direction: down
+    label: "CONNECTION POOL  pool/01-06"
+    pool_config: {
+      shape: sql_table
+      label: "PoolConfig  [M5]"
+      address: "string | host:port"
+      min_idle: "int | pre-warmed"
+      max_idle: "int | upper bound"
+      max_active: "int | hard ceiling"
+      dial_timeout: "time.Duration"
+      idle_timeout: "time.Duration"
+      max_conn_lifetime: "time.Duration"
+    }
+    pool: {
+      shape: class
+      label: "Pool  [M5]"
+      -config: "PoolConfig"
+      -mu: "sync.Mutex"
+      -idle: "[]*Conn | LIFO"
+      -active: "int"
+      -closed: "bool"
+      -stopCh: "chan struct{}"
+      +Get(ctx): "(*Conn, error)"
+      +Put(conn): "void"
+      +Close(): "error"
+      +Stats(): "PoolStats"
+    }
+  }
+  # --------------------------------------------------------------------------
+  # Layer: Retry & Pipeline
+  # --------------------------------------------------------------------------
+  layer_retry: {
+    direction: down
+    label: "RETRY & PIPELINE  retry/01-04  pipeline/01-04"
+    retrier: {
+      shape: class
+      label: "Retrier  [M5]"
+      -config: "Config"
+      -isRetryable: "IsRetryable"
+      -rand: "*rand.Rand"
+      +Do(ctx, fn): "error"
+      +DoWithValue(ctx, fn): "(interface{}, error)"
+      -calculateBackoff(attempt): "time.Duration"
+    }
+    pipeline: {
+      shape: class
+      label: "Pipeline  [M5]"
+      -conn: "*bufio.Writer"
+      -reader: "*bufio.Reader"
+      -maxCommands: "int"
+      -mu: "sync.Mutex"
+      -commands: "[]Command"
+      +Add(name, args...): "error"
+      +Get(key): "error"
+      +Set(key, value, ttl): "error"
+      +Exec(ctx): "([]Result, error)"
+    }
+  }
+  # --------------------------------------------------------------------------
+  # Layer: Client
+  # --------------------------------------------------------------------------
+  layer_client: {
+    direction: down
+    label: "CLIENT  client/01-09"
+    client: {
+      shape: class
+      label: "Client  [M5]"
+      -config: "ClientConfig"
+      -ring: "*hashring.HashRing"
+      -pools: "map[string]*Pool"
+      -poolsMu: "sync.RWMutex"
+      -retrier: "*Retrier"
+      +AddNode(id, addr, weight): "error"
+      +RemoveNode(id): "error"
+      +Get(ctx, key): "([]byte, error)"
+      +Set(ctx, key, value, ttl): "error"
+      +SetNX(ctx, key, value, ttl): "(bool, error)"
+      +Delete(ctx, key): "error"
+      +Incr(ctx, key): "(int64, error)"
+      +Pipeline(ctx, key): "(*Pipeline, error)"
+      +Close(): "error"
+    }
+  }
+}
+# ============================================================================
+# ROW 6: SERVER
+# ============================================================================
+row6: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_server: {
+    direction: down
+    label: "SERVER  server/01-05"
+    server: {
+      shape: class
+      label: "Server  [M5]"
+      -cache: "Cache"
+      -listener: "net.Listener"
+      -config: "ServerConfig"
+      -wg: "sync.WaitGroup"
+      -stopCh: "chan struct{}"
+      -connectionsAccepted: "int64"
+      -connectionsActive: "int64"
+      -commandsProcessed: "int64"
+      +Start(): "error"
+      +Stop(): "error"
+      -acceptLoop(): "void"
+      -handleConnection(conn): "void"
+      -executeCommand(ctx, cmd): "*Response"
+    }
+    server_config: {
+      shape: sql_table
+      label: "ServerConfig  [M5]"
+      address: "string | listen addr"
+      max_connections: "int | 0=unlimited"
+      read_timeout: "time.Duration"
+      write_timeout: "time.Duration"
+      max_command_size: "int64"
+      max_pipeline_commands: "int"
+    }
+  }
+}
+# ============================================================================
+# CROSS-LAYER CONNECTIONS
+# ============================================================================
+# M1: Entry to Cache Shard
+row1.layer_types.entry -> row1.layer_shard.cache_shard: "Entry* | stores"
+# M1: Config to Shard
+row1.layer_types.config -> row1.layer_shard.cache_shard: "Config | initializes"
+# M1: LFU bucket connection
+row1.layer_lfu.freq_bucket -> row1.layer_shard.cache_shard: "FreqBucket* | LFU state"
+# M2: Virtual Node to Ring
+row2.layer_ring_types.virtual_node -> row2.layer_ring.hash_ring: "VirtualNode[] | sorted"
+# M2: Physical Node to Ring
+row2.layer_ring_types.physical_node -> row2.layer_ring.hash_ring: "PhysicalNode* | lookup"
+# M2: Hasher to Ring
+row2.layer_hasher.hasher -> row2.layer_ring.hash_ring: "Hasher | uses"
+# M2: Ring to Client (M5)
+row2.layer_ring.hash_ring -> row5.layer_client.client: "routes keys"
+# M3: NodeInfo to Group
+row3.layer_repl_types.node_info -> row3.layer_group.repl_group: "NodeInfo[] | members"
+# M3: Detector to Manager
+row3.layer_detector.failure_detector -> row3.layer_group.repl_group: "health status"
+# M3: Lease to Group
+row3.layer_lease.leader_lease -> row3.layer_group.repl_group: "leadership"
+# M4: SingleFlight to Patterns
+row4.layer_singleflight.singleflight -> row4.layer_patterns.cache_aside: "coalesces"
+# M4: Patterns use Cache (M1)
+row4.layer_patterns.cache_aside -> row1.layer_shard.cache_shard: "uses"
+# M5: Pool to Client
+row5.layer_pool.pool -> row5.layer_client.client: "per-node"
+# M5: Retrier to Client
+row5.layer_retry.retrier -> row5.layer_client.client: "wraps ops"
+# M5: Pipeline to Client
+row5.layer_retry.pipeline -> row5.layer_client.client: "batches"
+# M5: Protocol to Server
+row5.layer_protocol_io.parser -> row6.layer_server.server: "parses"
+row5.layer_protocol_io.writer -> row6.layer_server.server: "serializes"
+# Server uses Cache (M1)
+row6.layer_server.server -> row1.layer_shard.cache_shard: "stores"
+# ============================================================================
+# MILESTONE INDEX
+# ============================================================================
+milestone_index: {
+  shape: sql_table
+  label: "Milestone Index"
+  m1: "M1 | distributed-cache-m1 | Single Node Cache with LRU/LFU Eviction & TTL"
+  m2: "M2 | distributed-cache-m2 | Consistent Hashing & Virtual Node Sharding"
+  m3: "M3 | distributed-cache-m3 | Primary-Secondary Replication & Failover"
+  m4: "M4 | distributed-cache-m4 | Cache Patterns & Thundering Herd Prevention"
+  m5: "M5 | distributed-cache-m5 | DCP Wire Protocol & Client Library"
+}

@@ -1,0 +1,173 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- ROOT LEVEL ANNOTATIONS ---
+title: {
+  label: "SWIM Protocol Period Structure"
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+  }
+}
+title.near: top-center
+
+# --- ROW 1: CORE PROTOCOL LOGIC ---
+logic_row: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  protocol_period: {
+    label: "Protocol Period (T = 1.0s) (swim.go)"
+    direction: down
+    style.fill: "#E8F4FD"
+    style.stroke: "#2E86AB"
+    style.stroke-width: 3
+
+    phase1_select: {
+      label: "Phase 1: Target Selection"
+      width: 400
+      code: |'go
+        // Select exactly ONE random alive peer
+        target := fd.peerList.GetRandomPeers(1)[0]
+        if target.State != PeerStateAlive {
+          return  // Cycle optimization: skip
+        }
+      '|
+    }
+
+    phase2_ping: {
+      label: "Phase 2: Direct Probe"
+      width: 400
+      code: |'go
+        ping := &Message{
+          Header: Header{Type: MsgTypePing},
+          Body: PingBody{
+            SeqNum:    fd.nextSeqNum(),
+            Piggyback: fd.piggybackBuffer.GetEvents(),
+          },
+        }
+        fd.conn.WriteToUDP(encode(ping), target.Addr())
+      '|
+    }
+
+    phase3_wait: {
+      label: "Phase 3: Wait for ACK"
+      width: 400
+      style.fill: "#FFF3E0"
+      code: |'go
+        select {
+        case <-fd.pendingPings[seqNum]:
+          fd.peerList.UpdateLastSeen(target.ID)
+          return
+        case <-time.After(fd.config.PingTimeout):
+          // Transition to Phase 4
+        }
+      '|
+    }
+
+    phase4_indirect: {
+      label: "Phase 4: Indirect Probing"
+      width: 400
+      style.fill: "#FFEBEE"
+      code: |'go
+        probes := fd.peerList.GetRandomPeersExcluding(3, []string{self, target})
+        for _, p := range probes {
+          fd.sendPingReq(p, target, seqNum)
+        }
+        select {
+        case <-anyIndirectAck: return
+        case <-time.After(2 * PingTimeout):
+          fd.markSuspect(target.ID)
+        }
+      '|
+    }
+
+    phase1_select -> phase2_ping: "target selected"
+    phase2_ping -> phase3_wait: "UDP | Write"
+    phase3_wait -> phase4_indirect: "timeout | retry"
+  }
+}
+
+# --- ROW 2: CONFIGURATION & METADATA ---
+meta_row: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  timeout_config: {
+    label: "Timing Boundaries (config.go)"
+    shape: sql_table
+    t1: "0x00 | PingTimeout         | 500ms"
+    t2: "0x08 | IndirectTimeout     | 1000ms (2x T1)"
+    t3: "0x10 | ProtocolPeriod      | 1000ms"
+    t4: "0x18 | SuspicionTimeout    | 3000ms (3x T3)"
+    sz: "Total Config Size: 32 bytes"
+  }
+
+  piggyback_buffer: {
+    shape: class
+    label: "PiggybackBuffer (swim.go)"
+    -events: "[]MemberEvent"
+    -maxSize: "int (default 10)"
+    +AddEvent(e): "void"
+    +GetEvents(): "[]MemberEvent"
+  }
+}
+
+# --- ROW 3: DETAILED MECHANISMS ---
+detail_row: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  indirect_detail: {
+    label: "Ping-Req Indirect Mechanism"
+    style.fill: "#F3E5F5"
+    a: "Node A\n(Originator)"
+    b: "Node B\n(Relay)"
+    c: "Node C\n(Target)"
+    
+    a -> b: "Ping-Req(C) | RPC"
+    b -> c: "Ping(C) | Proxy"
+    c -> b: "ACK | Reply"
+    b -> a: "ACK(C) | Return"
+  }
+
+  suspicion_flow: {
+    label: "Suspicion State Evolution"
+    alive: {shape: circle; style.fill: "#C8E6C9"}
+    suspect: {shape: diamond; style.fill: "#FFF9C4"}
+    dead: {shape: circle; style.fill: "#FFCDD2"}
+    
+    alive -> suspect: "probes fail | suspect"
+    suspect -> alive: "refutation | alive"
+    suspect -> dead: "timeout | cleanup"
+  }
+}
+
+# --- CONNECTIONS ---
+logic_row.protocol_period.phase3_wait -> logic_row.protocol_period.phase4_indirect: "No ACK | 500ms"
+logic_row.protocol_period.phase4_indirect -> detail_row.suspicion_flow.suspect: "No ACK | 1500ms"
+logic_row.protocol_period.phase4_indirect -> detail_row.indirect_detail: "Ping-Req" {
+  style.stroke-dash: 5
+}
+
+# --- FOOTER ANNOTATIONS ---
+legend: {
+  label: "Protocol Performance Metrics"
+  style.fill: "#FAFAFA"
+  metrics: |'md
+    **Guarantees:**
+    - **Latency**: `SuspicionTimeout + 3T`
+    - **Efficiency**: `O(1)` per node bandwidth
+    - **Reliability**: k=3 probes mitigates packet loss
+  '|
+}
+legend.near: bottom-right

@@ -1,0 +1,231 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: right
+
+title: ||md
+  # Write-Behind Buffer Architecture
+  ### System Design: Async Database Persistence & Immediate Cache ACK
+|| {near: top-center}
+
+classes: {
+  cache-layer: {
+    style: {
+      fill: "#B5D8F7"
+      stroke: "#2563EB"
+      stroke-width: 2
+      font-color: "#1E3A5F"
+    }
+  }
+  buffer-layer: {
+    style: {
+      fill: "#FEF3C7"
+      stroke: "#D97706"
+      stroke-width: 2
+      font-color: "#78350F"
+    }
+  }
+  db-layer: {
+    style: {
+      fill: "#D1FAE5"
+      stroke: "#059669"
+      stroke-width: 2
+      font-color: "#064E3B"
+    }
+  }
+  goroutine: {
+    shape: diamond
+    style: {
+      fill: "#FEE2E2"
+      stroke: "#DC2626"
+      font-color: "#7F1D1D"
+    }
+  }
+  write-entry: {
+    shape: rectangle
+    style: {
+      fill: "#FDE68A"
+      stroke: "#92400E"
+      font: mono
+      font-size: 11
+    }
+  }
+}
+
+client: Client {
+  shape: person
+  style.fill: "#E5E7EB"
+  tooltip: "App Actor issuing Set/Get commands"
+}
+
+cache_container: Cache Layer {
+  class: cache-layer
+  cache: "In-Memory\nLRU Cache" {
+    shape: cylinder
+    style.fill: "#93C5FD"
+    "sizeof": "2GB Heap"
+  }
+}
+
+buffer_container: Write Buffer {
+  class: buffer-layer
+  grid-columns: 1
+  label: "Buffer Map (map[string]*WriteEntry)"
+  
+  entry_1: ||md
+    **Key: "user:123"**
+    - Value: "alice"
+    - Timestamp: T+0ms
+    - Attempts: 0
+  || {class: write-entry}
+  
+  entry_2: ||md
+    **Key: "counter:views"**
+    - Value: "42"
+    - Timestamp: T+5ms
+    - Attempts: 0
+  || {class: write-entry}
+  
+  entry_3: ||md
+    **Key: "config:global"**
+    - Value: "{...}"
+    - Timestamp: T+10ms
+    - Attempts: 1
+  || {class: write-entry; style.fill: "#FCA5A5"}
+  
+  stats: ||md
+    **Runtime Metrics**
+    - Size: 3 / 1000 items
+    - Writes Dropped: 0
+    - Writes Flushed: 47
+  || {
+    style: {
+      fill: transparent
+      font-size: 11
+      font-color: "#78350F"
+    }
+  }
+}
+
+flush_loop: Background Flush Loop {
+  class: goroutine
+  ticker: "Ticker\n(FlushInterval)" {
+    shape: circle
+    style.fill: "#FECACA"
+  }
+  batch: Batch\nProcessor {
+    shape: rectangle
+    style.fill: "#FECACA"
+  }
+  retry: Retry\nLogic {
+    shape: rectangle
+    style.fill: "#FECACA"
+  }
+  
+  ticker -> batch: "SIGALRM trigger"
+  batch -> retry: "Process Batch (N=50)"
+}
+
+db_container: Database Layer {
+  class: db-layer
+  db: "PostgreSQL\n(Persistent Storage)" {
+    shape: cylinder
+    style.fill: "#6EE7B7"
+    "io_wait": "5ms - 20ms"
+  }
+}
+
+lifecycle_container: Lifecycle Management {
+  style.fill: "#F3F4F6"
+  style.stroke: "#6B7280"
+  style.stroke-dash: 3
+  
+  stop_ch: stopCh {
+    shape: diamond
+    style.fill: "#FEE2E2"
+    label: "os.Interrupt"
+  }
+  
+  flush_ch: flushCh {
+    shape: diamond
+    style.fill: "#DBEAFE"
+    label: "Manual Flush"
+  }
+  
+  final_flush: "Final Flush\non Close()" {
+    style.fill: "#E5E7EB"
+    tooltip: "Drain buffer to DB before exit"
+  }
+  
+  stop_ch -> final_flush: "Drain"
+  flush_ch -> flush_loop.ticker: "Force"
+}
+
+# --- Connections and Data Flow ---
+
+client -> cache_container.cache: "1. Set(key, value)" {
+  label: ||md
+    **Immediate ACK (T+0.2ms)**
+    - ✓ Cache entry updated
+    - ○ DB persistence pending
+  ||
+  style.stroke: "#2563EB"
+  style.stroke-width: 3
+  style.animated: true
+}
+
+cache_container.cache -> buffer_container: "2. Queue Write" {
+  label: "Upsert into map\nO(1) complexity"
+  style.stroke: "#D97706"
+  style.stroke-dash: 3
+}
+
+buffer_container -> flush_loop.batch: "3. Flush Signal" {
+  label: "Copy map keys\nLock/Unlock mutex"
+  style.stroke: "#DC2626"
+  style.stroke-dash: 5
+}
+
+flush_loop.retry -> db_container.db: "4. Async IO" {
+  label: ||md
+    **Persistence (T+50ms)**
+    - SQL: INSERT ... ON CONFLICT
+    - Max Retries: 3
+  ||
+  style.stroke: "#059669"
+  style.stroke-width: 2
+}
+
+buffer_container.stats -> flush_loop.batch: "Monitor Pressure"
+
+# --- Legends and Tables ---
+
+legend: ||md
+  ### Architectural Constraints
+  - **Durability**: Eventually consistent. Buffer is volatile.
+  - **Throughput**: High. Write speed limited only by memory bandwidth.
+  - **Consistency**: Read-your-writes guaranteed via Cache Layer.
+  
+  ### Implementation Notes
+  - `FlushInterval`: Default 1s
+  - `FlushBatchSize`: Default 100 entries
+  - `BufferLimit`: 10,000 entries (Backpressure if exceeded)
+|| {near: bottom-right}
+
+timing: ||md
+  ### Sequence Timing Analysis (Optimistic)
+  | Event | Offset | Latency |
+  | :--- | :--- | :--- |
+  | App `Set()` call | T+0.0ms | 0.0ms |
+  | Cache Write | T+0.1ms | 0.1ms |
+  | **Return ACK** | **T+0.2ms** | **0.1ms** |
+  | Map Insertion | T+0.3ms | 0.1ms |
+  | Flush Trigger | T+50.0ms | 49.7ms |
+  | SQL Execution | T+55.0ms | 5.0ms |
+  
+  **Data Loss Window: ~55ms**
+|| {near: bottom-left}

@@ -1,0 +1,187 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Shared Mutable State Identification & Memory Layout
+  **Engineering Spec: Thread Safety Design & Byte Alignment**
+| {near: top-center}
+
+direction: right
+
+# =============================================================================
+# MEMORY LAYOUT: MemoryPool Struct (Implementation Grade)
+# =============================================================================
+MemoryPool: {
+  shape: sql_table
+  style: {
+    stroke: "#6C757D"
+    stroke-width: 2
+    fill: "#F8F9FA"
+  }
+
+  # Offset | Field | Type | Protection Level
+  "0x00": "mutex: pthread_mutex_t" {constraint: "🔴 MUTEX"; style.fill: "#B71C1C"; style.font-color: white}
+  "0x28": "chunks: Chunk*" {constraint: "🔴 SHARED"; style.fill: "#FFCDD2"}
+  "0x30": "free_list_head: void*" {constraint: "🔴 SHARED (HOT)"; style.fill: "#FFCDD2"}
+  "0x38": "allocated: size_t" {constraint: "🔴 SHARED (HOT)"; style.fill: "#FFCDD2"}
+  "0x40": "total_capacity: size_t" {constraint: "🔴 SHARED (WARM)"; style.fill: "#FFCDD2"}
+  "0x48": "chunk_count: size_t" {constraint: "🔴 SHARED (WARM)"; style.fill: "#FFCDD2"}
+  "0x50": "allocated_map: uint64_t*" {constraint: "🔴 SHARED"; style.fill: "#FFCDD2"}
+  "0x58": "map_size: size_t" {constraint: "🔴 SHARED"; style.fill: "#FFCDD2"}
+  "---": "--- (Cache Line Boundary: 64B) ---" {style.stroke-dash: 3; style.fill: "#EEEEEE"}
+  "0x60": "block_size: size_t" {constraint: "🟢 IMMUTABLE"; style.fill: "#C8E6C9"}
+  "0x68": "blocks_per_chunk: size_t" {constraint: "🟢 IMMUTABLE"; style.fill: "#C8E6C9"}
+  "0x70": "max_chunks: size_t" {constraint: "🟢 IMMUTABLE"; style.fill: "#C8E6C9"}
+  "0x78": "max_bytes: size_t" {constraint: "🟢 IMMUTABLE"; style.fill: "#C8E6C9"}
+  "0x80": "use_canaries: bool" {constraint: "🟢 IMMUTABLE"; style.fill: "#C8E6C9"}
+  "0x81": "padding: uint8_t[7]" {constraint: "GRAY"; style.fill: "#E0E0E0"}
+}
+
+# =============================================================================
+# CATEGORY 1: MUTABLE SHARED STATE (Requires Mutex Protection)
+# =============================================================================
+mutable_shared: "🔴 MUTABLE SHARED STATE\n(Locked Path)" {
+  style: {
+    fill: "#FFEBEE"
+    stroke: "#C62828"
+    stroke-width: 3
+    border-radius: 8
+  }
+  
+  chunks: {
+    label: "chunks (Chunk registry)"
+    tooltip: "Modified during grow_pool()"
+    style.fill: "#FFCDD2"
+  }
+  allocated: {
+    label: "allocated (Counter)"
+    tooltip: "Modified on every alloc/free"
+    style.fill: "#FFCDD2"
+  }
+  free_list_head: {
+    label: "free_list_head (Pointer)"
+    tooltip: "Modified on every alloc/free"
+    style.fill: "#FFCDD2"
+  }
+}
+
+# =============================================================================
+# CATEGORY 2: IMMUTABLE AFTER INITIALIZATION
+# =============================================================================
+immutable: "🟢 IMMUTABLE / READ-ONLY\n(Wait-Free Path)" {
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#2E7D32"
+    stroke-width: 3
+    border-radius: 8
+  }
+  
+  block_size: {
+    label: "block_size"
+    style.fill: "#C8E6C9"
+  }
+  max_bytes: {
+    label: "max_bytes"
+    style.fill: "#C8E6C9"
+  }
+}
+
+# =============================================================================
+# CATEGORY 3: THREAD-LOCAL / TRANSIENT
+# =============================================================================
+thread_local: "🔵 THREAD-LOCAL\n(Stack Variables)" {
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1565C0"
+    stroke-width: 3
+    border-radius: 8
+  }
+  
+  local_block: {
+    label: "block (stack pointer)"
+    style.fill: "#BBDEFB"
+  }
+}
+
+# =============================================================================
+# PROTECTION LOGIC
+# =============================================================================
+MemoryPool."0x00" -> mutable_shared: "Protects Group" {
+  style: {
+    stroke: "#C62828"
+    stroke-width: 2
+    stroke-dash: 5
+  }
+}
+
+# =============================================================================
+# ANNOTATIONS & LEGENDS
+# =============================================================================
+critical_section: |md
+  ## Implementation Pattern: Critical Section
+  c
+  void* pool_alloc(MemoryPool* pool) {
+      // 1. Immutable check (Safe, no lock)
+      if (!pool) return NULL; 
+
+      // 2. Acquire Mutex (Critical Section Start)
+      pthread_mutex_lock(&pool->mutex); 
+
+      // 3. Access Mutable Shared State
+      if (pool->free_list_head == NULL) {
+          if (!grow_pool(pool)) {
+              pthread_mutex_unlock(&pool->mutex);
+              return NULL;
+          }
+      }
+
+      void* block = pool->free_list_head;
+      pool->free_list_head = *(void**)block;
+      pool->allocated++;
+
+      // 4. Release Mutex (Critical Section End)
+      pthread_mutex_unlock(&pool->mutex);
+
+      return block;
+  }
+  
+| {
+  near: bottom-center
+  shape: text
+  style.font: mono
+}
+
+warning: |md
+  ## ⚠️ Race Condition Hazard
+  If `pool->free_list_head` is read by Thread A and Thread B simultaneously 
+  without the mutex, both will receive the same memory address, leading to 
+  **Double Allocation / Heap Corruption**.
+| {
+  near: center-right
+  shape: text
+  style: {
+    fill: "#FFF8E1"
+    stroke: "#F57C00"
+    border-radius: 4
+  }
+}
+
+legend: "Access Frequency Legend" {
+  near: bottom-right
+  hot: "🔥 HOT: Every Op" { style.fill: "#FFCDD2" }
+  warm: "⚡ WARM: Growth only" { style.fill: "#FFF3E0" }
+  cold: "❄️ COLD: Init only" { style.fill: "#C8E6C9" }
+}
+
+# =============================================================================
+# STRUCTURAL CONNECTIONS
+# =============================================================================
+MemoryPool -> mutable_shared: "maps to"
+MemoryPool -> immutable: "maps to"
+thread_local -> MemoryPool: "points into" {
+  style.stroke-dash: 2
+}

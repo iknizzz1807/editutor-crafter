@@ -1,0 +1,330 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Canary Values: Block Boundary Protection
+  Detecting buffer overflows before they corrupt adjacent memory
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  block_layout: {
+    direction: down
+    label: "Block Layout (memory_pool.c)"
+    block: {
+      direction: right
+      grid-gap: 0
+      canary_front: {
+        label: "CANARY_FRONT\n8 bytes"
+        width: 100
+        height: 120
+        style: {
+          fill: "#FF6B6B"
+          stroke: "#C92A2A"
+          stroke-width: 2
+          font-color: white
+          bold: true
+        }
+        code: |'c
+          0xCAFEBABE
+          DEADBEEF
+        '|
+      }
+      user_data: {
+        label: "USER DATA\n(block_size - 16)"
+        width: 200
+        height: 120
+        style: {
+          fill: "#51CF66"
+          stroke: "#2F9E44"
+          stroke-width: 2
+          font-color: white
+          bold: true
+        }
+        code: |'c
+          // User gets pointer
+          // after front canary
+          char* ptr = 
+            block + 8;
+        '|
+      }
+      canary_back: {
+        label: "CANARY_BACK\n8 bytes"
+        width: 100
+        height: 120
+        style: {
+          fill: "#FF6B6B"
+          stroke: "#C92A2A"
+          stroke-width: 2
+          font-color: white
+          bold: true
+        }
+        code: |'c
+          0xCAFEBABE
+          DEADBEEF
+        '|
+      }
+    }
+    addr_row: {
+      direction: right
+      grid-gap: 0
+      style.stroke: transparent
+      a1: {
+        label: "0x1000"
+        width: 100
+        style: {
+          fill: transparent
+          stroke: transparent
+          font-color: "#868E96"
+          font-size: 14
+        }
+      }
+      a2: {
+        label: "0x1008"
+        width: 200
+        style: {
+          fill: transparent
+          stroke: transparent
+          font-color: "#868E96"
+          font-size: 14
+        }
+      }
+      a3: {
+        label: "0x1038"
+        width: 100
+        style: {
+          fill: transparent
+          stroke: transparent
+          font-color: "#868E96"
+          font-size: 14
+        }
+      }
+    }
+  }
+  lifecycle: {
+    direction: down
+    label: "Canary Lifecycle"
+    alloc_step: {
+      label: "pool_alloc()"
+      width: 320
+      style.fill: "#E7F5FF"
+      code: |'c
+        // 1. Allocate block from free list
+        void* block = pop_free_list();
+        // 2. Write canaries at boundaries
+        uint64_t* front = (uint64_t*)block;
+        uint64_t* back = (uint64_t*)
+            ((char*)block + block_size - 8);
+        *front = 0xCAFEBABEDEADBEEF;
+        *back  = 0xCAFEBABEDEADBEEF;
+        // 3. Return pointer AFTER front canary
+        return (char*)block + 8;
+      '|
+    }
+    free_step: {
+      label: "pool_free()"
+      width: 320
+      style.fill: "#FFF3BF"
+      code: |'c
+        // 1. Adjust pointer back to block start
+        void* block = (char*)ptr - 8;
+        // 2. Verify front canary (catch underflow)
+        if (*(uint64_t*)block != CANARY_VALUE)
+          CORRUPTION_DETECTED();
+        // 3. Verify back canary (catch overflow)
+        uint64_t* back = (uint64_t*)
+            ((char*)block + block_size - 8);
+        if (*back != CANARY_VALUE)
+          CORRUPTION_DETECTED();
+      '|
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  overflow_viz: {
+    direction: down
+    label: "Overflow Visualization"
+    before: {
+      label: "Before Overflow"
+      width: 450
+      style.fill: "#E6FCF5"
+      code: |'c
+        Block N                          Block N+1
+        ┌────────┬─────────────┬────────┬────────┬─────────────┬────────┐
+        │CANARY_F│  USER DATA  │CANARY_B│CANARY_F│  USER DATA  │CANARY_B│
+        │ 0xCAFE │   "hello"   │ 0xCAFE │ 0xCAFE │   "world"   │ 0xCAFE │
+        └────────┴─────────────┴────────┴────────┴─────────────┴────────┘
+                 ▲                                
+            User pointer                     
+      '|
+    }
+    overflow_arrow: {
+      label: "strcpy(buf, long_string) → overflow!"
+      width: 450
+      style: {
+        fill: transparent
+        stroke: "#F03E3E"
+        stroke-width: 3
+        stroke-dash: 5
+        font-color: "#F03E3E"
+        bold: true
+      }
+    }
+    after: {
+      label: "After Overflow (Canary Corrupted!)"
+      width: 450
+      style.fill: "#FFE3E3"
+      code: |'c
+        Block N                          Block N+1
+        ┌────────┬─────────────┬────────┬────────┬─────────────┬────────┐
+        │CANARY_F│  USER DATA  │CORRUPT │????????│  USER DATA  │CANARY_B│
+        │ 0xCAFE │"AAAAAAA..." │0x414141│ garbage│   "world"   │ 0xCAFE │
+        └────────┴─────────────┴────────┴────────┴─────────────┴────────┘
+                              ▲
+                         CANARY_BACK
+                         now contains
+                         "AAAA" (0x41414141)
+      '|
+    }
+    detection: {
+      label: "Detection at pool_free()"
+      width: 450
+      style.fill: "#FFF4E6"
+      code: |'c
+        pool_free(&pool, buf);
+        // → CANARY CORRUPTION (overflow): 
+        //     Block 0x1000 back canary = 0x41414141
+        //     Expected: 0xCAFEBABEDEADBEEF
+      '|
+    }
+  }
+  protection_value: {
+    direction: down
+    label: "Why Canaries Work"
+    timing: {
+      label: "Detection Timing"
+      width: 280
+      style.fill: "#F3F0FF"
+      code: |'c
+        WITHOUT CANARIES:
+        ─────────────────
+        Overflow writes →
+          into next block →
+          corruption spreads →
+          crash much later →
+          HARD TO DEBUG
+        WITH CANARIES:
+        ─────────────────
+        Overflow writes →
+          into canary →
+          pool_free() detects →
+          IMMEDIATE REPORT
+      '|
+    }
+    canary_design: {
+      label: "Canary Value Design"
+      width: 280
+      style.fill: "#FFF0F6"
+      code: |'c
+        #define CANARY_VALUE \
+          0xCAFEBABEDEADBEEFULL
+        Why this value?
+        ────────────────────────
+        • Unlikely user data
+        • Non-printable chars
+        • Recognizable in hex dump
+        • Both ends for symmetry
+      '|
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  underflow_viz: {
+    direction: down
+    label: "Underflow Detection (Front Canary)"
+    underflow_example: {
+      label: "Buffer Underflow"
+      width: 420
+      style.fill: "#FFF3BF"
+      code: |'c
+        User writes BEFORE their data:
+        Block N
+        ┌────────┬─────────────┬────────┐
+        │CORRUPT │  USER DATA  │CANARY_B│
+        │0x414141│   "hello"   │ 0xCAFE │
+        └────────┴─────────────┴────────┘
+           ▲
+        Front canary
+        overwritten by
+        buf[-4] = 'A'
+        Detection:
+        pool_free() checks front canary
+        → CANARY CORRUPTION (underflow)
+      '|
+    }
+  }
+  tradeoffs: {
+    direction: down
+    label: "Trade-offs"
+    cost_table: {
+      shape: sql_table
+      label: "Memory & Performance Cost"
+      f1: "Aspect | With Canaries | Without"
+      f2: "Usable block size | block_size - 16 | block_size"
+      f3: "Alloc overhead | 2 writes | 0"
+      f4: "Free overhead | 2 reads + 2 compares | 0"
+      f5: "64-byte block | 75% usable | 100% usable"
+      f6: "256-byte block | 94% usable | 100% usable"
+      f7: "Detection | Immediate | Never"
+    }
+    recommendation: {
+      label: "Recommendation"
+      width: 280
+      style.fill: "#D3F9D8"
+      code: |'c
+        #ifdef POOL_DEBUG
+        // Enable in debug builds
+        config.use_canaries = true;
+        #else
+        // Disable in release
+        config.use_canaries = false;
+        #endif
+        Zero production overhead
+        Full debug protection
+      '|
+    }
+  }
+}
+legend: {
+  near: bottom-right
+  label: "Color Legend"
+  canary_box: {
+    label: "Canary (protected)"
+    width: 20
+    height: 20
+    style.fill: "#FF6B6B"
+  }
+  user_box: {
+    label: "User Data"
+    width: 20
+    height: 20
+    style.fill: "#51CF66"
+  }
+  corrupt_box: {
+    label: "Corrupted"
+    width: 20
+    height: 20
+    style.fill: "#FFE066"
+  }
+}

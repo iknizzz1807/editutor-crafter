@@ -1,0 +1,147 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # pool_free() Implementation Specification
+  **Thread-safe LIFO deallocation with boundary validation & debug poisoning.**
+| {near: top-center}
+
+shape: sequence_diagram
+
+# Participants - Exact Types and Roles
+Caller: "Client Thread"
+Pool: "MemoryPool Struct"
+Bitmap: "uint64_t* (AllocMap)"
+Block: "void* (Target Data)"
+
+# -----------------------------------------------------------------------------
+# Sequence Flow
+# -----------------------------------------------------------------------------
+
+Caller -> Pool: "pool_free(pool, ptr)"
+
+group: "1. Pre-lock Parameter Validation" {
+    Pool -> Pool: "if (pool == NULL || ptr == NULL)"
+    alt: "Null Pointer provided" {
+        Pool -> Caller: "return false (EINVAL)"
+    }
+}
+
+group: "2. Debug: Canary Verification" {
+    Pool -> Pool: "#ifdef POOL_DEBUG"
+    Pool -> Block: "actual_block = (uint8_t*)ptr - CANARY_SIZE"
+    Pool -> Block: "read front_canary [ptr - 4]"
+    Pool -> Block: "read back_canary [ptr + block_size]"
+    alt: "Canary != MAGIC_VAL" {
+        Pool -> Caller: "stderr: 'CRITICAL: CANARY CORRUPTION'" {
+            style.stroke: red
+        }
+    }
+}
+
+group: "3. Concurrency Control" {
+    Pool -> Pool: "pthread_mutex_lock(&pool->mutex)"
+    Pool.lock: "▼ LOCK ACQUIRED (WAITING)" {
+        style.font-color: red
+        style.bold: true
+    }
+}
+
+group: "4. Index & Alignment Resolution" {
+    Pool -> Pool: "offset = (size_t)actual_block - (size_t)pool->data_start"
+    Pool -> Pool: "index = offset / pool->block_size"
+    Pool -> Pool: "check: (offset % pool->block_size) == 0"
+    
+    alt: "Invalid Boundary Offset" {
+        Pool -> Pool: "pthread_mutex_unlock(&pool->mutex)"
+        Pool -> Caller: "return false (EFAULT: Unaligned pointer)"
+    }
+}
+
+group: "5. Double-Free Detection" {
+    Pool -> Bitmap: "bitmap_test(pool->allocated_map, index)"
+    alt: "Bit is 0 (Block is already free)" {
+        Pool -> Pool: "pthread_mutex_unlock(&pool->mutex)"
+        Pool.release_err: "▲ LOCK RELEASED"
+        Pool -> Caller: "stderr: 'Double-free detected' -> return false" {
+            style.stroke: red
+        }
+    }
+}
+
+group: "6. State Transition: Mark Free" {
+    Pool -> Bitmap: "bitmap_clear(pool->allocated_map, index)"
+    Bitmap -> Bitmap: "map[index/64] &= ~(1ULL << (index%64))"
+    Bitmap.update: "State: FREE" {
+        style.stroke: green
+        style.bold: true
+    }
+}
+
+group: "7. Debug: Memory Poisoning" {
+    Pool -> Pool: "#ifdef POOL_DEBUG (use_poison)"
+    Pool -> Block: "memset(ptr, 0xDE, pool->block_size)"
+    Block.poison: "Poisoned with 0xDE" {
+        style.fill: "#FFE4B5"
+    }
+}
+
+group: "8. LIFO Free List Re-insertion" {
+    Pool -> Block: "*(void**)ptr = pool->free_list_head"
+    Pool -> Pool: "pool->free_list_head = ptr"
+    Pool -> Pool: "pool->stats.allocated_count--"
+}
+
+group: "9. Concurrency Release" {
+    Pool -> Pool: "pthread_mutex_unlock(&pool->mutex)"
+    Pool.unlock: "▲ LOCK RELEASED" {
+        style.font-color: green
+        style.bold: true
+    }
+}
+
+Pool -> Caller: "return true (SUCCESS)"
+
+# -----------------------------------------------------------------------------
+# Component Definitions & Styling
+# -----------------------------------------------------------------------------
+
+Pool: {
+  tooltip: "Main Pool Control Block (Handle)"
+  style: {
+    fill: "#E8E8E8"
+    stroke: "#666666"
+    stroke-width: 2
+  }
+}
+
+Bitmap: {
+  tooltip: "Bit-packed availability map (1 bit per block)"
+  style: {
+    fill: "#DDA0DD"
+    stroke: "#8B008B"
+    stroke-dash: 0
+  }
+}
+
+Block: {
+  tooltip: "Raw memory block within the data segment"
+  style: {
+    fill: "#87CEEB"
+    stroke: "#4682B4"
+  }
+}
+
+# Overrides for specific activation lifelines
+(Pool -> Bitmap)[*].style.stroke: orange
+(Pool -> Block)[*].style.stroke: blue
+
+# Style constraints for sequence lifelines
+Pool.style.stroke-width: 3
+Bitmap.style.stroke-dash: 2
+Block.style.multiple: true

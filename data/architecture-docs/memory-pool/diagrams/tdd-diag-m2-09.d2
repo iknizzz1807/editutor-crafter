@@ -1,0 +1,185 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # pool_destroy() Implementation Detail
+  **Call Sequence & Memory Deallocation Strategy**
+  *Standards: POSIX Thread Safety, Manual Heap Management, Memory Barriers*
+| {near: top-center}
+
+# ---------------------------------------------------------------------------
+# Sequence Diagram: pool_destroy() Execution Flow
+# ---------------------------------------------------------------------------
+pool_destroy_sequence: {
+  shape: sequence_diagram
+
+  # ---------------------------------------------------------------------------
+  # Participant Definitions (Lifelines)
+  # ---------------------------------------------------------------------------
+  Caller: "Caller Thread\n(Context)" {
+    shape: person
+    style.fill: "#E1F5FE"
+  }
+  MemoryPool: "MemoryPool Manager\n(pool_t *pool)" {
+    style.fill: "#F3E5F5"
+    style.stroke-width: 2
+    style.double-border: true
+  }
+  ChunkRegistry: "Chunk Linked List\n(pool->chunks)" {
+    style.fill: "#FFF3E0"
+    style.stroke-dash: 3
+  }
+  Bitmap: "Allocation Bitmap\n(pool->bitmap)" {
+    style.fill: "#E0F2F1"
+  }
+  SystemHeap: "System Heap\n(libc::free)" {
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    style.stroke-width: 3
+  }
+
+  # ---------------------------------------------------------------------------
+  # Phase 1: Entry & Atomic State Lock
+  # ---------------------------------------------------------------------------
+  Caller -> MemoryPool: "pool_destroy(pool_t *pool)"
+  
+  MemoryPool.t_init: {
+    MemoryPool -> MemoryPool: "Atomic check: if (pool == NULL) return;"
+    MemoryPool -> MemoryPool: "pthread_mutex_lock(&pool->lock)"
+    MemoryPool."STATE TRANSITION:\n[POOL_ACTIVE] -> [POOL_TERMINATING]\n(0x01 -> 0x03)" {
+      style.font-color: red
+      style.bold: true
+    }
+  }
+
+  # ---------------------------------------------------------------------------
+  # Phase 2: Leak Detection & Resource Audit
+  # ---------------------------------------------------------------------------
+  MemoryPool.t_leak_check: {
+    MemoryPool -> MemoryPool: "if (pool->allocated_count > 0)"
+    
+    Leak_Warning_Block: {
+      MemoryPool -> MemoryPool: "LOG_WARN: Detected %zu active leaks"
+      
+      Bitmap_Audit: {
+        MemoryPool -> Bitmap: "audit_remaining_bits(pool->bitmap_size)"
+        Bitmap -> MemoryPool: "uint64_t[] indices"
+        MemoryPool -> MemoryPool: "Trace: 0x%016X leaked (offset: %d)"
+      }
+    }
+  }
+
+  # ---------------------------------------------------------------------------
+  # Phase 3: Recursive Chunk Deallocation (The Critical Loop)
+  # ---------------------------------------------------------------------------
+  MemoryPool.t_walk: {
+    MemoryPool -> ChunkRegistry: "head = pool->chunks"
+    
+    Cleanup_Loop: {
+      ChunkRegistry -> MemoryPool: "next_chunk = current->next"
+      
+      # Step 1: Free User Data segment
+      MemoryPool -> SystemHeap: "free(current->data_ptr)" {
+        style.stroke: red
+        style.animated: true
+        tooltip: "Freeing the actual memory returned to user (Heap Arena Reclamation)"
+      }
+      SystemHeap --> MemoryPool: "ACK (Status: 0)"
+      
+      # Step 2: Free the Metadata node
+      MemoryPool -> SystemHeap: "free(current)" {
+        style.stroke: "#BF360C"
+        style.animated: true
+        tooltip: "Freeing the internal chunk_t struct metadata"
+      }
+      SystemHeap --> MemoryPool: "ACK (Status: 0)"
+      
+      MemoryPool -> MemoryPool: "current = next_chunk"
+    }
+    
+    ChunkRegistry -> MemoryPool: "return NULL (End of Chain Walk)"
+  }
+
+  # ---------------------------------------------------------------------------
+  # Phase 4: Secondary Resource Reclamation
+  # ---------------------------------------------------------------------------
+  MemoryPool.t_cleanup: {
+    # Reclaim Bitmap
+    MemoryPool -> SystemHeap: "free(pool->bitmap)"
+    SystemHeap --> MemoryPool: "Bitmap Array [0x%p] Released"
+    
+    # Mutex Teardown
+    MemoryPool -> MemoryPool: "pthread_mutex_unlock(&pool->lock)"
+    MemoryPool -> SystemHeap: "pthread_mutex_destroy(&pool->lock)"
+    SystemHeap --> MemoryPool: "OS Sync Object [0x%p] Released"
+  }
+
+  # ---------------------------------------------------------------------------
+  # Phase 5: Final Memory Sanitization & Valgrind Hooks
+  # ---------------------------------------------------------------------------
+  MemoryPool.t_final: {
+    MemoryPool -> MemoryPool: "memset(pool, 0, sizeof(pool_t))" {
+      tooltip: "Mitigate Use-After-Free/Dangling Pointers in debug builds"
+    }
+    MemoryPool -> MemoryPool: "VALGRIND_DESTROY_MEMPOOL(pool)"
+  }
+
+  MemoryPool --> Caller: "return void (Success)"
+
+  # ---------------------------------------------------------------------------
+  # Lifecycle Notes (Anchored to Participants)
+  # ---------------------------------------------------------------------------
+  MemoryPool.safety_note: "CRITICAL SECTION:\nMutex must encompass\nfull chunk walk to avoid\nUAF if threads try to\nrelease_block during destruction."
+  
+  SystemHeap.note: "OS ALLOCATOR:\nMemory may remain resident\nin process RSS. Use\nmalloc_trim(0) to force\nrelease to kernel."
+}
+
+# ---------------------------------------------------------------------------
+# Component Styling & Polish
+# ---------------------------------------------------------------------------
+pool_destroy_sequence.*.style.font-size: 13
+pool_destroy_sequence.*.style.font: mono
+
+# Connection Styling
+(pool_destroy_sequence.MemoryPool -> pool_destroy_sequence.SystemHeap)[*]: {
+  style: {
+    stroke: "#D32F2F"
+    stroke-width: 2
+  }
+}
+
+# Lifeline Span Colors
+pool_destroy_sequence.MemoryPool.t_init.style.fill: "#CE93D8"
+pool_destroy_sequence.MemoryPool.t_walk.style.fill: "#F48FB1"
+pool_destroy_sequence.MemoryPool.t_final.style.fill: "#90CAF9"
+
+# Summary Table (Positioned relative to the sequence container)
+Logic_Summary: |md
+  ### Implementation Invariants & Post-Conditions
+  | Invariant | Value / Strategy |
+  | :--- | :--- |
+  | **Atomic Transition** | `POOL_TERMINATING (0x03)` set prior to list traversal. |
+  | **Thread Safety** | Blocking mutex lock. Re-entry results in `EAGAIN` or early exit. |
+  | **Dangling Ptrs** | `memset(pool, 0, ...)` triggers immediate SIGSEGV on invalid access. |
+  | **Leak Policy** | Aggressive warning log; forced reclamation of all tracked chunks. |
+| {
+  near: pool_destroy_sequence
+  style.font-size: 12
+}
+
+# Technical Architecture Annotation
+arch_details: |md
+  **Memory Pool Structure (Reference)**
+  - `lock`: `pthread_mutex_t` (Offset 0x00)
+  - `chunks`: `chunk_t *` (Offset 0x28)
+  - `bitmap`: `uint8_t *` (Offset 0x30)
+  - `state`: `uint8_t` (Offset 0x38)
+| {
+  near: pool_destroy_sequence
+  style.stroke: orange
+  style.fill: "#FFFDE7"
+}

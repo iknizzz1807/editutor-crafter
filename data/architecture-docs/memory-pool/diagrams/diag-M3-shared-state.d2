@@ -1,0 +1,187 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # What Needs Protection: The Free List Head
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  pool_state: {
+    direction: down
+    label: "Pool State (Shared)"
+    free_list_head: {
+      shape: sql_table
+      label: "void* free_list_head"
+      f0: "0x00 | void* | next_free_block"
+      note: "THE ONLY SHARED MUTABLE STATE"
+      f0.style.fill: "#ff6b6b"
+      note.style.fill: "#ff6b6b"
+      note.style.font-color: white
+    }
+    immutable: {
+      label: "Immutable After Init"
+      base: "void* base"
+      block_size: "size_t block_size"
+      capacity: "size_t capacity"
+      style.fill: "#d4edda"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  thread_a: {
+    direction: down
+    label: "Thread A: pool_alloc()"
+    a_read: {
+      label: "1. Read free_list_head"
+      width: 280
+      code: |'c
+        void* block = pool->free_list_head;
+        // Reads: 0x1000
+      '|
+    }
+    a_read2: {
+      label: "2. Read next from block"
+      width: 280
+      code: |'c
+        void* next = *(void**)block;
+        // Reads: 0x1040
+      '|
+    }
+    a_write: {
+      label: "3. Write free_list_head"
+      width: 280
+      code: |'c
+        pool->free_list_head = next;
+        // Writes: 0x1040
+      '|
+      style.fill: "#ff6b6b"
+    }
+    a_read -> a_read2 -> a_write
+  }
+  thread_b: {
+    direction: down
+    label: "Thread B: pool_free(ptr)"
+    b_read: {
+      label: "1. Read free_list_head"
+      width: 280
+      code: |'c
+        void* old_head = pool->free_list_head;
+        // Reads: 0x1000 (or 0x1040?)
+      '|
+    }
+    b_write2: {
+      label: "2. Write next into ptr"
+      width: 280
+      code: |'c
+        *(void**)ptr = old_head;
+        // Links freed block
+      '|
+    }
+    b_write: {
+      label: "3. Write free_list_head"
+      width: 280
+      code: |'c
+        pool->free_list_head = ptr;
+        // Overwrites A's update!
+      '|
+      style.fill: "#ff6b6b"
+    }
+    b_read -> b_write2 -> b_write
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  race_result: {
+    direction: down
+    label: "Race Condition Outcome"
+    timeline: {
+      label: "Interleaved Execution"
+      width: 450
+      code: |'c
+        T0: A reads head = 0x1000
+        T1: B reads head = 0x1000  <- SAME VALUE!
+        T2: A writes head = 0x1040
+        T3: B writes head = 0x2000
+        // Result: Block 0x1040 LEAKED!
+        // Both A and B modified same state
+      '|
+      style.fill: "#fff3cd"
+    }
+    corruption: {
+      label: "Memory Corruption"
+      width: 450
+      code: |'c
+        // If both threads allocated:
+        // - Same block returned to both callers
+        // - Data corruption from concurrent writes
+        // - Free list chain broken
+        // - Leaked blocks never recoverable
+      '|
+      style.fill: "#f8d7da"
+    }
+  }
+  mutex_solution: {
+    direction: down
+    label: "Mutex Protection"
+    mutex: {
+      shape: class
+      label: "pthread_mutex_t mutex"
+      -state: "int (locked/unlocked)"
+      -owner: "pthread_t"
+      +lock(): "acquire exclusive access"
+      +unlock(): "release access"
+    }
+    protected: {
+      label: "Critical Section"
+      width: 320
+      code: |'c
+        pthread_mutex_lock(&pool->mutex);
+        // Only ONE thread here at a time
+        void* block = pool->free_list_head;
+        pool->free_list_head = *(void**)block;
+        pthread_mutex_unlock(&pool->mutex);
+      '|
+      style.fill: "#d4edda"
+    }
+    mutex -> protected
+  }
+}
+pool_state.free_list_head -> thread_a.a_read: "Thread A reads" {
+  style.stroke: "#ff6b6b"
+  style.stroke-width: 3
+}
+pool_state.free_list_head -> thread_b.b_read: "Thread B reads" {
+  style.stroke: "#ff6b6b"
+  style.stroke-width: 3
+}
+thread_a.a_write -> pool_state.free_list_head: "Thread A writes" {
+  style.stroke: "#ff6b6b"
+  style.stroke-width: 3
+  style.stroke-dash: 4
+}
+thread_b.b_write -> pool_state.free_list_head: "Thread B writes (RACE!)" {
+  style.stroke: "#ff6b6b"
+  style.stroke-width: 3
+  style.stroke-dash: 4
+}
+legend: {
+  near: bottom-right
+  label: "Legend"
+  shared: "Red = Shared Mutable State"
+  danger: "Dashed = Race Condition"
+  safe: "Green = Protected Access"
+  shared.style.fill: "#ff6b6b"
+  danger.style.stroke-dash: 4
+  safe.style.fill: "#d4edda"
+}

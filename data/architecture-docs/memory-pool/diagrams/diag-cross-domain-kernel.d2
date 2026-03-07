@@ -1,0 +1,189 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Memory Pool vs Linux Slab Allocator
+  ### Same Patterns, Different Scale
+| {near: top-center}
+row_compare: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  your_pool: {
+    direction: down
+    label: "Your Pool Allocator\n(userspace)"
+    pool_struct: {
+      shape: sql_table
+      label: "MemoryPool (memory_pool.h)"
+      f0: "0x00 | void*         | chunks"
+      f1: "0x08 | size_t        | block_size"
+      f2: "0x10 | size_t        | total_capacity"
+      f3: "0x18 | size_t        | allocated"
+      f4: "0x20 | void*         | free_list_head"
+      f5: "0x28 | uint64_t*     | allocated_map"
+      f6: "0x30 | pthread_mutex | mutex"
+      sz: "Total: ~56 bytes"
+    }
+    free_list_visual: {
+      label: "Free List (Intrusive)"
+      width: 280
+      code: |'c
+        // Blocks threaded through free memory
+        Block* head = pool->free_list_head;
+        while (head) {
+            head = *(Block**)head;  // next ptr
+        }
+      '|
+    }
+    alloc_path: {
+      label: "Allocation Path"
+      width: 280
+      code: |'c
+        pthread_mutex_lock(&pool->mutex);
+        void* block = pool->free_list_head;
+        pool->free_list_head = *(void**)block;
+        bitmap_set(pool->allocated_map, index);
+        pthread_mutex_unlock(&pool->mutex);
+        return block;
+      '|
+    }
+    debug_features: {
+      label: "Debug Features"
+      width: 280
+      code: |'c
+        #ifdef POOL_DEBUG
+        #define POISON_PATTERN   0xDE
+        #define CANARY_VALUE     0xCAFEBABEDEADBEEF
+        // Poison on free, check on alloc
+        // Canaries at block boundaries
+        #endif
+      '|
+    }
+  }
+  linux_slab: {
+    direction: down
+    label: "Linux Slab Allocator\n(kernel)"
+    kmem_cache: {
+      shape: sql_table
+      label: "struct kmem_cache (slab.h)"
+      f0: "0x00 | char[32]      | name"
+      f1: "0x20 | unsigned int  | object_size"
+      f2: "0x24 | unsigned int  | size"
+      f3: "0x28 | gfp_t         | allocflags"
+      f4: "0x2C | unsigned int  | cpu_partial"
+      f5: "0x30 | unsigned int  | cpu_partial"
+      f6: "0x38 | struct kmem_cache_cpu *cpu_slab"
+      f7: "0x40 | unsigned long | flags"
+      sz: "Total: ~200+ bytes"
+    }
+    per_cpu_visual: {
+      label: "Per-CPU Freelist"
+      width: 280
+      code: |'c
+        // Each CPU has its own freelist
+        struct kmem_cache_cpu *c = 
+            this_cpu_ptr(s->cpu_slab);
+        void *obj = c->freelist;
+        c->freelist = next_object(obj);
+        // NO LOCKS in fast path!
+      '|
+    }
+    alloc_path: {
+      label: "Allocation Path (kmalloc)"
+      width: 280
+      code: |'c
+        // Fast path: per-CPU freelist
+        void *obj = c->freelist;
+        if (likely(obj)) {
+            c->freelist = get_freepointer(s, obj);
+            return obj;  // ~15 instructions
+        }
+        // Slow path: __slab_alloc
+      '|
+    }
+    debug_features: {
+      label: "Debug Features (CONFIG_SLUB_DEBUG)"
+      width: 280
+      code: |'c
+        #define POISON_FREE     0x6b  // 'k'
+        #define POISON_RED      0xa5  // redzone
+        #define SLUB_REDZONE    // padding check
+        #define SLUB_POISON     // use-after-free
+        #define SLUB_TRACE      // alloc tracking
+      '|
+    }
+  }
+}
+arrow_same_pattern: {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  same1: {
+    label: "Intrusive Free List"
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    width: 200
+  }
+  same2: {
+    label: "O(1) Alloc/Free"
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    width: 200
+  }
+  same3: {
+    label: "Memory Poisoning"
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    width: 200
+  }
+}
+your_pool.free_list_visual -> same1: "identical pattern"
+your_pool.alloc_path -> same2: "same complexity"
+your_pool.debug_features -> same3: "same technique"
+diff_section: {
+  direction: right
+  your_mutex: {
+    label: "Your Approach\npthread_mutex_t"
+    width: 180
+    mutex_code: |'c
+      // Single global lock
+      // ~20-30ns overhead
+      // Simple, correct
+    '|
+  }
+  linux_percpu: {
+    label: "Linux Approach\nPer-CPU Caches"
+    width: 180
+    percpu_code: |'c
+      // Per-CPU freelists
+      // ~5-10ns overhead
+      // Lock-free fast path
+      // Complex slow path
+    '|
+  }
+  your_mutex -> linux_percpu: "Evolution" {
+    style.stroke-dash: 4
+    style.stroke: "#FF9800"
+  }
+}
+legend: {
+  near: bottom-center
+  style.fill: "#FFF3E0"
+  style.stroke: "#FF9800"
+  legend_title: "Key Insight"
+  legend_content: |md
+    **You built what the Linux kernel uses.**
+    Your pool allocator uses the same fundamental techniques as `kmalloc`:
+    - Fixed-size blocks → O(1) operations
+    - Intrusive free list → No external metadata
+    - Memory poisoning → Use-after-free detection
+    The kernel just adds scale optimizations:
+    - Per-CPU caches eliminate lock contention
+    - Multiple slabs per size class
+    - NUMA-aware allocation
+  |
+}

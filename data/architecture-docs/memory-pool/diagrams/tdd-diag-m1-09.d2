@@ -1,0 +1,215 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+title: {
+  near: top-center
+  label: |md
+    # Double-Free Detection Flow
+    **Component:** Memory Allocator Security Layer  
+    **Mechanism:** Bitmap-based state tracking to prevent heap corruption and Use-After-Free (UAF).
+  |
+  style: {
+    stroke-width: 0
+    font-size: 24
+  }
+}
+
+# --- STATES ---
+
+initial: ● {
+  shape: circle
+  style.fill: "#4CAF50"
+  style.stroke: "#2E7D32"
+}
+
+calculating: "Calculating Index" {
+  tooltip: "Converts raw pointer to pool-relative block index"
+  style.fill: "#BBDEFB"
+  style.stroke: "#1976D2"
+}
+
+checking: "Bitmap Check\n(Bit-masking & Offset)" {
+  shape: diamond
+  style.fill: "#FFF9C4"
+  style.stroke: "#F9A825"
+  style.bold: true
+}
+
+allocated_state: "BIT IS 1\n(Logical: Allocated)" {
+  shape: rectangle
+  style.fill: "#C8E6C9"
+  style.stroke: "#388E3C"
+  style.double-border: true
+}
+
+free_state: "BIT IS 0\n(Logical: Already Free)" {
+  shape: rectangle
+  style.fill: "#FFCDD2"
+  style.stroke: "#D32F2F"
+  style.double-border: true
+}
+
+error_double_free: "FATAL ERROR:\nDouble-Free Detected" {
+  shape: hexagon
+  style.fill: "#D32F2F"
+  style.stroke: "#B71C1C"
+  style.font-color: white
+  style.bold: true
+}
+
+clearing_bit: "Update Metadata\nMARK BIT = 0" {
+  tooltip: "Atomically marking block as free"
+  style.fill: "#B2DFDB"
+  style.stroke: "#00796B"
+}
+
+pushing_free_list: {
+  label: |md
+    ### Freelist Update
+    `node->next = pool->head;`
+    `pool->head = node;`
+  |
+  style.fill: "#E1BEE7"
+  style.stroke: "#7B1FA2"
+}
+
+decrementing: "Update Counters\nalloc_count--" {
+  style.fill: "#FFCCBC"
+  style.stroke: "#E64A19"
+}
+
+success: "SUCCESS\nMemory Released" {
+  shape: circle
+  style.fill: "#4CAF50"
+  style.stroke: "#2E7D32"
+  style.font-color: white
+}
+
+returned_false: "ABORT\nSecurity Violation" {
+  shape: circle
+  style.fill: "#757575"
+  style.stroke: "#424242"
+  style.font-color: white
+}
+
+# --- TRANSITIONS ---
+
+initial -> calculating: "pool_free(pool, ptr)"
+
+calculating -> checking: "idx = (ptr - data) / sz"
+
+checking -> allocated_state: "Test Bit (idx) == 1" {
+  style.stroke: green
+  style.bold: true
+}
+
+checking -> free_state: "Test Bit (idx) == 0" {
+  style.stroke: red
+  style.stroke-dash: 3
+}
+
+allocated_state -> clearing_bit: "Valid Free Request"
+
+free_state -> error_double_free: "CRITICAL: Double Free" {
+  style.stroke: red
+  style.animated: true
+}
+
+error_double_free -> returned_false: "SIGABRT / LOG"
+
+clearing_bit -> pushing_free_list
+
+pushing_free_list -> decrementing
+
+decrementing -> success
+
+# --- ANNOTATIONS & LOGIC ---
+
+legend: {
+  near: bottom-right
+  label: |md
+    ### Bitmap State Invariants
+    | Bit Value | Logical State | Memory Availability |
+    | :--- | :--- | :--- |
+    | **0** | FREE | Available for allocation |
+    | **1** | ALLOCATED | Owned by application |
+
+    **Security Rule:** 
+    `Free(p)` is only idempotent if the bitmap tracks state. 
+    Without this check, the same pointer is added to the 
+    free-list twice, creating a **circular linked list**.
+  |
+  style.fill: "#FAFAFA"
+  style.stroke: "#BDBDBD"
+  style.stroke-dash: 3
+}
+
+invariant_box: {
+  near: top-right
+  shape: rectangle
+  label: |md
+    ### PRIMARY INVARIANT
+    Every block exists in exactly one state:
+    1. **In Free-List** (bit=0)
+    2. **In Use** (bit=1)
+    
+    *Prevents "Next-Pointer" corruption.*
+  |
+  style.fill: "#FFF3E0"
+  style.stroke: "#FF6F00"
+  style.stroke-width: 2
+}
+
+index_calc_logic: |cpp
+uintptr_t offset = (uintptr_t)ptr - (uintptr_t)pool->data;
+size_t index = offset / pool->block_size;
+| 
+index_calc_logic.near: calculating
+index_calc_logic.style: {
+  fill: "#E3F2FD"
+  stroke: "#1565C0"
+  font-size: 11
+}
+
+bitmap_ops_logic: |cpp
+// idx is block index
+uint64_t *word = &map[idx >> 6];
+uint64_t mask = 1ULL << (idx & 63);
+
+// Atomic Clear (Mark Free)
+__atomic_and_fetch(word, ~mask, __ATOMIC_RELAXED);
+| 
+bitmap_ops_logic.near: clearing_bit
+bitmap_ops_logic.style: {
+  fill: "#E8F5E9"
+  stroke: "#2E7D32"
+  font-size: 11
+}
+
+# --- ILLEGAL PATHWAY ---
+
+(free_state -> clearing_bit)[0]: "ILLEGAL TRANSITION" {
+  style: {
+    stroke: red
+    stroke-dash: 5
+    opacity: 0.4
+  }
+}
+
+# Metadata Layout Reference
+metadata: {
+  shape: sql_table
+  near: legend
+  style.fill: "#E1F5FE"
+  label: "Pool Metadata Struct"
+  
+  addr_base: "uintptr_t" {constraint: "8 bytes"}
+  size_map: "uint64_t*" {constraint: "8 bytes"}
+  sz_block: "size_t" {constraint: "8 bytes"}
+  cnt_alloc: "atomic_size_t" {constraint: "8 bytes"}
+}

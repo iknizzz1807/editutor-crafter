@@ -1,0 +1,286 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Memory Poisoning: Use-After-Free Detection
+| {near: top-center}
+
+direction: right
+
+classes: {
+  header: {
+    style: {
+      fill: "#7C3AED"
+      font-color: white
+      bold: true
+      font-size: 20
+    }
+  }
+  poison: {
+    style: {
+      fill: "#DE7E7E"
+      font: mono
+      font-size: 16
+    }
+  }
+  free-ptr: {
+    style: {
+      fill: "#F59E0B"
+      font: mono
+      font-size: 16
+    }
+  }
+  user-data: {
+    style: {
+      fill: "#60A5FA"
+      font: mono
+      font-size: 16
+    }
+  }
+  check-pass: {
+    style: {
+      fill: "#22C55E"
+      font-color: white
+      bold: true
+    }
+  }
+  check-fail: {
+    style: {
+      fill: "#EF4444"
+      font-color: white
+      bold: true
+    }
+  }
+  arrow-label: {
+    style: {
+      font-size: 14
+      bold: true
+    }
+  }
+}
+
+# === STEP 1: User Allocates Block ===
+step1: "1. ALLOCATE" {
+  direction: down
+  step1_block: {
+    shape: rectangle
+    width: 400
+    height: 120
+    direction: down
+    step1_header: "Block Memory (64 bytes)" {
+      class: header
+    }
+    step1_user: |md
+      `user_data[0..63]`
+      User writes arbitrary data
+    | {
+      class: user-data
+    }
+  }
+  step1_note: |md
+    User receives block and writes data.
+    Block is marked **ALLOCATED** in bitmap.
+  |
+}
+
+# === STEP 2: User Frees Block (Poison Applied) ===
+step2: "2. FREE → POISON" {
+  direction: down
+  step2_block: {
+    shape: rectangle
+    width: 400
+    height: 250
+    direction: down
+    grid-gap: 0
+    step2_header: "Block Memory (64 bytes) — AFTER FREE" {
+      class: header
+    }
+    step2_ptr: |md
+      `0x00-0x07`: `0xCAFEBABE` (next ptr)
+      Free list pointer overwrites poison
+    | {
+      class: free-ptr
+    }
+    step2_poison: |md
+      `0x08-0x3F`: `0xDE 0xDE 0xDE ...`
+      Poison pattern fills remaining bytes
+    | {
+      class: poison
+    }
+  }
+  step2_code: |md
+    c
+    // In pool_free():
+    bitmap_clear(map, index);
+    #ifdef POOL_DEBUG
+    if (pool->use_poison) {
+      memset(ptr, 0xDE, block_size);
+    }
+    #endif
+    *(void**)ptr = free_list_head;
+    free_list_head = ptr;
+    
+  |
+}
+
+# === STEP 3: Use-After-Free Write (Corruption) ===
+step3: "3. USE-AFTER-FREE WRITE" {
+  direction: down
+  step3_block: {
+    shape: rectangle
+    width: 400
+    height: 250
+    direction: down
+    grid-gap: 0
+    step3_header: "Block Memory — CORRUPTED" {
+      class: header
+      style.fill: "#DC2626"
+    }
+    step3_ptr: |md
+      `0x00-0x07`: `0xCAFEBABE` (next ptr)
+      Free list pointer unchanged
+    | {
+      class: free-ptr
+    }
+    step3_corrupt: |md
+      `0x08-0x14`: `0xDE 0xDE 0xDE ...`
+      `0x15`: `0xFF` ← **CORRUPTED!**
+      User wrote after freeing
+      `0x16-0x3F`: `0xDE 0xDE ...`
+    | {
+      class: poison
+      style.fill: "#FCA5A5"
+    }
+  }
+  step3_code: |md
+    c
+    // Bug in user code:
+    char* p = pool_alloc(&pool);
+    pool_free(&pool, p);
+    // Use-after-free WRITE:
+    p[21] = 0xFF;  // Silent corruption!
+    
+  |
+}
+
+# === STEP 4: Reallocate (Detection) ===
+step4: "4. REALLOCATE → DETECT" {
+  direction: down
+  step4_block: {
+    shape: rectangle
+    width: 400
+    height: 300
+    direction: down
+    step4_header: "Block Memory — VERIFICATION" {
+      class: header
+    }
+    step4_verify: |md
+      **Poison Verification Loop:**
+      c
+      for (i = 0; i < 64; i++) {
+        if (block[i] != 0xDE) {
+          // CORRUPTION DETECTED!
+          fprintf(stderr, "Block %p modified at offset %zu\n", block, i);
+          break;
+        }
+      }
+      
+    | {
+      style: {
+        fill: "#FEF3C7"
+        font: mono
+        font-size: 12
+      }
+    }
+    step4_result: |md
+      **Output:**
+      `WARNING: Block 0x1000 was modified`
+      `after free at offset 21`
+    | {
+      class: check-fail
+    }
+  }
+  step4_code: |md
+    c
+    // In pool_alloc():
+    pthread_mutex_unlock(&pool->mutex);
+    #ifdef POOL_DEBUG
+    if (pool->use_poison) {
+      unsigned char* bytes = block;
+      for (size_t i = 0; i < block_size; i++) {
+        if (bytes[i] != 0xDE) {
+          fprintf(stderr, "WARNING: Block %p modified after free\n", block);
+          break;
+        }
+      }
+    }
+    #endif
+    return block;
+    
+  |
+}
+
+# === Arrows between steps ===
+step1 -> step2: "pool_free()" {
+  class: arrow-label
+  style.stroke: "#7C3AED"
+  style.stroke-width: 3
+}
+step2 -> step3: "Bug: write after free" {
+  class: arrow-label
+  style.stroke: "#DC2626"
+  style.stroke-width: 3
+  style.stroke-dash: 5
+}
+step3 -> step4: "pool_alloc()" {
+  class: arrow-label
+  style.stroke: "#22C55E"
+  style.stroke-width: 3
+}
+
+# === Detection Matrix ===
+detection_matrix: "Detection Capability Matrix" {
+  near: bottom-center
+  width: 600
+  grid-rows: 5
+  grid-columns: 3
+  grid-gap: 0
+  
+  header1: "Bug Type" {class: header}
+  header2: "Detected?" {class: header}
+  header3: "How" {class: header}
+  
+  row1a: "Write-after-free" {style.fill: "#DCFCE7"}
+  row1b: "✓ YES" {class: check-pass}
+  row1c: "Poison overwritten" {style.fill: "#DCFCE7"}
+  
+  row2a: "Read-after-free" {style.fill: "#FEE2E2"}
+  row2b: "✗ NO" {class: check-fail}
+  row2c: "Pattern unchanged" {style.fill: "#FEE2E2"}
+  
+  row3a: "Partial write" {style.fill: "#FEF9C3"}
+  row3b: "~ PARTIAL" {style.fill: "#F59E0B"}
+  row3c: "Only changed bytes" {style.fill: "#FEF9C3"}
+  
+  row4a: "Write then restore" {style.fill: "#FEE2E2"}
+  row4b: "✗ NO" {class: check-fail}
+  row4c: "Pattern restored" {style.fill: "#FEE2E2"}
+}
+
+# === Legend ===
+legend: "Legend" {
+  near: bottom-right
+  poison_byte: "0xDE = Poison byte" {
+    class: poison
+  }
+  free_ptr: "Free list pointer" {
+    class: free-ptr
+  }
+  corrupt: "Corrupted byte" {
+    class: check-fail
+  }
+}

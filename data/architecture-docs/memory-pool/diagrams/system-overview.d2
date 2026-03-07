@@ -1,0 +1,339 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+row_core: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_structs: {
+    direction: down
+    label: "CORE DATA STRUCTURES"
+    memory_pool: {
+      shape: sql_table
+      label: "struct MemoryPool (memory_pool.h) [M1-M3]"
+      chunks: "Chunk*        | head of chunk registry"
+      block_size: "size_t        | aligned block size"
+      blocks_per_chunk: "size_t        | growth granularity"
+      total_capacity: "size_t        | sum of all chunk blocks"
+      allocated: "size_t        | protected by mutex"
+      free_list_head: "void*         | unified free list"
+      allocated_map: "uint64_t*     | bitmap for all blocks"
+      map_size: "size_t        | bitmap words"
+      max_chunks: "size_t        | 0 = unlimited"
+      max_bytes: "size_t        | 0 = unlimited"
+      chunk_count: "size_t        | protected by mutex"
+      mutex: "pthread_mutex_t | protects shared state"
+      debug_flags: "bool use_canaries, use_poison [M3]"
+      sz: "Total: ~136-144 bytes"
+    }
+    chunk: {
+      shape: sql_table
+      label: "struct Chunk (memory_pool.h) [M2]"
+      memory: "void*    | ptr to block storage"
+      num_blocks: "size_t   | blocks in this chunk"
+      next: "Chunk*   | next in registry"
+      sz: "Total: 24 bytes"
+    }
+    pool_config: {
+      shape: sql_table
+      label: "struct PoolConfig (memory_pool.h) [M2-M3]"
+      block_size: "size_t | requested size"
+      initial_blocks: "size_t | initial capacity"
+      max_chunks: "size_t | chunk limit"
+      max_bytes: "size_t | byte limit"
+      debug_opts: "bool use_canaries, use_poison [M3]"
+      sz: "Total: 32+ bytes"
+    }
+    pool_stats: {
+      shape: sql_table
+      label: "struct PoolStats (memory_pool.h) [M2]"
+      total_blocks: "size_t | capacity"
+      allocated: "size_t | in use"
+      free: "size_t | available"
+      chunk_count: "size_t | num chunks"
+      block_size: "size_t | bytes per block"
+      total_bytes: "size_t | block memory"
+      overhead_bytes: "size_t | metadata size"
+      sz: "Total: 56 bytes"
+    }
+  }
+  layer_api: {
+    direction: down
+    label: "PUBLIC API (memory_pool.h)"
+    init_funcs: {
+      shape: class
+      label: "Initialization [M1-M3]"
+      +pool_init(pool, block_size, initial_blocks, max_chunks, max_bytes): "bool"
+      +pool_init_ex(pool, config): "bool"
+      +pool_destroy(pool): "void"
+    }
+    alloc_funcs: {
+      shape: class
+      label: "Allocation [M1-M3]"
+      +pool_alloc(pool): "void* | O(1), thread-safe [M3]"
+      +pool_free(pool, ptr): "bool | validates, thread-safe [M3]"
+    }
+    query_funcs: {
+      shape: class
+      label: "Query [M1-M2]"
+      +pool_get_stats(pool, stats): "void | atomic snapshot [M3]"
+      +pool_get_free_count(pool): "size_t"
+      +pool_get_allocated_count(pool): "size_t"
+      +pool_get_capacity(pool): "size_t"
+    }
+  }
+}
+row_internal: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_helpers: {
+    direction: down
+    label: "INTERNAL HELPERS (memory_pool.c)"
+    bitmap_ops: {
+      shape: class
+      label: "Bitmap Operations [M1]"
+      -bitmap_set(map, index): "void | mark allocated"
+      -bitmap_clear(map, index): "void | mark free"
+      -bitmap_test(map, index): "bool | check state"
+    }
+    alignment: {
+      shape: class
+      label: "Alignment [M1]"
+      -align_up(value, alignment): "size_t | round up"
+    }
+    chunk_ops: {
+      shape: class
+      label: "Chunk Management [M2]"
+      -grow_pool(pool): "bool | allocate new chunk"
+      -find_block_index(pool, ptr): "ssize_t | O(chunks)"
+    }
+  }
+  layer_debug: {
+    direction: down
+    label: "DEBUG INFRASTRUCTURE [M3]"
+    debug_helpers: {
+      shape: class
+      label: "Debug Helpers (POOL_DEBUG)"
+      -write_canaries(block, size): "void"
+      -verify_canaries(block, size): "void | reports corruption"
+      -check_poison(block, size): "void | detects UAF writes"
+    }
+    constants: {
+      shape: sql_table
+      label: "Debug Constants [M3]"
+      poison: "0xDE | fill pattern"
+      canary: "0xCAFEBABEDEADBEEF | boundary value"
+      canary_size: "8 bytes | front + back"
+    }
+  }
+}
+row_blocks: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_block_states: {
+    direction: down
+    label: "BLOCK MEMORY LAYOUT"
+    free_block: {
+      shape: sql_table
+      label: "Free Block (on free list)"
+      offset_0: "0x00 | void* next | free list ptr"
+      offset_8: "0x08 | ...unused... | remaining space"
+      note: "Intrusive linked list node"
+    }
+    alloc_block: {
+      shape: sql_table
+      label: "Allocated Block (user data)"
+      offset_0: "0x00 | user_data[0..N-1] | caller owns"
+      note: "Free list ptr overwritten"
+    }
+    canary_block: {
+      shape: sql_table
+      label: "Block with Canaries [M3]"
+      front: "0x00 | canary (8B) | underflow guard"
+      user: "0x08 | user_data | usable size - 16"
+      back: "N-8 | canary (8B) | overflow guard"
+      ptr_adj: "User ptr = block + 8"
+    }
+  }
+  layer_bitmap: {
+    direction: down
+    label: "BITMAP STRUCTURE"
+    bitmap_layout: {
+      shape: sql_table
+      label: "allocated_map[] Layout"
+      word0: "map[0] | bits 0-63 | blocks 0-63"
+      word1: "map[1] | bits 64-127 | blocks 64-127"
+      more: "... | ... | ..."
+      formula: "map_size = ceil(capacity / 64)"
+      access: "word = index/64, bit = index%64"
+    }
+  }
+}
+row_chunks: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_registry: {
+    direction: down
+    label: "CHUNK REGISTRY [M2]"
+    chunk_list: {
+      shape: class
+      label: "Chunk Linked List"
+      head: "pool->chunks | LIFO prepend"
+      traversal: "for (c=chunks; c; c=c->next)"
+      destruction: "walk list, free memory+metadata"
+    }
+    growth_flow: {
+      shape: class
+      label: "grow_pool() Flow"
+      check_limits: "1. Check max_chunks, max_bytes"
+      alloc_meta: "2. malloc(sizeof(Chunk))"
+      alloc_blocks: "3. aligned_alloc(block_size * n)"
+      expand_bitmap: "4. realloc(allocated_map)"
+      thread_free: "5. Add blocks to free list"
+    }
+  }
+  layer_freelist: {
+    direction: down
+    label: "UNIFIED FREE LIST [M2]"
+    cross_chunk: {
+      shape: class
+      label: "Cross-Chunk Free List"
+      concept: "Blocks from ANY chunk on same list"
+      example: "Chunk0.block -> Chunk1.block -> NULL"
+      key_insight: "Chunk boundaries transparent to allocator"
+    }
+    alloc_flow: {
+      shape: class
+      label: "pool_alloc() Flow [M1-M3]"
+      check_null: "if (pool == NULL) return NULL"
+      lock: "pthread_mutex_lock [M3]"
+      check_empty: "if (free_list_head == NULL)"
+      grow: "  grow_pool() or return NULL"
+      pop: "block = free_list_head"
+      advance: "free_list_head = *block"
+      track: "allocated++; bitmap_set()"
+      unlock: "pthread_mutex_unlock [M3]"
+      debug: "check_poison, write_canaries [M3]"
+      return_block: "return block (or adjusted ptr)"
+    }
+  }
+}
+row_threading: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_mutex: {
+    direction: down
+    label: "THREAD SAFETY [M3]"
+    protected_state: {
+      shape: sql_table
+      label: "Mutex-Protected State"
+      state1: "free_list_head | modified on every alloc/free"
+      state2: "allocated counter | modified on every alloc/free"
+      state3: "allocated_map bitmap | modified on every alloc/free"
+      state4: "chunk registry | modified during growth"
+    }
+    lock_pattern: {
+      shape: class
+      label: "Lock/Unlock Pattern"
+      acquire: "pthread_mutex_lock(&pool->mutex)"
+      critical: "... access shared state ..."
+      early_return: "ALL paths must unlock before return"
+      release: "pthread_mutex_unlock(&pool->mutex)"
+    }
+  }
+  layer_stress: {
+    direction: down
+    label: "STRESS TESTING [M3]"
+    thread_context: {
+      shape: sql_table
+      label: "ThreadContext (stress_test.c)"
+      pool: "MemoryPool* | shared pool"
+      thread_id: "int | unique identifier"
+      ops_completed: "size_t | counter"
+      held_blocks: "void*[10] | blocks held"
+      held_count: "size_t | num held"
+      corruption: "size_t | detected count"
+    }
+    integrity_check: {
+      shape: class
+      label: "Data Integrity"
+      pattern: "0xAB XOR thread_id | unique per thread"
+      verify: "Check before every free"
+      detect: "Cross-thread corruption"
+    }
+  }
+}
+row_errors: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_errors: {
+    direction: down
+    label: "ERROR HANDLING"
+    error_matrix: {
+      shape: sql_table
+      label: "Error Detection Matrix"
+      null_pool: "NULL check | silent return"
+      invalid_ptr: "find_block_index < 0 | stderr msg"
+      double_free: "bitmap_test == false | stderr msg"
+      exhaustion: "free_list_head == NULL | return NULL"
+      canary_corrupt: "canary != magic | stderr warning"
+      uaf_write: "poison pattern changed | stderr warning"
+      leak: "allocated > 0 at destroy | stderr warning"
+    }
+  }
+  layer_limits: {
+    direction: down
+    label: "GROWTH LIMITS [M2]"
+    limit_checks: {
+      shape: class
+      label: "Limit Enforcement"
+      chunk_limit: "if (max_chunks > 0 && chunk_count >= max_chunks)"
+      byte_limit: "if (max_bytes > 0 && current + new > max_bytes)"
+      fail: "return NULL from pool_alloc()"
+      invariant: "No partial allocation on failure"
+    }
+  }
+}
+connections: {
+  direction: down
+  # Struct relationships
+  layer_structs.memory_pool -> layer_structs.chunk: "chunks* | registry"
+  layer_structs.pool_config -> layer_api.init_funcs: "configures"
+  # API to helpers
+  layer_api.init_funcs -> layer_helpers.bitmap_ops: "uses"
+  layer_api.alloc_funcs -> layer_helpers.chunk_ops: "uses"
+  layer_api.alloc_funcs -> layer_helpers.bitmap_ops: "uses"
+  # Block states
+  layer_blocks.free_block -> layer_blocks.alloc_block: "pool_alloc() | overwrites ptr"
+  layer_blocks.alloc_block -> layer_blocks.free_block: "pool_free() | writes next ptr"
+  layer_blocks.canary_block -> layer_blocks.alloc_block: "M3 only | adjusted ptr"
+  # Chunk management
+  layer_registry.chunk_list -> layer_registry.growth_flow: "triggers when empty"
+  layer_helpers.chunk_ops -> layer_registry.growth_flow: "implements"
+  # Free list
+  layer_freelist.cross_chunk -> layer_freelist.alloc_flow: "uses"
+  layer_api.alloc_funcs -> layer_freelist.alloc_flow: "implements"
+  # Threading
+  layer_threading.protected_state -> layer_threading.lock_pattern: "guarded by"
+  layer_api.alloc_funcs -> layer_threading.lock_pattern: "follows"
+  layer_threading.lock_pattern -> layer_threading.stress: "verified by"
+  # Debug
+  layer_debug.debug_helpers -> layer_blocks.canary_block: "manages"
+  layer_helpers.bitmap_ops -> layer_errors.error_matrix: "enables double-free detect"
+}
+milestone_index: {
+  shape: sql_table
+  label: "Milestone Index"
+  m1: "M1 | memory-pool-m1 | Fixed-Size Aligned Pool"
+  m2: "M2 | memory-pool-m2 | Pool Growth & Lifecycle"
+  m3: "M3 | memory-pool-m3 | Thread Safety & Debugging"
+}

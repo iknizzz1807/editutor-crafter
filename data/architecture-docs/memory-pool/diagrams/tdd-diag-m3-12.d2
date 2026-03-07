@@ -1,0 +1,300 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    thread0: "#E74C3C"
+    thread1: "#3498DB"
+    thread2: "#2ECC71"
+    thread3: "#F39C12"
+    allocated: "#9B59B6"
+    freed: "#1ABC9C"
+    warning: "#E67E22"
+    mutex: "#34495E"
+  }
+}
+
+title: |md
+  # Thread Worker Data Integrity Pattern
+  **Per-Thread Unique Pattern Detection for Cross-Thread Corruption**
+| {near: top-center}
+
+direction: right
+
+classes: {
+  thread_box: {
+    style: {
+      stroke-width: 2
+      border-radius: 8
+      font: mono
+    }
+  }
+  block: {
+    shape: rectangle
+    style: {
+      stroke-width: 2
+      border-radius: 4
+      font: mono
+    }
+  }
+  decision: {
+    shape: diamond
+    style: {
+      stroke-width: 2
+    }
+  }
+  action: {
+    style: {
+      fill: "#ECF0F1"
+      stroke: "#34495E"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  header: {
+    style: {
+      bold: true
+      underline: true
+      fill: "#D5D8DC"
+    }
+  }
+}
+
+Thread_Context: {
+  label: "Thread Context"
+  style.fill: "${colors.mutex}"
+  style.font-color: white
+  style.border-radius: 8
+  thread_id: "thread_id: 0..7"
+  my_pattern: |md
+    ### Pattern Logic
+    `my_pattern = 0xAB XOR thread_id`
+    - Thread 0 → 0xAB
+    - Thread 1 → 0xAA
+    - Thread 2 → 0xA9
+    - Thread 3 → 0xA8
+  |
+  held_blocks: "held_blocks[10]: array"
+  held_count: "held_count: 0..10"
+}
+
+Pattern_Computation: {
+  label: "Step 1: Compute Unique Pattern"
+  class: action
+  formula: |c
+unsigned char my_pattern;
+my_pattern = 0xAB ^ thread_id;
+
+/* 
+Why XOR?
+- Each thread gets DISTINCT pattern
+- Simple computation (1 instruction)
+- Detects cross-thread writes
+*/
+|
+}
+
+Allocate_Block: {
+  label: "Step 2: Allocate Block"
+  class: action
+  call: "block = pool_alloc(pool)"
+  check: "if (block != NULL)"
+  style.fill: "#D5F5E3"
+}
+
+Write_Pattern: {
+  label: "Step 3: Write Pattern to Block"
+  style.fill: "${colors.allocated}"
+  style.font-color: white
+  style.border-radius: 8
+  code: |c
+memset(block, my_pattern, BLOCK_SIZE);
+|
+  block_visual: {
+    shape: rectangle
+    label: "Block Memory (64 bytes)"
+    style.fill: "${colors.allocated}"
+    style.stroke: "${colors.allocated}"
+    b0: "[0] 0xAB" {style.fill: "${colors.thread0}"}
+    b1: "[1] 0xAB"
+    b2: "[2] 0xAB"
+    dots: "..."
+    b63: "[63] 0xAB"
+  }
+}
+
+Store_Held: {
+  label: "Step 4: Store in held_blocks[]"
+  class: action
+  code: |c
+held_blocks[held_count++] = block;
+|
+}
+
+Verify_Pattern: {
+  label: "Step 5: Verify Before Free"
+  style.fill: "${colors.freed}"
+  style.border-radius: 8
+  code: |c
+unsigned char* bytes = block;
+for (size_t j = 0; j < BLOCK_SIZE; j++) {
+  if (bytes[j] != my_pattern) {
+    // CORRUPTION DETECTED!
+    fprintf(stderr, "Thread %d: CORRUPTION at %p!\n", thread_id, block);
+    corruption_detected++;
+    break;
+  }
+}
+|
+}
+
+Corruption_Check: {
+  label: "Pattern Match?"
+  shape: diamond
+  style.fill: "#FDEDEC"
+  style.stroke: "${colors.thread0}"
+}
+
+Corruption_Report: {
+  label: "Report Corruption"
+  style.fill: "${colors.warning}"
+  style.font-color: white
+  style.border-radius: 8
+  example: |md
+    **Example Output:**
+    Thread 3: CORRUPTION at 0x7f8a offset 20!
+    Expected 0xA8, got 0xAA
+    
+    **Diagnosis:**
+    - Expected 0xA8 (T3)
+    - Got 0xAA (T1)
+    - **Race condition / Use-after-free**
+  |
+}
+
+Free_Block: {
+  label: "Step 6: Free Block"
+  class: action
+  call: "pool_free(pool, block)"
+  update: "held_blocks[idx] = held_blocks[--held_count]"
+  style.fill: "#D5F5E3"
+}
+
+Thread_Context -> Pattern_Computation: "initialize"
+Pattern_Computation -> Allocate_Block: "compute\nmy_pattern"
+Allocate_Block -> Write_Pattern: "block\nallocated"
+Write_Pattern -> Store_Held: "pattern\nwritten"
+Store_Held -> Verify_Pattern: "before\nfree"
+Verify_Pattern -> Corruption_Check: "verify\neach byte"
+Corruption_Check -> Corruption_Report: "MISMATCH" {style.stroke: "${colors.thread0}"; style.stroke-width: 3}
+Corruption_Check -> Free_Block: "MATCH" {style.stroke: "${colors.freed}"}
+Corruption_Report -> Free_Block: "continue\nanyway"
+
+Cross_Thread_Detection: {
+  label: "Cross-Thread Corruption Detection"
+  style.fill: "#FEF9E7"
+  style.stroke: "${colors.warning}"
+  style.stroke-dash: 4
+  style.border-radius: 8
+  scenario: |md
+    **Scenario: Thread 1 corrupts Thread 3's block**
+    1. Thread 3 allocates block, writes 0xA8
+    2. Thread 3 frees block (to pool)
+    3. **BUG:** Thread 3's pointer still held
+    4. Thread 1 allocates same block, writes 0xAA
+    5. Thread 3 tries to verify before its own "free"
+    6. Sees 0xAA instead of 0xA8 -> **ALARM**
+  |
+}
+
+Pattern_Table: {
+  label: "Thread Pattern Lookup Table"
+  style.fill: "#F8F9FA"
+  style.border-radius: 8
+  grid-columns: 4
+  grid-gap: 0
+  th0: "Thread ID" {class: header}
+  th1: "XOR Mask" {class: header}
+  th2: "Pattern" {class: header}
+  th3: "Binary" {class: header}
+  t0: "0"; t0m: "0xAB ^ 0"; t0p: "0xAB" {style.fill: "${colors.thread0}"; style.font-color: white}; t0b: "10101011"
+  t1: "1"; t1m: "0xAB ^ 1"; t1p: "0xAA" {style.fill: "${colors.thread1}"; style.font-color: white}; t1b: "10101010"
+  t2: "2"; t2m: "0xAB ^ 2"; t2p: "0xA9" {style.fill: "${colors.thread2}"; style.font-color: white}; t2b: "10101001"
+  t3: "3"; t3m: "0xAB ^ 3"; t3p: "0xA8" {style.fill: "${colors.thread3}"; style.font-color: white}; t3b: "10101000"
+  t4: "4"; t4m: "0xAB ^ 4"; t4p: "0xAF"; t4b: "10101111"
+  t5: "5"; t5m: "0xAB ^ 5"; t5p: "0xAE"; t5b: "10101110"
+  t6: "6"; t6m: "0xAB ^ 6"; t6p: "0xAD"; t6b: "10101101"
+  t7: "7"; t7m: "0xAB ^ 7"; t7p: "0xAC"; t7b: "10101100"
+}
+
+Memory_State_Before_Verify: {
+  label: "Memory State Before Verification"
+  style.fill: "#F8F9FA"
+  style.border-radius: 8
+  normal: {
+    label: "Normal Case"
+    style.fill: "#D5F5E3"
+    mem: {
+      shape: rectangle
+      m0: "[0] 0xA8"
+      m1: "[1] 0xA8"
+      dots: "..."
+      m63: "[63] 0xA8"
+    }
+    verify: "Status: ✓ All 0xA8"
+  }
+  corrupted: {
+    label: "Corrupted Case"
+    style.fill: "#FDEDEC"
+    mem: {
+      shape: rectangle
+      m0: "[0] 0xA8"
+      m1: "[1] 0xA8"
+      dots: "..."
+      m20: "[20] 0xAA" {style.fill: "${colors.thread1}"; style.font-color: white; style.bold: true}
+      dots2: "..."
+      m63: "[63] 0xAA" {style.fill: "${colors.thread1}"; style.font-color: white}
+    }
+    verify: "Status: ✗ byte[20] is 0xAA!"
+  }
+}
+
+Stress_Test_Loop: {
+  label: "Stress Test Main Loop"
+  style.fill: "#EBF5FB"
+  style.border-radius: 8
+  code: |c
+for (size_t i = 0; i < OPS_PER_THREAD; i++) {
+  if (rand() % 2 == 0) {
+    void* b = pool_alloc(pool);
+    if (b) memset(b, my_pattern, BSIZE);
+  } else {
+    // Verify before free
+    verify(block, my_pattern);
+    pool_free(pool, block);
+  }
+}
+|
+}
+
+Why_This_Works: {
+  label: "Why This Detects Corruption"
+  style.fill: "#F5EEF8"
+  style.border-radius: 8
+  reasons: {
+    r1: "1. Unique Patterns: Distinct per-thread bitmask"
+    r2: "2. Full Coverage: Checks every byte in block"
+    r3: "3. Attribution: Wrong pattern identifies the 'other' thread"
+  }
+  limitations: {
+    label: "Limitations"
+    style.fill: "#FDEDEC"
+    lim1: "Does NOT detect read-after-free"
+    lim2: "Pinpoints corruption, not the exact source code line"
+  }
+}
+
+Cross_Thread_Detection -> Memory_State_Before_Verify: "visualize"
+Pattern_Table -> Memory_State_Before_Verify: "reference"
+Stress_Test_Loop -> Why_This_Works: "design rationale"

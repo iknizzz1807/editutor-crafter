@@ -1,0 +1,204 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Pool Statistics: What to Track
+  **Memory Pool Telemetry Architecture**
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  pool_struct: {
+    direction: down
+    label: "Internal Pool State (memory_pool.c)"
+    pool: {
+      shape: sql_table
+      label: "MemoryPool (pool->)"
+      f0: "0x00 | Chunk*        | chunks"
+      f1: "0x08 | size_t        | block_size"
+      f2: "0x10 | size_t        | blocks_per_chunk"
+      f3: "0x18 | size_t        | total_capacity"
+      f4: "0x20 | size_t        | allocated"
+      f5: "0x28 | void*         | free_list_head"
+      f6: "0x30 | uint64_t*     | allocated_map"
+      f7: "0x38 | size_t        | map_size"
+      f8: "0x40 | size_t        | max_chunks"
+      f9: "0x48 | size_t        | max_bytes"
+      f10: "0x50 | size_t       | chunk_count"
+      f11: "0x58 | pthread_mutex_t | mutex"
+      sz: "Total: 96+ bytes"
+    }
+  }
+  stats_struct: {
+    direction: down
+    label: "Public API (memory_pool.h)"
+    stats: {
+      shape: sql_table
+      label: "PoolStats (output)"
+      f0: "0x00 | size_t | total_blocks"
+      f1: "0x08 | size_t | allocated_blocks"
+      f2: "0x10 | size_t | free_blocks"
+      f3: "0x18 | size_t | chunk_count"
+      f4: "0x20 | size_t | block_size"
+      f5: "0x28 | size_t | total_bytes"
+      f6: "0x30 | size_t | overhead_bytes"
+      sz: "Total: 56 bytes"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  computation: {
+    direction: down
+    label: "Metric Computation Logic"
+    width: 420
+    code: |'c
+      void pool_get_stats(MemoryPool* pool, PoolStats* stats) {
+          pthread_mutex_lock(&pool->mutex);
+          // Direct copies
+          stats->total_blocks    = pool->total_capacity;
+          stats->allocated_blocks = pool->allocated;
+          stats->chunk_count     = pool->chunk_count;
+          stats->block_size      = pool->block_size;
+          // Computed values
+          stats->free_blocks     = pool->total_capacity - pool->allocated;
+          stats->total_bytes     = pool->total_capacity * pool->block_size;
+          stats->overhead_bytes  = pool->chunk_count * sizeof(Chunk) 
+                                 + pool->map_size * sizeof(uint64_t);
+          pthread_mutex_unlock(&pool->mutex);
+      }
+    '|
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  direct: {
+    direction: down
+    label: "Direct Mapping (O(1))"
+    d1: {
+      shape: sql_table
+      label: "total_blocks"
+      r1: "Source: pool->total_capacity"
+      r2: "Type: size_t"
+      r3: "Mutex: REQUIRED"
+    }
+    d2: {
+      shape: sql_table
+      label: "allocated_blocks"
+      r1: "Source: pool->allocated"
+      r2: "Type: size_t"
+      r3: "Mutex: REQUIRED"
+    }
+    d3: {
+      shape: sql_table
+      label: "chunk_count"
+      r1: "Source: pool->chunk_count"
+      r2: "Type: size_t"
+      r3: "Mutex: REQUIRED"
+    }
+  }
+  computed: {
+    direction: down
+    label: "Computed Metrics (O(1))"
+    c1: {
+      shape: sql_table
+      label: "free_blocks"
+      r1: "Formula: total_capacity - allocated"
+      r2: "Range: [0, total_capacity]"
+      r3: "Invariant: free + alloc == total"
+    }
+    c2: {
+      shape: sql_table
+      label: "total_bytes"
+      r1: "Formula: total_capacity * block_size"
+      r2: "Unit: bytes"
+      r3: "Grows with each new chunk"
+    }
+    c3: {
+      shape: sql_table
+      label: "overhead_bytes"
+      r1: "Formula: chunk_count * sizeof(Chunk)"
+      r2: "        + map_size * sizeof(uint64_t)"
+      r3: "Typical: 32 bytes/chunk + bitmap"
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  utilization: {
+    direction: down
+    label: "Derived Utilization Metric"
+    width: 380
+    util_code: |'c
+      // Not in struct - compute on demand
+      double utilization = (double)stats.allocated_blocks 
+                         / (double)stats.total_blocks * 100.0;
+      // Example output:
+      // "Pool utilization: 73.5% (735/1000 blocks)"
+      // "Memory: 64 KB blocks + 1.2 KB overhead"
+    '|
+  }
+  chunk_overhead: {
+    direction: down
+    label: "Overhead Breakdown"
+    overhead: {
+      shape: sql_table
+      label: "struct Chunk (per chunk)"
+      f0: "0x00 | void*   | memory       | 8 bytes"
+      f1: "0x08 | size_t  | num_blocks   | 8 bytes"
+      f2: "0x10 | Chunk*  | next         | 8 bytes"
+      sz: "Total: 24 bytes per chunk"
+      style.fill: "#E8F5E9"
+    }
+    bitmap: {
+      shape: sql_table
+      label: "Bitmap (shared)"
+      f0: "uint64_t allocated_map[]"
+      f1: "Size: (capacity + 63) / 64 words"
+      f2: "1 bit per block tracks state"
+      sz: "8 bytes per 64 blocks"
+      style.fill: "#E3F2FD"
+    }
+  }
+}
+row1.pool_struct.pool -> row1.stats_struct.stats: "pool_get_stats()" {
+  style.stroke: "#1976D2"
+  style.stroke-width: 2
+}
+row1.pool_struct.pool.f3 -> row1.stats_struct.stats.f0: "total_capacity" {
+  style.stroke: "#4CAF50"
+  style.stroke-dash: 3
+}
+row1.pool_struct.pool.f4 -> row1.stats_struct.stats.f1: "allocated" {
+  style.stroke: "#4CAF50"
+  style.stroke-dash: 3
+}
+row1.pool_struct.pool.f10 -> row1.stats_struct.stats.f3: "chunk_count" {
+  style.stroke: "#4CAF50"
+  style.stroke-dash: 3
+}
+legend: {
+  near: bottom-right
+  label: "Thread Safety Note"
+  content: |md
+    **All statistics require mutex lock**
+    Fields `total_capacity`, `allocated`, and
+    `chunk_count` are modified by both 
+    `pool_alloc()` and `pool_free()`.
+    Reading without lock → race condition.
+  |
+  style.fill: "#FFF3E0"
+  style.stroke: "#FF9800"
+  style.border-radius: 4
+}

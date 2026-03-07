@@ -1,0 +1,221 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Bitmap Reallocation for Growth
+  `realloc()` expands bitmap capacity; new words are zero-initialized; mapping logic is invariant.
+| {near: top-center}
+
+direction: right
+
+classes: {
+  bitmap_word: {
+    shape: rectangle
+    width: 240
+    height: 120
+    style: {
+      fill: "#3B82F6"
+      stroke: "#1D4ED8"
+      stroke-width: 2
+      font-color: white
+      font: mono
+    }
+  }
+  bitmap_word_new: {
+    shape: rectangle
+    width: 240
+    height: 120
+    style: {
+      fill: "#10B981"
+      stroke: "#047857"
+      stroke-width: 2
+      font-color: white
+      font: mono
+    }
+  }
+  header: {
+    style: {
+      fill: "#6A0DAD"
+      font-color: white
+      bold: true
+      stroke: "#4B0082"
+      stroke-width: 3
+    }
+  }
+  code_block: {
+    shape: rectangle
+    style: {
+      fill: "#1E1E1E"
+      font-color: "#D4D4D4"
+      font: mono
+      stroke: "#333333"
+    }
+  }
+  annotation: {
+    shape: rectangle
+    style: {
+      fill: "#FFFBEB"
+      stroke: "#D97706"
+      stroke-width: 1
+      font-size: 11
+      bold: true
+    }
+  }
+}
+
+# --- BEFORE STATE ---
+before: "BEFORE: 100 blocks (2 x 64-bit words)" {
+  class: header
+  
+  word0: "uint64_t map[0]\nBits 0-63\n[ 0xFF...FF ]" {
+    class: bitmap_word
+    tooltip: "Fully allocated"
+    offset: "Offset: +0B" {
+      class: annotation
+      near: center-left
+    }
+  }
+  
+  word1: "uint64_t map[1]\nBits 64-99 (Used)\nBits 100-127 (Padding)" {
+    class: bitmap_word
+    style.fill: "#93C5FD" # Lighter blue to show partial fill
+    offset: "Offset: +8B" {
+      class: annotation
+      near: center-left
+    }
+  }
+  
+  word0 -> word1: "Contiguous Memory" {style.stroke-dash: 3}
+}
+
+# --- TRANSITION ---
+transition_meta: {
+  shape: text
+  label: "ALLOCATION REQUEST\nsize > capacity\n━━━━━━━━━━━━━▶\nrealloc(map, 32B)"
+  style: {
+    font-size: 18
+    bold: true
+    font-color: "#047857"
+    italic: true
+  }
+}
+
+# --- AFTER STATE ---
+after: "AFTER: 200 blocks (4 x 64-bit words)" {
+  class: header
+  
+  new_word0: "uint64_t map[0]\nBits 0-63\n(Unchanged Data)" {
+    class: bitmap_word
+    offset: "Offset: +0B" {
+      class: annotation
+      near: center-left
+    }
+  }
+  
+  new_word1: "uint64_t map[1]\nBits 64-127\n(Unchanged Data)" {
+    class: bitmap_word
+    offset: "Offset: +8B" {
+      class: annotation
+      near: center-left
+    }
+  }
+  
+  new_word2: "uint64_t map[2]\nBits 128-191\n[ 0x00...00 ]" {
+    class: bitmap_word_new
+    tooltip: "Newly zeroed words"
+    offset: "Offset: +16B" {
+      class: annotation
+      near: center-left
+    }
+  }
+  
+  new_word3: "uint64_t map[3]\nBits 192-255\n[ 0x00...00 ]" {
+    class: bitmap_word_new
+    offset: "Offset: +24B" {
+      class: annotation
+      near: center-left
+    }
+  }
+
+  new_word0 -> new_word1 -> new_word2 -> new_word3: "Expanded Segment" {style.stroke-dash: 3}
+}
+
+# Connections for flow
+before -> transition_meta -> after {
+  style: {
+    stroke: "#10B981"
+    stroke-width: 4
+  }
+}
+
+# --- TECHNICAL DETAILS ---
+index_note: |md
+  ### BITMAP ADDRESSING INVARIANCE
+  The `block_id` acts as a logical index that remains stable across reallocations.
+  
+  **Address Calculation:**
+  1. `word_idx = block_id >> 6` (divide by 64)
+  2. `bit_offset = block_id & 63` (modulo 64)
+  3. `ptr = &map[word_idx]`
+  
+  **Safe Expansion:**
+  Because the bitmap expands linearly, logical indices `0..99` still point to `map[0]` and `map[1]` even if the physical base pointer of `map` changes during `realloc()`.
+| {
+  near: bottom-center
+  style: {
+    fill: "#FEF3C7"
+    stroke: "#D97706"
+    stroke-width: 2
+  }
+}
+
+code_impl: |go
+  // Expansion Implementation (C-Style)
+  func grow_bitmap(pool *Pool, new_blocks int) {
+      new_cap := pool.capacity + new_blocks
+      // Align to 64-bit boundary
+      new_word_count := (new_cap + 63) / 64
+      old_word_count := pool.word_count
+
+      // realloc handles copying existing bits
+      new_ptr := realloc(pool.map, new_word_count * 8)
+      if new_ptr == nil { return error }
+
+      // CRITICAL: Zero-initialize new segment
+      // Mark as 'Free' in bit-logic
+      memset(new_ptr + old_word_count, 0, 
+             (new_word_count - old_word_count) * 8)
+
+      pool.map = new_ptr
+      pool.word_count = new_word_count
+      pool.capacity = new_cap
+  }
+| {
+  near: bottom-right
+  class: code_block
+  width: 450
+}
+
+key_insight: |md
+  ### IMPLEMENTATION NOTE
+  When `realloc()` moves the block to a new memory address, 
+  all internal pointers to the bitmap must be updated. 
+  
+  However, **User Handles** (indices) are 
+  never invalidated because they represent 
+  **offset-based** identity, not 
+  **pointer-based** identity.
+| {
+  near: top-right
+  shape: rectangle
+  style: {
+    fill: "#EFF6FF"
+    stroke: "#3B82F6"
+    stroke-width: 2
+  }
+  width: 350
+}

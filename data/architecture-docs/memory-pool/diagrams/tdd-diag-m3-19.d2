@@ -1,0 +1,272 @@
+direction: right
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# -----------------------------------------------------------------------------
+# GLOBAL STYLES & CLASSES
+# -----------------------------------------------------------------------------
+classes: {
+  header: {
+    style: {
+      bold: true
+      underline: true
+      fill: "#E1F5FE"
+    }
+  }
+  mutex_locked: {
+    style: {
+      fill: "#FFCDD2"
+      stroke: "#B71C1C"
+      bold: true
+    }
+  }
+  memory_block: {
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+      font: mono
+    }
+  }
+}
+
+title: ||md
+  # TECHNICAL DESIGN: THREAD-SAFE MEMORY POOL (M3)
+  **Manual Ref: ARCH-MEM-001 | Revision: 1.1.0**
+  *Implementation-grade specification for byte-aligned allocation.*
+|| {near: top-center}
+
+# -----------------------------------------------------------------------------
+# APPLICATION & THREADING LAYER
+# -----------------------------------------------------------------------------
+application: "Application Layer" {
+  style.fill: "#F5F5F5"
+  
+  thread_pool: "Worker Thread Pool" {
+    style.fill: "#FFFFFF"
+    style.stroke-dash: 5
+    
+    t1: "Thread 01 (Alloc)" { shape: person; style.fill: "#BBDEFB" }
+    t2: "Thread 02 (Free)"  { shape: person; style.fill: "#C8E6C9" }
+    t3: "Thread N (Mixed)" { 
+      shape: person
+      style.multiple: true
+      style.fill: "#D1C4E9"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# MEMORY POOL ARCHITECTURE
+# -----------------------------------------------------------------------------
+memory_pool: "Thread-Safe MemoryPool (Global Object)" {
+  style.fill: "#FAFAFA"
+  style.stroke: "#1976D2"
+  style.stroke-width: 4
+
+  mutex: "pthread_mutex_t (pool->lock)" {
+    shape: diamond
+    style.fill: "#FFF9C4"
+    style.stroke: "#FBC02D"
+    
+    internal_state: ||md
+      **Offset 0x00: __lock** (int32)
+      **Offset 0x04: __count** (uint32)
+      **Offset 0x08: __owner** (pid_t)
+    ||
+  }
+
+  shared_state: "Shared Mutable State" {
+    style.fill: "#FFEBEE"
+    style.stroke: "#D32F2F"
+    
+    free_head: "free_list_head" {
+      shape: circle
+      tooltip: "Points to the first available 0xDE-poisoned block"
+    }
+    
+    metrics: "Pool Metrics" {
+      shape: sql_table
+      alloc_count: "size_t allocated_blocks"
+      total_capacity: "size_t total_blocks"
+      peak_usage: "size_t peak_allocated"
+    }
+
+    bitmap: "Allocated Bitset" {
+      shape: cylinder
+      style.fill: "#FFCDD2"
+      label: "Block Availability Bitmap"
+    }
+  }
+
+  config: "Immutable Pool Config" {
+    shape: sql_table
+    style.fill: "#E8F5E9"
+    block_size: "BLOCK_SIZE = 64B"
+    chunk_size: "CHUNK_SIZE = 4096B"
+    alignment: "ALIGNMENT = 8B"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# CHUNK REGISTRY (PHYSICAL LAYOUT)
+# -----------------------------------------------------------------------------
+chunks: "Physical Chunk Registry (mmap zones)" {
+  direction: right
+  
+  chunk_0: "Chunk 0 (Static)" {
+    style.fill: "#ECEFF1"
+    meta: "Base: 0x1000 | Count: 64" {
+      style.font: mono
+    }
+    blocks: "Block Storage Area" {
+      shape: sql_table
+      0x00: "Block 0 (Header + User Data)"
+      0x40: "Block 1 (Header + User Data)"
+      0x80: "Block 2 (Header + User Data)"
+      "...": "..."
+    }
+  }
+
+  chunk_1: "Chunk 1 (Dynamic)" {
+    style.fill: "#ECEFF1"
+    meta: "Base: 0x5000 | Count: 64" {
+      style.font: mono
+    }
+    blocks: "Block Storage Area" {
+      shape: cylinder
+      style.fill: "#CFD8DC"
+    }
+  }
+
+  chunk_n: "Chunk N" {
+    style.fill: "#ECEFF1"
+    style.multiple: true
+    meta: "Base: 0x... | Count: 64"
+  }
+
+  chunk_0.meta -> chunk_1.meta: "pNext"
+  chunk_1.meta -> chunk_n.meta: "pNext"
+}
+
+# -----------------------------------------------------------------------------
+# DEBUG & INSTRUMENTATION
+# -----------------------------------------------------------------------------
+debug_layer: "Debug Infrastructure (POOL_DEBUG=1)" {
+  style.fill: "#FFF3E0"
+  style.stroke: "#E65100"
+  style.stroke-dash: 5
+
+  poisoning: "Memory Poisoning Unit" {
+    style.fill: "#FFE0B2"
+    logic: ||md
+      **Pattern: 0xDEADBEEF**
+      1. Free(ptr) -> memset(ptr, 0xDE, size)
+      2. Alloc(ptr) -> assert(ptr[i] == 0xDE)
+      *Detections: Use-after-free read/write*
+    ||
+  }
+
+  canary: "Guard Band (Canaries)" {
+    style.fill: "#FFCC80"
+    layout: ||md
+      **Struct POOL_BLOCK:**
+      - [00] Head Canary (8B: 0xCAFE)
+      - [08] User Payload (N Bytes)
+      - [N+8] Tail Canary (8B: 0xBABE)
+    ||
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ALGORITHM FLOWS
+# -----------------------------------------------------------------------------
+allocation_logic: {
+  shape: sequence_diagram
+  
+  t1: "Thread 01"
+  mutex: "Mutex"
+  state: "Shared State"
+  chunk_reg: "Chunks"
+
+  t1 -> mutex: "1. pthread_mutex_lock()"
+  mutex -> state: "2. Check free_head"
+  
+  growth_subroutine: "Growth Subroutine" {
+    state -> chunk_reg: "3. [Optional] mmap new chunk"
+    chunk_reg -> state: "4. Update free_list pointers"
+  }
+
+  state -> state: "5. Pop head / Incr Counter"
+  mutex -> t1: "6. pthread_mutex_unlock()"
+}
+
+# -----------------------------------------------------------------------------
+# ERROR HANDLING MATRIX
+# -----------------------------------------------------------------------------
+error_handling: "Error Handling Matrix" {
+  grid-columns: 4
+  grid-gap: 0
+  
+  # Headers
+  h1: "Condition" { class: header }
+  h2: "Detection Point" { class: header }
+  h3: "Safe Action" { class: header }
+  h4: "Mutex State" { class: header }
+
+  # Row 1
+  r1_c1: "Heap Exhaustion"
+  r1_c2: "mmap() == MAP_FAILED"
+  r1_c3: "Return NULL"
+  r1_c4: "Unlock required"
+
+  # Row 2
+  r2_c1: "Invalid Pointer"
+  r2_c2: "Addr outside chunk bounds"
+  r2_c3: "SIGABRT / Warn"
+  r2_c4: "Unlock required"
+
+  # Row 3
+  r3_c1: "Double Free"
+  r3_c2: "Bitmap[idx] == 0"
+  r3_c3: "Abort"
+  r3_c4: "Unlock required"
+
+  # Row 4
+  r4_c1: "Corrupt Canary"
+  r4_c2: "Post-lock verification"
+  r4_c3: "Log Stack Trace"
+  r4_c4: "Unlock required"
+}
+
+# -----------------------------------------------------------------------------
+# GLOBAL CONNECTIONS & RELATIONSHIPS
+# -----------------------------------------------------------------------------
+application.thread_pool.t3 -> memory_pool.mutex: "Concurrent Request"
+memory_pool.mutex -> memory_pool.shared_state: "Serializes Access"
+memory_pool.shared_state.free_head -> chunks.chunk_0.blocks: "Points into storage"
+memory_pool.shared_state.bitmap -> chunks: "Maps 1:1 to blocks"
+
+debug_layer.poisoning -> chunks: "Scrubs on Free"
+debug_layer.canary -> chunks: "Validates surrounding data"
+
+memory_pool.config -> memory_pool.shared_state: "Determines offsets"
+
+# -----------------------------------------------------------------------------
+# FOOTER NOTES
+# -----------------------------------------------------------------------------
+footer: {
+  label: ||md
+    **Implementation Notes:**
+    - Alignment must be powers of 2.
+    - Bitset is stored in metadata chunk header.
+    - Mutex is strictly non-recursive to prevent logic cycles.
+  ||
+  near: bottom-center
+  style.font-size: 14
+}

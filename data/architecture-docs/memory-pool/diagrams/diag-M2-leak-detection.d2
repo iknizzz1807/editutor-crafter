@@ -1,0 +1,273 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Leak Detection at Destruction Time
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  chunk_state: {
+    direction: down
+    label: "Pool State at Destruction"
+    chunk0: {
+      label: "Chunk 0 (memory_pool.c)"
+      shape: sql_table
+      c0_mem: "0x00 | void*     | memory = 0x1000"
+      c0_num: "0x08 | size_t    | num_blocks = 4"
+      c0_next: "0x10 | Chunk*    | next → Chunk 1"
+    }
+    chunk1: {
+      label: "Chunk 1 (memory_pool.c)"
+      shape: sql_table
+      c1_mem: "0x00 | void*     | memory = 0x2000"
+      c1_num: "0x08 | size_t    | num_blocks = 4"
+      c1_next: "0x10 | Chunk*    | next = NULL"
+    }
+    chunk0 -> chunk1: "next"
+  }
+  pool_meta: {
+    direction: down
+    label: "Pool Metadata"
+    pool_struct: {
+      label: "MemoryPool (memory_pool.h)"
+      shape: sql_table
+      p_chunks: "0x00 | Chunk*    | chunks → Chunk 0"
+      p_bsize: "0x08 | size_t    | block_size = 64"
+      p_total: "0x10 | size_t    | total_capacity = 8"
+      p_alloc: "0x18 | size_t    | allocated = 3"
+      p_head: "0x20 | void*     | free_list_head → 0x1080"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  blocks_visual: {
+    direction: down
+    label: "Physical Block Layout"
+    chunk0_blocks: {
+      direction: right
+      label: "Chunk 0: 0x1000"
+      style.fill: "#e8f5e9"
+      b0_0: {
+        label: "0x1000\nALLOC\n[idx=0]"
+        shape: rectangle
+        style.fill: "#ffcdd2"
+        width: 80
+      }
+      b0_1: {
+        label: "0x1040\nFREE\n[idx=1]"
+        shape: rectangle
+        style.fill: "#c8e6c9"
+        width: 80
+      }
+      b0_2: {
+        label: "0x1080\nFREE\n[idx=2]"
+        shape: rectangle
+        style.fill: "#c8e6c9"
+        width: 80
+      }
+      b0_3: {
+        label: "0x10C0\nALLOC\n[idx=3]"
+        shape: rectangle
+        style.fill: "#ffcdd2"
+        width: 80
+      }
+    }
+    chunk1_blocks: {
+      direction: right
+      label: "Chunk 1: 0x2000"
+      style.fill: "#e3f2fd"
+      b1_0: {
+        label: "0x2000\nFREE\n[idx=4]"
+        shape: rectangle
+        style.fill: "#c8e6c9"
+        width: 80
+      }
+      b1_1: {
+        label: "0x2040\nALLOC\n[idx=5]"
+        shape: rectangle
+        style.fill: "#ffcdd2"
+        width: 80
+      }
+      b1_2: {
+        label: "0x2080\nFREE\n[idx=6]"
+        shape: rectangle
+        style.fill: "#c8e6c9"
+        width: 80
+      }
+      b1_3: {
+        label: "0x20C0\nFREE\n[idx=7]"
+        shape: rectangle
+        style.fill: "#c8e6c9"
+        width: 80
+      }
+    }
+  }
+  free_list_walk: {
+    direction: down
+    label: "Free List Walk (Count FREE Blocks)"
+    fl_head: {
+      label: "Step 1: Read free_list_head"
+      code: |'c
+        void* ptr = pool->free_list_head;
+        // ptr = 0x1080
+        free_count = 0;
+      '|
+      width: 280
+    }
+    fl_step1: {
+      label: "Step 2: Walk from 0x1080"
+      code: |'c
+        // Block at 0x1080 (idx=2)
+        ptr = *(void**)0x1080;  // → 0x1040
+        free_count++;           // = 1
+      '|
+      width: 280
+    }
+    fl_step2: {
+      label: "Step 3: Walk from 0x1040"
+      code: |'c
+        // Block at 0x1040 (idx=1)
+        ptr = *(void**)0x1040;  // → 0x2000
+        free_count++;           // = 2
+      '|
+      width: 280
+    }
+    fl_step3: {
+      label: "Step 4: Walk from 0x2000"
+      code: |'c
+        // Block at 0x2000 (idx=4)
+        ptr = *(void**)0x2000;  // → 0x2080
+        free_count++;           // = 3
+      '|
+      width: 280
+    }
+    fl_step4: {
+      label: "Step 5: Continue Walking"
+      code: |'c
+        // 0x2080 → 0x20C0 → NULL
+        free_count++;  // = 4 (0x2080)
+        free_count++;  // = 5 (0x20C0)
+        // ptr == NULL, stop
+      '|
+      width: 280
+    }
+    fl_result: {
+      label: "Result"
+      shape: rectangle
+      style.fill: "#fff9c4"
+      code: |'c
+        free_list_length = 5
+      '|
+      width: 280
+    }
+    fl_head -> fl_step1 -> fl_step2 -> fl_step3 -> fl_step4 -> fl_result
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  calc_box: {
+    label: "Leak Calculation (pool_destroy)"
+    width: 500
+    calc_code: |'c
+      // From chunk metadata (walk chunk list)
+      size_t total_blocks = 0;
+      for (Chunk* c = pool->chunks; c; c = c->next) {
+          total_blocks += c->num_blocks;
+      }
+      // total_blocks = 4 + 4 = 8
+      // From free list walk
+      size_t free_list_length = 5;  // counted above
+      // From pool->allocated counter (O(1))
+      size_t allocated_count = pool->allocated;  // = 3
+      // VERIFICATION: must satisfy invariant
+      assert(total_blocks == free_list_length + allocated_count);
+      // 8 == 5 + 3 ✓
+      // Leak detection
+      if (pool->allocated > 0) {
+          fprintf(stderr, 
+              "WARNING: %zu blocks still allocated!\n",
+              pool->allocated);
+      }
+    '|
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  output_box: {
+    label: "stderr Output"
+    shape: rectangle
+    style.fill: "#2d2d2d"
+    style.font-color: "#ff6b6b"
+    style.font: mono
+    output: |'text
+      pool_destroy: WARNING: 3 blocks still allocated!
+      Leaked blocks:
+        [0] 0x1000
+        [3] 0x10C0
+        [5] 0x2040
+    '|
+    width: 350
+  }
+  method_compare: {
+    direction: down
+    label: "Two Methods, Same Answer"
+    m1: {
+      label: "Method 1: Pool Counter (O(1))"
+      code: |'c
+        leaked = pool->allocated;
+        // 3 blocks
+      '|
+      width: 200
+      style.fill: "#e8f5e9"
+    }
+    m2: {
+      label: "Method 2: Walk + Compare (O(n))"
+      code: |'c
+        leaked = total_blocks - free_list_length;
+        // 8 - 5 = 3 blocks
+      '|
+      width: 200
+      style.fill: "#e3f2fd"
+    }
+    m1 <-> m2: "Invariant:\ntotal = free + alloc" {
+      style.stroke: "#666"
+      style.stroke-dash: 3
+    }
+  }
+}
+legend: {
+  near: bottom-right
+  direction: right
+  style.fill: transparent
+  style.stroke: "#ccc"
+  alloc_key: {
+    label: "ALLOC"
+    shape: rectangle
+    style.fill: "#ffcdd2"
+    width: 60
+  }
+  free_key: {
+    label: "FREE"
+    shape: rectangle
+    style.fill: "#c8e6c9"
+    width: 60
+  }
+}
+row1.chunk_state.chunk0 -> row2.blocks_visual.chunk0_blocks: "memory"
+row1.pool_meta.pool_struct -> row2.blocks_visual.chunk0_blocks.b0_2: "free_list_head" {
+  style.stroke: "#4caf50"
+  style.stroke-dash: 5
+}

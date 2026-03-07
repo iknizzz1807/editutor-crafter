@@ -1,0 +1,182 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+
+# ------------------------------------------------------------------------------------------
+# 1. MEMORY LAYOUT: MemoryPool Struct Alignment (64B Cache Line)
+# ------------------------------------------------------------------------------------------
+MemoryPool_Layout: {
+  shape: sql_table
+  label: "struct MemoryPool | sizeof: 64 bytes (1 Cache Line)"
+  style: {
+    stroke: "#333333"
+    stroke-width: 2
+    fill: "#8e44ad" # Header: Purple
+  }
+
+  0x00: "pthread_mutex_t lock" {
+    label: "pthread_mutex_t lock | 40B"
+    style: { fill: "#3498db"; font-color: white } # Data: Blue
+  }
+  0x28: "void* base" {
+    label: "void* base | 8B"
+    style: { fill: "#e67e22"; font-color: white } # Pointer: Orange
+  }
+  0x30: "void* free_list_head" {
+    label: "void* free_list_head | 8B"
+    style: { fill: "#e67e22"; font-color: white } # Pointer: Orange
+  }
+  0x38: "uint32_t block_size" {
+    label: "uint32_t block_size | 4B"
+    style: { fill: "#3498db"; font-color: white } # Data: Blue
+  }
+  0x3C: "uint32_t capacity" {
+    label: "uint32_t capacity | 4B"
+    style: { fill: "#3498db"; font-color: white } # Data: Blue
+  }
+
+  footer: "--- 64B CACHE LINE BOUNDARY ---" {
+    style: { 
+      stroke-dash: 5
+      font-color: "#e74c3c"
+      bold: true 
+    }
+  }
+}
+
+# ------------------------------------------------------------------------------------------
+# 2. SEQUENCE DIAGRAM: Mutex Serialization (Resolving Contention)
+# ------------------------------------------------------------------------------------------
+Contention_Flow: {
+  shape: sequence_diagram
+  
+  Thread_A: "Thread A (CPU 0)"
+  Thread_B: "Thread B (CPU 1)"
+  Shared_Pool: "MemoryPool"
+
+  Thread_A -> Shared_Pool: pool_alloc()
+  Thread_A -> Shared_Pool: ▼ pthread_mutex_lock(lock) {
+    style: { stroke: "#e67e22"; stroke-width: 3 }
+  }
+  
+  Thread_B -> Shared_Pool: pool_alloc()
+  Thread_B -> Shared_Pool: "BLOCKS (Spin/Context Switch)" {
+    style: { stroke: "#c0392b"; stroke-dash: 5; font-color: "#c0392b" }
+  }
+
+  Shared_Pool -> Shared_Pool: "pop(free_list_head)" {
+    style: { fill: "#2ecc71" }
+  }
+  
+  Thread_A -> Shared_Pool: ▲ pthread_mutex_unlock(lock) {
+    style: { stroke: "#e67e22"; stroke-width: 3 }
+  }
+  Thread_A <- Shared_Pool: return ptr_0x1000
+
+  Thread_B -> Shared_Pool: ▼ pthread_mutex_lock (acquired) {
+    style: { stroke: "#e67e22"; stroke-width: 3 }
+  }
+  Shared_Pool -> Shared_Pool: "pop(free_list_head)"
+  Thread_B -> Shared_Pool: ▲ pthread_mutex_unlock(lock)
+  Thread_B <- Shared_Pool: return ptr_0x1040
+}
+
+# ------------------------------------------------------------------------------------------
+# 3. ALGORITHM STATE: Atomic Free List Transition
+# ------------------------------------------------------------------------------------------
+State_Transition: {
+  direction: right
+  
+  Before: {
+    label: "T0: Initial Free List"
+    Pool_Head: "0x1000" { 
+      shape: parallelogram
+      style.fill: "#e67e22" 
+    }
+    
+    Block_A: "0x1000" {
+      shape: sql_table
+      next: "0x1040" { class: pointer_field }
+    }
+    
+    Block_B: "0x1040" {
+      shape: sql_table
+      next: "0x1080" { class: pointer_field }
+    }
+    
+    Pool_Head -> Block_A: "head" { class: pointer_edge }
+    Block_A -> Block_B: "next" { class: pointer_edge }
+  }
+
+  Transition: "atomic_pop()" {
+    style: { stroke-width: 4; animated: true; font-size: 20 }
+  }
+
+  After: {
+    label: "T1: Post-Allocation"
+    Pool_Head: "0x1040" { 
+      shape: parallelogram
+      style: { fill: "#e67e22"; stroke: "#e74c3c"; stroke-width: 3 } 
+    }
+    
+    Block_A: "0x1000" {
+      shape: sql_table
+      style.fill: "#bdc3c7"
+      data: "USER PAYLOAD" { style.font-color: "#c0392b"; style.bold: true }
+    }
+    
+    Block_B: "0x1040" {
+      shape: sql_table
+      next: "0x1080" { class: pointer_field }
+    }
+    
+    Pool_Head -> Block_B: "head updated" { class: pointer_edge }
+  }
+
+  Before -> After
+}
+
+# ------------------------------------------------------------------------------------------
+# 4. DEBUG INFRASTRUCTURE: Memory Poisoning & Canaries
+# ------------------------------------------------------------------------------------------
+Debug_Block_Layout: {
+  shape: sql_table
+  label: "Allocated Block with Canary Detection"
+  style.fill: "#8e44ad"
+  
+  0x00: "Canary (0xCAFE) | 2B" { style.fill: "#e74c3c"; style.font-color: white }
+  0x02: "User Payload | N bytes" { style.fill: "#3498db"; style.font-color: white }
+  "0xNN": "Canary (0xBABE) | 2B" { style.fill: "#e74c3c"; style.font-color: white }
+  
+  Note: |md
+    ### Poisoning Values
+    - `0xDE`: Block is FREE (Dead)
+    - `0xAA`: Block is ALLOCATED
+  | { near: 0x02 }
+}
+
+# Classes
+classes: {
+  # For table rows representing pointers
+  pointer_field: {
+    style: {
+      bold: true
+      font-color: "#e67e22"
+    }
+  }
+  # For actual connections representing pointers
+  pointer_edge: {
+    style: {
+      stroke: "#e67e22"
+      stroke-width: 2
+    }
+    target-arrowhead: {
+      shape: triangle
+      style.filled: true
+    }
+  }
+}

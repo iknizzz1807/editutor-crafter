@@ -1,0 +1,282 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 20
+  }
+}
+
+title: |md
+  # MemoryPool M3 State Machine
+  ## Thread-Safe Debuggable Allocator Lifecycle
+  **Invariants & Transitions Specification**
+| {near: top-center}
+
+# --- STYLE DEFINITIONS ---
+classes: {
+  normal_state: {
+    style: {
+      fill: "#E8DFF5"
+      stroke: "#7B68EE"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  transient_state: {
+    style: {
+      fill: "#FFF9E6"
+      stroke: "#FFB347"
+      stroke-width: 2
+      stroke-dash: 4
+      border-radius: 8
+    }
+  }
+  error_state: {
+    style: {
+      fill: "#FFE4E1"
+      stroke: "#DC143C"
+      stroke-width: 3
+      border-radius: 8
+    }
+  }
+  terminal_state: {
+    style: {
+      fill: "#E0E0E0"
+      stroke: "#696969"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  valid_transition: {
+    style: {
+      stroke: "#4169E1"
+      stroke-width: 2
+      font-size: 11
+    }
+  }
+  error_transition: {
+    style: {
+      stroke: "#DC143C"
+      stroke-width: 2
+      font-size: 11
+    }
+  }
+  illegal_transition: {
+    style: {
+      stroke: "#DC143C"
+      stroke-width: 3
+      stroke-dash: 5
+    }
+  }
+}
+
+# --- STATES ---
+
+initial: "●" {
+  shape: circle
+  style.fill: "#7B68EE"
+}
+
+UNINITIALIZED: |md
+  ### UNINITIALIZED
+  **Invariants:**
+  - `pool->chunks == NULL`
+  - `pool->mutex` uninitialized
+  - `pool->allocated_map == NULL`
+  - All fields zeroed
+| {class: terminal_state}
+
+INITIALIZING: |md
+  ### INITIALIZING
+  **Transient State**
+  **Invariants:**
+  - `pool` pointer valid
+  - `config` validated
+  - `pthread_mutex_init()` pending
+| {class: transient_state}
+
+ACTIVE: |md
+  ### ACTIVE
+  **Normal Operation**
+  **Invariants:**
+  - `pool->chunks != NULL`
+  - `pool->mutex` initialized/unlocked
+  - `0 ≤ alloc ≤ total_cap`
+  - Bitmap matches chunk status
+| {class: normal_state}
+
+EXHAUSTED: |md
+  ### EXHAUSTED
+  **Transient State**
+  **Invariants:**
+  - `free_list_head == NULL`
+  - `allocated == total_capacity`
+  - Caller holds pool mutex
+| {class: transient_state}
+
+GROWING: |md
+  ### GROWING
+  **Transient State**
+  **Invariants:**
+  - Mutex held
+  - `aligned_alloc()` in progress
+  - Bitmap expansion pending
+| {class: transient_state}
+
+GROWTH_BLOCKED: |md
+  ### GROWTH_BLOCKED
+  **Resource Limit State**
+  **Invariants:**
+  - `max_chunks` limit reached
+  - `pool_alloc()` returns NULL
+  - Frees still valid
+| {class: error_state}
+
+DESTROYING: |md
+  ### DESTROYING
+  **Transient State**
+  **Invariants:**
+  - Mutex locked
+  - Leak check in progress
+  - `free()` called on all chunks
+| {class: transient_state}
+
+DESTROYED: |md
+  ### DESTROYED
+  **Terminal State**
+  **Invariants:**
+  - `mutex` destroyed
+  - `chunks` pointer NULL
+  - **Re-initializable**
+| {class: terminal_state}
+
+# --- ERROR STATES ---
+
+MUTEX_FAILURE: |md
+  ### MUTEX_FAILURE
+  **Critical System Error**
+  - Lock initialization failed
+  - State: Non-recoverable
+| {class: error_state}
+
+ALLOCATION_FAILURE: |md
+  ### ALLOCATION_FAILURE
+  **Resource Error**
+  - OS denied memory growth
+  - Pool remains functional
+| {class: error_state}
+
+CORRUPTION_DETECTED: |md
+  ### CORRUPTION_DETECTED
+  **Debug Alert**
+  - Canary mismatch
+  - Poison pattern modified
+  - Double-free attempt
+| {class: error_state}
+
+# --- TRANSITIONS ---
+
+initial -> UNINITIALIZED: {class: valid_transition}
+
+UNINITIALIZED -> INITIALIZING: |md
+  **Trigger:** `pool_init()`
+  **Guard:** `pool != NULL`
+  **Action:** Validate config
+| {class: valid_transition}
+
+INITIALIZING -> MUTEX_FAILURE: |md
+  **Trigger:** `pthread_mutex_init() != 0`
+  **Action:** Zero pool struct
+| {class: error_transition}
+
+INITIALIZING -> ACTIVE: |md
+  **Trigger:** `grow_pool()` success
+  **Action:** Create initial chunk
+| {class: valid_transition}
+
+ACTIVE -> EXHAUSTED: |md
+  **Trigger:** `pool_alloc()`
+  **Guard:** `free_list == NULL`
+| {class: valid_transition}
+
+EXHAUSTED -> GROWING: |md
+  **Guard:** `chunk_count < max_chunks`
+  **Action:** Lock mutex
+| {class: valid_transition}
+
+GROWING -> ACTIVE: |md
+  **Trigger:** `malloc` success
+  **Action:** Link chunk, unlock
+| {class: valid_transition}
+
+GROWING -> ALLOCATION_FAILURE: |md
+  **Trigger:** `malloc` returns NULL
+  **Action:** Rollback, unlock
+| {class: error_transition}
+
+ALLOCATION_FAILURE -> ACTIVE: "Return NULL to caller" {class: valid_transition}
+
+EXHAUSTED -> GROWTH_BLOCKED: |md
+  **Guard:** `chunk_count == max_chunks`
+| {class: error_transition}
+
+GROWTH_BLOCKED -> ACTIVE: |md
+  **Trigger:** `pool_free()`
+  **Action:** Block added to free_list
+| {class: valid_transition}
+
+ACTIVE -> CORRUPTION_DETECTED: |md
+  **Trigger:** `pool_free()`
+  **Guard:** `canary != expected`
+  **Action:** `abort()` or Log error
+| {class: error_transition}
+
+CORRUPTION_DETECTED -> ACTIVE: "If non-fatal mode" {class: valid_transition}
+
+ACTIVE -> DESTROYING: |md
+  **Trigger:** `pool_destroy()`
+  **Action:** Lock, verify 0 leaks
+| {class: valid_transition}
+
+DESTROYING -> DESTROYED: |md
+  **Action:** Clean memory, zero ptrs
+| {class: valid_transition}
+
+DESTROYED -> INITIALIZING: "pool_init() reuse" {class: valid_transition}
+
+# --- ILLEGAL TRANSITIONS ---
+
+DESTROYED -> ACTIVE: "ILLEGAL: pool_alloc()" {
+  class: illegal_transition
+  label.style.font-color: red
+}
+
+UNINITIALIZED -> ACTIVE: "ILLEGAL: Skip Init" {
+  class: illegal_transition
+}
+
+DESTROYED -> CORRUPTION_DETECTED: "ILLEGAL: pool_free()" {
+  class: illegal_transition
+}
+
+# --- ANNOTATIONS ---
+
+legend: {
+  near: bottom-right
+  normal: Normal State {class: normal_state}
+  transient: Transient State {class: transient_state}
+  error: Error State {class: error_state}
+  term: Terminal State {class: terminal_state}
+  illegal: ILLEGAL {class: illegal_transition}
+}
+
+implementation_notes: |md
+  ### M3 Implementation Rules
+  1. **Thread Safety**: All `ACTIVE -> EXHAUSTED -> GROWING` transitions must hold `pool->mutex`.
+  2. **Debug Mode**: If `DEBUG_LEVEL > 0`, every `pool_free` verifies canaries (0xCAFE) at `block - 8` and `block + size`.
+  3. **Poisoning**: `GROWING` state must fill new memory with `0xDE` (Dead) pattern.
+  4. **Leak Detection**: `DESTROYING` verifies `pool->alloc_count == 0`.
+| {
+  near: bottom-left
+  style.fill: "#F0F0F0"
+}

@@ -1,0 +1,275 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 40
+  }
+}
+
+# --- STYLING CLASSES ---
+# Corrected: Classes defined independently. Sub-classing via 'class' keyword inside 'classes' block is invalid in D2.
+# Instead, we apply multiple classes at the instance level: [base; specific]
+classes: {
+  state_base: {
+    style: {
+      stroke-width: 2
+      border-radius: 8
+      font-size: 14
+    }
+  }
+  process_state: {
+    style: {
+      fill: "#EBF8FF"
+      stroke: "#3182CE"
+    }
+  }
+  validation_state: {
+    style: {
+      fill: "#FFFBEB"
+      stroke: "#D69E2E"
+    }
+  }
+  success_state: {
+    style: {
+      fill: "#C6F6D5"
+      stroke: "#2F855A"
+      double-border: true
+    }
+  }
+  error_state: {
+    style: {
+      fill: "#FED7D7"
+      stroke: "#C53030"
+      font-color: "#9B2C2C"
+    }
+  }
+  terminal: {
+    shape: circle
+    width: 30
+    height: 30
+    style: {
+      fill: "#2D3748"
+      stroke: "#4A5568"
+    }
+  }
+}
+
+# --- DIAGRAM HEADER ---
+header: {
+  near: top-center
+  label: ||md
+    # BENCHMARK QUALITY GATE STATE MACHINE
+    **Specification:** Statistical Validity Check (ISO/IEC 25010)
+    **Implementation Type:** Deterministic Finite Automaton (DFA)
+  ||
+  shape: text
+  style: {
+    font-size: 24
+    bold: true
+  }
+}
+
+# --- MEMORY LAYOUT (Technical Design Detail) ---
+# High-detail struct layout for C/C++ implementation alignment
+memory_layout: {
+  label: "BenchmarkState Struct Layout (64B Cache Aligned)"
+  near: top-right
+  shape: sql_table
+  style: {
+    fill: "#F7FAFC"
+    stroke: "#4A5568"
+  }
+  
+  0x00: "uint64_t current_state_id" {constraint: "8B"}
+  0x08: "uint32_t sample_count" {constraint: "4B"}
+  0x0C: "uint32_t warmup_remaining" {constraint: "4B"}
+  0x10: "double median_ns" {constraint: "8B"}
+  0x18: "double std_dev" {constraint: "8B"}
+  0x20: "double cv_percentage" {constraint: "8B"}
+  0x28: "uint8_t[24] reserved_padding" {style.fill: "#E2E8F0"}
+}
+
+# --- NODES / STATES ---
+init: {
+  class: terminal
+  label: "●"
+  tooltip: "Entry Point: Reset registers and flush CPU cache"
+}
+
+COLLECTING: {
+  class: [state_base; process_state]
+  label: ||md
+    ### 1. COLLECTING
+    **Invariant:** SUT isolated.
+    - [ ] 3x Warmup (JIT Prime)
+    - [ ] 15x Timed (Raw via RDTSC)
+    - **Buffer:** `raw_times_ns[15]`
+  ||
+}
+
+CALCULATING: {
+  class: [state_base; process_state]
+  label: ||md
+    ### 2. CALCULATING
+    **Invariant:** Data set complete (N=15).
+    - `qsort(raw_times_ns, 15, sizeof(u64))`
+    - `median = samples[7]`
+    - `σ = sqrt(Σ(x-μ)² / N)`
+  ||
+}
+
+VALIDATING_CV: {
+  class: [state_base; validation_state]
+  label: ||md
+    ### 3. VALIDATING_CV
+    **Guard Logic:** 
+    `CV = (σ / median) * 100`
+    ---
+    *Internal Logic:*
+    - CV < 2% → REPORTING
+    - 2% ≤ CV < 10% → WARNING
+    - CV ≥ 10% → REJECTED
+  ||
+}
+
+HIGH_VARIANCE_WARNING: {
+  class: [state_base; error_state]
+  label: ||md
+    ### 4. VARIANCE_WARNING
+    **State:** Non-deterministic Env.
+    - Log: High Jitter Detected
+    - Action: Set CPU Affinity
+    - Tip: Check background IRQs
+  ||
+}
+
+REPORTING: {
+  class: [state_base; success_state]
+  label: ||md
+    ### 5. REPORTING
+    **Status:** STATISTICALLY VALID
+    - Persist to PostgreSQL
+    - Emit JSON `bench_result.json`
+    - `exit_code = 0`
+  ||
+}
+
+REJECTED: {
+  class: [state_base; error_state]
+  label: ||md
+    ### ✗ REJECTED
+    **Error:** Unreliable Samples
+    - CV > 10.0%
+    - `valid = false`
+    - Trigger `SIGABRT` or System Audit
+  ||
+}
+
+done: {
+  class: terminal
+  label: "○"
+  style.double-border: true
+}
+
+# --- TRANSITIONS ---
+
+init -> COLLECTING: "START_BENCHMARK" {
+  style.stroke-width: 2
+}
+
+COLLECTING -> CALCULATING: "n=15" {
+  label: "DATASET_COMPLETE"
+  style: {
+    stroke: "#3182CE"
+    font-size: 11
+  }
+}
+
+CALCULATING -> VALIDATING_CV: "COMPUTE_METRICS" {
+  style: {
+    stroke: "#3182CE"
+    font-size: 11
+  }
+}
+
+VALIDATING_CV -> REPORTING: "CV < 2.0" {
+  label: "PASS (STABLE)"
+  style: {
+    stroke: "#2F855A"
+    stroke-width: 4
+    animated: true
+  }
+}
+
+VALIDATING_CV -> HIGH_VARIANCE_WARNING: "CV >= 2.0" {
+  label: "NOISE_DETECTED"
+  style: {
+    stroke: "#D69E2E"
+    stroke-dash: 5
+  }
+}
+
+HIGH_VARIANCE_WARNING -> REPORTING: "OVERRIDE" {
+  label: "PROCEED_WITH_WARNING"
+  style: {
+    stroke: "#D69E2E"
+    stroke-width: 2
+  }
+}
+
+HIGH_VARIANCE_WARNING -> REJECTED: "CV > 10.0" {
+  label: "DATA_UNRELIABLE"
+  style: {
+    stroke: "#C53030"
+    stroke-width: 3
+    stroke-dash: 2
+  }
+}
+
+REPORTING -> done: "FINALIZE" {
+  style.stroke: "#2F855A"
+}
+
+REJECTED -> done: "CLEANUP" {
+  style.stroke: "#C53030"
+}
+
+# --- REJECTED ILLEGAL PATH ---
+REJECTED -> COLLECTING: "ILLEGAL" {
+  label: "AUTO_RETRY_BLOCKED"
+  style: {
+    stroke: red
+    stroke-dash: 3
+    opacity: 0.5
+  }
+}
+
+# --- LEGEND & ENGINEERING NOTES ---
+legend: {
+  near: bottom-right
+  label: ||md
+    ### STATISTICAL THRESHOLDS
+    | Metric | Condition | Severity |
+    | :--- | :--- | :--- |
+    | CV | < 2% | Statistical Gold |
+    | CV | 2-10% | Environmental Noise |
+    | CV | > 10% | Runtime Violation |
+
+    **Environmental Constraints:**
+    - `CPU_FREQ`: Pin to `scaling_max_freq`
+    - `ASLR`: Disabled for consistency
+    - `NICE`: -20 (Highest Priority)
+  ||
+  style: {
+    fill: "#F7FAFC"
+    stroke: "#CBD5E0"
+    font-size: 12
+    font: mono
+  }
+}
+
+# Annotations for Engineers
+COLLECTING.tooltip: "Constraint: No context switches allowed during timed loop"
+VALIDATING_CV.tooltip: "Algorithm: Coefficient of Variation (σ / μ)"
+CALCULATING.tooltip: "Complexity: O(N log N) for sort + O(N) for variance"
+REJECTED.style.stroke-width: 5

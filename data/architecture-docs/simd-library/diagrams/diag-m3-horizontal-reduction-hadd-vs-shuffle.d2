@@ -1,0 +1,235 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  shape: rectangle
+  label: |'md
+    # Horizontal Reduction: hadd vs Shuffle+Add
+    Comparing two approaches to sum 4 floats in an XMM register
+  '|
+  style: {
+    stroke-width: 0
+    fill: transparent
+    font-size: 24
+  }
+}
+
+row_layout: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+
+  hadd_section: {
+    direction: down
+    label: "Approach 1: Horizontal Add (hadd_ps) (isa_manual.h)"
+    
+    hadd_input_struct: {
+      shape: sql_table
+      label: "struct __m128 v (Input)"
+      f0: "0x00 | float | v[0] = 1.0"
+      f1: "0x04 | float | v[1] = 2.0"
+      f2: "0x08 | float | v[2] = 3.0"
+      f3: "0x0C | float | v[3] = 4.0"
+      sz: "Total: 16 bytes (SSE Register)"
+    }
+
+    hadd_step1: {
+      label: "T1: Initial Pairwise Sum"
+      width: 320
+      code: |'c
+        // r[0]=v[0]+v[1], r[1]=v[2]+v[3]
+        // r[2]=v[0]+v[1], r[3]=v[2]+v[3]
+        __m128 sum1 = _mm_hadd_ps(v, v);
+        // Result: [3.0, 7.0, 3.0, 7.0]
+      '|
+    }
+
+    hadd_latency1: {
+      shape: callout
+      label: "3-5 cycles | Port 5"
+      style.fill: "#ffcdd2"
+    }
+
+    hadd_step2: {
+      label: "T2: Final Accumulation"
+      width: 320
+      code: |'c
+        // r[0]=sum1[0]+sum1[1] (3+7)
+        __m128 sum2 = _mm_hadd_ps(sum1, sum1);
+        // Result: [10.0, 10.0, 10.0, 10.0]
+      '|
+    }
+
+    hadd_latency2: {
+      shape: callout
+      label: "3-5 cycles | Port 5"
+      style.fill: "#ffcdd2"
+    }
+
+    hadd_result: {
+      shape: sql_table
+      label: "Final Register State"
+      f0: "0x00 | float | 10.0 (sum)"
+      f1: "0x04 | float | 10.0"
+      f2: "0x08 | float | 10.0"
+      f3: "0x0C | float | 10.0"
+    }
+
+    hadd_total: {
+      label: "Total: 6-10 cycles (Serialized)"
+      style.fill: "#ef9a9a"
+      style.bold: true
+    }
+
+    hadd_input_struct -> hadd_step1: "__m128 | read"
+    hadd_step1 -> hadd_latency1: "uop | dispatch"
+    hadd_latency1 -> hadd_step2: "__m128 | data"
+    hadd_step2 -> hadd_latency2: "uop | dispatch"
+    hadd_latency2 -> hadd_result: "store"
+    hadd_result -> hadd_total
+  }
+
+  shuffle_section: {
+    direction: down
+    label: "Approach 2: Shuffle + Vertical Add (fast_math.h)"
+
+    shuf_input_struct: {
+      shape: sql_table
+      label: "struct __m128 v (Input)"
+      f0: "0x00 | float | v[0] = 1.0"
+      f1: "0x04 | float | v[1] = 2.0"
+      f2: "0x08 | float | v[2] = 3.0"
+      f3: "0x0C | float | v[3] = 4.0"
+      sz: "Total: 16 bytes"
+    }
+
+    shuf_step1: {
+      label: "T1: Intra-Register Shuffle"
+      width: 320
+      code: |'c
+        // Swap high/low pairs (0xB1)
+        // shuf = [v[1], v[0], v[3], v[2]]
+        __m128 shuf = _mm_shuffle_ps(v, v, 0xB1);
+        // Result: [2.0, 1.0, 4.0, 3.0]
+      '|
+    }
+
+    shuf_latency1: {
+      shape: callout
+      label: "1 cycle | Port 5"
+      style.fill: "#c8e6c9"
+    }
+
+    shuf_step2: {
+      label: "T2: Vertical Parallel Add"
+      width: 320
+      code: |'c
+        // Parallel sums: [1+2, 2+1, 3+4, 4+3]
+        __m128 sums = _mm_add_ps(v, shuf);
+        // Result: [3.0, 3.0, 7.0, 7.0]
+      '|
+    }
+
+    shuf_latency2: {
+      shape: callout
+      label: "3-4 cycles | Port 0/1"
+      style.fill: "#c8e6c9"
+    }
+
+    shuf_step3: {
+      label: "T3: MoveHL + Scalar Add"
+      width: 320
+      code: |'c
+        // hl[0] = sums[2] = 7.0
+        __m128 hl = _mm_movehl_ps(sums, sums);
+        // Result: 3.0 + 7.0 = 10.0
+        __m128 final = _mm_add_ss(sums, hl);
+      '|
+    }
+
+    shuf_result: {
+      shape: sql_table
+      label: "Final Register State"
+      f0: "0x00 | float | 10.0 (sum)"
+      f1: "0x04 | float | (dirty)"
+      f2: "0x08 | float | (dirty)"
+      f3: "0x0C | float | (dirty)"
+    }
+
+    shuf_total: {
+      label: "Total: 5-6 cycles (Parallel)"
+      style.fill: "#a5d6a7"
+      style.bold: true
+    }
+
+    shuf_input_struct -> shuf_step1: "__m128 | read"
+    shuf_step1 -> shuf_latency1: "uop | P5"
+    shuf_latency1 -> shuf_step2: "__m128 | data"
+    shuf_step2 -> shuf_latency2: "uop | P0/1"
+    shuf_latency2 -> shuf_step3: "__m128 | data"
+    shuf_step3 -> shuf_result: "store"
+    shuf_result -> shuf_total
+  }
+}
+
+comparison: {
+  direction: down
+  label: "Performance Analysis (Intel Skylake Arch)"
+  
+  metrics: {
+    shape: sql_table
+    label: "Metric Comparison"
+    r1: "Metric | hadd_ps | shuffle+add"
+    r2: "Instruction Latency | 6-10 cycles | 5-6 cycles"
+    r3: "Execution Ports | P5 only | P0, P1, P5"
+    r4: "Port Contention | High (Serialized) | Low (Distributed)"
+    r5: "Throughput | 0.5 per cycle | 1 per cycle"
+  }
+
+  port_usage: {
+    direction: right
+    hadd_ports: {
+      label: "hadd_ps Port Pressure"
+      p0: "Port 0 (FMA): Idle" { style.fill: "#eeeeee" }
+      p1: "Port 1 (FMA): Idle" { style.fill: "#eeeeee" }
+      p5: "Port 5 (Shuffle): BUSY" { style.fill: "#ffcdd2" }
+    }
+    shuffle_ports: {
+      label: "shuffle+add Port Pressure"
+      p0: "Port 0 (FMA): Active" { style.fill: "#c8e6c9" }
+      p1: "Port 1 (FMA): Free" { style.fill: "#e8f5e9" }
+      p5: "Port 5 (Shuffle): Active" { style.fill: "#c8e6c9" }
+    }
+  }
+}
+
+verdict: {
+  label: |'md
+    ### Architectural Recommendation
+    **`hadd_ps` is optimized for code size, not performance.** 
+    The shuffle+add pattern exploits **Instruction-Level Parallelism (ILP)** by distributing 
+    uops across multiple execution ports (P0/P1 for adds, P5 for shuffles).
+    
+    c
+    // HIGH PERFORMANCE (5-6 cycles)
+    __m128 shuf = _mm_shuffle_ps(v, v, 0xB1);
+    __m128 sums = _mm_add_ps(v, shuf);
+    sums = _mm_add_ss(sums, _mm_movehl_ps(sums, sums));
+    
+  '|
+  style.fill: "#fff3e0"
+  style.stroke: "#e65100"
+}
+
+row_layout -> comparison: "Execution Trace"
+comparison -> verdict
+
+legend: {
+  near: bottom-right
+  label: "Red: Serialized/Contention | Green: Parallel/Efficient"
+}

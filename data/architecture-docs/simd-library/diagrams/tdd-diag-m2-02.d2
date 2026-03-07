@@ -1,0 +1,200 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Data Flow: Page-Safe strlen
+  Aligned-read-with-masking pattern for safe SIMD string scanning
+| {near: top-center}
+
+direction: right
+
+# Input stage
+input: {
+  style.fill: "#E8F4EA"
+  style.stroke: "#4CAF50"
+  ptr: "Input pointer\n(const char* str)" {
+    shape: hexagon
+    style.fill: "#C8E6C9"
+  }
+  addr_calc: "Extract address\naddr = (uintptr_t)ptr" {
+    shape: rectangle
+    style.fill: white
+  }
+  ptr -> addr_calc
+}
+
+# Alignment analysis stage
+alignment: {
+  style.fill: "#FFF3E0"
+  style.stroke: "#FF9800"
+  label: "Alignment Analysis"
+  offset_calc: "Compute offset\noffset = addr & 15" {
+    shape: rectangle
+    style.fill: white
+  }
+  page_check: "Check page boundary\ndistance = 4096 - (addr & 4095)" {
+    shape: diamond
+    style.fill: "#FFE0B2"
+  }
+  offset_calc -> page_check
+}
+
+input.addr_calc -> alignment.offset_calc
+
+# Decision: Which path to take
+decision: {
+  style.fill: "#E3F2FD"
+  style.stroke: "#2196F3"
+  path_select: "distance >= 16?" {
+    shape: diamond
+    style.fill: "#BBDEFB"
+  }
+}
+
+alignment.page_check -> decision.path_select
+
+# Path A: Aligned-from-below read
+path_aligned: {
+  style.fill: "#F3E5F5"
+  style.stroke: "#9C27B0"
+  label: "Path A: Aligned-From-Below"
+  align_down: "Align down\naligned = addr & ~15" {
+    shape: rectangle
+    style.fill: white
+  }
+  safe_load: "SAFE LOAD\n_mm_load_si128(aligned)\nCannot cross page boundary!" {
+    shape: cylinder
+    style.fill: "#E1BEE7"
+    style.bold: true
+  }
+  compare1: "Compare to zero\n_mm_cmpeq_epi8(chunk, zero)" {
+    shape: rectangle
+    style.fill: white
+  }
+  mask1: "Extract mask\nmask = _mm_movemask_epi8(cmp)" {
+    shape: rectangle
+    style.fill: white
+  }
+  shift_mask: "Shift to ignore\npre-string bytes\nmask >>= offset" {
+    shape: rectangle
+    style.fill: "#FFCDD2"
+    style.bold: true
+  }
+  align_down -> safe_load -> compare1 -> mask1 -> shift_mask
+}
+
+# Path B: Scalar prologue
+path_scalar: {
+  style.fill: "#FFEBEE"
+  style.stroke: "#F44336"
+  label: "Path B: Scalar Prologue"
+  calc_prologue: "Compute bytes\nuntil aligned\nprologue = 16 - offset" {
+    shape: rectangle
+    style.fill: white
+  }
+  scalar_loop: "Scalar scan\nfor (i = 0; i < prologue; i++)\n  if (ptr[i] == '\\0') return i" {
+    shape: rectangle
+    style.fill: "#FFCDD2"
+  }
+  advance_ptr: "Advance pointer\nptr += prologue\n(now 16-byte aligned)" {
+    shape: rectangle
+    style.fill: white
+  }
+  calc_prologue -> scalar_loop -> advance_ptr
+}
+
+decision.path_select -> path_aligned.align_down: "YES\n(safe for\naligned read)"
+decision.path_select -> path_scalar.calc_prologue: "NO\n(near page\nboundary)"
+
+# SIMD main loop
+simd_loop: {
+  style.fill: "#E8EAF6"
+  style.stroke: "#3F51B5"
+  label: "SIMD Main Loop"
+  load_aligned: "Aligned load\n_mm_load_si128(ptr)\nSAFE: ptr is aligned" {
+    shape: cylinder
+    style.fill: "#C5CAE9"
+    style.bold: true
+  }
+  compare2: "Compare to zero\n_mm_cmpeq_epi8(chunk, zero)" {
+    shape: rectangle
+    style.fill: white
+  }
+  mask2: "Extract mask\nmask = _mm_movemask_epi8(cmp)" {
+    shape: rectangle
+    style.fill: white
+  }
+  check_found: "mask != 0?" {
+    shape: diamond
+    style.fill: "#BBDEFB"
+  }
+  advance: "Advance\nptr += 16" {
+    shape: rectangle
+    style.fill: white
+  }
+  load_aligned -> compare2 -> mask2 -> check_found
+  check_found -> advance: "NO"
+  advance -> load_aligned
+}
+
+path_aligned.shift_mask -> simd_loop.check_found: "null not\nfound yet"
+path_scalar.advance_ptr -> simd_loop.load_aligned: "now aligned,\nenter SIMD loop"
+
+# Position calculation
+position: {
+  style.fill: "#E0F2F1"
+  style.stroke: "#009688"
+  label: "Position Calculation"
+  ctz: "Find first match\npos = __builtin_ctz(mask)\n(count trailing zeros)" {
+    shape: rectangle
+    style.fill: "#B2DFDB"
+  }
+  final_calc: "Calculate length\nlen = (ptr - str) + pos" {
+    shape: rectangle
+    style.fill: white
+  }
+}
+
+simd_loop.check_found -> position.ctz: "YES\n(null found)"
+
+# Output
+output: {
+  style.fill: "#E8F4EA"
+  style.stroke: "#4CAF50"
+  result: "Return length" {
+    shape: oval
+    style.fill: "#C8E6C9"
+    style.bold: true
+  }
+}
+
+position.ctz -> position.final_calc -> output.result
+
+# Legend
+legend: {
+  near: bottom-center
+  style.fill: white
+  style.stroke: "#9E9E9E"
+  note: |md
+    **Key Safety Guarantee**: Aligned reads (address % 16 == 0) cannot cross 4KB page boundaries.
+    This is because 4096 = 256 × 16, so any 16-byte aligned address starts within a single page.
+  |
+}
+
+# Annotations
+annotation: {
+  near: center-left
+  style.fill: transparent
+  style.stroke: transparent
+  safety_note: |md
+    **Why Aligned Reads Are Safe:**
+    - Page size: 4096 bytes
+    - Vector size: 16 bytes
+    - 4096 = 256 × 16
+    - Aligned address → stays within page
+  | {shape: text}
+}

@@ -1,0 +1,247 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    sketch: false
+    pad: 20
+  }
+}
+
+direction: right
+
+title: "Algorithm: Pointer Aliasing & SIMD Vectorization Safety" {
+  shape: text
+  near: top-center
+  style: {
+    font-size: 24
+    bold: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# INPUT STAGE: Memory Layout & Source
+# -----------------------------------------------------------------------------
+input_stage: "INPUT: Source Code & Memory Map" {
+  style: {
+    fill: "#f8fafc"
+    stroke: "#475569"
+    stroke-width: 2
+  }
+
+  source_c: |c
+    /* Target: SIMD Auto-vectorization */
+    void add_arrays(float* dst, 
+                    const float* a, 
+                    const float* b, 
+                    size_t n) {
+        for (size_t i = 0; i < n; i++) {
+            dst[i] = a[i] + b[i];
+        }
+    }
+  | {
+    label: "C Source Fragment"
+  }
+
+  memory_map: "Virtual Address Space Layout" {
+    style.stroke-dash: 3
+    
+    header: "Offset | Field | Size" {
+      shape: text
+      style.font: mono
+    }
+
+    layout: {
+      grid-columns: 1
+      grid-gap: 0
+      
+      a_buf: "0x00 | a[0...n-1] | 4*n Bytes" {
+        style.fill: "#60A5FA"
+        style.stroke: "#2563EB"
+      }
+      gap_1: ".... | Padding / Unknown | ...." {
+        style.fill: "#E2E8F0"
+        style.font-color: "#64748B"
+      }
+      dst_buf: "0x?? | dst[0...n-1] | 4*n Bytes" {
+        style.fill: "#34D399"
+        style.stroke: "#059669"
+      }
+      
+      overlap_danger: "CRITICAL: If (dst < a + n) && (a < dst + n) -> ALIAS DETECTED" {
+        style.fill: "#FCA5A5"
+        style.stroke: "#EF4444"
+        style.bold: true
+        style.stroke-width: 2
+      }
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 1: COMPILER QUALIFIER CHECK
+# -----------------------------------------------------------------------------
+step1: "STEP 01: Type Qualifier Analysis" {
+  shape: diamond
+  style.fill: "#FEF3C7"
+  style.stroke: "#D97706"
+  
+  label: "Are pointers\n'restrict' qualified?"
+}
+
+# -----------------------------------------------------------------------------
+# STEP 2: DATA DEPENDENCY ANALYSIS
+# -----------------------------------------------------------------------------
+step2: "STEP 02: Pointer Arithmetic Verification" {
+  style.fill: "#E0F2FE"
+  style.stroke: "#0288D1"
+  
+  logic: |md
+    **Static Alias Analysis (Points-to)**
+    1. Base Address Check: `&dst == &a?`
+    2. Range Intersection:
+       `Region(dst) ∩ Region(a) = ∅`
+       `Region(dst) ∩ Region(b) = ∅`
+  |
+  
+  outcomes: {
+    grid-columns: 3
+    disjoint: "PROVEN DISJOINT" {
+      style.fill: "#D1FAE5"
+      style.stroke: "#059669"
+      style.font-color: "#065F46"
+      style.bold: true
+    }
+    overlap: "PROVEN OVERLAP" {
+      style.fill: "#FEE2E2"
+      style.stroke: "#DC2626"
+      style.font-color: "#991B1B"
+      style.bold: true
+    }
+    unknown: "MAY ALIAS" {
+      style.fill: "#F1F5F9"
+      style.stroke: "#64748B"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 3: CONSERVATIVE HEURISTICS
+# -----------------------------------------------------------------------------
+step3: "STEP 03: Dependency Distance" {
+  style.fill: "#FFEDD5"
+  style.stroke: "#EA580C"
+  
+  check: |md
+    **Lexical Backward Dependency?**
+    If overlap exists, is the distance `d` 
+    greater than Vector Length `VL`?
+    `if (dst - a) >= 8 floats: SAFE`
+  |
+}
+
+# -----------------------------------------------------------------------------
+# OUTPUT: VECTORIZED VS SCALAR
+# -----------------------------------------------------------------------------
+outcome_vectorized: "OUTCOME: AVX2 VECTORIZED PATH" {
+  style.fill: "#DCFCE7"
+  style.stroke: "#166534"
+  style.double-border: true
+  
+  asm: |asm
+    ; Loop Unrolled & Vectorized (VL=256-bit)
+    .L_vector_loop:
+      vmovups ymm0, [rsi + rax*4]       ; Load 8 floats from 'a'
+      vaddps  ymm0, ymm0, [rdx + rax*4] ; Add 8 floats from 'b'
+      vmovups [rdi + rax*4], ymm0       ; Store 8 floats to 'dst'
+      add rax, 8
+      cmp rax, rcx
+      jl .L_vector_loop
+  |
+  
+  details: "Safety: Guaranteed No-Overlap\nThroughput: 8 f32/cycle" {
+    style.font-size: 11
+    style.italic: true
+  }
+}
+
+outcome_scalar: "OUTCOME: SISD SCALAR FALLBACK" {
+  style.fill: "#FEE2E2"
+  style.stroke: "#991B1B"
+  style.stroke-dash: 5
+  
+  asm: |asm
+    ; Serial execution (Read-after-Write Hazard)
+    .L_scalar_loop:
+      movss xmm0, [rsi + rax*4]
+      addss xmm0, [rdx + rax*4]
+      movss [rdi + rax*4], xmm0
+      inc rax
+      cmp rax, rcx
+      jl .L_scalar_loop
+  |
+  
+  warning: "STRICT SERIAL ORDER PRESERVED" {
+    style.font-color: "#991B1B"
+    style.bold: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# FLOW LOGIC
+# -----------------------------------------------------------------------------
+input_stage -> step1: "Analyze AST"
+
+step1 -> outcome_vectorized: "YES: Restrict" {
+  style.stroke: "#10b981"
+  style.stroke-width: 4
+}
+
+step1 -> step2: "NO: Perform Analysis" {
+  style.stroke-dash: 3
+}
+
+step2.outcomes.disjoint -> outcome_vectorized: "Safe" {
+  style.stroke: "#10b981"
+  style.stroke-width: 4
+}
+
+step2.outcomes.overlap -> outcome_scalar: "Conflict" {
+  style.stroke: "#ef4444"
+  style.stroke-width: 2
+}
+
+step2.outcomes.unknown -> step3: "Check VL"
+
+step3 -> outcome_scalar: "Unsafe" {
+  style.stroke: "#ef4444"
+  style.stroke-width: 4
+}
+
+step3 -> outcome_vectorized: "Distance > VL" {
+  style.stroke: "#10b981"
+  style.stroke-dash: 5
+}
+
+# -----------------------------------------------------------------------------
+# LEGEND & NOTES
+# -----------------------------------------------------------------------------
+legend: {
+  near: bottom-left
+  safe_path: "SIMD Path (High Performance)" {
+    style.fill: "#DCFCE7"
+    style.stroke: "#166534"
+  }
+  unsafe_path: "Scalar Path (Conservative)" {
+    style.fill: "#FEE2E2"
+    style.stroke: "#991B1B"
+  }
+}
+
+notes: |md
+  ### SIMD Hazard Documentation
+  - **Read-After-Write (RAW)**: Occurs if `dst[i]` is used as `a[i+k]` in a subsequent iteration where `k < VL`.
+  - **Vectorization**: Compilers like LLVM/GCC insert a **Runtime Alias Check** if `restrict` is missing but regions *might* overlap.
+  - **Memory Alignment**: Vectorized code often requires 32-byte (YMM) alignment for `vmovaps` (Aligned) vs `vmovups` (Unaligned).
+| {
+  near: bottom-right
+}

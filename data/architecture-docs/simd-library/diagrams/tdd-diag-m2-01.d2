@@ -1,0 +1,196 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#E8D5E0"
+    simdblock: "#B8D4E8"
+    util: "#E8E4D5"
+    pointer: "#D5E8D4"
+    flow: "#666666"
+  }
+}
+title: |md
+  # Module Architecture: String Scanning Functions
+  `simd_strlen` and `simd_memchr` — SSE2 Optimized Byte Search
+| {near: top-center}
+direction: right
+simd_stringops: String Operations Module {
+  style.fill: "${colors.header}"
+  style.border-radius: 8
+  includes: {
+    style.fill: "${colors.util}"
+    style.border-radius: 4
+    label: "#include <emmintrin.h>"
+    sse2_types: |md
+      __m128i — 128-bit integer vector
+      _mm_cmpeq_epi8 — parallel byte compare
+      _mm_movemask_epi8 — extract high bits
+      _mm_set1_epi8 — broadcast byte
+      _mm_setzero_si128 — zero vector
+    |
+  }
+  simd_strlen: simd_strlen(const char* str) → size_t {
+    style.fill: "${colors.simdblock}"
+    style.border-radius: 6
+    strlen_align: Alignment Handler {
+      style.fill: "${colors.pointer}"
+      style.border-radius: 4
+      offset_calc: |md
+        `offset = addr & 15`
+        `aligned = addr & ~15`
+      |
+      mask_gen: |md
+        `ignore_mask = (1U << offset) - 1`
+        Mask out bytes before str start
+      |
+    }
+    strlen_simd: SIMD Compare Loop {
+      style.fill: "${colors.simdblock}"
+      style.border-radius: 4
+      load_aligned: |md
+        `_mm_load_si128(aligned_addr)`
+        **Safe**: Aligned reads cannot
+        cross page boundaries
+      |
+      compare_zero: |md
+        `_mm_cmpeq_epi8(chunk, zero)`
+        16 parallel byte comparisons
+        Match → 0xFF, No match → 0x00
+      |
+      extract_mask: |md
+        `mask = _mm_movemask_epi8(cmp)`
+        Extract high bit from each byte
+        Result: 16-bit bitmask
+      |
+    }
+    strlen_position: Position Calculation {
+      style.fill: "${colors.util}"
+      style.border-radius: 4
+      mask_shift: |md
+        `mask >>= offset`
+        Align mask to string start
+      |
+      ctz_find: |md
+        `__builtin_ctz(mask)`
+        Count trailing zeros = first
+        null terminator position
+      |
+      position_calc: |md
+        `position = (p - str) + ctz(mask)`
+        Offset from string start
+      |
+    }
+    strlen_align -> strlen_simd: Aligned ptr
+    strlen_simd -> strlen_position: mask != 0
+    strlen_position -> strlen_simd: mask == 0\ncontinue
+  }
+  simd_memchr: simd_memchr(const void* s, int c, size_t n) → void* {
+    style.fill: "${colors.simdblock}"
+    style.border-radius: 6
+    memchr_bounds: Size Limit Handler {
+      style.fill: "${colors.pointer}"
+      style.border-radius: 4
+      zero_check: |md
+        `if (n == 0) return NULL`
+      |
+      prologue: |md
+        Scalar search until aligned
+        or until n exhausted
+        `prologue_bytes = MIN(16-offset, n)`
+      |
+      size_track: |md
+        `n -= prologue_bytes`
+        Track remaining bytes
+      |
+    }
+    memchr_simd: SIMD Compare Loop {
+      style.fill: "${colors.simdblock}"
+      style.border-radius: 4
+      broadcast: |md
+        `target = _mm_set1_epi8((char)c)`
+        Broadcast search byte to
+        all 16 vector lanes
+      |
+      load_compare: |md
+        `_mm_load_si128(p)`
+        `_mm_cmpeq_epi8(chunk, target)`
+        Compare 16 bytes simultaneously
+      |
+      check_limit: |md
+        Loop while `n >= 16`
+        Process 16 bytes per iteration
+        `n -= 16` after each
+      |
+    }
+    memchr_result: Result Handler {
+      style.fill: "${colors.util}"
+      style.border-radius: 4
+      found: |md
+        `pos = __builtin_ctz(mask)`
+        `return (void*)(p + pos)`
+      |
+      not_found: |md
+        Scalar epilogue for
+        remaining 0-15 bytes
+        Return NULL if not found
+      |
+    }
+    memchr_bounds -> memchr_simd: Aligned, n > 0
+    memchr_simd -> memchr_result: mask != 0
+    memchr_result -> memchr_simd: mask == 0 && n >= 16
+    memchr_simd -> memchr_result: n < 16\nscalar epilogue
+  }
+}
+page_safety: Page Boundary Safety {
+  style.fill: "#F5F5F5"
+  style.border-radius: 8
+  style.stroke-dash: 3
+  proof: |md
+    **Mathematical Guarantee:**
+    Page size P = 4096 = 2¹² bytes
+    Vector size V = 16 = 2⁴ bytes
+    P = 256 × V
+    Aligned address A: A mod 16 = 0
+    Load spans [A, A+15]
+    Since P is multiple of V,
+    aligned load cannot cross
+    page boundary.
+  |
+}
+invariants: Critical Invariants {
+  style.fill: "${colors.util}"
+  style.border-radius: 8
+  inv1: |md
+    1. **All SIMD loads use aligned addresses**
+       `_mm_load_si128` on 16-byte aligned ptr
+  |
+  inv2: |md
+    2. **movemask + ctz for position**
+       Branch-free first-match detection
+  |
+  inv3: |md
+    3. **memchr respects size limit**
+       Never reads past n bytes
+  |
+}
+includes -> simd_strlen.strlen_simd: provides intrinsics
+includes -> simd_memchr.memchr_simd: provides intrinsics
+page_safety -> simd_strlen.strlen_align: validates safety
+page_safety -> simd_memchr.memchr_simd: validates safety
+simd_strlen -> invariants: maintains
+simd_memchr -> invariants: maintains
+legend: {
+  near: bottom-right
+  style.fill: white
+  style.border-radius: 4
+  style.stroke: "#CCCCCC"
+  key: |md
+    **Color Key:**
+    🟣 Purple — Header/Module
+    🔵 Blue — SIMD Operations
+    🟢 Green — Pointer/Address Handling
+    🟡 Yellow — Utility/Result Processing
+  |
+}

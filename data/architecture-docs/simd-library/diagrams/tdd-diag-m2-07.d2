@@ -1,0 +1,246 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+title: "State Machine: SIMD strlen Execution Path" {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# STATES: Technical Definition of SIMD string length algorithm
+# -----------------------------------------------------------------------------------------
+
+init: ● {
+  shape: circle
+  style: {
+    fill: "#2E7D32"
+    stroke: "#1B5E20"
+    font-color: white
+  }
+}
+
+check_alignment: CHECK_ALIGNMENT {
+  |'md
+  ### State: Alignment Check
+  **Action:** `offset = (uintptr_t)addr & 15`
+  **Decision:** Is the pointer 16-byte aligned?
+  **Logic:** Misaligned pointers risk crossing page boundaries on 128-bit loads.
+  '|
+  shape: diamond
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1565C0"
+    stroke-width: 2
+  }
+}
+
+scalar_prologue: SCALAR_PROLOGUE {
+  |'md
+  ### State: Misaligned Handling
+  **Action:**
+  1. `aligned_addr = addr & ~15` (Align down)
+  2. `v = _mm_load_si128(aligned_addr)` (Safe, already in page)
+  3. `mask = _mm_movemask_epi8(_mm_cmpeq_epi8(v, zero))`
+  4. `mask >>= offset` (Ignore preceding bytes)
+  **Data:** Offset is 1-15 bytes.
+  '|
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#E65100"
+    stroke-width: 2
+  }
+}
+
+simd_loop: SIMD_LOOP {
+  |'md
+  ### State: Main Processing Loop
+  **Action:**
+  1. `chunk = _mm_load_si128(p)`
+  2. `cmp = _mm_cmpeq_epi8(chunk, zero)`
+  3. `mask = _mm_movemask_epi8(cmp)`
+  4. `if (mask == 0) p += 16;`
+  **Invariants:**
+  - `p` is strictly 16-byte aligned.
+  - No page boundary crossing possible within a single load.
+  '|
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1565C0"
+    stroke-width: 2
+  }
+}
+
+found_null: FOUND_NULL {
+  |'md
+  ### State: Result Computation
+  **Action:**
+  1. `position = __builtin_ctz(mask)` (Count Trailing Zeros)
+  2. `final_len = (p - start_ptr) + position`
+  **Formula:**
+  `len = index_of_first_zero_byte`
+  '|
+  style: {
+    fill: "#C8E6C9"
+    stroke: "#2E7D32"
+    stroke-width: 3
+    bold: true
+  }
+}
+
+return_state: RETURN {
+  |'md
+  **Postcondition:** 
+  `length` returned to caller. 
+  All registers restored.
+  '|
+  shape: rectangle
+  style: {
+    fill: "#2E7D32"
+    stroke: "#1B5E20"
+    font-color: white
+    stroke-width: 2
+  }
+}
+
+empty_string: EMPTY_STRING {
+  |'md
+  **Edge Case:** 
+  `*str == '\0'` detected during initial scalar check or prologue.
+  '|
+  style: {
+    fill: "#FFCDD2"
+    stroke: "#C62828"
+    stroke-dash: 3
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# TRANSITIONS: Trigger + Guard + Action
+# -----------------------------------------------------------------------------------------
+
+init -> check_alignment: "entry: strlen(str)"
+
+check_alignment -> scalar_prologue: "guard: addr & 15 != 0\naction: Align down" {
+  style: {
+    stroke: "#E65100"
+    stroke-width: 2
+  }
+}
+
+check_alignment -> simd_loop: "guard: addr & 15 == 0\naction: Start SIMD" {
+  style: {
+    stroke: "#2E7D32"
+    stroke-width: 2
+  }
+}
+
+scalar_prologue -> found_null: "trigger: mask != 0\n(null in prologue)" {
+  style: {
+    stroke: "#2E7D32"
+    stroke-width: 2
+  }
+}
+
+scalar_prologue -> simd_loop: "trigger: mask == 0\naction: p = aligned_addr + 16" {
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 2
+  }
+}
+
+simd_loop -> found_null: "trigger: mask != 0" {
+  style: {
+    stroke: "#2E7D32"
+    stroke-width: 2
+  }
+}
+
+simd_loop -> simd_loop: "trigger: mask == 0\naction: p += 16" {
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 2
+    stroke-dash: 3
+  }
+}
+
+found_null -> return_state: "action: compute total offset"
+
+# -----------------------------------------------------------------------------------------
+# ILLEGAL & EDGE CASES
+# -----------------------------------------------------------------------------------------
+
+check_alignment -> empty_string: "edge: *str == 0" {
+  style: {
+    stroke: "#C62828"
+    stroke-dash: 5
+  }
+}
+
+empty_string -> return_state: "result: 0" {
+  style: {
+    stroke: "#C62828"
+    stroke-dash: 5
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# ANNOTATIONS & LEGEND
+# -----------------------------------------------------------------------------------------
+
+invariants: |'md
+### Critical Engineering Invariants
+| State | Hardware Constraint | Safety Property |
+| :--- | :--- | :--- |
+| **ALIGNED_READ** | 16B alignment | Prevents #GP or performance penalty |
+| **PROLOGUE** | Masking | Prevents reading garbage before str start |
+| **SIMD_LOOP** | Page-Safe | Cannot cross 4KB page boundary |
+| **NULL_CHECK** | Movemask | Vector comparison to scalar bitmask |
+
+**Note:** SSE2 `_mm_load_si128` requires 16-byte alignment. 
+Misaligned access via `_mm_loadu_si128` is avoided to prevent 
+page faults on the very end of a mapped region.
+'| {
+  near: bottom-left
+  shape: text
+  style: {
+    font-size: 14
+    font: mono
+  }
+}
+
+legend: {
+  near: bottom-right
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#9E9E9E"
+    stroke-dash: 2
+  }
+  
+  title: "Legend" {
+    shape: text
+    style: { bold: true }
+  }
+  
+  l1: "Aligned Fast Path" {
+    style: { stroke: "#2E7D32"; stroke-width: 3 }
+  }
+  l2: "Alignment Handling" {
+    style: { stroke: "#E65100"; stroke-width: 2 }
+  }
+  l3: "Looping Path" {
+    style: { stroke: "#1565C0"; stroke-dash: 3 }
+  }
+  l4: "Edge/Error Path" {
+    style: { stroke: "#C62828"; stroke-dash: 5 }
+  }
+}

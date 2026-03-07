@@ -1,0 +1,257 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |'md
+  # Assembly Annotation: simd_dot_product
+  **Reading Compiler Output — Instruction by Instruction**
+'|
+title.near: top-center
+
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  code_block: {
+    label: "Compiled Assembly (GCC -O3 -march=native)"
+    width: 520
+    asm: |'asm
+      dot_product_sse:
+          xorps    %xmm0, %xmm0        ; sum_vec = [0,0,0,0]
+          testq    %rdx, %rdx          ; if (n == 0) return 0
+          je       .L_return
+          xorq     %rax, %rax          ; i = 0
+      .L_vector_loop:
+          movups   (%rdi,%rax,4), %xmm1    ; load a[i:i+4]
+          movups   (%rsi,%rax,4), %xmm2    ; load b[i:i+4]
+          mulps    %xmm2, %xmm1            ; prod = a * b
+          addps    %xmm1, %xmm0            ; sum_vec += prod
+          addq     $4, %rax                 ; i += 4
+          cmpq     %rdx, %rax               ; i < n?
+          jb       .L_vector_loop
+      ; Horizontal reduction: [s0,s1,s2,s3] -> scalar
+          movaps   %xmm0, %xmm3            ; copy sum_vec
+          shufps   $177, %xmm0, %xmm3      ; [s2,s3,s0,s1]
+          addps    %xmm3, %xmm0            ; [s0+s2, s1+s3, ...]
+          movhlps  %xmm0, %xmm3            ; extract high pair
+          addss    %xmm3, %xmm0            ; final sum in xmm0[0]
+      .L_return:
+          ret
+    '|
+  }
+
+  legend_block: {
+    label: "Instruction Reference"
+    width: 320
+    instruction_legend: {
+      shape: sql_table
+      label: "x86 SIMD Instructions"
+      row1: "movups | Unaligned load/store"
+      row2: "movaps | Aligned load/store"
+      row3: "mulps | Parallel FP multiply"
+      row4: "addps | Parallel FP add"
+      row5: "shufps | Shuffle across lanes"
+      row6: "movhlps | Move high to low"
+      row7: "addss | Scalar FP add (lane 0)"
+    }
+  }
+}
+
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  annotation_loop: {
+    direction: down
+    label: "Vector Loop Annotations"
+    width: 520
+    ann_movups_a: {
+      label: "movups (%rdi,%rax,4), %xmm1"
+      width: 500
+      code: |'c
+        // __m128 va = _mm_loadu_ps(a + i);
+        // Loads 4 floats from array 'a' into xmm1
+        // %rdi = base, %rax = index i, *4 scale
+      '|
+      latency: "Latency: 3-5 cycles (L1 hit)"
+      throughput: "Throughput: 2 per cycle"
+    }
+    ann_mulps: {
+      label: "mulps %xmm2, %xmm1"
+      width: 500
+      code: |'c
+        // __m128 prod = _mm_mul_ps(va, vb);
+        // xmm1[0] *= xmm2[0], xmm1[1] *= xmm2[1], ...
+        // 4-way parallel floating point multiply
+      '|
+      latency: "Latency: 4 cycles"
+      throughput: "Throughput: 2 per cycle"
+    }
+    ann_addps: {
+      label: "addps %xmm1, %xmm0"
+      width: 500
+      code: |'c
+        // sum_vec = _mm_add_ps(sum_vec, prod);
+        // Accumulates 4 partial sums in parallel
+      '|
+      latency: "Latency: 4 cycles"
+      throughput: "Throughput: 2 per cycle"
+    }
+  }
+
+  annotation_reduce: {
+    direction: down
+    label: "Horizontal Reduction Annotations"
+    width: 520
+    ann_shufps: {
+      label: 'shufps $177, %xmm0, %xmm3'
+      width: 500
+      code: |'c
+        // _mm_shuffle_ps(v, v, 0xB1)
+        // Swap low pair [0,1] with high pair [2,3]
+        // Result: [s2, s3, s0, s1]
+      '|
+      latency: "Latency: 1 cycle"
+      throughput: "Throughput: 1 per cycle"
+    }
+    ann_movhlps: {
+      label: "movhlps %xmm0, %xmm3"
+      width: 500
+      code: |'c
+        // _mm_movehl_ps(dest, src)
+        // High 64 bits of src -> Low 64 bits of dest
+      '|
+      latency: "Latency: 1 cycle"
+      throughput: "Throughput: 1 per cycle"
+    }
+    ann_addss: {
+      label: "addss %xmm3, %xmm0"
+      width: 500
+      code: |'c
+        // _mm_add_ss(scalar_sum, high_pair)
+        // Scalar add of lane 0 only
+      '|
+      latency: "Latency: 4 cycles"
+      note: "Final summation of lane 0+2 and 1+3"
+    }
+  }
+}
+
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  port_diagram: {
+    direction: down
+    label: "Skylake Execution Ports"
+    width: 400
+    port_legend: {
+      shape: sql_table
+      label: "Port Assignment (Skylake)"
+      p0: "Port 0 | FMA, mulps, addps"
+      p1: "Port 1 | FMA, mulps, addps"
+      p5: "Port 5 | shufps, movhlps"
+      p23: "Ports 2,3 | Load (movups)"
+    }
+    throughput_note: {
+      label: "Throughput"
+      width: 380
+      note: |'md
+        **8 FP ops/cycle** peak (with FMA)  
+        **2 Load/cycle** (32 bytes/cycle)  
+        Bottleneck: Memory bandwidth
+      '|
+    }
+  }
+
+  reduction_visual: {
+    direction: down
+    label: "Reduction Sequence Visual"
+    width: 480
+    step1: {
+      label: "Step 1: Loop Exit"
+      width: 460
+      state: "xmm0 = [s0, s1, s2, s3]"
+    }
+    step2: {
+      label: 'Step 2: After shufps $177'
+      width: 460
+      state: "xmm3 = [s2, s3, s0, s1]"
+    }
+    step3: {
+      label: "Step 3: After addps"
+      width: 460
+      state: "xmm0 = [s0+s2, s1+s3, s2+s0, s3+s1]"
+    }
+    step4: {
+      label: "Step 4: Result"
+      width: 460
+      state: "xmm0[0] = s0+s1+s2+s3"
+    }
+    step1 -> step2: "shufps"
+    step2 -> step3: "addps"
+    step3 -> step4: "reduction"
+  }
+}
+
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  key_insights: {
+    direction: down
+    label: "Key Insights"
+    width: 600
+    insight1: {
+      label: "1. Unaligned loads (movups)"
+      width: 580
+      detail: |'md
+        Compiler uses movups for safety. Aligned loads (movaps)
+        require 16-byte alignment of input arrays.
+      '|
+      style.fill: "#FFF9C9"
+    }
+    insight2: {
+      label: "2. Optimal Reduction Pattern"
+      width: 580
+      detail: |'md
+        Uses shufps+addps+movhlps instead of haddps.
+        haddps is 2-3x higher latency on older architectures.
+      '|
+      style.fill: "#ACE1AF"
+    }
+    insight4: {
+      label: "3. Dependency Chains"
+      width: 580
+      detail: |'md
+        xmm0 accumulator creates a 4-cycle loop dependency.
+        Unrolling by 4x would allow better port utilization.
+      '|
+      style.fill: "#C5C6C7"
+    }
+  }
+
+  comparison_table: {
+    label: "Strategy Comparison"
+    width: 400
+    table_data: {
+      shape: sql_table
+      label: "Reduction Latency"
+      row1: "haddps | 2 ops | 8-12 cycles"
+      row2: "shuf+add | 4 ops | 6-8 cycles"
+      row3: "Verdict | Shuf+Add | Faster"
+    }
+  }
+}
+
+code_block -> annotation_loop: "Line analysis"
+annotation_loop -> annotation_reduce: "Loop end"
+port_diagram -> reduction_visual: "Resource use"

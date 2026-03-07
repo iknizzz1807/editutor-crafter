@@ -1,0 +1,244 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+direction: down
+
+title: |md
+  # Data Flow: SIMD memset (16-byte SSE/AVX Implementation)
+  **Objective:** Fill memory at `dest` with byte `c` using aligned 128-bit vector stores.
+  **Performance Target:** Throughput @ ~1 cycle per 16 bytes on aligned regions.
+| {near: top-center}
+
+classes: {
+  buffer: {
+    shape: rectangle
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2E86AB"
+      stroke-width: 2
+    }
+  }
+  calculation: {
+    shape: diamond
+    style: {
+      fill: "#FFF3CD"
+      stroke: "#856404"
+      stroke-width: 2
+    }
+  }
+  scalar_stage: {
+    shape: rectangle
+    style: {
+      fill: "#F8D7DA"
+      stroke: "#721C24"
+      stroke-width: 2
+    }
+  }
+  vector_stage: {
+    shape: rectangle
+    style: {
+      fill: "#D4EDDA"
+      stroke: "#155724"
+      stroke-width: 2
+      double-border: true
+    }
+  }
+  return_stage: {
+    shape: oval
+    style: {
+      fill: "#E2E3E5"
+      stroke: "#383D41"
+      stroke-width: 3
+    }
+  }
+  memory_box: {
+    style: {
+      font-size: 11
+      text-transform: none
+      stroke-width: 1
+      font: mono
+    }
+  }
+  header_style: {
+    style: {
+      fill: "#6f42c1"
+      font-color: white
+      bold: true
+    }
+  }
+}
+
+# --- CONTROL FLOW PIPELINE ---
+
+pipeline: {
+  input: |md
+    ### Input Parameters
+    - **dest**: `void*` (base addr)
+    - **c**: `uint8_t` (fill byte)
+    - **count**: `size_t` (length)
+  | {
+    class: buffer
+  }
+
+  input -> align_calc: "0. Entry / Pointer Load"
+
+  align_calc: |md
+    ### 1. Boundary Analysis
+    `offset = (uintptr_t)dest & 0xF`
+    `prologue_len = (16 - offset) & 0xF`
+    `vec_iters = (count - prologue_len) >> 4`
+    `epi_len = (count - prologue_len) & 0xF`
+  | {
+    class: calculation
+  }
+
+  align_calc -> prologue: "If offset != 0"
+
+  prologue: |md
+    ### 2. Scalar Prologue
+    **Target:** Align `dest` to 16B
+    *Method:* `rep stosb` or loop
+    *Range:* `[dest, dest + prologue_len)`
+  | {
+    class: scalar_stage
+  }
+
+  prologue -> vector_loop: "Aligned: dest % 16 == 0" {
+    label: "Step 2 Complete"
+  }
+
+  vector_loop: |md
+    ### 3. Aligned Vector Loop
+    **Target:** Maximize Throughput
+    *Instruction:* `_mm_store_si128` (MOVDQA)
+    *Register:* `xmm0 = _mm_set1_epi8(c)`
+    *Stride:* 16 Bytes / Iteration
+  | {
+    class: vector_stage
+  }
+
+  vector_loop -> epilogue: "Remaining < 16B" {
+    label: "All Vectors Written"
+  }
+
+  epilogue: |md
+    ### 4. Scalar Epilogue
+    **Target:** Finalize Tail (0-15 Bytes)
+    *Range:* `[vec_end, dest + count)`
+  | {
+    class: scalar_stage
+  }
+
+  epilogue -> return_val: "Complete"
+
+  return_val: "return dest" {
+    class: return_stage
+  }
+}
+
+# --- VISUALIZATION: MEMORY LAYOUT ---
+
+mem_map: "Physical Memory Layout (Example: count=53, dest=0x1003)" {
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#444444"
+    stroke-dash: 3
+  }
+
+  grid: {
+    grid-columns: 8
+    grid-gap: 0
+
+    # Row 1: Memory Addresses (Offsets)
+    h0: "0x1000" { style.bold: true; style.fill: "#DCDCDC"; style.font: mono }
+    h1: "0x1008" { style.bold: true; style.fill: "#DCDCDC"; style.font: mono }
+    h2: "0x1010" { style.bold: true; style.fill: "#DCDCDC"; style.font: mono }
+    h3: "0x1018" { style.bold: true; style.fill: "#DCDCDC"; style.font: mono }
+    h4: "0x1020" { style.bold: true; style.fill: "#DCDCDC"; style.font: mono }
+    h5: "0x1028" { style.bold: true; style.fill: "#DCDCDC"; style.font: mono }
+    h6: "0x1030" { style.bold: true; style.fill: "#DCDCDC"; style.font: mono }
+    h7: "0x1038" { style.bold: true; style.fill: "#DCDCDC"; style.font: mono }
+
+    # Row 2: Logical Segmentation
+    p0: "PRE" { style.fill: "#E0E0E0"; class: memory_box; style.opacity: 0.5 }
+    p1: "DEST START" { style.fill: "#F8D7DA"; class: memory_box; style.bold: true }
+    p2: "PROLOGUE" { style.fill: "#F8D7DA"; class: memory_box }
+    p3: "PROLOGUE" { style.fill: "#F8D7DA"; class: memory_box }
+    
+    # SSE Boundary Start (Aligned at 0x1010)
+    v0: "SIMD BLOCK 0" { style.fill: "#D4EDDA"; class: memory_box; style.stroke-width: 3 }
+    v1: "SIMD BLOCK 0" { style.fill: "#D4EDDA"; class: memory_box; style.stroke-width: 3 }
+    v2: "SIMD BLOCK 1" { style.fill: "#D4EDDA"; class: memory_box; style.stroke-width: 3 }
+    v3: "SIMD BLOCK 1" { style.fill: "#D4EDDA"; class: memory_box; style.stroke-width: 3 }
+    
+    # SSE Boundary End (0x1030)
+    e0: "EPILOGUE" { style.fill: "#F8D7DA"; class: memory_box }
+    e1: "END" { style.fill: "#F8D7DA"; class: memory_box; style.bold: true }
+    p4: "POST" { style.fill: "#E0E0E0"; class: memory_box; style.opacity: 0.5 }
+  }
+}
+
+# Correction: The annotation is moved to root level to avoid the 'near' constant error
+mem_annotation: |md
+  ### Memory Segmentation Details
+  - **Total Count**: 53 Bytes
+  - **Prologue**: 13 Bytes (Scalar: 0x1003 to 0x1010)
+  - **Vector Region**: 32 Bytes (SIMD: 2x16B iterations)
+  - **Epilogue**: 8 Bytes (Scalar: 0x1030 to 0x1038)
+  - **Alignment Requirement**: 16-Byte Aligned (SSE)
+| {
+  near: mem_map
+}
+
+# --- IMPLEMENTATION DETAILS (LEGEND) ---
+
+legend: "Instruction Set Legend" {
+  near: bottom-right
+  
+  scalar: "Scalar Write (STOSB/MOV)" {
+    class: scalar_stage
+    width: 250
+  }
+  vector: "Aligned SIMD (MOVDQA)" {
+    class: vector_stage
+    width: 250
+  }
+  boundary: "16-byte Alignment Boundary" {
+    style: {
+      stroke: black
+      stroke-width: 5
+    }
+    height: 15
+    width: 250
+  }
+  
+  # Invisible connections to force layout order in legend
+  scalar -> vector: {style.opacity: 0}
+  vector -> boundary: {style.opacity: 0}
+}
+
+# Global Styling and Logic Indicators
+***.style.font: mono
+(pipeline.input -> pipeline.align_calc)[0].style.stroke: orange
+(pipeline.epilogue -> pipeline.return_val)[0].style.stroke: "#28A745"
+(pipeline.prologue -> pipeline.vector_loop)[0].style.stroke: "#2E86AB"
+
+# Memory Offset Visual Indicators
+mem_map.grid.v0.style.stroke: "#155724"
+mem_map.grid.v0.style.stroke-width: 4
+mem_map.grid.v1.style.stroke: "#155724"
+mem_map.grid.v1.style.stroke-width: 4
+mem_map.grid.v2.style.stroke: "#155724"
+mem_map.grid.v2.style.stroke-width: 4
+mem_map.grid.v3.style.stroke: "#155724"
+mem_map.grid.v3.style.stroke-width: 4
+
+# Pipeline Vector Highlight
+pipeline.vector_loop.style.fill: "#D4EDDA"
+pipeline.vector_loop.style.stroke: "#155724"
+pipeline.vector_loop.style.double-border: true

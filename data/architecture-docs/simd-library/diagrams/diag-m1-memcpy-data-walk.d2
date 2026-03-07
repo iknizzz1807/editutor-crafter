@@ -1,0 +1,244 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  shape: rectangle
+  label: |md
+    # SIMD memcpy: Data Flow Through Memory Hierarchy
+    16-byte chunks flowing through registers with cache line boundaries
+  |
+  style.stroke: transparent
+  style.fill: transparent
+}
+
+row_main: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  src_section: {
+    direction: down
+    label: "Source Memory (RAM)"
+    
+    src_buf: {
+      shape: sql_table
+      label: "src buffer (heap.c)"
+      row0: "0x00 | uint8_t[] | unaligned_prefix"
+      row1: "0x10 | uint8_t[] | aligned_data_start"
+      row2: "0x50 | uint8_t[] | next_cache_line"
+      total: "Size: N bytes"
+    }
+    
+    src_cache: {
+      shape: rectangle
+      label: "L1 Data Cache (32 KB)"
+      style.fill: "#B8D4E8"
+      style.stroke: "#4A90A4"
+      width: 180
+    }
+    
+    src_buf -> src_cache: "64B | fetch" {
+      style.stroke: "#4A90A4"
+      style.stroke-width: 2
+    }
+  }
+
+  reg_section: {
+    direction: down
+    label: "CPU Processing (Intel Core)"
+    
+    load_instr: {
+      label: "Instr: _mm_load_si128"
+      shape: oval
+      style.fill: "#90EE90"
+      style.stroke: "#228B22"
+    }
+
+    xmm_reg: {
+      shape: class
+      label: "XMM Register (128-bit)"
+      # Visibilities as prefixes, KV pairs for fields
+      +byte_0_7: "uint64_t (Low)"
+      +byte_8_15: "uint64_t (High)"
+      # Methods for lane access
+      +get_lane(i): "uint8_t"
+      style.fill: "#FFE4B5"
+      style.stroke: "#CC8800"
+    }
+    
+    store_instr: {
+      label: "Instr: _mm_store_si128"
+      shape: oval
+      style.fill: "#90EE90"
+      style.stroke: "#228B22"
+    }
+
+    load_instr -> xmm_reg: "16B | load" {
+      style.stroke: "#228B22"
+      style.stroke-width: 2
+    }
+    xmm_reg -> store_instr: "16B | store" {
+      style.stroke: "#228B22"
+      style.stroke-width: 2
+    }
+  }
+
+  dst_section: {
+    direction: down
+    label: "Destination Memory (RAM)"
+    
+    dst_cache: {
+      shape: rectangle
+      label: "L1 Data Cache (32 KB)"
+      style.fill: "#B8D4E8"
+      style.stroke: "#4A90A4"
+      width: 180
+    }
+    
+    dst_buf: {
+      shape: sql_table
+      label: "dst buffer (heap.c)"
+      row0: "0x00 | uint8_t[] | aligned_base"
+      row1: "0x10 | uint8_t[] | written_chunk_0"
+      row2: "0x20 | uint8_t[] | written_chunk_1"
+      total: "Alignment: 16-byte required"
+    }
+    
+    dst_cache -> dst_buf: "64B | writeback" {
+      style.stroke: "#4A90A4"
+      style.stroke-width: 2
+      style.stroke-dash: 4
+    }
+  }
+}
+
+# Cross-section data flow
+src_section.src_cache -> reg_section.load_instr: "16B | movdqa" {
+  style.stroke: "#CC8800"
+  style.stroke-width: 3
+  style.animated: true
+}
+reg_section.store_instr -> dst_section.dst_cache: "16B | movdqa" {
+  style.stroke: "#CC8800"
+  style.stroke-width: 3
+  style.animated: true
+}
+
+row_phases: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  phase_prologue: {
+    direction: down
+    label: "Phase 1: Prologue"
+    prologue_desc: {
+      label: "Scalar Alignment (1-15 bytes)"
+      style.fill: "#FFF0F0"
+      style.stroke: "#CC4444"
+    }
+    prologue_code: {
+      label: "alignment.c"
+      code: |'c
+        while ((uintptr_t)dst & 15) {
+          *dst++ = *src++;
+          count--;
+        }
+      '|
+      width: 250
+    }
+  }
+
+  phase_main: {
+    direction: down
+    label: "Phase 2: Vector Body"
+    main_desc: {
+      label: "SIMD Block Loop (16B chunks)"
+      style.fill: "#F0FFF0"
+      style.stroke: "#44AA44"
+    }
+    main_code: {
+      label: "simd_loop.c"
+      code: |'c
+        for (i = 0; i < count/16; i++) {
+          __m128i data = _mm_loadu_si128(&s[i]);
+          _mm_store_si128(&d[i], data);
+        }
+      '|
+      width: 250
+    }
+  }
+
+  phase_epilogue: {
+    direction: down
+    label: "Phase 3: Epilogue"
+    epilogue_desc: {
+      label: "Scalar Remainder (0-15 bytes)"
+      style.fill: "#F0F0FF"
+      style.stroke: "#4444CC"
+    }
+    epilogue_code: {
+      label: "cleanup.c"
+      code: |'c
+        size_t rem = count & 15;
+        for (size_t i = 0; i < rem; i++) {
+          dst[i] = src[i];
+        }
+      '|
+      width: 250
+    }
+  }
+}
+
+row_main -> row_phases: "Logic Flow"
+
+cache_boundaries: {
+  direction: down
+  label: "Memory Constraints & Alignment"
+  
+  cl_visual: {
+    shape: rectangle
+    label: |'md
+      |<- 64B Cache Line (8 x 64-bit qwords) ->|
+      [ 16B Aligned ][ 16B Aligned ][ 16B Aligned ][ 16B Aligned ]
+    '|
+    style.fill: "#F5F5F5"
+    style.stroke: "#999999"
+    width: 600
+  }
+  
+  note: {
+    label: |md
+      **Implementation Insight**: 
+      Aligned SIMD instructions (`MOVAPS`, `MOVDQA`) generate a General Protection fault (#GP) if 
+      the address is not a multiple of 16. Prologue phase is mandatory for correctness.
+    |
+    style.fill: "#FFFACD"
+    style.stroke: "#DAA520"
+  }
+}
+
+legend: {
+  near: bottom-right
+  direction: down
+  label: "Visual Legend"
+  item1: {
+    label: "Solid Gold: SIMD Aligned Transfer"
+    style.stroke: "#CC8800"
+    style.stroke-width: 3
+  }
+  item2: {
+    label: "Dashed Blue: Cache Management"
+    style.stroke: "#4A90A4"
+    style.stroke-dash: 4
+  }
+  item3: {
+    label: "Green: SSE/AVX Intrinsic"
+    style.stroke: "#228B22"
+  }
+}

@@ -1,0 +1,344 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Cross-Domain: SIMD in Transformer Attention
+  Understanding horizontal reduction explains why attention is compute-bound
+| {near: top-center}
+row_inputs: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  inputs: {
+    direction: down
+    label: "Input Tensors"
+    Q: {
+      shape: sql_table
+      label: "Query Q (seq_len × d_k)"
+      row0: "0x00 | float* | q_row_0"
+      row1: "0x08 | float* | q_row_1"
+      dots: "... | ... | ..."
+      sz: "Batch: batch_size × heads × seq × d_k"
+    }
+    K: {
+      shape: sql_table
+      label: "Key K (seq_len × d_k)"
+      row0: "0x00 | float* | k_col_0"
+      row1: "0x08 | float* | k_col_1"
+      dots: "... | ... | ..."
+      note: "Stored transposed for SIMD"
+    }
+  }
+  V: {
+    direction: down
+    label: "Value V"
+    shape: cylinder
+    style.fill: "#E8E8E8"
+  }
+}
+row_compute: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  stage1: {
+    direction: down
+    label: "Stage 1: Q × K^T"
+    matmul_block: {
+      label: "Matrix Multiply\n(simd_matmul from M3)"
+      style.fill: "#B5D8F0"
+      compute: |'c
+        // Each attention score is a dot product
+        // score[i][j] = dot(Q[i], K[j])
+        for (int i = 0; i < seq_len; i++) {
+          __m128 sum = _mm_setzero_ps();
+          for (int k = 0; k < d_k; k += 4) {
+            __m128 q = _mm_loadu_ps(&Q[i*d_k + k]);
+            __m128 k_col = _mm_loadu_ps(&K[j*d_k + k]);
+            sum = _mm_fmadd_ps(q, k_col, sum);
+          }
+          scores[i][j] = hsum_ps(sum);  // ← REDUCTION!
+        }
+      '|
+      width: 380
+    }
+    output1: {
+      label: "Scores Matrix\n(seq × seq)"
+      shape: rectangle
+      style.fill: "#D4E8D4"
+    }
+  }
+  stage2: {
+    direction: down
+    label: "Stage 2: Softmax"
+    softmax_block: {
+      label: "Softmax Per Row\n(hsum_ps from M3)"
+      style.fill: "#F0E5B5"
+      compute: |'c
+        // Softmax requires HORIZONTAL operations
+        // exp(x) / sum(exp(x_i)) for all i
+        for (int i = 0; i < seq_len; i++) {
+          // Vectorized exp (vertical - fast)
+          __m128 max = find_max_ps(row);      // hmax!
+          __m128 exp_vec = exp_ps(row - max); // vertical
+          __m128 sum_exp = hsum_ps(exp_vec);  // ← REDUCTION!
+          // Normalize (vertical - fast)
+          probs[i] = exp_vec / sum_exp;
+        }
+      '|
+      width: 380
+    }
+    note_softmax: {
+      label: "Key Insight"
+      width: 340
+      code: |'md
+        Softmax requires **two horizontal reductions** per row:
+        1. `find_max()` to find max for numerical stability
+        2. `hsum()` to sum all exponentials
+        These horizontal ops are the BOTTLENECK!
+        Vertical exp/div are O(n) parallel.
+        Horizontal sum is O(log n) tree reduction.
+      '|
+    }
+    output2: {
+      label: "Attention Weights\n(seq × seq)"
+      shape: rectangle
+      style.fill: "#E8D4E8"
+    }
+  }
+  stage3: {
+    direction: down
+    label: "Stage 3: Weights × V"
+    final_matmul: {
+      label: "Attention × V\n(Matrix Multiply)"
+      style.fill: "#B5D8F0"
+      compute: |'c
+        // Another matrix multiply
+        // output[i] = sum_j(weights[i][j] * V[j])
+        // Each output element requires:
+        //   - seq_len vectorized muls (fast)
+        //   - 1 horizontal reduction (slow!)
+        for (int i = 0; i < seq_len; i++) {
+          __m128 out = _mm_setzero_ps();
+          for (int j = 0; j < seq_len; j++) {
+            __m128 w = _mm_set1_ps(weights[i][j]);
+            __m128 v = _mm_loadu_ps(&V[j*d_v]);
+            out = _mm_fmadd_ps(w, v, out);
+          }
+          output[i] = hsum_ps(out);  // ← REDUCTION!
+        }
+      '|
+      width: 380
+    }
+    output3: {
+      label: "Output\n(seq × d_v)"
+      shape: rectangle
+      style.fill: "#D4D4E8"
+    }
+  }
+}
+row_parallel: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  parallel_heads: {
+    direction: down
+    label: "Parallel Attention Heads"
+    style.fill: "#F5F5F5"
+    style.stroke-dash: 3
+    head0: {
+      label: "Head 0\nYMM[0-1]"
+      shape: rectangle
+      style.fill: "#FFE4B5"
+    }
+    head1: {
+      label: "Head 1\nYMM[2-3]"
+      shape: rectangle
+      style.fill: "#B5E4FF"
+    }
+    head2: {
+      label: "Head 2\nYMM[4-5]"
+      shape: rectangle
+      style.fill: "#E4FFB5"
+    }
+    head3: {
+      label: "Head 3\nYMM[6-7]"
+      shape: rectangle
+      style.fill: "#FFB5E4"
+    }
+    note: {
+      label: "SIMD Parallelism"
+      code: |'c
+        // Multi-head attention processes
+        // multiple heads in SIMD lanes!
+        // 
+        // With AVX-512, one instruction
+        // processes 16 heads in parallel
+        // (or 4 heads × 4 positions)
+        //
+        // Key: Independent heads = NO
+        // horizontal communication needed
+        // between heads - pure vertical!
+      '|
+      width: 340
+    }
+  }
+  reduction_bottleneck: {
+    direction: down
+    label: "The Reduction Bottleneck"
+    style.fill: "#FFE0E0"
+    style.stroke: "#CC0000"
+    explanation: {
+      width: 400
+      code: |'md
+        ## Why Attention is Compute-Bound
+        **Per token pair** (Q[i] × K[j]):
+        - d_k/4 SIMD multiply-adds → O(d_k) parallel work
+        - **1 horizontal reduction** → O(log d_k) serialized
+        **For sequence length n:**
+        - n² dot products
+        - n² horizontal reductions!
+        **The Insight from M3:**
+        Shuffle+add reduction is 2-3× faster than `hadd_ps`.
+        This is why libraries like FlashAttention optimize
+        the reduction pattern - it's the critical path.
+        **Memory bandwidth** eventually dominates for large n,
+        but for typical d_k=64, the reduction overhead is real.
+      '|
+    }
+    timing: {
+      shape: sql_table
+      label: "Typical Timings (d_k=64)"
+      op1: "64 mul/add (vertical) | ~16 cycles | 4 per cycle"
+      op2: "hadd_ps (naive)      | ~10 cycles | bottleneck!"
+      op3: "shuffle+add (optimal)| ~4 cycles  | 2.5× faster"
+    }
+  }
+}
+row_m3_connection: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  m3_dot: {
+    direction: down
+    label: "M3: Dot Product"
+    style.fill: "#E8F0E8"
+    code: |'c
+      // From M3 - the pattern
+      __m128 sum = _mm_setzero_ps();
+      for (i = 0; i < n; i += 4) {
+        __m128 a = load(a+i);
+        __m128 b = load(b+i);
+        sum = _mm_fmadd_ps(a, b, sum);
+      }
+      return hsum_ps(sum);  // ← Here!
+    '|
+    width: 320
+  }
+  arrow: "->" {
+    shape: text
+    label: "Same Pattern"
+    style.font-size: 20
+    style.bold: true
+  }
+  attention_dot: {
+    direction: down
+    label: "Attention: Q×K^T"
+    style.fill: "#F0E8E8"
+    code: |'c
+      // Each attention score
+      float score(int i, int j) {
+        // dot(Q[i], K[j])
+        __m128 sum = _mm_setzero_ps();
+        for (k = 0; k < d_k; k += 4) {
+          sum = _mm_fmadd_ps(
+            Q[i*d_k + k], K[j*d_k + k], sum);
+        }
+        return hsum_ps(sum);  // ← Same!
+      }
+    '|
+    width: 320
+  }
+}
+row_summary: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  summary: {
+    direction: down
+    label: "Key Insights"
+    style.fill: "#F5F5DC"
+    insight1: {
+      label: "1. Attention = Matrix Multiply + Softmax"
+      width: 300
+      code: |'md
+        Q×K^T is O(n² × d_k) multiplies
+        + O(n²) horizontal reductions
+        Softmax adds O(n × seq_len) hsums
+      '|
+    }
+    insight2: {
+      label: "2. Horizontal Reduction is the Bottleneck"
+      width: 300
+      code: |'md
+        Every attention score needs one hsum
+        Every softmax row needs two hsums
+        Compiler often uses slow `hadd_ps`
+      '|
+    }
+    insight3: {
+      label: "3. M3 Knowledge Directly Applies"
+      width: 300
+      code: |'md
+        shuffle+add pattern → 2-3× faster
+        This is why FlashAttention exists
+        Hand-tuned kernels beat auto-vec
+      '|
+    }
+    insight4: {
+      label: "4. Multi-Head = Free Parallelism"
+      width: 300
+      code: |'md
+        Independent heads process in parallel
+        No horizontal ops across heads
+        Pure vertical SIMD - optimal!
+      '|
+    }
+  }
+  lib_connection: {
+    direction: down
+    label: "Production Libraries"
+    style.fill: "#E0E0F0"
+    libs: {
+      shape: sql_table
+      label: "Optimized Attention Kernels"
+      lib1: "cuBLAS/cuDNN   | GPU tensor cores"
+      lib2: "FlashAttention | IO-aware tiling"
+      lib3: "oneDNN         | CPU AVX-512"
+      lib4: "xFormers       | Memory-efficient"
+    }
+    note: {
+      label: "All use hand-written SIMD/assembly"
+      shape: text
+      style.italic: true
+      style.font-color: "#666666"
+    }
+  }
+}
+inputs.Q -> stage1.matmul_block: "Q rows"
+inputs.K -> stage1.matmul_block: "K cols (transposed)"
+stage1.matmul_block -> stage1.output1: "scores"
+stage1.output1 -> stage2.softmax_block: "raw scores"
+stage2.softmax_block -> stage2.output2: "probabilities"
+stage2.output2 -> stage3.final_matmul: "weights"
+V -> stage3.final_matmul: "V values"
+stage3.final_matmul -> stage3.output3: "output"
+parallel_heads.head0 -> stage3.output3: "head 0"
+parallel_heads.head1 -> stage3.output3: "head 1"
+parallel_heads.head2 -> stage3.output3: "head 2"
+parallel_heads.head3 -> stage3.output3: "head 3"
+m3_dot -> attention_dot: "identical pattern"
+stage2.softmax_block -> reduction_bottleneck: "requires hsum"

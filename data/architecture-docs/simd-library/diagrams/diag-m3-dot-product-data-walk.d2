@@ -1,0 +1,219 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  input_arrays: {
+    direction: down
+    label: "Input Arrays (memory)"
+    array_a: {
+      shape: sql_table
+      label: "float a[] (memory)"
+      a0: "0x00 | float | a[0]"
+      a1: "0x04 | float | a[1]"
+      a2: "0x08 | float | a[2]"
+      a3: "0x0C | float | a[3]"
+      dots: "... | ... | ..."
+    }
+    array_b: {
+      shape: sql_table
+      label: "float b[] (memory)"
+      b0: "0x00 | float | b[0]"
+      b1: "0x04 | float | b[1]"
+      b2: "0x08 | float | b[2]"
+      b3: "0x0C | float | b[3]"
+      dots: "... | ... | ..."
+    }
+  }
+  load_stage: {
+    direction: down
+    label: "Step 1: Vector Load"
+    load_code: {
+      width: 400
+      code: |'c
+        // Load 4 floats per iteration
+        __m128 va = _mm_loadu_ps(a + i);
+        __m128 vb = _mm_loadu_ps(b + i);
+      '|
+    }
+    xmm_a: {
+      shape: sql_table
+      label: "__m128 va (XMM0)"
+      lane0: "Lane 0 | a[0]"
+      lane1: "Lane 1 | a[1]"
+      lane2: "Lane 2 | a[2]"
+      lane3: "Lane 3 | a[3]"
+      sz: "128 bits (4 x float32)"
+    }
+    xmm_b: {
+      shape: sql_table
+      label: "__m128 vb (XMM1)"
+      lane0: "Lane 0 | b[0]"
+      lane1: "Lane 1 | b[1]"
+      lane2: "Lane 2 | b[2]"
+      lane3: "Lane 3 | b[3]"
+      sz: "128 bits (4 x float32)"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  multiply_stage: {
+    direction: down
+    label: "Step 2: Parallel Multiply"
+    mul_code: {
+      width: 400
+      code: |'c
+        // 4 multiplies in ONE instruction
+        __m128 prod = _mm_mul_ps(va, vb);
+        // Executes on FMA ports 0,1 in parallel
+      '|
+    }
+    xmm_prod: {
+      shape: sql_table
+      label: "__m128 prod (XMM2)"
+      lane0: "Lane 0 | a[0]*b[0]"
+      lane1: "Lane 1 | a[1]*b[1]"
+      lane2: "Lane 2 | a[2]*b[2]"
+      lane3: "Lane 3 | a[3]*b[3]"
+      perf: "mulps: 1 cycle latency"
+    }
+    mul_annot: {
+      label: "Vertical operation: independent lanes"
+      shape: rectangle
+      style.fill: "#E8F5E9"
+      style.stroke: "#4CAF50"
+    }
+  }
+  accumulate_stage: {
+    direction: down
+    label: "Step 3: Accumulate (Loop)"
+    acc_code: {
+      width: 400
+      code: |'c
+        // sum_vec maintains 4 partial sums
+        sum_vec = _mm_add_ps(sum_vec, prod);
+      '|
+    }
+    xmm_acc_before: {
+      shape: sql_table
+      label: "__m128 sum_vec (before)"
+      lane0: "Lane 0 | partial sum"
+      lane1: "Lane 1 | partial sum"
+      lane2: "Lane 2 | partial sum"
+      lane3: "Lane 3 | partial sum"
+    }
+    plus_op: {
+      shape: circle
+      label: "+"
+      style.fill: "#FFF9C4"
+      style.stroke: "#FBC02D"
+      style.font-size: 24
+      style.bold: true
+    }
+    xmm_acc_after: {
+      shape: sql_table
+      label: "__m128 sum_vec (after)"
+      lane0: "Lane 0 | Σ+a[0]*b[0]"
+      lane1: "Lane 1 | Σ+a[1]*b[1]"
+      lane2: "Lane 2 | Σ+a[2]*b[2]"
+      lane3: "Lane 3 | Σ+a[3]*b[3]"
+      note: "4 independent accumulators"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  reduce_stage: {
+    direction: down
+    label: "Step 4: Horizontal Reduction"
+    reduce_intro: {
+      label: "Combine partial sums into scalar"
+      shape: rectangle
+      style.fill: "#FFEBEE"
+      style.stroke: "#EF5350"
+    }
+    bad_approach: {
+      direction: right
+      label: "Slow Strategy: hadd_ps"
+      bad_code: {
+        width: 280
+        code: |'c
+          // Serialized on port 5
+          __m128 h1 = _mm_hadd_ps(v, v);
+          __m128 h2 = _mm_hadd_ps(h1, h1);
+        '|
+      }
+    }
+    good_approach: {
+      direction: down
+      label: "Fast Strategy: shuffle + vertical add"
+      good_code: {
+        width: 400
+        code: |'c
+          // Fold 4 lanes into 1 (scalar)
+          __m128 shuf = _mm_shuffle_ps(v, v, 0x4E);
+          __m128 sums = _mm_add_ps(v, shuf);
+          shuf = _mm_movehl_ps(shuf, sums);
+          sums = _mm_add_ss(sums, shuf);
+        '|
+      }
+    }
+  }
+  final_result: {
+    direction: down
+    label: "Final Result"
+    xmm_final: {
+      shape: sql_table
+      label: "__m128 sums (XMM3)"
+      lane0: "Lane 0 | a·b (TOTAL)"
+      lane1: "Lane 1 | (junk)"
+      lane2: "Lane 2 | (junk)"
+      lane3: "Lane 3 | (junk)"
+    }
+    extract_code: {
+      width: 320
+      code: |'c
+        // Extract lane 0 as scalar
+        float result = _mm_cvtss_f32(sums);
+      '|
+    }
+    result_box: {
+      label: "float result = Σ(a[i] * b[i])"
+      shape: rectangle
+      style.fill: "#E3F2FD"
+      style.stroke: "#1976D2"
+      style.bold: true
+    }
+  }
+}
+legend: {
+  near: bottom-right
+  label: "SIMD Performance Model"
+  vert: "Vertical op: 4-wide parallelism" {
+    style.fill: "#E8F5E9"
+  }
+  horiz: "Horizontal op: Port 5 Bottleneck" {
+    style.fill: "#FFF3E0"
+  }
+}
+row1.input_arrays.array_a -> row1.load_stage.xmm_a: "load"
+row1.input_arrays.array_b -> row1.load_stage.xmm_b: "load"
+row1.load_stage.xmm_a -> row2.multiply_stage.xmm_prod: "va"
+row1.load_stage.xmm_b -> row2.multiply_stage.xmm_prod: "vb"
+row2.multiply_stage.xmm_prod -> row2.accumulate_stage.plus_op: "prod"
+row2.accumulate_stage.xmm_acc_before -> row2.accumulate_stage.plus_op: "sum_vec"
+row2.accumulate_stage.plus_op -> row2.accumulate_stage.xmm_acc_after: "addps"
+row2.accumulate_stage.xmm_acc_after -> row3.reduce_stage.reduce_intro: "reduction" {style.stroke-dash: 4}
+row3.reduce_stage.good_approach.good_code -> row3.final_result.xmm_final: "shuffle"
+row3.final_result.xmm_final -> row3.final_result.result_box: "extract"

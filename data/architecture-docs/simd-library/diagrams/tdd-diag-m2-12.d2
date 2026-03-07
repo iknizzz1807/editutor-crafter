@@ -1,0 +1,310 @@
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    theme-id: 4
+    sketch: false
+    pad: 20
+  }
+}
+
+classes: {
+  memory_block: {
+    style: {
+      stroke-width: 1
+      border-radius: 0
+      font-size: 10
+      font: mono
+    }
+  }
+  header_style: {
+    style: {
+      fill: "#6c5ce7"
+      font-color: white
+      bold: true
+    }
+  }
+  data_style: {
+    style: {
+      fill: "#74b9ff"
+      stroke: "#0984e3"
+    }
+  }
+  prologue_style: {
+    style: {
+      fill: "#a29bfe"
+      stroke: "#6c5ce7"
+    }
+  }
+  padding_style: {
+    style: {
+      fill: "#dfe6e9"
+      stroke: "#b2bec3"
+      stroke-dash: 3
+    }
+  }
+  match_style: {
+    style: {
+      fill: "#ff7675"
+      stroke: "#d63031"
+      bold: true
+      stroke-width: 3
+    }
+  }
+  pointer_style: {
+    style: {
+      stroke: orange
+      stroke-width: 3
+      font-color: orange
+      bold: true
+    }
+  }
+  register_style: {
+    style: {
+      fill: "#55efc4"
+      stroke: "#00b894"
+      font: mono
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# Step-by-Step Algorithm State Diagram for SIMD memchr
+# -----------------------------------------------------------------------------------------
+
+title: "Algorithm: SIMD memchr() Scalar-Vector-Scalar Lifecycle" {
+  shape: text
+  style.font-size: 28
+  style.bold: true
+  near: top-center
+}
+
+steps: {
+  1: {
+    label: "Step 1: Alignment Calculation (Prologue Start)"
+    
+    Annotation: |md
+      ### State: MISALIGNED INPUT
+      - **Input**: `s = 0x...07`, `c = 'X'`, `n = 100`
+      - **Logic**: `offset = (uintptr_t)s & 15` (result: 7).
+      - **Constraints**: SIMD loads (`MOVDQA`) require 16-byte alignment. 
+      - **Action**: Scalar check for bytes `0..8` to reach next boundary.
+    | {
+      near: top-center
+    }
+    
+    Memory_Layout: {
+      label: "Memory Block: [0x00 - 0x0F]"
+      grid-columns: 16
+      grid-gap: 0
+      
+      # Padding bytes before 's'
+      o0: "00" {class: [memory_block; padding_style]}
+      o1: "01" {class: [memory_block; padding_style]}
+      o2: "02" {class: [memory_block; padding_style]}
+      o3: "03" {class: [memory_block; padding_style]}
+      o4: "04" {class: [memory_block; padding_style]}
+      o5: "05" {class: [memory_block; padding_style]}
+      o6: "06" {class: [memory_block; padding_style]}
+      
+      # Starting 's' at offset 7
+      s0: "s[0]" {class: [memory_block; data_style]}
+      s1: "s[1]" {class: [memory_block; data_style]}
+      s2: "s[2]" {class: [memory_block; data_style]}
+      s3: "s[3]" {class: [memory_block; data_style]}
+      s4: "s[4]" {class: [memory_block; data_style]}
+      s5: "s[5]" {class: [memory_block; data_style]}
+      s6: "s[6]" {class: [memory_block; data_style]}
+      s7: "s[7]" {class: [memory_block; data_style]}
+      s8: "s[8]" {class: [memory_block; data_style]}
+    }
+    
+    Pointer: "Current Pointer (s)" {
+      shape: parallelogram
+      class: pointer_style
+    }
+    Pointer -> Memory_Layout.s0: "addr % 16 == 7"
+  }
+  
+  2: {
+    label: "Step 2: Scalar Prologue Completion"
+    
+    Annotation: |md
+      ### State: ALIGNING
+      - Scalar loop processed 9 bytes.
+      - No match found in the first 9 bytes.
+      - **Target reached**: `0x10` (Aligned).
+    |
+    
+    Memory_Layout: {
+      label: "Memory Block: Crossing Boundary"
+      grid-columns: 16
+      grid-gap: 0
+      
+      p0: "07" {class: [memory_block; prologue_style]}
+      p1: "08" {class: [memory_block; prologue_style]}
+      p2: "09" {class: [memory_block; prologue_style]}
+      p3: "0A" {class: [memory_block; prologue_style]}
+      p4: "0B" {class: [memory_block; prologue_style]}
+      p5: "0C" {class: [memory_block; prologue_style]}
+      p6: "0D" {class: [memory_block; prologue_style]}
+      p7: "0E" {class: [memory_block; prologue_style]}
+      p8: "0F" {class: [memory_block; prologue_style]}
+      
+      # 16-byte aligned start
+      aligned: "0x10" {
+        class: [memory_block; data_style]
+        style.stroke: red
+        style.stroke-width: 4
+      }
+      a1: "..." {class: [memory_block; data_style]}
+      a2: "..." {class: [memory_block; data_style]}
+      a3: "..." {class: [memory_block; data_style]}
+      a4: "..." {class: [memory_block; data_style]}
+      a5: "..." {class: [memory_block; data_style]}
+      a6: "..." {class: [memory_block; data_style]}
+    }
+    
+    Status: "**Pointer Fixed**" {
+      shape: text
+      style.font-color: red
+      near: Memory_Layout.aligned
+    }
+  }
+  
+  3: {
+    label: "Step 3: SIMD Hot Path (SSE2/AVX)"
+    
+    Annotation: |md
+      ### State: VECTOR PROCESSING
+      - **Step A**: `MOVDQA` loads 16 bytes into `XMM0`.
+      - **Step B**: `PCMPEQB` compares `XMM0` with target `XMM1` (filled with `c`).
+      - **Step C**: `PMOVMSKB` creates 16-bit mask in `EAX`.
+      - **Step D**: `TEST EAX, EAX` checks for match.
+    |
+    
+    XMM_Register: {
+      label: "XMM0: 128-bit Vector Register"
+      grid-columns: 8
+      grid-gap: 2
+      
+      v0: "B0" {class: [memory_block; data_style]}
+      v1: "B1" {class: [memory_block; data_style]}
+      v2: "B2" {class: [memory_block; data_style]}
+      v3: "B3" {class: [memory_block; data_style]}
+      v4: "B4" {class: [memory_block; data_style]}
+      v5: "B5" {class: [memory_block; data_style]}
+      v6: "B6" {class: [memory_block; data_style]}
+      v7: "B7" {class: [memory_block; data_style]}
+    }
+    
+    Comparator: "PCMPEQB (XMM0, XMM1)" {
+      shape: hexagon
+      style.fill: "#ffeaa7"
+    }
+    
+    Bitmask: "EAX Register" {
+      grid-columns: 16
+      style.fill: white
+      b0: "0"; b1: "0"; b2: "0"; b3: "0"; b4: "0"; b5: "0"; b6: "0"; b7: "0"
+      b8: "0"; b9: "0"; b10: "0"; b11: "0"; b12: "0"; b13: "0"; b14: "0"; b15: "0"
+    }
+    
+    XMM_Register -> Comparator -> Bitmask: "Extract Mask"
+  }
+  
+  4: {
+    label: "Step 4: Scalar Epilogue (Final Match)"
+    
+    Annotation: |md
+      ### State: MATCH FOUND / TAIL
+      - Vector loop ends when `n < 16` or match is in current mask.
+      - Final scalar check processes remaining bytes.
+      - **Match Found** at `p[n-2]`.
+    |
+    
+    Buffer_Tail: {
+      grid-columns: 5
+      grid-gap: 0
+      t0: "p[n-4]" {class: [memory_block; data_style]}
+      t1: "p[n-3]" {class: [memory_block; data_style]}
+      t2: "MATCH" {class: [memory_block; match_style]}
+      t3: "p[n-1]" {class: [memory_block; data_style]}
+      t4: "EOF" {class: [memory_block; padding_style]}
+    }
+    
+    Result: "RETURN POINTER" {
+      shape: capsule
+      style.fill: "#55efc4"
+      bold: true
+    }
+    
+    Buffer_Tail.t2 -> Result: "offset calculation"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# Technical Implementation Details
+# -----------------------------------------------------------------------------------------
+
+Implementation_Details: |md
+  ### Engineering Specs: Aligned vs Unaligned
+  
+  1. **Page Safety**: Aligned loads (`MOVDQA`) are used to prevent crossing page boundaries, 
+     which can trigger spurious segmentation faults if the next page is unmapped.
+     
+  2. **The Masking Pattern**:
+     c
+     __m128i chunk = _mm_load_si128((__m128i*)ptr);
+     __m128i mask = _mm_cmpeq_epi8(chunk, target_vec);
+     int bitmask = _mm_movemask_epi8(mask);
+     if (bitmask != 0) return ptr + __builtin_ctz(bitmask);
+     
+     
+  3. **Complexity**: 
+     - Time: O(n/16) + O(1) prologue + O(1) epilogue.
+     - Space: O(1) (Vector registers used).
+| {
+  near: bottom-left
+  style.font-size: 13
+}
+
+Assembly_Reference: {
+  label: "Assembly: SSE2 memchr Inner Loop"
+  
+  Code: |asm
+    .loop:
+      movdqa xmm0, [rdi]      ; Load 16-byte aligned
+      pcmpeqb xmm0, xmm1      ; Compare to target char
+      pmovmskb eax, xmm0      ; Mask to EAX
+      test eax, eax           ; If bit set, match found
+      jnz .found
+      add rdi, 16             ; Advance ptr
+      sub rdx, 16             ; Remaining count
+      cmp rdx, 16
+      jae .loop               ; Continue vector path
+  |
+  
+  Code.style.font: mono
+  near: bottom-right
+}
+
+# Styling for the whole diagram
+***.style.stroke: "#2d3436"
+***.style.font: sans-serif
+
+# Pointer arrows
+(steps.1.Pointer -> steps.1.Memory_Layout.s0): {
+  style: {
+    stroke: orange
+    stroke-width: 4
+    animated: true
+  }
+}
+
+(steps.4.Buffer_Tail.t2 -> steps.4.Result): {
+  style: {
+    stroke: "#d63031"
+    stroke-width: 3
+  }
+}

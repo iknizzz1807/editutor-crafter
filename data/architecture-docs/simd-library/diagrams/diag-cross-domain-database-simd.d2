@@ -1,0 +1,249 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: |md
+    # Cross-Domain: SIMD in Database Query Processing
+    **Same `movemask` pattern from M2 applied to columnar data**
+  |
+  near: top-center
+  shape: rectangle
+  style.fill: transparent
+  style.stroke: transparent
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  source: {
+    direction: down
+    label: "Source Table (users)"
+    table: {
+      shape: sql_table
+      label: "users"
+      id: "INT | id"
+      name: "VARCHAR | name"
+      age: "INT | age"
+    }
+  }
+  arrow1: {
+    shape: rectangle
+    width: 80
+    label: "Column\nExtraction"
+    style.fill: transparent
+    style.stroke: transparent
+  }
+  column: {
+    direction: down
+    label: "Column Store (age column)"
+    age_col: {
+      shape: sql_table
+      label: "age[] (columnar)"
+      r0: "0x00 | 25"
+      r1: "0x04 | 30"
+      r2: "0x08 | 45"
+      r3: "0x0C | 18"
+      r4: "0x10 | 55"
+      r5: "0x14 | 28"
+      r6: "0x18 | 62"
+      r7: "0x1C | 35"
+      sz: "Total: 32 bytes"
+    }
+  }
+}
+source.table -> arrow1: "SELECT age"
+arrow1 -> column.age_col: "int32[]"
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  xmm_load: {
+    direction: down
+    label: "Load 4× int32 into XMM"
+    xmm_reg: {
+      shape: class
+      label: "xmm0 (128-bit)"
+      lane0: "25"
+      lane1: "30"
+      lane2: "45"
+      lane3: "18"
+    }
+    note: {
+      shape: rectangle
+      width: 200
+      label: |md
+        c
+        // Load 4 integers (16 bytes)
+        __m128i ages = _mm_loadu_si128(
+          (const __m128i*)(age_col + i));
+        
+      |
+    }
+  }
+  arrow2: {
+    shape: rectangle
+    width: 60
+    label: "Compare"
+    style.fill: transparent
+    style.stroke: transparent
+  }
+  compare: {
+    direction: down
+    label: "Parallel Comparison"
+    threshold: {
+      shape: class
+      label: "xmm1 (broadcast)"
+      t0: "30"
+      t1: "30"
+      t2: "30"
+      t3: "30"
+    }
+    code: {
+      shape: rectangle
+      width: 240
+      label: |'c
+        // Broadcast threshold
+        __m128i thresh = 
+          _mm_set1_epi32(30);
+        // Compare: age > 30?
+        __m128i cmp = 
+          _mm_cmpgt_epi32(ages, thresh);
+        // Result: [0xFF...] if true
+        //         [0x00...] if false
+      '|
+    }
+  }
+  arrow3: {
+    shape: rectangle
+    width: 60
+    label: "movemask"
+    style.fill: transparent
+    style.stroke: transparent
+  }
+  bitmask: {
+    direction: down
+    label: "Extract Bitmask"
+    mask_result: {
+      shape: class
+      label: "int mask"
+      bit3: "bit3 | 0 | 18 <= 30"
+      bit2: "bit2 | 1 | 45 > 30"
+      bit1: "bit1 | 0 | 30 <= 30"
+      bit0: "bit0 | 0 | 25 <= 30"
+    }
+    mask_code: {
+      shape: rectangle
+      width: 200
+      label: |'c
+        // Extract high bits
+        int mask = 
+          _mm_movemask_ps(
+            _mm_castsi128_ps(cmp));
+        // mask = 0b0100 = 4
+      '|
+    }
+    mask_value: {
+      shape: rectangle
+      label: "mask = 0b_0100 = 4"
+      style.fill: "#E8F5E9"
+      style.stroke: "#4CAF50"
+    }
+  }
+}
+column.age_col -> xmm_load.xmm_reg: "4× int32 | load"
+xmm_load.xmm_reg -> compare.threshold: "xmm0 | compare"
+compare.threshold -> bitmask.mask_result: "int | extract"
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  result: {
+    direction: down
+    label: "Query Result"
+    matches: {
+      shape: sql_table
+      label: "Matching rows"
+      r0: "row 2 | age=45"
+      r1: "row 4 | age=55"
+      r2: "row 6 | age=62"
+      r3: "row 7 | age=35"
+    }
+    note: {
+      shape: rectangle
+      width: 220
+      label: |md
+        **WHERE age > 30**
+        Bitmask tells us which lanes
+        matched. Use `__builtin_ctz()`
+        to find set bits and fetch
+        corresponding row IDs.
+      |
+    }
+  }
+  pattern: {
+    direction: down
+    label: "Same Pattern as M2 strlen"
+    strlen_box: {
+      shape: rectangle
+      width: 280
+      label: |'c
+        // M2: strlen finds '\0'
+        __m128i zero = _mm_setzero_si128();
+        __m128i cmp = _mm_cmpeq_epi8(chunk, zero);
+        int mask = _mm_movemask_epi8(cmp);
+        // M4: DB finds matches
+        __m128i thresh = _mm_set1_epi32(30);
+        __m128i cmp = _mm_cmpgt_epi32(ages, thresh);
+        int mask = _mm_movemask_ps(...);
+      '|
+      style.fill: "#FFF3E0"
+      style.stroke: "#FF9800"
+    }
+    insight: {
+      shape: rectangle
+      width: 280
+      label: |md
+        **Key Insight:**
+        The `movemask + ctz` pattern is
+        **universal** for finding matches
+        in parallel data:
+        - String scanning: find '\0'
+        - Column scans: find matches
+        - Image processing: find edges
+        - Regex: find character classes
+      |
+      style.fill: "#E3F2FD"
+      style.stroke: "#2196F3"
+    }
+  }
+}
+bitmask.mask_result -> result.matches: "popcount(mask)\n| filter"
+legend: {
+  near: bottom-right
+  label: "Color Legend"
+  style.fill: "#FAFAFA"
+  style.stroke: "#E0E0E0"
+  match: {
+    shape: rectangle
+    label: "Match (bit=1)"
+    style.fill: "#C8E6C9"
+  }
+  nomatch: {
+    shape: rectangle
+    label: "No Match (bit=0)"
+    style.fill: "#FFCDD2"
+  }
+}
+connection: {
+  style.stroke: "#9E9E9E"
+  style.stroke-dash: 3
+}
+pattern.strlen_box -> bitmask.mask_code: "Same\nmovemask\npattern" {
+  style.stroke: "#FF9800"
+  style.stroke-dash: 5
+  style.animated: true
+}

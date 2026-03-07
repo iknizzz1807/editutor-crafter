@@ -1,0 +1,208 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: "Shuffle+Add Horizontal Reduction" {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+subtitle: "4-lane SSE reduction in 2 shuffle+add rounds" {
+  near: top-center
+  shape: text
+  style.font-size: 16
+}
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  step0: {
+    label: "Initial Vector"
+    width: 320
+    vec0: {
+      shape: sql_table
+      label: "__m128 v"
+      lane0: "0   | float | s0"
+      lane1: "1   | float | s1"
+      lane2: "2   | float | s2"
+      lane3: "3   | float | s3"
+    }
+    note0: |md
+      **Goal:** Compute `s0 + s1 + s2 + s3`
+      Four partial sums need to be
+      combined into one scalar.
+    |
+  }
+}
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  step1: {
+    label: "Step 1: Shuffle"
+    width: 320
+    code1: |'c
+      // Swap high/low pairs
+      __m128 shuf = _mm_shuffle_ps(
+        v, v, 
+        _MM_SHUFFLE(2, 3, 0, 1)
+      );
+    '|
+    vec1: {
+      shape: sql_table
+      label: "__m128 shuf"
+      lane0: "0   | float | s2"
+      lane1: "1   | float | s3"
+      lane2: "2   | float | s0"
+      lane3: "3   | float | s1"
+    }
+    note1: |md
+      `_MM_SHUFFLE(2,3,0,1)`:
+      - From v[2],v[3] → positions 0,1
+      - From v[0],v[1] → positions 2,3
+      Lanes cross: high↔low
+    |
+  }
+}
+row3: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  step2: {
+    label: "Step 2: Vertical Add"
+    width: 320
+    code2: |'c
+      // Add original and shuffled
+      __m128 sums = _mm_add_ps(v, shuf);
+    '|
+    vec2: {
+      shape: sql_table
+      label: "__m128 sums"
+      lane0: "0   | float | s0+s2"
+      lane1: "1   | float | s1+s3"
+      lane2: "2   | float | s2+s0"
+      lane3: "3   | float | s3+s1"
+    }
+    note2: |md
+      **4 parallel additions!**
+      Lanes 0,2 are identical
+      Lanes 1,3 are identical
+      Progress: pairs summed
+    |
+  }
+}
+row4: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  step3: {
+    label: "Step 3: Move High to Low"
+    width: 320
+    code3: |'c
+      // Move high 64 bits to low
+      __m128 shuf2 = _mm_movehl_ps(
+        shuf, sums
+      );
+    '|
+    vec3: {
+      shape: sql_table
+      label: "__m128 shuf2"
+      lane0: "0   | float | s2+s0"
+      lane1: "1   | float | s3+s1"
+      lane2: "2   | float | (undef)"
+      lane3: "3   | float | (undef)"
+    }
+    note3: |md
+      `movehl` extracts upper half
+      of `sums` into lower half.
+      Now lanes 0,1 hold what was
+      in lanes 2,3.
+    |
+  }
+}
+row5: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  step4: {
+    label: "Step 4: Final Scalar Add"
+    width: 320
+    code4: |'c
+      // Add only lowest element
+      sums = _mm_add_ss(sums, shuf2);
+      // Extract scalar result
+      float result = _mm_cvtss_f32(sums);
+    '|
+    vec4: {
+      shape: sql_table
+      label: "__m128 sums (final)"
+      lane0: "0   | float | s0+s1+s2+s3"
+      lane1: "1   | float | (unchanged)"
+      lane2: "2   | float | (unchanged)"
+      lane3: "3   | float | (unchanged)"
+    }
+    note4: |md
+      `_mm_add_ss` adds **only**
+      lane 0 (scalar add).
+      Result: single scalar
+      `s0 + s1 + s2 + s3`
+    |
+  }
+}
+result_box: {
+  label: "Result"
+  width: 320
+  result: |md
+    **Final value:** `s0 + s1 + s2 + s3`
+    **Instruction count:**
+    - 1 shuffle (`shuffleps`)
+    - 1 add (`addps`) 
+    - 1 movehl (`movehlps`)
+    - 1 scalar add (`addss`)
+    **vs `hadd_ps`:** 2 horizontal adds
+    each with 3-5 cycle latency.
+    Shuffle+add uses different
+    execution ports → better ILP.
+  |
+}
+arrows: {
+  style.stroke: "#666"
+  style.stroke-width: 2
+  row1.step0.vec0 -> row2.step1.code1: "shuffle"
+  row2.step1.vec1 -> row3.step2.code2: "add"
+  row3.step2.vec2 -> row4.step3.code3: "movehl"
+  row4.step3.vec3 -> row5.step4.code4: "add_ss"
+}
+legend: {
+  near: bottom-right
+  style: {
+    fill: "#f5f5f5"
+    stroke: "#ccc"
+    border-radius: 8
+  }
+  title: "Lane Color Key" {
+    shape: text
+    style.bold: true
+  }
+  l0: "Lane 0 (s0)" {style.fill: "#a8d5ff"}
+  l1: "Lane 1 (s1)" {style.fill: "#ffb3ba"}
+  l2: "Lane 2 (s2)" {style.fill: "#baffc9"}
+  l3: "Lane 3 (s3)" {style.fill: "#ffffba"}
+}

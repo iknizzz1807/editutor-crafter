@@ -1,0 +1,221 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: |md
+    # Compiler Output: AoS vs SoA Assembly
+    Same algorithm, different memory layout = 8x throughput difference
+  |
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  aos_container: {
+    direction: down
+    label: "Array of Structs (AoS)"
+    aos_source: {
+      label: "Source Code"
+      width: 420
+      code: |'c
+        // AoS: interleaved x,y,z per particle
+        typedef struct { 
+          float x, y, z; 
+        } Vec3;
+        void apply_gravity_aos(Vec3* p, 
+                               float g, float dt, 
+                               int n) {
+          for (int i = 0; i < n; i++) {
+            p[i].x += g * dt;  // stride: 12 bytes
+            p[i].y += g * dt;  // non-contiguous
+            p[i].z += g * dt;
+          }
+        }
+      '|
+      style.fill: "#2d3748"
+      style.font-color: "#e2e8f0"
+      style.stroke: "#4a5568"
+    }
+    aos_asm: {
+      label: "Generated Assembly (Scalar)"
+      width: 480
+      code: |'asm
+        ; AoS inner loop - ONE particle per iteration
+        ; rdi = p (particle array pointer)
+        ; xmm0 = g * dt (broadcast scalar)
+        .loop_aos:
+          movss   xmm1, [rdi]          ; load p[i].x (4 bytes)
+          addss   xmm1, xmm0           ; add scalar: x += g*dt
+          movss   [rdi], xmm1          ; store p[i].x back
+          movss   xmm1, [rdi + 4]      ; load p[i].y
+          addss   xmm1, xmm0           ; add scalar: y += g*dt
+          movss   [rdi + 4], xmm1      ; store p[i].y back
+          movss   xmm1, [rdi + 8]      ; load p[i].z
+          addss   xmm1, xmm0           ; add scalar: z += g*dt
+          movss   [rdi + 8], xmm1      ; store p[i].z back
+          add     rdi, 12              ; next particle (12 bytes)
+          dec     rcx
+          jnz     .loop_aos
+      '|
+      style.fill: "#1a202c"
+      style.font-color: "#fc8181"
+      style.stroke: "#c53030"
+    }
+    aos_stats: {
+      shape: sql_table
+      label: "AoS Performance Analysis"
+      f1: "Instructions per iteration | ~12"
+      f2: "Particles per iteration    | 1"
+      f3: "SIMD utilization           | 12.5% (1 of 8 lanes)"
+      f4: "Memory access pattern      | Strided (12-byte gap)"
+      f5: "Cache line utilization     | 37.5% (12 of 32 bytes)"
+      f6: "Throughput                 | ~1.0 GFLOP/s"
+    }
+  }
+  spacer: {
+    shape: rectangle
+    width: 40
+    style.fill: transparent
+    style.stroke: transparent
+  }
+  soa_container: {
+    direction: down
+    label: "Struct of Arrays (SoA)"
+    soa_source: {
+      label: "Source Code"
+      width: 420
+      code: |'c
+        // SoA: separate arrays per component
+        typedef struct {
+          float* x;  // all x values contiguous
+          float* y;  // all y values contiguous
+          float* z;  // all z values contiguous
+        } Vec3SoA;
+        void apply_gravity_soa(Vec3SoA* p, 
+                               float g, float dt, 
+                               int n) {
+          float gv = g * dt;
+          for (int i = 0; i < n; i++) {
+            p->x[i] += gv;  // sequential!
+            p->y[i] += gv;  // cache-friendly
+            p->z[i] += gv;  // vectorizable
+          }
+        }
+      '|
+      style.fill: "#2d3748"
+      style.font-color: "#e2e8f0"
+      style.stroke: "#4a5568"
+    }
+    soa_asm: {
+      label: "Generated Assembly (SIMD Vectorized)"
+      width: 480
+      code: |'asm
+        ; SoA inner loop - EIGHT particles per iteration
+        ; rdi = x array, rsi = y array, rdx = z array
+        ; ymm0 = g * dt (broadcast to 8 lanes)
+        .loop_soa:
+          vmovaps  ymm1, [rdi]         ; load 8 x values (32 bytes)
+          vaddps   ymm1, ymm1, ymm0    ; SIMD add: 8 x's in parallel!
+          vmovaps  [rdi], ymm1         ; store 8 x values back
+          vmovaps  ymm1, [rsi]         ; load 8 y values
+          vaddps   ymm1, ymm1, ymm0    ; SIMD add: 8 y's in parallel!
+          vmovaps  [rsi], ymm1         ; store 8 y values back
+          vmovaps  ymm1, [rdx]         ; load 8 z values
+          vaddps   ymm1, ymm1, ymm0    ; SIMD add: 8 z's in parallel!
+          vmovaps  [rdx], ymm1         ; store 8 z values back
+          add      rdi, 32             ; next 8 x values
+          add      rsi, 32             ; next 8 y values
+          add      rdx, 32             ; next 8 z values
+          sub      rcx, 8
+          jnz      .loop_soa
+      '|
+      style.fill: "#1a365d"
+      style.font-color: "#68d391"
+      style.stroke: "#2f855a"
+    }
+    soa_stats: {
+      shape: sql_table
+      label: "SoA Performance Analysis"
+      f1: "Instructions per iteration | ~12"
+      f2: "Particles per iteration    | 8"
+      f3: "SIMD utilization           | 100% (8 of 8 lanes)"
+      f4: "Memory access pattern      | Sequential (contiguous)"
+      f5: "Cache line utilization     | 100% (all 64 bytes used)"
+      f6: "Throughput                 | ~8.0 GFLOP/s"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  legend: {
+    direction: right
+    label: "Instruction Legend"
+    scalar_box: {
+      label: ""
+      width: 24
+      height: 24
+      style.fill: "#c53030"
+      style.stroke: "#9b2c2c"
+    }
+    scalar_label: {
+      label: |md
+        **Scalar** (AoS)
+        `movss` = move scalar single
+        `addss` = add scalar single
+        Process 1 value at a time
+      |
+      shape: text
+    }
+    simd_box: {
+      label: ""
+      width: 24
+      height: 24
+      style.fill: "#2f855a"
+      style.stroke: "#276749"
+    }
+    simd_label: {
+      label: |md
+        **SIMD** (SoA)
+        `vmovaps` = vector move aligned packed single
+        `vaddps` = vector add packed single
+        Process 8 values in parallel
+      |
+      shape: text
+    }
+  }
+}
+aos_container -> soa_container: "8x throughput improvement" {
+  style: {
+    stroke: "#48bb78"
+    stroke-width: 3
+    animated: true
+  }
+}
+why_box: {
+  near: bottom-center
+  width: 700
+  label: |md
+    ## Why SIMD Requires SoA
+    **Problem with AoS**: Data is interleaved. To load 8 consecutive `x` values, the CPU would need to "gather" them from 8 different locations (every 12th byte). AVX has `vgather` instructions, but they're slow—often slower than scalar code.
+    **Solution with SoA**: All `x` values are contiguous. `vmovaps` loads 32 bytes (8 floats) in a single cache-line-aligned access. One instruction, 8 values loaded.
+    **The compiler sees**: 
+    - AoS: `p[i].x` is at address `base + i*12` → non-contiguous, gives up on vectorization
+    - SoA: `x[i]` is at address `x_base + i*4` → contiguous, auto-vectorizes
+  |
+  style.fill: "#edf2f7"
+  style.stroke: "#a0aec0"
+  style.border-radius: 8
+}

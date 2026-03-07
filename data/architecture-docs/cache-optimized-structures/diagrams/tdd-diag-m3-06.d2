@@ -1,0 +1,245 @@
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+  colors: {
+    header: "#E1BEE7"
+    data: "#BBDEFB"
+    free: "#C8E6C9"
+    padding: "#EEEEEE"
+    pointer: "#FFE0B2"
+    instruction: "#F8BBD0"
+    lat_high: "#FFCDD2"
+    lat_low: "#C8E6C9"
+    border: "#424242"
+  }
+}
+
+title: {
+  label: |md
+    # Software Prefetch: Hiding Memory Latency
+    ### Intel® 64 and IA-32 Architectures Optimization Specification
+    **Scenario:** Sequential Array Search with Prefetch Distance $D=8$
+  |
+  near: top-center
+}
+
+# 1. ARCHITECTURE & STATE MACHINE: THE PIPELINE
+execution_logic: {
+  label: "Algorithm State Machine: Pipelined Memory Access"
+  style.stroke: "${vars.colors.border}"
+  style.stroke-width: 2
+
+  iteration_n: {
+    label: "Iteration [N]"
+    style.fill: "#FAFAFA"
+    
+    op1: "LOAD keys[N]" {
+      style.fill: "${vars.colors.data}"
+      style.bold: true
+      style.stroke: "#1976D2"
+    }
+    
+    prefetch_op: "PREFETCHT0 &keys[N+8]" {
+      style.fill: "${vars.colors.instruction}"
+      style.stroke: "#D81B60"
+      style.stroke-width: 2
+      style.double-border: true
+    }
+    
+    desc: |md
+      **Micro-op Status:**
+      - L1 DCache Miss for N+8
+      - Non-blocking RFO/Read
+      - Out-of-order execution continues
+    | {
+      shape: sticky_note
+    }
+    
+    op1 -> prefetch_op: "1. Current Data"
+    prefetch_op -> desc: "2. Async Trigger"
+  }
+
+  background_latency: "Memory Controller Latency (~300 Cycles)" {
+    style: {
+      stroke-dash: 5
+      animated: true
+      font-color: "#D32F2F"
+      bold: true
+    }
+  }
+
+  iteration_n_plus_8: {
+    label: "Iteration [N+8]"
+    style.fill: "#FAFAFA"
+    
+    op_hit: "LOAD keys[N+8]" {
+      style.fill: "#43A047"
+      style.font-color: white
+      style.bold: true
+      style.stroke: "#1B5E20"
+    }
+    
+    result: "L1 CACHE HIT" {
+      shape: parallelogram
+      style.fill: "${vars.colors.lat_low}"
+      style.bold: true
+    }
+    
+    op_hit -> result
+  }
+
+  iteration_n -> background_latency -> iteration_n_plus_8
+}
+
+# 2. PHYSICAL MEMORY LAYOUT (64-BYTE CACHE LINE)
+memory_hierarchy: {
+  label: "Memory Layout: 64-Byte Cache Line Specification"
+  
+  cache_line_64b: {
+    grid-columns: 1
+    grid-gap: 0
+    style.stroke: black
+
+    header: "Offset 0x00 | Tag / State Bits (8 Bytes)" {
+      style.fill: "${vars.colors.header}"
+      width: 500
+    }
+    
+    target_data: "Offset 0x08 | keys[N+8] (8 Bytes) - PREFETCH TARGET" {
+      style.fill: "${vars.colors.data}"
+      style.bold: true
+      style.stroke: "#D81B60"
+      style.stroke-width: 4
+      width: 500
+    }
+    
+    adjacent_data: "Offset 0x10 | keys[N+9] (8 Bytes)" {
+      style.fill: "${vars.colors.data}"
+      width: 500
+    }
+    
+    remaining_space: "Offset 0x18 | Next 24 Bytes (3 x 64-bit values)" {
+      style.fill: "${vars.colors.free}"
+      width: 500
+    }
+    
+    padding: "Offset 0x30 | Alignment Padding (16 Bytes)" {
+      style.fill: "${vars.colors.padding}"
+      style.stroke-dash: 2
+      width: 500
+    }
+  }
+
+  pointer_logic: {
+    label: "Addressing Logic"
+    
+    rax: "RAX: Base Address" {
+      shape: rectangle
+      style.fill: "${vars.colors.pointer}"
+    }
+    
+    rdx: "RDX: Index (i+8) * 8" {
+      shape: rectangle
+      style.fill: "${vars.colors.pointer}"
+    }
+    
+    instruction: "PREFETCHT0 [RAX + RDX]" {
+      style.fill: "${vars.colors.instruction}"
+      style.bold: true
+      style.double-border: true
+    }
+    
+    rax -> instruction
+    rdx -> instruction
+  }
+
+  pointer_logic.instruction -> cache_line_64b.target_data: "Request Line Fill" {
+    style.stroke: "#E91E63"
+    style.stroke-width: 3
+    style.animated: true
+  }
+}
+
+# 3. LATENCY PIPELINE ANALYSIS
+latency_profile: {
+  direction: right
+  label: "Timing Analysis: Baseline vs Optimized"
+
+  baseline: {
+    label: "Serial Access (Bottlenecked)"
+    l1: "Load N" -> w1: "Wait (Stall)" -> l2: "Load N+1" -> w2: "Wait (Stall)"
+    w1.style.fill: "${vars.colors.lat_high}"
+    w2.style.fill: "${vars.colors.lat_high}"
+    (l1 -> w1)[0].label: "300 cycles"
+  }
+
+  optimized: {
+    label: "Software Prefetch (Overlapped)"
+    pf: "Prefetch N+8"
+    work: "Process N..N+7"
+    ready: "Load N+8"
+    
+    pf -> work: "Background Fetch"
+    work -> ready: "Ready in L1"
+    
+    ready.style.fill: "${vars.colors.lat_low}"
+    pf.style.fill: "${vars.colors.instruction}"
+    work.width: 300
+    (pf -> work)[0].label: "Latency Hidden"
+  }
+}
+
+# 4. IMPLEMENTATION INTERFACE
+implementation: {
+  label: "Low-Level Implementation (C++ Intrinsics)"
+  
+  code_spec: |cpp
+    /**
+     * Intel Optimization Manual:
+     * Distance D should be approximately (Memory Latency / Loop Cycles)
+     */
+    void find_target(int64_t* keys, int64_t val, size_t len) {
+        const size_t D = 8; // Prefetch distance
+        
+        for (size_t i = 0; i < len; ++i) {
+            // Hint T0: Fetch into all cache levels (L1, L2, L3)
+            _mm_prefetch((char*)&keys[i + D], _MM_HINT_T0);
+            
+            // This load will now be an L1 Hit
+            if (keys[i] == val) {
+                handle_match(i);
+            }
+        }
+    }
+  | {
+    shape: code
+    language: cpp
+  }
+}
+
+# COORDINATION EDGES
+implementation -> execution_logic: "Defines flow"
+execution_logic -> memory_hierarchy: "Memory Access Pattern"
+memory_hierarchy -> latency_profile: "Determines"
+
+# SUMMARY BLOCK
+summary: {
+  near: bottom-center
+  label: |md
+    ### Technical Specification Summary
+    - **Prefetch Distance ($D$):** $\frac{Memory Latency}{Execution Cost}$ $\approx$ 8-12 iterations
+    - **Temporal Hint:** `T0` (Temporal Data - keep in L1)
+    - **Cache Alignment:** 64-Byte boundaries maintained
+    - **Performance Gain:** Up to 3.5x for memory-bound sequential scans
+  |
+  style: {
+    stroke: "#424242"
+    fill: "#FFF9C4"
+    stroke-width: 2
+  }
+}

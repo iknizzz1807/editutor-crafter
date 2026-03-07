@@ -1,0 +1,238 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 40
+  }
+}
+
+title: |md
+  # Hash Table Resize State Machine (Linear Probing / Robin Hood)
+  **Engineering Specification: Lock-Free Shadow Allocation & Atomic Rehash** 
+  ---
+  1. **Detection**: Monitor Load Factor ($\alpha > 0.85$) or Tombstone Pressure ($\beta > 0.10$).
+  2. **Allocation**: Parallel allocation of shadow arrays (Keys, Values, Metadata).
+  3. **Atomic Swap**: Pointer redirection via single CAS or atomic exchange.
+  4. **Incremental Migration**: Rehash occupied slots from stale segment to new primary.
+  5. **Deallocation**: Deferred reclamation of stale memory regions.
+| {
+  near: top-center
+  style: {
+    stroke: "#B5AFF6"
+    fill: "#E4DBFE"
+    font-size: 18
+  }
+}
+
+# --- STATE DEFINITIONS ---
+
+initial: ● {
+  shape: circle
+  style.fill: "#6CB4EE"
+  width: 25
+  height: 25
+}
+
+Detection_Phase: "Phase 1: Pressure Detection" {
+  style: {
+    stroke-dash: 5
+    fill: "#F3E5F5"
+  }
+  
+  Check_Trigger: "Scan Table State" {
+    tooltip: "Evaluate (count + tombstones) vs Capacity"
+    style.fill: "#E4DBFE"
+    style.stroke: "#B5AFF6"
+  }
+
+  Check_Load: "Load Factor > 85%?" {
+    shape: diamond
+    style.fill: "#FFF9C4"
+    style.stroke: "#F9A825"
+  }
+
+  Check_Tombstone: "Tombstone % > 10%?" {
+    shape: diamond
+    style.fill: "#FFF9C4"
+    style.stroke: "#F9A825"
+  }
+}
+
+Allocation_Phase: "Phase 2: Shadow Memory Prep" {
+  style: {
+    stroke-dash: 5
+    fill: "#E8F5E9"
+  }
+
+  Allocate_Arrays: "Shadow Allocation" {
+    label: "Allocate New Arrays\n[uint64_t keys, void* values, uint8_t meta]"
+    style.fill: "#C8E6C9"
+    style.stroke: "#4CAF50"
+  }
+
+  Init_Metadata: "Zero-Init Metadata" {
+    label: "Initialize Metadata\nto EMPTY (0xFF)\nMEMSET(meta, 0xFF, size)"
+    style.fill: "#C8E6C9"
+    style.stroke: "#4CAF50"
+  }
+}
+
+Atomic_Phase: "Phase 3: State Pivot" {
+  style: {
+    stroke-dash: 5
+    fill: "#E3F2FD"
+  }
+
+  Save_Old: "Snapshot Stale Pointers" {
+    label: "Save Old Arrays\ninto 'stale_context' struct"
+    style.fill: "#BBDEFB"
+    style.stroke: "#2196F3"
+  }
+
+  Install_New: "Commit Table Swap" {
+    label: "ATOMIC_STORE(table->data, shadow)\nRESET counter: count=0, tomb=0"
+    style.fill: "#BBDEFB"
+    style.stroke: "#2196F3"
+    style.bold: true
+  }
+}
+
+Migration_Phase: "Phase 4: Data Migration" {
+  style: {
+    stroke-dash: 5
+    fill: "#FBE9E7"
+  }
+
+  Rehash_Loop: "Iterator: Next Occupied" {
+    label: "Rehash Loop\nScan stale_meta[i] != EMPTY"
+    style.fill: "#FFCCBC"
+    style.stroke: "#FF5722"
+  }
+
+  Rehash_Entry: "Execute Re-Insertion" {
+    label: "hash_table_insert(\nnew_table, old_key, old_val)"
+    style.fill: "#FFCCBC"
+    style.stroke: "#FF5722"
+  }
+
+  More_Entries: "Work Pending?" {
+    shape: diamond
+    style.fill: "#FFF9C4"
+    style.stroke: "#F9A825"
+  }
+}
+
+Cleanup_Phase: "Phase 5: Release" {
+  style: {
+    stroke-dash: 5
+    fill: "#E0F2F1"
+  }
+
+  Free_Old: "Deallocate Stale Segments" {
+    label: "Free Old Arrays\n(keys, values, meta)"
+    style.fill: "#C8E6C9"
+    style.stroke: "#4CAF50"
+  }
+
+  Complete: "Status: RESIZE_COMPLETE" {
+    style.fill: "#B2DFDB"
+    style.stroke: "#009688"
+    style.bold: true
+    style.double-border: true
+  }
+}
+
+No_Resize: "Status: STEADY_STATE" {
+  label: "No Action Needed\nProceed with Insert"
+  style.fill: "#CFD8DC"
+  style.stroke: "#607D8B"
+}
+
+Alloc_Failed: "FATAL: Allocation Failure" {
+  label: "OOM Error\nAbort Resize / Propagate Error"
+  style.fill: "#FFCDD2"
+  style.stroke: "#F44336"
+  style.font-color: "#C62828"
+}
+
+# --- TRANSITION LOGIC ---
+
+initial -> Detection_Phase.Check_Trigger: "On Mutation (Put/Delete)"
+
+Detection_Phase.Check_Trigger -> Detection_Phase.Check_Load
+
+Detection_Phase.Check_Load -> Detection_Phase.Check_Tombstone: "No (< 85%)"
+Detection_Phase.Check_Load -> Allocation_Phase.Allocate_Arrays: "Yes (>= 85%)\nNewCap = OldCap * 2" {
+  style: {
+    stroke: "#4CAF50"
+    stroke-width: 3
+    bold: true
+  }
+}
+
+Detection_Phase.Check_Tombstone -> No_Resize: "No (< 10%)"
+Detection_Phase.Check_Tombstone -> Allocation_Phase.Allocate_Arrays: "Yes (>= 10%)\nNewCap = OldCap" {
+  style: {
+    stroke: "#4CAF50"
+    stroke-width: 3
+    bold: true
+  }
+}
+
+Allocation_Phase.Allocate_Arrays -> Allocation_Phase.Init_Metadata: "Success"
+Allocation_Phase.Allocate_Arrays -> Alloc_Failed: "MALLOC ERROR" {
+  style: {
+    stroke: "#F44336"
+    stroke-dash: 3
+  }
+}
+
+Allocation_Phase.Init_Metadata -> Atomic_Phase.Save_Old
+Atomic_Phase.Save_Old -> Atomic_Phase.Install_New
+Atomic_Phase.Install_New -> Migration_Phase.Rehash_Loop
+
+Migration_Phase.Rehash_Loop -> Migration_Phase.Rehash_Entry: "Found Key"
+Migration_Phase.Rehash_Entry -> Migration_Phase.More_Entries
+
+Migration_Phase.More_Entries -> Migration_Phase.Rehash_Loop: "i < Old_Cap"
+Migration_Phase.More_Entries -> Cleanup_Phase.Free_Old: "i == Old_Cap"
+
+Cleanup_Phase.Free_Old -> Cleanup_Phase.Complete
+
+# --- ANNOTATIONS (Corrected for ELK Engine) ---
+
+Metadata_Spec: |md
+  ### SIMD-Friendly Metadata (1B per slot)
+  - **EMPTY (0xFF)**: High bit set, sentinel for fast scan.
+  - **DELETED (0xFE)**: High bit set, distinct from EMPTY.
+  - **OCCUPIED (0x00-0x7F)**: Bits 0-6 = H2 (Top 7 bits of hash).
+| {
+  near: top-right
+  style.font-size: 14
+}
+
+Atomic_Invariant: |md
+  ### Atomic Swap Invariant
+  Between `Save_Old` and `Install_New`, the
+  table must be locked or use a
+  Hazard Pointer for concurrent
+  readers to prevent Use-After-Free.
+| {
+  near: center-right
+  style.font-size: 14
+}
+
+# --- LEGEND ---
+
+Legend: {
+  near: bottom-right
+  direction: right
+  style.stroke: "#333333"
+  
+  State: "Logical Stage" { style.fill: "#E4DBFE" }
+  Decision: "Conditional" { shape: diamond; style.fill: "#FFF9C4" }
+  Mutation: "Data Mutation" { style.fill: "#BBDEFB" }
+  Mem: "Memory Op" { style.fill: "#C8E6C9" }
+  Err: "Critical Failure" { style.fill: "#FFCDD2" }
+}

@@ -1,0 +1,261 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Hardware Soul: Particle Update Loop
+  Position update: `p[i].x += p[i].vx * dt`
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  aos_section: {
+    direction: down
+    label: "Array of Structs (AoS)"
+    aos_mem: {
+      label: "Memory Layout"
+      mem_layout: {
+        shape: sql_table
+        label: "ParticleAoS (32 bytes)"
+        f0: "0x00 | float | x"
+        f1: "0x04 | float | y"
+        f2: "0x08 | float | z"
+        f3: "0x0C | float | vx"
+        f4: "0x10 | float | vy"
+        f5: "0x14 | float | vz"
+        f6: "0x18 | float | mass"
+        pad: "0x1C | [pad] | 4 bytes"
+        sz: "Total: 32 bytes"
+      }
+    }
+    aos_cache: {
+      label: "Cache Line Access"
+      cl1: {
+        shape: rectangle
+        label: |md
+          **Cache Line 0** (64 bytes)
+          `[px][py][pz][vx][vy][vz][ma][pad][px][py]...`
+          └─ particle 0 ────────┘ └─ p1 ─
+          **Used**: 24 bytes (x,y,z,vx,vy,vz)
+          **Wasted**: 40 bytes (62.5%)
+        |
+        width: 320
+      }
+    }
+    aos_loop: {
+      label: "Hot Loop Code"
+      width: 360
+      code: |'c
+        for (int i = 0; i < n; i++) {
+            p[i].x += p[i].vx * dt;
+            p[i].y += p[i].vy * dt;
+            p[i].z += p[i].vz * dt;
+        }
+      '|
+    }
+  }
+  soa_section: {
+    direction: down
+    label: "Struct of Arrays (SoA)"
+    soa_mem: {
+      label: "Memory Layout"
+      soa_layout: {
+        shape: sql_table
+        label: "ParticleSystemSoA"
+        arr0: "float* | x[n]    | contiguous"
+        arr1: "float* | y[n]    | contiguous"
+        arr2: "float* | z[n]    | contiguous"
+        arr3: "float* | vx[n]   | contiguous"
+        arr4: "float* | vy[n]   | contiguous"
+        arr5: "float* | vz[n]   | contiguous"
+        arr6: "float* | mass[n] | contiguous"
+      }
+    }
+    soa_cache: {
+      label: "Cache Line Access"
+      cl2: {
+        shape: rectangle
+        label: |md
+          **Cache Line (x array)** (64 bytes)
+          `[x0][x1][x2][x3][x4][x5][x6][x7][x8]...`
+          **Used**: 64 bytes (16 floats)
+          **Wasted**: 0 bytes (100%)
+          ×6 arrays: x, y, z, vx, vy, vz
+        |
+        width: 320
+        style.fill: "#E8F5E9"
+      }
+    }
+    soa_loop: {
+      label: "Hot Loop Code"
+      width: 360
+      code: |'c
+        for (int i = 0; i < n; i++) {
+            x[i] += vx[i] * dt;
+            y[i] += vy[i] * dt;
+            z[i] += vz[i] * dt;
+        }
+      '|
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  hw_analysis: {
+    direction: down
+    label: "Hardware Analysis"
+    hw_table: {
+      shape: sql_table
+      label: "Hardware Behavior Comparison"
+      r0: "Metric | AoS | SoA"
+      r1: "Cache Lines Touched | ~n/2 (every 2nd particle) | ~6n/16 = 0.375n"
+      r2: "Cache Utilization | 37.5% (12/32 bytes) | 100% (all floats used)"
+      r3: "L1 Behavior | Partial hits, some waste | All hits after warmup"
+      r4: "Prefetcher | Confused (strided) | Active (sequential)"
+      r5: "Branch Predictor | Trivial (no branches) | Trivial (no branches)"
+    }
+    simd_box: {
+      label: "SIMD Vectorization"
+      width: 380
+      simd_compare: {
+        shape: sql_table
+        label: "SIMD Opportunity (AVX-256)"
+        s0: "Aspect | AoS | SoA"
+        s1: "Data Layout | Interleaved xyz | Separate arrays"
+        s2: "Load Pattern | Gather (slow) | Contiguous (fast)"
+        s3: "Vectorizable | ❌ NO | ✅ YES"
+        s4: "Throughput | 1 op/cycle | 8 ops/cycle"
+      }
+    }
+  }
+  trace_section: {
+    direction: down
+    label: "Execution Trace (4 particles)"
+    trace_aos: {
+      label: "AoS Memory Access Pattern"
+      aos_pattern: {
+        shape: rectangle
+        width: 420
+        label: |md
+          
+          i=0: Load CL0 [p0.x,y,z,vx,vy,vz,mass,p1.x,y...]
+               ↓ Access p0.x, p0.vx (12 bytes used, 52 wasted)
+          i=1: Load CL0 (HIT) - p1 already loaded
+               ↓ Access p1.x, p1.vx
+          i=2: Load CL1 [p2.x,y,z,vx,vy,vz,mass,p3.x,y...]
+               ↓ NEW CACHE LINE NEEDED
+          Result: ~n/2 cache misses, poor utilization
+          
+        |
+      }
+    }
+    trace_soa: {
+      label: "SoA Memory Access Pattern"
+      soa_pattern: {
+        shape: rectangle
+        width: 420
+        style.fill: "#E8F5E9"
+        label: |md
+          
+          i=0-15: Load x[0:15]  → 1 cache line (64 bytes)
+                  Load vx[0:15] → 1 cache line
+                  Process 16 particles!
+          i=16-31: Load x[16:31]  → 1 cache line (prefetched!)
+                   Load vx[16:31] → 1 cache line (prefetched!)
+          Result: 6n/16 = 0.375n cache lines, 100% utilization
+          
+        |
+      }
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  summary: {
+    direction: down
+    label: "Performance Summary"
+    perf_table: {
+      shape: sql_table
+      label: "Measured Performance (1M particles)"
+      p0: "Implementation | Time | Speedup"
+      p1: "AoS naive | ~8.4 ms | 1.0x (baseline)"
+      p2: "SoA scalar | ~3.2 ms | 2.6x"
+      p3: "SoA + SIMD | ~1.0 ms | 8.4x"
+    }
+    key_insight: {
+      label: "Key Insight"
+      width: 380
+      insight: |md
+        **The same algorithm, different layout:**
+        - Both loops compute `position += velocity × dt`
+        - Same O(n) complexity
+        - Same number of FLOPs (6n multiply-adds)
+        **But cache behavior differs by 8x+**
+        SoA transforms a memory-bound loop into a
+        compute-bound loop. The CPU spends time
+        doing math instead of waiting for RAM.
+      |
+    }
+  }
+  asm_compare: {
+    direction: down
+    label: "Generated Assembly (Inner Loop)"
+    asm_aos: {
+      label: "AoS (Scalar)"
+      width: 340
+      code: |'asm
+        ; One particle at a time
+        movss  xmm0, [rdi + rax*4]    ; load x
+        movss  xmm1, [rdi + rax*4+12] ; load vx
+        mulss  xmm1, xmm2             ; vx * dt
+        addss  xmm0, xmm1             ; x += vx*dt
+        movss  [rdi + rax*4], xmm0    ; store x
+        ; ... repeat for y, z ...
+        inc    rax
+      '|
+    }
+    asm_soa: {
+      label: "SoA (Vectorized AVX)"
+      width: 340
+      code: |'asm
+        ; 8 particles at a time!
+        vmovups ymm0, [rdi + rax*4]   ; load x[0:7]
+        vmovups ymm1, [rsi + rax*4]   ; load vx[0:7]
+        vbroadcastss ymm2, xmm3       ; broadcast dt
+        vfmadd132ps ymm0, ymm1, ymm2  ; x += vx*dt (x8)
+        vmovups [rdi + rax*4], ymm0   ; store x[0:7]
+        add     rax, 8
+      '|
+      style.fill: "#E8F5E9"
+    }
+  }
+}
+aos_section -> soa_section: "Transform" {
+  style.stroke-dash: 4
+  style.stroke: "#1565C0"
+}
+legend: {
+  near: bottom-right
+  cache_line: {
+    shape: rectangle
+    label: "CL = Cache Line (64 bytes)"
+  }
+  l1_hit: {
+    shape: rectangle
+    style.fill: "#E8F5E9"
+    label: "Green = L1 cache hit / efficient"
+  }
+  waste: {
+    shape: rectangle
+    style.fill: "#FFEBEE"
+    label: "Red = Wasted bandwidth"
+  }
+}

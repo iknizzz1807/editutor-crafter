@@ -1,0 +1,230 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # SwissTable vs Robin Hood: Alternative Architecture
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  our_impl: {
+    direction: down
+    label: "Our Robin Hood Implementation"
+    rh_overview: {
+      label: "Memory Layout"
+      rh_arrays: {
+        direction: right
+        label: ""
+        rh_keys: {
+          shape: sql_table
+          label: "keys[capacity]"
+          k0: "0x00 | uint64_t | keys[0]"
+          k1: "0x08 | uint64_t | keys[1]"
+          k2: "0x10 | uint64_t | keys[2]"
+          k3: "0x18 | uint64_t | keys[3]"
+          kn: "... | uint64_t | keys[n]"
+          sz: "8 bytes each"
+        }
+        rh_meta: {
+          shape: sql_table
+          label: "probe_dist[capacity]"
+          p0: "0x00 | uint8_t | dist[0]"
+          p1: "0x01 | uint8_t | dist[1]"
+          p2: "0x02 | uint8_t | dist[2]"
+          p3: "0x03 | uint8_t | dist[3]"
+          pn: "... | uint8_t | dist[n]"
+          sz: "1 byte each"
+        }
+        rh_vals: {
+          shape: sql_table
+          label: "values[capacity]"
+          v0: "0x00 | uint64_t | values[0]"
+          v1: "0x08 | uint64_t | values[1]"
+          v2: "0x10 | uint64_t | values[2]"
+          v3: "0x18 | uint64_t | values[3]"
+          vn: "... | uint64_t | values[n]"
+          sz: "8 bytes each"
+        }
+      }
+    }
+    rh_probe: {
+      label: "Probe Strategy"
+      width: 340
+      code: |'c
+        // Linear probe, one slot at a time
+        while (slot < capacity) {
+          if (keys[slot] == target) return &values[slot];
+          if (probe_dist[slot] < my_dist) return NULL;  // Robin Hood early exit
+          slot++;
+          my_dist++;
+        }
+      '|
+    }
+    rh_traits: {
+      shape: class
+      label: "Characteristics"
+      -layout: "Key-value separated"
+      -probe: "Linear (1 slot/iter)"
+      -simd: "Not utilized"
+      -early_exit: "Robin Hood bound"
+      +cache_misses: "O(avg_probe)"
+      +complexity: "Simple"
+    }
+  }
+  swiss: {
+    direction: down
+    label: "Google SwissTable (absl::flat_hash_map)"
+    swiss_overview: {
+      label: "Memory Layout"
+      swiss_arrays: {
+        direction: right
+        label: ""
+        ctrl: {
+          shape: sql_table
+          label: "ctrl[capacity] (metadata)"
+          c0: "0x00 | int8 | ctrl[0]"
+          c1: "0x01 | int8 | ctrl[1]"
+          c2: "0x02 | int8 | ctrl[2]"
+          c3: "0x03 | int8 | ctrl[3]"
+          c4: "0x04 | int8 | ctrl[4]"
+          c5: "0x05 | int8 | ctrl[5]"
+          c6: "0x06 | int8 | ctrl[6]"
+          c7: "0x07 | int8 | ctrl[7]"
+          grp: "... (groups of 16)"
+          sz: "1 byte each"
+        }
+        swiss_slots: {
+          shape: sql_table
+          label: "slots[capacity]"
+          s0: "0x00 | slot | {key, value}"
+          s1: "0x10 | slot | {key, value}"
+          s2: "0x20 | slot | {key, value}"
+          s3: "0x30 | slot | {key, value}"
+          sn: "... | slot | ..."
+          sz: "16+ bytes each"
+        }
+      }
+    }
+    swiss_ctrl: {
+      label: "Control Byte Encoding"
+      width: 380
+      code: |'c
+        // ctrl byte: top 7 bits of hash | special values
+        #define EMPTY    0b10000000  // 0x80 = -128
+        #define DELETED  0b11111110  // 0xFE = -2
+        #define SENTINEL 0b11111111  // 0xFF = -1
+        // Occupied: lower 7 bits = H(key) >> 57
+      '|
+    }
+    swiss_probe: {
+      label: "Probe Strategy (SIMD Group Check)"
+      width: 440
+      code: |'c
+        // Check 16 slots in parallel with SSE/AVX
+        __m128i hash_vec = _mm_set1_epi8(hash >> 57);  // Broadcast hash bits
+        __m128i ctrl_vec = _mm_load_si128(&ctrl[group]);  // Load 16 ctrl bytes
+        __m128i match = _mm_cmpeq_epi8(hash_vec, ctrl_vec);
+        int mask = _mm_movemask_epi8(match);  // 16-bit bitmask of matches!
+        // Now check only slots where mask bit is set
+      '|
+    }
+    swiss_traits: {
+      shape: class
+      label: "Characteristics"
+      -layout: "Ctrl array + slot array"
+      -probe: "Quadratic in groups"
+      -simd: "16-way parallel check"
+      -early_exit: "Group-level bound"
+      +cache_misses: "O(avg_probe / 16)"
+      +complexity: "Sophisticated"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  comparison: {
+    direction: down
+    label: "Key Difference: SIMD Parallelism"
+    parallel_check: {
+      direction: right
+      label: ""
+      rh_check: {
+        label: "Robin Hood"
+        width: 300
+        code: |'c
+          // Scalar: check ONE slot
+          if (keys[slot] == target) hit();
+          slot++;
+          // 1 comparison per iteration
+        '|
+      }
+      swiss_check: {
+        label: "SwissTable"
+        width: 360
+        code: |'c
+          // SIMD: check 16 slots
+          int mask = _mm_movemask_epi8(match);
+          while (mask) {
+            int bit = __builtin_ctz(mask);
+            if (slots[group+bit].key == target) hit();
+            mask &= (mask - 1);
+          }
+          // 16 comparisons per iteration
+        '|
+      }
+    }
+    cache_analysis: {
+      label: "Cache Line Efficiency"
+      rh_cache: {
+        label: "Robin Hood"
+        width: 320
+        code: |'c
+          // Probe 5 slots, each key at random position
+          // Worst case: 5 cache misses
+          // Keys: 8 bytes each, scattered
+          // Must load full key for each compare
+        '|
+      }
+      swiss_cache: {
+        label: "SwissTable"
+        width: 360
+        code: |'c
+          // Probe 5 groups of 16
+          // Ctrl bytes: 16 per cache line
+          // Filter: 1 load checks 16 candidates
+          // Only load full keys on hash match
+          // ~5x fewer key loads
+        '|
+      }
+    }
+  }
+  perf_table: {
+    label: "Performance Comparison"
+    perf_grid: {
+      shape: sql_table
+      label: "Benchmark: 1M entries, 10M lookups"
+      m1: "Metric | Robin Hood | SwissTable"
+      m2: "Lookup time | 42 ms | 15-20 ms"
+      m3: "L1 miss rate | 3.7% | 1.2%"
+      m4: "Cache lines/lookup | 2-3 | 1-2"
+      m5: "Speedup factor | 1.0x | 2-3x"
+    }
+  }
+}
+legend: {
+  near: bottom-right
+  l1: "ctrl bytes: 7-bit hash fragments for SIMD filtering"
+  l2: "group: 16 consecutive slots processed together"
+  l3: "mask: 16-bit bitmask indicating hash matches"
+}
+rh_arrays -> swiss_arrays: "Evolution" {
+  style.stroke-dash: 4
+  style.stroke: "#666"
+}

@@ -1,0 +1,175 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+title: ||md
+  # SwissTable Design: SIMD-Optimized Hash Table
+  ### Alternative architecture achieving 2-3x throughput vs std::unordered_map
+||
+title.near: top-center
+
+# === Core Data Structure: Memory Layout ===
+Memory_Layout: {
+  label: "Physical Memory Layout (Contiguous Array-of-Arrays)"
+  tooltip: "Structure optimized for Cache Line (64B) prefetching and SIMD loads"
+  
+  Metadata: {
+    label: "Control Bytes (Metadata Array)"
+    tooltip: "1 byte per slot. SSE loads 16 bytes, AVX loads 32 bytes."
+    style.fill: "#FFE5B4"
+    
+    Data: ||md
+      **Offset 0x00**: [Ctrl 0][Ctrl 1]...[Ctrl 15]
+      - `0b11111111` (0xFF): Empty Slot
+      - `0b10000000` (0x80): Deleted (Tombstone)
+      - `0b0xxxxxxx`: Full (7-bit H2 Hash Fragment)
+    ||
+  }
+
+  Padding: {
+    label: "SIMD Alignment Padding"
+    style.fill: "#E2E3E5"
+    style.stroke-dash: 3
+    size: "Pad to 16/32B boundary"
+  }
+
+  Keys: {
+    label: "Key Array (Slot-Aligned)"
+    style.fill: "#D4EDDA"
+    info: "type: K[capacity] | size: sizeof(K)*capacity"
+  }
+
+  Values: {
+    label: "Value Array (Slot-Aligned)"
+    style.fill: "#D4EDDA"
+    info: "type: V[capacity] | size: sizeof(V)*capacity"
+  }
+
+  Metadata -> Padding: "64B Cache Line Alignment"
+  Padding -> Keys: "Start of Data"
+  Keys -> Values: "Linear scan optimization"
+}
+
+# === SIMD Lookup Process ===
+SIMD_Lookup: {
+  style.fill: "#FFF3CD"
+  style.stroke: "#856404"
+  label: "SIMD Group Probe Algorithm (SSE2/AVX2)"
+
+  Step1: {
+    label: "1. Broadcast Hash"
+    instruction: ||md
+      cpp
+      // h2(hash) extracts 7 bits
+      __m128i target = _mm_set1_epi8(h2_hash);
+      
+    ||
+  }
+
+  Step2: {
+    label: "2. Load Metadata"
+    instruction: ||md
+      cpp
+      // Load 16 control bytes from offset g
+      __m128i group = _mm_loadu_si128(&metadata[g]);
+      
+    ||
+  }
+
+  Step3: {
+    label: "3. Parallel Compare"
+    instruction: ||md
+      cpp
+      // Compare all 16 bytes in 1 cycle
+      __m128i match = _mm_cmpeq_epi8(target, group);
+      
+    ||
+  }
+
+  Step4: {
+    label: "4. Bitmask & Iterate"
+    instruction: ||md
+      cpp
+      // Convert vector to bitmask
+      uint32_t mask = _mm_movemask_epi8(match);
+      while (mask) { 
+        int i = ctz(mask); // Find first match
+        verify_key(slots[g + i]);
+      }
+      
+    ||
+  }
+
+  Step1 -> Step2: "Fragment ready"
+  Step2 -> Step3: "Group vector"
+  Step3 -> Step4: "Identity bitmask"
+}
+
+# === Group Structure Zoom-In ===
+Group_Visual: {
+  label: "SIMD Group (16-way concurrency)"
+  
+  G: {
+    grid-columns: 8
+    grid-gap: 5
+    S0: "0x7F" {style.fill: white}
+    S1: "0x2A" {style.fill: white}
+    S2: "0x44" {label: "H2 MATCH"; style.fill: "#90EE90"; style.bold: true}
+    S3: "0xFF" {label: "EMPTY"; style.fill: "#F8D7DA"}
+    S4: "0x12" {style.fill: white}
+    S5: "0x44" {label: "H2 MATCH"; style.fill: "#90EE90"; style.bold: true}
+    S6: "0x80" {label: "DEL"; style.fill: "#E2E3E5"}
+    S7: "0x09" {style.fill: white}
+    S8: "0x11" {style.fill: white}
+    S9: "0x33" {style.fill: white}
+    S10: "0x44" {label: "H2 MATCH"; style.fill: "#90EE90"; style.bold: true}
+    S11: "0x21" {style.fill: white}
+    S12: "0xFF" {label: "EMPTY"; style.fill: "#F8D7DA"}
+    S13: "0x01" {style.fill: white}
+    S14: "0x02" {style.fill: white}
+    S15: "0x03" {style.fill: white}
+  }
+
+  note: ||md
+    ### Bitmask Result
+    - Found bits at index: **2, 5, 10**
+    - Movemask: `0b0000010000100100`
+    - Advantage: Eliminates branch mispredictions for empty/deleted slots.
+  ||
+}
+
+# === Comparison Table ===
+Comparison: {
+  label: "Architectural Comparison"
+  shape: rectangle
+  style.fill: "#F5F5F5"
+  
+  Table: ||md
+    | Metric | std::unordered_map (Chained) | SwissTable (SIMD) |
+    | :--- | :--- | :--- |
+    | **Search Logic** | Scalar / Pointer Chasing | Vectorized / Data Parallel |
+    | **Load Factor** | ~50% (performance degrades) | Up to 90% (remains fast) |
+    | **Cache Locality** | Random Access (Linked Nodes) | Perfect Linear (Contiguous) |
+    | **Instruction Count**| ~20-50 per probe | ~4-8 per 16-slot group |
+  ||
+}
+
+# === Architectural Flows ===
+Memory_Layout.Metadata -> SIMD_Lookup.Step2: "Vector Load (16B)"
+SIMD_Lookup.Step4 -> Group_Visual.G: "Bitmask drives loop"
+Group_Visual.G -> Memory_Layout.Keys: "Verify exact K[i]"
+Memory_Layout.Keys -> Memory_Layout.Values: "Extract V[i] on hit"
+
+# === Legend ===
+Legend: {
+  near: bottom-right
+  Match: {shape: square; style.fill: "#90EE90"; label: "H2 Hash Match"}
+  Empty: {shape: square; style.fill: "#F8D7DA"; label: "Empty Slot (0xFF)"}
+  Del: {shape: square; style.fill: "#E2E3E5"; label: "Deleted (0x80)"}
+  Data: {shape: rectangle; style.fill: "#D4EDDA"; label: "Payload Array"}
+}

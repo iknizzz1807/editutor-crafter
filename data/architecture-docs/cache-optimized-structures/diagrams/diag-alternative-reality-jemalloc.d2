@@ -1,0 +1,330 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Alternative Reality: jemalloc Slabs
+  ### Cache-Friendly Allocation Through Size Classes
+| {near: top-center}
+
+# ============================================================
+# Header: Concept Overview
+# ============================================================
+concept_row: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  core_idea: {
+    label: "Core Insight"
+    width: 320
+    style.fill: "#E8F4FD"
+    style.stroke: "#2196F3"
+    style.stroke-width: 2
+    explanation: |md
+      **jemalloc** organizes memory into **size classes** 
+      and **slabs** to minimize internal fragmentation 
+      and improve cache locality.
+      Each size class has dedicated slabs—contiguous 
+      memory regions filled with same-sized allocations.
+      This relates directly to our `aligned_alloc()` usage 
+      for SoA particle arrays.
+    |
+  }
+
+  connection_to_soa: {
+    label: "Connection to Our SoA Arrays"
+    width: 350
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    style.stroke-width: 2
+    code: |'c
+      // SoA particle allocation:
+      float* x = aligned_alloc(64, n * sizeof(float));
+      float* y = aligned_alloc(64, n * sizeof(float));
+
+      // jemalloc logic:
+      // 1. Routes to 64-byte-aligned size class
+      // 2. Allocates from appropriate slab
+      // 3. Ensures cache-line boundary alignment
+    '|
+  }
+}
+
+# ============================================================
+# Size Classes: The Foundation
+# ============================================================
+size_classes_section: {
+  label: "Size Classes: Grouping for Efficiency"
+  
+  classes_table: {
+    shape: sql_table
+    label: "jemalloc Size Class Binning (Simplified)"
+    row1: "Category | Size Range | Alignment | Typical Usage"
+    row2: "Tiny     | 8 - 64 B   | 8 - 16 B  | Small structs, pointers"
+    row3: "Small    | 72 B - 4 KB| 16 - 64 B | String buffers, vectors"
+    row4: "Large    | 4 KB - 4 MB| 4 KB (Page)| SoA arrays, Large buffers"
+    row5: "Huge     | > 4 MB     | 4 KB+     | mmap() direct, Large matrices"
+  }
+
+  size_benefit: {
+    label: "Why Size Classes Matter"
+    width: 600
+    style.fill: "#E3F2FD"
+    benefits: |md
+      1. **Reduced Fragmentation**: Allocations rounded up to nearest size class.
+      2. **Fast Allocation**: O(1) from free list per size class bin.
+      3. **Cache Alignment**: Size classes ≥ 64 bytes are aligned to cache boundaries.
+      4. **Predictable Layout**: Same-sized objects grouped in contiguous slabs.
+    |
+  }
+}
+
+concept_row -> size_classes_section: "Architecture"
+
+# ============================================================
+# Slab Structure: Cache-Friendly Memory Organization
+# ============================================================
+slab_section: {
+  label: "Slab Structure: The Cache Line Connection"
+  
+  slab_layout: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+
+    slab_definition: {
+      label: "What is a Slab?"
+      width: 300
+      style.fill: "#E8F5E9"
+      explanation: |md
+        A **slab** is a contiguous memory region
+        (typically 4KB-256KB) divided into fixed-size
+        slots for a specific size class.
+        Each allocation (malloc/aligned_alloc) 
+        takes one slot.
+      |
+    }
+
+    slab_visual: {
+      label: "Slab (Size Class: 64B)"
+      width: 450
+      style.fill: "#FFFDE7"
+      diagram: |'md
+        ┌─────────────────────────────────────────────────────────┐
+        │               SLAB (Managed as 4KB Page)                │
+        ├──────────┬──────────┬──────────┬──────────┬─────────────┤
+        │ Slot 0   │ Slot 1   │ Slot 2   │ Slot 3   │ ... Slot 63 │
+        │ [64 B]   │ [64 B]   │ [64 B]   │ [64 B]   │   [64 B]    │
+        │ ┌──────┐ │ ┌──────┐ │ ┌──────┐ │ ┌──────┐ │   ┌──────┐  │
+        │ │ used │ │ │ free │ │ │ used │ │ │ used │ │   │ free │  │
+        │ └──────┘ │ └──────┘ │ └──────┘ │ └──────┘ │   └──────┘  │
+        └──────────┴──────────┴──────────┴──────────┴─────────────┘
+                  (Boundaries = Cache Line Boundaries)
+      '|
+    }
+  }
+
+  cache_alignment: {
+    label: "Cache Line Alignment in Slabs"
+    width: 600
+    style.fill: "#FCE4EC"
+    alignment_detail: |md
+      - **For 64-byte size class**: Each slot is exactly 1 cache line (64 bytes).
+      - **Slot boundaries** align with L1/L2 cache line boundaries.
+      - **False sharing** is minimized because allocations are isolated in discrete slots.
+    |
+  }
+}
+
+size_classes_section -> slab_section: "Memory partitioning"
+
+# ============================================================
+# Allocation Flow
+# ============================================================
+allocation_flow: {
+  label: "Allocation Flow: Request to Pointer"
+  
+  flow: {
+    direction: down
+    
+    step1: {
+      label: "1. Allocation Request"
+      code: |'c
+        void* ptr = malloc(256); // or aligned_alloc(64, 256)
+      '|
+    }
+    
+    step2: {
+      label: "2. Bin Selection"
+      code: |'c
+        size_t size_class = round_up(256); 
+        bin_t* bin = &arena->bins[size_class];
+      '|
+    }
+    
+    step3: {
+      label: "3. Slab Free-list Pop"
+      code: |'c
+        slab_t* slab = bin->current_slab;
+        void* slot = slab->free_list;
+        slab->free_list = *(void**)slot; // O(1)
+        return slot;
+      '|
+    }
+    
+    step1 -> step2 -> step3
+  }
+}
+
+slab_section -> allocation_flow: "Execution"
+
+# ============================================================
+# Connection to SoA Arrays
+# ============================================================
+soa_connection: {
+  label: "Relationship to SoA Particle Arrays"
+  
+  comparison: {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+
+    manual: {
+      label: "Manual aligned_alloc"
+      style.fill: "#FFEBEE"
+      code: |'c
+        float* x = aligned_alloc(64, sz);
+        // Guaranteed 64B align
+        // Explicit intent
+      '|
+    }
+
+    automatic: {
+      label: "jemalloc malloc"
+      style.fill: "#E8F5E9"
+      code: |'c
+        float* x = malloc(sz);
+        // Routes to aligned size class
+        // Slab-backed alignment
+      '|
+    }
+  }
+
+  key_insight: {
+    label: "Key Architectural Comparison"
+    width: 700
+    style.fill: "#FFF8E1"
+    style.stroke: "#FFC107"
+    style.stroke-width: 2
+    insight: |'md
+      | Aspect | jemalloc (automatic) | aligned_alloc (explicit) |
+      |--------|---------------------|--------------------------|
+      | Cache alignment | Via size class slabs | Via alignment parameter |
+      | Fragmentation | Rounded to size class | Exact or worse |
+      | Standard | Default on Linux/BSD | C11 standard |
+      | Control | Less explicit | Full hardware control |
+    '|
+  }
+}
+
+allocation_flow -> soa_connection
+
+# ============================================================
+# False Sharing Prevention
+# ============================================================
+false_sharing: {
+  label: "False Sharing Prevention"
+  
+  sharing_demo: {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+
+    bad: {
+      label: "No Isolation (Sharing)"
+      style.fill: "#FFEBEE"
+      visual: |'md
+        Thread 1 Obj | Thread 2 Obj
+        ┌─────────────────────────┐
+        │  [64-byte Cache Line]   │
+        └─────────────────────────┘
+         Thrashing on write!
+      '|
+    }
+
+    good: {
+      label: "Slab Isolation"
+      style.fill: "#E8F5E9"
+      visual: |'md
+        Slot N (T1)  | Slot N+1 (T2)
+        ┌────────────┐┌────────────┐
+        │  [Line 1]  ││  [Line 2]  │
+        └────────────┘└────────────┘
+         Distinct cache lines.
+      '|
+    }
+  }
+}
+
+soa_connection -> false_sharing: "Threading Benefits"
+
+# ============================================================
+# Performance & Verification
+# ============================================================
+performance: {
+  label: "Verification & Tooling"
+  
+  bench: {
+    label: "Verify Cache Behavior"
+    style.fill: "#F3E5F5"
+    code: |'bash
+      # Check for jemalloc
+      ldd ./particle_sim | grep jemalloc
+
+      # Measure cache misses
+      perf stat -e L1-dcache-load-misses ./particle_sim
+    '|
+  }
+}
+
+false_sharing -> performance
+
+# ============================================================
+# Summary
+# ============================================================
+summary: {
+  label: "Summary: Linking Slabs to Implementation"
+  width: 750
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+  style.stroke-width: 3
+  takeaways: |'md
+    1. **Size Classes**: jemalloc treats allocations of similar sizes identically, easing layout planning.
+    2. **Slab Alignment**: Slabs are page-aligned; slots are bin-aligned (e.g., 64-byte bins = cache alignment).
+    3. **Spatial Locality**: Contiguous arrays (like our SoA `x[]`, `y[]`) fit neatly into slabs/pages.
+    4. **Manual Control**: Use `aligned_alloc(64, ...)` for SIMD (AVX/AVX-512) to ensure hardware constraints are met regardless of the underlying allocator implementation.
+  '|
+}
+
+performance -> summary
+
+# ============================================================
+# Legend
+# ============================================================
+legend: {
+  near: bottom-right
+  style.fill: "#FAFAFA"
+  label: "Legend"
+  
+  items: {
+    direction: right
+    c1: "Cache Aligned" { style.fill: "#C8E6C9" }
+    c2: "Slab / Page" { style.fill: "#FFFDE7" }
+    c3: "Thread Local" { style.fill: "#E3F2FD" }
+  }
+}

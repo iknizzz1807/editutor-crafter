@@ -1,0 +1,232 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 30
+  }
+}
+
+direction: right
+
+# --- INTEL-STYLE COMPONENT CLASSES ---
+classes: {
+  header_purple: { 
+    style: { 
+      fill: "#8e44ad"
+      stroke: "#4a235a"
+      stroke-width: 2
+      font-color: white
+      bold: true 
+    } 
+  }
+  data_blue: { 
+    style: { 
+      fill: "#3498db"
+      stroke: "#1b4f72"
+      font-color: white 
+      border-radius: 0
+    } 
+  }
+  error_red: { 
+    style: { 
+      fill: "#e74c3c"
+      stroke: "#641e16"
+      font-color: white
+      bold: true 
+      border-radius: 0
+    } 
+  }
+  padding_gray: { 
+    style: { 
+      fill: "#bdc3c7"
+      stroke: "#7f8c8d"
+      font-color: black 
+      border-radius: 0
+    } 
+  }
+  annotation_box: {
+    style: {
+      stroke-dash: 3
+      fill: "#fcf3cf"
+      font-size: 13
+    }
+  }
+}
+
+title: |'md
+  # MAC Address Byte Order Confusion
+  ## Wire Transmission vs. Integer Interpretation (x86_64)
+'| {near: top-center}
+
+# --- STEP 1: PHYSICAL WIRE ---
+step_1: "1. Wire Representation (Canonical)" {
+  class: header_purple
+  
+  wire_seq: {
+    shape: sequence_diagram
+    nic_a: "NIC A\n(Transmitter)" { shape: person }
+    nic_b: "NIC B\n(Receiver)" { shape: person }
+    
+    nic_a -> nic_b: "00:11:22:33:44:55" {
+      style.animated: true
+      style.stroke-width: 4
+    }
+    nic_a."First Byte Sent: 0x00"
+    nic_b."First Byte Received: 0x00"
+  }
+  
+  details: |'md
+    ### Physical Signaling
+    - **Convention**: Network Byte Order (Big Endian) for the sequence.
+    - **Octet Order**: 0x00, then 0x11, then 0x22...
+    - **MAC**: `00:11:22:33:44:55`
+  '| { class: annotation_box }
+}
+
+# --- STEP 2: CANONICAL MEMORY ARRAY ---
+step_2: "2. Canonical Memory (uint8_t[6])" {
+  class: header_purple
+  
+  memory_layout: {
+    grid-columns: 6
+    grid-gap: 0
+    
+    b0: "0x00" { class: data_blue; tooltip: "mac[0]" }
+    b1: "0x11" { class: data_blue; tooltip: "mac[1]" }
+    b2: "0x22" { class: data_blue; tooltip: "mac[2]" }
+    b3: "0x33" { class: data_blue; tooltip: "mac[3]" }
+    b4: "0x44" { class: data_blue; tooltip: "mac[4]" }
+    b5: "0x55" { class: data_blue; tooltip: "mac[5]" }
+  }
+  
+  offset_labels: {
+    grid-columns: 6
+    grid-gap: 0
+    style.stroke-width: 0
+    
+    o0: "ptr+0" { shape: text }
+    o1: "ptr+1" { shape: text }
+    o2: "ptr+2" { shape: text }
+    o3: "ptr+3" { shape: text }
+    o4: "ptr+4" { shape: text }
+    o5: "ptr+5" { shape: text }
+  }
+  
+  code: |'go
+    // Standard Representation
+    // Index 0 is always the start of OUI
+    type MAC [6]byte
+    var m = MAC{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}
+  '|
+}
+
+# --- STEP 3: THE INTEGER PITFALL ---
+step_3: "3. The Integer Pitfall (uint64_t cast)" {
+  class: header_purple
+  
+  warning: "CRITICAL: x86_64 Little-Endian Interpretation" {
+    style: { font-color: red; bold: true }
+  }
+
+  reg_view: "64-Bit Register (RAX)" {
+    grid-columns: 8
+    grid-gap: 0
+    
+    p7: "0x00" { class: padding_gray; tooltip: "Padding MSB" }
+    p6: "0x00" { class: padding_gray; tooltip: "Padding" }
+    p5: "0x55" { class: error_red; style.stroke: yellow }
+    p4: "0x44" { class: error_red; style.stroke: yellow }
+    p3: "0x33" { class: error_red; style.stroke: yellow }
+    p2: "0x22" { class: error_red; style.stroke: yellow }
+    p1: "0x11" { class: error_red; style.stroke: yellow }
+    p0: "0x00" { class: error_red; style.stroke: yellow; tooltip: "ptr[0] becomes LSB" }
+  }
+  
+  bit_labels: {
+    grid-columns: 8
+    grid-gap: 0
+    style.stroke-width: 0
+    
+    l7: "Byte 7 (High)" { shape: text }
+    l6: "Byte 6 (Pad)" { shape: text }
+    l5: "Byte 5" { shape: text }
+    l4: "Byte 4" { shape: text }
+    l3: "Byte 3" { shape: text }
+    l2: "Byte 2" { shape: text }
+    l1: "Byte 1" { shape: text }
+    l0: "Byte 0 (Low)" { shape: text }
+  }
+  
+  analysis: |'md
+    ### Why it breaks:
+    1. `uint64_t val = *(uint64_t*)ptr;`
+    2. Little-endian CPUs place the **lowest memory address** (`ptr[0]`) into the **Least Significant Byte** (LSB) of the register.
+    3. Resulting Integer: `0x0000554433221100`
+    4. Numeric comparison (`valA > valB`) now incorrectly treats the OUI (the start) as the least significant portion.
+  '| { class: annotation_box }
+}
+
+# --- STEP 4: CORRECT IMPLEMENTATION ---
+step_4: "4. Implementation Guidance" {
+  class: header_purple
+  
+  rules: |'md
+    ### Safe Comparison Patterns
+    
+    **BAD (Arch-Dependent):**
+    c
+    // DANGEROUS: Swaps byte logic and includes stack junk in high bytes
+    if (*(uint64_t*)a == *(uint64_t*)b) { ... }
+    
+    
+    **GOOD (Portable):**
+    c
+    // Standard library approach
+    if (memcmp(mac1, mac2, 6) == 0) { ... }
+    
+    
+    **OPTIMIZED (Constant Time / SIMD Friendly):**
+    c
+    // Bitwise unrolling (No Branching)
+    uint64_t diff = 0;
+    diff |= (mac1[0] ^ mac2[0]);
+    diff |= (mac1[1] ^ mac2[1]);
+    diff |= (mac1[2] ^ mac2[2]);
+    diff |= (mac1[3] ^ mac2[3]);
+    diff |= (mac1[4] ^ mac2[4]);
+    diff |= (mac1[5] ^ mac2[5]);
+    if (diff == 0) { /* Match */ }
+    
+  '|
+}
+
+# --- FLOW & MAPPINGS ---
+step_1 -> step_2: "Map to uint8_t[]"
+step_2 -> step_3: "ILLEGAL LITTLE-ENDIAN CAST" {
+  style: {
+    stroke: red
+    stroke-dash: 5
+    stroke-width: 3
+  }
+}
+step_3 -> step_4: "Remediation"
+
+# Pointer mapping visual
+(step_3.reg_view.p0 -> step_2.memory_layout.b0): "ptr[0] maps to LSB" {
+  style: {
+    stroke: red
+    stroke-dash: 3
+    opacity: 0.7
+  }
+  source-arrowhead: diamond
+}
+
+(step_3.reg_view.p5 -> step_2.memory_layout.b5): "ptr[5] maps to Byte 5" {
+  style: {
+    stroke: red
+    stroke-dash: 3
+    opacity: 0.7
+  }
+  source-arrowhead: diamond
+}

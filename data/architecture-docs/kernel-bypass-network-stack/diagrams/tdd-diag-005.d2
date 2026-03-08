@@ -1,0 +1,136 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# AF_XDP Four Rings Interaction - High Fidelity Implementation Diagram
+# Visualizing Zero-Copy (ZC) Buffer Handover and Memory Ownership
+
+af_xdp_interaction: {
+  shape: sequence_diagram
+
+  app: "Application\n(User-Space)" {
+    style.fill: "#f3e5f5" # Purple Header
+  }
+  umem: "UMEM Buffer Pool\n(Shared RAM)" {
+    style.fill: "#e3f2fd" # Blue Data
+  }
+  rings: "AF_XDP Rings\n(Control Path)" {
+    style.fill: "#fff3e0" # Orange Pointers
+  }
+  kernel: "Kernel / XDP\n(Driver Space)" {
+    style.fill: "#f1f8e9" # Green System
+  }
+  nic: "NIC Hardware\n(DMA Engine)" {
+    style.fill: "#fafafa" # Gray Hardware
+  }
+
+  # ---------------------------------------------------------------------------
+  # PHASE 1: INITIALIZATION & REGISTRATION
+  # ---------------------------------------------------------------------------
+  initialization: {
+    app -> umem: "mmap(hugepages, size_bytes) -> void* base"
+    app -> kernel: "setsockopt(XDP_UMEM_REG, &mr) -> 0"
+    app -> rings: "xsk_ring_prod__reserve(Fill, N, &idx)\n▼ Ownership: Kernel" {
+      style.stroke: "#9c27b0"
+    }
+    app -> rings: "xsk_ring_prod__submit(Fill, N)" {
+      style.stroke: "#9c27b0"
+    }
+  }
+
+  # ---------------------------------------------------------------------------
+  # PHASE 2: RX PATH (ZERO-COPY RECEIVE)
+  # ---------------------------------------------------------------------------
+  rx_path: {
+    note: |md
+      **RX PATH**
+      Target Latency: < 2μs
+    |
+    nic -> umem: "DMA Write: Packet Data\n(Dst: addr from Fill Ring)" {
+      style.stroke: "#2196f3"
+      style.animated: true
+    }
+    kernel -> rings: "RX Ring: enqueue(desc{addr, len})\n▼ Ownership: Application" {
+      style.stroke: "#2196f3"
+    }
+    app -> rings: "xsk_ring_cons__peek(RX, batch, &idx)"
+    app -> umem: "Process Data @ addr\n(Read-only, Zero-Copy)" {
+      style.stroke: "#2196f3"
+    }
+    app -> rings: "xsk_ring_cons__release(RX, batch)"
+    app -> rings: "xsk_ring_prod__reserve(Fill, batch, &idx)\n▲ Ownership: Kernel" {
+      style.stroke: "#9c27b0"
+    }
+  }
+
+  # ---------------------------------------------------------------------------
+  # PHASE 3: TX PATH (ZERO-COPY TRANSMIT)
+  # ---------------------------------------------------------------------------
+  tx_path: {
+    note: |md
+      **TX PATH**
+      Target Throughput: 100Gbps+
+    |
+    app -> umem: "Write Packet Data @ addr_X" {
+      style.stroke: "#ff9800"
+    }
+    app -> rings: "TX Ring: xsk_ring_prod__reserve(TX, 1, &idx)\n▼ Ownership: Kernel" {
+      style.stroke: "#ff9800"
+    }
+    app -> kernel: "sendto(xsk_fd, NULL, 0, MSG_DONTWAIT)\n(Doorbell/Kick)" {
+      style.stroke-dash: 3
+    }
+    kernel -> nic: "Trigger TX DMA Descriptor Fetch"
+    nic -> umem: "DMA Read: Packet Data @ addr_X" {
+      style.stroke: "#ff9800"
+      style.animated: true
+    }
+    kernel -> rings: "CQ Ring: enqueue(addr_X)\n▲ Ownership: Application" {
+      style.stroke: "#4caf50"
+    }
+    app -> rings: "xsk_ring_cons__peek(CQ, 1, &idx)\n(Buffer reclaimed)" {
+      style.stroke: "#4caf50"
+    }
+    app -> rings: "xsk_ring_cons__release(CQ, 1)"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# LEGEND & METADATA
+# ---------------------------------------------------------------------------
+legend: {
+  near: bottom-center
+  rx: "RX Path (Blue)" {
+    style.font-color: "#2196f3"
+    shape: text
+  }
+  tx: "TX Path (Orange)" {
+    style.font-color: "#ff9800"
+    shape: text
+  }
+  ctrl: "Control/Fill (Purple)" {
+    style.font-color: "#9c27b0"
+    shape: text
+  }
+  reclaim: "Completion (Green)" {
+    style.font-color: "#4caf50"
+    shape: text
+  }
+}
+
+# Corrected: Using constant value for near (top-right) instead of object reference
+annotations: |md
+  ### AF_XDP Technical Invariants
+  1. **Ownership**: A buffer `addr` must exist in exactly one ring or the App/NIC processing state.
+  2. **Hugepages**: UMEM is pinned via `mlockall` or Hugepages; prevents page faults in ZC path.
+  3. **Ring Type**: AF_XDP rings are Single-Producer Single-Consumer (SPSC) lockless queues.
+  4. **Performance**: 
+     - Context Switch: 0 (if using Polled Mode / Busy Poll).
+     - Cache Efficiency: Descriptors fit within 64B cache lines.
+| {
+  near: top-right
+}

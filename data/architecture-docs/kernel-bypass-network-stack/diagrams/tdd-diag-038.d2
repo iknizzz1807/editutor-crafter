@@ -1,0 +1,217 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 50
+  }
+}
+
+# =============================================================================
+# INTEL MANUAL SPECIFICATION STYLES
+# =============================================================================
+classes: {
+  mem_header: {
+    style: {
+      fill: "#E1BEE7" # Purple (Header)
+      stroke: "#4A148C"
+      stroke-width: 2
+      bold: true
+    }
+  }
+  mem_pointer: {
+    style: {
+      fill: "#FFE0B2" # Orange (Pointers)
+      stroke: "#E65100"
+      stroke-width: 2
+      bold: true
+    }
+  }
+  mem_data: {
+    style: {
+      fill: "#BBDEFB" # Blue (Data)
+      stroke: "#0D47A1"
+      stroke-width: 1
+    }
+  }
+  mem_free: {
+    style: {
+      fill: "#C8E6C9" # Green (Free)
+      stroke: "#1B5E20"
+      stroke-width: 1
+    }
+  }
+  mem_padding: {
+    style: {
+      fill: "#EEEEEE" # Gray (Padding)
+      stroke: "#9E9E9E"
+      stroke-dash: 5
+    }
+  }
+}
+
+# =============================================================================
+# SYSTEM ARCHITECTURE & MEMORY MAP
+# =============================================================================
+ring_buffer_system: "Lock-Free SPSC Ring Buffer (Kernel Bypass Architecture)" {
+  
+  kbns_ring: "Descriptor Memory Layout (Size: 4096B Page Boundary)" {
+    grid-columns: 1
+    grid-gap: 0
+    style.fill: transparent
+    style.stroke-width: 2
+    style.stroke: black
+
+    # --- CACHE LINE 0 (PRODUCER OWNED) ---
+    cl0_label: "--- CACHE LINE 0 (0x00 - 0x3F) ---" {
+      shape: text
+      style.font-color: "#D32F2F"
+      style.bold: true
+    }
+    
+    cl0_head: "0x00 | head (uint32_t) | 4B" {
+      class: mem_header
+      width: 600
+      height: 40
+    }
+    
+    cl0_pad: "0x04 | padding[60] (False Sharing Barrier) | 60B" {
+      class: mem_padding
+      width: 600
+      height: 60
+    }
+
+    # --- CACHE LINE 1 (CONSUMER OWNED) ---
+    cl1_label: "--- CACHE LINE 1 (0x40 - 0x7F) ---" {
+      shape: text
+      style.font-color: "#D32F2F"
+      style.bold: true
+    }
+
+    cl1_tail: "0x40 | tail (uint32_t) | 4B" {
+      class: mem_pointer
+      width: 600
+      height: 40
+    }
+    
+    cl1_pad: "0x44 | padding[60] (False Sharing Barrier) | 60B" {
+      class: mem_padding
+      width: 600
+      height: 60
+    }
+
+    # --- CACHE LINE 2+ (DATA DESCRIPTORS) ---
+    cl2_label: "--- CACHE LINE 2+ (0x80 START) ---" {
+      shape: text
+      style.font-color: "#1976D2"
+      style.bold: true
+    }
+
+    desc_0: "0x80 | kbns_desc[0] {addr, len, flags} | 16B" {
+      class: mem_data
+      width: 600
+      height: 35
+    }
+    
+    desc_1: "0x90 | kbns_desc[1] {addr, len, flags} | 16B" {
+      class: mem_data
+      width: 600
+      height: 35
+    }
+    
+    desc_2: "0xA0 | kbns_desc[2] {addr, len, flags} | 16B" {
+      class: mem_data
+      width: 600
+      height: 35
+    }
+
+    desc_free_start: "0xB0 | kbns_desc[3] (Available) | 16B" {
+      class: mem_free
+      width: 600
+      height: 35
+    }
+
+    desc_ellipsis: "0x... | kbns_desc[4...N] | PAGE_SIZE - Offset" {
+      width: 600
+      height: 30
+      style: {
+        stroke-dash: 3
+        fill: "#F5F5F5"
+      }
+    }
+  }
+}
+
+# =============================================================================
+# CALLOUTS & ALGORITHMS
+# =============================================================================
+
+producer_logic: |md
+  ### PRODUCER ALGORITHM (TX Path)
+  *Writes to cl0_head*
+  
+  1. **Read**: Load `head` and `tail` (atomic).
+  2. **Bound Check**: `((head + 1) & mask) == tail`? -> `FULL`.
+  3. **Store**: Write packet info to `desc[head]`.
+  4. **Barrier**: `memory_order_release`.
+  5. **Update**: `head = (head + 1) & mask`.
+| {
+  near: top-left
+}
+
+consumer_logic: |md
+  ### CONSUMER ALGORITHM (RX Path)
+  *Writes to cl1_tail*
+  
+  1. **Read**: Load `head` and `tail` (atomic).
+  2. **Bound Check**: `head == tail`? -> `EMPTY`.
+  3. **Barrier**: `memory_order_acquire`.
+  4. **Load**: Read packet info from `desc[tail]`.
+  5. **Update**: `tail = (tail + 1) & mask`.
+| {
+  near: center-left
+}
+
+annotation_specs: |md
+  ### ALIGNMENT & PERFORMANCE
+  - **L1 Cache Separation**: `head` (CL0) and `tail` (CL1) are isolated by 60-byte padding to prevent **False Sharing** and unnecessary RFO (Request For Ownership) traffic.
+  - **Memory Barrier**: Acquire/Release semantics ensure descriptors are visible to Consumer before `head` update.
+  - **Descriptor Alignment**: 16-byte descriptors ensure no descriptor spans across two cache lines.
+| {
+  near: bottom-left
+}
+
+# =============================================================================
+# LEGEND & LOGICAL CONNECTIONS
+# =============================================================================
+
+legend: "Memory Field Legend" {
+  shape: package
+  near: bottom-right
+  
+  header: "Producer Head (CL 0)" { class: mem_header }
+  pointer: "Consumer Tail (CL 1)" { class: mem_pointer }
+  data: "In-Use Descriptor" { class: mem_data }
+  free: "Available Descriptor" { class: mem_free }
+  padding: "Isolation Padding" { class: mem_padding }
+}
+
+# Logical separation connection
+ring_buffer_system.kbns_ring.cl0_pad -> ring_buffer_system.kbns_ring.cl1_tail: "Cache Isolation Barrier" {
+  style: {
+    stroke: "#4CAF50"
+    stroke-width: 4
+    stroke-dash: 4
+    animated: true
+  }
+}
+
+# Explicit definition of the connection before styling to avoid "indexed edge does not exist"
+ring_buffer_system.kbns_ring.cl0_head -> ring_buffer_system.kbns_ring.cl1_tail: "SPSC Relationship" {
+  style: {
+    opacity: 0.3
+    stroke-dash: 2
+  }
+  source-arrowhead: none
+  target-arrowhead: none
+}

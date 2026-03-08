@@ -1,0 +1,219 @@
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    pad: 40
+  }
+}
+
+# --- DPDK ARCHITECTURE: USER-SPACE BYPASS ---
+
+DPDK_PATH: DPDK Architecture (Exclusive Hardware Control) {
+  style: {
+    stroke: "#512da8"
+    fill: "#f3e5f5"
+    stroke-width: 4
+  }
+
+  USER_SPACE: User Space {
+    APPLICATION: HFT Trading Engine {
+      shape: class
+      + poll_rx(port_id: uint16_t, queue_id: uint16_t, pkts: rte_mbuf**, max_pkts: uint16_t): uint32_t
+      + process_packets(buffer: rte_mbuf**): void
+      + send_burst(port_id: uint16_t, queue_id: uint16_t, pkts: rte_mbuf**, nb_pkts: uint16_t): void
+      
+      style.fill: "#D1C4E9"
+      tooltip: "Core application loop performing busy-polling"
+    }
+
+    DPDK_FRAMEWORK: DPDK Environment Abstraction Layer (EAL) {
+      style.fill: "#e1bee7"
+      
+      MBUF_POOL: struct rte_mempool {
+        shape: class
+        # Memory Layout Fields (Intel Manual Quality)
+        "0x00: header": "struct rte_mempool_hdr | size=64B"
+        "0x40: elt_size": "uint32_t | size=4B"
+        "0x44: pg_shift": "uint32_t | size=4B"
+        "0x48: pool_id": "uint64_t | size=8B"
+        
+        style.fill: "#B39DDB"
+        # sizeof=Configurable (backed by 1GB/2MB Hugepages)
+      }
+
+      PMD: Poll Mode Driver (Native) {
+        shape: class
+        + rx_burst(rxq: void*, rx_pkts: rte_mbuf**, nb_pkts: uint16_t): uint16_t
+        + tx_burst(txq: void*, tx_pkts: rte_mbuf**, nb_pkts: uint16_t): uint16_t
+        + dev_configure(port_id: uint16_t, nb_rx_q: uint16_t, nb_tx_q: uint16_t): int
+        
+        style.fill: "#9575CD"
+        # sizeof=64 bytes (aligned to L1 cache line)
+      }
+    }
+  }
+
+  KERNEL_SPACE: Linux Kernel (Completely Bypassed) {
+    VFIO: VFIO-PCI Driver {
+      label: "VFIO / UIO Interface\n(IOMMU groups, BAR mapping)"
+      style.stroke-dash: 5
+      style.fill: "#f5f5f5"
+    }
+    
+    DETACHED: Kernel Network Stack {
+      label: "NIC Detached\n(No ethX visible to 'ip link')"
+      style.fill: "#eeeeee"
+      style.opacity: 0.5
+      style.stroke-dash: 2
+    }
+  }
+
+  HARDWARE: Physical Hardware Layer {
+    NIC: Network Interface Card {
+      shape: cylinder
+      RX_RING: Hardware RX Descriptor Ring {
+        style.fill: "#d1c4e9"
+      }
+      TX_RING: Hardware TX Descriptor Ring {
+        style.fill: "#d1c4e9"
+      }
+    }
+  }
+
+  # Ownership and Data Flow Relationships
+  USER_SPACE.APPLICATION -> USER_SPACE.DPDK_FRAMEWORK.PMD: "Controls PMD"
+  USER_SPACE.DPDK_FRAMEWORK.PMD -> HARDWARE.NIC: "MMIO Access"
+  HARDWARE.NIC -> USER_SPACE.DPDK_FRAMEWORK.MBUF_POOL: "Direct DMA (Bypass)" {
+    style: {
+      stroke: orange
+      stroke-width: 4
+      animated: true
+    }
+  }
+  USER_SPACE.DPDK_FRAMEWORK.MBUF_POOL -- KERNEL_SPACE.VFIO: "Pin Memory (Hugepages)" {
+    style.stroke-dash: 3
+  }
+}
+
+# --- AF_XDP ARCHITECTURE: KERNEL-COOPERATIVE ---
+
+AF_XDP_PATH: AF_XDP Architecture (Cooperative Hook) {
+  style: {
+    stroke: "#00796b"
+    fill: "#e0f2f1"
+    stroke-width: 4
+  }
+
+  USER_SPACE: User Space {
+    APPLICATION: HFT Trading Engine {
+      shape: class
+      + xsk_socket__create(xsk: xsk_socket**, ifname: char*, queue_id: uint32_t): int
+      + xsk_ring_cons__peek(rx: xsk_ring_cons*, nb: uint32_t, idx: uint32_t*): uint32_t
+      
+      style.fill: "#80CBC4"
+    }
+
+    LIBXDP: libxdp / libbpf {
+      UMEM: struct xdp_umem {
+        shape: class
+        "0x00: area": "void* | size=8B"
+        "0x08: size": "uint64_t | size=8B"
+        "0x10: frame_size": "uint32_t | size=4B"
+        "0x14: headroom": "uint32_t | size=4B"
+        
+        style.fill: "#4DB6AC"
+        # sizeof=N * FrameSize (Standard RAM)
+      }
+      
+      RINGS: XSK Consumer/Producer Rings {
+        shape: class
+        fill_ring: struct xsk_ring_prod
+        rx_ring: struct xsk_ring_cons
+        tx_ring: struct xsk_ring_prod
+        comp_ring: struct xsk_ring_cons
+        
+        style.fill: "#26A69A"
+        # sizeof=SPSC Lockless Rings
+      }
+    }
+  }
+
+  KERNEL_SPACE: Linux Kernel (Cooperative Path) {
+    XDP_PROG: eBPF XDP Program {
+      style.fill: "#80cbc4"
+      label: "XDP Program Hook\n(Traffic Steering / Filtering)"
+      + process_bpf(ctx: xdp_md*): int (XDP_REDIRECT | XDP_PASS)
+    }
+
+    REDIRECT: BPF_MAP_TYPE_XSKMAP {
+      label: "XSKMAP\n(Kernel-to-User Redirect)"
+      style.fill: "#4db6ac"
+    }
+
+    STANDARD_STACK: standard_net_path {
+      label: "Kernel Net Stack\n(Default: SSH, ICMP, Management)"
+      style.fill: "#b2dfdb"
+    }
+  }
+
+  HARDWARE: Physical Hardware Layer {
+    NIC: Network Interface Card {
+      shape: cylinder
+      DRV: Native XDP-Enabled Driver {
+        style.fill: "#b2dfdb"
+      }
+    }
+  }
+
+  # Ownership and Data Flow Relationships
+  USER_SPACE.APPLICATION -> USER_SPACE.LIBXDP.RINGS: "Polls Rings"
+  USER_SPACE.LIBXDP.UMEM -- KERNEL_SPACE.XDP_PROG: "Shared Memory Region" {
+    style.stroke-dash: 3
+  }
+  HARDWARE.NIC.DRV -> KERNEL_SPACE.XDP_PROG: "Initial RX Hook"
+  KERNEL_SPACE.XDP_PROG -> KERNEL_SPACE.REDIRECT: "Socket Lookup"
+  KERNEL_SPACE.REDIRECT -> USER_SPACE.LIBXDP.UMEM: "DMA to User (Zero-Copy)" {
+    style: {
+      stroke: orange
+      stroke-width: 4
+      animated: true
+    }
+  }
+  KERNEL_SPACE.XDP_PROG -> KERNEL_SPACE.STANDARD_STACK: "XDP_PASS" {
+    style.stroke-dash: 3
+  }
+}
+
+# --- KEY ARCHITECTURAL LEGEND (CORRECTED NEAR FOR ELK) ---
+
+LEGEND: {
+  shape: rectangle
+  label: |'md
+    ### Architectural Comparison
+    | Feature | DPDK (User Bypass) | AF_XDP (Cooperative) |
+    | :--- | :--- | :--- |
+    | **Ownership** | Exclusive Hardware Control | Shared with Kernel |
+    | **Driver** | Poll Mode Driver (User) | Native/Generic (Kernel) |
+    | **Memory** | Hugepages (Mandatory) | UMEM (Shared RAM) |
+    | **Visibility** | Invisible to IP Link | Kernel Integrated |
+    | **Latency** | ~0.5 - 2.0 μs | ~2.0 - 5.0 μs |
+    | **Zero-Copy** | Always Direct | Available in Native Mode |
+  '|
+  style: {
+    stroke: "#333333"
+    fill: "#ffffff"
+    stroke-width: 2
+  }
+  # Layout engine ELK requires constant near values
+  near: bottom-center
+}
+
+DPDK_PATH -- AF_XDP_PATH: "Alternative Implementation Paths" {
+  style: {
+    stroke-dash: 10
+    stroke: "#9e9e9e"
+    stroke-width: 2
+  }
+}

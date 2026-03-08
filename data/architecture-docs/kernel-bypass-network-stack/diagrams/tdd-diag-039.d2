@@ -1,0 +1,190 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 50
+  }
+}
+
+# --- 1. CPU CORES (PRODUCERS) ---
+cores: "CPU EXECUTION DOMAIN (Single-Writer Model)" {
+  core_0: "CPU Core 0" {
+    shape: person
+    style.fill: "#E1F5FE"
+    tooltip: "Writes exclusively to stats_array[0]"
+  }
+  core_1: "CPU Core 1" {
+    shape: person
+    style.fill: "#E1F5FE"
+    tooltip: "Writes exclusively to stats_array[1]"
+  }
+  core_n: "CPU Core N" {
+    shape: person
+    style.fill: "#E1F5FE"
+    tooltip: "Writes exclusively to stats_array[N]"
+  }
+}
+
+# --- 2. PER-CORE STATISTICS ARRAY (MEMORY LAYOUT) ---
+# Each slot is aligned to 64B to prevent False Sharing (MESI invalidation)
+stats_array: "PER-CORE STATS ARRAY (64B Cache-Line Aligned)" {
+  style.fill: transparent
+  
+  slot_0: "per_core_stats[0]" {
+    shape: sql_table
+    style.fill: "#6A1B9A" # Header color
+    style.stroke: "#6A1B9A"
+    
+    0x00: "uint64_t rx_packets" {constraint: "8B"}
+    0x08: "uint64_t rx_bytes" {constraint: "8B"}
+    0x10: "uint64_t tx_packets" {constraint: "8B"}
+    0x18: "uint64_t tx_bytes" {constraint: "8B"}
+    0x20: "uint64_t rx_errors" {constraint: "8B"}
+    0x28: "char[24] _padding" {
+      constraint: "24B"
+    }
+  }
+
+  slot_1: "per_core_stats[1]" {
+    shape: sql_table
+    style.fill: "#6A1B9A"
+    style.stroke: "#6A1B9A"
+    
+    0x00: "uint64_t rx_packets" {constraint: "8B"}
+    0x08: "uint64_t rx_bytes" {constraint: "8B"}
+    0x10: "uint64_t tx_packets" {constraint: "8B"}
+    0x18: "uint64_t tx_bytes" {constraint: "8B"}
+    0x20: "uint64_t rx_errors" {constraint: "8B"}
+    0x28: "char[24] _padding" {
+      constraint: "24B"
+    }
+  }
+
+  slot_n: "per_core_stats[N]" {
+    shape: sql_table
+    style.fill: "#6A1B9A"
+    style.stroke: "#6A1B9A"
+    
+    0x00: "uint64_t rx_packets" {constraint: "8B"}
+    0x08: "uint64_t rx_bytes" {constraint: "8B"}
+    0x10: "uint64_t tx_packets" {constraint: "8B"}
+    0x18: "uint64_t tx_bytes" {constraint: "8B"}
+    0x20: "uint64_t rx_errors" {constraint: "8B"}
+    0x28: "char[24] _padding" {
+      constraint: "24B"
+    }
+  }
+}
+
+# Apply styling to padding rows across all slots
+stats_array.slot_0."0x28".style.fill: "#EEEEEE"
+stats_array.slot_1."0x28".style.fill: "#EEEEEE"
+stats_array.slot_n."0x28".style.fill: "#EEEEEE"
+
+# --- 3. AGGREGATION ENGINE (READER) ---
+aggregator: "MAINTENANCE THREAD (Background Reader)" {
+  style.fill: "#FFF9C4"
+  
+  logic: |md
+    ### Lock-Free Aggregation Logic
+    c
+    for (int i=0; i < n_cores; i++) {
+        // Read from per-core cache lines
+        // Relaxed consistency: 
+        // sum += atomic_load_explicit(
+        //    &stats[i].rx_packets, 
+        //    memory_order_relaxed
+        // );
+    }
+    
+  |
+}
+
+# --- 4. EXPORT LAYER ---
+prometheus: "PROMETHEUS EXPORTER" {
+  shape: cylinder
+  style.fill: "#FFCCBC"
+  content: |md
+    # HELP rx_packets_total Total RX
+    # TYPE rx_packets_total counter
+    rx_packets_total 104293
+  |
+}
+
+# --- CONNECTIONS & DATA FLOW ---
+
+# Update Path: Exclusive Single-Writer access per slot
+cores.core_0 -> stats_array.slot_0: "L1 Local Write\n(No Atomics)" {
+  style: {
+    stroke: "#1976D2"
+    stroke-width: 3
+  }
+}
+
+cores.core_1 -> stats_array.slot_1: "L1 Local Write\n(Non-Blocking)" {
+  style: {
+    stroke: "#1976D2"
+    stroke-width: 3
+  }
+}
+
+cores.core_n -> stats_array.slot_n: "Store Relaxed" {
+  style: {
+    stroke: "#1976D2"
+    stroke-width: 3
+  }
+}
+
+# Aggregation Path: Maintenance thread traverses all slots
+aggregator -> stats_array.slot_0: "Read Offset 0x00-0x3F" {
+  style: {
+    stroke: "#EF6C00"
+    stroke-dash: 5
+  }
+}
+aggregator -> stats_array.slot_1: "Read Offset 0x40-0x7F" {
+  style: {
+    stroke: "#EF6C00"
+    stroke-dash: 5
+  }
+}
+aggregator -> stats_array.slot_n: "Read N * 64B" {
+  style: {
+    stroke: "#EF6C00"
+    stroke-dash: 5
+  }
+}
+
+# Export Path
+aggregator -> prometheus: "Aggregate Snapshots" {
+  style: {
+    stroke: "#388E3C"
+    animated: true
+  }
+}
+
+# --- ANNOTATIONS ---
+
+legend: "CACHELINE ISOLATION (64B Boundary)" {
+  near: bottom-right
+  note: |md
+    **Prevention of False Sharing**
+    Each slot occupies exactly 64B. 
+    Padding ensures that `stats[0]` and `stats[1]` 
+    never reside in the same L1 cache line.
+  |
+  style.stroke: "#BDBDBD"
+  style.stroke-dash: 2
+}
+
+# Visual Boundary Indicators
+stats_array.slot_0 -- stats_array.slot_1: "Offset 0x40 Boundary" {
+  style.stroke-dash: 4
+  style.stroke: grey
+}
+
+stats_array.slot_1 -- stats_array.slot_n: "..." {
+  style.stroke-dash: 4
+  style.stroke: grey
+}

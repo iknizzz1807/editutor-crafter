@@ -1,0 +1,251 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    sketch: false
+    pad: 20
+  }
+  colors: {
+    header: "#7b1fa2"
+    kernel_bg: "#fce4ec"
+    kernel_border: "#c2185b"
+    user_bg: "#e8f5e9"
+    user_border: "#2e7d32"
+    bypass_bg: "#e1f5fe"
+    bypass_border: "#01579b"
+    hw_fill: "#e1d5e7"
+    latency_critical: "#f44336"
+    data_blue: "#0288d1"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ARCHITECTURAL COMPARISON: KERNEL VS USER-SPACE NETWORK BYPASS
+# -----------------------------------------------------------------------------
+
+kernel_path: "KERNEL NETWORK PATH (Standard Sockets)" {
+  style: {
+    fill: "#f8f9fa"
+    stroke: ${vars.colors.header}
+    stroke-width: 4
+    double-border: true
+  }
+
+  hw: Hardware Layer {
+    style.fill: "#ffffff"
+    nic: "NIC Hardware (Intel X550)\nOffset: 0x00 (Registers)" {
+      shape: parallelogram
+      style.fill: ${vars.colors.hw_fill}
+      tooltip: "Physical 10GbE / 40GbE Port - Rx/Tx FIFO"
+    }
+  }
+
+  kernel: "Kernel Space (Ring 0)" {
+    style.fill: ${vars.colors.kernel_bg}
+    style.stroke: ${vars.colors.kernel_border}
+    
+    irq: "IRQ Handler (Top Half)\nLatency: +500ns" {
+      style.fill: ${vars.colors.latency_critical}
+      style.font-color: white
+      style.bold: true
+    }
+    
+    skb_alloc: "sk_buff Allocation\nOffset: 0x40 (Headroom)" {
+      shape: sql_table
+      style.fill: "#ce93d8"
+      0x00: "next *sk_buff"
+      0x08: "prev *sk_buff"
+      0x10: "tstamp (64-bit)"
+      0x18: "data pointer"
+    }
+    
+    stack: "Linux Protocol Stack\n(Eth -> IP -> TCP/UDP)\nNetfilter Hooks" {
+      style.fill: "#9575cd"
+      style.font-color: white
+    }
+    
+    q: "Socket RX Queue\n(Backlog Ring Buffer)" {
+      shape: queue
+      style.fill: "#b39ddb"
+    }
+  }
+
+  user: "User Space (Ring 3)" {
+    style.fill: ${vars.colors.user_bg}
+    style.stroke: ${vars.colors.user_border}
+    app: "Application Buffer\n(recv() syscall)\nLatency: +700ns (Copy)" {
+      style.fill: "#81c784"
+      style.bold: true
+    }
+  }
+
+  # Latency sequence connections
+  hw.nic -> kernel.irq: "1. DMA + Hard IRQ Assert" {
+    style: {
+      stroke: ${vars.colors.latency_critical}
+      stroke-width: 3
+    }
+    source-arrowhead: circle
+    target-arrowhead.label: "~500ns"
+  }
+
+  kernel.irq -> kernel.skb_alloc: "2. Top Half Handler" {
+    label: "~200ns"
+  }
+
+  kernel.skb_alloc -> kernel.stack: "3. Protocol Logic" {
+    label: "~2,000ns"
+  }
+
+  kernel.stack -> kernel.q: "4. Lock + Enqueue" {
+    label: "Lock Contention Variable"
+  }
+
+  kernel.q -> user.app: "5. Context Switch\n+ Data Copy (__copy_to_user)" {
+    style: {
+      stroke: ${vars.colors.latency_critical}
+      stroke-dash: 5
+      stroke-width: 2
+    }
+    label: "~700ns - 1,500ns"
+  }
+
+  summary: {
+    shape: rectangle
+    label: |md
+      ### KERNEL OVERHEAD SUMMARY
+      - **Total Latency:** 10µs - 50µs
+      - **Bottleneck:** Context switching & interrupt storm
+      - **Data Path:** CPU-intensive memory copies
+    |
+    style: {
+      font-size: 14
+      stroke: ${vars.colors.kernel_border}
+      fill: "#fff0f6"
+      font-color: ${vars.colors.kernel_border}
+    }
+  }
+}
+
+bypass_path: "KERNEL BYPASS PATH (AF_XDP / DPDK / RDMA)" {
+  style: {
+    fill: "#f8f9fa"
+    stroke: ${vars.colors.data_blue}
+    stroke-width: 4
+    double-border: true
+  }
+
+  hw: Hardware Layer {
+    style.fill: "#ffffff"
+    nic: "NIC Hardware (SR-IOV / VMDq)\nDirect DMA (Descriptor Ring)" {
+      shape: parallelogram
+      style.fill: ${vars.colors.hw_fill}
+    }
+  }
+
+  kernel_stub: "--- Kernel Stack Bypassed ---" {
+    style: {
+      stroke-dash: 8
+      stroke: "#cfd8dc"
+      stroke-width: 2
+      fill: transparent
+    }
+  }
+
+  user: "User Space (Direct Access)" {
+    style.fill: ${vars.colors.bypass_bg}
+    style.stroke: ${vars.colors.bypass_border}
+    
+    ring: "Shared UMEM Ring Buffer\n(Zero-Copy Descriptor Table)" {
+      shape: cylinder
+      style.fill: "#4fc3f7"
+      style.bold: true
+    }
+    
+    pmd: "Poll Mode Driver (PMD)\n(Spin-lock Core / 100% CPU)" {
+      style.fill: ${vars.colors.data_blue}
+      style.font-color: white
+      tooltip: "Constant busy-wait loop avoiding IRQ latency"
+    }
+    
+    logic: "User-space Protocol Stack\n(L3/L4 Logic in Userland)" {
+      style.fill: ${vars.colors.bypass_border}
+      style.font-color: white
+    }
+  }
+
+  # Zero-copy low-latency connections
+  hw.nic -> user.ring: "1. DMA Direct to UMEM" {
+    style: {
+      stroke: "#2e7d32"
+      stroke-width: 4
+    }
+    source-arrowhead: circle
+    target-arrowhead.label: "~100ns"
+  }
+
+  user.ring -> user.pmd: "2. Busy-Poll (Spinning)" {
+    label: "~5ns (L1 Cache Hit)"
+  }
+
+  user.pmd -> user.logic: "3. Direct Pointer Arith" {
+    label: "~10ns (No memcpy)"
+  }
+
+  summary: {
+    shape: rectangle
+    label: |md
+      ### BYPASS EFFICIENCY SUMMARY
+      - **Total Latency:** 1µs - 2µs
+      - **Advantage:** Deterministic processing (Zero Jitter)
+      - **Data Path:** Memory mapped; zero boundary crossings
+    |
+    style: {
+      font-size: 14
+      stroke: ${vars.colors.data_blue}
+      fill: "#e1f5fe"
+      font-color: ${vars.colors.bypass_border}
+    }
+  }
+}
+
+# Legend and Technical Details
+legend: {
+  near: bottom-center
+  k: "Kernel-Space Overhead (High Jitter)" {
+    style.fill: ${vars.colors.kernel_bg}
+    style.stroke: ${vars.colors.latency_critical}
+    style.stroke-width: 2
+  }
+  b: "Bypass Efficiency (Ultra-Low Latency)" {
+    style.fill: ${vars.colors.bypass_bg}
+    style.stroke: ${vars.colors.data_blue}
+    style.stroke-width: 2
+  }
+}
+
+# Comparison Table
+comparison_box: {
+  shape: rectangle
+  label: |`md
+    ## Low-Level Technical Comparison
+    
+    | Feature | Kernel (Standard) | Bypass (AF_XDP/DPDK) |
+    | :--- | :--- | :--- |
+    | **CPU Model** | Interrupt-driven | Poll-mode (spinning) |
+    | **Memory** | sk_buff allocation/copy | Zero-copy DMA to User |
+    | **Boundary** | Multiple Context Switches | Memory Mapped (MMAP) |
+    | **Protocol** | Standard Linux Stack | User-space Stack |
+    | **Control** | Kernel-managed | Application-managed |
+  `|
+  near: bottom-right
+  style: {
+    stroke: "#455a64"
+    fill: "#f1f8e9"
+    font-size: 12
+  }
+}
+
+# Global Style Overrides
+***.style.font: mono
+***.style.border-radius: 4

@@ -1,0 +1,247 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 20
+  }
+}
+
+title: {
+  label: ||md
+    # Load Shedding State Machine (kbns-m5)
+    **System Invariant**: `Load % = (Current Queue Depth / Processing Rate) * 100`
+    **Hysteresis**: Recovery requires a -10% load delta from transition threshold.
+  ||
+  near: top-center
+  shape: text
+}
+
+# Initial State
+START: "" {
+  shape: circle
+  width: 25
+  height: 25
+  style: {
+    fill: black
+    stroke: black
+  }
+}
+
+# State Definitions with byte-offset logic
+LOAD_NORMAL: "STATE: NORMAL\n[ID: 0x00]" {
+  shape: rectangle
+  style: {
+    stroke: "#28a745"
+    stroke-width: 2
+    border-radius: 10
+    fill: "#f6ffed"
+  }
+  tooltip: "Standard operating conditions: Jitter < 1ms"
+  
+  Policy: ||md
+    ### Acceptance Policy
+    - **Established Flows**: ACCEPT
+    - **New Connections**: ACCEPT
+    - **Backpressure**: NONE (0%)
+    - **L7 Inspection**: FULL
+  ||
+}
+
+LOAD_HIGH: "STATE: HIGH\n[ID: 0x01]" {
+  shape: rectangle
+  style: {
+    stroke: "#ffd33d"
+    stroke-width: 2
+    border-radius: 10
+    fill: "#fffdef"
+  }
+  tooltip: "Congestion starting to build: Queue filling"
+  
+  Policy: ||md
+    ### Acceptance Policy
+    - **Existing Flows**: ACCEPT
+    - **New SYNs**: THROTTLE (100ms Delay)
+    - **Backpressure**: SRC_QUENCH (20%)
+    - **L7 Inspection**: HEADER_ONLY
+  ||
+}
+
+LOAD_CRITICAL: "STATE: CRITICAL\n[ID: 0x02]" {
+  shape: rectangle
+  style: {
+    stroke: "#f66a0a"
+    stroke-width: 3
+    border-radius: 10
+    fill: "#fff5eb"
+  }
+  tooltip: "Server near saturation: Dropping non-essential packets"
+  
+  Policy: ||md
+    ### Acceptance Policy
+    - **Priority 1+ (Control)**: ACCEPT
+    - **DSCP 0 (Best Effort)**: DROP
+    - **New SYNs**: REJECT (Drop)
+    - **Backpressure**: AGGRESSIVE (80%)
+  ||
+}
+
+LOAD_OVERLOAD: "STATE: OVERLOAD\n[ID: 0x03]" {
+  shape: rectangle
+  style: {
+    fill: "#ffeef0"
+    stroke: "#d73a49"
+    stroke-width: 4
+    border-radius: 10
+  }
+  tooltip: "System saturation exceeded: Emergency filtering active"
+  
+  Policy: ||md
+    ### Acceptance Policy
+    - **DSCP 46+ (HFT/EF)**: ACCEPT
+    - **All Others**: DROP
+    - **New SYNs**: REJECT (Send RST)
+    - **Backpressure**: EMERGENCY (100%)
+  ||
+}
+
+# Error State
+PANIC: "KERNEL_PANIC\n[HALT_ADDR: 0xFFFF]" {
+  shape: rectangle
+  style: {
+    fill: "#ff0000"
+    stroke: "#000000"
+    stroke-width: 5
+    font-color: white
+    bold: true
+  }
+}
+
+# Transitions: Forward Path (Load Rising)
+START -> LOAD_NORMAL: "stack_init()" {
+  style: {
+    stroke-width: 2
+  }
+}
+
+LOAD_NORMAL -> LOAD_HIGH: "load > 80%" {
+  style: {
+    stroke: "#ffd33d"
+    stroke-width: 2
+  }
+}
+
+LOAD_HIGH -> LOAD_CRITICAL: "load > 95%" {
+  style: {
+    stroke: "#f66a0a"
+    stroke-width: 2
+  }
+}
+
+LOAD_CRITICAL -> LOAD_OVERLOAD: "load > 110%" {
+  style: {
+    stroke: "#d73a49"
+    stroke-width: 4
+    animated: true
+  }
+}
+
+# Transitions: Recovery Path (Hysteresis & Delays)
+LOAD_OVERLOAD -> LOAD_CRITICAL: "load < 105%\n[Recovery Delay: 500ms]" {
+  style: {
+    stroke-dash: 5
+    stroke: "#586069"
+  }
+}
+
+LOAD_CRITICAL -> LOAD_HIGH: "load < 90%\n[Recovery Delay: 1000ms]" {
+  style: {
+    stroke-dash: 5
+    stroke: "#586069"
+  }
+}
+
+LOAD_HIGH -> LOAD_NORMAL: "load < 75%\n[Recovery Delay: 2000ms]" {
+  style: {
+    stroke-dash: 5
+    stroke: "#586069"
+  }
+}
+
+# Direct Jump (Aggressive Load Spike)
+LOAD_NORMAL -> LOAD_OVERLOAD: "BURST_SPIKE_DETECTED" {
+  tooltip: "load_delta > 50% / sec"
+  style: {
+    stroke: "#d73a49"
+    stroke-width: 5
+    animated: true
+  }
+}
+
+# Failure Path
+LOAD_OVERLOAD -> PANIC: "cpu_temp > 105C" {
+  style: {
+    stroke: black
+    stroke-width: 2
+    stroke-dash: 3
+  }
+}
+
+# Illegal Transitions (Security/Consistency Guards)
+LOAD_NORMAL -> LOAD_CRITICAL: "ILLEGAL" {
+  style: {
+    stroke: red
+    stroke-dash: 2
+    opacity: 0.3
+  }
+}
+
+# Policy Matrix Annotation
+Policy_Matrix: {
+  label: ||md
+    ### Acceptance Matrix (Global Configuration)
+    | Level | Established | Low-Pri | New SYN | Backpressure |
+    | :--- | :--- | :--- | :--- | :--- |
+    | **NORMAL** | Accept | Accept | Accept | 0% |
+    | **HIGH** | Accept | Accept | Delay | 20% |
+    | **CRITICAL**| Accept | **Drop** | **Drop** | 80% |
+    | **OVERLOAD**| **Filter** | **Drop** | **RST** | 100% |
+  ||
+  near: top-right
+  shape: text
+  style: {
+    font-size: 14
+  }
+}
+
+# Legend and Metadata
+legend: {
+  shape: package
+  near: bottom-right
+  label: "Circuit Breaker Legend"
+  
+  fwd: "Rising Edge (Trigger)"
+  fwd.style: {
+    stroke: "#d73a49"
+    stroke-width: 2
+  }
+  rev: "Falling Edge (Hysteresis)"
+  rev.style: {
+    stroke: "#586069"
+    stroke-dash: 5
+  }
+  burst: "Direct Spike Protection"
+  burst.style: {
+    stroke: "#d73a49"
+    stroke-width: 5
+  }
+}
+
+footer: {
+  label: ||md
+    **Reference**: Intel NIC Flow Director Specification Rev 2.1
+    **Module**: `kbns/sched/shedder.c`
+  ||
+  near: bottom-left
+  shape: text
+}

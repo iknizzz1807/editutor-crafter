@@ -1,0 +1,203 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    layout-engine: elk
+  }
+}
+
+# TCP Reno Congestion Control - AIMD Logic Evolution
+# Technical Specification: RFC 5681
+# Memory Alignment: 4-byte boundaries, Network Byte Order (Big-Endian)
+
+classes: {
+  tcp_state_struct: {
+    shape: sql_table
+    style: {
+      stroke: "#2B3440"
+      stroke-width: 2
+      fill: "#E1F5FE" # Data: Blue
+    }
+  }
+  modified_field: {
+    style: {
+      stroke: "#D32F2F" # Changed: Red
+      stroke-width: 4
+      font-color: "#D32F2F"
+      bold: true
+    }
+  }
+}
+
+legend: {
+  shape: package
+  label: "Manual Legend: Memory & State"
+  near: top-left
+  
+  key: {
+    shape: sql_table
+    "Visual Cue": "Technical Meaning"
+    "Purple Header": "Field Metadata / Address"
+    "Blue Cell": "Static / Unchanged Data"
+    "Red Border/Text": "Value Mutated in current T-step"
+    "Gray Line": "Cache-line boundary (64B)"
+  }
+  key."Purple Header".style.font-color: "#673AB7"
+  key."Red Border/Text".style.font-color: "#D32F2F"
+}
+
+# --- ALGORITHM EVOLUTION STEPS ---
+
+step_1: {
+  label: "Step 1: Slow Start (SS)"
+  desc: ||md
+    ### Phase: Exponential Probe
+    - **Trigger**: Initial syn-ack or Timeout.
+    - **Invariant**: `cwnd < ssthresh`.
+    - **Action**: `cwnd += 1 MSS` per ACK.
+  ||
+  
+  mem: {
+    shape: sql_table
+    0x00_cwnd: "10 MSS" {constraint: "uint32 (4B)"}
+    0x04_ssthresh: "64 MSS" {constraint: "uint32 (4B)"}
+    0x08_state: "0x01 (SS)" {constraint: "uint32 (4B)"}
+    0x0C_inflight: "10 MSS" {constraint: "uint32 (4B)"}
+  }
+}
+
+step_2: {
+  label: "Step 2: SS to CA Transition"
+  desc: ||md
+    ### Phase: Linear Threshold
+    - **Trigger**: `cwnd == ssthresh`.
+    - **Action**: Switch to Congestion Avoidance.
+    - **Math**: Linear growth starts here.
+  ||
+  
+  mem: {
+    shape: sql_table
+    0x00_cwnd: "64 MSS" {class: modified_field; constraint: "uint32 (4B)"}
+    0x04_ssthresh: "64 MSS" {constraint: "uint32 (4B)"}
+    0x08_state: "0x02 (CA)" {class: modified_field; constraint: "uint32 (4B)"}
+    0x0C_inflight: "64 MSS" {class: modified_field; constraint: "uint32 (4B)"}
+  }
+}
+
+step_3: {
+  label: "Step 3: Congestion Avoidance (AI)"
+  desc: ||md
+    ### Phase: Additive Increase
+    - **Rule**: `cwnd += 1/cwnd` per ACK.
+    - **Result**: Approx. `+1 MSS` per RTT.
+    - **Safety**: Avoids sudden congestion.
+  ||
+  
+  mem: {
+    shape: sql_table
+    0x00_cwnd: "80 MSS" {class: modified_field; constraint: "uint32 (4B)"}
+    0x04_ssthresh: "64 MSS" {constraint: "uint32 (4B)"}
+    0x08_state: "0x02 (CA)" {constraint: "uint32 (4B)"}
+    0x0C_inflight: "80 MSS" {class: modified_field; constraint: "uint32 (4B)"}
+  }
+}
+
+step_4: {
+  label: "Step 4: Loss (3-Dup ACKs)"
+  desc: ||md
+    ### Phase: Fast Retransmit
+    - **Event**: Sequence gap detected via duplicates.
+    - **Inference**: Single packet loss, not congestion collapse.
+  ||
+  
+  mem: {
+    shape: sql_table
+    0x00_cwnd: "80 MSS" {constraint: "uint32 (4B)"}
+    0x04_ssthresh: "64 MSS" {constraint: "uint32 (4B)"}
+    0x08_state: "0x03 (FR)" {class: modified_field; constraint: "uint32 (4B)"}
+    0x10_dup_ack_cnt: "3" {class: modified_field; constraint: "uint32 (4B)"}
+  }
+}
+
+step_5: {
+  label: "Step 5: Multiplicative Decrease (MD)"
+  desc: ||md
+    ### Phase: Fast Recovery
+    - **Logic**: `ssthresh = cwnd / 2`.
+    - **Logic**: `cwnd = ssthresh + 3`.
+    - **Goal**: Immediate rate reduction.
+  ||
+  
+  mem: {
+    shape: sql_table
+    0x00_cwnd: "43 MSS" {class: modified_field; constraint: "uint32 (4B)"}
+    0x04_ssthresh: "40 MSS" {class: modified_field; constraint: "uint32 (4B)"}
+    0x08_state: "0x03 (FR)" {constraint: "uint32 (4B)"}
+    0x0C_inflight: "40 MSS" {class: modified_field; constraint: "uint32 (4B)"}
+  }
+}
+
+# --- PIPELINE CONNECTORS ---
+
+step_1 -> step_2: "cwnd >= ssthresh" {
+  style: { stroke-width: 2; font-size: 14 }
+}
+step_2 -> step_3: "Normal ACKs"
+step_3 -> step_4: "RX 3-Dup ACKs" {
+  style: { stroke: "#D32F2F"; font-color: "#D32F2F"; bold: true }
+}
+step_4 -> step_5: "Execute AIMD Logic" {
+  style: { stroke: "#D32F2F"; stroke-dash: 4; animated: true }
+}
+
+# --- VISUAL STATE OVERVIEW ---
+
+network_visualizer: {
+  near: bottom-center
+  shape: text
+  label: ||md
+    ### TCP Reno cwnd Curve (AIMD)
+    
+    cwnd (MSS)
+      ^
+      |          / [AI]
+      |         /           Loss (3-Dup ACKs)
+      |   _____/             |
+      |  /                   |  [MD]
+      | / [SS]               |----> cwnd' = cwnd/2 + 3
+      |/_____________________|___________________> Time
+  ||
+}
+
+# --- SYSTEM INVARIANTS ---
+
+spec_meta: {
+  near: center-right
+  shape: package
+  label: "Runtime Invariants"
+  
+  details: {
+    shape: sql_table
+    "Parameter" : "Value / Logic"
+    "Initial cwnd": "10 MSS (RFC 6928)"
+    "Min cwnd": "2 MSS"
+    "RTO Behavior": "ssthresh=cwnd/2; cwnd=1; State=SS"
+    "MSS size": "1460 Bytes (Standard Ethernet MTU)"
+  }
+}
+
+# Styling for individual memory table headers
+step_1.mem.style.fill: "#673AB7"
+step_2.mem.style.fill: "#673AB7"
+step_3.mem.style.fill: "#673AB7"
+step_4.mem.style.fill: "#673AB7"
+step_5.mem.style.fill: "#673AB7"
+
+# Explicit Byte Padding visualization (gray)
+padding_note: {
+  label: "Note: All fields 32-bit aligned for optimal CPU cache performance."
+  near: bottom-right
+  shape: text
+  style.font-size: 12
+  style.italic: true
+}

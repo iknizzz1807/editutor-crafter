@@ -1,0 +1,203 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ⚠️ SYSTEM: M5 HARDENING PACKET CAPTURE ARCHITECTURE
+# Designed for Zero-Copy Kernel Bypass (Intel Manual Quality Spec)
+
+classes: {
+  hot_path: {
+    style: {
+      fill: "#fff5f5"
+      stroke: "#ca052b"
+      stroke-width: 3
+    }
+  }
+  memory_layout: {
+    style: {
+      fill: "#e7f3ff"
+      stroke: "#007bff"
+      stroke-dash: 0
+      double-border: true
+    }
+  }
+  background_thread: {
+    style: {
+      fill: "#f3e5f5"
+      stroke: "#6a1b9a"
+      stroke-width: 2
+    }
+  }
+  cache_line: {
+    style: {
+      stroke-dash: 5
+      fill: transparent
+      border-radius: 0
+    }
+  }
+}
+
+packet_processing_core: {
+  label: "Hot Path: Ingress Processing (CPU Core N)"
+  class: hot_path
+  
+  ingress: {
+    label: "RX Burst Hook"
+    shape: hexagon
+    tooltip: "DPDK/AF_XDP Ingress"
+  }
+
+  sampling_logic: {
+    label: |md
+      **Condition**: 
+      `if (pkt_count % sample_rate != 0) return;`
+    |
+    shape: parallelogram
+  }
+
+  space_check: {
+    label: |md
+      **Atomic Load**: `tail = load_acquire(&ring->tail)`
+      **Logic**: `if (((head + 1) & MASK) == tail) return FULL;`
+    |
+    shape: diamond
+    style.fill: "#fff3e0"
+  }
+
+  copy_logic: {
+    label: |md
+      `memcpy(entry->data, pkt, snaplen)`
+      `entry->ts = rdtsc()`
+      `store_release(&ring->head, next_head)`
+    |
+  }
+
+  ingress -> sampling_logic: "Raw Pkt Ptr"
+  sampling_logic -> space_check: "Sample Selected"
+  space_check -> copy_logic: "Slot Available"
+  space_check -> drop_counter: "BUFFER FULL" {
+    style.stroke: red
+    style.animated: true
+    style.stroke-width: 2
+  }
+}
+
+capture_buffer: {
+  label: "Shared Capture Ring (NUMA Local Memory)"
+  class: memory_layout
+  
+  header: {
+    label: "Ring Management Header (Aligned 64B)"
+    style.fill: "#d1c4e9" # Header Color (Purple per Role)
+    
+    cl0: {
+      label: "Cache Line 0 (Producer Owned)"
+      class: cache_line
+      head: {
+        label: "uint32_t head_idx"
+        style.fill: "#ffe0b2" # Pointers (Orange per Role)
+      }
+      pad0: {
+        label: "uint8_t pad[60]"
+        style.fill: "#eeeeee" # Padding (Gray per Role)
+      }
+    }
+    cl1: {
+      label: "Cache Line 1 (Consumer Owned)"
+      class: cache_line
+      tail: {
+        label: "uint32_t tail_idx"
+        style.fill: "#ffe0b2" # Pointers (Orange per Role)
+      }
+      pad1: {
+        label: "uint8_t pad[60]"
+        style.fill: "#eeeeee" # Padding (Gray per Role)
+      }
+    }
+  }
+
+  entries: {
+    label: "Ring Storage [65536 Entries]"
+    entry_n: {
+      label: "struct capture_entry (Size: 1560B)"
+      shape: sql_table
+      style.fill: "#e3f2fd" # Data (Blue per Role)
+      "0x00": "uint64_t ns_timestamp" {constraint: "8B"}
+      "0x08": "uint32_t original_len" {constraint: "4B"}
+      "0x0C": "uint32_t captured_len" {constraint: "4B"}
+      "0x10": "uint8_t pkt_payload[1522]" {constraint: "1522B"}
+      "0x602": "uint8_t padding_alignment" {constraint: "26B"}
+    }
+  }
+}
+
+footer_note: |md
+  ### Memory Specification
+  - **Total Allocation**: 102,236,224 Bytes (~97.5 MiB)
+  - **Alignment**: `__attribute__((aligned(64)))`
+  - **Page Size**: 2MiB Hugepages Recommended
+  - **Concurrency**: Lock-Free SPSC (Single Producer Single Consumer)
+| {
+  near: bottom-right
+}
+
+pcap_writer_thread: {
+  label: "I/O Worker (CPU Core M)"
+  class: background_thread
+
+  poll_logic: {
+    label: "while (load_acquire(&head) != tail)"
+  }
+
+  formatter: {
+    label: "PCAP v2.4 Formatter"
+  }
+
+  io_subsystem: {
+    shape: cylinder
+    label: "O_DIRECT | io_uring_submit"
+  }
+
+  poll_logic -> formatter: "De-queue"
+  formatter -> io_subsystem: "Async Write"
+}
+
+# Implementation Relationships
+packet_processing_core.copy_logic -> capture_buffer.entries.entry_n: "Zero-Copy Memcpy" {
+  style.stroke-width: 4
+  style.stroke: "#007bff"
+}
+
+packet_processing_core.space_check -> capture_buffer.header.cl0.head: "Store Release" {
+  style.stroke: "#f57c00"
+}
+
+capture_buffer.header.cl0.head -> pcap_writer_thread.poll_logic: "Load Acquire" {
+  style.stroke-dash: 3
+}
+
+pcap_writer_thread.poll_logic -> capture_buffer.header.cl1.tail: "Update Index" {
+  style.stroke: "#f57c00"
+}
+
+capture_buffer.entries.entry_n -> pcap_writer_thread.formatter: "Direct Read"
+
+drop_counter: {
+  label: "Hardware Drop Counter"
+  style.fill: "#ffebee"
+  style.stroke: red
+  style.border-radius: 999
+  tooltip: "Incremented on Ring Overflow"
+}
+
+legend: {
+  near: bottom-center
+  h: { label: "Control Header"; style.fill: "#d1c4e9" }
+  d: { label: "Packet Data"; style.fill: "#e3f2fd" }
+  p: { label: "Ring Pointers"; style.fill: "#ffe0b2" }
+  pad: { label: "Memory Padding"; style.fill: "#eeeeee" }
+}

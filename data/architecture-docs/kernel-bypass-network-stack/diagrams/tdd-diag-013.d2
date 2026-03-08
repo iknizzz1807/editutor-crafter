@@ -1,0 +1,158 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# Technical Design Artist: KBNS-M2 Kernel Bypass ARP Resolution
+# Sequence Specification v1.0.3 - Memory-Mapped IO & Seqlock Invariants
+
+arp_sequence: {
+  shape: sequence_diagram
+
+  app: "Application\n(HFT Engine)" {
+    style: {
+      fill: "#E1F5FE"
+      stroke: "#01579B"
+      stroke-width: 2
+    }
+  }
+  stack: "TCP/IP Stack\n(User Space)" {
+    style: {
+      fill: "#D1C4E9"
+      stroke: "#4527A0"
+      stroke-width: 2
+    }
+  }
+  cache: "ARP Cache\n(Hash Table)" {
+    style: {
+      fill: "#FFF9C4"
+      stroke: "#FBC02D"
+      stroke-width: 2
+    }
+  }
+  nic: "Kernel Bypass NIC\n(AF_XDP/DPDK)" {
+    style: {
+      fill: "#FFE0B2"
+      stroke: "#E65100"
+      stroke-width: 2
+    }
+  }
+  wire: "Network Switch\n(L2 Broadcast)" {
+    style: {
+      fill: "#F5F5F5"
+      stroke: "#9E9E9E"
+      stroke-dash: 3
+    }
+  }
+  target: "Remote Host\n(192.168.1.50)" {
+    style: {
+      fill: "#C8E6C9"
+      stroke: "#2E7D32"
+      stroke-width: 2
+    }
+  }
+
+  # --- ARP MISS & QUEUEING PHASE ---
+
+  app -> stack: "udp_send(dst_ip=192.168.1.50, buf=0x7f...)"
+  
+  stack.lookup -> cache: "arp_cache_lookup(key=0xC0A80132)"
+  cache -> stack.lookup: "RET: NULL (L2_MISS)" {
+    style.stroke: "#D32F2F"
+    style.bold: true
+  }
+
+  stack.q -> stack.q: "arp_queue_packet(pkt_ref, 192.168.1.50)"
+  stack.q."State: INCOMPLETE\nBuffer: 0x7f0012a0 (Pending)"
+
+  stack.build -> stack.build: "eth_build(dst=FF:FF:FF:FF:FF:FF, type=0x0806)"
+  
+  stack.tx -> nic.tx_req: "kbns_stack_tx_burst(ARP_REQ_DESC)"
+  nic.tx_req."Descriptor Ring Index: 12\nFrame Size: 64B (Padded)"
+
+  nic -> wire: "L2 Broadcast Frame (Eth II | ARP)"
+  wire -> target: "ARP Request: Who has 192.168.1.50?"
+
+  # --- TARGET RESPONSE PHASE ---
+
+  target -> target: "Validate TPA == interface_ip\nOpcode: 0x0001 (Request)"
+  target -> wire: "ARP Reply: 192.168.1.50 is at 00:AA:BB:CC:DD:EE"
+  wire."Direction: Unicast\nOpcode: 0x0002 (Reply)"
+
+  wire -> nic: "Unicast Frame (Ethertype=0x0806)"
+  
+  nic.rx_reply -> stack.rx_process: "kbns_stack_rx_burst() -> rcvd_cnt=1" {
+    style: {
+      stroke: "#2196F3"
+      animated: true
+    }
+  }
+
+  # --- CACHE UPDATE & BUFFER FLUSH ---
+
+  stack.update -> cache: "arp_cache_update(0xC0A80132, 00:AA:BB...)"
+  cache."Seqlock Write (seq++)\nMAC Entry: 00:AA:BB:CC:DD:EE"
+
+  stack.flush -> stack.flush: "arp_flush_pending(target_ip=0xC0A80132)"
+  stack.flush."Memcpy: Dest MAC → Descriptor\nStatus → REACHABLE"
+
+  stack.final_tx -> nic.tx_data: "kbns_stack_tx_burst(ORIGINAL_DATA_DESC)" {
+    style: {
+      stroke: "#4CAF50"
+      stroke-width: 4
+    }
+  }
+
+  nic -> wire: "Unicast Data Packet (IP_PROTO_UDP)"
+  wire -> target: "Payload Delivered (Seq: 0x01)"
+
+}
+
+# High-Grade Engineering Legend
+implementation_specs: {
+  near: bottom-center
+  
+  header: ||md
+### Implementation Details (Intel Manual Standard)
+| Parameter | Value | Description |
+| :--- | :--- | :--- |
+| **Ethertype** | 0x0806 | ARP Control Frame |
+| **HTYPE / PTYPE** | 1 / 0x0800 | Ethernet / IPv4 Protocol |
+| **Opcode REQ/REP** | 1 / 2 | ARP Request vs Reply identifier |
+| **Timeout** | 1000ms | Retransmission interval for unreplied REQs |
+| **Alignment** | 64-Byte | Minimum Ethernet frame size required by NIC |
+| **Memory Map** | Hugepages | Descriptor rings allocated in 2MB pages |
+||
+  
+  logic: ||md
+#### State Transition & Memory Invariants:
+1. **Seqlock Protocol**: Cache updates increment sequence counter (odd=busy, even=stable). Lookups must verify `seq_start == seq_end`.
+2. **Buffer Lifecycle**: The data buffer `0x7f...` is locked in `pending_queue`. No double-free allowed during ARP wait.
+3. **Bypass Path**: Stack operates in user-space using `UMEM` regions, bypassing kernel `sk_buff` allocation overhead.
+||
+
+  style: {
+    stroke: "#455A64"
+    fill: "#ECEFF1"
+    shadow: true
+  }
+}
+
+# Universal Component Styling
+***.style.font: mono
+***.style.font-size: 14
+
+arp_sequence.wire: {
+  style: {
+    stroke-dash: 5
+    fill: "#F5F5F5"
+  }
+}
+
+# Visual Emphasis on Logic Paths
+(arp_sequence.stack.lookup -> arp_sequence.cache)[0].style.stroke: "#FF9800"
+(arp_sequence.stack.final_tx -> arp_sequence.nic.tx_data)[0].style.animated: true

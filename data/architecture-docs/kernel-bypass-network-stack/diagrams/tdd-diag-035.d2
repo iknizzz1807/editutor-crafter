@@ -1,0 +1,236 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- GLOBAL ANNOTATIONS ---
+title: |md
+  # Timer Wheel Architecture (kbns-m4)
+  **O(1) Insertion & Deletion for 10K+ Concurrent Timers**
+  *Intel Manual Quality Spec - Implementation Grade*
+| {near: top-center}
+
+# --- DATA STRUCTURES ---
+
+tcp_timer_wheel: {
+  shape: class
+  label: "struct tcp_timer_wheel (sizeof=32840B)"
+  
+  # Byte Offsets (Left) | Field Name | Type | Size (Right)
+  "0x0000": "buckets[4096]" {
+    label: "buckets[4096]: struct tcp_timer*"
+    tooltip: "32,768B array of pointers. Fits in L1 Data Cache."
+    style.fill: "#E1D5E7"
+  }
+  "0x8000": "current_tick" {
+    label: "current_tick: uint64_t"
+    style.fill: "#DAE8FC"
+  }
+  "0x8008": "tick_ns" {
+    label: "tick_ns: uint64_t"
+    style.fill: "#DAE8FC"
+  }
+  "0x8010": "timer_pool" {
+    label: "timer_pool: struct tcp_timer*"
+    style.fill: "#FFF2CC"
+  }
+  "0x8018": "free_list" {
+    label: "free_list: struct tcp_timer*"
+    style.fill: "#D5E8D4"
+  }
+  "0x8020": "pool_size" {
+    label: "pool_size: uint32_t"
+    style.fill: "#F5F5F5"
+  }
+  "0x8024": "allocated" {
+    label: "allocated: uint32_t"
+    style.fill: "#F5F5F5"
+  }
+  "0x8028": "padding" {
+    label: "padding: uint32_t"
+    style.fill: "#CCCCCC"
+  }
+
+  # Methods
+  "create(pool_size uint32)": "int"
+  "add(conn *tcp_conn, type timer_type_t, delay_ms uint32)": "int"
+  "del(conn *tcp_conn, type timer_type_t)": "int"
+  "tick()": "void"
+
+  style: {
+    stroke: "#9673A6"
+    stroke-width: 2
+  }
+}
+
+tcp_timer: {
+  shape: class
+  label: "struct tcp_timer (sizeof=32B)"
+  
+  "0x00": "conn" {
+    label: "conn: struct tcp_conn*"
+    style.fill: "#DAE8FC"
+  }
+  "0x08": "type" {
+    label: "type: uint32_t (timer_type_t)"
+    style.fill: "#DAE8FC"
+  }
+  "0x0C": "expire_tick" {
+    label: "expire_tick: uint64_t"
+    style.fill: "#DAE8FC"
+  }
+  "0x14": "next" {
+    label: "next: struct tcp_timer*"
+    style.fill: "#FFE6CC"
+  }
+  "0x1C": "padding" {
+    label: "padding: uint32_t"
+    style.fill: "#CCCCCC"
+  }
+
+  # Cache Line Boundary Annotation
+  "----------------": "CACHE_LINE_0 (64B boundary)" {
+    style.stroke-dash: 3
+    style.font-size: 10
+  }
+  
+  style: {
+    stroke: "#6C8EBF"
+    stroke-width: 2
+  }
+}
+
+tcp_conn: {
+  shape: class
+  label: "struct tcp_conn (Control Block)"
+  
+  "timer_rto": "uint64_t"
+  "timer_persist": "uint64_t"
+  "timer_keepalive": "uint64_t"
+  "timer_timewait": "uint64_t"
+  "state": "tcp_state_t"
+  
+  style: {
+    fill: "#FFF2CC"
+    stroke: "#D6B656"
+  }
+}
+
+# --- THE WHEEL VISUALIZATION ---
+
+wheel_visual: {
+  label: "Timer Wheel Buckets (L1 Array Mapping)"
+  grid-columns: 8
+  grid-gap: 5
+  
+  slot_0: "Slot 0"
+  slot_1: "Slot 1"
+  slot_2: "Slot 2"
+  slot_3: "..."
+  slot_idx: "Slot [Tick % 4096]" {
+    style: {
+      fill: "#FFCCCC"
+      bold: true
+      double-border: true
+    }
+  }
+  slot_4094: "Slot 4094"
+  slot_4095: "Slot 4095"
+  
+  style: {
+    stroke-dash: 3
+    fill: "#F9F9F9"
+  }
+}
+
+# --- RELATIONSHIPS ---
+
+# Wheel owns the buckets and the timer pool
+tcp_timer_wheel."0x0000" -> wheel_visual: "Direct Memory Access" {
+  style: {
+    stroke-width: 2
+    stroke: "#9673A6"
+  }
+}
+
+tcp_timer_wheel."0x8010" -> tcp_timer: "Pre-allocated Memory Region" {
+  style: {
+    stroke-width: 2
+    stroke: "#6C8EBF"
+  }
+}
+
+# Linked list in buckets
+wheel_visual.slot_idx -> tcp_timer: "Collision Chain (hlist)" {
+  target-arrowhead: triangle
+  style.stroke-width: 2
+}
+
+# Timer points to connection
+tcp_timer."0x00" -> tcp_conn: "References Context" {
+  style: {
+    stroke-dash: 5
+    stroke: "#D6B656"
+  }
+}
+
+# Internal pointer chaining
+tcp_timer."0x14" -> tcp_timer: "next_in_bucket" {
+  style.stroke: "#B85450"
+}
+
+# --- LOGIC FLOW ANNOTATIONS ---
+
+logic_annotations: {
+  near: bottom-right
+  
+  calc: |md
+    ### Slot Calculation Logic
+    c
+    // Calculation performed on timer_add
+    expire_tick = (now_ns + delay_ns) / TICK_RESOLUTION_NS;
+    slot_index = expire_tick & (WHEEL_SIZE - 1);
+    
+    **Resolution:** 10.0ms (fixed)
+    **Wheel Size:** 4096 (Power of 2 for masking)
+    **Max Delay:** ~40.9s per revolution
+  |
+  
+  perf: |md
+    ### Implementation Notes
+    - **Memory Alignment:** `tcp_timer` aligned to 32B for dual packing in cache lines.
+    - **Add/Del:** $O(1)$ constant time.
+    - **Tick:** $O(1)$ amortized; iterates exactly 1 bucket per 10ms.
+    - **Locking:** SPSC (Single Producer Single Consumer) queue recommended for thread-safe cross-core timer dispatch.
+  |
+}
+
+# External Event Source
+external_event_loop: Hardware Timer Interrupt {
+  shape: cloud
+  style.fill: "#F8CECC"
+}
+
+# --- CONNECTIVITY MAPPING ---
+external_event_loop -> tcp_timer_wheel."tick()": "Trigger (10ms Periodic)" {
+  style: {
+    stroke: "#FF0000"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+# Footer metadata
+metadata: |md
+  **Memory Footprint Analysis (kbns-m4 spec)**
+  - `sizeof(tcp_timer_wheel)`: 32.8 KB (L1D Cache target)
+  - `sizeof(timer_pool[10000])`: 320 KB (L2 Cache target)
+  - **Total Static Overhead**: ~353 KB
+| {
+  near: bottom-center
+  shape: text
+  style.font-size: 14
+}

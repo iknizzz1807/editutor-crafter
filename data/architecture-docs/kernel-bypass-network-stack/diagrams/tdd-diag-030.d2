@@ -1,0 +1,267 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 25
+  }
+  # RFC 6298 Constants & Parameters
+  constants: {
+    alpha: "0.125 (1/8) - Gain for SRTT"
+    beta: "0.25 (1/4) - Gain for RTTVAR"
+    K: "4 - Deviation Multiplier"
+    G: "50ms - Clock Granularity"
+    RTO_MIN: "1000ms (1.0s)"
+    RTO_MAX: "60000ms (60s)"
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# TECHNICAL DESIGN: TCP RETRANSMISSION TIMER (JACOBSON/KARELS ALGORITHM)
+# This design specifies the state management of the TCP Control Block (TCB) timer variables.
+# ---------------------------------------------------------------------------------------
+
+classes: {
+  changed: {
+    style: {
+      stroke: "#ff0000"
+      stroke-width: 4
+      font-color: "#ff0000"
+      bold: true
+      double-border: true
+    }
+  }
+  header: {
+    style: {
+      fill: "#e1d5e7"
+      bold: true
+      font-size: 14
+    }
+  }
+  logic_box: {
+    style: {
+      fill: "#f8f9fa"
+      stroke: "#dee2e6"
+      stroke-dash: 2
+      border-radius: 5
+    }
+  }
+  memory_segment: {
+    style: {
+      font: mono
+      fill: "#e3f2fd"
+      stroke: "#1565c0"
+    }
+  }
+}
+
+# --- DATA STRUCTURE: TCB REGISTER LAYOUT (Logical Representation) ---
+TCB_Registers: "TCP Control Block (Timer Segment)" {
+  # Exact byte offsets for implementation reference
+  0x00: "SRTT (Smoothed RTT)" {
+    shape: sql_table
+    class: memory_segment
+    fields: "Offset | Size | Type"
+    row_1: "0x00 | 4B | uint32 (ms)"
+  }
+  0x04: "RTTVAR (RTT Variance)" {
+    shape: sql_table
+    class: memory_segment
+    fields: "Offset | Size | Type"
+    row_1: "0x04 | 4B | uint32 (ms)"
+  }
+  0x08: "RTO (Active Timeout)" {
+    shape: sql_table
+    class: memory_segment
+    fields: "Offset | Size | Type"
+    row_1: "0x08 | 4B | uint32 (ms)"
+  }
+}
+
+# --- ALGORITHM STATE: STEP 1 (RTT SAMPLING) ---
+Step_1: "1. RTT Measurement & Karn's Rule" {
+  Before: {
+    shape: sql_table
+    style.fill: "#f5f5f5"
+    "Variable": "Value"
+    srtt: "100.0 ms"
+    rttvar: "25.0 ms"
+    rto: "200.0 ms"
+  }
+  
+  Action: "Ingress ACK Sample" {
+    shape: package
+    style.fill: "#fff2cc"
+    rtt_sample: "150.0 ms"
+    is_retransmission: "FALSE"
+    status: "**VALID_SAMPLE**"
+    style.stroke: "#28a745"
+  }
+
+  After: {
+    shape: sql_table
+    "Variable": "Value"
+    srtt: "100.0 ms"
+    rttvar: "25.0 ms"
+    rto: "200.0 ms"
+    last_sample: "150.0 ms" {
+      class: changed
+    }
+  }
+  Before -> Action: "Stop Timer"
+  Action -> After: "Accept for Calc"
+}
+
+# --- ALGORITHM STATE: STEP 2 (SMOOTHING) ---
+Step_2: "2. Jacobson/Karels Smoothing" {
+  Logic: |'md
+### Smoothing Logic
+Update SRTT and RTTVAR using exponential moving averages.
+
+**Step-by-Step Implementation:**
+1. **Error Calculation:**
+   `Err = Sample - SRTT` (150 - 100 = 50)
+2. **Variance Update:**
+   `RTTVAR = (1 - β) * RTTVAR + β * |Err|`
+   `RTTVAR = 0.75 * 25 + 0.25 * 50 = 31.25`
+3. **Smoothed Mean Update:**
+   `SRTT = (1 - α) * SRTT + α * Sample`
+   `SRTT = 0.875 * 100 + 0.125 * 150 = 106.25`
+  '| {
+    class: logic_box
+  }
+  
+  Calculation: {
+    shape: sql_table
+    "TCB Field": "Smoothed Value"
+    error_delta: "50.0 ms"
+    srtt: "106.25 ms" {
+      class: changed
+      tooltip: "Fixed-point or Float32"
+    }
+    rttvar: "31.25 ms" {
+      class: changed
+    }
+  }
+}
+
+# --- ALGORITHM STATE: STEP 3 (RTO CALCULATION) ---
+Step_3: "3. RTO Derivation & Clamping" {
+  Formula: |'md
+### RTO Formula (RFC 6298)
+$RTO = SRTT + \max(G, K \cdot RTTVAR)$
+
+**Current Values:**
+- $SRTT = 106.25$
+- $K \cdot RTTVAR = 4 \cdot 31.25 = 125.0$
+- $RTO_{raw} = 106.25 + 125.0 = 231.25$
+
+**Bounds Check:**
+- If $RTO < 1000ms \rightarrow 1000ms$
+- If $RTO > 60000ms \rightarrow 60000ms$
+  '| {
+    class: logic_box
+  }
+
+  Bounds_Check: {
+    shape: diamond
+    label: "Result < 1000ms?"
+    style.fill: "#cfe2ff"
+  }
+
+  Result: {
+    shape: sql_table
+    "Final Register": "Value"
+    srtt: "106.25 ms"
+    rttvar: "31.25 ms"
+    calc_rto: "231.25 ms"
+    applied_rto: "1000.0 ms" {
+      class: changed
+      tooltip: "Clamped to RTO_MIN per RFC 6298"
+    }
+  }
+  
+  Bounds_Check -> Result: "Yes (Clamp to MIN)" {
+    style: {
+      stroke: "#ff0000"
+      bold: true
+    }
+  }
+}
+
+# --- ALGORITHM STATE: STEP 4 (EXPONENTIAL BACKOFF) ---
+Step_4: "4. Retransmission Timeout (RTO) Event" {
+  Condition: "Timer Expiration (SIGALRM)" {
+    shape: cloud
+    style: {
+      fill: "#f8d7da"
+      stroke: "#ff0000"
+      stroke-dash: 5
+    }
+  }
+
+  Backoff_State: {
+    shape: sql_table
+    "Binary Backoff": "Value"
+    prev_rto: "1000.0 ms"
+    multiplier: "2.0 (Shift Left)"
+    new_rto: "2000.0 ms" {
+      class: changed
+    }
+    retry_count: "1" {
+      class: changed
+    }
+  }
+
+  Condition -> Backoff_State: "RTO = RTO << 1"
+}
+
+# --- GLOBAL FLOW ---
+Step_1 -> Step_2: "Valid RTT Sample"
+Step_2 -> Step_3: "Estimates Updated"
+Step_3 -> Step_4: "Arm Retransmit Timer"
+
+# --- ANNOTATIONS ---
+# Note: Positioning changed to constants to support 'elk' engine
+
+Legend: {
+  near: top-right
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#333333"
+  }
+  srtt: "SRTT: Smoothed Round Trip Time" { shape: text }
+  rttvar: "RTTVAR: RTT Variance" { shape: text }
+  rto: "RTO: Retransmission Timeout" { shape: text }
+  alpha: "α: Smoothing Factor (1/8)" { shape: text }
+  beta: "β: Variance Factor (1/4)" { shape: text }
+}
+
+Note_Karn: |'md
+### Karn's Algorithm (Refined)
+To prevent retransmission ambiguity, the implementation **MUST**:
+1. Only update SRTT/RTTVAR for non-retransmitted segments.
+2. Maintain the backed-off RTO for subsequent segments until a valid ACK arrives for a segment sent after the most recent retransmission.
+'| {
+  near: top-left
+  style.fill: "#fff2cc"
+  style.stroke: "#d39e00"
+}
+
+Note_Timer: |'md
+### Real-Time Constraints
+- **Granularity (G):** If the clock tick $G$ is coarse (e.g., 500ms), it must be used as the floor for the variance component.
+- **Initialization:**
+  - Before first measurement: $SRTT = 0$, $RTTVAR = 0$, $RTO = 1.0s$.
+  - First measurement $R$: $SRTT = R$, $RTTVAR = R/2$, $RTO = SRTT + \max(G, K \cdot RTTVAR)$.
+'| {
+  near: bottom-left
+  style.fill: "#e2e3e5"
+  style.stroke: "#6c757d"
+}
+
+# Global Style Overrides
+***.style.font: mono
+(*** -> ***)[*]: {
+  style.stroke-width: 2
+}

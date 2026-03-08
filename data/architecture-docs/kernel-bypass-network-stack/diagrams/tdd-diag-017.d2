@@ -1,0 +1,170 @@
+direction: right
+layout-engine: elk
+theme-id: 4
+
+# Ethernet Layer Data Flow: Implementation Grade Specification
+# Matches TDD Spec for kbns-m2
+
+kbns_m1: {
+  label: "kbns-m1: Kernel Bypass"
+  rx_ring: "RX Ring Buffer (DMA)" {
+    shape: queue
+    style: {
+      fill: "#E1F5FE"
+      stroke: "#01579B"
+    }
+  }
+}
+
+ethernet_layer: "kbns-m2: Ethernet Layer" {
+  
+  entry: "Raw Frame Pointer" {
+    shape: circle
+    style: {
+      fill: "#D1C4E9"
+    }
+  }
+
+  eth_parse: "eth_parse(frame, len)" {
+    style: {
+      fill: "#B39DDB"
+      stroke: "#4527A0"
+      bold: true
+    }
+    
+    validation: "Length Check" {
+      shape: diamond
+      label: "len >= 14?"
+    }
+
+    mac_check: "eth_is_for_us()" {
+      shape: diamond
+      label: "DST == OUR_MAC\nOR\nDST == FF:FF:FF:FF:FF:FF?"
+    }
+
+    vlan_logic: "802.1Q Logic" {
+      shape: diamond
+      label: "Type == 0x8100?"
+    }
+
+    parse_result: "struct eth_parse_result" {
+      shape: sql_table
+      dst_mac: "*uint8_t"
+      src_mac: "*uint8_t"
+      ethertype: "uint16_t"
+      vlan_id: "uint16_t"
+      payload: "*uint8_t"
+      header_len: "uint16_t"
+    }
+  }
+
+  dispatch: "Ethertype Dispatch" {
+    shape: diamond
+    style: {
+      fill: "#FFF9C4"
+      stroke: "#FBC02D"
+    }
+  }
+
+  error_path: "Error & Drop Conditions" {
+    style: {
+      stroke: "#B71C1C"
+      fill: "#FFEBEE"
+    }
+    drop_small: "DROP: E_ETH_TOO_SMALL" {
+      shape: parallelogram
+      style.font-color: "#B71C1C"
+    }
+    drop_mac: "DROP: Not for us" {
+      shape: parallelogram
+      style.font-color: "#B71C1C"
+    }
+    drop_unknown: "DROP: Unsupported Ethertype" {
+      shape: parallelogram
+      style.font-color: "#B71C1C"
+    }
+  }
+}
+
+kbns_m3: {
+  label: "kbns-m3: IP Layer"
+  ip_input: "ip_process(payload, len)" {
+    style: {
+      fill: "#C8E6C9"
+      stroke: "#2E7D32"
+    }
+  }
+}
+
+arp_submodule: {
+  label: "kbns-m2: ARP Submodule"
+  arp_input: "arp_process(payload, len)" {
+    style: {
+      fill: "#C8E6C9"
+      stroke: "#2E7D32"
+    }
+  }
+}
+
+# Connections and Flow logic
+
+kbns_m1.rx_ring -> ethernet_layer.entry: "1. DMA'd Buffer Handoff"
+
+ethernet_layer.entry -> ethernet_layer.eth_parse.validation: "2. Load Header (Cache Line 0)"
+
+ethernet_layer.eth_parse.validation -> ethernet_layer.error_path.drop_small: "No" {
+  style: {
+    stroke: red
+    stroke-dash: 3
+  }
+}
+
+ethernet_layer.eth_parse.validation -> ethernet_layer.eth_parse.mac_check: "Yes"
+
+ethernet_layer.eth_parse.mac_check -> ethernet_layer.error_path.drop_mac: "No" {
+  style: {
+    stroke: red
+    stroke-dash: 3
+  }
+}
+
+ethernet_layer.eth_parse.mac_check -> ethernet_layer.eth_parse.vlan_logic: "Yes"
+
+ethernet_layer.eth_parse.vlan_logic -> ethernet_layer.eth_parse.parse_result: "No (Header=14B)" {
+  label: "InnerType = frame[12:13]"
+}
+
+ethernet_layer.eth_parse.vlan_logic -> ethernet_layer.eth_parse.parse_result: "Yes (Header=18B)" {
+  label: "VID=frame[14:15], InnerType=frame[16:17]"
+}
+
+ethernet_layer.eth_parse.parse_result -> ethernet_layer.dispatch: "3. Dispatch by result.ethertype"
+
+ethernet_layer.dispatch -> kbns_m3.ip_input: "0x0800 (IPv4)" {
+  style.stroke-width: 3
+}
+
+ethernet_layer.dispatch -> arp_submodule.arp_input: "0x0806 (ARP)" {
+  style.stroke-width: 3
+}
+
+ethernet_layer.dispatch -> ethernet_layer.error_path.drop_unknown: "Default" {
+  style: {
+    stroke: red
+    stroke-dash: 3
+  }
+}
+
+# Annotations
+ethernet_layer.eth_parse.parse_result.header_len: "sizeof=14 or 18 bytes"
+ethernet_layer.eth_parse.style.fill: "#EDE7F6"
+
+legend: {
+  near: bottom-right
+  note: |md
+    ### Implementation Notes:
+    - **Zero-Copy**: Pointers in `eth_parse_result` refer directly to `kbns-m1` UMEM frames.
+    - **Latency Budget**: Target < 20ns for parsing path.
+    - **Alignment**: `eth_hdr` is `__attribute__((packed))` to prevent 14->16 byte padding.
+  |
+}

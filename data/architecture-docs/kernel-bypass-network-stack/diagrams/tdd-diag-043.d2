@@ -1,0 +1,123 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- LEGEND ---
+legend: {
+  shape: package
+  near: top-right
+  header: |md
+    ### Memory Ownership
+  |
+  h: Header {style.fill: "#A020F0"} # Purple
+  d: Data {style.fill: "#0000FF"}   # Blue
+  f: Free {style.fill: "#00FF00"}   # Green
+  p: Pointers {style.fill: "#FFA500"} # Orange
+}
+
+# --- COMPONENTS ---
+mempool: Memory Pool (NUMA Node 0) {
+  shape: cylinder
+  style.fill: "#00FF00"
+  style.fill-pattern: dots
+  label.near: top-center
+}
+
+nic_hw: NIC Hardware (DMA Engine) {
+  shape: diamond
+  style.fill: "#D3D3D3"
+  label.near: center-left
+}
+
+stack: User-Space Protocol Stack {
+  l2: Ethernet/ARP Layer
+  l3: IP/UDP Layer
+  l4: TCP Engine
+  
+  l2 -> l3 -> l4
+}
+
+app: HFT Application Logic {
+  shape: person
+  style.stroke-width: 2
+}
+
+# --- BUFFER LIFETIME STEPS ---
+
+step1: 1. ALLOCATION {
+  shape: rectangle
+  buf: {
+    hdr: kbns_buf_hdr { style.fill: "#A020F0" }
+    data: Uninitialized { style.fill: "#808080" }
+  }
+  mempool -> buf.hdr: "Pop from lock-free stack"
+}
+
+step2: 2. DESCRIPTOR ENQUEUE {
+  desc: "kbns_desc" {
+    shape: sql_table
+    addr: kbns_addr_t
+    len: uint32_t
+  }
+  step1.buf.hdr -> desc: "Set addr = frame_offset"
+  desc -> nic_hw: "Fill Ring Update (Doorbell)"
+}
+
+step3: 3. HARDWARE DMA {
+  packet_wire: "Packet from Wire" { shape: parallelogram }
+  packet_wire -> nic_hw
+  nic_hw -> step1.buf.data: "Direct Memory Access (DMA)\nZero CPU intervention" {
+    style.stroke: "#0000FF"
+    style.stroke-width: 4
+    style.animated: true
+  }
+}
+
+step4: 4. POLL & PARSE {
+  ptr: "kbns_buf_t*" { style.fill: "#FFA500" }
+  nic_hw -> ptr: "RX Burst (Poll Mode)"
+  ptr -> stack.l2: "Pointer Handoff"
+  
+  note: |'md
+    **Zero-Copy:**
+    Headers are read in-place.
+    `data_off` is adjusted.
+  '|
+}
+
+step5: 5. APP DELIVERY {
+  stack.l4 -> app: "Socket Callback (ptr, len)"
+  app -> step1.buf.data: "Direct read from DMA region" {
+    style.stroke-dash: 5
+    style.stroke: "#FFA500"
+  }
+}
+
+step6: 6. RELEASE {
+  app -> mempool: "kbns_buf_free()"
+  mempool -> step1.buf.hdr: "Push to per-core cache" {
+    style.stroke: "#00FF00"
+  }
+}
+
+# --- STYLING & CONNECTORS ---
+(step1 -> step2 -> step3 -> step4 -> step5 -> step6): {
+  style.stroke-width: 2
+  style.stroke: gray
+}
+
+step1.buf.hdr.style.fill: "#A020F0"
+step1.buf.data.style.fill: "#0000FF"
+
+annotations: |md
+  ### Latency Budget: < 5μs
+  - **DMA Write:** Hardware (~100ns)
+  - **Parse:** Pointer Arithmetic (~50ns)
+  - **Handoff:** Register Pass (~10ns)
+| {
+  near: bottom-center
+}

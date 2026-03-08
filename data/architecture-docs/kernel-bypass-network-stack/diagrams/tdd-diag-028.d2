@@ -1,0 +1,144 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 20
+  }
+}
+
+tcp_teardown: {
+  shape: sequence_diagram
+
+  active: Active Closer {
+    shape: person
+    tooltip: |md
+      ### State: ESTABLISHED
+      - `snd_nxt`: Next sequence to send
+      - `rcv_nxt`: Next expected sequence
+    |
+  }
+  passive: Passive Closer {
+    shape: person
+    tooltip: |md
+      ### State: ESTABLISHED
+      - Buffer: `established_rx_q`
+      - Lock: `conn->lock`
+    |
+  }
+
+  standard_close: Standard 4-Way Teardown {
+    active -> active: "▼ acquire(conn->lock)"
+    active -> passive: "FIN [seq=u, ack=v, len=0]" {
+      tooltip: "State: ESTABLISHED → FIN_WAIT_1"
+    }
+    active -> active: "▲ release(conn->lock)"
+
+    passive -> passive: "▼ acquire(conn->lock)"
+    passive -> active: "ACK [seq=v, ack=u+1]" {
+      tooltip: "State: ESTABLISHED → CLOSE_WAIT"
+    }
+    passive -> passive: "▲ release(conn->lock)"
+
+    active -> active: "▼ acquire(conn->lock)"
+    active.ACK_RECV: "Recv ACK" {
+      tooltip: "State: FIN_WAIT_1 → FIN_WAIT_2"
+    }
+    active -> active: "▲ release(conn->lock)"
+
+    passive.APP_CLOSE: "App calls close()"
+    passive -> passive: "▼ acquire(conn->lock)"
+    passive -> active: "FIN [seq=v, ack=u+1]" {
+      tooltip: "State: CLOSE_WAIT → LAST_ACK"
+    }
+    passive -> passive: "▲ release(conn->lock)"
+
+    active -> active: "▼ acquire(conn->lock)"
+    active -> passive: "ACK [seq=u+1, ack=v+1]" {
+      tooltip: "State: FIN_WAIT_2 → TIME_WAIT"
+      style: {
+        stroke: "#2ecc71"
+        animated: true
+        stroke-width: 3
+      }
+    }
+    active -> active: "▲ release(conn->lock)"
+
+    passive -> passive: "▼ acquire(conn->lock)"
+    passive.CLOSED: "Recv ACK" {
+      tooltip: "State: LAST_ACK → CLOSED"
+    }
+    passive -> passive: "tcp_conn_free(conn)"
+    passive -> passive: "▲ release(conn->lock)"
+
+    active.WAIT: "Wait 2*MSL (120s)" {
+      tooltip: "Invariant: Handle late segments"
+      style.bold: true
+    }
+    active.FINAL_CLOSED: "Timer Expired" {
+      tooltip: "State: TIME_WAIT → CLOSED"
+    }
+    active -> active: "tcp_conn_free(conn)"
+  }
+
+  simultaneous_close: Simultaneous Close {
+    active -> passive: "FIN [seq=u, ack=v]"
+    passive -> active: "FIN [seq=v, ack=u]"
+    
+    active.S_FIN_WAIT_1: "State: FIN_WAIT_1"
+    passive.S_FIN_WAIT_1: "State: FIN_WAIT_1"
+
+    active -> passive: "ACK [seq=u+1, ack=v+1]" {
+      style.stroke: blue
+      tooltip: "State: FIN_WAIT_1 → CLOSING"
+    }
+    passive -> active: "ACK [seq=v+1, ack=u+1]" {
+      style.stroke: blue
+      tooltip: "State: FIN_WAIT_1 → CLOSING"
+    }
+
+    active.S_TIME_WAIT: "Recv ACK" {
+      tooltip: "State: CLOSING → TIME_WAIT"
+    }
+    passive.S_TIME_WAIT: "Recv ACK" {
+      tooltip: "State: CLOSING → TIME_WAIT"
+    }
+  }
+
+  abort_scenario: Abort (RST) {
+    active -> passive: "RST [seq=u, ack=v]" {
+      style: {
+        stroke: red
+        stroke-dash: 3
+        stroke-width: 4
+      }
+      tooltip: "Trigger: App Crash or Error"
+    }
+    
+    active.ABORT: "Immediate CLOSED" {
+      style.fill: "#ffcccc"
+    }
+    passive.ABORT: "Immediate CLOSED" {
+      style.fill: "#ffcccc"
+    }
+    
+    passive -> passive: "tcp_notify_reset(conn)"
+    passive -> passive: "tcp_conn_free(conn)"
+  }
+}
+
+legend: {
+  near: bottom-center
+  active_close: |md
+    ### Active Close Invariants
+    - `FIN` consumes 1 sequence number.
+    - `TIME_WAIT` prevents old duplicate interference.
+    - `2*MSL` (Max Segment Lifetime) = 120s default.
+  |
+  rst_behavior: |md
+    ### Reset (RST) Behavior
+    - No `ACK` expected.
+    - No `TIME_WAIT` state.
+    - Immediate resource reclamation.
+  |
+}

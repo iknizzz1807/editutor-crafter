@@ -1,0 +1,252 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 50
+  }
+}
+
+# --- LEGEND & SPECIFICATION ---
+legend: ||md
+  ### Latency Benchmark Specification
+  **Intel-Grade Quality Metric Setup**
+  - **Memory Layout**: Header=Purple, Data=Blue, Timestamps=Orange, Padding=Gray
+  - **Protocol Stack**: DPDK / Kernel Bypass (AF_XDP/Zero-Copy)
+  - **Interconnect**: PCIe Gen4 x16 (31.5 GB/s)
+  - **Synchronization**: Master TSC via PTP/Phc2Sys
+|| {
+  near: bottom-right
+  style: {
+    stroke: "#5b21b6"
+    stroke-width: 2
+    fill: "#f5f3ff"
+  }
+}
+
+# --- METRIC BUDGET ---
+METRICS: "Target Performance Budget (Nanoseconds)" {
+  near: top-center
+  label: ||md
+| Path Component | P50 (ns) | P99.9 (ns) | Jitter Tolerance |
+| :--- | :--- | :--- | :--- |
+| TX Descriptor Prep | 45 | 110 | Low |
+| NIC DMA Egress | 120 | 250 | Med |
+| 10m Fiber Transit | 50 | 50 | Deterministic |
+| NIC Ingress + DMA | 180 | 450 | Med |
+| Application RX Poll | 35 | 90 | Critical |
+| **Total System Latency** | **430 ns** | **< 1,800 ns** | **±15 ns** |
+||
+  style: {
+    stroke: "#b91c1c"
+    stroke-width: 2
+    fill: "#fef2f2"
+  }
+}
+
+# --- SENDER NODE ---
+SENDER: Packet Generator {
+  style: {
+    fill: "#f3f4f6"
+    stroke: "#374151"
+    stroke-width: 2
+  }
+  
+  CORE0: "Core 0: Generator Thread" {
+    tooltip: "Isolated via isolcpus/nohz_full"
+    style: {
+      fill: "#d1d5db"
+      bold: true
+    }
+  }
+  
+  TX_LOGIC: "Timestamp Injection" {
+    label: ||md
+      **Execution Sequence:**
+      1. `while (!tx_ready) busy_poll();`
+      2. `t_send = rte_rdtsc();`
+      3. `pkt->payload[0x2A] = t_send;`
+      4. `rte_eth_tx_burst(port, queue, &pkt, 1);`
+    ||
+  }
+}
+
+annotation_t0: ||md
+  ### T0: TRANSMIT TIMESTAMP
+  - Captured via `RDTSC` (Serializing)
+  - Injected at byte offset `42 (0x2A)`
+  - Frequency: 2.1GHz (System TSC)
+|| {
+  near: top-right
+  style.font-size: 11
+  style.fill: "#fff7ed"
+  style.stroke: "#f97316"
+}
+
+# --- DEVICE UNDER TEST ---
+DUT: "Device Under Test (DPDK Stack)" {
+  style: {
+    fill: "#e0f2fe"
+    stroke: "#0369a1"
+    stroke-width: 3
+  }
+
+  RX_PATH: "Zero-Copy RX Loop" {
+    label: ||md
+      **Hot Path:**
+      1. PMD polls HW RX Ring
+      2. Capture `t_recv = rte_rdtsc()`
+      3. `t_send = *(uint64_t*)(pkt + 0x2A)`
+      4. `latency = t_recv - t_send`
+    ||
+  }
+
+  CALC: "Cycle-to-NS Converter" {
+    label: "Frequency Scalar\nΔt_ns = Δcycles * (1e9 / TSC_Freq)"
+    style: {
+      fill: "#ffedd5"
+      stroke: "#f97316"
+      double-border: true
+    }
+  }
+}
+
+annotation_t1: ||md
+  ### T1: RECEIVE TIMESTAMP
+  - Captured on Lcore 1 (RX Thread)
+  - Includes PCIe TLP Latency
+  - Calibrated against `rte_get_tsc_hz()`
+|| {
+  near: bottom-left
+  style.font-size: 11
+  style.fill: "#f0f9ff"
+  style.stroke: "#0ea5e9"
+}
+
+# --- PACKET MEMORY LAYOUT ---
+MEASUREMENT_PACKET: Latency Probe Frame (64 Bytes) {
+  shape: sql_table
+  style: {
+    fill: "#ffffff"
+    stroke: "#1e1b4b"
+  }
+  
+  "0x00": "Ethernet Header [DA|SA|Type]" {
+    constraint: "14 bytes"
+    style.fill: "#d8b4fe"
+  }
+  "0x0E": "IPv4 Header [Ver|IHL|ToS|Len]" {
+    constraint: "20 bytes"
+    style.fill: "#d8b4fe"
+  }
+  "0x22": "UDP Header [SrcP|DstP|Len|CS]" {
+    constraint: "8 bytes"
+    style.fill: "#d8b4fe"
+  }
+  "0x2A": "send_tsc (uint64_t)" {
+    constraint: "8 bytes"
+    style: {
+      fill: "#fdba74"
+      bold: true
+    }
+  }
+  "0x32": "seq_num (uint32_t)" {
+    constraint: "4 bytes"
+    style.fill: "#93c5fd"
+  }
+  "0x36": "Payload Padding" {
+    constraint: "6 bytes"
+    style.fill: "#e5e7eb"
+  }
+  "0x3C": "CRC / FCS" {
+    constraint: "4 bytes"
+    style.fill: "#94a3b8"
+  }
+  
+  "0x40": "--- 64B CACHE LINE BOUNDARY ---" {
+    style: {
+      stroke-dash: 3
+      font-size: 10
+      font-color: "#64748b"
+    }
+  }
+}
+
+# --- HARDWARE LAYER ---
+
+NIC_SENDER: "NIC 0: Mellanox ConnectX-6" {
+  shape: rectangle
+  label: "Egress Interface\nPCIe Gen4 x16"
+  HW_OFFLOAD: "HW Egress Timestamping" {
+    style.font-color: "#ea580c"
+    style.italic: true
+  }
+}
+
+NIC_DUT: "NIC 1: Intel E810-XXV" {
+  shape: rectangle
+  label: "Ingress Interface\nKernel Bypass Mode"
+  HW_OFFLOAD: "HW Ingress Timestamping" {
+    style.font-color: "#ea580c"
+    style.italic: true
+  }
+}
+
+STORAGE: "Statistics Storage" {
+  shape: cylinder
+  label: "Latency Histogram\nPrometheus / JSON"
+  style.fill: "#ecfdf5"
+}
+
+# --- INTERCONNECTS & CALL SEQUENCES ---
+
+SENDER.TX_LOGIC -> NIC_SENDER: "1. Doorbell Write (MMIO)" {
+  style: {
+    stroke-dash: 5
+    stroke: "#4b5563"
+  }
+}
+
+NIC_SENDER -> NIC_DUT: "2. Wire Transit (10G/25G SFP+)" {
+  style: {
+    stroke: "#2563eb"
+    stroke-width: 5
+    stroke-dash: 0
+  }
+}
+
+NIC_DUT -> DUT.RX_PATH: "3. Zero-Copy DMA to Hugepages" {
+  style: {
+    stroke: "#f97316"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+DUT.RX_PATH -> DUT.CALC: "4. Lock-Free Ring Buffer" {
+  style.stroke: "#0ea5e9"
+}
+
+DUT.CALC -> STORAGE: "5. mmap / Async Write" {
+  style.stroke: "#10b981"
+}
+
+# Structural Alignment
+NIC_SENDER -- MEASUREMENT_PACKET: "Frame Serialization" {
+  style.stroke: "#94a3b8"
+  style.stroke-dash: 3
+}
+
+MEASUREMENT_PACKET -- NIC_DUT: "Frame Parsing" {
+  style.stroke: "#94a3b8"
+  style.stroke-dash: 3
+}
+
+# Ownership triangles
+SENDER -> SENDER.CORE0: {style.stroke-dash: 0; source-arrowhead: {shape: diamond; style.filled: true}}
+SENDER -> SENDER.TX_LOGIC: {style.stroke-dash: 0; source-arrowhead: {shape: diamond; style.filled: true}}
+DUT -> DUT.RX_PATH: {style.stroke-dash: 0; source-arrowhead: {shape: diamond; style.filled: true}}
+DUT -> DUT.CALC: {style.stroke-dash: 0; source-arrowhead: {shape: diamond; style.filled: true}}
+
+# Visual grouping hint
+SENDER -> DUT: {style.opacity: 0}

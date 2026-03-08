@@ -1,0 +1,172 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# ARP Cache Memory Layout & LRU Logic
+# Optimized for L1 Data Cache (64B Alignment)
+# sizeof(struct arp_cache) ≈ 16.5 KB 
+# ---------------------------------------------------------------------------------------
+
+arp_cache: {
+  label: "struct arp_cache (Total Size: 16,512 Bytes)"
+  style: {
+    stroke-width: 4
+    fill: "#f8f9fa"
+    stroke: "#2c3e50"
+  }
+
+  seqlock_header: {
+    label: "0x0000: Synchronization Header (Seqlock)"
+    shape: sql_table
+    style.fill: "#8e44ad" # Purple: Header
+    0x0000: "uint32_t" {label: "volatile seq"; constraint: "Seqlock Control"}
+    0x0004: "char[60]" {label: "_pad"; constraint: "64B Cache Line Alignment Padding"}
+    
+    # Visual cues for engineer
+    0x0000.style.fill: "#8e44ad"
+    0x0000.style.font-color: white
+    0x0004.style.fill: "#95a5a6" # Gray: Padding
+    0x0004.style.font-color: white
+  }
+
+  hash_table: {
+    label: "0x0040: Hash Table Array (256 Buckets x 8B Pointer)"
+    grid-columns: 8
+    style.fill: "#ebf5fb"
+    
+    b0: "B0" {style.fill: "#2980b9"; style.font-color: white}
+    b1: "B1" {style.fill: "#2980b9"; style.font-color: white}
+    b2: "B2" {style.fill: "#2980b9"; style.font-color: white}
+    b3: "B3" {style.fill: "#2980b9"; style.font-color: white}
+    b4: "B4" {style.fill: "#2980b9"; style.font-color: white}
+    b5: "B5" {style.fill: "#2980b9"; style.font-color: white}
+    dots: "..." {shape: text}
+    b255: "B255" {style.fill: "#2980b9"; style.font-color: white}
+  }
+
+  # Detailed view of a single 64B Cache Line entry
+  arp_entry_layout: {
+    label: "ARP Entry Detail (sizeof=64B, Cache Line Aligned)"
+    shape: sql_table
+    style.stroke-dash: 5
+    
+    0x00: "uint32_t" {label: "ip_addr"; constraint: "4B Key"; style.fill: "#2980b9"; style.font-color: white}
+    0x04: "uint8_t[6]" {label: "mac_addr"; constraint: "6B Value"; style.fill: "#2980b9"; style.font-color: white}
+    0x0A: "uint8_t" {label: "state"; constraint: "1B State"; style.fill: "#e67e22"; style.font-color: white}
+    0x0B: "uint8_t" {label: "retries"; constraint: "1B Count"; style.fill: "#e67e22"; style.font-color: white}
+    0x0C: "uint16_t" {label: "flags"; constraint: "2B Mask"; style.fill: "#e67e22"; style.font-color: white}
+    0x0E: "char[2]" {label: "_align"; constraint: "2B Pad"; style.fill: "#95a5a6"; style.font-color: white}
+    0x10: "uint64_t" {label: "expires_at"; constraint: "8B TTL"; style.fill: "#27ae60"; style.font-color: white}
+    0x18: "uint64_t" {label: "last_used"; constraint: "8B LRU"; style.fill: "#27ae60"; style.font-color: white}
+    0x20: "uint32_t" {label: "pending_cnt"; constraint: "4B QLen"; style.fill: "#2980b9"; style.font-color: white}
+    0x24: "uint8_t[28]" {label: "_pad"; constraint: "28B Cache Line Padding"; style.fill: "#95a5a6"; style.font-color: white}
+  }
+
+  stats_block: {
+    label: "0x4040: Telemetry Counters"
+    shape: sql_table
+    style.fill: "#7f8c8d"
+    0x4040: "uint64_t" {label: "lookups"; style.fill: "#2980b9"; style.font-color: white}
+    0x4048: "uint64_t" {label: "hits"; style.fill: "#27ae60"; style.font-color: white}
+    0x4050: "uint64_t" {label: "misses"; style.fill: "#e74c3c"; style.font-color: white}
+    0x4058: "uint64_t" {label: "collisions"; style.fill: "#f39c12"; style.font-color: white}
+  }
+}
+
+# State Logic Visualization
+states: {
+  label: "ARP State Machine (RFC 4861 Model)"
+  style.stroke: "#34495e"
+  
+  start: ● {
+    style.fill: black
+  }
+  
+  incomplete: "INCOMPLETE" {
+    style.fill: "#f1c40f"
+    tooltip: "ARP Request Sent, waiting for reply"
+  }
+  reachable: "REACHABLE" {
+    style.fill: "#2ecc71"
+    tooltip: "Valid mapping, usable"
+  }
+  stale: "STALE" {
+    style.fill: "#e67e22"
+    tooltip: "TTL expired, re-verification needed"
+  }
+  failed: "FAILED" {
+    style: {
+      fill: "#e74c3c"
+      stroke: "#c0392b"
+      stroke-width: 2
+    }
+    tooltip: "Max retries exceeded"
+  }
+
+  start -> incomplete: "New Entry"
+  incomplete -> reachable: "RX Reply"
+  reachable -> stale: "TTL > 300s"
+  stale -> reachable: "L4 Confirmed"
+  incomplete -> failed: "3 Retries / Timeout"
+  failed -> incomplete: "Manual Re-trigger"
+  
+  stale -> incomplete: "Egress Packet" {
+    style.stroke-dash: 3
+  }
+}
+
+# Eviction & Search Logic
+logic_flow: {
+  label: "LRU Eviction & Collision Logic"
+  
+  hash_fn: "Hash = ((ip >> 24) ^ (ip >> 16) ^ (ip >> 8) ^ ip) & 0xFF" {
+    shape: parallelogram
+    style.fill: "#d5f5e3"
+  }
+
+  collision: "Linear Probing" {
+    shape: diamond
+    style.fill: "#fcf3cf"
+    tooltip: "Check (hash + i) & 0xFF until match or empty"
+  }
+
+  eviction: "LRU Scan" {
+    shape: rectangle
+    label: "IF Table Full:\nScan for min(last_used)\nExcluding STATIC entries"
+    style.fill: "#fadbd8"
+  }
+
+  hash_fn -> collision
+  collision -> eviction: "No slots found"
+}
+
+# Connector relations
+arp_cache.hash_table.b1 -> arp_cache.arp_entry_layout: "Reference Entry" {
+  style: {
+    stroke: "#e67e22" # Orange: Pointers
+    stroke-dash: 5
+    stroke-width: 2
+  }
+}
+
+arp_cache.arp_entry_layout -> states: "Entry Lifecycle" {
+  style.stroke: "#2980b9"
+  target-arrowhead: triangle
+}
+
+# Fixed 'near' property for ELK compatibility
+doc: |md
+  ### Cache Design Specification
+  - **Memory Alignment**: Each `arp_entry` is exactly **64 Bytes**.
+  - **Latency Optimization**: Guaranteed single-cache-line access per entry (No split loads).
+  - **Concurrency**: **Seqlock** protects the entire structure. Readers increment `seq` before/after read; if mismatch, retry.
+  - **LRU Update**: `last_used` field updated via `clock_gettime(CLOCK_MONOTONIC_COARSE)` on every hit.
+| {
+  near: bottom-center
+}

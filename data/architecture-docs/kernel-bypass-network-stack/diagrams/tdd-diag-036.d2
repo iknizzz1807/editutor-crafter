@@ -1,0 +1,245 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 50
+  }
+}
+
+# --- STYLING CLASSES ---
+classes: {
+  cpu_core: {
+    style: {
+      fill: "#e1f5fe"
+      stroke: "#01579b"
+      border-radius: 3
+    }
+  }
+  memory_block: {
+    shape: cylinder
+    style: {
+      fill: "#e8f5e9"
+      stroke: "#2e7d32"
+    }
+  }
+  pci_component: {
+    style: {
+      fill: "#fff3e0"
+      stroke: "#ef6c00"
+      stroke-width: 2
+    }
+  }
+  interconnect_label: {
+    style: {
+      font-size: 14
+      bold: true
+      font-color: "#d32f2f"
+    }
+  }
+}
+
+title: |md
+  ### NUMA Topology for Kernel-Bypass Packet Processing
+  **Intel Xeon Scalable Architecture (Ice Lake/Sapphire Rapids)**
+  *Focus: Non-Uniform Memory Access Latency & DMA Pathing*
+| {
+  near: top-center
+}
+
+# --- PHYSICAL SERVER CHASSIS ---
+server_chassis: "Server Chassis (2S Rackmount)" {
+  style: {
+    stroke-width: 5
+    stroke: "#343a40"
+    fill: "#fdfdfe"
+  }
+
+  # --- NUMA NODE 0 (Socket 0 - Affinity for NIC) ---
+  numa_node_0: "NUMA Node 0 (Affinity: Local)" {
+    style: {
+      fill: "#f0f7ff"
+      stroke: "#007bff"
+      stroke-width: 3
+      double-border: true
+    }
+
+    cpu_pkg_0: "Intel Xeon CPU 0" {
+      shape: hexagon
+      cores: "Cores [0-31]" {
+        pinned_stack: "Core 0 (Stack Thread)" {
+          class: cpu_core
+          style.fill: "#4caf50"
+          style.font-color: white
+          tooltip: "Pthread affinity set to CPU 0"
+        }
+        app_cores: "Cores 1-31 (User Logic)" {
+          class: cpu_core
+        }
+      }
+      l3_cache: "L3 Cache (48MB LLC)" {
+        shape: rectangle
+        style.stroke-dash: 4
+        tooltip: "Shared among 32 cores"
+      }
+    }
+
+    imc_0: "Memory Controller 0" {
+      shape: sql_table
+      ch_0: "DIMM 0: 32GB DDR4-3200"
+      ch_1: "DIMM 1: 32GB DDR4-3200"
+      ch_2: "DIMM 2: 32GB DDR4-3200"
+      ch_3: "DIMM 3: 32GB DDR4-3200"
+    }
+
+    local_ram_0: "Local RAM (Node 0 Address Space)" {
+      class: memory_block
+      layout: |md
+        **0x00000000 - 0x3FFFFFFF**
+        - DPDK UMEM Pool
+        - Hugepages (1GB x 64)
+        - Cache-Aligned (64B)
+      |
+    }
+
+    pcie_rc_0: "PCIe Root Complex (Node 0)" {
+      class: pci_component
+      slot_x16: "PCIe Gen4 x16 Slot"
+    }
+
+    # Internal Node 0 Pathing
+    cpu_pkg_0.cores -> cpu_pkg_0.l3_cache: "Ring Interconnect"
+    cpu_pkg_0.l3_cache -> imc_0: "Mesh Fabric"
+    imc_0 -> local_ram_0: "Direct Load/Store (~80ns)"
+    cpu_pkg_0 -> pcie_rc_0: "PCIe Controller"
+  }
+
+  # --- INTERCONNECT BUS ---
+  # Fix: Changed shape from double_arrow to parallelogram
+  upi_link: "Intel UPI (Ultra Path Interconnect)" {
+    shape: parallelogram
+    style: {
+      stroke: "#d32f2f"
+      stroke-width: 4
+      fill: "#ffebee"
+    }
+    label: |md
+      **62.4 GB/s**
+      *+65ns Penalty*
+    |
+  }
+
+  # --- NUMA NODE 1 (Socket 1 - Remote for NIC) ---
+  numa_node_1: "NUMA Node 1 (Affinity: Remote)" {
+    style: {
+      fill: "#fff5f5"
+      stroke: "#dc3545"
+      stroke-width: 2
+    }
+
+    cpu_pkg_1: "Intel Xeon CPU 1" {
+      shape: hexagon
+      cores: "Cores [32-63]" {
+        class: cpu_core
+      }
+      l3_cache: "L3 Cache (48MB LLC)" {
+        style.stroke-dash: 4
+      }
+    }
+
+    imc_1: "Memory Controller 1"
+    local_ram_1: "Remote RAM (Node 1 Address Space)" {
+      class: memory_block
+      latency_note: "Total: ~145-155ns"
+    }
+
+    cpu_pkg_1 -> imc_1 -> local_ram_1
+  }
+
+  # --- NETWORK INTERFACE ---
+  nic_0: "Mellanox CX-6 DX NIC" {
+    shape: rectangle
+    style: {
+      fill: "#673ab7"
+      font-color: white
+      bold: true
+    }
+    spec: |md
+      - PCI: 0000:01:00.0
+      - Affinity: NUMA 0
+      - 100GbE / QSFP56
+    |
+  }
+
+  # --- PHYSICAL CONNECTIONS ---
+  numa_node_0.pcie_rc_0.slot_x16 -> nic_0: "Optimal Physical Path" {
+    style: {
+      stroke: "#2e7d32"
+      stroke-width: 5
+    }
+  }
+
+  # Link the nodes through the interconnect shape
+  numa_node_0 -> upi_link
+  upi_link -> numa_node_1
+}
+
+# --- CROSS-NUMA ERROR PATHING ---
+server_chassis.nic_0 -> server_chassis.numa_node_1.local_ram_1: "Cross-NUMA DMA (IO Jitter Path)" {
+  style: {
+    stroke: "#d32f2f"
+    stroke-width: 3
+    stroke-dash: 6
+  }
+}
+
+# --- DATA EXFILTRATION / CALL SEQUENCE ---
+# Fix: Removed dependency on a constant near key for nested objects
+path_description: {
+  near: top-left
+  optimal_md: |md
+    ### 🟢 OPTIMAL (NODE-LOCAL)
+    1. **NIC** receives frame.
+    2. **DMA Engine** writes to `local_ram_0` via `pcie_rc_0`.
+    3. **Core 0** polls memory location (PMD).
+    4. **Result:** Highest throughput, lowest jitter.
+  |
+  remote_md: |md
+    ### 🔴 SUB-OPTIMAL (CROSS-NUMA)
+    1. **NIC** receives frame.
+    2. **DMA Engine** must cross **UPI Link**.
+    3. Writing to `local_ram_1` consumes UPI bandwidth.
+    4. **Core 32** polls remote memory.
+    5. **Result:** Cache misses, 2x latency penalty.
+  |
+}
+
+# --- LEGEND ---
+legend: "Topology Key" {
+  near: bottom-right
+  class_fast: "Node-Local (Low Latency)" {
+    style: {
+      stroke: "#2e7d32"
+      stroke-width: 4
+    }
+  }
+  class_slow: "Cross-NUMA (High Latency)" {
+    style: {
+      stroke: "#d32f2f"
+      stroke-width: 4
+      stroke-dash: 4
+    }
+  }
+}
+
+# --- ANNOTATIONS ---
+# Fix: Changed near from 'legend' to 'bottom-left' to resolve compile error
+annotations: |md
+  **Implementation Checklist:**
+  - [ ] Set `cpuset` in GRUB: `isolcpus=0-31`
+  - [ ] Verify NIC affinity: `cat /sys/class/net/eth0/device/numa_node`
+  - [ ] Configure DPDK `socket-mem` for Node 0 only.
+  - [ ] Disable IOMMU if performance-critical (and secure).
+| {
+  near: bottom-left
+}

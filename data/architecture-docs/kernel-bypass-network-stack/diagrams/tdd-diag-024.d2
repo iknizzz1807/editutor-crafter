@@ -1,0 +1,178 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# PIPELINE STAGES
+L2_STAGE: "kbns-m2: Ethernet Frame Reception" {
+  style.fill: "#f3f4f6"
+  
+  frame_buffer: "NIC RX Ring Buffer" {
+    shape: cylinder
+    style.fill: "#e0e7ff"
+    tooltip: "DMA Descriptor Ring"
+    |'md
+    ### Ring Buffer Descriptor
+    - **Size**: 512 Slots
+    - **DMA**: NIC writes direct to host mem
+    - **Interrupt**: Coalesced every 16 frames (NAPI)
+    '|
+  }
+  
+  eth_parser: "eth_parse()" {
+    shape: rectangle
+    style.fill: "#c7d2fe"
+    |'md
+    ### Step 1: L2 Extraction
+    - **Extract Ethertype**: Offset 12-13
+    - **Check VLAN**: 0x8100 Tag presence
+    - **Src MAC**: 6 Bytes (Offset 6-11)
+    - **Dst MAC**: 6 Bytes (Offset 0-5)
+    '|
+  }
+  
+  frame_buffer -> eth_parser: "Raw Frame (14-1518B)"
+}
+
+L3_STAGE: "kbns-m3: IPv4 Processing Pipeline" {
+  style.fill: "#ffffff"
+  style.stroke-width: 2
+
+  header_parse: "IP Header Parse (ip_parse)" {
+    shape: sql_table
+    style.fill: "#f3e8ff"
+    style.stroke: "#6d28d9"
+    style.stroke-width: 3
+
+    # Corrected SQL Table Definition
+    "0x00: ver_ihl": "uint8_t" {constraint: "ver=4, ihl>=5 (20B)"}
+    "0x01: tos_ds": "uint8_t" {constraint: "Differentiated Services"}
+    "0x02: total_len": "uint16_t" {constraint: "Max 65535"}
+    "0x04: ident": "uint16_t" {constraint: "Fragment ID"}
+    "0x06: flags_frag": "uint16_t" {constraint: "DF/MF + Offset"}
+    "0x08: ttl": "uint8_t" {constraint: "Decrement; Drop if <= 0"}
+    "0x09: protocol": "uint8_t" {constraint: "UDP=17, TCP=6, ICMP=1"}
+    "0x0A: hdr_checksum": "uint16_t" {constraint: "16-bit 1's complement"}
+    "0x0C: src_addr": "uint32_t" {constraint: "Source IP"}
+    "0x10: dst_addr": "uint32_t" {constraint: "Destination IP"}
+  }
+
+  header_parse.latency: "sizeof=20B | Latency: ~10ns" {
+    shape: text
+    style.italic: true
+    near: top-right
+  }
+
+  checksum_verify: "Checksum Verification" {
+    shape: rectangle
+    style.fill: "#ede9fe"
+    style.stroke: "#6d28d9"
+    |'md
+    ### ip_checksum_verify()
+    - Accumulate 16-bit words (SIMD optimized)
+    - Fold 32-bit sum to 16-bit
+    - Result MUST be 0xFFFF
+    - If fail -> Drop & `ICMP_PARAM_PROB`
+    '|
+  }
+
+  addr_filter: "L3 Destination Filter" {
+    shape: diamond
+    label: "Dst IP == our_ip\nOR Broadcast?"
+    style.fill: "#fef3c7"
+  }
+
+  frag_logic: "Fragmentation Engine" {
+    style.fill: "#ecfdf5"
+    
+    is_frag: "Is Fragment?\n(MF==1 || Offset > 0)" {
+      shape: diamond
+      style.fill: "#d1fae5"
+    }
+
+    reassembly: "frag_process()" {
+      shape: rectangle
+      style.fill: "#6ee7b7"
+      style.stroke: "#059669"
+      |'md
+      ### Reassembly Logic
+      1. **Key**: {src, dst, id, proto}
+      2. **Alloc**: `frag_entry` (64B Header)
+      3. **Bitmap**: Update 8-byte block flags
+      4. **Payload**: `memcpy` to segment buffer
+      5. **Check**: `frag_bitmap_complete()`
+      '|
+    }
+    
+    is_frag -> reassembly: "Yes"
+  }
+
+  proto_dispatch: "Protocol Dispatcher" {
+    shape: rectangle
+    style.fill: "#ddd6fe"
+    style.bold: true
+    label: "Switch(ip_hdr.protocol)"
+  }
+
+  # Internal Stage Connections
+  header_parse -> checksum_verify: "L3 Header Map"
+  checksum_verify -> addr_filter: "CSUM Valid"
+  addr_filter -> is_frag: "IP Match"
+  is_frag -> proto_dispatch: "No (MTU Safe)"
+  reassembly -> proto_dispatch: "Full Reassembly"
+}
+
+L4_HANDLERS: "Transport Layer Handlers" {
+  udp_handler: "UDP Handler (kbns-m3)" {
+    shape: rectangle
+    style.fill: "#dbeafe"
+    style.stroke: "#2563eb"
+    label: "udp_input()\n1. Verify UDP Checksum\n2. PCB Hash Lookup\n3. Enqueue to App Socket"
+  }
+  
+  tcp_handler: "TCP Handler (kbns-m4)" {
+    shape: rectangle
+    style.fill: "#dcfce7"
+    style.stroke: "#16a34a"
+    label: "tcp_input()\n1. Seq/Ack Sequence Check\n2. FSM State Transition\n3. Sack Processing"
+  }
+  
+  icmp_handler: "ICMP Handler (kbns-m3)" {
+    shape: rectangle
+    style.fill: "#fee2e2"
+    label: "icmp_input()\n1. Type Check (0/8/11)\n2. Echo Dispatch\n3. Rate Limiting"
+  }
+}
+
+# GLOBAL FLOW
+L2_STAGE.eth_parser -> L3_STAGE.header_parse: "Ethertype 0x0800"
+
+L3_STAGE.proto_dispatch -> L4_HANDLERS.udp_handler: "Proto 17"
+L3_STAGE.proto_dispatch -> L4_HANDLERS.tcp_handler: "Proto 6"
+L3_STAGE.proto_dispatch -> L4_HANDLERS.icmp_handler: "Proto 1"
+
+# ANNOTATIONS
+cache_line_note: "Cache Efficiency Memo" {
+  near: top-right
+  shape: text
+  label: "Memory Analysis: Header (20B) fits in single 64B cache line.\nAccess triggers L1 miss on cold start (~100ns latency)."
+  style.font-color: "#475569"
+  style.font-size: 14
+}
+
+legend: {
+  near: bottom-right
+  L2: "Data Link Layer" { style.fill: "#c7d2fe" }
+  L3: "Network Layer" { style.fill: "#ede9fe" }
+  L4: "Transport Layer" { style.fill: "#dbeafe" }
+  Logic: "Decision Logic" { shape: diamond; style.fill: "#fef3c7" }
+}
+
+# Connect Annotations via dashed lines
+cache_line_note -- L3_STAGE.header_parse: {
+  style.stroke-dash: 5
+  style.stroke: "#94a3b8"
+}

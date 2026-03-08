@@ -1,0 +1,301 @@
+direction: down
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  layer_m1_bypass: {
+    label: "M1 | KERNEL BYPASS & MEMORY"
+    
+    kbns_stack: {
+      shape: class
+      label: "Stack Controller (kbns_stack.c) [M1]"
+      +kbns_stack_create(config): "int"
+      +rx_burst(stack, descs, count): "uint32_t"
+      +tx_burst(stack, descs, count): "uint32_t"
+      +buf_alloc(pool): "kbns_buf_t*"
+      -detect_backend(ifname): "int"
+    }
+
+    kbns_buf_pool: {
+      shape: sql_table
+      label: "struct kbns_buf_pool (buffer_pool.h) [M1]"
+      base_addr: "void* | virtual start"
+      phys_addr: "uint64_t | DMA base"
+      total_size: "size_t | e.g. 16MB"
+      frame_size: "uint32_t | 2048B"
+      free_stack: "kbns_addr_t* | LIFO"
+      top: "uint32_t | stack ptr"
+      sz: "Total: ~128 bytes + pool"
+    }
+
+    kbns_buf_hdr: {
+      shape: sql_table
+      label: "struct kbns_buf_hdr (buffer_pool.h) [M1]"
+      "+0x00 ref_count": "uint32_t | 4 bytes"
+      "+0x04 pool_id": "uint32_t | 4 bytes"
+      "+0x08 data_off": "uint32_t | 4 bytes"
+      "+0x0C data_len": "uint32_t | 4 bytes"
+      "+0x10 frame_idx": "uint32_t | 4 bytes"
+      "+0x14 flags": "uint32_t | 4 bytes"
+      "+0x18 timestamp": "uint64_t | 8 bytes"
+      sz: "Total: 64 bytes (1 cache line)"
+    }
+
+    kbns_desc: {
+      shape: sql_table
+      label: "struct kbns_desc (types.h) [M1]"
+      "+0x00 addr": "uint64_t | UMEM offset"
+      "+0x08 len": "uint32_t | Packet size"
+      "+0x0C options": "uint32_t | HW flags"
+      sz: "Total: 16 bytes (4/cache line)"
+    }
+  }
+}
+
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  layer_m2_l2: {
+    label: "M2 | LAYER 2: ETHERNET & ARP"
+    
+    eth_layer: {
+      shape: class
+      label: "Ethernet Processor (eth_layer.c) [M2]"
+      +eth_parse(frame, len, result): "int"
+      +eth_build(buf, dst, src, type): "uint16_t"
+      +arp_resolve(ip, packet): "int"
+      -eth_handle_vlan(hdr): "void"
+    }
+
+    arp_cache: {
+      shape: class
+      label: "ARP Cache Manager (arp_cache.c) [M2]"
+      +lookup(ip, out): "arp_entry*"
+      +update(ip, mac, static): "int"
+      +gc_stale(): "void"
+      -hash(ip): "uint32_t"
+    }
+
+    arp_entry: {
+      shape: sql_table
+      label: "struct arp_entry (arp_cache.h) [M2]"
+      "+0x00 ip": "uint32_t | network order"
+      "+0x04 mac": "uint8_t[6] | 6 bytes"
+      "+0x0A state": "uint8_t | arp_state_t"
+      "+0x10 expires": "uint64_t | nanoseconds"
+      sz: "Total: 64 bytes (aligned)"
+    }
+
+    eth_hdr: {
+      shape: sql_table
+      label: "struct eth_hdr (eth_types.h) [M2]"
+      "+0x00 dst": "uint8_t[6] | Mac Address"
+      "+0x06 src": "uint8_t[6] | Mac Address"
+      "+0x0C type": "uint16_t | EtherType"
+      sz: "Total: 14 bytes (packed)"
+    }
+  }
+}
+
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  layer_m3_l3: {
+    label: "M3 | LAYER 3 & UDP"
+    
+    ip_layer: {
+      shape: class
+      label: "IP Processor (ip_layer.c) [M3]"
+      +ip_parse(packet, len, res): "int"
+      +ip_build(buf, proto, src, dst): "uint16_t"
+      +ip_checksum(data, len): "uint16_t"
+      -handle_fragments(packet): "uint8_t*"
+    }
+
+    routing_table: {
+      shape: class
+      label: "Router (route.c) [M3]"
+      +lookup(dst_ip): "route_entry*"
+      +add_route(net, mask, gw): "int"
+    }
+
+    udp_layer: {
+      shape: class
+      label: "UDP Socket API (udp_proto.c) [M3]"
+      +udp_bind(port, addr): "int"
+      +udp_send(sock, dst, port, data): "int"
+      -udp_checksum(pseudo, hdr, data): "uint16_t"
+    }
+
+    ip_hdr: {
+      shape: sql_table
+      label: "struct ip_hdr (ip_types.h) [M3]"
+      "+0x00 v_ihl": "uint8_t | 4b+4b"
+      "+0x02 total_len": "uint16_t | 2 bytes"
+      "+0x06 flags_off": "uint16_t | 3b+13b"
+      "+0x09 protocol": "uint8_t | 1 byte"
+      "+0x0A checksum": "uint16_t | 2 bytes"
+      "+0x0C src_ip": "uint32_t | 4 bytes"
+      "+0x10 dst_ip": "uint32_t | 4 bytes"
+      sz: "Total: 20 bytes (minimum)"
+    }
+  }
+}
+
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  layer_m4_tcp: {
+    label: "M4 | RELIABLE TRANSPORT (TCP)"
+    
+    tcp_layer: {
+      shape: class
+      label: "TCP FSM (tcp_layer.c) [M4]"
+      +tcp_input(packet, src, dst): "int"
+      +tcp_connect(remote_ip, port): "int"
+      +tcp_send(conn, data, len): "int"
+      -handle_handshake(conn, seg): "void"
+      -handle_retransmit(conn): "void"
+    }
+
+    congestion_ctrl: {
+      shape: class
+      label: "CC Engine (tcp_congestion.c) [M4]"
+      +reno_ack(conn, bytes): "void"
+      +cubic_update(conn, now): "void"
+      +on_loss(conn, type): "void"
+    }
+
+    tcp_conn: {
+      shape: sql_table
+      label: "struct tcp_conn (tcp_conn.h) [M4]"
+      "+0x00 tuple": "uint32_t[2]+uint16_t[2]"
+      "+0x0C state": "uint8_t | tcp_state_t"
+      "+0x40 snd_nxt": "uint32_t | seq num"
+      "+0x44 snd_una": "uint32_t | seq num"
+      "+0x80 rcv_nxt": "uint32_t | seq num"
+      "+0x100 cwnd": "uint32_t | bytes"
+      "+0x104 ssthresh": "uint32_t | bytes"
+      sz: "Total: 320 bytes (5 cache lines)"
+    }
+
+    tcp_hdr: {
+      shape: sql_table
+      label: "struct tcp_hdr (tcp_types.h) [M4]"
+      "+0x00 ports": "uint16_t[2] | src+dst"
+      "+0x04 seq": "uint32_t | sequence"
+      "+0x08 ack": "uint32_t | acknowledgment"
+      "+0x0C off_flags": "uint16_t | 4b+12b"
+      "+0x0E window": "uint16_t | flow control"
+      "+0x10 checksum": "uint16_t | pseudo+hdr+data"
+      sz: "Total: 20 bytes (min)"
+    }
+  }
+}
+
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  layer_m5_prod: {
+    label: "M5 | OPTIMIZATION & PROD"
+    
+    numa_allocator: {
+      shape: class
+      label: "NUMA Manager (numa_alloc.c) [M5]"
+      +alloc_on_node(req, res): "int"
+      +pin_thread(core_id): "int"
+      -get_nic_node(ifname): "int"
+    }
+
+    stats_collector: {
+      shape: class
+      label: "Stats Engine (stats_percore.c) [M5]"
+      +update_per_core(stats, p, b): "void"
+      +record_latency(hist, ns): "void"
+      +export_prometheus(fd): "void"
+    }
+
+    load_monitor: {
+      shape: class
+      label: "Load Monitor (load_monitor.c) [M5]"
+      +update_load(rx, tx, proc): "void"
+      +should_shed(prio): "bool"
+      +get_backpressure(): "bp_info"
+    }
+
+    per_core_stats: {
+      shape: sql_table
+      label: "struct per_core_stats (stats_types.h) [M5]"
+      rx_packets: "uint64_t | core-local"
+      tx_packets: "uint64_t | core-local"
+      latency_sum: "uint64_t | ns"
+      _pad: "char[16] | CL alignment"
+      sz: "Total: 64 bytes (1 cache line)"
+    }
+  }
+}
+
+# CONNECTIONS
+
+row1.layer_m1_bypass.kbns_stack -> row1.layer_m1_bypass.kbns_buf_pool: "Manages"
+row1.layer_m1_bypass.kbns_stack -> row1.layer_m1_bypass.kbns_desc: "Produces KBNS_BURST_SIZE"
+row1.layer_m1_bypass.kbns_buf_pool -> row1.layer_m1_bypass.kbns_buf_hdr: "Allocates 2048B frames"
+
+row2.layer_m2_l2.eth_layer -> row1.layer_m1_bypass.kbns_desc: "Consumes"
+row2.layer_m2_l2.eth_layer -> row2.layer_m2_l2.eth_hdr: "Parses 14 bytes"
+row2.layer_m2_l2.eth_layer -> row2.layer_m2_l2.arp_cache: "Lookups"
+row2.layer_m2_l2.arp_cache -> row2.layer_m2_l2.arp_entry: "Hash Table"
+
+row3.layer_m3_l3.ip_layer -> row2.layer_m2_l2.eth_layer: "EtherType 0x0800"
+row3.layer_m3_l3.ip_layer -> row3.layer_m3_l3.ip_hdr: "Parses 20B"
+row3.layer_m3_l3.ip_layer -> row3.layer_m3_l3.routing_table: "LPM Lookup"
+row3.layer_m3_l3.udp_layer -> row3.layer_m3_l3.ip_layer: "Proto 17"
+
+row4.layer_m4_tcp.tcp_layer -> row3.layer_m3_l3.ip_layer: "Proto 6"
+row4.layer_m4_tcp.tcp_layer -> row4.layer_m4_tcp.tcp_hdr: "Checksums"
+row4.layer_m4_tcp.tcp_layer -> row4.layer_m4_tcp.tcp_conn: "FSM State"
+row4.layer_m4_tcp.tcp_layer -> row4.layer_m4_tcp.congestion_ctrl: "Window Adjust"
+
+row5.layer_m5_prod.numa_allocator -> row1.layer_m1_bypass.kbns_buf_pool: "Policy BIND"
+row5.layer_m5_prod.stats_collector -> row5.layer_m5_prod.per_core_stats: "Lock-free Inc"
+row5.layer_m5_prod.load_monitor -> row4.layer_m4_tcp.tcp_layer: "Backpressure"
+
+# MILESTONE INDEX
+
+milestone_index: {
+  shape: sql_table
+  label: "Project Milestone Index"
+  m1: "M1 | kbns-m1 | Bypass Setup & Zero-Copy Mem"
+  m2: "M2 | kbns-m2 | Ethernet, VLAN & ARP Cache"
+  m3: "M3 | kbns-m3 | IPv4, UDP & LPM Routing"
+  m4: "M4 | kbns-m4 | TCP FSM & Congestion Control"
+  m5: "M5 | kbns-m5 | NUMA & Production Hardening"
+}
+
+legend: {
+  shape: callout
+  label: "Performance Blueprint: 
+  - All L1 Hot structs are 64B aligned.
+  - Zero-copy data path via kbns_desc.addr.
+  - Thread-per-core pinned via numa_allocator."
+}
+
+milestone_index.near: bottom-right
+legend.near: top-right

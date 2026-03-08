@@ -1,0 +1,240 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+# -----------------------------------------------------------------------------
+# TCP Input Processing State Machine - Technical Specification
+# -----------------------------------------------------------------------------
+
+tcp_input_processing: {
+  label: "TCP Segment Input Processing Pipeline\n[Kernel-Level Design Specification]"
+
+  # Entry Point
+  start: ● {
+    shape: circle
+    style.fill: black
+  }
+
+  # Stage 1: Initial Parsing & Integrity
+  arrival: "Stage 1: Header Parsing & Validation" {
+    shape: rectangle
+    style.fill: "#f8f9fa"
+    
+    header_layout: {
+      label: |'md
+### TCP Header Layout
+| Offset | Size | Field | Logic |
+| :--- | :--- | :--- | :--- |
+| 0 | 2B | Src Port | Host Byte Order Conversion |
+| 2 | 2B | Dst Port | Host Byte Order Conversion |
+| 4 | 4B | Seq Num | 32-bit Modulo Logic |
+| 8 | 4B | Ack Num | 32-bit Modulo Logic |
+| 12 | 4B | Control | SYN/FIN/ACK/RST Decode |
+'|
+    }
+    
+    verify_checksum: "Verify Checksum" {
+      label: "Checksum Verification\n[Pseudo-Header + Seg + Padding]"
+    }
+    
+    paws: "PAWS Check (RFC 1323)" {
+      label: "PAWS Check\n[ts_val >= ts_recent]"
+    }
+  }
+
+  # Decision: Integrity
+  check_integrity: "Integrity Valid?" {
+    shape: diamond
+  }
+
+  # Error: Drop
+  drop_silent: "DROP SEGMENT" {
+    label: "DROP SEGMENT\n[Silent Discard]"
+    style: {
+      fill: "#ffcccc"
+      stroke: red
+      bold: true
+      stroke-width: 4
+    }
+  }
+
+  # Stage 2: Connection Lookup
+  conn_lookup: "Stage 2: TCB Lookup" {
+    shape: rectangle
+    hash_op: "Hash 4-Tuple" {
+      label: "key = CRC32(sip, dip, sport, dport)"
+    }
+    bucket_op: "Bucket Search" {
+      label: "Search linked-list for matching TCB"
+    }
+  }
+
+  # Decision: Connection Found?
+  found_decision: "TCB Found?" {
+    shape: diamond
+  }
+
+  # Decision: Listen Socket
+  is_listen: "Port in LISTEN?" {
+    shape: diamond
+  }
+
+  # Logic: Send RST
+  send_rst: "ACTION: SEND RST" {
+    label: "SEND RST\n[Seq=0, Ack=Seg.Seq+Len, Flags=RST|ACK]"
+    style.fill: "#ffcccc"
+    style.stroke: red
+  }
+
+  # Stage 3: State & Sequence Validation
+  lock_conn: "ACQUIRE SPINLOCK ▼" {
+    label: "ACQUIRE TCB LOCK ▼\n[Memory Barrier: LoadLoad | LoadStore]"
+    style.fill: "#e1d5e7"
+    style.bold: true
+  }
+
+  # Dispatcher based on Protocol State
+  state_dispatch: "FSM State Dispatcher" {
+    shape: diamond
+    label: "Check TCB.state"
+  }
+
+  # Logic: Listen State
+  listen_logic: "LISTEN Path" {
+    shape: rectangle
+    val_syn: "Validate SYN" {
+      label: "Reject if ACK or RST set"
+    }
+    syn_flood: "Check SYN Flood" {
+      label: "If count > thr -> Use SYN Cookies"
+    }
+    alloc: "Alloc TCB" {
+      label: "Create new TCB from slab allocator"
+    }
+    syn_ack: "Send SYN-ACK" {
+      label: "Init IRS/ISS; transition to SYN_RCVD"
+    }
+  }
+
+  # Logic: Data Path (ESTABLISHED and related)
+  established_path: "Stage 3: ESTABLISHED Data Path" {
+    style.fill: "#e3f2fd"
+    
+    validate_seq: "SEQ Validation" {
+      label: "Validate Sequence Window\n[rcv_nxt <= seq < rcv_nxt + rcv_wnd]"
+      shape: diamond
+      style.stroke: "#0d47a1"
+    }
+
+    process_ack: "ACK Processing" {
+      shape: rectangle
+      rtt: "RTT Calc" {
+        label: "Update RTT/RTO (Karels/Jacobson)"
+      }
+      cong: "Congestion" {
+        label: "Adjust cwnd/ssthresh (CUBIC)"
+      }
+      rtx: "Retransmit" {
+        label: "Remove ACKed bytes from rtx_queue"
+      }
+    }
+
+    process_payload: "Payload Status" {
+      shape: diamond
+      label: "In-Order Arrival?"
+    }
+
+    buffer_ofo: "Buffer Out-of-Order" {
+      label: "Store in OOO/SACK Queue\n[Reassembly Buffer]"
+      style.fill: "#fff9c4"
+    }
+
+    deliver_app: "App Delivery" {
+      label: "Copy to Socket Buffer\n[rcv_nxt += seg_len]"
+      style.fill: "#c8e6c9"
+    }
+
+    handle_fin: "FIN Sequence" {
+      label: "FIN Processing\n[Transition: CLOSE_WAIT]"
+      shape: rectangle
+    }
+  }
+
+  # Challenge Ack Handling
+  send_ack_current: "SEND CHALLENGE ACK" {
+    label: "Send Dup-ACK\n[Seq=snd_nxt, Ack=rcv_nxt]"
+    style.fill: "#fff3e0"
+  }
+
+  # Finalization
+  unlock_conn: "RELEASE SPINLOCK ▲" {
+    label: "RELEASE TCB LOCK ▲\n[Memory Barrier: StoreStore]"
+    style.fill: "#e1d5e7"
+    style.bold: true
+  }
+
+  # Transitions
+  start -> arrival: "Packet RX"
+  arrival -> check_integrity: "Fields Extracted"
+  
+  check_integrity -> conn_lookup: "VALID [Checksum OK]"
+  check_integrity -> drop_silent: "INVALID\n(Bad Checksum/PAWS)" {
+    style.stroke: red
+    style.stroke-dash: 3
+  }
+
+  conn_lookup -> found_decision: "Search Complete"
+  found_decision -> lock_conn: "MATCH FOUND"
+  found_decision -> is_listen: "MISS"
+
+  is_listen -> listen_logic: "YES [SYN]"
+  is_listen -> send_rst: "NO / RST" {
+    style.stroke: red
+  }
+
+  lock_conn -> state_dispatch: "Mutex Secured"
+  
+  state_dispatch -> listen_logic: "TCB.state == LISTEN"
+  state_dispatch -> established_path: "TCB.state >= ESTABLISHED"
+  
+  listen_logic -> unlock_conn: "State Updated"
+
+  # Established Sub-flow
+  established_path.validate_seq -> established_path.process_ack: "PASS [In Window]"
+  established_path.validate_seq -> send_ack_current: "FAIL [Dup/Old]" {
+    style.stroke: red
+    style.stroke-dash: 5
+  }
+
+  established_path.process_ack -> established_path.process_payload: "RTX Cleaned"
+  
+  established_path.process_payload -> established_path.deliver_app: "YES [Continuous]"
+  established_path.process_payload -> established_path.buffer_ofo: "NO [Gap Detected]"
+  
+  established_path.deliver_app -> established_path.handle_fin: "IF (seg.flags & FIN)"
+  established_path.deliver_app -> unlock_conn: "Normal RX Done"
+  
+  established_path.handle_fin -> unlock_conn: "ACK sent for FIN"
+  send_ack_current -> unlock_conn: "Sync Required"
+  
+  unlock_conn -> start: "FSM Recycle" {
+    style.stroke-dash: 5
+  }
+}
+
+# Documentation Overlay
+note: |'md
+### TCP Processing Implementation Notes:
+- **Memory Ordering**: Atomic increments on `rcv_nxt` must use `memory_order_release`.
+- **Deadlock Avoidance**: Lock hierarchy: Socket Lock -> TCB Lock.
+- **Performance**: CRC32 calculation utilize `_mm_crc32_u64` intrinsics.
+- **Interrupt Context**: Execute in SoftIRQ context. Minimal stack (< 1KB).
+- **Sequence Wrap**: Use `TCP_SEQ_LT(a, b)` macros for 32-bit unsigned wrapping.
+'| {
+  near: bottom-center
+  style.font-size: 14
+}

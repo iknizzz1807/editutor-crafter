@@ -1,0 +1,271 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+classes: {
+  mem_header: {
+    style: {
+      fill: "#9c27b0"
+      font-color: "#ffffff"
+      bold: true
+    }
+  }
+  mem_data: {
+    style: {
+      fill: "#e3f2fd"
+      stroke: "#1565c0"
+    }
+  }
+  pointer: {
+    style: {
+      stroke: "#ff9800"
+      stroke-width: 2
+    }
+  }
+}
+
+# --- Milestone 1: Kernel Bypass Layer ---
+M1: "MILESTONE 1: KERNEL BYPASS (kbns-m1)" {
+  style.fill: "#f3e5f5"
+  style.stroke: "#7b1fa2"
+  style.stroke-width: 2
+  
+  kbns_buf_pool: {
+    shape: sql_table
+    label: "kbns_buf_pool_t (Aligned 64B)"
+    base_addr: "void* | 8B (Pointer)"
+    phys_addr: "uint64_t | 8B (DMA Address)"
+    frame_size: "uint32_t | 4B"
+    num_frames: "uint32_t | 4B"
+    free_stack_ptr: "uint64_t* | 8B"
+    padding: "uint8_t[32] | 32B (Cache Alignment)"
+  }
+
+  kbns_desc: {
+    shape: sql_table
+    label: "kbns_desc_t (Packet Descriptor)"
+    addr: "kbns_addr_t | 8B (Virtual Offset)"
+    len: "uint32_t | 4B (Payload Length)"
+    flags: "uint16_t | 2B (TS | EOP | ERR)"
+    vlan_tci: "uint16_t | 2B"
+  }
+
+  kbns_ring: {
+    shape: sql_table
+    label: "kbns_ring_t (SPSC Lock-Free)"
+    head: "volatile uint32_t | 4B (Producer)"
+    tail: "volatile uint32_t | 4B (Consumer)"
+    mask: "uint32_t | 4B"
+    ring_size: "uint32_t | 4B"
+    descriptors: "kbns_desc_t* | 8B (Pointer)"
+  }
+
+  m1_methods: |md
+    ### Memory Invariants
+    - **Hugepages**: 2MB or 1GB pages required.
+    - **Alignment**: `posix_memalign` to 64B for all pool metadata.
+    - **Barriers**: `__atomic_load_n` with `memory_order_acquire`.
+  |
+}
+
+# --- Milestone 2: Ethernet & ARP Layer ---
+M2: "MILESTONE 2: ETHERNET & ARP (kbns-m2)" {
+  style.fill: "#e3f2fd"
+  style.stroke: "#1976d2"
+
+  eth_hdr: {
+    shape: sql_table
+    label: "eth_hdr_t (sizeof=14B)"
+    dst_mac: "uint8_t[6] | 6B"
+    src_mac: "uint8_t[6] | 6B"
+    ethertype: "uint16_t | 2B (Network Order)"
+  }
+
+  arp_cache: {
+    shape: sql_table
+    label: "arp_cache_t (Atomic Map)"
+    lock: "uint32_t | 4B (Spinlock)"
+    count: "uint32_t | 4B"
+    buckets: "arp_entry_t*[1024] | 8KB"
+  }
+
+  arp_entry: {
+    shape: sql_table
+    label: "arp_entry_t (sizeof=64B)"
+    ipv4_addr: "uint32_t | 4B"
+    mac_addr: "uint8_t[6] | 6B"
+    state: "uint8_t | 1B (STALE|REACHABLE)"
+    last_update: "uint64_t | 8B (TSC)"
+    padding: "uint8_t[45] | 45B"
+  }
+
+  m2_methods: |md
+    ### Protocol Support
+    - **802.3**: Basic Ethernet II frames.
+    - **ARP**: Static and dynamic cache entry support.
+    - **Filtering**: MAC-based destination dropping in software.
+  |
+}
+
+# --- Milestone 3: IP & UDP Layer ---
+M3: "MILESTONE 3: IP & UDP (kbns-m3)" {
+  style.fill: "#e8f5e9"
+  style.stroke: "#388e3c"
+
+  ip_hdr: {
+    shape: sql_table
+    label: "ipv4_hdr_t (sizeof=20B)"
+    version_ihl: "uint8_t | 1B"
+    tos: "uint8_t | 1B"
+    tot_len: "uint16_t | 2B"
+    id: "uint16_t | 2B"
+    frag_off: "uint16_t | 2B"
+    ttl_proto: "uint16_t | 2B"
+    check: "uint16_t | 2B"
+    src_addr: "uint32_t | 4B"
+    dst_addr: "uint32_t | 4B"
+  }
+
+  udp_hdr: {
+    shape: sql_table
+    label: "udp_hdr_t (sizeof=8B)"
+    src_port: "uint16_t | 2B"
+    dst_port: "uint16_t | 2B"
+    len: "uint16_t | 2B"
+    check: "uint16_t | 2B"
+  }
+
+  route_table: {
+    shape: sql_table
+    label: "route_table_t (LPM Tri-Tree)"
+    root: "node_t* | 8B"
+    default_gw: "uint32_t | 4B"
+    if_addr: "uint32_t | 4B"
+  }
+
+  m3_methods: |md
+    ### Stack Logic
+    - **Checksum**: SIMD optimized IP header check.
+    - **Fragmentation**: Dropped by design (MTU only).
+    - **LPM**: Longest Prefix Match via 16-8-8 bit trie.
+  |
+}
+
+# --- Milestone 4: TCP Layer ---
+M4: "MILESTONE 4: TCP ENGINE (kbns-m4)" {
+  style.fill: "#fff3e0"
+  style.stroke: "#f57c00"
+
+  tcp_tcb: {
+    shape: sql_table
+    label: "tcp_tcb_t (320B - Control Block)"
+    state: "uint8_t | 1B (CLOSED...ESTABLISHED)"
+    local_port: "uint16_t | 2B"
+    remote_port: "uint16_t | 2B"
+    snd_nxt: "uint32_t | 4B (Send Sequence)"
+    rcv_nxt: "uint32_t | 4B (Recv Sequence)"
+    snd_wnd: "uint32_t | 4B"
+    cwnd: "uint32_t | 4B (Congestion Window)"
+    retransmit_timer: "uint64_t | 8B (TSC)"
+  }
+
+  timer_wheel: {
+    shape: sql_table
+    label: "timer_wheel_t (Hashed Hierarchical)"
+    slots: "list_head[512] | 4KB"
+    tick_resolution: "uint64_t | 8B (ns)"
+    last_tick: "uint64_t | 8B"
+  }
+
+  m4_methods: |md
+    ### TCP Invariants
+    - **RFC 793**: Standard state machine implementation.
+    - **CC**: NewReno / CUBIC support.
+    - **Timestamping**: Hardware TSC based RTT calculation.
+  |
+}
+
+# --- Milestone 5: Optimization & Production ---
+M5: "MILESTONE 5: HARDENING & PERF (kbns-m5)" {
+  style.fill: "#fbe9e7"
+  style.stroke: "#d32f2f"
+
+  per_core_ctx: {
+    shape: sql_table
+    label: "per_core_ctx_t (sizeof=64B)"
+    core_id: "uint32_t | 4B"
+    rx_cnt: "uint64_t | 8B"
+    tx_cnt: "uint64_t | 8B"
+    drop_cnt: "uint64_t | 8B"
+    tsc_hz: "uint64_t | 8B"
+    padding: "uint8_t[28] | 28B"
+  }
+
+  perf_monitor: {
+    shape: sql_table
+    label: "perf_monitor_t"
+    p99_latency: "uint64_t | 8B"
+    current_pps: "uint64_t | 8B"
+    buffer_pressure: "float | 4B"
+  }
+
+  m5_methods: |md
+    ### Optimization Guide
+    - **NUMA**: All buffers allocated on `socket_id` of the NIC.
+    - **Prefetching**: Software prefetch of packet headers 2 descriptors ahead.
+    - **Affinity**: App threads pinned via `pthread_setaffinity_np`.
+  |
+}
+
+# --- Data Flow & Relationships ---
+
+NIC: "NIC HARDWARE (DMA Controller)" {
+  shape: cylinder
+  style.fill: "#bdbdbd"
+  style.stroke: "#424242"
+}
+
+# Physical to Logic mapping
+NIC -> M1.kbns_buf_pool: "DMA Burst (Zero-Copy)" {style.stroke-width: 4; style.stroke: orange}
+M1.kbns_ring -> NIC: "Tail Update (MMIO)" {style.stroke-dash: 4}
+
+# Data encapsulation flow
+M1.kbns_desc -> M2.eth_hdr: "points to payload" {style.stroke: "#ff9800"}
+M2.eth_hdr -> M3.ip_hdr: "L2 -> L3 Parse"
+M3.ip_hdr -> M4.tcp_tcb: "TCP Demux (L4)"
+M3.ip_hdr -> M3.udp_hdr: "UDP Demux (L4)"
+
+M2.arp_cache -> M2.arp_entry: "lookup" {style.stroke-dash: 2}
+M4.tcp_tcb -> M4.timer_wheel: "expiry registration" {style.stroke-dash: 5}
+
+# Control loop
+M5.perf_monitor -> M1.kbns_ring: "dynamic poll-rate adjustment" {style.stroke: "#d32f2f"}
+
+Application: "HFT Trading Strategy (Low Latency)" {
+  shape: person
+  style.fill: "#ffffff"
+}
+
+# User-space Interaction
+Application -> M4: "send_payload(ptr, len)" {style.stroke: blue}
+M4 -> Application: "on_receive_cb(buf)" {style.stroke: green}
+Application -> M5.perf_monitor: "query_backpressure()"
+
+# --- Global Annotations ---
+# FIXED: Elk requires constant near values
+note: |'md
+  ### Complete Stack Invariants
+  - **Zero-Copy Architecture**: Data resides in KBNS pools from DMA receipt to Application processing.
+  - **Single Producer Single Consumer**: All rings are SPSC to avoid atomic contention.
+  - **Interrupt-Free**: 100% busy-poll mode on isolated cores.
+  - **Deterministic Latency**: All heap allocations performed at boot (init phase).
+'| {
+  near: top-right
+  style.fill: "#ffff8d"
+  style.stroke: "#fbc02d"
+}

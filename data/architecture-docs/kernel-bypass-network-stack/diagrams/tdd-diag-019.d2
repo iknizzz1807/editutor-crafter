@@ -1,0 +1,232 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# IP FRAGMENTATION AND REASSEMBLY (RFC 791)
+# Technical Reference: Network Stack Implementation Guide
+# Legend: Header (Purple), Data (Blue), Metadata (Orange), Success (Green), Failure (Red)
+
+step1: "STEP 1: SENDER FRAGMENTATION" {
+  orig: "Original IPv4 Datagram (3000 bytes)" {
+    shape: sql_table
+    style.fill: "#fdfdfd"
+    style.stroke: "#333333"
+    style.stroke-width: 2
+
+    0x00: "IP Header (20 Bytes)" {
+      style.fill: "#d1b3ff"
+      tooltip: "Identification: 0x04D2 (1234), Flags: 0x00, Offset: 0"
+    }
+    0x14: "Payload Block A (1480 Bytes)" {
+      style.fill: "#b3d9ff"
+    }
+    0x5DC: "Payload Block B (1480 Bytes)" {
+      style.fill: "#b3d9ff"
+      style.stroke-dash: 2
+    }
+    0xBA4: "Payload Block C (40 Bytes)" {
+      style.fill: "#b3d9ff"
+    }
+    padding: "Ethernet Frame Padding / FCS" {
+      style.fill: "#eeeeee"
+      style.font-color: "#777777"
+    }
+  }
+
+  logic: |md
+    ### Segmentation Parameters
+    - **Interface MTU:** 1500 Bytes
+    - **Fragment Payload Max:** $1500 - 20 = 1480$
+    - **ID Field:** 1234 (must be persistent across fragments)
+    - **MF (More Fragments):** Set to 1 for all but last
+    - **Fragment Offset:** $ByteIndex \div 8$
+  | {
+    style.font-size: 14
+  }
+}
+
+step2: "STEP 2: WIRE REPRESENTATION (MTU=1500)" {
+  style.stroke: "#cccccc"
+  
+  frag1: "Fragment 1 (ID:1234)" {
+    shape: sql_table
+    style.stroke: "#d1b3ff"
+    0x00: "Header: **Len=1500, MF=1, Offset=0**" {
+      style.fill: "#d1b3ff"
+      style.font-color: "#4b0082"
+      style.bold: true
+    }
+    0x14: "Payload: Bytes 0 - 1479" {
+      style.fill: "#b3d9ff"
+    }
+  }
+
+  frag2: "Fragment 2 (ID:1234)" {
+    shape: sql_table
+    style.stroke: "#d1b3ff"
+    0x00: "Header: **Len=1500, MF=1, Offset=185**" {
+      style.fill: "#d1b3ff"
+      style.font-color: "#4b0082"
+      style.bold: true
+    }
+    0x14: "Payload: Bytes 1480 - 2959" {
+      style.fill: "#b3d9ff"
+    }
+  }
+
+  frag3: "Fragment 3 (ID:1234)" {
+    shape: sql_table
+    style.stroke: "#d1b3ff"
+    0x00: "Header: **Len=60, MF=0, Offset=370**" {
+      style.fill: "#d1b3ff"
+      style.font-color: "#4b0082"
+      style.bold: true
+    }
+    0x14: "Payload: Bytes 2960 - 2999" {
+      style.fill: "#b3d9ff"
+    }
+  }
+}
+
+step3: "STEP 3: RECEIVER REASSEMBLY (RCB STATE)" {
+  rcb: "Reassembly Control Block" {
+    style.fill: "#f8f9fa"
+    style.stroke: orange
+    style.stroke-width: 2
+    
+    descriptor: "State Descriptor (Tuple Matching)" {
+      shape: sql_table
+      tuple: "KEY: [SRC:10.0.0.1, DST:10.0.0.2, ID:1234, PROT:6]" {
+        style.fill: "#ffd1b3"
+      }
+      status: "Bitmap: **[F1: OK] [F2: MISSING] [F3: OK]**" {
+        style.fill: "#ffcc00"
+        style.font-color: "#d32f2f"
+        style.bold: true
+      }
+      timer: "Timer: 14.2s / 60s (kernel_jiffies)" {
+        style.stroke-dash: 3
+      }
+    }
+
+    mem_map: "Reassembly Buffer (Contiguous)" {
+      style.stroke: "#4a90e2"
+      style.stroke-width: 2
+      
+      chunk1: "Mapped: 0-1479 (Frag 1)" {
+        style.fill: "#b3d9ff"
+      }
+      hole: "HOLE: Missing 1480-2959" {
+        style.fill: "#e0e0e0"
+        style.stroke-dash: 4
+        style.font-color: "#999999"
+        style.italic: true
+      }
+      chunk3: "Mapped: 2960-2999 (Frag 3)" {
+        style.fill: "#b3d9ff"
+      }
+    }
+  }
+}
+
+step4: "STEP 4: TERMINATION VECTORS" {
+  grid-columns: 2
+  grid-gap: 40
+
+  success: "PATH A: REASSEMBLY COMPLETE" {
+    style.fill: "#f0fff4"
+    style.stroke: "#228b22"
+    
+    rebuilt: "Reassembled Datagram" {
+      shape: sql_table
+      hdr: "IP Header (Total Len: 3020)" {
+        style.fill: "#d1b3ff"
+      }
+      data: "Contiguous Payload Stream (3000B)" {
+        style.fill: "#b3ffb3"
+        style.bold: true
+      }
+    }
+    
+    rebuilt -> l4_handoff: "Socket Buffer (sk_buff) push" {
+      style.stroke: "#228b22"
+      style.stroke-width: 2
+      target-arrowhead: triangle
+    }
+    l4_handoff: "L4 Protocol Handler (TCP)" {
+      shape: hexagon
+      style.fill: "#e6fffa"
+    }
+  }
+
+  failure: "PATH B: ERROR / EXPIRED" {
+    style.fill: "#fff5f5"
+    style.stroke: "#c53030"
+    
+    logic_drop: |md
+      ### Buffer Eviction Policy
+      - **Reason:** Hole Timeout (Timer=0)
+      - **Action:** `ip_frag_reasm_free()`
+      - **Security:** Prevents memory bloat
+    | {
+      style.font-size: 13
+    }
+    
+    icmp_err: "ICMP Type 11 (Time Exceeded)\nCode 1 (Fragment Reassembly)" {
+      style.fill: "#feb2b2"
+      style.stroke: "#c53030"
+      style.double-border: true
+    }
+    
+    logic_drop -> icmp_err: "Notify Sender" {
+      style.stroke: "#c53030"
+      style.animated: true
+      style.stroke-dash: 3
+    }
+  }
+}
+
+# Implementation Data Flow
+step1 -> step2: "Fragmentation Loop" {
+  style.stroke-width: 3
+  style.stroke: "#4a90e2"
+}
+
+step2 -> step3: "Netfilter Ingress" {
+  style.stroke-width: 3
+  style.stroke: "#4a90e2"
+}
+
+step3 -> step4: "Completion / Timeout" {
+  style.stroke-dash: 6
+  style.stroke: "#718096"
+}
+
+# Technical Reference Legend
+legend: "Reference Legend" {
+  near: bottom-center
+  grid-columns: 3
+  
+  l1: "IP Header" { style.fill: "#d1b3ff" }
+  l2: "Payload Data" { style.fill: "#b3d9ff" }
+  l3: "Memory Hole" { style.fill: "#e0e0e0"; style.stroke-dash: 2 }
+  l4: "RCB Metadata" { style.fill: "#ffd1b3" }
+  l5: "Successful Reassembly" { style.fill: "#b3ffb3" }
+  l6: "Error State" { style.fill: "#feb2b2" }
+}
+
+footer: |md
+  **Implementation Constraints (RFC 791 / 815):**
+  1. **Units:** Fragment offsets are measured in 8-octet units ($Offset \times 8 = ByteIndex$).
+  2. **Overlap:** If fragments overlap, subsequent data typically overwrites existing data (vulnerability risk).
+  3. **Atomic:** Total reassembled size cannot exceed 65,535 bytes (IP limit).
+  4. **Bitmap:** RFC 815 optimization uses a linked list of holes instead of a full bitmask.
+| {
+  near: bottom-right
+  style.font-size: 12
+}

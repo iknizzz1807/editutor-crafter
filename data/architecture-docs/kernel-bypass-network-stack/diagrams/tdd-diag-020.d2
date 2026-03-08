@@ -1,0 +1,193 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- STYLING ---
+classes: {
+  processing_step: {
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#2196F3"
+      stroke-width: 2
+      border-radius: 5
+    }
+  }
+  validation_step: {
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#9C27B0"
+      stroke-width: 2
+    }
+  }
+  error_step: {
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#F44336"
+      stroke-width: 2
+      font-color: "#B71C1C"
+    }
+  }
+  memory_buffer: {
+    shape: cylinder
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#4CAF50"
+      stroke-width: 2
+    }
+  }
+  header_layout: {
+    shape: sql_table
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#E65100"
+      stroke-width: 1
+    }
+  }
+}
+
+# --- PIPELINE COMPONENTS ---
+
+IP_Layer: {
+  label: "kbns-m3: IP Layer Interface"
+  Payload_Buffer: "Raw IPv4 Payload [MTU 1500]" {
+    shape: parallelogram
+    style.fill: "#B0BEC5"
+  }
+}
+
+Pipeline: "UDP Datagram Processing Pipeline" {
+  style: {
+    stroke: "#78909C"
+    stroke-width: 4
+    stroke-dash: 5
+  }
+
+  Parser: {
+    class: processing_step
+    label: "UDP Header Parser\nCycles: ~12 | Latency: < 5ns"
+    
+    Header_Layout: {
+      class: header_layout
+      "0x00": "Source Port [uint16_t]"
+      "0x02": "Destination Port [uint16_t]"
+      "0x04": "UDP Length [uint16_t]"
+      "0x06": "Checksum [uint16_t]"
+    }
+  }
+
+  Checksum_Engine: {
+    class: validation_step
+    label: "One's Complement\nSIMD Verification"
+    
+    Logic: |md
+      **Pseudo-Header Calculation**
+      - **Source IP**: 4 Bytes
+      - **Dest IP**: 4 Bytes
+      - **Protocol**: 17 (0x11)
+      - **UDP Length**: 2 Bytes
+      - **Data**: Pad to 16-bit
+    |
+  }
+
+  Port_Lookup: {
+    class: processing_step
+    label: "Socket Dispatcher\nO(1) Port Mapping Table"
+    
+    Table: {
+      shape: sql_table
+      "Port 0..1023": "Reserved / System"
+      "Port 80": "ID: 0xFF04 (HTTP)"
+      "Port 12345": "ID: 0xA1C2 (App_Srv)"
+      "Port 65535": "ID: 0x0000 (Null)"
+    }
+  }
+
+  Socket_Context: {
+    label: "struct udp_socket_ctx"
+    class: memory_buffer
+    
+    Ring_Buffer: {
+      label: "UDP_RECV_RING\n(Lock-Free SPSC Queue)"
+      shape: cylinder
+      style.fill: "#C8E6C9"
+    }
+    Metadata: "Tail: 0x42\nHead: 0x10\nSize: 4096B"
+  }
+}
+
+Application: {
+  class: processing_step
+  label: "User Space Application [PID: 8812]"
+  
+  Callback: "recv_callback(remote_ip, remote_port, payload_ptr, bytes)" {
+    style: {
+      bold: true
+      fill: "#FFF9C4"
+    }
+  }
+}
+
+# --- ERRORS / DROPS ---
+
+Drops: "Discard Logic" {
+  style.fill: "#ECEFF1"
+  
+  Checksum_Fail: "DROP: Checksum Mismatch" {
+    class: error_step
+  }
+  Port_Unreachable: "ICMP: Port Unreachable" {
+    class: error_step
+  }
+  Buffer_Overflow: "DROP: Socket Buffer Full" {
+    class: error_step
+  }
+}
+
+# --- FLOW CONNECTIONS ---
+
+IP_Layer.Payload_Buffer -> Pipeline.Parser: "DMA Hand-off"
+
+Pipeline.Parser -> Pipeline.Checksum_Engine: "Verify (if csum != 0x0000)"
+
+Pipeline.Checksum_Engine -> Drops.Checksum_Fail: "Invalid Bitmask" {
+  style.stroke: red
+  style.animated: true
+  style.stroke-width: 2
+}
+
+Pipeline.Checksum_Engine -> Pipeline.Port_Lookup: "Verified / Bypass"
+
+Pipeline.Port_Lookup -> Pipeline.Socket_Context: "Context Match"
+
+Pipeline.Port_Lookup -> Drops.Port_Unreachable: "Lookup Miss" {
+  style.stroke: red
+  style.stroke-dash: 3
+}
+
+Pipeline.Socket_Context.Ring_Buffer -> Application.Callback: "Signal / Dispatch"
+
+Pipeline.Socket_Context.Ring_Buffer -> Drops.Buffer_Overflow: "Queue Pressure\n(Head == Tail - 1)" {
+  style.stroke: red
+  target-arrowhead: cross
+}
+
+# --- ANNOTATIONS ---
+
+Annotate: |md
+  ### UDP Processing Invariants (Kernel Bypass)
+  1. **Zero Checksum**: In IPv4, `0x0000` means validation is explicitly skipped by the sender.
+  2. **Cache Locality**: Socket mapping table is pre-allocated and aligned to 64B boundaries to fit in L3 cache lines.
+  3. **Zero-Copy**: No memory copies occur between IP_Layer and Application; only the `UMEM` frame descriptor pointers are passed.
+  4. **Endianness**: Ports and Length are converted from Network Byte Order (Big Endian) to Host Byte Order (Little Endian).
+| {
+  near: bottom-center
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#BDBDBD"
+    stroke-dash: 2
+  }
+}

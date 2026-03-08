@@ -1,0 +1,226 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    pad: 20
+  }
+  colors: {
+    header: "#7c3aed"
+    data: "#2563eb"
+    free: "#16a34a"
+    padding: "#94a3b8"
+    pointer: "#ea580c"
+    hot_path: "#dc2626"
+  }
+}
+
+# --- SYSTEM CONFIGURATION (BOOT TIME) ---
+
+bios_config: BIOS Settings (Optimized) {
+  near: top-left
+  shape: package
+  style: {
+    stroke: "#475569"
+    fill: "#f8fafc"
+    stroke-width: 2
+  }
+  label: |md
+    ### Intel® Xeon® Platform Hardening
+    - **Hyper-Threading (SMT)**: [DISABLED]
+    - **C-States / C1E**: [DISABLED] (C0 Fixed)
+    - **P-States**: [PERFORMANCE]
+    - **Uncore Frequency**: [MAX]
+    - **VT-d / SR-IOV**: [ENABLED]
+    - **Snoop Mode**: [Early Snoop]
+  |
+}
+
+kernel_params: Linux Kernel Boot Arguments {
+  near: top-center
+  shape: package
+  style: {
+    stroke: "#475569"
+    fill: "#f8fafc"
+    stroke-dash: 3
+  }
+  label: |md
+    ### /etc/default/grub (v5.15.0-x-rt)
+    `isolcpus=managed_irq,domain,0-3`
+    `nohz_full=0-3 rcu_nocbs=0-3`
+    `default_hugepagesz=1G hugepagesz=1G hugepages=16`
+    `intel_idle.max_cstate=0 processor.max_cstate=0`
+    `skew_tick=1 transparent_hugepage=never`
+  |
+}
+
+# --- PRIMARY DATA PLANE ARCHITECTURE ---
+
+host: Production Server (HFT Node) {
+  style: {
+    stroke-width: 4
+    fill: "#ffffff"
+    double-border: true
+  }
+  tooltip: "sizeof=2U Rackmount Server (Dual Socket)"
+
+  numa_node_0: NUMA Node 0 (Data Plane) {
+    style: {
+      fill: "#f5f3ff"
+      stroke: "#4f46e5"
+      stroke-width: 3
+    }
+    label: "NUMA Local Affinity (PCIe Root Complex 0)"
+
+    cpu_complex_0: CPU Cluster (Socket 0) {
+      style.fill: "#ffffff"
+      
+      core_0: Core 0 {
+        shape: circle
+        style: { fill: "${vars.colors.hot_path}"; font-color: white; bold: true }
+        label: "L1: Execution\n(Strategy Loop)"
+      }
+      core_1: Core 1 {
+        shape: circle
+        style: { fill: "${vars.colors.hot_path}"; font-color: white }
+        label: "L1: RX PMD\n(Kernel Bypass)"
+      }
+      core_2: Core 2 {
+        shape: circle
+        style: { fill: "${vars.colors.hot_path}"; font-color: white }
+        label: "L1: TX PMD\n(Lock-Free)"
+      }
+      core_3: Core 3 {
+        shape: circle
+        style: { fill: "#4b5563"; font-color: white }
+        label: "L1: Housekeeping\n(Timers/Stats)"
+      }
+    }
+
+    hugepage_memory: Hugepage Pool (NUMA Local) {
+      shape: cylinder
+      style: { fill: "#f0fdf4"; stroke: "#166534" }
+      
+      # Use |'md ... '| to escape Markdown pipes from D2 parser
+      memory_layout: |'md
+        ### Memory Map (2MB Hugepage)
+        | Offset | Field | Size | Alignment |
+        | :--- | :--- | :--- | :--- |
+        | 0x0000 | **Frame Header** | 64B | Cache Line |
+        | 0x0040 | **DMA Payload** | 1536B | Page Align |
+        | 0x0640 | **Circular Metadata** | 256B | - |
+        | 0x0740 | **Padding (Gray)** | 192B | 2KB Boundary |
+      '|
+      
+      mempool: Packet Buffer Pool {
+        label: "BufferPool::allocate(size_t n)\nsizeof=16GB"
+        style.fill: "${vars.colors.data}"
+        style.font-color: white
+      }
+    }
+
+    nic_hw: NIC (Intel E810-XXV) {
+      shape: diamond
+      icon: https://icons.terrastruct.com/tech%2F022-server.svg
+      style: { fill: "#ede9fe"; stroke: "#6d28d9" }
+      
+      rx_ring: RX Queue { shape: queue }
+      tx_ring: TX Queue { shape: queue }
+    }
+
+    # Data Flow Logic Within NUMA Node 0
+    core_1 -> nic_hw.rx_ring: "rte_eth_rx_burst()" {
+      style: { stroke: "${vars.colors.hot_path}"; stroke-width: 3; animated: true }
+    }
+    nic_hw.rx_ring -> hugepage_memory.mempool: "PCIe Gen4 x16 DMA" {
+      style: { stroke: "#3b82f6"; stroke-width: 2 }
+    }
+    core_0 -> hugepage_memory.mempool: "Memory-Mapped Access" {
+      style.stroke: "${vars.colors.pointer}"
+    }
+    core_2 -> nic_hw.tx_ring: "rte_eth_tx_burst()" {
+      style.stroke: "${vars.colors.hot_path}"
+    }
+  }
+
+  numa_node_1: NUMA Node 1 (Control Plane) {
+    style: { fill: "#f1f5f9"; stroke: "#64748b"; stroke-dash: 5 }
+    
+    kernel_cores: Shared OS Cores (4-31) {
+      mgmt_proc: Management/Orchestration
+      ssh_daemon: SSHD (Port 22)
+    }
+
+    monitoring: Monitoring Stack {
+      prometheus: Prometheus Node Exporter {
+        label: "Metrics Port: 9100"
+      }
+      health: Service Discovery API {
+        label: "HTTP /v1/health"
+      }
+    }
+    
+    mgmt_nic: Management NIC {
+      style.fill: "#cbd5e1"
+    }
+  }
+}
+
+# --- EXTERNAL ENTITIES ---
+
+exchange: The Exchange (Matching Engine) {
+  shape: cloud
+  style: { fill: "#fff1f2"; stroke: "#e11d48"; stroke-width: 4 }
+}
+
+host.numa_node_0.nic_hw <-> exchange: "Fiber::Multi-mode (Sub-1μs Latency)" {
+  style: { stroke: "#4f46e5"; stroke-width: 5 }
+}
+
+admin: SRE / Ops {
+  shape: person
+}
+
+# --- CONTROL FLOW ---
+
+admin -> host.numa_node_1.mgmt_nic: "Out-of-Band Management"
+host.numa_node_1.monitoring.prometheus -> admin: "gRPC Streaming (Grafana)"
+
+# --- MODULE COMPOSITION ---
+
+stack_layers: Stack Integration Architecture {
+  near: bottom-right
+  style.stroke: "#000"
+  
+  m1: M1: DPDK/Bypass {style.fill: "#f3e8ff"}
+  m2: M2: L2 DataLink {style.fill: "#e0e7ff"}
+  m3: M3: L3 (IPv4/Multicast) {style.fill: "#dcfce7"}
+  m4: M4: L4 (TCP/UDP Binary) {style.fill: "#fef9c3"}
+  m5: M5: App/Strategy {style.fill: "#fee2e2"; style.bold: true}
+
+  m1 -> m2: Zero-copy mbuf
+  m2 -> m3: Header Parsing
+  m3 -> m4: Session Tracking
+  m4 -> m5: Callbacks
+}
+
+# --- ANNOTATIONS AND LEGEND ---
+
+host.numa_node_1.monitoring -> host.numa_node_0.cpu_complex_0.core_3: "Stats Aggregation (Non-Blocking)" {
+  style: { stroke-dash: 5; opacity: 0.5 }
+}
+
+legend: {
+  near: bottom-center
+  style.fill: "#ffffff"
+  
+  dp: Data Plane Path (Critical) {
+    style: { stroke: "${vars.colors.hot_path}"; stroke-width: 4 }
+  }
+  cp: Control Plane Path (Standard) {
+    style: { stroke: "#64748b"; stroke-dash: 5 }
+  }
+  dma: DMA / Memory Access {
+    style: { stroke: "#3b82f6"; stroke-width: 2 }
+  }
+}

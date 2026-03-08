@@ -1,0 +1,314 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    sketch: false
+    pad: 20
+  }
+}
+
+title: |md
+  # SQ Polling Mode — Kernel Thread Architecture
+  **Mode:** `IORING_SETUP_SQPOLL`
+| {
+  near: top-center
+  style: {
+    font-size: 24
+    stroke-width: 0
+    fill: transparent
+  }
+}
+
+direction: right
+
+# === Userspace ===
+userspace: Userspace Process {
+  style: {
+    fill: "#E8F4FD"
+    stroke: "#2E86AB"
+    stroke-width: 2
+  }
+
+  app: Application Thread {
+    style: {
+      fill: "#FFFFFF"
+      stroke: "#2E86AB"
+    }
+    
+    label: |md
+      **Application Thread**
+      *CPU Core 0*
+    |
+
+    app_logic: {
+      shape: code
+      label: |python
+        # Zero-syscall loop
+        while True:
+            sqe = get_sqe()
+            prep_read(sqe, fd, buf)
+            # Commit to ring
+            atomic_store_release(sq_tail, tail + 1)
+            # Kernel thread sees change automatically
+      |
+    }
+
+    sqe_prep: "1. Prepare SQE" {
+      shape: rectangle
+      style.fill: "#D4EDDA"
+    }
+    
+    tail_update: "2. Atomic Store\n(Release Barrier)" {
+      shape: rectangle
+      style: {
+        fill: "#FFF3CD"
+        font: mono
+      }
+    }
+    
+    app_logic -> sqe_prep
+    sqe_prep -> tail_update
+  }
+
+  # Shared Memory Ring
+  shared_mem: Shared Memory Ring Buffer {
+    label: "MMAP'd Shared Memory (SQ/CQ Rings)"
+    style: {
+      fill: "#F8F9FA"
+      stroke: "#6C757D"
+      stroke-dash: 4
+    }
+
+    sq_ring: SQ Ring {
+      style.fill: "#FFFFFF"
+      
+      sq_array: SQ Index Array {
+        shape: queue
+        style.fill: "#CCE5FF"
+        style.multiple: true
+      }
+      
+      sq_tail: "tail (index)" {
+        shape: hexagon
+        style: {
+          fill: "#FFF3CD"
+          font: mono
+          bold: true
+        }
+      }
+      
+      sq_head: "head (index)" {
+        shape: hexagon
+        style: {
+          fill: "#D4EDDA"
+          font: mono
+        }
+      }
+      
+      sq_tail -> sq_array: "Updates"
+    }
+
+    sqes: SQE Array {
+      label: "SQE Descriptor Area (Entry=64B)"
+      style.fill: "#E2E3E5"
+      style.multiple: true
+      
+      sqe_0: "SQE[0]" { style.fill: "#CCE5FF" }
+      sqe_1: "SQE[1]" { style.fill: "#CCE5FF" }
+      sqe_2: "SQE[2] (New)" { 
+        style: {
+          fill: "#F8D7DA"
+          stroke: red
+          bold: true
+        }
+      }
+      sqe_3: "SQE[3]" { style.fill: "#FFFFFF" }
+    }
+
+    sq_ring.sq_array -> sqes: "Points to descriptor"
+  }
+
+  app.sqe_prep -> shared_mem.sqes: "Write command" {
+    style: {
+      stroke: "#28A745"
+      stroke-width: 2
+    }
+  }
+  app.tail_update -> shared_mem.sq_ring.sq_tail: "Visible to Kernel" {
+    style: {
+      stroke: "#FFC107"
+      stroke-width: 2
+    }
+  }
+}
+
+# === Kernel ===
+kernel: Kernel Space {
+  style: {
+    fill: "#FFF8E1"
+    stroke: "#F57C00"
+    stroke-width: 2
+  }
+
+  sqpoll_thread: SQPOLL Kernel Thread {
+    style: {
+      fill: "#FFFFFF"
+      stroke: "#F57C00"
+    }
+    
+    label: |md
+      **io_sq_thread**
+      *CPU Core 1 (Isolated)*
+    |
+
+    poll_loop: {
+      shape: code
+      label: |c
+        // Kernel side loop
+        for (;;) {
+          tail = load_acquire(sq_tail);
+          head = sq_head;
+          if (head != tail) {
+            consume_sqes(head, tail);
+          } else if (should_sleep()) {
+            schedule(); // Sleep until kicked
+          }
+        }
+      |
+    }
+
+    poll_check: "3. Atomic Load\n(Acquire Barrier)" {
+      shape: rectangle
+      style: {
+        fill: "#FFECB3"
+        font: mono
+      }
+    }
+
+    process_sqe: "4. Internal Submission" {
+      shape: rectangle
+      style.fill: "#C8E6C9"
+    }
+
+    # Idle timeout state
+    idle_state: Idle State Machine {
+      style.fill: "#FFCCBC"
+      
+      active: "ACTIVE" {
+        shape: circle
+        style: { fill: "#4CAF50"; font-color: white }
+      }
+      
+      idle_poll: "IDLE_POLL" {
+        shape: circle
+        style.fill: "#FFC107"
+      }
+      
+      sleeping: "SLEEPING" {
+        shape: circle
+        style: { fill: "#9E9E9E"; font-color: white }
+      }
+
+      active -> idle_poll: "No sqes found"
+      idle_poll -> active: "New task seen"
+      idle_poll -> sleeping: "timeout > sq_thread_idle"
+      sleeping -> active: "Wakeup (IORING_ENTER)" {
+        style.stroke: red
+        style.stroke-dash: 2
+      }
+    }
+    
+    poll_loop -> poll_check
+    poll_check -> process_sqe: "If tail > head"
+  }
+
+  io_subsystem: I/O Subsystem {
+    style.fill: "#FFFFFF"
+    vfs: VFS Layer
+    block: Block Device
+    network: Network Stack
+    
+    vfs -> block
+    vfs -> network
+  }
+}
+
+# === Cross-boundary connections ===
+userspace.shared_mem.sq_ring.sq_tail -> kernel.sqpoll_thread.poll_check: "Kernel Polling Loop\n(No Context Switch)" {
+  style: {
+    stroke: "#2196F3"
+    stroke-width: 4
+    animated: true
+  }
+}
+
+kernel.sqpoll_thread.process_sqe -> kernel.io_subsystem.vfs: "Async I/O Request"
+
+# === Data Comparison Table ===
+syscall_comparison: ||md
+  ### Performance Comparison
+  | Metric | Standard (io_uring_enter) | SQPOLL Mode |
+  | :--- | :--- | :--- |
+  | **Syscalls** | 1 per batch | 0 (Kernel polls) |
+  | **Latency** | ~500ns - 1.2µs | ~50ns - 150ns |
+  | **CPU Utilization** | Low (Reactive) | High (Busy poll) |
+  | **Context Switches**| High | Zero |
+|| {
+  near: bottom-center
+  style: {
+    fill: "#F1F8E9"
+    stroke: "#4CAF50"
+  }
+}
+
+# === CPU Pinning Architecture ===
+affinity_map: |md
+  ### Core Isolation Strategy
+  **Core 0:** Application logic + Ring Management  
+  **Core 1:** `io_sq_thread` (Polls SQ)  
+  **Core 2-N:** Kernel Worker Threads (IO Completion)
+  
+  *Recommendation: Use `taskset` or `IORING_SETUP_SQ_AFF`*
+| {
+  near: top-left
+  style.fill: "#E3F2FD"
+}
+
+# === Implementation Notes ===
+notes: {
+  near: bottom-left
+  label: |md
+    ### Critical Implementation Rules
+    1. **Memory Barriers:** `atomic_store_release` on tail is mandatory to ensure SQE data is visible before the index updates.
+    2. **Idle Kick:** If the kernel thread goes to `SLEEPING`, the app *must* call `io_uring_enter` with `IORING_ENTER_SQ_WAKEUP`.
+    3. **Privilege:** `IORING_SETUP_SQPOLL` usually requires `CAP_SYS_ADMIN` or root.
+  |
+}
+
+# === Legend ===
+legend: Legend {
+  near: bottom-right
+  style.fill: "#F5F5F5"
+  
+  barrier: "Memory Barrier" {
+    shape: rectangle
+    style: {
+      fill: "#FFF3CD"
+      stroke-dash: 0
+    }
+  }
+  shared: "Shared MMAP Region" {
+    shape: rectangle
+    style: {
+      fill: "#F8F9FA"
+      stroke-dash: 4
+    }
+  }
+  poll_line: "Kernel Poll Path" {
+    shape: rectangle
+    style: {
+      stroke: "#2196F3"
+      stroke-width: 4
+    }
+  }
+}

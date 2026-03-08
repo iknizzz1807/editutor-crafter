@@ -1,311 +1,259 @@
-direction: down
+layout-engine: elk
+
 vars: {
   d2-config: {
-    layout-engine: elk
     theme-id: 4
+    sketch: false
   }
   colors: {
-    changed: "#DC2626"
-    normal: "#374151"
-    complete: "#16A34A"
-    buffer: "#8B5CF6"
-    offset: "#EA580C"
-    memory: "#E5E7EB"
+    header: "#7E22CE"
+    data: "#2563EB"
+    sent: "#16A34A"
+    pending: "#9333EA"
+    retry: "#DC2626"
+    padding: "#94A3B8"
+    pointer: "#EA580C"
+    memory_bg: "#F8FAFC"
   }
 }
 
-title: {
-  label: |md
-    # Short Write Handling — Partial Send Recovery
-    ### State Evolution: 4096 bytes → short write → resubmit → complete
-  |
-  near: top-center
-}
+title: |md
+  # Intel® Short Write Handling — Partial Send Recovery
+  **Protocol:** io_uring SEND (OP_0x1A) | **Buffer:** 4KB Sequential
+  **Recovery Path:** Userspace Resubmission with Pointer Arithmetic
+|
+title.near: top-center
 
 # -----------------------------------------------------------------------------
-# STEP 0: INITIAL STATE
+# STEP 0: INITIAL SUBMISSION
 # -----------------------------------------------------------------------------
 step0: {
-  label: "Step 0: Initial Submission"
-  style.stroke: "${colors.normal}"
-  
-  send_req: {
-    shape: class
-    +fd: "int (socket_fd)"
-    +buffer: "void* (0x1000)"
-    +total_length: "size_t = 4096"
-    +bytes_sent: "size_t = 0"
-    +state: "SEND_SUBMITTED"
-    
-    details: {
-      label: |md
-        **SQE Prepared:**
-        - opcode: `IORING_OP_SEND`
-        - addr: `0x1000`
-        - len: **4096**
-      |
-    }
+  label: "STEP 0: Initial SQE Preparation"
+  style.stroke-dash: 0
+
+  sqe: {
+    shape: sql_table
+    label: "io_uring_sqe (Submission Queue Entry)"
+    "opcode": "IORING_OP_SEND (26)"
+    "fd": "0x03 (TCP Socket)"
+    "addr": "0x00001000"
+    "len": "4096 Bytes"
+    "flags": "0x00"
+    "user_data": "REQ_ID_A1"
   }
 
-  buffer0: {
-    label: "Process Memory (0x1000)"
-    data: {
-      label: "Payload Data (4096B)"
-      style: {
-        fill: "${colors.buffer}"
-        fill-pattern: lines
-        stroke: "${colors.normal}"
+  mem: "Virtual Memory (Base: 0x1000)" {
+    style.fill: "${colors.memory_bg}"
+    
+    buf: {
+      grid-columns: 1
+      grid-gap: 0
+      
+      h: "0x1000 [ 4096B PENDING ]" {
+        style: {
+          fill: "${colors.pending}"
+          fill-pattern: lines
+          font-color: white
+          stroke-width: 2
+        }
       }
     }
-    
-    legend: {
-      near: bottom-center
-      label: |md
-        | Offset | Size | State |
-        |---|---|---|
-        | 0x0 | 4096 | PENDING |
-      |
-    }
+  }
+  
+  sqe -> mem.buf.h: "Points to address 0x1000" {
+    style.stroke: "${colors.pointer}"
+    target-arrowhead: diamond
   }
 }
 
 # -----------------------------------------------------------------------------
-# STEP 1: SHORT WRITE DETECTION
+# STEP 1: PARTIAL COMPLETION (SHORT WRITE)
 # -----------------------------------------------------------------------------
 step1: {
-  label: "Step 1: Short Write Detected"
-  style.stroke: "${colors.changed}"
-  style.stroke-width: 2
+  label: "STEP 1: Partial Completion Interrupt"
+  style.stroke: "${colors.retry}"
+  style.stroke-width: 4
 
-  cqe1: {
-    shape: class
-    +user_data: "req_id_01"
-    +res: "1024"
-    +flags: "0"
-    
-    analysis: {
-      label: |md
-        **Result Analysis:**
-        - `res (1024) < requested (4096)`
-        - **Status:** Partial Success
-        - Action: Increment offset and retry
-      |
-    }
-  }
-
-  logic: {
-    shape: diamond
-    label: "Short Write?\n(res > 0 && res < total)"
-    yes: {
-      label: "YES: Resubmit"
-      style.fill: "${colors.changed}"
-      style.font-color: white
+  cqe: {
+    shape: sql_table
+    label: "io_uring_cqe (Completion Queue Entry)"
+    "user_data": "REQ_ID_A1"
+    "res": "**1024** (Bytes Actually Sent)" {
+      style.font-color: red
       style.bold: true
     }
-    logic -> yes
+    "flags": "0"
+    
+    status: "SHORT WRITE DETECTED" {
+      style.fill: "${colors.retry}"
+      style.font-color: white
+    }
   }
 
-  buffer1: {
-    label: "Memory State After Completion"
-    sent_part: {
-      label: "SENT (1024B)"
-      width: 150
-      style: {
-        fill: "${colors.complete}"
-        fill-pattern: dots
+  mem: "Virtual Memory State" {
+    style.fill: "${colors.memory_bg}"
+    
+    buf: {
+      grid-columns: 2
+      grid-gap: 0
+      
+      sent: "0x1000..0x13FF (1024B)" {
+        label: "SENT"
+        style.fill: "${colors.sent}"
+        style.font-color: white
       }
-    }
-    remaining: {
-      label: "REMAINING (3072B)"
-      width: 300
-      style: {
-        fill: "${colors.buffer}"
-        fill-pattern: lines
+      remain: "0x1400..0x1FFF (3072B)" {
+        label: "REMAINING"
+        style.fill: "${colors.pending}"
+        style.fill-pattern: lines
       }
     }
     
-    annotation: {
-      label: |md
-        **Kernel Progress:**
-        - Write Cursor: `0x1000 + 1024 = 0x1400`
-      |
-      near: bottom-center
+    cursor: "Kernel Cursor: 0x1400" {
+      shape: text
+      near: top-right
+      style.font-color: "${colors.pointer}"
     }
   }
 }
 
 # -----------------------------------------------------------------------------
-# STEP 2: RESUBMISSION
+# STEP 2: RECOVERY & RESUBMISSION
 # -----------------------------------------------------------------------------
 step2: {
-  label: "Step 2: Resubmit Remaining Bytes"
-  style.stroke: "${colors.offset}"
-  
-  resubmit_sqe: {
+  label: "STEP 2: Calculation & Resubmit"
+  style.stroke: "${colors.pointer}"
+
+  logic: {
     shape: class
-    +opcode: "IORING_OP_SEND"
-    +addr: "**0x1400** (Base + 1024)"
-    +len: "**3072** (Total - Sent)"
-    
-    math: {
-      label: |md
-        **Pointer Arithmetic:**
-        c
-        next_addr = buf + sent;
-        remaining = total - sent;
-        
-      |
-    }
+    label: "Userspace Handler"
+    "+handle_cqe(res=1024)"
+    "+bytes_sent += 1024"
+    "+remaining = 4096 - 1024"
+    "+next_addr = 0x1000 + 1024"
   }
 
-  offset_calc: {
-    label: |md
-      ### Offset Calculation
-      - Sent: `1024`
-      - Remaining: `3072`
-      - Next Ptr: `0x1400`
-    |
-    style.fill: "#FFFBEB"
+  new_sqe: {
+    shape: sql_table
+    label: "New SQE (Retry Segment)"
+    "opcode": "IORING_OP_SEND"
+    "addr": "**0x1400**" {
+      style.font-color: red
+      style.bold: true
+    }
+    "len": "**3072**" {
+      style.font-color: red
+      style.bold: true
+    }
+    "user_data": "REQ_ID_A2"
   }
 
-  buffer2: {
-    label: "Resubmit Buffer View"
-    done: {
-      label: "Offset 0..1023"
-      style.fill: "${colors.memory}"
-      style.opacity: 0.5
-    }
-    active_send: {
-      label: "SENDING: 3072 Bytes"
-      style: {
-        fill: "${colors.changed}"
-        stroke: "${colors.changed}"
-        stroke-width: 3
-        font-color: white
-        bold: true
+  mem: "Memory Visibility" {
+    buf: {
+      grid-columns: 2
+      grid-gap: 0
+      old: "0x1000 (Already Sent)" {
+        style.opacity: 0.3
+      }
+      active: "0x1400 (Active Range)" {
+        style: {
+          fill: "${colors.retry}"
+          stroke-width: 4
+          bold: true
+        }
       }
     }
   }
+  
+  logic -> new_sqe: "Prepare offset"
+  new_sqe -> mem.buf.active: "Targets remaining slice" {
+    style.stroke: "${colors.pointer}"
+  }
 }
 
 # -----------------------------------------------------------------------------
-# STEP 3: FINAL COMPLETION
+# STEP 3: FINAL TRANSMISSION
 # -----------------------------------------------------------------------------
 step3: {
-  label: "Step 3: Send Complete"
-  style.stroke: "${colors.complete}"
-  
+  label: "STEP 3: Full Completion"
+  style.stroke: "${colors.sent}"
+
   cqe_final: {
-    shape: class
-    +res: "3072"
-    +status: "SUCCESS"
-    
-    validation: {
-      label: |md
-        **Final Totals:**
-        - Initial: 1024
-        - Final: 3072
-        - **Total Sent: 4096**
-      |
+    shape: sql_table
+    label: "Final CQE"
+    "res": "3072"
+    "status": "TOTAL_SENT: 4096" {
+      style.font-color: "${colors.sent}"
+      style.bold: true
     }
   }
 
-  state_final: {
-    label: "Final State: SEND_COMPLETE"
-    shape: rectangle
-    style: {
-      fill: "${colors.complete}"
-      font-color: white
-      bold: true
-      double-border: true
+  mem: "Final Memory State" {
+    buf: {
+      label: "FULL BUFFER TRANSMITTED (4096/4096)"
+      style: {
+        fill: "${colors.sent}"
+        fill-pattern: dots
+        stroke: "${colors.sent}"
+      }
     }
   }
-
-  buffer_final: {
-    label: "Buffer Fully Transmitted"
-    style: {
-      fill: "${colors.complete}"
-      fill-pattern: dots
-    }
-    icon: https://icons.terrastruct.com/essentials%2F001-check.svg
+  
+  complete_flag: "OK" {
+    shape: circle
+    style.fill: "${colors.sent}"
+    style.font-color: white
   }
 }
 
 # -----------------------------------------------------------------------------
-# FLOW AND ANNOTATIONS
+# FLOW CONNECTORS
 # -----------------------------------------------------------------------------
-step0 -> step1: "Kernel returns\nCQE (1024)" {
-  style.stroke: "${colors.normal}"
+step0 -> step1: "Kernel Process: Send Interrupted" {
+  style.stroke-width: 2
 }
 
-step1 -> step2: "Resubmission logic\ntriggered" {
+step1 -> step2: "Userspace Recovery Loop" {
   style: {
-    stroke: "${colors.changed}"
+    stroke: "${colors.retry}"
     stroke-width: 4
     animated: true
   }
 }
 
-step2 -> step3: "Kernel returns\nCQE (3072)" {
-  style.stroke: "${colors.complete}"
+step2 -> step3: "Submission -> Success" {
+  style.stroke-width: 2
 }
 
 # -----------------------------------------------------------------------------
-# CODE IMPLEMENTATION REFERENCE
+# FOOTER & ANNOTATIONS
 # -----------------------------------------------------------------------------
-handler_code: {
-  near: bottom-left
-  label: |go
-    func handleSendCQE(req *SendRequest, cqe *CQE) {
-        if cqe.res < 0 {
-            req.State = SEND_ERROR
-            return
-        }
-        
-        req.BytesSent += cqe.res
-        
-        if req.BytesSent < req.TotalLength {
-            // SHORT WRITE: Calculate offset and resubmit
-            remaining := req.TotalLength - req.BytesSent
-            nextAddr  := uintptr(req.Buffer) + uintptr(req.BytesSent)
-            
-            sqe := ring.GetSQE()
-            sqe.PrepareSend(req.FD, nextAddr, remaining)
-            req.State = SEND_PARTIAL
-        } else {
-            // FULLY TRANSMITTED
-            req.State = SEND_COMPLETE
-            bufferPool.Release(req.Buffer)
-        }
-    }
-  |
-  style: {
-    fill: "#1E1E1E"
-    font-color: "#D4D4D4"
-    font: mono
+annotation: |md
+  ### Implementation Logic (C pseudo)
+  c
+  // Partial write handler for async send
+  if (cqe->res > 0 && cqe->res < req->total_len) {
+      // 1. Update internal state
+      req->bytes_sent += cqe->res;
+      
+      // 2. Prepare next fragment SQE
+      struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+      io_uring_prep_send(sqe, fd, 
+                         req->buf + req->bytes_sent, 
+                         req->total_len - req->bytes_sent, 
+                         0);
+                         
+      // 3. Chain user data for recovery tracking
+      sqe->user_data = (uint64_t)req; 
+      io_uring_submit(ring);
   }
-}
+  
+|
+annotation.near: bottom-left
 
-# -----------------------------------------------------------------------------
-# LEGEND
-# -----------------------------------------------------------------------------
 legend: {
   near: bottom-right
-  
-  l1: {
-    label: "Active Operation / Changed"
-    style.fill: "${colors.changed}"
-    style.font-color: white
-  }
-  l2: {
-    label: "Completed Data"
-    style.fill: "${colors.complete}"
-  }
-  l3: {
-    label: "Pending Buffer"
-    style.fill: "${colors.buffer}"
-  }
-  
-  *.width: 200
-  *.height: 40
+  p: "Pending/Buffered" { style.fill: "${colors.pending}" }
+  s: "Sent/Complete" { style.fill: "${colors.sent}" }
+  r: "Active Resubmit" { style.fill: "${colors.retry}" }
 }

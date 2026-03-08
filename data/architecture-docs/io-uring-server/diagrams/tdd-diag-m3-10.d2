@@ -1,0 +1,316 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: right
+
+# -----------------------------------------------------------------------------------------
+# GLOBAL TITLE & HEADER
+# -----------------------------------------------------------------------------------------
+title: ||md
+  # 10K Connection Scalability Test Architecture
+  **Target: 10,000+ concurrent connections with stable p99 latency**
+  *Implementation Spec: io_uring multishot accept + provided buffer rings*
+|| {
+  near: top-center
+  style: {
+    stroke-width: 0
+    font-size: 18
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# LEGEND & METADATA
+# -----------------------------------------------------------------------------------------
+legend: {
+  near: bottom-right
+  style.fill: "#f8f9fa"
+  style.stroke: "#dee2e6"
+  style.shadow: true
+  
+  title: "Legend / Symbol Key" {
+    style.bold: true
+  }
+  
+  load_gen: {
+    shape: rectangle
+    style.fill: "#e3f2fd"
+    label: "Load Generator Component"
+  }
+  server: {
+    shape: rectangle  
+    style.fill: "#e8f5e9"
+    label: "io_uring Server Logic"
+  }
+  conn_table: {
+    shape: cylinder
+    style.fill: "#fff3e0"
+    label: "Data Structure (Memory Layout)"
+  }
+  buf_pool: {
+    shape: cylinder
+    style.fill: "#fce4ec"
+    label: "Kernel Shared Buffer Pool"
+  }
+  metrics: {
+    shape: rectangle
+    style.fill: "#f3e5f5"
+    label: "Observability Pipeline"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# LOAD GENERATOR (CLIENT SIDE)
+# -----------------------------------------------------------------------------------------
+load_generator: {
+  style.fill: "#e3f2fd"
+  style.stroke: "#1976d2"
+  style.stroke-width: 2
+  label: "Load Generator\n(Client Side Simulation)"
+
+  connections: {
+    shape: rectangle
+    label: "10,000 TCP\nActive File Descriptors"
+    style.fill: "#bbdefb"
+    style.multiple: true
+  }
+  
+  rate_controller: {
+    label: "Rate Controller"
+    style.fill: "#bbdefb"
+    ramp_up: "Ramp-up: 1,000 conn/sec"
+    msg_rate: "Msg rate: 10-100/sec/conn"
+  }
+  
+  msg_generator: {
+    label: "Message Generator"
+    style.fill: "#bbdefb"
+    msg_size: "Payload: 64-byte ASCII echo"
+    patterns: "Mode: Randomized Poisson Distribution"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# ECHO SERVER (CORE IMPLEMENTATION)
+# -----------------------------------------------------------------------------------------
+echo_server: {
+  style.fill: "#e8f5e9"
+  style.stroke: "#388e3c"
+  style.stroke-width: 2
+  label: "io_uring High-Performance Echo Server"
+
+  # Accept path
+  accept: {
+    style.fill: "#c8e6c9"
+    label: "Multishot Accept Path\n(IORING_OP_ACCEPT)"
+    accept_stats: ||md
+      - **SQE Type**: Multishot (F_MULTI)
+      - **CQE Processing**: IORING_CQE_F_MORE logic
+      - **Backlog**: SOMAXCONN (4096)
+      - **Performance**: Zero-syscall accept loop
+    ||
+  }
+
+  # Connection Table - Memory Layout Specifics
+  conn_table: {
+    shape: cylinder
+    style.fill: "#fff3e0"
+    style.stroke: "#f57c00"
+    label: "Connection State Table\n(16,384 Slots)"
+    sizing: ||md
+      **Sizing Rationale & Layout:**
+      - **Slot Size**: 64 Bytes (Cache-line aligned)
+      - **Fields**: fd (4B), state (4B), rx_bytes (8B), tx_bytes (8B), timestamp (8B), buffer_id (4B)
+      - **Total Memory**: ~1.04 MB (Static Allocation)
+      - **Access**: O(1) indexed by internal connection ID
+    ||
+  }
+
+  # Event Loop
+  event_loop: {
+    style.fill: "#c8e6c9"
+    label: "Single-Threaded I/O Reactor"
+    ring: "Ring Size: 4,096 SQEs / 8,192 CQEs"
+    batch: "Processing: Batch 64+ events per io_uring_wait_cqe"
+  }
+
+  # I/O Handlers
+  io_handlers: {
+    style.fill: "#f1f8e9"
+    
+    recv: {
+      label: "Recv Handler\n(IOSQE_BUFFER_SELECT)"
+      recv_notes: ||md
+        - **Pool ID**: 0x01 (recv_ring)
+        - **Logic**: Extract `bid` from CQE
+        - **Zero-Copy**: No user-space copy for syscall
+      ||
+    }
+    
+    send: {
+      label: "Send Handler\n(Short-Write Aware)"
+      send_notes: ||md
+        - **Mechanics**: IORING_OP_SEND
+        - **Resubmission**: Auto-retry on partial writes
+        - **Cleanup**: Return buffer to pool after completion
+      ||
+    }
+  }
+
+  # Buffer Pool - Kernel Shared Resource
+  buffer_pool: {
+    shape: cylinder
+    style.fill: "#fce4ec"
+    style.stroke: "#c2185b"
+    label: "io_uring Provided Buffer Ring\n(Group 0x01)"
+    buf_sizing: ||md
+      **Resource Configuration:**
+      - **Count**: 2,048 Buffers
+      - **Size**: 8,192 Bytes (8KB) per Buffer
+      - **Total Allocation**: 16.7 MB
+      - **Algorithm**: LRU Kernel Selection
+    ||
+  }
+
+  # Internal Logic Routing
+  accept -> conn_table: "Register Context"
+  event_loop -> accept: "Dispatch Accept CQE"
+  event_loop -> io_handlers.recv: "Dispatch RECV CQE"
+  event_loop -> io_handlers.send: "Dispatch SEND CQE"
+  
+  io_handlers.recv -> buffer_pool: "Request Buffer ID"
+  io_handlers.send -> buffer_pool: "Release Buffer ID"
+  
+  conn_table -> io_handlers.recv: "Fetch Conn Metadata"
+  conn_table -> io_handlers.send: "Update Byte Counters"
+}
+
+# -----------------------------------------------------------------------------------------
+# METRICS & OBSERVABILITY
+# -----------------------------------------------------------------------------------------
+metrics: {
+  style.fill: "#f3e5f5"
+  style.stroke: "#7b1fa2"
+  style.stroke-width: 2
+  label: "Metrics Collection Engine"
+
+  latency_hist: {
+    label: "Latency Distribution\n(Log-Linear Buckets)"
+    buckets: ||md
+      **High-Res HDR Histogram:**
+      - 32 sub-buckets per power of 2
+      - Range: 50ns to 10s
+      - Exports: p50, p99, p99.9
+    ||
+  }
+  
+  throughput: {
+    label: "Throughput Analysis"
+    counters: ||md
+      - **Requests/sec**: Rolling 1s window
+      - **Bandwidth**: Gbps in/out
+      - **Error Rate**: 4xx/5xx equivalent
+    ||
+  }
+  
+  health: {
+    label: "Server Health"
+    monitors: ||md
+      - SQ/CQ Overflow detection
+      - Buffer Ring Starvation %
+      - CPU pinning efficiency
+    ||
+  }
+
+  latency_hist -> throughput: "Calculate Percentiles"
+  throughput -> health: "Evaluate Thresholds"
+}
+
+# -----------------------------------------------------------------------------------------
+# CROSS-COMPONENT CONNECTIONS
+# -----------------------------------------------------------------------------------------
+load_generator.connections -> echo_server.accept: {
+  label: "10,000 Concurrent\nTCP Handshakes"
+  style: {
+    stroke: "#1976d2"
+    stroke-width: 4
+    animated: true
+  }
+}
+
+echo_server.io_handlers.send -> load_generator.connections: {
+  label: "64-byte Echo Stream"
+  style: {
+    stroke: "#388e3c"
+    stroke-dash: 5
+  }
+}
+
+echo_server -> metrics: {
+  label: "Atomic Metric\nUpdates"
+  style.stroke: "#7b1fa2"
+}
+
+# -----------------------------------------------------------------------------------------
+# RESOURCE SUMMARY (FIXED BLOCK STRING ERROR)
+# -----------------------------------------------------------------------------------------
+resource_summary: {
+  near: bottom-left
+  style.fill: "#fafafa"
+  style.stroke: "#bdbdbd"
+  label: "Server Memory Footprint Summary"
+  
+  summary: ||md
+| Resource Component | Quantity | Memory (Est.) | Critical Purpose |
+| :--- | :--- | :--- | :--- |
+| Connection Table | 16,384 Slots | 1.04 MB | Per-socket state tracking |
+| Buffer Ring (0x01) | 2,048 × 8KB | 16.78 MB | Kernel-managed IO buffers |
+| SQ / CQ Rings | 4K / 8K entries | 0.38 MB | Submission/Completion queues |
+| Latency Metrics | 2^16 Buckets | 0.52 MB | HDR Histogram storage |
+| **Total Resident** | **--** | **~18.72 MB** | **Excluding static code size** |
+
+**Performance Targets:**
+- **P99 Latency**: < 500µs (Localhost) / < 5ms (Networked)
+- **Throughput**: > 500,000 ops/sec per physical core
+- **Buffer Safety**: Keep starvation below 0.1%
+  ||
+}
+
+# -----------------------------------------------------------------------------------------
+# TEST PHASE ORCHESTRATION
+# -----------------------------------------------------------------------------------------
+test_phases: {
+  near: bottom-center
+  style.fill: "#e8eaf6"
+  style.stroke: "#3f51b5"
+  label: "Automated Scalability Test Sequence"
+
+  phase1: {
+    label: "Phase 1: Connection Ramp"
+    style.fill: "#c5cae9"
+    desc: "Establish 10K conns\n@ 1K/sec"
+  }
+  
+  phase2: {
+    label: "Phase 2: Warm-up"
+    style.fill: "#c5cae9"
+    desc: "100 msg/sec/conn\nStable Baseline"
+  }
+  
+  phase3: {
+    label: "Phase 3: Burst Stress"
+    style.fill: "#c5cae9"
+    desc: "Step-up to 1K msg/sec\nSimulate Spike"
+  }
+  
+  phase4: {
+    label: "Phase 4: Analysis"
+    style.fill: "#c5cae9"
+    desc: "Drain, measure cleanup\nValidate 0 leaks"
+  }
+  
+  phase1 -> phase2 -> phase3 -> phase4: "State Transition"
+}

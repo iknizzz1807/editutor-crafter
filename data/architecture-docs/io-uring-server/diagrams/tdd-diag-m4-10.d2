@@ -1,0 +1,260 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+title: |'md
+  # io_uring vs epoll: Architectural Comparison
+  ## Syscall Paths and Kernel/Userspace Transitions
+'| {
+  near: top-center
+  style: {
+    font-size: 24
+    bold: true
+  }
+}
+
+direction: right
+
+# ==================== EPOLL ARCHITECTURE ====================
+epoll_side: {
+  label: "epoll Event Loop Architecture"
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#6c757d"
+    stroke-width: 2
+  }
+
+  # User Space - epoll
+  user_space: "User Space" {
+    style: {
+      stroke-dash: 5
+      fill: "#e3f2fd"
+    }
+
+    epoll_app: {
+      label: "Application Process (Event Loop)"
+      style.fill: "#bbdefb"
+      
+      epoll_code: |'c
+        while (running) {
+          // 1. Wait for events (Block/Context Switch)
+          n = epoll_wait(epfd, events, MAX); 
+          
+          for (i = 0; i < n; i++) {
+            fd = events[i].data.fd;
+            // 2. Data Transfer (Context Switch)
+            read(fd, buf, len);  
+            process(buf);
+            // 3. Data Transfer (Context Switch)
+            write(fd, buf, len); 
+          }
+        }
+      '|
+    }
+  }
+
+  # Syscall Layer - epoll
+  epoll_syscall_boundary: "SYSCALL BOUNDARY" {
+    shape: rectangle
+    style: {
+      fill: "#ffcdd2"
+      stroke: "#d32f2f"
+      stroke-width: 4
+      stroke-dash: 2
+    }
+    width: 400
+  }
+
+  # Kernel Space - epoll
+  kernel_space: "Kernel Space" {
+    style: {
+      stroke-dash: 5
+      fill: "#e8f5e9"
+    }
+
+    epoll_internal: {
+      label: "epoll Subsystem"
+      rb_tree: "Red-Black Tree (Watched FDs)"
+      ready_list: "Ready List (ep_rdllist)"
+      rb_tree.style.fill: "#a5d6a7"
+      ready_list.style.fill: "#81c784"
+    }
+
+    vfs: "Virtual File System / Sockets" {
+      style.fill: "#c8e6c9"
+      sock_buf: "Socket Receive/Send Buffers"
+    }
+  }
+
+  # Data flows
+  user_space.epoll_app -> epoll_syscall_boundary: "① epoll_wait()" {
+    style: { stroke: "#d32f2f"; stroke-width: 4; animated: true }
+  }
+  epoll_syscall_boundary -> kernel_space.epoll_internal.ready_list: "Check readiness"
+  
+  kernel_space.epoll_internal.ready_list -> epoll_syscall_boundary: "Data ready"
+  epoll_syscall_boundary -> user_space.epoll_app: "② wake & return"
+
+  user_space.epoll_app -> epoll_syscall_boundary: "③ read(fd) - [TRAP]" {
+    style: { stroke: "#f44336"; stroke-dash: 3 }
+  }
+  epoll_syscall_boundary -> kernel_space.vfs.sock_buf: "Copy to Userspace"
+}
+
+# ==================== io_uring ARCHITECTURE ====================
+iouring_side: {
+  label: "io_uring Asynchronous Architecture"
+  style: {
+    fill: "#f3e5f5"
+    stroke: "#7b1fa2"
+    stroke-width: 2
+  }
+
+  # User Space - io_uring
+  user_space: "User Space" {
+    style: {
+      stroke-dash: 5
+      fill: "#fff3e0"
+    }
+
+    iouring_app: {
+      label: "Application Process"
+      style.fill: "#ffe0b2"
+
+      iouring_logic: |'c
+        // 1. Prepare SQEs (Shared Memory)
+        sqe = io_uring_get_sqe(ring);
+        io_uring_prep_read(sqe, fd, buf, len);
+        
+        // 2. Batch Submit (One or Zero Syscalls)
+        io_uring_submit(ring);
+        
+        // 3. Harvest CQEs (Shared Memory)
+        io_uring_peek_cqe(ring, &cqe);
+        process(cqe->res);
+      '|
+    }
+  }
+
+  # The Shared Memory Interface
+  shared_ring: "Mapped Shared Memory (mmap)" {
+    style: {
+      fill: "#ede7f6"
+      stroke: "#673ab7"
+      stroke-width: 4
+    }
+    
+    sq_ring: "Submission Queue (SQ)" {
+      style.fill: "#d1c4e9"
+      sqe_array: "SQE Array [Op, FD, Addr, Len]" {
+        shape: sql_table
+        0: "READ | fd: 3 | buf: 0x100"
+        1: "WRITE | fd: 4 | buf: 0x200"
+      }
+    }
+    
+    cq_ring: "Completion Queue (CQ)" {
+      style.fill: "#d1c4e9"
+      cqe_array: "CQE Array [Result, UserData]" {
+        shape: sql_table
+        0: "res: 4096 | data: 0xAA"
+        1: "res: 1024 | data: 0xBB"
+      }
+    }
+  }
+
+  # Kernel Space - io_uring
+  kernel_space: "Kernel Space" {
+    style: {
+      stroke-dash: 5
+      fill: "#e8f5e9"
+    }
+
+    iouring_kernel: {
+      label: "io_uring Context"
+      sq_thread: "SQPOLL KThread (Optional)" {
+        shape: diamond
+        style.fill: "#fff9c4"
+      }
+      io_workers: "Async IO Workers" {
+        style.multiple: true
+        style.fill: "#c8e6c9"
+      }
+    }
+  }
+
+  # Connections
+  user_space.iouring_app -> shared_ring.sq_ring: "① Put SQEs\n(No Syscall)" {
+    style: { stroke: "#4caf50"; stroke-width: 4 }
+  }
+  
+  shared_ring.cq_ring -> user_space.iouring_app: "④ Read CQEs\n(No Syscall)" {
+    style: { stroke: "#4caf50"; stroke-width: 4 }
+  }
+
+  user_space.iouring_app -> kernel_space.iouring_kernel: "② io_uring_enter()\n(Batch/Optional)" {
+    style: { stroke: "#2196f3"; stroke-dash: 4 }
+  }
+
+  kernel_space.iouring_kernel.sq_thread -> shared_ring.sq_ring: "Polls Tail" {
+    style.animated: true
+  }
+}
+
+# ==================== SUMMARY & METRICS ====================
+metrics: {
+  near: bottom-center
+  
+  comparison_table: |'md
+    | Feature | epoll | io_uring |
+    | :--- | :--- | :--- |
+    | **Paradigm** | Readiness Notification | Asynchronous Completion |
+    | **Syscalls** | 2N + 1 per batch | 1 (or 0) per batch |
+    | **Data Copy** | Multiple context switches | Zero-copy / Direct-access |
+    | **Complexity** | Low (Standard) | High (Advanced) |
+    | **Performance**| Baseline | Up to 2-3x higher IOPS |
+  '| {
+    style.font-size: 16
+  }
+
+  stats_note: |'md
+    ### Syscall Efficiency Calculation
+    For **N=1000** concurrent operations:
+    - **epoll**: 1000 `read` + 1000 `write` + 1 `epoll_wait` = **2001** Syscalls
+    - **io_uring**: 1 `io_uring_enter` (Submit + Wait) = **1** Syscall
+    - **io_uring + SQPOLL**: 0 `io_uring_enter` = **0** Syscalls
+  '| {
+    style: {
+      fill: "#fffde7"
+      stroke: "#fbc02d"
+    }
+  }
+}
+
+# ==================== LEGEND ====================
+legend: {
+  near: bottom-right
+  
+  heavy_syscall: "Expensive Syscall Path"
+  heavy_syscall.style: { stroke: "#d32f2f"; stroke-width: 4 }
+  
+  shared_mem: "Shared Memory / Zero-Syscall"
+  shared_mem.style: { stroke: "#4caf50"; stroke-width: 4 }
+  
+  optional_path: "Optional/Batch Entry"
+  optional_path.style: { stroke: "#2196f3"; stroke-dash: 4 }
+}
+
+# Global Annotation
+global_note: |'md
+  **Architectural Summary:**
+  `epoll` is a **Synchronous** reactive model. The application is told when it *can* perform IO, then it must trap into the kernel to do so.
+  `io_uring` is a **Proactive** asynchronous model. The application submits requests to shared memory and later harvests the results, avoiding the expensive "Syscall Barrier" context switch entirely for data transfer.
+'| {
+  near: top-left
+  style.fill: "#ffffff"
+}

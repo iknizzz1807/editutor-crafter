@@ -1,0 +1,217 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+title: ||md
+  # Zero-Copy Buffer State Machine
+  **Critical Invariant: Buffer MUST NOT be reused until notification CQE arrives**
+|| {near: top-center}
+
+classes: {
+  valid_state: {
+    shape: circle
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+      stroke-width: 3
+      font-color: "#1B5E20"
+    }
+  }
+  pending_state: {
+    shape: circle
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#EF6C00"
+      stroke-width: 3
+      font-color: "#E65100"
+    }
+  }
+  error_state: {
+    shape: circle
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#C62828"
+      stroke-width: 3
+      font-color: "#B71C1C"
+    }
+  }
+  illegal_transition: {
+    style: {
+      stroke: "#C62828"
+      stroke-width: 4
+      stroke-dash: 6
+      animated: true
+    }
+  }
+  valid_transition: {
+    style: {
+      stroke: "#2E7D32"
+      stroke-width: 2
+    }
+  }
+  transition_label: {
+    style: {
+      font-size: 14
+      font-color: "#37474F"
+    }
+  }
+}
+
+# States
+FREE: {
+  class: valid_state
+  label: "FREE (Idle/Pool)"
+}
+
+IN_ZC_SEND: {
+  class: pending_state
+  label: ||md
+    **IN_ZC_SEND**
+    (completion pending)
+  ||
+}
+
+ZC_NOTIFIED: {
+  class: pending_state
+  label: ||md
+    **ZC_NOTIFIED**
+    (notification pending)
+  ||
+}
+
+ERROR: {
+  class: error_state
+  label: ||md
+    **ERROR**
+    (buffer can be freed)
+  ||
+}
+
+# Initial state indicator
+initial: {
+  shape: circle
+  width: 20
+  style.fill: "#1B5E20"
+}
+initial -> FREE: "" {
+  class: valid_transition
+  style.stroke-width: 4
+}
+
+# Valid transitions
+FREE -> IN_ZC_SEND: ||md
+  **zc_send_submit()**
+  1. IORING_OP_SEND_ZC submitted
+  2. Buffer locked for DMA
+  3. Start latency timer
+|| {
+  class: [valid_transition; transition_label]
+}
+
+IN_ZC_SEND -> ZC_NOTIFIED: ||md
+  **Completion CQE Received**
+  (flags: IORING_CQE_F_NOTIF = 0)
+  - Send queued to NIC hardware
+  - **Buffer STILL in use by DMA**
+  - Set NOTIFICATION_PENDING flag
+|| {
+  class: [valid_transition; transition_label]
+}
+
+ZC_NOTIFIED -> FREE: ||md
+  **Notification CQE Received**
+  (flags: IORING_CQE_F_NOTIF = 1)
+  - Hardware DMA transfer complete
+  - **Buffer safe to reuse/modify**
+  - Return buffer to global pool
+|| {
+  class: [valid_transition; transition_label]
+}
+
+# Error transitions
+IN_ZC_SEND -> ERROR: ||md
+  **Completion CQE Error**
+  (res < 0)
+  - Send operation failed
+  - Kernel released lock
+  - Buffer can be freed immediately
+|| {
+  style: {
+    stroke: "#B71C1C"
+    stroke-width: 2
+  }
+  class: transition_label
+}
+
+ERROR -> FREE: ||md
+  **Error Recovery**
+  - Scrub sensitive data
+  - Return to pool
+|| {
+  class: [valid_transition; transition_label]
+}
+
+# ILLEGAL transition (highlighted)
+IN_ZC_SEND -> FREE: ||md
+  ❌ **ILLEGAL TRANSITION**
+  **Data Corruption Risk:**
+  - Buffer freed before hardware release
+  - NIC may read garbage/reused data
+  - Memory safety violation (UAF)
+|| {
+  class: [illegal_transition; transition_label]
+}
+
+# Legend
+legend: {
+  near: bottom-right
+  label: ||md
+    ### State Machine Legend
+    | State | Meaning | Buffer Action |
+    |-------|---------|---------------|
+    | **FREE** | Available | Safe to acquire |
+    | **IN_ZC_SEND** | SQE submitted | **DO NOT TOUCH** |
+    | **ZC_NOTIFIED** | Completion recv | **DO NOT TOUCH** |
+    | **ERROR** | Op failed | Safe to free |
+    
+    ---
+    **Critical Timing Window:**
+    Between Completion CQE and Notification CQE, the buffer 
+    is still being read by the NIC hardware via DMA.
+  ||
+  shape: rectangle
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#BDBDBD"
+    border-radius: 8
+    font-size: 12
+  }
+}
+
+# Timing diagram
+timing: {
+  near: bottom-center
+  label: ||md
+    ### Zero-Copy Performance Timeline
+    
+    SQE Submit ──► Completion CQE ──► Notification CQE ──► Buffer Safe
+         │              │                    │
+         │              │                    └── IORING_CQE_F_NOTIF=1
+         │              └── IORING_CQE_F_NOTIF=0
+         └── Buffer locked by kernel
+         
+    [ DMA TRANSFER WINDOW: Buffer is immutable ]
+  ||
+  shape: rectangle
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1976D2"
+    border-radius: 8
+    font: mono
+    font-size: 11
+  }
+}

@@ -1,0 +1,225 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: right
+
+# --- TITLE BLOCK ---
+title: {
+  label: |md
+    # Zero-Copy Send: Dual CQE Sequence
+    **Technical Specification:** Linux Kernel `io_uring` + `IORING_OP_SEND_ZC`
+    **Requirement:** Zero-copy requires memory persistence until notification.
+  |
+  near: top-center
+  style.stroke-width: 0
+}
+
+# --- MEMORY LAYOUT (INTEL MANUAL STYLE) ---
+# Precise byte layouts for field engineers
+memory_layout: {
+  label: "Physical Memory Buffer Layout (Pinned Pages)"
+  style.fill: "#F8F9FA"
+  
+  # Page Boundary Top
+  page_limit_top: "---------------- PAGE BOUNDARY (4096B Aligned) ----------------" {
+    shape: text
+    style.font-color: "#B71C1C"
+    style.bold: true
+  }
+
+  buffer_map: {
+    grid-columns: 4
+    grid-gap: 0
+    
+    # Row 1: Header/Metadata
+    off0: "0x00" { style.stroke-width: 0; width: 60; height: 40 }
+    header: "skb_shared_info (Metadata)" {
+      style.fill: "#D1C4E9" # Purple
+      width: 250
+      tooltip: "Internal kernel struct tracking refs"
+    }
+    size8: "8B" { style.stroke-width: 0; style.italic: true }
+    pad1: "" { style.fill: "#E0E0E0" }
+
+    # Row 2: Payload
+    off8: "0x08" { style.stroke-width: 0; width: 60; height: 120 }
+    payload: "Data Payload Page" {
+      style: {
+        fill: "#BBDEFB" # Blue
+        stroke-width: 2
+        bold: true
+      }
+      width: 250
+    }
+    size4k: "4096B" { style.stroke-width: 0; style.italic: true }
+    pad2: "" { style.fill: "#E0E0E0" }
+  }
+  
+  cache_line_annotation: "--- Cache Line Boundary (64B) ---" {
+    shape: text
+    style: {
+      stroke-dash: 3
+      font-size: 10
+      font-color: "#757575"
+    }
+  }
+  
+  sizeof: "sizeof = 4160 bytes" {
+    near: bottom-right
+    shape: text
+    style.italic: true
+  }
+}
+
+# --- COMPLETION QUEUE ENTRY SCHEMATICS ---
+cqe_specifications: {
+  label: "CQE Binary Structures"
+  grid-columns: 2
+  grid-gap: 50
+  
+  completion_cqe: {
+    label: |md
+      ### Immediate Completion
+      *Generated when request is queued.*
+      c
+      struct io_uring_cqe {
+        __u64 user_data; // Request ID
+        __s32 res;       // Sent Bytes
+        __u32 flags;     // 0
+      };
+      
+    |
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#FF9800"
+      border-radius: 8
+    }
+  }
+  
+  notification_cqe: {
+    label: |md
+      ### Notification CQE (Deferred)
+      *Generated when NIC releases memory.*
+      c
+      struct io_uring_cqe {
+        __u64 user_data; // Request ID
+        __s32 res;       // 0
+        __u32 flags;     // IORING_CQE_F_NOTIF
+      };
+      
+    |
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#4CAF50"
+      border-radius: 8
+      double-border: true
+    }
+  }
+}
+
+# --- STATE INDICATOR ---
+state_tracking: {
+  label: "Memory Lifecycle States"
+  grid-columns: 4
+  s0: "1. USABLE" { style.fill: "#E0E0E0" }
+  s1: "2. PINNED" { style.fill: "#EF9A9A"; style.bold: true; style.stroke: red }
+  s2: "3. DMA_READ" { style.fill: "#EF9A9A"; style.bold: true; style.stroke: red }
+  s3: "4. RELEASED" { style.fill: "#A5D6A7"; style.double-border: true }
+}
+
+# --- MAIN SEQUENCE DIAGRAM ---
+zc_sequence: {
+  shape: sequence_diagram
+  
+  app: "User Application\n(Buffer Owner)" { shape: person }
+  ring: "io_uring\nSubsystem"
+  kernel: "Linux Kernel\nNetwork Stack"
+  nic: "NIC Hardware\n(DMA Engine)" { style.fill: "#FFF9C4" }
+  
+  app -> ring: PREP_SEND_ZC(sqe, buf, len)
+  ring -> kernel: io_uring_enter (Submit)
+  
+  Phase_1: Request Acceptance {
+    kernel -> kernel: get_user_pages() (Pin Memory)
+    kernel -> ring: Post Completion CQE
+    ring -> app: CQE (res=N bytes)
+  }
+  
+  app -> app: ⚠️ BLOCK: Memory is Read-Only
+  
+  Phase_2: Asynchronous Hardware Path {
+    kernel -> nic: Setup TX Descriptor
+    nic -> nic: DMA Fetch from User Address
+    nic -> nic: Packet Transmission
+  }
+  
+  Phase_3: Resource Reclamation {
+    nic -> kernel: TX Interrupt / Completion
+    kernel -> kernel: put_page() (Unpin Memory)
+    kernel -> ring: Post Notification CQE (F_NOTIF=1)
+    ring -> app: Notification Received
+  }
+  
+  app -> app: ✅ SAFE: Buffer Released
+}
+
+# --- IMPLEMENTATION TRAP / DOCUMENTATION ---
+logic_warning: {
+  label: |md
+    ## ⚠️ ARCHITECTURAL INVARIANT
+    In non-ZC sends, completion (Step 4) implies memory can be reused.
+    **In Zero-Copy sends, memory MUST NOT be modified until the Notification CQE arrives.**
+    
+    *Failure results in:*
+    1. **Data Corruption:** NIC reads partial data while app writes.
+    2. **Kernel Panic:** DMA occurs on unmapped/freed memory addresses.
+  |
+  style: {
+    fill: "#FFEBEE"
+    stroke: "#B71C1C"
+    stroke-width: 3
+  }
+}
+
+# --- PERFORMANCE CHARACTERISTICS ---
+timing_data: {
+  label: |md
+    ### Latency Profile (Measured in μs)
+    
+    | Segment | Avg | P95 | Notes |
+    | :--- | :--- | :--- | :--- |
+    | Submit -> Completion | 5 | 15 | Ring Context Switch |
+    | Completion -> Notif | 150 | 2500 | NIC TX Path + Interrupt |
+  |
+  style: {
+    fill: "#E1F5FE"
+    stroke: "#0288D1"
+  }
+}
+
+# --- SPATIAL ANNOTATIONS ---
+memory_layout.near: top-left
+cqe_specifications.near: center-right
+logic_warning.near: bottom-left
+timing_data.near: bottom-right
+state_tracking.near: bottom-center
+
+# --- ASSOCIATIONS ---
+# Show technical link between NIC activity and the memory payload field
+nic_dma_link: {
+  zc_sequence.nic -> memory_layout.buffer_map.payload: "DMA Read Access" {
+    style: {
+      stroke: red
+      stroke-width: 3
+      animated: true
+    }
+  }
+}
+
+# Link CQE specs to the sequence points
+assoc_1: cqe_specifications.completion_cqe -> zc_sequence.Phase_1: "Spec for Phase 1 CQE" { style.stroke-dash: 5 }
+assoc_2: cqe_specifications.notification_cqe -> zc_sequence.Phase_3: "Spec for Phase 3 CQE" { style.stroke-dash: 5 }

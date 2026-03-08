@@ -1,0 +1,362 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# User data type encoding legend
+legend: {
+  near: top-right
+  shape: rectangle
+  style.fill: "#f8f9fa"
+  style.stroke: "#dee2e6"
+  
+  title: "user_data Encoding" {
+    shape: text
+    style.bold: true
+  }
+  
+  enc_accept: {
+    label: |'md
+      **OP_TYPE_ACCEPT** = 0x0
+      `user_data = (0x0 << 60) | 0`
+    '|
+  }
+  enc_recv: {
+    label: |'md
+      **OP_TYPE_RECV** = 0x1
+      `user_data = (0x1 << 60) | conn_id`
+    '|
+  }
+  enc_send: {
+    label: |'md
+      **OP_TYPE_SEND** = 0x2
+      `user_data = (0x2 << 60) | conn_id`
+    '|
+  }
+  enc_cancel: {
+    label: |'md
+      **OP_TYPE_CANCEL** = 0x3
+      `user_data = (0x3 << 60) | conn_id`
+    '|
+  }
+}
+
+# Main event loop container
+event_loop: {
+  label: "Echo Server Event Loop"
+  style.fill: "#ffffff"
+  style.stroke: "#495057"
+  style.stroke-width: 2
+
+  # Step 1: Submit multishot accept
+  step1: {
+    label: "1. Submit Multishot Accept"
+    shape: rectangle
+    style.fill: "#d4edda"
+    style.stroke: "#28a745"
+    submit_accept: {
+      label: "io_uring_prep_accept()\nopcode = IORING_OP_ACCEPT\nflags = 0 (multishot implicit)\nuser_data = OP_TYPE_ACCEPT"
+      shape: rectangle
+    }
+    sq_ring: {
+      label: "Submission Queue"
+      shape: parallelogram
+      style.fill: "#e3f2fd"
+      sqe: "SQE (accept)"
+    }
+  }
+
+  # Step 2: Wait for CQE
+  step2: {
+    label: "2. Wait for CQE"
+    shape: rectangle
+    style.fill: "#fff3cd"
+    style.stroke: "#ffc107"
+    wait_cqe: {
+      label: "io_uring_wait_cqe()\nor io_uring_peek_cqe()"
+    }
+    cq_ring: {
+      label: "Completion Queue"
+      shape: parallelogram
+      style.fill: "#fce4ec"
+      cqe: {
+        label: "CQE {\n  user_data\n  res\n  flags\n}"
+      }
+    }
+  }
+
+  # Step 3: Decode and dispatch
+  step3: {
+    label: "3. Decode & Dispatch"
+    shape: diamond
+    style.fill: "#e2e3e5"
+    style.stroke: "#6c757d"
+    decode: {
+      shape: text
+      label: |'md
+        op_type = (cqe->user_data >> 60) & 0xF
+        conn_id = cqe->user_data & CONN_MASK
+      '|
+    }
+  }
+
+  # Dispatch handlers
+  dispatch: {
+    label: "Dispatch Strategy"
+    shape: rectangle
+    disp_acc: {
+      label: "OP_TYPE_ACCEPT\n→ handle_accept_cqe()"
+      style.fill: "#d4edda"
+    }
+    disp_rcv: {
+      label: "OP_TYPE_RECV\n→ handle_recv_cqe()"
+      style.fill: "#cce5ff"
+    }
+    disp_snd: {
+      label: "OP_TYPE_SEND\n→ handle_send_cqe()"
+      style.fill: "#f8d7da"
+    }
+    disp_can: {
+      label: "OP_TYPE_CANCEL\n→ handle_cancel_cqe()"
+      style.fill: "#e2e3e5"
+    }
+  }
+
+  # Connection arrows within dispatch
+  step3 -> dispatch: "switch(op_type)"
+
+  # Handle accept flow
+  handle_accept: {
+    label: "4. handle_accept_cqe()"
+    style.fill: "#d4edda"
+    style.stroke: "#28a745"
+    extract_fd: {
+      label: "client_fd = cqe->res\nconn = alloc_connection()\nconn->fd = client_fd"
+      shape: rectangle
+    }
+    check_more: {
+      label: "cqe->flags & IORING_CQE_F_MORE?"
+      shape: diamond
+    }
+    resubmit_accept: {
+      label: "Resubmit multishot\naccept if MORE=0"
+      shape: rectangle
+      style.fill: "#fff3cd"
+    }
+    submit_recv: {
+      label: "5. Submit Recv"
+      style.fill: "#cce5ff"
+      style.stroke: "#004085"
+      recv_prep: {
+        label: |'md
+          io_uring_prep_recv(sqe, fd, 
+            NULL, 0, 0)
+          sqe->buf_group = BGID
+          sqe->flags = IOSQE_BUFFER_SELECT
+          user_data = (RECV << 60) | conn_id
+        '|
+      }
+    }
+  }
+  handle_accept.extract_fd -> handle_accept.check_more
+  handle_accept.check_more -> handle_accept.resubmit_accept: "No (MORE=0)"
+  handle_accept.check_more -> handle_accept.submit_recv: "Yes (MORE=1)"
+  handle_accept.resubmit_accept -> handle_accept.submit_recv
+  dispatch.disp_acc -> handle_accept.extract_fd
+
+  # Handle recv flow
+  handle_recv: {
+    label: "6. handle_recv_cqe()"
+    style.fill: "#cce5ff"
+    style.stroke: "#004085"
+    check_error: {
+      label: "cqe->res < 0?"
+      shape: diamond
+    }
+    check_eof: {
+      label: "cqe->res == 0?"
+      shape: diamond
+    }
+    extract_buf: {
+      label: "buf_id = cqe->flags >> 16\ndata = buffer_pool[buf_id]\nlen = cqe->res"
+      shape: rectangle
+    }
+    error_path: {
+      label: "connection_close()"
+      shape: rectangle
+      style.fill: "#f8d7da"
+    }
+    submit_send: {
+      label: "7. Submit Send"
+      style.fill: "#f8d7da"
+      style.stroke: "#721c24"
+      send_prep: {
+        label: |'md
+          io_uring_prep_send(sqe, fd,
+            data, len, 0)
+          user_data = (SEND << 60) | conn_id
+        '|
+      }
+    }
+  }
+  dispatch.disp_rcv -> handle_recv.check_error
+  handle_recv.check_error -> handle_recv.error_path: "Yes"
+  handle_recv.check_error -> handle_recv.check_eof: "No"
+  handle_recv.check_eof -> handle_recv.error_path: "Yes (EOF)"
+  handle_recv.check_eof -> handle_recv.extract_buf: "No"
+  handle_recv.extract_buf -> handle_recv.submit_send
+
+  # Handle send flow
+  handle_send: {
+    label: "8. handle_send_cqe()"
+    style.fill: "#f8d7da"
+    style.stroke: "#721c24"
+    send_error: {
+      label: "cqe->res < 0?"
+      shape: diamond
+    }
+    short_write: {
+      label: "bytes_sent < total?"
+      shape: diamond
+    }
+    return_buf: {
+      label: "provided_buffer_return(buf_id)"
+      shape: rectangle
+      style.fill: "#d4edda"
+    }
+    resubmit_send: {
+      label: "Resubmit remaining\nbytes"
+      shape: rectangle
+      style.fill: "#fff3cd"
+    }
+    next_recv: {
+      label: "Submit next recv\n(step 5)"
+      shape: rectangle
+      style.fill: "#cce5ff"
+      style.stroke: "#004085"
+      style.stroke-dash: 3
+    }
+  }
+  dispatch.disp_snd -> handle_send.send_error
+  handle_send.send_error -> handle_recv.error_path: "Yes"
+  handle_send.send_error -> handle_send.short_write: "No"
+  handle_send.short_write -> handle_send.resubmit_send: "Yes"
+  handle_send.short_write -> handle_send.return_buf: "No"
+  handle_send.resubmit_send -> handle_send: "loop"
+  handle_send.return_buf -> handle_send.next_recv
+
+  # Handle cancel flow
+  handle_cancel: {
+    label: "9. handle_cancel_cqe()"
+    style.fill: "#e2e3e5"
+    style.stroke: "#6c757d"
+    dec_inflight: {
+      label: "Cleanup Inflight\nconn->n_in_flight--\nif (n_in_flight == 0)\n  close(fd)"
+      shape: rectangle
+    }
+  }
+  dispatch.disp_can -> handle_cancel.dec_inflight
+
+  # Loop back
+  handle_send.next_recv -> step2: "Wait for Next" {
+    style.stroke: "#28a745"
+    style.stroke-width: 2
+    style.animated: true
+  }
+}
+
+# Flow connections
+event_loop.step1 -> event_loop.step2: "io_uring_submit()"
+event_loop.step2 -> event_loop.step3: "CQE Available"
+
+# Connection state tracking
+connection_state: {
+  label: "Connection State Machine"
+  near: bottom-left
+  shape: rectangle
+  style.fill: "#f8f9fa"
+  style.stroke: "#dee2e6"
+  s_free: "CONN_FREE" {
+    shape: circle
+    style.fill: "#e2e3e5"
+  }
+  s_active: "CONN_ACTIVE" {
+    shape: circle
+    style.fill: "#d4edda"
+  }
+  s_recving: "CONN_RECVING" {
+    shape: circle
+    style.fill: "#cce5ff"
+  }
+  s_sending: "CONN_SENDING" {
+    shape: circle
+    style.fill: "#f8d7da"
+  }
+  s_closing: "CONN_CLOSING" {
+    shape: circle
+    style.fill: "#fff3cd"
+  }
+  
+  s_free -> s_active: "accept"
+  s_active -> s_recving: "submit_recv"
+  s_recving -> s_sending: "recv CQE\nsubmit_send"
+  s_sending -> s_recving: "send CQE\nsubmit_recv"
+  s_recving -> s_closing: "error/EOF"
+  s_sending -> s_closing: "error"
+  s_closing -> s_free: "cleanup"
+}
+
+# Buffer ring annotation
+buffer_ring: {
+  label: "Provided Buffer Ring"
+  near: bottom-right
+  shape: rectangle
+  style.fill: "#e8f5e9"
+  style.stroke: "#4caf50"
+  br_title: "Buffer Selection Flow" {
+    shape: text
+    style.bold: true
+  }
+  br_flow: {
+    label: |'md
+      1. Kernel selects buffer from ring
+      2. CQE contains `IORING_CQE_F_BUFFER` flag
+      3. Buffer ID in `cqe->flags >> 16`
+      4. Application processes data
+      5. `io_uring_buf_ring_add()` returns buffer
+      6. `io_uring_buf_ring_advance()` commits
+    '|
+  }
+}
+
+# Key invariants
+invariants: {
+  label: "Critical Invariants"
+  near: top-left
+  shape: rectangle
+  style.fill: "#fff3cd"
+  style.stroke: "#ffc107"
+  style.stroke-width: 2
+  inv_title: "⚠️ MUST MAINTAIN" {
+    shape: text
+    style.bold: true
+    style.font-color: "#856404"
+  }
+  inv_list: {
+    label: |'md
+      1. **Never close fd while n_in_flight > 0**
+         → Use ASYNC_CANCEL first
+      2. **Buffer ownership tracking**
+         → Buffer belongs to connection until send CQE
+      3. **Connection ID != fd**
+         → Use conn_id for lookups to prevent reuse bugs
+      4. **Check IORING_CQE_F_MORE for multishot**
+         → Resubmit accept when MORE=0
+      5. **Handle short writes**
+         → Resubmit remaining bytes at adjusted offset
+    '|
+  }
+}

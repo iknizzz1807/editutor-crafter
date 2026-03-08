@@ -1,0 +1,200 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- ROOT LEVEL ANNOTATIONS ---
+
+title: |md
+  # Connection Cleanup with ASYNC_CANCEL
+  **Manual Reference: io_uring / IORING_OP_ASYNC_CANCEL (Opcode 28)**
+  *Implementation-grade flow for safe fd lifecycle management*
+| {
+  near: top-center
+  shape: rectangle
+  style: {
+    stroke-width: 0
+    font-size: 24
+    bold: true
+  }
+}
+
+legend_box: |md
+  ### Legend & Protocol
+  - **Blue Solid**: Synchronous Request / Control Flow
+  - **Dashed Arrow**: Async SQE Submission (Ring Entry)
+  - **Purple Solid**: CQE Completion / Result (Ring Exit)
+  - **Red Stroke**: Critical Path / Cancellation Logic
+  - **Green Stroke**: Final Resource Release / close()
+| {
+  near: top-left
+  shape: rectangle
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#9E9E9E"
+    border-radius: 8
+    font-size: 14
+  }
+}
+
+code_reference: |md
+  ### C Implementation (Reference)
+  c
+  // Offset: 0x00 - Function Entry
+  void connection_close(tcp_server_t *s, connection_t *c) {
+      if (c->n_in_flight > 0) {
+          c->cancel_requested = true;
+          c->state = CONN_CANCELLING;
+          // IORING_OP_ASYNC_CANCEL (28)
+          // sqe->addr = (uint64_t)c->fd;
+          // sqe->cancel_flags = IORING_ASYNC_CANCEL_ALL;
+          submit_async_cancel(s->ring, c->fd, 
+                             IORING_ASYNC_CANCEL_ALL);
+          return; // Defer close() until CQE
+      }
+      // Critical Section: Ensure n_in_flight == 0
+      close(c->fd); 
+      c->fd = -1;
+      c->state = CONN_CLOSED;
+  }
+  
+| {
+  near: top-right
+  shape: rectangle
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1565C0"
+    font-size: 12
+  }
+}
+
+state_machine_spec: |md
+  ### State Transition Invariants
+  1. **[01] ACTIVE**: Processing `IORING_OP_READ/WRITE`. 
+     * `n_in_flight >= 1`
+  2. **[02] CANCELLING**: 
+     * **Trigger**: `close_requested`
+     * **Guard**: `n_in_flight > 0`
+     * **Action**: SQE Submission (Cancel)
+  3. **[03] CLOSED**:
+     * **Trigger**: Final CQE (res: -ECANCELED)
+     * **Guard**: `n_in_flight == 0`
+     * **Action**: `close(fd)`, Zero context.
+| {
+  near: bottom-left
+  shape: rectangle
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#E65100"
+    border-radius: 4
+  }
+}
+
+critical_invariant: |md
+  ### ⚠️ CRITICAL SAFETY INVARIANT
+  **The File Descriptor (fd) may ONLY be closed when:**
+  1. Internal reference counter `n_in_flight == 0`.
+  2. Every cancellation CQE has been harvested from the completion ring.
+  3. No kernel-side async worker threads are holding `struct file *`.
+  
+  **Failure to follow this sequence leads to:**
+  - **Use-After-Free**: Late CQE writes to reused memory buffers.
+  - **Data Corruption**: A late kernel write targets a REUSED fd in another thread.
+| {
+  near: bottom-center
+  shape: rectangle
+  style: {
+    fill: "#FFEBEE"
+    stroke: "#C62828"
+    double-border: true
+    bold: true
+    font-size: 14
+  }
+}
+
+fd_reuse_scenario: |md
+  ### FD Reuse Hazard (Race Condition)
+  1. **Thread A**: Connection A (fd=5) submits `READ`.
+  2. **Thread A**: Calls `close(5)` immediately (Bad).
+  3. **Thread B**: `accept()` returns `fd=5`.
+  4. **Kernel**: Async READ A finishes, writes data to `fd=5`.
+  5. **Result**: Data for Conn A overwrites buffers for Conn B.
+| {
+  near: bottom-right
+  shape: rectangle
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#388E3C"
+  }
+}
+
+# --- CORE SEQUENCE DIAGRAM ---
+
+cleanup_flow: {
+  shape: sequence_diagram
+  
+  # Participants
+  loop: "Event Loop" {
+    shape: person
+    style.fill: "#E8F4FD"
+  }
+  conn: "Connection Context" {
+    style.fill: "#FFF3E0"
+  }
+  kernel: "Kernel (io_uring)" {
+    style.fill: "#F3E5F5"
+  }
+
+  loop -> conn: "1. check_in_flight()"
+  conn -> loop: "return [atomic_t] n_in_flight = 2"
+  
+  loop -> loop: "Decision: n_in_flight > 0? (YES)" {
+    style.stroke: "#F57F17"
+    style.bold: true
+  }
+  
+  loop.cancel -> kernel: "2. Submit SQE: IORING_OP_ASYNC_CANCEL" {
+    style.stroke: "#C62828"
+    style.stroke-dash: 5
+    style.animated: true
+    label: "sqe->fd=fd, flags=CANCEL_ALL"
+  }
+  
+  kernel.proc -> kernel: "Match fd in Internal SQE_TABLE"
+  
+  kernel -> loop: "3. CQE: res=-ECANCELED (Original Read Op)" {
+    style.stroke: "#7B1FA2"
+    label: "user_data: 0xDEADBEEF"
+  }
+  loop -> conn: "atomic_dec(n_in_flight) -> [1]"
+  
+  kernel -> loop: "4. CQE: res=-ECANCELED (Original Write Op)" {
+    style.stroke: "#7B1FA2"
+    label: "user_data: 0xCAFEBABE"
+  }
+  loop -> conn: "atomic_dec(n_in_flight) -> [0]"
+  
+  loop -> loop: "Decision: n_in_flight == 0? (YES)" {
+    style.stroke: "#2E7D32"
+    style.bold: true
+  }
+  
+  loop -> kernel: "5. syscall: close(fd)" {
+    style.stroke: "#2E7D32"
+    style.stroke-width: 4
+    label: "Release File Slot"
+  }
+  
+  kernel -> loop: "ret: 0 (fd released)"
+  
+  loop -> conn: "set state = CLOSED" {
+    style.bold: true
+  }
+  
+  # Lifeline and Span Styling
+  loop.cancel.style.fill: "#FFEBEE"
+  kernel.proc.style.fill: "#F3E5F5"
+  kernel.proc.style.stroke: "#7B1FA2"
+}

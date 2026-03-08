@@ -1,0 +1,106 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # FD Reuse Race Condition
+  **Critical Bug in Async I/O Servers**
+| {near: top-center}
+shape: sequence_diagram
+direction: right
+# Participants
+app: Application {
+  style.fill: "#E3F2FD"
+  style.stroke: "#1565C0"
+}
+old_conn: "Old Connection\n(fd=5, conn_id=1)" {
+  style.fill: "#FFCDD2"
+  style.stroke: "#C62828"
+}
+kernel: Kernel {
+  style.fill: "#E8F5E9"
+  style.stroke: "#2E7D32"
+}
+new_conn: "New Connection\n(fd=5, conn_id=2)" {
+  style.fill: "#C8E6C9"
+  style.stroke: "#388E3C"
+}
+# Timeline markers
+t0: T0 {style.fill: "#BBDEFB"}
+t1: T1 {style.fill: "#FFCDD2"}
+t2: T2 {style.fill: "#C8E6C9"}
+t3: T3 {style.fill: "#FFCDD2"}
+t4: T4 {style.fill: "#FFCDD2"; style.stroke: "#B71C1C"; style.stroke-width: 3}
+# === T0: Submit recv on fd=5 ===
+t0.app -> t0.kernel: "submit recv\nfd=5, user_data=conn_id=1" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+}
+t0.kernel -> t0.old_conn: "SQE queued\nawaiting data" {
+  style.stroke: "#2E7D32"
+  style.stroke-dash: 3
+}
+t0.old_conn."recv SQE in-flight"
+# === T1: Close fd=5 (OLD connection) ===
+t1.app -> t1.kernel: "close(5)" {
+  style.stroke: "#C62828"
+  style.stroke-width: 2
+}
+t1.kernel -> t1.old_conn: "fd=5 closed\nBUT recv still pending!" {
+  style.stroke: "#C62828"
+  style.stroke-dash: 3
+}
+t1.old_conn."fd = -1\nconn_id=1 marked CLOSED"
+t1.old_conn.style.fill: "#FFEBEE"
+t1.old_conn.style.stroke-dash: 5
+# === T2: Accept new connection, gets fd=5 ===
+t2.kernel -> t2.app: "accept() returns fd=5\n(REUSED!)" {
+  style.stroke: "#388E3C"
+  style.stroke-width: 2
+}
+t2.app -> t2.new_conn: "conn_id=2 assigned\nfd=5" {
+  style.stroke: "#388E3C"
+}
+t2.new_conn."New connection active\nfd=5, conn_id=2"
+# === T3: Late recv CQE arrives ===
+t3.kernel -> t3.app: "recv CQE arrives\nuser_data=conn_id=1\nres=1024 bytes" {
+  style.stroke: "#C62828"
+  style.stroke-width: 3
+  style.stroke-dash: 5
+  style.animated: true
+}
+# === T4: Corruption occurs ===
+t4.app."Lookup conn_id=1\n-> finds CLOSED slot"
+t4.app -> t4.new_conn: "PROCESS DATA\nusing conn_id=2 context\nWRONG CONNECTION!" {
+  style.stroke: "#B71C1C"
+  style.stroke-width: 3
+  style.stroke-dash: 5
+}
+t4.new_conn."DATA CORRUPTION\n\nReceived data meant for\nOLD connection\napplied to NEW connection" {
+  style.fill: "#FFCDD2"
+  style.stroke: "#B71C1C"
+  style.stroke-width: 3
+  style.bold: true
+}
+# Critical warning annotation
+warning: |md
+  ## The Fix: Track by conn_id, NOT fd
+  **Before close:**
+  1. Check `n_in_flight > 0`
+  2. If yes: Submit `ASYNC_CANCEL`
+  3. Wait for cancellation CQEs
+  4. Only then: `close(fd)`
+  **CQE Handler:**
+  1. Decode `conn_id` from `user_data`
+  2. Lookup connection by `conn_id`
+  3. If `conn.state == CLOSED`: **IGNORE CQE**
+  4. Never use `fd` to identify connection
+| {
+  near: bottom-center
+  style.fill: "#FFF3E0"
+  style.stroke: "#E65100"
+  style.stroke-width: 2
+  style.border-radius: 8
+}

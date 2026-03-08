@@ -1,0 +1,305 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Linked SQE Chains — Atomic Multi-Step Operations
+  ## Linux io_uring Kernel Submission Logic (Internal Implementation)
+| {near: top-center}
+
+direction: right
+
+# --- Styling and Metadata ---
+classes: {
+  success_op: {
+    style: {
+      fill: "#90EE90"
+      stroke: "#228B22"
+      stroke-width: 2
+      font-color: "#006400"
+      bold: true
+    }
+  }
+  failed_op: {
+    style: {
+      fill: "#FFB6C1"
+      stroke: "#DC143C"
+      stroke-width: 2
+      font-color: "#8B0000"
+      bold: true
+    }
+  }
+  cancelled_op: {
+    style: {
+      fill: "#D3D3D3"
+      stroke: "#696969"
+      stroke-width: 2
+      stroke-dash: 4
+      font-color: "#696969"
+    }
+  }
+  sqe_box: {
+    style: {
+      fill: "#E6F3FF"
+      stroke: "#4169E1"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  link_arrow: {
+    style: {
+      stroke: "#4169E1"
+      stroke-width: 3
+      animated: true
+    }
+  }
+  cancel_arrow: {
+    style: {
+      stroke: "#DC143C"
+      stroke-width: 2
+      stroke-dash: 4
+    }
+  }
+  result_box: {
+    style: {
+      fill: "#FFFACD"
+      stroke: "#DAA520"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  header: {
+    style: {
+      fill: "#6c5ce7"
+      font-color: white
+      bold: true
+    }
+  }
+}
+
+# --- 1. Memory Layout: io_uring_sqe (64 Bytes) ---
+sqe_struct: {
+  label: "struct io_uring_sqe (64B Layout)"
+  shape: sql_table
+  style.fill: "#f8f9fa"
+
+  00: "opcode" {constraint: "u8"}
+  01: "flags (e.g. IOSQE_IO_LINK)" {constraint: "u8"}
+  02: "ioprio" {constraint: "u16"}
+  04: "fd" {constraint: "s32"}
+  08: "off / addr2" {constraint: "u64"}
+  16: "addr / splice_off_in" {constraint: "u64"}
+  24: "len" {constraint: "u32"}
+  28: "flags (union)" {constraint: "u32"}
+  32: "user_data" {constraint: "u64"}
+  40: "buf_index / buf_group" {constraint: "u16"}
+  42: "personality" {constraint: "u16"}
+  44: "splice_fd_in / file_index" {constraint: "s32"}
+  48: "pad2[2]" {constraint: "u64"}
+}
+
+# --- 2. Execution Scenarios ---
+scenarios: {
+  success_chain: {
+    label: "Scenario 1: All Operations Succeed"
+    
+    step1_read: {
+      class: sqe_box
+      label: |md
+        **1. READ**
+        ---
+        `opcode: IORING_OP_READ`
+        `flags: IOSQE_IO_LINK`
+        `user_data: 0x1001`
+      |
+    }
+    step2_write: {
+      class: sqe_box
+      label: |md
+        **2. WRITE**
+        ---
+        `opcode: IORING_OP_WRITE`
+        `flags: IOSQE_IO_LINK`
+        `user_data: 0x1002`
+      |
+    }
+    step3_fsync: {
+      class: sqe_box
+      label: |md
+        **3. FSYNC**
+        ---
+        `opcode: IORING_OP_FSYNC`
+        `flags: 0`
+        `user_data: 0x1003`
+      |
+    }
+    
+    step1_read -> step2_write: "IOSQE_IO_LINK" {class: link_arrow}
+    step2_write -> step3_fsync: "IOSQE_IO_LINK" {class: link_arrow}
+    
+    success_results: {
+      class: result_box
+      label: |md
+        **CQE Results:**
+        - READ: `res=4096` ✓
+        - WRITE: `res=4096` ✓
+        - FSYNC: `res=0` ✓
+        ---
+        **Chain State: COMPLETE**
+      |
+    }
+  }
+
+  failure_chain: {
+    label: "Scenario 2: READ Fails → Automatic Cancellation"
+    
+    fail_read: {
+      class: sqe_box
+      style.stroke: "#DC143C"
+      label: |md
+        **1. READ (FAIL)**
+        ---
+        `opcode: IORING_OP_READ`
+        `flags: IOSQE_IO_LINK`
+        `user_data: 0x2001`
+        ---
+        **Error: -EBADF**
+      |
+    }
+    cancel_write: {
+      class: sqe_box
+      style.opacity: 0.6
+      label: |md
+        **2. WRITE (CANCEL)**
+        ---
+        `opcode: IORING_OP_WRITE`
+        `flags: IOSQE_IO_LINK`
+        `user_data: 0x2002`
+      |
+    }
+    cancel_fsync: {
+      class: sqe_box
+      style.opacity: 0.6
+      label: |md
+        **3. FSYNC (CANCEL)**
+        ---
+        `opcode: IORING_OP_FSYNC`
+        `flags: 0`
+        `user_data: 0x2003`
+      |
+    }
+    
+    fail_read -> cancel_write: "FAILURE → ECANCELED" {class: cancel_arrow}
+    cancel_write -> cancel_fsync: "ECANCELED → ECANCELED" {class: cancel_arrow}
+    
+    failure_results: {
+      class: result_box
+      label: |md
+        **CQE Results:**
+        - READ: `res=-EBADF` ✗
+        - WRITE: `res=-ECANCELED` ✗
+        - FSYNC: `res=-ECANCELED` ✗
+        ---
+        **Chain State: FAILED**
+        **first_error: -EBADF**
+      |
+    }
+
+    cqe_visual_detail: {
+      read_cqe: {
+        class: failed_op
+        label: "READ CQE\nres=-EBADF"
+      }
+      write_cqe: {
+        class: cancelled_op
+        label: "WRITE CQE\nres=-ECANCELED"
+      }
+      fsync_cqe: {
+        class: cancelled_op
+        label: "FSYNC CQE\nres=-ECANCELED"
+      }
+      read_cqe -> write_cqe -> fsync_cqe: "kernel propagation"
+    }
+  }
+}
+
+# --- 3. Internal State Machine ---
+state_machine: {
+  near: bottom-left
+  label: "Linked Chain State Machine"
+  
+  start: ●
+  building: "BUILDING (App Side)"
+  submitted: "SUBMITTED (Kernel Queue)"
+  partial: "PARTIAL (In-Progress)"
+  
+  complete: {
+    class: success_op
+    label: "COMPLETE\n(first_error = 0)"
+  }
+  failed: {
+    class: failed_op
+    label: "FAILED\n(first_error < 0)"
+  }
+  
+  start -> building
+  building -> submitted: "io_uring_submit()"
+  submitted -> partial: "First SQE consumed"
+  partial -> complete: "All SQEs processed, no errors"
+  partial -> failed: "First non-link error detected"
+}
+
+# --- 4. Technical Annotations ---
+transaction_semantics: {
+  near: bottom-right
+  shape: text
+  style.fill: transparent
+  label: |md
+    ## Transaction Semantics
+    **Atomic Link Guarantee:**
+    - Chain executes sequentially on the same worker context.
+    - If entry `N` fails, entries `N+1...M` are aborted.
+    - Aborted entries return `res = -ECANCELED` to userspace.
+    
+    **Implementation Constraints:**
+    1. Maximum link depth: Kernel dependent (usually limited).
+    2. Cannot link across different rings.
+    3. `IOSQE_IO_DRAIN` on a link head waits for previous reqs.
+  |
+}
+
+cqe_handling_logic: {
+  near: bottom-center
+  shape: text
+  style.fill: transparent
+  style.font: mono
+  label: |md
+    ### CQE Handling Pseudocode (Kernel-level)
+    c
+    void handle_chain_cqe(struct io_kiocb *req, int res) {
+      if (res < 0 && (req->flags & REQ_F_LINK)) {
+         // Mark following SQEs in this link for cancellation
+         cancel_linked_timeout(req);
+         mark_chain_cancelled(req->link);
+      }
+      
+      io_cqring_add_event(req, res);
+      
+      if (req->flags & REQ_F_LINK_NEXT) {
+         io_submit_sqe(req->link_next);
+      }
+    }
+    
+  |
+}
+
+# --- 5. Legend ---
+legend: {
+  near: top-right
+  Success: {class: success_op; shape: rectangle}
+  Failed: {class: failed_op; shape: rectangle}
+  Cancelled: {class: cancelled_op; shape: rectangle}
+}

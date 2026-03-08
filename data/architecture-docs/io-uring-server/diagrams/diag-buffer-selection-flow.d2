@@ -1,0 +1,373 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: Provided Buffer Selection — Trace Example {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  step1: {
+    direction: down
+    label: "Step 1: Post Buffers"
+    app1: {
+      label: "Application"
+      shape: rectangle
+      style.fill: "#E8F5E9"
+    }
+    buf_ring1: {
+      label: "Buffer Ring (bgid=1)"
+      shape: queue
+      width: 300
+      style.fill: "#FFF3E0"
+      slots1: |md
+        **Head → [0]: buf[0] @ 0x7f1000**
+        [1]: buf[1] @ 0x7f2000
+        [2]: buf[2] @ 0x7f3000
+        ...
+        [15]: buf[15] @ 0x7fF000 ← Tail
+      |
+    }
+    code1: {
+      label: "io_uring_buf_ring_add() x16"
+      width: 280
+      code: |'c
+        for (i = 0; i < 16; i++) {
+          io_uring_buf_ring_add(br,
+            buffers[i], 8192, i, 0, i);
+        }
+        io_uring_buf_ring_advance(br, 16);
+      '|
+    }
+    note1: {
+      label: "Ring now has 16 available buffers\nhead=0, tail=16"
+      shape: callout
+      style.fill: "#E3F2FD"
+    }
+  }
+}
+app1 -> buf_ring1: "post 16 buffers"
+app1 -> code1: "executes"
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  step2: {
+    direction: down
+    label: "Step 2: Submit RECV"
+    sqe_box: {
+      label: "SQE Preparation"
+      shape: class
+      opcode: "IORING_OP_RECV"
+      fd: "client_fd"
+      addr: "0 (kernel selects)"
+      len: "0 (use buffer size)"
+      buf_group: "1 (bgid)"
+      flags: "IOSQE_BUFFER_SELECT"
+    }
+    code2: {
+      label: "Submit with buffer selection"
+      width: 280
+      code: |'c
+        sqe->opcode = IORING_OP_RECV;
+        sqe->fd = client_fd;
+        sqe->addr = 0;  // No buffer addr
+        sqe->buf_group = 1;  // bgid
+        sqe->flags |= IOSQE_BUFFER_SELECT;
+      '|
+    }
+  }
+}
+sqe_box -> kernel_step3: "submit to kernel" {
+  style.stroke: "#1976D2"
+  style.stroke-width: 2
+}
+row3: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  step3: {
+    direction: down
+    label: "Step 3: Kernel Pops Buffer"
+    kernel_step3: {
+      label: "Kernel (io_uring)"
+      shape: rectangle
+      style.fill: "#FFEBEE"
+      width: 200
+    }
+    buf_ring3: {
+      label: "Buffer Ring (after pop)"
+      shape: queue
+      width: 300
+      style.fill: "#FFF3E0"
+      slots3: |md
+        **Head → [1]: buf[1] @ 0x7f2000**
+        [2]: buf[2] @ 0x7f3000
+        ...
+        [15]: buf[15] @ 0x7fF000 ← Tail
+        *[0] CLAIMED by kernel*
+      |
+    }
+    note3: {
+      label: "Kernel pops buf[0] from head\nhead advances: 0 → 1"
+      shape: callout
+      style.fill: "#FFCDD2"
+    }
+    code3: {
+      label: "Internal kernel action"
+      width: 260
+      code: |'c
+        // Kernel selects buffer:
+        bid = ring->head % ring_size;
+        buf_addr = ring->bufs[bid].addr;
+        ring->head++;  // Advance head
+        // buf[0] @ 0x7f1000 selected
+      '|
+    }
+  }
+}
+kernel_step3 -> buf_ring3: "pop from head"
+kernel_step3 -> note3: "claims"
+kernel_step3 -> code3: "executes"
+row4: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  step4: {
+    direction: down
+    label: "Step 4: DMA Receive"
+    nic: {
+      label: "NIC / Network Stack"
+      shape: parallelogram
+      style.fill: "#E1BEE7"
+    }
+    dma_arrow: {
+      label: "DMA directly to user buffer"
+      shape: rectangle
+      width: 320
+      style.fill: transparent
+      style.stroke: "#7B1FA2"
+      style.stroke-width: 3
+      style.stroke-dash: 5
+      dma_detail: |md
+        **DMA Transfer: 2048 bytes**
+        Source: NIC RX ring buffer
+        Dest: buf[0] @ 0x7f1000 (pinned)
+        ✓ No kernel copy
+        ✓ Zero-copy receive
+      |
+    }
+    buf_mem: {
+      label: "User Buffer Memory (pinned)"
+      shape: cylinder
+      style.fill: "#C8E6C9"
+      mem_layout: |md
+        0x7f1000: [R X  D A T A  H E R E  ...]
+                  ↑ 2048 bytes received
+      |
+    }
+  }
+}
+nic -> dma_arrow: "triggers"
+dma_arrow -> buf_mem: "writes"
+row5: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  step5: {
+    direction: down
+    label: "Step 5: CQE Posted"
+    cqe_box: {
+      label: "CQE Structure"
+      shape: class
+      user_data: "0x1234 (request ID)"
+      res: "2048 (bytes received)"
+      flags: "0x00010000"
+    }
+    flags_detail: {
+      label: "CQE Flags Breakdown"
+      shape: rectangle
+      width: 320
+      style.fill: "#FFF8E1"
+      breakdown: |md
+        **flags = 0x00010000**
+        Bit 0 (BUFFER): 1 ← Buffer was selected
+        **Buffer ID extraction:**
+        `bid = flags >> 16`
+        `bid = 0x00010000 >> 16`
+        `bid = 0x0001 = 1`
+        Wait... that's bid=1?
+        Actually: `IORING_CQE_BUFFER_SHIFT = 16`
+        `bid = 0x00010000 >> 16 = 1`
+        **But kernel used buf[0]!**
+        The bid in flags is the buffer ID
+        stored in the ring entry, not index.
+      |
+    }
+    code5: {
+      label: "CQE inspection"
+      width: 280
+      code: |'c
+        // CQE arrives:
+        cqe->user_data = 0x1234;
+        cqe->res = 2048;  // bytes
+        cqe->flags = 0x00010000;
+        // Check buffer flag:
+        if (cqe->flags & IORING_CQE_F_BUFFER) {
+          // Buffer was selected!
+        }
+      '|
+    }
+  }
+}
+kernel_step3 -> cqe_box: "posts CQE"
+cqe_box -> flags_detail: "decode"
+cqe_box -> code5: "application reads"
+row6: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  step6: {
+    direction: down
+    label: "Step 6: Extract Buffer ID"
+    app6: {
+      label: "Application Handler"
+      shape: rectangle
+      style.fill: "#E8F5E9"
+    }
+    code6: {
+      label: "Buffer ID extraction"
+      width: 340
+      code: |'c
+        #define IORING_CQE_BUFFER_SHIFT 16
+        #define IORING_CQE_F_BUFFER      (1U << 0)
+        void handle_recv_cqe(cqe, pool) {
+          if (cqe->flags & IORING_CQE_F_BUFFER) {
+            // Extract buffer ID:
+            __u16 bid = cqe->flags >> 
+                        IORING_CQE_BUFFER_SHIFT;
+            // bid = 0 (buf[0] was used)
+            void *data = pool->buffers[bid];
+            size_t len = cqe->res;  // 2048
+            process_data(data, len);
+            // Buffer now "owned" by app
+          }
+        }
+      '|
+    }
+    note6: {
+      label: "Application now has:\n• Buffer ID: 0\n• Data pointer: 0x7f1000\n• Length: 2048 bytes"
+      shape: callout
+      style.fill: "#C8E6C9"
+    }
+  }
+}
+app6 -> code6: "executes"
+code6 -> note6: "produces"
+row7: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  step7: {
+    direction: down
+    label: "Step 7: Replenish Ring"
+    buf_ring7: {
+      label: "Buffer Ring (before replenish)"
+      shape: queue
+      width: 300
+      style.fill: "#FFF3E0"
+      slots7_before: |md
+        Head → [1]: buf[1] @ 0x7f2000
+        [2]: buf[2] @ 0x7f3000
+        ...
+        [15]: buf[15] @ 0x7fF000 ← Tail
+        Available: 15 / 16
+      |
+    }
+    code7: {
+      label: "Return buffer to ring"
+      width: 320
+      code: |'c
+        void return_buffer(ring, pool, bid) {
+          // Add buffer back to ring tail:
+          io_uring_buf_ring_add(
+            pool->buf_ring,
+            pool->buffers[bid],  // 0x7f1000
+            pool->buffer_size,   // 8192
+            bid,                 // 0
+            0,  // flags
+            0   // loc_hint
+          );
+          // Advance tail to publish:
+          io_uring_buf_ring_advance(
+            pool->buf_ring, 1
+          );
+        }
+      '|
+    }
+    buf_ring7_after: {
+      label: "Buffer Ring (after replenish)"
+      shape: queue
+      width: 300
+      style.fill: "#C8E6C9"
+      slots7_after: |md
+        Head → [1]: buf[1] @ 0x7f2000
+        [2]: buf[2] @ 0x7f3000
+        ...
+        [15]: buf[15] @ 0x7fF000
+        [0]: buf[0] @ 0x7f1000 ← Tail (returned!)
+        Available: 16 / 16 ✓
+      |
+    }
+  }
+}
+app6 -> buf_ring7: "after processing"
+buf_ring7 -> code7: "needs replenish"
+code7 -> buf_ring7_after: "returns buf[0]"
+legend: {
+  near: bottom-center
+  shape: rectangle
+  style.fill: "#FAFAFA"
+  style.stroke: "#BDBDBD"
+  legend_content: |md
+    **Legend:**
+    • **buf_ring**: Provided buffer ring shared with kernel (bgid identifies it)
+    • **bid**: Buffer ID stored in ring entry, returned in CQE flags
+    • **IOSQE_BUFFER_SELECT**: SQE flag requesting kernel buffer selection
+    • **IORING_CQE_F_BUFFER**: CQE flag indicating buffer was selected
+    • **Head/Tail**: Ring indices managed by kernel (head) and app (tail for add)
+    **Critical**: Buffer is "owned" by kernel during receive, then by app after CQE.
+    App MUST return buffer to ring after processing or pool will exhaust!
+  |
+}
+step1 -> step2: "setup → submit"
+step2 -> step3: "submit → kernel"
+step3 -> step4: "pop → DMA"
+step4 -> step5: "DMA → CQE"
+step5 -> step6: "CQE → extract"
+step6 -> step7: "process → replenish"

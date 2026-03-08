@@ -1,0 +1,170 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#8B5CF6"
+    data: "#3B82F6"
+    free: "#10B981"
+    padding: "#6B7280"
+    pointer: "#F59E0B"
+    error: "#EF4444"
+    success: "#22C55E"
+    kernel: "#1E293B"
+  }
+}
+
+title: |md
+  # Resource Cleanup Sequence: io_uring
+  ## Kernel Teardown Order & State Validation Spec
+| {near: top-center}
+
+shape: sequence_diagram
+
+# -----------------------------------------------------------------------------
+# Participants Definition
+# -----------------------------------------------------------------------------
+Application: User-Space Process {
+  shape: person
+  style.stroke: ${colors.data}
+}
+RingState: io_uring_ring Struct {
+  style.fill: ${colors.header}
+  style.font-color: white
+}
+Kernel: Linux Kernel Subsystem {
+  style.fill: ${colors.kernel}
+  style.font-color: white
+}
+Buffers: Registered User Buffers {
+  style.fill: ${colors.data}
+}
+Files: Registered File Table {
+  style.fill: ${colors.data}
+}
+Memory: Virtual Memory Manager {
+  style.fill: ${colors.padding}
+}
+
+# -----------------------------------------------------------------------------
+# Teardown Sequence
+# -----------------------------------------------------------------------------
+
+Application."1. Initiate Cleanup"
+
+# --- STEP 1: BUFFERS ---
+step1_unregister_buffers: {
+  label: "Phase 1: Registered Buffer Teardown"
+  Application -> RingState: "Check buffers_registered bitmask"
+  RingState -> Application: "STATE: true"
+  Application -> Kernel: "io_uring_register(IORING_UNREGISTER_BUFFERS)"
+  Kernel -> Buffers: "io_unmap_user(fput/put_page)"
+  Kernel -> Application: "ret = 0 (Success)"
+  Application -> RingState: "Update state: buffers_registered = false"
+}
+
+# --- STEP 2: FILES ---
+step2_unregister_files: {
+  label: "Phase 2: Registered File Teardown"
+  Application -> RingState: "Check files_registered bitmask"
+  RingState -> Application: "STATE: true"
+  Application -> Kernel: "io_uring_register(IORING_UNREGISTER_FILES)"
+  Kernel -> Files: "io_sqe_files_unregister (fput)"
+  Kernel -> Application: "ret = 0 (Success)"
+  Application -> RingState: "Update state: files_registered = false"
+}
+
+# --- STEP 3: PBUF ---
+step3_unregister_pbuf: {
+  label: "Phase 3: Provided Buffer Ring Release"
+  Application -> RingState: "Check pbuf_ring_registered"
+  RingState -> Application: "STATE: true"
+  Application -> Kernel: "io_uring_register(IORING_UNREGISTER_PBUF_RING)"
+  Kernel -> Memory: "kfree(io_buffer_list)"
+  Kernel -> Application: "ret = 0 (Success)"
+  Application -> RingState: "Update state: pbuf_ring_registered = false"
+}
+
+# --- STEP 4: SQ MAP ---
+step4_munmap_sq: {
+  label: "Phase 4: Submission Queue VMA Unmap"
+  Application -> RingState: "Retrieve offset: sq_off {addr, size}"
+  RingState -> Application: "{ptr: 0x7f...000, size: 4096}"
+  Application -> Kernel: "munmap(0x7f...000, 4096)"
+  Kernel -> Memory: "vm_munmap (Tear down VMA)"
+  Kernel -> Application: "ret = 0 (Success)"
+  Application -> RingState: "Set sq_ring_ptr = NULL"
+}
+
+# --- STEP 5: CQ MAP ---
+step5_munmap_cq: {
+  label: "Phase 5: Completion Queue VMA Unmap"
+  Application -> RingState: "Retrieve offset: cq_off {addr, size}"
+  RingState -> Application: "{ptr: 0x7f...100, size: 4096}"
+  Application -> Kernel: "munmap(0x7f...100, 4096)"
+  Kernel -> Memory: "vm_munmap (Unmap pages)"
+  Kernel -> Application: "ret = 0 (Success)"
+  Application -> RingState: "Set cq_ring_ptr = NULL"
+}
+
+# --- STEP 6: SQE MAP ---
+step6_munmap_sqes: {
+  label: "Phase 6: SQE Array VMA Unmap"
+  Application -> RingState: "Retrieve sqes {addr, size}"
+  RingState -> Application: "{ptr: 0x7f...200, size: 8192}"
+  Application -> Kernel: "munmap(0x7f...200, 8192)"
+  Kernel -> Memory: "vm_munmap (Release SQE pages)"
+  Kernel -> Application: "ret = 0 (Success)"
+  Application -> RingState: "Set sqes_ptr = NULL"
+}
+
+# --- STEP 7: CLOSE FD ---
+step7_close_fd: {
+  label: "Phase 7: Final File Descriptor Closure"
+  Application -> RingState: "Retrieve ring_fd"
+  RingState -> Application: "fd: 12"
+  Application -> Kernel: "close(12)"
+  Kernel -> Files: "Release FD slot"
+  Kernel -> Kernel: "__io_uring_free (Internal Async Release)"
+  Kernel -> Application: "ret = 0 (Final Success)"
+  Application -> RingState: "Set ring_fd = -1"
+}
+
+Application."8. Cleanup Complete"
+
+# -----------------------------------------------------------------------------
+# Post-Conditions & Verification
+# -----------------------------------------------------------------------------
+verification_block: {
+  Application -> RingState: "final_audit()"
+  RingState -> Application: "STATE: ALL_RESOURCES_RELEASED"
+}
+
+# Notes in sequence diagrams are defined as strings on the participant
+Application: |md
+  ### Implementation Notes
+  - **Teardown Order:** Critical to unregister resources before unmapping memory.
+  - **Memory Safety:** `munmap` must use the exact addresses/sizes from setup `io_uring_params`.
+  - **Kernel Sync:** `close(ring_fd)` triggers final cleanup. If `IORING_SETUP_IOPOLL` is set, 
+    kernel threads are reaped here.
+|
+
+# -----------------------------------------------------------------------------
+# Exception Paths
+# -----------------------------------------------------------------------------
+error_handling: {
+  label: "Exception & Error Recovery Path"
+  Application -> Application: "On Interrupt: Capture errno"
+  Application -> Application: "Retry: Atomic unregister check"
+  Application -> Application: "Critical Failure: SIGKILL fallback"
+  style.stroke: ${colors.error}
+  style.stroke-dash: 3
+}
+
+# Global Glob for sequence consistency
+***: {
+  style: {
+    font: mono
+  }
+}

@@ -1,0 +1,297 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: right
+
+title: |md
+  # Buffer Selection — Trace Example
+  **RECV with Provided Buffer Ring (IORING_CQE_F_BUFFER)**
+  *Intel Manual Quality Specification — Memory & State Transition*
+| {near: top-center}
+
+# === STAGE 1: SQE Preparation ===
+stage1: {
+  label: "Stage 1: SQE Preparation (submission_queue_entry)"
+  
+  sqe_box: {
+    shape: sql_table
+    style.fill: "#E3F2FD"
+    header: "struct io_uring_sqe (64B)"
+    
+    id: "uint64_t user_data" {constraint: "conn_42"}
+    opcode: "uint8_t opcode" {constraint: "IORING_OP_RECV (22)"}
+    flags: "uint8_t flags" {constraint: "0x00"}
+    ioprio: "uint16_t ioprio" {constraint: "0"}
+    fd: "int32_t fd" {constraint: "socket_fd"}
+    off: "uint64_t off" {constraint: "0 (unused)"}
+    addr: "uint64_t addr" {constraint: "0 (NULL)"}
+    len: "uint32_t len" {constraint: "0"}
+    buf_group: "uint16_t buf_group" {constraint: "1 (bgid)"}
+    personality: "uint16_t personality" {constraint: "0"}
+    splice_fd_in: "int32_t splice_fd_in" {constraint: "0"}
+    addr_flags: "uint32_t addr_flags" {constraint: "IOSQE_BUFFER_SELECT (1 << 9)"}
+  }
+
+  annotation1: |md
+    ### SQE Memory Layout Details
+    - **addr=0, len=0**: Application provides no pointer; kernel must provide the buffer.
+    - **buf_group (Offset 0x24)**: Points to the Ring Buffer Group ID registered via `io_uring_register_buf_ring`.
+    - **IOSQE_BUFFER_SELECT**: Bit 9 in `flags` (or `addr_flags` in newer kernels) signals kernel-side allocation.
+  | 
+}
+
+# === STAGE 2: Provided Buffer Ring State ===
+stage2: {
+  label: "Stage 2: Kernel Buffer Selection Logic"
+  
+  buffer_ring: {
+    label: "Provided Buffer Ring (bgid=1) | Shared Memory"
+    shape: rectangle
+    style.fill: "#E8F4FD"
+    style.stroke: "#2196F3"
+    
+    header: "Ring Head [idx=0]" {
+      style.fill: "#1976D2"
+      style.font-color: white
+    }
+    
+    buf0: {
+      label: "Slot 0: addr=0x7f00, bid=0, len=8K"
+      style.fill: "#C8E6C9"
+      style.bold: true
+      style.stroke: red
+    }
+    buf1: {label: "Slot 1: addr=0x9f00, bid=1, len=8K"; style.fill: white}
+    buf2: {label: "Slot 2: addr=0xbf00, bid=2, len=8K"; style.fill: white}
+    buf3: {label: "Slot 3: addr=0xdf00, bid=3, len=8K"; style.fill: white}
+    ellipsis: {label: "... [Total 2048 Slots] ..."; shape: text}
+    bufN: {label: "Slot 2047: addr=0xffff, bid=2047"; style.fill: "#FFECB3"}
+  }
+
+  selection_arrow: {
+    shape: text
+    label: "Kernel pops Head (FIFO) -> Selected bid=0"
+    style.font-color: red
+  }
+
+  annotation2: |md
+    ### Kernel Internal Procedure
+    1. Validate `buf_group` exists.
+    2. Atomic read of ring `head` index.
+    3. Retrieve buffer metadata at `head`.
+    4. **Increment Ring Head**: Buffer is now "leased" to the kernel.
+  | 
+}
+
+# === STAGE 3: Data Receive ===
+stage3: {
+  label: "Stage 3: Zero-Copy Data Transfer"
+  
+  socket: {
+    label: "NIC / Socket Buffer"
+    shape: cylinder
+    style.fill: "#F5F5F5"
+  }
+  
+  selected_buffer: {
+    label: "Kernel Managed Buffer (bid=0)"
+    shape: rectangle
+    style.fill: "#C8E6C9"
+    style.stroke: "#4CAF50"
+    style.stroke-width: 3
+    
+    data_region: {
+      label: "DATA RECEIVED: 1024 Bytes"
+      style.fill: "#81C784"
+      style.bold: true
+    }
+    unused_region: {
+      label: "REMAINING: 7168 Bytes"
+      style.fill: "#E8F5E9"
+    }
+  }
+  
+  socket -> selected_buffer.data_region: "Direct DMA Transfer\n(count=1024)" {
+    style.stroke: "#4CAF50"
+    style.stroke-width: 3
+    style.animated: true
+  }
+
+  annotation3: |md
+    ### Receive Phase
+    - Kernel fills `bid=0` at physical address `0x7f00`.
+    - Payload size (1024) is recorded for the `res` field.
+    - Buffer is marked as **Reserved** (cannot be selected for other SQEs).
+  | 
+}
+
+# === STAGE 4: CQE Completion ===
+stage4: {
+  label: "Stage 4: Completion Queue Entry (CQE)"
+  
+  cqe_box: {
+    shape: sql_table
+    style.fill: "#FFF3E0"
+    header: "struct io_uring_cqe (16B)"
+    
+    user_data: "uint64_t user_data" {constraint: "conn_42"}
+    res: "int32_t res" {constraint: "1024 (Bytes Written)"}
+    flags: "uint32_t flags" {constraint: "0x00000001 (F_BUFFER set)"}
+  }
+
+  flags_breakdown: {
+    label: "CQE Flags Register Breakdown"
+    shape: rectangle
+    style.fill: "#FFF3E0"
+    
+    grid-columns: 3
+    bit31_16: {
+      label: "bits[31:16]\nBuffer ID: 0"
+      style.fill: "#FFE0B2"
+      style.stroke-width: 2
+    }
+    bit15_1: {
+      label: "bits[15:1]\nReserved"
+    }
+    bit0: {
+      label: "bit[0]\nIORING_CQE_F_BUFFER: 1"
+      style.fill: "#FFCC80"
+      style.bold: true
+    }
+  }
+
+  extraction_logic: |go
+    // User-space Extraction
+    if cqe.Flags & IORING_CQE_F_BUFFER != 0 {
+        // bid is encoded in top 16 bits of flags
+        bid := uint16(cqe.Flags >> 16) 
+        ptr := my_buffers[bid]
+        process(ptr, cqe.Res)
+    }
+  |
+}
+
+# === STAGE 5: Application Processing ===
+stage5: {
+  label: "Stage 5: User-Space Processing"
+  
+  app_box: {
+    label: "Application Logic"
+    shape: rectangle
+    style.fill: "#E1BEE7"
+    
+    step1: "1. Poll CQE -> find user_data 'conn_42'"
+    step2: "2. Verify IORING_CQE_F_BUFFER bit is 1"
+    step3: "3. BID = flags >> 16 (Result: 0)"
+    step4: "4. Map BID to virtual addr (0x7f00)"
+    step5: "5. Process 1024 bytes of payload"
+  }
+
+  buffer_status: {
+    label: "Buffer [bid=0] State"
+    shape: rectangle
+    style.fill: "#CE93D8"
+    style.stroke: "#7B1FA2"
+    style.double-border: true
+    
+    owner: "OWNER: App (conn_42)"
+    state: "STATUS: BUSY_PROCESSING"
+  }
+
+  annotation5: |md
+    **Ownership Transfer:**
+    The kernel has released the buffer to the application.
+    The application is responsible for the buffer until it is explicitly 
+    returned to the ring for reuse.
+  | 
+}
+
+# === STAGE 6: Buffer Return ===
+stage6: {
+  label: "Stage 6: Buffer Return / Recycle"
+  
+  return_op: |c
+    /* io_uring_buf_ring_add() */
+    struct io_uring_buf *buf = &br->bufs[tail & mask];
+    buf->addr = 0x7f00;
+    buf->len = 8192;
+    buf->bid = 0;
+    
+    /* io_uring_buf_ring_advance() */
+    br->tail++; 
+  |
+
+  buffer_ring_final: {
+    label: "Buffer Ring (bgid=1) | Tail Updated"
+    shape: rectangle
+    style.fill: "#E8F4FD"
+    
+    buf0_new: {
+      label: "Slot 2048 (Cycle): bid=0"
+      style.fill: "#C8E6C9"
+      style.stroke: green
+      style.stroke-dash: 3
+    }
+    other_bufs: "Other Slots..." {shape: text}
+  }
+
+  annotation6: |md
+    ### Recycle Mechanism
+    1. App adds buffer back to the ring at the current `tail`.
+    2. Tail is incremented via `io_uring_buf_ring_advance`.
+    3. Buffer is once again eligible for kernel selection.
+  | 
+}
+
+# === Logical Flow Connections ===
+stage1.sqe_box -> stage2.buffer_ring: "io_uring_enter()\nSUBMIT" {
+  style.stroke: "#2196F3"
+  style.stroke-width: 3
+}
+
+stage2.selection_arrow -> stage3.selected_buffer: "Allocate Memory" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 3
+}
+
+stage3.selected_buffer -> stage4.cqe_box: "Interrupt / Completion" {
+  style.stroke: "#FF9800"
+  style.stroke-width: 3
+}
+
+stage4.extraction_logic -> stage5.app_box: "Data Read" {
+  style.stroke: "#9C27B0"
+  style.stroke-width: 3
+}
+
+stage5.app_box -> stage6.return_op: "Recycle Buffer" {
+  style.stroke: "#00BCD4"
+  style.stroke-width: 3
+}
+
+# === Legend & Metadata ===
+legend: {
+  label: "System Component Legend"
+  near: bottom-right
+  
+  sqe: "SQE (Request)" {style.fill: "#E3F2FD"}
+  kernel: "Kernel Resource" {style.fill: "#C8E6C9"}
+  cqe: "CQE (Response)" {style.fill: "#FFF3E0"}
+  app: "App Processing" {style.fill: "#E1BEE7"}
+}
+
+constants: {
+  label: "Protocol Constants (io_uring.h)"
+  near: bottom-left
+  shape: rectangle
+  style.fill: "#FAFAFA"
+  
+  c1: "IORING_CQE_F_BUFFER = 1"
+  c2: "IORING_CQE_BUFFER_SHIFT = 16"
+  c3: "IOSQE_BUFFER_SELECT = 512"
+  c4: "IORING_OP_RECV = 22"
+}

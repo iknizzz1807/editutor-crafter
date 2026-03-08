@@ -1,0 +1,362 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: |md
+    # Zero-Copy SEND_ZC: Dual CQE Protocol
+    **Critical Rule: Buffer NOT safe until notification CQE**
+  |
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+row_timeline: {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  timeline: {
+    direction: down
+    label: "Timeline (T0 → T4)"
+    style.fill: "#f0f4f8"
+    t0: {
+      label: "T0"
+      shape: circle
+      style.fill: "#4a90d9"
+      style.font-color: white
+      style.stroke: "#2c5aa0"
+    }
+    t1: {
+      label: "T1"
+      shape: circle
+      style.fill: "#f5a623"
+      style.font-color: white
+      style.stroke: "#c17f0a"
+    }
+    t2: {
+      label: "T2"
+      shape: circle
+      style.fill: "#e74c3c"
+      style.font-color: white
+      style.stroke: "#a83224"
+    }
+    t3: {
+      label: "T3"
+      shape: circle
+      style.fill: "#27ae60"
+      style.font-color: white
+      style.stroke: "#1a7840"
+    }
+    t4: {
+      label: "T4"
+      shape: circle
+      style.fill: "#27ae60"
+      style.font-color: white
+      style.stroke: "#1a7840"
+    }
+    t0 -> t1 -> t2 -> t3 -> t4
+  }
+  operations: {
+    direction: down
+    label: "Operation"
+    style.fill: white
+    op0: {
+      label: |md
+        **Submit SEND_ZC**
+        c
+        io_uring_prep_send_zc(sqe, fd,
+          buf, 4096, 0, 0);
+        
+      |
+      width: 280
+      style.fill: "#d4e6f7"
+      style.stroke: "#4a90d9"
+    }
+    op1: {
+      label: |md
+        **Completion CQE**
+        c
+        cqe->res = 4096  // bytes queued
+        cqe->flags = 0   // NO NOTIF flag
+        
+      |
+      width: 280
+      style.fill: "#fef3cd"
+      style.stroke: "#f5a623"
+    }
+    op2: {
+      label: |md
+        **⚠️ DANGER ZONE ⚠️**
+        c
+        // BUG: Buffer still in use!
+        free(buf);  // DATA CORRUPTION
+        
+      |
+      width: 280
+      style.fill: "#f8d7da"
+      style.stroke: "#e74c3c"
+      style.bold: true
+    }
+    op3: {
+      label: |md
+        **Notification CQE**
+        c
+        cqe->flags = IORING_CQE_F_NOTIF
+        // Transmission complete
+        
+      |
+      width: 280
+      style.fill: "#d4edda"
+      style.stroke: "#27ae60"
+    }
+    op4: {
+      label: |md
+        **Buffer Safe**
+        c
+        // NOW safe to free/reuse
+        free(buf);  // ✓ OK
+        
+      |
+      width: 280
+      style.fill: "#d4edda"
+      style.stroke: "#27ae60"
+    }
+    op0 -> op1 -> op2 -> op3 -> op4
+  }
+  kernel_state: {
+    direction: down
+    label: "Kernel/NIC State"
+    style.fill: "#f8f9fa"
+    ks0: {
+      label: "SQE queued\nKernel accepts request"
+      shape: rectangle
+      style.fill: "#e8f4f8"
+    }
+    ks1: {
+      label: "TCP headers built\nPayload reference held\nNIC DMA pending"
+      shape: rectangle
+      style.fill: "#fff3cd"
+    }
+    ks2: {
+      label: "Buffer pinned\nNIC may be reading\n**DO NOT TOUCH**"
+      shape: rectangle
+      style.fill: "#f8d7da"
+      style.bold: true
+    }
+    ks3: {
+      label: "TX complete\nACK received\nBuffer unpinned"
+      shape: rectangle
+      style.fill: "#d4edda"
+    }
+    ks4: {
+      label: "Buffer released\nNo kernel refs"
+      shape: rectangle
+      style.fill: "#d4edda"
+    }
+    ks0 -> ks1 -> ks2 -> ks3 -> ks4
+  }
+}
+row_timeline.timeline.t0 -> row_timeline.operations.op0 {
+  style.stroke: transparent
+}
+row_timeline.timeline.t1 -> row_timeline.operations.op1 {
+  style.stroke: transparent
+}
+row_timeline.timeline.t2 -> row_timeline.operations.op2 {
+  style.stroke: transparent
+}
+row_timeline.timeline.t3 -> row_timeline.operations.op3 {
+  style.stroke: transparent
+}
+row_timeline.timeline.t4 -> row_timeline.operations.op4 {
+  style.stroke: transparent
+}
+out_of_order: {
+  label: "Out-of-Order Scenario: Notification May Arrive After Subsequent Ops"
+  direction: down
+  style.fill: "#fff8e1"
+  style.stroke: "#f5a623"
+  style.stroke-dash: 4
+  warning: {
+    label: |md
+      ### ⚠️ Critical Timing Window
+      The notification CQE for SEND_ZC(op_A) may arrive **AFTER** the completion CQE for SEND(op_B).
+      **Wrong:**
+      c
+      // After SEND_ZC(op_A) completion CQE
+      free(buf_A);        // BUG: Notif not yet arrived!
+      // After SEND(op_B) completion CQE  
+      process(op_B);      // buf_A memory corrupted!
+      
+      **Correct:**
+      c
+      // Track buffer state per-operation
+      if (cqe->flags & IORING_CQE_F_NOTIF) {
+          // ONLY NOW safe to release
+          release_buffer(cqe->user_data);
+      }
+      
+    |
+    width: 500
+    style.fill: white
+  }
+  seq_diagram: {
+    direction: right
+    label: ""
+    style.fill: transparent
+    style.stroke: transparent
+    time_axis: {
+      label: "Time →"
+      shape: rectangle
+      style.fill: "#e0e0e0"
+      width: 600
+    }
+    events: {
+      direction: right
+      style.fill: transparent
+      style.stroke: transparent
+      e1: {
+        label: "SEND_ZC(A)\nsubmit"
+        shape: rectangle
+        style.fill: "#d4e6f7"
+        width: 100
+      }
+      e2: {
+        label: "SEND(B)\nsubmit"
+        shape: rectangle
+        style.fill: "#d4e6f7"
+        width: 100
+      }
+      e3: {
+        label: "CQE(A)\ncompl"
+        shape: rectangle
+        style.fill: "#fef3cd"
+        width: 100
+      }
+      e4: {
+        label: "CQE(B)\ncompl"
+        shape: rectangle
+        style.fill: "#d4edda"
+        width: 100
+      }
+      e5: {
+        label: "CQE(A)\nNOTIF"
+        shape: rectangle
+        style.fill: "#d4edda"
+        width: 100
+      }
+      e1 -> e2 -> e3 -> e4 -> e5
+    }
+    buffer_state: {
+      direction: right
+      label: ""
+      style.fill: transparent
+      style.stroke: transparent
+      b1: {
+        label: "buf_A:\nIN_USE"
+        shape: rectangle
+        style.fill: "#f8d7da"
+        width: 100
+      }
+      b2: {
+        label: "buf_A:\nIN_USE"
+        shape: rectangle
+        style.fill: "#f8d7da"
+        width: 100
+      }
+      b3: {
+        label: "buf_A:\nIN_USE⚠️"
+        shape: rectangle
+        style.fill: "#f8d7da"
+        style.bold: true
+        width: 100
+      }
+      b4: {
+        label: "buf_A:\nIN_USE⚠️"
+        shape: rectangle
+        style.fill: "#f8d7da"
+        style.bold: true
+        width: 100
+      }
+      b5: {
+        label: "buf_A:\nFREE ✓"
+        shape: rectangle
+        style.fill: "#d4edda"
+        width: 100
+      }
+      b1 -> b2 -> b3 -> b4 -> b5
+    }
+  }
+}
+handler_code: {
+  label: "Correct Handler Pattern"
+  direction: down
+  style.fill: "#e8f5e9"
+  style.stroke: "#27ae60"
+  code_block: {
+    label: |'c
+      void handle_zc_cqe(struct io_uring_cqe *cqe, 
+                         struct zc_buffer_pool *pool) {
+          __u64 buf_id = cqe->user_data & BUF_ID_MASK;
+          if (cqe->flags & IORING_CQE_F_NOTIF) {
+              // NOTIFICATION: Buffer is NOW safe
+              pool->in_use[buf_id] = false;
+              printf("Buffer %lu released (notif)\n", buf_id);
+              return;
+          }
+          // COMPLETION: Send was queued, buffer STILL in use
+          if (cqe->res < 0) {
+              // Error: can release early
+              pool->in_use[buf_id] = false;
+              fprintf(stderr, "ZC send failed: %s\n", 
+                      strerror(-cqe->res));
+          } else {
+              // SUCCESS: DO NOT FREE YET!
+              printf("ZC send queued (%d bytes), awaiting notif\n", 
+                     cqe->res);
+              // Buffer remains in_use = true
+          }
+      }
+    '|
+    width: 480
+    style.fill: "#263238"
+    style.font-color: "#e0e0e0"
+    style.font: mono
+  }
+}
+legend: {
+  direction: right
+  near: bottom-center
+  style.fill: white
+  style.stroke: "#ccc"
+  style.border-radius: 8
+  l1: {
+    label: "Completion CQE"
+    shape: rectangle
+    style.fill: "#fef3cd"
+  }
+  l2: {
+    label: "Notification CQE"
+    shape: rectangle
+    style.fill: "#d4edda"
+  }
+  l3: {
+    label: "Danger Zone"
+    shape: rectangle
+    style.fill: "#f8d7da"
+  }
+  l4: {
+    label: "Safe to Free"
+    shape: rectangle
+    style.fill: "#d4edda"
+  }
+}

@@ -1,0 +1,147 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    app: "#E8F4FD"
+    kernel: "#F3E8FF"
+    syscall: "#FFF3E0"
+    success: "#E8F5E9"
+    error: "#FFEBEE"
+    header: "#6750A4"
+  }
+}
+title: |md
+  # File Descriptor Table Update Flow
+  **IORING_REGISTER_FILES_UPDATE Sequence**
+| {near: top-center}
+direction: right
+UserSpace: "User Space" {
+  style.fill: ${colors.app}
+  style.stroke: "#1976D2"
+  AppCode: "Application Code"
+  PrepareArray: |md
+    **Step 1: Prepare fds Array**
+    c
+    int fds[4] = {
+      fd_new,  // slot 0: new fd
+      -1,      // slot 1: empty
+      fd_keep, // slot 2: keep existing
+      -1       // slot 3: empty
+    };
+    
+  | {shape: text}
+  BuildUpdate: |md
+    **Step 2: Build Update Struct**
+    c
+    struct io_uring_files_update update = {
+      .offset = 0,  // start at slot 0
+      .fds = fds
+    };
+    
+  | {shape: text}
+  InvokeSyscall: "Invoke Syscall"
+}
+SyscallBoundary: "Syscall Boundary" {
+  style.fill: ${colors.syscall}
+  style.stroke: "#F57C00"
+  style.stroke-dash: 4
+  EnterKernel: |md
+    **Step 3: io_uring_enter**
+    c
+    ret = syscall(__NR_io_uring_register,
+                  ring_fd,
+                  IORING_REGISTER_FILES_UPDATE,
+                  &update, 4);
+    
+  | {shape: text}
+}
+KernelSpace: "Kernel Space" {
+  style.fill: ${colors.kernel}
+  style.stroke: "#7B1FA2"
+  ValidateParams: "Validate Parameters"
+  InternalTable: "Internal File Table" {
+    style.fill: white
+    Slot0: "Slot 0\nfd_new" {
+      style.fill: ${colors.success}
+    }
+    Slot1: "Slot 1\n(unregistered)" {
+      style.fill: "#FFCDD2"
+    }
+    Slot2: "Slot 2\nfd_keep" {
+      style.fill: ${colors.success}
+    }
+    Slot3: "Slot 3\n(unregistered)" {
+      style.fill: "#FFCDD2"
+    }
+  }
+  UpdateTable: |md
+    **Step 4: Update Internal Table**
+    - Copy fds array from userspace
+    - For each slot at offset + i:
+      - If fds[i] == -1: unregister slot
+      - If fds[i] >= 0: resolve fd to `struct file *`
+    - Store resolved pointers
+  | {shape: text}
+  ReturnResult: |md
+    **Step 5: Return Result**
+    - Returns 0 on complete success
+    - Returns index of first failed slot + 1
+    - Per-slot errors in `resv` array
+  | {shape: text}
+}
+Result: "Result" {
+  style.fill: ${colors.success}
+  Success: |md
+    **Success Case**
+    c
+    ret == 0  // All slots updated
+    
+  | {shape: text}
+  Partial: |md
+    **Partial Failure**
+    c
+    ret > 0   // First failed slot + 1
+    // Check resv[ret-1] for errno
+    
+  | {shape: text}
+}
+# Flow arrows
+UserSpace.AppCode -> UserSpace.PrepareArray: "1. Build array\nwith -1 markers"
+UserSpace.PrepareArray -> UserSpace.BuildUpdate: "2. Wrap in\nupdate struct"
+UserSpace.BuildUpdate -> SyscallBoundary.EnterKernel: "3. Syscall\nwith offset"
+SyscallBoundary.EnterKernel -> KernelSpace.ValidateParams: "4. Enter kernel"
+KernelSpace.ValidateParams -> KernelSpace.UpdateTable: "5. Validate\nparams"
+KernelSpace.UpdateTable -> KernelSpace.InternalTable: "6. Update slots"
+KernelSpace.InternalTable -> KernelSpace.ReturnResult: "7. Resolve\nfd → file*"
+KernelSpace.ReturnResult -> Result: "8. Return"
+SyscallBoundary.EnterKernel -> KernelSpace.InternalTable: "offset: 0" {
+  style.stroke: "#7B1FA2"
+  style.stroke-dash: 3
+  label: "Start index"
+}
+# Legend
+Legend: {
+  near: bottom-right
+  NewFd: "New FD (fd >= 0)" {style.fill: ${colors.success}}
+  EmptySlot: "Empty Slot (fd == -1)" {style.fill: "#FFCDD2"}
+  NewFd -> EmptySlot
+}
+# Key insight annotation
+KeyInsight: |md
+  **Key Insight: Sparse Table Updates**
+  - `-1` means "unregister this slot"
+  - Only update slots starting at `offset`
+  - Avoid re-registering entire table
+  - Atomic from application perspective
+  **Before (IORING_REGISTER_FILES):**
+  - Must provide ALL fds
+  - Re-register entire table on any change
+  **After (IORING_REGISTER_FILES_UPDATE):**
+  - Update only changed slots
+  - O(changed) instead of O(total)
+| {
+  near: bottom-left
+  shape: text
+}

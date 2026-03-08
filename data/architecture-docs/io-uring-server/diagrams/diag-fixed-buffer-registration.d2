@@ -1,0 +1,306 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: "Fixed Buffer Registration — Memory Pinning"
+  near: top-center
+  shape: text
+  style: {
+    font-size: 32
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  userspace: {
+    direction: down
+    label: "Userspace"
+    style.fill: "#E8F4E8"
+    style.stroke: "#2E7D32"
+    iovec_array: {
+      shape: sql_table
+      label: "struct iovec[] (user_buffers.c)"
+      r0: "0x00 | void*  | iov_base"
+      r1: "0x08 | size_t | iov_len"
+      r2: "0x10 | void*  | iov_base"
+      r3: "0x18 | size_t | iov_len"
+      r4: "0x20 | void*  | iov_base"
+      r5: "0x18 | size_t | iov_len"
+      sz: "3 entries × 16 bytes = 48 bytes"
+    }
+    buffers: {
+      label: "Registered Buffers"
+      direction: right
+      buf0: {
+        label: "buf[0]"
+        shape: rectangle
+        width: 120
+        style.fill: "#C8E6C9"
+        style.stroke: "#388E3C"
+      }
+      buf1: {
+        label: "buf[1]"
+        shape: rectangle
+        width: 120
+        style.fill: "#C8E6C9"
+        style.stroke: "#388E3C"
+      }
+      buf2: {
+        label: "buf[2]"
+        shape: rectangle
+        width: 120
+        style.fill: "#C8E6C9"
+        style.stroke: "#388E3C"
+      }
+    }
+    iovec_array.r0 -> buffers.buf0: "0x7f1000\n4096 bytes"
+    iovec_array.r2 -> buffers.buf1: "0x7f3000\n4096 bytes"
+    iovec_array.r4 -> buffers.buf2: "0x7f5000\n4096 bytes"
+  }
+  kernel_space: {
+    direction: down
+    label: "Kernel Space"
+    style.fill: "#FFF3E0"
+    style.stroke: "#E65100"
+    syscall_reg: {
+      label: "io_uring_register(ring_fd, IORING_REGISTER_BUFFERS, iovecs, 3)"
+      shape: rectangle
+      width: 380
+      style.fill: "#FFE0B2"
+      style.stroke: "#F57C00"
+    }
+    page_table: {
+      shape: sql_table
+      label: "Pinned Page Table (kernel/mm.c)"
+      p0: "idx 0 | 0x7f1000 → pfn 0x1A3 | VM_PINNED"
+      p1: "idx 1 | 0x7f3000 → pfn 0x1B7 | VM_PINNED"
+      p2: "idx 2 | 0x7f5000 → pfn 0x1CB | VM_PINNED"
+      note: "get_user_pages() called ONCE at registration"
+    }
+    fixed_buf_table: {
+      shape: sql_table
+      label: "io_fixed_buffer (io_uring.c)"
+      f0: "idx 0 | pfn 0x1A3 | len 4096"
+      f1: "idx 1 | pfn 0x1B7 | len 4096"
+      f2: "idx 2 | pfn 0x1CB | len 4096"
+      note: "Pre-resolved physical addresses"
+    }
+    syscall_reg -> page_table: "pin pages\nresolve PFNs"
+    page_table -> fixed_buf_table: "store mapping"
+  }
+}
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  sqe_submission: {
+    direction: down
+    label: "SQE Submission Path"
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    sqe: {
+      shape: sql_table
+      label: "struct io_uring_sqe (64 bytes)"
+      op: "0x00 | u8  | opcode = IORING_OP_READ_FIXED"
+      fd: "0x04 | s32 | fd = registered_index"
+      addr: "0x08 | u64 | addr = 0 (ignored)"
+      len: "0x10 | u32 | len = 4096"
+      off: "0x18 | u64 | off = file_offset"
+      buf_idx: "0x2C | u16 | buf_index = 1"
+      ud: "0x20 | u64 | user_data = request_id"
+    }
+    hot_path: {
+      label: "Hot Path Per-Operation"
+      width: 300
+      code: |'c
+        // NO get_user_pages() call!
+        // NO page table walk!
+        // NO VM validation!
+        buf = &ctx->user_bufs[sqe->buf_index];
+        dma_addr = buf->pfn << PAGE_SHIFT;
+        // Direct DMA from pinned page
+      '|
+    }
+    sqe.buf_idx -> hot_path: "O(1) lookup"
+  }
+  comparison: {
+    direction: down
+    label: "Performance Comparison"
+    style.fill: "#FFF8E1"
+    style.stroke: "#FF8F00"
+    traditional: {
+      shape: rectangle
+      width: 320
+      label: |md
+        **Traditional IORING_OP_READ**
+        
+        Every operation:
+        1. get_user_pages()      ~500ns
+        2. validate VM area      ~100ns
+        3. resolve physical addr ~50ns
+        4. pin pages (atomic)    ~100ns
+        Total: ~750ns overhead
+        
+      |
+      style.fill: "#FFCDD2"
+      style.stroke: "#C62828"
+    }
+    fixed: {
+      shape: rectangle
+      width: 320
+      label: |md
+        **IORING_OP_READ_FIXED**
+        
+        Registration (once):
+        1. get_user_pages()      ~500ns × N
+        2. store resolved addrs
+        Per operation:
+        1. array lookup          ~5ns
+        Total: ~5ns overhead
+        
+      |
+      style.fill: "#C8E6C9"
+      style.stroke: "#2E7D32"
+    }
+    savings: {
+      label: "Savings: ~745ns per operation (150x faster path)"
+      shape: rectangle
+      width: 320
+      style.fill: "#B2DFDB"
+      style.stroke: "#00695C"
+      style.font: mono
+    }
+    traditional -> fixed: "Registration\neliminates loop"
+    fixed -> savings
+  }
+}
+row3: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  dma_flow: {
+    direction: down
+    label: "Zero-Copy DMA Path"
+    style.fill: "#F3E5F5"
+    style.stroke: "#7B1FA2"
+    flow: {
+      label: ""
+      direction: down
+      step1: {
+        label: "1. SQE specifies buf_index=1"
+        shape: rectangle
+        width: 280
+      }
+      step2: {
+        label: "2. Kernel: fixed_bufs[1] → pfn 0x1B7"
+        shape: rectangle
+        width: 280
+      }
+      step3: {
+        label: "3. DMA: disk → physical 0x1B7000"
+        shape: rectangle
+        width: 280
+        style.fill: "#E1BEE7"
+      }
+      step4: {
+        label: "4. User reads from buf[1] (0x7f3000)"
+        shape: rectangle
+        width: 280
+      }
+      step1 -> step2 -> step3 -> step4
+    }
+    note: {
+      label: |md
+        **Key Insight:**
+        Page is already pinned in memory.
+        Physical address is pre-resolved.
+        DMA engine writes directly to user buffer.
+        No kernel copy, no page fault possible.
+      |
+      shape: rectangle
+      width: 280
+      style.fill: "#EDE7F6"
+    }
+    flow.step4 -> note
+  }
+  constraints: {
+    direction: down
+    label: "Alignment Requirements"
+    style.fill: "#EFEBE9"
+    style.stroke: "#5D4037"
+    req_table: {
+      shape: sql_table
+      label: "Buffer Registration Constraints"
+      r0: "Address | Page-aligned (4096 or 2MB)"
+      r1: "Length  | Multiple of page size preferred"
+      r2: "Lifetime| Must remain valid until unregistered"
+      r3: "Access  | Readable for READ, writable for WRITE"
+      r4: "Memory   | Cannot be swapped (mlock if needed)"
+    }
+    code_example: {
+      label: "Registration Code"
+      width: 300
+      code: |'c
+        struct iovec iov[3] = {
+          { .iov_base = buf0, .iov_len = 4096 },
+          { .iov_base = buf1, .iov_len = 4096 },
+          { .iov_base = buf2, .iov_len = 4096 },
+        };
+        // buf0, buf1, buf2 must be page-aligned!
+        int ret = io_uring_register_buffers(
+          &ring, iov, 3);
+        if (ret < 0) {
+          // EINVAL: bad alignment
+          // ENOMEM: can't pin pages
+        }
+      '|
+    }
+    req_table -> code_example
+  }
+}
+userspace.syscall_reg -> kernel_space.syscall_reg: "syscall\nio_uring_register" {
+  style.stroke-dash: 3
+  style.stroke: "#1565C0"
+}
+legend: {
+  near: bottom-center
+  label: ""
+  direction: right
+  l1: {
+    label: "Userspace memory"
+    shape: rectangle
+    style.fill: "#E8F4E8"
+    width: 120
+  }
+  l2: {
+    label: "Kernel data"
+    shape: rectangle
+    style.fill: "#FFF3E0"
+    width: 120
+  }
+  l3: {
+    label: "Fast path"
+    shape: rectangle
+    style.fill: "#C8E6C9"
+    width: 120
+  }
+  l4: {
+    label: "Slow path"
+    shape: rectangle
+    style.fill: "#FFCDD2"
+    width: 120
+  }
+}

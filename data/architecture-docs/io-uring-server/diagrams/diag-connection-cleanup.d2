@@ -1,0 +1,203 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Connection Cleanup: Safe vs Unsafe Patterns
+  ## io_uring ASYNC_CANCEL prevents use-after-free
+| {near: top-center}
+row_proper: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  proper: {
+    direction: down
+    label: "PROPER: Async Cancel Before Close"
+    step1: {
+      label: "Step 1: Error Detected"
+      width: 300
+      code: |'c
+        // Connection error on fd=5
+        if (cqe->res == -ECONNRESET) {
+            conn->error = true;
+            // DO NOT close yet!
+        }
+      '|
+    }
+    step2: {
+      label: "Step 2: Submit ASYNC_CANCEL"
+      width: 300
+      code: |'c
+        // Cancel ALL ops on this fd
+        sqe = io_uring_get_sqe(&ring);
+        io_uring_prep_cancel_fd(sqe, fd, 
+            IORING_ASYNC_CANCEL_ALL);
+        sqe->user_data = CANCEL_OP;
+        io_uring_submit(&ring);
+      '|
+    }
+    step3: {
+      label: "Step 3: Harvest Cancel CQEs"
+      width: 300
+      code: |'c
+        // In-flight ops get -ECANCELED
+        while (conn->n_in_flight > 0) {
+            io_uring_wait_cqe(&ring, &cqe);
+            if (cqe->res == -ECANCELED) {
+                conn->n_in_flight--;
+            }
+            io_uring_cqe_seen(&ring, cqe);
+        }
+      '|
+    }
+    step4: {
+      label: "Step 4: Safe Close"
+      width: 300
+      code: |'c
+        // NOW safe to close
+        // No pending refs to fd
+        close(conn->fd);
+        free(conn->buffer);
+        conn->state = CONN_FREE;
+      '|
+    }
+    step1 -> step2: "detect"
+    step2 -> step3: "submit"
+    step3 -> step4: "wait"
+  }
+}
+row_improper: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  improper: {
+    direction: down
+    label: "UNSAFE: Immediate Close (Race Condition)"
+    bad1: {
+      label: "T0: Submit RECV on fd=5"
+      width: 300
+      code: |'c
+        sqe = io_uring_get_sqe(&ring);
+        io_uring_prep_recv(sqe, 5, buf, 1024, 0);
+        sqe->user_data = 5;  // fd as ID
+        io_uring_submit(&ring);
+        // RECV pending in kernel...
+      '|
+    }
+    bad2: {
+      label: "T1: Close fd=5 Immediately"
+      width: 300
+      code: |'c
+        // BUG: Close without cancel!
+        close(5);  // fd 5 freed
+        // RECV SQE still in kernel
+        // references stale fd
+      '|
+      style.stroke: "#CC0000"
+    }
+    bad3: {
+      label: "T2: Accept New Connection"
+      width: 300
+      code: |'c
+        // New connection gets fd=5
+        // (lowest available fd)
+        int new_fd = accept(listen_fd, ...);
+        // new_fd == 5 (REUSED!)
+      '|
+      style.stroke: "#CC0000"
+    }
+    bad4: {
+      label: "T3: CQE Arrives - CORRUPTION!"
+      width: 300
+      code: |'c
+        // Original RECV completes
+        // CQE has user_data=5
+        // Processed as NEW connection!
+        // DATA CORRUPTION: wrong state,
+        // wrong buffer, silent failure
+      '|
+      style.fill: "#FFCCCC"
+      style.stroke: "#CC0000"
+    }
+    bad1 -> bad2: "close"
+    bad2 -> bad3: "accept"
+    bad3 -> bad4: "cqe"
+  }
+}
+row_timeline: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  timeline: {
+    direction: down
+    label: "Safe Cleanup Timeline"
+    t0: {
+      shape: circle
+      label: "T0"
+    }
+    t1: {
+      shape: circle
+      label: "T1"
+    }
+    t2: {
+      shape: circle
+      label: "T2"
+    }
+    t3: {
+      shape: circle
+      label: "T3"
+    }
+    t4: {
+      shape: circle
+      label: "T4"
+    }
+    t0 -> t1: "error\ndetected"
+    t1 -> t2: "cancel\nsubmitted"
+    t2 -> t3: "CQEs\nharvested"
+    t3 -> t4: "fd\nclosed"
+    state_t0: {
+      label: "in_flight: 2\nrecv + send"
+    }
+    state_t1: {
+      label: "cancel_sqe\npending"
+    }
+    state_t2: {
+      label: "recv: -ECANCELED\nsend: -ECANCELED"
+    }
+    state_t3: {
+      label: "in_flight: 0\nresources freed"
+    }
+    state_t4: {
+      label: "fd closed\nslot reusable"
+    }
+    t0 -> state_t0
+    t1 -> state_t1
+    t2 -> state_t2
+    t3 -> state_t3
+    t4 -> state_t4
+  }
+}
+legend: {
+  near: bottom-center
+  direction: right
+  safe: {
+    label: "Safe Path"
+    style.fill: "#90EE90"
+  }
+  danger: {
+    label: "Race Window"
+    style.fill: "#FFCCCC"
+    style.stroke: "#CC0000"
+  }
+}
+row_proper -> row_improper: "CONTRAST" {
+  style.stroke-dash: 5
+  style.stroke: "#666666"
+}
+row_improper -> row_timeline: "TIMELINE" {
+  style.stroke-dash: 5
+  style.stroke: "#666666"
+}

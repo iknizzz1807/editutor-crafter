@@ -1,0 +1,297 @@
+direction: right
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+  colors: {
+    header: "#7B1FA2"
+    data: "#1976D2"
+    free: "#388E3C"
+    padding: "#9E9E9E"
+    pointer: "#F57C00"
+    syscall: "#2E7D32"
+    error: "#C62828"
+  }
+}
+
+title: |'md
+# Batched Submission Flow (io_uring)
+### High-Performance Syscall Reduction Strategy: N Operations ➜ 1 Context Switch
+'| {
+  near: top-center
+  style.font-size: 24
+}
+
+# Step 1: Slot Acquisition
+step1: {
+  label: "STEP 1: SQE Slot Acquisition"
+  style.stroke-width: 2
+  style.fill: "#F5F5F5"
+  
+  loop_start: {
+    shape: diamond
+    label: "Iteration [i..N]\nMore SQEs?"
+  }
+  
+  get_sqe: {
+    label: "io_uring_get_sqe()\n(User-space index calculation)"
+    shape: rectangle
+    tooltip: "Acquire pointer to next available SQE in the ring"
+    style.fill: "#BBDEFB"
+  }
+  
+  sqe_slot: {
+    label: "Slot Available?\n(tail - head < ring_entries)"
+    shape: diamond
+  }
+  
+  fail_full: {
+    label: "Ring Full / EAGAIN"
+    shape: parallelogram
+    style.fill: "#FFCDD2"
+    style.stroke: "#B71C1C"
+    style.font-color: "#B71C1C"
+  }
+
+  loop_start -> get_sqe
+  get_sqe -> sqe_slot
+  sqe_slot -> fail_full: "No"
+}
+
+# Step 2: Payload Preparation
+step2: {
+  label: "STEP 2: Memory Initialization"
+  style.stroke-width: 2
+  style.fill: "#F5F5F5"
+
+  prep_loop: {
+    shape: diamond
+    label: "Initialize\nSQE Fields"
+  }
+
+  sqe_definition: |'md
+  **struct io_uring_sqe (64 Bytes)**
+  c
+  struct io_uring_sqe {
+    __u8   opcode;   /* IORING_OP_READV */
+    __u8   flags;    /* IOSQE_FIXED_FILE */
+    __u16  ioprio;
+    __s32  fd;       /* File Descriptor */
+    __u64  off;      /* Offset in File */
+    __u64  addr;     /* User Buffer Ptr */
+    __u32  len;      /* Length of Buffer */
+    __u32  rw_flags;
+    __u64  user_data;/* Opaque Handle */
+    __u16  buf_index;
+    __u16  personality;
+    __s32  splice_fd_in;
+    __u64  __pad2[2];
+  };
+  
+  '|
+  sqe_definition.shape: code
+
+  sqe_array: |'md
+  **Submission Queue (Memory Layout View)**
+  | Offset | Size | Field | Value |
+  | :--- | :--- | :--- | :--- |
+  | 0x00 | 1B | Opcode | 0x16 (READV) |
+  | 0x04 | 4B | FD | 0x00000003 |
+  | 0x08 | 8B | Off | 0x0000000000001000 |
+  | 0x10 | 8B | Addr | 0x00007FFF12345000 |
+  | 0x18 | 4B | Len | 0x00001000 (4K) |
+  | 0x20 | 8B | Data | 0x000000000000DEAD |
+  '|
+
+  prep_loop -> sqe_definition: "Field Assignment"
+  sqe_definition -> sqe_array: "Memory Store"
+}
+
+# Step 3: Atomic Visibility
+step3: {
+  label: "STEP 3: Synchronization & Barrier"
+  style.stroke-width: 2
+  style.fill: "#F5F5F5"
+  
+  barrier_logic: {
+    old_tail: {
+      label: "Read local tail\nunsigned tail = sq->ktail;"
+      style.font: mono
+    }
+    
+    barrier: {
+      shape: rectangle
+      label: |'md
+      ### io_uring_smp_store_release
+      **Hardware Fence (Store-Release)**
+      c
+      // Atomic increment + Memory Barrier
+      // Ensure SQE data is visible BEFORE tail
+      io_uring_smp_store_release(sq_tail, tail + N);
+      
+      '|
+      style.fill: "#E1BEE7"
+      style.stroke: "#7B1FA2"
+      style.double-border: true
+    }
+    
+    visibility: {
+      label: "Kernel Side Visibility\nIndices [tail..tail+N]"
+      shape: cloud
+      style.fill: "#FFF9C4"
+    }
+    
+    old_tail -> barrier: "Calculate N"
+    barrier -> visibility: "Flush Pipeline"
+  }
+}
+
+# Step 4: The Batched Syscall
+step4: {
+  label: "STEP 4: Kernel Transition"
+  style.stroke-width: 2
+  style.fill: "#E8F5E9"
+
+  syscall_details: {
+    syscall: {
+      shape: rectangle
+      label: |'md
+      # io_uring_enter(fd, to_submit, min_complete, ...)
+      **Batch Processing (Syscall #425)**
+      *   Transitions to K-Thread
+      *   Traverses SQ Indices via SQ ring head
+      *   Dispatches to Block/FS Layer asynchronously
+      '|
+      style.fill: "#C8E6C9"
+      style.stroke: "#2E7D32"
+      style.bold: true
+    }
+  }
+
+  metrics: |'md
+  **Reduction Stats**
+  - **Overhead**: 1 Trap / N Ops
+  - **State**: User ➜ Kernel
+  - **Latency**: Sub-microsecond (SQ)
+  '|
+  metrics.shape: rectangle
+  metrics.style.fill: "#E0F2F1"
+  
+  syscall_details.syscall -> metrics
+}
+
+# Step 5: Completion Harvesting
+step5: {
+  label: "STEP 5: Result Processing"
+  style.stroke-width: 2
+  style.fill: "#F5F5F5"
+
+  cq_loop: {
+    shape: diamond
+    label: "Check CQ Ring\nHead != Tail?"
+  }
+
+  cqe_struct: |'md
+  **struct io_uring_cqe (16 Bytes)**
+  c
+  struct io_uring_cqe {
+    __u64  user_data; /* Orig. Task ID */
+    __s32  res;       /* Result (Bytes/Err) */
+    __u32  flags;
+  };
+  
+  '|
+  cqe_struct.shape: code
+
+  harvest: {
+    label: "io_uring_peek_cqe()\nio_uring_cqe_seen()"
+    shape: rectangle
+    style.fill: "#C8E6C9"
+  }
+
+  cq_loop -> harvest: "Consume Entry"
+  harvest -> cqe_struct: "Parse Buffer"
+}
+
+# Global Flow Connections
+step1.sqe_slot -> step2.prep_loop: "N Iterations\nReserved"
+step2.sqe_array -> step3.barrier_logic.old_tail: "Data Commited"
+step3.barrier_logic.visibility -> step4.syscall_details.syscall: "SQ Tail Updated"
+step4.syscall_details.syscall -> step5.cq_loop: "Async Completion"
+
+# Data Structure Analysis
+structures: {
+  label: "Kernel/User Shared Memory Structures"
+  near: bottom-center
+  
+  sqe_layout: {
+    label: "SQE Packet (64B Alignment)"
+    shape: rectangle
+    style.fill: "#E3F2FD"
+    style.stroke: "#1976D2"
+    "0x00 (8B)": "Header (Op/Flags/Prio)" {style.fill: "#7B1FA2"; style.font-color: white}
+    "0x08 (4B)": "fd (File Desc)" {style.fill: "#1976D2"; style.font-color: white}
+    "0x0C (4B)": "padding" {style.fill: "#9E9E9E"}
+    "0x10 (8B)": "off (Offset)" {style.fill: "#1976D2"; style.font-color: white}
+    "0x18 (8B)": "addr (Pointer)" {style.fill: "#1976D2"; style.font-color: white}
+    "0x20 (4B)": "len (Length)" {style.fill: "#1976D2"; style.font-color: white}
+    "0x24 (4B)": "rw_flags" {style.fill: "#1976D2"; style.font-color: white}
+    "0x28 (8B)": "user_data" {style.fill: "#F57C00"; style.font-color: white}
+    "0x30 (16B)": "Extended / Padding" {style.fill: "#9E9E9E"}
+  }
+  
+  cqe_layout: {
+    label: "CQE Packet (16B Alignment)"
+    shape: rectangle
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    "0x00 (8B)": "user_data (Request Key)" {style.fill: "#F57C00"; style.font-color: white}
+    "0x08 (4B)": "res (Return Value)" {style.fill: "#1976D2"; style.font-color: white}
+    "0x0C (4B)": "flags" {style.fill: "#9E9E9E"}
+  }
+}
+
+# Performance Comparison Table
+comparison: |'md
+## Performance Analysis (Batch Size N=64)
+| Metric | Standard read() | io_uring Batched |
+| :--- | :--- | :--- |
+| **Syscall Count** | 64 | **1** |
+| **Context Switches** | 128 | **2** |
+| **Spectre/Meltdown Mit.** | 64 x Penalty | **1 x Penalty** |
+| **Throughput** | Bound by CPU/Latency | **Bound by I/O Bandwidth** |
+| **Kernel Entry Cost** | ~14,000 ns | **~220 ns** |
+'| {
+  near: bottom-right
+  shape: rectangle
+  style.fill: "#FFF3E0"
+  style.stroke: "#EF6C00"
+}
+
+# Legend and Annotations
+legend: {
+  near: bottom-left
+  sync: "Memory Barrier / Hardware Sync" {
+    style.fill: "#E1BEE7"
+    style.stroke: "#7B1FA2"
+  }
+  kernel: "Syscall / Kernel Space" {
+    style.fill: "#C8E6C9"
+    style.stroke: "#2E7D32"
+  }
+  buffer: "User Space Buffer / Ring" {
+    style.fill: "#BBDEFB"
+    style.stroke: "#1976D2"
+  }
+}
+
+# Global Style Overrides for Clarity
+***.style.font: mono
+step1.**.style.font-size: 14
+step2.**.style.font-size: 14
+step3.**.style.font-size: 14
+step4.**.style.font-size: 14
+step5.**.style.font-size: 14

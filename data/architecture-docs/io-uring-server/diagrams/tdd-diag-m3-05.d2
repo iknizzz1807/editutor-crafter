@@ -1,0 +1,311 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    changed: "#DC2626"
+    normal: "#374151"
+    complete: "#16A34A"
+    buffer: "#8B5CF6"
+    offset: "#EA580C"
+    memory: "#E5E7EB"
+  }
+}
+
+title: {
+  label: |md
+    # Short Write Handling — Partial Send Recovery
+    ### State Evolution: 4096 bytes → short write → resubmit → complete
+  |
+  near: top-center
+}
+
+# -----------------------------------------------------------------------------
+# STEP 0: INITIAL STATE
+# -----------------------------------------------------------------------------
+step0: {
+  label: "Step 0: Initial Submission"
+  style.stroke: "${colors.normal}"
+  
+  send_req: {
+    shape: class
+    +fd: "int (socket_fd)"
+    +buffer: "void* (0x1000)"
+    +total_length: "size_t = 4096"
+    +bytes_sent: "size_t = 0"
+    +state: "SEND_SUBMITTED"
+    
+    details: {
+      label: |md
+        **SQE Prepared:**
+        - opcode: `IORING_OP_SEND`
+        - addr: `0x1000`
+        - len: **4096**
+      |
+    }
+  }
+
+  buffer0: {
+    label: "Process Memory (0x1000)"
+    data: {
+      label: "Payload Data (4096B)"
+      style: {
+        fill: "${colors.buffer}"
+        fill-pattern: lines
+        stroke: "${colors.normal}"
+      }
+    }
+    
+    legend: {
+      near: bottom-center
+      label: |md
+        | Offset | Size | State |
+        |---|---|---|
+        | 0x0 | 4096 | PENDING |
+      |
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 1: SHORT WRITE DETECTION
+# -----------------------------------------------------------------------------
+step1: {
+  label: "Step 1: Short Write Detected"
+  style.stroke: "${colors.changed}"
+  style.stroke-width: 2
+
+  cqe1: {
+    shape: class
+    +user_data: "req_id_01"
+    +res: "1024"
+    +flags: "0"
+    
+    analysis: {
+      label: |md
+        **Result Analysis:**
+        - `res (1024) < requested (4096)`
+        - **Status:** Partial Success
+        - Action: Increment offset and retry
+      |
+    }
+  }
+
+  logic: {
+    shape: diamond
+    label: "Short Write?\n(res > 0 && res < total)"
+    yes: {
+      label: "YES: Resubmit"
+      style.fill: "${colors.changed}"
+      style.font-color: white
+      style.bold: true
+    }
+    logic -> yes
+  }
+
+  buffer1: {
+    label: "Memory State After Completion"
+    sent_part: {
+      label: "SENT (1024B)"
+      width: 150
+      style: {
+        fill: "${colors.complete}"
+        fill-pattern: dots
+      }
+    }
+    remaining: {
+      label: "REMAINING (3072B)"
+      width: 300
+      style: {
+        fill: "${colors.buffer}"
+        fill-pattern: lines
+      }
+    }
+    
+    annotation: {
+      label: |md
+        **Kernel Progress:**
+        - Write Cursor: `0x1000 + 1024 = 0x1400`
+      |
+      near: bottom-center
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 2: RESUBMISSION
+# -----------------------------------------------------------------------------
+step2: {
+  label: "Step 2: Resubmit Remaining Bytes"
+  style.stroke: "${colors.offset}"
+  
+  resubmit_sqe: {
+    shape: class
+    +opcode: "IORING_OP_SEND"
+    +addr: "**0x1400** (Base + 1024)"
+    +len: "**3072** (Total - Sent)"
+    
+    math: {
+      label: |md
+        **Pointer Arithmetic:**
+        c
+        next_addr = buf + sent;
+        remaining = total - sent;
+        
+      |
+    }
+  }
+
+  offset_calc: {
+    label: |md
+      ### Offset Calculation
+      - Sent: `1024`
+      - Remaining: `3072`
+      - Next Ptr: `0x1400`
+    |
+    style.fill: "#FFFBEB"
+  }
+
+  buffer2: {
+    label: "Resubmit Buffer View"
+    done: {
+      label: "Offset 0..1023"
+      style.fill: "${colors.memory}"
+      style.opacity: 0.5
+    }
+    active_send: {
+      label: "SENDING: 3072 Bytes"
+      style: {
+        fill: "${colors.changed}"
+        stroke: "${colors.changed}"
+        stroke-width: 3
+        font-color: white
+        bold: true
+      }
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 3: FINAL COMPLETION
+# -----------------------------------------------------------------------------
+step3: {
+  label: "Step 3: Send Complete"
+  style.stroke: "${colors.complete}"
+  
+  cqe_final: {
+    shape: class
+    +res: "3072"
+    +status: "SUCCESS"
+    
+    validation: {
+      label: |md
+        **Final Totals:**
+        - Initial: 1024
+        - Final: 3072
+        - **Total Sent: 4096**
+      |
+    }
+  }
+
+  state_final: {
+    label: "Final State: SEND_COMPLETE"
+    shape: rectangle
+    style: {
+      fill: "${colors.complete}"
+      font-color: white
+      bold: true
+      double-border: true
+    }
+  }
+
+  buffer_final: {
+    label: "Buffer Fully Transmitted"
+    style: {
+      fill: "${colors.complete}"
+      fill-pattern: dots
+    }
+    icon: https://icons.terrastruct.com/essentials%2F001-check.svg
+  }
+}
+
+# -----------------------------------------------------------------------------
+# FLOW AND ANNOTATIONS
+# -----------------------------------------------------------------------------
+step0 -> step1: "Kernel returns\nCQE (1024)" {
+  style.stroke: "${colors.normal}"
+}
+
+step1 -> step2: "Resubmission logic\ntriggered" {
+  style: {
+    stroke: "${colors.changed}"
+    stroke-width: 4
+    animated: true
+  }
+}
+
+step2 -> step3: "Kernel returns\nCQE (3072)" {
+  style.stroke: "${colors.complete}"
+}
+
+# -----------------------------------------------------------------------------
+# CODE IMPLEMENTATION REFERENCE
+# -----------------------------------------------------------------------------
+handler_code: {
+  near: bottom-left
+  label: |go
+    func handleSendCQE(req *SendRequest, cqe *CQE) {
+        if cqe.res < 0 {
+            req.State = SEND_ERROR
+            return
+        }
+        
+        req.BytesSent += cqe.res
+        
+        if req.BytesSent < req.TotalLength {
+            // SHORT WRITE: Calculate offset and resubmit
+            remaining := req.TotalLength - req.BytesSent
+            nextAddr  := uintptr(req.Buffer) + uintptr(req.BytesSent)
+            
+            sqe := ring.GetSQE()
+            sqe.PrepareSend(req.FD, nextAddr, remaining)
+            req.State = SEND_PARTIAL
+        } else {
+            // FULLY TRANSMITTED
+            req.State = SEND_COMPLETE
+            bufferPool.Release(req.Buffer)
+        }
+    }
+  |
+  style: {
+    fill: "#1E1E1E"
+    font-color: "#D4D4D4"
+    font: mono
+  }
+}
+
+# -----------------------------------------------------------------------------
+# LEGEND
+# -----------------------------------------------------------------------------
+legend: {
+  near: bottom-right
+  
+  l1: {
+    label: "Active Operation / Changed"
+    style.fill: "${colors.changed}"
+    style.font-color: white
+  }
+  l2: {
+    label: "Completed Data"
+    style.fill: "${colors.complete}"
+  }
+  l3: {
+    label: "Pending Buffer"
+    style.fill: "${colors.buffer}"
+  }
+  
+  *.width: 200
+  *.height: 40
+}

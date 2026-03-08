@@ -1,0 +1,207 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+title: |'md
+# Buffer Lifetime State Machine (io_uring)
+**Critical Invariant:** A buffer in the `SUBMITTED` state is owned by the kernel. 
+Userspace access during this window results in non-deterministic memory corruption.
+'| {
+  near: top-center
+  style: {
+    font-size: 24
+    bold: true
+    stroke-width: 0
+    fill: transparent
+  }
+}
+
+# ============================================
+# STATE DEFINITIONS
+# ============================================
+# Bitmask Invariants: 
+# [0] KERNEL_OWNED, [1] APP_OWNED, [2] DIRTY, [3] ERROR_BIT
+
+states: {
+  FREE: {
+    label: "FREE\n─────────────\nREF_COUNT: 0\nBITMASK: 0000\n• Buffer in pool\n• RefCount == 0\n• Safe to Acquire\n• No Kernel Refs"
+    shape: rectangle
+    style: {
+      fill: "#90EE90"
+      stroke: "#228B22"
+      stroke-width: 3
+      border-radius: 15
+    }
+  }
+  
+  SUBMITTED: {
+    label: "SUBMITTED\n─────────────\nREF_COUNT: 1 (K)\nBITMASK: 0001\n• SQE Linked\n• Kernel DMA Active\n• **LOCKED STATE**\n• No App Access"
+    shape: rectangle
+    style: {
+      fill: "#FFD700"
+      stroke: "#FF8C00"
+      stroke-width: 5
+      bold: true
+      border-radius: 15
+      shadow: true
+    }
+  }
+  
+  PROCESSING: {
+    label: "PROCESSING\n─────────────\nREF_COUNT: 1 (U)\nBITMASK: 0010\n• CQE Reaped\n• App Owns Data\n• Read/Copy Safe\n• Pending Release"
+    shape: rectangle
+    style: {
+      fill: "#87CEEB"
+      stroke: "#4169E1"
+      stroke-width: 3
+      border-radius: 15
+    }
+  }
+  
+  ERROR: {
+    label: "ERROR\n─────────────\nREF_COUNT: 1 (U)\nBITMASK: 1010\n• Operation Failed\n• CQE.res < 0\n• Needs Sanitization\n• Release Required"
+    shape: rectangle
+    style: {
+      fill: "#FF6B6B"
+      stroke: "#DC143C"
+      stroke-width: 3
+      border-radius: 15
+    }
+  }
+}
+
+# ============================================
+# VALID TRANSITIONS (Numbered for TDD)
+# ============================================
+
+initial: {
+  shape: circle
+  label: "●"
+  style.fill: "#228B22"
+  style.stroke: "#228B22"
+  style.font-color: white
+  width: 30
+  height: 30
+}
+
+initial -> states.FREE: "0. App Start" {
+  style.stroke: "#228B22"
+  style.stroke-width: 2
+}
+
+states.FREE -> states.SUBMITTED: {
+  label: "1. buffer_acquire()\n[io_uring_submit]"
+  tooltip: "App provides buffer index to SQE and notifies kernel"
+  style: {
+    stroke: "#228B22"
+    stroke-width: 3
+  }
+}
+
+states.SUBMITTED -> states.PROCESSING: {
+  label: "2. CQE Success\n[res >= 0]"
+  tooltip: "Kernel writes completion data and releases DMA lock"
+  style: {
+    stroke: "#4169E1"
+    stroke-width: 3
+  }
+}
+
+states.SUBMITTED -> states.ERROR: {
+  label: "2b. CQE Failure\n[res < 0]"
+  style: {
+    stroke: "#DC143C"
+    stroke-width: 2
+    stroke-dash: 3
+  }
+}
+
+states.PROCESSING -> states.FREE: {
+  label: "3. buffer_release()\n[Work Complete]"
+  style: {
+    stroke: "#228B22"
+    stroke-width: 3
+  }
+}
+
+states.ERROR -> states.FREE: {
+  label: "3b. buffer_release()\n[Post-Cleanup]"
+  style: {
+    stroke: "#228B22"
+    stroke-width: 2
+  }
+}
+
+# ============================================
+# ILLEGAL TRANSITIONS (Safety Boundary)
+# ============================================
+
+states.SUBMITTED -> states.FREE: {
+  label: "❌ ILLEGAL: Early Free\nViolation: Use-After-Free"
+  style: {
+    stroke: "#DC143C"
+    stroke-width: 4
+    stroke-dash: 5
+    animated: true
+  }
+}
+
+states.PROCESSING -> states.SUBMITTED: {
+  label: "❌ ILLEGAL: Double Submit\nViolation: Index Collision"
+  style: {
+    stroke: "#DC143C"
+    stroke-width: 4
+    stroke-dash: 5
+    animated: true
+  }
+}
+
+# ============================================
+# DOCUMENTATION PANELS
+# ============================================
+
+bug_scenario: {
+  label: |'md
+## ⚠️ THE SILENT CORRUPTION BUG
+**Timeline:**
+1. **T0:** `IORING_OP_READ` submitted with `buf[X]`.
+2. **T1:** App logic error calls `release(X)` while kernel is reading.
+3. **T2:** Thread B acquires `buf[X]` and writes sensitive data.
+4. **T3:** Kernel completes hardware DMA, overwriting Thread B's memory.
+
+**Result:** Data corruption that never triggers a crash, only invalid state.
+  '|
+  shape: rectangle
+  near: top-right
+  style: {
+    fill: "#FFF0F0"
+    stroke: "#DC143C"
+    stroke-width: 2
+    border-radius: 8
+  }
+}
+
+invariants: {
+  label: |'md
+## OPERATIONAL INVARIANTS
+| Action | FREE | SUBMITTED | PROCESSING | ERROR |
+| :--- | :---: | :---: | :---: | :---: |
+| **Write** | ✅ | ❌ | ❌ | ❌ |
+| **Read** | ❌ | ❌ | ✅ | ❌ |
+| **Recycle**| ✅ | ❌ | ❌ | ✅ |
+
+*DMA ownership is atomic. Handover only occurs via CQE visibility.*
+  '|
+  shape: rectangle
+  near: bottom-right
+  style: {
+    fill: "#F0F8FF"
+    stroke: "#4169E1"
+    stroke-width: 2
+    border-radius: 8
+  }
+}

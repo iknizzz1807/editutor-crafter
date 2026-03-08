@@ -1,0 +1,197 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # io_uring Server Architecture
+  **Shared Memory Ring Buffers Between Application & Kernel**
+  *Satellite Map of Submission & Completion Paths*
+| {near: top-center}
+
+direction: right
+
+# === APPLICATION LAYER ===
+application: "Application\n(Event Loop)" {
+  style.fill: "#E8F4FD"
+  style.stroke: "#2E86AB"
+  style.stroke-width: 3
+
+  app_core: "Core Logic" {
+    style.fill: "#B8D4E8"
+    sqe_builder: "SQE Builder"
+    cqe_handler: "CQE Handler"
+    state_machine: "Connection\nState Machine"
+    
+    sqe_builder -> cqe_handler: "user_data\nmatching"
+  }
+
+  buffer_pools: "Buffer Management" {
+    style.fill: "#C8E6C9"
+    fixed_pool: "Fixed Buffer Pool\n(registered)"
+    provided_ring: "Provided Buffer Ring\n(kernel-managed)"
+    
+    fixed_pool <-> provided_ring: "complementary\nstrategies"
+  }
+
+  file_table: "Registered File Table" {
+    style.fill: "#FFF3E0"
+    fd_slots: "fd[0..N]\n→ kernel indices"
+  }
+
+  app_core -> buffer_pools: "acquire/release"
+  app_core -> file_table: "lookup"
+}
+
+# === SHARED MEMORY RING BUFFERS ===
+rings: "Shared Memory Ring Buffers" {
+  style.fill: "#F3E5F5"
+  style.stroke: "#7B1FA2"
+  style.stroke-width: 3
+  style.double-border: true
+  
+  direction: right
+
+  sq_ring: "Submission Queue (SQ)" {
+    style.fill: "#E1BEE7"
+    sq_entries: "SQE Array\n[0..N-1]"
+    sq_tail: "tail (app writes)\nhead (kernel reads)"
+    sq_array: "Index Array"
+    
+    sq_tail -> sq_entries: "points to"
+    sq_array -> sq_entries: "indirect\nlookup"
+  }
+
+  cq_ring: "Completion Queue (CQ)" {
+    style.fill: "#D1C4E9"
+    cq_entries: "CQE Array\n[0..2N-1]"
+    cq_head: "head (app writes)\ntail (kernel reads)"
+    
+    cq_head -> cq_entries: "consumes from"
+  }
+
+  sq_ring -> cq_ring: "request →\n← response" {
+    style.stroke: "#7B1FA2"
+    style.stroke-width: 2
+    style.stroke-dash: 4
+  }
+}
+
+# === KERNEL LAYER ===
+kernel: "Linux Kernel" {
+  style.fill: "#FFEBEE"
+  style.stroke: "#C62828"
+  style.stroke-width: 3
+
+  io_uring: "io_uring Subsystem" {
+    style.fill: "#FFCDD2"
+    worker: "Worker Threads"
+    poller: "SQ Poller\n(optional)"
+    
+    worker <-> poller
+  }
+
+  vfs: "VFS Layer" {
+    style.fill: "#F8BBD9"
+    file_ops: "File Operations"
+    socket_ops: "Socket Operations"
+    
+    file_ops <-> socket_ops
+  }
+
+  block: "Block Layer" {
+    style.fill: "#E1BEE7"
+    bio_queue: "BIO Queue"
+    nvme_driver: "NVMe Driver"
+    
+    bio_queue -> nvme_driver
+  }
+
+  net: "Network Stack" {
+    style.fill: "#B2DFDB"
+    tcp_ip: "TCP/IP"
+    nic_driver: "NIC Driver"
+    
+    tcp_ip -> nic_driver
+  }
+
+  io_uring -> vfs: "submits to"
+  vfs -> block: "file I/O"
+  vfs -> net: "network I/O"
+}
+
+# === DATA FLOW PATHS ===
+application.app_core.sqe_builder -> rings.sq_ring: "1. Write SQE\n(store-release tail)" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 3
+  style.animated: true
+}
+
+rings.sq_ring -> kernel.io_uring: "2. Kernel reads SQE\n(load-acquire head)" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+  style.stroke-dash: 5
+}
+
+kernel.io_uring -> rings.cq_ring: "3. Post CQE\n(store-release tail)" {
+  style.stroke: "#C62828"
+  style.stroke-width: 3
+  style.animated: true
+}
+
+rings.cq_ring -> application.app_core.cqe_handler: "4. Harvest CQE\n(load-acquire tail)" {
+  style.stroke: "#C62828"
+  style.stroke-width: 2
+  style.stroke-dash: 5
+}
+
+# === BUFFER REGISTRATION PATHS ===
+application.buffer_pools.fixed_pool -> kernel: "IORING_REGISTER_BUFFERS\n(pin pages for DMA)" {
+  style.stroke: "#388E3C"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+}
+
+application.buffer_pools.provided_ring -> kernel: "IORING_REGISTER_PBUF_RING\n(kernel buffer selection)" {
+  style.stroke: "#388E3C"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+}
+
+# === FILE REGISTRATION PATH ===
+application.file_table -> kernel: "IORING_REGISTER_FILES\n(direct struct file*)" {
+  style.stroke: "#F57C00"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+}
+
+# === MEMORY BARRIER CALLOUT ===
+# FIX: 'near' must use constant values for ELK engine
+barrier_note: |md
+  **Memory Barriers**
+  - `store_release`: Before tail update
+  - `load_acquire`: After tail read
+  - Prevents compiler reordering
+  - x86: compiler barrier only
+  - ARM: `dmb ish` instructions
+| {
+  near: top-right
+  style.fill: "#FFF9C4"
+  style.stroke: "#FBC02D"
+  shape: rectangle
+}
+
+# === LEGEND ===
+legend: "Legend" {
+  style.fill: "#FAFAFA"
+  style.stroke: "#9E9E9E"
+  
+  solid_line: "Ownership / Direct Access"
+  dashed_line: "Reference / Registration"
+  animated_line: "Active Data Flow"
+
+  solid_line -> dashed_line
+  dashed_line -> animated_line
+}

@@ -1,0 +1,272 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# --- DOCUMENTATION & TITLE ---
+title: |md
+  # Provided Buffer Ring for TCP Receive
+  **Memory Scaling: Kernel-managed buffer selection vs Static pre-allocation**
+  *Implementation Spec: IORING_REGISTER_PBUF_RING*
+| {
+  near: top-center
+  style: {
+    font-size: 24
+    bold: true
+  }
+}
+
+direction: right
+
+# --- GLOBAL STYLES & CLASSES ---
+classes: {
+  memory_struct: {
+    style: {
+      font: mono
+      fill: "#F8F9FA"
+      stroke: "#343A40"
+      stroke-width: 1
+    }
+  }
+  kernel_area: {
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+      stroke-dash: 5
+      border-radius: 10
+    }
+  }
+  user_area: {
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1565C0"
+      border-radius: 10
+    }
+  }
+  hardware: {
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#E65100"
+      stroke-width: 3
+    }
+  }
+  annotation: {
+    style: {
+      fill: "#FFF8E1"
+      stroke: "#FF8F00"
+      border-radius: 5
+      font-size: 14
+    }
+  }
+}
+
+# --- SHAPES ---
+
+# 1. SHARED BUFFER POOL (Physical Memory)
+buffer_pool: {
+  label: "Shared Buffer Pool (Physical RAM) | Total: 2MB (256 x 8KB Pages)"
+  style.fill: "#E8F5E9"
+  style.stroke: "#2E7D32"
+  style.stroke-width: 4
+
+  mem_layout: {
+    shape: sql_table
+    label: "Memory Map (8KB Pages)"
+    "0x0000": "[8192B] Buffer Index 0" {style.fill: "#C8E6C9"}
+    "0x2000": "[8192B] Buffer Index 1" {style.fill: "#C8E6C9"}
+    "0x4000": "[8192B] Buffer Index 2" {style.fill: "#C8E6C9"}
+    "...": "--- Sequential Data Pages ---"
+    "0x1FE000": "[8192B] Buffer Index 255" {style.fill: "#C8E6C9"}
+  }
+}
+
+# 2. IO_URING BUFFER RING (Shared Mapping)
+buffer_ring: {
+  label: "io_uring_buf_ring (Shared Control Ring)"
+  class: user_area
+
+  ring_header: {
+    shape: sql_table
+    label: "struct io_uring_buf_ring_header"
+    "+0x00": "tail: u16 | Producer Index" {style.fill: "#BBDEFB"; style.bold: true}
+    "+0x02": "mask: u16 | Entries-1"
+    "+0x04": "resv: u32 | Padding"
+  }
+
+  entries: {
+    shape: sql_table
+    label: "io_uring_buf[256] (16 bytes per entry)"
+    "0": "addr: 0x5500... | len: 8192 | bid: 0"
+    "1": "addr: 0x5520... | len: 8192 | bid: 1"
+    "2": "addr: 0x5540... | len: 8192 | bid: 2"
+    "...": "..."
+    "255": "addr: 0x57FE... | len: 8192 | bid: 255"
+  }
+}
+
+# 3. SQE PREPARATION (Submission)
+recv_sqe: {
+  label: "Submission Queue Entry (io_uring_sqe)"
+  class: user_area
+  
+  fields: {
+    shape: sql_table
+    label: "Submission Fields (IORING_OP_RECV)"
+    "opcode": "u8: 22"
+    "fd": "s32: socket_fd"
+    "addr": "u64: 0x0 (NULL)" {style.stroke: orange; tooltip: "Ignored for selection"}
+    "len": "u32: 0"
+    "buf_group": "u16: 1 (bgid)" {style.stroke: orange; style.bold: true}
+    "flags": "u8: IOSQE_BUFFER_SELECT" {style.stroke: red; style.bold: true}
+  }
+}
+
+# 4. KERNEL LOGIC (Automatic Selection)
+kernel: {
+  label: "Linux Kernel Subsystem"
+  class: kernel_area
+
+  logic: |md
+    ### Kernel Execution Phase
+    1. **Packet Arrival**: NIC DMA's data to kernel sk_buff.
+    2. **Group Lookup**: Finds `bgid=1` ring descriptor.
+    3. **Buffer Selection**:
+       - Reads `ring->tail` (volatile).
+       - Selects `io_uring_buf` at index `(head & mask)`.
+       - *Note*: Kernel maintains internal `head`.
+    4. **Data Copy**: Kernel copies from sk_buff to `buf.addr`.
+    5. **Consumption**: Internal `head` advanced.
+  |
+}
+
+# 5. CQE RESULT (Completion)
+cqe_result: {
+  label: "Completion Queue Entry (io_uring_cqe)"
+  class: user_area
+
+  fields: {
+    shape: sql_table
+    label: "Completion Fields"
+    "user_data": "u64: app_context"
+    "res": "s32: bytes_received"
+    "flags": "u32: IORING_CQE_F_BUFFER | (bid << 16)" {style.stroke: orange; style.bold: true}
+  }
+  
+  bid_decoder: {
+    label: "Buffer ID Extraction: (cqe->flags >> 16)"
+    shape: oval
+    style.fill: "#EF9A9A"
+    style.border-radius: 20
+  }
+}
+
+# 6. APP PROCESSING & REPLENISHMENT
+app_logic: {
+  label: "User Application Processing"
+  
+  process: |md
+    ### Consumption Logic
+    1. Extract `bid` from CQE flags.
+    2. Validate `res > 0`.
+    3. Access memory at `buffer_pool.mem_layout[bid]`.
+    4. Process protocol (JSON, Protobuf, etc.)
+  |
+
+  replenish: |cpp
+    // Replenishment Sequence (Standard liburing)
+    struct io_uring_buf *buf = &br->bufs[tail & mask];
+    buf->addr = original_addr;
+    buf->len = 8192;
+    buf->bid = bid;
+    io_uring_buf_ring_advance(br, 1); 
+    // ^ Above increments ring->tail
+  |
+}
+
+# --- FLOW CONNECTIONS ---
+
+# Initial Registration
+buffer_pool.mem_layout -> buffer_ring.entries: "Map addresses (Register)" {
+  style.stroke: orange
+  style.stroke-width: 2
+  source-arrowhead: * {
+    shape: circle
+  }
+}
+
+# Submission Flow
+recv_sqe.fields -> kernel.logic: "io_uring_submit()" {
+  style.stroke: "#E65100"
+  style.stroke-width: 2
+  style.animated: true
+}
+
+# Kernel Buffer Consumption
+kernel.logic -> buffer_ring.ring_header: "Check Tail" {
+  style.stroke: "#7B1FA2"
+  style.stroke-dash: 3
+}
+kernel.logic -> buffer_ring.entries: "Fetch addr/bid" {
+  style.stroke: "#7B1FA2"
+  style.stroke-dash: 3
+}
+
+# Kernel to User Completion
+kernel.logic -> cqe_result.fields: "Push CQE" {
+  style.stroke: "#7B1FA2"
+  style.stroke-width: 2
+}
+
+# Application Linkage
+cqe_result.fields -> cqe_result.bid_decoder: "Extract BID"
+cqe_result.bid_decoder -> app_logic.process: "bid pointer"
+
+app_logic.process -> buffer_pool.mem_layout: "Zero-copy Read" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 2
+  style.stroke-dash: 5
+}
+
+# Return Loop (Crucial for scaling)
+app_logic.replenish -> buffer_ring.ring_header: "Update tail index" {
+  style.stroke: "#1565C0"
+  style.stroke-dash: 3
+  style.animated: true
+}
+
+# --- ANNOTATIONS ---
+
+key_insight: |'md
+  ### Efficiency Comparison (High Concurrency)
+  
+  | Feature | Static Buffers (RECV) | Provided Buffer Ring |
+  | :--- | :--- | :--- |
+  | **Memory Usage** | `Count * Max_Packet_Size` | `Active_Syscalls * Max_Packet_Size` |
+  | **Memory Overhead** | High (e.g. 10k * 64KB = 640MB) | Low (e.g. 512 * 64KB = 32MB) |
+  | **Scaling** | O(N) connections | O(M) in-flight requests |
+
+  *Provided Buffer Rings allow handling 100k+ concurrent sockets with only a few MB of buffer memory.*
+'| {
+  near: bottom-center
+  class: annotation
+}
+
+legend: {
+  near: bottom-left
+  u: "User Space" {
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+  }
+  k: "Kernel Space" {
+    style.fill: "#F3E5F5"
+    style.stroke: "#7B1FA2"
+    style.stroke-dash: 5
+  }
+  p: "Physical Memory" {
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+  }
+}

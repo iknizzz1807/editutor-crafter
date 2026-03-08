@@ -1,0 +1,239 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: "Concurrent File I/O — 64 In-Flight Operations (io_uring)"
+  note: "Single syscall submits 64 reads; completions arrive out-of-order"
+}
+title.near: top-center
+
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  app: "Application (userspace)" {
+    direction: down
+    style.fill: "#F8F9FA"
+
+    sqe_batch: "SQE Batch Preparation" {
+      direction: right
+      style.stroke-dash: 3
+
+      sqe0: {
+        shape: sql_table
+        label: "struct io_uring_sqe [0]"
+        f0: "0x00 | __u8      | opcode = IORING_OP_READ"
+        f1: "0x08 | __s32     | fd = registered_idx"
+        f2: "0x10 | __u64     | off = 0x0000 (Block 0)"
+        f3: "0x18 | __u64     | addr = 0x7f001000"
+        f4: "0x20 | __u32     | len = 4096"
+        f5: "0x38 | __u64     | user_data = 0"
+        sz: "Size: 64 bytes"
+      }
+
+      sqe31: {
+        shape: sql_table
+        label: "struct io_uring_sqe [31]"
+        f0: "0x00 | __u8      | opcode = IORING_OP_READ"
+        f1: "0x08 | __s32     | fd = registered_idx"
+        f2: "0x10 | __u64     | off = 0x7800 (Block 31)"
+        f3: "0x18 | __u64     | addr = 0x7f021000"
+        f4: "0x20 | __u32     | len = 4096"
+        f5: "0x38 | __u64     | user_data = 31"
+        sz: "Size: 64 bytes"
+      }
+
+      spacer: "..." {
+        width: 60
+      }
+
+      sqe63: {
+        shape: sql_table
+        label: "struct io_uring_sqe [63]"
+        f0: "0x00 | __u8      | opcode = IORING_OP_READ"
+        f1: "0x08 | __s32     | fd = registered_idx"
+        f2: "0x10 | __u64     | off = 0xFC00 (Block 63)"
+        f3: "0x18 | __u64     | addr = 0x7f041000"
+        f4: "0x20 | __u32     | len = 4096"
+        f5: "0x38 | __u64     | user_data = 63"
+        sz: "Size: 64 bytes"
+      }
+    }
+
+    buffer_pool: "Buffer Pool (64 × 4KB Pages)" {
+      direction: right
+      style.fill: "#F3E5F5"
+      b0: "buf[0]"
+      b31: "buf[31]"
+      b_etc: "..."
+      b63: "buf[63]"
+    }
+
+    sqe_batch.sqe0 -> buffer_pool.b0: "target_addr"
+    sqe_batch.sqe31 -> buffer_pool.b31: "target_addr"
+    sqe_batch.sqe63 -> buffer_pool.b63: "target_addr"
+  }
+}
+
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  ring_entry: "io_uring Entry Point" {
+    style.fill: "#E3F2FD"
+    direction: right
+
+    sq_state: {
+      shape: sql_table
+      label: "SQ Ring State"
+      f0: "head | u32 | kernel_idx"
+      f1: "tail | u32 | app_idx"
+      f2: "mask | u32 | 0x3F"
+      f3: "entries | u32 | 64"
+    }
+
+    logic: "Submission Logic" {
+      code: |'c
+        for (int i = 0; i < 64; i++) {
+          sqe = get_sqe(ring);
+          fill_read_request(sqe, fd, i * 4096, bufs[i], i);
+        }
+        io_uring_submit(ring); // Single Syscall
+      '|
+      width: 380
+    }
+  }
+}
+
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  kernel_layer: "Kernel & Block Layer" {
+    style.fill: "#FFF9C4"
+    direction: right
+
+    merging: "IO Scheduler Merging" {
+      label: "Adjacent Request Merging"
+      info: |'md
+        Coalesces SQEs 0-3 into
+        single 16KB physical I/O.
+      '|
+      style.fill: "#FFEBEE"
+    }
+
+    dispatch: "Parallel Dispatch" {
+      label: "NVMe Hardware Queues"
+      info: |'md
+        - Multi-channel flash access
+        - Non-blocking hardware dispatch
+        - Queue Depth: 64 concurrent
+      '|
+      style.fill: "#E8F5E9"
+    }
+
+    completion_table: "Out-of-Order Completions" {
+      content: |'md
+        | CQE# | user_data | Status | Cause |
+        |------|-----------|--------|-------|
+        | 1    | 17        | 4096   | Cache |
+        | 2    | 3         | 4096   | Cache |
+        | 3    | 0         | 16384  | Merge |
+        | 4    | 42        | 4096   | NAND  |
+      '|
+      style.fill: "#FFFFFF"
+    }
+  }
+}
+
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  cq_ring: "CQ Ring (Completion Queue)" {
+    style.fill: "#FCE4EC"
+    direction: right
+
+    cqe_batch: "CQE Batch" {
+      direction: right
+      cqe1: {
+        shape: sql_table
+        label: "CQE [17 completed]"
+        f0: "user_data | 64b | 17"
+        f1: "res       | 32b | 4096"
+        f2: "flags     | 32b | 0"
+      }
+      cqe2: {
+        shape: sql_table
+        label: "CQE [0 completed]"
+        f0: "user_data | 64b | 0"
+        f1: "res       | 32b | 16384"
+        f2: "flags     | 32b | 0"
+      }
+    }
+  }
+}
+
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  matching: "Completion Handling" {
+    style.fill: "#E1F5FE"
+    direction: right
+
+    handler: "user_data Matching" {
+      code: |'c
+        io_uring_for_each_cqe(ring, head, cqe) {
+          uint64_t id = cqe->user_data;
+          struct request *req = &req_pool[id];
+          req->status = COMPLETED;
+          process_buffer(req->buf, cqe->res);
+        }
+      '|
+      width: 380
+    }
+
+    insight: "The user_data handle" {
+      label: "Verbatim Pass-through"
+      note: |'md
+        Kernel guarantees `user_data`
+        is copied SQE -> CQE 1:1.
+        Direct array index in userspace.
+      '|
+    }
+  }
+}
+
+# Core Flow Arrows
+row1.app.sqe_batch -> row2.ring_entry: "syscall | submit 64"
+row2.ring_entry -> row3.kernel_layer: "sqe[] | DMA"
+row3.kernel_layer -> row4.cq_ring: "irq | write CQE"
+row4.cq_ring -> row5.matching: "cq_advance | reap"
+
+# Styling specific SQE types
+row1.app.sqe_batch.sqe0.style.fill: "#E8F5E9"
+row1.app.sqe_batch.sqe31.style.fill: "#E3F2FD"
+row1.app.sqe_batch.sqe63.style.fill: "#FFF3E0"
+
+legend: {
+  shape: rectangle
+  style.fill: "#EEEEEE"
+  label: |'md
+    ### Performance Summary
+    - **Syscalls:** 1 (Submits 64 items)
+    - **Memory:** Zero-copy shared rings
+    - **Ordering:** Non-deterministic
+  '|
+}
+legend.near: bottom-right

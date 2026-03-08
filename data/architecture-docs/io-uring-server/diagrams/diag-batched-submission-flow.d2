@@ -1,0 +1,152 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: "Batched Submission — Submission Queue Flow"
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+row_compare: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  col_traditional: {
+    direction: down
+    label: "Traditional Async I/O"
+    trad_step1: {
+      label: "N Individual Syscalls"
+      width: 320
+      code: |'c
+        // N syscalls = N context switches
+        for (i = 0; i < N; i++) {
+          syscall(read, fd[i], buf[i], 4096);
+          // ~50-100ns syscall overhead EACH
+        }
+      '|
+      style.fill: "#FFE4E1"
+    }
+    trad_timing: {
+      label: "Timing Overhead"
+      shape: sql_table
+      label: "Per-Operation Cost (syscall)"
+      t1: "Context switch | ~1-3 μs"
+      t2: "Kernel entry    | ~50-100 ns"
+      t3: "Parameter copy  | ~20-50 ns"
+      t4: "Return to user  | ~50-100 ns"
+      total: "Total per op   | ~100-200 ns"
+    }
+    trad_result: {
+      label: "Result: N × (syscall + I/O)"
+      shape: rectangle
+      style: {
+        fill: "#FFB6C1"
+        stroke: "#8B0000"
+        bold: true
+      }
+    }
+  }
+  col_iouring: {
+    direction: down
+    label: "io_uring Batched"
+    iouring_step1: {
+      label: "Step 1: Prepare N SQEs"
+      width: 320
+      code: |'c
+        // No syscall - just memory writes
+        for (i = 0; i < N; i++) {
+          sqe = &sqes[(tail + i) & mask];
+          sqe->opcode = IORING_OP_READ;
+          sqe->fd = fd[i];
+          sqe->addr = (u64)buf[i];
+          sqe->len = 4096;
+        }
+      '|
+      style.fill: "#E0FFE0"
+    }
+    iouring_step2: {
+      label: "Step 2: Single io_uring_enter"
+      width: 320
+      code: |'c
+        // ONE syscall for N operations
+        io_uring_smp_store_release(sq_tail, tail + N);
+        syscall(io_uring_enter, ring_fd, N, 0, 0);
+        // Syscall cost amortized across N ops
+      '|
+      style.fill: "#E0FFE0"
+    }
+    iouring_step3: {
+      label: "Step 3: Kernel Processes Batch"
+      width: 320
+      code: |'c
+        // Kernel-side (single entry):
+        for (i = 0; i < N; i++) {
+          sqe = &sqes[head++];
+          result = vfs_read(sqe->fd, ...);
+          cqe = &cqes[cq_tail++];
+          cqe->res = result;
+        }
+      '|
+      style.fill: "#E0FFE0"
+    }
+    iouring_step4: {
+      label: "Step 4: Harvest N CQEs"
+      width: 320
+      code: |'c
+        // Single loop, no syscalls
+        while (cq_head != cq_tail) {
+          cqe = &cqes[cq_head++ & mask];
+          process_result(cqe);
+        }
+      '|
+      style.fill: "#E0FFE0"
+    }
+    iouring_result: {
+      label: "Result: 1 syscall + N × I/O"
+      shape: rectangle
+      style: {
+        fill: "#90EE90"
+        stroke: "#006400"
+        bold: true
+      }
+    }
+  }
+}
+col_traditional.trad_step1 -> col_traditional.trad_timing
+col_traditional.trad_timing -> col_traditional.trad_result
+col_iouring.iouring_step1 -> col_iouring.iouring_step2: "tail += N"
+col_iouring.iouring_step2 -> col_iouring.iouring_step3: "1 syscall"
+col_iouring.iouring_step3 -> col_iouring.iouring_step4: "N CQEs"
+col_iouring.iouring_step4 -> col_iouring.iouring_result
+col_traditional <-> col_iouring: "Compare" {
+  style.stroke-dash: 3
+  style.stroke: "#666"
+}
+footer: {
+  near: bottom-center
+  label: ""
+  shape: rectangle
+  width: 700
+  code: |'text
+    ╔══════════════════════════════════════════════════════════════════════╗
+    ║  SYSCALL REDUCTION: N syscalls → 1 syscall (98%+ reduction)         ║
+    ║  THROUGHPUT GAIN:  2-4x for I/O-bound, 5-10x for syscall-bound      ║
+    ║  LATENCY:          Batch amortization: ~100ns/op → ~1-2ns/op        ║
+    ╚══════════════════════════════════════════════════════════════════════╝
+  '|
+  style: {
+    fill: "#F5F5F5"
+    stroke: "#333"
+    font: mono
+  }
+}

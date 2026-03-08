@@ -1,0 +1,267 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: "Short Write Handling — Partial Send Recovery" {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 32
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  step1: "T0: Initial Submission" {
+    direction: down
+    width: 400
+    app_buf1: {
+      shape: sql_table
+      label: "Application Buffer (1000 bytes)"
+      b0: "0x000 | byte[0-199]   | header"
+      b1: "0x0C8 | byte[200-599] | payload A"
+      b2: "0x258 | byte[600-799] | payload B"
+      b3: "0x320 | byte[800-999] | payload C"
+      sz: "Total: 1000 bytes"
+    }
+    sqe1: {
+      shape: class
+      label: "SQE (IORING_OP_SEND)"
+      opcode: "IORING_OP_SEND"
+      fd: "int"
+      addr: "void* (buf)"
+      len: "1000"
+      user_data: "req_id: 42"
+    }
+    app_buf1 -> sqe1: "submit"
+  }
+  step2: "T1: Kernel Accepts Partial" {
+    direction: down
+    width: 400
+    kernel_buf1: {
+      label: "Kernel Send Buffer"
+      shape: cylinder
+      width: 280
+      style: {
+        fill: "#FFE4B5"
+        stroke: "#CD853F"
+        stroke-width: 2
+      }
+    }
+    note1: {
+      label: |md
+        **Send buffer has only 600 bytes free**
+        Slow receiver → TCP window closed
+        Kernel accepts what fits
+      |
+      width: 340
+      style.fill: transparent
+    }
+    kernel_buf1 -> note1: {
+      style.stroke: transparent
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  step3: "T2: CQE Returns 600" {
+    direction: down
+    width: 400
+    cqe1: {
+      shape: class
+      label: "CQE (Partial Send)"
+      user_data: "42"
+      res: "600  ← NOT an error!"
+      flags: "0"
+    }
+    send_state1: {
+      shape: sql_table
+      label: "struct send_request"
+      f0: "0x00 | int       | fd"
+      f1: "0x08 | void*     | buffer"
+      f2: "0x10 | size_t    | total_len = 1000"
+      f3: "0x18 | size_t    | bytes_sent = 600"
+      f4: "0x20 | size_t    | remaining = 400"
+      f5: "0x28 | off_t     | next_offset = 600"
+      sz: "State: IN_PROGRESS"
+    }
+    cqe1 -> send_state1: "update state"
+  }
+  step4: "T3: Resubmit Remaining" {
+    direction: down
+    width: 400
+    app_buf2: {
+      shape: sql_table
+      label: "Buffer Pointer Advance"
+      b0: "0x000 | byte[0-599]   | ✓ SENT"
+      b1: "0x258 | byte[600-999] | pending"
+      note: "addr = buf + 600"
+    }
+    sqe2: {
+      shape: class
+      label: "SQE (Resubmit)"
+      opcode: "IORING_OP_SEND"
+      fd: "int (same)"
+      addr: "buf + 600"
+      len: "400"
+      user_data: "req_id: 42"
+    }
+    app_buf2 -> sqe2: "remaining bytes"
+    style.fill: transparent
+  }
+}
+row3: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  step5: "T4: Receiver Drains" {
+    direction: down
+    width: 400
+    receiver: {
+      label: "Receiver (Slow Client)"
+      shape: queue
+      style: {
+        fill: "#E6F3FF"
+        stroke: "#4A90D9"
+      }
+    }
+    drain_flow: {
+      label: |md
+        **Backpressure propagation:**
+        1. Client ACKs arrive
+        2. TCP window opens
+        3. Send buffer space freed
+        4. Kernel accepts more data
+      |
+      width: 360
+      style.fill: transparent
+    }
+    receiver -> drain_flow: {
+      style.stroke: transparent
+    }
+  }
+  step6: "T5: Final Completion" {
+    direction: down
+    width: 400
+    cqe2: {
+      shape: class
+      label: "CQE (Final Send)"
+      user_data: "42"
+      res: "400"
+      flags: "0"
+    }
+    send_state2: {
+      shape: sql_table
+      label: "struct send_request (Complete)"
+      f0: "0x00 | int       | fd"
+      f1: "0x08 | void*     | buffer"
+      f2: "0x10 | size_t    | total_len = 1000"
+      f3: "0x18 | size_t    | bytes_sent = 1000"
+      f4: "0x20 | size_t    | remaining = 0"
+      f5: "0x28 | off_t     | next_offset = 1000"
+      sz: "State: COMPLETE"
+    }
+    cqe2 -> send_state2: "finalize"
+    style.fill: "#E8F5E9"
+  }
+}
+step1 -> step2: "kernel\nprocessing" {
+  style: {
+    stroke: "#4A90D9"
+    stroke-width: 2
+  }
+}
+step2 -> step3: "partial\nCQE" {
+  style: {
+    stroke: "#FF6B6B"
+    stroke-width: 2
+  }
+}
+step3 -> step4: "resubmit\nlogic" {
+  style: {
+    stroke: "#FFA500"
+    stroke-width: 2
+  }
+}
+step4 -> step5: "wait for\nwindow" {
+  style: {
+    stroke: "#9370DB"
+    stroke-width: 2
+    stroke-dash: 4
+  }
+}
+step5 -> step6: "buffer\nopens" {
+  style: {
+    stroke: "#4CAF50"
+    stroke-width: 2
+  }
+}
+code_handler: {
+  label: "Short Write Handler (send_request.c)"
+  width: 900
+  code: |'c
+    void handle_send_cqe(struct io_uring_cqe *cqe, 
+                         struct send_request *req,
+                         struct io_uring *ring) {
+        if (cqe->res < 0) {
+            req->state = SEND_ERROR;
+            return;  // Real error, not short write
+        }
+        if (cqe->res == 0) {
+            req->state = SEND_ERROR;  // EPIPE - peer closed
+            return;
+        }
+        // Progress: cqe->res bytes were accepted
+        req->bytes_sent += cqe->res;
+        req->offset += cqe->res;
+        if (req->bytes_sent >= req->total_len) {
+            req->state = SEND_COMPLETE;
+            return;  // All bytes sent!
+        }
+        // Short write - resubmit remaining bytes
+        size_t remaining = req->total_len - req->bytes_sent;
+        void *next_buf = (char *)req->buffer + req->bytes_sent;
+        struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+        io_uring_prep_send(sqe, req->fd, next_buf, remaining, 0);
+        sqe->user_data = req->user_data;  // Same ID for tracking
+        // Note: buffer still owned until complete!
+    }
+  '|
+}
+legend: {
+  near: bottom-center
+  label: "Key Insight"
+  insight: {
+    label: |md
+      **cqe->res < len is NOT an error**
+      Short writes are NORMAL in async I/O. The kernel accepts what fits
+      in the send buffer. Always check `bytes_sent < total_len` and resubmit.
+      **Never reuse buffer until bytes_sent == total_len**
+    |
+    style: {
+      fill: "#FFF9C4"
+      stroke: "#FBC02D"
+      stroke-width: 2
+    }
+  }
+}
+step1.style.fill: "#E3F2FD"
+step2.style.fill: "#FFF3E0"
+step3.style.fill: "#FFEBEE"
+step4.style.fill: "#F3E5F5"
+step5.style.fill: "#E0F7FA"
+step6.style.fill: "#E8F5E9"

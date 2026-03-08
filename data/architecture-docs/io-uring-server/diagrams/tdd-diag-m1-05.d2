@@ -1,0 +1,64 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+shape: sequence_diagram
+App: Application
+Kernel: Kernel
+title: Memory Barrier Placement — Before/After Comparison
+INCORRECT: {
+  App -> Kernel: "1. Write SQE data\n   sqe->opcode = READ\n   sqe->addr = buf"
+  App -> Kernel: "2. Update tail (NO BARRIER!)\n   *sq_tail = new_tail\n   ⚠️ Compiler may reorder!"
+  App -> Kernel: "3. Kernel reads tail\n   Sees new tail value"
+  App -> Kernel: "4. Kernel reads SQE\n   ⚠️ May see STALE data!\n   opcode = garbage\n   addr = old value"
+  App."❌ RACE CONDITION"
+  App."The compiler reordered:\n   tail write BEFORE\n   SQE field writes"
+  Kernel."Result: Kernel processes\ncorrupted SQE → CRASH"
+}
+CORRECT_SUBMISSION: {
+  App -> Kernel: "1. Write SQE data\n   sqe->opcode = READ\n   sqe->addr = buf\n   sqe->len = 4096"
+  App -> Kernel: "2. STORE-RELEASE barrier\n   io_uring_smp_store_release(\n     sq_tail, new_tail\n   )\n   ✓ All prior writes visible\n   before tail update"
+  App -> Kernel: "3. Kernel LOAD-ACQUIRE\n   tail = acquire_load(sq_tail)\n   ✓ Sees tail AFTER\n   all SQE writes"
+  App -> Kernel: "4. Kernel reads SQE\n   ✓ Guaranteed to see\n   correct, complete data"
+  App."✓ CORRECT ORDERING"
+  App."Release barrier ensures:\n   SQE writes → tail update\n   Visible in that order"
+}
+CORRECT_COMPLETION: {
+  Kernel -> App: "1. Write CQE data\n   cqe->res = bytes_read\n   cqe->user_data = req_id\n   cqe->flags = 0"
+  Kernel -> App: "2. STORE-RELEASE barrier\n   io_uring_smp_store_release(\n     cq_tail, new_tail\n   )\n   ✓ All CQE writes complete\n   before tail update"
+  Kernel -> App: "3. App LOAD-ACQUIRE\n   tail = acquire_load(cq_tail)\n   if (tail != head) {\n     ✓ CQE data visible\n   }"
+  Kernel -> App: "4. App reads CQE\n   ✓ Guaranteed to see\n   correct result data"
+  App."✓ CORRECT COMPLETION"
+  App."Acquire barrier ensures:\n   tail read → CQE read\n   Data visible before access"
+}
+BARRIER_DEFINITIONS: {
+  App: |md
+    ## Memory Barrier Definitions
+    **STORE-RELEASE (smp_store_release):**
+    c
+    // Ensures all writes BEFORE this
+    // are visible BEFORE the store
+    io_uring_smp_store_release(p, v) {
+      __asm__ __volatile__("" ::: "memory");
+      *p = v;
+    }
+    
+    **LOAD-ACQUIRE (smp_load_acquire):**
+    c
+    // Ensures all reads AFTER this
+    // see data written BEFORE
+    // the load's matching release
+    io_uring_smp_load_acquire(p) {
+      __typeof__(*(p)) v = *p;
+      __asm__ __volatile__("" ::: "memory");
+      return v;
+    }
+    
+    **On x86:** Barriers compile to compiler barriers only
+    (x86 has strong memory ordering)
+    **On ARM:** Barriers emit `dmb ish` instructions
+    (ARM has weak memory ordering)
+  | {near: bottom-center}
+}

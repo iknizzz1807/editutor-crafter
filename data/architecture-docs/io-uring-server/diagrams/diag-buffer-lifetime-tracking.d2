@@ -1,0 +1,272 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Buffer Lifetime and Ownership Tracking
+  ## The Silent Killer: Premature Buffer Reuse in Async I/O
+| {near: top-center}
+row_states: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  safe_path: {
+    direction: down
+    label: "Safe Ownership Flow"
+    state_free: {
+      shape: circle
+      label: "FREE"
+      style.fill: "#90EE90"
+      style.stroke: "#228B22"
+      style.stroke-width: 3
+    }
+    state_prepared: {
+      shape: circle
+      label: "PREPARED"
+      style.fill: "#87CEEB"
+      style.stroke: "#4169E1"
+      style.stroke-width: 3
+    }
+    state_inflight: {
+      shape: circle
+      label: "IN_FLIGHT"
+      style.fill: "#FFD700"
+      style.stroke: "#DAA520"
+      style.stroke-width: 3
+    }
+    state_processing: {
+      shape: circle
+      label: "PROCESSING"
+      style.fill: "#87CEEB"
+      style.stroke: "#4169E1"
+      style.stroke-width: 3
+    }
+    state_free2: {
+      shape: circle
+      label: "FREE"
+      style.fill: "#90EE90"
+      style.stroke: "#228B22"
+      style.stroke-width: 3
+    }
+    state_free -> state_prepared: "1. get_sqe()\nprep_read()" {
+      style.stroke: "#4169E1"
+      style.stroke-width: 2
+    }
+    state_prepared -> state_inflight: "2. submit()\nio_uring_enter()" {
+      style.stroke: "#DAA520"
+      style.stroke-width: 2
+    }
+    state_inflight -> state_processing: "3. CQE received\ncqe->res bytes" {
+      style.stroke: "#228B22"
+      style.stroke-width: 2
+    }
+    state_processing -> state_free2: "4. process_data()\nrelease_buffer()" {
+      style.stroke: "#228B22"
+      style.stroke-width: 2
+    }
+  }
+  danger_path: {
+    direction: down
+    label: "USE-AFTER-FREE Scenario"
+    danger_free: {
+      shape: circle
+      label: "FREE"
+      style.fill: "#90EE90"
+      style.stroke: "#228B22"
+      style.stroke-width: 3
+    }
+    danger_prepared: {
+      shape: circle
+      label: "PREPARED"
+      style.fill: "#87CEEB"
+      style.stroke: "#4169E1"
+      style.stroke-width: 3
+    }
+    danger_inflight: {
+      shape: circle
+      label: "IN_FLIGHT"
+      style.fill: "#FFD700"
+      style.stroke: "#DAA520"
+      style.stroke-width: 3
+    }
+    danger_bug: {
+      shape: diamond
+      label: "BUG!\nPremature\nReuse"
+      style.fill: "#FF6B6B"
+      style.stroke: "#DC143C"
+      style.stroke-width: 3
+      style.font-color: white
+    }
+    danger_corrupt: {
+      shape: circle
+      label: "DATA\nCORRUPTION"
+      style.fill: "#DC143C"
+      style.stroke: "#8B0000"
+      style.stroke-width: 3
+      style.font-color: white
+    }
+    danger_free -> danger_prepared: "submit SQE" {
+      style.stroke: "#4169E1"
+      style.stroke-width: 2
+    }
+    danger_prepared -> danger_inflight: "enter kernel" {
+      style.stroke: "#DAA520"
+      style.stroke-width: 2
+    }
+    danger_inflight -> danger_bug: "release_buffer()\nBEFORE CQE!" {
+      style.stroke: "#DC143C"
+      style.stroke-width: 3
+      style.stroke-dash: 4
+      style.animated: true
+    }
+    danger_bug -> danger_corrupt: "kernel writes\nto freed\nmemory" {
+      style.stroke: "#8B0000"
+      style.stroke-width: 3
+      style.animated: true
+    }
+  }
+}
+row_code: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  struct_def: {
+    label: "Buffer Tracking State (buffer_pool.h)"
+    shape: class
+    -state: "enum buffer_state"
+    -addr: "void*"
+    -size: "size_t"
+    -owner_user_data: "__u64"
+    +acquire_buffer(pool, user_data): "struct tracked_buffer*"
+    +release_buffer(pool, user_data): "void"
+    +buffer_is_releasable(pool, user_data): "bool"
+  }
+  correct_pattern: {
+    label: "Correct Pattern"
+    width: 380
+    code: |'c
+      // ALWAYS wait for CQE before release
+      void handle_read_cqe(struct io_uring_cqe *cqe,
+                           struct buffer_pool *pool) {
+          if (cqe->res < 0) {
+              // Error - buffer can be released
+              release_buffer(pool, cqe->user_data);
+              return;
+          }
+          // Process data while buffer is still owned
+          process_data(buffer->addr, cqe->res);
+          // ONLY release after processing complete
+          release_buffer(pool, cqe->user_data);
+      }
+    '|
+  }
+  bug_pattern: {
+    label: "BUG Pattern (DO NOT DO THIS)"
+    width: 380
+    code: |'c
+      // DANGEROUS: releasing before CQE harvest
+      void submit_read(struct io_uring *ring, int fd,
+                       struct buffer_pool *pool) {
+          struct tracked_buffer *buf = acquire_buffer(pool, id);
+          prep_read(sqe, fd, buf->addr, len, 0, id);
+          submit(ring);
+          // BUG: buffer still referenced by kernel!
+          release_buffer(pool, id);  // NEVER HERE!
+      }
+      // If kernel writes after this release,
+      // it corrupts whoever got this buffer next.
+    '|
+  }
+}
+row_timeline: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  timeline: {
+    direction: down
+    label: "Timeline: Where Corruption Happens"
+    t0: {
+      label: "T0: Submit Read"
+      code: |'c
+        sqe = get_sqe(ring);
+        prep_read(sqe, fd, buf, 4096, 0, user_data=5);
+        io_uring_submit(ring);
+        // buf->state = IN_FLIGHT
+      '|
+      width: 320
+    }
+    t1: {
+      label: "T1: Premature Release (BUG)"
+      code: |'c
+        // Application "finishes" and reuses buffer
+        release_buffer(pool, 5);
+        // buf returned to pool, state = FREE
+        // But kernel STILL has reference!
+      '|
+      width: 320
+      style.fill: "#FFE4E1"
+    }
+    t2: {
+      label: "T2: Buffer Reallocated"
+      code: |'c
+        // New operation gets same buffer
+        buf2 = acquire_buffer(pool);  // Gets buf!
+        prep_write(sqe2, fd2, buf2, 4096, 0, user_data=6);
+        // buf now contains NEW data
+      '|
+      width: 320
+      style.fill: "#FFE4E1"
+    }
+    t3: {
+      label: "T3: Original CQE Arrives"
+      code: |'c
+        // Kernel completes original read
+        // DMA writes into buf - OVERWRITES NEW DATA!
+        // CQE: res=4096, user_data=5
+        // Result: write data corrupted by read data
+      '|
+      width: 320
+      style.fill: "#DC143C"
+      style.font-color: white
+    }
+    t0 -> t1: "app continues" {style.stroke-dash: 3}
+    t1 -> t2: "pool reuse" {style.stroke-dash: 3}
+    t2 -> t3: "kernel DMA" {style.stroke: "#DC143C"; style.stroke-width: 3; style.animated: true}
+  }
+}
+legend: {
+  near: bottom-center
+  direction: right
+  style.fill: "#F5F5F5"
+  style.stroke: "#CCCCCC"
+  style.border-radius: 8
+  leg_free: {
+    shape: circle
+    label: ""
+    width: 20
+    height: 20
+    style.fill: "#90EE90"
+  }
+  leg_free_label: "FREE (safe to use)" {shape: text}
+  leg_inflight: {
+    shape: circle
+    label: ""
+    width: 20
+    height: 20
+    style.fill: "#FFD700"
+  }
+  leg_inflight_label: "IN_FLIGHT (kernel owned)" {shape: text}
+  leg_danger: {
+    shape: circle
+    label: ""
+    width: 20
+    height: 20
+    style.fill: "#DC143C"
+  }
+  leg_danger_label: "CORRUPTION (use-after-free)" {shape: text}
+}
+row_states.safe_path.state_inflight -> row_timeline.t0: "Example flow" {style.stroke-dash: 5; style.opacity: 0.5}
+row_states.danger_path.danger_corrupt -> row_timeline.t3: "Same bug" {style.stroke: "#DC143C"; style.stroke-dash: 5; style.opacity: 0.7}

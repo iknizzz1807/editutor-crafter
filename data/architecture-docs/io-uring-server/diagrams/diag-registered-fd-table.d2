@@ -1,0 +1,179 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: |md
+    # Registered File Descriptor Table
+    Traditional fd lookup vs. io_uring registered file optimization
+  |
+  near: top-center
+  shape: text
+}
+row_compare: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  traditional: {
+    direction: down
+    label: "Traditional Path (per-operation)"
+    trad_syscall: {
+      label: "syscall: read(fd=7, buf, len)"
+      width: 280
+      code: |'c
+        // Every operation triggers:
+        fdget_pos(fd) {
+          // 1. Bounds check
+          if (fd >= fdt->max_fds)
+            return -EBADF;
+          // 2. Array lookup
+          file = fdt->fd[fd];
+          // 3. Permission check
+          if (!file || !file->f_op->read)
+            return -EBADF;
+          // 4. Reference count (atomic)
+          atomic_long_inc(&file->f_count);
+          // 5. Position lock
+          mutex_lock(&file->f_pos_lock);
+          return file;
+        }
+      '|
+    }
+    trad_fdtable: {
+      label: "Process File Descriptor Table"
+      shape: sql_table
+      f0: "0 | struct file* | stdin"
+      f1: "1 | struct file* | stdout"
+      f2: "2 | struct file* | stderr"
+      f3: "3 | struct file* | socket_A"
+      f4: "... | ... | ..."
+      f5: "7 | struct file* | data_file"
+      f6: "8 | NULL | (closed)"
+      f7: "... | ... | ..."
+      sz: "Size: dynamic (typically 1024+ entries)"
+    }
+    trad_overhead: {
+      label: "Per-Operation Overhead"
+      shape: class
+      +lookup: "~30-50 ns"
+      +atomic_inc: "~10-20 ns"
+      +mutex_lock: "~20-100 ns"
+      +validation: "~20-40 ns"
+      +total: "80-210 ns BEFORE I/O"
+    }
+    trad_syscall -> trad_fdtable: "fdget_pos(7)"
+    trad_fdtable -> trad_overhead: "returns file*"
+    style.stroke: "#c0392b"
+  }
+  registered: {
+    direction: down
+    label: "Registered Path (one-time setup)"
+    reg_setup: {
+      label: "io_uring_register_files(ring, fds[], n)"
+      width: 280
+      code: |'c
+        // Called ONCE during initialization
+        int fds[] = { 3, 7, 12, 19, 42 };
+        int ret = io_uring_register_files(
+          ring, fds, 5
+        );
+        // Kernel validates each fd ONCE,
+        // stores direct struct file* pointers
+        // in a private indexed array.
+      '|
+    }
+    reg_sqe: {
+      label: "SQE with IOSQE_FIXED_FILE"
+      width: 280
+      code: |'c
+        sqe->opcode = IORING_OP_READ;
+        sqe->fd = 2;  // INDEX, not real fd!
+        sqe->flags = IOSQE_FIXED_FILE;
+        // Kernel does:
+        // file = registered_table[2];
+        // No lookup, no refcount, no lock
+      '|
+    }
+    reg_table: {
+      label: "Registered File Table (kernel-private)"
+      shape: sql_table
+      f0: "Index | struct file* | Original FD"
+      f1: "0 | file[3] | 3 (socket_A)"
+      f2: "1 | file[7] | 7 (data_file)"
+      f3: "2 | file[12] | 12 (log_file)"
+      f4: "3 | file[19] | 19 (config)"
+      f5: "4 | file[42] | 42 (cache)"
+      sz: "Size: fixed at registration (sparse)"
+    }
+    reg_overhead: {
+      label: "Per-Operation Overhead"
+      shape: class
+      +array_index: "~2-5 ns"
+      +no_lookup: "bypassed"
+      +no_refcount: "bypassed"
+      +no_lock: "bypassed"
+      +total: "2-5 ns BEFORE I/O"
+    }
+    reg_setup -> reg_table: "creates"
+    reg_sqe -> reg_table: "direct index [2]"
+    reg_table -> reg_overhead: "instant access"
+    style.stroke: "#27ae60"
+  }
+}
+arrow_comparison: {
+  direction: right
+  trad_arrow: {
+    label: "80-210 ns"
+    shape: diamond
+    style.fill: "#e74c3c"
+    style.stroke: "#c0392b"
+  }
+  vs: {
+    label: "vs"
+    shape: text
+  }
+  reg_arrow: {
+    label: "2-5 ns"
+    shape: diamond
+    style.fill: "#2ecc71"
+    style.stroke: "#27ae60"
+  }
+}
+row_compare.trad_overhead -> arrow_comparison.trad_arrow
+row_compare.reg_overhead -> arrow_comparison.reg_arrow
+savings: {
+  label: "Savings: 40-100x reduction in per-operation overhead"
+  style.fill: "#d5f5e3"
+  style.stroke: "#27ae60"
+  style.bold: true
+}
+arrow_comparison -> savings
+usage_pattern: {
+  direction: right
+  label: "Usage Pattern"
+  best_for: {
+    label: "Best For"
+    shape: class
+    +high_concurrency: "64+ concurrent ops"
+    +long_lived_fds: "server sockets, files"
+    +hot_path: "critical I/O loops"
+  }
+  avoid: {
+    label: "Avoid For"
+    shape: class
+    +short_lived: "single-use files"
+    +dynamic_fds: "frequently opening/closing"
+    +low_concurrency: "sequential I/O"
+  }
+}
+savings -> usage_pattern
+update_note: {
+  label: |md
+    **Dynamic Updates:** Use `IORING_REGISTER_FILES_UPDATE` to modify specific slots without re-registering the entire table. Pass -1 to unregister a slot.
+  |
+  width: 600
+}
+usage_pattern -> update_note

@@ -1,0 +1,279 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: Zero-Copy Send Mechanics {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  userspace: Userspace {
+    direction: down
+    style.fill: "#E8F4FD"
+    style.stroke: "#2196F3"
+    style.stroke-width: 2
+    sqe: SQE {
+      shape: sql_table
+      label: "struct io_uring_sqe (64 bytes)"
+      opcode: "0x00 | u8    | opcode"
+      flags: "0x01 | u8    | flags"
+      fd: "0x02 | s32   | fd"
+      addr: "0x10 | u64   | addr → 0x7fff1000"
+      len: "0x18 | u32   | len = 4096"
+      zc_flags: "0x1C | u32   | zc_flags"
+      note: "IORING_OP_SEND_ZC"
+    }
+    user_buf: User Buffer {
+      shape: rectangle
+      label: "Payload Buffer\n0x7fff1000 (4KB)\nPinned, Registered"
+      style: {
+        fill: "#4CAF50"
+        stroke: "#2E7D32"
+        font-color: white
+      }
+      width: 180
+    }
+    note1: |md
+      **Key:** Buffer registered via
+      `IORING_REGISTER_BUFFERS`
+      Pages pinned, physical
+      addresses known to DMA
+    | {
+      shape: rectangle
+      style.fill: "#FFF9C4"
+    }
+  }
+  kernelspace: Kernel Space {
+    direction: down
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    style.stroke-width: 2
+    netstack: Network Stack {
+      direction: down
+      skb_header: sk_buff Header {
+        shape: rectangle
+        label: "TCP/IP Headers\n(~60-80 bytes)\nAllocated in kernel"
+        style: {
+          fill: "#FF9800"
+          stroke: "#E65100"
+          font-color: white
+        }
+        width: 160
+      }
+      frag: Fragment Descriptor {
+        shape: sql_table
+        label: "skb_frag_t"
+        page: "struct page * | → user_buf"
+        offset: "u32 offset      | 0"
+        size: "u32 size        | 4096"
+      }
+    }
+    dma_setup: DMA Engine Setup {
+      shape: rectangle
+      label: "1. Map user pages for DMA\n2. Program NIC DMA engine\n3. Scatter-gather list:\n   [header: kernel mem]\n   [payload: user mem]"
+      style.fill: "#E1BEE7"
+      width: 220
+    }
+  }
+}
+row1.userspace.sqe -> row1.userspace.user_buf: "addr points to\nregistered buffer" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+}
+row1.kernelspace.netstack.skb_header -> row1.kernelspace.dma_setup: "Header + frag\nreference" {
+  style.stroke: "#9C27B0"
+  style.stroke-width: 2
+}
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  hardware: Hardware {
+    direction: down
+    style.fill: "#F3E5F5"
+    style.stroke: "#7B1FA2"
+    style.stroke-width: 2
+    nic: NIC DMA Engine {
+      direction: down
+      dma_ctrl: DMA Controller {
+        shape: rectangle
+        label: "DMA Ring Buffer\nTX Descriptors"
+        style.fill: "#9C27B0"
+        style.font-color: white
+      }
+      dma_ops: DMA Operations {
+        shape: rectangle
+        label: "1. Read header from\n    kernel memory (80B)\n2. Read payload from\n    user memory (4KB)\n3. Assemble packet\n4. Transmit to wire"
+        style.fill: "#CE93D8"
+        width: 200
+      }
+    }
+    wire: Network Wire {
+      shape: parallelogram
+      label: "═══════════════════\n    Ethernet Frame    \n═══════════════════\n[HDR][PAYLOAD (DMA'd)]"
+      style.fill: "#795548"
+      style.font-color: white
+      width: 240
+    }
+  }
+  lifecycle: CQE Lifecycle {
+    direction: down
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF5722"
+    style.stroke-width: 2
+    cqe1: Completion CQE {
+      shape: sql_table
+      label: "First CQE (Completion)"
+      user_data: "u64 | user_data"
+      res: "s32 | res = 4096"
+      flags: "u32 | flags = 0"
+      note1: "⚠️ Send QUEUED, not done"
+      note2: "Buffer NOT safe yet!"
+      style.fill: "#FFCDD2"
+    }
+    cqe2: Notification CQE {
+      shape: sql_table
+      label: "Second CQE (Notification)"
+      user_data2: "u64 | user_data"
+      res2: "s32 | res = 0"
+      flags2: "u32 | flags = NOTIF"
+      note3: "✓ Buffer fully transmitted"
+      note4: "✓ Safe to free/reuse"
+      style.fill: "#C8E6C9"
+    }
+    timing: Timing {
+      label: "Time Gap: ~10-100μs\n(Depends on MTU,\nnetwork conditions)"
+      shape: rectangle
+      style.fill: "#FFF9C4"
+    }
+  }
+}
+row1.kernelspace.dma_setup -> row2.hardware.nic.dma_ctrl: "Program DMA\nscatter-gather" {
+  style.stroke: "#9C27B0"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+}
+row2.hardware.nic.dma_ops -> row2.hardware.wire: "DMA read + transmit" {
+  style.stroke: "#795548"
+  style.stroke-width: 3
+  style.animated: true
+}
+row1.userspace.user_buf -> row2.hardware.nic.dma_ops: "Payload DMA\n(zero-copy)" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 3
+  style.stroke-dash: 5
+  style.animated: true
+  label: "Direct DMA\nfrom user mem"
+}
+row2.lifecycle.cqe1 -> row2.lifecycle.timing: "Wait for\nNIC TX done" {
+  style.stroke: "#F44336"
+  style.stroke-width: 2
+}
+row2.lifecycle.timing -> row2.lifecycle.cqe2: "IRQ triggers\nnotification" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+}
+legend: Legend {
+  near: bottom-center
+  direction: right
+  style.fill: transparent
+  style.stroke: "#666"
+  copy: Traditional {
+    shape: rectangle
+    label: "Traditional: copy\nkernel→user (100ns/4KB)"
+    style.fill: "#FFCDD2"
+  }
+  zc: Zero-Copy {
+    shape: rectangle
+    label: "Zero-Copy: DMA direct\n(no CPU copy)"
+    style.fill: "#C8E6C9"
+  }
+  warn: Warning {
+    shape: rectangle
+    label: "⚠️ Free buffer only\nafter NOTIF CQE"
+    style.fill: "#FFF9C4"
+  }
+}
+flow_title: Buffer Ownership Timeline {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 20
+    bold: true
+  }
+}
+flow: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  t0: T0 {
+    label: "Submit\nSEND_ZC"
+    shape: step
+    style.fill: "#BBDEFB"
+  }
+  t1: T1 {
+    label: "Completion\nCQE arrives"
+    shape: step
+    style.fill: "#FFCDD2"
+  }
+  t2: T2 {
+    label: "NIC DMA\nin progress"
+    shape: step
+    style.fill: "#FFE0B2"
+  }
+  t3: T3 {
+    label: "Notification\nCQE arrives"
+    shape: step
+    style.fill: "#C8E6C9"
+  }
+  t4: T4 {
+    label: "Buffer\nfreed"
+    shape: step
+    style.fill: "#B2DFDB"
+  }
+  t0 -> t1: "~1-5μs" {
+    style.stroke: "#2196F3"
+  }
+  t1 -> t2: "~1μs" {
+    style.stroke: "#F44336"
+  }
+  t2 -> t3: "~10-100μs" {
+    style.stroke: "#FF9800"
+  }
+  t3 -> t4: "immediate" {
+    style.stroke: "#4CAF50"
+  }
+}
+danger: |md
+  **⚠️ DANGER ZONE (T1 → T3):**  
+  Buffer is referenced by in-flight DMA.  
+  Premature free → data corruption or crash.  
+  Must track: `buffer_in_zc_send[bid] = true` until NOTIF CQE.
+| {
+  near: bottom-center
+  shape: rectangle
+  style: {
+    fill: "#FFCDD2"
+    stroke: "#F44336"
+    stroke-width: 3
+    bold: true
+  }
+  width: 500
+}

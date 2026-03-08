@@ -1,0 +1,217 @@
+direction: right
+title: ||md
+  # Ring Index Arithmetic — Split Ownership Model
+  Power-of-2 sizing enables bitwise AND for modulo-free wrapping
+|| {near: top-center}
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# === Submission Queue (SQ) ===
+SQ: "Submission Queue (SQ)" {
+  style.fill: "#E8F4FD"
+  style.stroke: "#2563EB"
+  style.stroke-width: 2
+
+  App_Writes: "App writes TAIL" {
+    shape: rectangle
+    style.fill: "#DBEAFE"
+    style.stroke: "#2563EB"
+    sq_tail: ||md
+      **sq_tail** (App owns)
+      c
+      // App adds SQEs to the ring
+      sqe = &sqes[tail & mask];
+      fill_sqe(sqe);
+      // Release barrier ensures SQE writes visible
+      io_uring_smp_store_release(sq_tail, new_tail);
+      
+    ||
+  }
+
+  Kernel_Reads: "Kernel reads TAIL" {
+    shape: rectangle
+    style.fill: "#FEF3C7"
+    style.stroke: "#D97706"
+    kernel_read: ||md
+      **Kernel acquires tail**:
+      c
+      tail = smp_load_acquire(sq_tail);
+      // Safe to read SQEs from head to tail
+      while (head != tail) {
+          process_sqe(&sqes[head & mask]);
+          head++;
+      }
+      
+    ||
+  }
+
+  Kernel_Writes: "Kernel writes HEAD" {
+    shape: rectangle
+    style.fill: "#FEE2E2"
+    style.stroke: "#DC2626"
+    sq_head: ||md
+      **sq_head** (Kernel owns)
+      c
+      // Kernel advances after consuming SQEs
+      *sq_head = consumed_count;
+      // No barrier needed; kernel side only
+      
+    ||
+  }
+
+  App_Reads: "App reads HEAD" {
+    shape: rectangle
+    style.fill: "#D1FAE5"
+    style.stroke: "#059669"
+    app_read: ||md
+      **App acquires head** for space check:
+      c
+      head = smp_load_acquire(sq_head);
+      available = sq_entries - (tail - head);
+      
+    ||
+  }
+}
+
+# === Completion Queue (CQ) ===
+CQ: "Completion Queue (CQ)" {
+  style.fill: "#F3E8FF"
+  style.stroke: "#7C3AED"
+  style.stroke-width: 2
+
+  Kernel_Writes_CQ: "Kernel writes TAIL" {
+    shape: rectangle
+    style.fill: "#EDE9FE"
+    style.stroke: "#7C3AED"
+    cq_tail: ||md
+      **cq_tail** (Kernel owns)
+      c
+      // After posting CQE:
+      smp_store_release(cq_tail, new_tail);
+      // CQE data visible before tail update
+      
+    ||
+  }
+
+  App_Reads_CQ: "App reads TAIL" {
+    shape: rectangle
+    style.fill: "#DDD6FE"
+    style.stroke: "#7C3AED"
+    app_cq_read: ||md
+      **App acquires tail** to check for CQEs:
+      c
+      tail = smp_load_acquire(cq_tail);
+      if (tail != *cq_head) {
+        // CQEs available from head to tail
+      }
+      
+    ||
+  }
+
+  App_Writes_CQ: "App writes HEAD" {
+    shape: rectangle
+    style.fill: "#C4B5FD"
+    style.stroke: "#7C3AED"
+    cq_head: ||md
+      **cq_head** (App owns)
+      c
+      // After processing CQEs:
+      *cq_head = *cq_head + count;
+      // Kernel will acquire on next CQE post
+      
+    ||
+  }
+
+  Kernel_Reads_CQ: "Kernel reads HEAD" {
+    shape: rectangle
+    style.fill: "#A78BFA"
+    style.stroke: "#7C3AED"
+    style.font-color: white
+    kernel_cq_read: ||md
+      **Kernel checks space**:
+      c
+      head = smp_load_acquire(cq_head);
+      space = cq_entries - (tail - head);
+      
+    ||
+  }
+}
+
+# === Index Wrapping ===
+Wrap: "Index Wrapping with ring_mask" {
+  style.fill: "#F0FDF4"
+  style.stroke: "#16A34A"
+  formula: ||md
+    ### Power-of-2 Optimization
+    Ring size is always power of 2 (e.g., 256, 1024)
+    **Instead of expensive modulo (`%`):**
+    c
+    index = (tail) % entries;  // Multi-cycle division
+    
+    **Use bitwise AND (Single CPU cycle):**
+    c
+    ring_mask = entries - 1;   // e.g., 256-1 = 0xFF
+    index = tail & ring_mask;  // AND instruction
+    
+    **Wrapping Proof:**
+    - `tail=255 & 255` → `255`
+    - `tail=256 & 255` → `0` (Automatic Wrap)
+    - `tail=257 & 255` → `1`
+  ||
+}
+
+# === Split Ownership Table ===
+Ownership: "Split Ownership — No Locks Needed" {
+  style.fill: "#FFF7ED"
+  style.stroke: "#EA580C"
+  table: ||md
+    | Index | Primary Writer | Primary Reader | Synchronization Logic |
+    | :--- | :--- | :--- | :--- |
+    | **SQ head** | Kernel | App | App uses `smp_load_acquire` |
+    | **SQ tail** | App | Kernel | App uses `smp_store_release` |
+    | **CQ head** | App | Kernel | Kernel uses `smp_load_acquire` |
+    | **CQ tail** | Kernel | App | App uses `smp_load_acquire` |
+
+    **Key Architected Constraint:** Each index has exactly **ONE** writer thread.
+    This eliminates the need for Atomic RMW (Lock CMPXCHG) instructions, relying solely on memory ordering primitives.
+  ||
+}
+
+# === Connections showing data and signal flow ===
+SQ.App_Writes -> SQ.Kernel_Reads: "Data ready signal\n(Tail Update)" {
+  style.stroke: "#2563EB"
+  style.stroke-dash: 3
+}
+SQ.Kernel_Writes -> SQ.App_Reads: "Consumption feedback\n(Head Update)" {
+  style.stroke: "#DC2626"
+  style.stroke-dash: 3
+}
+CQ.Kernel_Writes_CQ -> CQ.App_Reads_CQ: "Completion ready\n(Tail Update)" {
+  style.stroke: "#7C3AED"
+  style.stroke-dash: 3
+}
+CQ.App_Writes_CQ -> CQ.Kernel_Reads_CQ: "Release space\n(Head Update)" {
+  style.stroke: "#7C3AED"
+  style.stroke-dash: 3
+}
+
+# === Legend ===
+legend: "Memory Barrier Specification" {
+  style.fill: "#FAFAFA"
+  style.stroke: "#737373"
+  style.stroke-dash: 2
+  barriers: ||md
+    - **`smp_store_release(p, v)`**:
+      Ensures all memory operations *prior* to this call are globally visible before `*p = v` is observed by other CPUs.
+    - **`smp_load_acquire(p)`**:
+      Ensures memory operations *after* this call do not start until the load from `p` is complete and values are synchronized.
+    - **Platform Implementation**:
+      - **x86_64**: Strong TSO model. Compiles to simple move + compiler barrier.
+      - **ARM64/AArch64**: Weak model. Compiles to `stlr` / `ldar` or `dmb ish`.
+  ||
+}

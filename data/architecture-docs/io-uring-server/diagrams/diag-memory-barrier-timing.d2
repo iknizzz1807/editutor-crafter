@@ -1,0 +1,226 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: "Memory Barrier Placement — Before/After"
+  near: top-center
+  shape: rectangle
+  style: {
+    font-size: 24
+    bold: true
+    fill: transparent
+    stroke: transparent
+  }
+}
+
+row: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  
+  incorrect: "INCORRECT: No Memory Barrier" {
+    direction: down
+    style: {
+      fill: "#FFE4E1"
+      stroke: "#DC143C"
+      stroke-width: 3
+    }
+    inc_desc: {
+      width: 400
+      label: "Race: Compiler/CPU may reorder tail update before SQE data"
+      style.fill: transparent
+    }
+    inc_timeline: {
+      direction: down
+      style.fill: transparent
+      inc_t0: {
+        label: "T0: Prepare SQE"
+        width: 350
+        code: |'c
+  sqe->opcode = IORING_OP_READ;
+  sqe->fd = fd;
+  sqe->addr = (u64)buf;
+  sqe->len = 4096;
+        '|
+      }
+      inc_t1: {
+        label: "T1: Update tail (NO BARRIER)"
+        width: 350
+        code: |'c
+  *sq_tail = new_tail;  
+  // Compiler/CPU Reordering Risk!
+        '|
+      }
+      inc_t2: {
+        label: "T2: Kernel reads tail"
+        width: 350
+        style.fill: "#FFE4E1"
+        code: |'c
+  // Kernel sees new tail value
+  tail = load(sq_tail); 
+        '|
+      }
+      inc_t3: {
+        label: "T3: Kernel reads SQE data"
+        width: 350
+        style.fill: "#FF6B6B"
+        style.font-color: "#8B0000"
+        code: |'c
+  // Error: SQE writes not visible!
+  opcode = sqe->opcode; // STALE
+        '|
+      }
+      inc_t0 -> inc_t1 -> inc_t2 -> inc_t3
+    }
+    inc_bug: {
+      label: "BUG: Store Buffering"
+      width: 380
+      style: {
+        fill: "#FF6B6B"
+        font-color: white
+        bold: true
+      }
+      code: |'c
+// 1. sq_tail write committed first
+// 2. SQE fields still in store buffer
+// Kernel sees tail update before
+// data reaches coherent memory!
+      '|
+    }
+    inc_timeline -> inc_bug
+  }
+
+  correct: "CORRECT: Release Barrier" {
+    direction: down
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#228B22"
+      stroke-width: 3
+    }
+    cor_desc: {
+      width: 400
+      label: "Safe: Store-release ensures SQE visibility before tail update"
+      style.fill: transparent
+    }
+    cor_timeline: {
+      direction: down
+      style.fill: transparent
+      cor_t0: {
+        label: "T0: Prepare SQE"
+        width: 350
+        code: |'c
+  sqe->opcode = IORING_OP_READ;
+  sqe->fd = fd;
+  sqe->addr = (u64)buf;
+        '|
+      }
+      cor_t1: {
+        label: "T1: Update tail WITH BARRIER"
+        width: 350
+        style.fill: "#90EE90"
+        code: |'c
+  // Store-release barrier
+  io_uring_smp_store_release(
+    sq_tail, new_tail);
+        '|
+      }
+      cor_t2: {
+        label: "T2: Kernel reads tail"
+        width: 350
+        style.fill: "#E8F5E9"
+        code: |'c
+  // Load-acquire on kernel side
+  tail = io_uring_smp_load_acquire(
+    sq_tail);
+        '|
+      }
+      cor_t3: {
+        label: "T3: Kernel reads SQE data"
+        width: 350
+        style.fill: "#90EE90"
+        style.font-color: "#006400"
+        code: |'c
+  // Guaranteed: SQE data visible
+  opcode = sqe->opcode; // CORRECT
+        '|
+      }
+      cor_t0 -> cor_t1 -> cor_t2 -> cor_t3
+    }
+    cor_success: {
+      label: "CORRECT: Release Semantics"
+      width: 380
+      style: {
+        fill: "#228B22"
+        font-color: white
+        bold: true
+      }
+      code: |'c
+// All writes before barrier 
+// are visible to any observer 
+// that sees the tail update.
+      '|
+    }
+    cor_timeline -> cor_success
+  }
+}
+
+barrier_model: "Acquire/Release Memory Ordering Model" {
+  direction: right
+  style: {
+    fill: "#F0F8FF"
+    stroke: "#4169E1"
+    stroke-width: 2
+  }
+  release: {
+    label: "STORE-RELEASE"
+    width: 300
+    style.fill: "#90EE90"
+    code: |'c
+// 1. Flush local stores to memory
+// 2. Perform store to pointer
+// On x86: asm volatile("" ::: "memory");
+// On ARM: DMB ISH + STR
+      '|
+  }
+  acquire: {
+    label: "LOAD-ACQUIRE"
+    width: 300
+    style.fill: "#87CEEB"
+    code: |'c
+// 1. Perform load from pointer
+// 2. Ensure subsequent reads see
+// valid values from release.
+// On ARM: LDR + DMB ISH
+      '|
+  }
+  release -> acquire: "Synchronizes-With" {
+    style: {
+      stroke-width: 4
+      stroke: "#4169E1"
+    }
+  }
+}
+
+row -> barrier_model
+
+key_insight: {
+  near: bottom-center
+  width: 900
+  label: |md
+    **Key Insight:** The memory barrier establishes a **happens-before relationship**. 
+    Without it, the kernel may see a valid tail index pointing to uninitialized 
+    SQE data—a race condition that triggers corruption under high concurrency.
+  |
+  style: {
+    fill: "#FFF8DC"
+    stroke: "#DAA520"
+    border-radius: 8
+  }
+}

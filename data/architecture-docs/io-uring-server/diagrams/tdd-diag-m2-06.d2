@@ -1,0 +1,328 @@
+layout-engine: elk
+theme-id: 4
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 25
+  }
+}
+
+title: |'md
+  # TECHNICAL SPECIFICATION: IO_URING BUFFER OWNERSHIP & LIFECYCLE
+  **Module:** `io_uring_buffer_pool.c` | **Target:** x86_64 Linux 5.10+
+  **Security Context:** Kernel-space DMA Access / Memory Isolation
+'| {near: top-center}
+
+# -----------------------------------------------------------------------------------------
+# CLASSES & STYLING (Intel Manual Standard)
+# -----------------------------------------------------------------------------------------
+classes: {
+  state-box: {
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2E86AB"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  free-state: {
+    label: "FREE / RECYCLABLE"
+    style: {
+      fill: "#D4EDDA"
+      stroke: "#28A745"
+      stroke-width: 3
+    }
+  }
+  submitted-state: {
+    label: "KERNEL OWNED"
+    style: {
+      fill: "#FFF3CD"
+      stroke: "#FFC107"
+      stroke-width: 3
+    }
+  }
+  processing-state: {
+    label: "APP PROCESSING"
+    style: {
+      fill: "#CCE5FF"
+      stroke: "#007BFF"
+      stroke-width: 3
+    }
+  }
+  error-state: {
+    label: "FAULTED"
+    style: {
+      fill: "#F8D7DA"
+      stroke: "#DC3545"
+      stroke-width: 3
+    }
+  }
+  operation: {
+    shape: hexagon
+    style: {
+      fill: "#F8F9FA"
+      stroke: "#6C757D"
+      stroke-width: 2
+      font-size: 14
+      bold: true
+    }
+  }
+  struct-header: {
+    style: {
+      fill: "#6f42c1"
+      font-color: white
+      bold: true
+    }
+  }
+  memory-padding: {
+    style: {
+      fill: "#DEE2E6"
+      stroke-dash: 3
+      opacity: 0.6
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# 1. MEMORY LAYOUT (Exact Byte Alignment)
+# -----------------------------------------------------------------------------------------
+memory_map: {
+  label: "MEMORY LAYOUT: buffer_slot_t (sizeof=64B, cacheline_aligned)"
+  
+  slot_layout: {
+    grid-columns: 4
+    grid-gap: 0
+    
+    # Header Row
+    h1: "Offset (Hex)" {class: struct-header}
+    h2: "Field Identification" {class: struct-header}
+    h3: "Primitive Type" {class: struct-header}
+    h4: "Width" {class: struct-header}
+    
+    # 0-8: Pointer to DMA memory
+    o0: "0x00"
+    f0: "addr"
+    t0: "void * (DMA)"
+    s0: "8B"
+    f0.style.fill: "#D1E9FF"
+    
+    # 8-12: Size
+    o8: "0x08"
+    f8: "size"
+    t8: "uint32_t"
+    s8: "4B"
+    f8.style.fill: "#D1E9FF"
+    
+    # 12-16: Capacity
+    oc: "0x0C"
+    fc: "capacity"
+    tc: "uint32_t"
+    sc: "4B"
+    fc.style.fill: "#D1E9FF"
+    
+    # 16-20: State
+    o10: "0x10"
+    f10: "state"
+    t10: "enum32_t"
+    s10: "4B"
+    f10.style.fill: "#FFE8A3"
+    
+    # 20-24: Padding (Alignment)
+    o14: "0x14"
+    f14: "--- ALIGNMENT PADDING ---" {class: memory-padding}
+    t14: "---" {class: memory-padding}
+    s14: "4B" {class: memory-padding}
+    
+    # 24-32: Context data
+    o18: "0x18"
+    f18: "owner_data"
+    t18: "uint64_t"
+    s18: "8B"
+    f18.style.fill: "#D1E9FF"
+    
+    # 32-40: Timestamp
+    o20: "0x20"
+    f20: "ts_acquire"
+    t20: "uint64_t (TSC)"
+    s20: "8B"
+    f20.style.fill: "#D1E9FF"
+    
+    # 40-64: Cacheline Padding
+    o28: "0x28"
+    f28: "--- CACHELINE_RESERVED ---" {class: memory-padding}
+    t28: "---" {class: memory-padding}
+    s28: "24B" {class: memory-padding}
+  }
+  
+  slot_layout.*.style.stroke: "#ADB5BD"
+  slot_layout.*.style.font: mono
+  
+  footer: "Total Size: 64 Bytes (1 Cache Line)" {
+    shape: text
+    style.italic: true
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# 2. STATE MACHINE (FSM)
+# -----------------------------------------------------------------------------------------
+lifecycle_fsm: {
+  label: "BUFFER LIFECYCLE STATE MACHINE"
+
+  states: {
+    free: "BUFFER_STATE_FREE" {
+      class: free-state
+    }
+    
+    submitted: "BUFFER_STATE_SUBMITTED" {
+      class: submitted-state
+    }
+    
+    processing: "BUFFER_STATE_PROCESSING" {
+      class: processing-state
+    }
+    
+    error: "BUFFER_STATE_ERROR" {
+      class: error-state
+    }
+  }
+
+  ops: {
+    acquire: "acquire()" {class: operation}
+    harvest: "harvest_cqe()" {class: operation}
+    release: "release()" {class: operation}
+    handle_err: "on_error()" {class: operation}
+  }
+
+  states.free -> ops.acquire: "POP index"
+  ops.acquire -> states.submitted: "io_uring_sqe_submit()"
+  
+  states.submitted -> ops.harvest: "CQE status == 0"
+  ops.harvest -> states.processing: "Notify App"
+  
+  states.submitted -> ops.handle_err: "CQE status < 0"
+  ops.handle_err -> states.error: "Log Fault / Stats"
+  
+  states.processing -> ops.release: "Data Consumed"
+  states.error -> ops.release: "Cleanup Reset"
+  
+  ops.release -> states.free: "PUSH index"
+}
+
+# -----------------------------------------------------------------------------------------
+# 3. ALGORITHM SPECS
+# -----------------------------------------------------------------------------------------
+algorithms: {
+  near: top-right
+  
+  acq_algo: |'md
+    ### `buffer_acquire(pool_t *p)`
+    1. **Lock** `p->lock` (Spinlock)
+    2. If `p->n_free == 0`: **return** `-ENOBUFS`
+    3. `idx = p->free_stack[--p->n_free]`
+    4. `slot = &p->slots[idx]`
+    5. **Assert** `slot->state == FREE`
+    6. `slot->state = SUBMITTED`
+    7. `slot->ts_acquire = rdtsc()`
+    8. `smp_wmb()` // Write Memory Barrier
+    9. **Unlock** `p->lock`
+    10. **return** `idx`
+  '| {style.fill: "#F8F9FA"; style.stroke: "#6C757D"}
+
+  rel_algo: |'md
+    ### `buffer_release(pool_t *p, int idx)`
+    1. `slot = &p->slots[idx]`
+    2. **Assert** `slot->state != SUBMITTED`
+    3. **Lock** `p->lock`
+    4. `slot->state = FREE`
+    5. `slot->owner_data = 0`
+    6. `p->free_stack[p->n_free++] = idx`
+    7. **Unlock** `p->lock`
+  '| {style.fill: "#F8F9FA"; style.stroke: "#6C757D"}
+}
+
+# -----------------------------------------------------------------------------------------
+# 4. POOL TOPOLOGY
+# -----------------------------------------------------------------------------------------
+pool_topology: {
+  pool_struct: {
+    label: "buffer_pool_t"
+    class: state-box
+    fields: {
+      grid-columns: 1
+      f1: "buffer_slot_t *slots"
+      f2: "uint32_t *free_stack"
+      f3: "uint32_t n_buffers"
+      f4: "uint32_t n_free"
+      f5: "spinlock_t lock"
+    }
+    fields.style.fill: white
+    fields.style.font: mono
+  }
+
+  free_list_visual: {
+    label: "O(1) FREE STACK (Indices)"
+    
+    stack: {
+      s0: "3" {style.fill: "#D4EDDA"}
+      s1: "7" {style.fill: "#D4EDDA"}
+      s2: "12" {style.fill: "#D4EDDA"}
+      s3: "..." {style.stroke-dash: 3}
+      s4: "MAX" {style.fill: "#E2E3E5"}
+      
+      s0 -> s1 -> s2 -> s3 -> s4
+    }
+    
+    ptr: "p->free_stack"
+    ptr -> stack.s0: "Top of Stack"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# CRITICAL INVARIANTS
+# -----------------------------------------------------------------------------------------
+concurrency_warning: |'md
+  ### ⚠️ CRITICAL CONCURRENCY INVARIANTS
+  - **Kernel Ownership:** While state is `SUBMITTED`, the Kernel owns physical pages. 
+  - **Barrier:** `smp_wmb()` required before submission.
+  - **Memory Ordering:** Use `smp_load_acquire()` on CQE arrival.
+'| {
+  near: bottom-right
+  style: {
+    fill: "#FFF3CD"
+    stroke: "#FFC107"
+    stroke-width: 4
+    border-radius: 8
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# CONNECTIONS & ANNOTATIONS
+# -----------------------------------------------------------------------------------------
+
+# Logical flow connections (transparent to guide ELK but visible for relationships)
+memory_map -> lifecycle_fsm: { style.opacity: 0 }
+lifecycle_fsm -> pool_topology: { style.opacity: 0 }
+
+# Detailed flow labels
+lifecycle_fsm.ops.acquire -> lifecycle_fsm.states.submitted: "Atomic Transition" {
+  style: {
+    font-size: 11
+    italic: true
+  }
+}
+lifecycle_fsm.ops.release -> lifecycle_fsm.states.free: "Recycle" {
+  style: {
+    stroke: "#28A745"
+    font-size: 11
+    italic: true
+  }
+}
+
+# Global Styling
+***.style.stroke: "#495057"
+(*** -> ***)[*]: {
+  target-arrowhead: triangle
+}

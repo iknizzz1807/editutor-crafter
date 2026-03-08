@@ -1,0 +1,262 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: Provided Buffer Ring Architecture {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  app_side: Application Space {
+    direction: down
+    style.fill: "#E8F4FD"
+    style.stroke: "#2196F3"
+    buf_ring: struct io_uring_buf_ring {
+      shape: sql_table
+      label: "struct io_uring_buf_ring"
+      f0: "0x00 | __u64     | header.tail"
+      f1: "0x08 | __u64     | header.head"
+      f2: "0x10 | buf[0]    | {addr, len, bid}"
+      f3: "0x18 | buf[1]    | {addr, len, bid}"
+      f4: "0x20 | buf[2]    | {addr, len, bid}"
+      f5: "0x28 | buf[3]    | {addr, len, bid}"
+      f6: "...   | buf[n]    | ..."
+      sz: "Ring entries: power of 2"
+    }
+    buf_entry: struct io_uring_buf {
+      shape: sql_table
+      label: "struct io_uring_buf"
+      f0: "0x00 | __u64     | addr"
+      f1: "0x08 | __u32     | len"
+      f2: "0x0C | __u16     | bid"
+      f3: "0x0E | __u16     | resv"
+      sz: "16 bytes per entry"
+    }
+    buf_ring -> buf_entry: "each entry" {
+      style.stroke-dash: 3
+    }
+  }
+  data_buffers: Buffer Pool {
+    direction: down
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    buf0: Buffer 0 {
+      label: "buf[0]\naddr: 0x7f1000\nlen: 8192\nbid: 0"
+      shape: rectangle
+      width: 120
+      style.fill: "#FFE0B2"
+    }
+    buf1: Buffer 1 {
+      label: "buf[1]\naddr: 0x7f4000\nlen: 8192\nbid: 1"
+      shape: rectangle
+      width: 120
+      style.fill: "#FFE0B2"
+    }
+    buf2: Buffer 2 {
+      label: "buf[2]\naddr: 0x7f8000\nlen: 8192\nbid: 2"
+      shape: rectangle
+      width: 120
+      style.fill: "#FFCC80"
+      style.stroke: "#E65100"
+      style.stroke-width: 3
+    }
+    buf3: Buffer N {
+      label: "buf[n]\naddr: 0x7fc000\nlen: 8192\nbid: n"
+      shape: rectangle
+      width: 120
+      style.fill: "#FFE0B2"
+    }
+    buf0 -> buf1 -> buf2 -> buf3
+  }
+}
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  kernel_side: Kernel Space {
+    direction: down
+    style.fill: "#F3E5F5"
+    style.stroke: "#9C27B0"
+    sqe_recv: RECV SQE {
+      shape: sql_table
+      label: "SQE for IORING_OP_RECV"
+      f0: "opcode  | IORING_OP_RECV"
+      f1: "fd      | socket_fd"
+      f2: "addr    | 0 (kernel selects)"
+      f3: "len     | 0 (use buffer size)"
+      f4: "buf_group | bgid (e.g., 1)"
+      f5: "flags   | IOSQE_BUFFER_SELECT"
+      sz: "Kernel picks from ring"
+    }
+    cqe_recv: RECV CQE {
+      shape: sql_table
+      label: "CQE (completion)"
+      f0: "user_data | request_id"
+      f1: "res       | bytes_received"
+      f2: "flags     | IORING_CQE_F_BUFFER"
+      f3: "          | bid in bits [16:31]"
+      sz: "Buffer ID encoded"
+    }
+    sqe_recv -> cqe_recv: "completion" {
+      style.stroke: "#9C27B0"
+    }
+  }
+  flow_control: Buffer Selection Flow {
+    direction: down
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    step1: 1. Post Buffers {
+      label: "1. Post Buffers to Ring"
+      width: 200
+      code: |'c
+        io_uring_buf_ring_add(ring, 
+          buf_addr, buf_len, bid);
+        io_uring_buf_ring_advance(ring, n);
+      '|
+    }
+    step2: 2. Submit RECV {
+      label: "2. Submit RECV with BUFFER_SELECT"
+      width: 200
+      code: |'c
+        sqe->opcode = IORING_OP_RECV;
+        sqe->buf_group = bgid;
+        sqe->flags |= IOSQE_BUFFER_SELECT;
+      '|
+    }
+    step3: 3. Kernel Selects {
+      label: "3. Kernel Selects Buffer"
+      width: 200
+      code: |'c
+        // Kernel pops buffer from ring
+        // DMA's received data into it
+        // Posts CQE with bid in flags
+      '|
+    }
+    step4: 4. Process & Return {
+      label: "4. Process Data, Return Buffer"
+      width: 200
+      code: |'c
+        if (cqe->flags & IORING_CQE_F_BUFFER) {
+          bid = cqe->flags >> 16;
+          process_data(bufs[bid]);
+          return_buffer(ring, bid);
+        }
+      '|
+    }
+    step1 -> step2 -> step3 -> step4
+  }
+}
+row3: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  index_mgmt: Index Management {
+    direction: down
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    indices: Ring Indices {
+      shape: sql_table
+      label: "Head/Tail Semantics"
+      f0: "tail | App writes | Next slot to add"
+      f1: "head | Kernel reads | Next to consume"
+      f2: "mask | entries - 1 | For modulo-free wrap"
+      sz: "Power of 2 required"
+    }
+    ownership: Ownership Model {
+      shape: sql_table
+      label: "Buffer State Machine"
+      f0: "FREE       | In ring, available"
+      f1: "IN_FLIGHT  | Selected by kernel"
+      f2: "PROCESSING | App has data"
+      f3: "RETURNING  | Being reposted"
+      sz: "Track per-buffer state"
+    }
+  }
+  flags_detail: CQE Flags Detail {
+    direction: down
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+    flag_layout: IORING_CQE_F_BUFFER {
+      shape: sql_table
+      label: "CQE Flags Bit Layout"
+      f0: "bits 0-7   | CQE flags"
+      f1: "bits 8-15  | reserved"
+      f2: "bits 16-31 | buffer ID (bid)"
+      f3: "           | IORING_CQE_BUFFER_SHIFT = 16"
+      sz: "Extract: bid = flags >> 16"
+    }
+    error_cases: Error Handling {
+      shape: sql_table
+      label: "Common Errors"
+      f0: "-ENOBUFS | Ring empty, no buffers"
+      f1: "-EINVAL  | Bad bgid or flags"
+      f2: "-EFAULT  | Bad buffer address"
+      sz: "Check cqe->res < 0"
+    }
+  }
+}
+app_side.buf_ring -> data_buffers.buf0: "points to" {
+  style.stroke-dash: 3
+  style.stroke: "#666"
+}
+app_side.buf_ring -> data_buffers.buf2: "kernel reads" {
+  style.stroke: "#E65100"
+  style.stroke-width: 2
+  style.animated: true
+}
+kernel_side.sqe_recv -> app_side.buf_ring: "selects from" {
+  style.stroke: "#9C27B0"
+  style.stroke-dash: 5
+  label: "buf_group"
+}
+kernel_side.cqe_recv -> data_buffers.buf2: "bid=2" {
+  style.stroke: "#4CAF50"
+  label: "data ready"
+}
+flow_control.step3 -> data_buffers.buf2: "DMA write" {
+  style.stroke: "#E65100"
+  style.animated: true
+}
+legend: "" {
+  near: bottom-center
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  leg1: Selected Buffer {
+    shape: rectangle
+    width: 100
+    style.fill: "#FFCC80"
+    style.stroke: "#E65100"
+    style.stroke-width: 3
+  }
+  leg2: Available Buffer {
+    shape: rectangle
+    width: 100
+    style.fill: "#FFE0B2"
+  }
+  leg3: Animated = Data Flow {
+    shape: rectangle
+    width: 100
+    style.stroke-dash: 5
+    style.animated: true
+  }
+}

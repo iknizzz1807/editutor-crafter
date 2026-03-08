@@ -1,0 +1,238 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+# Connection State Machine for TCP Server
+# Tracks lifecycle from allocation through cleanup
+title: |md
+  # TCP Connection State Machine
+  Single-threaded event loop • io_uring-driven transitions
+| {near: top-center}
+# State definitions with invariants
+FREE: {
+  shape: circle
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+  style.stroke-width: 3
+  label: "FREE"
+  tooltip: "Slot available for reuse\nfd = -1\nn_in_flight = 0"
+}
+ACTIVE: {
+  style.fill: "#E3F2FD"
+  style.stroke: "#2196F3"
+  style.stroke-width: 3
+  tooltip: "Connection established\nTCP_NODELAY set\nReady for I/O"
+}
+RECVING: {
+  style.fill: "#FFF3E0"
+  style.stroke: "#FF9800"
+  style.stroke-width: 3
+  tooltip: "IORING_OP_RECV submitted\nIOSQE_BUFFER_SELECT set\nAwaiting data"
+}
+SENDING: {
+  style.fill: "#F3E5F5"
+  style.stroke: "#9C27B0"
+  style.stroke-width: 3
+  tooltip: "IORING_OP_SEND submitted\nEcho in progress\nBuffer owned"
+}
+CANCELLING: {
+  style.fill: "#FFEBEE"
+  style.stroke: "#F44336"
+  style.stroke-width: 3
+  tooltip: "IORING_OP_ASYNC_CANCEL submitted\nWaiting for in-flight ops\ncancel_requested = true"
+}
+CLOSED: {
+  shape: circle
+  style.fill: "#ECEFF1"
+  style.stroke: "#607D8B"
+  style.stroke-width: 3
+  label: "CLOSED"
+  tooltip: "fd closed (fd = -1)\nAwaiting cleanup\nWill return to FREE"
+}
+# Error state (terminal before cleanup)
+ERROR: {
+  shape: diamond
+  style.fill: "#FFCDD2"
+  style.stroke: "#D32F2F"
+  style.stroke-width: 3
+  tooltip: "Error occurred\nECONNRESET, EPIPE, EBADF\nInitiating cleanup"
+}
+# Initial state marker
+initial: {
+  shape: circle
+  style.fill: "#000000"
+  width: 20
+  height: 20
+}
+initial -> FREE: "system init" {
+  style.stroke: "#000000"
+  style.stroke-width: 2
+}
+# Normal flow transitions
+FREE -> ACTIVE: "accept CQE received\n• conn_id allocated\n• TCP_NODELAY set\n• submit recv SQE" {
+  label: "multishot accept"
+  style.stroke: "#4CAF50"
+  style.stroke-width: 3
+  style.animated: true
+}
+ACTIVE -> RECVING: "submit_recv()\n• SQE: IORING_OP_RECV\n• buf_group set\n• n_in_flight++" {
+  label: "initiate receive"
+  style.stroke: "#2196F3"
+  style.stroke-width: 2
+}
+RECVING -> SENDING: "recv CQE (res > 0)\n• extract buf_bid\n• submit echo send\n• same buffer used" {
+  label: "data received"
+  style.stroke: "#FF9800"
+  style.stroke-width: 3
+  style.animated: true
+}
+SENDING -> ACTIVE: "send CQE (complete)\n• return buffer to ring\n• submit next recv\n• bytes_sent updated" {
+  label: "echo complete"
+  style.stroke: "#9C27B0"
+  style.stroke-width: 3
+  style.animated: true
+}
+# Short write handling
+SENDING -> SENDING: "send CQE (partial)\n• res < total_requested\n• resubmit remaining\n• send_done += res" {
+  label: "short write"
+  style.stroke: "#9C27B0"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+}
+# EOF handling
+RECVING -> CLOSING: "recv CQE (res = 0)\n• peer closed gracefully\n• no error logged" {
+  label: "EOF"
+  style.stroke: "#607D8B"
+  style.stroke-width: 2
+}
+CLOSING: {
+  style.fill: "#ECEFF1"
+  style.stroke: "#607D8B"
+  style.stroke-width: 2
+  tooltip: "Close initiated\nChecking in-flight ops"
+}
+# Error transitions
+RECVING -> ERROR: "recv CQE (res < 0)\n• ECONNRESET, EPIPE\n• EBADF, other errors" {
+  label: "recv error"
+  style.stroke: "#F44336"
+  style.stroke-width: 2
+}
+SENDING -> ERROR: "send CQE (res < 0)\n• ECONNRESET, EPIPE\n• EBADF, other errors" {
+  label: "send error"
+  style.stroke: "#F44336"
+  style.stroke-width: 2
+}
+ACTIVE -> ERROR: "connection timeout\n• idle > timeout_ms\n• last_active_ns check" {
+  label: "timeout"
+  style.stroke: "#F44336"
+  style.stroke-width: 2
+}
+# Cleanup flow
+ERROR -> CANCELLING: "n_in_flight > 0\n• submit ASYNC_CANCEL\n• cancel_requested = true" {
+  label: "cancel ops"
+  style.stroke: "#F44336"
+  style.stroke-width: 2
+}
+CLOSING -> CANCELLING: "n_in_flight > 0\n• submit ASYNC_CANCEL\n• wait for CQEs" {
+  label: "cancel pending"
+  style.stroke: "#607D8B"
+  style.stroke-width: 2
+}
+CLOSING -> CLOSED: "n_in_flight == 0\n• close(fd)\n• fd = -1" {
+  label: "immediate close"
+  style.stroke: "#607D8B"
+  style.stroke-width: 2
+}
+# Cancellation completion
+CANCELLING -> CANCELLING: "cancel CQE\n• n_in_flight--\n• still > 0, wait more" {
+  label: "partial cancel"
+  style.stroke: "#F44336"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+}
+CANCELLING -> CLOSED: "cancel CQE\n• n_in_flight == 0\n• close(fd)" {
+  label: "all cancelled"
+  style.stroke: "#F44336"
+  style.stroke-width: 3
+}
+# Return to free pool
+CLOSED -> FREE: "connection_table_free()\n• slot returned\n• ready for reuse" {
+  label: "cleanup complete"
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+}
+# Illegal transitions (shown as dashed red)
+RECVING -> ACTIVE: "ILLEGAL: must complete recv" {
+  style.stroke: "#D32F2F"
+  style.stroke-width: 2
+  style.stroke-dash: 6
+  style.font-color: "#D32F2F"
+  label: "✗ ILLEGAL"
+}
+SENDING -> RECVING: "ILLEGAL: must complete send" {
+  style.stroke: "#D32F2F"
+  style.stroke-width: 2
+  style.stroke-dash: 6
+  style.font-color: "#D32F2F"
+  label: "✗ ILLEGAL"
+}
+CANCELLING -> ACTIVE: "ILLEGAL: cancellation is terminal" {
+  style.stroke: "#D32F2F"
+  style.stroke-width: 2
+  style.stroke-dash: 6
+  style.font-color: "#D32F32"
+  label: "✗ ILLEGAL"
+}
+# Legend
+legend: {
+  label: "State Machine Legend"
+  near: bottom-right
+  normal: "Normal transition"
+  normal.style.stroke: "#2196F3"
+  error_trans: "Error path"
+  error_trans.style.stroke: "#F44336"
+  illegal_trans: "Illegal transition"
+  illegal_trans.style.stroke: "#D32F2F"
+  illegal_trans.style.stroke-dash: 6
+  self_loop: "Self-transition (loop)"
+  self_loop.style.stroke: "#9C27B0"
+  self_loop.style.stroke-dash: 4
+}
+# State invariants box
+invariants: |md
+  ## Connection State Invariants
+  **FREE**
+  - fd = -1
+  - n_in_flight = 0
+  - cancel_requested = false
+  **ACTIVE**
+  - fd ≥ 0 (valid socket)
+  - n_in_flight = 0
+  - TCP_NODELAY enabled
+  **RECVING**
+  - n_in_flight ≥ 1 (recv SQE)
+  - recv_state = SUBMITTED
+  **SENDING**
+  - n_in_flight ≥ 1 (send SQE)
+  - Buffer ownership tracked
+  **CANCELLING**
+  - cancel_requested = true
+  - ASYNC_CANCEL SQE submitted
+  **CLOSED**
+  - fd = -1
+  - All buffers released
+| {near: bottom-left}
+# Key insight
+insight: |md
+  ### Key Design Principle
+  **Connection ID ≠ File Descriptor**
+  The connection table is indexed by `conn_id`, not `fd`. This prevents use-after-free bugs when:
+  1. Connection A closes, fd freed
+  2. Connection B opens, gets same fd
+  3. Late CQE for Connection A arrives
+  4. CQE lookup finds conn_id slot is CLOSED
+  5. CQE safely ignored → no corruption
+  **Safe fd Reuse**: Only close fd after n_in_flight reaches 0.
+| {near: bottom-center}

@@ -1,0 +1,179 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # io_uring vs epoll — Architectural Comparison
+| {near: top-center}
+row_compare: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  epoll_side: {
+    direction: down
+    label: "epoll Architecture"
+    epoll_loop: {
+      label: "Event Loop (epoll_server.c)"
+      width: 380
+      step1: {
+        label: "1. Wait for Events"
+        code: |'c
+          int n = epoll_wait(epfd, events, MAX, -1);
+          // SYSCALL #1 per iteration
+        '|
+        width: 360
+      }
+      step2: {
+        label: "2. Per-Ready-FD Loop"
+        code: |'c
+          for (i = 0; i < n; i++) {
+            int fd = events[i].data.fd;
+            // Process each fd...
+          }
+        '|
+        width: 360
+      }
+      step3: {
+        label: "3. Read Data"
+        code: |'c
+          ssize_t len = read(fd, buf, BUF_SIZE);
+          // SYSCALL #2 per fd
+        '|
+        width: 360
+      }
+      step4: {
+        label: "4. Process + Write"
+        code: |'c
+          process(buf, len);
+          write(fd, response, resp_len);
+          // SYSCALL #3 per fd
+        '|
+        width: 360
+      }
+      syscall_box: {
+        label: "Syscall Analysis"
+        style.fill: "#FFE4E1"
+        style.stroke: "#CD5C5C"
+        syscall_note: |md
+          **Per iteration (N ready fds):**
+          - `epoll_wait`: 1 syscall
+          - `read` × N: N syscalls
+          - `write` × N: N syscalls
+          - **Total: 1 + 2N syscalls**
+          For 64 ready fds: **129 syscalls**
+        |
+      }
+    }
+  }
+  iouring_side: {
+    direction: down
+    label: "io_uring Architecture"
+    io_loop: {
+      label: "Event Loop (io_uring_server.c)"
+      width: 380
+      iostep1: {
+        label: "1. Batch Prepare SQEs"
+        code: |'c
+          for (i = 0; i < batch; i++) {
+            sqe = io_uring_get_sqe(&ring);
+            io_uring_prep_read(sqe, fd[i], buf[i], ...);
+            sqe->user_data = i;
+          }
+          // NO SYSCALL (just memory writes)
+        '|
+        width: 360
+      }
+      iostep2: {
+        label: "2. Submit Batch"
+        code: |'c
+          io_uring_submit(&ring);
+          // SYSCALL #1 (or ZERO with SQPOLL)
+          // Kernel processes ALL pending SQEs
+        '|
+        width: 360
+      }
+      iostep3: {
+        label: "3. Harvest CQEs"
+        code: |'c
+          io_uring_for_each_cqe(&ring, head, cqe) {
+            handle_completion(cqe);
+          }
+          // NO SYSCALL (shared memory read)
+        '|
+        width: 360
+      }
+      iostep4: {
+        label: "4. Batch Write SQEs"
+        code: |'c
+          for (each response) {
+            sqe = io_uring_get_sqe(&ring);
+            io_uring_prep_send(sqe, fd, resp, ...);
+          }
+          io_uring_submit(&ring);
+          // SYSCALL #2 (or ZERO with SQPOLL)
+        '|
+        width: 360
+      }
+      iosyscall_box: {
+        label: "Syscall Analysis"
+        style.fill: "#E6FFE6"
+        style.stroke: "#228B22"
+        iosyscall_note: |md
+          **Per batch (N operations):**
+          - SQE preparation: 0 syscalls
+          - Submit batch: 1 syscall
+          - CQE harvest: 0 syscalls
+          - Submit responses: 1 syscall
+          - **Total: 2 syscalls per batch**
+          For 64 operations: **2 syscalls**
+        |
+      }
+    }
+  }
+}
+epoll_side -> iouring_side: "Evolution\n↓\n98% syscall reduction" {
+  style.stroke: "#4169E1"
+  style.stroke-width: 3
+  style.stroke-dash: 4
+}
+comparison: {
+  direction: right
+  label: "Syscall Count Comparison"
+  metrics: {
+    shape: sql_table
+    label: "Metrics (64 events per iteration)"
+    col1: "Metric | epoll | io_uring | Reduction"
+    row1: "Syscalls/iteration | 129 | 2 | 98.4%"
+    row2: "Context switches | 129 | 2 | 98.4%"
+    row3: "Kernel transitions | 129 | 2 | 98.4%"
+    row4: "Per-op overhead | ~150ns | ~3ns | 50x"
+    note: "Complexity: O(events × 3) | O(batches)"
+  }
+  scaling: {
+    label: "Scaling Analysis"
+    scale_chart: {
+      label: "Syscalls vs Events"
+      epoll_line: "epoll: syscalls = 1 + 2×events"
+      iouring_line: "io_uring: syscalls = ceil(events/batch_size) × 2"
+      example: |md
+        **At 10,000 events/sec:**
+        - epoll: ~30,000 syscalls/sec
+        - io_uring: ~312 syscalls/sec (batch=64)
+        - **Saved: 29,688 syscalls/sec**
+      |
+    }
+  }
+}
+legend: {
+  near: bottom-center
+  label: "Key Insight"
+  insight: |md
+    **epoll**: Each I/O operation requires kernel transition for notification AND execution.
+    **io_uring**: Shared ring buffers enable batch submission/harvest with single kernel transition.
+    The architectural difference compounds at scale — epoll syscall overhead grows linearly with events,
+    while io_uring grows with batch count (typically 64-256 operations per batch).
+  |
+}

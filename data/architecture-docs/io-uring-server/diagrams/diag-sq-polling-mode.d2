@@ -1,0 +1,225 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+header: {
+  label: "SQ Polling Mode — Kernel Thread Architecture"
+  shape: rectangle
+  style: {
+    font-size: 28
+    bold: true
+    fill: "#f0f0f0"
+  }
+}
+
+row_comparison: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+
+  sqpoll_side: {
+    direction: down
+    label: "SQPOLL Mode (Syscall-Free Path)"
+    
+    app_sqpoll: {
+      label: "Application (User Space)"
+      shape: rectangle
+      style.fill: "#E8F5E9"
+      style.stroke: "#2E7D32"
+      width: 320
+      code_prep: {
+        label: "Logic: Submission Loop"
+        width: 300
+        code: |'c
+          sqe = io_uring_get_sqe(&ring);
+          io_uring_prep_read(sqe, fd, buf, len, off);
+          
+          // Memory barrier ensures SQE is visible
+          io_uring_smp_store_release(sq->ktail, ktail + 1);
+          
+          // No io_uring_enter(IORING_ENTER_SQ_WAKEUP) 
+          // required unless thread is sleeping.
+        '|
+      }
+    }
+
+    sq_ring_sqpoll: {
+      shape: sql_table
+      label: "Shared SQ Ring (sq_ring.h)"
+      head: "0x00 | __u32 | head // Updated by Kernel"
+      tail: "0x04 | __u32 | tail // Updated by App"
+      mask: "0x08 | __u32 | ring_mask"
+      entries: "0x0C | __u32 | ring_entries"
+      flags: "0x10 | __u32 | flags // IORING_SQ_NEED_WAKEUP"
+      dropped: "0x14 | __u32 | dropped"
+      array: "0x18 | __u32[] | array // Index into SQEs"
+      size: "Total: 32 bytes + array size"
+    }
+
+    kernel_thread: {
+      label: "io_sq_thread (Kernel Space)"
+      shape: hexagon
+      style.fill: "#E3F2FD"
+      style.stroke: "#1565C0"
+      width: 320
+      thread_logic: {
+        label: "Thread Polling Loop"
+        width: 300
+        code: |'c
+          while (!kthread_should_stop()) {
+            unsigned int head = load_acquire(sq->head);
+            unsigned int tail = load_acquire(sq->tail);
+            
+            if (head != tail) {
+              io_submit_sqes(ctx, tail - head);
+              store_release(sq->head, tail);
+              idle_jiffies = 0;
+            } else {
+              if (++idle_jiffies > sysctl_sq_idle)
+                goto sleep;
+            }
+          }
+        '|
+      }
+    }
+  }
+
+  traditional_side: {
+    direction: down
+    label: "Traditional Mode (Syscall Overhead)"
+    
+    app_trad: {
+      label: "Application (User Space)"
+      shape: rectangle
+      style.fill: "#FAFAFA"
+      style.stroke: "#757575"
+      width: 320
+      code_trad: {
+        label: "Logic: Batch Submit"
+        width: 300
+        code: |'c
+          for (i = 0; i < batch; i++) {
+            sqe = io_uring_get_sqe(&ring);
+            io_uring_prep_read(sqe, fd, buf, len, off);
+          }
+          
+          // Transition to kernel mode via syscall
+          io_uring_submit(&ring); 
+          // -> syscall(__NR_io_uring_enter)
+        '|
+      }
+    }
+
+    sq_ring_trad: {
+      shape: sql_table
+      label: "Shared SQ Ring (Standard)"
+      head: "0x00 | __u32 | head"
+      tail: "0x04 | __u32 | tail"
+      flags: "0x10 | __u32 | flags"
+      note: "Passive structure until syscall"
+    }
+
+    syscall_barrier: {
+      label: "Kernel Boundary (Trap)"
+      shape: rectangle
+      style.fill: "#FFEBEE"
+      style.stroke: "#C62828"
+      style.stroke-width: 2
+      width: 320
+      perf_impact: |'md
+        **Syscall Overhead Analysis**
+        - Privilege Level Switch: ~65ns
+        - Context Save/Restore: ~40ns
+        - I-Cache/TLB Pressure: Variable
+        - Retpoline/Spectre Mitigations: ~30-100ns
+        
+        **Total per batch**: 150ns - 400ns
+      '|
+    }
+
+    kernel_core: {
+      label: "Kernel Inline Processing"
+      shape: rectangle
+      style.fill: "#E0E0E0"
+      style.stroke: "#616161"
+      width: 320
+      label_note: "Executes in process context"
+    }
+  }
+}
+
+row_analysis: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+
+  tradeoff_table: {
+    label: "Efficiency Matrix"
+    width: 650
+    content: |'md
+      | Metric | SQPOLL Mode | Traditional Mode |
+      | :--- | :--- | :--- |
+      | **Submissions** | 0 Syscalls | 1 Syscall / Batch |
+      | **Latency** | < 100ns (Mem Barrier) | ~300ns + Sync Overhead |
+      | **CPU Usage** | High (100% of 1 core) | Low (Context Dependent) |
+      | **Throughput** | Maximum (>1M IOPS/core) | High, but CPU capped |
+      | **Complexity** | Requires CAP_SYS_NICE | None |
+    '|
+  }
+
+  idle_behavior: {
+    label: "SQPOLL Idle State Machine"
+    shape: rectangle
+    style.fill: "#FFF8E1"
+    width: 300
+    logic: |'md
+      **Timeout: sq_thread_idle**
+      1. Polling: Consumer spins on tail
+      2. Idle: No activity > timeout
+      3. Sleep: Thread calls `schedule()`
+      4. Wakeup: App must check `IORING_SQ_NEED_WAKEUP` 
+         and call `io_uring_enter` to restart thread.
+    '|
+  }
+}
+
+# Connections for SQPOLL path
+sqpoll_side.app_sqpoll -> sqpoll_side.sq_ring_sqpoll: "Write SQE | tail++" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 3
+}
+
+sqpoll_side.kernel_thread -> sqpoll_side.sq_ring_sqpoll: "Poll tail | head++" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+  style.stroke-dash: 5
+}
+
+# Connections for Traditional path
+traditional_side.app_trad -> traditional_side.syscall_barrier: "SYSCALL | io_uring_enter" {
+  style.stroke: "#C62828"
+  style.stroke-width: 3
+  style.animated: true
+}
+
+traditional_side.syscall_barrier -> traditional_side.kernel_core: "Process Batch"
+
+legend: {
+  near: bottom-right
+  shape: rectangle
+  style.fill: "#ffffff"
+  content: |'md
+    **Diagram Legend**
+    - 🟢 Green: Zero-syscall fast path
+    - 🔵 Blue: Kernel thread activity
+    - 🔴 Red: Syscall bottleneck
+  '|
+}

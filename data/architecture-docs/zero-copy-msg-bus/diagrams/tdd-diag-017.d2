@@ -1,0 +1,217 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+title: |md
+  # Builder Construction Flow
+  ## Zero-copy FlatBuffer Assembly Protocol
+  *Internal Logic Specification v4.2*
+| {near: top-center}
+
+direction: right
+
+# -----------------------------------------------------------------------------
+# STATE DEFINITIONS
+# -----------------------------------------------------------------------------
+
+INIT: {
+  shape: circle
+  style.fill: "#E8F5E9"
+  style.stroke: "#2E7D32"
+  style.stroke-width: 4
+  label: "●"
+  tooltip: "Builder Initialized: Memory segment allocated"
+}
+
+WRITING_STRINGS: {
+  shape: rectangle
+  style.fill: "#E3F2FD"
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+  label: |md
+    **STATE: WRITING_STRINGS**
+    ---
+    • **Growth**: Backward toward index 0
+    • **Schema**: [int32: length][char[]: data][null: 1]
+    • **Return**: Relative offset from buffer tail
+    • **Invariant**: Must precede referencing tables
+  |
+}
+
+WRITING_VECTORS: {
+  shape: rectangle
+  style.fill: "#E3F2FD"
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+  label: |md
+    **STATE: WRITING_VECTORS**
+    ---
+    • **Alignment**: Pad to sizeof(Element)
+    • **Structure**: [int32: count][T[]: elements]
+    • **Pointers**: Elements stored as UOffsets
+    • **Action**: Update `write_pos` by `count * sizeof(T)`
+  |
+}
+
+WRITING_TABLES: {
+  shape: rectangle
+  style.fill: "#FFF3E0"
+  style.stroke: "#EF6C00"
+  style.stroke-width: 2
+  label: |md
+    **STATE: WRITING_TABLES**
+    ---
+    • **Inline**: Scalars stored by value (little-endian)
+    • **Indirection**: Offsets used for Strings/Vectors
+    • **Tracking**: Bit-set for field presence
+    • **VTable**: Field metadata mapping
+  |
+}
+
+FINISHING: {
+  shape: rectangle
+  style.fill: "#F3E5F5"
+  style.stroke: "#7B1FA2"
+  style.stroke-width: 2
+  label: |md
+    **STATE: FINISHING**
+    ---
+    • **VTable**: Deduplicate and write header
+    • **SOffset**: [int32: vtable_offset] @ table_start
+    • **Root**: Write final UOffset to index 0
+    • **Buffer**: Finalize total length `L`
+  |
+}
+
+DONE: {
+  shape: circle
+  style: {
+    fill: "#C8E6C9"
+    stroke: "#2E7D32"
+    stroke-width: 4
+    double-border: true
+  }
+  label: "●"
+  tooltip: "Buffer Complete: Ready for network transport"
+}
+
+# -----------------------------------------------------------------------------
+# TRANSITION LOGIC & DATA FLOW
+# -----------------------------------------------------------------------------
+
+INIT -> WRITING_STRINGS: "CreateString(\"AAPL\")" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 3
+}
+
+WRITING_STRINGS -> WRITING_STRINGS: "Add more pools\n[Alloc New Segment]" {
+  style.stroke: "#1565C0"
+  style.stroke-dash: 3
+}
+
+WRITING_STRINGS -> WRITING_VECTORS: "StartVector<f64>(64)" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+}
+
+WRITING_VECTORS -> WRITING_VECTORS: "Push element\n[Update write_pos]" {
+  style.stroke: "#1565C0"
+  style.stroke-dash: 3
+}
+
+WRITING_VECTORS -> WRITING_TABLES: "StartTable()" {
+  style.stroke: "#EF6C00"
+  style.stroke-width: 2
+}
+
+WRITING_TABLES -> WRITING_TABLES: "AddField<u32>(id, val)" {
+  style.stroke: "#EF6C00"
+  style.stroke-dash: 3
+}
+
+# Illegal back-jump for nested data during table assembly
+WRITING_TABLES -> WRITING_STRINGS: "Recursive Offset\n(Implicit Transition)" {
+  style.stroke: "#7B1FA2"
+  style.stroke-dash: 5
+  style.animated: true
+}
+
+WRITING_TABLES -> FINISHING: "EndTable()" {
+  style.stroke: "#7B1FA2"
+  style.stroke-width: 3
+}
+
+FINISHING -> DONE: "Finish(root_offset)" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 4
+}
+
+# -----------------------------------------------------------------------------
+# ANNOTATIONS & TECHNICAL SPECIFICATIONS
+# -----------------------------------------------------------------------------
+
+memory_layout: {
+  near: bottom-center
+  label: |md
+    ### Physical Memory Serialization Layout
+    
+    Higher Addresses (Tail) ──────────────────────────────────┐
+    [PADDING / ALIGNMENT BYTES]                               │
+    [STRING DATA: "AAPL"] <────────── write_pos (0x...F)      │
+    [VECTOR DATA: f64[64]]                                    │
+    [VTABLE 1: Metadata Fields] <──── deduplicated            │
+    [TABLE DATA: Offsets] <────────── table_start             │
+    [ROOT UOFFSET]                                            │
+    Lower Addresses (Head) 0x00 ──────────────────────────────┘
+    
+    *Serialization occurs from Tail to Head (backward growth)*
+  |
+  shape: text
+  style.font-size: 14
+}
+
+offset_note: {
+  near: top-right
+  label: |md
+    ### VTable Logic
+    **Indirection Constant Calculation:**
+    `soffset = vtable_addr - table_addr`
+    
+    **Validation Invariant:**
+    All String and Vector offsets must be 
+    written *before* the table that refers 
+    to them to maintain single-pass DAG 
+    serialization. Circular references 
+    are physically impossible.
+  |
+  shape: text
+  style: {
+    fill: "#FFFDE7"
+    stroke: "#FBC02D"
+    border-radius: 6
+    font-size: 12
+    shadow: true
+  }
+}
+
+# Illegal state attempt marker
+# Fixed: "near" now uses a constant position "bottom-right" as required by ELK engine
+ILLEGAL_TRANSITION: {
+  label: "ILLEGAL: StartTable -> Finish"
+  shape: hexagon
+  near: bottom-right
+  style: {
+    stroke: red
+    stroke-dash: 2
+    fill: "#FFEBEE"
+    font-color: red
+  }
+}
+
+WRITING_TABLES -> ILLEGAL_TRANSITION: "Direct finish\n(GUARD FAILED)" {
+  style.stroke: red
+  style.stroke-dash: 3
+}

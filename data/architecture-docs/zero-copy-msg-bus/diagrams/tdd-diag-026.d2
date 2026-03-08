@@ -1,0 +1,198 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 50
+  }
+}
+
+title: |md
+  # Sequence Number State Machine
+  ### Per-slot lifecycle in MPMC ring buffer
+  ---
+  *Technical Specification: Intel manual grade. Reference: Zero-Copy Message Bus.*
+| {near: top-center}
+
+direction: right
+
+# --- Styling Classes ---
+classes: {
+  state: {
+    shape: circle
+    width: 160
+    height: 160
+    style: {
+      stroke-width: 4
+      font-size: 18
+      bold: true
+      shadow: true
+    }
+  }
+  empty_style: {
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    style.font-color: "#1B5E20"
+  }
+  writing_style: {
+    style.fill: "#FFFDE7"
+    style.stroke: "#FBC02D"
+    style.font-color: "#F57F17"
+  }
+  ready_style: {
+    style.fill: "#E3F2FD"
+    style.stroke: "#1976D2"
+    style.font-color: "#0D47A1"
+  }
+  reading_style: {
+    style.fill: "#F3E5F5"
+    style.stroke: "#7B1FA2"
+    style.font-color: "#4A148C"
+  }
+  reclaimed_style: {
+    style.fill: "#FAFAFA"
+    style.stroke: "#616161"
+    style.font-color: "#212121"
+  }
+  transition_base: {
+    style: {
+      stroke-width: 3
+      font-size: 13
+      font: mono
+      animated: true
+    }
+  }
+}
+
+# --- States & Invariants ---
+
+START: "" {
+  shape: circle
+  width: 20
+  height: 20
+  style.fill: black
+}
+
+EMPTY: "EMPTY\n(seq == pos)" {
+  class: [state; empty_style]
+  tooltip: |md
+    ### Invariants
+    - Slot is ready for a producer.
+    - `sequence_number` matches the `buffer_index`.
+    - Buffer memory is owned by the Ring.
+  |
+}
+
+WRITING: "WRITING\nProducer\nLock" {
+  class: [state; writing_style]
+  tooltip: |md
+    ### Invariants
+    - Producer successfully performed CAS on tail.
+    - Data is being copied via memcpy/zero-copy pointer.
+    - Sequence number remains `pos` until commit.
+  |
+}
+
+READY: "READY\n(seq == pos+1)" {
+  class: [state; ready_style]
+  tooltip: |md
+    ### Invariants
+    - Producer finished write.
+    - Atomic store performed on `seq` with `memory_order_release`.
+    - Data is visible to consumers.
+  |
+}
+
+READING: "READING\nConsumer\nLock" {
+  class: [state; reading_style]
+  tooltip: |md
+    ### Invariants
+    - Consumer successfully performed CAS on head.
+    - Data is being read from the buffer slot.
+    - Sequence number remains `pos+1`.
+  |
+}
+
+RECLAIMED: "RECLAIMED\n(seq == pos+cap)" {
+  class: [state; reclaimed_style]
+  tooltip: |md
+    ### Invariants
+    - Consumer finished read.
+    - Atomic store performed on `seq` to signal reclamation.
+    - Slot cannot be reused until `pos` increments per lap.
+  |
+}
+
+# --- State Transitions (Flow) ---
+
+START -> EMPTY: "Initial Allocation"
+
+EMPTY -> WRITING: "1. CLAIM\n[T: Producer Request]\n[G: seq == pos]\n[A: CAS(tail, pos, pos+1)]" {
+  class: transition_base
+  style.stroke: "#2E7D32"
+}
+
+WRITING -> READY: "2. COMMIT\n[T: Write Finished]\n[G: Memory Flushed]\n[A: store(seq, pos+1)]" {
+  class: transition_base
+  style.stroke: "#1976D2"
+}
+
+READY -> READING: "3. ACQUIRE\n[T: Consumer Request]\n[G: seq == pos+1]\n[A: CAS(head, pos, pos+1)]" {
+  class: transition_base
+  style.stroke: "#7B1FA2"
+}
+
+READING -> RECLAIMED: "4. RELEASE\n[T: Read Finished]\n[G: N/A]\n[A: store(seq, pos+capacity)]" {
+  class: transition_base
+  style.stroke: "#616161"
+}
+
+RECLAIMED -> EMPTY: "5. LAP OVERFLOW\n[T: Buffer Wraparound]\n[G: seq == next_pos]\n[A: Reset Slot Logic]" {
+  class: transition_base
+  style.stroke: "#2E7D32"
+  style.stroke-dash: 5
+}
+
+# --- Guardrails & Safety ---
+
+WRITING -> READING: "ILLEGAL: DIRTY READ" {
+  style: {
+    stroke: red
+    stroke-dash: 4
+    opacity: 0.5
+  }
+}
+
+# --- Implementation Legend ---
+
+legend: {
+  near: bottom-center
+  width: 500
+  style.fill: "#F8F9FA"
+  style.stroke: "#333"
+  style.border-radius: 8
+  
+  header: "Protocol Implementation Metadata" {
+    style.bold: true
+    style.underline: true
+    style.font-size: 20
+  }
+  
+  details: |md
+    ### Synchronization Primitives
+    - **Memory Order**: All `store(seq, ...)` operations must use `memory_order_release`.
+    - **Atomic Ops**: CAS operations use `memory_order_acquire_release` on ring head/tail.
+    - **Avoidance of ABA**: 64-bit sequence numbers provide immunity to ABA for hardware lifespan.
+    
+    ### Variable Definitions
+    - `pos`: Logical index of the slot (0 to capacity-1).
+    - `seq`: Atomic value stored in slot metadata.
+    - `cap`: Total buffer capacity (must be power of 2 for masking).
+    
+    ### Memory Layout (Intel x86-64)
+    text
+    [ +0] Atomic64 Sequence Number (Metadata)
+    [ +8] Cache Line Padding (64B alignment)
+    [+64] Data Payload (Variable Size)
+    
+  |
+}

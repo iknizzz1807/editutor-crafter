@@ -1,0 +1,151 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Memory Map: Shared Memory Layout
+  Zero-Copy Message Bus — All processes map this same segment
+| {near: top-center}
+memory_segment: {
+  label: "Shared Memory Segment (shm_open + mmap)"
+  header: {
+    shape: sql_table
+    label: "Segment Header (0x000-0x0FF)"
+    f0: "0x00 | uint32_t | magic"
+    f1: "0x04 | uint32_t | version"
+    f2: "0x08 | uint32_t | total_size"
+    f3: "0x0C | uint32_t | config_flags"
+    f4: "0x10 | uint64_t | create_timestamp"
+    f5: "0x18 | uint64_t | last_heartbeat"
+    f6: "0x20 | uint32_t | num_ring_slots"
+    f7: "0x24 | uint32_t | slot_size"
+    f8: "0x28 | uint32_t | max_subscribers"
+    f9: "0x2C | uint32_t | max_topics"
+    f10: "0x30 | uint32_t | wal_offset"
+    f11: "0x34 | uint32_t | checkpoint_offset"
+    f12: "0x38 | uint8_t[8] | reserved"
+    sz: "Total: 64 bytes (1 cache line)"
+  }
+  m1_ring: {
+    shape: sql_table
+    label: "M1 Ring Buffer (0x100-0x???)"
+    f0: "0x100 | uint64_t | head (producer index)"
+    f1: "0x108 | uint64_t | tail (consumer index)"
+    f2: "0x110 | uint64_t | capacity"
+    f3: "0x118 | uint64_t | mask"
+    f4: "0x120 | uint64_t[] | sequence[num_slots]"
+    f5: "0x??? | uint8_t[] | slots[num_slots][slot_size]"
+    sz: "Size: 32 + 8*N + N*slot_size bytes"
+  }
+  m2_schema: {
+    shape: sql_table
+    label: "M2 Schema Registry (0x???-0x???)"
+    f0: "0x00 | uint32_t | num_types"
+    f1: "0x04 | uint32_t | next_type_id"
+    f2: "0x08 | uint32_t | string_table_offset"
+    f3: "0x0C | uint32_t | vtable_pool_offset"
+    f4: "0x10 | TypeEntry[] | types[32]"
+    f5: "0x??? | char[] | string_pool"
+    f6: "0x??? | VTable[] | vtable_pool"
+    sz: "Size: 16 + 64*32 + ~4KB strings"
+  }
+  m3_claim: {
+    shape: sql_table
+    label: "M3 Claim Counters (0x???-0x???)"
+    f0: "0x00 | atomic_uint64 | global_producer_epoch"
+    f1: "0x08 | atomic_uint64 | global_consumer_epoch"
+    f2: "0x10 | ClaimSlot[] | producer_claims[MAX_PRODUCERS]"
+    f3: "0x??? | ClaimSlot[] | consumer_claims[MAX_CONSUMERS]"
+    f4: "0x??? | atomic_uint32 | contention_backoff"
+    sz: "Size: 16 + 32*64 + 32*64 bytes"
+  }
+  m4_topic: {
+    shape: sql_table
+    label: "M4 Topic Trie (0x???-0x???)"
+    f0: "0x00 | uint32_t | root_node_offset"
+    f1: "0x04 | uint32_t | num_nodes"
+    f2: "0x08 | uint32_t | num_subscribers"
+    f3: "0x0C | uint32_t | next_free_offset"
+    f4: "0x10 | TrieNode[] | node_pool[MAX_NODES]"
+    f5: "0x??? | SubscriberEntry[] | subscribers[MAX_SUBS]"
+    f6: "0x??? | char[] | topic_strings"
+    sz: "Size: 16 + 64*N + 32*S + ~8KB strings"
+  }
+  m5_recovery: {
+    shape: sql_table
+    label: "M5 Recovery State (0x???-END)"
+    f0: "0x00 | uint32_t | recovery_magic"
+    f1: "0x04 | uint32_t | recovery_generation"
+    f2: "0x08 | uint64_t | last_checkpoint_seq"
+    f3: "0x10 | uint64_t | last_wal_seq"
+    f4: "0x18 | uint32_t | checkpoint_valid"
+    f5: "0x1C | uint32_t | active_processes"
+    f6: "0x20 | ProcessEntry[] | process_registry[16]"
+    f7: "0x??? | RecoveryJournal | journal"
+    sz: "Size: 32 + 64*16 + 256 bytes"
+  }
+}
+legend: {
+  near: bottom-right
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#666"
+  note: |md
+    **Offset Calculation**
+    
+    HEADER_SIZE      = 0x100 (256B)
+    RING_OFFSET      = HEADER_SIZE
+    RING_SIZE        = 32 + 8*slots + slots*slot_size
+    SCHEMA_OFFSET    = RING_OFFSET + RING_SIZE
+    SCHEMA_SIZE      = ~8KB (bounded)
+    CLAIM_OFFSET     = SCHEMA_OFFSET + SCHEMA_SIZE
+    CLAIM_SIZE       = 16 + 64*producers + 64*consumers
+    TOPIC_OFFSET     = CLAIM_OFFSET + CLAIM_SIZE
+    TOPIC_SIZE       = ~16KB (bounded)
+    RECOVERY_OFFSET  = TOPIC_OFFSET + TOPIC_SIZE
+    TOTAL_SIZE       = page_aligned(RECOVERY_OFFSET + 4KB)
+    
+  |
+}
+memory_segment.header -> memory_segment.m1_ring: "0x100 | offset"
+memory_segment.m1_ring -> memory_segment.m2_schema: "ring_size | offset"
+memory_segment.m2_schema -> memory_segment.m3_claim: "schema_size | offset"
+memory_segment.m3_claim -> memory_segment.m4_topic: "claim_size | offset"
+memory_segment.m4_topic -> memory_segment.m5_recovery: "topic_size | offset"
+process_views: {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  p1: {
+    direction: down
+    label: "Producer Process"
+    vp1: "Virtual: 0x7f0000000000"
+    pp1: "→ Physical: 0x12345000"
+    p1.style.fill: "#e8f5e9"
+  }
+  p2: {
+    direction: down
+    label: "Consumer Process"
+    vp2: "Virtual: 0x7f0001000000"
+    pp2: "→ Physical: 0x12345000"
+    p2.style.fill: "#e3f2fd"
+  }
+  p3: {
+    direction: down
+    label: "Broker Process"
+    vp3: "Virtual: 0x7f0002000000"
+    pp3: "→ Physical: 0x12345000"
+    p3.style.fill: "#fff3e0"
+  }
+}
+memory_segment -> process_views.p1: "mmap(MAP_SHARED)"
+memory_segment -> process_views.p2: "mmap(MAP_SHARED)"
+memory_segment -> process_views.p3: "mmap(MAP_SHARED)"
+note_hardware: |md
+  **Hardware Reality**: All three processes have different virtual addresses
+  mapping to the **same physical pages**. CPU MMU handles translation.
+  Cache coherence (MESI) ensures writes are visible across cores.
+| {near: bottom-center}

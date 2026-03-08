@@ -1,0 +1,195 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+  colors: {
+    header: "#9B7ED9" # Purple
+    data: "#5C9EE5"   # Blue
+    free: "#7ED9A6"   # Green
+    padding: "#B8B8B8" # Gray
+    pointer: "#F5A623" # Orange
+    highlight: "#E53935" # Red
+  }
+}
+
+title: |md
+  # Process Identity Tracking
+  ## Memory Layout & State Transition Specification
+| {near: top-center}
+
+direction: down
+
+# 1. Memory Layout Specification
+# Implementation: Intel Manual Style (Offsets Left, Fields Right)
+memory_layout: {
+  label: "Memory Map: ProcessRegistry Entry [0x00 - 0x7F] (128 Bytes)"
+  style: {
+    stroke-width: 4
+    border-radius: 8
+  }
+  
+  # Cache Line 0: Identification & Control
+  cache_line_0: {
+    label: "Cache Line 0: Identity (64 Bytes / 1x CL)"
+    style: {
+      stroke: ${colors.header}
+      stroke-width: 4
+      stroke-dash: 5
+      fill: "#F8F5FF"
+    }
+
+    fields: {
+      shape: sql_table
+      style.stroke: ${colors.header}
+      
+      "0x00": "pid (atomic<uint32>) [4B]" {style.fill: ${colors.header}; style.font-color: white}
+      "0x04": "generation (atomic<uint32>) [4B]" {style.fill: ${colors.highlight}; style.font-color: white; style.bold: true}
+      "0x08": "last_heartbeat_ns (atomic<uint64>) [8B]" {style.fill: ${colors.data}; style.font-color: white}
+      "0x10": "state (atomic<uint32>) [4B]" {style.fill: ${colors.data}; style.font-color: white}
+      "0x14": "padding_cl0 (uint8[44]) [44B]" {style.fill: ${colors.padding}; style.font-color: white}
+    }
+  }
+
+  # Cache Line 1: Statistics (Separated to prevent False Sharing)
+  cache_line_1: {
+    label: "Cache Line 1: Statistics (64 Bytes / 1x CL)"
+    style: {
+      stroke: ${colors.data}
+      stroke-width: 4
+      stroke-dash: 5
+      fill: "#F0F7FF"
+    }
+
+    fields: {
+      shape: sql_table
+      style.stroke: ${colors.data}
+
+      "0x40": "messages_processed (atomic<uint64>) [8B]" {style.fill: ${colors.free}; style.font-color: "#333"}
+      "0x48": "last_message_time_ns (atomic<uint64>) [8B]" {style.fill: ${colors.free}; style.font-color: "#333"}
+      "0x50": "padding_cl1 (uint8[48]) [48B]" {style.fill: ${colors.padding}; style.font-color: white}
+    }
+  }
+}
+
+# 2. Logic & Invariants
+identity_tuple: {
+  near: top-right
+  
+  box: {
+    shape: rectangle
+    label: "Invariance: UniqueID = (pid << 32) | generation"
+    style: {
+      fill: "#FFF9E6"
+      stroke: ${colors.highlight}
+      stroke-width: 3
+      double-border: true
+    }
+  }
+  
+  explanation: |md
+    ### ABA Problem Resolution
+    - **PIDs** are reused by the OS after wrap-around.
+    - **Generation** increments on every registration in that slot.
+    - **Verification**: `current_gen == expected_gen` prevents sending messages to a new process that inherited an old PID.
+  |
+}
+
+# 3. State Machine Invariants
+state_enum: {
+  machine: {
+    shape: sql_table
+    label: "ProcessState Lifecycle"
+    "0": "DEAD (Slot available for reuse)"
+    "1": "STARTING (PID assigned, heartbeat not yet valid)"
+    "2": "ALIVE (Heartbeat within timeout window)"
+    "3": "STOPPING (Graceful shutdown initiated)"
+  }
+}
+
+# 4. Step-by-Step Scenario: PID Reuse Detection
+pid_reuse_flow: {
+  label: "Scenario: PID Reuse Detection Sequence"
+  
+  t1: {
+    label: "T1: Process A"
+    shape: rectangle
+    style.fill: "#E8F5E9"
+    content: "PID: 12345\nGen: 5\nState: ALIVE"
+  }
+  
+  t2: {
+    label: "T2: Crash"
+    shape: rectangle
+    style.fill: "#FFEBEE"
+    content: "PID: 12345\nGen: 5\nState: DEAD" {style.font-color: red}
+  }
+  
+  t3: {
+    label: "T3: Process B"
+    shape: rectangle
+    style.fill: "#E3F2FD"
+    content: "PID: 12345\nGen: 6\nState: ALIVE" {style.bold: true}
+  }
+
+  t1 -> t2: "SIGKILL / Crash"
+  t2 -> t3: "OS reuses PID\nRegistry increments Gen"
+}
+
+# 5. Atomic Algorithm Specification
+is_alive_algo: {
+  label: "Atomic Validation Routine"
+  code: |go
+    // Lock-Free Validity Check: is_alive(slot)
+    func (r *Registry) IsAlive(slot uint32, expectedGen uint32) bool {
+        entry := &r.entries[slot]
+        
+        // 1. Load generation first (Acquire semantics)
+        currGen := entry.generation.Load(atomic.Acquire)
+        if currGen != expectedGen {
+            return false // ABA detected: slot reused
+        }
+
+        // 2. Check process state
+        state := entry.state.Load(atomic.Acquire)
+        if state != StateAlive {
+            return false
+        }
+
+        // 3. Heartbeat check (Liveness)
+        lastHb := entry.heartbeat.Load(atomic.Acquire)
+        if time.Since(lastHb) > Timeout {
+            return false
+        }
+
+        return true
+    }
+  |
+}
+
+# 6. Documentation Components
+legend: {
+  near: bottom-left
+  label: "Legend"
+  l1: "Header / Meta" {style.fill: ${colors.header}; style.font-color: white}
+  l2: "State Data" {style.fill: ${colors.data}; style.font-color: white}
+  l3: "Padding (Alignment)" {style.fill: ${colors.padding}; style.font-color: white}
+  l4: "ABA Protection" {style.fill: ${colors.highlight}; style.font-color: white}
+}
+
+# Layout constraints & Connections
+memory_layout.cache_line_0 -> memory_layout.cache_line_1: "64B Boundary" {
+  style: {
+    stroke-width: 2
+    stroke-dash: 2
+  }
+}
+
+# Annotations
+footer: |md
+  **Implementation Notes:**
+  1. **Alignment**: The `ProcessRegistry` entry MUST be 128-byte aligned to prevent entries spanning cache lines.
+  2. **False Sharing**: Identity fields (read/write frequent) are in CL0, Statistics (read-heavy, write-rare) in CL1.
+  3. **Atomic Access**: All field accesses must use `std::atomic` (C++) or `sync/atomic` (Go) with explicit memory ordering.
+| {near: bottom-center}

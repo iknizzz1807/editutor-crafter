@@ -1,0 +1,262 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+title: |'md
+  # Async Batched Durability Flow
+  ### Technical Design Specification: Latency vs. Durability Trade-offs
+'| {
+  near: top-center
+}
+
+direction: right
+
+# -----------------------------------------------------------------------------
+# Legend & Global Metadata
+# -----------------------------------------------------------------------------
+legend: Legend {
+  near: bottom-right
+  grid-columns: 2
+  sync_path: "Synchronous (Durable)" {
+    style: {
+      fill: "#90EE90"
+      stroke: "#228B22"
+    }
+  }
+  async_path: "Asynchronous (High Perf)" {
+    style: {
+      fill: "#87CEEB"
+      stroke: "#4169E1"
+    }
+  }
+  wait_state: "Wait/Blocking State" {
+    style: {
+      fill: "#FFD700"
+      stroke: "#DAA520"
+    }
+  }
+  io_state: "Disk / Hardware I/O" {
+    style: {
+      fill: "#DDA0DD"
+      stroke: "#8B008B"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Memory Layout & Header Spec (FIXED SQL_TABLE SYNTAX)
+# -----------------------------------------------------------------------------
+batch_spec: Batch Memory Layout {
+  near: top-left
+  shape: sql_table
+  style.fill: "#F8F9FA"
+  
+  # Row syntax: field_name: type {constraint: description}
+  "0x00": "count (uint32)" {constraint: "Num Records"}
+  "0x04": "size (uint32)" {constraint: "Total Bytes"}
+  "0x08": "timeout (uint64)" {constraint: "Expiration ns"}
+  "0x10": "padding (byte[48])" {constraint: "64B Cache Align"}
+}
+
+# -----------------------------------------------------------------------------
+# Process Contexts
+# -----------------------------------------------------------------------------
+producer_process: Producer Process Context {
+  style.fill: "#E8F4FD"
+  
+  producer_thread: "Producer Thread\n(User Space)" {
+    shape: person
+    style.fill: "#87CEEB"
+  }
+
+  pending_batch: Pending Message Queue {
+    shape: rectangle
+    style.multiple: true
+    style.fill: "#F0E68C"
+    tooltip: "In-memory circular buffer"
+    
+    batch_header: "Batch Header\nsizeof=64B" {
+      shape: class
+      style.fill: "#E0E0E0"
+      "+ count": "uint32"
+      "+ size": "uint32"
+      "+ deadline": "uint64"
+    }
+    
+    slots: {
+      slot_0: "Record[0]"
+      slot_1: "Record[1]"
+      slot_n: "Record[N]" {
+        style.stroke-dash: 3
+      }
+    }
+  }
+}
+
+# Boundary between User and Kernel space logic
+sync_context: Background Durability Worker {
+  style.fill: "#E8FFE8"
+  
+  worker: "Sync Thread\n(Kernel/Background)" {
+    shape: rectangle
+    style.fill: "#90EE90"
+    tooltip: "Dedicated pthread for WAL management"
+  }
+
+  batch_logic: "Batch Committer" {
+    shape: diamond
+    style.fill: "#FFD700"
+    full: "Queue Full?" { 
+      shape: diamond 
+      style.fill: "#FFFACD"
+    }
+    timeout: "Timeout?" { 
+      shape: diamond 
+      style.fill: "#FFFACD"
+    }
+  }
+
+  mem_buffer: "WAL Page Cache\n(Buffer Pool)" {
+    shape: cylinder
+    style.fill: "#DDA0DD"
+    tooltip: "Non-durable until fsync()"
+  }
+}
+
+storage_layer: Hardware Abstraction {
+  style.fill: "#F5F5F5"
+  
+  wal_file: "Physical WAL File\n/dev/nvme0n1" {
+    shape: cylinder
+    style.fill: "#DDA0DD"
+    style.stroke: "#8B008B"
+    style.stroke-width: 3
+  }
+
+  fsync_op: "NVMe Flush Command" {
+    shape: rectangle
+    style: {
+      fill: "#FF6B6B"
+      font-color: white
+      bold: true
+    }
+  }
+}
+
+notification_subsystem: Event Bus {
+  style.fill: "#FFF8DC"
+  
+  notify_logic: "Condition Signal" {
+    shape: diamond
+    style.fill: "#32CD32"
+  }
+
+  waiters: {
+    w1: "Waiter #1" { shape: circle; style.fill: "#FFD700" }
+    w2: "Waiter #2" { shape: circle; style.fill: "#FFD700" }
+    wn: "Waiter #N" { shape: circle; style.fill: "#FFD700"; style.stroke-dash: 3 }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Flow Connections
+# -----------------------------------------------------------------------------
+
+# 1. Async Path (Producer appends and returns)
+producer_process.producer_thread -> producer_process.pending_batch: "1. Lockless Append" {
+  style.stroke: "#4169E1"
+  style.stroke-width: 2
+}
+
+producer_process.producer_thread -> return_to_app: "2. Immediate ACK\n(Non-durable)" {
+  style: {
+    stroke: "#4169E1"
+    stroke-dash: 5
+    animated: true
+  }
+}
+
+return_to_app: "Application Entry" {
+  shape: circle
+  style.fill: "#87CEEB"
+}
+
+# 2. Batching Path
+producer_process.pending_batch -> sync_context.worker: "3. Wake Signal" {
+  style.stroke: "#228B22"
+  style.stroke-dash: 3
+}
+
+sync_context.worker -> sync_context.batch_logic: "4. Polling Loop"
+
+sync_context.batch_logic.full -> sync_context.mem_buffer: "Threshold Met" {
+  style.stroke: "#228B22"
+}
+
+sync_context.batch_logic.timeout -> sync_context.mem_buffer: "Timer Expired" {
+  style.stroke: "#228B22"
+}
+
+# 3. Durability Path
+sync_context.mem_buffer -> storage_layer.wal_file: "5. write(2)\nDirty Pages" {
+  style.stroke: "#8B008B"
+}
+
+storage_layer.wal_file -> storage_layer.fsync_op: "6. fsync(2)\nBarrier" {
+  style: {
+    stroke: "#DC143C"
+    stroke-width: 4
+  }
+}
+
+# 4. Notification Path
+storage_layer.fsync_op -> notification_subsystem.notify_logic: "7. IO Complete" {
+  style.stroke: "#228B22"
+}
+
+notification_subsystem.notify_logic -> notification_subsystem.waiters.w1: "Wake"
+notification_subsystem.notify_logic -> notification_subsystem.waiters.w2: "Wake"
+notification_subsystem.notify_logic -> notification_subsystem.waiters.wn: "Wake"
+
+# -----------------------------------------------------------------------------
+# Analysis Metadata
+# -----------------------------------------------------------------------------
+perf_metrics: Performance Analysis {
+  near: top-right
+  style.fill: "#F0F0F0"
+  content: |'md
+    ### Latency Targets (Internal Benchmark)
+    | Mechanism | Latency (p99) | Data Safety |
+    | :--- | :--- | :--- |
+    | **Async Return** | < 1 μs | ❌ Low (Last batch loss) |
+    | **Sync (Direct)** | 2,000 μs | ✅ High (Total) |
+    | **Batched Sync** | 15 μs (avg) | ✅ High (Total) |
+
+    **Throughput Bound Calculation:** 
+    $T = \frac{BatchSize}{DiskLatency}$
+  '|
+}
+
+state_machine: Lifecycle State {
+  near: bottom-left
+  style.fill: "#FAFAFA"
+  
+  EMPTY -> FILLING: "M_APPEND"
+  FILLING -> FILLING: "M_APPEND"
+  FILLING -> COMMITTING: "T > TIMEOUT || C > MAX" {
+    style: {
+      stroke: red
+      bold: true
+    }
+  }
+  COMMITTING -> PERSISTED: "IO_ACK"
+  PERSISTED -> EMPTY: "RESET_BUFFER"
+  
+  FILLING.style.fill: "#87CEEB"
+  COMMITTING.style.fill: "#DDA0DD"
+  PERSISTED.style.fill: "#90EE90"
+}

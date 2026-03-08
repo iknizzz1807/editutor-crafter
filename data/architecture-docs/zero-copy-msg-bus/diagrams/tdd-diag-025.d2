@@ -1,0 +1,408 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # MPMC Ring Buffer Architecture
+  Dmitry Vyukov's algorithm with per-slot sequence numbers
+| {
+  near: top-center
+}
+
+# Legend for Memory Alignment
+legend: {
+  near: bottom-right
+  style.fill: "#f8f9fa"
+  style.stroke: "#dee2e6"
+  header_legend: "Cache Line Aligned" {
+    shape: text
+    style.bold: true
+  }
+  cache_line_0: {
+    label: "Cache Line 0 (64 bytes)"
+    shape: rectangle
+    style.fill: "#e8f4f8"
+    style.stroke: "#17a2b8"
+    width: 180
+  }
+  cache_line_1: {
+    label: "Cache Line 1 (64 bytes)"
+    shape: rectangle
+    style.fill: "#fff3cd"
+    style.stroke: "#ffc107"
+    width: 180
+  }
+  atomic_type: {
+    label: "Atomic\<T\>"
+    shape: rectangle
+    style.fill: "#d4edda"
+    style.stroke: "#28a745"
+    width: 180
+  }
+}
+
+# Main Memory Structure
+MpmcRingBuffer: {
+  label: "MPMC Ring Buffer\nShared Memory Layout"
+  style.fill: "#f8f9fa"
+  style.stroke: "#343a40"
+  style.stroke-width: 2
+
+  # Header Section with Explicit Padding to avoid False Sharing
+  header: {
+    label: "MpmcRingBufferHeader (256 bytes)"
+    style.fill: "#e2e3e5"
+    style.stroke: "#6c757d"
+
+    # Cache Line 0: Consumer Tail (aligned 64B)
+    cache_line_0_head: {
+      label: "Cache Line 0: Consumer Index"
+      style.fill: "#e8f4f8"
+      style.stroke: "#17a2b8"
+      style.stroke-dash: 4
+      head: {
+        label: "head: atomic\<u64\>"
+        shape: rectangle
+        style.fill: "#d4edda"
+        style.stroke: "#28a745"
+        style.bold: true
+        width: 160
+      }
+      head_label: {
+        label: "Consumer fetch_add target\nOffset: 0x00"
+        shape: text
+        style.font-size: 11
+      }
+      padding0: {
+        label: "padding[56 bytes]"
+        shape: rectangle
+        style.fill: "#f8f9fa"
+        style.stroke: "#dee2e6"
+        width: 140
+      }
+    }
+
+    # Cache Line 1: Producer Head (aligned 64B)
+    cache_line_1_tail: {
+      label: "Cache Line 1: Producer Index"
+      style.fill: "#fff3cd"
+      style.stroke: "#ffc107"
+      style.stroke-dash: 4
+      tail: {
+        label: "tail: atomic\<u64\>"
+        shape: rectangle
+        style.fill: "#d4edda"
+        style.stroke: "#28a745"
+        style.bold: true
+        width: 160
+      }
+      tail_label: {
+        label: "Producer fetch_add target\nOffset: 0x40"
+        shape: text
+        style.font-size: 11
+      }
+      padding1: {
+        label: "padding[56 bytes]"
+        shape: rectangle
+        style.fill: "#f8f9fa"
+        style.stroke: "#dee2e6"
+        width: 140
+      }
+    }
+
+    # Cache Line 2: Read-Only Metadata
+    cache_line_2_meta: {
+      label: "Cache Line 2: Buffer Metadata"
+      style.fill: "#d1ecf1"
+      style.stroke: "#0c5460"
+      capacity: {
+        label: "capacity: u64"
+        shape: rectangle
+        style.fill: "#cce5ff"
+        width: 120
+      }
+      slot_size: {
+        label: "slot_size: u64"
+        shape: rectangle
+        style.fill: "#cce5ff"
+        width: 120
+      }
+      mask: {
+        label: "mask: u64\n(capacity - 1)"
+        shape: rectangle
+        style.fill: "#cce5ff"
+        width: 120
+      }
+    }
+
+    # Cache Line 3: Metrics (Shared Write)
+    cache_line_3_metrics: {
+      label: "Cache Line 3: Statistics"
+      style.fill: "#e2e3e5"
+      style.stroke: "#6c757d"
+      total_enqueued: {
+        label: "total_enqueued"
+        shape: rectangle
+        style.fill: "#d4edda"
+        width: 100
+      }
+      enqueue_failures: {
+        label: "enqueue_failures\n(CAS contention)"
+        shape: rectangle
+        style.fill: "#f8d7da"
+        width: 100
+      }
+    }
+  }
+
+  # Sequence Array Section (Metadata per slot)
+  sequence_section: {
+    label: "Sequence Number Array\n(Prevents ABA Problem)"
+    style.fill: "#fff8e1"
+    style.stroke: "#ff8f00"
+    seq_header: {
+      label: "Offset: 0x100 (after header)"
+      shape: text
+      style.bold: true
+    }
+    seq_array: {
+      grid-columns: 4
+      grid-gap: 8
+      seq_0: {
+        label: "seq[0]\natomic\<u64\>\n= 0"
+        shape: rectangle
+        style.fill: "#d4edda"
+        style.stroke: "#28a745"
+        width: 80
+      }
+      seq_1: {
+        label: "seq[1]\natomic\<u64\>\n= 1"
+        shape: rectangle
+        style.fill: "#d4edda"
+        style.stroke: "#28a745"
+        width: 80
+      }
+      seq_2: {
+        label: "seq[2]\natomic\<u64\>\n= 2"
+        shape: rectangle
+        style.fill: "#d4edda"
+        style.stroke: "#28a745"
+        width: 80
+      }
+      seq_n: {
+        label: "seq[N-1]\natomic\<u64\>\n= N-1"
+        shape: rectangle
+        style.fill: "#d4edda"
+        style.stroke: "#28a745"
+        width: 80
+        style.multiple: true
+      }
+    }
+    seq_semantics: {
+      label: |md
+        **Sequence Number Semantics:**
+        - `seq == position` &rarr; Slot EMPTY, ready for producer
+        - `seq == position + 1` &rarr; Slot has DATA, ready for consumer
+        - `seq == position + capacity` &rarr; Slot CONSUMED, next cycle
+        - Never wraps within buffer cycle (64-bit = 584 years at 1B msg/s)
+      |
+      shape: text
+      style.font-size: 11
+    }
+  }
+
+  # Slot Data Section (Payloads)
+  slots_section: {
+    label: "Message Slot Data Array"
+    style.fill: "#e8f5e9"
+    style.stroke: "#2e7d32"
+    slots_header: {
+      label: "Each slot: slot_size bytes"
+      shape: text
+      style.bold: true
+    }
+    slots_array: {
+      grid-columns: 4
+      grid-gap: 8
+      slot_0: {
+        label: "Slot 0\n[slot_size bytes]"
+        shape: rectangle
+        style.fill: "#c8e6c9"
+        style.stroke: "#388e3c"
+        width: 80
+      }
+      slot_1: {
+        label: "Slot 1\n[slot_size bytes]"
+        shape: rectangle
+        style.fill: "#c8e6c9"
+        style.stroke: "#388e3c"
+        width: 80
+      }
+      slot_2: {
+        label: "Slot 2\n[slot_size bytes]"
+        shape: rectangle
+        style.fill: "#c8e6c9"
+        style.stroke: "#388e3c"
+        width: 80
+      }
+      slot_n: {
+        label: "Slot N-1\n[slot_size bytes]"
+        shape: rectangle
+        style.fill: "#c8e6c9"
+        style.stroke: "#388e3c"
+        width: 80
+        style.multiple: true
+      }
+    }
+  }
+
+  header -> sequence_section: "followed by"
+  sequence_section -> slots_section: "followed by"
+}
+
+# Multi-Producer Race Condition Model
+producer_contention: {
+  label: "Multi-Producer Contention Model"
+  style.fill: "#fff3cd"
+  style.stroke: "#856404"
+  producers: {
+    grid-columns: 4
+    grid-gap: 16
+    producer_a: {
+      label: "Producer A\n(Core 0)"
+      shape: person
+      style.fill: "#ffcdd2"
+      style.stroke: "#c62828"
+    }
+    producer_b: {
+      label: "Producer B\n(Core 1)"
+      shape: person
+      style.fill: "#f8bbd9"
+      style.stroke: "#ad1457"
+    }
+    producer_c: {
+      label: "Producer C\n(Core 2)"
+      shape: person
+      style.fill: "#e1bee7"
+      style.stroke: "#6a1b9a"
+    }
+    producer_d: {
+      label: "Producer D\n(Core 3)"
+      shape: person
+      style.fill: "#c5cae9"
+      style.stroke: "#283593"
+    }
+  }
+  contention_flow: {
+    label: "All producers contend for tail:"
+    shape: text
+    style.bold: true
+  }
+  step1: {label: "1. All load tail = 100"; shape: text}
+  step2: {label: "2. All compute next = 101"; shape: text}
+  step3: {label: "3. Producer B's CAS succeeds"; shape: text; style.fill: "#d4edda"}
+  step4: {label: "4. Producers A, C, D CAS fails"; shape: text; style.fill: "#f8d7da"}
+  step5: {label: "5. Failed producers reload tail = 101"; shape: text}
+  step6: {label: "6. Retry with backoff..."; shape: text}
+  tail_cas: {
+    label: "tail.compare_exchange_weak(100, 101)"
+    shape: diamond
+    style.fill: "#fff3cd"
+    style.stroke: "#856404"
+  }
+  producers -> tail_cas: "CAS race" {
+    style.stroke: "#dc3545"
+    style.animated: true
+  }
+}
+
+# Core Producer Algorithm Logic
+algorithm_flow: {
+  label: "Producer Algorithm (Vyukov)"
+  style.fill: "#e3f2fd"
+  style.stroke: "#1565c0"
+  algo_steps: {
+    direction: right
+    step_load: {label: "pos = tail.load(relaxed)"; shape: rectangle; style.fill: "#bbdefb"}
+    step_seq: {label: "seq = sequence[pos & mask].load(acquire)"; shape: rectangle; style.fill: "#bbdefb"}
+    step_check: {label: "diff = seq - pos"; shape: diamond; style.fill: "#fff9c4"}
+    step_cas: {label: "CAS(tail, pos, pos+1)"; shape: rectangle; style.fill: "#c8e6c9"}
+    step_write: {label: "memcpy(slot, data)"; shape: rectangle; style.fill: "#c8e6c9"}
+    step_publish: {label: "sequence[slot].store(pos+1, release)"; shape: rectangle; style.fill: "#c8e6c9"}
+    step_full: {label: "return FULL"; shape: rectangle; style.fill: "#ffcdd2"}
+    step_retry: {label: "reload & retry"; shape: rectangle; style.fill: "#ffe0b2"}
+    
+    step_load -> step_seq
+    step_seq -> step_check
+    step_check -> step_cas: "diff == 0\n(ready)"
+    step_check -> step_full: "diff < 0\n(full)"
+    step_check -> step_retry: "diff > 0\n(ahead)"
+    step_cas -> step_write: "CAS success"
+    step_write -> step_publish
+    step_retry -> step_load: "loop"
+  }
+}
+
+# Sizing and Layout Constraints
+memory_layout_info: {
+  label: "Memory Layout (Total Size Calculation)"
+  style.fill: "#fafafa"
+  style.stroke: "#616161"
+  layout_calc: |md
+    ### Total Size Calculation
+    `Total Size = HEADER_SIZE + (num_slots * sizeof(atomic\<u64\>)) + (num_slots * slot_size)`
+    
+    **Example: 1024 slots * 256 bytes**
+    - Header: 256 bytes
+    - Sequences: 1024 * 8 = 8,192 bytes
+    - Slots: 1024 * 256 = 262,144 bytes
+    - **Total: 270,592 bytes (~264 KB)**
+  | {
+    shape: text
+    style.font: mono
+  }
+}
+
+# Cache Coherency Explanation
+cache_rationale: {
+  label: "Why Cache Line Separation Matters"
+  style.fill: "#fce4ec"
+  style.stroke: "#c2185b"
+  problem: {
+    label: "WITHOUT alignas(64):"
+    style.fill: "#ffcdd2"
+    head_tail_same: {
+      label: "head at 0x00, tail at 0x08\n(SAME 64-byte line)"
+      shape: rectangle
+      width: 220
+    }
+    ping_pong: {label: "Cache line ping-pong:\nWrites to tail invalidate core owning head.\nSevere MESI protocol traffic."; shape: text}
+    result_bad: {label: "Result: 10-100x latency spike"; shape: text; style.fill: "#f8d7da"; style.bold: true}
+  }
+  solution: {
+    label: "WITH alignas(64):"
+    style.fill: "#c8e6c9"
+    head_tail_sep: {
+      label: "head at 0x00 (line 0)\ntail at 0x40 (line 1)\n(Separate lines)"
+      shape: rectangle
+      width: 220
+    }
+    no_contention: {label: "Tail remains hot in Producer L1.\nHead remains hot in Consumer L1.\nIndependently valid."; shape: text}
+    result_good: {label: "Result: Lock-free sub-µs latency"; shape: text; style.fill: "#d4edda"; style.bold: true}
+  }
+  problem -> solution: "Optimization" {style.stroke: "#28a745"; style.stroke-width: 2}
+}
+
+# Logical Connections for Overall Flow
+MpmcRingBuffer.header.cache_line_1_tail -> producer_contention.tail_cas: {
+  label: "producers CAS against tail"
+  style.stroke: "#dc3545"
+  style.stroke-dash: 4
+}
+producer_contention -> MpmcRingBuffer.sequence_section: {
+  label: "claim slot index"
+  style.stroke: "#28a745"
+}

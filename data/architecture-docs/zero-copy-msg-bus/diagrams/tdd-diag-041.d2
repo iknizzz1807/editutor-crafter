@@ -1,0 +1,52 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+shape: sequence_diagram
+# Participants
+Publisher
+TopicRegistry
+PubSubBuffer
+Subscriber1
+Subscriber2
+Subscriber3
+# Phase 1: Topic Matching
+Publisher -> TopicRegistry: "1. match(\"stocks/AAPL/price\")"
+TopicRegistry -> TopicRegistry: "traverse trie\ncheck wildcards"
+Publisher <- TopicRegistry: "[sub1, sub2, sub3]"
+# Phase 2: Slot Reservation
+Publisher -> PubSubBuffer: "2. try_publish_begin(\n  subscriber_count=3,\n  topic_hash,\n  message_size\n)"
+PubSubBuffer -> PubSubBuffer: "load slot ref_count"
+alt "ref_count == 0 (slot free)"
+  PubSubBuffer -> PubSubBuffer: "CAS(ref_count, 0, 3)"
+  PubSubBuffer -> PubSubBuffer: "reserve slot"
+  Publisher <- PubSubBuffer: "slot_data_ptr"
+else "ref_count != 0 (slot busy)"
+  Publisher <- PubSubBuffer: "nullptr (buffer full)"
+end
+# Phase 3: Write Message Data
+Publisher -> PubSubBuffer: "3. memcpy(slot_ptr, message_data)"
+PubSubBuffer -> PubSubBuffer: "store header:\n  message_size\n  topic_hash\n  sequence\n  timestamp"
+# Phase 4: Memory Barrier & Commit
+Publisher -> PubSubBuffer: "4. atomic_thread_fence(release)"
+Publisher -> PubSubBuffer: "5. head.store(pos+1)"
+PubSubBuffer -> PubSubBuffer: "slot now visible"
+# Phase 5: Notify Subscribers
+Publisher -> Subscriber1: "6. notify (eventfd/futex)"
+Publisher -> Subscriber2: "6. notify (eventfd/futex)"
+Publisher -> Subscriber3: "6. notify (eventfd/futex)"
+# Subscriber Reads (concurrent)
+group "Subscriber Consumption (concurrent)" {
+  Subscriber1 -> PubSubBuffer: "poll(): read slot"
+  Subscriber1 -> PubSubBuffer: "ref_count.fetch_sub(1)"
+  Subscriber1 -> Subscriber1: "process message"
+  Subscriber2 -> PubSubBuffer: "poll(): read slot"
+  Subscriber2 -> PubSubBuffer: "ref_count.fetch_sub(1)"
+  Subscriber2 -> Subscriber2: "process message"
+  Subscriber3 -> PubSubBuffer: "poll(): read slot"
+  Subscriber3 -> PubSubBuffer: "ref_count.fetch_sub(1)\n(prev_ref == 1)"
+  Subscriber3 -> PubSubBuffer: "try_reclaim()\nadvance tail"
+  Subscriber3 -> Subscriber3: "process message"
+}

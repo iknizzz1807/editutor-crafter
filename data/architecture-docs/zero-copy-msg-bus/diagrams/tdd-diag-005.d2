@@ -1,0 +1,332 @@
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#9B7ED9"
+    data: "#5C9AD2"
+    free: "#6BC97A"
+    padding: "#A0A0A0"
+    pointer: "#E8A54B"
+    changed: "#E63946"
+    cache_hit: "#2E7D32"
+    cache_miss: "#C62828"
+  }
+}
+
+title: |md
+  # Produce Operation Sequence
+  ### SPSC Ring Buffer: Step-by-step memory operations with cache line analysis
+| {near: top-center}
+
+direction: right
+
+Step_1: {
+  label: "Step 1: Load Tail (acquire)"
+  Code: |md
+    cpp
+    uint64_t tail = header_->tail.load(
+        std::memory_order_acquire);
+    
+  |
+  Memory_Access: {
+    shape: rectangle
+    label: |md
+      **Memory Access:**
+      - Address: `header_ + 0x40` (cache line 1)
+      - Size: 8 bytes (atomic<uint64_t>)
+      - Type: **ACQUIRE load**
+    |
+    style.fill: "${colors.data}"
+    style.stroke: "#333"
+  }
+  Cache_Line: {
+    shape: rectangle
+    label: |md
+      **Cache Line Touch:**
+      ┌─────────────────────────────────────┐
+      │ Cache Line 1 (0x40-0x7F)            │
+      │ ┌─────────────────────────────────┐ │
+      │ │ tail: 0x0000000000000005        │ │
+      │ │ padding: [56 bytes]             │ │
+      │ └─────────────────────────────────┘ │
+      │                                     │
+      │ Owner: CONSUMER writes here         │
+      │ Producer: READ-ONLY (may miss)      │
+      └─────────────────────────────────────┘
+    |
+    style.fill: "#FFF3E0"
+    style.stroke: "${colors.pointer}"
+    style.stroke-width: 2
+  }
+  Cache_Outcome: {
+    shape: diamond
+    label: |md
+      **Cache Outcome:**
+      ○ May be cache MISS on first access
+      ○ Consumer's cache line may be in Modified state
+      ○ Inter-core traffic if consumer recently wrote
+    |
+    style.fill: "${colors.cache_miss}"
+    style.stroke: "#333"
+    style.font-color: white
+  }
+  Memory_Access -> Cache_Line: "reads from"
+  Cache_Line -> Cache_Outcome: "may trigger"
+}
+
+Step_2: {
+  label: "Step 2: Check Space Availability"
+  Code: |md
+    cpp
+    uint64_t next = (pos + 1) & mask;
+    if (next == tail) {
+        return false;  // Buffer full
+    }
+    
+  |
+  Computation: {
+    shape: rectangle
+    label: |md
+      **Computation (CPU registers only):**
+      - `next = (head + 1) & mask`
+      - Compare: `next == tail`
+      - Bitwise AND (power-of-2 optimization)
+    |
+    style.fill: "#E3F2FD"
+    style.stroke: "#1976D2"
+  }
+  No_Memory: {
+    shape: rectangle
+    label: |md
+      **No Memory Access:**
+      ✓ All values in registers
+      ✓ head was loaded in previous iteration
+      ✓ mask is constant (header field)
+      ✓ Zero cache line touches
+    |
+    style.fill: "${colors.free}"
+    style.stroke: "#333"
+  }
+  Decision: {
+    shape: diamond
+    label: |md
+      **Decision:**
+      If full → return false
+      If space → continue to step 3
+    |
+    style.fill: "${colors.pointer}"
+    style.stroke: "#333"
+    style.font-color: white
+  }
+  Computation -> No_Memory
+  No_Memory -> Decision
+}
+
+Step_3: {
+  label: "Step 3: memcpy Data to Slot"
+  Code: |md
+    cpp
+    void* slot = get_slot(pos);
+    memcpy(slot, data, 
+           std::min(size, slot_size_));
+    
+  |
+  Memory_Write: {
+    shape: rectangle
+    label: |md
+      **Memory Write:**
+      - Address: `slots_ + (pos & mask) * slot_size`
+      - Size: `min(message_size, slot_size)` bytes
+      - Type: **Non-atomic stores**
+    |
+    style.fill: "${colors.data}"
+    style.stroke: "#333"
+  }
+  Slot_Layout: {
+    shape: rectangle
+    label: |md
+      **Slot Memory Layout:**
+      ┌────────────────────────────────────────┐
+      │ Slot[pos & mask]                       │
+      │ ├─ Byte 0x00: Message data...          │
+      │ ├─ Byte 0x01: ...                      │
+      │ ├─ ...                                  │
+      │ └─ Byte N: (up to slot_size)           │
+      │                                        │
+      │ Write pattern: sequential stores       │
+      │ May span multiple cache lines          │
+      └────────────────────────────────────────┘
+    |
+    style.fill: "#E8F5E9"
+    style.stroke: "${colors.cache_hit}"
+    style.stroke-width: 2
+  }
+  Cache_Behavior: {
+    shape: rectangle
+    label: |md
+      **Cache Behavior:**
+      ○ First write: cache MISS (RFO - Read For Ownership)
+      ○ Subsequent writes: cache HIT (same line)
+      ○ Producer's L1: line in Modified state
+      ○ No cross-core traffic (producer owns this line)
+    |
+    style.fill: "${colors.cache_hit}"
+    style.stroke: "#333"
+    style.font-color: white
+  }
+  Memory_Write -> Slot_Layout: "writes to"
+  Slot_Layout -> Cache_Behavior
+}
+
+Step_4: {
+  label: "Step 4: Release Fence"
+  Code: |md
+    cpp
+    std::atomic_thread_fence(
+        std::memory_order_release);
+    
+  |
+  Fence_Explanation: {
+    shape: rectangle
+    label: |md
+      **Memory Fence (Release):**
+      Ensures ALL prior memory operations complete
+      BEFORE any subsequent memory operations.
+      Specifically: memcpy stores become visible
+      BEFORE head update becomes visible.
+    |
+    style.fill: "${colors.header}"
+    style.stroke: "#333"
+    style.font-color: white
+  }
+  CPU_Barrier: {
+    shape: rectangle
+    label: |md
+      **CPU Barrier Instruction:**
+      x86/x64: `mfence` or implicit (strong ordering)
+      ARM64: `dmb ish` (Data Memory Barrier)
+      POWER: `lwsync` (Lightweight Sync)
+      **No memory access - CPU pipeline stall only**
+    |
+    style.fill: "#FFEBEE"
+    style.stroke: "${colors.changed}"
+    style.stroke-width: 2
+  }
+  Ordering: {
+    shape: rectangle
+    label: |md
+      **Establishes Ordering:**
+      ┌─────────────────────────────────────┐
+      │ memcpy(slot, data, size)            │
+      │         ↓                           │
+      │ ═════ RELEASE FENCE ═════           │
+      │         ↓                           │
+      │ store(head, next)  ← visible AFTER  │
+      └─────────────────────────────────────┘
+    |
+    style.fill: "#FFF8E1"
+    style.stroke: "${colors.pointer}"
+  }
+  Fence_Explanation -> CPU_Barrier
+  CPU_Barrier -> Ordering
+}
+
+Step_5: {
+  label: "Step 5: Store Head (relaxed)"
+  Code: |md
+    cpp
+    header_->head.store(next, 
+        std::memory_order_relaxed);
+    return true;
+    
+  |
+  Memory_Store: {
+    shape: rectangle
+    label: |md
+      **Memory Store:**
+      - Address: `header_ + 0x00` (cache line 0)
+      - Size: 8 bytes (atomic<uint64_t>)
+      - Type: **RELAXED store** (fence provides ordering)
+    |
+    style.fill: "${colors.data}"
+    style.stroke: "#333"
+  }
+  Head_Cache_Line: {
+    shape: rectangle
+    label: |md
+      **Cache Line Touch:**
+      ┌─────────────────────────────────────┐
+      │ Cache Line 0 (0x00-0x3F)            │
+      │ ┌─────────────────────────────────┐ │
+      │ │ head: 0x0000000000000006 ← NEW  │ │
+      │ │ padding: [56 bytes]             │ │
+      │ └─────────────────────────────────┘ │
+      │                                     │
+      │ Owner: PRODUCER writes here         │
+      │ Consumer: READ-ONLY (will miss)     │
+      └─────────────────────────────────────┘
+    |
+    style.fill: "#E8F5E9"
+    style.stroke: "${colors.cache_hit}"
+    style.stroke-width: 2
+  }
+  Cache_Outcome_Final: {
+    shape: rectangle
+    label: |md
+      **Cache Outcome:**
+      ○ Cache HIT (producer owns this line)
+      ○ Line stays in producer's L1 (hot)
+      ○ Consumer will see cache MISS when reading
+      ○ No immediate cross-core traffic
+    |
+    style.fill: "${colors.cache_hit}"
+    style.stroke: "#333"
+    style.font-color: white
+  }
+  Memory_Store -> Head_Cache_Line: "writes to"
+  Head_Cache_Line -> Cache_Outcome_Final
+}
+
+Step_1 -> Step_2: "space available?"
+Step_2 -> Step_3: "yes"
+Step_3 -> Step_4: "data copied"
+Step_4 -> Step_5: "ordered"
+
+Cache_Summary: {
+  label: |'md
+    ## Cache Line Touch Summary
+    | Step | Cache Line | Operation | Outcome |
+    |------|------------|-----------|---------|
+    | 1 | CL 1 (tail) | Load | May MISS |
+    | 2 | — | Compute | No access |
+    | 3 | Slot region | Stores | MISS→HIT |
+    | 4 | — | Fence | No access |
+    | 5 | CL 0 (head) | Store | HIT |
+
+    **Total cross-core traffic:** 1-2 cache line transfers
+  '|
+  near: bottom-center
+  shape: rectangle
+  style.fill: "#F5F5F5"
+  style.stroke: "#333"
+  style.stroke-width: 2
+}
+
+Legend: {
+  label: |'md
+    ### Legend
+    - 🟦 **Data Access** - Memory read/write
+    - 🟩 **Cache Hit** - Line in local L1
+    - 🟥 **Cache Miss** - Line fetch required
+    - 🟪 **Fence** - CPU barrier, no memory access
+    - 🟧 **Changed** - Modified value
+  '|
+  near: bottom-right
+  shape: rectangle
+  style.fill: "#FAFAFA"
+  style.stroke: "#666"
+}

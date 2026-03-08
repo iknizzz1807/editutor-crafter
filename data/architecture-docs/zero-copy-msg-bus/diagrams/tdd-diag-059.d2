@@ -1,0 +1,120 @@
+shape: sequence_diagram
+direction: right
+# Predefine actors
+Application
+RecoveryCoordinator
+ProcessRegistry
+HeartbeatMonitor
+OrphanReclaimer
+WriteAheadLog
+CheckpointManager
+RecoveryJournal
+SignalHandler
+# Phase 1: Startup and Registration
+Application -> RecoveryCoordinator: initialize(shared_memory)
+RecoveryCoordinator -> ProcessRegistry: register_process()
+ProcessRegistry -> ProcessRegistry: find_free_slot()
+ProcessRegistry -> ProcessRegistry: increment_generation()
+ProcessRegistry --> RecoveryCoordinator: slot_index, generation
+RecoveryCoordinator -> HeartbeatMonitor: start(heartbeat_interval)
+RecoveryCoordinator -> OrphanReclaimer: start(scan_interval)
+# Phase 2: Normal Operation with Durability
+group "Normal Operation" {
+    Application -> RecoveryCoordinator: log_message(data, size)
+    RecoveryCoordinator -> WriteAheadLog: append(data, size, MESSAGE)
+    WriteAheadLog -> WriteAheadLog: compute_checksum(data)
+    WriteAheadLog -> WriteAheadLog: write_entry_header + data
+    WriteAheadLog --> RecoveryCoordinator: sequence_number
+    HeartbeatMonitor -> ProcessRegistry: update_heartbeat(slot)
+    ProcessRegistry -> ProcessRegistry: store(last_heartbeat_ns, now)
+    OrphanReclaimer -> OrphanReclaimer: scan_slots()
+    OrphanReclaimer -> ProcessRegistry: is_alive(owner_slot)
+    alt owner dead AND claim_stale
+        OrphanReclaimer -> OrphanReclaimer: CAS(ref_count, 0)
+        OrphanReclaimer -> OrphanReclaimer: slots_reclaimed++
+    end
+}
+# Phase 3: Periodic Checkpoint
+group "Checkpoint Cycle" {
+    RecoveryCoordinator -> CheckpointManager: save_checkpoint(name)
+    CheckpointManager -> CheckpointManager: serialize_ring_state()
+    CheckpointManager -> CheckpointManager: write_to_temp_file()
+    CheckpointManager -> CheckpointManager: fsync(temp_file)
+    CheckpointManager -> CheckpointManager: atomic_rename(temp, final)
+    CheckpointManager -> WriteAheadLog: get_next_sequence()
+    CheckpointManager --> RecoveryCoordinator: success
+}
+# Phase 4: Graceful Shutdown
+SignalHandler -> SignalHandler: SIGTERM received
+SignalHandler -> SignalHandler: set shutdown_requested = true
+Application -> Application: check shutdown_requested
+Application -> RecoveryCoordinator: stop()
+RecoveryCoordinator -> HeartbeatMonitor: stop()
+RecoveryCoordinator -> OrphanReclaimer: stop()
+RecoveryCoordinator -> CheckpointManager: save_checkpoint("shutdown")
+RecoveryCoordinator -> ProcessRegistry: set_state(DEAD)
+RecoveryCoordinator -> ProcessRegistry: unregister()
+# Phase 5: Crash Detection (Other Process)
+group "Crash Detection" {
+    HeartbeatMonitor -> ProcessRegistry: is_alive(other_slot)
+    ProcessRegistry -> ProcessRegistry: check heartbeat_timeout
+    alt timeout exceeded
+        ProcessRegistry -> ProcessRegistry: check kill(pid, 0)
+        alt ESRCH returned
+            ProcessRegistry --> HeartbeatMonitor: false (dead)
+            OrphanReclaimer -> OrphanReclaimer: detect_orphaned_slots(owner)
+            OrphanReclaimer -> OrphanReclaimer: CAS(ref_count, 0)
+            OrphanReclaimer -> OrphanReclaimer: log_reclamation
+        end
+    end
+}
+# Phase 6: Recovery After Crash
+group "Recovery Sequence" {
+    Application -> RecoveryCoordinator: recover(handler)
+    RecoveryCoordinator -> RecoveryJournal: read_last()
+    alt phase == NOT_STARTED OR COMPLETED
+        RecoveryCoordinator -> RecoveryJournal: begin_phase(LOADING_CHECKPOINT)
+        RecoveryCoordinator -> CheckpointManager: load_latest_checkpoint(name)
+        CheckpointManager --> RecoveryCoordinator: checkpoint_data
+        RecoveryCoordinator -> RecoveryJournal: begin_phase(RESTORING_RING_STATE)
+        RecoveryCoordinator -> RecoveryCoordinator: ring_deserializer(checkpoint.ring_state)
+    else phase == REPLAYING_WAL
+        RecoveryCoordinator -> RecoveryJournal: get wal_replay_position
+        RecoveryCoordinator -> WriteAheadLog: replay(position, handler)
+    end
+    RecoveryCoordinator -> RecoveryJournal: begin_phase(REPLAYING_WAL)
+    RecoveryCoordinator -> WriteAheadLog: replay(checkpoint_sequence, handler)
+    WriteAheadLog -> WriteAheadLog: read_entry_header
+    alt magic valid AND checksum valid
+        WriteAheadLog -> Application: handler(sequence, data, size, flags)
+    else checksum invalid
+        WriteAheadLog -> WriteAheadLog: skip_corrupted_entry
+    end
+    RecoveryCoordinator -> RecoveryJournal: begin_phase(VERIFYING_STATE)
+    RecoveryCoordinator -> RecoveryCoordinator: verify_buffer_consistency()
+    RecoveryCoordinator -> RecoveryJournal: mark_completed()
+}
+# Phase 7: Forced Shutdown
+SignalHandler -> SignalHandler: second SIGTERM/SIGINT
+SignalHandler -> SignalHandler: set force_shutdown = true
+Application -> Application: check force_shutdown
+Application -> Application: _exit(1)
+# Styling
+Application.style.fill: "#E8F4FD"
+Application.style.stroke: "#2196F3"
+RecoveryCoordinator.style.fill: "#FFF3E0"
+RecoveryCoordinator.style.stroke: "#FF9800"
+ProcessRegistry.style.fill: "#F3E5F5"
+ProcessRegistry.style.stroke: "#9C27B0"
+HeartbeatMonitor.style.fill: "#E8F5E9"
+HeartbeatMonitor.style.stroke: "#4CAF50"
+OrphanReclaimer.style.fill: "#FFEBEE"
+OrphanReclaimer.style.stroke: "#F44336"
+WriteAheadLog.style.fill: "#FFF8E1"
+WriteAheadLog.style.stroke: "#FFC107"
+CheckpointManager.style.fill: "#E0F7FA"
+CheckpointManager.style.stroke: "#00BCD4"
+RecoveryJournal.style.fill: "#FBE9E7"
+RecoveryJournal.style.stroke: "#FF5722"
+SignalHandler.style.fill: "#ECEFF1"
+SignalHandler.style.stroke: "#607D8B"

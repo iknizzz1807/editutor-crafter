@@ -1,0 +1,394 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    changed: "#FF4444"
+    normal: "#333333"
+    success: "#4CAF50"
+    error: "#F44336"
+    decision: "#2196F3"
+  }
+}
+direction: right
+title: |md
+  # Producer Claim Algorithm (Vyukov MPMC)
+  Zero-copy slot claiming with sequence number coordination
+| {near: top-center}
+step_1: {
+  label: "Step 1: Load Tail"
+  vars_box: {
+    shape: text
+    label: |md
+      **Variables:**
+      cpp
+      uint64_t pos = tail.load(relaxed)
+      
+    |
+  }
+  mem_state: {
+    label: "Memory State"
+    shape: rectangle
+    style.fill: "#E8F5E9"
+    tail_var: {
+      label: "tail (atomic)\n┌─────────────────────┐\n│ pos = 5             │\n└─────────────────────┘"
+      shape: text
+      style.font: mono
+    }
+  }
+  note: {
+    shape: text
+    label: |md
+      Load current producer position.
+      Relaxed ordering - no synchronization needed yet.
+    |
+    style.fill: "#FFF3E0"
+  }
+}
+step_2: {
+  label: "Step 2: Load Slot Sequence"
+  vars_box: {
+    shape: text
+    label: |md
+      **Variables:**
+      cpp
+      uint64_t seq = sequence[pos & mask].load(acquire)
+      
+    |
+  }
+  mem_state: {
+    label: "Memory State"
+    shape: rectangle
+    style.fill: "#E8F5E9"
+    seq_array: {
+      label: "sequence[] array\n┌─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┐\n│  0  │  1  │  2  │  3  │  4  │  5  │  6  │  7  │\n└─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┘\n                                      ↑\n                                  seq = 5"
+      shape: text
+      style.font: mono
+    }
+  }
+  note: {
+    shape: text
+    label: |md
+      Acquire ordering ensures we see all prior writes.
+      Slot 5 has sequence 5 → **slot is empty, ready for producer**
+    |
+    style.fill: "#FFF3E0"
+  }
+}
+step_3: {
+  label: "Step 3: Compute Difference"
+  vars_box: {
+    shape: text
+    label: |md
+      **Variables:**
+      cpp
+      int64_t diff = seq - pos  // 5 - 5 = 0
+      
+    |
+  }
+  diff_box: {
+    label: "diff calculation"
+    shape: diamond
+    style.fill: ${colors.decision}
+    style.font-color: white
+    center: {
+      label: "diff = 0"
+      shape: text
+      style.bold: true
+      style.font-size: 24
+    }
+  }
+  interpretation: {
+    shape: text
+    label: |md
+      **diff == 0**: Slot expects this position → **READY**
+      **diff < 0**: Slot is behind → **QUEUE FULL**
+      **diff > 0**: Another producer claimed → **RETRY**
+    |
+    style.fill: "#E3F2FD"
+  }
+}
+step_4: {
+  label: "Step 4: CAS Tail (Claim Slot)"
+  vars_box: {
+    shape: text
+    label: |md
+      **Variables:**
+      cpp
+      bool success = tail.compare_exchange_weak(
+          pos,        // expected: 5
+          pos + 1,    // desired: 6
+          relaxed, relaxed)
+      
+    |
+  }
+  cas_state: {
+    label: "CAS Operation"
+    shape: rectangle
+    style.fill: "#FFF9C4"
+    style.stroke: ${colors.changed}
+    style.stroke-width: 3
+    before: {
+      label: "BEFORE CAS:\ntail = 5"
+      shape: text
+    }
+    arrow: {
+      label: "CAS(5 → 6)"
+      shape: text
+      style.bold: true
+      style.font-color: ${colors.changed}
+    }
+    after: {
+      label: "AFTER CAS:\ntail = 6"
+      shape: text
+      style.bold: true
+      style.font-color: ${colors.success}
+    }
+  }
+  outcome: {
+    shape: text
+    label: |md
+      **CAS succeeds** → We own slot at position 5
+      **CAS fails** → Another producer beat us, retry from Step 1
+    |
+    style.fill: "#FFF3E0"
+  }
+}
+step_5: {
+  label: "Step 5: Write Message Data"
+  vars_box: {
+    shape: text
+    label: |md
+      **Variables:**
+      cpp
+      size_t slot_idx = pos & mask;  // 5 & 7 = 5
+      memcpy(slots[slot_idx], data, size);
+      
+    |
+  }
+  slot_layout: {
+    label: "Slot Memory Layout"
+    shape: rectangle
+    style.fill: "#E8F5E9"
+    header: {
+      label: "MessageSlotHeader (32 bytes)"
+      shape: rectangle
+      style.fill: "#9C27B0"
+      style.font-color: white
+      fields: {
+        label: "ref_count | msg_size | timestamp | topic_hash | seq | depth | flags"
+        shape: text
+        style.font-size: 10
+      }
+    }
+    data: {
+      label: "FlatBuffer Message Data\n(slot_size - 32 bytes)"
+      shape: rectangle
+      style.fill: "#2196F3"
+      style.font-color: white
+      content: {
+        label: |md
+          TradeOrder {
+            id: 12345
+            symbol: "AAPL"
+            price: 150.25
+            quantity: 100
+          }
+        |
+        shape: text
+        style.font: mono
+        style.font-size: 10
+      }
+    }
+  }
+  note: {
+    shape: text
+    label: |md
+      Copy message to claimed slot.
+      Data not yet visible to consumers.
+    |
+    style.fill: "#FFF3E0"
+  }
+}
+step_6: {
+  label: "Step 6: Release Fence + Update Sequence"
+  vars_box: {
+    shape: text
+    label: |md
+      **Variables:**
+      cpp
+      atomic_thread_fence(memory_order_release);
+      sequence[slot_idx].store(pos + 1, release);
+      // sequence[5] = 6
+      
+    |
+  }
+  mem_barrier: {
+    label: "Memory Barrier Effect"
+    shape: rectangle
+    style.fill: "#FFEBEE"
+    style.stroke: ${colors.changed}
+    style.stroke-width: 2
+    producer: {
+      label: "PRODUCER"
+      shape: text
+      style.bold: true
+      ops: {
+        label: |md
+          1. memcpy(slot, data)  ← Store
+          2. fence(release)      ← Barrier
+          3. store(seq, pos+1)   ← Publish
+        |
+        shape: text
+        style.font: mono
+      }
+    }
+    arrow: {
+      label: "→ Happens-Before →"
+      shape: text
+      style.bold: true
+      style.font-color: ${colors.success}
+    }
+    consumer: {
+      label: "CONSUMER"
+      shape: text
+      style.bold: true
+      ops: {
+        label: |md
+          1. load(seq)           ← Acquire
+          2. fence(acquire)      ← Barrier
+          3. memcpy(out, slot)   ← Load
+        |
+        shape: text
+        style.font: mono
+      }
+    }
+  }
+  seq_after: {
+    label: "sequence[] after publish\n┌─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┐\n│  0  │  1  │  2  │  3  │  4  │  6  │  6  │  7  │\n└─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┘\n                                      ↑\n                            seq = pos+1 (DATA READY)"
+    shape: text
+    style.font: mono
+    style.fill: "#E8F5E9"
+  }
+}
+step_7: {
+  label: "Step 7: Return Success"
+  result: {
+    label: "return true"
+    shape: rectangle
+    style.fill: ${colors.success}
+    style.font-color: white
+    style.bold: true
+    style.font-size: 24
+  }
+  summary: {
+    shape: text
+    label: |md
+      **Producer has successfully:**
+      1. Claimed slot via atomic CAS on tail
+      2. Written message data
+      3. Published via sequence update (pos + 1)
+      Consumer sees `sequence[slot] == pos + 1` → data is ready
+    |
+    style.fill: "#E8F5E9"
+  }
+}
+error_path: {
+  label: "Error Paths"
+  diff_negative: {
+    label: "diff < 0: QUEUE FULL"
+    shape: rectangle
+    style.fill: ${colors.error}
+    style.font-color: white
+    detail: {
+      label: |md
+        Slot sequence is behind position.
+        Example: pos=5, seq=3
+        Consumer hasn't caught up.
+        **return false** (caller applies backpressure)
+      |
+      shape: text
+    }
+  }
+  diff_positive: {
+    label: "diff > 0: SLOT AHEAD"
+    shape: rectangle
+    style.fill: "#FF9800"
+    style.font-color: white
+    detail: {
+      label: |md
+        Another producer claimed but hasn't written.
+        Example: pos=5, seq=7
+        **Reload tail and retry**
+      |
+      shape: text
+    }
+  }
+  cas_failed: {
+    label: "CAS Failed: CONTENTION"
+    shape: rectangle
+    style.fill: "#9C27B0"
+    style.font-color: white
+    detail: {
+      label: |md
+        Another producer's CAS succeeded first.
+        **pos updated by CAS, retry loop**
+      |
+      shape: text
+    }
+  }
+}
+flow: {
+  label: "Complete Flow"
+  start: {
+    shape: circle
+    label: "START"
+    style.fill: "#4CAF50"
+    style.font-color: white
+  }
+  s1: {label: "Load tail\n(pos)"}
+  s2: {label: "Load seq\n(seq[pos&mask])"}
+  s3: {label: "diff =\nseq - pos"}
+  decision: {
+    shape: diamond
+    label: "diff?"
+    style.fill: "#2196F3"
+    style.font-color: white
+  }
+  cas: {
+    shape: diamond
+    label: "CAS\nOK?"
+    style.fill: "#2196F3"
+    style.font-color: white
+  }
+  write: {label: "memcpy\ndata"}
+  publish: {label: "store\nseq=pos+1"}
+  success_end: {
+    shape: circle
+    label: "TRUE"
+    style.fill: "#4CAF50"
+    style.font-color: white
+  }
+  full_end: {
+    shape: circle
+    label: "FALSE\n(FULL)"
+    style.fill: "#F44336"
+    style.font-color: white
+  }
+  retry: {
+    shape: circle
+    label: "RETRY"
+    style.fill: "#FF9800"
+    style.font-color: white
+  }
+  start -> s1 -> s2 -> s3 -> decision
+  decision -> cas: "diff == 0"
+  decision -> full_end: "diff < 0"
+  decision -> s1: "diff > 0"
+  cas -> write: "yes"
+  cas -> s1: "no"
+  write -> publish -> success_end
+}
+step_1 -> step_2 -> step_3 -> step_4 -> step_5 -> step_6 -> step_7
+step_3 -> error_path

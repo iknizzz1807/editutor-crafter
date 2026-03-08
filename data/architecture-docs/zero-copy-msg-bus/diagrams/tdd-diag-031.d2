@@ -1,0 +1,241 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#7C3AED"
+    data: "#3B82F6"
+    free: "#22C55E"
+    padding: "#9CA3AF"
+    pointer: "#F97316"
+    text-muted: "#6B7280"
+  }
+}
+
+title: |'md
+# Zero-Copy Sharded Queue Architecture
+**Intel-Manual Grade Specification: Lock-Free Shared Memory Communication**
+'| {near: top-center}
+
+direction: right
+
+# =============================================================================
+# PROCESS LAYER: Isolation Boundaries
+# =============================================================================
+
+Producer Process: {
+  style.fill: "${colors.data}"
+  style.stroke: "#1E40AF"
+  style.stroke-width: 4
+
+  App Logic: {
+    style.fill: white
+    label: "L3 Cache Local Context\n(Producer Logic)"
+    Generate Messages
+    Serialize: FlatBuffer v23.5.x
+  }
+
+  Producer Thread: {
+    style.fill: "${colors.header}"
+    style.font-color: white
+    Claim Slot: "atomic_fetch_add(tail, 1)"
+    Write Data: "memcpy_fast(slot_ptr, msg)"
+    Update Head: "atomic_store_release(head, new_val)"
+  }
+
+  Heartbeat: {
+    style.fill: "${colors.free}"
+    Update Timestamp: "CLOCK_MONOTONIC_RAW"
+  }
+
+  App Logic -> Producer Thread: "enqueue(msg_t*)" {
+    style.stroke-width: 2
+  }
+  Producer Thread -> Heartbeat: "timer_t (10ms)" {
+    style.stroke-dash: 3
+  }
+}
+
+Consumer Process: {
+  style.fill: "${colors.data}"
+  style.stroke: "#1E40AF"
+  style.stroke-width: 4
+
+  Consumer Thread: {
+    style.fill: "${colors.header}"
+    style.font-color: white
+    Read Head: "atomic_load_acquire(head)"
+    Spinlock: "while(head == tail) PAUSE"
+    Zero Copy: "mmap_ptr + (idx & mask)"
+    Update Tail: "atomic_store_release(tail, new_val)"
+  }
+
+  App Logic: {
+    style.fill: white
+    label: "Business Logic Handler"
+    Process Frame
+    State Update
+  }
+
+  Heartbeat: {
+    style.fill: "${colors.free}"
+    Update Liveness: "shm_reg->alive[PID]"
+  }
+
+  Consumer Thread -> App Logic: "callback(const void*)"
+  Consumer Thread -> Heartbeat: "watchdog_refresh()" {
+    style.stroke-dash: 3
+  }
+}
+
+# =============================================================================
+# SHARED MEMORY LAYER: Physical Layout
+# =============================================================================
+
+Shared Memory Region: {
+  style.fill: "#F8FAFC"
+  style.stroke: "#334155"
+  style.stroke-width: 2
+  style.double-border: true
+
+  Ring Buffer Header: {
+    shape: sql_table
+    style.fill: "${colors.header}"
+    style.stroke: black
+    label: "Control Block (Aligned 256B)"
+    
+    0x00: "head: atomic<uint64_t>" {constraint: "Cache Line 0"}
+    0x40: "tail: atomic<uint64_t>" {constraint: "Cache Line 1 (Anti-False Sharing)"}
+    0x80: "capacity: uint64_t" {constraint: "POW2"}
+    0xC0: "mask: uint64_t" {constraint: "capacity - 1"}
+  }
+
+  Sequence Array: {
+    shape: sql_table
+    style.fill: "${colors.pointer}"
+    label: "Sequence Barrier Array"
+    
+    0x100: "seq[0]: uint64_t" {constraint: "Version Tag"}
+    0x108: "seq[1]: uint64_t" {constraint: "Version Tag"}
+    "...": "..."
+    "N*8": "seq[N]: uint64_t"
+  }
+
+  Message Slots: {
+    shape: sql_table
+    style.fill: "${colors.data}"
+    label: "Data Plane (Zero-Copy Buffer)"
+    
+    Slot_0: "uint8_t[4096]" {constraint: "PAGE_ALIGNED"}
+    Slot_1: "uint8_t[4096]" {constraint: "PAGE_ALIGNED"}
+    "... ": "..."
+    Slot_N: "uint8_t[4096]"
+  }
+
+  Process Registry: {
+    shape: sql_table
+    style.fill: "${colors.free}"
+    label: "Heartbeat & Liveness Registry"
+    
+    Reg_0: "struct ProcessIdentity" {constraint: "PID + Epoch"}
+    Reg_1: "struct ProcessIdentity" {constraint: "PID + Epoch"}
+    "...  ": "..."
+  }
+}
+
+# =============================================================================
+# HARDWARE & ATOMIC TOPOLOGY
+# =============================================================================
+
+Producer Process.Producer Thread -> Shared Memory Region.Ring Buffer Header: "LOCK CMPXCHG (Tail)" {
+  style.stroke: "${colors.pointer}"
+  style.stroke-width: 3
+  style.animated: true
+}
+
+Shared Memory Region.Ring Buffer Header -> Consumer Process.Consumer Thread: "LFENCE / Load Acquire" {
+  style.stroke: "${colors.data}"
+  style.stroke-width: 3
+  style.animated: true
+}
+
+Producer Process.Heartbeat -> Shared Memory Region.Process Registry: "shm_atomic_write" {
+  style.stroke: "${colors.free}"
+  style.stroke-dash: 5
+}
+
+Consumer Process.Heartbeat -> Shared Memory Region.Process Registry: "shm_atomic_write" {
+  style.stroke: "${colors.free}"
+  style.stroke-dash: 5
+}
+
+# =============================================================================
+# TECHNICAL ANNOTATIONS
+# =============================================================================
+
+legend: {
+  near: bottom-right
+  style.fill: "#F1F5F9"
+  style.stroke: "#CBD5E1"
+  
+  header_color: {
+    shape: rectangle
+    style.fill: "${colors.header}"
+    label: "Metadata / Atomics"
+  }
+  data_color: {
+    shape: rectangle
+    style.fill: "${colors.data}"
+    label: "Payload / State"
+  }
+  pointer_color: {
+    shape: rectangle
+    style.fill: "${colors.pointer}"
+    label: "Ordering / Sequences"
+  }
+  cas_op: {
+    label: "→ Atomic CAS / RMW"
+    style.stroke: "${colors.pointer}"
+    style.animated: true
+  }
+}
+
+# Cache Line Analysis Node
+cache_line_note: |'md'
+### Cache Line Optimization Spec
+- **Header Padding**: `tail` is offset by 64 bytes from `head` to reside on a different CPU cache line.
+- **Reason**: Prevents *False Sharing* where the Producer (updating tail) and Consumer (updating head) would invalidate each other's cache lines.
+- **Alignment**: All message slots are `4096B` (Page Aligned) for direct NIC DMA support.
+'| {
+  near: bottom-left
+  shape: text
+  style.fill: "#FFFBEB"
+  style.stroke: "#F59E0B"
+  style.border-radius: 8
+}
+
+# Memory Map Breakdown Node
+memory_layout_note: |'md'
+### SHM Address Space (Calculated)
+
+| Segment | Offset | Size (Bytes) |
+| :--- | :--- | :--- |
+| Header Block | `0x0000` | 256 |
+| Seq Barriers | `0x0100` | `N * 8` |
+| Data Slots | `BASE + Seq` | `N * SlotSize` |
+| Registry | `END - Reg` | `M * 128` |
+
+**Total Segment Size:** `256 + N*(8+SlotSize) + M*128`
+'| {
+  near: top-right
+  shape: text
+  style.fill: "#F0F9FF"
+  style.stroke: "#0EA5E9"
+  style.border-radius: 8
+}
+
+# Virtual Memory Boundary Lines
+Shared Memory Region.Ring Buffer Header -- Shared Memory Region.Sequence Array: {style.stroke-dash: 2}
+Shared Memory Region.Sequence Array -- Shared Memory Region.Message Slots: {style.stroke-dash: 2}
+Shared Memory Region.Message Slots -- Shared Memory Region.Process Registry: {style.stroke-dash: 2}

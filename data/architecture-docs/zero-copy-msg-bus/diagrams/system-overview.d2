@@ -1,0 +1,397 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_core: {
+    direction: down
+    label: "CORE: Shared Memory & Ring Buffer  [M1]"
+    shm: {
+      shape: class
+      label: "SharedMemory (shm_allocator.cpp)"
+      -name: "std::string"
+      -size: "size_t"
+      -fd: "int"
+      -data: "uint8_t*"
+      -is_creator: "bool"
+      +SharedMemory(name, size, create): "ctor"
+      +~SharedMemory(): "dtor - munmap, close, shm_unlink"
+      +data(): "void*"
+      +size(): "size_t"
+    }
+    ring_config: {
+      shape: sql_table
+      label: "RingBufferConfig (ring_buffer_config.hpp)"
+      num_slots: "size_t | MUST be power of 2"
+      slot_size: "size_t | bytes per slot"
+      shm_name: "const char* | POSIX shm name"
+    }
+    ring_header: {
+      shape: sql_table
+      label: "RingBufferHeader (256 bytes, shared_memory_ring_buffer.hpp)"
+      head: "atomic<uint64_t> | 0x00 | producer position"
+      pad0: "uint8_t[56] | 0x08 | padding to cache line"
+      tail: "atomic<uint64_t> | 0x40 | consumer position"
+      pad1: "uint8_t[56] | 0x48 | padding to cache line"
+      num_slots: "uint64_t | 0x80 | capacity"
+      slot_size: "uint64_t | 0x88 | bytes per slot"
+      mask: "uint64_t | 0x90 | num_slots - 1"
+      producer_pid: "atomic<uint32_t> | 0xC0"
+      consumer_pid: "atomic<uint32_t> | 0xC4"
+      producer_heartbeat: "atomic<uint64_t> | 0xC8 | ns"
+      consumer_heartbeat: "atomic<uint64_t> | 0xD0 | ns"
+      generation: "atomic<uint32_t> | 0xD8 | restart counter"
+    }
+    spsc: {
+      shape: class
+      label: "SpscRingBuffer (spsc_ring_buffer.cpp)"
+      -header: "Header*"
+      -slots: "uint8_t*"
+      +initialize(memory, config): "void"
+      +attach(memory): "void"
+      +try_produce(data, size): "bool | non-blocking"
+      +produce(data, size): "void | blocking w/ backoff"
+      +try_consume(out, size): "bool | non-blocking"
+      +consume(out, size): "void | blocking"
+      +capacity(): "size_t | num_slots - 1"
+      +empty(): "bool | head == tail"
+      +full(): "bool | (head+1) & mask == tail"
+    }
+  }
+  layer_mpmc: {
+    direction: down
+    label: "MPMC: Multi-Producer Multi-Consumer  [M3]"
+    mpmc_header: {
+      shape: sql_table
+      label: "MpmcRingBufferHeader (256 bytes)"
+      head: "atomic<uint64_t> | 0x00 | consumer fetch_add"
+      tail: "atomic<uint64_t> | 0x40 | producer fetch_add"
+      capacity: "uint64_t | 0x80 | num_slots"
+      slot_size: "uint64_t | 0x88"
+      mask: "uint64_t | 0x90"
+      total_enqueued: "atomic<uint64_t> | 0xC0"
+      total_dequeued: "atomic<uint64_t> | 0xC8"
+      enqueue_failures: "atomic<uint64_t> | 0xD0"
+    }
+    mpmc: {
+      shape: class
+      label: "MpmcRingBuffer (mpmc_ring_buffer.cpp)"
+      -header: "Header*"
+      -sequences: "atomic<uint64_t>*"
+      -slots: "uint8_t*"
+      +initialize(memory, config): "void"
+      +try_enqueue(data, size): "bool | CAS loop"
+      +try_dequeue(out, size): "bool | CAS loop"
+      +enqueue_failure_rate(): "double"
+    }
+    seq_semantics: {
+      shape: rectangle
+      label: "Sequence Number Semantics"
+      seq_slot: |md
+        seq == pos: EMPTY, ready for producer
+        seq == pos + 1: HAS_DATA, ready for consumer
+        seq == pos + capacity: RECYCLED, next cycle
+      |
+    }
+    shard: {
+      shape: sql_table
+      label: "Shard (64 bytes cache-aligned)"
+      head: "atomic<uint64_t> | offset 0x00"
+      tail: "atomic<uint64_t> | offset 0x40"
+      slots: "uint8_t* | message data"
+      slot_size: "size_t"
+      mask: "size_t"
+      enqueue_count: "atomic<uint64_t>"
+      dequeue_count: "atomic<uint64_t>"
+    }
+    backpressure: {
+      shape: class
+      label: "BackpressureController (backpressure.cpp)"
+      -credits: "atomic<int32_t>"
+      -backpressure_active: "atomic<bool>"
+      -config: "Config"
+      +try_consume_credit(): "bool"
+      +grant_credits(count): "void"
+      +is_backpressured(): "bool"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_serial: {
+    direction: down
+    label: "SERIALIZATION: Zero-Copy Format  [M2]"
+    vtable: {
+      shape: sql_table
+      label: "VTable (4 + 2*num_fields bytes)"
+      vtable_size: "uint16_t | total vtable bytes"
+      table_size: "uint16_t | table data bytes"
+      field_offsets: "uint16_t[] | per-field offsets, 0=absent"
+    }
+    buffer_view: {
+      shape: class
+      label: "BufferView (buffer_view.cpp)"
+      -buffer: "const uint8_t*"
+      -table_start: "const uint8_t*"
+      -vtable: "const VTable*"
+      +has_field(field_id): "bool"
+      +get_scalar<T>(id, default): "T"
+      +get_offset(field_id): "uint32_t"
+    }
+    vector_view: {
+      shape: class
+      label: "VectorView<T>"
+      -data: "const uint8_t*"
+      -length: "uint32_t"
+      +size(): "uint32_t"
+      +operator[](i): "const T&"
+      +begin(): "const_iterator"
+      +end(): "const_iterator"
+    }
+    string_view: {
+      shape: class
+      label: "StringView"
+      -data: "const uint8_t*"
+      -length: "uint32_t"
+      +size(): "uint32_t"
+      +c_str(): "const char*"
+      +str(): "std::string"
+    }
+    layout_calc: {
+      shape: class
+      label: "LayoutCalculator (layout_calculator.cpp)"
+      +add_field(size, alignment): "void"
+      +total_size(): "size_t | padded to 8"
+      +max_alignment(): "size_t"
+    }
+    builder: {
+      shape: class
+      label: "BuilderBase (builder_base.cpp)"
+      -buf: "vector<uint8_t>"
+      -field_presence: "vector<bool>"
+      +write_string(str): "uint32_t | offset"
+      +write_vector<T>(data, count): "uint32_t | offset"
+      +start_table(num_fields): "uint32_t"
+      +add_field<T>(id, value): "void"
+      +end_table(offsets, num): "uint32_t"
+    }
+  }
+  layer_pubsub: {
+    direction: down
+    label: "PUB/SUB: Topic Routing  [M4]"
+    trie_node: {
+      shape: sql_table
+      label: "TopicTrieNode (topic_trie.hpp)"
+      exact_children: "unordered_map<string, unique_ptr<Node>>"
+      wildcard_child: "unique_ptr<TopicTrieNode> | + matches"
+      subscribers: "vector<SubscriberID> | exact match"
+      multi_level_subscribers: "vector<SubscriberID> | # matches"
+      mutex: "mutable shared_mutex"
+    }
+    topic_registry: {
+      shape: class
+      label: "TopicRegistry (topic_registry.cpp)"
+      -root: "unique_ptr<TopicTrieNode>"
+      +subscribe(pattern, id): "void | + and # wildcards"
+      +unsubscribe(id): "void"
+      +match(topic): "vector<SubscriberID> | O(M)"
+    }
+    msg_slot_header: {
+      shape: sql_table
+      label: "MessageSlotHeader (32 bytes)"
+      ref_count: "atomic<uint32_t> | remaining readers"
+      message_size: "uint32_t | actual bytes"
+      publish_timestamp_ns: "uint64_t | ordering/TTL"
+      topic_hash: "uint32_t | bloom filter check"
+      sequence: "uint32_t | monotonic within topic"
+      topic_depth: "uint16_t | segment count"
+      flags: "uint16_t | reserved"
+    }
+    subscriber_cursor: {
+      shape: sql_table
+      label: "SubscriberCursor (256 bytes)"
+      current_offset: "atomic<uint64_t> | 0x00"
+      id: "SubscriberID | 0x40"
+      topic_hash_mask: "uint32_t | bloom filter"
+      messages_received: "atomic<uint64_t> | 0x80"
+      messages_filtered: "atomic<uint64_t>"
+      active: "atomic<bool> | 0xB0"
+    }
+    bloom: {
+      shape: class
+      label: "BloomFilter"
+      -bits: "bitset<256>"
+      +add(topic): "void | 3 hash functions"
+      +might_contain(topic): "bool | no false negatives"
+    }
+    retained: {
+      shape: class
+      label: "RetainedMessageStore (retained_store.cpp)"
+      -retained: "map<string, RetainedMessage>"
+      +store(topic, data, size): "void"
+      +get(topic, out): "bool | for late joiners"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_recovery: {
+    direction: down
+    label: "CRASH RECOVERY & DURABILITY  [M5]"
+    proc_identity: {
+      shape: sql_table
+      label: "ProcessIdentity (128 bytes, shared memory)"
+      pid: "atomic<uint32_t> | 0x00"
+      generation: "atomic<uint32_t> | 0x04 | restart counter"
+      last_heartbeat_ns: "atomic<uint64_t> | 0x08"
+      state: "atomic<uint32_t> | 0x10 | DEAD/ALIVE/..."
+      messages_processed: "atomic<uint64_t> | 0x40"
+    }
+    orphan_header: {
+      shape: sql_table
+      label: "OrphanedSlotHeader (64 bytes)"
+      fence: "atomic<uint64_t> | claim validation"
+      claim_timestamp_ns: "atomic<uint64_t>"
+      owner_slot: "atomic<uint32_t> | registry index"
+      ref_count: "atomic<uint32_t>"
+      message_size: "uint32_t"
+      sequence: "uint32_t"
+    }
+    fence_mgr: {
+      shape: class
+      label: "FenceManager (fence_manager.cpp)"
+      -header: "FenceHeader*"
+      -my_fence: "uint64_t"
+      +allocate_fence(): "uint64_t | atomic increment"
+      +is_fence_valid(fence): "bool"
+    }
+    wal_header: {
+      shape: sql_table
+      label: "WalEntryHeader (32 bytes)"
+      magic: "uint32_t | 0xFEEDFACE"
+      entry_size: "uint32_t"
+      sequence: "uint64_t | monotonic"
+      timestamp_ns: "uint64_t"
+      checksum: "uint32_t | CRC32"
+      flags: "uint32_t | MESSAGE/CHECKPOINT/..."
+    }
+    wal: {
+      shape: class
+      label: "WriteAheadLog (write_ahead_log.cpp)"
+      -fd: "int"
+      -next_sequence: "uint64_t"
+      +append(data, size, flags): "uint64_t"
+      +sync(): "void | fsync"
+      +truncate(sequence): "void"
+      +replay(from_seq, handler): "void | skip corrupt"
+    }
+    ckpt_header: {
+      shape: sql_table
+      label: "CheckpointFileHeader (64 bytes)"
+      magic: "uint32_t | 0xFEEDFACE"
+      wal_sequence: "uint64_t | checkpoint position"
+      timestamp_ns: "uint64_t"
+      ring_state_size: "uint32_t"
+      num_subscribers: "uint32_t"
+      checksum: "uint32_t"
+    }
+    recovery_journal: {
+      shape: sql_table
+      label: "RecoveryJournalEntry (64 bytes)"
+      phase: "RecoveryPhase | LOADING/REPLAYING/..."
+      checkpoint_sequence: "uint64_t"
+      wal_replay_position: "uint64_t | resume point"
+      timestamp_ns: "uint64_t"
+      checksum: "uint32_t"
+    }
+    signal_handler: {
+      shape: class
+      label: "SignalHandler (signal_handler.cpp)"
+      -shutdown_requested: "atomic<bool>"
+      -force_shutdown: "atomic<bool>"
+      +setup(): "void | SIGTERM/SIGINT"
+      +shutdown_requested(): "bool"
+    }
+  }
+  layer_integration: {
+    direction: down
+    label: "INTEGRATION LAYER"
+    broker: {
+      shape: class
+      label: "PubSubBroker (pubsub_broker.cpp)"
+      -config: "PubSubConfig"
+      -topic_registry: "unique_ptr<TopicTrieNode>"
+      -buffer_header: "PubSubBufferHeader*"
+      -subscriber_cursors: "map<SubscriberID, SubscriberCursor>"
+      -retained_store: "RetainedMessageStore"
+      +publish(topic, data, size, retain): "bool"
+      +subscribe(pattern, handler, filter): "SubscriberID"
+      +poll(id, max): "size_t | messages delivered"
+      +get_retained(topic, out): "bool"
+    }
+    recovery_coord: {
+      shape: class
+      label: "RecoveryCoordinator (recovery_coordinator.cpp)"
+      -process_registry: "unique_ptr<ProcessRegistry>"
+      -fence_manager: "unique_ptr<FenceManager>"
+      -orphan_reclaimer: "unique_ptr<OrphanReclaimer>"
+      -wal: "unique_ptr<WriteAheadLog>"
+      -checkpoint_mgr: "unique_ptr<CheckpointManager>"
+      -recovery_journal: "unique_ptr<RecoveryJournal>"
+      +initialize(shm): "void"
+      +start(): "void | bg threads"
+      +register_producer(): "uint32_t"
+      +log_message(data, size): "uint64_t"
+      +recover(handler): "bool | checkpoint + WAL"
+    }
+  }
+}
+# Connections between layers
+layer_core.shm -> layer_core.ring_header: "maps to"
+layer_core.ring_config -> layer_core.ring_header: "configures"
+layer_core.ring_header -> layer_core.spsc: "Header*"
+layer_core.spsc -> layer_mpmc.mpmc: "extended by"
+layer_mpmc.mpmc_header -> layer_mpmc.mpmc: "Header*"
+layer_mpmc.mpmc -> layer_mpmc.shard: "sharded alternative"
+layer_serial.vtable -> layer_serial.buffer_view: "VTableReader"
+layer_serial.buffer_view -> layer_serial.vector_view: "get_offset"
+layer_serial.buffer_view -> layer_serial.string_view: "get_offset"
+layer_serial.layout_calc -> layer_serial.builder: "computes offsets"
+layer_pubsub.trie_node -> layer_pubsub.topic_registry: "root node"
+layer_pubsub.msg_slot_header -> layer_pubsub.subscriber_cursor: "ref_count--"
+layer_pubsub.bloom -> layer_pubsub.subscriber_cursor: "topic_hash_mask"
+layer_pubsub.retained -> layer_pubsub.broker: "late joiner delivery"
+layer_recovery.proc_identity -> layer_recovery.orphan_header: "owner_slot"
+layer_recovery.fence_mgr -> layer_recovery.orphan_header: "fence validation"
+layer_recovery.wal_header -> layer_recovery.wal: "entry format"
+layer_recovery.ckpt_header -> layer_recovery.recovery_journal: "checkpoint_sequence"
+layer_recovery.signal_handler -> layer_recovery.recovery_coord: "graceful shutdown"
+layer_integration.broker -> layer_pubsub.topic_registry: "uses"
+layer_integration.broker -> layer_pubsub.retained: "uses"
+layer_integration.recovery_coord -> layer_recovery.wal: "durability"
+layer_integration.recovery_coord -> layer_recovery.proc_identity: "crash detection"
+layer_integration.recovery_coord -> layer_core.shm: "initializes"
+# Data flow
+layer_core.spsc -> layer_serial.buffer_view: "flat buffer bytes"
+layer_serial.builder -> layer_core.spsc: "produce(data)"
+layer_mpmc.mpmc -> layer_integration.broker: "message transport"
+layer_integration.broker -> layer_pubsub.subscriber_cursor: "fan-out delivery"
+milestone_index: {
+  shape: sql_table
+  label: "Milestone Index"
+  m1: "M1 | zcmb-m1 | Shared Memory Ring Buffer | SPSC lock-free queue in POSIX shm"
+  m2: "M2 | zcmb-m2 | Zero-Copy Serialization | FlatBuffer-style direct memory access"
+  m3: "M3 | zcmb-m3 | Multi-Producer Multi-Consumer | Vyukov MPMC + sharded alternative"
+  m4: "M4 | zcmb-m4 | Publish-Subscribe Topics | Trie routing + zero-copy fan-out"
+  m5: "M5 | zcmb-m5 | Crash Recovery Durability | WAL, checkpoint, orphan reclamation"
+}

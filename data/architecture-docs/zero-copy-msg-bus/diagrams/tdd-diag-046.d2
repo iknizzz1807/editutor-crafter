@@ -1,0 +1,256 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+  colors: {
+    header: "#E8D5F2"
+    normal: "#B8D4E8"
+    error: "#F8D8D8"
+    decision: "#FFF8DC"
+    success: "#D8F8D8"
+    timer: "#E8E8E8"
+  }
+}
+
+direction: right
+
+title: |md
+  # Last-Will Delivery Flow
+  **Heartbeat Monitoring & Disconnect Notification Logic**
+  *Intel-Grade Technical Specification v1.0.4*
+| {near: top-center}
+
+# Main Flow Container: Central Logic for monitoring and executing Last Will and Testament (LWT)
+flow: {
+  label: "LWT Execution Pipeline"
+  
+  start: "⏱️ Timer Tick" {
+    shape: circle
+    style.fill: ${colors.timer}
+    tooltip: "Interval-based monitoring trigger (default: 1000ms)"
+  }
+  
+  check_heartbeats: "Check All Subscriber\nHeartbeats" {
+    shape: rectangle
+    style.fill: ${colors.normal}
+    description: "Iterate through active registry mapping"
+  }
+  
+  any_timeout: "Any Subscriber\nTimed Out?" {
+    shape: diamond
+    style.fill: ${colors.decision}
+  }
+  
+  get_timed_out: "Get Timed Out\nSubscriber IDs" {
+    shape: rectangle
+    style.fill: ${colors.normal}
+  }
+  
+  foreach: "For Each Timed\nOut Subscriber" {
+    shape: rectangle
+    style.fill: ${colors.header}
+    style.double-border: true
+  }
+  
+  has_will: "Has Last-Will\nConfig?" {
+    shape: diamond
+    style.fill: ${colors.decision}
+  }
+  
+  load_will: "Load Will Config\n(topic, payload, retain)" {
+    shape: rectangle
+    style.fill: ${colors.normal}
+  }
+  
+  is_normal: "Normal Disconnect?\n(unregister called)" {
+    shape: diamond
+    style.fill: ${colors.decision}
+  }
+  
+  skip_will: "Skip Will Delivery\n(Normal Shutdown)" {
+    shape: rectangle
+    style.fill: ${colors.success}
+  }
+  
+  publish_will: "Publish Will Message\nto Configured Topic" {
+    shape: rectangle
+    style.fill: ${colors.normal}
+    style.bold: true
+    style.stroke-width: 3
+  }
+  
+  check_retain: "Retain Flag\nSet?" {
+    shape: diamond
+    style.fill: ${colors.decision}
+  }
+  
+  store_retained: "Store as Retained\nMessage" {
+    shape: rectangle
+    style.fill: ${colors.normal}
+  }
+  
+  remove_sub: "Remove Subscriber\nfrom Registry" {
+    shape: rectangle
+    style.fill: ${colors.normal}
+  }
+  
+  clear_will: "Clear Will Config\nfor Subscriber" {
+    shape: rectangle
+    style.fill: ${colors.normal}
+  }
+  
+  continue_loop: "Continue to\nNext Subscriber" {
+    shape: circle
+    style.fill: ${colors.timer}
+  }
+  
+  continue_monitor: "Continue\nMonitoring" {
+    shape: circle
+    style.fill: ${colors.success}
+  }
+  
+  # Connections - Main Flow
+  start -> check_heartbeats: "SIGALRM / Timer"
+  check_heartbeats -> any_timeout
+  any_timeout -> get_timed_out: "True [T > T_limit]"
+  any_timeout -> continue_monitor: "False"
+  get_timed_out -> foreach
+  foreach -> has_will
+  has_will -> load_will: "Yes"
+  has_will -> remove_sub: "No\n(Explicit Nil)"
+  load_will -> is_normal
+  is_normal -> skip_will: "Yes (Flag=0)"
+  is_normal -> publish_will: "No (Flag=1)"
+  publish_will -> check_retain
+  check_retain -> store_retained: "Yes"
+  check_retain -> remove_sub: "No"
+  store_retained -> remove_sub
+  skip_will -> remove_sub
+  remove_sub -> clear_will
+  clear_will -> continue_loop
+  continue_loop -> foreach: "Stack !Empty"
+  continue_loop -> continue_monitor: "Stack Empty"
+}
+
+# Error Handling Logic: Exceptional paths during delivery
+errors: {
+  label: "Fault Tolerance & Error States"
+  publish_fail: "Publish Failed\n(Internal Buffer Full)" {
+    shape: rectangle
+    style.fill: ${colors.error}
+  }
+  log_error: "Log Error &\nDeferred Retry" {
+    shape: rectangle
+    style.fill: ${colors.error}
+  }
+  retain_fail: "KV Store\nRetention Failure" {
+    shape: rectangle
+    style.fill: ${colors.error}
+  }
+  skip_retain: "Skip Retain\n(Graceful Degradation)" {
+    shape: rectangle
+    style.fill: ${colors.success}
+  }
+  publish_fail -> log_error
+  retain_fail -> skip_retain
+}
+
+# Cross-container Connections: Main flow to Error handling
+# FIX: Corrected syntax by removing parentheses from single node references
+flow.publish_will -> errors.publish_fail: "Exception: E_BUFFER_OVERFLOW" {
+  style.stroke: red
+  style.stroke-dash: 3
+  style.animated: true
+}
+flow.store_retained -> errors.retain_fail: "Exception: E_STORAGE_IO" {
+  style.stroke: red
+  style.stroke-dash: 3
+  style.animated: true
+}
+
+# Data Structures: Structural layout of memory objects
+structures: {
+  label: "Memory Layout & Byte Alignment"
+  
+  will_config: "LastWillConfig (Struct: 64B)" {
+    shape: class
+    topic: "char[32] | Topic String"
+    payload: "uint8_t[20] | Message Data"
+    retain: "bool (1b) | Retention Flag"
+    qos: "uint8_t (1b) | Delivery Quality"
+    padding: "uint8_t[10] | Cache Alignment"
+  }
+  
+  subscriber_entry: "Subscriber Registry Entry" {
+    shape: class
+    id: "uint64_t | Unique ID"
+    last_heartbeat: "uint64_t | TSC Timestamp"
+    will_config_ptr: "LastWillConfig* | Pointer (8B)"
+    state: "enum (4B) | Current FSM State"
+  }
+  
+  will_config -> subscriber_entry: "Composition" {
+    style.stroke-dash: 3
+  }
+}
+
+# Finite State Machine: Subscriber lifecycle during monitor
+states: {
+  label: "Subscriber FSM: Monitoring Lifecycle"
+  
+  alive: "ALIVE" {
+    shape: circle
+    style.fill: ${colors.success}
+    tooltip: "T_delta < 30s"
+  }
+  
+  timed_out: "STALE_TIMEOUT" {
+    shape: circle
+    style.fill: ${colors.error}
+    tooltip: "T_delta >= 30s"
+  }
+  
+  will_sent: "TERMINATED_NOTIFIED" {
+    shape: circle
+    style.fill: ${colors.timer}
+    tooltip: "LWT payload dispatched"
+  }
+  
+  alive -> timed_out: "Heartbeat Missed\n(Deadline Expired)" {
+    style.bold: true
+  }
+  
+  timed_out -> will_sent: "Dispatch_LWT()\nSuccess"
+}
+
+# Informational Overlays
+legend: {
+  label: "Component Legend"
+  near: bottom-right
+  
+  proc: "Logical Process" {
+    shape: rectangle
+    style.fill: ${colors.normal}
+  }
+  dec: "Branch Point" {
+    shape: diamond
+    style.fill: ${colors.decision}
+  }
+  err_path: "Error Vector" {
+    shape: rectangle
+    style.fill: ${colors.error}
+    style.stroke: red
+  }
+}
+
+timing: {
+  label: "System Configuration & Constraints"
+  near: bottom-left
+  
+  conf1: "MONITOR_INTERVAL = 1000ms" { shape: text }
+  conf2: "TIMEOUT_THRESHOLD = 30000ms" { shape: text }
+  conf3: "MAX_PUBLISH_RETRY = 3" { shape: text }
+  conf4: "MEMORY_MODE = STATIC_ALLOC" { shape: text }
+}

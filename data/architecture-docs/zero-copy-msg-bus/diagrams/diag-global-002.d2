@@ -1,0 +1,317 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: "Three-Level View: Complete Message Flow (Zero-Copy Message Bus)" {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 32
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  level1: {
+    direction: down
+    label: "LEVEL 1: Application"
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    style.stroke-width: 2
+    producer_app: {
+      label: "Producer Process"
+      style.fill: "#C8E6C9"
+      api_call: {
+        shape: code
+        label: "publish() API"
+        width: 280
+        code: |'cpp
+// Producer thread (app code)
+void publish_trade(const char* topic, 
+                   const TradeOrder* order) {
+  // 1. Acquire slot from ring buffer
+  Slot* slot = ring->try_claim();
+  // 2. Serialize directly to slot (zero-copy)
+  FlatBufferBuilder buf(slot->data);
+  buf.set_symbol(order->symbol);
+  buf.set_price(order->price);
+  buf.set_quantity(order->quantity);
+  // 3. Publish with refcount
+  ring->publish(slot, num_subscribers);
+}
+'|
+      }
+    }
+    l1_arrow: {
+      shape: text
+      label: "↓ Direct pointer write\n   No syscall in hot path"
+      style.font-color: "#2E7D32"
+    }
+    shared_mem_view: {
+      label: "Shared Memory View"
+      style.fill: "#C8E6C9"
+      ring_buf: {
+        shape: class
+        label: "RingBuffer (in shared mem)"
+        -head: "atomic<uint64_t>"
+        -tail: "atomic<uint64_t>"
+        -slots: "Slot[NUM_SLOTS]"
+        +try_claim(): "Slot*"
+        +publish(slot, ref): "void"
+      }
+    }
+    consumer_app: {
+      label: "Consumer Process"
+      style.fill: "#C8E6C9"
+      consumer_code: {
+        shape: code
+        label: "consume() API"
+        width: 280
+        code: |'cpp
+// Consumer thread (app code)
+void consume_loop() {
+  while (running) {
+    // 1. Check for new message
+    if (ring->has_message(my_offset)) {
+      // 2. Zero-copy read (direct access)
+      const Slot* slot = ring->peek(my_offset);
+      // 3. Access fields without parsing
+      TradeOrderView view(slot->data);
+      process(view.price(), view.quantity());
+      // 4. Acknowledge (decrement refcount)
+      ring->ack(my_offset++);
+    }
+  }
+}
+'|
+      }
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  level2: {
+    direction: down
+    label: "LEVEL 2: OS/Kernel"
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    style.stroke-width: 2
+    proc_a: {
+      label: "Process A (Producer)"
+      style.fill: "#BBDEFB"
+      va_table_a: {
+        shape: sql_table
+        label: "Virtual Address Space A"
+        va_code: "0x00 | .text    | code segment"
+        va_data: "0x01 | .data    | private data"
+        va_heap: "0x02 | heap     | malloc'd memory"
+        va_shm: "0x03 | 0x7f0000 | mmap'd shm ★"
+        note: "VA 0x7f0000 maps to shm"
+      }
+    }
+    kernel_layer: {
+      label: "Kernel (Initial Setup Only)"
+      style.fill: "#90CAF9"
+      setup_flow: {
+        shape: code
+        label: "Setup (one-time)"
+        width: 300
+        code: |'cpp
+// Process startup (executed once)
+int fd = shm_open("/zcmb_bus", 
+                  O_RDWR, 0666);
+void* addr = mmap(
+    NULL,               // let kernel choose
+    SHM_SIZE,           // e.g., 64MB
+    PROT_READ | PROT_WRITE,
+    MAP_SHARED,         // critical: shared mapping
+    fd, 0
+);
+// After mmap: NO MORE SYSCALLS
+// All reads/writes are userspace
+'|
+      }
+      shm_inode: {
+        shape: cylinder
+        label: "shmfs inode\n(/dev/shm/zcmb_bus)"
+        style.fill: "#64B5F6"
+      }
+    }
+    proc_b: {
+      label: "Process B (Consumer)"
+      style.fill: "#BBDEFB"
+      va_table_b: {
+        shape: sql_table
+        label: "Virtual Address Space B"
+        va_code_b: "0x00 | .text    | code segment"
+        va_data_b: "0x01 | .data    | private data"
+        va_heap_b: "0x02 | heap     | malloc'd memory"
+        va_shm_b: "0x03 | 0x7f1000 | mmap'd shm ★"
+        note_b: "VA 0x7f1000 maps to shm"
+      }
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  level3: {
+    direction: down
+    label: "LEVEL 3: Hardware"
+    style.fill: "#FFF3E0"
+    style.stroke: "#E65100"
+    style.stroke-width: 2
+    core0: {
+      label: "CPU Core 0 (Producer)"
+      style.fill: "#FFE0B2"
+      l1_cache_0: {
+        shape: class
+        label: "L1 Data Cache (32KB)"
+        -line0: "Cache Line @ 0x7f0000"
+        -state0: "MODIFIED (M)"
+        -data0: "[msg bytes...]"
+      }
+      store_buffer: {
+        shape: queue
+        label: "Store Buffer\n(56 entries)"
+        style.fill: "#FFCC80"
+      }
+    }
+    coherence: {
+      label: "Cache Coherence (MESI)"
+      style.fill: "#FFE0B2"
+      mesi_flow: {
+        shape: code
+        label: "MESI Protocol Flow"
+        width: 320
+        code: |'text
+T1: Producer writes to slot
+    → L1[0] acquires Exclusive ownership
+    → Store completes, L1[0] = Modified
+T2: Consumer reads same address
+    → L1[1] sends Read request
+    → L1[0] writes back to L3
+    → L1[0] downgrades to Shared
+    → L1[1] receives data (Shared)
+T3: Consumer acks (atomic fetch_sub)
+    → L1[1] acquires Exclusive
+    → Writes back new refcount
+'|
+      }
+      l3_cache: {
+        shape: cylinder
+        label: "L3 Cache (Shared)\n32MB - 64MB"
+        style.fill: "#FFB74D"
+      }
+    }
+    core1: {
+      label: "CPU Core 1 (Consumer)"
+      style.fill: "#FFE0B2"
+      l1_cache_1: {
+        shape: class
+        label: "L1 Data Cache (32KB)"
+        -line1: "Cache Line @ 0x7f0000"
+        -state1: "SHARED (S)"
+        -data1: "[msg bytes...]"
+      }
+      read_buffer: {
+        shape: queue
+        label: "Load Buffer\n(72 entries)"
+        style.fill: "#FFCC80"
+      }
+    }
+  }
+}
+latency_budget: {
+  label: "Complete Latency Budget"
+  style.fill: "#FCE4EC"
+  style.stroke: "#C2185B"
+  style.stroke-width: 2
+  budget_table: {
+    shape: sql_table
+    label: "Latency Breakdown (End-to-End)"
+    step1: "1 | Claim slot (atomic CAS)         | 10-30 ns"
+    step2: "2 | Serialize to slot (memcpy)      | 20-50 ns"
+    step3: "3 | Publish (atomic store + fence)  | 5-20 ns"
+    step4: "4 | L1→L3 writeback (MESI)          | 20-40 ns"
+    step5: "5 | Consumer cache miss (L3 fetch)  | 30-50 ns"
+    step6: "6 | Zero-copy field access          | 2-5 ns"
+    step7: "7 | Ack (atomic fetch_sub)          | 10-30 ns"
+    total: "TOTAL | Producer → Consumer        | 100-250 ns"
+  }
+  comparison: {
+    shape: code
+    label: "Comparison"
+    width: 280
+    code: |'text
+Traditional IPC (pipe/socket):
+  syscall overhead:    500-1000 ns
+  kernel buffer copy:  100-300 ns
+  context switch:      500-2000 ns
+  scheduler latency:   1000-10000 ns
+  ─────────────────────────────────
+  TOTAL:               2-15 μs
+Zero-Copy Shared Memory:
+  (all steps above):   100-250 ns
+  SPEEDUP: 10-100x faster
+'|
+  }
+}
+arrows: {
+  direction: down
+  level1.producer_app -> level1.shared_mem_view: "write()" {
+    label: "Slot*"
+    style.stroke: "#2E7D32"
+    style.stroke-width: 2
+  }
+  level1.shared_mem_view -> level1.consumer_app: "read()" {
+    label: "const Slot*"
+    style.stroke: "#2E7D32"
+    style.stroke-width: 2
+    style.stroke-dash: 4
+  }
+  level2.proc_a.va_table_a -> level2.kernel_layer.shm_inode: "mmap()" {
+    label: "VA→PA mapping"
+    style.stroke: "#1565C0"
+    style.stroke-width: 2
+  }
+  level2.kernel_layer.shm_inode -> level2.proc_b.va_table_b: "mmap()" {
+    label: "VA→PA mapping"
+    style.stroke: "#1565C0"
+    style.stroke-width: 2
+  }
+  level3.core0.l1_cache_0 -> level3.coherence.l3_cache: "writeback" {
+    label: "Modified→Shared"
+    style.stroke: "#E65100"
+    style.stroke-width: 2
+    style.animated: true
+  }
+  level3.coherence.l3_cache -> level3.core1.l1_cache_1: "fetch" {
+    label: "Shared state"
+    style.stroke: "#E65100"
+    style.stroke-width: 2
+    style.animated: true
+  }
+}
+legend: {
+  near: bottom-center
+  style.fill: "#FAFAFA"
+  style.stroke: "#9E9E9E"
+  legend_content: {
+    shape: sql_table
+    label: "Key Insight"
+    insight: "After initial mmap setup, NO syscalls in hot path"
+    insight2: "Producer and consumer see SAME physical memory"
+    insight3: "Hardware cache coherence handles synchronization"
+    insight4: "Latency dominated by cache coherency, not software"
+  }
+}

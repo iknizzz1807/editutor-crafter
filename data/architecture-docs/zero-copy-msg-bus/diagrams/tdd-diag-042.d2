@@ -1,0 +1,82 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+shape: sequence_diagram
+Subscriber: "Subscriber"
+TopicRegistry: "TopicRegistry\n(Trie)"
+Cursor: "SubscriberCursor"
+RetainedStore: "RetainedMessageStore"
+PubSubBuffer: "PubSubBuffer\n(Shared Memory)"
+RefCounter: "Slot RefCount"
+# Phase 1: Registration
+Phase1: {
+  Subscriber -> TopicRegistry: "subscribe(pattern, handler)"
+  TopicRegistry -> TopicRegistry.t1: "insert pattern into trie\nO(M) where M = depth"
+  TopicRegistry -> Subscriber: "return SubscriberID"
+}
+# Phase 2: Cursor Initialization
+Phase2: {
+  Subscriber -> Cursor: "initialize(SubscriberID)"
+  Cursor -> PubSubBuffer: "load head position"
+  PubSubBuffer -> Cursor: "current_head = N"
+  Cursor -> Cursor.t1: "current_offset = N\n(start at latest)"
+}
+# Phase 3: Retained Message Delivery
+Phase3: {
+  Subscriber -> RetainedStore: "get_retained(pattern)"
+  RetainedStore -> RetainedStore.t1: "lookup topic in map"
+  RetainedStore -> Subscriber: "retained_message[]\n(or empty)"
+  alt_has_retained: {
+    Subscriber -> Subscriber.t1: "deliver retained to handler\n(Zero-copy read)"
+  }
+}
+# Phase 4: Poll Loop
+Phase4: {
+  Subscriber -> Subscriber.t1: "enter poll loop"
+  loop_poll: {
+    Subscriber -> Cursor: "poll(max_messages)"
+    Cursor -> PubSubBuffer: "load head (acquire)"
+    PubSubBuffer -> Cursor: "head position"
+    Cursor -> Cursor.t2: "check: current_offset < head?"
+    alt_has_messages: {
+      Cursor -> PubSubBuffer.t1: "read slot[current_offset]"
+      PubSubBuffer.t1 -> Cursor: "slot data (pointer)"
+      Cursor -> Cursor.t3: "apply filter predicate"
+      alt_filter_pass: {
+        Cursor -> Subscriber: "deliver to handler\n(data, size, topic)"
+      }
+      Cursor -> RefCounter: "fetch_sub(ref_count, 1)\n(acq_rel)"
+      RefCounter -> Cursor: "prev_ref = N"
+      alt_last_reader: {
+        Cursor -> PubSubBuffer: "if prev_ref == 1:\ntry_reclaim_slots()"
+        PubSubBuffer -> PubSubBuffer.t2: "advance tail past\nref_count == 0 slots"
+      }
+      Cursor -> Cursor.t4: "current_offset++"
+    }
+    alt_no_messages: {
+      Cursor -> Subscriber: "return 0 (no messages)"
+      Subscriber -> Subscriber.t2: "yield or wait"
+    }
+  }
+}
+# Phase 5: Cleanup (Unsubscribe)
+Phase5: {
+  Subscriber -> TopicRegistry.t2: "unsubscribe(SubscriberID)"
+  TopicRegistry.t2 -> TopicRegistry.t3: "remove from trie nodes"
+  TopicRegistry.t2 -> Cursor: "mark inactive"
+}
+# Styling
+TopicRegistry.style.fill: "#E4DBFE"
+TopicRegistry.style.stroke: "#B5AFF6"
+Cursor.style.fill: "#C7F1FF"
+Cursor.style.stroke: "#88DCF7"
+PubSubBuffer.style.fill: "#DEE1EB"
+PubSubBuffer.style.stroke: "#A0A4AD"
+RetainedStore.style.fill: "#FFF9C9"
+RetainedStore.style.stroke: "#E6D8A0"
+RefCounter.style.fill: "#FFE7CB"
+RefCounter.style.stroke: "#D4A76A"
+Subscriber.icon: https://icons.terrastruct.com/essentials%2F005-programmer.svg

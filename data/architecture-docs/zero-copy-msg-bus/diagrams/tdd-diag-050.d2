@@ -1,0 +1,150 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    normal: "#4A90D9"
+    error: "#E74C3C"
+    warning: "#F39C12"
+    success: "#27AE60"
+    inactive: "#7F8C8D"
+  }
+}
+title: |md
+  # Process Identity State Machine
+  ## PID + Generation Tracking for Crash Recovery
+| {near: top-center}
+# States
+INITIAL: "Initial\n(slot empty)" {
+  style.fill: "${colors.inactive}"
+  style.stroke: "${colors.inactive}"
+  invariant: |md
+    - `pid = 0`
+    - `generation = 0`
+    - `state = DEAD`
+    - `last_heartbeat_ns = 0`
+  |
+}
+STARTING: "Starting\n(registering)" {
+  style.fill: "${colors.warning}"
+  style.stroke: "#D68910"
+  invariant: |md
+    - `pid = getpid()`
+    - `generation = prev + 1`
+    - `state = STARTING`
+    - `last_heartbeat_ns = now()`
+  |
+}
+ALIVE: "Alive\n(heartbeat active)" {
+  style.fill: "${colors.success}"
+  style.stroke: "#1E8449"
+  invariant: |md
+    - `pid = getpid()` (constant)
+    - `generation` (constant)
+    - `state = ALIVE`
+    - `last_heartbeat_ns` updated every `heartbeat_interval`
+    - Process responds to `kill(pid, 0)`
+  |
+}
+STOPPING: "Stopping\n(graceful shutdown)" {
+  style.fill: "${colors.warning}"
+  style.stroke: "#D68910"
+  invariant: |md
+    - `pid` unchanged
+    - `generation` unchanged
+    - `state = STOPPING`
+    - Final heartbeat sent
+  |
+}
+DEAD: "Dead\n(no heartbeat)" {
+  style.fill: "${colors.error}"
+  style.stroke: "#C0392B"
+  invariant: |md
+    - `last_heartbeat_ns` stale (> `timeout`)
+    - OR process doesn't respond to `kill(pid, 0)`
+    - Slot available for reuse
+  |
+}
+RECOVERED: "Recovered\n(generation changed)" {
+  style.fill: "${colors.normal}"
+  style.stroke: "#2874A6"
+  invariant: |md
+    - New process reuses slot
+    - `generation` incremented
+    - Old identity invalidated
+  |
+}
+ERROR_STATE: "Error\n(invalid transition)" {
+  style.fill: "${colors.error}"
+  style.stroke-dash: 3
+  style.font-color: "${colors.error}"
+}
+# Transitions
+INITIAL -> STARTING: "register_process()\n[guard: slot available]\n/action: set pid, gen++, state=STARTING" {
+  style.stroke: "${colors.success}"
+}
+STARTING -> ALIVE: "initialization complete\n[guard: startup success]\n/action: state=ALIVE, start heartbeat" {
+  style.stroke: "${colors.success}"
+}
+ALIVE -> ALIVE: "update_heartbeat()\n[guard: running]\n/action: last_heartbeat_ns=now()" {
+  style.stroke: "${colors.normal}"
+  style.animated: true
+}
+ALIVE -> STOPPING: "SIGTERM/SIGINT\n[guard: graceful shutdown]\n/action: state=STOPPING, final heartbeat" {
+  style.stroke: "${colors.warning}"
+}
+STOPPING -> DEAD: "unregister()\n[guard: cleanup done]\n/action: state=DEAD" {
+  style.stroke: "${colors.inactive}"
+}
+ALIVE -> DEAD: "crash / kill -9\n[guard: no graceful shutdown]\n/action: state=DEAD (implicit)" {
+  style.stroke: "${colors.error}"
+  style.stroke-dash: 5
+}
+DEAD -> RECOVERED: "register_process()\n[guard: slot reuse, gen++]\n/action: new pid, new gen, state=STARTING" {
+  style.stroke: "${colors.success}"
+}
+RECOVERED -> ALIVE: "initialization complete\n/action: state=ALIVE" {
+  style.stroke: "${colors.success}"
+}
+# Illegal transitions
+ALIVE -> ERROR_STATE: "DUPLICATE_REGISTER\nILLEGAL" {
+  style.stroke: "${colors.error}"
+  style.stroke-dash: 3
+}
+DEAD -> ALIVE: "ZOMBIE_REVIVAL\nILLEGAL\n(must go through RECOVERED)" {
+  style.stroke: "${colors.error}"
+  style.stroke-dash: 3
+}
+# Timeout detection note
+timeout_note: |md
+  ## Timeout Detection
+  
+  is_alive(slot):
+    entry = identities[slot]
+    // Check 1: Never used
+    if entry.pid == 0:
+      return false
+    // Check 2: Process exists?
+    if kill(entry.pid, 0) fails with ESRCH:
+      return false  // Process gone
+    // Check 3: Generation match?
+    // (detects PID reuse)
+    if entry.generation != expected_gen:
+      return false  // Stale registration
+    // Check 4: Heartbeat fresh?
+    age = now() - entry.last_heartbeat_ns
+    if age > heartbeat_timeout:
+      return false  // Timed out
+    // Check 5: State not DEAD
+    if entry.state == DEAD:
+      return false
+    return true
+  
+| {near: bottom-center}
+# Configuration parameters
+config: "Configuration\n• heartbeat_interval: 100ms\n• heartbeat_timeout: 5s\n• orphan_timeout: 10s" {
+  near: top-right
+  style.fill: "#F8F9FA"
+  style.stroke: "#DEE2E6"
+}

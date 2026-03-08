@@ -1,0 +1,257 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 50
+  }
+  colors: {
+    header: "#8B5CF6"
+    data: "#3B82F6"
+    changed: "#DC2626"
+    success: "#10B981"
+    warning: "#F59E0B"
+    slot: "#34D399"
+    padding: "#94A3B8"
+    pointer: "#F97316"
+    bg: "#F8FAFC"
+    border: "#1E293B"
+  }
+}
+
+title: |md
+  # ABA Problem & Monotonic Sequence Solution
+  ### MPMC (Multi-Producer Multi-Consumer) Ring Buffer State Lifecycle
+| {
+  near: top-center
+  shape: text
+}
+
+classes: {
+  memory_block: {
+    style: {
+      stroke: "${colors.border}"
+      stroke-width: 2
+      font: mono
+    }
+  }
+  timeline_step: {
+    shape: rectangle
+    style: {
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  slot_box: {
+    shape: rectangle
+    width: 350
+    height: 250
+    style: {
+      stroke-width: 3
+      shadow: true
+    }
+  }
+  offset_label: {
+    shape: text
+    style: {
+      font: mono
+      font-size: 14
+    }
+  }
+}
+
+problem_timeline: {
+  label: "1. Race Condition: Thread Interleaving (The ABA Scenario)"
+  style.fill: "${colors.bg}"
+  
+  t1: "T1: Producer A reads Slot 5" {
+    class: timeline_step
+    style.fill: "${colors.header}"
+    style.font-color: white
+    tooltip: "Reads seq=5, prepares data"
+  }
+  
+  t2: "T2: Thread B Overwrites" {
+    class: timeline_step
+    style.fill: "${colors.data}"
+    style.font-color: white
+    tooltip: "B completes full write. seq becomes 6."
+  }
+  
+  t3: "T3: Consumer & Cycle" {
+    class: timeline_step
+    style.fill: "${colors.warning}"
+    style.font-color: black
+    tooltip: "Consumer empties slot. Buffer cycles Capacity times."
+  }
+  
+  t4: "T4: A Resumes (Stale CAS)" {
+    class: timeline_step
+    style.fill: "${colors.changed}"
+    style.font-color: white
+    style.bold: true
+  }
+
+  t1 -> t2: "A preempted"
+  t2 -> t3: "Intervening work"
+  t3 -> t4: "A wakes up"
+
+  explanation: |md
+    ### The ABA Trigger
+    In systems with reuse:
+    1. **A** expects `seq == 5`.
+    2. Buffer wraps exactly `2^32` or `Capacity` times.
+    3. `seq` is back to `5` due to overflow/wrap.
+    4. **A**'s CAS(5, 6) succeeds even though the 
+       slot data is stale!
+  | {
+    shape: text
+    near: t4
+  }
+}
+
+memory_states: {
+  label: "2. Slot 5 Memory State Transitions (Visualizing Corruption)"
+  style.fill: "${colors.bg}"
+
+  state_initial: {
+    label: "Step 1: Initial (Valid)"
+    slot: {
+      class: slot_box
+      style.fill: "${colors.slot}"
+      label: |md
+        ### Slot 5 (Ready)
+        ---
+        **Sequence:** `0x00...0005`
+        **Data:** `[ EMPTY ]`
+        **Thread A:** Loading...
+      |
+    }
+  }
+
+  state_aba: {
+    label: "Step 2: After Cycles (ABA Condition)"
+    slot: {
+      class: slot_box
+      style.fill: "#FEF3C7"
+      style.stroke: "${colors.warning}"
+      label: |md
+        ### Slot 5 (Stale/Wrapped)
+        ---
+        **Sequence:** **`0x00...0005`**
+        **Data:** `[ DIRTY / PREV_DATA ]`
+        **Status:** ABA Vulnerable
+      |
+    }
+  }
+
+  state_corrupt: {
+    label: "Step 3: Post-A Write (CORRUPT)"
+    slot: {
+      class: slot_box
+      style.fill: "${colors.changed}"
+      style.font-color: white
+      label: |md
+        ### Slot 5 (CORRUPTED)
+        ---
+        **Sequence:** `0x00...0006`
+        **Data:** **`[ STALE_DATA_A ]`**
+        
+        ⚠️ **FAIL**: A overwrote current 
+        live data because seq matched!
+      |
+    }
+  }
+
+  state_initial -> state_aba: "Intervening writes\nand wrap-around" {
+    style.stroke-dash: 5
+  }
+  state_aba -> state_corrupt: "Thread A Resumes\nCAS(5, 6) SUCCEEDS" {
+    style.stroke: "${colors.changed}"
+    style.stroke-width: 4
+    style.animated: true
+  }
+}
+
+technical_solution: {
+  label: "3. The Implementation: 64-bit Monotonicity & Cache Alignment"
+  style.fill: "${colors.bg}"
+
+  layout: {
+    label: "Single Slot Memory Layout (Intel 64B Alignment)"
+    
+    o0: "0x00" { class: offset_label }
+    field_seq: "Sequence (Atomic uint64)" {
+      class: memory_block
+      width: 400
+      style.fill: "${colors.header}"
+      style.font-color: white
+    }
+    s8: "8 Bytes" { shape: text }
+
+    o8: "0x08" { class: offset_label }
+    field_data: "Data Payload (Message Body)" {
+      class: memory_block
+      width: 400
+      height: 100
+      style.fill: "${colors.data}"
+      style.font-color: white
+    }
+    s56: "56 Bytes" { shape: text }
+
+    cache_boundary: "----------------- CACHE LINE BOUNDARY (64B) -----------------" {
+      style: {
+        stroke-dash: 5
+        font-color: "${colors.padding}"
+      }
+    }
+
+    field_seq.near: o0
+    field_data.near: o8
+    cache_boundary.near: field_data
+  }
+
+  logic_fixed: {
+    label: "Corrected Producer Algorithm"
+    
+    s1: "1. H = atomic_load(head)"
+    s2: "2. Slot = H % Capacity"
+    s3: "3. Check: seq[Slot] == H?"
+    s4: "4. CAS(head, H, H+1)"
+    s5: "5. Write Data"
+    s6: "6. seq[Slot] = H + 1"
+
+    s1 -> s2 -> s3
+    s3 -> s4: "TRUE: Ready"
+    s3 -> s1: "FALSE: Busy/Stale" {
+      style.stroke: "${colors.changed}"
+    }
+    s4 -> s5 -> s6
+
+    s3.style.fill: "${colors.warning}"
+    s6.style.fill: "${colors.success}"
+    s6.style.font-color: white
+  }
+
+  proof: |md
+    ### Why 64-bit Fixes ABA
+    With a 64-bit `sequence`, even at 10 million 
+    ops/sec, the counter won't wrap for **58,000 years**.
+    
+    Thread A reads `seq=5`. 
+    Thread B completes. Slot is consumed. 
+    Slot wraps. New `seq = 5 + Capacity`.
+    
+    **Thread A** attempts `CAS(&seq, 5, 6)`.
+    Since `5 + Capacity != 5`, the CAS **FAILS**.
+    No corruption possible.
+  | {
+    shape: rectangle
+    style.fill: "#ECFDF5"
+    style.stroke: "${colors.success}"
+  }
+}
+
+# CONNECTIONS
+problem_timeline.t4 -> memory_states.state_aba: "CAS Trigger"
+memory_states.state_corrupt -> technical_solution: "Fix required"

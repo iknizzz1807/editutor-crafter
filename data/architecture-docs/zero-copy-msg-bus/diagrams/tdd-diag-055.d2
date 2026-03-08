@@ -1,0 +1,185 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+direction: right
+title: |md
+  ## WAL Replay Algorithm
+  Checkpoint-aware log replay with corruption handling
+| {near: top-center}
+# Start
+start: {
+  shape: circle
+  style.fill: "#90EE90"
+}
+start.label: "BEGIN"
+# Phase 1: Initialize
+init: {
+  label: "Initialize"
+  shape: rectangle
+  style.fill: "#E8E8E8"
+  open: "fd = open(wal_path, O_RDONLY)"
+  seek: "lseek(fd, FILE_HEADER_SIZE, SEEK_SET)"
+  offset: "offset = FILE_HEADER_SIZE"
+}
+# Phase 2: Read Entry Header
+read_header: {
+  label: "Read Entry Header"
+  shape: rectangle
+  style.fill: "#87CEEB"
+  read: "n = read(fd, &header, 32)"
+}
+# Decision: EOF
+eof_check: {
+  shape: diamond
+  label: "n == 0?\n(EOF)"
+  style.fill: "#FFD700"
+}
+# Decision: Truncated
+truncated_check: {
+  shape: diamond
+  label: "n < 32?\n(Truncated)"
+  style.fill: "#FFD700"
+}
+# Phase 3: Validate Magic
+validate_magic: {
+  shape: diamond
+  label: "header.magic\n== 0xFEEDFACE?"
+  style.fill: "#FFD700"
+}
+# Phase 4: Sequence Filter
+sequence_filter: {
+  shape: diamond
+  label: "header.sequence\n< from_sequence?"
+  style.fill: "#FFD700"
+}
+skip_entry: {
+  label: "Skip Entry"
+  shape: rectangle
+  style.fill: "#FFB6C1"
+  action: "lseek(fd, header.entry_size, SEEK_CUR)\noffset += 32 + header.entry_size"
+}
+# Phase 5: Read Data
+read_data: {
+  label: "Read Entry Data"
+  shape: rectangle
+  style.fill: "#87CEEB"
+  allocate: "data = allocate(header.entry_size)"
+  read: "n = read(fd, data, header.entry_size)"
+}
+# Decision: Truncated Data
+data_truncated: {
+  shape: diamond
+  label: "n != entry_size?"
+  style.fill: "#FFD700"
+}
+# Phase 6: Checksum Validation
+checksum_validate: {
+  shape: diamond
+  label: "crc32(data)\n== header.checksum?"
+  style.fill: "#FFD700"
+}
+# Checksum Mismatch
+checksum_mismatch: {
+  label: "Log Corruption\nSkip Entry"
+  shape: rectangle
+  style.fill: "#FF6B6B"
+  log: "LOG(\"Checksum mismatch at seq %lu\")"
+}
+# Phase 7: Apply Entry
+apply_entry: {
+  label: "Apply Entry"
+  shape: rectangle
+  style.fill: "#90EE90"
+  style.stroke: "#228B22"
+  style.stroke-width: 3
+  handler: "handler(sequence, data, size, flags)"
+}
+# Update Offset
+update_offset: {
+  label: "Update Offset"
+  shape: rectangle
+  style.fill: "#E8E8E8"
+  action: "offset += 32 + header.entry_size"
+}
+# Loop Back
+loop: {
+  shape: circle
+  style.fill: "#87CEEB"
+  label: "Loop"
+}
+# End
+end: {
+  shape: circle
+  style.fill: "#90EE90"
+}
+end.label: "END\nclose(fd)"
+# Connections
+start -> init: "Start replay\nfrom sequence"
+init -> read_header
+read_header -> eof_check
+eof_check -> end: "Yes"
+eof_check -> truncated_check: "No"
+truncated_check -> end: "Yes\n(partial write)"
+truncated_check -> validate_magic: "No"
+validate_magic -> end: "No\n(LOG: invalid magic)" {style.stroke: "#FF6B6B"}
+validate_magic -> sequence_filter: "Yes"
+sequence_filter -> skip_entry: "Yes\n(too old)"
+sequence_filter -> read_data: "No\n(process this entry)"
+skip_entry -> loop
+read_data -> data_truncated
+data_truncated -> end: "Yes\n(LOG: truncated)" {style.stroke: "#FF6B6B"}
+data_truncated -> checksum_validate: "No"
+checksum_validate -> checksum_mismatch: "No"
+checksum_validate -> apply_entry: "Yes"
+checksum_mismatch -> loop
+apply_entry -> update_offset
+update_offset -> loop
+loop -> read_header: "Continue\nnext entry"
+# Legend
+legend: {
+  near: bottom-right
+  style.fill: "#F5F5F5"
+  style.stroke: "#666"
+  style.stroke-dash: 3
+  legend_title: "Legend" {shape: text}
+  green: {
+    shape: rectangle
+    style.fill: "#90EE90"
+    label: "Success Path"
+  }
+  blue: {
+    shape: rectangle
+    style.fill: "#87CEEB"
+    label: "I/O Operation"
+  }
+  yellow: {
+    shape: diamond
+    style.fill: "#FFD700"
+    label: "Decision"
+  }
+  red: {
+    shape: rectangle
+    style.fill: "#FF6B6B"
+    label: "Error/Corruption"
+  }
+}
+# Algorithm Notes
+notes: |md
+  ### Key Properties
+  1. **Checkpoint-aware**: Skips entries before `from_sequence`
+  2. **Corruption-tolerant**: Invalid magic or checksum → skip & continue
+  3. **Crash-safe**: Stops on truncated reads (partial write at crash)
+  4. **No duplicates**: Each entry processed at most once
+  ### WAL Entry Header (32 bytes)
+  
+  Offset 0x00: magic (0xFEEDFACE)
+  Offset 0x04: entry_size
+  Offset 0x08: sequence
+  Offset 0x10: timestamp_ns
+  Offset 0x18: checksum (CRC32)
+  Offset 0x1C: flags
+  
+| {near: bottom-left}

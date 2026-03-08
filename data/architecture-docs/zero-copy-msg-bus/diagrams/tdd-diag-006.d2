@@ -1,0 +1,309 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    sketch: false
+    center: true
+  }
+  colors: {
+    header: "#9C27B0"
+    data: "#2196F3"
+    free: "#4CAF50"
+    padding: "#9E9E9E"
+    pointer: "#FF9800"
+    barrier: "#E91E63"
+  }
+}
+
+direction: down
+
+# --- STYLE DEFINITIONS ---
+classes: {
+  step_box: {
+    style: {
+      stroke-width: 2
+      border-radius: 4
+      fill: "#F8F9FA"
+    }
+  }
+  code_block: {
+    shape: text
+    style: {
+      font: mono
+      font-size: 14
+      bold: false
+    }
+  }
+  hex_mem: {
+    style: {
+      font: mono
+      stroke-width: 1
+      text-transform: uppercase
+    }
+  }
+}
+
+# --- HEADER SECTION ---
+title: {
+  shape: text
+  label: |md
+    # Intel-Grade Technical Specification: Ring Buffer Consumer
+    ## Algorithm: Zero-Copy Atomic Consume Operation
+    **Target Latency:** < 100ns | **Concurrency:** MPMC / SPSC Compatible
+  |
+  near: top-center
+}
+
+# --- MAIN ALGORITHM SEQUENCE ---
+algorithm: {
+  grid-columns: 1
+  grid-gap: 50
+
+  # STEP 01
+  step1: {
+    class: step_box
+    label: "01. LOAD CONSUMER POSITION (tail)"
+    
+    code: {
+      class: code_block
+      label: |cpp
+        // memory_order_relaxed is sufficient here as 
+        // this thread strictly owns the tail pointer.
+        uint64_t tail = header_->tail.load(std::memory_order_relaxed);
+      |
+    }
+    
+    viz: {
+      label: "Shared Header Memory Layout (Aligned 64B)"
+      direction: right
+      
+      m0: {
+        label: "0x00: Head (Atomic Load/Store)"
+        class: hex_mem
+        style: { fill: "${vars.colors.header}"; font-color: white }
+      }
+      m1: {
+        label: "0x08: Tail (Current Read Ptr)"
+        class: hex_mem
+        style: { fill: "${vars.colors.pointer}"; font-color: white; bold: true }
+      }
+      m2: {
+        label: "0x10: Mask (Bitwise Operand)"
+        class: hex_mem
+        style: { fill: "${vars.colors.padding}" }
+      }
+      
+      m0 -> m1: "8-Byte Gap"
+      m1 -> m2: "8-Byte Gap"
+    }
+  }
+
+  # STEP 02
+  step2: {
+    class: step_box
+    label: "02. ACQUIRE PRODUCER HEAD"
+    
+    code: {
+      class: code_block
+      label: |cpp
+        // ACQUIRE ensures all data writes by producer 
+        // prior to head update are visible to this core.
+        uint64_t head = header_->head.load(std::memory_order_acquire);
+      |
+    }
+    
+    barrier_note: {
+      shape: text
+      label: "⚠️ CPU Memory Barrier: LoadLoad + LoadStore (Acquire Semantics)"
+      style: {
+        font-color: "${vars.colors.barrier}"
+        bold: true
+      }
+    }
+  }
+
+  # STEP 03
+  step3: {
+    class: step_box
+    label: "03. CAPACITY CHECK"
+    
+    logic_check: {
+      shape: diamond
+      label: "if (tail == head)"
+      style.fill: "#FFF3E0"
+    }
+    
+    branch_empty: {
+      label: "Return EMPTY_QUEUE"
+      style: {
+        font-color: red
+        bold: true
+      }
+    }
+    
+    logic_check -> branch_empty: "true"
+  }
+
+  # STEP 04
+  step4: {
+    class: step_box
+    label: "04. INDEX WRAPAROUND MAPPING"
+    
+    code: {
+      class: code_block
+      label: |cpp
+        // Power-of-2 optimization: index = counter & (size - 1)
+        // Avoids expensive 'div' or 'mod' instructions.
+        size_t slot_idx = tail & header_->mask; 
+      |
+    }
+    
+    logic_viz: {
+      direction: right
+      val: "Tail Pointer: 0x...000A"
+      mask: "Header Mask: 0x...0007"
+      res: "Mapped Idx:  0x00000002"
+      
+      val -> res: "Bitwise AND"
+      mask -> res
+    }
+  }
+
+  # STEP 05
+  step5: {
+    class: step_box
+    label: "05. ZERO-COPY DATA ACCESS"
+    
+    code: {
+      class: code_block
+      label: |cpp
+        // Calculate offset: buffer_base + (idx * sizeof(T))
+        T* slot = &buffer[slot_idx];
+        process_payload_inline(*slot); 
+      |
+    }
+    
+    mem_viz: {
+      label: "Physical Buffer Slots (64B Aligned)"
+      grid-columns: 8
+      grid-gap: 5
+      
+      s0: "Free" { style.fill: "${vars.colors.free}" }
+      s1: "Free" { style.fill: "${vars.colors.free}" }
+      s2: "CONSUME" { 
+        style: { 
+          fill: "${vars.colors.data}"
+          bold: true
+          stroke: red
+          stroke-width: 4
+        }
+      }
+      s3: "Active" { style.fill: "${vars.colors.data}" }
+      s4: "Active" { style.fill: "${vars.colors.data}" }
+      s5: "Free" { style.fill: "${vars.colors.free}" }
+      s6: "Free" { style.fill: "${vars.colors.free}" }
+      s7: "Free" { style.fill: "${vars.colors.free}" }
+      
+      ptr_indicator: {
+        label: "↑ tail_idx references Slot 2"
+        shape: text
+        style.font-color: "${vars.colors.pointer}"
+      }
+    }
+  }
+
+  # STEP 06
+  step6: {
+    class: step_box
+    label: "06. COMMIT CONSUMPTION (Release)"
+    
+    code: {
+      class: code_block
+      label: |cpp
+        // Release semantics allow producer to safely 
+        // reuse this slot as 'free'.
+        header_->tail.store(tail + 1, std::memory_order_release);
+      |
+    }
+  }
+}
+
+# --- FLOW CONNECTIONS ---
+algorithm.step1 -> algorithm.step2: "Step 1 complete"
+algorithm.step2 -> algorithm.step3.logic_check
+algorithm.step3.logic_check -> algorithm.step4: "false (data exists)"
+algorithm.step4 -> algorithm.step5
+algorithm.step5 -> algorithm.step6
+
+# --- PERFORMANCE SPECIFICATIONS ---
+perf: {
+  shape: text
+  label: |md
+    ## CPU Performance & Hardware Spec (x86_64 / ARMv8)
+    - **Instruction Count:** ~12 instructions in hot-path (Optimized O2/O3).
+    - **Branch Prediction:** `tail == head` is highly predictable (rarely empty).
+    - **Cache Line Alignment:** 
+      - Header members: **CACHELINE_ALIGNED (64B)**.
+      - Prevents **False Sharing** between producer and consumer cores.
+    - **Memory Order:** 
+      - x86: `acquire` is a no-op at CPU level (TSO), but prevents compiler reordering.
+      - ARM: Emits `LDAR` instruction.
+  |
+  near: bottom-left
+  style: {
+    fill: "#E1F5FE"
+    stroke: "#01579B"
+    stroke-width: 2
+  }
+}
+
+# --- SYNCHRONIZATION LOGIC ---
+sync_protocol: {
+  label: "MPMC Memory Visibility Contract"
+  direction: right
+  
+  producer: {
+    p1: "1. Write Payload"
+    p2: "2. Head.Store(Release)"
+    p1 -> p2: "StoreStore Barrier"
+    style.fill: "#E8F5E9"
+  }
+  
+  barrier_node: {
+    label: "Atomic Synchronization Point"
+    shape: text
+    style.font-color: red
+    style.bold: true
+  }
+  
+  consumer: {
+    c1: "3. Head.Load(Acquire)"
+    c2: "4. Read Payload"
+    c1 -> c2: "LoadLoad Barrier"
+    style.fill: "#E3F2FD"
+  }
+  
+  producer.p2 -> barrier_node -> consumer.c1: "Visibility Guaranteed" {
+    style: {
+      stroke: red
+      stroke-width: 2
+      stroke-dash: 5
+    }
+  }
+}
+
+# --- FOOTER ---
+footer: {
+  boundary: {
+    label: "----------------- 4096B Physical Page Boundary (Memory Aligned) -----------------"
+    shape: text
+    style: { font-size: 16; bold: true }
+  }
+  
+  line: {
+    shape: line
+    style: { stroke: black; stroke-width: 6 }
+  }
+}
+
+footer.boundary -> footer.line: { style.opacity: 0 }

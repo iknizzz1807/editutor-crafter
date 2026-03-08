@@ -1,0 +1,309 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Shard Selection Flow
+  MPMC Queue with Sharded Buffers
+| {near: top-center}
+direction: right
+classes: {
+  producer: {
+    shape: rectangle
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+      stroke-width: 2
+    }
+  }
+  shard: {
+    shape: cylinder
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1565C0"
+      stroke-width: 2
+    }
+  }
+  consumer: {
+    shape: rectangle
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#E65100"
+      stroke-width: 2
+    }
+  }
+  decision: {
+    shape: diamond
+    style: {
+      fill: "#FCE4EC"
+      stroke: "#C2185B"
+    }
+  }
+  action: {
+    shape: rectangle
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+    }
+  }
+  index: {
+    shape: rectangle
+    style: {
+      fill: "#FFF8E1"
+      stroke: "#F57C00"
+      font: mono
+    }
+  }
+}
+# ============================================
+# PRODUCER FLOW
+# ============================================
+producer_flow: {
+  label: "Producer Shard Selection"
+  p_start: {
+    label: "Producer\nCall enqueue()"
+    class: producer
+  }
+  p_fetch: {
+    label: "idx ← fetch_add(\n  producer_idx, 1\n)\n# Atomic increment"
+    class: action
+  }
+  p_mod: {
+    label: "shard_idx ←\nidx % num_shards\n# Round-robin"
+    class: index
+  }
+  p_target: {
+    label: "target ←\nshards[shard_idx]"
+    class: action
+  }
+  p_try: {
+    label: "try_enqueue(\n  target,\n  data, size\n)"
+    class: action
+  }
+  p_check: {
+    label: "Success?"
+    class: decision
+  }
+  p_success: {
+    label: "RETURN true"
+    class: action
+    style.fill: "#C8E6C9"
+  }
+  p_next: {
+    label: "shard_idx ←\n(shard_idx + 1)\n  % num_shards"
+    class: index
+  }
+  p_full_check: {
+    label: "Tried all\nshards?"
+    class: decision
+  }
+  p_fail: {
+    label: "RETURN false\n# All shards full"
+    class: action
+    style.fill: "#FFCDD2"
+  }
+  p_start -> p_fetch
+  p_fetch -> p_mod
+  p_mod -> p_target
+  p_target -> p_try
+  p_try -> p_check
+  p_check -> p_success: "Yes"
+  p_check -> p_next: "No (full)"
+  p_next -> p_full_check
+  p_full_check -> p_try: "No\n(try next)" {
+    style.stroke-dash: 3
+  }
+  p_full_check -> p_fail: "Yes"
+}
+# ============================================
+# SHARD ARRAY
+# ============================================
+shards: {
+  label: "Shard Array (N shards)"
+  shard_0: {
+    label: "Shard 0\nSPSC Buffer"
+    class: shard
+  }
+  shard_1: {
+    label: "Shard 1\nSPSC Buffer"
+    class: shard
+  }
+  shard_n: {
+    label: "Shard N-1\nSPSC Buffer"
+    class: shard
+    style.multiple: true
+  }
+  shard_0 -> shard_1: {
+    style.opacity: 0
+  }
+  shard_1 -> shard_n: {
+    style.stroke-dash: 5
+    label: "..."
+  }
+}
+# ============================================
+# CONSUMER FLOW
+# ============================================
+consumer_flow: {
+  label: "Consumer Round-Robin Scan"
+  c_start: {
+    label: "Consumer\nCall dequeue()"
+    class: consumer
+  }
+  c_load: {
+    label: "start ←\nconsumer_idx.load()"
+    class: index
+  }
+  c_init: {
+    label: "i ← 0"
+    class: action
+  }
+  c_calc: {
+    label: "shard_idx ←\n(start + i)\n  % num_shards"
+    class: index
+  }
+  c_try: {
+    label: "try_dequeue(\n  shards[shard_idx],\n  out_data\n)"
+    class: action
+  }
+  c_check: {
+    label: "Success?"
+    class: decision
+  }
+  c_success: {
+    label: "consumer_idx.store(\n  (shard_idx + 1)\n    % num_shards\n)\nRETURN true"
+    class: action
+    style.fill: "#C8E6C9"
+  }
+  c_inc: {
+    label: "i ← i + 1"
+    class: action
+  }
+  c_all_check: {
+    label: "i >=\nnum_shards?"
+    class: decision
+  }
+  c_fail: {
+    label: "RETURN false\n# All shards empty"
+    class: action
+    style.fill: "#FFCDD2"
+  }
+  c_start -> c_load
+  c_load -> c_init
+  c_init -> c_calc
+  c_calc -> c_try
+  c_try -> c_check
+  c_check -> c_success: "Yes"
+  c_check -> c_inc: "No (empty)"
+  c_inc -> c_all_check
+  c_all_check -> c_calc: "No" {
+    style.stroke-dash: 3
+  }
+  c_all_check -> c_fail: "Yes"
+}
+# ============================================
+# SHARED STATE
+# ============================================
+shared_state: {
+  label: "Shared State (in memory)"
+  producer_idx: {
+    label: "producer_idx\natomic<uint32>\nInit: 0"
+    class: index
+  }
+  consumer_idx: {
+    label: "consumer_idx\natomic<uint32>\nInit: 0"
+    class: index
+  }
+  producer_idx -> consumer_idx: {
+    style.opacity: 0
+  }
+}
+# ============================================
+# CONNECTIONS
+# ============================================
+producer_flow.p_target -> shards.shard_0: "select" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 2
+}
+consumer_flow.c_try -> shards.shard_0: "scan" {
+  style.stroke: "#E65100"
+  style.stroke-width: 2
+}
+shared_state.producer_idx -> producer_flow.p_fetch: "read" {
+  style.stroke-dash: 3
+  style.stroke: "#7B1FA2"
+}
+producer_flow.p_fetch -> shared_state.producer_idx: "increment" {
+  style.stroke-dash: 3
+  style.stroke: "#7B1FA2"
+}
+shared_state.consumer_idx -> consumer_flow.c_load: "read" {
+  style.stroke-dash: 3
+  style.stroke: "#7B1FA2"
+}
+consumer_flow.c_success -> shared_state.consumer_idx: "update" {
+  style.stroke-dash: 3
+  style.stroke: "#7B1FA2"
+}
+# ============================================
+# LEGEND
+# ============================================
+legend: {
+  near: bottom-right
+  leg_title: {
+    label: "Legend"
+    shape: text
+    style.bold: true
+  }
+  leg1: {
+    label: "→  Flow direction"
+    shape: text
+  }
+  leg2: {
+    label: "- - →  Loop back"
+    shape: text
+  }
+  leg3: {
+    label: "◆  Decision point"
+    shape: text
+  }
+  leg4: {
+    label: "∎  Atomic operation"
+    shape: text
+  }
+}
+# ============================================
+# ALGORITHM NOTES
+# ============================================
+notes: |md
+  ## Shard Selection Algorithm
+  ### Producer (Round-Robin)
+  
+  1. idx = fetch_add(producer_idx, 1)  // Atomic
+  2. shard_idx = idx % num_shards
+  3. IF enqueue(shards[shard_idx], data):
+       RETURN true
+  4. FOR i = 1 to num_shards-1:
+       alt_idx = (shard_idx + i) % num_shards
+       IF enqueue(shards[alt_idx], data):
+         RETURN true
+  5. RETURN false  // All shards full
+  
+  ### Consumer (Fair Scan)
+  
+  1. start = consumer_idx.load()
+  2. FOR i = 0 to num_shards-1:
+       shard_idx = (start + i) % num_shards
+       IF dequeue(shards[shard_idx], out):
+         consumer_idx.store((shard_idx + 1) % num_shards)
+         RETURN true
+  3. RETURN false  // All shards empty
+  
+  ### Key Properties
+  - **O(1)** average case for both producer and consumer
+  - **Lock-free** per shard (SPSC semantics)
+  - **Fair** consumer distribution across shards
+  - **Bounded** worst case: O(N) where N = num_shards
+| {near: bottom-center}

@@ -1,0 +1,241 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 40
+  }
+}
+
+title: {
+  shape: text
+  label: |'md
+    # Exponential Backoff State Machine
+    ## Producer/Consumer Wait Strategy
+    *Progressive backoff escalation: Spin → Yield → Sleep*
+  '|
+  near: top-center
+}
+
+# -----------------------------------------------------------------------------
+# States with Detailed Invariants & Technical Specifications
+# -----------------------------------------------------------------------------
+
+initial: {
+  label: "●"
+  tooltip: "Entry point for thread attempting to acquire lock or resource"
+  shape: circle
+  style: {
+    fill: "#4CAF50"
+    stroke: "#2E7D32"
+    font-color: white
+  }
+}
+
+spin: {
+  label: "SPIN_WAIT\n(User Space)"
+  tooltip: "PAUSE instruction executed in user-space loop. Low latency."
+  style: {
+    fill: "#FF9800"
+    stroke: "#E65100"
+    font-color: white
+  }
+  # Invariants for Intel-quality manual
+  invariants: |'md
+    - cpu_mode: ring3
+    - latency: < 200 cycles
+    - context_switch: none
+    - logic: while (atom.load() != val) { cpu_pause(); }
+  '|
+}
+
+yield: {
+  label: "YIELD_CPU\n(Cooperative)"
+  tooltip: "Call to sched_yield(). Voluntary context switch."
+  style: {
+    fill: "#FFC107"
+    stroke: "#FF8F00"
+    font-color: black
+  }
+  invariants: |'md
+    - cpu_mode: ring0 (syscall)
+    - state: TASK_RUNNING
+    - scheduler: reschedule_current()
+    - logic: Thread remains in run-queue but moves to end.
+  '|
+}
+
+sleep: {
+  label: "DEEP_SLEEP\n(Blocking)"
+  tooltip: "Call to usleep() or futex_wait(). Process enters D/S state."
+  style: {
+    fill: "#F44336"
+    stroke: "#B71C1C"
+    font-color: white
+  }
+  invariants: |'md
+    - cpu_mode: ring0
+    - state: TASK_INTERRUPTIBLE
+    - resource: wait_queue
+    - logic: High latency; freed CPU for other processes.
+  '|
+}
+
+success: {
+  label: "RESOURCE_ACQUIRED"
+  shape: rectangle
+  tooltip: "Resource acquired. Operation proceeds."
+  style: {
+    double-border: true
+    fill: "#2196F3"
+    stroke: "#0D47A1"
+    font-color: white
+    stroke-width: 4
+  }
+}
+
+retry_spin: {
+  label: "Escalate to Yield"
+  style: {
+    fill: "#FFE0B2"
+    stroke: "#FF9800"
+    font-color: black
+    bold: true
+    border-radius: 5
+  }
+}
+
+retry_yield: {
+  label: "Escalate to Sleep"
+  style: {
+    fill: "#FFECB3"
+    stroke: "#FFC107"
+    font-color: black
+    bold: true
+    border-radius: 5
+  }
+}
+
+retry_sleep: {
+  label: "Backoff Loop"
+  style: {
+    fill: "#FFCDD2"
+    stroke: "#F44336"
+    font-color: black
+    bold: true
+    border-radius: 5
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Transitions: Trigger [Guard] / Action
+# -----------------------------------------------------------------------------
+
+initial -> spin: "try_acquire() [FAILED] / init_counters()" {
+  style.stroke-width: 2
+}
+
+# --- Spin Phase Logic ---
+spin -> spin: "loop [spins < 32] / _mm_pause()" {
+  style: {
+    stroke: "#FF9800"
+    stroke-width: 2
+    animated: true
+  }
+}
+
+spin -> success: "lock_cmpxchg() [SUCCESS] / enter_critical_section()" {
+  style: {
+    stroke: "#4CAF50"
+    stroke-width: 4
+  }
+}
+
+spin -> retry_spin: "timeout [spins == 32] / trigger_escalation()"
+
+retry_spin -> yield: "yield_notify() / set_state_yield()"
+
+# --- Yield Phase Logic ---
+yield -> yield: "loop [yields < 256] / sched_yield()" {
+  style: {
+    stroke: "#FFC107"
+    stroke-width: 2
+    animated: true
+  }
+}
+
+yield -> success: "lock_cmpxchg() [SUCCESS] / enter_critical_section()" {
+  style: {
+    stroke: "#4CAF50"
+    stroke-width: 4
+  }
+}
+
+yield -> retry_yield: "timeout [yields == 256] / trigger_escalation()"
+
+retry_yield -> sleep: "sleep_notify() / set_state_sleep()"
+
+# --- Sleep Phase Logic ---
+sleep -> sleep: "timer_expire [CAS_FAIL] / usleep(1ms)" {
+  style: {
+    stroke: "#F44336"
+    stroke-width: 2
+    animated: true
+  }
+}
+
+sleep -> success: "lock_cmpxchg() [SUCCESS] / clear_counters()" {
+  style: {
+    stroke: "#4CAF50"
+    stroke-width: 4
+  }
+}
+
+sleep -> retry_sleep: "check_abort [!shutdown] / log_backoff_event()"
+
+retry_sleep -> sleep: "re-enter_wait() [backoff_active]"
+
+# --- Post-Success Cleanup ---
+success -> initial: "release_lock() / unlock_cmpxchg()" {
+  style: {
+    stroke: "#9E9E9E"
+    stroke-dash: 5
+  }
+}
+
+# --- Illegal Transitions (Guard Rails) ---
+sleep -> spin: "ILLEGAL" {
+  style: {
+    stroke: red
+    stroke-dash: 3
+    opacity: 0.5
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Documentation Legend
+# -----------------------------------------------------------------------------
+
+legend: {
+  label: |'md
+    ### Threshold Configuration & Performance
+    | Phase | Threshold | Avg. Latency | CPU Usage |
+    | :--- | :--- | :--- | :--- |
+    | **Spin** | 32 iterations | ~120 cycles | 100% (Hot) |
+    | **Yield** | 256 iterations | ~1.5μs | 50% (Kernel) |
+    | **Sleep** | Indefinite | >100μs | 0% (Waiting) |
+
+    **Visual Keys:**
+    - 🟢 Green: Transaction Entry/Exit
+    - 🟠 Orange: User-space Busy Wait
+    - 🟡 Yellow: Scheduler Cooperative Wait
+    - 🔴 Red: Blocking OS Sleep
+    - 🎯 Double Border: Terminal Success State
+  '|
+  near: bottom-right
+  style: {
+    stroke: "#333333"
+    fill: "#f9f9f9"
+    font-size: 14
+    border-radius: 4
+  }
+}

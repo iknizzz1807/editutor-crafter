@@ -1,0 +1,232 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 40
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# DIAGRAM HEADER
+# ---------------------------------------------------------------------------------
+header: {
+  shape: rectangle
+  near: top-center
+  label: |md
+    # Ref Counted Slot Lifecycle (Zero-Copy Bus)
+    **State Machine Specification v1.0.4**
+    *Invariants: Atomic Reference Counting, Single-Writer/Multi-Reader*
+  |
+  style: {
+    stroke-width: 0
+    fill: transparent
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# STATE DEFINITIONS
+# ---------------------------------------------------------------------------------
+STATE_FREE: {
+  label: "● FREE"
+  tooltip: "ref_count == 0"
+  description: "Slot is available in the Ring Buffer for the Producer to claim."
+  shape: circle
+  style: {
+    fill: "#90EE90"
+    stroke: "#228B22"
+    stroke-width: 4
+    font-color: "#006400"
+    bold: true
+    shadow: true
+  }
+}
+
+STATE_CLAIMED: {
+  label: "CLAIMED"
+  tooltip: "ref_count == N (Subscriber Count)"
+  description: "Producer has written data and published the slot. Waiting for first reader."
+  shape: circle
+  style: {
+    fill: "#87CEEB"
+    stroke: "#4169E1"
+    stroke-width: 4
+    font-color: "#00008B"
+    bold: true
+  }
+}
+
+STATE_READING: {
+  label: "READING"
+  tooltip: "ref_count ∈ [2, N-1]"
+  description: "Multiple subscribers are actively processing the data in-place."
+  shape: circle
+  style: {
+    fill: "#DDA0DD"
+    stroke: "#8B008B"
+    stroke-width: 4
+    font-color: "#4B0082"
+    bold: true
+    multiple: true
+  }
+}
+
+STATE_LAST_READ: {
+  label: "LAST_READ"
+  tooltip: "ref_count == 1"
+  description: "Only one subscriber remains. The next ACK will trigger reclamation."
+  shape: circle
+  style: {
+    fill: "#FFD700"
+    stroke: "#B8860B"
+    stroke-width: 4
+    font-color: "#8B4513"
+    bold: true
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# TRANSITIONS
+# ---------------------------------------------------------------------------------
+
+STATE_FREE -> STATE_CLAIMED: {
+  label: |md
+    **TRIGGER: PUBLISH**
+    ---
+    1. `write_data(slot)`
+    2. `store_release(ref_count, N)`
+    3. `notify(cond_var)`
+  |
+  style: {
+    stroke: "#4169E1"
+    stroke-width: 3
+  }
+}
+
+STATE_CLAIMED -> STATE_READING: {
+  label: |md
+    **TRIGGER: FIRST_READ**
+    ---
+    1. `wait_for_notification()`
+    2. `atomic_decrement(ref_count)`
+  |
+  style: {
+    stroke: "#8B008B"
+    stroke-width: 3
+  }
+}
+
+STATE_READING -> STATE_READING: {
+  label: |md
+    **TRIGGER: SUBSEQUENT_READ**
+    ---
+    *Guard: ref_count > 2*
+    Action: `atomic_decrement`
+  |
+  style: {
+    stroke: "#8B008B"
+    stroke-width: 2
+    stroke-dash: 5
+    animated: true
+  }
+}
+
+STATE_READING -> STATE_LAST_READ: {
+  label: |md
+    **TRIGGER: PENULTIMATE_ACK**
+    ---
+    *Guard: ref_count == 2*
+    Action: `atomic_decrement`
+  |
+  style: {
+    stroke: "#B8860B"
+    stroke-width: 3
+  }
+}
+
+# Special case: N=1 (Immediate move from Claimed to Last Read)
+STATE_CLAIMED -> STATE_LAST_READ: {
+  label: "IF N == 1"
+  style: {
+    stroke-dash: 3
+    opacity: 0.6
+  }
+}
+
+STATE_LAST_READ -> STATE_FREE: {
+  label: |md
+    **TRIGGER: LAST_READ_ACK**
+    ---
+    1. `atomic_decrement`
+    2. `reclaim_slot()`
+    3. `increment_tail_ptr()`
+  |
+  style: {
+    stroke: "#228B22"
+    stroke-width: 4
+    stroke-dash: 0
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# ANNOTATIONS & INVARIANTS
+# ---------------------------------------------------------------------------------
+
+invariants: {
+  shape: rectangle
+  style: {
+    fill: "#FFF8DC"
+    stroke: "#8B4513"
+    stroke-width: 2
+    border-radius: 8
+  }
+  label: |md
+    ### System Invariants
+    - **Memory Safety**: No slot is reused until `ref_count == 0`.
+    - **Atomic Operations**: `ref_count` updates must use `std::atomic` fetch-sub.
+    - **Fences**: Write-Store must follow a *Release* fence; Read-Load must follow an *Acquire* fence.
+    - **Liveness**: If a subscriber crashes, the `Watchdog` service must decrement the ref_count to prevent deadlock.
+  |
+}
+
+timing: {
+  shape: rectangle
+  style: {
+    fill: "#F0F8FF"
+    stroke: "#4169E1"
+    stroke-width: 2
+    border-radius: 8
+  }
+  near: bottom-right
+  label: ||md
+    ### Timing Analysis
+    | Event | Ops | Latency (L3) |
+    | :--- | :--- | :--- |
+    | Publish | 1 WR + 1 ATOM | ~350ns |
+    | Read Ack | 1 ATOM | ~120ns |
+    | Reclamation | 1 ATOM + 1 PTR | ~150ns |
+
+    **Note:** Contention on the `ref_count` cache line
+    during high N (subscriber count) can induce
+    MESI protocol stalls.
+  ||
+}
+
+# ---------------------------------------------------------------------------------
+# ILLEGAL TRANSITIONS (Sanity Checks)
+# ---------------------------------------------------------------------------------
+STATE_FREE -> STATE_READING: "ILLEGAL" {
+  style: {
+    stroke: red
+    stroke-dash: 2
+    opacity: 0.3
+  }
+}
+
+STATE_CLAIMED -> STATE_FREE: "ERROR: PREMATURE_RECLAIM" {
+  style: {
+    stroke: red
+    stroke-dash: 2
+    opacity: 0.3
+  }
+}

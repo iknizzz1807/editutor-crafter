@@ -1,0 +1,213 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # TECHNICAL SPECIFICATION: CACHE LINE CONTENTION & ALIGNMENT
+  ## MESI Protocol Impact on False Sharing (64-Byte Granularity)
+| {near: top-center}
+
+classes: {
+  mem_header: { style: { fill: "#673AB7"; font-color: white; bold: true } }
+  mem_data: { style: { fill: "#2196F3"; font-color: white } }
+  mem_padding: { style: { fill: "#bdbdbd"; font-color: "#616161" } }
+  core_producer: { style: { fill: "#00d4ff"; font-color: black; stroke: "#00acc1" } }
+  core_consumer: { style: { fill: "#ff6b35"; font-color: black; stroke: "#e65100" } }
+  mesi_state: { style: { italic: true; font-size: 10 } }
+}
+
+# ============================================
+# LEFT SIDE: FALSE SHARING SCENARIO
+# ============================================
+FalseSharing: "❌ SCENARIO A: FALSE SHARING (UNALIGNED)" {
+  style: { stroke: "#ff4444"; stroke-width: 4; fill: "#fff5f5" }
+  
+  MemoryLayout: "Memory Layout: Physical Address Space" {
+    direction: right
+    
+    Offsets: {
+      grid-rows: 8
+      grid-gap: 0
+      o0: "0x00"
+      o1: "0x08"
+      o2: "0x10"
+      o3: "0x20"
+      o4: "0x30"
+      o5: "0x38"
+      o6: "0x3C"
+      o7: "0x3F"
+    }
+
+    Line0: "Cache Line [64B Block]" {
+      style: { stroke-dash: 3; fill: "#fcf0f0" }
+      grid-columns: 4
+      grid-gap: 2
+      
+      Head: "atomic<uint64_t>\n'head'" { 
+        class: mem_data
+        tooltip: "Size: 8 Bytes"
+      }
+      Tail: "atomic<uint64_t>\n'tail'" { 
+        class: mem_data
+        tooltip: "Size: 8 Bytes"
+      }
+      Padding: "Unused Space\n(48 Bytes)" { 
+        class: mem_padding 
+      }
+      End: "Boundary" { 
+        style: { stroke: red; bold: true } 
+      }
+    }
+    
+    Problem: |md
+      ### ⚠️ COHERENCY HAZARD
+      `head` (Core 0) and `tail` (Core 1) occupy the **same** L1/L2 cache line.
+      Updating `tail` forces hardware to invalidate the entire line for Core 0.
+    | {
+      style: { font-color: "#b71c1c"; fill: "#ffcdd2"; stroke: "#ef9a9a" }
+    }
+  }
+
+  CoherencyTraffic: "Inter-Core Bus Traffic (MESI)" {
+    direction: down
+    
+    C0: "CPU CORE 0" {
+      shape: rectangle
+      class: core_producer
+      State: "MESI: [M]" { class: mesi_state }
+    }
+
+    C1: "CPU CORE 1" {
+      shape: rectangle
+      class: core_consumer
+      State: "MESI: [I]" { class: mesi_state }
+    }
+
+    C1 -> C0: "RFO (Request For Ownership)\nTarget: tail @ 0x08" {
+      style: { stroke: red; stroke-width: 2; animated: true }
+    }
+    
+    C0 -> C1: "Invalidate Line 0\nFlush to L3/RAM" {
+      style: { stroke: red; stroke-width: 2; stroke-dash: 2 }
+    }
+
+    Status: |md
+      **Result:** L1 Cache Miss (Remote).
+      **Penalty:** ~200-400 CPU cycles.
+    | { style: { fill: "#ffebee" } }
+  }
+}
+
+# ============================================
+# RIGHT SIDE: FIXED WITH ALIGNAS
+# ============================================
+FixedSharing: "✅ SCENARIO B: ALIGNED ISOLATION" {
+  style: { stroke: "#44ff44"; stroke-width: 4; fill: "#f5fff5" }
+
+  MemoryLayout: "Memory Layout: Aligned (alignas(64))" {
+    direction: right
+    
+    Line0: "Cache Line 0 [Offset 0x00]" {
+      style: { stroke: "#2e7d32"; fill: "#e8f5e9" }
+      grid-columns: 2
+      Head: "atomic<uint64_t>\n'head'" { class: mem_data }
+      Pad: "Padding (56B)" { class: mem_padding }
+    }
+
+    Separator: "--- Line Boundary ---" {
+      shape: text
+      style: { font-color: "#1b5e20"; bold: true }
+    }
+
+    Line1: "Cache Line 1 [Offset 0x40]" {
+      style: { stroke: "#2e7d32"; fill: "#e8f5e9" }
+      grid-columns: 2
+      Tail: "atomic<uint64_t>\n'tail'" { class: mem_data }
+      Pad: "Padding (56B)" { class: mem_padding }
+    }
+    
+    Solution: |md
+      ### 🚀 PERFORMANCE FIX
+      Variables are strictly isolated to **distinct** lines.
+      Core 0 owns Line 0 [Modified].
+      Core 1 owns Line 1 [Modified].
+      **Zero** interconnect traffic.
+    | {
+      style: { font-color: "#1b5e20"; fill: "#c8e6c9"; stroke: "#a5d6a7" }
+    }
+  }
+
+  IndependentExecution: "CPU State: Parallel Write" {
+    direction: down
+    
+    C0_G: "CPU CORE 0" {
+      class: core_producer
+      S: "MESI: [M]" { class: mesi_state }
+      Op: "Write Head" { style: { bold: true } }
+    }
+    
+    C1_G: "CPU CORE 1" {
+      class: core_consumer
+      S: "MESI: [M]" { class: mesi_state }
+      Op: "Write Tail" { style: { bold: true } }
+    }
+
+    C0_G -- C1_G: "No Conflict\nParallel L1 Update" {
+      style: { stroke: "#4caf50"; stroke-dash: 5 }
+    }
+
+    Metric: |md
+      **Latency:** ~1ns (L1 Hit)
+      **Throughput:** Maximum Line Speed.
+    | { style: { fill: "#e8f5e9" } }
+  }
+}
+
+# ============================================
+# CODE & LEGEND
+# ============================================
+Implementation: "Implementation Reference" {
+  direction: right
+  
+  CPP: |cpp
+    // BAD: Shared Line
+    struct Counter {
+      std::atomic<int> head; // 0
+      std::atomic<int> tail; // 4
+    };
+
+    // GOOD: Aligned Isolation
+    struct AlignedCounter {
+      alignas(64) std::atomic<int> head;
+      alignas(64) std::atomic<int> tail;
+    };
+  | { 
+    shape: rectangle
+    style: { fill: "#1e1e1e"; font-color: "#dcdcdc"; font: mono } 
+  }
+}
+
+Legend: "MESI Protocol Key" {
+  direction: right
+  near: bottom-right
+  M: "Modified" { style: { fill: "#ff4444"; font-color: white } }
+  E: "Exclusive" { style: { fill: "#ffbb33"; font-color: black } }
+  S: "Shared" { style: { fill: "#00C851"; font-color: white } }
+  I: "Invalid" { style: { fill: "#9e9e9e"; font-color: white } }
+  M -- E -- S -- I
+}
+
+KeyInsight: |md
+  ### 🔑 ENGINEER CHECKLIST
+  1. **Measure:** Identify high-frequency atomic writes across threads.
+  2. **Audit:** Check offsets using `pahole` or `offsetof()`.
+  3. **Align:** Apply `alignas(64)` to prevent "Cache Line Ping-Pong".
+  4. **Verify:** Use `perf stat -e l1d_pend_miss.pending` or `cpc_event` on modern CPUs.
+| {
+  near: bottom-center
+  style: { fill: "#212121"; font-color: "#f5f5f5"; stroke: "#00acc1"; stroke-width: 2 }
+}

@@ -1,0 +1,248 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 1. TECHNICAL SPECIFICATION & ANALYSIS
+# -----------------------------------------------------------------------------
+Documentation: {
+  shape: text
+  near: top-left
+  content: ||md
+    ### Single-Producer Single-Consumer (SPSC) Ring Buffer
+    **Consumer Implementation Detail**
+    1. **Load tail (acquire)**: Read current consumer position from cache-local line.
+    2. **Check empty**: If `tail == head`, buffer is empty (Producer hasn't advanced).
+    3. **Acquire fence**: `std::atomic_thread_fence(memory_order_acquire)` ensures data visibility.
+    4. **memcpy**: Copy data from `slots[tail & mask]`.
+    5. **Update tail (release)**: `tail.store(tail + 1, memory_order_release)` to commit read.
+
+    #### Invariant Analysis
+    | Invariant | Description | Constraint |
+    |-----------|-------------|------------|
+    | **Monotonicity** | Head/Tail only increment | `val_new >= val_old` |
+    | **Bounds** | Buffer Capacity | `(head - tail) <= size` |
+    | **Full Detection** | One slot empty strategy | `(head + 1) & mask == tail` |
+  ||
+}
+
+# -----------------------------------------------------------------------------
+# 2. SEQUENCE DIAGRAM: Atomic Handshake
+# -----------------------------------------------------------------------------
+LogicFlow: {
+  shape: sequence_diagram
+  
+  Producer: {
+    shape: person
+    style.stroke: "#2196F3"
+  }
+  Consumer: {
+    shape: person
+    style.stroke: "#4CAF50"
+  }
+  Buffer: "Shared Memory" {
+    style.fill: "#f8f9fa"
+  }
+
+  group "1. Write Operation (Producer)" {
+    Producer -> Buffer: "try_produce(data)"
+    Buffer -> Buffer: "load tail (acquire)"
+    Buffer -> Buffer: "load head (relaxed)"
+    Buffer -> Buffer: "check: (head+1) & mask != tail"
+    Buffer -> Buffer: "memcpy(slot[head], data)" {style.stroke: "#2196F3"}
+    Buffer -> Buffer: "store head (release)" {style.stroke: "#f44336"; style.bold: true}
+    Producer <- Buffer: "return true"
+  }
+
+  group "2. Read Operation (Consumer)" {
+    Consumer -> Buffer: "try_consume(&out)"
+    Buffer -> Buffer: "load head (acquire)" {style.stroke: "#4CAF50"; style.bold: true}
+    Buffer -> Buffer: "check: tail != head"
+    Buffer -> Buffer: "memcpy(out, slot[tail])" {style.stroke: "#2196F3"}
+    Buffer -> Buffer: "store tail (release)" {style.stroke: "#f44336"; style.bold: true}
+    Consumer <- Buffer: "return true, data"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 3. STATE MACHINE: Consumer Logic
+# -----------------------------------------------------------------------------
+StateMachine: {
+  title: "Consumer State Invariants" {near: top-center}
+  
+  Initial: ●
+  Initial -> Empty: "init: head=0, tail=0"
+  
+  Empty: "STATE: EMPTY\n[tail == head]" {
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    style.double-border: true
+  }
+  
+  NotEmpty: "STATE: DATA_AVAILABLE\n[tail < head]" {
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+  }
+  
+  Full: "STATE: FULL\n[head-tail == size]" {
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+  }
+  
+  Empty -> NotEmpty: "Producer: head++" {
+    style.stroke: "#2196F3"
+    style.bold: true
+  }
+  
+  NotEmpty -> Empty: "Consumer: tail == head" {
+    style.stroke: "#4CAF50"
+  }
+  
+  NotEmpty -> Full: "Producer: (head+1)&mask == tail" {
+    style.stroke: "#F44336"
+  }
+  
+  Full -> NotEmpty: "Consumer: tail++" {
+    style.stroke: "#2196F3"
+  }
+  
+  NotEmpty -> NotEmpty: "Action: consume()\nGuard: tail < head\nEffect: tail++" {
+    style.stroke-dash: 3
+  }
+
+  Empty -> Empty: "ILLEGAL: consume()" {
+    style.stroke: "#f44336"
+    style.stroke-dash: 5
+    style.font-color: "#f44336"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 4. MEMORY LAYOUT: Ring Buffer Structure
+# -----------------------------------------------------------------------------
+MemoryMap: {
+  title: "Memory Offset Map (64B Cache Line Alignment)" {near: top-center}
+  direction: right
+
+  Header: "Aligned Header (256B)" {
+    style.fill: "#E1BEE7"
+    style.stroke: "#9C27B0"
+
+    CL0: "0x00 | HEAD INDEX (8B) | +56B Padding" {
+      style.fill: "#F3E5F5"
+      style.stroke-dash: 3
+    }
+    CL1: "0x40 | TAIL INDEX (8B) | +56B Padding" {
+      style.fill: "#F3E5F5"
+      style.stroke-dash: 3
+    }
+    CL2: "0x80 | Metadata: mask(8B), size(8B)" {
+      style.fill: "#F3E5F5"
+    }
+  }
+
+  DataRegion: "Slots Array" {
+    style.fill: "#BBDEFB"
+    style.stroke: "#2196F3"
+    
+    Slot0: "0x100 | SLOT[0]" { style.fill: "#E3F2FD" }
+    Slot1: "0x140 | SLOT[1]" { style.fill: "#E3F2FD" }
+    SlotN: "... | SLOT[N]" { style.fill: "#E3F2FD" }
+  }
+
+  Header.CL1 -> DataRegion.Slot0: "Tail (Read Cursor)" {
+    style.stroke: orange
+    style.stroke-width: 2
+    target-arrowhead: diamond
+  }
+  Header.CL0 -> DataRegion.Slot1: "Head (Write Cursor)" {
+    style.stroke: "#2196F3"
+    style.stroke-width: 2
+    target-arrowhead: diamond
+  }
+  
+  Footer: ||md
+    **Alignment Note**: `head` and `tail` reside on separate cache lines (CL0, CL1) 
+    to prevent **False Sharing** performance degradation in multi-threaded contention.
+  || {near: bottom-center}
+}
+
+# -----------------------------------------------------------------------------
+# 5. HARDWARE SOUL: Cache Coherency Path
+# -----------------------------------------------------------------------------
+HardwareAnalysis: {
+  title: "Cross-Core Cache Coherency (MESI)" {near: top-center}
+  direction: right
+
+  Core0_Producer: "Core 0" {
+    style.fill: "#C8E6C9"
+    L1_P: "L1 Cache" {
+      LineH: "0x00 [State: Modified]" { style.bold: true; style.stroke: "#4CAF50" }
+    }
+  }
+
+  Bus: "L3 Cache / Interconnect" {
+    shape: cloud
+    style.fill: "#FFF9C4"
+  }
+
+  Core1_Consumer: "Core 1" {
+    style.fill: "#BBDEFB"
+    L1_C: "L1 Cache" {
+      LineH_Invalid: "0x00 [State: Invalid]" { style.stroke: "#f44336" }
+      LineT: "0x40 [State: Exclusive]" { style.bold: true; style.stroke: "#2196F3" }
+    }
+  }
+
+  Core0_Producer.L1_P.LineH -> Bus: "BusUpgr (Write head)"
+  Bus -> Core1_Consumer.L1_C.LineH_Invalid: "Invalidate Signal" {
+    style.stroke: "#f44336"
+    style.animated: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 6. PERFORMANCE BUDGET
+# -----------------------------------------------------------------------------
+PerformanceView: {
+  title: "Latency Budget (CPU Cycles)" {near: top-center}
+
+  AppLayer: {
+    style.fill: "#E8F5E9"
+    Prod: "Producer.enqueue()"
+    Cons: "Consumer.dequeue()"
+  }
+
+  Hardware: {
+    style.fill: "#FFF3E0"
+    Store: "Atomic Store (12 cycles)"
+    Load: "Atomic Load (acquire) (12 cycles)"
+    Sync: "L1-L1 Transfer (120-200 cycles)"
+  }
+
+  AppLayer.Prod -> Hardware.Store
+  Hardware.Sync -> AppLayer.Cons: "Visibility"
+  
+  Summary: ||md
+    - **Throughput**: ~40M ops/sec  
+    - **P99 Latency**: < 150ns  
+    - **Architecture**: Zero-copy, Lock-free
+  || {near: bottom-center}
+}
+
+# Styling Globs for uniform technical look
+***: {
+  style: {
+    font: mono
+  }
+}
+
+(*** -> ***)[*]: {
+  style: {
+    stroke-width: 2
+  }
+}

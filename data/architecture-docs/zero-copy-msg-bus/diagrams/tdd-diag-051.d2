@@ -1,0 +1,316 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: right
+
+title: |'md
+# Orphaned Slot Detection Flow
+Reclamation algorithm for crashed producer recovery
+'| {
+  near: top-center
+  style.font-size: 24
+}
+
+# --- NODES ---
+
+step_1_start: {
+  label: "1. START\nReclaimer Loop"
+  shape: circle
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#2E7D32"
+    stroke-width: 2
+  }
+}
+
+step_2_iterate: {
+  label: "2. ITERATE\nFor each slot[i]\nin buffer"
+  shape: rectangle
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1565C0"
+  }
+}
+
+step_3_check_ref: {
+  label: |'md
+**3. LOAD ref_count**
+cpp
+ref = slot[i].ref_count
+      .load(acquire)
+
+'|
+  shape: rectangle
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#E65100"
+  }
+}
+
+decision_ref: {
+  label: "ref > 0?"
+  shape: diamond
+  style: {
+    fill: "#FFF8E1"
+    stroke: "#F57F17"
+  }
+}
+
+step_4_check_age: {
+  label: |'md
+**4. CHECK CLAIM AGE**
+cpp
+claim_time = slot[i]
+  .claim_timestamp_ns
+age = now_ns() - claim_time
+
+'|
+  shape: rectangle
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#E65100"
+  }
+}
+
+decision_age: {
+  label: "age ≥\nORPHAN_TIMEOUT?"
+  shape: diamond
+  style: {
+    fill: "#FFF8E1"
+    stroke: "#F57F17"
+  }
+}
+
+step_5_check_owner: {
+  label: |'md
+**5. CHECK OWNER ALIVE**
+cpp
+owner_slot = slot[i].owner_slot
+owner_pid = registry[owner_slot].pid
+// Signal 0 = check existence
+if (kill(owner_pid, 0) == -1 
+    && errno == ESRCH)
+  → Owner DEAD
+
+'|
+  shape: rectangle
+  style: {
+    fill: "#FFEBEE"
+    stroke: "#C62828"
+  }
+}
+
+decision_owner: {
+  label: "Owner\nDEAD?"
+  shape: diamond
+  style: {
+    fill: "#FFF8E1"
+    stroke: "#F57F17"
+  }
+}
+
+step_6_fence: {
+  label: |'md
+**6. VALIDATE FENCE**
+cpp
+slot_fence = slot[i].fence
+  .load(acquire)
+owner_fence = fence_mgr
+  .get_fence(owner_slot)
+// Fence mismatch = stale claim
+if (slot_fence < owner_fence)
+  → SAFE to reclaim
+
+'|
+  shape: rectangle
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#7B1FA2"
+  }
+}
+
+decision_fence: {
+  label: "slot_fence <\nowner_fence?"
+  shape: diamond
+  style: {
+    fill: "#FFF8E1"
+    stroke: "#F57F17"
+  }
+}
+
+step_7_cas: {
+  label: |'md
+**7. CAS RECLAMATION**
+cpp
+expected = ref
+success = slot[i].ref_count
+  .compare_exchange_strong(
+    expected, 0,
+    acq_rel, acquire
+  )
+
+'|
+  shape: rectangle
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#2E7D32"
+    stroke-width: 3
+  }
+}
+
+decision_cas: {
+  label: "CAS\nSUCCESS?"
+  shape: diamond
+  style: {
+    fill: "#FFF8E1"
+    stroke: "#F57F17"
+  }
+}
+
+step_8_log: {
+  label: |'md
+**8. LOG RECLAMATION**
+cpp
+LOG("Reclaimed slot %zu", i)
+reclaimed_count++
+fence_mgr.update_min_active(
+  slot_fence + 1)
+
+'|
+  shape: rectangle
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#2E7D32"
+  }
+}
+
+step_9_continue: {
+  label: "9. CONTINUE\nNext slot"
+  shape: rectangle
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1565C0"
+  }
+}
+
+step_end: {
+  label: "END\nScan Complete"
+  shape: circle
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#2E7D32"
+    stroke-width: 2
+  }
+}
+
+skip_slot: {
+  label: "SKIP\nSlot free or\nrecently claimed"
+  shape: rectangle
+  style: {
+    fill: "#ECEFF1"
+    stroke: "#607D8B"
+    stroke-dash: 3
+  }
+}
+
+owner_alive: {
+  label: "VALID\nOwner alive\nwith current fence"
+  shape: rectangle
+  style: {
+    fill: "#ECEFF1"
+    stroke: "#607D8B"
+    stroke-dash: 3
+  }
+}
+
+cas_failed: {
+  label: "RACE LOST\nOwner revived or\nother reclaimer won"
+  shape: rectangle
+  style: {
+    fill: "#FFEBEE"
+    stroke: "#C62828"
+    stroke-dash: 3
+  }
+}
+
+# --- CONNECTIONS ---
+
+step_1_start -> step_2_iterate: "begin scan"
+step_2_iterate -> step_3_check_ref
+step_3_check_ref -> decision_ref
+decision_ref -> step_4_check_age: "YES"
+decision_ref -> skip_slot: "NO\n(slot free)"
+step_4_check_age -> decision_age
+decision_age -> step_5_check_owner: "YES\n(stale claim)"
+decision_age -> skip_slot: "NO\n(recent)"
+step_5_check_owner -> decision_owner
+decision_owner -> step_6_fence: "YES"
+decision_owner -> owner_alive: "NO\n(alive)" {
+  style.stroke-dash: 3
+}
+step_6_fence -> decision_fence
+decision_fence -> step_7_cas: "YES\n(stale fence)"
+decision_fence -> owner_alive: "NO\n(current)"
+step_7_cas -> decision_cas
+decision_cas -> step_8_log: "YES"
+decision_cas -> cas_failed: "NO"
+
+step_8_log -> step_9_continue
+skip_slot -> step_9_continue
+owner_alive -> step_9_continue
+cas_failed -> step_9_continue
+
+step_9_continue -> step_2_iterate: "loop" {
+  style.stroke-dash: 5
+  style.animated: true
+}
+step_9_continue -> step_end: "all slots\nscanned"
+
+# --- ANNOTATIONS ---
+
+legend: {
+  near: bottom-right
+  label: |'md
+## Legend
+| Color | Meaning |
+|:---|:---|
+| 🟢 Green | Success / Complete |
+| 🔵 Blue | Iteration / Control Flow |
+| 🟠 Orange | Data Load / Check |
+| 🟡 Yellow | Decision Point |
+| 🔴 Red | Dead / Failed |
+| 🟣 Purple | Fence Validation |
+| ⬜ Gray | Skip / No-op |
+
+**Safety Guarantee:**
+CAS prevents reclaimer/owner race. 
+Fences prevent PID reuse collision.
+'|
+  shape: rectangle
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#BDBDBD"
+  }
+}
+
+timing: {
+  near: bottom-left
+  label: |'md
+## Performance Targets
+| Operation | Target Latency |
+|:---|:---|
+| Single slot check | < 100 ns |
+| Full scan (1k slots) | < 1 ms |
+| CAS reclamation | < 100 ns |
+| PID liveness check | < 1 μs |
+'|
+  shape: rectangle
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#BDBDBD"
+  }
+}

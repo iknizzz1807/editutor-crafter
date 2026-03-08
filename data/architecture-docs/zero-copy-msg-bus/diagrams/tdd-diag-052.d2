@@ -1,0 +1,171 @@
+vars: {
+  d2-config: {
+    theme-id: 4
+    layout-engine: elk
+    pad: 20
+  }
+}
+
+# --- Main Diagram Title ---
+title: "Fence-Based Recovery Sequence (Zero-Copy Message Bus)" {
+  shape: text
+  near: top-center
+  style: {
+    font-size: 32
+    bold: true
+    font-color: "#1a1a1a"
+  }
+}
+
+# --- System Overview Container ---
+bus_architecture: {
+  
+  recovery_sequence: {
+    shape: sequence_diagram
+    style: {
+      stroke-width: 2
+    }
+
+    # --- Participants Definition ---
+    OldProducer: "Old Producer\n(PID 1234, Gen 5)" {
+      style.fill: "#ffcccc"
+      style.stroke: "#cc0000"
+      style.bold: true
+    }
+    ProcessRegistry: "ProcessRegistry\n(Shared Memory)" {
+      style.fill: "#e6f3ff"
+      style.stroke: "#004080"
+    }
+    FenceManager: "FenceManager\n(Shared Memory)" {
+      style.fill: "#e6f3ff"
+      style.stroke: "#004080"
+    }
+    Slot0: "Slot[0]\n(OrphanedSlotHeader)" {
+      style.fill: "#fff2cc"
+      style.stroke: "#d4a017"
+      style.double-border: true
+    }
+    NewProducer: "New Producer\n(PID 1234, Gen 6)" {
+      style.fill: "#ccffcc"
+      style.stroke: "#00cc00"
+      style.bold: true
+    }
+    OrphanReclaimer: "OrphanReclaimer\n(Background Thread)" {
+      style.fill: "#f0e6ff"
+      style.stroke: "#5d3fd3"
+    }
+
+    # --- Phase 1: Initial State ---
+    Phase_1: "Phase 1: Old Producer Claims Slot" {
+      OldProducer -> ProcessRegistry: "register_process(PID=1234)"
+      ProcessRegistry -> ProcessRegistry: "Set ProcessIdentity[0]:\n  gen=5, status=ALIVE"
+      OldProducer -> FenceManager: "allocate_fence()"
+      FenceManager -> FenceManager: "atomic_inc(global_fence) -> 5"
+      OldProducer -> Slot0: "claim_slot(index=0, fence=5)"
+      Slot0 -> Slot0: "Write Offset 0x00: fence=5\nWrite Offset 0x14: ref_count=1"
+    }
+
+    # --- Phase 2: Failure Event ---
+    Phase_2: "Phase 2: Crash Scenario" {
+      OldProducer."CRASH: SIGKILL or HW Failure" {
+        style.font-color: red
+        style.bold: true
+      }
+      ProcessRegistry -> ProcessRegistry: "Heartbeat timer expires\n(last_heartbeat_ns + 5000ms < now)"
+    }
+
+    # --- Phase 3: Cleanup ---
+    Phase_3: "Phase 3: Automated Reclamation" {
+      OrphanReclaimer -> ProcessRegistry: "is_alive(slot=0)?"
+      ProcessRegistry -> ProcessRegistry: "Check PID 1234 / Gen 5"
+      ProcessRegistry -> OrphanReclaimer: "false (Stale Heartbeat)"
+      OrphanReclaimer -> Slot0: "try_reclaim(index=0)"
+      Slot0 -> Slot0: "CAS(ref_count, expected=1, desired=0)"
+      Slot0 -> OrphanReclaimer: "Reclaim Success (ref_count=0)"
+    }
+
+    # --- Phase 4: Recovery ---
+    Phase_4: "Phase 4: New Producer Initialization" {
+      NewProducer -> ProcessRegistry: "register_process(PID=1234)"
+      ProcessRegistry -> ProcessRegistry: "Increment Gen: 5 -> 6\nSet ProcessIdentity[0]: ALIVE"
+      NewProducer -> FenceManager: "allocate_fence()"
+      FenceManager -> FenceManager: "atomic_inc(global_fence) -> 6"
+    }
+
+    # --- Phase 5: Slot Acquisition ---
+    Phase_5: "Phase 5: Prevent ABA with Fences" {
+      NewProducer -> Slot0: "try_claim_slot(index=0, fence=6)"
+      
+      alt: "Claim Verification" {
+        Slot_is_Empty: "ref_count == 0" {
+          Slot0 -> Slot0: "CAS(ref_count, 0, 1)\nSet fence=6"
+          Slot0 -> NewProducer: "Acquired (Clean)"
+        }
+        Slot_is_Stale: "ref_count > 0 && current_fence(5) < my_fence(6)" {
+          Slot0 -> Slot0: "Forced Reclaim:\nCAS(ref_count, N, 1)\nSet fence=6"
+          Slot0 -> NewProducer: "Acquired (Forced)"
+        }
+      }
+    }
+  }
+
+  # --- Byte-Exact Memory Layouts ---
+  Memory_Specs: {
+    ProcessIdentity: {
+      shape: sql_table
+      label: "Memory Layout: ProcessIdentity (sizeof=128B)"
+      style.fill: purple
+      0x00: "pid (uint32)" {constraint: "Offset 0"}
+      0x04: "generation (uint32)" {constraint: "Offset 4"}
+      0x08: "last_heartbeat (uint64)" {constraint: "Offset 8"}
+      0x10: "state (uint32)" {constraint: "Offset 16"}
+      0x14: "padding_1 (byte[44])" {style.fill: gray}
+      0x40: "--- CACHE LINE BOUNDARY (64B) ---" {style.stroke-dash: 5}
+      0x40_1: "padding_2 (byte[64])" {style.fill: gray}
+    }
+
+    OrphanedSlotHeader: {
+      shape: sql_table
+      label: "Memory Layout: OrphanedSlotHeader (sizeof=64B)"
+      style.fill: purple
+      0x00: "fence (uint64)" {constraint: "Offset 0"}
+      0x08: "timestamp (uint64)" {constraint: "Offset 8"}
+      0x10: "owner_slot (uint32)" {constraint: "Offset 16"}
+      0x14: "ref_count (uint32)" {constraint: "Offset 20"}
+      0x18: "padding (byte[40])" {style.fill: gray}
+    }
+  }
+}
+
+# --- Positioning Definitions ---
+bus_architecture.Memory_Specs.near: bus_architecture.recovery_sequence
+bus_architecture.Memory_Specs.style.border-radius: 8
+
+ABA_Prevention_Note: |'md
+  ### ABA Prevention via Monotonic Fences
+  1. **The Risk**: New Producer starts with same PID 1234. Without fences, 
+     the system might assume the Old Producer's allocated memory is still 
+     valid for the New Producer.
+  2. **The Defense**: `Generation` and `Fence` values never repeat.
+  3. **Verification**: Even if PID matches, `slot.fence (5) != current_fence (6)`.
+  4. **Action**: New Producer detects the discrepancy and triggers a 
+     clean state initialization before claiming.
+'| {
+  near: bus_architecture.recovery_sequence
+  style: {
+    fill: "#fff7e6"
+    stroke: "#ffa940"
+    font-size: 14
+    border-radius: 10
+  }
+}
+
+# --- Technical Implementation Metadata ---
+Metadata: {
+  near: bottom-center
+  System: "Zero-Copy IPC Message Bus"
+  Mechanism: "Atomic CAS + Monotonic Fencing"
+  Protocol: "V2.1-STABLE"
+  shape: text
+  style.font-size: 10
+}

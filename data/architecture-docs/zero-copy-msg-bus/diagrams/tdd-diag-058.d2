@@ -1,0 +1,320 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 40
+  }
+}
+
+title: "RECOVERY JOURNAL STATE MACHINE (V2.4.0)" {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 36
+    bold: true
+    underline: true
+    font-color: "#2D3436"
+  }
+}
+
+# --- State Definitions ---
+
+not_started: "● INITIALIZATION" {
+  shape: circle
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#4CAF50"
+    stroke-width: 4
+    font-size: 16
+    bold: true
+  }
+}
+
+loading_checkpoint: "LOADING_CHECKPOINT\n(Stage 1)" {
+  shape: rectangle
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1565C0"
+    stroke-width: 2
+    border-radius: 8
+  }
+  tooltip: "Locating and deserializing the latest consistent snapshot from disk."
+}
+
+restoring_ring: "RESTORING_RING_STATE\n(Stage 2)" {
+  shape: rectangle
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1565C0"
+    stroke-width: 2
+    border-radius: 8
+  }
+  tooltip: "Re-populating the Ring Buffer metadata from checkpoint."
+}
+
+replaying_wal: "REPLAYING_WAL\n(Stage 3: Delta Application)" {
+  shape: rectangle
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#E65100"
+    stroke-width: 4
+    border-radius: 8
+  }
+  tooltip: "Applying delta updates from Write-Ahead Log to catch up to real-time."
+}
+
+rebuilding_indices: "REBUILDING_INDICES\n(Stage 4)" {
+  shape: rectangle
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#7B1FA2"
+    stroke-width: 2
+    border-radius: 8
+  }
+  tooltip: "Re-indexing sequence IDs to physical byte offsets."
+}
+
+verifying: "VERIFYING_STATE\n(Stage 5: Final Validation)" {
+  shape: rectangle
+  style: {
+    fill: "#E0F2F1"
+    stroke: "#00796B"
+    stroke-width: 2
+    border-radius: 8
+  }
+  tooltip: "Checksum validation and consistency checks."
+}
+
+# Terminal states
+completed: "RECOVERY_SUCCESSFUL" {
+  shape: rectangle
+  style: {
+    fill: "#C8E6C9"
+    stroke: "#2E7D32"
+    stroke-width: 5
+    double-border: true
+    bold: true
+    font-size: 20
+  }
+}
+
+failed: "RECOVERY_FAILED" {
+  shape: rectangle
+  style: {
+    fill: "#FFCDD2"
+    stroke: "#C62828"
+    stroke-width: 5
+    double-border: true
+    bold: true
+    font-size: 20
+  }
+}
+
+# --- Transition Logic ---
+
+# Normal sequence (Critical Path)
+not_started -> loading_checkpoint: "INIT [trigger: mount()]\naction: open_fd(v6_meta)" {
+  style: {
+    stroke: "#1976D2"
+    stroke-width: 3
+  }
+}
+
+loading_checkpoint -> restoring_ring: "checkpoint_ok\nguard: verify_sig(header)" {
+  style: {
+    stroke: "#1976D2"
+    stroke-width: 3
+  }
+}
+
+restoring_ring -> replaying_wal: "ring_meta_synced\naction: set_replay_head(pos)" {
+  style: {
+    stroke: "#1976D2"
+    stroke-width: 3
+  }
+}
+
+replaying_wal -> rebuilding_indices: "wal_eof_reached\naction: flush_to_disk()" {
+  style: {
+    stroke: "#1976D2"
+    stroke-width: 3
+  }
+}
+
+rebuilding_indices -> verifying: "indices_complete\naction: lock_read_only()" {
+  style: {
+    stroke: "#1976D2"
+    stroke-width: 3
+  }
+}
+
+verifying -> completed: "checks_pass\nguard: checksum == calculated" {
+  style: {
+    stroke: "#2E7D32"
+    stroke-width: 4
+    animated: true
+  }
+}
+
+# Self-loop: Idempotent replay logic
+replaying_wal -> replaying_wal: "STEP_BATCH\naction: apply_entry(N+1)\n[Invariant: Seq_N < WAL_Tail]" {
+  style: {
+    stroke: "#FB8C00"
+    stroke-dash: 5
+  }
+}
+
+# --- Fault Tolerance & Crash Recovery ---
+
+loading_checkpoint -> loading_checkpoint: "RETRY_IO\n[Policy: Exponential Backoff]" {
+  style: {
+    stroke: "#9C27B0"
+    stroke-dash: 5
+    animated: true
+  }
+}
+
+restoring_ring -> loading_checkpoint: "REVERSION\nerr: corrupted_meta_block" {
+  style: {
+    stroke: "#9C27B0"
+    stroke-dash: 5
+  }
+}
+
+replaying_wal -> replaying_wal: "RESUME\naction: seek(last_known_stable)" {
+  style: {
+    stroke: "#9C27B0"
+    stroke-dash: 5
+    animated: true
+  }
+}
+
+verifying -> verifying: "RE_VALIDATE\ntrigger: concurrent_write_detected" {
+  style: {
+    stroke: "#9C27B0"
+    stroke-dash: 5
+  }
+}
+
+# --- Terminal Failure Paths ---
+
+loading_checkpoint -> failed: "CRITICAL_IO_ERROR\n[unrecoverable]" {
+  style: {
+    stroke: "#D32F2F"
+    stroke-width: 2
+  }
+}
+
+replaying_wal -> failed: "DATA_CORRUPTION\nerr: block_checksum_fail" {
+  style: {
+    stroke: "#D32F2F"
+    stroke-width: 2
+  }
+}
+
+verifying -> failed: "INCONSISTENT_STATE\nerr: pointer_out_of_bounds" {
+  style: {
+    stroke: "#D32F2F"
+    stroke-width: 2
+  }
+}
+
+# --- Technical Annotations (Fixed Positioning) ---
+
+wal_detail: |md
+  ### [0x03] WAL REPLAY SPECIFICATION
+  - **Logic**: Strictly Sequential, Idempotent.
+  - **Storage**: `journal_meta.v6` (Little Endian).
+  - **Batch Size**: 4096 bytes (page-aligned).
+  - **Checksum**: CRC32-Castagnoli (SSE 4.2).
+  - **Concurrency**: Exclusive `RECOVERY_LOCK`.
+| {
+  near: top-right
+  style: {
+    stroke: "#E65100"
+    fill: "#FFF8E1"
+    font-size: 14
+    stroke-width: 2
+  }
+}
+
+failed_action: |md
+  ### [ERR] FAILURE MITIGATION
+  1. Inspect `recovery.log` for Offset.
+  2. Verify SMART/Disk block health.
+  3. Run `bin/journal-audit --fix`.
+  4. Force state override: `--ignore-wal-err`.
+| {
+  near: bottom-left
+  style: {
+    stroke: "#C62828"
+    fill: "#FFEBEE"
+    font-size: 14
+    stroke-width: 2
+  }
+}
+
+metadata_block: |md
+  ### IMPLEMENTATION ARTIFACTS
+  - **Timeout**: 300,000ms (Hard Kill).
+  - **Persistence**: `__journal_internal.db`.
+  - **Locking**: `pthread_mutex_t` (Robust).
+  - **Max Retries**: 5 (Stages 1-2 only).
+| {
+  near: bottom-center
+  style: {
+    font-size: 12
+    font-color: "#444"
+    fill: "#F5F5F5"
+    stroke: "#AAA"
+  }
+}
+
+# --- Legend ---
+
+legend: {
+  near: top-left
+  label: "DIAGRAM NOTATION"
+  
+  normal: "Happy Path (Sequential Recovery)" {
+    shape: text
+    style.font-color: "#1976D2"
+    style.bold: true
+  }
+  
+  crash: "Resilience Path (Loop/Retry)" {
+    shape: text
+    style.font-color: "#9C27B0"
+    style.italic: true
+  }
+  
+  error: "Terminal Fault (Shutdown)" {
+    shape: text
+    style.font-color: "#D32F2F"
+  }
+  
+  terminal_state: "Atomic/Finalized State" {
+    shape: rectangle
+    style.double-border: true
+    style.fill: white
+  }
+}
+
+# Illegal Transitions Annotation
+ILLEGAL_RESET: "ILLEGAL" {
+  near: center-right
+  shape: text
+  style: {
+    font-color: red
+    bold: true
+    font-size: 10
+  }
+}
+
+(completed -> not_started): {
+  style: {
+    stroke: red
+    stroke-dash: 2
+  }
+  label: "ILLEGAL: RESET_WITHOUT_CLEANUP"
+}

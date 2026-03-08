@@ -1,0 +1,315 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Packet Processing Cache Locality
+  Memory access pattern: hot path optimization for sub-5μs latency
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  nic_dma: {
+    direction: down
+    label: "1. NIC DMA Write"
+    width: 280
+    desc: |md
+      **NIC → RAM (DMA)**
+      - Packet data NOT in any CPU cache
+      - Cache lines are "cold"
+      - ~100ns to bring into L1
+    |
+    ring_desc: {
+      shape: sql_table
+      label: "RX Ring Descriptor (16 bytes)"
+      f0: "0x00 | uint64_t | addr     // UMEM offset"
+      f1: "0x08 | uint32_t | len      // packet length"
+      f2: "0x0C | uint32_t | options  // metadata"
+      sz: "16 bytes (fits in 1 cache line quarter)"
+    }
+  }
+  cache_hierarchy: {
+    direction: down
+    label: "CPU Cache Hierarchy"
+    l1: {
+      label: "L1 Cache (32KB/core)"
+      shape: rectangle
+      width: 200
+      style.fill: "#88DCF7"
+      desc: |md
+        **4ns access**
+        - Hot descriptors stay here
+        - Hot connection fields stay here
+      |
+    }
+    l2: {
+      label: "L2 Cache (256KB/core)"
+      shape: rectangle
+      width: 200
+      style.fill: "#C7F1FF"
+      desc: |md
+        **12ns access**
+        - Recent packet data
+        - Connection table buckets
+      |
+    }
+    l3: {
+      label: "L3 Cache (shared, 32MB)"
+      shape: rectangle
+      width: 200
+      style.fill: "#DEE1EB"
+      desc: |md
+        **40ns access**
+        - Full connection table
+        - ARP cache entries
+      |
+    }
+    ram: {
+      label: "Main Memory (DDR4)"
+      shape: rectangle
+      width: 200
+      style.fill: "#F5F5F5"
+      desc: |md
+        **100ns access**
+        - DMA'd packet data
+        - New connections
+      |
+    }
+    l1 -> l2: "miss"
+    l2 -> l3: "miss"
+    l3 -> ram: "miss"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  access_pattern: {
+    direction: down
+    label: "2. Memory Access Pattern (per packet)"
+    width: 380
+    step1: {
+      label: "Step 1: Ring Buffer Poll"
+      width: 350
+      code: |'c
+        // Descriptor access - SEQUENTIAL
+        struct xdp_desc *desc = &ring->descs[rx_idx];
+        // Cache line: desc occupies 16 bytes
+        // Prefetch: next descriptor already in cache
+        rte_prefetch0(&ring->descs[rx_idx + 1]);
+      '|
+    }
+    step2: {
+      label: "Step 2: Packet Data Access"
+      width: 350
+      code: |'c
+        // Packet data - COLD (just DMA'd!)
+        uint8_t *pkt = xsk_umem__get_data(umem, desc->addr);
+        // CACHE MISS: ~100ns penalty
+        // Solution: prefetch while processing current
+        rte_prefetch0(pkt);
+      '|
+    }
+    step3: {
+      label: "Step 3: Connection Lookup"
+      width: 350
+      code: |'c
+        // Hash table lookup
+        uint32_t hash = tcp_hash(src_ip, dst_ip, src_port, dst_port);
+        struct tcp_conn *c = conn_table->buckets[hash];
+        // Likely cache miss for cold connections
+        // Hot connections stay in L2/L3
+      '|
+    }
+    step1 -> step2 -> step3
+  }
+  timing: {
+    direction: down
+    label: "Latency Budget Breakdown"
+    budget_table: {
+      shape: sql_table
+      label: "5μs Budget Analysis"
+      r0: "Operation        | Time    | Cache"
+      r1: "Ring poll        | ~5ns   | L1 hit"
+      r2: "Desc read        | ~5ns   | L1 hit"
+      r3: "Packet data      | ~100ns | MISS (DMA'd)"
+      r4: "Ethernet parse   | ~20ns  | L1 (after miss)"
+      r5: "IP parse         | ~20ns  | L1"
+      r6: "TCP parse        | ~20ns  | L1"
+      r7: "Conn lookup      | ~30ns  | L2/L3"
+      r8: "Processing       | ~100ns | Mixed"
+      r9: "TOTAL (optimal)  | ~300ns | —"
+      r10: "TOTAL (realistic)| ~500ns | +2 misses"
+      r11: "REMAINING        | ~4500ns| For app/network"
+    }
+    note: |md
+      **Key insight**: 2 cache misses = 200ns
+      = 4% of 5μs budget per miss
+      = 40% of processing time
+    |
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  struct_layout: {
+    direction: down
+    label: "3. Optimized Struct Layout"
+    conn_struct: {
+      shape: sql_table
+      label: "struct tcp_conn (cache-optimized)"
+      c0: "=== CACHE LINE 0: Hot RX fields ==="
+      c1: "0x00 | uint32_t | local_addr"
+      c2: "0x04 | uint32_t | remote_addr"
+      c3: "0x08 | uint16_t | local_port"
+      c4: "0x0A | uint16_t | remote_port"
+      c5: "0x0C | uint32_t | rcv_nxt    // next expected"
+      c6: "0x10 | uint32_t | snd_nxt    // next to send"
+      c7: "0x14 | uint32_t | snd_una    // unacked"
+      c8: "0x18 | uint8_t  | state"
+      c9: "0x19 | uint8_t  | flags"
+      c10: "0x1A | uint8_t[6] | padding"
+      c11: "0x20 | uint32_t | rcv_wnd   // window"
+      c12: "=== CACHE LINE 1: Hot TX fields ==="
+      c13: "0x24 | uint32_t | snd_wnd"
+      c14: "0x28 | uint32_t | cwnd      // congestion"
+      c15: "0x2C | uint32_t | snd_wl1"
+      c16: "0x30 | uint32_t | snd_wl2"
+      c17: "0x34 | uint64_t | last_rx_time"
+      c18: "=== CACHE LINES 2-3: Cold fields ==="
+      c19: "0x3C | void*    | send_buf"
+      c20: "0x40 | void*    | recv_buf"
+      c21: "0x44 | uint64_t | total_bytes"
+      c22: "...  | ...      | (rarely accessed)"
+      sz: "64+ bytes per connection"
+    }
+    layout_note: {
+      label: "Layout Principles"
+      shape: rectangle
+      width: 320
+      style.fill: "#E8F5E9"
+      desc: |md
+        **Hot fields first** (touched every packet):
+        - 4-tuple identification
+        - Sequence numbers
+        - Window state
+        **Cold fields last** (rarely accessed):
+        - Statistics counters
+        - Buffers (pointer only)
+        - Timer state
+        **Result**: 1 cache miss for hot path
+        instead of 3-4 with naive layout
+      |
+    }
+  }
+  prefetch_strategy: {
+    direction: down
+    label: "4. Prefetch Strategy"
+    prefetch_code: {
+      label: "Batch Processing with Prefetch"
+      width: 380
+      code: |'c
+        void process_batch(struct rte_mbuf **bufs, uint16_t n) {
+            for (uint16_t i = 0; i < n; i++) {
+                // Prefetch packet data NOW
+                void *pkt = rte_pktmbuf_mtod(bufs[i], void *);
+                rte_prefetch0(pkt);
+                // Prefetch next mbuf structure
+                if (i + 1 < n) {
+                    rte_prefetch0(bufs[i + 1]);
+                }
+                // By time we get here, data is in cache
+                process_packet(bufs[i]);
+            }
+        }
+      '|
+    }
+    prefetch_timing: {
+      shape: sql_table
+      label: "Prefetch Timing"
+      t0: "Cycle | Action              | Cache State"
+      t1: "0     | Prefetch pkt[i]     | Request issued"
+      t2: "10    | Process pkt[i-1]    | pkt[i] loading"
+      t3: "50    | Access pkt[i]       | READY in L1"
+      t4: "—     | Latency hidden!     | No stall"
+    }
+    note2: |md
+      **Prefetch distance**: Start prefetch ~50 cycles
+      before actual access to hide memory latency
+    |
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  false_sharing: {
+    direction: down
+    label: "5. False Sharing Trap"
+    bad_layout: {
+      shape: sql_table
+      label: "WRONG: Shared cache line"
+      style.stroke: "#E53935"
+      b0: "struct counters {"
+      b1: "  uint64_t rx_pkts;   // Core 0 writes"
+      b2: "  uint64_t tx_pkts;   // Core 1 writes"
+      b3: "  uint64_t errors;    // Core 2 writes"
+      b4: "}"
+      b5: "// All 3 variables on SAME 64-byte line"
+      b6: "// Cache line bounces between cores!"
+    }
+    good_layout: {
+      shape: sql_table
+      label: "CORRECT: Cache-line aligned"
+      style.stroke: "#43A047"
+      g0: "struct counters {"
+      g1: "  uint64_t rx_pkts  __attr__((aligned(64)));"
+      g2: "  uint64_t tx_pkts  __attr__((aligned(64)));"
+      g3: "  uint64_t errors   __attr__((aligned(64)));"
+      g4: "}"
+      g5: "// Each counter on its own cache line"
+      g6: "// No false sharing, 10-50x faster"
+    }
+    false_sharing_note: |md
+      **False sharing penalty**: 50-500ns per update
+      when multiple cores write to same cache line
+      even if writing different variables!
+    |
+  }
+  optimization_summary: {
+    direction: down
+    label: "6. Optimization Summary"
+    summary_table: {
+      shape: sql_table
+      label: "Cache Optimization Checklist"
+      s0: "Technique         | Impact    | Effort"
+      s1: "Hot fields first  | -200ns    | Low"
+      s2: "Prefetch packet   | -100ns    | Low"
+      s3: "Per-core stats    | -500ns    | Low"
+      s4: "Cache-line align  | -300ns    | Low"
+      s5: "NUMA-local alloc  | -150ns    | Medium"
+      s6: "Batch processing  | -50ns/pkt | Medium"
+      s7: "Lock-free rings   | -500ns    | High"
+    }
+    final_note: {
+      label: "Result"
+      shape: rectangle
+      width: 300
+      style.fill: "#C8E6C9"
+      desc: |md
+        **Before**: ~1500ns processing (6+ cache misses)
+        **After**: ~400ns processing (1-2 cache misses)
+        **Savings**: 1100ns = 22% of 5μs budget
+        = room for application logic
+      |
+    }
+  }
+}
+nic_dma.ring_desc -> access_pattern.step1: "DMA writes\ndescriptors"
+access_pattern.step3 -> struct_layout.conn_struct: "Lookup touches\nhot fields only"
+prefetch_strategy.prefetch_code -> timing.budget_table: "Hides\n~100ns miss"

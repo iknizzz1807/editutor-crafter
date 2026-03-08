@@ -1,0 +1,334 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # TCP Connection Table — 10K+ Concurrent Connections
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  lookup: {
+    direction: down
+    label: "Lookup Flow (tcp_conn.c)"
+    step1: {
+      label: "1. Hash 4-Tuple"
+      width: 320
+      code: |'c
+        static inline uint32_t tcp_conn_hash(
+            uint32_t local_addr, uint16_t local_port,
+            uint32_t remote_addr, uint16_t remote_port)
+        {
+            uint32_t h = local_addr;
+            h ^= (remote_addr << 16) | (remote_addr >> 16);
+            h ^= (local_port << 16) | remote_port;
+            return h & (TCP_CONN_HASH_SIZE - 1);
+        }
+      '|
+    }
+    step2: {
+      label: "2. RCU Lock-Free Lookup"
+      width: 320
+      code: |'c
+        struct tcp_conn *tcp_conn_lookup_rcu(
+            struct tcp_conn_table_rcu *table,
+            uint32_t hash, uint32_t local_addr,
+            uint16_t local_port, uint32_t remote_addr,
+            uint16_t remote_port)
+        {
+            uint32_t v1, v2;
+            struct tcp_conn *conn;
+            do {
+                v1 = table->version;
+                if (v1 & 1) continue;  // Write in progress
+                conn = table->buckets[hash];
+                while (conn) {
+                    if (conn->local_addr == local_addr &&
+                        conn->local_port == local_port &&
+                        conn->remote_addr == remote_addr &&
+                        conn->remote_port == remote_port)
+                        return conn;
+                    conn = conn->next;
+                }
+                v2 = table->version;
+            } while (v1 != v2);
+            return NULL;
+        }
+      '|
+    }
+  }
+  hash_table: {
+    direction: down
+    label: "Hash Table (tcp_conn_table.h)"
+    header: {
+      shape: sql_table
+      label: "struct tcp_conn_table_rcu"
+      f0: "0x00 | struct tcp_conn * | buckets[16384]"
+      f1: "0x00 | volatile uint32_t | version"
+      note: "Total: 128KB + pointer array"
+    }
+    buckets: {
+      direction: right
+      label: "Bucket Array"
+      b0: {
+        shape: rectangle
+        label: "bucket[0]"
+        style.fill: "#E8F4E8"
+      }
+      b1: {
+        shape: rectangle
+        label: "bucket[1]"
+        style.fill: "#E8F4E8"
+      }
+      dots: {
+        shape: text
+        label: "..."
+      }
+      bN: {
+        shape: rectangle
+        label: "bucket[16383]"
+        style.fill: "#E8F4E8"
+      }
+    }
+    stats: {
+      label: |md
+        **Hash Statistics**
+        - Size: 16,384 buckets (power of 2)
+        - Load factor @ 10K conns: 0.61
+        - Avg chain length: < 1.0
+        - Worst case: 3-4 with good hash
+      |
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  chain: {
+    direction: down
+    label: "Hash Chain Example"
+    bucket: {
+      shape: rectangle
+      label: "bucket[hash]\n→ first conn"
+      style.fill: "#E8F4E8"
+      width: 140
+    }
+    conn1: {
+      shape: sql_table
+      label: "struct tcp_conn #1"
+      f0: "0x00 | uint32_t | local_addr = 192.168.1.100"
+      f1: "0x04 | uint16_t | local_port = 8080"
+      f2: "0x06 | uint16_t | remote_port = 54321"
+      f3: "0x08 | uint32_t | remote_addr = 10.0.0.50"
+      f4: "0x0C | uint8_t  | state = ESTABLISHED"
+      f5: "0x10 | struct tcp_conn * | next →"
+      sz: "Total: 64+ bytes"
+    }
+    conn2: {
+      shape: sql_table
+      label: "struct tcp_conn #2"
+      f0: "0x00 | uint32_t | local_addr = 192.168.1.100"
+      f1: "0x04 | uint16_t | local_port = 8080"
+      f2: "0x06 | uint16_t | remote_port = 54322"
+      f3: "0x08 | uint32_t | remote_addr = 10.0.0.51"
+      f4: "0x0C | uint8_t  | state = ESTABLISHED"
+      f5: "0x10 | struct tcp_conn * | next → NULL"
+      sz: "Total: 64+ bytes"
+    }
+    bucket -> conn1: "ptr"
+    conn1.f5 -> conn2: "next"
+  }
+  conn_struct: {
+    direction: down
+    label: "Connection Entry Layout (Cache-Optimized)"
+    cache_line_0: {
+      shape: sql_table
+      label: "Cache Line 0: Hot RX Path Data"
+      f0: "0x00 | uint32_t | local_addr"
+      f1: "0x04 | uint32_t | remote_addr"
+      f2: "0x08 | uint16_t | local_port"
+      f3: "0x0A | uint16_t | remote_port"
+      f4: "0x0C | uint32_t | rcv_nxt"
+      f5: "0x10 | uint32_t | snd_nxt"
+      f6: "0x14 | uint32_t | snd_una"
+      f7: "0x18 | uint8_t  | state"
+      f8: "0x19 | uint8_t  | flags"
+      f9: "0x1A | uint8_t[2] | padding"
+      fa: "0x1C | uint32_t | rcv_wnd"
+      sz: "64 bytes (1 cache line)"
+      style.fill: "#FFE4B5"
+    }
+    cache_line_1: {
+      shape: sql_table
+      label: "Cache Line 1: TX Path Data"
+      f0: "0x40 | uint32_t | snd_wnd"
+      f1: "0x44 | uint32_t | cwnd"
+      f2: "0x48 | uint32_t | snd_wl1"
+      f3: "0x4C | uint32_t | snd_wl2"
+      f4: "0x50 | uint64_t | last_rx_time"
+      f5: "0x58 | uint8_t[8] | padding"
+      sz: "64 bytes (1 cache line)"
+      style.fill: "#E6E6FA"
+    }
+    cache_line_2: {
+      shape: sql_table
+      label: "Cache Line 2: Buffers + Timers"
+      f0: "0x60 | struct tcp_send_buf * | send_buf"
+      f1: "0x68 | struct tcp_recv_buf * | recv_buf"
+      f2: "0x70 | uint32_t | retransmit_count"
+      f3: "0x74 | uint32_t | rto"
+      f4: "0x78 | uint64_t | timer_retransmit"
+      f5: "0x80 | uint64_t | rtt_estimate"
+      sz: "64 bytes (1 cache line)"
+      style.fill: "#F0F0F0"
+    }
+    cache_line_3: {
+      shape: sql_table
+      label: "Cache Line 3: Stats + Chain"
+      f0: "0x88 | struct tcp_conn * | next"
+      f1: "0x90 | void * | app_data"
+      f2: "0x98 | uint64_t | total_rx_bytes"
+      f3: "0xA0 | uint64_t | total_tx_bytes"
+      f4: "0xA8 | uint64_t | timer_time_wait"
+      f5: "0xB0 | uint8_t[16] | reserved"
+      sz: "64 bytes (1 cache line)"
+      style.fill: "#F0F0F0"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  rcu_version: {
+    direction: down
+    label: "RCU Version Counter"
+    version_struct: {
+      shape: sql_table
+      label: "Version Protocol"
+      f0: "version = even (0, 2, 4, ...) | Stable — safe to read"
+      f1: "version = odd (1, 3, 5, ...) | Write in progress — retry"
+      note: "Readers: spin until even, read, verify unchanged"
+    }
+    read_seq: {
+      label: "Read Sequence"
+      code: |'c
+        // Reader (wait-free)
+        do {
+            v1 = table->version;
+            if (v1 & 1) continue;  // Odd = writing
+            // ... read data ...
+            v2 = table->version;
+        } while (v1 != v2);  // Retry if changed
+      '|
+      width: 300
+    }
+    write_seq: {
+      label: "Write Sequence"
+      code: |'c
+        // Writer (exclusive)
+        __sync_fetch_and_add(&table->version, 1);
+        // ... modify data ...
+        __sync_fetch_and_add(&table->version, 1);
+      '|
+      width: 300
+    }
+  }
+  mem_layout: {
+    direction: down
+    label: "Memory Layout"
+    pool: {
+      shape: sql_table
+      label: "Connection Pool (Pre-Allocated)"
+      f0: "0x0000 | struct tcp_conn | conn_pool[0]"
+      f1: "0x0040 | struct tcp_conn | conn_pool[1]"
+      f2: "0x0080 | struct tcp_conn | conn_pool[2]"
+      dots: "..."
+      fn: "0xF830 | struct tcp_conn | conn_pool[9999]"
+      sz: "Total: 10,000 × 256B = 2.56MB"
+    }
+    note: |md
+      **Allocation Strategy**
+      - Pre-allocate at startup (no malloc in data path)
+      - Free list for O(1) alloc/free
+      - NUMA-local allocation
+    |
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  perf: {
+    direction: down
+    label: "Performance Characteristics"
+    metrics: {
+      shape: sql_table
+      label: "Lookup Performance"
+      f0: "Hash compute | ~10 ns | 3 XOR + shift ops"
+      f1: "Bucket access | ~5 ns | L1 cache hit"
+      f2: "Chain traverse | ~15 ns | 1-2 entries avg"
+      f3: "Field compare | ~10 ns | 4-tuple match"
+      f4: "Total (hit) | ~40 ns | All L1 hits"
+      f5: "Total (miss) | ~100 ns | 1 L3 cache miss"
+    }
+    scale: {
+      shape: sql_table
+      label: "Scaling @ 10K Connections"
+      f0: "Hash table size | 16,384 | buckets"
+      f1: "Load factor | 0.61 | 10K / 16K"
+      f2: "Avg chain length | 0.61 | mostly single entry"
+      f3: "Worst chain | 3-4 | hash collision"
+      f4: "Memory footprint | 2.56 MB | conn pool only"
+      f5: "Hash table overhead | 128 KB | pointer array"
+    }
+  }
+  concurrency: {
+    direction: down
+    label: "Concurrency Model"
+    model: {
+      shape: sql_table
+      label: "RCU Protection"
+      f0: "Readers | Zero overhead | No locks, no atomics"
+      f1: "Writers | Version toggle | Atomic increment ×2"
+      f2: "Grace period | Writer wait | For in-flight reads"
+      f3: "Memory reclaim | Deferred | After grace period"
+    }
+    pattern: {
+      label: "Access Pattern"
+      code: |'c
+        // RX path (read-heavy)
+        conn = tcp_conn_lookup_rcu(&table, hash, ...);
+        if (conn) {
+            // Process without lock
+            tcp_process_segment(conn, ...);
+        }
+        // TX path (application)
+        conn = tcp_conn_lookup_rcu(&table, hash, ...);
+        if (conn) {
+            // Application may need conn lock
+            // for state modification
+        }
+      '|
+      width: 340
+    }
+  }
+}
+row1.lookup -> row1.hash_table: "hash_idx"
+row1.hash_table.buckets -> row2.chain.bucket: "O(1)"
+row2.chain -> row2.conn_struct: "64 bytes/entry"
+legend: {
+  near: bottom-right
+  label: |md
+    **Color Key**
+    🟧 Orange: Hot RX path (frequently accessed)
+    🟪 Purple: TX path data
+    ⬜ Gray: Statistics/metadata
+    🟩 Green: Hash table structure
+  |
+}

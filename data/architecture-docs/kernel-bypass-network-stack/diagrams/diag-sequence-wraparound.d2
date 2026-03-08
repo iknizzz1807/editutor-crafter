@@ -1,0 +1,292 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: "TCP Sequence Number Wraparound (PAWS)\n32-bit seq wraps at 4GB — timestamps distinguish old from new"
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {stroke: transparent; fill: transparent}
+  wrap_problem: {
+    direction: down
+    label: "The Wraparound Problem"
+    seq_space: {
+      label: "32-bit Sequence Space"
+      shape: rectangle
+      width: 600
+      height: 120
+      style.fill: "#E8F4FD"
+      code: |'c
+        // Sequence number range
+        #define TCP_SEQ_MAX  0xFFFFFFFFUL  // 4,294,967,295
+        // At 10 Gbps throughput:
+        // - ~1.25 GB/s = 1.25e9 bytes/sec
+        // - Wraparound: 4.29e9 / 1.25e9 ≈ 3.4 seconds
+        // - At 100 Gbps: wrap in ~0.34 seconds!
+        uint32_t seq_before(uint32_t s1, uint32_t s2) {
+            // Returns true if s1 is "before" s2
+            // Handles wraparound correctly
+            return ((int32_t)(s1 - s2)) < 0;
+        }
+      '|
+    }
+    wrap_timeline: {
+      label: "Wraparound Timeline"
+      width: 600
+      style.fill: "#FFF9E6"
+      code: |'c
+        // Time T0: seq = 0xFFFFFFF0 (near end)
+        // Time T1: seq = 0x00000010 (wrapped)
+        // 
+        // Old segment (delayed): seq = 0x00000100
+        // New segment:           seq = 0x00000100  (SAME!)
+        //
+        // Without PAWS: Cannot distinguish old from new
+        // With PAWS: Timestamp comparison reveals order
+      '|
+    }
+  }
+  paws_mechanism: {
+    direction: down
+    label: "PAWS: Protection Against Wrapped Sequences"
+    timestamp_opt: {
+      label: "TCP Timestamp Option (RFC 7323)"
+      shape: sql_table
+      f0: "0 | uint8_t  | kind = 8 (Timestamp)"
+      f1: "1 | uint8_t  | length = 10 bytes"
+      f2: "2 | uint32_t | TSval (Sender's timestamp)"
+      f3: "6 | uint32_t | TSecr (Echo reply timestamp)"
+      sz: "Total: 10 bytes (in TCP options)"
+    }
+    paws_check: {
+      label: "PAWS Validation Logic"
+      width: 420
+      style.fill: "#E6FFE6"
+      code: |'c
+        // Per-connection state
+        struct tcp_paws_state {
+            uint32_t ts_recent;    // Highest timestamp seen from peer
+            uint64_t ts_last_ack;  // Time we last sent ACK
+        };
+        // PAWS check on incoming segment
+        int paws_check(struct tcp_conn *c, uint32_t ts_val) {
+            // Rule: Reject if timestamp is too old
+            // "Too old" = older than ts_recent
+            // With 24-day window for clock skew tolerance
+            if (ts_val < c->ts_recent) {
+                // Segment has old timestamp - reject
+                // Could be: delayed duplicate, wrapped seq
+                return PAWS_REJECT;
+            }
+            // Accept and update ts_recent
+            c->ts_recent = ts_val;
+            return PAWS_ACCEPT;
+        }
+      '|
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style: {stroke: transparent; fill: transparent}
+  wrap_arithmetic: {
+    direction: down
+    label: "Sequence Arithmetic Across Wrap"
+    seq_math: {
+      label: "Modular Arithmetic (RFC 793)"
+      width: 550
+      style.fill: "#F0E6FF"
+      code: |'c
+        // TCP sequence numbers use modular arithmetic
+        // Comparisons must handle wraparound correctly
+        // Is s1 < s2 (considering wrap)?
+        // Returns 1 if s1 is "before" s2 in sequence space
+        static inline int seq_before(uint32_t s1, uint32_t s2) {
+            // Cast to signed: wrap becomes negative
+            // Example: s1=0x10, s2=0xFFFFFFF0
+            //   (int32_t)(0x10 - 0xFFFFFFF0)
+            //   = (int32_t)(0x00000020) = 32 > 0, so NOT before
+            return (int32_t)(s1 - s2) < 0;
+        }
+        // Is s1 > s2?
+        static inline int seq_after(uint32_t s1, uint32_t s2) {
+            return (int32_t)(s1 - s2) > 0;
+        }
+        // Distance from s1 to s2 (may wrap)
+        static inline uint32_t seq_distance(uint32_t s1, uint32_t s2) {
+            return s2 - s1;  // Natural wraparound
+        }
+        // Example across wrap boundary:
+        //   seq_before(0xFFFFFFF0, 0x00000010) == 1 (true)
+        //   seq_before(0x00000010, 0xFFFFFFF0) == 0 (false)
+      '|
+    }
+    window_check: {
+      label: "Window Containment Check"
+      width: 550
+      style.fill: "#FFE6E6"
+      code: |'c
+        // Check if seq falls within [start, start+len)
+        // Handles wraparound correctly
+        int seq_in_window(uint32_t seq, 
+                          uint32_t start, 
+                          uint32_t len) {
+            // seq >= start AND seq < start+len
+            // Using modular comparisons
+            return !seq_before(seq, start) && 
+                   seq_before(seq, start + len);
+        }
+        // Example:
+        //   Window: [0xFFFFFFF0, 0x00000010) (len=32)
+        //   seq_in_window(0x00000000, 0xFFFFFFF0, 32) = 1
+        //   seq_in_window(0x00000020, 0xFFFFFFF0, 32) = 0
+      '|
+    }
+  }
+  combined_logic: {
+    direction: down
+    label: "Combined PAWS + Sequence Check"
+    segment_accept: {
+      label: "Segment Acceptance Decision"
+      width: 500
+      style.fill: "#E6FFFF"
+      code: |'c
+        // Complete segment validation with PAWS
+        int tcp_segment_acceptable(struct tcp_conn *c,
+                                   uint32_t seq, uint32_t len,
+                                   uint32_t ts_val) {
+            // Step 1: PAWS check (timestamp must be recent)
+            if (ts_val < c->ts_recent) {
+                // Old timestamp - likely stale duplicate
+                // Even if seq is valid, reject for safety
+                stats.paws_reject++;
+                return 0;
+            }
+            // Step 2: Sequence check (must be in window)
+            uint32_t rcv_wnd = c->rcv_wnd;
+            uint32_t rcv_nxt = c->rcv_nxt;
+            // Segment acceptable if any part falls in window
+            // (Simplified - full check per RFC 793)
+            if (!seq_in_window(seq, rcv_nxt, rcv_wnd) &&
+                !seq_in_window(seq + len - 1, rcv_nxt, rcv_wnd)) {
+                stats.seq_reject++;
+                return 0;
+            }
+            // Step 3: Update PAWS state
+            if (ts_val > c->ts_recent) {
+                c->ts_recent = ts_val;
+            }
+            return 1;  // Accept segment
+        }
+      '|
+    }
+    wrap_scenario: {
+      label: "Wrap Scenario: Delayed Duplicate"
+      shape: rectangle
+      width: 500
+      height: 200
+      style.fill: "#FFF0E6"
+      scenario: |md
+        **Timeline:**
+        1. **T=0s**: Send segment A, seq=0xFFFFFFF0, ts=1000
+        2. **T=0.001s**: Segment A lost in network
+        3. **T=3.5s**: Send segment B, seq=0x00000100, ts=4500
+           (sequence wrapped!)
+        4. **T=3.6s**: Segment B arrives, accepted (ts=4500 > ts_recent)
+        5. **T=4.0s**: Segment A finally arrives (delayed 4s!)
+           - seq=0xFFFFFFF0 appears "before" rcv_nxt=0x00000200
+           - **BUT** ts=1000 < ts_recent=4500
+           - **PAWS rejects** the stale duplicate!
+        **Without PAWS**: Segment A would be accepted as "old data"
+        and corrupt the stream with duplicate bytes.
+      |
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style: {stroke: transparent; fill: transparent}
+  clock_sync: {
+    direction: down
+    label: "Timestamp Clock Considerations"
+    clock_rules: {
+      label: "PAWS Clock Requirements"
+      width: 500
+      style.fill: "#F5F5DC"
+      code: |'c
+        // Timestamp clock must tick at least once per wrap
+        // Recommended: 1ms to 1s granularity
+        #define PAWS_WINDOW_NS (24ULL * 24 * 3600 * 1000000000ULL)
+        // 24 days - max acceptable timestamp age
+        // Generate timestamp (microseconds since boot)
+        uint32_t tcp_timestamp_generate(void) {
+            uint64_t now_ns = rte_rdtsc() * 1000000000ULL / rte_get_tsc_hz();
+            // Convert to ~1ms units (1000 per second)
+            return (uint32_t)(now_ns / 1000000ULL);
+        }
+        // At 1kHz timestamp rate:
+        // - Wraparound: 2^32 / 1000 / 86400 ≈ 49.7 days
+        // - Well within PAWS_WINDOW for clock skew tolerance
+      '|
+    }
+  }
+  edge_case: {
+    direction: down
+    label: "Edge Case: Simultaneous Wrap"
+    edge_handling: {
+      label: "When Both Seq and TS Wrap"
+      width: 500
+      style.fill: "#E6E6FA"
+      code: |'c
+        // Rare case: both sequence and timestamp wrap
+        // at approximately the same time
+        //
+        // Sequence wraps: every 4GB (~3.4s at 10Gbps)
+        // Timestamp wraps: every 49 days (at 1kHz)
+        //
+        // Probability of simultaneous wrap: negligible
+        // But PAWS still protects because:
+        // - Timestamp comparison is independent of seq
+        // - Even if ts_val < ts_recent due to wrap,
+        //   the 24-day window provides margin
+        // Guard: if timestamp difference > 12 days,
+        // assume timestamp wrapped and accept
+        #define PAWS_HALF_WINDOW (12ULL * 24 * 3600 * 1000ULL)
+        int paws_check_with_wrap(uint32_t ts_val, 
+                                  uint32_t ts_recent) {
+            int32_t diff = (int32_t)(ts_val - ts_recent);
+            if (diff < 0 && -diff > PAWS_HALF_WINDOW) {
+                // Likely timestamp wrapped - accept
+                return PAWS_ACCEPT;
+            }
+            return (diff >= 0) ? PAWS_ACCEPT : PAWS_REJECT;
+        }
+      '|
+    }
+  }
+}
+legend: {
+  near: bottom-center
+  label: ""
+  shape: rectangle
+  width: 900
+  style: {stroke: "#666"; fill: "#FAFAFA"}
+  legend_content: |md
+    **Key Concepts:**
+    • **32-bit wraparound**: At 10 Gbps, sequence space exhausts in ~3.4 seconds
+    • **PAWS**: Uses TCP timestamp option to distinguish old from new segments
+    • **Modular arithmetic**: `(int32_t)(s1 - s2) < 0` handles wrap correctly
+    • **24-day window**: Maximum acceptable timestamp age for clock skew tolerance
+  |
+}

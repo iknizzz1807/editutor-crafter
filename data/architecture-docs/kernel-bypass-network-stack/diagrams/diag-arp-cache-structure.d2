@@ -1,0 +1,242 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # ARP Cache — Hash Table with LRU
+  IP → MAC resolution with O(1) lookup, collision handling via linear probing, and LRU eviction
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  lookup: {
+    direction: down
+    label: "Lookup Flow"
+    hash_func: {
+      label: "Hash Function"
+      width: 280
+      code: |'c
+        static inline uint32_t arp_hash(uint32_t ip) {
+          // Mix bits across IP for better distribution
+          return ((ip >> 24) ^ (ip >> 16) ^ 
+                  (ip >> 8) ^ ip) & (SIZE - 1);
+        }
+      '|
+    }
+    ip_input: {
+      label: "Input: IP Address"
+      width: 280
+      code: |'c
+        uint32_t ip = 0xC0A80132;  // 192.168.1.50
+        uint32_t idx = arp_hash(ip);  // idx = 0x36
+      '|
+    }
+  }
+  entries: {
+    direction: down
+    label: "Hash Table (ARP_CACHE_SIZE = 256)"
+    entry_struct: {
+      shape: sql_table
+      label: "struct arp_entry (arp_cache.h)"
+      f0: "0x00 | uint32_t    | ip"
+      f1: "0x04 | uint8_t[6]  | mac"
+      f2: "0x0A | arp_state_t | state"
+      f3: "0x0B | uint8_t     | retries"
+      f4: "0x0C | uint64_t    | expires_at"
+      f5: "0x14 | arp_entry*  | lru_prev"
+      f6: "0x18 | arp_entry*  | lru_next"
+      sz: "Total: 32 bytes (½ cache line)"
+    }
+    state_enum: {
+      shape: class
+      label: "enum arp_state_t"
+      INCOMPLETE: "0 // ARP sent, waiting"
+      REACHABLE: "1 // Valid, can use"
+      STALE: "2 // Expired, retry"
+      FAILED: "3 // No response"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  hash_table: {
+    direction: down
+    label: "Hash Table Buckets (entries[256])"
+    bucket_header: {
+      shape: sql_table
+      label: "Bucket Index"
+      b0: "0x00"
+      b1: "0x01"
+      b2: "..."
+      b53: "0x35"
+      b54: "0x36 ← hash(192.168.1.50)"
+      b55: "0x37"
+      b56: "..."
+      bfe: "0xFE"
+      bff: "0xFF"
+    }
+    collision_note: {
+      label: "Collision Handling"
+      width: 300
+      code: |'c
+        // Linear probing on collision
+        uint32_t idx = arp_hash(ip);
+        for (int i = 0; i < PROBE_LIMIT; i++) {
+          entry = &table[(idx + i) & 0xFF];
+          if (entry->ip == ip) return entry;
+          if (entry->state == FAILED) break;
+        }
+        // Use first empty/expired slot
+      '|
+    }
+  }
+  lru: {
+    direction: down
+    label: "LRU List (Doubly Linked)"
+    lru_struct: {
+      shape: class
+      label: "struct arp_cache (arp_cache.h)"
+      -entries: "arp_entry[256]"
+      -lru_head: "arp_entry* // Most recent"
+      -lru_tail: "arp_entry* // Evict candidate"
+      -count: "uint32_t"
+      +lookup(ip): "arp_entry*"
+      +update(ip, mac): "void"
+      +evict_lru(): "arp_entry*"
+    }
+    lru_diagram: {
+      label: "LRU Order (head ↔ tail)"
+      head: {
+        label: "lru_head"
+        shape: rectangle
+        width: 100
+        style.fill: "#ACE1AF"
+      }
+      node1: {
+        label: "192.168.1.1\nREACHABLE"
+        shape: rectangle
+        width: 120
+        style.fill: "#ACE1AF"
+      }
+      node2: {
+        label: "192.168.1.50\nREACHABLE"
+        shape: rectangle
+        width: 120
+        style.fill: "#ACE1AF"
+      }
+      node3: {
+        label: "10.0.0.1\nREACHABLE"
+        shape: rectangle
+        width: 120
+        style.fill: "#ACE1AF"
+      }
+      tail: {
+        label: "lru_tail\n(evict this)"
+        shape: rectangle
+        width: 100
+        style.fill: "#FFE4E1"
+      }
+    }
+    lru_update: {
+      label: "On Access: Move to Head"
+      width: 340
+      code: |'c
+        void lru_touch(arp_cache *c, arp_entry *e) {
+          // Remove from current position
+          if (e->lru_prev) e->lru_prev->lru_next = e->lru_next;
+          if (e->lru_next) e->lru_next->lru_prev = e->lru_prev;
+          if (c->lru_tail == e) c->lru_tail = e->lru_prev;
+          // Insert at head
+          e->lru_next = c->lru_head;
+          e->lru_prev = NULL;
+          if (c->lru_head) c->lru_head->lru_prev = e;
+          c->lru_head = e;
+        }
+      '|
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  operations: {
+    direction: down
+    label: "Operations"
+    lookup_op: {
+      label: "Lookup (Hot Path)"
+      width: 320
+      code: |'c
+        arp_entry* arp_lookup(arp_cache *c, uint32_t ip) {
+          uint32_t idx = arp_hash(ip);
+          for (int i = 0; i < 256; i++) {
+            arp_entry *e = &c->entries[(idx + i) & 0xFF];
+            if (e->ip == ip && e->state == REACHABLE) {
+              if (time_now() < e->expires_at) {
+                lru_touch(c, e);  // O(1)
+                return e;
+              }
+              e->state = STALE;
+            }
+            if (e->state == FAILED) break;
+          }
+          return NULL;  // Miss → send ARP
+        }
+      '|
+    }
+    update_op: {
+      label: "Update (ARP Reply)"
+      width: 320
+      code: |'c
+        void arp_update(arp_cache *c, uint32_t ip, 
+                        uint8_t *mac) {
+          arp_entry *e = find_or_alloc(c, ip);
+          e->ip = ip;
+          memcpy(e->mac, mac, 6);
+          e->state = REACHABLE;
+          e->expires_at = time_now() + TTL;
+          lru_touch(c, e);  // Move to head
+          if (c->count == 256) evict_lru(c);
+          else c->count++;
+        }
+      '|
+    }
+  }
+  timing: {
+    direction: down
+    label: "Timing & Cache Behavior"
+    timing_table: {
+      shape: sql_table
+      label: "Operation Latency"
+      op1: "Hash (mix + mask)  | ~5 ns"
+      op2: "Linear probe (L1)  | ~5 ns/entry"
+      op3: "LRU touch (ptr swap)| ~10 ns"
+      op4: "Cache miss (RAM)   | ~100 ns"
+      total: "Total (L1 hit)     | ~20-30 ns"
+    }
+    cache_note: {
+      label: "Cache Optimization Notes"
+      width: 320
+      code: |'c
+        // Entry is 32 bytes → 2 per cache line
+        // Sequential probing = good prefetch
+        // LRU pointers separate from hot fields
+        // Consider: per-bucket LRU for less contention
+      '|
+    }
+  }
+}
+row1.lookup.ip_input -> row2.hash_table.bucket_header: "hash(ip) | index"
+row1.lookup.hash_func -> row2.lru.lru_struct: "maintains"
+row2.hash_table.collision_note -> row2.hash_table.bucket_header: "probe"
+row2.lru.head -> row2.lru.node1: "next"
+row2.lru.node1 -> row2.lru.node2: "next"
+row2.lru.node2 -> row2.lru.node3: "next"
+row2.lru.node3 -> row2.lru.tail: "next"
+row3.operations.lookup_op -> row3.timing.timing_table: "measure"

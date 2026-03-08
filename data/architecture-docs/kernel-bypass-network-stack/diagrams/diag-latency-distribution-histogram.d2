@@ -1,0 +1,214 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Latency Distribution — Why P99 Matters More Than Mean
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  hist_container: {
+    direction: down
+    label: "Packet Processing Latency Distribution"
+    hist_data: {
+      shape: class
+      label: "Latency Histogram (bins = 64ns width)"
+      bucket_0_64: "0-64ns: ████████████████████ 45,000"
+      bucket_64_128: "64-128ns: ████████████████████ 42,000"
+      bucket_128_192: "128-192ns: ██████████████ 28,000"
+      bucket_192_256: "192-256ns: ████████ 15,000"
+      bucket_256_320: "256-320ns: ████ 6,000"
+      bucket_320_384: "320-384ns: ██ 2,500"
+      bucket_384_448: "384-448ns: █ 1,200"
+      bucket_448_512: "448-512ns: 500"
+      bucket_gap: "... (near zero)"
+      bucket_4000_5000: "4000-5000ns: ███ 800"
+      bucket_5000_6000: "5000-6000ns: ████ 1,500"
+      bucket_6000_7000: "6000-7000ns: ██ 600"
+      bucket_7000_8000: "7000-8000ns: 300"
+      total: "Total samples: 100,000"
+    }
+  }
+  legend: {
+    label: "Distribution Analysis"
+    style.fill: "#f0f4f8"
+    style.stroke: "#cbd5e0"
+    fast_path: {
+      label: "Fast Path (Cache Hits)"
+      style.fill: "#48bb78"
+      style.stroke: "#276749"
+    }
+    slow_path: {
+      label: "Slow Path (Cache Miss / Contention)"
+      style.fill: "#f56565"
+      style.stroke: "#c53030"
+    }
+    mean_marker: {
+      label: "Mean = 287ns"
+      style.fill: "#4299e1"
+      style.stroke: "#2b6cb0"
+    }
+    p99_marker: {
+      label: "P99 = 6,240ns"
+      style.fill: "#ed8936"
+      style.stroke: "#c05621"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  stats_table: {
+    shape: sql_table
+    label: "Latency Statistics (latency_dist.c)"
+    f0: "Mean | 287 ns | MISLEADING"
+    f1: "Median (P50) | 64 ns | Fast path typical"
+    f2: "P90 | 192 ns | Good for most"
+    f3: "P99 | 6,240 ns | 22× mean!"
+    f4: "P99.9 | 7,680 ns | 27× mean!"
+    f5: "Max | 8,960 ns | Worst case"
+    note: "100K samples | Bi-modal distribution"
+  }
+  problem: {
+    label: "The Mean Latency Trap"
+    style.fill: "#fed7d7"
+    style.stroke: "#c53030"
+    trap_code: {
+      label: "Why Mean Fails in HFT"
+      code: |'c
+        // Mean = 287ns looks great!
+        // But 1% of packets take 6000+ ns
+        // At 10M packets/second:
+        // - 100,000 packets hit slow path
+        // - That's 100K missed opportunities
+        // - Your competitor got there first
+        // In HFT, you don't compete with the
+        // mean—you compete with every packet.
+        // One slow packet = one lost trade.
+      '|
+      width: 350
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  hft_impact: {
+    label: "HFT Impact Analysis"
+    style.fill: "#fef3c7"
+    style.stroke: "#d69e2e"
+    impact_code: {
+      label: "Real-World Consequence"
+      code: |'c
+        // Exchange round-trip: 100μs typical
+        // Your stack P99: 6.2μs (6.2% of budget)
+        // Competitor P99: 2.0μs (2.0% of budget)
+        // On P99 packets, you arrive 4.2μs later
+        // At price movement of $0.01/μs:
+        // - You miss by $0.042 per share
+        // - On 10,000 shares: $420 lost per event
+        // - At 1000 events/day: $420,000/day
+        // P99 optimization = competitive advantage
+      '|
+      width: 380
+    }
+  }
+  measurement: {
+    label: "Correct Measurement Approach"
+    style.fill: "#c6f6d5"
+    style.stroke: "#276749"
+    measure_code: {
+      label: "histogram.c — Track the Tail"
+      code: |'c
+        struct latency_hist {
+          uint64_t buckets[4096];  // 64ns bins
+          uint64_t total;
+          uint64_t sum_ns;
+          uint64_t min_ns;
+          uint64_t max_ns;
+        } __attribute__((aligned(64)));
+        // Record every sample
+        static inline void record_latency(
+            struct latency_hist *h, uint64_t ns) {
+          uint32_t bucket = ns >> 6;  // /64
+          if (bucket < 4096) h->buckets[bucket]++;
+          h->total++;
+          h->sum_ns += ns;
+          if (ns < h->min_ns) h->min_ns = ns;
+          if (ns > h->max_ns) h->max_ns = ns;
+        }
+        // Compute P99
+        uint64_t p99(struct latency_hist *h) {
+          uint64_t target = h->total * 99 / 100;
+          uint64_t cum = 0;
+          for (int i = 0; i < 4096; i++) {
+            cum += h->buckets[i];
+            if (cum >= target)
+              return (uint64_t)i * 64;
+          }
+          return 262144;  // max
+        }
+      '|
+      width: 380
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  root_cause: {
+    shape: sql_table
+    label: "Bi-Modal Distribution Root Causes"
+    fast_label: "FAST PATH | TYPICAL | CAUSE"
+    f0: "64-128ns | 87% | All L1 cache hits, no contention"
+    f1: "128-256ns | 10% | L2 cache hit, mild contention"
+    f2: "256-512ns | 2% | L3 cache hit or prefetch miss"
+    slow_label: "SLOW PATH | RARE | CAUSE"
+    s0: "1-4μs | 0.5% | Main memory access (cache miss)"
+    s1: "4-8μs | 0.5% | Lock contention or NUMA remote"
+    s2: ">8μs | <0.1% | Multiple cache misses, TLB miss"
+    summary: "Optimization Target | Eliminate slow path entirely"
+  }
+  fix_strategies: {
+    label: "Fixing the Tail Latency"
+    style.fill: "#e9d8fd"
+    style.stroke: "#6b46c1"
+    strategies: {
+      shape: class
+      label: "Optimization Strategies"
+      +prefetch: "Prefetch packet data while parsing headers"
+      +lock_free: "Eliminate ALL locks from data path"
+      +numa_local: "Allocate buffers on NIC's NUMA node"
+      +batch_aware: "Batch processing with timeout cap"
+      +cache_align: "Pad structures to cache line boundaries"
+      +per_core: "Per-core statistics, no shared counters"
+      measure: "Profile P99, not mean | perf record -g"
+    }
+  }
+}
+arrow_explain: {
+  label: |md
+    **Key Insight**: Mean latency of 287ns suggests your stack is fast.  
+    But P99 of 6,240ns means 1% of packets are 22× slower.  
+    In HFT, that 1% is where races are won and lost.
+  |
+  near: bottom-center
+  style.fill: "#edf2f7"
+  style.stroke: "#a0aec0"
+  width: 700
+}
+fast_path -> slow_path: "Cache Miss / Contention" {
+  style.stroke-dash: 3
+  style.stroke: red
+}
+stats_table -> hft_impact: "Drives" {
+  style.stroke: "#d69e2e"
+}

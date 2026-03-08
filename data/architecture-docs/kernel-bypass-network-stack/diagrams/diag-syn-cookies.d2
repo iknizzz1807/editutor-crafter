@@ -1,0 +1,284 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # SYN Cookies — Stateless SYN Flood Defense
+  **Trade-off**: Survives SYN floods but loses TCP options negotiation (MSS, WScale, SACK)
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  normal_flow: {
+    direction: down
+    label: "Normal: Stateful Handshake"
+    normal_client: {
+      label: "Client"
+      shape: person
+      style.fill: "#E8F5E9"
+    }
+    normal_server: {
+      label: "Server"
+      shape: rectangle
+      style.fill: "#E3F2FD"
+    }
+    normal_alloc: {
+      label: |md
+        **Allocates Conn State**
+        - 256+ bytes per SYN
+        - Times out after 60s
+      |
+      shape: rectangle
+      style.fill: "#FFCDD2"
+      style.stroke: "#C62828"
+    }
+    normal_client -> normal_server: "SYN (ISN=C)" {
+      style.stroke: "#1976D2"
+    }
+    normal_server -> normal_alloc: "alloc conn" {
+      style.stroke-dash: 3
+      style.stroke: "#C62828"
+    }
+    normal_alloc -> normal_client: "SYN-ACK (ISN=S)" {
+      style.stroke: "#1976D2"
+    }
+    normal_client -> normal_server: "ACK (ack=S+1)" {
+      style.stroke: "#2E7D32"
+    }
+  }
+  flood_flow: {
+    direction: down
+    label: "SYN Flood Attack"
+    flood_attacker: {
+      label: "Attacker"
+      shape: person
+      style.fill: "#FFCDD2"
+    }
+    flood_server: {
+      label: "Server"
+      shape: rectangle
+      style.fill: "#FFCDD2"
+    }
+    flood_exhausted: {
+      label: |md
+        **Memory Exhausted!**
+        - 10K SYNs = 2.5MB+
+        - Legit clients blocked
+        - Server unresponsive
+      |
+      shape: rectangle
+      style.fill: "#B71C1C"
+      style.font-color: white
+    }
+    flood_attacker -> flood_server: "SYN #1\nSYN #2\nSYN #3\n...\nSYN #N" {
+      style.stroke: "#C62828"
+      style.stroke-width: 2
+    }
+    flood_server -> flood_exhausted: "N conn states" {
+      style.stroke: "#C62828"
+      style.stroke-width: 2
+    }
+    flood_note: {
+      label: |md
+        **No ACKs sent**
+        (spoofed IPs or
+        malicious client)
+      |
+      shape: rectangle
+      style.fill: transparent
+      style.stroke-dash: 3
+    }
+    flood_exhausted -> flood_note: {
+      style.stroke: transparent
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  cookie_flow: {
+    direction: down
+    label: "SYN Cookie: Stateless Defense"
+    cookie_client: {
+      label: "Client"
+      shape: person
+      style.fill: "#E8F5E9"
+    }
+    cookie_server: {
+      label: "Server"
+      shape: rectangle
+      style.fill: "#C8E6C9"
+    }
+    cookie_nostate: {
+      label: |md
+        **NO STATE ALLOCATED**
+        - Cookie = f(IP, port, time, secret)
+        - Encodes MSS in top bits
+        - 0 bytes stored!
+      |
+      shape: rectangle
+      style.fill: "#81C784"
+      style.stroke: "#2E7D32"
+    }
+    cookie_client -> cookie_server: "SYN (ISN=C)" {
+      style.stroke: "#1976D2"
+    }
+    cookie_server -> cookie_nostate: "compute cookie" {
+      style.stroke: "#2E7D32"
+    }
+    cookie_nostate -> cookie_client: "SYN-ACK (ISN=cookie)" {
+      style.stroke: "#2E7D32"
+      style.stroke-width: 2
+    }
+    cookie_client -> cookie_server: "ACK (ack=cookie+1)" {
+      style.stroke: "#2E7D32"
+      style.stroke-width: 2
+    }
+    cookie_validate: {
+      label: |md
+        **Validate Cookie**
+        - Recompute f(IP, port, time, secret)
+        - If match: conn is legit
+        - NOW allocate state
+      |
+      shape: rectangle
+      style.fill: "#A5D6A7"
+    }
+    cookie_server -> cookie_validate: "verify" {
+      style.stroke: "#2E7D32"
+    }
+  }
+}
+row1 -> row2: "Solution" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 3
+  style.stroke-dash: 5
+}
+cookie_encoding: {
+  direction: right
+  label: "SYN Cookie Encoding (32-bit ISN)"
+  cookie_bits: {
+    shape: sql_table
+    label: "ISN Bit Layout (RFC 4987)"
+    bits_31_30: "31:30 | 2 bits  | MSS Index (0-3)"
+    bits_29_24: "29:24 | 6 bits  | Time counter (64s window)"
+    bits_23_00: "23:00 | 24 bits | Hash(IP, port, time, secret)"
+    note: "Total: 32 bits — fits in TCP seq field"
+  }
+  mss_table: {
+    shape: sql_table
+    label: "MSS Encoding"
+    idx0: "Index | MSS Value"
+    idx1: "0     | 536 bytes"
+    idx2: "1     | 1300 bytes"
+    idx3: "2     | 1440 bytes"
+    idx4: "3     | 1460 bytes"
+  }
+}
+cookie_formula: {
+  direction: down
+  label: "Cookie Generation & Validation"
+  width: 480
+  gen_code: {
+    label: "Cookie Generation (server.c)"
+    width: 440
+    code: |'c
+      uint32_t tcp_syn_cookie(uint32_t sip, uint16_t sport,
+                              uint32_t dip, uint16_t dport,
+                              uint32_t tcp_seq, uint32_t secret) {
+        // Time counter: changes every 64 seconds
+        uint32_t t = (time(NULL) >> 6) & 0x3F;
+        // Hash: 24-bit cryptographic MAC
+        uint32_t hash = siphash24(sip ^ dip ^ sport ^ dport 
+                                  ^ tcp_seq, secret) & 0xFFFFFF;
+        // MSS index: encoded in top 2 bits
+        uint32_t mss_idx = select_mss_for_mtu(mtu);
+        // Combine: [mss:2][time:6][hash:24]
+        return (mss_idx << 30) | (t << 24) | hash;
+      }
+    '|
+  }
+  val_code: {
+    label: "Cookie Validation (server.c)"
+    width: 440
+    code: |'c
+      int tcp_validate_cookie(uint32_t cookie, uint32_t sip,
+                              uint16_t sport, uint32_t dip,
+                              uint16_t dport, uint32_t secret,
+                              uint32_t *out_mss) {
+        // Extract time component
+        uint32_t cookie_time = (cookie >> 24) & 0x3F;
+        uint32_t now = (time(NULL) >> 6) & 0x3F;
+        // Allow 2 time windows (current + previous)
+        if ((now - cookie_time) > 2 && (now - cookie_time) < 62)
+          return 0;  // Expired or future cookie
+        // Try current and previous secrets
+        for (int i = 0; i <= 1; i++) {
+          uint32_t expected = tcp_syn_cookie(sip, sport, dip,
+                                  dport, 0, secret_for_window(i));
+          if ((cookie & 0x3FFFFFFF) == (expected & 0x3FFFFFFF)) {
+            *out_mss = mss_table[(cookie >> 30) & 3];
+            return 1;  // Valid!
+          }
+        }
+        return 0;  // Invalid cookie
+      }
+    '|
+  }
+}
+tradeoffs: {
+  direction: right
+  label: "Trade-offs"
+  pros: {
+    shape: sql_table
+    label: "PROS ✓"
+    style.fill: "#C8E6C9"
+    p1: "Zero memory for half-open conns"
+    p2: "Immune to SYN flood DoS"
+    p3: "No kernel config changes needed"
+    p4: "Transparent to client"
+    p5: "Standard Linux feature since 2.6"
+  }
+  cons: {
+    shape: sql_table
+    label: "CONS ✗"
+    style.fill: "#FFCDD2"
+    c1: "No MSS negotiation (limited to 4 values)"
+    c2: "No Window Scaling option"
+    c3: "No SACK permitted option"
+    c4: "No Timestamps option"
+    c5: "Falls back to suboptimal defaults"
+  }
+}
+security: {
+  direction: right
+  label: "Security Properties"
+  sec_props: {
+    shape: class
+    label: "SYN Cookie Security (crypto.c)"
+    +secret: "uint32_t [2] — rotates every 64s"
+    +siphash24: "Cryptographic MAC — not brute-forceable"
+    +time_window: "64-second validity — prevents replay"
+    +tcp_seq: "Included in hash — prevents hijacking"
+    -brute_force: "2^24 attempts needed per guess"
+    -guess_rate: "Limited by network RTT"
+  }
+}
+legend: {
+  near: bottom-right
+  label: "Legend"
+  shape: rectangle
+  style.fill: "#F5F5F5"
+  leg_normal: "Normal path"
+  leg_attack: "Attack path"
+  leg_cookie: "Cookie path"
+  leg_data: "Data flow"
+  leg_normal.style.fill: "#E3F2FD"
+  leg_attack.style.fill: "#FFCDD2"
+  leg_cookie.style.fill: "#C8E6C9"
+}

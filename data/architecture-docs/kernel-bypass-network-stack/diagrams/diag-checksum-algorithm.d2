@@ -1,0 +1,217 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # IP/UDP/TCP Checksum Algorithm
+  ## One's Complement Sum with SIMD Optimization
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  core_algo: {
+    direction: down
+    label: "Core Algorithm"
+    step1: {
+      label: "1. Sum 16-bit Words"
+      width: 380
+      code: |'c
+        // Treat data as array of uint16_t
+        const uint16_t *words = (const uint16_t *)data;
+        uint32_t sum = 0;
+        while (len > 1) {
+            sum += *words++;
+            len -= 2;
+        }
+        // Handle odd byte (left-justified)
+        if (len == 1) {
+            sum += *(const uint8_t *)words;
+        }
+      '|
+    }
+    step2: {
+      label: "2. Fold Carries (32→16 bit)"
+      width: 380
+      code: |'c
+        // Fold 32-bit sum to 16 bits
+        // Handle carries that overflow 16 bits
+        while (sum >> 16) {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
+        // One's complement for final checksum
+        return ~sum & 0xFFFF;
+      '|
+    }
+  }
+  fold_visual: {
+    direction: down
+    label: "Folding Visualized"
+    fold_example: {
+      shape: sql_table
+      label: "32-bit Sum Folding"
+      r0: "sum (32-bit) | 0x0001_B7A2"
+      r1: "sum >> 16    | 0x0000_0001"
+      r2: "sum & 0xFFFF | 0x0000_B7A2"
+      r3: "Folded       | 0x0000_B7A3"
+      r4: "~Folded      | 0xFFFF_485C"
+    }
+    fold_loop: {
+      label: "Why Loop?"
+      width: 320
+      code: |'c
+        // Folding can itself overflow!
+        // Example: sum = 0x1FFFE
+        // Fold 1: (0xFFFE + 0x1) = 0xFFFF
+        // (no overflow, loop exits)
+        // Rare case: sum = 0x2FFFD
+        // Fold 1: (0xFFFD + 0x2) = 0xFFFF
+        // Fold 2: (0xFFFF + 0x0) = 0xFFFF
+      '|
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  pseudo_header: {
+    direction: down
+    label: "Pseudo-Header (UDP/TCP)"
+    pseudo_struct: {
+      shape: sql_table
+      label: "struct pseudo_hdr (12 bytes)"
+      f0: "0x00 | uint32_t | src_addr"
+      f1: "0x04 | uint32_t | dst_addr"
+      f2: "0x08 | uint8_t  | zero"
+      f3: "0x09 | uint8_t  | protocol"
+      f4: "0x0A | uint16_t | length"
+      sz: "Total: 12 bytes"
+    }
+    pseudo_note: {
+      label: "Includes IP addresses in checksum"
+      width: 300
+      code: |'c
+        // UDP/TCP checksum covers:
+        // 1. Pseudo-header (IP addrs)
+        // 2. TCP/UDP header
+        // 3. Payload data
+        // Ensures end-to-end integrity
+      '|
+    }
+  }
+  incremental: {
+    direction: down
+    label: "Incremental Update"
+    inc_theory: {
+      shape: sql_table
+      label: "Header Field Update"
+      f0: "Old checksum | C_old"
+      f1: "Old value    | V_old"
+      f2: "New value    | V_new"
+      f3: "New checksum | C_new"
+      sz: "O(1) update, no rescan"
+    }
+    inc_code: {
+      label: "RFC 1624 Formula"
+      width: 350
+      code: |'c
+        // Incremental checksum update
+        // Avoids recalculating entire checksum
+        uint16_t checksum_update(uint16_t old_csum,
+                                  uint16_t old_val,
+                                  uint16_t new_val) {
+            uint32_t sum = (~old_csum & 0xFFFF) 
+                         + (~old_val & 0xFFFF) 
+                         + new_val;
+            while (sum >> 16) {
+                sum = (sum & 0xFFFF) + (sum >> 16);
+            }
+            return ~sum & 0xFFFF;
+        }
+      '|
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  simd: {
+    direction: down
+    label: "SIMD Vectorization"
+    simd_approach: {
+      label: "AVX2 Parallel Sum (256-bit)"
+      width: 420
+      code: |'c
+        #include <immintrin.h>
+        uint16_t checksum_avx2(const void *data, size_t len) {
+            __m256i sum_vec = _mm256_setzero_si256();
+            const __m256i *ptr = (const __m256i *)data;
+            // Process 32 bytes (16 words) per iteration
+            while (len >= 32) {
+                __m256i chunk = _mm256_loadu_si256(ptr++);
+                // Add 16 x 16-bit words in parallel
+                sum_vec = _mm256_add_epi16(sum_vec, chunk);
+                len -= 32;
+            }
+            // Horizontal reduce + fold...
+        }
+      '|
+    }
+    simd_benefit: {
+      shape: sql_table
+      label: "Performance Comparison"
+      f0: "Scalar (20B header)  | ~15 ns"
+      f1: "Scalar (1500B packet) | ~150 ns"
+      f2: "AVX2 (1500B packet)   | ~25 ns"
+      f3: "Speedup               | 6× faster"
+      sz: "Note: 20B header too small for SIMD overhead"
+    }
+    simd_note: {
+      label: "When SIMD Helps"
+      width: 380
+      code: |'c
+        // IP header: 20-60 bytes
+        // → Scalar is faster (overhead > gain)
+        // UDP/TCP checksum with payload:
+        // → SIMD wins for payloads > 256 bytes
+        // → Common in data transfers, not ACKs
+      '|
+    }
+  }
+  verify: {
+    direction: down
+    label: "Verification"
+    verify_code: {
+      label: "Checksum Verification"
+      width: 350
+      code: |'c
+        // To verify: sum including checksum field
+        // Result should be 0xFFFF (or 0x0000)
+        int verify_checksum(const void *hdr, size_t len) {
+            uint16_t csum = ip_checksum(hdr, len);
+            // Valid if all 1s (one's complement of 0)
+            return (csum == 0xFFFF) || (csum == 0);
+        }
+        // Why both 0xFFFF and 0?
+        // Some implementations return 0 on valid
+        // (depends on folding implementation)
+      '|
+    }
+    verify_example: {
+      shape: sql_table
+      label: "Verification Example"
+      f0: "Header words   | 0x4500 + 0x0028 + ..."
+      f1: "Sum (incl csum)| 0x0001_FFFE"
+      f2: "Folded         | 0xFFFF"
+      f3: "Result         | VALID"
+      sz: "Valid checksum → all 1s after fold"
+    }
+  }
+}
+row1 -> row2: "sum complete"
+row2 -> row3: "optimize"

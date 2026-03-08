@@ -1,0 +1,278 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    free: "#ACE1AF"
+    rx: "#B6DDF6"
+    processing: "#F6C889"
+    tx: "#E4DBFE"
+    numa0: "#D4EDDA"
+    numa1: "#FFF3CD"
+    hot: "#F8D7DA"
+  }
+}
+title: |md
+  # Zero-Copy Buffer Pool Architecture
+  NUMA-aware allocation with reference counting for buffer sharing
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  numa0_pool: NUMA Node 0 Pool {
+    direction: down
+    style.fill: ${colors.numa0}
+    numa0_header: {
+      label: |md
+        **Local to NIC**
+        Allocated via `numa_alloc_onnode(0)`
+      |
+    }
+    free_list_0: Free List (Lock-Free SPSC) {
+      shape: class
+      label: "struct numa_pool (mempool_numa.c)"
+      -buffers: "buffer_t[8192]"
+      -head: "uint32_t"
+      -tail: "uint32_t"
+      -count: "atomic_uint"
+      +alloc(): "buffer_t*"
+      +free(buf): "void"
+    }
+    buf_array_0: Buffer Array {
+      shape: sql_table
+      label: "buffer_t pool[8192] (mempool_numa.c)"
+      f0: "0x0000 | buffer_t | buf[0]"
+      f1: "0x0040 | buffer_t | buf[1]"
+      f2: "0x0080 | buffer_t | buf[2]"
+      f3: "0x00C0 | buffer_t | ..."
+      f4: "0xFFC0 | buffer_t | buf[8191]"
+      sz: "Total: 524,288 bytes (512KB)"
+    }
+  }
+  numa1_pool: NUMA Node 1 Pool {
+    direction: down
+    style.fill: ${colors.numa1}
+    numa1_header: {
+      label: |md
+        **Remote from NIC**
+        For app threads on socket 1
+      |
+    }
+    free_list_1: Free List (Lock-Free SPSC) {
+      shape: class
+      label: "struct numa_pool (mempool_numa.c)"
+      -buffers: "buffer_t[8192]"
+      -head: "uint32_t"
+      -tail: "uint32_t"
+      -count: "atomic_uint"
+      +alloc(): "buffer_t*"
+      +free(buf): "void"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  buffer_struct: Buffer Structure {
+    shape: sql_table
+    label: "struct buffer_t (buffer.h) — 64 bytes"
+    f0: "0x00 | uint32_t | refcount"
+    f1: "0x04 | uint32_t | pool_id"
+    f2: "0x08 | uint16_t | data_len"
+    f3: "0x0A | uint16_t | flags"
+    f4: "0x0C | uint32_t | checksum"
+    f5: "0x10 | uint64_t | timestamp"
+    f6: "0x18 | uint8_t[2048] | data[]"
+    sz: "Total: 64 bytes header + 2048 data"
+  }
+  refcount_logic: Reference Counting {
+    direction: down
+    style.fill: ${colors.processing}
+    refcount_ops: {
+      shape: class
+      label: "Buffer Lifecycle (buffer.c)"
+      +buf_get(buf): "buffer_t* // refcount++"
+      +buf_put(buf): "void // refcount--"
+      +buf_shared(buf): "bool // refcount > 1"
+      -free_to_pool(buf): "void // refcount == 0"
+    }
+    refcount_note: {
+      label: |md
+        **Sharing Scenarios:**
+        - Multicast: one buf → N connections
+        - Packet capture: processing + logging
+        - Zero-copy forward: RX → TX
+      |
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  lifecycle: Buffer Lifecycle Flow {
+    direction: right
+    state_free: FREE {
+      shape: circle
+      style.fill: ${colors.free}
+    }
+    state_rx: RX_DMA {
+      shape: circle
+      style.fill: ${colors.rx}
+    }
+    state_proc: PROCESSING {
+      shape: circle
+      style.fill: ${colors.processing}
+    }
+    state_tx: TX_QUEUED {
+      shape: circle
+      style.fill: ${colors.tx}
+    }
+    state_free2: FREE {
+      shape: circle
+      style.fill: ${colors.free}
+    }
+    state_free -> state_rx: "1. NIC DMA\nrefcount=1"
+    state_rx -> state_proc: "2. Parse\nrefcount unchanged"
+    state_proc -> state_tx: "3. Forward\nrefcount=1"
+    state_tx -> state_free2: "4. TX complete\nrefcount=0 → free"
+    state_proc -> state_proc2: "Multicast\nrefcount++"
+    state_proc2: SHARED {
+      shape: circle
+      style.fill: ${colors.hot}
+    }
+    state_proc2 -> state_tx2: "refcount--"
+    state_tx2: TX_QUEUED {
+      shape: circle
+      style.fill: ${colors.tx}
+    }
+    state_tx2 -> state_free2: "refcount=0"
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  hot_path: Hot Path Code {
+    direction: down
+    style.fill: "#F8F9FA"
+    alloc_code: {
+      label: "Buffer Allocation (Hot Path)"
+      width: 400
+      code: |'c
+        buffer_t* buf_alloc_numa(int numa_node) {
+            struct numa_pool *p = &pools[numa_node];
+            uint32_t idx = __sync_fetch_and_add(&p->head, 1);
+            idx &= (POOL_SIZE - 1);  // Ring wrap
+            buffer_t *buf = &p->buffers[idx];
+            buf->refcount = 1;       // Initial ref
+            return buf;
+        }
+      '|
+    }
+    free_code: {
+      label: "Buffer Release with Refcount"
+      width: 400
+      code: |'c
+        void buf_put(buffer_t *buf) {
+            if (__sync_sub_and_fetch(&buf->refcount, 1) == 0) {
+                // Refcount hit zero → return to pool
+                struct numa_pool *p = &pools[buf->pool_id];
+                uint32_t idx = __sync_fetch_and_add(&p->tail, 1);
+                idx &= (POOL_SIZE - 1);
+                p->buffers[idx] = buf;
+            }
+        }
+      '|
+    }
+  }
+  numa_check: NUMA Locality Check {
+    direction: down
+    style.fill: ${colors.hot}
+    numa_code: {
+      label: "NUMA Verification (init time)"
+      width: 380
+      code: |'c
+        int verify_numa_placement(void *buf, int expected) {
+            int nodes[1];
+            if (move_pages(0, 1, &buf, NULL, nodes, 0)) {
+                return -1;  // Query failed
+            }
+            if (nodes[0] != expected) {
+                log_err("Buffer on node %d, expected %d",
+                        nodes[0], expected);
+                return -1;
+            }
+            return 0;
+        }
+      '|
+    }
+    numa_penalty: {
+      label: |md
+        **NUMA Access Penalty:**
+        - Local: ~20ns
+        - Remote: ~80ns (4× slower)
+        - At 10Mpps: 600ns/sec wasted on wrong-node access
+      |
+    }
+  }
+}
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  cache_layout: Cache-Line Optimized Layout {
+    direction: down
+    style.fill: "#E8E8E8"
+    cache_diagram: {
+      label: |md
+        **Cache Line 0 (64 bytes): Hot fields**
+        ┌─────────────────────────────────────────────────────────────┐
+        │ refcount(4) │ pool_id(4) │ data_len(2) │ flags(2) │ ...    │
+        └─────────────────────────────────────────────────────────────┘
+        **Data region starts at offset 0x18 (byte 24)**
+        - First 24 bytes: metadata (always accessed)
+        - Next 2048 bytes: packet data (accessed during processing)
+        - Prefetch data region while parsing headers
+      |
+    }
+    prefetch_code: {
+      label: "Prefetch for Cache Warmth"
+      width: 380
+      code: |'c
+        void process_with_prefetch(buffer_t *buf) {
+            // Prefetch data while checking refcount
+            __builtin_prefetch(buf->data, 0, 3);
+            // By the time we access data, it's in cache
+            parse_ethernet(buf->data, buf->data_len);
+        }
+      '|
+    }
+  }
+  stats: Pool Statistics {
+    direction: down
+    style.fill: ${colors.processing}
+    stats_struct: {
+      shape: class
+      label: "struct pool_stats (mempool.h)"
+      -allocs: "uint64_t"
+      -frees: "uint64_t"
+      -current: "uint32_t"
+      -peak: "uint32_t"
+      -numa_misses: "uint64_t"
+      +snapshot(out): "void"
+    }
+    stats_note: {
+      label: |md
+        **Per-core counters, aggregated on demand**
+        No atomic operations in hot path
+      |
+    }
+  }
+}
+row1.numa0_pool.buf_array_0 -> row3.lifecycle.state_free: "alloc()"
+row3.lifecycle.state_free2 -> row1.numa0_pool.free_list_0: "free()"

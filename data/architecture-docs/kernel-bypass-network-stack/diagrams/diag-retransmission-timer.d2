@@ -1,0 +1,286 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # TCP Retransmission Timer — RTO Calculation
+  Jacobson/Karels Algorithm with Exponential Backoff
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  rtt_samples: {
+    direction: down
+    label: "RTT Sample Collection (tcp_input.c)"
+    sample1: {
+      label: "Sample 1: SYN-ACK Arrival"
+      width: 320
+      code: |'c
+        // RTT = time_now - syn_send_time
+        uint64_t rtt_sample = 45000;  // 45ms in microseconds
+        tcp_update_rto(conn, rtt_sample);
+      '|
+    }
+    sample2: {
+      label: "Sample 2: Data ACK Arrival"
+      width: 320
+      code: |'c
+        // Timestamp option: TS.EchoReply
+        uint64_t rtt_sample = 38000;  // 38ms
+        tcp_update_rto(conn, rtt_sample);
+      '|
+    }
+    sample3: {
+      label: "Sample 3: Data ACK Arrival"
+      width: 320
+      code: |'c
+        uint64_t rtt_sample = 52000;  // 52ms
+        tcp_update_rto(conn, rtt_sample);
+      '|
+    }
+  }
+  arrow_to_algo: {
+    shape: text
+    label: "→"
+    style.font-size: 40
+    style.fill: transparent
+    style.stroke: transparent
+  }
+  algo: {
+    direction: down
+    label: "Jacobson/Karels Algorithm"
+    formula_box: {
+      label: "Core Formulas"
+      width: 380
+      formulas: |'c
+        // First measurement (cold start)
+        SRTT  = RTT_sample
+        RTTVAR = RTT_sample / 2
+        RTO   = SRTT + 4 * RTTVAR
+        // Subsequent measurements
+        delta   = RTT_sample - SRTT
+        RTTVAR += (|delta| - RTTVAR) / 4
+        SRTT   += delta / 8
+        RTO    = SRTT + 4 * RTTVAR
+        // Clamping (RFC 6298)
+        RTO = clamp(RTO, 200ms, 120000ms)
+      '|
+    }
+    step1: {
+      label: "Step 1: Initialize (First Sample)"
+      width: 380
+      code: |'c
+        // Sample 1: 45ms
+        conn->srtt = 45000;           // SRTT = 45ms
+        conn->rttvar = 22500;         // RTTVAR = 22.5ms
+        conn->rto = 45000 + 4*22500;  // RTO = 135ms
+      '|
+    }
+    step2: {
+      label: "Step 2: Update (Sample 2: 38ms)"
+      width: 380
+      code: |'c
+        delta = 38000 - 45000;        // delta = -7ms
+        rttvar += (7000 - 22500) / 4; // RTTVAR = 16875
+        srtt += -7000 / 8;            // SRTT = 44125
+        rto = 44125 + 4*16875;        // RTO = 111.625ms
+      '|
+    }
+    step3: {
+      label: "Step 3: Update (Sample 3: 52ms)"
+      width: 380
+      code: |'c
+        delta = 52000 - 44125;        // delta = +7.875ms
+        rttvar += (7875 - 16875) / 4; // RTTVAR = 14812
+        srtt += 7875 / 8;             // SRTT = 45109
+        rto = 45109 + 4*14812;        // RTO = 104.357ms
+      '|
+    }
+  }
+}
+row1.rtt_samples.sample1 -> row1.algo.step1: "45ms"
+row1.rtt_samples.sample2 -> row1.algo.step2: "38ms"
+row1.rtt_samples.sample3 -> row1.algo.step3: "52ms"
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  state_table: {
+    label: "RTO State Evolution"
+    shape: sql_table
+    f0: "Sample | RTT | SRTT | RTTVAR | RTO"
+    f1: "Initial | — | — | — | 1000ms (default)"
+    f2: "1 | 45ms | 45ms | 22.5ms | 135ms"
+    f3: "2 | 38ms | 44.1ms | 16.9ms | 111.6ms"
+    f4: "3 | 52ms | 45.1ms | 14.8ms | 104.4ms"
+    note: "RTO converges as variance decreases"
+  }
+  backoff: {
+    direction: down
+    label: "Exponential Backoff on Retransmission"
+    backoff_code: {
+      label: "tcp_retransmit_timeout()"
+      width: 380
+      code: |'c
+        void tcp_retransmit_timeout(conn) {
+          // Double the RTO (exponential backoff)
+          conn->rto = min(conn->rto * 2, TCP_RTO_MAX);
+          conn->retransmit_count++;
+          if (conn->retransmit_count > TCP_MAX_RETRANS) {
+            tcp_conn_abort(conn);  // Give up
+            return;
+          }
+          tcp_retransmit(conn);
+          conn->timer_retransmit = time_now() + conn->rto;
+        }
+      '|
+    }
+    backoff_table: {
+      label: "Backoff Sequence"
+      shape: sql_table
+      f0: "Retry | RTO Multiplier | RTO Value"
+      f1: "1 | 1x | 104ms"
+      f2: "2 | 2x | 208ms"
+      f3: "3 | 4x | 416ms"
+      f4: "4 | 8x | 832ms"
+      f5: "5 | 16x | 1664ms"
+      f6: "... | ... | ..."
+      f7: "15 | 16384x | 120000ms (capped)"
+    }
+  }
+  timer_wheel: {
+    direction: down
+    label: "Timer Management"
+    timer_struct: {
+      shape: class
+      label: "struct tcp_conn (tcp_conn.h)"
+      -srtt: "uint32_t"
+      -rttvar: "uint32_t"
+      -rto: "uint32_t"
+      -retransmit_count: "uint8_t"
+      -timer_retransmit: "uint64_t"
+      +tcp_update_rto(rtt): "void"
+      +tcp_retransmit_timeout(): "void"
+    }
+    rto_bounds: {
+      label: "RTO Bounds (RFC 6298)"
+      shape: sql_table
+      f0: "Constant | Value | Purpose"
+      f1: "TCP_RTO_MIN | 200ms | Floor (prevent spurious)"
+      f2: "TCP_RTO_MAX | 120s | Ceiling (give up eventually)"
+      f3: "TCP_RTO_INITIAL | 1000ms | Before any RTT samples"
+      f4: "TCP_MAX_RETRANS | 15 | Abort after this many"
+    }
+  }
+}
+row1.algo.step3 -> row2.state_table: "final state"
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  why_critical: {
+    direction: down
+    label: "Why Accurate RTT Measurement Is Critical"
+    width: 500
+    too_low: {
+      label: "RTO Too Low"
+      shape: rectangle
+      style.fill: "#ffcccc"
+      style.stroke: "#cc0000"
+      width: 480
+      effects: |md
+        **Spurious Retransmissions:**
+        - RTO fires before ACK arrives
+        - Duplicate data sent unnecessarily
+        - Wastes bandwidth, increases congestion
+        - Triggers duplicate ACKs from receiver
+      |
+    }
+    too_high: {
+      label: "RTO Too High"
+      shape: rectangle
+      style.fill: "#fff3cd"
+      style.stroke: "#cc9900"
+      width: 480
+      effects: |md
+        **Slow Loss Recovery:**
+        - Lost packet not retransmitted for too long
+        - Connection stalls waiting for timeout
+        - Poor throughput on lossy networks
+        - User-perceived latency increases
+      |
+    }
+    just_right: {
+      label: "Accurate RTO"
+      shape: rectangle
+      style.fill: "#d4edda"
+      style.stroke: "#28a745"
+      width: 480
+      effects: |md
+        **Optimal Behavior:**
+        - Retransmit only when truly lost
+        - Fast recovery from actual packet loss
+        - Adapts to changing network conditions
+        - Minimizes both spurious and delayed retransmits
+      |
+    }
+  }
+  timestamp_opt: {
+    direction: down
+    label: "Timestamp Option for Accurate RTT"
+    width: 400
+    ts_header: {
+      label: "TCP Timestamp Option (RFC 7323)"
+      shape: sql_table
+      f0: "Offset | Size | Field"
+      f1: "0 | 1 byte | Kind = 8"
+      f2: "1 | 1 byte | Length = 10"
+      f3: "2 | 4 bytes | TSval (sender timestamp)"
+      f4: "6 | 4 bytes | TSecr (echoed timestamp)"
+      note: "Total: 10 bytes (pad to 12)"
+    }
+    ts_calc: {
+      label: "RTT Calculation with Timestamps"
+      width: 380
+      code: |'c
+        // On segment send
+        ts_val = tcp_get_timestamp();  // ~1ms resolution
+        // On ACK received
+        uint64_t rtt = tcp_get_timestamp() - ts_ecr;
+        // This is per-segment RTT, not just SYN
+        tcp_update_rto(conn, rtt);
+      '|
+    }
+    without_ts: {
+      label: "Without Timestamps (Karn's Algorithm)"
+      width: 380
+      code: |'c
+        // Problem: Can't measure RTT for retransmitted
+        // segments - which ACK corresponds to which send?
+        // Karn's solution:
+        // 1. Don't use retransmitted segments for RTT
+        // 2. Use exponential backoff for RTO
+        // 3. Only measure once per window
+      '|
+    }
+  }
+}
+row2.backoff.backoff_table -> row3.why_critical.too_low: "spurious if RTO < RTT"
+legend: {
+  near: bottom-right
+  shape: rectangle
+  style.fill: "#f8f9fa"
+  style.stroke: "#dee2e6"
+  key: |md
+    **Legend:**
+    - **SRTT**: Smoothed Round-Trip Time (EWMA)
+    - **RTTVAR**: Round-Trip Time Variation (mean deviation)
+    - **RTO**: Retransmission Timeout
+    - **delta**: Difference between sample and SRTT
+    - **EWMA**: Exponentially Weighted Moving Average
+  |
+}

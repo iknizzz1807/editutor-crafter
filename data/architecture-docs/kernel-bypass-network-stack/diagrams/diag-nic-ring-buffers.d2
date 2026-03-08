@@ -1,0 +1,247 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # NIC Ring Buffer Architecture
+  **Zero-Copy DMA Path with Memory Barrier Requirements**
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  nic_block: {
+    direction: down
+    label: "NIC Hardware"
+    nic_regs: {
+      shape: sql_table
+      label: "MMIO Registers (pci.h)"
+      r0: "0x00 | uint32_t | RX_TAIL (write)"
+      r1: "0x04 | uint32_t | RX_HEAD (read)"
+      r2: "0x08 | uint32_t | TX_TAIL (write)"
+      r3: "0x0C | uint32_t | TX_HEAD (read)"
+      r4: "0x10 | uint64_t | RX_DESC_BASE"
+      r5: "0x18 | uint64_t | TX_DESC_BASE"
+      r6: "0x20 | uint32_t | RX_CTRL"
+      r7: "0x24 | uint32_t | TX_CTRL"
+      sz: "Total: 40 bytes (volatile)"
+    }
+    dma_engine: {
+      shape: class
+      label: "DMA Engine (hw/dma.c)"
+      -state: "enum dma_state"
+      -pending_rx: "int"
+      -pending_tx: "int"
+      +dma_fetch(addr, len): "void"
+      +dma_write(addr, data): "void"
+      +dma_start(): "void"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  rx_ring_block: {
+    direction: down
+    label: "RX Ring Buffer (Producer: NIC, Consumer: CPU)"
+    rx_ring: {
+      shape: sql_table
+      label: "struct rx_desc_ring (nic/rx.h)"
+      f0: "0x00 | uint64_t | addr[0]    // pkt buffer PA"
+      f1: "0x08 | uint16_t | len[0]    // received bytes"
+      f2: "0x0A | uint16_t | flags[0]  // DD bit etc"
+      f3: "0x0C | uint64_t | addr[1]"
+      f4: "0x14 | uint16_t | len[1]"
+      f5: "0x16 | uint16_t | flags[1]"
+      dots: "... (NUM_DESCS entries)"
+      fn: "0x?? | uint64_t | addr[N-1]"
+      sz: "Total: 16 bytes × N descriptors"
+    }
+    rx_pointers: {
+      shape: class
+      label: "RX Pointers (cache-line separated)"
+      -rx_tail: "volatile uint32_t" {constraint: "aligned(64)"}
+      -rx_head: "volatile uint32_t" {constraint: "aligned(64)"}
+      +rx_refill(n): "int"
+      +rx_poll(): "int"
+    }
+  }
+  tx_ring_block: {
+    direction: down
+    label: "TX Ring Buffer (Producer: CPU, Consumer: NIC)"
+    tx_ring: {
+      shape: sql_table
+      label: "struct tx_desc_ring (nic/tx.h)"
+      f0: "0x00 | uint64_t | addr[0]    // pkt buffer PA"
+      f1: "0x08 | uint16_t | len[0]    // bytes to send"
+      f2: "0x0A | uint16_t | flags[0]  // EOP, RS etc"
+      f3: "0x0C | uint64_t | addr[1]"
+      f4: "0x14 | uint16_t | len[1]"
+      f5: "0x16 | uint16_t | flags[1]"
+      dots: "... (NUM_DESCS entries)"
+      fn: "0x?? | uint64_t | addr[N-1]"
+      sz: "Total: 16 bytes × N descriptors"
+    }
+    tx_pointers: {
+      shape: class
+      label: "TX Pointers (cache-line separated)"
+      -tx_head: "volatile uint32_t" {constraint: "aligned(64)"}
+      -tx_tail: "volatile uint32_t" {constraint: "aligned(64)"}
+      +tx_submit(n): "int"
+      +tx_complete(): "int"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  pkt_pool_block: {
+    direction: down
+    label: "Packet Buffer Pool (DMA-able Memory)"
+    pkt_buf: {
+      shape: sql_table
+      label: "struct pkt_buffer (nic/buf.h)"
+      f0: "0x000 | uint8_t[14]  | eth_hdr"
+      f1: "0x00E | uint8_t[20]  | ip_hdr"
+      f2: "0x022 | uint8_t[20]  | tcp_hdr"
+      f3: "0x036 | uint8_t[1460]| payload"
+      f4: "0x5FE | uint8_t[4]   | fcs (hw)"
+      sz: "Total: 1536 bytes (MTU+headroom)"
+    }
+    buf_pool: {
+      shape: class
+      label: "Buffer Pool (nic/mempool.c)"
+      -buffers: "struct pkt_buffer*"
+      -free_stack: "uint32_t*"
+      -free_count: "uint32_t"
+      -total_count: "uint32_t"
+      +buf_alloc(): "struct pkt_buffer*"
+      +buf_free(buf): "void"
+    }
+  }
+  barrier_block: {
+    direction: down
+    label: "Memory Barrier Requirements"
+    barrier_code: {
+      label: "Barrier Placement (barriers.h)"
+      width: 420
+      code: |'c
+        // RX path: after writing desc, before tail update
+        *desc_addr = buf_phys_addr;
+        rte_smp_wmb();        // Ensure desc visible to NIC
+        *rx_tail = new_tail;  // Then update tail (MMIO)
+        // TX path: after writing desc, before doorbell
+        *tx_desc = pkt_desc;
+        rte_wmb();            // Order desc write before MMIO
+        *TX_TAIL_REG = tail;  // Ring doorbell (MMIO write)
+        // RX poll: read head before reading desc
+        head = *rx_head;
+        rte_smp_rmb();        // Ensure desc read after head
+        pkt = *desc_addr;
+      '|
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  ownership_block: {
+    direction: down
+    label: "Descriptor Ownership (DD bit)"
+    ownership_table: {
+      shape: sql_table
+      label: "Descriptor Status Bits (hw/desc.h)"
+      f0: "bit 0  | DD     | Descriptor Done (NIC→CPU)"
+      f1: "bit 1  | EOP    | End of Packet"
+      f2: "bit 2  | IF     | Insert CRC (TX)"
+      f3: "bit 3  | RS     | Report Status (TX)"
+      f4: "bit 4  | IC     | Insert Checksum"
+      sz: "DD=1: NIC owns, DD=0: CPU owns"
+    }
+  }
+  flow_block: {
+    direction: down
+    label: "Zero-Copy Data Flow"
+    flow_code: {
+      label: "Critical Path (nic/rx.c:rx_poll)"
+      width: 420
+      code: |'c
+        // 1. Check for new packets (no copy!)
+        uint32_t rx_head = ring->head;
+        if (ring->desc[rx_head].flags & DD_BIT) {
+          // 2. Get packet pointer (already in RAM via DMA)
+          struct pkt_buffer *pkt = phys_to_virt(
+            ring->desc[rx_head].addr);
+          uint16_t len = ring->desc[rx_head].len;
+          // 3. Process in-place (zero-copy)
+          eth_parse(pkt->data, len, &result);
+          // 4. Return buffer to pool
+          ring->desc[rx_head].flags = 0;  // Clear DD
+          buf_pool_push(pool, pkt);
+        }
+      '|
+    }
+  }
+}
+nic_block.nic_regs -> rx_ring_block.rx_ring: "RX_DESC_BASE\nPA of ring" {
+  style.stroke: purple
+  style.stroke-dash: 3
+}
+nic_block.nic_regs -> tx_ring_block.tx_ring: "TX_DESC_BASE\nPA of ring" {
+  style.stroke: purple
+  style.stroke-dash: 3
+}
+nic_block.dma_engine -> rx_ring_block.rx_ring: "DMA write\nflags+len" {
+  style.stroke: blue
+  style.animated: true
+}
+nic_block.dma_engine -> pkt_pool_block.pkt_buf: "DMA write\npacket data" {
+  style.stroke: blue
+  style.animated: true
+  label.near: center-right
+}
+tx_ring_block.tx_ring -> nic_block.dma_engine: "DMA read\ndesc" {
+  style.stroke: green
+  style.animated: true
+}
+pkt_pool_block.pkt_buf -> nic_block.dma_engine: "DMA read\nTX data" {
+  style.stroke: green
+  style.animated: true
+}
+rx_ring_block.rx_pointers -> nic_block.nic_regs: "Write RX_TAIL\nafter refill" {
+  style.stroke: orange
+  style.stroke-dash: 4
+}
+tx_ring_block.tx_pointers -> nic_block.nic_regs: "Write TX_TAIL\nto ring doorbell" {
+  style.stroke: orange
+  style.stroke-dash: 4
+}
+legend: {
+  near: bottom-right
+  legend_title: Legend
+  dma_write: "DMA Write" {
+    style.stroke: blue
+    style.animated: true
+  }
+  dma_read: "DMA Read" {
+    style.stroke: green
+    style.animated: true
+  }
+  mmio: "MMIO Config" {
+    style.stroke: purple
+    style.stroke-dash: 3
+  }
+  doorbell: "Doorbell/Notify" {
+    style.stroke: orange
+    style.stroke-dash: 4
+  }
+}
+legend.style.fill: "#f5f5f5"
+legend.style.stroke: "#cccccc"
+legend.legend_title.style.bold: true

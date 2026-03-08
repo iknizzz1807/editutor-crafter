@@ -1,0 +1,334 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    red: "#E53935"
+    green: "#43A047"
+    blue: "#1E88E5"
+    purple: "#8E24AA"
+    orange: "#FB8C00"
+    gray: "#757575"
+    dark: "#263238"
+  }
+}
+
+title: |md
+  # Latency Measurement Methodology
+  ## Sub-Microsecond Precision Timing Architecture
+| {near: top-center}
+
+row_infra: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  generator: FPGA Packet Generator {
+    direction: down
+    style.fill: "#E3F2FD"
+    style.stroke: "#1E88E5"
+    
+    fpga_core: FPGA Core {
+      shape: rectangle
+      label: "Xilinx UltraScale+ (VU9P)"
+      style.fill: "#BBDEFB"
+    }
+    
+    pkt_gen: Packet Engine {
+      shape: class
+      label: "PacketGen (fpga.v)"
+      +generate_burst(rate): "void"
+      +set_pattern(type): "int"
+      +insert_tstamp(offset): "uint64_t"
+      -sequence_ctr: "uint32_t"
+      -payload_template: "uint8_t[64]"
+    }
+    
+    timing_core: Precision Timing {
+      shape: class
+      label: "Timing (timing.v)"
+      +get_tsc_ns(): "uint64_t"
+      +sync_to_ptp(gm_ptr): "int"
+      -ptp_offset: "int64_t"
+      -local_counter: "uint64_t"
+    }
+    
+    fpga_core -> pkt_gen: "data"
+    timing_core -> pkt_gen: "tstamp"
+  }
+
+  ptp: PTP Grandmaster {
+    direction: down
+    style.fill: "#F3E5F5"
+    style.stroke: "#8E24AA"
+    
+    gm_clock: GM Clock {
+      shape: rectangle
+      label: "Meinberg M1000 (PTPv2 IEEE 1588)"
+      style.fill: "#E1BEE7"
+    }
+    
+    specs: Specifications {
+      shape: sql_table
+      label: "PTP Grandmaster Specs"
+      f0: "0x00 | Accuracy    | ±8 ns to UTC"
+      f1: "0x08 | Protocol    | PTPv2 (IEEE 1588-2008)"
+      f2: "0x10 | Profile     | Telecom (G.8275.1)"
+      f3: "0x18 | Sync Rate   | 128 msgs/sec"
+      f4: "0x20 | Interfaces  | 4x SFP+ (10GbE)"
+      sz: "Total: 32 bytes (control block)"
+    }
+    gm_clock -> specs: "config"
+  }
+
+  dut: Device Under Test {
+    direction: down
+    style.fill: "#E8F5E9"
+    style.stroke: "#43A047"
+    
+    nic: NIC with HW Timestamp {
+      shape: rectangle
+      label: "Mellanox ConnectX-6 (PF0: 0000:17:00.0)"
+      style.fill: "#C8E6C9"
+    }
+    
+    rx_ring: RX Ring Buffer {
+      shape: sql_table
+      label: "RX Descriptor Ring (dpdk)"
+      f0: "0x00 | addr    | uint64_t  | DMA address"
+      f1: "0x08 | len     | uint32_t  | packet length"
+      f2: "0x0C | flags   | uint32_t  | EXT_RX_1588_OFL"
+      f3: "0x10 | tstamp  | uint64_t  | HW timestamp (ns)"
+      sz: "Total: 24 bytes per desc"
+    }
+    nic -> rx_ring: "DMA | write"
+  }
+}
+
+row_flow: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  flow: Packet Flow Lifecycle {
+    direction: right
+    style.fill: "#FFF3E0"
+    style.stroke: "#FB8C00"
+    
+    t1: T1: TX Timestamp {
+      shape: circle
+      style.fill: "#1E88E5"
+      style.font-color: white
+      tooltip: "T1: FPGA inserts 64-bit nanosecond timestamp at wire entry"
+    }
+    t2: T2: NIC RX {
+      shape: circle
+      style.fill: "#43A047"
+      style.font-color: white
+      tooltip: "T2: Hardware timestamp captured by NIC clock"
+    }
+    t3: T3: App RX {
+      shape: circle
+      style.fill: "#8E24AA"
+      style.font-color: white
+      tooltip: "T3: Packet consumed by user-space application via DPDK"
+    }
+    t4: T4: App TX {
+      shape: circle
+      style.fill: "#E53935"
+      style.font-color: white
+      tooltip: "T4: Application generates response or log completion"
+    }
+    
+    t1 -> t2: "Wire Latency"
+    t2 -> t3: "DPDK Poll"
+    t3 -> t4: "Logic"
+  }
+
+  latency_calc: Latency Calculation {
+    direction: down
+    style.fill: "#FFEBEE"
+    style.stroke: "#E53935"
+    
+    formula: One-Way Latency {
+      label: "Latency = T3 - T1 - (PTP_Sync_Offset)"
+      shape: rectangle
+      style.fill: "#FFCDD2"
+    }
+    
+    calc_code: {
+      label: "latency_calc (latency.c)"
+      code: |'c
+        uint64_t calc_latency(struct pkt *p, uint64_t rx_tsc) {
+          uint64_t tx_ns = p->tstamp_fpga;
+          uint64_t rx_ns = tsc_to_ns(rx_tsc);
+          int64_t ptp_off = get_ptp_offset();
+          return (rx_ns - tx_ns) - ptp_off;
+        }
+      '|
+      width: 400
+    }
+  }
+}
+
+row_stats: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  histogram: Latency Histogram {
+    direction: down
+    style.fill: "#E8EAF6"
+    style.stroke: "#1E88E5"
+    
+    hist_struct: Histogram Structure {
+      shape: sql_table
+      label: "struct latency_hist (stats.h)"
+      f0: "0x00 | buckets[4096] | uint64_t | bins"
+      f1: "0x8000 | total_samples | uint64_t | count"
+      f2: "0x8008 | sum_ns       | uint64_t | mean"
+      f3: "0x8010 | min_ns       | uint64_t | min"
+      f4: "0x8018 | max_ns       | uint64_t | max"
+      sz: "Total: 32808 bytes"
+    }
+    
+    bin_calc: Bin Calculation {
+      label: "index = latency_ns >> 6 (64ns bins)"
+      shape: rectangle
+      style.fill: "#C5CAE9"
+    }
+  }
+
+  percentiles: Percentile Analysis {
+    direction: down
+    style.fill: "#FCE4EC"
+    style.stroke: "#E53935"
+    
+    pct_table: Key Percentiles {
+      shape: sql_table
+      label: "Latency Requirements (HFT)"
+      p50: "P50   | Median      | < 1.5 us"
+      p90: "P90   | 90th        | < 2.0 us"
+      p99: "P99   | 99th        | < 3.0 us"
+      p999: "P99.9 | Tail        | < 5.0 us"
+      p9999: "P99.99| Critical    | < 10 us"
+    }
+    
+    pct_calc: {
+      label: "Percentile search (stats.c)"
+      code: |'c
+        uint64_t percentile(struct latency_hist *h, double p) {
+          uint64_t target = (p * h->total_samples / 100.0);
+          uint64_t cum = 0;
+          for (int i = 0; i < 4096; i++) {
+            cum += h->buckets[i];
+            if (cum >= target) return i * 64;
+          }
+          return 0xFFFFFFFFFFFFFFFF;
+        }
+      '|
+      width: 400
+    }
+  }
+
+  outliers: Outlier Classification {
+    direction: down
+    style.fill: "#FFF8E1"
+    style.stroke: "#FB8C00"
+    
+    outlier_types: Outlier Root Cause {
+      shape: sql_table
+      label: "Root Cause Delta (ns)"
+      cache_miss: "Cache L3 | +100-200ns"
+      tlb_miss: "TLB Walk | +30-50ns"
+      numa: "NUMA Hop | +100-150ns"
+      irq: "Intrusion| +500ns+"
+      gc: "Alloc    | +1-10us"
+    }
+    
+    thresholds: Action Thresholds {
+      label: "P99.9 > 5us: Trigger RCA | P99.99 > 10us: Fatal Alert"
+      shape: diamond
+      style.fill: "#FFECB3"
+    }
+  }
+}
+
+row_methodology: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  method_node: Measurement Methodology {
+    direction: down
+    style.fill: "#E0F2F1"
+    style.stroke: "#43A047"
+    
+    bench_steps: Benchmark Protocol {
+      shape: class
+      label: "Protocol (benchmark.c)"
+      +warmup(pkts): "void"
+      +measure(pkts): "void"
+      +cooldown(pkts): "void"
+      -discard_ctr: "uint32_t"
+      -sample_rate: "uint32_t"
+    }
+    
+    checklist: Validity Checklist {
+      shape: sql_table
+      label: "Measurement Validity"
+      c1: "HW timestamping enabled (ethtool)"
+      c2: "CPU pinned to NIC NUMA node"
+      c3: "C-states/Turbo disabled"
+      c4: "IRQ affinity isolated"
+      c5: "Hugepages pre-allocated"
+      c6: "PTP Offset < 100ns"
+    }
+  }
+
+  formulas: Statistical Formulas {
+    direction: down
+    style.fill: "#F3E5F5"
+    style.stroke: "#8E24AA"
+    
+    stats_table: Statistical Measures {
+      shape: sql_table
+      label: "Measures"
+      mean: "Mean (u)     | Sum(L) / N"
+      var: "Variance (s2) | Sum(L-u)2 / N"
+      std: "Std Dev (s)  | sqrt(s2)"
+      cov: "CoV          | s/u"
+    }
+    
+    ci_box: Confidence Interval {
+      label: "95% CI: u +/- 1.96 * (s/sqrt(N))"
+      shape: rectangle
+      style.fill: "#E1BEE7"
+    }
+  }
+}
+
+row_infra.generator -> row_infra.ptp: "PTP Sync"
+row_infra.ptp -> row_infra.dut: "Clock Ref"
+row_infra.generator.fpga_core -> row_infra.dut.nic: "Packet Burst"
+row_infra.generator.pkt_gen -> row_infra.dut.rx_ring: "T1 metadata"
+row_infra.dut.rx_ring -> row_flow.flow.t2: "T2 payload"
+row_flow.flow.t3 -> row_stats.histogram: "Log Samples"
+row_stats.histogram -> row_stats.percentiles: "Analyze"
+row_stats.percentiles -> row_stats.outliers: "Filter"
+
+legend: |md
+  **Legend**
+  - **Blue**: Hardware / TX Path (FPGA-driven)
+  - **Green**: Network / NIC RX (Kernel-bypass DPDK)
+  - **Purple**: Timing / PTP Logic (Meinberg GM)
+  - **Red**: Analysis / Tail Latency (Statistical Engine)
+  - **Orange**: Outlier / Root Cause (OS Jitter)
+| {
+  near: bottom-right
+  shape: rectangle
+  style.fill: "#FAFAFA"
+  style.stroke: "#757575"
+}

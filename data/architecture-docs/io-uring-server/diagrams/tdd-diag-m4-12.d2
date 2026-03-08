@@ -1,0 +1,150 @@
+direction: right
+layout-engine: elk
+theme-id: 4
+
+vars: {
+  d2-config: {
+    theme-id: 4
+    layout-engine: elk
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# 1. IO_URING MEMORY REGION LAYOUT
+# -----------------------------------------------------------------------------------------
+io_uring_mmap_regions: "io_uring Shared Memory Regions (mmap)" {
+  sq_ring: "Submission Queue Ring" {
+    shape: sql_table
+    style.fill: "#f3e5f5" # Purple Header
+    "0x00": "head | uint32_t" {constraint: "4B"}
+    "0x04": "tail | uint32_t" {constraint: "4B"}
+    "0x08": "ring_mask | uint32_t" {constraint: "4B"}
+    "0x0C": "ring_entries | uint32_t" {constraint: "4B"}
+    "0x10": "flags | uint32_t" {constraint: "4B"}
+    "0x14": "dropped | uint32_t" {constraint: "4B"}
+    "0x18": "array | uint32_t[]" {constraint: "N * 4B"}
+    style.stroke: "#7b1fa2"
+  }
+
+  sqe_array: "SQE Array (Submission Queue Entries)" {
+    shape: sql_table
+    style.fill: "#e3f2fd" # Blue Data
+    "0x00": "opcode | uint8_t" {constraint: "1B"}
+    "0x01": "flags | uint8_t" {constraint: "1B"}
+    "0x02": "ioprio | uint16_t" {constraint: "2B"}
+    "0x04": "fd | int32_t" {constraint: "4B"}
+    "0x08": "off / addr2 | uint64_t" {constraint: "8B"}
+    "0x10": "addr / splice_off_in | uint64_t" {constraint: "8B"}
+    "0x18": "len | uint32_t" {constraint: "4B"}
+    "0x1C": "opcode_flags | uint32_t" {constraint: "4B"}
+    "0x20": "user_data | uint64_t" {constraint: "8B"}
+    "0x28": "buf_index / buf_group | uint16_t" {constraint: "2B"}
+    "0x2A": "personality | uint16_t" {constraint: "2B"}
+    "0x2C": "splice_fd_in / file_index | int32_t" {constraint: "4B"}
+    "0x30": "padding | uint64_t[2]" {constraint: "16B"; style.fill: "#eeeeee"}
+  }
+
+  cq_ring: "Completion Queue Ring" {
+    shape: sql_table
+    style.fill: "#e8f5e9" # Green Header
+    "0x00": "head | uint32_t" {constraint: "4B"}
+    "0x04": "tail | uint32_t" {constraint: "4B"}
+    "0x08": "ring_mask | uint32_t" {constraint: "4B"}
+    "0x0C": "ring_entries | uint32_t" {constraint: "4B"}
+    "0x10": "cqes | struct io_uring_cqe[]" {constraint: "N * 16B"}
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# 2. SHORT WRITE RESUBMISSION ALGORITHM
+# -----------------------------------------------------------------------------------------
+short_write_logic: "Algorithm: Short Write Handling" {
+  direction: right
+
+  step1: "1. CQE Arrival" {
+    shape: sql_table
+    style.stroke: red
+    style.stroke-width: 4
+    "user_data": "conn_ptr"
+    "res": "4096 (Actual Sent)"
+    "expected": "8192 (Total Size)"
+  }
+
+  step2: "2. State Detection" {
+    shape: diamond
+    label: "res < total_len?"
+  }
+
+  step3: "3. Update Context" {
+    shape: sql_table
+    "sent": "4096" {style.fill: red; style.bold: true}
+    "remaining": "4096" {style.fill: red; style.bold: true}
+    "offset": "original_addr + 4096"
+  }
+
+  step4: "4. Re-queue SQE" {
+    shape: rectangle
+    label: "io_uring_prep_send()\noffset += res\nlen -= res"
+  }
+
+  step1 -> step2: "Check Result"
+  step2 -> step3: "Yes: Partial Write"
+  step3 -> step4: "Prepare Resubmission"
+  step2 -> success_path: "No: res == total_len"
+  success_path: "Success Path"
+}
+
+# -----------------------------------------------------------------------------------------
+# 3. ZERO-COPY SEND/RECV LIFECYCLE
+# -----------------------------------------------------------------------------------------
+zc_lifecycle: "Zero-Copy Lifecycle (IORING_OP_SEND_ZC)" {
+  shape: sequence_diagram
+  
+  app: "Application User-Space"
+  kernel: "Linux Kernel (io_uring)"
+  nic: "Network Interface Card"
+
+  app -> kernel: "io_uring_prep_send_zc(fd, buf, len)"
+  kernel. "Pin user memory pages"
+
+  kernel -> nic: "DMA Transfer"
+  nic. "No data copy to kernel buffers"
+
+  nic -> kernel: "Interrupt: TX Complete"
+  
+  kernel -> app: "CQE 1: Completion Result"
+  app. "Bytes sent to NIC"
+  
+  kernel -> app: "CQE 2: IORING_CQE_F_NOTIF" {
+    style.stroke: orange
+  }
+  app. "Safe to reuse/free buffer"
+}
+
+# -----------------------------------------------------------------------------------------
+# 4. BUFFER POOL MANAGEMENT (Provided Rings)
+# -----------------------------------------------------------------------------------------
+buffer_pool: "Provided Buffer Ring (IORING_REGISTER_PBUF_RING)" {
+  shape: sql_table
+  style.fill: "#fff3e0" # Orange Header
+  
+  "buf_ring_header": "Header info" {
+    constraint: "tail: User increments after replenishing"
+  }
+  
+  "buf0": "Addr: 0x7f... | ID: 0"
+  "buf1": "Addr: 0x7f... | ID: 1"
+  "buf2": "Addr: 0x7f... | ID: 2"
+  "padding": "... N entries ..." {style.stroke-dash: 3}
+}
+
+# Annotations & Connections
+io_uring_mmap_regions.sq_ring."0x18" -> io_uring_mmap_regions.sqe_array: "Index lookup" {style.stroke: orange}
+app -> buffer_pool: "Replenish buffers"
+kernel -> buffer_pool: "Consume on RECV"
+
+# Global Styles
+***.style.font: mono
+(*** -> ***)[*]: {
+  style.stroke-width: 2
+}

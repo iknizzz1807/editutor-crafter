@@ -1,0 +1,263 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Batch Size vs. Latency Trade-off
+  Finding the optimal batch size for kernel bypass packet processing
+| {near: top-center}
+
+row_before: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  small_batch: {
+    direction: down
+    label: "Small Batch (N=1-4)"
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    characteristics: {
+      label: "Characteristics"
+      style.fill: white
+      c1: "✓ Minimal latency (1-2μs)"
+      c2: "✓ Immediate processing"
+      c3: "✓ Low queueing delay"
+      c4: "✗ High per-packet overhead"
+      c5: "✗ More ring buffer updates"
+      c6: "✗ More memory barriers"
+    }
+    timing: {
+      label: "Per-Packet Cost"
+      code: |'c
+        poll() overhead:    50ns
+        ring update:        20ns
+        memory barrier:     15ns
+        processing:        100ns
+        ────────────────────────
+        Total overhead:    185ns/pkt
+        At 1M pps: 185ms/s = 18.5% CPU
+        on overhead alone
+      '|
+      width: 280
+    }
+    flow: {
+      label: "Packet Flow"
+      width: 200
+      code: |'c
+        pkt1 → process → done
+        pkt2 → process → done
+        pkt3 → process → done
+        pkt4 → process → done
+        (4 ring updates, 4 barriers)
+      '|
+    }
+  }
+}
+
+row_after: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  large_batch: {
+    direction: down
+    label: "Large Batch (N=32-64)"
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    characteristics: {
+      label: "Characteristics"
+      style.fill: white
+      c1: "✓ Amortized overhead"
+      c2: "✓ Better cache utilization"
+      c3: "✓ Fewer ring updates"
+      c4: "✗ Increased latency"
+      c5: "✗ Queueing delay"
+      c6: "✗ Tail latency spikes"
+    }
+    timing: {
+      label: "Per-Packet Cost"
+      code: |'c
+        poll() overhead:    50ns / 32
+        ring update:        20ns / 32
+        memory barrier:     15ns / 32
+        processing:        100ns
+        ────────────────────────
+        Total overhead:   ~103ns/pkt
+        At 1M pps: 103ms/s = 10.3% CPU
+        (44% reduction in overhead)
+      '|
+      width: 280
+    }
+    flow: {
+      label: "Packet Flow"
+      width: 200
+      code: |'c
+        pkt1  ┐
+        pkt2  │
+        pkt3  ├→ wait → batch process
+        ...   │        (1 ring update)
+        pkt32 ┘
+        Latency: pkt1 waits for pkt32
+      '|
+    }
+  }
+}
+
+row_optimal: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  optimal_batch: {
+    direction: down
+    label: "Optimal Batch (Adaptive)"
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+    characteristics: {
+      label: "Adaptive Strategy"
+      style.fill: white
+      c1: "✓ Batch size adjusts to load"
+      c2: "✓ Timeout prevents starvation"
+      c3: "✓ Low latency at low load"
+      c4: "✓ High throughput at high load"
+      c5: "✓ P99 latency bounded"
+      c6: "✓ CPU efficient at all rates"
+    }
+    algorithm: {
+      label: "Adaptive Batching Algorithm"
+      code: |'c
+        #define BATCH_MAX      32
+        #define BATCH_TIMEOUT_US 1
+        struct adaptive_batch {
+            uint32_t current_batch;
+            uint32_t empty_polls;
+            uint64_t batch_start_ns;
+        };
+        void process_batch(port, batch) {
+            n = rx_burst(port, batch, current_batch);
+            if (n == 0) {
+                if (++empty_polls > 1000)
+                    current_batch = max(1, current_batch/2);
+                return;
+            }
+            elapsed = now() - batch_start_ns;
+            if (n < current_batch && elapsed < 1000) return;
+            for (i = 0; i < n; i++) process_packet(batch[i]);
+            if (n == current_batch)
+                current_batch = min(BATCH_MAX, current_batch * 2);
+        }
+      '|
+      width: 400
+    }
+  }
+}
+
+row_graph: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  graph_container: {
+    label: "Throughput vs. Latency Trade-off Curve"
+    axes_box: {
+      shape: rectangle
+      style.fill: white
+      style.stroke: "#666"
+      width: 500
+      height: 350
+      
+      y_axis_label: {
+        shape: text
+        label: "Latency (μs)"
+        label.near: outside-left-center
+      }
+      x_axis_label: {
+        shape: text
+        label: "Batch Size →"
+        label.near: outside-bottom-center
+      }
+      
+      data_visualization: {
+        shape: text
+        label: |md
+          
+                Latency (μs)
+                     │
+              20μs ──┤                    ╭──────────────
+                     │                  ╱
+              15μs ──┤               ╱
+                     │            ╱
+              10μs ──┤         ╱
+                     │      ╱
+               5μs ──┤   ╱
+                     │╱
+               2μs ──┼──────────────────────────────
+                     │
+                     └────────────────────────────────
+                          1    4    8   16   32   64
+                                Batch Size
+          ████ Throughput (Mpps)
+          ░░░░ P99 Latency
+          
+        |
+        label.near: center-left
+      }
+    }
+  }
+  sweet_spot: {
+    label: "Sweet Spot Analysis"
+    style.fill: "#FCE4EC"
+    style.stroke: "#E91E63"
+    code: |'c
+      // Recommended batch sizes by workload
+      // Ultra-low latency (HFT orders)
+      #define BATCH_HFT        1-4
+      // Target: <2μs P99
+      
+      // Balanced (market data)
+      #define BATCH_BALANCED   8-16
+      // Target: <5μs P99, >10Mpps
+      
+      // High throughput (capture/relay)
+      #define BATCH_THROUGHPUT 32-64
+      // Target: >20Mpps
+    '|
+    width: 300
+  }
+}
+
+small_batch -> large_batch: "Increase batch size" {
+  style.stroke: "#666"
+  style.stroke-dash: 3
+}
+
+large_batch -> optimal_batch: "Add adaptivity" {
+  style.stroke: "#2196F3"
+  style.stroke-dash: 3
+}
+
+legend: {
+  near: bottom-center
+  direction: right
+  style.fill: "#F5F5F5"
+  style.stroke: "#999"
+  l1: "Batch=1: 2μs latency, 8Mpps max"
+  l2: "Batch=8: 4μs latency, 14Mpps max"
+  l3: "Batch=32: 8μs latency, 18Mpps max"
+  l4: "Adaptive: 2-6μs latency, 16Mpps avg"
+}
+
+key_insight: {
+  near: bottom-right
+  style.fill: "#FFF8E1"
+  style.stroke: "#FFC107"
+  label: |md
+    **Key Insight**
+    The optimal batch size depends on:
+    - **Load**: More packets → larger batches
+    - **Latency SLA**: Stricter SLA → smaller batches  
+    - **CPU budget**: Less CPU → larger batches
+    **Adaptive batching** gives you the best of both worlds.
+  |
+}

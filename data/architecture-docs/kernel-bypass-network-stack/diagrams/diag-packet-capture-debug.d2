@@ -1,0 +1,306 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # In-Stack Packet Capture for Debugging
+  Zero-overhead packet capture without kernel involvement
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  ingress: {
+    direction: down
+    label: "INGRESS PATH"
+    nic_rx: {
+      label: "NIC RX Ring"
+      shape: queue
+      style.fill: "#E8F4FD"
+    }
+    poll: {
+      label: "Poll & Batch"
+      code: |'c
+        nb_rx = rte_eth_rx_burst(port, 0,
+                                 bufs, BATCH_SIZE);
+      '|
+      width: 300
+    }
+    parse: {
+      label: "Parse Headers"
+      code: |'c
+        eth_parse(pkt, &eth);
+        ip_parse(eth.payload, &ip);
+        tcp_parse(ip.payload, &tcp);
+      '|
+      width: 300
+    }
+    capture_point: {
+      label: "CAPTURE POINT"
+      shape: diamond
+      style.fill: "#FFE4B5"
+      style.stroke: "#FF8C00"
+    }
+    process: {
+      label: "Process & Deliver"
+      code: |'c
+        conn = tcp_conn_lookup(hash);
+        tcp_process_segment(conn, &tcp);
+        app_deliver(conn, payload);
+      '|
+      width: 300
+    }
+    nic_rx -> poll: "mbuf[]"
+    poll -> parse: "mbuf"
+    parse -> capture_point: "parsed metadata"
+    capture_point -> process: "continue"
+  }
+  capture_system: {
+    direction: down
+    label: "CAPTURE SUBSYSTEM"
+    style.stroke: "#FF8C00"
+    style.stroke-dash: 3
+    capture_config: {
+      shape: sql_table
+      label: "struct capture_config"
+      f0: "0x00 | int       | enabled"
+      f1: "0x04 | int       | sample_rate"
+      f2: "0x08 | uint32_t  | sample_counter"
+      f3: "0x0C | int       | capture_rx"
+      f4: "0x10 | int       | capture_tx"
+      f5: "0x14 | uint32_t  | flags_filter"
+      sz: "Total: 24 bytes"
+    }
+    should_capture: {
+      label: "Capture Decision"
+      code: |'c
+        if (!cfg->enabled) return 0;
+        cfg->sample_counter++;
+        return (cfg->sample_counter 
+                % cfg->sample_rate) == 0;
+      '|
+      width: 280
+    }
+    capture_ring: {
+      label: "Lock-Free Capture Ring"
+      shape: cylinder
+      style.fill: "#FFE4B5"
+    }
+    capture_config -> should_capture: "check"
+    should_capture -> capture_ring: "if true"
+  }
+}
+row2: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  capture_ring_detail: {
+    direction: down
+    label: "CAPTURE RING BUFFER"
+    ring_struct: {
+      shape: sql_table
+      label: "struct capture_ring (lock-free SPSC)"
+      f0: "0x00 | volatile uint32_t | head"
+      f1: "0x40 | volatile uint32_t | tail"
+      note: "64-byte cache line separation\nprevents false sharing"
+      sz: "Ring size: 65536 entries"
+    }
+    entry_struct: {
+      shape: sql_table
+      label: "struct capture_entry (per packet)"
+      f0: "0x00 | uint64_t | timestamp"
+      f1: "0x08 | uint32_t | len"
+      f2: "0x0C | uint32_t | flags"
+      f3: "0x10 | uint8_t[1522] | data"
+      sz: "Total: 1538 bytes/entry"
+    }
+    capture_func: {
+      label: "capture_packet() — Hot Path"
+      code: |'c
+        uint32_t next = (ring->head + 1) & MASK;
+        if (next == ring->tail) return; // full
+        e = &ring->entries[ring->head];
+        e->timestamp = rte_rdtsc();
+        e->len = min(len, 1522);
+        memcpy(e->data, data, e->len);
+        __sync_synchronize(); // barrier
+        ring->head = next;
+      '|
+      width: 340
+    }
+    ring_struct -> entry_struct: "contains"
+    entry_struct -> capture_func: "populated by"
+  }
+  pcap_format: {
+    direction: down
+    label: "PCAP FILE FORMAT"
+    pcap_header: {
+      shape: sql_table
+      label: "Global Header (24 bytes)"
+      f0: "0x00 | uint32_t | magic_number"
+      f1: "0x04 | uint16_t | version_major"
+      f2: "0x06 | uint16_t | version_minor"
+      f3: "0x08 | int32_t  | thiszone"
+      f4: "0x0C | uint32_t | sigfigs"
+      f5: "0x10 | uint32_t | snaplen"
+      f6: "0x14 | uint32_t | network"
+      sz: "magic: 0xA1B2C3D4"
+    }
+    pkt_header: {
+      shape: sql_table
+      label: "Packet Header (16 bytes)"
+      f0: "0x00 | uint32_t | ts_sec"
+      f1: "0x04 | uint32_t | ts_usec"
+      f2: "0x08 | uint32_t | incl_len"
+      f3: "0x0C | uint32_t | orig_len"
+      sz: "Followed by packet data"
+    }
+    pcap_header -> pkt_header: "per file"
+    pkt_header -> pcap_data: "precedes"
+    pcap_data: {
+      label: "Packet Data"
+      shape: queue
+      style.fill: "#E8F4FD"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  drain_thread: {
+    direction: down
+    label: "DRAIN THREAD (background)"
+    drain_func: {
+      label: "capture_drain_thread()"
+      code: |'c
+        FILE *pcap = pcap_open("cap.pcap");
+        while (running) {
+          while (ring->tail != ring->head) {
+            e = &ring->entries[ring->tail];
+            pcap_write_packet(pcap, 
+              e->data, e->len, e->timestamp);
+            ring->tail = (ring->tail+1) & MASK;
+          }
+          usleep(1000); // 1ms poll
+        }
+      '|
+      width: 340
+    }
+    pcap_write: {
+      label: "pcap_write_packet()"
+      code: |'c
+        // Convert TSC to wall time
+        ts_sec = tsc_to_unix(hdr->ts);
+        ts_usec = tsc_to_usec(hdr->ts);
+        // Write header + data
+        fwrite(&pkt_hdr, 16, 1, f);
+        fwrite(data, len, 1, f);
+        fflush(f); // ensure durability
+      '|
+      width: 340
+    }
+    drain_func -> pcap_write: "calls"
+  }
+  mirror_port: {
+    direction: down
+    label: "ALTERNATIVE: MIRROR PORT"
+    style.stroke-dash: 4
+    switch: {
+      label: "Network Switch"
+      shape: hexagon
+      style.fill: "#E0E0E0"
+    }
+    span_port: {
+      label: "SPAN/Mirror Port"
+      code: |'c
+        // Switch config copies all traffic
+        // from data port to mirror port
+        // Zero impact on data path
+      '|
+      width: 280
+    }
+    wireshark: {
+      label: "Wireshark / tcpdump"
+      shape: document
+      style.fill: "#90EE90"
+    }
+    switch -> span_port: "mirror"
+    span_port -> wireshark: "capture"
+  }
+}
+row4: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  timing: {
+    direction: down
+    label: "TIMING ANALYSIS"
+    hot_path_cost: {
+      shape: sql_table
+      label: "Hot Path Overhead"
+      f0: "check enabled      | ~2 ns"
+      f1: "counter increment  | ~2 ns"
+      f2: "modulo check       | ~2 ns"
+      f3: "ring full check    | ~5 ns"
+      f4: "timestamp read     | ~20 ns"
+      f5: "memcpy 64B         | ~15 ns"
+      f6: "memory barrier     | ~10 ns"
+      f7: "head update        | ~5 ns"
+      sz: "Total: ~60 ns/packet (1.2% of 5μs)"
+    }
+    sample_savings: {
+      shape: sql_table
+      label: "Sampling Overhead Reduction"
+      f0: "sample_rate=1   | 60 ns (100%)"
+      f1: "sample_rate=10  | 6 ns avg"
+      f2: "sample_rate=100 | 0.6 ns avg"
+      f3: "sample_rate=1000| 0.06 ns avg"
+      sz: "1:100 sampling = negligible"
+    }
+  }
+  flags: {
+    direction: down
+    label: "CAPTURE FLAGS"
+    flags_struct: {
+      shape: sql_table
+      label: "uint32_t flags field"
+      f0: "bit 0    | CAP_FLAG_RX"
+      f1: "bit 1    | CAP_FLAG_TX"
+      f2: "bit 2    | CAP_FLAG_DROP"
+      f3: "bit 3    | CAP_FLAG_ERROR"
+      f4: "bit 4    | CAP_FLAG_SYN"
+      f5: "bit 5    | CAP_FLAG_FIN"
+      f6: "bit 6    | CAP_FLAG_RST"
+      f7: "bits 8-15| interface_id"
+      sz: "Enables filtered capture"
+    }
+  }
+}
+row1.ingress.capture_point -> row2.capture_ring_detail.capture_func: "capture if\nsampling\nmatches" {
+  style.stroke: "#FF8C00"
+  style.stroke-dash: 3
+}
+row2.capture_ring_detail.capture_ring -> row3.drain_thread.drain_func: "drain" {
+  style.stroke: "#FF8C00"
+}
+row3.drain_thread.pcap_write -> row2.pcap_format.pcap_header: "writes" {
+  style.stroke: "#4169E1"
+  style.stroke-dash: 3
+}
+legend: {
+  near: bottom-right
+  label: "Legend"
+  hot: "Hot Path" {
+    style.fill: "#FFE4B5"
+  }
+  background: "Background Thread" {
+    style.fill: "#90EE90"
+  }
+  optional: "Alternative Approach" {
+    style.stroke-dash: 4
+  }
+}

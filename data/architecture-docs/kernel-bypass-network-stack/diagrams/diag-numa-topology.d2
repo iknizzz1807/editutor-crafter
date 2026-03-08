@@ -1,0 +1,284 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # NUMA Topology for Packet Processing
+  **Memory locality determines latency — allocate and execute on the same node as your NIC**
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  numa0: NUMA Node 0 (Socket 0) {
+    direction: down
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    style.stroke-width: 3
+    cores0: CPU Cores {
+      style.fill: "#C8E6C9"
+      grid-columns: 2
+      core0_0: Core 0 {
+        shape: rectangle
+        style.fill: "#81C784"
+        label: "Core 0\n(Packet RX)"
+      }
+      core0_1: Core 1 {
+        shape: rectangle
+        style.fill: "#81C784"
+        label: "Core 1\n(Packet TX)"
+      }
+      core0_2: Core 2 {
+        shape: rectangle
+        style.fill: "#A5D6A7"
+        label: "Core 2\n(App Logic)"
+      }
+      core0_3: Core 3 {
+        shape: rectangle
+        style.fill: "#A5D6A7"
+        label: "Core 3\n(Spare)"
+      }
+    }
+    mem0: Local Memory (DDR4) {
+      shape: cylinder
+      style.fill: "#FFF9C4"
+      style.stroke: "#F9A825"
+      width: 200
+      buf_pool0: Buffer Pool {
+        shape: sql_table
+        label: "struct numa_mempool"
+        f0: "0x00 | void*     | base_addr"
+        f1: "0x08 | size_t    | size"
+        f2: "0x10 | uint32_t  | numa_node"
+        f3: "0x14 | uint32_t  | free_count"
+        sz: "64GB local"
+      }
+    }
+    nic0: NIC (Mellanox CX-6) {
+      shape: rectangle
+      style.fill: "#FFECB3"
+      style.stroke: "#FF8F00"
+      style.stroke-width: 3
+      width: 200
+      nic_regs: MMIO Registers {
+        shape: sql_table
+        label: "NIC Control (pci.h)"
+        f0: "0x00 | uint32_t | RX_TAIL"
+        f1: "0x04 | uint32_t | TX_TAIL"
+        f2: "0x08 | uint32_t | STATUS"
+        f3: "0x0C | uint32_t | IRQ_MASK"
+      }
+    }
+    nic0 -> cores0.core0_0: "DMA → L3 Cache" {
+      style.stroke: "#2E7D32"
+      style.stroke-width: 3
+      style.animated: true
+    }
+    cores0.core0_0 -> mem0.buf_pool0: "Local alloc\n~20ns" {
+      style.stroke: "#2E7D32"
+      style.stroke-width: 2
+    }
+  }
+  numa1: NUMA Node 1 (Socket 1) {
+    direction: down
+    style.fill: "#FFEBEE"
+    style.stroke: "#C62828"
+    style.stroke-width: 3
+    cores1: CPU Cores {
+      style.fill: "#FFCDD2"
+      grid-columns: 2
+      core1_0: Core 4 {
+        shape: rectangle
+        style.fill: "#EF9A9A"
+        label: "Core 4\n(WRONG!)"
+      }
+      core1_1: Core 5 {
+        shape: rectangle
+        style.fill: "#EF9A9A"
+        label: "Core 5\n(Idle)"
+      }
+      core1_2: Core 6 {
+        shape: rectangle
+        style.fill: "#EF9A9A"
+        label: "Core 6\n(Idle)"
+      }
+      core1_3: Core 7 {
+        shape: rectangle
+        style.fill: "#EF9A9A"
+        label: "Core 7\n(Idle)"
+      }
+    }
+    mem1: Local Memory (DDR4) {
+      shape: cylinder
+      style.fill: "#FFF9C4"
+      style.stroke: "#F9A825"
+      width: 200
+      buf_pool1: Buffer Pool {
+        shape: sql_table
+        label: "struct numa_mempool"
+        f0: "0x00 | void*     | base_addr"
+        f1: "0x08 | size_t    | size"
+        f2: "0x10 | uint32_t  | numa_node"
+        f3: "0x14 | uint32_t  | free_count"
+        sz: "64GB local"
+      }
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  interconnect: QPI/UPI Interconnect {
+    direction: right
+    style.fill: "#FCE4EC"
+    style.stroke: "#AD1457"
+    style.stroke-dash: 5
+    qpi_link: Bidirectional Link {
+      shape: queue
+      label: "QPI Bus\n~40GB/s"
+    }
+    latency_box: Cross-NUMA Latency {
+      shape: rectangle
+      style.fill: "#FFCDD2"
+      width: 280
+      code: |'c
+        // Cross-NUMA access penalty
+        // Local:  ~20ns  (L3 hit)
+        // Remote: ~80ns  (4× slower!)
+        //
+        // At 5μs budget, 60ns penalty
+        // = 1.2% latency per access
+        //
+        // FIX: Always allocate on
+        // NIC's NUMA node:
+        //
+        int node = get_nic_numa_node(iface);
+        void *buf = numa_alloc_onnode(
+            size, node);
+      '|
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  config: Configuration Check (sysfs) {
+    shape: rectangle
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    width: 320
+    code: |'bash
+      # Verify NIC NUMA placement
+      cat /sys/class/net/eth0/device/numa_node
+      # Output: 0  (good - matches our cores)
+      # Verify CPU NUMA affinity
+      numactl -H | grep "node 0 cpus"
+      # Output: node 0 cpus: 0 1 2 3
+      # Pin thread to correct node
+      numactl --cpunodebind=0 --membind=0 \
+        ./packet_stack --port 0
+    '|
+  }
+  penalty: Latency Impact Analysis {
+    shape: class
+    label: "Latency Budget Impact (numa.h)"
+    -local_l3_hit: "20ns"
+    -remote_access: "80ns"
+    -penalty_per_pkt: "60ns"
+    -budget_5us: "5000ns"
+    +calculate_impact(): "1.2% per access"
+    +recommendation(): "Allocate on NIC node"
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  alloc_code: Correct Allocation Pattern {
+    shape: rectangle
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    width: 340
+    code: |'c
+      // DPDK NUMA-aware initialization
+      int init_stack_numa(struct stack_cfg *cfg) {
+          // Step 1: Get NIC's NUMA node
+          int nic_node = get_nic_numa_node(cfg->iface);
+          // Step 2: Create mempool on SAME node
+          struct rte_mempool *pool = 
+            rte_pktmbuf_pool_create(
+              "pkt_pool",
+              cfg->pool_size,
+              256,  // cache_size
+              0,    // priv_size
+              RTE_MBUF_DEFAULT_BUF_SIZE,
+              nic_node  // CRITICAL!
+            );
+          // Step 3: Pin worker to core on that node
+          cpu_set_t cpuset;
+          CPU_ZERO(&cpuset);
+          CPU_SET(cfg->worker_core, &cpuset);
+          pthread_setaffinity_np(
+            pthread_self(), sizeof(cpuset), &cpuset);
+          return 0;
+      }
+    '|
+  }
+  verify: Verification Code {
+    shape: rectangle
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    width: 300
+    code: |'c
+      // Verify memory is on correct NUMA node
+      int check_numa_locality(void *ptr, 
+                               int expected_node) {
+          int actual_node = -1;
+          move_pages(0, 1, &ptr, NULL, 
+                     &actual_node, 0);
+          if (actual_node != expected_node) {
+              fprintf(stderr,
+                "WARN: buffer on node %d, "
+                "expected %d\n",
+                actual_node, expected_node);
+              return -1;
+          }
+          return 0;
+      }
+    '|
+  }
+}
+legend: "" {
+  direction: right
+  near: bottom-center
+  style.fill: transparent
+  style.stroke: "#9E9E9E"
+  style.stroke-dash: 3
+  good: Optimal Path {
+    shape: rectangle
+    style.fill: "#E8F5E9"
+  }
+  bad: Suboptimal Path {
+    shape: rectangle  
+    style.fill: "#FFEBEE"
+  }
+  penalty_arrow: Cross-NUMA {
+    shape: rectangle
+    style.fill: "#FCE4EC"
+  }
+}
+numa0.nic0 -> numa1.mem1.buf_pool1: "Remote DMA\n~150ns penalty!" {
+  style.stroke: "#C62828"
+  style.stroke-width: 2
+  style.stroke-dash: 5
+}
+numa1.cores1.core1_0 -> numa0.mem0.buf_pool0: "Remote alloc\n~80ns penalty!" {
+  style.stroke: "#C62828"
+  style.stroke-width: 2
+  style.stroke-dash: 5
+}

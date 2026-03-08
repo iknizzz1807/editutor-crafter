@@ -1,0 +1,320 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Statistics Collection — Lock-Free Counters
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  hotpath: {
+    direction: down
+    label: "Hot Path (Per-Core)"
+    core0: {
+      label: "Core 0 Statistics"
+      struct0: {
+        shape: sql_table
+        label: "struct per_core_stats (stats.h)"
+        f0: "0x00 | uint64_t | rx_packets"
+        f1: "0x08 | uint64_t | rx_bytes"
+        f2: "0x10 | uint64_t | tx_packets"
+        f3: "0x18 | uint64_t | tx_bytes"
+        f4: "0x20 | uint64_t | rx_errors"
+        f5: "0x28 | uint64_t | cache_misses"
+        f6: "0x30 | char[32] | padding"
+        sz: "Total: 64 bytes (1 cache line)"
+      }
+    }
+    core1: {
+      label: "Core 1 Statistics"
+      struct1: {
+        shape: sql_table
+        label: "struct per_core_stats (stats.h)"
+        f0: "0x00 | uint64_t | rx_packets"
+        f1: "0x08 | uint64_t | rx_bytes"
+        f2: "0x10 | uint64_t | tx_packets"
+        f3: "0x18 | uint64_t | tx_bytes"
+        f4: "0x20 | uint64_t | rx_errors"
+        f5: "0x28 | uint64_t | cache_misses"
+        f6: "0x30 | char[32] | padding"
+        sz: "Total: 64 bytes (1 cache line)"
+      }
+    }
+    coreN: {
+      label: "Core N Statistics"
+      structN: {
+        shape: sql_table
+        label: "struct per_core_stats (stats.h)"
+        f0: "0x00 | uint64_t | rx_packets"
+        f1: "0x08 | uint64_t | rx_bytes"
+        f2: "0x10 | uint64_t | tx_packets"
+        f3: "0x18 | uint64_t | tx_bytes"
+        f4: "0x20 | uint64_t | rx_errors"
+        f5: "0x28 | uint64_t | cache_misses"
+        f6: "0x30 | char[32] | padding"
+        sz: "Total: 64 bytes (1 cache line)"
+      }
+    }
+  }
+  update_logic: {
+    direction: down
+    label: "Update Logic"
+    update_code: {
+      label: "stat_rx_packet() — Zero Overhead"
+      width: 420
+      code: |'c
+        // Per-core: NO atomic, NO cache bounce
+        static inline void stat_rx_packet(uint32_t bytes) {
+            unsigned int lcore = rte_lcore_id();
+            // Direct write to local cache line
+            core_stats[lcore].rx_packets++;
+            core_stats[lcore].rx_bytes += bytes;
+        }
+        // Cost: ~2-4 ns (L1 hit, simple increment)
+        // NO inter-core traffic, NO locks
+      '|
+    }
+    update_timing: {
+      shape: sql_table
+      label: "Update Cost Comparison"
+      row1: "Local increment | ~2-4 ns | L1 cache hit"
+      row2: "Atomic fetch_add | ~25-50 ns | Cache coherency"
+      row3: "Locked increment | ~100-500 ns | Contention"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  agg_path: {
+    direction: down
+    label: "Aggregation Path (Stats Thread)"
+    stats_thread: {
+      shape: class
+      label: "Stats Aggregator (stats.c)"
+      -interval_ms: "uint64_t"
+      -running: "int"
+      +aggregate_stats(out): "void"
+      +export_prometheus(fd): "void"
+      +latency_percentile(h, p): "uint64_t"
+    }
+    agg_code: {
+      label: "aggregate_stats() — Cold Path"
+      width: 420
+      code: |'c
+        // Called from stats thread (NOT hot path)
+        void aggregate_stats(struct total_stats *out) {
+            memset(out, 0, sizeof(*out));
+            unsigned int lcore_id;
+            RTE_LCORE_FOREACH(lcore_id) {
+                // Sum all per-core counters
+                out->rx_packets += core_stats[lcore_id].rx_packets;
+                out->rx_bytes += core_stats[lcore_id].rx_bytes;
+                out->tx_packets += core_stats[lcore_id].tx_packets;
+                out->errors += core_stats[lcore_id].rx_errors;
+            }
+        }
+        // Cost: ~1-5 μs (N cores × cache reads)
+        // Acceptable: runs once per second
+      '|
+    }
+  }
+  export_path: {
+    direction: down
+    label: "Export Formats"
+    prometheus: {
+      label: "Prometheus Metrics"
+      width: 400
+      code: |'text
+        # TYPE packets_rx_total counter
+        packets_rx_total 1234567890
+        # TYPE latency_ns summary
+        latency_ns{quantile="0.50"} 420
+        latency_ns{quantile="0.99"} 1250
+        latency_ns{quantile="0.999"} 3200
+        # TYPE errors_total counter
+        errors_total{type="checksum"} 15
+        errors_total{type="dropped"} 3
+      '|
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  latency: {
+    direction: down
+    label: "Latency Histogram"
+    hist_struct: {
+      shape: sql_table
+      label: "struct latency_histogram (stats.h)"
+      f0: "0x00 | uint64_t[4096] | buckets"
+      f1: "0x2000 | uint64_t | total_samples"
+      f2: "0x2008 | uint64_t | sum_ns"
+      f3: "0x2010 | uint64_t | min_ns"
+      f4: "0x2018 | uint64_t | max_ns"
+      f5: "0x2020 | char[24] | padding"
+      sz: "Total: 8264 bytes"
+    }
+    hist_code: {
+      label: "latency_record() — Lock-Free Sample"
+      width: 420
+      code: |'c
+        static inline void latency_record(
+            struct latency_histogram *h, uint64_t ns) {
+            // Power-of-2 bucket: 64ns width
+            uint32_t bucket = ns >> 6;
+            if (bucket >= 4096) bucket = 4095;
+            h->buckets[bucket]++;  // No atomic needed
+            h->total_samples++;
+            h->sum_ns += ns;
+            // Min/max (racy but acceptable)
+            if (ns < h->min_ns || h->min_ns == 0) 
+                h->min_ns = ns;
+            if (ns > h->max_ns) 
+                h->max_ns = ns;
+        }
+        // Cost: ~10-20 ns per sample
+      '|
+    }
+  }
+  percentiles: {
+    direction: down
+    label: "Percentile Calculation"
+    pct_code: {
+      label: "latency_percentile()"
+      width: 420
+      code: |'c
+        uint64_t latency_percentile(
+            struct latency_histogram *h, double p) {
+            if (h->total_samples == 0) return 0;
+            uint64_t target = (uint64_t)
+                (p * h->total_samples / 100.0);
+            uint64_t cumulative = 0;
+            for (int i = 0; i < 4096; i++) {
+                cumulative += h->buckets[i];
+                if (cumulative >= target) {
+                    return (uint64_t)i * 64; // ns
+                }
+            }
+            return 262080; // Max bucket
+        }
+      '|
+    }
+    pct_table: {
+      shape: sql_table
+      label: "Typical Output"
+      r0: "P50 (median) | 420 ns"
+      r1: "P90 | 850 ns"
+      r2: "P99 | 1,250 ns"
+      r3: "P99.9 | 3,200 ns"
+      r4: "P99.99 | 8,500 ns"
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  memory_layout: {
+    direction: down
+    label: "Memory Layout"
+    layout_struct: {
+      shape: sql_table
+      label: "Cache-Line Alignment (critical)"
+      f0: "struct per_core_stats {"
+      f1: "  uint64_t rx_packets;    // 8 bytes"
+      f2: "  uint64_t rx_bytes;      // 8 bytes"
+      f3: "  uint64_t tx_packets;    // 8 bytes"
+      f4: "  uint64_t tx_bytes;      // 8 bytes"
+      f5: "  uint64_t rx_errors;     // 8 bytes"
+      f6: "  uint64_t cache_misses;  // 8 bytes"
+      f7: "  char padding[32];       // Pad to 64"
+      f8: "} __attribute__((aligned(64)));"
+      sz: "Total: 64 bytes = 1 cache line"
+    }
+    layout_note: {
+      label: "Why Alignment Matters"
+      width: 400
+      code: |'text
+        WITHOUT padding (false sharing):
+        Core 0 writes rx_packets (offset 0)
+        Core 1 writes rx_packets (offset 48)
+        → Same cache line! Cache coherency ping-pong
+        WITH 64-byte alignment:
+        Core 0's struct at address 0x0000
+        Core 1's struct at address 0x0040
+        → Different cache lines, zero contention
+      '|
+    }
+  }
+  antipattern: {
+    direction: down
+    label: "Anti-Pattern: Shared Atomics"
+    wrong_code: {
+      label: "❌ WRONG: Shared Atomic Counter"
+      width: 420
+      code: |'c
+        // Shared across all cores
+        volatile uint64_t rx_packets_shared;
+        static inline void stat_rx_packet_wrong(void) {
+            // Atomic fetch-and-add
+            __sync_fetch_and_add(&rx_packets_shared, 1);
+        }
+        // Cost: 25-50 ns per update
+        // Scales O(n) with core count
+        // Cache line bounces between cores
+      '|
+    }
+    wrong_timing: {
+      shape: sql_table
+      label: "Performance Impact"
+      r0: "1 core | 25 ns | Acceptable"
+      r1: "4 cores | 80 ns | Cache ping-pong"
+      r2: "16 cores | 200+ ns | Severe contention"
+      r3: "32 cores | 500+ ns | Unusable"
+    }
+  }
+}
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  summary: {
+    direction: down
+    label: "Design Principles"
+    principles: {
+      shape: sql_table
+      label: "Lock-Free Statistics Checklist"
+      p0: "1. Per-core storage | Separate cache line per CPU"
+      p1: "2. Local updates | NO atomic in hot path"
+      p2: "3. Cold aggregation | Sum from stats thread"
+      p3: "4. Cache alignment | 64-byte aligned structs"
+      p4: "5. Acceptable races | Min/max may be slightly off"
+      p5: "6. Histogram buckets | Power-of-2 for fast index"
+    }
+    cost_summary: {
+      shape: sql_table
+      label: "Cost Summary"
+      c0: "Per-packet update | ~2-4 ns | L1 hit"
+      c1: "Latency sample | ~10-20 ns | Histogram update"
+      c2: "Aggregation | ~1-5 μs | Once per second"
+      c3: "Prometheus export | ~10-50 μs | HTTP scrape"
+    }
+  }
+}
+hotpath.core0 -> update_logic.update_code: "Core 0\nupdates"
+hotpath.core1 -> update_logic.update_code: "Core 1\nupdates"
+hotpath.coreN -> update_logic.update_code: "Core N\nupdates"
+update_logic.update_code -> agg_path.stats_thread: "Periodic\naggregation"
+agg_path.stats_thread -> export_path.prometheus: "HTTP\nendpoint"
+latency.hist_struct -> percentiles.pct_code: "Query\npercentiles"
+memory_layout.layout_struct -> hotpath.core0: "Aligned to\ncache line"
+antipattern.wrong_code -> antipattern.wrong_timing: "Causes\ncontention"

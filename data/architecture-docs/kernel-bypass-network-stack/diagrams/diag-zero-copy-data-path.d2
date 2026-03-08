@@ -1,0 +1,400 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: "Zero-Copy Data Path — Buffer Lifetime\nAllocation → NIC DMA → Stack → App Read → Reuse"
+  shape: rectangle
+  style: {
+    font-size: 24
+    bold: true
+    fill: "#F0F4F8"
+    stroke-width: 0
+  }
+}
+
+# Phase 1: Buffer Pool Initialization
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  phase1_init: {
+    direction: down
+    label: "Phase 1: Pool Initialization (startup)"
+    
+    mempool: {
+      shape: class
+      label: "struct rte_mempool (dpdk_mempool.c)"
+      -name: "char[32]"
+      -elt_size: "uint32_t"
+      -header_size: "uint32_t"
+      -trailer_size: "uint32_t"
+      -cache: "struct rte_mempool_cache*"
+      +rte_mempool_create(name, n, elt_size, flags): "struct rte_mempool*"
+      +rte_mempool_get(mp, objp): "int"
+      +rte_mempool_put(mp, obj): "void"
+    }
+    
+    mempool_layout: {
+      label: "Memory Pool Layout (NUMA-local)"
+      shape: sql_table
+      f0: "0x0000 | void* | memzone base"
+      f1: "0x0008 | uint64_t | elt_size = 2176"
+      f2: "0x0010 | uint64_t | header_size = 64"
+      f3: "0x0018 | uint64_t | trailer_size = 0"
+      f4: "0x0020 | uint32_t | size = 8192"
+      sz: "Total: 256 bytes (header only)"
+    }
+    
+    annotation_pool: {
+      shape: callout
+      label: "Pool allocated once at startup\n8192 mbufs × 2176 bytes = ~17MB\nAll on single NUMA node"
+    }
+  }
+
+  init_code: {
+    label: "Pool Creation (init.c)"
+    width: 420
+    code: |'c
+      // Allocate mempool on NIC's NUMA node
+      struct rte_mempool *pool = rte_pktmbuf_pool_create(
+          "rx_pool",
+          8192,           // Number of mbufs
+          256,            // Per-core cache size
+          0,              // Private data size
+          RTE_MBUF_DEFAULT_BUF_SIZE,  // ~2176 bytes
+          nic_numa_node   // CRITICAL: NUMA-local
+      );
+    '|
+  }
+}
+
+# Phase 2: Buffer Allocation
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  phase2_alloc: {
+    direction: down
+    label: "Phase 2: Buffer Allocation (RX ring setup)"
+    
+    alloc_flow: {
+      direction: right
+      mempool_cache: {
+        label: "Per-Core Cache\n(L1 hot)"
+        shape: cylinder
+      }
+      cache_op: {
+        label: "Cache Miss?\nFallback to Ring"
+        shape: diamond
+      }
+      mempool_ring: {
+        label: "Mempool Ring\n(shared)"
+        shape: cylinder
+      }
+      mbuf_out: {
+        label: "struct rte_mbuf*\nready for use"
+        shape: parallelogram
+      }
+      mempool_cache -> cache_op: "rte_mempool_get()"
+      cache_op -> mempool_ring: "miss" {
+        style.stroke-dash: 4
+      }
+      cache_op -> mbuf_out: "hit"
+      mempool_ring -> mbuf_out: "dequeue"
+    }
+
+    mbuf_struct: {
+      shape: class
+      label: "struct rte_mbuf (rte_mbuf.h)"
+      -buf_addr: "void*"
+      -buf_iova: "rte_iova_t"
+      -buf_len: "uint16_t"
+      -data_off: "uint16_t"
+      -data_len: "uint16_t"
+      -pkt_len: "uint32_t"
+      -nb_segs: "uint8_t"
+      -port: "uint16_t"
+      -ol_flags: "uint64_t"
+      +rte_pktmbuf_mtod(m, t): "t"
+      +rte_pktmbuf_data_len(m): "uint16_t"
+    }
+  }
+
+  alloc_code: {
+    label: "Pre-Fill RX Ring (setup.c)"
+    width: 420
+    code: |'c
+      // Allocate mbufs for RX descriptors
+      struct rte_mbuf *bufs[BURST_SIZE];
+      int ret = rte_pktmbuf_alloc_bulk(pool, bufs, BURST_SIZE);
+      // Each mbuf: 64-byte header + 2048-byte data buffer
+      // buf_addr points to start of data area
+      // data_off = RTE_PKTMBUF_HEADROOM (128 bytes)
+    '|
+  }
+}
+
+row1 -> row2: "Pool ready | link" {
+  style.stroke: "#4A90D9"
+  style.stroke-width: 3
+}
+
+# Phase 3: NIC DMA Write
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  phase3_dma: {
+    direction: down
+    label: "Phase 3: NIC DMA Write (packet arrival)"
+    
+    dma_flow: {
+      direction: right
+      nic_hw: {
+        label: "NIC Hardware\n(ConnectX-6)"
+        shape: rectangle
+        style.fill: "#E8F5E9"
+      }
+      dma_engine: {
+        label: "DMA Engine\n(pcie gen4)"
+        shape: rectangle
+        style.fill: "#FFF3E0"
+      }
+      dram: {
+        label: "DDR4 RAM\n(NUMA node 0)"
+        shape: cylinder
+        style.fill: "#E3F2FD"
+      }
+      nic_hw -> dma_engine: "PCIe TLP"
+      dma_engine -> dram: "DMA Write"
+    }
+
+    rx_ring: {
+      label: "RX Ring Buffer State"
+      shape: sql_table
+      f0: "0x00 | uint32_t | head = 0 (driver)"
+      f1: "0x04 | uint32_t | tail = 32 (NIC wrote)"
+      f2: "0x08 | uint32_t | ring_mask = 1023"
+      desc0: "0x10 | uint64_t | desc[0].addr = 0x7fffe000"
+      desc1: "0x18 | uint32_t | desc[0].len = 64"
+      desc2: "0x20 | uint64_t | desc[1].addr = 0x7fffc000"
+      desc3: "0x28 | uint32_t | desc[1].len = 1514"
+      sz: "Total: 16KB for 1024 descriptors"
+    }
+  }
+
+  dma_code: {
+    label: "NIC -> RAM (hardware)"
+    width: 420
+    code: |'c
+      // 1. Read RX descriptor from ring
+      // 2. Extract buf_iova (physical address)
+      // 3. DMA packet data to buf_iova + data_off
+      // 4. Update descriptor with packet length
+      // 5. Write tail pointer update
+      // CPU cache does NOT have this data yet!
+    '|
+  }
+}
+
+row2 -> row3: "Mbuf awaiting | link" {
+  style.stroke: "#4A90D9"
+  style.stroke-width: 3
+}
+
+# Phase 4: Stack Processing
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  phase4_stack: {
+    direction: down
+    label: "Phase 4: Stack Processing (hot path)"
+    
+    stack_pipeline: {
+      direction: right
+      poll: { label: "Poll RX"; shape: rectangle; style.fill: "#E8F5E9" }
+      prefetch: { label: "Prefetch"; shape: rectangle; style.fill: "#E8F5E9" }
+      parse: { label: "Parse Headers"; shape: rectangle; style.fill: "#FFF3E0" }
+      lookup: { label: "Conn Lookup"; shape: rectangle; style.fill: "#FFF3E0" }
+      poll -> prefetch: "mbuf ptr"
+      prefetch -> parse: "warm cache"
+      parse -> lookup: "4-tuple"
+    }
+
+    zero_copy_check: {
+      label: "Zero-Copy Verification"
+      shape: sql_table
+      op1: "Operation | Copy? | Reason"
+      eth_parse: "eth_parse() | NO | pointer math"
+      ip_parse: "ip_parse() | NO | pointer math"
+      tcp_parse: "tcp_parse() | NO | pointer math"
+      conn_lookup: "conn_lookup() | NO | hash table"
+      note: "ZERO-COPY maintained through stack"
+    }
+  }
+
+  stack_code: {
+    label: "Stack Processing (stack.c)"
+    width: 420
+    code: |'c
+      // ZERO-COPY: Parsing uses pointers into mbuf
+      struct eth_hdr *eth = rte_pktmbuf_mtod(m, struct eth_hdr*);
+      struct ip_hdr *ip = (struct ip_hdr*)(eth + 1);
+      struct tcp_hdr *tcp = (struct tcp_hdr*)((uint8_t*)ip + len);
+      // No memcpy, no allocation in hot path
+      struct tcp_conn *conn = tcp_conn_lookup(ip, tcp);
+    '|
+  }
+}
+
+row3 -> row4: "Packet in DRAM | process" {
+  style.stroke: "#4A90D9"
+  style.stroke-width: 3
+}
+
+# Phase 5: Application Read
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  phase5_app: {
+    direction: down
+    label: "Phase 5: Application Read (delivery)"
+    
+    app_api: {
+      direction: right
+      zero_copy_api: {
+        label: "Zero-Copy API"
+        shape: rectangle
+        style.fill: "#C8E6C9"
+        api_funcs: {
+          shape: class
+          label: "Zero-Copy Interface"
+          +stack_recv_zc(conn, bufp, lenp): "int"
+          +stack_release_buf(conn, buf): "void"
+        }
+      }
+      copy_api: {
+        label: "Copy API"
+        shape: rectangle
+        style.fill: "#FFECB3"
+        api_funcs_copy: {
+          shape: class
+          label: "Copy Interface"
+          +stack_recv(conn, buf, maxlen): "int"
+        }
+      }
+    }
+    
+    annotation_zc: {
+      shape: callout
+      label: "CRITICAL: App must release\nor buffer leaks\nPool exhaustion = packet drop"
+    }
+  }
+
+  app_code: {
+    label: "App Delivery (app_api.c)"
+    width: 420
+    code: |'c
+      // Zero-copy delivery (HFT path)
+      int stack_recv_zc(conn, void **buf, uint32_t *len) {
+          *buf = rte_pktmbuf_mtod(conn->rx_mbuf, void*);
+          *len = conn->rx_mbuf->data_len;
+          return 0;  // Application now OWNS mbuf
+      }
+      // App MUST call release when done:
+      void stack_release_buf(conn, void *buf) {
+          rte_pktmbuf_free(conn->rx_mbuf);
+      }
+    '|
+  }
+}
+
+row4 -> row5: "Parsed seg | delivery" {
+  style.stroke: "#4A90D9"
+  style.stroke-width: 3
+}
+
+# Phase 6: Buffer Reuse
+row6: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  phase6_reuse: {
+    direction: down
+    label: "Phase 6: Buffer Reuse (recycle)"
+    
+    reuse_flow: {
+      direction: right
+      app_done: { label: "Release"; shape: rectangle; style.fill: "#E8F5E9" }
+      free_func: { label: "Free"; shape: rectangle; style.fill: "#FFF3E0" }
+      cache_check: { label: "Cache Full?"; shape: diamond }
+      return_cache: { label: "Return L1"; shape: cylinder; style.fill: "#C8E6C9" }
+      app_done -> free_func -> cache_check -> return_cache: "success"
+    }
+
+    lifecycle_summary: {
+      label: "Buffer Lifetime Summary"
+      shape: sql_table
+      s0: "Phase | Duration | Cache State"
+      s1: "Init | Once | Cold"
+      s2: "Allocate | ~50ns | Hot"
+      s3: "NIC DMA | ~100ns | Cold (I/O)"
+      s4: "Parse | ~100ns | Warm (L1)"
+      s5: "Release | ~30ns | Warm"
+      note: "Total overhead per packet: ~400ns"
+    }
+  }
+
+  reuse_code: {
+    label: "Buffer Return (mempool.c)"
+    width: 420
+    code: |'c
+      void rte_pktmbuf_free(struct rte_mbuf *m) {
+          m->data_off = HEADROOM;
+          m->data_len = 0;
+          struct rte_mempool_cache *cache = 
+              rte_mempool_default_cache(mp, core_id);
+          // Fast path: put in per-core cache
+          cache->objs[cache->len++] = m;
+      }
+    '|
+  }
+}
+
+row5 -> row6: "App done | release" {
+  style.stroke: "#4A90D9"
+  style.stroke-width: 3
+}
+
+# Cycle back
+row6 -> row2: "REUSE CYCLE" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 3
+  style.stroke-dash: 6
+}
+
+legend: {
+  near: bottom-right
+  label: "Legend"
+  shape: rectangle
+  content: |md
+    **Zero-Copy Path:**
+    NIC DMA → DRAM → CPU Cache → App
+    No memcpy() operations.
+    **Overhead:**
+    ~400ns per 1500B packet.
+  |
+}

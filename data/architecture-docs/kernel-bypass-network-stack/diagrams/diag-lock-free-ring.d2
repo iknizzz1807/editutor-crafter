@@ -1,0 +1,360 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Lock-Free SPSC Ring Buffer
+  ## Single-Producer Single-Consumer with Memory Ordering
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  ring_buffer: {
+    direction: down
+    label: "Ring Buffer Memory Layout (64-byte cache lines)"
+    producer_region: {
+      label: "Cache Line 0 — Producer State"
+      shape: rectangle
+      style.fill: "#E8F5E9"
+      style.stroke: "#2E7D32"
+      head_var: {
+        shape: sql_table
+        label: "volatile uint32_t head"
+        f0: "0x00 | uint32_t | head = 3"
+        f1: "0x04 | uint8_t[60] | padding"
+        sz: "64 bytes (1 cache line)"
+      }
+    }
+    consumer_region: {
+      label: "Cache Line 1 — Consumer State"
+      shape: rectangle
+      style.fill: "#E3F2FD"
+      style.stroke: "#1565C0"
+      tail_var: {
+        shape: sql_table
+        label: "volatile uint32_t tail"
+        f0: "0x00 | uint32_t | tail = 1"
+        f1: "0x04 | uint8_t[60] | padding"
+        sz: "64 bytes (1 cache line)"
+      }
+    }
+    entries_region: {
+      label: "Cache Lines 2+ — Data Entries"
+      shape: rectangle
+      style.fill: "#FFF3E0"
+      style.stroke: "#E65100"
+      entries_table: {
+        shape: sql_table
+        label: "void* entries[SIZE]"
+        e0: "0 | void* | pkt_0x1000"
+        e1: "1 | void* | NULL (consumed)"
+        e2: "2 | void* | pkt_0x2400"
+        e3: "3 | void* | pkt_0x3800"
+        e4: "4 | void* | NULL (empty)"
+        e5: "... | void* | ..."
+        sz: "SIZE × 8 bytes"
+      }
+    }
+  }
+  indices_diagram: {
+    direction: down
+    label: "Index Movement"
+    ring_visual: {
+      label: |md
+        
+                ┌───┐
+            ┌──►│ 0 │◄──┐
+            │   └───┘   │
+          ┌─┴─┐       ┌─┴─┐
+          │ 4 │       │ 1 │ ← tail=1
+          └─┬─┘       └─┬─┘
+            │   ┌───┐   │
+            └──►│ 2 │◄──┘
+                └───┘
+                  ▲
+              head=3
+        [0]=pkt  [1]=NULL  [2]=pkt  [3]=pkt  [4]=NULL
+                  ▲                   ▲
+              consumed            enqueued
+        
+      |
+      shape: rectangle
+      style.fill: transparent
+      style.stroke: transparent
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  producer_flow: {
+    direction: down
+    label: "Producer (Push)"
+    style.fill: "#E8F5E9"
+    prod_step1: {
+      label: "1. Read tail (local copy)"
+      code: |'c
+        uint32_t tail = ring->tail;
+        // No memory barrier needed
+        // Consumer only writes tail
+      '|
+      width: 320
+    }
+    prod_step2: {
+      label: "2. Check for space"
+      code: |'c
+        uint32_t next = (head + 1) & MASK;
+        if (next == tail) return FULL;
+        // Space available
+      '|
+      width: 320
+    }
+    prod_step3: {
+      label: "3. Store entry (the critical write)"
+      code: |'c
+        ring->entries[head] = pkt;
+        // Entry MUST be visible before head!
+      '|
+      width: 320
+    }
+    prod_step4: {
+      label: "4. Release barrier + update head"
+      code: |'c
+        __sync_synchronize();  // RELEASE
+        ring->head = next;     // Publish
+      '|
+      width: 320
+      style.fill: "#C8E6C9"
+    }
+    prod_step1 -> prod_step2 -> prod_step3 -> prod_step4
+  }
+  consumer_flow: {
+    direction: down
+    label: "Consumer (Pop)"
+    style.fill: "#E3F2FD"
+    cons_step1: {
+      label: "1. Read head (local copy)"
+      code: |'c
+        uint32_t head = ring->head;
+        // No memory barrier needed
+        // Producer only writes head
+      '|
+      width: 320
+    }
+    cons_step2: {
+      label: "2. Check for data"
+      code: |'c
+        if (tail == head) return EMPTY;
+        // Data available
+      '|
+      width: 320
+    }
+    cons_step3: {
+      label: "3. Acquire barrier + read entry"
+      code: |'c
+        __sync_synchronize();  // ACQUIRE
+        void *pkt = ring->entries[tail];
+      '|
+      width: 320
+      style.fill: "#BBDEFB"
+    }
+    cons_step4: {
+      label: "4. Update tail"
+      code: |'c
+        ring->tail = (tail + 1) & MASK;
+        // Consumer now owns this slot
+      '|
+      width: 320
+    }
+    cons_step1 -> cons_step2 -> cons_step3 -> cons_step4
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  memory_ordering: {
+    direction: down
+    label: "Memory Ordering Guarantees"
+    ordering_visual: {
+      label: |md
+        ## Why Memory Barriers Are Required
+        **Without barrier (WRONG):**
+        
+        CPU:    store entries[head]  →  store head
+        Reordered:  store head       →  store entries[head]
+        
+        Consumer sees new head, reads garbage!
+        **With RELEASE barrier:**
+        
+        CPU:    store entries[head]  →  BARRIER  →  store head
+        Guaranteed: entry visible before head published
+        
+        **With ACQUIRE barrier:**
+        
+        CPU:    load head  →  BARRIER  →  load entries[tail]
+        Guaranteed: see head before reading entry
+        
+      |
+      shape: rectangle
+      style.fill: "#FFF8E1"
+      style.stroke: "#FF8F00"
+    }
+  }
+  performance_compare: {
+    direction: down
+    label: "Lock-Free vs Mutex"
+    compare_table: {
+      shape: sql_table
+      label: "Latency Comparison"
+      op1: "Operation | Lock-Free | Mutex"
+      op2: "Empty check | ~5 ns | ~50 ns"
+      op3: "Push (uncontended) | ~10 ns | ~100 ns"
+      op4: "Push (contended) | ~10 ns | ~500+ ns"
+      op5: "Cache behavior | 2 lines | Shared line"
+      op6: "Scalability | Perfect | Degrades"
+    }
+    why_faster: {
+      label: |md
+        ### Why Lock-Free Is Faster
+        1. **No cache line bouncing**
+           - Producer owns cache line 0 (head)
+           - Consumer owns cache line 1 (tail)
+           - Zero false sharing!
+        2. **No kernel involvement**
+           - Mutex: syscall on contention
+           - Lock-free: pure userspace
+        3. **Predictable latency**
+           - Mutex: 50ns to 50μs (worst case)
+           - Lock-free: always ~10ns
+        4. **No priority inversion**
+           - Mutex: low-priority thread holds lock
+           - Lock-free: no blocking possible
+      |
+      shape: rectangle
+      style.fill: "#E8F5E9"
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  impl_complete: {
+    direction: down
+    label: "Complete Implementation (lf_ring.h)"
+    struct_def: {
+      label: "Structure Definition"
+      code: |'c
+        struct lf_ring {
+            // Cache line 0: Producer state
+            volatile uint32_t head 
+                __attribute__((aligned(64)));
+            // Cache line 1: Consumer state  
+            volatile uint32_t tail 
+                __attribute__((aligned(64)));
+            // Cache line 2+: Entries
+            void *entries[] 
+                __attribute__((aligned(64)));
+        };
+      '|
+      width: 400
+    }
+    push_func: {
+      label: "Lock-Free Push (Producer)"
+      code: |'c
+        int lf_ring_push(struct lf_ring *r, void *e, 
+                         uint32_t mask) {
+            uint32_t head = r->head;
+            uint32_t tail = r->tail;  // Read once
+            uint32_t next = (head + 1) & mask;
+            if (next == tail) return -1;  // Full
+            r->entries[head] = e;          // Store data
+            __sync_synchronize();          // RELEASE
+            r->head = next;                // Publish
+            return 0;
+        }
+      '|
+      width: 400
+    }
+    pop_func: {
+      label: "Lock-Free Pop (Consumer)"
+      code: |'c
+        void *lf_ring_pop(struct lf_ring *r, uint32_t mask) {
+            uint32_t tail = r->tail;
+            uint32_t head = r->head;  // Read once
+            if (tail == head) return NULL;  // Empty
+            __sync_synchronize();           // ACQUIRE
+            void *e = r->entries[tail];     // Read data
+            r->tail = (tail + 1) & mask;    // Release slot
+            return e;
+        }
+      '|
+      width: 400
+    }
+    struct_def -> push_func -> pop_func
+  }
+  usage_pattern: {
+    direction: down
+    label: "Usage Pattern"
+    usage_code: {
+      label: "RX to Application Handoff"
+      code: |'c
+        // RX thread (producer) - runs on core 0
+        void rx_loop(struct lf_ring *ring) {
+            while (1) {
+                struct rte_mbuf *m = rx_burst();
+                if (lf_ring_push(ring, m, MASK) < 0) {
+                    rte_pktmbuf_free(m);  // Drop
+                }
+            }
+        }
+        // App thread (consumer) - runs on core 1
+        void app_loop(struct lf_ring *ring) {
+            while (1) {
+                struct rte_mbuf *m = lf_ring_pop(ring, MASK);
+                if (m) {
+                    process_packet(m);
+                    rte_pktmbuf_free(m);
+                }
+            }
+        }
+      '|
+      width: 400
+    }
+    constraints: {
+      label: |md
+        ### SPSC Constraints
+        **Single Producer**: Only ONE thread calls `lf_ring_push`
+        **Single Consumer**: Only ONE thread calls `lf_ring_pop`
+        **Violation = Data Corruption**
+        - Multiple producers: lost updates
+        - Multiple consumers: duplicate entries
+        For MPMC, use hardware atomics or different algorithm
+        (e.g., Chase-Lev work-stealing deque)
+      |
+      shape: rectangle
+      style.fill: "#FFEBEE"
+      style.stroke: "#C62828"
+    }
+    usage_code -> constraints
+  }
+}
+legend: {
+  near: bottom-right
+  label: |md
+    **Color Key:**
+    🟢 Producer operations (writes head)
+    🔵 Consumer operations (writes tail)
+    🟡 Memory ordering (critical)
+    🔴 Constraints (must follow)
+  |
+  shape: rectangle
+  style.fill: "#FAFAFA"
+  style.stroke: "#BDBDBD"
+}

@@ -1,0 +1,282 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title_node: {
+  label: |'md
+    # UDP Datagram Processing Pipeline
+    **IP Layer → Socket Queue | Zero-copy, Lock-free Path**
+  '|
+  style.stroke: transparent
+  style.fill: transparent
+}
+title_node.near: top-center
+
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  ip_layer: {
+    direction: down
+    label: "IP Layer (ip.c)"
+    ip_input_proc: {
+      label: "ip_input()"
+      width: 280
+      code: |'c
+        // Header validated, proc payload
+        struct udp_hdr *uh = (void *)pkt->data;
+        udp_input(pkt, uh, src_ip, dst_ip);
+      '|
+    }
+    ip_payload: {
+      shape: sql_table
+      label: "IP Payload (UDP Segment)"
+      f0: "0x00 | udp_hdr* | header"
+      f1: "0x08 | uint8_t[] | data"
+      sz: "Size: 8 + N bytes"
+    }
+  }
+}
+
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  udp_parse_stage: {
+    direction: down
+    label: "Step 1: Header Parse (~5ns)"
+    parse_code: {
+      label: "udp_parse_header()"
+      width: 340
+      code: |'c
+        uint16_t sp = ntohs(u->src_port);
+        uint16_t dp = ntohs(u->dst_port);
+        uint16_t len = ntohs(u->length);
+        if (len < 8) return ERR_BAD_LEN;
+      '|
+    }
+    udp_hdr_struct: {
+      shape: sql_table
+      label: "struct udp_hdr (8 bytes)"
+      f0: "0x00 | uint16_t | src_port"
+      f1: "0x02 | uint16_t | dst_port"
+      f2: "0x04 | uint16_t | length"
+      f3: "0x06 | uint16_t | checksum"
+      sz: "Total: 8 bytes"
+    }
+  }
+
+  checksum_verify_stage: {
+    direction: down
+    label: "Step 2: Checksum (~20ns)"
+    check_code: {
+      label: "udp_checksum_verify()"
+      width: 380
+      code: |'c
+        if (u->checksum == 0) return OK; 
+        uint16_t sum = pseudo_header_sum(src, dst, 17, len);
+        sum = accumulate(sum, u, len);
+        return (sum == 0xFFFF) ? OK : DROP;
+      '|
+    }
+    pseudo_hdr: {
+      shape: sql_table
+      label: "Pseudo-Header (IPv4)"
+      f0: "0x00 | uint32_t | src_addr"
+      f1: "0x04 | uint32_t | dst_addr"
+      f2: "0x08 | uint8_t  | zero (0x00)"
+      f3: "0x09 | uint8_t  | proto (17)"
+      f4: "0x0A | uint16_t | length"
+      sz: "Computed in registers only"
+    }
+  }
+}
+
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  port_lookup_stage: {
+    direction: down
+    label: "Step 3: Demultiplexing (~10ns)"
+    demux_code: {
+      label: "socket_lookup()"
+      width: 360
+      code: |'c
+        // Port-to-Socket Mapping
+        uint16_t id = port_map[dst_port];
+        if (id == 0) {
+          send_icmp_unreach(pkt);
+          return DROP;
+        }
+        struct udp_sock *sk = &sockets[id];
+      '|
+    }
+    sock_table: {
+      shape: sql_table
+      label: "Socket Mapping Table"
+      f0: "port_map[65536] | uint16_t | idx"
+      f1: "sockets[1024]   | struct   | state"
+      note: "O(1) Direct Map"
+    }
+  }
+
+  socket_state: {
+    direction: down
+    label: "Socket Metadata"
+    sk_struct: {
+      shape: sql_table
+      label: "struct udp_socket (64 bytes)"
+      f0: "0x00 | uint16_t | l_port"
+      f1: "0x04 | uint32_t | l_addr"
+      f2: "0x08 | ring_buf | rx_q"
+      f3: "0x10 | callback | on_recv"
+      f4: "0x18 | uint32_t | rx_cnt"
+      f5: "0x1C | uint32_t | drp_cnt"
+      sz: "Size: 64 bytes (Cache Line)"
+    }
+  }
+}
+
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  enqueue_stage: {
+    direction: down
+    label: "Step 4: Lock-Free Handoff (~30ns)"
+    enq_code: {
+      label: "udp_enqueue_spsc()"
+      width: 400
+      code: |'c
+        uint32_t h = ring->head;
+        uint32_t next = (h + 1) & MASK;
+        if (next == ring->tail) return FULL;
+        ring->data[h] = (struct udp_msg){pkt, len};
+        atomic_store_rel(&ring->head, next);
+      '|
+    }
+    rx_ring: {
+      shape: sql_table
+      label: "SPSC Receive Ring Buffer"
+      f0: "head | uint32_t | Producer"
+      f1: "tail | uint32_t | Consumer"
+      f2: "msgs | udp_msg[] | Pointer Array"
+      sz: "Power-of-2 (1024 entries)"
+    }
+  }
+
+  msg_entry: {
+    direction: down
+    label: "Datagram Descriptor"
+    dgram_table: {
+      shape: sql_table
+      label: "struct udp_msg (24 bytes)"
+      f0: "0x00 | uint32_t | src_ip"
+      f1: "0x04 | uint16_t | src_port"
+      f2: "0x08 | uint32_t | data_len"
+      f3: "0x0C | uint8_t* | data_ptr"
+      f4: "0x14 | uint64_t | tstamp"
+      sz: "Handoff Metadata"
+    }
+  }
+}
+
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  api_layer: {
+    direction: down
+    label: "Application API (User Space)"
+    recv_logic: {
+      label: "udp_recvmsg()"
+      width: 360
+      code: |'c
+        if (ring->tail == ring->head) return -1;
+        struct udp_msg *m = &ring->data[ring->tail];
+        copy_out(user_buf, m->data_ptr, m->len);
+        atomic_store_rel(&ring->tail, (ring->tail + 1) & MASK);
+      '|
+    }
+  }
+
+  modes: {
+    direction: down
+    label: "Delivery Semantics"
+    zero_copy: {
+      label: "Direct Callback (RX Context)"
+      code: |'c
+        // Lowest latency (<100ns)
+        // Run in SoftIRQ/Thread
+        sk->on_recv(pkt);
+      '|
+      width: 280
+    }
+    buffered_mode: {
+      label: "Queue Mode (Standard)"
+      code: |'c
+        // Decoupled processing
+        // Handoff via ring buffer
+        // Adds scheduling latency
+      '|
+      width: 280
+    }
+  }
+}
+
+row6: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  latency_budget: {
+    shape: sql_table
+    label: "Latency Budget (per datagram)"
+    r1: "Parse      | 5 ns  | Header extraction"
+    r2: "Checksum   | 20 ns | 64B Payload L1 hit"
+    r3: "Lookup     | 10 ns | Direct array index"
+    r4: "Enqueue    | 30 ns | SPSC fence + store"
+    r5: "Total Path | 65 ns | L1 Warm Path"
+  }
+
+  stack_compare: {
+    shape: sql_table
+    label: "UDP vs TCP Overhead"
+    c1: "Metric    | UDP Path | TCP Path"
+    c2: "State     | Stateless| 11 States"
+    c3: "Control   | None     | Window/Congestion"
+    c4: "Retran    | App Space| Kernel Timer"
+    c5: "Ordering  | Best Effort| Sequence Map"
+  }
+}
+
+row1.ip_layer.ip_payload -> row2.udp_parse_stage.parse_code: "ptr + offset"
+row2.udp_parse_stage.parse_code -> row2.checksum_verify_stage.check_code: "len + payload"
+row2.checksum_verify_stage.check_code -> row3.port_lookup_stage.demux_code: "checksum valid"
+row3.port_lookup_stage.sock_table -> row3.socket_state: "index lookup"
+row3.socket_state.sk_struct -> row4.enqueue_stage.enq_code: "queue ptr"
+row4.enqueue_stage.rx_ring -> row5.api_layer.recv_logic: "consumer poll"
+
+legend: {
+  label: "Technical Implementation Keys"
+  p1: "Memory: Zero-copy pointer handoff"
+  p2: "Concurrency: SPSC Lock-free rings"
+  p3: "Complexity: O(1) across all stages"
+  p4: "IO: Cache-line aligned structures"
+}
+legend.near: bottom-right
+
+row2.checksum_verify_stage.check_code.style.stroke: "#B2DFDB"
+row3.port_lookup_stage.demux_code.style.stroke: "#D1C4E9"
+row4.enqueue_stage.enq_code.style.stroke: "#C8E6C9"
+row5.api_layer.recv_logic.style.stroke: "#BBDEFB"

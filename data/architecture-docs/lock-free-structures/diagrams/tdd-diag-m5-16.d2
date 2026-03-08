@@ -1,0 +1,191 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Intel-Grade Cache Line Analysis: Split-Ordered List Traversal
+  Linked list traversal is cache-hostile — each node access is a potential cache miss.
+  **Design Spec: HashMapNode Alignment & Temporal/Spatial Locality**
+| {near: top-center}
+
+direction: right
+
+# --- CLASSES FOR INTEL-QUALITY STYLING ---
+classes: {
+  header_purp: { style: { fill: "#E4DBFE"; stroke: "#6A0DAD"; bold: true } }
+  data_blue: { style: { fill: "#C7F1FF"; stroke: "#2E86AB" } }
+  ptr_orange: { style: { fill: "#FFE5B4"; stroke: "#F8961E" } }
+  padding_gray: { style: { fill: "#E0E0E0"; stroke: "#9E9E9E" } }
+  cache_boundary: { style: { stroke-dash: 5; stroke: "#FF0000"; stroke-width: 3 } }
+  intel_note: { shape: text; style: { font: mono; font-size: 12 } }
+}
+
+# --- CPU CACHE HIERARCHY ---
+cpu_complex: {
+  label: "Intel Xeon Scalable Architecture (Mesh Interconnect)"
+  style.fill: "#F8F9FA"
+  
+  l1: "L1 Data Cache\n(8-way set assoc)\nSize: 32KB | Line: 64B\nLatency: ~4 Cycles" {
+    shape: rectangle
+    class: header_purp
+  }
+  l2: "L2 Mid-Level Cache\n(16-way set assoc)\nSize: 1MB | Line: 64B\nLatency: ~14 Cycles" {
+    shape: rectangle
+    class: header_purp
+  }
+  l3: "L3 Last-Level Cache (LLC)\n(Inclusive/Non-Inclusive)\nSize: 1.375MB/Core\nLatency: ~50-70 Cycles" {
+    shape: rectangle
+    class: header_purp
+  }
+  
+  l1 -> l2 -> l3: "RFO / Snoop Filter"
+}
+
+# --- MEMORY LAYOUT (BYTE-LEVEL DETAIL) ---
+memory: {
+  label: "Main Memory (DRAM): HashMapNode Physical Layout"
+  
+  node_struct: "struct HashMapNode (sizeof=32 Bytes)" {
+    shape: sql_table
+    style.stroke: "#2E86AB"
+    style.fill: "#E4DBFE"
+    
+    # Corrected SQL Table syntax: Key: Type {constraint: "Label"}
+    "0x00 [0-7]": "uint64_t so_key" {constraint: "8B"}
+    "0x08 [8-15]": "void* key" {constraint: "8B"}
+    "0x10 [16-23]": "void* value" {constraint: "8B"}
+    "0x18 [24-31]": "std::atomic<node*> next" {constraint: "8B"}
+  }
+
+  alignment_analysis: |md
+    ### Memory Alignment Analysis
+    - **Total Node Size:** 32 Bytes
+    - **Packing Density:** 2 Nodes per 64B Cache Line
+    - **Boundary Condition:** If `&node % 64 == 32`, node is perfectly aligned within half a line.
+    - **False Sharing:** Atomic `next` pointer at 0x18 is adjacent to data. Concurrent writes to `next` invalidate entire line for other cores.
+  | { class: intel_note }
+}
+
+# --- CACHE LINE VISUALIZATION ---
+cache_viz: {
+  label: "64B Cache Line Boundary & Prefetch Analysis"
+  
+  line_0: {
+    label: "Physical Cache Line 0x4400 (64 Bytes)"
+    class: cache_boundary
+    
+    grid-columns: 2
+    grid-gap: 0
+    
+    node_a: "Node A (HEAD)\nOffset: +0x00\n[Active Working Set]" { 
+      class: data_blue; width: 250; height: 100 
+    }
+    node_b: "Node B (ADJACENT)\nOffset: +0x20\n[Implicitly Fetched]" { 
+      class: padding_gray; width: 250; height: 100 
+    }
+  }
+
+  # Visual gap representing spatial fragmentation in DRAM
+  gap: "DRAM Row Buffer Fragmentation" {
+    shape: text
+    style.italic: true
+  }
+
+  line_n: {
+    label: "Physical Cache Line 0x89C0 (64 Bytes)"
+    class: cache_boundary
+    
+    grid-columns: 2
+    grid-gap: 0
+    
+    node_c: "Node C (TARGET)\n[冷 Cold Access]\nTriggers Page Walk" { 
+      class: data_blue; width: 250; height: 100; style.stroke: red; style.stroke-width: 4 
+    }
+    node_d: "Unrelated Data/Padding\n[Cache Pollution]" { 
+      class: padding_gray; width: 250; height: 100 
+    }
+  }
+  
+  (line_0.node_a -> line_n.node_c): "Pointer Chasing (curr->next)\nLATENCY PENALTY: ~100ns" {
+    style: { stroke: red; stroke-width: 3; bold: true; animated: true }
+  }
+}
+
+# --- PERFORMANCE SPECIFICATIONS ---
+tradeoff: {
+  label: "Processor Cycles vs. Memory Access"
+  
+  stats: {
+    label: ||md
+      ### Execution Profile
+      | Level | Latency (ns) | CPU Cycles | Penalty Ratio |
+      | :--- | :---: | :---: | :---: |
+      | L1 | 1.0 | 4 | 1x |
+      | L2 | 4.0 | 14 | 3.5x |
+      | L3 | 15.0 | 50 | 12.5x |
+      | DRAM | 100.0 | 350 | 87.5x |
+      
+      **Stall Analysis:** 
+      A single DRAM fetch consumes execution resources for ~350 instruction slots.
+    ||
+    shape: text
+  }
+
+  prevention: {
+    label: ||md
+      ### Mitigation Strategies
+      1. **Software Prefetching:** `_mm_prefetch` 2 nodes ahead.
+      2. **Allocation Locality:** Use custom pool allocator to keep nodes in contiguous cache lines.
+      3. **SIMD Filtering:** Process `so_key` comparisons using AVX-512 for batch traversal.
+    ||
+    shape: text
+    style.fill: "#ACE1AF"
+  }
+}
+
+# --- PREFETCH IMPLEMENTATION ---
+prefetch_logic: {
+  label: "Intel ISA Optimization: Software Prefetching"
+  
+  code: |cpp
+    // Software Prefetching (T0 Hint - Fetch to all cache levels)
+    void traverse(HashMapNode* head, uint64_t target) {
+        HashMapNode* curr = head;
+        while (curr && curr->so_key < target) {
+            HashMapNode* next_ptr = curr->next.load(std::memory_order_acquire);
+            if (next_ptr) {
+                // Prefetch next_ptr into L1 cache
+                // Reduces 100ns stall to ~15ns if overlapped
+                _mm_prefetch((const char*)next_ptr, _MM_HINT_T0);
+            }
+            // Execute logic while memory subsystem fetches next_ptr
+            process_node(curr);
+            curr = next_ptr;
+        }
+    }
+  |
+  shape: text
+  style.font: mono
+  style.fill: "#FFF9C9"
+}
+
+# --- CONNECTIONS & FLOW ---
+cpu_complex.l3 -> memory.node_struct: "Uncached DRAM Access" { style.stroke-dash: 3 }
+memory.node_struct -> cache_viz.line_0.node_a: "Spatial Mapping"
+cache_viz.line_n.node_c -> tradeoff.stats: "Latency Source"
+tradeoff.prevention -> prefetch_logic: "Recommended Fix"
+
+# --- GLOBAL STYLING ---
+(*** -> ***)[*]: {
+  style: {
+    font-size: 14
+    bold: true
+  }
+}
+
+***.style: {
+  border-radius: 6
+}

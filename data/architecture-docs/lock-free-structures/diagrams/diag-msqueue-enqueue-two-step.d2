@@ -1,0 +1,178 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Enqueue: Two-Step CAS Protocol
+  **Michael-Scott Queue (M3)**
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  phase1: {
+    direction: down
+    label: "PHASE 1: Link New Node"
+    width: 320
+    step1: {
+      label: "Step 1: Read tail & tail->next"
+      width: 280
+      code: |'c
+        tail = atomic_load(&queue->tail);
+        next = atomic_load(&tail->next);
+        // next == NULL (ready to link)
+      '|
+    }
+    step2: {
+      label: "Step 2: CAS tail->next"
+      width: 280
+      code: |'c
+        CAS(&tail->next, NULL, new_node)
+        // Atomic link at tail
+      '|
+    }
+    p1_result: {
+      label: "Result: Node Linked"
+      width: 280
+      state: |md
+        **Linearization Point**
+        `tail->next` now points to `new_node`
+        Element is **logically in queue**
+      |
+    }
+    step1 -> step2: "next == NULL"
+    step2 -> p1_result: "CAS success"
+  }
+  phase2: {
+    direction: down
+    label: "PHASE 2: Swing Tail"
+    width: 320
+    step3: {
+      label: "Step 3: Advance tail"
+      width: 280
+      code: |'c
+        CAS(&queue->tail, tail, new_node)
+        // Swing tail pointer
+      '|
+    }
+    p2_result: {
+      label: "Result: Tail Advanced"
+      width: 280
+      state: |md
+        **Tail now points to new_node**
+        Queue state is fully consistent
+        Other threads see correct tail
+      |
+    }
+    step3 -> p2_result: "CAS success"
+  }
+  arrow: {
+    shape: text
+    label: "→"
+    style.font-size: 40
+    style.fill: transparent
+    style.stroke: transparent
+  }
+  phase1 -> arrow
+  arrow -> phase2
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  lagging: {
+    direction: down
+    label: "LAGGING TAIL: Thread Stalls Between Phases"
+    width: 680
+    before: {
+      label: "Before: Thread A stalls after Phase 1"
+      width: 300
+      struct1: {
+        shape: sql_table
+        label: "Queue State"
+        f1: "head | ptr | → sentinel"
+        f2: "tail | ptr | → node_B (stale!)"
+        f3: "sentinel.next | ptr | → node_A"
+        f4: "node_A.next | ptr | → NULL"
+        note: "Thread A linked node_A but\ndidn't swing tail yet"
+      }
+    }
+    arrow2: {
+      shape: text
+      label: "→"
+      style.font-size: 40
+      style.fill: transparent
+      style.stroke: transparent
+    }
+    after: {
+      label: "Helping: Thread B advances tail"
+      width: 300
+      struct2: {
+        shape: sql_table
+        label: "Thread B observes tail->next != NULL"
+        f1: "Condition | bool | tail->next != NULL"
+        f2: "Action | CAS | tail → tail->next"
+        f3: "Result | ptr | tail → node_A"
+        note: "Thread B helps complete\nThread A's enqueue!"
+      }
+    }
+    before -> arrow2
+    arrow2 -> after
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  helping: {
+    direction: down
+    label: "HELPING MECHANISM: Code Path"
+    width: 680
+    code_block: {
+      label: "Enqueue with Helping (ms_queue.c)"
+      width: 640
+      code: |'c
+        void ms_enqueue(MSQueue* queue, int64_t value) {
+            Node* new_node = malloc(sizeof(Node));
+            new_node->value = value;
+            new_node->next = NULL;
+            while (true) {
+                tail = atomic_load(&queue->tail);
+                next = atomic_load(&tail->next);
+                if (tail == atomic_load(&queue->tail)) {  // Consistency check
+                    if (next == NULL) {
+                        // PHASE 1: Link new node
+                        if (CAS(&tail->next, NULL, new_node)) {
+                            // PHASE 2: Swing tail (can fail - others may help)
+                            CAS(&queue->tail, tail, new_node);
+                            return;
+                        }
+                    } else {
+                        // HELPING: Tail is lagging!
+                        // Another thread linked but didn't swing tail
+                        CAS(&queue->tail, tail, next);  // Advance it ourselves
+                    }
+                }
+            }
+        }
+      '|
+    }
+  }
+}
+legend: {
+  near: bottom-center
+  label: "Key Insight"
+  insight: |md
+    **Why two phases?** We can only CAS one memory location at a time.
+    - Phase 1 modifies `tail->next` (the node's next field)
+    - Phase 2 modifies `queue->tail` (the queue's tail pointer)
+    **Helping ensures lock-freedom**: If Thread A stalls, Thread B can observe the
+    intermediate state (`tail->next != NULL`) and complete the tail swing.
+    No thread can block progress indefinitely.
+  |
+}
+row1 -> row2: "If thread descheduled"
+row2 -> row3: "Helping protocol"

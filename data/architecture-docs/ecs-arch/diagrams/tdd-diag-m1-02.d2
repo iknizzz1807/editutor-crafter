@@ -1,0 +1,306 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 40
+  }
+}
+
+title: "Entity Lifecycle State Machine (ECS Generation Tracking)" {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 32
+    bold: true
+    underline: true
+    font-color: "#2D3748"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# State Definitions
+# ---------------------------------------------------------------------------
+states: {
+  Unallocated: {
+    shape: circle
+    style: {
+      fill: "#F7FAFC"
+      stroke: "#A0AEC0"
+      stroke-width: 2
+    }
+    label: |md
+      ### UNALLOCATED
+      ---
+      **Invariants:**
+      - index ≥ capacity
+      - No memory mapped
+      - Handle is null/invalid
+    |
+  }
+  Alive: {
+    shape: circle
+    style: {
+      fill: "#F0FFF4"
+      stroke: "#38A169"
+      stroke-width: 4
+      shadow: true
+    }
+    label: |md
+      ### ALIVE
+      ---
+      **Invariants:**
+      - generation == slot.gen
+      - Entity handle is valid
+      - Component data accessible
+      - is_alive() returns **true**
+    |
+  }
+  Dead: {
+    shape: circle
+    style: {
+      fill: "#FFF5F5"
+      stroke: "#E53E3E"
+      stroke-width: 2
+    }
+    label: |md
+      ### DEAD
+      ---
+      **Invariants:**
+      - Entry in `free_list`
+      - generation incremented
+      - Slot awaits recycling
+      - handle.gen ≠ slot.gen
+    |
+  }
+  Recycled: {
+    shape: circle
+    style: {
+      fill: "#F0FFF4"
+      stroke: "#3182CE"
+      stroke-width: 4
+      double-border: true
+    }
+    label: |md
+      ### RECYCLED
+      ---
+      **Invariants:**
+      - slot.gen = old_gen + 1
+      - New handle returned
+      - Memory reused in-place
+    |
+  }
+  Stale: {
+    shape: circle
+    style: {
+      fill: "#FFFFF0"
+      stroke: "#D69E2E"
+      stroke-width: 2
+      stroke-dash: 5
+    }
+    label: |md
+      ### STALE HANDLE
+      ---
+      **State:**
+      - Pointer to index valid
+      - Generation mismatch detected
+      - Access results in error/none
+    |
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Initial State & Transitions
+# ---------------------------------------------------------------------------
+initial: ● {
+  shape: circle
+  style: {
+    fill: "#1A202C"
+    stroke: "#1A202C"
+  }
+  width: 24
+  height: 24
+}
+
+initial -> states.Unallocated: {
+  style: {
+    stroke-width: 2
+  }
+}
+
+# Valid Transitions
+states.Unallocated -> states.Alive: {
+  label: "O(1) create()\n\nAlloc new slot\ngen set to 0"
+  style: {
+    stroke: "#38A169"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+states.Alive -> states.Dead: {
+  label: "O(1) destroy()\n\ngen++\npush to free_list"
+  style: {
+    stroke: "#E53E3E"
+    stroke-width: 3
+  }
+}
+
+states.Dead -> states.Recycled: {
+  label: "O(1) recycle_create()\n\npop from free_list\nreturn Handle(gen)"
+  style: {
+    stroke: "#3182CE"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+# Self-loop for repeated destruction
+states.Dead -> states.Dead: {
+  label: "idempotent destroy()\n(No Action)\ngeneration mismatch"
+  style: {
+    stroke: "#A0AEC0"
+    stroke-dash: 3
+  }
+}
+
+# Stale handle detection
+states.Dead -> states.Stale: {
+  label: "Attempt Access\n\nHandle.gen < Slot.gen\nAccess Denied"
+  style: {
+    stroke: "#D69E2E"
+    stroke-dash: 3
+  }
+}
+
+states.Recycled -> states.Dead: {
+  label: "O(1) destroy()\n\ngen++\nre-enter free_list"
+  style: {
+    stroke: "#E53E3E"
+    stroke-width: 3
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Critical Annotations & Metadata
+# ---------------------------------------------------------------------------
+illegal_note: {
+  near: center-right
+  shape: rectangle
+  style: {
+    fill: "#FFF5F5"
+    stroke: "#C53030"
+    stroke-dash: 5
+    stroke-width: 3
+  }
+  label: |md
+    ⛔ **CRITICAL INVARIANT BREACH**
+    ---
+    **Illegal Transition:** Dead → Alive (direct)
+    **Failure Mode:** Reusing slot without gen increment.
+    
+    **Impacts:**
+    1. **Use-After-Free:** Old systems keep updating.
+    2. **Logic Corrupt:** Stale handles appear "Alive".
+    3. **Data Race:** Multiple owners of same index.
+  |
+}
+
+illegal_arrow: {
+  shape: rectangle
+  width: 1
+  height: 1
+  style: {
+    opacity: 0
+  }
+}
+
+states.Dead -> illegal_arrow: "❌ ILLEGAL DIRECT REUSE" {
+  style: {
+    stroke: "#E53E3E"
+    stroke-dash: 5
+    stroke-width: 3
+  }
+  target-arrowhead: cross {
+    style.stroke: "#E53E3E"
+  }
+}
+
+illegal_arrow -> states.Alive: {
+  style: {
+    stroke: "#E53E3E"
+    stroke-dash: 5
+    stroke-width: 3
+  }
+  source-arrowhead: cross {
+    style.stroke: "#E53E3E"
+  }
+}
+
+legend: {
+  near: bottom-right
+  shape: rectangle
+  style: {
+    fill: "#EDF2F7"
+    stroke: "#2D3748"
+    stroke-width: 1
+  }
+  label: |md
+    ## System Specifications
+    | Attribute | Value |
+    | :--- | :--- |
+    | **Handle Size** | 64-bit (32b index, 32b gen) |
+    | **Gen Max** | 4,294,967,295 |
+    | **Complexity** | O(1) All State Ops |
+    | **Memory** | Contiguous Array |
+
+    ## Generation Mechanics
+    - **Wraparound:** Handled via modular arithmetic.
+    - **Validation:** `Handle.gen == Storage[index].gen`.
+    - **Safety:** Prevents temporal aliasing.
+  |
+}
+
+ops: {
+  near: bottom-left
+  shape: rectangle
+  style: {
+    fill: "#EBF8FF"
+    stroke: "#3182CE"
+    stroke-width: 2
+  }
+  label: |md
+    ## Engine API (Trait/Interface)
+    
+    rust
+    fn create() -> Entity;
+    fn destroy(e: Entity) -> bool;
+    fn is_alive(e: Entity) -> bool;
+    fn get_components<T>(e: Entity) -> &T;
+    
+    
+    **Guarantees:**
+    No branching on entity state required for
+    bulk system processing.
+  |
+}
+
+wraparound: {
+  near: top-right
+  shape: rectangle
+  style: {
+    fill: "#FFFAF0"
+    stroke: "#B7791F"
+    stroke-dash: 4
+  }
+  label: |md
+    ⚠️ **Generation Wraparound Warning**
+    ---
+    If a slot is recycled 2^32 times while
+    a stale reference is held, the handle
+    becomes valid again (ABA problem).
+    
+    *Mitigation:* Use 32-bit generations;
+    wraparound time exceeds system uptime
+    at 100k cycles/sec.
+  |
+}

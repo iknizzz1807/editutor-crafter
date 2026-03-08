@@ -1,0 +1,313 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Lock-free Insert into Split-Ordered List
+  Hash → Reverse Bits → Find Position → CAS Link
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  phase1: {
+    direction: down
+    label: "Phase 1: Compute Key"
+    hash_input: {
+      label: "Hash Input"
+      width: 200
+      code: |'c
+        void* key = "user_42";
+        uint64_t hash = hash_fn(key);
+        // hash = 0xDEADBEEFCAFEBABE
+      '|
+    }
+    hash_result: {
+      shape: sql_table
+      label: "Hash Result (64-bit)"
+      b0: "bit 63..0 | 0xDEADBEEFCAFEBABE"
+      note: "Original hash value"
+    }
+    reverse_op: {
+      label: "Reverse Bits Operation"
+      width: 220
+      code: |'c
+        uint64_t reverse_bits(uint64_t x) {
+          return __builtin_bitreverse64(x);
+        }
+        // 0xDEAD... → 0x7D5BF7...
+      '|
+    }
+  }
+  phase2: {
+    direction: down
+    label: "Phase 2: Create Node"
+    so_key_compute: {
+      label: "SO-Key Computation"
+      width: 240
+      code: |'c
+        #define SO_KEY_REGULAR_BIT (1ULL << 63)
+        uint64_t so_key = 
+          reverse_bits(hash) | SO_KEY_REGULAR_BIT;
+        // High bit=1 marks regular node
+        // Sentinels have high bit=0
+      '|
+    }
+    so_key_layout: {
+      shape: sql_table
+      label: "SO-Key Memory Layout"
+      high: "bit 63    | 1 | Regular node marker"
+      mid: "bit 62..0 | reversed_hash"
+      sz: "Total: 8 bytes (uint64_t)"
+    }
+    new_node: {
+      shape: class
+      label: "HashMapNode (new)"
+      +so_key: "uint64_t"
+      +key: "void*"
+      +value: "void*"
+      +next: "HashMapNode*"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  phase3: {
+    direction: down
+    label: "Phase 3: Find Insertion Position"
+    bucket_lookup: {
+      label: "Get Bucket Sentinel"
+      width: 220
+      code: |'c
+        uint64_t bucket = hash % bucket_count;
+        HashMapNode* sentinel = 
+          get_or_init_bucket(map, bucket);
+        // Start traversal from sentinel
+      '|
+    }
+    list_before: {
+      label: "Sorted List (Before Insert)"
+      width: 380
+      code: |'c
+        // List sorted by so_key ascending
+        // Sentinels (high bit=0) before regular nodes
+        sentinel → [so_key=0x2A] → [so_key=0x7D...] → [so_key=0x8F] → NULL
+                      ↑                 ↑
+                   bucket 1        our target
+                   sentinel         position
+      '|
+    }
+    traversal: {
+      label: "Traversal with Hazard Pointers"
+      width: 300
+      code: |'c
+        hazard_protect(HAZ_PREV, sentinel);
+        prev = sentinel;
+        while (curr != NULL && 
+               curr->so_key < new_so_key) {
+          hazard_protect(HAZ_CURR, curr);
+          // Skip marked (deleted) nodes
+          prev = curr;
+          curr = curr->next;
+        }
+      '|
+    }
+    find_result: {
+      shape: sql_table
+      label: "FindResult struct"
+      prev: "prev pointer | node with so_key < target"
+      curr: "curr pointer | node with so_key >= target"
+      found: "bool | duplicate check"
+    }
+  }
+  phase4: {
+    direction: down
+    label: "Phase 4: CAS Link"
+    cas_attempt: {
+      label: "CAS: Link New Node"
+      width: 260
+      code: |'c
+        new_node->next = curr;  // Link forward
+        // Try to swing prev->next to new_node
+        if (atomic_compare_exchange_weak(
+            &prev->next, &curr, new_node)) {
+          // SUCCESS: node is now visible
+          return true;
+        }
+        // FAILURE: retry from find
+      '|
+    }
+    cas_success: {
+      label: "CAS Success Path"
+      width: 280
+      code: |'c
+        // Linearization point!
+        // At this instant, key is in the map
+        atomic_fetch_add(&map->count, 1);
+        hazard_release(HAZ_PREV);
+        hazard_release(HAZ_CURR);
+        return true;  // Inserted
+      '|
+      style.fill: "#ACE1AF"
+      style.stroke: "#167c3c"
+    }
+    cas_fail: {
+      label: "CAS Failure → Contention"
+      width: 280
+      code: |'c
+        // Another thread modified prev->next
+        // Possible causes:
+        // 1. Concurrent insert at same position
+        // 2. Delete removed prev or curr
+        // 3. Help mechanism changed list
+        // Retry entire find + CAS loop
+        continue;
+      '|
+      style.fill: "#FFE7CB"
+      style.stroke: "#9E2146"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  contention_box: {
+    direction: down
+    label: "Contention Handling"
+    contention_scenario: {
+      shape: sequence_diagram
+      label: ""
+      T1: "Thread 1"
+      T2: "Thread 2"
+      List: "Shared List"
+      T1.t1 -> List.t1: "load prev->next = A"
+      T2.t2 -> List.t2: "load prev->next = A"
+      T2.t2 -> List.t2a: "CAS(A, B) SUCCESS"
+      List.t2a -> T2.t2a: "prev->next = B"
+      T1.t1 -> List.t1a: "CAS(A, new) FAIL"
+      List.t1a -> T1.t1a: "expected != actual"
+      T1.t1b -> List.t1b: "retry with new state"
+    }
+    backoff_note: {
+      label: "Exponential Backoff (Optional)"
+      width: 240
+      code: |'c
+        uint32_t delay = 1;
+        while (!CAS(...)) {
+          cpu_pause();  // x86: pause
+          for (volatile int i = 0; 
+               i < delay; i++) {}
+          delay = min(delay * 2, 1024);
+        }
+      '|
+    }
+  }
+  final_state: {
+    direction: down
+    label: "Final State After Success"
+    list_after: {
+      label: "Sorted List (After Insert)"
+      width: 400
+      code: |'c
+        sentinel → [0x2A] → [NEW:0x7D...] → [0x8F] → NULL
+                              ↑
+                          inserted here
+        // Invariant maintained:
+        // prev->so_key < new->so_key <= curr->so_key
+      '|
+    }
+    invariants: {
+      shape: sql_table
+      label: "Post-Insert Invariants"
+      i1: "1 | List remains sorted by so_key"
+      i2: "2 | No duplicate keys (checked in find)"
+      i3: "3 | Hazard pointers released"
+      i4: "4 | Element count incremented"
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  hazard_protection: {
+    direction: down
+    label: "Hazard Pointer Protection"
+    hp_slots: {
+      shape: class
+      label: "Thread-Local Hazard Slots"
+      -slot_prev: "HAZ_PREV (0)"
+      -slot_curr: "HAZ_CURR (1)"
+      -slot_next: "HAZ_NEXT (2)"
+      +hazard_protect(slot, node): "void"
+      +hazard_release(slot): "void"
+    }
+    hp_protocol: {
+      label: "Set-Then-Validate Protocol"
+      width: 320
+      code: |'c
+        // PROTECT before dereference
+        hazard_protect(HAZ_CURR, curr);
+        // VALIDATE: is curr still in list?
+        if (curr != atomic_load(&prev->next)) {
+          // Stale! Retry
+          continue;
+        }
+        // SAFE to access curr->value, curr->next
+        // Node won't be freed while protected
+        // RELEASE when done
+        hazard_release(HAZ_CURR);
+      '|
+    }
+  }
+  linearization: {
+    direction: down
+    label: "Linearization Point"
+    lin_point: {
+      label: "The Atomic Instant"
+      width: 340
+      code: |'c
+        // Linearization point = successful CAS
+        //
+        // Before CAS: key NOT in map
+        // After CAS:  key IS in map
+        //
+        // All threads agree on this instant
+        // because CAS is hardware-atomic
+      '|
+      style.fill: "#E4DBFE"
+      style.stroke: "#6B5B95"
+    }
+    visibility: {
+      shape: sql_table
+      label: "Memory Ordering Guarantees"
+      release: "CAS success | memory_order_release"
+      acquire: "Next load   | memory_order_acquire"
+      hb: "Result      | happens-before established"
+    }
+  }
+}
+hash_input -> hash_result: "compute"
+hash_result -> reverse_op: "hash"
+reverse_op -> so_key_compute: "reversed"
+so_key_compute -> new_node: "so_key"
+new_node -> bucket_lookup: "node"
+bucket_lookup -> traversal: "sentinel"
+traversal -> find_result: "prev, curr"
+find_result -> cas_attempt: "position"
+cas_attempt -> cas_success: "CAS OK"
+cas_attempt -> cas_fail: "CAS FAIL"
+cas_fail -> traversal: "retry" {
+  style.stroke-dash: 4
+  style.stroke: "#9E2146"
+}
+cas_success -> list_after: "linked"
+contention_scenario -> backoff_note: "contention"
+hazard_protection -> traversal: "protects"
+linearization -> cas_success: "atomic at"

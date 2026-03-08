@@ -1,0 +1,295 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+title: |md
+  # Set-Then-Validate Protocol
+  ## Implementation Spec: Lock-Free Hazard Pointer Acquisition
+  Ref: "Hazard Pointers: Safe Memory Reclamation for Lock-Free Objects" (M. Michael)
+| {
+  near: top-center
+  style: {
+    font-size: 24
+    bold: true
+    fill: "#E1F5FE"
+    stroke: "#01579B"
+  }
+}
+
+direction: right
+
+# Global classes for consistency
+classes: {
+  atomic_source: {
+    shape: rectangle
+    style: {
+      fill: "#EDE7F6"
+      stroke: "#5E35B1"
+      stroke-width: 2
+      double-border: true
+    }
+  }
+  memory_node: {
+    shape: rectangle
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1976D2"
+      border-radius: 4
+    }
+  }
+  hazard_slot: {
+    shape: rectangle
+    style: {
+      fill: "#F1F8E9"
+      stroke: "#33691E"
+      stroke-dash: 3
+    }
+  }
+  operation_highlight: {
+    style: {
+      fill: "#FFF9C4"
+      stroke: "#F57C00"
+      bold: true
+      stroke-width: 3
+    }
+  }
+}
+
+# === STEP 1: Initial State ===
+step1: {
+  label: "STEP 1: Initial State (Quiescent)"
+  source: "Source Ptr\n(Atomic<T*>)\nOffset: 0x00" {
+    class: atomic_source
+  }
+  hazard_slot: "Thread_HP[i]\nValue: NULL" {
+    class: hazard_slot
+  }
+  node_a: "Node A\nAddr: 0x1000\nSize: 64B" {
+    class: memory_node
+  }
+  source -> node_a: "initial state" {
+    style.stroke: "#1976D2"
+  }
+}
+
+# === STEP 2: Load Pointer ===
+step2: {
+  label: "STEP 2: Local Acquisition"
+  source: "Source Ptr\n(0x1000)" {
+    class: [atomic_source; operation_highlight]
+  }
+  hazard_slot: "Thread_HP[i]\nValue: NULL" {
+    class: hazard_slot
+  }
+  node_a: "Node A\nAddr: 0x1000" {
+    class: memory_node
+  }
+  
+  load_label: |md
+    ### Step 2: Load
+    `ptr = source.load(memory_order_relaxed)`
+    Local register now holds `0x1000`.
+  | {
+    shape: text
+  }
+  
+  source -> node_a: "LOAD" {
+    style: {
+      stroke: "#F57C00"
+      stroke-width: 4
+      animated: true
+    }
+  }
+}
+
+# === STEP 3: Publish Protection ===
+step3: {
+  label: "STEP 3: Announcement (Publish)"
+  source: "Source Ptr\n(0x1000)" {
+    class: atomic_source
+  }
+  hazard_slot: "Thread_HP[i]\nValue: 0x1000" {
+    class: [hazard_slot; operation_highlight]
+    style.stroke-dash: 0
+  }
+  node_a: "Node A\nAddr: 0x1000" {
+    class: memory_node
+    style.fill: "#C8E6C9"
+  }
+  
+  protect_label: |md
+    ### Step 3: Set
+    `hp_slot[i].store(ptr, memory_order_seq_cst)`
+    **Invariant:** Node A is now "announced" to reclaimer.
+  | {
+    shape: text
+  }
+  
+  hazard_slot -> node_a: "HP PROTECT" {
+    style: {
+      stroke: "#388E3C"
+      stroke-width: 3
+    }
+  }
+}
+
+# === STEP 4: Validate ===
+step4: {
+  label: "STEP 4: Validation (Check Race)"
+  source: "Source Ptr\n(Re-evaluating)" {
+    class: [atomic_source; operation_highlight]
+  }
+  hazard_slot: "Thread_HP[i]\nValue: 0x1000" {
+    class: hazard_slot
+  }
+  
+  validate_label: |md
+    ### Step 4: Validate
+    `if (source.load(seq_cst) != ptr) retry()`
+    Ensures node wasn't retired before the HP store.
+  | {
+    shape: text
+  }
+  
+  check: "atomic_load(source) == 0x1000?" {
+    shape: diamond
+    style.fill: "#FFF9C4"
+  }
+}
+
+# === STEP 5a: Validation SUCCESS ===
+step5a: {
+  label: "STEP 5a: Success (Safe Path)"
+  source: "Source Ptr\n(0x1000)" {
+    class: atomic_source
+  }
+  node_a: "Node A\n(0x1000)\n[VALIDATED]" {
+    class: memory_node
+    style.fill: "#81C784"
+    style.double-border: true
+  }
+  
+  success_label: |md
+    ### Success
+    **Validated!** 
+    T1 can now safely dereference `ptr`.
+    Reclaimer will skip 0x1000 during `scan()`.
+  | {
+    shape: text
+  }
+  
+  hazard_slot5a: "Thread_HP[i]\nValue: 0x1000" {
+    class: hazard_slot
+  }
+  hazard_slot5a -> node_a: "Active Guard"
+}
+
+# === STEP 5b: Validation FAILURE (Retry) ===
+step5b: {
+  label: "STEP 5b: Failure (The Race Path)"
+  source: "Source Ptr\n(0x2000)" {
+    class: atomic_source
+    style.fill: "#FFCDD2"
+  }
+  node_a: "Node A\n(0x1000)\n[STALE]" {
+    class: memory_node
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#C62828"
+      stroke-dash: 5
+    }
+  }
+  
+  fail_label: |md
+    ### Mismatch!
+    **Race Detected.**
+    Another thread updated `source` to `0x2000`
+    and may have already retired `0x1000`.
+  | {
+    shape: text
+  }
+  
+  retry_action: "RETRY FROM STEP 2" {
+    shape: parallelogram
+    style.fill: "#D32F2F"
+    style.font-color: white
+  }
+}
+
+# === FLOW CONTROL ===
+step1 -> step2: "1. Acquire Local"
+step2 -> step3: "2. Publish HP"
+step3 -> step4: "3. Double-Check"
+step4 -> step5a: "MATCH" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 3
+}
+step4 -> step5b: "MISMATCH" {
+  style.stroke: "#C62828"
+  style.stroke-width: 3
+}
+step5b -> step2: "Jump to Retry" {
+  style: {
+    stroke: "#C62828"
+    stroke-dash: 5
+    animated: true
+  }
+}
+
+# === ROOT LEVEL ANNOTATIONS (NEAR SUPPORTED) ===
+
+race_warning: {
+  label: "⚠️ WHY THIS MATTERS: ABA & UAF PREVENTION"
+  near: bottom-left
+  content: |md
+    **The Hazard Pointer Race:**
+    1. T1 loads `A` from source.
+    2. T2 removes `A`, puts `A` on retired list.
+    3. T2 calls `scan()`. T1 hasn't published HP yet.
+    4. T2 sees no HP for `A`. **T2 FREES A**.
+    5. T1 publishes HP for `A`.
+    6. T1 accesses `A` -> **USE AFTER FREE**.
+    
+    **The Validation Fix:**
+    At step 4, T1 sees `source != A`. 
+    T1 knows its protection might have arrived too late.
+    T1 drops `A` and retries.
+  | {
+    shape: text
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#FF9800"
+      stroke-width: 2
+    }
+  }
+}
+
+legend: {
+  label: "Protocol States"
+  near: bottom-right
+  op: "Active Operation" {
+    class: operation_highlight
+  }
+  prot: "Protected Memory" {
+    class: memory_node
+    style.fill: "#81C784"
+  }
+  err: "Race Detected" {
+    class: memory_node
+    style.fill: "#FFCDD2"
+  }
+}
+
+# Implementation-grade sizing/meta
+meta_info: |md
+  **sizeof(HazardPointer)** = 8 bytes
+  **memory_order** = seq_cst (for Set/Validate)
+  **Page Alignment** = 4KB (Not required)
+| {
+  near: top-right
+  style.font-size: 10
+}

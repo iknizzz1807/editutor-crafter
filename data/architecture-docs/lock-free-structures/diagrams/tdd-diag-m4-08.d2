@@ -1,0 +1,130 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- DATA STRUCTURE SPECIFICATION ---
+# Engineers can determine memory layout from this section
+Memory_Layout: {
+  near: top-center
+  grid-columns: 2
+  grid-gap: 20
+
+  Tagged_Pointer: {
+    shape: sql_table
+    label: "Memory Layout: TaggedPtr (128-bit)"
+    pointer: "uintptr_t (64-bit)" {constraint: "Target Address"}
+    version: "uint64_t (64-bit)" {constraint: "ABA Counter"}
+    style.fill: "#e1f5fe"
+  }
+
+  Node_A: {
+    shape: sql_table
+    label: "Memory Layout: Node A"
+    value: "T (Data)" {constraint: "Offset 0"}
+    next: "TaggedPtr (Next)" {constraint: "Offset 8/16"}
+    style.fill: "#e8f5e9"
+  }
+}
+
+# --- ALGORITHM SEQUENCE DIAGRAM ---
+# Precise step-by-step for Treiber Stack Pop with Hazard Pointers
+Popping_Logic: {
+  shape: sequence_diagram
+
+  Thread_A: "Thread A\n(Caller)" {
+    shape: person
+  }
+  Stack: "TreiberStack\n(State: TaggedPtr top)" {
+    style.stroke: "#4a90d9"
+    style.stroke-width: 2
+  }
+  HP: "Hazard Pointer\nRegistry" {
+    style.fill: "#fff3e0"
+  }
+  Retire: "Retirement\nList (Local)" {
+    style.stroke-dash: 3
+  }
+
+  # 1. INITIAL READ
+  Thread_A.proc -> Stack.s1: "1. load top (acquire)"
+  Stack.s1 --> Thread_A.proc: "TaggedPtr{v:5, ptr:A}"
+  
+  # 2. ANNOUNCE PROTECTION
+  Thread_A.proc -> HP.h1: "2. protect(slot=0, node_A)"
+  HP.h1 -> HP.h1: "slots[0] = ptr_A\n(Atomic Release)"
+  
+  # 3. RE-VALIDATE (Critical for Lock-Free correctness)
+  Thread_A.proc -> Stack.s2: "3. validate: load top"
+  Stack.s2 --> Thread_A.proc: "TaggedPtr{v:5, ptr:A}"
+
+  Thread_A.validation_note: |md
+    ### VALIDATION SUCCESS
+    - `current == old_top`
+    - Node **A** is now safely held by HP
+    - Cannot be freed while we hold it
+  |
+  
+  # 4. PREPARE NEW TOP
+  Thread_A.proc -> Thread_A.proc: "4. read A->next (B)"
+  Thread_A.proc -> Thread_A.proc: "new_top = {v:6, ptr:B}"
+
+  # 5. ATOMIC SWAP
+  Thread_A.proc -> Stack.s3: "5. CAS(top, {v:5,A}, {v:6,B})"
+  Stack.s3 -> Stack.s3: "Atomic Compare-And-Swap"
+  
+  Stack.linearization_note: |md
+    ### LINEARIZATION POINT
+    - Node **A** is logically popped
+    - Stack top is now **B**
+  |
+
+  Stack.s3 --> Thread_A.proc: "true (Success)"
+
+  # 6. DATA ACCESS & CLEANUP
+  Thread_A.proc -> Thread_A.proc: "6. read value = A->value"
+  
+  Thread_A.proc -> HP.h2: "7. release(slot=0)"
+  HP.h2 -> HP.h2: "slots[0] = NULL"
+
+  Thread_A.proc -> Retire.r1: "8. retire(A)"
+  Retire.r1 -> Retire.r1: "Add A to Thread-Local List"
+
+  Thread_A.proc -> Thread_A: "9. return value"
+}
+
+# --- STYLING & ANNOTATIONS ---
+# Apply colors to specific spans for clarity
+Popping_Logic.Thread_A.proc.style.fill: "#fff3cd"
+Popping_Logic.Stack.s1.style.fill: "#fff3cd"
+Popping_Logic.HP.h1.style.fill: "#d4edda"
+Popping_Logic.Stack.s3.style.fill: "#cce5ff"
+
+# Grouping for conceptual phases
+Popping_Logic.Protection_Phase: {
+  style.stroke: "#2e7d32"
+  style.stroke-dash: 4
+  label: "HAZARD PROTECTION ZONE"
+  Popping_Logic.HP.h1
+  Popping_Logic.Stack.s2
+}
+
+Popping_Logic.Modification_Phase: {
+  style.stroke: "#1565c0"
+  style.stroke-dash: 4
+  label: "MUTATION ZONE"
+  Popping_Logic.Stack.s3
+}
+
+# Legend/Meta-data
+Legend: |md
+  **Treiber Stack + HP Correctness Invariants:**
+  1. HP must be set *before* validation.
+  2. CAS must include *version tag* to prevent ABA.
+  3. `retire()` never frees immediately; it waits for all HPs to clear.
+| {
+  near: bottom-center
+  style.font-size: 12
+}

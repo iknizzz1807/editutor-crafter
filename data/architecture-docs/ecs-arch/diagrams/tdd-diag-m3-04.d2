@@ -1,0 +1,262 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+direction: right
+
+title: |md
+  # ECS: Spawn and Get ID Challenge
+  **Problem**: Entity commands are typically deferred to the end of the frame to avoid structural invalidation during system iteration. However, the calling system often needs the `Entity ID` immediately to link other entities or components in the same frame.
+  
+  **Solution**: Split ID allocation (Immediate) from component storage insertion (Deferred).
+| {
+  near: top-center
+  style: {
+    stroke-width: 0
+    font-size: 18
+  }
+}
+
+# === 1. PROBLEM VISUALIZATION ===
+problem_container: {
+  label: "The Immediate ID Challenge"
+  style: {
+    fill: "#FFF5F5"
+    stroke: "#D32F2F"
+    stroke-width: 2
+    stroke-dash: 3
+  }
+  
+  problem_text: |rust
+  fn spawn_bullet(mut commands: Commands) {
+      // 1. We need this ID right now!
+      let bullet = commands.spawn(); 
+      
+      // 2. To use it as a reference here:
+      commands.insert(bullet, Parent(player_entity));
+      
+      // 3. And here:
+      commands.entity(bullet).insert(Sprite::new("bullet.png"));
+  }
+  
+  // If 'spawn' is fully deferred, 'bullet' would be null/future.
+  |
+  
+  annotation: "In a fully deferred model, the ID isn't known until the Command Buffer flushes." {
+    style: {
+      font-color: "#D32F2F"
+      italic: true
+    }
+  }
+}
+
+# === 2. ARCHITECTURAL SOLUTION ===
+solution_container: {
+  label: "Architecture: Split-Phase Lifecycle"
+  style: {
+    fill: "#F1F8E9"
+    stroke: "#388E3C"
+    stroke-width: 2
+  }
+
+  timeline: {
+    grid-columns: 3
+    
+    step1: {
+      label: "Phase 1: Immediate Allocation"
+      style.fill: "#E3F2FD"
+      content: |md
+        ### High-Speed ID Reservation
+        - **EntityManager** increments its internal counter.
+        - **Generational Index** is updated.
+        - **Result**: A valid `Entity` handle is returned to the user *now*.
+        - *State*: ID is unique but has no components attached yet.
+      |
+    }
+    
+    step2: {
+      label: "Phase 2: Command Buffering"
+      style.fill: "#F3E5F5"
+      content: |md
+        ### Metadata Storage
+        - `Command::Spawn` and `Command::Insert` are pushed to a `Vec<Command>`.
+        - Components are stored in type-erased `Box<dyn Any>`.
+        - The allocated ID is embedded in these command objects.
+      |
+    }
+    
+    step3: {
+      label: "Phase 3: World Flush"
+      style.fill: "#FFFDE7"
+      content: |md
+        ### Structural Application
+        - The `World` processes the buffer exclusively.
+        - Move components into **Archetype** storage.
+        - Entity becomes "fully alive" (visible to queries).
+      |
+    }
+  }
+}
+
+# === 3. DETAILED DATA FLOW ===
+data_flow: {
+  label: "Execution Sequence: spawn_bullet()"
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#BDBDBD"
+  }
+
+  # Participants
+  caller: "Game Logic\n(System)" {
+    shape: person
+    style.fill: "#E1BEE7"
+  }
+  
+  commands: "Commands\n(API Wrapper)" {
+    shape: rectangle
+    style.fill: "#B2DFDB"
+  }
+  
+  entity_mgr: "Entity Manager\n(Atomic Counter)" {
+    shape: cylinder
+    style.fill: "#FFCC80"
+  }
+  
+  cmd_buffer: "Command Buffer\n(Vec<Command>)" {
+    shape: queue
+    style.fill: "#90CAF9"
+  }
+
+  # Sequence connections
+  caller -> commands: "spawn()" {
+    label: "1. Request Entity"
+  }
+  
+  commands -> entity_mgr: "alloc_id()" {
+    label: "2. Lock-free Atomic Incr"
+    style: {
+      stroke: "#2E7D32"
+      stroke-width: 4
+    }
+  }
+  
+  entity_mgr -> commands: "Entity { id: 101, gen: 1 }" {
+    label: "3. ID Returned"
+    style.stroke: "#2E7D32"
+  }
+  
+  commands -> cmd_buffer: "push(Spawn(101))" {
+    label: "4. Record Intent"
+    style.stroke-dash: 5
+  }
+  
+  commands -> caller: "101" {
+    label: "5. Return to Logic"
+    style.font-color: "#1976D2"
+  }
+  
+  caller -> commands: "insert(101, Pos)" {
+    label: "6. User uses ID immediately"
+  }
+  
+  commands -> cmd_buffer: "push(Insert(101, Box<Pos>))" {
+    label: "7. Queue component"
+    style.stroke-dash: 5
+  }
+}
+
+# === 4. INTERNAL DATA STRUCTURES ===
+internals: {
+  grid-columns: 2
+  
+  command_enum: {
+    label: "Command Definition"
+    style.fill: "#ECEFF1"
+    
+    code: |rust
+    pub enum Command {
+        // ID is already allocated by EntityManager
+        Spawned { 
+          entity: Entity 
+        },
+        Insert { 
+          entity: Entity, 
+          component: Box<dyn Any>, 
+          type_id: TypeId 
+        },
+        Despawn { 
+          entity: Entity 
+        },
+    }
+    |
+  }
+  
+  entity_struct: {
+    label: "The Entity Handle"
+    style.fill: "#FFF3E0"
+    
+    memory_layout: |md
+      **sizeof = 8 bytes**
+      - `index`: 32-bit (4.2 billion max entities)
+      - `generation`: 32-bit (prevents UAF)
+      
+      *Can be passed by value, copied to registers.*
+    |
+  }
+}
+
+# === 5. THE WORLD FLUSH (ALGORITHM) ===
+flush_logic: {
+  label: "The Flush Implementation"
+  style.fill: "#F3E5F5"
+  
+  flush_steps: |rust
+  fn flush_commands(world: &mut World, buffer: &mut CommandBuffer) {
+      for cmd in buffer.drain(..) {
+          match cmd {
+              Command::Spawned { entity } => {
+                  // No-op: The ID exists. We just ensure 
+                  // metadata entries exist in internal maps.
+                  world.init_entity_meta(entity);
+              }
+              Command::Insert { entity, component, type_id } => {
+                  // This is the heavy lifting: 
+                  // moves entity between archetypes.
+                  world.move_entity_to_new_archetype(entity, component, type_id);
+              }
+          }
+      }
+  }
+  |
+}
+
+# === LAYOUT CONNECTORS ===
+problem_container -> solution_container: "Implementation" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 4
+}
+
+solution_container -> data_flow: "Sequence"
+
+data_flow -> internals: "Data Layout"
+
+internals -> flush_logic: "Consumption"
+
+# Global Legend
+legend: {
+  near: bottom-right
+  
+  immediate: "IMMEDIATE (CPU Cache)" {
+    style.fill: "#E3F2FD"
+  }
+  deferred: "DEFERRED (Memory/IO)" {
+    style: {
+      fill: "#F3E5F5"
+      stroke-dash: 5
+    }
+  }
+}

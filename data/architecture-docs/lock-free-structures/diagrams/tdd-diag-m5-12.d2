@@ -1,0 +1,238 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#E8D5B7"
+    active: "#FF6B6B"
+    success: "#4CAF50"
+    deleted: "#9E9E9E"
+    protected: "#2196F3"
+    neutral: "#F5F5F5"
+    decision: "#FFF9C4"
+  }
+}
+title: |md
+  # hm_list_find: Deletion Handling Algorithm
+  ## Skip marked nodes → Opportunistic physical removal
+|
+direction: right
+# Initial State
+initial_state: {
+  label: "Initial State"
+  style.fill: "${colors.neutral}"
+  list_header: |md
+    **Sorted List (with marked node)**
+  |
+  node0: "prev\nso_key: 0x02\nkey: A" {
+    style.fill: "${colors.protected}"
+    style.stroke: "#1565C0"
+    style.bold: true
+  }
+  node1: "curr\nso_key: 0x04\nkey: B\n**MARKED**" {
+    style.fill: "${colors.deleted}"
+    style.stroke: "#616161"
+    style.stroke-dash: 3
+    style.font-color: "#616161"
+  }
+  node2: "next\nso_key: 0x06\nkey: C" {
+    style.fill: "${colors.neutral}"
+  }
+  node0 -> node1: "next (marked)" {
+    style.stroke: "${colors.deleted}"
+    style.stroke-dash: 3
+  }
+  node1 -> node2: "next" {
+    style.stroke: "${colors.deleted}"
+  }
+  hp_slot0: "HP[0]: prev" {
+    style.fill: "${colors.protected}"
+    shape: rectangle
+  }
+  hp_slot1: "HP[1]: curr" {
+    style.fill: "${colors.protected}"
+    shape: rectangle
+  }
+  hp_slot0 -> node0: "protects" {
+    style.stroke: "${colors.protected}"
+    style.stroke-dash: 2
+  }
+  hp_slot1 -> node1: "protects" {
+    style.stroke: "${colors.protected}"
+    style.stroke-dash: 2
+  }
+}
+# Step 1: Detect Marked Node
+step1: {
+  label: "Step 1: Detect Marked Node"
+  style.fill: "${colors.decision}"
+  check: |md
+    **Check:** `IS_MARKED(curr->next)`
+    c
+    next_raw = atomic_load(&curr->next);
+    if (IS_MARKED(next_raw)) {
+      // Node is logically deleted
+    }
+    
+  |
+  result: "MARKED = TRUE" {
+    style.fill: "${colors.active}"
+    style.bold: true
+    shape: diamond
+  }
+  check -> result
+}
+# Step 2: Physical Removal Attempt
+step2: {
+  label: "Step 2: Attempt Physical Removal"
+  style.fill: "${colors.header}"
+  cas_op: |md
+    **CAS: Unlink marked node**
+    c
+    next = UNMARK(next_raw);
+    if (atomic_compare_exchange_weak(
+        &prev->next, &curr, next)) {
+      hp_retire(curr);  // Safe to retire
+      curr = next;
+    }
+    
+  |
+  note: |md
+    **Why safe?**
+    - `prev` protected by HP[0]
+    - `curr` protected by HP[1]
+    - No thread can free either
+  | {
+    style.fill: "#E3F2FD"
+  }
+}
+# Step 3: CAS Success Path
+step3_success: {
+  label: "Step 3a: CAS Success"
+  style.fill: "${colors.success}"
+  result_list: |md
+    **After successful CAS**
+  |
+  node0_s: "prev\nso_key: 0x02" {
+    style.fill: "${colors.protected}"
+    style.bold: true
+  }
+  node2_s: "curr (new)\nso_key: 0x06\nkey: C" {
+    style.fill: "${colors.active}"
+    style.bold: true
+  }
+  retired: "B (retired)" {
+    style.fill: "${colors.deleted}"
+    style.opacity: 0.5
+    style.stroke-dash: 5
+  }
+  node0_s -> node2_s: "next" {
+    style.stroke: "${colors.success}"
+    style.bold: true
+    label: "CAS updated"
+  }
+  retired_box: "Retirement List\n[pending reclaim]" {
+    shape: cylinder
+    style.fill: "${colors.deleted}"
+  }
+  retired -> retired_box: "hp_retire()" {
+    style.stroke-dash: 3
+  }
+}
+# Step 4: CAS Failure Path
+step4_failure: {
+  label: "Step 3b: CAS Failure"
+  style.fill: "${colors.active}"
+  reason: |md
+    **CAS failed → Another thread won**
+    Possible causes:
+    - Another thread already unlinked
+    - `prev->next` changed
+    - Concurrent modification
+  |
+  action: |md
+    **Action: Restart from beginning**
+    c
+    // CAS failed - restart find
+    continue outer_loop;
+    
+  |
+}
+# Step 5: Continue Traversal
+step5_continue: {
+  label: "Step 4: Continue Traversal"
+  style.fill: "${colors.neutral}"
+  final_list: |md
+    **Continue with cleaned list**
+  |
+  node0_c: "prev\nso_key: 0x02" {
+    style.fill: "${colors.protected}"
+  }
+  node2_c: "curr\nso_key: 0x06\nkey: C" {
+    style.fill: "${colors.protected}"
+  }
+  node3_c: "so_key: 0x08\nkey: D" {
+    style.fill: "${colors.neutral}"
+  }
+  node0_c -> node2_c
+  node2_c -> node3_c
+  hp_update: |md
+    **Update hazard protection:**
+    c
+    hp_release(0);        // Release old prev
+    prev = curr;          // Advance
+    hp_protect(0, prev);  // Protect new prev
+    curr = next;          // Advance
+    hp_protect(1, curr);  // Protect new curr
+    
+  | {
+    style.fill: "#E8F5E9"
+  }
+}
+# Flow arrows
+initial_state -> step1: "traverse"
+step1 -> step2: "marked"
+step2 -> step3_success: "CAS OK"
+step2 -> step4_failure: "CAS FAIL"
+step3_success -> step5_continue: "continue"
+step4_failure -> initial_state: "restart" {
+  style.stroke: "${colors.active}"
+  style.stroke-dash: 5
+  label: "outer loop"
+}
+# Legend
+legend: {
+  label: "Legend"
+  style.fill: "#FAFAFA"
+  protected_leg: "Protected by HP" {
+    style.fill: "${colors.protected}"
+  }
+  marked_leg: "Marked (deleted)" {
+    style.fill: "${colors.deleted}"
+    style.stroke-dash: 3
+  }
+  active_leg: "Being modified" {
+    style.fill: "${colors.active}"
+  }
+  success_leg: "CAS success" {
+    style.fill: "${colors.success}"
+  }
+}
+# Key invariant box
+invariants: {
+  label: "Key Invariants"
+  style.fill: "#FFF3E0"
+  inv1: |md
+    1. **Marked nodes are never dereferenced** for key comparison
+  |
+  inv2: |md
+    2. **Helping**: Any thread can complete physical removal
+  |
+  inv3: |md
+    3. **Safety**: Both prev and curr protected during CAS
+  |
+  inv4: |md
+    4. **Progress**: Removal is lock-free (some thread succeeds)
+  |
+}

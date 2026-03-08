@@ -1,0 +1,191 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Consistency Check Flow
+  **Verification that tail/head haven't changed between reading pointer and reading its next field**
+|
+direction: right
+# Phase labels
+phase1_label: |md
+  ## Phase 1: Initial Load
+  Read pointer value
+| {near: top-left}
+phase2_label: |md
+  ## Phase 2: Dereference
+  Read next field
+| {near: top-center}
+phase3_label: |md
+  ## Phase 3: Validation
+  Verify pointer unchanged
+| {near: top-right}
+# Step 1: Initial load
+step1: {
+  style.fill: "#E8F4FD"
+  style.stroke: "#2563EB"
+  style.stroke-width: 2
+  load_ptr: "Load Pointer\n\ntail ← atomic_load(&queue->tail)\nmemory_order_acquire" {
+    shape: rectangle
+    style.fill: "#DBEAFE"
+    style.stroke: "#1D4ED8"
+    width: 200
+  }
+  note1: |md
+    **Snapshot #1**
+    Capture current value of `tail`
+    (or `head` for dequeue)
+  | {
+    shape: text
+    style.font-size: 12
+    style.font-color: "#6B7280"
+  }
+}
+# Step 2: Dereference
+step2: {
+  style.fill: "#FEF3C7"
+  style.stroke: "#D97706"
+  style.stroke-width: 2
+  read_next: "Read Next Field\n\nnext ← atomic_load(&tail->next)\nmemory_order_acquire" {
+    shape: rectangle
+    style.fill: "#FDE68A"
+    style.stroke: "#B45309"
+    width: 200
+  }
+  note2: |md
+    **Dereference**
+    Access `tail->next`
+    ⚠️ **RACE WINDOW**
+    Another thread may modify
+    `queue->tail` here!
+  | {
+    shape: text
+    style.font-size: 12
+    style.font-color: "#92400E"
+  }
+}
+# Step 3: Validation
+step3: {
+  style.fill: "#D1FAE5"
+  style.stroke: "#059669"
+  style.stroke-width: 2
+  validate: "Validate Pointer\n\ncurrent ← atomic_load(&queue->tail)\nmemory_order_acquire" {
+    shape: rectangle
+    style.fill: "#A7F3D0"
+    style.stroke: "#047857"
+    width: 200
+  }
+  note3: |md
+    **Snapshot #2**
+    Read `tail` again to compare
+  | {
+    shape: text
+    style.font-size: 12
+    style.font-color: "#065F46"
+  }
+}
+# Decision diamond
+decision: {
+  shape: diamond
+  label: "tail == current?"
+  style.fill: "#F3E8FF"
+  style.stroke: "#7C3AED"
+  style.stroke-width: 2
+  width: 160
+  height: 100
+}
+# Success path
+success: {
+  label: "✓ VALID\n\nProceed with operation\n(next pointer is valid)"
+  style.fill: "#D1FAE5"
+  style.stroke: "#059669"
+  style.stroke-width: 2
+  shape: rectangle
+  width: 180
+}
+# Failure path
+failure: {
+  label: "✗ INVALID\n\nRestart from beginning\n(tail changed during read)"
+  style.fill: "#FEE2E2"
+  style.stroke: "#DC2626"
+  style.stroke-width: 2
+  shape: rectangle
+  width: 180
+}
+# Connections
+step1.load_ptr -> step2.read_next: "pointer value"
+step2.read_next -> step3.validate: "next value"
+step3.validate -> decision: "compare"
+decision -> success: "YES" {
+  style.stroke: "#059669"
+  style.stroke-width: 2
+}
+decision -> failure: "NO" {
+  style.stroke: "#DC2626"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+}
+# Retry loop
+failure -> step1.load_ptr: "retry" {
+  style.stroke: "#DC2626"
+  style.stroke-dash: 5
+  style.animated: true
+  label: "restart loop"
+}
+# Timeline annotation
+timeline: {
+  near: bottom-center
+  shape: rectangle
+  style.fill: "#F9FAFB"
+  style.stroke: "#E5E7EB"
+  width: 600
+  content: |md
+    ### Why This Check Is Necessary
+    
+    Thread A                              Thread B
+    ─────────                             ─────────
+    tail = load(&queue->tail)    → ptr_A
+                                          CAS(&queue->tail, ptr_A, ptr_B) → SUCCESS
+                                          (tail now points to B)
+    next = load(&tail->next)     → ptr_A->next
+    (tail was ptr_A when we read it!)
+    current = load(&queue->tail) → ptr_B
+    tail != current → INVALID, must retry
+    
+    Without this check, we might dereference `ptr_A->next` after `ptr_A` 
+    has been removed from the queue, leading to use-after-free.
+  |
+}
+# Code example
+code_example: {
+  near: bottom-left
+  shape: rectangle
+  style.fill: "#1F2937"
+  style.stroke: "#374151"
+  width: 320
+  content: |'
+    c
+    // Consistency check pattern
+    while (true) {
+        // Load pointer
+        tail = atomic_load_explicit(
+            &queue->tail, 
+            memory_order_acquire);
+        // Dereference (RACE WINDOW)
+        next = atomic_load_explicit(
+            &tail->next, 
+            memory_order_acquire);
+        // VALIDATION: Re-read and compare
+        if (tail != atomic_load_explicit(
+                &queue->tail, 
+                memory_order_acquire)) {
+            continue; // Retry - tail changed
+        }
+        // tail is still valid, proceed...
+        break;
+    }
+    
+  '|
+}

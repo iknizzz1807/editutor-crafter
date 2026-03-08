@@ -1,0 +1,217 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+title: |md
+  # Entity Cleanup on Destroy Command
+  **Specification**: Atomic Removal of Entity ID and Associated Component Memory
+| {
+  near: top-center
+  shape: text
+  style.font-size: 28
+  style.bold: true
+}
+
+direction: right
+
+# --- COMMAND BUFFER PHASE ---
+Command_Buffer: {
+  label: "Command Queue (Ring Buffer)"
+  style.fill: "#E8E8E8"
+  style.stroke: "#666666"
+  style.stroke-dash: 4
+
+  Command_Destroy: "OP_DESTROY_ENTITY" {
+    shape: sql_table
+    style.fill: "#FFE4B5"
+    style.stroke: "#D2691E"
+    
+    entity_id: "u32" {constraint: "Index"}
+    generation: "u32" {constraint: "ID Verifier"}
+    
+    # Tooltip for internal layout
+    tooltip: "Byte Offset 0x00: OpCode | 0x04: EntityIndex | 0x08: Generation"
+  }
+}
+
+# --- WORLD SYSTEM CONTEXT ---
+World: {
+  label: "EcsWorld::Internal"
+  style.fill: "#F5F5F5"
+  style.stroke: "#333333"
+  style.stroke-width: 2
+
+  Process_Header: "Phase 3: Command Flush" {
+    shape: text
+    style.italic: true
+    style.font-size: 16
+    style.font-color: "#555555"
+  }
+
+  Step1: {
+    label: "Step 1: ID Extraction"
+    style.fill: "#E6F3FF"
+    style.stroke: "#4A90D9"
+    extract: "let target = cmd.entity;" {
+      shape: code
+      style.font: mono
+    }
+  }
+
+  Step2: {
+    label: "Step 2: Immediate Cleanup"
+    style.fill: "#FFF3E0"
+    style.stroke: "#F5A623"
+    call: "World::destroy_immediate(target)" {
+      shape: code
+      style.font: mono
+      style.bold: true
+    }
+  }
+}
+
+# --- ENTITY MANAGER (GENERATIONAL INDEX) ---
+EntityManager_Cleanup: {
+  label: "EntityManager::invalidate()"
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+
+  Generations_Array: {
+    shape: sql_table
+    style.fill: "#C8E6C9"
+    header: "Generations [u32; N]"
+    index_n: "generations[target.index]++" {
+      style.fill: "#81C784"
+      style.bold: true
+    }
+  }
+
+  Free_List: {
+    shape: sql_table
+    style.fill: "#C8E6C9"
+    header: "FreeQueue <u32>"
+    push_op: "free_list.push_back(target.index)" {
+      style.fill: "#81C784"
+      style.bold: true
+    }
+  }
+
+  Invariants: "Invariants:\n1. Generation + 1\n2. Index returned to pool" {
+    shape: text
+    style.italic: true
+    style.font-size: 12
+  }
+}
+
+# --- COMPONENT REGISTRY (SPARSE SET) ---
+ComponentRegistry_Cleanup: {
+  label: "ComponentRegistry::gc()"
+  style.fill: "#FFF8E1"
+  style.stroke: "#FFC107"
+
+  Registry_Loop: "FOR EACH storage IN component_storages" {
+    shape: rectangle
+    style.fill: "#FFECB3"
+    style.font: mono
+    
+    Removal_Logic: {
+      shape: sql_table
+      header: "SparseSet<T>::remove(target)"
+      sparse: "sparse[target.index] = 0xFFFF" {
+        style.fill: "#FFD54F"
+        style.bold: true
+      }
+      dense_swap: "dense[pos] = dense.pop()" {
+        style.fill: "#FFD54F"
+      }
+      reclaim: "T::~T() called" {
+        style.fill: "#BDBDBD"
+      }
+    }
+  }
+}
+
+# --- FINAL MEMORY STATE ---
+Final_State: {
+  label: "Memory State: Post-Destroy"
+  style.fill: "#FFEBEE"
+  style.stroke: "#F44336"
+  style.double-border: true
+
+  Memory_Map: {
+    shape: sql_table
+    Slot_Status: "Deallocated / Reusable"
+    Handle_Status: "Handle Invalid (Gen Mismatch)"
+    Storage_Status: "0 bytes associated"
+    
+    style.fill: "#FFCDD2"
+  }
+}
+
+# --- DATA FLOW CONNECTIONS ---
+Command_Buffer.Command_Destroy -> World.Step1.extract: "Fetch from\n0x04 buffer offset" {
+  style.stroke: "#666666"
+  style.stroke-width: 2
+}
+
+World.Step1.extract -> World.Step2.call: "Pass ID"
+
+World.Step2.call -> EntityManager_Cleanup.Generations_Array.index_n: "Trigger\nInvalidation" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+  style.bold: true
+}
+
+World.Step2.call -> ComponentRegistry_Cleanup.Registry_Loop: "Trigger\nComponent GC" {
+  style.stroke: "#FFC107"
+  style.stroke-width: 2
+  style.bold: true
+}
+
+EntityManager_Cleanup.Free_List.push_op -> Final_State.Memory_Map: "Finalize" {
+  style.stroke: "#4CAF50"
+  style.stroke-dash: 3
+}
+
+ComponentRegistry_Cleanup.Registry_Loop.Removal_Logic.sparse -> Final_State.Memory_Map: "Reclaim Memory" {
+  style.stroke: "#FFC107"
+  style.stroke-dash: 3
+}
+
+# --- ANNOTATIONS ---
+Implementation_Notes: |md
+  ## Hardware / Memory Considerations
+  - **Generational Invalidation**: By incrementing the version in the `generations` array (at `index`), all existing handles (pointers) to this entity become stale. Comparison `handle.gen == generations[index]` will return false.
+  - **Sparse Set Removal**: The `swap-and-pop` pattern in the dense array ensures the component storage remains contiguous for cache-friendly iteration, even after arbitrary deletions.
+  - **Atomic Boundary**: If `destroy_immediate` fails midway, the entity exists in a "Zombie" state. Manual implementations must ensure the `Generations_Array` update is the last step if transactions are not supported.
+| {
+  near: bottom-right
+  style.fill: "#F0F4F8"
+  style.stroke: "#607D8B"
+  style.stroke-dash: 3
+}
+
+# --- LEGEND ---
+Legend: {
+  near: bottom-left
+  style.fill: "#FAFAFA"
+  style.stroke: "#CCCCCC"
+  
+  title: "Entity Lifecycle Legend" {
+    shape: text
+    style.bold: true
+  }
+  
+  l1: "Command Entry (Input)" { style.fill: "#FFE4B5" }
+  l2: "ID Management (Metadata)" { style.fill: "#E8F5E9" }
+  l3: "Memory Reallocation (Data)" { style.fill: "#FFF8E1" }
+  l4: "Final Validated State" { style.fill: "#FFEBEE" }
+}
+
+# Triple glob to enforce font consistency
+***.style.font: mono
+***.style.font-size: 14

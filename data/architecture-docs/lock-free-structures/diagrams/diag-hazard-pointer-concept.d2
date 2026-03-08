@@ -1,0 +1,186 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Hazard Pointer Concept
+  Per-thread publication slots enable safe memory reclamation
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  hazard_registry: {
+    direction: down
+    label: "Global Hazard Pointer Registry"
+    thread_slots: {
+      direction: right
+      t0: {
+        label: "Thread 0"
+        shape: sql_table
+        slot0: "0x00 | slot[0] | 0x7F3A"
+        slot1: "0x08 | slot[1] | NULL"
+      }
+      t1: {
+        label: "Thread 1"
+        shape: sql_table
+        slot0: "0x00 | slot[0] | 0x7F88"
+        slot1: "0x08 | slot[1] | 0x7FC2"
+      }
+      t2: {
+        label: "Thread 2"
+        shape: sql_table
+        slot0: "0x00 | slot[0] | NULL"
+        slot1: "0x08 | slot[1] | NULL"
+      }
+      t3: {
+        label: "Thread 3"
+        shape: sql_table
+        slot0: "0x00 | slot[0] | 0x7F3A"
+        slot1: "0x08 | slot[1] | 0x8010"
+      }
+    }
+    legend: {
+      label: "Slot Semantics"
+      shape: rectangle
+      style.fill: "#E8E8E8"
+      style.stroke: "#666666"
+      content: |md
+        - Each thread owns 2 slots exclusively
+        - Slots hold node addresses being accessed
+        - NULL = slot not in use
+        - Release ordering on write ensures visibility
+      |
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  scan_process: {
+    direction: down
+    label: "Scan-and-Reclaim Algorithm"
+    step1: {
+      label: "Step 1: Snapshot All Hazard Pointers"
+      width: 380
+      code: |'c
+        uintptr_t protected[MAX_THREADS * SLOTS];
+        size_t count = 0;
+        for (int t = 0; t < num_threads; t++) {
+          for (int s = 0; s < SLOTS_PER_THREAD; s++) {
+            uintptr_t hp = atomic_load_acquire(&registry[t][s]);
+            if (hp != 0) protected[count++] = hp;
+          }
+        }
+      '|
+    }
+    step2: {
+      label: "Step 2: Build Protected Set"
+      width: 380
+      code: |'c
+        // Snapshot from above yields:
+        // protected = {0x7F3A, 0x7F88, 0x7FC2, 0x7F3A, 0x8010}
+        // Deduplicated: {0x7F3A, 0x7F88, 0x7FC2, 0x8010}
+      '|
+    }
+    step3: {
+      label: "Step 3: Check Retirement List"
+      width: 380
+      code: |'c
+        for (node in retirement_list) {
+          if (node in protected_set) {
+            keep(node);  // Still in use
+          } else {
+            free(node);  // Safe to reclaim
+          }
+        }
+      '|
+    }
+  }
+  retirement: {
+    direction: down
+    label: "Per-Thread Retirement List"
+    retire_list: {
+      label: "Thread N Retirement List"
+      shape: sql_table
+      r0: "0 | 0x7F3A | waiting"
+      r1: "1 | 0x7F44 | waiting"
+      r2: "2 | 0x7FB0 | waiting"
+      r3: "3 | 0x8010 | waiting"
+      r4: "4 | 0x8055 | waiting"
+      total: "Threshold: 2 × threads × slots"
+    }
+    result: {
+      label: "After Scan"
+      shape: rectangle
+      style.fill: "#ACE1AF"
+      style.stroke: "#2E8B57"
+      content: |md
+        **Freed**: 0x7F44, 0x7FB0, 0x8055
+        **Kept**: 0x7F3A, 0x8010 (in protected set)
+      |
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  timeline: {
+    direction: down
+    label: "Set-Then-Validate Protocol"
+    phase1: {
+      label: "Protect Before Dereference"
+      width: 400
+      code: |'c
+        // Thread A accessing stack top
+        Node* node;
+        do {
+          node = atomic_load(&stack->top);    // Load candidate
+          hazard_protect(SLOT, node);          // Publish address
+        } while (node != atomic_load(&stack->top)); // Validate
+        // Now safe: node cannot be freed while protected
+        return node->value;  // Safe dereference
+      '|
+    }
+    phase2: {
+      label: "Release After Use"
+      width: 400
+      code: |'c
+        // After reading value, release protection
+        int64_t val = node->value;
+        hazard_release(SLOT);  // Clear slot to NULL
+        return val;
+        // Node can now be reclaimed if retired
+      '|
+    }
+  }
+  invariant: {
+    label: "Critical Invariant"
+    shape: rectangle
+    style.fill: "#FFE4E1"
+    style.stroke: "#DC143C"
+    width: 350
+    content: |md
+      **A node is freed only if:**
+      1. It was retired (removed from data structure)
+      2. AND no hazard pointer references it
+      3. AND the scan happens AFTER retirement
+      The happens-before relationship is established by:
+      - `memory_order_release` on `hazard_protect()`
+      - `memory_order_acquire` on scan reads
+    |
+  }
+}
+thread_slots.t0.style.fill: "#E6F3FF"
+thread_slots.t1.style.fill: "#E6F3FF"
+thread_slots.t2.style.fill: "#E6F3FF"
+thread_slots.t3.style.fill: "#E6F3FF"
+scan_process.step1.style.fill: "#FFF8DC"
+scan_process.step2.style.fill: "#FFF8DC"
+scan_process.step3.style.fill: "#FFF8DC"
+retirement.retire_list.style.fill: "#FFE4B5"

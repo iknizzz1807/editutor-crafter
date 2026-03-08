@@ -1,0 +1,177 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    sketch: false
+    pad: 20
+  }
+}
+
+title: |md
+  # ABA Problem Timeline: CAS Pointer Race Condition
+  ### Memory Recycling & Pointer Identity Vulnerability Analysis
+  **Engineering Specification:** Demonstrates a failure in lock-free synchronization where a `CAS` (Compare-and-Swap) succeeds based on pointer value identity, ignoring that the underlying memory node has been deallocated and repurposed.
+| {
+  near: top-center
+}
+
+# Implementation Legend
+legend: {
+  shape: package
+  near: top-right
+  style: {
+    stroke: "#333333"
+    fill: "#F5F5F5"
+    stroke-width: 1
+  }
+  T1_Legend: "Thread 1: Victim (Pop)" {
+    style: { fill: "#E3F2FD"; stroke: "#2196F3"; stroke-width: 2 }
+  }
+  T2_Legend: "Thread 2: Interfering (Mutator)" {
+    style: { fill: "#FFF3E0"; stroke: "#FF9800"; stroke-width: 2 }
+  }
+  Memory_Recycle: "Reused/Recycled Memory" {
+    style: { fill: "#FFEBEE"; stroke: "#D32F2F"; stroke-dash: 3 }
+  }
+}
+
+aba_sequence: {
+  shape: sequence_diagram
+
+  Thread1: Thread 1 (Victim) {
+    shape: person
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+  }
+  
+  Thread2: Thread 2 (Mutator) {
+    shape: person
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+  }
+
+  # Initial Memory State Trace
+  Thread1."STACK INIT:\n[HEAD] -> **0x00A** (Node A)\n**0x00A** -> 0x00B (Node B)\n0x00B -> 0x00C (Node C)" {
+    style.font-color: "#2196F3"
+  }
+
+  # PHASE 1: Execution Start
+  Phase1: {
+    label: "PHASE 1: Thread 1 Local Snapshot (Pre-emption)"
+    
+    Thread1 -> Thread1: "1. old_ptr = atomic_load(HEAD) // 0x00A" {
+      style.stroke: "#2196F3"
+      style.font-color: "#2196F3"
+    }
+    Thread1 -> Thread1: "2. next_ptr = old_ptr->next // 0x00B" {
+      style.stroke: "#2196F3"
+      style.font-color: "#2196F3"
+    }
+    Thread1."T1 Context:\nREG_OLD: **0x00A**\nREG_NEXT: **0x00B**" {
+      style.fill: "#E1F5FE"
+    }
+  }
+
+  # SCHEDULER EVENT
+  Thread1 -> Thread2: "⚠️ IRQ / CONTEXT SWITCH (T1 Suspended)" {
+    style: { stroke: "#D32F2F"; stroke-dash: 3; animated: true }
+  }
+
+  # PHASE 2: Mutation
+  Phase2: {
+    label: "PHASE 2: The ABA Mutation (Memory Reclamation)"
+    
+    Thread2 -> Thread2: "3. pop() -> 0x00A" {
+      style.stroke: "#FF9800"
+    }
+    Thread2 -> Thread2: "4. pop() -> 0x00B" {
+      style.stroke: "#FF9800"
+    }
+    
+    Thread2 -> Thread2: "5. free(0x00A), free(0x00B)" {
+      style.stroke: "#D32F2F"
+      style.stroke-dash: 2
+    }
+    
+    Thread2 -> Thread2: "6. malloc() -> recycled 0x00A" {
+      style.stroke: "#2E7D32"
+      style.stroke-width: 2
+    }
+    
+    Thread2 -> Thread2: "7. push(0x00A) // Node A'" {
+      style.stroke: "#2E7D32"
+    }
+
+    Thread2."STACK STATE:\n[HEAD] -> **0x00A** (Node A')\n**0x00A** -> 0x00C (Node C)" {
+      style.fill: "#FFF3E0"
+      style.bold: true
+    }
+  }
+
+  # SCHEDULER EVENT
+  Thread2 -> Thread1: "🔄 RESUME T1" {
+    style: { stroke: "#2196F3"; stroke-dash: 3; animated: true }
+  }
+
+  # PHASE 3: Corruption
+  Phase3: {
+    label: "PHASE 3: False CAS Success & Heap Corruption"
+    
+    Thread1 -> Thread1: "8. atomic_cas(HEAD, 0x00A, 0x00B)" {
+      style: { stroke: "#D32F2F"; stroke-width: 4; animated: true }
+    }
+    
+    Thread1 -> Thread1: "Logic: (0x00A == 0x00A) is TRUE" {
+      style: { bold: true; font-color: "#D32F2F" }
+    }
+    
+    Thread1 -> Thread1: "RESULT: HEAD = 0x00B" {
+      style: { stroke: "#D32F2F"; stroke-width: 2 }
+    }
+
+    Thread1."❌ CRITICAL FAILURE:\nHEAD now points to **0x00B**\n**0x00B** IS DEALLOCATED MEMORY" {
+      style: { fill: "#FFEBEE"; font-color: "#D32F2F"; bold: true; double-border: true }
+    }
+  }
+}
+
+# Technical Root Cause Analysis
+Analysis: |md
+  ### TECHNICAL POST-MORTEM & SPECIFICATION
+  *   **Pointer Identity Overload:** In Step 8, the hardware Compare-and-Swap instruction performs a bitwise comparison. It succeeds because the pointer value `0x00A` is identical to the snapshot, despite the semantic data at that address being completely different (Node A vs Node A').
+  *   **Use-After-Free (UAF):** The stack `HEAD` is successfully updated to `0x00B`. However, `0x00B` was returned to the allocator's free list in Step 5.
+  *   **Immediate Failure Vector:**
+      1.  **Segfault:** Next `pop()` attempts to read `0x00B->next`, accessing unmapped or protected memory.
+      2.  **Silent Corruption:** `0x00B` might be re-allocated for a different object type, leading to arbitrary memory writes.
+  
+  ### REMEDIATION STRATEGIES (Intel/AMD x86-64)
+  1.  **Tagged State (Double-Width CAS):** Use `cmpxchg16b`. Pair the pointer with a 64-bit generation counter. Even if the pointer is reused, the counter mismatch causes CAS failure.
+  2.  **Hazard Pointers:** Active threads register the pointers they are accessing. The `free()` operation is deferred until no hazard pointers reference the target address.
+  3.  **Epoch-Based Reclamation (EBR):** Memory is retired into a 'limbo' state and only physically freed once all threads have exited the current protective epoch.
+| {
+  near: bottom-center
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#AAAAAA"
+    border-radius: 4
+    font-size: 14
+  }
+}
+
+# Global Styling Adjustments
+aba_sequence.Phase1.style.stroke-dash: 2
+aba_sequence.Phase2.style.stroke-dash: 2
+aba_sequence.Phase3.style.stroke: "#D32F2F"
+aba_sequence.Phase3.style.stroke-width: 2
+
+# Sequence Lifeline and Pointer Styling
+(aba_sequence.Thread2 -> aba_sequence.Thread2).style.stroke-width: 2
+(aba_sequence.Thread1 -> aba_sequence.Thread1).style.stroke-width: 2
+
+# Memory recycled indicators
+aba_sequence.Thread2.T2_Recycle: {
+  style.fill: "#E8F5E9"
+  style.stroke: "#2E7D32"
+}
+aba_sequence.Phase2.T2_Free.style.fill: "#FFEBEE"
+aba_sequence.Phase2.T2_Recycle.style.fill: "#E8F5E9"

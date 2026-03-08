@@ -1,0 +1,320 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+title: |md
+  # API Safety Design: Iterator Invalidation Control
+  ## Technical Specification for ECS Milestone 3
+  **Target:** Memory-Safe Entity Component System Implementation
+| {near: top-center}
+
+# ============================================
+# Approach 1: Type-Level Safety (Static)
+# ============================================
+Approach_1: {
+  label: "Approach 1: Compile-Time Verification (Static Analysis)"
+  style.stroke-width: 2
+  style.fill: "#F8F9FA"
+
+  System: {
+    shape: rectangle
+    style.fill: "#E8F4FD"
+    style.stroke: "#2196F3"
+    label: "System::run(WorldRef)\nsizeof = 0 (ZST)"
+  }
+
+  WorldRef: {
+    label: "WorldRef<'a> Proxy Object\nsizeof = 16 bytes"
+    shape: class
+    style.fill: "#C8E6C9"
+    style.stroke: "#4CAF50"
+    
+    # Field Layout (Internal Pointers)
+    "0x00: world": "&'a World (8B)" {style.font-color: "#E65100"} # Pointer Color
+    "0x08: commands": "&'a mut CommandBuffer (8B)" {style.font-color: "#E65100"}
+    
+    # Restricted API
+    "+ get_component<T>(e)": "&T"
+    "+ storage<T>()": "&SparseSet<T>"
+    "- storage_mut<T>()": "ILLEGAL: Method Omitted" {
+      style.font-color: red
+      style.bold: true
+      style.italic: true
+    }
+    "+ spawn()": "Entity"
+    "+ destroy(e)": "void"
+    "+ insert<T>(e, c)": "void"
+    
+    tooltip: "Enforces single-mutable-command-buffer borrow at compile time using Rust lifetimes."
+  }
+
+  World: {
+    label: "World (Core Data Object)\nsizeof = 64 bytes (1 cache line)"
+    shape: class
+    style.fill: "#FFCDD2"
+    style.stroke: "#F44336"
+    
+    # Memory Layout
+    "0x00: entities": "EntityManager (16B)" {style.fill: "#BBDEFB"} # Header/Data
+    "0x10: components": "ComponentRegistry (32B)" {style.fill: "#BBDEFB"}
+    "0x30: archetypes": "TableMap (16B)" {style.fill: "#BBDEFB"}
+    
+    # Internal Methods
+    "create_entity()": "Entity"
+    "destroy_entity(e)": "bool"
+    "add_component<T>(e, c)": "void"
+    "get_component<T>(e)": "Option<&T>"
+    
+    style.multiple: true
+  }
+
+  Commands_1: {
+    label: "CommandBuffer\nsizeof = 32 bytes"
+    shape: cylinder
+    style.fill: "#FFF9C4"
+    style.stroke: "#FBC02D"
+    "0x00: queue": "Vec<Command> (24B)"
+    "0x18: capacity": "usize (8B)"
+  }
+
+  System -> WorldRef: "1. borrows (Context Setup)" {style.stroke-width: 2}
+  WorldRef -> World: "2. immutable borrow (&World)" {
+    style.stroke: "#4CAF50"
+    style.stroke-dash: 3
+    style.animated: true
+  }
+  WorldRef -> Commands_1: "3. mutable borrow (&mut Cmd)" {
+    style.stroke: "#FBC02D"
+    style.stroke-width: 2
+  }
+
+  Note_1: |md
+    ### Static enforcement logic
+    - **Borrow Restriction**: `WorldRef` encapsulates the `World` but only exposes immutable access.
+    - **Deferred Mutation**: All structural changes are pushed to `CommandBuffer`.
+    - **Lifetime Alignment**: `'a` ensures that proxies cannot outlive the `World` instance.
+  | {
+    shape: text
+    style.fill: "#F1F8E9"
+    style.stroke: "#4CAF50"
+    style.border-radius: 8
+  }
+}
+
+# ============================================
+# Approach 2: Runtime Safety (Dynamic)
+# ============================================
+Approach_2: {
+  label: "Approach 2: Execution State Guarding (Dynamic)"
+  style.stroke-width: 2
+  style.fill: "#FDF7FF"
+
+  World_2: {
+    label: "World Core Implementation"
+    shape: class
+    style.fill: "#E1BEE7"
+    style.stroke: "#9C27B0"
+    
+    # Offset | Field | Size
+    "0x00: entities": "EntityManager"
+    "0x10: components": "ComponentRegistry"
+    "0x30: commands": "CommandBuffer"
+    "0x50: in_system_execution": "AtomicBool (1B)" {
+      style.bold: true
+      style.font-color: "#D32F2F"
+      style.stroke: "#D32F2F"
+      style.fill: "#FFEBEE"
+    }
+    "0x51: padding": "15B (Cache Line Alignment)" {
+      style.font-color: gray
+      style.fill: "#EEEEEE"
+    }
+    
+    "create_entity()": "Entity"
+    "destroy_entity(e)": "bool"
+    "add_component<T>(e, c)": "void"
+    "tick(dt)": "void"
+  }
+
+  Flag_False: {
+    label: "State: IDLE\n(Guard = false)"
+    shape: rectangle
+    style.fill: "#C8E6C9"
+    style.stroke: "#4CAF50"
+    style.double-border: true
+    
+    Ops: |md
+      - `destroy_entity()`: **ALLOWED** ✅
+      - `add_component()`: **ALLOWED** ✅
+      - `clear()`: **ALLOWED** ✅
+    | {shape: text}
+  }
+
+  Flag_True: {
+    label: "State: BUSY\n(Guard = true)"
+    shape: rectangle
+    style.fill: "#FFCDD2"
+    style.stroke: "#F44336"
+    style.double-border: true
+    
+    Ops: |md
+      - `destroy_entity()`: **PANIC** ❌
+      - `add_component()`: **PANIC** ❌
+      - `commands().destroy()`: **OK** (Deferred)
+    | {shape: text}
+  }
+
+  World_2 -> Flag_False: "Reset on Tick End" {
+    style.stroke: "#4CAF50"
+    source-arrowhead: * {shape: diamond}
+  }
+  World_2 -> Flag_True: "Set on Tick Start" {
+    style.stroke: "#F44336"
+    source-arrowhead: * {shape: diamond}
+  }
+
+  Note_2: |md
+    ### Runtime Guard logic
+    rust
+    fn destroy_entity(&mut self, e: Entity) -> bool {
+      if self.in_system_execution.load(Ordering::Acquire) {
+        panic!("ILLEGAL OPERATION: Iterator Invalidation");
+      }
+      self.entities.kill(e)
+    }
+    
+  | {
+    shape: text
+    style.fill: "#F3E5F5"
+    style.stroke: "#9C27B0"
+    style.font: mono
+  }
+}
+
+# ============================================
+# Comparison Grid
+# ============================================
+Comparison: {
+  label: "Architectural Trade-offs"
+  grid-columns: 2
+  grid-gap: 40
+  
+  TypeLevel: {
+    label: "Approach 1: Static (Type-Level)"
+    shape: rectangle
+    style.fill: "#C8E6C9"
+    style.stroke: "#4CAF50"
+    
+    Content: |md
+      - ✅ **Compile-time safety**
+      - ✅ **Zero runtime overhead**
+      - ❌ **Complex lifetime bounds**
+    | {shape: text}
+  }
+  
+  Runtime: {
+    label: "Approach 2: Dynamic (Runtime Flag)"
+    shape: rectangle
+    style.fill: "#FFCDD2"
+    style.stroke: "#F44336"
+    
+    Content: |md
+      - ✅ **Simplified API surface**
+      - ✅ **Faster prototyping**
+      - ❌ **Runtime Atomic Load cost**
+    | {shape: text}
+  }
+}
+
+# ============================================
+# Execution Lifecycle Timeline
+# ============================================
+Timeline: {
+  label: "System Tick Lifecycle & Safety States"
+  direction: right
+  
+  Start: "tick() start" {
+    shape: circle
+    style.fill: "#E3F2FD"
+  }
+  
+  Guard_On: "SET Guard = TRUE" {
+    shape: rectangle
+    style.fill: "#FFCDD2"
+    style.stroke: "#F44336"
+    style.bold: true
+  }
+  
+  Systems_Run: "Run System Logic\n(Iterators Active)" {
+    shape: rectangle
+    style.fill: "#FFF9C4"
+    style.stroke-width: 3
+    style.multiple: true
+  }
+  
+  Guard_Off: "SET Guard = FALSE" {
+    shape: rectangle
+    style.fill: "#C8E6C9"
+    style.stroke: "#4CAF50"
+  }
+  
+  Flush: "Apply CommandBuffer\n(Mutation Allowed)" {
+    shape: rectangle
+    style.fill: "#E1BEE7"
+  }
+  
+  End: "tick() return" {
+    shape: circle
+    style.fill: "#E3F2FD"
+  }
+
+  Start -> Guard_On -> Systems_Run -> Guard_Off -> Flush -> End
+
+  Danger_Zone: |md
+    ### ⚠️ DANGER ZONE
+    Direct mutation panics here.
+  | {
+    shape: text
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    style.font-color: "#C62828"
+  }
+
+  Safe_Zone: |md
+    ### ✅ SAFE ZONE
+    Mutations permitted.
+  | {
+    shape: text
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    style.font-color: "#2E7D32"
+  }
+}
+
+# ============================================
+# Final Selection
+# ============================================
+Recommendation: {
+  label: "Decision: Implementation Path for Milestone 3"
+  
+  Selection: |md
+    ## Selection: Runtime Safety (Approach 2)
+    
+    **Rationale:** 
+    Provides the best balance between implementation velocity and safety. Prevents memory corruption during high-concurrency dispatch while keeping the user-facing API clean.
+    
+    **Implementation Steps:**
+    1. Allocate `AtomicBool` at offset `0x50` in `World`.
+    2. Instrument `World::get_mut` and `World::entities_mut` with state checks.
+    3. Ensure `Schedule` toggles guard state before/after system iteration.
+  | {
+    shape: rectangle
+    style.fill: "#FFFDE7"
+    style.stroke: "#FBC02D"
+    style.shadow: true
+  }
+}

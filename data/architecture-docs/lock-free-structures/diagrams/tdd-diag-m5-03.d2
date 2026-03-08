@@ -1,0 +1,295 @@
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+title: |md
+  # Sentinel vs Regular Node Layout
+  ## Split-Ordered List Node Structures (Memory-Safe Implementation)
+|
+title.near: top-center
+title.style.font-size: 32
+
+# -----------------------------------------------------------------------------
+# 1. Memory Layout: Node Structures
+# -----------------------------------------------------------------------------
+
+NodeComparison: {
+  direction: right
+  
+  SentinelNode: {
+    shape: sql_table
+    label: "Sentinel Node Layout (Bucket Header)\nsizeof=16 bytes"
+    style.fill: "#F3E5F5"
+    style.stroke: "#7B1FA2"
+    style.stroke-width: 2
+    
+    "0x00": "uint64_t" {constraint: "so_key: MSB=0 (Sentinel)"}
+    "0x08": "atomic_ptr<node>" {constraint: "next: Linked List Ptr"}
+  }
+
+  SentinelLogic: {
+    shape: text
+    label: |md
+      **Sentinel Logic:**
+      - `so_key = bit_reverse(hash) & ~HIGH_BIT`
+      - Markers for hash bucket boundaries.
+      - Never contains data payload.
+    |
+  }
+
+  RegularNode: {
+    shape: sql_table
+    label: "Regular Node Layout (Data Element)\nsizeof=32 bytes"
+    style.fill: "#E3F2FD"
+    style.stroke: "#1976D2"
+    style.stroke-width: 2
+    
+    "0x00": "uint64_t" {constraint: "so_key: MSB=1 (Regular)"}
+    "0x08": "atomic_ptr<node>" {constraint: "next: Linked List Ptr"}
+    "0x10": "uintptr_t" {constraint: "key: Application Key"; style.fill: "#BBDEFB"}
+    "0x18": "uintptr_t" {constraint: "value: Application Value"; style.fill: "#BBDEFB"}
+  }
+
+  RegularLogic: {
+    shape: text
+    label: |md
+      **Regular Logic:**
+      - `so_key = bit_reverse(hash) | HIGH_BIT`
+      - Guarantees regular nodes sort after bucket sentinels.
+      - Carries user-defined key/value pairs.
+    |
+  }
+  
+  SentinelNode -> SentinelLogic: {style.stroke-dash: 3}
+  RegularNode -> RegularLogic: {style.stroke-dash: 3}
+}
+
+DetectionLogic: {
+  label: "Node Type Detection Macros"
+  style.fill: "#FAFAFA"
+  style.stroke-width: 2
+  
+  Code: |md
+    c
+    #define HM_SO_KEY_REGULAR_BIT  ((uint64_t)1 << 63)
+    #define HM_IS_REGULAR(node)    (((node)->so_key & HM_SO_KEY_REGULAR_BIT) != 0)
+    #define HM_IS_SENTINEL(node)   (((node)->so_key & HM_SO_KEY_REGULAR_BIT) == 0)
+    
+  |
+  Code.style.font: mono
+}
+
+# -----------------------------------------------------------------------------
+# 2. Memory Ordering & Atomic Operations
+# -----------------------------------------------------------------------------
+
+MemoryOrdering: {
+  label: "C11/C++11 Memory Ordering Lattice"
+  style.stroke: "#333"
+  style.stroke-width: 2
+  
+  Relaxed: "memory_order_relaxed\nAtomicity only\nNo reordering constraints" {
+    style.fill: "#E8F5E9"
+  }
+  Consume: "memory_order_consume\nData-dependency ordering" {
+    style.fill: "#FFF3E0"
+  }
+  Acquire: "memory_order_acquire\nPrevents Hoisting Reads\n(Load-Load/Load-Store Barrier)" {
+    style.fill: "#BBDEFB"
+  }
+  Release: "memory_order_release\nPrevents Sinking Writes\n(Store-Store/Load-Store Barrier)" {
+    style.fill: "#C8E6CF"
+  }
+  AcqRel: "memory_order_acq_rel\nRead-Modify-Write\n(Full Barrier on that var)" {
+    style.fill: "#D1C4E9"
+  }
+  SeqCst: "memory_order_seq_cst\nSequentially Consistent\nTotal Global Ordering" {
+    style.fill: "#F8BBD9"
+    style.bold: true
+  }
+
+  Relaxed -> Consume: "weaker than" {style.stroke-dash: 3}
+  Consume -> Acquire: "weaker than" {style.stroke-dash: 3}
+  Acquire -> AcqRel: "weaker than" {style.stroke-dash: 3}
+  Release -> AcqRel: "weaker than" {style.stroke-dash: 3}
+  AcqRel -> SeqCst: "weaker than" {style.stroke-dash: 3}
+}
+
+# -----------------------------------------------------------------------------
+# 3. CAS Loop Algorithm State
+# -----------------------------------------------------------------------------
+
+CAS_Anatomy: {
+  label: "CAS Loop Anatomy (Lock-Free Update)"
+  
+  Step1: "1. LOAD\nRead current value\nold_val = atomic_load(&x)" {
+    shape: rectangle
+    style.fill: "#E3F2FD"
+  }
+  Step2: "2. COMPUTE\nCalculate new state\nnew_val = transform(old_val)" {
+    shape: rectangle
+    style.fill: "#E8F5E9"
+  }
+  Step3: "3. ATTEMPT\nAtomic Compare & Swap\nCAS(&x, old_val, new_val)" {
+    shape: diamond
+    style.fill: "#FFF3E0"
+  }
+  
+  Success: "COMMIT\nValue updated" {
+    shape: rectangle
+    style.fill: "#C8E6C9"
+    style.stroke: green
+    style.bold: true
+  }
+  
+  Retry: "CONFLICT\nValue changed by\nanother thread" {
+    shape: rectangle
+    style.fill: "#FFCDD2"
+    style.stroke: red
+  }
+
+  Step1 -> Step2 -> Step3
+  Step3 -> Success: "match"
+  Step3 -> Retry: "mismatch" {style.stroke: red; font-color: red}
+  Retry -> Step1: "RETRY LOOP" {style.stroke-dash: 5; style.animated: true}
+}
+
+# -----------------------------------------------------------------------------
+# 4. Tagged Pointer (Double-Width CAS / ABA Protection)
+# -----------------------------------------------------------------------------
+
+MemoryLayout_TaggedPtr: {
+  label: "Tagged Pointer Layout (128-bit / x86_64 cmpxchg16b)"
+  
+  ByteMap: {
+    grid-columns: 16
+    grid-gap: 0
+    B0: "00"; B1: "01"; B2: "02"; B3: "03"; B4: "04"; B5: "05"; B6: "06"; B7: "07" {
+      style.fill: "#7E57C2"; style.font-color: white
+    }
+    B8: "08"; B9: "09"; B10: "10"; B11: "11"; B12: "12"; B13: "13"; B14: "14"; B15: "15" {
+      style.fill: "#42A5F5"; style.font-color: white
+    }
+  }
+
+  VersionField: {
+    label: "uint64_t tag / version\nOffsets: 0-7\nUsed to solve ABA"
+    style.fill: "#7E57C2"
+    style.font-color: white
+  }
+  PointerField: {
+    label: "void* ptr\nOffsets: 8-15\nActual payload address"
+    style.fill: "#42A5F5"
+    style.font-color: white
+  }
+  
+  ByteMap.B0 -> VersionField
+  ByteMap.B8 -> PointerField
+}
+
+# -----------------------------------------------------------------------------
+# 5. MESI State Transitions
+# -----------------------------------------------------------------------------
+
+MESI: {
+  label: "MESI Cache Coherence Protocol Transitions"
+  
+  M: "Modified\nExclusive copy, dirty\nOwner must respond" {
+    shape: circle
+    style.fill: "#E53935"
+    style.font-color: white
+  }
+  E: "Exclusive\nOnly copy, clean\nCan transition silently" {
+    shape: circle
+    style.fill: "#FB8C00"
+    style.font-color: white
+  }
+  S: "Shared\nClean, multi-core\nRead-only copies" {
+    shape: circle
+    style.fill: "#43A047"
+    style.font-color: white
+  }
+  I: "Invalid\nUnusable data\nMust fetch from L3" {
+    shape: circle
+    style.fill: "#757575"
+    style.font-color: white
+  }
+
+  M -> S: "Remote Read (BusRd)" {style.stroke: blue}
+  S -> M: "Local Write (BusRdX)" {style.stroke: red; style.stroke-width: 3}
+  E -> M: "Local Write (Silent)" {style.stroke: red}
+  E -> S: "Remote Read" {style.stroke: blue}
+  I -> S: "Local Read" {style.stroke: blue}
+  I -> E: "Local Read (exclusive)" {style.stroke: blue}
+  I -> M: "Local Write" {style.stroke: red; style.stroke-width: 3}
+  S -> I: "Remote Write (Invalidate)" {style.stroke: grey; style.stroke-dash: 3}
+}
+
+# -----------------------------------------------------------------------------
+# 6. ABA Scenario Visualization
+# -----------------------------------------------------------------------------
+
+ABA_Timeline: {
+  direction: right
+  T0: "T0: Initial State\nTop -> A -> B\nVersion: 10" {style.fill: "#E3F2FD"}
+  T1: "T1: Thread 1 reads A\nold_top = {10, A}\nnext = B" {style.fill: "#FFF3E0"}
+  T2: "T2: Thread 2 pops A, pops B\nPushes A back\nVersion: 11" {style.fill: "#FFCDD2"}
+  T3: "T3: Thread 1 attempts CAS\nCompares {10, A} vs {11, A}\nFAIL: Version Mismatch" {
+    style.fill: "#C8E6C9"
+    style.bold: true
+  }
+  
+  T0 -> T1 -> T2 -> T3
+}
+
+# -----------------------------------------------------------------------------
+# 7. Hardware Platform Models
+# -----------------------------------------------------------------------------
+
+ArchComparison: {
+  grid-columns: 2
+  
+  x86_TSO: {
+    label: "x86-64 (Total Store Order)"
+    style.fill: "#E1F5FE"
+    Features: |md
+      - Strong memory model
+      - Stores NOT reordered with Stores
+      - Loads NOT reordered with Loads
+      - **Only Store-Load reordering permitted**
+    |
+  }
+  
+  ARM_Weak: {
+    label: "ARM / AArch64 (Weakly Ordered)"
+    style.fill: "#FFF3E0"
+    Features: |md
+      - Very weak memory model
+      - Load-Load reordering permitted
+      - Store-Store reordering permitted
+      - **Explicit DMB/ISB or LDAR/STLR required**
+    |
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Global Summary
+# -----------------------------------------------------------------------------
+
+FinalNote: {
+  near: bottom-center
+  style.fill: "#f9f9f9"
+  style.stroke: "#ccc"
+  label: |md
+    **Implementation Summary for Engineers:**
+    1. **x86 Implementation**: `lock cmpxchg16b` is the standard for 128-bit atomic updates.
+    2. **ARM Implementation**: Use `ldrex`/`strex` monitor loops or C11 `memory_order_release`.
+    3. **Backoff Strategy**: Exponential backoff using `_mm_pause` (x86) or `yield` (ARM) prevents MESI thrashing.
+  |
+}

@@ -1,0 +1,245 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: "Tagged Pointer ABA Prevention"
+  shape: text
+  style: {
+    font-size: 32
+    bold: true
+  }
+}
+title.near: top-center
+
+subtitle: {
+  label: "Version counter detects recycled pointers at same memory addresses"
+  shape: text
+  style.font-size: 18
+}
+subtitle.near: top-center
+
+# --- ROW 1: INITIAL STATE & INTERFERENCE ---
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  phase1: {
+    direction: down
+    label: "PHASE 0: Initial State"
+    
+    stack_state: {
+      shape: sql_table
+      label: "Stack Head (reactor.h)"
+      r0: "0x00 | uint64_t | version: 0"
+      r1: "0x08 | Node*    | head: 0x1000 (A)"
+      sz: "Size: 16 bytes (Atomic128)"
+    }
+
+    mem_view: {
+      label: "Memory Layout (T0)"
+      code: |'c
+        [0x1000: Node A] -> next: 0x2000
+        [0x2000: Node B] -> next: 0x3000
+        [0x3000: Node C] -> next: NULL
+      '|
+    }
+
+    t1_local: {
+      label: "Thread 1: Read Step"
+      style.fill: "#FFF3CD"
+      code: |'c
+        // Thread 1 reads state:
+        old_val = {ver: 0, ptr: A};
+        next_ptr = old_val.ptr->next; // B
+        // --- PREEMPTED HERE ---
+      '|
+    }
+  }
+
+  phase2: {
+    direction: down
+    label: "PHASE 1: Thread 2 Interference"
+    style.stroke: "#F8D7DA"
+
+    stack_state: {
+      shape: sql_table
+      label: "Stack Head (Modified)"
+      r0: "0x00 | uint64_t | version: 3"
+      r1: "0x08 | Node*    | head: 0x1000 (X)"
+      note: "Version incremented 3 times"
+    }
+
+    t2_logic: {
+      label: "Thread 2 Sequence"
+      style.fill: "#D4EDDA"
+      code: |'c
+        pop()  // ver 0 -> 1
+        pop()  // ver 1 -> 2
+        push(X)// ver 2 -> 3
+        // X allocated at 0x1000!
+        // (A was freed and recycled)
+      '|
+    }
+
+    mem_view: {
+      label: "Memory Layout (T1)"
+      style.fill: "#F8D7DA"
+      code: |'c
+        [0x1000: Node X] -> next: 0x3000
+        [0x3000: Node C] -> next: NULL
+        // 0x2000 (B) is unlinked/freed
+      '|
+    }
+  }
+}
+
+# --- ROW 2: RESUMPTION & ABA DETECTION ---
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  phase3: {
+    direction: down
+    label: "PHASE 2: Thread 1 Resumes"
+    
+    cas_logic: {
+      label: "Atomic CAS Analysis"
+      style.fill: "#F8D7DA"
+      code: |'c
+        Thread 1 attempts:
+        CAS(&head, {0, A}, {1, B})
+        
+        Current Memory Value: {3, X}
+        Comparison:
+          Expected Ptr: 0x1000 (A)
+          Actual Ptr:   0x1000 (X)  // MATCH
+          Expected Ver: 0
+          Actual Ver:   3           // MISMATCH
+        Result: CAS FAILS (ABA CAUGHT)
+      '|
+    }
+
+    prevention: {
+      label: "Why it worked"
+      code: |md
+        The version mismatch (0 vs 3) 
+        revealed that the stack was 
+        modified, even though the head
+        pointer address was identical.
+      |
+    }
+  }
+
+  phase4: {
+    direction: down
+    label: "PHASE 3: Safe Retry"
+    
+    retry_stack: {
+      shape: sql_table
+      label: "Stack Head (Current)"
+      r0: "0x00 | uint64_t | version: 3"
+      r1: "0x08 | Node*    | head: 0x1000 (X)"
+    }
+
+    t1_retry: {
+      label: "Thread 1 Retry Loop"
+      style.fill: "#D4EDDA"
+      code: |'c
+        while(true) {
+          old = head; // {3, X}
+          next = old.ptr->next; // 0x3000
+          if (CAS(&head, old, {old.ver+1, next}))
+            break; // Success
+        }
+      '|
+    }
+
+    outcome: {
+      label: "Final Consistency"
+      style.fill: "#CCE5FF"
+      code: |md
+        - No corruption of linked list
+        - No use-after-free of Node B
+        - Thread 1 correctly pops Node X
+      |
+    }
+  }
+}
+
+row1.phase1.t1_local -> row1.phase2: "Context Switch" { style.stroke-dash: 5 }
+row1.phase2 -> row2.phase3: "T1 Resumes"
+row2.phase3.cas_logic -> row2.phase4.t1_retry: "Retry Triggered" { 
+  style.stroke: "#28A745"
+  style.animated: true 
+}
+
+# --- SUPPORTING BLOCKS ---
+comparison_box: {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  
+  naive: {
+    label: "Naive CAS (Vulnerable)"
+    style.fill: "#F8D7DA"
+    code: |'c
+      // Only compares pointer
+      if (head == old_ptr) {
+        head = new_ptr; // SUCCESS
+        // ERROR: Silently links 
+        // stale pointer B!
+      }
+    '|
+  }
+
+  tagged: {
+    label: "Tagged CAS (Safe)"
+    style.fill: "#D4EDDA"
+    code: |'c
+      // Compares ptr AND version
+      // Uses lock cmpxchg16b on x86
+      if (head.ptr == old.ptr && 
+          head.ver == old.ver) {
+        head = {ver+1, new_ptr};
+      }
+    '|
+  }
+}
+comparison_box.near: bottom-center
+
+timeline: {
+  label: "Version Transition Log"
+  direction: right
+  style.fill: "#E9ECEF"
+
+  v0: "ver: 0" { shape: circle; style.fill: "#FFF3CD" }
+  v1: "ver: 1" { shape: circle; style.fill: "#D4EDDA" }
+  v2: "ver: 2" { shape: circle; style.fill: "#D4EDDA" }
+  v3: "ver: 3" { shape: circle; style.fill: "#D4EDDA" }
+  v4: "ver: 4" { shape: circle; style.fill: "#CCE5FF" }
+
+  v0 -> v1: "T2: pop"
+  v1 -> v2: "T2: pop"
+  v2 -> v3: "T2: push"
+  v3 -> v4: "T1: retry pop"
+}
+timeline.near: bottom-center
+
+legend_details: {
+  shape: rectangle
+  label: "Hardware Requirements"
+  style.fill: "#E2E3E5"
+  code: |md
+    - **Architecture**: x86-64 (CMPXCHG16B) or ARMv8.1 (CASP)
+    - **Memory**: 16-byte aligned pointer
+    - **Atomic**: Must be a single 128-bit load/store
+  |
+}
+legend_details.near: bottom-left

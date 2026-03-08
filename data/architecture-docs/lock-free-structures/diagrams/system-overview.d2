@@ -1,0 +1,469 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+title: |md
+  # Lock-Free Data Structures
+  ## System Architecture Blueprint
+  **M1–M5 Complete Implementation Reference**
+| {near: top-center}
+# =============================================================================
+# ROW 1: ATOMIC PRIMITIVES & FOUNDATIONS (M1)
+# =============================================================================
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_m1_types: {
+    direction: down
+    label: "M1: ATOMIC TYPES & PRIMITIVES (atomic_ops/)"
+    atomic_types: {
+      shape: sql_table
+      label: "struct TaggedPtr (atomic_wrappers.h) [M1]"
+      version: "uint64_t | offset 0x00"
+      ptr: "uintptr_t | offset 0x08"
+      sz: "Total: 16 bytes | 16-byte aligned"
+    }
+    cas_result: {
+      shape: sql_table
+      label: "struct CASResult (atomic_wrappers.h) [M1]"
+      success: "bool | true if CAS succeeded"
+      observed: "uintptr_t | actual value on failure"
+      sz: "Total: 16 bytes"
+    }
+  }
+  layer_m1_api: {
+    direction: down
+    label: "M1: ATOMIC API (atomic_wrappers.h)"
+    atomic_api: {
+      shape: class
+      label: "Atomic Wrappers [M1]"
+      +atomic_load_int(addr, order): "int"
+      +atomic_store_int(addr, value, order): "void"
+      +atomic_cas_int(addr, exp, des, s_ord, f_ord): "CASResult"
+      +atomic_cas_weak_int(addr, exp, des, s_ord, f_ord): "CASResult"
+      +atomic_fetch_add_int(addr, delta, order): "int"
+      +atomic_cas_tagged(addr, exp, des, s_ord, f_ord): "TaggedCASResult"
+      -memory_order: "relaxed | acquire | release | seq_cst"
+    }
+    backoff: {
+      shape: class
+      label: "Backoff Utilities (06_backoff.h) [M1]"
+      -delay: "uint32_t"
+      -max_delay: "uint32_t | default 1024"
+      +backoff_init(state): "void"
+      +backoff_wait(state): "void | exponential pause"
+      +backoff_reset(state): "void"
+      +cpu_pause(): "void | x86:pause ARM:yield"
+    }
+  }
+  layer_m1_ordering: {
+    direction: down
+    label: "M1: MEMORY ORDERING"
+    ordering_lattice: {
+      shape: class
+      label: "Memory Order Lattice [M1]"
+      +relaxed: "no ordering | atomicity only"
+      +acquire: "no loads after | before this"
+      +release: "no stores before | after this"
+      +acq_rel: "acquire + release combined"
+      +seq_cst: "total global order | most expensive"
+      -x86_tso: "implicit acquire/release"
+      -arm_weak: "explicit barriers needed"
+    }
+  }
+}
+# =============================================================================
+# ROW 2: LOCK-FREE STACK (M2)
+# =============================================================================
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_m2_types: {
+    direction: down
+    label: "M2: TREIBER STACK TYPES (treiber_stack/)"
+    treiber_node: {
+      shape: sql_table
+      label: "struct TreiberNode (01_treiber_types.h) [M2]"
+      value: "int64_t | offset 0x00"
+      next: "TreiberNode* | offset 0x08"
+      sz: "Total: 16 bytes | 8-byte aligned"
+    }
+    tagged_ptr_stack: {
+      shape: sql_table
+      label: "struct TaggedPtr (01_treiber_types.h) [M2]"
+      version: "uint64_t | offset 0x00 | ABA prevention"
+      ptr: "TreiberNode* | offset 0x08 | or NULL"
+      sz: "Total: 16 bytes | cmpxchg16b required"
+    }
+    treiber_stack: {
+      shape: sql_table
+      label: "struct TreiberStack (01_treiber_types.h) [M2]"
+      top: "AtomicTaggedPtr | offset 0x00"
+      sz: "Total: 16 bytes | single cache line"
+    }
+    pop_result: {
+      shape: sql_table
+      label: "struct PopResult (01_treiber_types.h) [M2]"
+      success: "bool | true if value popped"
+      value: "int64_t | valid only if success"
+      sz: "Total: 16 bytes"
+    }
+  }
+  layer_m2_api: {
+    direction: down
+    label: "M2: STACK OPERATIONS"
+    stack_api: {
+      shape: class
+      label: "Treiber Stack API (treiber_stack.h) [M2]"
+      +treiber_init(stack): "void | top={0,NULL}"
+      +treiber_destroy(stack): "void | free all nodes"
+      +treiber_push(stack, value): "bool | never blocks"
+      +treiber_pop(stack): "PopResult | empty: success=false"
+      +treiber_push_backoff(stack, value): "bool | with backoff"
+      +treiber_pop_backoff(stack): "PopResult | with backoff"
+      +treiber_is_empty(stack): "bool | approximate"
+      +treiber_size_approx(stack): "size_t | diagnostic"
+      -linearization_point: "successful CAS on top"
+    }
+  }
+  layer_m2_algo: {
+    direction: down
+    label: "M2: ALGORITHM DETAILS"
+    push_algo: {
+      shape: class
+      label: "Push Algorithm [M2]"
+      +allocate_node(): "TreiberNode*"
+      +load_old_top(acquire): "TaggedPtr"
+      +set_node_next(old_top.ptr): "void"
+      +CAS_top(old, {v+1, node}): "bool | release/acquire"
+      +retry_on_failure: "loop until success"
+    }
+    aba_prevention: {
+      shape: class
+      label: "ABA Prevention [M2]"
+      +version_counter: "uint64_t | monotonically increasing"
+      +compare_both: "ptr AND version | 128-bit CAS"
+      +wraparound: "practically infinite | 2^64 ops"
+      -recycled_addr: "same address, different version"
+      -cas_fails: "version mismatch detected"
+    }
+  }
+}
+# =============================================================================
+# ROW 3: LOCK-FREE QUEUE (M3)
+# =============================================================================
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_m3_types: {
+    direction: down
+    label: "M3: MICHAEL-SCOTT QUEUE TYPES (ms_queue/)"
+    ms_node: {
+      shape: sql_table
+      label: "struct MSNode (01_ms_types.h) [M3]"
+      value: "int64_t | offset 0x00"
+      next: "MSNode* | offset 0x08 | toward tail"
+      sz: "Total: 16 bytes | 8-byte aligned"
+    }
+    ms_queue: {
+      shape: sql_table
+      label: "struct MSQueue (01_ms_types.h) [M3]"
+      head: "_Atomic(MSNode*) | offset 0x00 | sentinel"
+      tail: "_Atomic(MSNode*) | offset 0x08 | last node"
+      sz: "Total: 16 bytes | same cache line"
+    }
+    dequeue_result: {
+      shape: sql_table
+      label: "struct DequeueResult (01_ms_types.h) [M3]"
+      success: "bool | true if value dequeued"
+      value: "int64_t | valid only if success"
+      sz: "Total: 16 bytes"
+    }
+  }
+  layer_m3_api: {
+    direction: down
+    label: "M3: QUEUE OPERATIONS"
+    queue_api: {
+      shape: class
+      label: "MS Queue API (ms_queue.h) [M3]"
+      +ms_queue_init(queue): "bool | alloc sentinel"
+      +ms_queue_destroy(queue): "void | free all"
+      +ms_enqueue(queue, value): "bool | two-step CAS"
+      +ms_dequeue(queue): "DequeueResult | empty: false"
+      +ms_queue_is_empty(queue): "bool | approximate"
+      +ms_queue_peek(queue): "DequeueResult | no remove"
+      +ms_queue_size_approx(queue): "size_t | diagnostic"
+      -linearization_point_enqueue: "CAS on tail->next"
+      -linearization_point_dequeue: "CAS on head"
+    }
+  }
+  layer_m3_algo: {
+    direction: down
+    label: "M3: TWO-STEP PROTOCOL"
+    enqueue_algo: {
+      shape: class
+      label: "Enqueue Two-Step [M3]"
+      +phase1_link: "CAS tail->next: NULL→node"
+      +phase2_swing: "CAS tail: old→node | best-effort"
+      +helping: "advance lagging tail"
+      -intermediate_state: "tail->next != NULL"
+      -consistency_check: "tail == queue->tail"
+    }
+    sentinel_pattern: {
+      shape: class
+      label: "Sentinel Node Pattern [M3]"
+      +always_exists: "head never NULL"
+      +dummy_node: "value undefined | key=NULL"
+      +real_data: "at head->next | not head"
+      +dequeue_swap: "head→head->next | old sentinel orphaned"
+      -eliminates: "empty queue special case"
+    }
+  }
+}
+# =============================================================================
+# ROW 4: HAZARD POINTERS (M4)
+# =============================================================================
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_m4_types: {
+    direction: down
+    label: "M4: HAZARD POINTER TYPES (hazard_pointers/)"
+    hazard_slot: {
+      shape: sql_table
+      label: "struct HazardThreadSlot (01_hp_types.h) [M4]"
+      slots_0: "atomic_uintptr_t | offset 0x00"
+      slots_1: "atomic_uintptr_t | offset 0x08"
+      active: "atomic_bool | offset 0x10"
+      padding: "char[47] | to 64 bytes"
+      sz: "Total: 64 bytes | one cache line"
+    }
+    retirement_list: {
+      shape: sql_table
+      label: "struct RetirementList (01_hp_types.h) [M4]"
+      nodes: "void*[1024] | offset 0x00 | 8KB"
+      count: "size_t | offset 0x2000"
+      sz: "Total: ~8KB | thread-local"
+    }
+    hazard_system: {
+      shape: sql_table
+      label: "struct HazardSystem (01_hp_types.h) [M4]"
+      registry: "HazardThreadSlot[128] | 8KB"
+      next_thread_id: "atomic_int"
+      active_thread_count: "atomic_int"
+      initialized: "atomic_bool"
+      sz: "Total: ~8KB + overhead"
+    }
+  }
+  layer_m4_api: {
+    direction: down
+    label: "M4: HAZARD POINTER API"
+    hp_api: {
+      shape: class
+      label: "Hazard Pointer API (hazard_pointers.h) [M4]"
+      +hp_system_init(): "void | once at startup"
+      +hp_system_shutdown(): "void | cleanup all"
+      +hp_register_thread(): "int | thread ID"
+      +hp_unregister_thread(): "void | cleanup thread"
+      +hp_protect(slot, node): "void | release order"
+      +hp_release(slot): "void | release order"
+      +hp_protect_load(slot, source): "void* | set-then-validate"
+      +hp_retire(node): "void | add to retirement"
+      +hp_scan_and_reclaim(): "void | free unprotected"
+      +hp_force_scan(): "void | trigger immediate"
+      -HP_SLOTS_PER_THREAD: "2"
+      -HP_MAX_THREADS: "128"
+      -HP_RETIREMENT_CAPACITY: "1024"
+    }
+  }
+  layer_m4_protocol: {
+    direction: down
+    label: "M4: SAFE MEMORY RECLAMATION"
+    set_validate: {
+      shape: class
+      label: "Set-Then-Validate Protocol [M4]"
+      +load_pointer(acquire): "void*"
+      +publish_protection(release): "void"
+      +validate_unchanged(acquire): "bool"
+      +retry_if_changed: "loop"
+      -prevents: "use-after-free race"
+      -happens_before: "protect→scan establishes"
+    }
+    scan_algo: {
+      shape: class
+      label: "Scan-and-Reclaim [M4]"
+      +snapshot_all_hps(acquire): "O(threads×slots)"
+      +check_each_retired: "linear search snapshot"
+      +free_unprotected: "immediate free()"
+      +keep_protected: "stay in retirement list"
+      -threshold: "2 × threads × slots"
+      -amortized_cost: "O(1) per retirement"
+    }
+  }
+}
+# =============================================================================
+# ROW 5: LOCK-FREE HASH MAP (M5)
+# =============================================================================
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  layer_m5_types: {
+    direction: down
+    label: "M5: HASH MAP TYPES (lf_hashmap/)"
+    hashmap_node: {
+      shape: sql_table
+      label: "struct HashMapNode (01_hm_types.h) [M5]"
+      so_key: "uint64_t | offset 0x00 | split-ordered"
+      key: "void* | offset 0x08 | NULL for sentinel"
+      value: "void* | offset 0x10 | NULL for sentinel"
+      next: "HashMapNode* | offset 0x18 | may be marked"
+      sz: "Total: 32 bytes | 8-byte aligned"
+    }
+    bucket_entry: {
+      shape: sql_table
+      label: "struct BucketEntry (01_hm_types.h) [M5]"
+      sentinel: "_Atomic(HashMapNode*) | offset 0x00"
+      sz: "Total: 8 bytes"
+    }
+    lf_hashmap: {
+      shape: sql_table
+      label: "struct LFHashMap (01_hm_types.h) [M5]"
+      buckets: "_Atomic(BucketEntry*) | offset 0x00"
+      bucket_count: "_Atomic(uint64_t) | offset 0x08"
+      element_count: "_Atomic(uint64_t) | offset 0x10"
+      resize_version: "_Atomic(uint64_t) | offset 0x18"
+      head: "HashMapNode* | offset 0x20 | dummy"
+      sz: "Total: 40 bytes"
+    }
+  }
+  layer_m5_api: {
+    direction: down
+    label: "M5: HASH MAP OPERATIONS"
+    hashmap_api: {
+      shape: class
+      label: "Lock-Free Hash Map API (lf_hashmap.h) [M5]"
+      +hm_init(map): "bool | alloc buckets, head"
+      +hm_destroy(map): "void | free all"
+      +hm_insert(map, key, value, hash, eq): "HMInsertResult"
+      +hm_lookup(map, key, hash, eq): "HMLookupResult"
+      +hm_delete(map, key, hash, eq): "HMDeleteResult"
+      +hm_size(map): "uint64_t | atomic"
+      +hm_bucket_count(map): "uint64_t"
+      +hm_load_factor(map): "double | diagnostic"
+      -HM_INITIAL_BUCKETS: "16"
+      -HM_SO_KEY_REGULAR_BIT: "1ULL << 63"
+      -HM_MARK_BIT: "1 | in next pointer"
+    }
+  }
+  layer_m5_algo: {
+    direction: down
+    label: "M5: SPLIT-ORDERED LIST"
+    reverse_bits: {
+      shape: class
+      label: "Reverse-Bit Ordering [M5]"
+      +hm_reverse_bits(x): "uint64_t | builtin or loop"
+      +hm_make_so_key(hash): "uint64_t | reverse|REGULAR_BIT"
+      +hm_make_sentinel_key(bucket): "uint64_t | reverse only"
+      +hm_get_bucket(hash, count): "uint64_t | hash & (count-1)"
+      +hm_parent_bucket(bucket): "uint64_t | bucket & (bucket-1)"
+      -ensures: "bucket splits preserve contiguity"
+      -no_element_movement: "sentinels only"
+    }
+    list_ops: {
+      shape: class
+      label: "Lock-Free List Operations [M5]"
+      +hm_list_find(map, start, so_key, key, eq): "HMFindResult"
+      +hm_list_insert(map, node, key, eq): "bool"
+      +hm_list_insert_sentinel(map, sent, parent): "bool"
+      +hm_list_delete(map, start, so_key, key, eq): "bool"
+      +hm_get_or_init_bucket(map, bucket): "HashMapNode*"
+      -two_phase_delete: "mark then unlink"
+      -hazard_slots: "3 (prev, curr, next)"
+    }
+  }
+}
+# =============================================================================
+# CROSS-LAYER CONNECTIONS
+# =============================================================================
+# M1 → M2: Atomic primitives used by stack
+layer_m1_api.atomic_api -> layer_m2_api.stack_api: "CAS primitives"
+layer_m1_types.atomic_types -> layer_m2_types.tagged_ptr_stack: "TaggedPtr reuse"
+# M2 → M4: Stack needs hazard pointers for safe reclamation
+layer_m2_api.stack_api -> layer_m4_api.hp_api: "memory reclamation"
+# M1 → M3: Atomic primitives used by queue
+layer_m1_api.atomic_api -> layer_m3_api.queue_api: "CAS primitives"
+# M3 → M4: Queue needs hazard pointers
+layer_m3_api.queue_api -> layer_m4_api.hp_api: "memory reclamation"
+# M4 → M5: Hash map uses hazard pointers
+layer_m4_api.hp_api -> layer_m5_api.list_ops: "node protection"
+# M1 → M5: Atomic primitives for hash map
+layer_m1_api.atomic_api -> layer_m5_api.hashmap_api: "CAS primitives"
+# M5 internal: list ops use buckets
+layer_m5_types.bucket_entry -> layer_m5_algo.list_ops: "sentinel access"
+# M5 internal: reverse bits for so_key
+layer_m5_algo.reverse_bits -> layer_m5_types.hashmap_node: "so_key generation"
+# =============================================================================
+# INTEGRATION LAYER
+# =============================================================================
+integration: {
+  direction: right
+  label: "INTEGRATION PATTERNS"
+  stack_hp: {
+    shape: class
+    label: "Stack + Hazard Pointers [M2+M4]"
+    +treiber_pop_safe(stack, value): "bool"
+    -hp_protect(0, old_top.ptr): "protect before deref"
+    -hp_protect(1, old_top.ptr->next): "protect next"
+    -hp_retire(old_top.ptr): "after successful CAS"
+    -read_value_before_release: "copy data"
+  }
+  queue_hp: {
+    shape: class
+    label: "Queue + Hazard Pointers [M3+M4]"
+    +ms_dequeue_safe(queue, value): "bool"
+    -hp_protect(0, head): "protect sentinel"
+    -hp_protect(1, head->next): "protect data node"
+    -hp_retire(old_head): "old sentinel"
+    -two_slots_required: "head and head->next"
+  }
+}
+# =============================================================================
+# MILESTONE INDEX
+# =============================================================================
+milestone_index: {
+  shape: sql_table
+  label: "Milestone Index"
+  m1: "M1 | lock-free-structures-m1 | Atomic Operations & Memory Ordering"
+  m2: "M2 | lock-free-structures-m2 | Lock-free Treiber Stack"
+  m3: "M3 | lock-free-structures-m3 | Michael-Scott Lock-free Queue"
+  m4: "M4 | lock-free-structures-m4 | Hazard Pointers & Memory Reclamation"
+  m5: "M5 | lock-free-structures-m5 | Lock-free Hash Map"
+}
+# =============================================================================
+# CONSTANTS & CONFIGURATION
+# =============================================================================
+constants: {
+  direction: right
+  label: "CONFIGURATION CONSTANTS"
+  config: {
+    shape: sql_table
+    label: "System Constants"
+    HP_SLOTS_PER_THREAD: "2 | hazard slots per thread"
+    HP_MAX_THREADS: "128 | max concurrent threads"
+    HP_RETIREMENT_CAPACITY: "1024 | nodes per retirement list"
+    HM_INITIAL_BUCKETS: "16 | initial bucket count"
+    HM_LOAD_FACTOR_THRESHOLD: "2.0 | resize trigger"
+    TREIBER_NODE_SIZE: "16 bytes | node overhead"
+    MS_NODE_SIZE: "16 bytes | node overhead"
+    HASHMAP_NODE_SIZE: "32 bytes | node overhead"
+    CACHE_LINE_SIZE: "64 bytes | alignment target"
+  }
+}

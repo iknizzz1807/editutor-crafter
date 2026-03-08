@@ -1,0 +1,433 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: "Two-Phase Lock-Free Delete with Hazard Pointer Protection"
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  phase1: {
+    direction: down
+    label: "PHASE 1: Logical Delete"
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    style.stroke-width: 2
+    p1_desc: {
+      label: |md
+        **Mark the node's `next` pointer**
+        Set low bit to indicate deletion.
+        Other threads skip marked nodes.
+        Atomic operation - no race window.
+      |
+      shape: rectangle
+      style.fill: transparent
+      style.stroke: transparent
+    }
+    p1_list: {
+      label: "Before Marking"
+      style.fill: white
+      before: {
+        shape: sql_table
+        label: "Sorted List State"
+        n1: "Node A | so_key=0x80...02 | next → B"
+        n2: "Node B | so_key=0x80...05 | next → C"
+        n3: "Node C | so_key=0x80...0A | next → NULL"
+        note: "B is the deletion target"
+      }
+    }
+    p1_code: {
+      label: "Mark Operation (hashmap.c)"
+      width: 420
+      code: |'c
+        // Read current next pointer
+        HashMapNode* next = atomic_load(&curr->next);
+        // Set mark bit (low bit = 1)
+        HashMapNode* marked_next = MARK_PTR(next);
+        // Atomic CAS: mark if not already marked
+        if (!atomic_compare_exchange_weak(
+            &curr->next, &next, marked_next)) {
+            continue;  // Retry if race
+        }
+        // B is now logically deleted
+      '|
+    }
+    p1_after: {
+      label: "After Marking"
+      style.fill: "#FFEBEE"
+      after: {
+        shape: sql_table
+        label: "Node B Marked"
+        n1: "Node A | next → B"
+        n2: "Node B | next → C | 0x1 (MARKED)"
+        n3: "Node C | next → NULL"
+        note: "Mark bit = 0x1 in pointer"
+      }
+    }
+    p1_invariant: {
+      label: |md
+        **Invariant**: Once marked, a node is never unmarked.
+        Marked nodes are skipped in all traversals.
+      |
+      shape: rectangle
+      style.fill: "#FFECB3"
+      style.stroke: "#FFA000"
+    }
+  }
+  phase2: {
+    direction: down
+    label: "PHASE 2: Physical Delete"
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    style.stroke-width: 2
+    p2_desc: {
+      label: |md
+        **Unlink node from list**
+        Must use hazard pointers to protect
+        both prev and curr during unlink.
+        CAS prev->next to skip marked node.
+      |
+      shape: rectangle
+      style.fill: transparent
+      style.stroke: transparent
+    }
+    p2_hazard: {
+      label: "Hazard Pointer Setup"
+      style.fill: "#E3F2FD"
+      style.stroke: "#2196F3"
+      hp_slots: {
+        shape: sql_table
+        label: "Thread-Local Hazard Slots"
+        slot0: "HP[0] = prev (Node A)"
+        slot1: "HP[1] = curr (Node B)"
+        slot2: "HP[2] = next (Node C)"
+        note: "Published BEFORE dereference"
+      }
+    }
+    p2_code: {
+      label: "Physical Unlink (hashmap.c)"
+      width: 420
+      code: |'c
+        // Protect prev and curr with hazard ptrs
+        hazard_protect(HP_SLOT_PREV, prev);
+        hazard_protect(HP_SLOT_CURR, curr);
+        // Validate: is prev->next still curr?
+        if (atomic_load(&prev->next) != curr) {
+            hazard_release(HP_SLOT_PREV);
+            hazard_release(HP_SLOT_CURR);
+            return false;  // Retry find
+        }
+        // Safe to CAS - nodes protected
+        HashMapNode* clean_next = UNMARK_PTR(next);
+        if (atomic_compare_exchange_weak(
+            &prev->next, &curr, clean_next)) {
+            // Success! B is unlinked
+            hazard_retire(curr);  // Deferred free
+        }
+      '|
+    }
+    p2_result: {
+      label: "After Physical Delete"
+      style.fill: "#E8F5E9"
+      result: {
+        shape: sql_table
+        label: "Final List State"
+        n1: "Node A | next → C"
+        n2: "Node B | (retired, not freed)"
+        n3: "Node C | next → NULL"
+        note: "B in retirement list"
+      }
+    }
+    p2_retire: {
+      label: "Retirement List"
+      style.fill: "#F3E5F5"
+      style.stroke: "#9C27B0"
+      retire: {
+        shape: sql_table
+        label: "Thread-Local Retire List"
+        r1: "nodes[0] = Node B"
+        r2: "nodes[1] = ..."
+        r3: "... | count = N"
+        threshold: "Scan when N >= threshold"
+        note: "Freed after hazard scan"
+      }
+    }
+  }
+}
+row1.phase1 -> row1.phase2: "CAS succeeds\n(node marked)" {
+  style: {
+    stroke: "#4CAF50"
+    stroke-width: 3
+    bold: true
+  }
+}
+row2: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  hazard_scan: {
+    direction: down
+    label: "Safe Reclamation via Scan"
+    style.fill: "#F3E5F5"
+    style.stroke: "#9C27B0"
+    style.stroke-width: 2
+    width: 500
+    scan_desc: {
+      label: |md
+        **Scan-and-Reclaim Algorithm**
+        1. Snapshot ALL hazard pointers from ALL threads
+        2. Check each retired node against snapshot
+        3. Free only nodes NOT in snapshot
+      |
+      shape: rectangle
+      style.fill: transparent
+      style.stroke: transparent
+    }
+    scan_code: {
+      label: "hazard_scan_and_reclaim (hazard_pointers.c)"
+      width: 480
+      code: |'c
+        void hazard_scan_and_reclaim(void) {
+            // Step 1: Snapshot all hazard pointers
+            uintptr_t protected[MAX_THREADS * HAZARD_SLOTS];
+            size_t count = 0;
+            for (int t = 0; t < num_threads; t++) {
+                for (int s = 0; s < HAZARD_SLOTS; s++) {
+                    uintptr_t hp = atomic_load_acquire(
+                        &g_registry[t].slots[s]);
+                    if (hp != 0) protected[count++] = hp;
+                }
+            }
+            // Step 2: Check each retired node
+            for (size_t i = 0; i < retire_list.count; i++) {
+                void* node = retire_list.nodes[i];
+                if (!in_protected_set(node, protected, count)) {
+                    free(node);  // Safe to free!
+                } else {
+                    keep(node);   // Still in use
+                }
+            }
+        }
+      '|
+    }
+    scan_visual: {
+      label: "Scan Decision"
+      style.fill: white
+      decision: {
+        shape: sql_table
+        label: "Node B in Retirement List"
+        check: "Is Node B in protected[]?"
+        case1: "YES → Keep in retire list"
+        case2: "NO  → free(Node B)"
+        note: "Only free if NO thread has HP to B"
+      }
+    }
+  }
+  timeline: {
+    direction: down
+    label: "Complete Delete Timeline"
+    style.fill: "#ECEFF1"
+    style.stroke: "#607D8B"
+    style.stroke-width: 2
+    t1: {
+      label: "T1: Find Target"
+      width: 300
+      code: |'c
+        // list_find() locates prev/curr
+        // curr = node to delete
+        // prev = node before curr
+      '|
+    }
+    t2: {
+      label: "T2: Mark (Logical Delete)"
+      width: 300
+      code: |'c
+        // Set mark bit atomically
+        CAS(&curr->next, next, MARK(next));
+        // Linearization point for delete
+      '|
+      style.fill: "#FFF3E0"
+    }
+    t3: {
+      label: "T3: Protect with Hazard Ptrs"
+      width: 300
+      code: |'c
+        hazard_protect(0, prev);
+        hazard_protect(1, curr);
+        // Publish before dereferencing
+      '|
+      style.fill: "#E3F2FD"
+    }
+    t4: {
+      label: "T4: Validate"
+      width: 300
+      code: |'c
+        // Ensure prev->next == curr
+        // (no concurrent modification)
+      '|
+    }
+    t5: {
+      label: "T5: Unlink (Physical Delete)"
+      width: 300
+      code: |'c
+        CAS(&prev->next, curr, 
+            UNMARK(curr->next));
+        // Node removed from list
+      '|
+      style.fill: "#E8F5E9"
+    }
+    t6: {
+      label: "T6: Retire"
+      width: 300
+      code: |'c
+        hazard_retire(curr);
+        // Add to retirement list
+        // Free happens later via scan
+      '|
+      style.fill: "#F3E5F5"
+    }
+    t1 -> t2 -> t3 -> t4 -> t5 -> t6: {
+      style.stroke: "#607D8B"
+      style.stroke-width: 2
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  memory_layout: {
+    direction: down
+    label: "Mark Bit in Pointer"
+    style.fill: "#E8EAF6"
+    style.stroke: "#3F51B5"
+    style.stroke-width: 2
+    layout: {
+      label: "Pointer with Mark Bit"
+      width: 450
+      code: |'c
+        // 64-bit pointer layout:
+        // [63:1] address bits (aligned to 2)
+        // [0]   mark bit (1 = logically deleted)
+        #define MARK_BIT    ((uintptr_t)1)
+        #define IS_MARKED(p) (((uintptr_t)(p)) & MARK_BIT)
+        #define MARK_PTR(p)  ((HashMapNode*)(((uintptr_t)(p)) | MARK_BIT))
+        #define UNMARK_PTR(p) ((HashMapNode*)(((uintptr_t)(p)) & ~MARK_BIT))
+        // Example:
+        // next = 0x7FFFE8400020 (clean)
+        // next = 0x7FFFE8400021 (marked for deletion)
+      '|
+    }
+    visual: {
+      label: "Bit Layout"
+      bits: {
+        shape: sql_table
+        label: "64-bit Pointer"
+        b63_48: "bits 63-48 | address high"
+        b47_16: "bits 47-16 | address middle"
+        b15_1: "bits 15-1  | address low (always 0 for aligned)"
+        b0: "bit 0      | MARK BIT"
+        note: "0 = live, 1 = logically deleted"
+      }
+    }
+  }
+  invariants: {
+    direction: down
+    label: "Critical Invariants"
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    style.stroke-width: 2
+    inv_list: {
+      label: |md
+        **1. Mark Before Unlink**
+        A node MUST be marked before physical removal.
+        This prevents lost updates during concurrent inserts.
+        **2. Hazard Protect Before Access**
+        MUST publish hazard pointer BEFORE dereferencing.
+        Use set-then-validate protocol.
+        **3. Never Free In-Use Nodes**
+        A node is only freed if:
+        - It's marked (logically deleted)
+        - It's unlinked (physically deleted)
+        - It's in retirement list
+        - AND not in any hazard pointer slot
+        **4. Read Value Before Unlink**
+        Read `curr->value` BEFORE the unlink CAS.
+        After unlink, another thread may retire/free.
+      |
+      shape: rectangle
+      style.fill: transparent
+    }
+  }
+  race_example: {
+    direction: down
+    label: "Race Without Hazard Pointers"
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    style.stroke-width: 2
+    race_desc: {
+      label: |md
+        **DANGER: Use-After-Free Race**
+        Without hazard pointers, this sequence causes
+        use-after-free:
+      |
+      shape: rectangle
+      style.fill: transparent
+    }
+    race_timeline: {
+      label: "Race Condition"
+      race: {
+        shape: sql_table
+        label: "Concurrent Access Without Protection"
+        t1: "Thread A: load prev->next → curr"
+        t2: "Thread A: (stalled before CAS)"
+        t3: "Thread B: CAS marks curr"
+        t4: "Thread B: CAS unlinks curr"
+        t5: "Thread B: free(curr) ← DANGER"
+        t6: "Thread A: CAS(&prev->next, curr, next)"
+        t7: "Thread A: dereferences freed memory!"
+        result: "USE-AFTER-FREE BUG"
+      }
+    }
+    fix: {
+      label: |md
+        **Fix**: Thread A protects `curr` with hazard
+        pointer BEFORE the unlink CAS. Thread B's scan
+        sees the hazard pointer and defers free.
+      |
+      shape: rectangle
+      style.fill: "#E8F5E9"
+      style.stroke: "#4CAF50"
+    }
+  }
+}
+legend: {
+  near: bottom-center
+  label: "Color Legend"
+  style.fill: white
+  style.stroke: "#9E9E9E"
+  style.stroke-width: 1
+  l1: "Orange = Logical delete phase"
+  l2: "Green = Physical delete phase"
+  l3: "Blue = Hazard pointer operations"
+  l4: "Purple = Retirement/reclamation"
+  l5: "Red = Danger/race conditions"
+}

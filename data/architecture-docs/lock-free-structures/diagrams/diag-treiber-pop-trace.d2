@@ -1,0 +1,222 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: "Treiber Pop: Step-by-Step Trace (ABA Vulnerability)"
+  shape: rectangle
+  style: {
+    font-size: 24
+    bold: true
+    fill: "#f0f0f0"
+  }
+}
+
+row0: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  step0: {
+    label: "Step 0: Initial State"
+    width: 350
+    stack_before: {
+      shape: sql_table
+      label: "Stack Memory"
+      head: "0x00 | TaggedPtr | top -> 0x1000"
+      node_a: "0x1000 | Node A | next -> 0x2000"
+      node_b: "0x2000 | Node B | next -> 0x3000"
+      sz: "Stack size: 3 nodes"
+    }
+    desc: {
+      shape: code
+      label: "Logical View"
+      code: "top → [A] → [B] → [C] → NULL"
+    }
+  }
+}
+
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  step1: {
+    label: "Step 1: Load Top"
+    width: 350
+    code: |'c
+      // Thread 1: Read current top
+      old_top = atomic_load_explicit(
+          &stack->top, 
+          memory_order_acquire
+      );
+      // old_top.ptr = 0x1000 (Node A)
+      // old_top.ver = 0
+    '|
+    note: {
+      label: "T1 holds local copy of A"
+      style.fill: "#E3F2FD"
+    }
+  }
+}
+
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  step2: {
+    label: "Step 2: Null Check"
+    width: 350
+    code: |'c
+      if (old_top.ptr == NULL) {
+          return false; // Empty
+      }
+      // Result: Proceeding with A
+    '|
+  }
+}
+
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  step3: {
+    label: "Step 3: Dereference top->next"
+    width: 350
+    code: |'c
+      // CRITICAL: ABA Point
+      // T1 reads A->next to find new top
+      new_top.ptr = old_top.ptr->next;
+      // new_top.ptr = 0x2000 (Node B)
+      new_top.ver = old_top.ver + 1;
+    '|
+    warn: {
+      label: "⚠️ ABA WINDOW OPENS"
+      shape: callout
+      style.fill: "#FFEBEE"
+      style.stroke: "#D32F2F"
+    }
+  }
+}
+
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  aba_window: {
+    label: "⚡ INTERFERENCE EVENT (Thread 2) ⚡"
+    width: 700
+    style.fill: "#FFF9C4"
+    style.stroke: "#FBC02D"
+    style.stroke-width: 2
+    
+    event_log: {
+      shape: sql_table
+      label: "T2 Activity Sequence"
+      t1: "1. pop()  | Removes A, top=B"
+      t2: "2. pop()  | Removes B, top=C"
+      t3: "3. free() | Memory at 0x1000 (A) is reclaimed"
+      t4: "4. push() | New node X allocated at 0x1000"
+      t5: "Status   | top.ptr is 0x1000 again (ABA)"
+    }
+  }
+}
+
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  step5: {
+    label: "Step 5: CAS Attempt"
+    width: 350
+    code: |'c
+      // Atomic swap attempt
+      bool ok = atomic_compare_exchange_strong(
+          &stack->top,
+          &old_top, // Expected {ver:0, ptr:0x1000}
+          new_top   // Desired  {ver:1, ptr:0x2000}
+      );
+    '|
+  }
+}
+
+row6: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  outcome_success: {
+    label: "Path A: No Interference"
+    style.fill: "#E8F5E9"
+    width: 350
+    stack_final: {
+      shape: sql_table
+      label: "Correct Stack"
+      head: "top -> 0x2000 (Node B)"
+      n_b: "0x2000 (Node B)"
+    }
+    msg: "✓ CAS succeeds, A removed safely"
+  }
+  
+  outcome_aba: {
+    label: "Path B: ABA Corruption"
+    style.fill: "#FFEBEE"
+    width: 350
+    stack_corrupt: {
+      shape: sql_table
+      label: "Corrupted Stack"
+      head: "top -> 0x2000 (FREED!)"
+      error: "Error: Pointer to deallocated B"
+    }
+    msg: "✗ CAS succeeded on stale version"
+  }
+}
+
+row7: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  fix: {
+    label: "The Solution: Tagged Pointers"
+    width: 700
+    style.fill: "#E1F5FE"
+    code: |'c
+      typedef struct {
+          uint64_t version; // Incremented on every change
+          Node* ptr;
+      } TaggedPtr;
+      // In Path B: top.version would be 2, not 0.
+      // CAS fails correctly.
+    '|
+  }
+}
+
+# Connections
+row0.step0 -> row1.step1: "T1 Init"
+row1.step1 -> row2.step2
+row2.step2 -> row3.step3: "Dereference"
+row3.step3 -> row4.aba_window: "Race window"
+row4.aba_window -> row5.step5: "T1 Resumes"
+row5.step5 -> row6.outcome_success: "ok == true"
+row5.step5 -> row6.outcome_aba: "ABA Success" {
+  style.stroke: "#D32F2F"
+  style.stroke-dash: 4
+}
+
+legend: {
+  near: bottom-right
+  shape: sql_table
+  label: "Legend"
+  l1: "Blue | Data Flow / T1 Load"
+  l2: "Yellow | Thread Interference"
+  l3: "Red | Memory Corruption"
+}

@@ -1,0 +1,273 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- GLOBAL ANNOTATIONS ---
+
+title: |md
+  # ECS Architecture: Satellite View
+  **Standard Implementation Blueprint (v1.2)**
+|
+title.near: top-center
+
+flow_annotation: |md
+  ### Data Flow & Lifecycle
+  1. `World::spawn()` -> **EntityManager** allocates ID (index + generation).
+  2. `World::add<T>()` -> **ComponentStorage** inserts into SparseSet OR triggers **Archetype** migration.
+  3. `System::run()` -> Query filters archetypes, then iterates columns in sequential cache lines.
+  4. `Commands` -> Ops are queued in a **CommandBuffer** to prevent iterator invalidation.
+  5. `World::maintain()` -> Commits deferred commands and resolves structural changes.
+|
+flow_annotation.near: bottom-center
+
+# --- ARCHITECTURE LAYERS ---
+
+row_core: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  world: World Context {
+    shape: rectangle
+    style: {
+      fill: "#E8F4F8"
+      stroke: "#2E86AB"
+      stroke-width: 4
+      shadow: true
+    }
+    
+    entity_manager: "Entity Manager" {
+      style.fill: "#FFF3E0"
+      style.stroke: "#E65100"
+    }
+    
+    component_storage: "Component Storage" {
+      style.fill: "#E8F5E9"
+      style.stroke: "#2E7D32"
+    }
+    
+    systems: "Systems Engine" {
+      style.fill: "#F3E5F5"
+      style.stroke: "#6A1B9A"
+    }
+    
+    archetypes: "Archetype Tables" {
+      style.fill: "#E3F2FD"
+      style.stroke: "#1565C0"
+    }
+  }
+}
+
+row_m1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  m1_entity: "M1 | Entity Management" {
+    width: 450
+    style.fill: "#FFF3E0"
+    style.stroke: "#E65100"
+    
+    info: |md
+      **Generation-counted IDs**
+      - Packed `u32` prevents ABA problems
+      - O(1) creation via free-list recycling
+    |
+
+    entity_id: {
+      shape: sql_table
+      label: "struct Entity (types.h)"
+      f0: "0x00:00 | u20 | index      // Array index"
+      f1: "0x00:20 | u12 | generation // Version tag"
+      sz: "Total: 32 bits (packed)"
+    }
+
+    manager: {
+      shape: class
+      label: "EntityManager (manager.c)"
+      -generations: "uint16_t*"
+      -free_indices: "uint32_t*"
+      -active_count: "size_t"
+      +create_entity(): "Entity"
+      +is_alive(e): "bool"
+      +recycle(e): "void"
+    }
+  }
+}
+
+row_m2_m4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  m2_sparse: "M2 | Sparse Set Storage" {
+    width: 480
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    
+    info: |md
+      **Cache-Friendly Component Storage**
+      - Dense: Contiguous `[T]` for iteration
+      - Sparse: Map `Entity.index` -> `Dense.index`
+      - Removal: Swap-and-pop to maintain density
+    |
+
+    sparse_set: {
+      shape: class
+      label: "SparseSet<T> (sparse.cpp)"
+      -sparse: "vector<int>"
+      -dense: "vector<T>"
+      -entities: "vector<Entity>"
+      +assign(e, val): "T&"
+      +get(e): "T*"
+      +remove(e): "void"
+      +iter_dense(): "T*"
+    }
+  }
+
+  m4_archetype: "M4 | Archetype Storage" {
+    width: 480
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    
+    info: |md
+      **SoA (Structure of Arrays) Tables**
+      - Grouped by component signature
+      - Sequential memory access for SIMD
+    |
+
+    table_layout: {
+      shape: sql_table
+      label: "Archetype Chunk Memory"
+      col0: "Entity[]   | [E1, E2, E3, ...]"
+      col1: "Position[] | [P1, P2, P3, ...]"
+      col2: "Velocity[] | [V1, V2, V3, ...]"
+      meta: "Offset: 64-byte aligned (Cache Line)"
+    }
+
+    archetype_class: {
+      shape: class
+      label: "Archetype (archetype.rs)"
+      -edges: "HashMap<TypeId, ArchetypeId>"
+      -columns: "Vec<*mut u8>"
+      +get_column(type): "Slice<u8>"
+      +migrate_to(e, dest): "void"
+    }
+  }
+}
+
+row_m3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  m3_systems: "M3 | System Pipeline" {
+    width: 480
+    style.fill: "#F3E5F5"
+    style.stroke: "#6A1B9A"
+    
+    info: |md
+      **Execution & Command Buffering**
+      - Parallel execution across independent types
+      - Commands deferred to atomic sync points
+    |
+
+    command_buffer: {
+      shape: class
+      label: "CommandBuffer"
+      -queue: "Vec<Cmd>"
+      +spawn_entity(): "void"
+      +add_comp(e, T): "void"
+      +flush(world): "void"
+    }
+
+    system_trait: {
+      shape: class
+      label: "System Interface"
+      +query_mask(): "Bitset"
+      +update(view, dt): "void"
+    }
+  }
+}
+
+row_legend: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  legend_box: "Legend" {
+    style.fill: "#FAFAFA"
+    style.stroke: "#BDBDBD"
+    
+    content: {
+      direction: right
+      style.stroke: transparent
+      
+      L1: {
+        label: "Entity ID | Gen-counted"
+        style.fill: "#FFF3E0"
+      }
+      L2: {
+        label: "Storage | Sparse Sets"
+        style.fill: "#E8F5E9"
+      }
+      L3: {
+        label: "Logic | Systems"
+        style.fill: "#F3E5F5"
+      }
+      L4: {
+        label: "Memory | Archetypes"
+        style.fill: "#E3F2FD"
+      }
+    }
+  }
+}
+
+# --- RELATIONSHIPS ---
+
+world.entity_manager -> m1_entity: "delegate | ID Mgmt" {
+  style.stroke: "#E65100"
+  style.stroke-dash: 3
+}
+
+world.component_storage -> m2_sparse: "delegate | sparse" {
+  style.stroke: "#2E7D32"
+  style.stroke-dash: 3
+}
+
+world.systems -> m3_systems: "delegate | logic" {
+  style.stroke: "#6A1B9A"
+  style.stroke-dash: 3
+}
+
+world.archetypes -> m4_archetype: "delegate | tables" {
+  style.stroke: "#1565C0"
+  style.stroke-dash: 3
+}
+
+m1_entity -> m2_sparse: "index | lookup" {
+  style.stroke: "#424242"
+}
+
+m1_entity -> m4_archetype: "offset | row" {
+  style.stroke: "#424242"
+}
+
+m3_systems -> m2_sparse: "read/write | query" {
+  style.stroke: "#6A1B9A"
+  style.stroke-dash: 2
+}
+
+m3_systems -> m4_archetype: "read/write | query" {
+  style.stroke: "#6A1B9A"
+  style.stroke-dash: 2
+}
+
+m2_sparse -> m4_archetype: "migration | sync" {
+  style.stroke: "#1565C0"
+  style.stroke-dash: 5
+}

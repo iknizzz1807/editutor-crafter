@@ -1,0 +1,271 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+  colors: {
+    critical_red: "#B71C1C"
+    safe_green: "#2E7D32"
+    worker_blue: "#1565C0"
+    hazard_bg: "#FFEBEE"
+    success_bg: "#E8F5E9"
+    padding_gray: "#ECEFF1"
+    header_purple: "#4A148C"
+    pointer_orange: "#E65100"
+  }
+}
+
+title: {
+  label: |md
+    # Scan Snapshot Consistency
+    ## Memory Ordering & Hazard Pointer Synchronization
+    *TDD Module M4-07: Lock-Free Memory Reclamation*
+  |
+  near: top-center
+  style: {
+    font-size: 28
+    bold: true
+  }
+}
+
+# ==========================================================
+# 1. PROBLEM SCENARIO: NON-ATOMIC CHECKING
+# ==========================================================
+Problem_Scenario: {
+  label: "HAZARD: Unsafe Checking (Per-Thread Linear Scan)"
+  style: {
+    fill: ${vars.colors.hazard_bg}
+    stroke: ${vars.colors.critical_red}
+    stroke-width: 3
+    double-border: true
+  }
+
+  RaceNote: {
+    label: |md
+      ### CRITICAL RACE CONDITION
+      **T1 (Scanner):** Checks Worker_A's HP slot. It is NULL.
+      **T2 (Worker):** Publishes Pointer `0xDEADBEEF` to HP slot.
+      **T3 (Worker):** Accesses memory at `0xDEADBEEF`.
+      **T4 (Scanner):** Finishes scan, assumes `0xDEADBEEF` is unreferenced.
+      **T5 (Scanner):** Calls `free(0xDEADBEEF)`.
+      **T6 (Worker):** **USE-AFTER-FREE CRASH.**
+    |
+    style: {
+      stroke: ${vars.colors.critical_red}
+      fill: "#FFCDD2"
+      font-size: 14
+    }
+  }
+
+  ScanThread: {
+    label: "Scanning Thread (Reclamation Context)"
+    style.fill: "#FFCDD2"
+    
+    Check_Step_1: "Check HP[0]: NULL" {
+      style.fill: "#EF5350"
+      style.font-color: white
+    }
+    
+    Check_Step_2: "Check HP[1]: NULL" {
+      style.fill: "#EF5350"
+      style.font-color: white
+    }
+
+    RetireQueue: {
+      label: "Internal Retire List"
+      shape: sql_table
+      row0: "0x00 | 0xDEADBEEF   | 64B"
+      row1: "0x08 | 0xCAFEBABE   | 32B"
+      row2: "0x10 | 0xBAADF00D   | 128B"
+      style.fill: white
+    }
+  }
+
+  WorkerThread: {
+    label: "Mutator Thread (Active Context)"
+    style.fill: "#E3F2FD"
+    
+    HP_Registry: {
+      label: "Shared Hazard Pointers"
+      shape: sql_table
+      slot0: "[+0x00] HP[0]: 0xDEADBEEF" {
+        style: {
+          stroke: ${vars.colors.critical_red}
+          stroke-width: 4
+          bold: true
+        }
+      }
+      slot1: "[+0x08] HP[1]: NULL"
+      style.fill: white
+    }
+    
+    Action: "Dereference 0xDEADBEEF" {
+      style.fill: "#BBDEFB"
+      style.bold: true
+    }
+  }
+
+  ScanThread.Check_Step_1 -> WorkerThread.HP_Registry.slot0: "1. Checked before publish" {
+    style.stroke: "#757575"
+    style.stroke-dash: 5
+  }
+  
+  WorkerThread.HP_Registry.slot0 -> Action: "2. Load/Access Node" {
+    style.stroke: ${vars.colors.worker_blue}
+    style.stroke-width: 2
+  }
+
+  Free_Crash: "free(0xDEADBEEF)\nSYSTEM PANIC" {
+    shape: diamond
+    style: {
+      fill: ${vars.colors.critical_red}
+      font-color: white
+      bold: true
+    }
+  }
+
+  ScanThread.Check_Step_2 -> Free_Crash: "3. Reclaim Node"
+  Action -> Free_Crash: "4. SEGFAULT" {
+    style: {
+      stroke: ${vars.colors.critical_red}
+      stroke-width: 6
+      target-arrowhead.shape: cross
+    }
+  }
+}
+
+# ==========================================================
+# 2. CORRECT APPROACH: ATOMIC SNAPSHOT
+# ==========================================================
+Correct_Approach: {
+  label: "SOLUTION: Snapshot Consistency (Point-in-Time)"
+  style: {
+    fill: ${vars.colors.success_bg}
+    stroke: ${vars.colors.safe_green}
+    stroke-width: 3
+    double-border: true
+  }
+
+  SolutionNote: {
+    label: |md
+      ### THE ATOMIC INVARIANT
+      By performing a full snapshot of all active Hazard Pointers **before** 
+      filtering the retirement list, we establish a global linearization point. 
+      Any Mutator publishing *after* the snapshot cannot possibly see a node 
+      that was retired *before* the scan started.
+    |
+    style: {
+      stroke: ${vars.colors.safe_green}
+      fill: "#C8E6C9"
+      font-size: 14
+    }
+  }
+
+  SnapshotPhase: {
+    Snapshotter: "Atomic Snapshot Op" {
+      style: {
+        fill: ${vars.colors.safe_green}
+        font-color: white
+        bold: true
+      }
+    }
+
+    LocalCache: {
+      label: "Local HP Snapshot (Stack)"
+      shape: sql_table
+      ptr0: "0x00: 0x00000000"
+      ptr1: "0x08: 0xCAFEBABE"
+      ptr2: "0x10: 0x00000000"
+      style.fill: white
+    }
+    
+    Snapshotter -> LocalCache: "memcpy / Atomic Load Loop"
+  }
+
+  ReclaimPhase: {
+    Filter: "Compare Local Snapshot vs Retire List" {
+      style.fill: "#81C784"
+    }
+    
+    SafeNodes: "Safe to Reclaim\n[0xDEADBEEF, 0xBAADF00D]" {
+      shape: rectangle
+      style: {
+        fill: ${vars.colors.safe_green}
+        font-color: white
+        multiple: true
+      }
+    }
+    
+    Filter -> SafeNodes: "Linear Intersection Check"
+  }
+
+  SnapshotPhase.LocalCache -> ReclaimPhase.Filter: "Input to Logic"
+}
+
+# ==========================================================
+# 3. FORMAL MEMORY ORDERING
+# ==========================================================
+Happens_Before: {
+  label: "Memory Synchronization Proof (C11/C++11 Model)"
+  style.fill: "#FFF3E0"
+
+  Sequence: {
+    shape: sequence_diagram
+    
+    Scanner: "Reclaiming Thread"
+    Registry: "Hazard Pointer Registry"
+    Worker: "Mutator Thread"
+
+    Scanner -> Registry: "Atomic Load (memory_order_acquire)"
+    Registry -> Scanner: "ptr = NULL"
+    
+    Registry <- Worker: "Atomic Store (memory_order_release)\nHP[i] = Node_A"
+    
+    Scanner -> Scanner: "LocalSnapshot[i] = NULL"
+    Scanner -> Scanner: "Scan Logic: Node_A not in Snapshot"
+    Scanner -> Scanner: "HB Constraint: Store must be > Load"
+    
+    Scanner -> Scanner: "free(Node_A)"
+    
+    (Scanner -> Scanner)[3].style.stroke: ${vars.colors.safe_green}
+    
+    Scanner."Ordering Invariant: Snapshot < Publish"
+  }
+
+  LogicTable: {
+    label: |md
+      | Operation | Memory Order | Side Effect |
+      | :--- | :--- | :--- |
+      | HP Publish | `release` | Synchronizes with Acquire Load |
+      | HP Snapshot | `acquire` | Ensures Mutator stores are visible |
+      | Reclamation | `seq_cst` | Global visibility of free |
+    |
+    style.fill: "#FFE0B2"
+  }
+}
+
+# ==========================================================
+# 4. FOOTER & STYLING
+# ==========================================================
+Footer: {
+  label: |md
+    **Implementation Requirement:** The local HP cache must be sorted to enable O(M log N) comparison efficiency against the retired node list.
+  |
+  near: bottom-center
+  style: {
+    font-size: 14
+    italic: true
+    font-color: "#455A64"
+  }
+}
+
+# Global Styling Globs
+***.style.stroke: "#37474F"
+"Problem_Scenario".ScanThread.** : {
+  style.font-size: 12
+}
+"Correct_Approach".SnapshotPhase.** : {
+  style.font-size: 12
+}

@@ -1,0 +1,232 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    pad: 50
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# GLOBAL STYLE CLASSES (Per Technical Design Spec)
+# ---------------------------------------------------------------------------------
+classes: {
+  header_style: {
+    style: {
+      fill: "#E1BEE7" # Purple Header per spec
+      stroke: "#7B1FA2"
+      stroke-width: 4
+    }
+  }
+  data_node: {
+    style: {
+      fill: "#BBDEFB" # Blue Data per spec
+      stroke: "#1976D2"
+    }
+  }
+  padding_node: {
+    style: {
+      fill: "#EEEEEE" # Gray Padding per spec
+      stroke: "#9E9E9E"
+    }
+  }
+  atomic_ptr: {
+    shape: rectangle
+    style: {
+      fill: "#FFF3E0" # Orange Pointers per spec (background)
+      stroke: "#FB8C00" # Orange Pointers per spec (stroke)
+      stroke-width: 3
+    }
+  }
+  logic_step: {
+    shape: rectangle
+    style: {
+      fill: "#F1F8E9"
+      stroke: "#388E3C"
+      border-radius: 4
+    }
+  }
+  terminal_null: {
+    shape: circle
+    style: {
+      fill: "#616161"
+      stroke: "#212121"
+      stroke-dash: 2
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# TOP-LEVEL DOCUMENTATION
+# ---------------------------------------------------------------------------------
+doc_header: |md
+  # TECHNICAL SPECIFICATION: DEQUEUE EMPTY STATE
+  **Protocol**: MSR-Queue-CAS-V1
+  **Module**: `lock_free_queue.c`
+  **Linearization Point**: The load of `next_ptr` at Step 3 (if NULL).
+| {
+  near: top-center
+  shape: text
+  style.font-size: 18
+}
+
+# ---------------------------------------------------------------------------------
+# MEMORY SUBSYSTEM: DATA LAYOUT
+# ---------------------------------------------------------------------------------
+memory_view: "Physical Memory Layout (Stack & Heap)" {
+  style: {
+    stroke: "#4527A0"
+    stroke-width: 2
+    fill: "#FAFAFA"
+  }
+
+  sub_stack: "Stack (Atomic Pointers)" {
+    head_ptr: "HEAD ATOMIC PTR\nAddr: 0x0040 | Value: 0x1000" { 
+      class: atomic_ptr 
+      tooltip: "Points to Current Sentinel"
+    }
+    tail_ptr: "TAIL ATOMIC PTR\nAddr: 0x0048 | Value: 0x1000" { 
+      class: atomic_ptr 
+      tooltip: "Points to Current Sentinel"
+    }
+  }
+
+  sentinel_block: "Heap (Node Allocations)" {
+    sentinel: "SENTINEL NODE (0x1000)" {
+      shape: sql_table
+      style.stroke: "#7B1FA2"
+      # Format: Offset | Field Name | Size | Value
+      00: "+0x00 | value (uint64) | 8B | [UNDEFINED]" { class: header_style }
+      08: "+0x08 | next (atomic_ptr) | 8B | [0x00 / NULL]" { style.bold: true; style.font-color: red }
+    }
+    
+    null_marker: "NULL_PTR" { class: terminal_null }
+  }
+
+  # Connections representing memory references (Orange)
+  sub_stack.head_ptr -> sentinel_block.sentinel: "deref" {
+    style: { stroke: "#FB8C00"; stroke-width: 4 }
+  }
+  sub_stack.tail_ptr -> sentinel_block.sentinel: "deref" {
+    style: { stroke: "#FB8C00"; stroke-width: 4 }
+  }
+  sentinel_block.sentinel.08 -> sentinel_block.null_marker: "0x0" {
+    style: { stroke: "#D32F2F"; stroke-dash: 5 }
+  }
+
+  # Meta annotation placed inside the container to avoid Elk positioning errors
+  snapshot_meta: |md
+    ### Memory State Invariants
+    - **Page Boundary**: 0x1000 (Aligned)
+    - **Cache Line**: 64B (Fits single line)
+    - **Alignment**: 8-byte boundary enforced
+  | {
+    shape: text
+    style.font-size: 12
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# ALGORITHM LOGIC FLOW (State Transitions)
+# ---------------------------------------------------------------------------------
+logic_execution: "Algorithm Step-By-Step: Dequeue()" {
+  style.fill: "#E3F2FD"
+  
+  s1: "1. Load head (head_old)\nLoad Value: 0x1000" { class: logic_step }
+  s2: "2. Load tail (tail_snapshot)\nLoad Value: 0x1000" { class: logic_step }
+  s3: "3. Load head_old->next (next_ptr)\nLoad Value: 0x0 (NULL)" { 
+    class: logic_step
+    style.stroke: red
+    style.stroke-width: 3
+  }
+  s4: "4. Verify Consistency\nhead_old == atomic_load(head)?" { class: logic_step }
+
+  empty_check: "State Check" {
+    shape: diamond
+    label: "IF (head == tail && next == NULL)"
+    style.fill: "#FFF9C4"
+  }
+
+  linearize: "LINEARIZATION POINT:\nReturn QUEUE_EMPTY" {
+    shape: rectangle
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#D32F2F"
+      bold: true
+      stroke-width: 5
+    }
+  }
+
+  s1 -> s2 -> s3 -> s4 -> empty_check
+  empty_check -> linearize: "TRUE" {
+    style: { stroke: "#D32F2F"; stroke-width: 4; font-color: "#D32F2F"; bold: true }
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# COMPARATIVE STATE: NON-EMPTY (Divergence Analysis)
+# ---------------------------------------------------------------------------------
+contrast_view: "Logic Divergence: Non-Empty Queue" {
+  style: { stroke: "#388E3C"; fill: "#F1F8E9" }
+
+  ptr_ref: {
+    ne_head: "Head: 0x1000" { class: atomic_ptr }
+    ne_tail: "Tail: 0x2000" { class: atomic_ptr }
+  }
+
+  heap_nodes: {
+    s_node: "Sentinel (0x1000)" {
+      shape: sql_table
+      style.stroke: "#7B1FA2"
+      h: "Header/Val" { class: header_style }
+      n: "next: 0x2000" { style.font-color: blue; style.bold: true }
+    }
+    
+    d_node: "Data Node (0x2000)" {
+      shape: sql_table
+      style.stroke: "#1976D2"
+      h: "Data Val: 100" { style.fill: "#BBDEFB" }
+      n: "next: NULL" { class: padding_node }
+    }
+  }
+
+  ptr_ref.ne_head -> heap_nodes.s_node
+  ptr_ref.ne_tail -> heap_nodes.d_node
+  heap_nodes.s_node.n -> heap_nodes.d_node: "Atomic Link" {
+    style: { stroke: "#1976D2"; stroke-width: 4 }
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# FOOTER NOTES & BARRIERS
+# ---------------------------------------------------------------------------------
+impl_notes: |md
+  ## Low-Level Implementation (Architecture Specifics)
+  
+  ### 1. Memory Ordering (C11/C++11)
+  All loads in Steps 1-3 MUST use `memory_order_acquire`. On **x86_64**, these are plain 
+  MOV instructions (as x86 provides acquire/release semantics by default). On **ARMv8**, 
+  these require `LDAR` instructions to prevent Step 3 from being reordered before Step 1.
+  
+  ### 2. The ABA Problem
+  Empty queue detection is generally ABA-safe because we do not perform a CAS to pop 
+  a node when it is empty. We only return a status code.
+  
+  ### 3. Consistency Check (Step 4)
+  This ensures that the sentinel node at `head_old` hasn't been popped and re-pushed 
+  (ABA) or freed during the observation window.
+| {
+  near: bottom-center
+  shape: text
+  style.font-size: 14
+}
+
+# ---------------------------------------------------------------------------------
+# DIAGRAM WIRING
+# ---------------------------------------------------------------------------------
+memory_view -> logic_execution: "Observation Input" {
+  style: { stroke-dash: 5; opacity: 0.5 }
+}
+
+logic_execution -> contrast_view: "Conditional Divergence" {
+  style: { stroke-dash: 5; opacity: 0.5 }
+}

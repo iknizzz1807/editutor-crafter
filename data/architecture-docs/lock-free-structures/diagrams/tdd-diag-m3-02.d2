@@ -1,0 +1,249 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |'md
+# Sentinel Node Pattern (Michael-Scott Queue)
+## Implementation Grade Specification for Lock-Free Concurrency
+Eliminates edge cases for empty/single-node queues using a persistent dummy node.
+'|
+title.near: top-center
+
+classes: {
+  sentinel: {
+    label: "SENTINEL (DUMMY)"
+    style: {
+      fill: "#E8D5F0"
+      stroke: "#8B5CF6"
+      stroke-width: 2
+      font-color: "#5B21B6"
+      double-border: true
+    }
+  }
+  data_node: {
+    style: {
+      fill: "#DBEAFE"
+      stroke: "#3B82F6"
+      stroke-width: 2
+      font-color: "#1E40AF"
+    }
+  }
+  pointer: {
+    shape: circle
+    width: 70
+    height: 70
+    style: {
+      fill: "#FEF3C7"
+      stroke: "#D97706"
+      stroke-width: 2
+      font: mono
+      font-size: 14
+      bold: true
+      shadow: true
+    }
+  }
+  memory_box: {
+    style: {
+      stroke: "#94A3B8"
+      stroke-dash: 3
+      fill: "#F8FAFC"
+      font-size: 12
+    }
+  }
+}
+
+direction: right
+
+# ============================================================
+# Memory Layout Definition
+# ============================================================
+node_layout: {
+  shape: sql_table
+  label: "Memory Layout: Node Struct (16B)"
+  near: top-right
+  style.fill: "#F1F5F9"
+
+  0x00: "atomic<Node*> next" {constraint: "8 Bytes (Pointer)"}
+  0x08: "int32_t value" {constraint: "4 Bytes (Data)"}
+  0x0C: "char padding[4]" {constraint: "4 Bytes (Alignment)"}
+}
+
+# ============================================================
+# State 1: Empty Queue
+# ============================================================
+empty_state: "STATE 1: Empty (Initial)" {
+  direction: down
+  
+  queue: {
+    direction: right
+    style.fill: transparent
+    style.stroke: "#E2E8F0"
+    
+    head: "head" {class: pointer}
+    tail: "tail" {class: pointer}
+    
+    sentinel: "DUMMY NODE\nAddr: 0x1000\nNext: NULL" {
+      class: sentinel
+      width: 200
+    }
+    
+    head -> sentinel: "0x1000" { style.stroke: "#D97706"; style.stroke-width: 2 }
+    tail -> sentinel: "0x1000" { style.stroke: "#D97706"; style.stroke-width: 2 }
+  }
+  
+  note: |'md
+  ### Invariants
+  - `head == tail`
+  - `head->next == NULL`
+  - **Count:** 1 Physical, 0 Logical.
+  '|
+  note.style.font-size: 13
+}
+
+# ============================================================
+# State 2: After Enqueue(Data=42)
+# ============================================================
+enqueue_state: "STATE 2: After Enqueue(42)" {
+  direction: down
+  
+  queue: {
+    direction: right
+    style.fill: transparent
+    style.stroke: "#E2E8F0"
+    
+    head: "head" {class: pointer}
+    tail: "tail" {class: pointer}
+    
+    sentinel: "SENTINEL\nAddr: 0x1000" {
+      class: sentinel
+    }
+    
+    new_node: "NODE [42]\nAddr: 0x2000\nNext: NULL" {
+      class: data_node
+      style.stroke-width: 4
+      style.stroke: "#10B981" # Highlight new element
+    }
+    
+    head -> sentinel: "0x1000"
+    sentinel -> new_node: "next = 0x2000" {
+      style.stroke: "#3B82F6"
+      style.stroke-width: 3
+    }
+    tail -> new_node: "CAS(tail, 0x1000, 0x2000)" {
+      style.stroke: "#D97706"
+      style.stroke-width: 3
+      style.animated: true
+    }
+  }
+  
+  note: |'md
+  ### Enqueue atomic steps:
+  1. `N = alloc(0x2000, val=42)`
+  2. `CAS(tail->next, NULL, 0x2000)`
+  3. `CAS(tail, 0x1000, 0x2000)`
+  '|
+}
+
+# ============================================================
+# State 3: After Dequeue()
+# ============================================================
+dequeue_state: "STATE 3: After Dequeue() -> 42" {
+  direction: down
+  
+  queue: {
+    direction: right
+    style.fill: transparent
+    style.stroke: "#E2E8F0"
+    
+    head: "head" {class: pointer}
+    tail: "tail" {class: pointer}
+    
+    old_sentinel: "OLD SENTINEL\n(Freeing...)" {
+      class: sentinel
+      style.opacity: 0.2
+      style.stroke-dash: 5
+    }
+    
+    new_sentinel: "NEW SENTINEL\n(Old Node 0x2000)" {
+      class: sentinel
+      style.stroke: "#8B5CF6"
+      style.stroke-width: 4
+    }
+    
+    head -> new_sentinel: "CAS(head, 0x1000, 0x2000)" {
+      style.stroke: "#059669"
+      style.stroke-width: 4
+    }
+    tail -> new_sentinel: "0x2000"
+    
+    old_sentinel -> new_sentinel: "unlink" {
+      style.stroke: "#94A3B8"
+      style.stroke-dash: 3
+    }
+  }
+  
+  note: |'md
+  ### Dequeue Logic
+  1. `val = head->next->value` (42)
+  2. `CAS(head, head, head->next)`
+  3. Node `0x2000` becomes the **New Dummy**.
+  4. Logical count returns to 0.
+  '|
+}
+
+# ============================================================
+# Transition Pathing
+# ============================================================
+empty_state -> enqueue_state: "atomic enqueue" {
+  style.stroke: "#10B981"
+  style.stroke-width: 4
+  style.bold: true
+}
+
+enqueue_state -> dequeue_state: "atomic dequeue" {
+  style.stroke: "#EF4444"
+  style.stroke-width: 4
+  style.bold: true
+}
+
+# ============================================================
+# Engineering Specification (The "Insight" Block)
+# ============================================================
+spec: {
+  shape: rectangle
+  near: bottom-center
+  style.fill: "#F8FAFC"
+  style.stroke: "#475569"
+  
+  content: |'md
+  ## M-S Lock-Free Dequeue Protocol (Pseudo-C)
+  c
+  bool dequeue(Queue *Q, int *p_val) {
+      while (true) {
+          Node *h = Q->head;
+          Node *t = Q->tail;
+          Node *next = h->next;
+          if (h == Q->head) {           // Are h, t, next consistent?
+              if (h == t) {             // Is queue empty or tail falling behind?
+                  if (next == NULL) return false; // Logically empty
+                  CAS(&Q->tail, t, next); // Tail fell behind; help advance it
+              } else {
+                  *p_val = next->value; // Read value BEFORE CAS
+                  if (CAS(&Q->head, h, next)) {
+                      free_node(h);     // Linearization Point
+                      return true;
+                  }
+              }
+          }
+      }
+  }
+  
+  ### Hazards & Solutions
+  - **ABA Problem:** Mitigated via tagged pointers or GC (Hazard Pointers / RCU).
+  - **Memory Ordering:** Requires `memory_order_release` for enqueuing and `memory_order_acquire` for head/tail reads to ensure visibility of `Node->value`.
+  '|
+  content.style.font: mono
+}

@@ -1,0 +1,208 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Michael-Scott Queue: Hazard Pointer Protection in Dequeue
+  Two-slot protection protocol for safe memory reclamation
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  left_panel: {
+    direction: down
+    label: "Hazard Pointer Registry (Global)"
+    registry: {
+      shape: sql_table
+      label: "g_hazard_registry[MAX_THREADS]"
+      f0: "Thread 0 | slot[0] | slot[1]"
+      f1: "Thread 1 | slot[0] | slot[1]"
+      f2: "Thread 2 | slot[0] | slot[1]"
+      f3: "...      | ...    | ..."
+      fn: "Thread N | slot[0] | slot[1]"
+      note: "Each thread owns 2 slots exclusively"
+    }
+    slot_defs: {
+      shape: sql_table
+      label: "Slot Assignments"
+      s0: "HAZARD_SLOT_HEAD = 0 | protects sentinel"
+      s1: "HAZARD_SLOT_NEXT = 1 | protects data node"
+    }
+  }
+  right_panel: {
+    direction: down
+    label: "Queue Structure"
+    queue_struct: {
+      shape: class
+      label: "MSQueueSafe (ms_queue_safe.h)"
+      -head: "_Atomic(MSNodeSafe*)"
+      -tail: "_Atomic(MSNodeSafe*)"
+    }
+    sentinel_note: {
+      label: "Sentinel Node Pattern"
+      width: 280
+      code: |'c
+        // Sentinel always exists
+        // Real data is in nodes AFTER sentinel
+        // Dequeue removes sentinel, promotes
+        // head->next to new sentinel
+      '|
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  queue_state: {
+    direction: down
+    label: "Queue State During Dequeue"
+    before: {
+      label: "Before Dequeue"
+      width: 400
+      nodes_before: {
+        shape: class
+        label: "Linked List State"
+        sentinel: "S (sentinel) | value=0 | next→N1"
+        n1: "N1 (data)     | value=42| next→N2"
+        n2: "N2 (data)     | value=99| next→NULL"
+      }
+      ptrs_before: {
+        shape: sql_table
+        label: "Queue Pointers"
+        h: "head  → S"
+        t: "tail  → N2"
+      }
+    }
+    arrow1: {
+      shape: text
+      label: "→"
+      width: 40
+    }
+    during: {
+      label: "During Dequeue (Protected)"
+      width: 400
+      prot_table: {
+        shape: sql_table
+        label: "Hazard Protection (Thread T)"
+        p0: "slot[0] = S    | head sentinel"
+        p1: "slot[1] = N1   | head->next (data)"
+        note: "Both nodes protected from reclamation"
+      }
+      code_prot: {
+        label: "Protection Protocol"
+        width: 380
+        code: |'c
+          // Step 1: Protect head sentinel
+          head = atomic_load(&queue->head);
+          hazard_protect(HAZARD_SLOT_HEAD, head);
+          // Validate head hasn't changed
+          if (head != atomic_load(&queue->head))
+            continue;  // Retry
+          // Step 2: Protect head->next (data node)
+          next = atomic_load(&head->next);
+          if (next == NULL) return EMPTY;
+          hazard_protect(HAZARD_SLOT_NEXT, next);
+          // NOW SAFE to dereference next->value
+          *value = next->value;  // Protected!
+        '|
+      }
+    }
+  }
+  hazard_flow: {
+    direction: down
+    label: "Hazard Pointer Lifecycle"
+    lifecycle: {
+      shape: class
+      label: "Dequeue Protection Sequence"
+      step1: "+hazard_protect(0, head): void"
+      step2: "+validate head still current: bool"
+      step3: "+hazard_protect(1, next): void"
+      step4: "+read next->value (safe): int64_t"
+      step5: "+CAS(&head, head, next): bool"
+      step6: "+hazard_release(0): void"
+      step7: "+hazard_release(1): void"
+      step8: "+hazard_retire(old_head): void"
+    }
+    invariant: {
+      label: "Critical Invariant"
+      width: 280
+      code: |'c
+        // A node is ONLY freed if it's
+        // NOT in any hazard slot at the
+        // start of a scan.
+        // 
+        // Our protection happens BEFORE
+        // dereference, ensuring the scan
+        // will see our hazard pointers.
+      '|
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  race_prevented: {
+    direction: down
+    label: "Race Condition Prevented"
+    timeline: {
+      shape: class
+      label: "Without Protection (BUG)"
+      t1a: "Thread A: load head = S"
+      t1b: "Thread A: load next = N1"
+      t2a: "Thread B: CAS head S→N1"
+      t2b: "Thread B: hazard_retire(S)"
+      t2c: "Thread B: scan frees S"
+      t1c: "Thread A: read S->next  USE-AFTER-FREE!"
+    }
+    safe_timeline: {
+      shape: class
+      label: "With Protection (SAFE)"
+      t1a: "Thread A: hazard_protect(0, S)"
+      t1b: "Thread A: load head = S"
+      t1c: "Thread A: hazard_protect(1, N1)"
+      t1d: "Thread A: load next = N1"
+      t2a: "Thread B: CAS head S→N1"
+      t2b: "Thread B: hazard_retire(S)"
+      t2c: "Thread B: scan sees A's hp(0)=S"
+      t2d: "Thread B: CANNOT free S"
+      t1e: "Thread A: read N1->value (safe)"
+    }
+  }
+  memory_layout: {
+    direction: down
+    label: "Memory Layout"
+    layout: {
+      shape: sql_table
+      label: "HazardThreadSlot (16 bytes)"
+      f0: "0x00 | atomic_uintptr_t | slots[0]"
+      f1: "0x08 | atomic_uintptr_t | slots[1]"
+      f2: "0x10 | atomic_bool     | active"
+      sz: "Total: 24 bytes (padded to 64)"
+    }
+    ordering: {
+      label: "Memory Ordering Requirements"
+      width: 280
+      code: |'c
+        // hazard_protect: RELEASE
+        atomic_store_explicit(
+          &slot[slot], node,
+          memory_order_release);
+        // scan: ACQUIRE
+        hp = atomic_load_explicit(
+          &registry[t].slots[s],
+          memory_order_acquire);
+        // Establishes happens-before:
+        // protect → scan → free decision
+      '|
+    }
+  }
+}
+row1.right_panel.queue_struct -> row2.queue_state.before.nodes_before: "head/tail point to"
+row2.queue_state.during.prot_table -> row2.hazard_flow.lifecycle: "enables"
+row3.race_prevented.timeline -> row3.race_prevented.safe_timeline: "fixed by" {style.stroke-dash: 4}

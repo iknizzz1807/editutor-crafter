@@ -1,0 +1,326 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: |md
+    # MS Queue Dequeue: Hazard Pointer Memory Safety
+    **Algorithm Design Spec (TDD M4-09)**
+    *Implementation-Grade Intel Manual Quality Diagram*
+  |
+  near: top-center
+}
+
+direction: down
+
+classes: {
+  memory_node: {
+    style: {
+      stroke-width: 2
+      border-radius: 4
+      shadow: true
+    }
+  }
+  code_block: {
+    style: {
+      fill: "#263238"
+      font-color: "#ECEFF1"
+      font: mono
+      border-radius: 4
+    }
+  }
+  hazard_active: {
+    style: {
+      fill: "#C8E6C9"
+      stroke: "#4CAF50"
+      stroke-width: 4
+      bold: true
+    }
+  }
+  header_style: { 
+    style: { fill: "#E1BEE7"; stroke: "#9C27B0" }
+  }
+  data_style: { 
+    style: { fill: "#BBDEFB"; stroke: "#1976D2" }
+  }
+  pointer_style: { 
+    style: { fill: "#FFE0B2"; stroke: "#FF9800" }
+  }
+}
+
+# =============================================================================
+# PHASE 1: Initial State - Memory Layout
+# =============================================================================
+phase1: {
+  label: "PHASE 1: Initial Heap Layout (T=0)"
+  style: {
+    fill: "#E8F4FD"
+    stroke: "#2196F3"
+    stroke-width: 2
+  }
+
+  queue_mem: "Global Queue State (Memory Map)" {
+    style.fill: white
+    
+    head: "head (8B)\nOffset: 0x00" {
+      class: [memory_node; pointer_style]
+    }
+    tail: "tail (8B)\nOffset: 0x08" {
+      class: [memory_node; pointer_style]
+    }
+    
+    sentinel: {
+      label: |md
+        **SENTINEL [0x1000]**
+        | Offset | Size | Field | Value |
+        | :--- | :--- | :--- | :--- |
+        | 0x00 | 8B | key | NULL |
+        | 0x08 | 8B | val | NULL |
+        | 0x10 | 8B | next | 0x2000 |
+      |
+      class: [memory_node; header_style]
+    }
+    
+    data_node: {
+      label: |md
+        **DATA NODE [0x2000]**
+        | Offset | Size | Field | Value |
+        | :--- | :--- | :--- | :--- |
+        | 0x00 | 8B | key | 0xDEAD |
+        | 0x08 | 8B | val | 0x0064 |
+        | 0x10 | 8B | next | NULL |
+      |
+      class: [memory_node; data_style]
+    }
+
+    null_ptr: "NULL" {
+      shape: circle
+      style.fill: "#E0E0E0"
+    }
+
+    head -> sentinel: "points to"
+    tail -> data_node: "points to"
+    sentinel -> data_node: "next"
+    data_node -> null_ptr
+  }
+
+  note1: {
+    label: |md
+      ### Memory Invariant
+      - **Hazard Slot 0:** Must protect `head` (Sentinel).
+      - **Hazard Slot 1:** Must protect `head->next` (Data).
+    |
+    shape: text
+    style.font-size: 14
+  }
+}
+
+# =============================================================================
+# PHASE 2: Slot 0 Protection
+# =============================================================================
+phase2: {
+  label: "PHASE 2: Acquire Slot 0 (Sentinel Guard)"
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#4CAF50"
+    stroke-width: 2
+  }
+
+  hazard_registry: "Hazard Pointer Registry (Thread 0)" {
+    style.fill: "#FFF8E1"
+    
+    slot0: "SLOT 0 [0x1000]\n**PROTECTED**" {
+      class: hazard_active
+    }
+    slot1: "SLOT 1 [NULL]" {
+      style.fill: "#F5F5F5"
+      style.stroke: "#9E9E9E"
+    }
+  }
+
+  code2: {
+    label: |go
+      // STEP 1: LOAD HEAD
+      h = atomic_load(&Q->head) // 0x1000
+      // STEP 2: PROTECT
+      hp_protect(0, h)
+      // STEP 3: RELOAD & VALIDATE (ABA)
+      if (h != atomic_load(&Q->head)) goto retry
+    |
+    class: code_block
+  }
+
+  hazard_registry.slot0 -> code2: "Published" {
+    style.stroke: "#4CAF50"
+    style.stroke-width: 2
+  }
+}
+
+# =============================================================================
+# PHASE 3: Slot 1 Protection
+# =============================================================================
+phase3: {
+  label: "PHASE 3: Acquire Slot 1 (Data Guard)"
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#FF9800"
+    stroke-width: 2
+  }
+
+  registry3: "Hazard Pointer Registry (Thread 0)" {
+    style.fill: "#FFF8E1"
+    
+    slot0_3: "SLOT 0 [0x1000]" {
+      style.fill: "#C8E6C9"
+    }
+    slot1_3: "SLOT 1 [0x2000]\n**DATA PROTECTED**" {
+      class: hazard_active
+    }
+  }
+
+  code3: {
+    label: |go
+      // STEP 4: LOAD NEXT
+      // Sentinel 0x1000 is pinned by S0
+      n = atomic_load(&h->next) // 0x2000
+      // STEP 5: PROTECT TARGET
+      hp_protect(1, n)
+      // STEP 6: VALIDATE NEXT
+      if (n != atomic_load(&h->next)) goto retry
+    |
+    class: code_block
+  }
+
+  why_two: {
+    label: |md
+      **Dual Guard Requirement:**
+      Protects against concurrent reclamation 
+      of both the current head and the node 
+      being extracted.
+    |
+    shape: text
+    style.font-size: 13
+  }
+}
+
+# =============================================================================
+# PHASE 4: Extract and CAS
+# =============================================================================
+phase4: {
+  label: "PHASE 4: CAS & Memory Retirement"
+  style: {
+    fill: "#FCE4EC"
+    stroke: "#E91E63"
+    stroke-width: 2
+  }
+
+  code4: {
+    label: |go
+      // STEP 7: CACHE VALUE
+      val = n->value 
+      // STEP 8: SWING HEAD
+      if (CAS(&Q->head, h, n)) {
+          hp_release(0); hp_release(1)
+          hp_retire(h) // 0x1000 orphaned
+          return val
+      }
+    |
+    class: code_block
+  }
+
+  crit_warn: {
+    label: |md
+      **CRITICAL:** Once `hp_release` is called,
+      0x2000 is reclaimable. Data must be 
+      cached in a local variable FIRST.
+    |
+    shape: text
+    style.font-color: "#D32F2F"
+  }
+}
+
+# =============================================================================
+# FINAL STATE
+# =============================================================================
+final: {
+  label: "FINAL STATE: Transformed Heap"
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#4CAF50"
+    stroke-width: 2
+  }
+
+  queue_post: "Queue Condition (T=End)" {
+    style.fill: white
+    f_head: "head (8B)" { class: [memory_node; pointer_style] }
+    f_tail: "tail (8B)" { class: [memory_node; pointer_style] }
+    
+    new_sentinel: {
+      label: |md
+        **SENTINEL [0x2000]**
+        (Promoted from Data)
+        key: NULL | val: NULL
+      |
+      class: [memory_node; header_style]
+      style.double-border: true
+    }
+    
+    orphaned: {
+      label: |md
+        **RETIRED [0x1000]**
+        (Pending hp_scan free)
+      |
+      class: memory_node
+      style.fill: "#EEEEEE"
+      style.stroke: "#F44336"
+      style.stroke-dash: 3
+    }
+    
+    f_head -> new_sentinel: "0x2000"
+    f_tail -> new_sentinel: "0x2000"
+  }
+}
+
+# =============================================================================
+# RACE ANALYSIS (Logic Diagram)
+# =============================================================================
+race: {
+  label: "Race Analysis: Concurrent Reclamation"
+  style.fill: "#FFEBEE"
+  style.stroke: "#F44336"
+
+  timeline: {
+    shape: sequence_diagram
+    T1: "Thread 1 (Reader)"
+    T2: "Thread 2 (Mutator)"
+
+    T1 -> T1: hp_protect(S1, 0x2000)
+    T2 -> T2: Dequeue(0x2000)
+    T2 -> T2: hp_retire(0x2000)
+    T2 -> T2: hp_scan()
+    T2 -> T1: "Observe S1 == 0x2000?"
+    T1 -> T2: "YES (Busy)"
+    T2 -> T2: "DEFER free(0x2000)"
+    T1 -> T1: val = 0x2000->v
+    T1 -> T1: hp_release(S1)
+  }
+}
+
+# Flow Sequence Connections
+phase1 -> phase2: "Protect Head"
+phase2 -> phase3: "Protect Next"
+phase3 -> phase4: "Atomic Swing"
+phase4 -> final: "Retire Old"
+phase4 -> race: "Safety Verification"
+
+# Global Legend
+legend: {
+  near: bottom-right
+  p: "Pointer/Control" { class: pointer_style }
+  h: "Header/Sentinel" { class: header_style }
+  d: "Data Segment" { class: data_style }
+  r: "Retired/Free" { style: { fill: "#EEEEEE"; stroke-dash: 3 } }
+}

@@ -1,0 +1,298 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+classes: {
+  node: {
+    shape: rectangle
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2563EB"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  header: {
+    shape: rectangle
+    style: {
+      fill: "#7C3AED"
+      font-color: white
+      bold: true
+      stroke: "#5B21B6"
+    }
+  }
+  field: {
+    shape: rectangle
+    style: {
+      fill: "#DBEAFE"
+      stroke: "#93C5FD"
+      stroke-width: 1
+      font: mono
+    }
+  }
+  pointer_field: {
+    shape: rectangle
+    style: {
+      fill: "#FFEDD5"
+      stroke: "#F97316"
+      stroke-width: 1
+      font: mono
+    }
+  }
+  tag_box: {
+    shape: rectangle
+    style: {
+      fill: "#F3E8FF"
+      stroke: "#9333EA"
+      stroke-width: 2
+      double-border: true
+    }
+  }
+  null_field: {
+    shape: rectangle
+    style: {
+      fill: "#D1FAE5"
+      stroke: "#10B981"
+      stroke-width: 1
+      font: mono
+    }
+  }
+  offset_label: {
+    shape: text
+    style: {
+      font-size: 10
+      font-color: "#6B7280"
+      font: mono
+    }
+  }
+}
+
+direction: right
+
+title: "Treiber Stack: Non-Blocking Concurrent Structure" {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+
+# --- STACK HEAD CONTAINER ---
+# Byte offsets on left, field sizes/types inside
+Stack: {
+  label: "TreiberStack Struct (sizeof=16B)"
+  style: {
+    fill: "#F9FAFB"
+    stroke: "#7C3AED"
+    stroke-width: 2
+    stroke-dash: 5
+  }
+  
+  offset_0: "0x00" { class: offset_label }
+  offset_8: "0x08" { class: offset_label }
+
+  top_ptr: {
+    label: "TaggedPtr top [Atomic CAS target]"
+    class: tag_box
+    
+    version: "uint64_t version [8B]" {
+      class: field
+      tooltip: "ABA prevention counter: Increments on every modification"
+      style.fill: "#F3E8FF"
+    }
+    
+    ptr: "Node* ptr [8B]" {
+      class: pointer_field
+      tooltip: "Memory address of the head node"
+    }
+  }
+  
+  offset_0 -> top_ptr.version
+  offset_8 -> top_ptr.ptr
+}
+
+# --- NODE CHAIN ---
+# Linked list representation with byte offsets for alignment determination
+Node_A: {
+  label: "Node A (Current Head)"
+  class: node
+  
+  off_0: "0x00" { class: offset_label }
+  off_8: "0x08" { class: offset_label }
+
+  v: "int64_t value [8B]" { class: field }
+  n: "Node* next [8B]" { class: pointer_field }
+  
+  off_0 -> v
+  off_8 -> n
+}
+
+Node_B: {
+  label: "Node B (Internal)"
+  class: node
+  
+  off_0: "0x00" { class: offset_label }
+  off_8: "0x08" { class: offset_label }
+
+  v: "int64_t value [8B]" { class: field }
+  n: "Node* next [8B]" { class: pointer_field }
+
+  off_0 -> v
+  off_8 -> n
+}
+
+Node_C: {
+  label: "Node C (Sentinel Tail)"
+  class: node
+  
+  off_0: "0x00" { class: offset_label }
+  off_8: "0x08" { class: offset_label }
+
+  v: "int64_t value [8B]" { class: field }
+  n: "NULL" { class: null_field }
+
+  off_0 -> v
+  off_8 -> n
+}
+
+# --- ALIGNMENT / CACHE LINE MARKER ---
+CacheLineBoundary: "64-byte Cache Line Boundary (Alignment Marker)" {
+  shape: rectangle
+  height: 2
+  width: 1200
+  style: {
+    stroke: "#9CA3AF"
+    stroke-dash: 3
+    fill: transparent
+    font-color: "#9CA3AF"
+    font-size: 14
+    bold: true
+  }
+}
+
+# --- CONNECTIONS ---
+# Primary Atomic Operation Path
+Stack.top_ptr.ptr -> Node_A: "atomic_load / cmpxchg16b" {
+  style: {
+    stroke: "#7C3AED"
+    stroke-width: 6
+    animated: true
+  }
+}
+
+# Standard pointer references in the heap
+Node_A.n -> Node_B: "dereference" {
+  target-arrowhead: triangle
+  style: {
+    stroke: "#F97316"
+    stroke-width: 2
+  }
+}
+
+Node_B.n -> Node_C: "dereference" {
+  target-arrowhead: triangle
+  style: {
+    stroke: "#F97316"
+    stroke-width: 2
+  }
+}
+
+# --- DOCUMENTATION BLOCKS ---
+Memory_Layout: |'md
+### Low-Level Memory Layout (x86_64)
+| Offset | Size | Field | Description |
+| :--- | :--- | :--- | :--- |
+| **0x00** | 8B | `version` | Monotonic counter to solve ABA problem |
+| **0x08** | 8B | `ptr` | Pointer to current head of stack |
+| **0x10** | 8B | `value` | Data stored in the node |
+| **0x18** | 8B | `next` | Pointer to next node in LIFO chain |
+
+**Hardware Requirements:**
+- Structure must be **16-byte aligned** for atomic access.
+- Non-blocking access via `LOCK CMPXCHG16B` or `LDXP/STXP`.
+'| {
+  near: bottom-left
+  style: {
+    fill: "#F3F4F6"
+    stroke: "#4B5563"
+    border-radius: 8
+  }
+}
+
+Implementation_Notes: |'md
+### Lock-Free Treiber Algorithm
+**Push(node):**
+1. Read `old_top = stack.top` (atomic load).
+2. Set `node->next = old_top.ptr`.
+3. Prepare `new_top = {old_top.version + 1, node}`.
+4. `while (!CAS(&stack.top, old_top, new_top));`
+
+**Pop():**
+1. `do {`
+2. `  old_top = stack.top;`
+3. `  if (old_top.ptr == NULL) return EMPTY;`
+4. `  next_node = old_top.ptr->next;`
+5. `  new_top = {old_top.version + 1, next_node};`
+6. `} while (!CAS(&stack.top, old_top, new_top));`
+'| {
+  near: bottom-right
+  style: {
+    fill: "#FFFBEB"
+    stroke: "#D97706"
+    border-radius: 8
+  }
+}
+
+# --- LEGEND ---
+Legend: {
+  near: bottom-center
+  grid-columns: 2
+  grid-gap: 20
+  
+  L1: "Atomic Tagged Field (ABA Protected)" {
+    class: tag_box
+    style.font-size: 12
+  }
+  L2: "Node Pointer (Memory Address)" {
+    class: pointer_field
+    style.font-size: 12
+  }
+  L3: "Data Field (64-bit Integer)" {
+    class: field
+    style.font-size: 12
+  }
+  L4: "Null / Terminator" {
+    class: null_field
+    style.font-size: 12
+  }
+}
+
+# --- ANNOTATIONS ---
+Growth: {
+  shape: text
+  label: "Stack Growth (LIFO Top) ◄───"
+  near: top-right
+  style: {
+    font-size: 16
+    bold: true
+    font-color: "#7C3AED"
+  }
+}
+
+# FIX: elk does not support near: <object_id>, changed to constant
+CAS_Logic: {
+  shape: cloud
+  label: "Atomic CAS Target Area"
+  near: top-left
+  style: {
+    stroke: red
+    stroke-width: 2
+    stroke-dash: 2
+    fill: transparent
+  }
+}

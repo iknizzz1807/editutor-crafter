@@ -1,0 +1,244 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Shooting System: Command Buffer Usage
+  Collect spawn requests during iteration, then spawn bullets via commands.
+  *Pattern: Structural Change Deferral for Borrow Checker Compliance.*
+| {
+  near: top-center
+  style.font-size: 24
+}
+
+# Sequence diagram showing the pattern
+shooting_sequence: {
+  shape: sequence_diagram
+  
+  # Actors / Participants
+  system: ShootingSystem {
+    shape: person
+    style.fill: "#E1F5FE"
+  }
+  spawner_storage: "Storage<Spawner>" {
+    style.fill: "#E8F5E9"
+  }
+  position_storage: "Storage<Position>" {
+    style.fill: "#E8F5E9"
+  }
+  commands: "Commands<'a>" {
+    style.fill: "#FFF3E0"
+  }
+  command_buffer: CommandBuffer {
+    style.fill: "#FFF3E0"
+  }
+  entity_manager: EntityManager {
+    style.fill: "#F3E5F5"
+  }
+
+  # Phase 1: Iteration - Collect spawn requests
+  collect_phase: {
+    label: "Phase 1: Iteration & Collection"
+    system -> spawner_storage: "iter_with_entity()"
+    spawner_storage -> system: "Yield (entity, &Spawner)"
+    
+    system -> system: "Logic: check cooldown & input"
+    
+    system -> position_storage: "get(entity)"
+    position_storage -> system: "Return Some(&Position)"
+    
+    system -> system: "push (x, y, speed) to local Vec"
+    
+    # Corrected: In sequence diagrams, notes are attached directly to actors
+    # as nested objects without connections to indicate their position in time.
+    system.note: |md
+      **Deferred Spawning Pattern**
+      Immutable borrows of `spawner_storage` 
+      and `position_storage` prevent 
+      calling `world.spawn()` directly 
+      during iteration.
+    |
+  }
+
+  # Phase 2: Spawning - Use commands
+  spawn_phase: {
+    label: "Phase 2: Recording Commands"
+    system -> commands: "spawn()"
+    commands -> entity_manager: "create_id()"
+    entity_manager -> commands: "Entity { id: 0x000A0001 }"
+    commands -> command_buffer: "push(Op::Spawn { id })"
+    commands -> system: "bullet_entity"
+    
+    system -> commands: "insert(bullet, Position { x, y })"
+    commands -> command_buffer: "push(Op::Insert { id, comp: Pos })"
+    
+    system -> commands: "insert(bullet, Velocity { dx, dy })"
+    commands -> command_buffer: "push(Op::Insert { id, comp: Vel })"
+    
+    system -> commands: "insert(bullet, BulletMarker)"
+    commands -> command_buffer: "push(Op::Insert { id, comp: Bullet })"
+    
+    system -> commands: "insert(bullet, Lifetime { rem: 2.0 })"
+    commands -> command_buffer: "push(Op::Insert { id, comp: Life })"
+  }
+}
+
+# Visual flow of the pattern
+flow: {
+  direction: right
+  label: "Execution Phases"
+  style.stroke-dash: 3
+  
+  phase1: {
+    label: "Phase 1: Read-Only Collection"
+    style.fill: "#E8F5E9"
+    iterate: "Iterate over\nSpawner entities" {
+      style.fill: "#C8E6C9"
+    }
+    collect: "Collect spawn\nrequests to Vec" {
+      style.fill: "#C8E6C9"
+    }
+    iterate -> collect: "Extract data"
+  }
+  
+  phase2: {
+    label: "Phase 2: Command Recording"
+    style.fill: "#E3F2FD"
+    loop: "For each\nspawn_request" {
+      style.fill: "#BBDEFB"
+    }
+    spawn_cmd: "commands.spawn()\n(Queues Op::Spawn)" {
+      style.fill: "#90CAF9"
+    }
+    insert_cmds: "commands.insert()\n(Queues Op::Insert)" {
+      style.fill: "#90CAF9"
+    }
+    loop -> spawn_cmd -> insert_cmds
+  }
+  
+  phase3: {
+    label: "Phase 3: Synchronous Flush"
+    style.fill: "#FFF3E0"
+    flush: "flush_commands()" {
+      style.fill: "#FFE0B2"
+    }
+    apply: "Apply structural changes\n(World.write_lock)" {
+      style.fill: "#FFCC80"
+    }
+    flush -> apply
+  }
+  
+  phase1 -> phase2: "Borrows Dropped" {
+    style.stroke: green
+    style.bold: true
+  }
+  phase2 -> phase3: "Sync Point" {
+    style.stroke: orange
+    style.bold: true
+  }
+}
+
+# Memory Layout of the Command Buffer
+command_buffer_layout: {
+  label: "CommandBuffer Memory Layout (Byte-Level)"
+  direction: right
+  
+  header: {
+    label: "Buffer Header"
+    style.fill: "#D1C4E9"
+    offset_00: "0x00: Capacity (u64)" { style.fill: "#EDE7F6" }
+    offset_08: "0x08: Cursor (u64)" { style.fill: "#EDE7F6" }
+    offset_16: "0x10: AtomicLock (u32)" { style.fill: "#EDE7F6" }
+  }
+
+  stream: {
+    label: "Command OpStream"
+    op_spawn: "OpCode: Spawn (1B)" { style.fill: "#BBDEFB" }
+    ent_id: "EntityID: 0x0001 (4B)" { style.fill: "#90CAF9" }
+    
+    op_insert: "OpCode: Insert (1B)" { style.fill: "#C8E6C9" }
+    comp_type: "CompID: Pos (2B)" { style.fill: "#A5D6A7" }
+    data: "Data: {x,y} (8B)" { style.fill: "#81C784" }
+    
+    op_spawn -> ent_id -> op_insert -> comp_type -> data
+  }
+}
+
+# Code example
+code_example: |md
+  ### Implementation Logic
+  rust
+  fn shooting_system(world: &mut World, dt: f32) {
+      // 1. COLLECTION: Storage borrowed immutably here
+      let mut spawn_requests = Vec::new();
+      {
+          let spawners = world.query::<&mut Spawner>();
+          let positions = world.query::<&Position>();
+          for (ent, s, p) in spawners.iter() {
+              if s.tick(dt) { 
+                  spawn_requests.push((*p, s.bullet_speed)); 
+              }
+          }
+      } // <- Immutables dropped here
+
+      // 2. RECORDING: Command buffer records intent
+      let mut commands = world.get_command_buffer();
+      for (pos, speed) in spawn_requests {
+          let b = commands.spawn();
+          commands.insert(b, pos);
+          commands.insert(b, Velocity::from_speed(speed));
+          commands.insert(b, BulletMarker);
+      }
+  }
+  
+| {
+  near: bottom-center
+}
+
+# Key insight
+key_insight: {
+  label: "Technical Implementation Notes"
+  style.fill: "#FFF8E1"
+  style.stroke: "#FFC107"
+  insight: |md
+    **Architectural Justification**
+    - **Borrow Checker**: You cannot `world.spawn()` (requires `&mut World`) while iterating over `world.query()` (requires `&World`).
+    - **Performance**: Batching insertions during the sync point improves cache locality and reduces allocation overhead.
+    - **Parallelism**: Multiple systems can record to thread-local CommandBuffers simultaneously without contention.
+  |
+}
+
+# Timeline
+timeline: {
+  direction: right
+  label: "Frame Execution Timeline"
+  
+  t0: "Iterate" {
+    style.fill: "#E8F5E9"
+    label: "System Starts\nReading Component Storages"
+  }
+  t1: "Drop Borrows" {
+    style.fill: "#E8F5E9"
+    label: "Storage Iterators\nDropped"
+  }
+  t2: "Queue" {
+    style.fill: "#E3F2FD"
+    label: "Commands Encoded\ninto Byte Stream"
+  }
+  t3: "System End" {
+    style.fill: "#FFF3E0"
+    label: "Logic Complete\nControl to Schedule"
+  }
+  t4: "Sync Point" {
+    style.fill: "#FFEBEE"
+    label: "Flush: Memory\nCommit to World"
+  }
+  
+  t0 -> t1: "Read Phase"
+  t1 -> t2: "Write Phase"
+  t2 -> t3: "Idle Phase"
+  t3 -> t4: "Sync Phase"
+}

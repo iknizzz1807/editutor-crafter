@@ -1,0 +1,239 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- HEADER SECTION ---
+header: {
+  label: "Contention & Backoff Strategies: Cache Coherency Performance"
+  subtitle: "Architectural Analysis of Spinning vs. Exponential Backoff"
+  style: {
+    font-size: 24
+    bold: true
+    fill: "#f8f9fa"
+    stroke: "#dee2e6"
+  }
+}
+
+# --- ROW 1: METRICS & COST ANALYSIS ---
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  throughput_graph: {
+    label: "Throughput (ops/sec) vs. Contention (Threads)"
+    width: 500
+    y_axis: {
+      shape: rectangle
+      label: "Ops/sec"
+      width: 60
+      height: 200
+    }
+    x_axis: {
+      shape: rectangle
+      label: "Thread Count"
+      width: 300
+      height: 30
+    }
+    
+    # Legend items as simple nodes inside container (avoiding nested 'near')
+    labels: {
+      no_bk: "No Backoff: Collapse at 8+ threads" {
+        style.font-color: "#d9534f"
+        style.italic: true
+      }
+      pause_bk: "Pause: Linear degradation" {
+        style.font-color: "#f0ad4e"
+        style.italic: true
+      }
+      exp_bk: "Exp Backoff: Sustained Throughput" {
+        style.font-color: "#5cb85c"
+        style.italic: true
+      }
+    }
+  }
+
+  cost_comparison: {
+    label: "Coherency Traffic (cache_line.h)"
+    direction: down
+    
+    no_backoff_cost: {
+      shape: sql_table
+      label: "Strategy: Aggressive Spin"
+      f0: "0x00 | CAS Attempt 1 | FAIL (Bus Lock)"
+      f1: "0x04 | CAS Attempt 2 | FAIL (Invalidate)"
+      f2: "0x08 | CAS Attempt 3 | FAIL (Ping-Pong)"
+      f3: "0x12 | CAS Attempt 4 | SUCCESS"
+      total: "Cost: 4x RFO (Request For Ownership)"
+    }
+
+    exp_cost: {
+      shape: sql_table
+      label: "Strategy: Exponential Backoff"
+      f0: "0x00 | CAS Attempt 1 | FAIL"
+      f1: "0x04 | delay(2^1)     | PAUSE x 2"
+      f2: "0x08 | CAS Attempt 2 | SUCCESS"
+      total: "Cost: 2x RFO (Spread over cycles)"
+    }
+  }
+}
+
+# --- ROW 2: THEORETICAL FOUNDATION ---
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  cache_problem: {
+    label: "The Cache Coherency Bottleneck"
+    width: 480
+    explanation: |md
+      ### Why Spinning Kills Performance
+      Each **Compare-and-Swap (CAS)** on a contended address:
+      1. **RFO (Request For Ownership)**: Broadcasts invalidation to all L1 caches.
+      2. **MESI Transition**: Forced transition from **Shared (S)** or **Exclusive (E)** to **Invalid (I)** on other cores.
+      3. **Pipeline Stall**: The local core stalls until all Acks return.
+      
+      **O(N²) Traffic**: With N threads, total bus messages grow quadratically, saturating the ring interconnect/mesh.
+    |
+    formula: {
+      label: "Performance Impact Formula"
+      code: |'c
+        // Estimated Throughput (T)
+        // Latency (L) = 200 cycles (Contended CAS)
+        // N = Threads
+        T = 1 / (N * L)
+      '|
+    }
+  }
+
+  mesi_diagram: {
+    label: "MESI Contention State Machine"
+    width: 480
+    
+    core_cluster: {
+      direction: right
+      c0: "Core 0 (M)" { style.fill: "#d4edda" }
+      c1: "Core 1 (I)" { style.fill: "#f8d7da" }
+      c2: "Core 2 (I)" { style.fill: "#f8d7da" }
+    }
+
+    bus: "Ring Interconnect / Bus" {
+      shape: queue
+    }
+
+    core_cluster.c1 -> bus: "Read-For-Ownership"
+    bus -> core_cluster.c0: "Invalidate Line"
+    core_cluster.c0 -> core_cluster.c1: "Modified Data Copy"
+    
+    note: {
+      label: "M = Modified (Owner), I = Invalid (Stale)"
+    }
+  }
+}
+
+# --- ROW 3: IMPLEMENTATION STRATEGIES ---
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  pause_impl: {
+    label: "Solution 1: Hardware Hinting"
+    code: |'c
+      // CPU-specific yield instruction
+      static inline void cpu_pause(void) {
+        #if defined(__x86_64__)
+          __asm__ volatile("pause" ::: "memory");
+        #elif defined(__aarch64__)
+          __asm__ volatile("yield" ::: "memory");
+        #endif
+      }
+    '|
+    info: |md
+      **Benefits:**
+      - Yields execution units to HT sibling.
+      - Prevents memory order violation on exit.
+      - Saves power by reducing freq of loop.
+    |
+  }
+
+  backoff_impl: {
+    label: "Solution 2: Software Throttling"
+    code: |'c
+      void backoff(uint32_t *delay) {
+        for (volatile uint32_t i = 0; i < *delay; i++) {
+          cpu_pause();
+        }
+        // Exponentially increase delay
+        if (*delay < 1024) *delay <<= 1;
+      }
+    '|
+    info: |md
+      **Benefits:**
+      - Reduces collision probability.
+      - Self-tunes to contention levels.
+      - Protects bus from saturation.
+    |
+  }
+}
+
+# --- ROW 4: FINAL PRODUCTION CODE ---
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  final_code: {
+    label: "Thread-Safe Pop with Backoff (stack.c)"
+    width: 650
+    code: |'c
+      int64_t stack_pop(Stack *s) {
+          uint32_t wait = 1;
+          while (1) {
+              Node *top = atomic_load(&s->top);
+              if (!top) return -1;
+              
+              if (atomic_compare_exchange_weak(&s->top, &top, top->next)) {
+                  return top->val; // Success
+              }
+              // Back off on contention failure
+              backoff(&wait);
+          }
+      }
+    '|
+  }
+
+  summary: {
+    shape: sql_table
+    label: "Performance Benchmark (16-Core)"
+    h: "Strategy | Throughput | Bus Load"
+    r1: "Aggressive | 0.8M ops/s | 98%"
+    r2: "Pause Hint | 1.2M ops/s | 92%"
+    r3: "Exp Backoff | 4.5M ops/s | 15%"
+    r4: "Final Opt   | 5.1M ops/s | 12%"
+  }
+}
+
+# --- ROOT LEVEL LEGEND ---
+legend: {
+  label: "Performance Legend"
+  style.stroke-dash: 3
+  
+  items: {
+    direction: right
+    red: "Critical Contention" { style.font-color: "#d9534f" }
+    yellow: "Wait State" { style.font-color: "#f0ad4e" }
+    green: "Optimized Path" { style.font-color: "#5cb85c" }
+  }
+}
+legend.near: bottom-right
+
+# Connections between logical rows
+row1 -> row2: "Hardware Stress"
+row2 -> row3: "Mitigation Steps"
+row3 -> row4: "Final Implementation"

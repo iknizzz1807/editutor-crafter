@@ -1,0 +1,240 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: "SIMD Auto-Vectorization: The Archetype Advantage"
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+# Row 1: Source Code
+row1: "" {
+  direction: right
+  style: { fill: transparent; stroke: transparent }
+  source_code: {
+    label: "Source Code (Rust)"
+    width: 420
+    code: |'rust
+// Physics update loop
+for i in 0..len {
+    pos[i].x += vel[i].dx * dt;
+    pos[i].y += vel[i].dy * dt;
+}
+// 4 ops per entity: 2 loads, 1 mul, 1 add
+'|
+    style.fill: "#E8F4E8"
+    style.stroke: "#4A7C59"
+  }
+}
+# Row 2: Memory Layout Comparison
+row2: "" {
+  direction: right
+  style: { fill: transparent; stroke: transparent }
+  archetype_layout: {
+    label: "Archetype Layout: Contiguous Parallel Arrays"
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    pos_array: {
+      label: "Position Column (Vec<Position>)"
+      shape: sql_table
+      r0: "0x00 | f32 | pos[0].x"
+      r1: "0x04 | f32 | pos[0].y"
+      r2: "0x08 | f32 | pos[1].x"
+      r3: "0x0C | f32 | pos[1].y"
+      r4: "0x10 | f32 | pos[2].x"
+      r5: "0x14 | f32 | pos[2].y"
+      r6: "0x18 | f32 | pos[3].x"
+      r7: "0x1C | f32 | pos[3].y"
+      note: "Sequential X/Y pairs\nCache-line aligned (64B)"
+    }
+    vel_array: {
+      label: "Velocity Column (Vec<Velocity>)"
+      shape: sql_table
+      r0: "0x00 | f32 | vel[0].dx"
+      r1: "0x04 | f32 | vel[0].dy"
+      r2: "0x08 | f32 | vel[1].dx"
+      r3: "0x0C | f32 | vel[1].dy"
+      r4: "0x10 | f32 | vel[2].dx"
+      r5: "0x14 | f32 | vel[2].dy"
+      r6: "0x18 | f32 | vel[3].dx"
+      r7: "0x1C | f32 | vel[3].dy"
+      note: "Same layout as Position"
+    }
+    pos_array -> vel_array: "parallel access\nindex i → i" {
+      style.stroke: "#1565C0"
+      style.stroke-dash: 3
+    }
+    note_arch: "Compiler can prove:\n• No pointer aliasing\n• Sequential memory\n• Known stride" {
+      style.fill: "#C8E6C9"
+      style.stroke: "#2E7D32"
+    }
+  }
+  arrow: "→" {
+    shape: text
+    style.font-size: 40
+    style.bold: true
+  }
+  sparse_layout: {
+    label: "Sparse Set Layout: Indirection Prevents SIMD"
+    style.fill: "#FFEBEE"
+    style.stroke: "#C62828"
+    sparse_array: {
+      label: "Sparse Array (entity index → dense index)"
+      shape: sql_table
+      r0: "0 | 3 | entity 0"
+      r1: "1 | EMPTY | entity 1"
+      r2: "2 | 0 | entity 2"
+      r3: "3 | 1 | entity 3"
+      r4: "4 | 2 | entity 4"
+    }
+    dense_array: {
+      label: "Dense Array (packed components)"
+      shape: sql_table
+      r0: "0 | Position | vel[0]"
+      r1: "1 | Position | vel[1]"
+      r2: "2 | Position | vel[2]"
+      r3: "3 | Position | vel[3]"
+    }
+    sparse_array -> dense_array: "indirection\nrandom access" {
+      style.stroke: "#C62828"
+      style.stroke-dash: 3
+    }
+    note_sparse: "Compiler barriers:\n• Random access pattern\n• Unknown stride\n• Potential aliasing" {
+      style.fill: "#FFCDD2"
+      style.stroke: "#B71C1C"
+    }
+  }
+}
+# Row 3: Assembly Output Comparison
+row3: "" {
+  direction: right
+  style: { fill: transparent; stroke: transparent }
+  scalar_asm: {
+    label: "Scalar Assembly (Sparse Set)"
+    width: 400
+    style.fill: "#FFF3E0"
+    style.stroke: "#E65100"
+    code: |'asm
+; One entity per loop iteration
+; 4 instructions × N entities
+loop:
+  mov eax, [sparse + rdi*4]    ; lookup dense idx
+  test eax, eax                ; check EMPTY?
+  jz skip                      ; branch if missing
+  movss xmm0, [pos + eax*8]    ; load pos.x
+  movss xmm1, [vel + eax*8]    ; load vel.dx
+  mulss xmm1, xmm2             ; vel.dx * dt
+  addss xmm0, xmm1             ; pos.x += result
+  movss [pos + eax*8], xmm0    ; store pos.x
+  ; Same for Y component...
+  inc rdi
+  cmp rdi, len
+  jl loop
+; ~15-20 cycles per entity
+; Random memory access
+; No vectorization possible
+'|
+  }
+  vectorized_asm: {
+    label: "Vectorized Assembly (Archetype)"
+    width: 450
+    style.fill: "#E8F5E9"
+    style.stroke: "#1B5E20"
+    code: |'asm
+; EIGHT entities per loop iteration
+; AVX2: 256-bit registers (8 × f32)
+loop:
+  vmovups ymm0, [pos + rdi*4]    ; load 8 × pos.x
+  vmovups ymm1, [vel + rdi*4]    ; load 8 × vel.dx
+  vbroadcastss ymm2, xmm2        ; broadcast dt
+  vmulps ymm1, ymm1, ymm2        ; 8 × vel.dx * dt
+  vaddps ymm0, ymm0, ymm1        ; 8 × pos.x += ...
+  vmovups [pos + rdi*4], ymm0    ; store 8 results
+  vmovups ymm0, [pos_y + rdi*4]  ; load 8 × pos.y
+  vmovups ymm1, [vel_dy + rdi*4] ; load 8 × vel.dy
+  vmulps ymm1, ymm1, ymm2        ; 8 × vel.dy * dt
+  vaddps ymm0, ymm0, ymm1        ; 8 × pos.y += ...
+  vmovups [pos_y + rdi*4], ymm0  ; store 8 results
+  add rdi, 8
+  cmp rdi, len
+  jl loop
+; ~3-4 cycles per 8 entities
+; Sequential memory (prefetch!)
+; 8× throughput increase
+'|
+  }
+}
+scalar_asm -> vectorized_asm: "SIMD\nSpeedup" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 3
+  style.animated: true
+  label: "8× faster"
+}
+# Row 4: Performance Summary
+row4: "" {
+  direction: right
+  style: { fill: transparent; stroke: transparent }
+  metrics: {
+    label: "Performance Comparison (100K entities)"
+    sparse_metric: {
+      label: "Sparse Set"
+      shape: rectangle
+      style.fill: "#FFCDD2"
+      time: "~1.5 ms"
+      cycles: "~4.5M cycles"
+      reason: "Random access, no SIMD"
+    }
+    archetype_metric: {
+      label: "Archetype"
+      shape: rectangle
+      style.fill: "#C8E6C9"
+      time: "~200 μs"
+      cycles: "~600K cycles"
+      reason: "Sequential + AVX2 SIMD"
+    }
+    sparse_metric -> archetype_metric: "7.5× faster" {
+      style.stroke: "#1B5E20"
+      style.stroke-width: 4
+      style.bold: true
+    }
+  }
+}
+# Legend
+legend: {
+  near: bottom-right
+  label: "Key Insight"
+  shape: rectangle
+  style.fill: "#FFF9C4"
+  style.stroke: "#F57F17"
+  insight: |md
+**Data layout enables compiler optimizations that code changes cannot achieve.**
+Archetype's parallel arrays give the compiler:
+• Proven sequential access → loop unrolling
+• No pointer aliasing → SIMD vectorization  
+• Known stride → prefetching
+Sparse set indirection blocks all of these.
+| {
+    shape: text
+  }
+}
+# Arrows between rows
+row1 -> row2: "Memory Layout" {
+  style.stroke: "#666"
+  style.stroke-dash: 2
+}
+row2 -> row3: "Compiler Analysis" {
+  style.stroke: "#666"
+  style.stroke-dash: 2
+}
+row3 -> row4: "Result" {
+  style.stroke: "#666"
+  style.stroke-dash: 2
+}

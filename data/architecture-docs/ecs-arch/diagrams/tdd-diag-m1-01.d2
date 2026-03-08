@@ -1,0 +1,282 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ---------------------------------------------------------------------------------
+# SECTION 1: MEMORY LAYOUT - ENTITY ID BIT PACKING
+# Intel Manual Quality Specification: 64-bit Packed Identifier
+# ---------------------------------------------------------------------------------
+bit_packing: "Entity ID Bit Packing Layout (sizeof=8B)" {
+  style: {
+    stroke: "#333333"
+    stroke-width: 2
+    fill: "#FFFFFF"
+  }
+
+  header: "63 ................................................................ 0" {
+    style: {
+      fill: "#D1C4E9"
+      bold: true
+      font-size: 18
+    }
+  }
+
+  layout: {
+    grid-columns: 3
+    grid-gap: 0
+    vertical-gap: 2
+    
+    # Row Labels
+    h1: "Offset" { style.font-color: gray; style.bold: true }
+    h2: "Field Description" { style.font-color: gray; style.bold: true }
+    h3: "Bit Range" { style.font-color: gray; style.bold: true }
+
+    # Row 1: Index (40 bits)
+    offset_0: "0x00" { style.font-color: "#78909C" }
+    index_field: "ENTITY INDEX (High 40 Bits)" {
+      style.fill: "#BBDEFB" # Data=Blue
+      style.bold: true
+      width: 450
+    }
+    bits_0: "63:24" { style.font-color: "#78909C" }
+
+    # Row 2: Generation (16 bits)
+    offset_5: "0x05" { style.font-color: "#78909C" }
+    gen_field: "GENERATION (16 Bits)" {
+      style.fill: "#C8E6C9" # Free/Gen=Green
+      style.bold: true
+      width: 450
+    }
+    bits_5: "23:08" { style.font-color: "#78909C" }
+
+    # Row 3: Flags (8 bits)
+    offset_7: "0x07" { style.font-color: "#78909C" }
+    flag_field: "FLAGS / TYPE (8 Bits)" {
+      style.fill: "#EEEEEE" # Padding/Flags=Gray
+      style.bold: true
+      width: 450
+    }
+    bits_7: "07:00" { style.font-color: "#78909C" }
+  }
+
+  notes: |md
+    ### Bit Field Definitions
+    - **Index**: Unique identifier within a generation. Max: 1,099,511,627,775 entities.
+    - **Generation**: Incremented on despawn to prevent "ABA" dangling pointer issues.
+    - **Flags**: [7:4] reserved for versioning, [3:0] entity archetype classification.
+  |
+}
+
+# ---------------------------------------------------------------------------------
+# SECTION 2: ARCHITECTURE - COMMAND BUFFER PATTERN
+# ---------------------------------------------------------------------------------
+title: |md
+  # Cross-Domain: Command Buffers as Event Sourcing
+  *Architectural equivalence between high-performance ECS and distributed Event Stores.*
+| {
+  near: top-center
+}
+
+row1: {
+  style.stroke: transparent
+  style.fill: transparent
+
+  ecs: "ECS Domain: Command Buffer (game_loop.rs)" {
+    direction: down
+    style.stroke-width: 2
+    
+    frame_n: "Frame Execution Boundary (T = 16.6ms)" {
+      style.fill: "#E8F5E9"
+      
+      systems: "Parallel System Execution" {
+        style.fill: "#C8E6C9"
+        sys1: "MovementSystem(Query<Pos, Vel>)"
+        sys2: "AISystem(Query<Behavior>)"
+        sys3: "CombatSystem(Query<Health, Attack>)"
+        sys1 -> sys2 -> sys3: "dependency"
+      }
+      
+      cmd_buf: "Deferred Command Queue (Vec<Command>)" {
+        shape: queue
+        style.fill: "#81C784"
+        c1: "Spawn{id: 42, type: 'Orc'}"
+        c2: "AddComp{e: 42, Pos(0,0)}"
+        c3: "Destroy{e: 15}"
+        c4: "AddComp{e: 7, Buff(Fire)}"
+      }
+      systems -> cmd_buf: "push_command()"
+    }
+    
+    flush: "Sync Point: flush(world)" {
+      style.fill: "#FFECB3"
+      style.stroke: "#FFA000"
+      
+      flush_code: {
+        shape: code
+        width: 350
+        label: |rust
+          for cmd in buffer.drain(..) {
+            match cmd {
+              Spawn{id, ..} => world.spawn(id),
+              Destroy{e} => world.despawn(e),
+              AddComp{e, c} => world.insert(e, c),
+            }
+          }
+        |
+      }
+    }
+    frame_n -> flush: "end of frame"
+  }
+
+  bridge: "PATTERN EQUIVALENCE" {
+    shape: parallelogram
+    style.fill: "#F3E5F5"
+    style.stroke: "#9C27B0"
+    style.bold: true
+  }
+
+  event_src: "Distributed Domain: Event Sourcing (ledger.go)" {
+    direction: down
+    style.stroke-width: 2
+    
+    event_log: "Append-Only Event Store" {
+      shape: cylinder
+      style.fill: "#E3F2FD"
+      
+      events: "Persistence Log" {
+        shape: queue
+        style.fill: "#90CAF9"
+        e1: "OrderCreated{uid: 101}"
+        e2: "ItemAdded{sku: 'AX-1'}"
+        e3: "PaymentValidated{tx: 99}"
+        e4: "OrderShipped{pkg: 882}"
+      }
+    }
+    
+    projector: "Materialized View Projector" {
+      style.fill: "#FFECB3"
+      style.stroke: "#FFA000"
+      
+      proj_code: {
+        shape: code
+        width: 350
+        label: |rust
+          fn apply(state: &mut OrderState, ev: Event) {
+            match ev {
+              OrderCreated{..} => state.status = Pending,
+              ItemAdded{sku}   => state.items.push(sku),
+              OrderShipped{..} => state.status = Shipped,
+            }
+          }
+        |
+      }
+    }
+    event_log -> projector: "replay / stream"
+  }
+  
+  ecs -> bridge -> event_src
+}
+
+row2: {
+  style.stroke: transparent
+  style.fill: transparent
+
+  mapping: "Structural Mapping" {
+    style.fill: "#F5F5F5"
+    eq_table: {
+      shape: rectangle
+      label: |md
+        | Component | ECS Definition | Event Sourcing Definition |
+        | :--- | :--- | :--- |
+        | **The Log** | `CommandBuffer` | Event Store / Kafka Topic |
+        | **The Atom** | `Command` enum | `Event` payload |
+        | **Process** | `world.flush()` | Projection / Aggregation |
+        | **State** | `World` (Entities/Comps) | Materialized View / Read Model |
+        | **Trigger** | Frame Completion | Transaction / User Action |
+      |
+    }
+  }
+
+  apps: "Implementation Strategies" {
+    direction: right
+    style.fill: "#FFF3E0"
+    
+    networking: {
+      style.fill: "#FFCC80"
+      label: |md
+        ### Network Replication
+        **Delta Sync**
+        Serialize the Buffer instead
+        of the whole World state.
+      |
+    }
+    
+    replay: {
+      style.fill: "#FFCC80"
+      label: |md
+        ### Deterministic Replay
+        **Bug Reproduction**
+        Record user commands + seeds.
+        Re-run for bit-perfect failure.
+      |
+    }
+
+    undo: {
+      style.fill: "#FFCC80"
+      label: |md
+        ### Undo / Redo Stack
+        **Command Inversion**
+        Store 'inverse' commands.
+        e.g., `Add` becomes `Remove`.
+      |
+    }
+  }
+}
+
+row3: {
+  style.stroke: transparent
+  style.fill: transparent
+
+  philosophy: "Architectural Shift: Intent-Based vs State-Based" {
+    direction: right
+    
+    state_side: {
+      style.fill: "#FFCDD2"
+      label: |md
+        ### State-Based (Direct Mutation)
+        **"What is the value now?"**
+        - `health -= 20`
+        - Destructive: Loses Context
+        - Hard to sync (Snapshots only)
+      |
+    }
+    
+    transition: "==== transforms to ====>" {
+      shape: text
+    }
+    
+    intent_side: {
+      style.fill: "#C8E6C9"
+      label: |md
+        ### Intent-Based (Event Log)
+        **"What happened?"**
+        - `DamageCommand{amt: 20}`
+        - Preserves History: Audit trail
+        - Easy to sync (Deltas)
+      |
+    }
+  }
+}
+
+# Explicit Logic Connections
+row1.ecs.frame_n.systems -> row1.ecs.flush: "deferred execution"
+row1.event_src.event_log -> row1.event_src.projector: "stream reduction"
+
+# Global Formatting
+***.style.font-size: 14
+(*** -> ***)[*].style.stroke: "#546E7A"
+(*** -> ***)[*].style.stroke-width: 1

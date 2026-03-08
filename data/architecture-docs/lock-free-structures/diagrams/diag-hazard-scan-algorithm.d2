@@ -1,0 +1,147 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # hazard_scan_and_reclaim() Algorithm
+  **O(P×S + R×P) where P=threads, S=slots, R=retired nodes**
+| {near: top-center}
+step1_collect: {
+  label: "STEP 1: Snapshot Hazard Pointers"
+  width: 420
+  code: |'c
+    size_t num_threads = atomic_load(&g_next_thread_id);
+    size_t max_hps = num_threads * HAZARD_PTRS_PER_THREAD;
+    uintptr_t* protected = alloca(max_hps * sizeof(uintptr_t));
+    size_t protected_count = 0;
+    for (int t = 0; t < num_threads; t++) {
+      if (!g_hazard_registry[t].active) continue;
+      for (int s = 0; s < HAZARD_PTRS_PER_THREAD; s++) {
+        uintptr_t hp = atomic_load_explicit(
+          &g_hazard_registry[t].slots[s],
+          memory_order_acquire  // ← CRITICAL: sees prior protects
+        );
+        if (hp != 0) protected[protected_count++] = hp;
+      }
+    }
+  '|
+  style.fill: "#E8F4E8"
+  style.stroke: "#2E7D32"
+}
+complexity_1: {
+  label: |md
+    **Complexity:** O(P × S)
+    - P = number of registered threads
+    - S = slots per thread (typically 2)
+    - Each load: ~3-40 cycles (L1/L2/L3)
+  |
+  shape: rectangle
+  style.fill: "#FFF9C4"
+  style.stroke: "#F9A825"
+}
+step2_iterate: {
+  label: "STEP 2: Partition Retirement List"
+  width: 420
+  code: |'c
+    size_t keep_count = 0;
+    for (size_t i = 0; i < t_retire_list.count; i++) {
+      void* node = t_retire_list.nodes[i];
+      bool is_protected = false;
+      // Linear search through protected set
+      for (size_t p = 0; p < protected_count; p++) {
+        if (protected[p] == (uintptr_t)node) {
+          is_protected = true;
+          break;
+        }
+      }
+      if (is_protected) {
+        // Keep in retirement list
+        t_retire_list.nodes[keep_count++] = node;
+      } else {
+        free(node);  // ← Safe: no HP references this node
+      }
+    }
+    t_retire_list.count = keep_count;
+  '|
+  style.fill: "#E3F2FD"
+  style.stroke: "#1565C0"
+}
+complexity_2: {
+  label: |md
+    **Complexity:** O(R × P')
+    - R = retirement list size (≤ threshold)
+    - P' = protected_count (≤ P × S)
+    - Linear search per retired node
+  |
+  shape: rectangle
+  style.fill: "#FFF9C4"
+  style.stroke: "#F9A825"
+}
+memory_ordering: {
+  label: "Memory Ordering Guarantee"
+  width: 420
+  code: |'c
+    // Protect side (Thread A accessing node):
+    hazard_protect(slot, node):
+      atomic_store_explicit(&hp[slot], node, memory_order_RELEASE);
+    // Scan side (Thread B reclaiming):
+    hp = atomic_load_explicit(&hp[slot], memory_order_ACQUIRE);
+    // Result: Thread B's scan HAPPENS-AFTER Thread A's protect
+    // Therefore: if Thread B sees hp != node, Thread A's 
+    // dereference must have completed before Thread B frees
+  '|
+  style.fill: "#F3E5F5"
+  style.stroke: "#7B1FA2"
+}
+invariant: {
+  label: |md
+    ## Key Invariant
+    A node is freed **IFF** it was not in any hazard slot
+    at the **snapshot instant**.
+    This creates a happens-before edge:
+    
+    Thread A: protect(node) → dereference(node)
+                   ↓ (release)
+    Thread B: scan() → see hp==node → skip free
+                   ↓ (acquire)
+    Thread B: scan() → see hp!=node → free(node)
+    
+    By transitivity: Thread A's dereference happens-before
+    Thread B's free, ensuring safety.
+  |
+  shape: rectangle
+  width: 420
+  style.fill: "#FFEBEE"
+  style.stroke: "#C62828"
+}
+optimizations: {
+  label: "Optimization Strategies"
+  width: 420
+  code: |'c
+    // OPT 1: Sort + Binary Search
+    // - Sort protected[] after snapshot
+    // - Binary search per retired node
+    // - O(P log P + R log P) vs O(R × P)
+    // OPT 2: Hash Table for Protected Set
+    // - Hash each protected pointer
+    // - O(R) average case lookup
+    // OPT 3: Bloom Filter Pre-check
+    // - Quick reject for definitely-unprotected
+    // - Falls back to full check on positive
+    // OPT 4: Batch Size Tuning
+    // - Larger threshold = amortized lower cost
+    // - But higher memory usage
+    // - Typical: threshold = 2 × P × S
+  '|
+  style.fill: "#E0F7FA"
+  style.stroke: "#00838F"
+}
+step1_collect -> complexity_1: "cost"
+complexity_1 -> step2_iterate: "then"
+step2_iterate -> complexity_2: "cost"
+complexity_2 -> memory_ordering: "correctness"
+memory_ordering -> invariant: "guarantees"
+invariant -> optimizations: "improvements"

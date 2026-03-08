@@ -1,0 +1,194 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |'md
+# Tagged Pointer ABA Prevention
+**Atomic 128-bit Compare-and-Swap with Monotonic Versioning**
+'| {
+  near: top-center
+}
+
+# -----------------------------------------------------------------------------------------
+# 1. MEMORY LAYOUT (cmpxchg16b compatible)
+# -----------------------------------------------------------------------------------------
+MemoryLayout: {
+  label: "TaggedPtr Memory Layout (16-Byte Aligned)"
+  
+  header: "Tagged Pointer Structure" {
+    style.fill: "#673AB7" # Purple
+    style.font-color: white
+  }
+
+  offset_0: "0x00" {
+    shape: rectangle
+    label: "version (8 Bytes)"
+    tooltip: "Monotonically increasing counter"
+    style.fill: "#BBDEFB" # Blue
+    width: 300
+    height: 40
+  }
+  
+  offset_8: "0x08" {
+    shape: rectangle
+    label: "ptr (8 Bytes)"
+    tooltip: "Memory address of node"
+    style.fill: "#FFE0B2" # Orange
+    width: 300
+    height: 40
+  }
+
+  size_label: "sizeof = 16 bytes" {
+    shape: text
+    style.font-size: 14
+  }
+
+  offset_0 -> offset_8: "contiguous" {style.stroke-dash: 3}
+}
+
+# -----------------------------------------------------------------------------------------
+# 2. SEQUENCE DIAGRAM: THE RACE CONDITION
+# -----------------------------------------------------------------------------------------
+ABA_Prevention_Sequence: {
+  shape: sequence_diagram
+  
+  t1: Thread 1 (Core 0) {shape: person}
+  stack: Shared Stack (Top) {shape: cylinder}
+  t2: Thread 2 (Core 1) {shape: person}
+
+  t1 -> stack: "Load current top: {v:0, ptr:A}"
+  t1 -> t1: "Calculate next: {v:1, ptr:B}"
+  
+  note: |'md
+    **Context Switch**
+    Thread 1 Preempted
+  '| {
+    style.fill: "#FFEBEE"
+  }
+
+  t2 -> stack: "pop() -> A succeeds\nCAS({v:0, A}, {v:1, B})"
+  t2 -> stack: "pop() -> B succeeds\nCAS({v:1, B}, {v:2, C})"
+  t2 -> t2: "free(A), free(B)"
+  t2 -> stack: "push(X) [alloc at A]\nCAS({v:2, C}, {v:3, A})"
+
+  note: |'md
+    **Thread 1 Resumes**
+    Attempts to commit stale state
+  '| {
+    style.fill: "#E8F5E9"
+  }
+
+  t1 -> stack: "CAS({v:0, A}, {v:1, B})"
+  stack -> t1: "FAILURE: current={v:3, A}" {
+    style: {
+      stroke: red
+      bold: true
+    }
+  }
+
+  t1 -> t1: "Detects Version Mismatch (0 != 3)\nRetry Loop"
+}
+
+# -----------------------------------------------------------------------------------------
+# 3. ALGORITHM STATE TRANSITIONS
+# -----------------------------------------------------------------------------------------
+StackTransitions: {
+  label: "Evolution of 'top' Tagged Pointer"
+
+  T0: {
+    label: |'md
+      ### T0: Initial State
+      `top = {v:0, ptr:A}`
+      Stack: A -> B -> C
+    '|
+    style.fill: "#E1F5FE"
+  }
+
+  T1: {
+    label: |'md
+      ### T1: T2 Pops A
+      `top = {v:1, ptr:B}`
+      Stack: B -> C
+    '|
+    style.fill: "#E1F5FE"
+  }
+
+  T2: {
+    label: |'md
+      ### T2: T2 Pops B
+      `top = {v:2, ptr:C}`
+      Stack: C
+    '|
+    style.fill: "#E1F5FE"
+  }
+
+  T3: {
+    label: |'md
+      ### T3: T2 Pushes A' (recycled)
+      `top = {v:3, ptr:A'}`
+      Stack: A' -> C
+    '|
+    style.fill: "#FFF9C4"
+    style.stroke: "#FBC02D"
+  }
+
+  T4_Fail: {
+    label: |'md
+      ### T4: T1 CAS Fails
+      Expected: `{v:0, ptr:A}`
+      Found:    `{v:3, ptr:A'}`
+      **Result: Blocked ABA corruption**
+    '|
+    style.fill: "#FFCDD2"
+    style.stroke: "#D32F2F"
+  }
+
+  T0 -> T1: "Thread 2 Pop"
+  T1 -> T2: "Thread 2 Pop"
+  T2 -> T3: "Thread 2 Push (malloc returns A)"
+  T3 -> T4_Fail: "Thread 1 attempts CAS"
+}
+
+# -----------------------------------------------------------------------------------------
+# 4. TECHNICAL SPECIFICATIONS & INSIGHTS
+# -----------------------------------------------------------------------------------------
+KeyInsight: {
+  label: |'md
+  ## 🔑 Why Tagged Pointers Work
+  In standard pointers, **A == A'** based on memory address alone.
+  In tagged pointers, **(v:0, A) != (v:3, A')**.
+  
+  The 128-bit atomic CAS ensures that if any thread modifies the stack, the 
+  version counter *must* change. Even if the address is reused, the 
+  tuple remains unique across time.
+  '|
+  style.fill: "#F5F5F5"
+  style.stroke: "#9E9E9E"
+  style.border-radius: 8
+}
+
+VersionLifecycle: {
+  label: |'md
+  ### Version Lifecycle (Δv)
+  | Op | Input | Output | Result |
+  | :--- | :--- | :--- | :--- |
+  | Push | `{v, P}` | `{v+1, N}` | Success |
+  | Pop  | `{v, P}` | `{v+1, P->next}` | Success |
+  | ABA  | `{0, A}` | `{3, A'}` | **Fail** |
+  '|
+  style.fill: "#FAFAFA"
+}
+
+# Layout constraints
+MemoryLayout.near: top-left
+KeyInsight.near: bottom-center
+VersionLifecycle.near: bottom-right
+StackTransitions.near: center-right
+
+# Global Styles
+***.style.font: mono
+(ABA_Prevention_Sequence -> stack)[*].style.stroke: "#2196F3"
+(StackTransitions -> *)[*].style.stroke-width: 2

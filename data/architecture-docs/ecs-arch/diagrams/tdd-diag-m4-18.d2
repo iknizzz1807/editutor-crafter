@@ -1,0 +1,215 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# --- MODULE 1: ENTITY ID MEMORY LAYOUT ---
+# Specification for a 32-bit packed handle used to reference entities in O(1).
+entity_id_layout: "Entity ID Bit Packing (32-bit u32 handle)" {
+  style: {
+    stroke: "#333333"
+    fill: "#f8f9fa"
+    stroke-width: 2
+  }
+
+  # Visual representation of bits for hardware-level clarity
+  bit_grid: "" {
+    grid-columns: 32
+    grid-gap: 0
+    
+    # 20 Bits for Index (MSB)
+    b31: "31"; b30: " "; b29: " "; b28: " "; b27: " "; b26: " "; b25: " "; b24: " "; b23: " "; b22: " "; b21: " "; b20: " "; b19: " "; b18: " "; b17: " "; b16: " "; b15: " "; b14: " "; b13: " "; b12: "12"
+    
+    # 12 Bits for Generation (LSB)
+    b11: "11"; b10: " "; b09: " "; b08: " "; b07: " "; b06: " "; b05: " "; b04: " "; b03: " "; b02: " "; b01: " "; b00: "0"
+
+    # Explicit styling for MSB Index Block
+    b31, b30, b29, b28, b27, b26, b25, b24, b23, b22, b21, b20, b19, b18, b17, b16, b15, b14, b13, b12: {
+      style.fill: "#88DCF7"
+    }
+    # Explicit styling for LSB Generation Block
+    b11, b10, b09, b08, b07, b06, b05, b04, b03, b02, b01, b00: {
+      style.fill: "#C6F6D5"
+    }
+  }
+
+  layout_table: "" {
+    shape: sql_table
+    "Index (20b)": "Offset [31:12]" {constraint: "Max: 1,048,576"}
+    "Generation (12b)": "Version [11:0]" {constraint: "Max: 4,096 Recycles"}
+    style.fill: transparent
+    style.stroke-width: 0
+  }
+
+  byte_offsets: |md
+    ### Memory Constraints
+    - **Index**: 20 bits allows for **1.04M** simultaneous entities.
+    - **Generation**: 12 bits prevents "ABA" pointer problems during recycling.
+    - **Alignment**: u32 (4-byte) aligned for atomic CAS operations.
+  |
+}
+
+# --- MODULE 2: ARCHETYPE-BASED STORAGE ---
+# Demonstrates Structure of Arrays (SoA) layout for high cache-hit rate.
+archetype_storage: "Archetype-Based Storage (Parallel SoA Arrays)" {
+  style: {
+    stroke: "#4A90E2"
+    fill: "#E4F0FB"
+  }
+
+  archetype_a: "Archetype Instance: [Position, Velocity]" {
+    grid-columns: 3
+    grid-gap: 20
+    
+    entities: "Entity Column (u32)" {
+      shape: sql_table
+      header: "Offset: 0x00" {class: table_header}
+      e0: "E_101v1"
+      e1: "E_205v2"
+      e2: "E_310v1"
+      style.fill: "#CBD6E0"
+    }
+
+    pos_col: "Position (f32 x 2)" {
+      shape: sql_table
+      header: "Offset: 0x100" {class: table_header}
+      p0: "10.0, 20.0"
+      p1: "15.0, 25.0"
+      p2: "20.0, 30.0"
+      style.fill: "#C7F1FF"
+    }
+
+    vel_col: "Velocity (f32 x 2)" {
+      shape: sql_table
+      header: "Offset: 0x200" {class: table_header}
+      v0: "1.0, 0.0"
+      v1: "0.5, 0.5"
+      v2: "0.0, 1.0"
+      style.fill: "#B5AFF6"
+    }
+    
+    # Illustrate row-aligned components for specific entity
+    # FIX: Declaring edges directly instead of trying to index non-existent ones.
+    entities.e1 -> pos_col.p1: { style.stroke: orange }
+    pos_col.p1 -> vel_col.v1: { style.stroke: orange }
+  }
+
+  annotation: |md
+    **Data Locality (SoA)**:
+    - `Position` and `Velocity` are stored in separate contiguous arrays.
+    - Simd-friendly: `Velocity` can be added to `Position` using packed loads.
+    - **Cache Line Utilization**: 64B line typically holds 8 Positions or 8 Velocities.
+  |
+}
+
+# --- MODULE 3: ENTITY MIGRATION FLOW ---
+# Logic for moving an entity from one Archetype to another when components are added.
+migration_logic: "Entity Migration Algorithm (Component Add/Remove)" {
+  shape: sequence_diagram
+  
+  em: EntityManager
+  reg: ArchetypeRegistry
+  src: SourceArchetype
+  dst: TargetArchetype
+
+  em -> reg: "find_or_create_target(target_sig)"
+  reg -> dst: "allocate_new_row()"
+  dst -> reg: "target_row_idx"
+  reg -> em: "target_row_idx"
+
+  span_copy: {
+    em -> src: "swap_and_pop(src_idx)"
+    src -> dst: "move_shared_data(Pos, Vel)"
+    dst -> dst: "init_component(Health)"
+  }
+  
+  em -> em: "update_entity_location(target_row_idx)"
+  
+  note: |md
+    **Critical Path: Swap-and-Pop**
+    1. Copy `last_entity` into `src_idx` hole.
+    2. Update `EntityLocation` for the moved `last_entity`.
+    3. Decrement `SourceArchetype.len`.
+  |
+}
+
+# --- MODULE 4: ARCHETYPE GRAPH TRANSITIONS ---
+# State machine representation of archetype branching.
+archetype_graph: "Archetype Transition Graph" {
+  style.fill: "#F6F9FC"
+  style.stroke: "#9B6DFF"
+
+  null_node: "()" {shape: circle; style.fill: "#E4DBFE"}
+  pos_node: "(Pos)" {style.fill: "#E4DBFE"}
+  pos_vel_node: "(Pos, Vel)" {style.fill: "#E4DBFE"}
+  pos_health_node: "(Pos, Health)" {style.fill: "#E4DBFE"}
+
+  null_node -> pos_node: "Add<Pos>" {style: {stroke: "#4A90E2"; bold: true}}
+  pos_node -> pos_vel_node: "Add<Vel>" {style: {stroke: "#4A90E2"; bold: true}}
+  pos_node -> pos_health_node: "Add<Health>" {style: {stroke: "#4A90E2"; bold: true}}
+  pos_vel_node -> pos_node: "Remove<Vel>" {style: {stroke: "#E74C3C"; stroke-dash: 3}}
+
+  graph_memo: |md
+    ### Pathfinding
+    - Graph edges are established lazily.
+    - `Add<C>` follows cached `ToID` if present.
+    - Avoids expensive signature hashing on every frame.
+  | {near: bottom-right}
+}
+
+# --- MODULE 5: WORLD DATA STRUCTURE ---
+world_root: "World (State Container)" {
+  shape: class
+  
+  entity_manager: "EntityManager" {
+    - generations: "Vec<u12>"
+    - free_list: "Vec<u32>"
+    + create(): "Entity"
+    + destroy(Entity): "void"
+  }
+
+  archetype_registry: "ArchetypeRegistry" {
+    - archetypes: "Vec<Archetype>"
+    - signature_map: "HashMap<Signature, ID>"
+    + get_matching(Query): "Vec<&Archetype>"
+  }
+
+  locations: "EntityLocations" {
+    - table: "Vec<Location { arch_id, row }>"
+  }
+
+  entity_manager -- locations: "manages"
+  locations -- archetype_registry: "references"
+}
+
+# Global Labels & Annotations
+world_root.style.stroke: "#9B6DFF"
+world_root.style.stroke-width: 4
+
+title_card: |md
+  # TDD-M4: Component Storage & Migration
+  **Technical Specification**
+  - **Memory Scheme**: SoA (Structure of Arrays)
+  - **Handle Size**: 4 Bytes
+  - **Complexity**: O(1) Migration (amortized)
+| {near: top-left}
+
+# Layout Connections (Architecture Flow)
+entity_id_layout -> world_root: "Defines ID Handle"
+world_root -> archetype_storage: "Allocates Buffers"
+migration_logic -> archetype_graph: "Traverses transitions"
+archetype_storage -> migration_logic: "Input State"
+
+classes: {
+  table_header: {
+    style: {
+      font-size: 12
+      italic: true
+      fill: "#eeeeee"
+    }
+  }
+}

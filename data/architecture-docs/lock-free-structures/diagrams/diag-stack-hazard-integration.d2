@@ -1,0 +1,278 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Treiber Stack Pop with Hazard Pointer Protection
+  Set-Then-Validate Protocol
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  phase1: {
+    direction: down
+    label: "Phase 1: Load & Protect"
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    step1: {
+      label: "Step 1: Load Top"
+      width: 320
+      code: |'c
+        // Load current top pointer
+        old_top = atomic_load_explicit(
+            &stack->top, 
+            memory_order_acquire
+        );
+      '|
+    }
+    step2: {
+      label: "Step 2: Set Hazard Pointer"
+      width: 320
+      style.fill: "#C8E6C9"
+      code: |'c
+        // Publish protection BEFORE dereference
+        hazard_protect(HAZARD_SLOT_TOP, 
+                       old_top.ptr);
+      '|
+    }
+    note1: {
+      label: "⚠ Critical: Protection must be set\nBEFORE any dereference!"
+      shape: diamond
+      style.fill: "#FFCDD2"
+      style.stroke: "#E53935"
+      width: 200
+    }
+  }
+  phase2: {
+    direction: down
+    label: "Phase 2: Validate"
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+    step3: {
+      label: "Step 3: Validate Top Unchanged"
+      width: 320
+      code: |'c
+        // Re-read to verify protection is valid
+        TaggedPtr current = atomic_load_explicit(
+            &stack->top, 
+            memory_order_acquire
+        );
+        if (old_top.version != current.version 
+            || old_top.ptr != current.ptr) {
+            // Top changed! Retry from beginning
+            continue;
+        }
+      '|
+    }
+    step4: {
+      label: "Step 4: Safe Dereference"
+      width: 320
+      style.fill: "#BBDEFB"
+      code: |'c
+        // NOW safe to dereference
+        // Node cannot be freed while protected
+        new_top.ptr = old_top.ptr->next;
+        new_top.version = old_top.version + 1;
+      '|
+    }
+    note2: {
+      label: "✓ Validation ensures\nprotection is current"
+      shape: oval
+      style.fill: "#C8E6C9"
+      style.stroke: "#4CAF50"
+      width: 160
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  phase3: {
+    direction: down
+    label: "Phase 3: CAS & Cleanup"
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    step5: {
+      label: "Step 5: Attempt CAS"
+      width: 320
+      code: |'c
+        if (atomic_compare_exchange_strong_explicit(
+            &stack->top, &old_top, new_top,
+            memory_order_release,
+            memory_order_acquire
+        )) {
+            // Success! Node removed
+            *value = old_top.ptr->value;
+      '|
+    }
+    step6: {
+      label: "Step 6: Release & Retire"
+      width: 320
+      style.fill: "#FFE0B2"
+      code: |'c
+            // Clear hazard protection
+            hazard_release(HAZARD_SLOT_TOP);
+            // Defer reclamation
+            hazard_retire(old_top.ptr);
+            return true;
+        }
+        // CAS failed - retry loop
+      '|
+    }
+  }
+  memory_view: {
+    direction: down
+    label: "Memory State Visualization"
+    style.fill: "#F3E5F5"
+    style.stroke: "#9C27B0"
+    stack_struct: {
+      shape: sql_table
+      label: "TreiberStack (treiber_stack_safe.h)"
+      f0: "0x00 | TaggedPtr | top"
+      f1: "0x10 | uint64_t | version"
+      sz: "16 bytes (cache-aligned)"
+    }
+    hazard_registry: {
+      shape: sql_table
+      label: "Hazard Registry (Thread 0)"
+      slot0: "Slot 0 | Node* | protected ptr"
+      slot1: "Slot 1 | Node* | NULL"
+      sz: "Per-thread, cache-line padded"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  stack_diagram: {
+    direction: down
+    label: "Stack Structure During Pop"
+    style.fill: "#FAFAFA"
+    style.stroke: "#9E9E9E"
+    top_ptr: {
+      label: "stack->top"
+      shape: rectangle
+      style.fill: "#64B5F6"
+      width: 120
+    }
+    node_a: {
+      label: "Node A\n(value: 42)\n← HAZARD PROTECTED"
+      shape: rectangle
+      style.fill: "#81C784"
+      style.stroke: "#2E7D32"
+      style.stroke-width: 3
+      width: 140
+    }
+    node_b: {
+      label: "Node B\n(value: 17)"
+      shape: rectangle
+      style.fill: "#E0E0E0"
+      width: 140
+    }
+    node_c: {
+      label: "Node C\n(value: 99)"
+      shape: rectangle
+      style.fill: "#E0E0E0"
+      width: 140
+    }
+    null_node: {
+      label: "NULL"
+      shape: rectangle
+      style.fill: "#BDBDBD"
+      width: 80
+    }
+    top_ptr -> node_a: "ptr"
+    node_a -> node_b: "next"
+    node_b -> node_c: "next"
+    node_c -> null_node: "next"
+  }
+  race_diagram: {
+    direction: down
+    label: "Race Prevention: What HP Prevents"
+    style.fill: "#FFEBEE"
+    style.stroke: "#C62828"
+    timeline: {
+      direction: right
+      label: ""
+      t1: {
+        label: "T1: Pop"
+        style.fill: "#FFCDD2"
+        step_t1_1: "load top = A"
+        step_t1_2: "hazard_protect(A)"
+        step_t1_3: "validate A still top"
+        step_t1_4: "read A->next = B"
+        step_t1_5: "CAS(top, A, B) ✓"
+        step_t1_6: "hazard_retire(A)"
+        step_t1_1 -> step_t1_2
+        step_t1_2 -> step_t1_3
+        step_t1_3 -> step_t1_4
+        step_t1_4 -> step_t1_5
+        step_t1_5 -> step_t1_6
+      }
+      t2: {
+        label: "T2: Pop (concurrent)"
+        style.fill: "#FFCDD2"
+        step_t2_1: "load top = A"
+        step_t2_2: "hazard_protect(A)"
+        step_t2_3: "CAS fails (top != A)"
+        step_t2_4: "retry with new top"
+        step_t2_1 -> step_t2_2
+        step_t2_2 -> step_t2_3
+        step_t2_3 -> step_t2_4
+      }
+    }
+    safety_note: {
+      label: |md
+        **Without hazard pointers:**
+        T2 could dereference freed A after T1's retire
+        **With hazard pointers:**
+        Scan sees A is protected, defers free
+      |
+      shape: rectangle
+      style.fill: "#FFF9C4"
+      width: 280
+    }
+  }
+}
+phase1 -> phase2: "Protection Set"
+phase2 -> phase3: "Validated ✓"
+phase3.step5 -> memory_view: "Updates"
+step1 -> step2
+step2 -> step3
+step3 -> step4
+step4 -> step5
+step5 -> step6
+legend: {
+  near: bottom-center
+  direction: right
+  label: ""
+  style.stroke: transparent
+  style.fill: transparent
+  green: {
+    label: "Protected Node"
+    shape: rectangle
+    style.fill: "#81C784"
+    style.stroke: "#2E7D32"
+    style.stroke-width: 3
+    width: 100
+  }
+  blue: {
+    label: "Active Operation"
+    shape: rectangle
+    style.fill: "#64B5F6"
+    width: 100
+  }
+  red: {
+    label: "Critical Path"
+    shape: diamond
+    style.fill: "#FFCDD2"
+    style.stroke: "#E53935"
+    width: 100
+  }
+}

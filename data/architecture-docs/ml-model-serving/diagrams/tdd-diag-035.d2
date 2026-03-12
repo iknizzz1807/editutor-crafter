@@ -1,0 +1,258 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    layout-engine: elk
+  }
+}
+
+# =============================================================================
+# MODULE 1: CORE ARCHITECTURE & MEMORY LAYOUT
+# =============================================================================
+
+direction: right
+
+GlobalStateMemory: {
+  shape: sql_table
+  label: "GlobalState (Singleton Memory Layout) | sizeof=64B (Cache Line Aligned)"
+  
+  "0x00": "vtable_ptr" {constraint: "8B (Pointer)"; style.fill: "#e17055"; style.font-color: white}
+  "0x08": "model_ptr" {constraint: "8B (torch.nn.Module*)"; style.fill: "#e17055"; style.font-color: white}
+  "0x10": "state_enum" {constraint: "4B (int32)"; style.fill: "#6c5ce7"; style.font-color: white}
+  "0x14": "version_len" {constraint: "4B (uint32)"; style.fill: "#0984e3"; style.font-color: white}
+  "0x18": "version_str" {constraint: "32B (char[32])"; style.fill: "#0984e3"; style.font-color: white}
+  "0x38": "padding" {constraint: "8B (alignment)"; style.fill: "#dfe6e9"}
+}
+
+ModelState: {
+  shape: oval # FIXED: Changed from 'ellipse' to 'oval'
+  style.fill: "#E4DBFE"
+  LOADING: {style.stroke: grey}
+  WARMING_UP: {style.stroke: orange; style.stroke-width: 3}
+  READY: {style.stroke: green; style.stroke-width: 4; style.bold: true}
+  FAILED: {style.stroke: red; style.fill: "#ff7675"}
+}
+
+ModelLoader: {
+  shape: rectangle
+  label: "Model Loader (C++ Extension / Python Wrapper)"
+  functions: {
+    shape: code
+    label: |python
+      def get_device() -> torch.device:
+          return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+      def check_memory_budget(path: str, device: torch.device) -> bool:
+          free, total = torch.cuda.mem_get_info(device)
+          return (os.path.getsize(path) * 4) < (free * 0.7)
+
+      def load_model(path: str, device: torch.device) -> nn.Module:
+          model = torch.load(path).to(device)
+          return model.eval()
+
+      def warmup(model: nn.Module, n: int = 5):
+          with torch.no_grad():
+              for _ in range(n): model(torch.randn(1, 3, 224, 224))
+    |
+  }
+}
+
+HealthEndpoints: {
+  label: "FastAPI Service Health Probes"
+  Liveness: {
+    label: "GET /health/liveness"
+    tooltip: "Confirms process is running"
+    returns: "200 OK"
+  }
+  Readiness: {
+    label: "GET /health/readiness"
+    tooltip: "Checks GlobalState.state == READY"
+    LOADING -> "503 Service Unavailable": {style.stroke: red}
+    WARMING -> "503 Service Unavailable": {style.stroke: orange}
+    READY -> "200 OK": {style.stroke: green}
+    FAILED -> "500 Internal Error": {style.stroke: darkred}
+  }
+}
+
+InferencePipeline: {
+  label: "Synchronous Inference Execution Flow"
+  flow: {
+    shape: sequence_diagram
+    Client: {shape: person}
+    Router: FastAPI Router
+    Engine: InferenceEngine
+    GPU: CUDA Device
+    
+    Client -> Router: POST /predict (Payload)
+    Router -> Router: Validate JSON Schema
+    Router -> Engine: forward(tensor)
+    
+    # Critical section
+    Engine.lock: GIL Acquire {
+      Engine -> GPU: mem_copy_h2d(inputs)
+      GPU -> GPU: kernel_exec(model_weights, inputs)
+      GPU -> Engine: mem_copy_d2h(outputs)
+    }
+    
+    Engine -> Router: PredictionResult
+    Router -> Client: 200 OK (JSON)
+  }
+}
+
+# =============================================================================
+# MODULE 2: VERSIONING & ATOMIC HOT SWAP
+# =============================================================================
+
+VersioningSystem: {
+  label: "Model Versioning & Atomic Pointer Swap"
+  
+  ModelSchema: {
+    shape: class
+    label: "ModelSchema Definition"
+    inputs: "Dict[str, TensorSpec]"
+    outputs: "Dict[str, TensorSpec]"
+    metadata: "Dict[str, str]"
+    "validate(input_data)": "bool"
+  }
+
+  ModelVersion: {
+    shape: class
+    version_id: "string (UUID v4)"
+    status: "Enum[VersionStatus]"
+    artifact_path: "s3://bucket/model.pt"
+    in_flight_count: "AtomicInt64"
+    "is_active()": "bool"
+  }
+
+  HotSwapSequence: {
+    label: "Zero-Downtime Atomic Swap Algorithm"
+    shape: sequence_diagram
+    Manager: SwapController
+    Registry: ModelRegistry
+    State: GlobalState
+    
+    Manager -> Registry: fetch_next_version()
+    Registry -> Manager: ModelVersion(v2)
+    Manager -> Manager: load_and_warmup(v2)
+    
+    Manager.swap: Atomic Update {
+      Manager -> State: lock_acquire()
+      State -> State: atomic_swap_ptr(v1_ptr, v2_ptr)
+      Manager -> State: lock_release()
+    }
+    
+    Manager -> Registry: mark_v1_draining()
+    Registry -> Registry: wait_for_inflight(v1, timeout=30s)
+    Registry -> Manager: v1_ready_for_unload
+  }
+}
+
+# =============================================================================
+# MODULE 3: DYNAMIC REQUEST BATCHING
+# =============================================================================
+
+BatchingEngine: {
+  label: "High-Throughput Batcher (Virtual Queue)"
+  
+  Queue: {
+    shape: rectangle
+    label: "asyncio.Queue[InferenceRequest]"
+    max_batch_size: "32"
+    wait_timeout_ms: "50"
+  }
+
+  RequestObject: {
+    shape: class
+    label: "InferenceRequest"
+    request_id: "string"
+    arrival_time: "float"
+    payload: "torch.Tensor"
+    future: "asyncio.Future"
+  }
+
+  BatchProcessor: {
+    shape: rectangle
+    label: "Batch Formation Logic"
+    "collect()": "List[Request]"
+    "pad_tensors()": "Tensor (B, C, H, W)"
+    "dispatch()": "void"
+  }
+}
+
+BatchingEngine.Queue -> BatchingEngine.BatchProcessor: "Triggers on BatchSize OR Timeout"
+BatchingEngine.BatchProcessor -> InferencePipeline.flow: "Feeds Batch"
+
+# =============================================================================
+# MODULE 4: STATISTICAL DRIFT & MONITORING
+# =============================================================================
+
+DriftMonitoring: {
+  label: "Data Drift & Performance Monitoring"
+
+  Collector: {
+    shape: rectangle
+    label: "Prometheus Metric Exporter"
+    metrics: {
+      p99_latency: "Histogram"
+      inference_count: "Counter"
+      error_rate: "Summary"
+      gpu_util: "Gauge"
+    }
+  }
+
+  DriftDetector: {
+    shape: rectangle
+    label: "Statistical Drift Engine"
+    method: "Kolmogorov-Smirnov (KS) Test"
+    window_size: "10,000 requests"
+    threshold: "0.05 (p-value)"
+  }
+}
+
+# =============================================================================
+# MODULE 5: CANARY ROUTING
+# =============================================================================
+
+TrafficControl: {
+  label: "Canary & A/B Routing Logic"
+  
+  Router: {
+    shape: diamond
+    label: "Traffic Splitter"
+    "stable_v1": "90%"
+    "canary_v2": "10%"
+  }
+
+  Policy: {
+    shape: rectangle
+    strategy: "Consistent Hashing"
+    key: "user_id"
+    failover: "If Canary 5xx > 1%, divert to Stable"
+  }
+}
+
+# =============================================================================
+# CROSS-MODULE LOGIC & INTEGRATION
+# =============================================================================
+
+ModelLoader -> GlobalStateMemory: "1. Writes Ptr" {style.stroke: orange; style.bold: true}
+InferencePipeline.flow -> DriftMonitoring.Collector: "2. Emits Metrics" {style.stroke: blue; style.stroke-dash: 3}
+TrafficControl.Router -> VersioningSystem.ModelVersion: "3. Resolves Version" {style.stroke: purple}
+BatchingEngine.BatchProcessor -> DriftMonitoring.DriftDetector: "4. Samples Outputs" {style.stroke: grey; style.stroke-dash: 5}
+
+# STYLING & ANNOTATIONS
+GlobalStateMemory.style.stroke: "#6c5ce7"
+VersioningSystem.style.fill: "#f1f2f6"
+BatchingEngine.style.fill: "#e3f2fd"
+DriftMonitoring.style.fill: "#fff3e0"
+TrafficControl.style.fill: "#f3e5f5"
+
+explanation: |md
+  ### Implementation Technical Specification
+  - **Memory Safety**: `GlobalState` uses a fixed 64-byte layout to prevent false sharing and ensure cache-line alignment.
+  - **Atomic Operations**: Hot swapping model versions requires an atomic pointer update (64-bit word swap) within the GIL.
+  - **Batching Strategy**: A dynamic window of 50ms ensures that even under low load, requests are not delayed indefinitely.
+  - **Health Probes**: Liveness is shallow; Readiness is deep (checks GPU memory + model state).
+| {
+  near: bottom-center
+}

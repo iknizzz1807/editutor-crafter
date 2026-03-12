@@ -1,0 +1,201 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 50
+  }
+}
+
+title: |md
+  # GPU MatVec Kernel Optimization Progression
+  **Objective**: $y = Ax$ for $A \in \mathbb{R}^{4096 \times 4096}$, $x, y \in \mathbb{R}^{4096}$
+  **Performance Impact**: $12.34\text{ms} \rightarrow 3.21\text{ms}$ ($3.8\times$ Speedup)
+| {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    font-color: "#2D3436"
+  }
+}
+
+baseline: "STAGE 1: Naive Global Memory Access" {
+  label.near: top-center
+  style: {
+    fill: "#FFF5F5"
+    stroke: "#D63031"
+    stroke-width: 4
+    double-border: true
+  }
+
+  implementation: {
+    label: "Kernel Implementation"
+    shape: code
+    language: cpp
+    value: |cpp
+      __global__ void matvec_naive(float* A, float* x, float* y, int M, int N) {
+        int row = blockIdx.x * blockDim.x + threadIdx.x;
+        if (row < M) {
+          float sum = 0.0f;
+          for (int col = 0; col < N; col++) {
+            // CRITICAL FAILURE: Non-coalesced broadcast of x[col]
+            // Every thread in the warp requests the same float.
+            sum += A[row * N + col] * x[col]; 
+          }
+          y[row] = sum;
+        }
+      }
+    |
+  }
+
+  memory_visual: "Memory Access Trace (Global Mem)" {
+    style.fill: "#FFF9C9"
+    grid-columns: 1
+    
+    warp_trace: |md
+      **Warp 0 (Threads 0-31)**
+      - Cycle 0: All 32 threads fetch `x[0]`
+      - Hardware Behavior: 32 separate loads or L1 cache pressure
+      - **Bus Utilization**: 4 bytes used / 128 byte transaction
+      - **Efficiency**: 3.125%
+    |
+    
+    transaction_diagram: {
+      grid-columns: 8
+      grid-gap: 2
+      t0: "x[0]" { style.fill: "#D63031"; style.font-color: white }
+      p1: "pad" { style.fill: "#DFE6E9"; label: "" }
+      p2: "pad" { style.fill: "#DFE6E9"; label: "" }
+      p3: "pad" { style.fill: "#DFE6E9"; label: "" }
+      p4: "pad" { style.fill: "#DFE6E9"; label: "" }
+      p5: "pad" { style.fill: "#DFE6E9"; label: "" }
+      p6: "pad" { style.fill: "#DFE6E9"; label: "" }
+      p7: "pad" { style.fill: "#DFE6E9"; label: "" }
+    }
+  }
+
+  metrics: "Profiling Data" {
+    style.fill: "#FFEBEE"
+    grid-rows: 3
+    t: "Latency: 12.34 ms"
+    b: "Bandwidth: 89 GB/s"
+    o: "Occupancy: 25%"
+  }
+
+  bottleneck: "⚠️ BOTTLENECK: MEMORY LATENCY / L2 THRASHING" {
+    style.fill: "#D63031"
+    style.font-color: white
+    style.bold: true
+  }
+}
+
+transition: |md
+  ## OPTIMIZATION APPLIED
+  **Shared Memory Tiling**
+  Coalesced loading of $x$-vector segments into `__shared__` memory
+  to satisfy $N$ threads with $1$ global fetch.
+| {
+  shape: text
+  style.italic: true
+  style.font-size: 18
+}
+
+optimized: "STAGE 2: Shared Memory Tiling (Coalesced)" {
+  label.near: top-center
+  style: {
+    fill: "#F0FFF4"
+    stroke: "#27AE60"
+    stroke-width: 4
+    double-border: true
+  }
+
+  implementation: {
+    label: "Kernel Implementation"
+    shape: code
+    language: cpp
+    value: |cpp
+      __global__ void matvec_tiled(float* A, float* x, float* y, int M, int N) {
+        __shared__ float x_tile[BLOCK_SIZE];
+        int row = blockIdx.x * blockDim.x + threadIdx.x;
+        float sum = 0.0f;
+        for (int t = 0; t < N; t += BLOCK_SIZE) {
+          // COALESCED FETCH: Threads load x cooperatively
+          x_tile[threadIdx.x] = x[t + threadIdx.x];
+          __syncthreads();
+          
+          #pragma unroll
+          for (int i = 0; i < BLOCK_SIZE; i++) {
+            sum += A[row * N + t + i] * x_tile[i];
+          }
+          __syncthreads();
+        }
+        if (row < M) y[row] = sum;
+      }
+    |
+  }
+
+  memory_visual: "Memory Access Trace (Shared Mem)" {
+    style.fill: "#E2F2E3"
+    grid-columns: 1
+    
+    warp_trace: |md
+      **Warp 0 (Threads 0-31)**
+      - **Phase 1**: Coalesced global load `x[t...t+31]`
+      - **Phase 2**: Low-latency Shared Memory broadcast
+      - **Bus Utilization**: 128 bytes used / 128 byte transaction
+      - **Efficiency**: 100.0%
+    |
+    
+    transaction_diagram: {
+      grid-columns: 8
+      grid-gap: 2
+      t0: "x[0]" { style.fill: "#27AE60"; style.font-color: white }
+      t1: "x[1]" { style.fill: "#27AE60"; style.font-color: white }
+      t2: "x[2]" { style.fill: "#27AE60"; style.font-color: white }
+      t3: "x[3]" { style.fill: "#27AE60"; style.font-color: white }
+      t4: "x[4]" { style.fill: "#27AE60"; style.font-color: white }
+      t5: "x[5]" { style.fill: "#27AE60"; style.font-color: white }
+      t6: "x[6]" { style.fill: "#27AE60"; style.font-color: white }
+      t7: "x[7]" { style.fill: "#27AE60"; style.font-color: white }
+    }
+  }
+
+  metrics: "Profiling Data" {
+    style.fill: "#E8F5E9"
+    grid-rows: 3
+    t: "Latency: 3.21 ms"
+    b: "Bandwidth: 312 GB/s"
+    o: "Occupancy: 62%"
+  }
+
+  status: "✅ PERFORMANCE TARGET ACHIEVED" {
+    style.fill: "#27AE60"
+    style.font-color: white
+    style.bold: true
+  }
+}
+
+# Explicit root-level connections for flow
+baseline -> transition -> optimized: {
+  style: {
+    stroke-width: 4
+    stroke: "#27AE60"
+    animated: true
+  }
+}
+
+summary: "Comparative Performance Summary" {
+  near: bottom-center
+  style.fill: "#F8F9FA"
+  style.stroke: "#B2BEC3"
+  
+  table: ||md
+    | Metric | Baseline (Naive) | Optimized (Tiled) | Delta |
+    | :--- | :--- | :--- | :--- |
+    | **Execution Time** | 12.34 ms | 3.21 ms | **-74%** |
+    | **Eff. Bandwidth** | 89 GB/s | 312 GB/s | **+250%** |
+    | **Global Load Eff.** | 3.1% | 100% | **+32x** |
+    | **L2 Hit Rate** | 23% | 67% | **+44%** |
+  ||
+}

@@ -1,0 +1,249 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+
+# Prediction Distribution Monitoring - Technical Data Flow
+# Input Stage: High-throughput stream of inference results
+prediction_samples: {
+  label: "Prediction Samples"
+  shape: queue
+  sample_data: {
+    label: "Sample Data Record\n─────────────────\n• value: float32\n• timestamp: int64\n• version_id: string\n• input_hash: uint64"
+    shape: class
+  }
+}
+
+# Sliding Window Storage: In-memory buffer for statistical calculation
+sliding_window: {
+  label: "Sliding Window Storage"
+  window_deque: {
+    label: "Sample Deque\n─────────────────\nmaxlen: window_size\n(default: 10,000)"
+    shape: class
+  }
+  version_buckets: {
+    label: "Version Buckets\n─────────────────\n_samples[version_id]\n→ deque[float]"
+    shape: class
+  }
+  style.fill: "#e0f2fe"
+}
+
+# Histogram Computation: Density estimation for distribution comparison
+histogram_compute: {
+  label: "Histogram Computation"
+  binning: {
+    label: "Binning Process\n─────────────────\n1. Find min/max range\n2. Calculate bin width\n3. Count samples per bin\n4. Normalize to density"
+    shape: class
+  }
+  histogram_output: {
+    label: "Histogram Output\n─────────────────\nn_bins: 20 (default)\n→ Dict[bin_label, density]"
+    shape: class
+  }
+  style.fill: "#f0f9ff"
+}
+
+# Baseline Management: Persistent storage of "Golden" distributions
+baseline_manager: {
+  label: "Baseline Manager"
+  baseline_store: {
+    label: "Baseline Store\n─────────────────\n_baseline_histograms\n[version_id → histogram]"
+    shape: cylinder
+    style.fill: "#ede9fe"
+  }
+  capture_trigger: {
+    label: "Capture Baseline\n─────────────────\nTrigger: Manual/API\nAction: Freeze current\n        histogram as baseline"
+    shape: class
+  }
+}
+
+# Comparison Engine: Mathematical drift detection
+comparison_engine: {
+  label: "Comparison Engine"
+  current_hist: {
+    label: "Current Histogram"
+    shape: hexagon
+    style.fill: "#dcfce7"
+  }
+  baseline_hist: {
+    label: "Baseline Histogram"
+    shape: hexagon
+    style.fill: "#fef9c3"
+  }
+  tvd_calc: {
+    label: "Total Variation\nDistance Calculator\n─────────────────\nTVD = ½ Σ |p(i) - q(i)|\n\nRange: [0.0, 1.0]"
+    shape: class
+  }
+  current_hist -> tvd_calc
+  baseline_hist -> tvd_calc
+}
+
+# Metrics Computation: Derived observability signals
+metrics_compute: {
+  label: "Metrics Computation"
+  metrics: {
+    label: "Computed Metrics\n─────────────────\n• mean_shift\n• mean_shift_percent\n• std_ratio\n• total_variation_distance"
+    shape: class
+  }
+}
+
+# Status Determination: Logic branching based on TVD thresholds
+status_router: {
+  label: "Status Determination"
+  shape: diamond
+  stable_check: {
+    label: "TVD < 0.1?"
+    shape: diamond
+  }
+  moderate_check: {
+    label: "TVD < 0.3?"
+    shape: diamond
+  }
+}
+
+# Output States: Discrete system health levels
+stable: {
+  label: "STABLE"
+  shape: oval
+  style: {
+    fill: "#4ade80"
+    stroke: "#16a34a"
+    bold: true
+  }
+}
+moderate_shift: {
+  label: "MODERATE_SHIFT"
+  shape: oval
+  style: {
+    fill: "#fbbf24"
+    stroke: "#d97706"
+    bold: true
+  }
+}
+significant_shift: {
+  label: "SIGNIFICANT_SHIFT"
+  shape: oval
+  style: {
+    fill: "#f87171"
+    stroke: "#dc2626"
+    bold: true
+  }
+}
+
+# Prometheus Export: Sink for time-series visualization
+prometheus_export: {
+  label: "Prometheus Metrics"
+  metrics_output: {
+    label: "Exported TSDB Metrics\n─────────────────\nprediction_count\nprediction_mean\nprediction_std\ndistribution_tvd\ndistribution_status"
+    shape: class
+  }
+}
+
+# Alerting: Logic for automated remediation/notification
+alerting: {
+  label: "Alert System"
+  shape: diamond
+  alert_handler: {
+    label: "Alert Handler\n─────────────────\n• Log warnings\n• Notify on-call\n• Trigger retraining"
+    shape: class
+  }
+}
+
+# Data Flow Connections
+prediction_samples -> sliding_window: "record()\nappend sample" {
+  style.stroke: "#3b82f6"
+  style.stroke-width: 2
+}
+sliding_window -> histogram_compute: "compute_histogram()\non version_id" {
+  style.stroke: "#3b82f6"
+}
+histogram_compute.binning -> histogram_compute.histogram_output: "normalize" {
+  style.stroke-dash: 3
+}
+histogram_compute -> baseline_manager: "capture_baseline()\nstore histogram" {
+  style.stroke: "#8b5cf6"
+  style.stroke-dash: 3
+}
+baseline_manager.baseline_store -> comparison_engine.baseline_hist: "fetch baseline" {
+  style.stroke: "#8b5cf6"
+}
+histogram_compute -> comparison_engine.current_hist: "current histogram" {
+  style.stroke: "#3b82f6"
+}
+comparison_engine.tvd_calc -> metrics_compute: "TVD value" {
+  style.stroke: "#3b82f6"
+}
+metrics_compute -> status_router: "evaluation" {
+  style.stroke: "#3b82f6"
+}
+
+status_router.stable_check -> stable: "yes" {
+  label: "TVD < 0.1"
+  style.stroke: "#16a34a"
+}
+status_router.stable_check -> status_router.moderate_check: "no" {
+  style.stroke: "#6b7280"
+}
+status_router.moderate_check -> moderate_shift: "yes" {
+  label: "0.1 ≤ TVD < 0.3"
+  style.stroke: "#d97706"
+}
+status_router.moderate_check -> significant_shift: "no" {
+  label: "TVD ≥ 0.3"
+  style.stroke: "#dc2626"
+}
+
+stable -> prometheus_export: "export" {
+  style.stroke: "#6b7280"
+}
+moderate_shift -> prometheus_export: "export" {
+  style.stroke: "#6b7280"
+}
+moderate_shift -> alerting: "warning" {
+  style.stroke: "#d97706"
+  style.stroke-dash: 3
+}
+significant_shift -> prometheus_export: "export" {
+  style.stroke: "#6b7280"
+}
+significant_shift -> alerting: "critical" {
+  style.stroke: "#dc2626"
+  style.stroke-dash: 3
+}
+
+# Threshold Legend: Fixed SQL syntax for multi-column representation
+legend: {
+  label: "Threshold Legend"
+  threshold_table: {
+    shape: sql_table
+    "TVD Range": "Status" {constraint: "Action"}
+    "[0.0, 0.1)": "STABLE" {constraint: "Continue"}
+    "[0.1, 0.3)": "MODERATE_SHIFT" {constraint: "Monitor"}
+    "[0.3, 1.0]": "SIGNIFICANT_SHIFT" {constraint: "Alert"}
+  }
+}
+
+# Configuration Box: System hyperparameters
+config: {
+  label: "Configuration\n─────────────────\nwindow_size: 10,000\nn_bins: 20\nstable_threshold: 0.1\nmoderate_threshold: 0.3"
+  shape: class
+  style: {
+    stroke-dash: 3
+    fill: "#f3f4f6"
+  }
+}
+
+config -> sliding_window: "params" {
+  style.stroke-dash: 3
+  style.stroke: "#9ca3af"
+}
+config -> histogram_compute: "params" {
+  style.stroke-dash: 3
+  style.stroke: "#9ca3af"
+}
+config -> status_router: "thresholds" {
+  style.stroke-dash: 3
+  style.stroke: "#9ca3af"
+}

@@ -1,0 +1,298 @@
+direction: right
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 50
+  }
+}
+
+classes: {
+  tensor_style: {
+    shape: rectangle
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1565C0"
+      stroke-width: 2
+      font-color: "#0D47A1"
+      double-border: true
+    }
+  }
+  op_style: {
+    shape: diamond
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#E65100"
+      stroke-width: 2
+      font-color: "#BF360C"
+      shadow: true
+    }
+  }
+  data_style: {
+    shape: oval
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+      stroke-width: 2
+      font-color: "#1B5E20"
+    }
+  }
+  mask_style: {
+    shape: rectangle
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#C62828"
+      stroke-width: 2
+      stroke-dash: 3
+      font-color: "#B71C1C"
+    }
+  }
+  result_style: {
+    shape: circle
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+      stroke-width: 3
+      font-color: "#4A148C"
+      3d: true
+    }
+  }
+  step_container: {
+    style: {
+      fill: "#FAFAFA"
+      stroke: "#424242"
+      stroke-width: 1
+      border-radius: 8
+      stroke-dash: 2
+    }
+  }
+}
+
+title: {
+  label: "LOSS COMPUTATION PIPELINE: CROSS-ENTROPY WITH PADDING MASK\nTechnical Implementation Specification v1.2"
+  shape: text
+  near: top-center
+  style: {
+    font-size: 32
+    bold: true
+    underline: true
+    font-color: "#212121"
+  }
+}
+
+# Step 1: Input Tensors
+step1_input: "1. Raw Input Tensors" {
+  class: step_container
+  logits: "Logits Tensor [B, S, V]\nFP32: 4 Bytes/Elem" {
+    class: tensor_style
+    tooltip: "Shape: (Batch, SeqLen, Vocab)"
+  }
+  targets: "Target Tensor [B, S]\nINT64: 8 Bytes/Elem" {
+    class: tensor_style
+    tooltip: "Ground Truth Token IDs"
+  }
+  meta: "Offsets:\n0x00: Logits Ptr\n0x08: Targets Ptr" {
+    shape: text
+    style: {
+      font: mono
+      font-size: 10
+    }
+  }
+}
+
+# Step 2: Shift Targets
+step2_shift: "2. Target Shift Phase\nAlignment for next-token prediction" {
+  class: step_container
+  input_targets: "Targets\n[B, S]" {
+    class: tensor_style
+  }
+  shift_op: "Slice [:, 1:]\nStride Shift" {
+    class: op_style
+  }
+  shifted_targets: "Shifted Targets\n[B, S-1]" {
+    class: tensor_style
+  }
+  input_targets -> shift_op: "Drop index 0"
+  shift_op -> shifted_targets: "New Shape"
+}
+
+# Step 3: Create Padding Mask
+step3_mask: "3. Mask Generation\nignore_index Logic" {
+  class: step_container
+  shifted_copy: "Shifted Targets\n[B, S-1]" {
+    class: tensor_style
+  }
+  compare_op: "NEQ\n-100" {
+    class: op_style
+    tooltip: "Not Equal to PAD_ID"
+  }
+  pad_id: "PAD_ID\n-100" {
+    class: data_style
+  }
+  padding_mask: "Padding Mask\n[B, S-1]\nBool (Uint8)" {
+    class: mask_style
+  }
+  shifted_copy -> compare_op
+  pad_id -> compare_op
+  compare_op -> padding_mask: "Broadcast"
+}
+
+# Step 4: Compute Log Softmax
+step4_logprob: "4. Normalization\nNumerical Stability Layer" {
+  class: step_container
+  logits_shifted: "Logits [:, :-1, :]\n[B, S-1, V]" {
+    class: tensor_style
+  }
+  log_softmax_op: "LogSoftmax\ndim=-1" {
+    class: op_style
+  }
+  log_probs: "Log Probs\n[B, S-1, V]" {
+    class: tensor_style
+  }
+  logits_shifted -> log_softmax_op -> log_probs: "exp-normalize"
+}
+
+# Step 5: Gather Target Log Probs
+step5_gather: "5. NLL Extraction\nIndex Selection" {
+  class: step_container
+  log_probs_in: "Log Probs\n[B, S-1, V]" {
+    class: tensor_style
+  }
+  targets_in: "Shifted Targets\n[B, S-1]" {
+    class: tensor_style
+  }
+  gather_op: "Gather-Elements\nIndices=Targets" {
+    class: op_style
+  }
+  nll_per_pos: "NLL Tensor\n[B, S-1]" {
+    class: tensor_style
+  }
+  log_probs_in -> gather_op
+  targets_in -> gather_op
+  gather_op -> nll_per_pos
+}
+
+# Step 6: Apply Mask
+step6_masked: "6. Element-wise Masking\nZeroing Invalid Positions" {
+  class: step_container
+  nll_in: "NLL Tensor\n[B, S-1]" {
+    class: tensor_style
+  }
+  mask_in: "Padding Mask\n[B, S-1]" {
+    class: mask_style
+  }
+  where_op: "torch.where\n(mask, nll, 0.0)" {
+    class: op_style
+  }
+  masked_nll: "Masked NLL\nValid=Val; Pad=0" {
+    class: tensor_style
+  }
+  nll_in -> where_op
+  mask_in -> where_op
+  where_op -> masked_nll
+}
+
+# Step 7: Sum and Normalize
+step7_normalize: "7. Statistical Reduction" {
+  class: step_container
+  masked_in: "Masked NLL\n[B, S-1]" {
+    class: tensor_style
+  }
+  sum_op: "Reduce Sum\nGlobal" {
+    class: op_style
+  }
+  total_loss: "Total Summed NLL\nScalar" {
+    class: data_style
+  }
+  count_mask: "Padding Mask\n[B, S-1]" {
+    class: mask_style
+  }
+  count_op: "PopCount\nSum(Bool)" {
+    class: op_style
+  }
+  token_count: "N_valid\nDivisor" {
+    class: data_style
+  }
+  masked_in -> sum_op -> total_loss
+  count_mask -> count_op -> token_count
+}
+
+# Step 8: Final Loss Output
+step8_final: "8. Normalization & Output" {
+  class: step_container
+  loss_in: "Total Loss" {
+    class: data_style
+  }
+  n_valid: "Token Count" {
+    class: data_style
+  }
+  divide_op: "Div(ΣL / N)" {
+    class: op_style
+  }
+  final_loss: "Final Mean Loss\nScalar (FP32)" {
+    class: result_style
+  }
+  loss_in -> divide_op
+  n_valid -> divide_op
+  divide_op -> final_loss
+}
+
+# Inter-Step Global Flow Connections
+step1_input.logits -> step4_logprob.logits_shifted: "Trim Logits" {
+  style: { stroke: "#1565C0"; stroke-width: 2 }
+}
+step1_input.targets -> step2_shift.input_targets {
+  style: { stroke: "#1565C0"; stroke-width: 2 }
+}
+step2_shift.shifted_targets -> step3_mask.shifted_copy
+step2_shift.shifted_targets -> step5_gather.targets_in
+step3_mask.padding_mask -> step6_masked.mask_in: "Apply Filter" {
+  style.stroke-dash: 3
+}
+step3_mask.padding_mask -> step7_normalize.count_mask: "Denominator" {
+  style.stroke-dash: 3
+}
+step4_logprob.log_probs -> step5_gather.log_probs_in
+step5_gather.nll_per_pos -> step6_masked.nll_in
+step6_masked.masked_nll -> step7_normalize.masked_in
+step7_normalize.total_loss -> step8_final.loss_in
+step7_normalize.token_count -> step8_final.n_valid
+
+# Formula and Legend Info
+formula_box: |md
+  ### Implementation Logic
+  **NLL Function:**
+  $L_i = -\log(\frac{\exp(x_{y_i})}{\sum_j \exp(x_j)})$
+
+  **Aggregation with Masking:**
+  $Loss = \frac{\sum (L_i \cdot M_i)}{\sum M_i}$
+  where $M_i = [y_i \neq -100]$
+
+  **Memory Usage Note:**
+  - Logits: $4 \times B \times S \times V$ bytes
+  - Peak Memory: $O(B \times S \times V)$ during Softmax
+| {
+  near: bottom-right
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#757575"
+    border-radius: 4
+  }
+}
+
+legend: "Pipeline Components" {
+  near: top-left
+  t: "High-D Tensor" { class: tensor_style }
+  o: "In-Place/Out Op" { class: op_style }
+  s: "Scalar Value" { class: data_style }
+  m: "Padding Mask" { class: mask_style }
+  r: "Final Result" { class: result_style }
+  
+  style: {
+    fill: "#FFFFFF"
+    stroke: "#EEEEEE"
+    stroke-width: 1
+  }
+}

@@ -1,0 +1,333 @@
+direction: right
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    theme-id: 4
+    pad: 25
+  }
+  dp_rank_color: "#3B82F6"
+  comm_allreduce: "#EF4444"
+  comm_reducescatter: "#F59E0B"
+  comm_allgather: "#10B981"
+  header_bg: "#1E293B"
+  stage1_bg: "#1E3A5F"
+  stage2_bg: "#1E4D3A"
+  stage3_bg: "#4D1E3A"
+}
+
+title: {
+  label: "ZeRO Communication Volume Analysis\nImplementation Specification: Comparing DP-Only Communication Across Stages 1, 2, 3"
+  shape: text
+  near: top-center
+  style: {
+    font-size: 28
+    bold: true
+    font-color: "#F8FAFC"
+  }
+}
+
+# ==================== LEGEND & FORMULAE ====================
+legend: {
+  label: "Notation & Cost Reference"
+  shape: rectangle
+  style: {
+    fill: "#0F172A"
+    stroke: "#334155"
+    font-color: "#E2E8F0"
+    stroke-width: 2
+    shadow: true
+  }
+  
+  allreduce: {
+    label: "All-Reduce\nCost: 2×Ψ(P) bytes"
+    shape: rectangle
+    style: {
+      fill: "${comm_allreduce}"
+      stroke: "#B91C1C"
+      bold: true
+    }
+  }
+  
+  reducescatter: {
+    label: "Reduce-Scatter\nCost: Ψ(P) bytes"
+    shape: rectangle
+    style: {
+      fill: "${comm_reducescatter}"
+      stroke: "#D97706"
+      bold: true
+    }
+  }
+  
+  allgather: {
+    label: "All-Gather\nCost: Ψ(P) bytes"
+    shape: rectangle
+    style: {
+      fill: "${comm_allgather}"
+      stroke: "#059669"
+      bold: true
+    }
+  }
+  
+  notation: |md
+    ### Parameters & Definitions
+    - **Ψ(P)**: Total Model Parameters (e.g., 175B for GPT-3)
+    - **N**: Data Parallelism (DP) World Size (Number of GPUs)
+    - **Total Memory (Stage 3)**: (Ψ(P)/N) * (2 + 2 + 12) bytes
+    - **Note**: Optimizer state includes Master Weights (4B) + Momentum (4B) + Variance (4B)
+  |
+  
+  allreduce -> reducescatter -> allgather: {style.opacity: 0}
+}
+
+# ==================== STAGE 1 ====================
+stage1: {
+  label: "ZeRO Stage 1\n(Optimizer State Sharding)"
+  shape: rectangle
+  style: {
+    fill: "${stage1_bg}"
+    stroke: "#3B82F6"
+    stroke-width: 4
+    border-radius: 12
+  }
+  
+  memory_layout: {
+    label: "Per-GPU Memory Partitioning"
+    shape: rectangle
+    style: {
+      fill: "#0F172A"
+      stroke: "#475569"
+      stroke-dash: 5
+    }
+    params_s1: {
+      label: "Parameters (Replicated)\nOffset [0] | Size: Ψ(P)"
+      style.fill: "#1E40AF"
+    }
+    grads_s1: {
+      label: "Gradients (Replicated)\nOffset [Ψ] | Size: Ψ(P)"
+      style.fill: "#7C3AED"
+    }
+    opt_s1: {
+      label: "Optimizer State (Sharded)\nOffset [2Ψ] | Size: 12×Ψ(P)/N"
+      style: {
+        fill: "#059669"
+        double-border: true
+      }
+    }
+    params_s1 -> grads_s1 -> opt_s1: {style.opacity: 0}
+  }
+
+  flow: {
+    forward: {
+      label: "1. FORWARD"
+      compute: "Local Matrix Multiply"
+      comm: "0 bytes"
+      style.stroke: "#475569"
+    }
+    backward: {
+      label: "2. BACKWARD"
+      compute: "Gradient Accumulation"
+      comm: "All-Reduce Gradients\nVolume: 2×Ψ(P)"
+      style: {
+        stroke: "${comm_allreduce}"
+        stroke-width: 3
+        animated: true
+      }
+    }
+    optimizer: {
+      label: "3. OPTIMIZER"
+      compute: "Update Sharded Weights"
+      comm: "0 bytes"
+      style.stroke: "#475569"
+    }
+    forward -> backward -> optimizer: {style.stroke-width: 2}
+  }
+
+  total_s1: {
+    label: "TOTAL COMM: 2×Ψ(P)\n(Equal to Vanilla DP)"
+    shape: parallelogram
+    style: {
+      fill: "#1E293B"
+      stroke: "${comm_allreduce}"
+      bold: true
+      font-color: "#EF4444"
+      font-size: 18
+    }
+  }
+  flow.optimizer -> total_s1: {style.stroke-dash: 3}
+}
+
+# ==================== STAGE 2 ====================
+stage2: {
+  label: "ZeRO Stage 2\n(Gradient Sharding)"
+  shape: rectangle
+  style: {
+    fill: "${stage2_bg}"
+    stroke: "#10B981"
+    stroke-width: 4
+    border-radius: 12
+  }
+
+  memory_layout_s2: {
+    label: "Per-GPU Memory Partitioning"
+    shape: rectangle
+    style: {
+      fill: "#0F172A"
+      stroke: "#475569"
+      stroke-dash: 5
+    }
+    params_s2: "Params: Replicated (Ψ(P))" { style.fill: "#1E40AF" }
+    grads_s2: "Gradients: Sharded (Ψ(P)/N)" { 
+      style: {
+        fill: "#7C3AED"
+        double-border: true
+      }
+    }
+    opt_s2: "Optimizer: Sharded (Ψ(P)/N)" { style.fill: "#059669" }
+    params_s2 -> grads_s2 -> opt_s2: {style.opacity: 0}
+  }
+
+  flow_s2: {
+    forward: "1. FORWARD\nComm: 0"
+    backward: "2. BACKWARD\nReduce-Scatter Gradients\nVol: Ψ(P)" {
+      style: {
+        stroke: "${comm_reducescatter}"
+        stroke-width: 3
+        animated: true
+      }
+    }
+    optimizer: "3. OPTIMIZER\nComm: 0"
+    forward -> backward -> optimizer
+  }
+
+  total_s2: {
+    label: "TOTAL COMM: Ψ(P)\n(50% Savings vs Stage 1)"
+    shape: parallelogram
+    style: {
+      fill: "#1E293B"
+      stroke: "${comm_reducescatter}"
+      bold: true
+      font-color: "#F59E0B"
+      font-size: 18
+    }
+  }
+  flow_s2.optimizer -> total_s2: {style.stroke-dash: 3}
+}
+
+# ==================== STAGE 3 ====================
+stage3: {
+  label: "ZeRO Stage 3\n(Parameter Sharding)"
+  shape: rectangle
+  style: {
+    fill: "${stage3_bg}"
+    stroke: "#A855F7"
+    stroke-width: 4
+    border-radius: 12
+  }
+
+  memory_layout_s3: {
+    label: "Per-GPU Memory Partitioning"
+    shape: rectangle
+    style: {
+      fill: "#0F172A"
+      stroke: "#475569"
+      stroke-dash: 5
+    }
+    params_s3: "Params: Sharded (Ψ(P)/N)" { 
+      style: {
+        fill: "#1E40AF" 
+        double-border: true
+      }
+    }
+    grads_s3: "Gradients: Sharded (Ψ(P)/N)" { style.fill: "#7C3AED" }
+    opt_s3: "Optimizer: Sharded (Ψ(P)/N)" { style.fill: "#059669" }
+    params_s3 -> grads_s3 -> opt_s3: {style.opacity: 0}
+  }
+
+  flow_s3: {
+    forward: "1. FORWARD\nAll-Gather Parameters\nVol: Ψ(P)" {
+      style: {
+        stroke: "${comm_allgather}"
+        stroke-width: 3
+        animated: true
+      }
+    }
+    backward: "2. BACKWARD\nAll-Gather Params +\nReduce-Scatter Grads\nVol: 2×Ψ(P)" {
+      style: {
+        stroke: "#A855F7"
+        stroke-width: 3
+        animated: true
+      }
+    }
+    optimizer: "3. OPTIMIZER\nComm: 0"
+    forward -> backward -> optimizer
+  }
+
+  total_s3: {
+    label: "TOTAL COMM: 3×Ψ(P)\n(Trading Bandwidth for Memory)"
+    shape: parallelogram
+    style: {
+      fill: "#1E293B"
+      stroke: "#A855F7"
+      bold: true
+      font-color: "#A855F7"
+      font-size: 18
+    }
+  }
+  flow_s3.optimizer -> total_s3: {style.stroke-dash: 3}
+}
+
+# ==================== ANALYSIS TABLES ====================
+comparison_matrix: {
+  label: "Communication Volume Summary Matrix"
+  shape: rectangle
+  style: {
+    fill: "#0F172A"
+    stroke: "#475569"
+    shadow: true
+  }
+  table: ||md
+    | Optimization Level | Forward | Backward | Total Volume | Memory Savings |
+    | :--- | :---: | :---: | :---: | :---: |
+    | **Stage 1 (OS)** | 0 | 2×Ψ | **2×Ψ** | 4x |
+    | **Stage 2 (OS+G)** | 0 | 1×Ψ | **1×Ψ** | 8x |
+    | **Stage 3 (OS+G+P)** | 1×Ψ | 2×Ψ | **3×Ψ** | ~Linear |
+  ||
+}
+
+insights: {
+  label: "Key Architectural Trade-offs"
+  shape: rectangle
+  style: {
+    fill: "#0F172A"
+    stroke: "#F59E0B"
+    stroke-dash: 5
+    font-color: "#E2E8F0"
+  }
+  i1: "• Stage 1 & 2: Communication volume is strictly equal or less than Vanilla DP."
+  i2: "• Stage 3: Primary bottleneck is All-Gather in the Forward pass (high latency sensitivity)."
+  i3: "• Throughput: Stage 2 typically yields the highest throughput by avoiding gather overheads."
+  i4: "• Scalability: Stage 3 is the only method that scales to 1T+ parameter models on commodity clusters."
+  
+  i1 -> i2 -> i3 -> i4: {style.opacity: 0}
+}
+
+# ==================== GLOBAL CONNECTIVITY ====================
+stage1 -> stage2: "Adding Gradient Sharding" {
+  style: {
+    stroke: "#3B82F6"
+    stroke-width: 3
+    stroke-dash: 4
+  }
+}
+stage2 -> stage3: "Adding Parameter Sharding" {
+  style: {
+    stroke: "#10B981"
+    stroke-width: 3
+    stroke-dash: 4
+  }
+}
+
+# Invisible structural positioning
+stage3 -> comparison_matrix: {style.opacity: 0}
+comparison_matrix -> insights: {style.opacity: 0}

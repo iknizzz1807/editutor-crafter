@@ -1,0 +1,336 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: "Megatron MLP Parallel Pattern Implementation\nColumnParallelLinear → GELU → RowParallelLinear"
+  shape: text
+  near: top-center
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# GLOBAL CLASSES & STYLING
+# -----------------------------------------------------------------------------------------
+classes: {
+  tensor_replicated: {
+    shape: parallelogram
+    style: {
+      fill: "#e3f2fd"
+      stroke: "#1976d2"
+      stroke-width: 3
+    }
+  }
+  tensor_sharded: {
+    shape: parallelogram
+    style: {
+      fill: "#fff9c4"
+      stroke: "#f9a825"
+      stroke-width: 3
+      stroke-dash: 5
+    }
+  }
+  linear_layer: {
+    shape: rectangle
+    style: {
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  annotation_note: {
+    shape: sticky_note
+    style: {
+      font-size: 11
+      fill: "#f8f9fa"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# LEGEND & ARCHITECTURAL SPECS
+# -----------------------------------------------------------------------------------------
+legend: {
+  label: "Implementation Legend"
+  near: top-right
+  
+  replicated_key: "■ Replicated Tensor: Identical on all TP ranks" {
+    shape: text
+    style.font-size: 11
+  }
+  sharded_key: "▣ Sharded Tensor: Partitioned along hidden/ffn dimension" {
+    shape: text
+    style.font-size: 11
+  }
+  comm_op: "⟳ Comm: All-Reduce (Summation across TP group)" {
+    shape: text
+    style.font-size: 11
+    style.font-color: "#c62828"
+  }
+  local_op: "✓ Local: Operation performed in isolation per rank" {
+    shape: text
+    style.font-size: 11
+    style.font-color: "#2e7d32"
+  }
+  
+  replicated_key -> sharded_key -> comm_op -> local_op: {style.opacity: 0}
+}
+
+# -----------------------------------------------------------------------------------------
+# PHYSICAL RANK VISUALIZATION
+# -----------------------------------------------------------------------------------------
+tp_ranks: {
+  label: "Tensor Parallel (TP) Ranks Configuration\nGroup Size = N"
+  shape: rectangle
+  near: top-left
+  style: {
+    fill: "#fafafa"
+    stroke-dash: 4
+    stroke: "#9e9e9e"
+  }
+  
+  rank0: "Rank 0" {
+    style.fill: "#fff3e0"
+  }
+  rank1: "Rank 1" {
+    style.fill: "#fce4ec"
+  }
+  rank_ellipsis: "..." {
+    shape: text
+  }
+  rank_n: "Rank N-1" {
+    style.fill: "#f3e5f5"
+  }
+  
+  rank0 -> rank1 -> rank_ellipsis -> rank_n: {style.opacity: 0}
+}
+
+# -----------------------------------------------------------------------------------------
+# DATA FLOW: INPUT
+# -----------------------------------------------------------------------------------------
+input_replicated: {
+  class: tensor_replicated
+  label: "Input Activation (X)\nDim: [B, S, H]\nState: REPLICATED"
+  tooltip: "B=Batch, S=SeqLen, H=HiddenSize"
+}
+
+# -----------------------------------------------------------------------------------------
+# COMPONENT 1: COLUMN PARALLEL
+# -----------------------------------------------------------------------------------------
+column_parallel: {
+  class: linear_layer
+  label: "ColumnParallelLinear (W_up)"
+  style.fill: "#bbdefb"
+  style.stroke: "#1565c0"
+  
+  weight_shard: {
+    label: "Weight Shard: W_up_i\nDim: [H, 4H/N]\nSplit: Dim 1"
+    shape: cylinder
+    style.fill: "#90caf9"
+  }
+  
+  op_desc: "Y_i = X @ W_up_i\nOutput: [B, S, 4H/N]" {
+    shape: text
+    style.font: mono
+  }
+  
+  weight_shard -> op_desc
+}
+
+hidden_sharded: {
+  class: tensor_sharded
+  label: "Intermediate Shard (H)\nDim: [B, S, 4H/N]\nState: SHARDED"
+}
+
+# -----------------------------------------------------------------------------------------
+# COMPONENT 2: GELU (ELEMENT-WISE)
+# -----------------------------------------------------------------------------------------
+gelu: {
+  label: "GELU Activation"
+  shape: diamond
+  style: {
+    fill: "#c8e6c9"
+    stroke: "#388e3c"
+    stroke-width: 2
+  }
+  
+  local_note: "Element-wise Operation\nNo Cross-Rank Dependency" {
+    shape: text
+    style.font-size: 10
+  }
+}
+
+hidden2_sharded: {
+  class: tensor_sharded
+  label: "Activated Shard (G)\nDim: [B, S, 4H/N]\nState: SHARDED"
+}
+
+# -----------------------------------------------------------------------------------------
+# COMPONENT 3: ROW PARALLEL
+# -----------------------------------------------------------------------------------------
+row_parallel: {
+  class: linear_layer
+  label: "RowParallelLinear (W_down)"
+  style.fill: "#e1bee7"
+  style.stroke: "#7b1fa2"
+  
+  weight_shard: {
+    label: "Weight Shard: W_down_i\nDim: [4H/N, H]\nSplit: Dim 0"
+    shape: cylinder
+    style.fill: "#ce93d8"
+  }
+  
+  op_desc: "P_i = G_i @ W_down_i\nOutput: [B, S, H]" {
+    shape: text
+    style.font: mono
+  }
+  
+  weight_shard -> op_desc
+}
+
+partial_output: {
+  class: tensor_sharded
+  label: "Partial Result (P)\nDim: [B, S, H]\nState: PARTIAL SUM"
+  style: {
+    fill: "#ffccbc"
+    stroke: "#e64a19"
+    stroke-dash: 5
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# COMPONENT 4: ALL-REDUCE
+# -----------------------------------------------------------------------------------------
+all_reduce: {
+  label: "ALL-REDUCE (SUM)"
+  shape: circle
+  style: {
+    fill: "#ffcdd2"
+    stroke: "#c62828"
+    stroke-width: 4
+    bold: true
+  }
+}
+
+output_replicated: {
+  class: tensor_replicated
+  label: "Final Activation (Y)\nDim: [B, S, H]\nState: REPLICATED"
+}
+
+# -----------------------------------------------------------------------------------------
+# CONNECTORS & ANNOTATIONS
+# -----------------------------------------------------------------------------------------
+input_replicated -> column_parallel: "Broadcast X to all ranks" {
+  style.stroke: "#1976d2"
+  style.stroke-width: 2
+}
+
+column_parallel -> hidden_sharded: "Linear output is sharded\nby column index" {
+  style.stroke: "#1565c0"
+}
+
+hidden_sharded -> gelu: {
+  style.stroke: "#f9a825"
+}
+
+gelu -> hidden2_sharded: {
+  style.stroke: "#388e3c"
+}
+
+hidden2_sharded -> row_parallel: "Input partition aligns with\nRowParallel split (4H/N)" {
+  style.stroke: "#7b1fa2"
+}
+
+row_parallel -> partial_output: "Each rank holds additive\ncontribution to Y" {
+  style.stroke: "#7b1fa2"
+}
+
+partial_output -> all_reduce: "Global Synchronous Sum" {
+  style.stroke: "#c62828"
+  style.animated: true
+}
+
+all_reduce -> output_replicated: "Replicated Result\nReady for Residual Add" {
+  style.stroke: "#1976d2"
+}
+
+# -----------------------------------------------------------------------------------------
+# KEY ANALYTICAL INSIGHTS (Correction for ELK Engine)
+# -----------------------------------------------------------------------------------------
+no_comm_zone: "ZERO COMMUNICATION ZONE" {
+  near: top-center
+  style: {
+    stroke: "#4caf50"
+    fill: "#e8f5e9"
+    font-color: "#1b5e20"
+    bold: true
+  }
+}
+
+optimization_logic: |md
+  ### Efficiency Analysis
+  - **ColumnParallel Output**: `[B, S, 4H/N]` (Sharded on Dim 2)
+  - **RowParallel Input**: Requires sharding on Dim 1 (the `4H` dimension)
+  - **Result**: The layout matches perfectly. We avoid an `All-Gather` between Linear layers.
+  - **Total Cost**: Exactly **one** All-Reduce per MLP block.
+| {
+  near: bottom-right
+  style.font-size: 12
+}
+
+# -----------------------------------------------------------------------------------------
+# MEMORY LAYOUT DETAILS (Byte Offsets for Rank i)
+# -----------------------------------------------------------------------------------------
+memory_block_specification: {
+  label: "Memory Offset Map (Rank i)"
+  near: bottom-left
+  style.fill: "#eceff1"
+  
+  grid: {
+    grid-columns: 2
+    grid-gap: 5
+    
+    header_offset: "Byte Offset" { style.bold: true; style.underline: true }
+    header_field: "Field Descriptor" { style.bold: true; style.underline: true }
+    
+    off_0: "0x00"
+    field_0: "X (Input Tensor Shard Head)"
+    
+    off_1: "0x..."
+    field_1: "W_up (Local Column Shard [H, 4H/N])"
+    
+    off_2: "0x..."
+    field_2: "W_down (Local Row Shard [4H/N, H])"
+    
+    off_3: "0x..."
+    field_3: "Grad_Bucket (Reserved for All-Reduce Sync)" { style.fill: "#ffebee" }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# ADDITIONAL TECHNICAL ANNOTATIONS
+# -----------------------------------------------------------------------------------------
+all_reduce.tooltip: |md
+  ### Implementation Detail
+  $Y = \sum_{i=0}^{N-1} P_i$
+  Executed via NCCL AllReduce.
+|
+
+column_parallel.tooltip: |md
+  ### Sharding Strategy
+  Split weight matrix $W \in \mathbb{R}^{H \times 4H}$ into $N$ shards along columns:
+  $W = [W_0, W_1, \dots, W_{N-1}]$ where $W_i \in \mathbb{R}^{H \times \frac{4H}{N}}$.
+|
+
+row_parallel.tooltip: |md
+  ### Sharding Strategy
+  Split weight matrix $W \in \mathbb{R}^{4H \times H}$ into $N$ shards along rows:
+  $W = [W_0^T, W_1^T, \dots, W_{N-1}^T]^T$ where $W_i \in \mathbb{R}^{\frac{4H}{N} \times H}$.
+|

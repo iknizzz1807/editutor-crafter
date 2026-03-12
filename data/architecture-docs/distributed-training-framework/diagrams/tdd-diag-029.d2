@@ -1,0 +1,394 @@
+direction: right
+layout-engine: elk
+theme-id: 6
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+  # Color Palette for Manual Quality
+  color_state_bg: "#F0F7FF"
+  color_state_border: "#2B5797"
+  color_error_bg: "#FFF0F0"
+  color_error_border: "#B91C1C"
+  color_success_bg: "#F0FFF4"
+  color_success_border: "#15803D"
+  color_illegal_stroke: "#EF4444"
+  color_recovery_stroke: "#6366F1"
+}
+
+title: {
+  label: "CHECKPOINT CONSENSUS PROTOCOL (CCP-v1.0)\nState Transition Specification"
+  shape: text
+  near: top-center
+  style: {
+    font-size: 32
+    bold: true
+    underline: true
+  }
+}
+
+classes: {
+  # Base State Class
+  protocol_state: {
+    shape: rectangle
+    style: {
+      fill: ${color_state_bg}
+      stroke: ${color_state_border}
+      stroke-width: 2
+      border-radius: 10
+      font-size: 14
+      shadow: true
+    }
+  }
+  # Terminal/Success State
+  protocol_success: {
+    shape: rectangle
+    style: {
+      fill: ${color_success_bg}
+      stroke: ${color_success_border}
+      stroke-width: 4
+      border-radius: 10
+      font-size: 14
+      bold: true
+      shadow: true
+    }
+  }
+  # Error/Fault State
+  protocol_error: {
+    shape: rectangle
+    style: {
+      fill: ${color_error_bg}
+      stroke: ${color_error_border}
+      stroke-width: 3
+      border-radius: 10
+      font-size: 14
+      bold: true
+      shadow: true
+    }
+  }
+  # Textual Annotation Class
+  invariant_text: {
+    shape: text
+    style: {
+      font-size: 11
+      italic: true
+      font-color: "#475569"
+    }
+  }
+  # Initial/Entry Point
+  entry_point: {
+    shape: circle
+    style: {
+      fill: "#1E293B"
+      stroke: "#1E293B"
+    }
+    width: 24
+    height: 24
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STATES DEFINITION
+# -----------------------------------------------------------------------------
+
+●: {
+  class: entry_point
+  label: ""
+}
+
+Idle: {
+  class: protocol_state
+  label: |md
+    ### IDLE (S0)
+    ---
+    **Description:** System quiescent. No active checkpoint.
+    **Invariant:** `CHKPT_PENDING == NULL`
+  |
+}
+
+Proposing: {
+  class: protocol_state
+  label: |md
+    ### PROPOSING (S1)
+    ---
+    **Description:** Rank 0 broadcasts proposal.
+    **Invariant:** `SENDER_RANK == 0`
+  |
+}
+
+Acknowledging: {
+  class: protocol_state
+  label: |md
+    ### ACKNOWLEDGING (S2)
+    ---
+    **Description:** Collecting readiness bits.
+    **Invariant:** `AWAIT_COUNT == WORLD_SIZE`
+  |
+}
+
+Saving: {
+  class: protocol_state
+  label: |md
+    ### SAVING (S3)
+    ---
+    **Description:** Parallel I/O to tiered storage.
+    **Invariant:** `IO_ASYNC_LOCK == HELD`
+  |
+}
+
+Reporting: {
+  class: protocol_state
+  label: |md
+    ### REPORTING (S4)
+    ---
+    **Description:** Status aggregation to Rank 0.
+    **Invariant:** `REPORT_STATUS != UNDEFINED`
+  |
+}
+
+Validating: {
+  class: protocol_state
+  label: |md
+    ### VALIDATING (S5)
+    ---
+    **Description:** Global integrity/checksum verify.
+    **Invariant:** `ALL_RANKS_COMPLETE == TRUE`
+  |
+}
+
+Complete: {
+  class: protocol_success
+  label: |md
+    ### COMPLETE (S6)
+    ---
+    **Result:** Checkpoint Persisted.
+    **ID:** `G_CHKPT_ID++`
+  |
+}
+
+# -----------------------------------------------------------------------------
+# ERROR STATES
+# -----------------------------------------------------------------------------
+
+TimeoutError: {
+  class: protocol_error
+  label: "ERR: ACK_TIMEOUT\nSequence: S2 → FAIL"
+}
+
+StorageError: {
+  class: protocol_error
+  label: "ERR: IO_FAILURE\nSequence: S3 → FAIL"
+}
+
+PartialError: {
+  class: protocol_error
+  label: "ERR: PARTIAL_SAVE\nSequence: S5 → FAIL"
+}
+
+ValidationError: {
+  class: protocol_error
+  label: "ERR: CHECKSUM_MISMATCH\nSequence: S5 → FAIL"
+}
+
+# -----------------------------------------------------------------------------
+# TRANSITIONS (SUCCESS PATH)
+# -----------------------------------------------------------------------------
+
+● -> Idle: {
+  style: {
+    stroke-width: 2
+    stroke: "#1E293B"
+  }
+}
+
+Idle -> Proposing: {
+  label: ||
+    [T1] interval_elapsed
+    GUARD: is_coordinator(rank)
+    ACTION: mcast(PROP_REQ)
+  ||
+  style.stroke-width: 2
+}
+
+Proposing -> Acknowledging: {
+  label: ||
+    [T2] proposal_broadcast
+    GUARD: pg_connected
+    ACTION: timer_start(ACK_TO)
+  ||
+}
+
+Acknowledging -> Saving: {
+  label: ||
+    [T3] all_acks_received
+    GUARD: ack_count == world_sz
+    ACTION: trigger_async_io()
+  ||
+}
+
+Saving -> Reporting: {
+  label: ||
+    [T4] io_buffer_flushed
+    GUARD: write_ret_code == 0
+    ACTION: send_done(rank_0)
+  ||
+}
+
+Reporting -> Validating: {
+  label: ||
+    [T5] report_agg_complete
+    GUARD: report_count == world_sz
+    ACTION: verify_checksums()
+  ||
+}
+
+Validating -> Complete: {
+  label: ||
+    [T6] checksums_valid
+    GUARD: global_match == true
+    ACTION: commit_metadata()
+  ||
+  style: {
+    stroke: ${color_success_border}
+    stroke-width: 3
+  }
+}
+
+# -----------------------------------------------------------------------------
+# TRANSITIONS (ERROR PATHS)
+# -----------------------------------------------------------------------------
+
+Acknowledging -> TimeoutError: {
+  label: "t > ACK_TIMEOUT"
+  style.stroke: ${color_error_border}
+}
+
+Saving -> StorageError: {
+  label: "errno != 0"
+  style.stroke: ${color_error_border}
+}
+
+Validating -> PartialError: {
+  label: "done_bits < world_sz"
+  style.stroke: ${color_error_border}
+}
+
+Validating -> ValidationError: {
+  label: "crc_mismatch"
+  style.stroke: ${color_error_border}
+}
+
+# -----------------------------------------------------------------------------
+# RECOVERY PATHS (Dashed Indigo)
+# -----------------------------------------------------------------------------
+
+TimeoutError -> Idle: {
+  label: "RETRY_S0"
+  style: {
+    stroke: ${color_recovery_stroke}
+    stroke-dash: 5
+  }
+}
+
+StorageError -> Idle: {
+  label: "CLEANUP_RETRY"
+  style: {
+    stroke: ${color_recovery_stroke}
+    stroke-dash: 5
+  }
+}
+
+PartialError -> Idle: {
+  label: "ROLLBACK_RETRY"
+  style: {
+    stroke: ${color_recovery_stroke}
+    stroke-dash: 5
+  }
+}
+
+ValidationError -> Idle: {
+  label: "INVALIDATE_RETRY"
+  style: {
+    stroke: ${color_recovery_stroke}
+    stroke-dash: 5
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ILLEGAL TRANSITIONS (Red Dashed)
+# -----------------------------------------------------------------------------
+
+Idle -> Saving: {
+  label: "ILLEGAL: Proposal Bypass"
+  style: {
+    stroke: ${color_illegal_stroke}
+    stroke-dash: 3
+    opacity: 0.6
+  }
+}
+
+Acknowledging -> Validating: {
+  label: "ILLEGAL: I/O Bypass"
+  style: {
+    stroke: ${color_illegal_stroke}
+    stroke-dash: 3
+    opacity: 0.6
+  }
+}
+
+# -----------------------------------------------------------------------------
+# METADATA AND ANNOTATIONS
+# -----------------------------------------------------------------------------
+
+ProtocolInvariants: {
+  near: top-right
+  shape: rectangle
+  style: {
+    fill: "#FFFBEB"
+    stroke: "#F59E0B"
+    stroke-width: 2
+  }
+  label: |md
+    # Protocol Constraints
+    ---
+    1. **ATOMICITY:** Checkpoint is valid iff all ranks succeed.
+    2. **ORDERING:** S1 must precede S2-S6.
+    3. **QUORUM:** `WORLD_SIZE` must be static during S2.
+    4. **CLEANUP:** Error states must invoke `fs_rollback()`.
+  |
+}
+
+Legend: {
+  near: bottom-right
+  grid-rows: 6
+  grid-columns: 2
+  style: {
+    fill: white
+    stroke: "#E2E8F0"
+    border-radius: 5
+  }
+
+  l1: { class: entry_point; width: 15; height: 15 }
+  t1: "Entry Point" { shape: text }
+  
+  l2: { style.fill: ${color_state_bg}; style.stroke: ${color_state_border}; style.stroke-width: 2 }
+  t2: "Active Protocol State" { shape: text }
+  
+  l3: { style.fill: ${color_success_bg}; style.stroke: ${color_success_border}; style.stroke-width: 3 }
+  t3: "Terminal Success" { shape: text }
+  
+  l4: { style.fill: ${color_error_bg}; style.stroke: ${color_error_border}; style.stroke-width: 2 }
+  t4: "Fault Condition" { shape: text }
+  
+  l5: "───►" { shape: text }
+  t5: "Valid State Change" { shape: text }
+  
+  l6: "- - ►" { shape: text; style.font-color: ${color_illegal_stroke} }
+  t6: "Illegal Operation" { shape: text }
+}
+
+# Global Style Overrides
+***.style.font: mono
+(*** -> ***)[*].style.font-size: 10

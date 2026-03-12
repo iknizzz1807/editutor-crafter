@@ -1,0 +1,299 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Column vs Row Parallel Matrix Multiplication
+  ### Technical Implementation Spec for Tensor Model Parallelism (TP)
+| {
+  near: top-center
+  shape: text
+}
+
+# -----------------------------------------------------------------------------
+# LEGEND & CLASSES
+# -----------------------------------------------------------------------------
+classes: {
+  gpu0_node: {
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1565C0"
+      stroke-width: 2
+    }
+  }
+  gpu1_node: {
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#EF6C00"
+      stroke-width: 2
+    }
+  }
+  replicated_tensor: {
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+      stroke-width: 2
+      double-border: true
+    }
+  }
+  collective_op: {
+    shape: diamond
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#C62828"
+      bold: true
+    }
+  }
+}
+
+legend: {
+  label: "Diagram Legend & Color Spec"
+  gpu0_box: "GPU 0 Context" { class: gpu0_node }
+  gpu1_box: "GPU 1 Context" { class: gpu1_node }
+  replicated: "Replicated Tensor" { class: replicated_tensor }
+  allreduce_op: "Collective Op" { class: collective_op }
+  near: top-right
+}
+
+# -----------------------------------------------------------------------------
+# MODULE A: COLUMN PARALLEL
+# -----------------------------------------------------------------------------
+column_parallel: {
+  label: "MODULE A: Column Parallel Linear Layer (Y = [XW₀, XW₁])"
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 4
+    fill: "#F0F7FF"
+  }
+
+  cp_input: "Input X\nShape: (B, S, H_in)\nState: REPLICATED" {
+    class: replicated_tensor
+  }
+
+  cp_weight_container: {
+    label: "Weight Partitioning (Dim 1)"
+    style.stroke-dash: 5
+    
+    cp_w0: "W₀ Partition\n(H_in, H_out/2)\nGPU 0" {
+      class: gpu0_node
+    }
+    cp_w1: "W₁ Partition\n(H_in, H_out/2)\nGPU 1" {
+      class: gpu1_node
+    }
+  }
+
+  cp_ops: {
+    label: "Parallel Gemm Operations"
+    cp_matmul0: "f(X, W₀)\nLocal Dot Product" {
+      shape: circle
+      class: gpu0_node
+    }
+    cp_matmul1: "f(X, W₁)\nLocal Dot Product" {
+      shape: circle
+      class: gpu1_node
+    }
+  }
+
+  cp_shards: {
+    label: "Intermediate Shards"
+    cp_output0: "Y₀ shard\n(B, S, H_out/2)" {
+      class: gpu0_node
+    }
+    cp_output1: "Y₁ shard\n(B, S, H_out/2)" {
+      class: gpu1_node
+    }
+  }
+
+  cp_final: "Output Y\n(B, S, H_out)\nState: SHARDED (Merged)" {
+    shape: rectangle
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+      stroke-width: 3
+    }
+  }
+
+  cp_comm_note: "COMMUNICATION: NONE\nForward pass overhead: 0ms" {
+    shape: text
+    style: {
+      italic: true
+      font-color: "#388E3C"
+      bold: true
+    }
+  }
+
+  cp_input -> cp_ops.cp_matmul0: "Broadcast X"
+  cp_input -> cp_ops.cp_matmul1: "Broadcast X"
+  cp_weight_container.cp_w0 -> cp_ops.cp_matmul0
+  cp_weight_container.cp_w1 -> cp_ops.cp_matmul1
+  cp_ops.cp_matmul0 -> cp_shards.cp_output0
+  cp_ops.cp_matmul1 -> cp_shards.cp_output1
+  cp_shards.cp_output0 -> cp_final: "Identity/Concat"
+  cp_shards.cp_output1 -> cp_final: "Identity/Concat"
+}
+
+# -----------------------------------------------------------------------------
+# MODULE B: ROW PARALLEL
+# -----------------------------------------------------------------------------
+row_parallel: {
+  label: "MODULE B: Row Parallel Linear Layer (Y = Σ(XᵢWᵢ))"
+  style: {
+    stroke: "#C62828"
+    stroke-width: 4
+    fill: "#FFF5F5"
+  }
+
+  rp_input_container: {
+    label: "Input X (SHARDED)"
+    rp_x0: "X₀ shard\n(B, S, H_in/2)\nGPU 0" {
+      class: gpu0_node
+    }
+    rp_x1: "X₁ shard\n(B, S, H_in/2)\nGPU 1" {
+      class: gpu1_node
+    }
+  }
+
+  rp_weight_container: {
+    label: "Weight Partitioning (Dim 0)"
+    rp_w0: "W₀ Partition\n(H_in/2, H_out)\nGPU 0" {
+      class: gpu0_node
+    }
+    rp_w1: "W₁ Partition\n(H_in/2, H_out)\nGPU 1" {
+      class: gpu1_node
+    }
+  }
+
+  rp_ops: {
+    label: "Parallel Partial Sums"
+    rp_matmul0: "X₀ @ W₀\nPartial Sum 0" {
+      shape: circle
+      class: gpu0_node
+    }
+    rp_matmul1: "X₁ @ W₁\nPartial Sum 1" {
+      shape: circle
+      class: gpu1_node
+    }
+  }
+
+  rp_partials: {
+    label: "Distributed Partial Tensors"
+    rp_p0: "P₀ (Partial Result)\n(B, S, H_out)" {
+      class: gpu0_node
+      style.stroke-dash: 3
+    }
+    rp_p1: "P₁ (Partial Result)\n(B, S, H_out)" {
+      class: gpu1_node
+      style.stroke-dash: 3
+    }
+  }
+
+  rp_allreduce: "ALL-REDUCE SUM\n(Synchronization Point)" {
+    class: collective_op
+    style.stroke-width: 3
+    style.animated: true
+  }
+
+  rp_final: "Output Y\n(B, S, H_out)\nState: REPLICATED" {
+    class: replicated_tensor
+    style.stroke-width: 3
+  }
+
+  rp_comm_note: "COMMUNICATION: REQUIRED\nAll-Reduce sync required" {
+    shape: text
+    style: {
+      italic: true
+      font-color: "#C62828"
+      bold: true
+    }
+  }
+
+  rp_input_container.rp_x0 -> rp_ops.rp_matmul0
+  rp_input_container.rp_x1 -> rp_ops.rp_matmul1
+  rp_weight_container.rp_w0 -> rp_ops.rp_matmul0
+  rp_weight_container.rp_w1 -> rp_ops.rp_matmul1
+  rp_ops.rp_matmul0 -> rp_partials.rp_p0
+  rp_ops.rp_matmul1 -> rp_partials.rp_p1
+  rp_partials.rp_p0 -> rp_allreduce: "Sum Term"
+  rp_partials.rp_p1 -> rp_allreduce: "Sum Term"
+  rp_allreduce -> rp_final: "Result Y"
+}
+
+# -----------------------------------------------------------------------------
+# OPTIMIZATION SUMMARY
+# -----------------------------------------------------------------------------
+comparison_table: {
+  label: "Implementation Metrics Summary"
+  table_content: {
+    label: |'md
+      | Aspect | Column Parallel (MLP 1) | Row Parallel (MLP 2) |
+      | :--- | :--- | :--- |
+      | **Weight Partition** | Vertical: `W[:, i*k : (i+1)*k]` | Horizontal: `W[i*k : (i+1)*k, :]` |
+      | **Input Requirement** | **Replicated** across all GPUs | **Sharded** across model parallel dimension |
+      | **Output Result** | **Sharded** (Column-wise) | **Replicated** (via All-Reduce) |
+      | **Comm (Fwd)** | Identity (Zero Comm) | **All-Reduce** (Blocking sync) |
+      | **Comm (Bwd)** | All-Reduce (on Gradient Input) | Identity (Zero Comm) |
+      | **Memory** | `sizeof(W)/TP` per GPU | `sizeof(W)/TP` per GPU |
+    '|
+    shape: rectangle
+    style.font: mono
+  }
+}
+
+# -----------------------------------------------------------------------------
+# MEGATRON PATTERN
+# -----------------------------------------------------------------------------
+megatron_chain: {
+  label: "Megatron-LM Optimized Topology"
+  style.fill: "#F3E5F5"
+  
+  m_title: "Optimized Chain: ColParallel -> RowParallel" {
+    shape: text
+    style.bold: true
+  }
+  
+  step1: "Column Parallel Layer" {
+    class: gpu0_node
+    style.multiple: true
+  }
+  step2: "Activation (GELU)\n(Element-wise)" {
+    shape: circle
+    style.fill: "#F5F5F5"
+  }
+  step3: "Row Parallel Layer" {
+    class: gpu1_node
+    style.multiple: true
+  }
+  step4: "All-Reduce SUM" {
+    class: collective_op
+  }
+
+  step1 -> step2: "Sharded Output"
+  step2 -> step3: "Sharded Input"
+  step3 -> step4: "Partial Sums"
+  
+  chain_note: {
+    label: |'md
+      This sequence allows sharded tensors to flow through activations,
+      delaying the expensive All-Reduce until the very end of the MLP block.
+    '|
+    shape: text
+    style.italic: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# CONNECTIONS & FLOW
+# -----------------------------------------------------------------------------
+column_parallel -> row_parallel: "TP Block Pipeline" {
+  style: {
+    stroke-width: 4
+    stroke: "#7B1FA2"
+  }
+}
+
+row_parallel -> comparison_table: { style.stroke: transparent }
+comparison_table -> megatron_chain: { style.stroke: transparent }

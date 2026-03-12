@@ -1,0 +1,270 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+
+# ==================== TITLE & HEADER ====================
+title_block: {
+  label: "PIPELINE POINT-TO-POINT COMMUNICATION"
+  shape: text
+  near: top-center
+  style: {
+    font-size: 32
+    bold: true
+    underline: true
+  }
+}
+
+subtitle_block: {
+  label: |md
+    ### Distributed Training Micro-batch Orchestration
+    **Forward Activations** (Stage 0 → P-1) | **Backward Gradients** (Stage P-1 → 0)
+  |
+  shape: text
+  style: {
+    font-size: 16
+    italic: true
+  }
+}
+
+# ==================== SEQUENCE DIAGRAM ====================
+seq: {
+  shape: sequence_diagram
+  
+  # Participants - Pipeline Stages
+  s0: "Stage 0 (Rank 0)" {
+    style: {
+      stroke: "#2563eb"
+      fill: "#dbeafe"
+      stroke-width: 2
+    }
+  }
+  s1: "Stage 1 (Rank 1)" {
+    style: {
+      stroke: "#2563eb"
+      fill: "#dbeafe"
+      stroke-width: 2
+    }
+  }
+  s2: "Stage 2 (Rank 2)" {
+    style: {
+      stroke: "#2563eb"
+      fill: "#dbeafe"
+      stroke-width: 2
+    }
+  }
+  s3: "Stage 3 (Rank 3)" {
+    style: {
+      stroke: "#7c3aed"
+      fill: "#ede9fe"
+      stroke-width: 2
+    }
+  }
+
+  # --- FORWARD PASS SEQUENCE ---
+  forward_phase: {
+    label: "PHASE 1: FORWARD PROPAGATION (ISEND/IRECV)"
+    
+    s0 -> s1: "isend(act_mb0)" {
+      style: {
+        stroke: "#16a34a"
+        stroke-width: 4
+      }
+    }
+    s1 -> s2: "isend(act_mb0)" {
+      style: {
+        stroke: "#16a34a"
+        stroke-width: 4
+      }
+    }
+    s2 -> s3: "isend(act_mb0)" {
+      style: {
+        stroke: "#16a34a"
+        stroke-width: 4
+      }
+    }
+
+    # Asynchronous Overlap for Micro-batch 1
+    s0 -> s1: "isend(act_mb1)" {
+      style: {
+        stroke: "#16a34a"
+        stroke-dash: 5
+      }
+    }
+    s1 -> s2: "isend(act_mb1)" {
+      style: {
+        stroke: "#16a34a"
+        stroke-dash: 5
+      }
+    }
+    s2 -> s3: "isend(act_mb1)" {
+      style: {
+        stroke: "#16a34a"
+        stroke-dash: 5
+      }
+    }
+  }
+
+  # --- BACKWARD PASS SEQUENCE ---
+  backward_phase: {
+    label: "PHASE 2: GRADIENT PROPAGATION"
+
+    s3 -> s2: "isend(grad_mb0)" {
+      style: {
+        stroke: "#dc2626"
+        stroke-width: 4
+      }
+    }
+    s2 -> s1: "isend(grad_mb0)" {
+      style: {
+        stroke: "#dc2626"
+        stroke-width: 4
+      }
+    }
+    s1 -> s0: "isend(grad_mb0)" {
+      style: {
+        stroke: "#dc2626"
+        stroke-width: 4
+      }
+    }
+
+    # Gradient MB1
+    s3 -> s2: "isend(grad_mb1)" {
+      style: {
+        stroke: "#dc2626"
+        stroke-dash: 5
+      }
+    }
+    s2 -> s1: "isend(grad_mb1)" {
+      style: {
+        stroke: "#dc2626"
+        stroke-dash: 5
+      }
+    }
+    s1 -> s0: "isend(grad_mb1)" {
+      style: {
+        stroke: "#dc2626"
+        stroke-dash: 5
+      }
+    }
+  }
+}
+
+# ==================== DATA STRUCTURES ====================
+specs: {
+  grid-columns: 2
+  grid-gap: 20
+
+  packet_layout: {
+    shape: sql_table
+    label: "P2P TENSOR PACKET LAYOUT (64-bit aligned)"
+    
+    "0x00": "HEADER_MAGIC (uint32)" {constraint: "0x50325021"}
+    "0x04": "MICRO_BATCH_ID (uint32)" {constraint: "SEQ_ID"}
+    "0x08": "TENSOR_NDIMS (uint32)" {constraint: "4 (N,C,H,W)"}
+    "0x0C": "DTYPE_ENUM (uint32)" {constraint: "BF16=0, FP32=1"}
+    "0x10": "SHAPE_DIM_0 (uint64)" {constraint: "Batch Size"}
+    "0x18": "SHAPE_DIM_1 (uint64)" {constraint: "Channels"}
+    "0x20": "PAYLOAD_OFFSET (uint64)" {constraint: "Byte Pointer"}
+    "0x28": "PAYLOAD_DATA (void*)" {constraint: "Heavy Buffer"}
+
+    style: {
+      fill: "#f8fafc"
+      stroke: "#475569"
+    }
+  }
+
+  network_timing: {
+    label: "Network Constraints"
+    content: |'md
+      ### Communication Profile
+      | Protocol | Latency | Bandwidth |
+      | :--- | :--- | :--- |
+      | **NVLink** | <1.0μs | 600 GB/s |
+      | **InfiniBand** | 10-25μs | 400 Gb/s |
+      | **TCP/IP** | >100μs | 10-100 Gb/s |
+      
+      **Wait overhead**: $T_{sync} \approx Latency + \frac{Volume}{BW}$
+    '|
+    style: {
+      fill: "#e0f2fe"
+      stroke: "#0369a1"
+    }
+  }
+}
+
+# ==================== IMPLEMENTATION LOGIC ====================
+impl_grid: {
+  grid-columns: 2
+  grid-gap: 15
+
+  stage_0_logic: {
+    label: |md
+      ### Rank 0 (Producer)
+      1. **Allocate** Act Buffer [B, S, H]
+      2. **Compute** `Act = Layer(X)`
+      3. **isend** (Metadata, next_rank, tag=0)
+      4. **isend** (Act.data_ptr, next_rank, tag=1)
+      5. **Wait** for Backward Gradient
+    |
+    style: {
+      fill: "#f0fdf4"
+      stroke: "#166534"
+    }
+  }
+
+  stage_n_logic: {
+    label: |md
+      ### Rank N (Consumer)
+      1. **irecv** (Metadata, prev_rank, tag=0)
+      2. **Allocate** Buffer based on Metadata
+      3. **irecv** (TensorData, prev_rank, tag=1)
+      4. **Compute** `Loss = Criterion(Layer(Act))`
+      5. **Compute** `Gradients` and **isend** back
+    |
+    style: {
+      fill: "#fef2f2"
+      stroke: "#991b1b"
+    }
+  }
+}
+
+# ==================== ALGORITHM ====================
+algorithm_reference: {
+  label: "P2P Synchronization Primitive"
+  python_code: |'python
+    def p2p_communicate(tensor, peer_rank, mb_id, is_send=True):
+        """Low-level NCCL/MPI wrapper for Pipeline Stages"""
+        tag_metadata = mb_id * 100
+        tag_payload = tag_metadata + 1
+        
+        if is_send:
+            # Step 1: Push Metadata (Small)
+            header = tensor.shape_to_bytes()
+            dist.isend(header, dst=peer_rank, tag=tag_metadata)
+            # Step 2: Push Tensor (Large)
+            return dist.isend(tensor.contiguous(), dst=peer_rank, tag=tag_payload)
+        else:
+            # Step 1: Pull Metadata and Alloc
+            header = dist.recv(src=peer_rank, tag=tag_metadata)
+            buffer = torch.empty(header.shape)
+            # Step 2: Pull Tensor
+            return dist.irecv(buffer, src=peer_rank, tag=tag_payload)
+  '|
+  style: {
+    fill: "#f1f5f9"
+    stroke: "#334155"
+    font: mono
+  }
+}
+
+# Layout constraints (invisible edges for ordering)
+title_block -> subtitle_block -> seq -> specs -> impl_grid -> algorithm_reference: {
+  style: {
+    stroke-width: 0
+    opacity: 0
+  }
+}

@@ -1,0 +1,344 @@
+direction: down
+# M1: Core Quantization Foundation
+M1_Container: {
+  label: "M1: Core Quantization Foundation\nquant/config.py, quant/scale.py, quant/quantize.py"
+  QuantizationConfig: {
+    shape: sql_table
+    label: "QuantizationConfig"
+    bits: INT
+    symmetric: BOOL
+    per_channel: BOOL
+    dtype: DType
+    scale: FLOAT | NULL
+    zero_point: INT | NULL
+  }
+  QuantizationParams: {
+    shape: sql_table
+    label: "QuantizationParams"
+    scale: FLOAT
+    zero_point: INT
+    qmin: INT
+    qmax: INT
+  }
+  compute_scale_zero_point: {
+    shape: class
+    label: "compute_scale_zero_point"
+    rmin: "float"
+    rmax: "float"
+    qmin: "int"
+    qmax: "int"
+    symmetric: "bool"
+    returns: "Tuple[float, int]"
+  }
+  quantize: {
+    shape: class
+    label: "quantize"
+    tensor: "Tensor[float]"
+    scale: "float"
+    zero_point: "int"
+    returns: "Tensor[int8]"
+  }
+  dequantize: {
+    shape: class
+    label: "dequantize"
+    tensor: "Tensor[int8]"
+    scale: "float"
+    zero_point: "int"
+    returns: "Tensor[float]"
+  }
+  TensorQuantizer: {
+    shape: class
+    label: "TensorQuantizer"
+    config: "QuantizationConfig"
+    params: "QuantizationParams | None"
+    _ calibrated: "bool"
+    calibrate(tensor): "None"
+    quantize(tensor): "Tensor[int8]"
+    dequantize(tensor): "Tensor[float]"
+  }
+}
+# M2: Granularity System
+M2_Container: {
+  label: "M2: Granularity System\nquant/granularity.py, quant/per_tensor.py, quant/per_channel.py"
+  Granularity: {
+    shape: class
+    label: "Granularity"
+    PER_TENSOR: "str"
+    PER_CHANNEL: "str"
+    PER_GROUP: "str"
+  }
+  PerTensorQuantizer: {
+    shape: class
+    label: "PerTensorQuantizer"
+    config: "QuantizationConfig"
+    params: "QuantizationParams"
+    scale: "Tensor[float]"
+    zero_point: "Tensor[int]"
+    calibrate(tensor): "None"
+    quantize(tensor): "Tensor[int8]"
+    dequantize(tensor): "Tensor[float]"
+  }
+  PerChannelQuantizer: {
+    shape: class
+    label: "PerChannelQuantizer"
+    config: "QuantizationConfig"
+    params: "List[QuantizationParams]"
+    scales: "Tensor[float]"
+    zero_points: "Tensor[int]"
+    channel_axis: "int"
+    calibrate(tensor): "None"
+    quantize(tensor): "Tensor[int8]"
+    dequantize(tensor): "Tensor[float]"
+  }
+  WeightQuantizer: {
+    shape: class
+    label: "WeightQuantizer"
+    granularity: "Granularity"
+    quantizer: "PerTensorQuantizer | PerChannelQuantizer"
+    from_config(cfg): "WeightQuantizer"
+    quantize_weights(layer): "Tuple[Tensor, Tensor]"
+  }
+  ChannelUtils: {
+    shape: class
+    label: "channel_utils"
+    get_channel_axis(layer): "int"
+    reshape_for_channel(tensor, axis): "Tensor"
+    reduce_over_channels(tensor, axis): "Tensor"
+  }
+}
+# M3: Calibration Pipeline
+M3_Container: {
+  label: "M3: Calibration Pipeline\nquant/calibration/*.py"
+  CalibrationStats: {
+    shape: sql_table
+    label: "CalibrationStats"
+    min_val: FLOAT
+    max_val: FLOAT
+    absmax: FLOAT
+    histogram: ARRAY[FLOAT]
+    bin_edges: ARRAY[FLOAT]
+    num_samples: INT
+  }
+  CalibrationCollector: {
+    shape: class
+    label: "CalibrationCollector"
+    stats_dict: "Dict[str, CalibrationStats]"
+    hooks: "List[RemovableHandle]"
+    register_hook(module, name): "None"
+    collect(tensor, name): "None"
+    get_stats(name): "CalibrationStats"
+    reset(): "None"
+  }
+  MinMaxCalibrator: {
+    shape: class
+    label: "MinMaxCalibrator"
+    stats: "CalibrationStats"
+    compute_params(): "QuantizationParams"
+    update(tensor): "None"
+  }
+  PercentileCalibrator: {
+    shape: class
+    label: "PercentileCalibrator"
+    stats: "CalibrationStats"
+    percentile: "float"
+    compute_params(): "QuantizationParams"
+    compute_cdf(histogram): "Array[float]"
+    find_threshold_percentile(cdf, pct): "float"
+    update(tensor): "None"
+  }
+  ActivationCalibrator: {
+    shape: class
+    label: "ActivationCalibrator"
+    calibrator: "MinMaxCalibrator | PercentileCalibrator"
+    collector: "CalibrationCollector"
+    calibrate(model, dataloader): "Dict[str, QuantizationParams]"
+  }
+  CalibrationStorage: {
+    shape: class
+    label: "CalibrationStorage"
+    path: "Path"
+    save(params_dict, path): "None"
+    load(path): "Dict[str, QuantizationParams]"
+  }
+  CalibrationMonitor: {
+    shape: class
+    label: "CalibrationMonitor"
+    history: "List[Dict[str, float]]"
+    log_step(name, scale, zp): "None"
+    get_summary(): "DataFrame"
+  }
+}
+# M4: PTQ Pipeline
+M4_Container: {
+  label: "M4: PTQ Pipeline\nquant/ptq/*.py"
+  PTQConfig: {
+    shape: sql_table
+    label: "PTQConfig"
+    weight_bits: INT
+    activation_bits: INT
+    weight_granularity: Granularity
+    calibration_method: STR
+    calibration_percentile: FLOAT
+    num_calibration_samples: INT
+    per_channel_axes: LIST[INT]
+  }
+  QuantizedLinear: {
+    shape: class
+    label: "QuantizedLinear"
+    in_features: "int"
+    out_features: "int"
+    weight: "Tensor[int8]"
+    weight_scale: "Tensor[float]"
+    weight_zp: "Tensor[int]"
+    input_scale: "Tensor[float]"
+    input_zp: "Tensor[int]"
+    bias: "Tensor[float] | None"
+    forward(x): "Tensor[float]"
+  }
+  QuantizedResidualAdd: {
+    shape: class
+    label: "QuantizedResidualAdd"
+    input_scales: "List[float]"
+    output_scale: "float"
+    align_scales(inputs): "List[Tensor]"
+    forward(inputs): "Tensor"
+  }
+  fold_batchnorm_into_conv: {
+    shape: class
+    label: "fold_batchnorm_into_conv"
+    conv: "Conv2d"
+    bn: "BatchNorm2d"
+    returns: "Conv2d"
+  }
+  PTQPipeline: {
+    shape: class
+    label: "PTQPipeline"
+    config: "PTQConfig"
+    model: "nn.Module"
+    calibrator: "ActivationCalibrator"
+    run(model, dataloader): "nn.Module"
+    _prepare_model(): "None"
+    _calibrate(dataloader): "None"
+    _convert_layers(): "None"
+    _finalize(): "nn.Module"
+  }
+}
+# M5: GPTQ Quantization
+M5_Container: {
+  label: "M5: GPTQ Quantization\nquant/gptq/*.py"
+  GPTQConfig: {
+    shape: sql_table
+    label: "GPTQConfig"
+    bits: INT
+    group_size: INT
+    perchannel: BOOL
+    sym: BOOL
+    actorder: BOOL
+    damp_percent: FLOAT
+    block_size: INT
+  }
+  GPTQQuantizer: {
+    shape: class
+    label: "GPTQQuantizer"
+    config: "GPTQConfig"
+    H: "Tensor[float]"
+    scales: "Tensor[float]"
+    zeros: "Tensor[int]"
+    quantize_column(W_col, i, H_inv): "Tensor[int4]"
+    update_H_inverse(H, i, q): "None"
+    cholesky_fallback(diag): "Tensor"
+  }
+  GPTQModelQuantizer: {
+    shape: class
+    label: "GPTQModelQuantizer"
+    config: "GPTQConfig"
+    quantizer: "GPTQQuantizer"
+    quantize_model(model, dataloader): "nn.Module"
+    process_layer(layer, H): "None"
+    compute_hessian(layer, inputs): "Tensor"
+  }
+  pack_int4_weights: {
+    shape: class
+    label: "pack_int4_weights"
+    weights: "Tensor[int4]"
+    returns: "Tensor[uint8]"
+  }
+  unpack_int4_weights: {
+    shape: class
+    label: "unpack_int4_weights"
+    packed: "Tensor[uint8]"
+    returns: "Tensor[int4]"
+  }
+  measure_perplexity: {
+    shape: class
+    label: "measure_perplexity"
+    model: "nn.Module"
+    dataloader: "DataLoader"
+    returns: "float"
+  }
+}
+# M1 Internal Connections
+M1_Container.QuantizationConfig -> M1_Container.TensorQuantizer: {label: "config"}
+M1_Container.QuantizationParams -> M1_Container.TensorQuantizer: {label: "params"}
+M1_Container.compute_scale_zero_point -> M1_Container.QuantizationParams: {label: "produces"}
+M1_Container.quantize -> M1_Container.TensorQuantizer: {label: "used by"}
+M1_Container.dequantize -> M1_Container.TensorQuantizer: {label: "used by"}
+# M2 Internal Connections
+M2_Container.Granularity -> M2_Container.WeightQuantizer: {label: "selects"}
+M2_Container.PerTensorQuantizer -> M2_Container.WeightQuantizer: {label: "delegates to"}
+M2_Container.PerChannelQuantizer -> M2_Container.WeightQuantizer: {label: "delegates to"}
+M2_Container.ChannelUtils -> M2_Container.PerChannelQuantizer: {label: "axis helpers"}
+# M3 Internal Connections
+M3_Container.CalibrationStats -> M3_Container.MinMaxCalibrator: {label: "aggregates"}
+M3_Container.CalibrationStats -> M3_Container.PercentileCalibrator: {label: "histogram"}
+M3_Container.CalibrationCollector -> M3_Container.ActivationCalibrator: {label: "hooks"}
+M3_Container.MinMaxCalibrator -> M3_Container.ActivationCalibrator: {label: "strategy"}
+M3_Container.PercentileCalibrator -> M3_Container.ActivationCalibrator: {label: "strategy"}
+M3_Container.CalibrationStorage -> M3_Container.ActivationCalibrator: {label: "persists"}
+M3_Container.CalibrationMonitor -> M3_Container.ActivationCalibrator: {label: "logs"}
+# M4 Internal Connections
+M4_Container.PTQConfig -> M4_Container.PTQPipeline: {label: "configures"}
+M4_Container.QuantizedLinear -> M4_Container.PTQPipeline: {label: "creates"}
+M4_Container.QuantizedResidualAdd -> M4_Container.PTQPipeline: {label: "creates"}
+M4_Container.fold_batchnorm_into_conv -> M4_Container.PTQPipeline: {label: "prepares"}
+# M5 Internal Connections
+M5_Container.GPTQConfig -> M5_Container.GPTQQuantizer: {label: "configures"}
+M5_Container.GPTQConfig -> M5_Container.GPTQModelQuantizer: {label: "configures"}
+M5_Container.GPTQQuantizer -> M5_Container.GPTQModelQuantizer: {label: "column logic"}
+M5_Container.pack_int4_weights -> M5_Container.GPTQQuantizer: {label: "compresses"}
+M5_Container.unpack_int4_weights -> M5_Container.GPTQQuantizer: {label: "decompresses"}
+M5_Container.measure_perplexity -> M5_Container.GPTQModelQuantizer: {label: "validates"}
+# Cross-Milestone Connections
+M1_Container.QuantizationConfig -> M2_Container.PerTensorQuantizer: {label: "config"}
+M1_Container.QuantizationConfig -> M2_Container.PerChannelQuantizer: {label: "config"}
+M1_Container.QuantizationParams -> M3_Container.MinMaxCalibrator: {label: "output"}
+M1_Container.QuantizationParams -> M3_Container.PercentileCalibrator: {label: "output"}
+M1_Container.TensorQuantizer -> M3_Container.ActivationCalibrator: {label: "wraps"}
+M3_Container.ActivationCalibrator -> M4_Container.PTQPipeline: {label: "calibrates"}
+M4_Container.PTQConfig -> M4_Container.QuantizedLinear: {label: "settings"}
+M1_Container.QuantizationConfig -> M5_Container.GPTQConfig: {label: "extends"}
+M4_Container.QuantizedLinear -> M5_Container.GPTQModelQuantizer: {label: "replaces"}
+M2_Container.PerChannelQuantizer -> M5_Container.GPTQQuantizer: {label: "per-channel"}
+# Milestone Index
+MilestoneIndex: {
+  label: "Milestone Index"
+  shape: rectangle
+  m1: "M1: Core Foundation - QuantizationConfig, scale/zero_point computation, quantize/dequantize ops"
+  m2: "M2: Granularity - PerTensorQuantizer, PerChannelQuantizer, WeightQuantizer, ChannelUtils"
+  m3: "M3: Calibration - MinMax, Percentile calibrators, Collector, Storage, Monitor"
+  m4: "M4: PTQ Pipeline - PTQConfig, QuantizedLinear, QuantizedResidualAdd, BatchNorm folding"
+  m5: "M5: GPTQ - Hessian-based quantization, INT4 packing, perplexity measurement"
+}
+# Theme
+style: {
+  fill: "#f8f9fa"
+  stroke: "#dee2e6"
+  font-color: "#212529"
+  dark-mode: false
+}
+M1_Container.style.fill: "#e3f2fd"
+M2_Container.style.fill: "#e8f5e9"
+M3_Container.style.fill: "#fff3e0"
+M4_Container.style.fill: "#f3e5f5"
+M5_Container.style.fill: "#fce4ec"
+MilestoneIndex.style.fill: "#eceff1"

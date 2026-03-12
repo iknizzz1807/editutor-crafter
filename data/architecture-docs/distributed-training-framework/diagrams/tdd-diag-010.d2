@@ -1,0 +1,241 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    compute: "#00b894"
+    comm: "#e17055"
+    background: "#1a1a2e"
+    text_primary: "#ffffff"
+    text_secondary: "#e0e0e0"
+    border_red: "#ff7675"
+    border_green: "#55efc4"
+    sync: "#fdcb6e"
+    overlap_bg: "#2d3436"
+    nvlink: "#a29bfe"
+  }
+}
+
+classes: {
+  compute_block: {
+    style: {
+      fill: "${colors.compute}"
+      stroke: "white"
+      stroke-width: 1
+      bold: true
+      font-size: 14
+    }
+  }
+  comm_block: {
+    style: {
+      fill: "${colors.comm}"
+      stroke: "white"
+      stroke-width: 1
+      stroke-dash: 3
+    }
+  }
+  panel: {
+    style: {
+      fill: "${colors.background}"
+      stroke-width: 2
+      border-radius: 8
+      font-color: "${colors.text_primary}"
+    }
+  }
+  metric_text: {
+    shape: text
+    style: {
+      font-size: 16
+      bold: true
+    }
+  }
+}
+
+title: |md
+  # Communication Overlap Timeline: Chunk-wise All-Reduce Pipelined with Computation
+  *Technical Specification for Row-Parallel Linear Optimization (Distributed Training Framework)*
+| {
+  near: top-center
+  shape: text
+  style.font-size: 28
+}
+
+comparison: {
+  grid-columns: 2
+  grid-gap: 60
+  
+  without_overlap: {
+    label: "BASELINE: SEQUENTIAL EXECUTION (EAGER)"
+    class: panel
+    style.stroke: "${colors.border_red}"
+    grid-rows: 2
+    vertical-gap: 20
+    
+    seq_diag: {
+      shape: sequence_diagram
+      
+      gpu_comp: "GPU 0\n(Execution Engine)" {
+        style.stroke: "#74b9ff"
+        style.fill: "#0984e3"
+      }
+      ring_bus: "System Memory / NVLink" {
+        style.stroke: "#fd79a8"
+        style.fill: "#e84393"
+      }
+      
+      # Sequential Compute Phase
+      gpu_comp -> gpu_comp: "MatMul(Chunk 0) [T=0]" { class: compute_block }
+      gpu_comp -> gpu_comp: "MatMul(Chunk 1) [T=10]" { class: compute_block }
+      gpu_comp -> gpu_comp: "MatMul(Chunk 2) [T=20]" { class: compute_block }
+      gpu_comp -> gpu_comp: "MatMul(Chunk 3) [T=30]" { class: compute_block }
+      
+      # Blocked Communication Phase
+      gpu_comp -> ring_bus: "ncclAllReduce(FULL_BUFFER) [T=40ms]" {
+        class: comm_block
+        style.stroke-width: 4
+      }
+      ring_bus -> gpu_comp: "AR_COMPLETE_SIGNAL [T=65ms]" {
+        style.stroke: "${colors.sync}"
+      }
+    }
+    
+    metrics: "T_total = 40ms (Compute) + 25ms (Comm) = 65ms" {
+      class: metric_text
+      style.font-color: "${colors.border_red}"
+    }
+  }
+
+  with_overlap: {
+    label: "OPTIMIZED: CHUNK-WISE PIPELINING (OVERLAP)"
+    class: panel
+    style.stroke: "${colors.border_green}"
+    grid-rows: 2
+    vertical-gap: 20
+    
+    pipe_diag: {
+      shape: sequence_diagram
+      
+      gpu_comp: "GPU 0\n(Compute Unit)" {
+        style.stroke: "#74b9ff"
+        style.fill: "#0984e3"
+      }
+      async_bus: "Async SM Proxy\n(Stream 1)" {
+        style.stroke: "${colors.nvlink}"
+        style.fill: "#6c5ce7"
+      }
+      
+      # Pipelined Execution
+      gpu_comp -> gpu_comp: "C0 Comp [0-10ms]" { class: compute_block }
+      
+      # Step 1: C0 Comm starts, C1 Comp starts simultaneously
+      gpu_comp -> async_bus: "start_ar(C0) [10ms]" { class: comm_block }
+      gpu_comp -> gpu_comp: "C1 Comp [10-20ms]" { class: compute_block }
+      
+      # Step 2: C1 Comm starts, C2 Comp starts
+      gpu_comp -> async_bus: "start_ar(C1) [20ms]" { class: comm_block }
+      gpu_comp -> gpu_comp: "C2 Comp [20-30ms]" { class: compute_block }
+      
+      # Step 3: C2 Comm starts, C3 Comp starts
+      gpu_comp -> async_bus: "start_ar(C2) [30ms]" { class: comm_block }
+      gpu_comp -> gpu_comp: "C3 Comp [30-40ms]" { class: compute_block }
+      
+      # Final Comm overlap
+      gpu_comp -> async_bus: "start_ar(C3) [40ms]" { class: comm_block }
+      
+      async_bus -> gpu_comp: "StreamSync(WaitAll) [~42ms]" {
+        style.stroke: "${colors.sync}"
+        style.bold: true
+      }
+    }
+    
+    metrics: "T_total = max(40ms, 42ms) ≈ 42ms (35% Improvement)" {
+      class: metric_text
+      style.font-color: "${colors.border_green}"
+    }
+  }
+}
+
+bottom_matter: {
+  grid-columns: 3
+  grid-gap: 30
+  
+  algorithm: {
+    label: "Algorithm: OverlappingRowParallel"
+    class: panel
+    style.stroke: "#4cc9f0"
+    
+    code_block: |md
+      cpp
+      // Pseudo-implementation
+      for (int i = 0; i < N_CHUNKS; ++i) {
+        LaunchKernel(ComputeStream, Chunks[i]);
+        if (i > 0) {
+          // Sync compute completion
+          EventRecord(ComputeStream, ev[i]);
+          StreamWaitEvent(CommStream, ev[i]);
+          // Async comm start
+          ncclAllReduce(Chunks[i], CommStream);
+        }
+      }
+      StreamSync(CommStream);
+    | {
+      shape: text
+      style.font-size: 11
+    }
+  }
+  
+  performance: {
+    label: "Hardware Constraints & Tuning"
+    class: panel
+    style.stroke: "${colors.border_green}"
+    
+    stats: |md
+      - **Critical Path**: $\max(\sum T_{comp}, T_{comm\_tail} + T_{comp\_tail})$
+      - **Memory Pressure**: Requires $2 \times$ pinned output memory for ping-pong buffering.
+      - **Optimal Chunking**: $N=4$ or $N=8$ to minimize NCCL kernel launch overhead.
+      - **NVLink Saturation**: Peak 600GB/s P2P required for efficient chunking below 1MB.
+    | {
+      shape: text
+      style.font-size: 12
+    }
+  }
+  
+  legend: {
+    label: "Symbolic Reference"
+    class: panel
+    grid-columns: 1
+    
+    c_box: "Compute Kernel (Local SM Access)" {
+      class: compute_block
+    }
+    a_box: "Async NCCL All-Reduce (NVLink)" {
+      class: comm_block
+    }
+    s_box: "Stream Synchronization Barrier" {
+      style.stroke: "${colors.sync}"
+      style.stroke-width: 4
+      style.fill: transparent
+    }
+  }
+}
+
+# Cross-container logical flow
+comparison.without_overlap -> comparison.with_overlap: "Transformation: Temporal Folding" {
+  style: {
+    stroke: "#ffeaa7"
+    stroke-width: 4
+    stroke-dash: 5
+    animated: true
+  }
+}
+
+# Documentation Metadata
+footer: "Technical Specification: Parallelism-Aware Communication Protocols v4.2.0-LTS | Author: Architecture Lead" {
+  shape: text
+  near: bottom-right
+  style.italic: true
+  style.font-size: 12
+  style.font-color: "#636e72"
+}

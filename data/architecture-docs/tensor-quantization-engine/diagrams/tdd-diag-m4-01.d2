@@ -1,0 +1,367 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+# --- DOCUMENT HEADER ---
+header: {
+  near: top-center
+  title: |md
+    # Complete PTQ Pipeline Flow
+    ## Module M4: Post-Training Static Quantization
+    *Implementation Spec v1.4.2 | Engineering Reference*
+  |
+  title.shape: text
+  title.style.font-size: 24
+  title.style.bold: true
+}
+
+# --- GLOBAL CLASSES ---
+classes: {
+  process_block: {
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#FF9800"
+      stroke-width: 2
+      border-radius: 8
+      shadow: true
+    }
+  }
+  data_object: {
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#2196F3"
+      stroke-dash: 0
+    }
+  }
+  interface_spec: {
+    shape: class
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+    }
+  }
+}
+
+# --- INPUT SECTION (PHASE 0) ---
+inputs: {
+  label: "INPUT ARTIFACTS (Phase 0)"
+  fp32_model: {
+    label: "FP32 Model\n(PyTorch nn.Module)"
+    shape: cylinder
+    style.fill: "#E1F5FE"
+  }
+  calib_data: {
+    label: "Calibration Dataloader\n(Representative Batch)"
+    shape: cylinder
+    style.fill: "#E1F5FE"
+  }
+  ptq_config: PTQConfig {
+    class: interface_spec
+    "dtype": "qint8 | qint4"
+    "per_channel": "bool"
+    "calibration": "minmax | percentile"
+    "percentile": "float (99.99)"
+    "fuse_modules": "bool"
+    "skip_layers": "List[str]"
+    "bias_correction": "bool"
+  }
+}
+
+# --- STAGE 1: ANALYZE ---
+stage1: {
+  label: "STAGE 1: STATIC ANALYSIS"
+  class: process_block
+
+  layer_analyzer: LayerAnalyzer {
+    class: interface_spec
+    "analyze(model)": AnalysisResult
+    "find_quantizable_layers()": "List[LayerInfo]"
+    "compute_layer_stats()": LayerStats
+    "detect_residuals()": "List[ResidualInfo]"
+  }
+
+  analysis_result: AnalysisResult {
+    class: interface_spec
+    "layers": "List[LayerInfo]"
+    "fusion_groups": "List[FusionGroup]"
+    "residual_connections": "List[str]"
+    "total_params": "int"
+    "compression_est": "float"
+  }
+
+  layer_analyzer -> analysis_result: "generates mapping"
+}
+
+# --- STAGE 2: FUSE ---
+stage2: {
+  label: "STAGE 2: OPERATOR FUSION"
+  class: process_block
+
+  layer_fuser: LayerFuser {
+    class: interface_spec
+    "fuse(model, groups)": nn.Module
+    "fuse_conv_bn()": FusedConvBN
+    "update_bn_stats()": void
+    "rewrite_graph()": void
+  }
+
+  fused_conv_bn: FusedConvBN {
+    class: interface_spec
+    "weight": "Tensor[f32]"
+    "bias": "Tensor[f32]"
+    "running_mean": "Tensor[f32]"
+    "forward(x)": Tensor
+  }
+
+  layer_fuser -> fused_conv_bn: "In-place graph modification"
+}
+
+# --- STAGE 3: CALIBRATE ---
+stage3: {
+  label: "STAGE 3: ACTIVATION CALIBRATION"
+  class: process_block
+
+  calibrator: ActivationCalibrator {
+    class: interface_spec
+    "calibrate(model, data)": CalibResult
+    "collect_activations()": void
+    "compute_scale_zp()": "Tuple[f32, i32]"
+    "apply_percentile()": f32
+  }
+
+  calib_stats: CalibrationStats {
+    class: interface_spec
+    "min_val": "float"
+    "max_val": "float"
+    "histogram": "Tensor[i64]"
+    "num_bins": "int"
+  }
+
+  calibrator -> calib_stats: "Updates observer stats"
+}
+
+# --- STAGE 4: QUANTIZE WEIGHTS ---
+stage4: {
+  label: "STAGE 4: WEIGHT QUANTIZATION"
+  class: process_block
+
+  weight_quantizer: WeightQuantizer {
+    class: interface_spec
+    "quantize(weight, config)": QWeight
+    "compute_per_tensor_qparams()": QParams
+    "compute_per_channel_qparams()": QParams
+  }
+
+  qparams: QParams {
+    class: interface_spec
+    "scale": "Tensor[f32]"
+    "zero_point": "Tensor[i32]"
+    "qmin": "int"
+    "qmax": "int"
+  }
+
+  quantized_weight: QuantizedWeight {
+    class: interface_spec
+    "qweight": "Tensor[i8]"
+    "scale": "Tensor[f32]"
+    "zp": "Tensor[i32]"
+    "dequantize()": "Tensor[f32]"
+  }
+
+  weight_quantizer -> qparams
+  qparams -> quantized_weight
+}
+
+# --- STAGE 5: BUILD ---
+stage5: {
+  label: "STAGE 5: QUANTIZED MODEL CONSTRUCTION"
+  class: process_block
+
+  model_builder: QuantizedModelBuilder {
+    class: interface_spec
+    "build(model, qw, calib)": nn.Module
+    "replace_linear()": QuantizedLinear
+    "replace_conv()": QuantizedConv2d
+  }
+
+  quantized_linear: QuantizedLinear {
+    class: interface_spec
+    "weight": "Tensor[i8]"
+    "w_scale": "Tensor[f32]"
+    "in_scale": "f32"
+    "out_scale": "f32"
+    "forward(x)": Tensor
+  }
+  
+  model_builder -> quantized_linear: "In-place module replacement"
+}
+
+# --- STAGE 6: VALIDATE ---
+stage6: {
+  label: "STAGE 6: ACCURACY & COMPRESSION VALIDATION"
+  style.fill: "#FCE4EC"
+  style.stroke: "#D81B60"
+  style.stroke-width: 2
+
+  validator: PTQValidator {
+    class: interface_spec
+    "validate(q_model, fp_model)": ValidationResult
+    "measure_accuracy()": AccMetrics
+    "measure_size()": CompMetrics
+  }
+
+  validation_result: ValidationResult {
+    class: interface_spec
+    "passed": "bool"
+    "accuracy_loss": "float"
+    "size_mb": "float"
+  }
+
+  validator -> validation_result: "Executes test suite"
+}
+
+# --- MEMORY LAYOUT (TECHNICAL SPEC) ---
+memory_layout: {
+  label: "QuantizedLinear Memory Map (Binary Layout - 64B Cache Line)"
+  shape: sql_table
+  style.fill: "#ECEFF1"
+  style.stroke: "#455A64"
+  
+  "0x00": "Header (Metadata + vtable)" {constraint: "16B [Header]"}
+  "0x10": "qweight_ptr (Data Blob)" {constraint: "8B [Pointer]"}
+  "0x18": "scale_ptr (F32 Vector)" {constraint: "8B [Pointer]"}
+  "0x20": "zp_ptr (I32 Vector)" {constraint: "8B [Pointer]"}
+  "0x28": "bias_ptr (F32 Bias)" {constraint: "8B [Pointer]"}
+  "0x30": "in_scale (Act In)" {constraint: "f32 (4B) [Data]"}
+  "0x34": "out_scale (Act Out)" {constraint: "f32 (4B) [Data]"}
+  "0x38": "padding (Cache Line Sync)" {constraint: "8B [Padding]"}
+  
+  "0x40 - EOF": "Contiguous Weight Tensor" {constraint: "Align=64B [Data]"}
+}
+
+# Apply detailed styling to memory map
+memory_layout."0x00".style.fill: "#E1BEE7"
+memory_layout."0x10".style.fill: "#FFE0B2"
+memory_layout."0x18".style.fill: "#FFE0B2"
+memory_layout."0x20".style.fill: "#FFE0B2"
+memory_layout."0x28".style.fill: "#FFE0B2"
+memory_layout."0x30".style.fill: "#BBDEFB"
+memory_layout."0x34".style.fill: "#BBDEFB"
+memory_layout."0x38".style.fill: "#F5F5F5"
+
+# --- PIPELINE CONNECTIONS ---
+inputs.fp32_model -> stage1.layer_analyzer: "Load Graph"
+inputs.ptq_config -> stage1.layer_analyzer: "Inject Settings"
+stage1 -> stage2: "AnalysisResult"
+stage2 -> stage3: "Prepared Graph"
+inputs.calib_data -> stage3.calibrator: "Representative Batches"
+stage3 -> stage4: "Calibration Envelopes"
+stage4 -> stage5: "Packed QWeights"
+stage5 -> stage6: "Target INT8 Model"
+
+# --- OUTPUTS ---
+outputs: {
+  label: "OUTPUT ARTIFACTS"
+  int8_model: {
+    label: "INT8 Model\n(Optimized .pth)"
+    shape: cylinder
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+  }
+  onnx_export: "ONNX QDQ Runtime" {
+    shape: document
+    style.fill: "#E8F5E9"
+  }
+}
+
+stage6.validation_result -> int8_artifact_check: "Evaluation Result"
+int8_artifact_check: "Accuracy Threshold Check" {
+  shape: diamond
+}
+
+int8_artifact_check -> outputs.int8_model: "passed == true"
+outputs.int8_model -> outputs.onnx_export: "export_qdq()"
+
+# --- ERROR HANDLING & FEEDBACK LOOP ---
+retry_logic: {
+  label: "Adjustment Policy\n1. Shrink Percentile\n2. Disable Per-Channel\n3. Mark layer as FP32-only"
+  shape: rectangle
+  style.fill: "#FFEBEE"
+  style.stroke: "#B71C1C"
+  style.double-border: true
+}
+
+int8_artifact_check -> retry_logic: "passed == false"
+retry_logic -> stage3: "Re-trigger Calib"
+
+# --- STATE MACHINE ---
+lifecycle_states: {
+  label: "PTQ ENGINE INTERNAL STATE MACHINE"
+  style.stroke-dash: 5
+  style.fill: "#FAFAFA"
+  
+  initial: {
+    shape: circle
+    label: "●"
+    style.fill: black
+    width: 20
+    height: 20
+  }
+  
+  initial -> ANALYZING: "bootstrap"
+  ANALYZING -> FUSING: "layers_found"
+  FUSING -> CALIBRATING: "observers_active"
+  CALIBRATING -> QUANTIZING: "params_calculated"
+  QUANTIZING -> BUILDING: "buffers_packed"
+  BUILDING -> VALIDATING: "eval_start"
+  VALIDATING -> SUCCESS: "met_objective"
+  VALIDATING -> ERROR: "drift_detected"
+  ERROR -> CALIBRATING: "reconfigure"
+  
+  ERROR.style.fill: "#FFCDD2"
+  SUCCESS.style.fill: "#C8E6C9"
+}
+
+# --- RESIDUAL HANDLING ---
+residual_subgraph: {
+  label: "Residual Path Scale Synchronization"
+  style.stroke-dash: 3
+  
+  handler: ResidualScaleHandler {
+    class: interface_spec
+    "align_scales(path_a, path_b)": void
+    "get_shared_scale()": f32
+  }
+  
+  annotation: |md
+    **Mandatory Constraint:**
+    Scale(Branch_A) == Scale(Branch_B)
+    Required for bitwise integer addition
+    without re-quantization overhead.
+  |
+  annotation.shape: rectangle
+  annotation.style.fill: "#FFF9C4"
+}
+
+stage1.analysis_result -> residual_subgraph.handler: "residual_info"
+residual_subgraph.handler -> stage5.model_builder: "alignment_constraints"
+
+# --- LEGEND ---
+legend: {
+  near: bottom-right
+  class: data_object
+  l1: "Solid Blue Arrow: Primary Model Data Flow"
+  l2: "Dashed Grey Arrow: Metadata/Constraint Injection"
+  l3: "Purple Class: Interface/Spec Definition"
+  l4: "Orange Enclosure: Processing Stage"
+}
+
+# Global Overrides
+***.style.font: mono
+(stage6 -> int8_artifact_check).style.stroke: "#2E7D32"
+(stage6 -> int8_artifact_check).style.stroke-width: 4

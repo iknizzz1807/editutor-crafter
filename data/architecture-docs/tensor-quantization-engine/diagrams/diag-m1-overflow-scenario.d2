@@ -1,0 +1,199 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  normal: {
+    direction: down
+    label: "Normal Quantization"
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    scale_normal: {
+      label: "Scale: 0.004"
+      shape: rectangle
+      style.fill: "#C8E6C9"
+      style.stroke: "#4CAF50"
+    }
+    weights_normal: {
+      shape: sql_table
+      label: "FP32 Weights"
+      w1: "0.123"
+      w2: "0.087"
+      w3: "-0.056"
+      w4: "0.201"
+      w5: "-0.142"
+    }
+    quantized_normal: {
+      shape: sql_table
+      label: "INT8 Quantized"
+      q1: "31"
+      q2: "22"
+      q3: "-14"
+      q4: "50"
+      q5: "-35"
+      total: "Range: [-35, 50]"
+    }
+    output_normal: {
+      shape: rectangle
+      label: "Output: 2.341"
+      style.fill: "#A5D6A7"
+      style.bold: true
+    }
+    scale_normal -> weights_normal: "calibrate"
+    weights_normal -> quantized_normal: "q = round(w/scale)"
+    quantized_normal -> output_normal: "dequantize"
+  }
+  overflow: {
+    direction: down
+    label: "Scale Too Small → Overflow"
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    scale_overflow: {
+      label: "Scale: 0.0008"
+      shape: rectangle
+      style.fill: "#FFCDD2"
+      style.stroke: "#F44336"
+    }
+    weights_overflow: {
+      shape: sql_table
+      label: "FP32 Weights (same)"
+      w1: "0.123"
+      w2: "0.087"
+      w3: "-0.056"
+      w4: "0.201"
+      w5: "-0.142"
+    }
+    quantized_overflow: {
+      shape: sql_table
+      label: "INT8 (No Clamp!)"
+      q1: "154"
+      q2: "109"
+      q3: "-70"
+      q4: "251"
+      q5: "-177"
+      danger: "Exceeds [-128, 127]!"
+      total: "WRAPAROUND!"
+      style.fill: "#FFCDD2"
+    }
+    output_overflow: {
+      shape: rectangle
+      label: "Output: -18.742 ❌"
+      style.fill: "#EF9A9A"
+      style.bold: true
+      style.font-color: "#C62828"
+    }
+    scale_overflow -> weights_overflow: "calibrate"
+    weights_overflow -> quantized_overflow: "q = round(w/scale)"
+    quantized_overflow -> output_overflow: "bits flip!"
+  }
+}
+arrow_label: {
+  shape: text
+  label: "5x smaller scale\n= 5x larger quantized values\n= OVERFLOW"
+  near: center-center
+  style.fill: transparent
+  style.font-color: "#C62828"
+  style.bold: true
+}
+normal -> overflow: "scale 5x smaller" {
+  style.stroke: "#C62828"
+  style.stroke-dash: 4
+  style.animated: true
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  code_block: {
+    direction: down
+    label: "The Fix: Always Clamp"
+    width: 500
+    code: |'python
+# WRONG: No overflow protection
+quantized = torch.round(weight / scale)  # Can exceed range!
+# CORRECT: Clamp to valid INT8 range
+q_min, q_max = -128, 127
+quantized = torch.clamp(
+    torch.round(weight / scale + zero_point),
+    q_min, q_max
+)
+    '|
+  }
+  wraparound_demo: {
+    direction: down
+    label: "INT8 Wraparound Example"
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    before_wrap: {
+      shape: sql_table
+      label: "Before Wrap"
+      b1: "251 (decimal)"
+    }
+    after_wrap: {
+      shape: sql_table
+      label: "After INT8 Cast"
+      a1: "-5 (signed)"
+      note: "0xFB = 251 unsigned\n= -5 signed!"
+    }
+    before_wrap -> after_wrap: "int8 cast" {
+      label: "bits: 11111011"
+      style.stroke: "#FF9800"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  matmul_warning: {
+    direction: down
+    label: "⚠️ INT8 × INT8 Overflow"
+    style.fill: "#FFF8E1"
+    style.stroke: "#FFC107"
+    width: 350
+    problem: {
+      label: |md
+**The Problem:**
+INT8 × INT8 can produce values up to 127² = 16,129
+This **overflows INT8** immediately!
+**Solution:** Use INT32 accumulator
+      |
+    }
+  }
+  accumulator_code: {
+    direction: down
+    label: "INT32 Accumulation"
+    width: 400
+    code: |'python
+def quantized_matmul(a_int8, w_int8):
+    # INT8 × INT8 -> INT32
+    # Prevents overflow during accumulation
+    accumulator = torch.zeros(
+        batch_size, out_features,
+        dtype=torch.int32  # Key!
+    )
+    for i in range(in_features):
+        # Each mul fits in INT16
+        # Sum accumulates in INT32
+        product = a_int8[:, i] * w_int8[i, :]
+        accumulator += product.to(torch.int32)
+    # Requantize back to INT8 at the end
+    return requantize(accumulator)
+    '|
+  }
+}
+legend: {
+  near: bottom-right
+  style.fill: "#F5F5F5"
+  label: "Key Points"
+  l1: "• Scale determines quantization step size"
+  l2: "• Too small scale = quantized values overflow"
+  l3: "• INT8 wraparound flips signs catastrophically"
+  l4: "• Always clamp AND use INT32 accumulation"
+}

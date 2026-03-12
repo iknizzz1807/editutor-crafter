@@ -1,0 +1,169 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+"Backpressure Flow Control": {
+  shape: sequence_diagram
+
+  # ---------------------------------------------------------------------------
+  # Participant Definitions (Actors)
+  # ---------------------------------------------------------------------------
+  Client: {
+    shape: person
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1565C0"
+      stroke-width: 2
+    }
+  }
+
+  HTTPHandler: "API Gateway\n(FastAPI / uvicorn)" {
+    tooltip: "Non-blocking I/O entry point"
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#EF6C00"
+      stroke-width: 2
+    }
+  }
+
+  RequestQueue: "Asyncio Request Queue\n(Bounded Memory)" {
+    tooltip: "Queue size limit = 1024"
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+      stroke-width: 2
+    }
+  }
+
+  DynamicBatcher: "Dynamic Batcher\n(Worker Loop)" {
+    tooltip: "Batch size: 32 | Timeout: 5ms"
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+      stroke-width: 2
+    }
+  }
+
+  Model: "ML Model\n(TRT / ONNX Engine)" {
+    tooltip: "GPU Resident Model"
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#C62828"
+      stroke-width: 2
+    }
+  }
+
+  # ---------------------------------------------------------------------------
+  # Sequence Logic
+  # ---------------------------------------------------------------------------
+
+  # Phase 1: Request Ingestion
+  Client -> HTTPHandler: "POST /predict {image_bytes}" {
+    style.stroke-width: 2
+  }
+
+  # Phase 2: Admission Control
+  HTTPHandler -> RequestQueue: "len(pending_tasks)"
+  RequestQueue -> HTTPHandler: "return current_depth"
+
+  # Logical Branch: Load Shedding
+  "Backpressure: Over Capacity": {
+    style.stroke: "#C62828"
+    HTTPHandler -> Client: "HTTP 503 Service Unavailable" {
+      style.stroke: "#C62828"
+      style.stroke-dash: 3
+    }
+    Client."JSON Payload: {'error': 'overload', 'retry_after': 0.1}"
+  }
+
+  # Logical Branch: Task Admission
+  "Admission Phase": {
+    HTTPHandler -> RequestQueue: "put_nowait(RequestObj)"
+    RequestQueue -> HTTPHandler: "asyncio.Future (pending)"
+    
+    # Activation span representing the suspended coroutine
+    HTTPHandler.waiting_for_future: "await future.result()" {
+      style.stroke-dash: 3
+    }
+  }
+
+  # Phase 3: Background Batch Processing
+  "Model Inference Pipeline": {
+    RequestQueue -> DynamicBatcher: "get_batch(max=32)"
+    
+    DynamicBatcher.batching: "Preprocessing / Tensor Copy"
+    
+    DynamicBatcher -> Model: "tensor_forward(Batch[32, 3, 224, 224])" {
+      style.stroke-width: 3
+    }
+    
+    Model -> DynamicBatcher: "softmax_output[32, 1000]"
+    
+    DynamicBatcher -> RequestQueue: "resolve_futures(results[])"
+  }
+
+  # Phase 4: Response Resolution
+  RequestQueue -> HTTPHandler.waiting_for_future: "Future.set_result(data)" {
+    style.stroke-dash: 5
+    style.stroke: "#2E7D32"
+  }
+
+  HTTPHandler -> Client: "HTTP 200 OK {prediction: 0.98}" {
+    style.stroke: "#2E7D32"
+    style.stroke-width: 2
+  }
+
+}
+
+# ---------------------------------------------------------------------------
+# Documentation and Technical Specifications
+# ---------------------------------------------------------------------------
+
+"System Implementation Notes": {
+  # Fix: Changed 'near' to a constant value supported by the 'elk' engine
+  near: bottom-center
+  
+  shape: rectangle
+  style: {
+    fill: "#F9F9F9"
+    stroke: "#BDC3C7"
+    stroke-dash: 4
+    border-radius: 8
+  }
+  
+  Header: |md
+    ### Backpressure Strategy: Bounded Queuing
+    The system utilizes a **fail-fast** mechanism to maintain low p99 latency.
+  |
+
+  SpecTable: {
+    shape: sql_table
+    "Metric": "Value"
+    "Max Queue Depth": "1024 Tasks"
+    "Batch Timeout": "5ms (Wait for batch)"
+    "Model Precision": "FP16 (Half Precision)"
+    "Shedding Mechanism": "HTTP 503 + Retry-After"
+  }
+
+  ImplementationDetails: |md
+    - **Liveliness**: The `HTTPHandler` remains responsive to new connections while the event loop handles background batching.
+    - **Backpressure**: Prevents **TCP Bufferbloat** by rejecting at the application layer before enqueuing.
+    - **Resource Efficiency**: GPU utilization is maximized by using the `DynamicBatcher` to saturate SM cores.
+  |
+
+  Legend: {
+    grid-columns: 1
+    async: "Dashed Arrows = Asynchronous / Non-blocking callbacks" {
+      style.stroke-dash: 3
+    }
+    blocking: "Solid Arrows = Synchronous Request/Response" {
+      style.stroke-width: 2
+    }
+    shed: "Red Paths = Backpressure rejection / Load shedding" {
+      style.stroke: "#C62828"
+    }
+  }
+}

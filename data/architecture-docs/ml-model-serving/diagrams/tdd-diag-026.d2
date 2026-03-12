@@ -1,0 +1,295 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+# -----------------------------------------------------------------------------
+# TITLE & SPECIFICATION HEADER
+# -----------------------------------------------------------------------------
+title: {
+  label: "Traffic Splitter Architecture\n(Implementation Specification v1.0.2)"
+  shape: text
+  near: top-center
+  style: {
+    font-size: 32
+    bold: true
+    underline: true
+    font-color: "#212121"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 1. CLASS DEFINITIONS (UML)
+# -----------------------------------------------------------------------------
+# Memory Layout Standards: 
+# Purple (#7B1FA2) = Header/Control Logic
+# Blue (#1565C0) = Data Structures
+# Green (#2E7D32) = Processing Logic
+
+TrafficSplitter: {
+  shape: class
+  style: {
+    stroke: "#7B1FA2"
+    stroke-width: 4
+    fill: "#F3E5F5"
+  }
+  tooltip: "Main dispatching engine. sizeof=64 bytes"
+
+  # Fields
+  allocations: "List[TrafficAllocation] (ptr 0x00)"
+  hash_algorithm: "str = \"sha256\" (ptr 0x08)"
+  salt: "str (ptr 0x10)"
+  
+  # Methods
+  "_hash_user(user_id: str)": "int (range 0-99)" {
+    tooltip: "Computes SHA-256 hash and maps to 0-99 range via modulo."
+  }
+  "route(user_id: str)": "Tuple[str, RouteMetadata]" {
+    tooltip: "Calculate target version based on consistent hashing."
+  }
+  "update_weights(new_allocations: List[TrafficAllocation])": "None"
+}
+
+TrafficAllocation: {
+  shape: class
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 2
+    fill: "#E3F2FD"
+  }
+  tooltip: "Individual bucket configuration. sizeof=128 bytes (aligned)"
+
+  "version_id": "str (offset 0x00, 32 bytes)"
+  "weight_percent": "float64 (offset 0x20, 8 bytes)"
+  "description": "str (offset 0x28, 64 bytes)"
+  "padding": "uint8[24] (offset 0x68, alignment)"
+}
+
+RouteMetadata: {
+  shape: class
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 2
+    fill: "#E3F2FD"
+  }
+  tooltip: "Telemetry data for logging and debugging."
+  
+  "version_id": "str"
+  "weight_percent": "float"
+  "allocation_index": "int"
+  "hash_percentile": "int"
+}
+
+# -----------------------------------------------------------------------------
+# 2. HASH PIPELINE (ALGORITHM DETAIL)
+# -----------------------------------------------------------------------------
+HashProcess: {
+  label: "Consistent Hashing Internal Pipeline (Detailed)"
+  style: {
+    fill: "#F1F8E9"
+    stroke: "#2E7D32"
+    stroke-dash: 3
+    stroke-width: 2
+  }
+
+  Input: "input: user_id (string)" { 
+    shape: parallelogram 
+    style.fill: "#FFFFFF"
+  }
+  
+  Step1: "1. UTF-8 Encoding\n(String to Bytes)" {
+    style.fill: "#C8E6C9"
+  }
+  
+  Step2: "2. SHA-256 Digest Generation\n(256-bit fixed output)" {
+    tooltip: "Ensures uniform distribution across the keyspace."
+    style.fill: "#A5D6A7"
+  }
+  
+  Step3: "3. 8-Byte Slicing\n(Big-Endian uint64)" {
+    tooltip: "Extract first 64-bits for integer mapping."
+    style.fill: "#C8E6C9"
+  }
+  
+  Step4: "4. Modulo 100 Operation\n(Range mapping)" {
+    style: {
+      fill: "#66BB6A"
+      bold: true
+      font-color: "#FFFFFF"
+    }
+  }
+  
+  Output: "Result: Hash Percentile (0-99)" { 
+    shape: parallelogram 
+    style: {
+      fill: "#DCEDC8"
+      stroke: "#2E7D32"
+      stroke-width: 3
+    }
+  }
+
+  Input -> Step1 -> Step2 -> Step3 -> Step4 -> Output
+}
+
+# -----------------------------------------------------------------------------
+# 3. ROUTING LOGIC FLOW (TDD SPEC)
+# -----------------------------------------------------------------------------
+RoutingFlow: {
+  label: "Decision Tree: Cumulative Weight Matching"
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#424242"
+  }
+
+  Start: "User ID Input" { shape: oval }
+  
+  ComputeHash: "percentile = _hash_user(uid)" {
+    shape: rectangle
+    style.fill: "#E1F5FE"
+  }
+  
+  Accumulator: "cumulative_weight = 0\nindex = 0" {
+    shape: rectangle
+    style.fill: "#EEEEEE"
+  }
+
+  LoopStart: "index < allocations.length?" { 
+    shape: diamond 
+    style.fill: "#FFFFFF"
+  }
+
+  CheckWeight: "percentile < (cumulative_weight + allocations[index].weight)?" {
+    shape: diamond
+    style.fill: "#FFF9C4"
+    tooltip: "Check if percentile falls within current bucket range."
+  }
+
+  ReturnVersion: "MATCH: Return Metadata" {
+    shape: oval
+    style: {
+      fill: "#A5D6A7"
+      bold: true
+      stroke: "#1B5E20"
+      stroke-width: 3
+    }
+  }
+
+  Increment: "cumulative_weight += allocations[index].weight\nindex++" {
+    shape: rectangle
+    style.fill: "#F5F5F5"
+  }
+
+  Fallback: "Return Last Version" {
+    shape: oval
+    style.fill: "#FFCCBC"
+  }
+
+  Start -> ComputeHash -> Accumulator -> LoopStart
+  LoopStart -> CheckWeight: "Yes (Valid Index)"
+  CheckWeight -> ReturnVersion: "Yes (Matched Range)"
+  CheckWeight -> Increment: "No (Try Next)"
+  Increment -> LoopStart
+  LoopStart -> Fallback: "No (Bounds Exceeded)"
+}
+
+# -----------------------------------------------------------------------------
+# 4. VISUALIZATION & MEMORY LAYOUT
+# -----------------------------------------------------------------------------
+ExampleWeights: {
+  label: |`md
+### Runtime Configuration Example
+| version_id | weight_percent | range_start | range_end |
+| :--- | :--- | :--- | :--- |
+| **v1.0.0 (Stable)** | 70.0% | 0 | 69 |
+| **v2.0.0 (Canary)** | 20.0% | 70 | 89 |
+| **v2.1.0 (Beta)** | 10.0% | 90 | 99 |
+`|
+  style.fill: "#FFFFFF"
+  style.stroke: "#BDBDBD"
+}
+
+PercentileBuckets: {
+  label: "Linear Memory Map: 100-Point Routing Range"
+  grid-columns: 3
+  grid-gap: 0
+
+  B1: "v1.0.0\n[0x00 - 0x45]" {
+    style: { fill: "#A5D6A7"; stroke: "#2E7D32"; stroke-width: 2 }
+    width: 250
+  }
+  B2: "v2.0.0\n[0x46 - 0x59]" {
+    style: { fill: "#90CAF9"; stroke: "#1565C0"; stroke-width: 2 }
+    width: 150
+  }
+  B3: "v2.1.0\n[0x5A - 0x63]" {
+    style: { fill: "#FFCC80"; stroke: "#E65100"; stroke-width: 2 }
+    width: 80
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 5. LEGEND & ANNOTATIONS
+# -----------------------------------------------------------------------------
+# FIXED: Moved Annotation to a static 'near' value for ELK compatibility.
+Annotation: "IMPLEMENTATION NOTE:\nConsistent hashing ensures idempotency.\nA specific User ID will always route to the\nsame Version ID until weights are modified." {
+  shape: rectangle
+  near: top-left
+  style: {
+    fill: "#FFFDE7"
+    stroke: "#FBC02D"
+    stroke-dash: 4
+    shadow: true
+    font-size: 14
+  }
+}
+
+Legend: {
+  near: bottom-right
+  DataType: "Dataclass / Struct" { style.fill: "#E3F2FD" }
+  Process: "Internal Logic Step" { style.fill: "#C8E6C9" }
+  Decision: "Branching Condition" { shape: diamond; style.fill: "#FFF9C4" }
+}
+
+# -----------------------------------------------------------------------------
+# RELATIONSHIPS & POINTERS
+# -----------------------------------------------------------------------------
+# Orange (#EF6C00) = Memory Pointers/References
+
+TrafficSplitter.allocations -> TrafficAllocation: "ref count: 0..*" {
+  style: {
+    stroke: "#EF6C00"
+    stroke-width: 2
+  }
+  target-arrowhead: * {
+    shape: cf-many-required
+  }
+}
+
+TrafficSplitter."route(user_id: str)" -> RouteMetadata: "allocates" {
+  style: {
+    stroke: "#7B1FA2"
+    stroke-dash: 5
+  }
+}
+
+TrafficSplitter."_hash_user(user_id: str)" -> HashProcess.Input: "executes" {
+  style: {
+    stroke: "#2E7D32"
+    stroke-dash: 2
+    stroke-width: 2
+  }
+}
+
+# Link Annotation to the primary object via a standard connection
+TrafficSplitter -- Annotation: { 
+  style.stroke-dash: 5 
+  style.stroke: "#BDBDBD"
+}
+
+PercentileBuckets -- ExampleWeights: "visual representation" {
+  style.stroke-dash: 3
+}

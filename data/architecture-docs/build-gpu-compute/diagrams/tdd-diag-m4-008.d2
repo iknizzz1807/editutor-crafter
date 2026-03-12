@@ -1,0 +1,161 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+GPU_Side_Sync_Events: {
+  shape: sequence_diagram
+  label: "GPU-Side Synchronization with CUDA Events\nArchitecture & Execution Flow"
+
+  # Lifeline Participants
+  CPU: "CPU (Host Processor)" {
+    shape: person
+    style: {
+      fill: "#E1F5FE"
+      stroke: "#01579B"
+      stroke-width: 2
+    }
+  }
+
+  Stream1: "CUDA Stream 1\n(Compute Engine)" {
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#4A148C"
+      stroke-width: 2
+    }
+  }
+
+  Stream2: "CUDA Stream 2\n(DMA/Copy Engine)" {
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#1B5E20"
+      stroke-width: 2
+    }
+  }
+
+  GPU_CP: "GPU Command Processor (CP)\nHardware Scheduler" {
+    shape: rectangle
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#E65100"
+      double-border: true
+      stroke-width: 3
+    }
+  }
+
+  # --- PHASE 1: WORK SUBMISSION ---
+  
+  Work_Submission: {
+    CPU -> Stream1: "kernel<<<grid, block>>>(d_in)\n(Launch Overhead: ~5-10µs | Grid: 1024x1024)" {
+      tooltip: "Asynchronous kernel launch command sent to driver queue"
+      style.stroke: "#0288D1"
+    }
+    
+    Stream1 -> GPU_CP: "Enqueue KERNEL_LAUNCH Descriptor" {
+      style.stroke-dash: 3
+    }
+
+    CPU -> Stream1: "cudaEventRecord(hEvent, stream1)\n(Registers 'hEvent' in Stream 1 queue)" {
+      tooltip: "Inserts a hardware-specific SIGNAL_EVENT command into the stream"
+    }
+
+    Stream1 -> GPU_CP: "Enqueue PIPE_FLUSH + SIGNAL_EVENT(0xDEADBEEF)" {
+      style.stroke-dash: 3
+      style.stroke: "#7B1FA2"
+    }
+    
+    Stream1."BARRIER: HW must clear all ALUs\nbefore signaling event bit": {
+      style.font-color: "#4A148C"
+      style.bold: true
+    }
+  }
+
+  # --- PHASE 2: GPU-SIDE DEPENDENCY SETUP ---
+
+  Dependency_Setup: {
+    CPU -> Stream2: "cudaStreamWaitEvent(stream2, hEvent, 0)\n(Non-blocking on Host | Stalls GPU Stream 2 Engine)" {
+      tooltip: "Instructs hardware to wait for 0xDEADBEEF bit before continuing"
+      style.stroke: "#EF6C00"
+    }
+
+    Stream2 -> GPU_CP: "Enqueue WAIT_FOR_EVENT(0xDEADBEEF)" {
+      style.stroke-dash: 3
+    }
+
+    CPU -> Stream2: "cudaMemcpyAsync(h_out, d_out, 4MB, D2H, stream2)\n(Queued behind GPU-side barrier)" {
+      tooltip: "DMA copy will not start until event is signaled"
+      style.stroke: "#2E7D32"
+    }
+  }
+
+  # --- PHASE 3: ASYNCHRONOUS CONCURRENCY ---
+
+  Concurrent_Processing: {
+    CPU -> CPU: "CPU Thread proceeds to Task B\n(Total Host Blocking: ~0ns)" {
+      style: {
+        stroke: red
+        fill: "#FFEBEE"
+        bold: true
+      }
+    }
+  }
+
+  # --- PHASE 4: GPU INTERNAL HARDWARE EXECUTION ---
+
+  Hardware_Execution: {
+    GPU_CP -> GPU_CP: "Stream 2 Execution Unit: STALLED\nMonitoring Event Register Bit" {
+      style: {
+        stroke: red
+        animated: true
+        stroke-width: 4
+      }
+    }
+
+    Stream1 -> GPU_CP: "Kernel Execution Complete\nPipeline Flushed" {
+      style.stroke: "#7B1FA2"
+    }
+
+    GPU_CP -> GPU_CP: "SIGNAL_EVENT(0xDEADBEEF) Bit SET" {
+      style: {
+        stroke: "#43A047"
+        fill: "#E8F5E9"
+        bold: true
+      }
+    }
+
+    GPU_CP -> Stream2: "UNBLOCK: Dependency Satisfied" {
+      style: {
+        stroke: "#43A047"
+        stroke-width: 2
+      }
+    }
+
+    Stream2 -> GPU_CP: "Initiate PCI-e DMA Transfer\nPayload: 4,194,304 Bytes"
+    
+    Stream2 -> CPU: "INTERRUPT: DMA_COMPLETE\n(h_out memory ready for read)" {
+      style.stroke-dash: 5
+      style.stroke: "#1B5E20"
+    }
+  }
+}
+
+Annotation: |md
+  ### ═══════════════════════════════════════════════════════════
+  ## GPU-SIDE SYNCHRONIZATION: TECHNICAL SPECIFICATION
+  ### Coordination happens entirely on the GPU Command Processor
+  - **Latency Path**: CUDA Event signaling avoids PCIe round-trips to the Host CPU, reducing sync latency by ~2-5ms.
+  - **Command Queue**: `cudaStreamWaitEvent` inserts a hardware command into the GPU stream (Wait-On-Event), not a software wait in the driver.
+  - **Asynchrony**: The CPU thread is released immediately after `cudaMemcpyAsync`, allowing for massive CPU-GPU overlap.
+  - **Hardware State**: Stream 2 is physically idle on the Copy Engine until Stream 1 clears the pipeline and sets the HW event register.
+  ### ═══════════════════════════════════════════════════════════
+| {
+  near: bottom-center
+  style: {
+    stroke: "#333333"
+    fill: "#F5F5F5"
+    font-size: 14
+    font: mono
+  }
+}

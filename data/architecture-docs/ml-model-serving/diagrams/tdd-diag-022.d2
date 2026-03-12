@@ -1,0 +1,330 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 20
+  }
+}
+
+title: {
+  label: "REQUEST DRAINING STATE MACHINE (v1.2.0)"
+  shape: text
+  near: top-center
+  style: {
+    font-size: 32
+    bold: true
+    underline: true
+    font-color: "#2D3436"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# State Classes: Detailed visual properties for manual-grade clarity
+# -----------------------------------------------------------------------------------------
+classes: {
+  state_active: {
+    style: {
+      fill: "#4CAF50"
+      stroke: "#1B5E20"
+      font-color: white
+      stroke-width: 4
+      border-radius: 12
+      shadow: true
+    }
+    width: 280
+    height: 140
+  }
+  state_draining: {
+    style: {
+      fill: "#FF9800"
+      stroke: "#E65100"
+      font-color: white
+      stroke-width: 4
+      border-radius: 12
+      shadow: true
+    }
+    width: 280
+    height: 140
+  }
+  state_deprecated: {
+    style: {
+      fill: "#9E9E9E"
+      stroke: "#424242"
+      font-color: white
+      stroke-width: 4
+      border-radius: 12
+      shadow: true
+    }
+    width: 280
+    height: 140
+  }
+  state_error: {
+    style: {
+      fill: "#F44336"
+      stroke: "#B71C1C"
+      font-color: white
+      stroke-width: 4
+      border-radius: 12
+      shadow: true
+    }
+    width: 280
+    height: 140
+  }
+  initial_marker: {
+    shape: circle
+    style: {
+      fill: "#1565C0"
+      stroke: "#0D47A1"
+      stroke-width: 3
+    }
+    width: 40
+    height: 40
+  }
+  final_marker: {
+    shape: circle
+    style: {
+      fill: "#1565C0"
+      stroke: "#0D47A1"
+      stroke-width: 3
+      double-border: true
+    }
+    width: 45
+    height: 45
+  }
+  transition: {
+    style: {
+      stroke: "#333333"
+      stroke-width: 2
+      font-size: 14
+      bold: true
+    }
+  }
+  illegal_transition: {
+    style: {
+      stroke: "#D32F2F"
+      stroke-dash: 5
+      stroke-width: 3
+      font-color: "#D32F2F"
+      bold: true
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# Nodes & State Definitions
+# -----------------------------------------------------------------------------------------
+
+initial: {
+  class: initial_marker
+  label: "●"
+}
+
+ACTIVE: {
+  class: state_active
+  label: |md
+    ### ACTIVE (Primary)
+    ---
+    - **Invariant**: `ref_count >= 0`
+    - **Traffic**: Accepting New Requests
+    - **Memory**: Hot / Model Loaded
+    - **ID**: `S_ACTIVE_001`
+  |
+}
+
+DRAINING: {
+  class: state_draining
+  label: |md
+    ### DRAINING (Transitional)
+    ---
+    - **Invariant**: `ref_count > 0`
+    - **Traffic**: Rejecting New Ingress
+    - **Memory**: Awaiting ref_count == 0
+    - **ID**: `S_DRAIN_002`
+  |
+}
+
+DEPRECATED: {
+  class: state_deprecated
+  label: |md
+    ### DEPRECATED (Zombie)
+    ---
+    - **Invariant**: `ref_count == 0`
+    - **Traffic**: Black-holed (503/410)
+    - **Memory**: Ready for Cleanup
+    - **ID**: `S_DEPR_003`
+  |
+}
+
+FAILED: {
+  class: state_error
+  label: |md
+    ### FAILED (Panic)
+    ---
+    - **Invariant**: State Inconsistent
+    - **Traffic**: 5xx Error Response
+    - **Memory**: Unsafe / Leak Potential
+    - **ID**: `S_ERR_500`
+  |
+}
+
+final: {
+  class: final_marker
+  label: "●●"
+}
+
+# -----------------------------------------------------------------------------------------
+# Transitions (Legal & Nominal Path)
+# -----------------------------------------------------------------------------------------
+
+initial -> ACTIVE: "Init / load_model()" {
+  class: transition
+}
+
+ACTIVE -> DRAINING: "swap() / trigger_drain()" {
+  class: transition
+  style.stroke: "#2E7D32"
+  tooltip: "New model version detected. Redirecting ingress."
+}
+
+DRAINING -> DEPRECATED: "ref_count == 0" {
+  class: transition
+  style.stroke: "#E65100"
+  tooltip: "Last request finished. Safely unloading artifacts."
+}
+
+# Transition representing a hard timeout or force command
+DRAINING -> DEPRECATED: "FORCE / timeout" {
+  class: transition
+  style: {
+    stroke: "#B71C1C"
+    stroke-dash: 3
+  }
+  tooltip: "Drain timeout exceeded. Killing in-flight requests."
+}
+
+DEPRECATED -> final: "GC / Purge" {
+  class: transition
+}
+
+# -----------------------------------------------------------------------------------------
+# Error & Loops
+# -----------------------------------------------------------------------------------------
+
+ACTIVE -> FAILED: "critical_fail / OOM" {
+  class: transition
+  style.stroke: "#B71C1C"
+}
+
+DRAINING -> FAILED: "mem_corruption" {
+  class: transition
+  style.stroke: "#B71C1C"
+}
+
+# Self-loops for state internal logic
+ACTIVE -> ACTIVE: "acquire() / release()" {
+  style.stroke: "#1B5E20"
+  label: "Refcount Management"
+}
+
+DRAINING -> DRAINING: "release()" {
+  style.stroke: "#E65100"
+  label: "Monitor Drain Progress"
+}
+
+# -----------------------------------------------------------------------------------------
+# ILLEGAL Transitions (Annotated)
+# -----------------------------------------------------------------------------------------
+
+DEPRECATED -> ACTIVE: "ILLEGAL: Reactivation" {
+  class: illegal_transition
+}
+
+FAILED -> ACTIVE: "ILLEGAL: Auto-retry (requires reset)" {
+  class: illegal_transition
+}
+
+DRAINING -> ACTIVE: "ILLEGAL: Rollback Forbidden" {
+  class: illegal_transition
+}
+
+# -----------------------------------------------------------------------------------------
+# Documentation & Annotation Blocks (Near values fixed for ELK)
+# -----------------------------------------------------------------------------------------
+
+state_invariants: |md
+  ## System Invariants
+  1. **Memory Safety**: No model can be unloaded while `ref_count > 0` unless `force=true`.
+  2. **Ingress Control**: `ACTIVE` is the only state where `accept_request()` returns `true`.
+  3. **Resource Cleanup**: Every transition to `final` must close file handles and clear heap.
+| {
+  near: bottom-right
+  style: {
+    stroke: "#1565C0"
+    fill: "#E3F2FD"
+    border-radius: 8
+    font-size: 12
+  }
+}
+
+technical_notes: |md
+  ### State Guard Conditions
+  - **swap**: Triggered when `new_version.is_staged == true`.
+  - **ref_count==0**: Atomic decrement reaches zero.
+  - **timeout**: `sys_clock > drain_start + 30s` threshold.
+| {
+  near: top-right
+  style: {
+    stroke: "#E65100"
+    fill: "#FFF3E0"
+    border-radius: 8
+    font-size: 12
+  }
+}
+
+legend_container: {
+  label: "DIAGRAM LEGEND"
+  near: bottom-left
+  style: {
+    stroke: "#7F8C8D"
+    fill: "#FDFEFE"
+    stroke-dash: 2
+  }
+
+  L_ACTIVE: "Primary/Active" { 
+    class: state_active
+    height: 40 
+    width: 180
+    label.style.font-size: 10
+  }
+  L_DRAIN: "Draining/Waiting" { 
+    class: state_draining
+    height: 40 
+    width: 180
+    label.style.font-size: 10
+  }
+  L_ERROR: "Terminal Error" { 
+    class: state_error
+    height: 40 
+    width: 180
+    label.style.font-size: 10
+  }
+  L_ILLEGAL: "Forbidden Path" { 
+    style: {
+      stroke: "#D32F2F"
+      stroke-dash: 5
+      stroke-width: 2
+      font-color: "#D32F2F"
+      bold: true
+    }
+    height: 40
+    width: 180
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# Hidden layout constraints to maintain structure
+# -----------------------------------------------------------------------------------------
+initial -- technical_notes: { style.opacity: 0 }
+DEPRECATED -- state_invariants: { style.opacity: 0 }
+FAILED -- legend_container: { style.opacity: 0 }

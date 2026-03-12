@@ -1,0 +1,218 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# TECHNICAL DESIGN: ATOMIC MODEL HOT-SWAP ARCHITECTURE
+# -----------------------------------------------------------------------------------------
+# Specification: Zero-downtime model replacement with pointer-swapping and ref-counting.
+# Logic: Intel-grade atomic CAS (Compare-And-Swap) for global reference management.
+# -----------------------------------------------------------------------------------------
+
+hot_swap_process: {
+  shape: sequence_diagram
+
+  # Participants / Actors with detailed technical styling and metadata
+  HotSwapManager: Hot Swap Manager {
+    shape: person
+    tooltip: "Orchestrator for atomic model transitions. sizeof=128B."
+    style: {
+      stroke: "#3498db"
+      stroke-width: 2
+      fill: "#ebf5fb"
+    }
+  }
+  
+  ModelRegistry: Model Registry {
+    tooltip: "Central repository for model artifacts and state. Type: Distributed KV Store"
+    style: {
+      fill: "#f8f9f9"
+      stroke: "#bdc3c7"
+    }
+  }
+  
+  NewVersion: New Model Instance {
+    tooltip: "Target Model. VRAM Allocation: 12GB. State: UNINITIALIZED"
+    style: {
+      fill: "#e8f8f5"
+      stroke: "#2ecc71"
+      stroke-width: 3
+    }
+  }
+  
+  SchemaValidator: Schema Validator {
+    tooltip: "Logic: Tensor Rank/Dim matching. Strictness: Level 3"
+    style: {
+      stroke: "#9b59b6"
+      fill: "#f5eef8"
+    }
+  }
+  
+  AtomicVersionPointer: Atomic Pointer {
+    tooltip: "CAS-capable memory address (64-bit). Location: Global Static Segment"
+    style: {
+      stroke: "#e74c3c"
+      stroke-width: 4
+      double-border: true
+      fill: "#fdedec"
+    }
+  }
+  
+  RequestTracker: Request Tracker {
+    tooltip: "Atomic Reference counter. Logic: std::atomic<uint64_t>"
+    style.fill: "#ebf5fb"
+  }
+  
+  OldVersion: Old Model Instance {
+    tooltip: "Source Model. VRAM Allocation: 12GB. State: ACTIVE"
+    style: {
+      fill: "#fef9e7"
+      stroke: "#f39c12"
+      stroke-width: 2
+    }
+  }
+
+  # --- Phase 1: Resource Allocation & Instantiation ---
+  HotSwapManager.load_span -> ModelRegistry.load_api: "load(new_version_id)"
+  ModelRegistry."Memory Mapping: mmap(PROT_READ, MAP_PRIVATE)"
+  
+  ModelRegistry.load_api -> NewVersion: "instantiate(mmap_handle)"
+  NewVersion -> ModelRegistry.load_api: "handle: 0x7FFF001" {
+    style.stroke-dash: 5
+  }
+  ModelRegistry.load_api -> HotSwapManager.load_span: "status: READY" {
+    style.stroke-dash: 5
+  }
+
+  # --- Phase 2: Structural Integrity Validation ---
+  HotSwapManager.val_span -> SchemaValidator.check_api: "validate_io_tensors(v_old, v_new)"
+  
+  # Recursive self-validation for buffer alignment
+  SchemaValidator.check_api -> SchemaValidator.check_api: "verify_layer_weights()"
+  SchemaValidator.check_api -> SchemaValidator.check_api: "check_tensor_alignment()"
+  
+  SchemaValidator.check_api -> HotSwapManager.val_span: "validation_result{code: 200}" {
+    style: {
+      stroke: "#2ecc71"
+      stroke-dash: 5
+      bold: true
+    }
+  }
+
+  # --- Phase 3: Critical Section - Atomic Pointer Exchange ---
+  HotSwapManager.swap_span -> AtomicVersionPointer.api: "swap(ptr_new)"
+  
+  AtomicVersionPointer."LOCK CMPXCHG: Atomic 64-bit Pointer Exchange"
+
+  AtomicVersionPointer.api -> AtomicVersionPointer.api: "update_global_ref()" {
+    style: {
+      stroke: "#e74c3c"
+      stroke-width: 3
+    }
+  }
+  AtomicVersionPointer.api -> HotSwapManager.swap_span: "ack(ptr_old_reclaimed)" {
+    style.stroke-dash: 5
+  }
+
+  # --- Phase 4: Request Draining (Reference Counting) ---
+  HotSwapManager.drain_span -> RequestTracker.drain_api: "drain_signal(old_handle)"
+  RequestTracker.drain_api -> RequestTracker.drain_api: "set_state(DRAINING)"
+  RequestTracker.drain_api -> HotSwapManager.drain_span: "timer_started(grace=30s)" {
+    style.stroke-dash: 5
+  }
+
+  HotSwapManager.wait_span -> RequestTracker.poll_api: "await_ref_zero(ptr_old, timeout=30)"
+  
+  # Monitoring loop for thread safety
+  "Reference Count Monitoring": {
+    style: {
+      stroke: "#95a5a6"
+      stroke-dash: 4
+      fill: "#f2f3f4"
+    }
+    RequestTracker.poll_api -> RequestTracker.poll_api: "ref_count == 84"
+    RequestTracker.poll_api -> RequestTracker.poll_api: "ref_count == 12"
+    RequestTracker.poll_api -> RequestTracker.poll_api: "ref_count == 0"
+  }
+  
+  RequestTracker.poll_api -> HotSwapManager.wait_span: "drain_complete()" {
+    style: {
+      stroke: "#2ecc71"
+      stroke-dash: 5
+    }
+  }
+
+  # --- Phase 5: Resource Deallocation ---
+  HotSwapManager.cleanup_span -> ModelRegistry.term_api: "unload(old_version_id)"
+  ModelRegistry.term_api -> OldVersion.release_span: "munmap(address)"
+  
+  OldVersion.release_span -> OldVersion.release_span: "flush_gpu_buffers()"
+  
+  OldVersion.release_span -> ModelRegistry.term_api: "ok" {
+    style.stroke-dash: 5
+  }
+  ModelRegistry.term_api -> HotSwapManager.cleanup_span: "memory_reclaimed" {
+    style.stroke-dash: 5
+  }
+
+  # Finalization telemetry
+  HotSwapManager.final_span -> HotSwapManager.final_span: "log_telemetry(success=true)" {
+    style.stroke: "#3498db"
+    style.stroke-width: 2
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# TECHNICAL IMPLEMENTATION SPECIFICATIONS
+# -----------------------------------------------------------------------------------------
+
+Annotation: |md
+  ### ML Serving Hot-Swap Specification (v2.4)
+  
+  | Phase | System Requirement | Logic / CPU Op | Memory Constraint |
+  | :--- | :--- | :--- | :--- |
+  | **Atomic Swap** | Zero-downtime | `atomic.CompareAndSwap` (x86 `LOCK CMPXCHG8B`) | Pointer boundary 8-byte aligned |
+  | **Draining** | Reference Integrity | Spin-lock check on `inflight_request_count`. | Read-only access for `OldVersion`. |
+  | **Validation** | Memory Safety | Tensor geometry checksum validation. | Prevent OOM by checking free VRAM. |
+  | **Cleanup** | GPU Management | `cudaFree` or `munmap` triggered on zero-ref. | Page-out artifact immediately. |
+
+  #### Error Recovery Matrix:
+  1. **Validation Fail:** Return `400 Bad Request`. Transition aborted. System remains on `OldVersion`.
+  2. **Swap Contention:** Retry logic with jittered exponential backoff (Max 3 attempts).
+  3. **Drain Timeout:** Trigger `Hard Shutdown` after 30s. Log potential request drop in `SIGKILL` telemetry.
+| {
+  near: hot_swap_process
+  style: {
+    stroke: "#bdc3c7"
+    fill: "#fdfefe"
+    font-size: 14
+  }
+}
+
+# Visual Legend for Engineering Quick-Look
+Legend: {
+  near: hot_swap_process
+  direction: right
+  success: "Success/New Path" {
+    style: {
+      stroke: "#2ecc71"
+      stroke-width: 2
+      fill: "#e8f8f5"
+    }
+  }
+  critical: "Atomic Operation" {
+    style: {
+      stroke: "#e74c3c"
+      stroke-width: 3
+      fill: "#fdedec"
+    }
+  }
+  async: "Response/Return" {
+    style.stroke-dash: 5
+  }
+}

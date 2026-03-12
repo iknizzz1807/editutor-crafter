@@ -1,0 +1,201 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+title: {
+  label: "STREAM POOL SYSTEM: ARCHITECTURE & MEMORY SPECIFICATION"
+  shape: text
+  near: top-center
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+
+# 1. CLASS DEFINITIONS (SOLID ARCHITECTURE)
+# sizeof=64 bytes (one cache line)
+StreamPool: {
+  shape: class
+  style.fill: "#E3F2FD"
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+
+  # Internal State / Fields
+  "-streams": "cudaStream_t* | Offset: 0x08 | 8 bytes"
+  "-num_streams": "int | Offset: 0x10 | 4 bytes"
+  "-next_stream": "std::atomic<int> | Offset: 0x14 | 4 bytes"
+  "-stream_busy": "bool* | Offset: 0x18 | 8 bytes"
+  "-pinned_base": "void* | Offset: 0x20 | 8 bytes"
+  "-pinned_size": "size_t | Offset: 0x28 | 8 bytes"
+  "-pinned_offset": "size_t | Offset: 0x30 | 8 bytes"
+
+  # Public API / Methods
+  "+stream_pool_create(count: int, pinned_mb: size_t)": "cudaError_t"
+  "+stream_pool_destroy()": "void"
+  "+stream_pool_get_next()": "cudaStream_t"
+  "+stream_pool_sync_all()": "cudaError_t"
+}
+
+# 2. INTEL-STYLE MEMORY LAYOUT (CACHELINE ALIGNED)
+# Byte offsets on left margin, field sizes right margin.
+MemoryMap: {
+  label: "Memory Segment Layout: StreamPool Struct (sizeof=64B)"
+  style.stroke-dash: 3
+  
+  grid-columns: 2
+  grid-gap: 0
+
+  # Address Column (Left Margin)
+  A0: "0x00" { style.fill: "#424242"; style.font-color: white }
+  F0: "Header / VTable (8B)" { style.fill: "#E1BEE7" }
+
+  A8: "0x08" { style.fill: "#424242"; style.font-color: white }
+  F8: "streams (cudaStream_t**) (8B)" { style.fill: "#FFE0B2" }
+
+  A16: "0x10" { style.fill: "#424242"; style.font-color: white }
+  F16: "num_streams (int) (4B)" { style.fill: "#BBDEFB" }
+
+  A20: "0x14" { style.fill: "#424242"; style.font-color: white }
+  F20: "next_stream (atomic<int>) (4B)" { style.fill: "#BBDEFB" }
+
+  A24: "0x18" { style.fill: "#424242"; style.font-color: white }
+  F24: "stream_busy (bool*) (8B)" { style.fill: "#FFE0B2" }
+
+  A32: "0x20" { style.fill: "#424242"; style.font-color: white }
+  F32: "pinned_base (void*) (8B)" { style.fill: "#FFE0B2" }
+
+  A40: "0x28" { style.fill: "#424242"; style.font-color: white }
+  F40: "pinned_size (size_t) (8B)" { style.fill: "#BBDEFB" }
+
+  A48: "0x30" { style.fill: "#424242"; style.font-color: white }
+  F48: "pinned_offset (size_t) (8B)" { style.fill: "#BBDEFB" }
+
+  A56: "0x38" { style.fill: "#424242"; style.font-color: white }
+  F56: "Padding / Reserved (8B)" { style.fill: "#EEEEEE" }
+}
+
+# 3. COMPONENT TOPOLOGY
+Allocations: {
+  StreamArray: {
+    label: "streams[] (Heap-Allocated Array)"
+    style.fill: "#E8F5E9"
+    "[0]": "cudaStream_t (8B)"
+    "[1]": "cudaStream_t (8B)"
+    "[2]": "cudaStream_t (8B)"
+    "[N]": "... (8B)"
+  }
+
+  BusyFlags: {
+    label: "stream_busy[] (Heap-Allocated Array)"
+    style.fill: "#FFF3E0"
+    "B0": "bool (1B)"
+    "B1": "bool (1B)"
+    "B2": "bool (1B)"
+    "Pad": "Alignment Padding (5B)"
+  }
+}
+
+Logic: {
+  RR: {
+    shape: diamond
+    label: "Round-Robin Indexer\n(idx = next++ % num)"
+    style.fill: "#FFEBEE"
+  }
+}
+
+# 4. SEQUENCE DIAGRAM
+ExecutionFlow: {
+  shape: sequence_diagram
+  label: "Stream Acquisition & Sync Sequence"
+
+  Host: "Host Thread"
+  Pool: "StreamPool"
+  GPU: "CUDA Engine"
+
+  Host -> Pool: "stream_pool_get_next()"
+  Pool.idx -> Pool.idx: "atomic_fetch_add(next_stream, 1)"
+  Pool -> Host: "return streams[idx]"
+  
+  Host -> GPU: "cudaLaunchKernel(..., streams[idx])"
+  
+  Host -> Pool: "stream_pool_sync_all()"
+  Pool.sync -> GPU: "cudaStreamSynchronize(streams[0..n])" {
+    source-arrowhead.label: "▼ Lock"
+  }
+  GPU -> Pool.sync: "ACK: All Finished" {
+    target-arrowhead.label: "▲ Unlock"
+  }
+  Pool -> Host: "status: SUCCESS"
+}
+
+# 5. CROSS-COMPONENT RELATIONSHIPS
+StreamPool -> Allocations.StreamArray: "owns pointer" {
+  source-arrowhead.label: "1"
+  target-arrowhead: {
+    shape: diamond
+    style.filled: true
+  }
+}
+
+StreamPool -> Allocations.BusyFlags: "manages" {
+  style.stroke-dash: 5
+}
+
+StreamPool -> Logic.RR: "triggers"
+
+Logic.RR -> Allocations.StreamArray: "accesses index [i]" {
+  style.stroke-dash: 2
+  style.stroke: "#D32F2F"
+}
+
+# 6. TECHNICAL SPECIFICATIONS & LEGEND
+# Fixed: "near" targets non-special container StreamPool to avoid grid-descendant errors
+Annotations: {
+  near: StreamPool
+  AlignNote: {
+    shape: text
+    label: "⚠️ Cache Line Boundary: 64B enforced.\n⚠️ Pinned Buffer Alignment: 4096B (Page Size)."
+    style.font-color: red
+  }
+}
+
+Legend: {
+  near: bottom-right
+  shape: rectangle
+  style.fill: "#FAFAFA"
+  label: |md
+    ### Legend
+    - **Header (Purple)**: VTable / Object Metadata
+    - **Data (Blue)**: Primitives / State Values
+    - **Pointers (Orange)**: Heap Reference Offsets
+    - **Solid Line**: Direct Ownership / Allocation
+    - **Dashed Line**: Reference or Logical Control Flow
+  |
+}
+
+# 7. STATE INVARIANTS
+# Fixed: "near" targets non-special container Allocations
+Invariants: |md
+  ### Implementation Constraints (TDD Spec)
+  1. **Indexing**: `next_stream` counter must wrap-around via `num_streams` modulo to prevent OOB access.
+  2. **Cleanup**: RAII implementation must call `cudaStreamDestroy` for all array elements and `cudaFreeHost` for pinned segments.
+  3. **Concurrency**: All modifications to `next_stream` must be atomic (Memory Order: Relaxed is sufficient for RR).
+  4. **Bus Invariants**: `cudaHostAlloc` flag `cudaHostAllocMapped` must be set for zero-copy access if supported.
+| {
+  near: Allocations
+}
+
+# Map visual connection between struct and physical memory map
+StreamPool -> MemoryMap: "Physical Mapping" {
+  style: {
+    stroke: orange
+    stroke-width: 3
+    stroke-dash: 4
+  }
+}

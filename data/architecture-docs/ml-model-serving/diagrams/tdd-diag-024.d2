@@ -1,0 +1,200 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    sketch: false
+    pad: 30
+    center: true
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# PARTICIPANT DEFINITIONS
+# Intel Manual Quality: Precise component roles and data-structure associations.
+# -----------------------------------------------------------------------------------------
+RequestHandler: Request Handler {
+  shape: person
+  tooltip: "Entry point for inference requests; manages client socket lifecycle."
+}
+
+RollbackMonitor: Rollback Monitor {
+  tooltip: "High-frequency observability agent. State: { error_window: 60s, threshold: 0.05 }"
+  style: {
+    fill: "#d5e8d4"
+    stroke: "#82b366"
+  }
+}
+
+HotSwapManager: Hot-Swap Manager {
+  tooltip: "Logic engine for atomic version transitions. Implements version-locking primitives."
+  style: {
+    fill: "#dae8fc"
+    stroke: "#6c8ebf"
+  }
+}
+
+AtomicVersionPointer: Atomic Version Pointer {
+  shape: cylinder
+  tooltip: "Memory-mapped 64-bit address pointer. Offset 0x00: Active version addr."
+  style: {
+    fill: "#fcecc9"
+    stroke: "#f39c12"
+  }
+}
+
+ModelRegistry: Model Registry {
+  shape: package
+  tooltip: "Immutable artifact storage. Key: version_id, Value: blob_ptr"
+}
+
+PrometheusMetrics: Prometheus Metrics {
+  shape: parallelogram
+  tooltip: "External TSDB Sink for operational visibility."
+  style: {
+    fill: "#f8cecc"
+    stroke: "#b85450"
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# EXECUTION SEQUENCE: Automatic Rollback Trigger Flow
+# -----------------------------------------------------------------------------------------
+shape: sequence_diagram
+
+# Phase 1: High-Frequency Monitoring
+monitoring_loop: Health Monitoring Loop {
+  RequestHandler.active -> RequestHandler.active: "process_inference(v2.3.1)" {
+    tooltip: "Inference Latency Target: < 150ms"
+  }
+  
+  RequestHandler.active -> RollbackMonitor.ingress: "emit_event(outcome=FAIL, err_code=503)" {
+    style.stroke-dash: 3
+    tooltip: "Non-blocking UDP/gRPC stream"
+  }
+  
+  RollbackMonitor.ingress -> RollbackMonitor.ingress: "update_sliding_window()" {
+    tooltip: "Bitmask-based error window update"
+  }
+}
+
+# Phase 2: Failure Detection & Decision
+detection_logic: Error Rate Detection Logic {
+  RollbackMonitor.calc -> RollbackMonitor.calc: "calc_error_rate() -> 0.15"
+  
+  RollbackMonitor.calc -> RollbackMonitor.calc: "COMPARE(0.15 > 0.05)" {
+    class: error-state
+    tooltip: "Breach detected: rate exceeds static threshold"
+  }
+  
+  RollbackMonitor.calc -> RollbackMonitor.calc: "INCREMENT(breach_counter)"
+  
+  RollbackMonitor.calc -> RollbackMonitor.calc: "EVAL(3 >= 3 consecutive)" {
+    class: error-state
+    tooltip: "Confirmation: Threshold breached for N consecutive windows"
+  }
+}
+
+# Phase 3: Rollback Triggering
+# Intel Spec: Critical path transition from detection to mitigation
+RollbackMonitor.calc -> HotSwapManager.init: "trigger_rollback(fault='rate_spike')" {
+  class: critical-path
+}
+
+HotSwapManager.init -> PrometheusMetrics: "alert_start(v2.3.1 -> v2.3.0)" {
+  style.stroke: "#e74c3c"
+}
+
+# Phase 4: Atomic Memory Swap
+rollback_op: Atomic Rollback Operation {
+  HotSwapManager.exec -> ModelRegistry: "fetch_metadata(v2.3.0)"
+  ModelRegistry -> HotSwapManager.exec: "artifact_ptr: 0xDEADBEEF"
+  
+  HotSwapManager.exec -> AtomicVersionPointer: "ACQUIRE_WRITE_LOCK" {
+    class: lock-op
+    tooltip: "Mutex lock at 0x08 on shared memory segment"
+  }
+  
+  AtomicVersionPointer.swap -> AtomicVersionPointer.swap: "MEM_SYNC: wait_for_readers()" {
+    style.stroke-dash: 3
+    tooltip: "Spin-lock logic: Read Atomic RC (Reader Count) until zero"
+  }
+  
+  AtomicVersionPointer.swap -> AtomicVersionPointer.swap: "ATOMIC_STORE(v2.3.1 -> v2.3.0)" {
+    class: atomic-op
+    tooltip: "XCHG instruction at 0x00"
+  }
+  
+  HotSwapManager.exec <- AtomicVersionPointer: "ACK_SWAP_COMPLETE" {
+    class: atomic-op
+  }
+}
+
+# Phase 5: Convergence & Cleanup
+HotSwapManager.cleanup -> RollbackMonitor: "RESET_MONITORS(target=v2.3.0)"
+
+HotSwapManager.cleanup -> PrometheusMetrics: "alert_success(active=v2.3.0)" {
+  class: atomic-op
+}
+
+# Intel Spec: Final state verification
+RollbackMonitor -> RequestHandler: "active_ptr_updated(0xDEADBEEF)" {
+  class: atomic-op
+}
+
+# -----------------------------------------------------------------------------------------
+# STYLING & CLASSES
+# -----------------------------------------------------------------------------------------
+classes: {
+  error-state: {
+    style: {
+      stroke: "#ff0000"
+      font-color: "#ff0000"
+      stroke-width: 2
+      bold: true
+    }
+  }
+  critical-path: {
+    style: {
+      stroke: "#ff6b35"
+      stroke-width: 4
+      bold: true
+    }
+  }
+  atomic-op: {
+    style: {
+      stroke: "#27ae60"
+      font-color: "#27ae60"
+      bold: true
+    }
+  }
+  lock-op: {
+    style: {
+      stroke: "#2980b9"
+      stroke-dash: 0
+      stroke-width: 2
+    }
+  }
+}
+
+# Documentation Overlay
+OperationalSpec: |'md
+  ### Rollback Operational Spec
+  | Component | Instruction | Latency |
+  | :--- | :--- | :--- |
+  | **AVP** | `LOCK CMPXCHG` | < 1μs |
+  | **HSM** | Orchestration | < 2ms |
+  | **RM** | Aggregation | 1s Window |
+  
+  **Safety Invariant**: No request shall see intermediate state between v2.3.1 and v2.3.0.
+'|
+OperationalSpec.near: bottom-right
+
+GlobalAnnotations: "INTEL_REF: ROLLBACK_LOGIC_099A" {
+  near: top-right
+  style: {
+    font: mono
+    font-size: 10
+    stroke-width: 1
+  }
+}

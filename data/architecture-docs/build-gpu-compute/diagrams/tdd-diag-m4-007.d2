@@ -1,0 +1,152 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    pad: 40
+  }
+}
+
+# CUDA EVENT RECORDING AND TIMING SPECIFICATION
+# Intel-manual quality diagram for hardware/software interaction timing.
+# This diagram describes the precise interaction between the Host CPU, 
+# the CUDA Runtime API, the Hardware Work Queue (Stream), and the GPU Timers.
+
+EventTimingProcess: {
+  shape: sequence_diagram
+
+  # PARTICIPANT DEFINITIONS
+  Host: Host Application {
+    shape: person
+    tooltip: "CPU-side control thread (User Space)"
+  }
+
+  Runtime: CUDA Runtime {
+    style: {
+      fill: "#E1D5E7"
+      stroke: "#9673A6"
+      stroke-width: 2
+    }
+  }
+
+  Stream: CUDA Stream {
+    shape: queue
+    tooltip: "FIFO queue of GPU commands"
+    style: {
+      fill: "#DAE8FC"
+      stroke: "#6C8EBF"
+    }
+  }
+
+  GPU: GPU Device {
+    shape: circle
+    tooltip: "Hardware execution units and timers"
+    style: {
+      fill: "#D5E8D4"
+      stroke: "#82B366"
+    }
+  }
+
+  # 1. INITIALIZATION
+  "Event Creation Phase": {
+    Host -> Runtime: "cudaEventCreate(&start)"
+    Runtime -> Host: "cudaSuccess (handle: 0x01)"
+    
+    Host -> Runtime: "cudaEventCreate(&stop)"
+    Runtime -> Host: "cudaSuccess (handle: 0x02)"
+  }
+
+  # 2. START TIMING
+  "Record Start Timestamp": {
+    Host -> Runtime: "cudaEventRecord(start, stream)"
+    Runtime -> Stream: "Enqueue Event Marker [ID:01]"
+    Stream -> GPU: "Capture GPU Timer [T0]"
+    GPU.T0: "T0 Latched in Event 01"
+  }
+
+  # 3. WORKLOAD EXECUTION
+  "Workload Phase": {
+    Host -> Runtime: "kernel<<<...>>>(stream)"
+    Runtime -> Stream: "Enqueue Kernel Command"
+    Stream -> GPU: "Execution: PTX Instruction Stream"
+    GPU -> GPU: "Processing Compute Units"
+  }
+
+  # 4. STOP TIMING
+  "Record Stop Timestamp": {
+    Host -> Runtime: "cudaEventRecord(stop, stream)"
+    Runtime -> Stream: "Enqueue Event Marker [ID:02]"
+    Stream -> GPU: "Capture GPU Timer [T1]"
+    GPU.T1: "T1 Latched in Event 02"
+  }
+
+  # 5. SYNCHRONIZATION
+  "Synchronization & Calculation": {
+    Host -> Runtime: "cudaEventSynchronize(stop)"
+    
+    # Synchronous wait blocking host thread
+    Runtime.Sync: "Host thread enters block state"
+    Runtime -> Stream: "Poll for Event ID [02] completion"
+    
+    # Return path indicating hardware completion
+    Runtime <- Stream: "Marker [02] Passed" {
+      style.stroke-dash: 5
+    }
+    Host <- Runtime: "Sync complete (CPU resumes)" {
+      style.stroke-dash: 5
+    }
+    
+    Host -> Runtime: "cudaEventElapsedTime(&ms, start, stop)"
+    
+    # Documentation of internal calculation
+    Runtime.Compute: |md
+      ### Internal Calculation Logic
+      1. Retrieve latched hardware ticks: `T0`, `T1`
+      2. `diff = T1 - T0`
+      3. `ms = (diff / device_clock_rate) * 1000.0`
+    |
+    
+    Host <- Runtime: "return float ms (accuracy: ~0.5µs)"
+  }
+}
+
+# EXTERNAL ANNOTATIONS & DOCUMENTATION
+# Fixed: accuracy_note positioned near the parent container instead of internal actor
+accuracy_note: |md
+  ### Timing Accuracy & Specs
+  - **Resolution:** ~0.5µs to 1.0µs depending on GPU architecture (Pascal+).
+  - **Clock Source:** Global Device nanosecond timer; unaffected by CPU frequency scaling.
+  - **Overhead:** `cudaEventRecord` is a non-blocking asynchronous call on the host.
+  - **Stream Consistency:** Events are recorded in-order within the specified stream.
+| {
+  near: bottom-left
+  shape: text
+  style: {
+    stroke-dash: 5
+    font-size: 14
+    fill: "#FFF2CC"
+  }
+}
+
+# VISUAL LEGEND
+Legend: {
+  near: bottom-right
+  style: {
+    fill: "#F5F5F5"
+    stroke: "#CCCCCC"
+    stroke-width: 1
+  }
+  
+  SyncCall: "Solid Line: Synchronous/Blocking API Call" {
+    shape: text
+    style.font-color: "#000000"
+  }
+  AsyncOp: "Dashed Line: Asynchronous Hardware Return / Logic" {
+    shape: text
+    style.font-color: "#666666"
+  }
+}
+
+# GLOBAL STYLES
+***.style.font: mono
+(*** -> ***)[*].style.stroke: "#333333"

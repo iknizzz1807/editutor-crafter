@@ -1,0 +1,358 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Latency Histogram and Percentile Calculation
+  *From raw observations to statistical summaries*
+| {near: top-center}
+# Row 1: Raw Observations
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  observations: {
+    label: "Raw Latency Observations"
+    obs_list: {
+      label: "Request Latencies (ms)"
+      width: 280
+      code: |md
+        req_001: 45ms
+        req_002: 52ms
+        req_003: 38ms
+        req_004: 67ms
+        req_005: 41ms
+        req_006: 89ms
+        req_007: 43ms
+        req_008: 156ms  ← slow
+        req_009: 47ms
+        req_010: 51ms
+        ... (10,000 requests)
+      |
+    }
+    stats: {
+      label: "Summary Statistics"
+      shape: sql_table
+      label: "Aggregates"
+      f1: "sum_total | float | 523,847.0"
+      f2: "count_total | int | 10,000"
+      f3: "mean | float | 52.4ms"
+    }
+  }
+}
+row1_arrow: row1.observations -> row2.buckets: "Bucket | classify"
+# Row 2: Histogram Buckets
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  buckets: {
+    label: "Prometheus Cumulative Histogram"
+    direction: down
+    bucket_table: {
+      shape: sql_table
+      label: "LatencyHistogram (monitoring.py)"
+      b0: "bucket{le='1'} | 0"
+      b1: "bucket{le='5'} | 23"
+      b2: "bucket{le='10'} | 156"
+      b3: "bucket{le='25'} | 892"
+      b4: "bucket{le='50'} | 5,247"
+      b5: "bucket{le='75'} | 7,834"
+      b6: "bucket{le='100'} | 8,912"
+      b7: "bucket{le='150'} | 9,456"
+      b8: "bucket{le='200'} | 9,789"
+      b9: "bucket{le='500'} | 9,956"
+      b10: "bucket{le='+Inf'} | 10,000"
+      sum_row: "_sum | 523,847.0"
+      count_row: "_count | 10,000"
+    }
+    cumulative_note: {
+      label: "Cumulative Convention"
+      width: 320
+      code: |md
+        Each bucket count = ALL observations
+        less than or equal to bucket boundary.
+        bucket{le='50'} = 5,247 means:
+        5,247 requests had latency < 50ms
+        NOT 5,247 requests in [25, 50) range!
+      |
+    }
+  }
+  visual_histogram: {
+    label: "Visual: Bucket Distribution"
+    direction: down
+    bar_0_10: {
+      label: "0-10ms    ▓░░░░░░░░░ 156"
+      width: 100
+    }
+    bar_10_25: {
+      label: "10-25ms   ▓▓░░░░░░░░ 736"
+      width: 140
+    }
+    bar_25_50: {
+      label: "25-50ms   ▓▓▓▓▓▓▓░░░ 4,355"
+      width: 200
+    }
+    bar_50_75: {
+      label: "50-75ms   ▓▓▓▓▓░░░░░ 2,587"
+      width: 160
+    }
+    bar_75_100: {
+      label: "75-100ms  ▓▓░░░░░░░░ 1,078"
+      width: 120
+    }
+    bar_100_150: {
+      label: "100-150ms ▓░░░░░░░░░ 544"
+      width: 100
+    }
+    bar_150_200: {
+      label: "150-200ms ▓░░░░░░░░░ 333"
+      width: 90
+    }
+    bar_200_500: {
+      label: "200-500ms ▓░░░░░░░░░ 167"
+      width: 80
+    }
+    bar_500_plus: {
+      label: "500ms+    ▓░░░░░░░░░ 44"
+      width: 60
+    }
+  }
+}
+row2_arrow: row2.buckets -> row3.percentiles: "Percentile | interpolate"
+# Row 3: Percentile Calculation
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  percentile_calc: {
+    label: "Percentile Calculation Algorithm"
+    direction: down
+    algorithm: {
+      label: "LatencyHistogram.percentile(p)"
+      width: 380
+      code: |'python
+def percentile(self, p: float) -> float:
+    if self.count_total == 0:
+        return 0.0
+    # Target count for this percentile
+    target = (p / 100.0) * self.count_total
+    # Find bucket containing target
+    prev_count = 0
+    prev_bound = 0.0
+    for bucket in self.buckets:
+        if bucket.count >= target:
+            # Percentile is in this bucket
+            # Linear interpolation within bucket
+            width = bucket.upper_bound - prev_bound
+            obs_in_bucket = bucket.count - prev_count
+            obs_needed = target - prev_count
+            fraction = obs_needed / obs_in_bucket
+            return prev_bound + (width * fraction)
+        prev_count = bucket.count
+        prev_bound = bucket.upper_bound
+    return self.buckets[-1].upper_bound * 2
+'|
+    }
+  }
+  percentile_examples: {
+    label: "Percentile Examples"
+    direction: down
+    p50_calc: {
+      label: "p50 (Median)"
+      shape: rectangle
+      width: 350
+      code: |md
+        target = 0.50 * 10,000 = 5,000th request
+        bucket{le='25'}  has 892   < 5,000
+        bucket{le='50'}  has 5,247 ≥ 5,000 ✓
+        prev_count = 892, prev_bound = 25
+        obs_in_bucket = 5,247 - 892 = 4,355
+        obs_needed = 5,000 - 892 = 4,108
+        fraction = 4,108 / 4,355 = 0.943
+        p50 = 25 + (50 - 25) * 0.943 = 48.6ms
+      |
+    }
+    p95_calc: {
+      label: "p95"
+      shape: rectangle
+      width: 350
+      code: |md
+        target = 0.95 * 10,000 = 9,500th request
+        bucket{le='150'} has 9,456 < 9,500
+        bucket{le='200'} has 9,789 ≥ 9,500 ✓
+        prev_count = 9,456, prev_bound = 150
+        obs_in_bucket = 9,789 - 9,456 = 333
+        obs_needed = 9,500 - 9,456 = 44
+        fraction = 44 / 333 = 0.132
+        p95 = 150 + (200 - 150) * 0.132 = 156.6ms
+      |
+    }
+    p99_calc: {
+      label: "p99"
+      shape: rectangle
+      width: 350
+      code: |md
+        target = 0.99 * 10,000 = 9,900th request
+        bucket{le='200'} has 9,789 < 9,900
+        bucket{le='500'} has 9,956 ≥ 9,900 ✓
+        prev_count = 9,789, prev_bound = 200
+        obs_in_bucket = 9,956 - 9,789 = 167
+        obs_needed = 9,900 - 9,789 = 111
+        fraction = 111 / 167 = 0.665
+        p99 = 200 + (500 - 200) * 0.665 = 399.5ms
+      |
+    }
+  }
+}
+row3_arrow: row3.percentile_examples -> row4.prometheus: "Export | format"
+# Row 4: Prometheus Metric Structure
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  prometheus: {
+    label: "Prometheus Text Exposition Format"
+    direction: down
+    metric_output: {
+      label: "/metrics endpoint output"
+      width: 420
+      code: |md
+        # TYPE model_inference_latency_ms histogram
+        model_inference_latency_ms_bucket{le="1",version="v1.0.0"} 0
+        model_inference_latency_ms_bucket{le="5",version="v1.0.0"} 23
+        model_inference_latency_ms_bucket{le="10",version="v1.0.0"} 156
+        model_inference_latency_ms_bucket{le="25",version="v1.0.0"} 892
+        model_inference_latency_ms_bucket{le="50",version="v1.0.0"} 5247
+        model_inference_latency_ms_bucket{le="75",version="v1.0.0"} 7834
+        model_inference_latency_ms_bucket{le="100",version="v1.0.0"} 8912
+        model_inference_latency_ms_bucket{le="150",version="v1.0.0"} 9456
+        model_inference_latency_ms_bucket{le="200",version="v1.0.0"} 9789
+        model_inference_latency_ms_bucket{le="500",version="v1.0.0"} 9956
+        model_inference_latency_ms_bucket{le="+Inf",version="v1.0.0"} 10000
+        model_inference_latency_ms_sum{version="v1.0.0"} 523847.0
+        model_inference_latency_ms_count{version="v1.0.0"} 10000
+      |
+    }
+  }
+  promql: {
+    label: "PromQL Queries"
+    direction: down
+    queries: {
+      label: "Common PromQL Percentile Queries"
+      width: 420
+      code: |md
+        # p50 latency over 5 minutes
+        histogram_quantile(0.50, 
+          rate(model_inference_latency_ms_bucket[5m])
+        )
+        # p95 latency per version
+        histogram_quantile(0.95, 
+          sum by (le, version) (
+            rate(model_inference_latency_ms_bucket[5m])
+          )
+        )
+        # p99 latency - alert threshold
+        histogram_quantile(0.99, 
+          rate(model_inference_latency_ms_bucket[5m])
+        ) > 500
+        # Request rate (from _count)
+        rate(model_inference_latency_ms_count[1m])
+        # Average latency (from _sum / _count)
+        rate(model_inference_latency_ms_sum[5m) 
+          / rate(model_inference_latency_ms_count[5m])
+      |
+    }
+  }
+}
+# Row 5: SLA-Aligned Buckets
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  sla_buckets: {
+    label: "SLA-Aligned Bucket Design"
+    direction: down
+    default_vs_sla: {
+      shape: sql_table
+      label: "Bucket Strategy Comparison"
+      r1: "Default Buckets | [1,5,10,25,50,75,100,150,200,300,500,750,1000,2000,5000]"
+      r2: "SLA-Aligned (p99=200ms) | [50,100,150,200,250,300,400,500,1000]"
+      r3: "Rationale | Put buckets at 0.5x, 0.75x, 1x, 1.25x, 1.5x, 2x your SLA"
+    }
+    sla_code: {
+      label: "create_for_sla() method"
+      width: 380
+      code: |'python
+@classmethod
+def create_for_sla(cls, p99_sla_ms: float):
+    """
+    Create histogram with buckets aligned to SLA.
+    Ensures detection when latency approaches SLA.
+    """
+    multipliers = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 5.0]
+    bounds = [p99_sla_ms * m for m in multipliers]
+    # Add fine-grained buckets below SLA
+    fine_bounds = [1, 5, 10, 25, 50]
+    all_bounds = sorted(set(fine_bounds + bounds))
+    return cls(buckets=[
+        HistogramBucket(upper_bound=b) 
+        for b in all_bounds
+    ])
+'|
+    }
+  }
+  accuracy_note: {
+    label: "Approximation Accuracy"
+    direction: down
+    accuracy_table: {
+      shape: sql_table
+      label: "Trade-off: Bucket Width vs Accuracy"
+      r1: "Narrow buckets | High accuracy | More memory/compute"
+      r2: "Wide buckets | Low accuracy | Less memory/compute"
+      r3: "Rule of thumb | Bucket width ≤ 10% of target percentile"
+    }
+    example: {
+      label: "Example Error"
+      width: 350
+      code: |md
+        True p99: 398ms
+        Bucket boundaries: [..., 200, 500, ...]
+        Without interpolation:
+          Would report p99 ∈ (200, 500)
+          Error: up to 302ms!
+        With linear interpolation:
+          Reports p99 ≈ 399.5ms
+          Error: ~1.5ms (0.4%)
+      |
+    }
+  }
+}
+# Final summary
+summary: {
+  label: "Key Insights"
+  near: bottom-center
+  width: 800
+  code: |md
+    1. **Cumulative buckets**: Prometheus convention - each bucket counts ALL observations ≤ its boundary
+    2. **Linear interpolation**: Percentiles are approximated by interpolating within the containing bucket
+    3. **SLA-aligned buckets**: Design bucket boundaries around your SLAs for meaningful alerts
+    4. **Three required metrics**: `_bucket` (per boundary), `_sum` (total), `_count` (observations)
+    5. **Bounded memory**: Fixed number of buckets regardless of observation count
+  |
+}
+# Style the latency bars
+row2.visual_histogram.bar_25_50.style.fill: "#4CAF50"
+row2.visual_histogram.bar_50_75.style.fill: "#8BC34A"
+row2.visual_histogram.bar_75_100.style.fill: "#FFEB3B"
+row2.visual_histogram.bar_100_150.style.fill: "#FF9800"
+row2.visual_histogram.bar_150_200.style.fill: "#F44336"
+row2.visual_histogram.bar_200_500.style.fill: "#E91E63"
+row2.visual_histogram.bar_500_plus.style.fill: "#9C27B0"
+# Highlight key percentiles
+row3.percentile_examples.p50_calc.style.fill: "#E8F5E9"
+row3.percentile_examples.p95_calc.style.fill: "#FFF3E0"
+row3.percentile_examples.p99_calc.style.fill: "#FFEBEE"

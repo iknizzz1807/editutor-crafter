@@ -1,0 +1,230 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#E8F4FD"
+    data: "#F0FDF4"
+    control: "#FEF3C7"
+    storage: "#F3E8FF"
+    arrow: "#6B7280"
+    highlight: "#EF4444"
+  }
+}
+
+title_container: {
+  style: {
+    stroke-width: 0
+    fill: transparent
+  }
+  title: "Structured Request Logging with Sampling" {
+    shape: text
+    style: {
+      font-size: 32
+      bold: true
+      underline: true
+    }
+  }
+}
+
+# Row 1: Structural Definition and Output Examples
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  
+  log_entry_def: "Log Entry Structure (monitoring.py)" {
+    direction: down
+    
+    entry_struct: {
+      shape: sql_table
+      label: "struct StructuredLogEntry"
+      f0: "0x00 | float      | timestamp      // Epoch seconds"
+      f1: "0x08 | char[8]    | request_id     // Unique trace ID"
+      f2: "0x10 | char[32]   | model_version  // Semantic version string"
+      f3: "0x30 | char[16]   | features_hash  // SHA-256 slice"
+      f4: "0x40 | float      | latency_ms     // Wall-clock time"
+      f5: "0x48 | bool       | sampled_drift  // Boolean flag"
+      f6: "0x49 | uint8_t    | status_code    // 0=Success, 1=Fail"
+      sz: "Total Static Size: 74 bytes + Dynamic Payloads"
+    }
+
+    dynamic_payloads: {
+      direction: right
+      style.stroke: transparent
+      
+      feat_map: {
+        shape: sql_table
+        label: "Feature Map (JSON)"
+        f0: "raw_features | dict | KV pairs of model inputs"
+      }
+      pred_map: {
+        shape: sql_table
+        label: "Prediction (JSON)"
+        f0: "prediction | any | Model output tensor/class"
+      }
+    }
+    
+    entry_struct -> dynamic_payloads: "serializes to"
+  }
+
+  json_output: "Implementation Target" {
+    direction: down
+    label: "JSON Line Format (.jsonl)"
+    
+    code_block: {
+      width: 400
+      code: |'json
+{
+  "timestamp": 1710123456.789,
+  "request_id": "a3f8c2d1",
+  "model_version": "v1.2.3",
+  "features": {"age": 32, "income": 75000},
+  "features_hash": "e3b0c44298fc1c14",
+  "prediction": {"score": 0.87},
+  "latency_ms": 45.3,
+  "was_sampled_for_drift": true
+}
+      '|
+    }
+    
+    note: {
+      shape: rectangle
+      label: "Format: NDJSON (Newline Delimited)\nOptimized for streaming writes and BigQuery ingestion."
+      style: {
+        fill: ${colors.storage}
+        stroke-dash: 3
+      }
+    }
+    code_block -> note
+  }
+}
+
+# Row 2: Logic Flow and Class Definition
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  
+  sampling_flow: "Decision Logic" {
+    direction: down
+    
+    req: { shape: oval; label: "Incoming Request" }
+    
+    is_drift: {
+      shape: diamond
+      label: "Drift Sample?"
+    }
+    
+    force_log: {
+      shape: rectangle
+      label: "FORCE LOG\n(Flag=True)"
+      style.fill: "#DCFCE7"
+    }
+    
+    rate_limit: {
+      shape: diamond
+      label: "counter % (1/rate) == 0?"
+    }
+    
+    log_action: {
+      shape: rectangle
+      label: "CAPTURE ENTRY"
+      style.fill: "#DCFCE7"
+    }
+    
+    drop: {
+      shape: rectangle
+      label: "DISCARD"
+      style.fill: "#FEE2E2"
+    }
+    
+    req -> is_drift
+    is_drift -> force_log: "YES (0.1%)"
+    is_drift -> rate_limit: "NO"
+    rate_limit -> log_action: "YES (1%)"
+    rate_limit -> drop: "NO"
+    
+    buffer: {
+      shape: queue
+      label: "Async IO Buffer"
+      style.fill: ${colors.storage}
+    }
+    
+    force_log -> buffer
+    log_action -> buffer
+    buffer -> disk: "Flush (100 ms)"
+    disk: { shape: cylinder; label: "requests.jsonl" }
+  }
+
+  logger_class: "Module: RequestLogger" {
+    direction: down
+    
+    logger: {
+      shape: class
+      label: "RequestLogger (logger.py)"
+      -sample_rate: "float"
+      -counter: "int"
+      -buffer: "List[dict]"
+      +should_log(force_drift): "bool"
+      +log(request, response): "void"
+      -_flush(): "void"
+    }
+    
+    hash_utility: {
+      shape: rectangle
+      label: "hash_features(dict) -> str\nConsistent MD5/SHA of sorted keys"
+      style.fill: ${colors.control}
+    }
+    
+    logger -> hash_utility: "calls"
+  }
+}
+
+# Row 3: Capacity Planning and Code Snip
+row3: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+
+  capacity: "Storage Analysis (1M Req/Day)" {
+    direction: down
+    
+    stats: {
+      shape: sql_table
+      label: "Comparison: 100% vs 1% Sampling"
+      r0: "Metric         | Full (100%) | Sampled (1.1%)"
+      r1: "Daily Logs     | 1,000,000   | 11,000"
+      r2: "Daily Storage  | 1.2 GB      | 13.2 MB"
+      r3: "Annual Storage | 438 GB      | 4.8 GB"
+      res: "Reduction: ~98.9% Storage Savings"
+    }
+  }
+
+  snippet: "Python Implementation" {
+    direction: down
+    code: {
+      width: 400
+      code: |'python
+def should_log(self, force_drift: bool) -> bool:
+    if force_drift:
+        return True
+    self._counter += 1
+    # Sample every Nth request
+    mod = int(1 / self.sample_rate)
+    return (self._counter % mod) == 0
+      '|
+    }
+  }
+}
+
+row1 -> row2: "Log Format | guides"
+row2 -> row3: "Logic | impacts"

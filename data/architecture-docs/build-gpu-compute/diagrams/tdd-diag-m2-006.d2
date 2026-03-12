@@ -1,0 +1,254 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  constants: {
+    TILE_DIM: "32"
+    BLOCK_ROWS: "8"
+    STRIDE: "33 (32 + 1 Padding)"
+    WORD_SIZE: "4 Bytes"
+  }
+}
+
+classes: {
+  memory_block: {
+    style: {
+      stroke-width: 2
+      border-radius: 4
+      shadow: true
+    }
+  }
+  header_text: {
+    style: {
+      bold: true
+      font-size: 18
+      underline: true
+    }
+  }
+  annotation: {
+    shape: text
+    style: {
+      font-size: 12
+      italic: true
+    }
+  }
+  coalesced_path: {
+    style: {
+      stroke: "#2E7D32"
+      stroke-width: 4
+      animated: true
+    }
+  }
+}
+
+title: |md
+  # Tiled Transpose Algorithm: GPU Memory Path Architecture
+  **sizeof(tile) = 32 * 33 * 4 bytes = 4224 bytes (approx. 1.03 L1 Cache Lines)**
+  *Optimized for Bank Conflict Avoidance via Padding*
+| {
+  near: top-center
+  shape: text
+}
+
+# Phase 1: Input Matrix to Shared Memory
+phase1: "PHASE 1: COALESCED READ FROM GMEM" {
+  class: memory_block
+  style.fill: "#E1F5FE"
+
+  global_mem: "Global Memory (Input Matrix)" {
+    style.fill: "#BBDEFB"
+    
+    row0: "Row Y (Base + 0x00)" {
+      style.fill: "#E3F2FD"
+      col_0_31: "[tx=0..31] | 128B Burst" {style.fill: "#90CAF9"}
+    }
+    row1: "Row Y+1 (Base + Width*4)" {
+      style.fill: "#E3F2FD"
+      col_0_31: "[tx=0..31] | 128B Burst" {style.fill: "#64B5F6"}
+    }
+    row_n: "... (Height rows total)" {style.stroke-dash: 3}
+  }
+
+  shm_load: "Warp Request (32 threads)" {
+    shape: parallelogram
+    label: "LD.G [y*W + x]"
+    tooltip: "Each thread reads 4-bytes, contiguous across warp"
+    style.fill: "#C8E6C9"
+  }
+
+  shared_mem_bank: "Shared Memory Tile [32][33]" {
+    grid-columns: 8
+    grid-gap: 5
+    
+    style.fill: "#FFF9C4"
+    style.stroke: "#FBC02D"
+    
+    t0_0: "Tile[0][0]" {style.fill: "#FFF176"}
+    t0_1: "Tile[0][1]"
+    t0_2: "Tile[0][2]"
+    t0_3: "Tile[0][3]"
+    t0_4: "Tile[0][4]"
+    t0_5: "Tile[0][5]"
+    t0_6: "Tile[0][6]"
+    t0_padding: "PAD (Bank 0)" {style.fill: "#BDBDBD"; tooltip: "Padding for Bank Conflict Avoidance"}
+    
+    t1_0: "Tile[1][0]"
+    t1_1: "Tile[1][1]"
+    t1_2: "Tile[1][2]"
+    t1_3: "Tile[1][3]"
+    t1_4: "Tile[1][4]"
+    t1_5: "Tile[1][5]"
+    t1_6: "Tile[1][6]"
+    t1_padding: "PAD (Bank 1)" {style.fill: "#BDBDBD"}
+  }
+
+  global_mem.row0.col_0_31 -> shm_load: "Coalesced Transaction"
+  shm_load -> shared_mem_bank.t0_0: "tile[ty][tx] = input[y*W+x]"
+}
+
+# Phase 2: Barrier & Local Transpose Logic
+phase2: "PHASE 2: SYNCHRONIZATION & ADDRESS CALC" {
+  class: memory_block
+  style.fill: "#FFF3E0"
+
+  sync: " __syncthreads()" {
+    shape: diamond
+    style.fill: "#FF7043"
+    style.font-color: white
+    tooltip: "Ensure all threads finished writing to shared memory"
+  }
+
+  logic: "Index Mapping Transformation" {
+    shape: rectangle
+    label: |md
+      ### Coordinate Swap Logic
+      **Read Indices (Transpose):**
+      `x_new = blockIdx.y * TILE_DIM + threadIdx.x`
+      `y_new = blockIdx.x * TILE_DIM + threadIdx.y`
+      
+      **Shared Memory Access:**
+      `register = tile[threadIdx.x][threadIdx.y]`
+    |
+  }
+
+  sync -> logic: "Wait for SHM"
+}
+
+# Phase 3: Shared Memory to Output Matrix
+phase3: "PHASE 3: COALESCED WRITE TO GMEM" {
+  class: memory_block
+  style.fill: "#E8F5E9"
+
+  shm_transposed: "Shared Memory (Transposed Access)" {
+    grid-columns: 4
+    style.fill: "#C8E6C9"
+    cell0: "tile[0][ty]" {style.multiple: true; style.fill: "#A5D6A7"}
+    cell1: "tile[1][ty]" {style.multiple: true}
+    cell2: "tile[2][ty]" {style.multiple: true}
+    cell3: "..." {style.stroke-dash: 2}
+  }
+
+  shm_store: "Warp Store (32 threads)" {
+    shape: parallelogram
+    label: "ST.G [y_t*H + x_t]"
+    tooltip: "Threads write contiguous 128B block to Global Memory"
+    style.fill: "#90CAF9"
+  }
+
+  global_mem_out: "Global Memory (Transposed Output)" {
+    style.fill: "#BBDEFB"
+    
+    out_row0: "Transposed Row X" {
+      style.fill: "#E3F2FD"
+      out_col: "Base + 0x00 | Coalesced Store" {style.fill: "#42A5F5"}
+    }
+    out_row1: "Transposed Row X+1" {
+      style.fill: "#E3F2FD"
+      out_col: "Base + Height*4" {style.fill: "#1E88E5"}
+    }
+  }
+
+  shm_transposed -> shm_store: "Transpose: tile[tx][ty]"
+  shm_store -> global_mem_out.out_row0.out_col: "Burst Write (128B)"
+}
+
+# Implementation Details
+kernel_code: {
+  label: "CUDA C++ Kernel Definition"
+  near: bottom-center
+  code: |'cpp
+__global__ void transpose(float* o, float* i, int w, int h) {
+    // 32x32 data + 1 col padding to shift bank alignment
+    __shared__ float tile[32][33]; 
+    
+    int tx = threadIdx.x; int ty = threadIdx.y;
+    int x = blockIdx.x * 32 + tx;
+    int y = blockIdx.y * 32 + ty;
+
+    // Load into Shared Memory (Coalesced)
+    if (x < w && y < h)
+        tile[ty][tx] = i[y * w + x];
+
+    __syncthreads();
+
+    // Calculate Transposed Global Indices
+    x = blockIdx.y * 32 + tx; 
+    y = blockIdx.x * 32 + ty;
+
+    // Store into Global Memory (Coalesced)
+    if (x < h && y < w)
+        o[y * h + x] = tile[tx][ty]; 
+}'|
+}
+
+# Flow Connections
+phase1 -> phase2: "Barrier (L1/L2 Flush)" {class: coalesced_path}
+phase2 -> phase3: "Transposed Write Path" {class: coalesced_path}
+
+# Analysis Section
+analysis: {
+  near: center-right
+  
+  metrics: "Hardware Access Metrics" {
+    shape: sql_table
+    "Global In": "Type: Coalesced | Throughput: ~95% Peak"
+    "Shared Mem": "Type: Bank-Conflict-Free | Latency: 28 cycles"
+    "Global Out": "Type: Coalesced | Throughput: ~92% Peak"
+  }
+
+  bank_info: |md
+    ### Bank Conflict Avoidance
+    Without padding (`[32][32]`), `tile[i][0]` and `tile[i+1][0]` 
+    hit Bank 0, causing a 32-way conflict.
+    
+    With `[32][33]`:
+    `Address(ty, tx) = ty * 33 + tx`
+    `Bank = (ty * 33 + tx) % 32`
+    
+    This ensures that columns mapped to the same 
+    warp access distinct banks.
+  | {
+    style.fill: "#FFF9C4"
+    style.stroke: "#FBC02D"
+    style.border-radius: 10
+  }
+}
+
+legend: {
+  label: "Diagram Key"
+  near: bottom-right
+  
+  gmem: "Global Memory (VRAM)" {style.fill: "#BBDEFB"}
+  smem: "Shared Memory (On-Chip)" {style.fill: "#FFF9C4"}
+  warp: "Warp Parallel Action" {shape: parallelogram; style.fill: "#C8E6C9"}
+  trans: "Transaction Boundary" {style.stroke: "#2E7D32"; style.stroke-width: 3}
+}
+
+# Footer annotations
+footer: "GPU Compute TDD-006 | Intel-Style Technical Specification | Revision 1.4" {
+  shape: text
+  near: bottom-left
+  style.font-size: 10
+}

@@ -1,0 +1,203 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: "Naive vs Tiled Transpose Timeline" {
+  shape: text
+  near: top-center
+  style: {
+    font-size: 28
+    bold: true
+  }
+}
+
+subtitle: "Memory Transaction Patterns for Matrix Transpose (32 threads/warp)" {
+  shape: text
+  near: top-center
+  style.italic: true
+}
+
+# ==================== CLASSES ====================
+classes: {
+  thread_active: {
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+      stroke-width: 1
+    }
+  }
+  cache_line: {
+    style: {
+      fill: "#FFCDD2"
+      stroke: "#C62828"
+      stroke-dash: 3
+    }
+  }
+  shared_mem: {
+    style: {
+      fill: "#E1F5FE"
+      stroke: "#0277BD"
+      fill-pattern: dots
+    }
+  }
+  note_box: {
+    style: {
+      stroke-width: 2
+      bold: true
+      border-radius: 4
+    }
+  }
+}
+
+# ==================== NAIVE TRANSPOSE ====================
+naive_section: "Naive Transpose Implementation\nThroughput: ~30-50 GB/s (Strided Writes)" {
+  style: {
+    fill: "#FFF5F5"
+    stroke: "#EF5350"
+    stroke-width: 2
+  }
+
+  naive_timeline: {
+    label: "Global Memory Transaction Map"
+    
+    threads: "Warp Threads (tid: 0-31)" {
+      grid-columns: 32
+      t0: "0" { class: thread_active }
+      t1: "1" { class: thread_active }
+      t2: "2" { class: thread_active }
+      t_mid: "..." { shape: text }
+      t31: "31" { class: thread_active }
+    }
+
+    dram_layout: "DRAM Address Space (Row-Major)" {
+      grid-rows: 4
+      row0: "Row 0 (Cache Line 0-3) - Bytes 0..255" { class: cache_line }
+      row1: "Row 1 (Cache Line 4-7) - Bytes 1024..1279" { class: cache_line }
+      row2: "Row 2 (Cache Line 8-11) - Bytes 2048..2303" { class: cache_line }
+      row31: "Row 31 (Cache Line 124-127) - Bytes 31744..31999" { class: cache_line }
+    }
+
+    # Strided connections: Highlighting that T0, T1, T31 hit DIFFERENT cache lines
+    threads.t0 -> dram_layout.row0: "Write tid*N" { style.stroke: red; style.stroke-width: 2 }
+    threads.t1 -> dram_layout.row1: "Write tid*N" { style.stroke: red; style.stroke-width: 2 }
+    threads.t31 -> dram_layout.row31: "Write tid*N" { style.stroke: red; style.stroke-width: 2 }
+  }
+
+  analysis: "ANALYSIS: NON-COALESCED\n- 32 Memory Transactions per Warp\n- Effective Bandwidth: ~5% Peak\n- Cause: Column-wise writes in Global Mem" {
+    class: note_box
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#EF5350"
+      font-color: "#B71C1C"
+    }
+  }
+  
+  timing_info: "TIMING: SINGLE PASS\nBottleneck: Memory Latency Bound" {
+    shape: text
+    style.font-color: "#B71C1C"
+  }
+
+  naive_timeline -> analysis -> timing_info
+}
+
+# ==================== TILED TRANSPOSE ====================
+tiled_section: "Tiled Transpose with Shared Memory\nThroughput: ~600+ GB/s (Coalesced IO)" {
+  style: {
+    fill: "#F0F4FF"
+    stroke: "#4CAF50"
+    stroke-width: 2
+  }
+
+  execution_steps: {
+    # Phase 1: Coalesced Read
+    p1: "1. COALESCED LOAD" {
+      src: "Global Mem (Input Matrix)" { shape: cylinder; style.fill: "#BBDEFB" }
+      warp: "Warp Threads" { class: thread_active }
+      warp <- src: "Read 128B Contiguous" { label: "1 Transaction"; style.stroke: green }
+    }
+
+    # Phase 2: Transpose via SMEM
+    p2: "2. SHARED MEM TRANSPOSE" {
+      smem: "tile[32][33]" {
+        shape: rectangle
+        class: shared_mem
+        tooltip: "33rd column avoids bank conflicts (32 banks)"
+      }
+      op: "Transpose Logic" { shape: diamond }
+      
+      smem -> op: "Read Rows"
+      op -> smem: "Write Columns"
+      
+      sync: "__syncthreads()" {
+        shape: parallelogram
+        style.fill: "#FFF9C4"
+      }
+    }
+
+    # Phase 3: Coalesced Store
+    p3: "3. COALESCED STORE" {
+      warp: "Warp Threads" { class: thread_active }
+      dst: "Global Mem (Output Matrix)" { shape: cylinder; style.fill: "#A5D6A7" }
+      warp -> dst: "Write 128B Contiguous" { label: "1 Transaction"; style.stroke: green }
+    }
+
+    p1 -> p2 -> p3
+  }
+
+  analysis: "ANALYSIS: FULLY COALESCED\n- 2 Memory Transactions total\n- Effective Bandwidth: ~90% Peak\n- Shared Mem Latency: ~25 cycles" {
+    class: note_box
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#4CAF50"
+      font-color: "#1B5E20"
+    }
+  }
+
+  timing_info: "TIMING: THREE PHASES\nBound: Memory Bandwidth (Peak)" {
+    shape: text
+    style.font-color: "#1B5E20"
+  }
+
+  implementation_notes: |md
+    ### Implementation Details
+    - **Shared Memory Padding**: `__shared__ float tile[32][33]`
+    - **Offset**: `33` ensures `tile[i][j]` and `tile[k][j]` map to different banks.
+    - **Memory Coalescing**: Both Load and Store operations access contiguous 128-byte segments (L1 Cache Line size).
+  | 
+
+  execution_steps -> analysis -> timing_info -> implementation_notes
+}
+
+# ==================== GLOBAL ARCHITECTURE LEGEND ====================
+legend: "Architecture Key" {
+  near: bottom-left
+  
+  l1: "Active Warp Thread" { class: thread_active }
+  l2: "Global Memory (DRAM)" { shape: cylinder; style.fill: "#BBDEFB" }
+  l3: "Coalesced Access" { 
+    shape: rectangle 
+    style: { stroke: green; stroke-width: 3 }
+  }
+  l4: "Bank Conflict Hazard" {
+    shape: rectangle
+    style: { stroke: red; stroke-dash: 2 }
+  }
+
+  l1 -- l2: { style.opacity: 0 }
+  l2 -- l3: { style.opacity: 0 }
+  l3 -- l4: { style.opacity: 0 }
+}
+
+# ==================== OPTIMIZATION FLOW ====================
+naive_section -> tiled_section: "Optimization: Use __shared__ for Coalescing" {
+  style: {
+    stroke: "#7E57C2"
+    stroke-width: 4
+    stroke-dash: 5
+    animated: true
+  }
+}

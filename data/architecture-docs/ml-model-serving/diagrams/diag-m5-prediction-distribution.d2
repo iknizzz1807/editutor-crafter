@@ -1,0 +1,347 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |'md
+  # Prediction Distribution Monitoring
+  Implementation blueprint for sliding-window distribution drift detection.
+'| {near: top-center}
+
+# ========== ROW 1: TIME-SERIES EVOLUTION ==========
+row_evolution: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  t0_window: {
+    direction: down
+    label: "T0: BASELINE WINDOW"
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    
+    t0_hist: {
+      label: "Distribution Histogram"
+      width: 280
+      viz: |'md
+        
+        0.0 [####      ]
+        0.2 [########  ]
+        0.4 [##########] (Peak)
+        0.6 [#######   ]
+        0.8 [###       ]
+        1.0 [          ]
+        
+      '|
+      stats: "mean=0.52 | std=0.18"
+    }
+    status_t0: {
+      shape: oval
+      label: "STABLE"
+      style.fill: "#4CAF50"
+      style.font-color: white
+    }
+  }
+
+  t1_window: {
+    direction: down
+    label: "T1: RECENT WINDOW (+7d)"
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    
+    t1_hist: {
+      label: "Distribution Histogram"
+      width: 280
+      viz: |'md
+        
+        0.0 [###       ]
+        0.2 [######    ]
+        0.4 [########  ]
+        0.6 [##########] (Peak shift)
+        0.8 [#######   ]
+        1.0 [##        ]
+        
+      '|
+      stats: "mean=0.61 | std=0.22"
+    }
+    status_t1: {
+      shape: oval
+      label: "SHIFTING"
+      style.fill: "#FF9800"
+      style.font-color: white
+    }
+  }
+
+  t2_window: {
+    direction: down
+    label: "T2: DRIFTED WINDOW (+14d)"
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    
+    t2_hist: {
+      label: "Distribution Histogram"
+      width: 280
+      viz: |'md
+        
+        0.0 [#         ]
+        0.2 [##        ]
+        0.4 [####      ]
+        0.6 [#######   ]
+        0.8 [##########] (Critical shift)
+        1.0 [######    ]
+        
+      '|
+      stats: "mean=0.73 | std=0.15"
+    }
+    status_t2: {
+      shape: oval
+      label: "DRIFTED"
+      style.fill: "#F44336"
+      style.font-color: white
+    }
+  }
+}
+
+t0_window.status_t0 -> t1_window.status_t1: "mean_shift | +0.09" {
+  style.stroke: "#FF9800"
+  style.stroke-dash: 3
+}
+t1_window.status_t1 -> t2_window.status_t2: "mean_shift | +0.12" {
+  style.stroke: "#F44336"
+  style.stroke-dash: 3
+}
+
+# ========== ROW 2: CORE LOGIC DEFINITIONS ==========
+row_logic: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  prediction_monitor: {
+    label: "PredictionDistributionMonitor (monitor.py)"
+    shape: class
+    -window_size: "int = 10000"
+    -n_bins: "int = 20"
+    -samples: "deque[float]"
+    -baseline_hist: "dict[int, float]"
+    +record(prediction): "void"
+    +compute_histogram(): "dict[int, float]"
+    +compare_to_baseline(): "DriftResult"
+    +is_drifted(): "bool"
+  }
+
+  drift_metrics: {
+    shape: sql_table
+    label: "Drift Metrics Definition"
+    m1: "mean_shift | abs(curr_mean - base_mean)"
+    m2: "std_ratio | curr_std / base_std"
+    m3: "tvd | total_variation_distance"
+    m4: "tvd_formula | 0.5 * sum(|P_i - Q_i|)"
+    m5: "unit | Probability Density"
+  }
+
+  thresholds: {
+    shape: sql_table
+    label: "Monitoring Thresholds"
+    t1: "TVD < 0.1 | Status: GREEN"
+    t2: "0.1 <= TVD < 0.3 | Status: YELLOW"
+    t3: "TVD >= 0.3 | Status: RED"
+    t4: "Action | Trigger Retraining"
+  }
+}
+
+# ========== ROW 3: SAMPLING MECHANISM ==========
+row_sampling: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  sampling_detail: {
+    label: "Sliding Window Implementation"
+    direction: right
+    
+    stream: {
+      label: "Live Stream"
+      code: |'python
+        # Input: Model Output
+        y_pred = model.predict(X)
+        monitor.record(y_pred)
+      '|
+    }
+
+    buffer: {
+      label: "Memory Buffer"
+      shape: queue
+      content: "collections.deque(maxlen=10000)"
+      style.fill: "#E3F2FD"
+    }
+
+    compute: {
+      label: "Hist Engine"
+      code: |'python
+        def compute_histogram(data):
+          counts, bins = np.histogram(
+            data, bins=20, range=(0,1)
+          )
+          return counts / len(data)
+      '|
+    }
+
+    stream -> buffer: "push()"
+    buffer -> compute: "slice(0, 10000)"
+  }
+}
+
+# ========== ROW 4: DATA FLOW & COMPARISON ==========
+row_comparison: "" {
+  direction: down
+  style.stroke: transparent
+  style.fill: transparent
+
+  comparison_engine: {
+    direction: right
+    label: "Comparison Process"
+    
+    baseline: {
+      shape: sql_table
+      label: "P (Baseline)"
+      b0: "Bin 0 | 0.05"
+      b1: "Bin 1 | 0.12"
+      b2: "Bin 2 | 0.25"
+      b3: "Bin 3 | 0.35"
+      total: "1.00 (Normalized)"
+    }
+
+    logic: {
+      label: "TVD Algorithm"
+      width: 300
+      code: |'python
+        # Total Variation Distance
+        diffs = np.abs(live - base)
+        tvd = 0.5 * np.sum(diffs)
+        
+        if tvd > alert_limit:
+          trigger_alert(tvd)
+      '|
+    }
+
+    live: {
+      shape: sql_table
+      label: "Q (Current Window)"
+      b0: "Bin 0 | 0.02"
+      b1: "Bin 1 | 0.08"
+      b2: "Bin 2 | 0.15"
+      b3: "Bin 3 | 0.28"
+      total: "1.00 (Normalized)"
+    }
+
+    baseline -> logic: "P_vector"
+    live -> logic: "Q_vector"
+  }
+
+  output_json: {
+    label: "Result Object (JSON)"
+    code: |'json
+    {
+      "status": "SIGNIFICANT_SHIFT",
+      "metrics": {
+        "tvd": 0.32,
+        "mean_shift": 0.21,
+        "is_critical": true
+      },
+      "timestamp": "2024-05-20T10:00:00Z"
+    }
+    '|
+  }
+  
+  comparison_engine -> output_json: "serialize"
+}
+
+# ========== ROW 5: STATE MACHINE ==========
+row_states: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  sm: "Status State Machine" {
+    direction: right
+    
+    stable: {
+      shape: circle
+      label: "STABLE"
+      style.fill: "#4CAF50"
+      style.font-color: white
+    }
+    
+    moderate: {
+      shape: oval
+      label: "WARNING"
+      style.fill: "#FF9800"
+      style.font-color: white
+    }
+    
+    critical: {
+      shape: hexagon
+      label: "CRITICAL"
+      style.fill: "#F44336"
+      style.font-color: white
+    }
+
+    stable -> moderate: "TVD > 0.1"
+    moderate -> critical: "TVD > 0.3"
+    critical -> moderate: "TVD < 0.3 (recovery)"
+    moderate -> stable: "TVD < 0.1"
+  }
+}
+
+# ========== ROW 6: INTEGRATION ARCHITECTURE ==========
+row_infra: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  pipeline: "Monitoring Pipeline Context" {
+    direction: right
+    
+    api: Inference API {
+      shape: parallelogram
+      style.fill: "#E3F2FD"
+    }
+    
+    mon: Drift Detector {
+      shape: rectangle
+      style.fill: "#FFF3E0"
+    }
+    
+    pager: Alert Manager {
+      shape: diamond
+      style.fill: "#FFEBEE"
+    }
+
+    api -> mon: "observation (64 bytes)"
+    mon -> pager: "DriftEvent (TVD >= 0.3)" {
+      style.stroke: red
+      style.stroke-dash: 3
+    }
+  }
+}
+
+# Connections between major stages
+row_evolution -> row_logic: "compute"
+row_logic -> row_sampling: "config"
+row_sampling -> row_comparison: "data"
+row_comparison -> row_states: "status"
+row_states -> row_infra: "trigger"
+
+legend: {
+  label: "Legend & Scale"
+  shape: package
+  row1: "Window Size: 10,000 samples (~80KB memory)"
+  row2: "Update Frequency: Every 1,000 records"
+  row3: "Metric: Total Variation Distance (TVD)"
+  row4: "Range: [0.0 - 1.0]"
+}
+legend.near: bottom-right

@@ -1,0 +1,307 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## Automatic Rollback Trigger Flow
+  Monitor → Threshold Check → Atomic Swap → Alert (Target: <5s)
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  monitoring: {
+    direction: down
+    label: "MONITORING PHASE"
+    error_monitor: {
+      shape: class
+      label: "RollbackMonitor (hot_reload.py)"
+      -error_history: "Dict[str, deque]"
+      -latency_history: "Dict[str, deque]"
+      -consecutive_failures: "int"
+      +record_result(): "void"
+      +check_health(): "Tuple[bool, str]"
+      -compute_window_metrics(): "dict"
+    }
+    metrics_flow: {
+      label: "Metrics Collection"
+      shape: rectangle
+      width: 280
+      code: |'python
+        async def check_health(version_id):
+            window_start = time.time() - window_size
+            metrics = _compute_window_metrics(
+                version_id, window_start
+            )
+            if metrics["count"] < 10:
+                return True, None
+            if metrics["error_rate"] > threshold:
+                return False, f"Error rate {rate:.1%}"
+            if metrics["latency_p99"] > latency_threshold:
+                return False, f"Latency p99 {p99}ms"
+            return True, None
+      '|
+    }
+  }
+  threshold_check: {
+    direction: down
+    label: "THRESHOLD COMPARISON"
+    compare_box: {
+      shape: diamond
+      label: "Error Rate\n> 2x Baseline?"
+      width: 160
+      height: 100
+    }
+    thresholds: {
+      shape: sql_table
+      label: "RollbackThresholds"
+      f0: "error_rate_multiplier | 2.0"
+      f1: "latency_p99_multiplier | 1.5"
+      f2: "consecutive_failures | 3"
+      f3: "window_size_seconds | 10.0"
+    }
+    fail_count: {
+      label: "Consecutive Failure Counter"
+      shape: rectangle
+      width: 260
+      code: |'python
+        # Increment on each failure
+        consecutive_failures += 1
+        # Trigger rollback at threshold
+        if consecutive_failures >= 3:
+            trigger_rollback(canary_version, reason)
+            consecutive_failures = 0
+      '|
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  rollback_action: {
+    direction: down
+    label: "ROLLBACK EXECUTION"
+    atomic_swap: {
+      shape: class
+      label: "RollbackCapableHotSwap"
+      -_previous_version: "ModelVersion"
+      -_rollback_monitor: "RollbackMonitor"
+      +_trigger_rollback(): "bool"
+      +manual_rollback(): "Tuple[bool, str]"
+    }
+    swap_logic: {
+      label: "Atomic Pointer Swap"
+      shape: rectangle
+      width: 300
+      code: |'python
+        async def _trigger_rollback(
+            failed_version_id, reason
+        ):
+            rollback_start = time.perf_counter()
+            # Atomic swap (instant - O(1))
+            await pointer.swap(previous_version)
+            # Update registry
+            registry._active_version_id = previous_id
+            previous_version.status = ACTIVE
+            elapsed_ms = (time.perf_counter() 
+                         - rollback_start) * 1000
+            # Target: < 5000ms
+            logger.info(f"Rollback in {elapsed_ms:.1f}ms")
+      '|
+    }
+    state_change: {
+      shape: sql_table
+      label: "Version State Transition"
+      before: "canary | ACTIVE | in_flight=47"
+      after: "canary | FAILED | in_flight=0"
+      prev_before: "stable | DRAINING | in_flight=0"
+      prev_after: "stable | ACTIVE | in_flight=0"
+    }
+  }
+  alerting: {
+    direction: down
+    label: "ALERTING"
+    alert_handler: {
+      shape: class
+      label: "AlertManager"
+      -_last_alert_time: "Dict[str, float]"
+      +evaluate(): "List[Alert]"
+      +get_recent_alerts(): "List[Alert]"
+    }
+    alert_payload: {
+      shape: sql_table
+      label: "Alert Payload"
+      f0: "rule_name | rollback_triggered"
+      f1: "severity | CRITICAL"
+      f2: "feature_name | canary_v2.0.0"
+      f3: "message | Error rate 12.5% > 2x baseline"
+      f4: "timestamp | 1710123456.789"
+      f5: "value | 0.125"
+      f6: "threshold | 0.10"
+    }
+    destinations: {
+      label: "Alert Destinations"
+      shape: rectangle
+      dest_list: {
+        shape: sql_table
+        label: "Routing"
+        d1: "PagerDuty | CRITICAL"
+        d2: "Slack #ml-alerts | WARNING+"
+        d3: "Email oncall@ | CRITICAL"
+      }
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  timeline: {
+    direction: down
+    label: "TIMELINE: Error Spike → Rollback (<5s)"
+    t0: {
+      shape: rectangle
+      label: "T+0s: Error Spike Begins"
+      width: 320
+      code: |'text
+        Canary v2.0.0 deployed at 5% traffic
+        First health check window starts
+        Error rate: 0.5% (normal)
+      '|
+      style.fill: "#E8F5E9"
+    }
+    t10: {
+      shape: rectangle
+      label: "T+10s: First Window Complete"
+      width: 320
+      code: |'text
+        Window samples: 523 requests
+        Error count: 67 errors
+        Error rate: 12.8% (threshold: 5%)
+        → consecutive_failures = 1
+      '|
+      style.fill: "#FFF3E0"
+    }
+    t20: {
+      shape: rectangle
+      label: "T+20s: Second Failure"
+      width: 320
+      code: |'text
+        Window samples: 498 requests  
+        Error count: 71 errors
+        Error rate: 14.3%
+        → consecutive_failures = 2
+      '|
+      style.fill: "#FFEBEE"
+    }
+    t30: {
+      shape: rectangle
+      label: "T+30s: ROLLBACK TRIGGERED"
+      width: 320
+      code: |'text
+        Window samples: 512 requests
+        Error count: 69 errors
+        Error rate: 13.5%
+        → consecutive_failures = 3 ✓ THRESHOLD
+        → _trigger_rollback() called
+      '|
+      style.fill: "#FFCDD2"
+    }
+    t30_5: {
+      shape: rectangle
+      label: "T+30.005s: Atomic Swap Complete"
+      width: 320
+      code: |'text
+        pointer.swap(previous_version) → 3.2ms
+        Registry update → 0.8ms
+        Status change → 0.3ms
+        Alert dispatched → 0.7ms
+        ─────────────────────
+        Total rollback time: ~5ms
+      '|
+      style.fill: "#C8E6C9"
+    }
+  }
+  state_diagram: {
+    direction: down
+    label: "Version State Machine"
+    stable: {
+      shape: circle
+      label: "STABLE\nv1.0.0\n(Active)"
+      style.fill: "#C8E6C9"
+    }
+    canary: {
+      shape: circle  
+      label: "CANARY\nv2.0.0\n(Deployed)"
+      style.fill: "#BBDEFB"
+    }
+    failed: {
+      shape: circle
+      label: "FAILED\nv2.0.0\n(Rolled Back)"
+      style.fill: "#FFCDD2"
+    }
+    stable_active: {
+      shape: circle
+      label: "STABLE\nv1.0.0\n(Active)"
+      style.fill: "#C8E6C9"
+      style.stroke: "#2E7D32"
+      style.stroke-width: 3
+    }
+    stable -> canary: "deploy 5%" {
+      style.stroke: "#1976D2"
+    }
+    canary -> failed: "error_rate > 2x\nconsecutive >= 3" {
+      style.stroke: "#D32F2F"
+      style.stroke-dash: 4
+    }
+    failed -> stable_active: "atomic swap\n<5ms" {
+      style.stroke: "#2E7D32"
+      style.animated: true
+      label: "ATOMIC SWAP"
+    }
+  }
+}
+legend: {
+  near: bottom-center
+  label: "Color Legend"
+  shape: rectangle
+  normal: "Normal Operation" {style.fill: "#E8F5E9"}
+  warning: "Warning (1st failure)" {style.fill: "#FFF3E0"}
+  error: "Error (2nd failure)" {style.fill: "#FFEBEE"}
+  critical: "Critical (3rd failure → rollback)" {style.fill: "#FFCDD2"}
+  recovered: "Recovered (rollback complete)" {style.fill: "#C8E6C9"}
+}
+# Flow connections
+row1.monitoring.metrics_flow -> row1.threshold_check.compare_box: "metrics\nevery 10s" {
+  style.stroke: "#1976D2"
+}
+row1.threshold_check.compare_box -> row1.threshold_check.fail_count: "YES\n(error)" {
+  style.stroke: "#D32F2F"
+  style.stroke-dash: 4
+}
+row1.threshold_check.compare_box -> row1.monitoring.error_monitor: "NO\n(healthy)" {
+  style.stroke: "#2E7D32"
+}
+row1.threshold_check.fail_count -> row2.rollback_action.swap_logic: "failures >= 3\nTRIGGER ROLLBACK" {
+  style.stroke: "#D32F2F"
+  style.stroke-width: 3
+  style.animated: true
+}
+row2.rollback_action.swap_logic -> row2.alerting.alert_handler: "swap complete\n<5ms" {
+  style.stroke: "#2E7D32"
+}
+row2.rollback_action.swap_logic -> row2.rollback_action.state_change: "update" {
+  style.stroke-dash: 3
+}
+row2.alerting.alert_handler -> row2.alerting.destinations: "route by\nseverity" {
+  style.stroke: "#FF9800"
+}
+# Timeline connections
+row3.timeline.t0 -> row3.timeline.t10 -> row3.timeline.t20 -> row3.timeline.t30 -> row3.timeline.t30_5 {
+  style.stroke: "#424242"
+  style.stroke-width: 2
+}

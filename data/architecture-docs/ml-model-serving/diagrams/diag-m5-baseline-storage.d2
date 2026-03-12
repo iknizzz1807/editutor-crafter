@@ -1,0 +1,223 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Training Baseline Storage and Retrieval
+  Data Walk: From Training Distribution to Drift Detection
+| {near: top-center}
+row_training: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  training: {
+    direction: down
+    label: "TRAINING PHASE"
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    train_data: {
+      label: "Training Dataset"
+      shape: cylinder
+      style.fill: "#C8E6C9"
+    }
+    extract: {
+      label: "Extract Features"
+      width: 200
+      code: |'python
+        features = {
+          "age": df["age"].values,
+          "income": df["income"].values,
+          "session_len": df["session"].values,
+        }
+      '|
+    }
+    compute_dist: {
+      label: "Compute Distributions"
+      width: 280
+      code: |'python
+        for name, values in features.items():
+            baseline = FeatureBaseline.from_samples(
+                feature_name=name,
+                samples=values,
+                max_baseline_samples=10000
+            )
+      '|
+    }
+    train_data -> extract: "raw rows"
+    extract -> compute_dist: "Dict[str, List[float]]"
+  }
+}
+row_baseline: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  baseline_storage: {
+    direction: down
+    label: "BASELINE STORAGE"
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+    feature_baseline: {
+      shape: sql_table
+      label: "FeatureBaseline (baseline.json)"
+      f0: "0x00 | str      | feature_name"
+      f1: "0x08 | List[f]  | samples (max 10k)"
+      f2: "0x10 | float    | min_val"
+      f3: "0x18 | float    | max_val"
+      f4: "0x20 | float    | mean"
+      f5: "0x28 | float    | std"
+      f6: "0x30 | List[f]  | sorted_samples"
+      sz: "Total: ~80KB per feature"
+    }
+    model_baseline: {
+      shape: sql_table
+      label: "ModelBaseline (v1.0.0.json)"
+      m0: "0x00 | str              | model_version"
+      m1: "0x08 | str              | capture_time (ISO)"
+      m2: "0x10 | Dict[str, Base]  | feature_baselines"
+      m3: "0x18 | Dict             | prediction_baseline"
+      m4: "0x20 | Dict             | metadata"
+      sz: "Total: ~2MB (25 features)"
+    }
+    feature_baseline -> model_baseline: "nested in feature_baselines"
+  }
+}
+row_serving: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  serving: {
+    direction: down
+    label: "SERVING PHASE"
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    load_baseline: {
+      label: "Load Baseline"
+      width: 280
+      code: |'python
+        baseline = BaselineManager.load_baseline(
+            model_version="v1.0.0"
+        )
+        # Returns FeatureBaseline for each
+        # tracked feature with sorted_samples
+      '|
+    }
+    live_request: {
+      label: "Live Request"
+      shape: oval
+      style.fill: "#FFE0B2"
+    }
+    sampler: {
+      label: "DriftDetectionSampler"
+      width: 300
+      code: |'python
+        if sampler.should_sample():
+            sampler.record_features({
+                "age": 34.5,
+                "income": 72000.0,
+                "session_len": 185.2
+            })
+      '|
+    }
+    reservoir: {
+      shape: sql_table
+      label: "FeatureSampleBuffer"
+      r0: "feature_name | str"
+      r1: "max_size     | int (5000)"
+      r2: "samples      | List[float]"
+      r3: "total_seen   | int"
+      sz: "Reservoir Sampling: O(1) add"
+    }
+    load_baseline -> live_request: "baseline ready"
+    live_request -> sampler: "1/1000 sampled"
+    sampler -> reservoir: "reservoir_add(value)"
+  }
+}
+row_detection: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  detection: {
+    direction: down
+    label: "DRIFT DETECTION"
+    style.fill: "#FCE4EC"
+    style.stroke: "#E91E63"
+    ks_test: {
+      label: "KS Test Comparison"
+      width: 320
+      code: |'python
+        # Compare CDFs
+        D = max|CDF_baseline(x) - CDF_live(x)|
+        # Compute p-value
+        n_eff = sqrt(n_base * n_live / (n_base + n_live))
+        p = ks_p_value(D, n_eff)
+        # Drift if p < 0.01
+        is_drifted = p < 0.01
+      '|
+    }
+    result: {
+      shape: sql_table
+      label: "KSTestResult"
+      k0: "feature_name   | str"
+      k1: "statistic (D)  | float [0,1]"
+      k2: "p_value        | float [0,1]"
+      k3: "is_significant | bool"
+      k4: "interpretation | str"
+      sz: "p < 0.01 = DRIFT DETECTED"
+    }
+    alert: {
+      label: "Alert?"
+      shape: diamond
+      style.fill: "#FFCDD2"
+    }
+    ks_test -> result: "test result"
+    result -> alert: "p_value"
+  }
+}
+row_training.compute_dist -> row_baseline.feature_baseline: "serialize" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+}
+row_baseline.model_baseline -> row_serving.load_baseline: "load at startup" {
+  style.stroke: "#2196F3"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+}
+row_serving.reservoir -> row_detection.ks_test: "get_samples()" {
+  style.stroke: "#FF9800"
+  style.stroke-width: 2
+}
+row_baseline.feature_baseline -> row_detection.ks_test: "baseline.sorted_samples" {
+  style.stroke: "#2196F3"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+}
+row_detection.alert -> row_serving.live_request: "trigger\nretrain?" {
+  style.stroke: "#E91E63"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+  style.animated: true
+}
+legend: {
+  near: bottom-center
+  style.fill: transparent
+  style.stroke: "#9E9E9E"
+  l1: "Training Flow" {
+    shape: text
+    style.font-color: "#4CAF50"
+  }
+  l2: "Baseline I/O" {
+    shape: text
+    style.font-color: "#2196F3"
+  }
+  l3: "Live Sampling" {
+    shape: text
+    style.font-color: "#FF9800"
+  }
+  l4: "Drift Alert" {
+    shape: text
+    style.font-color: "#E91E63"
+  }
+}

@@ -1,0 +1,209 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Default Stream Serialization Effect
+  ### CUDA Stream 0 Performance Bottleneck
+| {
+  near: top-center
+}
+
+# -----------------------------------------------------------------------------
+# 1. CORE SEQUENCE: The Logical Execution Flow
+# -----------------------------------------------------------------------------
+sequencediagram: {
+  shape: sequence_diagram
+  
+  host: Host (CPU) {
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+  }
+  stream0: Default Stream (0) {
+    style.fill: "#FFEBEE"
+    style.stroke: "#C62828"
+    style.stroke-dash: 3
+  }
+  gpu_engines: GPU Engines {
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+  }
+
+  phase1: H2D Transfer {
+    host -> stream0: cudaMemcpy(H2D)
+    stream0 -> gpu_engines: DMA Transfer (Copy Engine)
+    host <- gpu_engines: Sync/Return {style.stroke-dash: 3}
+    note: "CPU Blocked during transfer"
+  }
+
+  phase2: Kernel Execution {
+    host -> stream0: kernel<<<...>>>()
+    stream0 -> gpu_engines: SM Compute Execution
+    host <- gpu_engines: Sync/Return {style.stroke-dash: 3}
+    note: "CPU Blocked (Implicit Sync)"
+  }
+
+  phase3: D2H Transfer {
+    host -> stream0: cudaMemcpy(D2H)
+    stream0 -> gpu_engines: DMA Transfer (Copy Engine)
+    host <- gpu_engines: Sync/Return {style.stroke-dash: 3}
+    note: "CPU Blocked during transfer"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 2. TIMELINE VIEW: Visualizing Engine Utilization (Gantt Style)
+# -----------------------------------------------------------------------------
+timeline_view: {
+  label: "Engine Utilization Timeline (Serialized)"
+  
+  grid-rows: 3
+  grid-gap: 10
+  
+  headers: {
+    grid-columns: 4
+    grid-gap: 0
+    t0: "t0 (Start)"
+    t1: "t1"
+    t2: "t2"
+    t3: "t3 (End)"
+  }
+
+  copy_engine: {
+    label: "Copy Engine (DMA)"
+    grid-columns: 3
+    grid-gap: 0
+    
+    h2d: "H2D" {
+      style.fill: "#FF8F00"
+      width: 150
+    }
+    idle_compute: "IDLE (Waiting for SMs)" {
+      style.fill: "#EEEEEE"
+      style.stroke-dash: 2
+      width: 300
+    }
+    d2h: "D2H" {
+      style.fill: "#FF8F00"
+      width: 150
+    }
+  }
+
+  sm_engine: {
+    label: "SMs (Compute)"
+    grid-columns: 3
+    grid-gap: 0
+    
+    idle_h2d: "IDLE (Waiting for H2D)" {
+      style.fill: "#EEEEEE"
+      style.stroke-dash: 2
+      width: 150
+    }
+    kernel: "KERNEL" {
+      style.fill: "#4CAF50"
+      width: 300
+    }
+    idle_d2h: "IDLE" {
+      style.fill: "#EEEEEE"
+      style.stroke-dash: 2
+      width: 150
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 3. ANALYSIS & CODE
+# -----------------------------------------------------------------------------
+analysis_container: {
+  grid-columns: 2
+  
+  insight_box: {
+    label: |md
+      ### ⚠️ KEY INSIGHT: Serialization Bottleneck
+      Default Stream (Stream 0) enforces **IMPLICIT SYNCHRONIZATION**:
+      
+      - **Fully Blocking:** CPU thread stalls on every API call.
+      - **Zero Overlap:** Copy and Compute engines cannot run concurrently.
+      - **Resource Waste:** GPU SMs sit idle while data moves; Copy engines sit idle while kernel runs.
+      - **Performance:** Total latency is purely additive ($T_{total} = T_{h2d} + T_{kern} + T_{d2h}$).
+    |
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#C62828"
+      stroke-width: 3
+    }
+  }
+
+  code_example: |cpp
+    // ❌ BAD: Default stream (Stream 0)
+    // Results in fully serialized execution
+    
+    // 1. Blocks CPU until move finishes
+    cudaMemcpy(d_in, h_in, N, cudaMemcpyH2D);
+    
+    // 2. Blocks CPU until kernel finishes
+    myKernel<<<G, B>>>(d_in, d_out);
+    
+    // 3. Blocks CPU until move finishes
+    cudaMemcpy(h_out, d_out, N, cudaMemcpyD2H);
+  | {
+    label: "Serialized Pattern (C++)"
+    style.fill: "#263238"
+    style.font-color: "#ECEFF1"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 4. PERFORMANCE COMPARISON
+# -----------------------------------------------------------------------------
+perf_comparison: {
+  label: "Throughput Comparison"
+  direction: right
+
+  serialized: {
+    label: "Default Stream (Serialized)"
+    style.fill: "#FFCDD2"
+    
+    bar: {
+      grid-columns: 3
+      grid-gap: 2
+      h: "H2D" { style.fill: "#FF8F00"; width: 50 }
+      k: "Kernel" { style.fill: "#4CAF50"; width: 100 }
+      d: "D2H" { style.fill: "#FF8F00"; width: 50 }
+    }
+    caption: "Total Time: 1.0x"
+  }
+
+  concurrent: {
+    label: "Async Streams (Concurrent)"
+    style.fill: "#C8E6C9"
+    
+    note: |md
+      **Overlap Achieved:**
+      H2D(n+1) overlaps with
+      Kernel(n) and D2H(n-1)
+    |
+    
+    bar: {
+      grid-columns: 1
+      grid-gap: 2
+      stream1: { grid-columns: 3; h: "H"; k: "K"; d: "D"; style.fill: "#81C784" }
+      stream2: { grid-columns: 3; h: "H"; k: "K"; d: "D"; style.fill: "#A5D6A7" }
+    }
+    caption: "Total Time: ~0.4x"
+  }
+
+  serialized -> concurrent: "Potential 2.5x Speedup" {
+    style.stroke: "#2196F3"
+    style.bold: true
+  }
+}
+
+# Layout constraints
+sequencediagram -> timeline_view: "Timeline mapping"
+timeline_view -> analysis_container
+analysis_container -> perf_comparison

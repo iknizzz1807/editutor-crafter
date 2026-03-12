@@ -1,0 +1,356 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# -----------------------------------------------------------------------------
+# GLOBAL TITLE & METADATA
+# -----------------------------------------------------------------------------
+title: {
+  label: "Batch Formation Timeline\nM2 Request Batching Module"
+  shape: text
+  near: top-center
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# PHASE 1: ASYNCHRONOUS REQUEST ARRIVALS
+# -----------------------------------------------------------------------------
+phase1_container: "Phase 1: Request Arrivals" {
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1976D2"
+    stroke-dash: 4
+    stroke-width: 2
+  }
+
+  req_arrivals: {
+    shape: sequence_diagram
+    client_a: Client A
+    client_b: Client B
+    client_c: Client C
+    client_d: Client D
+    queue: asyncio.Queue
+
+    client_a -> queue: "BatchRequest(future_a, input_a)" {
+      style.stroke: "#4CAF50"
+    }
+    client_b -> queue: "BatchRequest(future_b, input_b)" {
+      style.stroke: "#4CAF50"
+    }
+    client_c -> queue: "BatchRequest(future_c, input_c)" {
+      style.stroke: "#4CAF50"
+    }
+    client_d -> queue: "BatchRequest(future_d, input_d)" {
+      style.stroke: "#4CAF50"
+    }
+  }
+
+  arrival_note: {
+    label: "Requests arrive asynchronously\nat random intervals [0ms - T]\nEach call creates a local Future object"
+    shape: text
+    style: {
+      font-size: 11
+      italic: true
+      font-color: "#1565C0"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# PHASE 2: INITIAL WAIT LOOP (LATENCY BUDGET)
+# -----------------------------------------------------------------------------
+phase2_container: "Phase 2: wait_for() Timeout" {
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#F57C00"
+    stroke-dash: 4
+    stroke-width: 2
+  }
+
+  wait_logic: ||python
+# _batch_loop() - Step 1: Sentinel Wait
+try:
+    # Block until at least one item is present
+    # This prevents busy-waiting on the CPU
+    first_req = await asyncio.wait_for(
+        queue.get(),
+        timeout=0.050  # 50ms batch window starts
+    )
+except asyncio.TimeoutError:
+    # No workload; yield to event loop
+    continue 
+  ||
+
+  timeout_timeline: {
+    shape: sequence_diagram
+    loop: _batch_loop
+    queue: Queue
+    loop -> queue: "wait_for(get(), 50ms)" {
+      style.stroke: "#F57C00"
+    }
+    queue -> loop: "returns first_req" {
+      style.stroke: "#F57C00"
+      style.stroke-dash: 3
+    }
+  }
+
+  timeout_note: {
+    label: "Batch window: 50ms (configurable)\nStarts the moment first_req is popped\nProtects against tail latency"
+    shape: text
+    style: {
+      font-size: 11
+      italic: true
+      font-color: "#E65100"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# PHASE 3: NON-BLOCKING QUEUE DRAIN
+# -----------------------------------------------------------------------------
+phase3_container: "Phase 3: get_nowait() Collection" {
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#388E3C"
+    stroke-dash: 4
+    stroke-width: 2
+  }
+
+  collect_logic: ||python
+# _batch_loop() - Step 2: Immediate Drain
+batch = [first_req]
+while len(batch) < max_batch_size:
+    try:
+        # Check if other items arrived during wait_for
+        req = queue.get_nowait()
+        batch.append(req)
+    except asyncio.QueueEmpty:
+        break  # Queue fully drained for this cycle
+  ||
+
+  collect_flow: {
+    shape: sequence_diagram
+    batcher: DynamicBatcher
+    queue: Queue
+    batcher -> queue: "get_nowait() [drain]" {
+      style.stroke: "#4CAF50"
+    }
+    queue -> batcher: "req_2" {
+      style.stroke: "#4CAF50"
+    }
+    batcher -> queue: "get_nowait()" {
+      style.stroke: "#4CAF50"
+    }
+    queue -> batcher: "req_3" {
+      style.stroke: "#4CAF50"
+    }
+    batcher -> queue: "get_nowait()" {
+      style.stroke: "#F44336"
+      style.stroke-dash: 3
+    }
+    queue -> batcher: "QueueEmpty" {
+      style.stroke: "#F44336"
+      style.stroke-dash: 3
+    }
+  }
+
+  collect_note: {
+    label: "Collects 1 to 32 requests\nZero additional waiting\nMaximizes GPU utilization per pass"
+    shape: text
+    style: {
+      font-size: 11
+      italic: true
+      font-color: "#1B5E20"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# PHASE 4: GPU INFERENCE EXECUTION
+# -----------------------------------------------------------------------------
+phase4_container: "Phase 4: Batch Inference" {
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#7B1FA2"
+    stroke-dash: 4
+    stroke-width: 2
+  }
+
+  inference_logic: ||python
+# _batch_loop() - Step 3: Compute
+# Concatenate inputs into batch dimension [B, S, D]
+batch_tensor, attention_mask = pad_and_stack(
+    [r.input_tensor for r in batch]
+)
+# Execute Model Forward Pass
+with torch.no_grad():
+    outputs = model(batch_tensor, attention_mask)
+  ||
+
+  inference_diagram: {
+    batch_tensor: "Batched Tensor\n[B, S, D]" {
+      style: {
+        fill: "#CE93D8"
+        stroke: "#7B1FA2"
+        stroke-width: 2
+      }
+    }
+    model_box: "GPU Model\nForward Pass" {
+      style: {
+        fill: "#AB47BC"
+        stroke: "#7B1FA2"
+        font-color: white
+        bold: true
+      }
+    }
+    outputs: "Outputs\n[B, num_classes]" {
+      style: {
+        fill: "#CE93D8"
+        stroke: "#7B1FA2"
+        stroke-width: 2
+      }
+    }
+    batch_tensor -> model_box -> outputs: "CUDA Stream"
+  }
+
+  inference_note: {
+    label: "Latency is O(1) w.r.t batch size\n~6ms fixed cost on RTX 4090\nPadding handled via Attention Mask"
+    shape: text
+    style: {
+      font-size: 11
+      italic: true
+      font-color: "#4A148C"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# PHASE 5: ASYNCHRONOUS RESULT DELIVERY
+# -----------------------------------------------------------------------------
+phase5_container: "Phase 5: Future Resolution" {
+  style: {
+    fill: "#FFEBEE"
+    stroke: "#C62828"
+    stroke-dash: 4
+    stroke-width: 2
+  }
+
+  delivery_logic: ||python
+# _batch_loop() - Step 4: De-multiplex
+for idx, req in enumerate(batch):
+    # This wakes up the specific client task
+    req.future.set_result(outputs[idx])
+  ||
+
+  delivery_flow: {
+    shape: sequence_diagram
+    batcher: DynamicBatcher
+    future_a: Future A
+    future_b: Future B
+    future_c: Future C
+    future_d: Future D
+    batcher -> future_a: "set_result(0)" {
+      style.stroke: "#2196F3"
+    }
+    batcher -> future_b: "set_result(1)" {
+      style.stroke: "#2196F3"
+    }
+    batcher -> future_c: "set_result(2)" {
+      style.stroke: "#2196F3"
+    }
+    batcher -> future_d: "set_result(3)" {
+      style.stroke: "#2196F3"
+    }
+  }
+
+  client_receive: {
+    shape: sequence_diagram
+    client_a: Client A
+    client_b: Client B
+    future_a: Future A
+    future_b: Future B
+    future_a -> client_a: "yield from await future_a" {
+      style.stroke: "#4CAF50"
+    }
+    future_b -> client_b: "yield from await future_b" {
+      style.stroke: "#4CAF50"
+    }
+  }
+
+  delivery_note: {
+    label: "Decoupled delivery logic\nClients resume immediately\nNo shared memory contention"
+    shape: text
+    style: {
+      font-size: 11
+      italic: true
+      font-color: "#B71C1C"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# INTER-PHASE CONNECTORS
+# -----------------------------------------------------------------------------
+phase1_container -> phase2_container -> phase3_container -> phase4_container -> phase5_container: {
+  style: {
+    stroke: "#333"
+    stroke-width: 4
+    animated: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# DOCUMENTATION AND STATS
+# -----------------------------------------------------------------------------
+timing_box: {
+  label: ||md
+### Performance Profile (T1)
+| Phase | Operation | Typical Duration |
+| :--- | :--- | :--- |
+| 1 | Async Queue Push | < 0.1ms |
+| 2 | Kernel Batch Wait | 0ms - 50ms |
+| 3 | Queue Drain (Non-blocking) | ~1.5ms |
+| 4 | CUDA Forward Pass (Float16) | ~6.2ms |
+| 5 | Future Callback Resolution | < 0.2ms |
+
+**P99 Target Latency**: 58ms
+**Throughput Gain**: ~14x vs Single-Request
+  ||
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#666"
+    font-size: 14
+    border-radius: 8
+  }
+  near: bottom-center
+}
+
+# Legend for implementation detail
+legend: "Architecture Key" {
+  style: {
+    fill: "#ECEFF1"
+    stroke: "#455A64"
+    border-radius: 10
+  }
+  near: bottom-left
+  async: "Async/Await Boundary" {
+    style.fill: "#E3F2FD"
+    style.stroke: "#1976D2"
+  }
+  block: "Blocking Loop Logic" {
+    style.fill: "#FFF3E0"
+    style.stroke: "#F57C00"
+  }
+  gpu: "Native/GPU Context" {
+    style.fill: "#F3E5F5"
+    style.stroke: "#7B1FA2"
+  }
+}

@@ -1,0 +1,254 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+title: |md
+  # Warp Aggregation with __match_any_sync
+  *Optimization: Reducing Atomic Operations via Intra-Warp Communication*
+| {
+  shape: text
+  style: {
+    font-size: 32
+    bold: true
+  }
+}
+
+# --- STYLING CLASSES ---
+classes: {
+  step_container: {
+    style: {
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  thread_active: {
+    style: {
+      fill: "#FF6B6B"
+      stroke: "#C0392B"
+      bold: true
+      font-color: white
+    }
+  }
+  thread_idle: {
+    style: {
+      fill: "#FDFEFE"
+      stroke: "#BDC3C7"
+      font-color: "#7F8C8D"
+    }
+  }
+  hardware_reg: {
+    shape: cylinder
+    style: {
+      fill: "#D5F5E3"
+      font: mono
+    }
+  }
+  code_block: {
+    shape: code
+    style: {
+      fill: "#2C3E50"
+      font-color: "#F1C40F"
+    }
+  }
+  annotation: {
+    shape: text
+    style: {
+      italic: true
+      font-size: 14
+    }
+  }
+}
+
+# --- STEP 1: INITIAL STATE ---
+step_1: "STEP 1: PER-THREAD BIN CALCULATION" {
+  class: step_container
+  style.fill: "#EBEDEF"
+
+  threads: "Warp Laning (Lane ID 0-7)" {
+    grid-columns: 8
+    t0: "T0\nbin: 5" { class: thread_idle }
+    t1: "T1\nbin: 5" { class: thread_idle }
+    t2: "T2\nbin: 12" { class: thread_idle }
+    t3: "T3\nbin: 5" { class: thread_idle }
+    t4: "T4\nbin: 8" { class: thread_idle }
+    t5: "T5\nbin: 5" { class: thread_idle }
+    t6: "T6\nbin: 5" { class: thread_idle }
+    t7: "T7\nbin: 3" { class: thread_idle }
+  }
+
+  desc: |md
+    **State**: Each thread has calculated its target histogram bin.
+    **Redundancy**: 5 threads (0,1,3,5,6) want to update `bin[5]`.
+  | { class: annotation }
+}
+
+# --- STEP 2: MATCH DETECTION ---
+step_2: "STEP 2: COALESCED MASK GENERATION" {
+  class: step_container
+  style.fill: "#FEF9E7"
+
+  threads: "Match Group (bin == 5)" {
+    grid-columns: 8
+    t0: "T0\nbin: 5" { class: thread_active }
+    t1: "T1\nbin: 5" { class: thread_active }
+    t2: "T2\nbin: 12" { class: thread_idle }
+    t3: "T3\nbin: 5" { class: thread_active }
+    t4: "T4\nbin: 8" { class: thread_idle }
+    t5: "T5\nbin: 5" { class: thread_active }
+    t6: "T6\nbin: 5" { class: thread_active }
+    t7: "T7\nbin: 3" { class: thread_idle }
+  }
+
+  intrinsic: "__match_any_sync(mask, 5)" {
+    class: hardware_reg
+    label: "same_bin_mask: 0x6B (0b01101011)"
+  }
+
+  desc: |md
+    **Mechanism**: Hardware compares registers across warp.
+    **Result**: All threads sharing `bin: 5` receive the same bitmask.
+  | { class: annotation }
+}
+
+# --- STEP 3: LEADER ELECTION ---
+step_3: "STEP 3: LEADER DETERMINATION" {
+  class: step_container
+  style.fill: "#EAF2F8"
+
+  election: "Election Logic" {
+    logic: "__ffs(0x6B) - 1" { class: code_block }
+    res: "Leader Lane: 0" {
+      style: {
+        fill: "#27AE60"
+        font-color: white
+        bold: true
+      }
+    }
+    logic -> res
+  }
+
+  roles: "Assigned Roles" {
+    leader: "T0 (LEADER)" {
+      shape: person
+      style.fill: "#27AE60"
+    }
+    peers: "T1, T3, T5, T6 (PEERS)" {
+      style.stroke-dash: 3
+    }
+  }
+
+  desc: |md
+    **ffs**: Find First Set bit selects the lowest index thread
+    to act as the aggregator for the group.
+  | { class: annotation }
+}
+
+# --- STEP 4: POPULATION COUNT ---
+step_4: "STEP 4: AGGREGATE COUNT" {
+  class: step_container
+  style.fill: "#E8F8F5"
+
+  popc: "BitCount Logic" {
+    logic: "__popc(0x6B)" { class: code_block }
+    res: "Count: 5" {
+      shape: diamond
+      style: {
+        fill: "#F39C12"
+        bold: true
+      }
+    }
+    logic -> res
+  }
+
+  desc: |md
+    **Aggregation**: The leader calculates how many threads
+    are in its group to perform a single weighted atomic.
+  | { class: annotation }
+}
+
+# --- STEP 5: ATOMIC EXECUTION ---
+step_5: "STEP 5: SINGLE ATOMIC ADD" {
+  class: step_container
+  style.fill: "#F4ECF7"
+
+  execution: {
+    op: "atomicAdd(&hist[5], 5)" {
+      class: code_block
+      style.stroke: "#8E44AD"
+      style.stroke-width: 4
+    }
+
+    mem: "Global/Shared Memory" {
+      shape: cylinder
+      bin5: "Bin 5 Value" {
+        style.fill: "#D2B4DE"
+      }
+    }
+
+    op -> mem.bin5: "Update (+5)" {
+      style: {
+        animated: true
+        stroke: "#8E44AD"
+        stroke-width: 3
+      }
+    }
+  }
+
+  desc: |md
+    **Optimization**: Instead of 5 atomics of +1,
+    we perform **1 atomic of +5**.
+  | { class: annotation }
+}
+
+# --- CONNECTIONS ---
+step_1 -> step_2: "Intra-warp\nBroadcast"
+step_2 -> step_3: "Bit Manipulation"
+step_3 -> step_4: "Parallel Reduction"
+step_4 -> step_5: "Divergent Branch\n(if lane == leader)"
+
+# --- SUMMARY BLOCK ---
+performance_analysis: "PERFORMANCE COMPARISON" {
+  near: bottom-center
+  grid-columns: 2
+
+  legacy: "Standard Approach (Naive)" {
+    style.fill: "#FDEDEC"
+    content: |md
+      - **Atomic Ops**: 5
+      - **Contention**: High (Serializing)
+      - **Throughput**: Low
+    |
+  }
+
+  optimized: "Match Aggregation (Warp-Coalesced)" {
+    style.fill: "#D4EFDF"
+    content: |md
+      - **Atomic Ops**: 1
+      - **Contention**: Minimal
+      - **Efficiency**: **5x Speedup** for this group
+    |
+  }
+
+  legacy <-> optimized: "32x Max Theoretical Gain" {
+    style: {
+      stroke: "#27AE60"
+      stroke-width: 5
+      bold: true
+    }
+  }
+}
+
+code_snippet: "CUDA Implementation" {
+  near: bottom-right
+  content: |cpp
+    unsigned mask = __activemask();
+    unsigned group = __match_any_sync(mask, bin);
+    int leader = __ffs(group) - 1;
+    if (lane_id == leader) {
+        atomicAdd(&hist[bin], __popc(group));
+    }
+  | { shape: code }
+}

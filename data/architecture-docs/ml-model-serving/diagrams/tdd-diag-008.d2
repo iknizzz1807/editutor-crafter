@@ -1,0 +1,240 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+title: {
+  shape: text
+  label: |md
+    # InputSchema and Validator Architecture
+    **Ref: TDD-DIAG-008** | **Level: Implementation Grade**
+    *Standardizes ML Model Inference Input Validation*
+  |
+  near: top-center
+  style: {
+    font-size: 22
+    bold: true
+    stroke-width: 0
+  }
+}
+
+# ------------------------------------------------------------------------------------------
+# 1. MEMORY LAYOUT REPRESENTATION (Serialized C-Struct Equivalent)
+# ------------------------------------------------------------------------------------------
+Memory_Layout: {
+  label: "Serialized InputSchema Binary Representation (sizeof=64B)"
+  
+  # Offsets and Sizes
+  offset_col: "Offset" {
+    shape: text
+    "0x00"
+    "0x04"
+    "0x0C"
+    "0x10"
+    "0x30"
+    "0x32"
+    "0x40"
+  }
+
+  layout: {
+    grid-columns: 1
+    grid-gap: 0
+
+    magic: "Header (Magic + Version)" {
+      style.fill: "#9b59b6" # Purple
+      width: 400
+      height: 40
+    }
+    name_ptr: "name_ptr (char*)" {
+      style.fill: "#f39c12" # Orange
+      width: 400
+      height: 40
+    }
+    rank: "rank (uint32)" {
+      style.fill: "#3498db" # Blue
+      width: 400
+      height: 40
+    }
+    dims: "dimensions (int64[4])" {
+      style.fill: "#3498db" # Blue
+      style.multiple: true
+      width: 400
+      height: 80
+    }
+    dtype: "dtype_id (uint16)" {
+      style.fill: "#2ecc71" # Green
+      width: 400
+      height: 40
+    }
+    padding: "Alignment Padding" {
+      style.fill: "#bdc3c7" # Gray
+      width: 400
+      height: 40
+    }
+    limit: "64B CACHE LINE BOUNDARY" {
+      style.stroke-dash: 5
+      style.stroke: red
+      style.fill: transparent
+      height: 20
+    }
+  }
+  
+  size_col: "Size" {
+    shape: text
+    "4B"
+    "8B"
+    "4B"
+    "32B"
+    "2B"
+    "14B"
+    "0B"
+  }
+
+  offset_col -> layout
+  layout -> size_col
+}
+
+# ------------------------------------------------------------------------------------------
+# 2. ARCHITECTURE / UML CLASSES
+# ------------------------------------------------------------------------------------------
+Classes: {
+  InputSchema: {
+    shape: class
+    label: "«dataclass»\nInputSchema"
+    
+    "+name": "str"
+    "+shape": "Tuple[Union[int, None], ...]"
+    "+dtype": "torch.dtype"
+    "+description": "str"
+    
+    "+validate(tensor: torch.Tensor)": "Tuple[bool, Optional[str]]"
+    "+to_json()": "str"
+  }
+
+  ModelInputValidator: {
+    shape: class
+    label: "ModelInputValidator"
+    
+    "-schemas": "Dict[str, InputSchema]"
+    
+    "+__init__(schemas: List[InputSchema])"
+    "+validate_request(data: dict)": "ValidationResult"
+    "-check_dtype(t: torch.Tensor, target: torch.dtype)": "bool"
+  }
+
+  ValidationResult: {
+    shape: class
+    label: "«result»\nValidationResult"
+    "+is_valid": "bool"
+    "+tensors": "Dict[str, torch.Tensor]"
+    "+error": "Optional[str]"
+  }
+}
+
+Classes.ModelInputValidator -> Classes.InputSchema: "Composition (1..*)" {
+  source-arrowhead: * {
+    shape: diamond
+    style.filled: true
+  }
+}
+
+# ------------------------------------------------------------------------------------------
+# 3. ALGORITHM STATE DIAGRAM (Internal Logic Flow)
+# ------------------------------------------------------------------------------------------
+Algorithm: {
+  label: "validate_request() Execution State"
+  
+  State_0: "1. Iterate Inputs" {
+    style.fill: "#f8f9fa"
+  }
+  
+  State_1: "2. Key Check" {
+    shape: diamond
+    label: "Exists in Schema?"
+  }
+  
+  State_2: "3. Cast Tensor" {
+    label: "val -> torch.as_tensor()"
+    style.stroke: red
+    style.stroke-width: 3
+  }
+  
+  State_3: "4. DType Verify" {
+    shape: diamond
+    label: "t.dtype == schema.dtype?"
+  }
+  
+  State_4: "5. Shape Verify" {
+    shape: diamond
+    label: "t.shape == schema.shape?"
+  }
+
+  Success: "RETURN SUCCESS" {
+    style.fill: "#d4edda"
+    style.bold: true
+  }
+
+  Failure: "RAISE InvalidInput" {
+    style.fill: "#f8d7da"
+    style.font-color: "#721c24"
+  }
+
+  State_0 -> State_1
+  State_1 -> State_2: "YES"
+  State_1 -> Failure: "NO (Missing Key)"
+  
+  State_2 -> State_3
+  State_3 -> State_4: "MATCH"
+  State_3 -> Failure: "MISMATCH (DType)"
+  
+  State_4 -> Success: "MATCH"
+  State_4 -> Failure: "MISMATCH (Shape)"
+}
+
+# ------------------------------------------------------------------------------------------
+# 4. SEQUENCE DIAGRAM (High Level Call Flow)
+# ------------------------------------------------------------------------------------------
+Sequence: {
+  shape: sequence_diagram
+  
+  App: Client Application
+  Validator: ModelInputValidator
+  Schema: InputSchema
+  
+  App -> Validator: validate_request(raw_json)
+  Validator -> Validator: parse_json()
+  
+  loop: For each input field
+    Validator -> Schema: validate(tensor)
+    Schema -> Schema: check_rank()
+    Schema -> Schema: check_dims()
+    Validator <- Schema: bool, err_msg
+  end
+
+  App <- Validator: ValidationResult {
+    style.stroke: green
+  }
+}
+
+# ------------------------------------------------------------------------------------------
+# 5. ANNOTATIONS & NOTES
+# ------------------------------------------------------------------------------------------
+Notes: {
+  shape: text
+  label: |md
+    ### Implementation Specifications
+    1. **Dynamic Dimensions**: `None` in the shape tuple (e.g., `(None, 3, 224, 224)`) allows for variable batch sizes.
+    2. **DType Strictness**: Conversion uses `torch.as_tensor`. If data cannot be safely cast, `RuntimeError` is wrapped.
+    3. **Alignment**: C-level structs for this schema must be `__attribute__((packed))` or aligned to 8-byte boundaries to avoid bus errors on ARM.
+  |
+}
+
+Notes.near: Memory_Layout
+
+# Global Connections for Layout
+Classes -> Algorithm: "Implements" {style.stroke-dash: 5}
+Algorithm -> Sequence: "Executes" {style.stroke-dash: 5}

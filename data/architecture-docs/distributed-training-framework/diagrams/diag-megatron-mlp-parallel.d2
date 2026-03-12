@@ -1,0 +1,238 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Megatron-LM Parallel MLP Block
+  **Efficient Tensor Model Parallelism (Column-Parallel → Row-Parallel)**
+  *Optimized for minimal synchronization overhead (1 All-Reduce per block)*
+|
+title.near: top-center
+
+# --- MAIN DATA FLOW ---
+
+row_input: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  input_x: {
+    label: "Input Tensor X\n[batch, seq, hidden]"
+    shape: rectangle
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+    style.stroke-width: 2
+    width: 200
+  }
+  
+  input_props: {
+    shape: sql_table
+    label: "State: Replicated"
+    r1: "Locally available on all GPU ranks"
+    r2: "Sync required before this block: NONE"
+  }
+}
+
+row_col_para: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  col_linear: {
+    label: "f: Column-Parallel Linear\n(Up-Projection)"
+    shape: rectangle
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    style.stroke-width: 2
+    width: 200
+  }
+
+  col_sharding: {
+    shape: sql_table
+    label: "Weight: W_up [h, 4h]"
+    shard: "GPU i shard: [h, 4h/TP]"
+    output: "Local Z_i: [b, s, 4h/TP]"
+    comm: "COMM: NONE (Independent)"
+  }
+  
+  col_note: "Note: Each GPU computes a distinct set of output features." {
+    style.font-size: 11
+    style.italic: true
+  }
+}
+
+row_gelu: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  activation: {
+    label: "GeLU\n(Non-linear)"
+    shape: rectangle
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    style.stroke-width: 2
+    width: 200
+  }
+
+  act_props: {
+    shape: sql_table
+    label: "Element-wise Operation"
+    r1: "Applied to sharded hidden states"
+    r2: "Maintains partition boundary"
+    total: "Communication overhead: 0"
+  }
+}
+
+row_row_para: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  row_linear: {
+    label: "g: Row-Parallel Linear\n(Down-Projection)"
+    shape: rectangle
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    style.stroke-width: 2
+    width: 200
+  }
+
+  row_sharding: {
+    shape: sql_table
+    label: "Weight: W_down [4h, h]"
+    shard: "GPU i shard: [4h/TP, h]"
+    output: "Partial Y_i: [b, s, h]"
+    comm: "COMM: ALL-REDUCE (Sum)"
+  }
+}
+
+row_reduce: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  all_reduce: {
+    label: "ALL-REDUCE\n(Collective)"
+    shape: diamond
+    style.fill: "#F3E5F5"
+    style.stroke: "#9C27B0"
+    style.stroke-width: 3
+    width: 200
+    height: 80
+  }
+
+  comm_detail: {
+    shape: sql_table
+    label: "Sync Logic: Y = Σ Y_i"
+    cost: "Volume: 2 * (TP-1)/TP * size(Y)"
+    latency: "O(log TP) steps (Ring)"
+    total: "Replicates Y across all GPUs"
+  }
+}
+
+row_output: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  output_y: {
+    label: "Output Tensor Y\n[batch, seq, hidden]"
+    shape: rectangle
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+    style.stroke-width: 2
+    width: 200
+  }
+
+  final_props: {
+    shape: sql_table
+    label: "State: Replicated"
+    r1: "Ready for Residual Connection"
+    r2: "Ready for LayerNorm"
+  }
+}
+
+# --- CONNECTIONS ---
+
+row_input.input_x -> row_col_para.col_linear: "X [b,s,h]"
+row_col_para.col_linear -> row_gelu.activation: "Z_i [b,s,4h/TP]"
+row_gelu.activation -> row_row_para.row_linear: "GeLU(Z_i)"
+row_row_para.row_linear -> row_reduce.all_reduce: "Partial Y_i"
+row_reduce.all_reduce -> row_output.output_y: "Summed Y"
+
+# --- PARTITION VIEW ---
+
+partition_view: {
+  label: "Distributed Memory Layout (TP=4)"
+  style.stroke-dash: 3
+  style.fill: "#FAFAFA"
+  
+  gpu_grid: {
+    grid-columns: 4
+    grid-gap: 20
+    
+    gpu0: "GPU Rank 0" {
+      up: "W_up[:, 0:H]"
+      down: "W_down[0:H, :]"
+      style.fill: "#F1F8E9"
+    }
+    gpu1: "GPU Rank 1" {
+      up: "W_up[:, H:2H]"
+      down: "W_down[H:2H, :]"
+      style.fill: "#F1F8E9"
+    }
+    gpu2: "GPU Rank 2" {
+      up: "W_up[:, 2H:3H]"
+      down: "W_down[2H:3H, :]"
+      style.fill: "#F1F8E9"
+    }
+    gpu3: "GPU Rank 3" {
+      up: "W_up[:, 3H:4H]"
+      down: "W_down[3H:4H, :]"
+      style.fill: "#F1F8E9"
+    }
+  }
+}
+
+# --- DOCUMENTATION NODES ---
+
+legend: {
+  label: "Legend & Symbols"
+  shape: rectangle
+  direction: right
+  style.fill: "#F5F5F5"
+  
+  item1: {
+    label: "Local Path"
+    style.stroke: "#4CAF50"
+    style.stroke-width: 2
+  }
+  item2: {
+    label: "Comm Path"
+    style.stroke: "#9C27B0"
+    style.stroke-dash: 5
+  }
+}
+legend.near: bottom-right
+
+implementation_notes: |md
+  ### Mathematical Equivalence
+  Standard MLP: $Y = \text{GeLU}(XW_1 + b_1)W_2 + b_2$
+  
+  **Parallel Split:**
+  1. $W_1 = [W_{1,a}, W_{1,b}]$ (Column Split)
+  2. $W_2 = [W_{2,a}; W_{2,b}]$ (Row Split)
+  3. $Y = \text{AllReduce}(\text{GeLU}(XW_{1,i})W_{2,i})$
+  
+  **Complexity:**
+  - Memory: $1/TP$ per GPU
+  - Compute: $1/TP$ per GPU
+  - Communication: Only 1 sync point
+|
+implementation_notes.near: bottom-left
+implementation_notes.width: 350

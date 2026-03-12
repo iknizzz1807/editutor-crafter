@@ -1,0 +1,207 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Hessian Diagonal Approximation
+  ## Why GPTQ Uses Diagonal for Practical Quantization
+| {near: top-center}
+row_compare: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  full_hessian: {
+    label: "Full Hessian Matrix"
+    direction: down
+    full_matrix: {
+      shape: sql_table
+      label: "H ∈ ℝⁿˣⁿ (Full)"
+      f0: "H₁₁ | H₁₂ | H₁₃ | ... | H₁ₙ"
+      f1: "H₂₁ | H₂₂ | H₂₃ | ... | H₂ₙ"
+      f2: "H₃₁ | H₃₂ | H₃₃ | ... | H₃ₙ"
+      f3: "...  | ...  | ...  | ... | ..."
+      f4: "Hₙ₁ | Hₙ₂ | Hₙ₃ | ... | Hₙₙ"
+      note: "Memory: O(n²)"
+    }
+    full_memory: {
+      label: |md
+        **Memory Cost**
+        - For n=4096: 16M × 16M matrix
+        - 1 TB+ memory required
+        - Computationally infeasible
+      |
+    }
+    full_style: {
+      style.fill: "#FFE4E1"
+      style.stroke: "#CD5C5C"
+    }
+  }
+  full_hessian.full_matrix.style.fill: "#FFE4E1"
+  full_hessian.full_matrix.style.stroke: "#CD5C5C"
+  arrow: "→" {
+    shape: text
+    style.font-size: 40
+    style.bold: true
+  }
+  diag_hessian: {
+    label: "Diagonal Approximation"
+    direction: down
+    diag_matrix: {
+      shape: sql_table
+      label: "H_diag ∈ ℝⁿ (Diagonal)"
+      f0: "H₁₁ |  0  |  0  | ... |  0"
+      f1: " 0  | H₂₂ |  0  | ... |  0"
+      f2: " 0  |  0  | H₃₃ | ... |  0"
+      f3: "...  | ...  | ...  | ... | ..."
+      f4: " 0  |  0  |  0  | ... | Hₙₙ"
+      note: "Memory: O(n)"
+    }
+    diag_memory: {
+      label: |md
+        **Memory Cost**
+        - For n=4096: 4096 values
+        - 16 KB memory required
+        - Computationally trivial
+      |
+    }
+    diag_style: {
+      style.fill: "#E6FFE6"
+      style.stroke: "#228B22"
+    }
+  }
+  diag_hessian.diag_matrix.style.fill: "#E6FFE6"
+  diag_hessian.diag_matrix.style.stroke: "#228B22"
+}
+row_formula: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  formula_box: {
+    label: "Diagonal Computation from Activations"
+    width: 500
+    formula: |md
+      ## The Formula
+      For a Linear layer **Y = XWᵀ**, the Hessian of the output error:
+      
+      H_diag[i] = 2 × Σⱼ X[j,i]²
+      
+      Where:
+      - **X[j,i]** = activation at position j, feature i
+      - **H_diag[i]** = sensitivity of weight column i
+      This is the **Fisher Information Matrix** diagonal for squared error loss.
+    |
+    interpretation: {
+      label: "Interpretation"
+      code: |'python
+# Hessian diagonal: sum of squared inputs per column
+def compute_hessian_diagonal(X):
+    # X: [batch*seq, in_features]
+    # H_diag[i] = 2 * sum(X[:, i]^2)
+    return 2 * (X ** 2).sum(dim=0)
+# Why it works:
+# - High H_diag[i] → weight i affects output strongly
+# - Low H_diag[i]  → weight i has minimal impact
+      '|
+      width: 420
+    }
+  }
+}
+row_why: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  why_box: {
+    label: "Why Diagonal Approximation Works"
+    preserves: {
+      label: "✓ What Diagonal Preserves"
+      code: |'python
+# Per-weight sensitivity
+# Knows HOW MUCH each weight matters
+# For compensation formula:
+# delta_w[i] = -error[i] / H_diag[i]
+# Large H_diag[i] → small adjustment needed
+# Small H_diag[i] → large adjustment allowed
+      '|
+      width: 380
+    }
+    preserves.style.fill: "#E6FFE6"
+    preserves.style.stroke: "#228B22"
+    loses: {
+      label: "✗ What Diagonal Loses"
+      code: |'python
+# Weight-weight interactions
+# Does NOT know how weights correlate
+# Off-diagonal H[i,j] tells us:
+# "If we change weight i, how much
+#  should we adjust weight j?"
+# Lost in diagonal approximation
+      '|
+      width: 380
+    }
+    loses.style.fill: "#FFE4E1"
+    loses.style.stroke: "#CD5C5C"
+  }
+}
+row_recovery: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  recovery_box: {
+    label: "GPTQ's Recovery Mechanism"
+    width: 800
+    recovery: {
+      label: "How GPTQ Recovers Interaction Information"
+      code: |'python
+# GPTQ processes columns SEQUENTIALLY
+# This reconstructs interaction effects:
+for i in range(n):
+    # 1. Quantize column i
+    Q[:, i] = quantize(W[:, i])
+    # 2. Compute error
+    error = (W[:, i] - Q[:, i] * scale)
+    # 3. COMPENSATE remaining columns
+    # This is where interaction is recovered!
+    W[:, i+1:] -= error @ H_inv[i, i+1:] / H_inv[i, i]
+# The Cholesky factor H_inv encodes interactions
+# through the recursive update process
+      '|
+      width: 780
+    }
+    note: {
+      label: |md
+        **Key Insight**: The diagonal approximation is just for the INITIAL inverse.
+        GPTQ uses **Cholesky decomposition** of the full Hessian for accurate
+        compensation updates, not just the diagonal.
+      |
+    }
+  }
+}
+row_summary: {
+  label: "Summary: Diagonal Approximation Tradeoff"
+  summary_table: {
+    shape: sql_table
+    label: "Comparison"
+    aspect: "Full Hessian | Diagonal Approx"
+    memory: "O(n²) - 1 TB+ | O(n) - 16 KB"
+    compute: "O(n³) inversion | O(n) element-wise"
+    accuracy: "Perfect | Good for GPTQ"
+    usage: "Infeasible | Production standard"
+  }
+}
+legend: {
+  near: bottom-right
+  label: "Legend"
+  red: {
+    label: "Red = Infeasible / Lost Information"
+    style.fill: "#FFE4E1"
+    style.stroke: "#CD5C5C"
+  }
+  green: {
+    label: "Green = Feasible / Preserved Information"
+    style.fill: "#E6FFE6"
+    style.stroke: "#228B22"
+  }
+}

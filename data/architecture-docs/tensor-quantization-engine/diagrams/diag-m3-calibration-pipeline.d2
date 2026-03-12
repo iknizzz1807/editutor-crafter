@@ -1,0 +1,197 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Calibration Pipeline Architecture
+  Post-Training Static Quantization
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step1: {
+    direction: down
+    label: "Stage 1"
+    fp32_model: {
+      label: "FP32 Model\n(Pre-trained)"
+      style.fill: "#E8F4FD"
+      style.stroke: "#2E86AB"
+      weights: {
+        shape: class
+        label: "Weight Tensor"
+        +shape: "[out, in]"
+        +dtype: "float32"
+        +size: "4 bytes/param"
+      }
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step2: {
+    direction: down
+    label: "Stage 2"
+    hook_reg: {
+      label: "Register Hooks"
+      style.fill: "#FFF3E0"
+      style.stroke: "#E65100"
+      code: |'python
+        def make_hook(name):
+          def hook(module, inp, out):
+              stats[name].update(inp[0])
+              stats[name].update(out)
+          return hook
+        for name, layer in model.named_modules():
+          if isinstance(layer, nn.Linear):
+              layer.register_forward_hook(
+                  make_hook(name))
+      '|
+      width: 380
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step3: {
+    direction: down
+    label: "Stage 3"
+    calibration_run: {
+      label: "Calibration Pass"
+      style.fill: "#E8F5E9"
+      style.stroke: "#2E7D32"
+      calib_data: {
+        label: "Calibration Dataset"
+        shape: cylinder
+        style.fill: "#C8E6C9"
+      }
+      forward: {
+        label: "Forward Pass\n(No Gradients)"
+        style.fill: "#A5D6A7"
+      }
+      calib_data -> forward: "batch"
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step4: {
+    direction: down
+    label: "Stage 4"
+    stats_collector: {
+      label: "Collect Statistics"
+      style.fill: "#F3E5F5"
+      style.stroke: "#7B1FA2"
+      stats_table: {
+        shape: sql_table
+        label: "CalibrationStats"
+        layer: "string | layer name"
+        min_val: "float | min activation"
+        max_val: "float | max activation"
+        histogram: "tensor | value bins"
+        bin_edges: "tensor | bin boundaries"
+        total_samples: "int | batch count"
+      }
+      update_code: |'python
+        def update(self, tensor):
+            flat = tensor.flatten().float()
+            self.min_val = min(self.min_val, 
+                               flat.min().item())
+            self.max_val = max(self.max_val, 
+                               flat.max().item())
+            self._update_histogram(flat)
+      '|
+      width: 360
+    }
+  }
+}
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step5: {
+    direction: down
+    label: "Stage 5"
+    scale_compute: {
+      label: "Compute Scales"
+      style.fill: "#FFEBEE"
+      style.stroke: "#C62828"
+      minmax: {
+        label: "Min/Max Method"
+        style.fill: "#FFCDD2"
+        code: |'python
+          scale = (r_max - r_min) / (q_max - q_min)
+          zp = round(q_min - r_min / scale)
+        '|
+        width: 300
+      }
+      percentile: {
+        label: "Percentile Method"
+        style.fill: "#FFCDD2"
+        code: |'python
+          r_min = get_percentile(0.05)  # 99.9%
+          r_max = get_percentile(99.95)
+          scale = (r_max - r_min) / 255
+        '|
+        width: 300
+      }
+      minmax -- percentile: "or" {
+        style.stroke-dash: 4
+      }
+    }
+  }
+}
+row6: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step6: {
+    direction: down
+    label: "Stage 6"
+    store_params: {
+      label: "Store Parameters"
+      style.fill: "#E0F7FA"
+      style.stroke: "#00838F"
+      params_table: {
+        shape: sql_table
+        label: "CalibrationResult"
+        layer_name: "string | layer ID"
+        scale: "float | quant scale"
+        zero_point: "int | zp offset"
+        r_min: "float | calibrated min"
+        r_max: "float | calibrated max"
+        method: "string | minmax/percentile"
+      }
+      output: {
+        label: "calibration.json"
+        shape: document
+        style.fill: "#B2EBF2"
+      }
+      params_table -> output: "serialize"
+    }
+  }
+}
+step1.fp32_model -> step2.hook_reg: "model\ninstance"
+step2.hook_reg -> step3.calibration_run: "hooked\nmodel"
+step3.calibration_run -> step4.stats_collector: "activations\nper layer"
+step4.stats_collector -> step5.scale_compute: "min/max\nhistogram"
+step5.scale_compute -> step6.store_params: "scale\nzero_point"
+legend: {
+  near: bottom-right
+  label: "Data Types"
+  tensor: "Tensor | Activation values"
+  stats: "Stats | CalibrationStats object"
+  params: "Params | scale + zero_point"
+  tensor.style.fill: "#E8F4FD"
+  stats.style.fill: "#F3E5F5"
+  params.style.fill: "#E0F7FA"
+}

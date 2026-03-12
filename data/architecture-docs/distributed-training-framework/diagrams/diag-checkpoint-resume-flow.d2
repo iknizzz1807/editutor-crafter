@@ -1,0 +1,317 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Checkpoint Resume Flow
+  **Distributed State Recovery Protocol**
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step1: {
+    direction: down
+    label: "Step 1: Coordinator Broadcast"
+    width: 280
+    coordinator: {
+      shape: diamond
+      label: "Main Rank\n(dp_rank=0)"
+      style.fill: "#E8F5E9"
+      style.stroke: "#4CAF50"
+    }
+    broadcast: {
+      label: "Broadcast checkpoint path"
+      code: |'c
+        path = "s3://bucket/step_5000/"
+        dist.broadcast(path, src=0)
+      '|
+      width: 260
+    }
+    all_ranks: {
+      label: "All DP Ranks"
+      shape: rectangle
+      style.fill: "#E3F2FD"
+      style.stroke: "#2196F3"
+      width: 200
+    }
+    coordinator -> broadcast
+    broadcast -> all_ranks: "path string"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step2: {
+    direction: down
+    label: "Step 2: Load RNG State (CRITICAL ORDER)"
+    width: 320
+    warning: {
+      label: "⚠️ RNG order MUST match save order"
+      shape: callout
+      style.fill: "#FFF3E0"
+      style.stroke: "#FF9800"
+    }
+    rng_sequence: {
+      direction: down
+      label: "RNG Restoration Sequence"
+      rng_torch: {
+        label: "1. PyTorch CPU RNG"
+        code: |'c
+          torch.set_rng_state(
+            ckpt['rng']['torch']
+          )
+        '|
+        width: 280
+      }
+      rng_cuda: {
+        label: "2. CUDA RNG (per-device)"
+        code: |'c
+          for i, state in enumerate(
+            ckpt['rng']['cuda']
+          ):
+            torch.cuda.set_rng_state(
+              state, i
+            )
+        '|
+        width: 280
+      }
+      rng_numpy: {
+        label: "3. NumPy RNG"
+        code: |'c
+          np.random.set_state(
+            ckpt['rng']['numpy']
+          )
+        '|
+        width: 280
+      }
+      rng_torch -> rng_cuda -> rng_numpy
+    }
+    warning -> rng_sequence
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step3: {
+    direction: down
+    label: "Step 3: Load Sharded Parameters"
+    width: 340
+    param_desc: |md
+      Each rank loads ONLY its owned shard.
+      ZeRO-3: each DP rank owns param partition
+      TP: each GPU owns weight columns/rows
+      PP: each stage owns layer subset
+    | {shape: rectangle}
+    shard_loader: {
+      direction: down
+      label: "Per-Rank Shard Loading"
+      rank0: {
+        label: "Rank 0"
+        code: |'c
+          # Load shard 0
+          shard = torch.load(
+            "rank_0.pt"
+          )
+          model.load_shard(shard)
+        '|
+        width: 140
+        style.fill: "#E8F5E9"
+      }
+      rank1: {
+        label: "Rank 1"
+        code: |'c
+          # Load shard 1
+          shard = torch.load(
+            "rank_1.pt"
+          )
+          model.load_shard(shard)
+        '|
+        width: 140
+        style.fill: "#E3F2FD"
+      }
+      rankn: {
+        label: "Rank N-1"
+        code: |'c
+          # Load shard N-1
+          shard = torch.load(
+            "rank_N.pt"
+          )
+          model.load_shard(shard)
+        '|
+        width: 140
+        style.fill: "#F3E5F5"
+      }
+    }
+    barrier1: {
+      label: "dist.barrier()"
+      shape: rectangle
+      style.fill: "#FFEBEE"
+      style.stroke: "#F44336"
+    }
+    param_desc -> shard_loader
+    rank0 -> barrier1
+    rank1 -> barrier1
+    rankn -> barrier1
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step4: {
+    direction: down
+    label: "Step 4: Load Optimizer States"
+    width: 300
+    opt_desc: {
+      label: "ZeRO Sharded Optimizer States"
+      shape: sql_table
+      f0: "0x00 | fp32 | momentum (m)"
+      f1: "0x04 | fp32 | variance (v)"
+      f2: "0x08 | int64 | step_count"
+      note: "Only for owned param partition"
+    }
+    opt_loader: {
+      label: "Optimizer State Load"
+      code: |'c
+        # Adam states: m, v per param
+        for param_idx, state in 
+            ckpt['optimizer'].items():
+          opt.state[param_idx] = {
+            'm': state['m'].cuda(),
+            'v': state['v'].cuda(),
+            'step': state['step']
+          }
+      '|
+      width: 280
+    }
+    opt_desc -> opt_loader
+  }
+}
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step5: {
+    direction: down
+    label: "Step 5: Restore Pipeline Schedule State"
+    width: 320
+    pp_state: {
+      label: "Pipeline State to Restore"
+      shape: sql_table
+      f0: "int | current_micro_batch_id"
+      f1: "int | forward_mb_in_flight"
+      f2: "int | backward_mb_pending"
+      f3: "list | activation_buffers"
+    }
+    pp_restore: {
+      label: "Pipeline State Restoration"
+      code: |'c
+        # Restore 1F1B schedule state
+        schedule.forward_idx = 
+          ckpt['schedule']['forward_idx']
+        schedule.backward_idx = 
+          ckpt['schedule']['backward_idx']
+        schedule.pending_backward = 
+          ckpt['schedule']['pending']
+      '|
+      width: 280
+    }
+    pp_state -> pp_restore
+  }
+}
+row6: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step6: {
+    direction: down
+    label: "Step 6: Resume Training"
+    width: 300
+    final_barrier: {
+      label: "Final Synchronization"
+      code: |'c
+        // All ranks must reach here
+        // before any starts training
+        dist.barrier()
+      '|
+      width: 260
+    }
+    resume: {
+      label: "Resume from Correct Iteration"
+      code: |'c
+        step_count = ckpt['step']  // e.g. 5000
+        epoch = ckpt['epoch']
+        // Adjust sampler for data position
+        sampler.set_epoch(epoch)
+        dataloader.skip(step_count)
+        // Resume training loop
+        while step_count < target:
+          train_step()
+      '|
+      width: 280
+    }
+    success: {
+      label: "✓ Training Resumed"
+      shape: oval
+      style.fill: "#E8F5E9"
+      style.stroke: "#4CAF50"
+    }
+    final_barrier -> resume -> success
+  }
+}
+row1 -> row2: "Step 1 → 2"
+row2 -> row3: "Step 2 → 3"
+row3 -> row4: "Step 3 → 4"
+row4 -> row5: "Step 4 → 5"
+row5 -> row6: "Step 5 → 6"
+legend: {
+  near: bottom-right
+  label: "Legend"
+  shape: rectangle
+  style.fill: "#FAFAFA"
+  style.stroke: "#E0E0E0"
+  critical: {
+    label: "Critical: Must match save order"
+    shape: rectangle
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+  }
+  parallel: {
+    label: "Parallel: Each rank independent"
+    shape: rectangle
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+  }
+  sync: {
+    label: "Sync Point: dist.barrier()"
+    shape: rectangle
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+  }
+}
+errors: {
+  near: bottom-center
+  label: "Common Resume Errors"
+  shape: rectangle
+  style.fill: "#FFEBEE"
+  style.stroke: "#F44336"
+  width: 400
+  e1: |md
+    **RNG order mismatch** → Training diverges after resume
+  |
+  e2: |md
+    **Shard index wrong** → Parameter corruption, NaN gradients
+  |
+  e3: |md
+    **Missing barrier** → Race condition, deadlock
+  |
+  e4: |md
+    **Config mismatch** → Shape errors, cannot load state
+  |
+}

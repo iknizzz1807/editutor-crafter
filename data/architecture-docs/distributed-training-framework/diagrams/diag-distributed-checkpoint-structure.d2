@@ -1,0 +1,300 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    param: "#4A90D9"
+    optimizer: "#7B68EE"
+    rng: "#50C878"
+    schedule: "#FFB347"
+    meta: "#B0B0B0"
+  }
+}
+
+title: Distributed Checkpoint Structure {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  
+  components: {
+    direction: down
+    label: "Checkpoint Components (per-rank state)"
+    
+    params: {
+      shape: sql_table
+      label: "Model Parameters"
+      sharding: "Sharded across TP x PP"
+      f1: "0x00 | Tensor | layer.0.weight"
+      f2: "0x08 | Tensor | layer.0.bias"
+      f3: "0x10 | Tensor | layer.1.weight"
+      f4: "0x18 | ...    | etc." 
+      sz: "Size: Variable by TP rank"
+      style.fill: ${colors.param}
+    }
+    
+    optimizer: {
+      shape: sql_table
+      label: "Optimizer States"
+      sharding: "Sharded across DP by ZeRO"
+      f1: "0x00 | Tensor | momentum (fp32)"
+      f2: "0x08 | Tensor | variance (fp32)"
+      f3: "0x10 | int    | step_count"
+      note: "ZeRO-3: only owned params"
+      style.fill: ${colors.optimizer}
+    }
+    
+    rng: {
+      shape: sql_table
+      label: "RNG State"
+      type: "Per-rank unique"
+      f1: "torch.get_rng_state()"
+      f2: "cuda.get_rng_state_all()"
+      f3: "numpy.random.get_state()"
+      style.fill: ${colors.rng}
+    }
+    
+    schedule: {
+      shape: sql_table
+      label: "Training State"
+      f1: "0x00 | int   | global_step"
+      f2: "0x04 | int   | epoch"
+      f3: "0x08 | float | lr_scheduler"
+      f4: "0x0C | int   | micro_batch"
+      style.fill: ${colors.schedule}
+    }
+    
+    params -> optimizer: "Required for update"
+    optimizer -> rng: "Reproducibility path"
+    rng -> schedule: "Resume exact state"
+  }
+  
+  layout: {
+    direction: down
+    label: "3D Parallel Layout"
+    grid: {
+      grid-rows: 2
+      grid-columns: 4
+      grid-gap: 0
+      r0_tp0: "Rank 0\nTP=0, PP=0" {
+        style.fill: "#E8F4FD"
+      }
+      r0_tp1: "Rank 1\nTP=1, PP=0" {
+        style.fill: "#D0E8FA"
+      }
+      r0_tp2: "Rank 2\nTP=2, PP=0" {
+        style.fill: "#E8F4FD"
+      }
+      r0_tp3: "Rank 3\nTP=3, PP=0" {
+        style.fill: "#D0E8FA"
+      }
+      r1_tp0: "Rank 4\nTP=0, PP=1" {
+        style.fill: "#FDF4E8"
+      }
+      r1_tp1: "Rank 5\nTP=1, PP=1" {
+        style.fill: "#FAEBD0"
+      }
+      r1_tp2: "Rank 6\nTP=2, PP=1" {
+        style.fill: "#FDF4E8"
+      }
+      r1_tp3: "Rank 7\nTP=3, PP=1" {
+        style.fill: "#FAEBD0"
+      }
+    }
+    note: {
+      label: "TP=4, PP=2, DP=1 Config"
+      width: 200
+      desc: |md
+        Each rank saves independently.
+        Recovery requires ALL 
+        rank checkpoints.
+      |
+    }
+    grid -> note
+  }
+}
+
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  
+  sharded: {
+    direction: down
+    label: "Strategy A: Sharded Checkpoint"
+    shard_files: {
+      direction: right
+      f0: |'md
+        step_1000/
+        ├── rank_0.pt
+        ├── rank_1.pt
+        ├── rank_2.pt
+        └── rank_N.pt
+      '| {
+        shape: code
+        width: 180
+      }
+      metadata: |'md
+        metadata.json
+        {
+          "step": 1000,
+          "valid": true,
+          "num_ranks": 8
+        }
+      '| {
+        shape: code
+        width: 200
+      }
+    }
+    sharded_pros: {
+      label: "Trade-offs"
+      width: 350
+      code: |'md
+        ✓ Fast save (parallel I/O)
+        ✓ Fast local recovery
+        ✗ Many files to manage
+        ✗ All ranks must complete
+      '|
+    }
+    shard_files -> sharded_pros
+  }
+  
+  consolidated: {
+    direction: down
+    label: "Strategy B: Consolidated Checkpoint"
+    consol_files: {
+      direction: right
+      single: |'md
+        step_1000/
+        └── consolidated.pt
+            (all in one file)
+      '| {
+        shape: code
+        width: 200
+      }
+      metadata2: "metadata.json" {
+        shape: code
+        width: 120
+      }
+    }
+    consol_pros: {
+      label: "Trade-offs"
+      width: 350
+      code: |'md
+        ✓ Single file (easy to manage)
+        ✓ Can resume with different parallelism
+        ✗ Slow save (gather + serialize)
+        ✗ Memory spike on main rank
+      '|
+    }
+    consol_files -> consol_pros
+  }
+  
+  sharded -> consolidated: "Consolidate (Archival)" {
+    style.stroke-dash: 3
+  }
+}
+
+row3: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  
+  consensus: {
+    direction: down
+    label: "Checkpoint Consensus Protocol"
+    phase1: {
+      label: "Phase 1: Propose"
+      code: |'c
+        // Main rank broadcasts step
+        broadcast(&step, src=0);
+      '|
+      width: 280
+    }
+    phase2: {
+      label: "Phase 2: Acknowledge"
+      code: |'c
+        // All ranks confirm readiness
+        all_gather(&ready, group=dp_group);
+        if (!all_ready) abort();
+      '|
+      width: 280
+    }
+    phase3: {
+      label: "Phase 3: Save Local"
+      code: |'c
+        // Each rank saves its shard
+        save_to_local_ssd(state);
+        // Async upload to S3/GCS
+        upload_background(state);
+      '|
+      width: 280
+    }
+    phase4: {
+      label: "Phase 4: Confirm"
+      code: |'c
+        // All ranks report completion
+        all_gather(&completed, group);
+        if (all_completed) {
+          main_rank.mark_valid(step);
+        }
+      '|
+      width: 280
+    }
+    phase1 -> phase2 -> phase3 -> phase4
+  }
+  
+  recovery: {
+    direction: down
+    label: "Recovery Hierarchy"
+    fast: {
+      label: "Fast Path (local SSD)"
+      code: |'md
+        1. Check local cache
+        2. Load from /tmp/cache/
+        3. < 10s for 70B model
+      '|
+      width: 200
+      style.fill: "#90EE90"
+    }
+    slow: {
+      label: "Slow Path (remote)"
+      code: |'md
+        1. Fetch from S3/GCS
+        2. Download to local SSD
+        3. ~2-5 min for 70B model
+      '|
+      width: 200
+      style.fill: "#FFD700"
+    }
+    fast -> slow: "Fallback" {
+      style.stroke-dash: 3
+    }
+  }
+}
+
+legend: {
+  near: bottom-right
+  direction: right
+  l1: "Model Params" {style.fill: ${colors.param}}
+  l2: "Optimizer" {style.fill: ${colors.optimizer}}
+  l3: "RNG State" {style.fill: ${colors.rng}}
+  l4: "Schedule" {style.fill: ${colors.schedule}}
+}

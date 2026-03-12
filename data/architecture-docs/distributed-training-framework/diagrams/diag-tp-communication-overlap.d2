@@ -1,0 +1,220 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    compute: "#4A90D9"
+    comm: "#E67E22"
+    overlap: "#27AE60"
+    idle: "#BDC3C7"
+    border: "#2C3E50"
+  }
+}
+
+title: {
+  shape: rectangle
+  label: |'md
+    # Tensor Parallel Communication-Computation Overlap
+    **Objective**: Minimize GPU "Bubbles" by overlapping All-Reduce latency with subsequent chunk computation.
+  '|
+  style.fill: "#F8F9FA"
+  style.stroke: ${colors.border}
+}
+
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  naive_block: {
+    direction: down
+    label: "Scenario A: Sequential Execution (Naive)"
+    style.stroke: "#E74C3C"
+    style.fill: "#FDF2F2"
+    
+    timeline: {
+      direction: right
+      style.fill: transparent
+      t1: "Compute Block 1" {
+        width: 150
+        height: 60
+        style.fill: ${colors.compute}
+      }
+      t2: "IDLE (Wait)" {
+        width: 80
+        height: 60
+        style.fill: ${colors.idle}
+        style.stroke-dash: 3
+      }
+      t3: "All-Reduce" {
+        width: 100
+        height: 60
+        style.fill: ${colors.comm}
+      }
+      t4: "Compute Block 2" {
+        width: 150
+        height: 60
+        style.fill: ${colors.compute}
+      }
+    }
+    
+    analysis: {
+      shape: sql_table
+      label: "Performance Impact (TP=8)"
+      metric: "Value"
+      compute_time: "1.5 ms"
+      comm_latency: "0.9 ms"
+      gpu_util: "62.5% (Sequential)"
+      overhead: "37.5% Latency Bubble"
+    }
+  }
+
+  opt_block: {
+    direction: down
+    label: "Scenario B: Overlapped Execution (Optimized)"
+    style.stroke: ${colors.overlap}
+    style.fill: "#F0FDF4"
+
+    timeline: {
+      direction: right
+      style.fill: transparent
+      c0: "Chunk 0: Comp" {
+        width: 80
+        height: 60
+        style.fill: ${colors.compute}
+      }
+      c1: "Chunk 1: Comp\nChunk 0: Comm" {
+        width: 120
+        height: 60
+        style.fill: ${colors.overlap}
+        style.stroke-width: 3
+      }
+      c2: "Chunk 2: Comp\nChunk 1: Comm" {
+        width: 120
+        height: 60
+        style.fill: ${colors.overlap}
+        style.stroke-width: 3
+      }
+      c3: "Chunk N: Comm" {
+        width: 80
+        height: 60
+        style.fill: ${colors.comm}
+      }
+    }
+
+    analysis: {
+      shape: sql_table
+      label: "Efficiency Gains"
+      metric: "Value"
+      effective_comm: "~0.1 ms (Hidden)"
+      gpu_util: "94.0% (Pipelined)"
+      throughput: "1.6x vs Naive"
+      note: "Communicated hidden by T+1 compute"
+    }
+  }
+}
+
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  implementation: {
+    label: "Implementation Logic: Bucketized All-Reduce"
+    direction: down
+    style.fill: "#F4F7F9"
+    
+    code_logic: {
+      shape: code
+      label: "Distributed Comm Hook (Python/PyTorch)"
+      code: |'python
+        def overlap_comm_hook(state, bucket):
+            # Launch Async All-Reduce for finished bucket
+            fut = dist.all_reduce(bucket.buffer(), async_op=True)
+            # Register callback to mark completion
+            def finalize(f): state.mark_ready(bucket.id())
+            # Non-blocking return
+            return fut.then(finalize)
+      '|
+    }
+    
+    flow: {
+      label: "Workflow Steps"
+      step1: "Backward Pass produces grads"
+      step2: "Grads fill Bucket (e.g. 25MB)"
+      step3: "NCCL Launch (Async Stream)"
+      step4: "Next Layer Compute (Main Stream)"
+      
+      step1 -> step2 -> step3 -> step4: "Trigger"
+    }
+  }
+
+  hardware_stats: {
+    label: "Hardware Constraints: NVLink vs PCIe"
+    direction: down
+    style.fill: "#FFF9C4"
+    
+    bw_table: {
+      shape: sql_table
+      label: "A100/H100 Interconnect Bandwidth"
+      interface: "Bandwidth (GB/s)"
+      nvlink_3: "600 GB/s (Intra-node)"
+      pcie_gen4: "31.5 GB/s (Internal)"
+      ib_hdr: "25 GB/s (Inter-node)"
+      ratio: "NVLink is 24x faster than IB"
+    }
+    
+    insight: {
+      shape: rectangle
+      label: |'md
+        **Why Overlap Works**: 
+        On NVLink systems, communication 
+        bandwidth is often > computation 
+        requirements for large model layers. 
+        If $BW_{comm} > FLOPS_{layer}$, 
+        latency is completely hidden.
+      '|
+    }
+  }
+}
+
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  memory_tradeoff: {
+    label: "Memory Analysis: Bucket Size Selection"
+    direction: down
+    
+    buckets: {
+      shape: sql_table
+      label: "Bucket Size (S) vs Efficiency (E)"
+      s_small: "5MB   | E=70% | High kernel launch overhead"
+      s_med: "25MB  | E=95% | PyTorch / Megatron Default"
+      s_large: "100MB | E=40% | Large bubbles at start/end"
+    }
+    
+    formula: {
+      shape: rectangle
+      style.font: mono
+      label: "Memory_Overhead = num_buckets * S"
+    }
+  }
+
+  timing_profile: {
+    label: "Detailed Timing: Transformer Block (70B, TP=8)"
+    shape: sql_table
+    t0: "0.0ms | Self-Attention Compute"
+    t1: "0.3ms | Row-Parallel All-Reduce (Async)"
+    t2: "0.4ms | MLP Up-Proj Compute (Overlapped)"
+    t3: "0.9ms | MLP Down-Proj Compute"
+    t4: "1.2ms | MLP All-Reduce (Async Launch)"
+    t5: "Total | 1.6ms (Comm fully hidden)"
+  }
+}
+
+row1 -> row2: "Implementation Strategy"
+row2 -> row3: "Tuning & Results"

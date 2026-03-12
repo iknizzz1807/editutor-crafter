@@ -1,0 +1,167 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Quantized Linear Layer Internal Structure
+  `QuantizedLinear(in=768, out=1024)`
+| {near: top-center}
+row_components: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  weights_block: {
+    direction: down
+    label: "(1) Quantized Weights"
+    weight_matrix: {
+      shape: sql_table
+      label: "INT8 Weight Matrix (q_w)"
+      f0: "0x000 | int8[1024×768] | W_quantized"
+      f1: "values: [-128, 127]"
+      sz: "Size: 768 KB (1 byte/weight)"
+    }
+    per_channel_scales: {
+      shape: sql_table
+      label: "Per-Channel Scales (s_w)"
+      f0: "0x000 | float32[1024] | scale[c]"
+      f1: "one per output channel"
+      sz: "Size: 4 KB"
+    }
+    weight_matrix -> per_channel_scales: "broadcast\nover rows"
+  }
+  input_block: {
+    direction: down
+    label: "(2) Quantized Input"
+    input_tensor: {
+      shape: sql_table
+      label: "INT8 Input Activation (q_x)"
+      f0: "shape: [batch, 768]"
+      f1: "values: [-128, 127]"
+      sz: "From previous layer"
+    }
+    input_scale: {
+      shape: sql_table
+      label: "Input Scale (s_x)"
+      f0: "0x000 | float32 | scale"
+      f1: "per-tensor"
+      sz: "Size: 4 bytes"
+    }
+    input_tensor -> input_scale: "single scale"
+  }
+}
+row_compute: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  dequant_block: {
+    direction: down
+    label: "(3) Dequantize to Float"
+    dequant_input: {
+      label: "Dequantize Input"
+      code: |'python
+        x_float = s_x * (q_x - zp_x)
+      '|
+      width: 300
+    }
+    dequant_weight: {
+      label: "Dequantize Weights"
+      code: |'python
+        # Per-row scale broadcast
+        W_float = s_w[c] * q_w[c, :]
+      '|
+      width: 300
+    }
+    dequant_input -> dequant_weight
+  }
+  matmul_block: {
+    direction: down
+    label: "(4) Matrix Multiply"
+    matmul_op: {
+      shape: class
+      label: "FP32 Matmul"
+      +forward(): "Y = X @ W.T + bias"
+      -accumulator: "float32[batch, 1024]"
+    }
+    matmul_note: {
+      label: "Accumulate in FP32\n(INT8×INT8 overflows INT8)"
+      width: 280
+    }
+    matmul_op -> matmul_note
+  }
+}
+row_output: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  scale_compute: {
+    direction: down
+    label: "(5) Output Scale Computation"
+    scale_formula: {
+      shape: class
+      label: "Requantization Scale"
+      +compute(): "s_out = s_x * s_w[c]"
+      -effective_scale: "per output channel"
+    }
+    scale_explain: {
+      label: |md
+        Output scale combines:
+        - Input activation scale (s_x)
+        - Per-channel weight scale (s_w[c])
+        For symmetric quantization:
+        `y_float = s_x * s_w[c] * (q_out - zp_out)`
+      |
+      width: 320
+    }
+    scale_formula -> scale_explain
+  }
+  requant_block: {
+    direction: down
+    label: "(6) Requantize to INT8"
+    requant_op: {
+      label: "Quantize Output"
+      code: |'python
+        # Quantize back to INT8
+        q_out = clamp(
+          round(y_float / s_out + zp_out),
+          -128, 127
+        )
+      '|
+      width: 320
+    }
+    output_tensor: {
+      shape: sql_table
+      label: "INT8 Output (q_out)"
+      f0: "shape: [batch, 1024]"
+      f1: "values: [-128, 127]"
+      sz: "To next layer"
+    }
+    requant_op -> output_tensor
+  }
+}
+row_components.weights_block -> row_compute.dequant_block: "W_quant, s_w"
+row_components.input_block -> row_compute.dequant_block: "q_x, s_x"
+row_compute.dequant_block -> row_compute.matmul_block: "x_float, W_float"
+row_compute.matmul_block -> row_output.scale_compute: "y_float"
+row_output.scale_compute -> row_output.requant_block: "s_out"
+row_compute.matmul_block -> row_output.requant_block: "y_float"
+legend: {
+  near: bottom-center
+  legend_title: "Data Flow Legend"
+  legend_title.shape: text
+  legend_title.style.bold: true
+  flow_int8: "INT8 quantized tensor (1 byte/element)"
+  flow_int8.shape: text
+  flow_int8.style.fill: "#E8F5E9"
+  flow_int8.style.stroke: "#4CAF50"
+  flow_fp32: "FP32 scale or accumulator (4 bytes)"
+  flow_fp32.shape: text
+  flow_fp32.style.fill: "#E3F2FD"
+  flow_fp32.style.stroke: "#2196F3"
+  flow_compute: "Compute operation"
+  flow_compute.shape: text
+  flow_compute.style.fill: "#FFF3E0"
+  flow_compute.style.stroke: "#FF9800"
+}

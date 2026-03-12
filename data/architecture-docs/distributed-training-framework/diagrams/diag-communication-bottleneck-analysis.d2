@@ -1,0 +1,159 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    decision: "#E8F4FD"
+    network_bottleneck: "#FEE2E2"
+    straggler: "#FEF3C7"
+    balanced: "#D1FAE5"
+    compute_bound: "#E0E7FF"
+  }
+}
+title: |md
+  # Communication vs Compute Bottleneck Analysis
+  ## Distributed Training Diagnostic Decision Tree
+| {near: top-center}
+# Root: Low GPU Utilization Detection
+root: {
+  shape: diamond
+  label: "GPU Utilization < 80%?"
+  style.fill: ${colors.decision}
+  width: 200
+}
+# First Level: Is it waiting?
+waiting_check: {
+  shape: diamond
+  label: "GPU waiting on\nexternal events?"
+  style.fill: ${colors.decision}
+  width: 180
+}
+root -> waiting_check: "Yes\n(diagnose)"
+# Compute Bound Path
+compute_bound: {
+  label: "COMPUTE BOUND\n━━━━━━━━━━━━━━━━━━\n• Model too small for GPU\n• Batch size too small\n• Inefficient kernels"
+  style.fill: ${colors.compute_bound}
+  width: 280
+}
+waiting_check -> compute_bound: "No" {
+  style.stroke: "#6366F1"
+}
+# Communication Investigation
+comm_check: {
+  shape: diamond
+  label: "High NCCL\ntime in profiler?"
+  style.fill: ${colors.decision}
+  width: 160
+}
+waiting_check -> comm_check: "Yes\n(investigate communication)" {
+  style.stroke: "#DC2626"
+}
+# Network Bottleneck Path
+network_bottleneck: {
+  label: "NETWORK BOTTLENECK\n━━━━━━━━━━━━━━━━━━━━━\nSymptoms:\n• NCCL time > 30% total\n• Low network throughput\n• All-reduce latency high\n\nDiagnostics:\n• Check bandwidth: ibstat\n• Check topology: nvidia-smi topo\n• Profile: nsys profile --trace nccl\n\nSolutions:\n• Reduce TP degree\n• Increase gradient accumulation\n• Use gradient compression\n• Check InfiniBand config"
+  style.fill: ${colors.network_bottleneck}
+  width: 340
+}
+comm_check -> network_bottleneck: "Yes\n(> 30% NCCL)" {
+  style.stroke: "#DC2626"
+  style.stroke-dash: 4
+}
+# Straggler Investigation
+variance_check: {
+  shape: diamond
+  label: "High variance in\nall-reduce completion?"
+  style.fill: ${colors.decision}
+  width: 180
+}
+comm_check -> variance_check: "No\nNCCL time reasonable" {
+  style.stroke: "#F59E0B"
+}
+# Straggler Path
+straggler: {
+  label: "STRAGGLER DETECTED\n━━━━━━━━━━━━━━━━━━━━━\nSymptoms:\n• 1-2 GPUs consistently slow\n• High std dev in per-rank timing\n• Pipeline stalls at specific stage\n\nDiagnostics:\n• Heatmap: per-rank timing\n• Check thermal: nvidia-smi dmon\n• Check clock: nvidia-smi q -d CLOCK\n• Profile each rank separately\n\nSolutions:\n• Fix thermal throttling\n• Redistribute workload\n• Use async all-reduce\n• Exclude faulty GPU (elastic)"
+  style.fill: ${colors.straggler}
+  width: 340
+}
+variance_check -> straggler: "Yes\n(some ranks slow)" {
+  style.stroke: "#F59E0B"
+  style.stroke-dash: 4
+}
+# Balanced Path
+balanced: {
+  label: "BALANCED SYSTEM\n━━━━━━━━━━━━━━━━━━\nSymptoms:\n• Similar timing across ranks\n• NCCL time < 20%\n• No single slow rank\n\nLikely causes:\n• Batch size too small\n• Model underutilizes GPU\n• Data loading bottleneck\n\nSolutions:\n• Increase batch size\n• Fuse kernels\n• Optimize data loader"
+  style.fill: ${colors.balanced}
+  width: 300
+}
+variance_check -> balanced: "No\n(all ranks similar)" {
+  style.stroke: "#10B981"
+}
+# All Good Path
+all_good: {
+  label: "SYSTEM HEALTHY\n━━━━━━━━━━━━━━━━━━\nGPU Util > 80%\nNo action needed"
+  style.fill: ${colors.balanced}
+  width: 200
+}
+root -> all_good: "No\n(utilization OK)" {
+  style.stroke: "#10B981"
+}
+# Diagnostic Tools Reference
+diagnostics: {
+  label: "Diagnostic Commands"
+  width: 400
+  profiler_check: {
+    label: |'bash
+# Profile with PyTorch
+torch.profiler.profile(
+  activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+  record_shapes=True
+)
+    '|
+  }
+  nccl_check: {
+    label: |'bash
+# Check NCCL timing
+nccl_time = sum(e.cuda_time for e in events 
+                if 'nccl' in e.key.lower())
+comm_ratio = nccl_time / total_time
+# > 0.3 = network bottleneck
+    '|
+  }
+  variance_check: {
+    label: |'bash
+# Check per-rank timing variance
+timings = gather_all_rank_timings()
+variance = stdev(timings) / mean(timings)
+# > 0.2 = straggler present
+    '|
+  }
+  heatmap: {
+    label: |'bash
+# Generate timing heatmap
+python -c "
+import seaborn as sns
+sns.heatmap(rank_timing_matrix)
+# Look for hot spots = stragglers
+"
+    '|
+  }
+}
+diagnostics.near: bottom-right
+# Legend
+legend: {
+  label: "Decision Legend"
+  near: bottom-left
+  network: "Network Bottleneck" {
+    style.fill: ${colors.network_bottleneck}
+  }
+  strag: "Straggler Issue" {
+    style.fill: ${colors.straggler}
+  }
+  bal: "Balanced/Healthy" {
+    style.fill: ${colors.balanced}
+  }
+  comp: "Compute Bound" {
+    style.fill: ${colors.compute_bound}
+  }
+}

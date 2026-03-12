@@ -1,0 +1,294 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    fp32: "#5B8DEF"
+    int8: "#4CAF50"
+    decision: "#FF9800"
+    verify: "#9C27B0"
+    deploy: "#00BCD4"
+    skip: "#9E9E9E"
+    residual: "#E91E63"
+  }
+}
+title: "Post-Training Static Quantization Pipeline" {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  step1: "1. Prepare Model" {
+    style: {
+      fill: ${colors.fp32}
+      stroke: "#1A237E"
+      stroke-width: 2
+    }
+    submodules: {
+      direction: down
+      analyze: "Analyze Architecture" {
+        style.fill: "#E3F2FD"
+      }
+      fuse: "Layer Fusion" {
+        width: 200
+        code: |'python
+# Fold BatchNorm into Conv
+W_fold = W * (gamma / sqrt(var + eps))
+b_fold = (b - mean) * factor + beta
+'|
+        style.fill: "#E3F2FD"
+      }
+      identify: "Identify Sensitive Layers" {
+        style.fill: "#E3F2FD"
+      }
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  decision1: "Sensitive Layer?" {
+    shape: diamond
+    style: {
+      fill: ${colors.decision}
+      stroke: "#E65100"
+    }
+  }
+  step2: "2. Quantize Weights" {
+    style: {
+      fill: ${colors.int8}
+      stroke: "#1B5E20"
+      stroke-width: 2
+    }
+    submodules: {
+      direction: down
+      per_channel: "Per-Channel Quantization" {
+        width: 240
+        code: |'python
+# Scale per output channel
+scale[c] = max(|W[c]|) / 127
+W_q[c] = clamp(round(W[c]/scale[c]), -128, 127)
+'|
+        style.fill: "#E8F5E9"
+      }
+      storage: "Storage Layout" {
+        shape: sql_table
+        label: "INT8 Weight Tensor"
+        row1: "weight | int8 | [C_out, C_in]"
+        row2: "scales | fp32 | [C_out]"
+        row3: "zeros | int32 | [C_out]"
+        row4: "Total: ~25% of FP32"
+      }
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  skip_path: "Keep FP32" {
+    shape: oval
+    style: {
+      fill: ${colors.skip}
+      stroke: "#616161"
+      stroke-dash: 3
+    }
+  }
+  step3: "3. Calibrate Activations" {
+    style: {
+      fill: ${colors.int8}
+      stroke: "#1B5E20"
+      stroke-width: 2
+    }
+    submodules: {
+      direction: down
+      collect: "Collect Statistics" {
+        width: 220
+        code: |'python
+# Run calibration data
+for batch in calib_data:
+    hooks.record_activations()
+# Percentile calibration
+r_min = percentile(0.1%)
+r_max = percentile(99.9%)
+'|
+        style.fill: "#E8F5E9"
+      }
+      percentile: "Percentile vs Min/Max" {
+        style.fill: "#E8F5E9"
+      }
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  decision2: "Has Residual?" {
+    shape: diamond
+    style: {
+      fill: ${colors.decision}
+      stroke: "#E65100"
+    }
+  }
+  step4: "4. Build Quantized Model" {
+    style: {
+      fill: ${colors.int8}
+      stroke: "#1B5E20"
+      stroke-width: 2
+    }
+    submodules: {
+      direction: down
+      quantlinear: "QuantizedLinear" {
+        shape: class
+        label: "QuantizedLinear (qlinear.py)"
+        -weight_quant: "torch.int8"
+        -scales: "torch.float32"
+        -input_scale: "float"
+        -output_scale: "float"
+        +forward(x_int8): "torch.int8"
+        +from_float(layer, calib): "QuantizedLinear"
+      }
+      residual_handler: "Residual Scale Alignment" {
+        width: 260
+        code: |'python
+# Dequantize -> Add -> Requantize
+x_float = s1 * (q1 - zp1)
+r_float = s2 * (q2 - zp2)
+out = quantize(x_float + r_float, s_out)
+'|
+        style.fill: "#FCE4EC"
+        style.stroke: ${colors.residual}
+        style.stroke-width: 2
+      }
+    }
+  }
+}
+row5: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  residual_note: "Scale Mismatch!" {
+    shape: callout
+    style: {
+      fill: ${colors.residual}
+      font-color: white
+    }
+  }
+  step5: "5. Verify Accuracy" {
+    style: {
+      fill: ${colors.verify}
+      stroke: "#4A148C"
+      stroke-width: 2
+    }
+    submodules: {
+      direction: down
+      metrics: "Validation Metrics" {
+        shape: sql_table
+        label: "Accuracy Report"
+        m1: "Accuracy Drop | < 3%"
+        m2: "Perplexity Inc | < 1.0"
+        m3: "Compression | ~4x"
+        m4: "Latency | -40 to -60%"
+      }
+      decision3: "Pass?" {
+        shape: diamond
+        style: {
+          fill: ${colors.decision}
+          stroke: "#E65100"
+        }
+      }
+    }
+  }
+}
+row6: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  fail_path: "Tune Config" {
+    shape: oval
+    style: {
+      fill: "#FFCDD2"
+      stroke: "#C62828"
+      stroke-dash: 3
+    }
+  }
+  step6: "6. Deploy" {
+    style: {
+      fill: ${colors.deploy}
+      stroke: "#006064"
+      stroke-width: 2
+    }
+    submodules: {
+      direction: down
+      export: "Export Format" {
+        shape: class
+        label: "Exported Model"
+        +weights: "packed INT8"
+        +scales: "per-channel fp32"
+        +activation_scales: "per-layer fp32"
+        +metadata: "JSON config"
+      }
+      runtime: "Target Runtimes" {
+        style.fill: "#E0F7FA"
+      }
+    }
+  }
+}
+legend: "Legend" {
+  near: bottom-center
+  style.fill: "#FAFAFA"
+  style.stroke: "#E0E0E0"
+  grid-columns: 4
+  grid-gap: 20
+  l1: "FP32 Path" {
+    style.fill: ${colors.fp32}
+  }
+  l2: "INT8 Path" {
+    style.fill: ${colors.int8}
+  }
+  l3: "Decision Point" {
+    style.fill: ${colors.decision}
+  }
+  l4: "Skip (Keep FP32)" {
+    style.fill: ${colors.skip}
+    style.stroke-dash: 3
+  }
+}
+step1 -> decision1: "Layers identified"
+decision1 -> step2: "No (robust)"
+decision1 -> skip_path: "Yes (embed, logits)"
+skip_path -> step4: "pass-through"
+step2 -> step3: "Weights quantized\nscales stored"
+step3 -> decision2: "Activation scales\ncalibrated"
+decision2 -> step4: "No"
+decision2.residual_handler -> step4.residual_handler: "Yes: align scales"
+step4 -> step5: "Model assembled"
+step5.decision3 -> step6: "Yes (<3% drop)"
+step5.decision3 -> fail_path: "No (>3% drop)"
+fail_path -> step2: "iterate"
+residual_note -> decision2: "x + f(x)\ndifferent scales!"
+step1.submodules.fuse -> step2.submodules.per_channel: "fused weights"
+step3.submodules.collect -> step4.submodules.quantlinear: "input_scale\noutput_scale"

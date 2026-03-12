@@ -1,0 +1,231 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  label: "Calibration Collector Hook Flow\nquant-m3: Forward Pass Statistics Capture"
+  shape: text
+  near: top-center
+  style: {
+    font-size: 24
+    bold: true
+    underline: true
+  }
+}
+
+# ============================================
+# Sequence Diagram Implementation
+# ============================================
+calibration_sequence: {
+  shape: sequence_diagram
+
+  # Participants (Actors)
+  user_code: User Code {
+    shape: person
+    style.fill: "#E3F2FD"
+  }
+  collector: CalibrationCollector {
+    style.fill: "#E8F5E9"
+  }
+  hook_registry: PyTorch Hook Registry {
+    style.fill: "#FFF3E0"
+  }
+  linear_layer: Target Linear Layer {
+    style.fill: "#F3E5F5"
+  }
+  stats_obj: CalibrationStats {
+    style.fill: "#E0F7FA"
+  }
+
+  # ============================================
+  # PHASE 1: Hook Registration
+  # ============================================
+  phase_1: "Phase 1: Hook Registration" {
+    user_code.reg -> collector.reg: "enable()"
+    collector.reg -> collector.reg: "_create_forward_hook()\n(closure over layer stats)"
+    collector.reg -> hook_registry.reg: "register_forward_hook(layer, hook_fn)"
+    hook_registry.reg --> collector.reg: hook_handle
+    collector.reg -> collector.reg: "store handle\nself.handles.append(handle)"
+    collector.reg --> user_code.reg: "return self (Fluent API)"
+  }
+
+  # ============================================
+  # PHASE 2: Execution & Capture
+  # ============================================
+  phase_2: "Phase 2: Calibration Forward Pass" {
+    
+    batch_1: "Calibration Batch 1" {
+      user_code.b1 -> linear_layer.b1: "forward(batch_1_tensor)"
+      
+      linear_layer.b1 -> linear_layer.b1: "internal computation\ninput.shape = [B, Ci]"
+      
+      # Hook Execution
+      linear_layer.b1 -> hook_registry.b1: "call_forward_hooks()"
+      hook_registry.b1 -> collector.b1: "hook_fn(mod, input, output)"
+      
+      # Stats Update sequence
+      collector.b1 -> stats_obj.b1: "update_min_max(input[0].min, input[0].max)"
+      stats_obj.b1 -> stats_obj.b1: "self.min = min(self.min, new_min)\nself.max = max(self.max, new_max)"
+      stats_obj.b1 --> collector.b1: ack
+      
+      collector.b1 -> stats_obj.b1: "update_histogram(output.detach())"
+      stats_obj.b1 -> stats_obj.b1: "compute_histogram(bins=2048, range=[min, max])"
+      stats_obj.b1 --> collector.b1: histogram_updated
+      
+      collector.b1 -> stats_obj.b1: "update_moments(output.mean, output.var)"
+      stats_obj.b1 --> collector.b1: moments_updated
+      
+      collector.b1 --> hook_registry.b1: "return (yield control)"
+      linear_layer.b1 --> user_code.b1: output_1
+    }
+
+    batch_2: "Calibration Batch 2" {
+      user_code.b2 -> linear_layer.b2: "forward(batch_2_tensor)"
+      linear_layer.b2 -> hook_registry.b2: "call_forward_hooks()"
+      hook_registry.b2 -> collector.b2: "hook_fn(mod, input, output)"
+      
+      collector.b2 -> stats_obj.b2: "update_min_max(new_min, new_max)"
+      stats_obj.b2 -> stats_obj.b2: "merge_range(global_min, global_max)"
+      stats_obj.b2 --> collector.b2: range_expanded
+      
+      collector.b2 -> stats_obj.b2: "update_histogram(output)"
+      stats_obj.b2 -> stats_obj.b2: "accumulate_bins(existing_bins)"
+      stats_obj.b2 --> collector.b2: histogram_accumulated
+      
+      collector.b2 --> hook_registry.b2: return
+      linear_layer.b2 --> user_code.b2: output_2
+    }
+
+    iteration_gap: "... (Iterate for N batches) ..." {
+      style.stroke-dash: 5
+    }
+
+    batch_n: "Calibration Batch N (Final)" {
+      user_code.bn -> linear_layer.bn: "forward(batch_n_tensor)"
+      linear_layer.bn -> hook_registry.bn: "call_forward_hooks()"
+      hook_registry.bn -> collector.bn: "hook_fn(mod, input, output)"
+      
+      collector.bn -> stats_obj.bn: "final_update()"
+      stats_obj.bn -> stats_obj.bn: "finalize_histogram()\nnormalize_distribution()"
+      stats_obj.bn --> collector.bn: stats_complete
+      
+      collector.bn --> hook_registry.bn: return
+      linear_layer.bn --> user_code.bn: output_n
+    }
+  }
+
+  # ============================================
+  # PHASE 3: Cleanup
+  # ============================================
+  phase_3: "Phase 3: Hook Removal" {
+    user_code.off -> collector.off: "disable()"
+    collector.off -> hook_registry.off: "for h in self.handles: h.remove()"
+    hook_registry.off -> hook_registry.off: "unregister_hook(layer_id)"
+    hook_registry.off --> collector.off: success
+    collector.off -> collector.off: "self.handles.clear()\nself._enabled = False"
+    collector.off --> user_code.off: collector_disabled
+  }
+
+  # ============================================
+  # PHASE 4: Retrieval
+  # ============================================
+  phase_4: "Phase 4: Get Statistics" {
+    user_code.get -> collector.get: "get_stats(layer_name)"
+    collector.get -> stats_obj.get: "query_final_state()"
+    stats_obj.get --> collector.get: "CalibrationStats(min, max, histogram, mean, var)"
+    collector.get --> user_code.get: stats_payload
+  }
+}
+
+# ============================================
+# Supporting Technical Reference
+# ============================================
+legend: {
+  label: "Implementation Details & Architectural Legend"
+  near: bottom-center
+  style: {
+    stroke-dash: 4
+    fill: "#F5F5F5"
+    border-radius: 8
+  }
+
+  grid_container: {
+    grid-columns: 2
+    grid-gap: 20
+
+    collector_info: |md
+      **CalibrationCollector**
+      - Manages hook lifecycle (RAII pattern)
+      - Thread-safe storage of PyTorch handles
+      - Routes tensor activations to specific `CalibrationStats` objects
+    |
+    
+    stats_info: |md
+      **CalibrationStats**
+      - Running Min/Max tracking
+      - Histogram: 2048 FP32 bins
+      - Welford's Algorithm for online mean/variance
+    |
+    
+    hook_info: |md
+      **PyTorch Hook Interface**
+      `hook_fn(module, input, output)`
+      - `input`: Tuple containing layer input tensor
+      - `output`: Tensor representing layer activation
+    |
+    
+    runtime_info: |md
+      **Memory Constraints**
+      - Stats are stored in CPU RAM to preserve GPU VRAM
+      - Tensors are `.detach().cpu()`'d before histogram calculation
+    |
+  }
+}
+
+code_ref: {
+  label: |py
+    # TDD Reference (quant-m3): Static Type Definitions
+    class CalibrationStats:
+        min: float = float('inf')
+        max: float = float('-inf')
+        histogram: Optional[torch.Tensor] = None
+        mean: float = 0.0
+        var: float = 0.0
+        total_samples: int = 0
+        
+        def update(self, tensor: torch.Tensor) -> None:
+            """Main entry point for stats accumulation."""
+            pass
+
+    class CalibrationCollector:
+        def __init__(self, model: torch.nn.Module):
+            self.model = model
+            self.handles = []
+            self.stats = {} # Dict[str, CalibrationStats]
+
+        def enable(self) -> 'CalibrationCollector':
+            """Registers hooks on all targeted layers."""
+            pass
+
+        def get_stats(self, name: str) -> CalibrationStats:
+            """Retrieves processed statistics for a layer."""
+            return self.stats[name]
+  |
+  shape: code
+  style: {
+    font-size: 11
+    fill: "#263238"
+    font-color: "#ECEFF1"
+    stroke: "#546E7A"
+    stroke-width: 2
+  }
+}
+
+# Visual Layout Hint
+legend -> code_ref: {
+  style.stroke: transparent
+}

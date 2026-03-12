@@ -1,0 +1,283 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+classes: {
+  json_block: {
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    style.font: mono
+  }
+  tensor_block: {
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+    style.font: mono
+  }
+  validation_block: {
+    shape: diamond
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+  }
+  error_block: {
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    style.font: mono
+  }
+  output_block: {
+    style.fill: "#F3E5F5"
+    style.stroke: "#9C26B0"
+    style.font: mono
+  }
+}
+
+header: {
+  label: "Tensor Shape Validation Flow\nData walk from JSON request to serialized response"
+  style.font-size: 20
+  style.bold: true
+  style.stroke: transparent
+  style.fill: transparent
+}
+header.near: top-center
+
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step1: {
+    label: "Step 1: JSON Request"
+    req: {
+      class: json_block
+      width: 300
+      code: |'json
+        {
+          "image": [[[[0.1, 0.2, 0.3, ...]]]]
+        }
+      '|
+    }
+    meta: "Raw JSON | Nested lists, untyped"
+  }
+}
+
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step2: {
+    label: "Step 2: Parse & Convert"
+    logic: {
+      class: tensor_block
+      width: 380
+      code: |'python
+        data = orjson.loads(body)
+        raw_list = data["image"]
+        # numpy conversion
+        arr = np.array(raw_list, dtype=np.float32)
+      '|
+    }
+    meta: "np.ndarray | float32 | (1,1,1,N)"
+  }
+}
+
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step3: {
+    label: "Step 3: Schema Definition"
+    direction: right
+    schema_def: {
+      shape: class
+      label: "InputSchema (validator.py)"
+      +name: "str"
+      +shape_def: "Tuple[int | None, ...]"
+      +dtype: "torch.dtype"
+      +validate(tensor): "Tuple[bool, str | None]"
+    }
+    schema_example: {
+      class: tensor_block
+      width: 320
+      code: |'python
+        IMAGE_SCHEMA = InputSchema(
+          name="image",
+          shape=(None, 3, 224, 224),
+          dtype=torch.float32
+        )
+      '|
+    }
+  }
+}
+
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step4: {
+    label: "Step 4: Shape Validation"
+    validate_check: {
+      class: validation_block
+      label: "Rank == 4?\nC == 3?\nH,W == 224?"
+    }
+    logic: {
+      class: tensor_block
+      width: 380
+      code: |'python
+        if len(tensor.shape) != 4:
+          return False, "Expected 4D"
+        if tensor.shape[1] != 3:
+          return False, "Expected 3 channels"
+        if tensor.shape[2:] != (224, 224):
+          return False, "Expected 224x224"
+      '|
+    }
+  }
+}
+
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step5a: {
+    label: "Step 5a: Error Path"
+    resp: {
+      class: error_block
+      width: 350
+      code: |'json
+        {
+          "detail": "Invalid shape: 
+            expected (B, 3, 224, 224), 
+            got (1, 1, 224, 224)"
+        }
+      '|
+    }
+  }
+  step5b: {
+    label: "Step 5b: Device Transfer"
+    logic: {
+      class: tensor_block
+      width: 380
+      code: |'python
+        tensor = torch.from_numpy(arr)
+        if tensor.dtype != schema.dtype:
+          tensor = tensor.to(schema.dtype)
+        tensor = tensor.to("cuda:0")
+      '|
+    }
+  }
+}
+
+row6: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step6: {
+    label: "Step 6: Inference"
+    model: {
+      shape: rectangle
+      label: "ResNet-50\n(model.pt)"
+      style.fill: "#E8EAF6"
+      style.stroke: "#3F51B5"
+      width: 150
+    }
+    logic: {
+      class: tensor_block
+      width: 380
+      code: |'python
+        @torch.no_grad()
+        def predict(model, x):
+          # x shape: (B, 3, 224, 224)
+          logits = model(x)
+          # logits shape: (B, 1000)
+          return logits
+      '|
+    }
+  }
+}
+
+row7: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step7: {
+    label: "Step 7: Serialization"
+    logic: {
+      class: output_block
+      width: 380
+      code: |'python
+        out = logits.detach().cpu().numpy()
+        preds = out.tolist()
+        res = orjson.dumps({
+          "predictions": preds,
+          "latency_ms": 42.5
+        })
+      '|
+    }
+  }
+}
+
+row8: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  step8: {
+    label: "Step 8: Final Response"
+    resp: {
+      class: json_block
+      width: 340
+      code: |'json
+        {
+          "predictions": [[0.001, 0.847, ...]],
+          "latency_ms": 42.5,
+          "model_version": "v1.2.3"
+        }
+      '|
+    }
+  }
+}
+
+summary_table: {
+  label: "Shape Transformation Summary"
+  content: |'md
+    | Stage | Shape | Type |
+    |-------|-------|------|
+    | Input JSON | nested lists | str |
+    | Parsed | (?, ?, ?, ?) | np.ndarray |
+    | Validated | (B, 3, 224, 224) | np.ndarray |
+    | On GPU | (B, 3, 224, 224) | torch.Tensor |
+    | Output | (B, 1000) | torch.Tensor |
+    | Response | nested lists | JSON bytes |
+  '|
+}
+summary_table.near: center-left
+
+legend: {
+  legend_title: "Shape Coding"
+  shapes_row: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    s1: "Input" { style.fill: "#E8F5E9" }
+    s2: "Tensor" { style.fill: "#E3F2FD" }
+    s3: "Validate" { style.fill: "#FFF3E0" }
+    s4: "Error" { style.fill: "#FFEBEE" }
+    s5: "Output" { style.fill: "#F3E5F5" }
+  }
+}
+legend.near: bottom-right
+
+row1.step1.req -> row2.step2.logic: "bytes | parse"
+row2.step2.logic -> row3.step3.schema_def: "ndarray | check"
+row3.step3.schema_def -> row4.step4.validate_check: "InputSchema"
+row4.step4.validate_check -> row5.step5a.resp: "Invalid | 400" {
+  style.stroke-dash: 4
+  style.stroke: "#F44336"
+}
+row4.step4.validate_check -> row5.step5b.logic: "Valid | float32" {
+  style.stroke: "#4CAF50"
+}
+row5.step5b.logic -> row6.step6.model: "Tensor | cuda:0"
+row6.step6.model -> row7.step7.logic: "Logits | Bx1000"
+row7.step7.logic -> row8.step8.resp: "JSON | dumps"

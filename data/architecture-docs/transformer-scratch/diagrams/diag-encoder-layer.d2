@@ -1,0 +1,220 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title_container: {
+  shape: rectangle
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  near: top-center
+  content: |'md
+    # Encoder Layer Architecture
+    Implementation Blueprint: [Self-Attention] → [Add&Norm] → [FFN] → [Add&Norm]
+  '|
+}
+
+# --- Main Layer Container ---
+encoder_layer: "Transformer Encoder Block" {
+  direction: down
+  
+  input: {
+    label: "Input Tensor (x)"
+    width: 320
+    shape_trace: |'md
+      **Buffer Shape:** `[Batch, Seq, d_model]`
+      Example: `[32, 128, 512]`
+      Type: `float32` (4 bytes/elem)
+    '|
+  }
+
+  # --- Sublayer 1: Attention ---
+  self_attn_block: "Multi-Head Self-Attention" {
+    width: 450
+    qkv_proj: {
+      label: "1. Linear Projections"
+      width: 400
+      code: |'python
+        # Linear: [B, S, D] -> [B, S, D]
+        Q = x @ W_Q + b_Q
+        K = x @ W_K + b_K
+        V = x @ W_V + b_V
+      '|
+    }
+    head_split: {
+      label: "2. Head Splitting"
+      width: 400
+      code: |'python
+        # [B, S, D] -> [B, H, S, d_k]
+        # d_k = d_model / num_heads (e.g., 512/8 = 64)
+        Q = Q.view(B, S, H, d_k).transpose(1, 2)
+      '|
+    }
+    attention: {
+      label: "3. Scaled Dot-Product"
+      width: 400
+      code: |'python
+        # Attention(Q, K, V) = softmax(QK^T / sqrt(d_k))V
+        scores = (Q @ K.transpose(-2, -1)) / sqrt(d_k)
+        weights = softmax(scores, dim=-1)
+        output = weights @ V
+      '|
+    }
+    head_merge: {
+      label: "4. Concat + W_O"
+      width: 400
+      code: |'python
+        # [B, H, S, d_k] -> [B, S, D]
+        x = output.transpose(1, 2).contiguous()
+        x = x.view(B, S, D)
+        return x @ W_O + b_O
+      '|
+    }
+    qkv_proj -> head_split -> attention -> head_merge
+  }
+
+  # --- Sublayer 1 Residual/Norm ---
+  add_norm_1: "Add & LayerNorm (1)" {
+    direction: right
+    residual_1: {
+      shape: diamond
+      label: "+"
+    }
+    ln_1: {
+      label: "LayerNorm"
+      width: 250
+      formula: |'md
+        $y = \frac{x - E[x]}{\sqrt{Var[x] + \epsilon}} \cdot \gamma + \beta$
+        *Normalized across the 512 features*
+      '|
+    }
+    residual_1 -> ln_1
+  }
+
+  # --- Sublayer 2: FFN ---
+  ffn_block: "Position-Wise Feed-Forward Network" {
+    width: 450
+    w1: {
+      label: "1. Linear (Expansion)"
+      width: 400
+      shape_trace: |'md
+        **W₁ Mapping:** `d_model -> d_ff` (512 -> 2048)
+        Params: `1,048,576` (W) + `2048` (b)
+      '|
+    }
+    activation: {
+      label: "2. Non-Linearity"
+      width: 400
+      code: |'python
+        # SwiGLU / GELU / ReLU
+        x = x * sigmoid(1.702 * x) # GELU approx
+      '|
+    }
+    w2: {
+      label: "3. Linear (Projection)"
+      width: 400
+      shape_trace: |'md
+        **W₂ Mapping:** `d_ff -> d_model` (2048 -> 512)
+        Params: `1,048,576` (W) + `512` (b)
+      '|
+    }
+    w1 -> activation -> w2
+  }
+
+  # --- Sublayer 2 Residual/Norm ---
+  add_norm_2: "Add & LayerNorm (2)" {
+    direction: right
+    residual_2: {
+      shape: diamond
+      label: "+"
+    }
+    ln_2: {
+      label: "LayerNorm"
+      width: 250
+      params: |'md
+        **Learned Weights:**
+        - `gamma`: [512] initialized to 1
+        - `beta`:  [512] initialized to 0
+      '|
+    }
+    residual_2 -> ln_2
+  }
+
+  output: {
+    label: "Output Tensor (y)"
+    width: 320
+    shape_trace: |'md
+      **Buffer Shape:** `[Batch, Seq, d_model]`
+      Identical to input. Passed to Encoder Layer N+1.
+    '|
+  }
+
+  # --- Sequence Flow ---
+  input -> self_attn_block -> add_norm_1.residual_1
+  add_norm_1.ln_1 -> ffn_block -> add_norm_2.residual_2
+  add_norm_2.ln_2 -> output
+}
+
+# --- Residual Connections (Skip Paths) ---
+encoder_layer.input -> encoder_layer.add_norm_1.residual_1: "Residual Connection" {
+  style: {
+    stroke: "#4A90D9"
+    stroke-width: 2
+    stroke-dash: 5
+    animated: true
+  }
+}
+
+encoder_layer.add_norm_1.ln_1 -> encoder_layer.add_norm_2.residual_2: "Residual Connection" {
+  style: {
+    stroke: "#4A90D9"
+    stroke-width: 2
+    stroke-dash: 5
+    animated: true
+  }
+}
+
+# --- Meta-Information & Annotations ---
+legend: {
+  near: bottom-right
+  label: "Parameter & Complexity Analysis"
+  stats: {
+    shape: rectangle
+    width: 320
+    content: |'md
+      | Module | Parameters | FLOPs |
+      | :--- | :--- | :--- |
+      | Attention (W_QKV, W_O) | 4D² | 4BSD² |
+      | FFN (W₁, W₂) | 8D² | 8BSD² |
+      | LayerNorms | 4D | 4BSD |
+      | **Total (Base)** | **~3.1M** | **~12BSD²** |
+      
+      *Estimates for D=512, d_ff=2048*
+    '|
+  }
+}
+
+norm_variant: {
+  near: bottom-left
+  label: "Architecture Note: Pre-LN vs Post-LN"
+  info: {
+    shape: rectangle
+    width: 350
+    content: |'md
+      **Post-LN (Original Vaswani 2017):**
+      `y = LayerNorm(x + Sublayer(x))`
+      *Harder to train without warm-up.*
+      
+      **Pre-LN (GPT-Style/Modern):**
+      `y = x + Sublayer(LayerNorm(x))`
+      *Gradient flow is more stable; standard for deep LLMs.*
+      
+      **Current Diagram:** Post-LN Implementation
+    '|
+  }
+}

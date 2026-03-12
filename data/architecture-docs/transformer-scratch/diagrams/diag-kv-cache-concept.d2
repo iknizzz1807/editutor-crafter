@@ -1,0 +1,193 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- GLOBAL CLASSES ---
+classes: {
+  module: {
+    style: {
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  hot_path: {
+    style: {
+      stroke: "#d73a49"
+      stroke-width: 3
+      animated: true
+    }
+  }
+  memory_segment: {
+    style: {
+      fill: "#e1f5fe"
+      stroke: "#01579b"
+    }
+  }
+}
+
+# --- TOP LEVEL LAYOUT ---
+
+header: {
+  label: "Transformer Inference: KV Caching & Memory Management"
+  shape: rectangle
+  style: {
+    font-size: 24
+    bold: true
+    fill: "#f8f9fa"
+  }
+}
+
+main_view: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  encoder: {
+    label: "Encoder (Prefill Phase)"
+    direction: down
+    
+    embedding: {
+      shape: sql_table
+      label: "Embedding Layer (embed.c)"
+      f0: "0x00 | float32 | tok_embed[V, D]"
+      f1: "0x40 | float32 | pos_embed[S, D]"
+      total: "Output: Tensor[B, S, D]"
+    }
+
+    mha_block: {
+      shape: class
+      label: "Standard Attention (attn.c)"
+      +compute_qkv(x): "Tensor[3, B, S, H, D]"
+      +scaled_dot_product(Q, K, V): "Tensor[B, S, D]"
+      -W_qkv: "Linear(D, 3*H*D)"
+    }
+
+    embedding -> mha_block: "Tensor | input"
+  }
+
+  decoder: {
+    label: "Decoder (Token-by-Token Phase)"
+    direction: down
+    
+    masked_mha: {
+      shape: class
+      label: "Causal Attention (causal.c)"
+      +query_current(t): "Q_t [B, 1, H, D]"
+      +fetch_past_kv(t): "K_0..t, V_0..t"
+      +concat_step(t): "Update Cache"
+      -W_q: "Linear(D, H*D)"
+    }
+
+    cross_attn: {
+      shape: class
+      label: "Cross-Attention (cross.c)"
+      +query(Q_masked): "Tensor[B, 1, D]"
+      +kv_static(enc_out): "Tensor[B, S, D]"
+      +context: "Tensor[B, 1, D]"
+    }
+
+    masked_mha -> cross_attn: "Tensor | query"
+  }
+}
+
+memory_view: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  kv_cache: {
+    shape: sql_table
+    label: "struct KVCache (mem.h)"
+    class: memory_segment
+    
+    layer0: "0x0000 | fp16[2, B, H, S, D] | Layer 0 KV"
+    layer1: "0x0400 | fp16[2, B, H, S, D] | Layer 1 KV"
+    layer2: "0x0800 | fp16[2, B, H, S, D] | Layer 2 KV"
+    layer3: "0x0C00 | fp16[2, B, H, S, D] | Layer 3 KV"
+    layer4: "0x1000 | fp16[2, B, H, S, D] | Layer 4 KV"
+    layer5: "0x1400 | fp16[2, B, H, S, D] | Layer 5 KV"
+    
+    alignment: "64-byte aligned"
+    total_sz: "Total: 2*L*B*H*S_max*2 bytes"
+  }
+
+  logic_note: {
+    label: "KV Update Strategy"
+    code: |'c
+      // Step T: Project 1 token
+      k_new, v_new = project(x_t);
+      
+      // I/O: Load past KV
+      k_past = cache[layer].key[0:t];
+      v_past = cache[layer].val[0:t];
+      
+      // Store current step T
+      cache[layer].key[t] = k_new;
+      cache[layer].val[t] = v_new;
+    '|
+    width: 400
+  }
+}
+
+footer: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  legend: {
+    label: "Diagram Legend"
+    write_op: {
+      label: "Write: Append K_t, V_t"
+      style.stroke: "#28a745"
+      style.stroke-width: 3
+    }
+    read_op: {
+      label: "Read: Fetch Past K, V"
+      style.stroke: "#007bff"
+      style.stroke-dash: 5
+    }
+  }
+
+  metrics: {
+    shape: rectangle
+    label: "Optimization Gains"
+    content: |'md
+      **Computational Complexity**
+      - Prefill: O(S²) FLOPS
+      - Decode: O(S) FLOPS/token
+      
+      **VRAM Bottleneck**
+      - Footprint: O(L * B * H * S * D)
+    '|
+    width: 300
+  }
+}
+
+# --- CROSS-COMPONENT FLOWS ---
+
+# Encoder to Decoder (Static KV)
+main_view.encoder.mha_block -> main_view.decoder.cross_attn: "Tensor | static K,V"
+
+# Decoder to Cache (Append current step)
+main_view.decoder.masked_mha -> memory_view.kv_cache: "fp16 | Write T" {
+  style.stroke: "#28a745"
+  style.stroke-width: 2
+}
+
+# Cache to Decoder (Retrieve all steps)
+memory_view.kv_cache -> main_view.decoder.masked_mha: "fp16 | Read 0..T" {
+  style.stroke: "#007bff"
+  style.stroke-dash: 5
+}
+
+# Vertical Layout Chain
+header -> main_view
+main_view -> memory_view: "Iteration Loop"
+memory_view -> footer
+
+# Placement rules
+header.near: top-center

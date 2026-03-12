@@ -1,0 +1,288 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    queue_bg: "#E8F4FD"
+    batcher_bg: "#FFF3E0"
+    padding_bg: "#F3E5F5"
+    inference_bg: "#E8F5E9"
+    router_bg: "#FFEBEE"
+    timing_color: "#666666"
+  }
+}
+title: |md
+  # Dynamic Request Batcher Architecture
+  **Request Flow: Async Queue → Batch Formation → Inference → Response Routing**
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  http_handlers: {
+    direction: down
+    label: "HTTP Handlers"
+    style.fill: "#FAFAFA"
+    handler1: {
+      label: "Handler 1"
+      width: 120
+      code: |'python
+        async def predict(req):
+          result = await batcher
+            .submit(input_tensor)
+          return result
+      '|
+    }
+    handler2: {
+      label: "Handler N"
+      width: 120
+      style.multiple: true
+      code: |'python
+        # Concurrent handlers
+        # submit to shared queue
+      '|
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  request_queue: {
+    label: "Async Request Queue"
+    style.fill: ${colors.queue_bg}
+    width: 320
+    queue_struct: {
+      shape: sql_table
+      label: "asyncio.Queue (max_depth=1000)"
+      f0: "0x00 | BatchRequest[] | _queue"
+      f1: "0x08 | int | max_depth"
+      f2: "0x10 | int | total_enqueued"
+      f3: "0x14 | int | total_rejected"
+      sz: "Backpressure: 503 on overflow"
+    }
+    batch_request: {
+      shape: sql_table
+      label: "struct BatchRequest"
+      f0: "0x00 | str | request_id"
+      f1: "0x08 | Tensor | input_tensor"
+      f2: "0x10 | float | arrival_time"
+      f3: "0x18 | Future | result_future"
+      f4: "0x20 | Status | status"
+      sz: "48 bytes per request"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  batch_formation: {
+    label: "Batch Formation Loop"
+    style.fill: ${colors.batcher_bg}
+    width: 400
+    config: {
+      shape: sql_table
+      label: "BatcherConfig"
+      f0: "max_batch_size: 32"
+      f1: "timeout_ms: 50.0"
+      f2: "max_queue_depth: 1000"
+    }
+    formation_logic: {
+      label: "Formation Logic"
+      width: 360
+      code: |'python
+        async def _batch_loop():
+          while running:
+            # Wait for first (timeout bounded)
+            first = await wait_for(
+              queue.get(), timeout=50ms)
+            batch = [first]
+            # Drain without waiting
+            while len(batch) < 32:
+              try:
+                batch.append(queue.get_nowait())
+              except QueueEmpty:
+                break
+            # Flush when full OR timeout
+            await process_batch(batch)
+      '|
+    }
+    timing_note: {
+      label: ""
+      width: 350
+      code: |'text
+        ┌─────────────────────────────────────────┐
+        │  TIMING GUARANTEES                      │
+        ├─────────────────────────────────────────┤
+        │  • Max wait for first: 50ms (timeout)   │
+        │  • Drain: O(batch_size) ~0.1ms          │
+        │  • Worst-case latency: 50ms + inference │
+        │  • Batch fullness: traffic-dependent    │
+        └─────────────────────────────────────────┘
+      '|
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  padding_module: {
+    label: "Variable-Length Padding"
+    style.fill: ${colors.padding_bg}
+    width: 380
+    padding_struct: {
+      shape: sql_table
+      label: "VariableLengthPadder"
+      f0: "pad_value: 0"
+      f1: "max_length: Optional[int]"
+      f2: "pad_batch(inputs) → Tensor"
+      sz: "Creates attention mask"
+    }
+    padding_example: {
+      label: "Padding Example"
+      width: 340
+      code: |'text
+        Input lengths: [128, 512, 64, 256]
+        Before padding (cannot stack):
+        ┌───────────────────┐ 128
+        ┌───────────────────────────────────────┐ 512
+        ┌────────┐ 64
+        ┌────────────────────────┐ 256
+        After padding (shape: 4 × 512):
+        ┌───────────────────████████████████████│
+        ┌───────────────────────────────────────┤
+        ┌────────███████████████████████████████│
+        ┌────────────────────────███████████████│
+        Mask: 1=real, 0=padding
+      '|
+    }
+  }
+}
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  batch_inference: {
+    label: "Batch Inference"
+    style.fill: ${colors.inference_bg}
+    width: 420
+    inference_struct: {
+      shape: sql_table
+      label: "GPU Batch Execution"
+      f0: "inputs: Tensor (B, D)"
+      f1: "model: nn.Module"
+      f2: "outputs: Tensor (B, O)"
+      f3: "single kernel launch"
+      sz: "O(1) kernel overhead per batch"
+    }
+    latency_table: {
+      shape: sql_table
+      label: "Latency vs Batch Size (ResNet-50)"
+      row1: "B=1  | 12ms  | 83 RPS  | 8% GPU"
+      row2: "B=8  | 24ms  | 333 RPS | 52% GPU"
+      row3: "B=32 | 62ms  | 516 RPS | 81% GPU"
+      row4: "B=64 | 108ms | 592 RPS | 89% GPU"
+      sz: "6x throughput at 5x latency"
+    }
+    inference_code: {
+      label: "Inference Wrapper"
+      width: 380
+      code: |'python
+        @torch.no_grad()
+        async def _run_inference(inputs):
+          # Run in thread pool
+          # (don't block event loop)
+          loop = get_event_loop()
+          return await loop.run_in_executor(
+            None,
+            lambda: model(inputs)
+          )
+      '|
+    }
+  }
+}
+row6: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  response_router: {
+    label: "Response Router"
+    style.fill: ${colors.router_bg}
+    width: 400
+    router_struct: {
+      shape: sql_table
+      label: "Result Routing"
+      f0: "outputs: Tensor (B, ...)"
+      f1: "metadata: dict"
+      f2: "batch: List[BatchRequest]"
+      sz: "Index-based unstacking"
+    }
+    router_code: {
+      label: "Routing Logic"
+      width: 360
+      code: |'python
+        def _route_results(outputs, batch, meta):
+          for i, request in enumerate(batch):
+            # Split by batch index
+            output_i = outputs[i]
+            # Handle padding trim if needed
+            if meta.get("needs_unpadding"):
+              original_len = meta["shapes"][i][1]
+              output_i = output_i[:original_len]
+            # Resolve Future (unblocks handler)
+            request.future.set_result(output_i)
+      '|
+    }
+    future_resolution: {
+      label: ""
+      width: 350
+      code: |'text
+        ┌─────────────────────────────────────────┐
+        │  FUTURE RESOLUTION FLOW                 │
+        ├─────────────────────────────────────────┤
+        │  1. Handler awaits Future               │
+        │  2. Batcher processes batch             │
+        │  3. Router sets result on each Future   │
+        │  4. Handler resumes, returns response   │
+        │                                         │
+        │  Latency breakdown:                     │
+        │  • Queue wait: ~5-50ms                  │
+        │  • Inference: ~20-100ms                 │
+        │  • Total: ~50-150ms (p99)               │
+        └─────────────────────────────────────────┘
+      '|
+    }
+  }
+}
+http_handlers -> request_queue: "BatchRequest | enqueue" {
+  style.stroke: "#1976D2"
+}
+request_queue -> batch_formation: "get_batch(max=32, timeout=50ms)" {
+  style.stroke: "#F57C00"
+}
+batch_formation -> padding_module: "List[Tensor] | prepare" {
+  style.stroke: "#7B1FA2"
+}
+padding_module -> batch_inference: "Tensor (B, D) + Mask | infer" {
+  style.stroke: "#388E3C"
+}
+batch_inference -> response_router: "Tensor (B, O) | route" {
+  style.stroke: "#D32F2F"
+}
+response_router -> http_handlers: "Future.set_result() | unblock" {
+  style.stroke: "#1976D2"
+  style.stroke-dash: 5
+}
+legend: {
+  near: bottom-right
+  label: "Component Legend"
+  queue_legend: "Queue: Backpressure + Ordering" {style.fill: ${colors.queue_bg}}
+  batcher_legend: "Batcher: Size/Timeout Formation" {style.fill: ${colors.batcher_bg}}
+  padding_legend: "Padding: Variable-Length Handling" {style.fill: ${colors.padding_bg}}
+  inference_legend: "Inference: GPU Batch Execution" {style.fill: ${colors.inference_bg}}
+  router_legend: "Router: Index-Based Unstacking" {style.fill: ${colors.router_bg}}
+}

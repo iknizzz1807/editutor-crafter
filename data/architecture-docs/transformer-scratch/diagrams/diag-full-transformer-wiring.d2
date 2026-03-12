@@ -1,0 +1,354 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Full Transformer Wiring Diagram
+  Complete Encoder-Decoder Architecture
+| {near: top-center}
+row_input: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  src_input: {
+    label: "Source Input"
+    shape: rectangle
+    width: 180
+    src_tokens: {
+      shape: sql_table
+      label: "src_tokens"
+      f0: "[batch, src_len]"
+      f1: "int64 indices"
+      sz: "Token IDs from source sequence"
+    }
+  }
+  tgt_input: {
+    label: "Target Input"
+    shape: rectangle
+    width: 180
+    tgt_tokens: {
+      shape: sql_table
+      label: "tgt_tokens (shifted)"
+      f0: "[batch, tgt_len]"
+      f1: "int64 indices"
+      f2: "<sos> + tgt[:-1]"
+      sz: "Teacher forcing input"
+    }
+  }
+}
+row_embedding: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  src_emb_block: {
+    label: "Source Embedding"
+    direction: down
+    src_tok_emb: {
+      shape: class
+      label: "TokenEmbedding"
+      +embedding: "nn.Embedding"
+      +d_model: "int"
+      +forward(x): "[batch, seq, d_model]"
+    }
+    src_pos_enc: {
+      shape: class
+      label: "PositionalEncoding"
+      +pe: "Buffer [1, max_len, d_model]"
+      +forward(x): "x + pe[:, :seq]"
+    }
+    src_tok_emb -> src_pos_enc: "[batch, src_len, d_model]"
+  }
+  tgt_emb_block: {
+    label: "Target Embedding"
+    direction: down
+    tgt_tok_emb: {
+      shape: class
+      label: "TokenEmbedding"
+      +embedding: "nn.Embedding"
+      +d_model: "int"
+      +forward(x): "[batch, seq, d_model]"
+    }
+    tgt_pos_enc: {
+      shape: class
+      label: "PositionalEncoding"
+      +pe: "Buffer [1, max_len, d_model]"
+      +forward(x): "x + pe[:, :seq]"
+    }
+    tgt_tok_emb -> tgt_pos_enc: "[batch, tgt_len, d_model]"
+  }
+}
+src_input.src_tokens -> src_emb_block.src_tok_emb: "indices"
+tgt_input.tgt_tokens -> tgt_emb_block.tgt_tok_emb: "indices"
+row_encoder: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  encoder_stack: {
+    label: "Encoder Stack (N=6 layers)"
+    direction: down
+    width: 380
+    enc_layer_1: {
+      label: "EncoderLayer 1"
+      direction: down
+      width: 340
+      enc_self_attn_1: {
+        shape: class
+        label: "MultiHeadAttention (self)"
+        +W_Q: "Linear(d_model, d_model)"
+        +W_K: "Linear(d_model, d_model)"
+        +W_V: "Linear(d_model, d_model)"
+        +W_O: "Linear(d_model, d_model)"
+        +forward(Q,K,V,mask): "[batch, seq, d_model]"
+      }
+      enc_sublayer1_1: {
+        shape: class
+        label: "SublayerConnection"
+        +norm: "LayerNorm(d_model)"
+        +dropout: "Dropout"
+        +pre_norm: "bool"
+      }
+      enc_ffn_1: {
+        shape: class
+        label: "PositionWiseFFN"
+        +W1: "Linear(d_model, d_ff)"
+        +W2: "Linear(d_ff, d_model)"
+        +activation: "GELU"
+        +forward(x): "[batch, seq, d_model]"
+      }
+      enc_sublayer2_1: {
+        shape: class
+        label: "SublayerConnection"
+        +norm: "LayerNorm(d_model)"
+        +dropout: "Dropout"
+      }
+      enc_self_attn_1 -> enc_sublayer1_1: "residual + norm"
+      enc_sublayer1_1 -> enc_ffn_1: "[batch, src_len, d_model]"
+      enc_ffn_1 -> enc_sublayer2_1: "residual + norm"
+    }
+    enc_dots: {
+      label: "..."
+      shape: text
+    }
+    enc_layer_n: {
+      label: "EncoderLayer N"
+      direction: down
+      width: 340
+      enc_self_attn_n: {
+        shape: class
+        label: "MultiHeadAttention (self)"
+      }
+      enc_ffn_n: {
+        shape: class
+        label: "PositionWiseFFN"
+      }
+    }
+    enc_final_norm: {
+      shape: class
+      label: "LayerNorm (final, Pre-LN only)"
+      +gamma: "Parameter [d_model]"
+      +beta: "Parameter [d_model]"
+    }
+    enc_layer_1 -> enc_dots -> enc_layer_n -> enc_final_norm
+  }
+  encoder_output: {
+    label: "Encoder Output"
+    shape: rectangle
+    width: 200
+    style.fill: "#E8F5E9"
+    enc_out_tensor: {
+      shape: sql_table
+      label: "encoder_output"
+      f0: "[batch, src_len, d_model]"
+      f1: "Contextualized source"
+      f2: "Passed to ALL decoder layers"
+    }
+  }
+}
+src_emb_block.src_pos_enc -> encoder_stack.enc_layer_1: "[batch, src_len, d_model]"
+encoder_stack -> encoder_output: "[batch, src_len, d_model]"
+row_decoder: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  decoder_stack: {
+    label: "Decoder Stack (N=6 layers)"
+    direction: down
+    width: 420
+    dec_layer_1: {
+      label: "DecoderLayer 1"
+      direction: down
+      width: 380
+      dec_masked_self_attn: {
+        shape: class
+        label: "MultiHeadAttention (masked self)"
+        +W_Q: "Linear(d_model, d_model)"
+        +W_K: "Linear(d_model, d_model)"
+        +W_V: "Linear(d_model, d_model)"
+        +forward(Q,Q,Q,causal_mask): "[batch, tgt_len, d_model]"
+      }
+      dec_sublayer1: {
+        shape: class
+        label: "SublayerConnection 1"
+        +norm: "LayerNorm"
+      }
+      dec_cross_attn: {
+        shape: class
+        label: "MultiHeadAttention (cross)"
+        +W_Q: "Linear(d_model, d_model)"
+        +W_K: "Linear(d_model, d_model)"
+        +W_V: "Linear(d_model, d_model)"
+        +forward(Q_dec, K_enc, V_enc, src_mask): "[batch, tgt_len, d_model]"
+      }
+      dec_cross_note: {
+        label: "Q from decoder\nK,V from encoder"
+        shape: text
+        style.font-size: 12
+        style.italic: true
+      }
+      dec_sublayer2: {
+        shape: class
+        label: "SublayerConnection 2"
+        +norm: "LayerNorm"
+      }
+      dec_ffn: {
+        shape: class
+        label: "PositionWiseFFN"
+        +W1: "Linear(d_model, d_ff)"
+        +W2: "Linear(d_ff, d_model)"
+      }
+      dec_sublayer3: {
+        shape: class
+        label: "SublayerConnection 3"
+        +norm: "LayerNorm"
+      }
+      dec_masked_self_attn -> dec_sublayer1: "residual + norm"
+      dec_sublayer1 -> dec_cross_attn: "[batch, tgt_len, d_model]"
+      dec_cross_attn -> dec_sublayer2: "residual + norm"
+      dec_sublayer2 -> dec_ffn: "[batch, tgt_len, d_model]"
+      dec_ffn -> dec_sublayer3: "residual + norm"
+    }
+    dec_dots: {
+      label: "..."
+      shape: text
+    }
+    dec_layer_n: {
+      label: "DecoderLayer N"
+      dec_cross_n: {
+        shape: class
+        label: "Cross-Attention (all layers)"
+      }
+    }
+    dec_final_norm: {
+      shape: class
+      label: "LayerNorm (final, Pre-LN only)"
+    }
+    dec_layer_1 -> dec_dots -> dec_layer_n -> dec_final_norm
+  }
+}
+tgt_emb_block.tgt_pos_enc -> decoder_stack.dec_layer_1: "[batch, tgt_len, d_model]"
+encoder_output.enc_out_tensor -> decoder_stack.dec_layer_1.dec_cross_attn: "K, V (encoder output)"
+encoder_output.enc_out_tensor -> decoder_stack.dec_layer_n.dec_cross_n: "K, V (same for all layers)" {
+  style.stroke-dash: 3
+  style.stroke: "#4CAF50"
+}
+row_output: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  output_proj: {
+    label: "Output Projection"
+    direction: down
+    proj_linear: {
+      shape: class
+      label: "nn.Linear(d_model, vocab_size)"
+      +weight: "[vocab_size, d_model]"
+      +bias: "False (optional)"
+      +forward(x): "[batch, tgt_len, vocab_size]"
+    }
+    weight_tie_note: {
+      label: "Optional: weight tying\nwith target embedding"
+      shape: text
+      style.font-size: 11
+      style.italic: true
+    }
+  }
+  logits_out: {
+    label: "Output"
+    shape: rectangle
+    width: 200
+    style.fill: "#FFF3E0"
+    logits_tensor: {
+      shape: sql_table
+      label: "logits"
+      f0: "[batch, tgt_len, vocab_size]"
+      f1: "Unnormalized scores"
+      f2: "Softmax → probabilities"
+    }
+  }
+}
+decoder_stack.dec_final_norm -> output_proj.proj_linear: "[batch, tgt_len, d_model]"
+output_proj -> logits_out: "[batch, tgt_len, vocab_size]"
+legend: {
+  near: bottom-right
+  label: "Data Flow Legend"
+  shape: rectangle
+  style.fill: "#FAFAFA"
+  style.stroke: "#E0E0E0"
+  flow_self: "Self-Attention: Q=K=V from same input"
+  flow_cross: "Cross-Attention: Q from decoder, K=V from encoder"
+  flow_residual: "Residual: x + Sublayer(x)"
+  flow_norm: "LayerNorm: normalizes over d_model"
+  leg_data: |md
+    **Tensor Shapes:**
+    - batch: Batch size (e.g., 32)
+    - src_len: Source sequence length
+    - tgt_len: Target sequence length  
+    - d_model: Model dimension (512)
+    - d_ff: FFN hidden (4×d_model = 2048)
+    - vocab_size: Vocabulary size
+  |
+}
+masks_block: {
+  near: bottom-left
+  label: "Attention Masks"
+  shape: rectangle
+  style.fill: "#FFFDE7"
+  style.stroke: "#FBC02D"
+  src_mask_info: {
+    shape: sql_table
+    label: "src_mask"
+    f0: "[batch, 1, 1, src_len]"
+    f1: "True = padding position"
+    f2: "Applied before softmax"
+  }
+  tgt_mask_info: {
+    shape: sql_table
+    label: "tgt_mask (causal)"
+    f0: "[1, 1, tgt_len, tgt_len]"
+    f1: "Upper triangle = True"
+    f2: "Prevents attending to future"
+  }
+}
+src_input.src_tokens -> masks_block.src_mask_info: "generate mask" {
+  style.stroke-dash: 3
+  style.stroke: "#9E9E9E"
+}
+tgt_input.tgt_tokens -> masks_block.tgt_mask_info: "generate mask" {
+  style.stroke-dash: 3
+  style.stroke: "#9E9E9E"
+}
+masks_block.src_mask_info -> encoder_stack: "src_mask" {
+  style.stroke-dash: 3
+  style.stroke: "#FBC02D"
+}
+masks_block.tgt_mask_info -> decoder_stack: "tgt_mask" {
+  style.stroke-dash: 3
+  style.stroke: "#FBC02D"
+}
+masks_block.src_mask_info -> decoder_stack: "src_mask (cross-attn)" {
+  style.stroke-dash: 3
+  style.stroke: "#FBC02D"
+}

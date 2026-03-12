@@ -1,0 +1,248 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# -----------------------------------------------------------------------------
+# GLOBAL STYLING & CLASSES (TECHNICAL SPEC GRADE)
+# -----------------------------------------------------------------------------
+classes: {
+  container: {
+    style: {
+      fill: "#F8F9FA"
+      stroke: "#212529"
+      stroke-width: 4
+      border-radius: 4
+      shadow: true
+    }
+  }
+  epoch_sub: {
+    style: {
+      fill: white
+      stroke: "#ADB5BD"
+      stroke-dash: 2
+      border-radius: 8
+    }
+  }
+  grad_buffer: {
+    shape: sql_table
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1976D2"
+    }
+  }
+  logic_gate: {
+    shape: diamond
+    style: {
+      fill: "#FFF9C4"
+      stroke: "#FBC02D"
+    }
+  }
+  annotation: {
+    shape: text
+    style: {
+      font: mono
+      font-size: 14
+      italic: true
+    }
+  }
+  critical_node: {
+    style: {
+      stroke: "#D32F2F"
+      stroke-width: 5
+      animated: true
+    }
+  }
+  memory_block: {
+    style: {
+      font: mono
+      fill: "#ECEFF1"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# DIAGRAM HEADER
+# -----------------------------------------------------------------------------
+header: {
+  shape: text
+  label: |md
+    # BACKPROPAGATION: GRADIENT ACCUMULATION DYNAMICS
+    ## Technical Analysis of `zero_grad()` side-effects on Memory Buffers
+  |
+  near: top-center
+  style: {
+    font-size: 28
+    bold: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# MEMORY LAYOUT REPRESENTATION (INTEL MANUAL QUALITY)
+# -----------------------------------------------------------------------------
+memory_map: {
+  label: "GRADIENT ACCUMULATOR MEMORY MAP (torch.Tensor.grad)"
+  near: top-right
+  
+  layout: {
+    shape: sql_table
+    "0x00": "Header (Tensor Metadata)" { constraint: "32 bytes" }
+    "0x20": "Data Pointer (fp32)" { constraint: "8 bytes"; style.fill: "#FFE0B2" }
+    "0x28": "Shape/Stride Info" { constraint: "16 bytes" }
+    "0x38": "GRADIENT_VALUE" { 
+      label: "**GRADIENT_VALUE** (Accumulator Buffer)"
+      constraint: "4 bytes (float32)"
+      style: { fill: "#BBDEFB"; bold: true; stroke: "#1976D2" }
+    }
+    "0x3C": "Padding/Reserved" { constraint: "4 bytes"; style.fill: "#E0E0E0" }
+  }
+
+  op_logic: |md
+    ### Micro-op: Accumulation
+    `grad_buffer[addr] += current_grad`
+    1. **LOAD** 0x38 (Existing Value)
+    2. **ADD** new_computed_gradient
+    3. **STORE** 0x38 (New Total)
+  |
+}
+
+# -----------------------------------------------------------------------------
+# PIPELINE 1: THE VALID IMPLEMENTATION (CONTROL)
+# -----------------------------------------------------------------------------
+pipeline_valid: "PIPELINE A: DETERMINISTIC GRADIENTS (zero_grad=TRUE)" {
+  class: container
+  
+  iter_0: "Iteration N" {
+    class: epoch_sub
+    
+    op_zero: "optimizer.zero_grad()" {
+      style: { fill: "#4CAF50"; font-color: white; bold: true }
+      tooltip: "MEMSET 0x38 to 0x00000000"
+    }
+    
+    op_forward: "Forward(X_i)" { style.fill: "#E1F5FE" }
+    op_loss: "Loss(Y, Y_hat)" { style.fill: "#FFF9C4" }
+    op_backward: "Backward()" { style.fill: "#F3E5F5" }
+    
+    buf: {
+      class: grad_buffer
+      grad_val: "**0.30**" { constraint: "New" }
+    }
+    
+    op_zero -> op_forward: "1. Memory Cleared"
+    op_forward -> op_loss: "2. Activation Flow"
+    op_loss -> op_backward: "3. Chain Rule Init"
+    op_backward -> buf.grad_val: "4. Store"
+  }
+
+  iter_1: "Iteration N+1" {
+    class: epoch_sub
+    
+    op_zero_2: "optimizer.zero_grad()" {
+      style: { fill: "#4CAF50"; font-color: white; bold: true }
+    }
+    
+    op_backward_2: "Backward()" { style.fill: "#F3E5F5" }
+    
+    buf_2: {
+      class: grad_buffer
+      grad_val: "**0.20**" { constraint: "New" }
+    }
+    
+    op_zero_2 -> op_backward_2: "Grad Reset (Buffer=0.0)"
+    op_backward_2 -> buf_2.grad_val: "Grad=0.20 (Correct)"
+  }
+
+  # Captions moved to root level or positioned relatively to avoid 'near' error
+  iter_0 -> iter_1: "optimizer.step()" {
+    label: "W = W - lr * 0.30"
+    style: { stroke: "#2E7D32"; stroke-width: 2; stroke-dash: 4 }
+  }
+}
+
+# Fix for Line 159: Placing caption relative to container at root level
+caption_correct: |md
+  ### EXPECTED BEHAVIOR
+  Gradients represent the local curvature of the surface for the **current batch**. 
+  Independent batch updates allow the optimizer to follow the true stochastic manifold.
+| {
+  near: pipeline_valid
+  style: { fill: "#C8E6C9"; border-radius: 8 }
+}
+
+# -----------------------------------------------------------------------------
+# PIPELINE 2: THE BROKEN IMPLEMENTATION (VARIABLE)
+# -----------------------------------------------------------------------------
+pipeline_broken: "PIPELINE B: GRADIENT STACKING BUG (zero_grad=FALSE)" {
+  class: container
+  
+  iter_0_b: "Iteration N" {
+    class: epoch_sub
+    
+    op_skip: "MISSING: zero_grad()" {
+      class: critical_node
+      style: { fill: "#FFCDD2"; font-color: "#B71C1C"; stroke-dash: 2 }
+    }
+    
+    op_backward_b: "Backward()" { style.fill: "#F3E5F5" }
+    
+    buf_b: {
+      class: grad_buffer
+      grad_val: "0.30" { constraint: "Base" }
+    }
+    
+    op_skip -> op_backward_b
+    op_backward_b -> buf_b.grad_val
+  }
+
+  iter_1_b: "Iteration N+1" {
+    class: epoch_sub
+    
+    op_backward_b2: "Backward()" { style.fill: "#F3E5F5" }
+    
+    buf_b2: {
+      class: grad_buffer
+      grad_val: "**0.50 (CORRUPT)**" { 
+        constraint: "Σ(0.3 + 0.2)"
+        style: { fill: "#D32F2F"; font-color: white; bold: true }
+      }
+    }
+    
+    op_backward_b2 -> buf_b2.grad_val: "Memory Write: Accumulate"
+  }
+
+  iter_0_b -> iter_1_b: "optimizer.step()" {
+    label: "W = W - lr * 0.50 (OVERSHOOT)"
+    style: { stroke: "#C62828"; stroke-width: 3; stroke-dash: 0 }
+  }
+}
+
+# Fix for Line 216: Placing caption relative to container at root level
+caption_incorrect: |md
+  ### BUG: STALE GRADIENT LEAK
+  The `0.30` from the previous step is physically still in the buffer. 
+  `backward()` performs a `+=` operation, treating Iteration N+1 as having 
+  a massive gradient of `0.50`. This leads to **Gradient Explosion**.
+| {
+  near: pipeline_broken
+  style: { fill: "#FFCDD2"; border-radius: 8 }
+}
+
+# -----------------------------------------------------------------------------
+# FOOTER / LEGEND (ROOT LEVEL)
+# -----------------------------------------------------------------------------
+legend: {
+  near: bottom-left
+  style.stroke: "#9E9E9E"
+  reset: "Memory Clear (zero_grad)" { style.fill: "#4CAF50" }
+  comp: "Computation (Forward/Backward)" { style.fill: "#E1F5FE" }
+  acc: "Accumulation Point (Buffer Write)" { shape: parallelogram; style.fill: "#BBDEFB" }
+  err: "Buffer Corruption (Leakage)" { style.fill: "#D32F2F" }
+}
+
+# High-level comparison link
+pipeline_valid -> pipeline_broken: "Control vs. Variable Analysis" {
+  style: { stroke-dash: 10; stroke: "#BDBDBD" }
+}

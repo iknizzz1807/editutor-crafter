@@ -1,0 +1,397 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  shape: rectangle
+  label: |'md
+    # Tiled Matrix Transpose Algorithm
+    **Optimization: Coalesced reads AND writes using shared memory**
+  '|
+  style: {
+    stroke-width: 0
+    fill: transparent
+  }
+}
+
+# ================================================================
+# PHASE 1: PROBLEM STATEMENT
+# ================================================================
+problem_section: {
+  label: "Problem: Naive Transpose Pattern"
+  width: 700
+  problem_desc: {
+    shape: rectangle
+    width: 650
+    label: |'md
+      **Transpose Operation:** `output[col * height + row] = input[row * width + col]`
+      - **Read pattern:** Coalesced (adjacent threads read adjacent columns in same row)
+      - **Write pattern:** Strided (adjacent threads write to different rows -> non-coalesced!)
+      **Result:** ~30-50 GB/s on a 760 GB/s GPU (4-6% efficiency)
+    '|
+  }
+  
+  naive_patterns: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    
+    naive_read: {
+      label: "Read (Coalesced ✓)"
+      width: 320
+      desc: |'md
+        Thread 0 -> input[0]
+        Thread 1 -> input[1]
+        Thread 2 -> input[2]
+        ...
+        **Adjacent threads -> Adjacent memory**
+      '|
+    }
+    naive_write: {
+      label: "Write (Non-Coalesced ✗)"
+      width: 320
+      desc: |'md
+        Thread 0 -> output[0]
+        Thread 1 -> output[height]
+        Thread 2 -> output[2*height]
+        ...
+        **Adjacent threads -> Scattered memory**
+      '|
+    }
+  }
+}
+
+# ================================================================
+# PHASE 2: TILED ALGORITHM OVERVIEW
+# ================================================================
+algorithm_section: {
+  label: "Tiled Transpose: Three-Phase Solution"
+  width: 700
+  algo_desc: {
+    shape: rectangle
+    label: |'md
+      **Key Insight:** Use shared memory as a transpose buffer
+      - Load from global memory with **coalesced reads**
+      - Rearrange in shared memory (on-chip, fast)
+      - Store to global memory with **coalesced writes**
+    '|
+  }
+  
+  three_phases: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+
+    phase1_box: {
+      label: "Phase 1: Load"
+      width: 210
+      style.fill: "#E8F5E9"
+      desc: |'md
+        **Coalesced Load**
+        Read tile from global memory
+        into shared memory
+        ✓ Adjacent threads read
+        adjacent addresses
+      '|
+    }
+    phase2_box: {
+      label: "Phase 2: Sync"
+      width: 210
+      style.fill: "#FFF3E0"
+      desc: |'md
+        **Barrier Sync**
+        `__syncthreads()`
+        Ensure all threads have
+        written before any reads
+        ⚠ Mandatory for correctness
+      '|
+    }
+    phase3_box: {
+      label: "Phase 3: Store"
+      width: 210
+      style.fill: "#E3F2FD"
+      desc: |'md
+        **Coalesced Write**
+        Read from shared memory
+        with transposed indices
+        ✓ Adjacent threads write
+        adjacent addresses
+      '|
+    }
+  }
+  three_phases.phase1_box -> three_phases.phase2_box: "Sync"
+  three_phases.phase2_box -> three_phases.phase3_box: "Barrier"
+}
+
+problem_section -> algorithm_section: "Solution Path"
+
+# ================================================================
+# PHASE 3: DETAILED STEP VISUALIZATION
+# ================================================================
+step_section: {
+  label: "Step-by-Step Execution (32x32 Tile, Block (0,0))"
+  width: 900
+
+  # Step 1: Initial State
+  step1: {
+    direction: right
+    label: "Step 1: Tile Selection"
+    input_matrix: {
+      label: "Input Matrix (Row-Major)"
+      width: 400
+      in_grid: {
+        shape: rectangle
+        label: |'md
+          col: 0    1    2  ...   31
+          row +----+----+----+---+----+
+            0 | A0 | B0 | C0 |...| Z0 |
+            1 | A1 | B1 | C1 |...| Z1 |
+            2 | A2 | B2 | C2 |...| Z2 |
+           .. | ...| ...| ...|...| ...|
+           31 | A31| B31| C31|...| Z31|
+          +----+----+----+---+----+
+          ↑ Block (0,0) reads this
+        '|
+      }
+    }
+    output_matrix: {
+      label: "Output Matrix (Row-Major)"
+      width: 400
+      out_grid: {
+        shape: rectangle
+        label: |'md
+          col: 0    1    2  ...   31
+          row +----+----+----+---+----+
+            0 |    |    |    |   |    |
+            1 |    |    |    |   |    |
+            2 |    |    |    |   |    |
+           .. |    |    |    |   |    |
+           31 |    |    |    |   |    |
+          +----+----+----+---+----+
+          ↑ Block (0,0) writes here
+          (indices transposed!)
+        '|
+      }
+    }
+  }
+
+  # Step 2: Coalesced Load
+  step2: {
+    direction: right
+    label: "Step 2: Coalesced Load"
+    load_detail: {
+      label: "Load Pattern"
+      width: 420
+      code: |'c
+        int col = blockIdx.x * 32 + threadIdx.x;
+        int row = blockIdx.y * 32 + threadIdx.y;
+        // Coalesced read!
+        tile[threadIdx.y][threadIdx.x] = 
+            input[row * width + col];
+      '|
+    }
+    shared_mem_after_load: {
+      label: "Shared Memory tile[32][33] After Load"
+      width: 420
+      smem_grid: {
+        shape: rectangle
+        label: |'md
+          tile[row][col] contents:
+              [0]  [1]  [2] ... [31] [32]
+           +----+----+----+---+----+----+
+          0| A0 | B0 | C0 |...| Z0 |pad |
+          1| A1 | B1 | C1 |...| Z1 |pad |
+          2| A2 | B2 | C2 |...| Z2 |pad |
+          ..|... |... |... |...|... |pad |
+          31| A31| B31| C31|...| Z31|pad |
+           +----+----+----+---+----+----+
+          +1 padding avoids bank conflicts!
+        '|
+      }
+    }
+  }
+
+  # Step 3: Barrier
+  step3: {
+    direction: right
+    label: "Step 3: Barrier Synchronization"
+    barrier_desc: {
+      label: "__syncthreads()"
+      width: 420
+      code: |'c
+        // CRITICAL: All threads must finish
+        // writing before any thread reads
+        __syncthreads();
+      '|
+    }
+    barrier_visual: {
+      label: "Thread Execution Timeline"
+      width: 420
+      timeline: {
+        shape: rectangle
+        label: |'md
+          Thread 0:   [write] ... [wait] [read]
+          Thread 1:   [write] ... [wait] [read]
+          Thread 31:  [write] ... [wait] [read]
+          Thread 1023:[write] ... [wait] [read]
+                          ^
+                    __syncthreads()
+        '|
+      }
+    }
+  }
+
+  # Step 4: Transposed Store
+  step4: {
+    direction: right
+    label: "Step 4: Transposed Store"
+    write_detail: {
+      label: "Write Pattern"
+      width: 420
+      code: |'c
+        // Transposed block coordinates!
+        int out_col = blockIdx.y * 32 + threadIdx.x;
+        int out_row = blockIdx.x * 32 + threadIdx.y;
+        // Transposed shared mem access
+        output[out_row * height + out_col] = 
+            tile[threadIdx.x][threadIdx.y];
+      '|
+    }
+    final_output: {
+      label: "Output Matrix Segment"
+      width: 420
+      out_grid_final: {
+        shape: rectangle
+        label: |'md
+          col: 0    1    2  ...   31
+          row +----+----+----+---+----+
+            0 | A0 | A1 | A2 |...| A31|
+            1 | B0 | B1 | B2 |...| B31|
+            2 | C0 | C1 | C2 |...| C31|
+           .. | ...| ...| ...|...| ...|
+           31 | Z0 | Z1 | Z2 |...| Z31|
+          +----+----+----+---+----+
+          Tile successfully transposed!
+        '|
+      }
+    }
+  }
+  
+  step1 -> step2: "begin"
+  step2 -> step3: "sync"
+  step3 -> step4: "store"
+}
+
+algorithm_section -> step_section: "Execution Walk"
+
+# ================================================================
+# PHASE 4: BANK CONFLICTS
+# ================================================================
+bank_section: {
+  label: "Bank Conflict Avoidance: tile[32][33]"
+  width: 900
+  bank_viz: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+
+    no_padding: {
+      label: "Without Padding: tile[32][32]"
+      width: 430
+      style.fill: "#FFEBEE"
+      desc: |'md
+        **32-Way Bank Conflict!**
+        Reading tile[tx][ty] (column-major):
+        - Thread 0 reads tile[0][0] -> Bank 0
+        - Thread 1 reads tile[1][0] -> Bank 0 (FAIL)
+        - Thread 31 reads tile[31][0] -> Bank 0 (FAIL)
+        
+        **Accesses serialize: 32x slower**
+      '|
+    }
+    with_padding: {
+      label: "With Padding: tile[32][33]"
+      width: 430
+      style.fill: "#E8F5E9"
+      desc: |'md
+        **Conflict-Free Parallelism**
+        Each row offset by 1 bank:
+        - tile[0][0] -> Bank 0
+        - tile[1][0] -> Bank 1 (OK)
+        - tile[31][0] -> Bank 31 (OK)
+        
+        **All 32 accesses parallel: 1 cycle**
+      '|
+    }
+  }
+}
+
+step_section -> bank_section: "Performance Critical"
+
+# ================================================================
+# PHASE 5: PERFORMANCE
+# ================================================================
+perf_section: {
+  label: "Performance Benchmarks"
+  width: 700
+  perf_table: {
+    shape: rectangle
+    width: 650
+    label: |'md
+      | Version | Bandwidth | Efficiency | Key Issue |
+      | :--- | :--- | :--- | :--- |
+      | **Naive** | 40 GB/s | 5% | Non-coalesced writes |
+      | **Tiled (no pad)** | 225 GB/s | 30% | Bank conflicts |
+      | **Tiled (padded)** | 550 GB/s | 72% | Near-optimal |
+      | **Peak** | 760 GB/s | 100% | Hardware Limit |
+    '|
+  }
+}
+
+bank_section -> perf_section: "Results"
+
+# ================================================================
+# PHASE 6: KERNEL CODE
+# ================================================================
+code_section: {
+  label: "Implementation (CUDA C++)"
+  width: 800
+  kernel: {
+    shape: code
+    code: |'c
+      #define TILE_DIM 32
+      __global__ void transposeTiled(float* in, float* out, int w, int h) {
+          __shared__ float tile[TILE_DIM][TILE_DIM + 1];
+          int x = blockIdx.x * TILE_DIM + threadIdx.x;
+          int y = blockIdx.y * TILE_DIM + threadIdx.y;
+          if (x < w && y < h)
+              tile[threadIdx.y][threadIdx.x] = in[y * w + x];
+          __syncthreads();
+          x = blockIdx.y * TILE_DIM + threadIdx.x;
+          y = blockIdx.x * TILE_DIM + threadIdx.y;
+          if (x < h && y < w)
+              out[y * h + x] = tile[threadIdx.x][threadIdx.y];
+      }
+    '|
+  }
+}
+
+perf_section -> code_section: "Final Code"
+
+takeaways: {
+  label: "Key Optimization Rules"
+  width: 700
+  style.fill: "#E8EAF6"
+  notes: |'md
+    1. **Coalescing:** Maps thread IDs to adjacent global memory addresses.
+    2. **Shared Memory:** Fast on-chip scratchpad used for data rearrangement.
+    3. **Padding:** Prevents hardware serialization from bank conflicts.
+    4. **Barriers:** Ensures global memory write visibility before tile reads.
+  '|
+}
+
+code_section -> takeaways: "Review"

@@ -1,0 +1,172 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  shape: package
+  label: "Transformer Architecture: End-to-End Gradient Flow"
+}
+
+data_structures: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  model_config: {
+    shape: sql_table
+    label: "struct TransformerConfig (config.h)"
+    d_model: "0x00 | uint32_t | d_model // Embedding dimension"
+    n_heads: "0x04 | uint32_t | num_heads // Attention heads"
+    d_k: "0x08 | uint32_t | d_k // d_model / num_heads"
+    d_ff: "0x0C | uint32_t | d_ff // Feed-forward dim"
+    total_sz: "Total: 16 bytes"
+  }
+
+  tensor_metadata: {
+    shape: sql_table
+    label: "Tensor Layout (ATen/Core)"
+    rank: "0x00 | int64_t  | ndim // e.g., 3"
+    dims: "0x08 | int64_t* | shape // [B, S, D]"
+    strides: "0x10 | int64_t* | strides"
+    dtype: "0x18 | uint16_t | dtype // kFloat32"
+    total_sz: "Total: 32 bytes"
+  }
+}
+
+forward_pass: "" {
+  direction: down
+  style.stroke: transparent
+  style.fill: transparent
+
+  encoder_stack: "Encoder Block (N layers)" {
+    direction: right
+    style.fill: "#f8f9fa"
+
+    mha_layer: {
+      shape: class
+      label: "MultiHeadAttention (mha.py)"
+      -W_Q: "Linear"
+      -W_K: "Linear"
+      -W_V: "Linear"
+      -dropout: "float"
+      +forward(x, mask): "Tensor"
+      +split_heads(x): "Tensor"
+      +scaled_dot_product(q, k, v): "Tensor"
+    }
+
+    residual_norm: "Add & Norm" {
+      label: "LayerNorm (norm.py)"
+      code: |'python
+        def forward(self, x, residual):
+          out = self.norm(x + residual)
+          return out
+      '|
+    }
+  }
+
+  bridge: "Transformer Bridge" {
+    direction: right
+    style.stroke-dash: 5
+    
+    cross_attn_logic: {
+      label: "Cross-Attention Mechanism"
+      width: 400
+      code: |'python
+        # Q from Decoder, K/V from Encoder
+        attn = softmax(Q @ K.T / sqrt(d_k))
+        context = attn @ V
+        out = self.W_O(context)
+      '|
+    }
+  }
+
+  decoder_stack: "Decoder Block (M layers)" {
+    direction: right
+    style.fill: "#fff3f3"
+
+    masked_mha: {
+      shape: class
+      label: "MaskedAttention"
+      -mask: "LowerTriangular"
+      +forward(x): "Tensor"
+    }
+
+    output_projection: {
+      shape: class
+      label: "Classifier (head.py)"
+      -W_proj: "Linear(d_model, vocab_sz)"
+      +forward(x): "Logits"
+    }
+  }
+}
+
+backprop_path: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  init_logic: {
+    label: "Gradient Initialization & Weights"
+    width: 400
+    code: |'python
+      def _init_weights(self):
+        nn.init.xavier_uniform_(self.W_Q.weight)
+        nn.init.xavier_uniform_(self.W_K.weight)
+        nn.init.xavier_uniform_(self.W_V.weight)
+        assert self.d_model % self.num_heads == 0
+    '|
+  }
+
+  grad_check: {
+    label: "Autograd Assertions"
+    width: 400
+    code: |'python
+      # Check d_model divisibility 
+      d_k = d_model // num_heads
+      if d_model % num_heads != 0:
+        raise ValueError("d_model not divisible")
+      # Gradient clipping
+      nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    '|
+  }
+}
+
+# Connections
+data_structures -> forward_pass: "Config | Load"
+
+forward_pass.encoder_stack.mha_layer -> forward_pass.encoder_stack.residual_norm: "Tensor | residual"
+forward_pass.encoder_stack.residual_norm -> forward_pass.bridge: "Keys/Values | context"
+
+forward_pass.bridge -> forward_pass.decoder_stack.masked_mha: "Cross-Attention | flow"
+forward_pass.decoder_stack.masked_mha -> forward_pass.decoder_stack.output_projection: "HiddenState | logits"
+
+# Gradient Flow (Backwards)
+forward_pass.decoder_stack.output_projection -> backprop_path: "dLoss/dW | backprop" {
+  style.stroke-dash: 4
+  style.stroke: red
+}
+
+backprop_path.grad_check -> backprop_path.init_logic: "Gradients | clip" {
+  style.stroke: red
+}
+
+legend: {
+  near: bottom-right
+  f_pass: Forward Flow {
+    style.stroke: black
+  }
+  b_pass: Gradient Flow {
+    style.stroke: red
+    style.stroke-dash: 4
+  }
+}
+
+notes: {
+  near: top-right
+  shape: callout
+  label: "Implementation Note:\nKV Cache O(1) inference\nrequires manual buffer mgmt\nper position i."
+}

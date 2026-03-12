@@ -1,0 +1,251 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# Header Section
+header: {
+  label: "Model Loading Lifecycle"
+  note: "Sequential flow from torch.load() to ready-to-serve"
+  style.stroke: transparent
+  style.fill: transparent
+  style.font-size: 20
+  style.bold: true
+}
+
+# Phase 1: Storage & Device Detection
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  disk: {
+    shape: cylinder
+    label: "Model File (model.pt)"
+    style.fill: "#E8E8E8"
+  }
+  
+  device_check: {
+    label: "T1: Device Detection"
+    code: |'python
+      if torch.cuda.is_available():
+          device = torch.device("cuda")
+          gpu_mem = torch.cuda.get_device_properties(0).total_memory
+      else:
+          device = torch.device("cpu")
+    '|
+    width: 340
+  }
+  
+  memory_check: {
+    label: "T2: Memory Budget Check"
+    code: |'python
+      model_size = os.path.getsize(model_path)
+      free_mem = total_mem - reserved
+      required = model_size * 4 # activations
+      if free_mem - required < safety_margin:
+          raise RuntimeError("Insufficient VRAM")
+    '|
+    width: 360
+  }
+}
+
+# Phase 2: Model Loading
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  load_op: {
+    label: "T3: torch.load()"
+    code: |'python
+      model = torch.load(
+          model_path,
+          map_location=device
+      )
+    '|
+    width: 280
+    style.fill: "#D4EDDA"
+  }
+  
+  eval_mode: {
+    label: "T4: Eval Mode"
+    code: |'python
+      model.eval()
+      # Disables Dropout
+      # Freezes BatchNorm running stats
+    '|
+    width: 280
+    style.fill: "#D4EDDA"
+  }
+  
+  device_place: {
+    label: "T5: Device Placement"
+    code: |'python
+      model = model.to(device)
+      # Moves parameters to GPU
+      # Allocates VRAM
+    '|
+    width: 280
+    style.fill: "#D4EDDA"
+  }
+}
+
+# Phase 3: Warmup
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  warmup_loop: {
+    label: "T6: CUDA Warmup Loop"
+    code: |'python
+      dummy = torch.randn(input_shape, device=device)
+      for i in range(5):
+          with torch.no_grad():
+              _ = model(dummy)
+          torch.cuda.synchronize()
+    '|
+    width: 380
+    style.fill: "#FFF3CD"
+  }
+  
+  kernel_cache: {
+    shape: sql_table
+    label: "CUDA Kernel Cache"
+    f0: "0x00 | cublas_matmul | compiled"
+    f1: "0x20 | cudnn_conv2d  | compiled"
+    f2: "0x40 | relu_kernel    | compiled"
+    f3: "0x60 | bn_kernel      | compiled"
+    sz: "Populated after warmup"
+  }
+  
+  warmup_graph: {
+    label: "Warmup Latency Decay"
+    code: |'text
+      Run 1: 487ms  ████████████████████
+      Run 2: 89ms   ████░░░░░░░░░░░░░░░░
+      Run 3: 52ms   ██░░░░░░░░░░░░░░░░░░
+      Run 4: 45ms   █░░░░░░░░░░░░░░░░░░░
+      Run 5: 43ms   █░░░░░░░░░░░░░░░░░░░
+    '|
+    width: 340
+    style.fill: "#FFF3CD"
+  }
+}
+
+# Phase 4: Readiness Gate
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  readiness_probe: {
+    label: "T7: Readiness Gate"
+    code: |'python
+      @app.get("/health/readiness")
+      async def readiness():
+          if model_state == READY:
+              return {"status": "ready"}
+          raise HTTPException(503, "loading")
+    '|
+    width: 340
+    style.fill: "#CCE5FF"
+  }
+  
+  state_transition: {
+    shape: class
+    label: "ModelState Lifecycle"
+    LOADING: "string"
+    WARMING: "string"
+    READY: "string"
+    +transition(target): "void"
+  }
+  
+  ready_signal: {
+    shape: oval
+    label: "✓ READY"
+    style.fill: "#28A745"
+    style.font-color: white
+    style.bold: true
+  }
+}
+
+# Phase 5: Inference Context
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  inference_wrapper: {
+    label: "T8: Inference Wrapper"
+    code: |'python
+      @torch.no_grad()
+      def predict(inputs: torch.Tensor):
+          inputs = inputs.to(device)
+          return model(inputs)
+    '|
+    width: 360
+    style.fill: "#D4EDDA"
+  }
+  
+  no_grad_note: {
+    label: "Context Benefits"
+    code: |'text
+      - No comp graph built
+      - No grad allocation
+      - 30-50% speedup
+      - Lower VRAM floor
+    '|
+    width: 280
+    style.fill: "#D4EDDA"
+  }
+}
+
+# Global Data Flow
+row1.disk -> row1.device_check: "100MB | read"
+row1.device_check -> row1.memory_check: "device_id"
+row1.memory_check -> row2.load_op: "path | proceed"
+row2.load_op -> row2.eval_mode: "Module | init"
+row2.eval_mode -> row2.device_place: "eval_set"
+row2.device_place -> row3.warmup_loop: "nn.Module | cuda"
+row3.warmup_loop -> row3.kernel_cache: "exec"
+row3.kernel_cache -> row3.warmup_graph: "record"
+row3.warmup_graph -> row4.readiness_probe: "latency_stable"
+row4.readiness_probe -> row4.state_transition: "poll"
+row4.state_transition -> row4.ready_signal: "READY"
+row4.ready_signal -> row5.inference_wrapper: "serve"
+row5.inference_wrapper -> row5.no_grad_note: "wrapper"
+
+# Timing Summary - FIXED BLOCK STRING
+timing_summary: {
+  label: "Timeline Overview"
+  # Use |'md ... '| to prevent | in tables from closing the block early
+  data: |'md
+    | Phase | Duration | Primary Operation |
+    | :--- | :--- | :--- |
+    | Storage | ~10ms | Disk seek & read |
+    | Deserial | ~1.8s | torch.load() |
+    | Allocation| ~200ms | GPU Memory transfer |
+    | Warmup | ~500ms | CUDA Graph / JIT |
+    | **Total** | **~2.5s** | **Cold-Start to Ready** |
+  '|
+  shape: rectangle
+  style.fill: "#F8F9FA"
+  style.stroke: "#DEE2E6"
+}
+timing_summary.near: bottom-left
+
+# Legend
+legend: {
+  label: "Phase Legend"
+  style.fill: "#F8F9FA"
+  p1: "Device/Memory" { style.fill: "#E8E8E8" }
+  p2: "Model Load" { style.fill: "#D4EDDA" }
+  p3: "Warmup" { style.fill: "#FFF3CD" }
+  p4: "Readiness" { style.fill: "#CCE5FF" }
+}
+legend.near: bottom-right

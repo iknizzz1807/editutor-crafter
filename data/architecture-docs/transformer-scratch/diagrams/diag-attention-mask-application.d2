@@ -1,0 +1,177 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  shape: rectangle
+  label: |'md
+    # Mask Application Before Softmax
+    **Critical: Apply masks to scores BEFORE softmax, not after**
+  '|
+  style.stroke: transparent
+  style.fill: transparent
+}
+
+row_before: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  scores_raw: {
+    label: "Raw Scores (attention.py)"
+    scores_raw_data: {
+      shape: class
+      label: "Scores [Q @ K.T / √d_k]"
+      row0: "[ 8.2,  5.1,  3.4,  -2.1]"
+      row1: "[ 6.7,  9.3,  4.2,   1.5]"
+      row2: "[ 4.1,  7.8, 11.2,   2.9]"
+      row3: "[ 2.3,  3.1,  5.6,   8.4]"
+    }
+    note: "Raw dot-product | 32-bit float"
+  }
+
+  scores_masked: {
+    label: "Masked Scores (attention.py)"
+    scores_masked_data: {
+      shape: class
+      label: "Masked [with -inf]"
+      row0: "[ 8.2,   -∞,   -∞,   -∞]"
+      row1: "[ 6.7,  9.3,   -∞,   -∞]"
+      row2: "[ 4.1,  7.8, 11.2,   -∞]"
+      row3: "[ 2.3,  3.1,  5.6,  8.4]"
+    }
+    note: "Upper triangle + Padding → -inf"
+  }
+}
+
+row_mask_types: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  causal_mask_box: {
+    label: "Causal Mask (Masking.py)"
+    causal_data: {
+      shape: class
+      label: "Causal [Look-ahead]"
+      row0: "[ 0,  1,  1,  1]"
+      row1: "[ 0,  0,  1,  1]"
+      row2: "[ 0,  0,  0,  1]"
+      row3: "[ 0,  0,  0,  0]"
+    }
+  }
+  
+  padding_mask_box: {
+    label: "Padding Mask (Masking.py)"
+    padding_data: {
+      shape: class
+      label: "Padding [batch_idx]"
+      row0: "[ 0,  0,  0,  1]"
+      row1: "[ 0,  0,  0,  1]"
+      row2: "[ 0,  0,  0,  1]"
+      row3: "[ 0,  0,  0,  1]"
+    }
+  }
+}
+
+row_after: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  softmax_box: {
+    label: "Softmax (torch.nn.functional)"
+    formula: |'md
+      softmax(x_i) = exp(x_i) / Σ exp(x_j)
+      **exp(-∞) = 0**
+    '|
+    code: |'python
+      # exp(-inf) contributes 0 to sum
+      weights = F.softmax(masked_scores, dim=-1)
+    '|
+  }
+
+  weights_final: {
+    label: "Attention Weights (Final)"
+    weights_data: {
+      shape: class
+      label: "Weights [Probabilities]"
+      row0: "[1.00, 0.00, 0.00, 0.00]"
+      row1: "[0.12, 0.88, 0.00, 0.00]"
+      row2: "[0.02, 0.14, 0.84, 0.00]"
+      row3: "[0.01, 0.02, 0.09, 0.88]"
+    }
+    verify: "Row sum = 1.00 | Ready for @ V"
+  }
+}
+
+row_wrong: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  wrong_approach: {
+    label: "❌ FATAL ERROR: Mask After Softmax"
+    style.fill: "#FFE4E1"
+    style.stroke: "#CD5C5C"
+    wrong_code: |'python
+      # WRONG: Sum(Row) will not be 1.0
+      weights = F.softmax(scores, dim=-1)
+      weights = weights.masked_fill(mask, 0.0)
+    '|
+    wrong_result: {
+      shape: class
+      label: "Invalid Weights (sum < 1)"
+      row0: "[0.95, 0.00, 0.00, 0.00]"
+      row3: "[0.01, 0.02, 0.07, 0.69]"
+    }
+  }
+}
+
+row_summary: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  summary_box: {
+    label: "Engineering Summary"
+    takeaway: |'md
+      | Step | Operation | Implementation |
+      | :--- | :--- | :--- |
+      | 1 | Raw | `Q @ K.T / sqrt(dk)` |
+      | 2 | **Mask** | `s.masked_fill(m, -inf)` |
+      | 3 | Softmax | `F.softmax(s, dim=-1)` |
+      | 4 | Output | `weights @ V` |
+    '|
+  }
+
+  impl_snippet: {
+    label: "PyTorch Hot Path"
+    code: |'python
+      # Combined mask application
+      m = causal_mask | padding_mask
+      scores = scores.masked_fill(m, -1e9)
+      attn = F.softmax(scores, dim=-1)
+    '|
+  }
+}
+
+# Data flow connections
+row_before.scores_raw -> row_before.scores_masked: "float32 | MaskFill"
+row_mask_types.causal_mask_box -> row_before.scores_masked: "broadcast"
+row_mask_types.padding_mask_box -> row_before.scores_masked: "broadcast"
+
+row_before.scores_masked -> row_after.softmax_box: "scores"
+row_after.softmax_box -> row_after.weights_final: "probs"
+
+row_after.weights_final -> row_wrong.wrong_approach: "Incorrect Comparison" {
+  style.stroke-dash: 5
+  style.stroke: red
+}
+
+row_summary.summary_box.style.fill: "#F0FFF0"
+row_summary.impl_snippet.style.fill: "#F0F8FF"

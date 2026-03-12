@@ -1,0 +1,103 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+hot_swap_sequence: {
+  shape: sequence_diagram
+  HTTP_Handler: HTTP Handler
+  AtomicPointer: AtomicPointer
+  ModelRegistry: ModelRegistry
+  RequestTracker: RequestTracker
+  GPU_Memory: GPU Memory
+  HTTP_Handler."Init: v1.0.0 serving"
+  ModelRegistry."v1.0.0: ACTIVE"
+  phase_1_background_load: Phase 1: Background Load {
+    HTTP_Handler.t1 -> ModelRegistry.t1: hot_swap(v2.0.0)
+    ModelRegistry.t1 -> GPU_Memory: allocate model buffer
+    GPU_Memory -> ModelRegistry.t1: 2GB reserved
+    ModelRegistry.t1 -> GPU_Memory: load v2.0.0 weights
+    ModelRegistry.t1."v2.0.0: STAGED"
+  }
+  phase_2_schema_validation: Phase 2: Schema Validation {
+    ModelRegistry.t2 -> ModelRegistry.t2: validate_compatibility()
+    ModelRegistry.t2."input_shape: (N,3,224,224) ✓"
+    ModelRegistry.t2."output_shape: (N,1000) ✓"
+    ModelRegistry.t2."dtypes: float32 ✓"
+  }
+  phase_3_warmup: Phase 3: Warmup {
+    ModelRegistry.t3 -> GPU_Memory: run 5 warmup inferences
+    GPU_Memory -> ModelRegistry.t3: kernels compiled
+    ModelRegistry.t3."v2.0.0: ready for swap"
+  }
+  concurrent_requests: Concurrent Requests (during swap) {
+    HTTP_Handler.c1 -> AtomicPointer.c1: get_active_version()
+    AtomicPointer.c1 -> HTTP_Handler.c1: v1.0.0
+    HTTP_Handler.c1 -> RequestTracker.c1: acquire(v1.0.0)
+    RequestTracker.c1."in_flight[v1.0.0] = 3"
+    HTTP_Handler.c2 -> AtomicPointer.c2: get_active_version()
+    AtomicPointer.c2 -> HTTP_Handler.c2: v1.0.0
+    HTTP_Handler.c2 -> RequestTracker.c2: acquire(v1.0.0)
+    RequestTracker.c2."in_flight[v1.0.0] = 4"
+    HTTP_Handler.c3 -> AtomicPointer.c3: get_active_version()
+    AtomicPointer.c3 -> HTTP_Handler.c3: v1.0.0
+    HTTP_Handler.c3 -> RequestTracker.c3: acquire(v1.0.0)
+    RequestTracker.c3."in_flight[v1.0.0] = 5"
+  }
+  phase_4_atomic_swap: Phase 4: Atomic Swap (<1ms) {
+    ModelRegistry.t4 -> AtomicPointer.t4: swap(v1.0.0 -> v2.0.0)
+    AtomicPointer.t4."LOCK acquired"
+    AtomicPointer.t4."pointer = v2.0.0"
+    AtomicPointer.t4."LOCK released"
+    ModelRegistry.t4."v2.0.0: ACTIVE"
+    ModelRegistry.t4."v1.0.0: DRAINING"
+  }
+  phase_5_draining: Phase 5: Request Draining {
+    RequestTracker.t5 -> ModelRegistry.t5: start_drain(v1.0.0)
+    HTTP_Handler.d1 -> RequestTracker.d1: release(v1.0.0)
+    RequestTracker.d1."in_flight[v1.0.0] = 4"
+    HTTP_Handler.d2 -> RequestTracker.d2: release(v1.0.0)
+    RequestTracker.d2."in_flight[v1.0.0] = 3"
+    HTTP_Handler.d3 -> RequestTracker.d3: release(v1.0.0)
+    RequestTracker.d3."in_flight[v1.0.0] = 2"
+    HTTP_Handler.d4 -> RequestTracker.d4: release(v1.0.0)
+    RequestTracker.d4."in_flight[v1.0.0] = 1"
+    HTTP_Handler.d5 -> RequestTracker.d5: release(v1.0.0)
+    RequestTracker.d5."in_flight[v1.0.0] = 0"
+    RequestTracker.d5."DRAIN COMPLETE"
+  }
+  new_requests_post_swap: New Requests (post-swap) {
+    HTTP_Handler.n1 -> AtomicPointer.n1: get_active_version()
+    AtomicPointer.n1 -> HTTP_Handler.n1: v2.0.0
+    HTTP_Handler.n1 -> RequestTracker.n1: acquire(v2.0.0)
+    HTTP_Handler.n2 -> AtomicPointer.n2: get_active_version()
+    AtomicPointer.n2 -> HTTP_Handler.n2: v2.0.0
+    HTTP_Handler.n2 -> RequestTracker.n2: acquire(v2.0.0)
+  }
+  phase_6_unload: Phase 6: Unload Old Version {
+    ModelRegistry.t6 -> RequestTracker.t6: wait_for_drain(v1.0.0)
+    RequestTracker.t6 -> ModelRegistry.t6: drain complete
+    ModelRegistry.t6 -> GPU_Memory: free v1.0.0 memory
+    GPU_Memory -> ModelRegistry.t6: 2GB freed
+    ModelRegistry.t6."v1.0.0: DEPRECATED"
+    ModelRegistry.t6."Hot swap complete"
+  }
+}
+legend: {
+  near: bottom-right
+  label: ""
+  style.stroke: transparent
+  style.fill: transparent
+  timing_note: |md
+    **Timing (Typical)**
+    - Phase 1-3: 5-30s (depends on model size)
+    - Phase 4: <1ms (atomic pointer swap)
+    - Phase 5: 0-30s (depends on in-flight requests)
+    - Phase 6: <1s (memory cleanup)
+    **Key Insight**: No requests dropped during swap.
+    In-flight requests complete with v1.0.0.
+    New requests immediately route to v2.0.0.
+  |
+}

@@ -1,0 +1,227 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Embedding + Positional Encoding Composition
+  Token embeddings scaled by √d_model, then added to positional encodings
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  input_col: {
+    direction: down
+    label: "Input Processing"
+    token_indices: {
+      shape: sql_table
+      label: "Token Indices (input_ids)"
+      dim0: "0 | int64 | batch"
+      dim1: "1 | int64 | seq_len"
+      example: "... | [2, 47, 1231, ...]"
+      shape_row: "Shape: [batch, seq_len]"
+    }
+    embedding_layer: {
+      shape: class
+      label: "nn.Embedding"
+      +num_embeddings: "int"
+      +embedding_dim: "int (d_model)"
+      +forward(indices): "Tensor"
+    }
+    token_indices -> embedding_layer: "indices"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  embed_col: {
+    direction: down
+    label: "Token Embedding Path"
+    raw_embeddings: {
+      shape: sql_table
+      label: "Raw Embeddings (emb)"
+      dim0: "0 | float32 | batch"
+      dim1: "1 | float32 | seq_len"
+      dim2: "2 | float32 | d_model"
+      shape_row: "Shape: [batch, seq_len, d_model]"
+      note_row: "Values ~ N(0, 1) from init"
+    }
+    scale_op: {
+      label: "Scale by √d_model"
+      width: 200
+      code: |'python
+        emb = emb * math.sqrt(d_model)
+        # d_model=512: scale by ~22.6
+        # Variance: 1 → d_model
+      '|
+    }
+    scaled_embeddings: {
+      shape: sql_table
+      label: "Scaled Embeddings"
+      dim0: "0 | float32 | batch"
+      dim1: "1 | float32 | seq_len"
+      dim2: "2 | float32 | d_model"
+      shape_row: "Shape: [batch, seq_len, d_model]"
+      note_row: "Values ~ N(0, √d_model)"
+    }
+    raw_embeddings -> scale_op: "emb"
+    scale_op -> scaled_embeddings: "scaled"
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  pe_col: {
+    direction: down
+    label: "Positional Encoding Path"
+    pe_formula: {
+      width: 320
+      code: |'python
+        # Sinusoidal Positional Encoding
+        PE(pos, 2i)   = sin(pos / 10000^(2i/d_model))
+        PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
+        # pos: position index [0, seq_len)
+        # i: dimension index [0, d_model/2)
+      '|
+    }
+    pe_buffer: {
+      shape: sql_table
+      label: "Positional Encoding (buffer)"
+      dim0: "0 | float32 | 1 (broadcast)"
+      dim1: "1 | float32 | max_seq_len"
+      dim2: "2 | float32 | d_model"
+      shape_row: "Shape: [1, max_seq_len, d_model]"
+      note_row: "Precomputed, fixed (not trained)"
+    }
+    pe_slice: {
+      shape: sql_table
+      label: "PE Slice for Current Seq"
+      dim0: "0 | float32 | 1"
+      dim1: "1 | float32 | seq_len"
+      dim2: "2 | float32 | d_model"
+      shape_row: "Shape: [1, seq_len, d_model]"
+    }
+    pe_buffer -> pe_slice: "[:, :seq_len, :]"
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  combine_col: {
+    direction: down
+    label: "Combination"
+    add_op: {
+      shape: diamond
+      label: "+"
+      width: 80
+      height: 80
+      style.fill: "#E8F5E9"
+      style.stroke: "#4CAF50"
+    }
+    combined: {
+      shape: sql_table
+      label: "Token + Position Embeddings"
+      dim0: "0 | float32 | batch"
+      dim1: "1 | float32 | seq_len"
+      dim2: "2 | float32 | d_model"
+      shape_row: "Shape: [batch, seq_len, d_model]"
+      note_row: "Position info injected!"
+    }
+    dropout_layer: {
+      shape: class
+      label: "nn.Dropout(p=0.1)"
+      +p: "float (dropout prob)"
+      +forward(x): "Tensor"
+    }
+    final_output: {
+      shape: sql_table
+      label: "Final Embedding Output"
+      dim0: "0 | float32 | batch"
+      dim1: "1 | float32 | seq_len"
+      dim2: "2 | float32 | d_model"
+      shape_row: "Shape: [batch, seq_len, d_model]"
+      note_row: "Ready for first Transformer layer"
+    }
+    add_op -> combined: "element-wise"
+    combined -> dropout_layer: "x"
+    dropout_layer -> final_output: "x (with dropout)"
+  }
+}
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  legend_col: {
+    direction: down
+    label: "Key Concepts"
+    why_scale: {
+      width: 350
+      label: "Why √d_model Scaling?"
+      code: |'python
+        # Embedding init: N(0, 1) → variance ≈ 1
+        # Transformer expects: variance ≈ d_model
+        # Scaling by √d_model increases variance:
+        #   Var(X * √d) = d * Var(X) = d_model
+        #
+        # Note: Some modern models omit this scaling
+        # (e.g., GPT-2), absorbed into learning rate
+      '|
+    }
+    why_pe: {
+      width: 350
+      label: "Why Positional Encoding?"
+      code: |'python
+        # Self-attention is permutation-equivariant
+        # "cat sat on mat" → same attention as
+        # "mat on sat cat" (wrong order!)
+        #
+        # PE injects absolute position information
+        # Each position gets unique "fingerprint"
+        # Model can learn relative position from PE
+      '|
+    }
+  }
+}
+# Cross-row connections
+embedding_layer -> raw_embeddings: "lookup\n[batch, seq] → [batch, seq, d_model]" {
+  style.stroke: "#2196F3"
+}
+scaled_embeddings -> add_op: "scaled_emb" {
+  style.stroke: "#4CAF50"
+}
+pe_slice -> add_op: "pe_slice\n(broadcast over batch)" {
+  style.stroke: "#9C27B0"
+}
+# Legend for colors
+legend: {
+  near: bottom-right
+  shape: rectangle
+  style.fill: "#FAFAFA"
+  style.stroke: "#E0E0E0"
+  title: "Data Flow Legend"
+  blue: {
+    shape: rectangle
+    label: "Embedding Path"
+    style.fill: "#BBDEFB"
+    width: 120
+  }
+  green: {
+    shape: rectangle
+    label: "Combination"
+    style.fill: "#C8E6C9"
+    width: 120
+  }
+  purple: {
+    shape: rectangle
+    label: "Positional Path"
+    style.fill: "#E1BEE7"
+    width: 120
+  }
+  blue -> green -> purple: {style.stroke: transparent}
+}

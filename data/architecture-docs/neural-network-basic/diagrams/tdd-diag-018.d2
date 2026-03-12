@@ -1,0 +1,254 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    correct: "#4CAF50"
+    wrong: "#F44336"
+    highlight: "#FF9800"
+    box_bg: "#FAFAFA"
+    box_border: "#E0E0E0"
+  }
+}
+title: |md
+  # Double-Backward Accumulation Bug
+  Calling `backward()` twice without `zero_grad()` causes gradient accumulation
+| {near: top-center}
+direction: right
+correct_flow: "Correct Usage" {
+  style.fill: ${colors.box_bg}
+  style.stroke: ${colors.correct}
+  style.stroke-width: 3
+  epoch1_correct: "Epoch 1" {
+    style.fill: white
+    style.stroke: ${colors.correct}
+    step1: |md
+      **Forward Pass**
+      `loss = compute_loss(network(x))`
+      `loss.data = 0.5`
+    |
+    step2: |md
+      **Zero Gradients**
+      `optimizer.zero_grad()`
+      `param.grad = 0.0` ✓
+    | {
+      style.fill: "#E8F5E9"
+    }
+    step3: |md
+      **Backward Pass**
+      `loss.backward()`
+      `param.grad = 0.5`
+    |
+    step4: |md
+      **Update**
+      `optimizer.step()`
+      `param.data -= lr × 0.5`
+    |
+    step1 -> step2 -> step3 -> step4
+  }
+  epoch2_correct: "Epoch 2" {
+    style.fill: white
+    style.stroke: ${colors.correct}
+    step1b: |md
+      **Forward Pass**
+      New loss computed
+    |
+    step2b: |md
+      **Zero Gradients**
+      `optimizer.zero_grad()`
+      `param.grad = 0.0` ✓
+    | {
+      style.fill: "#E8F5E9"
+    }
+    step3b: |md
+      **Backward Pass**
+      `loss.backward()`
+      `param.grad = 0.4` (fresh)
+    |
+    step4b: |md
+      **Update**
+      `optimizer.step()`
+      `param.data -= lr × 0.4`
+    |
+    step1b -> step2b -> step3b -> step4b
+  }
+  epoch1_correct -> epoch2_correct: "Next iteration"
+  result_correct: |md
+    ✅ **Result: Correct gradient each epoch**
+    Each epoch uses fresh gradient from current loss
+  | {
+    style.fill: "#E8F5E9"
+    style.stroke: ${colors.correct}
+  }
+  epoch2_correct -> result_correct
+}
+buggy_flow: "Buggy Usage (Missing zero_grad)" {
+  style.fill: ${colors.box_bg}
+  style.stroke: ${colors.wrong}
+  style.stroke-width: 3
+  epoch1_bug: "Epoch 1" {
+    style.fill: white
+    style.stroke: ${colors.wrong}
+    step1_bug: |md
+      **Forward Pass**
+      `loss.data = 0.5`
+    |
+    step2_bug: |md
+      **Zero Gradients**
+      ❌ **SKIPPED!**
+      `param.grad = 0.0` (still 0)
+    | {
+      style.fill: "#FFEBEE"
+      style.stroke: ${colors.wrong}
+      style.stroke-dash: 3
+    }
+    step3_bug: |md
+      **Backward Pass**
+      `loss.backward()`
+      `param.grad = 0.5`
+    |
+    step4_bug: |md
+      **Update**
+      `optimizer.step()`
+      `param.data -= lr × 0.5`
+    |
+    step1_bug -> step2_bug -> step3_bug -> step4_bug
+  }
+  epoch2_bug: "Epoch 2" {
+    style.fill: white
+    style.stroke: ${colors.wrong}
+    step1b_bug: |md
+      **Forward Pass**
+      New loss computed
+    |
+    step2b_bug: |md
+      **Zero Gradients**
+      ❌ **SKIPPED!**
+      `param.grad = 0.5` (stale!)
+    | {
+      style.fill: "#FFEBEE"
+      style.stroke: ${colors.wrong}
+      style.stroke-dash: 3
+    }
+    step3b_bug: |md
+      **Backward Pass**
+      `loss.backward()`
+      `param.grad += 0.4`
+      **= 0.5 + 0.4 = 0.9** ⚠️
+    | {
+      style.fill: "#FFF3E0"
+      style.stroke: ${colors.highlight}
+    }
+    step4b_bug: |md
+      **Update**
+      `optimizer.step()`
+      `param.data -= lr × 0.9`
+      **WRONG!** (should be 0.4)
+    | {
+      style.fill: "#FFEBEE"
+    }
+    step1b_bug -> step2b_bug -> step3b_bug -> step4b_bug
+  }
+  epoch3_bug: "Epoch 3" {
+    style.fill: white
+    style.stroke: ${colors.wrong}
+    step3c_bug: |md
+      **Backward Pass**
+      `param.grad += 0.3`
+      **= 0.9 + 0.3 = 1.2** ⚠️
+    | {
+      style.fill: "#FFF3E0"
+    }
+  }
+  epoch1_bug -> epoch2_bug -> epoch3_bug
+  result_bug: |md
+    ❌ **Result: Exploding gradients**
+    Gradient grows: 0.5 → 0.9 → 1.2 → 1.5 → ...
+    Training diverges!
+  | {
+    style.fill: "#FFEBEE"
+    style.stroke: ${colors.wrong}
+  }
+  epoch3_bug -> result_bug
+}
+accumulation_detail: "Why Accumulation Happens" {
+  style.fill: ${colors.box_bg}
+  style.stroke: "#2196F3"
+  explanation: |md
+    ## The `+=` Operator in _backward()
+    python
+    # Inside Value._backward for addition:
+    def _backward():
+        self.grad += out.grad   # ACCUMULATES
+        other.grad += out.grad  # ACCUMULATES
+    
+    The `+=` is **correct** for multi-path gradients
+    within a single backward pass, but causes
+    incorrect accumulation across epochs if not
+    reset.
+  |
+  memory_view: "Gradient Memory View" {
+    style.fill: white
+    cell1: |md
+      **Epoch 1**
+      `grad = 0.0`
+      `backward()`
+      `grad += 0.5`
+      `grad = 0.5` ✓
+    |
+    cell2: |md
+      **Epoch 2 (no zero)**
+      `grad = 0.5` (stale)
+      `backward()`
+      `grad += 0.4`
+      `grad = 0.9` ❌
+    |
+    cell3: |md
+      **Epoch 2 (with zero)**
+      `zero_grad()`
+      `grad = 0.0`
+      `backward()`
+      `grad += 0.4`
+      `grad = 0.4` ✓
+    |
+    cell1 -> cell2: "No zero_grad"
+    cell1 -> cell3: "With zero_grad"
+  }
+  explanation -> memory_view
+}
+divergence_graph: "Training Divergence Pattern" {
+  style.fill: ${colors.box_bg}
+  style.stroke: ${colors.wrong}
+  good: |md
+    ### With zero_grad()
+    
+    Epoch   0: loss = 0.500
+    Epoch 100: loss = 0.150
+    Epoch 200: loss = 0.050
+    Epoch 300: loss = 0.010
+    Epoch 400: loss = 0.001 ✓
+    
+  | {
+    style.fill: "#E8F5E9"
+  }
+  bad: |md
+    ### Without zero_grad()
+    
+    Epoch   0: loss = 0.500
+    Epoch 100: loss = 0.800  ⚠️
+    Epoch 200: loss = 5.200  ⚠️
+    Epoch 300: loss = 142.0  💥
+    Epoch 400: loss = NaN    💥
+    
+  | {
+    style.fill: "#FFEBEE"
+  }
+  good -> bad
+}
+legend: |md
+  ## Legend
+  - ✅ Correct sequence: `zero_grad()` → `backward()` → `step()`
+  - ❌ Bug: Skipping `zero_grad()` between epochs
+  - `+=` accumulates: Must reset before each backward pass
+| {near: bottom-center}

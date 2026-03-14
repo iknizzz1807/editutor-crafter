@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
-Evaluate GLM-5 generated docs vs Claude-written baselines.
-Spawns up to 10 parallel Claude workers, each reviewing 2 GLM projects at a time
-alongside the 2 Claude baseline projects.
-Results written to evaluation_results.md
+Evaluate documentation quality by scoring each project out of 100.
+Each project is evaluated individually with detailed feedback.
 """
 
 import os
@@ -11,52 +9,52 @@ import subprocess
 import threading
 from pathlib import Path
 from datetime import datetime
-from itertools import islice
 
 # --- Config ---
 BASE_DIR = Path(__file__).parent.parent
 ARCH_DOCS = BASE_DIR / "data" / "architecture-docs"
 OUTPUT_FILE = BASE_DIR / "evaluation_results.md"
 
-BASELINE_PROJECTS = ["http-server-basic", "build-event-loop"]
-EXCLUDE = set(BASELINE_PROJECTS)
-
 MAX_WORKERS = 10
-CLAUDE_MODEL = "opus[1m]"
+CLAUDE_MODEL = "opus"
 
-PROMPT_TEMPLATE = """http-basic và event-loop là được Claude viết. Còn lại là được model GLM-5 viết vì tôi thấy Claude đắt quá. Tôi thích Claude, tuy nhiên tôi lo rằng tài liệu viết bằng GLM sẽ không đảm bảo chất lượng, kiến thức, trình bày, giải thích, giáo dục, hướng dẫn hay code.
+PROMPT_TEMPLATE = """Hãy đánh giá tài liệu hướng dẫn dự án dưới đây và cho điểm trên thang 100.
 
-Bạn đọc và nhận xét giúp tôi nhé, và tôi có thể yên tâm dùng GLM-5 chưa? So sánh chi tiết từng khía cạnh nhé. Check thật chi tiết đừng bỏ qua bất cứ thứ gì.
+Yêu cầu đánh giá chi tiết các khía cạnh:
+1. **Kiến thức chuyên môn** - Nội dung có chính xác, đầy đủ không?
+2. **Cấu trúc và trình bày** - Có dễ hiểu, logic không?
+3. **Giải thích** - Các khái niệm có được giải thích rõ ràng không?
+4. **Giáo dục và hướng dẫn** - Có phù hợp để học không?
+5. **Code mẫu** - Code có chính xác, chạy được không?
+6. **Phương pháp sư phạm** - Có theo style giảng dạy tốt không?
+   - Có nêu mục tiêu học trước không?
+   - Có giải thích "tại sao" không chỉ "cái gì"?
+   - Có nối kiến thức cũ với mới không?
+   - Có dẫn dắt từ dễ đến khó không?
+   - Có giải thích chi tiết các khái niệm, thuật ngữ không?
+7. **Tính giao dịch** - Ngôn ngữ có thân thiện, dễ hiểu không? Có khuyến khích người học không?
+8. **Context bám sát** - Tài liệu có liên kết từ đầu đến cuối không? Có continuity không hay lộn xộn?
+9. **Code bám sát** - Code có khớp với nội dung giải thích không? Hay code và chữ rời rạc, không nhất quán?
 
-Dưới đây là nội dung 4 tài liệu:
+Cho điểm từ 0-100 và giải thích chi tiết từng điểm mạnh, điểm yếu.
 
 ---
-# [BASELINE 1 - Claude] Project: http-server-basic
-{baseline1}
+# Project: {project_name}
 
----
-# [BASELINE 2 - Claude] Project: build-event-loop
-{baseline2}
-
----
-# [GLM-5 PROJECT 1] Project: {glm1_name}
-{glm1}
-
----
-# [GLM-5 PROJECT 2] Project: {glm2_name}
-{glm2}
+{content}
 """
 
 def read_file(path: Path) -> str:
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
-def run_claude(prompt: str, projects: list[str]) -> str:
-    """Spawn claude CLI subprocess, feed prompt via stdin to avoid ARG_MAX limit."""
+def run_claude(prompt: str, project_name: str) -> str:
+    """Spawn claude CLI subprocess, feed prompt via stdin."""
     env = os.environ.copy()
-    env.pop("CLAUDECODE", None)  # allow nested claude invocation
+    env.pop("CLAUDECODE", None)
+    cmd = ["claude", "--model", CLAUDE_MODEL, "-p", "--dangerously-skip-permissions"]
     result = subprocess.run(
-        ["claude", f"--model={CLAUDE_MODEL}", "-p", "--dangerously-skip-permissions"],
+        cmd,
         input=prompt,
         capture_output=True,
         text=True,
@@ -64,38 +62,41 @@ def run_claude(prompt: str, projects: list[str]) -> str:
         env=env,
     )
     if result.returncode != 0:
-        return f"ERROR (returncode={result.returncode}):\n{result.stderr}"
+        return f"ERROR (returncode={result.returncode}):\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
     return result.stdout
 
-def evaluate_pair(baseline1: str, baseline2: str, proj1: str, proj2: str, results: list, lock: threading.Lock):
-    glm1_path = ARCH_DOCS / proj1 / "index.md"
-    glm2_path = ARCH_DOCS / proj2 / "index.md"
+def evaluate_project(project_name: str, results: list, lock: threading.Lock):
+    project_path = ARCH_DOCS / project_name / "index.md"
 
-    if not glm1_path.exists():
-        print(f"[SKIP] {proj1}: index.md not found")
-        return
-    if not glm2_path.exists():
-        print(f"[SKIP] {proj2}: index.md not found")
+    if not project_path.exists():
+        print(f"[SKIP] {project_name}: index.md not found")
         return
 
-    glm1 = read_file(glm1_path)
-    glm2 = read_file(glm2_path)
+    content = read_file(project_path)
 
     prompt = PROMPT_TEMPLATE.format(
-        baseline1=baseline1,
-        baseline2=baseline2,
-        glm1_name=proj1,
-        glm1=glm1,
-        glm2_name=proj2,
-        glm2=glm2,
+        project_name=project_name,
+        content=content,
     )
 
-    print(f"[START] Evaluating: {proj1} + {proj2}")
-    response = run_claude(prompt, [proj1, proj2])
-    print(f"[DONE]  Evaluated:  {proj1} + {proj2}")
+    print(f"[START] Evaluating: {project_name}")
+    response = run_claude(prompt, project_name)
+    print(f"[DONE]  Evaluated:  {project_name}")
+
+    # Extract score if present
+    score = "?"
+    for line in response.split('\n'):
+        if 'điểm' in line.lower() or 'score' in line.lower() or '/100' in line:
+            if any(c.isdigit() for c in line):
+                # Try to find a number
+                import re
+                nums = re.findall(r'\d+', line)
+                if nums:
+                    score = nums[0]
+                    break
 
     entry = f"""
-## Batch: {proj1} & {proj2}
+## {project_name} - Score: {score}/100
 _Evaluated at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_
 
 {response}
@@ -103,70 +104,44 @@ _Evaluated at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_
 ---
 """
     with lock:
-        results.append((proj1, proj2, entry))
-
-def chunked(lst, n):
-    it = iter(lst)
-    while True:
-        chunk = list(islice(it, n))
-        if not chunk:
-            break
-        yield chunk
+        results.append((project_name, entry))
+        with open(OUTPUT_FILE, "a", encoding="utf-8") as f:
+            f.write(entry)
 
 def main():
-    # Load baselines
-    b1 = read_file(ARCH_DOCS / "http-server-basic" / "index.md")
-    b2 = read_file(ARCH_DOCS / "build-event-loop" / "index.md")
-
-    # Get all GLM projects (those with index.md, excluding baselines)
+    # Get all projects with index.md
     all_projects = sorted([
         d.name for d in ARCH_DOCS.iterdir()
-        if d.is_dir() and d.name not in EXCLUDE and (d / "index.md").exists()
+        if d.is_dir() and (d / "index.md").exists()
     ])
 
-    print(f"Found {len(all_projects)} GLM projects to evaluate")
+    print(f"Found {len(all_projects)} projects to evaluate")
     print(f"Projects: {all_projects}")
 
-    # Pair them up (2 per batch)
-    pairs = list(chunked(all_projects, 2))
-    # Drop incomplete last pair if only 1 project left
-    # (still evaluate it by pairing with the first project)
-    if pairs and len(pairs[-1]) == 1:
-        # pair with first available
-        pairs[-1].append(all_projects[0])
-
-    print(f"Total batches: {len(pairs)} | Max parallel workers: {MAX_WORKERS}")
+    # Init output file with header
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        f.write(f"# Documentation Quality Evaluation\n")
+        f.write(f"_Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_\n\n")
+        f.write(f"**Model:** {CLAUDE_MODEL}\n\n")
+        f.write(f"**Evaluated {len(all_projects)} projects**\n\n")
+        f.write("---\n")
 
     results = []
     lock = threading.Lock()
     threads = []
     semaphore = threading.Semaphore(MAX_WORKERS)
 
-    def worker(proj1, proj2):
+    def worker(project_name):
         with semaphore:
-            evaluate_pair(b1, b2, proj1, proj2, results, lock)
+            evaluate_project(project_name, results, lock)
 
-    for pair in pairs:
-        proj1, proj2 = pair[0], pair[1]
-        t = threading.Thread(target=worker, args=(proj1, proj2), daemon=True)
+    for project_name in all_projects:
+        t = threading.Thread(target=worker, args=(project_name,), daemon=True)
         threads.append(t)
         t.start()
 
     for t in threads:
         t.join()
-
-    # Write output
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        f.write(f"# GLM-5 vs Claude Documentation Evaluation\n")
-        f.write(f"_Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_\n\n")
-        f.write(f"**Baselines (Claude-written):** http-server-basic, build-event-loop\n\n")
-        f.write(f"**Evaluated {len(all_projects)} GLM-5 projects in {len(pairs)} batches**\n\n")
-        f.write("---\n")
-
-        # Sort by project names for consistent order
-        results.sort(key=lambda x: x[0])
-        for _, _, entry in results:
-            f.write(entry)
 
     print(f"\nDone! Results written to: {OUTPUT_FILE}")
 

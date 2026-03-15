@@ -45,6 +45,21 @@ The project is complete when:
 - `gcc -fsanitize=thread` build followed by `ab -n 5000 -c 50` produces zero `ThreadSanitizer: data race` reports
 - `kill -TERM $SERVER_PID` while a large file download is in progress causes the download to complete successfully (exit code 0, md5sum matches) before the server process exits with code 0
 
+
+> **🔑 Foundation: Postel's Law**
+>
+> Postel's Law, also known as the robustness principle, states "be conservative in what you send, be liberal in what you accept." This means your software should strictly adhere to specifications when sending data but should gracefully handle deviations from the specification when receiving data. In our project, this principle guides how we handle potentially malformed incoming data, making our application more resilient. A key insight is that anticipating and accommodating variations promotes interoperability, although it can also introduce security vulnerabilities if not carefully implemented.
+
+
+> **🔑 Foundation: realpath**
+>
+> `realpath()` is a function that expands a path name to its canonical absolute form, resolving all symbolic links and removing relative references like "." and "..". We use this to sanitize user-provided file paths, ensuring they point to the intended location within a controlled directory. Understanding how ".." navigates the file system hierarchy and how symlinks can point outside a restricted prefix is crucial for preventing directory traversal vulnerabilities. `realpath()` offers a robust way to perform this path canonicalization.
+
+
+> **🔑 Foundation: MIME types and Content-Type negotiation**
+>
+> MIME types, specified in the `Content-Type` header, tell a browser how to handle a received resource. The browser uses the `Content-Type` to determine whether to render the resource (e.g., display HTML) or download it (e.g., save a PDF). For our web server project, correctly setting the `Content-Type` is essential for proper browser behavior. A common mistake is serving JavaScript files with `text/plain`, which browsers interpret as plain text and therefore don't execute as modules.
+
 ---
 
 # 📚 Before You Read This: Prerequisites & Further Reading
@@ -154,7 +169,16 @@ You call `recv()`. You get back a buffer full of bytes. You glance at it, see `G
 This works on your laptop. It works in every test. You ship it. Three weeks later, a user on a mobile network with 200ms latency reports that the server hangs. A load test shows random failures under high request volume. You are confused — the code looks right.
 The bug is in an assumption so deep you never thought to question it: that `recv()` delivers a complete request.
 **TCP does not deliver messages. TCP delivers a stream of bytes.** The kernel may give you 1 byte or 4000 bytes in a single `recv()` call, depending on factors that have nothing to do with how the sender wrote the data: network fragmentation, Nagle's algorithm buffering small writes together, OS scheduler timing, receive buffer state. A single `write()` on the sender's side can arrive as two, three, or twenty `recv()` calls on your side — or as one call that contains half of one request and the beginning of the next.
-[[EXPLAIN:partial-reads-on-stream-sockets-—-tcp-is-a-byte-stream,-not-a-message-protocol;-a-single-recv()-may-return-1-byte-or-n-bytes;-correct-code-always-loops|Partial reads on stream sockets — TCP is a byte stream, not a message protocol; a single recv() may return 1 byte or N bytes; correct code always loops]]
+
+> **🔑 Foundation: Partial reads on stream sockets**
+>
+> TCP sockets provide a byte stream, not guaranteed message boundaries. A single `recv()` call might return fewer bytes than requested, even if more data is available. To reliably receive a complete message, your code *must* loop, accumulating data until you've received the expected number of bytes. We need this knowledge to reliably transmit data packets in our system. Think of a garden hose: water comes out in a continuous stream, not in pre-packaged bottles; you need to collect it in your own container until it's full.
+
+
+> **🔑 Foundation: Partial reads on stream sockets**
+>
+> Partial reads occur when the `recv()` system call on a TCP socket returns fewer bytes than requested. TCP treats data as a byte stream, not as discrete messages. In our current project, we need to handle incoming data in chunks, even if the entire message hasn't arrived in one `recv()` call. The key insight is that you must always loop and append the received data until you've received the complete message, based on a predetermined length or a delimiter.
+
 This is the single most important concept in this milestone. Every piece of code you write in this chapter flows from it. The `recv()` loop, the delimiter search, the buffer accumulation strategy — all of it exists because TCP is a stream.
 
 ![Partial Read Problem: Why One recv() Is Never Enough](./diagrams/diag-m1-partial-read-loop.svg)
@@ -166,6 +190,16 @@ Every network connection you will ever write in C passes through the same four-s
 ![TCP Socket Lifecycle: socket() → bind() → listen() → accept() → close()](./diagrams/diag-m1-socket-lifecycle.svg)
 
 ### Step 1: `socket()` — Creating the Endpoint
+
+> **🔑 Foundation: realpath**
+>
+> Internally, `realpath()` works by iteratively calling `lstat()` to get file information and `readlink()` to resolve symbolic links. For each component of the path, it checks if it's a symbolic link; if so, it resolves the link and continues. It ultimately constructs the absolute path. If any component of the path doesn't exist, `realpath()` typically returns NULL and sets `errno` to `ENOENT`. Understanding this behavior helps us debug issues when path resolution fails.
+
+
+> **🔑 Foundation: Binary vs. text mode file reading on POSIX**
+>
+> On POSIX systems, `open()` with `O_RDONLY` always opens files in binary mode, regardless of the file's content. There is no separate text mode for reading. This is crucial for serving binary files like images and PDFs correctly because no character translations or modifications are performed. Understanding that files are treated as raw byte streams avoids potential corruption or misinterpretation of the file contents during transmission to the client.
+
 ```c
 int server_fd = socket(AF_INET, SOCK_STREAM, 0);
 if (server_fd < 0) {
@@ -173,7 +207,16 @@ if (server_fd < 0) {
     exit(EXIT_FAILURE);
 }
 ```
-[[EXPLAIN:socket-system-calls-as-file-descriptors-—-socket()-returns-an-int-fd;-all-i/o-uses-the-same-read/write/close-interface|Socket system calls as file descriptors — socket() returns an int FD; all I/O uses the same read/write/close interface]]
+
+> **🔑 Foundation: Socket system calls as file descriptors**
+>
+> In Unix-like systems, a socket created with `socket()` is represented by an integer file descriptor (FD). This means you can use the same familiar `read()`, `write()`, and `close()` system calls for socket I/O as you do for files. Understanding this abstraction is crucial for integrating sockets seamlessly with other file-based operations. Visualize a socket as just another file opened for reading and writing, simplifying I/O handling.
+
+
+> **🔑 Foundation: Socket system calls as file descriptors**
+>
+> The `socket()` system call returns an integer known as a file descriptor (FD). This FD represents the newly created socket. We use this FD with standard I/O functions like `read()`, `write()`, and `close()` to interact with the socket. This unified interface simplifies our code by allowing us to treat sockets similarly to files. The mental model is that a socket is just another type of file that the operating system manages, allowing for consistent I/O operations.
+
 `socket()` returns an integer. That integer is a **file descriptor** — the kernel's universal handle for I/O resources. The same integer type used for files (`open()`), pipes (`pipe()`), and terminals is used for network connections. This is not a coincidence; it is the Unix design philosophy: everything is a file. Once you have a socket FD, you can call `read()`, `write()`, and `close()` on it, just as you would on a regular file. Later you will use `recv()` and `send()` instead of `read()`/`write()` because they expose socket-specific flags, but at the kernel level it is the same mechanism.
 The arguments to `socket()` specify what kind of connection you want:
 - `AF_INET` — IPv4 address family (use `AF_INET6` for IPv6)
@@ -194,7 +237,16 @@ if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
 }
 ```
 `bind()` tells the kernel which address and port this socket owns. Without it, the socket exists but has no address — clients have nowhere to connect to.
-[[EXPLAIN:network-byte-order-and-htons/htonl-—-cpus-are-little-endian,-network-protocol-is-big-endian;-all-port-and-address-fields-must-be-converted|Network byte order and htons/htonl — CPUs are little-endian, network protocol is big-endian; all port and address fields must be converted]]
+
+> **🔑 Foundation: Network byte order and htons/htonl**
+>
+> CPUs can store multi-byte values in different byte orders (endianness), while network protocols usually require big-endian order. `htons()` and `htonl()` functions convert host byte order to network byte order, ensuring proper data interpretation on the receiving end. Correctly converting byte order is crucial for any networking application to avoid misinterpreting port numbers and addresses. Imagine two people speaking different languages: `htons` and `htonl` are like translators, ensuring they both understand the numbers being exchanged.
+
+
+> **🔑 Foundation: Network byte order and htons/htonl**
+>
+> Different CPUs store multi-byte values (like integers and addresses) in different byte orders (endianness). Network protocols like TCP/IP universally use big-endian (network byte order). For our networking project, we must ensure that port numbers and IP addresses are correctly represented when sending data over the network. `htons()` and `htonl()` convert short (16-bit) and long (32-bit) values from host byte order to network byte order, while `ntohs()` and `ntohl()` do the reverse.
+
 Notice `htons(8080)`. The `h` is "host," the `n` is "network," the `s` is "short" (16-bit). Your CPU stores multi-byte numbers with the least significant byte first (little-endian on x86). Network protocols store them with the most significant byte first (big-endian). If you write `addr.sin_port = 8080` without `htons()`, the bytes get swapped and you bind to port 8224 (0x2020) instead of port 8080 (0x1F90). The server starts, `bind()` succeeds, and nothing can connect to it — a bug that is genuinely difficult to diagnose without knowing this context.
 `INADDR_ANY` (value `0.0.0.0`) means "accept connections on any network interface." If you have multiple network cards or a loopback interface, the server will accept connections arriving on any of them. For development this is almost always what you want.
 #### The SO_REUSEADDR Option
@@ -206,7 +258,7 @@ if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
     exit(EXIT_FAILURE);
 }
 ```
-Without `SO_REUSEADDR`, restarting your server within about 60 seconds of stopping it will fail with `bind: Address already in use`. This happens because TCP has a state called TIME_WAIT [[EXPLAIN:tcp-time_wait-state-—-after-a-connection-closes,-the-port-stays-in-time_wait-for-2msl-(~60s)-to-absorb-delayed-packets;-so_reuseaddr-bypasses-this-for-servers|TCP TIME_WAIT state — after a connection closes, the port stays in TIME_WAIT for ~60s to absorb delayed packets; SO_REUSEADDR bypasses this for servers]] — the old socket occupies the port while the kernel waits for any delayed packets to arrive and be discarded. `SO_REUSEADDR` tells the kernel that it is safe for a new socket to claim the same address, which is always true for server sockets (not for the client-side FD that's actually in TIME_WAIT). Every production server sets this option without exception.
+Without `SO_REUSEADDR`, restarting your server within about 60 seconds of stopping it will fail with `bind: Address already in use`. This happens because TCP has a state called TIME_WAIT TCP TIME_WAIT state — after a connection closes, the port stays in TIME_WAIT for ~60s to absorb delayed packets; SO_REUSEADDR bypasses this for servers — the old socket occupies the port while the kernel waits for any delayed packets to arrive and be discarded. `SO_REUSEADDR` tells the kernel that it is safe for a new socket to claim the same address, which is always true for server sockets (not for the client-side FD that's actually in TIME_WAIT). Every production server sets this option without exception.
 ### Step 3: `listen()` — Opening for Business
 ```c
 if (listen(server_fd, SOMAXCONN) < 0) {
@@ -649,7 +701,7 @@ int parse_request_line(const char *line, size_t line_len,
 }
 ```
 Three things to notice:
-**`memchr()` instead of `strchr()`**: `memchr(line, ' ', line_len)` scans exactly `line_len` bytes for a space. `strchr(line, ' ')` scans until it finds a null terminator. Since `line` comes from a network buffer that might not be null-terminated at the right place, `strchr` could read past the end of the line. [[EXPLAIN:memchr-vs-strchr-safety-—-working-with-length-bounded-buffers-from-the-network-requires-using-mem*-functions-not-str*-functions-to-avoid-reading-past-the-valid-data|memchr vs strchr safety — working with length-bounded buffers from the network requires using mem* functions not str* functions to avoid reading past valid data]]
+**`memchr()` instead of `strchr()`**: `memchr(line, ' ', line_len)` scans exactly `line_len` bytes for a space. `strchr(line, ' ')` scans until it finds a null terminator. Since `line` comes from a network buffer that might not be null-terminated at the right place, `strchr` could read past the end of the line. memchr vs strchr safety — working with length-bounded buffers from the network requires using mem* functions not str* functions to avoid reading past valid data
 **Return code -2 for 414**: The `parse_request_line` function uses -1 for generic malformation (→ 400 Bad Request) and -2 specifically for oversized paths (→ 414 URI Too Long). The caller inspects the return code and chooses the error response accordingly. You could use an enum for clarity in a larger codebase.
 **Stripping trailing `\r`**: When a client sends bare LF line endings (`\n` without `\r`), the version field will still have its `\r` from the original CRLF — wait, actually the opposite: if the client sends `GET / HTTP/1.1\n`, the line will end in `\n` only, so there is no `\r` to strip. But if the client sends `GET / HTTP/1.1\r\n` and your line-splitting logic includes the `\r` in the line content, you need to strip it. The safest approach: always check for and strip a trailing `\r` from any line before using its content.
 ---
@@ -778,7 +830,7 @@ const char *host   = get_header(&req, "host");
 const char *ctype  = get_header(&req, "content-type");
 const char *clen   = get_header(&req, "content-length");
 ```
-A linear scan through 32 entries costs 32 `strcmp()` calls — a few hundred nanoseconds at most. For a static file server with tens of thousands of requests per second (not millions), this is the right tradeoff. [[EXPLAIN:linear-scan-vs-hash-map-for-small-collections-—-hash-maps-have-overhead-per-lookup-amortized-across-size;-for-n-under-32-linear-scan-is-often-faster-due-to-cache-locality|Linear scan vs hash map for small collections — hash maps have overhead per lookup; for N under 32, linear scan is often faster due to cache locality]]
+A linear scan through 32 entries costs 32 `strcmp()` calls — a few hundred nanoseconds at most. For a static file server with tens of thousands of requests per second (not millions), this is the right tradeoff. Linear scan vs hash map for small collections — hash maps have overhead per lookup; for N under 32, linear scan is often faster due to cache locality
 If you wanted O(1) lookup, you would store headers in a hash map with a case-insensitive hash function. That is what nginx's internal header table does. For this milestone, linear scan is correct.
 ---
 ## Validation: Method Checking and Error Responses
@@ -843,7 +895,11 @@ void validate_and_log_host(const http_request_t *req) {
 }
 ```
 The decision of whether to reject a missing `Host` with 400 Bad Request or to log-and-continue is the **Postel's Law tension**: the spec says reject it, but being robust means serving the request anyway since the handler knows which host it is (there is only one). For a production reverse proxy, reject it. For this learning project, log it and continue — your server is not doing virtual hosting.
-[[EXPLAIN:postels-law-be-conservative-in-what-you-send-be-liberal-in-what-you-accept-—-the-robustness-principle-that-shaped-the-web-and-its-security-implications|Postel's Law — "be conservative in what you send, be liberal in what you accept" — the robustness principle that shaped the web and its security implications]]
+
+> **🔑 Foundation: Postel's Law**
+>
+> Postel's Law, also known as the Robustness Principle, states "be conservative in what you send, be liberal in what you accept." This means your application should adhere strictly to protocol specifications when sending data, but be tolerant of deviations when receiving data. We should implement this when processing user inputs in order to handle different types of clients/browsers.  Think of it as a forgiving teacher accepting slightly messy homework, but always assigning perfectly formatted instructions.
+
 ---
 ## Reading the Request Body
 For GET and HEAD requests, there is no body. For POST (and future PUT), the body follows the empty line, and its length is given by the `Content-Length` header.
@@ -1196,7 +1252,11 @@ All three bypasses have the same root cause: **a string comparison on a path is 
 
 ![Directory Traversal Attack: Three Bypass Vectors Neutralized](./diagrams/diag-m3-traversal-attack-neutralization.svg)
 
-[[EXPLAIN:realpath()-and-filesystem-path-canonicalization-—-what-..-means-at-the-kernel-level-and-how-symlinks-can-escape-a-prefix-check|realpath() and filesystem path canonicalization — what .. means at the kernel level and how symlinks can escape a prefix check]]
+
+> **🔑 Foundation: realpath**
+>
+> `realpath()` resolves a path to its absolute, canonical form, resolving symbolic links and `..` components. Failing to properly use `realpath()` can expose security vulnerabilities where symlinks can be used to bypass path restrictions. Consider it a map that eliminates shortcuts and detours, revealing the true, direct route to a file, preventing unauthorized access via tricky routes.
+
 ---
 ## The URL-to-Filesystem Pipeline
 Every file-serving request travels through a five-stage pipeline. Skipping or reordering any stage opens a vulnerability or a bug.
@@ -1278,7 +1338,11 @@ int build_full_path(const char *doc_root, const char *decoded_path,
 }
 ```
 ### Stage 3: `realpath()` — The Security Keystone
-[[EXPLAIN:realpath()-internals-—-the-series-of-lstat()-and-readlink()-calls-it-makes-and-its-ENOENT-behavior-on-nonexistent-paths|realpath() internals — the series of lstat() and readlink() calls it makes, and its ENOENT behavior on nonexistent paths]]
+
+> **🔑 Foundation: realpath**
+>
+> Internally, `realpath()` repeatedly calls `lstat()` to get file metadata and `readlink()` to resolve symbolic links. If the path doesn't exist, `realpath()` will typically return an `ENOENT` error. Understanding these low-level operations helps debug unexpected behavior or performance issues. Visualize `realpath()` as a detective meticulously following clues (symlinks and directory entries) until they reach the final destination.
+
 ```c
 char canonical[PATH_MAX];
 if (realpath(full_path, canonical) == NULL) {
@@ -1352,7 +1416,7 @@ if (S_ISDIR(st.st_mode)) {
 }
 ```
 Notice that after appending `/index.html`, you call `realpath()` again and re-run the prefix check. This is not paranoia — `index.html` could itself be a symlink that points outside the document root. Every call to `realpath()` is a containment checkpoint.
-The order of operations also prevents a TOCTOU (Time-of-Check, Time-of-Use) [[EXPLAIN:TOCTOU-race-condition-—-the-window-between-checking-a-file's-properties-and-using-the-file-where-the-filesystem-can-change|TOCTOU race condition — the window between checking a file's properties and using the file where the filesystem can change]] race: you `stat()` to check whether it is a directory, then `open()` the result. An attacker who can replace the directory with a symlink in the microsecond between your `stat()` and `open()` can bypass your check. For a simple static file server this risk is low, but in production systems this is addressed by using `openat()` with `O_NOFOLLOW` on the final component. For this milestone, the `realpath()` + `stat()` + `open()` sequence is correct and sufficient.
+The order of operations also prevents a TOCTOU (Time-of-Check, Time-of-Use) TOCTOU race condition — the window between checking a file's properties and using the file where the filesystem can change race: you `stat()` to check whether it is a directory, then `open()` the result. An attacker who can replace the directory with a symlink in the microsecond between your `stat()` and `open()` can bypass your check. For a simple static file server this risk is low, but in production systems this is addressed by using `openat()` with `O_NOFOLLOW` on the final component. For this milestone, the `realpath()` + `stat()` + `open()` sequence is correct and sufficient.
 ---
 ## MIME Type Detection
 
@@ -1400,14 +1464,22 @@ const char *get_mime_type(const char *path) {
 `strrchr(path, '.')` finds the *last* dot in the path. This correctly handles files like `archive.tar.gz` — you get `.gz`, not `.tar`. It also handles `dotfiles` like `.gitignore` which have no extension — `strrchr` returns a pointer to the leading `.`, which will not match any entry in the table, so you get `application/octet-stream` (which triggers a download, appropriate for dotfiles).
 Why `application/octet-stream` as the default? The browser treats it as raw binary data and offers a download dialog. This is the safe default. If your server returns `text/html` for a JavaScript file, the browser renders it as HTML — which could contain attacker-injected markup. If your server returns `text/plain` for a JavaScript file, browsers refuse to execute it in certain security contexts (notably when loaded as a module with `<script type="module">`). Getting the MIME type wrong is not just a display issue — it can break functionality and create security vulnerabilities.
 The `charset=utf-8` suffix on text types tells the browser the character encoding of the text. Without it, the browser uses heuristics to guess the encoding, which can fail on files containing non-ASCII characters. Always include `charset=utf-8` for text MIME types.
-[[EXPLAIN:MIME-types-and-Content-Type-negotiation-—-how-browsers-use-Content-Type-to-decide-rendering-vs-download-and-why-text/plain-breaks-JavaScript-modules|MIME types and Content-Type negotiation — how browsers use Content-Type to decide rendering vs. download, and why text/plain breaks JavaScript modules]]
+
+> **🔑 Foundation: MIME types and Content-Type negotiation**
+>
+> MIME types, conveyed through the `Content-Type` header, tell the browser how to handle a resource (e.g., render it, download it). Sending incorrect MIME types, like `text/plain` for JavaScript modules, can lead to unexpected behavior and security issues. Ensuring correct `Content-Type` headers is vital for proper resource handling and security in web applications. Think of the `Content-Type` as a label on a package: it tells the browser what's inside and how to handle it safely.
+
 ---
 ## Reading and Sending File Contents
 
 ![File Serving Code Path: open() → fstat() → write() Loop](./diagrams/diag-m3-file-serve-flow.svg)
 
 With a validated canonical path and a MIME type, you can now open and serve the file. The key constraint: **always read files in binary mode** — which on Linux/POSIX simply means using `open()`/`read()` rather than `fopen()`/`fread()` in text mode. On POSIX systems there is no text/binary distinction at the OS level; the C standard library's text mode (`fopen("file", "r")` vs `"rb"`) can perform newline translation on Windows but not on Linux. Since your server will send binary content (images, PDFs, fonts), use the POSIX `open()`/`read()`/`close()` calls directly.
-[[EXPLAIN:binary-vs-text-mode-file-reading-on-POSIX-—-why-open()-with-O_RDONLY-is-always-binary-and-why-this-matters-for-serving-images-and-PDFs|Binary vs. text mode file reading on POSIX — why open() with O_RDONLY is always binary and why this matters for serving images and PDFs]]
+
+> **🔑 Foundation: Binary vs. text mode file reading on POSIX**
+>
+> On POSIX systems, opening a file with `open()` in `O_RDONLY` mode always opens it in binary mode. This means no newline translation occurs, and all bytes are read as is, which is essential for serving non-text files like images and PDFs correctly. We have to remember that binary files need to be treated as a binary stream in the server. Consider it like reading a book versus photocopying it: in "binary mode" you just make an exact copy, whereas "text mode" may silently add or remove special characters that could corrupt non-text data.
+
 ```c
 // stat() gives us the file size before opening — needed for Content-Length.
 // The stat struct is also used for Last-Modified.
@@ -1495,7 +1567,20 @@ When a browser visits a page for the second time, it does not want to download u
 3. If unchanged: respond `304 Not Modified` with no body — saves the entire file transfer
 4. If changed: respond `200 OK` with the new file contents and updated `Last-Modified`
 The `304 Not Modified` response contains no body but *must* include the same headers the `200` would include: `Content-Type`, `Last-Modified`, and `Content-Length`. The `Content-Length` tells the client the size the body *would* have been — the client already has that many bytes in its cache.
-[[EXPLAIN:HTTP-conditional-requests-and-304-Not-Modified-—-how-browser-caches-CDN-edge-caches-and-reverse-proxies-all-use-this-mechanism-to-avoid-retransmitting-unchanged-content|HTTP conditional requests and 304 Not Modified — how browser caches, CDN edge caches, and reverse proxies all use this mechanism to avoid retransmitting unchanged content]]
+
+> **🔑 Foundation: HTTP conditional requests and 304 Not Modified**
+>
+> HTTP conditional requests allow clients to ask a server to send a resource *only* if it has been modified since the client last received it. The server can respond with a 304 Not Modified status code to signal that the client's cached version is still valid. We need this to minimize bandwidth usage and improve response times for frequently accessed resources in our distributed system. Think of it like a librarian checking if a book has been updated before sending you a fresh copy; they only send it if there are changes.
+
+
+> **🔑 Foundation: HTTP conditional requests and 304 Not Modified**
+>
+> HTTP conditional requests let clients (like browsers or CDNs) ask a server to send a resource *only if* it has changed since the last time the client retrieved it. The server replies with a 304 Not Modified response if the resource hasn't changed, telling the client to use its cached copy. This saves bandwidth and reduces server load, especially when dealing with static content or frequently accessed resources.
+
+We're introducing this now because our system frequently retrieves static configuration files and large assets that rarely change. By implementing conditional requests, we can significantly reduce network traffic and improve response times for our users without constantly downloading the same data.
+
+The key insight is that clients and servers can "remember" the last known state of a resource. Instead of blindly resending data, the server can quickly check if the resource has changed and efficiently inform the client whether to reuse its existing copy.
+
 ### Parsing the If-Modified-Since Header
 The `If-Modified-Since` header value is an HTTP-date string: `Mon, 01 Jan 2024 12:00:00 GMT`. You need to parse this into a `time_t` to compare it with `st.st_mtime`.
 ```c
@@ -1516,7 +1601,7 @@ time_t parse_http_date(const char *date_str) {
     return timegm(&tm); // Convert UTC struct tm to time_t (Linux/BSD extension)
 }
 ```
-`strptime()` is the inverse of `strftime()` — it parses a formatted date string into a `struct tm`. `timegm()` is the UTC-aware version of `mktime()`: it converts a `struct tm` in UTC to a `time_t` without applying local timezone offsets. Using `mktime()` instead of `timegm()` would produce incorrect comparisons on servers not running in UTC. [[EXPLAIN:timegm()-vs-mktime()-and-UTC-timezone-handling-in-HTTP-date-comparison|timegm() vs mktime() and why UTC timezone handling matters for correct If-Modified-Since comparison]]
+`strptime()` is the inverse of `strftime()` — it parses a formatted date string into a `struct tm`. `timegm()` is the UTC-aware version of `mktime()`: it converts a `struct tm` in UTC to a `time_t` without applying local timezone offsets. Using `mktime()` instead of `timegm()` would produce incorrect comparisons on servers not running in UTC. timegm() vs mktime() and why UTC timezone handling matters for correct If-Modified-Since comparison
 ### The Comparison Logic
 ```c
 time_t if_modified_since = parse_http_date(
@@ -1890,7 +1975,20 @@ The fix is not to make threads cheaper — it is to bound how many you create. A
 > **The insight**: Thread pools with bounded queues are not an optimization of thread-per-connection. They are a fundamentally different contract with the OS: instead of "I will create as many threads as there are connections," the contract is "I will use exactly N threads, always, regardless of load." This contract is what makes the server's behavior predictable under adversarial input.
 ---
 ## POSIX Threads: The Primitives
-[[EXPLAIN:posix-threads:-pthread_create,-pthread_mutex_lock,-pthread_cond_wait-—-the-primitives-used-in-m4|POSIX threads: pthread_create, pthread_mutex_lock, pthread_cond_wait — the primitives used in M4]]
+
+> **🔑 Foundation: POSIX threads: pthread_create**
+>
+> POSIX threads (pthreads) provide a standard API for creating and managing threads within a process. `pthread_create` creates a new thread, `pthread_mutex_lock` and `pthread_mutex_unlock` provide mutual exclusion, and `pthread_cond_wait` allows threads to wait for specific conditions. We're using pthreads in M4 to achieve concurrency and parallelism for improved performance. Visualize threads as workers in a factory, each with a specific task, coordinating their work and sharing resources using locks and waiting on signals to proceed.
+
+
+> **🔑 Foundation: POSIX threads: pthread_create**
+>
+> POSIX threads (pthreads) provide a standard API for creating and managing threads within a process, enabling concurrency. `pthread_create` spawns a new thread, `pthread_mutex_lock` acquires exclusive access to a shared resource protected by a mutex, and `pthread_cond_wait` allows a thread to sleep until another thread signals a condition variable, often in conjunction with a mutex. These primitives are fundamental for managing concurrent access to shared data and coordinating the execution of multiple threads.
+
+We're using these pthreads primitives in M4 to handle multiple incoming client connections concurrently. Each connection will be handled in its own thread, improving the overall throughput and responsiveness of the system.
+
+The mental model is that of a group of workers (threads) sharing resources (data) and needing to coordinate their work. Mutexes act as locks, preventing simultaneous access to critical sections, and condition variables allow threads to signal and wait for specific events related to the shared data.
+
 Before building the thread pool, you need a working mental model of the three POSIX primitives you will use throughout this milestone.
 ### `pthread_create()` — Spawning a Thread
 ```c
@@ -2035,7 +2133,7 @@ typedef struct {
     int             thread_count;
 } thread_pool_t;
 ```
-The queue is a **circular buffer** (also called a ring buffer) — a fixed-size array where `head` and `tail` wrap around using modulo arithmetic. This avoids `memmove()` on every dequeue. [[EXPLAIN:circular-buffer-ring-buffer-—-fixed-size-array-with-head-and-tail-indices-that-wrap-around-using-modulo;-O(1)-enqueue-and-dequeue-without-shifting|Circular buffer (ring buffer) — fixed-size array with head/tail indices that wrap modulo capacity; O(1) enqueue and dequeue without shifting elements]]
+The queue is a **circular buffer** (also called a ring buffer) — a fixed-size array where `head` and `tail` wrap around using modulo arithmetic. This avoids `memmove()` on every dequeue. Circular buffer (ring buffer) — fixed-size array with head/tail indices that wrap modulo capacity; O(1) enqueue and dequeue without shifting elements
 Two condition variables instead of one: `not_empty` (workers wait on this when the queue is empty) and `not_full` (the accept loop waits on this if the queue is full, or you can choose to reject with 503 instead). Using two separate condition variables avoids waking the wrong waiter — if you used one cond var, a producer adding an item might wake another producer instead of the waiting consumer.
 ### Initialization
 ```c
@@ -2264,7 +2362,7 @@ ssize_t read_request_with_timeout(int fd, char *buf, size_t buf_size,
     return -1;  // Buffer exhausted
 }
 ```
-`select()` takes a set of file descriptors to monitor and a timeout. It blocks until at least one FD in the set becomes readable, or until the timeout expires. [[EXPLAIN:select()-and-fd_set-—-monitoring-multiple-file-descriptors-for-readability-or-writeability-with-an-optional-timeout;-predecessor-to-poll()-and-epoll()|select() and fd_set — monitoring file descriptors for I/O readiness with an optional timeout; predecessor to poll() and epoll()]]
+`select()` takes a set of file descriptors to monitor and a timeout. It blocks until at least one FD in the set becomes readable, or until the timeout expires. select() and fd_set — monitoring file descriptors for I/O readiness with an optional timeout; predecessor to poll() and epoll()
 When `select()` returns 0, the timeout elapsed without any data arriving. You return -1 from `read_request_with_timeout()`, and the caller breaks out of the keep-alive loop and closes the connection. The worker thread is then free to handle the next client.
 The timeout applies **per read operation** within a request, not per connection total. This is the right granularity: it allows a slow but active client to send headers byte by byte over 30 seconds (unusual but not malicious), while killing a completely idle connection after 30 seconds.
 ### SO_RCVTIMEO: The Socket-Level Timeout
@@ -2329,7 +2427,20 @@ while (!atomic_load(&server_shutdown)) {
 }
 ```
 `atomic_int` ensures that the write in the signal handler and the read in the accept loop are not subject to compiler reordering or visibility issues. Without `atomic` or `volatile`, the compiler is free to cache `server_shutdown` in a register and never re-read it from memory — making the loop spin forever even after the signal arrives.
-[[EXPLAIN:volatile-vs-atomic-in-signal-handlers-—-why-volatile-is-insufficient-for-cross-thread-visibility-and-atomic_int-is-the-correct-type-for-flags-modified-from-signal-handlers|volatile vs. atomic in signal handlers — why volatile alone is insufficient and atomic_int is the correct type]]
+
+> **🔑 Foundation: volatile vs. atomic in signal handlers**
+>
+> volatile vs. atomic in signal handlers — why volatile alone is insufficient and atomic_int is the correct type
+
+
+> **🔑 Foundation: volatile vs. atomic in signal handlers**
+>
+> `volatile` tells the compiler not to optimize away accesses to a variable, ensuring that the variable's value is always read from memory and written back. However, it doesn't guarantee atomicity (indivisible operations) which is essential for cross-thread or signal handler communication. `atomic_int` guarantees both that accesses are not optimized away *and* that they are performed atomically, preventing race conditions.
+
+We need to use `atomic_int` instead of `volatile` for flags modified within signal handlers because signal handlers can interrupt other threads at any point. If a regular `int` were being modified when the signal arrived, the operation could be partially completed leading to inconsistent state. Furthermore, `volatile` doesn't guarantee visibility across threads on architectures where processors have separate caches.
+
+The key insight is that reading and writing a shared variable can be a sequence of operations at the machine level. `volatile` only addresses compiler optimizations, while `atomic_int` ensures that the entire operation (read and/or write) happens as a single, indivisible action, preventing data corruption and ensuring consistent cross-thread visibility.
+
 ### Shutting Down the Thread Pool
 After the accept loop exits, you need to shut down the thread pool cleanly:
 ```c
@@ -2382,7 +2493,7 @@ void stats_connection_closed(void) {
     pthread_mutex_unlock(&g_stats.lock);
 }
 ```
-Call `stats_connection_opened()` at the start of `handle_client_keep_alive()` and `stats_connection_closed()` at the end. The mutex ensures that two threads incrementing simultaneously produce the correct result, not the racy result of a non-atomic read-modify-write. [[EXPLAIN:data-race-on-non-atomic-increment-—-why-counter++-is-not-thread-safe-without-a-mutex-or-atomic-operation-even-on-x86|Data race on non-atomic increment — why counter++ is not thread-safe without a mutex or atomic operation, even on x86]]
+Call `stats_connection_opened()` at the start of `handle_client_keep_alive()` and `stats_connection_closed()` at the end. The mutex ensures that two threads incrementing simultaneously produce the correct result, not the racy result of a non-atomic read-modify-write. Data race on non-atomic increment — why counter++ is not thread-safe without a mutex or atomic operation, even on x86
 ### Cache-Line False Sharing
 There is a subtle performance issue with mutexes and counters that matters when you push for high throughput. Consider this struct:
 ```c
@@ -2392,7 +2503,7 @@ typedef struct {
     // ...padding to 64 bytes total...
 } stats_t;
 ```
-`pthread_mutex_t` is 40 bytes on Linux. The counter is 4 bytes. Together, they fit in a single 64-byte cache line. Every time any thread acquires the mutex, the hardware writes to the mutex's internal state. Every write to a cache line **invalidates that line in every other CPU core's cache** — this is the MESI cache coherence protocol. [[EXPLAIN:MESI-cache-coherence-protocol-—-how-multi-core-CPUs-keep-their-L1-caches-consistent-using-Modified/Exclusive/Shared/Invalid-states;-why-writing-to-a-shared-cache-line-causes-inter-core-traffic|MESI cache coherence protocol — how multi-core CPUs keep their caches consistent; why writes to a shared cache line cause all other cores to reload that line]]
+`pthread_mutex_t` is 40 bytes on Linux. The counter is 4 bytes. Together, they fit in a single 64-byte cache line. Every time any thread acquires the mutex, the hardware writes to the mutex's internal state. Every write to a cache line **invalidates that line in every other CPU core's cache** — this is the MESI cache coherence protocol. MESI cache coherence protocol — how multi-core CPUs keep their caches consistent; why writes to a shared cache line cause all other cores to reload that line
 If 16 threads are competing for `g_stats.lock`, the cache line containing the mutex bounces between cores on every lock/unlock. This is called **false sharing** — threads are not sharing the *data* logically, but they share the *cache line* physically. High-frequency mutex operations can saturate the inter-core interconnect.
 For a simple connection counter, the impact is small — you lock briefly, increment, unlock. But the principle matters for hot paths. High-performance servers use one of two approaches:
 - **Per-thread counters**: each thread has its own counter, atomically merged when statistics are read. Zero contention during the fast path.

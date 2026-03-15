@@ -166,7 +166,13 @@ Instead of asking the kernel "please do this I/O" and waiting for an answer, you
 io_uring is built around two circular buffers (rings) that live in memory shared between your application and the kernel:
 - **Submission Queue (SQ):** You write I/O requests here; the kernel reads them
 - **Completion Queue (CQ):** The kernel writes results here; you read them
-[[EXPLAIN:ring-buffer-index-arithmetic-(modulo-free-circular-queues)|Ring buffers that use power-of-2 sizes to avoid expensive modulo operations]]
+
+> **🔑 Foundation: Ring buffers that use power-of-2 sizes to avoid expensive mo**
+>
+> Ring buffers, also known as circular queues, are fixed-size data structures that treat the allocated memory as if it were a continuous circle. Data is written sequentially until the end is reached, at which point writing wraps around to the beginning, overwriting older data. We're using a ring buffer to efficiently manage incoming network packets, allowing us to process them asynchronously without constantly allocating and deallocating memory.
+Calculating the correct index to read or write from/to within a ring buffer typically involves using the modulo operator (`%`). However, if the ring buffer's size is a power of 2, we can replace the expensive modulo operation with a bitwise AND operation (`&`), which is significantly faster. The key insight here is that `x % N` is equivalent to `x & (N-1)` when N is a power of 2; the AND operation effectively "masks" off all bits above the range of valid indices, creating a circular behavior without needing division.
+
+
 The critical insight is **split ownership**:
 | Index | Owner (writes) | Other side (reads) |
 |-------|----------------|-------------------|
@@ -236,7 +242,13 @@ struct io_sqring_offsets {
     __u32 resv[3];
 };
 ```
-[[EXPLAIN:cache-line-alignment-(64-byte-boundaries)|Cache lines and why the ring structures are laid out the way they are]]
+
+> **🔑 Foundation: Cache lines and why the ring structures are laid out the way**
+>
+> A cache line is a small block of memory (typically 64 bytes) that is transferred as a unit between main memory and the CPU cache. Accessing data within a cache line is fast, but accessing data across multiple cache lines is slow due to the need to retrieve multiple cache lines from main memory. We are aligning elements within our ring buffer to cache line boundaries to minimize the risk of "false sharing," where logically independent data items reside in the same cache line and cause contention between cores or processors.
+Aligning data structures, particularly those accessed frequently by multiple threads or cores, on cache line boundaries ensures that each element resides within its own dedicated cache line. This avoids situations where multiple cores are attempting to modify different parts of the *same* cache line, leading to cache invalidation and performance degradation. The key mental model is that the CPU doesn't operate on individual bytes; it operates on cache lines, so minimizing cache line contention is crucial for performance.
+
+
 ## Memory Barriers: Not Optional, Not Just for Weak Memory Models
 Here's where most developers go wrong: they assume x86's strong memory model means they don't need memory barriers. "x86 preserves ordering," they think. "I'll just write to tail and the kernel will see it."
 **The trap:** x86 preserves ordering for memory operations, but **the compiler doesn't know about the kernel**.
@@ -246,7 +258,13 @@ Here's where most developers go wrong: they assume x86's strong memory model mea
 sqes[index].opcode = IORING_OP_READ;  // Write SQE data
 ```
 The compiler sees two independent memory writes. It's free to reorder them. If the kernel reads `sq_tail` before your SQE data is written, it will process garbage.
-[[EXPLAIN:memory-barriers-(acquire/release-semantics)|Acquire and release semantics: what they guarantee and why you need them]]
+
+> **🔑 Foundation: Acquire and release semantics: what they guarantee and why y**
+>
+> Memory barriers, also known as memory fences, are instructions that enforce ordering constraints on memory operations. They prevent the compiler and CPU from reordering reads and writes in a way that could lead to unexpected behavior in concurrent programs. We're using acquire and release semantics to ensure that reads and writes to the ring buffer's head and tail pointers are correctly synchronized between the producer (network processing thread) and the consumer (application thread).
+Acquire semantics guarantee that any read operation with acquire semantics will see all writes that happened *before* a corresponding release operation. Release semantics guarantee that all writes that happened *before* the release operation are visible to any thread that performs an acquire operation. The mental model is to think of acquire as "acquiring" the latest state of the data protected by the barrier, and release as "releasing" the new state of the data to be acquired by others. Without these, the consumer might see an outdated head pointer or the producer may operate on stale tail information, leading to data corruption or deadlocks.
+
+
 The solution: **store-release** when publishing, **load-acquire** when consuming.
 ```c
 // Publishing to kernel: ensure all SQE writes complete before tail update
@@ -1545,6 +1563,12 @@ void process_completions(struct file_read_context *ctx) {
     io_uring_cq_advance(&ctx->ring, count);
 }
 ```
+
+> **🔑 Foundation: Why DMA buffers need special handling and what happens when **
+>
+> DMA (Direct Memory Access) allows hardware devices, like network interface cards (NICs), to directly access system memory without involving the CPU. In DMA-coherent systems, the hardware and the CPU share a unified memory space and the hardware automatically maintains cache coherency. This project uses a device that may or may not be DMA coherent, and thus needs special attention to avoid stale data.
+If the CPU caches data written by the device using DMA, it may not see updates made directly to memory by the DMA engine. Similarly, if the device reads from memory that the CPU has cached but not yet written back to main memory, it will read stale data. The mental model is that the CPU's cache and the device's memory access are separate entities that need explicit synchronization mechanisms (e.g., cache flushing or invalidation) to guarantee data consistency when DMA coherence is not available. This involves flushing CPU caches to ensure data written by the CPU is visible to the device and invalidating CPU caches to force the CPU to read the latest data written by the device.
+
 ---
 ## Direct I/O: Bypassing the Page Cache
 > **The Misconception:** Direct I/O (`O_DIRECT`) is just a flag that tells the kernel to skip the page cache. You pass it to `open()`, and suddenly your reads and writes go straight to disk.
@@ -2888,7 +2912,13 @@ void handle_multishot_accept_cqe(struct multishot_accept_context *ctx,
     setup_client(client_fd);
 }
 ```
-[[EXPLAIN:non-blocking-socket-flags-(SOCK_NONBLOCK,-O_NONBLOCK)|Why non-blocking mode is essential for async I/O and what happens without it]]
+
+> **🔑 Foundation: Why non-blocking mode is essential for async I/O and what ha**
+>
+> Non-blocking socket flags instruct the operating system to return immediately if a read or write operation cannot be completed immediately. Instead of blocking (waiting) until data is available or a buffer becomes free, the operation returns an error (typically `EAGAIN` or `EWOULDBLOCK`). We need non-blocking sockets to achieve asynchronous I/O, allowing our application to handle multiple network connections concurrently without dedicating a thread to each connection.
+Without non-blocking sockets, each `read()` or `write()` call on a socket could potentially block indefinitely, waiting for data or buffer space. This would make it impossible to handle multiple connections efficiently within a single thread. The key insight is that by using non-blocking sockets, we can use `select()` or `epoll()` to monitor multiple sockets simultaneously and only perform I/O operations on sockets that are ready, maximizing throughput and responsiveness.
+
+
 ### The Fallback: Single-Shot Accept
 For kernels before 5.19, or when multishot isn't available, you must use single-shot accept with manual resubmission:
 ```c
@@ -4235,7 +4265,7 @@ void handle_zc_cqe(struct zc_echo_server *server, struct io_uring_cqe *cqe) {
     }
 }
 ```
-[[EXPLAIN:dma-coherent-memory-vs-cache-coherent-interop|Why DMA buffers need special handling and what happens when the CPU and device both access the same memory]]
+
 ---
 ## SQ Polling: Eliminating the Submission Syscall
 With zero-copy sends, you've eliminated data copies. Now let's eliminate the syscall that notifies the kernel of new submissions.

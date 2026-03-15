@@ -340,7 +340,12 @@ def __mul__(self, other):
 ![Operator Overload Execution Flow](./diagrams/diag-operator-overload-flow.svg)
 
 ## The Gradient Accumulation Trap
-[[EXPLAIN:why-gradient-accumulation-(+=)-not-assignment-(=)|Why gradient accumulation (+=) not assignment (=)]]
+
+> **🔑 Foundation: Why gradient accumulation**
+>
+> **Foundation:** Gradient accumulation involves repeatedly computing gradients on multiple mini-batches of data and *adding* them together. This accumulated gradient is then used to update the model's parameters after a certain number of mini-batches. In our current project, mini-batches are constrained by available GPU memory; we want to effectively simulate a larger batch size without exceeding memory limits. The key mental model is that accumulating gradients approximates the gradient calculated from a single, larger batch, allowing for improved training stability and performance when large batch sizes are beneficial but resource-intensive.
+
+
 Consider this expression:
 ```python
 a = Value(3)

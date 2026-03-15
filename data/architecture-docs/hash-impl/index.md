@@ -267,7 +267,12 @@ This means padding is load-bearing in a security sense. The **Merkle-Damgård st
 You'll engage with the full Merkle-Damgård chain in Milestone 4. For now, the key insight is: **padding is where the security guarantee begins.**
 ---
 ## Decoding the FIPS 180-4 Padding Rule
-[[EXPLAIN:reading-a-cryptographic-specification-(fips-pseudocode-notation)|Reading a cryptographic specification (FIPS pseudocode notation) — how to interpret FIPS 180-4 notation including ROTR^n(x), + mod 2^32, sigma symbols, and the pseudocode conventions used throughout this project]]
+
+> **🔑 Foundation: Reading a cryptographic specification**
+>
+> Cryptographic specifications, like FIPS 180-4, use a combination of mathematical notation and pseudocode to precisely define algorithms. These specs detail the steps required for cryptographic transformations, independent of any specific programming language. Understanding this notation is crucial for implementing SHA-256 correctly according to the standard. Think of it as a formal, unambiguous recipe; each symbol and construct has a specific meaning, and deviations can lead to incorrect cryptographic output.
+
+
 Open NIST FIPS 180-4, Section 5.1.1. The specification describes SHA-256 padding in plain terms, but you need to read it carefully. Here is the rule, translated from the spec into concrete steps:
 Given a message `M` of length `L` bits:
 1. Append a single `1` bit immediately after the last bit of `M`.
@@ -323,6 +328,11 @@ Suppose you're reading a 4-byte chunk of a SHA-256 message block from a buffer i
 ```
 These bytes represent the big-endian word `0x1A2B3C4D`. But a naive `memcpy` or pointer cast on x86 will load them little-endian, giving you `0x4D3C2B1A` — **wrong**.
 **Correct approach — manual byte swap:**
+
+> **🔑 Foundation: Hexadecimal encoding of binary data**
+>
+> Hexadecimal encoding represents binary data (sequences of bytes) using pairs of hexadecimal characters (0-9 and a-f). Each byte, representing values from 0 to 255, is converted into its corresponding two-digit hexadecimal representation. We use hex encoding for representing SHA-256 hash digests as human-readable strings for easier debugging and verification. Think of it as converting binary data into base-16; this allows us to easily represent the byte values in a string format suitable for display and comparison.
+
 ```c
 #include <stdint.h>
 /* Read 4 bytes from buf (big-endian order) into a uint32_t */
@@ -809,7 +819,12 @@ The σ0 and σ1 functions exist entirely to serve goal 2. Understanding how they
 Before we touch the σ functions, we need to confront the most dangerous misconception about the message schedule:
 > *"ROTR and SHR both shift bits to the right. They're basically the same operation. The constants in the σ functions were probably just chosen somewhat arbitrarily."*
 This is wrong in both halves. ROTR and SHR are **fundamentally different** operations, and the constants were chosen with extreme care. Let's prove it.
-[[EXPLAIN:bitwise-rotation-(rotr)-vs-right-shift-(shr)|Bitwise rotation (ROTR) vs right-shift (SHR) — ROTR wraps bits that fall off the right end back to the top of the word, preserving every bit; SHR discards bits that fall off the right end and fills vacated positions with zeros. The σ functions deliberately combine both to create a specific diffusion pattern where no bits are lost globally but some positions receive zeroed-in bits locally.]]
+
+> **🔑 Foundation: Bitwise rotation**
+>
+> Bitwise rotation (ROTR) shifts bits to the right, wrapping the shifted-off bits around to the left side of the register. Right-shift (SHR), on the other hand, shifts bits to the right, filling the vacated bit positions with zeros and discarding shifted bits. We specifically use ROTR and SHR, along with XOR, in the SHA-256 σ functions for optimized mixing of bits. The key insight is that ROTR preserves all bits while SHR introduces zeros, which, when combined, create diffusion and prevent simple reversal.
+
+
 ### Tracing Bits Through an Example
 Consider the 32-bit value `x = 0xABCDE001`. In binary:
 ```
@@ -893,7 +908,7 @@ The NIST SHA-256 example computation for "abc" shows `W[0] = 0x61626380`. ✓
 This parse is all you need for `W[0]` through `W[15]`. Now for the expansion.
 ---
 ## Reading the FIPS Specification Notation
-[[EXPLAIN:reading-a-cryptographic-specification-(fips-pseudocode-notation)|Reading a cryptographic specification (FIPS pseudocode notation) — FIPS 180-4 uses specific notation: ROTR^n(x) means right-rotate x by n bits, + means addition mod 2^32, ⊕ means XOR, the lowercase σ symbols are used in the message schedule while uppercase Σ symbols are used in the compression function, and the superscript (256) on function names indicates SHA-256 variants of those functions.]]
+
 FIPS 180-4 Section 6.2.2 gives the message schedule recurrence as:
 ```
 W[t] = σ1(W[t-2]) + W[t-7] + σ0(W[t-15]) + W[t-16],    for 16 ≤ t ≤ 63
@@ -2507,7 +2522,7 @@ The raw digest is 32 bytes. The conventional representation — and what you com
 
 ![Final Output: H0..H7 to 64-Char Hex String](./diagrams/diag-m4-hex-output-encoding.svg)
 
-[[EXPLAIN:hexadecimal-encoding-of-binary-data|Hexadecimal encoding of binary data — each byte (0x00 through 0xFF) maps to exactly two hex characters (00 through ff); the result is always exactly 2N characters for N bytes of input. This is a lossless, reversible encoding that makes binary data human-readable and copy-pasteable.]]
+
 ```c
 /*
  * sha256_hex - Format a raw 32-byte digest as a 64-character lowercase hex string.
@@ -3038,7 +3053,12 @@ The fix is simple: call `sha256_init()` before every independent hash computatio
 ## Knowledge Cascade: What You Can Now Build
 ### HMAC-SHA-256 and Why the Double-Hash Matters
 With a working `SHA256_CTX`, `sha256_update()`, and `sha256_finalize()`, you can implement HMAC-SHA-256 in about 20 lines.
-[[EXPLAIN:HMAC-construction|HMAC (Hash-based Message Authentication Code) — a construction that turns a cryptographic hash function into a message authentication code by applying two nested hash computations with key-derived padding, defined in RFC 2104 as H(K ⊕ opad || H(K ⊕ ipad || message)) where ipad is 0x36 repeated and opad is 0x5C repeated across a full block.]]
+
+> **🔑 Foundation: HMAC**
+>
+> HMAC (Hash-based Message Authentication Code) provides a way to create a MAC (Message Authentication Code) using a cryptographic hash function like SHA-256 along with a secret key. It strengthens message integrity and authenticity by combining the key with the message through two layers of hashing with inner and outer padding. We will be using HMAC-SHA256 as the integrity check during key exchange. HMAC leverages the diffusion properties of the hash function, making it computationally infeasible to forge a message without knowing the secret key.
+
+
 HMAC is defined as:
 ```
 HMAC(K, message) = H( K ⊕ opad  ||  H( K ⊕ ipad  ||  message ) )
@@ -3122,7 +3142,12 @@ The three NIST vectors are not arbitrary examples — they are a deliberate cove
 | `SHA-256("abc")` | 3 bytes | Single-block path, output byte ordering |
 | `SHA-256("abcdbcde...")` | 56 bytes | Multi-block path (boundary case), Merkle-Damgård chaining |
 This coverage methodology — test empty, test minimal, test the boundary that triggers a new code path — is the same approach used in **FIPS 140-2 Known-Answer Tests (KATs)**. Any cryptographic module seeking FIPS 140-2 certification must run KATs on every algorithm at startup and fail safe if any KAT fails. The logic: if the hardware or software has been tampered with in a way that subtly changes the algorithm, the KAT catches it immediately. Shipping a module that passes KATs at certification time but fails them in production (due to a cosmic ray bit flip, firmware update, or malicious modification) would be detectable and would halt the module.
-[[EXPLAIN:FIPS-140-2-certification-and-known-answer-tests|FIPS 140-2 — a US government standard for cryptographic module validation; Level 1 requires correct algorithm implementation validated by NIST-approved testing labs; KATs are a mandatory self-test component where the module verifies its own cryptographic correctness at power-on using test vectors with known answers.]]
+
+> **🔑 Foundation: FIPS 140-2**
+>
+> FIPS 140-2 is a U.S. government standard that defines security requirements for cryptographic modules. At Level 1, this primarily means demonstrating the correct implementation of cryptographic algorithms. Known Answer Tests (KATs) are a crucial component where the module runs pre-defined test vectors with known outputs at startup to verify its internal correctness. FIPS 140-2 certification provides assurance that our SHA-256 implementation is functionally correct. It's like a standardized set of unit tests required by a third party; successful KAT execution confirms that the cryptographic functions are operating as expected.
+
+
 A production SHA-256 implementation should run these three KATs at library initialization and abort if any fails. This is a one-time cost (microseconds) with an enormous payoff: silent algorithm corruption is caught before any user data is hashed.
 ### Hex Encoding as Binary Serialization
 The final output step — writing `H[0..7]` as big-endian bytes and then encoding each byte as two hex characters — is a binary serialization pipeline that appears throughout computer systems:

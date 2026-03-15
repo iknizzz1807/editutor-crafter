@@ -233,7 +233,20 @@ Q = W_Q(x)  # [batch, seq_len, d_k]
 K = W_K(x)  # [batch, seq_len, d_k]
 V = W_V(x)  # [batch, seq_len, d_v]
 ```
-[[EXPLAIN:tensor-dimension-semantics-(batch-×-seq-×-feature-vs-batch-×-feature-×-seq)|Tensor dimension semantics (batch × seq × feature vs batch × feature × seq)]]
+
+> **🔑 Foundation: Tensor dimension semantics**
+>
+> Tensor dimension semantics describe the meaning assigned to each dimension of a multi-dimensional array, dictating how data is organized. Choosing the right dimension order is crucial for efficient processing and correct interpretation by downstream operations. Our project requires careful data ordering to optimize matrix multiplication operations and facilitate effective batching of sequences. Think of tensors as stacks of matrices. The first dimension usually indicates the number of stacks (batches), while the remaining dimensions represent the rows and columns within each stack.
+
+
+> **🔑 Foundation: Tensor dimension semantics**
+>
+> Tensors are multi-dimensional arrays. In deep learning, the order of these dimensions often carries crucial semantic meaning.  For example, a 3D tensor might represent a batch of sequences, where each sequence has a certain number of features (batch x seq x feature), or a batch where each item has its features organised across a sequence dimension (batch x feature x seq).
+
+Understanding the intended meaning of each dimension is critical for correctly processing data, especially when feeding tensors to libraries like PyTorch or TensorFlow. Our current project requires processing sequential data, where each item in a batch has multiple time steps, and each time step has a vector of features, so keeping track of batch, sequence length, and feature dimensions is paramount to ensure that the computations are correctly applied.
+
+Think of tensor dimensions like named arguments to a function.  Just as the order of arguments matters, so too does the order of tensor dimensions. A mismatch in dimension order leads to incorrect calculations and, ultimately, a broken system.
+
 Notice that Q and K share the same dimension `d_k` (they need to be compatible for dot products), while V has dimension `d_v`. In the original transformer, `d_k = d_v = d_model / num_heads = 64`, but we'll explore multi-head attention in the next milestone.
 ### The Attention Score Matrix
 Here's where the magic happens. You want to compute how much each token "attends to" every other token. That means computing the dot product between every query and every key:
@@ -268,7 +281,16 @@ With `d_k = 64`, dot products will typically have magnitude around 8. With `d_k 
 
 ![Softmax Numerical Stability](./diagrams/diag-softmax-stability.svg)
 
-[[EXPLAIN:softmax-numerical-stability-(subtracting-max-before-exp)|Softmax numerical stability (subtracting max before exp)]]
+
+
+> **🔑 Foundation: Softmax numerical stability**
+>
+> Softmax is a function that converts a vector of real numbers into a probability distribution. It exponentiates each element and then normalizes by dividing by the sum of the exponentiated elements.  Directly computing the exponential of large values can lead to numerical overflow, resulting in `NaN`s.
+
+When dealing with large numbers from the outputs of neural networks before the softmax, directly computing e^x may overflow the floating point representation. Subtracting the maximum value in the vector from all elements *before* exponentiation addresses this, because it shifts the values to be exponentiated to be centered around zero or negative, but *does not change the final probabilities* because the normalization step cancels out the effect.
+
+The key insight here is that the softmax function is invariant to adding a constant to all the input values.  By subtracting the maximum, you prevent overflow while preserving the relative probabilities that the softmax aims to calculate.
+
 The softmax function converts scores to probabilities:
 $$\text{softmax}(x_i) = \frac{e^{x_i}}{\sum_j e^{x_j}}$$
 When inputs are large (say, 20), the exponential `e^20 ≈ 500,000,000` is enormous. When one input is slightly larger than others, softmax becomes nearly one-hot:
@@ -1880,7 +1902,16 @@ The identity term `I` means gradients have a direct path to flow backward withou
 This is why ResNet could train 152-layer networks when previous architectures struggled at 20 layers. The same principle applies to Transformers.
 ---
 ## Layer Normalization: Taming the Activation Wild West
-[[EXPLAIN:layer-normalization-(mean/variance-over-feature-dimension)|Layer normalization (mean/variance over feature dimension)]]
+
+> **🔑 Foundation: Layer normalization**
+>
+> Layer normalization is a technique used to normalize the activations within a layer of a neural network. Specifically, it computes the mean and variance across the *feature* dimension for each individual example. This is unlike batch normalization, which calculates the mean and variance across the *batch* dimension.
+
+In our current project, we have varying sequence lengths within a batch. Because batch normalization's statistics depend on all examples in the batch, it may perform poorly when sequences in the batch are significantly different lengths. Layer normalization calculates statistics on each sequence independently, mitigating this issue.
+
+Imagine each example as having its own independent normalization process. Layer normalization independently centers and scales the features of each example, improving training stability and convergence by preventing internal covariate shift *within* the example itself.
+
+
 Layer normalization stabilizes activations by ensuring they have zero mean and unit variance at each layer:
 $$\text{LayerNorm}(x) = \gamma \cdot \frac{x - \mu}{\sigma + \epsilon} + \beta$$
 Where:
@@ -2731,7 +2762,16 @@ class MaskedCrossEntropyLoss(nn.Module):
 **Why ignore padding?** If you don't, the model will optimize for predicting padding tokens—the most common token in your batch! This corrupts the learning signal.
 ---
 ## Label Smoothing: Preventing Overconfidence
-[[EXPLAIN:label-smoothing-(preventing-overconfidence-in-classification)|Label smoothing (preventing overconfidence in classification)]]
+
+> **🔑 Foundation: Label smoothing**
+>
+> Label smoothing is a regularization technique applied to classification tasks. Instead of using "hard" labels (e.g., 1 for the correct class, 0 for all others), it replaces these with "soft" labels, mixing them with a uniform distribution. This means the target for the correct class is slightly lower than 1, and the targets for incorrect classes are slightly higher than 0.
+
+Neural networks can sometimes become overconfident in their predictions, assigning extremely high probabilities to the predicted class. This overconfidence can lead to poor generalization on unseen data. Label smoothing encourages the network to be less certain, improving robustness and preventing overfitting by penalizing the network for outputs that are too confident.
+
+Think of label smoothing as adding a small amount of noise to the target labels. This forces the model to learn a more robust representation, making it less sensitive to small variations in the input data and encouraging it to consider the less likely classes.
+
+
 The model outputs logits, which softmax converts to probabilities. Without regularization, cross-entropy pushes the model toward predicting probability 1.0 for the correct class. But this is harmful for several reasons:
 1. **Language is inherently uncertain**: "The cat sat on the ___" has multiple valid completions
 2. **Overconfident models generalize poorly**: They don't explore alternatives
@@ -4139,7 +4179,16 @@ def demonstrate_temperature():
 # Temperature 5.0: [0.2684, 0.2468, 0.2227, 0.2017]  <- Nearly uniform
 ```
 ### Temperature as Entropy Control
-[[EXPLAIN:entropy-in-probability-distributions|Entropy in probability distributions]]
+
+> **🔑 Foundation: Entropy in probability distributions**
+>
+> Entropy, in the context of probability distributions, is a measure of uncertainty or randomness. A distribution with high entropy is spread out, with probabilities closer to uniform across all possibilities, indicating high uncertainty. A distribution with low entropy is concentrated on a few outcomes, indicating low uncertainty.
+
+In machine learning, we often want to minimize the cross-entropy between the predicted probability distribution and the true labels. High entropy in the predicted distribution may indicate the model is unsure of its prediction and vice versa. Understanding the concept of entropy helps when analysing model outputs.
+
+The mental model for entropy is analogous to the information content of a message. The more unpredictable the message, the higher its entropy and the more information it conveys. Similarly, a probability distribution that is less certain (higher entropy) carries more information than one that is highly certain (lower entropy).
+
+
 Temperature directly controls the entropy of the output distribution:
 - **High temperature**: High entropy, more surprise, more creative/diverse outputs
 - **Low temperature**: Low entropy, less surprise, more predictable/focused outputs

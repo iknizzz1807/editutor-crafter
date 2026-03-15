@@ -4603,7 +4603,7 @@ Before diving into invariants, we need to distinguish two fundamental types of p
 - "A committed entry will eventually be applied" — requires fairness assumptions
 - Liveness violations are about **termination**, not correctness
 Raft guarantees safety unconditionally and liveness under timing assumptions (eventually-synchronous network). This milestone focuses on safety because safety violations are bugs. Liveness issues are configuration problems.
-> **💡 Insight**: This distinction comes from [[EXPLAIN:safety-vs-liveness-formal|formal verification of concurrent systems]]. The same concepts appear in model checkers, theorem provers, and Jepsen-style testing. Safety properties can be checked at each state; liveness properties require reasoning about infinite executions.
+> **💡 Insight**: This distinction comes from formal verification of concurrent systems. The same concepts appear in model checkers, theorem provers, and Jepsen-style testing. Safety properties can be checked at each state; liveness properties require reasoning about infinite executions.
 ---
 ## The Four Raft Safety Invariants
 The Raft paper defines four safety properties that must hold at all times. These aren't suggestions—they're the definition of correctness.

@@ -152,7 +152,12 @@ Here's what actually happens when a packet arrives on your NIC:
 7. **Another Context Switch**: Your application calls `recv()`, triggering a user-kernel boundary crossing (~100-200ns)
 8. **Data Copy**: The kernel copies packet data from kernel space to your userspace buffer (~50-200ns depending on size)
 **Total: 10-50 microseconds per packet**. And that's the happy path—no packet loss, no retransmissions, no queueing delays.
-[[EXPLAIN:kernel-vs.-user-space-boundary|The protected boundary between application code and privileged kernel operations, enforced by CPU privilege rings]]
+
+> **🔑 Foundation: The protected boundary between application code and privileg**
+>
+> The kernel-vs.-user-space boundary is a separation between application code and the core operating system (kernel) code, protecting the system from crashes caused by user-level programs. We need this separation in our project to ensure that a buggy application, or even malicious code, cannot corrupt the kernel or access other applications' data. The key mental model is that of distinct realms: User space is like a playground where applications can freely experiment, while kernel space is the secure vault where the system's most critical operations happen, managed by a strict gatekeeper (the CPU).
+
+
 In high-frequency trading, 50 microseconds is an eternity. Market data arrives, you analyze it, you send an order. If your competitor's packet processing takes 2 microseconds while yours takes 50, they see the market first. Every single time. They trade on information you haven't received yet.
 
 ![Kernel Path vs. Bypass Path — Latency Comparison](./diagrams/tdd-diag-001.svg)
@@ -214,7 +219,12 @@ Modern NICs don't "deliver" packets to the CPU. Instead:
 The ring buffer is shared memory. The NIC writes to it. The CPU reads from it. No CPU involvement is needed for the actual data transfer—the NIC is a bus master that can initiate memory transactions independently.
 This is the fundamental insight: **the kernel doesn't need to be involved in packet transfer at all**. It's involved by convention, not necessity. The NIC is perfectly happy to DMA packets anywhere you tell it, including to memory your user-space program controls.
 ### Memory-Mapped I/O: The Control Channel
-[[EXPLAIN:memory-mapped-i/o|Hardware technique where device registers appear as normal memory addresses, allowing load/store instructions to control peripherals]]
+
+> **🔑 Foundation: Hardware technique where device registers appear as normal m**
+>
+> Memory-mapped I/O (MMIO) is a technique where hardware device registers are accessed as if they were locations in memory, eliminating the need for special I/O instructions. We're using MMIO to communicate with our custom network card, as it simplifies driver development by allowing us to use standard memory read and write operations to configure and control the hardware. Think of it like a shared address book: the CPU and the network card both have access, and writing in a specific address triggers an action on the device.
+
+
 How do you tell the NIC where to put packets? The NIC has control registers—memory locations that don't correspond to RAM but to configuration state inside the NIC hardware. When you write to these addresses, you're programming the device.
 On x86, there are two ways to access device registers:
 1. **Port I/O** (`in`/`out` instructions): Separate address space for devices, accessed via special instructions
@@ -1008,7 +1018,12 @@ In practice:
 - MAC spoofing is trivial for security testing or attacks
 - Consumer routers often clone the ISP modem's MAC
 The MAC address isn't a secure identity. It's a convenient shorthand for "this particular network interface on this local network."
-[[EXPLAIN:network-byte-order-(big-endian)|The standard for transmitting multi-byte values in network protocols, where the most significant byte comes first]]
+
+> **🔑 Foundation: The standard for transmitting multi-byte values in network p**
+>
+> Network byte order, which is big-endian, is a standardized way of representing multi-byte data (like integers) when sending them across a network. We're using it in our network protocol to ensure that data is interpreted correctly regardless of the endianness (byte order) of the sending and receiving machines. Visualize it as a standardized packing method for shipping valuables: regardless of where the package originates, the receiver knows exactly how it's organized and can safely unpack it.
+
+
 ### The Minimum Frame Size Problem
 Ethernet has a minimum frame size of 64 bytes. This isn't arbitrary—it's physics.
 Ethernet uses CSMA/CD (Carrier Sense Multiple Access with Collision Detection). When two stations transmit simultaneously, a collision occurs. But the collision can only be detected if both stations are still transmitting when the collision signal propagates back. At 10Mbps with a 2500m maximum cable length, the round-trip time is about 51.2 microseconds—which happens to be the time to transmit 64 bytes.
@@ -1764,7 +1779,7 @@ Let's walk through each field's purpose:
 **Checksum (2 bytes)**: One's complement sum of all 16-bit words in the header. We'll implement an optimized version.
 **Source + Destination Address (8 bytes)**: The IP addresses. These are the only fields a router looks at for forwarding decisions (besides TTL).
 ### Network Byte Order: The Universal Translator
-[[EXPLAIN:network-byte-order-(big-endian)|The standard for transmitting multi-byte values in network protocols, where the most significant byte comes first]]
+
 All multi-byte fields in IP headers are transmitted in network byte order. When you receive a packet on a little-endian x86 system, you must convert:
 ```c
 #include <arpa/inet.h>  // ntohs, ntohl, htons, htonl

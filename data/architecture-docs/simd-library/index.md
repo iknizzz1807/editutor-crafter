@@ -260,7 +260,12 @@ Epilogue: process remaining 0-15 bytes at the end
 ```
 ---
 ## SSE2 Intrinsics: Your First Vector Instructions
-[[EXPLAIN:xmm/ymm-register-file-and-vector-lanes|XMM/YMM register file and vector lanes]]
+
+> **🔑 Foundation: XMM/YMM register file and vector lanes**
+>
+> The XMM/YMM register file is a set of special storage locations inside the CPU, used for holding data during computations, especially when dealing with vectors of numbers. Think of it as a scratchpad for the processor, optimized for parallel calculations. We need to understand this now because our project requires performing the same operation on multiple data points simultaneously to dramatically increase performance, something known as Single Instruction, Multiple Data (SIMD) processing. The key insight is to view these registers not as single values, but as arrays of independent "lanes" that can each hold a small piece of data, allowing the CPU to operate on all lanes in parallel with a single instruction.
+
+
 
 ![Data Flow: SIMD memset](./diagrams/tdd-diag-m1-02.svg)
 

@@ -385,7 +385,12 @@ sudo bpftool prog load my_prog.o /sys/fs/bpf/my_prog --debug
 ```
 The log shows the verifier's state at each instruction, including register types and bounds. Learning to read these logs is essential for debugging.
 ## CO-RE: Compile Once, Run Everywhere
-[[EXPLAIN:btf-(bpf-type-format)|BTF (BPF Type Format): kernel type information for eBPF]]
+
+> **🔑 Foundation: BTF**
+>
+> BTF (BPF Type Format) is a metadata format embedded within ELF binaries (like kernel modules or eBPF programs) that describes the types of data structures used within that binary. It essentially allows tools to understand the layout and meaning of data held in memory. We need BTF because our project requires introspecting kernel data structures (like task_struct or net_device) from eBPF programs running in the kernel. Without BTF, eBPF programs would be forced to use hardcoded offsets to access these structures, which are highly brittle and change across kernel versions. Think of BTF as a Rosetta Stone for understanding kernel memory layouts, letting eBPF programs dynamically adapt to different kernel versions.
+
+
 Here's a problem that plagued early eBPF development: kernel structures change between versions. The `task_struct` (representing a process) might have `comm` at offset 0x500 on kernel 5.10 and offset 0x520 on kernel 5.15. If you hardcode offsets, your program breaks on different kernels.
 The old solution was "recompile for each kernel version"—painful for distribution.
 **CO-RE (Compile Once, Run Everywhere)** solves this elegantly:

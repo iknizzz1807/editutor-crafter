@@ -2887,7 +2887,7 @@ static void parse_filter(char *filter_str) {
     }
 }
 ```
-`strtok` [[EXPLAIN:strtok-thread-safety|strtok's internal static state makes it non-reentrant — safe here because parsing happens once before any threads exist]] is appropriate here because parsing happens once, synchronously, before tracing begins. The `filter_str` pointer must remain valid for the lifetime of the tracer (don't pass a stack-allocated temporary). Pass `argv[i]` directly after advancing past the `"trace="` prefix — `argv` is valid for the process lifetime.
+`strtok` strtok's internal static state makes it non-reentrant — safe here because parsing happens once before any threads exist is appropriate here because parsing happens once, synchronously, before tracing begins. The `filter_str` pointer must remain valid for the lifetime of the tracer (don't pass a stack-allocated temporary). Pass `argv[i]` directly after advancing past the `"trace="` prefix — `argv` is valid for the process lifetime.
 ### Applying the Filter in the Event Loop
 In `handle_syscall_stop`, the filter check goes at the exit stop, after timing has been recorded:
 ```c
@@ -2949,7 +2949,7 @@ The ordering here is deliberate: timing is recorded *before* the filter check, s
 ### Why the Clock Choice Matters
 You need to measure time between two events in your tracer. The obvious choice is `time(NULL)` or `gettimeofday()`. Both are wrong.
 `time(NULL)` has one-second resolution. A syscall that takes 50 microseconds is unmeasurable.
-`gettimeofday()` gives microsecond resolution via `CLOCK_REALTIME`. This sounds fine until you encounter **NTP** [[EXPLAIN:ntp-clock-adjustment|Network Time Protocol synchronizes a system's clock to external time sources by occasionally stepping or slewing the clock — including backward jumps when the local clock is ahead]] adjustments. NTP can jump the system clock backward to correct drift. If your tracer measures an entry stop at time T and an exit stop at time T-50μs (after a backward NTP step), you compute a negative 50-microsecond duration. Negative durations don't cumulate sensibly and produce wildly incorrect statistics.
+`gettimeofday()` gives microsecond resolution via `CLOCK_REALTIME`. This sounds fine until you encounter **NTP** Network Time Protocol synchronizes a system's clock to external time sources by occasionally stepping or slewing the clock — including backward jumps when the local clock is ahead adjustments. NTP can jump the system clock backward to correct drift. If your tracer measures an entry stop at time T and an exit stop at time T-50μs (after a backward NTP step), you compute a negative 50-microsecond duration. Negative durations don't cumulate sensibly and produce wildly incorrect statistics.
 
 ![CLOCK_MONOTONIC vs CLOCK_REALTIME: Why the Wrong Clock Breaks Profiling](./diagrams/diag-m4-clock-monotonic-vs-realtime.svg)
 
@@ -3307,7 +3307,7 @@ static void sigint_handler(int sig) {
     g_interrupted = 1;
 }
 ```
-`volatile sig_atomic_t` [[EXPLAIN:volatile-sig-atomic-t|sig_atomic_t is an integer type that can be written atomically even in the presence of signals — reading or writing it won't be torn by signal delivery mid-operation; volatile prevents the compiler from caching it in a register across signal handler invocations]] is the correct type for a flag shared between a signal handler and the main program. Using `int` would technically work on x86_64 because all reads and writes to naturally-aligned integers are atomic on this architecture, but `sig_atomic_t` is the portable and standards-correct choice.
+`volatile sig_atomic_t` sig_atomic_t is an integer type that can be written atomically even in the presence of signals — reading or writing it won't be torn by signal delivery mid-operation; volatile prevents the compiler from caching it in a register across signal handler invocations is the correct type for a flag shared between a signal handler and the main program. Using `int` would technically work on x86_64 because all reads and writes to naturally-aligned integers are atomic on this architecture, but `sig_atomic_t` is the portable and standards-correct choice.
 Register the handler in `main()` before beginning the trace:
 ```c
 struct sigaction sa;
@@ -3398,7 +3398,7 @@ The `EINTR` handling in the `waitpid` error path is the connection point: when S
 ---
 ## Part 7: Argument Parsing — Putting It All Together
 ### Using `getopt_long` for Option Parsing
-`getopt_long` [[EXPLAIN:getopt-long-option-parsing|getopt_long parses both short (-o file) and long (--output=file) command-line options; it modifies argv in place, reordering non-option arguments to the end, and advances optind past each processed option]] is the POSIX standard for option parsing. It handles short options (`-o`, `-p`, `-e`) and can be extended to long options (`--output`, `--pid`):
+`getopt_long` getopt_long parses both short (-o file) and long (--output=file) command-line options; it modifies argv in place, reordering non-option arguments to the end, and advances optind past each processed option is the POSIX standard for option parsing. It handles short options (`-o`, `-p`, `-e`) and can be extended to long options (`--output`, `--pid`):
 ```c
 #include <getopt.h>
 typedef struct {
@@ -3515,7 +3515,7 @@ int main(int argc, char *argv[]) {
 ```
 ---
 ## Hardware Soul: What's Actually Happening
-Every `clock_gettime(CLOCK_MONOTONIC, ...)` call triggers a **vDSO** [[EXPLAIN:vdso-virtual-dynamic-shared-object|The vDSO (virtual dynamically linked shared object) is a small shared library the kernel automatically maps into every process's address space; it provides fast implementations of frequently-called syscalls like clock_gettime by reading kernel data from a shared memory page without a full ring-0 context switch]] fast path on modern Linux. Instead of a full syscall with kernel mode transition (~100ns), the vDSO reads the time from a kernel-maintained page mapped into your process's address space — a pure memory read (~5-20ns). Your two `clock_gettime` calls per syscall add roughly 10-40ns of overhead each, which is negligible compared to the 2-10µs context switch cost of the ptrace stop itself.
+Every `clock_gettime(CLOCK_MONOTONIC, ...)` call triggers a **vDSO** The vDSO (virtual dynamically linked shared object) is a small shared library the kernel automatically maps into every process's address space; it provides fast implementations of frequently-called syscalls like clock_gettime by reading kernel data from a shared memory page without a full ring-0 context switch fast path on modern Linux. Instead of a full syscall with kernel mode transition (~100ns), the vDSO reads the time from a kernel-maintained page mapped into your process's address space — a pure memory read (~5-20ns). Your two `clock_gettime` calls per syscall add roughly 10-40ns of overhead each, which is negligible compared to the 2-10µs context switch cost of the ptrace stop itself.
 The statistics table operations — `s->call_count++` and `s->total_ns += elapsed_ns` — are non-atomic increments. This is safe because your tracer is single-threaded: `waitpid(-1)` serializes all events into a single dispatch loop. If you ever parallelized the tracer (one thread per traced PID), these would need `_Atomic` or mutex protection.
 The `g_stats` array (400 × 24 bytes = 9.6KB) fits in L1 cache. Syscall statistics for common syscalls (`read`, `write`, `openat`, `mmap`) will be at predictable low-numbered indices (0, 1, 257, 9), all within the first cache lines of the array. The access pattern is hot for common syscalls and cold for rare ones — exactly what you want for cache efficiency.
 ---

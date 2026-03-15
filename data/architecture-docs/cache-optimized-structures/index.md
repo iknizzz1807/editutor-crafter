@@ -197,7 +197,12 @@ CPU designers solve this with a **memory hierarchy**: multiple layers of progres
 ```
 [CPU Core] ←→ [L1 Cache: 32KB, 4 cycles] ←→ [L2: 256KB-1MB, 12 cycles] ←→ [L3: 8-64MB, 40 cycles] ←→ [RAM: 8-128GB, 200+ cycles]
 ```
-[[EXPLAIN:memory-latency-hierarchy-(l1:-4-cycles,-l2:-12-cycles,-l3:-40-cycles,-ram:-200+-cycles)|Memory latency hierarchy showing the dramatic cost difference between cache levels and main memory]]
+
+> **🔑 Foundation: Memory latency hierarchy showing the dramatic cost differenc**
+>
+> The memory latency hierarchy describes the varying access times for different levels of computer memory, from the fastest (L1 cache) to the slowest (RAM).  Each level acts as a cache for the level below, storing frequently accessed data closer to the CPU.  We need to understand this because our current project involves optimizing a computationally intensive image processing algorithm; bottlenecks in memory access will significantly impact performance.  Think of memory like a multi-tiered library: finding a book on the table next to you is much faster than searching the stacks, which is faster than waiting for it to be shipped from another branch.
+
+
 ### The Transfer Unit: Cache Lines
 Here's the critical insight: **the CPU never reads a single byte or a single integer.** When you access `array[i]`, the CPU fetches an entire **cache line**—typically 64 bytes—from the next level of memory.
 
@@ -4504,7 +4509,12 @@ Within a block, both reads and writes are cache-friendly. The block of A is read
 | **Portability** | Excellent (pure C) | Good | Requires library install | Requires GPU |
 | **Educational value** | High (teaches cache optimization) | Medium (teaches algorithm design) | Low (black box) | Medium (different paradigm) |
 | **Used by** | Custom HPC code, embedded | Very large matrices (>2000) | Production code everywhere | Deep learning, HPC |
-[[EXPLAIN:loop-tiling-transformation|Compiler optimization that transforms nested loops to iterate over blocks, improving data locality]]
+
+> **🔑 Foundation: Compiler optimization that transforms nested loops to iterat**
+>
+> Loop tiling, also known as loop blocking, is a compiler optimization technique that restructures nested loops to operate on smaller blocks of data instead of the entire dataset.  This rearrangement enhances data locality by ensuring that data accessed within a block is likely to be in the cache, minimizing trips to slower memory levels.  We can use loop tiling in our image processing project to process image chunks that will fit in L2 cache.  The key insight is to break a large problem into smaller, cache-friendly subproblems, allowing the processor to work on a small set of data as efficiently as possible before moving on.
+
+
 ---
 ## Knowledge Cascade: What This Unlocks
 **BLAS and LAPACK Internals**

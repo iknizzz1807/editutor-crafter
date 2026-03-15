@@ -1701,7 +1701,7 @@ func (s *Store) Size() int {
     return len(s.entries)
 }
 ```
-## [[EXPLAIN:logical-clocks-(lamport-timestamps)|Logical clocks for ordering distributed events]]
+## Logical clocks for ordering distributed events
 The `Version` field in each entry is a **Lamport timestamp**—a simple but powerful mechanism for ordering events across distributed nodes without synchronized clocks.
 
 ![State Machine: Message Processing](./diagrams/tdd-diag-m2-04.svg)
@@ -3257,7 +3257,7 @@ When two nodes have different values for the same key, someone has to decide whi
 You might think: "Just use the timestamp! Whoever wrote later wins."
 This fails because of **clock skew**. Node A's clock might be 500ms ahead of Node B's. If Node A writes at wall-clock time 10:00:00.500 and Node B writes at wall-clock time 10:00:00.600, Node B appears to win. But in reality, Node A's write happened later (by causality, not clock).
 This is why we use **logical timestamps** (Lamport clocks) instead of wall-clock time.
-### [[EXPLAIN:logical-clocks-(lamport-timestamps)|Lamport Clocks for Versioning]]
+### Lamport Clocks for Versioning
 Lamport clocks provide a total ordering that respects causality. The rules:
 1. Before any local event (write): `clock = clock + 1`
 2. When sending a message: include current clock

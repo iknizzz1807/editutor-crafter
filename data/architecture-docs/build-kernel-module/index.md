@@ -193,6 +193,11 @@ Kernel modules run *in kernel space*, with full ring 0 privileges. There is no m
 
 This has a direct consequence you need to feel before you write code:
 ```
+
+> **🔑 Foundation: ioctl command number encoding**
+>
+> `ioctl` (input/output control) is a system call that allows applications to perform device-specific operations that don't fit the standard read/write model. To uniquely identify these custom commands, kernel developers use macros like `_IOW`, `_IOR`, and `_IOWR` to encode command numbers that encapsulate direction (input, output, both), data type, and a command identifier. In our driver, we use `ioctl` to provide functionality beyond simple data transfer, such as configuring device parameters or triggering specific actions, requiring us to use these macros to create unambiguous commands. The fundamental idea is to pack multiple pieces of information (data direction, data size, and command number) into a single integer value for compact and efficient command identification.
+
 Your module code: part of the kernel
 Your module data: part of the kernel
 A pointer bug in your module: kills the kernel
@@ -754,11 +759,21 @@ Think of SMAP/SMEP as a locked door between two rooms. The kernel lives in one r
 
 **Third, the page fault problem.** Userspace memory isn't always in RAM. The virtual address `buf` might be valid (it belongs to the process), but the physical page it maps to might currently be swapped out to disk. In userspace, this is handled transparently: your code accesses the page, the CPU raises a page fault, the OS swaps the page in, and execution resumes. In kernel code, if you directly dereference a userspace pointer and that page is swapped out, you get a page fault *inside the kernel*, which is far more complicated to handle safely—and in many kernel contexts, sleeping (which swap-in requires) isn't allowed.
 `copy_from_user()` and `copy_to_user()` solve all three problems simultaneously. They're not a politeness convention. They're the *only correct way* to touch userspace memory from kernel code.
-[[EXPLAIN:the-copy_to_user/copy_from_user-contract|The copy_to_user/copy_from_user contract]]
+
+> **🔑 Foundation: The copy_to_user/copy_from_user contract**
+>
+> `copy_to_user` and `copy_from_user` are kernel functions that safely transfer data between kernel space and user space. They prevent user space applications from directly accessing or corrupting kernel memory, and conversely protect user space memory from potentially malicious kernel code. In our current device driver project, we need them when handling `read()` and `write()` system calls, ensuring we transfer data reliably between our driver's internal buffers and the application's memory. The core insight is that kernel and user space reside in separate memory spaces, and direct pointer access across this boundary is forbidden for security and stability reasons.
+
+
 ---
 ## How the VFS Routes `/dev/mydevice` to Your Code
 Before writing the device driver, you need to understand the dispatch chain that connects a userspace `open("/dev/mydevice", O_RDWR)` to your C function. This chain is the VFS (Virtual File System), and understanding it is one of the most transferable pieces of knowledge in all of systems programming.
-[[EXPLAIN:major/minor-numbers-and-vfs-dispatch|Major/minor numbers and VFS dispatch]]
+
+> **🔑 Foundation: Major/minor numbers and VFS dispatch**
+>
+> Major and minor numbers are used by the kernel to identify a specific device driver and a particular device instance, respectively. The major number links a character device file (like `/dev/mydevice`) to the correct device driver, while the minor number allows the driver to differentiate between multiple instances of the same device type, like multiple serial ports. In the context of our device driver, these numbers are vital for the Virtual File System (VFS) to dispatch file operations (open, read, write, etc.) on a device file to the appropriate driver functions. The key concept is that VFS uses these numbers as an index to a table of function pointers within the device driver, effectively routing the system calls.
+
+
 When the kernel boots, it maintains a global registry of character device drivers, keyed by **major number**. When you call `alloc_chrdev_region()`, you're asking the kernel to assign you a major number—a unique identifier that says "driver with this number handles these devices."
 The **minor number** is yours to interpret. A driver managing 4 physical disks might register major=253 with minor numbers 0–3. When the kernel receives `open()` for `/dev/sda` (major=8, minor=0) vs `/dev/sdb` (major=8, minor=16), the same driver code runs for both—it uses the minor number to select which physical disk to talk to. In your project, you'll use a single minor number (0) because you have one device instance.
 
@@ -1450,7 +1465,7 @@ Bits 29-16: size       (14 bits) — size of the argument being transferred
 Bits 15-8:  type       (8 bits)  — magic number identifying the driver/subsystem
 Bits 7-0:   number     (8 bits)  — sequential command number within this driver
 ```
-[[EXPLAIN:ioctl-command-number-encoding-(_iow/_ior/_iowr)|ioctl command number encoding (_IOW/_IOR/_IOWR)]]
+
 
 ![ioctl Command Number Bit Layout: _IOW/_IOR/_IOWR Macros](./diagrams/diag-m3-ioctl-command-encoding.svg)
 
@@ -1735,7 +1750,12 @@ static int mydevice_proc_read(char *buf, char **start, off_t offset,
 ```
 This approach has a fatal flaw. The `buf` the kernel provides is limited in size (typically 4096 bytes). If your driver's status output exceeds that, the data is silently truncated. Worse: the `offset` handling for partial reads (when `cat` reads the file in chunks) is error-prone and has historically been implemented incorrectly in thousands of kernel drivers. The old `proc_read` API is deprecated for exactly this reason.
 The correct approach is `seq_file`.
-[[EXPLAIN:seq_file-interface-for-/proc|seq_file interface for /proc]]
+
+> **🔑 Foundation: seq_file interface for /proc**
+>
+> The `seq_file` interface provides a convenient and efficient way to generate sequential data for files in the `/proc` filesystem, which is a virtual filesystem that exposes kernel data structures and statistics to user space. Instead of building the entire file content in memory at once, `seq_file` allows us to generate data incrementally, reducing memory footprint and improving performance, especially for large datasets. We use it to expose internal state and statistics of our device driver through `/proc/mydevice`, giving userspace visibility into the driver's operation and internal data. The mental model is viewing the file generation as an iterator pattern, where the `seq_file` functions (`start`, `next`, `show`, `stop`) act as the iterator's methods to navigate and display the data.
+
+
 
 ![seq_file: Why Simple proc_read Is Broken for Large Output](./diagrams/diag-m3-seq-file-mechanics.svg)
 
@@ -2378,7 +2398,12 @@ All of these are system call handlers. System call handlers run in **process con
 
 ---
 ## Kernel Synchronization: Two Tools, One Rule
-[[EXPLAIN:kernel-synchronization:-mutex-vs-spinlock,-process-context-vs-interrupt-context|Kernel synchronization: mutex vs spinlock, process context vs interrupt context]]
+
+> **🔑 Foundation: Kernel synchronization: mutex vs spinlock**
+>
+> Kernel synchronization primitives are used to protect shared data from concurrent access and prevent race conditions. `mutex` and `spinlock` are two fundamental locking mechanisms, but they differ in their usage: `mutex` can be used in process context and may cause the thread to sleep if the lock is contended, while `spinlock` must be used in interrupt context and prevents preemption, busy-waiting instead. In our device driver, we need to protect shared resources like device registers and data structures from concurrent access, requiring us to carefully choose between `mutex` for operations triggered from user space (process context) and `spinlock` for operations triggered by hardware interrupts (interrupt context). The key consideration is that sleeping (which `mutex` allows) is forbidden in interrupt context because it can lead to deadlocks.
+
+
 The single rule governing kernel synchronization primitive selection:
 **If your critical section can sleep (calls `copy_from_user`, calls `kmalloc(GFP_KERNEL)`, waits for a condition): use a mutex.**  
 **If your critical section cannot sleep (runs in interrupt context, holds a spinlock already): use a spinlock.**
@@ -2424,7 +2449,12 @@ Option B: Return an error like `-EAGAIN`. This is the right answer for `O_NONBLO
 Option C: Spin in a loop checking the buffer. This wastes a full CPU core polling an empty buffer. Unacceptable.
 Option D: Put the process to sleep until a writer adds data. The writer then wakes up all sleeping readers. This is exactly how pipes and sockets work, and it's what you'll implement.
 The kernel mechanism for this is a **wait queue**.
-[[EXPLAIN:wait-queues-and-the-condition-recheck-pattern|Wait queues and the condition-recheck pattern]]
+
+> **🔑 Foundation: Wait queues and the condition-recheck pattern**
+>
+> Wait queues provide a mechanism for a kernel thread to efficiently wait for a specific condition to become true. A thread enqueues itself on a wait queue and goes to sleep until another thread wakes it up, signalling that the condition might be met. Critically, after being woken up, the thread *must* re-check the condition to ensure it's actually true, as spurious wakeups can occur. Our device driver uses wait queues when an application is waiting for data to become available or for the device to become ready, avoiding busy-waiting and conserving CPU resources. The essential pattern is "wait, recheck, repeat" (if necessary); it's not enough to just wait; you must confirm the reason for the wait has been satisfied.
+
+
 
 ![Wait Queue: Block → Sleep → Wakeup → Recheck → Proceed](./diagrams/diag-m4-wait-queue-lifecycle.svg)
 
@@ -2708,7 +2738,12 @@ This loop is the skeleton of every event-driven server. nginx, Node.js, Redis—
 ## Implementing `.poll`: The Bridge to select/poll/epoll
 With blocking I/O and `O_NONBLOCK` in place, you have a functional driver for most use cases. But there's a third mode: **multiplexed I/O**, where a single thread monitors many file descriptors simultaneously and acts on whichever becomes ready first.
 This is the domain of `select(2)`, `poll(2)`, and `epoll(7)`. These system calls let userspace say: "Tell me when any of these file descriptors have data to read, space to write, or an error to report." They're the foundation of every scalable I/O framework.
-[[EXPLAIN:poll/select-kernel-side-mechanics|poll/select kernel-side mechanics]]
+
+> **🔑 Foundation: poll/select kernel-side mechanics**
+>
+> `poll` and `select` are system calls that allow applications to monitor multiple file descriptors for readiness (readable, writable, exceptional conditions) without blocking on each one individually. The kernel provides underlying support for `poll` and `select` by allowing device drivers to register callback functions (specifically, the `poll` method in the `file_operations` structure) that indicate the readiness status of the device. In our driver, we implement the `poll` method to signal to the application when data is available for reading or when the device is ready to accept data for writing, enabling efficient asynchronous I/O. The core idea is that the kernel aggregates the readiness information from all monitored file descriptors, allowing the application to be notified only when at least one descriptor is ready for I/O, minimizing unnecessary wakeups and context switches.
+
+
 
 ![O_NONBLOCK vs Blocking: Two Personalities of mydevice_read()](./diagrams/tdd-diag-24.svg)
 

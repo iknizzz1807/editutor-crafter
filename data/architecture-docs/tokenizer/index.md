@@ -176,20 +176,34 @@ If whitespace were a delimiter, `x+42` with no spaces would be one token, not th
 4. Consume and discard this character (whitespace)
 Whitespace is **noise** that the scanner explicitly consumes and throws away. Token boundaries are determined by *character class transitions* — when the input changes from digit-characters to letter-characters, or from operator-characters to whitespace, the scanner knows to emit what it has accumulated and reset.
 This is why `x+42` works: `x` is a letter, so the scanner starts an identifier. The next character is `+`, which is not a letter or digit, so the identifier ends and the scanner emits it. Then `+` is an operator character, so a new token starts — and so on.
-This character-by-character decision process IS a [[EXPLAIN:finite-state-machines-(fsm)-—-states,-transitions,-accepting-states|Finite State Machines (FSM) — states, transitions, accepting states]]. Each "mode" of the scanner (scanning an identifier, scanning a number, skipping whitespace) is a *state*, and each character class drives a *transition* between states.
+This character-by-character decision process IS a Finite State Machines (FSM) — states, transitions, accepting states. Each "mode" of the scanner (scanning an identifier, scanning a number, skipping whitespace) is a *state*, and each character class drives a *transition* between states.
 
 ![FSM: Single-Character Token Recognition State Machine](./diagrams/diag-m1-fsm-single-char.svg)
 
 ---
 ## Why Lexers Don't Need Recursion
 Here is something worth pausing on: your tokenizer will use loops and conditionals, but it will *never call itself recursively*. That is not an accident.
-[[EXPLAIN:regular-languages-vs-context-free-languages-—-why-lexers-don't-need-recursion|Regular languages vs context-free languages — why lexers don't need recursion]]
+
+> **🔑 Foundation: Regular languages vs context-free languages**
+>
+> Regular languages are defined by regular expressions and can be recognized by finite automata, machines with a fixed, finite amount of memory. Context-free languages require more complex grammars and potentially infinite memory to recognize. We need to understand this distinction because our lexer needs to be efficient and avoid stack overflows, which are possible with recursive implementations often needed for context-free languages. Imagine a vending machine: it only needs to track the coins inserted (finite state) to dispense a snack, unlike a parser that needs to track nested parentheses (potentially infinite depth).
+
+
+> **🔑 Foundation: Regular languages vs context-free languages**
+>
+> Regular languages are a simple class of formal languages that can be recognized by finite state machines (FSAs), which don't have memory beyond their current state. Context-free languages are more powerful and require a stack-based machine (like a pushdown automaton) for recognition. We're building a lexer, which breaks down source code into tokens. Because programming language tokens can usually be described with regular expressions, we can avoid the complexity and potential recursion of context-free parsing, making our lexer significantly faster and easier to reason about. The key insight is that tokenizing isn't about understanding the entire program structure (which is context-free), but about identifying individual, well-defined units, which fits neatly into the regular language paradigm.
+
 The token patterns you care about — identifiers, numbers, operators — are all **regular languages**: their structure can be described by patterns that only look at a finite amount of current state. You don't need to count arbitrarily nested things; you just need to know "am I currently in an identifier? Am I in a number?" A simple loop with a handful of boolean modes is sufficient.
 This is why every major lexer from CPython's to GCC's is fundamentally a big `while` loop with a state variable. The moment you need recursion, you've stepped into parsing territory — that's for the next stage of the pipeline.
 ---
 ## Designing the Token Type Enumeration
 The first concrete thing you will build is an exhaustive list of everything your scanner can recognize. This list is your **token type enumeration** — and getting it right upfront prevents a cascade of bugs downstream.
-[[EXPLAIN:enum-/-algebraic-data-types-for-token-categories|Enum / algebraic data types for token categories]]
+
+> **🔑 Foundation: Enum / algebraic data types for token categories**
+>
+> Enums (enumerated types) and algebraic data types (ADTs) allow us to define a set of distinct, named categories for our tokens, like `Identifier`, `Keyword`, `Operator`, or `Number`. We need a way to represent what *kind* of token we've identified so the parser can understand the structure of the code. Using enums or ADTs to define token categories provides type safety and clarity, preventing errors caused by misinterpreting tokens, and making our code more robust and easier to maintain than using raw strings or integers. The core idea is that each token belongs to one and only one category (for enums) or has a variant from a set of possibilities (for ADTs), enabling precise handling.
+
+
 Here is the full token type system for your C-like language:
 ```python
 from enum import Enum, auto
@@ -674,7 +688,7 @@ You have written fewer than 150 lines of Python, but the concepts inside them co
 Open any Python or C source file. Find `==`. To you, that is obviously the equality comparison operator — a single, indivisible unit of meaning. You have never once confused it with two consecutive assignment operators.
 But your scanner has no idea what `==` *means*. It sees a stream of characters: `'='`, then `'='`. That's it. Two identical characters sitting next to each other. There is no font difference, no spacing, no metadata that says "treat these two as one." The scanner must decide, character by character, how to group them — and it must do so without backtracking, without lookahead further than one character, and without any understanding of syntax.
 This is the fundamental tension of lexical analysis: **the scanner must make irrevocable decisions at each character, without knowing what comes next, while still producing the token grouping that a human reader would consider "obvious."**
-The solution is a precise algorithmic rule called [[EXPLAIN:maximal-munch-principle-—-always-prefer-the-longest-valid-token|Maximal munch principle — always prefer the longest valid token]]. And the mechanism that makes it possible without backtracking is [[EXPLAIN:lookahead-—-peek-without-consuming-—-and-why-it-enables-disambiguation-without-backtracking|Lookahead — peek without consuming — and why it enables disambiguation without backtracking]].
+The solution is a precise algorithmic rule called Maximal munch principle — always prefer the longest valid token. And the mechanism that makes it possible without backtracking is Lookahead — peek without consuming — and why it enables disambiguation without backtracking.
 By the end of this milestone, your scanner will handle two-character operators, integer and float literals, identifiers, and keywords. Every one of those features uses the same two-character pattern: `advance()` to consume, `peek()` to decide.
 ---
 ## The Revelation: There Is No "Obviously One Token"
@@ -689,7 +703,11 @@ Now consider keywords. What makes `if` a keyword and `iffy` an identifier? The s
 Keywords are NOT grammar rules. The grammar never says "an `if` statement starts with the characters `i` then `f`." The grammar says "an `if` statement starts with a `KEYWORD` token whose lexeme is `if`." The distinction happens here, in the lexer, via a dictionary lookup. This separation is one of the cleanest design decisions in compiler architecture.
 ---
 ## Maximal Munch: The Greedy Lexer
-[[EXPLAIN:maximal-munch-principle-—-always-prefer-the-longest-valid-token|Maximal munch principle — always prefer the longest valid token]]
+
+> **🔑 Foundation: Maximal munch principle**
+>
+> The maximal munch principle dictates that when creating tokens, the lexer should always consume the longest possible sequence of characters that matches a valid token definition. This is important to prevent ambiguity when, for example, parsing identifiers that might start with keywords. Think of it like eating a cookie: you take the biggest bite you can (the maximal munch) instead of many tiny nibbles.
+
 The maximal munch principle states: **when more than one token could start at the current position, always consume the most characters that form a valid token.**
 This is a *greedy* algorithm in the same sense that greedy regex patterns are greedy — it always takes as much as possible. When your scanner sees `<`, it must ask: is this `LESS` (one character) or the start of `LESS_EQUAL` (two characters)? Maximal munch says: peek at the next character. If it's `=`, consume both and emit `LESS_EQUAL`. If it's anything else, emit just `LESS`.
 
@@ -712,7 +730,11 @@ The rule `>==` → `GREATER_EQUAL + ASSIGN` (not `GREATER + EQUAL_EQUAL`) is a d
 ---
 ## Implementing Lookahead
 You already have `peek()` from Milestone 1. Now you will use it seriously.
-[[EXPLAIN:lookahead-—-peek-without-consuming-—-and-why-it-enables-disambiguation-without-backtracking|Lookahead — peek without consuming — and why it enables disambiguation without backtracking]]
+
+> **🔑 Foundation: Lookahead**
+>
+> Lookahead allows the lexer to "peek" at the next few characters in the input stream without actually consuming them. This enables the lexer to make informed decisions about which token to create, particularly in cases where two token definitions share a common prefix, preventing backtracking. It's like checking the next card in a deck before deciding whether to hit or stand in Blackjack; you gain information without committing to an action.
+
 The pattern for any two-character operator is always:
 1. `advance()` consumed the first character (e.g., `=`).
 2. `peek()` inspects the next character without consuming it.
@@ -1248,7 +1270,7 @@ x = a / b          # SLASH token — division operator
 "path/to/file"     # character inside string literal — just the character '/', no meaning
 ```
 Four characters. Four completely different interpretations. The same byte value `0x2F` means four different things depending on which mode the scanner is in.
-This is not a quirk. It is the fundamental nature of lexical analysis. A scanner is a [[EXPLAIN:deterministic-finite-automaton-(dfa)|Deterministic Finite Automaton (DFA)]] — a machine that has a finite set of states and transitions between them based on input characters. The "modes" you are about to implement *are* those states. Each mode is a state in the DFA, and each character is a transition event.
+This is not a quirk. It is the fundamental nature of lexical analysis. A scanner is a Deterministic Finite Automaton (DFA) — a machine that has a finite set of states and transitions between them based on input characters. The "modes" you are about to implement *are* those states. Each mode is a state in the DFA, and each character is a transition event.
 The practical implication: you cannot process comments as a preprocessing step before scanning. A preprocessing pass would look for `//` in the raw source and delete everything until the end of the line — but it would also delete `//` *inside string literals*, breaking `"http://example.com"` or `"value // description"`. The scanner must track whether it is inside a string before it can interpret `//` as a comment delimiter.
 
 ![Before/After: Comment-Inside-String Ambiguity](./diagrams/diag-m3-before-after-comment-in-string.svg)
@@ -2850,7 +2872,12 @@ class TestPerformance(unittest.TestCase):
 ```
 **Understanding the performance model:**
 Your scanner is O(n) in the length of the source input — each character is visited exactly once by `advance()`, and `peek()` does not advance the cursor. There are no nested loops over the input. The only way your scanner could be O(n²) or worse is if you had introduced string concatenation in a loop — for example, if `_current_lexeme()` built the lexeme character by character using `lexeme += ch` instead of slicing `self.source[self.start:self.current]`. Python's `str` is immutable; each `+=` on a string creates a new string, making the lexeme-building loop O(k²) in the token length k. Your implementation avoids this by storing indices and slicing at emit time, which is O(1) per emit.
-[[EXPLAIN:O(n)-vs-O(n-squared)-complexity-in-string-processing|O(n) vs O(n²) complexity — why string concatenation in loops is expensive in Python]]
+
+> **🔑 Foundation: O**
+>
+> O(n) complexity means an operation's execution time grows linearly with the input size (n), while O(n²) means it grows quadratically. We're processing source code as a string, and repeated string concatenation (like `result += character` inside a loop) can lead to O(n²) complexity in Python because strings are immutable, creating new string objects each time. String concatenation appears when building token content. To avoid performance bottlenecks, we should use more efficient alternatives, such as accumulating characters in a list and then joining them into a string at the end using `''.join(list)`. The core idea is to be aware of how string operations are implemented to avoid accidentally quadratic behavior.
+
+
 LLVM's lexer processes source at hundreds of megabytes per second — your Python scanner will be far slower, but the *algorithmic* complexity is the same. The throughput difference comes from interpreter overhead and garbage collection pressure, not from algorithmic design. If you ever port this scanner to PyPy, Cython, or Rust, you will see dramatic speedups because the O(n) algorithm is already optimal; only the constant factor changes.
 ---
 ## Putting It All Together: The Full Test Suite
@@ -2909,7 +2936,7 @@ A passing run with all tests green means:
 
 ![Formal Boundary: What Regular Languages Can and Cannot Lex](./diagrams/diag-m4-regular-language-boundary.svg)
 
-Let's connect position tracking to a concrete, production impact. The [[EXPLAIN:language-server-protocol-(LSP)-and-how-editors-use-token-positions|Language Server Protocol (LSP)]] is a standardized interface between code editors (VS Code, Neovim, Emacs) and language analysis tools (compilers, linters, type checkers). It is the mechanism behind "jump to definition," "rename symbol," "show type on hover," and "underline errors in red."
+Let's connect position tracking to a concrete, production impact. The Language Server Protocol (LSP) is a standardized interface between code editors (VS Code, Neovim, Emacs) and language analysis tools (compilers, linters, type checkers). It is the mechanism behind "jump to definition," "rename symbol," "show type on hover," and "underline errors in red."
 Every single feature in that list requires the editor to know **exactly** where a token is in the source file — line and column. When you hover over a variable name, the editor sends an LSP request saying "I am at line 42, column 17 — what is here?" The language server must find the token at that position, look it up in its symbol table, and return information about it. If your scanner's position tracking is off by one column on line 42, the server looks up the wrong token and returns wrong information. The hover tooltip shows the wrong type. The rename refactoring renames the wrong symbol.
 This is a real production bug class. Position tracking errors are one of the most common sources of subtle bugs in language server implementations. The fix is always the same: make position tracking happen in one place (`advance()`), unconditionally, for every character consumed, including characters inside comments and strings. Your implementation already does this correctly. The multi-line position tests you wrote in this milestone are the verification that it stays correct as you modify the scanner.
 ---

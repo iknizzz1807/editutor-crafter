@@ -3672,7 +3672,7 @@ function makeCounter() {
 ```
 If `count` lives in `makeCounter`'s frame, it would be destroyed when `makeCounter` returns! Yet the returned function still works.
 The solution: **captured variables must be heap-allocated**. The compiler detects when a local "escapes" and moves it from the frame to a heap-allocated "closure environment." This is why closures have a performance cost in some languages—they can't use the fast frame-based storage you just implemented.
-> [[EXPLAIN:closures-and-captured-variables|How languages implement closures by heap-allocating captured variables]]
+> How languages implement closures by heap-allocating captured variables
 **Frame Pointer Chains → Exception Handling**
 When you `throw` an exception, the runtime must:
 1. Find a matching `catch` block

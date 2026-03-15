@@ -41,6 +41,21 @@ The project is complete when:
 - `curl http://127.0.0.1:8080/` returns `200 OK` with correct `Content-Type` and `Content-Length` headers, and `curl http://127.0.0.1:8080/../../etc/passwd` returns `404` (path traversal blocked)
 - `wrk -t12 -c10000 -d60s --latency http://127.0.0.1:8080/index.html` completes with zero errors and p99 latency reported under 100ms
 
+
+> **🔑 Foundation: The difference between I/O readiness notification and I/O co**
+>
+> I/O readiness notification (like `epoll` and `select`) tells you *when* an I/O operation *might* succeed without blocking. I/O completion notification (like `io_uring` and IOCP) tells you *when* an I/O operation has *actually* finished.  Right now, we need to efficiently handle many concurrent connections in our server, and avoiding wasted CPU cycles waiting for I/O is crucial. The key is understanding the difference between "I think I can read now" (readiness) and "I have successfully read" (completion) which directly impacts how we structure our event loop.
+
+
+> **🔑 Foundation: File descriptor table internals: FD is an index into per-pro**
+>
+> A file descriptor (FD) is simply an index into a per-process table managed by the kernel. Each entry in this table points to a kernel-level file description, which contains information about the opened file/socket, including file position and access mode. Because our server forks worker processes to handle requests, and/or we are using `dup` to redirect standard I/O, it is crucial to understand how file descriptors are represented at the kernel level. It is vital to remember that `epoll` (and other readiness notification mechanisms) watch the underlying kernel file descriptions, *not* the FD number itself in a given process.
+
+
+> **🔑 Foundation: Min-heap data structure: insert O**
+>
+> A min-heap is a tree-based data structure where the value of each node is less than or equal to the value of its children. It supports efficient insertion, extraction of the minimum element, and decreasing the key of an element, all in O(log n) time. Given our server needs to gracefully handle timeouts for clients that aren't sending data or responding, we need a fast way to track the earliest timeout event. Using a min-heap allows us to efficiently retrieve and update the next timeout to expire.
+
 ---
 
 # 📚 Before You Read This: Prerequisites & Further Reading
@@ -176,7 +191,11 @@ Start with what you already know from your prerequisite project: a blocking HTTP
 The physical constraint: **a CPU core can only run one thread at a time**. With 10,000 threads and 8 cores, the OS scheduler must context-switch constantly. Each context switch costs ~1–10 microseconds in direct overhead plus cache pollution from replacing register state and TLB entries. A server spending 30% of its CPU time on context switches is a server that serves 30% fewer requests than it could.
 The insight: most network connections are idle *most of the time*. A typical HTTP keep-alive connection sends a burst of requests, then sits quiet for 30 seconds. If you have 10,000 connections but only 50 are actively transferring data right now, why should you be managing 10,000 threads?
 What you need instead: **a mechanism that tells you which file descriptors have work ready, right now, and lets a single thread serve them all**. That mechanism is `epoll`.
-[[EXPLAIN:the-difference-between-i/o-readiness-notification-and-i/o-completion-notification-(readiness-=-epoll/select;-completion-=-io_uring/iocp)|The difference between I/O readiness notification and I/O completion notification (readiness = epoll/select; completion = io_uring/IOCP)]]
+
+> **🔑 Foundation: The difference between I/O readiness notification and I/O co**
+>
+> I/O readiness notification informs you when a socket *might* be ready to read or write, requiring you to still attempt the operation. I/O completion notification, on the other hand, confirms the operation has *already* completed. We're switching to completion-based I/O for higher throughput and lower latency compared to constantly polling for readiness. Think of readiness notification as a "maybe" - you check if the door is open, then try to walk through; completion notification is like receiving a package confirmation - the delivery is guaranteed.
+
 ---
 ## The Kernel's Two Data Structures: Interest Set and Readiness Queue
 `epoll` is not a smarter `select()`. That is the first misconception to discard. `select()` re-scans all watched file descriptors on every call — it is O(n) in the number of fds you are watching. `epoll` is O(1) for event delivery regardless of how many fds you are monitoring, because it maintains state inside the kernel between calls.
@@ -190,12 +209,21 @@ When you call `epoll_wait()`, the kernel copies entries from the readiness queue
 ![epoll Interest Set vs. Readiness Queue (Kernel Data Structures)](./diagrams/diag-m1-epoll-interest-vs-readiness.svg)
 
 This design means that adding 9,950 idle connections to the interest set costs you nothing at `epoll_wait()` time. Only the 50 active connections appear in the results.
-[[EXPLAIN:file-descriptor-table-internals:-fd-is-an-index-into-per-process-table-pointing-to-kernel-file-description-(shared-on-fork/dup);-epoll-watches-kernel-file-descriptions-not-fd-numbers|File descriptor table internals: FD is an index into per-process table pointing to kernel file description (shared on fork/dup); epoll watches kernel file descriptions not FD numbers]]
+
+> **🔑 Foundation: File descriptor table internals: FD is an index into per-pro**
+>
+> A file descriptor (FD) is just an index into your process's private table, which then points to a kernel file description. This kernel structure tracks the actual file and its current position. Understanding this indirection is critical for managing shared file access and preventing issues in forking and concurrent I/O with epoll. Imagine FDs as addresses in your mailbox; the kernel file description is the actual house at that address, which multiple mailboxes (processes) might point to, and epoll watches the house, not your mailbox.
+
 ---
 ## Kernel Socket Buffers and What EAGAIN Means Physically
 Before you can understand *when* epoll reports a socket as ready, you need to understand what the kernel is actually watching.
 Every TCP socket has two kernel-managed buffers: a **receive buffer** (data the remote peer sent, not yet read by your application) and a **send buffer** (data your application wrote, not yet acknowledged by the remote peer). These buffers live in kernel memory — you do not allocate them; the kernel does when `accept()` creates the socket. Their default sizes are typically 87KB receive and 16KB send on Linux, tunable via `SO_RCVBUF` and `SO_SNDBUF`.
-[[EXPLAIN:kernel-socket-buffer-model:-send-buffer-+-receive-buffer,-how-they-fill-and-drain,-what-eagain-means-physically|Kernel socket buffer model: send buffer + receive buffer, how they fill and drain, what EAGAIN means physically]]
+
+> **🔑 Foundation: Kernel socket buffer model: send buffer + receive buffer**
+>
+> Each socket in the kernel has two associated buffers: a send buffer and a receive buffer. When you `send()`, data is copied from your user-space buffer into the socket's send buffer. When data arrives, it's placed in the socket's receive buffer, available for `recv()`. Understanding the mechanics of socket buffers is critical because we're optimizing for high throughput and need to avoid bottlenecks in data transfer. `EAGAIN` (or `EWOULDBLOCK`) physically means the send buffer is full, or the receive buffer is empty, and the operation would have blocked if the socket were in blocking mode.
+
+
 
 ![Kernel File Descriptor and Socket Buffer Model](./diagrams/diag-m1-kernel-fd-model.svg)
 
@@ -853,7 +881,7 @@ This milestone exists to erase both lies.
 You probably have a mental model of `write()` that goes like this: either it writes all the bytes you asked for, or it returns an error. This model is wrong in two ways.
 **First**, on a blocking socket, `write()` *will* write all bytes before returning — but it does this by sleeping until the kernel send buffer drains. In a non-blocking event loop, sleeping is the one thing you cannot do.
 **Second**, on a non-blocking socket, `write()` can return any number from 1 to `len` with `errno` unchanged and no error code. This is called a **partial write**, and it is a success — the kernel accepted as many bytes as it could and is telling you: "I took 3,200 of your 8,192 bytes. Come back for the rest." If you do not check the return value and queue the remaining bytes, they vanish.
-[[EXPLAIN:kernel-socket-buffer-model:-send-buffer-+-receive-buffer,-how-they-fill-and-drain,-what-eagain-means-physically|Kernel socket buffer model: send buffer + receive buffer, how they fill and drain, what EAGAIN means physically]]
+
 The three outcomes of `write()` on a non-blocking socket:
 | Return value | errno | Meaning |
 |---|---|---|
@@ -1115,7 +1143,11 @@ What you just built is not just an application-level buffering mechanism. It is 
 TCP's receive window — the field in each TCP ACK packet that says "I have room for N more bytes" — is computed by the kernel from the size of the receive buffer on the *other end*. When the remote peer's application reads slowly, its receive buffer fills, its advertised window shrinks, and eventually it reaches zero, at which point the sender (your server) cannot transmit any more bytes. The kernel reflects this by letting your send buffer fill up. You get `EAGAIN` from `write()`. Your write buffer starts growing.
 The chain: **remote application reads slowly → remote receive buffer fills → TCP window shrinks to zero → your kernel send buffer fills → write() returns EAGAIN → your write buffer grows**.
 This is TCP backpressure propagating upward through every layer. Redis's "client output buffer limits" (configured via `client-output-buffer-limit`) and Node.js's `writable.write()` returning `false` (the backpressure signal in Node.js streams) are both responding to this same physical phenomenon. When you implement the maximum write buffer size limit in M4 and close connections that exceed it, you are implementing the same defense as Redis's hard limit. The alternative — letting the write buffer grow without bound — is the **slow loris** attack: a client that reads at 1 byte per second can exhaust your server's memory by accumulating unbounded write buffers across thousands of connections.
-[[EXPLAIN:min-heap-data-structure:-insert-o(log-n),-extract-min-o(log-n),-decrease-key-o(log-n)-—-needed-for-timer-management|Min-heap data structure: insert O(log n), extract-min O(log n), decrease-key O(log n) — needed for timer management]]
+
+> **🔑 Foundation: Min-heap data structure: insert O**
+>
+> A min-heap is a tree-based data structure where the value of each node is less than or equal to the value of its children, allowing quick access to the smallest element. We need a min-heap to efficiently manage timers, ensuring the earliest timer is always readily available for processing. Think of it as a pile of tasks sorted by urgency; you can always grab the most urgent one at the top quickly, and re-prioritize (decrease key) efficiently as new information arrives.
+
 ---
 ## Part Two: Timer Management
 ### The Problem: Idle Connections Are a Resource Leak
@@ -1538,7 +1570,7 @@ In M3, you will abstract everything you have built — the epoll fd, the per-fd 
 
 You have built a functional event loop. It monitors file descriptors with epoll, drains reads in ET mode, handles partial writes through a write buffer, and fires idle timeouts through a min-heap integrated with `epoll_wait`'s timeout parameter. Every mechanism is working.
 The problem is that it is working in the worst possible way: as a single monolithic function with epoll internals scattered through every handler. Your read handler calls `epoll_ctl`. Your write handler calls `epoll_ctl`. Your accept handler calls `epoll_ctl`. The timer heap lives in a global variable. The connection table lives in another global variable. There is no seam between "the machinery that multiplexes events" and "the code that handles those events." Every time you want to add a feature — the HTTP parser in M4, a rate limiter, a logging system — you must reach through the event loop's internals to touch epoll directly.
-This is the exact design problem that the **Reactor pattern** solves. [[EXPLAIN:the-reactor-vs-proactor-pattern-distinction-—-reactor-dispatches-on-readiness,-proactor-dispatches-on-completion|The Reactor vs Proactor pattern distinction — Reactor dispatches on readiness, Proactor dispatches on completion]]
+This is the exact design problem that the **Reactor pattern** solves. The Reactor vs Proactor pattern distinction — Reactor dispatches on readiness, Proactor dispatches on completion
 The goal of this milestone: wrap every raw epoll call behind a clean API. After M3, user code never calls `epoll_ctl` or `epoll_wait` directly. User code calls `reactor_register()`, `reactor_deregister()`, `reactor_set_timeout()`, and `reactor_defer()`. The reactor becomes a black box that delivers events to registered callbacks. The HTTP server in M4 will be built entirely against this API — it will have zero knowledge of epoll.
 ---
 ## The Misconception That Will Hurt You
@@ -2223,7 +2255,7 @@ static void http_connection_handler(int fd, uint32_t events, void *udata) {
 }
 ```
 The critical detail: **a single event can have multiple flags set simultaneously**. `EPOLLIN | EPOLLERR` means "there is data to read AND an error occurred." In this case, you should process `REACTOR_ERROR` first and close the connection, rather than attempting to read. Data in the receive buffer after an error is typically garbage or irrelevant. Check the error flag before the read/write flags.
-Note also that `EPOLLRDHUP` (Linux 2.6.17+) is a separate flag that specifically signals that the remote peer shut down its write side (half-close). [[EXPLAIN:tcp-half-close-and-epollrdhup:-remote-peer-sends-fin-but-connection-remains-open-for-sending|TCP half-close and EPOLLRDHUP: remote peer sends FIN but connection remains open for sending]] It is more specific than `EPOLLHUP`. For HTTP/1.1, detecting `EPOLLRDHUP` early allows you to stop reading and start closing without waiting for `EPOLLERR`.
+Note also that `EPOLLRDHUP` (Linux 2.6.17+) is a separate flag that specifically signals that the remote peer shut down its write side (half-close). TCP half-close and EPOLLRDHUP: remote peer sends FIN but connection remains open for sending It is more specific than `EPOLLHUP`. For HTTP/1.1, detecting `EPOLLRDHUP` early allows you to stop reading and start closing without waiting for `EPOLLERR`.
 ---
 ## Building an Echo Server Against the Reactor API
 Now demonstrate the API from the user's perspective. This is the same echo server from M1, rewritten to use the reactor — no `epoll_ctl`, no `epoll_wait`, no epoll knowledge in user code:
@@ -2361,7 +2393,12 @@ if (h->closing) {
     continue;
 }
 ```
-[[EXPLAIN:safe-iterator-invalidation-patterns:-copy-on-iterate,-mark-and-skip,-and-generational-counters|Safe iterator invalidation patterns: copy-on-iterate, mark-and-skip, and generational counters]]
+
+> **🔑 Foundation: Safe iterator invalidation patterns: copy-on-iterate**
+>
+> Iterator invalidation occurs when the underlying data structure being iterated over is modified, making the iterator's state incorrect. Common safe iteration patterns include creating a copy of the data structure before iterating (copy-on-iterate), marking elements for removal and skipping them during iteration (mark-and-skip), and using generational counters to track changes in the data structure's structure. Because our server handles many concurrent connections, requiring frequent updates to connection-related data, we must avoid crashes or undefined behavior caused by iterator invalidation. The key insight is choosing a strategy that minimizes overhead while guaranteeing safe concurrent access.
+
+
 The broader pattern has many names in different contexts:
 - **Java's `CopyOnWriteArrayList`**: instead of iterating the live list, it copies the underlying array first. Modifications create a new array; the old iteration continues on the original.
 - **Rust's borrow checker**: prevents you from holding a mutable reference to a `Vec` while iterating it — the compile-time enforcement of what your `dispatching` flag enforces at runtime.
@@ -2767,7 +2804,12 @@ static parse_result_t http_try_parse(http_conn_t *conn) {
 }
 ```
 The key structural property of this parser: **it has no persistent sub-state beyond the bytes in `read_buf` and the `state` field**. You can call `http_try_parse` after adding any number of bytes to `read_buf` — zero, one, or ten thousand — and it will correctly determine whether the request is complete. The "resumable" property comes for free from the accumulation model: you always scan the entire buffer from the beginning, which means the parser is stateless between calls at the sub-header level.
-[[EXPLAIN:http/1.1-keep-alive,-pipelining,-content-length-vs-transfer-encoding:-chunked,-and-the-connection-header|HTTP/1.1 keep-alive, pipelining, Content-Length vs Transfer-Encoding: chunked, and the Connection header]]
+
+> **🔑 Foundation: HTTP/1.1 keep-alive**
+>
+> HTTP/1.1 introduced keep-alive connections (persistent connections), which allow multiple requests to be sent over the same TCP connection, and pipelining, where multiple requests are sent without waiting for responses. `Content-Length` specifies the exact size of the body, while `Transfer-Encoding: chunked` indicates the body is sent in chunks, each prefixed with its size. The `Connection` header controls connection persistence (`keep-alive` or `close`). Optimizing our server's handling of HTTP/1.1 requires efficiently reusing connections and understanding how to parse different content encodings. Understanding these nuances is crucial for improving throughput and reducing latency.
+
+
 ---
 ## Part Two: The State Machine Dispatcher
 The reactor delivers `REACTOR_READ`, `REACTOR_WRITE`, and `REACTOR_ERROR` events to a single callback per connection. That callback is the state machine dispatcher — it routes each event to the correct handler based on the current state.
@@ -2873,7 +2915,12 @@ Notice the drain loop — this is ET mode, so you must read until `EAGAIN`. Each
 ![Static File Serving Path with MIME Types](./diagrams/diag-m4-static-file-serving.svg)
 
 Static file serving sounds simple: open the file, read it, write the response. There are several non-trivial details: path validation (you cannot let `../../../etc/passwd` escape your serve root), MIME type detection, and the choice between `read()+write()` and `sendfile()`.
-[[EXPLAIN:sendfile()-syscall:-zero-copy-file-serving-that-transfers-data-directly-from-page-cache-to-socket-buffer-without-a-userspace-round-trip|sendfile() syscall: zero-copy file serving that transfers data directly from page cache to socket buffer without a userspace round-trip]]
+
+> **🔑 Foundation: sendfile**
+>
+> The `sendfile()` system call allows transferring data directly from a file descriptor (typically a file) to another file descriptor (typically a socket) within the kernel. This avoids the need to copy data into and out of user space, resulting in a "zero-copy" transfer. Since our server serves static files, using `sendfile()` can dramatically reduce CPU usage and improve throughput. By understanding that the data goes directly from the page cache to the socket buffer, we see the efficiency gains compared to traditional `read()` then `write()` approaches.
+
+
 ### Path Sanitization
 ```c
 /* Resolve the requested path against the serve root.
@@ -3032,7 +3079,7 @@ static void http_process_request(http_conn_t *conn) {
 ```
 ---
 ## Part Four: Write Path and HTTP Keep-Alive
-[[EXPLAIN:http/1.1-keep-alive,-pipelining,-content-length-vs-transfer-encoding:-chunked,-and-the-connection-header|HTTP/1.1 keep-alive, pipelining, Content-Length vs Transfer-Encoding: chunked, and the Connection header]]
+
 
 ![HTTP/1.1 Keep-Alive: State Reset and FD Reuse](./diagrams/diag-m4-keep-alive-connection-reuse.svg)
 
@@ -3412,7 +3459,12 @@ Let us trace the hardware behavior of a single HTTP request through your server 
 **`write()` to the socket**: Another syscall + kernel copy. The kernel copies from your write buffer into the socket's send buffer, then schedules the TCP stack to transmit. The NIC's DMA engine moves data from the send buffer to the wire without CPU involvement — this is what makes the server CPU-efficient: the CPU queues the data and moves on; the NIC handles transmission asynchronously.
 **Branch prediction**: The dispatch loop's `if (events & REACTOR_ERROR)` is almost always false — the predictor learns this in the first few iterations and predicts correctly >99% of the time. The `switch (conn->state)` in the callback is also highly predictable: under benchmark load, almost every connection is in `READING_HEADERS` or `WRITING_RESPONSE`.
 **TLB pressure**: With 10,000 `http_conn_t` structs (26KB each), the working set is ~260MB — far larger than the TLB can cover. Each access to a new connection's struct may trigger a TLB miss: the MMU must walk the page table to find the physical address. TLB misses cost ~50 cycles each. Under load with 200 active connections per batch, that is 200 potential TLB misses per tick. This is visible in `perf stat` output as a high `dTLB-load-misses` count. Mitigation: use huge pages (2MB instead of 4KB) for the conn_table allocation, reducing TLB entries needed by a factor of 512.
-[[EXPLAIN:huge-pages-and-tlb-pressure:-2mb-huge-pages-reduce-tlb-miss-rate-at-the-cost-of-increased-memory-fragmentation|Huge pages and TLB pressure: 2MB huge pages reduce TLB miss rate at the cost of increased memory fragmentation]]
+
+> **🔑 Foundation: Huge pages and TLB pressure: 2MB huge pages reduce TLB miss **
+>
+> Traditional memory management uses 4KB pages. Huge pages are larger (e.g., 2MB), reducing the number of pages needed to map a given amount of memory. This reduces Translation Lookaside Buffer (TLB) pressure, as the TLB can store more mappings, leading to fewer TLB misses. Given our server's large memory footprint, TLB misses can become a performance bottleneck. However, using huge pages can lead to increased memory fragmentation. The tradeoff is between reducing TLB misses (speeding up memory access) and increasing internal fragmentation (potentially wasting memory).
+
+
 ---
 ## Comparison: Your Server vs. NGINX
 
@@ -3431,7 +3483,7 @@ Your server and NGINX's worker process implement the same architectural pattern.
 | **Deferred tasks** | Phase 3 queue | Posted events queue |
 | **Config** | Hardcoded constants | `nginx.conf` directive system |
 The structural difference in file serving — `sendfile()` vs `read()+write()` — is significant. With `read()+write()`, file data travels the path: **disk → kernel page cache → userspace buffer → kernel socket buffer → NIC**. There are two kernel→userspace transitions. With `sendfile()`, the path is: **disk → kernel page cache → kernel socket buffer → NIC**. Userspace is bypassed entirely. No context switches for data movement, no userspace buffer allocation. For a server that is 90% static file serving, `sendfile()` can double throughput and halve CPU usage.
-[[EXPLAIN:sendfile()-syscall:-zero-copy-file-serving-that-transfers-data-directly-from-page-cache-to-socket-buffer-without-a-userspace-round-trip|sendfile() syscall: zero-copy file serving that transfers data directly from page cache to socket buffer without a userspace round-trip]]
+
 The `sendfile()` call in your server would replace the file-reading loop in `http_process_request`:
 ```c
 /* sendfile() integration — replaces read()+write() for file content */
@@ -3463,7 +3515,12 @@ HTTP/3 over QUIC takes this further: QUIC packets contain multiple frames, each 
 TLS 1.3 records follow the same pattern: 5-byte record header (content type + version + length), followed by `length` bytes of encrypted payload. Parse the header, wait for the payload, decrypt, process.
 Every streaming protocol you will ever implement follows this pattern: **accumulate, detect complete unit, process, advance, repeat**. The parser you built here is not HTTP-specific knowledge. It is a transferable architectural skill.
 ### Redis Protocol (RESP)
-[[EXPLAIN:redis-resp-protocol:-inline-commands-and-bulk-strings-as-a-streaming-protocol|Redis RESP protocol: inline commands and bulk strings as a streaming protocol]]
+
+> **🔑 Foundation: Redis RESP protocol: inline commands and bulk strings as a s**
+>
+> The Redis Serialization Protocol (RESP) uses simple text-based formats, specifically "inline commands" (single-line strings) and "bulk strings" (length-prefixed strings), to transmit requests and responses between clients and the Redis server. Think of it like sending instructions and data over a pipe, one piece at a time. We're using RESP to communicate with the Redis server in our caching system, allowing us to store and retrieve data efficiently. The key mental model is understanding that RESP isn't a fixed-size data format; instead, the prefixes and terminators allow us to parse data streams incrementally without needing to read the entire message into memory at once.
+
+
 Redis's wire protocol (RESP — Redis Serialization Protocol) is a simpler version of exactly what you built. A bulk string command looks like:
 ```
 *3\r\n$3\r\nSET\r\n$5\r\nhello\r\n$5\r\nworld\r\n

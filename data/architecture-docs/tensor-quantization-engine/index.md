@@ -213,7 +213,12 @@ def naive_quantization(tensor):
 ```
 This is catastrophically incorrect. Let's see why.
 **The Problem**: FP32 values span an enormous range—your model weights might be in `[-0.5, 0.5]` while activations could span `[-100, 100]`. INT8, by contrast, can only represent **exactly 256 distinct values**: the integers from -128 to 127.
-[[EXPLAIN:integer-representation-ranges-(int8,-int4)|INT8 stores values from -128 to 127 (signed 8-bit). INT4 stores -8 to 7—only 16 distinct values. The range is fixed; you can't change it.]]
+
+> **🔑 Foundation: INT8 stores values from -128 to 127**
+>
+> INT8 and INT4 are data types representing integers using a fixed number of bits: 8 and 4, respectively.  INT8 can hold values from -128 to 127, while INT4 holds a smaller range of -8 to 7. Understanding these ranges is crucial because our upcoming compression algorithm will utilize INT4 to represent smaller, more common values efficiently, potentially sacrificing range for space savings. This trade-off relies on the fact that many intermediate calculations in our image processing pipeline result in values within the INT4 range. The core insight is realizing the fundamental limitation imposed by a fixed-size data representation: a smaller bit-width means fewer representable values.
+
+
 If you just "round to the nearest integer," you're assuming your weights happen to fall in the range `[-128, 127]`. They don't. And even if they did, you'd lose all precision for small values—`0.123` and `0.001` would both round to `0`.
 **The Real Mechanism**: Quantization is an **affine transformation** that maps your floating-point range to the integer range. You choose a **scale** (how much each integer step represents) and optionally a **zero-point** (which integer corresponds to floating-point zero).
 
@@ -4929,7 +4934,12 @@ A **64x increase in output error**. This is why naive INT4 destroys LLMs—that 
 ---
 ## The Hessian: Measuring What Matters
 To understand GPTQ, you need to understand the Hessian matrix—not as abstract math, but as a practical tool that tells you *which weights matter most*.
-[[EXPLAIN:hessian-matrix-intuition|Hessian matrix intuition]]
+
+> **🔑 Foundation: Hessian matrix intuition**
+>
+> The Hessian matrix represents the second-order partial derivatives of a multi-variable function. In simpler terms, it describes the curvature of a function at a specific point; it tells us how the rate of change of the function's gradient is changing. We need the Hessian matrix to identify points of interest in an image, such as corners and edges, by analyzing the local curvature of the image's intensity function. Think of the Hessian as a map of the landscape's "bumpy-ness"; high Hessian values mean the landscape is changing rapidly, indicating an important feature.
+
+
 ### The Hessian in GPTQ: Why Second Derivatives Matter
 The Hessian $H$ captures the **curvature** of the loss landscape. In GPTQ, we care about how the *output* of a layer changes when we perturb weights. For a Linear layer $Y = XW^T$, the Hessian of the output error with respect to the weights is:
 $$H = 2 X^T X$$

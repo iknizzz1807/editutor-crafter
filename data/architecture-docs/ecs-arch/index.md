@@ -197,7 +197,12 @@ pub struct Entity {
 }
 ```
 But wait—how do we pack both index and generation into a single `u32`?
-[[EXPLAIN:bit-manipulation-(packing,-masking,-shifting)|Bit manipulation (packing, masking, shifting)]]
+
+> **🔑 Foundation: Bit manipulation**
+>
+> Bit manipulation involves directly manipulating the individual bits within a data type, using techniques like packing multiple values into fewer bits, masking to isolate specific bits, and shifting bits to perform arithmetic or logical operations. In our embedded systems project, memory and bandwidth are extremely limited, so packing data efficiently into smaller bit fields is crucial for maximizing data storage and transmission speed. The key insight is to visualize data as a collection of independent bits that can be individually accessed and modified, allowing for fine-grained control and optimization.
+
+
 ### Bit Packing: Squeezing Two Numbers Into One
 We have 32 bits. We need to store:
 - **Index**: Which slot in our entity array
@@ -1702,7 +1707,12 @@ for (entity, (pos, vel)) in world.query_mut::<(Position, Velocity)>() {
 }
 ```
 But `query_mut` needs to borrow `world` mutably. And it needs to return mutable references to *multiple* component types simultaneously. The borrow checker needs to prove that `Position` and `Velocity` don't overlap.
-[[EXPLAIN:interior-mutability-patterns-(refcell,-etc.)|Interior mutability patterns (RefCell, etc.)]]
+
+> **🔑 Foundation: Interior mutability patterns**
+>
+> Interior mutability patterns, like `RefCell` in Rust, allow you to modify data even when you have an immutable reference to it, effectively bypassing the normal borrow checker rules within a limited scope. This is needed in our concurrent data structure implementation because we may need to update shared state within a read-only context, such as updating counters or caches, without requiring a full lock. The crucial mental model is that the mutability is contained within the structure itself, relying on runtime checks to prevent data races instead of compile-time guarantees.
+
+
 This is where Rust's type system forces good design. We have two options:
 **Option 1: Split borrows at the API level**
 ```rust

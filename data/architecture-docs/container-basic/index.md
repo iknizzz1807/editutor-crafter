@@ -167,7 +167,12 @@ Let's start with the syscall that makes this possible.
 ---
 ## The clone() Syscall: Namespace-Aware Process Creation
 You've used `fork()` before — it creates a child process that's a copy of the parent. But `fork()` doesn't understand namespaces. For that, you need `clone()`, the lower-level primitive that `fork()` and `pthread_create()` are built on.
-[[EXPLAIN:clone()-syscall-and-child-stack-allocation|clone() syscall and child stack allocation]]
+
+> **🔑 Foundation: clone**
+>
+> The `clone()` system call in Linux is used to create new processes, offering fine-grained control over what the new process shares with the parent process. Unlike `fork()`, `clone()` allows specifying which resources like memory, file descriptors, signal handlers, and even the address space are shared. We need `clone()` to efficiently launch worker threads in our high-performance server, avoiding unnecessary copying of data and reducing memory footprint. The key insight is that `clone()` provides process creation as a composable set of options, moving beyond the monolithic behavior of `fork()` for tailored process relationships.
+
+
 The signature of `clone()` is:
 ```c
 #include <sched.h>
@@ -286,7 +291,12 @@ Let's trace what happens when the child calls `getpid()`:
 The overhead is negligible because the namespace mapping is cached in the task structure. The kernel doesn't scan a global table on every PID lookup.
 ---
 ## Verifying Isolation via /proc
-[[EXPLAIN:linux-/proc-filesystem-structure|Linux /proc filesystem structure]]
+
+> **🔑 Foundation: Linux /proc filesystem structure**
+>
+> The `/proc` filesystem in Linux is a virtual filesystem, meaning it doesn't store data on a physical disk but dynamically generates information about the kernel and processes running on the system. It's organized hierarchically with directories for each process (named after the process ID or PID), and various files within each process directory providing detailed information like memory maps, open file descriptors, and CPU usage. We'll use `/proc` to monitor our server's resource consumption, identify potential memory leaks, and debug performance bottlenecks without attaching a debugger. The mental model is that `/proc` is a real-time window into the kernel's internal state and running processes, presented as a filesystem for easy access and manipulation.
+
+
 The `/proc` filesystem exposes kernel data structures as files. For process introspection, `/proc/self/status` is particularly useful — it shows information about the current process, including namespace-specific PIDs.
 ```c
 static void print_pid_info(const char *label) {

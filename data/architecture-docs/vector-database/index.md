@@ -3392,7 +3392,12 @@ impl<'a> BruteForceSearch<'a> {
 This same tradeoff appears in HNSW (M4) and the Query API (M6). The decision isn't specific to brute-force—it's a fundamental tension in filtered search.
 ---
 ## Ground Truth Generation: The Recall Foundation
-[[EXPLAIN:approximation-quality-tradeoff-(recall@k)|Approximation-quality tradeoff (recall@k)]]
+
+> **🔑 Foundation: Approximation-quality tradeoff**
+>
+> Approximation-quality tradeoff (recall@k) refers to the balancing act of using faster, approximate algorithms for retrieving information while accepting that these algorithms might not return the *absolute* best `k` results, ranked by some quality metric. Instead of exhaustively searching all possible results, we accept a subset that's "good enough" within a reasonable timeframe. In our current system, we need to serve search queries rapidly, and evaluating every single item for relevance is computationally infeasible for large datasets. The key insight is that for many users, a very slightly sub-optimal result set delivered quickly is more valuable than a perfectly ranked set that takes much longer to compute; `recall@k` quantifies what proportion of the true top-k results we actually retrieve.
+
+
 The most important output of brute-force search isn't the search itself—it's the **ground truth** you generate for evaluating approximate algorithms.
 **Recall@k** measures what fraction of the true top-k neighbors your approximate algorithm found:
 $$\text{recall@k} = \frac{|S_{\text{approx}} \cap S_{\text{exact}}|}{k}$$
@@ -3871,7 +3876,7 @@ This is HNSW: Hierarchical Navigable Small World. It combines two ideas that are
 ### The Three Constraints You Must Satisfy
 Every decision in this milestone traces back to three constraints:
 1. **Sub-linear Query Complexity**: You cannot afford O(N). You need O(log N) or better. The hierarchy is what enables this—each layer prunes the search space exponentially.
-2. **Recall vs Latency Tradeoff**: Approximate search is meaningless if it returns random results. You need ≥95% recall@10 (finding 95% of the true top-10 neighbors) while being 10x+ faster than brute-force. This is the [[EXPLAIN:approximation-quality-tradeoff-(recall@k)|approximation-quality tradeoff]] in action.
+2. **Recall vs Latency Tradeoff**: Approximate search is meaningless if it returns random results. You need ≥95% recall@10 (finding 95% of the true top-10 neighbors) while being 10x+ faster than brute-force. This is the approximation-quality tradeoff in action.
 3. **Incremental Construction**: You cannot rebuild the entire index for every insert. The graph must support streaming updates while maintaining navigability properties.
 ---
 ## The Architecture: Satellite View

@@ -204,6 +204,11 @@ Enter the **TAP device** — a virtual network interface that delivers raw Ether
 A TAP device appears as a regular network interface (like `eth0` or `wlan0`) to the rest of the system, but it has no physical hardware behind it. Instead, it's connected to a **file descriptor** in your program. When you read from that file descriptor, you get raw Ethernet frames. When you write to it, your frames appear on the virtual interface as if they came from the network.
 ### Opening a TAP Device
 Here's the ritual to create and configure a TAP device:
+
+> **🔑 Foundation: Timer wheel / min-heap for retransmission**
+>
+> A timer wheel or min-heap are efficient data structures used for managing retransmission timers. They allow us to schedule and track when a packet acknowledgment is overdue. If an acknowledgment isn't received within the timeout period, the timer expires, triggering a retransmission. We need a mechanism like this to ensure reliable data delivery in the face of packet loss or network delays. The mental model is a virtual clock, where each packet awaiting acknowledgement has an alarm set; when the alarm goes off, we retransmit. A timer wheel/min-heap lets us manage many of these alarms efficiently.
+
 ```c
 #include <fcntl.h>
 #include <unistd.h>
@@ -386,7 +391,12 @@ struct vlan_tag {
 } __attribute__((packed));
 ```
 The `__attribute__((packed))` directive tells the compiler not to insert padding bytes. Without this, the compiler might add padding to align fields on 4-byte boundaries, completely breaking the memory layout. Network protocols are defined at the byte level; there's no room for compiler whims.
-[[EXPLAIN:network-byte-order-(big-endian)|Network byte order (big-endian)]]
+
+> **🔑 Foundation: Network byte order**
+>
+> Network byte order, also known as big-endian, defines a standard way to represent multi-byte data (like integers and floats) when transmitted over a network. It mandates that the most significant byte of the data is transmitted first. We need this in our network protocol to ensure that all machines, regardless of their native byte order (endianness), interpret the received data correctly, preventing misinterpretation of packet lengths and data values. The mental model is that the network is a shared highway, and big-endian is the common language everyone agrees to speak so data arrives as intended.
+
+
 ### Parsing an Ethernet Frame
 Now let's write the parser:
 ```c
@@ -3184,7 +3194,12 @@ TCP is defined by a state machine with 11 states. Every connection goes through 
 | **LAST_ACK** | FIN sent after remote FIN, waiting for ACK | Passive closer |
 | **TIME_WAIT** | Waiting for delayed segments to expire | Active closer |
 ### Sequence Number Arithmetic: The Modulo 2³² Problem
-[[EXPLAIN:modulo-2^32-sequence-number-arithmetic|Modulo 2^32 sequence number arithmetic]]
+
+> **🔑 Foundation: Modulo 2^32 sequence number arithmetic**
+>
+> Modulo 2^32 sequence number arithmetic involves performing arithmetic operations on sequence numbers, where the result wraps around after reaching 2^32. This wrapping behavior allows us to track the order of packets in a connection where sequence numbers eventually recycle without needing to maintain a massive (unbounded) range of sequence numbers. This is crucial for reliable data transmission, enabling accurate reassembly and reordering of packets, and for detecting duplicate packets without overwhelming our system resources. The key insight is that the wraparound property of modulo arithmetic provides a concise way to determine packet order, even with limited sequence number space.
+
+
 
 ![Modulo 2^32 Sequence Number Comparison](./diagrams/diag-sequence-number-arithmetic.svg)
 
@@ -4798,7 +4813,7 @@ int32_t tcp_rtt_stop(struct tcp_rtt_tracker *tracker,
 
 ![Retransmission Timer State Machine](./diagrams/diag-retransmission-timer.svg)
 
-[[EXPLAIN:timer-wheel-/-min-heap-for-retransmission|Timer wheel / min-heap for retransmission]]
+
 ```c
 /**
  * Timer management for TCP connections.

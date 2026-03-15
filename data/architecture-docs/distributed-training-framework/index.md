@@ -214,7 +214,12 @@ for batch in dataloader:
 The `all_reduce_gradients` call is where everything interesting happens.
 ### Level 2 — Distributed Primitives: All-Reduce
 `all_reduce` is a **collective communication primitive**—an operation where all processes participate and all receive the same result.
-[[EXPLAIN:collective-communication-primitives-(all-reduce,-all-gather,-reduce-scatter)|Collective communication primitives (all-reduce, all-gather, reduce-scatter)]]
+
+> **🔑 Foundation: Collective communication primitives**
+>
+> Collective communication primitives are pre-built communication patterns in distributed computing, enabling multiple processes (e.g., GPUs) to exchange data efficiently. Examples include `all-reduce` (summing values across all processes and distributing the result), `all-gather` (collecting data from all processes to each process), and `reduce-scatter` (reducing values and scattering the results). These primitives are crucial in our project because we're training a large model across multiple GPUs, requiring frequent synchronization of gradients and model parameters. The key mental model is that these primitives treat the participating processes as a coordinated team, optimizing data movement based on the specific communication requirement, thereby avoiding naive point-to-point communication overhead.
+
+
 For data parallelism, we use `all_reduce` with the `SUM` operation, then divide by world size:
 ```python
 def all_reduce_gradients(model):
@@ -470,7 +475,12 @@ Your gradients and activations are in fp32 (32 bits per number). Modern GPUs hav
 - Halves memory for activations
 - Doubles effective memory bandwidth
 - Uses Tensor Cores (2-8× faster matrix multiply)
-[[EXPLAIN:mixed-precision-training-(fp16/bf16,-loss-scaling)|Mixed precision training (fp16/bf16, loss scaling)]]
+
+> **🔑 Foundation: Mixed precision training**
+>
+> Mixed precision training uses lower precision floating-point numbers (like FP16 or BF16) alongside single-precision (FP32) to accelerate training and reduce memory consumption. Because FP16/BF16 have a smaller dynamic range, loss scaling is often needed to prevent underflow during gradient computation. Using mixed precision is vital in our project to handle the memory demands of our large model and accelerate training throughput without significantly sacrificing accuracy. The core insight is that many deep learning operations don't require the full precision of FP32, and strategically using lower precision can dramatically improve performance while maintaining numerical stability with techniques like loss scaling.
+
+
 
 ![Mixed Precision Training Flow](./diagrams/diag-mixed-precision-training.svg)
 
@@ -2429,7 +2439,12 @@ Micro-batch flow:
   MB2 → Stage 0 → Stage 1 → Stage 2 → Stage 3 → Loss
   ...
 ```
-[[EXPLAIN:pipeline-scheduling-concepts-(bubble,-micro-batch)|Pipeline scheduling concepts (bubble, micro-batch)]]
+
+> **🔑 Foundation: Pipeline scheduling concepts**
+>
+> Pipeline scheduling in distributed training splits the model into stages, assigning each stage to a different device (e.g., GPU) and processing data in a pipelined manner. A "bubble" refers to idle time in the pipeline when a stage is waiting for data from the previous stage. To minimize bubbles, we use micro-batching, which involves dividing a larger batch into smaller micro-batches and processing them sequentially through the pipeline. We need pipeline scheduling to train even larger models than can fit on a single device, by distributing the computational load across multiple devices. The mental model is analogous to an assembly line: dividing the work and keeping each station busy maximizes overall throughput, and micro-batching helps maintain a continuous flow by reducing idle time in the pipeline.
+
+
 The key insight: **micro-batching fills the pipeline**. Instead of processing one giant batch sequentially, you split it into many small micro-batches that flow through concurrently:
 ```
 With 4 micro-batches (improved utilization):
@@ -5346,7 +5361,12 @@ class CheckpointCoordinator:
             # Some rank not ready - abort
             return False
 ```
-[[EXPLAIN:distributed-consensus-for-checkpointing|Distributed consensus for checkpointing]]
+
+> **🔑 Foundation: Distributed consensus for checkpointing**
+>
+> Distributed consensus for checkpointing involves ensuring that all processes (e.g., GPUs) in a distributed training setup agree on the state of the model before saving a checkpoint. This prevents inconsistent checkpoints due to failures or asynchronous operations across processes. This is crucial for our project to guarantee the recoverability of the training process and to avoid corrupted or incompatible checkpoints when training across many machines. The fundamental idea is to treat checkpointing as a transaction; either all processes commit to saving their part of the checkpoint consistently, or none do, ensuring a consistent global state of the model that can be reliably resumed.
+
+
 ### Level 3 — Hardware Layer: Storage Hierarchy
 Checkpoint storage follows a hierarchy optimized for MTTR:
 ```

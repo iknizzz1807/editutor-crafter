@@ -242,7 +242,12 @@ No searching. No splitting. No coalescing. No size metadata. Just pointer operat
 
 ## The Hardware Reality: Why Alignment Matters
 Before we write code, there's a physical constraint we must address. CPUs don't treat all memory addresses equally.
-[[EXPLAIN:memory-alignment-(alignof,-why-cpus-care)|Memory alignment (alignof, why CPUs care)]]
+
+> **🔑 Foundation: Memory alignment**
+>
+> Memory alignment refers to how data is arranged in memory, specifically the addresses at which data can be stored. The `alignof` operator in C/C++ returns the alignment requirement of a type, indicating the memory address must be a multiple of that value (e.g., `alignof(int)` might be 4, meaning an `int` must start at an address divisible by 4).  We need to understand memory alignment because our custom memory allocator aims for efficiency. Misaligned memory accesses can significantly slow down CPU operations, or even cause crashes on some architectures. The mental model is that memory is like a street with numbered houses. Different types of data require houses with certain divisible numbers, and violating this rule is like trying to squeeze a large object into a small space.
+
+
 Here's what this means for your pool allocator:
 **If a user requests 5-byte blocks, you cannot simply allocate 5-byte blocks.** The CPU requires that multi-byte accesses be properly aligned. An 8-byte pointer stored at address `0x1003` would span two cache lines on many architectures, causing either a performance penalty (two memory fetches instead of one) or a hardware fault on strict architectures like ARM in unaligned mode.
 
@@ -290,7 +295,12 @@ void* base = aligned_alloc(16, pool_size);  // 0x1000
 ## The Intrusive Free List: Storing Pointers Inside Blocks
 Here's where memory pools perform their cleverest trick. When a block is free, we need to store a pointer to the next free block. But we don't want to allocate *extra* memory for this pointer—that would defeat the efficiency gains.
 Instead, we store the pointer **inside the free block itself**.
-[[EXPLAIN:intrusive-data-structures-(storing-list-nodes-inside-data)|Intrusive data structures (storing list nodes inside data)]]
+
+> **🔑 Foundation: Intrusive data structures**
+>
+> Intrusive data structures are structures where the data structure's metadata (like pointers for a linked list) are embedded directly within the data object itself, rather than allocated separately. For example, instead of having a linked list of pointers *to* your data, your data structure *contains* the "next" and "previous" pointers required for a linked list. We are exploring intrusive data structures because they can improve performance and reduce memory overhead in specific scenarios, particularly when dealing with frequent insertions and deletions in our custom allocator, avoiding extra allocations. The key insight is that by embedding the list nodes within the data, we avoid the extra memory allocation and indirection associated with non-intrusive approaches, trading space within the primary data structure for speed.
+
+
 
 ![Invalid Pointer Detection](./diagrams/tdd-diag-m1-13.svg)
 
@@ -1979,7 +1989,12 @@ Everything else is either:
 - **Immutable after initialization**: `block_size`, `blocks_per_chunk`, `chunks` list (only modified during growth)
 - **Thread-local**: Temporary variables within functions
 A single mutex protecting the three mutable fields is sufficient. Finer-grained locking (separate locks for the bitmap and free list) would add complexity without meaningful performance benefit for this data structure.
-[[EXPLAIN:mutex-fundamentals-(lock/unlock,-why-needed)|Mutex fundamentals (lock/unlock, why needed)]]
+
+> **🔑 Foundation: Mutex fundamentals**
+>
+> A mutex (mutual exclusion) is a synchronization primitive used to protect shared resources from concurrent access by multiple threads.  It works by providing two primary operations: `lock` (acquire) and `unlock` (release). A thread that successfully `lock`s a mutex gains exclusive access to the protected resource; other threads attempting to `lock` the same mutex will block until the holding thread `unlock`s it.  We need mutexes to protect the internal data structures of our memory allocator from race conditions, ensuring data consistency and preventing corruption when multiple threads allocate and deallocate memory simultaneously. The mental model is a restroom with only one key. Only the thread with the key (`lock`ed the mutex) can use the resource (e.g., a shared data structure); other threads must wait outside until the key is available again (`unlock`ed).
+
+
 ## The Mutex Solution: Serialization, Not Parallelism
 A mutex (mutual exclusion lock) ensures that only one thread can execute a critical section at a time. When a thread locks the mutex, other threads attempting to lock it will block until the first thread unlocks.
 

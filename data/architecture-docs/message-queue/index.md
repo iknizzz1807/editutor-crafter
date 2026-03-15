@@ -230,7 +230,12 @@ Scenario 2:   [100 bytes] [50 bytes]                      (lucky! exactly what y
 Scenario 3:   [120 bytes] [30 bytes]                      (A + partial B, then rest of B)
 Scenario 4:   [25 bytes] [75 bytes] [25 bytes] [25 bytes] (fragmented across 4 reads)
 ```
-[[EXPLAIN:tcp-is-a-byte-stream,-not-a-message-stream|TCP is a byte stream, not a message stream]]
+
+> **🔑 Foundation: TCP is a byte stream**
+>
+> TCP is a protocol that provides reliable, ordered delivery of a continuous *stream* of bytes between two applications. Think of it as a pipe continuously pumping data, rather than a series of distinct envelopes containing discrete messages. In our current project, we're seeing unexpected data combinations on the receiving end, indicating our assumption of message boundaries isn't valid. The key mental model is that TCP doesn't inherently understand or preserve application-level message boundaries; we, as programmers, are responsible for implementing that logic if we need it.
+
+
 TCP guarantees **bytes arrive in order and without errors**. It does NOT guarantee that `read()` calls correspond to `write()` calls. The network, OS buffers, and Nagle's algorithm all conspire to fragment or coalesce your data.
 ### The Consequence: Protocol Corruption
 Without explicit framing, your parser becomes confused:

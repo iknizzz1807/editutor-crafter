@@ -5588,7 +5588,16 @@ Crash recovery in Raft is identical to journal replay — the follower reads its
 **Blockchain**: Each block in a blockchain is effectively a journal entry containing a batch of transactions. The chain structure ensures entries can't be modified after being committed. "Replay" in blockchain means re-executing all transactions from genesis to verify state — the same principle as journal recovery, just with cryptographic verification added.
 In every case, the core pattern is the same: **write intentions before actions, recover by replaying intentions**. This is the universal pattern for building crash-tolerant systems.
 ---
-[[EXPLAIN:atomic-writes-and-durability|Atomic writes and durability]]
+
+> **🔑 Foundation: Atomic writes and durability**
+>
+> Atomic writes ensure that a write operation either completes fully, or not at all. In other words, there's no in-between state where only *part* of the data is written. Durability, in this context, guarantees that once a write is acknowledged as successful, the data persists even if the system crashes or loses power shortly after.
+
+Right now, we're building a persistent data store for our application. Without atomic writes, a crash mid-write could leave our data in a corrupted state, making recovery difficult or impossible. Durability ensures that committed transactions survive unexpected system failures.
+
+The key mental model here is thinking about the write operation as an all-or-nothing event. Imagine writing a check: you don't want only half the amount written down if the pen runs out of ink. Atomic writes and durability together are like having a secure, reliable vault for your data.
+
+
 ---
 <!-- END_MS -->
 

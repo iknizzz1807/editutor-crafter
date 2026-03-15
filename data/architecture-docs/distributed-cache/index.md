@@ -2376,7 +2376,16 @@ Two bad things can happen simultaneously:
 - They refuse to promote because they're not sure A is dead
 - All writes to "user:123" fail
 - **Availability loss**: the system is down even though 2/3 nodes are healthy
-[[EXPLAIN:eventual-consistency-vs.-strong-consistency|Eventual consistency vs. strong consistency]]
+
+> **🔑 Foundation: Eventual consistency vs. strong consistency**
+>
+> **What it IS:** Strong consistency means that after an update, all subsequent reads, anywhere, will see the updated value immediately. Eventual consistency, on the other hand, guarantees that if no new updates are made for a while, all reads will eventually return the last updated value, but there might be a delay. Think of strong consistency as immediately updating a record visible to everyone globally; eventual consistency is like emailing the updated record to everyone, which takes time to propagate.
+
+**WHY needed right now:** We're building a distributed cache. Choosing between these consistency models impacts its performance, complexity, and reliability. Strong consistency will slow down write operations and increase coordination overhead, while eventual consistency offers better write performance but introduces the possibility of stale data reads, which can cause unexpected behavior in the applications using the cache.
+
+**Key mental model or insight:** The core tradeoff is latency vs. recency. Strong consistency prioritizes immediate data recency at the cost of increased latency and coordination, while eventual consistency optimizes for low latency and high availability, accepting the risk of reading slightly older data. Choose the consistency model based on the application's tolerance for stale data and its performance requirements.
+
+
 You cannot prevent both scenarios simultaneously. This is the CAP theorem: during a network partition, you must choose between **Consistency** (all nodes see the same data) and **Availability** (every request gets a response).
 Your cache must pick a side. We'll choose **eventual consistency with quorum-based failover**—the same approach Redis Cluster uses.
 ---
@@ -4869,7 +4878,7 @@ You've built a sophisticated distributed cache. It handles eviction policies, co
 Every system needs a way for clients to communicate with it. This seems trivial—"just send commands over TCP"—but this apparent simplicity hides a minefield of production disasters. Let's feel the constraints before we solve them.
 **The Protocol Problem**: Your cache can perform sub-microsecond lookups, but if parsing a command takes 10 microseconds, you've thrown away 90% of your performance. Protocol design directly impacts throughput. Redis's RESP protocol and Memcached's text protocol weren't accidents—they were deliberate choices balancing parsing speed, memory efficiency, and debuggability.
 **The Connection Problem**: Creating a TCP connection requires a three-way handshake (1-3 RTTs), TLS negotiation (1-2 RTTs if used), and potentially authentication. At 10,000 requests per second, creating a new connection per request means 10,000 handshakes per second—your network will melt. Connection pooling isn't optional; it's survival.
-**The Retry Problem**: Networks fail. Servers crash. Timeouts expire. But retrying immediately creates **retry storms**—if 100 clients all retry at the same moment, you've amplified a 1-second outage into a sustained attack on your recovering servers. The solution requires [[EXPLAIN:exponential-backoff-and-jitter|Exponential backoff with jitter]] to spread retry attempts across time.
+**The Retry Problem**: Networks fail. Servers crash. Timeouts expire. But retrying immediately creates **retry storms**—if 100 clients all retry at the same moment, you've amplified a 1-second outage into a sustained attack on your recovering servers. The solution requires Exponential backoff with jitter to spread retry attempts across time.
 **The Pipelining Problem**: Round-trip latency kills performance. If each command requires a request-response cycle (0.5ms RTT), you can only execute 2,000 commands per second regardless of how fast your cache is. Pipelining—sending multiple commands without waiting for responses—unlocks throughput, but requires careful memory management to prevent a slow client from consuming all server memory.
 
 ![system-overview](./diagrams/system-overview.svg)

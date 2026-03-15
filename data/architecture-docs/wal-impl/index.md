@@ -140,7 +140,12 @@ This is the **durability problem**. Before you can understand the solution (Writ
 
 ![Steal/No-Force Buffer Pool Policy](./diagrams/diag-steal-noforce-policy.svg)
 
-[[EXPLAIN:steal/no-force-buffer-pool-policy|Steal/No-Force Buffer Pool Policy]]
+
+
+> **🔑 Foundation: Steal/No-Force Buffer Pool Policy**
+>
+> The steal/no-force buffer pool policy determines when changes made to data in memory (buffer pool) are written to disk. "Steal" means a buffer page in the pool, even if it contains uncommitted changes, can be evicted and its space reused by another transaction. "No-force" means that changes made by a transaction are not necessarily written to disk immediately upon commit. This policy helps to improve performance, especially for write-heavy workloads. Without it, every dirty page would need to be flushed before a new transaction could potentially claim that buffer space ("no-steal") or a transaction commit would require an immediate write of all changes to disk ("force"), greatly slowing down the system. The key insight is that combining steal and no-force necessitates a robust logging mechanism (using LSNs) to ensure data consistency and durability in case of a crash.
+
 ### The Three Policies That Matter
 A buffer pool manager makes two independent decisions that determine durability characteristics:
 | Policy | Question | Implication |
@@ -168,7 +173,12 @@ typedef struct {
     uint32_t length;     // Total record length including header and CRC
 } LogRecordHeader;
 ```
-[[EXPLAIN:lsn-(log-sequence-number)-semantics|LSN (Log Sequence Number) semantics]]
+
+> **🔑 Foundation: LSN**
+>
+> LSN (Log Sequence Number) semantics define how each record in the transaction log is uniquely identified and related to the data pages on disk. An LSN is a monotonically increasing identifier assigned to each log record, providing a chronological ordering of events. These LSNs are crucial for recovery after a crash, allowing the system to replay operations recorded in the log to bring the database to a consistent state, even if some transactions were incomplete. The key insight is that by embedding the LSN of the last log record applied to a page within the page itself, the system can determine whether a page needs to be updated or rolled back based on the log records during recovery.
+
+
 Let's examine why each field exists:
 **LSN (Log Sequence Number)**: This is the record's unique identifier. LSNs are monotonically increasing — each new record gets an LSN higher than all previous records. In practice, LSNs are often byte offsets into the log file, making them both identifiers and positions.
 **Type**: Discriminates between record types. We'll cover each type in detail, but for now know that we have six: `BEGIN`, `UPDATE`, `COMMIT`, `ABORT`, `CLR`, and `CHECKPOINT`.

@@ -194,7 +194,12 @@ This translation isn't a performance optimization you can opt out of. It's the f
 - **Relocation**: Programs can load anywhere in physical memory without recompilation—the page table handles the indirection
 - **Sharing**: The same physical frame can appear at different virtual addresses in different processes (shared libraries, memory-mapped files)
 - **Lazy allocation**: The OS can promise memory (virtual addresses exist) without providing it (physical frames allocated on first touch)
-[[EXPLAIN:why-translation-is-needed-(isolation,-relocation,-sharing)|The three fundamental reasons virtual-to-physical translation exists]]
+
+> **🔑 Foundation: The three fundamental reasons virtual-to-physical translatio**
+>
+> Virtual-to-physical address translation allows multiple programs to believe they have exclusive access to the entire physical memory space. This illusion is vital for operating systems to isolate processes, preventing them from corrupting each other's data or the kernel. We need address translation in our OS project right now because we want to run multiple user-space programs concurrently without them interfering with each other or crashing the system. The key insight is that address translation decouples a process's view of memory (its virtual address space) from the actual physical layout, enabling resource management and security.
+
+
 
 ![VPN to PFN Translation Example](./diagrams/tdd-diag-m1-11.svg)
 
@@ -229,7 +234,12 @@ The standard frame size on modern systems is 4 KB (4096 bytes). This isn't arbit
 - **Small enough**: Internal fragmentation (wasted space when allocations don't fill a frame) is bounded at 4 KB
 - **Large enough**: Amortizes the overhead of tracking metadata across many bytes
 - **Hardware-aligned**: Matches disk sector sizes, cache line boundaries, and TLB designs
-[[EXPLAIN:page-frame-vs-page-(logical-vs-physical)|The distinction between pages (virtual chunks) and frames (physical chunks)]]
+
+> **🔑 Foundation: The distinction between pages**
+>
+> A "page" is a fixed-size block of virtual memory, representing a contiguous range of addresses within a process's address space. A "frame," on the other hand, is a fixed-size block of physical memory where page data can be stored. We're implementing paging to allow for efficient memory allocation and protection, so understanding this distinction is crucial for mapping virtual addresses to physical locations. The mental model is that pages are the "logical" units of memory, while frames are the actual physical containers; the page table bridges the gap between them.
+
+
 **The tension**: Programs allocate memory in arbitrary sizes (17 bytes, 3 MB, 1 byte). Hardware manages memory in 4 KB chunks. The page table is the translator that bridges this gap.
 Your virtual address space is divided into **pages** (4 KB chunks of virtual memory). Physical memory is divided into **frames** (4 KB chunks of physical memory). The page table maps each page to a frame—or marks it as unmapped.
 ```
@@ -1031,7 +1041,12 @@ Virtual Address
 └──────────────┘
 ```
 **Key insight**: The TLB doesn't cache data. It caches *mappings*. A TLB entry says "virtual page 0x1 maps to physical frame 0x7F" — not "the byte at address 0x1234 contains the value 42."
-[[EXPLAIN:cache-hit/miss-semantics-and-locality|Why caches work at all: the principle of locality]]
+
+> **🔑 Foundation: Why caches work at all: the principle of locality**
+>
+> A cache operates by storing copies of frequently accessed data from main memory in a faster, smaller storage space. A "cache hit" occurs when requested data is found in the cache, while a "cache miss" happens when the data must be retrieved from main memory, incurring a significant performance penalty. We need to understand cache behavior to optimize our memory access patterns and avoid performance bottlenecks in our OS. The principle of locality – that programs tend to access data and instructions that are near those they have recently accessed (temporal and spatial locality) – is what makes caching effective.
+
+
 This distinction matters because:
 - **Data caches** (L1/L2/L3) cache the *contents* of memory
 - **The TLB** caches the *path* to memory
@@ -3313,7 +3328,7 @@ uint32_t lru_evict(lru_replacer_t *lru) {
 
 ![LRU Replacement: Stack/List Evolution](./diagrams/diag-lru-stack.svg)
 
-**Appeal**: Uses actual access patterns. Pages accessed recently are likely to be accessed again soon ([[EXPLAIN:temporal-locality|the principle that recently accessed items are likely to be accessed again]]).
+**Appeal**: Uses actual access patterns. Pages accessed recently are likely to be accessed again soon (the principle that recently accessed items are likely to be accessed again).
 **Problem**: Requires tracking access time for every page. On every memory access, you must update a timestamp. Hardware doesn't do this—the referenced bit is a coarse approximation.
 **Implementation note**: The O(n) scan above is simplified. Real systems use doubly-linked lists (move accessed page to head, evict from tail) for O(1) operations.
 ### Clock: The Hardware-Friendly Approximation

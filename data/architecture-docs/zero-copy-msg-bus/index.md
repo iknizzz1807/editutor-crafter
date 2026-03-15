@@ -4620,7 +4620,16 @@ public:
 ---
 ## Implementation: Write-Ahead Logging for Durability
 If you need true durability (survive power loss), you must write to persistent storage. The standard technique is **Write-Ahead Logging (WAL)**—the same approach used by databases.
-[[EXPLAIN:write-ahead-logging-wal|A durability technique where changes are logged to disk before being applied to the main data structure, enabling recovery after a crash]]
+
+> **🔑 Foundation: A durability technique where changes are logged to disk befo**
+>
+> Write-ahead logging (WAL) is a method for ensuring data durability. It involves writing all intended changes to a log file on disk *before* those changes are actually made to the main database or data structure in memory. This log acts as a record of all operations that are *supposed* to happen.
+
+We need WAL right now because our system must survive unexpected crashes without losing committed data. If the system crashes before data is fully written, the log can be replayed on restart to reconstruct the correct state, ensuring no data is lost.
+
+Think of WAL like a restaurant's order ticket system. The waitstaff writes down your order (log entry) *before* the kitchen starts cooking (applying changes to the database). If the restaurant burns down (crash), they still have the order tickets and know exactly what dishes needed to be cooked.
+
+
 ### The WAL Protocol
 1. **Before** publishing a message, write it to the WAL
 2. **After** the WAL write is durable (`fsync`), publish to shared memory

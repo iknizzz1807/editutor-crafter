@@ -878,7 +878,7 @@ Knowledge Cascade connections to surface:
 YAML Acceptance Criteria (ANCHOR - must be covered, but refine based on your content):
 {ms_criteria_str}
 
-Available diagrams (use {{{{DIAGRAM:id}}}}):
+Diagrams assigned to this milestone (you MUST embed ALL of them using `{{{{DIAGRAM:id}}}}` — place each one at the point in the text where it is most relevant and naturally supports the explanation):
 {diag_list}
 
 {INSTR_EDUCATOR}

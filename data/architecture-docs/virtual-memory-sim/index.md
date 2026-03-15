@@ -185,6 +185,8 @@ When you write `int *ptr = 0x1000;` in your C program, you believe you're pointi
 **This is a lie.**
 Every pointer you've ever used is a *virtual address*—a fictional number that your process invented. The CPU takes that fictional number and, on every single memory access, translates it to a completely different *physical address* where the data actually lives. Your `0x1000` might translate to physical `0x7F3A2000`. Another process's `0x1000` might translate to `0x8B1C4000`. Same virtual number, completely different physical locations.
 
+![Statistics Collection Points](./diagrams/tdd-diag-m1-10.svg)
+
 ![Virtual Memory Simulator: System Overview](./diagrams/diag-satellite-system.svg)
 
 This translation isn't a performance optimization you can opt out of. It's the fundamental mechanism that makes modern computing possible:
@@ -193,6 +195,8 @@ This translation isn't a performance optimization you can opt out of. It's the f
 - **Sharing**: The same physical frame can appear at different virtual addresses in different processes (shared libraries, memory-mapped files)
 - **Lazy allocation**: The OS can promise memory (virtual addresses exist) without providing it (physical frames allocated on first touch)
 [[EXPLAIN:why-translation-is-needed-(isolation,-relocation,-sharing)|The three fundamental reasons virtual-to-physical translation exists]]
+
+![VPN to PFN Translation Example](./diagrams/tdd-diag-m1-11.svg)
 
 > **🔑 Foundation: How the OS creates the illusion that each process has its own private memory space**
 > 
@@ -214,6 +218,8 @@ Understanding address spaces is foundational to almost everything else in system
 ## Key Mental Model
 Think of an address space as a **per-process map or translation table**, not as actual memory. Each process carries its own map. When the CPU switches from one process to another (context switch), the OS swaps in a different map — suddenly all those address 0x1000 references point somewhere entirely different.
 The genius of this abstraction is that the process never needs to know or care where its memory physically resides. It simply refers to addresses 0 through N, and the OS handles the complexity of multiplexing physical RAM among all running processes. This is isolation by design: process A cannot name (and therefore cannot access) process B's memory, because those addresses *mean different things* in each process's context.
+
+![Page Fault Handling Sequence](./diagrams/tdd-diag-m1-06.svg)
 
 In this milestone, you'll build the translation machinery yourself. You'll parse memory access traces, decompose virtual addresses, consult a page table, handle faults, and track statistics. By the end, you won't just understand address translation—you'll have implemented it.
 ---
@@ -250,7 +256,11 @@ A 32-bit virtual address isn't a monolithic number—it's two fields packed toge
          31              11 10               0
 ```
 
+![Virtual Address Bit Layout](./diagrams/tdd-diag-m1-02.svg)
+
 ![Virtual Address Bit Layout](./diagrams/diag-address-decomposition.svg)
+
+![Dirty and Referenced Bit State Machine](./diagrams/tdd-diag-m1-12.svg)
 
 - **VPN (bits 31-12)**: Which page contains the data? This indexes into the page table.
 - **Offset (bits 11-0)**: Which byte within the 4 KB page? This passes through unchanged.
@@ -277,6 +287,8 @@ uint32_t translate(uint32_t va, page_table_entry_t *page_table) {
 ---
 ## The Page Table Entry: Metadata That Controls Everything
 A page table entry (PTE) is more than just a frame number. It's a control structure that encodes permissions, state, and access history.
+
+![Translation Pipeline Flow](./diagrams/tdd-diag-m1-05.svg)
 
 ![Page Table Entry (PTE) Bit Fields](./diagrams/diag-pte-structure.svg)
 
@@ -311,6 +323,8 @@ This bit is critical for swap: when evicting a page from memory, the OS only wri
 This is the hardware's contribution to LRU-like algorithms. Pages with referenced=1 have been used recently; pages with referenced=0 are candidates for eviction.
 ---
 ## The Translation Pipeline: From Virtual to Physical
+
+![Page Table Entry Structure](./diagrams/tdd-diag-m1-03.svg)
 
 ![Single-Level Address Translation Flow](./diagrams/diag-translation-pipeline.svg)
 
@@ -391,6 +405,8 @@ W 0x00003000
 R 0x00001000
 ```
 
+![System Component Overview](./diagrams/tdd-diag-m1-01.svg)
+
 ![Memory Access Trace File Format](./diagrams/diag-trace-format.svg)
 
 - **First character**: Operation type (`R` for read, `W` for write)
@@ -428,7 +444,11 @@ R 0x00001000    # Re-access page 1, should NOT fault (valid=1 now)
 ---
 ## Demand Paging: Being Lazy on Purpose
 
+![Trace File Format](./diagrams/tdd-diag-m1-08.svg)
+
 ![Demand Paging: First Access Sequence](./diagrams/diag-demand-paging-timeline.svg)
+
+![Demand Paging Timeline](./diagrams/tdd-diag-m1-09.svg)
 
 When a process allocates memory (e.g., `malloc(1GB)`), the OS doesn't immediately reserve 1 GB of physical RAM. That would be wasteful—most allocations are never fully used. Instead:
 1. The OS creates page table entries with **valid=0**
@@ -472,7 +492,11 @@ void handle_page_fault(
 ---
 ## Protection Faults: When Access Is Denied
 
+![Physical Memory Frame Pool](./diagrams/tdd-diag-m1-04.svg)
+
 ![Protection Fault Detection Flowchart](./diagrams/diag-protection-fault-flow.svg)
+
+![Protection Fault Detection](./diagrams/tdd-diag-m1-07.svg)
 
 A protection fault is different from a page fault:
 - **Page fault**: "This page isn't in memory yet" → Can be resolved by loading the page
@@ -964,7 +988,11 @@ In Milestone 1, you built a page table and translated virtual addresses. Every t
 When you write `page_table[vpn]` in C, you're reading from *virtual* memory. That means the CPU must first translate `page_table[vpn]`'s virtual address to a physical address before it can read the PTE. And how does it do that? By walking the page table. Which requires another translation. Which requires...
 Wait. Let's step back and count the actual memory accesses for a single load instruction.
 
+![TLB Miss Slow Path](./diagrams/tdd-diag-m2-05.svg)
+
 ![TLB Hit vs Miss: Memory Access Count](./diagrams/diag-tlb-vs-page-table-access.svg)
+
+![LRU Victim Selection Algorithm](./diagrams/tdd-diag-m2-06.svg)
 
 ### The True Cost of a Page Table Walk
 When your program executes `int x = *ptr` where `ptr = 0x00001234`:
@@ -1023,7 +1051,11 @@ But if your access pattern has poor locality (random jumps across many pages), T
 ## TLB Entry Structure
 Each TLB entry needs to store enough information to perform a translation and validate it:
 
+![TLB Hit Fast Path](./diagrams/tdd-diag-m2-04.svg)
+
 ![TLB Entry Structure with ASID Tag](./diagrams/diag-tlb-structure.svg)
+
+![Translation Pipeline with TLB](./diagrams/tdd-diag-m2-10.svg)
 
 ```c
 typedef struct {
@@ -1053,7 +1085,11 @@ These are where things get tricky. The TLB must track whether the page has been 
 ---
 ## The TLB Lookup Algorithm
 
+![TLB Lookup Decision Tree](./diagrams/tdd-diag-m2-03.svg)
+
 ![TLB Lookup and Miss Handling](./diagrams/diag-tlb-lookup-flow.svg)
+
+![TLB Invalidation Flow](./diagrams/tdd-diag-m2-09.svg)
 
 Every address translation now follows this sequence:
 ```
@@ -1279,7 +1315,11 @@ In the old days, every context switch required a complete TLB flush. Process A's
 3. Context switch back to Process A → flush again → warm up again
 Modern systems use **ASID (Address Space ID)** tagging to avoid this penalty.
 
+![TLB Entry Structure with ASID](./diagrams/tdd-diag-m2-01.svg)
+
 ![Context Switch with ASID Tagging](./diagrams/diag-context-switch-asid.svg)
+
+![Context Switch with ASID](./diagrams/tdd-diag-m2-07.svg)
 
 ### How ASIDs Work
 Each process is assigned a unique ASID (typically 8-16 bits). Every TLB entry stores the ASID of the process that owns it. On lookup, the CPU compares the current process's ASID with the entry's ASID:
@@ -1380,7 +1420,15 @@ void tlb_invalidate(tlb_t *tlb, uint32_t vpn, uint32_t asid) {
 ---
 ## TLB Coherency: The Stale Entry Problem
 
+![TLB Architecture](./diagrams/tdd-diag-m2-02.svg)
+
 ![TLB Coherency: Stale Entry Problem](./diagrams/diag-tlb-coherency.svg)
+
+![ASID Allocation and Exhaustion](./diagrams/tdd-diag-m2-12.svg)
+
+![TLB Statistics State Machine](./diagrams/tdd-diag-m2-11.svg)
+
+![TLB Coherency Problem](./diagrams/tdd-diag-m2-08.svg)
 
 Here's a subtle bug that trips up many implementers: **the TLB can become inconsistent with the page table.**
 ### Scenario: Page Eviction
@@ -1991,7 +2039,11 @@ Now consider a 64-bit address space. With 4 KB pages, you have 2⁵² possible p
 ```
 **A single flat page table would be 36 petabytes.** Per process. That's more RAM than exists in most data centers.
 
+![Multi-Level Architecture](./diagrams/tdd-diag-m3-08.svg)
+
 ![Memory Overhead: Flat vs Multi-Level for Sparse Address Space](./diagrams/diag-sparse-vs-dense-memory.svg)
+
+![Sparse vs Dense Access Patterns](./diagrams/tdd-diag-m3-07.svg)
 
 The lie you've been telling yourself is that the address space is "full." It isn't. Real programs use a tiny fraction of their address space:
 - **Code**: Maybe 1-10 MB at address 0x00400000
@@ -2020,7 +2072,11 @@ Instead of one giant array, we split the virtual page number (VPN) into two part
         31        22 21            12 11                 0
 ```
 
+![Two-Level Page Table Bit Extraction](./diagrams/tdd-diag-m3-01.svg)
+
 ![Two-Level Page Table: Bit Extraction](./diagrams/diag-multi-level-bit-extraction.svg)
+
+![Page Table Memory Accounting](./diagrams/tdd-diag-m3-12.svg)
 
 - **Directory Index (bits 31-22)**: Which entry in the top-level *page directory*?
 - **Table Index (bits 21-12)**: Which entry in the second-level *page table*?
@@ -2059,7 +2115,11 @@ The critical field is `page_table_addr` — it's a physical address pointing to 
 ---
 ## The Page Table Walk: Following the Pointers
 
+![Memory Overhead Comparison](./diagrams/tdd-diag-m3-06.svg)
+
 ![Page Table Walk: CR3 → Physical Address](./diagrams/diag-cr3-to-pfn-walk.svg)
+
+![Walk Failure Cases](./diagrams/tdd-diag-m3-09.svg)
 
 Translation now requires multiple memory accesses:
 ```
@@ -2187,6 +2247,8 @@ walk_output_t walk_two_level(
 ---
 ## CR3: The Per-Process Root
 
+![CR3 to Physical Address Walk](./diagrams/tdd-diag-m3-03.svg)
+
 ![Context Switch: CR3 Update and TLB Flush](./diagrams/diag-context-switch-cr3.svg)
 
 The **CR3 register** (Control Register 3, also called the Page Directory Base Register or PDBR) holds the physical address of the current process's page directory. This is the "root" of the entire address translation tree.
@@ -2217,6 +2279,8 @@ void context_switch(
 This is the hardware mechanism that provides **memory isolation**. Process A cannot construct a virtual address that translates to Process B's physical frames because Process A's page directory doesn't contain mappings to those frames.
 ---
 ## On-Demand Table Allocation
+
+![Context Switch CR3 Update](./diagrams/tdd-diag-m3-05.svg)
 
 ![On-Demand Second-Level Table Allocation](./diagrams/diag-on-demand-allocation.svg)
 
@@ -2385,7 +2449,11 @@ void demonstrate_overhead(void) {
 ## Three-Level Page Tables: The Stretch Goal
 For 32-bit systems, two levels work well. But what about 64-bit systems? Even with two levels, a fully populated 64-bit address space would need impossibly many second-level tables.
 
+![On-Demand Table Allocation](./diagrams/tdd-diag-m3-04.svg)
+
 ![Three-Level Page Table Structure (Stretch)](./diagrams/diag-three-level-stretch.svg)
+
+![Three-Level Stretch Goal Structure](./diagrams/tdd-diag-m3-11.svg)
 
 The solution is **more levels**. x86-64 uses four levels:
 ```
@@ -2936,6 +3004,8 @@ You've now implemented the same fundamental structure that x86-64 and ARM64 use,
 ### Cross-Domain Connections
 **→ B-Trees in Databases**: A multi-level page table is essentially a B-tree optimized for a specific key distribution (bit prefixes). The fan-out (1024 for directory → table), height (2-5 levels), and the principle of only allocating nodes for populated keys—all identical. Database index design uses the same math you just applied to page tables.
 
+![Page Directory Entry Structure](./diagrams/tdd-diag-m3-02.svg)
+
 > **🔑 Foundation: Tries: prefix trees that use key bits/characters for navigation**
 > 
 > ## What It Is
@@ -2961,6 +3031,8 @@ Tries make this O(k) where k = prefix length (typically 32 for IPv4), regardless
 ## Key Insight
 **Think of a trie as a "decision compressor."** Each level answers one binary question about the key. The genius is that you stop as soon as you've distinguished your key from all others — common prefixes share nodes, saving memory and comparison work.
 In networking specifically: the trie depth equals the prefix length you're matching, not the number of routes in your table. A /24 route requires 24 decisions whether you have 100 routes or 100,000 routes.
+
+![Per-Process Address Space Isolation](./diagrams/tdd-diag-m3-10.svg)
 
 **→ Tries and Radix Trees**: Your page directory → page table → PTE structure is exactly a fixed-depth trie. Each level consumes some bits of the key (virtual address) to index into the next level. This is why multi-level page tables are sometimes called "radix trees" in OS literature.
 **→ JVM Compressed OOPs**: The JVM uses a trick called "Compressed Ordinary Object Pointers" to use 32-bit pointers in a 64-bit JVM. This works because the OS places the heap in the low 32 GB of address space, which can be addressed with 32-bit offsets from a base. Multi-level page tables make this cheap—the sparse upper address space costs nothing.
@@ -3002,6 +3074,8 @@ And you thought: "My program needs more RAM than the machine has. Time to buy mo
 **This is almost never what's happening.**
 When your program "runs out of memory," the machine almost always has plenty of free RAM. What actually happened is subtler—and far more interesting.
 
+![Swap Mapping Structure](./diagrams/tdd-diag-m4-18.svg)
+
 ![Physical Memory Frame Pool Management](./diagrams/diag-physical-memory-frame-pool.svg)
 
 Modern operating systems practice **memory overcommitment**: they promise more memory to processes than physically exists. When you call `malloc(1GB)` on a machine with 4GB RAM, the OS says "sure, here's your 1GB"—even though it doesn't have 1GB to give you. It's betting you won't actually touch all those pages.
@@ -3014,7 +3088,11 @@ This isn't theoretical. It's called **Bélády's anomaly**, and you're about to 
 Every process wants infinite memory. Your web browser would love to cache every webpage you've ever visited. Your database wants to keep all indexes in RAM. Your ML training wants the entire dataset loaded at once.
 Hardware provides a fixed amount of physical frames. A machine with 16 GB RAM has about 4 million frames of 4 KB each. That's it. No more.
 
+![Replacement Algorithm Comparison Architecture](./diagrams/tdd-diag-m4-14.svg)
+
 ![Thrashing: When Working Set Exceeds Memory](./diagrams/diag-thrashing-detection.svg)
+
+![Thrashing Detection Flow](./diagrams/tdd-diag-m4-13.svg)
 
 The OS sits between infinite demand and finite supply, constantly making triage decisions:
 1. **Page fault occurs**: Process A needs page X, but all frames are occupied
@@ -3038,6 +3116,8 @@ This is **thrashing**: when the working set (pages actively being used) exceeds 
 ---
 ## Swap Space: The Overflow Parking Lot
 Before we can evict pages, we need somewhere to put them. That's **swap space**: a reserved area on disk (or a dedicated partition) where evicted pages are stored.
+
+![Page Reload from Swap](./diagrams/tdd-diag-m4-09.svg)
 
 ![Simulated Swap Space Organization](./diagrams/diag-swap-space-layout.svg)
 
@@ -3123,7 +3203,11 @@ void evict_to_swap(
 }
 ```
 
+![Swap Space Organization](./diagrams/tdd-diag-m4-03.svg)
+
 ![Dirty Page Write-Back Path](./diagrams/diag-dirty-page-writeback.svg)
+
+![Complete Eviction Sequence](./diagrams/tdd-diag-m4-10.svg)
 
 **The critical insight**: clean pages can be discarded without writing to swap because their data already exists somewhere (the executable file, memory-mapped file, or was never modified). Only dirty pages require disk writes. This is why the dirty bit matters—it can save 50% of swap I/O.
 ---
@@ -3160,7 +3244,11 @@ uint32_t fifo_evict(fifo_replacer_t *fifo) {
 }
 ```
 
+![FIFO Queue State Evolution](./diagrams/tdd-diag-m4-04.svg)
+
 ![FIFO Replacement: Queue Evolution](./diagrams/diag-fifo-queue-state.svg)
+
+![Statistics State Transitions](./diagrams/tdd-diag-m4-20.svg)
 
 **Appeal**: Simple, fair, requires almost no metadata.
 **Problem**: A page loaded 5 minutes ago but accessed every microsecond will be evicted before a page loaded 1 minute ago but never touched. FIFO ignores recency entirely.
@@ -3220,6 +3308,8 @@ uint32_t lru_evict(lru_replacer_t *lru) {
     return victim_vpn;
 }
 ```
+
+![LRU Stack Evolution](./diagrams/tdd-diag-m4-05.svg)
 
 ![LRU Replacement: Stack/List Evolution](./diagrams/diag-lru-stack.svg)
 
@@ -3299,6 +3389,8 @@ uint32_t clock_evict(clock_replacer_t *clock, pte_t *page_table) {
 }
 ```
 
+![Clock Algorithm Visualization](./diagrams/tdd-diag-m4-06.svg)
+
 ![Clock (Second-Chance) Algorithm Visualization](./diagrams/diag-clock-algorithm.svg)
 
 **Appeal**: Uses only the referenced bit that hardware already provides. O(1) amortized—most evictions require just a few hand movements.
@@ -3362,6 +3454,8 @@ uint32_t optimal_evict(optimal_replacer_t *opt,
 Here's the result that surprises everyone:
 > With FIFO replacement, adding more frames can **increase** the number of page faults.
 
+![Optimal Algorithm Lookahead](./diagrams/tdd-diag-m4-07.svg)
+
 ![Bélády's Anomaly: More Frames, More Faults](./diagrams/diag-belady-anomaly.svg)
 
 Let's trace through a concrete example. Consider this access pattern:
@@ -3408,7 +3502,11 @@ Your simulator will demonstrate this anomaly automatically when you run the comp
 ## Working Set Size: The Real Performance Predictor
 Page fault counts tell you what happened, but not what's *going to happen*. For that, you need the **working set**: the set of pages a process actively uses within a time window.
 
+![Bélády's Anomaly Demonstration](./diagrams/tdd-diag-m4-11.svg)
+
 ![Working Set Size Tracking](./diagrams/diag-working-set-window.svg)
+
+![Working Set Sliding Window](./diagrams/tdd-diag-m4-12.svg)
 
 ```c
 typedef struct {
@@ -3807,7 +3905,11 @@ trans_output_t translate_with_replacement(
 ---
 ## Comparative Statistics and Analysis
 
+![Physical Memory Frame Pool with Reverse Mapping](./diagrams/tdd-diag-m4-01.svg)
+
 ![Page Replacement Algorithms: Visual Comparison](./diagrams/diag-replacement-algorithm-comparison.svg)
+
+![Full Translation Pipeline Summary](./diagrams/tdd-diag-m4-19.svg)
 
 ```c
 typedef struct {
@@ -4127,16 +4229,24 @@ The system you've built mirrors what runs on every computer today. When you see 
 - Consider whether the working set fits in memory
 More importantly, you understand that memory isn't just "RAM"—it's a hierarchy of caches (TLB → L1 → L2 → L3 → RAM → Swap), and performance depends on how well your access patterns match each level's characteristics.
 
+![Dirty Page Write-Back Path](./diagrams/tdd-diag-m4-08.svg)
+
 ![Complete Translation Pipeline: VA to PA](./diagrams/diag-full-translation-pipeline.svg)
 
 
+![Translation with Replacement Pipeline](./diagrams/tdd-diag-m4-17.svg)
+
 ![Statistics Collection Architecture](./diagrams/diag-statistics-collection-points.svg)
+
+![Statistics Collection Points](./diagrams/tdd-diag-m4-15.svg)
 
 [[CRITERIA_JSON: {"milestone_id": "virtual-memory-sim-m4", "criteria": ["Physical memory modeled as configurable frame pool (uint32_t total_frames, free_list, free_count); page fault triggers replacement when free_count == 0", "Swap space structure (swap_slot_t with data[PAGE_SIZE], vpn, occupied) stores evicted page contents; swap_alloc() and swap_free() manage slot lifecycle", "FIFO replacement uses circular queue (head, tail, count); evict returns queue[head] with head = (head + 1) % capacity", "LRU replacement tracks last_access_time (uint64_t) per page; evict scans for minimum timestamp, returns that VPN", "Clock replacement uses circular buffer with referenced[] array; evict clears referenced bits on first pass, evicts first page with referenced=false on second pass", "Optimal (Bélády's) replacement requires trace lookahead; evict selects page with farthest future access or never-accessed-again page", "Dirty page write-back: if pte->dirty on eviction, memcpy frame data to swap slot and increment stats.swap_writes; clean pages increment stats.swap_discards", "Page reload on fault: if swap_map[vpn].in_swap, memcpy from swap slot to frame, increment stats.swap_reads, free the swap slot", "Comparative statistics printed: page_faults, swap_writes, swap_reads per algorithm; fault rate as percentage of total_accesses", "Bélády's anomaly demonstration shows FIFO fault count non-monotonic with increasing frame count; LRU faults decrease monotonically", "Working set tracker maintains sliding window of recent VPNs; working_set_size() returns count of distinct VPNs in window", "Thrashing detection compares working_set_size() against num_frames; logs warning when working set exceeds available memory", "Swap mapping structure (swap_mapping_t with swap_slot index and in_swap bool) tracks which pages have swap copies", "Statistics structure includes total_accesses, page_faults, swap_writes, swap_reads, swap_discards, thrashing_warnings as uint64_t fields"]}]
 <!-- END_MS -->
 
 
 ## System Overview
+
+![Swap Slot Structure](./diagrams/tdd-diag-m4-02.svg)
 
 ![System Overview](./diagrams/system-overview.svg)
 
@@ -4148,6 +4258,8 @@ More importantly, you understand that memory isn't just "RAM"—it's a hierarchy
 Build a complete virtual memory subsystem simulator that mirrors real OS memory management. The simulator processes memory access traces through a full translation pipeline: virtual address decomposition, TLB caching, multi-level page table walks, demand paging with page fault handling, and swap-backed page replacement algorithms. This reveals the same performance phenomena (TLB miss storms, page fault cascades, Bélády's anomaly, thrashing) that production systems encounter.
 
 
+
+![Algorithm Comparison Output Format](./diagrams/tdd-diag-m4-16.svg)
 
 <!-- TDD_MOD_ID: virtual-memory-sim-m1 -->
 # Technical Design Document: Single-Level Page Table and Address Translation

@@ -187,7 +187,6 @@ Build the complete Transformer architecture from first principles—the same arc
 This is not about using nn.Transformer—it's about understanding every matrix multiplication, every reshape operation, and every gradient that flows through the model. You'll verify each component against PyTorch's reference implementations, building confidence that your understanding matches production-grade code.
 
 
-
 <!-- MS_ID: transformer-scratch-m1 -->
 # Scaled Dot-Product Attention
 ## The Heart of Every Transformer
@@ -1845,6 +1844,8 @@ This isn't a trivial composition problem. Stack too many layers naïvely, and gr
 The solution involves two architectural patterns so fundamental that modern deep learning would be impossible without them: **residual connections** and **layer normalization**. These aren't optimizations—they're the scaffolding that makes deep Transformers trainable at all.
 But there's a critical design choice hiding in plain sight: *where* do you apply normalization? Before the sublayer, or after? This single decision—Pre-LN vs Post-LN—determines whether your 12-layer model trains stably or collapses into numerical chaos.
 
+![tdd-diag-m5-09](./diagrams/tdd-diag-m5-09.svg)
+
 ![Encoder and Decoder Stack Composition](./diagrams/diag-encoder-decoder-stack.svg)
 
 ---
@@ -2190,7 +2191,6 @@ Output:                         [batch, tgt_len, d_model]
 ## Stacking Layers: The Encoder and Decoder Stacks
 A single layer isn't enough. The Transformer uses N layers (N=6 in the base model, N=12 in the big model). Let's build the stacks.
 
-![Encoder Layer Structure](./diagrams/diag-encoder-layer.svg)
 
 ```python
 class Encoder(nn.Module):
@@ -2570,6 +2570,8 @@ This is called **exposure bias**. The model is never exposed to its own mistakes
 Transformers have millions of parameters in a highly non-convex loss landscape. Early in training, gradient magnitudes can vary wildly between layers. A naive optimizer step can send parameters into regions from which recovery is impossible.
 **Problem 3: Overconfidence is a disease**
 Cross-entropy loss pushes the model toward predicting probability 1.0 for the correct class. But in language, uncertainty is real. "The cat sat on the ___" could plausibly be "mat," "floor," "couch," or "bed." A model that outputs `[0.0, 0.0, 1.0, 0.0]` for "mat" is overconfident—it will generalize poorly.
+
+![End-to-End Gradient Flow](./diagrams/diag-gradient-flow-full.svg)
 
 ![Training Loop Data Flow](./diagrams/diag-training-loop-flow.svg)
 
@@ -3472,6 +3474,8 @@ This works. It produces output. And it's catastrophically slow.
 **Problem 1: Quadratic Computation**
 Each forward pass computes attention over the entire sequence so far. When you generate token 100, you're computing attention scores for 100 query positions against 100 key positions—10,000 scores per attention head. Then you throw away 99 of those query results and only use the last one.
 
+![system-overview](./diagrams/system-overview.svg)
+
 ![Attention Complexity Analysis](./diagrams/diag-attention-complexity.svg)
 
 **The math**: Generating a sequence of length n with naive re-encoding requires:
@@ -3759,7 +3763,6 @@ def apply_length_penalty(score, length, alpha=0.6):
 ### Why Beam Search Isn't Global Optimization
 > **Reveal**: Beam search is not finding the globally optimal sequence—it's approximate search that keeps the k most promising partial hypotheses. It can miss the optimal sequence because that sequence might start with a lower-probability token that leads to a higher-probability continuation.
 
-![Beam Search Exploration Tree](./diagrams/diag-beam-search-tree.svg)
 
 Consider this scenario:
 - Token A has probability 0.4
@@ -4045,6 +4048,8 @@ class DecoderWithCache(nn.Module):
             output = layer.sublayer1.norm(output)
         return output
 ```
+
+![Greedy Decoding Process](./diagrams/diag-greedy-decoding.svg)
 
 ![KV Cache Speedup Benchmark](./diagrams/diag-kv-cache-speedup.svg)
 
@@ -4531,12 +4536,9 @@ Once this passes, you've built a complete Transformer from scratch—including t
 <!-- END_MS -->
 
 
-
-
 # TDD
 
 Build the complete Transformer architecture from first principles—implementing every matrix multiplication, reshape operation, and gradient flow explicitly. This project creates an educational yet production-grade encoder-decoder Transformer with scaled dot-product attention, multi-head parallel processing, sinusoidal positional encodings, complete encoder/decoder stacks with residual connections and layer normalization, trained on sequence-to-sequence tasks with proper learning rate scheduling, and efficient inference with KV caching. The implementation is verified against PyTorch reference implementations at each milestone, building deep understanding of the architecture that powers GPT, BERT, and virtually all modern language models.
-
 
 
 <!-- TDD_MOD_ID: transformer-scratch-m1 -->
@@ -11224,7 +11226,6 @@ Total Memory: ~280 MB for this configuration
 | Gradient clipping | Division by 0 norm | Add epsilon to norm |
 | Adam optimizer | Division by 0 variance | epsilon=1e-9 |
 | Loss normalization | Division by 0 tokens | Clamp n_tokens to min 1 |
-{{DIAGRAM:tdd-diag-m5-09}}
 ---
 ## 12. Common Pitfalls and Solutions
 | Pitfall | Symptom | Solution |

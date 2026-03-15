@@ -139,7 +139,6 @@ The project is complete when:
 Build a complete inode-based filesystem from the ground up, starting with raw block I/O and culminating in a FUSE-mountable filesystem with crash-consistent journaling. This project strips away the abstraction layers between your code and persistent storage, revealing how operating systems transform a bag of bytes on disk into the hierarchical file trees we navigate daily. You'll implement every layer: block allocation with bitmaps, inode metadata with multi-level indirect pointers, directory entry management, file I/O with sparse file support, and write-ahead journaling that survives crashes. By the end, you'll understand why databases, container runtimes, and storage engines all share the same fundamental concerns about block alignment, atomic writes, and recovery semantics.
 
 
-
 <!-- MS_ID: filesystem-m1 -->
 # Block Layer and mkfs
 You're about to build the foundation of a filesystem from scratch. Not a wrapper around an existing filesystem — the actual bytes-on-disk structures that an operating system uses to transform a raw storage device into files and directories.
@@ -329,6 +328,8 @@ typedef struct {
     uint8_t reserved[3928];       // Pad to exactly 4096 bytes
 } __attribute__((packed)) Superblock;
 ```
+
+![On-Disk Layout Map](./diagrams/tdd-diag-m1-02.svg)
 
 > **🔑 Foundation: Endianness and serialization**
 > 
@@ -1517,7 +1518,8 @@ int inode_deallocate(FileSystem* fs, uint64_t inode_num) {
 }
 ```
 
-![Filesystem Layer Stack](./diagrams/diag-l1-layer-stack.svg)
+![Double-Indirect Traversal](./diagrams/tdd-diag-m2-05.svg)
+
 
 ## Timestamp Management
 Unix files track three timestamps, each with different update semantics:
@@ -1777,7 +1779,6 @@ The "hierarchy" you see in `ls -R` or file explorers is an illusion created by:
 This isn't just an implementation detail — it's the **fundamental design decision** of Unix filesystems. Everything is a file; directories are just files with a specific format. The kernel doesn't have separate "directory storage" — it uses the same inode/block machinery for everything.
 **Why This Matters**: When you implement `mkdir`, you're not creating a new kind of object. You're creating a regular inode, marking it as a directory in the mode field, and writing two DirEntry records (`.` and `..`) to its first data block. That's it. The "directory-ness" is entirely in how the data is interpreted.
 
-![Filesystem Component Atlas](./diagrams/diag-l0-filesystem-map.svg)
 
 ## Directory Entry Structure: The Name→Inode Map
 Let's design the on-disk format for directory entries. Each entry needs to store:
@@ -2743,7 +2744,8 @@ void test_directory_operations(FileSystem* fs) {
 }
 ```
 
-![Filesystem Layer Stack](./diagrams/diag-l1-layer-stack.svg)
+![Rename Atomic Move](./diagrams/tdd-diag-m3-10.svg)
+
 
 ## Common Pitfalls
 **Forgetting to update parent link count on mkdir/rmdir**: When you create a directory, the parent's `link_count` must increase by 1 (for the child's `..` entry). When you remove a directory, it must decrease by 1. Forgetting this causes `fsck` to report incorrect link counts.
@@ -3162,7 +3164,6 @@ ssize_t fs_write(FileSystem* fs, uint64_t inode_num, uint64_t offset,
 3. Write the entire block back
 This is why partial writes are more expensive than full-block writes — they require two I/O operations (read + write) instead of one (write only).
 
-![Filesystem Layer Stack](./diagrams/diag-l1-layer-stack.svg)
 
 ## Block Allocation: The get_or_alloc_block Function
 The core of write-side allocation is ensuring a block exists before writing to it:
@@ -3700,7 +3701,6 @@ void test_large_file(FileSystem* fs) {
 }
 ```
 
-![Filesystem Component Atlas](./diagrams/diag-l0-filesystem-map.svg)
 
 ## Common Pitfalls
 **Not zero-filling partial blocks**: When writing 100 bytes at offset 4050 in an empty block, you must read the block first (it may contain garbage from a previous file), write bytes 4050-4149, then write the block back. Forgetting the read step corrupts data.
@@ -4257,7 +4257,8 @@ static void fs_destroy(void* private_data) {
 ## Concurrency: The Locking Challenge
 FUSE is inherently multithreaded by default. Multiple threads handle concurrent requests — one thread processing `readdir` while another handles `write`, another `mkdir`, etc. Without proper synchronization, your filesystem will corrupt data.
 
-![Filesystem Layer Stack](./diagrams/diag-l1-layer-stack.svg)
+![stat Structure Fill](./diagrams/tdd-diag-m5-09.svg)
+
 
 The critical sections that need protection:
 1. **Block allocation**: Two threads could allocate the same block
@@ -4575,7 +4576,8 @@ static void* fs_init(struct fuse_conn_info* conn) {
 }
 ```
 
-![Filesystem Component Atlas](./diagrams/diag-l0-filesystem-map.svg)
+![Thread Locking Strategy](./diagrams/tdd-diag-m5-06.svg)
+
 
 ## Common Pitfalls
 **Forgetting to return negative error codes**: FUSE expects negative errno values (e.g., `-ENOENT`), not positive return codes. Returning `ENOENT` instead of `-ENOENT` will be interpreted as success with return value 2.
@@ -5295,7 +5297,8 @@ int journal_write_entry(Journal* j, const JournalEntry* entry) {
 }
 ```
 
-![Filesystem Layer Stack](./diagrams/diag-l1-layer-stack.svg)
+![Journal Header Structure](./diagrams/tdd-diag-m6-02.svg)
+
 
 ## Metadata Journaling vs. Full Data Journaling
 There are two journaling modes, with a significant trade-off:
@@ -5592,15 +5595,14 @@ In every case, the core pattern is the same: **write intentions before actions, 
 
 ## System Overview
 
+![Idempotent Apply Operations](./diagrams/tdd-diag-m6-09.svg)
+
 ![System Overview](./diagrams/system-overview.svg)
-
-
 
 
 # TDD
 
 A complete inode-based filesystem with block allocation, directory tree management, FUSE integration, and write-ahead journaling for crash consistency. The design embodies the fundamental tension between logical file abstractions (paths, byte streams) and physical storage reality (blocks, sectors, disk latency). Each layer negotiates with hardware constraints: 4KB block alignment matches SSD pages and memory pages, bitmap allocation trades scan time for constant-time free/used tracking, indirect pointers balance inode size against maximum file size, and journaling transforms random metadata writes into sequential log entries for both crash safety and write performance.
-
 
 
 <!-- TDD_MOD_ID: filesystem-m1 -->
@@ -6047,7 +6049,6 @@ ALGORITHM block_bitmap_alloc(dev, sb, bitmap_buffer):
 - Inner loop: predictable until free bit found
 - `bits[word_idx] ≠ ~0ULL`: 50/50 early in filesystem, predictable later
 - `__builtin_ctzll`: compiled to single instruction (TZCNT on x86)
-{{DIAGRAM:tdd-diag-m1-02}}
 ### Block Bitmap Free
 **Input:** BlockDevice `dev`, Superblock `sb`, block number `block_num`, buffer
 **Output:** 0 on success, -1 on failure
@@ -7448,7 +7449,6 @@ For a full 1GB file, freeing requires:
 - 1 double-indirect block to read
 - ~262,659 block_bitmap_free calls
 - Estimated time: ~10 seconds on HDD, ~0.5 seconds on NVMe
-{{DIAGRAM:tdd-diag-m2-05}}
 ---
 ## Error Handling Matrix
 | Error | errno | Detected By | Recovery | User-Visible Message |
@@ -9822,12 +9822,21 @@ With dentry cache (future optimization):
 
 ---
 ## Diagrams
-{{DIAGRAM:tdd-diag-m3-10}}
 
 ![Directory Entry Add Flow](./diagrams/tdd-diag-m3-11.svg)
 
 
-![Path Component Split](./diagrams/tdd-diag-m3-12.svg)
+![Path Component Split](./diagrams/tdd-diag-m3-12/index.svg)
+
+![s1](./diagrams/tdd-diag-m3-12/s1.svg)
+
+![s2](./diagrams/tdd-diag-m3-12/s2.svg)
+
+![s3](./diagrams/tdd-diag-m3-12/s3.svg)
+
+![s4](./diagrams/tdd-diag-m3-12/s4.svg)
+
+![s5](./diagrams/tdd-diag-m3-12/s5.svg)
 
 ---
 <!-- END_TDD_MOD -->
@@ -10423,7 +10432,13 @@ Sparse file read (1MB logical, 1KB actual at end):
   Sparse read is 256× faster on NVMe for this case
 ```
 
-![Sparse File Allocation](./diagrams/tdd-diag-m4-03.svg)
+![Sparse File Allocation](./diagrams/tdd-diag-m4-03/index.svg)
+
+![step_1](./diagrams/tdd-diag-m4-03/step_1.svg)
+
+![step_2](./diagrams/tdd-diag-m4-03/step_2.svg)
+
+![step_3](./diagrams/tdd-diag-m4-03/step_3.svg)
 
 ### fs_write Algorithm
 **Input:** `fs`, `inode_num`, `offset`, `data`, `length`
@@ -12576,7 +12591,6 @@ $ ./verify test.img
 Verification complete: 0 errors
 # All integration tests passed
 ```
-{{DIAGRAM:tdd-diag-m5-06}}
 ---
 ## Test Specification
 ### test_fuse_mount.c
@@ -12863,7 +12877,6 @@ Optimizations:
 
 ![Concurrent Access Scenario](./diagrams/tdd-diag-m5-08.svg)
 
-{{DIAGRAM:tdd-diag-m5-09}}
 
 ![FUSE Performance Overhead](./diagrams/tdd-diag-m5-10.svg)
 
@@ -13151,6 +13164,8 @@ Head catching up to tail (need checkpoint):
                                     ^head ^tail
                                     (only 1000 bytes free!)
 ```
+
+![Crash Simulation Test Flow](./diagrams/tdd-diag-m6-12.svg)
 
 ![Journal Region Layout](./diagrams/tdd-diag-m6-01.svg)
 
@@ -13674,7 +13689,6 @@ fsync cost:
 Each committed transaction costs one fsync.
 Batching multiple operations in one transaction amortizes this cost.
 ```
-{{DIAGRAM:tdd-diag-m6-02}}
 ### journal_write_entry Algorithm
 **Input:** Journal `j`, entry to write
 **Output:** 0 on success, -1 on failure
@@ -13731,6 +13745,8 @@ ALGORITHM journal_write_entry_to_block(j, block_num, offset, entry, size):
     RETURN -1
   RETURN 0
 ```
+
+![Cache Levels and Miss Penalties](./diagrams/diag-l1-cache-hierarchy.svg)
 
 ![Journal Entry Types](./diagrams/tdd-diag-m6-03.svg)
 
@@ -14006,6 +14022,8 @@ If crash during APPLY:
   - Recovery replays ALL operations
   - Idempotency ensures correct final state
 ```
+
+![Checkpoint Process](./diagrams/tdd-diag-m6-13.svg)
 
 ![Journal Write-Ahead Protocol](./diagrams/tdd-diag-m6-06.svg)
 
@@ -14564,15 +14582,12 @@ Optimization: Batch writes
 
 ---
 ## Diagrams
-{{DIAGRAM:tdd-diag-m6-09}}
 
 ![Metadata vs Full Data Journaling](./diagrams/tdd-diag-m6-10.svg)
 
 
 ![File Create with Journaling](./diagrams/tdd-diag-m6-11.svg)
 
-{{DIAGRAM:tdd-diag-m6-12}}
-{{DIAGRAM:tdd-diag-m6-13}}
 
 ![Journal Entry Checksum](./diagrams/tdd-diag-m6-14.svg)
 

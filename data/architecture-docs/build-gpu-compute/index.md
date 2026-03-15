@@ -157,7 +157,6 @@ The project is complete when:
 GPU computing transforms how we solve computationally intensive problems by harnessing thousands of parallel threads. This project teaches you to think in parallel at a fundamental level—where memory access patterns determine performance more than algorithmic complexity, and where understanding hardware architecture is not optional but essential. You'll progress from basic CUDA kernels to sophisticated optimizations that achieve near-peak memory bandwidth.
 
 
-
 <!-- MS_ID: gpu-compute-m1 -->
 # CUDA Fundamentals & Memory
 ## The GPU Revolution: Why This Matters
@@ -167,6 +166,8 @@ But here's the thing: GPU programming requires a fundamentally different mental 
 This milestone builds that mental model from the ground up. By the end, you won't just write CUDA code—you'll *think* in CUDA, visualizing how thousands of threads march through your data in lockstep.
 ---
 ## The Fundamental Tension: Latency vs. Throughput
+
+![GPU Memory Hierarchy](./diagrams/tdd-diag-m1-007.svg)
 
 ![GPU Compute Atlas: System Map](./diagrams/diag-l0-satellite-map.svg)
 
@@ -205,7 +206,11 @@ This has profound implications:
 3. **Copying data across PCIe is slow.** At ~16 GB/s, the PCIe bus is the bottleneck for any algorithm that moves lots of data back and forth.
 This is similar to memory-mapped I/O in systems programming—`cudaMemcpy` is conceptually like copying between two separate address spaces. The GPU isn't an accelerator that accesses your RAM; it's a coprocessor with its own memory that needs to be fed data.
 
+![Host-Device Memory Architecture](./diagrams/tdd-diag-m1-001.svg)
+
 ![Host-Device Memory Transfer Pattern](./diagrams/diag-m1-memory-transfer.svg)
+
+![Error Handling State Machine](./diagrams/tdd-diag-m1-009.svg)
 
 ---
 ## The CUDA Execution Model: Thinking in Parallel
@@ -218,6 +223,8 @@ If you've programmed with CPU threads (pthread, std::thread, OpenMP), you have a
 - Thread creation is expensive
 **What GPU threads actually are:**
 GPU threads are grouped into **warps** of 32 threads that execute in **SIMT (Single Instruction, Multiple Threads) lockstep**. Think of it as hardware-enforced SIMD, but with 32-wide parallelism instead of the 4-8 lanes you get with CPU vector intrinsics.
+
+![Vector Addition Memory Layout](./diagrams/tdd-diag-m1-008.svg)
 
 > **🔑 Foundation: SIMD execution model: how vector processors execute the same instruction on multiple data elements simultaneously**
 > 
@@ -242,6 +249,8 @@ Understanding SIMD is essential for writing performant GPU kernels because:
 ### Key Mental Model
 **The Lockstep Choir**: Imagine a choir where every singer must sing the exact same note at the same time. If one person needs to sing a different note (branch divergence), the whole choir has to wait—or worse, sing both notes sequentially while half the singers stay silent. Your job as the composer (programmer) is to write music where everyone sings together as much as possible.
 The practical implication: structure your data and control flow so that threads in the same warp take the same code paths and access memory in predictable, adjacent patterns.
+
+![Vector Addition: Data Walk](./diagrams/diag-m1-vector-add-walk.svg)
 
 ```
 Warp (32 threads):
@@ -268,7 +277,11 @@ Then for each warp, *both* paths execute. Threads 0-15 execute Path A while thre
 ---
 ## The Thread Hierarchy: Grids, Blocks, and Threads
 
+![SIMT Warp Execution](./diagrams/tdd-diag-m1-003.svg)
+
 ![CUDA Thread Hierarchy: Grid → Block → Warp → Thread](./diagrams/diag-m1-execution-hierarchy.svg)
+
+![Block Scheduling Across SMs](./diagrams/tdd-diag-m1-010.svg)
 
 CUDA organizes threads into a hierarchy that maps directly to the hardware:
 ### Level 1: Threads
@@ -321,6 +334,8 @@ The triple angle brackets `<<< >>>` is the **kernel launch syntax**—it tells t
 ---
 ## Thread Indexing: Finding Your Place
 
+![CUDA Thread Hierarchy](./diagrams/tdd-diag-m1-002.svg)
+
 ![Computing Global Thread Index from blockIdx and threadIdx](./diagrams/diag-m1-thread-indexing.svg)
 
 Every thread needs to know "which element of my data should I process?" This requires computing a **global thread index** from the built-in CUDA variables:
@@ -363,6 +378,8 @@ This **bounds check** is essential. Without it, threads 1000-1023 would access m
 ---
 ## GPU Memory Hierarchy: The Performance Ladder
 
+![Thread Index Calculation](./diagrams/tdd-diag-m1-004.svg)
+
 > **🔑 Foundation: GPU memory hierarchy: the different memory spaces available on GPUs and their performance characteristics**
 > 
 > ## GPU Memory Hierarchy
@@ -401,6 +418,8 @@ int val = data[threadIdx.x];
 - **Host memory** = Another library across town. Getting anything requires a trip.
 The optimization strategy: keep what you're actively working on at the table (shared memory), bring it from the stacks (global) in organized batches, and never make unnecessary trips across town (PCIe).
 
+
+![Memory Transfer Pattern](./diagrams/tdd-diag-m1-006.svg)
 
 ![GPU Memory Transaction Granularity](./diagrams/diag-m2-memory-transaction-view.svg)
 
@@ -526,6 +545,8 @@ int main() {
     return 0;
 }
 ```
+
+![Kernel Launch Lifecycle](./diagrams/tdd-diag-m1-005.svg)
 
 ![Kernel Launch to Completion Timeline](./diagrams/diag-m1-kernel-lifecycle.svg)
 
@@ -866,7 +887,8 @@ By the end of this milestone, you'll transform that 2 GB/s kernel into one that 
 ---
 ## The Fundamental Tension: Memory Transactions, Not Bytes
 
-![GPU Memory Transaction Granularity](./diagrams/diag-m2-memory-transaction-view.svg)
+![DRAM Row Buffer Access](./diagrams/tdd-diag-m2-011.svg)
+
 
 Here's the physical reality that shapes everything in GPU memory optimization:
 **You don't read bytes. You read 128-byte cache lines.**
@@ -885,7 +907,11 @@ Same number of bytes read. Same number of floating-point operations. **32× diff
 ---
 ## Coalescing: The Art of Perfect Transactions
 
+![Shared Memory Bank Architecture](./diagrams/tdd-diag-m2-004.svg)
+
 ![Coalesced vs Strided vs Random Access](./diagrams/diag-m2-coalescing-patterns.svg)
+
+![Coalescing Patterns Comparison](./diagrams/tdd-diag-m2-002.svg)
 
 **Coalescing** is the GPU's ability to combine multiple memory requests from threads in a warp into a single transaction. When coalescing works, 32 memory requests become 1-2 transactions. When it fails, 32 requests become 32 transactions.
 ### What "Sequential" Really Means
@@ -936,7 +962,8 @@ Each address is in a different cache line. **Zero coalescing.**
 This is why **data layout matters as much as algorithm design** on GPUs. The same operation can be 10-30× faster or slower depending on how your data is arranged in memory.
 ### AoS vs SoA: A Coalescing Perspective
 
-![Coalesced vs Strided vs Random Access](./diagrams/diag-m2-coalescing-patterns.svg)
+![Synchronization Barrier State Machine](./diagrams/tdd-diag-m2-009.svg)
+
 
 Consider a particle system with position (x, y, z) and velocity (vx, vy, vz):
 ```cuda
@@ -987,7 +1014,11 @@ This same pattern appears in database design: **columnar storage** (SoA) vs **ro
 ---
 ## The Matrix Transpose: A Coalescing Case Study
 
+![AoS vs SoA Memory Layout](./diagrams/tdd-diag-m2-003.svg)
+
 ![Tiled Matrix Transpose Algorithm](./diagrams/diag-m2-tiled-transpose.svg)
+
+![Matrix Transpose Block Mapping](./diagrams/tdd-diag-m2-012.svg)
 
 Matrix transpose is the perfect teaching example because:
 1. The algorithm is trivial: `out[j][i] = in[i][j]`
@@ -1044,6 +1075,8 @@ Now the write is coalesced, but the read is strided. Same problem, different dir
 ---
 ## Shared Memory: Your Software-Controlled Scratchpad
 
+![Shared Memory Tile with Padding](./diagrams/tdd-diag-m2-007.svg)
+
 ![Shared Memory: Banks and Access Ports](./diagrams/diag-m2-shared-memory-layout.svg)
 
 To break the coalescing deadlock, we need **shared memory**—an on-chip scratchpad that's **software-managed**. Unlike CPU caches (which automatically cache what you access), shared memory gives you explicit control over what lives where.
@@ -1084,7 +1117,8 @@ __global__ void kernel() {
 3. Shared memory size is fixed per block (limited resource affecting occupancy)
 ### The Tiled Transpose Algorithm
 
-![Tiled Matrix Transpose Algorithm](./diagrams/diag-m2-tiled-transpose.svg)
+![Tiled Transpose Algorithm](./diagrams/tdd-diag-m2-006.svg)
+
 
 Here's the optimized transpose using shared memory:
 ```cuda
@@ -1155,7 +1189,11 @@ Block (0,0) writes to output block (0,0) in transposed position:
 ---
 ## Bank Conflicts: The Hidden Performance Killer
 
+![Naive vs Tiled Transpose Timeline](./diagrams/tdd-diag-m2-008.svg)
+
 ![Bank Conflict Scenarios: None, 2-way, 32-way](./diagrams/diag-m2-bank-conflicts.svg)
+
+![Bank Conflict Scenarios](./diagrams/tdd-diag-m2-005.svg)
 
 There's a detail we glossed over: `tile[TILE_DIM][TILE_DIM+1]`. Why `+1`?
 ### What Are Banks?
@@ -1507,7 +1545,11 @@ CUDA_CHECK(cudaGetLastError());  // Will catch shared mem overflow
 ---
 ## Alternative Reality: How Other Systems Handle This
 
+![Memory Transaction Granularity](./diagrams/tdd-diag-m2-001.svg)
+
 ![Memory Bandwidth: Naive vs Optimized Transpose](./diagrams/diag-m2-bandwidth-comparison.svg)
+
+![Bandwidth Comparison Chart](./diagrams/tdd-diag-m2-010.svg)
 
 | System | Memory Hierarchy | Coalescing Equivalent | Optimization Strategy |
 |--------|------------------|----------------------|----------------------|
@@ -1608,6 +1650,8 @@ Here's a thought experiment. I give you an array of one billion numbers and ask 
 Now I give you a thousand people and ask them to sum the same array together. Your brain probably says: "Split the array into chunks, give each person a chunk, then... wait, how do we combine their partial sums?"
 This is the fundamental challenge of parallel algorithms. Your sequential intuition—the accumulation pattern you've internalized from decades of programming—fails completely in a parallel world. You can't have a thousand threads all adding to the same variable (race condition). You can't have threads waiting on other threads without careful synchronization (deadlocks, serialization). And you certainly can't afford O(n) sequential steps when you have thousands of threads that could be working.
 
+![Atomic Contention in Histogram](./diagrams/tdd-diag-m3-008.svg)
+
 ![Parallel Reduction: Tree-Based Approach](./diagrams/diag-m3-reduction-tree.svg)
 
 The revelation that awaits you: **parallel algorithms require fundamentally different thinking**. A parallel reduction isn't "sum with threads"—it's a tree-based approach where step count is O(log n) instead of O(n). A parallel scan (prefix sum) isn't "running total with threads"—it's a two-phase algorithm with precise indexing requirements. And atomic operations, which seem like a simple coordination primitive, can secretly serialize your entire computation.
@@ -1625,7 +1669,11 @@ Every parallel algorithm exists in a tension between two competing metrics:
 - Work: O(n) — still n-1 additions, just arranged differently
 Wait—parallel reduction does the same amount of work! It just arranges it differently to minimize the critical path. This is the key insight: **parallelism doesn't reduce work, it reduces latency**.
 
+![Blelloch Scan Upsweep Phase](./diagrams/tdd-diag-m3-005.svg)
+
 ![Work Efficiency: O(n) vs O(n log n)](./diagrams/diag-m3-work-efficiency.svg)
+
+![Work vs Step Complexity Comparison](./diagrams/tdd-diag-m3-011.svg)
 
 But here's where it gets tricky. Some parallel algorithms actually *increase* work to reduce steps:
 **Blelloch scan**:
@@ -1652,6 +1700,8 @@ __global__ void naiveAtomicSum(float* input, float* result, int N) {
 ```
 This "works" in the sense that it produces the correct answer. But it's catastrophically slow.
 **Why?** Atomic operations to the same address serialize. When thread 0 executes `atomicAdd`, it acquires exclusive access to that memory location. Threads 1 through 1,000,000 queue up waiting. You've turned parallel computation into sequential computation with extra overhead.
+
+![Blelloch Scan Downsweep Phase](./diagrams/tdd-diag-m3-006.svg)
 
 ![Atomic Contention in Histogram](./diagrams/diag-m3-histogram-atomics.svg)
 
@@ -1717,6 +1767,8 @@ float reduce(float* d_input, int N) {
 ```
 ### The Divergence Problem
 
+![Tree Reduction Structure](./diagrams/tdd-diag-m3-001.svg)
+
 ![Warp Divergence in Reduction](./diagrams/diag-m3-warp-divergence.svg)
 
 There's a subtle performance problem in the basic reduction kernel. Look at this line:
@@ -1735,6 +1787,8 @@ In the second iteration, `stride = 64`. Threads 0-63 participate. Now:
 Actually, the divergence problem appears in **later iterations** when `stride` becomes small:
 When `stride = 32`: threads 0-31 participate. This is exactly one warp—no divergence.
 When `stride = 16`: threads 0-15 participate. Warp 0 has threads 0-15 active, threads 16-31 inactive. **Divergence!**
+
+![Warp Aggregation with __match_any_sync](./diagrams/tdd-diag-m3-010.svg)
 
 > **🔑 Foundation: When threads in a warp take different code paths**
 > 
@@ -1757,6 +1811,8 @@ Understanding divergence is critical when optimizing CUDA kernels. A divergent w
 - Writing kernels where boundary conditions affect some threads but not others
 **Key Insight**
 Think of divergence as "paying for all paths, but only getting results from one per thread." The hardware cost is the *sum* of all path lengths, not the maximum. If path A takes 100 cycles and path B takes 50 cycles, a divergent warp pays 150 cycles — not 100. The solution isn't always avoiding branches; it's organizing your data and thread mapping so that threads in the same warp tend to take the same path (branch coherence).
+
+![Histogram Privatization Pattern](./diagrams/tdd-diag-m3-009.svg)
 
 When threads in the same warp execute different branches (some take the if, some don't), the warp must execute both paths. Half the threads are masked off during each path—effectively serializing that warp's execution.
 ### Optimizing the Reduction: Removing Divergence
@@ -1924,7 +1980,11 @@ __global__ void scanNaive(float* input, float* output, int N) {
 This is O(n²) work. For n = 1 million, that's 500 billion operations. Completely impractical.
 **Approach 2: Hillis-Steele Scan**
 
+![Reduction Memory Access Pattern](./diagrams/tdd-diag-m3-002.svg)
+
 ![Blelloch Scan: Upsweep and Downsweep](./diagrams/diag-m3-scan-phases.svg)
+
+![Scan Shared Memory Layout](./diagrams/tdd-diag-m3-007.svg)
 
 ```cuda
 __global__ void scanHillisSteele(float* input, float* output, int N) {
@@ -2071,7 +2131,8 @@ __global__ void histogramNaive(int* input, int* histogram, int N, int numBins) {
 ```
 ### The Contention Problem
 
-![Atomic Contention in Histogram](./diagrams/diag-m3-histogram-atomics.svg)
+![Warp Shuffle Reduction](./diagrams/tdd-diag-m3-004.svg)
+
 
 This works and is simple. But consider what happens when the input is skewed—say, 90% of values are 0:
 - 900,000 threads all try to `atomicAdd(&histogram[0], 1)` simultaneously
@@ -2460,7 +2521,11 @@ Here's what you should expect on an RTX 3080:
 - GPU privatized: ~5-10 ms
 - GPU warp-aggregated: ~2-4 ms
 
+![Warp Divergence Visualization](./diagrams/tdd-diag-m3-003.svg)
+
 ![CPU vs GPU Algorithm Comparison](./diagrams/diag-m3-algo-comparison.svg)
+
+![CPU vs GPU Algorithm Performance](./diagrams/tdd-diag-m3-012.svg)
 
 ---
 ## Common Pitfalls
@@ -2660,7 +2725,6 @@ The revelation awaiting you: **the GPU is a massively parallel machine, but the 
 ---
 ## The Fundamental Tension: One Engine, Many Tasks
 
-![GPU Compute Atlas: System Map](./diagrams/diag-l0-satellite-map.svg)
 
 Your GPU is a factory with thousands of workers (CUDA cores) organized into departments (SMs). The factory has:
 - **Compute resources**: SMs that execute kernels
@@ -2685,6 +2749,8 @@ The hardware supports concurrency. The software model (by default) prohibits it.
 > **The fundamental tension**: GPUs have independent execution units (SMs, copy engines) that could run concurrently, but the default stream provides a simple sequential model that hides this capability. You must explicitly opt into concurrency—and doing so correctly requires understanding synchronization, memory types, and resource limits.
 ---
 ## The Default Stream: Your Silent Performance Killer
+
+![PCIe Bandwidth Bottleneck Analysis](./diagrams/tdd-diag-m4-012.svg)
 
 ![Default Stream Serialization Effect](./diagrams/diag-m4-default-serialization.svg)
 
@@ -2836,7 +2902,8 @@ for (int i = 0; i < NUM_STREAMS; i++) {
 }
 ```
 
-![CUDA Streams: Concurrent Execution Timeline](./diagrams/diag-m4-stream-timeline.svg)
+![Multi-Stream Concurrent Timeline](./diagrams/tdd-diag-m4-002.svg)
+
 
 Timeline with 2 streams:
 ```
@@ -2929,7 +2996,6 @@ printf("GPU memory: %zu MB free, %zu MB total\n", free/1024/1024, total/1024/102
 ---
 ## Concurrent Kernel Execution: Filling the GPU
 
-![CUDA Streams: Concurrent Execution Timeline](./diagrams/diag-m4-stream-timeline.svg)
 
 So far we've focused on compute-transfer overlap. But streams also enable **concurrent kernel execution**—multiple kernels running simultaneously on different SMs.
 ### When Concurrent Kernels Help
@@ -2960,6 +3026,8 @@ Just because you launch kernels in different streams doesn't mean they'll run co
 // Launching A and B concurrently might fit, or might not,
 // depending on total block count
 ```
+
+![Concurrent Kernel Execution Limits](./diagrams/tdd-diag-m4-011.svg)
 
 > **🔑 Foundation: How register and shared memory usage limits the number of concurrent warps per SM**
 > 
@@ -3076,6 +3144,8 @@ This pattern enables sophisticated pipelines:
 | `cudaEventSynchronize(e)` | Yes | N/A | CPU waits for specific event |
 ---
 ## Stream Pools: Managing Many Streams
+
+![Stream Pool Architecture](./diagrams/tdd-diag-m4-009.svg)
 
 ![Stream Pool Architecture](./diagrams/diag-m4-stream-pool.svg)
 
@@ -3596,7 +3666,10 @@ The revelation awaiting you: **optimization is a science, not an art.** The prof
 ---
 ## The Fundamental Tension: Multiple Limiting Factors, Opposite Solutions
 
-![GPU Compute Atlas: System Map](./diagrams/diag-l0-satellite-map.svg)
+![Optimization Cycle](./diagrams/tdd-diag-m5-007.svg)
+
+
+![Thermal Throttling Indicators](./diagrams/tdd-diag-m5-010.svg)
 
 Every GPU kernel is constrained by something. The constraint falls into one of three categories:
 **Memory-bound**: The kernel spends most of its time waiting for data to arrive from DRAM. The compute units sit idle while memory transactions complete.
@@ -3664,7 +3737,11 @@ NVIDIA provides two complementary profiling tools:
 | **Nsight Systems** | Entire application | Timeline view | Understanding overall flow, stream overlap, CPU-GPU interaction |
 | **Nsight Compute** | Individual kernels | Hardware counters | Deep dive into kernel bottlenecks, occupancy, memory throughput |
 
+![Occupancy Limiting Factors](./diagrams/tdd-diag-m5-004.svg)
+
 ![Nsight Compute Analysis Workflow](./diagrams/diag-m5-nsight-workflow.svg)
+
+![Occupancy vs Performance Curve](./diagrams/tdd-diag-m5-014.svg)
 
 ### Nsight Systems: The Wide-Angle Lens
 Nsight Systems gives you a timeline of everything:
@@ -3692,7 +3769,11 @@ You can see:
 - CPU overhead: Is the CPU spending too much time in driver calls?
 ### Nsight Compute: The Microscope
 
+![Key Metrics Interpretation Guide](./diagrams/tdd-diag-m5-008.svg)
+
 ![Key Profiling Metrics and Their Meaning](./diagrams/diag-m5-metric-interpretation.svg)
+
+![Warp State Statistics Interpretation](./diagrams/tdd-diag-m5-013.svg)
 
 Nsight Compute dives deep into a single kernel, collecting hundreds of hardware counters:
 **Memory Throughput Section:**
@@ -3736,7 +3817,11 @@ The key metrics I check first:
 ---
 ## The Roofline Model: Your Mental Framework
 
+![Occupancy Calculator Flow](./diagrams/tdd-diag-m5-005.svg)
+
 ![Roofline Model: Memory vs Compute Bound](./diagrams/diag-m5-roofline-model.svg)
+
+![Memory vs Compute Bound Region Map](./diagrams/tdd-diag-m5-012.svg)
 
 The **roofline model** is a visual way to understand kernel bottlenecks. It plots achievable performance (FLOPS) against arithmetic intensity (FLOPS per byte transferred).
 ```
@@ -3787,12 +3872,16 @@ If your kernel is **below the horizontal roof** (compute-bound):
 - Focus on instruction count, using tensor cores, reducing precision
 - Higher occupancy helps only if it improves instruction throughput
 
+![Roofline Model Visualization](./diagrams/tdd-diag-m5-003.svg)
+
 ![Bottleneck Identification Decision Tree](./diagrams/diag-m5-bottleneck-decision.svg)
 
 ---
 ## Occupancy: The Misunderstood Metric
 
 ![Occupancy Calculator: Registers and Shared Memory](./diagrams/diag-m5-occupancy-calculator.svg)
+
+![Case Study Optimization Progression](./diagrams/tdd-diag-m5-011.svg)
 
 **Occupancy** is the ratio of active warps per SM to the maximum possible warps per SM. It's often cited as the key performance metric, but it's more nuanced than most developers realize.
 ### What Limits Occupancy
@@ -3944,6 +4033,8 @@ Memory Access Patterns
 - Sector miss rate: High rate indicates non-coalesced access or cache thrashing
 ---
 ## The Optimization Cycle: A Systematic Approach
+
+![Nsight Compute Analysis Workflow](./diagrams/tdd-diag-m5-002.svg)
 
 ![Optimization Cycle: Measure-Analyze-Optimize-Verify](./diagrams/diag-m5-optimization-cycle.svg)
 
@@ -4147,7 +4238,8 @@ The profiler guided every decision. Without measurement, we might have tried to 
 ---
 ## Launch Overhead: When Parallelism Backfires
 
-![Bottleneck Identification Decision Tree](./diagrams/diag-m5-bottleneck-decision.svg)
+![Bottleneck Identification Decision Tree](./diagrams/tdd-diag-m5-006.svg)
+
 
 For small kernels, **launch overhead** can dominate execution time. A kernel launch takes ~5-10 microseconds of CPU time. If your kernel executes in 2 microseconds, you're spending 70-80% of total time on overhead.
 ### Detecting Launch Overhead Dominance
@@ -4550,9 +4642,9 @@ void printOccupancy(void* kernel, int threadsPerBlock, int sharedMemBytes) {
 
 ## System Overview
 
+![Nsight Systems Timeline View](./diagrams/tdd-diag-m5-001.svg)
+
 ![System Overview](./diagrams/system-overview.svg)
-
-
 
 
 # TDD
@@ -4560,6 +4652,7 @@ void printOccupancy(void* kernel, int threadsPerBlock, int sharedMemBytes) {
 A comprehensive GPU computing curriculum that transforms CPU programmers into GPU performance engineers. Students progress from fundamental CUDA kernels through memory optimization, parallel algorithms, asynchronous execution, to systematic profiling—building a complete mental model of GPU architecture and the practical skills to achieve near-peak performance. The emphasis is on understanding hardware constraints (memory bandwidth, cache hierarchy, thread scheduling) and making software cooperate with physics rather than fight against it.
 
 
+![Launch Overhead Detection](./diagrams/tdd-diag-m5-009.svg)
 
 <!-- TDD_MOD_ID: gpu-compute-m1 -->
 # Technical Design Document: CUDA Fundamentals & Memory
@@ -9416,9 +9509,11 @@ Host Memory (Pinned):
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-![Default Stream Serialization Effect](./diagrams/tdd-diag-m4-001.svg)
 
 ```
+
+![Default Stream Serialization Effect](./diagrams/tdd-diag-m4-001.svg)
+
 ---
 ## 4. Interface Contracts
 ### 4.1 Public API (stream_pipeline.h)
@@ -9882,8 +9977,9 @@ OBSERVATIONS:
    - At t2: H2D_1 overlaps with Compute_0
    - At t3: D2H_0 overlaps with Compute_1 and H2D_2
    - Maximum overlap when compute_time ≈ transfer_time
-{{DIAGRAM:tdd-diag-m4-002}}
 ```
+
+
 ### 5.3 Pinned Memory Allocation
 ```
 ALGORITHM: pinned_malloc
@@ -9917,9 +10013,11 @@ LIMITATIONS:
    - Too much pinned memory can cause system instability
    - Rule of thumb: don't pin more than 25-50% of system RAM
 
-![Compute-Transfer Overlap Pattern](./diagrams/tdd-diag-m4-003.svg)
 
 ```
+
+![Compute-Transfer Overlap Pattern](./diagrams/tdd-diag-m4-003.svg)
+
 ### 5.4 Event-Based Timing
 ```
 ALGORITHM: event_timer_elapsed
@@ -9949,9 +10047,11 @@ TIMESTAMP RESOLUTION:
    - GPU timestamp counter runs at GPU clock frequency
    - Typical resolution: 1-10 microseconds
 
-![Pinned vs Pageable Memory Transfer](./diagrams/tdd-diag-m4-004.svg)
 
 ```
+
+![Pinned vs Pageable Memory Transfer](./diagrams/tdd-diag-m4-004.svg)
+
 ### 5.5 Overlap Analysis Algorithm
 ```
 ALGORITHM: measure_overlap_efficiency
@@ -9996,9 +10096,11 @@ EXPECTED RESULTS:
    With transfer_time >> compute_time:
    - Speedup: ~1.0x (PCIe bound)
 
-![GPU Copy Engine Architecture](./diagrams/tdd-diag-m4-005.svg)
 
 ```
+
+![GPU Copy Engine Architecture](./diagrams/tdd-diag-m4-005.svg)
+
 ---
 ## 6. Error Handling Matrix
 | Error | Detected By | Recovery | User-Visible? | System State |
@@ -10039,9 +10141,11 @@ CORRECT:
    Stream 0: H2D into d_input[0], Compute on d_input[0]
    Stream 1: H2D into d_input[1]  ← Different buffer, no race
 
-![Double-Buffered Memory Layout](./diagrams/tdd-diag-m4-006.svg)
 
 ```
+
+![Double-Buffered Memory Layout](./diagrams/tdd-diag-m4-006.svg)
+
 ---
 ## 7. Implementation Sequence with Checkpoints
 ### Phase 1: Default Stream Serialization Demo (1-2 hours)
@@ -10887,9 +10991,11 @@ WITH 2 COPY ENGINES:
   Stream 1:  [H2D....] [Kernel..][D2H....]
               ↑ Can run concurrently with Stream 0's H2D!
 
-![Event Recording and Timing](./diagrams/tdd-diag-m4-007.svg)
 
 ```
+
+![Event Recording and Timing](./diagrams/tdd-diag-m4-007.svg)
+
 ### 10.2 Pinned Memory DMA Flow
 ```
 PINNED MEMORY DMA FLOW:
@@ -10923,9 +11029,11 @@ WITH PINNED MEMORY:
 │ No staging copy means 30-50% faster transfers!                            │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-![GPU-Side Synchronization with Events](./diagrams/tdd-diag-m4-008.svg)
 
 ```
+
+![GPU-Side Synchronization with Events](./diagrams/tdd-diag-m4-008.svg)
+
 ### 10.3 Stream Command Queues
 ```
 STREAM COMMAND QUEUE ARCHITECTURE:
@@ -10957,8 +11065,9 @@ DEFAULT STREAM SPECIAL BEHAVIOR:
   - Any command in default stream waits for ALL other streams
   - ALL other streams wait for default stream commands
   - This is why mixing default and non-default streams serializes!
-{{DIAGRAM:tdd-diag-m4-009}}
 ```
+
+
 ### 10.4 L2 Cache Contention with Concurrent Kernels
 ```
 L2 CACHE CONTENTION:
@@ -10983,9 +11092,11 @@ MITIGATION:
   - Consider kernel fusion instead of concurrency for related work
   - Profile to find optimal balance
 
-![Synchronization Options Comparison](./diagrams/tdd-diag-m4-010.svg)
 
 ```
+
+![Synchronization Options Comparison](./diagrams/tdd-diag-m4-010.svg)
+
 ---
 ## 11. Makefile Specification
 ```makefile

@@ -148,7 +148,6 @@ Build a production-grade distributed training framework capable of training mode
 The framework addresses the fundamental scaling challenge: a 175B parameter model requires ~350GB just for parameters in fp16, far exceeding single GPU memory. By combining multiple parallelism strategies intelligently—matching them to cluster topology and network bandwidth—you'll achieve near-linear scaling efficiency across massive GPU clusters. This is the infrastructure backbone of modern AI labs.
 
 
-
 <!-- MS_ID: distributed-m1 -->
 # Data Parallelism Fundamentals
 You're about to build the foundational layer of distributed training—the pattern that enables training any model across multiple GPUs. This isn't just "run on multiple GPUs and average gradients." It's a carefully orchestrated system where timing, memory, and network bandwidth intersect.
@@ -257,6 +256,8 @@ Compare:
 | Naive all-reduce (N² sends) | O(N) × data |
 | Ring all-reduce | 2 × data (constant!) |
 The "2" comes from the reduce-scatter phase (data flows one direction) plus the all-gather phase (data flows back).
+
+![Ring All-Reduce Mechanism](./diagrams/diag-all-reduce-ring-topology.svg)
 
 The key insight: **Ring All-Reduce has O(model_size) bandwidth cost, regardless of GPU count.** The latency grows with GPU count, but total bytes transferred per GPU stays constant.
 For a 7B parameter model in fp16:
@@ -1815,7 +1816,7 @@ The effectiveness depends on the compute-to-communication ratio. If computation 
 ---
 ## Sequence Parallelism: When Activations Don't Fit
 For very long sequences, even activations don't fit on a single GPU. Sequence parallelism extends tensor parallelism to shard along the sequence dimension.
-{{DIAGRAM:diag-sequence_parallelism}}
+![diag-sequence-parallelism](./diagrams/diag-sequence-parallelism.svg)
 ```python
 class SequenceParallelLayerNorm(nn.Module):
     """
@@ -2180,6 +2181,7 @@ pytest test_tensor_parallel.py -v
 ---
 ## Memory Analysis: Why Tensor Parallelism Works
 
+
 ![Tensor Parallel Memory Layout](./diagrams/diag-tp-memory-layout.svg)
 
 Let's quantify the memory savings for a 70B parameter model:
@@ -2485,6 +2487,8 @@ def train_step(model_stages, micro_batches):
 ```
 ### Level 2 — Scheduling Layer: GPipe vs. 1F1B
 The naive approach above waits for ALL forward passes to complete before ANY backward pass starts. This is the **GPipe schedule**. It's simple but creates a large bubble.
+
+![Naive Pipeline (High Bubble)](./diagrams/diag-pp-naive-pipeline.svg)
 
 ![GPipe Schedule](./diagrams/diag-pp-gpipe-schedule.svg)
 
@@ -2850,7 +2854,8 @@ class AsyncPipelineCommunicator:
         self.pending_ops.clear()
 ```
 
-![Pipeline Point-to-Point Communication](./diagrams/diag-pp-p2p-communication.svg)
+![Pipeline Point-to-Point Communication](./diagrams/tdd-diag-016.svg)
+
 
 ---
 ## GPipe Schedule Implementation
@@ -2949,7 +2954,6 @@ class GPipeSchedule:
         self.losses.clear()
 ```
 
-![GPipe Schedule](./diagrams/diag-pp-gpipe-schedule.svg)
 
 ---
 ## 1F1B Schedule Implementation
@@ -3056,7 +3060,6 @@ class F1B1Schedule:
         return loss_fn(logits_flat, labels_flat)
 ```
 
-![1F1B (One Forward One Backward) Schedule](./diagrams/diag-pp-1f1b-schedule.svg)
 
 ---
 ## Interleaved 1F1B: Better Load Balancing
@@ -4731,6 +4734,8 @@ class AsyncCheckpoint(DistributedCheckpoint):
         torch.save(checkpoint_data, checkpoint_path)
 ```
 
+![Async Checkpoint Strategy](./diagrams/tdd-diag-026.svg)
+
 ![Asynchronous Checkpoint Strategy](./diagrams/diag-async-checkpoint.svg)
 
 ---
@@ -5251,6 +5256,8 @@ If 99 GPUs finish in 100ms, but 1 GPU takes 150ms (thermal throttling):
 ```
 At 1000+ GPU scale, you will always have stragglers. The question is whether you detect and mitigate them.
 
+![system-overview](./diagrams/system-overview.svg)
+
 ![Straggler Detection Heatmap](./diagrams/diag-straggler-detection.svg)
 
 **The Failure Rate Reality**: Hardware failures follow a predictable pattern:
@@ -5357,7 +5364,6 @@ The key insight: **write to local SSD first, upload to distributed storage in ba
 ## Asynchronous Checkpointing: The Foundation
 Synchronous checkpointing blocks training for the entire checkpoint duration. Asynchronous checkpointing copies state to CPU, then continues training while the checkpoint is written to storage.
 
-![Asynchronous Checkpoint Strategy](./diagrams/diag-async-checkpoint.svg)
 
 ```python
 import os
@@ -5642,7 +5648,6 @@ class AsyncCheckpointManager:
         np.random.set_state(rng_state['numpy'])
 ```
 
-![Distributed Checkpoint Structure](./diagrams/diag-distributed-checkpoint-structure.svg)
 
 **Timeline comparison:**
 ```
@@ -5765,7 +5770,6 @@ class DistributedCheckpointCoordinator:
         return step_tensor.item() if step_tensor.item() > 0 else None
 ```
 
-![Checkpoint Resume Flow](./diagrams/diag-checkpoint-resume-flow.svg)
 
 ---
 ## Resume from Failure: Complete Recovery Protocol
@@ -6173,7 +6177,6 @@ class ElasticTrainer:
 ## Straggler Detection and Mitigation
 In synchronous distributed training, one slow GPU blocks everyone. Straggler detection identifies these slow ranks, and mitigation strategies allow training to continue despite them.
 
-![Straggler Detection Heatmap](./diagrams/diag-straggler-detection.svg)
 
 ```python
 from dataclasses import dataclass
@@ -6625,7 +6628,6 @@ Memory:
 ## Memory Profiling: Tracking Allocation Across Parallelism
 Memory issues are the most common cause of OOM at scale. Understanding where memory goes is critical for optimization.
 
-![Memory Profiling Breakdown](./diagrams/diag-memory-profiling-breakdown.svg)
 
 ```python
 from typing import Dict, List, Tuple
@@ -7325,12 +7327,9 @@ You've now completed the full distributed training framework: data parallelism f
 <!-- END_MS -->
 
 
-
-
 # TDD
 
 A production-grade distributed training framework implementing the complete parallelism stack used to train frontier models like GPT-4 and LLaMA. The system combines data parallelism for batch scaling, tensor parallelism for intra-layer sharding, pipeline parallelism for inter-layer partitioning, and ZeRO optimization for memory efficiency—all orchestrated across thousands of GPUs with comprehensive fault tolerance and profiling capabilities.
-
 
 
 <!-- TDD_MOD_ID: distributed-m1 -->
@@ -8499,36 +8498,48 @@ torchrun --nproc_per_node=8 scripts/profile_memory.py \
 ## Visual Reference
 ```
 
-![Data Parallel Architecture](./diagrams/tdd-diag-001.svg)
 
 Data Parallel Communication Pattern
 Shows: All-reduce gradient synchronization across GPUs
 
-![Gradient Synchronization Data Flow](./diagrams/tdd-diag-002.svg)
   
 Gradient Bucketization Timeline
 Shows: Overlapping communication with backward pass
 
-![Ring All-Reduce Algorithm Steps](./diagrams/tdd-diag-003.svg)
 
 SyncBatchNorm vs Local BatchNorm
 Shows: How running statistics diverge without sync
 
-![SyncBatchNorm vs Local BatchNorm](./diagrams/tdd-diag-004.svg)
 
 Gradient Accumulation Timeline
 Shows: Multiple forward/backward before optimizer step
 
-![Mixed Precision Training Flow](./diagrams/tdd-diag-005.svg)
 
 Mixed Precision Training Flow
 Shows: Autocast, loss scaling, gradient unscaling
 
-![Scaling Efficiency Curve](./diagrams/tdd-diag-006.svg)
 
 Scaling Efficiency Curve
 Shows: Efficiency vs GPU count with NVLink vs InfiniBand
 ```
+
+![Data Parallel Architecture](./diagrams/tdd-diag-001.svg)
+
+
+![Gradient Synchronization Data Flow](./diagrams/tdd-diag-002.svg)
+
+
+![Ring All-Reduce Algorithm Steps](./diagrams/tdd-diag-003.svg)
+
+
+![SyncBatchNorm vs Local BatchNorm](./diagrams/tdd-diag-004.svg)
+
+
+![Mixed Precision Training Flow](./diagrams/tdd-diag-005.svg)
+
+
+![Scaling Efficiency Curve](./diagrams/tdd-diag-006.svg)
+
 <!-- END_TDD_MOD -->
 
 
@@ -9893,36 +9904,48 @@ torchrun --nproc_per_node=8 scripts/profile_tp_communication.py \
 ## 10. Visual Reference
 ```
 
-![Column vs Row Parallel Matrix Multiplication](./diagrams/tdd-diag-007.svg)
 
 Column vs Row Parallelism
 Shows: How weight matrices are partitioned, input/output sharding patterns
 
-![Megatron MLP Parallel Pattern](./diagrams/tdd-diag-008.svg)
 
 Megatron-LM Parallel MLP Block
 Shows: Column-parallel → GELU → Row-parallel with single all-reduce
 
-![Tensor Parallel Attention Architecture](./diagrams/tdd-diag-009.svg)
 
 Megatron-LM Parallel Attention
 Shows: Head distribution, QKV column-parallel, output row-parallel
 
-![Communication Overlap Timeline](./diagrams/tdd-diag-010.svg)
 
 Tensor Parallel Memory Layout
 Shows: Memory per GPU at different TP sizes
 
-![Gradient Flow Through TP Layers](./diagrams/tdd-diag-011.svg)
 
 Tensor Parallel Communication Overlap
 Shows: Chunking and async all-reduce timeline
 
-![Tensor Parallel Memory Layout](./diagrams/tdd-diag-012.svg)
 
 Gradient Flow Through TP Layers
 Shows: Where all-reduce happens in forward and backward
 ```
+
+![Column vs Row Parallel Matrix Multiplication](./diagrams/tdd-diag-007.svg)
+
+
+![Megatron MLP Parallel Pattern](./diagrams/tdd-diag-008.svg)
+
+
+![Tensor Parallel Attention Architecture](./diagrams/tdd-diag-009.svg)
+
+
+![Communication Overlap Timeline](./diagrams/tdd-diag-010.svg)
+
+
+![Gradient Flow Through TP Layers](./diagrams/tdd-diag-011.svg)
+
+
+![Tensor Parallel Memory Layout](./diagrams/tdd-diag-012.svg)
+
 ---
 <!-- END_TDD_MOD -->
 
@@ -11572,34 +11595,44 @@ torchrun --nproc_per_node=4 scripts/profile_memory.py \
 ## 10. Visual Reference
 ```
 
-![Pipeline Stage Partitioning](./diagrams/tdd-diag-013.svg)
 
 GPipe Schedule Timeline
 Shows: All forwards, then all backwards. Large bubble at start and end.
 
-![GPipe Schedule Timeline](./diagrams/tdd-diag-014.svg)
 
 1F1B Schedule Timeline
 Shows: Warmup, steady-state, cooldown phases. Bounded memory.
 
-![1F1B Schedule Timeline](./diagrams/tdd-diag-015.svg)
 
 Pipeline Bubble Analysis
 Shows: Bubble fraction vs micro-batch count for GPipe and 1F1B.
-{{DIAGRAM:tdd-diag-016}}
 Point-to-Point Communication Pattern
 Shows: Send/recv between adjacent stages. Header + payload protocol.
 
-![Pipeline Bubble Analysis](./diagrams/tdd-diag-017.svg)
 
 Stage Balancing Analysis
 Shows: Imbalanced vs balanced partition. Efficiency metrics.
 
-![GPipe vs 1F1B Memory Comparison](./diagrams/tdd-diag-018.svg)
 
 Memory Comparison: GPipe vs 1F1B
 Shows: Peak activation memory for different micro-batch counts.
 ```
+
+![Pipeline Stage Partitioning](./diagrams/tdd-diag-013.svg)
+
+
+![GPipe Schedule Timeline](./diagrams/tdd-diag-014.svg)
+
+
+![1F1B Schedule Timeline](./diagrams/tdd-diag-015.svg)
+
+
+![Pipeline Bubble Analysis](./diagrams/tdd-diag-017.svg)
+
+
+![GPipe vs 1F1B Memory Comparison](./diagrams/tdd-diag-018.svg)
+
+
 ---
 <!-- END_TDD_MOD -->
 
@@ -13046,44 +13079,58 @@ torchrun --nproc_per_node=8 scripts/benchmark_checkpoint.py \
 ## 10. Visual Reference
 ```
 
-![3D Parallelism Process Grid](./diagrams/tdd-diag-019.svg)
 
 3D Process Grid Architecture
 Shows: DP × TP × PP grid with orthogonal process groups
 
-![3D Topology Mapping](./diagrams/tdd-diag-020.svg)
 
 Topology to Configuration Mapping
 Shows: How cluster topology determines optimal 3D config
 
-![ZeRO Stages Memory Comparison](./diagrams/tdd-diag-021.svg)
 
 ZeRO Stages Memory Comparison
 Shows: Memory per GPU at each ZeRO stage
 
-![ZeRO-3 Forward Pass with Parameter Gathering](./diagrams/tdd-diag-022.svg)
 
 ZeRO-3 Parameter Gathering Flow
 Shows: Forward pass with on-demand parameter fetch
 
-![ZeRO Communication Volume Analysis](./diagrams/tdd-diag-023.svg)
 
 ZeRO Communication Volume Analysis
 Shows: All-reduce vs reduce-scatter vs all-gather patterns
 
-![Distributed Checkpoint Structure](./diagrams/tdd-diag-024.svg)
 
 Distributed Checkpoint Structure
 Shows: Sharded state across 3D parallelism dimensions
 
-![Checkpoint Resume Flow](./diagrams/tdd-diag-025.svg)
 
 Checkpoint Consensus Protocol
 Shows: How all ranks coordinate for consistent checkpoint
-{{DIAGRAM:tdd-diag-026}}
 3D Parallelism Configuration Decision Tree
 Shows: Flow chart for choosing TP/PP/DP based on constraints
 ```
+
+![3D Parallelism Process Grid](./diagrams/tdd-diag-019.svg)
+
+
+![3D Topology Mapping](./diagrams/tdd-diag-020.svg)
+
+
+![ZeRO Stages Memory Comparison](./diagrams/tdd-diag-021.svg)
+
+
+![ZeRO-3 Forward Pass with Parameter Gathering](./diagrams/tdd-diag-022.svg)
+
+
+![ZeRO Communication Volume Analysis](./diagrams/tdd-diag-023.svg)
+
+
+![Distributed Checkpoint Structure](./diagrams/tdd-diag-024.svg)
+
+
+![Checkpoint Resume Flow](./diagrams/tdd-diag-025.svg)
+
+
 ---
 <!-- END_TDD_MOD -->
 
@@ -14762,51 +14809,69 @@ torchrun --nproc_per_node=8 scripts/simulate_failures.py \
 ## 10. Visual Reference
 ```
 
-![Fault Tolerance Architecture](./diagrams/tdd-diag-027.svg)
 
 Asynchronous Checkpoint Strategy
 Shows: Copy to CPU, write to SSD, upload to remote in background
 
-![Async Checkpoint Timeline](./diagrams/tdd-diag-028.svg)
 
 Distributed Checkpoint Structure
 Shows: Sharded state across 3D parallelism dimensions
 
-![Checkpoint Consensus Protocol](./diagrams/tdd-diag-029.svg)
 
 Checkpoint Consensus Protocol
 Shows: Propose → Acknowledge → Save → Validate flow
 
-![Failure Recovery Flow](./diagrams/tdd-diag-030.svg)
 
 Straggler Detection Heatmap
 Shows: Per-rank timing visualization for 1000+ GPUs
 
-![Elastic Training with Dynamic Workers](./diagrams/tdd-diag-031.svg)
 
 Elastic Training with Dynamic Workers
 Shows: Worker removal and addition with batch/LR scaling
 
-![Straggler Detection Heatmap](./diagrams/tdd-diag-032.svg)
 
 Gradient Compression Flow
 Shows: Quantization, transmission, decompression
 
-![Distributed Profiling Timeline](./diagrams/tdd-diag-033.svg)
 
 Memory Profiling Breakdown
 Shows: Parameters, gradients, optimizer, activations over time
 
-![Memory Profiling Breakdown](./diagrams/tdd-diag-034.svg)
 
 Distributed Profiling Timeline
 Shows: Forward, backward, communication phases per rank
 
-![Communication vs Compute Bottleneck Analysis](./diagrams/tdd-diag-035.svg)
 
 Failure Recovery Flow
 Shows: Detection → Classification → Recovery → Resume
 ```
+
+![Fault Tolerance Architecture](./diagrams/tdd-diag-027.svg)
+
+
+![Async Checkpoint Timeline](./diagrams/tdd-diag-028.svg)
+
+
+![Checkpoint Consensus Protocol](./diagrams/tdd-diag-029.svg)
+
+
+![Failure Recovery Flow](./diagrams/tdd-diag-030.svg)
+
+
+![Elastic Training with Dynamic Workers](./diagrams/tdd-diag-031.svg)
+
+
+![Straggler Detection Heatmap](./diagrams/tdd-diag-032.svg)
+
+
+![Distributed Profiling Timeline](./diagrams/tdd-diag-033.svg)
+
+
+![Memory Profiling Breakdown](./diagrams/tdd-diag-034.svg)
+
+
+![Communication vs Compute Bottleneck Analysis](./diagrams/tdd-diag-035.svg)
+
 ---
 [[CRITERIA_JSON: {"module_id": "distributed-m5", "criteria": ["Async checkpoint overhead < 2% of training time", "MTTR < 10 minutes for 175B model", "Checkpoint consensus ensures all ranks complete before marking valid", "Straggler detection within 10 steps with > 90% accuracy", "Memory leak detection with 10% growth threshold", "Gradient compression achieves 2:1 (fp16) or 4:1 (fp32) ratio", "Elastic training maintains correctness with worker changes", "Profiling overhead < 5% of step time", "Distributed logging aggregates metrics from all workers", "All failure types have defined recovery protocols with exponential backoff"]}]
 <!-- END_TDD_MOD -->

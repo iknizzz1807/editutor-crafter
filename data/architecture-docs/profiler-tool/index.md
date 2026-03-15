@@ -199,7 +199,6 @@ Build a production-quality sampling profiler from scratch that measures CPU usag
 The profiler operates at the boundary between application code and operating system primitives. You'll learn why sampling at 99Hz (prime frequency) avoids synchronization with application loops, how frame pointers enable stack walking without debug info, and why intercepting malloc/free changes allocation behavior (the Boehm effect). By the end, you'll have a tool that exports to standard formats like pprof and generates differential flame graphs for performance regression analysis.
 
 
-
 <!-- MS_ID: profiler-m1 -->
 # Milestone 1: Sampling-Based CPU Profiler
 ## The Problem: You Can't Measure What You Can't See
@@ -337,6 +336,8 @@ void* unwind(void** rbp) {
 Modern compilers sometimes omit frame pointers for performance (`-fomit-frame-pointer`), which breaks this technique. If you need reliable unwinding, compile with `-fno-omit-frame-pointer` or use `-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer`.
 ## Key Insight
 Think of the stack as a singly-linked list where each node is a stack frame, and the "next pointer" is the saved `rbp` value. The frame pointer chain is literally a linked list embedded in memory that the hardware and compiler conspire to maintain. This mental model makes unwinding intuitive: you're just traversing a linked list, but the list lives on the stack and grows downward.
+
+![Stack Frame Pointer Chaining](./diagrams/tdd-diag-004.svg)
 
 To walk the stack:
 ```rust
@@ -662,7 +663,6 @@ pub fn uninstall_signal_handler() -> Result<(), String> {
 **Why `SA_RESTART`?**
 Some syscalls (like `read()`, `write()`, `wait()`) return with `EINTR` when interrupted by a signal. `SA_RESTART` tells the kernel to automatically restart these syscalls, reducing visible disruption to the profiled program.
 
-![Signal Handler Execution Context](./diagrams/diag-signal-handler-context.svg)
 
 ---
 ## Multi-Threaded Sample Collection
@@ -1198,7 +1198,6 @@ But 990 individual stack traces are useless. You can't scan them manually. You n
 - What's the distribution of work across the call tree?
 The naive answer is "count how often each function appears." But this loses **context**. If `malloc()` appears in 30% of samples, is it because your code allocates too much, or because a third-party library does? You need the **call path**, not just the function.
 
-![From Stack Samples to Call Graph](./diagrams/diag-call-graph-construction.svg)
 
 ---
 ## The Fundamental Tension: Precision vs. Comprehension
@@ -1420,6 +1419,8 @@ pub struct RecursiveStats {
 }
 ```
 The flame graph approach (discussed next) naturally handles recursion by showing it as a wider bar—recursive calls appear multiple times in the same stack.
+
+![String Interning for Memory Efficiency](./diagrams/tdd-diag-018.svg)
 
 ![Recursive Functions in Call Graphs & Flame Graphs](./diagrams/diag-recursive-function-handling.svg)
 
@@ -1741,6 +1742,8 @@ Because `validate` and `transform` no longer exist as separate functions in the 
 1. `validate` and `transform` never appear in your profile
 2. `process` looks hotter than it "should"
 3. You can't see the breakdown of validation vs. transformation
+
+![Flame Graph Tree Structure](./diagrams/tdd-diag-013.svg)
 
 ![Inlined Functions: Why They Disappear](./diagrams/diag-inline-function-visibility.svg)
 
@@ -2230,7 +2233,6 @@ Consider these scenarios that a CPU profiler can't help with:
 4. **The cold path bomb:** A rarely-called initialization function allocates a 500MB buffer. It runs once, early, and never appears in a CPU profile. But that 500MB is stolen from cache and available memory for the entire program lifetime.
 **What you need is a way to ask: "Where does my memory come from, where does it go, and what's still there?"**
 
-![Profiler Tool: System Overview](./diagrams/diag-satellite-map.svg)
 
 ---
 ## The Fundamental Tension: Visibility vs. Distortion
@@ -2937,6 +2939,8 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 ```
+
+![Hot Spot Report Generation](./diagrams/tdd-diag-029.svg)
 
 ![Allocation Hot Spots by Call Site](./diagrams/diag-allocation-hotspot-visualization.svg)
 
@@ -4079,6 +4083,8 @@ fn get_timestamp_ns() -> u64 {
 }
 ```
 
+![Tokio Runtime Integration Points](./diagrams/tdd-diag-040.svg)
+
 ![CPU Time vs Await Time Attribution](./diagrams/diag-cpu-vs-await-time.svg)
 
 ---
@@ -4294,6 +4300,8 @@ impl<F: Future> Future for ProfiledFutureWrapper<F> {
     }
 }
 ```
+
+![Task Relationship Graph](./diagrams/tdd-diag-036.svg)
 
 ![Tokio Runtime Integration Points](./diagrams/diag-tokio-integration.svg)
 
@@ -4839,7 +4847,8 @@ Consider these real-world scenarios:
 4. **The team workflow:** Your colleague wants to analyze the profile you captured. They don't have your profiler built—they have `pprof` and `speedscope`. You need to export in standard formats.
 **What you need is interoperability.** Your profiler must speak the languages that existing tools understand.
 
-![Profiler Tool: System Overview](./diagrams/diag-satellite-map.svg)
+![system-overview](./diagrams/system-overview.svg)
+
 
 ---
 ## The Fundamental Tension: Precision vs. Compatibility
@@ -4937,7 +4946,6 @@ Tools consume your exported profiles:
 - **speedscope:** Reads JSON or collapsed stacks, provides interactive visualization
 - **Continuous profilers:** Push profiles to collection endpoints
 
-![Collapsed Stack Format: Simple but Powerful](./diagrams/diag-collapsed-stack-format.svg)
 
 ---
 ## Collapsed Stack Format: Simplicity That Scales
@@ -5100,7 +5108,6 @@ flamegraph.pl --title "CPU Profile" --width 1600 profile.txt > flamegraph.svg
 ```
 The simplicity of the format means any tool can generate flame graph input—you're not locked into any specific profiler.
 
-![Flame Graph Anatomy: Reading the Visualization](./diagrams/diag-flame-graph-anatomy.svg)
 
 ---
 ## pprof Protobuf Format: Production-Grade Interoperability
@@ -5753,7 +5760,6 @@ impl SymbolResolver {
 }
 ```
 
-![Symbol Resolution Pipeline](./diagrams/diag-symbol-resolution-pipeline.svg)
 
 ---
 ## Profile Merging: Combining Multiple Runs
@@ -6463,12 +6469,9 @@ Profiling is a superpower. Use it wisely.
 <!-- END_MS -->
 
 
-
-
 # TDD
 
 A production-quality sampling profiler that measures CPU usage, tracks memory allocations, handles async execution patterns, and generates flame graph visualizations. The profiler operates at the boundary between application code and OS primitives, using statistical sampling at prime frequencies (99Hz) to avoid lock-step with application loops, frame pointer chaining for stack unwinding, LD_PRELOAD interposition for allocation tracking, and task identity tracking for async-aware profiling. All signal handlers use async-signal-safe operations with pre-allocated buffers, and the system exports to standard formats (pprof, collapsed stacks) for toolchain interoperability.
-
 
 
 <!-- TDD_MOD_ID: profiler-m1 -->
@@ -7392,7 +7395,6 @@ pub fn stop() -> Result<(), ProfilerError> {
 | Timer teardown failed | `setitimer()` returns non-zero | Log warning, continue shutdown | Partially - warning in logs |
 | Signal removal failed | `sigaction()` returns non-zero | Log warning, continue shutdown | Partially - warning in logs |
 ---
-{{DIAGRAM:tdd-diag-004}}
 ---
 ## Concurrency Specification
 ### Lock Ordering
@@ -8303,7 +8305,6 @@ impl FlameGraph {
 }
 ```
 ---
-{{DIAGRAM:tdd-diag-013}}
 ---
 ### SVG Renderer
 ```rust
@@ -8928,7 +8929,6 @@ INVARIANT: node.value == node.self_value + sum(children.values)
 COMPLEXITY: O(P × D) where P = unique paths, D = average stack depth
 ```
 ---
-{{DIAGRAM:tdd-diag-018}}
 ---
 ### Differential Analysis Algorithm
 ```
@@ -10491,7 +10491,6 @@ INVARIANTS:
 | Hash collision in call site | Different stacks, same hash | Aggregates together (rare) | No - acceptable error |
 | Temporal buffer overflow | `samples.len() > max_samples` | Drop oldest samples | No - data retained |
 ---
-{{DIAGRAM:tdd-diag-029}}
 ---
 ## Implementation Sequence with Checkpoints
 ### Phase 1: LD_PRELOAD Interposition Layer (2-3 hours)
@@ -11857,7 +11856,6 @@ impl AsyncFlameRenderer {
 }
 ```
 ---
-{{DIAGRAM:tdd-diag-036}}
 ---
 ## Interface Contracts
 ### Public API
@@ -12173,7 +12171,6 @@ cargo run --example async_demo
 # Expected: Async profile report printed, flame graph generated
 ```
 ---
-{{DIAGRAM:tdd-diag-040}}
 ---
 ## Test Specification
 ### Unit Tests

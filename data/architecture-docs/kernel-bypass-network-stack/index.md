@@ -138,7 +138,6 @@ The project forces confrontation with fundamental networking concepts that remai
 This is the networking equivalent of building your own memory allocator—you may never need to do it in production, but understanding the internals transforms how you approach every system that depends on networking.
 
 
-
 <!-- MS_ID: kbns-m1 -->
 # Kernel Bypass Setup
 ## The Latency You Never Knew You Were Paying
@@ -155,6 +154,8 @@ Here's what actually happens when a packet arrives on your NIC:
 **Total: 10-50 microseconds per packet**. And that's the happy path—no packet loss, no retransmissions, no queueing delays.
 [[EXPLAIN:kernel-vs.-user-space-boundary|The protected boundary between application code and privileged kernel operations, enforced by CPU privilege rings]]
 In high-frequency trading, 50 microseconds is an eternity. Market data arrives, you analyze it, you send an order. If your competitor's packet processing takes 2 microseconds while yours takes 50, they see the market first. Every single time. They trade on information you haven't received yet.
+
+![Kernel Path vs. Bypass Path — Latency Comparison](./diagrams/tdd-diag-001.svg)
 
 ![Kernel Path vs. Bypass Path — Latency Comparison](./diagrams/diag-kernel-bypass-comparison.svg)
 
@@ -205,6 +206,8 @@ Modern NICs don't "deliver" packets to the CPU. Instead:
 2. **The NIC is told** the physical address of this ring buffer via memory-mapped registers
 3. **When a packet arrives**, the NIC uses DMA to write the packet data directly to RAM, then updates a "tail pointer" in the ring buffer
 4. **The CPU polls** or receives an interrupt, reads the new descriptors, and processes the packets
+
+![Packet Reception — Step-by-Step Trace](./diagrams/diag-packet-reception-trace.svg)
 
 ![NIC Ring Buffer Architecture](./diagrams/diag-nic-ring-buffers.svg)
 
@@ -347,6 +350,8 @@ AF_XDP uses four ring buffers to manage packet flow:
 2. **RX Ring** (Producer: Kernel, Consumer: You): Kernel puts descriptors here when packets arrive
 3. **TX Ring** (Producer: You, Consumer: Kernel): You put descriptors here to transmit packets
 4. **Completion Ring** (Producer: Kernel, Consumer: You): Kernel acknowledges completed TX packets
+
+![Latency Benchmark Setup](./diagrams/tdd-diag-008.svg)
 
 ![Zero-Copy Buffer Pool Architecture](./diagrams/diag-buffer-pool-design.svg)
 
@@ -687,6 +692,8 @@ void forward_packet(struct rte_mbuf *m, uint16_t dst_port) {
 }
 ```
 
+![Buffer Pool Cache Line Layout](./diagrams/tdd-diag-007.svg)
+
 ![Zero-Copy Data Path — Buffer Lifetime](./diagrams/diag-zero-copy-data-path.svg)
 
 ## Performance Measurement: Proving Your Bypass Works
@@ -795,6 +802,8 @@ void dpdk_packet_loop_prefetch(uint16_t port) {
 ```
 
 ![Latency Distribution — Why P99 Matters More Than Mean](./diagrams/diag-latency-distribution-histogram.svg)
+
+![Latency Distribution Histogram](./diagrams/tdd-diag-009.svg)
 
 ## Debugging Without the Kernel
 When you bypass the kernel, you lose all the kernel's debugging tools. No `tcpdump`, no `ethtool -S`, no `/proc/net/dev`. You're flying blind unless you build your own instrumentation.
@@ -912,6 +921,8 @@ int get_nic_numa_node(const char *pci_addr) {
     return node;
 }
 ```
+
+![Complete Stack Layers](./diagrams/tdd-diag-010.svg)
 
 ![NUMA Topology for Packet Processing](./diagrams/diag-numa-topology.svg)
 
@@ -2780,6 +2791,8 @@ struct tcp_hdr {
 #define TCP_FLAG_CWR    0x80    // Congestion Window Reduced
 ```
 
+![TCP Input Processing State Machine](./diagrams/tdd-diag-034.svg)
+
 ![TCP Header — Complete Byte Layout](./diagrams/diag-tcp-header-layout.svg)
 
 Let's walk through each field's purpose:
@@ -2902,6 +2915,8 @@ uint16_t tcp_checksum(uint32_t src_addr, uint32_t dst_addr,
 ```
 ## The Eleven-State Machine
 TCP connections progress through a defined set of states. This isn't optional—it's fundamental to how TCP provides reliability.
+
+![TCP Sequence Number Wraparound (PAWS)](./diagrams/diag-sequence-wraparound.svg)
 
 ![TCP State Machine — Complete](./diagrams/diag-tcp-state-machine.svg)
 
@@ -3066,6 +3081,8 @@ void tcp_handle_syn(struct tcp_stack *stack, struct tcp_parse_result *tcp,
 ```
 ### Connection Teardown
 
+![SYN Cookies — SYN Flood Defense](./diagrams/tdd-diag-033.svg)
+
 ![TCP Connection Teardown — FIN/RST Paths](./diagrams/diag-tcp-connection-teardown.svg)
 
 Closing a TCP connection is asymmetric and takes longer than opening one:
@@ -3164,6 +3181,8 @@ void tcp_handle_rst(struct tcp_conn *conn) {
 }
 ```
 ## Sliding Windows: Flow Control at Scale
+
+![Timer Wheel Architecture](./diagrams/tdd-diag-035.svg)
 
 > **🔑 Foundation: TCP's mechanism for efficient**
 > 
@@ -3356,6 +3375,8 @@ int tcp_add_sack_option(uint8_t *opts, struct tcp_conn *conn) {
 ### Retransmission Timers
 When data is sent, a retransmission timer starts. If no ACK arrives before the timer expires, retransmit:
 
+![TCP Sliding Window Mechanics](./diagrams/tdd-diag-029.svg)
+
 ![TCP Retransmission Timer — RTO Calculation](./diagrams/diag-retransmission-timer.svg)
 
 ```c
@@ -3540,6 +3561,8 @@ CUBIC grows quickly near the last loss point (probing for more capacity) and pla
 ## The Connection Table: 10K Concurrent Connections
 Your acceptance criterion requires supporting 10K concurrent connections. This is a significant scaling challenge.
 
+![TCP Reno Congestion Control — AIMD](./diagrams/tdd-diag-031.svg)
+
 ![Connection Table — 10K Connections Design](./diagrams/diag-tcp-connection-table.svg)
 
 ### Hash Table Design
@@ -3688,6 +3711,8 @@ void timer_wheel_tick(struct timer_wheel *wheel) {
 ```
 ## SYN Cookies: Surviving SYN Floods
 A SYN flood attack sends millions of SYNs without completing handshakes. Each SYN allocates a connection structure, exhausting memory.
+
+![TCP Connection Table Design](./diagrams/tdd-diag-032.svg)
 
 ![SYN Cookies — SYN Flood Defense](./diagrams/diag-syn-cookies.svg)
 
@@ -3921,6 +3946,8 @@ Wait—4695ns remaining? That seems like plenty. Here's where it goes:
 | **Total hidden costs** | **565-1095 ns** | **Per-packet overhead** |
 Your "remaining budget" just became 3600-4130ns. And that's assuming no packet loss, no retransmission, no congestion events. The margin is thin. Every nanosecond matters.
 
+![system-overview](./diagrams/system-overview.svg)
+
 ![Packet Processing Cache Locality](./diagrams/diag-cache-locality-packet.svg)
 
 ## NUMA: The Memory Topology That Kills Latency
@@ -4030,7 +4057,6 @@ int get_nic_numa_node(const char *iface) {
 }
 ```
 
-![NUMA Topology for Packet Processing](./diagrams/diag-numa-topology.svg)
 
 ### Memory Allocation Strategy
 Every data structure in your hot path must be NUMA-aware:
@@ -4428,7 +4454,6 @@ uint64_t latency_percentile(struct latency_histogram *h, double p) {
 }
 ```
 
-![Latency Distribution — Why P99 Matters More Than Mean](./diagrams/diag-latency-distribution-histogram.svg)
 
 ### Prometheus-Compatible Metrics Export
 ```c
@@ -4719,6 +4744,8 @@ curl http://localhost:9090/metrics | grep latency
 3. Check retransmissions: High retransmit count indicates network issues
 ```
 
+![Production Deployment Architecture](./diagrams/tdd-diag-042.svg)
+
 ![Production Deployment Architecture](./diagrams/diag-deployment-architecture.svg)
 
 ## The Complete Picture: 5μs End-to-End
@@ -4862,12 +4889,9 @@ The optimization techniques you've learned extend far beyond networking:
 <!-- END_MS -->
 
 
-
-
 # TDD
 
 A complete user-space TCP/IP stack using kernel bypass (DPDK/AF_XDP) for ultra-low latency packet processing in HFT environments. The stack eliminates kernel overhead by directly accessing NIC hardware via DMA, implements all protocol layers from Ethernet through TCP with congestion control, and achieves sub-5μs packet-to-application latency through cache-optimized, lock-free data paths on NUMA-aware memory allocations.
-
 
 
 <!-- TDD_MOD_ID: kbns-m1 -->
@@ -5088,7 +5112,6 @@ static inline void kbns_buf_prepend(kbns_buf_t *buf, uint32_t len);
 ```
 ### Buffer Layout Diagram
 ```
-{{DIAGRAM:tdd-diag-001}}
 Frame Memory Layout (2048 bytes total):
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ Offset    │ Size  │ Field                                               │
@@ -5126,6 +5149,8 @@ Buffer Pointer Relationships:
     │ └─────────────────────────────────────────────────┘ │
     └─────────────────────────────────────────────────────┘
 ```
+
+
 ### 07_ring.h — Lock-Free Ring Buffer Interface
 ```c
 #ifndef KBNS_M1_RING_H
@@ -5201,7 +5226,6 @@ static inline int kbns_ring_dequeue_fast(struct kbns_ring *ring,
 ### Ring Buffer Index Relationships
 ```
 
-![NIC Ring Buffer Architecture](./diagrams/tdd-diag-002.svg)
 
 Ring Buffer State Machine (producer/consumer view):
            ┌───────────────────────────────────────────────────────────┐
@@ -5234,6 +5258,9 @@ Key Invariants:
   • Full when: (producer_idx - consumer_idx) == size
   • Empty when: producer_idx == consumer_idx
 ```
+
+![NIC Ring Buffer Architecture](./diagrams/tdd-diag-002.svg)
+
 ### 09_afxdp.h — AF_XDP Backend Interface
 ```c
 #ifndef KBNS_M1_AFXDP_H
@@ -5317,7 +5344,6 @@ void kbns_afxdp_get_stats(struct kbns_afxdp_socket *sock,
 ### AF_XDP Ring Relationships
 ```
 
-![DPDK vs. AF_XDP Architecture](./diagrams/tdd-diag-003.svg)
 
 AF_XDP Four-Ring Architecture:
                     User Space
@@ -5368,6 +5394,9 @@ UMEM Layout:
     Fill Ring: "0x0000, 0x0800, ..."              TX Ring: "0x1000, ..."
     (kernel fills these with packets)            (user fills with packets)
 ```
+
+![DPDK vs. AF_XDP Architecture](./diagrams/tdd-diag-003.svg)
+
 ### 13_stack.h — Unified Stack Interface
 ```c
 #ifndef KBNS_M1_STACK_H
@@ -6511,7 +6540,6 @@ INVARIANT 4: Descriptor Ownership
 ### Stack Initialization State Machine
 ```
 
-![UMEM/mbuf Pool Memory Layout](./diagrams/tdd-diag-004.svg)
 
 Stack Initialization States:
     ┌─────────────┐
@@ -6565,12 +6593,14 @@ Stack Initialization States:
     │  DESTROYED  │
     └─────────────┘
 ```
+
+![UMEM/mbuf Pool Memory Layout](./diagrams/tdd-diag-004.svg)
+
 ---
 ## Wire Format (Ring Descriptor Layout)
 ### Descriptor Byte Layout
 ```
 
-![AF_XDP Four Rings Interaction](./diagrams/tdd-diag-005.svg)
 
 kbns_desc Structure (16 bytes):
 Offset  Size  Field         Description
@@ -6600,11 +6630,13 @@ XDP Descriptor Compatibility (for AF_XDP):
     };
     kbns_desc is binary-compatible with xdp_desc.
 ```
+
+![AF_XDP Four Rings Interaction](./diagrams/tdd-diag-005.svg)
+
 ---
 ## Deployment Checklist
 ```
 
-![Zero-Copy Buffer Pool Design](./diagrams/tdd-diag-006.svg)
 
 Pre-Deployment Verification Checklist:
 □ HARDWARE
@@ -6642,6 +6674,9 @@ Pre-Deployment Verification Checklist:
   □ CPU affinity set correctly
   □ Statistics export working
 ```
+
+![Zero-Copy Buffer Pool Design](./diagrams/tdd-diag-006.svg)
+
 ---
 <!-- END_TDD_MOD -->
 
@@ -6780,7 +6815,6 @@ struct vlan_tag {
 ### Ethernet Frame Memory Layout
 ```
 
-![Ethernet Frame Structure — Byte Layout](./diagrams/tdd-diag-011.svg)
 
 Standard Ethernet Frame (1518 bytes max):
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -6827,6 +6861,9 @@ Minimum Frame Padding:
     - Total frame = 64 bytes (14 header + 46 payload + 4 FCS)
     - NIC may auto-pad (check offload capabilities)
 ```
+
+![Ethernet Frame Structure — Byte Layout](./diagrams/tdd-diag-011.svg)
+
 ### 07_arp_types.h — ARP Structures
 ```c
 #ifndef KBNS_M2_ARP_TYPES_H
@@ -6888,7 +6925,6 @@ static_assert(sizeof(struct arp_hdr) == ARP_PKT_LEN, "arp_hdr size mismatch");
 ### ARP Packet Byte Layout
 ```
 
-![MAC Address Byte Order Confusion](./diagrams/tdd-diag-012.svg)
 
 ARP Packet Detailed Byte Layout (28 bytes):
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -6935,6 +6971,9 @@ Complete ARP Reply Frame (Ethernet + ARP = 42 bytes):
 └─────────┴─────────┴────────┴───────────────────────────────────────────────┘
 Total: 42 bytes (requires padding to 64 bytes)
 ```
+
+![MAC Address Byte Order Confusion](./diagrams/tdd-diag-012.svg)
+
 ### 09_arp_cache.h — ARP Cache Interface
 ```c
 #ifndef KBNS_M2_ARP_CACHE_H
@@ -7052,7 +7091,6 @@ void arp_cache_get_stats(struct arp_cache *cache, void *stats_out);
 ### ARP Cache Memory Layout
 ```
 
-![ARP Request/Reply Packet Flow](./diagrams/tdd-diag-013.svg)
 
 ARP Cache Entry Layout (64 bytes = 1 cache line):
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -7101,6 +7139,9 @@ Seqlock Read Protocol:
   3. Read seq again
   4. If seq changed, retry from step 1
 ```
+
+![ARP Request/Reply Packet Flow](./diagrams/tdd-diag-013.svg)
+
 ### 03_eth_parse.h — Ethernet Parsing Interface
 ```c
 #ifndef KBNS_M2_ETH_PARSE_H
@@ -8299,7 +8340,6 @@ void test_arp_cache_perf(void) {
 ### Cache Line Analysis
 ```
 
-![ARP Cache Structure](./diagrams/tdd-diag-014.svg)
 
 Cache Line Access Patterns:
 Ethernet Header Parse (14 bytes):
@@ -8344,6 +8384,9 @@ ARP Cache Hash Table (256 entries × 64 bytes = 16 KB):
 │   - Probe 2+: L2/L3 if table is large and sparse                  │
 └────────────────────────────────────────────────────────────────────┘
 ```
+
+![ARP Cache Structure](./diagrams/tdd-diag-014.svg)
+
 ---
 ## Concurrency Specification
 ### Thread Safety Model
@@ -8424,7 +8467,6 @@ INVARIANT 4: ARP State Transitions
 ### ARP Entry State Machine
 ```
 
-![ARP Cache — Hash Table with LRU](./diagrams/tdd-diag-015.svg)
 
 ARP Entry State Machine:
                     ┌─────────────────────────────────────────────────┐
@@ -8473,10 +8515,12 @@ State Transition Table:
 │ FAILED      │ New resolution start  │ INCOMPLETE                  │
 └─────────────┴───────────────────────┴─────────────────────────────┘
 ```
+
+![ARP Cache — Hash Table with LRU](./diagrams/tdd-diag-015.svg)
+
 ### Ethernet Processing State Machine
 ```
 
-![ARP Resolution State Machine](./diagrams/tdd-diag-016.svg)
 
 Ethernet Frame Processing Flow:
                     ┌─────────────────────────────────────────────────┐
@@ -8521,12 +8565,14 @@ Ethernet Frame Processing Flow:
     │ - Send reply  │
     └───────────────┘
 ```
+
+![ARP Resolution State Machine](./diagrams/tdd-diag-016.svg)
+
 ---
 ## Wire Format
 ### Complete Frame Layout
 ```
 
-![Ethernet Layer Data Flow](./diagrams/tdd-diag-017.svg)
 
 Complete Ethernet + ARP Frame (42 bytes, padded to 64):
 Byte    0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
@@ -8572,6 +8618,9 @@ VLAN-Tagged Frame (68 bytes with ARP):
 │ 46-67    │ Padding                                             │
 └──────────┴─────────────────────────────────────────────────────┘
 ```
+
+![Ethernet Layer Data Flow](./diagrams/tdd-diag-017.svg)
+
 ---
 ## Deployment Checklist
 ```
@@ -8754,7 +8803,6 @@ typedef uint32_t ipv4_addr_t;  /* Stored in network byte order */
 ### IPv4 Header Byte Layout
 ```
 
-![IPv4 Header — Complete Byte Layout](./diagrams/tdd-diag-018.svg)
 
 IPv4 Header Detailed Byte Layout (20 bytes minimum):
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -8802,6 +8850,9 @@ Fragment Offset Interpretation:
     Fragment 3: ID=1234, Total=1040, Offset=370, MF=0 (bytes 2960-3999)
     Note: Offset 185 × 8 = 1480 bytes
 ```
+
+![IPv4 Header — Complete Byte Layout](./diagrams/tdd-diag-018.svg)
+
 ### 09_ip_frag.h — Fragmentation Types
 ```c
 #ifndef KBNS_M3_IP_FRAG_H
@@ -8907,7 +8958,6 @@ void frag_table_gc(struct frag_table *table);
 ### Fragment Reassembly State
 ```
 
-![IP Fragmentation and Reassembly](./diagrams/tdd-diag-019.svg)
 
 Fragment Reassembly Bitmap and Buffer Layout:
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -8964,6 +9014,9 @@ Reassembly State Machine:
     │  - Free entry             │           │                           │
     └───────────────────────────┘           └───────────────────────────┘
 ```
+
+![IP Fragmentation and Reassembly](./diagrams/tdd-diag-019.svg)
+
 ### 11_udp_types.h — UDP Header Structures
 ```c
 #ifndef KBNS_M3_UDP_TYPES_H
@@ -9184,7 +9237,6 @@ struct icmp_dest_unreach {
 ### ICMP Message Layout
 ```
 
-![UDP Datagram Processing Pipeline](./diagrams/tdd-diag-020.svg)
 
 ICMP Message Types and Layouts:
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -9228,6 +9280,9 @@ ICMP Echo Request/Reply Flow:
       │                                                 │
     RTT = Reply_Timestamp - Request_Timestamp
 ```
+
+![UDP Datagram Processing Pipeline](./diagrams/tdd-diag-020.svg)
+
 ### 19_route.h — Routing Table
 ```c
 #ifndef KBNS_M3_ROUTE_H
@@ -9303,7 +9358,6 @@ static inline bool route_match(const struct route_entry *e, uint32_t addr) {
 ### Routing Table Lookup
 ```
 
-![IP/UDP/TCP Checksum Algorithm](./diagrams/tdd-diag-021.svg)
 
 Longest Prefix Match Algorithm:
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -9339,6 +9393,9 @@ Algorithm Complexity:
   - For small tables (<256), cache locality beats trie structures
   - Typical lookup: 10-50 ns depending on table size
 ```
+
+![IP/UDP/TCP Checksum Algorithm](./diagrams/tdd-diag-021.svg)
+
 ---
 ## Interface Contracts
 ### ip_parse() Contract
@@ -10159,7 +10216,6 @@ void test_route_default(void) {
 ### Cache Line Analysis
 ```
 
-![ICMP Message Types and Layout](./diagrams/tdd-diag-022.svg)
 
 IP/UDP Processing Cache Access Patterns:
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -10197,6 +10253,9 @@ IP/UDP Processing Cache Access Patterns:
 │ └─────────────────────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+![ICMP Message Types and Layout](./diagrams/tdd-diag-022.svg)
+
 ---
 ## Concurrency Specification
 ### Thread Safety Model
@@ -10234,7 +10293,6 @@ INVARIANT 5: Routing Table Consistency
 ### IP Packet Processing Flow
 ```
 
-![IP Routing Table Lookup](./diagrams/tdd-diag-023.svg)
 
 IP Packet Processing State Machine:
                     ┌─────────────────────────────────────────────────┐
@@ -10308,10 +10366,12 @@ Yes                No
 │ Timeout → DROP (send ICMP Time Exceeded if first frag)        │
 └───────────────────────────────────────────────────────────────┘
 ```
+
+![IP Routing Table Lookup](./diagrams/tdd-diag-023.svg)
+
 ### UDP Socket State
 ```
 
-![Complete IP Processing Pipeline](./diagrams/tdd-diag-024.svg)
 
 UDP Socket Lifecycle:
     ┌─────────────────────────────────────────────────────────────────────────┐
@@ -10365,6 +10425,9 @@ Socket Receive Buffer Ring:                                                     
     Empty: head == tail (return EAGAIN)                                       │
     Available: (tail - head - 1) % N entries                                  │
 ```
+
+![Complete IP Processing Pipeline](./diagrams/tdd-diag-024.svg)
+
 ---
 ## Wire Format
 ### Complete UDP/IPv4 Packet Layout
@@ -10673,7 +10736,6 @@ struct tcp_sack_block {
 ### TCP Header Byte Layout
 ```
 
-![TCP Header — Complete Byte Layout](./diagrams/tdd-diag-025.svg)
 
 TCP Header Detailed Byte Layout (20 bytes minimum):
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -10730,6 +10792,9 @@ Typical SYN Options (example: MSS + WScale + SACKOK + TS = 20 bytes total header
   0x01                   // NOP (padding)
   0x01                   // NOP (padding)
 ```
+
+![TCP Header — Complete Byte Layout](./diagrams/tdd-diag-025.svg)
+
 ### 09_tcp_conn.h — Connection Control Block
 ```c
 #ifndef KBNS_M4_TCP_CONN_H
@@ -10909,7 +10974,6 @@ static inline bool tcp_seq_between(uint32_t seq, uint32_t lo, uint32_t hi) {
 ### Connection Control Block Layout
 ```
 
-![TCP State Machine — Complete](./diagrams/tdd-diag-026.svg)
 
 TCP Connection Control Block Memory Layout (320 bytes = 5 cache lines):
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -10981,6 +11045,9 @@ Connection Table Memory:
   Hash table: 16,384 buckets × 8 bytes = 128 KB
   Total: ~3.4 MB (fits in L3 cache on modern CPUs)
 ```
+
+![TCP State Machine — Complete](./diagrams/tdd-diag-026.svg)
+
 ### 21_tcp_congestion.h — Congestion Control Interface
 ```c
 #ifndef KBNS_M4_TCP_CONGESTION_H
@@ -11099,7 +11166,6 @@ void tcp_timer_timewait_callback(struct tcp_conn *conn);
 ### TCP State Machine
 ```
 
-![TCP Three-Way Handshake](./diagrams/tdd-diag-027.svg)
 
 TCP State Machine (11 States):
                                     ┌────────────────────────────────────────────┐
@@ -11194,6 +11260,9 @@ State Transition Table:
 │ TIME_WAIT       │ timeout (2*MSL)   │ → CLOSED                            │
 └─────────────────┴───────────────────┴─────────────────────────────────────┘
 ```
+
+![TCP Three-Way Handshake](./diagrams/tdd-diag-027.svg)
+
 ---
 ## Interface Contracts
 ### tcp_parse() Contract
@@ -12273,7 +12342,6 @@ void test_tcp_10k_connections(void) {
 ### Cache Line Analysis
 ```
 
-![TCP Connection Teardown](./diagrams/tdd-diag-028.svg)
 
 TCP Connection Table Cache Behavior:
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -12311,6 +12379,9 @@ Connection Hot Fields (accessed per packet):
   - Cache lines 0-1 must fit in L3 cache for reasonable performance
   - 10K × 128 bytes = 1.28 MB (fits in typical 8MB L3 cache)
 ```
+
+![TCP Connection Teardown](./diagrams/tdd-diag-028.svg)
+
 ---
 ## Concurrency Specification
 ### Thread Safety Model
@@ -12355,7 +12426,6 @@ INVARIANT 5: Timer Consistency
 ## Wire Format
 ### Complete TCP Segment Layout
 ```
-{{DIAGRAM:tdd-diag-029}}
 Complete TCP over IPv4 Segment (minimum 40 bytes):
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ Ethernet Header (14 bytes) - from kbns-m2                                   │
@@ -12396,10 +12466,11 @@ TCP Pseudo-Header for Checksum (not transmitted):
 │ 0x0A   │ TCP Length (2)       │ Header + Data (not including pseudo)      │
 └────────┴──────────────────────┴───────────────────────────────────────────┘
 ```
+
+
 ### SYN Segment Example
 ```
 
-![TCP Retransmission Timer](./diagrams/tdd-diag-030.svg)
 
 SYN Segment with Options (40 bytes TCP, 74 bytes total with IP):
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -12423,6 +12494,9 @@ SYN Segment with Options (40 bytes TCP, 74 bytes total with IP):
 │ 0x27     │ NOP: [0x01]                                                      │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+![TCP Retransmission Timer](./diagrams/tdd-diag-030.svg)
+
 ---
 ## Deployment Checklist
 ```
@@ -12647,7 +12721,6 @@ struct thread_affinity {
 ### NUMA Topology Memory Layout
 ```
 
-![NUMA Topology for Packet Processing](./diagrams/tdd-diag-036.svg)
 
 NUMA Topology Structure Layout:
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -12681,6 +12754,9 @@ NIC-to-NUMA Mapping:
     │   └─ DMA Memory: Node 0 only                                          │
     └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+![NUMA Topology for Packet Processing](./diagrams/tdd-diag-036.svg)
+
 ### 08_stats_types.h — Statistics Structures
 ```c
 #ifndef KBNS_M5_STATS_TYPES_H
@@ -12787,7 +12863,6 @@ struct stats_config {
 ### Statistics Memory Layout
 ```
 
-![Packet Processing Cache Locality](./diagrams/tdd-diag-037.svg)
 
 Per-Core Statistics Layout (64 bytes = 1 cache line):
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -12829,6 +12904,9 @@ Update Pattern (lock-free):
   Aggregator reads all cores and sums
   No synchronization needed (eventual consistency acceptable for stats)
 ```
+
+![Packet Processing Cache Locality](./diagrams/tdd-diag-037.svg)
+
 ### 17_batch_types.h — Batch Processor Types
 ```c
 #ifndef KBNS_M5_BATCH_TYPES_H
@@ -12981,7 +13059,6 @@ struct capture_stats {
 ### Capture Ring Layout
 ```
 
-![Lock-Free Ring Buffer for Packet Queues](./diagrams/tdd-diag-038.svg)
 
 Capture Ring Buffer Layout (lock-free SPSC):
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -13027,6 +13104,9 @@ Full Detection:
   head == tail                 →  empty
   (head + 1) mod SIZE == tail  →  full (cannot write)
 ```
+
+![Lock-Free Ring Buffer for Packet Queues](./diagrams/tdd-diag-038.svg)
+
 ### 25_load_monitor.h — Load Monitoring
 ```c
 #ifndef KBNS_M5_LOAD_MONITOR_H
@@ -13116,7 +13196,6 @@ void load_monitor_get_backpressure(const struct load_monitor *mon,
 ### Load Level State Machine
 ```
 
-![Statistics Collection — Lock-Free Counters](./diagrams/tdd-diag-039.svg)
 
 Load Level State Machine:
                     ┌─────────────────────────────────────────────────┐
@@ -13176,6 +13255,9 @@ Shedding Policy by Level:
 │ OVERLOAD      │ Accept only high-priority, send RST to new SYNs             │
 └───────────────┴─────────────────────────────────────────────────────────────┘
 ```
+
+![Statistics Collection — Lock-Free Counters](./diagrams/tdd-diag-039.svg)
+
 ### 29_cache_optimize.h — Cache Optimization
 ```c
 #ifndef KBNS_M5_CACHE_OPTIMIZE_H
@@ -13276,7 +13358,6 @@ static inline uint64_t atomic_fetch_add_relaxed(volatile uint64_t *ptr, uint64_t
 ```
 ### Cache Line Analysis for Hot Path
 ```
-{{DIAGRAM:tdd-diag-040}}
 Packet Processing Hot Path - Cache Access Analysis:
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ Operation              │ Cache Lines │ Access Pattern │ Expected Latency    │
@@ -13335,6 +13416,9 @@ Structure Reorganization Example:
         // ... all cold fields
     };
 ```
+
+![tdd-diag-040](./diagrams/tdd-diag-040.svg)
+
 ### 33_config_verify.h — Configuration Verification
 ```c
 #ifndef KBNS_M5_CONFIG_VERIFY_H
@@ -14552,7 +14636,6 @@ static inline uint64_t stats_read(volatile uint64_t *counter) {
 ### Load Level State Machine
 ```
 
-![In-Stack Packet Capture for Debugging](./diagrams/tdd-diag-041.svg)
 
 Load Level State Machine:
                         ┌─────────────────────────────────────────────────┐
@@ -14610,9 +14693,11 @@ Shedding Actions by Level:
 │ OVERLOAD    │ Accept DSCP 46+ only, reject all SYNs with RST           │
 └─────────────┴───────────────────────────────────────────────────────────┘
 ```
+
+![In-Stack Packet Capture for Debugging](./diagrams/tdd-diag-041.svg)
+
 ### Batch Processor State Machine
 ```
-{{DIAGRAM:tdd-diag-042}}
 Batch Processor State Machine:
                     ┌─────────────────────────────────────────────────────┐
                     │                   IDLE                              │
@@ -14660,12 +14745,13 @@ Adaptive Sizing Logic:
       current_size = min(max_size, current_size * 2)
       state = ADJUSTING_UP
 ```
+
+
 ---
 ## Wire Format
 ### Prometheus Metrics Export Format
 ```
 
-![Zero-Copy Data Path — Buffer Lifetime](./diagrams/tdd-diag-043.svg)
 
 Prometheus Text Format (HTTP GET /metrics):
 # HELP rx_packets_total Total packets received
@@ -14698,10 +14784,12 @@ tcp_connections_active{interface="eth0"} 5432
 # TYPE capture_dropped_total counter
 capture_dropped_total{interface="eth0"} 42
 ```
+
+![Zero-Copy Data Path — Buffer Lifetime](./diagrams/tdd-diag-043.svg)
+
 ### PCAP File Format
 ```
 
-![Latency Budget Breakdown](./diagrams/tdd-diag-044.svg)
 
 PCAP Global Header (24 bytes):
 ┌──────────┬──────────┬───────────────────────────────────────────────────┐
@@ -14729,10 +14817,12 @@ PCAP Packet Header (16 bytes per packet):
                Packet Data (incl_len bytes)
                Ethernet + IP + TCP/UDP + payload
 ```
+
+![Latency Budget Breakdown](./diagrams/tdd-diag-044.svg)
+
 ### Configuration Verification Output
 ```
 
-![Load Shedding State Machine](./diagrams/tdd-diag-045.svg)
 
 Configuration Verification Report:
 ═══════════════════════════════════════════════════════════════════════════
@@ -14785,6 +14875,9 @@ SUMMARY
   RESULT: ALL CHECKS PASSED
 ══════════════════════════════ed
 ```
+
+![Load Shedding State Machine](./diagrams/tdd-diag-045.svg)
+
 ---
 ## Deployment Checklist
 ```
@@ -14893,6 +14986,7 @@ Pre-Deployment Verification (kbns-m5):
 
 
 # Project Structure: Kernel Bypass Network Stack
+
 
 ## Directory Tree
 

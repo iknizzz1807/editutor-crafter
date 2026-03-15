@@ -159,7 +159,6 @@ Gossip protocols are the backbone of fault-tolerant distributed systems like Cas
 Unlike consensus protocols (Raft, Paxos) that require coordination and majority quorums, gossip embraces eventual consistency—updates propagate like a virus through the cluster, with mathematical guarantees that all nodes will converge given sufficient time. This makes gossip uniquely suited for large-scale, dynamic environments where nodes come and go, and where perfect network reliability is impossible.
 
 
-
 <!-- MS_ID: gossip-protocol-m1 -->
 # Bootstrapping & Peer Management
 You're about to build the foundation of a gossip protocol—the membership layer that every other component depends on. Without this, there's no one to gossip *to*.
@@ -177,7 +176,11 @@ Consider what actually happens:
 5. The anti-entropy thread (M3) is comparing peer lists with a remote node.
 All four threads need the peer list. Two are reading, two are writing. With a naive mutex, readers block readers. Under high fanout with frequent reads, your peer list becomes a serialization point.
 
+![Memory Layout: Peer Struct](./diagrams/tdd-diag-m1-04.svg)
+
 ![Concurrent Access Pattern](./diagrams/diag-m1-concurrent-access-pattern.svg)
+
+![Concurrent Access Pattern](./diagrams/tdd-diag-m1-08.svg)
 
 But that's just the concurrency problem. The deeper issue is **distributed state itself**.
 ### The Three-Level View of Membership
@@ -192,7 +195,11 @@ The SWIM protocol (M4) addresses Level 3's failure modes. For now, we focus on L
 You can't gossip without knowing *who* to gossip with. This creates a chicken-and-egg problem: how does a new node discover existing cluster members?
 The solution is the **seed node pattern**. Seed nodes are designated rendezvous points—well-known addresses that new nodes contact to join the cluster. They're not special in any other way; they participate in gossip like any other node. Their only unique role is being "known" at startup.
 
+![Data Flow: Node Join Sequence](./diagrams/tdd-diag-m1-02.svg)
+
 ![Seed Node Bootstrap Sequence](./diagrams/diag-m1-seed-bootstrap-sequence.svg)
+
+![Sequence Diagram: Seed Bootstrap](./diagrams/tdd-diag-m1-06.svg)
 
 Here's the join protocol:
 ```
@@ -211,6 +218,8 @@ You might wonder: why doesn't the seed broadcast the new node's arrival to every
 The trade-off: joins are slower (O(log N) rounds instead of 1 round-trip), but the system handles churn gracefully without hotspots.
 ## The Peer State Machine
 Each peer exists in one of four states. This state machine is the foundation of failure detection in M4.
+
+![Memory Layout: Wire Message Format](./diagrams/tdd-diag-m1-05.svg)
 
 ![Peer Membership State Machine](./diagrams/diag-m1-peer-state-machine.svg)
 
@@ -246,6 +255,8 @@ type Peer struct {
 The `Incarnation` field is the key. When Node B sees itself suspected, it increments its incarnation and gossips an ALIVE override. Other nodes accept this because the incarnation is higher.
 ## Thread-Safe Peer List Design
 Now we arrive at the core challenge: the peer list is accessed by multiple concurrent threads.
+
+![Peer Membership State Machine](./diagrams/tdd-diag-m1-03.svg)
 
 ![Thread-Safe Peer List Structure](./diagrams/diag-m1-peer-list-structure.svg)
 
@@ -355,6 +366,8 @@ func (pl *PeerList) GetRandomPeers(k int) []*Peer {
 }
 ```
 
+![Module Architecture: Peer Management](./diagrams/tdd-diag-m1-01.svg)
+
 > **🔑 Foundation: Fisher-Yates shuffle algorithm for uniform random sampling**
 > 
 > ## What It IS
@@ -378,10 +391,16 @@ Imagine drawing names from a hat. You have 10 names. You draw one (10 choices), 
 Fisher-Yates simulates this exactly: at step `i`, you're "drawing" from indices `0` through `i` — the unshuffled portion of the array. The swapped element goes into the "already drawn" section (positions `i+1` onward).
 **Critical implementation detail**: The random index must be chosen from `[0, i]`, NOT `[0, n-1]`. Using the full range reintroduces bias because elements get multiple opportunities to move, distorting the uniform distribution.
 
+![Algorithm Steps: Fisher-Yates Partial Shuffle](./diagrams/tdd-diag-m1-07.svg)
+
 ## Random Peer Selection: The Math Behind Fanout
 Gossip protocols rely on randomized peer selection to achieve epidemic-style spreading. The key parameter is **fanout** (often denoted k): the number of peers each node contacts per gossip round.
 
+![Data Flow: Graceful Leave](./diagrams/tdd-diag-m1-09.svg)
+
 ![Random Peer Selection Algorithm](./diagrams/diag-m1-random-selection-algorithm.svg)
+
+![Algorithm Steps: Incarnation Conflict Resolution](./diagrams/tdd-diag-m1-10.svg)
 
 ### Why Random, Not Round-Robin?
 You might think round-robin peer selection would spread information more evenly. It doesn't work well for two reasons:
@@ -1485,7 +1504,8 @@ In the next milestone, you'll add push-based gossip dissemination on top of this
 You have a peer list. You know who's in the cluster. Now comes the question that defines gossip: **how does information spread?**
 Most developers reach for the obvious answer: broadcast. When Node A learns something new, it tells everyone. Simple, right? Node A sends N-1 messages, every node knows immediately, done.
 
-![Gossip Protocol System Map](./diagrams/diag-l0-satellite-map.svg)
+![Sequence Diagram: Message Forwarding](./diagrams/tdd-diag-m2-08.svg)
+
 
 Here's why that intuition fails catastrophically at scale:
 In a 1000-node cluster, every update generates 999 messages from the originator. If 100 updates happen per second, that's 99,900 messages per second just for dissemination—before any application traffic. The originator becomes a bottleneck. The network saturates. The system collapses under its own weight.
@@ -1533,7 +1553,11 @@ After t rounds with fanout f in a cluster of n nodes, the probability a node rem
 The power of epidemic models is that they let you reason about system-wide behavior from local actions. Each node only needs to "infect" a few random peers per round — but because those peers turn around and infect *their* peers, information spreads exponentially (log N time to reach all nodes).
 This is the same reason real epidemics are dangerous: local, simple actions compound into global, complex outcomes. In gossip protocols, that's a feature, not a bug.
 
+![Epidemic Spreading Model](./diagrams/tdd-diag-m2-06.svg)
+
 The mathematics of gossip comes from epidemiology. When you implement `GetRandomPeers(fanout)` and send updates to those peers, you're building a distributed system that behaves like a virus spreading through a population.
+
+![State Machine: Gossiper Loop](./diagrams/tdd-diag-m2-12.svg)
 
 ![Epidemic Spreading Model](./diagrams/diag-m2-epidemic-spreading-model.svg)
 
@@ -1680,6 +1704,8 @@ func (s *Store) Size() int {
 ## [[EXPLAIN:logical-clocks-(lamport-timestamps)|Logical clocks for ordering distributed events]]
 The `Version` field in each entry is a **Lamport timestamp**—a simple but powerful mechanism for ordering events across distributed nodes without synchronized clocks.
 
+![State Machine: Message Processing](./diagrams/tdd-diag-m2-04.svg)
+
 ![Lamport Clock Version Ordering](./diagrams/diag-m2-lamport-clock-example.svg)
 
 **Why not wall-clock timestamps?** Clock skew. Node A's clock might be 100ms ahead of Node B's. If A writes at timestamp 1000 and B writes at timestamp 950 (but wall-clock time 1010), B's update appears older despite being newer. This causes lost updates and convergence failures.
@@ -1691,6 +1717,8 @@ The Lamport clock rules:
 This creates a **partial ordering**: if event A happened-before event B, then `clock(A) < clock(B)`. The converse isn't true (concurrent events may have arbitrary clock orderings), but the tiebreaker by node ID ensures deterministic resolution.
 ## The Gossip Message Format
 Now you need a wire format for gossip messages. This extends the protocol package from M1.
+
+![Algorithm Steps: Lamport Clock Update](./diagrams/tdd-diag-m2-05.svg)
 
 ![Gossip Message Wire Format](./diagrams/diag-m2-gossip-message-format.svg)
 
@@ -1868,11 +1896,17 @@ Notice `GetDelta(g.lastSent)`. This is crucial for bandwidth efficiency.
 - Bandwidth: O(N_nodes × delta_size × round_frequency)
 - A 1KB delta with 1000 nodes at 5 rounds/sec = 5 MB/sec cluster-wide
 
+![Module Architecture: Push Gossip](./diagrams/tdd-diag-m2-01.svg)
+
 ![Bandwidth: Full State vs Delta](./diagrams/diag-m2-bandwidth-comparison.svg)
+
+![Bandwidth: Full State vs Delta](./diagrams/tdd-diag-m2-09.svg)
 
 The `lastSent` watermark tracks the highest version we've transmitted. Any entry with version > lastSent is "new" and needs to be sent. After sending, we update lastSent.
 **Edge case**: What if a new peer joins and has nothing in its store? It will receive updates through normal gossip rounds from other nodes. For faster catch-up, M3's anti-entropy mechanism handles bulk synchronization.
 ## TTL-Bounded Propagation
+
+![Algorithm Steps: LWW Conflict Resolution](./diagrams/tdd-diag-m2-11.svg)
 
 ![TTL-Bounded Propagation](./diagrams/diag-m2-ttl-propagation.svg)
 
@@ -1957,7 +1991,11 @@ Setting TTL too high wastes bandwidth (messages continue forwarding after everyo
 **Practical tip**: TTL is a safety net. In healthy clusters, the seen-message cache stops duplicates before TTL exhaustion. TTL handles the pathological case where a message keeps finding new, uninformed nodes.
 ## The Seen-Message Cache: Duplicate Detection
 
+![Data Flow: Gossip Round](./diagrams/tdd-diag-m2-02.svg)
+
 ![Seen-Message LRU Cache](./diagrams/diag-m2-seen-message-cache.svg)
+
+![Memory Layout: SeenCache Entry](./diagrams/tdd-diag-m2-07.svg)
 
 Without duplicate detection, a message could loop through the cluster indefinitely. Node A sends to B, B sends to C, C sends to A, and the cycle repeats. The seen-message cache breaks these loops.
 ```go
@@ -2206,7 +2244,11 @@ func TestGossipConvergenceDistribution(t *testing.T) {
 }
 ```
 
+![Memory Layout: GossipBody Message](./diagrams/tdd-diag-m2-03.svg)
+
 ![Convergence Probability by Round](./diagrams/diag-m2-convergence-probability.svg)
+
+![Convergence Probability by Round](./diagrams/tdd-diag-m2-10.svg)
 
 ### Expected Results
 For a 10-node cluster with fanout=3:
@@ -2558,7 +2600,8 @@ But distributed systems are defined by what happens when assumptions *fail*.
 Consider this scenario: Node A writes a critical update. Node B is temporarily partitioned—maybe a network blip, maybe a GC pause that lasts 2 seconds. During those 2 seconds, Node A's push gossip spreads the update to everyone *except* Node B. The partition heals. Node B is back. But Node A has already moved on—it sent its delta, updated its `lastSent` watermark, and won't resend that update.
 Node B never receives it. The system has converged... incompletely.
 
-![Gossip Protocol System Map](./diagrams/diag-l0-satellite-map.svg)
+![Sequence Diagram: Full Anti-Entropy Exchange](./diagrams/tdd-diag-m3-12.svg)
+
 
 This is the fundamental limitation of push-only gossip: **it has no memory of what others have missed**. Each node only knows what *it* has sent, not what *others* have received.
 Anti-entropy is the repair mechanism that guarantees convergence despite message loss, partitions, and crashes. It works by having nodes periodically compare their state with a random peer and exchange any differences. The key insight: instead of sending updates hoping they arrive, nodes actively *request* the state they're missing.
@@ -2575,6 +2618,8 @@ Anti-entropy is *pessimistic*—it assumes failures happen continuously and desi
 | **Guarantee** | Probabilistic delivery | Eventual consistency |
 | **Recovery** | None | Catches all differences |
 You need **both**. Push gossip provides low-latency dissemination. Anti-entropy provides the guarantee that no update is permanently lost.
+
+![State Machine: Anti-Entropy Round](./diagrams/tdd-diag-m3-08.svg)
 
 ![Push-Pull Anti-Entropy Flow](./diagrams/diag-m3-push-pull-flow.svg)
 
@@ -2713,7 +2758,8 @@ This is why **push-pull** is essential: both sides exchange digests and both sen
 ## Push-Pull Anti-Entropy: Bidirectional Reconciliation
 In push-pull mode, both nodes share their digests simultaneously. Each node identifies what it's missing and what the other node is missing, then both send their respective updates.
 
-![Push-Pull Anti-Entropy Flow](./diagrams/diag-m3-push-pull-flow.svg)
+![Data Flow: Push-Pull Anti-Entropy](./diagrams/tdd-diag-m3-02.svg)
+
 
 ```go
 // PushPullSync performs bidirectional anti-entropy sync.
@@ -2882,7 +2928,11 @@ This is how Git, IPFS, Bitcoin, Cassandra, and DynamoDB efficiently detect and r
 Think of Merkle tree comparison as **parallelizable binary search with cryptographic guarantees**. Each level of the tree halves the search space, and you can compare all branches at the same level simultaneously. With a balanced tree of depth *d*, you identify exactly which blocks differ in *O(d)* comparisons — logarithmic in the number of data blocks.
 **Critical property:** Two datasets have identical Merkle roots if and only if they contain identical data (assuming no hash collisions). This makes the root hash a compact "fingerprint" you can trust for equality checks.
 
+![Algorithm Steps: Merkle Diff Detection](./diagrams/tdd-diag-m3-04.svg)
+
 The solution is **Merkle trees**—a hierarchical hash structure that enables O(log S) difference detection.
+
+![Merkle Tree Difference Detection](./diagrams/tdd-diag-m3-11.svg)
 
 ![Merkle Tree for State](./diagrams/diag-m3-merkle-tree-structure.svg)
 
@@ -3097,6 +3147,8 @@ func (t *Tree) collectKeys(node *Node) []string {
 }
 ```
 
+![Merkle Tree Structure](./diagrams/tdd-diag-m3-03.svg)
+
 ![Merkle Tree Difference Detection](./diagrams/diag-m3-merkle-tree-diff.svg)
 
 ### Merkle Tree Anti-Entropy
@@ -3195,7 +3247,11 @@ The trade-off: Merkle trees require more round-trips for the recursive compariso
 ## Conflict Resolution: Last-Write-Wins
 When two nodes have different values for the same key, someone has to decide which one wins. This is the **conflict resolution** problem.
 
+![Module Architecture: Anti-Entropy](./diagrams/tdd-diag-m3-01.svg)
+
 ![LWW Conflict Resolution Example](./diagrams/diag-m3-lww-conflict-resolution.svg)
+
+![Algorithm Steps: LWW Resolution](./diagrams/tdd-diag-m3-10.svg)
 
 ### The Problem with Wall-Clock Timestamps
 You might think: "Just use the timestamp! Whoever wrote later wins."
@@ -3282,6 +3338,8 @@ Two events are concurrent not when they happen at "the same time" (a meaningless
 Vector clocks capture exactly this: if VC(A) and VC(B) are incomparable (neither less-than the other), then A and B are concurrent. Node A did its thing without knowing about B's action, and vice versa. They're independent branches of history that must be reconciled.
 This mental model — concurrency as *absence of information flow* rather than simultaneity — is the key to reasoning correctly about distributed systems.
 
+![LWW Conflict Resolution Example](./diagrams/tdd-diag-m3-06.svg)
+
 Lamport clocks have a limitation: they provide a total ordering, but you can't tell if two events were *concurrent* or *causally related*.
 **Vector clocks** solve this. Each node maintains a vector of counters, one per node. When Node A writes, it increments its own counter. When Node B receives the write, it updates its vector to be element-wise max.
 With vector clocks, you can detect:
@@ -3317,6 +3375,8 @@ func (v1 VectorClock) Concurrent(v2 VectorClock) bool {
 For this milestone, we use Lamport clocks with LWW. Vector clocks are more powerful but require O(N) space per key and add complexity.
 ## Partition Healing: The Ultimate Test
 The real test of anti-entropy is what happens after a network partition heals.
+
+![Partition Healing Timeline](./diagrams/tdd-diag-m3-07.svg)
 
 ![Partition Healing Timeline](./diagrams/diag-m3-partition-healing.svg)
 
@@ -3402,7 +3462,11 @@ With anti-entropy running every 10 seconds:
 Applications must be designed for this. If your application needs all nodes to agree within 100ms, eventual consistency isn't the right model.
 ## Jitter: Preventing Sync Storms
 
+![Memory Layout: Merkle Node](./diagrams/tdd-diag-m3-05.svg)
+
 ![Sync Storm Prevention with Jitter](./diagrams/diag-m3-jitter-prevention.svg)
+
+![Sync Storm Prevention with Jitter](./diagrams/tdd-diag-m3-09.svg)
 
 A subtle but critical problem: if all nodes start their anti-entropy timers at the same time (e.g., all nodes restart simultaneously), they'll all try to sync at the same wall-clock time. This creates a **sync storm**—spikes in bandwidth and CPU usage.
 The solution is **jitter**: add a random delay to each node's anti-entropy schedule.
@@ -3841,7 +3905,8 @@ In the next milestone, you'll add SWIM-style failure detection. The membership s
 You've built a gossip system that spreads information through randomized epidemic dissemination. Nodes join, exchange state, and eventually converge. But there's a question you've been avoiding: **how do you know when a node has actually failed?**
 This is not a theoretical concern. In a distributed system, distinguishing between "slow" and "dead" is one of the hardest problems you'll face. Get it wrong in one direction, and you declare healthy nodes dead—causing cascading failures as traffic shifts away from functioning systems. Get it wrong in the other direction, and dead nodes linger in your membership lists—wasting resources on futile communication attempts and serving stale data.
 
-![Gossip Protocol System Map](./diagrams/diag-l0-satellite-map.svg)
+![Algorithm Steps: Piggyback Processing](./diagrams/tdd-diag-m4-12.svg)
+
 
 Most developers reach for the obvious answer: ping the node. If it responds, it's alive. If it doesn't, it's dead. Simple, right?
 Here's why that intuition fails catastrophically in practice:
@@ -3868,6 +3933,8 @@ When detection is slow:
 4. No unnecessary failover, no split-brain
 This is why SWIM optimizes for **low false positives** even at the cost of slower detection. A node that's truly dead can't cause problems. A healthy node incorrectly marked dead can cause chaos.
 
+![State Machine: Suspicion Timer](./diagrams/tdd-diag-m4-10.svg)
+
 ![False Positive Rate Analysis](./diagrams/diag-m4-false-positive-analysis.svg)
 
 ### The Three-Level View of Failure Detection
@@ -3879,6 +3946,8 @@ Unlike consensus protocols, SWIM doesn't require all nodes to agree on membershi
 Networks partition. Packets get lost. Nodes pause for garbage collection. A node might be reachable from B but not from A. Your failure detector must handle all of this without human intervention.
 ## The Protocol Period: SWIM's Heartbeat
 SWIM is structured around a **protocol period**—a fixed time window during which the failure detector performs its work. This is different from the gossip interval you implemented in M2; the protocol period is specifically for failure detection.
+
+![Sequence Diagram: Refutation Flow](./diagrams/tdd-diag-m4-11.svg)
 
 ![SWIM Protocol Period Structure](./diagrams/diag-m4-swim-protocol-period.svg)
 
@@ -4076,6 +4145,8 @@ In practice, you might want to continuously monitor RTT and adjust the timeout d
 ## Indirect Probing: Asking Multiple Witnesses
 When a direct ping fails, you don't immediately declare the node dead. Instead, you ask other nodes to probe it on your behalf. This is the **ping-req** mechanism, and it's the key innovation that makes SWIM robust to packet loss.
 
+![Piggyback Buffer Structure](./diagrams/tdd-diag-m4-06.svg)
+
 ![Indirect Probe (ping-req) Path](./diagrams/diag-m4-indirect-probe-path.svg)
 
 Consider what happens with 1% packet loss:
@@ -4190,6 +4261,8 @@ Even with indirect probing, false positives are still possible. A node might be 
 - **CPU starvation**: Other processes consuming all CPU
 The **suspicion mechanism** gives nodes a chance to recover before being declared dead.
 
+![False Positive Rate Analysis](./diagrams/tdd-diag-m4-07.svg)
+
 ![SWIM Suspicion State Machine](./diagrams/diag-m4-suspicion-state-machine.svg)
 
 ```go
@@ -4299,6 +4372,8 @@ The suspicion timeout should be long enough for:
 A good rule: `suspicion_timeout = 3 × protocol_period`. This gives the suspected node at least 2-3 opportunities to see the suspicion message and respond.
 ## Incarnation Numbers: The Refutation Mechanism
 
+![Algorithm Steps: Protocol Round](./diagrams/tdd-diag-m4-08.svg)
+
 ![Incarnation Number Refutation](./diagrams/diag-m4-incarnation-refutation.svg)
 
 The suspicion mechanism is useless if a node can't defend itself. This is where **incarnation numbers** come in—each node maintains a monotonically increasing counter that it can use to prove it's still alive.
@@ -4401,6 +4476,8 @@ Incarnation numbers create a **partial ordering** of membership events. Consider
 The key property: **a higher incarnation always wins**. This ensures that even if suspicion messages and refutation messages arrive out of order, nodes converge to the correct state.
 ## Piggybacking: Free Dissemination
 SWIM's final innovation is **piggybacking** membership events on protocol messages. Instead of sending separate "Node X is dead" messages, SWIM attaches membership events to ping, ping-req, and ack messages that are already being sent.
+
+![Memory Layout: MemberEvent](./diagrams/tdd-diag-m4-09.svg)
 
 ![Piggyback Buffer Structure](./diagrams/diag-m4-piggyback-buffer.svg)
 
@@ -4965,7 +5042,8 @@ You've built a complete gossip protocol: membership management (M1), push-based 
 But here's the uncomfortable truth: **unit tests are almost useless for distributed systems.**
 A unit test verifies that `GetRandomPeers(3)` returns 3 peers. It doesn't verify that those 3 peers, combined with the random selections of 99 other nodes, actually achieve O(log N) convergence. A unit test verifies that `Apply(entry)` correctly compares versions. It doesn't verify that 100 concurrent updates from 10 different nodes eventually converge to the same state across the entire cluster.
 
-![Gossip Protocol System Map](./diagrams/diag-l0-satellite-map.svg)
+![system-overview](./diagrams/system-overview.svg)
+
 
 Distributed systems fail in ways that unit tests cannot catch:
 - **Timing-dependent bugs**: A race condition that only appears when Node A's gossip round coincides with Node B's anti-entropy sync
@@ -4983,6 +5061,8 @@ Every testing approach sits on a spectrum:
 | **Formal verification** | Very high (mathematical proof) | Very expensive | Algorithmic correctness |
 | **Production testing** | Ultimate (real-world validation) | Risky | Everything, including unknowns |
 The key insight: **confidence in a distributed system requires fault injection at scale**. You cannot reason about a 100-node cluster by testing 3 nodes. You cannot reason about network partitions by testing happy paths.
+
+![Real-World Gossip Implementations](./diagrams/diag-real-world-comparison.svg)
 
 ![Integration Test Harness Architecture](./diagrams/diag-m5-test-harness-architecture.svg)
 
@@ -5406,6 +5486,8 @@ func (h *Harness) SetPacketLoss(rate float64) {
 ## Convergence Verification
 The core property of gossip protocols is **eventual convergence**: given enough time, all nodes should agree on the state. But "eventual" is not a testable property. We need to verify convergence within **bounded time**.
 
+![Module Architecture: Test Harness](./diagrams/tdd-diag-m5-01.svg)
+
 ![Convergence Verification Test Flow](./diagrams/diag-m5-convergence-test-flow.svg)
 
 The theoretical bound for gossip convergence is O(log N) rounds. With fanout k and gossip interval T, the expected convergence time is:
@@ -5589,6 +5671,8 @@ func TestConvergenceBound(t *testing.T) {
 SWIM failure detection has two critical properties to verify:
 1. **Detection latency**: When a node crashes, how long until other nodes detect it?
 2. **False positive rate**: How often are healthy nodes incorrectly marked dead?
+
+![Bandwidth Profiling Dashboard](./diagrams/tdd-diag-m5-06.svg)
 
 ![Fault Injection Test Matrix](./diagrams/diag-m5-fault-injection-matrix.svg)
 
@@ -5822,7 +5906,11 @@ func TestFalsePositiveRate(t *testing.T) {
 ## Partition Healing Test
 The most important test for eventual consistency is partition healing: does the system correctly merge state after a network partition?
 
+![Fault Injection Test Matrix](./diagrams/tdd-diag-m5-03.svg)
+
 ![Partition Test Scenario](./diagrams/diag-m5-partition-test-scenario.svg)
+
+![Chaos Test Scenario Generator](./diagrams/tdd-diag-m5-10.svg)
 
 ```go
 // PartitionTest verifies state convergence after network partition
@@ -5979,6 +6067,8 @@ func TestPartitionHealing(t *testing.T) {
 ## Bandwidth Profiling
 A "correct" gossip protocol that uses 10x expected bandwidth is not deployable. Bandwidth profiling verifies that the protocol scales as O(fanout × message_size × round_frequency), not O(N²).
 
+![SimulatedTransport Architecture](./diagrams/tdd-diag-m5-04.svg)
+
 ![Bandwidth Profiling Dashboard](./diagrams/diag-m5-bandwidth-profiling.svg)
 
 ```go
@@ -6130,7 +6220,11 @@ func TestBandwidthScaling(t *testing.T) {
 ## Consistency Verification
 The final property to verify is **consistency**: no node should hold a value that's strictly older than a value that's been committed by a majority of nodes for more than the convergence bound.
 
+![Convergence Verification Test Flow](./diagrams/tdd-diag-m5-02.svg)
+
 ![Consistency Check Algorithm](./diagrams/diag-m5-consistency-check-algorithm.svg)
+
+![Algorithm Steps: False Positive Measurement](./diagrams/tdd-diag-m5-12.svg)
 
 ```go
 // ConsistencyCheck verifies no stale reads
@@ -6560,13 +6654,14 @@ You've now built a complete gossip protocol with comprehensive testing. From see
 <!-- END_MS -->
 
 
-
-
 # TDD
+
+![Complete Protocol Data Flow](./diagrams/diag-complete-data-flow.svg)
 
 A production-grade gossip protocol implementing epidemic-style broadcast dissemination with SWIM failure detection, pull-based anti-entropy reconciliation, and comprehensive integration testing. The system achieves O(log N) convergence through randomized peer selection while maintaining O(1) per-node bandwidth regardless of cluster size. Designed for eventual consistency environments where availability and partition tolerance are prioritized over strong consistency.
 
 
+![Partition Test Scenario](./diagrams/tdd-diag-m5-05.svg)
 
 <!-- TDD_MOD_ID: gossip-protocol-m1 -->
 # Technical Design Document: Bootstrapping & Peer Management
@@ -10350,6 +10445,8 @@ const (
 ---
 ## State Machine: SWIM Protocol Period
 
+![CAP Trade-off in Gossip Systems](./diagrams/diag-cap-tradeoff-gossip.svg)
+
 ![Module Architecture: SWIM Failure Detector](./diagrams/tdd-diag-m4-01.svg)
 
 ```
@@ -10549,6 +10646,8 @@ func (s *Suspicion) Cancel()
 ## Algorithm Specification
 ### Protocol Period Loop
 
+![State Machine: Test Node Lifecycle](./diagrams/tdd-diag-m5-08.svg)
+
 ![SWIM Protocol Period Structure](./diagrams/tdd-diag-m4-02.svg)
 
 **Purpose:** Execute one SWIM round per protocol period.
@@ -10616,6 +10715,8 @@ func (s *Suspicion) Cancel()
    fd.markSuspect(target.ID, target.Incarnation)
 ```
 ### Indirect Probe (Ping-Req) Algorithm
+
+![Sequence Diagram: Full Integration Test](./diagrams/tdd-diag-m5-11.svg)
 
 ![Indirect Probe (ping-req) Path](./diagrams/tdd-diag-m4-03.svg)
 
@@ -10734,6 +10835,8 @@ func (s *Suspicion) Cancel()
    }
 ```
 ### Refutation Algorithm
+
+![Consistency Check Algorithm](./diagrams/tdd-diag-m5-07.svg)
 
 ![Suspicion State Machine](./diagrams/tdd-diag-m4-04.svg)
 
@@ -10871,6 +10974,8 @@ PeerList.mu (RWMutex) [from M1]
 2. incarnationMu and seqNumMu are independent, no ordering needed
 3. sync.Map operations are lock-free, no ordering issues
 ### Goroutine Model
+
+![Memory Layout: NodeMetrics](./diagrams/tdd-diag-m5-09.svg)
 
 ![Incarnation Number Refutation](./diagrams/tdd-diag-m4-05.svg)
 

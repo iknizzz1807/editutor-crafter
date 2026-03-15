@@ -187,7 +187,6 @@ A memory pool allocator pre-allocates fixed-size blocks and manages them through
 The project progresses from a single-chunk pool with basic free list management (Milestone 1), through dynamic growth with multiple chunks (Milestone 2), to thread-safe operations with debugging aids (Milestone 3). At each stage, you confront the physical realities of memory: alignment constraints imposed by CPU cache lines, the cost of contention on shared data structures, and the difficulty of detecting memory corruption without hardware support.
 
 
-
 <!-- MS_ID: memory-pool-m1 -->
 # Fixed-Size Aligned Pool
 
@@ -237,6 +236,8 @@ When the application calls `pool_free(ptr)`:
 3. Done
 No searching. No splitting. No coalescing. No size metadata. Just pointer operations on a linked list.
 
+![Double-Free Detection Flow](./diagrams/tdd-diag-m1-09.svg)
+
 ![Pool Structure: Contiguous Region to Blocks](./diagrams/diag-M1-pool-structure.svg)
 
 ## The Hardware Reality: Why Alignment Matters
@@ -244,6 +245,8 @@ Before we write code, there's a physical constraint we must address. CPUs don't 
 [[EXPLAIN:memory-alignment-(alignof,-why-cpus-care)|Memory alignment (alignof, why CPUs care)]]
 Here's what this means for your pool allocator:
 **If a user requests 5-byte blocks, you cannot simply allocate 5-byte blocks.** The CPU requires that multi-byte accesses be properly aligned. An 8-byte pointer stored at address `0x1003` would span two cache lines on many architectures, causing either a performance penalty (two memory fetches instead of one) or a hardware fault on strict architectures like ARM in unaligned mode.
+
+![Alignment at Base and Block Boundaries](./diagrams/tdd-diag-m1-15.svg)
 
 ![Memory Alignment: Why CPUs Care](./diagrams/diag-M1-alignment-visual.svg)
 
@@ -289,11 +292,17 @@ Here's where memory pools perform their cleverest trick. When a block is free, w
 Instead, we store the pointer **inside the free block itself**.
 [[EXPLAIN:intrusive-data-structures-(storing-list-nodes-inside-data)|Intrusive data structures (storing list nodes inside data)]]
 
+![Invalid Pointer Detection](./diagrams/tdd-diag-m1-13.svg)
+
 ![Intrusive Free List: Pointer Inside Block Memory](./diagrams/diag-M1-intrusive-list.svg)
+
+![Pointer Arithmetic with char*](./diagrams/tdd-diag-m1-16.svg)
 
 This works because:
 - **When a block is free**: Its memory isn't being used for anything. We can safely store our "next" pointer there.
 - **When a block is allocated**: The caller gets the full block. They overwrite the "next" pointer with their own data—which is fine, because the block is no longer on the free list.
+
+![Intrusive Free List Pointer Aliasing](./diagrams/tdd-diag-m1-14.svg)
 
 > **🔑 Foundation: Pointer aliasing and type punning**
 > 
@@ -342,6 +351,8 @@ std::memcpy(&bits, &f, sizeof(bits));  // Compilers optimize this to a register 
 ```
 **Mental model**: Aliasing is the compiler's "no trespassing" assumption. The optimizer builds a house of cards assuming pointers of incompatible types don't point to the same memory. When you violate this, the house collapses in unpredictable ways. Use unions (C) or memcpy (C++) when you need to cross type boundaries — they're the legal doors through that wall.
 
+![Benchmark Comparison Architecture](./diagrams/tdd-diag-m1-11.svg)
+
 ```c
 // When block is free: store next pointer
 // +------------------+
@@ -384,6 +395,8 @@ When we initialize the pool, we need to:
 1. Allocate a contiguous memory region
 2. Carve it into aligned blocks
 3. Thread all blocks onto the free list
+
+![Pool Exhaustion State](./diagrams/tdd-diag-m1-12.svg)
 
 ![Free List Construction During Initialization](./diagrams/diag-M1-free-list-init.svg)
 
@@ -449,6 +462,8 @@ This is why you'll almost always see `char*` used for low-level memory manipulat
 ## Allocation: O(1) Pop from Head
 Now for the operation you've been waiting for. Allocation is a simple linked list pop:
 
+![Free List Construction During Init](./diagrams/tdd-diag-m1-04.svg)
+
 ![pool_alloc(): O(1) Pop from Head](./diagrams/diag-M1-alloc-operation.svg)
 
 ```c
@@ -479,6 +494,8 @@ No searching. No splitting. No size tracking. The caller gets a pointer to align
 - **Memory access pattern**: Sequential through the free list if blocks are consumed in order
 ## Deallocation: O(1) Push to Head
 Freeing is equally simple—we push the block back onto the free list head:
+
+![Cache Line Analysis for Alloc](./diagrams/tdd-diag-m1-10.svg)
 
 ![pool_free(): O(1) Push to Head](./diagrams/diag-M1-free-operation.svg)
 
@@ -516,6 +533,8 @@ bool pool_free(MemoryPool* pool, void* ptr) {
 The bounds and alignment checks are optional for maximum performance, but they catch common programming errors. In production systems, these might be compiled out for release builds.
 ## Double-Free Detection
 There's a critical bug pattern we need to address: the **double-free**. If the caller frees the same block twice, it gets added to the free list twice. Subsequent allocations could return the same block to different callers—catastrophic memory corruption.
+
+![Block Index Calculation](./diagrams/tdd-diag-m1-08.svg)
 
 ![Double-Free Detection Strategies](./diagrams/diag-M1-double-free-detection.svg)
 
@@ -860,6 +879,8 @@ int main(void) {
 }
 ```
 
+![Bitmap for Block State](./diagrams/tdd-diag-m1-07.svg)
+
 ![Pool vs malloc: Latency Distribution](./diagrams/diag-M1-benchmark-comparison.svg)
 
 Typical results on a modern x86-64 system:
@@ -1086,7 +1107,8 @@ In Milestone 2, you'll add dynamic growth: the ability to allocate new chunks wh
 <!-- MS_ID: memory-pool-m2 -->
 # Pool Growth & Lifecycle
 
-![Memory Pool Atlas — System Map](./diagrams/diag-L0-satellite.svg)
+![Growth Strategies Comparison](./diagrams/tdd-diag-m2-15.svg)
+
 
 You've built a pool allocator that hands out fixed-size blocks in O(1) time. But there's a problem: you had to decide exactly how many blocks you needed *before* the program started running. What happens when you guessed wrong?
 In Milestone 1, if your program needed more blocks than the pool contained, `pool_alloc()` simply returned `NULL`. The caller had to handle exhaustion—which often meant crashing, failing gracefully, or somehow knowing to create a second pool. This works for embedded systems with fixed workloads, but it's inadequate for servers, game engines, and most real-world applications.
@@ -1113,7 +1135,11 @@ void* new_base = realloc(pool->base, new_larger_size);
 // But ptr1 and ptr2 still point to the OLD addresses!
 ```
 
+![Automatic Growth in pool_alloc](./diagrams/tdd-diag-m2-12.svg)
+
 ![Dynamic Growth: Adding New Chunks](./diagrams/diag-M2-chunk-growth.svg)
+
+![get_block_by_index for Leak Reporting](./diagrams/tdd-diag-m2-13.svg)
 
 `realloc()` doesn't know about the pointers scattered throughout your application. If it moves the memory (which it must when there's not enough adjacent space), every existing pointer becomes invalid. You've just created a use-after-free bomb waiting to explode.
 **The only solution**: Never move existing memory. Instead, allocate *new, separate* chunks and stitch them together through the data structure. Your pool becomes a collection of non-contiguous regions that share a single free list.
@@ -1130,7 +1156,11 @@ Let's examine each.
 ### Chunk Metadata: Tracking What You've Allocated
 Each chunk needs metadata: where it starts, how big it is, and a link to the next chunk. This metadata must live *outside* the block memory—you don't want user writes corrupting your chunk list.
 
+![Overhead Calculation](./diagrams/tdd-diag-m2-11.svg)
+
 ![Chunk Metadata Layout](./diagrams/diag-M2-chunk-structure.svg)
+
+![Cache Locality Degradation with Chunks](./diagrams/tdd-diag-m2-18.svg)
 
 ```c
 typedef struct Chunk {
@@ -1169,7 +1199,11 @@ Here's where many developers get confused. They assume that blocks from differen
 **Neither is true.**
 The free list is a singly-linked list of *addresses*. It doesn't care whether those addresses are contiguous. A block at `0x1000` (chunk 1) can point to a block at `0x5000` (chunk 2) without any issue:
 
+![PoolStats Structure](./diagrams/tdd-diag-m2-10.svg)
+
 ![Cross-Chunk Free List: Non-Contiguous Blocks, Single List](./diagrams/diag-M2-unified-free-list.svg)
+
+![Cross-Chunk Free Correctness](./diagrams/tdd-diag-m2-16.svg)
 
 ```
 Chunk 1: [0x1000] → [0x1040] → [0x1080] → ...
@@ -1342,7 +1376,11 @@ while (true) {
 ```
 This is why `max_chunks` exists. When configured, it provides a hard ceiling:
 
+![Bitmap Reallocation for Growth](./diagrams/tdd-diag-m2-06.svg)
+
 ![Bounded vs Unbounded Growth](./diagrams/diag-M2-growth-boundaries.svg)
+
+![Bounded vs Unbounded Growth States](./diagrams/tdd-diag-m2-17.svg)
 
 ```c
 typedef struct {
@@ -1378,6 +1416,8 @@ static bool grow_pool(MemoryPool* pool) {
 ```
 ## Pool Destruction: The Final Accounting
 When a pool is destroyed, you must free every chunk. But there's a critical question: what if the user didn't free all their blocks?
+
+![Why realloc Cannot Work](./diagrams/tdd-diag-m2-14.svg)
 
 ![Leak Detection at Destruction Time](./diagrams/diag-M2-leak-detection.svg)
 
@@ -1438,6 +1478,8 @@ static void* get_block_by_index(const MemoryPool* pool, size_t global_index) {
 ```
 ## Statistics API: Monitoring Pool Health
 A statistics API lets you monitor pool usage in production:
+
+![pool_destroy Sequence](./diagrams/tdd-diag-m2-09.svg)
 
 ![Pool Statistics: What to Track](./diagrams/diag-M2-statistics-api.svg)
 
@@ -1891,7 +1933,10 @@ In Milestone 3, you'll add thread safety with mutexes and debugging aids like me
 <!-- MS_ID: memory-pool-m3 -->
 # Thread Safety & Debugging
 
-![Memory Pool Atlas — System Map](./diagrams/diag-L0-satellite.svg)
+![diag-M2-lifecycle-states](./diagrams/diag-M2-lifecycle-states.svg)
+
+
+![diag-cross-domain-game-engine](./diagrams/diag-cross-domain-game-engine.svg)
 
 You've built a memory pool that grows dynamically and catches double-frees. But there's a problem lurking: what happens when two threads call `pool_alloc()` at the same time?
 In Milestones 1 and 2, we operated in a single-threaded world. The free list head pointer changed predictably—each allocation popped, each free pushed. But introduce concurrency, and those same operations become a race condition waiting to corrupt your data.
@@ -1912,6 +1957,8 @@ return 0x1000
                                    return 0x1000
 ```
 
+![diag-cross-domain-kernel](./diagrams/diag-cross-domain-kernel.svg)
+
 ![Race Condition Without Mutex](./diagrams/diag-M3-race-condition.svg)
 
 Both threads got the same block! Block `0x1000` is now "allocated" twice, and block `0x1040` is the new free list head. But `0x1040` was supposed to be the *second* block on the list, not the first. Block `0x1040`'s link to `0x1080` is now lost—memory leak. And when both threads write to their "unique" block `0x1000`, they corrupt each other's data.
@@ -1919,6 +1966,8 @@ This is a **race condition**: the outcome depends on the timing of thread execut
 ### What Exactly Needs Protection?
 Here's a common misconception: "thread-safe" means adding locks everywhere. But blind locking creates deadlocks, kills performance, and often doesn't even solve the problem.
 The key insight: **only shared mutable state needs protection**.
+
+![Production Observability Integration](./diagrams/tdd-diag-m3-20.svg)
 
 ![What Needs Protection: The Free List Head](./diagrams/diag-M3-shared-state.svg)
 
@@ -2030,6 +2079,8 @@ Why doesn't this crash? Because `free()` doesn't unmap the memory. It just marks
 - Still contain the old data (appears to work)
 - Contain allocator metadata (garbage from your perspective)
 - Be reallocated and contain *different user data* (cross-contamination)
+
+![ABA Problem in Lock-Free Lists](./diagrams/tdd-diag-m3-15.svg)
 
 ![Memory Poisoning: Detecting Use-After-Free Writes](./diagrams/diag-M3-memory-poisoning.svg)
 
@@ -2686,6 +2737,8 @@ The mutex is a `pthread_mutex_t`, which maps to the kernel's `futex` (Fast Users
 - **Memory ordering**: The mutex provides acquire (lock) and release (unlock) semantics, ensuring memory operations inside the critical section are visible to other threads in the correct order.
 - **False sharing**: If the mutex and frequently-accessed data share a cache line, performance degrades. Consider padding to separate them.
 
+![Thread Worker Data Integrity](./diagrams/tdd-diag-m3-12.svg)
+
 ![Complete Pool Architecture (End State)](./diagrams/diag-L3-complete-architecture.svg)
 
 ## Common Pitfalls
@@ -2776,6 +2829,8 @@ Your memory pool is now complete. It provides O(1) allocation and deallocation, 
 
 ![Debug Feature Detection Matrix](./diagrams/diag-M3-debugging-workflow.svg)
 
+![Cache Line Contention Under Load](./diagrams/tdd-diag-m3-14.svg)
+
 [[CRITERIA_JSON: {"milestone_id": "memory-pool-m3", "criteria": ["pool_alloc() and pool_free() use pthread_mutex_t to protect free_list_head, allocated counter, and allocated_map bitmap from concurrent access corruption", "Stress test with 8 threads each performing 100,000 alloc/free cycles completes without data corruption, deadlocks, assertion failures, or crashes", "When POOL_DEBUG is defined, pool_free() fills freed blocks with 0xDE poison pattern; pool_alloc() verifies pattern on reallocation and reports use-after-free writes", "Double-free detection via bitmap state tracking produces error message to stderr containing the block address and block index", "When use_canaries is enabled, canary values (0xCAFEBABEDEADBEEF) placed at block start and end detect buffer overflows; corruption reported on pool_free() with canary address and corrupted value", "pool_destroy() logs warning with count of unfreed blocks; in debug mode with POOL_DEBUG, lists each leaked block's index and address", "All debug code (poisoning, canaries, detailed logging) wrapped in #ifdef POOL_DEBUG and compiles to zero instructions when POOL_DEBUG is not defined", "Mutex properly initialized in pool_init_ex() and destroyed in pool_destroy(); all error paths within locked sections properly unlock before returning"]}] ]
 <!-- END_MS -->
 
@@ -2785,12 +2840,9 @@ Your memory pool is now complete. It provides O(1) allocation and deallocation, 
 ![System Overview](./diagrams/system-overview.svg)
 
 
-
-
 # TDD
 
 A production-grade fixed-size block allocator achieving O(1) allocation/deallocation through intrusive free list management. The system trades general-purpose flexibility for predictable latency, proper alignment, and bounded performance—critical for real-time systems, game engines, and embedded applications. The design evolves from single-chunk allocation through dynamic growth to thread-safe debugging infrastructure, demonstrating the physical constraints of memory alignment, cache behavior, and concurrent access at each stage.
-
 
 
 <!-- TDD_MOD_ID: memory-pool-m1 -->
@@ -3205,7 +3257,6 @@ assert(pool_init(&pool, 64, 100) == true);
 assert(pool.base != NULL);
 assert(pool.capacity == 100);
 ```
-{{DIAGRAM:tdd-diag-m1-04}}
 ---
 ### Phase 3: pool_alloc Implementation (0.5-1 hour)
 **Files:** `src/memory_pool.c`
@@ -4224,7 +4275,6 @@ void* p2 = pool_alloc(&pool);  // Chunk 1, block 0 → index 100
 assert(pool_free(&pool, p1) == true);
 assert(pool_free(&pool, p2) == true);
 ```
-{{DIAGRAM:tdd-diag-m2-06}}
 ---
 ### Phase 7: pool_init_ex with PoolConfig (0.5 hour)
 **Files:** `src/memory_pool.c`
@@ -4538,6 +4588,8 @@ Each chunk is a separate allocation, likely on different pages. With 4KB pages a
 - Each chunk with 100 blocks ≈ 2 pages
 - 10 chunks ≈ 20 pages in TLB
 For large pools, consider using `mmap` directly for huge pages.
+
+![Detailed Leak Report Format](./diagrams/tdd-diag-m3-17.svg)
 
 ![Block Index Search Across Chunks](./diagrams/tdd-diag-m2-07.svg)
 
@@ -4864,7 +4916,6 @@ This module transforms the static pool from M1 into a dynamically growing alloca
 - **Statistics API** — `PoolStats` provides utilization and overhead metrics
 - **Leak detection** — Warning at destruction if blocks remain allocated
 The key insight is that **non-contiguous memory works fine for a linked list**. The free list doesn't require physical adjacency—just valid pointers. This enables growth without invalidating existing allocations, at the cost of O(chunk_count) lookups during free operations.
-{{DIAGRAM:tdd-diag-m2-09}}
 ---
 [[CRITERIA_JSON: {"module_id": "memory-pool-m2", "criteria": ["When pool_alloc() is called and free_list_head is NULL, grow_pool() is invoked to allocate a new chunk of blocks_per_chunk blocks before returning NULL", "Each chunk allocation creates a Chunk metadata structure via malloc(sizeof(Chunk)) and block storage via aligned_alloc(), with metadata stored separately from user-accessible memory", "All chunks are tracked in a singly-linked list via pool->chunks head pointer, with new chunks prepended in O(1) time", "pool_free() correctly handles blocks from any chunk by traversing the chunk list in find_block_index() to determine global block index", "max_chunks limit enforced: grow_pool() returns false when max_chunks > 0 and chunk_count >= max_chunks", "max_bytes limit enforced: grow_pool() returns false when max_bytes > 0 and (current_bytes + new_chunk_bytes) would exceed max_bytes", "Bitmap expands correctly via realloc() when new chunks are added, with new words zero-initialized to mark all new blocks as free", "pool_destroy() walks the chunk list, freeing each chunk->memory then the Chunk struct itself, then frees the bitmap", "pool_destroy() logs warning to stderr with count of still-allocated blocks when pool->allocated > 0", "pool_get_stats() populates PoolStats with total_blocks, allocated, free, chunk_count, block_size, total_bytes, and calculated overhead_bytes", "Cross-chunk free list works correctly: blocks from different non-contiguous chunks coexist on the unified free list and can be allocated in any order"]}] ]
 <!-- END_TDD_MOD -->
@@ -4974,6 +5025,8 @@ pthread_mutex_t (40 bytes on x86-64):
 | `mutex` | Synchronization primitive | N/A (IS the lock) |
 | `use_canaries` | Debug feature toggle | No (read-only during operation) |
 | `use_poison` | Debug feature toggle | No (read-only during operation) |
+
+![Complete Thread-Safe MemoryPool Layout](./diagrams/tdd-diag-m3-16.svg)
 
 ![Race Condition Without Mutex](./diagrams/tdd-diag-m3-01.svg)
 
@@ -5242,6 +5295,8 @@ void* pool_alloc(MemoryPool* pool) {
     // ...
 }
 ```
+
+![Error Message Format](./diagrams/tdd-diag-m3-19.svg)
 
 ![pool_alloc with Mutex Flow](./diagrams/tdd-diag-m3-04.svg)
 
@@ -5909,6 +5964,8 @@ void* thread_worker(void* arg) {
 #   PASS: No data corruption detected!
 ```
 
+![Stress Test Architecture](./diagrams/tdd-diag-m3-11.svg)
+
 ![Poison Detection Workflow](./diagrams/tdd-diag-m3-07.svg)
 
 ---
@@ -6195,6 +6252,8 @@ typedef struct {
 } MemoryPool;
 ```
 For this implementation, we accept the false sharing overhead for simplicity.
+
+![futex State Machine (Linux)](./diagrams/tdd-diag-m3-13.svg)
 
 ![Canary Block Layout](./diagrams/tdd-diag-m3-08.svg)
 
@@ -6607,6 +6666,8 @@ size_t pool_get_capacity(const MemoryPool* pool) {
     return pool->total_capacity;
 }
 ```
+
+![Debug Feature Detection Matrix](./diagrams/tdd-diag-m3-18.svg)
 
 ![Canary Verification on Free](./diagrams/tdd-diag-m3-09.svg)
 

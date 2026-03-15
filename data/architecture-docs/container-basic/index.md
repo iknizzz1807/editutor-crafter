@@ -146,7 +146,6 @@ The project is complete when:
 Build a minimal container runtime from scratch using Linux kernel primitives—namespaces, cgroups, and user namespace mapping—to achieve process isolation without hardware virtualization. This project strips away the abstraction layers of Docker and Kubernetes to reveal the actual syscalls and kernel mechanisms that make containers possible. You'll implement PID isolation, mount namespace filesystem isolation with pivot_root, network namespace virtualization with veth pairs, cgroup resource limits, and unprivileged rootless container execution through user namespace UID/GID mapping.
 
 
-
 <!-- MS_ID: container-basic-m1 -->
 # PID and UTS Namespace Isolation
 ## The Fundamental Tension: Process Identity in a Shared Kernel
@@ -278,7 +277,6 @@ This is the core insight: **the same process has two valid PIDs simultaneously**
 ### The Three-Level View
 Let's trace what happens when the child calls `getpid()`:
 
-![PID Namespace View Translation](./diagrams/diag-M1-pid-translation.svg)
 
 | Level | What Happens | Cost |
 |-------|--------------|------|
@@ -1130,6 +1128,8 @@ unshare --mount /bin/bash
 unshare --mount --propagation-private /bin/bash
 ```
 
+![Device Node Creation for Minimal /dev](./diagrams/tdd-diag-m2-008.svg)
+
 Here's the trap: on modern Linux systems, the root filesystem is mounted with **shared** propagation by default. This means mount events propagate between namespaces — exactly what you DON'T want for container isolation.
 
 ![Mount Propagation Types: Shared vs Private](./diagrams/diag-M2-mount-propagation.svg)
@@ -1249,6 +1249,8 @@ if (mount(new_root, new_root, NULL, MS_BIND | MS_REC, NULL) == -1) {
 ```
 **What's happening**: `mount --bind source source` creates a new mount entry in the kernel's mount table pointing to the same underlying filesystem. The directory content doesn't change, but now the kernel recognizes it as a mount point.
 ### Why This Matters: The EINVAL Trap
+
+![Mount Propagation Types Comparison](./diagrams/tdd-diag-m2-003.svg)
 
 ![pivot_root() Error Cases: EINVAL and EBUSY](./diagrams/diag-M2-pivot-root-failures.svg)
 
@@ -1440,6 +1442,8 @@ mknod("/dev/urandom", S_IFCHR | 0666, makedev(1, 9));
 mknod("/dev/random", S_IFCHR | 0666, makedev(1, 8));
 mknod("/dev/tty", S_IFCHR | 0666, makedev(5, 0));
 ```
+
+![Bind-Mount-to-Self Mechanism](./diagrams/tdd-diag-m2-006.svg)
 
 ![Minimal Container rootfs Directory Structure](./diagrams/diag-M2-rootfs-layout.svg)
 
@@ -2239,7 +2243,8 @@ int move_if_to_netns_setns(const char *ifname, int netns_fd) {
 ## The Linux Bridge: Virtual Switch
 A **bridge** is a software implementation of a network switch. It learns MAC addresses, forwards frames between ports, and can participate in spanning tree protocols. For containers, the bridge serves as the local network segment — all containers on the same bridge can communicate directly.
 
-![Container Network Bridge Topology](./diagrams/diag-M3-bridge-topology.svg)
+![veth Pair Virtual Cable Mechanics](./diagrams/tdd-diag-m3-002.svg)
+
 
 ### Creating and Configuring a Bridge
 ```c
@@ -2467,6 +2472,8 @@ int main(void) {
 ## NAT and Outbound Internet Access
 Your container can now reach the bridge (gateway), but it still can't reach the internet. Why? Because the container's IP address (10.200.0.2) is private and non-routable. External servers would try to respond to 10.200.0.2, which doesn't exist on the public internet.
 **The solution**: Network Address Translation (NAT) with IP masquerading. The host rewrites outgoing packets from the container's private IP to the host's public IP, then rewrites responses back.
+
+![Network Setup Sequence Diagram](./diagrams/tdd-diag-m3-007.svg)
 
 ![NAT MASQUERADE: Container to Internet](./diagrams/diag-M3-nat-masquerade.svg)
 
@@ -3126,7 +3133,6 @@ cgroup_version_t detect_cgroup_version(void) {
 | **Process count limit** | No direct support | `pids.max` |
 | **Thread mode** | Separate `tasks` file | `cgroup.threads` |
 
-![cgroups v1 vs v2 Hierarchy Comparison](./diagrams/diag-M4-cgroup-v1-v2.svg)
 
 **Why v2 is better for containers:**
 1. **Single hierarchy** — A process is in exactly one cgroup, not one-per-controller
@@ -3354,6 +3360,8 @@ The kernel's OOM killer terminated the process when it exceeded the limit.
 ## CPU Limits: The Bandwidth Controller
 CPU limits control how much CPU time a cgroup can consume. The kernel's CFS (Completely Fair Scheduler) bandwidth controller enforces these limits by throttling processes that exceed their quota.
 
+![CFS Bandwidth Controller CPU Throttling](./diagrams/tdd-diag-m4-003.svg)
+
 ![CFS Bandwidth Controller: CPU Throttling](./diagrams/diag-M4-cpu-throttling.svg)
 
 ### cpu.max: Quota and Period
@@ -3405,7 +3413,6 @@ When a cgroup's processes have used their quota for the current period:
 3. They don't get CPU time until the next period begins
 4. At period start, quota is reset and processes are unthrottled
 
-![CFS Bandwidth Controller: CPU Throttling](./diagrams/diag-M4-cpu-throttling.svg)
 
 ### Reading CPU Statistics
 ```c
@@ -3625,6 +3632,8 @@ int remove_process_from_cgroup(const char *cgroup_path, pid_t pid) {
 **Timing matters**: You should add the process to the cgroup **before** it execs into the container payload. This ensures all resource usage is counted from the start.
 ---
 ## Cleanup: The Order Matters
+
+![pids.max Fork Bomb Containment](./diagrams/tdd-diag-m4-004.svg)
 
 ![cgroup Cleanup Order: Why rmdir Fails](./diagrams/diag-M4-cgroup-cleanup-order.svg)
 
@@ -4400,7 +4409,6 @@ The format is: `nsid_first hostid_first count`
 0 100000 65536  # Container UIDs 0-65535 → Host UIDs 100000-165535 (full range)
 ```
 
-![UID Translation: Inside vs Outside Namespace](./diagrams/diag-M5-uid-translation.svg)
 
 ### Who Can Write the Maps?
 This is where the security model gets subtle:
@@ -4458,7 +4466,6 @@ int write_gid_map(pid_t pid, gid_t host_gid, unsigned int count) {
 ### The Ordering Requirement: Parent Writes Before Child Execs
 The maps must be written by the **parent process** (which is outside the user namespace) before the **child process** (inside the namespace) does anything meaningful.
 
-![uid_map/gid_map Write Sequence](./diagrams/diag-M5-uid-map-writes.svg)
 
 ```c
 // Parent process (outside user namespace)
@@ -5222,15 +5229,14 @@ This is the foundation that Docker, Podman, containerd, and Kubernetes are built
 
 ## System Overview
 
+![Container Escape Vulnerability Taxonomy](./diagrams/diag-escape-vulnerabilities.svg)
+
 ![System Overview](./diagrams/system-overview.svg)
-
-
 
 
 # TDD
 
 Build a minimal container runtime from scratch using Linux kernel primitives—namespaces, cgroups, and user namespace mapping—to achieve process isolation without hardware virtualization. This implementation strips away Docker/Kubernetes abstractions to reveal the actual syscalls and kernel mechanisms: PID isolation via clone(CLONE_NEWPID), mount namespace filesystem isolation with pivot_root, network namespace virtualization with veth pairs, cgroup resource limits, and unprivileged rootless execution through user namespace UID/GID mapping.
-
 
 
 <!-- TDD_MOD_ID: container-basic-m1 -->
@@ -6198,7 +6204,6 @@ void test_init_forwards_termination_signal(void) {
 ## 10. State Machine: Init Process Lifecycle
 ```
 
-![PID Namespace View Translation](./diagrams/tdd-diag-m1-001.svg)
 
 States:
   ┌─────────────────┐
@@ -6234,12 +6239,14 @@ Invariants:
   - TERMINATING always sends SIGTERM to all children
   - EXITING always restores signal handlers
 ```
+
+![PID Namespace View Translation](./diagrams/tdd-diag-m1-001.svg)
+
 ---
 ## 11. Concurrency Specification
 ### 11.1 Process Model
 ```
 
-![clone() Stack Layout for x86-64](./diagrams/tdd-diag-m1-002.svg)
 
 Timeline:
   Host Process (Parent)
@@ -6266,6 +6273,9 @@ Timeline:
   │
   └─ exit(0)
 ```
+
+![clone() Stack Layout for x86-64](./diagrams/tdd-diag-m1-002.svg)
+
 ### 11.2 Signal Safety
 **Async-signal-safe operations in handlers:**
 - Setting `volatile sig_atomic_t` flags: ✅ SAFE
@@ -6309,21 +6319,22 @@ static void sigchld_handler(int sig) {
 ### Diagram 001: Init Process State Machine
 ```
 
-![PID Namespace View Translation](./diagrams/tdd-diag-m1-001.svg)
 
 See Section 10 for state machine specification.
 ```
+
+
 ### Diagram 002: Process Timeline
 ```
 
-![clone() Stack Layout for x86-64](./diagrams/tdd-diag-m1-002.svg)
 
 See Section 11.1 for timeline specification.
 ```
+
+
 ### Diagram 003: Stack Memory Layout
 ```
 
-![PID 1 Zombie Reaping State Machine](./diagrams/tdd-diag-m1-003.svg)
 
 High Address (0x7FFF...)
 ┌─────────────────────────────────────────────┐
@@ -6344,10 +6355,12 @@ Low Address (0x...00000)
 Key insight: clone() expects the TOP address,
              NOT the malloc'd base address.
 ```
+
+![PID 1 Zombie Reaping State Machine](./diagrams/tdd-diag-m1-003.svg)
+
 ### Diagram 004: PID Namespace Translation
 ```
 
-![Process Creation and Namespace Entry](./diagrams/tdd-diag-m1-004.svg)
 
 ┌─────────────────────────────────────────────────────────────┐
 │                    KERNEL PROCESS TABLE                      │
@@ -6373,10 +6386,12 @@ When process calls getpid():
   2. Walks numbers[] array to find entry for current namespace
   3. Returns upid.nr from matching namespace level
 ```
+
+![Process Creation and Namespace Entry](./diagrams/tdd-diag-m1-004.svg)
+
 ### Diagram 005: UTS Namespace Isolation
 ```
 
-![/proc/self/status NSpid Field Analysis](./diagrams/tdd-diag-m1-005.svg)
 
 ┌─────────────────────────────────────────────────────────────┐
 │                    HOST UTS NAMESPACE                        │
@@ -6409,10 +6424,12 @@ sethostname() inside container:
   2. Modifies that namespace's nodename field
   3. Host's uts_namespace is UNCHANGED
 ```
+
+![/proc/self/status NSpid Field Analysis](./diagrams/tdd-diag-m1-005.svg)
+
 ### Diagram 006: Zombie Reaping Flow
 ```
 
-![UTS Namespace struct utsname Layout](./diagrams/tdd-diag-m1-006.svg)
 
 Child Process Exits:
   ┌─────────────┐
@@ -6459,10 +6476,12 @@ WITHOUT reaping:
   Eventually exhaust kernel process table
   Cannot create new processes
 ```
+
+![UTS Namespace struct utsname Layout](./diagrams/tdd-diag-m1-006.svg)
+
 ### Diagram 007: Complete Integration Test Flow
 ```
 
-![Signal Handler Setup Flow](./diagrams/tdd-diag-m1-007.svg)
 
 ┌─────────────────────────────────────────────────────────────────┐
 │                        MAIN PROGRAM                              │
@@ -6517,6 +6536,9 @@ WITHOUT reaping:
                                                   │
 └─────────────────────────────────────────────────┘
 ```
+
+![Signal Handler Setup Flow](./diagrams/tdd-diag-m1-007.svg)
+
 ---
 ## 14. Build Configuration
 ```makefile
@@ -6743,7 +6765,6 @@ mount_context_t Layout (x86-64):
 ### 3.3 Kernel Data Structures (Logical View)
 ```
 
-![pivot_root Atomic Swap Sequence](./diagrams/tdd-diag-m2-001.svg)
 
 Mount Namespace and vfsmount Hierarchy:
 ┌─────────────────────────────────────────────────────────────────┐
@@ -6811,6 +6832,9 @@ Mount Namespace and vfsmount Hierarchy:
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+![pivot_root Atomic Swap Sequence](./diagrams/tdd-diag-m2-001.svg)
+
 ### 3.4 Pseudo-Filesystem Mount Table
 ```c
 /* Standard pseudo-filesystem mount configurations */
@@ -7858,7 +7882,6 @@ void test_chroot_escape_prevented(void) {
 ## 10. State Machine: Filesystem Isolation Sequence
 ```
 
-![Why chroot is Not Container Isolation](./diagrams/tdd-diag-m2-002.svg)
 
 States:
   ┌─────────────────────┐
@@ -7904,6 +7927,9 @@ Invariants:
   - Old root MUST be unmounted for full isolation
   - Pseudo-filesystems mounted AFTER pivot (in new root)
 ```
+
+![Why chroot is Not Container Isolation](./diagrams/tdd-diag-m2-002.svg)
+
 ---
 ## 11. Syscall Reference
 | Syscall | Purpose | Flags/Arguments | Error Conditions |
@@ -7924,15 +7950,12 @@ Invariants:
 ## 12. Diagrams
 ### Diagram 001: Mount Namespace Hierarchy
 (See Section 3.3 - `
-![pivot_root Atomic Swap Sequence](./diagrams/tdd-diag-m2-001.svg)
 `)
 ### Diagram 002: Isolation State Machine
 (See Section 10 - `
-![Why chroot is Not Container Isolation](./diagrams/tdd-diag-m2-002.svg)
 `)
 ### Diagram 003: pivot_root Atomic Swap
 ```
-{{DIAGRAM:tdd-diag-m2-003}}
 pivot_root("/var/ctr/root", "/var/ctr/root/oldroot"):
 BEFORE pivot_root:
 ┌─────────────────────────────────────────────────────────────┐
@@ -7981,10 +8004,11 @@ AFTER umount2("/oldroot", MNT_DETACH):
 │  No path to host filesystem exists                          │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+
 ### Diagram 004: Mount Propagation Types
 ```
 
-![pivot_root Error Cases](./diagrams/tdd-diag-m2-004.svg)
 
 Mount Propagation Event Flow:
 SHARED (default on many systems):
@@ -8014,10 +8038,12 @@ UNBINDABLE:
 └─────────────────┘                      └─────────────────┘
      Prevents: accidental bind-mount loops
 ```
+
+![pivot_root Error Cases](./diagrams/tdd-diag-m2-004.svg)
+
 ### Diagram 005: Complete Isolation Sequence
 ```
 
-![Minimal Container rootfs Directory Structure](./diagrams/tdd-diag-m2-005.svg)
 
 Timeline of setup_filesystem_isolation():
 Time ──────────────────────────────────────────────────────────→
@@ -8058,9 +8084,11 @@ Result: COMPLETE ISOLATION
 │ /proc, /sys, /dev: available with container-specific data  │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+![Minimal Container rootfs Directory Structure](./diagrams/tdd-diag-m2-005.svg)
+
 ### Diagram 006: chroot vs pivot_root
 ```
-{{DIAGRAM:tdd-diag-m2-006}}
 Why chroot is NOT container isolation:
 chroot("/var/ctr/root"):
 ┌─────────────────────────────────────────────────────────────┐
@@ -8094,10 +8122,11 @@ pivot_root("/var/ctr/root", "/var/ctr/root/oldroot") + umount:
 │  Escape attempts fail - no destination to reach            │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+
 ### Diagram 007: Error Recovery Flow
 ```
 
-![Mount Propagation Shared vs Private Demo](./diagrams/tdd-diag-m2-007.svg)
 
 Error Recovery During setup_filesystem_isolation():
 ┌─────────────────────────────────────────────────────────────┐
@@ -8164,9 +8193,11 @@ Error Recovery During setup_filesystem_isolation():
     └─────────────────┘          │  still visible) │
                                  └─────────────────┘
 ```
+
+![Mount Propagation Shared vs Private Demo](./diagrams/tdd-diag-m2-007.svg)
+
 ### Diagram 008: Integration with M1 Namespaces
 ```
-{{DIAGRAM:tdd-diag-m2-008}}
 Integration with PID/UTS Namespaces (from M1):
 ┌─────────────────────────────────────────────────────────────┐
 │                    HOST PROCESS                              │
@@ -8221,6 +8252,8 @@ Namespaces Combined:
 │  Mount NS │  Filesystem isolated, host unreachable         │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+
 ---
 ## 13. Build Configuration
 ```makefile
@@ -8495,7 +8528,6 @@ net_config_t Layout (x86-64):
 ### 3.3 Kernel Data Structures (Logical View)
 ```
 
-![Container Network Bridge Topology](./diagrams/tdd-diag-m3-001.svg)
 
 Network Namespace and veth Pair Architecture:
 ┌─────────────────────────────────────────────────────────────────┐
@@ -8567,9 +8599,11 @@ Network Namespace and veth Pair Architecture:
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+![Container Network Bridge Topology](./diagrams/tdd-diag-m3-001.svg)
+
 ### 3.4 veth Pair Kernel Implementation
 ```
-{{DIAGRAM:tdd-diag-m3-002}}
 veth Pair Implementation (drivers/net/veth.c):
 ┌─────────────────────────────────────────────────────────────────┐
 │                    veth_pair (kernel structure)                 │
@@ -8622,6 +8656,8 @@ veth Pair Creation via Netlink:
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+
 ---
 ## 4. Interface Contracts
 ### 4.1 Network Namespace Operations (`02_net_namespace.c`)
@@ -9598,7 +9634,6 @@ void test_nat_external_access(void) {
 ## 10. State Machine: Network Setup Lifecycle
 ```
 
-![Network Namespace Lifecycle](./diagrams/tdd-diag-m3-003.svg)
 
 Network Setup State Machine:
   ┌─────────────────────┐
@@ -9659,12 +9694,14 @@ Invariants:
   - NAT requires IP forwarding enabled
   - Bridge must be UP for traffic to flow
 ```
+
+![Network Namespace Lifecycle](./diagrams/tdd-diag-m3-003.svg)
+
 ---
 ## 11. Concurrency Specification
 ### 11.1 Process Model
 ```
 
-![NAT MASQUERADE Packet Flow](./diagrams/tdd-diag-m3-004.svg)
 
 Network Setup Process Timeline:
   Host Process (Parent)
@@ -9699,6 +9736,9 @@ Network Setup Process Timeline:
   │
   └─ exit()
 ```
+
+![NAT MASQUERADE Packet Flow](./diagrams/tdd-diag-m3-004.svg)
+
 ### 11.2 Synchronization Requirements
 | Operation | Synchronization | Reason |
 |-----------|-----------------|--------|
@@ -9756,22 +9796,17 @@ Network Setup Process Timeline:
 ## 13. Diagrams
 ### Diagram 001: Network Namespace Architecture
 (See Section 3.3 - `
-![Container Network Bridge Topology](./diagrams/tdd-diag-m3-001.svg)
 `)
 ### Diagram 002: veth Pair Implementation
-(See Section 3.4 - `{{DIAGRAM:tdd-diag-m3-002}}`)
 ### Diagram 003: Network Setup State Machine
 (See Section 10 - `
-![Network Namespace Lifecycle](./diagrams/tdd-diag-m3-003.svg)
 `)
 ### Diagram 004: Process Timeline
 (See Section 11.1 - `
-![NAT MASQUERADE Packet Flow](./diagrams/tdd-diag-m3-004.svg)
 `)
 ### Diagram 005: Bridge Topology
 ```
 
-![DNS Resolution Path](./diagrams/tdd-diag-m3-005.svg)
 
 Container Network Bridge Topology:
                     EXTERNAL NETWORK (Internet)
@@ -9812,10 +9847,12 @@ Bridge FDB Learning:
 - Subsequent frames to that MAC go only to that port
 - Unknown MACs are flooded to all ports
 ```
+
+![DNS Resolution Path](./diagrams/tdd-diag-m3-005.svg)
+
 ### Diagram 006: NAT Packet Flow
 ```
 
-![veth Netlink Message Structure](./diagrams/tdd-diag-m3-006.svg)
 
 NAT MASQUERADE Packet Flow:
 Container sends packet to 8.8.8.8:
@@ -9894,9 +9931,11 @@ Response packet:
                              ▼
                      Container receives response
 ```
+
+![veth Netlink Message Structure](./diagrams/tdd-diag-m3-006.svg)
+
 ### Diagram 007: Complete Integration Flow
 ```
-{{DIAGRAM:tdd-diag-m3-007}}
 Complete Container Network Integration:
 ┌─────────────────────────────────────────────────────────────────┐
 │                        MAIN PROGRAM                              │
@@ -9972,6 +10011,8 @@ Final State:
 - Host resources cleaned up
 - No veth leaks, no iptables rule leaks
 ```
+
+
 ---
 ## 14. Build Configuration
 ```makefile
@@ -10244,7 +10285,6 @@ cgroup_config_t Layout (x86-64):
 ### 3.3 Kernel Data Structures (Logical View)
 ```
 
-![cgroups v1 vs v2 Hierarchy Comparison](./diagrams/tdd-diag-m4-001.svg)
 
 cgroup v2 Unified Hierarchy:
 ┌─────────────────────────────────────────────────────────────────┐
@@ -10308,6 +10348,9 @@ cgroup v2 Unified Hierarchy:
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+![cgroups v1 vs v2 Hierarchy Comparison](./diagrams/tdd-diag-m4-001.svg)
+
 ### 3.4 cgroup v1 vs v2 File Mapping
 ```c
 /* File name differences between cgroup versions */
@@ -11496,7 +11539,6 @@ void test_complete_cgroup_lifecycle(void) {
 ## 10. State Machine: cgroup Lifecycle
 ```
 
-![cgroup OOM Killer Decision Flow](./diagrams/tdd-diag-m4-002.svg)
 
 cgroup Lifecycle State Machine:
   ┌─────────────────────┐
@@ -11547,6 +11589,9 @@ Invariants:
   - Cgroup MUST be empty before removal
   - Controllers MUST be enabled in parent's subtree_control (v2)
 ```
+
+![cgroup OOM Killer Decision Flow](./diagrams/tdd-diag-m4-002.svg)
+
 ---
 ## 11. Syscall Reference
 | Syscall | Purpose | Arguments | Error Conditions |
@@ -11573,15 +11618,12 @@ Invariants:
 ## 12. Diagrams
 ### Diagram 001: cgroup v2 Hierarchy
 (See Section 3.3 - `
-![cgroups v1 vs v2 Hierarchy Comparison](./diagrams/tdd-diag-m4-001.svg)
 `)
 ### Diagram 002: cgroup Lifecycle State Machine
 (See Section 10 - `
-![cgroup OOM Killer Decision Flow](./diagrams/tdd-diag-m4-002.svg)
 `)
 ### Diagram 003: Memory Limit Enforcement
 ```
-{{DIAGRAM:tdd-diag-m4-003}}
 Memory Limit Enforcement Flow:
 Process calls malloc() → kernel allocates pages
                     │
@@ -11640,9 +11682,10 @@ Process calls malloc() → kernel allocates pages
 Key insight: OOM only kills processes in THIS cgroup,
              not random host processes!
 ```
+
+
 ### Diagram 004: CPU Throttling Mechanism
 ```
-{{DIAGRAM:tdd-diag-m4-004}}
 CFS Bandwidth Control Throttling:
 Time (100ms periods):
 │
@@ -11687,10 +11730,11 @@ Scheduler Decision (pick_next_task):
 Cost: ~100 cycles per scheduling decision
 Effect: Process appears "slow" but doesn't block other processes
 ```
+
+
 ### Diagram 005: PID Limit Enforcement
 ```
 
-![cgroup v2 File Layout for Container](./diagrams/tdd-diag-m4-005.svg)
 
 PID Limit Check in fork():
 Process calls fork()
@@ -11734,10 +11778,12 @@ User sees:
 Cost: ~50 cycles (simple comparison)
 Effect: Fork bombs hit wall immediately
 ```
+
+![cgroup v2 File Layout for Container](./diagrams/tdd-diag-m4-005.svg)
+
 ### Diagram 006: Complete Setup Sequence
 ```
 
-![cgroup Cleanup Order](./diagrams/tdd-diag-m4-006.svg)
 
 Complete cgroup Setup Sequence:
 Host Process (Parent)
@@ -11798,10 +11844,12 @@ Host Process (Parent)
 │
 └─ exit()
 ```
+
+![cgroup Cleanup Order](./diagrams/tdd-diag-m4-006.svg)
+
 ### Diagram 007: Cleanup Sequence
 ```
 
-![Controller Enablement Chain](./diagrams/tdd-diag-m4-007.svg)
 
 cgroup Cleanup Sequence:
 cleanup_cgroup() called
@@ -11867,6 +11915,9 @@ IMPORTANT: Cleanup order
 3. THEN remove cgroup
 4. rmdir will FAIL if any process remains
 ```
+
+![Controller Enablement Chain](./diagrams/tdd-diag-m4-007.svg)
+
 ---
 ## 13. Build Configuration
 ```makefile
@@ -12106,7 +12157,6 @@ id_map_extent_t Layout (12 bytes each):
 ### 3.3 Kernel Data Structures (Logical View)
 ```
 
-![UID Translation Inside vs Outside Namespace](./diagrams/tdd-diag-m5-001.svg)
 
 User Namespace and UID Mapping Architecture:
 ┌─────────────────────────────────────────────────────────────────┐
@@ -12162,10 +12212,12 @@ User Namespace and UID Mapping Architecture:
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+![UID Translation Inside vs Outside Namespace](./diagrams/tdd-diag-m5-001.svg)
+
 ### 3.4 UID Translation Mechanism
 ```
 
-![uid_map/gid_map Write Sequence](./diagrams/tdd-diag-m5-002.svg)
 
 UID Translation on File Access:
 Process in user namespace calls stat("/some/file"):
@@ -12213,6 +12265,9 @@ Key insight: The mapping is TWO-WAY.
 - Host UID 1000 → Container UID 0 (for access checks)
 - Host UID 0 → INVALID (not in map, can't access!)
 ```
+
+![uid_map/gid_map Write Sequence](./diagrams/tdd-diag-m5-002.svg)
+
 ---
 ## 4. Interface Contracts
 ### 4.1 User Namespace Creation (`02_user_namespace.c`)
@@ -13145,7 +13200,6 @@ void test_namespace_ordering(void) {
 ## 10. State Machine: User Namespace Mapping
 ```
 
-![Capability Scoping in User Namespaces](./diagrams/tdd-diag-m5-003.svg)
 
 User Namespace Lifecycle State Machine:
   ┌─────────────────────┐
@@ -13193,12 +13247,14 @@ Invariants:
   - Maps can only be written by parent process
   - Child must wait for signal before using capabilities
 ```
+
+![Capability Scoping in User Namespaces](./diagrams/tdd-diag-m5-003.svg)
+
 ---
 ## 11. Concurrency Specification
 ### 11.1 Process Model
 ```
 
-![setgroups='deny' Security Requirement](./diagrams/tdd-diag-m5-004.svg)
 
 Rootless Container Setup Timeline:
 Host Process (Parent)
@@ -13252,6 +13308,9 @@ Host Process (Parent)
 │
 └─ 10. exit()
 ```
+
+![setgroups='deny' Security Requirement](./diagrams/tdd-diag-m5-004.svg)
+
 ### 11.2 Synchronization Requirements
 | Operation | Must Complete Before | Reason |
 |-----------|---------------------|--------|
@@ -13288,24 +13347,19 @@ Host Process (Parent)
 ## 13. Diagrams
 ### Diagram 001: User Namespace Architecture
 (See Section 3.3 - `
-![UID Translation Inside vs Outside Namespace](./diagrams/tdd-diag-m5-001.svg)
 `)
 ### Diagram 002: UID Translation
 (See Section 3.4 - `
-![uid_map/gid_map Write Sequence](./diagrams/tdd-diag-m5-002.svg)
 `)
 ### Diagram 003: State Machine
 (See Section 10 - `
-![Capability Scoping in User Namespaces](./diagrams/tdd-diag-m5-003.svg)
 `)
 ### Diagram 004: Process Timeline
 (See Section 11.1 - `
-![setgroups='deny' Security Requirement](./diagrams/tdd-diag-m5-004.svg)
 `)
 ### Diagram 005: Mapping Sequence
 ```
 
-![Rootless Container Limitations](./diagrams/tdd-diag-m5-005.svg)
 
 Complete Mapping Sequence for Rootless Container:
 ┌─────────────────────────────────────────────────────────────────┐
@@ -13395,10 +13449,12 @@ Complete Mapping Sequence for Rootless Container:
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+![Rootless Container Limitations](./diagrams/tdd-diag-m5-005.svg)
+
 ### Diagram 006: Capability Scoping
 ```
 
-![Full Stack Integration All Namespaces](./diagrams/tdd-diag-m5-006.svg)
 
 Capability Scoping in User Namespace:
 ┌─────────────────────────────────────────────────────────────────┐
@@ -13460,10 +13516,12 @@ Capability Scoping in User Namespace:
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+![Full Stack Integration All Namespaces](./diagrams/tdd-diag-m5-006.svg)
+
 ### Diagram 007: Rootless Limitations
 ```
 
-![UID Map Format and Extent Array](./diagrams/tdd-diag-m5-007.svg)
 
 Rootless Container Limitations and Workarounds:
 ┌─────────────────────────────────────────────────────────────────┐
@@ -13561,6 +13619,9 @@ Rootless Container Limitations and Workarounds:
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+![UID Map Format and Extent Array](./diagrams/tdd-diag-m5-007.svg)
+
 ---
 ## 14. Build Configuration
 ```makefile
@@ -13627,6 +13688,8 @@ At the completion of this module, the implementation must:
 
 
 # Project Structure: Container (Basic)
+
+![Container Runtime Architecture: Satellite View](./diagrams/diag-L0-satellite.svg)
 
 ## Directory Tree
 

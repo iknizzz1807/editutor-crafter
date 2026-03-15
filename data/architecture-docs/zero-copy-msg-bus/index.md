@@ -206,7 +206,6 @@ AFTER M5:
 A high-throughput inter-process messaging system that eliminates data copying by leveraging shared memory regions, lock-free ring buffers, and flat buffer serialization. Processes communicate by reading and writing directly to shared memory segments, achieving sub-microsecond latency that traditional IPC mechanisms (pipes, sockets, message queues) cannot match. This project teaches the fundamental techniques used in high-frequency trading platforms, real-time analytics pipelines, and low-latency microservices.
 
 
-
 <!-- MS_ID: zcmb-m1 -->
 # Milestone 1: Shared Memory Ring Buffer
 ## The Problem: When memcpy() Becomes Your Bottleneck
@@ -223,7 +222,11 @@ This is shared memory IPC, and when done right, it achieves **sub-microsecond** 
 ---
 ## The Architecture: Ring Buffer in Shared Memory
 
+![Shared Memory Setup Sequence](./diagrams/tdd-diag-009.svg)
+
 ![System Satellite Map: Zero-Copy Message Bus](./diagrams/diag-global-001.svg)
+
+![Buffer Wraparound State](./diagrams/tdd-diag-011.svg)
 
 The ring buffer (also called a circular buffer) is your fundamental data structure. It's a fixed-size array where the producer writes and the consumer reads, with two indices that wrap around when they reach the end:
 ```
@@ -246,7 +249,11 @@ This single-instruction operation matters when you're processing millions of mes
 ---
 ## The Three-Level View: How Shared Memory Actually Works
 
+![Consume Operation Sequence](./diagrams/tdd-diag-006.svg)
+
 ![Memory Map: Shared Memory Layout](./diagrams/diag-global-003.svg)
+
+![Module Interface Map](./diagrams/tdd-diag-012.svg)
 
 ### Level 1 — Application
 From your code's perspective, shared memory looks like a pointer:
@@ -280,6 +287,8 @@ When Process A writes to its virtual address, the CPU's Memory Management Unit (
 No copies. The hardware did the translation, and both processes see the same bytes.
 ---
 ## Cross-Process Visibility: The Trap That Awaits
+
+![Cross-Process Memory Visibility Flow](./diagrams/tdd-diag-007.svg)
 
 > **🔑 Foundation: Cross-process memory visibility differs from thread visibility**
 > 
@@ -319,6 +328,8 @@ __sync_synchronize();
 if (shared_data->flag == 1) { /* Now guaranteed */ }
 ```
 
+![Produce Operation Sequence](./diagrams/tdd-diag-005.svg)
+
 Here's the misconception that ruins shared memory projects: "I'll just use `std::atomic` and it'll work across processes, same as threads."
 This is *almost* true, which makes it *especially* dangerous.
 ### The Problem with Compiler Optimizations
@@ -347,6 +358,8 @@ void produce_wrong(RingBuffer* ring, const uint8_t* msg) {
 }
 ```
 The issue: the compiler is allowed to reorder the `memcpy` and the `store` because they operate on different memory locations. The compiler doesn't know another *process* is watching this memory. It assumes single-threaded semantics for non-atomic operations.
+
+![Crash Detection Flow](./diagrams/tdd-diag-010.svg)
 
 > **🔑 Foundation: Memory barriers and their mapping to CPU instructions**
 > 
@@ -400,6 +413,8 @@ r = y;          // Load — may execute BEFORE x=1 becomes visible!
 ```
 SeqCst (sequentially consistent) atomics insert `mfence` (or use `lock`-prefixed instructions) precisely to prevent this.
 
+![Producer State Machine](./diagrams/tdd-diag-003.svg)
+
 ### The Correct Pattern: Head/Tail Updates as Signals
 The cleanest design uses separate `head` (producer writes) and `tail` (consumer writes) indices:
 ```cpp
@@ -446,6 +461,8 @@ bool consume(RingBuffer* ring, uint8_t* out_msg, size_t out_size) {
 The key insight: **`head` and `tail` serve dual purposes**. They track position, but they also serve as synchronization points. When the producer updates `head`, the consumer's `load(acquire)` of `head` ensures all prior writes (the message data) are visible.
 ---
 ## False Sharing: The Performance Killer
+
+![Consumer State Machine](./diagrams/tdd-diag-004.svg)
 
 > **🔑 Foundation: False sharing and cache line alignment**
 > 
@@ -506,6 +523,8 @@ struct RingBuffer {
 ```
 The producer and consumer can now operate in parallel without cache coherency traffic between them.
 
+![Ring Buffer Memory Layout](./diagrams/tdd-diag-002.svg)
+
 Look at this struct:
 ```cpp
 struct RingBuffer {
@@ -521,6 +540,8 @@ Here's the disaster scenario:
 3. Consumer writes to `tail` → needs exclusive ownership, invalidates core 0's cache line
 4. Producer reads `tail` to check for space → cache miss, must fetch from core 1
 This is **cache line ping-pong**. Every operation on either index causes the cache line to bounce between cores. On a multi-socket system, this can require inter-socket traffic over QPI or UPI links, adding 100+ nanoseconds per bounce.
+
+![Cache Line Movement Diagram](./diagrams/tdd-diag-008.svg)
 
 ![Hardware Soul: Cache Line Movement](./diagrams/diag-global-004.svg)
 
@@ -932,6 +953,8 @@ If your median latency is above 500ns, check:
 ---
 ## Knowledge Cascade: What You've Unlocked
 
+![Shared Memory Ring Buffer Architecture](./diagrams/tdd-diag-001.svg)
+
 ![Alternative Reality: Industry Comparisons](./diagrams/diag-global-005.svg)
 
 **1. LMAX Disruptor Pattern**
@@ -1055,7 +1078,31 @@ The key insight: **you're not building a parser. You're building a memory layout
 ---
 ## The Architecture: How Flat Buffers Work
 
+![Flat Buffer Memory Layout](./diagrams/tdd-diag-013.svg)
+
 ![Three-Level View: Complete Message Flow](./diagrams/diag-global-002.svg)
+
+![Zero-Copy vs Traditional Comparison](./diagrams/tdd-diag-024.svg)
+
+![Ring Buffer Integration](./diagrams/tdd-diag-023.svg)
+
+![Code Generator Architecture](./diagrams/tdd-diag-022.svg)
+
+![Schema Evolution Matrix](./diagrams/tdd-diag-021.svg)
+
+![Alignment Calculator Flow](./diagrams/tdd-diag-020.svg)
+
+![Vector Access Pattern](./diagrams/tdd-diag-019.svg)
+
+![Nested Table Access Sequence](./diagrams/tdd-diag-018.svg)
+
+![Builder Construction Flow](./diagrams/tdd-diag-017.svg)
+
+![Field Access Algorithm](./diagrams/tdd-diag-016.svg)
+
+![Schema Parsing Pipeline](./diagrams/tdd-diag-015.svg)
+
+![VTable Structure Detail](./diagrams/tdd-diag-014.svg)
 
 A flat buffer is a contiguous block of memory with a specific structure:
 ```
@@ -2025,7 +2072,10 @@ Here's what happens with 8 producers contending for the same ring buffer:
 | 8 | 25% | 4.8 | 8.5 μs |
 With 8 producers, **75% of CAS operations fail**. Each failure means the CPU wasted cycles on a failed atomic operation, the cache line was invalidated by another core's successful CAS, and the producer must retry—re-reading the cache line that's now being hammered by 7 other producers.
 
-![Hardware Soul: Cache Line Movement](./diagrams/diag-global-004.svg)
+![Sequence Number State Machine](./diagrams/tdd-diag-026.svg)
+
+
+![Sharded Queue Architecture](./diagrams/tdd-diag-031.svg)
 
 The cache coherency traffic alone can saturate the memory bus. On a dual-socket system, the inter-socket link (UPI or QPI) becomes the bottleneck—you're not limited by your algorithm, you're limited by physics.
 **The tension**: You need multiple producers and consumers for throughput and redundancy. But sharing a single data structure between N writers creates exponential contention. The lock-free algorithms that work beautifully for 1 writer become pathological for 8.
@@ -2049,6 +2099,8 @@ bool cas(std::atomic<uint64_t>* addr, uint64_t expected, uint64_t desired) {
 ```
 The assumption is: if `current == expected`, then *nothing changed* between your read and your write. This assumption is **false** in MPMC scenarios.
 
+![Producer Claim Algorithm](./diagrams/tdd-diag-027.svg)
+
 > **🔑 Foundation: The ABA problem occurs when a value changes A→B→A between read and CAS**
 > 
 > ## What It Is
@@ -2069,6 +2121,8 @@ Epoch-based solutions solve this by ensuring memory isn't recycled while any thr
 ## Key Insight
 **CAS checks *equality of value*, not *stability of state*.** Think of it like checking if a hotel room number is still "302" — that doesn't tell you if the occupant changed while you weren't looking. The room number is the same, but the context is completely different.
 Epoch-based reclamation adds the missing "version information" by guaranteeing that even if memory is logically freed, it won't be physically recycled until no thread could possibly still be referencing it.
+
+![ABA Problem Illustration](./diagrams/tdd-diag-030.svg)
 
 Here's the concrete failure mode:
 ```
@@ -2120,7 +2174,10 @@ This isn't just unfair. It's a correctness issue: if Producer B's messages are h
 ---
 ## The Architecture: Three Approaches to MPMC
 
-![System Satellite Map: Zero-Copy Message Bus](./diagrams/diag-global-001.svg)
+![CAS Contention Scenario](./diagrams/tdd-diag-029.svg)
+
+
+![Backpressure Propagation](./diagrams/tdd-diag-033.svg)
 
 There are three fundamental strategies for MPMC queues, each with different trade-offs:
 ### Approach 1: Array-Based with Sequence Numbers (Dmitry Vyukov's Algorithm)
@@ -2738,7 +2795,10 @@ For ultra-low latency, you may need to:
 - Disable power saving (CPU frequency scaling adds latency variance)
 ### Level 3 — Hardware
 
-![Memory Map: Shared Memory Layout](./diagrams/diag-global-003.svg)
+![MPMC Ring Buffer Architecture](./diagrams/tdd-diag-025.svg)
+
+
+![Exponential Backoff State Machine](./diagrams/tdd-diag-034.svg)
 
 The hardware reality of MPMC:
 **Cache Coherency Traffic (MESI Protocol)**:
@@ -2925,6 +2985,8 @@ Use lock-based when:
 **1. ABA Problem and Epoch-Based Reclamation**
 The sequence number solution you've implemented is one approach to ABA. The broader concept—**epoch-based reclamation**—is used in lock-free memory allocators, hazard pointers, and RCU (Read-Copy-Update) in the Linux kernel. The principle is universal: don't reuse a resource until you're sure no one has a stale reference to it.
 
+![Consumer Claim Algorithm](./diagrams/tdd-diag-028.svg)
+
 > **🔑 Foundation: Hazard pointers and epoch-based reclamation are memory reclamation schemes for lock-free data structures that prevent use-after-free by tracking which memory locations threads are actively accessing**
 > 
 > ## What It Is
@@ -2953,6 +3015,12 @@ Epoch-based reclamation is typically **2-10x faster** than hazard pointers for r
 The choice between them is usually:
 - **Hazard pointers**: Predictable, fine-grained, better for heterogeneous workloads
 - **Epoch-based**: Faster throughput, worse tail latency, better for uniform workloads
+
+![Single MPMC vs Sharded Comparison](./diagrams/tdd-diag-036.svg)
+
+![Contention Metrics Collection](./diagrams/tdd-diag-035.svg)
+
+![Shard Selection Flow](./diagrams/tdd-diag-032.svg)
 
 **2. Database Concurrency Control (Cross-Domain)**
 The contention patterns you've seen—multiple writers competing for the same resource—are identical to database concurrency problems:
@@ -3079,7 +3147,10 @@ A hash map can't do wildcard matching. You'd have to:
 2. Or scan every subscription pattern (O(N) where N = number of subscriptions)
 At 100,000 subscriptions and 2 million messages/second, an O(N) scan is **200 billion comparisons per second**. Your CPU will melt.
 
-![System Satellite Map: Zero-Copy Message Bus](./diagrams/diag-global-001.svg)
+![Topic Matching Algorithm](./diagrams/tdd-diag-039.svg)
+
+
+![Message Filter Evaluation](./diagrams/tdd-diag-044.svg)
 
 ### The Trie Solution: Prefix Trees for Topic Matching
 The efficient approach uses a **trie** (prefix tree) to represent the topic hierarchy:
@@ -3099,6 +3170,8 @@ Topic matching becomes tree traversal:
 - `stocks.NASDAQ.price` → match both `stocks.*.price` (sub A) and `stocks.NASDAQ.price` (sub B)
 - `orders.client123.new` → match `orders.client123.#` (sub C)
 **Time complexity**: O(M) where M = number of topic levels (typically 3-5), not O(N) subscriptions.
+
+![Reference Counted Slot Lifecycle](./diagrams/tdd-diag-040.svg)
 
 > **🔑 Foundation: A tree where each node represents a character or segment**
 > 
@@ -3128,6 +3201,8 @@ They also enable efficient longest-prefix matching (critical for IP routing) and
 **ONE key insight**
 A trie trades depth for breadth in a specific way: the tree's depth is bounded by the maximum string length, not the number of strings. This means whether you have 100 or 100 million strings, looking up "hello" always takes 5 node traversals (plus any branching overhead at each level).
 
+![Subscribe Flow Sequence](./diagrams/tdd-diag-042.svg)
+
 ### The MQTT Standard
 Your topic hierarchy design isn't arbitrary—it follows **MQTT** conventions, the industry-standard pub/sub protocol used by AWS IoT, Azure IoT Hub, and millions of IoT devices:
 | Wildcard | Meaning | Example |
@@ -3142,7 +3217,10 @@ We'll use MQTT-style wildcards because:
 ---
 ## The Architecture: Topic Router + Shared Messages
 
-![Three-Level View: Complete Message Flow](./diagrams/diag-global-002.svg)
+![Bloom Filter Structure](./diagrams/tdd-diag-043.svg)
+
+
+![Retained Message Store Layout](./diagrams/tdd-diag-045.svg)
 
 Our pub/sub layer has three components:
 ### 1. Topic Registry (Trie-Based Router)
@@ -3598,6 +3676,8 @@ struct Subscriber {
 ### Bloom Filter for Quick Rejection
 For ultra-fast filtering, we use a **bloom filter** on topic hashes:
 
+![Pub/Sub System Architecture](./diagrams/tdd-diag-037.svg)
+
 > **🔑 Foundation: A probabilistic data structure that tests set membership with no false negatives but possible false positives. Uses multiple hash functions to set bits in a bit array. Great for quick rejection**
 > 
 > **What it IS**
@@ -3920,7 +4000,10 @@ public:
 ---
 ## The Three-Level View: Pub/Sub in Action
 
-![Memory Map: Shared Memory Layout](./diagrams/diag-global-003.svg)
+![Topic Trie Structure](./diagrams/tdd-diag-038.svg)
+
+
+![Last-Will Delivery Flow](./diagrams/tdd-diag-046.svg)
 
 ### Level 1 — Application
 From the application's perspective, pub/sub is simple:
@@ -3961,7 +4044,12 @@ public:
 ```
 ### Level 3 — Hardware
 
-![Hardware Soul: Cache Line Movement](./diagrams/diag-global-004.svg)
+![Publish Flow Sequence](./diagrams/tdd-diag-041.svg)
+
+
+![Sharded Broker Architecture](./diagrams/tdd-diag-048.svg)
+
+![Per-Topic Sequencing](./diagrams/tdd-diag-047.svg)
 
 The hardware reality:
 - **Reference count updates**: Atomic `fetch_sub` on every subscriber ack
@@ -4190,7 +4278,10 @@ You try to replay from a log, but the log itself might be corrupted. The process
 Your trading system has a requirement: **no message loss**. If a crash happens, you must recover every in-flight message. So you add persistence: every message is written to disk before being acknowledged. Your latency just went from **500 nanoseconds to 2 milliseconds**—a **4000× slowdown**. The disk write takes 1-2ms, and you need an `fsync()` to guarantee it's durable.
 The tension is brutal: **durability requires disk I/O, but disk I/O kills low latency**. You can't have both.
 
-![System Satellite Map: Zero-Copy Message Bus](./diagrams/diag-global-001.svg)
+![system-overview](./diagrams/system-overview.svg)
+
+
+![Fence-Based Recovery Sequence](./diagrams/tdd-diag-052.svg)
 
 **The deeper tension**: Crash recovery code is the least tested, most buggy code in any system. Why? Because crashes are rare, and crash-while-recovering is rarer still. You can't easily test the recovery path in CI. The first time your recovery code runs in production might be during an actual outage—when you need it most.
 **The escape hatch**: Accept that perfect recovery is impossible. Design for **graceful degradation**: recover quickly, recover most messages, and make the failure visible. A system that comes back in 50ms with 99.9% of messages is better than one that takes 5 seconds trying to achieve 100%.
@@ -4253,7 +4344,10 @@ This is the approach used by **Kafka** (with idempotent producers) and most prod
 ---
 ## The Architecture: Layers of Resilience
 
-![Three-Level View: Complete Message Flow](./diagrams/diag-global-002.svg)
+![Orphaned Slot Detection Flow](./diagrams/tdd-diag-051.svg)
+
+
+![WAL Replay Algorithm](./diagrams/tdd-diag-055.svg)
 
 Crash recovery isn't one thing—it's a stack of mechanisms, each handling a different failure mode:
 ### Layer 1: Crash Detection
@@ -5079,7 +5173,10 @@ The `Restart=on-failure` and `RestartSec=100ms` mean systemd will automatically 
 ---
 ## The Three-Level View: Crash Recovery in Action
 
-![Memory Map: Shared Memory Layout](./diagrams/diag-global-003.svg)
+![Recovery System Architecture](./diagrams/tdd-diag-049.svg)
+
+
+![WAL Entry Format](./diagrams/tdd-diag-053.svg)
 
 ### Level 1 — Application
 From your application's perspective, crash recovery should be invisible:
@@ -5301,13 +5398,28 @@ Before considering this milestone complete, ensure you have:
 <!-- END_MS -->
 
 
-
-
 # TDD
+
+![Heartbeat Monitor State Machine](./diagrams/tdd-diag-050.svg)
 
 A high-throughput inter-process messaging system that eliminates data copying by leveraging shared memory regions, lock-free ring buffers, and flat buffer serialization. The system achieves sub-microsecond latency through direct memory access, careful cache line alignment, and minimal kernel involvement after initial setup. Built for high-frequency trading platforms, real-time analytics, and low-latency microservices where traditional IPC mechanisms cannot meet performance requirements.
 
 
+![Process Identity Tracking](./diagrams/tdd-diag-062.svg)
+
+![Async Batched Durability Flow](./diagrams/tdd-diag-061.svg)
+
+![At-Least-Once Deduplication](./diagrams/tdd-diag-060.svg)
+
+![Signal Handling Flow](./diagrams/tdd-diag-059.svg)
+
+![Recovery Journal State Machine](./diagrams/tdd-diag-058.svg)
+
+![Full Recovery Flow](./diagrams/tdd-diag-057.svg)
+
+![Checkpoint File Format](./diagrams/tdd-diag-056.svg)
+
+![WAL Write Sequence](./diagrams/tdd-diag-054.svg)
 
 <!-- TDD_MOD_ID: zcmb-m1 -->
 # Technical Design Specification: Shared Memory Ring Buffer

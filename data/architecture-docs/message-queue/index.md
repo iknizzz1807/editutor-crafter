@@ -178,10 +178,11 @@ This minimum set connects every concept in the project to production systems you
 Build a production-grade message broker from scratch, implementing both pub/sub fan-out and consumer-group competitive consumption patterns over TCP. This project teaches the fundamental plumbing of asynchronous distributed systems: how messages flow from producers through a broker to consumers, how durability and delivery guarantees work at the storage layer, and how backpressure prevents cascade failures. You'll implement a custom binary wire protocol with length-prefixed framing, acknowledgment-based at-least-once delivery, persistent append-only log storage with crash recovery, dead letter queues for poison message handling, and comprehensive monitoring. By the end, you'll understand why message queues are the backbone of reliable microservice architectures and the trade-offs involved in every design decision.
 
 
-
 <!-- MS_ID: message-queue-m1 -->
 # Wire Protocol & Pub/Sub Fan-out
 You're about to build the foundation of a message broker—the network-facing layer that accepts connections, speaks a custom binary protocol, and routes messages to subscribers. This is where distributed systems become tangible: not abstract concepts, but bytes on a wire, goroutines juggling connections, and the subtle bugs that emerge when TCP's nature collides with our mental models.
+
+![State Machine: Topic Subscription State](./diagrams/tdd-diag-m1-012.svg)
 
 ![Message Queue Architecture: Satellite View](./diagrams/diag-satellite-overview.svg)
 
@@ -213,6 +214,8 @@ By the time you finish this milestone, you'll have:
 ```
 Every message published to the "orders" topic flows to ALL subscribers. This is **fan-out**—the core pub/sub pattern where each message is broadcast to everyone listening.
 ## TCP: The Byte Stream That Breaks Your Mental Model
+
+![Data Flow: Client Connect to Subscribe](./diagrams/tdd-diag-m1-007.svg)
 
 ![TCP is a Byte Stream, Not a Message Stream](./diagrams/diag-m1-tcp-byte-stream.svg)
 
@@ -249,6 +252,8 @@ func handleConnection(conn net.Conn) {
 This code works in testing—small messages on localhost usually arrive in single reads. In production, under load, across real networks, it corrupts data in ways that are nearly impossible to debug.
 ## Length-Prefixed Framing: The Universal Solution
 
+![Algorithm Steps: Fan-out with Slow Subscriber Handling](./diagrams/tdd-diag-m1-010.svg)
+
 > **🔑 Foundation: Length-prefixed framing**
 > 
 > **What it IS**
@@ -271,6 +276,8 @@ No escaping, no ambiguity, no "message ended with newline" assumptions that brea
 Think of it as a "read the menu, then order" protocol. The length prefix is the menu—it tells you exactly how much to consume. Once you've read those N bytes, you're done with that message. The next byte is the start of the next length prefix. This creates a clean, parseable boundary without any relationship to the message content itself.
 
 
+![Sequence: Connection Cleanup on Disconnect](./diagrams/tdd-diag-m1-014.svg)
+
 ![Length-Prefixed Message Framing](./diagrams/diag-m1-length-prefix-framing.svg)
 
 Every serious binary protocol uses the same pattern: **prefix each message with its size.**
@@ -290,6 +297,8 @@ The receiver's algorithm becomes:
 This works regardless of how TCP fragments the data. If a read contains partial data, you buffer it and wait for more. If a read contains multiple messages, you parse them all.
 ### Why Big-Endian?
 
+![Algorithm Steps: FrameReader.ReadFrame](./diagrams/tdd-diag-m1-009.svg)
+
 > **🔑 Foundation: Network byte order**
 > 
 > **What it IS**
@@ -303,6 +312,8 @@ Use the standard conversion functions:
 Or in modern code, use explicit big-endian write/read functions that handle endianness regardless of your host machine.
 **Key insight**
 Network byte order is a *wire format*, not an in-memory format. Convert to it right before sending; convert from it right after receiving. Never let network byte order values leak into your application logic—do your conversion at the serialization boundary and work in native byte order everywhere else.
+
+![Memory Layout: Length-Prefixed Frame](./diagrams/tdd-diag-m1-004.svg)
 
 Big-endian is the convention for network protocols. It's arbitrary—little-endian would work too—but consistency matters. Every networked system agrees: when you send a multi-byte integer on the wire, the most significant byte comes first.
 In Go, you use the `encoding/binary` package:
@@ -394,6 +405,8 @@ Payload:
 ```
 The 8-byte MessageID is a server-assigned unique identifier used for acknowledgment in later milestones.
 ## Implementing the Frame Reader
+
+![Memory Layout: PUBLISH Command Payload](./diagrams/tdd-diag-m1-005.svg)
 
 ![Partial Read Buffering: The #1 Networking Bug](./diagrams/diag-m1-partial-read-buffer.svg)
 
@@ -638,6 +651,8 @@ func parseError(data []byte) (*Command, error) {
 ```
 ## Building the TCP Server
 
+![Module Architecture: Protocol Layer Components](./diagrams/tdd-diag-m1-001.svg)
+
 ![Concurrent Connection Architecture](./diagrams/diag-m1-concurrent-connections.svg)
 
 Now we tackle the concurrent TCP server. Go's model is elegant: one goroutine per connection, communicating via channels.
@@ -836,7 +851,11 @@ func randomString(n int) string {
 ## Command Handlers
 ### PUBLISH: Broadcasting to Subscribers
 
+![Module Architecture: Server Core Components](./diagrams/tdd-diag-m1-002.svg)
+
 ![Pub/Sub Fan-Out Message Flow](./diagrams/diag-m1-fan-out-flow.svg)
+
+![Sequence: Full Pub/Sub Flow with Multiple Subscribers](./diagrams/tdd-diag-m1-013.svg)
 
 The PUBLISH command is the heart of the broker. When a message arrives, we route it to ALL subscribers of that topic.
 ```go
@@ -960,7 +979,8 @@ func (s *Server) sendUnsubscribeAck(client *Client, topic string) {
 ```
 ## The Topic Router: Fan-Out Engine
 
-![Pub/Sub Fan-Out Message Flow](./diagrams/diag-m1-fan-out-flow.svg)
+![Data Flow: PUBLISH to Fan-out Delivery](./diagrams/tdd-diag-m1-008.svg)
+
 
 The Topic Router is where the pub/sub magic happens. It maintains the mapping from topics to subscribers and handles message delivery.
 ```go
@@ -1115,7 +1135,8 @@ for _, client := range subscribers {
 ```
 ### Fixing Head-of-Line Blocking
 
-![Pub/Sub Fan-Out Message Flow](./diagrams/diag-m1-fan-out-flow.svg)
+![Memory Layout: MESSAGE Delivery Command](./diagrams/tdd-diag-m1-006.svg)
+
 
 The solution is per-subscriber goroutines with buffered channels:
 ```go
@@ -1182,7 +1203,11 @@ func (r *TopicRouter) Publish(topic string, payload []byte, msgID uint64) int {
 This pattern ensures that a slow subscriber only affects itself—not other subscribers.
 ## Connection Manager: Tracking Active Clients
 
+![Module Architecture: Topic Router](./diagrams/tdd-diag-m1-003.svg)
+
 ![Connection Lifecycle State Machine](./diagrams/diag-m1-connection-lifecycle.svg)
+
+![State Machine: Connection Lifecycle](./diagrams/tdd-diag-m1-011.svg)
 
 The Connection Manager tracks all active connections and handles cleanup:
 ```go
@@ -1592,7 +1617,11 @@ You've built a broker that broadcasts every message to every subscriber. That's 
 Imagine you have 10 workers processing orders from a queue. You don't want all 10 workers to process the same order—that would be wasteful and incorrect. You want each order to be processed by **exactly one** worker. The workers compete for work; the fastest (or least loaded) one wins each message.
 This is the consumer group pattern, and it's the foundation of scalable, fault-tolerant message processing.
 
+![Memory Layout: ACK Command Format](./diagrams/tdd-diag-m2-003.svg)
+
 ![Fan-Out vs Consumer Group Delivery](./diagrams/diag-m2-fanout-vs-consumer-group.svg)
+
+![Sequence: Consumer Join and Initial Delivery](./diagrams/tdd-diag-m2-014.svg)
 
 ## The Fundamental Tension: Reliability vs. Duplication
 Every reliable messaging system faces a brutal tradeoff:
@@ -1600,6 +1629,8 @@ Every reliable messaging system faces a brutal tradeoff:
 **Duplication**: Redelivery means the same message might be processed twice. The original consumer might have succeeded but crashed before acknowledging. Now two consumers have processed it.
 You cannot have perfect reliability without accepting possible duplication. This isn't a bug—it's a mathematical consequence of distributed systems. The network can fail, consumers can crash, and there's no way to distinguish "crashed before processing" from "crashed after processing."
 The solution? **At-least-once delivery** with **idempotent consumers**.
+
+![Algorithm Steps: Visibility Timeout Scanner](./diagrams/tdd-diag-m2-012.svg)
 
 > **🔑 Foundation: At-least-once delivery means every message is delivered at least once**
 > 
@@ -1623,6 +1654,8 @@ When you're building event-driven architectures, microservices communication, or
 Think of at-least-once delivery as the **"better safe than sorry"** semantics. The system errs on the side of over-delivery rather than under-delivery. This means the responsibility for handling duplicates shifts from the infrastructure layer (which promises nothing about uniqueness) to your application layer.
 The mental model: **delivery guarantees are a spectrum, and at-least-once is the reliable-but-messy middle ground.** You get safety (no data loss) at the cost of needing defensive coding on the consumer side.
 
+
+![Data Flow: Message Delivery to Consumer Group](./diagrams/tdd-diag-m2-006.svg)
 
 > **🔑 Foundation: Idempotent consumers can safely process the same message multiple times with the same result**
 > 
@@ -1650,6 +1683,8 @@ Idempotent design transforms these from catastrophic bugs into non-issues.
 The mental model for idempotent consumers: **every message might be a replay, and that should be fine.**
 Design your consumer to ask: *"Have I already done this work?"* before asking *"What work do I need to do?"* This often means leading with a check against a persistent record of processed message IDs, or structuring your mutations to be naturally idempotent (using upserts instead of inserts, `SET` instead of `INCREMENT` when possible, etc.).
 The golden rule: **idempotency is not an optimization — it's a correctness requirement** in any system with at-least-once delivery semantics.
+
+![Data Flow: NACK and Redelivery Path](./diagrams/tdd-diag-m2-008.svg)
 
 ## The Message Lifecycle: A State Machine
 
@@ -1694,6 +1729,8 @@ Each state transition is a decision point:
 This state machine is the heart of reliable delivery. Let's build it.
 ## Visibility Timeout: The Key Insight
 
+![Data Flow: ACK Success Path](./diagrams/tdd-diag-m2-007.svg)
+
 ![Visibility Timeout: The Key to At-Least-Once](./diagrams/diag-m2-visibility-timeout.svg)
 
 Here's the clever mechanism that makes crash recovery work: **when a message is delivered to a consumer, it doesn't disappear from the queue—it becomes invisible**.
@@ -1719,6 +1756,8 @@ If Consumer A crashes at T=10 without ACKing, the message "reappears" at T=35 an
 This is the insight that makes consumer groups resilient. A consumer can crash at any point, and its work is automatically recovered.
 But there's a catch: **Consumer A might still be alive**. It might be processing slowly. When it finally finishes at T=40 and sends ACK, Consumer B has already received the message. Now both have processed it.
 This is why consumers MUST be idempotent. Duplicate delivery isn't a bug—it's a consequence of the reliability model.
+
+![Algorithm Steps: Rebalance on Member Change](./diagrams/tdd-diag-m2-013.svg)
 
 ![Why Consumers Must Be Idempotent](./diagrams/diag-m2-idempotency-requirement.svg)
 
@@ -1955,7 +1994,11 @@ func (pq *PendingQueue) Len() int {
 ```
 ## Round-Robin Partition Assignment
 
+![Module Architecture: Consumer Group Components](./diagrams/tdd-diag-m2-001.svg)
+
 ![Round-Robin Partition Assignment](./diagrams/diag-m2-round-robin-assignment.svg)
+
+![Algorithm Steps: Round-Robin Partition Assignment](./diagrams/tdd-diag-m2-011.svg)
 
 We divide messages into logical partitions. Each consumer in the group is assigned a subset of partitions:
 ```go
@@ -2140,7 +2183,8 @@ func (cg *ConsumerGroup) HandleAck(msgID uint64) error {
 ```
 ## Handling NACK: Immediate Redelivery
 
-![ACK/NACK Protocol Flow](./diagrams/diag-m2-ack-nack-protocol.svg)
+![Module Architecture: Pending Queue with Partition Affinity](./diagrams/tdd-diag-m2-002.svg)
+
 
 When a consumer NACKs a message, we want immediate redelivery—but NOT to the same consumer. That consumer already failed to process it:
 ```go
@@ -2191,7 +2235,11 @@ func (cg *ConsumerGroup) HandleNack(msgID uint64, reason string) error {
 ```
 ## Poison Message Detection
 
+![Memory Layout: NACK Command Format](./diagrams/tdd-diag-m2-004.svg)
+
 ![Poison Message Detection Flow](./diagrams/diag-m2-poison-message-detection.svg)
+
+![Sequence: NACK with Retry and Eventual Poison](./diagrams/tdd-diag-m2-015.svg)
 
 A poison message is one that consistently fails processing no matter which consumer tries. Without detection, it would be retried forever, consuming resources and blocking progress:
 ```go
@@ -2221,7 +2269,8 @@ func (cg *ConsumerGroup) PoisonQueueDepth() int {
 ```
 ## The Visibility Timeout Scanner
 
-![Visibility Timeout: The Key to At-Least-Once](./diagrams/diag-m2-visibility-timeout.svg)
+![State Machine: Message Lifecycle in Consumer Group](./diagrams/tdd-diag-m2-009.svg)
+
 
 Messages that aren't acknowledged within the visibility timeout need to be redelivered:
 ```go
@@ -2338,6 +2387,8 @@ func (cg *ConsumerGroup) GetMembers() []string {
 ```
 ## Rebalancing: Redistributing Work
 
+![Memory Layout: InFlightMessage Structure](./diagrams/tdd-diag-m2-005.svg)
+
 ![Consumer Group Rebalancing](./diagrams/diag-m2-rebalancing-trigger.svg)
 
 When consumers join or leave, partitions must be reassigned:
@@ -2390,6 +2441,8 @@ func (cg *ConsumerGroup) notifyAssignment(consumerID string) {
 }
 ```
 ## Avoiding Head-of-Line Blocking
+
+![State Machine: Consumer Group Membership](./diagrams/tdd-diag-m2-010.svg)
 
 ![Avoiding Head-of-Line Blocking](./diagrams/diag-m2-head-of-line-blocking.svg)
 
@@ -2742,7 +2795,10 @@ You've built a broker that routes messages with two delivery patterns—fan-out 
 In production, this is unacceptable. Messages represent business transactions: orders placed, payments processed, notifications sent. Losing them means lost revenue, corrupted state, and violated trust.
 This milestone adds durability. You'll persist every message to disk before acknowledging the producer. You'll recover gracefully from crashes by replaying the log. And you'll implement backpressure—the mechanism that prevents fast producers from drowning slow consumers in unread messages.
 
-![Message Queue Architecture: Satellite View](./diagrams/diag-satellite-overview.svg)
+![Algorithm Steps: Log Entry Decoding with CRC Validation](./diagrams/tdd-diag-m3-011.svg)
+
+
+![Sequence: Full Persistent Publish with Backpressure Check](./diagrams/tdd-diag-m3-015.svg)
 
 ## The Fundamental Tension: Durability vs. Speed
 Every durable storage system lives on a brutal spectrum:
@@ -2780,6 +2836,8 @@ If the broker crashes between steps 2 and 3, the message is still in the log. On
 **Key Insight**
 The WAL is the **source of truth**. All other in-memory structures (pending queues, in-flight maps, consumer offsets) are derived state that can be reconstructed from the log. This means you can freely rebuild these structures on restart—the log contains everything needed.
 
+![Data Flow: Persistent Publish Flow](./diagrams/tdd-diag-m3-007.svg)
+
 ![The fsync Throughput Tradeoff](./diagrams/diag-m3-fsync-tradeoffs.svg)
 
 ### The fsync Tradeoff Spectrum
@@ -2792,7 +2850,11 @@ You have three options for durability, each with different tradeoffs:
 Most production systems choose batched fsync with a small window—Kafka defaults to fsyncing every 5 seconds, accepting that a crash might lose up to 5 seconds of data. The key is making this **configurable** so operators can choose their durability/speed tradeoff.
 ## The Append-Only Log Structure
 
+![Algorithm Steps: Log Entry Encoding with CRC](./diagrams/tdd-diag-m3-010.svg)
+
 ![Append-Only Log File Structure](./diagrams/diag-m3-append-only-log-structure.svg)
+
+![State Machine: Log File State](./diagrams/tdd-diag-m3-013.svg)
 
 The append-only log is elegantly simple: new messages are always appended to the end. Each message gets a monotonically increasing **offset**—its position in the log. Offsets never change, never get reused, and are unique forever.
 ```
@@ -2813,6 +2875,8 @@ This structure has profound implications:
 3. **Reads can be random** — Consumers can read from any offset. A new consumer starts at offset 0. A recovering consumer starts at its last committed offset.
 4. **Compaction happens at the edges** — Old entries can be removed (retention) without affecting newer entries. The log can be truncated from the beginning, but the end always grows.
 ### Log Entry Binary Format
+
+![Data Flow: Consumer Offset Commit](./diagrams/tdd-diag-m3-009.svg)
 
 ![Log Entry Binary Format](./diagrams/diag-m3-log-entry-format.svg)
 
@@ -2930,6 +2994,8 @@ var (
 )
 ```
 ## The Log Writer with Configurable fsync
+
+![Memory Layout: Log Entry Binary Format](./diagrams/tdd-diag-m3-004.svg)
 
 ![Durability Configuration Spectrum](./diagrams/diag-m3-durability-config-spectrum.svg)
 
@@ -3240,6 +3306,8 @@ func (r *Reader) Close() error {
 ```
 ## Consumer Offset Persistence
 
+![Memory Layout: THROTTLE Command Format](./diagrams/tdd-diag-m3-006.svg)
+
 ![Consumer Offset Persistence](./diagrams/diag-m3-consumer-offset-persistence.svg)
 
 For crash recovery to work, we need to know **where each consumer left off**. If a consumer group had processed messages up to offset 1000 before the crash, we should resume from offset 1001—not from the beginning.
@@ -3359,7 +3427,11 @@ Crash Scenarios:
 This pattern guarantees that the offset file is never in a partially-written state.
 ## Crash Recovery Procedure
 
+![Memory Layout: Offset Store JSON Structure](./diagrams/tdd-diag-m3-005.svg)
+
 ![Crash Recovery: Replay from Consumer Offset](./diagrams/diag-m3-crash-recovery-flow.svg)
+
+![Sequence: Crash Recovery Startup](./diagrams/tdd-diag-m3-016.svg)
 
 When the broker restarts after a crash, recovery proceeds in a specific order:
 ```
@@ -3483,6 +3555,8 @@ func (w *log.Writer) SetNextOffset(offset uint64) {
 ```
 ### Handling CRC Corruption
 
+![Module Architecture: Recovery Manager](./diagrams/tdd-diag-m3-002.svg)
+
 ![CRC Corruption Detection and Recovery](./diagrams/diag-m3-crc-corruption-handling.svg)
 
 Disk corruption is rare but not impossible. The CRC32 checksum catches:
@@ -3548,7 +3622,11 @@ func (r *Reader) skipToNextValid() bool {
 The key principle: **corruption shouldn't halt the entire broker**. Skip the bad entry, log a warning, and continue. Operators can investigate the corrupted data later.
 ## Application-Level Backpressure
 
+![Data Flow: Crash Recovery Sequence](./diagrams/tdd-diag-m3-008.svg)
+
 ![Application-Level Backpressure: THROTTLE Command](./diagrams/diag-m3-backpressure-throttle.svg)
+
+![State Machine: Backpressure State](./diagrams/tdd-diag-m3-014.svg)
 
 Without backpressure, a fast producer can overwhelm the system:
 1. Producer sends 100,000 messages/second
@@ -3558,6 +3636,8 @@ Without backpressure, a fast producer can overwhelm the system:
 5. Broker crashes or becomes unresponsive
 The solution is **explicit backpressure signaling**. When consumer lag exceeds a threshold, the broker tells producers to slow down.
 ### Consumer Lag Calculation
+
+![Algorithm Steps: Backpressure Decision with Hysteresis](./diagrams/tdd-diag-m3-012.svg)
 
 ![Consumer Lag Calculation](./diagrams/diag-m3-lag-calculation.svg)
 
@@ -3794,6 +3874,8 @@ func (p *Producer) PublishWithBackoff(topic string, payload []byte) error {
 }
 ```
 ## Retention Policies
+
+![Module Architecture: Backpressure Manager](./diagrams/tdd-diag-m3-003.svg)
 
 ![Retention: Time-Based and Size-Based](./diagrams/diag-m3-retention-policies.svg)
 
@@ -4278,7 +4360,10 @@ You've built a broker that handles message delivery with consumer groups, persis
 In M2, you detected poison messages—messages that exceed their retry limit. You moved them to a holding area. But that holding area was a dead end. Operators couldn't see what was there, understand why messages failed, or attempt recovery. The poison queue was a black hole.
 This milestone transforms that black hole into a **first-class operational tool**. You'll build dead letter queues (DLQs) as proper topics with full metadata, inspection APIs for debugging, replay mechanisms for recovery, and a monitoring layer that makes the broker's vital signs visible.
 
-![Message Queue Architecture: Satellite View](./diagrams/diag-satellite-overview.svg)
+![system-overview](./diagrams/system-overview.svg)
+
+
+![Sequence: Health Check with Kubernetes Probes](./diagrams/tdd-diag-m4-016.svg)
 
 ## The Fundamental Tension: Visibility vs. Actionability
 Every failure in a distributed system creates a choice:
@@ -4294,7 +4379,11 @@ This is catastrophically wrong. The DLQ is not a trash can—it's a **debugging 
 2. **A symptom of a systemic problem** — schema changes, downstream API failures, data quality issues
 3. **A potential recovery candidate** — many "poison" messages are actually good messages that encountered temporary failures
 
+![Memory Layout: Health Response JSON](./diagrams/tdd-diag-m4-007.svg)
+
 ![Dead Letter Queue as Separate Topic](./diagrams/diag-m4-dlq-topic-structure.svg)
+
+![State Machine: Consumer Heartbeat State](./diagrams/tdd-diag-m4-013.svg)
 
 The DLQ must preserve enough information to answer:
 - What was the original message?
@@ -4406,7 +4495,11 @@ func (dm *DLQManager) GetDLQTopicName(topic string) string {
 }
 ```
 
+![End-to-End Message Journey](./diagrams/diag-e2e-message-journey.svg)
+
 ![DLQ Message Metadata Structure](./diagrams/diag-m4-dlq-message-metadata.svg)
+
+![State Machine: Health Check Status](./diagrams/tdd-diag-m4-014.svg)
 
 ### Why JSON for DLQ Payload?
 You might wonder: we've been using binary protocols everywhere else. Why JSON for the DLQ?
@@ -4486,7 +4579,11 @@ func (cg *ConsumerGroup) HandleNack(msgID uint64, reason string) error {
 ```
 ## DLQ Inspection API
 
+![Module Architecture: DLQ Manager](./diagrams/tdd-diag-m4-001.svg)
+
 ![Monitoring API Architecture](./diagrams/diag-m4-api-architecture.svg)
+
+![Data Flow: Metrics Collection Cycle](./diagrams/tdd-diag-m4-010.svg)
 
 Operators need to see what's in the DLQ. We'll expose this through a REST HTTP API running on a separate port from the main TCP broker.
 ```go
@@ -4678,7 +4775,11 @@ func (api *InspectionAPI) readDLQMessages(topic string, offset, limit int) ([]DL
 ```
 ## DLQ Replay: New Message, New Offset
 
+![Module Architecture: Inspection API Components](./diagrams/tdd-diag-m4-002.svg)
+
 ![DLQ Replay: New Message, New Offset](./diagrams/diag-m4-dlq-replay-flow.svg)
+
+![Data Flow: DLQ Replay to Original Topic](./diagrams/tdd-diag-m4-009.svg)
 
 Here's where the misconception about DLQ replay becomes dangerous. Developers often think replay means "put the message back where it was" or "undo the failure."
 **Replay is not undo.** When you replay a DLQ message, you're publishing a **brand new message** to the original topic. It gets a new offset, appears at the end of the queue, and is delivered according to current routing rules.
@@ -4805,7 +4906,11 @@ This is usually the right choice. Consider: if message 100 failed due to a bug t
 However, if your application requires strict ordering (e.g., state machine events where replaying an old event would corrupt state), you need additional coordination—perhaps a "reprocess from offset X" that re-drives everything from a checkpoint.
 ## Monitoring Metrics: The Vital Signs
 
+![Memory Layout: DLQ Message JSON Structure](./diagrams/tdd-diag-m4-006.svg)
+
 ![Monitoring Metrics Exposed](./diagrams/diag-m4-monitoring-metrics.svg)
+
+![Sequence: Consumer Death Detection and Rebalance](./diagrams/tdd-diag-m4-017.svg)
 
 You can't operate what you can't measure. A production message broker needs continuous visibility into:
 1. **Queue depth** — How many messages are waiting?
@@ -4963,7 +5068,11 @@ func (api *InspectionAPI) handleTopicMetrics(w http.ResponseWriter, r *http.Requ
 ```
 ## Consumer Heartbeat and Dead Detection
 
+![Module Architecture: Metrics Collector](./diagrams/tdd-diag-m4-003.svg)
+
 ![Consumer Heartbeat and Dead Detection](./diagrams/diag-m4-consumer-heartbeat.svg)
+
+![Algorithm Steps: Consumer Death Detection](./diagrams/tdd-diag-m4-011.svg)
 
 In M2, we handled consumer crashes through visibility timeout—messages would be redelivered after the timeout expired. But there's a proactive approach: **detect dead consumers through heartbeat monitoring** and trigger immediate rebalancing.
 This reduces recovery time. Instead of waiting 30 seconds for visibility timeout, dead consumers are detected within the heartbeat interval (typically 10 seconds) and their partitions reassigned immediately.
@@ -5107,7 +5216,11 @@ func (s *Server) handleConsumerDeath(consumerID string) {
 ```
 ## Health Endpoint: The Kubernetes Probe Pattern
 
+![Module Architecture: Heartbeat Manager](./diagrams/tdd-diag-m4-004.svg)
+
 ![Health Check States and Criteria](./diagrams/diag-m4-health-endpoint-states.svg)
+
+![Algorithm Steps: Health Status Aggregation](./diagrams/tdd-diag-m4-012.svg)
 
 The health endpoint answers a simple question: "Is this broker ready to serve traffic?" But the answer isn't binary—there are degrees of health:
 - **HEALTHY**: Everything is working. The broker can accept connections, persist messages, and deliver to consumers.
@@ -5296,7 +5409,11 @@ func (api *InspectionAPI) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
+![Module Architecture: Health Checker](./diagrams/tdd-diag-m4-005.svg)
+
 ![DLQ Growth Rate Alerting](./diagrams/diag-m4-dlq-alerting-threshold.svg)
+
+![Sequence: DLQ Inspection and Selective Replay](./diagrams/tdd-diag-m4-015.svg)
 
 ### Kubernetes Integration
 The health endpoint is designed for Kubernetes probes:
@@ -5637,13 +5754,16 @@ These concepts appear in every messaging system—Kafka, RabbitMQ, SQS, Pulsar. 
 <!-- END_MS -->
 
 
-
-
 # TDD
+
+![Comparison: Your Broker vs Kafka vs RabbitMQ](./diagrams/diag-comparison-kafka-rabbitmq.svg)
 
 A production-grade message broker implementing both pub/sub fan-out and consumer-group competitive consumption over TCP with a custom binary wire protocol. The system embodies the fundamental tension of data-storage systems: durability vs. speed. Messages persist via an append-only log with configurable fsync policies, while application-level backpressure prevents cascade failures. The design prioritizes operational visibility through dead letter queues, comprehensive metrics, and health monitoring—making the broker not just functional but debuggable and operable in production.
 
 
+![Data Flow: Complete DLQ Lifecycle](./diagrams/tdd-diag-m4-018.svg)
+
+![Data Flow: Poison Message to DLQ](./diagrams/tdd-diag-m4-008.svg)
 
 <!-- TDD_MOD_ID: message-queue-m1 -->
 # Technical Design Document: Wire Protocol & Pub/Sub Fan-out
@@ -8660,9 +8780,11 @@ message-queue/
 All multi-byte integers are **big-endian** (network byte order).
 ```
 
-![Module Architecture: Log Writer Components](./diagrams/tdd-diag-m3-001.svg)
 
 ```
+
+![Module Architecture: Log Writer Components](./diagrams/tdd-diag-m3-001.svg)
+
 | Offset | Size | Field | Type | Description |
 |--------|------|-------|------|-------------|
 | 0x00 | 8 bytes | Offset | uint64 BE | Monotonically increasing log position |

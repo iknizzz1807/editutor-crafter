@@ -156,7 +156,6 @@ The project progressively reveals how the kernel mediates all observation of run
 By the end, you'll have a tool that can attach to any running process, decode its syscalls with human-readable arguments and flags, follow all child processes, filter by syscall name, and produce a statistical summary — a genuine systems debugging instrument.
 
 
-
 <!-- MS_ID: build-strace-m1 -->
 # Milestone 1: Basic ptrace Syscall Intercept
 
@@ -505,6 +504,8 @@ Your main tracer loop calls `waitpid` continuously. Every single iteration produ
 ### Key Mental Model
 > **The `status` integer is like a tagged union in C: the "tag" bits tell you which interpretation is valid, and the extraction macros are the field accessors. Never access a field without checking the tag first.**
 `WIFEXITED`, `WIFSIGNALED`, `WIFSTOPPED` are the tags. `WEXITSTATUS`, `WTERMSIG`, `WSTOPSIG` are the fields. One tag is always true; the others are false. Check the tag, then read the field.
+
+![waitpid Status Word Bit Layout](./diagrams/tdd-diag-3.svg)
 
 For your tracer, you need to handle three cases on every `waitpid` return:
 ```c
@@ -1540,6 +1541,8 @@ You'll also encounter return values that pack status information into bits — `
 > **Each bit is an independent light switch. OR turns switches on. AND with a complement turns one switch off. AND alone reads whether a switch is on. Never use `==` to test a flag — use `&`.**
 Define your own flags the same way when designing any interface that takes a set of boolean options. It's more readable than a struct of bools, cheaper to pass, and the pattern is immediately recognizable to any systems programmer.
 
+![Bitmask Flag Decoding: open() Flags Example with Access Mode Special Case](./diagrams/tdd-diag-12.svg)
+
 Here is the generic flag-decoding infrastructure:
 ```c
 /* A single flag entry: the bit value and its symbolic name */
@@ -2281,7 +2284,6 @@ The `num_active` counter is the exit condition. It starts at 1 (the initial chil
 ---
 ## Decoding the PTRACE_EVENT Stop
 
-![waitpid Status Word Bit Layout](./diagrams/diag-m1-waitpid-status-decoding.svg)
 
 Now for the dispatch logic inside `handle_stop`. This is where the status word bit layout becomes crucial:
 ```c
@@ -2582,7 +2584,6 @@ Using `fputs` (which calls `write` once) instead of multiple `fprintf` calls is 
 ---
 ## Putting It All Together: The Complete M3 Structure
 
-![waitpid(-1) Event Dispatch Flowchart](./diagrams/diag-m3-event-dispatch-flowchart.svg)
 
 Here's the complete `main` function and top-level structure for Milestone 3:
 ```c
@@ -2652,7 +2653,6 @@ Expected output structure:
 ---
 ## Edge Case: The Entry/Exit Toggle Across Fork
 
-![Syscall Entry/Exit Double-Stop State Machine](./diagrams/diag-m1-entry-exit-toggle.svg)
 
 Here's a subtle correctness issue. When a process calls `fork()`, the event sequence looks like this from the tracer's perspective:
 1. Parent PID 1234: **syscall-entry stop** for `fork` (toggle: parent is now `in_syscall = 1`)
@@ -2832,7 +2832,6 @@ The M3 per-PID hash map and event loop remain unchanged in structure. You're add
 ---
 ## Part 1: Syscall Filtering
 
-![Syscall Filter Architecture: Trace Everything, Display Selectively](./diagrams/diag-m4-filter-architecture.svg)
 
 ### The Key Principle: Trace Everything, Display Selectively
 This principle deserves a dedicated moment of attention because it's counterintuitive.
@@ -2943,6 +2942,8 @@ The ordering here is deliberate: timing is recorded *before* the filter check, s
 ---
 ## Part 2: Timing with CLOCK_MONOTONIC
 
+![Syscall Filter Architecture: Trace All, Print Selectively](./diagrams/tdd-diag-23.svg)
+
 ![Syscall Timing: What You Actually Measure vs True Cost](./diagrams/diag-m4-timing-measurement.svg)
 
 ### Why the Clock Choice Matters
@@ -2977,7 +2978,6 @@ static uint64_t timespec_diff_ns(const struct timespec *start,
 ```
 ### The Observer Effect: Your Measurement Includes Yourself
 
-![Syscall Timing: What You Actually Measure vs True Cost](./diagrams/diag-m4-timing-measurement.svg)
 
 This is the core revelation of this milestone. Read it slowly.
 When you call `clock_gettime(CLOCK_MONOTONIC, &state->entry_time)` at the entry stop, then `clock_gettime(CLOCK_MONOTONIC, &exit_time)` at the exit stop, what does the elapsed time contain?
@@ -3671,12 +3671,9 @@ Your statistics should count *all* syscalls, not just filtered ones. If you appl
 ![System Overview](./diagrams/system-overview.svg)
 
 
-
-
 # TDD
 
 A ptrace-based syscall interception engine for x86_64 Linux that progressively reveals kernel-mediated process observation: from a single-process entry/exit toggle through full argument decoding via cross-address-space memory reads, to a multi-process event dispatcher with per-PID state machines, culminating in production-quality filtering, monotonic timing, and attach/detach lifecycle management. Every design decision is grounded in the hardware cost of context switching, TLB pressure, and the observer effect on measurement.
-
 
 
 <!-- TDD_MOD_ID: build-strace-m1 -->
@@ -3911,7 +3908,6 @@ static const char *errno_name(int err) {
 ---
 ## 5. Algorithm Specification
 ### 5.1 Main Tracing Loop — Full State Machine
-{{DIAGRAM:tdd-diag-3}}
 ```
 Input:  child_pid (valid child PID; child has called PTRACE_TRACEME and exec'd)
 Output: formatted lines to stderr; returns when child terminates
@@ -5169,7 +5165,6 @@ long word = ptrace(PTRACE_PEEKDATA, pid, (void *)(uintptr_t)aligned_addr, NULL);
 if (word == -1L && errno != 0) { ... }
 ```
 ### 5.2 Argument Extraction from Registers
-{{DIAGRAM:tdd-diag-12}}
 ```
 FUNCTION extract_args(regs, info):
   info->syscall_nr ← (long)regs->orig_rax
@@ -6946,7 +6941,6 @@ _Static_assert(offsetof(pid_state_t, entry_time) == 0x50,
 _Static_assert(offsetof(pid_state_t, outbuf) == 0x60,
     "pid_state_t.outbuf must be at offset 0x60");
 ```
-{{DIAGRAM:tdd-diag-23}}
 ### 3.2 `syscall_stats_t` — Per-Syscall Accumulator
 ```c
 /*

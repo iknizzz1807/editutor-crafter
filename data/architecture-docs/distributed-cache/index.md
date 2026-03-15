@@ -214,7 +214,6 @@ These are explicitly called out in the Atlas as `🔭 Deep Dive Available` block
 Build a production-grade distributed caching system from scratch, implementing the core techniques behind Redis Cluster and Memcached. You'll start with a single-node cache featuring LRU/LFU eviction and TTL expiration, then scale horizontally using consistent hashing with virtual nodes. The system evolves to include primary-secondary replication with automatic failover, cache patterns (write-through, write-behind, cache-aside), thundering herd protection, and a custom wire protocol with connection pooling. By the end, you'll understand why distributed caching is the backbone of high-traffic systems serving millions of requests per second.
 
 
-
 <!-- MS_ID: distributed-cache-m1 -->
 # Single Node Cache with Eviction
 ## Mission Briefing
@@ -256,7 +255,6 @@ type Entry struct {
 }
 ```
 
-![Cache Entry Memory Layout](./diagrams/diag-m1-entry-memory-layout.svg)
 
 Notice the `Prev` and `Next` pointers. These aren't just convenience—they're the backbone of O(1) eviction. We'll see why in a moment.
 ---
@@ -456,6 +454,8 @@ func (c *NaiveLFU) evictLFU() {
 ### The Real LFU: Frequency Buckets
 The optimization: **group entries by frequency**. Instead of searching all entries, we maintain a linked list of "frequency buckets," each containing entries with that frequency.
 
+![LRU Eviction on Capacity Breach](./diagrams/tdd-diag-m1-005.svg)
+
 ![LFU Cache: Frequency Bucket Structure](./diagrams/diag-m1-lfu-buckets.svg)
 
 ```
@@ -577,7 +577,6 @@ This is why we have the `Recency` field in our Entry struct.
 ---
 ## LRU vs LFU: When to Use Which?
 
-![LRU Cache: Hashmap + Doubly Linked List](./diagrams/diag-m1-lru-structure.svg)
 
 The choice depends on your access pattern:
 **Use LRU when:**
@@ -1785,7 +1784,8 @@ ring.AddNode(&PhysicalNode{
 })
 ```
 
-![Weighted Node Position Calculation](./diagrams/diag-m2-weighted-nodes.svg)
+![GetNodes for Replication](./diagrams/tdd-diag-m2-009.svg)
+
 
 The math: with weights w₁, w₂, ..., wₙ, the fraction of keys going to node i is:
 ```
@@ -1944,6 +1944,8 @@ func (dc *DistributedCache) setWithRetry(ctx context.Context, pool *ConnectionPo
     return lastErr
 }
 ```
+
+![Client-Side Sharding Request Flow](./diagrams/tdd-diag-m2-008.svg)
 
 > **🔑 Foundation: Why connection pooling matters for distributed systems performance**
 > 
@@ -2491,6 +2493,8 @@ This is **replica lag**, and it's unavoidable in async replication. Your cache m
 ## Failure Detection: The Heartbeat Protocol
 Before you can fail over, you must detect failure. But in distributed systems, **"can't reach" doesn't mean "dead"**.
 
+![Phi Accrual Detection Statistics](./diagrams/tdd-diag-m3-004.svg)
+
 ![Heartbeat Failure Detection Timing](./diagrams/diag-m3-heartbeat-timing.svg)
 
 ### The False Positive Problem
@@ -2687,6 +2691,8 @@ func normalCDF(x float64) float64 {
 ---
 ## Failover: When the Primary Dies
 
+![Heartbeat Failure Detection Timing](./diagrams/tdd-diag-m3-003.svg)
+
 ![Failover State Machine](./diagrams/diag-m3-failover-state-machine.svg)
 
 When the primary fails, a secondary must be promoted. But which one? And how do we prevent split-brain?
@@ -2712,7 +2718,6 @@ When the primary fails, a secondary must be promoted. But which one? And how do 
 └─────────────────────────────────────────────────────────────┘
 ```
 
-![Split-Brain During Network Partition](./diagrams/diag-m3-split-brain-scenario.svg)
 
 Split-brain is catastrophic. When the partition heals, you have two different values for the same key, and no way to know which is correct without application-level conflict resolution.
 ### Quorum-Based Failover
@@ -4082,7 +4087,6 @@ Timeline:
 ## Thundering Herd: The Stampede Defense
 Now let's return to the core problem: when a popular key expires, concurrent requests all miss and bombard the database.
 
-![Thundering Herd Timeline](./diagrams/diag-m4-thundering-herd.svg)
 
 We've seen single-flight request coalescing as one solution. But there's another approach that's even more elegant: **probabilistic early expiration**.
 ### Strategy 1: Request Coalescing (Single-Flight)
@@ -4867,6 +4871,8 @@ Every system needs a way for clients to communicate with it. This seems trivial�
 **The Connection Problem**: Creating a TCP connection requires a three-way handshake (1-3 RTTs), TLS negotiation (1-2 RTTs if used), and potentially authentication. At 10,000 requests per second, creating a new connection per request means 10,000 handshakes per second—your network will melt. Connection pooling isn't optional; it's survival.
 **The Retry Problem**: Networks fail. Servers crash. Timeouts expire. But retrying immediately creates **retry storms**—if 100 clients all retry at the same moment, you've amplified a 1-second outage into a sustained attack on your recovering servers. The solution requires [[EXPLAIN:exponential-backoff-and-jitter|Exponential backoff with jitter]] to spread retry attempts across time.
 **The Pipelining Problem**: Round-trip latency kills performance. If each command requires a request-response cycle (0.5ms RTT), you can only execute 2,000 commands per second regardless of how fast your cache is. Pipelining—sending multiple commands without waiting for responses—unlocks throughput, but requires careful memory management to prevent a slow client from consuming all server memory.
+
+![system-overview](./diagrams/system-overview.svg)
 
 ![Client Library Architecture](./diagrams/diag-m5-client-architecture.svg)
 
@@ -5917,6 +5923,8 @@ func (c *Conn) Raw() net.Conn {
 ```
 ---
 ## Retry Logic: Exponential Backoff with Jitter
+
+![Connection Health Check Flow](./diagrams/tdd-diag-m5-012.svg)
 
 ![Exponential Backoff with Jitter Timeline](./diagrams/diag-m5-retry-backoff.svg)
 
@@ -7143,12 +7151,11 @@ This is the same foundation that powers Redis Cluster, Memcached, and caching la
 <!-- END_MS -->
 
 
-
-
 # TDD
 
-A production-grade distributed caching system implementing the core techniques behind Redis Cluster and Memcached. The system evolves from a single-node cache with LRU/LFU eviction through consistent hashing-based horizontal scaling, primary-secondary replication with automatic failover, sophisticated cache patterns with thundering herd protection, to a complete wire protocol with connection pooling. This project teaches the fundamental impossibility results of distributed systems (CAP theorem) through hands-on implementation of the patterns used at scale by Netflix, GitHub, and Reddit.
+![DCP Protocol Packet Format](./diagrams/tdd-diag-m5-001.svg)
 
+A production-grade distributed caching system implementing the core techniques behind Redis Cluster and Memcached. The system evolves from a single-node cache with LRU/LFU eviction through consistent hashing-based horizontal scaling, primary-secondary replication with automatic failover, sophisticated cache patterns with thundering herd protection, to a complete wire protocol with connection pooling. This project teaches the fundamental impossibility results of distributed systems (CAP theorem) through hands-on implementation of the patterns used at scale by Netflix, GitHub, and Reddit.
 
 
 <!-- TDD_MOD_ID: distributed-cache-m1 -->
@@ -8042,7 +8049,6 @@ go test -race ./...
 ![LRU Get Operation State Transition](./diagrams/tdd-diag-m1-004.svg)
 
 **Figure 4: Shard Architecture** - Depicts key → shard → entry flow.
-{{DIAGRAM:tdd-diag-m1-005}}
 **Figure 5: TTL Lazy Eviction Flow** - Sequence diagram for Get with TTL check.
 
 ![LFU Frequency Increment Flow](./diagrams/tdd-diag-m1-006.svg)
@@ -8885,9 +8891,7 @@ go test -race ./...
 ![Key Distribution Heatmap](./diagrams/tdd-diag-m2-007.svg)
 
 **Figure 7: Data Structure Relationships** - Shows HashRing → vnodes slice → VirtualNode → PhysicalNode references.
-{{DIAGRAM:tdd-diag-m2-008}}
 **Figure 8: Index Rebuild on Removal** - Shows before/after state when removing a node's vnodes.
-{{DIAGRAM:tdd-diag-m2-009}}
 **Figure 9: Distribution Heatmap** - Visualizes key distribution across ring positions and nodes.
 
 ![Hash Ring State Machine](./diagrams/tdd-diag-m2-010.svg)
@@ -10071,9 +10075,7 @@ go test -race ./...
 ![Replication Write Path Sequence](./diagrams/tdd-diag-m3-002.svg)
 
 **Figure 2: Node Health State Machine** - States (Healthy, Suspect, Unhealthy, Dead) with transition conditions.
-{{DIAGRAM:tdd-diag-m3-003}}
 **Figure 3: Heartbeat Flow** - Sequence diagram: sender → receiver, heartbeat message, detector update.
-{{DIAGRAM:tdd-diag-m3-004}}
 **Figure 4: Phi Accrual Distribution** - Normal distribution with mean/variance, phi threshold line.
 
 ![Quorum Decision Matrix](./diagrams/tdd-diag-m3-005.svg)
@@ -11195,6 +11197,8 @@ go test -race ./...
 ```
 ---
 ## Diagrams
+
+![Pipeline Request Flow](./diagrams/tdd-diag-m5-008.svg)
 
 ![Cache Pattern Comparison Matrix](./diagrams/tdd-diag-m4-001.svg)
 
@@ -12521,10 +12525,10 @@ go test -race ./...
 ```
 ---
 ## Diagrams
-{{DIAGRAM:tdd-diag-m5-001}}
 **Figure 1: Protocol Message Flow** - Shows client request → server parsing → command execution → response serialization → client.
-{{DIAGRAM:tdd-diag-m5-002}}
+![tdd-diag-m5-002](./diagrams/tdd-diag-m5-002.svg)
 **Figure 2: Connection Pool State Machine** - Shows IDLE ↔ IN_USE ↔ CLOSED transitions with Get/Put operations.
+
 
 ![Server Connection Handler Architecture](./diagrams/tdd-diag-m5-003.svg)
 
@@ -12545,7 +12549,6 @@ go test -race ./...
 ![Jitter Strategy Comparison](./diagrams/tdd-diag-m5-007.svg)
 
 **Figure 7: Command Tokenization** - Shows tokenizer state machine for quote handling.
-{{DIAGRAM:tdd-diag-m5-008}}
 **Figure 8: Response Type Format** - Shows byte layout for each response type prefix.
 
 ![Client Library Architecture](./diagrams/tdd-diag-m5-009.svg)
@@ -12559,7 +12562,6 @@ go test -race ./...
 ![Protocol Parser State Machine](./diagrams/tdd-diag-m5-011.svg)
 
 **Figure 11: Server Connection Handling** - Shows accept loop, per-connection goroutine, command dispatch.
-{{DIAGRAM:tdd-diag-m5-012}}
 **Figure 12: Retry Decision Tree** - Shows retryable check, backoff calculation, context cancellation handling.
 ---
 [[CRITERIA_JSON: {"module_id": "distributed-cache-m5", "criteria": ["Implement ResponseType enum with OK, Error, Integer, Bulk, Array, Null types", "Implement Command struct with Name, Args slice, TTL Duration, NX/XX bools", "Implement Response struct with Type, Value interface{}, Message string", "Implement Parser struct with bufio.Reader and ParseCommand method returning Command and error", "Implement tokenize() function with quote handling (single/double), escape sequences (\\\\, \\\", \\n, \\t), and whitespace tokenization", "Implement command option parsing for EX (seconds), PX (milliseconds), NX, XX with mutual exclusivity validation", "Implement Writer struct with bufio.Writer and WriteResponse method for all response types", "Implement bulk string reading with length prefix ($N) and null handling ($-1)", "Implement PoolConfig with Address, MinIdle, MaxIdle, MaxActive, DialTimeout, ReadTimeout, WriteTimeout, IdleTimeout, MaxConnLifetime, HealthCheckInterval, and callbacks", "Implement Conn struct wrapping net.Conn with pool reference, createdAt, lastUsedAt, inUse tracking", "Implement Pool struct with config, mutex, idle slice (LIFO), active count, closed flag, stopCh, and atomic metrics", "Implement Pool.Get(ctx) with idle check (LIFO), validation, new connection creation under MaxActive, and wait loop for exhaustion", "Implement Pool.Put(conn) with inUse=false, active decrement, validation, idle list enforcement, and connection close if over MaxIdle", "Implement isConnValid with MaxConnLifetime check, IdleTimeout check (for idle connections), and OnConnectionValidated callback", "Implement background health check loop with periodic validation and min idle replenishment", "Implement background idle cleanup loop removing connections exceeding IdleTimeout", "Implement Retrier Config with MaxRetries, InitialBackoff, MaxBackoff, BackoffFactor, JitterFactor", "Implement calculateBackoff with exponential growth capped at MaxBackoff and jitter calculation", "Implement Retrier.Do(ctx, fn) with retry loop, retryable check, backoff sleep, and context cancellation", "Implement Pipeline struct with bufio.Writer/Reader, maxCommands limit, mutex-protected commands slice", "Implement Pipeline.Add with buffer limit check (ErrPipelineFull) and thread-safe command queueing", "Implement Pipeline.Exec with batch command send, single flush, ordered response reading, and buffer clear", "Implement Client struct with config, hash ring, pools map with RWMutex, retrier, lifecycle management", "Implement Client.AddNode with ring update, pool creation, and pool map update under lock", "Implement Client.RemoveNode with ring update, pool close, and pool map removal under lock", "Implement Client.Get with ring routing, pool acquisition, GET command send, response parsing, and retry wrapping", "Implement Client.Set/SetNX/SetXX with conditional flags, TTL options, and retry wrapping", "Implement Client.Delete with DEL command and retry wrapping", "Implement Client.Incr/IncrBy with amount parameter and retry wrapping", "Implement Client.Pipeline with ring routing and pipeline creation from connection pool", "Implement Client.PipelineMulti with command grouping by node and parallel execution", "Ensure protocol is telnet-compatible: human-readable text commands work via raw TCP", "Ensure pool enforces MaxActive limit and returns ErrPoolExhausted when exceeded", "Ensure retry uses exponential backoff with jitter to prevent synchronization", "Ensure pipeline bounds memory with MaxCommands limit", "Pass all tests with race detector enabled for concurrent safety"]}]

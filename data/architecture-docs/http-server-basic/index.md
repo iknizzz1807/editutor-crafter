@@ -139,7 +139,6 @@ The project exposes the physical reality underneath every web request. When ngin
 The four milestones form a dependency chain: TCP socket infrastructure → HTTP protocol parsing → filesystem serving with security → concurrent connection management. Each milestone builds on the previous and introduces a new layer of the hardware/OS/protocol stack. At the end you will have a production-credible server core that handles keep-alive, directory traversal prevention, conditional requests, graceful shutdown, and bounded concurrency.
 
 
-
 <!-- MS_ID: http-server-basic-m1 -->
 # Milestone 1: TCP Server & HTTP Response
 ## Where We Are
@@ -288,7 +287,6 @@ Walk through this carefully:
 4. **`buf_size - 1 - total`**: you always leave room for the null terminator and never overflow the buffer. This is the guard against a client that sends headers forever to exhaust your memory.
 5. **`strstr(buf, "\r\n\r\n")`**: scan the accumulated buffer for the end-of-headers marker. HTTP/1.1 uses CRLF line endings, so headers end with `\r\n\r\n`. Only when you find this delimiter do you have a complete set of headers.
 
-![Partial Read Problem: Why One recv() Is Never Enough](./diagrams/diag-m1-partial-read-loop.svg)
 
 ### The Three-Level View of a `recv()` Call
 What actually happens when your code calls `recv()`?
@@ -299,6 +297,8 @@ The critical insight: by the time `recv()` returns, it has copied whatever bytes
 ---
 ## The HTTP Response
 You have read a request (for now, you do not parse it). Time to send a response. An HTTP/1.1 response is plain text bytes with a specific structure.
+
+![Three-Level View: One HTTP Request Across Application / OS / Hardware](./diagrams/diag-cross-layer-three-level-view.svg)
 
 ![HTTP/1.1 Response Wire Format: Byte Anatomy](./diagrams/diag-m1-http-response-wire.svg)
 
@@ -538,7 +538,6 @@ Before moving to Milestone 2, verify your implementation handles all of these:
 # Milestone 2: HTTP Request Parsing
 ## Where We Are
 
-![Project Atlas: HTTP Server Component Map](./diagrams/diag-l0-satellite-map.svg)
 
 In Milestone 1 you built the plumbing: a TCP server that accepts a connection, accumulates raw bytes into a buffer until it sees `\r\n\r\n`, and sends a hardcoded response. Your server speaks the socket language fluently. It does not yet speak HTTP.
 This milestone is about turning that opaque buffer of bytes into something your code can reason about: a structured `http_request_t` containing a method, a path, a version, and a map of headers. The socket layer handed you a stream. You are now going to impose grammar on it.
@@ -1172,7 +1171,6 @@ Before moving to Milestone 3, verify your implementation handles all of these:
 # Milestone 3: Static File Serving
 ## Where We Are
 
-![Project Atlas: HTTP Server Component Map](./diagrams/diag-l0-satellite-map.svg)
 
 In Milestone 1 you built the socket plumbing. In Milestone 2 you taught your server to read HTTP grammar — to turn a stream of bytes into a structured `http_request_t` with a method, path, and headers. Now your server knows *what* the client is asking for. It is time to actually deliver it.
 This milestone is about the journey from a URL string like `/images/logo.png` to the bytes of that file arriving in the client's browser — and every security check, metadata query, and protocol negotiation that happens in between. By the end, your server will serve real files from a real directory, detect their types, protect itself from path attacks, and skip transmitting files the client already has.
@@ -1871,7 +1869,6 @@ Before moving to Milestone 4, verify your implementation handles all of these:
 # Milestone 4: Concurrent Connections
 ## Where We Are
 
-![Project Atlas: HTTP Server Component Map](./diagrams/diag-l0-satellite-map.svg)
 
 In Milestone 1 you built the socket plumbing. In Milestone 2 you wrote the HTTP parser. In Milestone 3 you added file serving with path security. Your server works — it can accept a connection, parse the request, serve the file, and close the connection. The problem is that it can only do one of these at a time.
 Open `server.c` and look at `main()`. There is a `while(1)` loop that calls `accept()`, then calls `handle_client()`, then loops back. While `handle_client()` is running — reading from the socket, calling `stat()`, reading the file, sending the response — every other client knocking at the port is sitting in the kernel's accept queue, waiting. If a single client has a slow connection and takes 500ms to receive a 1MB file, every other client waits 500ms before your server even reads their first byte.
@@ -2587,7 +2584,6 @@ echo "Exit code: $?"  # Should be 0 (success)
 ---
 ## Design Decisions
 
-![Concurrency Models: Thread-per-Connection vs. Thread Pool](./diagrams/diag-m4-thread-models-comparison.svg)
 
 | Concurrency Model | Pros | Cons | Used By |
 |---|---|---|---|
@@ -2639,12 +2635,9 @@ Before declaring Milestone 4 complete, verify your implementation handles all of
 ![System Overview](./diagrams/system-overview.svg)
 
 
-
-
 # TDD
 
 A socket-level HTTP/1.1 static file server built layer by layer: raw TCP socket lifecycle → RFC-compliant request parser → filesystem security pipeline → bounded thread pool with graceful shutdown. Every module exposes the hardware-software contract: bytes on the wire, cache-line cost of mutex acquisition, TLB pressure from realpath(), and scheduler overhead of thread creation. The implementation proceeds as four vertically-stacked modules, each buildable and testable independently.
-
 
 
 <!-- TDD_MOD_ID: http-server-basic-m1 -->

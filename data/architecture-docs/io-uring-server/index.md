@@ -146,7 +146,6 @@ Build a high-performance TCP server using Linux io_uring, the modern asynchronou
 The core insight is that io_uring inverts the traditional I/O model: instead of the application asking the kernel 'is data ready?' and then 'give me data,' the application posts requests to a queue and the kernel posts completions to another queue—all through shared memory that both sides can read without syscalls. This architectural shift enables throughput improvements of 2-10x for I/O-bound workloads while reducing CPU usage significantly.
 
 
-
 <!-- MS_ID: io-uring-server-m1 -->
 # Basic SQ/CQ Operations & Buffer Strategies
 ## The Fundamental Tension: Syscall Overhead
@@ -319,6 +318,8 @@ struct io_uring_sqe {
 };
 ```
 The 64-byte size is intentional: it's exactly one cache line. An SQE never straddles cache lines, which matters when you're preparing dozens of them.
+
+![io_uring_sqe Structure — 64-Byte Layout](./diagrams/tdd-diag-m1-03.svg)
 
 > **🔑 Foundation: How Linux returns errors and what negative values in CQE res mean**
 > 
@@ -1172,7 +1173,6 @@ Steps 1-4 happen on EVERY operation. For a file server handling 100,000 reads pe
 - **Total per-operation overhead: 80-180ns before ANY actual I/O**
 For a 4KB read from SSD taking ~50μs, this overhead is only 0.3%. But for cached data served from page cache (~500ns), overhead becomes 20-35% of total latency. And at 100K ops/sec, you're burning 8-18ms of CPU per second on pure validation.
 
-![io_uring Server Architecture — Satellite Map](./diagrams/diag-satellite-overview.svg)
 
 **The hardware reality:** Every lookup touches cache lines. The file descriptor table is a separate data structure from the open file table, which is separate from the inode cache. A single `read()` might touch 5-10 cache lines just for bookkeeping. At high throughput, this "cheap" metadata traffic evicts actual data from cache.
 io_uring's answer: **register once, use many times.**
@@ -1984,6 +1984,8 @@ The proof is in the numbers. Here's a benchmark comparing:
 2. io_uring with batched submissions
 3. io_uring with registered files and fixed buffers
 
+![File I/O Benchmark Results](./diagrams/tdd-diag-m2-09.svg)
+
 ![File I/O Benchmark — io_uring vs pread](./diagrams/diag-file-io-benchmark-results.svg)
 
 ### Benchmark Implementation
@@ -2692,7 +2694,6 @@ At 2,000 connections/second, you're spending 2-20ms per second JUST accepting co
 Scale to 10,000 connections/second and you're burning 10-50ms per second on pure accept overhead — 1-5% of your CPU just saying "hello."
 io_uring's answer: **let the kernel accept connections for you, in bulk, without per-connection syscalls.**
 
-![io_uring Server Architecture — Satellite Map](./diagrams/diag-satellite-overview.svg)
 
 ---
 ## Revelation: What You Think Accepting Connections Means
@@ -3054,7 +3055,6 @@ void handle_recv_cqe(struct io_uring_cqe *cqe,
 }
 ```
 
-![Provided Buffer Selection — Trace Example](./diagrams/diag-buffer-selection-flow.svg)
 
 ### Replenishing the Buffer Ring
 The most critical aspect of provided buffer rings is **replenishment**. When the kernel uses a buffer, it's removed from the available pool. If you don't return buffers, the pool exhausts and new receives fail with `ENOBUFS`.
@@ -3906,6 +3906,8 @@ int main(int argc, char **argv) {
 }
 ```
 
+![Short Write Handling — Partial Send Recovery](./diagrams/tdd-diag-m3-05.svg)
+
 ![10K Concurrent Connections — Scalability Test Architecture](./diagrams/diag-10k-connections-scalability.svg)
 
 ---
@@ -4053,7 +4055,6 @@ For a server pushing 10Gbps of 4KB frames:
 - Submission overhead: varies wildly based on batching
 These numbers seem small, but they add up. And more importantly, **they're unnecessary**. The hardware can DMA directly from user memory. The kernel can poll your submission queue without syscalls. You just need to ask correctly.
 
-![io_uring Server Architecture — Satellite Map](./diagrams/diag-satellite-overview.svg)
 
 ---
 ## Revelation: What Zero-Copy Actually Means
@@ -4389,6 +4390,8 @@ CQE 2: res=-ECANCELED (write cancelled)
 CQE 3: res=-ECANCELED (fsync cancelled)
 ```
 The chain is atomic: either all operations execute, or the failure point and everything after is cancelled.
+
+![SQPOLL CPU Tradeoff Analysis](./diagrams/tdd-diag-m4-05.svg)
 
 ![Linked SQE Chains — Atomic Multi-Step Operations](./diagrams/diag-linked-sqe-chain.svg)
 
@@ -5253,15 +5256,14 @@ But more importantly, you understand **why** these optimizations work. The hardw
 
 ## System Overview
 
+![Zero-Copy Dual CQE Sequence](./diagrams/tdd-diag-m4-02.svg)
+
 ![System Overview](./diagrams/system-overview.svg)
-
-
 
 
 # TDD
 
 Build a production-grade asynchronous I/O server using Linux io_uring, progressing from fundamental ring buffer operations through advanced zero-copy I/O, SQ polling, and linked operations. The architecture eliminates syscall overhead through batched submissions via shared memory ring buffers, enables scalable buffer management with provided buffer rings, and achieves maximum throughput with registered resources and kernel bypass techniques. The final system will demonstrate 2-10x performance improvement over traditional epoll-based servers across file I/O, network I/O, and mixed workloads.
-
 
 
 <!-- TDD_MOD_ID: io-uring-server-m1 -->
@@ -5946,7 +5948,6 @@ int detect_kernel_features(kernel_features_t *features);
 - `*cq_head == *cq_tail` (CQ empty initially)
 - All pointers are valid mapped memory
 - Ring is ready for SQE submission
-{{DIAGRAM:tdd-diag-m1-03}}
 ### Algorithm: SQE Preparation with Memory Barriers
 **Purpose:** Prepare an SQE in the ring buffer with correct synchronization.
 **Inputs:**
@@ -7000,6 +7001,8 @@ typedef struct {
     uint64_t buffer_timeout_ns;
 } file_server_t;
 ```
+
+![Production Server Configuration](./diagrams/tdd-diag-m4-15.svg)
 
 ![Registered File Descriptor Table](./diagrams/tdd-diag-m2-01.svg)
 
@@ -8691,7 +8694,6 @@ File metadata:
   - Cached in file_slot_t
   - No per-operation stat() calls
 ```
-{{DIAGRAM:tdd-diag-m2-09}}
 ---
 ## Alternative Reality Comparisons
 | Aspect | This Module | libaio | POSIX AIO | Synchronous |
@@ -9603,7 +9605,6 @@ if !conn->cancel_requested && conn->state != CONN_CLOSING:
 - If complete: Buffer returned, recv submitted
 - If partial: Resubmission in flight
 - If error: Cleanup initiated
-{{DIAGRAM:tdd-diag-m3-05}}
 ### Algorithm: Safe Connection Close with Cancellation
 **Purpose:** Close a connection safely, cancelling in-flight operations first.
 **Inputs:**
@@ -10855,6 +10856,8 @@ typedef struct {
 } kernel_features_t;
 ```
 
+![IO_DRAIN Ordering Guarantee](./diagrams/tdd-diag-m4-08.svg)
+
 ![Zero-Copy Send — Kernel DMA from User Buffer](./diagrams/tdd-diag-m4-01.svg)
 
 ---
@@ -11177,7 +11180,6 @@ void feature_print_summary(kernel_features_t *features);
  */
 const char *feature_get_fallback(const char *feature_name);
 ```
-{{DIAGRAM:tdd-diag-m4-02}}
 ---
 ## Algorithm Specification
 ### Algorithm: Zero-Copy Send with Dual CQE Tracking
@@ -11643,7 +11645,6 @@ harness->result.latency_p50_ns = latency_percentile(&hist, 50)
 harness->result.latency_p95_ns = latency_percentile(&hist, 95)
 harness->result.latency_p99_ns = latency_percentile(&hist, 99)
 ```
-{{DIAGRAM:tdd-diag-m4-05}}
 ---
 ## Error Handling Matrix
 | Error | Detected By | Recovery | User-Visible? | System State |
@@ -11943,7 +11944,11 @@ gcc build/*.o -o build/feature_check
 # Test PASSED
 ```
 
-![Linked SQE Chains — Atomic Multi-Step Operations](./diagrams/tdd-diag-m4-06.svg)
+![Linked SQE Chains — Atomic Multi-Step Operations](./diagrams/tdd-diag-m4-06/index.svg)
+
+![failure_chain](./diagrams/tdd-diag-m4-06/failure_chain.svg)
+
+![success_chain](./diagrams/tdd-diag-m4-06/success_chain.svg)
 
 ---
 ## Test Specification
@@ -12283,7 +12288,6 @@ void run_benchmark_comparison(const char *file_path) {
 - COMPLETED: Record completion time, set NOTIFICATION_PENDING flag
 - ERROR: Buffer can be freed immediately
 - FREE: Buffer returned to pool
-{{DIAGRAM:tdd-diag-m4-08}}
 ---
 ## Concurrency Specification
 This module uses a **single-threaded event loop** model with optional SQPOLL kernel thread.
@@ -12457,7 +12461,6 @@ Ring mappings:
 
 ![Feature Detection Flow](./diagrams/tdd-diag-m4-14.svg)
 
-{{DIAGRAM:tdd-diag-m4-15}}
 
 ![Syscall Count Measurement](./diagrams/tdd-diag-m4-16.svg)
 

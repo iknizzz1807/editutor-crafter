@@ -179,7 +179,6 @@ The project is complete when:
 Raft is a consensus algorithm designed for understandability while achieving the same fault tolerance as Paxos. It elects a leader who manages a replicated log across a cluster of servers. The leader accepts client commands, appends them to its log, replicates them to followers, and commits them once a majority acknowledges. This project builds a complete Raft implementation from scratch, covering leader election with randomized timeouts, log replication with consistency checks, persistence for crash recovery, snapshot-based log compaction, and a client interface with linearizable semantics. By the end, you'll have implemented the same consensus algorithm that powers etcd, CockroachDB, and Consul.
 
 
-
 <!-- MS_ID: build-raft-m1 -->
 # Leader Election & Persistence
 You're about to build the beating heart of Raft—the mechanism by which a cluster of independent machines agrees on a single coordinator. This isn't just "voting for a leader." It's a distributed protocol that must work correctly when messages are lost, clocks are skewed, and machines crash at the worst possible moments.
@@ -192,6 +191,8 @@ Let's begin with the fundamental problem that makes all of this necessary.
 ---
 ## The Impossibility at the Heart of Consensus
 Here's the uncomfortable truth: **in an asynchronous distributed system, no deterministic algorithm can guarantee consensus with even one faulty process.**
+
+![RaftNode Core Structure](./diagrams/tdd-diag-m1-11.svg)
 
 > **🔑 Foundation: FLP Impossibility**
 > 
@@ -259,6 +260,8 @@ Term 3:  ───────────────────────�
 2. Steps down to follower (if it was a candidate or leader)
 3. Clears its `votedFor` (it can now vote in the new term)
 This is how the cluster maintains a coherent view of time despite network partitions and crash-recovery cycles.
+
+![Term Epoch Clock](./diagrams/tdd-diag-m1-02.svg)
 
 ![Terms as Logical Clocks](./diagrams/diag-term-epoch-clock.svg)
 
@@ -396,6 +399,8 @@ If election timeout min = 150ms:
 ## The RequestVote RPC
 When a candidate starts an election, it sends `RequestVote` RPCs to all peers. This is where Raft's safety guarantees are enforced.
 
+![Election Sequence](./diagrams/tdd-diag-m1-03.svg)
+
 ![Election Sequence Diagram](./diagrams/diag-election-sequence.svg)
 
 ### Message Format
@@ -439,6 +444,8 @@ func (rf *RaftNode) isLogUpToDate(candidateLastTerm, candidateLastIndex int) boo
     return candidateLastIndex >= myLastIndex
 }
 ```
+
+![Log Up-to-Date Comparison](./diagrams/tdd-diag-m1-05.svg)
 
 ![Log Up-to-Date Comparison](./diagrams/diag-log-uptodate.svg)
 
@@ -618,6 +625,8 @@ Let's apply the "Failure Soul" thinking from distributed systems:
 ---
 ## Quorum Intersection: Why Majority Guarantees Safety
 
+![Raft Node State Machine](./diagrams/tdd-diag-m1-01.svg)
+
 > **🔑 Foundation: Quorum intersection**
 > 
 > ## Quorum Intersection
@@ -792,6 +801,8 @@ type PersistentState struct {
 | `log` | To recover committed entries | Committed entries lost on crash, breaking durability guarantee |
 ### The Persistence Flow
 
+![Persistence Flow](./diagrams/tdd-diag-m1-07.svg)
+
 ![Persistence Flow](./diagrams/diag-persistence-flow.svg)
 
 ```go
@@ -879,6 +890,8 @@ func (fp *FilePersister) ReadRaftState() ([]byte, error) {
     return os.ReadFile(fp.path)
 }
 ```
+
+![Persistent State Layout](./diagrams/tdd-diag-m1-08.svg)
 
 ![Persistent State Layout](./diagrams/diag-persistence-format.svg)
 
@@ -1073,13 +1086,19 @@ func TestSplitVoteResolution(t *testing.T) {
 }
 ```
 
+![Split Vote Resolution](./diagrams/tdd-diag-m1-09.svg)
+
 ![Split Vote Resolution](./diagrams/diag-split-vote-resolution.svg)
 
 ---
 ## Network Partitions: The Ultimate Test
 Let's examine what happens during network partitions, which are the most challenging failure mode.
 
+![Failure Mode Analysis](./diagrams/tdd-diag-m1-12.svg)
+
 ![Network Partition During Election](./diagrams/diag-partition-scenario.svg)
+
+![Network Partition During Election](./diagrams/tdd-diag-m1-10.svg)
 
 ### Scenario: Leader Isolated from Majority
 ```
@@ -1214,6 +1233,8 @@ The quorum intersection guarantee appears in:
 - **Dynamo-style read/write quorums**
 - **Blockchain consensus (proof-of-stake validators)**
 
+![Quorum Intersection Proof](./diagrams/tdd-diag-m1-06.svg)
+
 > **🔑 Foundation: Quorum intersection**
 > 
 > ## Quorum Intersection
@@ -1265,6 +1286,8 @@ Before moving on, verify your implementation:
 - [ ] Election safety test: no two leaders in same term
 - [ ] Split vote test: system resolves within bounded time
 
+![RequestVote RPC Flow](./diagrams/tdd-diag-m1-04.svg)
+
 ![Raft Failure Mode Analysis](./diagrams/diag-failure-soul.svg)
 
 ---
@@ -1308,7 +1331,6 @@ The fix requires understanding *why* the naive model fails, which brings us to t
 ---
 ## The Three-Level View of Log Replication
 
-![Raft System Overview](./diagrams/diag-raft-satellite.svg)
 
 ### Level 1 — Single Node (What you build)
 Each node maintains:
@@ -1606,6 +1628,8 @@ The Raft paper's solution is elegant:
 Here's why this works: if a leader commits an entry from its own term, that leader must have been elected by a majority. The election requires that the leader's log is at least as up-to-date as any voter's log (from Milestone 1). Therefore, any committed entry from a previous term must already have been on the leader's log when it was elected.
 **But wait**—what about entries from previous terms? Don't they ever get committed?
 They do—but *indirectly*. When a leader commits a current-term entry at index N, all entries before N are implicitly committed. The commit is transitive.
+
+![Figure 8 Scenario](./diagrams/tdd-diag-m2-05.svg)
 
 ![Commit Index Advancement Rules](./diagrams/diag-commit-advancement.svg)
 
@@ -2591,6 +2615,8 @@ rf.nextIndex[i] = lastLogIndex + 1
 ---
 ## The InstallSnapshot RPC: Replicating Snapshots
 
+![Log Indexing with Snapshot Offset](./diagrams/tdd-diag-m3-02.svg)
+
 ![InstallSnapshot RPC](./diagrams/diag-installsnapshot-rpc.svg)
 
 When a leader's `nextIndex` for a follower points to an entry that's been snapshotted away, the leader can't use `AppendEntries`. The entry doesn't exist anymore. Instead, the leader sends its snapshot via `InstallSnapshot`.
@@ -2744,6 +2770,14 @@ func (rf *RaftNode) sendSnapshot(peerIdx int) {
 }
 ```
 
+![AppendEntries with Snapshot Boundary](./diagrams/tdd-diag-m3-07/index.svg)
+
+![case_a](./diagrams/tdd-diag-m3-07/case_a.svg)
+
+![case_b](./diagrams/tdd-diag-m3-07/case_b.svg)
+
+![case_c](./diagrams/tdd-diag-m3-07/case_c.svg)
+
 ![Slow Follower Catch-Up via Snapshot](./diagrams/diag-slow-follower-catchup.svg)
 
 ---
@@ -2812,6 +2846,8 @@ The key invariant: **the old log + old state OR the new snapshot + new log must 
 > **💡 Insight**: This atomicity requirement is the same pattern as **write-ahead logging in databases**. A database doesn't invalidate the old version of a page until the new version is safely written. Similarly, we don't invalidate the old log until the snapshot is safely persisted.
 ---
 ## Recovery from Snapshot + Log
+
+![Snapshot Persistence Format](./diagrams/tdd-diag-m3-10.svg)
 
 ![Recovery from Snapshot + Log](./diagrams/diag-snapshot-recovery.svg)
 
@@ -3347,7 +3383,6 @@ Clients shouldn't need to track leadership. That's the cluster's job. The interf
 ---
 ## The Three-Level View of Client Interface
 
-![Raft System Overview](./diagrams/diag-raft-satellite.svg)
 
 ### Level 1 — Single Node (What you build)
 - **RPC handlers**: accept client commands, return responses
@@ -3665,6 +3700,8 @@ This is safe because if an expired client comes back, it just creates a new sess
 ---
 ## Linearizable Reads: The Leader Isn't Enough
 Here's the trap: **a node that thinks it's the leader might not be.**
+
+![Key-Value State Machine](./diagrams/tdd-diag-m4-05.svg)
 
 ![Stale Leader Prevention](./diagrams/diag-stale-leader-prevention.svg)
 
@@ -4753,6 +4790,8 @@ func (ic *InvariantChecker) CheckStateMachineSafety() error {
 ## The Invariant Checker Architecture
 Now let's build a complete invariant checker that runs continuously during tests:
 
+![State Machine Safety Check](./diagrams/tdd-diag-m5-11.svg)
+
 ![Invariant Checker Architecture](./diagrams/diag-invariant-checker.svg)
 
 ```go
@@ -5139,6 +5178,8 @@ func (cc *ChaosController) healAllPartitionsLocked() {
 }
 ```
 ### The Partition Test Matrix
+
+![Chaos Controller Architecture](./diagrams/tdd-diag-m5-07.svg)
 
 ![Partition Test Scenarios](./diagrams/diag-partition-test-matrix.svg)
 
@@ -5792,15 +5833,14 @@ Go build something that needs consensus. You're ready.
 
 ## System Overview
 
+![Raft vs Paxos vs Zab Comparison](./diagrams/diag-raft-vs-paxos.svg)
+
 ![System Overview](./diagrams/system-overview.svg)
-
-
 
 
 # TDD
 
 A complete Raft consensus implementation providing leader election with randomized timeouts, log replication with Figure 8 safety, snapshot-based log compaction, and linearizable client semantics. The system guarantees safety under crash-recovery failures and network partitions, verified through continuous invariant checking and adversarial chaos testing.
-
 
 
 <!-- TDD_MOD_ID: build-raft-m1 -->
@@ -6967,6 +7007,8 @@ type CommitState struct {
 }
 ```
 
+![Leader Completeness Proof Sketch](./diagrams/tdd-diag-m5-04.svg)
+
 ![Log Structure and Indexing](./diagrams/tdd-diag-m2-01.svg)
 
 ---
@@ -7406,7 +7448,6 @@ PROCEDURE:
            // Channel full, log warning (don't block Raft)
            log.Printf("Apply channel full at index %d", rf.lastApplied)
 ```
-{{DIAGRAM:tdd-diag-m2-05}}
 ### 5.5 Leader Replication Flow
 ```
 ALGORITHM: startReplication
@@ -7943,6 +7984,8 @@ FOLLOWER LOG CONSISTENCY CHECK:
     │                                                             │
     └─────────────────────────────────────────────────────────────┘
 ```
+
+![Concurrent Failure Test Flow](./diagrams/tdd-diag-m5-12.svg)
 
 ![Commit Index Advancement Rules](./diagrams/tdd-diag-m2-06.svg)
 
@@ -8603,7 +8646,6 @@ PROCEDURE:
               rf.id, index, len(rf.log)-1)
 11. RETURN nil
 ```
-{{DIAGRAM:tdd-diag-m3-02}}
 ### 5.3 Log Index Translation
 ```
 ALGORITHM: logIndexToSlice
@@ -9386,7 +9428,6 @@ INSTALLSNAPSHOT RPC STATE MACHINE (FOLLOWER):
     │                                                             │
     └─────────────────────────────────────────────────────────────┘
 ```
-{{DIAGRAM:tdd-diag-m3-07}}
 ---
 ## 11. Concurrency Specification
 ### 11.1 Lock Ordering
@@ -9551,7 +9592,6 @@ func DefaultConfig() Config {
 
 ![Log Entry Access Layer](./diagrams/tdd-diag-m3-09.svg)
 
-{{DIAGRAM:tdd-diag-m3-10}}
 
 ![Follower Log After InstallSnapshot](./diagrams/tdd-diag-m3-11.svg)
 
@@ -10213,7 +10253,6 @@ PROCEDURE:
        RETURN fmt.Errorf("timeout waiting for quorum")
 8. RETURN fmt.Errorf("insufficient acknowledgments")
 ```
-{{DIAGRAM:tdd-diag-m4-05}}
 ### 5.6 Alternative: Linearizable Read via No-Op Commit
 ```
 ALGORITHM: ReadWithNoOp (simpler but slower alternative)
@@ -11268,6 +11307,8 @@ type PartitionScenario struct {
 }
 ```
 
+![Invariant Checker Architecture](./diagrams/tdd-diag-m5-02.svg)
+
 ![Raft Safety Invariants](./diagrams/tdd-diag-m5-01.svg)
 
 ---
@@ -11747,7 +11788,6 @@ HELPER: isCommitted(index int) bool
    majority := (len(ic.nodes) / 2) + 1
    RETURN count >= majority
 ```
-{{DIAGRAM:tdd-diag-m5-02}}
 ### 5.4 Log Matching Check
 ```
 ALGORITHM: CheckLogMatching
@@ -11874,7 +11914,6 @@ HELPER: maybeCreatePartitionLocked()
 4. cc.partitions = append(cc.partitions, group1, group2)
 5. cc.recordFailure(FailurePartitionCreate, fmt.Sprintf("%v | %v", group1, group2))
 ```
-{{DIAGRAM:tdd-diag-m5-04}}
 ### 5.7 Stress Test Execution
 ```
 ALGORITHM: RunStressTest
@@ -12616,7 +12655,6 @@ CHAOS CONTROLLER STATE MACHINE:
     │                                                            │
     └────────────────────────────────────────────────────────────┘
 ```
-{{DIAGRAM:tdd-diag-m5-07}}
 ---
 ## 11. Concurrency Specification
 ### 11.1 Lock Ordering
@@ -12812,8 +12850,6 @@ func DefaultPartitionConfig() PartitionTestConfig {
 
 ![Log Matching Check Algorithm](./diagrams/tdd-diag-m5-10.svg)
 
-{{DIAGRAM:tdd-diag-m5-11}}
-{{DIAGRAM:tdd-diag-m5-12}}
 
 ![Jepsen Methodology Overview](./diagrams/tdd-diag-m5-13.svg)
 

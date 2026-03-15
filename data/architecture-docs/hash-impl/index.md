@@ -166,7 +166,6 @@ The Merkle-Damgård construction at SHA-256's core is a beautiful and instructiv
 Building SHA-256 from scratch teaches three things that no library call can: (1) how formal cryptographic specifications translate into executable code at the bit level, (2) how subtle bugs in bit manipulation produce outputs that look plausible but are cryptographically wrong, and (3) how endianness, overflow masking, and off-by-one errors in padding are the most common sources of divergence from the spec. These skills transfer directly to implementing any symmetric cipher, MAC, or cryptographic protocol.
 
 
-
 <!-- MS_ID: hash-impl-m1 -->
 # Milestone 1: Message Preprocessing and Padding
 ## Your Mission
@@ -1035,7 +1034,6 @@ void sha256_message_schedule(const uint8_t *block, uint32_t W[64]) {
 This loop is deliberately minimal: 48 iterations, each with two σ function calls and three additions. On modern hardware, this executes in nanoseconds per block. The clarity matters here — every line maps directly to a term in the FIPS recurrence.
 **Why the indices are ordered σ1(W[t-2]) first**: The FIPS pseudocode defines the terms in the order shown. While addition is commutative (the sum is the same regardless of operand order), following the spec's order makes it easier to verify your values against published intermediate computations.
 
-![Message Schedule Expansion: W[0]..W[63]](./diagrams/diag-m2-schedule-expansion.svg)
 
 ---
 ## Connecting the Schedule to Diffusion
@@ -2890,7 +2888,6 @@ void sha256_finalize(SHA256_CTX *ctx, uint8_t digest[SHA256_DIGEST_SIZE]) {
 ### The State Machine Behind update()/finalize()
 Think of the streaming API as a simple state machine with three conditions:
 
-![Streaming SHA-256 API: update() and finalize() State Machine](./diagrams/diag-m4-streaming-api.svg)
 
 **State 1: Buffer has room (buf_len < 64)** — incoming bytes go into the buffer. If they don't fill it, return. Nothing is compressed yet.
 **State 2: Buffer becomes full** — compress the buffer, reset `buf_len = 0`. Continue processing remaining input bytes.
@@ -3339,12 +3336,9 @@ You have now built SHA-256 from scratch, from the FIPS 180-4 specification, in C
 ![System Overview](./diagrams/system-overview.svg)
 
 
-
-
 # TDD
 
 A four-module TDD blueprint that translates NIST FIPS 180-4 pseudocode into verifiable C code, enforcing cryptographic correctness at every layer through known-answer tests, intermediate-value validation against NIST example computations, and strict big-endian byte ordering throughout. Each module is independently testable and feeds directly into the next via well-defined byte-array interfaces.
-
 
 
 <!-- TDD_MOD_ID: hash-impl-m1 -->

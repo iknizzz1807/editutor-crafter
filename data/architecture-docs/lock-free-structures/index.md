@@ -129,7 +129,6 @@ The project is complete when:
 Lock-free data structures represent the pinnacle of concurrent programming, where threads cooperate without mutex locks by leveraging atomic CPU instructions. This project builds a complete lock-free toolkit: a Treiber stack, Michael-Scott queue, and split-ordered hash map—all using compare-and-swap (CAS) operations with safe memory reclamation via hazard pointers. The journey reveals why traditional locks become contention bottlenecks under high concurrency, and how atomic operations with careful memory ordering can achieve both correctness and performance.
 
 
-
 <!-- MS_ID: lock-free-structures-m1 -->
 # Atomic Operations & Memory Ordering
 ## The Fundamental Tension
@@ -925,6 +924,8 @@ push() compiles to:
 ```
 The critical insight: step 4's cost depends entirely on what *other* threads are doing. Pushing to an idle stack: ~50 cycles. Pushing while 15 other threads also push: thousands of cycles per push, with most failing CAS and retrying.
 
+![Cache Line Ping-Pong Under Contention](./diagrams/tdd-diag-m2-08.svg)
+
 ![Treiber Stack Structure](./diagrams/diag-treiber-stack-structure.svg)
 
 ---
@@ -977,6 +978,8 @@ The push is actually correct. Here's why:
 3. **CAS with release**: The release ordering ensures `new_node->next` write is visible before `top` is updated
 4. **Failure ordering acquire**: On retry, we need to see the new top's writes
 The CAS is the **linearization point**—the single instant where the push "takes effect." If CAS succeeds, the push happened. If it fails, someone else's push happened first, and we retry.
+
+![Stress Test Architecture](./diagrams/tdd-diag-m2-10.svg)
 
 ![Treiber Push: Step-by-Step](./diagrams/diag-treiber-push-trace.svg)
 
@@ -1055,7 +1058,6 @@ Result: top points to freed memory!
 ```
 The CAS succeeded because it only compared the *address*, not the *identity* of the node. The address `A` was recycled, but it's now a completely different node.
 
-![ABA Problem Timeline](./diagrams/diag-aba-problem-timeline.svg)
 
 ### Why This Isn't Theoretical
 "Surely this is rare?" No. In production:
@@ -1086,7 +1088,6 @@ typedef struct {
 } TreiberStack;
 ```
 
-![Tagged Pointer Memory Layout](./diagrams/diag-tagged-pointer-layout.svg)
 
 ### Memory Layout: Why 128 Bits?
 On a 64-bit system:
@@ -1229,6 +1230,8 @@ Each operation "takes effect" at the instant its CAS succeeds. Before that insta
 When multiple threads hammer the stack, the cache line containing `top` bounces between cores. This is the performance killer.
 ### The MESI Cost of Contention
 
+![Linearization Points](./diagrams/tdd-diag-m2-07.svg)
+
 When Thread A successfully CAS's `top`:
 1. Its cache line transitions to **M**odified state
 2. All other cores' copies of that cache line are **I**nvalidated
@@ -1294,7 +1297,6 @@ The `pause`/`yield` instruction tells the CPU we're spinning, which:
 - On ARM: reduces power consumption during spin
 - Reduces memory bus contention from useless load operations
 
-![Contention and Backoff Strategies](./diagrams/diag-contention-backoff.svg)
 
 ---
 ## Complete Implementation
@@ -2080,7 +2082,8 @@ typedef struct {
 } MSQueuePadded;
 ```
 
-![Contention and Backoff Strategies](./diagrams/diag-contention-backoff.svg)
+![Multi-Producer Multi-Consumer Test](./diagrams/tdd-diag-m3-10.svg)
+
 
 ---
 ## Complete Implementation
@@ -3041,6 +3044,8 @@ bool treiber_safe_pop(TreiberStackSafe* stack, int64_t* value) {
 }
 ```
 
+![Scan Snapshot Consistency](./diagrams/tdd-diag-m4-07.svg)
+
 ![Treiber Stack with Hazard Pointers](./diagrams/diag-stack-hazard-integration.svg)
 
 ### The Critical Invariant
@@ -3186,6 +3191,8 @@ bool ms_queue_safe_dequeue(MSQueueSafe* queue, int64_t* value) {
     }
 }
 ```
+
+![MS Queue Dequeue with Two Hazard Slots](./diagrams/tdd-diag-m4-09.svg)
 
 ![Michael-Scott Queue with Hazard Pointers](./diagrams/diag-queue-hazard-integration.svg)
 
@@ -3631,6 +3638,8 @@ int main(void) {
 }
 ```
 
+![Memory Boundedness Test](./diagrams/tdd-diag-m4-10.svg)
+
 ![Memory Boundedness Under Load](./diagrams/diag-memory-boundedness-test.svg)
 
 ---
@@ -3805,6 +3814,8 @@ The solution is to **never rehash**.
 This sounds impossible. A hash table's whole purpose is to distribute keys across buckets via a hash function. If you double the bucket count, keys need to be redistributed. That's rehashing.
 Unless... you design the data structure so that keys are **already in the right order** for any bucket count.
 
+![system-overview](./diagrams/system-overview.svg)
+
 ![Split-Ordered List Concept](./diagrams/diag-split-ordered-list-concept.svg)
 
 ---
@@ -3975,6 +3986,8 @@ The resize operation doesn't move elements. It only:
 3. **Updates the bucket pointer** to the new array
 Step 2 is done **incrementally**. When a thread accesses a bucket that hasn't been initialized yet, it initializes that bucket on demand.
 
+![Reverse-Bit Ordering](./diagrams/tdd-diag-m5-02.svg)
+
 ![Incremental Bucket Splitting](./diagrams/diag-bucket-split-sequence.svg)
 
 ### The Parent Bucket Relationship
@@ -4049,7 +4062,6 @@ Insert into a sorted lock-free linked list requires:
 3. **CAS the predecessor's next pointer**: `CAS(&prev->next, curr, new_node)`
 ```c
 
-![Lock-free Insert into Sorted List](./diagrams/diag-hashmap-insert-trace.svg)
 
 bool hashmap_insert(LockFreeHashMap* map, void* key, void* value, 
                     uint64_t (*hash_fn)(void*), bool (*eq_fn)(void*, void*)) {
@@ -4113,6 +4125,9 @@ bool hashmap_insert(LockFreeHashMap* map, void* key, void* value,
     }
 }
 ```
+
+![Lock-free Insert into Sorted List](./diagrams/diag-hashmap-insert-trace.svg)
+
 ### Linearization Point for Insert
 The **linearization point** for insert is the successful CAS on `prev->next`. At that instant:
 - The key becomes visible to all threads
@@ -4945,6 +4960,8 @@ int main(void) {
 ---
 ## Throughput Benchmark: Lock-Free vs Mutex-Based
 
+![Sentinel vs Regular Node Layout](./diagrams/tdd-diag-m5-03.svg)
+
 ![Lock-free vs Mutex-based Throughput](./diagrams/diag-throughput-benchmark.svg)
 
 ```c
@@ -5151,12 +5168,11 @@ The skills you've developed—reasoning about memory ordering, understanding har
 <!-- END_MS -->
 
 
-
-
 # TDD
 
-A production-grade lock-free data structure library implementing Treiber stack, Michael-Scott queue, and split-ordered hash map using CAS operations with hazard pointer-based safe memory reclamation. The design prioritizes correctness through careful memory ordering, ABA prevention via tagged pointers, and lock-free progress guarantees under any thread scheduling pattern.
+![Lock-free vs Mutex Throughput](./diagrams/tdd-diag-m5-15.svg)
 
+A production-grade lock-free data structure library implementing Treiber stack, Michael-Scott queue, and split-ordered hash map using CAS operations with hazard pointer-based safe memory reclamation. The design prioritizes correctness through careful memory ordering, ABA prevention via tagged pointers, and lock-free progress guarantees under any thread scheduling pattern.
 
 
 <!-- TDD_MOD_ID: lock-free-structures-m1 -->
@@ -6767,12 +6783,9 @@ The Treiber stack is **lock-free** (not wait-free):
 | `treiber_size_approx` | No | For diagnostics only |
 ---
 ## Diagrams Reference
-{{DIAGRAM:tdd-diag-m2-07}}
-{{DIAGRAM:tdd-diag-m2-08}}
 
 ![Exponential Backoff State Machine](./diagrams/tdd-diag-m2-09.svg)
 
-{{DIAGRAM:tdd-diag-m2-10}}
 ---
 ## Design Decisions Summary
 | Aspect | Chosen | Alternative | Rationale |
@@ -7819,7 +7832,6 @@ When producers and consumers are separate threads, they contend on different poi
 | `ms_queue_size_approx` | No | For diagnostics only |
 ---
 ## Diagrams Reference
-{{DIAGRAM:tdd-diag-m3-10}}
 
 ![Cache Line Separation](./diagrams/tdd-diag-m3-11.svg)
 
@@ -8976,7 +8988,6 @@ bool treiber_pop_safe(TreiberStack* stack, int64_t* value) {
     } while (true);
 }
 ```
-{{DIAGRAM:tdd-diag-m4-07}}
 ### Michael-Scott Queue Dequeue Integration
 ```c
 bool ms_dequeue_safe(MSQueue* queue, int64_t* value) {
@@ -9037,8 +9048,6 @@ bool ms_dequeue_safe(MSQueue* queue, int64_t* value) {
 | Linear scan of protected set | O(n²) scan complexity | Consider hash table for large deployments |
 ---
 ## Diagrams Reference
-{{DIAGRAM:tdd-diag-m4-09}}
-{{DIAGRAM:tdd-diag-m4-10}}
 
 ![Thread Registration State Machine](./diagrams/tdd-diag-m4-11.svg)
 
@@ -9211,6 +9220,8 @@ Split-Ordered List:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+![Load Factor Monitoring and Resize Trigger](./diagrams/diag-load-factor-resize.svg)
+
 ![Split-Ordered List Concept](./diagrams/tdd-diag-m5-01.svg)
 
 ### Split-Ordered Key (so_key) Semantics
@@ -9248,7 +9259,6 @@ Bucket 2 splits into 2 and 6:
 - Bucket 6: so_keys 0x6... (between 0x4 and 0x8)
 Elements are ALREADY in the right order!
 ```
-{{DIAGRAM:tdd-diag-m5-02}}
 ---
 ## Interface Contracts
 ### Configuration Constants
@@ -9406,7 +9416,6 @@ static inline uint64_t hm_next_bucket_count(uint64_t current) {
 }
 #endif // HM_BUCKET_MATH_H
 ```
-{{DIAGRAM:tdd-diag-m5-03}}
 ### Hash Map Initialization
 ```c
 // 05_hm_init.h
@@ -10806,7 +10815,6 @@ The split-ordered hash map is **lock-free** (not wait-free):
 | `hm_size` | Yes | Atomic read |
 | `hm_load_factor` | Yes | Approximate |
 | `hm_validate` | No | For diagnostics only |
-{{DIAGRAM:tdd-diag-m5-15}}
 ---
 ## Design Decisions Summary
 | Aspect | Chosen | Alternative | Rationale |

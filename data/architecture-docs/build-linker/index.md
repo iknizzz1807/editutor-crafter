@@ -148,7 +148,6 @@ This project reveals the hidden mechanics of how your multi-file C programs actu
 Building a linker from scratch teaches you the ELF format in depth—one of the most important binary formats in modern computing. You'll handle alignment, address spaces, symbol visibility rules, and machine code patching. This knowledge transfers directly to debuggers, binary analyzers, JIT compilers, and security research.
 
 
-
 <!-- MS_ID: build-linker-m1 -->
 # Section Merging: Weaving Object Files into a Whole
 You've compiled your C files. Each `.c` became a `.o` — an object file containing machine code, but with holes where addresses should be. Now you face the linker's first real challenge: taking these fragments and stitching them together into something coherent.
@@ -159,6 +158,8 @@ Here's what you probably think happens during linking: the compiler outputs some
 - `main.o` has 100 bytes of `.text`. `utils.o` has 50 bytes. Where does `utils.o`'s code end up? What if there's also a `lib.o`?
 - `main.o`'s `.data` section needs 8-byte alignment. `utils.o`'s needs 16-byte alignment. How do you honor both?
 
+![Section Merging State Machine](./diagrams/tdd-diag-007.svg)
+
 ![Linker Pipeline: Satellite View](./diagrams/diag-satellite-overview.svg)
 
 The fundamental tension: **object files are designed to be position-independent, but executables must have fixed addresses**. Every byte in an object file might end up anywhere in the final executable, depending on what other files are linked and in what order. Your job is to:
@@ -168,6 +169,8 @@ The fundamental tension: **object files are designed to be position-independent,
 The output of this milestone isn't an executable yet — it's a **merged layout** with a complete **input-to-output mapping table**. This table is the linker's internal bible; without it, you can't fix up addresses later.
 ## What's Inside an Object File?
 Before you can merge sections, you need to understand what you're working with. An ELF object file (`ET_REL` type) isn't a runnable program — it's a collection of ingredients:
+
+![File Offset vs Virtual Address Assignment](./diagrams/tdd-diag-014.svg)
 
 > **🔑 Foundation: ELF header and section header table structure**
 > 
@@ -241,6 +244,8 @@ The section header table is the "catalog" — it's an array of records, each poi
 ```
 **Critical insight**: Sections are a *link-time* concept. The section header table is optional for execution — the runtime loader uses *program headers* (segments), not sections. A stripped binary often has no section header table. But for any tool that needs to understand the binary's logical structure (debuggers, linkers, disassemblers), the section header table is essential.
 
+
+![OutputSection Struct Memory Layout](./diagrams/tdd-diag-010.svg)
 
 ![ELF Object File Anatomy](./diagrams/diag-elf-object-anatomy.svg)
 
@@ -434,6 +439,8 @@ The allocatable sections you'll typically see:
 - `.rodata` — read-only data (SHF_ALLOC)
 - `.bss` — uninitialized data (SHF_ALLOC | SHF_WRITE, but SHT_NOBITS)
 
+![ELF Object File Parsing Data Flow](./diagrams/tdd-diag-002.svg)
+
 ![Section Flags and Consistency](./diagrams/diag-section-flags.svg)
 
 ## The Merge Strategy: Group, Pad, Concatenate
@@ -456,6 +463,8 @@ If `.data` starts at a misaligned address, accessing `origin.x` will crash on so
 - 8-byte alignment for `double` and pointers
 - 4-byte alignment for `int` and `float`
 - Section alignment should be at least the maximum alignment of any contained data
+
+![.bss Special Handling Data Flow](./diagrams/tdd-diag-011.svg)
 
 ![Alignment Padding Visualization](./diagrams/diag-alignment-padding.svg)
 
@@ -633,7 +642,11 @@ int merge_all_sections(LinkerContext *ctx) {
 }
 ```
 
+![Alignment Padding Calculation Algorithm](./diagrams/tdd-diag-006.svg)
+
 ![Section Merging Data Flow](./diagrams/diag-section-merge-flow.svg)
+
+![Section Flag Validation Matrix](./diagrams/tdd-diag-013.svg)
 
 ## The Input-to-Output Mapping Table
 This is the most important data structure you're building in this milestone. The mapping table answers the question: "I have an offset in an input section; where is it in the output?"
@@ -644,6 +657,8 @@ Symbol 'helper' in utils.o:
   - .text from utils.o was placed at output offset 0x1050
   - Therefore 'helper' is at output offset 0x1070
 ```
+
+![Mapping Table Hash Structure](./diagrams/tdd-diag-012.svg)
 
 ![Input-to-Output Offset Mapping Table](./diagrams/diag-input-output-mapping.svg)
 
@@ -738,6 +753,8 @@ int build_mapping_hash(LinkerContext *ctx, MappingHash *hash) {
 - Uninitialized globals don't need to be stored in the file (waste of disk)
 - But they need memory at runtime (the loader allocates it)
 - The section exists to reserve address space, not file space
+
+![Multi-File Section Grouping Sequence](./diagrams/tdd-diag-008.svg)
 
 ![.bss Section Handling: File vs Memory](./diagrams/diag-bss-handling.svg)
 
@@ -882,6 +899,8 @@ Output .bss (max align: 8):
 (utils.o, .rodata, 0x0) -> output .rodata at 0x0
 (utils.o, .bss, 0x0) -> output .bss at 0x0
 ```
+
+![InputSection Struct Memory Layout](./diagrams/tdd-diag-009.svg)
 
 ![Trace Example: Linking Two Files](./diagrams/diag-trace-simple-link.svg)
 
@@ -1050,7 +1069,8 @@ Here's what you probably think happens: you call `helper()`, the compiler output
 - `internal.c` has a `static void helper()` function. `other.c` also has `static void helper()`. These are different functions with the same name — how?
 - `main.c` references `printf`, but no input file defines it. Is this an error? (Hint: maybe not — it might come from a library)
 
-![Linker Pipeline: Satellite View](./diagrams/diag-satellite-overview.svg)
+![Weak Undefined Symbol Resolution](./diagrams/tdd-diag-027.svg)
+
 
 The fundamental tension: **source code uses human-readable names, but executables need numeric addresses**. The linker must translate every name to a number, and it must do so unambiguously even when:
 - Multiple files define the same name
@@ -1105,6 +1125,8 @@ A symbol is a named location in an object file. It's the linker's representation
 > - If `st_shndx` is a valid section, the answer is "in section Y at offset Z"
 > - The binding field says whether other files can see this answer (LOCAL vs GLOBAL)
 
+![Symbol Resolution Sequence Diagram](./diagrams/tdd-diag-025.svg)
+
 ![ELF Symbol Table Entry Structure](./diagrams/diag-symbol-table-entry.svg)
 
 ### Symbol Types You'll Encounter
@@ -1119,6 +1141,8 @@ Let's categorize what you'll find in a typical `.symtab`:
 | COMMON | GLOBAL | SHN_COMMON | Uninitialized global | `int buffer[100];` (tentative) |
 | Section symbol | LOCAL | Section index | Section's own label | Used in relocations |
 | File symbol | LOCAL | SHN_ABS | Source file name | Always first, for debugging |
+
+![Undefined Symbol Error Attribution](./diagrams/tdd-diag-026.svg)
 
 ![Symbol Binding and Visibility Matrix](./diagrams/diag-symbol-binding-visibility.svg)
 
@@ -1308,6 +1332,8 @@ GlobalSymbol* insert_symbol(GlobalSymbolTable *tbl, const char *name) {
 ## Symbol Resolution: The Rules
 Now comes the core logic. When you encounter a symbol from an input file, you need to decide how it interacts with existing entries in the global table.
 
+![COMMON Symbol Merging Flow](./diagrams/tdd-diag-021.svg)
+
 ![Strong/Weak Symbol Resolution Rules](./diagrams/diag-strong-weak-resolution.svg)
 
 ### Rule 1: Local Symbols Are Private
@@ -1424,6 +1450,8 @@ int buffer[200];  // COMMON, size 800 bytes
 // Result: buffer has 800 bytes
 ```
 
+![Local vs Global Symbol Processing](./diagrams/tdd-diag-022.svg)
+
 ![COMMON Symbol Merging](./diagrams/diag-common-symbols.svg)
 
 ```c
@@ -1482,6 +1510,8 @@ int check_undefined_symbols(GlobalSymbolTable *tbl) {
     return errors;
 }
 ```
+
+![GlobalSymbol Struct Memory Layout](./diagrams/tdd-diag-024.svg)
 
 ![Undefined Symbol Detection Flow](./diagrams/diag-undefined-symbol-detection.svg)
 
@@ -1642,6 +1672,8 @@ int assign_symbol_addresses(LinkerContext *ctx) {
     return 0;
 }
 ```
+
+![Symbol Address Calculation Algorithm](./diagrams/tdd-diag-023.svg)
 
 ![Final Address Assignment Process](./diagrams/diag-symbol-address-assignment.svg)
 
@@ -1959,7 +1991,8 @@ int main() {
 ```
 When the compiler translates `main.c` to `main.o`, it encounters a problem: **it has no idea where `helper` will live**. The compiler only sees `main.c` — it doesn't know about `utils.c`, it doesn't know what other files will be linked, and it certainly doesn't know the final memory layout.
 
-![Linker Pipeline: Satellite View](./diagrams/diag-satellite-overview.svg)
+![Little-Endian Patch Write](./diagrams/tdd-diag-038.svg)
+
 
 So what does the compiler do? It cheats:
 1. Emits the instruction with a **placeholder value** (often zeros)
@@ -2019,7 +2052,11 @@ The key insight: **relocations are metadata, not code**. They live in separate s
 > 
 > The formula isn't stored explicitly — it's **implied by the relocation type**. Type `R_X86_64_64` means "write the full 64-bit address." Type `R_X86_64_PC32` means "write a 32-bit PC-relative offset." The type encodes the computation; the entry provides the parameters.
 
+![Section Symbol Resolution Flow](./diagrams/tdd-diag-035.svg)
+
 ![Relocation Entry Structure](./diagrams/diag-relocation-entry-format.svg)
+
+![call Instruction Relocation Example](./diagrams/tdd-diag-039.svg)
 
 ## The Relocation Section Structure
 Relocations don't live in the code sections they modify — they live in separate sections named `.rela.<section>` or `.rel.<section>`. For example:
@@ -2133,6 +2170,8 @@ call helper    # Encoded as: E8 xx xx xx xx (relative offset)
 #   (RIP points to next instruction, so we subtract the end of this one)
 ```
 
+![Overflow Detection for 32-bit Relocations](./diagrams/tdd-diag-036.svg)
+
 ![x86-64 Relocation Type Reference](./diagrams/diag-relocation-types-x86-64.svg)
 
 ## The Relocation Processing Algorithm
@@ -2183,6 +2222,8 @@ int apply_relocation(LinkerContext *ctx, ObjectFile *obj, Relocation *rel) {
     // ... continue with symbol lookup and patching ...
 }
 ```
+
+![Relocation Processing Sequence](./diagrams/tdd-diag-037.svg)
 
 ![Relocation Patching in Action](./diagrams/diag-relocation-patching.svg)
 
@@ -2322,6 +2363,8 @@ int apply_relocation(LinkerContext *ctx, ObjectFile *obj, Relocation *rel) {
 }
 ```
 
+![R_X86_64_PC32 PC-Relative Calculation](./diagrams/tdd-diag-032.svg)
+
 ![PC-Relative Relocation Calculation](./diagrams/diag-pc-relative-calculation.svg)
 
 ## Understanding the Addend: Why It Exists
@@ -2396,6 +2439,8 @@ int64_t get_implicit_addend(uint8_t *location, uint32_t type) {
 }
 ```
 The REL format saves 8 bytes per relocation but is more complex to handle. Modern x86-64 code uses RELA exclusively.
+
+![Relocation Type Dispatcher State Machine](./diagrams/tdd-diag-034.svg)
 
 ![Overflow Detection for Truncating Relocations](./diagrams/diag-relocation-overflow.svg)
 
@@ -2572,7 +2617,8 @@ When the `call` executes:
 - Relative offset in instruction = 0x00000007
 - Target = RIP + offset = 0x401009 + 0x7 = 0x401010 ✓
 
-![Relocation Patching in Action](./diagrams/diag-relocation-patching.svg)
+![Input to Output Offset Translation](./diagrams/tdd-diag-033.svg)
+
 
 ## Handling Edge Cases
 ### Edge Case 1: Weak Undefined Symbols
@@ -2768,7 +2814,8 @@ int link_files(LinkerContext *ctx, const char **inputs, int input_count) {
 }
 ```
 
-![Relocation Processing Order](./diagrams/diag-relocation-order.svg)
+![Relocation Processing Data Flow](./diagrams/tdd-diag-030.svg)
+
 
 ## What's Next?
 You've completed the hardest part of linking: correctly patching binary code with computed addresses. Every `call`, every global variable reference, every function pointer — all of them now contain the correct values.
@@ -2801,7 +2848,6 @@ Here's what you probably think happens: the linker outputs code, the OS loads it
 - The OS doesn't "load it" — it **parses program headers** and **mmaps segments** into memory
 - Execution doesn't begin at `main()` — it begins at **`_start`**, which the C runtime provides
 
-![Linker Pipeline: Satellite View](./diagrams/diag-satellite-overview.svg)
 
 The fundamental tension: **the linker's internal organization (sections) is completely different from what the loader needs (segments)**. Sections are the compiler/linker's way of grouping related content: all code here, all read-only data there, all writable data somewhere else. Segments are the loader's way of describing memory regions: this range of file bytes should be mapped to this virtual address with these permissions.
 You've spent three milestones thinking in sections. Now you must think in segments.
@@ -2861,6 +2907,8 @@ You've spent three milestones thinking in sections. Now you must think in segmen
 > │ .bss (uninitialized)│         │   to vaddr 0x403000     │
 > └─────────────────────┘         └─────────────────────────┘
 > ```
+
+![Sections to Segments Mapping](./diagrams/tdd-diag-042.svg)
 
 ![Sections vs Segments: Dual View](./diagrams/diag-sections-vs-segments.svg)
 
@@ -3307,6 +3355,8 @@ int layout_executable(LinkerContext *ctx) {
 }
 ```
 
+![Segment Building Algorithm](./diagrams/tdd-diag-046.svg)
+
 ![Complete Executable Walkthrough](./diagrams/diag-complete-executable-example.svg)
 
 ## Writing the Complete Executable
@@ -3662,15 +3712,14 @@ You now understand the foundation. These advanced features build on the same pri
 
 ## System Overview
 
+![Virtual Address Space Layout](./diagrams/tdd-diag-050.svg)
+
 ![System Overview](./diagrams/system-overview.svg)
-
-
 
 
 # TDD
 
 A multi-file ELF linker that transforms position-independent object files into fixed-address executables. The linker performs four fundamental operations: section merging (combining code and data from multiple translation units with alignment handling), symbol resolution (connecting references to definitions across files with strong/weak rules), relocation processing (patching addresses using PC-relative and absolute formulas), and executable generation (producing valid ELF with program headers and entry point). The design emphasizes clear separation of concerns between parsing, merging, resolution, patching, and output phases, with comprehensive error reporting and a well-defined internal data model centered on the input-to-output mapping table.
-
 
 
 <!-- TDD_MOD_ID: build-linker-m1 -->
@@ -4241,7 +4290,6 @@ MapError translate_to_vaddr(LinkerContext *ctx,
                              uint64_t *out_vaddr);
 #endif // MAPPING_TABLE_H
 ```
-{{DIAGRAM:tdd-diag-002}}
 ## Algorithm Specification
 ### Algorithm 1: ELF Header Parsing
 **Purpose**: Validate file is a valid x86-64 relocatable object and extract section table location.
@@ -7793,7 +7841,6 @@ void set_relocation_error_callback(RelocErrorCallback callback);
    *out_file_off = output_sec->file_offset + output_offset
 9. RETURN RELOC_OK
 ```
-{{DIAGRAM:tdd-diag-030}}
 ### Algorithm 5: Patch Value Calculation
 **Purpose**: Compute the patch value for each supported relocation type.
 **Input**:
@@ -8255,7 +8302,6 @@ as -o test_call.o test_call.s
 # All tests passed!
 ```
 **Milestone 3 Complete**: All relocations processed, output buffer fully patched.
-{{DIAGRAM:tdd-diag-032}}
 ## Test Specification
 ### Test Suite: Relocation Parsing
 ```c
@@ -8556,7 +8602,6 @@ void test_section_symbol_relocation(void) {
     linker_context_destroy(&ctx);
 }
 ```
-{{DIAGRAM:tdd-diag-033}}
 ## Performance Targets
 | Operation | Target | Measurement Method |
 |-----------|--------|-------------------|
@@ -8622,7 +8667,6 @@ If parallel processing is desired in the future:
 - Each input file's relocations can be processed independently
 - Symbol lookups require read-only access to global table (thread-safe)
 - Output buffer writes must be synchronized (different regions per section)
-{{DIAGRAM:tdd-diag-034}}
 [[CRITERIA_JSON: {"module_id": "build-linker-m3", "criteria": ["Parse .rela sections from input object files extracting Elf64_Rela entries with r_offset, r_info (symbol index via ELF64_R_SYM macro and type via ELF64_R_TYPE macro), and r_addend fields", "Parse .rel sections from input object files extracting Elf64_Rel entries with implicit addend read from relocation site in target section data", "Identify target section for each relocation section via sh_info field in section header pointing to the section the relocations apply to", "Implement relocation type dispatcher supporting at minimum R_X86_64_64 (type 1) and R_X86_64_PC32 (type 2) relocation types", "Translate relocation site offsets from input section coordinates to output buffer coordinates using the section mapping table from Milestone 1", "Look up target symbols by index in the input file's symbol table, then resolve to final virtual addresses via the global symbol table from Milestone 2", "Handle section symbols (STT_SECTION type) by resolving to their output section's virtual address plus the symbol's st_value offset", "Handle absolute symbols (SHN_ABS) by using st_value directly as the address", "Handle weak undefined symbols by resolving their relocations to address 0 without error", "Compute R_X86_64_64 patch values using formula: symbol_address + addend (direct 64-bit absolute address)", "Compute R_X86_64_PC32 patch values using formula: symbol_address + addend - site_address (PC-relative 32-bit signed offset)", "Detect and report overflow errors for 32-bit relocations when computed values exceed INT32_MIN to INT32_MAX range for signed types", "Detect and report overflow errors for R_X86_64_32 when computed values are negative or exceed UINT32_MAX", "Write computed relocation values to the output buffer at the correct file offset with little-endian byte order (LSB first)", "Validate relocation site offset does not exceed target section size before processing", "Reject relocations targeting .bss sections (SHT_NOBITS) with appropriate error", "Process relocations only after symbol resolution is complete (dependency ordering enforced)", "Support optional verification mode to read back and confirm patch values", "Track and report relocation processing statistics: total count, success count, error count, overflow count"]}]
 <!-- END_TDD_MOD -->
 
@@ -8871,6 +8915,8 @@ Total: 64 bytes (0x40)
 | 0x30 | 8 | p_align | Alignment (typically 0x1000) |
 Total: 56 bytes (0x38)
 
+![Entry Point Resolution Flow](./diagrams/tdd-diag-045.svg)
+
 ![Executable Generation Module Architecture](./diagrams/tdd-diag-040.svg)
 
 ### Segment Layout Model
@@ -8940,6 +8986,8 @@ This allows the loader to:
   2. Map directly to (p_vaddr & ~(page_size-1))
   3. Both file offset and virtual address have same page offset
 ```
+
+![Loader mmap Operation](./diagrams/tdd-diag-051.svg)
 
 ![Complete ELF Executable File Layout](./diagrams/tdd-diag-041.svg)
 
@@ -9428,7 +9476,6 @@ const char *exec_error_string(ExecError err);
 ExecError verify_executable(const char *path);
 #endif // EXEC_WRITER_H
 ```
-{{DIAGRAM:tdd-diag-042}}
 ## Algorithm Specification
 ### Algorithm 1: ELF Header Initialization
 **Purpose**: Create a valid ELF64 header for a static executable.
@@ -9624,6 +9671,8 @@ ExecError verify_executable(const char *path);
 5. RETURN EXEC_OK
 ```
 **Key insight**: `p_memsz > p_filesz` when .bss is present. The loader zero-fills the difference.
+
+![Minimal Executable Example Trace](./diagrams/tdd-diag-052.svg)
 
 ![Elf64_Phdr Program Header Memory Layout](./diagrams/tdd-diag-043.svg)
 
@@ -9892,7 +9941,6 @@ Check: 0x1000 % 0x1000 == 0x401000 % 0x1000 ✓
     printf("  Segments: %d\n", layout.phnum)
 12. RETURN EXEC_OK
 ```
-{{DIAGRAM:tdd-diag-045}}
 ## Error Handling Matrix
 | Error | Detected By | Recovery | User-Visible? | System State |
 |-------|-------------|----------|---------------|--------------|
@@ -10068,7 +10116,6 @@ gcc tests/test_exec_full.c elf_header.o entry_point.o segment_builder.o \
 # All tests passed!
 ```
 **Milestone 4 Complete**: Full executable generation producing runnable Linux binaries.
-{{DIAGRAM:tdd-diag-046}}
 ## Test Specification
 ### Test Suite: ELF Header Generation
 ```c
@@ -10460,6 +10507,8 @@ void test_verify_with_readelf(void) {
     linker_context_destroy(&ctx);
 }
 ```
+
+![Executable File Write Sequence](./diagrams/tdd-diag-049.svg)
 
 ![p_memsz vs p_filesz for .bss](./diagrams/tdd-diag-047.svg)
 

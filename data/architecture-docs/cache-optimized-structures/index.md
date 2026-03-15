@@ -170,7 +170,6 @@ These aren't required but reward the curious:
 This project teaches you to design data structures and algorithms that work with the CPU memory hierarchy rather than against it. You'll build tools to measure cache behavior, transform memory layouts for optimal cache line utilization, implement cache-friendly hash tables, construct cache-oblivious B-trees using van Emde Boas layout, and apply loop tiling to matrix operations. The core insight is that memory access patterns—not algorithmic complexity—often dominate performance on modern hardware. A cache-miss can cost 100-300 cycles while an L1 hit costs 4 cycles: that's a 25-75x difference per access. By understanding spatial locality (adjacent bytes in the same cache line), temporal locality (reusing data while it's still cached), and the transfer unit (64-byte cache lines), you can transform code that fights the hardware into code that flows with it.
 
 
-
 <!-- MS_ID: cache-optimized-structures-m1 -->
 # Milestone 1: Cache Fundamentals & Benchmarking
 ## The Hidden Cost of Every Memory Access
@@ -201,6 +200,8 @@ CPU designers solve this with a **memory hierarchy**: multiple layers of progres
 [[EXPLAIN:memory-latency-hierarchy-(l1:-4-cycles,-l2:-12-cycles,-l3:-40-cycles,-ram:-200+-cycles)|Memory latency hierarchy showing the dramatic cost difference between cache levels and main memory]]
 ### The Transfer Unit: Cache Lines
 Here's the critical insight: **the CPU never reads a single byte or a single integer.** When you access `array[i]`, the CPU fetches an entire **cache line**—typically 64 bytes—from the next level of memory.
+
+![CPU Cache Hierarchy: Side View](./diagrams/tdd-diag-m1-01.svg)
 
 > **🔑 Foundation: Cache line as the fundamental unit of data transfer between memory hierarchy levels**
 > 
@@ -245,6 +246,8 @@ struct {
 - The "working set size" that matters is measured in cache lines, not bytes
 
 
+![Cache Line Anatomy](./diagrams/tdd-diag-m1-02.svg)
+
 ![Anatomy of a Cache Line](./diagrams/diag-cache-line-anatomy.svg)
 
 This means:
@@ -255,6 +258,8 @@ This means:
 Every memory operation is gambling: is the data I need already in a cache? The difference between winning and losing this gamble is measured in hundreds of CPU cycles.
 ### Spatial and Temporal Locality
 CPUs are simple pattern-matching machines at heart. They assume your code follows two predictable patterns:
+
+![Benchmark State Machine](./diagrams/tdd-diag-m1-08.svg)
 
 > **🔑 Foundation: Spatial locality**
 > 
@@ -311,6 +316,8 @@ for (int i = 0; i < MILLION; i++) {
 When optimizing for spatial locality, ask: "Am I using everything in each cache line I fetch?"
 When optimizing for temporal locality, ask: "Does my working set fit in the cache so reused data stays hot?"
 A linked list traversal has **high temporal locality** (you revisit the list nodes' pointers) but **poor spatial locality** (nodes scattered across memory). An array traversal has **high spatial locality** (contiguous elements share cache lines) but may have **low temporal locality** if each element is used once.
+
+![Pointer Chasing Buffer Layout](./diagrams/tdd-diag-m1-06.svg)
 
 **Spatial locality**: If you accessed address X, you'll probably access X+1, X+2, X+3... soon. This is why cache lines are 64 bytes instead of 4 or 8—you get "free" adjacent data.
 **Temporal locality**: If you accessed address X, you'll probably access X again soon. This is why caches exist at all—they store recently-used data on the assumption you'll reuse it.
@@ -389,6 +396,8 @@ double measure_latency(size_t working_set_bytes, int iterations) {
 }
 ```
 
+![Latency vs Working Set Size Graph](./diagrams/tdd-diag-m1-03.svg)
+
 ![Latency vs Working Set Size Graph](./diagrams/diag-latency-vs-working-set.svg)
 
 The key insight here is **pointer chasing**: each memory access depends on the previous one. This defeats hardware prefetchers, which are designed to detect sequential or strided patterns. By making each address unpredictable until the previous load completes, we force the CPU to wait for each memory access.
@@ -439,6 +448,8 @@ double random_access(volatile int* array, size_t* perm, size_t size) {
 }
 ```
 
+![Sequential vs Random Access Memory Pattern](./diagrams/tdd-diag-m1-04.svg)
+
 ![Sequential vs Random Access Memory Pattern](./diagrams/diag-sequential-vs-random-access.svg)
 
 For an array larger than L1 cache (say, 1 million integers = 4MB), you'll see:
@@ -485,6 +496,8 @@ double stride_benchmark(volatile char* buffer, size_t size, size_t stride) {
     return (double)(end - start) / iterations;
 }
 ```
+
+![Cache Line Stride Benchmark Patterns](./diagrams/tdd-diag-m1-05.svg)
 
 ![Cache Line Stride Benchmark Patterns](./diagrams/diag-stride-benchmark-pattern.svg)
 
@@ -569,6 +582,8 @@ uint64_t read_counter(int fd) {
     return value;
 }
 ```
+
+![Hardware Performance Counter Collection](./diagrams/tdd-diag-m1-07.svg)
 
 ![Hardware Performance Counter Collection](./diagrams/diag-perf-counters-output.svg)
 
@@ -993,6 +1008,8 @@ Consider the numbers:
 - **Ratio**: L1 is 20x faster than RAM
 When you waste cache line space, you're not just wasting memory — you're forcing more accesses to slower levels of the hierarchy. A loop that should be L1-resident becomes L2-bound, or worse, RAM-bound.
 
+![Performance Crossover Analysis](./diagrams/tdd-diag-m2-08.svg)
+
 > **🔑 Foundation: Struct padding and alignment rules that determine how compilers lay out structures in memory**
 > 
 > ## What It IS
@@ -1033,6 +1050,8 @@ Think of alignment as a **hierarchy of requirements**:
 4. The struct's total size is padded to be a multiple of its alignment
 **Mental model**: Imagine lining up boxes on a grid where different box types require different grid spacings. You can't place an 8-byte box at grid position 3 — only 0, 8, 16, 24. The compiler fills gaps with padding because it can't rearrange your declared order.
 **Rule of thumb**: Order struct members from largest to smallest alignment requirement. This minimizes padding automatically.
+
+![Struct Padding and Alignment](./diagrams/diag-struct-padding-analysis.svg)
 
 ---
 ## Two Layouts, One Goal
@@ -1075,6 +1094,8 @@ z:  [pz0][pz1][pz2][pz3][pz4][pz5][pz6][pz7][pz8]...
 vx: [vx0][vx1][vx2][vx3][vx4][vx5][vx6][vx7][vx8]...
 ...
 ```
+
+![Struct Padding Analysis](./diagrams/tdd-diag-m2-07.svg)
 
 ![Struct of Arrays: Memory Layout](./diagrams/diag-soa-memory-layout.svg)
 
@@ -1125,6 +1146,8 @@ Memory access pattern:
 Total: 6 cache lines to process 16 particles = **0.375 cache lines per particle**
 AoS: ~1 cache line per particle (can't share cache lines efficiently due to strided access)
 **SoA uses 2.67x fewer cache lines for the same work.**
+
+![AoS Memory Layout](./diagrams/tdd-diag-m2-01.svg)
 
 ![AoS vs SoA: Cache Line Utilization](./diagrams/diag-aos-vs-soa-cache-utilization.svg)
 
@@ -1181,6 +1204,8 @@ cmp       rax, rcx
 jl        loop_start
 ```
 **1x the throughput (plus loop overhead).**
+
+![Compiler Output: AoS vs SoA Assembly](./diagrams/tdd-diag-m2-05.svg)
 
 ![SIMD Vectorization: Why AoS Fails](./diagrams/diag-simd-vectorization-aos.svg)
 
@@ -1585,6 +1610,8 @@ for (int i = 0; i < n; i++) {
 
 ![Hardware Soul: Particle Update Loop](./diagrams/diag-hardware-soul-particle-update.svg)
 
+![Alternative Reality: jemalloc Slabs](./diagrams/diag-alternative-reality-jemalloc.svg)
+
 ### SoA Loop Analysis
 ```c
 float* x = sys->x;
@@ -1704,6 +1731,8 @@ grep -E 'vmov|vadd|vmul|vfmadd|xmm|ymm|zmm' particle.s
 - `movss` (move scalar single)
 - `addss` (add scalar single)
 - `xmm` registers used singly, not as vectors
+
+![Before/After: AoS to SoA Transformation](./diagrams/diag-before-after-aos-to-soa.svg)
 
 ![Compiler Output: AoS vs SoA Assembly](./diagrams/diag-compiler-asm-comparison.svg)
 
@@ -2133,6 +2162,8 @@ The `__builtin_prefetch(addr, rw, locality)` hint:
 - `rw`: 0 for read, 1 for write
 - `locality`: 0 (no temporal locality) to 3 (high temporal locality)
 Prefetching **8 entries ahead** gives the memory subsystem time to pull in the next cache line while we're comparing keys in the current one. On a cache miss, this can hide 100+ cycles of latency.
+
+![Software Prefetch: Hiding Latency](./diagrams/tdd-diag-m3-06.svg)
 
 ![Software Prefetch: Hiding Latency](./diagrams/diag-software-prefetch-placement.svg)
 
@@ -2681,6 +2712,8 @@ int main() {
 }
 ```
 
+![State Evolution: Robin Hood Insert Sequence](./diagrams/diag-state-evolution-robin-hood.svg)
+
 ![Cache Misses: Chained vs Open Addressing](./diagrams/diag-chained-vs-open-cache-misses.svg)
 
 ### Expected Results
@@ -2938,6 +2971,8 @@ Q(N) = Q(√N) + Q(√N) + O(1) = 2·Q(√N) + O(1)
 ```
 This solves to **Q(N) = O(log_B N)** where B is the number of nodes per cache line.
 **The key insight**: The vEB layout ensures that whenever we access a node, the nodes we're likely to access next (its children and nearby nodes in the subtree) are in the same contiguous memory region. This contiguous region might fit in cache—or it might not. But regardless of cache size, the access pattern is optimal.
+
+![vEB Subtree Memory Contiguity](./diagrams/tdd-diag-m4-04.svg)
 
 ![vEB Subtree Memory Contiguity](./diagrams/diag-veb-subtree-contiguity.svg)
 
@@ -3649,7 +3684,8 @@ The **cache-oblivious B-tree** (Bender, Demaine, Farach-Colton, 2000) extends vE
 | **Optimal for all cache levels** | ✅ Yes | ❌ No | ❌ No | ❌ No |
 | **Used by** | Research, some databases | Binary heaps | Most code | Databases, filesystems |
 
-![Cache Access Pattern: vEB vs Pointer BST](./diagrams/diag-veb-vs-bst-cache-pattern.svg)
+![Non-Power-of-Two Tree Handling](./diagrams/tdd-diag-m4-08.svg)
+
 
 ---
 ## Knowledge Cascade
@@ -4029,7 +4065,6 @@ void matmul_blocked_optimized(Matrix* A, Matrix* B, Matrix* C, int block_size) {
 // Block size auto-tuner
 // ============================================================
 
-![Block Size Auto-Tuner: Empirical Search](./diagrams/diag-block-size-autotuner.svg)
 
 typedef struct {
     int optimal_block_size;
@@ -4107,7 +4142,6 @@ void matrix_transpose_naive(Matrix* src, Matrix* dst) {
     }
 }
 
-![Matrix Transpose: Naive vs Blocked](./diagrams/diag-matrix-transpose-naive-vs-blocked.svg)
 
 // Blocked transpose for cache efficiency
 void matrix_transpose_blocked(Matrix* src, Matrix* dst, int block_size) {
@@ -4133,7 +4167,6 @@ void matrix_transpose_blocked(Matrix* src, Matrix* dst, int block_size) {
 // Handling non-aligned dimensions
 // ============================================================
 
-![Non-Aligned Dimensions: Edge Block Handling](./diagrams/diag-non-aligned-blocks.svg)
 
 // The blocked multiplication already handles non-aligned dimensions
 // through the min() logic in i_max, j_max, k_max calculations.
@@ -4329,6 +4362,15 @@ int main(int argc, char** argv) {
     return 0;
 }
 ```
+
+![Block Size Auto-Tuner: Empirical Search](./diagrams/diag-block-size-autotuner.svg)
+
+
+![Matrix Transpose: Naive vs Blocked](./diagrams/diag-matrix-transpose-naive-vs-blocked.svg)
+
+
+![Non-Aligned Dimensions: Edge Block Handling](./diagrams/diag-non-aligned-blocks.svg)
+
 ---
 ## The Hardware Soul: Tracing Through a Block
 Let's trace what happens in the CPU cache hierarchy during a single 32×32 block multiplication:
@@ -4378,6 +4420,8 @@ Cache miss rate: ~50%
 ## Block Size Selection: Why It Matters
 The block size is a critical tuning parameter. Here's the trade-off space:
 
+![Block Size Auto-Tuner: Empirical Search](./diagrams/tdd-diag-m5-04.svg)
+
 ![Cache Miss Comparison: Naive vs Blocked](./diagrams/diag-cache-miss-comparison-blocked.svg)
 
 ### Too Small (B < 16)
@@ -4414,7 +4458,6 @@ Real-world matrices aren't always perfect multiples of the block size. A 1000×1
 - 31 full blocks (31 × 32 = 992)
 - 1 partial block (8 rows/columns)
 
-![Non-Aligned Dimensions: Edge Block Handling](./diagrams/diag-non-aligned-blocks.svg)
 
 The implementation handles this with the `min()` logic:
 ```c
@@ -4491,15 +4534,14 @@ The profound realization: **algorithm and memory access pattern are separable co
 
 ## System Overview
 
+![Cache-Optimized Structures: Project Atlas](./diagrams/diag-satellite-cache-atlas.svg)
+
 ![System Overview](./diagrams/system-overview.svg)
-
-
 
 
 # TDD
 
 Build a comprehensive toolkit for understanding and exploiting CPU cache behavior through hands-on implementation of cache-profiling tools, memory layout transformations, cache-friendly hash tables, cache-oblivious B-trees, and blocked matrix operations. Each component teaches a fundamental principle: cache hierarchy awareness (M1), data-oriented design (M2), open addressing with Robin Hood hashing (M3), recursive memory layout for cache-oblivious algorithms (M4), and loop tiling for data reuse (M5). The project bridges the gap between algorithmic complexity analysis and real-world performance by making cache behavior visible and measurable.
-
 
 
 <!-- TDD_MOD_ID: cache-optimized-structures-m1 -->
@@ -5711,7 +5753,6 @@ typedef struct {
 | `mass` | `float` | 0x18 | 4 | Particle mass |
 | _padding_ | — | 0x1C | 4 | Alignment padding to 32 bytes |
 | **Total** | | | **32** | 2 particles per cache line |
-{{DIAGRAM:tdd-diag-m2-01}}
 ### 3.2 ParticleSystemSoA Structure
 ```c
 // src/particle_soa.h
@@ -6660,7 +6701,6 @@ AoS inner loop:
   cmp      rax, rcx
   jl       loop
 ```
-{{DIAGRAM:tdd-diag-m2-05}}
 ### Memory Access Pattern
 ```
 AoS PATTERN:
@@ -6766,8 +6806,6 @@ grep -E 'movss|addss' src/particle_ops_aos.s | head -20
 
 ![Hardware Soul: Particle Update Loop](./diagrams/tdd-diag-m2-06.svg)
 
-{{DIAGRAM:tdd-diag-m2-07}}
-{{DIAGRAM:tdd-diag-m2-08}}
 ---
 [[CRITERIA_JSON: {"module_id": "cache-optimized-structures-m2", "criteria": ["ParticleAoS struct defines x, y, z, vx, vy, vz, mass fields with __attribute__((aligned(16))) resulting in sizeof of 32 bytes with documented field offsets", "ParticleSystemSoA struct contains seven separate float pointers (x, y, z, vx, vy, vz, mass) with create_soa_system allocating each array via aligned_alloc(32, ...) for AVX compatibility", "create_aos_system initializes particles with deterministic values matching SoA: position from index modulo, velocity (1.0, 2.0, 3.0), mass 1.0 + index variation", "update_positions_aos and update_positions_soa implement pos += vel * dt accessing 6 fields, with SoA version showing at least 2x speedup over AoS for 1M particles", "apply_gravity_aos and apply_gravity_soa implement pos += gravity * dt accessing only 3 fields (x, y, z), with SoA showing at least 3x speedup", "full_update_aos and full_update_soa implement velocity update from gravity scaled by inverse mass plus position update, accessing all 7 fields, with both versions within 20% performance", "BenchmarkResult struct contains mean_ns, stddev_ns, min_ns, max_ns, ns_per_particle, cycles_per_particle, iteration_count, particle_count totaling 64 bytes", "benchmark_aos_operation and benchmark_soa_operation functions implement warmup iterations (default 3), measurement iterations (default 10), and statistical reporting", "LayoutAnalysisResult from analyze_aos_layout reports sizeof=32, num_fields=7, cache_efficiency_full=87.5%, cache_efficiency_pos=37.5%", "Vectorization verification documents gcc -fopt-info-vec-optimized showing SoA loops vectorized and assembly inspection showing vmovaps/vfmaddps for SoA vs movss/addss for AoS", "perf stat integration documents L1-dcache-load-misses and LLC-load-misses measurement with SoA showing 2-3x fewer misses for position-only access pattern", "All update operations produce identical results between AoS and SoA implementations within floating-point tolerance (1e-5) verified by correctness tests"]}]
 <!-- END_TDD_MOD -->
@@ -7854,7 +7892,6 @@ NOT IMPLEMENTED:
 - Base version uses scalar for clarity
 - SwissTable optimization is Phase 2 enhancement
 ```
-{{DIAGRAM:tdd-diag-m3-06}}
 ### Memory Access Pattern
 ```
 OPEN HASH (LINEAR PROBE):
@@ -8662,7 +8699,6 @@ EDGE CASES:
 - Two elements: median_idx = start, one right child
 - Three elements: median_idx = start + 1, both children
 ```
-{{DIAGRAM:tdd-diag-m4-04}}
 ### 5.5 Search Implementation
 ```
 ALGORITHM: veb_tree_search(tree, target)
@@ -9317,7 +9353,6 @@ CONCLUSION:
 - Array BST: Better than pointer, worse than vEB
 - Pointer BST: Worst cache behavior
 ```
-{{DIAGRAM:tdd-diag-m4-08}}
 ---
 ## 11. Makefile
 ```makefile
@@ -9760,7 +9795,7 @@ int matmul_naive(const Matrix* A, const Matrix* B, Matrix* C);
  */
 int matmul_blocked(const Matrix* A, const Matrix* B, Matrix* C, int block_size);
 ```
-{{DIAGRAM:tdd-diag-m5-02}}
+![tdd-diag-m5-02](./diagrams/tdd-diag-m5-02.svg)
 ```c
 // src/matmul_blocked_optimized.c
 /**
@@ -9813,6 +9848,8 @@ AutoTuneResult matmul_autotune(const Matrix* A, const Matrix* B, Matrix* C,
                                 const BenchmarkConfig* config);
 ```
 
+![Register Blocking: Micro-Kernel](./diagrams/tdd-diag-m5-09.svg)
+
 ![Block Fits in Cache: Working Set Analysis](./diagrams/tdd-diag-m5-03.svg)
 
 ### 4.5 Matrix Transpose
@@ -9859,7 +9896,6 @@ int matrix_transpose_naive(const Matrix* src, Matrix* dst);
  */
 int matrix_transpose_blocked(const Matrix* src, Matrix* dst, int block_size);
 ```
-{{DIAGRAM:tdd-diag-m5-04}}
 ### 4.6 Edge Handling Demonstration
 ```c
 // src/edge_handling.c
@@ -9966,7 +10002,7 @@ The inner loop order (i, k, j) with a_val hoisted allows:
 - B accessed row-wise within block (sequential)
 - C accessed row-wise within block (sequential)
 ```
-{{DIAGRAM:tdd-diag-m5-05}}
+![tdd-diag-m5-05](./diagrams/tdd-diag-m5-05.svg)
 ### 5.3 Register-Optimized Blocked Multiplication
 ```
 ALGORITHM: matmul_blocked_optimized(A, B, C, block_size)
@@ -10036,6 +10072,7 @@ BLOCKED:
 - Total cache misses: 128 × 1024 = ~131,000
 - Improvement: 1M / 131K ≈ 7.6x fewer cache misses
 ```
+
 
 ![Three-Level View: Matrix Multiplication](./diagrams/tdd-diag-m5-06.svg)
 
@@ -10207,6 +10244,7 @@ gcc -O2 -o test_edge test_edge.c src/edge_handling.c
 # Edge blocks: 729 total - 512 = 217
 # Edge block sizes: i=1, j=1, k=1
 ```
+
 
 ![Cache Miss Comparison: Naive vs Blocked](./diagrams/tdd-diag-m5-07.svg)
 
@@ -10575,6 +10613,8 @@ IMPROVEMENT:
 - Ratio: ~10.6x fewer cache lines touched
 ```
 
+![Performance Scaling: Matrix Size](./diagrams/tdd-diag-m5-10.svg)
+
 ![Matrix Transpose: Naive vs Blocked](./diagrams/tdd-diag-m5-08.svg)
 
 ### Branch Predictability
@@ -10640,7 +10680,6 @@ NOT IMPLEMENTED:
 - Base version relies on compiler auto-vectorization
 - Manual intrinsics optimization is future enhancement
 ```
-{{DIAGRAM:tdd-diag-m5-09}}
 ### Memory Access Pattern
 ```
 NAIVE MULTIPLICATION:
@@ -10674,7 +10713,6 @@ KEY INSIGHT:
 Blocking transforms B from column-wise to row-wise access
 within each block, enabling sequential access and prefetching.
 ```
-{{DIAGRAM:tdd-diag-m5-10}}
 ---
 ## 11. Makefile
 ```makefile

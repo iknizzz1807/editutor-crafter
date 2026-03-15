@@ -162,7 +162,6 @@ The central insight this project drives home is deceptively simple but profound:
 You will implement the complete stack from scratch: epoll creation, edge-triggered vs. level-triggered semantics, per-connection state machines, write buffering with EPOLLOUT backpressure, a timer heap for idle timeouts, a clean Reactor abstraction with deferred task scheduling, and finally an incremental HTTP/1.1 parser with keep-alive support. Every layer builds on the one before it, and by the end you will be able to read NGINX's source code and understand every design decision it makes.
 
 
-
 <!-- MS_ID: build-event-loop-m1 -->
 # Milestone 1: epoll Basics — Level-Triggered and Edge-Triggered
 ## Where You Are in the System
@@ -185,6 +184,8 @@ When you call `epoll_create1()`, the kernel allocates a new `epoll` instance wit
 1. **The interest set** — a red-black tree of `(fd, event_mask)` pairs. When you call `epoll_ctl(EPOLL_CTL_ADD)`, you insert an entry here. The kernel uses this to know which events to track for which file descriptors.
 2. **The readiness queue** — a linked list of entries that became ready since the last `epoll_wait()`. When a network packet arrives and the kernel wakes up the socket's receive buffer, the kernel walks the interest set looking for entries that are watching that socket, and appends matching ones to the readiness queue.
 When you call `epoll_wait()`, the kernel copies entries from the readiness queue into your userspace array and returns. If no entries are ready, the thread sleeps with zero CPU overhead until the kernel adds something to the readiness queue.
+
+![epoll Kernel Data Structures: Interest Set (Red-Black Tree) vs Readiness Queue (Linked List)](./diagrams/tdd-diag-1.svg)
 
 ![epoll Interest Set vs. Readiness Queue (Kernel Data Structures)](./diagrams/diag-m1-epoll-interest-vs-readiness.svg)
 
@@ -824,7 +825,6 @@ In M2, you will handle the one remaining gap: what happens when `write()` return
 # Milestone 2: Write Buffering and Timer Management
 ## Where You Are in the System
 
-![L0 Satellite: Project-Wide System Map](./diagrams/diag-l0-satellite-map.svg)
 
 In M1 you built the skeleton of an event loop: epoll watches file descriptors, your code wakes when data arrives, and an echo server demonstrates LT versus ET semantics. But the echo server has two quiet lies buried in it — two places where it silently discards data or wastes CPU rather than handling edge cases correctly.
 This milestone fixes both. By the end, your server will handle the full write path correctly under backpressure, and it will enforce idle timeouts on connections without a background thread or a signal handler in sight.
@@ -1390,6 +1390,8 @@ static void conn_close(int epfd, int fd) {
 ```
 Missing the timer cancellation on close is a resource leak: the heap entry still references an fd that has been closed and possibly reused. When the timer fires, it will call `conn_close` on the wrong connection.
 
+![Heap Sift-Up After Insert: Step-by-Step State Transitions](./diagrams/tdd-diag-14.svg)
+
 ![Full Connection Lifecycle with Timers](./diagrams/diag-m2-connection-lifecycle-full.svg)
 
 ### Design Decision: Min-Heap vs. Timer Wheel
@@ -1442,7 +1444,6 @@ When your event loop is running with write buffers and timers, the hot path now 
 **`epoll_ctl(EPOLL_CTL_MOD)`** to arm/disarm EPOLLOUT: This is a syscall — ~200 cycles including ring transition. You call it at most twice per connection per "backpressure event": once to arm EPOLLOUT, once to disarm. Under normal operation (no backpressure), you never call it. Under a slow client causing backpressure, you pay 200 cycles twice for every burst of data — acceptable.
 **Branch predictability in the event dispatch loop**: The `if (ev & (EPOLLERR | EPOLLHUP))` branch is almost always false (errors are rare). The CPU branch predictor learns this quickly. The `if (ev & EPOLLIN)` branch is almost always true (most events are data-ready). The `if (ev & EPOLLOUT)` branch is true only for connections under backpressure — intermittent, harder to predict, but infrequent.
 
-![Hardware Soul: Cache Line Analysis of Hot Path](./diagrams/diag-hardware-soul-cache-analysis.svg)
 
 ---
 ## Putting It All Together: The Full Updated Connection Struct and Event Loop
@@ -1534,7 +1535,6 @@ In M3, you will abstract everything you have built — the epoll fd, the per-fd 
 # Milestone 3: Reactor API and Callback Dispatch
 ## Where You Are in the System
 
-![L0 Satellite: Project-Wide System Map](./diagrams/diag-l0-satellite-map.svg)
 
 You have built a functional event loop. It monitors file descriptors with epoll, drains reads in ET mode, handles partial writes through a write buffer, and fires idle timeouts through a min-heap integrated with `epoll_wait`'s timeout parameter. Every mechanism is working.
 The problem is that it is working in the worst possible way: as a single monolithic function with epoll internals scattered through every handler. Your read handler calls `epoll_ctl`. Your write handler calls `epoll_ctl`. Your accept handler calls `epoll_ctl`. The timer heap lives in a global variable. The connection table lives in another global variable. There is no seam between "the machinery that multiplexes events" and "the code that handles those events." Every time you want to add a feature — the HTTP parser in M4, a rate limiter, a logging system — you must reach through the event loop's internals to touch epoll directly.
@@ -2182,6 +2182,14 @@ The ordering within `reactor_expire_timers` for repeating timers is deliberate: 
 ---
 ## EPOLLHUP and EPOLLERR: The Events You Did Not Subscribe To
 
+![One-Shot vs Repeating Timer: Heap State Before and After Expiry](./diagrams/tdd-diag-24/index.svg)
+
+![comparison](./diagrams/tdd-diag-24/comparison.svg)
+
+![scenario_a](./diagrams/tdd-diag-24/scenario_a.svg)
+
+![scenario_b](./diagrams/tdd-diag-24/scenario_b.svg)
+
 ![EPOLLHUP and EPOLLERR: Kernel-Reported Error Events](./diagrams/diag-m3-epollhup-epollerr-handling.svg)
 
 `EPOLLHUP` and `EPOLLERR` are delivered by the kernel *regardless* of whether you subscribed to them. You cannot opt out. This is by design: the kernel must be able to notify you of catastrophic events even if you forgot to ask.
@@ -2363,7 +2371,6 @@ Your `dispatching` flag is a runtime version of these compile-time and kernel-le
 ## Hardware Soul: What the CPU Is Actually Doing
 The reactor's dispatch loop has a tighter hot path than the raw epoll loop from M1, because each iteration now performs more structured work. Let us trace the cache behavior:
 
-![Hardware Soul: Cache Line Analysis of Hot Path](./diagrams/diag-hardware-soul-cache-analysis.svg)
 
 **`epoll_wait` return**: The kernel copies `nready` `epoll_event` structs to `events[]`. Each `epoll_event` is 12 bytes (4 bytes events mask + 8 bytes data union). For 1024 events: 12,288 bytes = 192 cache lines. This is a sequential copy — the hardware prefetcher handles it well. By the time you start the dispatch loop, `events[]` is likely warm in L1/L2.
 **`fd_handler_t` lookup**: `r->handlers[fd]` is an array of `fd_handler_t` structs (≈ 40 bytes each). For 10,000 connections, the handlers array is 400KB — well beyond typical L1 (32KB) and approaching L2 (256KB) limits. Each event dispatch causes a load from `handlers[fd]`, which is a cache miss if that connection was last active many ticks ago. L3 miss → DRAM access: ≈200 cycles. This is the dominant cache cost of the dispatch loop.
@@ -2390,7 +2397,6 @@ Node.js's event loop has six phases: timers, pending callbacks, idle/prepare, po
 - **Check phase** (`setImmediate`) = your Phase 3: deferred tasks that run after I/O but before the next wait.
 - **`process.nextTick()`** = also your Phase 3, but with *higher priority* than `setImmediate`. Node.js runs the nextTick queue before `setImmediate` callbacks, which is why `process.nextTick(f)` runs before `setImmediate(f)` even when both are scheduled in the same tick. In your reactor, you could implement this by having two deferred queues: a "next-tick queue" (drained first) and a "check queue" (drained second).
 
-![Node.js libuv Event Loop: Mapping to This Project's Reactor](./diagrams/diag-cross-domain-nodejs-libuv.svg)
 
 **→ libuv's uv_run(): You Just Built It**
 `uv_run()` in libuv (Node.js's C event loop library) is structurally identical to your `reactor_run()`:
@@ -2448,7 +2454,6 @@ In M4, you will build the HTTP/1.1 server entirely against this API. The HTTP re
 # Milestone 4: HTTP Server on Event Loop
 ## Where You Are in the System
 
-![L0 Satellite: Project-Wide System Map](./diagrams/diag-l0-satellite-map.svg)
 
 You have built the entire engine. The reactor sits beneath you like a jet turbine — you register file descriptors, callbacks fire when data arrives, timers enforce deadlines, deferred tasks execute cleanly after each I/O batch. The machinery is correct, tested, and abstracted.
 Now you put it to work. This milestone builds an HTTP/1.1 server on top of that reactor — a real server, not a toy. It will parse HTTP requests from streams of bytes that arrive in arbitrary chunks, manage per-connection state machines across those chunks, serve static files with proper MIME types, support keep-alive connection reuse, and survive a benchmark that opens 10,000 simultaneous connections and measures p99 latency.
@@ -3394,7 +3399,6 @@ When wrk opens 10,000 connections, here is what happens in your server:
 6. The idle timer is reset on each data receipt: 200 `timer_cancel` + 200 `timer_insert` per batch. The heap sees ~200 × 2 × 13 = ~5,200 comparisons per epoll_wait cycle — still negligible.
 The single thread touches roughly 200 connections per event loop tick. At 10,000 connections, the per-connection state is spread across ~260MB. Most of that memory is cold most of the time. Active connections' `http_conn_t` structs cycle through L2/L3 cache frequently. Idle connections' data is evicted from cache between their activity periods. This is the cache pressure pattern for high-connection-count servers.
 
-![Hardware Soul: Cache Line Analysis of Hot Path](./diagrams/diag-hardware-soul-cache-analysis.svg)
 
 ---
 ## Hardware Soul: What the CPU Is Actually Doing
@@ -3512,12 +3516,9 @@ The architecture you built is the same architecture that powers NGINX, Redis, No
 ![System Overview](./diagrams/system-overview.svg)
 
 
-
-
 # TDD
 
 A bottom-up construction of a production-grade single-threaded C10K server: raw epoll syscalls → write buffering and timer heap → reactor abstraction → HTTP/1.1 application layer. Each milestone is a vertical slice that compiles, runs, and is correct before the next layer is added. The reactor abstraction is the pivot point — below it, all epoll internals; above it, zero epoll knowledge. Hardware constraints (kernel socket buffers, cache lines, TLB pressure, syscall cost) drive every design decision.
-
 
 
 <!-- TDD_MOD_ID: build-event-loop-m1 -->
@@ -3597,7 +3598,6 @@ typedef struct {
 | *(padding)* | 4112 | 0 | no padding needed; 8-byte aligned |
 **Why `fd` stored redundantly?** Sanity assertions: `assert(conn_table[fd].fd == fd)` catches corruption where the wrong fd's slot is mutated. The cost is 4 bytes; the debugging value is high.
 **Why `read_len` present?** M2 and M4 need to know how many bytes are currently staged. The echo server itself does not use accumulation (it reads and immediately echoes), but the field must exist so M2 can extend this struct without changing its layout.
-{{DIAGRAM:tdd-diag-1}}
 **Global connection table:**
 ```c
 /* conn.c */
@@ -5070,7 +5070,6 @@ The event loop from M1 is updated to:
 2. Handle `EPOLLOUT` events by calling `conn_flush_write_buf`.
 3. Reset the idle timer on every `EPOLLIN` event with actual data received.
 4. Call `timer_expire_all` after every `epoll_wait` return.
-{{DIAGRAM:tdd-diag-14}}
 ```c
 /* event_loop.c — updated run_event_loop (LT shown; ET is identical except read handler) */
 void run_event_loop(int epfd, int listen_fd, int use_et) {

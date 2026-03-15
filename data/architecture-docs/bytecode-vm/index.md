@@ -167,7 +167,6 @@ The project is complete when:
 A stack-based virtual machine implementation that teaches the fundamental mechanics of language runtimes. You'll design a bytecode instruction set, build a fetch-decode-execute interpreter loop, manage operand stacks for computation, and implement call frames for function execution. This project reveals how languages like Python, Lua, and Java actually execute code under the hood. By building a VM from scratch, you'll understand why certain language features have the performance characteristics they do, and gain the foundation needed for compiler backends, JIT compilers, and language implementation.
 
 
-
 <!-- MS_ID: bytecode-vm-m1 -->
 # Instruction Set Design
 ## The Mission Before You
@@ -371,6 +370,8 @@ int opcode_operand_count(OpCode code);
 ```
 Notice the opcode values are grouped by category (0x00s for control flow, 0x10s for stack ops, etc.). This organization helps when debugging raw bytecode—you can often guess the category from the high nibble.
 
+![Instruction Size Lookup Table](./diagrams/tdd-diag-m1-008.svg)
+
 ![Bytecode Instruction Memory Layout](./diagrams/diag-m1-opcode-layout.svg)
 
 The implementation of the helper functions:
@@ -446,6 +447,8 @@ The simplest approach: every operand is a fixed number of bytes. We'll use 2 byt
 | opcode (1 byte) | operand byte 1 | operand byte 2 |
 ```
 For instructions with no operands, just the opcode byte.
+
+![Disassembler Output Format](./diagrams/tdd-diag-m1-006.svg)
 
 ![Bytecode Chunk Internal Structure](./diagrams/diag-m1-chunk-structure.svg)
 
@@ -962,6 +965,8 @@ This "pointing ahead" convention simplifies jump calculation: `JUMP target` just
 ---
 ## The Fetch-Decode-Execute Cycle: Your VM's Heartbeat
 
+![Instruction Pointer Advancement Patterns](./diagrams/tdd-diag-m2-008.svg)
+
 > **🔑 Foundation: The fundamental interpreter loop pattern**
 > 
 > ## What It IS
@@ -1034,6 +1039,8 @@ Value vm_pop(VM* vm);
 Value vm_peek(VM* vm, int distance);  // Peek without popping
 #endif
 ```
+
+![Operand Stack Operations](./diagrams/tdd-diag-m2-002.svg)
 
 ![VM Struct Memory Layout](./diagrams/diag-m2-vm-struct-layout.svg)
 
@@ -1701,6 +1708,8 @@ Here's what most developers believe about control flow:
 > "`if` statements, `while` loops, and `for` loops are the fundamental building blocks of programs. They're built into the language and the machine."
 This is wrong. Dangerously wrong.
 
+![Control Flow Graph from Bytecode](./diagrams/tdd-diag-m3-001.svg)
+
 ![Control Flow Graph from Bytecode](./diagrams/diag-m3-control-flow-graph.svg)
 
 At the bytecode level—where your VM lives—there are no `if` statements. There are no loops. There are no structured constructs of any kind. There is only:
@@ -1804,6 +1813,8 @@ case OP_JUMP_IF_FALSE: {
 }
 ```
 
+![Jump Validation State Machine](./diagrams/tdd-diag-m3-007.svg)
+
 ![Condition Stack Leak Bug](./diagrams/diag-m3-stack-leak-bug.svg)
 
 ### The Critical Detail: Always Pop the Condition
@@ -1829,6 +1840,8 @@ if (condition) {
 }
 // after-both
 ```
+
+![Condition Stack Leak Bug](./diagrams/tdd-diag-m3-006.svg)
 
 ![If-Else Compilation to Jumps](./diagrams/diag-m3-if-else-bytecode.svg)
 
@@ -2849,7 +2862,6 @@ Function add's bytecode (at offset 20):
   0027: RETURN           ; return the result
 ```
 
-![CALL Instruction Execution Trace](./diagrams/diag-m4-call-instruction-trace.svg)
 
 | Step | IP | Action | Stack | Frames | Locals |
 |------|-----|--------|-------|--------|--------|
@@ -3712,15 +3724,14 @@ But those are stories for another project. For now, you've built something real.
 
 ## System Overview
 
+![Frame Lifecycle State Machine](./diagrams/tdd-diag-m4-011.svg)
+
 ![System Overview](./diagrams/system-overview.svg)
-
-
 
 
 # TDD
 
 A stack-based virtual machine implementation that transforms bytecode instructions into runtime behavior through a fetch-decode-execute cycle. The VM manages an operand stack for expression evaluation, call frames for function isolation, and control flow primitives for branching and looping. This design prioritizes clarity and debuggability over raw performance, making the internals of language runtimes transparent and understandable.
-
 
 
 <!-- TDD_MOD_ID: bytecode-vm-m1 -->
@@ -4243,7 +4254,6 @@ FUNCTION disassemble_instruction(chunk, offset):
     PRINT newline
     RETURN offset + total_size
 ```
-{{DIAGRAM:tdd-diag-m1-006}}
 ---
 ## Error Handling Matrix
 | Error | Detected By | Recovery | User-Visible? |
@@ -4571,7 +4581,6 @@ void test_complete_chunk() {
 - At 8 full: capacity → 16
 - At 16 full: capacity → 32
 - After any write: count ≤ capacity ≤ 2 × (previous capacity)
-{{DIAGRAM:tdd-diag-m1-008}}
 ---
 ## Appendix: Complete Bytecode Example
 For the expression `3 + 5`, here is the complete bytecode representation:
@@ -4739,7 +4748,6 @@ After executing LOAD_CONST:
   IP = 3 (still pointing to ADD opcode)
 ```
 This convention makes jump calculations simple: `JUMP target` just sets `IP = target`.
-{{DIAGRAM:tdd-diag-m2-002}}
 ### InterpretResult Enum
 ```c
 typedef enum {
@@ -5670,7 +5678,6 @@ InterpretResult vm_interpret(VM* vm, Chunk* chunk) {
     }
 }
 ```
-{{DIAGRAM:tdd-diag-m2-008}}
 ---
 ## Debugging Support
 For development, add optional trace output:
@@ -5791,7 +5798,6 @@ OP_JUMP_IF_FALSE:
 | Target High | 1 byte | 0x00-0xFF | High 8 bits of target offset |
 | Target Low | 1 byte | 0x00-0xFF | Low 8 bits of target offset |
 | Combined Target | 16 bits | 0x0000-0xFFFF | Absolute byte offset (0 to 65535) |
-{{DIAGRAM:tdd-diag-m3-001}}
 ### Control Flow State Machine
 The IP can be in one of three conceptual states during execution:
 ```
@@ -6035,7 +6041,6 @@ An `if (condition) { then } else { else }` compiles to:
 1. Condition test → conditional jump to else
 2. Then branch → unconditional jump past else
 3. Else branch → falls through to after
-{{DIAGRAM:tdd-diag-m3-006}}
 ---
 ## Error Handling Matrix
 | Error | Detected By | Recovery | User-Visible? | State After |
@@ -6156,7 +6161,6 @@ vm_init(&vm2);
 vm_interpret(&vm2, &chunk2);
 assert(vm2.stack_top == 0);  // Only condition was pushed and popped
 ```
-{{DIAGRAM:tdd-diag-m3-007}}
 ---
 ### Phase 4: Add DEBUG_TRACE_EXECUTION for Control Flow (0.5 hours)
 **Files**: `src/vm.c`
@@ -6660,7 +6664,7 @@ Total size: 24 bytes (aligned)
 | `return_address` | Where to resume in caller after RETURN | Captured at CALL, used at RETURN |
 | `locals_base` | Start of this frame's locals in shared array | Computed at CALL, used for all local access |
 | `locals_count` | Bounds check for local slot access | Set at CALL, validated on LOAD/STORE_LOCAL |
-{{DIAGRAM:tdd-diag-m4-001}}
+![tdd-diag-m4-001](./diagrams/tdd-diag-m4-001.svg)
 ### FrameStack Structure
 ```c
 typedef struct {
@@ -6686,6 +6690,7 @@ locals_top = 10 (= 5 + 3 + 2)
 - Initial capacity: 8 frames
 - Growth factor: 2x when full
 - Maximum: FRAMES_MAX (256) enforced at push time
+
 
 ![Frame Stack Growth Pattern](./diagrams/tdd-diag-m4-002.svg)
 
@@ -6786,7 +6791,17 @@ OP_CALL encoding (7 bytes total):
 **Why Three Operands**:
 In a real compiler, function metadata (entry point, locals count) would be stored in a function object. For this learning VM, we embed them in the instruction for simplicity.
 
-![RETURN Instruction Execution Trace](./diagrams/tdd-diag-m4-005.svg)
+![RETURN Instruction Execution Trace](./diagrams/tdd-diag-m4-005/index.svg)
+
+![step1](./diagrams/tdd-diag-m4-005/step1.svg)
+
+![step2](./diagrams/tdd-diag-m4-005/step2.svg)
+
+![step3](./diagrams/tdd-diag-m4-005/step3.svg)
+
+![step4](./diagrams/tdd-diag-m4-005/step4.svg)
+
+![step5](./diagrams/tdd-diag-m4-005/step5.svg)
 
 ### Argument Passing Convention
 Arguments are passed **left-to-right** into local slots:
@@ -7615,7 +7630,6 @@ void test_frame_depth_limit() {
     // Error message should mention "too many nested calls"
 }
 ```
-{{DIAGRAM:tdd-diag-m4-011}}
 ---
 ## Test Specification
 ### Test: test_simple_function_call

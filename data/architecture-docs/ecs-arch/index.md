@@ -142,7 +142,6 @@ The core challenge of ECS is solving the 'pointer chasing' problem of traditiona
 By the end, you'll understand why ECS dominates performance-critical game development and how to apply these cache-aware patterns to any system where memory access patterns determine performance.
 
 
-
 <!-- MS_ID: ecs-arch-m1 -->
 # Entity Manager & World Container
 You're about to build the identity layer of an Entity-Component-System architecture. Every entity in your game—every enemy, bullet, particle, and UI element—will carry an ID born from the code you write in this milestone. Get this wrong, and you'll chase bugs where bullets hit the wrong target or saved games reference ghosts. Get it right, and you'll have a foundation that scales to millions of entities with provable correctness.
@@ -185,6 +184,8 @@ And it must do this while fitting in the **CPU cache**. Every cache miss costs ~
 This is the fundamental tension: **correctness requires distinguishing reused slots, but performance requires O(1) operations on cache-friendly data structures.**
 ## The Solution: Generation-Counted Entity IDs
 The fix is elegant. Each entity slot carries a **generation counter** that increments every time the slot is recycled:
+
+![1M Entity Benchmark Timeline](./diagrams/tdd-diag-m1-10.svg)
 
 ![Entity ID Bit Packing](./diagrams/diag-m1-entity-id-layout.svg)
 
@@ -238,6 +239,8 @@ Let's see what happens when you call `world.create_entity()`:
 ## The Free List: O(1) Recycling Without Allocations
 When an entity is destroyed, its index goes into a free list for reuse. But we're not going to allocate linked list nodes on the heap—that would be a cache disaster and defeat the entire purpose of ECS.
 Instead, we use a **linked-list-in-array** pattern:
+
+![Entity ID Bit Packing Layout](./diagrams/tdd-diag-m1-01.svg)
 
 ![Free List as Linked-List-in-Array](./diagrams/diag-m1-free-list-structure.svg)
 
@@ -341,7 +344,11 @@ impl EntityManager {
 }
 ```
 
+![Entity Lifecycle State Machine](./diagrams/tdd-diag-m1-02.svg)
+
 ![World Container Structure](./diagrams/diag-m1-world-ownership.svg)
+
+![World Container Ownership](./diagrams/tdd-diag-m1-05.svg)
 
 ### The Generation Overflow Question
 What happens when a slot is recycled 4096 times and the generation wraps from 4095 back to 0?
@@ -580,6 +587,8 @@ Let's analyze the memory footprint for 1 million entities:
 - Total: ~10 MB for tracking 1 million entity slots
 Both arrays are contiguous. When you iterate over `generations` (e.g., for serialization or debugging), you get sequential memory access at ~20-50 GB/s on modern RAM. The free list is only touched during create/destroy, not during the hot path of component iteration.
 ## What We've Built: The Satellite View
+
+![EntityManager Memory Layout](./diagrams/tdd-diag-m1-04.svg)
 
 ![ECS Architecture: Satellite View](./diagrams/diag-L0-ecs-satellite.svg)
 
@@ -827,6 +836,8 @@ impl<T> SparseSet<T> {
 ```
 The `dense` array is contiguous memory. When you iterate over it, the CPU prefetcher loads cache lines ahead of your access. A 64-byte cache line holds 8 `f32` values. If `Position` is two `f32`s (x, y), each cache line brings in 4 positions. You're processing 4 entities per cache line fetch instead of 1 entity per cache line fetch (or worse, with pointer chasing).
 
+![Swap-and-Pop Remove Algorithm](./diagrams/tdd-diag-m2-04.svg)
+
 ![Memory Layout During Component Iteration](./diagrams/diag-m2-iteration-memory-layout.svg)
 
 ### The Performance Math
@@ -842,6 +853,8 @@ A real ECS has dozens of component types. Each needs its own sparse set. But we 
 1. Store them uniformly (type erasure)
 2. Look them up by type
 3. Clean up all components for a destroyed entity
+
+![Type-Safe Access Flow](./diagrams/tdd-diag-m2-11.svg)
 
 ![Per-Type Component Storage Registry](./diagrams/diag-m2-component-registry.svg)
 
@@ -1002,6 +1015,8 @@ impl World {
 The generic type parameter `T` is resolved at compile time. If you call `get_component::<Position>(entity)`, the compiler generates code that looks up the `TypeId` of `Position` and casts to `SparseSet<Position>`. A type mismatch would require unsafe code or a bug in our implementation—not something user code can trigger accidentally.
 ## Entity Destruction: Cascading Cleanup
 When an entity is destroyed, all its components must be removed. This is where the registry earns its keep:
+
+![Entity Destruction Cascade](./diagrams/tdd-diag-m2-08.svg)
 
 ![Entity Destruction: Cascading Component Cleanup](./diagrams/diag-m2-entity-destruction-cleanup.svg)
 
@@ -1508,7 +1523,8 @@ mod benchmarks {
 | **Iteration order** | Unspecified (dense array order) | Sorted by entity index | Unspecified is faster; sorted requires tracking or sorting |
 ## What We've Built: The Component Layer
 
-![ECS Architecture: Satellite View](./diagrams/diag-L0-ecs-satellite.svg)
+![Sparse Array Growth Scenario](./diagrams/tdd-diag-m2-05.svg)
+
 
 We've added the **Components** box to our ECS architecture:
 - **SparseSet<T>**: Per-component-type storage with O(1) add/remove/lookup
@@ -1622,6 +1638,8 @@ The challenge: our sparse sets are per-component-type. We need to:
 ### The Query Algorithm: Small-Set Iteration
 The key insight: **iterate over the smallest component set, check presence in others**.
 
+![Iterator Invalidation Problem](./diagrams/tdd-diag-m3-01.svg)
+
 ![Query: Filtering Entities by Component Presence](./diagrams/diag-m3-query-composition.svg)
 
 If 50,000 entities have Position but only 200 have Velocity, iterate over Velocity's dense array and check if each entity has Position. This is O(200) with sparse lookups, not O(50,000).
@@ -1716,6 +1734,8 @@ The **command buffer** is a queue of structural operations:
 - `DestroyEntity(Entity)` — mark entity for destruction
 - `AddComponent(Entity, T)` — attach a component
 - `RemoveComponent(Entity, TypeId)` — detach a component
+
+![Smallest-Set Query Heuristic](./diagrams/tdd-diag-m3-07.svg)
 
 ![Command Buffer: Deferred Operation Queue](./diagrams/diag-m3-command-buffer-structure.svg)
 
@@ -1930,6 +1950,8 @@ impl SystemScheduler {
 }
 ```
 
+![System Scheduler Architecture](./diagrams/tdd-diag-m3-05.svg)
+
 ![System Registration and Execution Order](./diagrams/diag-m3-system-registration.svg)
 
 ### System Ordering: Why It Matters
@@ -1948,6 +1970,8 @@ scheduler.add_system("collision", collision_system)
 ```
 ## API Safety: Preventing Mutation During Iteration
 The command buffer solves the crash problem, but how do we *enforce* that systems use it? If a system calls `world.destroy_entity()` directly instead of `commands.destroy()`, we're back to crashes.
+
+![Cross-Domain: Command Buffers as Event Sourcing](./diagrams/diag-cross-domain-command-buffer-events.svg)
 
 ![API Safety: Preventing Mutation During Iteration](./diagrams/diag-m3-api-safety-design.svg)
 
@@ -2490,7 +2514,8 @@ mod tests {
 | **System ordering** | Registration order | Dependency graph | Registration is simple; dependency graph is more flexible but complex to implement |
 ## What We've Built: The Execution Layer
 
-![ECS Architecture: Satellite View](./diagrams/diag-L0-ecs-satellite.svg)
+![Command Buffer Structure](./diagrams/tdd-diag-m3-02.svg)
+
 
 We've added the **Systems** box to our ECS architecture:
 - **System trait**: Functions that run each frame with delta time
@@ -2542,6 +2567,8 @@ fn movement_system(world: &mut World, dt: f32) {
     }
 }
 ```
+
+![system-overview](./diagrams/system-overview.svg)
 
 ![Iteration: Sparse Set vs Archetype Memory Access](./diagrams/diag-m4-iteration-memory-access.svg)
 
@@ -2877,6 +2904,8 @@ impl Archetype {
 ## The Archetype Graph: O(1) Transitions
 When you add or remove a component, the entity moves from one archetype to another. The **archetype graph** caches these transitions—each archetype stores edges to archetypes that differ by exactly one component.
 
+![ArchetypeSignature Structure](./diagrams/tdd-diag-m4-04.svg)
+
 ![Archetype Graph: Transition Edges](./diagrams/diag-m4-archetype-graph.svg)
 
 ```rust
@@ -2984,6 +3013,8 @@ impl ArchetypeRegistry {
     }
 }
 ```
+
+![Archetype Graph with Transition Edges](./diagrams/tdd-diag-m4-06.svg)
 
 ![Entity Migration: Moving Between Archetypes](./diagrams/diag-m4-entity-migration.svg)
 
@@ -3106,6 +3137,8 @@ impl ComponentTypeInfo {
 ```
 ## Query Matching: Archetype-Level Filtering
 The key insight: **queries match against archetypes, not individual entities**. A query for `(Position, Velocity)` finds all archetypes whose signature contains both types, then iterates those archetype tables.
+
+![ComponentTypeInfo for Migration](./diagrams/tdd-diag-m4-18.svg)
 
 ![Query Matching Against Archetypes](./diagrams/diag-m4-query-vs-archetypes.svg)
 
@@ -3503,6 +3536,8 @@ impl World {
 ## The Benchmark: Archetype vs Sparse Set
 Now for the moment of truth. Let's measure archetype iteration against sparse set iteration:
 
+![for_each Query API Flow](./diagrams/tdd-diag-m4-12.svg)
+
 ![Performance Benchmark: Sparse Set vs Archetype](./diagrams/diag-m4-benchmark-results.svg)
 
 ```rust
@@ -3744,7 +3779,6 @@ The "hot/cold data splitting" principle from databases applies: if you have a co
 - **EnTT**: Optional archetypes via `group` functionality
 ## What We've Built: The Complete ECS
 
-![ECS Architecture: Satellite View](./diagrams/diag-L0-ecs-satellite.svg)
 
 We've completed the full ECS architecture:
 1. **Entity IDs** (Milestone 1): Generation-counted handles for safe references
@@ -3779,12 +3813,11 @@ This principle—access patterns drive storage layout—applies everywhere: file
 <!-- END_MS -->
 
 
-
-
 # TDD
 
-A production-quality Entity-Component-System framework implementing sparse-set storage with archetype-based optimization. The architecture prioritizes cache-friendly data layout, O(1) component operations, and safe deferred structural changes. Built around the core insight that iteration performance (the hot path) should be optimized at the expense of structural change speed, with entities grouped by component signature for maximum sequential memory access during system execution.
+![Command Buffer: Archetype-Aware Structural Changes](./diagrams/diag-m4-command-buffer-archetype-integration.svg)
 
+A production-quality Entity-Component-System framework implementing sparse-set storage with archetype-based optimization. The architecture prioritizes cache-friendly data layout, O(1) component operations, and safe deferred structural changes. Built around the core insight that iteration performance (the hot path) should be optimized at the expense of structural change speed, with entities grouped by component signature for maximum sequential memory access during system execution.
 
 
 <!-- TDD_MOD_ID: ecs-arch-m1 -->
@@ -4680,54 +4713,69 @@ free_list:
 ## Diagrams
 ### Entity ID Bit Packing
 ```
-{{DIAGRAM:tdd-diag-m1-01}}
 ```
+
+
 ### Entity Lifecycle State Machine
 ```
-{{DIAGRAM:tdd-diag-m1-02}}
 ```
+
+
 ### Free List Structure
+```
+
+
 ```
 
 ![Free List as Stack Structure](./diagrams/tdd-diag-m1-03.svg)
 
-```
 ### World Container Ownership
 ```
-{{DIAGRAM:tdd-diag-m1-04}}
 ```
+
+
 ### Generation Counter Overflow
 ```
-{{DIAGRAM:tdd-diag-m1-05}}
 ```
+
+
 ### Create Entity Flow
+```
+
+
 ```
 
 ![Generation Wraparound Scenario](./diagrams/tdd-diag-m1-06.svg)
 
-```
 ### Destroy Entity Flow
+```
+
+
 ```
 
 ![Create Entity Flow](./diagrams/tdd-diag-m1-07.svg)
 
-```
 ### Memory Layout Overview
+```
+
+
 ```
 
 ![Destroy Entity Flow](./diagrams/tdd-diag-m1-08.svg)
 
-```
 ### Stale Handle Detection
+```
+
+
 ```
 
 ![Stale Handle Detection Algorithm](./diagrams/tdd-diag-m1-09.svg)
 
-```
 ### Entity Recycling Timeline
 ```
-{{DIAGRAM:tdd-diag-m1-10}}
 ```
+
+
 ---
 ## Complete Implementation Reference
 ```rust
@@ -6282,67 +6330,87 @@ Parallel arrays benefit:
 ### Sparse Set Anatomy
 ```
 
-![SparseSet Three-Array Structure](./diagrams/tdd-diag-m2-01.svg)
 
 ```
+
+![SparseSet Three-Array Structure](./diagrams/tdd-diag-m2-01.svg)
+
 ### Sparse Set Operations
+```
+
+
 ```
 
 ![SparseSet Memory Layout](./diagrams/tdd-diag-m2-02.svg)
 
-```
 ### Swap-and-Pop Removal
+```
+
+
 ```
 
 ![Insert Operation Algorithm](./diagrams/tdd-diag-m2-03.svg)
 
-```
 ### Cache Locality Comparison
 ```
-{{DIAGRAM:tdd-diag-m2-04}}
 ```
+
+
 ### Component Registry Structure
 ```
-{{DIAGRAM:tdd-diag-m2-05}}
 ```
+
+
 ### Entity Destruction Cleanup
+```
+
+
 ```
 
 ![Component Registry Architecture](./diagrams/tdd-diag-m2-06.svg)
 
-```
 ### Iteration Memory Access Pattern
+```
+
+
 ```
 
 ![ComponentStorage Trait Boundary](./diagrams/tdd-diag-m2-07.svg)
 
-```
 ### Sparse Array Growth
 ```
-{{DIAGRAM:tdd-diag-m2-08}}
 ```
+
+
 ### Type Erasure Flow
+```
+
+
 ```
 
 ![Iteration Memory Access Pattern](./diagrams/tdd-diag-m2-09.svg)
 
-```
 ### Query Composition
+```
+
+
 ```
 
 ![Cache Locality Comparison](./diagrams/tdd-diag-m2-10.svg)
 
-```
 ### Memory Layout Overview
 ```
-{{DIAGRAM:tdd-diag-m2-11}}
 ```
+
+
 ### Component Lifecycle
+```
+
+
 ```
 
 ![100K Iteration Benchmark Timeline](./diagrams/tdd-diag-m2-12.svg)
 
-```
 ---
 ## Complete Implementation Reference
 ```rust
@@ -8027,80 +8095,104 @@ INVARIANTS:
 ## Diagrams
 ### Command Buffer Structure
 ```
-{{DIAGRAM:tdd-diag-m3-01}}
 ```
+
+
 ### System Registration and Execution
 ```
-{{DIAGRAM:tdd-diag-m3-02}}
 ```
+
+
 ### Iterator Invalidation Problem
+```
+
+
 ```
 
 ![Command Buffer Timeline](./diagrams/tdd-diag-m3-03.svg)
 
-```
 ### Command Buffer Timeline
+```
+
+
 ```
 
 ![Spawn and Get ID Challenge](./diagrams/tdd-diag-m3-04.svg)
 
-```
 ### Query Composition
 ```
-{{DIAGRAM:tdd-diag-m3-05}}
 ```
+
+
 ### Movement System Example
+```
+
+
 ```
 
 ![Query Composition](./diagrams/tdd-diag-m3-06.svg)
 
-```
 ### API Safety Design
 ```
-{{DIAGRAM:tdd-diag-m3-07}}
 ```
+
+
 ### Entity Migration (Deferred)
+```
+
+
 ```
 
 ![Split Borrowing Pattern](./diagrams/tdd-diag-m3-08.svg)
 
-```
 ### Flush Algorithm Phases
+```
+
+
 ```
 
 ![API Safety Design](./diagrams/tdd-diag-m3-09.svg)
 
-```
 ### Split Borrowing Pattern
+```
+
+
 ```
 
 ![MovementSystem Integration Example](./diagrams/tdd-diag-m3-10.svg)
 
-```
 ### Spawn During Iteration
+```
+
+
 ```
 
 ![Flush Commands Flow](./diagrams/tdd-diag-m3-11.svg)
 
-```
 ### Destroy During Iteration
+```
+
+
 ```
 
 ![World Tick State Machine](./diagrams/tdd-diag-m3-12.svg)
 
-```
 ### Query Smallest-Set Heuristic
+```
+
+
 ```
 
 ![Shooting System: Command Buffer Usage](./diagrams/tdd-diag-m3-13.svg)
 
-```
 ### System Execution Guard
+```
+
+
 ```
 
 ![Entity Cleanup on Destroy Command](./diagrams/tdd-diag-m3-14.svg)
 
-```
 ---
 ## Complete Implementation Reference
 ```rust
@@ -10312,115 +10404,151 @@ World {
 ### Archetype Concept
 ```
 
-![Archetype Concept: Grouping by Signature](./diagrams/tdd-diag-m4-01.svg)
 
 ```
+
+![Archetype Concept: Grouping by Signature](./diagrams/tdd-diag-m4-01.svg)
+
 ### Archetype Table Layout
+```
+
+
 ```
 
 ![Archetype Table Memory Layout](./diagrams/tdd-diag-m4-02.svg)
 
-```
 ### Archetype Graph Transitions
+```
+
+
 ```
 
 ![Iteration Memory Access: Sparse Set vs Archetype](./diagrams/tdd-diag-m4-03.svg)
 
-```
 ### Entity Migration Flow
 ```
-{{DIAGRAM:tdd-diag-m4-04}}
 ```
+
+
 ### Query Matching
+```
+
+
 ```
 
 ![ComponentColumn Type Erasure](./diagrams/tdd-diag-m4-05.svg)
 
-```
 ### Swap-and-Pop in Archetype
 ```
-{{DIAGRAM:tdd-diag-m4-06}}
 ```
+
+
 ### Memory Layout Comparison
+```
+
+
 ```
 
 ![Entity Migration Flow](./diagrams/tdd-diag-m4-07.svg)
 
-```
 ### Cache Line Utilization
+```
+
+
 ```
 
 ![Migration: Before and After](./diagrams/tdd-diag-m4-08.svg)
 
-```
 ### Signature Operations
+```
+
+
 ```
 
 ![EntityLocation Mapping](./diagrams/tdd-diag-m4-09.svg)
 
-```
 ### Column Type Erasure
+```
+
+
 ```
 
 ![Query Matching Against Archetypes](./diagrams/tdd-diag-m4-10.svg)
 
-```
 ### EntityLocation Lookup
+```
+
+
 ```
 
 ![Archetype Query Iterator](./diagrams/tdd-diag-m4-11.svg)
 
-```
 ### Add Component Flow
 ```
-{{DIAGRAM:tdd-diag-m4-12}}
 ```
+
+
 ### Remove Component Flow
+```
+
+
 ```
 
 ![Benchmark Results: Sparse Set vs Archetype](./diagrams/tdd-diag-m4-13.svg)
 
-```
 ### for_each Iteration
+```
+
+
 ```
 
 ![Archetype Explosion Scenario](./diagrams/tdd-diag-m4-14.svg)
 
-```
 ### Benchmark Comparison
+```
+
+
 ```
 
 ![Chunk-Based Allocation Concept](./diagrams/tdd-diag-m4-15.svg)
 
-```
 ### Archetype Explosion Warning
+```
+
+
 ```
 
 ![SIMD Auto-Vectorization Opportunity](./diagrams/tdd-diag-m4-16.svg)
 
-```
 ### ComponentTypeInfo Clone
+```
+
+
 ```
 
 ![Swap-Remove Location Update](./diagrams/tdd-diag-m4-17.svg)
 
-```
 ### Graph Edge Caching
 ```
-{{DIAGRAM:tdd-diag-m4-18}}
 ```
+
+
 ### Query Spec Building
+```
+
+
 ```
 
 ![Complete World with Archetypes](./diagrams/tdd-diag-m4-19.svg)
 
-```
 ### World Integration
+```
+
+
 ```
 
 ![Hybrid Storage Strategy](./diagrams/tdd-diag-m4-20.svg)
 
-```
 ---
 ## Complete Implementation Reference
 ```rust

@@ -180,7 +180,6 @@ The project is complete when:
 Build a production-grade eBPF tracing tool that dynamically instruments the Linux kernel to extract runtime telemetry. This project teaches you to write eBPF bytecode that passes the kernel verifier's strict safety constraints, attach to kprobes and tracepoints for dynamic instrumentation, and efficiently transfer data between kernel and userspace via BPF ring buffers and maps. You'll implement CO-RE (Compile Once Run Everywhere) for cross-kernel portability, measure syscall latency distributions, trace TCP connection lifecycles, and build a multi-source observability dashboard. The skills learned here directly apply to production tools like Cilium, Falco, bpftrace, and Pixie.
 
 
-
 <!-- MS_ID: build-ebpf-tracer-m1 -->
 # eBPF Fundamentals & Kprobe Tracer
 You're about to write code that runs *inside* the Linux kernel. Not a kernel module—something far more constrained, far more powerful, and far more strange. By the end of this milestone, you'll have an eBPF program that attaches to kernel functions, extracts runtime data, and streams it to userspace. But first, you need to understand why eBPF exists and what makes it different from everything you've worked with before.
@@ -197,6 +196,8 @@ eBPF's answer is brutal but elegant: **your code must pass a verifier that mathe
 
 This isn't a debugger. You can't set breakpoints, inspect arbitrary memory, or step through code. eBPF is a bytecode virtual machine inside the kernel that runs your small, verified programs at specific hook points—kprobes, tracepoints, socket operations, and more.
 ## The eBPF Execution Model
+
+![eBPF Stack Constraints](./diagrams/tdd-diag-015.svg)
 
 > **🔑 Foundation: eBPF execution model: how bytecode runs in the kernel**
 > 
@@ -236,6 +237,8 @@ int handle_execve(void *ctx) {
 ```
 The kernel doesn't "call" this function directly—you register it at a hook point, and the kernel invokes it when that hook fires.
 
+![eBPF System Architecture Overview](./diagrams/tdd-diag-001.svg)
+
 When you write an eBPF program, here's what actually happens:
 ```
 Your C Code → clang -target bpf → BPF Bytecode → Verifier → JIT → Native Code → Hook Execution
@@ -247,6 +250,8 @@ Let's trace this lifecycle:
 **4. JIT Compilation**: Once verified, the bytecode is compiled to native machine code for your CPU architecture. This isn't interpretation—verified eBPF runs at near-native speed.
 **5. Attachment**: The program is attached to a hook point. For this milestone, that's a kprobe on a kernel function.
 **6. Execution**: When the hook fires (e.g., `do_sys_openat2` is called), your eBPF program runs in kernel context. It has access to helper functions for reading memory, getting timestamps, and writing to maps—but not arbitrary kernel internals.
+
+![eBPF Program Lifecycle State Machine](./diagrams/tdd-diag-002.svg)
 
 ![eBPF Program Lifecycle: Compile → Verify → Load → Attach](./diagrams/diag-ebpf-lifecycle.svg)
 
@@ -262,6 +267,8 @@ You can't write standard C. The verifier enforces constraints that make the lang
 | Function pointers | Limited, verified calls | No arbitrary indirect calls |
 The 512-byte stack limit is particularly jarring. A single `char comm[16]` and `char filename[256]` would exceed it. The solution: use BPF maps (specifically `BPF_MAP_TYPE_PERCPU_ARRAY`) for larger temporary storage.
 ## The BPF Verifier: Safety Through Mathematical Proof
+
+![Event Structure Memory Layout](./diagrams/tdd-diag-012.svg)
 
 > **🔑 Foundation: BPF verifier safety proof: how the kernel proves your code won't crash**
 > 
@@ -309,6 +316,8 @@ The verifier isn't being paranoid—it's being *exhaustive*. It's considering pa
 > **The verifier proves safety for all possible inputs, not just the ones you expect.**
 Your program might work fine for 99% of inputs, but if there exists *any* input that causes an unsafe operation, the verifier will reject it. This is why "but I know this pointer is valid" isn't enough—the verifier needs proof.
 **Mental model**: Think of the verifier as an extremely paranoid code reviewer who demands mathematical certainty. "It works in testing" doesn't satisfy it; "I can prove it always works" does.
+
+![BPF Verifier Path Exploration](./diagrams/tdd-diag-003.svg)
 
 The verifier is the gatekeeper. Understanding what it does—and why it rejects programs—will save you hours of frustration.
 The verifier performs **abstract interpretation**: instead of executing your code with concrete values, it tracks what *could* be true at each program point. For every register, it maintains:
@@ -363,6 +372,8 @@ ptr->field = 1;
 ```
 The verifier tracks initialization state across branches.
 
+![Common Verifier Rejection Patterns](./diagrams/tdd-diag-010.svg)
+
 ![Common Verifier Rejections](./diagrams/diag-verifier-rejection-examples.svg)
 
 ### Viewing Verifier Logs
@@ -381,6 +392,8 @@ The old solution was "recompile for each kernel version"—painful for distribut
 1. **At compile time**: clang emits "relocation records" that say "I want field X from struct Y" rather than hardcoding the offset.
 2. **BTF (BPF Type Format)**: The kernel exposes its own type information via BTF. This is a compact encoding of all kernel structures, their fields, and their layouts.
 3. **At load time**: libbpf reads BTF from your kernel, matches it against the relocation records, and patches your bytecode with the correct offsets.
+
+![CO-RE Relocation Process](./diagrams/tdd-diag-004.svg)
 
 ![CO-RE: Compile Once, Run Everywhere](./diagrams/diag-core-read-layout.svg)
 
@@ -416,6 +429,8 @@ For this milestone, we'll use `BPF_MAP_TYPE_RINGBUF`—a modern, efficient ring 
 - Support variable-length records
 - Don't lose events when readers fall behind (they block writers instead)
 - Have lower overhead per event
+
+![libbpf Skeleton Code Generation](./diagrams/tdd-diag-011.svg)
 
 > **🔑 Foundation: Kernel ring buffers: efficient event streaming from kernel to userspace**
 > 
@@ -474,6 +489,8 @@ The mental model: kernel produces, userspace consumes. If userspace is too slow 
 **Design tip**: Size your ring buffer for burst capacity, not average throughput. A 10 MB buffer handles brief spikes; a 1 MB buffer might lose events during traffic bursts.
 
 
+![BPF Ring Buffer Memory Layout](./diagrams/tdd-diag-005.svg)
+
 ![BPF Ring Buffer Internal Layout](./diagrams/diag-ring-buffer-structure.svg)
 
 ### Ring Buffer vs. Perf Event Array
@@ -485,6 +502,8 @@ The mental model: kernel produces, userspace consumes. If userspace is too slow 
 | Memory overhead | Lower | Higher (per-CPU duplication) |
 | Backpressure | Writers block | Events dropped |
 | Kernel version | 5.8+ | 4.4+ |
+
+![Ring Buffer vs Perf Event Array Comparison](./diagrams/tdd-diag-014.svg)
 
 ![Ring Buffer vs Perf Event Array](./diagrams/diag-ring-buffer-vs-perf.svg)
 
@@ -527,6 +546,8 @@ bpf_ringbuf_submit(e, 0);
 The reserve/submit pattern ensures you never write partially-filled events. If you need to abort, use `bpf_ringbuf_discard(e, 0)` instead of submit.
 ## Kprobes: Attaching to Kernel Functions
 A **kprobe** is a dynamic breakpoint on a kernel function. When the function is called, your eBPF program runs first, with access to the function's arguments.
+
+![Ring Buffer Reserve/Submit Flow](./diagrams/tdd-diag-006.svg)
 
 ![Kprobe Attachment Mechanics](./diagrams/diag-kprobe-attachment.svg)
 
@@ -572,6 +593,8 @@ char first_char = *filename;
 char first_char;
 bpf_probe_read_kernel(&first_char, sizeof(first_char), filename);
 ```
+
+![Kprobe Context and Register Access](./diagrams/tdd-diag-007.svg)
 
 ![Safe Kernel Memory Access](./diagrams/diag-probe-read-safety.svg)
 
@@ -792,6 +815,8 @@ TIME     PID     COMM             DFD  FILENAME [FLAGS]
 ```
 ## Capabilities: CAP_BPF and the Security Model
 
+![bpf_probe_read_kernel Safety Flow](./diagrams/tdd-diag-008.svg)
+
 > **🔑 Foundation: CAP_BPF capability and eBPF security model**
 > 
 > ## What It IS
@@ -860,6 +885,8 @@ Capabilities control *who* can load programs. The verifier controls *what* progr
 - Create unbounded loops
 - Hide from the verifier
 The capability model is about *delegation*: root can delegate BPF loading to a specific user/container without giving them full system control. The verifier ensures that delegated power can't escape its sandbox.
+
+![CAP_BPF Security Model](./diagrams/tdd-diag-009.svg)
 
 eBPF programs need elevated privileges. Historically, this meant root. Modern kernels (5.8+) introduce **CAP_BPF**, a dedicated capability for eBPF operations.
 
@@ -959,7 +986,8 @@ Error: failed to load program: read from uninitialized stack
 ```
 **What happened**: The verifier tracks initialization state. On the path where `pid <= 1000`, `value` is never assigned, so reading it is rejected.
 
-![Common Verifier Rejections](./diagrams/diag-verifier-rejection-examples.svg)
+![Userspace Loader Sequence](./diagrams/tdd-diag-013.svg)
+
 
 ## The Three-Level View
 Let's zoom out and see what's happening at each level of abstraction:
@@ -1077,7 +1105,11 @@ u64 duration = bpf_ktime_get_ns() - start;
 There's just one problem: **entry and exit probes are completely separate eBPF program invocations.**
 When your entry kprobe fires, the eBPF program runs, captures the timestamp, and... returns. The kernel continues executing the syscall. Then, microseconds or milliseconds later, the exit kprobe fires. A *different* eBPF program runs. It has no access to the `start` variable from the entry probe. The stack is gone. The registers are different.
 
+![Percentile Calculation from Histogram](./diagrams/tdd-diag-025.svg)
+
 ![Entry/Exit Probe Correlation via Hash Map](./diagrams/diag-entry-exit-correlation.svg)
+
+![Userspace Histogram Display Format](./diagrams/tdd-diag-027.svg)
 
 This is the core challenge: **you must manually correlate two independent events that happen at different times, to the same thread.**
 The solution is a pattern you'll see everywhere in distributed systems: a correlation identifier. In OpenTelemetry, it's a request ID that ties together spans across microservices. Here, it's the thread ID (the kernel's `pid`) that ties together the entry and exit of a syscall within a single thread of execution.
@@ -1086,7 +1118,11 @@ But there's more tension:
 **Clock semantics**: What clock do you use? Wall-clock time can jump backward (NTP adjustments, suspend/resume). A latency measurement that shows negative duration would corrupt your histogram. You need monotonic time.
 **Histogram efficiency**: How do you represent a distribution that spans microseconds to seconds (six orders of magnitude) without using thousands of buckets? You need log2 bucketing.
 
+![Thread ID vs Process ID Keying](./diagrams/tdd-diag-017.svg)
+
 ![Syscall Latency Measurement Flow](./diagrams/diag-latency-flow.svg)
+
+![Nested Syscall Edge Case](./diagrams/tdd-diag-026.svg)
 
 By the end of this milestone, you'll have built a system that:
 1. Correlates entry/exit probes across time using a BPF hash map
@@ -1126,7 +1162,11 @@ Thread B: write() exit → should use start_time_B
 ```
 If you keyed by process ID, both threads would share the same entry in the hash map. Thread A's exit might read Thread B's start time, producing completely wrong latency measurements.
 
+![Entry/Exit Probe Correlation Flow](./diagrams/tdd-diag-016.svg)
+
 ![Per-Syscall Histogram Storage](./diagrams/diag-multi-syscall-histogram.svg)
+
+![Per-Syscall Histogram Storage](./diagrams/tdd-diag-021.svg)
 
 ### The Hash Map Structure
 ```c
@@ -1153,7 +1193,11 @@ if (ret) {
 ```
 The `BPF_ANY` flag means "create or update"—if the key exists, overwrite it. This handles the rare case where a thread is already in the hash map (nested syscalls, though rare, can happen).
 
+![Start Times Hash Map Structure](./diagrams/tdd-diag-018.svg)
+
 ![Hash Map Full Graceful Degradation](./diagrams/diag-map-full-handling.svg)
+
+![Hash Map Full Graceful Degradation](./diagrams/tdd-diag-023.svg)
 
 ## Monotonic Time: Why Wall Clocks Lie
 
@@ -1173,6 +1217,8 @@ Think of monotonic time as a **stopwatch** and wall-clock time as a **calendar w
 The stopwatch (monotonic) only cares about elapsed time since you started it — it never jumps around. The calendar-watch (wall-clock) tries to match real-world time and can be rewound or fast-forwarded.
 When `bpf_ktime_get_ns()` returns `1,234,567,890,123,456`, that number means "1,234,567.89 seconds since system boot" — not "Tuesday at 3:45 PM." If you need human-readable timestamps in your BPF output, convert monotonic time to wall-clock time in userspace, not in the kernel.
 
+![Config Map for Runtime Control](./diagrams/tdd-diag-024.svg)
+
 You might be tempted to use wall-clock time for latency measurement. Don't.
 Wall-clock time (`CLOCK_REALTIME`) can:
 - **Jump forward**: NTP adjusts the clock because it was running fast
@@ -1184,6 +1230,8 @@ If you measure latency with wall-clock time and the clock jumps backward during 
 - Never goes backward
 - Advances at a steady rate (ignoring NTP adjustments)
 - Continues across suspend/resume (on modern kernels)
+
+![Monotonic vs Wall-Clock Time](./diagrams/tdd-diag-022.svg)
 
 ![Monotonic vs Wall-Clock Time](./diagrams/diag-monotonic-vs-wallclock.svg)
 
@@ -1216,7 +1264,11 @@ Bucket 20: 524 ms  - 1048 ms  (range: 524 ms)
 ```
 With 64 buckets, you cover 0 to 18 hours of latency. That's enough for any realistic syscall measurement.
 
+![Log2 Histogram Bucket Algorithm](./diagrams/tdd-diag-019.svg)
+
 ![Log2 Histogram Bucket Distribution](./diagrams/diag-log2-histogram.svg)
+
+![Histogram Bucket Range Distribution](./diagrams/tdd-diag-020.svg)
 
 ### Computing the Log2 Bucket
 The bucket index for a latency `latency_ns` (in nanoseconds) is:
@@ -1837,7 +1889,11 @@ This milestone is about **stability**. You're going to learn about tracepoints�
 ## The Fundamental Tension: Observability vs. Kernel Evolution
 Here's the core problem: **You want to observe kernel behavior, but the kernel's internal implementation changes over time.**
 
+![Connection Duration Tracking Flow](./diagrams/tdd-diag-034.svg)
+
 ![Kprobe vs Tracepoint Stability](./diagrams/diag-kprobe-vs-tracepoint.svg)
+
+![Tracepoint Attachment Sequence](./diagrams/tdd-diag-038.svg)
 
 Let's make this concrete. In kernel 5.10, the TCP state change might happen in a function called `tcp_set_state()`:
 ```c
@@ -1869,6 +1925,8 @@ The tracepoint definition includes:
 - **Arguments**: A struct containing the data you'll receive (sock pointer, old state, new state, etc.)
 - **Stability guarantee**: The argument struct layout is maintained across kernel versions
 
+![Tracepoint vs Kprobe Stability](./diagrams/tdd-diag-028.svg)
+
 ![Tracepoint Context Struct Layout](./diagrams/diag-tracepoint-context.svg)
 
 Think of it like this:
@@ -1892,7 +1950,11 @@ CLOSED → ESTABLISHED → data flows → CLOSED
 ```
 That's... not even close. TCP has **11 distinct states** with complex transition rules:
 
+![Filter Evaluation Logic](./diagrams/tdd-diag-036.svg)
+
 ![TCP State Machine Transitions](./diagrams/diag-tcp-state-machine.svg)
+
+![Userspace Event Formatting](./diagrams/tdd-diag-039.svg)
 
 | State | Meaning | Transitions From |
 |-------|---------|------------------|
@@ -1947,7 +2009,11 @@ The IP addresses are also in network byte order. For IPv4, you'll use `bpf_ntohl
 ## IPv4/IPv6 Dual-Stack: The Address Family Reality
 Modern systems run dual-stack—they accept connections on both IPv4 and IPv6. Your tracer must handle both.
 
+![TCP State Machine Transitions](./diagrams/tdd-diag-029.svg)
+
 ![IPv4/IPv6 Dual-Stack Address Extraction](./diagrams/diag-ipv4-ipv6-handling.svg)
+
+![IPv4-Mapped IPv6 Address Format](./diagrams/tdd-diag-037.svg)
 
 The key is the `family` field in the tracepoint:
 - `AF_INET` (2): IPv4 address in first 4 bytes of `saddr`/`daddr`
@@ -1980,7 +2046,11 @@ If you're filtering by address range, you need to handle both native IPv4 and IP
 ## Connection Duration Tracking: Correlating Across States
 You've done entry/exit correlation for syscalls. Connection tracking is similar, but the "entry" is the ESTABLISHED state transition and the "exit" is TIME_WAIT or CLOSE.
 
+![IPv4/IPv6 Address Extraction](./diagrams/tdd-diag-031.svg)
+
 ![Connection Duration Tracking Across States](./diagrams/diag-connection-tracking.svg)
+
+![Connection Tracking by Socket Pointer](./diagrams/tdd-diag-033.svg)
 
 ### The Correlation Key
 What uniquely identifies a TCP connection? The classic 4-tuple:
@@ -2072,6 +2142,8 @@ Notice the cleanup: `bpf_map_delete_elem()` removes the connection entry once we
 Here's a common scenario: you're tracing connections in production, but you only care about database traffic (port 3306). With kprobes, you'd need to modify your eBPF code to add the filter condition, recompile, and redeploy—with a brief observability gap during the reload.
 Runtime filtering solves this. You configure *what* to filter via BPF maps, and update those maps from userspace without touching the eBPF program.
 
+![Tracepoint Context Struct Layout](./diagrams/tdd-diag-030.svg)
+
 ![Runtime Filtering via BPF Maps](./diagrams/diag-runtime-filtering.svg)
 
 ### The Configuration Map
@@ -2142,6 +2214,8 @@ bpf_map_update_elem(config_fd, &key, &cfg, BPF_ANY);
 Now your tracer only reports connections to port 3306. To change the filter, update the map again—no eBPF reload needed.
 ### This Is the Same Pattern as Feature Flags
 
+![Network Byte Order Port Conversion](./diagrams/tdd-diag-032.svg)
+
 > **🔑 Foundation: Feature flag systems like LaunchDarkly and Unleash**
 > 
 > ## What It IS
@@ -2198,6 +2272,8 @@ For eBPF specifically, this pattern is invaluable:
 └─────────────────┘     └──────────────────┘     └─────────────────┘
 ```
 Your userspace application loads the eBPF program on startup but only *attaches* it to kernel hooks when the flag is enabled. This gives you deployment safety without sacrificing the ability to iterate quickly.
+
+![Runtime Filter Configuration Map](./diagrams/tdd-diag-035.svg)
 
 The runtime filtering pattern you just learned—configuration stored in shared state, checked at execution time, updated without redeployment—is identical to how feature flag systems work in distributed applications. In LaunchDarkly or Unleash, feature flags are stored in a shared data store (Redis, database, CDN), checked by application code at runtime, and can be toggled instantly without redeploying the application.
 The BPF map is your "feature flag service." The eBPF program is your "application." The userspace control program is your "admin dashboard." Same architecture, different domain.
@@ -2842,7 +2918,11 @@ Userspace: sum all CPU counters periodically
 ```
 No cache line bouncing. No atomic instructions. The probe stays at 100ns.
 
+![Cache Contention vs Per-CPU Comparison](./diagrams/tdd-diag-042.svg)
+
 ![Per-CPU Map Memory Layout](./diagrams/diag-percpu-map-layout.svg)
+
+![File Descriptor Leak Prevention](./diagrams/tdd-diag-054.svg)
 
 This is the same principle behind RCU (Read-Copy-Update) and seqlocks in the kernel: avoid contention by giving each CPU its own state, then aggregate when needed.
 ### The Three Sources We'll Combine
@@ -2894,7 +2974,11 @@ for (int i = 0; i < num_cpus; i++) {
 }
 ```
 
+![Per-CPU Map Memory Layout](./diagrams/tdd-diag-040.svg)
+
 ![Per-CPU Value Summation in Userspace](./diagrams/diag-percpu-aggregation.svg)
+
+![Dashboard State Aggregation](./diagrams/tdd-diag-052.svg)
 
 libbpf provides a helper for this, but it's worth understanding what happens under the hood:
 ```c
@@ -2924,7 +3008,11 @@ for (int i = 0; i < num_cpus; i++) {
 ## The Multi-Program Architecture
 You need to manage multiple eBPF programs, each with its own maps and attachment points. The key is **lifecycle isolation**: each probe should be independently controllable.
 
+![Scheduler Tracepoint Handler](./diagrams/tdd-diag-049.svg)
+
 ![Multi-Program eBPF Lifecycle Manager](./diagrams/diag-multi-program-manager.svg)
+
+![Probe Enable/Disable Runtime Flow](./diagrams/tdd-diag-053.svg)
 
 ### The Probe Manager Pattern
 ```c
@@ -3022,6 +3110,8 @@ void probe_manager_destroy(struct probe_manager *mgr)
 // → Leaked pinned maps
 // → Eventually hits system limits
 ```
+
+![Probe Manager State Machine](./diagrams/tdd-diag-043.svg)
 
 ![Probe Attach/Detach Resource Lifecycle](./diagrams/diag-resource-lifecycle.svg)
 
@@ -3143,7 +3233,11 @@ while (1) {
 The problem: `poll_ring_buffer()` blocks waiting for events. While it's blocked, you're not updating histograms or scheduler stats. If there are no TCP events for 10 seconds, your dashboard freezes.
 The solution: **epoll** to wait on multiple file descriptors simultaneously.
 
+![Multi-Source Data Flow](./diagrams/tdd-diag-045.svg)
+
 ![Efficient Multi-Source Ring Buffer Polling](./diagrams/diag-epoll-ring-buffer.svg)
+
+![Resource Cleanup on Shutdown](./diagrams/tdd-diag-051.svg)
 
 ### Setting Up epoll for Multi-Source Polling
 ```c
@@ -3278,6 +3372,8 @@ A common mistake: refreshing the terminal as fast as possible. At 60 Hz, you're:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+![epoll Multi-Source Polling](./diagrams/tdd-diag-046.svg)
+
 ![Terminal Dashboard Layout](./diagrams/diag-terminal-dashboard.svg)
 
 ### Implementing the Terminal UI
@@ -3399,7 +3495,11 @@ sudo perf top -p $(pidof dashboard)
 sudo bpftool prog show
 ```
 
+![Timer-Based Refresh Sequence](./diagrams/tdd-diag-047.svg)
+
 ![Performance Overhead Measurement](./diagrams/diag-overhead-measurement.svg)
+
+![Overhead Measurement Architecture](./diagrams/tdd-diag-050.svg)
 
 ### Documenting Overhead
 Your tool should report its own overhead:
@@ -3794,6 +3894,8 @@ cleanup:
 }
 ```
 
+![bpf_link Lifecycle Management](./diagrams/tdd-diag-044.svg)
+
 ![Complete System Data Flow](./diagrams/diag-complete-data-flow.svg)
 
 ## The Makefile
@@ -3890,9 +3992,9 @@ The fundamental insight: **visibility is a distributed systems problem**. You're
 
 ## System Overview
 
+![Per-CPU Aggregation Flow](./diagrams/tdd-diag-041.svg)
+
 ![System Overview](./diagrams/system-overview.svg)
-
-
 
 
 # TDD
@@ -3900,6 +4002,7 @@ The fundamental insight: **visibility is a distributed systems problem**. You're
 A production-grade eBPF observability platform that dynamically instruments the Linux kernel through kprobes and tracepoints, using CO-RE for cross-kernel portability, BPF ring buffers for efficient kernel-to-userspace communication, and per-CPU maps for contention-free aggregation. The system provides real-time visibility into syscall latency distributions, TCP connection lifecycles, and process scheduling behavior through a unified terminal dashboard with runtime-configurable probes.
 
 
+![Terminal Dashboard Layout](./diagrams/tdd-diag-048.svg)
 
 <!-- TDD_MOD_ID: build-ebpf-tracer-m1 -->
 # Technical Design Specification: eBPF Fundamentals & Kprobe Tracer

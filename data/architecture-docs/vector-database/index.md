@@ -143,7 +143,6 @@ The core challenge of vector search is the curse of dimensionality: as dimension
 By implementing these components, you'll understand why vector databases are designed the way they are—not as a black box, but as an emergent solution to fundamental mathematical and systems constraints. You'll see how approximate algorithms trade accuracy for speed, how memory layout affects performance, and how quantization enables billion-scale search on commodity hardware.
 
 
-
 <!-- MS_ID: vector-database-m1 -->
 # Vector Storage Engine
 ## The Problem: When "Just Store It" Fails
@@ -165,6 +164,8 @@ Every decision in this milestone traces back to three constraints:
 These constraints are in tension. Alignment adds padding (wasted space). Contiguous allocation complicates growth. Persistence adds overhead. Your job is to navigate these tradeoffs intentionally.
 ---
 ## The Architecture: Satellite View
+
+![Batch Insert vs Individual Insert Flow](./diagrams/tdd-diag-m1-04.svg)
 
 ![Vector Database Architecture: Satellite Map](./diagrams/diag-L0-satellite-map.svg)
 
@@ -203,6 +204,8 @@ struct VectorStore {
 ```
 Now vector `i` starts at `data[i * dimension]`. Iterating through all vectors means walking through memory sequentially. The CPU prefetcher loves this.
 ### The Alignment Requirement
+
+![Persistent Storage File Format](./diagrams/tdd-diag-m1-07.svg)
 
 > **🔑 Foundation: SIMD intrinsics and memory alignment**
 > 
@@ -247,6 +250,8 @@ Address ending in 0x04: ✗ Not aligned — _mm_load_ps will fault
 ```
 **Mental model**: SIMD registers are like cargo containers. They load most efficiently when the loading dock (memory address) is built to match the container size. You *can* load from awkward positions, but it costs extra work.
 
+
+![SIMD Alignment Detail: 32/64 Byte Boundaries](./diagrams/tdd-diag-m1-03.svg)
 
 ![SIMD Alignment: Why 32/64 Bytes Matter](./diagrams/diag-m1-alignment-detail.svg)
 
@@ -353,6 +358,8 @@ Now let's build the actual storage engine. It needs to handle:
 4. **Tombstone deletion**: Mark deleted without immediate reclamation
 5. **Compaction**: Reclaim space from tombstones
 6. **Persistence**: Survive process restart
+
+![Contiguous Vector Storage Memory Layout](./diagrams/tdd-diag-m1-01.svg)
 
 ![Persistent Storage File Format](./diagrams/diag-m1-file-format.svg)
 
@@ -596,6 +603,8 @@ impl VectorStorage {
 }
 ```
 
+![VectorStorage Architecture](./diagrams/tdd-diag-m1-02.svg)
+
 ![Batch Insert vs Individual Insert Performance](./diagrams/diag-m1-batch-insert.svg)
 
 ### Retrieval: O(1) by ID
@@ -685,7 +694,11 @@ More subtly, immediate deletion invalidates all indices. If you have an HNSW gra
 2. The slot remains occupied; indices remain valid
 3. A background process reclaims space via compaction
 
+![Compaction Algorithm Steps](./diagrams/tdd-diag-m1-06.svg)
+
 ![Tombstone Deletion and Compaction](./diagrams/diag-m1-tombstone-compact.svg)
+
+![Generation Counter ABA Prevention](./diagrams/tdd-diag-m1-10.svg)
 
 ```rust
 #[derive(Debug, Clone)]
@@ -823,6 +836,8 @@ pub struct StorageStats {
 ## Persistence: Memory-Mapped Files
 ### The mmap Advantage
 
+![Tombstone Deletion State Machine](./diagrams/tdd-diag-m1-05.svg)
+
 > **🔑 Foundation: Memory-mapped file lifecycle**
 > 
 > ## What It IS
@@ -885,6 +900,8 @@ Pages are loaded **on demand** (lazy). When you first access a region, you'll ta
 - Sequential access is fast (OS prefetches); random access causes seeking
 **Critical gotcha**: After `munmap()`, the pointer is invalid. If you have any stale references, they'll segfault. Unmap happens automatically when the process exits, but explicit cleanup is good hygiene.
 
+![Memory-Mapped File Lifecycle](./diagrams/tdd-diag-m1-08.svg)
+
 Memory-mapped files (`mmap`) give you two things simultaneously:
 1. **File persistence**: Data is backed by disk
 2. **Memory-like access**: Read/write using pointers, not `read()`/`write()` syscalls
@@ -893,6 +910,8 @@ For a vector database, this is powerful:
 - Datasets larger than RAM are accessible (OS pages in what you need)
 - Startup is instant (no loading data into memory)
 - Persistence is automatic (OS writes dirty pages to disk)
+
+![Crash-Safe Write Pattern](./diagrams/tdd-diag-m1-09.svg)
 
 ![Memory-Mapped File Lifecycle](./diagrams/diag-m1-mmap-lifecycle.svg)
 
@@ -1428,7 +1447,6 @@ Every decision in this milestone traces back to three constraints:
 ---
 ## The Architecture: Satellite View
 
-![Vector Database Architecture: Satellite Map](./diagrams/diag-L0-satellite-map.svg)
 
 You're building the **Distance Metrics** layer—the computational heart of the vector database:
 - **Vector Storage (M1)** provides contiguous aligned vectors that make SIMD possible
@@ -1468,7 +1486,6 @@ $$\text{cosine\_dist}(a, b) = 1 - \text{cosine\_sim}(a, b)$$
 - **True metric** on the unit hypersphere
 **When to use**: When you care about direction but not magnitude—text embeddings, semantic similarity, document comparison. The canonical choice for NLP.
 
-![Distance Metric Formulas Visualized](./diagrams/diag-m2-distance-formulas.svg)
 
 ---
 ## The Scalar Baseline: Correctness First
@@ -2027,6 +2044,8 @@ A critical optimization: many embedding models produce **unit vectors** (vectors
 - Cosine similarity = dot product (norms are both 1, so they cancel)
 - Cosine distance = 1 - dot product
 If you know vectors are pre-normalized, you can skip the expensive norm computation entirely.
+
+![Pre-Normalized Vector Fast Path](./diagrams/tdd-diag-m2-05.svg)
 
 ![Pre-Normalized Vector Fast Path](./diagrams/diag-m2-normalized-fast-path.svg)
 
@@ -2660,7 +2679,6 @@ Every decision in this milestone traces back to three constraints:
 ---
 ## The Architecture: Satellite View
 
-![Vector Database Architecture: Satellite Map](./diagrams/diag-L0-satellite-map.svg)
 
 You're building the **Brute Force KNN** layer—the correctness foundation for everything that follows:
 - **Vector Storage (M1)** provides contiguous vectors for cache-efficient scanning
@@ -2701,6 +2719,8 @@ Let's put real numbers on this. You have 1,000,000 vectors and want the top 10 n
 - Extract sorted results: O(k log k) = O(10 × 3.3) = 33 comparisons
 - **Total: ~3,300,033 comparisons**
 The heap approach is **6x faster** in comparisons alone. But the real win is memory: full sort requires storing all N distances (4MB for 1M floats), while the heap only stores k (40 bytes for k=10).
+
+![O(N log k) vs O(N log N) Comparison](./diagrams/tdd-diag-m3-03.svg)
 
 ![Max-Heap Top-K Selection](./diagrams/diag-m3-heap-topk.svg)
 
@@ -3379,6 +3399,8 @@ $$\text{recall@k} = \frac{|S_{\text{approx}} \cap S_{\text{exact}}|}{k}$$
 Where $S_{\text{approx}}$ is the set of k results from your approximate algorithm, and $S_{\text{exact}}$ is the set from brute-force.
 You cannot compute recall without brute-force ground truth.
 
+![Pre-Filtering vs Post-Filtering Tradeoff](./diagrams/tdd-diag-m3-04.svg)
+
 ![Ground Truth Export for Recall Measurement](./diagrams/diag-m3-ground-truth-generation.svg)
 
 ```rust
@@ -3544,7 +3566,8 @@ mod ground_truth_tests {
 ## Performance Baselines: Measuring Where Brute-Force Breaks
 You need to establish concrete performance numbers to understand when brute-force is acceptable and when you need HNSW.
 
-![Brute-Force Scalability: Where It Breaks](./diagrams/diag-m3-scalability-cliff.svg)
+![Recall@k Calculation](./diagrams/tdd-diag-m3-07.svg)
+
 
 ```rust
 #[cfg(test)]
@@ -3853,7 +3876,8 @@ Every decision in this milestone traces back to three constraints:
 ---
 ## The Architecture: Satellite View
 
-![Vector Database Architecture: Satellite Map](./diagrams/diag-L0-satellite-map.svg)
+![HNSW Hierarchical Layer Structure](./diagrams/tdd-diag-m4-01.svg)
+
 
 You're building the **HNSW Index**—the algorithmic heart that makes billion-scale vector search possible:
 - **Vector Storage (M1)** provides contiguous vectors for distance computation
@@ -3864,6 +3888,8 @@ You're building the **HNSW Index**—the algorithmic heart that makes billion-sc
 If HNSW fails, the entire system fails to scale. If it's slow, queries timeout. If recall is low, users get irrelevant results. This is where the math meets the metal.
 ---
 ## The Core Insight: Why Hierarchy Changes Everything
+
+![Recall@k Calculation Against Ground Truth](./diagrams/tdd-diag-m4-10.svg)
 
 > **🔑 Foundation: Probabilistic skip list-like structures**
 > 
@@ -4065,6 +4091,8 @@ impl HNSWIndex {
 ---
 ## Greedy Search with Backtracking: The Algorithm
 The core of HNSW is the search algorithm. It's not pure greedy—it maintains a candidate queue that allows backtracking when greedy choices lead to dead ends.
+
+![Skip List Analogy for Layer Assignment](./diagrams/tdd-diag-m4-12.svg)
 
 ![Greedy Search with Layer Descent](./diagrams/diag-m4-greedy-search.svg)
 
@@ -4577,6 +4605,8 @@ The most important parameter for query performance is `efSearch`. It controls th
 
 ![efSearch vs Recall vs Latency Tradeoff](./diagrams/diag-m4-efsearch-tuning.svg)
 
+![efSearch vs Recall vs Latency Tradeoff](./diagrams/tdd-diag-m4-08.svg)
+
 | efSearch | Recall@10 | Latency | Use Case |
 |----------|-----------|---------|----------|
 | 10 | ~0.70 | Very fast | Real-time, low precision OK |
@@ -4854,6 +4884,8 @@ mod tests {
 
 ![HNSW vs Brute-Force: Latency Comparison](./diagrams/diag-m4-vs-bruteforce.svg)
 
+![HNSW vs Brute-Force Latency Comparison](./diagrams/tdd-diag-m4-11.svg)
+
 ```rust
 #[cfg(test)]
 mod benchmarks {
@@ -5003,7 +5035,6 @@ Every decision in this milestone traces back to three constraints:
 ---
 ## The Architecture: Satellite View
 
-![Vector Database Architecture: Satellite Map](./diagrams/diag-L0-satellite-map.svg)
 
 You're building the **Vector Quantization** layer—the memory optimization that makes billion-scale search economically viable:
 - **Vector Storage (M1)** provides the raw float32 vectors you'll quantize
@@ -5290,6 +5321,8 @@ Product quantization achieves 16-32x compression by exploiting a different struc
 2. **Quantizes each subvector independently** using its own codebook
 3. **Stores M uint8 codes** (one per subspace)
 
+![Memory Usage: FP32 vs SQ8 vs PQ](./diagrams/tdd-diag-m5-01.svg)
+
 ![Product Quantization: Subspace Decomposition](./diagrams/diag-m5-product-quantization.svg)
 
 For a 768-dimensional vector with M=8 subspaces:
@@ -5331,6 +5364,8 @@ The algorithm is guaranteed to converge, but not to the globally optimal cluster
 - **Multiple restarts**: Run several times, pick the best result
 - **Mini-batch K-means**: For large datasets, use random samples each iteration
 The mental model: K-means is like finding K "natural centers" in your data. It's deterministic only after initialization—random starting points matter.
+
+![PQ Codebook Training via K-Means](./diagrams/tdd-diag-m5-04.svg)
 
 ![PQ Codebook Training via K-Means](./diagrams/diag-m5-pq-training.svg)
 
@@ -5808,6 +5843,8 @@ Yes, with a **two-phase search**:
 1. **Phase 1 (HNSW traversal)**: Use quantized distances (ADC) for graph navigation. The approximate distances are good enough to find the right neighborhood.
 2. **Phase 2 (Re-ranking)**: Take the top candidates from HNSW, compute exact distances using full-precision vectors, return the final top-k.
 
+![Naive Decompression vs ADC Comparison](./diagrams/tdd-diag-m5-07.svg)
+
 ![HNSW + PQ: Two-Phase Search](./diagrams/diag-m5-hnsw-pq-integration.svg)
 
 This gives you:
@@ -6151,7 +6188,6 @@ Every decision in this milestone traces back to three constraints:
 ---
 ## The Architecture: Satellite View
 
-![Vector Database Architecture: Satellite Map](./diagrams/diag-L0-satellite-map.svg)
 
 You're building the **Query API & Server** layer—the interface between your vector database and the real world:
 - **Vector Storage (M1)** provides concurrent-safe storage via `RwLock`
@@ -6513,6 +6549,8 @@ impl FilterPredicate {
 ## Concurrent Access: The Hard Part
 ### The Read-Write Lock Model
 
+![FilterStrategy::Auto Decision Tree](./diagrams/tdd-diag-m6-06.svg)
+
 ![Concurrent Access: Read-Write Lock Model](./diagrams/diag-m6-concurrency-model.svg)
 
 Vector databases have an asymmetric access pattern: many more reads than writes. A typical workload might be 100 reads per second and 1 write per second. This suggests using a **read-write lock** (RW-lock):
@@ -6626,6 +6664,8 @@ impl ThreadSafeCollection {
 }
 ```
 ### The Pre-Filter vs Post-Filter Trap
+
+![Search Request Processing Flow](./diagrams/tdd-diag-m6-04.svg)
 
 ![Pre-Filter vs Post-Filter for ANN](./diagrams/diag-m6-filter-strategies.svg)
 
@@ -6797,6 +6837,8 @@ The tradeoff: CoW has O(data size) write cost but O(1) read cost with no blockin
 ## Query Timeouts: Staying Alive
 ### Why Timeouts Are Non-Negotiable
 
+![Pre-Filter vs Post-Filter for ANN](./diagrams/tdd-diag-m6-05.svg)
+
 ![Query Timeout Mechanism](./diagrams/diag-m6-timeout-handling.svg)
 
 HNSW search is approximate, but it's still bounded by graph traversal. On a 10M vector index with `efSearch=500`, a single query can examine 500 × average_degree nodes. With M=16, that's potentially 8,000 distance computations. At 768 dimensions with SIMD, that's 8,000 × 768 / 8 = 768,000 SIMD operations—still fast, but not instant.
@@ -6959,6 +7001,8 @@ impl<'a> TimedSearch<'a> {
 ## Batch Operations: Efficiency Through Amortization
 ### Why Batch Matters
 
+![Query Timeout Mechanism](./diagrams/tdd-diag-m6-07.svg)
+
 ![Batch Operation Efficiency](./diagrams/diag-m6-batch-operations.svg)
 
 Individual operations have fixed overhead: lock acquisition, validation, statistics update. For 1000 inserts, that's 1000 lock acquisitions. A batch operation amortizes this overhead: one lock acquisition, 1000 inserts, one unlock.
@@ -7117,6 +7161,8 @@ pub struct BatchSearchResponse {
 ## The REST API: Putting It All Together
 ### API Design
 
+![Batch Operation Efficiency](./diagrams/tdd-diag-m6-08.svg)
+
 ![Search Request Processing Flow](./diagrams/diag-m6-search-request-flow.svg)
 
 We'll design a REST API with these endpoints:
@@ -7241,6 +7287,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
 ```
 ---
 ## Concurrent Stress Testing: Proving Correctness
+
+![REST API Endpoint Map](./diagrams/tdd-diag-m6-09.svg)
 
 ![Concurrent Stress Test Scenario](./diagrams/diag-m6-stress-test.svg)
 
@@ -7436,6 +7484,8 @@ mod stress_tests {
 ---
 ## Collection Lifecycle Management
 
+![Concurrent Stress Test Scenario](./diagrams/tdd-diag-m6-10.svg)
+
 ![Collection Lifecycle Management](./diagrams/diag-m6-collection-lifecycle.svg)
 
 ```rust
@@ -7621,15 +7671,14 @@ This is the layer that transforms your vector database from a library into a ser
 
 ## System Overview
 
+![Query API Architecture Overview](./diagrams/tdd-diag-m6-01.svg)
+
 ![System Overview](./diagrams/system-overview.svg)
-
-
 
 
 # TDD
 
 A production-grade vector similarity search engine implementing HNSW (Hierarchical Navigable Small World) graphs for sub-linear approximate nearest neighbor search. The system trades exact accuracy for query speed through probabilistic graph traversal, achieving 10x+ latency improvement over brute-force while maintaining ≥95% recall. Core design principles: memory-aligned contiguous storage for SIMD compatibility, quantization for billion-scale memory efficiency, and concurrent-safe access patterns for production workloads.
-
 
 
 <!-- TDD_MOD_ID: vector-database-m1 -->
@@ -9883,7 +9932,6 @@ Output: f32 sum of all 8 elements
 Complexity: O(1) - fixed number of operations
 Note: Uses SIMD shuffle tricks to avoid scalar extraction
 ```
-{{DIAGRAM:tdd-diag-m2-05}}
 ### AVX2 Dot Product
 ```
 Algorithm: avx2_dot_product(a, b)
@@ -10878,7 +10926,6 @@ impl<'a> BruteForceSearch<'a> {
     }
 }
 ```
-{{DIAGRAM:tdd-diag-m3-03}}
 ### BatchSearch: Multi-Query Execution
 ```rust
 // src/search/batch_search.rs
@@ -10974,7 +11021,6 @@ impl<'a> BatchSearch<'a> {
     }
 }
 ```
-{{DIAGRAM:tdd-diag-m3-04}}
 ### GroundTruth: Recall Measurement Foundation
 ```rust
 // src/search/ground_truth.rs
@@ -11368,7 +11414,6 @@ Output: bool (true if added)
 Invariant: After each call, heap contains min(k, processed_count) best candidates
 Complexity: O(log k) for push/pop operations
 ```
-{{DIAGRAM:tdd-diag-m3-07}}
 ### Brute-Force Linear Scan
 ```
 Algorithm: BruteForceSearch::search
@@ -12232,7 +12277,6 @@ pub enum ConfigError {
     InvalidMl,
 }
 ```
-{{DIAGRAM:tdd-diag-m4-01}}
 ### HNSWNode: Graph Vertex with Layered Neighbors
 ```rust
 // src/hnsw/node.rs
@@ -12348,6 +12392,8 @@ impl HNSWNode {
     }
 }
 ```
+
+![FilterPredicate Evaluation Tree](./diagrams/tdd-diag-m6-12.svg)
 
 ![Probabilistic Level Assignment Distribution](./diagrams/tdd-diag-m4-02.svg)
 
@@ -12888,7 +12934,6 @@ Output: None (mutates nodes[node_id].neighbors[layer])
 9. // Update this node's neighbor set
    node.neighbors[layer] = new_neighbors
 ```
-{{DIAGRAM:tdd-diag-m4-08}}
 ---
 ## Error Handling Matrix
 | Error | Detected By | Recovery | User-Visible? |
@@ -13359,6 +13404,8 @@ mod benchmark_tests {
 }
 ```
 
+![Error Response Structure](./diagrams/tdd-diag-m6-11.svg)
+
 ![HNSW Index Serialization Format](./diagrams/tdd-diag-m4-09.svg)
 
 ### Serialization Tests
@@ -13496,7 +13543,6 @@ impl HNSWIndex {
     }
 }
 ```
-{{DIAGRAM:tdd-diag-m4-10}}
 ---
 [[CRITERIA_JSON: {"module_id": "vector-database-m4", "criteria": ["HNSWConfig defines m_max (layers 1+), m_max0 (layer 0, typically 2×M), ef_construction (build-time beam width), ef_search (query-time beam width), ml (level multiplier, default 1/ln(M))", "HNSWNode stores vector_id (u64), max_layer (usize), neighbors (Vec<HashSet<NodeId>>) with one HashSet per layer 0..=max_layer", "HNSWNode::neighbors_at(layer) returns &HashSet<NodeId> for layer <= max_layer, empty static set otherwise", "assign_layer(ml, rng) implements level = floor(-ln(uniform) × ml) creating exponential distribution with ~50% at layer 0", "search_layer(query, entry_points, ef, layer) uses min-heap for candidates (closest to explore), max-heap for results (worst at top for eviction), visited HashSet for cycle prevention", "search() traverses from entry_point at max_layer using ef=1 per layer for descent, then efSearch candidates at layer 0", "insert(vector_id, storage, rng) assigns layer, creates node, finds neighbors at each insertion layer via search_layer, creates bidirectional edges, updates entry_point if higher layer", "Bidirectional edges: inserting node A with neighbor B adds A→B and B→A edges at the same layer", "Edge pruning enforces m_max at layers 1+ and m_max0 at layer 0 by keeping closest neighbors when limit exceeded", "Recall@10 >= 0.95 on 100K vectors (768d) with efSearch=100, measured against brute-force ground truth", "Query latency >= 10x faster than brute-force on 100K vectors (768d) for k=10", "Serialization saves config, nodes (with neighbors per layer), entry_point, max_layer, metric_name to JSON", "Deserialization validates metric_name match and reconstructs identical search behavior", "Empty index search returns empty Vec<HNSWResult> without panic", "Concurrent access via RwLock: multiple readers (search) OR single writer (insert)", "HNSWIndex::len() returns nodes.len(), is_empty() returns len() == 0", "HNSWResult contains vector_id (NodeId) and distance (f32)", "Config validation rejects m_max=0, ef_construction=0, ef_search=0, ml<=0, m_max0<m_max", "search_with_ef(query, storage, k, ef) allows per-query ef override for tuning", "Layer 0 always has denser connections (m_max0 = 2×m_max default) for better recall at base layer"]}]
 <!-- END_TDD_MOD -->
@@ -13658,7 +13704,6 @@ mod dimension_stats_tests {
     }
 }
 ```
-{{DIAGRAM:tdd-diag-m5-01}}
 ### ScalarQuantizer: 4x Compression via Per-Dimension Calibration
 ```rust
 // src/quantization/scalar_quantizer.rs
@@ -13841,6 +13886,8 @@ impl ScalarQuantizer {
     }
 }
 ```
+
+![Concurrent Access: Read-Write Lock Model](./diagrams/tdd-diag-m6-03.svg)
 
 ![Scalar Quantization: Float32 → UInt8](./diagrams/tdd-diag-m5-02.svg)
 
@@ -14205,7 +14252,6 @@ impl SubspaceCodebook {
     }
 }
 ```
-{{DIAGRAM:tdd-diag-m5-04}}
 ### ProductQuantizer: M-Subspace Decomposition
 ```rust
 // src/quantization/product_quantizer.rs
@@ -14592,7 +14638,6 @@ impl PQStorage {
     }
 }
 ```
-{{DIAGRAM:tdd-diag-m5-07}}
 ### HNSW+PQ Integration: Two-Phase Search
 ```rust
 // src/quantization/hnsw_pq.rs
@@ -16442,6 +16487,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 
 # Project Structure: Vector Database
+
+![Collection Lifecycle State Machine](./diagrams/tdd-diag-m6-02.svg)
 
 ## Directory Tree
 

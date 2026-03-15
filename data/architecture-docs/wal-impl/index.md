@@ -130,7 +130,6 @@ The project is complete when:
 A Write-Ahead Log (WAL) is the fundamental durability mechanism in virtually every production database system. This project implements a complete WAL with ARIES-style crash recovery, teaching you how databases guarantee that committed transactions survive system crashes. You'll build log record formats, an append-only writer with group commit optimization, and the full three-phase ARIES recovery algorithm (Analysis, Redo, Undo) with Compensation Log Records (CLRs) for crash-safe recovery. The system supports fuzzy checkpointing to bound recovery time and enable safe log truncation.
 
 
-
 <!-- MS_ID: wal-impl-m1 -->
 # Milestone 1: Log Record Format & Transaction API
 ## The Durability Problem: Why WAL Exists
@@ -475,6 +474,8 @@ void test_update_roundtrip(void) {
 }
 ```
 ## Transaction API: The Public Interface
+
+![CRC Computation Scope](./diagrams/tdd-diag-m1-09.svg)
 
 ![Transaction State Machine with Log Records](./diagrams/diag-txn-state-machine.svg)
 
@@ -953,6 +954,8 @@ You've now mastered log record formats. Here's where this knowledge connects:
 
 ![LSN Tracking: The Connective Tissue](./diagrams/diag-lsn-tracking-everywhere.svg)
 
+![CLR Record vs UPDATE Record Comparison](./diagrams/tdd-diag-m1-04.svg)
+
 ---
 [[CRITERIA_JSON: {"milestone_id": "wal-impl-m1", "criteria": ["Log record header contains LSN (8-byte little-endian, monotonically increasing), type (4-byte), txn_id (4-byte), prev_lsn (8-byte, links records within same transaction), and length (4-byte, includes header + payload + CRC)", "Six record types implemented: BEGIN (transaction start, 32 bytes), UPDATE (page modification with before/after images), COMMIT (durable commit marker), ABORT (transaction termination after undo), CLR (compensation record with undo_next_lsn field), CHECKPOINT (transaction table and dirty page table snapshot)", "UPDATE records serialize page_id (8-byte), offset (4-byte), old_value_len + old_value (length-prefixed), new_value_len + new_value (length-prefixed)", "CLR records contain undo_next_lsn field that points to the next record to undo (prev_lsn of the UPDATE being undone), enabling crash-safe recovery resumption", "CRC32 checksum computed over header + payload, stored as final 4 bytes of each record, verified during deserialization", "Transaction API: begin_txn() writes BEGIN and returns txn_id, write_txn() writes UPDATE with linked prev_lsn, commit_txn() writes COMMIT and fsyncs, abort_txn() writes CLRs following prev_lsn chain then writes ABORT", "Transaction table tracks active transactions with txn_id, status (ACTIVE/COMMITTED/ABORTED), first_lsn, and last_lsn for prev_lsn linking", "Serialization/deserialization achieves byte-perfect round-trip fidelity for all record types with variable-length fields", "Unit tests verify: BEGIN/UPDATE/CLR serialization format, variable-length field handling, CRC corruption detection, prev_lsn chain correctness, full transaction lifecycle"]}]
 <!-- END_MS -->
@@ -1092,6 +1095,8 @@ uint64_t allocate_lsn(LogManager* log) {
 ```
 ## Concurrent Writers: The Serialization Problem
 You have multiple threads, each handling a transaction. They all need to write log records. What happens if they write simultaneously?
+
+![Append-Only Log File Growth](./diagrams/tdd-diag-m2-05.svg)
 
 ![Concurrent Writer Serialization](./diagrams/diag-concurrent-writer-serialization.svg)
 
@@ -1263,6 +1268,8 @@ void benchmark_group_commit(void) {
 ## Torn Write Detection: When Crashes Happen Mid-Write
 What happens if the system crashes while writing a log record?
 
+![Group Commit Benchmark Results](./diagrams/tdd-diag-m2-10.svg)
+
 ![Torn Write Detection via CRC](./diagrams/diag-torn-write-detection.svg)
 
 ```
@@ -1387,6 +1394,8 @@ A log file that grows forever has problems:
 - Slow operations (stat, seek on huge files)
 - No way to reclaim space for old, unneeded logs
 The solution: **log segment rotation**. When the current segment reaches a size threshold, close it and start a new one.
+
+![Commit Must Flush Buffer](./diagrams/tdd-diag-m2-12.svg)
 
 ![Log Segment Rotation](./diagrams/diag-log-segment-rotation.svg)
 
@@ -2259,7 +2268,6 @@ Recovery runs again:
 ```
 Without CLRs, undo would try to undo LSN 200 again. But LSN 200 is already undone! The CLR at LSN 300 records "I already undid 200, next undo 150."
 
-![CLR Prevents Recovery Loop](./diagrams/diag-clr-crash-during-undo.svg)
 
 ```c
 uint64_t write_clr(LogManager* log, uint32_t txn_id,
@@ -2593,6 +2601,8 @@ Five minutes of downtime after a crash. In a high-availability system, that's un
 **The insight**: You don't need the *entire* log to recover. You only need the portion that describes changes to pages that might not be on disk yet. If you could record "everything before this point is guaranteed to be on disk," recovery could start from there instead of the beginning.
 This is what **checkpointing** does: it bounds recovery time by recording a known-good starting point.
 
+![system-overview](./diagrams/system-overview.svg)
+
 ![Recovery Scan: With vs Without Checkpoint](./diagrams/diag-recovery-scan-without-checkpoint.svg)
 
 ## The Naive Checkpoint: Stop the World
@@ -2863,6 +2873,8 @@ int crash_recovery_with_checkpoint(LogManager* log, BufferPool* pool) {
 The key change: **Analysis starts from the checkpoint LSN, not from the beginning of the log**. All records before the checkpoint are irrelevant — their effects are either already on disk or captured in the checkpoint's dirty page table.
 ## Log Truncation: Reclaiming Disk Space
 With checkpointing in place, you can now safely delete old log segments. But which segments can be deleted?
+
+![Snapshot Capture Under Concurrent Modification](./diagrams/tdd-diag-m4-12.svg)
 
 ![Log Truncation: What Can Be Deleted](./diagrams/diag-log-truncation-safety.svg)
 
@@ -3262,19 +3274,15 @@ You've completed the WAL implementation with checkpointing and log truncation. H
 **→ Backup Window Optimization (Cross-Domain)**: Fuzzy checkpointing is the principle behind modern backup systems. Instead of stopping the database to take a consistent backup, they capture a fuzzy snapshot (using filesystem snapshots, copy-on-write, etc.) and let the application continue. Recovery from backup is equivalent to your checkpoint-based recovery.
 ---
 
-![WAL System Architecture Map](./diagrams/diag-satellite-wal-system.svg)
 
 ---
 [[CRITERIA_JSON: {"milestone_id": "wal-impl-m4", "criteria": ["Fuzzy checkpoint writes CHECKPOINT_BEGIN record at start, captures atomic snapshots of transaction table and dirty page table (via brief mutex lock), then writes CHECKPOINT_END record containing serialized snapshots", "Concurrent transactions continue executing during checkpoint without blocking; transactions may commit, abort, or start between CHECKPOINT_BEGIN and CHECKPOINT_END", "Master record stored in separate file (wal.master) with magic number, version, last_checkpoint_lsn, and CRC32; updated atomically via temp file + rename pattern", "Master record update occurs AFTER CHECKPOINT_END is fsynced to disk; crash before master update leaves previous checkpoint valid", "Recovery reads master record first, validates CRC, and starts Analysis phase from checkpoint_lsn if valid; falls back to log start if master record corrupted or missing", "Log truncation checks two conditions: (1) segment.end_lsn < checkpoint's minimum recLSN, AND (2) no active transaction's firstLSN falls within segment range", "Long-running transactions prevent log truncation; truncation only succeeds when all transactions active at checkpoint time have completed", "Checkpoint interval configurable via time_interval_ms or record_count_interval; default time-based interval of 30 seconds recommended", "Recovery time benchmark: with checkpoint at 50% log position, recovery time is <= 60% of recovery time without checkpoint (measured with 10000 transactions)", "Truncation safety verified by test: delete segments, run recovery, confirm all committed transactions present and correct", "Checkpoint scheduler runs in background thread, checking interval triggers every 100ms, performing checkpoint + truncation when triggered", "Unit tests verify: master record atomic update (crash during write leaves previous valid), truncation blocked by long transaction, recovery with corrupted master record falls back gracefully"]}]
 <!-- END_MS -->
 
 
-
-
 # TDD
 
 A production-grade Write-Ahead Log system implementing the ARIES recovery algorithm for ACID-compliant durability. The system provides crash-safe transaction logging with group commit optimization, fuzzy checkpointing for bounded recovery time, and Compensation Log Records (CLRs) for idempotent recovery even after crashes during recovery itself. The design follows the steal/no-force buffer pool policy, enabling maximum concurrency while guaranteeing that committed transactions survive any crash scenario.
-
 
 
 <!-- TDD_MOD_ID: wal-impl-m1 -->
@@ -3358,9 +3366,11 @@ typedef uint64_t PageId;     // Page Identifier
 Every record begins with this fixed 28-byte header. All multi-byte integers are stored little-endian.
 ```
 
-![Log Record Header Binary Layout](./diagrams/tdd-diag-m1-01.svg)
 
 ```
+
+![Log Record Header Binary Layout](./diagrams/tdd-diag-m1-01.svg)
+
 **Byte Layout:**
 | Offset | Size | Field      | Type      | Description                              |
 |--------|------|------------|-----------|------------------------------------------|
@@ -3408,9 +3418,11 @@ typedef struct {
 The workhorse record. Stores page modification with before/after images.
 ```
 
-![Record Type Hierarchy](./diagrams/tdd-diag-m1-02.svg)
 
 ```
+
+![Record Type Hierarchy](./diagrams/tdd-diag-m1-02.svg)
+
 **Byte Layout:**
 | Offset          | Size        | Field          | Type      | Description                    |
 |-----------------|-------------|----------------|-----------|--------------------------------|
@@ -3462,9 +3474,11 @@ typedef struct {
 Critical for crash-safe undo. Written during undo phase to record progress.
 ```
 
-![UPDATE Record Binary Layout](./diagrams/tdd-diag-m1-03.svg)
 
 ```
+
+![UPDATE Record Binary Layout](./diagrams/tdd-diag-m1-03.svg)
+
 **Byte Layout:**
 | Offset        | Size        | Field          | Type      | Description                         |
 |---------------|-------------|----------------|-----------|-------------------------------------|
@@ -3488,8 +3502,9 @@ typedef struct {
 ```
 **CRITICAL DISTINCTION:**
 ```
-{{DIAGRAM:tdd-diag-m1-04}}
 ```
+
+
 | Field          | Source          | Meaning                                      |
 |----------------|-----------------|----------------------------------------------|
 | header.prev_lsn| Last record of txn | Previous record in transaction chain       |
@@ -3936,9 +3951,11 @@ static inline uint32_t read_le32(const uint8_t* buf) {
 ### 5.2 UPDATE Record Serialization Algorithm
 ```
 
-![prev_lsn Chain Across Transactions](./diagrams/tdd-diag-m1-05.svg)
 
 ```
+
+![prev_lsn Chain Across Transactions](./diagrams/tdd-diag-m1-05.svg)
+
 **Procedure serialize_update(rec, buf, buf_len, written):**
 1. **Validate inputs**
    - IF rec == NULL OR buf == NULL: RETURN WAL_ERR_NULL_POINTER
@@ -4047,9 +4064,11 @@ static inline uint32_t read_le32(const uint8_t* buf) {
 ### 5.5 Transaction Write Algorithm
 ```
 
-![Transaction State Machine](./diagrams/tdd-diag-m1-06.svg)
 
 ```
+
+![Transaction State Machine](./diagrams/tdd-diag-m1-06.svg)
+
 **Procedure txn_write(mgr, txn_id, page_id, offset, old_val, old_len, new_val, new_len, record):**
 1. **Validate inputs**
    - IF mgr == NULL OR record == NULL: RETURN WAL_ERR_NULL_POINTER
@@ -4091,9 +4110,11 @@ static inline uint32_t read_le32(const uint8_t* buf) {
 The prev_lsn chain is the critical data structure enabling efficient undo. Each record's prev_lsn points to the previous record of the **same transaction**, not the previous record in the log.
 ```
 
-![Serialization/Deserialization Round-Trip](./diagrams/tdd-diag-m1-07.svg)
 
 ```
+
+![Serialization/Deserialization Round-Trip](./diagrams/tdd-diag-m1-07.svg)
+
 **Example:**
 ```
 Time  T1 (txn_id=1)           T2 (txn_id=2)
@@ -4577,17 +4598,22 @@ void benchmark_serialize_begin(void) {
 ## 10. Diagrams Reference
 ```
 
+
+```
+
 ![Transaction Table Structure](./diagrams/tdd-diag-m1-08.svg)
 
 ```
 ```
-{{DIAGRAM:tdd-diag-m1-09}}
+
+
 ```
+
+
 ```
 
 ![Transaction API Call Sequence](./diagrams/tdd-diag-m1-10.svg)
 
-```
 ---
 ## 11. State Machine: Transaction Lifecycle
 ```
@@ -4669,9 +4695,11 @@ typedef enum {
 Buffers records in memory before issuing write() syscalls. Reduces context switch overhead for high-throughput scenarios.
 ```
 
-![fsync Latency Breakdown](./diagrams/tdd-diag-m2-01.svg)
 
 ```
+
+![fsync Latency Breakdown](./diagrams/tdd-diag-m2-01.svg)
+
 ```c
 typedef struct {
     uint8_t*   buffer;           // Allocated buffer memory
@@ -4703,9 +4731,11 @@ typedef struct {
 Orchestrates segment lifecycle and rotation.
 ```
 
-![Group Commit Leader/Follower Protocol](./diagrams/tdd-diag-m2-02.svg)
 
 ```
+
+![Group Commit Leader/Follower Protocol](./diagrams/tdd-diag-m2-02.svg)
+
 ```c
 typedef struct {
     char       base_path[256];   // Base path for segment files
@@ -4722,9 +4752,11 @@ typedef struct {
 Implements the leader/follower protocol for batching fsync operations.
 ```
 
-![Group Commit Timeline](./diagrams/tdd-diag-m2-03.svg)
 
 ```
+
+![Group Commit Timeline](./diagrams/tdd-diag-m2-03.svg)
+
 ```c
 typedef struct {
     pthread_mutex_t lock;            // Protects all fields
@@ -4772,9 +4804,11 @@ typedef struct {
 ### 3.7 Memory Layout: WriteBuffer During Operation
 ```
 
-![Concurrent Writer Serialization](./diagrams/tdd-diag-m2-04.svg)
 
 ```
+
+![Concurrent Writer Serialization](./diagrams/tdd-diag-m2-04.svg)
+
 **Buffer State Example (1MB buffer, 3 records buffered):**
 ```
 Offset    Content                      Size
@@ -4789,8 +4823,9 @@ Offset    Content                      Size
 ```
 ### 3.8 File Layout: Segment Naming Convention
 ```
-{{DIAGRAM:tdd-diag-m2-05}}
 ```
+
+
 **On-Disk Structure:**
 ```
 /data/wal/
@@ -4813,9 +4848,11 @@ uint64_t lsn_to_file_offset(uint64_t lsn, uint64_t segment_size) {
 ### 3.9 Group Commit State Machine
 ```
 
-![Log Segment Rotation](./diagrams/tdd-diag-m2-06.svg)
 
 ```
+
+![Log Segment Rotation](./diagrams/tdd-diag-m2-06.svg)
+
 **States and Transitions:**
 ```
                     +-----------------+
@@ -5150,9 +5187,11 @@ ssize_t wal_validate_record(int fd, Lsn* lsn);
 ### 5.1 LSN-as-Offset Append Algorithm
 ```
 
-![Write Buffer Structure](./diagrams/tdd-diag-m2-07.svg)
 
 ```
+
+![Write Buffer Structure](./diagrams/tdd-diag-m2-07.svg)
+
 **Procedure wal_append(writer, data, len, lsn):**
 ```
 1. VALIDATE INPUTS
@@ -5226,9 +5265,11 @@ ssize_t wal_validate_record(int fd, Lsn* lsn);
 ### 5.3 Group Commit Leader/Follower Protocol
 ```
 
-![Torn Write Detection via CRC](./diagrams/tdd-diag-m2-08.svg)
 
 ```
+
+![Torn Write Detection via CRC](./diagrams/tdd-diag-m2-08.svg)
+
 **Procedure group_commit_sync(gcm, commit_lsn, timeout_us):**
 ```
 1. ACQUIRE LOCK
@@ -5315,9 +5356,11 @@ follower_path:
 ### 5.4 Segment Rotation Algorithm
 ```
 
-![WalWriter Component Architecture](./diagrams/tdd-diag-m2-09.svg)
 
 ```
+
+![WalWriter Component Architecture](./diagrams/tdd-diag-m2-09.svg)
+
 **Procedure segment_manager_rotate(mgr):**
 ```
 1. SYNC CURRENT SEGMENT
@@ -5358,8 +5401,9 @@ follower_path:
 - No data is ever written to two segments simultaneously
 ### 5.5 Torn Write Detection Algorithm
 ```
-{{DIAGRAM:tdd-diag-m2-10}}
 ```
+
+
 **Procedure wal_detect_truncate_torn_writes(base_path, last_valid_lsn):**
 ```
 1. FIND MOST RECENT SEGMENT
@@ -5908,12 +5952,15 @@ NEVER acquire in reverse order - deadlock risk.
 ## 11. Diagrams Reference
 ```
 
+
+```
+
 ![Segment FD Update on Rotation](./diagrams/tdd-diag-m2-11.svg)
 
 ```
 ```
-{{DIAGRAM:tdd-diag-m2-12}}
-```
+
+
 ---
 ## 12. State Machine: Group Commit Protocol
 ```
@@ -6025,9 +6072,11 @@ typedef struct {
 Tracks pages that might have uncommitted changes on disk.
 ```
 
-![ARIES Three-Phase Recovery Overview](./diagrams/tdd-diag-m3-01.svg)
 
 ```
+
+![ARIES Three-Phase Recovery Overview](./diagrams/tdd-diag-m3-01.svg)
+
 ```c
 typedef struct {
     PageId    page_id;        // Page identifier
@@ -6072,9 +6121,11 @@ typedef struct {
 **Memory Layout of BufferPage:**
 ```
 
-![Analysis Phase: Building Transaction Table](./diagrams/tdd-diag-m3-02.svg)
 
 ```
+
+![Analysis Phase: Building Transaction Table](./diagrams/tdd-diag-m3-02.svg)
+
 | Offset  | Size    | Field       | Description                          |
 |---------|---------|-------------|--------------------------------------|
 | 0x0000  | 8       | page_id     | Page identifier                      |
@@ -6099,6 +6150,8 @@ typedef struct {
 ### 3.6 Undo Priority Queue
 Max-heap ordered by LSN (highest LSN first for correct undo order).
 ```
+
+![Recovery Scan: With vs Without Checkpoint](./diagrams/tdd-diag-m4-01.svg)
 
 ![Analysis Phase: Building Dirty Page Table](./diagrams/tdd-diag-m3-03.svg)
 
@@ -6162,9 +6215,11 @@ Each page has a header containing pageLSN for idempotency checks.
 ### 3.9 Recovery Flow State Diagram
 ```
 
-![Redo Phase: pageLSN Skip Logic](./diagrams/tdd-diag-m3-05.svg)
 
 ```
+
+![Redo Phase: pageLSN Skip Logic](./diagrams/tdd-diag-m3-05.svg)
+
 **Phase Transitions:**
 ```
 INACTIVE -> ANALYZING (start recovery)
@@ -6525,9 +6580,11 @@ Lsn dpt_min_rec_lsn(const DirtyPageTable* dpt);
 ### 5.1 Complete Recovery Flow
 ```
 
-![Redo Idempotency Verification](./diagrams/tdd-diag-m3-06.svg)
 
 ```
+
+![Redo Idempotency Verification](./diagrams/tdd-diag-m3-06.svg)
+
 **Procedure recovery_run(mgr):**
 ```
 1. SET STATE
@@ -6564,9 +6621,11 @@ Lsn dpt_min_rec_lsn(const DirtyPageTable* dpt);
 ### 5.2 Analysis Phase Algorithm
 ```
 
-![Undo Phase: Priority Queue Construction](./diagrams/tdd-diag-m3-07.svg)
 
 ```
+
+![Undo Phase: Priority Queue Construction](./diagrams/tdd-diag-m3-07.svg)
+
 **Procedure recovery_analysis_phase(mgr):**
 ```
 1. INITIALIZE TABLES
@@ -6645,9 +6704,11 @@ Lsn dpt_min_rec_lsn(const DirtyPageTable* dpt);
 ### 5.3 Redo Phase Algorithm
 ```
 
-![Undo Order: Why Global LSN Matters](./diagrams/tdd-diag-m3-08.svg)
 
 ```
+
+![Undo Order: Why Global LSN Matters](./diagrams/tdd-diag-m3-08.svg)
+
 **Procedure recovery_redo_phase(mgr):**
 ```
 1. FIND REDO START POINT
@@ -6723,9 +6784,11 @@ Lsn dpt_min_rec_lsn(const DirtyPageTable* dpt);
 ### 5.4 Undo Phase Algorithm
 ```
 
-![CLR Prevents Recovery Loop](./diagrams/tdd-diag-m3-09.svg)
 
 ```
+
+![CLR Prevents Recovery Loop](./diagrams/tdd-diag-m3-09.svg)
+
 **Procedure recovery_undo_phase(mgr):**
 ```
 1. CHECK FOR ACTIVE TRANSACTIONS
@@ -6796,9 +6859,11 @@ Lsn dpt_min_rec_lsn(const DirtyPageTable* dpt);
 ### 5.5 Process Undo Item Algorithm
 ```
 
-![CLR Record Structure in Recovery Context](./diagrams/tdd-diag-m3-10.svg)
 
 ```
+
+![CLR Record Structure in Recovery Context](./diagrams/tdd-diag-m3-10.svg)
+
 **Procedure recovery_process_undo_item(mgr, item, next_lsn):**
 ```
 1. READ RECORD
@@ -6935,9 +7000,11 @@ Lsn dpt_min_rec_lsn(const DirtyPageTable* dpt);
 ### 5.7 Undo Queue (Max-Heap) Implementation
 ```
 
-![Three-Transaction Recovery Test Scenario](./diagrams/tdd-diag-m3-11.svg)
 
 ```
+
+![Three-Transaction Recovery Test Scenario](./diagrams/tdd-diag-m3-11.svg)
+
 **Procedure undo_queue_push(queue, item):**
 ```
 1. CHECK CAPACITY
@@ -7503,29 +7570,39 @@ Single-threaded recovery requires no memory barriers. All state transitions are 
 ## 11. Diagrams Reference
 ```
 
+
+```
+
 ![Recovery Idempotency Test Flow](./diagrams/tdd-diag-m3-12.svg)
 
 ```
+
+
 ```
 
 ![Crash During Undo Test](./diagrams/tdd-diag-m3-13.svg)
 
 ```
+
+
 ```
 
 ![Transaction Table State Transitions During Recovery](./diagrams/tdd-diag-m3-14.svg)
 
 ```
+
+
 ```
 
 ![Dirty Page Table with rec_lsn](./diagrams/tdd-diag-m3-15.svg)
 
 ```
+
+
 ```
 
 ![Complete Recovery Flow Integration](./diagrams/tdd-diag-m3-16.svg)
 
-```
 ---
 ## 12. State Machine: Recovery Flow
 ```
@@ -7626,8 +7703,9 @@ typedef enum {
 ### 3.2 Master Record Structure
 The master record is a small file (one disk block) storing checkpoint bootstrap information. It's the first thing recovery reads.
 ```
-{{DIAGRAM:tdd-diag-m4-01}}
 ```
+
+
 **Byte Layout:**
 | Offset | Size | Field             | Type      | Description                           |
 |--------|------|-------------------|-----------|---------------------------------------|
@@ -7702,9 +7780,11 @@ typedef struct {
 Orchestrates fuzzy checkpoint lifecycle.
 ```
 
-![Fuzzy Checkpoint Timeline](./diagrams/tdd-diag-m4-02.svg)
 
 ```
+
+![Fuzzy Checkpoint Timeline](./diagrams/tdd-diag-m4-02.svg)
+
 ```c
 typedef struct {
     // State machine
@@ -7753,9 +7833,11 @@ typedef struct {
 Determines which segments can be safely deleted.
 ```
 
-![Checkpoint Record Payload Structure](./diagrams/tdd-diag-m4-03.svg)
 
 ```
+
+![Checkpoint Record Payload Structure](./diagrams/tdd-diag-m4-03.svg)
+
 ```c
 // wal_truncate.h
 #ifndef WAL_TRUNCATE_H
@@ -7814,9 +7896,11 @@ typedef struct {
 ### 3.8 File Layout: Master Record Location
 ```
 
-![Master Record: Bootstrap Location](./diagrams/tdd-diag-m4-04.svg)
 
 ```
+
+![Master Record: Bootstrap Location](./diagrams/tdd-diag-m4-04.svg)
+
 **On-Disk Structure:**
 ```
 /data/wal/
@@ -7829,9 +7913,11 @@ typedef struct {
 ### 3.9 Checkpoint Timeline: Concurrent with Transactions
 ```
 
-![Master Record Atomic Update Pattern](./diagrams/tdd-diag-m4-05.svg)
 
 ```
+
+![Master Record Atomic Update Pattern](./diagrams/tdd-diag-m4-05.svg)
+
 **Timeline Example:**
 ```
 Time    Checkpoint Thread              Transaction Thread 1      Transaction Thread 2
@@ -8128,9 +8214,11 @@ void* checkpoint_thread_func(void* arg);
 ### 5.1 Fuzzy Checkpoint Algorithm
 ```
 
-![Log Truncation Safety Regions](./diagrams/tdd-diag-m4-06.svg)
 
 ```
+
+![Log Truncation Safety Regions](./diagrams/tdd-diag-m4-06.svg)
+
 **Procedure checkpoint_take(mgr, trigger, checkpoint_lsn):**
 ```
 1. VALIDATE STATE
@@ -8230,9 +8318,11 @@ void* checkpoint_thread_func(void* arg);
 ### 5.2 Master Record Atomic Write Algorithm
 ```
 
-![Long Transaction Blocking Truncation](./diagrams/tdd-diag-m4-07.svg)
 
 ```
+
+![Long Transaction Blocking Truncation](./diagrams/tdd-diag-m4-07.svg)
+
 **Procedure master_record_write(path, rec):**
 ```
 1. COMPUTE CRC
@@ -8276,9 +8366,11 @@ void* checkpoint_thread_func(void* arg);
 ### 5.3 Log Truncation Safety Check Algorithm
 ```
 
-![Checkpoint Interval Tradeoff Curve](./diagrams/tdd-diag-m4-08.svg)
 
 ```
+
+![Checkpoint Interval Tradeoff Curve](./diagrams/tdd-diag-m4-08.svg)
+
 **Procedure truncator_can_delete_segment(truncator, segment, checkpoint_min_rec_lsn, active_txns, num_active_txns):**
 ```
 1. CHECK IF SEGMENT IS ACTIVE
@@ -8348,9 +8440,11 @@ void* checkpoint_thread_func(void* arg);
 ### 5.5 Background Checkpoint Thread Algorithm
 ```
 
-![Checkpoint State Machine](./diagrams/tdd-diag-m4-09.svg)
 
 ```
+
+![Checkpoint State Machine](./diagrams/tdd-diag-m4-09.svg)
+
 **Procedure checkpoint_thread_func(sys):**
 ```
 1. INITIALIZATION
@@ -8968,9 +9062,11 @@ NEVER acquire in reverse order.
 ## 11. State Machine: Checkpoint Lifecycle
 ```
 
-![Background Checkpoint Thread Flow](./diagrams/tdd-diag-m4-10.svg)
 
 ```
+
+![Background Checkpoint Thread Flow](./diagrams/tdd-diag-m4-10.svg)
+
 **States and Transitions:**
 ```
 States: INACTIVE -> BEGIN_WRITTEN -> END_WRITING -> SYNCING -> INACTIVE
@@ -8995,27 +9091,36 @@ Per-Checkpoint Flow:
 ## 12. Diagrams Reference
 ```
 
+
+```
+
 ![Recovery Time Benchmark Setup](./diagrams/tdd-diag-m4-11.svg)
 
 ```
 ```
-{{DIAGRAM:tdd-diag-m4-12}}
+
+
 ```
+
+
 ```
 
 ![Truncation Two-Condition Check](./diagrams/tdd-diag-m4-13.svg)
 
 ```
+
+
 ```
 
 ![Checkpoint System Component Architecture](./diagrams/tdd-diag-m4-14.svg)
 
 ```
+
+
 ```
 
 ![Recovery with Checkpoint Bootstrap](./diagrams/tdd-diag-m4-15.svg)
 
-```
 ---
 [[CRITERIA_JSON: {"module_id": "wal-impl-m4", "criteria": ["Fuzzy checkpoint writes CHECKPOINT_BEGIN record, captures atomic snapshots of transaction table and dirty page table via brief mutex lock (<100µs), writes CHECKPOINT_END record containing serialized snapshot data", "Concurrent transactions continue executing during checkpoint without blocking; transactions may commit, abort, or start between CHECKPOINT_BEGIN and CHECKPOINT_END", "MasterRecord struct is exactly 64 bytes with fields: magic (uint32_t, 0x57414C4D), version (uint32_t), last_checkpoint_lsn (uint64_t), checkpoint_count (uint64_t), create_time (uint64_t), update_time (uint64_t), crc32 (uint32_t), padding (20 bytes)", "Master record stored in separate file (wal.master) and updated atomically via temp-file-rename pattern: write to .tmp, fsync, rename to final path", "Master record update occurs AFTER CHECKPOINT_END is fsynced to disk; crash before master update leaves previous checkpoint valid and recoverable", "master_record_read validates magic, version, and CRC32; returns MASTER_ERR_CRC_MISMATCH or MASTER_ERR_INVALID_MAGIC on corruption", "Recovery reads master record first via recovery_read_checkpoint_lsn(); if valid, starts Analysis phase from checkpoint_lsn; if corrupted or missing, falls back to log start (LSN 0)", "CheckpointScheduler triggers checkpoints based on time_interval_ms (default 30000) or record_count_interval (default 10000); checkpoint_scheduler_should_checkpoint() returns TRIGGER_TIME, TRIGGER_RECORD_COUNT, or TRIGGER_NONE", "LogTruncator scans log directory to build SegmentMetadata array with segment_id, file_path, start_lsn, end_lsn, file_size, is_active", "Truncation safety rule 1: segment.end_lsn < checkpoint's minimum rec_lsn (segment not needed for redo)", "Truncation safety rule 2: no active transaction's first_lsn falls within segment range (segment not needed for undo)", "truncator_can_delete_segment() returns true only if both safety rules are satisfied; active segments are never deleted", "TruncationResult tracks segments_deleted, bytes_freed, segments_blocked, blocking_txns", "Long-running transactions prevent log truncation; truncation only succeeds after all transactions active at checkpoint time have completed", "CheckpointSystem runs background thread that wakes every check_interval_ms, checks scheduler, takes checkpoint if triggered, then attempts truncation", "Recovery time benchmark: with checkpoint at 50% log position, recovery time is <= 60% of recovery without checkpoint (measured with 10000 transactions)", "Checkpoint snapshot capture holds txn_table.lock and dpt.lock each for <100µs; total checkpoint time <10ms for 1000 transactions", "Checkpoint overhead during normal operation is <2% of transaction throughput", "checkpoint_take() returns CHECKPOINT_ERR_IN_PROGRESS if checkpoint already in progress (state != CHECKPOINT_INACTIVE)", "Unit tests verify: master record atomic update (temp file + rename), truncation blocked by long transaction, recovery with corrupted master falls back to log start"]}]
 <!-- END_TDD_MOD -->

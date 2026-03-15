@@ -183,14 +183,23 @@ Prioritize papers, specifications, original source material, then best explanati
 Build a complete model quantization system that transforms floating-point neural networks into compact integer representations for efficient inference. This project covers the full spectrum from fundamental quantization mathematics to advanced GPTQ algorithms used in production LLM deployment. You'll implement symmetric and asymmetric quantization, calibration pipelines for activation scaling, per-tensor and per-channel granularity strategies, and the GPTQ algorithm that enables 4-bit LLM inference with minimal accuracy loss. By the end, you'll understand why quantization works, when it fails, and how to navigate the accuracy-compression-speed tradeoff space.
 
 
-
 <!-- MS_ID: quant-m1 -->
 # Quantization Fundamentals
 ## The Tension: Precision vs Efficiency
 Every neural network you deploy faces a brutal reality: **FP32 weights consume 4 bytes each**. A 7 billion parameter LLM? That's 28 GB of VRAM just to load the model—before a single token of inference. Want to run it on a consumer GPU with 12 GB? Impossible. Want to deploy on edge devices with 4 GB? Forget it.
 But here's the deeper tension: **neural networks don't need 32 bits of precision**. Your model learned its weights through stochastic gradient descent—noisy approximations of noisy gradients. The difference between `0.123456789` and `0.12` is almost certainly noise, not signal.
 
-![Tensor Quantization Engine: System Map](./diagrams/diag-satellite-overview.svg)
+![Tensor Quantization Engine: System Map](./diagrams/diag-satellite-overview/index.svg)
+
+![m1_detail](./diagrams/diag-satellite-overview/m1_detail.svg)
+
+![m2_detail](./diagrams/diag-satellite-overview/m2_detail.svg)
+
+![m3_detail](./diagrams/diag-satellite-overview/m3_detail.svg)
+
+![m4_detail](./diagrams/diag-satellite-overview/m4_detail.svg)
+
+![m5_detail](./diagrams/diag-satellite-overview/m5_detail.svg)
 
 The question isn't "can we reduce precision?" The question is: **how do we map continuous floating-point values to a discrete integer grid without destroying what the model learned?**
 This milestone gives you the mathematical foundation to answer that question. By the end, you'll understand quantization as an **affine transformation**—a mapping with deliberate tradeoffs—and you'll implement it yourself.
@@ -557,6 +566,8 @@ def compare_distributions():
     return results
 ```
 Running this reveals the critical insight: **outliers destroy quantization quality**. A single value of 10.0 in a tensor otherwise in [-0.1, 0.1] forces a huge scale, destroying precision for the 99.9% of "normal" values.
+
+![Bit Width vs MSE Tradeoff Curve](./diagrams/tdd-diag-m1-04.svg)
 
 ![Integer Overflow Catastrophe](./diagrams/diag-m1-overflow-scenario.svg)
 
@@ -1189,6 +1200,8 @@ Each row (output channel) gets divided by its own scale. This is a single effici
 ---
 ## The Channel Dimension Convention
 Here's a subtle pitfall that causes endless bugs: **what is the "channel" dimension?**
+
+![Broadcast Trick for Per-Channel Quantization](./diagrams/tdd-diag-m2-03.svg)
 
 ![Channel Dimension Convention for Different Layers](./diagrams/diag-m2-channel-dimension-convention.svg)
 
@@ -2015,7 +2028,6 @@ def compare_activation_distributions():
 ## The Calibration Pipeline Architecture
 A production calibration pipeline has three phases:
 
-![Calibration Pipeline Architecture](./diagrams/diag-m3-calibration-pipeline.svg)
 
 ### Phase 1: Data Collection
 Run representative inputs through the model, collecting activation statistics at each layer. This is **forward-pass only**—no gradients needed.
@@ -4514,6 +4526,8 @@ def export_quantized_model(
     print(f"Total layers: {len(export_data['layers'])}")
 ```
 
+![Complete PTQ Pipeline Flow](./diagrams/tdd-diag-m4-01.svg)
+
 ![Before/After: Model Size and Latency Comparison](./diagrams/diag-m4-before-after-benchmark.svg)
 
 ---
@@ -4769,6 +4783,8 @@ Here's the brutal reality: **naive INT4 quantization destroys LLMs**.
 Not "slightly damages." Destroys. A 7B parameter model that achieves perplexity 5.5 in FP16 will jump to perplexity 50+ in naive INT4—it's generating gibberish. The model becomes useless.
 Why? INT4 has only **16 discrete values** (−8 to 7). Your carefully trained weights, which live in continuous space, get hammered onto a 16-point grid. For a typical weight distribution with values in [−0.1, 0.1], each quantization step represents about 0.013 in floating-point space. Two weights that differ by 0.005—meaningfully different to the model—get quantized to the same INT4 value. Information is annihilated.
 
+![system-overview](./diagrams/system-overview.svg)
+
 ![Perplexity Comparison: FP16 vs Naive INT4 vs GPTQ INT4](./diagrams/diag-m5-perplexity-comparison.svg)
 
 But here's the miracle: **GPTQ achieves INT4 quantization with perplexity increase below 1.0**. Same 16-value grid, same annihilation of information—and yet the model remains functional. How?
@@ -4959,6 +4975,8 @@ def compute_hessian_inverse_row(
     hessian_inv = 1.0 / hessian_diag_damped
     return hessian_inv
 ```
+
+![Hessian Diagonal Approximation](./diagrams/tdd-diag-m5-03.svg)
 
 ![Hessian Diagonal Approximation](./diagrams/diag-m5-hessian-diagonal.svg)
 
@@ -5203,6 +5221,8 @@ class GPTQQuantizer:
         zero_bytes = self.zeros.numel() * 2  # FP16
         return weight_bytes + scale_bytes + zero_bytes
 ```
+
+![Cholesky Decomposition Flow](./diagrams/tdd-diag-m5-09.svg)
 
 ![GPTQ Algorithm: Column-by-Column Quantization with Compensation](./diagrams/diag-m5-gptq-algorithm-flow.svg)
 
@@ -5463,6 +5483,8 @@ def measure_perplexity(
     perplexity = np.exp(avg_nll)
     return perplexity
 ```
+
+![GPTQModelQuantizer Pipeline](./diagrams/tdd-diag-m5-08.svg)
 
 ![GPTQ vs Naive Quantization: Weight Compensation Visualized](./diagrams/diag-m5-gptq-vs-naive.svg)
 
@@ -6023,12 +6045,9 @@ You now understand not just *how* to quantize LLMs to INT4, but *why* it works, 
 <!-- END_MS -->
 
 
-
-
 # TDD
 
 Build a complete model quantization system that transforms floating-point neural networks into compact integer representations. The system implements the full quantization stack: fundamental affine transforms (M1), per-channel granularity strategies (M2), calibration pipelines with outlier handling (M3), complete PTQ model construction (M4), and GPTQ for INT4 LLM compression (M5). The architecture emphasizes mathematical correctness through TDD with tensor shape validation, numerical stability analysis, and gradient flow verification at each layer.
-
 
 
 <!-- TDD_MOD_ID: quant-m1 -->
@@ -6522,7 +6541,6 @@ assert analysis['mse'] < 0.01, f"MSE {analysis['mse']} exceeds 0.01"
 pytest quant/test_quantization_fundamentals.py -v
 # All tests should pass
 ```
-{{DIAGRAM:tdd-diag-m1-04}}
 ---
 ## Test Specification
 ### Test Class: TestQuantizationConfig
@@ -7411,7 +7429,6 @@ INVARIANTS:
    - Each channel quantized with its own scale
 COMPLEXITY: O(n) where n = tensor.numel()
 ```
-{{DIAGRAM:tdd-diag-m2-03}}
 ### Algorithm: Memory Footprint Calculation
 **Step-by-step procedure:**
 ```
@@ -10000,7 +10017,6 @@ class QuantizedLinear(nn.Module):
 | Input | `[batch, in_features]` | int8 | Quantized activations |
 | Output | `[batch, out_features]` | int8 | Quantized activations |
 | `weight_scale` broadcast | `[out_features, 1]` | float32 | Expanded for row-wise multiplication |
-{{DIAGRAM:tdd-diag-m4-01}}
 ### QuantizedResidualAdd
 ```python
 class QuantizedResidualAdd(nn.Module):
@@ -11803,7 +11819,6 @@ INVARIANTS:
 COMPLEXITY: O(in_features × out_features × in_features) for full H_inv
             O(in_features × out_features) for diagonal approximation
 ```
-{{DIAGRAM:tdd-diag-m5-03}}
 ### Algorithm: Cholesky Decomposition with Fallback
 ```
 INPUT:

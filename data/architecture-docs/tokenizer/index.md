@@ -144,7 +144,6 @@ The core challenge is deceptively simple on the surface — 'just split text' �
 At intermediate depth, this project exposes the Formal Soul of lexing: regular languages are exactly what finite automata can recognize, which is exactly why lexers don't need recursion. You will see where lexing ends and parsing begins, why keywords are NOT handled by the grammar, and how maximal munch resolves token boundary ambiguity without backtracking.
 
 
-
 <!-- MS_ID: tokenizer-m1 -->
 # Milestone 1: Token Types & Scanner Foundation
 ## Where You Are in the Pipeline
@@ -2155,7 +2154,10 @@ This is a good moment to appreciate that everything in your scanner stays within
 # Milestone 4: Integration Testing & Error Recovery
 ## Where You Are in the Pipeline
 
-![L0 Satellite: Full Tokenizer Pipeline & Milestone Map](./diagrams/diag-l0-satellite-map.svg)
+![system-overview](./diagrams/system-overview.svg)
+
+
+![tdd-diag-2](./diagrams/tdd-diag-2.svg)
 
 You have built, milestone by milestone, a complete tokenizer. You have character-level scanning infrastructure, maximal munch for multi-character operators, number and identifier scanning, keyword lookup, string literals with escape sequences, and comment filtering. Each piece was tested in isolation: a single `==`, a single number literal, a single unterminated string.
 Now comes the question that separates a working prototype from production-quality software: **does it actually work when all the pieces are in play at the same time, on real input, with errors scattered throughout?**
@@ -2166,6 +2168,8 @@ Here is the assumption almost every developer makes when thinking about error ha
 This model feels principled. It is also nearly useless in practice.
 Consider what happens when you write a program with five bugs and compile it with a tokenizer that stops at the first error. You get one error message. You fix it. Recompile. Another error message. Fix. Repeat five times. Five compile-fix-recompile cycles to discover five errors that all existed simultaneously from the start.
 Now compare that to what Clang or Rust's compiler does: it continues past every error it can recover from, collects all the problems it can find, and reports them all at once. A single compile shows you all five errors. You fix them all in one pass. One cycle.
+
+![tdd-diag-3](./diagrams/tdd-diag-3.svg)
 
 ![Error Recovery: Skip-One-and-Continue vs Halt-on-First](./diagrams/diag-m4-error-recovery-strategy.svg)
 
@@ -2355,7 +2359,6 @@ The key discipline in these tests: **count the lines carefully before asserting 
 ## Error Recovery: Proving the Scanner Collects All Errors
 Now test the behavior that distinguishes a useful scanner from a fragile one.
 
-![Error Recovery: Skip-One-and-Continue vs Halt-on-First](./diagrams/diag-m4-error-recovery-strategy.svg)
 
 ```python
 class TestErrorRecovery(unittest.TestCase):
@@ -2912,7 +2915,6 @@ This is a real production bug class. Position tracking errors are one of the mos
 ---
 ## Formal Boundary: What the Lexer Cannot Do
 
-![Formal Boundary: What Regular Languages Can and Cannot Lex](./diagrams/diag-m4-regular-language-boundary.svg)
 
 Your tokenizer is complete. Before you move on, it is worth understanding precisely what it can and cannot do — not as a limitation, but as a clear picture of where the lexer's responsibility ends and the parser's begins.
 **What regular languages can handle (your lexer):**
@@ -2940,12 +2942,9 @@ Your tokenizer, finished and tested, is a clean, well-bounded component at the f
 <!-- END_MS -->
 
 
-
-
 # TDD
 
 A character-level FSM scanner for a simple C-like language. Each milestone is a self-contained, testable module that adds one layer of lexical recognition. TDD contracts are written in terms of Token structs and exact token streams. Every design decision (maximal munch, non-nesting comments, keyword post-scan lookup) is captured as a diagram and test, not prose.
-
 
 
 <!-- TDD_MOD_ID: tokenizer-m1 -->
@@ -3083,7 +3082,6 @@ class Scanner:
 | `token_start_line` | Frozen snapshot of `line` at the moment `_begin_token()` was called. Stable for the duration of the token scan. |
 | `token_start_column` | Frozen snapshot of `column` at the moment `_begin_token()` was called. |
 | `tokens` | Grows monotonically. Never shrinks. Last element after `scan_tokens()` is always `EOF`. |
-{{DIAGRAM:tdd-diag-2}}
 ---
 ## 4. Interface Contracts
 ### 4.1 `Scanner.is_at_end() -> bool`
@@ -3133,7 +3131,6 @@ def peek(self) -> str:
   2. All character-class checks (`.isdigit()`, `.isalpha()`, `ch in WHITESPACE`, `ch in SINGLE_CHAR_TOKENS`) return `False` for `'\0'`, so no code path will accidentally match on it.
   3. Callers do not need a separate `is_at_end()` guard before calling `peek()`.
 **Complexity:** O(1).
-{{DIAGRAM:tdd-diag-3}}
 ### 4.4 `Scanner._begin_token() -> None`
 ```python
 def _begin_token(self) -> None:

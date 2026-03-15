@@ -150,7 +150,6 @@ The project is complete when:
 A hands-on exploration of Single Instruction Multiple Data (SIMD) programming, building a library of vectorized memory operations, string scanning, and mathematical computations. This project bridges the gap between high-level algorithmic thinking and the raw parallelism available in modern CPUs. You'll learn to think in terms of 128-bit and 256-bit vector registers, where one instruction processes 4, 8, or 16 data elements simultaneously. The journey progresses from fundamental SSE2 memory operations through string scanning with page-boundary safety, to floating-point math with horizontal reductions, culminating in a deep analysis of when hand-written SIMD beats compiler auto-vectorization—and when it doesn't.
 
 
-
 <!-- MS_ID: simd-library-m1 -->
 # SSE2 Basics: memset and memcpy
 
@@ -177,6 +176,8 @@ Each iteration executes:
 - Loop overhead (increment, compare, branch)
 That's **3+ instructions per byte**. For a 1MB buffer, you execute over 3 million instructions.
 
+![Cache Hierarchy: Non-Temporal vs Cached Stores](./diagrams/tdd-diag-m1-07.svg)
+
 ![SIMD memcpy: Data Flow Through Memory Hierarchy](./diagrams/diag-m1-memcpy-data-walk.svg)
 
 With SSE2, you copy 16 bytes per iteration:
@@ -195,6 +196,8 @@ But here's the catch: **memory bandwidth is the same either way**. If your scala
 And there's a second catch: **alignment**.
 ---
 ## The Alignment Constraint: Hardware Reality
+
+![State Machine: Buffer Size Threshold Decision](./diagrams/tdd-diag-m1-09.svg)
 
 > **🔑 Foundation: Memory alignment and alignment attributes**
 > 
@@ -223,6 +226,8 @@ You're likely working with SIMD operations, GPU buffers, or high-performance dat
 **Alignment is a contract between your data and the hardware's expectations.**
 When you see a crash on a load/store instruction with no obvious null pointer, suspect alignment. When your SIMD code runs 3x slower than expected on aligned data, check your struct padding. The hardware doesn't negotiate — it either gets what it wants, or you pay the penalty.
 
+![Memory Layout: Buffer Alignment Scenarios](./diagrams/tdd-diag-m1-04.svg)
+
 Your CPU doesn't read memory one byte at a time. It reads in **cache lines** (64 bytes on modern x86) and operates on **aligned chunks**. An "aligned" address is one that's a multiple of the access size:
 - 16-byte aligned: address % 16 == 0 (ends in 0x0 in hex)
 - 64-byte aligned: address % 64 == 0 (ends in 0x00, 0x40, 0x80, 0xC0)
@@ -235,6 +240,8 @@ __m128i data = _mm_load_si128((__m128i*)ptr);
 ```
 The `_mm_load_si128` intrinsic compiles to the `movdqa` instruction (Move Aligned Double Quadword), which **requires** 16-byte alignment. If `ptr` is 0x1001 (one byte past aligned), your program segfaults.
 The unaligned variant `_mm_loadu_si128` (note the `u`) compiles to `movdqu` and works on any address—but is slower on older CPUs.
+
+![Execution Ports: SIMD Store Instruction Flow](./diagrams/tdd-diag-m1-10.svg)
 
 ![Alignment Handling: Prologue and Epilogue Pattern](./diagrams/diag-m1-alignment-prologue-epilogue.svg)
 
@@ -254,6 +261,8 @@ Epilogue: process remaining 0-15 bytes at the end
 ---
 ## SSE2 Intrinsics: Your First Vector Instructions
 [[EXPLAIN:xmm/ymm-register-file-and-vector-lanes|XMM/YMM register file and vector lanes]]
+
+![Data Flow: SIMD memset](./diagrams/tdd-diag-m1-02.svg)
 
 > **🔑 Foundation: Intrinsics as direct machine instruction mappings**
 > 
@@ -294,6 +303,8 @@ float dot_product(float* a, float* b, int n) {
 Use them when you know something the compiler doesn't: that your data is aligned, that there's no aliasing, that a specific instruction sequence is optimal. But remember: the compiler still outperforms hand-coded intrinsics in most cases. Profile first, intrinsics second.
 Also critical: intrinsics create *portability boundaries*. `_mm_*` intrinsics are x86-only. ARM needs `_mm_*` replaced with `v*` NEON intrinsics. Cross-platform SIMD often requires abstraction layers or libraries like Highway/SIMDjson.
 
+![Algorithm Steps: Alignment Prologue Calculation](./diagrams/tdd-diag-m1-06.svg)
+
 SSE2 (Streaming SIMD Extensions 2) was introduced in 2001 with the Pentium 4. It added:
 - 16 **XMM registers** (`xmm0` through `xmm15` in 64-bit mode)
 - Each register holds **128 bits** (16 bytes, 4 floats, 2 doubles, or 8/16 integers)
@@ -322,6 +333,8 @@ void _mm_stream_si128(__m128i* mem_addr, __m128i a);
 // Create vector from single value (for memset)
 __m128i _mm_set1_epi8(char b);     // Fill all 16 bytes with b
 ```
+
+![Memory Layout: XMM Register (128-bit)](./diagrams/tdd-diag-m1-05.svg)
 
 ![XMM Register: 128-bit Vector Lane Structure](./diagrams/diag-m1-register-view.svg)
 
@@ -477,6 +490,8 @@ void* simd_memcpy(void* dest, const void* src, size_t count) {
 ---
 ## Non-Temporal Stores: Bypassing the Cache
 
+![Module Architecture: SSE2 Memory Operations](./diagrams/tdd-diag-m1-01.svg)
+
 ![Non-Temporal Stores: Cache Hierarchy Impact](./diagrams/diag-m1-cache-hierarchy-impact.svg)
 
 For **large buffers** (larger than L2 cache), standard stores pollute the cache. Every store loads the cache line into L1/L2, evicting potentially useful data.
@@ -533,6 +548,8 @@ void* simd_memset_stream(void* dest, int c, size_t count) {
 Non-temporal stores have a **higher latency** for small buffers. If the data would have stayed in cache anyway, you've just forced it to go all the way to main memory. Always benchmark!
 ---
 ## The Hardware Soul: What's Really Happening
+
+![Data Flow: SIMD memcpy](./diagrams/tdd-diag-m1-03.svg)
 
 ![Hardware Soul: Cache Line Boundaries in SIMD](./diagrams/diag-hardware-soul-cache-lines.svg)
 
@@ -651,6 +668,8 @@ int main(void) {
 }
 ```
 ### Expected Results (and Why)
+
+![Sequence Diagram: Benchmark Execution Flow](./diagrams/tdd-diag-m1-08.svg)
 
 ![Benchmark Results: SIMD vs Scalar vs libc](./diagrams/diag-m1-benchmark-results-template.svg)
 
@@ -787,7 +806,16 @@ You'll learn the **aligned read with masking** technique, which is the foundatio
 <!-- MS_ID: simd-library-m2 -->
 # String Operations: strlen and memchr
 
-![SIMD Optimization Library: System Map](./diagrams/diag-L0-satellite-map.svg)
+![Algorithm Steps: memchr Scalar Epilogue](./diagrams/tdd-diag-m2-12/index.svg)
+
+![1](./diagrams/tdd-diag-m2-12/1.svg)
+
+![2](./diagrams/tdd-diag-m2-12/2.svg)
+
+![3](./diagrams/tdd-diag-m2-12/3.svg)
+
+![4](./diagrams/tdd-diag-m2-12/4.svg)
+
 
 In M1, you copied memory—blindly moving bytes from source to destination without caring about their contents. Now you're going to *search* memory. The difference is profound: copying processes every byte exactly once, but searching stops at an unpredictable location.
 This unpredictability creates a new challenge. When copying, you knew exactly how many bytes to process. When searching for a null terminator or a specific byte, you don't know where the match will be—or even *if* there is a match. Your SIMD code must handle the case where the target byte appears at position 0, position 15, position 4096, or never at all.
@@ -797,7 +825,11 @@ But there's a deeper danger lurking. And it will crash your program.
 Here's what most developers think: "strlen just reads bytes until it finds a null. If the string is valid, the memory is valid, so reading it is safe. SIMD can check 16 bytes at once—just read 16 bytes, compare to zero, repeat."
 **This is dangerously wrong.**
 
+![Data Flow: memchr with Size Limit](./diagrams/tdd-diag-m2-08.svg)
+
 ![Page Boundary Hazard: Why Unaligned Reads Fault](./diagrams/diag-m2-page-boundary-hazard.svg)
+
+![Memory Layout: mmap Test Setup for Page Boundary](./diagrams/tdd-diag-m2-10.svg)
 
 Consider a string starting at address `0x4FFF`. It's 10 bytes long, ending at `0x508`. Perfectly valid memory, right? Your SIMD strlen reads 16 bytes starting at `0x4FFF`—which means accessing bytes from `0x4FFF` to `0x500E`.
 Here's the problem: `0x5000` is a page boundary. Pages are 4096 bytes (4KB), so:
@@ -822,6 +854,8 @@ The CPU's Memory Management Unit (MMU) walks the page table on every memory acce
 - 16-byte aligned means address % 16 == 0
 - 4096 % 16 == 0 (pages are multiples of 16 bytes)
 - Therefore: a 16-byte aligned read stays within one page
+
+![Memory Layout: Page Boundary Hazard](./diagrams/tdd-diag-m2-03.svg)
 
 ![Aligned Read with Byte Masking](./diagrams/diag-m2-aligned-read-masking.svg)
 
@@ -926,6 +960,8 @@ Since `_mm_cmpeq_epi8` produces `0xFF` (binary `11111111`) for matches and `0x00
 - Match → high bit is 1 → corresponding mask bit is 1
 - No match → high bit is 0 → corresponding mask bit is 0
 
+![State Machine: strlen Execution Path](./diagrams/tdd-diag-m2-07.svg)
+
 ![From Comparison to Position: movemask + ctz](./diagrams/diag-m2-movemask-ctz-flow.svg)
 
 Continuing our example:
@@ -990,6 +1026,8 @@ size_t simd_strlen(const char* s) {
     }
 }
 ```
+
+![Algorithm Steps: Mask Shifting for Alignment](./diagrams/tdd-diag-m2-06.svg)
 
 ![SIMD strlen: State Evolution](./diagrams/diag-m2-strlen-state-machine.svg)
 
@@ -1286,7 +1324,8 @@ The SIMD comparison is entirely branch-free at the data level:
 - `__builtin_ctz`: hardware instruction (BSF on x86), no branches
 The only branch is `if (mask != 0)`, which is highly predictable (almost always not-taken until the match is found). This is the beauty of SIMD: **data-dependent logic without branch mispredictions**.
 
-![Hardware Soul: Execution Ports for SIMD Instructions](./diagrams/diag-hardware-soul-execution-ports.svg)
+![Cross-Domain: SIMD in Database Query Processing](./diagrams/diag-cross-domain-database-simd.svg)
+
 
 ### Execution Throughput
 On modern Intel:
@@ -1297,7 +1336,11 @@ The bottleneck is usually memory bandwidth, not instruction throughput. You can 
 ---
 ## Testing: The Edge Cases That Kill
 
+![Execution Ports: SIMD Compare and Movemask](./diagrams/tdd-diag-m2-11.svg)
+
 ![String Length Test Coverage](./diagrams/diag-m2-test-coverage-matrix.svg)
+
+![Test Coverage Matrix: String Lengths and Alignments](./diagrams/tdd-diag-m2-09.svg)
 
 SIMD string functions have more edge cases than scalar ones. You must test:
 ### 1. Length Boundaries
@@ -1594,7 +1637,6 @@ The aligned-read-with-masking pattern from this milestone will return when you i
 <!-- MS_ID: simd-library-m3 -->
 # Math Operations: Dot Product and Matrix Multiply
 
-![SIMD Optimization Library: System Map](./diagrams/diag-L0-satellite-map.svg)
 
 You've learned to copy bytes with SIMD (M1) and to search memory with SIMD (M2). Now you're going to *compute* with SIMD—processing floating-point numbers in parallel to achieve the 2-4× speedups that make SIMD worthwhile for numerical code.
 But here's the uncomfortable truth: most developers who try to write SIMD math code end up with something *slower* than scalar code. Not because SIMD is hard to use, but because they reach for the wrong instructions. The trap has a name: `_mm_hadd_ps`.
@@ -1614,6 +1656,8 @@ Products: [a0*b0, a1*b1, a2*b2, a3*b3]
 Sum:      a0*b0 + a1*b1 + a2*b2 + a3*b3  ← Now we need elements to interact!
 ```
 This is a **horizontal operation**—elements within the same vector must be combined. And here's the hardware reality: **x86 SIMD was designed for vertical operations. Horizontal operations are an afterthought.**
+
+![Cross-Domain: SIMD in Transformer Attention](./diagrams/diag-cross-domain-ml-attention.svg)
 
 ![SIMD Dot Product: Element-wise Multiply Then Reduce](./diagrams/diag-m3-dot-product-data-walk.svg)
 
@@ -1825,7 +1869,6 @@ The CPU's execution units receive these instructions:
 - `shuffleps`: dispatched to shuffle unit on port 5
 Key insight: **multiply and add can execute in parallel** because they use different micro-ops. The CPU's out-of-order engine keeps the pipeline full.
 
-![Hardware Soul: Execution Ports for SIMD Instructions](./diagrams/diag-hardware-soul-execution-ports.svg)
 
 ---
 ## Matrix Multiplication: When Layout Dominates Algorithm
@@ -2217,6 +2260,8 @@ int main(void) {
 ```
 ### Expected Results
 
+![Benchmark Results Template: Scalar vs SSE vs AVX](./diagrams/tdd-diag-m3-13.svg)
+
 ![Benchmark Results: Scalar vs SSE vs AVX](./diagrams/diag-m3-benchmark-speedup-graph.svg)
 
 | Elements | Scalar | SSE | AVX | SSE Speedup | AVX Speedup |
@@ -2393,7 +2438,8 @@ The horizontal reduction pattern you learned here will help you recognize when t
 <!-- MS_ID: simd-library-m4 -->
 # Auto-vectorization Analysis
 
-![SIMD Optimization Library: System Map](./diagrams/diag-L0-satellite-map.svg)
+![system-overview](./diagrams/system-overview.svg)
+
 
 You've spent three milestones writing SIMD code by hand—carefully aligning pointers, orchestrating shuffles, and reasoning about register widths. Now it's time to ask an uncomfortable question: **was any of that necessary?**
 Modern compilers are sophisticated optimization engines. They can transform simple loops into vectorized code automatically, often matching or exceeding hand-written intrinsics. The gap between what compilers *can* do and what they *actually* do is where your expertise lives.
@@ -3247,12 +3293,11 @@ The deeper pattern you've learned—**negotiating with hardware constraints**—
 <!-- END_MS -->
 
 
-
-
 # TDD
 
-A hands-on library implementing vectorized memory operations, string scanning, and floating-point math using SSE2/AVX intrinsics. The library teaches the fundamental patterns of data-parallel computation: alignment handling, page-boundary safety, horizontal reduction optimization, and the critical skill of reading compiler output to know when hand-written SIMD is necessary versus when to trust auto-vectorization.
+![Algorithm Steps: Statistical Calculation](./diagrams/tdd-diag-m4-12.svg)
 
+A hands-on library implementing vectorized memory operations, string scanning, and floating-point math using SSE2/AVX intrinsics. The library teaches the fundamental patterns of data-parallel computation: alignment handling, page-boundary safety, horizontal reduction optimization, and the critical skill of reading compiler output to know when hand-written SIMD is necessary versus when to trust auto-vectorization.
 
 
 <!-- TDD_MOD_ID: simd-library-m1 -->
@@ -4108,7 +4153,6 @@ void* simd_memchr(const void* s, int c, size_t n);
 ### simd_strlen Algorithm
 **Precondition:** `str` is a valid pointer to a null-terminated string.
 **Postcondition:** Returns the count of bytes before the first null terminator.
-{{DIAGRAM:tdd-diag-m2-03}}
 ```
 ALGORITHM simd_strlen(str):
     s ← str
@@ -4819,7 +4863,6 @@ int main() {
 ---
 ## Hardware Soul: Execution Analysis
 ### Cache Line Behavior
-{{DIAGRAM:tdd-diag-m2-06}}
 ```
 SIMD String Scan Memory Access Pattern:
 Cache Line 0 (0x0000-0x003F):
@@ -6255,7 +6298,6 @@ On Skylake and later:
 
 ---
 
-{{DIAGRAM:tdd-diag-m3-13}}
 
 ![Algorithm Steps: 4x4 Matrix Multiply Row Processing](./diagrams/tdd-diag-m3-14.svg)
 
@@ -7700,7 +7742,6 @@ CV < 2% implies:
 - 95% CI width < 64 ns
 - Measurements are reproducible
 ```
-{{DIAGRAM:tdd-diag-m4-12}}
 ---
 ## Analysis Decision Tree
 ```

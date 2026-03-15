@@ -161,7 +161,6 @@ The project is complete when:
 This project implements a complete userspace TCP/IP network stack from the ground up, transforming raw Ethernet frames into reliable, ordered byte streams. You'll build every layer: Ethernet frame parsing with VLAN handling, ARP for MAC resolution, IPv4 with fragmentation reassembly, ICMP for diagnostics, and a full TCP implementation featuring the 3-way handshake, sliding window flow control, adaptive retransmission timers, and congestion control algorithms (slow start, congestion avoidance, fast retransmit/recovery). The stack runs on Linux using TAP devices or raw sockets, giving you direct access to network frames without kernel modifications.
 
 
-
 <!-- MS_ID: build-tcp-stack-m1 -->
 # Ethernet & ARP: Your First Steps into Layer 2
 You're about to build the foundation of a complete TCP/IP stack. Not a simulation. Not a library wrapper. Real packets, real network interfaces, real bytes on the wire that other computers will understand.
@@ -169,7 +168,9 @@ Before we write a single line of code, you need to understand what you're actual
 ## The Hidden World Beneath Your Sockets
 When you call `send()` on a TCP socket, something magical happens — and by magical, I mean invisibly complex. Your data doesn't just "go to the destination." It descends through layers of abstraction, each adding its own envelope, until it becomes electrical pulses on a cable or radio waves in the air.
 
-![TCP/IP Stack Architecture: Satellite View](./diagrams/diag-satellite-stack.svg)
+![TCP/IP Stack Architecture: Satellite View](./diagrams/diag-satellite-stack/index.svg)
+
+![TCP/IP Stack Architecture: Satellite View](./diagrams/tdd-diag-001.svg)
 
 This milestone focuses on **Layer 2** — the Ethernet layer — and the **Address Resolution Protocol (ARP)** that bridges Layer 3 (IP addresses) to Layer 2 (MAC addresses).
 ### The Fundamental Tension: IP Addresses Are Lies
@@ -440,6 +441,8 @@ int eth_parse(const uint8_t *buffer, size_t len,
 That 4-byte VLAN tag isn't just extra parsing complexity — it's how modern datacenters achieve **multi-tenancy**. A single physical network switch can have 4094 virtual LANs, each completely isolated from the others. Your AWS instance is on one VLAN; someone else's is on another. The hardware enforces that frames from VLAN 42 can never reach ports assigned to VLAN 100.
 When you see cloud providers advertising "network isolation," this is often the mechanism. Understanding VLANs isn't just academic — it's how the internet actually works at scale.
 
+![Network vs Host Byte Order Conversion](./diagrams/diag-byte-order-conversion.svg)
+
 ![Ethernet Frame Parsing State Machine](./diagrams/diag-ethernet-parser-state.svg)
 
 ### MAC Address Utilities
@@ -533,6 +536,8 @@ The protocol is beautifully simple:
 4. **The device with IP X responds** directly to you: "IP X is at MAC Z"
 5. **You cache this mapping** in your ARP table
 6. **You can now send Ethernet frames** to that MAC
+
+![ARP Request/Reply Message Flow](./diagrams/tdd-diag-006.svg)
 
 ![ARP Request/Reply Message Flow](./diagrams/diag-arp-request-reply-flow.svg)
 
@@ -1092,6 +1097,8 @@ arp -n | grep 10.0.0.1
 You should see the MAC address you configured (00:11:22:33:44:55 in the example).
 ### Test 4: Wireshark Analysis
 
+![Ethernet Frame Byte Layout](./diagrams/tdd-diag-004.svg)
+
 ![Wireshark Packet Dissection Reference](./diagrams/diag-wireshark-dissection.svg)
 
 Use Wireshark to capture traffic on the TAP interface. Verify:
@@ -1322,6 +1329,8 @@ The IP header is 20-60 bytes. On a 64-byte cache line system:
 For routing table lookups, the destination IP (bytes 16-19) is the key field. In a high-performance router, you'd want to prefetch the routing table entry while checksumming the header.
 ## IP Checksum: The RFC 1071 Algorithm
 The IP header checksum is one of the most elegant error-detection mechanisms in networking. It's simple enough to compute in a few instructions, yet catches most common errors (single-bit flips, adjacent bit errors, most burst errors).
+
+![ICMP Packet Memory Layout](./diagrams/tdd-diag-019.svg)
 
 ![IP Checksum Calculation (RFC 1071)](./diagrams/diag-ip-checksum-algorithm.svg)
 
@@ -1580,6 +1589,8 @@ uint32_t ip_prefix_to_mask(int prefix)
 ```
 ## IP Fragmentation and Reassembly
 Here's where IP gets genuinely complicated. When a packet is too large for the next link's MTU, a router can fragment it into multiple smaller packets. The **destination host** (not the router!) must reassemble these fragments back into the original datagram.
+
+![IP Layer Send Processing Path](./diagrams/diag-ip-send-path.svg)
 
 ![IP Fragmentation and Reassembly](./diagrams/diag-ip-fragmentation-reassembly.svg)
 
@@ -1904,6 +1915,8 @@ This is why **Path MTU Discovery** is critical for TCP performance — it avoids
 When your stack receives a packet destined for another host (forwarding) or needs to send its own packet, it must decide: **which interface and which next-hop address should I use?**
 This is the routing problem, and it's solved by the **routing table** — a data structure that maps destination IP prefixes to next-hop gateways.
 
+![IP Fragmentation and Reassembly](./diagrams/tdd-diag-014.svg)
+
 ![Routing Table with Longest Prefix Match](./diagrams/diag-routing-table-trie.svg)
 
 ### Longest Prefix Match
@@ -2184,6 +2197,8 @@ int icmp_verify_checksum(const void *buffer, size_t len)
 ```
 ### Implementing Ping (Echo Request/Reply)
 
+![IP Checksum Calculation (RFC 1071)](./diagrams/tdd-diag-013.svg)
+
 ![ICMP Echo Request/Reply (Ping) Flow](./diagrams/diag-icmp-ping-flow.svg)
 
 ```c
@@ -2401,7 +2416,6 @@ void icmp_send_dest_unreachable(int tap_fd,
 ## Putting It Together: The IP Layer Handler
 Now let's build the main IP processing function that ties everything together:
 
-![IP Layer Receive Processing Path](./diagrams/diag-ip-receive-path.svg)
 
 ```c
 /**
@@ -2847,6 +2861,8 @@ struct tcp_hdr {
 ### The Pseudo-Header: Breaking Layer Boundaries
 Here's where TCP gets architecturally messy. The TCP checksum doesn't just cover the TCP segment — it covers a **pseudo-header** that includes fields from the IP layer.
 
+![TCP Segment Byte Layout](./diagrams/tdd-diag-022.svg)
+
 > **🔑 Foundation: TCP pseudo-header checksum**
 > 
 > ## TCP Pseudo-Header Checksum
@@ -3152,7 +3168,6 @@ uint16_t tcp_calculate_mss(uint16_t mtu)
 ## The 11-State Machine: Where Theory Meets Reality
 TCP is defined by a state machine with 11 states. Every connection goes through a defined sequence of state transitions, driven by events (segment arrivals, timer expirations, application calls).
 
-![TCP State Machine (RFC 793 Figure 6)](./diagrams/diag-tcp-state-machine.svg)
 
 ### The States
 | State | Description | Who's in it |
@@ -3227,6 +3242,8 @@ uint32_t tcp_generate_isn(uint32_t local_ip, uint16_t local_port,
     return clock_component ^ tuple_hash;
 }
 ```
+
+![Modulo 2^32 Sequence Number Comparison](./diagrams/tdd-diag-026.svg)
 
 ![Initial Sequence Number Generation](./diagrams/diag-isn-generation.svg)
 
@@ -4115,7 +4132,6 @@ for i in {1..10}; do nc 10.0.0.1 80 & done
 Verify all connections are tracked independently and don't interfere.
 ### Test 5: Wireshark Analysis
 
-![Wireshark Packet Dissection Reference](./diagrams/diag-wireshark-dissection.svg)
 
 Use Wireshark to capture and analyze:
 - Verify TCP checksums are correct
@@ -4777,6 +4793,8 @@ int32_t tcp_rtt_stop(struct tcp_rtt_tracker *tracker,
 }
 ```
 ## The Retransmission Timer
+
+![RTT Measurement and RTO Calculation](./diagrams/tdd-diag-038.svg)
 
 ![Retransmission Timer State Machine](./diagrams/diag-retransmission-timer.svg)
 
@@ -5691,12 +5709,9 @@ You've built more than a protocol implementation — you've built the distribute
 ![System Overview](./diagrams/system-overview.svg)
 
 
-
-
 # TDD
 
 A complete userspace TCP/IP network stack implementing Ethernet framing, ARP resolution, IPv4 routing with fragmentation, ICMP diagnostics, and full TCP with 3-way handshake, sliding window flow control, adaptive retransmission, and congestion control. The stack bridges the fundamental tension between software's desire for reliable byte streams and hardware's reality of fixed-size frames, unreliable delivery, and limited buffer space.
-
 
 
 <!-- TDD_MOD_ID: build-tcp-stack-m1 -->
@@ -5924,7 +5939,6 @@ struct tap_device {
     uint16_t mtu;               // Maximum transmission unit
 };
 ```
-{{DIAGRAM:tdd-diag-001}}
 ---
 ## 4. Interface Contracts
 ### 4.1 TAP Device Functions
@@ -6316,7 +6330,6 @@ INPUT: Ethernet header, ARP payload, our MAC, our IP
        tap_write(tap_fd, frame, frame_len)
    END IF
 ```
-{{DIAGRAM:tdd-diag-004}}
 ---
 ## 6. Error Handling Matrix
 | Error | Detection Point | Recovery Action | User-Visible? | State Consistency |
@@ -6657,7 +6670,6 @@ perf stat -r 10000 ./bench_arp_cache
 # Full resolution latency
 ping -c 10 10.0.0.2 | tail -1  # Check RTT as proxy
 ```
-{{DIAGRAM:tdd-diag-006}}
 ---
 ## 10. State Machine (Network Interface)
 ```
@@ -7168,7 +7180,6 @@ struct route_result {
     uint32_t                  src_ip;    // Source IP to use
 };
 ```
-{{DIAGRAM:tdd-diag-013}}
 ### 3.4 ICMP Structures
 ```c
 // include/icmp.h
@@ -7269,7 +7280,6 @@ struct icmp_error {
 #define ICMP_ERROR_HDR_LEN sizeof(struct icmp_error)
 static_assert(ICMP_ERROR_HDR_LEN == 8, "icmp_error size mismatch");
 ```
-{{DIAGRAM:tdd-diag-014}}
 ### 3.5 IP Layer State
 ```c
 // include/ip.h (continued)
@@ -8113,7 +8123,6 @@ for f in frags:
 "
 # Should see reassembly in stack output
 ```
-{{DIAGRAM:tdd-diag-019}}
 ### Phase 5: Routing Table with Longest Prefix Match (3-4 hours)
 **Files:** `include/route.h`, `src/route.c`
 **Implementation Steps:**
@@ -9034,6 +9043,8 @@ struct tcp_parse_result {
 };
 ```
 
+![Timer Wheel for Efficient Retransmission](./diagrams/diag-timer-wheel-structure.svg)
+
 ![TCP State Machine (RFC 793 Figure 6)](./diagrams/tdd-diag-021.svg)
 
 ### 3.2 TCP Options Structures
@@ -9073,7 +9084,6 @@ struct tcp_opts_builder {
     size_t   len;
 };
 ```
-{{DIAGRAM:tdd-diag-022}}
 ### 3.3 TCP State Machine Definitions
 ```c
 // include/tcp_state.h
@@ -9309,6 +9319,8 @@ struct tcp_lookup_result {
     int              is_listen;         // Is this a listening socket?
 };
 ```
+
+![TCP Receiver State Variables](./diagrams/diag-tcp-receive-state-variables.svg)
 
 ![TCP 4-Way Connection Teardown](./diagrams/tdd-diag-025.svg)
 
@@ -9823,7 +9835,6 @@ COMMON ERRORS:
 3. Not converting tcp_len to network byte order
 4. Forgetting to zero checksum field before calculating
 ```
-{{DIAGRAM:tdd-diag-026}}
 ### 5.3 Sequence Number Comparison Algorithm
 ```
 ALGORITHM: SEQ_LT (Less Than)
@@ -11148,6 +11159,8 @@ struct tcp_send_stats {
 };
 ```
 
+![TCP Sender State Variables](./diagrams/diag-tcp-send-state-variables.svg)
+
 ![Sliding Window Protocol Concept](./diagrams/tdd-diag-034.svg)
 
 ### 3.2 Receive Buffer with Out-of-Order Queue
@@ -11386,7 +11399,6 @@ struct tcp_cc_stats {
     uint32_t    min_ssthresh;           // Minimum ssthresh observed
 };
 ```
-{{DIAGRAM:tdd-diag-038}}
 ### 3.6 Complete Connection State Extension
 ```c
 // include/tcp_reliable.h

@@ -156,7 +156,6 @@ The project is structured as four milestones that mirror how real device drivers
 By the end, you'll have a working /dev/ device that multiple processes can open, read, write, poll, and control simultaneously—the same architecture underlying /dev/null, /dev/random, and real hardware drivers.
 
 
-
 <!-- MS_ID: build-kernel-module-m1 -->
 # Milestone 1: Hello World Kernel Module
 ## Before You Write a Single Line
@@ -189,6 +188,8 @@ Kernel modules run *in kernel space*, with full ring 0 privileges. There is no m
 - Why a kernel bug can take down the entire machine, not just one process.
 **Key insight**
 > **Kernel code has no safety net.** In userspace, the kernel protects processes from each other and from themselves. In kernel space, *you* are the kernel — there is nothing below you to catch mistakes. This is why kernel programming demands a different level of discipline than application programming.
+
+![Project Satellite Map: Kernel Module Architecture](./diagrams/diag-L0-satellite-map.svg)
 
 This has a direct consequence you need to feel before you write code:
 ```
@@ -1669,6 +1670,8 @@ static int mydevice_ioctl_resize(unsigned long arg)
 }
 ```
 
+![RESIZE ioctl: Allocate-Copy-Swap-Free State Transitions](./diagrams/tdd-diag-16.svg)
+
 ![Buffer Resize via ioctl: Edge Cases and Data Integrity](./diagrams/diag-m3-ioctl-resize-edge-cases.svg)
 
 The buffer resize implementation hides a critical ordering requirement: **allocate new memory before freeing old memory**. If you freed first and then `kzalloc` failed, you'd have no buffer at all—a kernel module with a null `kernel_buffer` that subsequent reads/writes would crash on. The safe pattern is always: allocate → copy → swap → free old. This is the same principle as the copy-on-write mechanism: never destroy what you have until you have a working replacement.
@@ -2350,6 +2353,8 @@ That model isn't wrong. But in the kernel, it's *incomplete* in three ways that 
 **Problem 3: Wakeup doesn't mean the data is still there.** When multiple readers are waiting for data and a writer adds one item, all readers wake up simultaneously. Only one of them will find data—the rest need to go back to sleep. If you don't recheck the condition after waking up, you have a class of bugs that manifest as data corruption or infinite spinning. The `wait_event_interruptible` macro handles this correctly; understanding *why* it uses a loop is essential for writing any manual wait logic.
 These three problems are the substance of this milestone. By the end, you'll have a driver that handles concurrent access correctly, lets processes sleep without becoming zombies, and integrates with Linux's event notification infrastructure—the same infrastructure that powers nginx, Node.js's event loop, and io_uring.
 
+![system-overview](./diagrams/system-overview.svg)
+
 ![The Corruption: What Happens Without a Mutex](./diagrams/diag-m4-concurrency-problem.svg)
 
 ---
@@ -2704,6 +2709,8 @@ This loop is the skeleton of every event-driven server. nginx, Node.js, Redis—
 With blocking I/O and `O_NONBLOCK` in place, you have a functional driver for most use cases. But there's a third mode: **multiplexed I/O**, where a single thread monitors many file descriptors simultaneously and acts on whichever becomes ready first.
 This is the domain of `select(2)`, `poll(2)`, and `epoll(7)`. These system calls let userspace say: "Tell me when any of these file descriptors have data to read, space to write, or an error to report." They're the foundation of every scalable I/O framework.
 [[EXPLAIN:poll/select-kernel-side-mechanics|poll/select kernel-side mechanics]]
+
+![O_NONBLOCK vs Blocking: Two Personalities of mydevice_read()](./diagrams/tdd-diag-24.svg)
 
 ![.poll Implementation: poll_wait + Mask Return](./diagrams/diag-m4-poll-mechanics.svg)
 
@@ -3671,12 +3678,9 @@ echo "rmmod exit: $?"  # Should be 0
 <!-- END_MS -->
 
 
-
-
 # TDD
 
 A four-milestone progression from bare kernel module to a fully concurrent, poll-capable character device driver. Each module builds directly on the previous: M1 establishes the init/exit scaffold and Kbuild toolchain; M2 adds the VFS dispatch table and kernel-userspace memory boundary; M3 layers ioctl control and /proc introspection; M4 hardens concurrent access with mutex, wait queues, and poll. The architecture mirrors production kernel drivers in drivers/ — goto error unwinding, atomic_t for statistics, mutex for buffer invariants, wait_event_interruptible for blocking I/O, and seq_file for /proc. The final driver is a working pipe-semantics character device exercised by a checksum-verified concurrent stress test.
-
 
 
 <!-- TDD_MOD_ID: build-kernel-module-m1 -->
@@ -5536,7 +5540,6 @@ Note: `proc_create` failure goto is `err_destroy_device` — it triggers `device
 7. pr_info("mydevice: module unloaded\n")
 ```
 **Why `proc_remove` is first:** If a process is mid-read of `/proc/mydevice` when `mydevice_exit` starts, `proc_remove` waits for the reader to finish (the proc infrastructure holds a reference). Only after `proc_remove` returns is it safe to free `kernel_buffer` and unregister the device. Removing the proc entry before the device ensures no new `/proc` readers can start accessing state that's about to be freed.
-{{DIAGRAM:tdd-diag-16}}
 ---
 ## 6. Error Handling Matrix
 | Error | Detected By | Module State After | User-Visible | Recovery |
@@ -6427,6 +6430,8 @@ static int mydevice_ioctl_clear(void);
 6. `pr_info("mydevice: buffer cleared\n");`
 7. Return `0`.
 
+![IOCTL RESIZE Under Mutex: Pre-Alloc Before Lock Pattern](./diagrams/tdd-diag-28.svg)
+
 ![Mutex vs Spinlock Decision: Execution Context Matrix](./diagrams/tdd-diag-20.svg)
 
 ---
@@ -6650,7 +6655,6 @@ Understanding this macro is mandatory for correct usage. It expands to approxima
 }
 ```
 **The condition-between-set-and-sleep ordering:** The `prepare_to_wait` + condition check + `schedule()` sequence is carefully ordered. If `wake_up_interruptible` fires between `prepare_to_wait` and `schedule()`, the task is already in `TASK_INTERRUPTIBLE` state in the wait queue — the wake_up sets it back to `TASK_RUNNING`, and when `schedule()` runs, the scheduler immediately returns (the task is runnable). This prevents the "missed wakeup" bug: data is written, wake_up fires, reader sets INTERRUPTIBLE state, reader checks condition (false because it read stale value), reader calls schedule() and sleeps forever. The kernel's implementation avoids this with memory barriers that guarantee the condition check sees the updated value.
-{{DIAGRAM:tdd-diag-24}}
 ### 5.5 `-ERESTARTSYS` Propagation Chain
 ```
 1. Signal delivered to process P (e.g., SIGINT from Ctrl+C)
@@ -7293,7 +7297,6 @@ echo "rmmod exit: $?"   # Must be 0
 lsmod | grep mydevice   # Must be empty
 dmesg | tail -2 | grep "module unloaded"  # Must appear
 ```
-{{DIAGRAM:tdd-diag-28}}
 ---
 ## 9. Performance Targets
 | Operation | Target | How to Measure |

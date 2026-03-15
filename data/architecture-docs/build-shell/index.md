@@ -212,7 +212,6 @@ The project is complete when:
 This project guides you through building a full-featured POSIX-like shell from scratch, covering the complete journey from lexical analysis to job control. You'll implement process creation (fork/exec), inter-process communication (pipes), terminal control (process groups, tcsetpgrp), signal handling, and a scripting language with variables, conditionals, loops, and functions. Unlike a simple command runner, this shell properly handles concurrent pipelines, background jobs, Ctrl+Z suspension, and nested control structures—all while learning why shells are among the most intricate Unix programs.
 
 
-
 <!-- MS_ID: build-shell-m1 -->
 # Lexer, Parser, and Basic Execution
 ## The Hidden Complexity Behind "Just Run This Command"
@@ -220,7 +219,31 @@ You type `echo "hello world"` and hit Enter. The command runs. Simple, right?
 Now type `echo "hello   world"` (multiple spaces). The output is `hello   world` — the spaces are preserved. But type `echo hello   world` (no quotes) and you get `hello world` — the spaces collapsed. What's happening?
 Here's the uncomfortable truth: **string splitting on spaces is not parsing**. A shell isn't a simple tokenizer that chops input on whitespace. It's a full programming language interpreter with a grammar, state machines for quoting, operator precedence rules, and an abstract syntax tree.
 
-![Shell Architecture Satellite Map](./diagrams/diag-satellite-overview.svg)
+![Shell Architecture Satellite Map](./diagrams/diag-satellite-overview/index.svg)
+
+![control_flow_detail](./diagrams/diag-satellite-overview/control_flow_detail.svg)
+
+![executor_detail](./diagrams/diag-satellite-overview/executor_detail.svg)
+
+![expander_detail](./diagrams/diag-satellite-overview/expander_detail.svg)
+
+![function_detail](./diagrams/diag-satellite-overview/function_detail.svg)
+
+![heredoc_detail](./diagrams/diag-satellite-overview/heredoc_detail.svg)
+
+![job_control_detail](./diagrams/diag-satellite-overview/job_control_detail.svg)
+
+![lexer_detail](./diagrams/diag-satellite-overview/lexer_detail.svg)
+
+![logical_detail](./diagrams/diag-satellite-overview/logical_detail.svg)
+
+![parser_detail](./diagrams/diag-satellite-overview/parser_detail.svg)
+
+![signal_detail](./diagrams/diag-satellite-overview/signal_detail.svg)
+
+![subshell_detail](./diagrams/diag-satellite-overview/subshell_detail.svg)
+
+![terminal_detail](./diagrams/diag-satellite-overview/terminal_detail.svg)
 
 This milestone builds the foundation of your shell: a lexer that tokenizes input with proper quote and escape handling, a parser that constructs an Abstract Syntax Tree (AST), and an executor that runs commands from that AST. By the end, you'll understand why shells are among the most intricate Unix programs — and you'll have built one from scratch.
 ---
@@ -531,6 +554,8 @@ But what does this *mean*? You can't execute it directly. You need to know:
 - The `> out.txt` redirects the output of `grep` (the last command in the pipeline)
 - The `&` makes the entire thing run in the background
 
+![AST for 'ls -la | grep foo > out.txt &'](./diagrams/tdd-diag-m1-05.svg)
+
 ![AST for 'ls -la | grep foo > out.txt &'](./diagrams/diag-m1-ast-example.svg)
 
 ### AST Node Types
@@ -573,6 +598,8 @@ typedef struct ASTNode {
     } data;
 } ASTNode;
 ```
+
+![AST Node Hierarchy](./diagrams/tdd-diag-m1-06.svg)
 
 ![AST Node Hierarchy](./diagrams/diag-m1-ast-structure.svg)
 
@@ -731,6 +758,8 @@ static void parser_error(Parser* p, const char* message) {
 }
 ```
 
+![Parser Error Recovery Flow](./diagrams/tdd-diag-m1-07.svg)
+
 ![Parser Error Recovery Flow](./diagrams/diag-m1-parser-error-flow.svg)
 
 ---
@@ -781,6 +810,8 @@ If you're building anything that spawns processes — a shell, a test runner, a 
 ## Key Mental Model
 Think of `fork()` as photocopying a running program. The child is a perfect copy standing at the same line of code. `exec()` is then erasing that photocopy and drawing something new on the same paper. If the erasure fails, you need to throw away the photocopy carefully (`_exit()`) — don't smudge ink on the original.
 
+
+![fork/exec/wait Process Lifecycle](./diagrams/tdd-diag-m1-08.svg)
 
 ![fork/exec/wait Process Lifecycle](./diagrams/diag-m1-fork-exec-wait.svg)
 
@@ -873,6 +904,8 @@ Imagine if `cd` were an external program:
 3. Child calls `chdir("/some/directory")` — this changes *the child's* current directory
 4. Child exits
 5. Parent (shell) continues — its current directory is unchanged!
+
+![Why cd Must Be a Builtin](./diagrams/tdd-diag-m1-09.svg)
 
 ![Why cd Must Be a Builtin](./diagrams/diag-m1-builtin-why.svg)
 
@@ -1096,6 +1129,8 @@ int execute_ast(ASTNode* node) {
 ## Memory Layout and Ownership
 Understanding who owns what memory is critical for avoiding leaks and use-after-free bugs:
 
+![Shell Process Memory Layout](./diagrams/tdd-diag-m1-10.svg)
+
 ![Shell Process Memory Layout](./diagrams/diag-memory-layout-overview.svg)
 
 | Data | Who Allocates | Who Frees | Lifetime |
@@ -1250,6 +1285,8 @@ But it terminates instantly, printing a single "y". Why?
 4. Only *then* waits for the pipeline to complete
 When `head -1` reads one line and exits, it closes its stdin. The pipe's read end closes. `yes` tries to write to a pipe with no reader and receives **SIGPIPE** — the kernel's way of saying "nobody's listening." `yes` dies, the pipeline completes.
 
+![Concurrent Pipeline Execution](./diagrams/tdd-diag-m2-01.svg)
+
 ![Concurrent Pipeline Execution](./diagrams/diag-m2-pipeline-concurrent.svg)
 
 This concurrent execution model is why Unix pipes are so powerful. They enable **dataflow programming** — programs as transformers in a streaming pipeline, not batch processors. Each program can start producing output before seeing all its input, enabling processing of datasets larger than memory.
@@ -1266,6 +1303,8 @@ For a pipeline `cmd1 | cmd2`, you need:
 - `cmd1`'s stdout (fd 1) → pipe's write end
 - `cmd2`'s stdin (fd 0) → pipe's read end
 - All other pipe fds closed in both processes
+
+![File Descriptor Table During Pipeline Setup](./diagrams/tdd-diag-m2-02.svg)
 
 ![File Descriptor Table During Pipeline Setup](./diagrams/diag-m2-pipe-fd-table.svg)
 
@@ -1372,6 +1411,8 @@ int execute_pipeline(ASTNode* node) {
 ```
 ### The SIGPIPE Signal: Backpressure in Action
 When a process writes to a pipe whose read end is closed, the kernel sends **SIGPIPE** to the writer. This is Unix's elegant solution to the "producer-consumer with bounded buffer" problem.
+
+![Pipeline Data Flow for 'cmd1 | cmd2 | cmd3'](./diagrams/tdd-diag-m2-09.svg)
 
 ![SIGPIPE in Pipelines](./diagrams/diag-m2-sigpipe-flow.svg)
 
@@ -1833,6 +1874,8 @@ Glob patterns match filenames:
 - `?` matches any single character
 - `[abc]` matches any character in the set
 - `[!abc]` matches any character NOT in the set
+
+![Command Substitution as Recursive Shell Invocation](./diagrams/tdd-diag-m2-07.svg)
 
 ![Glob Pattern Matching State Machine](./diagrams/diag-m2-glob-state-machine.svg)
 
@@ -2361,6 +2404,8 @@ tcsetpgrp(STDIN_FILENO, pgid);
 ## Key Insight
 **The terminal sends signals to groups, not processes.** When you press Ctrl+C, the terminal driver sends `SIGINT` to *every process in the foreground process group*. This is why `cat file | grep pattern` terminates completely when you interrupt it — both processes share the same PGID and receive the signal simultaneously.
 
+![Signal Blocking Critical Section](./diagrams/tdd-diag-m3-10.svg)
+
 ### The Shell's Process Group Architecture
 Your shell itself runs in its own process group. Each job (pipeline, simple command, or compound command) runs in a **separate process group**.
 
@@ -2717,6 +2762,8 @@ The kernel sends SIGCHLD to the parent whenever a child:
 - Resumes (SIGCONT)
 ### The Looping waitpid Pattern
 **Critical**: Multiple children may exit during a single signal handler invocation. You MUST loop until `waitpid()` returns 0 or error.
+
+![Self-Pipe Trick Architecture](./diagrams/tdd-diag-m3-09.svg)
 
 ![SIGCHLD Handler Structure](./diagrams/diag-m3-sigchld-handler.svg)
 
@@ -3586,6 +3633,8 @@ typedef struct ASTWhile {
 } ASTWhile;
 ```
 
+![if Statement AST and Evaluation](./diagrams/tdd-diag-m4-03.svg)
+
 ![while Loop AST and Execution](./diagrams/diag-m4-while-loop-ast.svg)
 
 ### Parsing `while` and `until`
@@ -4065,6 +4114,8 @@ void restore_local_vars(void) {
 ## Part 6: Script Execution — Files as Programs
 ### The Script Execution Flow
 
+![Script File Execution Flow](./diagrams/tdd-diag-m4-10.svg)
+
 ![Script File Execution Flow](./diagrams/diag-m4-script-execution.svg)
 
 When you run `./script.sh` or `sh script.sh`, the shell:
@@ -4436,6 +4487,8 @@ You write `(cd /tmp && tar czf archive.tar.gz *)` expecting to create an archive
 Now you write `{ cd /tmp && tar czf archive.tar.gz *; }` expecting the same behavior. The archive gets created. But now you're *in* `/tmp`. Your shell's working directory changed.
 Same commands. Same `&&`. Same everything visible. But `( )` and `{ }` are not just different bracket styles. They represent a **fundamental boundary in Unix process model** — the fork boundary.
 
+![system-overview](./diagrams/system-overview.svg)
+
 ![Subshell vs Brace Group: The Fork Boundary](./diagrams/diag-m5-subshell-vs-brace.svg)
 
 The parentheses `()` create a **subshell** — a forked child process that inherits everything but can modify nothing of the parent. The braces `{ }` execute in the **current shell** — every change persists.
@@ -4464,6 +4517,8 @@ A subshell provides these isolation guarantees:
 | **What IS shared** | | |
 | Open file offsets | **Yes** | Kernel file structures are shared |
 | Exit status of subshell | **Yes** | Parent receives via `waitpid()` |
+
+![Subshell vs Brace Group: The Fork Boundary](./diagrams/tdd-diag-m5-01.svg)
 
 ![Subshell Implementation Details](./diagrams/diag-m5-subshell-implementation.svg)
 
@@ -4623,7 +4678,7 @@ The `&&` and `||` operators implement **short-circuit evaluation** based on exit
 - `cmd1 && cmd2`: Execute `cmd2` only if `cmd1` exits 0 (success)
 - `cmd1 || cmd2`: Execute `cmd2` only if `cmd1` exits non-zero (failure)
 This is **McCarthy evaluation** — the same principle behind `?:` in C, `&&`/`||` in JavaScript, and `and`/`or` in Python. The right side may never execute.
-{{DIAGRAM:diag-m5-logical-operators-precedence}}
+![diag-m5-logical-operators-precedence](./diagrams/diag-m5-logical-operators-precedence.svg)
 ### Operator Precedence: The Subtle Trap
 `&&` and `||` have **equal precedence** and are **left-associative**. This is different from most programming languages:
 ```bash
@@ -4739,6 +4794,7 @@ EOF
 A naive approach would be: parse the here-document, expand variables, create a temporary file, write content, redirect stdin to the file, then execute.
 **This is wrong.** It has race conditions (what if another process accesses the temp file?), cleanup issues (what if the command never runs?), and security problems (content might be visible in /tmp).
 The correct implementation uses **pipes** — just like command pipelines.
+
 
 ![Here-Document Implementation](./diagrams/diag-m5-heredoc-implementation.svg)
 
@@ -5465,12 +5521,11 @@ The patterns you've learned — AST walkers, signal safety, file descriptor mani
 <!-- END_MS -->
 
 
-
-
 # TDD
 
-A complete POSIX-like shell interpreter built from scratch, implementing the full pipeline from lexical analysis to job control. The shell serves as both a command executor and a scripting language interpreter, handling process lifecycle management through fork/exec, inter-process communication via Unix pipes, signal-based job control using process groups and tcsetpgrp(), and comprehensive shell scripting features including variables, conditionals, loops, command substitution, and subshell execution. This project teaches the deepest levels of Unix systems programming: the fork boundary, async-signal-safe code, terminal control transfer, and the exit-status-as-boolean philosophy that underlies all Unix composition.
+![Complete Shell Data Flow](./diagrams/diag-complete-data-flow.svg)
 
+A complete POSIX-like shell interpreter built from scratch, implementing the full pipeline from lexical analysis to job control. The shell serves as both a command executor and a scripting language interpreter, handling process lifecycle management through fork/exec, inter-process communication via Unix pipes, signal-based job control using process groups and tcsetpgrp(), and comprehensive shell scripting features including variables, conditionals, loops, command substitution, and subshell execution. This project teaches the deepest levels of Unix systems programming: the fork boundary, async-signal-safe code, terminal control transfer, and the exit-status-as-boolean philosophy that underlies all Unix composition.
 
 
 <!-- TDD_MOD_ID: build-shell-m1 -->
@@ -7047,7 +7102,6 @@ typedef struct {
 **Total struct size:** 24 bytes  
 **Heap allocations:** pipes array (16 bytes), pids array (12 bytes)
 **Cache Line Analysis:** Struct fits in single cache line. Pipe array access is sequential (prefetch-friendly). Pids array accessed once during wait loop.
-{{DIAGRAM:tdd-diag-m2-01}}
 ### 3.2 Expansion Context Structure
 ```c
 // 19_expand.h
@@ -7398,7 +7452,6 @@ ALGORITHM setup_child_pipes(child_idx, num_cmds, pipes):
    CRITICAL: Failure to close causes readers to hang forever!
 END ALGORITHM
 ```
-{{DIAGRAM:tdd-diag-m2-02}}
 ### 5.2 Redirection Application Algorithm
 ```
 ALGORITHM apply_redirects(redirects):
@@ -7466,6 +7519,8 @@ cmd 2>&1 > file
   Step 2: > file    → fd 1 points to file
   Result: stderr to terminal, stdout to file
 ```
+
+![Here-Document Variable Expansion Modes](./diagrams/tdd-diag-m5-05.svg)
 
 ![SIGPIPE in Pipelines](./diagrams/tdd-diag-m2-03.svg)
 
@@ -8306,11 +8361,9 @@ sigprocmask(SIG_SETMASK, &oldmask, NULL);
 ```
 ---
 ## 11. Diagrams Reference
-{{DIAGRAM:tdd-diag-m2-07}}
 
 ![Glob Pattern Matching State Machine](./diagrams/tdd-diag-m2-08.svg)
 
-{{DIAGRAM:tdd-diag-m2-09}}
 
 ![Expansion Memory Ownership](./diagrams/tdd-diag-m2-10.svg)
 
@@ -8418,6 +8471,8 @@ typedef struct Job {
 | (padding) | - | 0x33 | 5 | Alignment padding |
 **Total size:** 56 bytes (fits in 1 cache line with 8 bytes to spare)
 **Cache Line Analysis:** The entire Job struct fits in a single 64-byte cache line. Sequential traversal of the job list has good locality since the `next` pointer is in the same cache line as frequently accessed fields (`state`, `is_foreground`).
+
+![Subshell Memory Cost Analysis](./diagrams/tdd-diag-m5-08.svg)
 
 ![Process Groups and Terminal Control](./diagrams/tdd-diag-m3-01.svg)
 
@@ -9998,6 +10053,8 @@ typedef struct {
 **Total size:** 24 bytes (fits in 1 cache line with 40 bytes to spare)
 **Design Note:** `elif` chains are represented as nested `if` in `else_body`. This eliminates the need for a separate `elif` list structure and simplifies execution.
 
+![Shell Complete Architecture](./diagrams/tdd-diag-m5-10.svg)
+
 ![Exit Status as Boolean Semantics](./diagrams/tdd-diag-m4-01.svg)
 
 ### 3.3 While/Until Loop Structure
@@ -10610,7 +10667,6 @@ execute_if(outer_if)
       return 0
   return 0
 ```
-{{DIAGRAM:tdd-diag-m4-03}}
 ### 5.2 While/Until Loop Execution Algorithm
 ```
 ALGORITHM execute_while(node, state):
@@ -11560,7 +11616,6 @@ time ./shell large_script.sh
 
 ![Function Definition and Dispatch](./diagrams/tdd-diag-m4-09.svg)
 
-{{DIAGRAM:tdd-diag-m4-10}}
 ---
 ]
 <!-- END_TDD_MOD -->
@@ -11677,7 +11732,6 @@ typedef struct HereDoc {
 | next | `HereDoc*` | 0x20 | 8 | Next in chain |
 **Total size:** 40 bytes
 **Cache Line Analysis:** Struct fits in 1 cache line (64 bytes). The `content` field typically points to a larger buffer that lives separately.
-{{DIAGRAM:tdd-diag-m5-01}}
 ### 3.4 Shell Options Structure
 ```c
 // 60_shell_options.h
@@ -11758,6 +11812,8 @@ typedef enum {
     TOK_OR_IF,           // ||
 } TokenType;
 ```
+
+![Logical Operators Precedence and Associativity](./diagrams/tdd-diag-m5-03.svg)
 
 ![Subshell Implementation Details](./diagrams/tdd-diag-m5-02.svg)
 
@@ -12073,7 +12129,6 @@ int parse_heredoc(Parser* p, ASTNode* cmd_node);
  */
 int read_heredoc_content(Parser* p, HereDoc* hd);
 ```
-{{DIAGRAM:tdd-diag-m5-03}}
 ---
 ## 5. Algorithm Specification
 ### 5.1 Subshell Execution Algorithm
@@ -12124,6 +12179,8 @@ ALGORITHM execute_brace_group(node, state):
 END ALGORITHM
 ```
 **That's it.** The brace group is purely a parsing construct. The executor simply runs the child.
+
+![Complete Executor Switch](./diagrams/tdd-diag-m5-09.svg)
 
 ![Here-Document Implementation](./diagrams/tdd-diag-m5-04.svg)
 
@@ -12194,7 +12251,6 @@ true && false || echo "reached"
 #   2. 1 || echo → execute echo
 #   Output: "reached"
 ```
-{{DIAGRAM:tdd-diag-m5-05}}
 ### 5.6 Here-Document Parsing Algorithm
 ```
 ALGORITHM parse_heredoc(p, cmd_node):
@@ -12820,7 +12876,6 @@ time ./shell -c 'set -x; for i in $(seq 100); do echo $i; done' 2>/dev/null
 ```
 ---
 ## 10. State Machine: Fork Boundary
-{{DIAGRAM:tdd-diag-m5-08}}
 **States:**
 - `PARENT`: Original shell process
 - `CHILD`: Forked subshell process

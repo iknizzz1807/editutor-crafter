@@ -167,7 +167,6 @@ Build a scalar-valued autograd engine that implements reverse-mode automatic dif
 The culmination is a fully functional multi-layer perceptron trained on real data. By building the training loop, loss function, and SGD optimizer yourself, you gain intimate knowledge of how neural networks actually learn. This isn't about using ML frameworks—it's about understanding what those frameworks are doing, line by line, so you can debug them, extend them, and reason about their behavior when something goes wrong.
 
 
-
 <!-- MS_ID: neural-network-basic-m1 -->
 # Value Class with Autograd
 ## The Hidden Magic Behind Every Neural Network
@@ -194,6 +193,8 @@ class Value:
 Every `Value` wraps a single floating-point number. But unlike a plain float, it carries metadata about its origin. If you compute `c = a + b`, the new `Value` `c` remembers: "I came from `a` and `b`, and I was created by addition."
 
 ![Value Object Anatomy](./diagrams/diag-value-anatomy.svg)
+
+![Addition Backward Derivation](./diagrams/tdd-diag-006.svg)
 
 ## The Operator Overloading Revelation
 
@@ -235,6 +236,8 @@ This means `a * b` could mean:
 - Graph node creation with multiplication semantics (autograd)
 - String repetition (`"ha" * 3 = "hahaha"`)
 The power—and danger—is that the syntax implies nothing about performance or side effects. `a + b` could trigger a network call or allocate gigabytes of memory. Use this power deliberately; overload operators to mean what users *expect* them to mean.
+
+![Division via Power Composition](./diagrams/tdd-diag-009.svg)
 
 When you write `a + b` in Python, the interpreter checks if `a` has an `__add__` method. If it does, Python calls `a.__add__(b)` and returns whatever that method produces. This isn't syntax sugar—it's a fundamental mechanism that lets objects define their own arithmetic behavior.
 Here's the key insight: **the return value of `__add__` doesn't have to be a number**. It can be *any object*. We'll return a new `Value` that wraps the sum while secretly recording the relationship.
@@ -313,6 +316,8 @@ for node in reversed(tape):
 ```
 The graph exists *because* the forward pass built it. This is why autograd systems track operations—you're constructing a roadmap that makes the return journey possible.
 
+![Value Class Complete Architecture](./diagrams/tdd-diag-010.svg)
+
 ### Multiplication and the Chain Rule
 Addition has the simplest derivative: both inputs get gradient 1. Multiplication is more interesting because the derivative depends on the *other* operand.
 $$\frac{\partial(ab)}{\partial a} = b, \quad \frac{\partial(ab)}{\partial b} = a$$
@@ -329,6 +334,8 @@ def __mul__(self, other):
     return out
 ```
 **Critical detail**: Notice we use `other.data` and `self.data` in the backward pass, not `other.grad` or `self.grad`. The local derivative for multiplication is the *value* of the sibling, not its gradient. This trips up many first implementations.
+
+![Multiplication Backward Derivation](./diagrams/tdd-diag-007.svg)
 
 ![Operator Overload Execution Flow](./diagrams/diag-operator-overload-flow.svg)
 
@@ -388,6 +395,8 @@ def __rtruediv__(self, other):
     return other * self**(-1)  # Rewrite as: other * (self^-1)
 ```
 The reflected operators let our `Value` class work naturally with Python's numeric types on either side of the operator.
+
+![Reverse Operator Dispatch](./diagrams/tdd-diag-005.svg)
 
 ![Reverse Operator Dispatch](./diagrams/diag-reverse-operators.svg)
 
@@ -489,6 +498,8 @@ f = a * b + a * b  # Same value used multiple times
 print(f._prev)  # Two Value objects (results of both multiplications)
 ```
 
+![Power Backward Derivation](./diagrams/tdd-diag-008.svg)
+
 ![micrograd System Architecture](./diagrams/diag-satellite-system.svg)
 
 ## What's Really Happening: A Trace Example
@@ -520,6 +531,8 @@ The closure approach has elegant properties:
 2. **The closure captures the necessary context** — the `_backward` for multiplication "remembers" `self.data` and `other.data` at forward-pass time, which are needed for the derivative.
 3. **No global switch statements** — we don't need a central function that checks `_op` and dispatches. The polymorphism is built into each node.
 This is the same pattern PyTorch uses internally. Each operation registers its backward function (called `grad_fn` in PyTorch), and the autograd engine simply calls them in the right order.
+
+![Gradient Accumulation Problem](./diagrams/tdd-diag-004.svg)
 
 ![Local Derivative Computation Per Operation](./diagrams/diag-backward-derivatives.svg)
 
@@ -995,6 +1008,8 @@ check_gradient(test_expr, [2.0, 3.0, 4.0])
 #   dL/db = 2 * 10 * 2 = 40
 #   dL/dc = 2 * 10 * 1 = 20
 ```
+
+![Gradient Verification Workflow](./diagrams/tdd-diag-017.svg)
 
 ![Numerical Gradient Verification](./diagrams/diag-numerical-gradient.svg)
 
@@ -2209,7 +2224,7 @@ print(f"Generated {len(X)} data points")
 print(f"First 3 points: {X[:3]}")
 print(f"First 3 labels: {Y[:3]}")
 ```
-{{DIAGRAM:diag-moon-dataset}}
+![diag-moon-dataset](./diagrams/diag-moon-dataset.svg)
 ### Training on Moons
 ```python
 # Create a larger network for this more complex task
@@ -2457,6 +2472,7 @@ if __name__ == "__main__":
     print("\n✅ Training converged successfully!")
 ```
 
+
 ![Complete Computational Graph for Training](./diagrams/diag-full-graph-visualization.svg)
 
 ---
@@ -2679,15 +2695,14 @@ This isn't magic. It's five lines in a loop. You built it yourself.
 
 ## System Overview
 
+![Training Loop Sequence](./diagrams/tdd-diag-036.svg)
+
 ![System Overview](./diagrams/system-overview.svg)
-
-
 
 
 # TDD
 
 Build a scalar-valued autograd engine implementing reverse-mode automatic differentiation through dynamic computational graph construction. The system strips away PyTorch/TensorFlow abstractions to reveal the elegant core: operator overloading traces operations, topological sorting orders gradient computation, and the chain rule mechanically applies backward through arbitrary computation graphs. Culminates in a fully functional multi-layer perceptron trained on real data with hand-built training loop, loss function, and SGD optimizer.
-
 
 
 <!-- TDD_MOD_ID: neural-network-basic-m1 -->
@@ -4645,6 +4660,8 @@ class Value:
 ![Topological Sort DFS Process](./diagrams/tdd-diag-011.svg)
 
 
+![Zero Grad Necessity](./diagrams/tdd-diag-030.svg)
+
 ![Backward Pass Gradient Flow](./diagrams/tdd-diag-012.svg)
 
 
@@ -4659,7 +4676,7 @@ class Value:
 
 ![Numerical Gradient Approximation](./diagrams/tdd-diag-016.svg)
 
-{{DIAGRAM:tdd-diag-017}}
+![Gradient Verification Workflow](./diagrams/tdd-diag-017.svg)
 
 ![Double-Backward Accumulation Bug](./diagrams/tdd-diag-018.svg)
 
@@ -6953,7 +6970,6 @@ def train(network, X, Y, epochs=1000, learning_rate=0.1, print_every=100):
 
 ![Training Loop Data Flow](./diagrams/tdd-diag-029.svg)
 
-{{DIAGRAM:tdd-diag-030}}
 
 ![Learning Rate Effects](./diagrams/tdd-diag-031.svg)
 
@@ -6969,7 +6985,6 @@ def train(network, X, Y, epochs=1000, learning_rate=0.1, print_every=100):
 
 ![Complete Computational Graph for Training](./diagrams/tdd-diag-035.svg)
 
-{{DIAGRAM:tdd-diag-036}}
 ---
 [[CRITERIA_JSON: {"module_id": "neural-network-basic-m4", "criteria": ["MSE loss function correctly computes mean of (prediction - target)² over all training examples, returning a Value object connected to the computational graph", "MSE loss gradient is correctly computed as ∂L/∂ŷᵢ = -2(yᵢ - ŷᵢ)/N, verified by backward pass populating prediction gradients", "SGD optimizer class implements zero_grad() method that resets all parameter gradients to 0.0", "SGD optimizer class implements step() method that updates parameters via p.data -= learning_rate * p.grad without adding to computational graph", "Training loop executes correct sequence: forward pass → compute loss → zero_grad() → backward() → step() for each epoch", "XOR dataset (4 samples: [0,0]→0, [0,1]→1, [1,0]→1, [1,1]→0) is successfully learned with final loss below 0.01", "Loss decreases monotonically on average over 100+ epochs, demonstrating successful gradient descent", "Loss history list has one entry per epoch, enabling convergence visualization", "Learning rate is appropriately tuned (0.01-0.5 range) to achieve stable convergence without oscillation or divergence", "Parameter updates mutate p.data directly (not through Value operations) to avoid memory leaks from growing computational graphs", "Gradients are zeroed before each backward pass via optimizer.zero_grad() to prevent accumulation across epochs", "Final predictions on training data match targets within tolerance (< 0.15 error per sample for XOR)", "Training completes in under 30 seconds for XOR with 2000 epochs on standard hardware"]}]
 <!-- END_TDD_MOD -->

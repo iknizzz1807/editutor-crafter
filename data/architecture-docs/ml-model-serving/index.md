@@ -307,7 +307,6 @@ Build a production-grade model inference service that transforms a trained ML mo
 You'll implement dynamic request batching that groups individual inference requests to maximize GPU utilization, multi-version model deployment with zero-downtime hot swapping, statistically rigorous A/B testing infrastructure, and real-time monitoring with drift detection to catch model degradation before it impacts users. These are the systems that power recommendation engines, fraud detection, and content moderation at companies like Netflix, Stripe, and Meta.
 
 
-
 <!-- MS_ID: ml-model-serving-m1 -->
 # Model Loading, Inference & Serialization
 ## The Hidden Complexity of "Just Loading a Model"
@@ -319,6 +318,8 @@ app.run()  # Ship it!
 ```
 This works. For about thirty seconds in production.
 Then reality arrives: the first request takes 800ms instead of 50ms because CUDA kernels weren't compiled. Your GPU runs out of memory because you didn't check available VRAM before loading. BatchNorm layers behave erratically because the model is still in training mode. Kubernetes kills your pod because the health check times out during model loading. And that 50ms latency target? It's actually 120ms because you forgot `torch.no_grad()` and PyTorch is silently building computation graphs you'll never use.
+
+![FastAPI Lifespan Handler Sequence](./diagrams/tdd-diag-007.svg)
 
 ![Model Loading Lifecycle](./diagrams/diag-m1-model-loader-flow.svg)
 
@@ -340,6 +341,8 @@ This tension explains everything that follows:
 ---
 ## Phase 1: Device Detection and Memory Budgeting
 ### The Three-Level View of GPU Memory
+
+![Tensor Shape Validation Flow](./diagrams/tdd-diag-004.svg)
 
 > **🔑 Foundation: GPU memory model and CUDA context**
 > 
@@ -368,6 +371,8 @@ Understanding this model is essential for:
 On a CPU, caches are automatic—you just access memory, and hardware figures out caching. On a GPU, you must *explicitly* manage the fast memory (shared memory). The hardware gives you the tools, but you're responsible for using them.
 **The mental model**: Global memory is like a warehouse (huge, slow to traverse). Shared memory is like your workbench (small, but everything's within arm's reach). An efficient GPU kernel is one that loads data from the warehouse to the workbench, does as much work as possible, then writes results back—minimizing warehouse trips.
 **Practical rule of thumb**: If you're reading the same global memory location more than once within a thread block, you should probably load it into shared memory first. This pattern—load once, reuse many times—is the core of GPU memory optimization.
+
+![InputSchema and Validator Architecture](./diagrams/tdd-diag-008.svg)
 
 Before loading anything, you must answer: *where will this model live, and will it fit?*
 ```python
@@ -520,6 +525,8 @@ def predict_fast(model, inputs):
 ---
 ## Phase 3: CUDA Warmup — The 500ms Tax
 
+![GPU Memory Budget Allocation](./diagrams/tdd-diag-002.svg)
+
 ![CUDA Kernel Caching: Before and After Warmup](./diagrams/diag-m1-cuda-warmup.svg)
 
 ### What Actually Happens on First Inference
@@ -633,7 +640,11 @@ Output:
 ```
 **89ms to serialize.** Your model inference was 40ms. Serialization just doubled your latency.
 
+![CUDA Warmup Effect on Latency](./diagrams/tdd-diag-003.svg)
+
 ![JSON Serialization Performance: stdlib vs orjson](./diagrams/diag-m1-serialization-benchmark.svg)
+
+![Serialization Benchmark Comparison](./diagrams/tdd-diag-005.svg)
 
 ### The orjson Solution
 `orjson` is a Rust-based JSON library that's 5-10x faster for array-like data:
@@ -903,12 +914,16 @@ async def predict_endpoint(request: Request) -> Response:
         raise HTTPException(status_code=500, detail=f"Inference error: {e}")
 ```
 
+![Model Loading Lifecycle State Machine](./diagrams/tdd-diag-001.svg)
+
 ![Tensor Shape Validation Flow](./diagrams/diag-m1-tensor-shapes.svg)
 
 ---
 ## Phase 6: Health Probes — Readiness vs. Liveness
 
 ![Readiness vs Liveness Probes](./diagrams/diag-m1-health-probes.svg)
+
+![Health Probe Response Logic](./diagrams/tdd-diag-006.svg)
 
 Kubernetes (and other orchestrators) distinguish two types of health:
 | Probe Type | Question It Answers | Failure Behavior |
@@ -3134,6 +3149,8 @@ class HotSwapManager:
 ### The API Contract Problem
 Models have input/output schemas just like APIs have request/response types. A breaking schema change—like changing output dimension from 768 to 512—breaks downstream consumers.
 
+![Hot Swap Sequence](./diagrams/tdd-diag-019.svg)
+
 ![Schema Compatibility Validation](./diagrams/diag-m3-schema-compatibility.svg)
 
 ```python
@@ -3961,6 +3978,8 @@ Every A/B testing system faces a core constraint:
 3. **Risk exposure**: A bad model can damage user experience during the experiment
 4. **Confounding variables**: Multiple simultaneous changes make results uninterpretable
 
+![Experiment Log Structure](./diagrams/tdd-diag-033.svg)
+
 ![Sample Size and Statistical Significance](./diagrams/diag-m4-statistical-significance.svg)
 
 The sample size constraint is brutal. Let's do the math:
@@ -4003,6 +4022,8 @@ Deterministic routing via hashing guarantees that user `alice_123` ALWAYS routes
 Simple modulo: "You're at table `hash(name) % table_count`." When you add a table, everyone's seat changes.
 Consistent hashing: "You're at the first table clockwise from your position on this circular map." Adding a table only affects people who now fall into that table's section.
 For traffic splitting, we use the simpler "percentile bucket" approach: the hash tells you your percentile, and the traffic weights tell you which percentile ranges map to which models.
+
+![Consistent Hashing for Routing](./diagrams/tdd-diag-027.svg)
 
 ![Consistent Hashing for Deterministic Routing](./diagrams/diag-m4-consistent-hashing.svg)
 
@@ -4181,6 +4202,8 @@ The principle is universal: **deterministic mapping from entity to destination.*
 ---
 ## Phase 2: Runtime Weight Adjustment
 ### The Canary Rollout Controller
+
+![Traffic Splitter Architecture](./diagrams/tdd-diag-026.svg)
 
 ![Gradual Canary Rollout Stages](./diagrams/diag-m4-canary-rollout.svg)
 
@@ -4398,6 +4421,8 @@ This staged rollout pattern is identical to **service mesh progressive deploymen
 The pattern: **increase exposure gradually, verify health at each step, bail out fast on failure.** It's universal in distributed systems deployment.
 ---
 ## Phase 3: Per-Version Metrics Collection
+
+![Gradual Canary Rollout Stages](./diagrams/tdd-diag-028.svg)
 
 ![Per-Version Metrics Collection](./diagrams/diag-m4-per-version-metrics.svg)
 
@@ -4663,7 +4688,8 @@ Statistical testing tells you when you have enough evidence to make a confident 
 If p-value < α, you reject the null hypothesis (convict). But there's always a chance of error—innocent people get convicted (false positive), and guilty people go free (false negative).
 The solution: **require more evidence (larger sample size) for smaller expected effects.**
 
-![Sample Size and Statistical Significance](./diagrams/diag-m4-statistical-significance.svg)
+![Per-Version Metrics Collection](./diagrams/tdd-diag-029.svg)
+
 
 ```python
 import math
@@ -4987,6 +5013,8 @@ def analyze_experiment():
 ```
 ---
 ## Phase 5: Experiment Logging and Audit Trail
+
+![Statistical Significance Testing](./diagrams/tdd-diag-030.svg)
 
 ![Experiment Log Structure](./diagrams/diag-m4-experiment-log.svg)
 
@@ -5320,7 +5348,11 @@ class ExperimentManager:
 ---
 ## Phase 6: Automatic Canary Rollback
 
+![Sample Size vs Detectable Effect](./diagrams/tdd-diag-031.svg)
+
 ![Automatic Canary Rollback Trigger](./diagrams/diag-m4-rollback-trigger.svg)
+
+![Automatic Canary Rollback Trigger](./diagrams/tdd-diag-032.svg)
 
 The safety net for canary deployments: **automatic rollback when the canary shows problems**.
 ```python
@@ -5833,6 +5865,8 @@ You've built a model serving system with batching, versioning, and A/B testing. 
 Six weeks after deployment, a subtle shift happens. Users start receiving slightly different recommendations. Not wrong—just different. No alerts fire. No errors appear in logs. But engagement metrics slowly decline: click-through rate drops 8%, session duration falls 12%, conversion rate slips 5%.
 What happened?
 Your input data drifted. The feature distributions that your model was trained on—user ages, product prices, session lengths—shifted imperceptibly. Users from a new demographic arrived. Seasonal patterns changed. Your model, trained on January's data, is now making predictions on March's reality.
+
+![system-overview](./diagrams/system-overview.svg)
 
 ![Drift Detection Pipeline](./diagrams/diag-m5-drift-detection-flow.svg)
 
@@ -6917,7 +6951,8 @@ The principle: **statistics about data are as valuable as the data itself.** Sto
 ## Phase 6: Alert Management and Threshold Tuning
 ### The Alert Fatigue Problem
 
-![Alert Threshold Tuning: Sensitivity vs Noise](./diagrams/diag-m5-alert-threshold-tuning.svg)
+![Training Baseline Storage Structure](./diagrams/tdd-diag-040.svg)
+
 
 Too many alerts = ignored alerts. This is **alert fatigue**, and it's the enemy of effective monitoring.
 ```python
@@ -7569,12 +7604,21 @@ You now have the tools to **see the invisible** — to detect silent model degra
 <!-- END_MS -->
 
 
-
-
 # TDD
 
-A production-grade model inference service that transforms trained ML models into reliable, scalable, and observable APIs. The system implements dynamic request batching for GPU throughput optimization, multi-version model deployment with zero-downtime hot swapping, statistically rigorous A/B testing infrastructure, and real-time drift detection to catch model degradation before it impacts users. The architecture balances the fundamental tension between inference latency and resource constraints—maximizing GPU utilization while bounding worst-case latency through configurable batching parameters.
+![ML Model Serving: Interactive Atlas](./diagrams/diag-satellite-atlas/index.svg)
 
+![m1](./diagrams/diag-satellite-atlas/m1.svg)
+
+![m2](./diagrams/diag-satellite-atlas/m2.svg)
+
+![m3](./diagrams/diag-satellite-atlas/m3.svg)
+
+![m4](./diagrams/diag-satellite-atlas/m4.svg)
+
+![m5](./diagrams/diag-satellite-atlas/m5.svg)
+
+A production-grade model inference service that transforms trained ML models into reliable, scalable, and observable APIs. The system implements dynamic request batching for GPU throughput optimization, multi-version model deployment with zero-downtime hot swapping, statistically rigorous A/B testing infrastructure, and real-time drift detection to catch model degradation before it impacts users. The architecture balances the fundamental tension between inference latency and resource constraints—maximizing GPU utilization while bounding worst-case latency through configurable batching parameters.
 
 
 <!-- TDD_MOD_ID: ml-model-serving-m1 -->
@@ -11767,6 +11811,8 @@ INCOMPATIBLE (missing input):
 
 ![Model Registry Structure](./diagrams/tdd-diag-018.svg)
 
+![Alert Rule Evaluation with Cooldown](./diagrams/tdd-diag-042.svg)
+
 ---
 ## Interface Contracts
 ### HotSwapManager
@@ -12091,7 +12137,6 @@ class VersionRouter:
         return await self.pointer.get_version_id()
 ```
 ---
-{{DIAGRAM:tdd-diag-019}}
 ---
 ## Algorithm Specification
 ### Hot Swap Algorithm
@@ -16658,6 +16703,8 @@ ILLEGAL TRANSITIONS:
 
 ![Latency Histogram Bucket Structure](./diagrams/tdd-diag-034.svg)
 
+![Grafana Dashboard Layout](./diagrams/diag-m5-grafana-dashboard.svg)
+
 ---
 
 ![Percentile Calculation from Histogram](./diagrams/tdd-diag-035.svg)
@@ -16679,13 +16726,11 @@ ILLEGAL TRANSITIONS:
 ![Reservoir Sampling for Drift Buffer](./diagrams/tdd-diag-039.svg)
 
 ---
-{{DIAGRAM:tdd-diag-040}}
 ---
 
 ![Alert Threshold Tuning Tradeoff](./diagrams/tdd-diag-041.svg)
 
 ---
-{{DIAGRAM:tdd-diag-042}}
 ---
 
 ![Structured Request Log Entry](./diagrams/tdd-diag-043.svg)

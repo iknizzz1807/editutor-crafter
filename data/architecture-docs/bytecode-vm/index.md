@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Bytecode VM
+# Project Charter: Bytecode VM
 ## What You Are Building
 A stack-based virtual machine that executes custom bytecode instructions through a fetch-decode-execute cycle. By the end, your VM will run programs with arithmetic expressions, conditional branching, loops, and function calls—including recursion. The implementation includes a bytecode chunk structure with constant pool, a disassembler for debugging, and complete call frame management for isolated function execution.
 ## Why This Project Exists
@@ -42,7 +42,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---

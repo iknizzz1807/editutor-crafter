@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Container (Basic)
+# Project Charter: Container (Basic)
 
 ## What You Are Building
 You are building a minimal Linux container runtime from scratch using C, Go, or Rust. Unlike high-level tools like Docker, your runtime will directly invoke kernel syscalls to create process isolation (namespaces), enforce hardware resource boundaries (cgroups), and virtualize a network stack using veth pairs and bridges. By the end, you will have a single binary that can take a standard Linux rootfs and execute an isolated shell that cannot see host processes, access host files, or starve the host of CPU and memory.
@@ -51,7 +51,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
@@ -93,7 +93,7 @@ The project is complete when:
 
 ---
 
-### 🌐 Network Virtualization
+### Network Virtualization
 **Virtual Ethernet (veth) Driver**
 - **Code**: [Linux Kernel: `drivers/net/veth.c`](https://github.com/torvalds/linux/blob/master/drivers/net/veth.c)
 - **Best Explanation**: [Red Hat: Introduction to Linux Bridging and veth devices](https://developers.redhat.com/blog/2018/10/22/introduction-to-linux-interfaces-for-virtual-networking).
@@ -109,7 +109,7 @@ The project is complete when:
 
 ---
 
-### ⚖️ Resource Limits (Cgroups)
+### ⚖ Resource Limits (Cgroups)
 **Control Groups v2 (The Unified Hierarchy)**
 - **Spec**: [Linux Kernel Documentation: `cgroup-v2.rst`](https://www.kernel.org/doc/Documentation/admin-guide/cgroup-v2.rst).
 - **Code**: [Linux Kernel: `kernel/cgroup/cgroup.c`](https://github.com/torvalds/linux/blob/master/kernel/cgroup/cgroup.c).
@@ -4844,7 +4844,7 @@ Certain filesystem types can't be mounted from user namespaces:
 | `proc` | ✅ Yes | Already namespace-aware |
 | `sysfs` | ❌ No | Exposes kernel internals |
 | `devpts` | ✅ Yes | Virtual PTY filesystem |
-| `overlay` | ⚠️ Limited | Requires `mount_sysfs` privilege |
+| `overlay` | ⚠ Limited | Requires `mount_sysfs` privilege |
 | `bind` | ✅ Yes (mostly) | Depends on source permissions |
 ### Device Nodes: Created but Non-functional
 You can `mknod()` device nodes inside a user namespace, but they won't work:
@@ -6290,7 +6290,7 @@ Timeline:
 **Async-signal-safe operations in handlers:**
 - Setting `volatile sig_atomic_t` flags: ✅ SAFE
 - Writing to pipe (for notification): ✅ SAFE
-- Calling `waitpid()`: ⚠️ SAFE but we avoid it (use flag + main loop)
+- Calling `waitpid()`: ⚠ SAFE but we avoid it (use flag + main loop)
 - Calling `printf()`: ❌ UNSAFE (do in main loop only)
 - Calling `malloc()`: ❌ UNSAFE
 - Modifying global data structures: ❌ UNSAFE

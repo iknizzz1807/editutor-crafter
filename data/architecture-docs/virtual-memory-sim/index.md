@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Virtual Memory Simulator
+# Project Charter: Virtual Memory Simulator
 ## What You Are Building
 A complete virtual memory subsystem simulator that processes memory access traces through the full translation pipeline: virtual address decomposition, TLB caching, multi-level page table walks, demand paging with page fault handling, and swap-backed page replacement. Your simulator will implement four replacement algorithms (FIFO, LRU, Clock, Optimal) and produce detailed statistics demonstrating real-world performance phenomena like TLB miss storms, Bélády's anomaly, and thrashing detection.
 ## Why This Project Exists
@@ -46,7 +46,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---

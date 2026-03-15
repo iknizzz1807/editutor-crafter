@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Lock-free Data Structures
+# Project Charter: Lock-free Data Structures
 ## What You Are Building
 A production-grade lock-free data structure library implementing a Treiber stack, Michael-Scott queue, and split-ordered hash map—using compare-and-swap (CAS) operations with hazard pointer-based safe memory reclamation. By the end, you will have ~3,000 lines of C code that provides thread-safe push/pop, enqueue/dequeue, and insert/lookup/delete operations without any mutex locks, booting in any multi-threaded environment and handling concurrent access from 16+ threads with linearizable correctness.
 ## Why This Project Exists
@@ -44,7 +44,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---
@@ -998,7 +998,7 @@ int64_t naive_pop(NaiveStack* stack, bool* success) {
             *success = false;
             return 0;  // Stack empty
         }
-        // ⚠️ DANGER: This dereference might access freed memory!
+        // ⚠ DANGER: This dereference might access freed memory!
         new_top = old_top->next;
     } while (!atomic_compare_exchange_strong_explicit(
         (atomic_void_ptr*)&stack->top,

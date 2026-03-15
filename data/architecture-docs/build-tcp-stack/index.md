@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Build Your Own TCP/IP Stack
+# Project Charter: Build Your Own TCP/IP Stack
 ## What You Are Building
 A userspace TCP/IP network stack that boots from a TAP device, parses raw Ethernet frames, resolves MAC addresses via ARP, routes IPv4 packets with fragmentation reassembly, responds to ICMP pings, establishes TCP connections through the 3-way handshake, and delivers reliable ordered byte streams over unreliable networks using sliding window flow control and congestion control. By the end, your stack will run in userspace on Linux and transfer a 1MB file with byte-for-byte SHA-256 verified correctness.
 ## Why This Project Exists
@@ -47,7 +47,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---

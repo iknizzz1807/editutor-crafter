@@ -1,4 +1,4 @@
-# 🎯 Project Charter: SIMD Optimization Library
+# Project Charter: SIMD Optimization Library
 ## What You Are Building
 A C library implementing vectorized memory operations (memset, memcpy), string scanning (strlen, memchr), and floating-point math (dot product, 4×4 matrix multiply) using SSE2 and AVX intrinsics. The library handles memory alignment correctly, implements page-boundary-safe string operations, uses optimal horizontal reduction patterns, and includes a comprehensive benchmark suite with runtime CPU feature detection for automatic SSE/AVX code path selection.
 ## Why This Project Exists
@@ -43,7 +43,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---

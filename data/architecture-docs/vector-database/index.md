@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Vector Database
+# Project Charter: Vector Database
 
 ## What You Are Building
 A high-performance similarity search engine capable of indexing and querying high-dimensional vector embeddings. You will build a systems-level application featuring SIMD-accelerated distance metrics, a multi-layered Hierarchical Navigable Small World (HNSW) graph index, and Product Quantization for memory efficiency. By the end, you will have a running server that performs sub-10ms searches on datasets of 1 million vectors with high accuracy.
@@ -47,12 +47,12 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 
-## 🚀 Foundational Systems Concepts
+## Foundational Systems Concepts
 *Read these BEFORE starting the project to understand the hardware constraints that dictate the software architecture.*
 
 ### 1. SIMD Intrinsics
@@ -75,7 +75,7 @@ The project is complete when:
 - **Why**: The gold standard for understanding how databases delegate persistence to the OS page cache.
 - **Timing**: Read **DURING** Milestone 1 (Storage Engine) — essential for implementing the persistence layer.
 
-## 🕸️ Graph-Based Search (HNSW)
+## 🕸 Graph-Based Search (HNSW)
 *The core algorithm of the database. Read these to understand the "Small World" phenomenon.*
 
 ### 4. Hierarchical Navigable Small Worlds (HNSW)
@@ -108,7 +108,7 @@ The project is complete when:
 - **Why**: Product Quantization relies entirely on K-Means to generate codebooks (centroids).
 - **Timing**: Read **DURING** Milestone 5 — you will implement a simplified version of this for your codebooks.
 
-## ⚙️ Concurrency & Systems Safety
+## ⚙ Concurrency & Systems Safety
 *Ensuring the database remains correct under production load.*
 
 ### 8. Read-Write Locking (RwLock)

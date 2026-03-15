@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Tokenizer / Lexer
+# Project Charter: Tokenizer / Lexer
 ## What You Are Building
 A character-level lexical scanner for a simple C-like language, implemented as a single `scanner.py` module containing a `TokenType` enumeration, a `Token` dataclass, and a `Scanner` class that reads source text one character at a time and emits a structured token stream. The scanner recognizes integer and float literals, string literals with escape sequences, identifiers, seven keywords, all arithmetic and comparison operators (including two-character forms like `>=` and `!=`), punctuation, and both single-line and multi-line comments. It tracks line and column positions for every token and continues scanning after errors rather than halting.
 ## Why This Project Exists
@@ -43,11 +43,11 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---
-## 🏁 Read BEFORE Starting the Project
+## Read BEFORE Starting the Project
 ### 1. Formal Languages & the Chomsky Hierarchy
 **Paper:** Chomsky, N. (1956). "Three models for the description of language." *IRE Transactions on Information Theory*, 2(3), 113–124.
 **Best Explanation:** Sipser, M. *Introduction to the Theory of Computation*, 3rd ed. — **Chapter 1 (Regular Languages)** and **Chapter 2 (Context-Free Languages)**. Read the opening two sections of each chapter; skip proofs on first pass.
@@ -65,7 +65,7 @@ The project is complete when:
 **Why:** The project's entire data model rests on `@dataclass` and `Enum`. Knowing that `@dataclass` generates `__eq__` (enabling `==` in test assertions) and that `auto()` assigns unique integers prevents confusion about why `TokenType.PLUS == TokenType.PLUS` but `TokenType.PLUS != TokenType.MINUS`.
 **📅 Timing:** 20 minutes, before Milestone 1, Phase 1.
 ---
-## 📍 Read at Milestone 1 — Token Types & Scanner Foundation
+## Read at Milestone 1 — Token Types & Scanner Foundation
 ### 4. *Crafting Interpreters* — Chapters 1–4 (Scanning)
 **Book:** Nystrom, R. *Crafting Interpreters* (2021). Free at [craftinginterpreters.com](https://craftinginterpreters.com).
 Read **Chapter 4 "Scanning"** in full. Chapter 1 ("Introduction") and Chapter 2 ("A Map of the Territory") are useful 20-minute reads for pipeline context.
@@ -78,7 +78,7 @@ Read **Chapter 4 "Scanning"** in full. Chapter 1 ("Introduction") and Chapter 2 
 **Why:** The Atlas states repeatedly that `Token.line` and `Token.column` are "the foundation of every IDE feature you've ever used." Reading the actual LSP spec — which mandates 0-indexed line/character positions for all editor↔server communication — makes this concrete. You will immediately understand why the Atlas's 1-based positions need a trivial offset when connecting to real tooling, and why the field exists at all.
 **📅 Timing:** After completing Milestone 1's position tracking. The spec page is short; reading it after you've built position tracking is the moment of maximum insight.
 ---
-## 📍 Read at Milestone 2 — Multi-Character Tokens & Maximal Munch
+## Read at Milestone 2 — Multi-Character Tokens & Maximal Munch
 ### 6. The Maximal Munch Principle — Original Formulation
 **Paper:** Aho, A., Lam, M., Sethi, R., & Ullman, J. (2006). *Compilers: Principles, Techniques, and Tools* ("The Dragon Book"), 2nd ed. — **§3.3 "Specification of Tokens"** and **§3.4 "Recognition of Tokens"**. The "longest match" rule is defined precisely in §3.4 with DFA construction.
 **Why:** The Dragon Book is the authoritative academic source for everything the Atlas calls "maximal munch." Reading §3.3–3.4 after implementing `_match()` for `==` and `>=` gives you the formal name and proof for the pattern you just built intuitively. The C++ `>>` template disaster cited in the Atlas is a famous real-world violation of this principle — the Dragon Book's treatment explains exactly why it was a mistake.
@@ -89,7 +89,7 @@ Read **Chapter 4 "Scanning"** in full. Chapter 1 ("Introduction") and Chapter 2 
 **Why:** The Atlas notes that your identifier scanner "builds the foundation for symbol tables." Chapters 11–12 show exactly what that foundation supports — how `IDENTIFIER` tokens become variable lookups, closures, and class members. Reading them after building `_scan_identifier()` makes the downstream consequences of your design decisions vivid.
 **📅 Timing:** Read after Milestone 2 is complete — not before. You need `_scan_identifier()` and the `KEYWORDS` dict in your hands before these chapters make full sense.
 ---
-## 📍 Read at Milestone 3 — Strings & Comments
+## Read at Milestone 3 — Strings & Comments
 ### 8. Escape Sequences — The POSIX/C Standard Definition
 **Spec:** ISO/IEC 9899:2018 (C Standard) — **§6.4.4.4 "Character constants"** and **§6.4.5 "String literals"**. The relevant tables are two pages and define the canonical set of C escape sequences your project's `VALID_ESCAPE_CHARS` is based on.
 **Why:** The five escapes in `VALID_ESCAPE_CHARS` (`\n`, `\t`, `\r`, `\"`, `\\`) are not arbitrary — they are a strict subset of the C standard's escape table. Reading the original standard clarifies exactly what the Atlas means by "this is a language design decision" and what the tradeoffs are for `\0`, `\xNN`, and `\uXXXX`.
@@ -105,7 +105,7 @@ Read **Chapter 4 "Scanning"** in full. Chapter 1 ("Introduction") and Chapter 2 
 **Why:** The Atlas's "scanner modes" — NORMAL, IN_STRING, IN_LINE_COMMENT, IN_BLOCK_COMMENT — are what ANTLR calls "lexer modes" and Flex calls "exclusive start conditions." After building these modes by hand, reading how a lexer *generator* expresses the same concept (in ~5 lines of declarative grammar) reveals both what you built and what tooling automates. This is the bridge from hand-written to industrial tooling.
 **📅 Timing:** Read after completing all of Milestone 3. Takes 30 minutes. The hand-built version must exist in your head before the generated version is meaningful.
 ---
-## 📍 Read at Milestone 4 — Integration Testing & Error Recovery
+## Read at Milestone 4 — Integration Testing & Error Recovery
 ### 11. Engineering a Compiler — Chapter 2 (Scanners) for Production Context
 **Book:** Cooper, K. & Torczon, L. *Engineering a Compiler*, 3rd ed. — **Chapter 2 "Scanners"**, especially §2.4 "Implementing Scanners" and §2.5 "A Scanner for the iloc Language."
 **Why:** After building a complete scanner by hand, Chapter 2 of *Engineering a Compiler* shows how production compilers (GCC, LLVM) structure the same work at scale — including the transition from hand-written to table-driven DFAs, which is the architecture underlying every lexer generator. This is the bridge from your project to industrial compiler front-ends.

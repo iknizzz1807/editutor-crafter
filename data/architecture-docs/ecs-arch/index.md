@@ -1,4 +1,4 @@
-# 🎯 Project Charter: ECS Architecture
+# Project Charter: ECS Architecture
 ## What You Are Building
 A production-quality Entity-Component-System framework with sparse-set storage, system scheduling, command buffers for safe deferred structural changes, and archetype-based optimization for cache-optimal iteration. By the end, your ECS will manage 100K+ entities efficiently, run systems in a defined order each frame, and iterate over component data at speeds competitive with engines like Bevy and Unity DOTS.
 ## Why This Project Exists
@@ -45,7 +45,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---

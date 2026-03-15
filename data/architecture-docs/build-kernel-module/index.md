@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Linux Kernel Module — Character Device Driver
+# Project Charter: Linux Kernel Module — Character Device Driver
 ## What You Are Building
 A production-quality Linux character device driver implemented as a loadable kernel module. The driver exposes `/dev/mydevice` to userspace, accepts `read()`, `write()`, `ioctl()`, and `poll()` system calls, stores data in a kernel-allocated FIFO buffer, exposes runtime statistics through `/proc/mydevice`, and handles concurrent access from multiple processes without data corruption, deadlocks, or unkillable processes.
 ## Why This Project Exists
@@ -45,11 +45,11 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---
-## 🧠 Before You Start: Required Foundations
+## Before You Start: Required Foundations
 ### 1. Virtual Memory and Process Address Spaces
 **Best Explanation:** *Operating Systems: Three Easy Pieces* (Arpaci-Dusseau & Arpaci-Dusseau) — **Part II: Virtualization, Chapters 12–16** (Address Spaces, Address Translation, Segmentation, Free Space, Paging). Free at ostep.org.
 **Why:** The Atlas repeatedly uses concepts like "kernel space vs. userspace," page faults, and TLB costs. Without a concrete model of how virtual memory works, the explanations of `copy_from_user`, SMAP, and the address space split will be abstract noise. Read this before writing a single line.
@@ -86,7 +86,7 @@ The project is complete when:
 **Why:** This is *the* authoritative reference for kernel driver development, written by the maintainers of the kernel's driver subsystem. Chapter 3 maps almost one-to-one with Milestone 2.
 **Pedagogical Timing:** **Read Chapter 3 before Milestone 2, Chapter 6 before Milestone 4.** The book's chapter structure mirrors the project's milestone structure almost exactly.
 ---
-## 🎛️ Milestone 3: ioctl and /proc
+## 🎛 Milestone 3: ioctl and /proc
 ### 7. ioctl Command Number Encoding
 **Spec:** Linux kernel documentation — `Documentation/userspace-api/ioctl/ioctl-number.rst` — the official registry of `_IOC_TYPE` magic bytes and the structured encoding convention.
 **URL:** https://www.kernel.org/doc/html/latest/userspace-api/ioctl/ioctl-number.html
@@ -512,7 +512,7 @@ module_param(buffer_size, int, 0444);
 // Use this for parameters that should be tunable at runtime
 module_param(buffer_size, int, 0644);
 ```
-> ⚠️ **Security note**: Use `0444` unless you specifically need runtime modification. A `0666` sysfs parameter lets any unprivileged user modify kernel module state — a security hole. Parameters that control security-sensitive behavior should use `0400` or `0` to prevent even root from changing them after load (though root can always use `echo` with proper permissions).
+> ⚠ **Security note**: Use `0444` unless you specifically need runtime modification. A `0666` sysfs parameter lets any unprivileged user modify kernel module state — a security hole. Parameters that control security-sensitive behavior should use `0400` or `0` to prevent even root from changing them after load (though root can always use `echo` with proper permissions).
 For an `int` parameter exposed with `0644`, writing to the sysfs file changes the in-memory value of `buffer_size` while the module is running. Your module code reads `buffer_size` directly — there's no notification callback. If you need to react to parameter changes (e.g., reallocate a buffer), you need a param ops struct with a `set` callback, which is beyond this milestone.
 ---
 ## Module Metadata
@@ -866,7 +866,7 @@ if (IS_ERR(mydevice_device)) {
 ```
 When `device_create` runs, the kernel creates entries in `/sys/class/mydevice/mydevice/`. The **udev** daemon (running in userspace) watches sysfs for these events via netlink socket. When it sees the new device, it reads the major/minor from sysfs and calls `mknod /dev/mydevice c <major> <minor>` automatically. Within milliseconds of `device_create` returning, `/dev/mydevice` exists.
 This is the chain: your kernel code → sysfs entry → udev event → `/dev/` node. You never call `mknod` yourself. This is the modern approach; older drivers required manual `mknod` after `insmod`, which was error-prone and didn't persist across reboots.
-> ⚠️ **`IS_ERR` and `PTR_ERR`**: Kernel functions that return pointers signal errors by returning a specially-crafted invalid pointer (a value in the range `-4096` to `-1` cast to a pointer). Never check these with `== NULL`. Use `IS_ERR(ptr)` to detect errors and `PTR_ERR(ptr)` to extract the errno. Treating an error pointer as a valid pointer and dereferencing it causes a kernel crash.
+> ⚠ **`IS_ERR` and `PTR_ERR`**: Kernel functions that return pointers signal errors by returning a specially-crafted invalid pointer (a value in the range `-4096` to `-1` cast to a pointer). Never check these with `== NULL`. Use `IS_ERR(ptr)` to detect errors and `PTR_ERR(ptr)` to extract the errno. Treating an error pointer as a valid pointer and dereferencing it causes a kernel crash.
 ---
 ## The Kernel Buffer
 Your device needs memory to store data. In Milestone 1, your module had no state. This module has one central piece of state: a buffer that userspace writes to and reads from.

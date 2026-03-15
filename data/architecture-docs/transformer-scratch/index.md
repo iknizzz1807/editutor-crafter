@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Transformer from Scratch
+# Project Charter: Transformer from Scratch
 ## What You Are Building
 A complete encoder-decoder Transformer architecture implemented from first principles—the same architecture that powers GPT, BERT, and virtually all modern language models. You will implement scaled dot-product attention with Query-Key-Value matrix operations, multi-head parallel processing with head splitting and concatenation, sinusoidal positional encodings, stacked encoder-decoder layers with residual connections and layer normalization, and efficient autoregressive generation with beam search and KV caching. By the end, your transformer will train on sequence-to-sequence tasks and generate outputs that match PyTorch reference implementations within numerical tolerance.
 ## Why This Project Exists
@@ -44,7 +44,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---
@@ -71,7 +71,7 @@ The project is complete when:
   - Section 3 (Model Architecture) — read carefully
   - Section 5.1 (Training regime) — reference during Milestone 5
 ---
-## 🧠 Deep Learning Fundamentals
+## Deep Learning Fundamentals
 ### Read Before Milestone 1 or 2
 **"Deep Learning"** — Goodfellow, Bengio, Courville (MIT Press)
 - **When**: Read BEFORE starting, or alongside Milestone 1-2
@@ -86,7 +86,7 @@ The project is complete when:
 - **Why**: Shows how the paper's formulas translate to actual PyTorch code with detailed comments
 - **Best Explanation**: The section on "Scaled Dot-Product Attention" explains the sqrt(d_k) scaling better than any other resource
 ---
-## 🎯 Attention Mechanism Deep Dives
+## Attention Mechanism Deep Dives
 ### Read After Milestone 1 (Scaled Dot-Product Attention)
 **"The Illustrated Transformer"** — Jay Alammar
 - **Blog**: https://jalammar.github.io/illustrated-transformer/
@@ -99,7 +99,7 @@ The project is complete when:
 - **Why**: Explains why attention replaced RNNs and connects to Bahdanau attention (the precursor)
 - **Key insight**: Section on "Self-Attention" explains why Q, K, V decomposition works
 ---
-## 🏗️ Architecture & Design Patterns
+##  Architecture & Design Patterns
 ### Read After Milestone 2 (Multi-Head Attention)
 **"Transformer Architecture: The Positional Encoding"** — Amirhossein Kazemnejad
 - **Blog**: https://kazemnejad.com/blog/transformer_architecture_positional_encoding/
@@ -124,7 +124,7 @@ The project is complete when:
 - **Why**: Explains why GPT-2 uses Pre-LN while the original Transformer used Post-LN
 - **Best Explanation**: The gradient analysis showing why Pre-LN is more stable
 ---
-## 🏋️ Training & Optimization
+## 🏋 Training & Optimization
 ### Read Before Milestone 5 (Full Transformer Assembly & Training)
 **"Adam: A Method for Stochastic Optimization"** — Kingma & Ba, 2014
 - **Paper**: https://arxiv.org/abs/1412.6980
@@ -137,7 +137,7 @@ The project is complete when:
 - **Key section**: Section 3 (Label Smoothing)
 - **Why**: Explains why overconfident predictions hurt generalization
 ---
-## 🚀 Inference & Generation
+## Inference & Generation
 ### Read Before Milestone 6 (Inference & Generation)
 **"Get To The Point: Summarization with Pointer-Generator Networks"** — See et al., 2017
 - **Paper**: https://arxiv.org/abs/1704.04368
@@ -2391,7 +2391,7 @@ def verify_gradient_flow(model, src_tokens, tgt_tokens):
         elif torch.all(param.grad == 0):
             zero_grad_params.append(f"{name} (zero grad)")
     if zero_grad_params:
-        print("⚠️  Parameters with no gradient flow:")
+        print("⚠  Parameters with no gradient flow:")
         for p in zero_grad_params:
             print(f"  - {p}")
         return False

@@ -1,4 +1,4 @@
-# 🎯 Project Charter: eBPF Tracing Tool
+# Project Charter: eBPF Tracing Tool
 ## What You Are Building
 A production-grade eBPF observability tool that dynamically instruments the Linux kernel to capture syscall latency distributions, TCP connection lifecycles, and scheduler behavior in real-time. The final artifact is a unified terminal dashboard displaying live histograms, active connections, and top processes—all powered by eBPF programs that safely execute in kernel space after passing the verifier's strict safety constraints.
 ## Why This Project Exists
@@ -48,7 +48,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---

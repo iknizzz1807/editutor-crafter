@@ -1,4 +1,4 @@
-# 🎯 Project Charter: ML Model Serving API
+# Project Charter: ML Model Serving API
 ## What You Are Building
 You will build a production-grade ML model serving API that transforms a trained PyTorch model into a high-performance inference service. This is not a toy example—it's a real system implementing the patterns used at companies serving millions of predictions daily.
 The core deliverable is a FastAPI application that:
@@ -100,7 +100,7 @@ The final test suite includes:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---

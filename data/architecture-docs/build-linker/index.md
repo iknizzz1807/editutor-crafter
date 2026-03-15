@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Static Linker
+# Project Charter: Static Linker
 ## What You Are Building
 A multi-file ELF64 static linker that transforms position-independent x86-64 object files (`.o`) into loadable Linux executables. Your linker will parse ELF relocatable files, merge sections from multiple translation units with proper alignment, resolve symbols across files following ELF strong/weak rules, apply relocations to patch addresses using PC-relative and absolute formulas, and generate a complete executable with valid program headers and entry point configuration. By the end, your linker will produce binaries that boot and run on real Linux systems.
 ## Why This Project Exists
@@ -47,7 +47,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---

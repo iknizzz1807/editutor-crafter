@@ -1,4 +1,4 @@
-# 🎯 Project Charter: SHA-256 Hash Function
+# Project Charter: SHA-256 Hash Function
 ## What You Are Building
 A complete, from-scratch implementation of the SHA-256 cryptographic hash function conforming to NIST FIPS 180-4. You will build every layer of the algorithm: message padding, message schedule expansion, the 64-round compression function, and a streaming API that accepts arbitrary input and produces a 64-character hexadecimal digest. The finished implementation will be verified byte-for-byte against official NIST test vectors.
 ## Why This Project Exists
@@ -42,7 +42,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---
@@ -363,7 +363,7 @@ Most production SHA-256 implementations also use compiler built-ins or platform 
 /* GCC / Clang built-in (compiles to a single BSWAP instruction on x86) */
 uint32_t w = __builtin_bswap32(*(uint32_t *)(block + i * 4));
 ```
-> ⚠️ The pointer-cast version (`*(uint32_t*)ptr`) without the bswap is a common bug in hand-rolled SHA-256 implementations. It produces correct output only on big-endian hardware, silently giving wrong answers on x86.
+> ⚠ The pointer-cast version (`*(uint32_t*)ptr`) without the bswap is a common bug in hand-rolled SHA-256 implementations. It produces correct output only on big-endian hardware, silently giving wrong answers on x86.
 ---
 ### One Key Mental Model
 > **Endianness is a question of perspective, not of value. The integer `0x1A2B3C4D` is the same number everywhere — endianness only describes how its bytes are *arranged in memory*. SHA-256's spec defines one arrangement (big-endian); your CPU may prefer another. The byte-swap is the translation between those two perspectives.**
@@ -863,8 +863,8 @@ In C, implementing both on a `uint32_t` is clean and direct:
  */
 #define SHR32(x, n)   ((x) >> (n))
 ```
-> ⚠️ **The `uint32_t` Requirement for ROTR**: The `ROTR32` macro `((x) << (32 - n))` shifts left by up to 31 positions. If `x` were a signed integer (like `int`), a left shift that reaches the sign bit causes **undefined behavior** in C. By using `uint32_t`, you guarantee unsigned semantics — left shifts are well-defined, and `>> n` is a logical (zero-filling) shift, not arithmetic. Always use `uint32_t` for SHA-256 words.
-> ⚠️ **Undefined Behavior for n = 0**: If `n` equals 0 or 32, the macro has undefined behavior (shifting by the word size). In SHA-256, the rotation constants are always in {2, 6, 7, 11, 13, 17, 18, 19, 22, 25}, so `n = 0` and `n = 32` never occur in practice. For a production implementation, add an assertion or check.
+> ⚠ **The `uint32_t` Requirement for ROTR**: The `ROTR32` macro `((x) << (32 - n))` shifts left by up to 31 positions. If `x` were a signed integer (like `int`), a left shift that reaches the sign bit causes **undefined behavior** in C. By using `uint32_t`, you guarantee unsigned semantics — left shifts are well-defined, and `>> n` is a logical (zero-filling) shift, not arithmetic. Always use `uint32_t` for SHA-256 words.
+> ⚠ **Undefined Behavior for n = 0**: If `n` equals 0 or 32, the macro has undefined behavior (shifting by the word size). In SHA-256, the rotation constants are always in {2, 6, 7, 11, 13, 17, 18, 19, 22, 25}, so `n = 0` and `n = 32` never occur in practice. For a production implementation, add an assertion or check.
 ### Why the σ Functions Need Both
 Here is the σ0 definition from FIPS 180-4:
 ```

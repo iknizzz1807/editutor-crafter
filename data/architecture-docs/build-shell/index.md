@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Build Your Own Shell (Advanced)
+# Project Charter: Build Your Own Shell (Advanced)
 ## What You Are Building
 A complete POSIX-like Unix shell from scratch that boots from a command prompt, tokenizes and parses shell grammar into an AST, manages concurrent pipelines and background jobs with proper process group handling, implements signal-based job control with terminal control transfer, and supports full scripting with variables, functions, loops, conditionals, and command substitution. By the end, your shell will pass a comprehensive test suite including concurrent pipelines like `cmd1 | cmd2 | cmd3`, interactive job control with Ctrl+Z/Ctrl+C, and self-hosting script execution.
 ## Why This Project Exists
@@ -44,7 +44,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---
@@ -54,27 +54,27 @@ The project is complete when:
 **🔗 Spec:** POSIX.1-2017, `fork()` - <https://pubs.opengroup.org/onlinepubs/9699919799/functions/fork.html>
 **💻 Code:** Linux Kernel `kernel/fork.c` — `do_fork()` function (arch/x86/kernel/process.c for architecture-specific parts)
 **📝 Best Explanation:** "Chapter 5: Process Management" in *Operating Systems: Three Easy Pieces* by Remzi Arpaci-Dusseau and Andrea Arpaci-Dusseau. <https://pages.cs.wisc.edu/~remzi/OSTEP/>
-**🎯 Why:** Fork is the fundamental primitive for process creation in Unix. Understanding copy-on-write semantics and the parent-child relationship is essential before Milestone 1's executor.
+** Why:** Fork is the fundamental primitive for process creation in Unix. Understanding copy-on-write semantics and the parent-child relationship is essential before Milestone 1's executor.
 **When to read:** BEFORE starting Milestone 1 — you'll implement fork/exec/wait immediately.
 ---
 ### 2. The exec Family of Functions
 **🔗 Spec:** POSIX.1-2017, `exec` family — <https://pubs.opengroup.org/onlinepubs/9699919799/functions/exec.html>
 **💻 Code:** musl libc `src/process/execve.c` — the thin wrapper around the syscall
 **📝 Best Explanation:** "Chapter 5: The exec() Family" in *Advanced Programming in the UNIX Environment* by W. Richard Stevens (3rd ed., APUE), Section 8.10.
-**🎯 Why:** Understanding how exec replaces the process image clarifies why `_exit()` is required after exec failure in the child (Milestone 1's critical bug trap).
+** Why:** Understanding how exec replaces the process image clarifies why `_exit()` is required after exec failure in the child (Milestone 1's critical bug trap).
 **When to read:** BEFORE starting Milestone 1 — you need to understand process replacement before writing the executor.
 ---
 ### 3. The exit() vs _exit() Distinction
 **📝 Best Explanation:** "Section 8.5: exit Function" in *Advanced Programming in the UNIX Environment* by W. Richard Stevens. The critical passage explains stdio buffer inheritance at fork.
 **💻 Code:** glibc `stdlib/exit.c` (exit) vs `sysdeps/unix/sysv/linux/_exit.c` (_exit)
-**🎯 Why:** Using `exit()` instead of `_exit()` after failed exec causes double-flushed stdio buffers — one of the most common shell bugs.
+** Why:** Using `exit()` instead of `_exit()` after failed exec causes double-flushed stdio buffers — one of the most common shell bugs.
 **When to read:** BEFORE starting Milestone 1 — this will bite you immediately in the executor.
 ---
 ### 4. File Descriptors and dup2()
 **🔗 Spec:** POSIX.1-2017, `dup2()` — <https://pubs.opengroup.org/onlinepubs/9699919799/functions/dup2.html>
 **📝 Best Explanation:** "Chapter 3: File I/O" in *The Linux Programming Interface* by Michael Kerrisk (TLPI), specifically the "Duplicating File Descriptors" section (Section 4.4 in some editions, 5.4 in others).
 **💻 Code:** Linux Kernel `fs/file.c` — `do_dup2()` function
-**🎯 Why:** Redirections (Milestone 2) and pipelines depend entirely on dup2(). Understanding atomic close-and-copy prevents race conditions.
+** Why:** Redirections (Milestone 2) and pipelines depend entirely on dup2(). Understanding atomic close-and-copy prevents race conditions.
 **When to read:** BEFORE Milestone 2 — redirection implementation requires deep dup2() understanding.
 ---
 ## Foundation: Pipes and IPC
@@ -83,12 +83,12 @@ The project is complete when:
 **🔗 Spec:** POSIX.1-2017, `pipe()` — <https://pubs.opengroup.org/onlinepubs/9699919799/functions/pipe.html>
 **💻 Code:** Linux Kernel `fs/pipe.c` — `do_pipe2()` and the pipe buffer implementation
 **📝 Best Explanation:** "Chapter 44: Pipes and FIFOs" in *The Linux Programming Interface* by Michael Kerrisk. Section on pipe capacity and atomic writes.
-**🎯 Why:** Pipelines execute concurrently, not sequentially. Understanding the 64KB buffer limit and SIGPIPE behavior is critical for Milestone 2.
+** Why:** Pipelines execute concurrently, not sequentially. Understanding the 64KB buffer limit and SIGPIPE behavior is critical for Milestone 2.
 **When to read:** BEFORE Milestone 2 — concurrent pipeline execution depends on understanding pipe mechanics.
 ---
 ### 6. SIGPIPE and Backpressure
 **📝 Best Explanation:** "Chapter 10: Signals" in *Advanced Programming in the UNIX Environment* — specifically the SIGPIPE section. Also see "Job Control" signals in Section 9.7.
-**🎯 Why:** When `yes | head -1` terminates, `yes` receives SIGPIPE. Understanding this signal explains why pipelines don't hang on early termination.
+** Why:** When `yes | head -1` terminates, `yes` receives SIGPIPE. Understanding this signal explains why pipelines don't hang on early termination.
 **When to read:** Read after Milestone 2 (Pipeline Implementation) — you'll have enough context to appreciate the producer-consumer dynamics.
 ---
 ## Foundation: Signals and Job Control
@@ -96,7 +96,7 @@ The project is complete when:
 **🔗 Spec:** POSIX.1-2017, "Signal-Safe Functions" — <https://pubs.opengroup.org/onlinepubs/9699919799/functions/V2_chap02.html#tag_15_04>
 **📝 Best Explanation:** Butenhof, D. R. (1997). *Programming with POSIX Threads*, Section 6.6: "Async-Signal-Safe Functions." Also see "Chapter 10: Signals" in APUE.
 **💻 Code:** glibc's signal-safe wrappers in `sysdeps/unix/sysv/linux/`
-**🎯 Why:** The SIGCHLD handler (Milestone 3) can ONLY call async-signal-safe functions. Understanding why `printf()` causes deadlock prevents mysterious crashes.
+** Why:** The SIGCHLD handler (Milestone 3) can ONLY call async-signal-safe functions. Understanding why `printf()` causes deadlock prevents mysterious crashes.
 **When to read:** BEFORE Milestone 3 — the self-pipe trick requires understanding async-signal-safety constraints.
 ---
 ### 8. Process Groups and Terminal Control
@@ -104,13 +104,13 @@ The project is complete when:
 **🔗 Spec:** POSIX.1-2017, `setpgid()`, `tcsetpgrp()` — <https://pubs.opengroup.org/onlinepubs/9699919799/functions/setpgid.html>
 **💻 Code:** Linux Kernel `kernel/sys.c` — `do_setpgid()`; `drivers/tty/tty_io.c` — `tiocsctty()` and `tty_check_change()`
 **📝 Best Explanation:** "Chapter 9: Process Relationships" in *Advanced Programming in the UNIX Environment*, specifically Section 9.8: "Job Control."
-**🎯 Why:** Ctrl+C sends SIGINT to the *foreground process group*, not individual processes. Understanding this is essential for Milestone 3's job control.
+** Why:** Ctrl+C sends SIGINT to the *foreground process group*, not individual processes. Understanding this is essential for Milestone 3's job control.
 **When to read:** BEFORE Milestone 3 — process groups are the foundation of job control.
 ---
 ### 9. The Self-Pipe Trick
 **📝 Best Explanation:** Libevent documentation's "A Callback-Based System" section describes the pattern. See also Dan Bernstein's "The self-pipe trick" discussion on the qmail mailing list (1997).
 **💻 Code:** libevent `event.c` — signal handler integration using pipes
-**🎯 Why:** This pattern bridges async signal handlers and synchronous main loops. Milestone 3's SIGCHLD handling uses this to safely reap children.
+** Why:** This pattern bridges async signal handlers and synchronous main loops. Milestone 3's SIGCHLD handling uses this to safely reap children.
 **When to read:** Read after Milestone 2 — you'll understand pipes well enough to appreciate the self-pipe design.
 ---
 ## Foundation: Parsing and Language Design
@@ -118,13 +118,13 @@ The project is complete when:
 **📖 Paper:** Wirth, N. (1976). "Algorithms + Data Structures = Programs." Prentice-Hall. Chapter 5 introduces recursive descent.
 **📝 Best Explanation:** "Chapter 2: A Simple Interpreter" in *Crafting Interpreters* by Robert Nystrom. Free online: <https://craftinginterpreters.com/>
 **💻 Code:** Bash `parse.y` (though Bash uses yacc, the structure is instructive) or dash's `parser.c` for a hand-written recursive descent parser
-**🎯 Why:** Your shell's parser uses recursive descent with operator precedence levels. Understanding the pattern helps debug parsing issues in all milestones.
+** Why:** Your shell's parser uses recursive descent with operator precedence levels. Understanding the pattern helps debug parsing issues in all milestones.
 **When to read:** Read BEFORE starting Milestone 1 — parsing is the first major component you'll build.
 ---
 ### 11. Abstract Syntax Trees
 **📝 Best Explanation:** "Chapter 3: The Tree-Walk Interpreter" in *Crafting Interpreters* by Robert Nystrom. <https://craftinginterpreters.com/contents.html>
 **💻 Code:** Lox interpreter's AST implementation in the same book
-**🎯 Why:** Your shell's execution model walks an AST. The tree structure (pipeline → commands → arguments) directly reflects execution semantics.
+** Why:** Your shell's execution model walks an AST. The tree structure (pipeline → commands → arguments) directly reflects execution semantics.
 **When to read:** Read BEFORE starting Milestone 1 — you'll design AST node types immediately.
 ---
 ## Foundation: Shell Expansion Semantics
@@ -132,13 +132,13 @@ The project is complete when:
 **🔗 Spec:** POSIX.1-2017, "Shell Command Language" Section 2.6: "Word Expansions" — <https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html#tag_18_06>
 **📝 Best Explanation:** "Chapter 7: The Bourne Again Shell" in *Classic Shell Scripting* by Arnold Robbins and Nelson Beebe, specifically the expansion sections.
 **💻 Code:** Bash `subst.c` — the `expand_word()` function chain
-**🎯 Why:** Expansions happen in a strict order: tilde → parameter → command substitution → field splitting → glob → quote removal. Violating this order causes subtle bugs.
+** Why:** Expansions happen in a strict order: tilde → parameter → command substitution → field splitting → glob → quote removal. Violating this order causes subtle bugs.
 **When to read:** BEFORE Milestone 2 — expansion implementation requires understanding the six-phase pipeline.
 ---
 ### 13. Glob Pattern Matching
 **📝 Best Explanation:** "Chapter 8: Filename Generation" in *Classic Shell Scripting* by Robbins and Beebe.
 **💻 Code:** Bash `lib/glob/glob.c` or musl's `src/regex/glob.c`
-**🎯 Why:** Glob expansion matches filenames against patterns. The recursive matching algorithm for `*`, `?`, and `[...]` is non-trivial.
+** Why:** Glob expansion matches filenames against patterns. The recursive matching algorithm for `*`, `?`, and `[...]` is non-trivial.
 **When to read:** Read after Milestone 2 (Expansion Pipeline) — glob is the final expansion phase and builds on earlier concepts.
 ---
 ## Foundation: Control Flow and Scripting
@@ -146,7 +146,7 @@ The project is complete when:
 **🔗 Spec:** POSIX.1-2017, "Shell Command Language" Section 2.9.1: "Exit Status" — <https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html#tag_18_09_01>
 **📝 Best Explanation:** The bash(1) man page, "EXIT STATUS" section. Also see the `test` command documentation.
 **💻 Code:** Bash `test.c` — the implementation of `[` and `test` builtins
-**🎯 Why:** In shell, exit status 0 means true/success, non-zero means false/failure. This inverts C's boolean convention and affects all control flow.
+** Why:** In shell, exit status 0 means true/success, non-zero means false/failure. This inverts C's boolean convention and affects all control flow.
 **When to read:** BEFORE Milestone 4 — control flow depends entirely on exit status semantics.
 ---
 ### 15. setjmp/longjmp for Control Transfer
@@ -154,27 +154,27 @@ The project is complete when:
 **🔗 Spec:** POSIX.1-2017, `setjmp()`, `longjmp()` — <https://pubs.opengroup.org/onlinepubs/9699919799/functions/setjmp.html>
 **📝 Best Explanation:** "Chapter 7: C Program Startup and Termination" in *Advanced Programming in the UNIX Environment*, longjmp section.
 **💻 Code:** glibc `setjmp/` directory — architecture-specific implementations
-**🎯 Why:** `break`, `continue`, and `return` use longjmp to exit nested constructs. Understanding the jump buffer model is essential for Milestone 4.
+** Why:** `break`, `continue`, and `return` use longjmp to exit nested constructs. Understanding the jump buffer model is essential for Milestone 4.
 **When to read:** Read after Milestone 3 — you'll appreciate the control flow challenge before seeing the solution.
 ---
 ### 16. Dynamic Scoping
 **📖 Paper:** Moses, J. (1970). "The Function of FUNCTION in LISP." MIT AI Memo 199. Introduces deep vs shallow binding.
 **📝 Best Explanation:** "Section 3.3: Scope" in *Structure and Interpretation of Computer Programs* by Abelson and Sussman. Contrast with lexical scope.
-**🎯 Why:** Shell functions use dynamic scoping — variables are looked up in the call stack at runtime. This differs from most modern languages and affects how `local` works.
+** Why:** Shell functions use dynamic scoping — variables are looked up in the call stack at runtime. This differs from most modern languages and affects how `local` works.
 **When to read:** Read after Milestone 4 (Functions) — you'll have implemented dynamic scoping and can compare with the explanation.
 ---
 ## Foundation: Advanced Features
 ### 17. The Fork Boundary and Isolation
 **📖 Paper:** McIlroy, M. D., & Kernighan, B. W. (1979). "UNIX Time-Sharing System: The Evolution of a Facility." Bell System Technical Journal.
 **📝 Best Explanation:** "Section 8.3: fork Function" in *Advanced Programming in the UNIX Environment*, specifically the discussion of what is and isn't inherited.
-**🎯 Why:** Subshells `(cmd)` fork and isolate all state. Brace groups `{ cmd; }` don't. Understanding what crosses the fork boundary (only exit status) is key to Milestone 5.
+** Why:** Subshells `(cmd)` fork and isolate all state. Brace groups `{ cmd; }` don't. Understanding what crosses the fork boundary (only exit status) is key to Milestone 5.
 **When to read:** BEFORE Milestone 5 — subshell implementation depends on understanding isolation semantics.
 ---
 ### 18. Shell Options and Errexit
 **🔗 Spec:** POSIX.1-2017, `set` builtin — <https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html#tag_18_25_01>
 **📝 Best Explanation:** The bash(1) man page, "SHELL BUILTIN COMMANDS" section for `set`, particularly `-e` behavior.
 **💻 Code:** Bash `builtins/set.def` — the complex errexit suppression logic
-**🎯 Why:** `set -e` exits on command failure EXCEPT in condition contexts (`if`, `while`, `&&`, `||`). This is one of the most subtle shell behaviors.
+** Why:** `set -e` exits on command failure EXCEPT in condition contexts (`if`, `while`, `&&`, `||`). This is one of the most subtle shell behaviors.
 **When to read:** Read after Milestone 5 (Subshells and Options) — you'll have implemented errexit and can test the edge cases.
 ---
 ## Historical Context
@@ -182,13 +182,13 @@ The project is complete when:
 **📖 Paper:** Bourne, S. R. (1978). "The UNIX Shell." Bell System Technical Journal, 57(6). The original shell paper.
 **📝 Best Explanation:** "Chapter 1: Introduction" in *The Unix Programming Environment* by Kernighan and Pike, which explains the shell's role.
 **💻 Code:** The original V7 Unix `/usr/src/cmd/sh/` — a compact 3,500 lines of C
-**🎯 Why:** Understanding Bourne's original design clarifies why shells work the way they do. Many "quirks" become logical in historical context.
+** Why:** Understanding Bourne's original design clarifies why shells work the way they do. Many "quirks" become logical in historical context.
 **When to read:** Read after completing the project — you'll appreciate the design decisions with your implementation experience.
 ---
 ## Reference Materials
 ### 20. The POSIX Shell Specification
 **🔗 Spec:** POSIX.1-2017, "Shell Command Language" — <https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html>
-**🎯 Why:** This is the authoritative specification. When in doubt, consult POSIX. Your shell aims for POSIX compliance.
+** Why:** This is the authoritative specification. When in doubt, consult POSIX. Your shell aims for POSIX compliance.
 **When to read:** Keep open throughout the project — reference for any ambiguous behavior.
 ---
 ## Summary Reading Order

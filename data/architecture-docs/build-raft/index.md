@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Build Your Own Raft
+# Project Charter: Build Your Own Raft
 ## What You Are Building
 A complete Raft consensus implementation in Go, Rust, or Java that provides leader election with randomized timeouts, log replication with Figure 8 safety guarantees, snapshot-based log compaction, and linearizable client semantics. By the end, your implementation will boot a 5-node cluster, elect a leader, replicate client commands through the log, survive node crashes and network partitions, compact the log via snapshots, and serve linearizable reads—all verified through continuous invariant checking and adversarial chaos testing.
 ## Why This Project Exists
@@ -47,7 +47,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---
@@ -278,7 +278,7 @@ func (rf *Raft) checkTerm(rpcTerm int) bool {
     return false
 }
 ```
-> **💡 Insight**: Terms are the same concept as **epoch numbers in Kafka** and **view numbers in Viewstamped Replication**. They provide a total ordering on leadership changes that all nodes eventually agree on.
+> ** Insight**: Terms are the same concept as **epoch numbers in Kafka** and **view numbers in Viewstamped Replication**. They provide a total ordering on leadership changes that all nodes eventually agree on.
 ---
 ## The Node State Machine
 Each Raft node exists in exactly one of three states at any moment:
@@ -354,7 +354,7 @@ type RPCMessage struct {
     Response chan interface{}
 }
 ```
-> **⚠️ Critical Detail**: The comment "BEFORE responding to RPCs" on persistent state isn't a suggestion—it's a correctness requirement. If you respond to a vote request, then crash before persisting, you could vote again on restart and violate election safety.
+> **⚠ Critical Detail**: The comment "BEFORE responding to RPCs" on persistent state isn't a suggestion—it's a correctness requirement. If you respond to a vote request, then crash before persisting, you could vote again on restart and violate election safety.
 ---
 ## The Election Timeout: Breaking Symmetry with Randomness
 Here's a scenario that breaks naive leader election: all five nodes start simultaneously. They all timeout at the same instant. They all become candidates. They all vote for themselves. No one gets a majority.
@@ -1669,7 +1669,7 @@ func (rf *RaftNode) maybeAdvanceCommitIndex() {
     }
 }
 ```
-> **💡 Insight**: The Figure 8 rule connects to **database transaction commit records**. A transaction's data pages can all be written to disk, but the transaction isn't durable until the commit record is written. Similarly, previous-term entries can be replicated, but they aren't committed until a current-term entry "seals" them.
+> ** Insight**: The Figure 8 rule connects to **database transaction commit records**. A transaction's data pages can all be written to disk, but the transaction isn't durable until the commit record is written. Similarly, previous-term entries can be replicated, but they aren't committed until a current-term entry "seals" them.
 ---
 ## The State Machine Application Loop
 Committing an entry and applying it are different operations:
@@ -2611,7 +2611,7 @@ rf.nextIndex[i] = lastLogIndex + 1
 lastLogIndex := rf.logLastIndex()
 rf.nextIndex[i] = lastLogIndex + 1
 ```
-> **💡 Insight**: This offset arithmetic is the same pattern as **virtual memory page tables**. The "logical index" is like a virtual address; the "slice index" is like a physical address; `lastIncludedIndex` is the offset that translates between them. Every memory access goes through the page table; every log access goes through the offset calculation.
+> ** Insight**: This offset arithmetic is the same pattern as **virtual memory page tables**. The "logical index" is like a virtual address; the "slice index" is like a physical address; `lastIncludedIndex` is the offset that translates between them. Every memory access goes through the page table; every log access goes through the offset calculation.
 ---
 ## The InstallSnapshot RPC: Replicating Snapshots
 
@@ -2843,7 +2843,7 @@ func (rf *RaftNode) takeSnapshotLocked(index int) {
 }
 ```
 The key invariant: **the old log + old state OR the new snapshot + new log must be fully durable before we respond to any RPC.**
-> **💡 Insight**: This atomicity requirement is the same pattern as **write-ahead logging in databases**. A database doesn't invalidate the old version of a page until the new version is safely written. Similarly, we don't invalidate the old log until the snapshot is safely persisted.
+> ** Insight**: This atomicity requirement is the same pattern as **write-ahead logging in databases**. A database doesn't invalidate the old version of a page until the new version is safely written. Similarly, we don't invalidate the old log until the snapshot is safely persisted.
 ---
 ## Recovery from Snapshot + Log
 
@@ -3569,7 +3569,7 @@ func (c *RaftClient) serverOrder(hint string) []string {
     return result
 }
 ```
-> **💡 Insight**: This redirect pattern is the same as **HTTP 302 redirects** and **service discovery** in microservices. The client doesn't need to know the current topology—the server tells it where to go. This is essential for systems where leadership changes over time.
+> ** Insight**: This redirect pattern is the same as **HTTP 302 redirects** and **service discovery** in microservices. The client doesn't need to know the current topology—the server tells it where to go. This is essential for systems where leadership changes over time.
 ---
 ## Duplicate Detection: Retries Are Not Harmless
 The core problem: **clients retry, but the command might have already succeeded.**
@@ -3696,7 +3696,7 @@ func (kv *KVStateMachine) ExpireSessions(timeout time.Duration) {
 }
 ```
 This is safe because if an expired client comes back, it just creates a new session. The only risk is if a client's retry takes longer than the timeout—but that's a configuration problem, not a correctness problem.
-> **💡 Insight**: The (clientId, sequenceNumber) pattern is identical to **idempotency keys in Stripe's API** and **exactly-once semantics in Kafka**. Every system that needs to handle network retries safely uses some form of client-provided unique identifier. The client is the only entity that knows what "same operation" means.
+> ** Insight**: The (clientId, sequenceNumber) pattern is identical to **idempotency keys in Stripe's API** and **exactly-once semantics in Kafka**. Every system that needs to handle network retries safely uses some form of client-provided unique identifier. The client is the only entity that knows what "same operation" means.
 ---
 ## Linearizable Reads: The Leader Isn't Enough
 Here's the trap: **a node that thinks it's the leader might not be.**
@@ -3889,7 +3889,7 @@ func (rf *RaftNode) LinearizableFollowerRead(key string) (string, error) {
     }
 }
 ```
-> **💡 Insight**: ReadIndex is "consensus lite"—you get the safety of confirming leadership without the cost of full log replication. This connects to **lease-based reads in distributed databases** where a leader holds a time-based lease and can serve reads during the lease period without re-confirming quorum.
+> ** Insight**: ReadIndex is "consensus lite"—you get the safety of confirming leadership without the cost of full log replication. This connects to **lease-based reads in distributed databases** where a leader holds a time-based lease and can serve reads during the lease period without re-confirming quorum.
 ---
 ## The CAP Tradeoff: Why Raft Chooses Consistency
 Raft provides linearizability, which means it's a **CP system** in CAP terms.
@@ -4603,7 +4603,7 @@ Before diving into invariants, we need to distinguish two fundamental types of p
 - "A committed entry will eventually be applied" — requires fairness assumptions
 - Liveness violations are about **termination**, not correctness
 Raft guarantees safety unconditionally and liveness under timing assumptions (eventually-synchronous network). This milestone focuses on safety because safety violations are bugs. Liveness issues are configuration problems.
-> **💡 Insight**: This distinction comes from formal verification of concurrent systems. The same concepts appear in model checkers, theorem provers, and Jepsen-style testing. Safety properties can be checked at each state; liveness properties require reasoning about infinite executions.
+> ** Insight**: This distinction comes from formal verification of concurrent systems. The same concepts appear in model checkers, theorem provers, and Jepsen-style testing. Safety properties can be checked at each state; liveness properties require reasoning about infinite executions.
 ---
 ## The Four Raft Safety Invariants
 The Raft paper defines four safety properties that must hold at all times. These aren't suggestions—they're the definition of correctness.

@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Memory Pool Allocator
+# Project Charter: Memory Pool Allocator
 ## What You Are Building
 A production-grade fixed-size block allocator that achieves O(1) allocation and deallocation through intrusive free list management. Your allocator will pre-allocate memory pools, automatically grow when exhausted, protect concurrent access with mutexes, and detect memory corruption bugs through poisoning and canary values. By the end, you'll have a complete allocator suitable for real-time systems, game engines, and embedded applications.
 ## Why This Project Exists
@@ -43,7 +43,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---

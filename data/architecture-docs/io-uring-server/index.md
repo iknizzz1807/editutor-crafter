@@ -1,4 +1,4 @@
-# 🎯 Project Charter: io_uring High-Performance Server
+# Project Charter: io_uring High-Performance Server
 ## What You Are Building
 A production-grade asynchronous I/O server using Linux io_uring that boots from a minimal ring buffer implementation and progresses through file I/O with registered resources, a TCP echo server handling 10,000+ concurrent connections, and finally advanced features including zero-copy sends, SQ polling, and linked operations. By the end, you will have a complete server demonstrating 2-10x throughput improvement over traditional epoll-based implementations, with comprehensive benchmarks proving the performance gains.
 ## Why This Project Exists
@@ -49,7 +49,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---

@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Distributed Training Framework
+# Project Charter: Distributed Training Framework
 ## What You Are Building
 A production-grade distributed training framework capable of training large language models (7B to 175B+ parameters) across thousands of GPUs. You will implement the complete parallelism stack: data parallelism for batch scaling, tensor parallelism for intra-layer sharding across NVLink-connected GPUs, pipeline parallelism for inter-layer partitioning across nodes, and ZeRO optimization for memory efficiency. The framework includes fault tolerance with asynchronous checkpointing, straggler detection, elastic training, and comprehensive profiling capabilities.
 ## Why This Project Exists
@@ -48,7 +48,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---
@@ -5144,13 +5144,13 @@ Efficiency Analysis:
         # Add efficiency recommendations
         comm_pct = analysis.get('comm_overhead_pct', 0)
         if comm_pct > 30:
-            report += "  ⚠️  High communication overhead. Consider:\n"
+            report += "  ⚠  High communication overhead. Consider:\n"
             report += "      - Reducing TP size (requires less all-reduce)\n"
             report += "      - Using gradient compression\n"
             report += "      - Increasing gradient accumulation\n"
         memory = analysis.get('memory_peak_gb', 0)
         if memory > 70:  # Close to A100's 80GB
-            report += "  ⚠️  High memory usage. Consider:\n"
+            report += "  ⚠  High memory usage. Consider:\n"
             report += "      - Increasing ZeRO stage\n"
             report += "      - Enabling gradient checkpointing\n"
             report += "      - Reducing batch size\n"
@@ -6596,7 +6596,7 @@ Memory:
         comm_ratio = aggregate['communication_compute_ratio']
         if comm_ratio > 0.5:
             report += f"""
-⚠️  Communication bottleneck detected!
+⚠  Communication bottleneck detected!
    Communication takes {comm_ratio*100:.1f}% of compute time.
    Consider:
    - Reducing tensor parallel size (fewer all-reduces)
@@ -6605,7 +6605,7 @@ Memory:
 """
         if aggregate['avg_gpu_util_pct'] < 70:
             report += f"""
-⚠️  Low GPU utilization ({aggregate['avg_gpu_util_pct']:.1f}%)
+⚠  Low GPU utilization ({aggregate['avg_gpu_util_pct']:.1f}%)
    GPUs are spending time waiting.
    Consider:
    - Checking for data loading bottlenecks
@@ -6789,18 +6789,18 @@ Memory Breakdown:
             report += f"  {category}: {pct:.1f}%\n"
         report += f"""
 Fragmentation: {analysis['avg_fragmentation_pct']:.1f}%
-Memory leak:   {'⚠️  DETECTED' if analysis['memory_leak_detected'] else '✓ None detected'}
+Memory leak:   {'⚠  DETECTED' if analysis['memory_leak_detected'] else '✓ None detected'}
 """
         if analysis['avg_fragmentation_pct'] > 20:
             report += """
-⚠️  High memory fragmentation!
+⚠  High memory fragmentation!
    Consider:
    - Calling torch.cuda.empty_cache() periodically
    - Reducing activation checkpointing granularity
 """
         if analysis['memory_leak_detected']:
             report += """
-⚠️  Memory leak detected!
+⚠  Memory leak detected!
    Memory is continuously increasing.
    Check for:
    - Saved tensors not being freed

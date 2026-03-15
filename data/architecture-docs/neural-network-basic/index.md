@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Neural Network from Scratch (micrograd)
+# Project Charter: Neural Network from Scratch (micrograd)
 ## What You Are Building
 A scalar-valued automatic differentiation engine that constructs computational graphs dynamically through operator overloading, implements reverse-mode backpropagation via topological sorting, and culminates in a fully trainable multi-layer perceptron. Your final system will train a neural network to learn the XOR function from scratch—no deep learning frameworks, just ~150 lines of Python revealing exactly how PyTorch works under the hood.
 ## Why This Project Exists
@@ -39,7 +39,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---

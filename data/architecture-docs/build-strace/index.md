@@ -1,4 +1,4 @@
-# 🎯 Project Charter: System Call Tracer (strace Clone)
+# Project Charter: System Call Tracer (strace Clone)
 ## What You Are Building
 A fully functional `strace` clone for x86_64 Linux: a command-line tool that uses `ptrace` to intercept every system call made by a target process and its descendants, decode arguments from registers and tracee memory, and print human-readable output in strace format. By the end, your tracer can attach to any running process, follow forks across an entire process tree, filter output by syscall name, and generate a timing summary table — a genuine systems debugging instrument.
 ## Why This Project Exists
@@ -43,7 +43,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---
@@ -357,7 +357,7 @@ Here's the complete register map:
 | `rdi` | Argument 1 | |
 | `rsi` | Argument 2 | |
 | `rdx` | Argument 3 | |
-| `r10` | Argument 4 | ⚠️ NOT `rcx` — this is the key difference from the C ABI |
+| `r10` | Argument 4 | ⚠ NOT `rcx` — this is the key difference from the C ABI |
 | `r8` | Argument 5 | |
 | `r9` | Argument 6 | |
 | `rax` (after) | Return value | Negative = `-errno` (e.g., `-2` = `-ENOENT`) |

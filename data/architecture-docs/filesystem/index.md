@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Inode-Based Filesystem Implementation
+# Project Charter: Inode-Based Filesystem Implementation
 
 ## What You Are Building
 A fully functional, inode-based filesystem that runs in userspace via the FUSE (Filesystem in Userspace) interface. You are building the entire stack: from a raw block-device abstraction over a 256MB disk image to a hierarchical directory tree and a write-ahead journaling system. By the end, you will mount your filesystem as a real volume on your Linux or macOS machine and use standard tools like `ls`, `vim`, and `git` to manipulate data stored in your custom binary format.
@@ -51,12 +51,12 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 
-## 🏗️ Filesystem Foundations & Unix Design
+##  Filesystem Foundations & Unix Design
 
 **The UNIX Time-Sharing System**
 - **Paper**: Dennis Ritchie and Ken Thompson (1974), *The UNIX Time-Sharing System*.
@@ -71,7 +71,7 @@ The project is complete when:
 - **Why**: The definitive text on why block alignment and locality (discussed in M1) matter for physical disk performance.
 - **Pedagogical Timing**: Read **after Milestone 1** to understand why you partitioned the disk into specific regions.
 
-## 💾 Block Storage & Alignment
+## Block Storage & Alignment
 
 **Coding for SSDs (Part 2: Architecture and Benchmarking)**
 - **Best Explanation**: [Emmanuel Goossaert's Blog](https://codecapsule.com/2014/02/12/coding-for-ssds-part-2-architecture-and-benchmarking/), Section: "Pages and Blocks."
@@ -105,7 +105,7 @@ The project is complete when:
 - **Why**: The authoritative reference for the kernel-to-userspace bridge you build in Milestone 5.
 - **Pedagogical Timing**: Read **before starting Milestone 5** to understand the callback loop.
 
-## 🛡️ Journaling & Crash Consistency
+## 🛡 Journaling & Crash Consistency
 
 **Analysis and Evolution of Journaling File Systems**
 - **Paper**: Prabhakaran et al. (2005), *Analysis and Evolution of Journaling File Systems*.
@@ -118,7 +118,7 @@ The project is complete when:
 - **Why**: A world-class explanation of how WAL (Write-Ahead Logging) enables concurrent readers and writers, a concept introduced in the M6 "Knowledge Cascade."
 - **Pedagogical Timing**: Read **after completing Milestone 6** to see how your journaling logic applies to database engines.
 
-## 🛠️ Performance & Concurrency
+## 🛠 Performance & Concurrency
 
 **The Linux VFS (Virtual File System) Lock: Pathname Lookup**
 - **Best Explanation**: [Neil Brown's "Pathname lookup in the Linux kernel"](https://lwn.net/Articles/649115/) (LWN.net series).

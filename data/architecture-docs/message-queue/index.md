@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Message Queue
+# Project Charter: Message Queue
 ## What You Are Building
 A production-grade message broker supporting both pub/sub fan-out and consumer-group competitive consumption over TCP with a custom binary wire protocol. The broker persists messages to an append-only log with configurable durability, implements acknowledgment-based at-least-once reliability, handles backpressure through explicit flow control, and provides dead letter queues for poison message handling. By the end, your broker will accept 100+ concurrent connections, survive crashes with full message recovery, and expose a monitoring API for operational visibility.
 ## Why This Project Exists
@@ -55,7 +55,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---

@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Gossip Protocol
+# Project Charter: Gossip Protocol
 ## What You Are Building
 A production-grade gossip protocol implementing epidemic-style broadcast dissemination with SWIM failure detection, pull-based anti-entropy reconciliation, and comprehensive integration testing. The system achieves O(log N) convergence through randomized peer selection while maintaining O(1) per-node bandwidth regardless of cluster size. You will build seed-node bootstrapping, push-based state dissemination with Lamport clocks, bidirectional anti-entropy with Merkle tree optimization, and SWIM-style failure detection with indirect probing and incarnation-based refutation—all validated against probabilistic convergence bounds.
 ## Why This Project Exists
@@ -43,7 +43,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---

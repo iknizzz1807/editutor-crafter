@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Profiler Tool
+# Project Charter: Profiler Tool
 ## What You Are Building
 A production-quality sampling profiler that captures CPU profiles via statistical sampling at configurable frequencies (default 99Hz), tracks memory allocations through LD_PRELOAD interposition, handles async/await execution patterns with logical call stack reconstruction, and generates flame graph visualizations. The profiler exports to standard formats (pprof protobuf, collapsed stacks) for integration with existing toolchains and exposes an HTTP endpoint for continuous profiling in production environments.
 ## Why This Project Exists
@@ -48,7 +48,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---
@@ -3222,7 +3222,7 @@ extern "C" fn dump_final_report() {
         if let Some(temporal) = TEMPORAL.get() {
             if let Ok(t) = temporal.lock() {
                 if let Some(pattern) = t.detect_leak_pattern() {
-                    println!("\n⚠️  DETECTED POTENTIAL LEAK PATTERN");
+                    println!("\n⚠  DETECTED POTENTIAL LEAK PATTERN");
                     println!("   Growth rate: {}/second", format_bytes(pattern.bytes_per_second));
                 }
                 // Export temporal data
@@ -11965,7 +11965,7 @@ impl AsyncProfiler {
             println!("  {} - Await: {}, I/O: {}", name, await_time, io);
         }
         if !report.hanging_tasks.is_empty() {
-            println!("\n⚠️  WARNING: {} potential hanging tasks detected",
+            println!("\n⚠  WARNING: {} potential hanging tasks detected",
                 report.hanging_tasks.len());
         }
     }

@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Event Loop with epoll
+# Project Charter: Event Loop with epoll
 ## What You Are Building
 A single-threaded C server that handles 10,000+ simultaneous TCP connections using Linux's `epoll` interface and the Reactor pattern. You will build every layer from scratch: raw epoll syscalls with edge-triggered I/O, a write buffer with backpressure handling, a min-heap timer system, a clean Reactor abstraction API, and a benchmarked HTTP/1.1 static file server on top of it all. The final server boots, accepts connections, and serves files — with zero epoll symbols in application-layer code.
 ## Why This Project Exists
@@ -58,11 +58,11 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---
-## 🧱 Before You Begin: Required Foundations
+## Before You Begin: Required Foundations
 ### 1. The C10K Problem — Historical Framing
 - **Paper**: Dan Kegel, "The C10K Problem" (1999, updated 2011). kegel.com/c10k.html
 - **Why**: This is the document that named the problem you are solving. Every design decision in the Atlas traces back to the constraints Kegel identified. Read it before writing a single line of code to understand why thread-per-connection fails.
@@ -80,7 +80,7 @@ The project is complete when:
 - **Why**: The Atlas's kernel data structure description (interest set = red-black tree, readiness queue = linked list) maps directly to `eventpoll.c`. The Cloudflare posts explain the thundering herd and `EPOLLEXCLUSIVE` in concrete production terms.
 - **When**: **Read at the START of Milestone 1**, before implementing the epoll setup. The man pages are your reference throughout M1–M4.
 ---
-## 🔄 At Milestone 1: Level-Triggered vs Edge-Triggered
+## At Milestone 1: Level-Triggered vs Edge-Triggered
 ### 4. Edge-Triggered vs Level-Triggered Semantics — Epoll Deep Dive
 - **Best explanation**: Linus Torvalds's explanation of ET vs LT semantics in the Linux kernel mailing list (2002) — available via lkml.org search for "epoll semantics". Alternatively: Jonathan Corbet, "Migrating to epoll()" — lwn.net/Articles/14587/ (2002), ~10 minutes.
 - **Code**: NGINX source — `src/event/modules/ngx_epoll_module.c` — `ngx_epoll_add_event()` function shows exactly how NGINX registers events with `EPOLLET | EPOLLIN`. github.com/nginx/nginx
@@ -92,7 +92,7 @@ The project is complete when:
 - **Why**: The Atlas's warning about the fd-reuse race (DEL before close) and the `data.ptr` vs `data.fd` discussion in M3 both require understanding that an fd is an index, not an identity. Love's explanation of `dup()`, `fork()`, and shared file descriptions is the minimum required mental model.
 - **When**: **Read during Milestone 1**, specifically before implementing `conn_close`. The ordering (DEL then close) only makes sense if you understand what closing an fd actually does to the kernel's data structures.
 ---
-## 💾 At Milestone 2: Write Buffering and Timer Management
+## At Milestone 2: Write Buffering and Timer Management
 ### 6. I/O Readiness vs I/O Completion — The Fundamental Model Distinction
 - **Best explanation**: Jens Axboe, "io_uring and the new world of async I/O" — kernel.dk/io_uring.pdf (2019). Read only **Sections 1–3** ("Introduction" through "Basic usage") — ~20 minutes.
 - **Why**: The Atlas references the readiness/completion distinction in M1 and the "io_uring upgrade path" in M3 and M4. Axboe's paper is the primary source. Reading it at M2 gives you the context to understand *why* your reactor is structured the way it is — and what its fundamental limitation is — before you build the abstraction in M3.
@@ -108,7 +108,7 @@ The project is complete when:
 - **Why**: The Atlas mandates `CLOCK_MONOTONIC` and notes that `now_ms()` is a vDSO call costing ~20ns. Drepper explains the vDSO mechanism. The POSIX spec explains why `CLOCK_REALTIME` can jump. Both facts appear in the M2 hardware soul section.
 - **When**: **Read during Milestone 2** before implementing `now_ms()`. The 5 minutes spent understanding vDSO will explain why you never need to worry about the timer accuracy cost.
 ---
-## 🏗️ At Milestone 3: Reactor Pattern
+##  At Milestone 3: Reactor Pattern
 ### 9. The Reactor Pattern — Original Source
 - **Paper**: Douglas C. Schmidt, "Reactor: An Object Behavioral Pattern for Demultiplexing and Dispatching Handles for Synchronous Events" — in *Pattern Languages of Program Design* (1995). Available at: cs.wustl.edu/~schmidt/PDF/reactor-siemens.pdf
 - **Why**: The Atlas builds exactly the pattern Schmidt defined. The four-component model (Demultiplexer, Dispatcher, Handler Registration Table, Concrete Handlers) maps 1:1 to `reactor_t`'s internal structure. Reading the original 10-page paper reveals why the Reactor is an *architectural* decision, not merely an implementation detail.
@@ -124,7 +124,7 @@ The project is complete when:
 - **Why**: The Atlas explicitly maps M3's four-phase loop to Node.js's event loop phases. Belder's talk makes this concrete: `process.nextTick()` = your Phase 3 deferred queue; timer phase = your Phase 4. After M3, you can read Node.js internals documentation and understand every sentence.
 - **When**: **Read after completing `reactor_run()` in Milestone 3 (Phase 3)**. You need your own implementation working before the comparison is meaningful. The mapping from your code to Node.js's code is the reward for completing M3 correctly.
 ---
-## 🌐 At Milestone 4: HTTP Server
+## At Milestone 4: HTTP Server
 ### 12. HTTP/1.1 Specification — RFC 9110 and RFC 9112
 - **Spec**: RFC 9112 — "HTTP/1.1" — datatracker.ietf.org/doc/html/rfc9112. Read **Sections 2 (Message Format), 3 (Request Line), 5 (Field Syntax), 6 (Message Body), and 9 (Connection Management)** only. ~45 minutes total.
 - **Why**: The Atlas's parser implements exactly the grammar in RFC 9112. Section 6 (Content-Length behavior, duplicate header handling) explains why the parser takes `last-value-wins` on duplicate `Content-Length` headers. Section 9 explains keep-alive and `Connection: close` semantics precisely.
@@ -140,7 +140,7 @@ The project is complete when:
 - **Why**: The Atlas uses `read()+write()` for file serving and explicitly notes that `sendfile()` is the production upgrade. Stancevic's article provides the precise data-copy count (4 copies with `read/write`, 2 with `sendfile`) that quantifies the performance difference. The Atlas's comparison table (your server vs. NGINX) references this directly.
 - **When**: **Read after completing `http_process_request` in Milestone 4 (Phase 7)**. Once you have working `read()+write()` file serving, reading about `sendfile()` makes the upgrade path concrete and motivating.
 ---
-## 🏁 After the Project: What Opens Up
+## After the Project: What Opens Up
 ### 15. Designing Data-Intensive Applications — Distributed Systems Connections
 - **Book chapter**: Martin Kleppmann, *Designing Data-Intensive Applications* (2017) — **Chapter 8, "The Trouble with Distributed Systems"**, specifically **pages 274–281** on clocks and ordering.
 - **Why**: The Atlas repeatedly draws connections from event-loop mechanics to distributed systems concepts (TCP backpressure → Kafka backpressure; timer accuracy → distributed clock skew). Kleppmann's Chapter 8 extends these connections into the distributed systems domain. After completing M4, you have the systems intuition to make Kleppmann's content immediately actionable.

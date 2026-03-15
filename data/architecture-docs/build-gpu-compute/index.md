@@ -1,4 +1,4 @@
-# 🎯 Project Charter: GPU Compute Programming
+# Project Charter: GPU Compute Programming
 ## What You Are Building
 A complete GPU computing toolkit in CUDA C++ that includes a vector operations library with coalesced memory access, an optimized matrix transpose achieving 65-85% of peak memory bandwidth, parallel primitives (reduction, scan, histogram) that scale to millions of elements, a streaming pipeline with compute-transfer overlap using CUDA streams and pinned memory, and a profiling framework with occupancy calculation and roofline analysis. By the end, you'll have ~3,000-4,000 lines of CUDA code across 15+ source files that can process data at hundreds of gigabytes per second.
 ## Why This Project Exists
@@ -43,7 +43,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---

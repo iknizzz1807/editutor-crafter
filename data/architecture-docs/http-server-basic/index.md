@@ -1,4 +1,4 @@
-# 🎯 Project Charter: HTTP Server (Basic)
+# Project Charter: HTTP Server (Basic)
 ## What You Are Building
 A static-file-serving HTTP/1.1 server built from raw TCP sockets. You will write every layer by hand: a sequential accept loop that handles the socket lifecycle, an RFC 7230-compliant request parser that turns wire bytes into structured data, a five-stage filesystem security pipeline that serves files while blocking directory traversal attacks, and a bounded thread pool with HTTP/1.1 keep-alive and graceful shutdown. By the end, your server will accept concurrent connections, serve real files from a configurable document root, and shut down cleanly on SIGTERM without dropping in-flight requests.
 ## Why This Project Exists
@@ -62,7 +62,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---
@@ -108,7 +108,7 @@ The project is complete when:
 - **Why:** The `realpath(3)` man page documents the ENOENT/EACCES/ELOOP errno values that drive your 404-vs-403 logic. The `openat(2)` man page with `O_NOFOLLOW` is the reference for the TOCTOU mitigation described in the M3 design decisions table.
 - **⏱ Read the `realpath(3)` page BEFORE implementing Stage 3 in Milestone 3.**
 ---
-## ⚙️ Concurrency Primitives
+## ⚙ Concurrency Primitives
 ### *Programming with POSIX Threads* — David Butenhof
 **Book.** Addison-Wesley, 1997. Chapter 2 (Threads), Chapter 3 (Synchronization — mutex and condition variable), Chapter 5 (Advanced Synchronization — spurious wakeups, lock ordering).
 - **Why:** The definitive reference for `pthread_mutex_t`, `pthread_cond_wait` with a `while` loop (not `if`), and the lock-ordering rule to prevent deadlocks. The M4 thread pool design follows the producer-consumer pattern described in Chapter 3 exactly.
@@ -1183,7 +1183,7 @@ What happens in the hardware when your parser runs?
 **`tolower()` in the name normalization loop**: Each `tolower()` call involves a branch (is the character between 'A' and 'Z'?) that is highly predictable: header names are short ASCII strings where most characters are already lowercase. The branch predictor will overwhelmingly predict "already lowercase" and be right most of the time. The misprediction penalty is paid at most once or twice per header name (for the uppercase letters), which is negligible.
 **`strcmp()` in method classification**: `strcmp("GET", method)` touches 3–16 bytes of the method string. Both the literal `"GET"` (in read-only data segment) and `req.method` (on the stack) are almost certainly in L1 cache. Three `strcmp()` calls cost under 10 nanoseconds total.
 **Stack allocation**: `http_request_t` is about 40KB when you count MAX_HEADERS × (128 + 1024) bytes = 32 × 1152 = 36KB. That pushes it past L1 cache size. If you are allocating `http_request_t` on the stack in `handle_client()`, check with `-Wframe-larger-than=16384` that you are not exceeding the thread stack limit. Consider heap-allocating `http_request_t` or reducing header value buffer sizes.
-> ⚠️ **Stack size alert**: With `MAX_HEADERS = 32` and `http_header_t` containing `char name[128]` + `char value[1024]`, the headers array alone is `32 × 1152 = 36,864` bytes. Plus the `char buf[8192]` in `handle_client()`. Your thread may be using 45KB of stack. Default thread stack size is typically 8MB on Linux, so this is safe — but be aware of it. In a thread pool with 64 threads, the headers arrays alone consume 64 × 36KB ≈ 2.3MB of stack across all threads.
+> ⚠ **Stack size alert**: With `MAX_HEADERS = 32` and `http_header_t` containing `char name[128]` + `char value[1024]`, the headers array alone is `32 × 1152 = 36,864` bytes. Plus the `char buf[8192]` in `handle_client()`. Your thread may be using 45KB of stack. Default thread stack size is typically 8MB on Linux, so this is safe — but be aware of it. In a thread pool with 64 threads, the headers arrays alone consume 64 × 36KB ≈ 2.3MB of stack across all threads.
 ---
 ## Design Decisions
 | Approach | Pros | Cons | Used By |

@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Write-Ahead Log Implementation
+# Project Charter: Write-Ahead Log Implementation
 ## What You Are Building
 A production-grade Write-Ahead Log (WAL) system implementing the ARIES crash recovery algorithm. Your implementation will serialize transaction records to an append-only log file with CRC32 integrity, batch multiple transaction commits into single fsync operations via group commit, and perform three-phase crash recovery (Analysis, Redo, Undo) with Compensation Log Records for idempotent recovery even after crashes during recovery itself. The final system supports fuzzy checkpointing to bound recovery time and enables safe log segment truncation.
 ## Why This Project Exists
@@ -47,7 +47,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---

@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Distributed Cache
+# Project Charter: Distributed Cache
 ## What You Are Building
 A production-grade distributed caching system implementing the core techniques behind Redis Cluster and Memcached. You'll build a horizontally-scalable, fault-tolerant cache from scratch featuring: an in-memory cache with LRU/LFU eviction and TTL expiration, consistent hashing with virtual nodes for balanced key distribution, primary-secondary replication with automatic failover, cache patterns (write-through, write-behind, cache-aside) with thundering herd protection, and a custom wire protocol with connection pooling. By the end, your system will handle multiple cache nodes, survive node failures, prevent cache stampedes, and serve millions of requests per second.
 ## Why This Project Exists
@@ -48,11 +48,11 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---
-## 🎯 Essential Prerequisites
+## Essential Prerequisites
 ### Data Structures & Algorithms
 **Read BEFORE starting this project** — required foundational knowledge.
 | Resource | Type | Section/Focus | Why It Matters |

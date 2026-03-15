@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Cache-Optimized Data Structures
+# Project Charter: Cache-Optimized Data Structures
 ## What You Are Building
 A comprehensive toolkit for understanding and exploiting CPU cache behavior, including cache-profiling tools that detect L1/L2/L3 boundaries through latency measurement, memory layout transformations (AoS vs SoA) that demonstrate 2-5x speedups from data-oriented design, a cache-friendly hash table using Robin Hood open addressing, a van Emde Boas layout B-tree that achieves optimal cache behavior without knowing cache parameters, and cache-blocked matrix multiplication with automatic block size tuning.
 ## Why This Project Exists
@@ -43,7 +43,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---

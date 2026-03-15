@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Tensor Quantization Engine
+# Project Charter: Tensor Quantization Engine
 ## What You Are Building
 A complete model quantization system that transforms floating-point neural networks into compact integer representations for efficient inference. You'll implement symmetric and asymmetric quantization with the affine transform, per-tensor and per-channel granularity strategies, calibration pipelines with percentile outlier handling, full post-training static quantization for CNNs and transformers, and the GPTQ algorithm for INT4 LLM compression. By the end, you'll have a working quantization toolkit that can reduce model size by 4-8x with minimal accuracy loss.
 ## Why This Project Exists
@@ -45,7 +45,7 @@ The project is complete when:
 ---
 
 Prioritize papers, specifications, original source material, then best explanations.
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---

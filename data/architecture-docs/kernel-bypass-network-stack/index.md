@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Kernel Bypass Network Stack
+# Project Charter: Kernel Bypass Network Stack
 
 ## What You Are Building
 You are building a complete, high-performance user-space TCP/IP stack that bypasses the Linux kernel using DPDK or AF_XDP. This system provides direct access to NIC hardware, implementing every layer from Ethernet frames and ARP resolution to IPv4 routing and a full TCP state machine. By the end, you will have a custom networking framework capable of processing packets with sub-5 microsecond latency and handling 10,000+ concurrent connections.
@@ -48,7 +48,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
@@ -4722,8 +4722,8 @@ dpdk-devbind.py --bind=vfio-pci 0000:01:00.0
 ./stack --lcores 0@0,1@2 -n 4 -- -p 0x1
 # Parameters:
 # --lcores: Core mapping (logical@physical)
-#   0@0: Logical core 0 on physical core 0
-#   1@2: Logical core 1 on physical core 2
+# 0@0: Logical core 0 on physical core 0
+# 1@2: Logical core 1 on physical core 2
 # -n 4: Number of memory channels
 # -p 0x1: Port mask (bit 0 = port 0)
 # For multi-NUMA (if necessary)

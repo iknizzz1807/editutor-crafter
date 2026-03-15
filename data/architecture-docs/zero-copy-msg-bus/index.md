@@ -1,4 +1,4 @@
-# 🎯 Project Charter: Zero-Copy Message Bus
+# Project Charter: Zero-Copy Message Bus
 ## What You Are Building
 A high-throughput inter-process messaging system that achieves sub-microsecond latency by eliminating data copies entirely. Processes communicate through shared memory regions with lock-free ring buffers, passing flat buffer serialized messages that are read directly from memory without parsing. By the end, you'll have a production-grade message bus supporting multiple producers and consumers, topic-based pub/sub routing with MQTT-style wildcards, and crash recovery with optional durability—all achieving 5-20 million messages per second with median latency under 500 nanoseconds.
 ## Why This Project Exists
@@ -48,7 +48,7 @@ The project is complete when:
 
 ---
 
-# 📚 Before You Read This: Prerequisites & Further Reading
+# Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
 ---

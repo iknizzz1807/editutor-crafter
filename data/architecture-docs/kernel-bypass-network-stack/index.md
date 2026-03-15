@@ -4658,7 +4658,6 @@ void application_send_loop(struct tcp_stack *stack) {
 ## Deployment Documentation: Production-Ready
 Your stack is optimized. Now it needs to be deployable. Documentation isn't optional—it's how your system survives in production.
 ### System Requirements
-```markdown
 # Kernel Bypass Network Stack - Deployment Guide
 ## Hardware Requirements
 ### Minimum
@@ -4690,7 +4689,6 @@ Critical for latency:
 - **SR-IOV**: DISABLE (unless using SR-IOV mode)
 ## Linux Kernel Parameters
 Add to /etc/sysctl.conf:
-```
 # Hugepages
 vm.nr_hugepages=16384
 # Reduce kernel interference

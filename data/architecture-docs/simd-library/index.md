@@ -3192,7 +3192,6 @@ RESULT: Hand-written WINS (3.7x faster, compiler couldn't vectorize)
 ---
 ## Analysis Document Template
 Your final deliverable is a written analysis. Here's the structure:
-```markdown
 # SIMD Auto-vectorization Analysis Report
 ## Executive Summary
 - Auto-vectorization matched hand-written SIMD for [X] of [Y] operations
@@ -3205,7 +3204,6 @@ Your final deliverable is a written analysis. Here's the structure:
 - CPU Frequency: Pinned at [X] GHz
 ## Operation 1: Array Addition
 ### Vectorization Report
-```
 [paste compiler output]
 ```
 ### Assembly Analysis

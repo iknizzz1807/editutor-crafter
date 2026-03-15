@@ -13217,7 +13217,6 @@ __global__ void matvec_optimized(const float* A, const float* x, float* y,
 }
 ```
 **Optimization Log Template**:
-```markdown
 # Matrix-Vector Multiplication Optimization Log
 ## Baseline (Naive)
 ### Configuration
@@ -13240,7 +13239,6 @@ __global__ void matvec_optimized(const float* A, const float* x, float* y,
   - All threads in a warp read the same x[col] simultaneously
   - This causes 32 threads to contend for the same cache line
 ### Nsight Compute Output
-```
 Global Load Throughput: 45 GB/s
 Global Store Throughput: 12 GB/s
 L2 Cache Hit Rate: 23.4%

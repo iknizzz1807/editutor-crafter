@@ -48,7 +48,6 @@ The project is complete when:
 
 ---
 
-```markdown
 # 📚 Before You Read This: Prerequisites & Further Reading
 > **Read these first.** The Atlas assumes you are familiar with the foundations below.
 > Resources are ordered by when you should encounter them — some before you start, some at specific milestones.
@@ -137,7 +136,6 @@ The project is complete when:
 | **Pipeline Bubble** | GPipe paper, Figure 1 (shows bubble vs. computation tradeoff) |
 | **ZeRO Memory Savings** | ZeRO paper, Figure 2 (memory breakdown by stage) |
 | **3D Process Grid** | Megatron-LM 3D paper, Figure 1 (topology visualization) |
-```
 
 ---
 

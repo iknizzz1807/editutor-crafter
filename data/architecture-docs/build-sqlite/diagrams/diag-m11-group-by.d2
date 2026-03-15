@@ -1,0 +1,213 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: "GROUP BY Execution: Sort-Based vs Hash-Based Approaches" {
+  shape: text
+  style.font-size: 28
+  style.bold: true
+}
+
+# Main Execution Flow Row
+execution_engines: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  # --- COLUMN 1: SORT-BASED ENGINE ---
+  sort_engine: "Sort-Based Engine (Streaming)" {
+    direction: down
+    style.fill: "#E3F2FD"
+    style.stroke: "#1976D2"
+    style.stroke-width: 2
+
+    input_rows: {
+      shape: sql_table
+      label: "Raw Table Data (buffer_mgr.c)"
+      row1: "0x00 | uint64_t | id"
+      row2: "0x08 | char[32] | category"
+      row3: "0x28 | double   | amount"
+      style.fill: "#FFF3E0"
+    }
+
+    sort_step: {
+      label: "Step 1: External Merge Sort"
+      shape: step
+      style.fill: "#FFECB3"
+      style.stroke: "#FFA000"
+      width: 320
+      code: |'sql
+        -- Sort logic
+        ORDER BY category ASC, amount DESC;
+        /* Complexity: O(N log N) */
+        /* Memory: Constant (using spill-to-disk) */
+      '|
+    }
+
+    sorted_data: {
+      shape: sql_table
+      label: "Sorted Intermediate Stream"
+      row1: "Category A | 100"
+      row2: "Category A | 150"
+      row3: "Category B | 200"
+      row4: "Category C | 50"
+      style.fill: "#E8F5E9"
+    }
+
+    scan_step: {
+      label: "Step 2: Control-Break Aggregate"
+      shape: step
+      style.fill: "#C8E6C9"
+      style.stroke: "#388E3C"
+      width: 320
+      code: |'c
+        if (curr_key != prev_key) {
+           emit_group(prev_agg);
+           reset_agg(curr_key);
+        }
+        update_agg(curr_val);
+      '|
+    }
+
+    sort_output: {
+      shape: sql_table
+      label: "Aggregated Results"
+      row1: "category | COUNT | SUM"
+      row2: "A        | 2     | 250"
+      row3: "B        | 1     | 200"
+      style.fill: "#C5CAE5"
+    }
+
+    sort_tradeoffs: {
+      label: "Architecture Specs"
+      shape: callout
+      style.fill: "#FFFDE7"
+      style.stroke: "#FBC02D"
+      width: 250
+      code: |'md
+        - Scalability: High (Disk-bound)
+        - Memory usage: Low/Fixed
+        - Property: Maintains order
+      '|
+    }
+  }
+
+  # --- SPACER ---
+  vs_spacer: "   VS   " {
+    shape: text
+    style.font-size: 24
+    style.bold: true
+  }
+
+  # --- COLUMN 2: HASH-BASED ENGINE ---
+  hash_engine: "Hash-Based Engine (In-Memory)" {
+    direction: down
+    style.fill: "#F3E5F5"
+    style.stroke: "#7B1FA2"
+    style.stroke-width: 2
+
+    hash_input: {
+      shape: sql_table
+      label: "Raw Table Data (buffer_mgr.c)"
+      row1: "0x00 | uint64_t | id"
+      row2: "0x08 | char[32] | category"
+      row3: "0x28 | double   | amount"
+      style.fill: "#FFF3E0"
+    }
+
+    hash_step: {
+      label: "Step 1: Hash & Probe"
+      shape: step
+      style.fill: "#E1BEE7"
+      style.stroke: "#7B1FA2"
+      width: 320
+      code: |'c
+        uint64_t h = hash_fn(row.category);
+        AggState *s = table_lookup(h, row.category);
+        if (!s) s = table_insert(h, row.category);
+      '|
+    }
+
+    hash_table_struct: {
+      shape: class
+      label: "HashGroupTable (hash_agg.h)"
+      -buckets: "Bucket**"
+      -size: "size_t"
+      -mask: "uint64_t"
+      +probe(key): "AggState*"
+      +resize(): "void"
+    }
+
+    bucket_struct: {
+      shape: class
+      label: "Bucket (Singly Linked)"
+      -key: "char*"
+      -sum: "double"
+      -count: "uint64_t"
+      -next: "Bucket*"
+    }
+
+    accumulate_step: {
+      label: "Step 2: Update State"
+      shape: step
+      style.fill: "#D1C4E9"
+      style.stroke: "#5E35B1"
+      width: 320
+      code: |'c
+        s->sum += row.amount;
+        s->count += 1;
+        // complexity: O(1) average
+      '|
+    }
+
+    hash_output: {
+      shape: sql_table
+      label: "Aggregated Results"
+      row1: "category | COUNT | SUM"
+      row2: "A        | 2     | 250"
+      row3: "C        | 1     | 50"
+      style.fill: "#C5CAE5"
+    }
+
+    hash_tradeoffs: {
+      label: "Architecture Specs"
+      shape: callout
+      style.fill: "#F3E5F5"
+      style.stroke: "#8E24AA"
+      width: 250
+      code: |'md
+        - Scalability: CPU-bound
+        - Memory usage: High (O(Groups))
+        - Property: Unordered output
+      '|
+    }
+  }
+}
+
+# Decision Matrix Row
+comparison_table: {
+  shape: sql_table
+  label: "SQL Optimizer Decision Matrix"
+  c0: "Metric         | Sort-Aggregate         | Hash-Aggregate"
+  c1: "Time Complexity| O(N log N)             | O(N)"
+  c2: "Space Complex. | O(1) (External)        | O(Unique Groups)"
+  c3: "Large Groups   | Recommended (Spills)   | Risk of OOM"
+  c4: "Sorted Input   | Optimal (O(N))         | Sub-optimal"
+  style.fill: "#ECEFF1"
+}
+
+# Connections
+sort_engine.input_rows -> sort_engine.sort_step: "rows"
+sort_engine.sort_step -> sort_engine.sorted_data: "sorted"
+sort_engine.sorted_data -> sort_engine.scan_step: "stream"
+sort_engine.scan_step -> sort_engine.sort_output: "emit"
+
+hash_engine.hash_input -> hash_engine.hash_step: "rows"
+hash_engine.hash_step -> hash_engine.hash_table_struct: "lookup"
+hash_engine.hash_table_struct -> hash_engine.bucket_struct: "ptr"
+hash_engine.bucket_struct -> hash_engine.accumulate_step: "accumulate"
+hash_engine.accumulate_step -> hash_engine.hash_output: "scan"

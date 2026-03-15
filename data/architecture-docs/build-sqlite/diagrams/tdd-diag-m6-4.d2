@@ -1,0 +1,210 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# 1. MEMORY LAYOUT: AggAccumulator (32-byte struct)
+# Exact byte offsets left margin, field sizes right margin.
+# Colors: Header=Purple (#6c5ce7), Data=Blue (#74b9ff), Free=Green (#55efc4), Padding=Gray (#dfe6e9)
+AggAccumulator_Memory: {
+  label: "AggAccumulator Struct Layout (sizeof=32B)"
+  
+  Header: "struct AggAccumulator" {
+    style.fill: "#6c5ce7"
+    style.font-color: white
+  }
+
+  Row0: "0x00: union u (cnt/sum/mem_ptr)" {
+    tooltip: "8 Bytes"
+    style.fill: "#74b9ff"
+  }
+  Row1: "0x08: avg.count (denominator)" {
+    tooltip: "8 Bytes"
+    style.fill: "#74b9ff"
+  }
+  Row2: "0x10: enum agg_state" {
+    tooltip: "4 Bytes"
+    style.fill: "#55efc4"
+  }
+  Row3: "0x14: int have_null" {
+    tooltip: "4 Bytes"
+    style.fill: "#55efc4"
+  }
+  Row4: "0x18: padding / alignment" {
+    tooltip: "8 Bytes"
+    style.fill: "#dfe6e9"
+    style.stroke-dash: 3
+  }
+
+  # Visual flow of memory progression
+  Row0 -> Row1 -> Row2 -> Row3 -> Row4: {style.stroke-width: 1; style.stroke: "#636e72"}
+}
+
+# 2. ARCHITECTURE: Join State Machine
+# Transitions: trigger + guard + action. Initial=●. Error states=red.
+Join_Execution: {
+  label: "VDBE Join Logic (Nested Loop)"
+  
+  State_Init: ● {
+    shape: circle
+  }
+  
+  State_Outer_Scan: "SCAN LEFT (Outer)" {
+    tooltip: "Advance pOuter cursor"
+  }
+  
+  State_Inner_Match: "MATCH RIGHT (Inner)" {
+    tooltip: "Evaluate ON condition"
+  }
+  
+  State_Left_Null: "EMIT LEFT NULL" {
+    tooltip: "For LEFT JOIN unmatched rows"
+  }
+  
+  State_Emit: "EMIT JOINED ROW" {
+    style.fill: "#ffeaa7"
+    style.bold: true
+  }
+
+  State_Init -> State_Outer_Scan: "OP_CursorOpen (idx=0)"
+  State_Outer_Scan -> State_Inner_Match: "Row found [matched=0]"
+  State_Inner_Match -> State_Emit: "ON condition == TRUE [matched++]"
+  State_Inner_Match -> State_Inner_Match: "Next row (OP_Next idx=1)"
+  State_Inner_Match -> State_Left_Null: "Cursor 1 EOF && matched==0 && isLEFT"
+  State_Left_Null -> State_Outer_Scan: "Reset Cursor 1 (OP_Rewind)"
+  State_Emit -> State_Inner_Match: "OP_Next idx=1"
+  State_Outer_Scan -> End: "Outer Cursor EOF"
+  
+  # Error handling demonstration
+  State_Inner_Match -> Error_State: "ILLEGAL: Corrupt B-Tree" {
+    style.stroke: red
+    style.font-color: red
+    style.stroke-dash: 5
+  }
+  
+  Error_State: "ABORT / SQLITE_CORRUPT" {
+    style.fill: "#ff7675"
+    style.stroke: red
+  }
+
+  End: "DONE" {
+    shape: circle
+    style.double-border: true
+  }
+}
+
+# 3. ALGORITHM: Hash-Based Aggregation
+# Changed elements RED + bold. Arrows showing movement.
+Aggregation_Pipeline: {
+  label: "Algorithm: Hash-Based GROUP BY"
+  
+  Input: "VDBE Row Stream" {
+    shape: queue
+  }
+  
+  Key_Gen: "encode_group_key()" {
+    style.fill: "#a29bfe"
+    style.font-color: white
+  }
+  
+  Hash_Stage: {
+    label: "Group Hash Map"
+    HT: {
+      shape: sql_table
+      Bucket_0: "Key A | Acc_Ptr_0"
+      Bucket_1: "Key B | Acc_Ptr_1"
+      Bucket_N: "Key C | Acc_Ptr_2"
+    }
+  }
+  
+  Accumulator_Update: {
+    label: "agg_function_step()"
+    Op: "**u.sum += val**" {
+      style.font-color: red
+      style.bold: true
+    }
+  }
+
+  Input -> Key_Gen: "Extract columns"
+  Key_Gen -> Hash_Stage.HT: "MurmurHash3"
+  Hash_Stage.HT -> Accumulator_Update: "lookup / create"
+  Accumulator_Update -> Output: "OP_AggFinal"
+  
+  Output: "Sort & Emit" {
+    shape: diamond
+  }
+}
+
+# 4. SEQUENCE DIAGRAM: Opcode Call Sequence
+# Lock acquire ▼, release ▲. Normal=blue, error=red.
+Sequence_Opcodes: {
+  shape: sequence_diagram
+  
+  Engine: "VDBE VM (sqlite3_step)"
+  Cursor: "B-Tree Cursor"
+  Agg: "Aggregator Engine"
+  Mem: "Result Register"
+
+  Engine -> Cursor: "OP_Transaction (▼ Shared Lock)"
+  Engine -> Agg: "OP_AggInit (reset context)"
+  Engine -> Cursor: "OP_Next (seek row)"
+  Cursor -> Engine: "Row Data (pData)"
+  
+  Engine -> Agg: "OP_AggStep (accumulate)" {
+    style.stroke: "#0984e3"
+    style.animated: true
+  }
+  
+  Agg -> Agg: "Execute xStep() Callback"
+  
+  Engine -> Agg: "OP_AggFinal (finalize group)"
+  Agg -> Engine: "Final result"
+  Engine -> Mem: "Write to Mem[X]"
+  Engine -> Cursor: "OP_Close (▲ Release Lock)"
+  
+  # Error path example
+  Engine -> Cursor: "OP_Next"
+  Cursor -> Engine: "SQLITE_IOERR" {
+    style.stroke: red
+    style.font-color: red
+  }
+}
+
+# 5. GLOBAL ANNOTATIONS & POINTERS
+# Orange arrows (#e17055) for pointer references
+AggAccumulator_Memory -> Agg: "Instantiated per group" {
+  style.stroke: "#e17055"
+  style.stroke-dash: 5
+}
+
+Aggregation_Pipeline.Hash_Stage -> AggAccumulator_Memory: "Stores pointers to" {
+  style.stroke: "#e17055"
+}
+
+# Positioning fixed to constant values for ELK compatibility
+Note_3VL: |md
+  ### SQL Three-Valued Logic (3VL)
+  Join conditions follow:
+  1. **TRUE**: Row is included in result set.
+  2. **FALSE**: Row is excluded.
+  3. **UNKNOWN (NULL)**: Row is excluded.
+  
+  *Aggregate Behavior:*
+  - `SUM(NULL)` results in `NULL`.
+  - `COUNT(*)` counts `NULL` rows.
+  - `COUNT(col)` ignores `NULL` rows.
+| {
+  near: bottom-right
+}
+
+Design_Notes: |md
+  ### Performance Implementation Specs
+  - **Memory Alignment**: AggAccumulator is padded to 32B to ensure two structs fit in one 64B cache line.
+  - **Complexity**: Hash aggregation is $O(N)$ space, $O(N)$ time.
+  - **Join**: Current implementation uses $O(M \times N)$ Nested Loop Join (NLJ).
+| {
+  near: bottom-left
+}

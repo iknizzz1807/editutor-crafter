@@ -1,0 +1,227 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    sketch: false
+    pad: 20
+  }
+}
+
+# Crash Recovery Flow - SQLite Database Recovery Procedure
+# Technical Design Spec for Database Engine Implementation
+
+title: "Crash Recovery Flow: ACID Compliance & Journaling" {
+  shape: text
+  near: top-center
+  style: {
+    font-size: 28
+    bold: true
+    font-color: "#2c3e50"
+  }
+}
+
+# ==== GLOBAL CLASSES AND STYLING ====
+classes: {
+  process_step: {
+    style: {
+      stroke-width: 2
+      border-radius: 4
+      font-size: 15
+    }
+  }
+  decision: {
+    shape: diamond
+    style: {
+      fill: "#fdfefe"
+      stroke: "#7f8c8d"
+      stroke-width: 2
+    }
+  }
+  rollback_action: {
+    style: {
+      fill: "#fadbd8"
+      stroke: "#c0392b"
+      stroke-width: 4
+      font-color: "#922b21"
+      bold: true
+    }
+  }
+  commit_action: {
+    style: {
+      fill: "#d5f5e3"
+      stroke: "#27ae60"
+      stroke-width: 4
+      font-color: "#1e8449"
+      bold: true
+    }
+  }
+  terminal_state: {
+    style: {
+      fill: "#ebf5fb"
+      stroke: "#2e86c1"
+      stroke-width: 3
+      double-border: true
+    }
+  }
+  documentation: {
+    shape: rectangle
+    style: {
+      fill: "#fef9e7"
+      stroke: "#f1c40f"
+      stroke-dash: 3
+      border-radius: 2
+    }
+  }
+}
+
+# ==== CORE COMPONENT DEFINITIONS ====
+startup: "SYSTEM_BOOT\nInitialize VFS" {
+  class: process_step
+  style.fill: "#d6eaf8"
+  style.stroke: "#2e86c1"
+}
+
+check_journal: "IO_SCAN\nSearch for Hot Journal" {
+  class: process_step
+  style.fill: "#fcf3cf"
+}
+
+journal_exists: "File Exists?\n('-journal' / '-wal')" {
+  class: decision
+}
+
+no_journal: "CLEAN_SHUTDOWN\nSkip Recovery" {
+  class: process_step
+  style.fill: "#f4f6f7"
+  style.stroke: "#bdc3c7"
+}
+
+read_header: "READ_HEADER\nExtract Page Count\n(Offset 0x08)" {
+  class: process_step
+  style.fill: "#fcf3cf"
+}
+
+check_committed: "VERIFY_COMMIT\nCommitted Bit Set?" {
+  class: decision
+}
+
+rollback: "UNDO_PHASE\nRollback to Main DB" {
+  class: rollback_action
+}
+
+commit_finalize: "REDO_PHASE\nWAL Checkpoint Replay" {
+  class: commit_action
+}
+
+cleanup_journal: "FS_UNLINK\nAtomic Deletion" {
+  class: process_step
+  style.fill: "#f5eef8"
+  style.stroke: "#8e44ad"
+}
+
+continue_node: "DB_READY\nNormal Operations" {
+  class: terminal_state
+}
+
+# ==== IMPLEMENTATION DETAIL BLOCKS ====
+rollback_details: {
+  label: |md
+    ### ROLLBACK (UNDO) SPEC
+    - **Step 1:** Acquire EXCLUSIVE lock on Main DB.
+    - **Step 2:** Read original page values from Journal.
+    - **Step 3:** Overwrite main database file (Bit-by-Bit).
+    - **Step 4:** Force Disk Flush (fsync).
+    - **Status:** Atomic Undo complete.
+  |
+  class: documentation
+}
+
+commit_details: {
+  label: |md
+    ### COMMIT (REDO) SPEC
+    - **Step 1:** Verify WAL Checksum (CRC32).
+    - **Step 2:** Copy committed pages from WAL to Main.
+    - **Step 3:** Update database file header.
+    - **Step 4:** Set high-water mark to zero.
+    - **Status:** Atomic Redo complete.
+  |
+  class: documentation
+}
+
+# Memory Layout and Field Offsets for Implementation
+header_spec: {
+  label: |'md
+    ### Journal Header (Big-Endian)
+    | Offset | Size | Field Name |
+    | :--- | :--- | :--- |
+    | 0x00 | 8B | Magic: 0xd9,0xd5,0x05,0xf9,0x20,0xa1,0x63,0xd7 |
+    | 0x08 | 4B | Page Count in Journal |
+    | 0x0C | 4B | Random Nonce |
+    | 0x14 | 4B | Master Pointer Size |
+  '|
+  class: documentation
+}
+
+# ==== POSITIONING AND LAYOUT ====
+header_spec.near: read_header
+rollback_details.near: rollback
+commit_details.near: commit_finalize
+
+summary_table: {
+  label: |'md
+    | Component | Recovery Action | Target |
+    | :--- | :--- | :--- |
+    | Rollback Journal | Restore Old Pages | Main Database |
+    | WAL File | Replay New Pages | Main Database |
+    | Master Pointer | Cleanup Shared Lock | VFS Pointers |
+  '|
+  near: bottom-right
+  class: documentation
+}
+
+# ==== FLOW CONNECTIONS ====
+startup -> check_journal
+check_journal -> journal_exists
+
+journal_exists -> no_journal: "NO (Clean Boot)" {
+  style.stroke-dash: 4
+}
+journal_exists -> read_header: "YES (Dirty Boot)"
+
+read_header -> check_committed
+
+check_committed -> rollback: "FLAG: NOT_SET\n(Transaction Aborted)" {
+  style: {
+    stroke: "#c0392b"
+    stroke-width: 3
+  }
+}
+check_committed -> commit_finalize: "FLAG: COMMITTED\n(Transaction Persistent)" {
+  style: {
+    stroke: "#27ae60"
+    stroke-width: 3
+  }
+}
+
+rollback -> cleanup_journal
+commit_finalize -> cleanup_journal
+
+no_journal -> continue_node
+cleanup_journal -> continue_node
+
+# External Reference Binding
+rollback -- rollback_details: { style.stroke-dash: 5 }
+commit_finalize -- commit_details: { style.stroke-dash: 5 }
+
+# Legend for On-Site Engineers
+legend: {
+  near: bottom-left
+  label: "RECOVERY LEGEND"
+  rollback_path: "Rollback Routine" {
+    class: rollback_action
+  }
+  commit_path: "Commit Replay" {
+    class: commit_action
+  }
+}

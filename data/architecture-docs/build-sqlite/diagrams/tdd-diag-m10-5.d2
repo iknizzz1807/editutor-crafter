@@ -1,0 +1,203 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    sketch: false
+    pad: 20
+  }
+}
+
+title: |md
+  # SQLite Concurrent Reader/Writer Locking Protocol
+  *TDD-M10-5: Implementation-Grade Sequence Diagram*
+  **State Transitions: UNLOCKED → SHARED → RESERVED → PENDING → EXCLUSIVE**
+| {near: top-center}
+
+# Main Sequence Container
+locking_protocol: {
+  shape: sequence_diagram
+  style.stroke-width: 2
+
+  # Participants Definition & Order
+  Reader_1: Reader A {
+    shape: person
+    style.stroke: "#3f87a6"
+    style.fill: "#B6DDF6"
+  }
+  Reader_2: Reader B {
+    shape: person
+    style.stroke: "#3f87a6"
+    style.fill: "#B6DDF6"
+  }
+  Reader_3: Reader C {
+    shape: person
+    style.stroke: "#3f87a6"
+    style.fill: "#B6DDF6"
+  }
+  Writer: SQLite Writer {
+    shape: person
+    style.stroke: "#f69d3c"
+    style.fill: "#FAD7A0"
+  }
+  Pager: Pager/Lock Manager {
+    style.fill: "#DEE1EB"
+    style.stroke-width: 3
+    style.bold: true
+  }
+  OS_Disk: VFS/Disk {
+    shape: cylinder
+    style.fill: "#C7F1FF"
+    style.stroke: "#3f87a6"
+  }
+
+  # --- Interaction Sequence ---
+
+  "PHASE 1: Concurrent Read (SHARED)": {
+    Reader_1 -> Pager: xLock(SHARED)
+    Pager -> Reader_1: SQLITE_OK {
+      style.stroke: "#2ecc71"
+      style.bold: true
+    }
+    
+    Reader_1.t1 -> OS_Disk: pread(fd, page_1, offset=0x1000, size=4096)
+    OS_Disk -> Reader_1.t1: Page 1 Data [0x00...0x0F]
+
+    Reader_2 -> Pager: xLock(SHARED)
+    Pager -> Reader_2: SQLITE_OK {
+      style.stroke: "#2ecc71"
+    }
+    
+    Reader_2.t1 -> OS_Disk: pread(fd, page_2, offset=0x2000, size=4096)
+    OS_Disk -> Reader_2.t1: Page 2 Data [0x00...0x0F]
+  }
+
+  "PHASE 2: Write Preparation (RESERVED & PENDING)": {
+    # RESERVED transition: First writer steps up
+    Writer -> Pager: xLock(RESERVED) {
+      style.stroke: "#f69d3c"
+      style.stroke-width: 4
+    }
+    Pager."STATE: RESERVED\n(1 Writer, N Readers allowed)" {
+      style.italic: true
+      style.font-size: 11
+    }
+    Pager -> Writer: SQLITE_OK {
+      style.stroke: "#2ecc71"
+    }
+
+    # Writer prepares data in private cache
+    Writer.t1 -> Writer.t1: "Update Page 3 (Memory Only)\nOffset: 0x3000 | NewVal: 0xDEADBEEF"
+    Writer.t1 -> Writer.t1: "Update Page 4 (Memory Only)\nOffset: 0x4000 | NewVal: 0xCAFEBABE"
+
+    # PENDING transition: Signal intent to commit
+    Writer -> Pager: xLock(PENDING) {
+      style.stroke: "#e67e22"
+      style.stroke-width: 4
+    }
+    Pager."STATE: PENDING\n(Gate Closed: New SHARED blocked)" {
+      style.font-color: "#e67e22"
+      style.bold: true
+    }
+    Pager -> Writer: SQLITE_OK {
+      style.stroke: "#2ecc71"
+    }
+
+    # New reader attempt while PENDING - Demonstrating Blockage/Starvation Prevention
+    Reader_3 -> Pager: xLock(SHARED)
+    Pager -> Reader_3: SQLITE_BUSY (Blocked by PENDING) {
+      style: {
+        stroke: "#e74c3c"
+        font-color: "#e74c3c"
+        bold: true
+        stroke-dash: 3
+      }
+    }
+  }
+
+  "PHASE 3: Exclusive Transition & Global Commit": {
+    # Readers release SHARED locks to allow EXCLUSIVE
+    Reader_1 -> Pager: xUnlock(SHARED)
+    Reader_2 -> Pager: xUnlock(SHARED)
+    
+    Pager."RefCount == 0\nReady for EXCLUSIVE" {
+      style.stroke: "#2ecc71"
+      style.bold: true
+    }
+
+    Writer -> Pager: xLock(EXCLUSIVE) {
+      style.stroke: "#e74c3c"
+      style.stroke-width: 4
+    }
+    Pager -> Writer: SQLITE_OK {
+      style.stroke: "#2ecc71"
+    }
+
+    # Journal Write (Atomic protection)
+    Writer.t2 -> OS_Disk: write(journal_file, pg3, pg4)
+    OS_Disk -> Writer.t2: fsync() 0ms [Journal Persistent]
+    
+    # DB Write (The actual change)
+    Writer.t3 -> OS_Disk: pwrite(db_file, pg3, off=0x3000)
+    Writer.t3 -> OS_Disk: pwrite(db_file, pg4, off=0x4000)
+    OS_Disk -> Writer.t3: fsync() 2ms [DB Persistent]
+
+    # Release sequence
+    Writer -> Pager: xUnlock(UNLOCKED)
+    Pager -> Writer: SQLITE_OK {
+      style.stroke: "#2ecc71"
+    }
+    Pager."Cleanup:\nDelete Journal File" {
+      style.bold: true
+      style.font-color: "#34495e"
+    }
+  }
+}
+
+# Documentation and Legend Layout
+Legend: {
+  near: bottom-right
+  style.fill: "#f8f9fa"
+  style.stroke: "#DEE1EB"
+  
+  shared: SHARED {
+    style.fill: "#B6DDF6"
+    tooltip: Multiple concurrent readers permitted.
+  }
+  reserved: RESERVED {
+    style.fill: "#C6E6BA"
+    tooltip: One writer active, multiple readers may continue/start.
+  }
+  pending: PENDING {
+    style.fill: "#F69E03"
+    tooltip: Gate closed. Waiting for existing readers to flush.
+  }
+  exclusive: EXCLUSIVE {
+    style.fill: "#FE7070"
+    tooltip: Zero readers. Writer has total control.
+  }
+
+  shared -- reserved -- pending -- exclusive: "Lock Escalation Path" {
+    style.stroke: grey
+    style.stroke-dash: 2
+  }
+}
+
+Pager_State_Monitor: |md
+  ### Pager State Invariants (Mutex Logic)
+  *Engineer Note: Logic gates for implementation*
+
+  | Lock State | Readers Allowed | Writers Allowed | New Readers |
+  | :--- | :---: | :---: | :---: |
+  | **SHARED** | N | 0 | Yes |
+  | **RESERVED** | N | 1 | Yes |
+  | **PENDING** | N (existing) | 1 | **NO** |
+  | **EXCLUSIVE**| 0 | 1 | **NO** |
+  
+  **Transition Invariant**: `EXCLUSIVE` is illegal if `nReader > 0`.
+| {
+  near: bottom-left
+  style.stroke: "#DEE1EB"
+  style.fill: "#ffffff"
+  style.border-radius: 8
+}

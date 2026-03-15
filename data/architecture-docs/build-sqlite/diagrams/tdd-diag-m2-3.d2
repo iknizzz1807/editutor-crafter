@@ -1,0 +1,178 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- STYLES ---
+classes: {
+  header: { style: { fill: "#DDA0DD"; bold: true } }
+  data: { style: { fill: "#ADD8E6" } }
+  padding: { style: { fill: "#D3D3D3"; stroke-dash: 3 } }
+  pointer: { style: { fill: "#FFD580" } }
+  dirty: { style: { fill: "#FFCCCB"; stroke: red; stroke-width: 2 } }
+  pinned: { style: { fill: "#90EE90"; stroke: green; stroke-width: 2 } }
+}
+
+# --- MODULE 05: BUFFER POOL MANAGER ---
+
+BufferPoolManager: {
+  label: "Module m05: Buffer Pool Manager Architecture"
+
+  # Memory Layout of a Single Frame
+  Frame_Memory_Layout: {
+    shape: sql_table
+    label: "struct Frame Layout (sizeof=64B - Optimized for Cache Line)"
+    
+    0x00: "page_id (uint32_t)" {class: data; constraint: "4B"}
+    0x04: "frame_id (uint32_t)" {class: data; constraint: "4B"}
+    0x08: "page_data (uint8_t*)" {class: pointer; constraint: "8B (Aligned)"}
+    0x10: "is_dirty (bool)" {class: dirty; constraint: "1B"}
+    0x11: "is_pinned (bool)" {class: pinned; constraint: "1B"}
+    0x12: "pin_count (uint32_t)" {class: pinned; constraint: "4B"}
+    0x16: "padding (alignment)" {class: padding; constraint: "2B"}
+    0x18: "last_access (uint64_t)" {class: data; constraint: "8B"}
+    0x20: "hash_next (Frame*)" {class: pointer; constraint: "8B"}
+    0x28: "lru_prev (Frame*)" {class: pointer; constraint: "8B"}
+    0x30: "lru_next (Frame*)" {class: pointer; constraint: "8B"}
+    0x38: "padding (tail)" {class: padding; constraint: "8B"}
+  }
+
+  # Buffer Pool Control Block
+  BufferPool_Control: {
+    shape: class
+    label: "struct BufferPool"
+    frames: "Frame* (Array of pool_size)"
+    pool_size: "uint32_t"
+    frame_size: "uint32_t (4096B)"
+    page_table: "HashTable*"
+    lru_head: "Frame*"
+    lru_tail: "Frame*"
+    hit_count: "uint64_t"
+    miss_count: "uint64_t"
+    lock: "pthread_mutex_t"
+  }
+
+  # Page Data Boundary
+  Page_Buffer: {
+    label: "Page Data Alignment (4096B)"
+    style.stroke-dash: 5
+    style.fill: "#F0F8FF"
+    
+    Buffer_Start: "Offset 0"
+    Data_Payload: "4KB SQLITE PAGE DATA" { style.fill: "#E6F3FF" }
+    Buffer_End: "Offset 4096"
+  }
+
+  BufferPool_Control.frames -> Frame_Memory_Layout: "owns array"
+  Frame_Memory_Layout.page_data -> Page_Buffer: "points to"
+}
+
+# --- MODULE 06: SECONDARY INDEXES ---
+
+Secondary_Indexes: {
+  label: "Module m06: Secondary Index structures"
+
+  # Index Leaf Node Layout
+  Leaf_Node_Page: {
+    shape: sql_table
+    label: "Index Leaf Page Layout (B+Tree)"
+    
+    0x00: "page_type (0x0D)" {class: header; constraint: "1B"}
+    0x01: "free_offset" {class: header; constraint: "2B"}
+    0x03: "cell_count" {class: header; constraint: "2B"}
+    0x05: "cell_content_area" {class: header; constraint: "2B"}
+    0x07: "frag_bytes" {class: header; constraint: "1B"}
+    0x08: "Cell Pointers (uint16_t[])" {class: pointer}
+    "..." : "Unallocated Space" {class: padding}
+    "N": "Cell Payload (Key || RowID)" {class: data}
+  }
+
+  Index_Internal_Node: {
+    shape: class
+    label: "IndexInternalHeader"
+    page_type: "uint8_t (0x02)"
+    free_offset: "uint16_t"
+    cell_count: "uint16_t"
+    rightmost_pointer: "uint32_t"
+  }
+}
+
+# --- ALGORITHM STATE: buffer_pool_get ---
+
+Page_Lookup_Algorithm: {
+  label: "Algorithm: buffer_pool_get(page_id)"
+  
+  Step1: "1. Compute Hash" {
+    tooltip: "index = page_id % num_buckets"
+  }
+  
+  Step2: "2. Scan HashTable Bucket" {
+    tooltip: "Traverse Frame->hash_next chain"
+  }
+  
+  Decision: "3. Page in Memory?" {
+    shape: diamond
+  }
+  
+  Hit_Path: "4a. Cache Hit" {
+    style.fill: "#90EE90"
+    label: "Update last_access\nMove to LRU Head\nIncrement pin_count"
+  }
+  
+  Miss_Path: "4b. Cache Miss" {
+    style.fill: "#FFCCCB"
+    label: "Invoke buffer_pool_evict()\nLoad from Storage\nUpdate HashTable/LRU"
+  }
+
+  Step1 -> Step2
+  Step2 -> Decision
+  Decision -> Hit_Path: "YES"
+  Decision -> Miss_Path: "NO"
+  
+  Hit_Path -> Return: "Return Frame*"
+  Miss_Path -> Return
+}
+
+# --- SEQUENCE: Transaction Commit (m08) ---
+
+Transaction_Commit_Sequence: {
+  shape: sequence_diagram
+  label: "m08: Atomic Commit via Rollback Journal"
+  
+  User: "DB Engine"
+  BP: "Buffer Pool"
+  Journal: "Rollback Journal (.db-journal)"
+  Disk: "Main Database (.db)"
+
+  User -> BP: "commit_request()"
+  BP -> Journal: "Write Original Pages (Undo Log)"
+  Journal -> Journal: "Calculate Checksums"
+  Journal -> Disk: "fsync() Journal Header"
+  BP -> Disk: "Write Dirty Pages to Main DB"
+  Disk -> Disk: "fsync() Data"
+  User -> Journal: "Delete Journal (Commit Marker)"
+}
+
+# --- GLOBAL ANNOTATIONS ---
+legend: {
+  near: bottom-right
+  h: Header { class: header }
+  d: Data { class: data }
+  p: Pointer { class: pointer }
+  f: Dirty/Modified { class: dirty }
+}
+
+# Metadata
+Module_Linkages: {
+  m05 -> m06: "Buffer Pool provides pages"
+  m06 -> m07: "Index provides search"
+  m05 -> m08: "Journaling dirty pages"
+  m05 -> m09: "WAL mode coordination"
+}
+
+# Styling Globals
+***.style.font: mono
+***.style.font-size: 14
+(*** -> ***)[*].style.stroke: "#444444"

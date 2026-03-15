@@ -1,0 +1,241 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 20
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# TECHNICAL DESIGN: TWO-PASS DELETE FLOW (VDBE IMPLEMENTATION SPEC)
+# -----------------------------------------------------------------------------------------
+# Engineers: Refer to this diagram for cursor state management and locking escalations.
+# Pass 1 identifies RowIDs to avoid the 'Lost Update' anomaly during B-Tree rebalancing.
+
+two_pass_delete: {
+  shape: sequence_diagram
+
+  # --- PARTICIPANTS ---
+  
+  client: "Client Application" {
+    shape: person
+    style.stroke: "#212121"
+  }
+
+  vdbe: "Virtual Machine (VDBE)" {
+    style: {
+      stroke: "#4A148C"
+      stroke-width: 3
+      fill: "#EDE7F6"
+      double-border: true
+    }
+    tooltip: "SQLite Virtual Database Engine - Executes Bytecode"
+  }
+
+  temp_storage: "RowID List (Registers)" {
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+      stroke-dash: 3
+      multiple: true
+    }
+    tooltip: "Temporary buffer for row identifiers to be processed in Pass 2"
+  }
+
+  btree: "B-Tree Layer (Table)" {
+    style: {
+      fill: "#E1F5FE"
+      stroke: "#0288D1"
+      stroke-width: 2
+    }
+    tooltip: "Primary Table Storage (Clustered Index)"
+  }
+
+  idx_btree: "Index B-Trees (Secondary)" {
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#F57C00"
+      stroke-width: 2
+    }
+    tooltip: "Secondary Indexes (Unclustered)"
+  }
+
+  pager: "Pager/Journal Layer" {
+    style: {
+      stroke: "#B71C1C"
+      fill: "#FFEBEE"
+      stroke-width: 2
+    }
+    tooltip: "Transaction management and WAL/Journal IO"
+  }
+
+  # --- EXECUTION FLOW ---
+
+  client -> vdbe: "OP_Execute: DELETE FROM T WHERE C" {
+    style.bold: true
+  }
+
+  vdbe -> pager: "PagerAcquire(SHARED) ▼" {
+    style.stroke: "#1976D2"
+    source-arrowhead.label: "0x01 (SHARED)"
+  }
+
+  # PASS 1: SCAN AND IDENTIFY
+  pass_1: "PASS 1: SCAN & IDENTIFY (Discovery Phase)" {
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+      stroke-dash: 2
+    }
+    
+    vdbe -> btree: "OP_OpenRead (Cursor 0, Root P2)"
+    
+    scan_loop: "OP_Rewind -> OP_Next (B-Tree Scan)" {
+      vdbe -> btree: "OP_Next()"
+      btree -> vdbe: "RowPayload (0x00...0xFF)"
+      
+      vdbe -> vdbe: "OP_Column + OP_Filter (Evaluate condition)"
+      
+      alt_condition: "Condition == TRUE" {
+        vdbe -> temp_storage: "OP_Rowid -> OP_MemStore(Mem[R])" {
+          style: {
+            stroke: "#D32F2F"
+            stroke-width: 4
+          }
+        }
+        temp_storage."Buffer Key/RowID to \nprevent Cursor Invalidation"
+      }
+    }
+    
+    vdbe -> btree: "OP_Close(Cursor 0)"
+  }
+
+  # ATOMIC STATE TRANSITION (Crucial for WAL Integrity)
+  vdbe -> pager: "PagerUpgrade(EXCLUSIVE) ▼" {
+    style: {
+      stroke: "#B71C1C"
+      stroke-width: 3
+      animated: true
+    }
+    source-arrowhead.label: "0x04 (EXCLUSIVE)"
+  }
+
+  # PASS 2: MUTATION
+  pass_2: "PASS 2: DELETE EXECUTION (Mutation Phase)" {
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#F57C00"
+      stroke-dash: 2
+    }
+    
+    vdbe -> temp_storage: "OP_MemLoad(Mem[R]) -> Iterator"
+    
+    mutation_loop: "For Each Captured Identifier" {
+      vdbe -> pager: "OP_Journal(RowID) [Log to WAL]"
+      
+      clustered_mutation: "Clustered Table Mutation" {
+        vdbe -> btree: "OP_NotExists(RowID)"
+        vdbe -> btree: "OP_Delete(Cursor 0)" {
+          style.stroke: "#D32F2F"
+          style.bold: true
+        }
+        btree -> btree: "balance_leaves()"
+      }
+
+      secondary_sync: "Secondary Index Synchronization" {
+        vdbe -> idx_btree: "OP_OpenWrite (Cursor 1..N)"
+        vdbe -> idx_btree: "OP_IdxDelete (IndexKey + RowID)"
+        vdbe -> idx_btree: "OP_Close"
+      }
+    }
+  }
+
+  # FINALIZATION & COMMIT
+  vdbe -> pager: "OP_Halt / PagerCommit ▲" {
+    style: {
+      stroke: "#2E7D32"
+      stroke-width: 3
+    }
+  }
+  
+  pager -> pager: "sqlite3OsSync() [Flush to Persistence]"
+  pager -> pager: "PagerUnlock(NONE)"
+  
+  vdbe -> client: "SQLITE_OK (N rows modified)" {
+    style: {
+      bold: true
+      font-color: "#2E7D32"
+    }
+  }
+}
+
+# --- DOCUMENTATION OVERLAYS ---
+
+implementation_notes: |md
+  ### Implementation Spec: Two-Pass Mechanism
+  
+  - **Memory Limits:** If identification results exceed `SQLITE_LIMIT_WORKER_THREADS` heap allowance, the `RowID List` is transparently spilled to a temporary B-Tree stored in `sqlite3_temp_directory`.
+  - **Concurrency:** The **SHARED lock** held during Pass 1 allows concurrent readers. The escalation to **EXCLUSIVE** occurs only after the scan is finished, minimizing write-contention windows.
+  - **Anomaly Prevention:** Deleting rows while scanning a cursor (`one-pass`) is prohibited if index updates are required, as b-tree page balancing (`balance_leaves`) may shift records to pages already scanned, causing rows to be missed or processed twice.
+  - **WAL Mode:** Under Write-Ahead Logging, Pass 2 appends frames to the `-wal` file; actual database page modification is deferred to the checkpoint process.
+| {
+  near: top-right
+  style: {
+    font-size: 12
+    fill: "#FAFAFA"
+    stroke: "#7B1FA2"
+    stroke-width: 1
+    border-radius: 8
+    shadow: true
+  }
+}
+
+# Technical Specification Legend
+specs_legend: {
+  near: bottom-right
+  direction: right
+  
+  header: "Legend & State Indicators" {
+    shape: text
+    style.bold: true
+  }
+
+  states: {
+    shared: "SHARED LOCK" {
+      style: {
+        fill: "#1976D2"
+        font-color: white
+        bold: true
+      }
+    }
+    exclusive: "EXCLUSIVE LOCK" {
+      style: {
+        fill: "#B71C1C"
+        font-color: white
+        bold: true
+      }
+    }
+    mutation: "DATABASE WRITE" {
+      style: {
+        stroke: "#D32F2F"
+        stroke-width: 3
+        stroke-dash: 2
+      }
+    }
+  }
+
+  encoding_text: |md
+    - `▼`: Lock Acquisition
+    - `▲`: Lock Release
+    - `0xNN`: Internal Opcode Reference
+  | {
+    shape: text
+  }
+}
+
+# Footer Styling for Intel-grade precision
+***.style.font: mono
+two_pass_delete.** : {
+  style.font-size: 13
+}

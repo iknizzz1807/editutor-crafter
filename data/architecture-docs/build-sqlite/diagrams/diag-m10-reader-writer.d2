@@ -1,0 +1,221 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+
+# --- HEADER SECTION ---
+header: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  title_box: {
+    label: "WAL Reader/Writer Concurrency (Write-Ahead Logging)"
+    shape: rectangle
+    style: {
+      fill: "#F4F4F4"
+      stroke: "#333333"
+      stroke-width: 2
+      font-size: 24
+      bold: true
+    }
+  }
+
+  explanation: |md
+    ### Concurrency Control Mechanism
+    1. **Writer Path**: Appends frames to the log. Holds an `EXCLUSIVE` lock.
+    2. **Reader Path**: Records current WAL end-point as a **Snapshot**.
+    3. **Resolution**: Readers search the WAL **backwards**. If page isn't in WAL, they read from the original DB file.
+    4. **Invariant**: Writers do not block readers; readers do not block writers.
+  | {
+    shape: rectangle
+    style.fill: "#FFFFFF"
+    style.stroke: "#CCCCCC"
+    width: 400
+  }
+}
+
+# --- MAIN WORK AREA ---
+system: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  # LEFT COLUMN: WRITER LOGIC
+  writer_column: {
+    direction: down
+    style.stroke: transparent
+    
+    proc_writer: "Writer Process (PID: 4021)" {
+      shape: class
+      +transaction_id: "uint64"
+      +lock_state: "EXCLUSIVE"
+      -current_frame: "int"
+      +begin_tx(): "void"
+      +append_page(page_id, data): "void"
+      +commit(): "void"
+    }
+
+    writer_sm: "Writer State Machine" {
+      direction: down
+      idle: "IDLE" { shape: circle }
+      locking: "HOLD_LOCK" { 
+        shape: circle
+        style.fill: "#FFECB3"
+      }
+      appending: "APPEND_FRAMES" {
+        shape: circle
+        style.fill: "#FFE0B2"
+      }
+      syncing: "FSYNC_COMMIT" {
+        shape: circle
+        style.fill: "#C8E6C9"
+      }
+
+      idle -> locking: "BEGIN"
+      locking -> appending: "WRITE 4KB"
+      appending -> syncing: "MARKER"
+      syncing -> idle: "RELEASE"
+    }
+
+    wal_lock: "WAL_LOCK_FILE" {
+      shape: rectangle
+      style: {
+        fill: "#FFCDD2"
+        stroke: "#B71C1C"
+        stroke-dash: 5
+      }
+      label: "LOCK STATUS: EXCLUSIVE (Writer holds)"
+    }
+  }
+
+  # CENTER COLUMN: WAL FILE ON DISK
+  wal_storage: {
+    direction: down
+    style.stroke: transparent
+
+    wal_file: "WAL File Structure (journal.wal)" {
+      shape: cylinder
+      style.fill: "#FFFDE6"
+      
+      header: {
+        shape: sql_table
+        label: "WAL Header (32 bytes)"
+        r0: "0x00 | uint32_t | magic_low"
+        r1: "0x04 | uint32_t | magic_high"
+        r2: "0x08 | uint32_t | page_size (4096)"
+        r3: "0x0C | uint32_t | checkpoint_seq"
+      }
+
+      frames: {
+        direction: down
+        f1: {
+          shape: sql_table
+          label: "WAL Frame 1"
+          h: "Header (24B) | Pg: 10"
+          d: "Data (4096B) | Version A"
+        }
+        f2: {
+          shape: sql_table
+          label: "WAL Frame 2"
+          h: "Header (24B) | Pg: 15"
+          d: "Data (4096B) | Version A"
+        }
+        f3: {
+          shape: sql_table
+          label: "WAL Frame 3"
+          h: "Header (24B) | Pg: 10"
+          d: "Data (4096B) | Version B"
+          style.fill: "#FFF9C4"
+        }
+        commit_f: {
+          shape: rectangle
+          label: "Frame 4: COMMIT MARKER"
+          style: {
+            fill: "#A5D6A7"
+            stroke: "#2E7D32"
+            bold: true
+          }
+        }
+      }
+    }
+    
+    append_ptr: "Append Head" {
+      shape: parallelogram
+      style.fill: "#BDBDBD"
+    }
+    append_ptr -> wal_file.frames.commit_f: "offset"
+  }
+
+  # RIGHT COLUMN: READERS
+  readers_column: {
+    direction: down
+    style.stroke: transparent
+
+    reader_1: "Reader 1 (Snapshot @F1)" {
+      shape: class
+      -snapshot_end: "Frame 1"
+      +get_page(10): "Data@F1"
+      style.fill: "#E3F2FD"
+    }
+
+    reader_2: "Reader 2 (Snapshot @F3)" {
+      shape: class
+      -snapshot_end: "Frame 3"
+      +get_page(10): "Data@F3"
+      style.fill: "#E3F2FD"
+    }
+
+    reader_3: "Reader 3 (Current)" {
+      shape: class
+      -snapshot_end: "Frame 4"
+      +get_page(10): "Data@F3"
+      style.fill: "#E1F5FE"
+    }
+  }
+}
+
+# --- CROSS-COMPONENT INTERACTIONS ---
+
+# Reader 1 only sees up to Frame 1
+system.readers_column.reader_1 -> system.wal_storage.wal_file.frames.f1: "BACKWARD SEARCH | Valid" {
+  style.stroke: "#1976D2"
+  style.stroke-dash: 3
+}
+
+# Reader 2 sees up to Frame 3, finds latest version
+system.readers_column.reader_2 -> system.wal_storage.wal_file.frames.f3: "BACKWARD SEARCH | Hit (Pg 10)" {
+  style.stroke: "#1976D2"
+  style.stroke-width: 2
+}
+
+# Writer appends after commit marker
+system.writer_column.writer_sm.appending -> system.wal_storage.append_ptr: "WRITE" {
+  style.stroke: "#D32F2F"
+}
+
+# --- LEGEND ---
+legend: {
+  shape: rectangle
+  style.fill: "#FAFAFA"
+  near: bottom-right
+  
+  l1: "Blue Arrow: Reader backward search path" {
+    style.font-color: "#1976D2"
+  }
+  l2: "Red Arrow: Writer append path" {
+    style.font-color: "#D32F2F"
+  }
+  l3: "Yellow Node: Multi-versioned page data" {
+    style.fill: "#FFF9C4"
+  }
+}
+
+# Connection to show data flow for Reader 2 specifically
+system.wal_storage.wal_file.frames.f3 -> system.readers_column.reader_2: "Page 10 (vB)" {
+  style.stroke: "#1976D2"
+  target-arrowhead: arrow
+}

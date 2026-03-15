@@ -1,0 +1,266 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    pad: 20
+  }
+}
+
+# --- GLOBAL STYLING CLASSES ---
+classes: {
+  header_field: {
+    style: {
+      fill: "#E4DBFE" # Purple
+      stroke: "#6a0dad"
+      stroke-width: 2
+      bold: true
+    }
+  }
+  data_field: {
+    style: {
+      fill: "#C7F1FF" # Blue
+      stroke: "#0077be"
+      stroke-width: 2
+    }
+  }
+  checksum_field: {
+    style: {
+      fill: "#FFF9C9" # Yellowish/Orange
+      stroke: "#9D341E"
+      stroke-width: 2
+    }
+  }
+  padding_field: {
+    style: {
+      fill: "#DEE1EB" # Gray
+      stroke: "#718096"
+      stroke-dash: 3
+    }
+  }
+  cache_line_boundary: {
+    style: {
+      stroke: "#2D3748"
+      stroke-width: 2
+      stroke-dash: 5
+    }
+  }
+  page_boundary: {
+    style: {
+      stroke: black
+      stroke-width: 4
+    }
+  }
+}
+
+# --- 1. MEMORY LAYOUT: WAL FILE STRUCTURE ---
+# Format: Offset (Left) | Field Name | Size (Right)
+WAL_STORAGE_LAYOUT: {
+  label: "SQLite Write-Ahead Log (.wal) Binary Format | Spec v3007000"
+
+  WAL_HEADER: {
+    shape: sql_table
+    label: "WAL FILE HEADER (32 Bytes total)"
+    
+    "00": "u32: Magic Number (0x377f0682)" { class: header_field; constraint: "4 bytes" }
+    "04": "u32: File Format Version" { class: header_field; constraint: "4 bytes" }
+    "08": "u32: Database Page Size" { class: data_field; constraint: "4 bytes" }
+    "12": "u32: Checkpoint Sequence" { class: data_field; constraint: "4 bytes" }
+    "16": "u32: Salt-1 (Randomized)" { class: data_field; constraint: "4 bytes" }
+    "20": "u32: Salt-2 (Randomized)" { class: data_field; constraint: "4 bytes" }
+    "24": "u32: Checksum-1 (Big Endian)" { class: checksum_field; constraint: "4 bytes" }
+    "28": "u32: Checksum-2 (Big Endian)" { class: checksum_field; constraint: "4 bytes" }
+  }
+
+  WAL_FRAME_CONTENT: {
+    label: "WAL FRAME LOGIC"
+    
+    FRAME_HDR: {
+      shape: sql_table
+      label: "FRAME HEADER (24 Bytes)"
+      
+      "00": "u32: Page Number" { class: header_field; constraint: "4 bytes" }
+      "04": "u32: Commit Flag (nPages/0)" { class: data_field; constraint: "4 bytes" }
+      "08": "u32: Salt-1 (Header Match)" { class: data_field; constraint: "4 bytes" }
+      "12": "u32: Salt-2 (Header Match)" { class: data_field; constraint: "4 bytes" }
+      "16": "u32: Checksum-1 (Cumulative)" { class: checksum_field; constraint: "4 bytes" }
+      "20": "u32: Checksum-2 (Cumulative)" { class: checksum_field; constraint: "4 bytes" }
+    }
+
+    PAGE_DATA_BLOCK: {
+      label: "PAGE DATA (Size = PageSize bytes)"
+      style: {
+        fill: "#EBF8FF"
+        stroke: "#3182CE"
+        stroke-width: 3
+        fill-pattern: grain
+      }
+      width: 400
+      height: 120
+    }
+
+    FRAME_HDR -> PAGE_DATA_BLOCK: "Contiguous Memory" { 
+      style.stroke-width: 2
+    }
+  }
+  
+  WAL_HEADER -> WAL_FRAME_CONTENT: "Start Frame 0" {
+    style.stroke-width: 3
+  }
+}
+
+# --- 2. SEQUENCE: COMMIT & PERSISTENCE ---
+WAL_COMMIT_LOGIC: {
+  shape: sequence_diagram
+  label: "WAL Page Injection & Durability Protocol"
+
+  VDBE: "VDBE / Pager" { 
+    shape: person 
+    style.fill: "#C6F6D5"
+  }
+  WAL_FILE: "WAL File (.wal)" {
+    style.fill: "#E4DBFE"
+  }
+  WAL_INDEX: "WAL Index (.shm)" {
+    style.fill: "#FFF9C9"
+  }
+  OS_STORAGE: "Persistent Disk" {
+    style.fill: "#F7FAFC"
+  }
+
+  VDBE.write -> WAL_FILE: "Append Frame(Hdr + Data)"
+  
+  # Ensure durability via fsync
+  VDBE.sync -> OS_STORAGE: "fsync(wal_fd)" {
+    source-arrowhead: "box"
+  }
+  OS_STORAGE -> VDBE: "I/O Barrier Reached" {
+    style: {
+      stroke: "#38A169"
+      bold: true
+    }
+  }
+
+  VDBE -> WAL_INDEX: "Update mxFrame Index"
+  WAL_INDEX -> WAL_INDEX: "CAS: Increment Last-Frame-Offset"
+
+  # Optional database sync if full commit
+  VDBE.commit -> OS_STORAGE: "fsync(db_fd) [Checkpoint Only]"
+}
+
+# --- 3. STATE MACHINE: WAL LOCKING PROTOCOL ---
+WAL_LOCK_PROTO: {
+  label: "Concurrency & Locking State Transitions"
+
+  IDLE: "● IDLE" {
+    style.fill: white
+  }
+
+  READING: "READING (SHM Shared)" {
+    tooltip: "Reading from DB + WAL redirection via SHM"
+    style.fill: "#C7F1FF"
+  }
+
+  WRITING: "WRITING (WAL Exclusive)" {
+    style: {
+      fill: "#FFE7CB"
+      bold: true
+      stroke-width: 3
+    }
+  }
+
+  CHECKPOINT: "CHECKPOINTING (Migration)" {
+    style: {
+      fill: "#F6C889"
+      stroke: orange
+    }
+  }
+
+  RECOVERY: "RECOVERY (SHM Rebuild)" {
+    style: {
+      fill: "#FEB2B2"
+      stroke: red
+      stroke-width: 4
+    }
+  }
+
+  IDLE -> READING: "sqlite3WalBeginRead()"
+  READING -> IDLE: "sqlite3WalEndRead()"
+
+  IDLE -> WRITING: "sqlite3WalBeginWrite()"
+  WRITING -> IDLE: "sqlite3WalEndWrite()"
+
+  IDLE -> CHECKPOINT: "sqlite3WalCheckpoint()"
+  CHECKPOINT -> IDLE: "mxFrame reset"
+
+  IDLE -> RECOVERY: "Salt/Checksum Mismatch Detected"
+  RECOVERY -> IDLE: "Index Validated"
+
+  # Illegal transition handling
+  WRITING -> CHECKPOINT: "ILLEGAL" {
+    style: {
+      stroke: red
+      stroke-dash: 5
+      animated: true
+    }
+  }
+}
+
+# --- 4. ARCHITECTURE: QUERY EXECUTION ENGINE ---
+SQL_EXEC_ARCH: {
+  label: "Query Pipeline Architecture (Milestone 11)"
+
+  NESTED_LOOP_JOIN: {
+    label: "Join Logic (B+Tree Iterators)"
+    OUTER_SCAN: "Outer Loop (Table A)" {
+      INNER_SCAN: "Inner Loop (Table B)" {
+        PREDICATE_EVAL: {
+          shape: diamond
+          label: "A.id == B.fk?"
+          style.fill: "#FFF9C9"
+        }
+        EMIT: "Row Concatenation" {
+          shape: parallelogram
+          style.fill: "#C6F6D5"
+        }
+        
+        PREDICATE_EVAL -> EMIT: "Success"
+      }
+    }
+  }
+
+  ACCUMULATOR_STORAGE: {
+    shape: sql_table
+    label: "AggInfo: Final Aggregate Memory Layout"
+    
+    "00": "i64: COUNT(*)" { class: data_field; constraint: "8 bytes" }
+    "08": "f64: SUM(value)" { class: data_field; constraint: "8 bytes" }
+    "16": "f64: Aggregate_Avg_Sum" { class: data_field; constraint: "8 bytes" }
+    "24": "i64: Aggregate_Avg_Cnt" { class: data_field; constraint: "8 bytes" }
+  }
+}
+
+# --- TECHNICAL NOTES (FIXED) ---
+# Note: ELK layout engine requires constant positioning for 'near'. 
+NOTES: |md
+  ### Implementation Notes
+  **1. Checksum Verification**
+  - Algorithm: `s0 += x + s1; s1 += s0;`
+  - Computed on both frame headers and raw page data.
+  
+  **2. SHM Structure**
+  - The WAL Index is a memory-mapped file (`.shm`).
+  - Contains a bitmask of modified pages for fast lookups.
+  - Volatile: On process crash/salt mismatch, truncate and rebuild from `.wal`.
+
+  **3. Concurrency Model**
+  - Readers never block writers.
+  - Checkpointing can be `PASSIVE`, `FULL`, or `RESTART`.
+| {
+  near: bottom-right
+  style: {
+    stroke: "#718096"
+    fill: "#F7FAFC"
+    font-size: 14
+  }
+}

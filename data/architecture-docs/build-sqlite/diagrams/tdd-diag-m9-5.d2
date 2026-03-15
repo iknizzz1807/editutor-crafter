@@ -1,0 +1,206 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    pad: 30
+  }
+}
+
+# --- PARTICIPANT DEFINITIONS ---
+# Order of declaration determines left-to-right position in sequence_diagram
+Page Journaling During Transaction: {
+  shape: sequence_diagram
+  
+  App: Application {
+    shape: person
+    style: {
+      stroke: "#333333"
+      stroke-width: 2
+    }
+  }
+  Pager: SQLite Pager {
+    tooltip: "Manages page cache (LRU), concurrency, and rollback journal state machine."
+    style: {
+      fill: "#E1D5E7"
+      stroke: "#9673A6"
+      stroke-width: 4
+    }
+  }
+  Journal: Rollback Journal {
+    tooltip: "On-disk 'hot' journal containing original 4KB page images for atomicity."
+    style: {
+      fill: "#DAE8FC"
+      stroke: "#6C8EBF"
+      stroke-width: 3
+      double-border: true
+    }
+  }
+  BTree: Main Database {
+    tooltip: "Main B-Tree file storage (.db). Page-indexed persistence layer."
+    style: {
+      fill: "#D5E8D4"
+      stroke: "#82B366"
+      stroke-width: 3
+      double-border: true
+    }
+  }
+  VFS: OS / File System {
+    tooltip: "Virtual File System interface: Unix (flock/fcntl) or Windows syscalls."
+    style: {
+      fill: "#F5F5F5"
+      stroke: "#666666"
+      stroke-width: 2
+    }
+  }
+
+  # --- PHASE 1: PREPARATION & SHARED READ ---
+  App -> Pager: "sqlite3_step(UPDATE table SET val=1 WHERE id=1)" {
+    style.bold: true
+  }
+  
+  Pager -> VFS: "xLock(SHARED_LOCK)" {
+    tooltip: "Prevents EXCLUSIVE writers; allows multiple concurrent SHARED readers."
+  }
+  VFS -> Pager: "OK (Lock ID: 0xAF2)"
+  
+  Pager -> VFS: "xRead(File: MainDB, Pg: 4, Offset: 12288, Size: 4096B)" {
+    tooltip: "Calculation: Offset = (PageNum - 1) * 4096"
+  }
+  VFS -> Pager: "raw_bytes[4096] (Page Header: 0x0D...)"
+  
+  Pager -> VFS: "xLock(RESERVED_LOCK)"
+  Pager."Transition: Process signals intent to write; blocks other RESERVED/PENDING attempts."
+  
+  # --- PHASE 2: ATOMICITY PROTECTION (JOURNALING) ---
+  group Rollback Journaling {
+    style: {
+      stroke: "#6C8EBF"
+      fill: "#F0F7FF"
+      stroke-dash: 3
+    }
+    Pager -> Journal: "xOpen('main.db-journal', CREATE|READWRITE)"
+    Pager -> Journal: "WriteHeader(Magic=0xd9d505f9, PageCount=1, SectorSize=512)"
+    
+    Pager -> Journal: "WritePage(PageNum=4, Data=Original_Page_4_Snapshot)" {
+      tooltip: "Rollback image must be synced to disk BEFORE main DB is mutated."
+      style.stroke: "#6C8EBF"
+    }
+    
+    Pager -> VFS: "xSync('main.db-journal') [I/O Barrier]" {
+      tooltip: "Blocking F_FULLFSYNC: Wait for physical platter/SSD confirm."
+      style: {
+        italic: true
+        stroke-width: 2
+      }
+    }
+    VFS -> Pager: "Sync Complete"
+  }
+
+  # --- PHASE 3: MUTATION (IN-MEMORY ONLY) ---
+  Pager -> Pager: "Update Page 4 Cache (New Value 0x01)" {
+    tooltip: "Dirty page exists only in RAM. Main DB on disk remains unchanged."
+    style: {
+      stroke: "#FF0000"
+      stroke-width: 3
+      bold: true
+      font-color: "#FF0000"
+    }
+  }
+
+  # --- PHASE 4: COMMITMENT & WRITE-BACK ---
+  group Transaction Commit {
+    style: {
+      stroke: "#82B366"
+      fill: "#F3F9F1"
+      stroke-dash: 0
+    }
+    App -> Pager: "sqlite3_commit()" {
+      style.bold: true
+    }
+    
+    Pager -> VFS: "xLock(EXCLUSIVE_LOCK)"
+    Pager."Blocking Call: Wait for all concurrent SHARED readers to clear."
+    
+    Pager -> BTree: "xWrite(File: MainDB, Offset: 12288, Data: New_Page_4_Bytes)" {
+      tooltip: "Physically overwriting original 0x0D header with updated data."
+      style.stroke: "#82B366"
+    }
+    
+    Pager -> VFS: "xSync('main.db') [Persistence Barrier]" {
+      tooltip: "Ordering: Data must reach disk before journal is invalidated."
+      style: {
+        italic: true
+        stroke-width: 2
+      }
+    }
+    VFS -> Pager: "Flush Complete"
+    
+    Pager -> Journal: "xDelete('main.db-journal') / xTruncate(0)" {
+      style.bold: true
+    }
+    Pager."COMMIT POINT: Transaction is permanent; Rollback no longer possible."
+    
+    Pager -> VFS: "xUnlock(Release All)" {
+      tooltip: "Return to NO_LOCK state; allows next transaction to start."
+    }
+  }
+
+  App <- Pager: "SQLITE_DONE (Status: 0)" {
+    style.bold: true
+  }
+}
+
+# --- GLOBAL STYLING & FORMATTING ---
+
+# Actor Label Sizing
+Page Journaling During Transaction.App.style.font-size: 18
+Page Journaling During Transaction.Pager.style.font-size: 18
+Page Journaling During Transaction.Journal.style.font-size: 18
+Page Journaling During Transaction.BTree.style.font-size: 18
+Page Journaling During Transaction.VFS.style.font-size: 18
+
+# Message Line Formatting
+(*** -> ***)[*]: {
+  style: {
+    font-size: 14
+    stroke: "#333333"
+    font: mono
+  }
+}
+
+# Tech Spec Annotations
+Legend: {
+  near: bottom-right
+  shape: text
+  label: |md
+    ### SQLite Journaling Spec (Rollback Mode)
+    - **Page Size**: 4096B (Fixed)
+    - **Sector Size**: 512B
+    - **Locking State**: SHARED -> RESERVED -> EXCLUSIVE
+    - **Safety**: Atomic Commit via Journal Sync
+  |
+  style: {
+    stroke: "#CCCCCC"
+    fill: "#FFFFFF"
+    font-size: 14
+    font: mono
+  }
+}
+
+# Offsets/Sizes for Engineers
+Annotations: {
+  near: bottom-left
+  shape: text
+  label: |md
+    **Memory Layout:**
+    - Page 4 Offset: 0x3000 (12288 decimal)
+    - Header Size: 100 bytes (typical B-Tree leaf)
+    - Checksum: Last 4 bytes of page
+  |
+  style: {
+    stroke: "#FFA500"
+    fill: "#FFF9F0"
+    font-size: 12
+  }
+}

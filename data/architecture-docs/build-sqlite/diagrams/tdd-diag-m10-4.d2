@@ -1,0 +1,124 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- CLASSES & STYLING ---
+classes: {
+  memory_box: {
+    style: {
+      stroke-width: 2
+      font: mono
+    }
+  }
+  header: {
+    style: {
+      fill: "#DDA0DD" # Purple
+      bold: true
+    }
+  }
+  data: {
+    style: {
+      fill: "#ADD8E6" # Blue
+    }
+  }
+  changed_red: {
+    style: {
+      fill: "#FFB6C1"
+      stroke: red
+      stroke-width: 4
+      bold: true
+    }
+  }
+  pointer: {
+    shape: person
+    style: {
+      fill: orange
+    }
+  }
+}
+
+# --- MAIN DIAGRAM CONTAINER ---
+checkpoint_process: "ALGORITHM: WAL CHECKPOINT (PASSIVE MODE)" {
+  
+  # Step 1: Initialization and Log Scanning
+  step_01: "Step 1: Scan WAL Log" {
+    notes: |md
+      - Acquire **SHARED** lock on DB.
+      - Acquire **CHECKPOINT** lock on WAL.
+      - Read WAL Header to find last committed frame.
+    |
+    
+    wal_log: "WAL FILE (on disk)" {
+      header: "WAL HEADER (32B)" { class: [memory_box; header] }
+      frame_0: "FRAME 0: Pg 5, Tx 10" { class: [memory_box; data] }
+      frame_1: "FRAME 1: Pg 12, Tx 10" { class: [memory_box; data] }
+      frame_2: "FRAME 2: Pg 5, Tx 11" { class: [memory_box; data] }
+      
+      offsets: {
+        shape: text
+        label: "0x00\n0x20\n0x1020\n0x2020"
+      }
+    }
+    
+    ckpt_ptr: "ckpt_read_ptr" { class: pointer }
+    ckpt_ptr -> wal_log.frame_2: "Current Max Frame"
+  }
+
+  # Step 2: Transferring Pages to Main Database
+  step_02: "Step 2: Page Migration" {
+    notes: |md
+      - Only the **latest version** of each page is copied.
+      - Page 5 from Frame 2 overrides Page 5 from Frame 0.
+    |
+
+    source: "WAL BUFFER" {
+      f2: "Frame 2 (Pg 5)" { class: [memory_box; data] }
+      f1: "Frame 1 (Pg 12)" { class: [memory_box; data] }
+    }
+
+    destination: "MAIN DATABASE (sqlite3_db)" {
+      pg_12: "**PAGE 12 (Commit Tx 10)**" { class: [memory_box; changed_red] }
+      pg_5: "**PAGE 5 (Commit Tx 11)**" { class: [memory_box; changed_red] }
+      pg_padding: "..." { style.opacity: 0.5 }
+    }
+
+    source.f2 -> destination.pg_5: "mmap_copy"
+    source.f1 -> destination.pg_12: "mmap_copy"
+  }
+
+  # Step 3: FSync and Checkpoint Completion
+  step_03: "Step 3: Sync & Truncate" {
+    notes: |md
+      - FSync Main DB to persistent storage.
+      - Update WAL Header: `nBackfill` = Frame 2.
+      - Reset WAL file (Passive mode: log remains for reuse).
+    |
+
+    wal_header: "WAL HEADER (POST-SYNC)" {
+      class: [memory_box; header]
+      nBackfill: "Backfill Index: 2" { style.font-color: red }
+      salt: "0xAF32... (New)"
+      checksum: "CRC-32 (Updated)"
+    }
+
+    db_disk: "DISK STORAGE" {
+      shape: cylinder
+      style.fill: "#90EE90" # Green (Safe)
+    }
+
+    wal_header -> db_disk: "1. FSync DB"
+    wal_header -> wal_header: "2. Atomic Header Write"
+  }
+
+  # Sequencing the steps
+  step_01 -> step_02: "Valid WAL Found"
+  step_02 -> step_03: "Buffer Flushed"
+}
+
+# Metadata Annotations
+checkpoint_process.step_01.wal_log.header.tooltip: "Magic: 0x377f0682"
+checkpoint_process.step_02.destination.pg_5.tooltip: "Last writer wins (LWW) strategy"

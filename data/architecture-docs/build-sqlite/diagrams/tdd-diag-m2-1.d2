@@ -1,0 +1,212 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 0
+    layout-engine: elk
+    pad: 50
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 1. MEMORY LAYOUT SPECIFICATION
+# -----------------------------------------------------------------------------
+# PURPLE=Header, BLUE=Data, GREEN=Salt, GOLD=Checksum, RED=Locks
+# Engineers: Byte offsets in left column, Types in middle, Field Names in right.
+
+Memory_Layout_Specification: {
+  grid-columns: 2
+  grid-gap: 50
+
+  WalFrameHdr: {
+    shape: sql_table
+    label: "WAL Frame Header (24 Bytes)"
+    style: {
+      stroke: "#333333"
+      stroke-width: 2
+      fill: "#E1BEE7"
+    }
+
+    "00": uint32_t {constraint: page_number}
+    "04": uint32_t {constraint: commit_frame}
+    "08": uint32_t {constraint: salt1}
+    "12": uint32_t {constraint: salt2}
+    "16": uint32_t {constraint: checksum1}
+    "20": uint32_t {constraint: checksum2}
+
+    # Row-level styling for byte-role identification
+    "00".style.fill: "#D0E1F9"
+    "04".style.fill: "#D0E1F9"
+    "08".style.fill: "#D1FFD1"
+    "12".style.fill: "#D1FFD1"
+    "16".style.fill: "#FFECB3"
+    "20".style.fill: "#FFECB3"
+  }
+
+  WalIndexHdr: {
+    shape: sql_table
+    label: "WAL Index Header (Shared Memory)"
+    style: {
+      stroke: "#333333"
+      stroke-width: 2
+      fill: "#E1BEE7"
+    }
+
+    "00": uint32_t {constraint: wal_version}
+    "04": uint32_t {constraint: page_size}
+    "08": uint32_t {constraint: last_frame}
+    "12": uint32_t {constraint: last_commit}
+    "16": "uint32_t[8]" {constraint: "locks[8]"}
+    "48": "uint32_t[4]" {constraint: "salt_locks[4]"}
+    "64": uint32_t {constraint: checksum1}
+    "68": uint32_t {constraint: checksum2}
+
+    "16".style.fill: "#FFCCBC"
+    "48".style.fill: "#FFCCBC"
+    "64".style.fill: "#FFECB3"
+    "68".style.fill: "#FFECB3"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 2. ARCHITECTURE (STATIC STRUCTURE)
+# -----------------------------------------------------------------------------
+
+Architecture: {
+  WalReader: {
+    shape: class
+    + fd: int
+    + mapped: "void*"
+    + mapped_size: size_t
+    - index: WalIndexHdr
+    - frame_count: uint32_t
+    - read_frame: uint32_t
+    
+    + "wal_reader_init(reader, path)": int
+    + "wal_reader_get_frame(reader, idx)": "void*"
+    + "wal_reader_refresh_index(reader)": int
+    
+    tooltip: "sizeof=64 bytes (one cache line aligned)"
+  }
+
+  WalWriter: {
+    shape: class
+    + fd: int
+    - index: "WalIndexHdr*"
+    + frame_size: uint32_t
+    - write_pos: uint32_t
+    - salt1: uint32_t
+    - salt2: uint32_t
+    
+    + "wal_writer_init(writer, path, size, mode)": int
+    + "wal_writer_append_frame(writer, data, pnum, commit)": int
+    + "wal_writer_commit(writer, start, end)": int
+  }
+
+  WalCheckpointCtx: {
+    shape: class
+    + db_path: "const char*"
+    + wal_path: "const char*"
+    - fd_db: int
+    - fd_wal: int
+    - checkpoint_frame: uint32_t
+    - total_frames: uint32_t
+  }
+
+  WalWriter -> WalReader: "references shared index" {
+    style.stroke-dash: 3
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 3. SEQUENCE: CHECKPOINT LIFECYCLE
+# -----------------------------------------------------------------------------
+
+Checkpoint_Sequence: {
+  shape: sequence_diagram
+
+  App: Application
+  WalCtx: WalCheckpointCtx
+  Lock: LockManager
+  WAL: WAL_File_Storage
+  DB: Database_Storage
+
+  App -> WalCtx: "wal_checkpoint(PASSIVE|FULL)"
+  
+  WalCtx -> Lock: "▼ wal_try_lock(WAL_LOCK_CHECKPOINT)"
+  Lock -> WalCtx: "lock_granted"
+  
+  WalCtx -> WAL: "open(wal_path)"
+  WalCtx -> DB: "open(db_path)"
+
+  checkpoint_loop: {
+    WalCtx -> WAL: "read_frame(frame_idx)"
+    WAL -> WalCtx: "WalFrame + PageData"
+    WalCtx -> DB: "pwrite(page_data, db_offset)"
+  }
+
+  WalCtx -> WAL: "ftruncate(header_size)"
+  
+  WalCtx -> Lock: "▲ wal_unlock(WAL_LOCK_CHECKPOINT)"
+  WalCtx -> App: "return result"
+}
+
+# -----------------------------------------------------------------------------
+# 4. DATA FLOW & PERSISTENCE
+# -----------------------------------------------------------------------------
+
+Data_Flow: {
+  direction: right
+
+  Disk: {
+    DB_File: "Database File\n(Main Storage)" {
+      shape: cylinder
+      style.fill: "#BBDEFB"
+    }
+    WAL_File: "WAL File\n(Log of Frames)" {
+      shape: cylinder
+      style.fill: "#C8E6C9"
+    }
+  }
+
+  Memory: {
+    SHM: "Shared Memory\n(WalIndexHdr Buffer)" {
+      shape: parallelogram
+      style.fill: "#F3E5F5"
+      style.stroke-width: 2
+    }
+  }
+
+  Writer: WalWriter
+  Reader: WalReader
+  Checkpointer: WalCheckpointCtx
+
+  Writer -> Disk.WAL_File: "Append Frame"
+  Writer -> Memory.SHM: "Update last_commit"
+  
+  Reader <- Disk.WAL_File: "Read Page"
+  Reader <- Memory.SHM: "Verify last_commit"
+
+  Checkpointer -> Disk.WAL_File: "Read Committed Frames"
+  Checkpointer -> Disk.DB_File: "Copy to Main DB"
+  Checkpointer -> Disk.WAL_File: "Truncate (Reset)"
+}
+
+# -----------------------------------------------------------------------------
+# 5. GLOBAL SPECIFICATION & ANNOTATIONS
+# -----------------------------------------------------------------------------
+
+Annotate: |md
+  ### WAL Technical Specification
+  - **Magic Number:** `0x377f0682`
+  - **Header Size:** 32 Bytes
+  - **Frame Header:** 24 Bytes
+  - **Default Threshold:** 1000 frames
+  - **Consistency:** Salt must match between Hdr and Frame
+  - **Page Alignment:** Cache-line (64B) alignment enforced for Reader structures.
+  - **Checksum Algorithm:** Fletcher-64 variant on little-endian platforms.
+| {
+  near: top-left
+}
+
+***.style.font: mono
+***.style.stroke-width: 1

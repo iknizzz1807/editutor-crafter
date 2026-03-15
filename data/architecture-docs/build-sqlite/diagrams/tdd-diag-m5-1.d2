@@ -1,0 +1,295 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# GLOBAL STYLES & THEMES
+# Header=Purple, Data=Blue, Free=Green, Padding=Gray, Pointers=Orange
+classes: {
+  header_style: {
+    style: {
+      fill: "#9b59b6"
+      font-color: white
+      bold: true
+      stroke: "#4a235a"
+      stroke-width: 2
+    }
+  }
+  data_style: {
+    style: {
+      fill: "#3498db"
+      font-color: white
+      stroke: "#1a5276"
+    }
+  }
+  padding_style: {
+    style: {
+      fill: "#95a5a6"
+      fill-pattern: lines
+    }
+  }
+  state_start: {
+    shape: circle
+    style: {
+      fill: "#2ecc71"
+      bold: true
+      stroke-width: 3
+    }
+  }
+  state_process: {
+    shape: rectangle
+    style: {
+      fill: "#f8f9f9"
+      stroke: "#2c3e50"
+      border-radius: 4
+    }
+  }
+  state_decision: {
+    shape: diamond
+    style: {
+      fill: "#f1c40f"
+      stroke: "#9a7d0a"
+    }
+  }
+  state_error: {
+    shape: rectangle
+    style: {
+      fill: "#e74c3c"
+      font-color: white
+      stroke: "#7b241c"
+    }
+  }
+  critical_path: {
+    style: {
+      stroke: "#e67e22"
+      stroke-width: 4
+      animated: true
+    }
+  }
+}
+
+# ROOT LEVEL ANNOTATION
+MAIN_TITLE: |md
+  # Module M10: Write-Ahead Logging (WAL)
+  **Concurrent Readers with Durable Writes & Snapshot Isolation**
+  *Implementation Spec: SQLite-compatible WAL Format*
+| {
+  shape: text
+  near: top-center
+}
+
+WAL_MODULE: {
+  label: "WAL Subsystem Implementation"
+
+  FILE_STRUCTURES: {
+    label: "10.1 WAL File Layout & Memory Mapping"
+
+    WAL_HEADER: {
+      shape: sql_table
+      class: header_style
+      label: "WAL Header (32 Bytes total) | sizeof=32"
+      
+      "0x00: magic": "uint32 (0x377f0682/3)" {constraint: "4B"}
+      "0x04: version": "uint32 (3007000)" {constraint: "4B"}
+      "0x08: page_size": "uint32 (4096 default)" {constraint: "4B"}
+      "0x0C: checkpoint_seq": "uint32 (Big-Endian)" {constraint: "4B"}
+      "0x10: salt1": "uint32 (Randomized)" {constraint: "4B"}
+      "0x14: salt2": "uint32 (Randomized)" {constraint: "4B"}
+      "0x18: cksum1": "uint32 (Rolling)" {constraint: "4B"}
+      "0x1C: cksum2": "uint32 (Rolling)" {constraint: "4B"}
+    }
+
+    FRAME_HEADER: {
+      shape: sql_table
+      class: data_style
+      label: "WAL Frame Header (24 Bytes) | sizeof=24"
+      
+      "0x00: pgno": "uint32 (Source Page)" {constraint: "4B"}
+      "0x04: commit_size": "uint32 (Commit if >0)" {constraint: "4B"}
+      "0x08: salt1": "uint32 (Match WAL Hdr)" {constraint: "4B"}
+      "0x0C: salt2": "uint32 (Match WAL Hdr)" {constraint: "4B"}
+      "0x10: cksum1": "uint32 (Frame specific)" {constraint: "4B"}
+      "0x14: cksum2": "uint32 (Frame specific)" {constraint: "4B"}
+    }
+
+    STORAGE_SEQUENCE: {
+      label: "On-Disk Storage Sequence (Append-Only)"
+      grid-columns: 1
+      
+      hdr: "WAL Header (32B)" {
+        class: header_style
+      }
+      
+      tx1: "Transaction 1 (2 Frames)" {
+        style.stroke-dash: 3
+        f1_h: "Frame 1 Hdr (24B)" {class: data_style}
+        f1_d: "Page Data (4096B)" {style.fill: "#eaeded"}
+        f2_h: "Frame 2 Hdr (24B)" {class: data_style}
+        f2_d: "Page Data (4096B)" {style.fill: "#eaeded"}
+        
+        f1_h -> f1_d
+        f2_h -> f2_d
+      }
+      
+      tx2: "Transaction 2 (Commit Frame)" {
+        f3_h: "Frame 3 Hdr (24B)" {class: data_style; style.bold: true}
+        f3_d: "Page Data (4096B)" {style.fill: "#eaeded"}
+        f3_h -> f3_d
+      }
+
+      hdr -> tx1 -> tx2: "Sequential Write Pointer"
+    }
+  }
+
+  WAL_INDEX_SHM: {
+    label: "10.2 WAL Index (Shared Memory Map)"
+    
+    shm_struct: {
+      label: "SHM Map (wal-index)"
+      grid-columns: 1
+      
+      master: "Master Index (Frame 0)" {
+        style.fill: "#e3f2fd"
+        label: "nBackfill | aReadMark[5] | mxFrame | salts[2]"
+      }
+      
+      entry_array: "Entry Array (WalEntry[N])" {
+        style.fill: "#fff3e0"
+        label: "Mappings: uint32 pgno -> uint32 wal_frame_idx"
+      }
+      
+      hash_table: "Lookup Hash (16-bit keys)" {
+        style.fill: "#fce4ec"
+        label: "pgno % hash_sz -> wal_entry_idx"
+      }
+    }
+
+    # FIX: Set 'near' to sibling 'shm_struct' instead of parent 'WAL_INDEX_SHM'
+    wal_entry_spec: |c
+      typedef struct WalEntry {
+          uint32_t page_number;   // Primary Key
+          uint32_t commit_frame;  // WAL Offset
+          uint32_t size;          // Data Size
+          uint32_t salt1, salt2;  // Consistency
+          uint32_t checksum1, 2;  // Integrity
+      } WalEntry; // sizeof=24 bytes
+    | {
+      shape: text
+      near: shm_struct
+    }
+  }
+
+  READER_PROTOCOL: {
+    label: "10.3 Reader Protocol (Snapshot Isolation)"
+    shape: sequence_diagram
+    
+    Reader: {shape: person}
+    SHM_Lock: "SHM Locks" {style.fill: "#fdf2e9"}
+    WAL_File: "WAL File" {class: data_style}
+    DB_File: "Main DB" {class: padding_style}
+    
+    Reader -> SHM_Lock: "1. Acquire WAL_READ_LOCK(i) ▼"
+    Reader <- SHM_Lock: "Success: Snapshot mxFrame captured"
+    
+    Reader -> SHM_Lock: "2. Lookup pgno in Hash Map"
+    Reader <- SHM_Lock: "Found: Frame K <= mxFrame"
+    
+    Reader -> WAL_File: "3. Read Page(K) at offset (32 + K*(24+PgSz))"
+    WAL_File -> Reader: "Return Byte Stream"
+    
+    Reader -> Reader: "4. Verify rolling checksum"
+    
+    Reader -> SHM_Lock: "5. Release WAL_READ_LOCK(i) ▲"
+  }
+
+  WRITER_FLOW: {
+    label: "10.4 Writer Protocol (Serialization)"
+    
+    start: ● {class: state_start}
+    lock: "Acquire WAL_WRITE_LOCK" {class: state_process}
+    prep: "Calculate next mxFrame" {class: state_process}
+    write: "Append Header + Dirty Pages" {
+      class: state_process
+      style.fill: "#d6eaf8"
+    }
+    sync: "fsync(WAL_FILE_HANDLE)" {
+      class: state_process
+      style.stroke: "#e67e22"
+      style.stroke-width: 3
+    }
+    update_shm: "Atomic Update mxFrame" {
+      class: state_process
+      style.double-border: true
+    }
+    unlock: "Release WAL_WRITE_LOCK" {class: state_start}
+    
+    start -> lock -> prep -> write -> sync -> update_shm -> unlock
+    
+    # Critical dependency
+    write -> WAL_MODULE.FILE_STRUCTURES.FRAME_HEADER: "Enforces Schema"
+  }
+
+  CHECKPOINT_LOGIC: {
+    label: "10.5 Checkpoint Algorithm (WAL -> Main DB)"
+    
+    cp_start: ● {class: state_start}
+    cp_lock: "Acquire WAL_CKPT_LOCK" {class: state_process}
+    cp_read: "Read mxFrame from SHM" {class: state_process}
+    cp_copy: "Copy unique pages to Main DB" {
+      class: state_process
+      style.fill: "#d4efdf"
+    }
+    cp_sync: "fsync(DB_FILE_HANDLE)" {class: state_process}
+    cp_reset: "Update nBackfill / Reset WAL" {class: state_process}
+    cp_end: "Release Locks" {class: state_start}
+    
+    cp_start -> cp_lock -> cp_read -> cp_copy -> cp_sync -> cp_reset -> cp_end
+  }
+
+  LOCK_MATRIX: {
+    label: "10.7 Lock Compatibility Matrix"
+    grid-rows: 5
+    grid-columns: 5
+    grid-gap: 0
+    
+    # Legend
+    "Type": {style.bold: true; style.fill: "#f2f3f4"}
+    "Read": {style.bold: true}
+    "Write": {style.bold: true}
+    "Ckpt": {style.bold: true}
+    "Recover": {style.bold: true}
+    
+    # Data Rows
+    "Read_Row": "Read" {style.bold: true}
+    "R_R": "OK" {style.fill: "#c8e6c9"}
+    "R_W": "OK" {style.fill: "#c8e6c9"; tooltip: "Snapshot isolation allows concurrent write"}
+    "R_C": "OK" {style.fill: "#c8e6c9"; tooltip: "Ckpt waits for readers to clear"}
+    "R_Rec": "BLOCK" {style.fill: "#ffcdd2"}
+    
+    "Write_Row": "Write" {style.bold: true}
+    "W_R": "OK" {style.fill: "#c8e6c9"}
+    "W_W": "BLOCK" {style.fill: "#ffcdd2"; tooltip: "Only one writer allowed"}
+    "W_C": "BLOCK" {style.fill: "#ffcdd2"}
+    "W_Rec": "BLOCK" {style.fill: "#ffcdd2"}
+    
+    "Ckpt_Row": "Ckpt" {style.bold: true}
+    "C_R": "OK" {style.fill: "#c8e6c9"}
+    "C_W": "BLOCK" {style.fill: "#ffcdd2"}
+    "C_C": "BLOCK" {style.fill: "#ffcdd2"}
+    "C_Rec": "BLOCK" {style.fill: "#ffcdd2"}
+    
+    "Rec_Row": "Recover" {style.bold: true}
+    "Rec_R": "BLOCK" {style.fill: "#ffcdd2"}
+    "Rec_W": "BLOCK" {style.fill: "#ffcdd2"}
+    "Rec_C": "BLOCK" {style.fill: "#ffcdd2"}
+    "Rec_Rec": "BLOCK" {style.fill: "#ffcdd2"}
+  }
+}
+
+# CROSS-COMPONENT INTEGRATION
+WAL_MODULE.WRITER_FLOW.update_shm -> WAL_MODULE.WAL_INDEX_SHM.shm_struct.master: "Updates mxFrame"
+WAL_MODULE.CHECKPOINT_LOGIC.cp_copy -> WAL_MODULE.FILE_STRUCTURES.STORAGE_SEQUENCE: "Reads from sequence"
+WAL_MODULE.READER_PROTOCOL -> WAL_MODULE.WAL_INDEX_SHM.shm_struct.hash_table: "Lookups"

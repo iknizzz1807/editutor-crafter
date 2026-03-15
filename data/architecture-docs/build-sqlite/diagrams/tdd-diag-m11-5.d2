@@ -1,0 +1,157 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# COMPONENT: HAVING Filter Execution Flow
+# DESCRIPTION: High-fidelity sequence diagram of SQLite-style VDBE execution for 
+#              post-aggregation filtering.
+# -----------------------------------------------------------------------------------------
+"HAVING Filter Execution Flow": {
+  shape: sequence_diagram
+
+  # Participants Definition
+  parser: SQL Compiler {
+    shape: person
+    tooltip: "Generates Abstract Syntax Tree (AST) and translates to VM Opcodes"
+  }
+  vdbe: VDBE Virtual Machine {
+    style: {
+      double-border: true
+      stroke-width: 2
+    }
+    tooltip: "Virtual Database Engine executing byte-code: Registers R0-Rn"
+  }
+  sorter: Row Sorter/Grouper {
+    style.fill: "#DEE1EB"
+    tooltip: "B-Tree based intermediate storage for GROUP BY operations"
+  }
+  aggregator: Aggregation Engine {
+    style: {
+      fill: "#B5AFF6"
+      stroke: "#333333"
+    }
+    tooltip: "Accumulator logic for SUM(), COUNT(), AVG(), MIN(), MAX()"
+  }
+  filter: HAVING Logic Gate {
+    style: {
+      fill: "#FFE7CB"
+      stroke: orange
+      stroke-width: 4
+    }
+    tooltip: "Post-aggregation comparator for Boolean expressions"
+  }
+  results: "Result Set Buffer" {
+    shape: cylinder
+    style.fill: "#C7F1FF"
+  }
+
+  # 1. Compilation Phase
+  parser -> vdbe: OP_Init (Jump to 1), OP_OpenRead (P1=root, P2=tbl)
+  parser -> vdbe: OP_Explain ("SELECT x, SUM(y) GROUP BY x HAVING SUM(y) > 500")
+
+  # 2. Initialization Phase
+  vdbe -> sorter: OP_SorterOpen (P1=Cursor, P2=KeyLen, P3=Unused)
+  vdbe -> aggregator: OP_Null (P2=Register R1) {
+    tooltip: "Initialize aggregate accumulator register to NULL"
+  }
+
+  # 3. Main Processing Loop (Grouping and Accumulation)
+  loop: Aggregation Phase (For each Input Row) {
+    vdbe -> sorter: OP_SorterInsert (P1=Cursor, P2=Record)
+    sorter -> aggregator: OP_AggStep (P1=0, P2=Register R2, P3=AggFuncContext)
+    
+    # State change highlighted: RED + bold
+    aggregator -> aggregator: **Update Accumulator R1 (R1 = R1 + R2)** {
+      style: {
+        stroke: red
+        stroke-width: 4
+        bold: true
+      }
+    }
+  }
+
+  # 4. Finalization and Filtering Phase
+  vdbe -> sorter: OP_SorterSort (Triggering group boundary detection)
+  sorter -> vdbe: OP_SorterNext (Yielding group record)
+
+  vdbe -> aggregator: OP_AggFinalize (P1=AggFuncContext, P2=Register R1)
+  aggregator -> vdbe: Return Final Aggregated State (R1 = Calculated Value)
+
+  vdbe -> filter: OP_Filter (P1=R1, P2=Constant 500, P3=Comparator ">")
+  
+  # Logic Context Note
+  filter.eval_note: |md
+    ### HAVING Evaluation Context
+    The comparator gate executes **after** the 
+    `OP_AggFinalize` instruction has populated 
+    the target Register `R1`.
+    
+    **Evaluation:** `R1 >= 500`
+  |
+
+  filter -> filter: Run CMP(R1, 500)
+
+  # 5. Conditional Branching
+  alt: Filter Logic Result = TRUE {
+    filter -> vdbe: JMP Next Instruction (Continue Flow)
+    vdbe -> results: OP_ResultRow (P1=R1, P2=1) {
+      tooltip: "Emit record to output buffer"
+    }
+  }
+
+  alt: Filter Logic Result = FALSE {
+    filter -> vdbe: OP_Halt (Branch to Skip Point)
+    
+    # Skip Logic State Transition
+    vdbe -> vdbe: **OP_Next (Advance Cursor to Next Group Boundary)** {
+      style: {
+        stroke: red
+        stroke-width: 3
+        animated: true
+        bold: true
+      }
+    }
+  }
+
+  # Cleanup
+  vdbe -> vdbe: OP_Reset (Flush Register R1 for next iteration)
+}
+
+# -----------------------------------------------------------------------------------------
+# TECHNICAL SPECIFICATION: Positioned using constant 'near' value for ELK compatibility
+# -----------------------------------------------------------------------------------------
+"HAVING Implementation Specification": {
+  near: bottom-center
+  shape: text
+  label: |md
+    ### VDBE Implementation Specifications (M11-5)
+    
+    **1. Register Management Architecture**
+    - **R1 (Accumulator)**: Volatile aggregate state. Lifetime spans group processing.
+    - **R2 (Extracted Field)**: Transient storage for raw row data before accumulation.
+    
+    **2. Execution Constraints**
+    - **Blocking Op**: `OP_SorterSort` acts as a full execution barrier. Aggregation cannot be finalized until the sorter flushes.
+    - **OpCode Sequence**: `AggStep` -> `SorterNext` -> `AggFinalize` -> `Filter`.
+    
+    **3. Hardware Alignment**
+    - Aggregator state is designed to fit within L1 cache (approx. 64B per aggregate context) to minimize memory stall during `Update Accumulator`.
+    
+    **4. Logical Short-Circuiting**
+    - If `HAVING` contains `AND` clauses, `OP_Filter` is chained with multiple jump offsets to optimize CPU branch prediction.
+  |
+}
+
+# -----------------------------------------------------------------------------------------
+# GLOBAL STYLING & OVERRIDES
+# -----------------------------------------------------------------------------------------
+***.style.font: mono
+
+# Annotate specific component styles within the sequence container
+"HAVING Filter Execution Flow".aggregator.style.stroke: "#333333"
+"HAVING Filter Execution Flow".filter.style.stroke: orange
+"HAVING Filter Execution Flow".filter.style.stroke-width: 4

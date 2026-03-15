@@ -1,0 +1,366 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    pad: 20
+  }
+}
+
+# --------------------------------------------------------------------------------------------
+# 1. QUERY PLANNER INTERNALS
+# --------------------------------------------------------------------------------------------
+
+query_planning: {
+  label: "Query Planning & Optimization Pipeline"
+  tooltip: "High-level transformation from SQL text to VDBE Opcode"
+  
+  flow: {
+    shape: sequence_diagram
+    user: User SQL Query
+    parser: SQL Parser
+    rewriter: Query Rewriter (RBO/CBO)
+    planner: Plan Enumerator
+    cost_model: Cost Estimator
+    vdbe: VDBE Execution
+    
+    user -> parser: "SELECT * FROM orders WHERE id = 100"
+    parser -> rewriter: "Abstract Syntax Tree (AST)"
+    rewriter -> planner: "Canonical Relational Algebra"
+    
+    group: "Optimization Loop (Join Search)" {
+      planner -> cost_model: "Candidate Plan (e.g., Hash Join)"
+      cost_model -> planner: "Estimated Cost (I/O + CPU)"
+    }
+    
+    planner -> vdbe: "Optimal Opcode Bytecode"
+  }
+
+  cost_params: {
+    shape: sql_table
+    label: "Optimizer Cost Weights (Default Profile)"
+    style.fill: "#FFFDE7"
+    seq_page_cost: "1.0 (Reference Value)" {constraint: "I/O"}
+    random_page_cost: "4.0 (HDD Seek Penalty)" {constraint: "I/O"}
+    cpu_tuple_cost: "0.01 (Processing overhead)" {constraint: "CPU"}
+    cpu_index_tuple_cost: "0.005 (B-Tree traversal)" {constraint: "CPU"}
+  }
+}
+
+# --------------------------------------------------------------------------------------------
+# 2. JOIN ORDER OPTIMIZATION
+# --------------------------------------------------------------------------------------------
+
+join_optimization: {
+  label: "Join Order Search Space & Plan Trees"
+  grid-columns: 2
+
+  left_deep: {
+    label: "Left-Deep Tree (Standard Pipeline)"
+    join1: "Join 1"
+    join2: "Join 2"
+    join3: "Join 3"
+    
+    join3 -> join2: "Intermediate result"
+    join2 -> join1: "Intermediate result"
+    
+    rel_a: "Table A"
+    rel_b: "Table B"
+    rel_c: "Table C"
+    rel_d: "Table D"
+    
+    rel_a -> join3
+    rel_b -> join3
+    rel_c -> join2
+    rel_d -> join1
+    
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+  }
+
+  bushy: {
+    label: "Bushy Tree (Parallel Execution Friendly)"
+    root_join: "Final Join"
+    sub_join_1: "Join A-B"
+    sub_join_2: "Join C-D"
+    
+    sub_join_1 -> root_join
+    sub_join_2 -> root_join
+    
+    a: "A"; b: "B"; c: "C"; d: "D"
+    a -> sub_join_1
+    b -> sub_join_1
+    c -> sub_join_2
+    d -> sub_join_2
+    
+    style.fill: "#FFF3E0"
+    style.stroke: "#EF6C00"
+  }
+}
+
+# --------------------------------------------------------------------------------------------
+# 3. TRANSACTION MANAGEMENT: TWO-PHASE COMMIT (2PC)
+# --------------------------------------------------------------------------------------------
+
+two_phase_commit: {
+  shape: sequence_diagram
+  label: "Atomic Commit Protocol (2PC) Sequence"
+  
+  coordinator: Coordinator { 
+    style.fill: "#E1BEE7"
+    style.stroke: "#7B1FA2"
+  }
+  node_a: Data Node A { 
+    style.fill: "#BBDEFB"
+    style.stroke: "#1976D2"
+  }
+  node_b: Data Node B { 
+    style.fill: "#BBDEFB"
+    style.stroke: "#1976D2"
+  }
+
+  group: "Phase 1: Voting (Prepare)" {
+    coordinator -> node_a: "PREPARE (TID: 0xAF)"
+    coordinator -> node_b: "PREPARE (TID: 0xAF)"
+    node_a -> coordinator: "VOTE_COMMIT (Ready)" { style.stroke: "#388E3C" }
+    node_b -> coordinator: "VOTE_COMMIT (Ready)" { style.stroke: "#388E3C" }
+  }
+
+  group: "Phase 2: Completion (Commit/Abort)" {
+    coordinator -> node_a: "GLOBAL_COMMIT" {
+      tooltip: "Coordinator writes COMMIT to its own WAL first"
+    }
+    coordinator -> node_b: "GLOBAL_COMMIT"
+    node_a -> coordinator: "ACK"
+    node_b -> coordinator: "ACK"
+  }
+}
+
+# --------------------------------------------------------------------------------------------
+# 4. CONCURRENCY CONTROL: MVCC VERSION CHAIN
+# --------------------------------------------------------------------------------------------
+
+mvcc_structure: {
+  label: "Multi-Version Concurrency Control (MVCC) Chain"
+  direction: right
+
+  row_slot: {
+    label: "Primary Table Slot (Main Heap)"
+    shape: sql_table
+    row_id: 101 {constraint: "Primary Key"}
+    version_ptr: "→ 0x7FFF01 (Latest)"
+    version_ptr.style.font-color: orange
+  }
+
+  v_latest: {
+    label: "Version 3 (Timestamp: 500)"
+    shape: sql_table
+    tx_id: 500 {constraint: "Active"}
+    data: "Balance: \$200"
+    prev: "→ 0x7FFF00 (Old)"
+    style.fill: "#C8E6C9"
+  }
+
+  v_mid: {
+    label: "Version 2 (Timestamp: 450)"
+    shape: sql_table
+    tx_id: 450 {constraint: "Committed"}
+    data: "Balance: \$150"
+    prev: "→ 0x7FFEF9 (Historic)"
+    style.fill: "#FFF9C4"
+  }
+
+  v_old: {
+    label: "Version 1 (Oldest)"
+    shape: sql_table
+    tx_id: 300 {constraint: "Garbage"}
+    data: "Balance: \$100"
+    prev: "NULL"
+    style.fill: "#FFECB3"
+  }
+
+  row_slot.version_ptr -> v_latest
+  v_latest.prev -> v_mid
+  v_mid.prev -> v_old
+  
+  vacuum: "Garbage Collector" {
+    shape: person
+    # FIX: Changed 'near' from object reference to constant value for ELK compatibility
+    near: bottom-right
+  }
+  vacuum -> v_old: "Reclaim if TX < OldestActive" { 
+    style.stroke: red
+    style.stroke-dash: 3 
+    style.animated: true
+  }
+}
+
+# --------------------------------------------------------------------------------------------
+# 5. STORAGE ENGINE: SLOTTED PAGE LAYOUT
+# --------------------------------------------------------------------------------------------
+
+slotted_page_layout: {
+  label: "Slotted Page Memory Format (Physical Layout)"
+  tooltip: "Page Size = 4096B (Standard OS Page)"
+
+  header: {
+    label: "PAGE HEADER (Bytes 0-23)"
+    shape: sql_table
+    flags: "0x01 (B-Tree Leaf)"
+    free_start: "Ptr to Free Space Offset"
+    cell_count: "Total Record Count"
+    style.fill: "#9C27B0" # Header: Purple
+    style.font-color: white
+  }
+
+  pointers: {
+    label: "CELL POINTER ARRAY (Grows Down)"
+    shape: sql_table
+    p0: "Record 0 @ Offset 4000"
+    p1: "Record 1 @ Offset 3850"
+    p2: "Record 2 @ Offset 3700"
+    style.fill: "#FF9800" # Pointers: Orange
+  }
+
+  free_space: {
+    label: "UNALLOCATED FREE SPACE (Padding)"
+    style.fill: "#4CAF50" # Free: Green
+    style.stroke-dash: 5
+  }
+
+  cells: {
+    label: "CELL STORAGE (Grows Upwards)"
+    shape: sql_table
+    cell_2: "Data R2 (Key: 55, Size: 150B)"
+    cell_1: "Data R1 (Key: 20, Size: 150B)"
+    cell_0: "Data R0 (Key: 10, Size: 96B)"
+    style.fill: "#2196F3" # Data: Blue
+    style.font-color: white
+  }
+
+  header -> pointers: "Allocation ↓"
+  cells -> free_space: "Allocation ↑"
+}
+
+# --------------------------------------------------------------------------------------------
+# 6. WAL MODE: FRAME & CHECKPOINT
+# --------------------------------------------------------------------------------------------
+
+wal_internals: {
+  label: "Write-Ahead Log (WAL) Frames"
+  
+  frame: {
+    label: "WAL Frame Internal Layout"
+    header: {
+      label: "Frame Header (24B)"
+      shape: sql_table
+      pg_no: "u32: Original Page No"
+      commit: "u32: Page Count in TX"
+      salt: "u32[2]: Integrity Salt"
+      cksum: "u32[2]: Frame Checksum"
+      style.fill: "#F8BBD9"
+    }
+    data_shape: "Page Payload (4096B Snapshot)" {
+      style.fill: "#E1BEE7"
+      style.stroke-dash: 3
+    }
+    header -> data_shape
+  }
+
+  checkpoint_logic: {
+    label: "Checkpoint Algorithm (WAL-to-DB)"
+    shape: sequence_diagram
+    wal: WAL File
+    buffer: Page Cache
+    db: Main Database (.db)
+    
+    wal -> buffer: "Read committed frames"
+    buffer -> db: "Overwrite original pages (fsync)"
+    db -> wal: "Truncate or Reset WAL Header"
+  }
+}
+
+# --------------------------------------------------------------------------------------------
+# 7. VDBE EXECUTION CYCLE
+# --------------------------------------------------------------------------------------------
+
+vdbe_engine: {
+  label: "VDBE Virtual Machine Engine Cycle"
+  
+  cycle: {
+    shape: sequence_diagram
+    pc: Program Counter
+    decoder: Opcode Decoder
+    alu: Execution Logic
+    regs: Register File
+    
+    pc -> decoder: "Fetch next instruction"
+    decoder -> alu: "Execute (OP_Column / OP_Add)"
+    alu -> regs: "R[1] = Read(Row, Col)"
+    alu -> pc: "PC++ or Branch Target"
+  }
+
+  registers: {
+    label: "VdbeEnv Register File"
+    grid-columns: 4
+    r0: "0x00 (Int)"; r1: "Data (Blob)"; r2: "Key (Text)"; r3: "Flags (Null)"
+    style.fill: "#ECEFF1"
+    style.stroke: "#B0BEC5"
+  }
+}
+
+# --------------------------------------------------------------------------------------------
+# 8. INDEX DECISION LOGIC
+# --------------------------------------------------------------------------------------------
+
+index_decision: {
+  label: "Index Selection & Query Analysis Logic"
+  analyze: "Query Analyzer"
+  is_indexed: "Column Indexed?"
+  selectivity: "Selectivity < 10%?"
+  
+  analyze -> is_indexed
+  is_indexed -> selectivity: "Yes (Index Exists)"
+  is_indexed -> table_scan: "No"
+  selectivity -> index_scan: "Yes (Efficient)"
+  selectivity -> table_scan: "No (Sparse Index)"
+  
+  table_scan: "Full Table Scan (I/O Bound)" { 
+    style.fill: "#FFCDD2" 
+    style.stroke: "#B71C1C"
+    style.double-border: true
+  }
+  index_scan: "Index/Covering Scan (Memory Bound)" { 
+    style.fill: "#C8E6C9"
+    style.stroke: "#1B5E20"
+  }
+}
+
+# --------------------------------------------------------------------------------------------
+# 9. GLOBAL STYLING & CLASSES
+# --------------------------------------------------------------------------------------------
+
+***.style.font-size: 14
+***.style.stroke-width: 1
+
+classes: {
+  memory_box: {
+    style.font: mono
+    style.stroke-width: 2
+    style.shadow: true
+  }
+  logic_step: {
+    style.border-radius: 5
+    style.bold: true
+  }
+}
+
+slotted_page_layout.** : { class: memory_box }
+wal_internals.frame.** : { class: memory_box }
+index_decision.** : { class: logic_step }
+
+# Annotate memory boundary
+slotted_page_layout: {
+  style.stroke: black
+  style.stroke-width: 3
+}

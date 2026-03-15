@@ -1,0 +1,128 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# Technical Classes for SQL Engine
+classes: {
+  logical_op: {
+    style: {
+      stroke: "#3498db"
+      stroke-width: 2
+    }
+  }
+  physical_io: {
+    style: {
+      stroke: "#e67e22"
+      stroke-dash: 3
+    }
+  }
+  critical_path: {
+    style: {
+      stroke: "#e74c3c"
+      stroke-width: 3
+      bold: true
+    }
+  }
+}
+
+Index_Lookup_Flow: {
+  shape: sequence_diagram
+  
+  # Actor Definitions - Quote labels with spaces or special chars
+  Optimizer: "Query Optimizer" {
+    shape: person
+    style.fill: "#dae8fc"
+  }
+  IndexManager: "Index Manager" {
+    style.fill: "#d5e8d4"
+  }
+  BTree: "B-Tree Engine" {
+    style.fill: "#ffe6cc"
+  }
+  Pager: "Pager Module" {
+    style.fill: "#f8cecc"
+  }
+  Disk: "Storage Layer" {
+    shape: cylinder
+    style.fill: "#e1d5e7"
+  }
+
+  # --- Initialization Phase ---
+  Optimizer -> IndexManager: "find_rowids(table_t* pTab, int col_id, val_t target)"
+  
+  IndexManager."Metadata Lookup Phase"
+  
+  IndexManager -> IndexManager: "resolve_index_meta(int col_id)"
+  
+  IndexManager."Note: Locates root_page from sqlite_master cache"
+
+  IndexManager -> BTree: "sqlite3BtreeMovetoUnpacked(BtCursor* pCur, UnpackedRecord* pIdxKey)" {
+    style.stroke: "#ffa500"
+  }
+
+  # --- B-Tree Traversal Phase ---
+  traversal_loop: "Traversal Loop [O(log N)]" {
+    BTree -> Pager: "sqlite3PagerGet(Pgno pg_no, DbPage** ppPage)"
+    
+    page_fault: "Page Cache Miss / Disk IO" {
+      Pager -> Disk: "pread(int fd, void* buf, size_t 4096, off_t offset)"
+      Pager <- Disk: "raw_byte_stream (4KB aligned)"
+    }
+    
+    BTree <- Pager: "*MemPage (Structure Map)"
+    
+    BTree -> BTree: "parse_btree_node(u8* buffer)" {
+      style.stroke: "#2ecc71"
+    }
+    
+    BTree."Internal Node Layout: [Header: 12B], [Cell Pointers: 2B * N], [Cell Content Area]"
+  }
+
+  # --- Leaf Processing ---
+  BTree -> BTree: "locate_leaf_entry(val_t target)"
+  IndexManager <- BTree: "BtCursor(int pg_idx, int entry_offset)"
+
+  IndexManager -> BTree: "sqlite3BtreePayload(BtCursor* pCur, u32 len)"
+  
+  BTree -> BTree: "decode_varint_rowid()" {
+    class: critical_path
+    style.stroke: "#e74c3c"
+  }
+  
+  BTree."Storage Note: RowID stored as ULEB128 varint (Variable length, 1-9 bytes)"
+
+  IndexManager <- BTree: "i64 RowID"
+
+  # --- Final Delivery ---
+  Optimizer <- IndexManager: "RowID_List[]" {
+    style.stroke-dash: 5
+  }
+}
+
+# Implementation Specification Annotation
+# Use block string with ' to avoid substitution issues with $ signs
+documentation: |'md'
+  ### SQLite Index Lookup Specification
+  
+  | Component | Responsibility |
+  | :--- | :--- |
+  | **Optimizer** | Generates `UnpackedRecord` for normalized comparison. |
+  | **IndexManager** | Manages `BtCursor` state machine and visibility. |
+  | **B-Tree** | Implements page traversal and record parsing. |
+  | **Pager** | Logic for LRU eviction and 4KB buffer management. |
+  | **Disk** | Physical storage access via `OS VFS` layer. |
+
+  **Performance Characteristics**:
+  - **Memory Alignment**: `raw_buffer` must be aligned to 4KB sector boundaries.
+  - **Concurrency**: `SHARED_LOCK` is upgraded during b-tree rebalancing.
+  - **Complexity**: Complexity is O(log_M N) where M is fan-out (page size / cell size).
+'|
+
+documentation.near: Index_Lookup_Flow
+documentation.style.stroke: "#cccccc"
+documentation.style.fill: "#f9f9f9"

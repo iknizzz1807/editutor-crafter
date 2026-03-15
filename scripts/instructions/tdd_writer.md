@@ -11,7 +11,15 @@ You will receive a **DOMAIN PROFILE** specifying detail levels and which section
 
 ## HARD RULES (every module)
 
-### 0. Language Consistency (BINDING)
+### 0. NO TOOLS - Output Only (CRITICAL)
+
+**DO NOT use any tools.** Do not execute commands. Do not read or write files. Do not use `<tool_code>`, `<tool name="Bash">`, or any tool syntax. Output your response directly as text.
+
+Your output will be parsed automatically. Any tool calls will cause parsing errors.
+
+---
+
+### 1. Language Consistency (BINDING)
 
 You MUST use the **primary language** specified in the blueprint's `implementation.primary_language` field. This is a BINDING decision made by the Architect.
 

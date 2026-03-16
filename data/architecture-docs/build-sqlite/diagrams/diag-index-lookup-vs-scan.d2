@@ -1,0 +1,131 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+header: {
+  label: "Index Lookup vs Full Table Scan — users: 70,000 rows, 1,000 leaf pages, 4 KB/page"
+  style.fill: "#1e293b"
+  style.font-color: "#f1f5f9"
+  style.bold: true
+  style.border-radius: 4
+}
+query: {
+  label: "SELECT name, email FROM users WHERE id = 42"
+  style.fill: "#0f172a"
+  style.font-color: "#7dd3fc"
+  style.border-radius: 4
+  style.font: mono
+}
+comparison: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  scan_col: "PLAN A — Full Table Scan" {
+    direction: down
+    style.fill: "#fef2f2"
+    style.stroke: "#dc2626"
+    style.border-radius: 8
+    scan_desc: {
+      shape: sql_table
+      label: "Access Pattern: Sequential"
+      reason: "No usable index → cannot skip pages"
+      order: "Reads pages 1 → 2 → 3 → ... → 1000"
+    }
+    scan_pages: {
+      shape: sql_table
+      label: "Table Leaf Pages (ALL 1000 READ)"
+      pg1: "Pg 0001 | READ | rows      1 –    70"
+      pg2: "Pg 0002 | READ | rows     71 –   140"
+      pg3: "Pg 0003 | READ | rows    141 –   210"
+      mid: "Pg 0500 | READ | rows  34931 – 35000"
+      pg999: "Pg 0999 | READ | rows  69861 – 69930"
+      end: "Pg 1000 | READ | rows  69931 – 70000"
+      found: "id=42 found in Pg 0001 — scan cannot stop early"
+      style.stroke: "#dc2626"
+    }
+    scan_counter: {
+      shape: sql_table
+      label: "Page Read Counter — EXPENSIVE"
+      reads: "1000 page reads"
+      bytes: "4,096,000 bytes (4 MB transferred)"
+      latency: "~100 ms on NVMe SSD"
+      big_o: "O(N) — scales linearly with row count"
+      style.fill: "#dc2626"
+      style.font-color: "#ffffff"
+    }
+    scan_desc -> scan_pages: "scan all"
+    scan_pages -> scan_counter: "1000 reads"
+  }
+  index_col: "PLAN B — Index Lookup" {
+    direction: down
+    style.fill: "#f0fdf4"
+    style.stroke: "#16a34a"
+    style.border-radius: 8
+    idx_desc: {
+      shape: sql_table
+      label: "Access Pattern: B+Tree + Fetch"
+      reason: "idx_users_id exists → direct descent"
+      step1: "Phase 1: traverse index B+tree (3 pages)"
+      step2: "Phase 2: fetch full row by rowid (1 page)"
+    }
+    idx_root: {
+      shape: sql_table
+      label: "Index Page 1 of 3: Root  (height = 3)"
+      pg: "Pg 201 | ROOT | separator keys: [23333, 46667, 70000]"
+      work: "id=42 < 23333 → descend left child ptr → Pg 204"
+      note: "Read 1: 1 page read"
+    }
+    idx_internal: {
+      shape: sql_table
+      label: "Index Page 2 of 3: Internal  (height = 2)"
+      pg: "Pg 204 | INTERNAL | separator keys: [10, 20, 30, 40, 50]"
+      work: "40 ≤ id=42 ≤ 50 → descend right child ptr → Pg 207"
+      note: "Read 2: 1 page read"
+    }
+    idx_leaf: {
+      shape: sql_table
+      label: "Index Page 3 of 3: Leaf  (height = 1)"
+      pg: "Pg 207 | LEAF | (id=40,rowid=40)  (id=42,rowid=42)  (id=43,...)"
+      work: "id=42 found — extract rowid=42 for table lookup"
+      note: "Read 3: 1 page read"
+    }
+    table_fetch: {
+      shape: sql_table
+      label: "Table Page: Double-Lookup  (rowid = 42)"
+      pg: "Pg 001 | DATA | id=42  name=Alice  email=alice@x.com  age=34"
+      work: "rowid 42 lives in Pg 001 — full row retrieved"
+      note: "Read 4: 1 page read"
+      style.stroke: "#2563eb"
+    }
+    idx_counter: {
+      shape: sql_table
+      label: "Page Read Counter — FAST"
+      reads: "4 page reads  (3 index + 1 data)"
+      bytes: "16,384 bytes  (16 KB transferred)"
+      latency: "~0.4 ms on NVMe SSD"
+      big_o: "O(log N) — height grows as log base 341"
+      style.fill: "#16a34a"
+      style.font-color: "#ffffff"
+    }
+    idx_desc -> idx_root: "Phase 1a"
+    idx_root -> idx_internal: "Phase 1b"
+    idx_internal -> idx_leaf: "Phase 1c"
+    idx_leaf -> table_fetch: "Phase 2"
+    table_fetch -> idx_counter: "4 reads"
+  }
+}
+verdict: {
+  shape: sql_table
+  label: "Performance Verdict — WHERE id = 42 on 70,000-row table"
+  plan_a: "Full Table Scan |  1000 reads | ~100 ms  | O(N)     | selectivity 0.001% — still loses"
+  plan_b: "Index Lookup    |     4 reads |  ~0.4 ms | O(log N) | 250× fewer reads, 250× faster"
+  rule: "Crossover rule: prefer index when selectivity < page_count / (rows × RANDOM_IO_FACTOR)"
+  math: "Threshold ≈ 1000 / (70000 × 4.0) = 0.36% — index wins below this point"
+  warn: "At 30% selectivity: 21,000 random table reads > 1,000 sequential reads → use scan"
+}
+header -> query: "query submitted"
+query -> comparison: "optimizer evaluates two plans"
+comparison -> verdict: "compare I/O cost"

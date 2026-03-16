@@ -1,0 +1,169 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  shape: text
+  label: "B-tree Cursor Iterator Pattern (Implementation Blueprint)"
+  style.font-size: 24
+  style.bold: true
+}
+
+# ── Memory Layout ───────────────────────────────────────────────────────────
+cursor_struct: {
+  shape: sql_table
+  label: "struct BTreeCursor (btree.h)"
+  f0: "0x00 | BTree*       | tree        // Pointer to owner tree"
+  f1: "0x08 | uint32_t     | page_id     // Current page being iterated"
+  f2: "0x0C | int32_t      | cell_index  // Current cell offset in page"
+  f3: "0x10 | uint8_t      | is_eof      // Iterator exhaustion flag"
+  f4: "0x18 | ParentFrame* | stack       // Path for tree re-traversal"
+  f5: "0x20 | int32_t      | stack_depth // Current stack height"
+  sz: "Total: 40 bytes (plus heap-allocated stack)"
+}
+
+# ── Lifecycle Row 1 ──────────────────────────────────────────────────────────
+row1: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  step_open: {
+    label: "T1: Cursor Initialization"
+    style.border-radius: 8
+    sig: "btree_cursor_open(BTree* tree) -> BTreeCursor*"
+    code: {
+      width: 350
+      code: |'c
+        cur = calloc(1, sizeof(*cur));
+        cur->tree = tree;
+        cur->page_id = tree->root_page_id;
+        cur->cell_index = -1;
+        cur->is_eof = 0;
+        return cur;
+      '|
+    }
+    state: {
+      shape: sql_table
+      label: "Initial State"
+      p: "page_id | root_id"
+      i: "cell_idx| -1"
+      e: "is_eof  | false"
+    }
+    code -> state: "init"
+  }
+
+  step_rewind: {
+    label: "T2: Rewind to Start"
+    style.border-radius: 8
+    sig: "btree_cursor_rewind(BTreeCursor* cur) -> void"
+    code: {
+      width: 350
+      code: |'c
+        while (!is_leaf(cur->page_id)) {
+          push_stack(cur, cur->page_id, 0);
+          cur->page_id = get_child(cur->page_id, 0);
+        }
+        cur->cell_index = 0;
+      '|
+    }
+    state: {
+      shape: sql_table
+      label: "Rewound State"
+      p: "page_id | leftmost_leaf"
+      i: "cell_idx| 0"
+      e: "is_eof  | false"
+    }
+    code -> state: "descent"
+  }
+}
+
+# ── Lifecycle Row 2 ──────────────────────────────────────────────────────────
+row2: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  step_read: {
+    label: "T3: Data Extraction"
+    style.border-radius: 8
+    sig: "btree_cursor_data(BTreeCursor* cur, void* buf) -> int"
+    code: {
+      width: 350
+      code: |'c
+        page = pager_fetch(cur->page_id);
+        cell = page_cell(page, cur->cell_index);
+        return decode_payload(cell, buf);
+      '|
+    }
+    state: {
+      shape: sql_table
+      label: "Access Pattern"
+      m: "Memory  | O(1) cell lookup"
+      p: "Pointer | PageBase + Offset"
+    }
+    code -> state: "read"
+  }
+
+  step_next: {
+    label: "T4: Advance Logic"
+    style.border-radius: 8
+    sig: "btree_cursor_next(BTreeCursor* cur) -> bool"
+    code: {
+      width: 380
+      code: |'c
+        if (++cur->cell_index < page_count(cur->page_id))
+          return true; // Intra-page advance
+        
+        while (cur->stack_depth > 0) {
+          f = pop_stack(cur);
+          if (++f.idx < page_count(f.id)) {
+            cur->page_id = f.id; cur->cell_idx = f.idx;
+            return descend_leftmost(cur);
+          }
+        }
+        cur->is_eof = 1; return false;
+      '|
+    }
+  }
+}
+
+# ── Lifecycle Row 3 ──────────────────────────────────────────────────────────
+row3: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  step_close: {
+    label: "T5: Resource Cleanup"
+    style.border-radius: 8
+    sig: "btree_cursor_close(BTreeCursor* cur) -> void"
+    code: {
+      width: 350
+      code: |'c
+        pager_unpin(cur->page_id);
+        free(cur->stack);
+        free(cur);
+      '|
+    }
+  }
+}
+
+# ── Flow Connections ─────────────────────────────────────────────────────────
+cursor_struct -> row1.step_open: "allocation"
+row1.step_open -> row1.step_rewind: "Init | seek"
+row1.step_rewind -> row2.step_read: "Start | fetch"
+row2.step_read -> row2.step_next: "Next | advance"
+row2.step_next -> row2.step_read: "Loop | !EOF" {style.stroke-dash: 4}
+row2.step_next -> row3.step_close: "End | EOF"
+
+legend: {
+  shape: callout
+  label: "State Transition: Green = Success Path | Red = EOF/Cleanup"
+  style.fill: "#f0f0f0"
+}
+legend.near: bottom-right

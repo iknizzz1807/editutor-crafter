@@ -1,0 +1,139 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+context: "Query: SELECT * FROM orders WHERE status = 'active'" {
+  style.fill: "#f0f4f8"
+  style.stroke: "#b0bec5"
+  style.border-radius: 6
+  table_info: {
+    shape: sql_table
+    label: "orders table (planner_input.h)"
+    total_rows: "10,000 rows"
+    leaf_pages: "500 leaf pages (4 KB each)"
+    index_col: "status: 3 distinct values (NDV = 3)"
+    selectivity: "status='active' matches 30% → 3,000 rows"
+    random_factor: "RANDOM_IO_FACTOR = 4.0 (SSD-tuned)"
+  }
+}
+plans_row: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  scan_plan: "PLAN A — Full Table Scan" {
+    direction: down
+    style.fill: "#e8f5e9"
+    style.stroke: "#388e3c"
+    style.stroke-width: 3
+    style.border-radius: 8
+    step1: {
+      shape: sql_table
+      label: "Step 1: Open Cursor  (btree_cursor.c)"
+      op: "OP_OPEN_READ  cursor=0  root_page=2"
+      pattern: "OP_REWIND → position at leftmost leaf"
+    }
+    step2: {
+      shape: sql_table
+      label: "Step 2: Sequential Scan  (btree_scan.c)"
+      pages_read: "500 leaf pages  (left → right)"
+      io_pattern: "SEQUENTIAL — OS read-ahead active"
+      cost_per_page: "1.0 per page"
+      rows_checked: "10,000 rows evaluated"
+      rows_returned: "3,000 rows pass WHERE filter"
+    }
+    cost_a: {
+      shape: sql_table
+      label: "Cost Model  (planner_cost.h)"
+      formula: "cost = page_count × seq_page_cost"
+      calculation: "500 × 1.0"
+      total: "TOTAL COST = 500"
+    }
+    winner: "✓  PLAN SELECTED  —  Cost: 500" {
+      style.fill: "#2e7d32"
+      style.font-color: white
+      style.border-radius: 6
+      style.bold: true
+    }
+    step1 -> step2: "OP_NEXT loop"
+    step2 -> cost_a: "500 pages read"
+    cost_a -> winner: "cost = 500"
+  }
+  idx_plan: "PLAN B — Index Scan  (REJECTED)" {
+    direction: down
+    style.fill: "#ffebee"
+    style.stroke: "#c62828"
+    style.stroke-width: 3
+    style.border-radius: 8
+    idx_step1: {
+      shape: sql_table
+      label: "Step 1: Index Descent  (index_btree.c)"
+      op: "OP_OPEN_INDEX_READ  cursor=1  root=9"
+      pages: "3 pages  (B+tree height)"
+      note: "Descend idx_status to first 'active' leaf"
+    }
+    idx_step2: {
+      shape: sql_table
+      label: "Step 2: Index Leaf Scan  (index_scan.c)"
+      matching_entries: "3,000 index entries traversed"
+      leaf_pages: "~150 index leaf pages"
+      output: "3,000 rowids enqueued for table lookup"
+    }
+    idx_step3: {
+      shape: sql_table
+      label: "Step 3: Double Lookup  (btree_seek.c)"
+      op: "OP_IDX_ROWID → OP_SEEK_ROWID  × 3,000"
+      io_pattern: "RANDOM — row 42, row 8917, row 201 …"
+      pages_touched: "up to 3,000 distinct table pages"
+      penalty: "× RANDOM_IO_FACTOR = 4.0"
+      cost_component: "3,000 × 1.0 = 3,000 units"
+    }
+    cost_b: {
+      shape: sql_table
+      label: "Cost Model  (planner_cost.h)"
+      formula: "cost = height + idx_leaves + est_rows × rand_factor"
+      c1: "index descent :    3 pages"
+      c2: "index leaves  :  150 pages"
+      c3: "table lookups :  3,000 random reads"
+      total: "TOTAL COST = 3,153  (rounded → 3,000)"
+    }
+    loser: "✗  REJECTED  —  Cost: 3,000  (6× slower)" {
+      style.fill: "#b71c1c"
+      style.font-color: white
+      style.border-radius: 6
+      style.bold: true
+    }
+    idx_step1 -> idx_step2: "leaf chain walk"
+    idx_step2 -> idx_step3: "3,000 rowids"
+    idx_step3 -> cost_b: "random I/O tally"
+    cost_b -> loser: "cost = 3,000"
+  }
+}
+verdict: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  crossover: {
+    shape: sql_table
+    label: "Selectivity Crossover Formula  (planner.c)"
+    formula: "use_index_if: sel < pages / (rows × rand_factor)"
+    threshold: "500 / (10,000 × 4.0) = 0.0125  →  1.25%"
+    actual: "Actual selectivity = 30%  →  far above threshold"
+    examples: "id = 42  (0.01%) ✓ index wins"
+    examples2: "status = 'active'  (30%) ✗ table scan wins"
+  }
+  summary: {
+    shape: sql_table
+    label: "Key Insight  (query_planner.h)"
+    seq_cost: "500 sequential reads  = cost 500"
+    rand_cost: "3,000 random reads    = cost 3,000"
+    ratio: "6× penalty: random I/O erases index benefit"
+    lesson: "High-selectivity predicates → always prefer table scan"
+    maintenance: "Run ANALYZE regularly to keep NDV estimates accurate"
+  }
+}
+context -> plans_row.scan_plan.step1: "open table cursor"
+context -> plans_row.idx_plan.idx_step1: "open index cursor"
+plans_row -> verdict: "planner picks lowest cost"

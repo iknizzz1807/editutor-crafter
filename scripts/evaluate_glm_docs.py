@@ -88,17 +88,26 @@ def evaluate_project(project_name: str, results: list, lock: threading.Lock):
     response = run_claude(prompt, project_name)
     print(f"[DONE]  Evaluated:  {project_name}")
 
-    # Extract score if present
+    # Extract score if present - improved patterns
     score = "?"
-    for line in response.split('\n'):
-        if 'điểm' in line.lower() or 'score' in line.lower() or '/100' in line:
-            if any(c.isdigit() for c in line):
-                # Try to find a number
-                import re
-                nums = re.findall(r'\d+', line)
-                if nums:
-                    score = nums[0]
-                    break
+    import re
+
+    # Look for total/overall scores in Vietnamese
+    score_patterns = [
+        r'\*\*ĐIỂM TỔNG[:\s]*\*?\*(\d+)/100',
+        r'\*\*TỔNG[:\s]*(\d+)/100',
+        r'Điểm Tổng[:\s]*\*?\*(\d+)/100',
+        r'Tổng điểm[:\s]*\*?\*(\d+)/100',
+        r'Điểm tổng thể[:\s]*\*?\*(\d+)/100',
+        r'TỔNG[:\s]*(\d+)/100',
+        r'Overall[:\s]*(\d+)/100',
+    ]
+
+    for p in score_patterns:
+        m = re.search(p, response, re.IGNORECASE)
+        if m:
+            score = m.group(1)
+            break
 
     entry = f"""
 ## {project_name} - Score: {score}/100

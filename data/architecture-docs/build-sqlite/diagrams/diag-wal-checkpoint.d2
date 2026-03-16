@@ -1,0 +1,245 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 5
+  }
+}
+
+# ─── HEADER ──────────────────────────────────────────────────────────────────
+header: {
+  label: "WAL Checkpoint Process: Three-phase merge of WAL frames into main database file"
+  shape: callout
+  style.stroke: "#4A90D9"
+  style.fill: "#E1F5FE"
+}
+header.near: top-center
+
+# ─── PHASE 0: INITIAL STATE ───────────────────────────────────────────────────
+phase0_row: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  wal_frames: "WAL File (db.db-wal)" {
+    shape: sql_table
+    style.fill: "#2C5F8A"
+    style.font-color: white
+    style.stroke: "#4A90D9"
+    f0: "Frame 0 | page_id=3  | db_size=0  (uncommitted)"
+    f1: "Frame 1 | page_id=7  | db_size=0  (uncommitted)"
+    f2: "Frame 2 | page_id=3  | db_size=42 ← COMMIT txn1"
+    f3: "Frame 3 | page_id=12 | db_size=0  (uncommitted)"
+    f4: "Frame 4 | page_id=7  | db_size=43 ← COMMIT txn2"
+  }
+  
+  snapshots: "SnapshotManager — Active Readers" {
+    shape: sql_table
+    style.fill: "#7B2D00"
+    style.font-color: white
+    style.stroke: "#E64A19"
+    r_a: "Reader A | max_frame=2 | started T=100 | STALE"
+    r_b: "Reader B | max_frame=4 | started T=200 | current"
+    wmax: "writer_max_frame = 4"
+  }
+  
+  db_before: "Database File (db.db) — Pre-Checkpoint" {
+    shape: sql_table
+    style.fill: "#1B4020"
+    style.font-color: "#C8E6C9"
+    style.stroke: "#388E3C"
+    p3: "Page 3  | stale — newer in WAL frames 0, 2"
+    p7: "Page 7  | stale — newer in WAL frames 1, 4"
+    p12: "Page 12 | stale — newer in WAL frame 3"
+  }
+}
+
+# ─── PHASE 1: COMPUTE SAFE BOUNDARY ──────────────────────────────────────────
+phase1_row: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  safe_calc: "Phase 1 — Compute safe_frame (snapshot_min_reader_frame)" {
+    direction: right
+    style.fill: "#2D2700"
+    style.stroke: "#F9A825"
+    style.border-radius: 6
+    
+    calc: {
+      shape: sql_table
+      style.fill: "#4A3800"
+      style.font-color: "#FFE082"
+      label: "Calculation Logic"
+      s1: "scan sm->readers[] for is_active == true"
+      s2: "Reader A: max_frame = 2  ← minimum"
+      s3: "Reader B: max_frame = 4"
+      s4: "safe_frame = min(2, 4) = 2"
+    }
+    
+    # RENAMED from 'constraint' to avoid keyword conflict
+    safety_constraints: {
+      shape: sql_table
+      style.fill: "#5C2000"
+      style.font-color: "#FFCCBC"
+      label: "Checkpoint Safety Check"
+      c1: "Frames 0-2 | safe to copy to database"
+      c2: "Frame 3    | BLOCKED — Reader A snapshot"
+      c3: "Frame 4    | BLOCKED — Reader A snapshot"
+      c4: "Result: PARTIAL CHECKPOINT only"
+    }
+  }
+}
+
+# ─── PHASE 2: COPY FRAMES TO DATABASE ────────────────────────────────────────
+phase2_row: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  copy_phase: "Phase 2 — Copy frames 0 to 2 to database (wal_checkpoint)" {
+    direction: right
+    style.fill: "#0A1F0A"
+    style.stroke: "#43A047"
+    style.border-radius: 6
+    
+    copy_loop: {
+      shape: sql_table
+      style.fill: "#1B4020"
+      style.font-color: "#A5D6A7"
+      label: "I/O Loop"
+      i0: "frame=0 | page_id=3  | pread WAL @ 32+(0x4120)"
+      w0: "        | pwrite db  @ 3x4096  → page 3 v1"
+      i1: "frame=1 | page_id=7  | pread WAL @ 32+(1x4120)"
+      w1: "        | pwrite db  @ 7x4096  → page 7 v1"
+      i2: "frame=2 | page_id=3  | pread WAL @ 32+(2x4120)"
+      w2: "        | pwrite db  @ 3x4096  → page 3 v2 (latest)"
+      fs: "fsync(pool->fd) — pages 3, 7 persisted"
+    }
+    
+    db_after: "Database File — After Partial Checkpoint" {
+      shape: sql_table
+      style.fill: "#1B5E20"
+      style.font-color: "#C8E6C9"
+      p3n: "Page 3  | CURRENT — frame 2 applied"
+      p7n: "Page 7  | CURRENT — frame 1 applied"
+      p12s: "Page 12 | STALE   — frame 3 still blocked"
+      note: "db_size on disk updated to 42"
+    }
+  }
+}
+
+# ─── PHASE 3: RESET DECISION ─────────────────────────────────────────────────
+phase3_row: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  blocked: "Phase 3A — Partial Result (Reader A blocking)" {
+    direction: down
+    style.fill: "#3B0000"
+    style.stroke: "#EF5350"
+    style.border-radius: 6
+    wal_partial: {
+      shape: sql_table
+      style.fill: "#5C1010"
+      style.font-color: "#FFCDD2"
+      k0: "Frame 0 | page_id=3  | cannot remove"
+      k1: "Frame 1 | page_id=7  | cannot remove"
+      k2: "Frame 2 | page_id=3  | cannot remove"
+      k3: "Frame 3 | page_id=12 | pinned by Reader A"
+      k4: "Frame 4 | page_id=7  | pinned by Reader A"
+      warn: "WAL file NOT truncated — still 5 frames"
+    }
+  }
+  
+  full_reset: "Phase 3B — Full Reset (no blocking readers)" {
+    direction: down
+    style.fill: "#00210F"
+    style.stroke: "#00C853"
+    style.border-radius: 6
+    reset_seq: {
+      shape: sql_table
+      style.fill: "#00401E"
+      style.font-color: "#B9F6CA"
+      label: "Truncation Steps"
+      t1: "ftruncate(wal->fd, 0)         file → 0 bytes"
+      t2: "header.checkpoint_seq++       increment gen"
+      t3: "header.salt1 = time()^seq     new salt"
+      t4: "header.salt2 = pid()^time()   new salt"
+      t5: "pwrite + fsync WAL header     32 bytes persisted"
+      t6: "clear wal_index[]             all entries = -1"
+      t7: "wal->frame_count = 0           logically empty"
+    }
+    wal_final: "WAL File — Reset State" {
+      shape: sql_table
+      style.fill: "#1B5E20"
+      style.font-color: "#CCFF90"
+      hdr: "magic=0x377F0682 | page_size=4096"
+      seq: "checkpoint_seq = N+1"
+      sal: "salt1=new | salt2=new"
+      sz:  "file size = 32 bytes (header)"
+    }
+  }
+}
+
+# ─── READER LIFECYCLE — BLOCKING DETAIL ──────────────────────────────────────
+reader_row: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  reader_lifecycle: "Reader A Lifecycle — Truncation Block Logic" {
+    direction: right
+    style.fill: "#12123A"
+    style.stroke: "#7986CB"
+    style.border-radius: 6
+    
+    timeline: {
+      shape: sql_table
+      style.fill: "#1A1A5C"
+      style.font-color: "#C5CAE9"
+      label: "Timeline Trace"
+      t100: "T=100 | snapshot_begin_read() → max_frame=2"
+      t105: "T=105 | Reader A sees db of frame 2"
+      t110: "T=110 | long SELECT scanning rows..."
+      t150: "T=150 | checkpoint fires: safe_frame=2"
+      t151: "T=151 | frames 3-4 PINNED by Reader A"
+      t199: "T=199 | Reader A still running"
+      t200: "T=200 | snapshot_end_read(sm, reader_a_id)"
+      t201: "T=201 | safe_frame advances to 4"
+    }
+    
+    mitigation: {
+      shape: sql_table
+      style.fill: "#0D1B5E"
+      style.font-color: "#90CAF9"
+      label: "System Protections"
+      d1: "diff = writer_max_frame - reader.max_frame"
+      d2: "wal_report_stale_readers() if diff > 10000"
+      d3: "PRAGMA wal_autocheckpoint = 1000"
+      d4: "App rule: COMMIT/ROLLBACK always"
+      d5: "Timeout idle readers via pool eviction"
+    }
+  }
+}
+
+# ─── CONNECTIONS ──────────────────────────────────────────────────────────────
+phase0_row -> phase1_row: "checkpoint start"
+phase1_row -> phase2_row: "safe_frame = 2"
+phase2_row -> phase3_row: "sync finished"
+phase3_row.blocked -> reader_row: "frames 3-4 pinned"
+reader_row -> phase3_row.full_reset: "T=200 cleanup"
+
+phase0_row.wal_frames -> phase2_row.copy_phase.copy_loop: "pread frames 0..2" {
+  style.stroke-dash: 4
+  style.stroke: "#43A047"
+}
+
+phase2_row.copy_phase.copy_loop -> phase2_row.copy_phase.db_after: "pwrite pages"
+phase2_row.copy_phase.db_after -> phase3_row.full_reset.reset_seq: "unblocked path" {
+  style.stroke-dash: 4
+  style.stroke: "#00C853"
+}
+
+phase0_row.snapshots -> phase1_row.safe_calc.calc: "reader scan"

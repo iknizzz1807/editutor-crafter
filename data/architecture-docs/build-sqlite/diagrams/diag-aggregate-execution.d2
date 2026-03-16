@@ -1,0 +1,199 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: down
+
+title: "Aggregate Execution with GROUP BY" {
+  near: top-center
+  style: {
+    font-size: 20
+    bold: true
+    fill: transparent
+    stroke: transparent
+  }
+}
+
+# ─── PHASE 1: SCAN & ACCUMULATE ──────────────────────────────────────────────
+phase1: "Phase 1: Scan & Accumulation" {
+  direction: right
+  style: {
+    fill: "#f0f4ff"
+    stroke: "#7090c0"
+    stroke-dash: 3
+  }
+  
+  btree: "B-Tree Cursor (employees.db)" {
+    shape: queue
+    label: "B-tree Leaf Pages | Scan"
+    style.fill: "#dce8ff"
+  }
+
+  rows: "" {
+    direction: down
+    style.fill: transparent
+    style.stroke: transparent
+    
+    row1: {
+      shape: sql_table
+      label: "Row 0x01"
+      dept: "Engineering"
+      sal: "120000"
+    }
+    row2: {
+      shape: sql_table
+      label: "Row 0x02"
+      dept: "HR"
+      sal: "80000"
+    }
+    row3: {
+      shape: sql_table
+      label: "Row 0x03"
+      dept: "Engineering"
+      sal: "NULL"
+    }
+    row4: {
+      shape: sql_table
+      label: "Row 0x04"
+      dept: "HR"
+      sal: "95000"
+    }
+  }
+
+  btree -> rows.row1: "NextRow()"
+  btree -> rows.row2
+  btree -> rows.row3
+  btree -> rows.row4
+}
+
+# ─── HASH TABLE (INTERMEDIATE STATE) ──────────────────────────────────────────
+htable: "GroupTable: Hash Map State" {
+  direction: right
+  style: {
+    fill: "#fff8e8"
+    stroke: "#c8a030"
+    stroke-dash: 3
+  }
+  
+  fnv: "FNV-1a Hash" {
+    shape: hexagon
+    style.fill: "#ffe8a0"
+    label: "Hash(dept)"
+  }
+
+  entries: "" {
+    direction: down
+    style.fill: transparent
+    style.stroke: transparent
+
+    eng: "GroupEntry (Engineering)" {
+      shape: class
+      key: "dept = 'Engineering'"
+      count: "COUNT(*) -> 2"
+      avg_state: "AVG -> {count: 1, sum: 120000.0}"
+      has_val: "has_value: true"
+    }
+
+    hr: "GroupEntry (HR)" {
+      shape: class
+      key: "dept = 'HR'"
+      count: "COUNT(*) -> 2"
+      avg_state: "AVG -> {count: 2, sum: 175000.0}"
+      has_val: "has_value: true"
+    }
+  }
+
+  fnv -> entries.eng: "lookup/insert"
+  fnv -> entries.hr: "lookup/insert"
+}
+
+# ─── ACCUMULATOR LOGIC ────────────────────────────────────────────────────────
+step: "Step Logic (Aggregate Functions)" {
+  direction: right
+  style: {
+    fill: "#f0fff0"
+    stroke: "#50a050"
+    stroke-dash: 3
+  }
+
+  count_logic: "COUNT_STAR Logic" {
+    shape: class
+    op: "AGG_COUNT_STAR"
+    +update(acc): "acc.count++"
+    null_behavior: "Include All"
+  }
+
+  avg_logic: "AVG_salary Logic" {
+    shape: class
+    op: "AGG_AVG"
+    +update(acc, val): "if val != NULL { acc.sum += val; acc.count++ }"
+    null_behavior: "Skip Nulls"
+  }
+}
+
+# ─── PHASE 2: FINALIZE & EMIT ─────────────────────────────────────────────────
+phase2: "Phase 2: Finalize Output" {
+  direction: right
+  style: {
+    fill: "#fef0ff"
+    stroke: "#9050b0"
+    stroke-dash: 3
+  }
+
+  iter: "Group Table Iterator" {
+    shape: hexagon
+    style.fill: "#e8c8ff"
+  }
+
+  finalize: "Accumulator Finalizer" {
+    shape: class
+    +finalize_count(acc): "return acc.count"
+    +finalize_avg(acc): "return acc.sum / acc.count"
+  }
+
+  having: "HAVING Filter" {
+    shape: diamond
+    style.fill: "#ffd8f0"
+  }
+
+  results: "" {
+    direction: down
+    style.fill: transparent
+    style.stroke: transparent
+
+    res_eng: {
+      shape: sql_table
+      label: "Result Row (Eng)"
+      department: "Engineering"
+      "COUNT(*)": "2"
+      "AVG(salary)": "120000.0"
+    }
+    res_hr: {
+      shape: sql_table
+      label: "Result Row (HR)"
+      department: "HR"
+      "COUNT(*)": "2"
+      "AVG(salary)": "87500.0"
+    }
+  }
+
+  iter -> finalize: "foreach entry"
+  finalize -> having: "eval constraints"
+  having -> results.res_eng: "emit"
+  having -> results.res_hr: "emit"
+}
+
+# ─── CROSS-PHASE CONNECTIONS ─────────────────────────────────────────────────
+
+phase1.rows -> htable.fnv: "key: department"
+
+htable.entries.eng -> step.count_logic: "step(acc)"
+htable.entries.eng -> step.avg_logic: "step(acc, 120000)"
+
+htable.entries.hr -> step.count_logic
+htable.entries.hr -> step.avg_logic
+
+htable.entries -> phase2.iter: "Scan Complete"

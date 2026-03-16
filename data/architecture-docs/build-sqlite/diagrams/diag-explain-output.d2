@@ -1,0 +1,169 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+banner: "EXPLAIN SELECT name, age FROM users WHERE age > 21" {
+  style.fill: "#1A252F"
+  style.font-color: "#ECF0F1"
+  style.bold: true
+  style.border-radius: 4
+  width: 720
+}
+row_plan: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  qplan: "QUERY PLAN" {
+    shape: sql_table
+    label: "QUERY PLAN (planner output — written before bytecode)"
+    style.fill: "#D5F5E3"
+    style.stroke: "#27AE60"
+    scan_type: "SEARCH USING INDEX idx_users_age"
+    est_rows: "estimated rows: 2,000"
+    sel: "selectivity: 0.0200  (1 / NDV=50)"
+    cost_idx: "index cost: 8,003.0"
+    cost_scan: "scan cost: 14,285.0  (not chosen)"
+  }
+  plan_ann: "Why Index Won" {
+    shape: callout
+    style.fill: "#FDFEFE"
+    style.stroke: "#27AE60"
+    w1: "ANALYZE found NDV(age) = 50 distinct values"
+    w2: "selectivity = 1/50 = 0.02  (2% of rows match)"
+    w3: "2% < MAX_INDEX_SELECTIVITY threshold (20%)"
+    w4: "index cost = height(3) + leaf_pages + rows x 4.0"
+    w5: "8003 < 14285 (scan cost)  => index plan selected"
+  }
+  qplan -> plan_ann: "planner reasoning"
+}
+row_fieldkey: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  fieldkey: "EXPLAIN Field Anatomy" {
+    shape: class
+    label: "EXPLAIN Field Anatomy  (vdbe.h)"
+    addr: "uint16_t   program counter (instruction index 0..N)"
+    opcode: "Opcode     VM operation name (enum, 30+ variants)"
+    p1: "int        operand 1: cursor# or register# or value"
+    p2: "int        operand 2: jump target or register# or page#"
+    p3: "int        operand 3: register# or column# or count"
+    comment: "char*      human-readable description of instruction"
+  }
+  opcode_families: "Opcode Families" {
+    shape: callout
+    style.fill: "#EBF5FB"
+    style.stroke: "#2980B9"
+    g1: "CURSOR:   OpenRead  OpenIndexRead  Close"
+    g2: "SEEK:     IdxSeek  SeekRowid  Rewind"
+    g3: "READ:     Column  IdxKey  IdxRowid"
+    g4: "COMPARE:  Eq  Ne  Lt  Gt  Le  Ge  IsNull"
+    g5: "OUTPUT:   ResultRow"
+    g6: "CONTROL:  Init  Goto  Next  IdxNext  Halt"
+  }
+}
+row_setup: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  ph1: "Phase 1: Cursor Setup" {
+    style.fill: "#EBF5FB"
+    style.stroke: "#5DADE2"
+    style.border-radius: 4
+    label: "Phase 1 — Open Cursors  (addr 0-3, run once)"
+    code: |`
+      addr  opcode           p1   p2   p3   comment
+      ----  ---------------  ---  ---  ---  ----------------------------
+        0   Init              0    1    0   start: jump to addr 1
+        1   OpenRead          0    5    3   cursor 0 = users (root=pg5, 3 cols)
+        2   OpenIndexRead     1    8    0   cursor 1 = idx_users_age (root=pg8)
+        3   Integer          21    3    0   r3 = constant 21 (WHERE value)
+    `|
+    width: 560
+  }
+  ph1_ann: "Phase 1 Notes" {
+    shape: callout
+    style.fill: "#D6EAF8"
+    style.stroke: "#2E86C1"
+    s1: "TWO cursors = planner selected index scan path"
+    s2: "OpenRead:      p1=cursor# p2=root_page p3=n_cols"
+    s3: "OpenIndexRead: B+tree cursor (leaf nodes only have data)"
+    s4: "Integer:       load WHERE constant once before loop"
+  }
+  ph1 -> ph1_ann
+}
+row_index: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  ph2: "Phase 2: Double Lookup Loop" {
+    style.fill: "#FDEDEC"
+    style.stroke: "#E74C3C"
+    style.border-radius: 4
+    label: "Phase 2 — Index Seek + Table Fetch  (addr 4-8, per match)"
+    code: |`
+      addr  opcode           p1   p2   p3   comment
+      ----  ---------------  ---  ---  ---  ----------------------------
+        4   IdxSeek           1   12    3   seek index B+tree to age >= r3
+        5   IdxKey            1    4    0   r4 = current age value from index
+        6   Gt                4   11    3   if r4 > r3: pass; else jump -> 11
+        7   IdxRowid          1    5    0   r5 = rowid from (age, rowid) entry
+        8   SeekRowid         0    5    0   seek TABLE cursor 0 to rowid in r5
+    `|
+    width: 560
+  }
+  ph2_ann: "Double Lookup Detail" {
+    shape: callout
+    style.fill: "#FADBD8"
+    style.stroke: "#C0392B"
+    d1: "addr 4-6:  scan index B+tree leaf chain forward"
+    d2: "IdxRowid:  extracts rowid stored in index leaf entry"
+    d3: "SeekRowid: SECOND B-tree descent in table file"
+    d4: "Cost:      O(log n) random I/O per matching row"
+    d5: "Justified: only 2000 of 100000 rows match (2%)"
+    d6: "Covering index would eliminate addr 8 entirely"
+  }
+  ph2 -> ph2_ann: "double lookup"
+}
+row_output: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  ph3: "Phase 3: Project and Stream" {
+    style.fill: "#E8F8F5"
+    style.stroke: "#27AE60"
+    style.border-radius: 4
+    label: "Phase 3 — Column Projection + Output  (addr 9-15)"
+    code: |`
+      addr  opcode           p1   p2   p3   comment
+      ----  ---------------  ---  ---  ---  ----------------------------
+        9   Column            0    0    1   r1 = cursor0.col0  (name)
+       10   Column            0    1    2   r2 = cursor0.col1  (age)
+       11   ResultRow         1    2    0   emit r1..r2 to user callback
+       12   IdxNext           1    5    0   advance index leaf; loop -> addr 5
+       13   Close             1    0    0   close index cursor 1
+       14   Close             0    0    0   close table cursor 0
+       15   Halt              0    0    0   done  (return code = 0)
+    `|
+    width: 560
+  }
+  ph3_ann: "Phase 3 Notes" {
+    shape: callout
+    style.fill: "#D5F5E3"
+    style.stroke: "#27AE60"
+    o1: "Column:    p1=cursor# p2=col_idx p3=dest_register"
+    o2: "ResultRow: p1=first_reg p2=count -> user callback"
+    o3: "IdxNext:   follows leaf-chain link in index B+tree"
+    o4: "Close:     decrements pin_count, frees cursor memory"
+    o5: "Halt:      p1=rc  (0=OK  1=error  19=constraint fail)"
+  }
+  ph3 -> ph3_ann
+}
+banner -> row_plan
+row_plan -> row_fieldkey
+row_fieldkey -> row_setup
+row_setup -> row_index
+row_index -> row_output

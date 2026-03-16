@@ -1,0 +1,173 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+reader: "Reader Transaction" {
+  shape: class
+  style.fill: "#D6EAF8"
+  style.stroke: "#2980B9"
+  +max_frame: "int = 49"
+  +page_requested: "page_id_t = 42"
+  +snapshot_start: "frame 49 = last committed"
+}
+
+fetch_call: "fetch_page_wal(pool, page_id=42, max_frame=49)" {
+  shape: rectangle
+  style.fill: "#EBF5FB"
+  style.stroke: "#2980B9"
+  style.font: mono
+  width: 460
+}
+
+reader -> fetch_call: "page 42 | needed"
+
+wal_index: "WAL Index" {
+  shape: sql_table
+  label: "WAL Index — wal_index[page_id] (in-memory hash map)"
+  e0: "page_id =  5  | frame =  2  | 2  <= 49: visible"
+  e1: "page_id = 17  | frame = 11  | 11 <= 49: visible"
+  e2: "page_id = 42  | frame = 37  | 37 <= 49: visible MATCH"
+  e3: "page_id = 55  | frame = 51  | 51 >  49: too new"
+  e4: "page_id = 91  | frame = 44  | 44 <= 49: visible"
+  note: "O(1) lookup | reset on checkpoint"
+}
+
+fetch_call -> wal_index: "wal_index_get(42, 49)"
+
+decision: "frame=37 found AND 37 <= 49 ?" {
+  shape: diamond
+  style.fill: "#F9F0FF"
+  style.stroke: "#884EA0"
+  style.stroke-width: 2
+}
+
+wal_index -> decision: "frame = 37"
+
+row_paths: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  wal_path: "WAL PATH — frame visible in snapshot" {
+    direction: down
+    style.fill: "#EAFAF1"
+    style.stroke: "#27AE60"
+    style.stroke-width: 2
+    style.border-radius: 8
+    
+    wal_file: "WAL File" {
+      shape: sql_table
+      label: "WAL File — db.db-wal (append-only)"
+      fh: "WAL Header | magic=0x377F0682 | salt1 | salt2"
+      f0: "Frame  0  | pg_id= 5 | 4096B"
+      f11: "Frame 11  | pg_id=17 | 4096B"
+      f37: "Frame 37  | pg_id=42 | data[4096B] | READ"
+      f44: "Frame 44  | pg_id=91 | 4096B"
+      f51: "Frame 51  | pg_id=55 | invisible"
+      note: "Each frame = 24B header + 4096B page"
+    }
+    
+    wal_calc: "offset = WAL_HDR(32B) + 37*(24+4096)" {
+      shape: rectangle
+      style.fill: "#D5F5E3"
+      style.stroke: "#27AE60"
+      style.font: mono
+      width: 380
+    }
+    
+    wal_pread: "pread(wal_fd, dest, 4096, frame_37_offset)" {
+      shape: rectangle
+      style.fill: "#A9DFBF"
+      style.stroke: "#27AE60"
+      style.font: mono
+      width: 380
+    }
+    
+    wal_file -> wal_calc: "seek frame 37"
+    wal_calc -> wal_pread: "read 4096B"
+  }
+  
+  db_path: "DATABASE FALLBACK — frame absent or too new" {
+    direction: down
+    style.fill: "#FEF5E7"
+    style.stroke: "#E67E22"
+    style.stroke-width: 2
+    style.stroke-dash: 4
+    style.border-radius: 8
+    
+    fallback_cases: "Fallback Trigger Conditions" {
+      shape: sql_table
+      label: "Fallback Logic"
+      c1: "Case A | wal_index[42] == -1    | never in WAL"
+      c2: "Case B | frame > max_frame (49) | post-snapshot"
+      note: "Database file contains snapshot-safe version"
+    }
+    
+    db_file: "Database File" {
+      shape: sql_table
+      label: "Database File — db.db (checkpointed)"
+      pg1: "Page  1 | sqlite_master | schema catalog"
+      pg5: "Page  5 | users leaf    | rows 1-70"
+      pg42: "Page 42 | orders leaf   | READ"
+      pg91: "Page 91 | idx_age leaf  | entries 1-90"
+      note: "Frozen since last checkpoint"
+    }
+    
+    db_pread: "pread(pool_fd, dest, 4096, 42 * 4096)" {
+      shape: rectangle
+      style.fill: "#FDEBD0"
+      style.stroke: "#E67E22"
+      style.font: mono
+      width: 380
+    }
+    
+    fallback_cases -> db_file: "lookup origin"
+    db_file -> db_pread: "seek 42 * 4096"
+  }
+}
+
+decision -> row_paths.wal_path: "YES | WAL frame 37" {
+  style.stroke: "#27AE60"
+  style.stroke-width: 2
+}
+
+decision -> row_paths.db_path: "NO | db fallback" {
+  style.stroke: "#E67E22"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+}
+
+bp_frame: "Buffer Pool Frame — returned to caller" {
+  shape: sql_table
+  label: "Buffer Pool Frame (pool[idx])"
+  r1: "page_id    | 42"
+  r2: "data[4096] | orders leaf page bytes"
+  r3: "pin_count  | 1"
+  r4: "is_dirty   | false"
+  r5: "lru_pos    | head"
+  note: "Unpin when done | Dirty on write-intent"
+}
+
+row_paths.wal_path.wal_pread -> bp_frame: "4096B | WAL" {
+  style.stroke: "#27AE60"
+  style.stroke-width: 2
+}
+
+row_paths.db_path.db_pread -> bp_frame: "4096B | DB" {
+  style.stroke: "#E67E22"
+  style.stroke-dash: 4
+}
+
+snapshot_legend: "Snapshot Isolation Guarantee" {
+  shape: sql_table
+  label: "Snapshot Isolation — max_frame = 49"
+  g1: "Frames 0..49 | PRE-START | VISIBLE"
+  g2: "Frames 50+   | POST-START | INVISIBLE"
+  g3: "Uncommitted  | no marker  | INVISIBLE"
+  note: "Writers append frames without blocking readers"
+}
+snapshot_legend.near: bottom-right

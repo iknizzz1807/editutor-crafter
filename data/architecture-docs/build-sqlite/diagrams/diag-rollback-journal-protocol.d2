@@ -1,0 +1,297 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+hdr: "Rollback Journal Write Protocol  (txn.c)" {
+  style.fill: "#1A237E"
+  style.font-color: white
+  style.bold: true
+  style.font-size: 15
+  style.border-radius: 4
+  style.stroke: "#0D47A1"
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  s1_phase: "① BEGIN — Create Journal File" {
+    direction: down
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    style.border-radius: 8
+    s1_class: {
+      shape: class
+      label: "TransactionManager (txn.c)"
+      state: "TxnState // TXN_NONE → TXN_ACTIVE"
+      +txn_begin(txn, pool): "int"
+      -create_journal(txn, pool): "int  // lazy: on first write"
+      -open_journal(O_CREAT): "int  // .db-journal"
+      -write_journal_header(hdr): "void"
+      -fsync_header(journal_fd): "void  // header durable"
+      -fsync_dir(dir_fd): "void  // directory entry durable"
+    }
+  }
+  s1_journal: {
+    shape: sql_table
+    label: ".db-journal  (created, header written)"
+    f1: "0x00 | magic       | 0xD9D505F9... | 8 B"
+    f2: "0x08 | page_count  | -1 (TBD)      | 4 B"
+    f3: "0x0C | page_size   | 4096          | 4 B"
+    f4: "0x10 | sector_size | 512           | 4 B"
+    f5: "0x14 | db_page_cnt | N at txn start| 4 B"
+    f6: "0x18 | cksum_init  | rand seed     | 4 B"
+    f7: "0x1C | padding     | zeros         | 484 B"
+    f8: "Total header: 512 B (padded to sector boundary)"
+    style.fill: "#FFF9C4"
+    style.stroke: "#F57F17"
+  }
+  s1_db: "Database File  (.db)" {
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    style.border-radius: 6
+    status: "UNTOUCHED — consistent pre-txn state"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  s2_phase: "② Before EACH Page Modification — Journal Original" {
+    direction: down
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    style.border-radius: 8
+    s2_class: {
+      shape: class
+      label: "txn_journal_page()  (txn.c)"
+      state: "TxnState // TXN_ACTIVE → TXN_DIRTY"
+      +txn_journal_page(txn, pool, page_id): "int"
+      -check_journaled_bitmap(page_id): "bool // skip if already saved"
+      -pread(db_fd, orig_buf, PAGE_SZ, off): "ssize_t // READ FROM .db"
+      -append_record(page_id, orig_buf, cksum): "void"
+      -mark_journaled(txn, page_id): "void"
+      note1: "CRITICAL: pread from .db file, NOT buffer pool"
+      note2: "Buffer pool may hold in-memory modifications already"
+    }
+  }
+  s2_journal: {
+    shape: sql_table
+    label: ".db-journal  (page records appended)"
+    hdr: "--- header (512 bytes) ---"
+    pr1_id: "page_id   | 42         | uint32 BE | 4 B"
+    pr1_dat: "page_data | original   | raw bytes | 4096 B"
+    pr1_cks: "checksum  | 0xABCD1234 | uint32 BE | 4 B"
+    pr2_id: "page_id   | 117        | uint32 BE | 4 B"
+    pr2_dat: "page_data | original   | raw bytes | 4096 B"
+    pr2_cks: "checksum  | 0xFEED5678 | uint32 BE | 4 B"
+    rec_sz: "Record size: 4 + 4096 + 4 = 4104 bytes each"
+    style.fill: "#FFF9C4"
+    style.stroke: "#F57F17"
+  }
+  s2_db: "Database File  (.db)" {
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    style.border-radius: 6
+    status: "STILL UNTOUCHED — journal is safety net"
+  }
+}
+s3_barrier: "③  fsync(journal_fd)  —  THE ORDERING BARRIER" {
+  direction: down
+  style.fill: "#E65100"
+  style.font-color: white
+  style.bold: true
+  style.font-size: 14
+  style.border-radius: 4
+  style.double-border: true
+  style.stroke: "#BF360C"
+  b_guarantee: "GUARANTEE: original page data is DURABLE on persistent storage" {
+    style.fill: "#FF8F00"
+    style.font-color: white
+    style.bold: true
+  }
+  b_invariant: "INVARIANT: this fsync MUST complete before ANY write to .db file" {
+    style.fill: "#BF360C"
+    style.font-color: white
+    style.bold: true
+  }
+  b_after: "Crash AFTER this point → journal holds all originals → recovery works" {
+    style.fill: "#33691E"
+    style.font-color: white
+  }
+  b_before: "Crash BEFORE this point → .db untouched → no recovery needed" {
+    style.fill: "#1B5E20"
+    style.font-color: white
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  s4_phase: "④ Write Modified Pages to Database File" {
+    direction: down
+    style.fill: "#FFF3E0"
+    style.stroke: "#E65100"
+    style.border-radius: 8
+    s4_class: {
+      shape: class
+      label: "buffer_pool_flush_all()  (buffer_pool.c)"
+      +buffer_pool_flush_all(pool): "void"
+      +evict_frame(pool, frame_idx): "void"
+      -disk_write_page(pool, page_id, data): "void // pwrite() to .db"
+      note1: "Pages written in LRU eviction order or explicit flush"
+      note2: "Write order within this step does NOT matter for correctness"
+    }
+    s4_danger: "⚠  CRASH WINDOW  ⚠" {
+      style.fill: "#FFCDD2"
+      style.stroke: "#C62828"
+      style.bold: true
+      style.border-radius: 4
+      w1: "Some pages contain NEW data"
+      w2: "Other pages contain OLD data"
+      w3: "Database file is INCONSISTENT"
+      w4: "Recovery: restore ALL journaled pages from journal"
+    }
+  }
+  s4_journal: {
+    shape: sql_table
+    label: ".db-journal  (complete — all originals durable)"
+    j_status: "status  | COMPLETE AND DURABLE  | safety net"
+    p42: "page 42 | original data fsynced | restorable"
+    p117: "page 117| original data fsynced | restorable"
+    note: "Journal is the recovery anchor during this phase"
+    style.fill: "#FFF9C4"
+    style.stroke: "#F57F17"
+  }
+  s4_db: {
+    shape: sql_table
+    label: ".db file  (partially written — INCONSISTENT)"
+    pg42: "page 42  | NEW DATA  | already written"
+    pg117: "page 117 | OLD DATA  | not yet written"
+    pg_note: "Exact state varies per crash timing"
+    style.fill: "#FFCDD2"
+    style.stroke: "#C62828"
+  }
+}
+s5_fsync_db: "⑤a  fsync(database_fd)  —  All DB Writes Durable" {
+  style.fill: "#388E3C"
+  style.font-color: white
+  style.bold: true
+  style.font-size: 13
+  style.border-radius: 4
+  style.double-border: true
+  style.stroke: "#1B5E20"
+  note: "After return: every modified page is on persistent storage"
+}
+row6: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  s6_phase: "⑤b  COMMIT  =  unlink(.db-journal)" {
+    direction: down
+    style.fill: "#E8EAF6"
+    style.stroke: "#3F51B5"
+    style.border-radius: 8
+    style.double-border: true
+    s6_class: {
+      shape: class
+      label: "txn_commit()  (txn.c)"
+      state: "TxnState // TXN_DIRTY → TXN_NONE"
+      +txn_commit(txn, pool): "int"
+      -unlink(journal_path): "int  // THE COMMIT POINT"
+      -fsync_dir(dir_fd): "void  // durable journal deletion"
+      -free(txn_journaled_pages): "void"
+    }
+    s6_commit_pt: "THE COMMIT POINT" {
+      style.fill: "#C5CAE9"
+      style.stroke: "#3F51B5"
+      style.bold: true
+      style.border-radius: 4
+      c1: "Before unlink → transaction is UNCOMMITTED"
+      c2: "After  unlink → transaction is COMMITTED"
+      c3: "Journal existence  ≡  uncommitted transaction"
+      c4: "Crash during unlink → recovery rolls back"
+    }
+  }
+  s6_journal: "Journal File  (.db-journal)" {
+    style.fill: "#F5F5F5"
+    style.stroke: "#BDBDBD"
+    style.border-radius: 6
+    status: "DELETED — no longer exists"
+  }
+  s6_db: "Database File  (.db)" {
+    style.fill: "#C8E6C9"
+    style.stroke: "#2E7D32"
+    style.border-radius: 6
+    style.bold: true
+    status: "COMMITTED — all modifications durable and consistent"
+  }
+}
+recovery: "CRASH RECOVERY  recover_hot_journal()  (txn.c)" {
+  direction: down
+  style.fill: "#F3E5F5"
+  style.stroke: "#7B1FA2"
+  style.border-radius: 8
+  r_class: {
+    shape: class
+    label: "db_open_with_recovery()  called on restart"
+    +recover_hot_journal(db, journal_path): "int"
+    -validate_header(magic, page_size): "bool  // check 0xD9D505F9"
+    -scan_records(journal_fd, cksum_init): "int  // stop on cksum mismatch"
+    -pwrite(db_fd, orig_page, PAGE_SZ, off): "void // restore each page"
+    -ftruncate(db_fd, original_size): "int  // remove any new pages"
+    -fsync_db(db_fd): "void"
+    -unlink(journal_path): "int  // cleanup"
+    note: "Stops at first checksum fail — torn journal write is safe"
+  }
+  r_result: "Result: database restored to consistent pre-txn state" {
+    style.fill: "#CE93D8"
+    style.stroke: "#7B1FA2"
+    style.bold: true
+    style.border-radius: 4
+  }
+}
+hdr -> row1: "transaction starts"
+row1 -> row2: "first write → journal created & header fsynced"
+row2 -> s3_barrier: "all modified pages journaled"
+s3_barrier -> row4: "barrier satisfied — safe to write .db"
+row4 -> s5_fsync_db: "all dirty pages written to .db"
+s5_fsync_db -> row6: "database writes durable"
+row4 -> recovery: "crash during DB write" {
+  style.stroke-dash: 4
+  style.stroke: "#C62828"
+  style.animated: true
+}
+legend: "Legend" {
+  near: bottom-right
+  style.fill: "#FAFAFA"
+  style.stroke: "#90A4AE"
+  style.border-radius: 4
+  lg1: "Green border — safe / committed state" {
+    style.fill: "#C8E6C9"
+    style.stroke: "#2E7D32"
+    style.border-radius: 3
+  }
+  lg2: "Orange double-border — fsync ordering barrier" {
+    style.fill: "#FFCC80"
+    style.stroke: "#E65100"
+    style.border-radius: 3
+  }
+  lg3: "Red — crash window (DB inconsistent)" {
+    style.fill: "#FFCDD2"
+    style.stroke: "#C62828"
+    style.border-radius: 3
+  }
+  lg4: "Purple — crash recovery path on restart" {
+    style.fill: "#F3E5F5"
+    style.stroke: "#7B1FA2"
+    style.border-radius: 3
+  }
+  lg5: "Yellow — journal file contents" {
+    style.fill: "#FFF9C4"
+    style.stroke: "#F57F17"
+    style.border-radius: 3
+  }
+}

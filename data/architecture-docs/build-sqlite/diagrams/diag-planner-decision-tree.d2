@@ -1,0 +1,275 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+input: "Query Input (planner.c)" {
+  shape: rectangle
+  style.fill: "#E8F4FD"
+  style.stroke: "#2196F3"
+  style.bold: true
+}
+stats: "Catalog Statistics (sqlite_stat1)" {
+  shape: sql_table
+  row_count: "row_count  | int64 | total rows in table"
+  page_count: "page_count | int   | leaf pages — table scan cost"
+  ndv: "ndv        | int64 | distinct values per column"
+  null_count: "null_count | int64 | NULL rows per column"
+  min_val: "min_val    | Value | minimum column value"
+  max_val: "max_val    | Value | maximum column value"
+}
+phase1: "Phase 1 — Enumerate Candidate Plans" {
+  style.fill: "#EDE7F6"
+  style.stroke: "#673AB7"
+  plans_row: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    scan_plan: "Table Scan Plan" {
+      shape: rectangle
+      style.fill: "#FFFFFF"
+      style.stroke: "#673AB7"
+      label: |md
+        **Access:** Full leaf-page traversal
+        **Always available** — no index required
+        **Cost driver:** page\_count
+      |
+    }
+    index_plan: "Index Scan Plan(s)" {
+      shape: rectangle
+      style.fill: "#FFFFFF"
+      style.stroke: "#673AB7"
+      label: |md
+        **Access:** B+tree descent → leaf chain
+        **One plan per matching index on WHERE col**
+        **Cost driver:** tree\_height + random lookups
+      |
+    }
+  }
+}
+phase2: "Phase 2 — Estimate Selectivity" {
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+  sel_row: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    sel_eq: "Equality  col = val" {
+      shape: rectangle
+      style.fill: "#FFFFFF"
+      style.stroke: "#4CAF50"
+      label: |'c
+        sel = 1.0 / ndv;
+        // ndv=50 → sel=0.0200
+      '|
+    }
+    sel_range: "Range  col > val" {
+      shape: rectangle
+      style.fill: "#FFFFFF"
+      style.stroke: "#4CAF50"
+      label: |'c
+        sel = (max - val) / (max - min);
+        // clamped to [0.001, 1.0]
+      '|
+    }
+    sel_null: "IS NULL" {
+      shape: rectangle
+      style.fill: "#FFFFFF"
+      style.stroke: "#4CAF50"
+      label: |'c
+        sel = null_count / row_count;
+      '|
+    }
+  }
+  compound: "AND / OR Compound Selectivity" {
+    shape: rectangle
+    style.fill: "#FFFFFF"
+    style.stroke: "#4CAF50"
+    label: |'c
+      // AND — independence assumption
+      sel_AND = sel_A * sel_B;
+      // OR  — inclusion-exclusion
+      sel_OR  = sel_A + sel_B - (sel_A * sel_B);
+    '|
+  }
+}
+phase3: "Phase 3 — Compute I/O Cost" {
+  style.fill: "#FFF3E0"
+  style.stroke: "#FF9800"
+  cost_row: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    scan_cost: "Table Scan Cost" {
+      shape: rectangle
+      style.fill: "#FFFFFF"
+      style.stroke: "#FF9800"
+      label: |'c
+        cost_scan = page_count;
+        // Sequential I/O — no penalty
+        // 14 000-page table → cost = 14 000
+      '|
+    }
+    idx_cost: "Index Scan Cost" {
+      shape: rectangle
+      style.fill: "#FFFFFF"
+      style.stroke: "#FF9800"
+      label: |'c
+        est_rows      = sel * row_count;
+        idx_leaf_pgs  = est_rows / ROWS_PER_IDX_LEAF;
+        tbl_pages     = min(est_rows, page_count);
+        cost_idx = tree_height
+                 + idx_leaf_pgs
+                 + tbl_pages * RANDOM_IO_FACTOR;
+      '|
+    }
+  }
+  constants: "Cost Model Constants" {
+    shape: sql_table
+    rio: "RANDOM_IO_FACTOR      | 4.0  | random vs sequential I/O penalty"
+    rpl: "ROWS_PER_IDX_LEAF     | 200  | index entries per leaf page"
+    fan: "INDEX_FANOUT          | 340  | keys per internal index page"
+    thr: "MAX_INDEX_SELECTIVITY | 0.20 | force table scan above this"
+  }
+}
+phase4: "Phase 4 — Select Minimum-Cost Plan" {
+  style.fill: "#FFEBEE"
+  style.stroke: "#F44336"
+  threshold_check: "sel > MAX_INDEX_SELECTIVITY\n(sel > 0.20)?" {
+    shape: diamond
+    style.fill: "#FFB3BA"
+    style.stroke: "#F44336"
+    style.bold: true
+  }
+  force_scan: "Force Table Scan" {
+    shape: rectangle
+    style.fill: "#FFCDD2"
+    style.stroke: "#F44336"
+    label: |md
+      At sel > 20 % random double-lookups
+      cost more than a sequential pass.
+      Independence-assumption failures also
+      dominate in this high-selectivity regime.
+    |
+  }
+  cost_compare: "cost_idx < cost_scan?" {
+    shape: diamond
+    style.fill: "#FFECB3"
+    style.stroke: "#FF9800"
+    style.bold: true
+  }
+  threshold_check -> force_scan: "YES — skip index" {
+    style.stroke: "#F44336"
+    style.stroke-dash: 4
+  }
+  threshold_check -> cost_compare: "NO — compare costs" {
+    style.stroke: "#4CAF50"
+  }
+}
+crossover: "Selectivity Crossover Reference" {
+  style.fill: "#F3E5F5"
+  style.stroke: "#9C27B0"
+  zones: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    low_sel: "Low sel  (< 0.4 %)" {
+      shape: rectangle
+      style.fill: "#C8E6C9"
+      style.stroke: "#4CAF50"
+      label: |md
+        **Index wins decisively.**
+        est\_rows × RANDOM\_IO\_FACTOR ≪ page\_count
+        e.g. sel=0.0001 → cost\_idx≈44
+        vs cost\_scan=14 000
+      |
+    }
+    break_zone: "Crossover Zone (~0.4 – 3.5 %)" {
+      shape: rectangle
+      style.fill: "#FFF9C4"
+      style.stroke: "#FFC107"
+      label: |md
+        **Hardware-dependent break-even.**
+        sel\_break = page\_count /
+        (row\_count × RANDOM\_IO\_FACTOR)
+        Tune RANDOM\_IO\_FACTOR per storage class.
+      |
+    }
+    high_sel: "High sel  (> 20 %)" {
+      shape: rectangle
+      style.fill: "#FFCDD2"
+      style.stroke: "#F44336"
+      label: |md
+        **Table scan wins.**
+        Random double-lookups dominate.
+        e.g. sel=0.95 → 950 K random reads
+        MAX\_INDEX\_SELECTIVITY cap = 0.20
+      |
+    }
+  }
+}
+output_row: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  use_index: "Use Index Scan" {
+    shape: rectangle
+    style.fill: "#C8E6C9"
+    style.stroke: "#2E7D32"
+    style.bold: true
+    label: |md
+      Emit: **OpenIndexRead → SeekIdx →
+      IdxRowid → SeekRowid → Column**
+      Double-lookup: index leaf → rowid → table page
+    |
+  }
+  use_scan: "Use Table Scan" {
+    shape: rectangle
+    style.fill: "#BBDEFB"
+    style.stroke: "#1565C0"
+    style.bold: true
+    label: |md
+      Emit: **OpenRead → Rewind →
+      Column → ResultRow → Next**
+      Single sequential pass over all pages
+    |
+  }
+}
+explain_out: "EXPLAIN Output  (explain_with_plan)" {
+  shape: rectangle
+  style.fill: "#F5F5F5"
+  style.stroke: "#9E9E9E"
+  label: |md
+    
+    QUERY PLAN
+      SEARCH USING INDEX idx_age
+        (est 2 000 rows, sel=0.0200, cost=8 013.0)
+    -- or --
+      SCAN TABLE users
+        (est 950 000 rows, cost=14 000.0)
+    
+  |
+}
+input -> stats: "ANALYZE populates"
+input -> phase1: "WHERE clause predicates"
+stats -> phase2: "ndv, null_count, min, max"
+phase1 -> phase2: "one path per candidate plan"
+phase2 -> phase3: "selectivity per plan"
+stats -> phase3: "row_count, page_count"
+phase3 -> phase4: "cost_scan, cost_idx per candidate"
+crossover -> phase4: "threshold reference"
+phase4.cost_compare -> output_row.use_index: "YES" {
+  style.stroke: "#2E7D32"
+  style.bold: true
+}
+phase4.cost_compare -> output_row.use_scan: "NO" {
+  style.stroke: "#1565C0"
+  style.bold: true
+}
+phase4.force_scan -> output_row.use_scan: "forced" {
+  style.stroke: "#F44336"
+  style.stroke-dash: 4
+}
+output_row -> explain_out: "selected plan + bytecode"

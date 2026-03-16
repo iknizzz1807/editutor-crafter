@@ -1,0 +1,187 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  ## Rollback Journal File Format (`<db>.db-journal`)
+| {near: top-center}
+file_container: "Journal File Layout" {
+  style.fill: "#E8F4FD"
+  style.stroke: "#2980B9"
+  style.stroke-width: 2
+  style.border-radius: 6
+  direction: down
+  header_section: "HEADER REGION — 512 bytes (padded to sector size)" {
+    style.fill: "#D6EAF8"
+    style.stroke: "#1A5276"
+    style.stroke-width: 2
+    style.border-radius: 4
+    header_table: {
+      shape: sql_table
+      label: "JournalHeader (journal.h) — 512 bytes total"
+      style.fill: "#AED6F1"
+      f0: "0x00 | uint64_t      | magic = 0xD9D505F920A163D7 (sentinel)"
+      f1: "0x08 | int32_t       | page_count  (-1 while writing; patched on commit)"
+      f2: "0x0C | uint32_t      | page_size   (e.g. 4096 — matches DB page size)"
+      f3: "0x10 | uint32_t      | sector_size (e.g. 512 — disk sector granularity)"
+      f4: "0x14 | uint32_t      | db_page_count (total pages in DB at txn start)"
+      f5: "0x18 | uint32_t      | checksum_init (random per-txn salt)"
+      f6: "0x1C | uint8_t[492]  | padding[] — zeroed, fills remainder to 512 bytes"
+      sz: "──── | Total         | 512 bytes = 1 sector (guarantees alignment)"
+    }
+  }
+  records_region: "PAGE RECORD REGION — grows with each journaled page" {
+    style.fill: "#FDFEFE"
+    style.stroke: "#1A5276"
+    style.stroke-width: 1
+    style.border-radius: 4
+    direction: down
+    record0: "Page Record 0  (offset 512, size 4104 bytes)" {
+      style.fill: "#D5F5E3"
+      style.stroke: "#1E8449"
+      style.stroke-width: 2
+      style.border-radius: 4
+      rec0_table: {
+        shape: sql_table
+        label: "JournalPageRecord — first original page"
+        style.fill: "#A9DFBF"
+        r0f0: "0x0000 | uint32_t      | page_id    — which DB page is preserved"
+        r0f1: "0x0004 | uint8_t[4096] | page_data  — exact original bytes from DB"
+        r0f2: "0x1004 | uint32_t      | checksum   — integrity sentinel for record"
+        r0sz: "──────── | Total         | 4 + 4096 + 4 = 4104 bytes per record"
+      }
+    }
+    record1: "Page Record 1  (offset 4616, size 4104 bytes)" {
+      style.fill: "#D5F5E3"
+      style.stroke: "#1E8449"
+      style.stroke-width: 1
+      style.border-radius: 4
+      rec1_table: {
+        shape: sql_table
+        label: "JournalPageRecord — second original page"
+        style.fill: "#A9DFBF"
+        r1f0: "0x0000 | uint32_t      | page_id    — a different modified page"
+        r1f1: "0x0004 | uint8_t[4096] | page_data  — its original contents"
+        r1f2: "0x1004 | uint32_t      | checksum   — cumulative integrity"
+        r1sz: "──────── | File offset   | 512 + (1 × 4104) = 4616"
+      }
+    }
+    ellipsis_box: "  . . .  one record per modified page  . . ." {
+      style.fill: "#F8F9FA"
+      style.stroke: "#BDC3C7"
+      style.stroke-dash: 4
+      style.border-radius: 4
+      style.font-size: 13
+      style.italic: true
+    }
+    record_n: "Page Record N  (offset 512 + N×4104 bytes)" {
+      style.fill: "#D5F5E3"
+      style.stroke: "#1E8449"
+      style.stroke-width: 1
+      style.border-radius: 4
+      recn_table: {
+        shape: sql_table
+        label: "JournalPageRecord — last record before commit"
+        style.fill: "#A9DFBF"
+        rnf0: "0x0000 | uint32_t      | page_id    — Nth modified page"
+        rnf1: "0x0004 | uint8_t[4096] | page_data  — its original bytes"
+        rnf2: "0x1004 | uint32_t      | checksum   — torn-write detection sentinel"
+        rnsz: "──────── | File offset   | 512 + (N × 4104) bytes"
+      }
+    }
+    record0 -> record1: "append — sequential write"
+    record1 -> ellipsis_box: "append"
+    ellipsis_box -> record_n: "append"
+  }
+  header_section -> records_region: "records begin at byte offset 512"
+}
+checksum_node: "Checksum Algorithm (journal.c)" {
+  style.fill: "#FEF9E7"
+  style.stroke: "#D4AC0D"
+  style.stroke-width: 2
+  style.border-radius: 4
+  algo_table: {
+    shape: sql_table
+    label: "Per-record checksum — torn-write detection"
+    style.fill: "#FCF3CF"
+    a0: "input   | page_data[4096] bytes + checksum_init seed from header"
+    a1: "method  | FNV-variant: accumulate bytes with rotate-and-XOR mixing"
+    a2: "output  | uint32_t stored at record offset 0x1004"
+    a3: "mismatch| checksum wrong → torn write detected → stop recovery here"
+    a4: "valid   | all records before first mismatch are safe to restore"
+  }
+}
+recovery_flow: "Crash Recovery Read Sequence (recover_hot_journal)" {
+  style.fill: "#F9EBEA"
+  style.stroke: "#CB4335"
+  style.stroke-width: 2
+  style.border-radius: 4
+  direction: right
+  step1: "1. Open journal\nverify magic\n0xD9D505F920A163D7" {
+    style.fill: "#FADBD8"
+    style.stroke: "#CB4335"
+    style.border-radius: 4
+  }
+  step2: "2. Read header\nextract checksum_init\ndb_page_count" {
+    style.fill: "#FADBD8"
+    style.stroke: "#CB4335"
+    style.border-radius: 4
+  }
+  step3: "3. Seek to\nbyte 512\nread record" {
+    style.fill: "#FADBD8"
+    style.stroke: "#CB4335"
+    style.border-radius: 4
+  }
+  step4: "4. Verify\nchecksum\ntorn write?" {
+    style.fill: "#F1948A"
+    style.stroke: "#922B21"
+    style.border-radius: 4
+  }
+  step5: "5. pwrite(\n  page_data →\n  DB at page_id)" {
+    style.fill: "#FADBD8"
+    style.stroke: "#1E8449"
+    style.border-radius: 4
+  }
+  step6: "6. Loop\nnext record\nor EOF" {
+    style.fill: "#FADBD8"
+    style.stroke: "#CB4335"
+    style.border-radius: 4
+  }
+  step7: "7. ftruncate DB\nto db_page_count\nfsync + unlink" {
+    style.fill: "#A9DFBF"
+    style.stroke: "#1E8449"
+    style.border-radius: 4
+  }
+  step1 -> step2: "valid magic"
+  step2 -> step3: "seek byte 512"
+  step3 -> step4: "4104 bytes read"
+  step4 -> step5: "checksum OK"
+  step5 -> step6: "page restored"
+  step6 -> step3: "next record"
+  step6 -> step7: "EOF reached"
+}
+write_protocol: "Write-Ordering Protocol (txn_journal_page)" {
+  style.fill: "#EBF5FB"
+  style.stroke: "#2980B9"
+  style.stroke-width: 2
+  style.border-radius: 4
+  proto_table: {
+    shape: sql_table
+    label: "Invariant: journal fsync BEFORE any database write"
+    style.fill: "#AED6F1"
+    p0: "Step 1 | create journal file and write 512-byte header"
+    p1: "Step 2 | pread original page from DB file (bypass buffer pool)"
+    p2: "Step 3 | append [page_id][page_data][checksum] to journal"
+    p3: "Step 4 | fsync(journal_fd)  ← BARRIER: original now durable on disk"
+    p4: "Step 5 | pwrite modified page to DB file"
+    p5: "Step 6 | fsync(db_fd)       ← all modifications now durable"
+    p6: "Step 7 | unlink journal     ← THIS IS THE ATOMIC COMMIT POINT"
+    p7: "RULE   | journal MUST be durable before ANY DB page is overwritten"
+  }
+}
+file_container -> checksum_node: "checksum guards each record"
+file_container -> recovery_flow: "recovery reads journal sequentially"
+file_container -> write_protocol: "write ordering invariant"

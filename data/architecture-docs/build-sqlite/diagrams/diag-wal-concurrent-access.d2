@@ -1,0 +1,220 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 5
+  }
+}
+actors: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  writer_box: "Writer  (wal.c)" {
+    shape: rectangle
+    style.fill: "#FFCDD2"
+    style.stroke: "#C62828"
+    style.bold: true
+    width: 180
+  }
+  reader_a_box: "Reader A  snapshot=49" {
+    shape: rectangle
+    style.fill: "#DCEDC8"
+    style.stroke: "#558B2F"
+    width: 200
+  }
+  reader_b_box: "Reader B  snapshot=79" {
+    shape: rectangle
+    style.fill: "#BBDEFB"
+    style.stroke: "#0D47A1"
+    width: 200
+  }
+  reader_c_box: "Reader C  snapshot=79" {
+    shape: rectangle
+    style.fill: "#E8EAF6"
+    style.stroke: "#283593"
+    width: 200
+  }
+}
+data_row: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  wal_file: "WAL File  db.db-wal  (append-only)" {
+    shape: sql_table
+    style.fill: "#FFF9C4"
+    style.stroke: "#F9A825"
+    hdr:  "WAL Header  | magic=0xD9D505F9  | salt1=0xABCD1234 | page_size=4096"
+    f0:   "Frame  0    | page_id= 5        | db_size= 0       | txn1 in progress"
+    f1:   "Frame  1    | page_id=12        | db_size= 0       | txn1 in progress"
+    f25:  "Frame 25    | page_id= 8        | db_size= 0       | txn1 in progress"
+    f49:  "Frame 49    | page_id= 3        | db_size=14       | COMMIT txn1"
+    f50:  "Frame 50    | page_id= 7        | db_size= 0       | txn2 in progress"
+    f64:  "Frame 64    | page_id=11        | db_size= 0       | txn2 in progress"
+    f79:  "Frame 79    | page_id= 9        | db_size=16       | COMMIT txn2"
+  }
+  wal_index: "WAL Index  in-memory  (wal.c)" {
+    shape: sql_table
+    style.fill: "#E3F2FD"
+    style.stroke: "#1976D2"
+    label: "wal_index[page_id] = latest_frame_num"
+    pg3:  "page_id= 3 | frame=49 | commit frame txn1"
+    pg5:  "page_id= 5 | frame= 0 | modified in txn1"
+    pg7:  "page_id= 7 | frame=50 | modified in txn2"
+    pg8:  "page_id= 8 | frame=25 | modified in txn1"
+    pg9:  "page_id= 9 | frame=79 | commit frame txn2"
+    pg11: "page_id=11 | frame=64 | modified in txn2"
+    pg12: "page_id=12 | frame= 1 | modified in txn1"
+  }
+  db_file: "Database File  db.db  (frozen)" {
+    shape: cylinder
+    style.fill: "#F3E5F5"
+    style.stroke: "#7B1FA2"
+    style.stroke-dash: 4
+    label: "db.db\nLast checkpoint: frame 0\nNOT modified during WAL writes"
+  }
+}
+phase1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  w1: "T1: Writer — txn1  INSERT 50 rows  frames 0-49" {
+    style.fill: "#FFCDD2"
+    style.stroke: "#C62828"
+    width: 420
+    code: |'c
+      txn_begin(&txn, pool);  // state TXN_ACTIVE
+      for each dirty page:
+          wal_write_frame(wal, page_id, data,
+              page_size, false, 0);
+      // db.db untouched — only WAL grows
+    '|
+  }
+  db_note1: "db.db has NO new writes" {
+    shape: rectangle
+    style.fill: "#F3E5F5"
+    style.stroke: "#9E9E9E"
+    style.stroke-dash: 4
+    style.italic: true
+  }
+}
+phase2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  w2: "T2: Writer — COMMIT txn1  frame 49 is commit frame" {
+    style.fill: "#FFCDD2"
+    style.stroke: "#C62828"
+    width: 420
+    code: |'c
+      wal_write_frame(wal, page_id, data,
+          page_size, true, 14);  // db_size=14
+      fsync(wal->fd);            // DURABLE BARRIER
+      snapshot_update_writer(&sm, 49);
+    '|
+  }
+  commit_marker: "COMMIT marker: db_size=14 != 0" {
+    shape: rectangle
+    style.fill: "#FFF9C4"
+    style.stroke: "#F9A825"
+    style.bold: true
+  }
+}
+phase3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  ra1: "T3: Reader A starts  max_frame = 49" {
+    style.fill: "#DCEDC8"
+    style.stroke: "#558B2F"
+    width: 400
+    code: |'c
+      int ra_id;
+      int max = snapshot_begin_read(&sm, &ra_id);
+      // max = sm.writer_max_frame = 49
+      // fetch_page: wal_index_get(wal, pg, 49)
+    '|
+  }
+  no_block1: "Writer NOT blocked by Reader A" {
+    shape: rectangle
+    style.fill: "#C8E6C9"
+    style.stroke: "#388E3C"
+    style.bold: true
+  }
+}
+phase4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  w3: "T4: Writer — txn2  INSERT 30 rows  frames 50-79  COMMIT" {
+    style.fill: "#FFCDD2"
+    style.stroke: "#C62828"
+    width: 420
+    code: |'c
+      // Reader A still active — NOT blocked
+      wal_write_frame(wal, page_id, data,
+          page_size, true, 16); // COMMIT frame 79
+      fsync(wal->fd);
+      snapshot_update_writer(&sm, 79);
+    '|
+  }
+  ra_isolated: "Reader A sees only frames 0-49" {
+    shape: rectangle
+    style.fill: "#DCEDC8"
+    style.stroke: "#558B2F"
+    width: 260
+    code: |'c
+      int f = wal_index_get(wal, 9, 49);
+      // page_id=9, max_frame=49
+      // frame 79 > 49 → f = -1
+      // fallback: read db.db
+    '|
+  }
+}
+phase5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  rb_rc: "T5: Readers B and C start  max_frame = 79" {
+    style.fill: "#BBDEFB"
+    style.stroke: "#0D47A1"
+    width: 420
+    code: |'c
+      snapshot_begin_read(&sm, &rb_id);
+      snapshot_begin_read(&sm, &rc_id);
+      // Both: max_frame = sm.writer_max_frame = 79
+      // See all of txn1 AND txn2
+    '|
+  }
+  ra_still: "Reader A still on snapshot 49" {
+    shape: rectangle
+    style.fill: "#DCEDC8"
+    style.stroke: "#558B2F"
+  }
+}
+visibility: "Snapshot Visibility Summary  wal_index_get(wal, page_id, max_frame)" {
+  shape: sql_table
+  style.fill: "#E8F5E9"
+  style.stroke: "#2E7D32"
+  ra_vis:  "Reader A  | max_frame=49 | sees frames  0-49  | invisible: frames 50-79"
+  rb_vis:  "Reader B  | max_frame=79 | sees frames  0-79  | all committed data visible"
+  rc_vis:  "Reader C  | max_frame=79 | sees frames  0-79  | all committed data visible"
+  db_vis:  "db.db     | checkpoint=0 | frozen at frame 0  | updated only at CHECKPOINT"
+  key_inv: "Invariant: reader sees frame F only if F <= its max_frame"
+}
+actors.writer_box -> data_row.wal_file: "appends | sequential I/O"
+actors.writer_box -> data_row.db_file: "DOES NOT write | WAL mode" {
+  style.stroke-dash: 4
+  style.stroke: "#9E9E9E"
+}
+actors.reader_a_box -> data_row.wal_index: "lookup | max_frame=49"
+actors.reader_b_box -> data_row.wal_index: "lookup | max_frame=79"
+actors.reader_c_box -> data_row.wal_index: "lookup | max_frame=79"
+data_row.wal_index -> data_row.wal_file: "frame# | byte offset"
+data_row.wal_index -> data_row.db_file: "fallback | frame=-1" {
+  style.stroke-dash: 3
+}
+phase1 -> phase2: "50 frames appended"
+phase2 -> phase3: "txn1 durable"
+phase3 -> phase4: "concurrent write"
+phase4 -> phase5: "txn2 durable"
+phase5 -> visibility: "concurrent read state"

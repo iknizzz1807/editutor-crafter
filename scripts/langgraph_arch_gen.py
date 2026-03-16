@@ -590,7 +590,7 @@ For each milestone: misconception, reveal, cascade (3-5 connections, 1+ cross-do
             and (LLM_PROVIDER.startswith("mixed") or LLM_PROVIDER in ("architect-claude", "claude-artist-gemini"))
             else None
         ),
-        model_override="default[1m]" if USE_1M else "default",
+        model_override=os.getenv("CLAUDE_MODEL", "sonnet"),
     )
     print(f"  [Agent: Architect] Initial response received: {len(res.content)} chars")
     blueprint = extract_json(res.content)

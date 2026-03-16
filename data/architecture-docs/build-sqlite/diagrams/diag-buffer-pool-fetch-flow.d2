@@ -1,0 +1,216 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+classes: {
+  decision: {
+    shape: diamond
+    style.fill: "#FFF3CD"
+    style.stroke: "#856404"
+    style.font-size: 14
+  }
+  action: {
+    style.fill: "#D4EDDA"
+    style.stroke: "#155724"
+    style.font-size: 14
+  }
+  io: {
+    shape: parallelogram
+    style.fill: "#CCE5FF"
+    style.stroke: "#004085"
+    style.font-size: 14
+  }
+  hot: {
+    style.fill: "#F8D7DA"
+    style.stroke: "#721C24"
+    style.font-size: 14
+  }
+  terminal: {
+    shape: oval
+    style.fill: "#E2D9F3"
+    style.stroke: "#6F42C1"
+    style.font-size: 14
+    style.bold: true
+  }
+  transparent: {
+    style.stroke: transparent
+    style.fill: transparent
+  }
+}
+# ──────────────────────────────────────────────
+# ENTRY
+# ──────────────────────────────────────────────
+entry: "fetch_page(pool, page_id)" {
+  class: terminal
+}
+# ──────────────────────────────────────────────
+# STEP 1: Page Table Lookup
+# ──────────────────────────────────────────────
+hash_lookup: "Hash page_id into\npage_table[]" {
+  class: action
+}
+page_hit: "page_table hit?" {
+  class: decision
+}
+entry -> hash_lookup: "page_id"
+hash_lookup -> page_hit
+# ──────────────────────────────────────────────
+# HIT PATH
+# ──────────────────────────────────────────────
+hit_actions: "" {
+  direction: right
+  class: transparent
+  inc_pin: "pin_count++" {
+    class: action
+  }
+  lru_front: "LRU move_to_front(frame)" {
+    class: action
+  }
+  inc_hits: "pool->hits++" {
+    class: action
+  }
+  inc_pin -> lru_front -> inc_hits
+}
+page_hit -> hit_actions: "YES (frame in pool)" {
+  style.stroke: green
+  style.font-color: green
+  style.bold: true
+}
+# ──────────────────────────────────────────────
+# MISS PATH — Free List
+# ──────────────────────────────────────────────
+inc_miss: "pool->misses++" {
+  class: hot
+}
+free_check: "free_list\nempty?" {
+  class: decision
+}
+pop_free: "Pop frame from\nfree_list" {
+  class: action
+}
+page_hit -> inc_miss: "NO (miss)" {
+  style.stroke: red
+  style.font-color: red
+  style.bold: true
+}
+inc_miss -> free_check
+free_check -> pop_free: "NO (frames available)" {
+  style.stroke: green
+}
+# ──────────────────────────────────────────────
+# MISS PATH — LRU Eviction
+# ──────────────────────────────────────────────
+lru_scan: "Scan LRU from tail\nfind pin_count == 0" {
+  class: action
+}
+all_pinned: "All frames\npinned?" {
+  class: decision
+}
+error_exit: "Return NULL\n(pool exhausted)" {
+  class: hot
+  style.stroke-dash: 4
+}
+dirty_check: "Victim frame\nis dirty?" {
+  class: decision
+}
+journal_check: "Transaction\nactive?" {
+  class: decision
+}
+journal_write: "txn_journal_page()\nWrite original to\n.db-journal" {
+  class: io
+}
+journal_fsync: "fsync(journal_fd)" {
+  class: io
+  style.fill: "#F8D7DA"
+  style.stroke: "#721C24"
+}
+writeback: "pwrite() dirty page\nto database file" {
+  class: io
+}
+remove_old: "page_table_remove()\nlru_remove()\nframe.page_id = INVALID" {
+  class: action
+}
+free_check -> lru_scan: "YES (no free frames)" {
+  style.stroke: red
+}
+lru_scan -> all_pinned
+all_pinned -> error_exit: "YES" {
+  style.stroke: red
+  style.stroke-dash: 4
+}
+all_pinned -> dirty_check: "NO (victim found)" {
+  style.stroke: green
+}
+dirty_check -> journal_check: "YES" {
+  style.stroke: "#E67E22"
+  style.font-color: "#E67E22"
+}
+dirty_check -> remove_old: "NO (clean)" {
+  style.stroke: green
+}
+journal_check -> journal_write: "YES" {
+  style.stroke: "#E67E22"
+}
+journal_check -> writeback: "NO" {
+  style.stroke: gray
+}
+journal_write -> journal_fsync: "WAL ordering"
+journal_fsync -> writeback: "barrier complete"
+writeback -> remove_old: "evictions++"
+# ──────────────────────────────────────────────
+# LOAD PAGE INTO FRAME
+# ──────────────────────────────────────────────
+set_meta: "frame.page_id = page_id\nframe.is_dirty = false\nframe.pin_count = 1" {
+  class: action
+}
+disk_read: "pread(fd, frame.data,\n4096, page_id * 4096)" {
+  class: io
+}
+zero_fill: "New page?\nmemset(0) remainder" {
+  class: action
+  style.fill: "#FFF3CD"
+}
+register_frame: "page_table_insert()\nlru_push_front()" {
+  class: action
+}
+pop_free -> set_meta
+remove_old -> set_meta
+set_meta -> disk_read: "load from disk"
+disk_read -> zero_fill
+zero_fill -> register_frame
+# ──────────────────────────────────────────────
+# RETURN
+# ──────────────────────────────────────────────
+return_ptr: "return frame.data\n(uint8_t* — 4096 bytes, pinned)" {
+  class: terminal
+}
+register_frame -> return_ptr
+hit_actions -> return_ptr: "fast path"
+# ──────────────────────────────────────────────
+# COST ANNOTATIONS
+# ──────────────────────────────────────────────
+cost_legend: "Performance Reference" {
+  style.fill: "#F0F0F0"
+  style.stroke: "#999"
+  style.font-size: 13
+  c1: "Hash lookup (hit path): ~10 ns" {
+    style.fill: "#D4EDDA"
+    style.font-size: 12
+  }
+  c2: "Disk read (pread 4KB): ~100 us SSD" {
+    style.fill: "#CCE5FF"
+    style.font-size: 12
+  }
+  c3: "fsync barrier: ~100 us SSD" {
+    style.fill: "#F8D7DA"
+    style.font-size: 12
+  }
+  c4: "LRU eviction scan: O(1) amortized" {
+    style.fill: "#FFF3CD"
+    style.font-size: 12
+  }
+}
+cost_legend.near: bottom-right

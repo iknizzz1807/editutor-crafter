@@ -20,6 +20,10 @@ CLAUDE_MODEL = "opus"
 
 PROMPT_TEMPLATE = """Hãy đánh giá tài liệu hướng dẫn dự án dưới đây và cho điểm trên thang 100.
 
+**LƯU Ý QUAN TRỌNG:**
+- KHÔNG đánh giá hay nhận xét về diagrams, hình ảnh, hay visual elements. Đây là raw markdown file, diagrams sẽ được render đầy đủ trong bản final.
+- Tập trung vào nội dung text, code, cấu trúc và chất lượng giáo dục.
+
 Yêu cầu đánh giá chi tiết các khía cạnh:
 1. **Kiến thức chuyên môn** - Nội dung có chính xác, đầy đủ không?
 2. **Cấu trúc và trình bày** - Có dễ hiểu, logic không?
@@ -35,6 +39,7 @@ Yêu cầu đánh giá chi tiết các khía cạnh:
 7. **Tính giao dịch** - Ngôn ngữ có thân thiện, dễ hiểu không? Có khuyến khích người học không?
 8. **Context bám sát** - Tài liệu có liên kết từ đầu đến cuối không? Có continuity không hay lộn xộn?
 9. **Code bám sát** - Code có khớp với nội dung giải thích không? Hay code và chữ rời rạc, không nhất quán?
+10. **Phát hiện bất thường** - Có section nào NGẮN MỘT CÁCH BẤT THƯỜNG không? (ví dụ: milestone chỉ có vài dòng, chapter bị cắt giữa chừng, nội dung đột ngột kết thúc). Nếu có, đánh dấu đây là nghi vấn lỗi trong quá trình generate.
 
 Cho điểm từ 0-100 và giải thích chi tiết từng điểm mạnh, điểm yếu.
 

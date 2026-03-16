@@ -1,0 +1,271 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: Variable-Length Integer (Varint) Encoding {
+  style.font-size: 28
+  style.bold: true
+  near: top-center
+}
+# ============================================================
+# SECTION 1: Encoding Principle
+# ============================================================
+principle: Encoding Principle {
+  style.fill: "#E8F4FD"
+  style.border-radius: 8
+  rule: {
+    shape: sql_table
+    label: "Varint Bit Layout Rule"
+    msb: "Bit 7 (MSB) | Continuation flag | 1 = more bytes follow, 0 = last byte"
+    payload: "Bits 6..0 | Data payload | 7 bits of actual integer value per byte"
+    ninth: "Byte 9 (special) | Full 8 bits | No continuation flag needed (max reached)"
+    capacity: "Total capacity | 7×8 + 8 = 64 bits | Encodes full uint64_t"
+  }
+}
+# ============================================================
+# SECTION 2: Size Tiers
+# ============================================================
+tiers: Encoding Size Tiers {
+  direction: down
+  style.fill: "#F0F0F0"
+  style.border-radius: 8
+  t1: {
+    shape: sql_table
+    label: "1-Byte Varint (values 0 - 127)"
+    bit_layout: "Byte 0 | 0xxxxxxx | MSB=0 (last byte), 7 data bits"
+    range: "Range | 0 to 127 | 2^7 - 1"
+    example1: "Value 0 | 0x00 | 0_0000000"
+    example2: "Value 42 | 0x2A | 0_0101010"
+    example3: "Value 127 | 0x7F | 0_1111111"
+  }
+  t2: {
+    shape: sql_table
+    label: "2-Byte Varint (values 128 - 16,383)"
+    byte0: "Byte 0 | 1xxxxxxx | MSB=1 (more), 7 data bits (high)"
+    byte1: "Byte 1 | 0xxxxxxx | MSB=0 (last), 7 data bits (low)"
+    range: "Range | 128 to 16,383 | 2^14 - 1"
+    example1: "Value 128 | 0x81 0x00 | 1_0000001 0_0000000"
+    example2: "Value 300 | 0x82 0x2C | 1_0000010 0_0101100"
+  }
+  t3: {
+    shape: sql_table
+    label: "3-Byte Varint (values 16,384 - 2,097,151)"
+    byte0: "Byte 0 | 1xxxxxxx | MSB=1 (more), 7 high bits"
+    byte1: "Byte 1 | 1xxxxxxx | MSB=1 (more), 7 mid bits"
+    byte2: "Byte 2 | 0xxxxxxx | MSB=0 (last), 7 low bits"
+    range: "Range | 16,384 to 2,097,151 | 2^21 - 1"
+    example: "Value 100,000 | 0x86 0x8D 0x20 | 3 bytes for 17-bit value"
+  }
+  t9: {
+    shape: sql_table
+    label: "9-Byte Varint (values up to 2^64 - 1)"
+    bytes0_7: "Bytes 0-7 | 1xxxxxxx each | All have continuation bit set"
+    byte8: "Byte 8 | xxxxxxxx | Full 8 bits, no continuation flag"
+    range: "Total bits | 7x8 + 8 = 64 | Covers full uint64_t"
+    example: "Value 2^63-1 | 9 bytes | Maximum signed 64-bit integer"
+  }
+  t1 -> t2: "overflow at 128"
+  t2 -> t3: "overflow at 16,384"
+  t3 -> t9: "... up to 9 bytes"
+}
+principle -> tiers
+# ============================================================
+# SECTION 3: Concrete Encoding Walkthrough (Value 300)
+# ============================================================
+walkthrough: Encoding Walkthrough - Value 300 {
+  direction: down
+  style.fill: "#FFF8E1"
+  style.border-radius: 8
+  step1: {
+    label: "Step 1: Binary Representation"
+    width: 420
+    code: |'c
+      // 300 decimal = 0b100101100 (9 bits)
+      // Doesn't fit in 7 bits (max 127)
+      // Needs 2-byte encoding
+      uint64_t value = 300;
+    '|
+  }
+  step2: {
+    label: "Step 2: Split into 7-bit Groups (big-endian)"
+    width: 420
+    code: |'c
+      // 300 = 0b 0000010  0101100
+      //        [high 7]  [low 7]
+      // Group 1 (high): 0000010 = 0x02
+      // Group 0 (low):  0101100 = 0x2C
+    '|
+  }
+  step3: {
+    label: "Step 3: Set Continuation Bits"
+    width: 420
+    code: |'c
+      // Byte 0 (first): set MSB=1 (more bytes)
+      //   1_0000010 = 0x82
+      // Byte 1 (last):  set MSB=0 (final)
+      //   0_0101100 = 0x2C
+      // Result: [0x82, 0x2C]
+    '|
+  }
+  decode: {
+    label: "Decoding: Reverse the Process"
+    width: 420
+    code: |'c
+      // Read 0x82: MSB=1, payload = 0000010
+      //   result = 0000010 (= 2)
+      // Read 0x2C: MSB=0, payload = 0101100
+      //   result = (2 << 7) | 0101100
+      //          = 0b 0000010_0101100
+      //          = 300
+    '|
+  }
+  step1 -> step2: "9 bits needed"
+  step2 -> step3: "add flags"
+  step3 -> decode: "verify"
+}
+tiers -> walkthrough
+# ============================================================
+# SECTION 4: Bit Layout Visualization
+# ============================================================
+bit_layout: Bit-Level Layout Comparison {
+  direction: down
+  style.fill: "#E8F5E9"
+  style.border-radius: 8
+  one_byte: {
+    shape: sql_table
+    label: "1-Byte: Value 42"
+    bit7: "Bit 7 | 0 | LAST byte flag"
+    bits_6_0: "Bits 6-0 | 0101010 | payload = 42"
+    hex: "Hex | 0x2A | 1 byte total"
+  }
+  two_byte: {
+    shape: sql_table
+    label: "2-Byte: Value 300"
+    b0_bit7: "Byte 0, Bit 7 | 1 | MORE bytes follow"
+    b0_payload: "Byte 0, Bits 6-0 | 0000010 | high 7 bits"
+    b1_bit7: "Byte 1, Bit 7 | 0 | LAST byte flag"
+    b1_payload: "Byte 1, Bits 6-0 | 0101100 | low 7 bits"
+    hex: "Hex | 0x82 0x2C | 2 bytes total"
+  }
+  fixed_cmp: {
+    shape: sql_table
+    label: "Fixed-Width Comparison (value 42)"
+    uint8: "uint8_t | 0x2A | 1 byte (same as varint)"
+    uint16: "uint16_t | 0x00 0x2A | 2 bytes (1 byte wasted)"
+    uint32: "uint32_t | 0x00 0x00 0x00 0x2A | 4 bytes (3 bytes wasted)"
+    uint64: "uint64_t | 8 zero bytes + 0x2A | 8 bytes (7 bytes wasted)"
+    varint: "Varint | 0x2A | 1 byte (optimal)"
+  }
+}
+walkthrough -> bit_layout
+# ============================================================
+# SECTION 5: Cross-System Comparison
+# ============================================================
+comparison: Cross-System Varint Comparison {
+  direction: down
+  style.fill: "#F3E5F5"
+  style.border-radius: 8
+  cmp_table: {
+    shape: sql_table
+    label: "Varint Encoding Schemes Compared"
+    header_sys: "System | Bit Order | Continuation | Max Bytes | Max Bits"
+    sqlite: "SQLite | Big-endian (MSB first) | Bit 7 = more | 9 | 64"
+    protobuf: "Protocol Buffers (LEB128) | Little-endian (LSB first) | Bit 7 = more | 10 | 64"
+    utf8: "UTF-8 | Big-endian | Leading 1s count = length | 4 | 21 (codepoints)"
+    wasm: "WebAssembly (LEB128) | Little-endian (LSB first) | Bit 7 = more | 5 (u32) / 10 (u64) | 32 / 64"
+    dwarf: "DWARF debug info (ULEB128) | Little-endian (LSB first) | Bit 7 = more | variable | unbounded"
+  }
+  sqlite_detail: {
+    shape: sql_table
+    label: "SQLite Varint Specifics"
+    order: "Byte order | Big-endian | High bits in first byte"
+    ninth: "9th byte rule | All 8 bits are data | No continuation flag"
+    signed: "Signed values | Two's complement in value bits | Negative via zigzag or direct"
+    usage: "Used for | Record headers, payload sizes, rowids | Throughout page format"
+  }
+  protobuf_detail: {
+    shape: sql_table
+    label: "Protocol Buffers (Google) LEB128"
+    order: "Byte order | Little-endian | Low bits in first byte"
+    decode: "Decode | Strip MSB, concatenate LSB-first | Reverse of SQLite order"
+    example: "Value 300 | 0xAC 0x02 | vs SQLite 0x82 0x2C"
+    usage: "Used for | Field tags, string lengths, int32/int64 | Wire format serialization"
+  }
+  utf8_detail: {
+    shape: sql_table
+    label: "UTF-8 Character Encoding"
+    one: "1 byte (ASCII) | 0xxxxxxx | 7 bits, codepoints U+0000-U+007F"
+    two: "2 bytes | 110xxxxx 10xxxxxx | 11 bits, U+0080-U+07FF"
+    three: "3 bytes | 1110xxxx 10xxxxxx 10xxxxxx | 16 bits, U+0800-U+FFFF"
+    four: "4 bytes | 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx | 21 bits, U+10000-U+10FFFF"
+    principle: "Key difference | Leading 1-count encodes length | Self-synchronizing (any byte reveals position)"
+  }
+}
+bit_layout -> comparison
+# ============================================================
+# SECTION 6: Space Savings in Database Pages
+# ============================================================
+savings: Space Savings in Practice {
+  direction: down
+  style.fill: "#FBE9E7"
+  style.border-radius: 8
+  impact: {
+    shape: sql_table
+    label: "Impact on 4096-Byte Database Page"
+    scenario: "Scenario | Fixed uint64 | Varint | Savings"
+    rowid_small: "Rowid = 42 | 8 bytes | 1 byte | 7 bytes saved"
+    rowid_med: "Rowid = 10,000 | 8 bytes | 2 bytes | 6 bytes saved"
+    strlen_5: "String length = 5 | 8 bytes | 1 byte | 7 bytes saved"
+    serial_type: "Serial type = 1 (int8) | 8 bytes | 1 byte | 7 bytes saved"
+    per_row: "Per-row overhead (4 varints) | 32 bytes | ~5 bytes | ~27 bytes saved"
+    per_page: "50 rows per page | 1,600 bytes overhead | ~250 bytes | ~1,350 bytes reclaimed"
+    extra_rows: "Reclaimed space | - | ~19 extra rows per page | Higher B-tree fanout"
+  }
+  tradeoff: {
+    shape: sql_table
+    label: "Encode/Decode Cost"
+    encode_cost: "Encoding | ~3-5 ns per varint | Loop + shift + mask"
+    decode_cost: "Decoding | ~2-4 ns per varint | Loop + shift + OR"
+    disk_cost: "Disk read (4KB page) | ~100,000 ns (SSD) | 25,000x more expensive"
+    verdict: "Verdict | CPU cost is negligible vs I/O | Always worth it for storage"
+  }
+}
+comparison -> savings
+# ============================================================
+# SECTION 7: C Implementation Reference
+# ============================================================
+impl: C Implementation (varint.h) {
+  direction: down
+  style.fill: "#E3F2FD"
+  style.border-radius: 8
+  encode_fn: {
+    shape: class
+    label: "varint_encode (varint.h)"
+    +varint_encode(value, buf): "int (bytes written)"
+    -emit_continuation(byte, more): "uint8_t"
+  }
+  decode_fn: {
+    shape: class
+    label: "varint_decode (varint.h)"
+    +varint_decode(buf, out_value): "int (bytes consumed)"
+    -read_continuation(byte): "bool"
+  }
+  size_table: {
+    shape: sql_table
+    label: "Quick Reference: Value Range to Byte Count"
+    r1: "0 - 127 | 1 byte | 7 data bits"
+    r2: "128 - 16,383 | 2 bytes | 14 data bits"
+    r3: "16,384 - 2,097,151 | 3 bytes | 21 data bits"
+    r4: "2,097,152 - 268,435,455 | 4 bytes | 28 data bits"
+    r5: "268M - 34B | 5 bytes | 35 data bits"
+    r6: "34B - 4.4T | 6 bytes | 42 data bits"
+    r7: "4.4T - 562T | 7 bytes | 49 data bits"
+    r8: "562T - 72P | 8 bytes | 56 data bits"
+    r9: "72P - 18E (uint64 max) | 9 bytes | 64 data bits"
+  }
+  encode_fn -> decode_fn: "inverse operations"
+}
+savings -> impl

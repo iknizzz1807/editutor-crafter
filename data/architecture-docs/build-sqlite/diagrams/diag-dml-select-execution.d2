@@ -1,0 +1,235 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+sql_layer: "SQL INPUT" {
+  style.fill: "#E8F4FD"
+  style.stroke: "#2196F3"
+  style.stroke-width: 2
+  style.border-radius: 6
+  query: {
+    shape: sql_table
+    label: "SELECT name FROM users WHERE age > 21"
+    col0: "tokens  | SELECT  name  FROM  users  WHERE  age  >  21"
+    col1: "parser  | AST → SelectStmt(col=name, tbl=users, where=age>21)"
+    col2: "compile | emit bytecode program"
+  }
+}
+vdbe_layer: "LAYER 1 — VDBE (vdbe.c)" {
+  style.fill: "#FFF8E1"
+  style.stroke: "#FF9800"
+  style.stroke-width: 2
+  style.border-radius: 6
+  program: {
+    shape: sql_table
+    label: "Bytecode Program"
+    i0: "addr 0 | OP_OPEN_TABLE  | cursor=0  tbl='users'"
+    i1: "addr 1 | OP_REWIND      | cursor=0  →end@7"
+    i2: "addr 2 | OP_COLUMN      | cursor=0  col=1  dest=r1  (age)"
+    i3: "addr 3 | OP_INTEGER     | val=21    dest=r2"
+    i4: "addr 4 | OP_LE          | r1  →next@6  r2  (skip if age<=21)"
+    i5: "addr 5 | OP_COLUMN      | cursor=0  col=0  dest=r3  (name)"
+    i6: "addr 6 | OP_RESULT_ROW  | start=r3  count=1"
+    i7: "addr 7 | OP_NEXT        | cursor=0  →loop@2"
+    i8: "addr 8 | OP_HALT        |"
+  }
+  reg_state: {
+    shape: sql_table
+    label: "Register File (row: Alice, age=25)"
+    r0: "r0 | unused      | —"
+    r1: "r1 | VAL_INTEGER | 25        (age from OP_COLUMN)"
+    r2: "r2 | VAL_INTEGER | 21        (immediate constant)"
+    r3: "r3 | VAL_TEXT    | 'Alice'   (name from OP_COLUMN)"
+    cmp: "cmp| 25 > 21 → TRI_TRUE → fall through to ResultRow"
+  }
+}
+cursor_layer: "LAYER 2 — BTree Cursor (btree.c)" {
+  style.fill: "#F3E5F5"
+  style.stroke: "#9C27B0"
+  style.stroke-width: 2
+  style.border-radius: 6
+  cursor_struct: {
+    shape: class
+    label: "BTreeCursor (btree.h)"
+    -bt: "BTree*"
+    -leaf_page_id: "PageId"
+    -slot: "int"
+    -at_end: "int"
+    -current_page: "uint8_t*"
+    +btree_cursor_rewind(cur): "int"
+    +btree_cursor_next(cur): "int"
+    +btree_cursor_column(cur, col, out): "void"
+    +btree_cursor_rowid(cur): "int64_t"
+  }
+  rewind_op: {
+    label: "Rewind: descend to leftmost leaf"
+    width: 340
+    code: |'c
+      PageId cur = bt->root_page_id;
+      while (page_type(cur) != TABLE_LEAF)
+        cur = leftmost_child(cur);
+      cursor->leaf_page_id = cur;
+      cursor->slot = 0;
+    '|
+  }
+  next_op: {
+    label: "Next: advance slot or cross to right sibling"
+    width: 360
+    code: |'c
+      cursor->slot++;
+      if (cursor->slot >= cell_count(leaf))
+        cursor->leaf_page_id = right_sibling(leaf);
+      return cursor->leaf_page_id != INVALID;
+    '|
+  }
+}
+buffer_pool_layer: "LAYER 3 — Buffer Pool (buffer_pool.c)" {
+  style.fill: "#E8F5E9"
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+  style.border-radius: 6
+  row1: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    fetch_path: {
+      shape: sql_table
+      label: "FetchPage(page_id=42)"
+      h0: "1 | hash lookup page_table[42]      | frame_idx=7  HIT ✓"
+      h1: "2 | frames[7].pin_count++            | 0 → 1"
+      h2: "3 | lru_move_to_head(7)              | frame 7 = MRU"
+      h3: "4 | return frames[7].data            | ptr to 4096 bytes"
+      h4: "COLD MISS path: pread(fd, buf, 4096, 42*4096)  ~100µs"
+    }
+    frame: {
+      shape: sql_table
+      label: "Frame 7  (page_id=42, pin=1, dirty=0)"
+      f0: "byte    0 | page_type        | 0x0D  TABLE_LEAF"
+      f1: "byte    3 | cell_count       | 0x00 0x32  (50 cells)"
+      f2: "byte    5 | cell_content_ofs | 0x04 0x10  (offset 1040)"
+      f3: "byte    8 | right_child      | 0x00  (leaf: unused)"
+      f4: "byte   12 | ptr[0]           | 0x0F 0xE0  → cell@4064"
+      f5: "byte   14 | ptr[1]           | 0x0F 0xA8  → cell@4008"
+      f6: "...       | ptr[slot]        | → cell offset in page"
+    }
+  }
+}
+record_layer: "LAYER 4 — Record Decoder (btree.c)" {
+  style.fill: "#FCE4EC"
+  style.stroke: "#E91E63"
+  style.stroke-width: 2
+  style.border-radius: 6
+  row1: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    cell_layout: {
+      shape: sql_table
+      label: "Leaf Cell at ptr[slot]  (raw bytes)"
+      b0: "0x00 | varint payload_size | 0x18  (24 bytes)"
+      b1: "0x01 | varint rowid        | 0x01  (rowid=1)"
+      b2: "0x02 | record header_size  | 0x05  (5 bytes)"
+      b3: "0x03 | serial_type[0]      | 0x13  TEXT len=(0x13-13)/2=3 → 'Alice'"
+      b4: "0x04 | serial_type[1]      | 0x06  INT64 8 bytes → age"
+      b5: "0x05–0x09 | col0 data (name) | 41 6C 69 63 65  'Alice'"
+      b6: "0x0A–0x11 | col1 data (age)  | 00 00 00 00 00 00 00 19  = 25"
+    }
+    decode_col: {
+      label: "record_decode_column(payload, col_idx=1)"
+      width: 340
+      code: |'c
+        header_size = varint(record);       // 5
+        serial_type = serial_types[1];      // 0x06 = INT64
+        data_offset = header_size
+                    + sizeof(col0_data);    // 5 + 5 = 10
+        out->type = VAL_INTEGER;
+        out->i = read_be_i64(record + 10);  // 25
+      '|
+    }
+  }
+}
+comparison_layer: "LAYER 5 — OP_LE Comparison (vdbe.c)" {
+  style.fill: "#FFF3E0"
+  style.stroke: "#FF5722"
+  style.stroke-width: 2
+  style.border-radius: 6
+  row1: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    tri_table: {
+      shape: sql_table
+      label: "Three-Valued Logic  (age > 21)"
+      t0: "r1.type == VAL_INTEGER (25)  | r2.type == VAL_INTEGER (21)"
+      t1: "value_compare(r1, r2)         | returns +1  (25 > 21)"
+      t2: "OP_LE: jump if r1 <= r2       | +1 is NOT <= 0  →  NO jump"
+      t3: "fall-through to OP_COLUMN     | emit name column"
+      t4: "NULL input → TRI_NULL         | skip row  (WHERE = false)"
+    }
+    decision: {
+      shape: diamond
+      label: "age > 21 ?"
+      style.fill: "#FF9800"
+      style.font-color: white
+    }
+  }
+}
+output_layer: "LAYER 6 — ResultRow + Next (vdbe.c / btree.c)" {
+  style.fill: "#E0F2F1"
+  style.stroke: "#009688"
+  style.stroke-width: 2
+  style.border-radius: 6
+  row1: "" {
+    direction: right
+    style.stroke: transparent
+    style.fill: transparent
+    result_row: {
+      shape: sql_table
+      label: "OP_RESULT_ROW  start=r3  count=1"
+      o0: "r3.type == VAL_TEXT        | data='Alice'  len=5"
+      o1: "value_print(r3, stdout)    | emit: Alice"
+      o2: "output delimiter           | '\\n'"
+      o3: "increment rows_returned    | 1 row so far"
+    }
+    advance: {
+      label: "OP_NEXT → btree_cursor_next"
+      width: 320
+      code: |'c
+        cursor->slot++;                  // 0 → 1
+        if (slot < cell_count) {
+          // same leaf: no page I/O
+          return 1;  // loop back to addr 2
+        }
+        // cross to right sibling (new buffer_pool_fetch)
+        cursor->leaf_page_id = right_sib;
+        cursor->slot = 0;
+        return 1;
+      '|
+    }
+  }
+}
+sql_layer -> vdbe_layer: "AST | compile"
+vdbe_layer -> cursor_layer: "OP_REWIND | OP_NEXT"
+cursor_layer -> buffer_pool_layer: "page_id | FetchPage"
+buffer_pool_layer -> record_layer: "uint8_t* | pinned frame"
+record_layer -> comparison_layer: "Value(age=25) | decode"
+comparison_layer -> output_layer: "TRI_TRUE | fall-through"
+output_layer -> cursor_layer: "slot++ | OP_NEXT loop" {
+  style.stroke-dash: 4
+  style.stroke: "#FF9800"
+}
+legend: {
+  near: bottom-right
+  shape: sql_table
+  label: "Color Legend"
+  c0: "Blue    | SQL parse + compile"
+  c1: "Orange  | VDBE bytecode execution"
+  c2: "Purple  | BTree cursor navigation"
+  c3: "Green   | Buffer pool cache"
+  c4: "Pink    | Record binary decoder"
+  c5: "Red     | Comparison + NULL logic"
+  c6: "Teal    | Output + loop-back"
+}

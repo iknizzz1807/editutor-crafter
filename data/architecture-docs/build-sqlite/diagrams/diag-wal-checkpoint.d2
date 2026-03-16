@@ -1,0 +1,188 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+title: |md
+  ## WAL Checkpoint: State Evolution
+  Auto-checkpoint threshold = 1000 frames · Reader R1 snapshot = frame 500
+| {near: top-center}
+phase1: "① Initial State — WAL Exceeds Threshold" {
+  direction: right
+  style.fill: "#E3F2FD"
+  style.stroke: "#1565C0"
+  style.border-radius: 8
+  wal_state: {
+    shape: sql_table
+    label: "WAL File  (db.db-wal)"
+    frames_0_499: "frames 0–499   | pages written BEFORE R1 snapshot"
+    frames_500_1199: "frames 500–1199 | pages written AFTER R1 snapshot"
+    total: "frame_count = 1200  |  threshold = 1000  →  TRIGGER"
+    style.fill: "#FFF9C4"
+    style.stroke: "#F9A825"
+  }
+  main_db: {
+    shape: cylinder
+    label: "Main DB (db.db)\nLast checkpoint state\n(stale — pending WAL frames)"
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+  }
+  reader_r1: {
+    shape: person
+    label: "Reader R1\nsnapshot_end = 500\n(active read transaction)"
+    style.fill: "#FFCDD2"
+  }
+  reader_r1 -> wal_state: "holds view at frame 500" {
+    style.stroke: red
+    style.stroke-dash: 4
+    style.stroke-width: 2
+  }
+}
+phase2: "② Auto-Checkpoint Triggers — Safe Limit Computed" {
+  direction: right
+  style.fill: "#FFF8E1"
+  style.stroke: "#E65100"
+  style.border-radius: 8
+  trigger: {
+    shape: diamond
+    label: "frame_count (1200)\n> auto_checkpoint (1000)?"
+    style.fill: "#FFE0B2"
+    style.stroke: "#E65100"
+  }
+  limit_table: {
+    shape: sql_table
+    label: "Checkpoint Limit Calculation"
+    row_a: "frame_count          | 1200"
+    row_b: "min_reader_snapshot  | 500  (R1 active)"
+    row_c: "safe_limit           | min(1200, 500) = 500"
+    row_d: "checkpoint range     | frames 0 .. 499 only"
+    style.fill: "#FFECB3"
+    style.stroke: "#FF8F00"
+  }
+  trigger -> limit_table: "YES → acquire write lock" {style.stroke: "#E65100"}
+}
+phase3: "③ Copy Frames 0–499 to Main Database" {
+  direction: right
+  style.fill: "#F3E5F5"
+  style.stroke: "#6A1B9A"
+  style.border-radius: 8
+  copy_logic: {
+    shape: sql_table
+    label: "Frame Copy Loop  (linear scan 0..499)"
+    row1: "frame 0   → page 42 | pwrite(db_fd, buf, PAGE_SIZE, offset)"
+    row2: "frame 1   → page 77 | pwrite(db_fd, buf, PAGE_SIZE, offset)"
+    row3: "frame 2   → page 42 | OVERWRITES frame 0 — latest version wins"
+    row4: "frame 499 → page 99 | pwrite(db_fd, buf, PAGE_SIZE, offset)"
+    note: "Only latest frame per page_no lands on disk"
+    style.fill: "#EDE7F6"
+  }
+  main_db_recv: {
+    shape: cylinder
+    label: "Main DB\nReceiving updates\nfrom frames 0–499"
+    style.fill: "#F8BBD0"
+    style.stroke: "#AD1457"
+  }
+  blocked: {
+    style.fill: "#FFCDD2"
+    style.stroke: red
+    style.border-radius: 6
+    label: "Frames 500–1199 NOT copied\nR1 snapshot boundary = 500\nCheckpoint must stop here"
+    style.font-color: "#B71C1C"
+    style.bold: true
+  }
+  copy_logic -> main_db_recv: "pwrite per frame" {
+    style.animated: true
+    style.stroke: "#6A1B9A"
+  }
+}
+phase4: "④ fsync Main Database — Durability Barrier" {
+  direction: right
+  style.fill: "#E8F5E9"
+  style.stroke: "#2E7D32"
+  style.border-radius: 8
+  fsync_node: {
+    shape: hexagon
+    label: "fsync(db_fd)\nFlush OS page cache → physical medium\nBlocks until storage confirms write"
+    style.fill: "#A5D6A7"
+    style.stroke: "#1B5E20"
+  }
+  guarantee: {
+    shape: sql_table
+    label: "Post-fsync Guarantee"
+    g1: "Pages from frames 0–499 | DURABLE on disk"
+    g2: "Survives power cut       | YES"
+    g3: "Main DB consistent       | YES — up to safe_limit 500"
+    style.fill: "#C8E6C9"
+  }
+  fsync_node -> guarantee: "returns 0 (success)"
+}
+phase5: "⑤ Partial WAL Reset — R1 Blocks Full Truncation" {
+  direction: right
+  style.fill: "#FFEBEE"
+  style.stroke: "#C62828"
+  style.border-radius: 8
+  wal_after: {
+    shape: sql_table
+    label: "WAL File After Partial Checkpoint"
+    row_a: "frames 0–499    | CHECKPOINTED — data now in main DB"
+    row_b: "frames 500–1199 | STILL IN WAL — R1 needs these"
+    row_c: "frames 1200+    | future writes continue appending here"
+    row_d: "frame_count     | NOT reset to 0 — remains at 1200"
+    style.fill: "#FFCDD2"
+    style.stroke: "#C62828"
+  }
+  r1_blocking: {
+    shape: person
+    style.fill: "#EF9A9A"
+    label: "Reader R1\nsnapshot = 500\nSTILL ACTIVE\n\nBlocks WAL salt rotation\nBlocks frame_count reset\nWAL grows from frame 1200+"
+  }
+  cannot_reset: {
+    shape: diamond
+    label: "min_reader_snapshot = 500\nCannot rotate salts\nCannot clear WAL index\nCannot truncate file"
+    style.fill: "#EF9A9A"
+    style.stroke: "#B71C1C"
+  }
+  r1_blocking -> cannot_reset: "prevents full reset" {
+    style.stroke: red
+    style.stroke-width: 3
+  }
+}
+phase6: "⑥ R1 Releases Snapshot → Full Checkpoint Completes" {
+  direction: right
+  style.fill: "#E0F7FA"
+  style.stroke: "#006064"
+  style.border-radius: 8
+  r1_done: {
+    shape: person
+    style.fill: "#B2EBF2"
+    label: "R1 finishes query\nwal_end_read(snapshot=500)\nmin_reader_snapshot = none"
+  }
+  full_reset: {
+    shape: sql_table
+    label: "Full WAL Reset Sequence"
+    s1: "1. Copy frames 500–1199 to main DB"
+    s2: "2. fsync(db_fd)"
+    s3: "3. checkpoint_seq++ (new generation)"
+    s4: "4. salt1 = rand()   salt2 = rand()"
+    s5: "5. frame_count = 0"
+    s6: "6. WAL index: all slots = EMPTY"
+    s7: "7. Old frames invalidated by new salts"
+    style.fill: "#B2EBF2"
+    style.stroke: "#00838F"
+  }
+  result: {
+    shape: cylinder
+    label: "Main DB\nFully up to date\nAll 1200 frames applied\nWAL empty — ready for reuse"
+    style.fill: "#A5D6A7"
+    style.stroke: "#1B5E20"
+  }
+  r1_done -> full_reset: "triggers next checkpoint pass" {style.animated: true; style.stroke: "#00BCD4"}
+  full_reset -> result: "checkpoint complete" {style.stroke: "#2E7D32"; style.stroke-width: 2}
+}
+phase1 -> phase2: "frame_count 1200 > threshold 1000" {style.stroke-dash: 4; style.stroke: "#1565C0"}
+phase2 -> phase3: "safe_limit = 500\nbegin copy loop" {style.stroke-dash: 4; style.stroke: "#E65100"}
+phase3 -> phase4: "all pages in range written" {style.stroke-dash: 4; style.stroke: "#6A1B9A"}
+phase4 -> phase5: "main DB durable up to frame 499" {style.stroke-dash: 4; style.stroke: "#2E7D32"}
+phase5 -> phase6: "R1 eventually calls wal_end_read()" {style.stroke-dash: 4; style.stroke: red; style.stroke-width: 2}

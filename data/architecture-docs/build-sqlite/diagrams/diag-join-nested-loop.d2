@@ -1,0 +1,187 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: "Nested Loop JOIN  —  SELECT * FROM users u JOIN orders o ON u.id = o.user_id" {
+  style.bold: true
+  style.fill: "#E3F2FD"
+  style.stroke: "#1976D2"
+  style.border-radius: 4
+}
+row_tables: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  users_tbl: {
+    shape: sql_table
+    label: "users  (n rows — outer relation)"
+    style.fill: "#1976D2"
+    r1: "rowid=1 | id=1 | name='Alice'"
+    r2: "rowid=2 | id=2 | name='Bob'"
+    r3: "rowid=3 | id=3 | name='Carol'"
+    rn: "... n-3 more rows"
+  }
+  orders_tbl: {
+    shape: sql_table
+    label: "orders  (m rows — inner relation)"
+    style.fill: "#E65100"
+    r1: "rowid=101 | o.id=1 | user_id=1 | amt=49.99"
+    r2: "rowid=102 | o.id=2 | user_id=2 | amt=12.00"
+    r3: "rowid=103 | o.id=3 | user_id=1 | amt=99.00"
+    rm: "... m-3 more rows"
+  }
+}
+row_exec: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  naive: "Strategy A — Full Inner Scan  O(n × m)" {
+    direction: down
+    style.fill: "#FFF3E0"
+    style.stroke: "#E65100"
+    style.border-radius: 6
+    outer_cur: "① Outer Cursor: users  (OP_REWIND + OP_NEXT)" {
+      width: 340
+      code: |'c
+        OP_OPEN_TABLE  cursor_u, 'users'
+        OP_REWIND      cursor_u  // seek to first user
+        // Iterates n times total (one per user row)
+      '|
+    }
+    inner_cur: "② Inner Cursor: orders — RESETS EVERY ITERATION" {
+      style.fill: "#FF8A65"
+      style.stroke: "#BF360C"
+      width: 340
+      code: |'c
+        OP_REWIND cursor_o  // EXPENSIVE: re-reads all m rows
+        // Repeated n times: n x m total row reads
+        // e.g. 1000 users x 5000 orders = 5,000,000 checks
+      '|
+    }
+    join_check: "③ Evaluate Join Condition: u.id = o.user_id ?" {
+      shape: diamond
+      style.fill: "#FFF9C4"
+      style.stroke: "#F57F17"
+    }
+    naive_cost: {
+      shape: sql_table
+      label: "Cost Analysis — Strategy A"
+      style.fill: "#FFCCBC"
+      style.stroke: "#E65100"
+      c1: "Row comparisons: n x m  (e.g. 5,000,000)"
+      c2: "Inner rewinds: n full table scans of orders"
+      c3: "Pages read: n x pages(orders) — catastrophic"
+      c4: "Complexity: O(n x m)  <- BAD for large tables"
+    }
+    outer_cur -> inner_cur: "for each user row"
+    inner_cur -> join_check: "per order row"
+    join_check -> inner_cur: "no match | next order" {
+      style.stroke: red
+      style.stroke-dash: 4
+    }
+    join_check -> naive_cost: "accumulate cost"
+  }
+  idx_nl: "Strategy B — Index Inner Lookup  O(n log m + k)" {
+    direction: down
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    style.border-radius: 6
+    outer_cur_i: "① Outer Cursor: users  (same outer loop)" {
+      style.fill: "#C8E6C9"
+      style.stroke: "#388E3C"
+      width: 340
+      code: |'c
+        OP_OPEN_TABLE  cursor_u, 'users'
+        OP_REWIND      cursor_u
+        // Same outer scan: n iterations — identical cost
+      '|
+    }
+    idx_seek: "② OP_INDEX_SEEK: idx_orders_user_id(u.id)" {
+      style.fill: "#A5D6A7"
+      style.stroke: "#1B5E20"
+      width: 340
+      code: |'c
+        OP_OPEN_INDEX  cursor_idx, 'idx_orders_user_id'
+        OP_INTEGER     reg1  <- u.id   // e.g. 1
+        OP_INDEX_SEEK  cursor_idx, reg1
+        // B+tree descent: O(log m) — 3-4 page reads only
+      '|
+    }
+    rowid_fetch: "③ OP_INDEX_ROWID + OP_SEEK_ROWID  (k matches only)" {
+      style.fill: "#C8E6C9"
+      style.stroke: "#388E3C"
+      width: 340
+      code: |'c
+        while cursor_idx.key == u.id:
+          rowid <- OP_INDEX_ROWID cursor_idx
+          OP_SEEK_ROWID cursor_o, rowid  // direct hit
+          emit(u JOIN o)   // only k matched rows!
+          OP_INDEX_NEXT cursor_idx
+      '|
+    }
+    idx_cost: {
+      shape: sql_table
+      label: "Cost Analysis — Strategy B"
+      style.fill: "#A5D6A7"
+      style.stroke: "#2E7D32"
+      c1: "Index probes: n x log2(m) — e.g. 13,000 ops"
+      c2: "Table lookups: k total (only matching orders)"
+      c3: "Pages read: O(n x index_depth + k) — efficient"
+      c4: "Complexity: O(n log m + k)  <- GOOD"
+    }
+    outer_cur_i -> idx_seek: "u.id=1 | probe index"
+    idx_seek -> rowid_fetch: "rowids=[101,103] | found"
+    rowid_fetch -> idx_cost: "accumulate cost"
+    rowid_fetch -> outer_cur_i: "next user | OP_NEXT" {
+      style.stroke: green
+      style.stroke-dash: 4
+    }
+  }
+}
+row_match: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  emit_naive: "Emit Combined Row  (naive path)" {
+    shape: parallelogram
+    style.fill: "#EDE7F6"
+    style.stroke: "#512DA8"
+  }
+  emit_idx: "Emit Combined Row  (index path)" {
+    shape: parallelogram
+    style.fill: "#EDE7F6"
+    style.stroke: "#512DA8"
+  }
+}
+result: "Result Set — k combined rows  (identical output, radically different cost)" {
+  style.fill: "#E8EAF6"
+  style.stroke: "#3F51B5"
+  style.bold: true
+  style.border-radius: 4
+}
+title -> row_tables: "input relations"
+row_tables.users_tbl -> row_exec.naive.outer_cur: "outer full scan" {
+  style.stroke: "#E65100"
+}
+row_tables.orders_tbl -> row_exec.naive.inner_cur: "inner full scan per user" {
+  style.stroke: "#E65100"
+  style.stroke-width: 2
+}
+row_tables.users_tbl -> row_exec.idx_nl.outer_cur_i: "outer full scan" {
+  style.stroke: "#2E7D32"
+}
+row_tables.orders_tbl -> row_exec.idx_nl.idx_seek: "index probe only" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 2
+}
+row_exec.naive.join_check -> row_match.emit_naive: "MATCH | emit row" {
+  style.stroke: green
+}
+row_exec.idx_nl.rowid_fetch -> row_match.emit_idx: "k matches | emit row" {
+  style.stroke: green
+}
+row_match.emit_naive -> result: "collect all matched rows"
+row_match.emit_idx -> result: "collect all matched rows"

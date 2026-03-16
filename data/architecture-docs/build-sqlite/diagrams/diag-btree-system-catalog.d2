@@ -1,0 +1,254 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  file_layout: "database.db — Page Layout" {
+    direction: down
+    style.fill: "#EBF5FB"
+    style.stroke: "#5B9BD5"
+    style.border-radius: 6
+    page0: {
+      shape: sql_table
+      label: "Page 0 (byte 0–4095)"
+      style.fill: "#D6EAF8"
+      hdr: "0x000–0x063 | 100 bytes  | DB file header (magic, page_size, enc)"
+      sm_btree: "0x064–0xFFF | 3996 bytes | sqlite_master B-tree page (starts here)"
+    }
+    page1: {
+      shape: sql_table
+      label: "Page 1 (byte 4096–8191) — sqlite_master Root"
+      style.fill: "#FFF9C4"
+      style.stroke: "#F0C420"
+      ptype: "0x000 | 1 byte   | 0x0D = PAGE_TYPE_TABLE_LEAF"
+      pcount: "0x003–0x004 | 2 bytes | cell_count (number of catalog rows)"
+      pcontent: "0x005–0x006 | 2 bytes | cell_content_area offset"
+      ptrs: "0x00C–... | 2*N bytes | cell pointer array [ptr0, ptr1, ...]"
+      cells: "...–0xFFF | variable  | cell content area (records grow upward)"
+      note: "Always page 1 — known without any catalog lookup"
+    }
+    page2plus: {
+      shape: sql_table
+      label: "Page 2+ (user tables and indexes)"
+      style.fill: "#D5E8D4"
+      style.stroke: "#82B366"
+      utable: "page N   | TABLE_LEAF or TABLE_INTERNAL | user table B-tree"
+      uindex: "page M   | INDEX_LEAF or INDEX_INTERNAL | secondary index B+tree"
+      note: "rootpage column in sqlite_master points here"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  sm_schema: "sqlite_master Schema Definition" {
+    direction: down
+    style.fill: "#FFFDE7"
+    style.stroke: "#F9A825"
+    style.border-radius: 6
+    schema_tbl: {
+      shape: sql_table
+      label: "sqlite_master (rootpage = 1, always)"
+      style.fill: "#FFF9C4"
+      style.stroke: "#F0C420"
+      c0: "type     | TEXT    | 'table' or 'index'"
+      c1: "name     | TEXT    | table or index name (e.g. 'users')"
+      c2: "tbl_name | TEXT    | owning table (same as name for tables)"
+      c3: "rootpage | INTEGER | B-tree root page number in database file"
+      c4: "sql      | TEXT    | original CREATE TABLE / CREATE INDEX SQL"
+      note: "One row per table, one row per index"
+    }
+    cell_wire: {
+      shape: sql_table
+      label: "TABLE_LEAF Cell Wire Format (each sqlite_master row)"
+      style.fill: "#FEF9E7"
+      w1: "payload_size | varint | total byte count of the record payload"
+      w2: "rowid        | varint | auto-assigned integer row ID"
+      w3: "header_size  | varint | byte count of header region"
+      w4: "serial_type0 | varint | type code for 'type' column (TEXT)"
+      w5: "serial_type1 | varint | type code for 'name' column (TEXT)"
+      w6: "...          | varints | serial_types for tbl_name, rootpage, sql"
+      w7: "col_data     | bytes   | packed big-endian column values"
+      note: "Serial type = 2*len+13 for TEXT, 1–6 for INTEGER"
+    }
+  }
+  sm_lookup: "Schema Lookup (In-Memory Cache)" {
+    direction: down
+    style.fill: "#EDE7F6"
+    style.stroke: "#7E57C2"
+    style.border-radius: 6
+    lookup_map: {
+      shape: sql_table
+      label: "schema_get_table(db, name) — O(1) hash lookup"
+      lm1: "table_name | key: char*        | e.g. 'users'"
+      lm2: "root_page  | PageId            | e.g. 3"
+      lm3: "columns[]  | ColumnDef*        | name, type, NOT NULL, PK flags"
+      lm4: "indexes[]  | IndexDescriptor*  | per-table index list"
+      note: "Populated by schema_load() at db_open time"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  ex_table: "Example: TABLE Entry" {
+    shape: sql_table
+    label: "sqlite_master row — type='table'"
+    style.fill: "#D5E8D4"
+    style.stroke: "#82B366"
+    e1: "type     | 'table'"
+    e2: "name     | 'users'"
+    e3: "tbl_name | 'users'"
+    e4: "rootpage | 3"
+    e5: "sql      | 'CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'"
+    note: "rootpage=3 → users B-tree root is page 3"
+  }
+  ex_index: "Example: INDEX Entry" {
+    shape: sql_table
+    label: "sqlite_master row — type='index'"
+    style.fill: "#DAE8FC"
+    style.stroke: "#6C8EBF"
+    ei1: "type     | 'index'"
+    ei2: "name     | 'idx_email'"
+    ei3: "tbl_name | 'users'"
+    ei4: "rootpage | 7"
+    ei5: "sql      | 'CREATE INDEX idx_email ON users(email)'"
+    note: "rootpage=7 → idx_email B+tree root is page 7"
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  bootstrap: "Bootstrap Flow — db_open()" {
+    direction: down
+    style.fill: "#F3E5F5"
+    style.stroke: "#9C27B0"
+    style.border-radius: 6
+    bs1: {
+      label: "1. open(path, O_RDWR | O_CREAT)"
+      width: 340
+    }
+    bs2: {
+      label: "2. Read Page 0 — validate DB header"
+      code: |'c
+        pread(fd, buf, PAGE_SIZE, 0);
+        /* magic = "SQLite format 3\0" at buf[0..15] */
+        page_size = (buf[16]<<8) | buf[17];
+        encoding  = read_u32_be(buf + 56);
+      '|
+      width: 340
+    }
+    bs3: {
+      label: "3. Scan sqlite_master (ALWAYS page 1)"
+      code: |'c
+        btree_cursor_open_read(&cur, bt_page1);
+        btree_cursor_rewind(&cur);
+        do {
+          btree_cursor_column(&cur, 0, &type_val);
+          btree_cursor_column(&cur, 1, &name_val);
+          btree_cursor_column(&cur, 3, &root_val);
+          schema_register(db, name_val, root_val);
+        } while (btree_cursor_next(&cur));
+      '|
+      width: 340
+    }
+    bs4: {
+      label: "4. In-memory schema map ready — queries can execute"
+      width: 340
+    }
+    bs1 -> bs2: "fd"
+    bs2 -> bs3: "page_size=4096"
+    bs3 -> bs4: "SchemaTable[]"
+  }
+  create_tbl: "CREATE TABLE Flow" {
+    direction: down
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    style.border-radius: 6
+    ct1: {
+      label: "1. Parse CREATE TABLE SQL → AstNode"
+      width: 340
+    }
+    ct2: {
+      label: "2. Allocate new root page for the table"
+      code: |'c
+        uint8_t *pg = buffer_pool_new_page(bp, &new_root);
+        page_init(pg, PAGE_TYPE_TABLE_LEAF);
+        buffer_pool_unpin(bp, new_root, /*dirty=*/1);
+      '|
+      width: 340
+    }
+    ct3: {
+      label: "3. INSERT row into sqlite_master (page 1)"
+      code: |'c
+        cols[0] = {VAL_TEXT,    "table"      };
+        cols[1] = {VAL_TEXT,    table_name   };
+        cols[2] = {VAL_TEXT,    table_name   };
+        cols[3] = {VAL_INTEGER, new_root     };
+        cols[4] = {VAL_TEXT,    original_sql };
+        btree_insert(catalog_bt, cols, 5, next_rowid);
+      '|
+      width: 340
+    }
+    ct4: {
+      label: "4. Update in-memory schema cache"
+      code: |'c
+        schema_add_table(db, table_name,
+                         new_root, col_defs);
+      '|
+      width: 340
+    }
+    ct1 -> ct2: "AstNode*"
+    ct2 -> ct3: "new_root PageId"
+    ct3 -> ct4: "committed"
+  }
+}
+self_describe: "Self-Describing Bootstrapping Invariant" {
+  near: bottom-center
+  style.fill: "#FFFDE7"
+  style.stroke: "#F9A825"
+  style.border-radius: 8
+  note1: "Page 1 = sqlite_master root — FIXED by convention, no catalog needed to find it"
+  note2: "sqlite_master stores schema in the SAME B-tree format as all user tables"
+  note3: "Schema IS data: schema_find_table() reads the catalog like any other SELECT"
+  note4: "Circular dependency resolved: page 1 is the bootstrap entry point"
+}
+row1.file_layout.page1 -> row2.sm_schema.schema_tbl: "B-tree root | contains rows" {
+  style.stroke: "#F0C420"
+  style.stroke-width: 2
+}
+row2.sm_schema.schema_tbl -> row3.ex_table: "table row | example" {
+  style.stroke: "#82B366"
+}
+row2.sm_schema.schema_tbl -> row3.ex_index: "index row | example" {
+  style.stroke: "#6C8EBF"
+}
+row3.ex_table.e4 -> row1.file_layout.page2plus: "rootpage=3 | users B-tree root" {
+  style.stroke: "#82B366"
+  style.stroke-dash: 4
+}
+row3.ex_index.ei4 -> row1.file_layout.page2plus: "rootpage=7 | idx_email root" {
+  style.stroke: "#6C8EBF"
+  style.stroke-dash: 4
+}
+row4.bootstrap.bs3 -> row1.file_layout.page1: "reads cells" {
+  style.stroke: "#9C27B0"
+  style.animated: true
+}
+row4.create_tbl.ct3 -> row1.file_layout.page1: "btree_insert()" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+  style.animated: true
+}
+row2.sm_schema.schema_tbl -> row2.sm_lookup.lookup_map: "schema_load() populates" {
+  style.stroke: "#7E57C2"
+}

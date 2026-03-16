@@ -1,0 +1,154 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 5
+  }
+}
+reader_state: {
+  shape: sql_table
+  label: "Reader R2 State (buffer_pool.c)"
+  style.fill: "#DBEAFE"
+  style.stroke: "#2563EB"
+  r1: "end_frame | int    | 8   snapshot taken at wal_begin_read() before W1 commit"
+  r2: "page_no   | uint32 | 42  requested by OP_COLUMN in VDBE dispatch loop"
+  r3: "W1 writer | --     | committed frames 9-12 AFTER R2 started"
+}
+step1: "Step 1: WAL Index Hash Probe (wal.c:wal_find_frame)" {
+  style.fill: "#FEF9C3"
+  style.stroke: "#CA8A04"
+  style.border-radius: 4
+  code: |'c
+    h = (page_no * 2654435761u) & (WAL_INDEX_SLOTS - 1);
+    e = wal->index.slots[h];
+    // e.page_no   == 42   -> cache hit
+    // e.frame_idx == 12   -> most recent frame (written by W1)
+  '|
+  width: 460
+}
+wal_index: {
+  shape: sql_table
+  label: "WalIndex — in-process hash table (walindex_lookup)"
+  style.fill: "#FFFBEB"
+  style.stroke: "#D97706"
+  h0: "page_no | frame_idx | written by"
+  r1: "42      | 12        | W1 commit at t=2  (R2 started at t=0)"
+  r2: "77      | 11        | W1 commit at t=2"
+  r3: "5       | 3         | earlier txn at t=1"
+  r4: "99      | 7         | earlier txn at t=1"
+}
+snapshot_gate: "Step 2: Snapshot Boundary Check — Is Frame Visible to This Reader?" {
+  shape: diamond
+  label: "frame_idx (12) <= end_frame (8) ?"
+  style.fill: "#FCE7F3"
+  style.stroke: "#DB2777"
+  width: 440
+  height: 115
+}
+row_branches: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  path_wal: "Path A — YES: Frame Within Snapshot" {
+    direction: down
+    style.fill: "#DCFCE7"
+    style.stroke: "#16A34A"
+    style.border-radius: 6
+    scenario_wal: {
+      shape: sql_table
+      label: "Example: R3 started AFTER W1 commit (end_frame=13)"
+      s1: "end_frame  | 13   R3 snapshot after W1"
+      s2: "frame_idx  | 12   W1 frame for page 42"
+      s3: "12 <= 13   | YES — frame is visible to R3"
+    }
+    wal_read: "pread WAL Frame 12 into buffer" {
+      style.fill: "#BBF7D0"
+      style.stroke: "#15803D"
+      code: |'c
+        off = WAL_HEADER_SIZE
+            + 12 * WAL_FRAME_SIZE;
+        pread(wal->fd, buf, PAGE_SIZE, off);
+        // buf = W1 updated page 42 content
+        // validate salt + checksum before use
+      '|
+      width: 360
+    }
+    result_wal: "Returns: W1 version of page 42" {
+      shape: rectangle
+      style.fill: "#86EFAC"
+      style.stroke: "#15803D"
+      style.bold: true
+    }
+  }
+  path_db: "Path B — NO: Frame Beyond Snapshot" {
+    direction: down
+    style.fill: "#FEF2F2"
+    style.stroke: "#DC2626"
+    style.border-radius: 6
+    scenario_db: {
+      shape: sql_table
+      label: "Our case: R2 started BEFORE W1 commit (end_frame=8)"
+      s1: "end_frame  | 8    R2 snapshot before W1"
+      s2: "frame_idx  | 12   W1 frame for page 42"
+      s3: "12 > 8     | NO — frame is INVISIBLE to R2"
+    }
+    backward_scan: "Scan WAL Backward for Earlier Frame" {
+      style.fill: "#FEE2E2"
+      style.stroke: "#EF4444"
+      code: |'c
+        for (f = end_frame - 1; f >= 0; f--) {
+          pg = wal_frame_page_no(wal, f);
+          if (pg == 42) return f;
+        }
+        return -1;  // not in WAL within snapshot
+      '|
+      width: 360
+    }
+    db_read: "pread Main Database File (fallback)" {
+      style.fill: "#FECACA"
+      style.stroke: "#B91C1C"
+      code: |'c
+        // page 42 not found in WAL before snapshot
+        off = (42 - 1) * PAGE_SIZE;
+        pread(db_fd, buf, PAGE_SIZE, off);
+        // buf = last checkpointed version of page 42
+      '|
+      width: 360
+    }
+    result_db: "Returns: Pre-W1 version of page 42" {
+      shape: rectangle
+      style.fill: "#FCA5A5"
+      style.stroke: "#B91C1C"
+      style.bold: true
+    }
+  }
+}
+insight: {
+  shape: sql_table
+  label: "Snapshot Isolation: Same Page, Two Readers, Two Different Versions — Zero Locks"
+  style.fill: "#EFF6FF"
+  style.stroke: "#3B82F6"
+  i1: "R2  end_frame=8  | sees pre-W1 DB version   | started BEFORE W1 commit"
+  i2: "R3  end_frame=13 | sees W1 WAL frame 12      | started AFTER  W1 commit"
+  i3: "W1 writer        | appended frames 9-12 concurrently with both readers"
+  i4: "Mechanism        | end_frame integer is the snapshot marker — no mutex"
+}
+reader_state -> step1: "page_no=42 | fetch"
+step1 -> wal_index: "hash probe h=(42*2654435761)&mask"
+wal_index -> snapshot_gate: "entry: page 42 -> frame 12"
+snapshot_gate -> row_branches.path_wal: "YES (12 <= 13 for R3)" {
+  style.stroke: "#16A34A"
+  style.stroke-width: 2
+}
+snapshot_gate -> row_branches.path_db: "NO (12 > 8 for R2)" {
+  style.stroke: "#DC2626"
+  style.stroke-dash: 4
+  style.stroke-width: 2
+}
+row_branches.path_wal.scenario_wal -> row_branches.path_wal.wal_read
+row_branches.path_wal.wal_read -> row_branches.path_wal.result_wal
+row_branches.path_db.scenario_db -> row_branches.path_db.backward_scan
+row_branches.path_db.backward_scan -> row_branches.path_db.db_read: "not found in WAL"
+row_branches.path_db.db_read -> row_branches.path_db.result_db
+row_branches.path_wal.result_wal -> insight: "W1 version"
+row_branches.path_db.result_db -> insight: "pre-W1 version"

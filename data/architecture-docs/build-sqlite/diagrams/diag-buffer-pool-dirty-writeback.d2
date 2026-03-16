@@ -1,0 +1,179 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+compare_row: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  before: "BEFORE — Frame Dirty, Disk Stale" {
+    direction: down
+    style.fill: "#FFF3E0"
+    style.stroke: "#BF360C"
+    style.border-radius: 8
+    frame_struct: {
+      shape: sql_table
+      label: "struct Frame (buffer_pool.h) — Frame[7]"
+      page_id:  "page_id    | PageId   | 42"
+      is_dirty: "is_dirty   | int      | 1  ← DIRTY"
+      pin_cnt:  "pin_count  | int      | 0  (evictable)"
+      lru_p:    "lru_prev   | int      | 3"
+      lru_n:    "lru_next   | int      | -1 (LRU tail)"
+    }
+    frame_struct.style.fill: "#FF8A65"
+    page_mem: {
+      shape: sql_table
+      label: "Frame[7].data — Page 42 in Memory (4096 bytes)"
+      h0:   "0x0000 | uint8_t[12] | B-tree page header"
+      r1:   "0x000C | char[16]    | name = 'Alice'"
+      r2:   "0x001C | int64_t     | balance = 0    ← MODIFIED"
+      r3:   "0x0024 | uint32_t    | flags = 0x01"
+      note: "balance was 100 before this transaction"
+    }
+    page_mem.style.fill: "#FFAB91"
+    page_mem.style.stroke: "#E64A19"
+    disk_stale: {
+      shape: sql_table
+      label: "Disk: db.sqlite @ byte offset 172032 (42 x 4096)"
+      h0:   "0x0000 | uint8_t[12] | B-tree page header"
+      d1:   "0x000C | char[16]    | name = 'Alice'"
+      d2:   "0x001C | int64_t     | balance = 100  ← STALE"
+      d3:   "0x0024 | uint32_t    | flags = 0x01"
+      note: "STALE: diverges from buffer pool frame"
+    }
+    disk_stale.style.fill: "#FFCCBC"
+    disk_stale.style.stroke: "#BF360C"
+    disk_stale.style.stroke-dash: 5
+  }
+  after: "AFTER — Frame Clean, Disk Durable" {
+    direction: down
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    style.border-radius: 8
+    frame_struct_a: {
+      shape: sql_table
+      label: "struct Frame (buffer_pool.h) — Frame[7]"
+      page_id:  "page_id    | PageId   | 42"
+      is_dirty: "is_dirty   | int      | 0  ← CLEARED"
+      pin_cnt:  "pin_count  | int      | 0"
+      lru_p:    "lru_prev   | int      | 3"
+      lru_n:    "lru_next   | int      | -1"
+    }
+    frame_struct_a.style.fill: "#81C784"
+    page_mem_a: {
+      shape: sql_table
+      label: "Frame[7].data — Page 42 in Memory (4096 bytes)"
+      h0:   "0x0000 | uint8_t[12] | B-tree page header"
+      r1:   "0x000C | char[16]    | name = 'Alice'"
+      r2:   "0x001C | int64_t     | balance = 0    (written)"
+      r3:   "0x0024 | uint32_t    | flags = 0x01"
+      note: "Frame stays warm — next read is cache HIT"
+    }
+    page_mem_a.style.fill: "#A5D6A7"
+    disk_durable: {
+      shape: sql_table
+      label: "Disk: db.sqlite @ byte offset 172032 (42 x 4096)"
+      h0:   "0x0000 | uint8_t[12] | B-tree page header"
+      d1:   "0x000C | char[16]    | name = 'Alice'"
+      d2:   "0x001C | int64_t     | balance = 0    ← DURABLE"
+      d3:   "0x0024 | uint32_t    | flags = 0x01"
+      note: "DURABLE: survives power loss after fsync"
+    }
+    disk_durable.style.fill: "#69F0AE"
+    disk_durable.style.stroke: "#00C853"
+  }
+}
+ops_row: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  write_seq: "write_page_to_disk() — buffer_pool.c" {
+    direction: down
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    style.border-radius: 6
+    step1: {
+      label: "1 — pwrite(): scatter 4096 bytes to disk offset"
+      width: 500
+      code: |'c
+        off_t offset = (off_t)f->page_id * PAGE_SIZE;
+        // offset = 42 * 4096 = 172032 bytes from file start
+        ssize_t n = pwrite(bp->fd, f->data, PAGE_SIZE, offset);
+        if (n != PAGE_SIZE) return -1;
+        // Data reaches OS page cache — NOT yet on physical media
+      '|
+    }
+    step2: {
+      label: "2 — fsync(): durability barrier — blocks until durable"
+      width: 500
+      code: |'c
+        if (fsync(bp->fd) < 0) return -1;
+        // Forces OS cache flush to storage controller
+        // NVMe SSD: 50-500 µs  |  Spinning HDD: 3-10 ms
+        // Returns only when storage confirms NAND/platter write
+      '|
+    }
+    step3: {
+      label: "3 — clear dirty bit and update telemetry"
+      width: 500
+      code: |'c
+        f->is_dirty = 0;
+        bp->stats.dirty_writes++;
+        // Frame[7] stays in buffer pool at LRU position
+        // Eviction now allowed; page is clean and reusable
+      '|
+    }
+  }
+  trigger_paths: "When Write-Back Fires (buffer_pool.c)" {
+    direction: down
+    style.fill: "#F3E5F5"
+    style.stroke: "#6A1B9A"
+    style.border-radius: 6
+    evict_path: {
+      shape: sql_table
+      label: "Path A — evict_lru(): on cache pressure"
+      c1: "walk LRU list from tail toward head"
+      c2: "find first frame with pin_count == 0"
+      c3: "if is_dirty == 1: call write_page_to_disk()"
+      c4: "remove frame from page_table and LRU list"
+      c5: "frame is now free for incoming page"
+    }
+    evict_path.style.fill: "#CE93D8"
+    flush_path: {
+      shape: sql_table
+      label: "Path B — buffer_pool_flush_all(): on COMMIT"
+      f1: "iterate frames[0 .. pool_size - 1]"
+      f2: "skip: page_id == INVALID_PAGE_ID"
+      f3: "skip: is_dirty == 0"
+      f4: "call write_page_to_disk() for each dirty frame"
+      f5: "caller fsyncs once then deletes WAL journal"
+    }
+    flush_path.style.fill: "#BA68C8"
+  }
+}
+compare_row.before -> compare_row.after: "pwrite() + fsync()" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 3
+  style.animated: true
+  style.bold: true
+}
+compare_row.before.frame_struct -> compare_row.before.page_mem: "data ptr" {
+  style.stroke: "#E64A19"
+  style.stroke-width: 2
+}
+compare_row.after.frame_struct_a -> compare_row.after.page_mem_a: "data ptr" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 2
+}
+compare_row.before.page_mem -> compare_row.after.disk_durable: "4096 bytes flushed" {
+  style.stroke: "#FF6F00"
+  style.stroke-dash: 4
+  style.animated: true
+}
+compare_row -> ops_row: "triggers" {
+  style.stroke: "#546E7A"
+  style.stroke-dash: 3
+}

@@ -1,0 +1,147 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+page_header_struct: {
+  shape: sql_table
+  label: "PageHeader (btree.h) — 12 bytes, fields big-endian"
+  b00: "0x00 | 1 B | uint8_t  | page_type         | 0x0D=TABLE_LEAF 0x05=TABLE_INT 0x0A=IDX_LEAF 0x02=IDX_INT"
+  b01: "0x01 | 2 B | uint16_t | first_freeblock    | offset of first freeblock, 0=none"
+  b03: "0x03 | 2 B | uint16_t | cell_count         | number of cells on this page"
+  b05: "0x05 | 2 B | uint16_t | cell_content_area  | byte offset where content area starts (stored 0 means 65536)"
+  b07: "0x07 | 1 B | uint8_t  | fragmented_bytes   | count of fragmented free bytes in content area"
+  b08: "0x08 | 4 B | uint32_t | right_child        | rightmost child page number (internal pages only)"
+  sz:  "Total  12 bytes at page start | Page 1 only: DB header occupies bytes 0-99, PageHeader at offset 0x64"
+}
+page_visual: "4096-Byte Page — Slotted Bidirectional Layout" {
+  direction: down
+  hdr_region: "HEADER  [0x000 – 0x00B]  12 bytes fixed" {
+    style.fill: "#DAE8FC"
+    style.stroke: "#6C8EBF"
+    style.font-size: 14
+    style.bold: true
+    width: 600
+  }
+  ptr_region: "CELL POINTER ARRAY  [0x00C – 0x00C + cell_count x 2]  grows forward" {
+    style.fill: "#D5E8D4"
+    style.stroke: "#82B366"
+    style.font-size: 13
+    width: 600
+    ptr_detail: {
+      shape: sql_table
+      label: "Cell Pointer Entry (cell_pointer_get / cell_pointer_set)"
+      e0: "0x00C     | uint16_t | ptr[0] -> byte offset of cell[0] content"
+      e1: "0x00E     | uint16_t | ptr[1] -> byte offset of cell[1] content"
+      ei: "0x00C+2i  | uint16_t | ptr[i] -> byte offset of cell[i] content"
+      rule: "Pointers maintained in key order: ptr[0]=smallest key ptr[N-1]=largest key"
+      cost: "Each new cell appends 2 bytes here AND decrements cell_content_area"
+    }
+  }
+  free_region: "FREE SPACE  (cell_content_area minus 12 plus cell_count x 2  bytes available)" {
+    style.fill: "#FFFDE7"
+    style.stroke: "#F0C808"
+    style.stroke-dash: 5
+    style.font-size: 13
+    width: 600
+    free_formula: {
+      shape: sql_table
+      label: "Free Space Accounting (page_free_space)"
+      l1: "header_end    = PAGE_HEADER_SIZE(12) + cell_count * 2"
+      l2: "content_start = cell_content_area  (treat 0 as 65536)"
+      l3: "free_space    = content_start - header_end"
+      l4: "Insert check  = free_space >= cell_payload_len + 2"
+      l5: "Defragment when free is sufficient but fragmented"
+    }
+  }
+  content_region: "CELL CONTENT AREA  [cell_content_area – 0xFFF]  grows backward" {
+    style.fill: "#FFE6CC"
+    style.stroke: "#D79B00"
+    style.font-size: 13
+    width: 600
+    content_note: {
+      shape: sql_table
+      label: "Cell Packing Strategy (page_insert_cell)"
+      cn:  "0xFF8  | cell[N-1] | last inserted cell, nearest page end"
+      cm:  "...    | cell[i]   | each cell variable length"
+      c0:  "cell_content_area | cell[0] | current low-water mark for content"
+      rule: "On insert: cell_content_area -= cell_len then write cell bytes there"
+      frag: "Deleted cell space becomes freeblock linked list via first_freeblock"
+    }
+  }
+  end_marker: "0xFFF  Last byte of 4096-byte page" {
+    style.fill: "#F8CECC"
+    style.stroke: "#B85450"
+    style.font-size: 12
+    width: 600
+  }
+  hdr_region -> ptr_region: "pointer array starts immediately after header"
+  ptr_region -> free_region: "pointer array grows forward into free space"
+  content_region -> free_region: "content area grows backward into free space"
+  free_region -> end_marker: "content fills toward page end"
+}
+cell_formats_row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  tl_cell: {
+    shape: sql_table
+    label: "TABLE_LEAF Cell  page_type=0x0D"
+    f1: "varint  | payload_size | total payload byte count"
+    f2: "varint  | rowid        | integer primary key (1-9 bytes)"
+    f3: "N bytes | payload      | record: [varint header_size][serial_types...][col_data...]"
+    f4: "4 bytes | overflow_pgno| only if payload exceeds max inline size"
+    ex: "Example: 0x0A 0x2A [hdr][type_int8][type_str][42][Alice]"
+    note: "B+tree leaf sorted by rowid ASC; no right_child cell field"
+  }
+  ti_cell: {
+    shape: sql_table
+    label: "TABLE_INTERNAL Cell  page_type=0x05"
+    f1: "4 bytes | left_child   | page number of left child subtree (big-endian uint32)"
+    f2: "varint  | separator    | rowid: all rows in left subtree have rowid <= separator"
+    rc: "right_child | stored in PageHeader.right_child | page no. of rightmost child"
+    note: "N cells produce N+1 children; keys in left child <= separator key"
+    inv: "Internal pages contain no payload data in TABLE trees"
+  }
+}
+cell_formats_row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  il_cell: {
+    shape: sql_table
+    label: "INDEX_LEAF Cell  page_type=0x0A"
+    f1: "varint  | payload_size | total payload byte count"
+    f2: "N bytes | payload      | 2-col record: (indexed_key_value, rowid)"
+    f3: "4 bytes | overflow_pgno| only if payload exceeds max inline size"
+    hdr: "payload header | serial_type(key) | serial_type(rowid)"
+    sorted: "Sorted by (key_val ASC, rowid ASC) for duplicate key handling"
+    note: "right_child in PageHeader = right sibling for leaf-chain range scans"
+  }
+  ii_cell: {
+    shape: sql_table
+    label: "INDEX_INTERNAL Cell  page_type=0x02"
+    f1: "4 bytes | left_child   | page number of left child (big-endian uint32)"
+    f2: "varint  | payload_size | byte count of separator key payload"
+    f3: "N bytes | payload      | 1-col record: separator key value only"
+    f4: "4 bytes | overflow_pgno| only if separator key payload exceeds max inline"
+    rc: "right_child | in PageHeader.right_child | rightmost child page"
+    note: "True B+tree: all data rows live in INDEX_LEAF pages only"
+  }
+}
+page_types_summary: {
+  shape: sql_table
+  label: "Page Type Quick Reference (page_init / page_read)"
+  tl: "0x0D | TABLE_LEAF     | stores full rows + rowids  | leaf of table B+tree"
+  ti: "0x05 | TABLE_INTERNAL | rowid routing only          | interior of table B+tree"
+  il: "0x0A | INDEX_LEAF     | stores (key, rowid) pairs   | leaf of index B+tree"
+  ii: "0x02 | INDEX_INTERNAL | key routing only             | interior of index B+tree"
+  pg0: "Page 1 special: SQLite DB header at bytes 0x000-0x063; PageHeader at 0x064"
+  varint: "Varint encoding: 1-9 bytes, MSB=continuation bit, 7 data bits per byte"
+}
+page_header_struct -> page_visual.hdr_region: "page_header_write() initialises these 12 bytes"
+page_types_summary -> page_visual: "page_type byte selects cell format"
+page_visual -> cell_formats_row1: "TABLE cell wire formats"
+page_visual -> cell_formats_row2: "INDEX cell wire formats"

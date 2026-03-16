@@ -359,7 +359,7 @@ def invoke_claude_cli(
             cmd = [
                 "claude",
                 "-p",
-                f"--model={model}",
+                "--model", model,
                 "--dangerously-skip-permissions",
                 "--tools",
                 "",
@@ -1667,7 +1667,7 @@ def explainer_node(state: GraphState):
         return {}
 
     last_ms_content = segments[-2]
-    markers = re.findall(r"\[\[EXPLAIN:([\w-]+)\|(.*?)\]\]", last_ms_content)
+    markers = re.findall(r"\[\[EXPLAIN:([^\]|]+)\|(.*?)\]\]", last_ms_content)
 
     if not markers:
         return {}  # Nothing to explain — pass through
@@ -1724,7 +1724,7 @@ No other text outside these blocks."""
     # Parse explanations
     explanations = {}
     for match in re.finditer(
-        r"===CONCEPT:([\w-]+)===\s*(.*?)\s*===END===", str(res.content), re.DOTALL
+        r"===CONCEPT:([^\s=]+)===\s*(.*?)\s*===END===", str(res.content), re.DOTALL
     ):
         explanations[match.group(1)] = match.group(2).strip()
 

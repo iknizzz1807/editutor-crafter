@@ -11871,7 +11871,7 @@ typedef struct AstNode {
 | 16 | 8 | `*next` |
 | 24 | ≤40 | `union as` (largest member: `SelectStmt`, ~40 bytes) |
 Total: `sizeof(AstNode)` ≈ 64 bytes. With an arena allocator this is negligible; document it so students understand the memory budget for a 1 000-node parse tree (≈ 64 KB).
-{{DIAGRAM:tdd-diag-4}}
+![AST Node Type Hierarchy & Memory Layout](./diagrams/tdd-diag-4.svg)
 ### 3.5 Public AST API
 ```c
 /* src/ast.h (continued) */
@@ -13077,7 +13077,7 @@ typedef struct {
 /* 256 registers × 24 bytes = 6 KB register file — fits in L1 cache.          */
 ```
 **String ownership protocol:** When `Value.type == VAL_STRING` and `Value.u.s.owned == 1`, the VM must call `free(v.u.s.data)` when the register is overwritten or the VM is destroyed. When `owned == 0`, the string data is borrowed from the source buffer (the SQL string or the string pool) and must not be freed. `OP_COPY` sets `owned = 1` and calls `malloc` + `memcpy`. `OP_SCOPY` sets `owned = 0` and copies the pointer only.
-{{DIAGRAM:tdd-diag-7}}
+![VDBE Opcode Catalog and Register Flow](./diagrams/tdd-diag-7.svg)
 *Figure 7: Instruction Set Architecture overview — opcode groups (control, cursor, data, arithmetic, comparison) and their operand field semantics. Each cell shows which of p1/p2/p3 carries a register index, cursor id, address, or constant pool index.*
 ### 3.4 Program Struct
 ```c
@@ -18089,7 +18089,7 @@ int column_value_compare(const ColumnValue *a, const ColumnValue *b);
 int compare_index_keys(const ColumnValue *val_a, int64_t rowid_a,
                        const ColumnValue *val_b, int64_t rowid_b);
 ```
-{{DIAGRAM:tdd-diag-23}}
+![SQLite Dual B-tree Architecture](./diagrams/tdd-diag-23.svg)
 *Figure 23: Index key comparison decision tree. Entry: two keys (val_a, rid_a) and (val_b, rid_b). Step 1: map each value to TypeOrder (NULL=0, NUMERIC=1, TEXT=2, BLOB=3). If TypeOrder differs, return difference. Step 2 (same TypeOrder): compare values within type (integer comparison, double comparison, memcmp for text/blob). Step 3: if values equal, compare rowids as integers. Output: negative, zero, or positive.*
 ### 3.4 `column_value_compare` Implementation
 ```c
@@ -24157,7 +24157,7 @@ PROCEDURE group_ht_find_or_create(ht, key_values, n_key_cols):
     ABORT("group hash table full")
 ```
 ### 5.3 Two-Phase Aggregate Execution Bytecode Template
-{{DIAGRAM:tdd-diag-38}}
+![Two-Phase Aggregate Execution](./diagrams/tdd-diag-38.svg)
 *Figure 38: Two-phase aggregate execution. Phase 1 (Accumulation): scan all rows, for each row load GROUP BY key columns into registers, load aggregate input columns, call OP_GROUP_KEY for each key column, call OP_GROUP_STEP to find/create group and step all accumulators. Phase 2 (Emission): OP_GROUP_ITER starts iteration over groups. For each group: OP_GROUP_COL loads key columns, OP_GROUP_AGG finalises each accumulator, HAVING filter evaluates on aggregate results, OP_RESULT_ROW emits the row. OP_GROUP_ITER jumps to done-addr when exhausted.*
 For `SELECT name, SUM(val), COUNT(*) FROM t GROUP BY name HAVING SUM(val) > 45`:
 ```

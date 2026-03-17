@@ -1,0 +1,536 @@
+vars: {
+  d2-config: {
+    theme-id: 6
+    layout-engine: elk
+  }
+}
+
+title: |'md'
+  # Crash Recovery Algorithm — Database::open()
+  *Intel Manual Grade Technical Specification*
+'| {near: top-center}
+
+direction: down
+
+# ============================================================
+# STEP 0: Entry point
+# ============================================================
+entry: "Database::open() Entry" {
+  style: {
+    font-size: 20
+    bold: true
+    fill: "#2D3748"
+    font-color: "#FFFFFF"
+    border-radius: 8
+    shadow: true
+  }
+}
+
+# ============================================================
+# STEP 1: Check journal existence
+# ============================================================
+step1: |'md'
+  **Step 1 — Check Journal File**
+  
+  `exists = access("<dbname>-journal", F_OK)`
+  
+  Probe filesystem for rollback journal.
+  No file open yet — just an existence check.
+'| {
+  style: {
+    fill: "#EBF8FF"
+    stroke: "#2B6CB0"
+    border-radius: 6
+    font-size: 14
+  }
+}
+
+step1_decision: "Journal exists?" {
+  shape: diamond
+  style: {
+    fill: "#FED7D7"
+    stroke: "#C53030"
+    font-size: 16
+    bold: true
+  }
+}
+
+entry -> step1
+step1 -> step1_decision
+
+# ============================================================
+# STEP 2: No journal → clean open
+# ============================================================
+step2: |'md'
+  **Step 2 — No Recovery Needed**
+  No journal file on disk.
+  Previous session committed cleanly
+  (journal was deleted at commit point).
+'| {
+  style: {
+    fill: "#C6F6D5"
+    stroke: "#276749"
+    border-radius: 6
+    font-size: 14
+  }
+}
+
+step1_decision -> step2: "NO — file absent" {
+  style: {
+    stroke: "#276749"
+    font-color: "#276749"
+    bold: true
+  }
+}
+
+# ============================================================
+# STEP 3: Read and validate journal header
+# ============================================================
+step3: |'md'
+  **Step 3 — Read Journal Header (512 bytes)**
+  
+  `fd = open("<dbname>-journal", O_RDONLY)`
+  `pread(fd, header_buf, 512, 0)`
+  
+  Parse fields:
+  | Offset | Size | Field |
+  | :--- | :--- | :--- |
+  | 0x00 | 8 | magic (D9 D5 05 F9 ...) |
+  | 0x08 | 4 | page_count (BE int32) |
+  | 0x0C | 4 | page_size (4096) |
+  | 0x14 | 4 | db_page_count at start |
+  | 0x18 | 4 | checksum_nonce |
+'| {
+  style: {
+    fill: "#EBF8FF"
+    stroke: "#2B6CB0"
+    border-radius: 6
+    font-size: 13
+  }
+}
+
+step1_decision -> step3: "YES — file exists" {
+  style: {
+    stroke: "#C53030"
+    font-color: "#C53030"
+    bold: true
+    stroke-dash: 0
+  }
+}
+
+# ============================================================
+# STEP 3a: Validate magic bytes
+# ============================================================
+step3a_decision: |'md'
+  Magic == D9 D5 05 F9
+  20 A1 63 D7 ?
+'| {
+  shape: diamond
+  style: {
+    fill: "#FEFCBF"
+    stroke: "#975A16"
+    font-size: 14
+    bold: true
+  }
+}
+
+step3 -> step3a_decision
+
+step3a_foreign: |'md'
+  **Foreign/Corrupt Journal**
+  Magic mismatch → not our journal.
+  Delete file and proceed normally.
+  
+  `unlink("<dbname>-journal")`
+'| {
+  style: {
+    fill: "#FED7E2"
+    stroke: "#97266D"
+    border-radius: 6
+    font-size: 13
+  }
+}
+
+step3a_decision -> step3a_foreign: "NO — mismatch" {
+  style: {
+    stroke: "#97266D"
+    font-color: "#97266D"
+  }
+}
+
+# ============================================================
+# STEP 4: Check page_count field
+# ============================================================
+step4_decision: "page_count value?" {
+  shape: diamond
+  style: {
+    fill: "#FEFCBF"
+    stroke: "#975A16"
+    font-size: 16
+    bold: true
+  }
+}
+
+step3a_decision -> step4_decision: "YES — valid magic" {
+  style: {
+    stroke: "#276749"
+    font-color: "#276749"
+    bold: true
+  }
+}
+
+step4_committed: |'md'
+  **Step 4 — Already-Committed Journal**
+  `page_count == 0` means the transaction
+  committed but journal deletion was
+  interrupted (crash between db fsync
+  and unlink).
+  
+  `close(fd)`
+  `unlink("<dbname>-journal")`
+'| {
+  style: {
+    fill: "#C6F6D5"
+    stroke: "#276749"
+    border-radius: 6
+    font-size: 13
+  }
+}
+
+step4_decision -> step4_committed: "page_count == 0\n(committed)" {
+  style: {
+    stroke: "#276749"
+    font-color: "#276749"
+  }
+}
+
+step4_incomplete: |'md'
+  **Incomplete Header**
+  `pread` returned < 512 bytes.
+  Journal was being created when
+  crash occurred — no pages were
+  modified yet.
+  
+  `close(fd)`
+  `unlink("<dbname>-journal")`
+'| {
+  style: {
+    fill: "#FED7E2"
+    stroke: "#97266D"
+    border-radius: 6
+    font-size: 13
+  }
+}
+
+step4_decision -> step4_incomplete: "header truncated\n(partial create)" {
+  style: {
+    stroke: "#97266D"
+    font-color: "#97266D"
+  }
+}
+
+# ============================================================
+# STEP 5: Hot journal detected
+# ============================================================
+step5: |'md'
+  **Step 5 — HOT JOURNAL DETECTED 🔥**
+  `page_count == -1` (0xFFFFFFFF)
+  Transaction was in progress when crash occurred.
+  **Must replay journal to restore pre-transaction state.**
+  
+  Extract: `nonce = header.checksum_nonce`
+  Extract: `db_pages_at_start = header.db_page_count`
+'| {
+  style: {
+    fill: "#FED7D7"
+    stroke: "#C53030"
+    border-radius: 8
+    font-size: 14
+    bold: true
+    shadow: true
+  }
+}
+
+step4_decision -> step5: "page_count == -1\n(HOT JOURNAL)" {
+  style: {
+    stroke: "#C53030"
+    font-color: "#C53030"
+    bold: true
+    stroke-width: 3
+  }
+}
+
+# ============================================================
+# STEP 6: Sequential entry read + checksum validation
+# ============================================================
+step6: |'md'
+  **Step 6 — Read Journal Entries Sequentially**
+  
+  `offset = 512`  // JOURNAL_HEADER_SIZE
+  
+  Each entry structure:
+  | Field | Size | Encoding |
+  | :--- | :--- | :--- |
+  | page_id | 4 | big-endian uint32 |
+  | page_data | 4096 | original bytes |
+  | checksum | 4 | big-endian uint32 |
+'| {
+  style: {
+    fill: "#E9D8FD"
+    stroke: "#553C9A"
+    border-radius: 6
+    font-size: 13
+  }
+}
+
+step5 -> step6
+
+# ============================================================
+# STEP 6 loop
+# ============================================================
+step6_loop: |'md'
+  **Read Next Entry at `offset`**
+  
+  `pread(fd, id_buf, 4, offset)`
+  `pread(fd, page_data, 4096, offset + 4)`
+  `pread(fd, cksum_buf, 4, offset + 4100)`
+'| {
+  style: {
+    fill: "#FAF5FF"
+    stroke: "#6B46C1"
+    border-radius: 6
+    font-size: 13
+  }
+}
+
+step6 -> step6_loop
+
+# ============================================================
+# STEP 6a: Validate checksum
+# ============================================================
+step6a_cksum: |'md'
+  **Validate Entry Checksum**
+  
+  `computed = jenkins_hash(page_data, 4096, nonce)`
+  `stored = read_be32(cksum_buf)`
+'| {
+  style: {
+    fill: "#FAF5FF"
+    stroke: "#6B46C1"
+    border-radius: 6
+    font-size: 13
+  }
+}
+
+step6_loop -> step6a_cksum
+
+step6a_decision: "Checksum match?" {
+  shape: diamond
+  style: {
+    fill: "#FEFCBF"
+    stroke: "#975A16"
+    font-size: 14
+    bold: true
+  }
+}
+
+step6a_cksum -> step6a_decision
+
+# ============================================================
+# STEP 6b: Truncated / torn entry → stop
+# ============================================================
+step6b_stop: |'md'
+  **Truncated or Torn Entry**
+  `pread` returned < expected,
+  OR checksum mismatch.
+  **Stop processing here.**
+  
+  All entries BEFORE this point are safe.
+  Write-ordering ensures journal fsync 
+  happens before any DB write.
+'| {
+  style: {
+    fill: "#FEEBC8"
+    stroke: "#C05621"
+    border-radius: 6
+    font-size: 13
+    italic: true
+  }
+}
+
+step6a_decision -> step6b_stop: "NO — mismatch\nor truncated" {
+  style: {
+    stroke: "#C05621"
+    font-color: "#C05621"
+    stroke-dash: 5
+  }
+}
+
+# ============================================================
+# STEP 7: Write original page back to database
+# ============================================================
+step7: |'md'
+  **Step 7 — Restore Original Page**
+  
+  `page_id = read_be32(id_buf)`
+  `db_offset = page_id * 4096`
+  `pwrite(db_fd, page_data, 4096, db_offset)`
+  
+  Overwrites database with original bytes.
+  `offset += 4104` // advance
+'| {
+  style: {
+    fill: "#C6F6D5"
+    stroke: "#276749"
+    border-radius: 6
+    font-size: 13
+    bold: true
+  }
+}
+
+step6a_decision -> step7: "YES — valid entry" {
+  style: {
+    stroke: "#276749"
+    font-color: "#276749"
+    bold: true
+  }
+}
+
+step7_more: "More entries?" {
+  shape: diamond
+  style: {
+    fill: "#FEFCBF"
+    stroke: "#975A16"
+    font-size: 14
+    bold: true
+  }
+}
+
+step7 -> step7_more
+step7_more -> step6_loop: "YES — offset < EOF" {
+  style: {
+    stroke: "#6B46C1"
+    font-color: "#6B46C1"
+    stroke-dash: 3
+    animated: true
+  }
+}
+
+# ============================================================
+# STEP 8: Truncate database + fsync
+# ============================================================
+step8: |'md'
+  **Step 8 — Truncate & Fsync Database**
+  `ftruncate(db_fd, db_pages_at_start * 4096)`
+  `fsync(db_fd)`
+  
+  Restores database to pre-transaction state.
+'| {
+  style: {
+    fill: "#BEE3F8"
+    stroke: "#2A4365"
+    border-radius: 6
+    font-size: 13
+    bold: true
+  }
+}
+
+step7_more -> step8: "NO — EOF reached" {
+  style: {
+    stroke: "#2A4365"
+    font-color: "#2A4365"
+    bold: true
+  }
+}
+
+step6b_stop -> step8: "proceed with\npartial replay" {
+  style: {
+    stroke: "#2A4365"
+    font-color: "#2A4365"
+    stroke-dash: 3
+  }
+}
+
+# ============================================================
+# STEP 9: Delete journal
+# ============================================================
+step9: |'md'
+  **Step 9 — Delete Journal File**
+  
+  `close(journal_fd)`
+  `unlink("<dbname>-journal")`
+  `fsync(dir_fd)` // ensure durable deletion
+'| {
+  style: {
+    fill: "#C6F6D5"
+    stroke: "#276749"
+    border-radius: 6
+    font-size: 13
+  }
+}
+
+step8 -> step9
+
+# ============================================================
+# STEP 10: Normal open
+# ============================================================
+step10: |'md'
+  **Step 10 — Open Database Normally**
+  
+  `catalog_load(pool)`
+  Database is consistent and ready for queries.
+'| {
+  style: {
+    fill: "#2D3748"
+    font-color: "#FFFFFF"
+    border-radius: 8
+    font-size: 14
+    bold: true
+    shadow: true
+  }
+}
+
+step2 -> step10
+step3a_foreign -> step10
+step4_committed -> step10
+step4_incomplete -> step10
+step9 -> step10
+
+# ============================================================
+# Annotations
+# ============================================================
+ordering_note: |'md'
+  ### Write-Ordering Invariant
+  Rollback protocol enforces:
+  
+  `journal_write` → `journal_fsync`
+  → `db_write` → `db_fsync`
+  → `journal_delete`
+'| {
+  near: top-right
+  style: {
+    fill: "#FFFBEB"
+    stroke: "#B7791F"
+    border-radius: 8
+    font-size: 12
+    italic: true
+  }
+}
+
+crash_scenarios: |'md'
+  ### Recovery Scenarios Matrix
+  | Crash Point | Journal State | DB State | Recovery Action |
+  | :--- | :--- | :--- | :--- |
+  | Pre-journal-fsync | Partial | Untouched | Delete partial journal |
+  | Mid-DB-write | Complete | Inconsistent | Replay → Restore originals |
+  | Post-DB-fsync | Complete | Committed | Replay → Idempotent restore |
+'| {
+  near: bottom-center
+  style: {
+    fill: "#FFF5F5"
+    stroke: "#C53030"
+    border-radius: 8
+    font-size: 11
+    opacity: 0.90
+  }
+}

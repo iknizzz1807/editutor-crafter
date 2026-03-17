@@ -1,0 +1,158 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+shape: sequence_diagram
+planner: Query Planner
+compiler: Bytecode Compiler
+vm: VM (VDBE)
+idx_cur: Index Cursor\n(B+tree idx_name)
+tbl_cur: Table Cursor\n(B-tree users)
+bp: Buffer Pool
+idx_btree: Index B+tree Pages
+tbl_btree: Table B-tree Pages
+# Phase 1: Plan Selection
+plan_phase: Plan & Compile {
+  planner -> planner: "estimate_selectivity('name','bob')\nsel = 1/NDV = 0.0002"
+  planner -> planner: "cost_index_scan() = 17.3\ncost_table_scan() = 143.0\nINDEX WINS"
+  planner -> compiler: "PlanNode{PLAN_INDEX_SCAN,\nidx='idx_name', col=1}"
+  compiler -> compiler: "emit OP_OpenRead(0, root=5, ncol=3)\nemit OP_OpenRead(1, idx_root=8)\nemit OP_String8('bob') → r1\nemit OP_IdxSeek(1, close_addr, r1)\n..."
+}
+# Phase 2: Cursor Setup
+setup: Open Cursors {
+  vm -> tbl_cur: "OP_OpenRead(cursor=0, root_page=5, ncol=3)"
+  tbl_cur -> bp: "pool_fetch_page(5)"
+  bp -> tbl_btree: "pread(fd, 5×4096)" {
+    style.stroke-dash: 5
+  }
+  bp -> tbl_cur: "page_data*"
+  vm -> idx_cur: "OP_OpenRead(cursor=1, root_page=8)"
+  idx_cur -> bp: "pool_fetch_page(8)"
+  bp -> idx_btree: "pread(fd, 8×4096)" {
+    style.stroke-dash: 5
+  }
+  bp -> idx_cur: "page_data*"
+}
+# Phase 3: Load search key
+load_key: Load Search Key {
+  vm -> vm: "OP_String8(pool_idx=0, dest=r1)\nr1 = 'bob'"
+}
+# Phase 4: Index Seek
+seek: Index B+tree Descent {
+  vm -> idx_cur: "OP_IdxSeek(cursor=1, jump=close, key=r1)"
+  idx_cur -> idx_cur: "btree_cursor_seek_ge('bob')"
+  idx_cur -> bp: "pool_fetch_page(internal_page)"
+  bp -> idx_cur: "page_data*"
+  idx_cur -> idx_cur: "compare 'bob' vs separators\ndescend to child"
+  idx_cur -> bp: "pool_fetch_page(leaf_page)"
+  bp -> idx_cur: "page_data*"
+  idx_cur -> idx_cur: "positioned at first\nentry ≥ 'bob'"
+  idx_cur -> vm: "found (no jump)"
+}
+# Phase 5: Match Loop — Iteration 1
+iter1: "Loop Iteration 1: rowid=2" {
+  vm -> idx_cur: "OP_IdxKey(cursor=1, dest=r2)"
+  idx_cur -> idx_cur: "index_cell_deserialize()\nread record → val='bob'"
+  idx_cur -> vm: "r2 = 'bob'"
+  vm -> vm: "OP_Ne(r2, next_addr, r1)\ncompare 'bob' ≠ 'bob'? → NO\ncontinue (match!)" {
+    style.font-color: green
+  }
+  vm -> idx_cur: "OP_IdxRowid(cursor=1, dest=r3)"
+  idx_cur -> idx_cur: "read rowid field\nfrom index entry"
+  idx_cur -> vm: "r3 = 2"
+  vm."Double Lookup begins"
+  vm -> tbl_cur: "OP_SeekRowid(cursor=0, key=r3=2)" {
+    style.stroke: "#e07000"
+    style.animated: true
+  }
+  tbl_cur -> tbl_cur: "btree_search(rowid=2)"
+  tbl_cur -> bp: "pool_fetch_page(root=5)"
+  bp -> tbl_cur: "page_data* (cache hit)"
+  tbl_cur -> bp: "pool_fetch_page(leaf_page)"
+  bp -> tbl_cur: "page_data*"
+  tbl_cur -> vm: "positioned at rowid=2"
+  vm -> tbl_cur: "OP_Column(cursor=0, col=1, dest=r4)" {
+    style.stroke: "#e07000"
+  }
+  tbl_cur -> tbl_cur: "record_read_column(1)\nskip header varints\ndeserialize 'bob'"
+  tbl_cur -> vm: "r4 = 'bob'"
+  vm -> tbl_cur: "OP_Column(cursor=0, col=2, dest=r5)"
+  tbl_cur -> vm: "r5 = 25 (age)"
+  vm -> vm: "OP_ResultRow(r4, 2)\ncallback('bob', 25)" {
+    style.font-color: green
+    style.bold: true
+  }
+  vm -> idx_cur: "OP_IdxNext(cursor=1, loop_start)"
+  idx_cur -> idx_cur: "advance to next\nindex leaf cell"
+  idx_cur -> vm: "has_more=true → jump to loop_start"
+}
+# Phase 5b: Match Loop — Iteration 2
+iter2: "Loop Iteration 2: rowid=7" {
+  vm -> idx_cur: "OP_IdxKey(cursor=1, dest=r2)"
+  idx_cur -> vm: "r2 = 'bob'"
+  vm -> vm: "OP_Ne(r2, next_addr, r1)\n'bob' ≠ 'bob'? → NO → match" {
+    style.font-color: green
+  }
+  vm -> idx_cur: "OP_IdxRowid(cursor=1, dest=r3)"
+  idx_cur -> vm: "r3 = 7"
+  vm -> tbl_cur: "OP_SeekRowid(cursor=0, key=r3=7)" {
+    style.stroke: "#e07000"
+    style.animated: true
+  }
+  tbl_cur -> bp: "pool_fetch_page(leaf_for_7)"
+  bp -> tbl_btree: "pread (cache miss)" {
+    style.stroke-dash: 5
+    style.stroke: red
+  }
+  tbl_btree -> bp: "4096 bytes"
+  bp -> tbl_cur: "page_data*"
+  tbl_cur -> vm: "positioned at rowid=7"
+  vm -> tbl_cur: "OP_Column(cursor=0, col=1, dest=r4)"
+  tbl_cur -> vm: "r4 = 'bob'"
+  vm -> tbl_cur: "OP_Column(cursor=0, col=2, dest=r5)"
+  tbl_cur -> vm: "r5 = 31 (age)"
+  vm -> vm: "OP_ResultRow(r4, 2)\ncallback('bob', 31)" {
+    style.font-color: green
+    style.bold: true
+  }
+  vm -> idx_cur: "OP_IdxNext(cursor=1, loop_start)"
+  idx_cur -> vm: "has_more=true"
+}
+# Phase 5c: Loop exit — key mismatch
+exit: "Loop Exit: key ≠ 'bob'" {
+  vm -> idx_cur: "OP_IdxKey(cursor=1, dest=r2)"
+  idx_cur -> vm: "r2 = 'carol'"
+  vm -> vm: "OP_Ne(r2, next_addr, r1)\n'carol' ≠ 'bob'? → YES\njump to next_addr (exit loop)" {
+    style.font-color: red
+    style.bold: true
+  }
+}
+# Phase 6: Cleanup
+cleanup: Close & Halt {
+  vm -> idx_cur: "OP_Close(cursor=1)"
+  idx_cur -> bp: "pool_unpin_page(leaf, false)"
+  idx_cur -> idx_cur: "free cursor"
+  vm -> tbl_cur: "OP_Close(cursor=0)"
+  tbl_cur -> bp: "pool_unpin_page(leaf, false)"
+  tbl_cur -> tbl_cur: "free cursor"
+  vm -> vm: "OP_Halt(0)\nreturn SQLITE_OK"
+}
+# Annotations
+io_summary: |md
+  ## I/O Summary
+  - **Index descent:** 2–3 pages (root + internal + leaf)
+  - **Per match:** 1–2 table pages (root hit in cache + leaf)
+  - **Total for 2 matches:** ~5 page reads
+  - **Full scan alternative:** 143 leaf pages
+  - **Speedup:** ~28×
+| {
+  near: bottom-center
+  style: {
+    font-size: 14
+    fill: "#f0f4ff"
+    stroke: "#4070b0"
+    border-radius: 8
+  }
+}

@@ -1,0 +1,90 @@
+vars: {
+  d2-config: {
+    theme-id: 4
+    layout-engine: elk
+  }
+}
+shape: sequence_diagram
+caller: "Caller\n(B-tree / VM)"
+fp: "fetch_page()"
+pt: "PageTable\n(HashMap)"
+lru: "LRU List"
+frames: "Frame Array"
+disk: "Disk I/O\n(pread/pwrite)"
+# ── Step 1: Caller invokes fetch_page ──
+caller -> fp: "fetch_page(page_id=7)"
+# ── Step 2: Page table lookup ──
+fp -> pt: "lookup(page_id=7)"
+fp <- pt: "MISS → INVALID_FRAME_ID" {
+  style.stroke-dash: 5
+  style.stroke: "#E74C3C"
+}
+# ── Step 3: Try free stack first ──
+check_free: {
+  fp -> frames: "free_stack.pop()"
+  fp <- frames: "empty — free_count == 0" {
+    style.stroke-dash: 5
+    style.stroke: "#E74C3C"
+  }
+}
+# ── Step 4: Find LRU victim ──
+fp -> lru: "scan from tail → find unpinned frame"
+# ── Step 4a: Error branch — all pinned ──
+all_pinned: {
+  lru -> lru: "candidate.pin_count > 0\n→ walk lru_prev"
+  lru."(if all frames pinned)"
+  fp <- lru: "INVALID_FRAME_ID" {
+    style.stroke: "#E74C3C"
+    style.stroke-dash: 5
+  }
+  caller <- fp: "return NULL\n→ Err(BufferPoolFull)" {
+    style.stroke: "#E74C3C"
+    style.font-color: "#E74C3C"
+    style.bold: true
+  }
+}
+# ── Step 4b: Happy path — unpinned victim found ──
+victim_found: {
+  fp <- lru: "victim frame_id=2\n(page_id=old, pin_count=0)"
+  # ── Step 5: Check dirty flag ──
+  fp -> frames: "frames[2].is_dirty?"
+  fp <- frames: "is_dirty == true" {
+    style.stroke: "#E67E22"
+  }
+  # ── Step 6: Txn journal hook (M9 integration) ──
+  fp -> fp: "txn_journal_page(pool, old_page_id)\n→ pread original from db file\n→ append to .db-journal\n→ fsync(journal_fd)" {
+    style.stroke: "#8E44AD"
+    style.stroke-dash: 3
+  }
+  # ── Step 7: Write-back dirty page ──
+  fp -> disk: "pwrite(fd, frame.data,\n  PAGE_SIZE,\n  old_page_id × 4096)" {
+    style.stroke: "#E67E22"
+  }
+  fp <- disk: "4096 bytes written\nstat_disk_writes++" {
+    style.stroke: "#E67E22"
+  }
+  # ── Step 8: Evict — remove old mapping ──
+  fp -> pt: "remove(old_page_id)"
+  fp -> lru: "lru_remove(frame_id=2)"
+  fp -> frames: "frames[2].page_id = INVALID\nframes[2].is_dirty = false\nstat_evictions++"
+  # ── Step 9: Load new page from disk ──
+  fp -> disk: "pread(fd, frames[2].data,\n  PAGE_SIZE,\n  7 × 4096)" {
+    style.stroke: "#2980B9"
+    style.bold: true
+  }
+  fp <- disk: "4096 bytes read\n(zero-fill if beyond EOF)\nstat_disk_reads++" {
+    style.stroke: "#2980B9"
+  }
+  # ── Step 10: Register new page ──
+  fp -> pt: "insert(page_id=7, frame_id=2)"
+  fp -> lru: "lru_push_head(frame_id=2)\n→ MRU position"
+  # ── Step 11: Set frame metadata ──
+  fp -> frames: "frames[2].page_id = 7\nframes[2].pin_count = 1\nframes[2].is_dirty = false"
+  # ── Step 12: Return to caller ──
+  caller <- fp: "return &frames[2].data\n(pinned, PAGE_SIZE bytes)" {
+    style.stroke: "#27AE60"
+    style.bold: true
+  }
+}
+# ── Annotation ──
+caller."Caller MUST call\npool_unpin_page(pool, 7, dirty)\nwhen done with the page"

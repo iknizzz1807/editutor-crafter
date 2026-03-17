@@ -1,0 +1,441 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+title: |md
+  # WAL Checkpoint Algorithm (wal\_checkpoint)
+| {near: top-center}
+classes: {
+  step: {
+    style: {
+      border-radius: 8
+      font-size: 14
+      bold: true
+    }
+  }
+  decision: {
+    shape: diamond
+    style: {
+      font-size: 13
+      bold: true
+    }
+  }
+  action: {
+    style: {
+      border-radius: 6
+      font-size: 13
+    }
+  }
+  io: {
+    shape: parallelogram
+    style: {
+      font-size: 13
+    }
+  }
+  state: {
+    shape: cylinder
+    style: {
+      font-size: 12
+    }
+  }
+  error: {
+    style: {
+      fill: "#FFB3B3"
+      stroke: "#CC0000"
+      font-color: "#990000"
+      border-radius: 6
+      font-size: 13
+    }
+  }
+  success: {
+    style: {
+      fill: "#B3FFB3"
+      stroke: "#009900"
+      border-radius: 6
+      font-size: 13
+    }
+  }
+  blocked: {
+    style: {
+      fill: "#FFEAB3"
+      stroke: "#CC8800"
+      font-color: "#885500"
+      border-radius: 6
+      font-size: 13
+      stroke-dash: 5
+    }
+  }
+  annotation: {
+    shape: text
+    style: {
+      font-size: 11
+      italic: true
+      font-color: "#666666"
+    }
+  }
+}
+# ─── PRE-STATE: WAL file and active structures ───
+wal_file: WAL File (.db-wal) {
+  class: state
+  style.fill: "#D4E6F1"
+}
+db_file: Database File (.db) {
+  class: state
+  style.fill: "#D5F5E3"
+}
+snapshot_mgr: SnapshotManager\n(active reader table) {
+  class: state
+  style.fill: "#E8DAEF"
+}
+# ─── STEP 1: Determine mxFrame ───
+step1: |md
+  **Step 1 — Determine mxFrame**
+  Read wal→last_commit_frame
+  mxFrame = last committed WAL frame index
+| {
+  class: step
+  style.fill: "#AED6F1"
+}
+wal_file -> step1: "read\nlast_commit_frame" {
+  style: {
+    stroke: "#2980B9"
+    font-size: 11
+  }
+}
+step1_note: |md
+  mxFrame = index of the final frame
+  whose db_size > 0 (commit marker).
+  All frames 0..mxFrame are committed.
+| {
+  class: annotation
+}
+# ─── STEP 2: Determine minReadFrame ───
+step2: |md
+  **Step 2 — Determine minReadFrame**
+  Scan all active reader snapshots
+  minReadFrame = MIN(reader[i].max_frame)
+  for all readers where is_active == true
+| {
+  class: step
+  style.fill: "#AED6F1"
+}
+snapshot_mgr -> step2: "scan\nactive readers" {
+  style: {
+    stroke: "#8E44AD"
+    font-size: 11
+  }
+}
+step1 -> step2
+step2_note: |md
+  If no readers active:
+    minReadFrame = mxFrame
+    (full checkpoint possible)
+| {
+  class: annotation
+}
+# ─── STEP 2b: Compute safe_frame ───
+compute_safe: |md
+  **Compute safe_frame**
+  safe_frame = MIN(mxFrame, minReadFrame)
+| {
+  class: action
+  style.fill: "#D4E6F1"
+}
+step2 -> compute_safe
+# ─── STEP 3: Decision — any frames to checkpoint? ───
+has_frames: safe_frame >= 0 ? {
+  class: decision
+  style.fill: "#F9E79F"
+}
+compute_safe -> has_frames
+no_work: |md
+  **No frames to checkpoint**
+  Return 0 (nothing to do)
+| {
+  class: success
+}
+has_frames -> no_work: "No\n(safe_frame < 0)" {
+  style: {
+    stroke: "#27AE60"
+    stroke-dash: 3
+  }
+}
+# ─── STEP 3–4: Frame copy loop ───
+loop_init: |md
+  **Initialize loop**
+  i = 0
+  pages_written = 0
+| {
+  class: action
+  style.fill: "#EBF5FB"
+}
+has_frames -> loop_init: "Yes"
+loop_check: i <= safe_frame ? {
+  class: decision
+  style.fill: "#F9E79F"
+}
+loop_init -> loop_check
+# ─── STEP 3a: Read frame from WAL ───
+read_frame: |md
+  **Step 3 — Read WAL frame i**
+  offset = WAL_HEADER_SIZE + i × WAL_FRAME_SIZE
+  pread(wal_fd, frame_hdr, 24, offset)
+  pread(wal_fd, page_data, 4096,
+        offset + 24)
+  Extract: page_number from frame_hdr[0..3]
+| {
+  class: io
+  style.fill: "#D6EAF8"
+}
+loop_check -> read_frame: "Yes" {
+  style.stroke: "#2980B9"
+}
+wal_file -> read_frame: "pread\nframe header\n+ page data" {
+  style: {
+    stroke: "#2980B9"
+    stroke-dash: 3
+    font-size: 10
+  }
+}
+# ─── STEP 4: Write frame to database file ───
+write_db: |md
+  **Step 4 — Write to database file**
+  db_offset = (page_number) × PAGE_SIZE
+  pwrite(db_fd, page_data, 4096, db_offset)
+  pages_written++
+| {
+  class: io
+  style.fill: "#D5F5E3"
+}
+read_frame -> write_db
+write_db -> db_file: "pwrite\noriginal page offset" {
+  style: {
+    stroke: "#27AE60"
+    font-size: 10
+  }
+}
+# ─── STEP 4b: Invalidate buffer pool ───
+invalidate_bp: |md
+  **Invalidate buffer pool cache**
+  If page_number is cached in pool:
+    Remove from page_table
+    Remove from LRU list
+    frame→page_id = INVALID_PAGE_ID
+| {
+  class: action
+  style.fill: "#FDEBD0"
+}
+write_db -> invalidate_bp
+# ─── Loop advance ───
+loop_advance: |md
+  i++
+| {
+  class: action
+  style.fill: "#EBF5FB"
+}
+invalidate_bp -> loop_advance
+loop_advance -> loop_check
+# ─── STEP 5: fsync database ───
+fsync_db: |md
+  **Step 5 — fsync(db_fd)**
+  Ensure all written pages
+  are durable on storage
+| {
+  class: step
+  style.fill: "#ABEBC6"
+}
+loop_check -> fsync_db: "No\n(loop done)" {
+  style.stroke: "#27AE60"
+}
+fsync_db -> db_file: "fsync" {
+  style: {
+    stroke: "#27AE60"
+    stroke-width: 3
+    font-size: 11
+    bold: true
+  }
+}
+# ─── STEP 6: Decision — full or partial checkpoint? ───
+full_or_partial: |md
+  safe_frame ==
+  mxFrame ?
+| {
+  class: decision
+  style.fill: "#F9E79F"
+}
+fsync_db -> full_or_partial
+# ═══════════════════════════════════════════════
+# FULL CHECKPOINT PATH (right side)
+# ═══════════════════════════════════════════════
+full_ckpt: |md
+  **Step 6 — Full Checkpoint: Reset WAL**
+| {
+  class: step
+  style.fill: "#82E0AA"
+  style.stroke: "#1E8449"
+  style.stroke-width: 2
+}
+full_or_partial -> full_ckpt: "Yes\n(all frames\ncheckpointed)" {
+  style: {
+    stroke: "#1E8449"
+    stroke-width: 2
+    bold: true
+  }
+}
+truncate_wal: |md
+  **ftruncate(wal_fd, 0)**
+  Truncate WAL file to zero bytes
+| {
+  class: action
+  style.fill: "#D5F5E3"
+}
+full_ckpt -> truncate_wal
+write_new_hdr: |md
+  **Write fresh WAL header**
+  • checkpoint_seq++
+  • Generate new salt1, salt2
+  • Recompute header checksum
+  • pwrite header (32 bytes at offset 0)
+  • fsync(wal_fd)
+| {
+  class: io
+  style.fill: "#D5F5E3"
+}
+truncate_wal -> write_new_hdr
+reset_state: |md
+  **Reset in-memory state**
+  • wal→frame_count = 0
+  • wal→last_commit_frame = -1
+  • wal→write_cksum1 = header.checksum1
+  • wal→write_cksum2 = header.checksum2
+  • wal_index_clear(wal→index)
+  • frame_log.count = 0
+| {
+  class: action
+  style.fill: "#ABEBC6"
+}
+write_new_hdr -> reset_state
+# ─── STEP 7: Next writer starts from frame 0 ───
+wal_reuse: |md
+  **Step 7 — WAL Reuse**
+  Next writer appends from
+  frame 0 in the reset WAL.
+  Sequential append resumes.
+| {
+  class: success
+  style.stroke-width: 2
+}
+reset_state -> wal_reuse
+# ═══════════════════════════════════════════════
+# PARTIAL CHECKPOINT PATH (left side)
+# ═══════════════════════════════════════════════
+partial_ckpt: |md
+  **Partial Checkpoint**
+  Active readers block full reset
+| {
+  class: blocked
+  style.stroke-width: 2
+}
+full_or_partial -> partial_ckpt: "No\n(active readers\npin older frames)" {
+  style: {
+    stroke: "#CC8800"
+    stroke-dash: 5
+    stroke-width: 2
+    bold: true
+  }
+}
+partial_detail: |md
+  **Partial Checkpoint State**
+  • WAL file NOT truncated
+  • Frames 0..safe_frame are now
+    also in database file (redundant)
+  • Frames safe_frame+1..mxFrame
+    remain ONLY in WAL
+  • WAL index retains entries for
+    frames > safe_frame
+  • New writer appends at
+    frame mxFrame+1
+| {
+  class: blocked
+}
+partial_ckpt -> partial_detail
+reader_blocks: |md
+  **Why partial?**
+  Reader A started at max_frame = safe_frame.
+  Frames > safe_frame may contain pages
+  that Reader A needs in their pre-update
+  version (from the database file, not WAL).
+  Truncating WAL would destroy frames
+  that other readers (B, C) with
+  max_frame > safe_frame depend on.
+| {
+  class: annotation
+}
+partial_detail -> reader_blocks
+partial_resolve: |md
+  **Resolution**
+  When all readers with
+  max_frame <= safe_frame
+  call snapshot_end_read():
+    → Next checkpoint can
+      advance safe_frame
+    → Eventually full reset
+| {
+  class: action
+  style.fill: "#FFF3CD"
+  style.stroke: "#CC8800"
+}
+reader_blocks -> partial_resolve
+# ═══════════════════════════════════════════════
+# EXAMPLE: Concrete scenario
+# ═══════════════════════════════════════════════
+scenario: |md
+  ## Concrete Scenario
+  **WAL state:** 5 committed frames (0–4), mxFrame = 4
+  **Active readers:**
+  • Reader A: max_frame = 2 (started before txn 3)
+  • Reader B: max_frame = 4 (started after all commits)
+  **Checkpoint computes:**
+  • minReadFrame = MIN(2, 4) = **2**
+  • safe_frame = MIN(4, 2) = **2**
+  **Result:** Frames 0, 1, 2 copied to database.
+  Frames 3, 4 remain in WAL only.
+  WAL NOT reset (partial checkpoint).
+  **After Reader A ends:**
+  • minReadFrame = 4 (only Reader B)
+  • Next checkpoint: safe_frame = 4
+  • All frames copied → **full reset**
+| {
+  style: {
+    fill: "#F8F9FA"
+    stroke: "#AEB6BF"
+    border-radius: 8
+    font-size: 12
+  }
+}
+# ═══════════════════════════════════════════════
+# FRAME DIAGRAM: Visual WAL state
+# ═══════════════════════════════════════════════
+wal_frames: |md
+  ### WAL Frame State During Partial Checkpoint
+  
+  Frame:   [0]  [1]  [2]  [3]  [4]
+  Status:   ✅   ✅   ✅   🔒   🔒
+            ↑              ↑    ↑
+         copied to     Reader A  Reader B
+         database      boundary  boundary
+         file          (pinned)
+  ✅ = checkpointed (now in both WAL and DB file)
+  🔒 = retained in WAL (needed by readers > safe_frame)
+  
+| {
+  style: {
+    fill: "#FDFEFE"
+    stroke: "#D5DBDB"
+    border-radius: 8
+    font-size: 12
+    font: mono
+  }
+}

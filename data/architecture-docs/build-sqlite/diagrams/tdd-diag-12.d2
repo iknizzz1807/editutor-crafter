@@ -1,0 +1,395 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+title: ||md
+  # LRU Frame State Machine
+  Buffer Pool Frame Lifecycle — Pin/Unpin/Dirty/Eviction Transitions
+|| {
+  near: top-center
+}
+
+classes: {
+  state: {
+    style: {
+      border-radius: 8
+      font-size: 16
+      bold: true
+    }
+  }
+  initial: {
+    shape: circle
+    width: 24
+    height: 24
+    style: {
+      fill: "#1a1a2e"
+      stroke: "#1a1a2e"
+    }
+  }
+  evictable: {
+    style: {
+      stroke-dash: 5
+      stroke: "#4a9e4a"
+      stroke-width: 2
+    }
+  }
+  pinned: {
+    style: {
+      stroke: "#c0392b"
+      stroke-width: 3
+    }
+  }
+  dirty_indicator: {
+    style: {
+      fill: "#f39c12"
+    }
+  }
+  clean_indicator: {
+    style: {
+      fill: "#3498db"
+    }
+  }
+  disk_op: {
+    shape: hexagon
+    style: {
+      fill: "#e74c3c"
+      font-color: white
+      font-size: 14
+      bold: true
+    }
+  }
+  illegal: {
+    style: {
+      stroke: "#e74c3c"
+      stroke-dash: 3
+      font-color: "#e74c3c"
+      italic: true
+    }
+  }
+  normal_edge: {
+    style: {
+      stroke: "#2c3e50"
+      font-size: 13
+    }
+  }
+  evict_edge: {
+    style: {
+      stroke: "#27ae60"
+      font-size: 13
+      stroke-width: 2
+    }
+  }
+  dirty_edge: {
+    style: {
+      stroke: "#f39c12"
+      font-size: 13
+      stroke-width: 2
+    }
+  }
+  pin_edge: {
+    style: {
+      stroke: "#c0392b"
+      font-size: 13
+      stroke-width: 2
+    }
+  }
+}
+
+# --- Initial pseudo-state ---
+start.class: initial
+start.label: ""
+
+# --- States ---
+EMPTY: ||md
+  **EMPTY**
+  page_id = INVALID
+  pin_count = 0
+  is_dirty = false
+  On free stack or
+  just evicted
+|| {
+  class: [state; clean_indicator]
+  style.fill: "#eaf2f8"
+}
+
+CLEAN_PINNED: ||md
+  **CLEAN_PINNED**
+  page_id = valid
+  pin_count > 0
+  is_dirty = false
+  ❌ NOT evictable
+|| {
+  class: [state; pinned]
+  style.fill: "#d5e8f7"
+}
+
+DIRTY_PINNED: ||md
+  **DIRTY_PINNED**
+  page_id = valid
+  pin_count > 0
+  is_dirty = true
+  ❌ NOT evictable
+  ⚠ Journal hook fired
+  on first dirty transition
+|| {
+  class: [state; pinned; dirty_indicator]
+  style.fill: "#fdebd0"
+}
+
+CLEAN_UNPINNED: ||md
+  **CLEAN_UNPINNED**
+  page_id = valid
+  pin_count = 0
+  is_dirty = false
+  ✅ Evictable (no write)
+  In LRU list
+|| {
+  class: [state; evictable]
+  style.fill: "#d5f5e3"
+}
+
+DIRTY_UNPINNED: ||md
+  **DIRTY_UNPINNED**
+  page_id = valid
+  pin_count = 0
+  is_dirty = true
+  ✅ Evictable (MUST write)
+  In LRU list
+|| {
+  class: [state; evictable; dirty_indicator]
+  style.fill: "#fef9e7"
+}
+
+# --- Disk write operation node ---
+disk_write: "pwrite() + fsync\n(write-back)" {
+  class: disk_op
+}
+
+# --- Transitions ---
+
+# Start → EMPTY
+start -> EMPTY: "pool_create()\nallocate frames" {
+  class: normal_edge
+}
+
+# EMPTY → CLEAN_PINNED (cache miss: load from disk or WAL)
+EMPTY -> CLEAN_PINNED: ||md
+  **fetch_page() [cache miss]**
+  pread(db_fd) or wal_read_page()
+  pin_count = 1
+  Move to LRU head
+|| {
+  class: pin_edge
+}
+
+# CLEAN_PINNED → CLEAN_PINNED (re-pin: another fetch on same page)
+CLEAN_PINNED -> CLEAN_PINNED: ||md
+  **fetch_page() [cache hit]**
+  pin_count++
+  Move to LRU head
+|| {
+  class: pin_edge
+}
+
+# CLEAN_PINNED → DIRTY_PINNED (first modification while pinned)
+CLEAN_PINNED -> DIRTY_PINNED: ||md
+  **unpin_page(dirty=true)**
+  or **mark_dirty()**
+  is_dirty = true
+  pin_count unchanged (mark)
+  or pin_count-- (unpin)
+  🔒 txn_journal_page() fires
+  (reads ORIGINAL from db file)
+|| {
+  class: dirty_edge
+}
+
+# DIRTY_PINNED → DIRTY_PINNED (re-pin or additional writes)
+DIRTY_PINNED -> DIRTY_PINNED: ||md
+  **fetch_page() [hit]**
+  pin_count++
+  —or—
+  **unpin(dirty=true)**
+  pin_count-- (still > 0)
+  Journal: no-op (already journaled)
+|| {
+  class: dirty_edge
+}
+
+# CLEAN_PINNED → CLEAN_UNPINNED (last unpin, no modification)
+CLEAN_PINNED -> CLEAN_UNPINNED: ||md
+  **unpin_page(dirty=false)**
+  pin_count-- → 0
+  Remains in LRU list
+|| {
+  class: normal_edge
+}
+
+# DIRTY_PINNED → DIRTY_UNPINNED (last unpin, was modified)
+DIRTY_PINNED -> DIRTY_UNPINNED: ||md
+  **unpin_page(dirty=false)**
+  pin_count-- → 0
+  is_dirty remains true
+  Remains in LRU list
+|| {
+  class: dirty_edge
+}
+
+# CLEAN_UNPINNED → CLEAN_PINNED (re-fetch: cache hit on unpinned page)
+CLEAN_UNPINNED -> CLEAN_PINNED: ||md
+  **fetch_page() [cache hit]**
+  pin_count = 1
+  Move to LRU head
+|| {
+  class: pin_edge
+}
+
+# DIRTY_UNPINNED → DIRTY_PINNED (re-fetch: cache hit on dirty unpinned page)
+DIRTY_UNPINNED -> DIRTY_PINNED: ||md
+  **fetch_page() [cache hit]**
+  pin_count = 1
+  Move to LRU head
+|| {
+  class: pin_edge
+}
+
+# CLEAN_UNPINNED → DIRTY_UNPINNED (mark_dirty on unpinned page — rare but valid)
+CLEAN_UNPINNED -> DIRTY_UNPINNED: ||md
+  **mark_dirty()**
+  is_dirty = true
+  🔒 txn_journal_page() fires
+|| {
+  class: dirty_edge
+}
+
+# CLEAN_UNPINNED → EMPTY (eviction: no disk write needed)
+CLEAN_UNPINNED -> EMPTY: ||md
+  **evict_frame()**
+  get_free_frame() selected this
+  frame from LRU tail
+  Remove from page_table
+  Remove from LRU list
+  page_id = INVALID
+  No disk write (clean)
+|| {
+  class: evict_edge
+}
+
+# DIRTY_UNPINNED → disk_write → EMPTY (eviction: must write back first)
+DIRTY_UNPINNED -> disk_write: ||md
+  **evict_frame()**
+  🔒 fsync(journal_fd) first!
+  (write-ordering invariant)
+|| {
+  class: evict_edge
+}
+
+disk_write -> EMPTY: ||md
+  pwrite(db_fd, page_data)
+  is_dirty = false
+  Remove from page_table
+  Remove from LRU list
+  page_id = INVALID
+  stat_evictions++
+  stat_disk_writes++
+|| {
+  class: evict_edge
+}
+
+# DIRTY_UNPINNED → CLEAN_UNPINNED (explicit flush without eviction)
+DIRTY_UNPINNED -> CLEAN_UNPINNED: ||md
+  **flush_page()** or
+  **flush_all()**
+  pwrite(db_fd, page_data)
+  fsync(db_fd)
+  is_dirty = false
+  Frame stays in pool
+|| {
+  class: normal_edge
+}
+
+# --- ILLEGAL transitions ---
+illegal_box: ||md
+  **ILLEGAL Transitions**
+  (Invariant Violations)
+|| {
+  style: {
+    fill: "#fdedec"
+    stroke: "#e74c3c"
+    stroke-width: 2
+    border-radius: 8
+    font-size: 14
+  }
+}
+
+illegal_1: "evict_frame() on\npin_count > 0" {
+  class: illegal
+  style.fill: "#fdedec"
+}
+illegal_2: "fetch_page() returns\nNULL (all pinned)" {
+  class: illegal
+  style.fill: "#fdedec"
+}
+illegal_3: "unpin_page() when\npin_count == 0" {
+  class: illegal
+  style.fill: "#fdedec"
+}
+
+illegal_box -> illegal_1: "" {
+  style.stroke: "#e74c3c"
+  style.stroke-dash: 3
+}
+illegal_box -> illegal_2: "" {
+  style.stroke: "#e74c3c"
+  style.stroke-dash: 3
+}
+illegal_box -> illegal_3: "" {
+  style.stroke: "#e74c3c"
+  style.stroke-dash: 3
+}
+
+illegal_1 -> CLEAN_PINNED: "BLOCKED" {
+  class: illegal
+  style.stroke: "#e74c3c"
+  style.stroke-dash: 5
+}
+illegal_1 -> DIRTY_PINNED: "BLOCKED" {
+  class: illegal
+  style.stroke: "#e74c3c"
+  style.stroke-dash: 5
+}
+
+# --- Legend ---
+legend: ||md
+  ### Legend
+  | Symbol | Meaning |
+  | :--- | :--- |
+  | 🔴 Red border | Pinned — NOT evictable |
+  | 🟢 Green dash | Unpinned — evictable |
+  | 🟠 Orange fill | Dirty — modified in memory |
+  | 🔵 Blue fill | Clean — matches disk |
+  | 🔴 Red dashed | ILLEGAL transition |
+  | ⬡ Red hexagon | Disk I/O operation |
+  
+  ### Write Ordering (M9 Invariant)
+  
+  `journal_write` → `journal_fsync`
+       → `database_write` → `database_fsync`
+       → `journal_delete`
+  
+  Eviction of a dirty frame triggers:
+  1. **txn_journal_page()** — journal original
+  2. **fsync(journal_fd)** — barrier
+  3. **pwrite(db_fd)** — write modified page
+|| {
+  near: bottom-center
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#dee2e6"
+    border-radius: 8
+    font-size: 13
+  }
+}

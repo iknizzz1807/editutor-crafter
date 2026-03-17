@@ -1,0 +1,477 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+
+direction: down
+
+title: |md
+  # DML Write Path — INSERT Data Flow
+  Every write is buffered through the pool. No component bypasses it.
+| {near: top-center}
+
+classes: {
+  frontend: {
+    style: {
+      fill: "#E8E0F0"
+      stroke: "#7B68AE"
+      border-radius: 6
+      font-size: 14
+    }
+  }
+  vm-layer: {
+    style: {
+      fill: "#DCEEFB"
+      stroke: "#4A90D9"
+      border-radius: 6
+      font-size: 14
+    }
+  }
+  storage: {
+    style: {
+      fill: "#D5EDDA"
+      stroke: "#3A8A4E"
+      border-radius: 6
+      font-size: 14
+    }
+  }
+  pool: {
+    style: {
+      fill: "#FFF3CD"
+      stroke: "#D4A017"
+      border-radius: 6
+      font-size: 14
+      stroke-width: 3
+    }
+  }
+  disk: {
+    style: {
+      fill: "#F0F0F0"
+      stroke: "#666666"
+      border-radius: 6
+      font-size: 14
+    }
+  }
+  data-box: {
+    style: {
+      fill: "#FAFAFA"
+      stroke: "#CCCCCC"
+      border-radius: 4
+      font-size: 12
+      font: mono
+    }
+  }
+  critical: {
+    style: {
+      stroke: "#CC3333"
+      stroke-width: 3
+      font-color: "#CC3333"
+      bold: true
+    }
+  }
+}
+
+# ─── SQL Frontend ───────────────────────────────────────────
+
+sql_input: |md
+  sql
+  INSERT INTO users (name, age)
+  VALUES ('Alice', 30);
+  
+| {
+  class: data-box
+  width: 340
+}
+
+lexer: "Tokenizer (M1)\nlexer_tokenize_all()" {
+  class: frontend
+}
+
+token_stream: |md
+  **Token Stream Output**
+  `KEYWORD(INSERT)` `KEYWORD(INTO)`
+  `IDENT(users)` `LPAREN` `IDENT(name)` `COMMA`
+  `IDENT(age)` `RPAREN` `KEYWORD(VALUES)` `LPAREN`
+  `STRING('Alice')` `COMMA` `INTEGER(30)` `RPAREN` `SEMI`
+| {
+  class: data-box
+  width: 380
+}
+
+parser: "Parser (M2)\nparser_parse()" {
+  class: frontend
+}
+
+ast_node: |md
+  **AstNode (NODE_INSERT)**
+  
+  InsertStmt {
+    table_name: "users"
+    columns: [name, age]  (linked list)
+    values:  ['Alice', 30] (linked list)
+  }
+| {
+  class: data-box
+  width: 340
+}
+
+sql_input -> lexer: "const char*\nSQL string" {
+  style.font-size: 12
+}
+lexer -> token_stream
+token_stream -> parser: "Token *tokens,\nint count" {
+  style.font-size: 12
+}
+parser -> ast_node
+
+# ─── Bytecode Compiler ─────────────────────────────────────
+
+compiler: "Bytecode Compiler (M3)\ncompiler_compile()" {
+  class: frontend
+  width: 300
+  # RENAMED FROM 'steps' TO 'logic' TO FIX COMPILATION ERROR
+  logic: |md
+    1. Look up "users" in CompileContext
+       → root_page=5, col_count=3, schema
+    2. alloc_register() for rowid, values, record
+    3. emit() opcodes in sequence
+    4. Constraint check: NOT NULL columns
+    5. Final OP_HALT
+  |
+}
+
+ast_node -> compiler: "AstNode*\n(NODE_INSERT)" {
+  style.font-size: 12
+}
+
+bytecode: |md
+  **Program.ops[]** (Instruction array)
+  
+  addr  opcode        p1   p2   p3   comment
+  ----  -----------   ---  ---  ---  ----------------
+  0     OP_INIT        0    1    0   Start
+  1     OP_OPEN_WRITE  0    5    3   cursor=0, root=5
+  2     OP_NEW_ROWID   0    1    0   cursor=0 → r1
+  3     OP_STRING8     0    2    0   'Alice' → r2
+  4     OP_INTEGER    30    3    0   30 → r3
+  5     OP_NOT_NULL    2    0    0   name NOT NULL
+  6     OP_MAKE_RECORD 2    2    4   r2..r3 → record r4
+  7     OP_INSERT      0    4    1   cursor=0, rec=r4, key=r1
+  8     OP_CLOSE       0    0    0
+  9     OP_HALT        0    0    0   Done
+| {
+  class: data-box
+  width: 480
+}
+
+compiler -> bytecode
+
+# ─── VM Execution ───────────────────────────────────────────
+
+vm: "Virtual Machine (M3)\nvm_execute()" {
+  class: vm-layer
+  width: 420
+  register_file: |md
+    **Register File** (256 × Value, 6 KB)
+    
+    r0: [scratch]
+    r1: VAL_INTEGER  i=1        ← rowid (from OP_NEW_ROWID)
+    r2: VAL_STRING   "Alice"    ← from OP_STRING8
+    r3: VAL_INTEGER  i=30       ← from OP_INTEGER
+    r4: VAL_BLOB     [record]   ← from OP_MAKE_RECORD
+  | {
+    class: data-box
+    width: 380
+  }
+  op_exec: |md
+    **Fetch-Decode-Execute Cycle**
+    
+    pc=0: OP_INIT       → pc=1
+    pc=1: OP_OPEN_WRITE → table_cursor_create()
+    pc=2: OP_NEW_ROWID  → cur->max_rowid() + 1 → r1
+    pc=3: OP_STRING8    → pool string → r2
+    pc=4: OP_INTEGER    → 30 → r3
+    pc=5: OP_NOT_NULL   → r2 != NULL ✓
+    pc=6: OP_MAKE_RECORD→ serialize r2,r3 → r4
+    pc=7: OP_INSERT     → cur->insert(r1, r4)
+    pc=8: OP_CLOSE      → cur->close()
+    pc=9: OP_HALT       → halt_code=0
+  | {
+    class: data-box
+    width: 380
+  }
+}
+
+bytecode -> vm: "Program*\n(flat instruction array)" {
+  style.font-size: 12
+}
+
+# ─── Cursor Layer ───────────────────────────────────────────
+
+cursor: "TableCursor (M6)\ntc_insert()" {
+  class: vm-layer
+  width: 340
+  conversion: |md
+    **Value[] → ColumnValue[]**
+    
+    vm_value_to_column_value():
+      r2 (VAL_STRING "Alice")
+        → COL_TEXT {data="Alice", len=5}
+      r3 (VAL_INTEGER 30)
+        → COL_INTEGER {i=30}
+  |
+}
+
+vm -> cursor: "cur->insert(key=1,\nrecord=r4, ncols=2)" {
+  style.font-size: 12
+}
+
+# ─── B-tree Storage Engine ──────────────────────────────────
+
+btree: "B-tree Engine (M5)\nbtree_insert()" {
+  class: storage
+  width: 460
+  record_encode: |md
+    **record_serialize(cols, 2, buf, 4096)**
+    
+    Serial type header:
+      header_size = 4 (varint: 0x04)
+      serial_type[0] = 23  (TEXT, len=5: 5×2+13)
+      serial_type[1] = 4   (32-bit int)
+    Value body:
+      "Alice" (5 bytes, raw UTF-8)
+      0x0000001E (30 as 4-byte big-endian)
+    Total record: 4 + 5 + 4 = 13 bytes
+  | {
+    class: data-box
+    width: 420
+  }
+  cell_encode: |md
+    **cell_serialize_table_leaf(buf, rowid=1, record, 13)**
+    
+    [varint: payload_size=13] → 0x0D (1 byte)
+    [varint: rowid=1]         → 0x01 (1 byte)
+    [record body: 13 bytes]
+    Total cell: 1 + 1 + 13 = 15 bytes
+  | {
+    class: data-box
+    width: 420
+  }
+  page_insert: |md
+    **page_insert_cell(page, cell, 15, key=1)**
+    
+    1. Binary search ptr array → insert_pos=0
+    2. free_space = content_start - ptr_end
+       = 4096 - 8 = 4088 ≥ 15+2 ✓
+    3. content_start -= 15 → 4081
+    4. memcpy(page+4081, cell, 15)
+    5. set_cell_pointer(page, 8, 0, 4081)
+    6. cell_count: 0 → 1
+    7. header updated via page_header_write()
+  | {
+    class: data-box
+    width: 420
+  }
+}
+
+cursor -> btree: "btree_insert(tree,\nrowid=1, cols, 2)" {
+  style.font-size: 12
+}
+
+# ─── Split Decision ─────────────────────────────────────────
+
+split_check: "page_insert_cell\nreturns -1?" {
+  shape: diamond
+  class: storage
+  width: 180
+  height: 80
+}
+
+btree.page_insert -> split_check
+
+no_split: "Cell fits\n(common case)" {
+  style.font-size: 12
+  style.font-color: "#3A8A4E"
+  shape: text
+}
+
+split: "btree_split_leaf()\n+ btree_insert_into_parent()" {
+  class: storage
+  split_detail: |md
+    1. Collect all cells + overflow cell, sorted
+    2. Split at median: left=[0..mid-1], right=[mid..n]
+    3. pool_new_page() → new right page
+    4. page_init() both pages
+    5. Redistribute cells
+    6. Promote separator key to parent
+    7. If parent overflows → recursive split
+    8. If root splits → btree_create_new_root()
+    9. Mark ALL modified pages dirty
+  |
+}
+
+split_check -> no_split: "0 (success)" {
+  style.stroke: "#3A8A4E"
+  style.font-size: 12
+}
+split_check -> split: "-1 (overflow)" {
+  style.stroke: "#CC3333"
+  style.font-size: 12
+}
+
+# ─── Buffer Pool (THE GATE) ────────────────────────────────
+
+pool: "Buffer Pool Manager (M4)\n*** ALL WRITES GO THROUGH HERE ***" {
+  class: pool
+  width: 500
+  fetch: |md
+    **pool_fetch_page(pool, page_id)**
+    
+    1. page_table_lookup(page_id)
+       HIT  → pin_count++, lru_move_to_head(), return frame->data
+       MISS → get_free_frame() or evict_frame()
+              → pread(fd, frame->data, 4096, offset)
+              → page_table_insert(), lru_push_head()
+              → return frame->data
+  | {
+    class: data-box
+    width: 460
+  }
+  dirty: |md
+    **pool_unpin_page(pool, page_id, dirty=true)**
+    
+    1. pin_count--
+    2. IF dirty AND NOT already dirty:
+       a. IF txn_journal_page hook set (M9):
+          → journal original page BEFORE marking
+       b. frame->is_dirty = true
+    
+    **pool_mark_dirty(pool, page_id)**
+    
+    Same journal hook + set is_dirty flag
+  | {
+    class: data-box
+    width: 460
+  }
+  frame_layout: |md
+    **Frame struct (32 bytes metadata + 4096 bytes data)**
+    
+    Frame {
+      page_id:    5          ← which DB page
+      pin_count:  0          ← safe to evict when 0
+      is_dirty:   true       ← MUST write back before reuse
+      lru_prev:   2          ← doubly-linked LRU chain
+      lru_next:   -1 (tail)
+      data:       →[4096 bytes at data_block + i×4096]
+    }
+  | {
+    class: data-box
+    width: 460
+  }
+  eviction: |md
+    **evict_frame() — when free_stack empty**
+    
+    1. Scan LRU from tail → find pin_count==0
+    2. IF is_dirty:
+       a. txn_journal_page() hook (M9)
+       b. fsync(journal_fd)  ← BEFORE db write!
+       c. pwrite(fd, data, 4096, page_id×4096)
+       d. stat_disk_writes++
+       e. is_dirty = false
+    3. page_table_remove(page_id)
+    4. lru_remove(frame_id)
+    5. frame.page_id = INVALID
+  | {
+    class: data-box
+    width: 460
+  }
+  flush: |md
+    **pool_flush_all(pool)**
+    
+    FOR each frame WHERE is_dirty:
+      pwrite(fd, data, 4096, page_id × 4096)
+      is_dirty = false
+    fsync(fd)  ← barrier: all pages durable
+  | {
+    class: data-box
+    width: 460
+  }
+}
+
+no_split -> pool: "pool_unpin_page(pool,\nleaf_pid, dirty=true)" {
+  style.font-size: 12
+  style.stroke: "#D4A017"
+  style.stroke-width: 2
+}
+split -> pool: "pool_unpin_page() ×3\n(left + right + parent)\nall dirty=true" {
+  style.font-size: 12
+  style.stroke: "#D4A017"
+  style.stroke-width: 2
+}
+btree -> pool: "pool_fetch_page()\nfor each level\nduring tree descent" {
+  style.font-size: 12
+  style.stroke-dash: 3
+}
+split -> pool: "pool_new_page()\nallocate new page\nfor split sibling" {
+  style.font-size: 12
+  style.stroke-dash: 3
+}
+
+# ─── Disk ───────────────────────────────────────────────────
+
+disk: "Database File (OS)" {
+  class: disk
+  shape: cylinder
+  width: 300
+  layout: |md
+    Offset 0×4096:  Page 0 (sqlite_master root)
+    Offset 1×4096:  Page 1
+    ...
+    Offset 5×4096:  Page 5 (users table root)
+      ┌──────────────────────────────────┐
+      │ Hdr: type=0x0D cell_count=1      │
+      │ Ptr[0] → offset 4081             │
+      │                                  │
+      │ [free space: 4081 - 10 bytes]    │
+      │                                  │
+      │ @4081: cell(rowid=1, "Alice", 30)│
+      └──────────────────────────────────┘
+  |
+}
+
+pool -> disk: "pwrite(fd, data, 4096,\npage_id × 4096)\n\nONLY on eviction\nor flush_all()" {
+  style.font-size: 13
+  class: critical
+}
+
+pool -> disk: "fsync(fd)\nafter flush_all()" {
+  style.font-size: 12
+  style.stroke-dash: 5
+  style.stroke: "#666666"
+}
+
+# ─── Critical Invariant Annotation ──────────────────────────
+
+invariant: |md
+  ## Critical Invariant
+  **No component below the VM ever calls `pwrite()` or `fsync()` directly.**
+  All page modifications happen in-memory on `frame->data` buffers owned
+  by the Buffer Pool. The modified bytes reach disk **only** through:
+  1. **Eviction** — `evict_frame()` writes dirty frame before reusing it
+  2. **Explicit flush** — `pool_flush_all()` writes all dirty frames + fsync
+  
+  The **transaction layer (M9)** hooks into dirty-marking to journal the
+  original page bytes *before* the dirty flag is set, ensuring crash
+  recovery can restore pre-transaction state.
+| {
+  near: bottom-center
+  style: {
+    fill: "#FFF0F0"
+    stroke: "#CC3333"
+    border-radius: 8
+    font-size: 13
+  }
+  width: 520
+}

@@ -1,0 +1,250 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+title: |md
+  # Transaction State Machine
+  ## SQLite-style Rollback Journal Lifecycle & Atomic Commit Protocol
+| {near: top-center}
+
+classes: {
+  state: {
+    style: {
+      border-radius: 8
+      font-size: 16
+      bold: true
+      stroke-width: 2
+    }
+  }
+  initial: {
+    shape: circle
+    width: 24
+    height: 24
+    style: {
+      fill: "#1a1a2e"
+      stroke: "#1a1a2e"
+    }
+  }
+  normal-edge: {
+    style: {
+      stroke: "#4a6fa5"
+      font-size: 13
+    }
+  }
+  error-edge: {
+    style: {
+      stroke: "#c0392b"
+      stroke-dash: 5
+      font-size: 13
+      font-color: "#c0392b"
+    }
+  }
+  recovery-edge: {
+    style: {
+      stroke: "#e67e22"
+      animated: true
+      font-size: 13
+      font-color: "#e67e22"
+    }
+  }
+  commit-edge: {
+    style: {
+      stroke: "#27ae60"
+      font-size: 13
+      font-color: "#27ae60"
+    }
+  }
+  illegal-edge: {
+    style: {
+      stroke: red
+      stroke-dash: 2
+      font-color: red
+      bold: true
+    }
+  }
+}
+
+# ── States ───────────────────────────────────────────────────────────────────
+
+start.class: initial
+start.label: ""
+
+IDLE: {
+  class: state
+  style.fill: "#e8f4f8"
+  style.stroke: "#2c3e50"
+  label: |md
+    **IDLE (TXN_NONE)**
+    ───────────────
+    - No active locks
+    - Buffer pool: Clean
+    - Journal file: Absent
+    - Autocommit: Active
+  |
+}
+
+OPEN_READ: {
+  class: state
+  style.fill: "#eaf2e8"
+  style.stroke: "#2e7d32"
+  label: |md
+    **OPEN_READ (TXN_ACTIVE)**
+    ───────────────
+    - SHARED lock held
+    - Readers can coexist
+    - Pages: Pristine
+    - Journal: Not yet created
+  |
+}
+
+OPEN_WRITE: {
+  class: state
+  style.fill: "#fff3e0"
+  style.stroke: "#e65100"
+  label: |md
+    **OPEN_WRITE (TXN_DIRTY)**
+    ───────────────
+    - EXCLUSIVE lock held
+    - **Journal: Header fsynced**
+    - `page_backups[]` stored
+    - DB file: Being modified
+  |
+}
+
+COMMITTING: {
+  class: state
+  style.fill: "#e8f5e9"
+  style.stroke: "#1b5e20"
+  label: |md
+    **COMMITTING**
+    ───────────────
+    1. fsync(journal_fd)
+    2. pwrite(dirty_pages → db)
+    3. fsync(db_fd)
+    4. **Unlink Journal** (Commit Point)
+  |
+}
+
+ROLLING_BACK: {
+  class: state
+  style.fill: "#fce4ec"
+  style.stroke: "#b71c1c"
+  label: |md
+    **ROLLING_BACK**
+    ───────────────
+    1. Read journal metadata
+    2. Overwrite DB with backups
+    3. Truncate DB to orig size
+    4. Unlink Journal
+  |
+}
+
+CRASH: {
+  shape: hexagon
+  style.fill: "#c0392b"
+  style.stroke: "#922b21"
+  style.font-color: white
+  label: "**SYSTEM CRASH**"
+}
+
+RECOVERY: {
+  shape: hexagon
+  style.fill: "#e67e22"
+  style.stroke: "#d35400"
+  style.font-color: white
+  label: |md
+    **HOT JOURNAL**
+    **DETECTED**
+  |
+}
+
+# ── Transitions ──────────────────────────────────────────────────────────────
+
+start -> IDLE: "db_open()" { class: normal-edge }
+
+IDLE -> OPEN_READ: "txn_begin()" { class: normal-edge }
+
+OPEN_READ -> OPEN_WRITE: "first page write" {
+  label: |md
+    **journal_setup()**
+    - Create journal
+    - Write header
+    - fsync(dir)
+  |
+  class: normal-edge
+  style.stroke-width: 3
+}
+
+OPEN_READ -> IDLE: "txn_commit() (no-op)" { class: commit-edge }
+
+OPEN_WRITE -> COMMITTING: "txn_commit()" { 
+  class: commit-edge
+  style.stroke-width: 4
+}
+
+COMMITTING -> IDLE: "unlink(journal)" { 
+  label: "SUCCESS"
+  class: commit-edge 
+}
+
+OPEN_WRITE -> ROLLING_BACK: "txn_rollback()" { 
+  class: error-edge
+  style.stroke-dash: 0 
+}
+
+ROLLING_BACK -> IDLE: "cleanup complete" { class: recovery-edge }
+
+# ── Fault Tolerance Paths ────────────────────────────────────────────────────
+
+OPEN_WRITE -> CRASH: "Power Loss / SIGKILL" { class: error-edge }
+COMMITTING -> CRASH: "I/O Fail during Sync" { class: error-edge }
+
+CRASH -> RECOVERY: "Next db_open() attempt" { class: recovery-edge }
+
+RECOVERY -> ROLLING_BACK: "pager_playback()" { 
+  class: recovery-edge 
+  style.stroke-width: 4
+}
+
+# ── Invalid/Illegal Operations ───────────────────────────────────────────────
+
+IDLE -> IDLE: "txn_commit()" { 
+  label: "ILLEGAL: No active txn"
+  class: illegal-edge
+}
+
+OPEN_READ -> OPEN_READ: "txn_begin()" {
+  label: "ILLEGAL: Already active"
+  class: illegal-edge
+}
+
+# ── Protocol Integrity Specification ─────────────────────────────────────────
+
+protocol_spec: {
+  near: bottom-center
+  label: ||md
+    ## Write-Ordering Protocol Invariants (Rollback Journal)
+    
+    The sequence of `fsync` calls ensures that if a crash occurs at any point, 
+    the database is either in its original state or its fully updated state.
+
+    | Stage | Journal Condition | DB File Integrity | Recovery Logic |
+    | :--- | :--- | :--- | :--- |
+    | **1. Journal Header Sync** | Created + Header Fsynced | Pristine | No-op (Header invalid) |
+    | **2. Page Journaling** | Contains Original Pages | Pristine | Restore from Original |
+    | **3. Database Sync** | **HOT (Valid)** | Partially Dirty | **Restore from Original** |
+    | **4. Journal Unlink** | Deleted (Commit Point) | Fully Synced | Success (No recovery needed) |
+    
+    *Note: The "Hot Journal" is considered valid only after fsync(journal_fd) is confirmed.*
+  ||
+  style: {
+    fill: "#fdfefe"
+    stroke: "#7f8c8d"
+    border-radius: 10
+    font-size: 14
+    stroke-width: 2
+  }
+}

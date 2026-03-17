@@ -1,0 +1,227 @@
+vars: {
+  d2-config: {
+    theme-id: 6
+    layout-engine: elk
+  }
+}
+shape: sequence_diagram
+title: |md
+  ## Concurrent Readers & Writer — Snapshot Isolation in WAL Mode
+| {near: top-center}
+# Participants
+R1: "Reader R1\n(snapshot: frame 5)" {
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#2E7D32"
+    font-size: 13
+  }
+}
+WAL_IDX: "WAL Index\n(page→frame map)" {
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1565C0"
+    font-size: 13
+  }
+}
+WAL_FILE: "WAL File\n(.db-wal)" {
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#E65100"
+    font-size: 13
+  }
+}
+DB_FILE: "Database File\n(.db)" {
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#6A1B9A"
+    font-size: 13
+  }
+}
+W1: "Writer W1" {
+  style: {
+    fill: "#FFEBEE"
+    stroke: "#C62828"
+    font-size: 13
+  }
+}
+R2: "Reader R2\n(snapshot: frame 8)" {
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#2E7D32"
+    font-size: 13
+  }
+}
+CKPT: "Checkpoint\nProcess" {
+  style: {
+    fill: "#FFFDE7"
+    stroke: "#F57F17"
+    font-size: 13
+  }
+}
+# ─── Phase 1: Reader R1 starts ───
+phase_1: "Phase 1 — R1 Captures Snapshot" {
+  R1 -> WAL_IDX: "snapshot_begin_read()" {
+    style.stroke: "#2E7D32"
+    style.font-size: 12
+  }
+  R1 <- WAL_IDX: "max_frame = 5\nreader_id = 0" {
+    style.stroke: "#2E7D32"
+    style.stroke-dash: 5
+    style.font-size: 12
+  }
+  R1."R1 snapshot frozen at frame 5\nAll future reads bounded by max_frame=5"
+}
+# ─── Phase 2: Writer W1 appends frames 6,7,8 ───
+phase_2: "Phase 2 — Writer Appends New Transaction (frames 6–8)" {
+  W1 -> WAL_FILE: "wal_write_frame(page=3, data=0xAA)\nframe 6, db_size=0 (not commit)" {
+    style.stroke: "#C62828"
+    style.font-size: 11
+  }
+  W1 -> WAL_IDX: "wal_index_set(page=3, frame=6)" {
+    style.stroke: "#C62828"
+    style.font-size: 11
+  }
+  W1 -> WAL_FILE: "wal_write_frame(page=7, data=0xBB)\nframe 7, db_size=0 (not commit)" {
+    style.stroke: "#C62828"
+    style.font-size: 11
+  }
+  W1 -> WAL_IDX: "wal_index_set(page=7, frame=7)" {
+    style.stroke: "#C62828"
+    style.font-size: 11
+  }
+  W1 -> WAL_FILE: "wal_write_frame(page=3, data=0xCC)\nframe 8, db_size=10 ← COMMIT" {
+    style.stroke: "#C62828"
+    style.font-size: 11
+    style.bold: true
+  }
+  W1 -> WAL_FILE: "fsync(wal_fd) — commit barrier" {
+    style.stroke: "#C62828"
+    style.stroke-dash: 3
+    style.font-size: 11
+  }
+  W1 -> WAL_IDX: "wal_index_set(page=3, frame=8)\nsnapshot_update_writer(max=8)" {
+    style.stroke: "#C62828"
+    style.font-size: 11
+  }
+  W1."Transaction committed\nFrames 6–8 now durable in WAL\nDatabase file UNTOUCHED"
+}
+# ─── Phase 3: Reader R2 starts ───
+phase_3: "Phase 3 — R2 Captures Snapshot (sees W1's commit)" {
+  R2 -> WAL_IDX: "snapshot_begin_read()" {
+    style.stroke: "#2E7D32"
+    style.font-size: 12
+  }
+  R2 <- WAL_IDX: "max_frame = 8\nreader_id = 1" {
+    style.stroke: "#2E7D32"
+    style.stroke-dash: 5
+    style.font-size: 12
+  }
+  R2."R2 snapshot at frame 8\nSees all of W1's committed writes"
+}
+# ─── Phase 4: R1 reads page 3 (snapshot = 5) ───
+phase_4: "Phase 4 — R1 Reads Page 3 (snapshot bounded at frame 5)" {
+  R1 -> WAL_IDX: "wal_frame_log_find(page=3, max_frame=5)" {
+    style.stroke: "#2E7D32"
+    style.font-size: 11
+  }
+  R1 <- WAL_IDX: "frame = 2\n(latest frame ≤ 5 for page 3)" {
+    style.stroke: "#2E7D32"
+    style.stroke-dash: 5
+    style.font-size: 11
+  }
+  R1."Frames 6 & 8 (page 3) are INVISIBLE\nto R1 — they exceed max_frame=5"
+  R1 -> WAL_FILE: "pread(wal_fd, offset_of_frame_2 + 24,\n4096 bytes) — read page data" {
+    style.stroke: "#2E7D32"
+    style.font-size: 11
+  }
+  R1 <- WAL_FILE: "page 3 data from frame 2\n(pre-W1 version)" {
+    style.stroke: "#2E7D32"
+    style.stroke-dash: 5
+    style.font-size: 11
+  }
+  R1."R1 sees page 3 as of frame 2 ✓\nSnapshot isolation: W1 writes invisible"
+}
+# ─── Phase 5: R2 reads page 3 (snapshot = 8) ───
+phase_5: "Phase 5 — R2 Reads Page 3 (snapshot bounded at frame 8)" {
+  R2 -> WAL_IDX: "wal_frame_log_find(page=3, max_frame=8)" {
+    style.stroke: "#2E7D32"
+    style.font-size: 11
+  }
+  R2 <- WAL_IDX: "frame = 8\n(W1's commit frame for page 3)" {
+    style.stroke: "#2E7D32"
+    style.stroke-dash: 5
+    style.font-size: 11
+  }
+  R2 -> WAL_FILE: "pread(wal_fd, offset_of_frame_8 + 24,\n4096 bytes)" {
+    style.stroke: "#2E7D32"
+    style.font-size: 11
+  }
+  R2 <- WAL_FILE: "page 3 data = 0xCC\n(W1's committed version)" {
+    style.stroke: "#2E7D32"
+    style.stroke-dash: 5
+    style.font-size: 11
+  }
+  R2."R2 sees page 3 as written by W1 ✓\nSnapshot frame 8 includes W1's commit"
+}
+# ─── Phase 6: Checkpoint blocked by R1 ───
+phase_6: "Phase 6 — Checkpoint Must Respect Active Snapshots" {
+  CKPT -> WAL_IDX: "snapshot_min_reader_frame()\n→ scan active readers" {
+    style.stroke: "#F57F17"
+    style.font-size: 11
+  }
+  CKPT <- WAL_IDX: "min_frame = 5\n(R1 holds snapshot at frame 5)" {
+    style.stroke: "#F57F17"
+    style.stroke-dash: 5
+    style.font-size: 11
+  }
+  CKPT."safe_frame = 5\nCan only checkpoint frames 0–5\nFrames 6–8 must remain in WAL\n(R1 might need pre-frame-6 versions)"
+  CKPT -> WAL_FILE: "Read frames 0–5" {
+    style.stroke: "#F57F17"
+    style.font-size: 11
+  }
+  CKPT -> DB_FILE: "pwrite pages from frames 0–5\nto database file at correct offsets" {
+    style.stroke: "#F57F17"
+    style.font-size: 11
+  }
+  CKPT -> DB_FILE: "fsync(db_fd)" {
+    style.stroke: "#F57F17"
+    style.stroke-dash: 3
+    style.font-size: 11
+  }
+  CKPT."PARTIAL checkpoint complete\nWAL NOT truncated — frames 6–8 retained\nfor R1's snapshot consistency"
+}
+# ─── Phase 7: R1 finishes, full checkpoint now possible ───
+phase_7: "Phase 7 — R1 Releases Snapshot → Full Checkpoint Possible" {
+  R1 -> WAL_IDX: "snapshot_end_read(reader_id=0)" {
+    style.stroke: "#2E7D32"
+    style.font-size: 12
+  }
+  R1."R1 released — no longer pinning frame 5"
+  CKPT -> WAL_IDX: "snapshot_min_reader_frame()\n→ min = 8 (only R2 active)" {
+    style.stroke: "#F57F17"
+    style.font-size: 11
+  }
+  CKPT -> WAL_FILE: "Read frames 6–8" {
+    style.stroke: "#F57F17"
+    style.font-size: 11
+  }
+  CKPT -> DB_FILE: "pwrite pages from frames 6–8" {
+    style.stroke: "#F57F17"
+    style.font-size: 11
+  }
+  CKPT -> DB_FILE: "fsync(db_fd)" {
+    style.stroke: "#F57F17"
+    style.stroke-dash: 3
+    style.font-size: 11
+  }
+  R2 -> WAL_IDX: "snapshot_end_read(reader_id=1)" {
+    style.stroke: "#2E7D32"
+    style.font-size: 12
+  }
+  CKPT -> WAL_FILE: "ftruncate(wal_fd, 0)\nWrite new header (checkpoint_seq++,\nnew salt1/salt2)\nfsync(wal_fd)" {
+    style.stroke: "#F57F17"
+    style.font-size: 11
+    style.bold: true
+  }
+  CKPT."FULL checkpoint complete\nWAL reset — 0 frames\nDatabase file fully up to date"
+}

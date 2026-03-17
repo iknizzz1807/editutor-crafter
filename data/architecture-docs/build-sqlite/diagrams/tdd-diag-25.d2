@@ -1,0 +1,400 @@
+vars: {
+  d2-config: {
+    theme-id: 4
+    layout-engine: elk
+  }
+}
+title: |md
+  # Index Maintenance on INSERT / UPDATE / DELETE
+  All index mutations execute within the same transaction boundary as the table mutation
+| {
+  near: top-center
+  style: {
+    font-size: 20
+    bold: true
+  }
+}
+classes: {
+  entry: {
+    style: {
+      fill: "#E8F0FE"
+      stroke: "#4285F4"
+      border-radius: 8
+      font-size: 14
+      bold: true
+    }
+  }
+  process: {
+    style: {
+      fill: "#FFF8E1"
+      stroke: "#F9A825"
+      border-radius: 6
+      font-size: 13
+    }
+  }
+  storage: {
+    shape: cylinder
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1565C0"
+      font-size: 13
+      bold: true
+    }
+  }
+  index-op: {
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+      border-radius: 6
+      font-size: 12
+    }
+  }
+  decision: {
+    shape: diamond
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#E65100"
+      font-size: 12
+      bold: true
+    }
+  }
+  txn-boundary: {
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+      stroke-width: 3
+      stroke-dash: 5
+      border-radius: 12
+      font-size: 15
+      bold: true
+      font-color: "#1B5E20"
+    }
+  }
+  error: {
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#C62828"
+      border-radius: 6
+      font-size: 12
+      bold: true
+    }
+  }
+}
+# ── Entry Point ──────────────────────────────────────────
+dml-op: "DML Operation Arrives\n(SQL statement compiled to bytecode)" {
+  class: entry
+}
+dispatch: "Determine\nDML Type" {
+  class: decision
+}
+dml-op -> dispatch
+# ── Transaction Boundary (wraps ALL mutations) ───────────
+txn: "Transaction Boundary (Rollback Journal or WAL)" {
+  class: txn-boundary
+  # ════════════════════════════════════════════════════════
+  #  INSERT PATH
+  # ════════════════════════════════════════════════════════
+  insert-path: "INSERT Path" {
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1565C0"
+      border-radius: 10
+      stroke-width: 2
+    }
+    encode-rec: "encode_record()\nSerialize columns → varint header\n+ serial-type values" {
+      class: process
+    }
+    assign-rowid: "Assign rowid\nauto-increment:\nmax_rowid(table) + 1" {
+      class: process
+    }
+    build-cell: "cell_serialize_table_leaf()\n[varint payload_size]\n[varint rowid]\n[record bytes]" {
+      class: process
+    }
+    tbl-insert: "btree_insert(table_tree,\n  rowid, cell)" {
+      class: process
+    }
+    check-unique: "UNIQUE\ncheck?" {
+      class: decision
+    }
+    unique-fail: "SQLITE_CONSTRAINT (19)\nAbort INSERT\nRollback table insert" {
+      class: error
+    }
+    idx-loop-ins: "For Each Index on Table" {
+      style: {
+        fill: "#F3E5F5"
+        stroke: "#7B1FA2"
+        stroke-dash: 3
+        border-radius: 8
+      }
+      encode-idx-key: "encode_index_key(\n  new_col_value,\n  rowid\n)\nRecord: [col_val, rowid]" {
+        class: index-op
+      }
+      idx-insert: "index_btree_insert(\n  index_tree,\n  col_value,\n  rowid\n)" {
+        class: index-op
+      }
+      encode-idx-key -> idx-insert: "serialized\nindex cell" {
+        style.stroke: "#7B1FA2"
+      }
+    }
+    encode-rec -> assign-rowid
+    assign-rowid -> build-cell
+    build-cell -> tbl-insert
+    tbl-insert -> check-unique
+    check-unique -> idx-loop-ins.encode-idx-key: "pass\n(or no UNIQUE)" {
+      style.stroke: "#2E7D32"
+    }
+    check-unique -> unique-fail: "UNIQUE\nviolation" {
+      style.stroke: "#C62828"
+    }
+  }
+  # ════════════════════════════════════════════════════════
+  #  DELETE PATH
+  # ════════════════════════════════════════════════════════
+  delete-path: "DELETE Path" {
+    style: {
+      fill: "#FBE9E7"
+      stroke: "#BF360C"
+      border-radius: 10
+      stroke-width: 2
+    }
+    seek-row: "btree_cursor_seek(rowid)\nPosition at target row" {
+      class: process
+    }
+    read-old: "Read old column values\n(needed for index key removal)" {
+      class: process
+    }
+    idx-loop-del: "For Each Index on Table" {
+      style: {
+        fill: "#F3E5F5"
+        stroke: "#7B1FA2"
+        stroke-dash: 3
+        border-radius: 8
+      }
+      remove-idx: "index_btree_delete(\n  index_tree,\n  old_col_value,\n  rowid\n)\nExact (value, rowid) match" {
+        class: index-op
+      }
+    }
+    tbl-delete: "btree_cursor_delete_current()\nRemove cell pointer\n+fragmented_free_bytes" {
+      class: process
+    }
+    seek-row -> read-old: "cursor\npositioned"
+    read-old -> idx-loop-del.remove-idx: "old values\nextracted" {
+      style.stroke: "#7B1FA2"
+    }
+    idx-loop-del.remove-idx -> tbl-delete: "all index\nentries removed" {
+      style.stroke: "#BF360C"
+    }
+  }
+  # ════════════════════════════════════════════════════════
+  #  UPDATE PATH (delete-then-reinsert)
+  # ════════════════════════════════════════════════════════
+  update-path: "UPDATE Path (Two-Pass)" {
+    style: {
+      fill: "#FFF8E1"
+      stroke: "#F57F17"
+      border-radius: 10
+      stroke-width: 2
+    }
+    pass1: "Pass 1: Collect" {
+      style: {
+        fill: "#FFFDE7"
+        stroke: "#FBC02D"
+        border-radius: 8
+      }
+      scan-where: "Scan table with WHERE\nevaluate predicate per row" {
+        class: process
+      }
+      collect-rids: "Collect matching rowids\ninto ephemeral temp table" {
+        class: process
+      }
+      scan-where -> collect-rids
+    }
+    pass2: "Pass 2: Modify" {
+      style: {
+        fill: "#FFF9C4"
+        stroke: "#F9A825"
+        border-radius: 8
+      }
+      seek-rid: "For each collected rowid:\nbtree_cursor_seek(rowid)" {
+        class: process
+      }
+      decode-old: "decode old record\nRead all current column values" {
+        class: process
+      }
+      apply-set: "Apply SET clause\nOverwrite changed columns\nin register array" {
+        class: process
+      }
+      changed-check: "Column\nchanged?" {
+        class: decision
+      }
+      idx-loop-upd: "For Each Changed Indexed Column" {
+        style: {
+          fill: "#F3E5F5"
+          stroke: "#7B1FA2"
+          stroke-dash: 3
+          border-radius: 8
+        }
+        remove-old-idx: "index_btree_delete(\n  old_col_value,\n  rowid\n)" {
+          class: index-op
+        }
+        check-unique-upd: "UNIQUE\ncheck on\nnew value?" {
+          class: decision
+        }
+        add-new-idx: "index_btree_insert(\n  new_col_value,\n  rowid\n)" {
+          class: index-op
+        }
+        unique-fail-upd: "SQLITE_CONSTRAINT\nAbort UPDATE" {
+          class: error
+        }
+        remove-old-idx -> check-unique-upd
+        check-unique-upd -> add-new-idx: "pass" {
+          style.stroke: "#2E7D32"
+        }
+        check-unique-upd -> unique-fail-upd: "violation" {
+          style.stroke: "#C62828"
+        }
+      }
+      skip-idx: "Skip index update\n(value unchanged)" {
+        class: process
+        style.fill: "#E8F5E9"
+      }
+      tbl-update: "btree_cursor_delete_current()\n→ btree_insert(rowid, new_cols)\nSame rowid, new record" {
+        class: process
+      }
+      seek-rid -> decode-old
+      decode-old -> apply-set
+      apply-set -> changed-check
+      changed-check -> idx-loop-upd.remove-old-idx: "yes —\nvalue differs" {
+        style.stroke: "#7B1FA2"
+      }
+      changed-check -> skip-idx: "no —\nsame value" {
+        style.stroke: "#66BB6A"
+      }
+      idx-loop-upd.add-new-idx -> tbl-update {
+        style.stroke: "#F57F17"
+      }
+      skip-idx -> tbl-update {
+        style.stroke: "#66BB6A"
+      }
+    }
+    pass1 -> pass2: "rowid list\ncomplete" {
+      style: {
+        stroke: "#F57F17"
+        stroke-width: 2
+      }
+    }
+  }
+  # ── Storage Targets ──────────────────────────────────
+  table-btree: "Table B-tree\n(rowid → full row record)" {
+    class: storage
+  }
+  index-btree: "Index B+tree(s)\n(col_value, rowid) entries\nSorted by column_value_compare" {
+    class: storage
+  }
+  # ── Storage Connections ──────────────────────────────
+  insert-path.tbl-insert -> table-btree: "page_insert_cell\n(may trigger split)" {
+    style: {
+      stroke: "#1565C0"
+      stroke-width: 2
+    }
+  }
+  insert-path.idx-loop-ins.idx-insert -> index-btree: "page_insert_cell_cmp\n(custom comparator)" {
+    style: {
+      stroke: "#7B1FA2"
+      stroke-width: 2
+    }
+  }
+  delete-path.tbl-delete -> table-btree: "remove cell\nfrom leaf page" {
+    style: {
+      stroke: "#BF360C"
+      stroke-width: 2
+    }
+  }
+  delete-path.idx-loop-del.remove-idx -> index-btree: "find exact\n(value,rowid)\nremove cell" {
+    style: {
+      stroke: "#7B1FA2"
+      stroke-width: 2
+    }
+  }
+  update-path.pass2.tbl-update -> table-btree: "delete old cell\ninsert new cell" {
+    style: {
+      stroke: "#F57F17"
+      stroke-width: 2
+    }
+  }
+  update-path.pass2.idx-loop-upd.remove-old-idx -> index-btree: "remove\nold entry" {
+    style: {
+      stroke: "#7B1FA2"
+      stroke-dash: 3
+    }
+  }
+  update-path.pass2.idx-loop-upd.add-new-idx -> index-btree: "add\nnew entry" {
+    style: {
+      stroke: "#7B1FA2"
+      stroke-width: 2
+    }
+  }
+}
+# ── Dispatch Connections ─────────────────────────────────
+dispatch -> txn.insert-path.encode-rec: "INSERT" {
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 2
+    bold: true
+    font-size: 14
+  }
+}
+dispatch -> txn.delete-path.seek-row: "DELETE" {
+  style: {
+    stroke: "#BF360C"
+    stroke-width: 2
+    bold: true
+    font-size: 14
+  }
+}
+dispatch -> txn.update-path.pass1.scan-where: "UPDATE" {
+  style: {
+    stroke: "#F57F17"
+    stroke-width: 2
+    bold: true
+    font-size: 14
+  }
+}
+# ── Buffer Pool Layer ────────────────────────────────────
+buffer-pool: "Buffer Pool (M4)\nAll page reads/writes go through\npool_fetch_page / pool_unpin_page\nDirty pages marked for flush" {
+  style: {
+    fill: "#ECEFF1"
+    stroke: "#546E7A"
+    border-radius: 10
+    font-size: 12
+    double-border: true
+  }
+}
+txn.table-btree -> buffer-pool: "fetch_page / unpin_page(dirty=true)" {
+  style: {
+    stroke: "#546E7A"
+    stroke-dash: 5
+  }
+}
+txn.index-btree -> buffer-pool: "fetch_page / unpin_page(dirty=true)" {
+  style: {
+    stroke: "#546E7A"
+    stroke-dash: 5
+  }
+}
+# ── Annotation: Write Amplification ─────────────────────
+annotation: |md
+  **Write Amplification**: 1 INSERT with *N* indexes =
+  1 table B-tree insert + *N* index B-tree inserts.
+  Each insert may trigger page splits → additional dirty pages.
+  All within a single transaction boundary.
+| {
+  near: bottom-center
+  style: {
+    fill: "#FFF8E1"
+    stroke: "#F9A825"
+    border-radius: 8
+    font-size: 12
+    italic: true
+  }
+}

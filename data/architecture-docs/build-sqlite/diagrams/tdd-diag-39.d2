@@ -1,0 +1,144 @@
+layout-engine: elk
+theme-id: 4
+
+classes: {
+  vm_actor: {
+    shape: person
+    style: {
+      fill: "#f3f4f6"
+      stroke: "#374151"
+      stroke-width: 2
+    }
+  }
+  cursor_actor: {
+    style: {
+      fill: "#e0f2fe"
+      stroke: "#0369a1"
+      stroke-width: 2
+    }
+  }
+  storage_actor: {
+    style: {
+      fill: "#fef3c7"
+      stroke: "#b45309"
+      stroke-width: 2
+    }
+  }
+  output_actor: {
+    style: {
+      fill: "#dcfce7"
+      stroke: "#15803d"
+      stroke-width: 2
+    }
+  }
+  critical_path: {
+    style: {
+      stroke: "#dc2626"
+      stroke-width: 3
+      animated: true
+    }
+  }
+}
+
+nested_loop_join: {
+  shape: sequence_diagram
+  
+  vdbe: "VDBE: Virtual Machine" {
+    class: vm_actor
+  }
+  cur0: "Cursor 0\nTableScan(orders)" {
+    class: cursor_actor
+  }
+  cur1: "Cursor 1\nTableScan(customers)" {
+    class: cursor_actor
+  }
+  regs: "Register File\nValue[64]" {
+    class: storage_actor
+  }
+  out: "Result Set\nCallback" {
+    class: output_actor
+  }
+
+  setup: "1. Initialization (Instruction Cycle 0-4)" {
+    vdbe.start -> cur0: "OP_OpenRead(root=5, ncol=3)"
+    vdbe.start -> cur1: "OP_OpenRead(root=8, ncol=2)"
+    vdbe.start -> cur0: "OP_Rewind()"
+    cur0 -> vdbe.start: "status: SQLITE_OK"
+  }
+
+  outer_loop: "2. Outer Loop Execution (N Iterations)" {
+    vdbe.loop -> cur0: "OP_Column(p2=1, p3=r[1])"
+    cur0 -> regs: "MOV r[1] <- orders.customer_id"
+    
+    reset_inner: "CRITICAL: O(N*M) Pointer Reset" {
+      vdbe.loop -> cur1: "OP_Rewind()" {
+        class: critical_path
+      }
+      cur1."Pointer returned to B-Tree root\nCost: O(log M) per outer row"
+    }
+
+    inner_loop: "3. Inner Loop Execution (M Iterations)" {
+      vdbe.inner -> cur1: "OP_Column(p2=0, p3=r[2])"
+      cur1 -> regs: "MOV r[2] <- customers.id"
+      
+      comparison: "4. Join Predicate Validation" {
+        vdbe.inner -> regs: "OP_Eq(r[1], r[2], jump=match)"
+        regs -> vdbe.inner: "status: boolean_result"
+        
+        match_branch: "5. Projection & Yield" {
+          vdbe.match -> cur0: "OP_Column(p2=2, p3=r[3])"
+          cur0 -> regs: "MOV r[3] <- orders.amount"
+          vdbe.match -> cur1: "OP_Column(p2=1, p3=r[4])"
+          cur1 -> regs: "MOV r[4] <- customers.name"
+          vdbe.match -> out: "OP_ResultRow(r[3], r[4])"
+          out -> vdbe.match: "callback_ack"
+        }
+      }
+
+      vdbe.inner -> cur1: "OP_Next()"
+      cur1 -> vdbe.inner: "status: {has_more | SQLITE_DONE}"
+    }
+
+    vdbe.loop -> cur0: "OP_Next()"
+    cur0 -> vdbe.loop: "status: {has_more | SQLITE_DONE}"
+  }
+
+  teardown: "6. Resource Deallocation" {
+    vdbe.end -> cur0: "OP_Close()"
+    vdbe.end -> cur1: "OP_Close()"
+    vdbe.end -> vdbe.end: "OP_Halt(err_code=0)"
+  }
+}
+
+complexity_analysis: |'md
+### Complexity Analysis: SQLite Nested-Loop Join (NLJ)
+
+**1. Computational Complexity**
+- **Time:** $O(N \times M)$ where $N=|Orders|$, $M=|Customers|$.
+- **Comparison Count:** Exactly $N \times M$ predicate evaluations in a naive scan.
+
+**2. I/O Performance**
+- **Best Case:** $Pages(Outer) + Pages(Inner)$ (If inner fits in page cache).
+- **Worst Case:** $Pages(Outer) + (Rows(Outer) \times Pages(Inner))$.
+
+**3. Operational Trace (VDBE Instruction Set)**
+- `OP_Rewind`: Resets the B-Tree cursor to the first entry.
+- `OP_Column`: Extracts data from the current row into a register.
+- `OP_Next`: Advances the cursor. If EOF is reached, falls through; else jumps to loop start.
+- `OP_ResultRow`: Invokes the `sqlite3_callback` function for the current row.
+
+**4. Logic Optimization**
+If `customers.id` is indexed (PRIMARY KEY), the `OP_Rewind` + `Inner Loop` is optimized by the Query Planner into `OP_SeekRowid`, changing complexity from $O(N \times M)$ to $O(N \log M)$.
+'| {
+  near: bottom-center
+  shape: rectangle
+  style: {
+    stroke-dash: 3
+    fill: "#f9fafb"
+    font-size: 14
+  }
+}
+
+***.style.font: mono
+(*** -> ***)[*].style.font-size: 12
+(*** -> ***)[*].style.stroke: "#2563eb"

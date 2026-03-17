@@ -1,0 +1,207 @@
+vars: {
+  d2-config: {
+    theme-id: 4
+    layout-engine: elk
+  }
+}
+shape: sequence_diagram
+vm: "VM\n(fetch-decode-execute)" {
+  style.font-size: 14
+}
+tc: "TableCursor\n(M6 adapter)" {
+  style.font-size: 14
+}
+btc: "BTreeCursor\n(M5)" {
+  style.font-size: 14
+}
+bp: "BufferPool\n(M4)" {
+  style.font-size: 14
+}
+page: "Page Frame\n(4096 bytes)" {
+  style.font-size: 14
+}
+# ─── OP_OpenRead ────────────────────────────────────────────
+open_phase: "OP_OPEN_READ (cursor 0, root_page, n_cols)" {
+  vm -> tc: "table_cursor_create(tree, pool, n_cols)"
+  tc -> btc: "btree_cursor_open(tree)"
+  tc <- btc: "BTreeCursor* (pos=-1, is_eof=true)"
+  vm <- tc: "Cursor* stored in vm->cursors[0]"
+}
+# ─── OP_Rewind ──────────────────────────────────────────────
+rewind_phase: "OP_REWIND (cursor 0, jump_if_empty)" {
+  vm -> tc: "cursor->rewind(cursor)"
+  tc -> btc: "btree_cursor_first(btcur)"
+  btc.descend: "descend root → leftmost leaf" {
+    btc -> bp: "pool_fetch_page(root_page)" {
+      style.stroke: "#4a90d9"
+    }
+    bp -> page: "hash lookup → HIT or pread()" {
+      style.stroke: "#4a90d9"
+    }
+    bp <- page: "uint8_t* page_data" {
+      style.stroke: "#4a90d9"
+    }
+    btc <- bp: "page_data (pinned, pin_count++)" {
+      style.stroke: "#4a90d9"
+    }
+    btc."read page[0] → PAGE_TYPE_TABLE_INTERNAL (0x05)"
+    btc -> bp: "pool_unpin_page(root_page, false)"
+    btc -> btc: "push (root_page, cell_idx=0) onto stack"
+    btc -> bp: "pool_fetch_page(left_child_page)" {
+      style.stroke: "#4a90d9"
+    }
+    btc <- bp: "page_data (leaf: 0x0D)" {
+      style.stroke: "#4a90d9"
+    }
+    btc -> bp: "pool_unpin_page(left_child, false)"
+    btc."set page_id=leaf, cell_index=0, is_eof=false"
+  }
+  tc <- btc: "return 0 (not empty)"
+  vm <- tc: "return 0 → do NOT jump"
+}
+# ─── Loop iteration 1 ──────────────────────────────────────
+vm."pc → loop_start (first OP_COLUMN)"
+loop_iter_1: "LOOP BODY — Row 1" {
+  column_age: "OP_COLUMN (cursor=0, col_idx=1, dest_reg=r2) — load 'age'" {
+    vm -> tc: "cursor->column(cursor, col_idx=1, &reg[r2])"
+    tc -> btc: "btree_cursor_column(btcur, 1, &col_val)"
+    btc -> bp: "pool_fetch_page(cur->page_id)" {
+      style.stroke: "#4a90d9"
+    }
+    btc <- bp: "page_data (pinned)" {
+      style.stroke: "#4a90d9"
+    }
+    btc."ptr = get_cell_pointer(page, LEAF_HDR, cell_index)"
+    btc."varint_decode → payload_size"
+    btc."varint_decode → rowid"
+    btc."record_read_column(page+pos, payload_size, col_idx=1, &dest)" {
+      style.font-size: 12
+    }
+    btc."  parse header varints → skip serial_type[0]" {
+      style.font-size: 11
+      style.italic: true
+    }
+    btc."  compute value_offset for col 1" {
+      style.font-size: 11
+      style.italic: true
+    }
+    btc."  decode serial_type[1] → read big-endian int bytes" {
+      style.font-size: 11
+      style.italic: true
+    }
+    btc -> bp: "pool_unpin_page(page_id, false)"
+    tc <- btc: "ColumnValue {COL_INTEGER, .i=25}"
+    tc -> tc: "column_value_to_vm_value() → Value {VAL_INTEGER, .i=25}"
+    vm <- tc: "reg[r2] = {VAL_INTEGER, 25}"
+  }
+  column_name: "OP_COLUMN (cursor=0, col_idx=0, dest_reg=r1) — load 'name'" {
+    vm -> tc: "cursor->column(cursor, col_idx=0, &reg[r1])"
+    tc -> btc: "btree_cursor_column(btcur, 0, &col_val)"
+    btc -> bp: "pool_fetch_page (likely cache HIT)" {
+      style.stroke: "#2ecc71"
+    }
+    btc <- bp: "page_data" {
+      style.stroke: "#2ecc71"
+    }
+    btc."record_read_column(col_idx=0) → serial_type 23 → TEXT 5 bytes"
+    btc -> bp: "pool_unpin_page"
+    tc <- btc: "ColumnValue {COL_TEXT, 'Alice', len=5}"
+    tc -> tc: "column_value_to_vm_value() → Value {VAL_STRING, borrowed}"
+    vm <- tc: "reg[r1] = {VAL_STRING, data='Alice', owned=0}"
+  }
+  result_row: "OP_RESULT_ROW (first_reg=r1, n_cols=2)" {
+    vm -> vm: "result_cb(&registers[r1], 2, ctx)" {
+      style.stroke: "#e67e22"
+      style.font-color: "#e67e22"
+    }
+    vm."callback receives: ['Alice', 25]" {
+      style.font-size: 12
+      style.italic: true
+    }
+  }
+  next_1: "OP_NEXT (cursor=0, jump=loop_start)" {
+    vm -> tc: "cursor->next(cursor)"
+    tc -> tc: "next_count++"
+    tc -> btc: "btree_cursor_next(btcur)"
+    btc."cell_index++ → cell_index < cell_count?"
+    btc."YES: cell_index=1 still in same leaf page"
+    tc <- btc: "return 0 (has next)"
+    tc -> tc: "adapter: return 1 (has_more)"
+    vm <- tc: "return 1 → jump to loop_start"
+    vm."pc = loop_start" {
+      style.font-size: 12
+      style.italic: true
+    }
+  }
+}
+# ─── Loop iteration N (page boundary) ──────────────────────
+loop_iter_n: "LOOP BODY — Row N (crosses page boundary)" {
+  vm -> tc: "cursor->column(cursor, col_idx, &dest)"
+  tc -> btc: "btree_cursor_column(btcur, col_idx, &val)"
+  btc -> bp: "pool_fetch_page(cur->page_id)" {
+    style.stroke: "#4a90d9"
+  }
+  btc <- bp: "page_data" {
+    style.stroke: "#4a90d9"
+  }
+  btc."decode cell → record_read_column"
+  btc -> bp: "pool_unpin_page"
+  vm <- tc: "reg[dest] = decoded Value"
+  vm -> vm: "OP_RESULT_ROW → result_cb()" {
+    style.stroke: "#e67e22"
+  }
+  next_boundary: "OP_NEXT — leaf page exhausted" {
+    vm -> tc: "cursor->next(cursor)"
+    tc -> btc: "btree_cursor_next(btcur)"
+    btc."cell_index++ → cell_index >= cell_count"
+    btc."current leaf exhausted → pop parent stack"
+    btc.ascend: "ascend + descend to next subtree" {
+      btc."stack_depth--; parent = stack[depth]"
+      btc."parent.cell_index++ → next child slot"
+      btc -> bp: "pool_fetch_page(parent.page_id)" {
+        style.stroke: "#9b59b6"
+      }
+      btc <- bp: "parent page data" {
+        style.stroke: "#9b59b6"
+      }
+      btc."read child pointer at parent.cell_index"
+      btc -> bp: "pool_unpin_page(parent, false)"
+      btc."push updated parent back on stack"
+      btc -> bp: "pool_fetch_page(next_child)" {
+        style.stroke: "#9b59b6"
+      }
+      btc <- bp: "next leaf page data" {
+        style.stroke: "#9b59b6"
+      }
+      btc."descend to leftmost leaf of subtree"
+      btc."set page_id=new_leaf, cell_index=0"
+      btc -> bp: "pool_unpin_page(new_leaf, false)"
+    }
+    tc <- btc: "return 0 (has next row)"
+    tc -> tc: "adapter: return 1"
+    vm <- tc: "return 1 → jump to loop_start"
+  }
+}
+# ─── Final OP_NEXT — EOF ───────────────────────────────────
+final_next: "OP_NEXT — cursor exhausted (EOF)" {
+  vm -> tc: "cursor->next(cursor)"
+  tc -> btc: "btree_cursor_next(btcur)"
+  btc."cell_index++ → >= cell_count"
+  btc."pop stack → stack_depth == 0"
+  btc."all subtrees visited → is_eof = true"
+  tc <- btc: "return 1 (EOF)"
+  tc -> tc: "adapter: return 0 (no more rows)"
+  vm <- tc: "return 0 → fall through (do NOT jump)"
+  vm."pc++ → next instruction (OP_CLOSE)"
+}
+# ─── Cleanup ────────────────────────────────────────────────
+close_phase: "OP_CLOSE (cursor 0)" {
+  vm -> tc: "cursor->close(cursor)"
+  tc -> btc: "btree_cursor_close(btcur)"
+  tc."free(TableCursor)"
+  vm."cursors[0] = NULL"
+}
+halt_phase: "OP_HALT (p1=0)" {
+  vm."halted = true; halt_code = 0"
+  vm."return SQLITE_OK"
+}

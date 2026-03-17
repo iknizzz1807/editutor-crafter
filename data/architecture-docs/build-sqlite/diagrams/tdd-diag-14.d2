@@ -1,0 +1,319 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+  }
+}
+
+direction: down
+
+# ─────────────────────────────────────────────
+# PAGE HEADER & ARCHITECTURAL OVERVIEW
+# ─────────────────────────────────────────────
+title: |md
+  # DIRTY PAGE TRACKING AND FLUSH DATA FLOW
+  **Write-back caching architecture**: modifications accumulate in volatile memory. 
+  Persistence is deferred until explicit flush or cache pressure.
+  
+  **Implementation Constraints:**
+  - Page Size: 4096 Bytes
+  - Meta Overhead: 64 Bytes per Frame
+  - Alignment: 4KB Boundary Required for O_DIRECT
+| {
+  near: top-center
+  style: {
+    font-size: 24
+    bold: true
+    fill: "#F8F9FA"
+    stroke: "#2D3748"
+    stroke-width: 2
+  }
+}
+
+classes: {
+  vm-layer: {
+    style: {
+      fill: "#E8D5F5"
+      stroke: "#7B2D8E"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  bp-layer: {
+    style: {
+      fill: "#D4E8FC"
+      stroke: "#2B6CB0"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  disk-layer: {
+    style: {
+      fill: "#D5F5E3"
+      stroke: "#1E8449"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  frame-clean: {
+    style: {
+      fill: "#F0F4F8"
+      stroke: "#718096"
+      border-radius: 4
+      font-size: 12
+    }
+  }
+  frame-dirty: {
+    style: {
+      fill: "#FED7D7"
+      stroke: "#C53030"
+      border-radius: 4
+      font-size: 12
+      bold: true
+    }
+  }
+  action: {
+    style: {
+      fill: "#FFFBEA"
+      stroke: "#D69E2E"
+      border-radius: 6
+      font-size: 13
+      italic: true
+    }
+  }
+  critical: {
+    style: {
+      fill: "#FFF5F5"
+      stroke: "#E53E3E"
+      stroke-width: 2
+      border-radius: 6
+      font-size: 13
+      bold: true
+    }
+  }
+  annotation: {
+    shape: text
+    style: {
+      font-size: 14
+      font-color: "#2D3748"
+    }
+  }
+}
+
+# ─────────────────────────────────────────────
+# VM / VDBE LAYER: THE SOURCE OF MUTATION
+# ─────────────────────────────────────────────
+vm: VDBE (Virtual Database Engine) {
+  class: vm-layer
+  
+  op_insert: "OP_INSERT (B-Tree)\ncursor.insert(key, record)" {
+    shape: rectangle
+    style.font-size: 14
+    tooltip: "Entry point for data modification. Triggers B-Tree balance logic."
+  }
+  
+  btree_logic: "B-Tree page_modify()\n1. fetch_page(pid)\n2. mark_dirty(pid)\n3. memcpy(cell_data)" {
+    shape: rectangle
+    style.fill: "#F3E8FF"
+    tooltip: "Byte-level mutation happens here after marking the page dirty in the pager."
+  }
+
+  op_insert -> btree_logic: "calls"
+}
+
+# ─────────────────────────────────────────────
+# BUFFER POOL: CENTRAL COORDINATION & MEMORY LAYOUT
+# ─────────────────────────────────────────────
+bp: Buffer Pool Manager {
+  class: bp-layer
+  style.double-border: true
+
+  write_logic: Dirtying Mechanism {
+    step1: "1. pager_write(pPage)\nVerify lock status (RESERVED)" {
+      class: action
+      tooltip: "Check if the process holds the appropriate filesystem lock before modification."
+    }
+    step2: "2. Transition clean -> dirty\nInvoke journal_write(pPage)\n[WAL or Rollback]" {
+      class: critical
+      tooltip: "Write-Ahead-Log entry must be generated before the in-memory page is ever modified."
+    }
+    step3: "3. set frame.is_dirty = 1\nIncrement pager.nDirty" {
+      class: action
+      tooltip: "The dirty bit is set in the page header structure (64B metadata)."
+    }
+    
+    step1 -> step2: "if !pPage->dirty"
+    step2 -> step3
+  }
+
+  frames: Frame Pool (Memory Resident) {
+    grid-columns: 4
+    grid-gap: 10
+    
+    f0: "Frame 0\nPgID: 3\nDirty: 0\n[CLEAN]" { 
+      class: frame-clean 
+      tooltip: "Memory Address: 0x7F001000\nData: Consistent with Disk"
+    }
+    f1: "Frame 1\nPgID: 7\nDirty: 1\n[DIRTY]" { 
+      class: frame-dirty 
+      tooltip: "Memory Address: 0x7F002040\nData: Modified by VM"
+    }
+    f2: "Frame 2\nPgID: 12\nDirty: 1\n[DIRTY]" { 
+      class: frame-dirty 
+      tooltip: "Memory Address: 0x7F003080\nData: Pending persistence"
+    }
+    f3: "Frame 3\nPgID: 5\nDirty: 1\n[DIRTY]" { 
+      class: frame-dirty 
+      tooltip: "Memory Address: 0x7F0040C0\nData: Modified in-situ"
+    }
+  }
+
+  flush_engine: Flush & Checkpoint Logic {
+    style.fill: "#E1EFFE"
+    
+    sort: "Sort dirty PIDs\n[5, 7, 12]\nPattern: Sequential" {
+      class: action
+      tooltip: "Minimizes disk head movement by scheduling writes in order of file offset."
+    }
+    
+    pwrite_call: "pwrite(fd, buf, 4096, PID * 4096)" {
+      shape: code
+      style.fill: "#FDF2F2"
+      tooltip: "System call: Direct I/O to specific file offset."
+    }
+    
+    fsync_call: "fsync(fd)\nBarrier for durability" {
+      class: critical
+      tooltip: "Flushes OS write cache to physical media controller."
+    }
+    
+    sort -> pwrite_call -> fsync_call
+  }
+  
+  eviction_path: LRU Replacement (Write-back) {
+    style.fill: "#FDE8E8"
+    
+    find_victim: "LRU Scan\nFound frame[7] (dirty)" {
+      class: action
+      tooltip: "Buffer pool is full; must evict to make room for new page."
+    }
+    
+    journal_check: "M9: Ensure journal\nis fsync'd first" {
+      class: critical
+      tooltip: "WAL must be durable before the 'data' page reaches the main DB file."
+    }
+    
+    write_back: "pwrite(fd, frame[7])\nclear dirty bit" {
+      class: action
+      tooltip: "Synchronous flush during query execution (High latency path)."
+    }
+    
+    find_victim -> journal_check -> write_back
+  }
+
+  # Internal Relationships
+  write_logic -> frames: "updates flags" { 
+    style: { stroke: "#C53030"; stroke-dash: 3 } 
+  }
+  frames -> flush_engine: "collects PIDs" { 
+    style: { stroke: "#2B6CB0" } 
+  }
+  frames -> eviction_path: "victim selection" { 
+    style: { stroke: "#C53030" } 
+  }
+}
+
+# ─────────────────────────────────────────────
+# DISK LAYER: PERSISTENT STORAGE LAYOUT
+# ─────────────────────────────────────────────
+disk: DB File (Filesystem / Block Device) {
+  class: disk-layer
+  
+  layout: Sequential Page Storage {
+    grid-columns: 6
+    grid-gap: 5
+    
+    p0: "Page 0\n[Header]" { style.fill: "#C8E6C9"; tooltip: "Offset: 0x0000" }
+    p1: "Page 1\n[B-Tree]" { style.fill: "#C8E6C9"; tooltip: "Offset: 0x1000" }
+    p2: "Page 2" { style.fill: "#C8E6C9"; tooltip: "Offset: 0x2000" }
+    p5: "Page 5\n(DIRTY TARGET)" { 
+      style: { fill: "#FED7D7"; stroke: "#C53030"; stroke-width: 3 }
+      tooltip: "Offset: 0x5000 (20,480)"
+    }
+    p7: "Page 7\n(DIRTY TARGET)" { 
+      style: { fill: "#FED7D7"; stroke: "#C53030"; stroke-width: 3 }
+      tooltip: "Offset: 0x7000 (28,672)"
+    }
+    p12: "Page 12\n(DIRTY TARGET)" { 
+      style: { fill: "#FED7D7"; stroke: "#C53030"; stroke-width: 3 }
+      tooltip: "Offset: 0xC000 (49,152)"
+    }
+  }
+}
+
+# ─────────────────────────────────────────────
+# CROSS-LAYER DATA FLOWS
+# ─────────────────────────────────────────────
+
+vm.btree_logic -> bp.write_logic.step1: "Request dirty transition" {
+  style: {
+    stroke: "#7B2D8E"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+bp.flush_engine.pwrite_call -> disk.layout: "IO System Call" {
+  style: {
+    stroke: "#2B6CB0"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+bp.eviction_path.write_back -> disk.layout: "Synchronous Write-back" {
+  style: {
+    stroke: "#C53030"
+    stroke-width: 2
+    stroke-dash: 5
+  }
+}
+
+# ─────────────────────────────────────────────
+# DOCUMENTATION & INVARIANTS (FIXED POSITIONING)
+# ─────────────────────────────────────────────
+
+dirty_note: |md
+  ### The Buffer Pool Invariant
+  1. **VM Layer** operates strictly on pointers to `frame->data`. 
+  2. **Dirty Bit** is the only indicator that memory and disk have diverged.
+  3. **Writes** are asynchronous relative to the VM execution, unless eviction occurs.
+  
+  **Frame Layout (Memory):**
+  - Data: 4096B (Page Payload)
+  - Flags: 1B (Dirty, Pinned, Locked)
+  - RefCount: 4B
+  - PageID: 4B
+| {
+  class: annotation
+  near: top-right
+}
+
+persistence_rules: |md
+  ### IO Ordering (M9/M10)
+  `WRITE(Journal) -> FSYNC(Journal) -> WRITE(DB) -> FSYNC(DB)`
+  
+  **Data Integrity:**
+  This order ensures that if a crash occurs during DB write, the 
+  Rollback Journal or WAL contains the recovery data.
+  
+  **Byte Offsets:**
+  `Physical_Offset = Page_ID * Page_Size`
+| {
+  class: annotation
+  near: bottom-right
+}
+
+# Explicit sizing tooltips for engineers
+bp.frames.f1.tooltip: "sizeof(Frame) = 4096 (data) + 64 (meta) bytes"
+disk.layout.p5.tooltip: "Offset: 5 * 4096 = 20,480 bytes"

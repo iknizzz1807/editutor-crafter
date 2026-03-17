@@ -1,0 +1,559 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # B-tree Node Split Algorithm
+  **Leaf overflow → split → promote separator → possible cascade to root**
+| {
+  near: top-center
+}
+classes: {
+  step-box: {
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2196F3"
+      border-radius: 8
+      font-size: 14
+    }
+  }
+  data-box: {
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#FF9800"
+      border-radius: 4
+      font-size: 13
+      font: mono
+    }
+  }
+  result-box: {
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#4CAF50"
+      border-radius: 4
+      font-size: 13
+      font: mono
+    }
+  }
+  separator-box: {
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#9C27B0"
+      border-radius: 4
+      font-size: 13
+      bold: true
+    }
+  }
+  error-box: {
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#F44336"
+      border-radius: 4
+      font-size: 13
+    }
+  }
+  cascade-box: {
+    style: {
+      fill: "#FCE4EC"
+      stroke: "#E91E63"
+      border-radius: 6
+      font-size: 13
+    }
+  }
+  root-split-box: {
+    style: {
+      fill: "#FFF9C4"
+      stroke: "#F57F17"
+      border-radius: 8
+      font-size: 13
+      bold: true
+    }
+  }
+  arrow-label: {
+    style: {
+      font-size: 12
+      italic: true
+    }
+  }
+}
+# ─────────────────────────────────────────────
+# STEP 0: INITIAL STATE — Full leaf page
+# ─────────────────────────────────────────────
+step0: "Step 0: Overflow Detected" {
+  class: step-box
+  label: |md
+    ## Step 0 — Overflow Detected
+    `page_insert_cell()` returns `-1`
+    Free space < cell_size + CELL_PTR_SIZE
+  |
+  full_leaf: "Full Leaf Page (N cells)" {
+    class: data-box
+    label: |md
+      
+      ┌─────────────────────────────────────────────┐
+      │ Header: type=0x0D  cell_count=N             │
+      │ cell_content_start ≈ header_size + N×2       │
+      ├─────────────────────────────────────────────┤
+      │ Ptr[0] Ptr[1] Ptr[2] ... Ptr[N-1]           │
+      │ ◄── pointer array (sorted by key) ──►        │
+      ├─── FREE SPACE ≈ 0 ──────────────────────────┤
+      │ [Cell N-1][Cell N-2] ... [Cell 1][Cell 0]    │
+      │ ◄── cell content area (grows upward) ──►     │
+      └─────────────────────────────────────────────┘
+      
+    |
+  }
+  overflow_cell: "Overflow Cell" {
+    class: error-box
+    label: |md
+      New cell to insert:
+      
+      [varint(payload_sz)] [varint(rowid)] [record...]
+      
+      **Cannot fit**: ptr_array_end + 2 > cell_content_start - cell_size
+    |
+  }
+  full_leaf -> overflow_cell: "page_insert_cell\nreturns -1" {
+    style: {
+      stroke: "#F44336"
+      stroke-dash: 3
+    }
+  }
+}
+# ─────────────────────────────────────────────
+# STEP 1: Collect all N+1 cells sorted
+# ─────────────────────────────────────────────
+step1: "Step 1: Collect & Sort" {
+  class: step-box
+  label: |md
+    ## Step 1 — Collect All N+1 Cells
+    Merge existing N cells + 1 overflow cell
+    into a single sorted array by key (rowid)
+  |
+  collect_algo: "Collection Algorithm" {
+    class: data-box
+    label: |md
+      c
+      // Walk pointer array, copy each cell
+      for (i = 0; i < cell_count; i++) {
+          ptr = get_cell_pointer(page, hdr_sz, i);
+          key = cell_read_key(page, ptr, type);
+          size = cell_compute_size(page, ptr, type);
+          entries[idx].key  = key;
+          entries[idx].data = malloc(size);
+          memcpy(entries[idx].data, page+ptr, size);
+          // Insert overflow cell at correct position
+          if (!inserted && overflow_key < key) {
+              entries[idx-1] = {overflow_key,
+                                overflow_cell, overflow_sz};
+              inserted = true;
+          }
+          idx++;
+      }
+      if (!inserted)  // overflow is largest
+          entries[idx++] = {overflow_key, ...};
+      
+    |
+  }
+  sorted_array: "Sorted Result: entries[0..N]" {
+    class: result-box
+    label: |md
+      
+      Index:  0    1    2    3    4    5    6
+      Key:   [10] [20] [25] [30] [40] [50] [60]
+                         ▲
+                    overflow cell
+                    inserted here
+      Total = N + 1 = 7 cells
+      
+    |
+  }
+  collect_algo -> sorted_array: "O(N) merge" {
+    style.stroke: "#4CAF50"
+  }
+}
+# ─────────────────────────────────────────────
+# STEP 2: Find median split point
+# ─────────────────────────────────────────────
+step2: "Step 2: Median Split" {
+  class: step-box
+  label: |md
+    ## Step 2 — Determine Split Point
+    `m = (N+1) / 2`
+    Median divides cells into two balanced halves
+  |
+  split_calc: "Split Calculation" {
+    class: data-box
+    label: |md
+      
+      total = N + 1 = 7
+      m = total / 2 = 3
+      Left half:   entries[0 .. m-1]  = entries[0..2]  → 3 cells
+      Separator:   entries[m].key     = entries[3].key → key=30
+      Right half:  entries[m .. N]    = entries[3..6]  → 4 cells
+      ┌──────────────────────────────────────────────────────┐
+      │ [10] [20] [25] │ 30 │ [30] [40] [50] [60]           │
+      │  ◄─ LEFT ──►   │sep │  ◄──── RIGHT ────►            │
+      │  (3 cells)      │ ▲  │  (4 cells, includes sep key)  │
+      └──────────────── │ │ ─┴───────────────────────────────┘
+                        │ │
+                  promoted_key = 30
+      
+    |
+  }
+  note_leaf: "Leaf Split Note" {
+    class: separator-box
+    label: |md
+      **For TABLE LEAF splits:**
+      - `promoted_key = entries[m].key`
+      - entries[m] goes to the RIGHT page
+        (leaf cells are NOT removed from leaves)
+      - Left: entries[0..m-1], Right: entries[m..N]
+      **For INTERNAL splits:**
+      - The median cell is REMOVED (promoted only)
+      - Left: entries[0..m-1], Right: entries[m+1..N]
+    |
+  }
+}
+# ─────────────────────────────────────────────
+# STEP 3: Populate LEFT page
+# ─────────────────────────────────────────────
+step3: "Step 3: Left Page" {
+  class: step-box
+  label: |md
+    ## Step 3 — Reinitialize Left Page
+    Reuse original page_id; overwrite with left-half cells
+  |
+  left_page: "Left Page (original page_id)" {
+    class: result-box
+    label: |md
+      c
+      page_init(page, PAGE_TYPE_TABLE_LEAF);
+      for (i = 0; i < m; i++) {         // i = 0,1,2
+          page_insert_cell(page,
+              entries[i].data,
+              entries[i].size,
+              entries[i].key);
+      }
+      pool_mark_dirty(pool, page_id);
+      pool_unpin_page(pool, page_id, true);
+      
+      
+      ┌─────────────────────────────┐
+      │ Header: cell_count = 3      │
+      │ Ptr[0] Ptr[1] Ptr[2]        │
+      │ ─── free space ───          │
+      │ [Cell:25] [Cell:20] [Cell:10]│
+      │ Keys: 10, 20, 25            │
+      └─────────────────────────────┘
+      
+    |
+  }
+}
+# ─────────────────────────────────────────────
+# STEP 4: Populate RIGHT page
+# ─────────────────────────────────────────────
+step4: "Step 4: Right Page" {
+  class: step-box
+  label: |md
+    ## Step 4 — Allocate & Populate Right Page
+    `pool_new_page()` → fresh page for right half
+  |
+  right_page: "Right Page (new page_id)" {
+    class: result-box
+    label: |md
+      c
+      *new_page_id = pool_new_page(pool);
+      new_page = pool_fetch_page(pool, *new_page_id);
+      page_init(new_page, PAGE_TYPE_TABLE_LEAF);
+      for (i = m; i < total; i++) {      // i = 3,4,5,6
+          page_insert_cell(new_page,
+              entries[i].data,
+              entries[i].size,
+              entries[i].key);
+      }
+      pool_unpin_page(pool, *new_page_id, true);
+      
+      
+      ┌──────────────────────────────────┐
+      │ Header: cell_count = 4           │
+      │ Ptr[0] Ptr[1] Ptr[2] Ptr[3]     │
+      │ ─── free space ───              │
+      │ [Cell:60][Cell:50][Cell:40][Cell:30]│
+      │ Keys: 30, 40, 50, 60            │
+      └──────────────────────────────────┘
+      
+    |
+  }
+}
+# ─────────────────────────────────────────────
+# STEP 5: Determine separator key
+# ─────────────────────────────────────────────
+step5: "Step 5: Separator Key" {
+  class: separator-box
+  label: |md
+    ## Step 5 — Extract Separator Key
+    
+    *promoted_key = entries[m].key = 30
+    Invariant after split:
+      ∀ key in LEFT:   key < promoted_key    (10,20,25 < 30) ✓
+      ∀ key in RIGHT:  key ≥ promoted_key    (30,40,50,60 ≥ 30) ✓
+    
+    The separator key tells the parent:
+    "keys ≤ 30 → go LEFT,  keys > 30 → go RIGHT"
+  |
+}
+# ─────────────────────────────────────────────
+# STEP 6: Insert separator into parent
+# ─────────────────────────────────────────────
+step6: "Step 6: Parent Insertion" {
+  class: step-box
+  label: |md
+    ## Step 6 — Insert Separator into Parent
+    Create an internal cell and insert into parent page
+  |
+  parent_insert: "Parent Page Update" {
+    class: data-box
+    label: |md
+      c
+      // Build internal cell:
+      //   [left_child_page (4 bytes BE)] [varint(separator_key)]
+      uint8_t cell_buf[32];
+      int cell_size = cell_serialize_table_internal(
+          cell_buf, 32,
+          left_page_id,     // left child = original page
+          promoted_key);    // separator = 30
+      // Insert into parent at sorted position
+      int rc = page_insert_cell(parent_page,
+          cell_buf, cell_size, promoted_key);
+      // Update parent's right_child if needed:
+      // If this is the rightmost insertion,
+      // set right_child = new_page_id
+      write_be32(parent_page + 8, right_page_id);
+      
+    |
+  }
+  parent_result: "Parent After Insertion" {
+    class: result-box
+    label: |md
+      
+      ┌─────────────────────────────────────────────┐
+      │ Header: type=0x05 cell_count=2               │
+      │         right_child = page_id(RIGHT)          │
+      ├─────────────────────────────────────────────┤
+      │ Internal Cell 0:                              │
+      │   left_child = ...  key = 15                  │
+      │ Internal Cell 1:        ◄── NEW               │
+      │   left_child = LEFT_PAGE  key = 30            │
+      │                                               │
+      │ Interpretation:                               │
+      │   keys ≤ 15 → child of cell 0                 │
+      │   15 < keys ≤ 30 → LEFT_PAGE                  │
+      │   keys > 30 → right_child (RIGHT_PAGE)        │
+      └─────────────────────────────────────────────┘
+      
+    |
+  }
+  parent_insert -> parent_result: "page_insert_cell" {
+    style.stroke: "#4CAF50"
+  }
+}
+# ─────────────────────────────────────────────
+# STEP 7: Cascade — parent overflow
+# ─────────────────────────────────────────────
+step7: "Step 7: Cascade Check" {
+  class: cascade-box
+  label: |md
+    ## Step 7 — Cascade if Parent Full
+    c
+    if (rc == -1) {
+        // Parent page also overflowed!
+        // Recurse: split_internal(parent_page, ...)
+        btree_split_internal(tree, parent_page_id,
+            cell_buf, cell_size, promoted_key,
+            &parent_promoted_key, &parent_new_page_id);
+        // Insert parent's promoted key into grandparent
+        btree_insert_into_parent(tree,
+            parent_page_id,
+            parent_promoted_key,
+            parent_new_page_id,
+            grandparent_page_id);
+    }
+    
+    **Cascade continues until a non-full ancestor is found
+    or the root itself must split.**
+  |
+}
+# ─────────────────────────────────────────────
+# ROOT SPLIT — tree height increases
+# ─────────────────────────────────────────────
+root_split: "Root Split → Height Increase" {
+  class: root-split-box
+  label: |md
+    ## Root Split — Tree Grows Taller
+    When the ROOT page overflows, a **new root** is created.
+    This is the ONLY operation that increases tree height.
+  |
+  before_root: "Before Root Split" {
+    class: data-box
+    label: |md
+      
+      Height = 1 (root is the only page)
+           ┌──────────────────────┐
+           │  ROOT (INTERNAL)     │
+           │  cell_count = FULL   │
+           │  + overflow cell     │
+           └──────────────────────┘
+           ╱         │          ╲
+        child_0   child_1 ... child_N
+      
+    |
+  }
+  after_root: "After Root Split" {
+    class: result-box
+    label: |md
+      
+      Height = 2 (increased by 1)
+              ┌───────────────────────┐
+              │  NEW ROOT (INTERNAL)  │
+              │  cell_count = 1       │
+              │  cell[0]: left=OLD    │
+              │           key=median  │
+              │  right_child = NEW    │
+              └───────────────────────┘
+              ╱                       ╲
+      ┌──────────────┐       ┌──────────────┐
+      │  OLD ROOT    │       │  NEW SIBLING  │
+      │  (left half) │       │  (right half) │
+      │  keys < med  │       │  keys > med   │
+      └──────────────┘       └──────────────┘
+      ╱    │    ╲            ╱    │     ╲
+      
+    |
+  }
+  root_algo: "Root Split Algorithm" {
+    class: data-box
+    label: |md
+      c
+      void btree_create_new_root(BTree *tree,
+          page_id_t left_page_id,
+          page_id_t right_page_id,
+          int64_t separator_key)
+      {
+          page_id_t new_root = pool_new_page(pool);
+          uint8_t *root = pool_fetch_page(pool, new_root);
+          page_init(root, PAGE_TYPE_TABLE_INTERNAL);
+          // Single internal cell: left_child=left, key=separator
+          uint8_t cell[32];
+          int sz = cell_serialize_table_internal(
+              cell, 32, left_page_id, separator_key);
+          page_insert_cell(root, cell, sz, separator_key);
+          // right_child = right_page_id
+          write_be32(root + 8, right_page_id);
+          pool_unpin_page(pool, new_root, true);
+          tree->root_page = new_root;  // UPDATE root!
+      }
+      
+    |
+  }
+  before_root -> after_root: "split + new root" {
+    style: {
+      stroke: "#F57F17"
+      stroke-width: 3
+      animated: true
+    }
+  }
+}
+# ─────────────────────────────────────────────
+# CONNECTIONS: Step flow
+# ─────────────────────────────────────────────
+step0 -> step1: "1. Collect all cells" {
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 2
+  }
+}
+step1 -> step2: "2. Find split point" {
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 2
+  }
+}
+step2 -> step3: "3. Populate left (m cells)" {
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 2
+  }
+}
+step3 -> step4: "4. Populate right (N+1-m cells)" {
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 2
+  }
+}
+step4 -> step5: "5. promoted_key = entries[m].key" {
+  style: {
+    stroke: "#9C27B0"
+    stroke-width: 2
+  }
+}
+step5 -> step6: "6. Insert into parent" {
+  style: {
+    stroke: "#1565C0"
+    stroke-width: 2
+  }
+}
+step6 -> step7: "7. Parent full?" {
+  style: {
+    stroke: "#E91E63"
+    stroke-width: 2
+    stroke-dash: 5
+  }
+}
+step7 -> step6: "Recurse:\nsplit_internal(parent)" {
+  style: {
+    stroke: "#E91E63"
+    stroke-width: 2
+    stroke-dash: 3
+    animated: true
+  }
+}
+step7 -> root_split: "Parent is ROOT\nand ROOT is full" {
+  style: {
+    stroke: "#F57F17"
+    stroke-width: 3
+  }
+}
+# ─────────────────────────────────────────────
+# INVARIANTS summary
+# ─────────────────────────────────────────────
+invariants: "Split Invariants" {
+  style: {
+    fill: "#ECEFF1"
+    stroke: "#607D8B"
+    border-radius: 10
+    font-size: 13
+  }
+  label: |md
+    ### Invariants Maintained After Every Split
+    1. **Balance**: all root-to-leaf paths have equal depth
+    2. **Order**: keys in left < separator ≤ keys in right
+    3. **Occupancy**: both pages are ≥ half full (⌊(N+1)/2⌋ cells min)
+    4. **Parent consistency**: separator key correctly routes searches
+    5. **Dirty pages**: all modified pages marked dirty via `pool_mark_dirty`
+    6. **Pin discipline**: all fetched pages unpinned after modification
+    ### Complexity
+    - Split cost: O(N) cells copied per split
+    - Cascade depth: O(h) where h = tree height
+    - Height increase: at most 1 per insertion (root split only)
+    - With fanout f ≈ 100: height 3 holds f³ = 10⁶ rows
+  |
+}
+root_split -> invariants: "guarantees" {
+  style: {
+    stroke: "#607D8B"
+    stroke-dash: 5
+  }
+}

@@ -1,0 +1,244 @@
+vars: {
+  d2-config: {
+    theme-id: 4
+    layout-engine: elk
+    pad: 20
+  }
+}
+
+title: ||md
+  # Query Planner Cost Model: TableScan vs IndexScan
+  *Technical analysis of crossover points and I/O overheads*
+|| {
+  near: top-center
+  style: {
+    stroke-width: 0
+    font-size: 24
+    bold: true
+  }
+}
+
+direction: down
+
+# ============================================================
+# Side-by-side cost formulas
+# ============================================================
+formulas: "" {
+  grid-columns: 2
+  grid-gap: 40
+  style.fill: transparent
+  style.stroke: transparent
+
+  table_scan_formula: ||md
+    ### 🟦 Table Scan Cost Model
+    
+    **Formula:** `cost_scan = page_count`
+    
+    - **Access Pattern:** Sequential I/O
+    - **Complexity:** $O(N)$
+    - **Mechanism:** Reads every leaf page in the B-Tree or Heap.
+    - **I/O Factor:** 1.0 (Sequential read baseline)
+    
+    **Example (N = 10k rows):**
+    `cost_scan = 143 pages`
+  || {
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#4A90D9"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+
+  index_scan_formula: ||md
+    ### 🟧 Index Scan Cost Model
+    
+    **Formula:** `cost_idx = H + leaf_pages + (sel * N * R)`
+    
+    - **H:** Tree Height (Index Traversal)
+    - **sel:** Selectivity ($0.0 \dots 1.0$)
+    - **R:** `RANDOM_IO_FACTOR` (Default ≈ 4.0)
+    - **Mechanism:** Traverse B-Tree, scan range, then fetch heap rows.
+    
+    **Example (N = 10k, H = 3, R = 4.0):**
+    `cost_idx = 3 + ⌈sel * 50⌉ + min(sel * 10000, 143) * 4`
+  || {
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#E67E22"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+}
+
+# ============================================================
+# Crossover derivation
+# ============================================================
+crossover: ||md
+  ### ⚖️ Crossover Point Derivation
+  The Query Planner switches to Table Scan when `cost_idx > cost_scan`.
+  
+  Assuming $N=10,000$, $H=3$, $R=4.0$, $Pages=143$:
+  $3 + (sel \times 10,000 \times 4.0) < 143$
+  $sel < \frac{140}{40,000}$
+  **$sel < 0.0035$ (0.35%)**
+  
+  > **Observation:** For this dataset size, the index is only efficient if returning fewer than **35 rows**.
+|| {
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#8E24AA"
+    stroke-width: 2
+    border-radius: 8
+  }
+  width: 800
+}
+
+# ============================================================
+# Cost comparison table
+# ============================================================
+cost_table: ||md
+  ### Cost Evaluation Table (N=10,000)
+  | Selectivity | Match Rows | Index Cost ($H+L+sel \cdot N \cdot R$) | Scan Cost | Winner |
+  | :--- | :--- | :--- | :--- | :--- |
+  | **0.01%** | 1 | $3 + 1 + (1 \cdot 4) = \mathbf{8}$ | 143 | 🟢 **Index** |
+  | **0.1%** | 10 | $3 + 1 + (10 \cdot 4) = \mathbf{44}$ | 143 | 🟢 **Index** |
+  | **0.35%** | 35 | $3 + 1 + (35 \cdot 4) = \mathbf{144}$ | 143 | ⚖️ **Limit** |
+  | **1.0%** | 100 | $3 + 1 + (100 \cdot 4) = \mathbf{404}$ | 143 | 🔴 **Scan** |
+  | **5.0%** | 500 | $3 + 3 + (143 \cdot 4) = \mathbf{578}$ | 143 | 🔴 **Scan** |
+  | **10.0%** | 1,000 | $3 + 5 + (578) = \mathbf{586}$ | 143 | 🔴 **Scan** |
+|| {
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#616161"
+    border-radius: 8
+  }
+  width: 800
+}
+
+# ============================================================
+# Visual cost graph
+# ============================================================
+graph: "Cost vs Selectivity Visualization" {
+  style: {
+    fill: "white"
+    stroke: "#333333"
+    border-radius: 12
+    shadow: true
+  }
+
+  header: ||md
+    **Y-Axis:** I/O Cost (Pages)  |  **X-Axis:** Selectivity
+  || {
+    style.stroke: transparent
+  }
+
+  chart: ||md
+    text
+    Cost (Pages)
+      ^
+      |                                    . (Index: 625)
+    600|                                 .
+       |                               .
+    400|                             .
+       |                           .
+       |                         .
+    200|                       .
+    143|---------------------.------------------- (Scan: 143 Constant)
+       |                   / 
+       |       (Crossover / )
+      0+------------------/----------------------> Selectivity
+       0.0%              0.35%                 100%
+    
+  || {
+    style: {
+      font: mono
+      fill: "#f8f9fa"
+      border-radius: 4
+    }
+  }
+
+  legend: "" {
+    grid-columns: 3
+    scan: "━━━ Table Scan (1.0x I/O)" { style.fill: "#4A90D9"; style.font-color: white }
+    idx: "···· Index Scan (4.0x Random I/O)" { style.fill: "#E67E22"; style.font-color: white }
+    cross: "✕ Crossover Point" { style.fill: "#8E24AA"; style.font-color: white }
+  }
+}
+
+# ============================================================
+# Key insights
+# ============================================================
+insights: "" {
+  grid-columns: 3
+  grid-gap: 20
+  style.fill: transparent
+  style.stroke: transparent
+
+  insight_1: ||md
+    ### 🟢 High Selectivity
+    **Constraint:** `sel < 0.35%`
+    Use for Primary Key lookups or unique constraints. 
+    **I/O Pattern:** Sparse random access.
+  || {
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+  }
+
+  insight_2: ||md
+    ### ⚖️ Sequential Threshold
+    **Constraint:** `sel ≈ 0.35%`
+    The "Tipping Point". Modern SSDs reduce R, potentially moving this to 1-2%.
+    **Planner Action:** Prefer Scan if equal.
+  || {
+    style.fill: "#FFF9C4"
+    style.stroke: "#F9A825"
+  }
+
+  insight_3: ||md
+    ### 🔴 Low Selectivity
+    **Constraint:** `sel > 0.35%`
+    Frequent in status columns (e.g., `is_active`).
+    **Why Scan?** Avoids "Thrashing" the heap pages via random I/O.
+  || {
+    style.fill: "#FFEBEE"
+    style.stroke: "#E53935"
+  }
+}
+
+# ============================================================
+# Random I/O Context
+# ============================================================
+random_io: ||md
+  ### 💽 The Cost of Randomness (R Factor)
+  
+  | Hardware | Seq Latency | Random Latency | R Ratio |
+  | :--- | :--- | :--- | :--- |
+  | **HDD** | 0.5ms | 10.0ms | **20.0** |
+  | **SATA SSD** | 0.1ms | 0.4ms | **4.0** |
+  | **NVMe SSD** | 0.02ms | 0.05ms | **2.5** |
+  
+  *On spinning disks (HDD), the index crossover happens at even lower selectivity (e.g., 0.05%) due to the massive seek penalty.*
+|| {
+  style: {
+    fill: "#E0F2F1"
+    stroke: "#00897B"
+    border-radius: 8
+  }
+  width: 800
+}
+
+# ============================================================
+# Logical Flow Connections
+# ============================================================
+formulas.table_scan_formula -> crossover: "Sequential Baseline"
+formulas.index_scan_formula -> crossover: "Variable Cost"
+crossover -> cost_table: "Parametric Mapping"
+cost_table -> graph: "Visual Curve"
+graph -> insights: "Heuristic Rules"
+insights -> random_io: "Hardware Dependency"
+
+(formulas.table_scan_formula -> crossover)[0].style.stroke: "#4A90D9"
+(formulas.index_scan_formula -> crossover)[0].style.stroke: "#E67E22"
+(graph -> insights)[0].style.stroke: "#333333"

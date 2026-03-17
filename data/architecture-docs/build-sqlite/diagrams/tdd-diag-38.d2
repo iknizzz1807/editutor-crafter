@@ -1,0 +1,229 @@
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- GLOBAL STYLES (Engineer-Grade Intel Specs) ---
+classes: {
+  storage: {
+    style: {
+      fill: "#e1f5fe" # Blue (Data/Disk)
+      stroke: "#01579b"
+      stroke-width: 2
+    }
+  }
+  logic: {
+    style: {
+      fill: "#f3e5f5" # Purple (Header/Logic)
+      stroke: "#4a148c"
+      stroke-width: 2
+    }
+  }
+  memory_map: {
+    style: {
+      fill: "#fff3e0" # Orange (Memory/Pointers)
+      stroke: "#e65100"
+      stroke-width: 2
+    }
+  }
+  padding: {
+    style: {
+      fill: "#eeeeee" # Gray (Padding)
+      stroke: "#9e9e9e"
+      stroke-dash: 3
+    }
+  }
+  annotation: {
+    shape: rectangle
+    style: {
+      fill: "#fff9c4"
+      stroke: "#fbc02d"
+      stroke-dash: 2
+      font-size: 12
+    }
+  }
+}
+
+# --- PIPELINE PHASES ---
+
+PHASE_1: "PHASE 1: ACCUMULATION (SCAN LOOP)" {
+  style: {
+    stroke-dash: 5
+    fill: transparent
+    stroke: "#9e9e9e"
+  }
+
+  BTree_Storage: {
+    shape: cylinder
+    class: storage
+    label: "B-Tree Leaf Pages (Disk/Buffer Cache) | PageSize: 4096B"
+  }
+
+  BTreeCursor: {
+    shape: rectangle
+    class: storage
+    label: "BTreeCursor State {PageID: uint32, CellIdx: uint16}"
+  }
+
+  Row_Extract: "OP_Column (Schema Decoding)" {
+    class: logic
+    label: "Row Extract | Varint -> Native Decoding"
+  }
+
+  Key_Encoder: {
+    label: "Key Encoder | (group_col) -> Raw Key (UTF-8)"
+    class: logic
+  }
+
+  Hash_Engine: {
+    label: "FNV-1a Hash Engine | 64-bit Hash (uint64_t)"
+    class: logic
+  }
+
+  Sum_Accumulator: {
+    label: "SumAcc.step(val) | += val | 8-byte Alignment"
+    class: logic
+    style.fill: "#f1f8e9"
+  }
+
+  BTree_Storage -> BTreeCursor: "pread(fd, offset, 4k)"
+  BTreeCursor -> Row_Extract: "Binary Tuple Payload"
+  Row_Extract -> Key_Encoder: "Extract: Col 0 ('name')"
+  Row_Extract -> Sum_Accumulator: "Extract: Col 1 ('val')"
+  Key_Encoder -> Hash_Engine: "Value: 'Alice'"
+  Hash_Engine -> IN_MEMORY_STATE.GroupByMap: "Slot Index = (Hash % N)"
+}
+
+IN_MEMORY_STATE: "IN-MEMORY STATE (AGGREGATION ENGINE)" {
+  class: memory_map
+  style.stroke-width: 4
+  
+  GroupByMap: {
+    shape: sql_table
+    label: "GroupByMap (Hash Table) [sizeof = N * 24 Bytes]"
+    
+    "Offset 0x00": "Slot 0 | Key_Ptr: 0xA01 | Acc_Idx: 0"
+    "Offset 0x18": "Slot 1 | Key_Ptr: 0xB02 | Acc_Idx: 1"
+    "Offset 0x30": "Slot 2 | Key_Ptr: NULL  | Acc_Idx: -1" {class: padding}
+    "Offset 0x48": "Slot ... | Reserved for Collision Chain"
+    "Offset 0x...": "Slot N | Key_Ptr: 0xF99 | Acc_Idx: M"
+  }
+
+  Accumulator_Array: "Accumulator Array (Contiguous Memory Block)" {
+    grid-columns: 3
+    style.fill: "#f1f8e9"
+    
+    Acc0: "Entry 0\n[0x00] count: 5 (8B)\n[0x08] sum: 120.5 (8B)\n[0x10] null: 0 (1B)\n[0x11] pad: 7B"
+    Acc1: "Entry 1\n[0x18] count: 2 (8B)\n[0x20] sum: 45.0 (8B)\n[0x28] null: 0 (1B)\n[0x29] pad: 7B"
+    Acc_Free: "Entry 2 (Free Slot)\n[0x30] count: 0\n[0x38] sum: 0.0\n[0x40] null: 1\n[0x41] pad: 7B" {style.stroke-dash: 5}
+  }
+
+  GroupByMap -> Accumulator_Array.Acc0: "Index Reference (Acc_Idx)" {
+    style.stroke: orange
+    style.stroke-width: 2
+    source-arrowhead: circle
+  }
+  
+  Complexity_Note: |md
+    ### Memory Invariant & Hardware Specs
+    **Space Complexity:** O(distinct_groups)
+    - **Total Allocation:** `(sizeof(Entry) * N_Slots) + (sizeof(Acc) * M_Groups)`
+    - **Alignment:** 8-byte boundaries enforced for AVX-512 vectorization.
+    - **Cache Line Awareness:** Entries packed to minimize L1/L2 misses.
+    - **Growth Policy:** Linear probing with 0.7 load factor resize.
+  | {
+    class: annotation
+    # CORRECTED: Use absolute path to shape for 'near'
+    near: IN_MEMORY_STATE.GroupByMap
+  }
+}
+
+PHASE_2: "PHASE 2: EMISSION (AGGREGATE OUTPUT)" {
+  style: {
+    stroke-dash: 5
+    fill: transparent
+    stroke: "#9e9e9e"
+  }
+
+  Group_Iterator: {
+    label: "OP_GroupIter | (Linear Map Scan) | ptr++ until !NULL"
+    class: logic
+  }
+
+  Finalizer: {
+    label: "SumAcc.finalize() | (sum / count) | FP Div (AVX2)"
+    class: logic
+  }
+
+  HAVING_Filter: {
+    label: "HAVING Predicate Eval | SUM(val) > X"
+    class: logic
+  }
+
+  Result_Generator: {
+    label: "OP_ResultRow | BTree Tuple Builder (SQLite format)"
+    class: logic
+  }
+
+  Sort_Buffer: {
+    label: "SortBuffer | O(N log N) | QuickSort in-place"
+    class: memory_map
+  }
+
+  Output: {
+    shape: parallelogram
+    label: "Result Set Stream | (To SQL Client / Interface)"
+    style: {
+      fill: "#e8f5e9"
+      stroke: "#2e7d32"
+      stroke-width: 3
+    }
+  }
+
+  IN_MEMORY_STATE.GroupByMap -> Group_Iterator: "Read Occupied Slots"
+  Group_Iterator -> Finalizer: "Fetch Row State"
+  Finalizer -> HAVING_Filter: "Computed Aggregate"
+  HAVING_Filter -> Result_Generator: "PASS: Continue Flow"
+  HAVING_Filter -> Group_Iterator: "FAIL: Drop Row" {
+    style: {
+      stroke: red
+      stroke-dash: 3
+    }
+  }
+  Result_Generator -> Sort_Buffer: "Write to Temp Segment"
+  Sort_Buffer -> Output: "Final Emit (Row Set)"
+}
+
+# --- CROSS-PHASE CONTROL FLOW ---
+
+PHASE_1.Sum_Accumulator -> IN_MEMORY_STATE.Accumulator_Array: "Update State | In-Place Add" {
+  style: {
+    stroke: "#e65100"
+    animated: true
+    stroke-width: 3
+  }
+}
+
+PHASE_1.Hash_Engine -> IN_MEMORY_STATE.GroupByMap: "Probe/Insert (uint64_t)" {
+  style.stroke: "#4a148c"
+  source-arrowhead: triangle
+}
+
+PHASE_2.Group_Iterator -> IN_MEMORY_STATE.GroupByMap: "Iterator Cursor" {
+  style.stroke: "#01579b"
+  source-arrowhead: diamond
+}
+
+LEGEND: "Implementation Legend" {
+  near: PHASE_2
+  direction: right
+  
+  S1: Storage (Disk/Page) { class: storage }
+  L1: Logic (OpCode) { class: logic }
+  M1: Memory Layout { class: memory_map }
+  P1: Padding/Unused { class: padding }
+}

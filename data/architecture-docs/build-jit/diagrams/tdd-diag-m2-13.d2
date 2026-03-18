@@ -1,0 +1,187 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- GLOBAL CLASSES ---
+classes: {
+  header_purple: {
+    style: {
+      fill: "#f3e5f5"
+      stroke: "#7b1fa2"
+      stroke-width: 3
+      font-color: "#4a148c"
+      bold: true
+    }
+  }
+  data_blue: {
+    style: {
+      fill: "#e3f2fd"
+      stroke: "#1976d2"
+      font-color: "#0d47a1"
+    }
+  }
+  error_red: {
+    style: {
+      fill: "#ffebee"
+      stroke: "#d32f2f"
+      font-color: "#b71c1c"
+      stroke-dash: 3
+    }
+  }
+  memory_orange: {
+    style: {
+      fill: "#fff3e0"
+      stroke: "#e65100"
+      font-color: "#bf360c"
+    }
+  }
+  logic_group: {
+    style: {
+      stroke: "#455a64"
+      stroke-width: 2
+      stroke-dash: 5
+      fill: "#f8f9fa"
+    }
+  }
+}
+
+# --- NATIVE STACK FRAME LAYOUT ---
+# Precise memory mapping for x86_64 implementation reference
+native_frame_layout: {
+  shape: sql_table
+  class: memory_orange
+  label: "X86_64 JIT STACK FRAME (System V ABI)\nsizeof=64 bytes (1 cache line)"
+  
+  0x00: "[8B] Previous RBP" {constraint: "rbp + 0 (Saved FP)"}
+  0x08: "[8B] Return Address" {constraint: "rbp + 8 (Caller EIP)"}
+  0x10: "[8B] Bytecode Ptr" {constraint: "rbp + 16 (RDI)"}
+  0x18: "[8B] Context Ptr" {constraint: "rbp + 24 (RSI)"}
+  0x20: "[8B] Scratch Slot 1" {style.fill: "#eeeeee"}
+  0x28: "[8B] Scratch Slot 2" {style.fill: "#eeeeee"}
+  0x30: "[16B] XMM0 Alignment Padding" {style.fill: "#cfd8dc"}
+  
+  style.stroke-width: 4
+  # Cache line boundary annotation
+  style.stroke-dash: 0
+}
+native_frame_layout.near: center-right
+
+# --- MAIN SEQUENCE DIAGRAM ---
+# Execution flow for validating JIT compiler correctness against reference interpreter
+equivalence_test: {
+  shape: sequence_diagram
+  label: "Interpreter vs JIT Equivalence Test Loop"
+
+  # Participants
+  th: "th: TestHarness\n(v1.2.0 CI Runner)" {
+    shape: person
+    style.stroke: "#2e7d32"
+  }
+  interp: "interp: ReferenceInterpreter\n(C++ AST Walker)" {
+    class: data_blue
+  }
+  jit: "jit: JIT_Backend\n(X86_64 MacroAssembler)" {
+    class: data_blue
+  }
+  nf: "nf: NativeFunction\n[RX Memory Region]" {
+    class: memory_orange
+    tooltip: "Memory: mmap(PROT_READ|PROT_EXEC)"
+  }
+  log: "log: AuditLogger\n(Hardware Telemetry)" {
+    style.fill: "#eceff1"
+  }
+
+  # Sequence Logic
+  loop_test_cases: {
+    label: "FOR EACH [test_id, bytecode, args] IN suite"
+    
+    # Reference Execution
+    th.t1 -> interp.t1: "interpret(u8* bc, i64* args) -> i64"
+    interp.t1 -> interp.t1: "decode_op() && exec_logic()"
+    th.t1 <- interp.t1: "RET: interp_val [64-bit Reg]"
+    
+    # JIT Compilation
+    th.t2 -> jit.t2: "jit_compile(u8* bc) -> i64(*)(i64*)"
+    jit.t2 -> jit.t2: "emit_prologue: push rbp; mov rbp, rsp"
+    jit.t2 -> jit.t2: "translate: u8 bc -> x86_64 assembly"
+    jit.t2 -> jit.t2: "emit_epilogue: pop rbp; ret"
+    th.t2 <- jit.t2: "RET: native_fn_ptr [RIP Address]"
+    
+    # Native Execution
+    th.t3 -> nf.t3: "call(i64* args) [Direct Jump]"
+    nf.t3 -> nf.t3: "Native Execution (AVX2 Pipelined)"
+    th.t3 <- nf.t3: "RET: jit_val [RAX]"
+    
+    # Bit-Level Verification
+    verification_logic: {
+      label: "COMPARE_OUTPUTS(interp_val, jit_val)"
+      th.check -> th.check: "memcmp(val1, val2, 8)"
+      
+      mismatch_case: {
+        label: "ALT: IF (interp_val != jit_val)"
+        th.err -> log.err: "raise_mismatch_exception()"
+        log."ERROR: Bit-pattern mismatch detected"
+      }
+      
+      success_case: {
+        label: "ELSE"
+        th.ok -> log.ok: "commit_test_pass()"
+      }
+    }
+    
+    th.cleanup -> jit.cleanup: "munmap(nf_ptr) && release_jit_resources()"
+  }
+  
+  th.final -> log.final: "finalize_summary(SUCCESS_RATE)"
+}
+
+# --- DOCUMENTATION AND METADATA ---
+technical_spec: |md
+### Equivalence Invariants (Architectural Spec)
+| Property | Requirement |
+| :--- | :--- |
+| **Memory Coherence** | All outputs must match 64-bit integer bit-patterns exactly. |
+| **Zero-Extension** | 32-bit ops MUST zero-extend to 64-bit per Intel x86_64 manual Vol 1. |
+| **UB Handling** | Signed overflow in C-Interpreter must match x86-64 wrap-around. |
+| **FPU State** | MXCSR bits (Flush-to-Zero) must be synchronized before execution. |
+|
+technical_spec.near: bottom-center
+
+metadata: |md
+**Implementation Grade Diagram**
+- **Compiler Backend:** Clang 16.0+ / LLVM 15
+- **Host Target:** x86_64-unknown-linux-gnu
+- **Memory Safety:** ASAN/MSAN validated loop
+- **Version:** v2.4.0-STABLE
+|
+metadata.near: top-right
+
+# --- CONNECTION STYLING ---
+# Critical Path Highlighting
+(equivalence_test.th.t1 -> equivalence_test.interp.t1)[0].style.stroke: "#0288d1"
+(equivalence_test.th.t2 -> equivalence_test.jit.t2)[0].style.stroke: "#388e3c"
+(equivalence_test.th.t3 -> equivalence_test.nf.t3)[0].style.stroke: "#f57c00"
+
+(equivalence_test.th.err -> equivalence_test.log.err)[0].style: {
+  stroke: "#d32f2f"
+  stroke-width: 3
+  animated: true
+}
+
+(equivalence_test.th.ok -> equivalence_test.log.ok)[0].style: {
+  stroke: "#2e7d32"
+  stroke-dash: 2
+}
+
+# Implementation Annotation
+verification_note: |md
+**Bitwise Comparison (Strict):**
+Comparison must use raw register values.
+Do not allow floating point epsilon
+during JIT test suite runs.
+|
+verification_note.near: equivalence_test.loop_test_cases.verification_logic

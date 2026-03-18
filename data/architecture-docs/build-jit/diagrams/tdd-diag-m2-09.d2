@@ -1,0 +1,120 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+"Forward Jump Back-Patching Flow": {
+  shape: sequence_diagram
+  style.stroke-width: 2
+
+  compiler: "JitExprCompiler (Logic)" {
+    shape: person
+    style.fill: "#E4DBFE"
+  }
+  emitter: "CodeEmitter (Buffer)" {
+    icon: https://icons.terrastruct.com/tech/022-server.svg
+    style.fill: "#C7F1FF"
+  }
+  label_mgr: "LabelManager (State)" {
+    style.fill: "#DEE1EB"
+  }
+
+  # --- Step 1: Initial Instruction Emission ---
+  compiler.t1 -> emitter.t1: "emitter_emit_byte(e, 0x0F)"
+  compiler.t1 -> emitter.t1: "emitter_emit_byte(e, 0x84)"
+  compiler.t1.note: "Emit x86 JZ (rel32) prefix and opcode" {
+    style.font-size: 12
+  }
+
+  # --- Step 2: Placeholder and Metadata ---
+  compiler.t2 -> emitter.t2: "patch_loc = e->cursor"
+  compiler.t2 -> emitter.t2: "emitter_emit_uint32(e, 0x00000000)"
+  emitter.t2.placeholder: "Placeholder Disp32 (4 bytes @ patch_loc)" {
+    style.stroke: orange
+    style.stroke-dash: 3
+  }
+
+  # --- Step 3: Record for future patching ---
+  compiler.t3 -> label_mgr.t3: "labelmgr_add_forward_jump(lm, patch_loc, label_id)"
+  label_mgr.t3 -> label_mgr.t3: "Store state: {offset: patch_loc, id: label_id}"
+
+  # --- Step 4: Program Content (Varying Size) ---
+  "Loop: Program Body": {
+    style.fill: "#F8F9FA"
+    compiler.t4 -> emitter.t4: "emit_code_body(expr->next)"
+    emitter.t4 -> emitter.t4: "Update e->cursor"
+  }
+
+  # --- Step 5: Define Label Location ---
+  compiler.t5 -> label_mgr.t5: "labelmgr_define(lm, label_id, e->cursor)"
+  label_mgr.t5 -> label_mgr.t5: "Resolved: target_addr = e->cursor"
+  
+  # --- Step 6: Offset Calculation Logic ---
+  label_mgr.math_note: ||md
+    ### Offset Calculation (RIP-Relative)
+    **Formula:**
+    `rel32 = target_addr - (patch_loc + 4)`
+    
+    *rip-relative base is the end of the instruction (4 bytes past patch_loc).*
+  ||
+
+  label_mgr.t6 -> label_mgr.t6: "Calc: rel32 = target - (patch + 4)"
+  
+  # --- Step 7: Back-Patching ---
+  label_mgr.t7 -> emitter.t7: "patch_memory(patch_loc, (int32_t)rel32)"
+  emitter.t7.patch_action: "Overwrite 0x00000000 with calculated rel32" {
+    style.stroke: red
+    style.bold: true
+  }
+
+  # --- Step 8: Final Validation ---
+  compiler.t8 -> compiler.t8: "Validation: rel32 within int32 range (±2GB)"
+}
+
+# Documentation Overlay - Intel Manual Grade Layout
+"Implementation Details": {
+  near: bottom-center
+  shape: rectangle
+  width: 800
+  style: {
+    stroke: "#167c3c"
+    stroke-dash: 4
+    fill: "#f6f3e6"
+    stroke-width: 2
+  }
+  
+  text: ||md
+    ## X86_64 JZ (rel32) Instruction Byte Layout
+    
+    | Byte Offset | Field Size | Hex Value | Semantic Description |
+    | :--- | :--- | :--- | :--- |
+    | 0 | 1 | `0x0F` | Two-byte escape prefix |
+    | 1 | 1 | `0x84` | Primary Opcode for JZ (Jump if Zero) |
+    | 2 | 4 | `rel32` | **Patched field**: Little-endian signed 32-bit displacement |
+    
+    **Total Instruction Size: 6 bytes.**
+    
+    ### Critical Implementation Notes:
+    1. **patch_loc**: Points specifically to the start of the 4-byte displacement field (offset 2).
+    2. **Relative Base**: The CPU calculates the target as `RIP + rel32`. Since RIP points to the **next** instruction after execution starts, the base address for the calculation is `patch_loc + 4`.
+    3. **Endianness**: Displacement must be written in Little-Endian format in the `emitter` buffer.
+    4. **Range**: If `target_addr - (patch_loc + 4)` exceeds `0x7FFFFFFF`, the compiler must throw a displacement overflow error.
+  ||
+}
+
+# Styling for critical path sequence
+("Forward Jump Back-Patching Flow".label_mgr -> "Forward Jump Back-Patching Flow".emitter)[*]: {
+  style: {
+    stroke: "#ed800c"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+("Forward Jump Back-Patching Flow".compiler -> "Forward Jump Back-Patching Flow".emitter)[*]: {
+  style.stroke: "#007bff"
+}

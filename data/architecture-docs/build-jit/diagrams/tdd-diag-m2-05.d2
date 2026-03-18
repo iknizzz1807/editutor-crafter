@@ -1,0 +1,260 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    layout-engine: elk
+    pad: 40
+  }
+  colors: {
+    header_purple: "#6d28d9"
+    data_blue: "#eff6ff"
+    free_green: "#f0fdf4"
+    padding_gray: "#f3f4f6"
+    pointer_orange: "#f59e0b"
+    error_red: "#fee2e2"
+    modified_red: "#ef4444"
+    text_white: "#ffffff"
+  }
+}
+
+classes: {
+  step_container: {
+    style: {
+      stroke-width: 2
+      border-radius: 8
+      fill: "#ffffff"
+      shadow: true
+    }
+  }
+  modified_cell: {
+    style: {
+      stroke: "#ef4444"
+      stroke-width: 3
+      bold: true
+      font-color: "#ef4444"
+    }
+  }
+  sql_header: {
+    style: {
+      fill: "#6d28d9"
+      font-color: "#ffffff"
+      bold: true
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# LINEAR SCAN ALLOCATION & SPILL LOGIC
+# -----------------------------------------------------------------------------------------
+
+LINEAR_SCAN_STATE: {
+  
+  step_1: "STEP 1: REG-POOL EXHAUSTION" {
+    class: step_container
+    description: |md
+      ### Trigger: Allocation Request
+      - **Target**: `V_new` (Virtual Register)
+      - **Current State**: Physical register pool is completely exhausted.
+      - **Requirement**: Selection of a spill victim to vacate a register.
+    |
+    
+    free_list: {
+      shape: sql_table
+      class: sql_header
+      "OFF | PHYSICAL REG": "STATUS | OWNER"
+      "0x00: r15": "IN_USE | V_9"
+      "0x08: r14": "IN_USE | V_8"
+      "0x10: r13": "IN_USE | V_7"
+      "0x18: r12": "IN_USE | V_6"
+      
+      "0x00: r15".style.fill: ${colors.padding_gray}
+      "0x08: r14".style.fill: ${colors.padding_gray}
+      "0x10: r13".style.fill: ${colors.padding_gray}
+      "0x18: r12".style.fill: ${colors.padding_gray}
+    }
+    
+    status: "CRITICAL: 0 FREE REGS" {
+      shape: cloud
+      style: {
+        fill: ${colors.error_red}
+        stroke: ${colors.modified_red}
+        stroke-width: 3
+      }
+    }
+  }
+
+  step_2: "STEP 2: VICTIM SELECTION" {
+    class: step_container
+    description: |md
+      ### Selection Logic: Furthest Next Use
+      - Algorithm scans `active` set for register with highest `next_use_pc`.
+      - `V_0` in `rax` is chosen (Next use at PC 1024).
+    |
+
+    active_vregs: {
+      shape: sql_table
+      class: sql_header
+      "VREG ID": "PHSYICAL | NEXT_USE_PC"
+      "V_0": "rax | 1024" 
+      "V_1": "rcx | 1048"
+      "V_2": "rdx | 1100"
+      
+      "V_0".class: modified_cell
+      "V_0".style.fill: ${colors.error_red}
+    }
+    
+    victim_marker: "SPILL VICTIM" {
+      shape: text
+      style.font-color: ${colors.pointer_orange}
+      style.bold: true
+    }
+    
+    victim_marker -> active_vregs."V_0" {
+      style: {
+        stroke: ${colors.pointer_orange}
+        stroke-width: 4
+        animated: true
+      }
+    }
+  }
+
+  step_3: "STEP 3: EMIT SPILL (WRITEBACK)" {
+    class: step_container
+    description: |md
+      ### Synchronization Phase
+      - CPU context must be saved to memory before register overwrite.
+      - Emit `MOV` instruction: store `rax` to stack frame offset.
+    |
+
+    instruction_stream: {
+      shape: sql_table
+      class: sql_header
+      "PC OFFSET": "OPCODE | ASSEMBLY"
+      "0x10A0": "48 89 45 F8 | MOV [rbp - 8], rax"
+      "0x10A4": "?? ?? ?? ?? | <PENDING>"
+      
+      "0x10A0".class: modified_cell
+    }
+
+    stack_layout: {
+      shape: sql_table
+      class: sql_header
+      "FRAME ADDR": "CONTENT (64-BIT)"
+      "rbp + 0": "Saved RBP"
+      "rbp - 8": "V_0 (SPILLED VALUE)"
+      "rbp - 16": "Padding"
+      
+      "rbp - 8".style.fill: ${colors.free_green}
+      "rbp - 8".class: modified_cell
+    }
+
+    instruction_stream."0x10A0" -> stack_layout."rbp - 8": "WRITEBACK" {
+      style.stroke: ${colors.pointer_orange}
+      style.stroke-dash: 5
+      style.animated: true
+    }
+  }
+
+  step_4: "STEP 4: METADATA UPDATE" {
+    class: step_container
+    description: |md
+      ### Updating Internal Registry
+      - Location for `V_0` updated to Stack Slot.
+      - `rax` state cleared to `AVAILABLE` for the new allocator request.
+    |
+
+    meta_table: {
+      shape: sql_table
+      class: sql_header
+      "VREG ID": "LOCATION | STATE"
+      "V_0": "[rbp-8] | SPILLED"
+      "V_new": "N/A | PENDING"
+      
+      "V_0".class: modified_cell
+    }
+
+    phys_reg_state: {
+      shape: sql_table
+      class: sql_header
+      "REGISTER": "OWNER | STATUS"
+      "rax": "NONE | AVAILABLE"
+      "rcx": "V_1 | BUSY"
+      
+      "rax".style.fill: ${colors.data_blue}
+      "rax".class: modified_cell
+    }
+  }
+
+  step_5: "STEP 5: RE-ALLOCATION" {
+    class: step_container
+    description: |md
+      ### Allocation Complete
+      - `V_new` is assigned to the now-vacant `rax`.
+      - The JIT compiler proceeds to emit the load for `V_new`.
+    |
+
+    final_assignment: {
+      shape: sql_table
+      class: sql_header
+      "VREG ID": "FINAL LOCATION"
+      "V_new": "REGISTER: rax"
+      "V_0": "STACK: [rbp-8]"
+      
+      "V_new".style.fill: ${colors.free_green}
+      "V_new".style.bold: true
+      "V_new".style.stroke: ${colors.free_green}
+    }
+
+    final_asm: {
+      shape: sql_table
+      class: sql_header
+      "PC OFFSET": "ASSEMBLY"
+      "0x10A4": "48 C7 C0 ... | MOV rax, [V_new_src]"
+      
+      "0x10A4".class: modified_cell
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# FLOW CONTROL
+# -----------------------------------------------------------------------------------------
+
+LINEAR_SCAN_STATE.step_1 -> LINEAR_SCAN_STATE.step_2: "Invoke Spill"
+LINEAR_SCAN_STATE.step_2 -> LINEAR_SCAN_STATE.step_3: "Sync to Mem"
+LINEAR_SCAN_STATE.step_3 -> LINEAR_SCAN_STATE.step_4: "Commit State"
+LINEAR_SCAN_STATE.step_4 -> LINEAR_SCAN_STATE.step_5: "Finalize"
+
+# -----------------------------------------------------------------------------------------
+# LEGEND & ANNOTATIONS
+# -----------------------------------------------------------------------------------------
+
+LEGEND: {
+  near: bottom-right
+  
+  header: "LINEAR SCAN SPECIFICATION" { 
+    shape: text
+    style.bold: true 
+  }
+  
+  l1: "FREE / TARGETED" {
+    style.fill: ${colors.free_green}
+  }
+  l2: "VICTIM / MODIFIED" {
+    style: {
+      fill: ${colors.error_red}
+      stroke: ${colors.modified_red}
+      stroke-width: 2
+    }
+  }
+  l3: "METADATA BLOCK" {
+    style.fill: ${colors.data_blue}
+  }
+  
+  notes: |md
+    **Technical Invariants**:
+    1. **Spill Protocol**: Must issue writeback before reg reuse.
+    2. **Metadata**: Must sync 32-byte descriptor before return.
+    3. **Alignment**: Stack slots must be 8-byte aligned (x86_64).
+  |
+}

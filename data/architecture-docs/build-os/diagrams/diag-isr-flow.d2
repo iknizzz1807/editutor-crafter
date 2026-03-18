@@ -1,0 +1,423 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Interrupt Service Routine Flow
+  Complete sequence from CPU interrupt to `iret` return
+| {near: top-center}
+legend: {
+  near: bottom-right
+  timing: {
+    label: "Timing Guide"
+    shape: rectangle
+    style.fill: "#E8E8E8"
+    style.stroke: "#666666"
+    t1: "Hardware: ~10-50 cycles"
+    t2: "Save/Restore: ~20-40 cycles each"
+    t3: "Handler: varies (keep < 100μs)"
+    t4: "Total latency: ~0.5-2 μs typical"
+  }
+  safety: {
+    label: "Safety Rules"
+    shape: rectangle
+    style.fill: "#FFF8DC"
+    style.stroke: "#DAA520"
+    s1: "SAFE: Read hardware ports"
+    s2: "SAFE: Write to kernel memory"
+    s3: "SAFE: Call kernel functions"
+    s4: "UNSAFE: Block/sleep"
+    s5: "UNSAFE: Access user memory directly"
+    s6: "UNSAFE: Take spinlocks long"
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  hw_column: {
+    direction: down
+    label: "Hardware Layer"
+    hw_trigger: {
+      label: "1. Interrupt Trigger"
+      shape: rectangle
+      style.fill: "#FFE4E1"
+      style.stroke: "#DC143C"
+      width: 200
+      source: |md
+        **Sources:**
+        - IRQ0: Timer (100Hz tick)
+        - IRQ1: Keyboard (scancode ready)
+        - IRQ14: Disk I/O complete
+        - Exception: Page fault, GPF
+      |
+    }
+    hw_cpu: {
+      label: "2. CPU Interrupt Logic"
+      shape: rectangle
+      style.fill: "#FFE4E1"
+      style.stroke: "#DC143C"
+      width: 200
+      actions: |md
+        **Automatic CPU Actions:**
+        1. Check IF (Interrupt Flag)
+        2. Check privilege transition
+        3. Push SS:ESP (if ring change)
+        4. Push EFLAGS
+        5. Push CS:EIP
+        6. Load IDT[vector] → CS:EIP
+        7. Clear IF (for INT gates)
+      |
+    }
+    hw_stack: {
+      label: "3. CPU Stack Frame"
+      shape: sql_table
+      label: "Kernel Stack (after CPU push)"
+      f0: "ESP+20 | SS      | (if ring change)"
+      f1: "ESP+16 | ESP     | (if ring change)"
+      f2: "ESP+12 | EFLAGS  |"
+      f3: "ESP+8  | CS      | 0x08 (kernel)"
+      f4: "ESP+4  | EIP     | return address"
+      f5: "ESP+0  | ErrCode | (some exceptions)"
+      note: "CPU pushes these automatically"
+    }
+  }
+  asm_column: {
+    direction: down
+    label: "Assembly Stub"
+    asm_entry: {
+      label: "4. ISR Entry Stub"
+      shape: rectangle
+      style.fill: "#E6E6FA"
+      style.stroke: "#6A5ACD"
+      width: 240
+      code: |'nasm
+        isr_common_stub:
+            cli                  ; Ensure ints disabled
+            push byte 0          ; Dummy error (if needed)
+            push byte 32         ; Vector number
+            pusha                ; Save ALL GP regs
+            ; EAX,ECX,EDX,EBX,ESP,EBP,ESI,EDI
+            push ds              ; Save segment regs
+            push es
+            push fs
+            push gs
+            mov ax, 0x10         ; Load kernel DS
+            mov ds, ax
+            mov es, ax
+            mov fs, ax
+            mov gs, ax
+            push esp             ; Arg: *regs
+            call interrupt_handler
+      '|
+    }
+    asm_saved: {
+      label: "5. Saved Register State"
+      shape: sql_table
+      label: "registers_t (on stack)"
+      r0: "ESP+52 | GS    |"
+      r1: "ESP+48 | FS    |"
+      r2: "ESP+44 | ES    |"
+      r3: "ESP+40 | DS    |"
+      r4: "ESP+36 | EDI   |"
+      r5: "ESP+32 | ESI   |"
+      r6: "ESP+28 | EBP   |"
+      r7: "ESP+24 | ESP   |"
+      r8: "ESP+20 | EBX   |"
+      r9: "ESP+16 | EDX   |"
+      r10: "ESP+12 | ECX   |"
+      r11: "ESP+8  | EAX   |"
+      r12: "ESP+4  | int_no|"
+      r13: "ESP+0  | err   |"
+    }
+  }
+}
+hw_column.hw_cpu -> asm_column.asm_entry: "Jump to IDT handler" {
+  label: "CS:EIP loaded"
+  style.stroke: "#DC143C"
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  c_handler: {
+    direction: down
+    label: "C Handler Layer"
+    handler_entry: {
+      label: "6. C Interrupt Handler"
+      shape: class
+      label: "interrupt_handler(regs)"
+      f1: "-regs: registers_t*"
+      m1: "+dispatch to registered handler"
+      m2: "+check int_no (exception vs IRQ)"
+      m3: "+call specific handler"
+      m4: "+send EOI for IRQs"
+    }
+    timer_handler: {
+      label: "7a. Timer Handler Example"
+      shape: rectangle
+      style.fill: "#98FB98"
+      style.stroke: "#228B22"
+      width: 220
+      code: |'c
+        static void timer_handler(regs_t *r) {
+            tick_count++;
+            if (current_process) {
+                current_process->time_slice--;
+                if (current_process->time_slice == 0) {
+                    scheduler_yield(); // May switch!
+                }
+            }
+            // EOI sent by dispatcher
+        }
+      '|
+    }
+    kbd_handler: {
+      label: "7b. Keyboard Handler Example"
+      shape: rectangle
+      style.fill: "#98FB98"
+      style.stroke: "#228B22"
+      width: 220
+      code: |'c
+        static void kbd_handler(regs_t *r) {
+            uint8_t scancode = inb(0x60);
+            // Convert scancode to ASCII
+            char c = scancode_to_ascii[scancode];
+            if (c != 0) {
+                kb_buffer[write_pos++] = c;
+            }
+            // EOI sent by dispatcher
+        }
+      '|
+    }
+    eoi: {
+      label: "8. Send EOI to PIC"
+      shape: rectangle
+      style.fill: "#FFD700"
+      style.stroke: "#B8860B"
+      width: 220
+      code: |'c
+        // After handler returns:
+        if (regs->int_no >= 32 && regs->int_no < 48) {
+            uint8_t irq = regs->int_no - 32;
+            pic_send_eoi(irq);
+            // outb(0x20, 0x20) for master
+            // outb(0xA0, 0x20) for slave too
+        }
+      '|
+      warning: |md
+        ⚠️ **CRITICAL**: Forgetting EOI blocks
+        ALL future interrupts!
+      |
+    }
+  }
+}
+asm_column.asm_entry -> c_handler.handler_entry: "Call C function" {
+  label: "push esp\ncall"
+}
+c_handler.handler_entry -> c_handler.timer_handler: "if int_no == 32"
+c_handler.handler_entry -> c_handler.kbd_handler: "if int_no == 33"
+c_handler.timer_handler -> c_handler.eoi: "return"
+c_handler.kbd_handler -> c_handler.eoi: "return"
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  restore_column: {
+    direction: down
+    label: "Return Path"
+    asm_restore: {
+      label: "9. Restore Registers"
+      shape: rectangle
+      style.fill: "#E6E6FA"
+      style.stroke: "#6A5ACD"
+      width: 220
+      code: |'nasm
+        ; Back from C handler
+        add esp, 4          ; Remove arg
+        pop gs              ; Restore segments
+        pop fs
+        pop es
+        pop ds
+        popa                ; Restore GP regs
+        ; EDI,ESI,EBP,ESP,EBX,EDX,ECX,EAX
+        add esp, 8          ; Remove err + int_no
+        iret                ; Return from interrupt
+      '|
+    }
+    iret_action: {
+      label: "10. IRET Instruction"
+      shape: rectangle
+      style.fill: "#87CEEB"
+      style.stroke: "#4682B4"
+      width: 220
+      actions: |md
+        **IRET pops from stack:**
+        1. EIP (return address)
+        2. CS (code segment)
+        3. EFLAGS (restores IF!)
+        4. ESP (if ring change)
+        5. SS (if ring change)
+        **Result:**
+        - Returns to interrupted code
+        - Interrupts re-enabled (IF restored)
+        - Privilege restored if changed
+      |
+    }
+    resumed: {
+      label: "11. Resumed Execution"
+      shape: rectangle
+      style.fill: "#90EE90"
+      style.stroke: "#228B22"
+      width: 220
+      state: |md
+        **Interrupted code continues:**
+        - All registers restored
+        - EFLAGS restored (including IF)
+        - CS:EIP pointing to next instruction
+        - No awareness interruption occurred
+        **Except:** time has passed!
+      |
+    }
+  }
+  timing_column: {
+    direction: down
+    label: "Timing Analysis"
+    timing_table: {
+      label: "ISR Timing Breakdown"
+      shape: sql_table
+      t0: "Phase | Cycles | Notes"
+      t1: "CPU push | 10-30 | Hardware, unavoidable"
+      t2: "Save regs | 20-40 | pusha + segments"
+      t3: "Handler | varies | KEEP SHORT!"
+      t4: "EOI | 10-20 | Two outb if slave"
+      t5: "Restore | 20-40 | popa + segments"
+      t6: "iret | 10-20 | Hardware return"
+      t7: "Total | 100-200+ | Min without handler"
+    }
+    critical: {
+      label: "Critical Timing Rules"
+      shape: rectangle
+      style.fill: "#FF6B6B"
+      style.stroke: "#CC0000"
+      style.font-color: "white"
+      width: 240
+      rules: |md
+        **Maximum handler time: ~100μs**
+        Why? Other interrupts blocked!
+        - Timer at 100Hz = 10ms between ticks
+        - Keyboard: human scale, forgiving
+        - Disk: DMA handles data transfer
+        **If handler takes too long:**
+        - Lost interrupts (keyboard strokes)
+        - Broken timing (clock drift)
+        - System feels sluggish
+      |
+    }
+  }
+}
+c_handler.eoi -> restore_column.asm_restore: "Handler returns" {
+  label: "ret"
+}
+restore_column.asm_restore -> restore_column.iret_action: "iret"
+restore_column.iret_action -> restore_column.resumed: "CPU resumes"
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  safety_column: {
+    direction: down
+    label: "Safety Guidelines"
+    safe_ops: {
+      label: "✅ Safe in ISR"
+      shape: rectangle
+      style.fill: "#90EE90"
+      style.stroke: "#228B22"
+      width: 200
+      ops: |md
+        - Read I/O ports (inb/inw)
+        - Write I/O ports (outb/outw)
+        - Access kernel memory
+        - Call reentrant kernel functions
+        - Increment counters
+        - Add to ring buffers
+        - Wake up waiting processes
+        - Send EOI to PIC
+      |
+    }
+    unsafe_ops: {
+      label: "❌ Unsafe in ISR"
+      shape: rectangle
+      style.fill: "#FF6B6B"
+      style.stroke: "#CC0000"
+      style.font-color: "white"
+      width: 200
+      ops: |md
+        - Sleep/block (no scheduler!)
+        - Access user memory directly
+        - Hold spinlocks for long
+        - Call non-reentrant functions
+        - Trigger page faults
+        - Call kmalloc (may block)
+        - Wait for I/O completion
+        - Enable interrupts manually
+      |
+    }
+    reentrancy: {
+      label: "Reentrancy Warning"
+      shape: rectangle
+      style.fill: "#FFFACD"
+      style.stroke: "#DAA520"
+      width: 200
+      warning: |md
+        **Problem:** If handler enables
+        interrupts and another interrupt
+        fires, same handler may re-enter!
+        **Solutions:**
+        - Use INT gates (IF cleared)
+        - Per-CPU data structures
+        - Spinlocks with IRQ save/restore
+        - Bottom-half processing
+      |
+    }
+  }
+  context_column: {
+    direction: down
+    label: "Context Switch Scenario"
+    switch_flow: {
+      label: "When Handler Triggers Switch"
+      shape: rectangle
+      style.fill: "#DDA0DD"
+      style.stroke: "#8B008B"
+      width: 240
+      flow: |md
+        **Timer handler calls scheduler:**
+        1. timer_handler() runs
+        2. time_slice == 0
+        3. scheduler_yield() called
+        4. context_switch(old, new)
+        5. Saves old process state
+        6. Loads new process state
+        7. Returns to NEW process!
+        **Old process resumes later**
+        when its time slice comes
+      |
+    }
+    switch_stack: {
+      label: "Stack During Context Switch"
+      shape: sql_table
+      label: "Process A's kernel stack"
+      s0: "Position | Content"
+      s1: "Top | Saved registers"
+      s2: " | EIP (scheduler_yield ret)"
+      s3: " | EIP (timer_handler ret)"
+      s4: " | EIP (ISR stub ret)"
+      s5: "Bottom | CPU interrupt frame"
+      note: "Process B has its own stack"
+    }
+  }
+}
+hw_column.hw_trigger -> hw_column.hw_cpu: "Signal arrives"

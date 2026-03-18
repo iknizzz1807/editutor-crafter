@@ -1,0 +1,196 @@
+direction: down
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- HEADER SECTION ---
+header: {
+  title: "Physical Frame Allocator (PMM) — Bitmap Implementation"
+  subtitle: "Each bit maps to one 4KiB page | Status: 0=Free, 1=Used"
+  style.stroke: transparent
+}
+
+# --- ROW 1: BITMAP STRUCTURE ---
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  bitmap_definition: {
+    label: "Bitmap Metadata (pmm.h)"
+    shape: class
+    -bitmap_ptr: "uint32_t*"
+    -total_frames: "uint32_t"
+    -used_frames: "uint32_t"
+    -free_frames: "uint32_t"
+    +pmm_init(mmap): "void"
+    +pmm_alloc_block(): "void*"
+    +pmm_free_block(ptr): "void"
+  }
+
+  bitmap_layout: {
+    label: "frame_bitmap[N] (Memory Layout)"
+    shape: sql_table
+    row0: "Index | Type | Bits | Coverage"
+    row1: "0x00 | uint32_t | [0..31] | 0KB - 124KB"
+    row2: "0x04 | uint32_t | [32..63] | 128KB - 252KB"
+    row3: "0x08 | uint32_t | [64..95] | 256KB - 380KB"
+    rowN: "... | ... | ... | ..."
+    total: "Total size: (Total RAM / 4KB / 8) bytes"
+  }
+}
+
+# --- ROW 2: ALLOCATION LOGIC ---
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  alloc_step: {
+    label: "pmm_alloc_block(): Allocation Hot-Path"
+    
+    find_free: {
+      label: "1. Linear Bit Scan"
+      width: 400
+      code: |"c
+        for (uint32_t i = 0; i < total_frames; i++) {
+          if (!pmm_test_bit(i)) {
+             pmm_set_bit(i);
+             used_frames++;
+             return (void*)(i * 0x1000);
+          }
+        }
+        return NULL; // Out of memory
+      "|
+    }
+
+    set_logic: {
+      label: "2. Bitwise Marking"
+      width: 400
+      code: |"c
+        void pmm_set_bit(uint32_t bit) {
+          uint32_t idx = bit / 32;
+          uint32_t off = bit % 32;
+          bitmap[idx] |= (1 << off);
+        }
+      "|
+    }
+
+    find_free -> set_logic: "Bit index i"
+  }
+}
+
+# --- ROW 3: FREE LOGIC ---
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  free_step: {
+    label: "pmm_free_block(void* addr): Deallocation"
+    
+    clear_logic: {
+      label: "Address to Bit Calculation"
+      width: 400
+      code: |"c
+        void pmm_free_block(void* addr) {
+          uint32_t frame = (uint32_t)addr / 4096;
+          uint32_t idx = frame / 32;
+          uint32_t off = frame % 32;
+          bitmap[idx] &= ~(1 << off);
+          used_frames--;
+        }
+      "|
+    }
+  }
+}
+
+# --- ROW 4: CONCRETE EXAMPLE ---
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  visual_example: {
+    label: "State Transition: Allocating Frame 5"
+    
+    before: {
+      shape: sql_table
+      label: "Before (0x1F)"
+      b0: "Bit 0 | 1 (Used)"
+      b1: "Bit 1 | 1 (Used)"
+      b2: "Bit 2 | 1 (Used)"
+      b3: "Bit 3 | 1 (Used)"
+      b4: "Bit 4 | 1 (Used)"
+      b5: "Bit 5 | 0 (FREE)"
+    }
+
+    after: {
+      shape: sql_table
+      label: "After (0x3F)"
+      b0: "Bit 0 | 1 (Used)"
+      b1: "Bit 1 | 1 (Used)"
+      b2: "Bit 2 | 1 (Used)"
+      b3: "Bit 3 | 1 (Used)"
+      b4: "Bit 4 | 1 (Used)"
+      b5: "Bit 5 | 1 (USED)"
+    }
+
+    before -> after: "SET_BIT(5)"
+  }
+
+  calc_box: {
+    label: "Efficiency Metrics"
+    code: |"text
+      RAM: 512 MiB (131,072 frames)
+      Bitmap: 16,384 bytes (4 pages)
+      Overhead: 0.003%
+      Resolution: 4096 bytes
+    "|
+  }
+}
+
+# --- ROW 5: PHYSICAL MEMORY MAP ---
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  physical_map: {
+    shape: sql_table
+    label: "Physical Address Space (pmm.c)"
+    r0: "0x00000000 - 0x000FFFFF | 1MiB | Reserved (BIOS/IVT/Video)"
+    r1: "0x00100000 - 0x00103FFF | 16KiB | Bitmap Storage"
+    r2: "0x00104000 - 0x001FFFFF | ~1MiB | Kernel Executable"
+    r3: "0x00200000 - 0x1FFFFFFF | 510MiB | Available User Frames"
+    limit: "Max Address: 0x20000000"
+  }
+}
+
+# --- GLOBAL CONNECTIONS & LEGEND ---
+row1 -> row2: "Data Flow"
+row2 -> row3: "Logic Flow"
+row3 -> row4: "State Change"
+row4 -> row5: "Hardware Mapping"
+
+legend: {
+  near: bottom-right
+  shape: rectangle
+  label: "PMM Legend"
+  style.fill: "#f8f9fa"
+  content: |md
+    - **Complexity**: Alloc O(N), Free O(1)
+    - **Optimization**: Use 'last_free' pointer for O(1) average alloc
+    - **Safety**: TEST_BIT before CLEAR to prevent double-free
+  |
+}
+
+# Style overrides for clarity
+row2.alloc_step.find_free.style.stroke: "#007bff"
+row3.free_step.clear_logic.style.stroke: "#28a745"
+row4.visual_example.before.b5.style.fill: "#fff3cd"
+row4.visual_example.after.b5.style.fill: "#d4edda"

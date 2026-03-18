@@ -1,0 +1,361 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    method_a: "#E8F5E9"
+    method_b: "#E3F2FD"
+    decision: "#FFF3E0"
+    context: "#F3E5F5"
+    cache: "#FFEBEE"
+    header: "#F5F5F5"
+    critical: "#FFEBEE"
+    padding: "#ECEFF1"
+    pte_green: "#C8E6C9"
+    pte_blue: "#BBDEFB"
+  }
+}
+
+title: ||md
+  # TLB Flush Methods & MMU Management
+  ### Intel x86-64 Translation Lookaside Buffer (TLB) Invalidation Architecture
+|| {near: top-center}
+
+direction: right
+
+# --- ARCHITECTURAL PTE LAYOUT (Memory Layout) ---
+pte_layout: {
+  label: "x86-64 Page Table Entry (PTE) Format"
+  style.fill: ${colors.header}
+  
+  bits_0_11: ||md
+    | Offset | Field | Description | Size |
+    |---|---|---|---|
+    | 0 | **P** | Present | 1b |
+    | 1 | **R/W** | Read/Write | 1b |
+    | 2 | **U/S** | User/Supervisor | 1b |
+    | 3 | **PWT** | Page-level Write-Through | 1b |
+    | 4 | **PCD** | Page-level Cache Disable | 1b |
+    | 5 | **A** | Accessed | 1b |
+    | 6 | **D** | Dirty | 1b |
+    | 7 | **PAT** | Page Attribute Table | 1b |
+    | 8 | **G** | **Global (Prevents CR3 Flush)** | 1b |
+    | 9-11 | **AVL** | Available to Software | 3b |
+  ||
+  
+  bits_12_51: "Physical Page Frame Address (shifted by 12)" {
+    style.fill: ${colors.pte_blue}
+  }
+  
+  bits_52_63: ||md
+    | Offset | Field | Description | Size |
+    |---|---|---|---|
+    | 52-62 | **AVL** | Available to Software | 11b |
+    | 63 | **NX** | No-Execute Bit | 1b |
+  ||
+}
+
+# --- ARCHITECTURE DEFINITIONS ---
+methods: {
+  invlpg: {
+    label: "INVLPG Instruction"
+    style.fill: ${colors.method_a}
+    style.stroke: "#2E7D32"
+    style.stroke-width: 2
+    
+    desc: ||md
+      **Operation: Invalidate Single TLB Entry**
+      - Mnemonic: `invlpg [m8]`
+      - Function: Flushes the translation for a single 4KB/2MB/1GB page.
+      - Usage: Granular PTE updates without destroying entire cache state.
+    ||
+    
+    when: {
+      label: "Use Cases (Granular)"
+      style.fill: "#C8E6C9"
+      cases: {
+        shape: text
+        label: ||md
+          ✓ `vmm_map_page()` completion
+          ✓ `vmm_unmap_page()` completion
+          ✓ COW (Copy-On-Write) fault resolution
+          ✓ Page permission upgrades/downgrades
+          ✓ Single address space remapping
+        ||
+      }
+    }
+    
+    timing: {
+      label: "Performance Metrics"
+      style.fill: "#A5D6A7"
+      cost: {
+        shape: text
+        label: ||md
+          - **Latency:** ~10-25 cycles
+          - **Pipeline:** Serializing (partial)
+          - **Overhead:** Near-zero cache pollution.
+        ||
+      }
+    }
+  }
+
+  cr3_reload: {
+    label: "CR3 MOV Instruction"
+    style.fill: ${colors.method_b}
+    style.stroke: "#1565C0"
+    style.stroke-width: 2
+
+    desc: ||md
+      **Operation: Invalidate Non-Global Entries**
+      - Mnemonic: `mov cr3, reg`
+      - Function: Reloads Page Directory Base Register.
+      - Side-effect: Flushes all TLB entries EXCEPT those with G (Global) bit.
+    ||
+    
+    when: {
+      label: "Use Cases (Bulk)"
+      style.fill: "#BBDEFB"
+      cases: {
+        shape: text
+        label: ||md
+          ✓ Process Context Switching (Scheduler)
+          ✓ Address Space (ASID) exhaustion
+          ✓ Bulk memory remapping (paging init)
+          ✓ Kernel-wide mapping updates
+          ✓ Security: Speculative execution mitigation
+        ||
+      }
+    }
+    
+    timing: {
+      label: "Performance Metrics"
+      style.fill: "#90CAF9"
+      cost: {
+        shape: text
+        label: ||md
+          - **Latency:** ~150-500 cycles (Serializing)
+          - **System Cost:** ~2k-10k cycles (Cold TLB Penalty)
+          - **Pipeline:** Full drain/pipeline flush.
+        ||
+      }
+    }
+  }
+
+  vs_bridge: {
+    shape: text
+    label: "VS"
+    style: {
+      font-size: 28
+      bold: true
+      font-color: "#616161"
+    }
+  }
+  
+  invlpg -> vs_bridge <- cr3_reload
+}
+
+# --- DECISION ALGORITHM ---
+decision_flow: {
+  label: "Decision Logic: TLB Invalidation Strategy"
+  style.fill: ${colors.decision}
+  style.stroke: "#EF6C00"
+  style.border-radius: 8
+  
+  start: {
+    shape: diamond
+    label: "Paging Structure\nModified?"
+    style.fill: "#FFE0B2"
+  }
+  
+  single_or_bulk: {
+    shape: diamond
+    label: "Modification\nScale?"
+    style.fill: "#FFCC80"
+  }
+  
+  check_context: {
+    shape: diamond
+    label: "Is Context\nSwitching?"
+    style.fill: "#FFB74D"
+  }
+  
+  use_invlpg: {
+    label: "INVLPG [VADDR]"
+    style: {
+      fill: "#4CAF50"
+      font-color: white
+      bold: true
+    }
+    shape: hexagon
+  }
+  
+  use_invlpg_loop: {
+    label: "Loop INVLPG\n(Threshold < 32)"
+    style: {
+      fill: "#81C784"
+      font-color: black
+    }
+    shape: hexagon
+  }
+  
+  use_cr3: {
+    label: "MOV CR3, RAX"
+    style: {
+      fill: "#2196F3"
+      font-color: white
+      bold: true
+    }
+    shape: hexagon
+  }
+
+  start -> single_or_bulk: "Yes"
+  single_or_bulk -> use_invlpg: "Single Page"
+  single_or_bulk -> check_context: "Multiple Pages"
+  check_context -> use_cr3: "Yes (New Process)"
+  check_context -> use_invlpg_loop: "No (Same Process)"
+}
+
+# --- IMPLEMENTATION DETAIL ---
+code_examples: {
+  label: "Low-Level Implementation (x86_64 ASM/C)"
+  
+  invlpg_code: {
+    label: "Granular Flush"
+    style.fill: ${colors.method_a}
+    code: ||c
+      /*
+       * Intel Manual Vol 3A: 4.10.4.1
+       * Invalidates TLB for specific virtual address
+       */
+      static inline void tlb_flush_single(unsigned long addr) {
+          asm volatile("invlpg (%0)" 
+                       : 
+                       : "r" (addr) 
+                       : "memory");
+      }
+    ||
+  }
+  
+  cr3_code: {
+    label: "Full Cache Flush"
+    style.fill: ${colors.method_b}
+    code: ||c
+      /* 
+       * Triggering side-effect invalidation by 
+       * reading and writing back CR3.
+       */
+      static inline void tlb_flush_all(void) {
+          unsigned long cr3;
+          asm volatile("mov %%cr3, %0; mov %0, %%cr3"
+                       : "=r" (cr3)
+                       :
+                       : "memory");
+      }
+    ||
+  }
+  
+  invlpg_code -> cr3_code: "Escalation Path"
+}
+
+# --- STATE SNAPSHOTS ---
+tlb_state: {
+  label: "Memory Hierarchy: TLB State Transition"
+  
+  before: {
+    label: "State: T₀ (Warm Cache)"
+    style.fill: ${colors.cache}
+    entries: ||md
+      | VPN (Virtual) | PPN (Physical) | Flags |
+      |---------------|----------------|-------|
+      | 0x0000_C0DE  | 0x0000_1234   | R-X   |
+      | 0x0000_DA7A  | 0x0000_5678   | RW-   |
+      | 0x0000_DEAD  | 0x0000_90AB   | RW-   |
+      | 0xFFFF_8000  | 0x0000_0000   | R-- G |
+    ||
+  }
+  
+  after_invlpg: {
+    label: "State: T₁ (INVLPG 0xDEAD)"
+    style.fill: "#C8E6C9"
+    entries: ||md
+      | VPN (Virtual) | PPN (Physical) | Flags |
+      |---------------|----------------|-------|
+      | 0x0000_C0DE  | 0x0000_1234   | R-X   |
+      | 0x0000_DA7A  | 0x0000_5678   | RW-   |
+      | **[VACANT]** | **[FLUSHED]**  | **-** |
+      | 0xFFFF_8000  | 0x0000_0000   | R-- G |
+    ||
+  }
+  
+  after_cr3: {
+    label: "State: T₁ (CR3 Reload)"
+    style.fill: "#90CAF9"
+    entries: ||md
+      | VPN (Virtual) | PPN (Physical) | Flags |
+      |---------------|----------------|-------|
+      | **[VACANT]** | **[FLUSHED]**  | **-** |
+      | **[VACANT]** | **[FLUSHED]**  | **-** |
+      | **[VACANT]** | **[FLUSHED]**  | **-** |
+      | 0xFFFF_8000  | 0x0000_0000   | R-- G |
+    ||
+  }
+  
+  before -> after_invlpg: "Select Target"
+  before -> after_cr3: "Full Reload"
+}
+
+# --- PERFORMANCE GRID ---
+performance_matrix: {
+  label: "Architectural Performance Matrix"
+  grid-rows: 4
+  grid-columns: 3
+  grid-gap: 0
+
+  h1: "Parameter" { style.fill: "#E0E0E0"; style.bold: true }
+  h2: "INVLPG" { style.fill: "#E0E0E0"; style.bold: true }
+  h3: "MOV CR3" { style.fill: "#E0E0E0"; style.bold: true }
+
+  r1c1: "Instruction Latency"
+  r1c2: "~25 cycles"
+  r1c3: "~150-200 cycles"
+
+  r2c1: "TLB Hit Rate Impact"
+  r2c2: "Negligible (-1 entry)"
+  r2c3: "Catastrophic (Reset)" { style.fill: ${colors.critical} }
+
+  r3c1: "Hardware Side Effects"
+  r3c2: "PTE Access Bit Update"
+  r3c3: "Pipeline Serialization"
+
+  *.style.fill: white
+}
+
+# --- DATA INTEGRITY BOUNDARY ---
+separator: {
+  shape: text
+  label: "--- DATA INTEGRITY BOUNDARY ---"
+  style: {
+    font-size: 14
+    italic: true
+    font-color: "#BDBDBD"
+  }
+}
+
+# --- FINAL CONNECTIONS ---
+methods.invlpg -> decision_flow.start: "Trigger"
+methods.cr3_reload -> decision_flow.start: "Trigger"
+decision_flow.use_invlpg -> code_examples.invlpg_code: "Select Impl"
+decision_flow.use_cr3 -> code_examples.cr3_code: "Select Impl"
+code_examples.invlpg_code -> tlb_state.after_invlpg: "Resulting State"
+code_examples.cr3_code -> tlb_state.after_cr3: "Resulting State"
+
+footer_note: {
+  shape: text
+  label: ||md
+    **Technical Note:** Process Context Identifiers (PCIDs) on modern x86_64 
+    can prevent TLB flushes on CR3 reload by tagging entries with a 12-bit ID.
+    CR3 Bit 63 (PCID NOFLUSH) allows updating the address space without invalidation.
+  ||
+  near: bottom-center
+}

@@ -1,0 +1,232 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+# --- GLOBAL CLASSES ---
+classes: {
+  module: {
+    style: {
+      stroke: "#2b2d42"
+      stroke-width: 2
+      fill: "#edf2f4"
+      shadow: true
+      border-radius: 8
+    }
+  }
+  interface: {
+    shape: rectangle
+    style: {
+      stroke: "#ef233c"
+      stroke-width: 2
+      stroke-dash: 3
+      fill: "#ffccd5"
+    }
+  }
+  data_store: {
+    shape: cylinder
+    style: {
+      fill: "#caf0f8"
+      stroke: "#0077b6"
+    }
+  }
+  header_text: {
+    shape: text
+    style: {
+      font-size: 14
+      bold: true
+    }
+  }
+  memory_field: {
+    style: {
+      font: mono
+      font-size: 12
+    }
+  }
+  mem_header: {
+    style: {
+      fill: "#6a0dad" # Purple
+      font-color: white
+      bold: true
+    }
+  }
+  mem_data: {
+    style: {
+      fill: "#a2d2ff" # Blue
+    }
+  }
+  mem_padding: {
+    style: {
+      fill: "#d3d3d3" # Gray
+      stroke-dash: 2
+    }
+  }
+}
+
+# --- ARCHITECTURE DEFINITION ---
+CodeEmitterModule: {
+  label: "CodeEmitter Core Module\n[sizeof=512 bytes | Alignment=64B | Thread-Local]"
+  class: module
+
+  # Frontend Interface
+  EmitterInterface: {
+    label: "ICodeEmitter (Interface)\nVTable Offset: 0x00"
+    class: interface
+    shape: class
+    "+ EmitInstruction(op: OpCode, operands: List<Operand>)": Result
+    "+ Finalize()": BinaryExecutable
+    "+ GetSymbolOffset(name: string)": uint64
+  }
+
+  # Logic Components
+  InstructionEncoder: {
+    label: "InstructionEncoder\nType: Logic Engine (Stateless)\nHot Path: __vectorcall"
+    class: module
+    shape: class
+    "- opcode_map": "Map<OpCode, uint32> (Fixed Size)"
+    "- prefix_table": "uint8[256] (LUT)"
+    "+ Encode(instr: Instruction)": "byte[]"
+    "+ CalculateModRM(r1: Reg, r2: Reg)": uint8
+  }
+
+  RegisterManager: {
+    label: "RegisterManager\nContext: X86_64 / ARM64\nsizeof=64B (Cache Line Aligned)"
+    class: module
+    shape: class
+    style.fill: "#fdf0d5"
+    "0x00 | availability_mask": "uint64 [8 bytes]" {class: mem_data}
+    "0x08 | spill_stack_offset": "int32 [4 bytes]" {class: mem_data}
+    "0x0C | padding": "uint8[52] [Alignment Padding]" {class: mem_padding}
+    "+ AllocateVolatile()": Register
+    "+ MarkDirty(reg: Register)": void
+    "+ Synchronize()": void
+  }
+
+  # State & Buffers
+  BinaryStream: {
+    label: "BinaryStream\nBuffer: 2MB Slab-Allocated\nRegion: .text (Executable)"
+    class: data_store
+    shape: class
+    "0x00 | cursor": "uint64 [8 bytes]" {class: mem_data}
+    "0x08 | data_ptr": "void* [8 bytes]" {class: mem_data}
+    "0x10 | capacity": "uint64 [8 bytes]" {class: mem_data}
+    "0x18 | padding": "uint8[40] [Cache Line Align]" {class: mem_padding}
+    "+ Write(b: byte[])": void
+    "+ Seek(offset: uint64)": void
+    "+ Patch(offset: uint64, val: uint32)": void
+  }
+
+  RelocationTable: {
+    label: "RelocationTable\nTrack: Jumps/Global Refs\nAlignment: 16B"
+    class: data_store
+    shape: class
+    "- entries": "RelocEntry* [Buffer]"
+    "+ AddFixup(pos: uint64, sym: string)": void
+    "+ ResolveAll(base_addr: uint64)": void
+  }
+
+  # Internal Relationships
+  EmitterInterface -> InstructionEncoder: "delegates call" {
+    style.stroke: "#2b2d42"
+    style.stroke-width: 2
+  }
+  InstructionEncoder -> RegisterManager: "queries physical mapping" {
+    style.stroke: "#8d99ae"
+  }
+  InstructionEncoder -> BinaryStream: "writes machine code" {
+    style.stroke: "#d90429"
+    style.stroke-width: 3
+  }
+  InstructionEncoder -> RelocationTable: "registers unresolved jumps" {
+    style.stroke: "#ef233c"
+  }
+  
+  RegisterManager -- BinaryStream: "references (spill logic)" {
+    style.stroke-dash: 5
+    source-arrowhead: circle
+    source-arrowhead.style.filled: true
+  }
+}
+
+# --- EXTERNAL PIPELINE ---
+IR_Optimizer: "IR Optimizer (Upstream Pipeline)" {
+  shape: step
+  style: {
+    fill: "#d8f3dc"
+    stroke: "#2d6a4f"
+    stroke-width: 2
+  }
+}
+
+BinaryLinker: "Static/Dynamic Linker (Downstream Pipeline)" {
+  shape: step
+  style: {
+    fill: "#f8edeb"
+    stroke: "#6d597a"
+    stroke-width: 2
+  }
+}
+
+# System Flow Connections
+IR_Optimizer -> CodeEmitterModule.EmitterInterface: "Stream of optimized IR nodes\nCalling Conv: SysV/FastCall" {
+  style: {
+    stroke-width: 3
+    animated: true
+    stroke: "#2d6a4f"
+  }
+}
+
+CodeEmitterModule.BinaryStream -> BinaryLinker: "Raw byte stream + Fixup metadata\n(ELF/PE Format Ready)" {
+  style: {
+    stroke-width: 2
+    stroke: "#6d597a"
+  }
+}
+
+# --- ANNOTATIONS & DOCUMENTATION ---
+# FIX: 'near' must be a constant for ELK engine
+Note: |md
+  ### Technical Implementation Details
+  - **Memory Layout**: `BinaryStream` implements a circular buffer strategy if the 2MB slab is exhausted.
+  - **Cache Locality**: `RegisterManager` and `BinaryStream` metadata are cache-line aligned (64B).
+  - **Register Spill**: When `availability_mask == 0`, `RegisterManager` triggers spill to `[RSP + offset]`.
+  - **Relocations**: Fixups are resolved in-place by `BinaryLinker` using the `RelocationTable`.
+| {
+  near: bottom-right
+  style: {
+    font-size: 13
+    fill: "#fdf0d5"
+    stroke: "#780000"
+    stroke-width: 2
+  }
+}
+
+legend: {
+  shape: callout
+  label: "CRITICAL PATH:\nIR_Optimizer (Upstream)\n-> InstructionEncoder\n-> BinaryStream (Slab)"
+  near: top-left
+  style: {
+    stroke: "#d90429"
+    stroke-width: 2
+    fill: "#fff3f3"
+    font-color: "#d90429"
+    bold: true
+  }
+}
+
+# Metadata styling for specific logic components
+CodeEmitterModule.InstructionEncoder.style.stroke: "#d90429"
+CodeEmitterModule.InstructionEncoder.style.bold: true
+
+# Cache Line Visualizer (Annotation for engineer implementation)
+CacheLineAnnotation: |md
+  **Cache Line Boundary (64B)**
+  *Fields in RegisterManager & BinaryStream are padded to 
+  prevent false sharing between thread-local emitter instances.*
+| {
+  near: top-right
+  style.fill: "#e9ecef"
+}

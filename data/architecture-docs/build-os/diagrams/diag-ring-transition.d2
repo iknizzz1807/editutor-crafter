@@ -1,0 +1,283 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: |md
+    # Ring 3 → Ring 0 Transition (INT/Syscall)
+    Stack switch on privilege change via TSS
+  |
+  near: top-center
+  shape: text
+  style.font-size: 20
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  before: "BEFORE (User Mode)" {
+    direction: down
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    style.stroke-width: 2
+    user_stack: {
+      shape: rectangle
+      label: "User Stack (Ring 3)"
+      width: 280
+      stack_frame: {
+        shape: sql_table
+        label: "SS:ESP = 0x23:0xBFFFF000"
+        row1: "local vars"
+        row2: "return addr"
+        row3: "..."
+        growing: "↓ grows down"
+      }
+    }
+    user_code: {
+      label: "User Code"
+      code: |'c
+        ; User process executing
+        mov eax, 4      ; sys_write
+        mov ebx, 1      ; stdout
+        int 0x80        ; TRIGGER!
+        ; <-- CPU suspends here
+      '|
+      width: 280
+    }
+    cpu_state_before: {
+      shape: class
+      label: "CPU State (Before)"
+      CS: "0x1B (Ring 3)"
+      SS: "0x23 (Ring 3)"
+      ESP: "0xBFFFF000"
+      CPL: "3 (Current Privilege)"
+    }
+  }
+  arrow_transition: {
+    shape: diamond
+    label: "int 0x80\nor\nsyscall"
+    style.fill: "#FFEB3B"
+    style.stroke: "#F57C00"
+    style.stroke-width: 3
+    width: 100
+  }
+  hardware: "Hardware Actions" {
+    direction: down
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    step1: {
+      label: "1. CPU detects privilege change"
+      width: 220
+    }
+    step2: {
+      label: "2. CPU reads TSS"
+      code: |'c
+        ; From TSS at selector 0x28
+        SS0  = 0x10  ; Kernel data
+        ESP0 = 0x90000 ; Kernel stack
+      '|
+      width: 220
+    }
+    step3: {
+      label: "3. CPU switches to kernel stack"
+      width: 220
+    }
+    step4: {
+      label: "4. CPU pushes to KERNEL stack:"
+      code: |'c
+        SS  = 0x23  ; User SS
+        ESP = 0xBFFFF000 ; User ESP
+        EFLAGS
+        CS  = 0x1B  ; User CS
+        EIP = addr after int 0x80
+      '|
+      width: 220
+    }
+    step1 -> step2 -> step3 -> step4: {style.stroke: transparent}
+  }
+  after: "AFTER (Kernel Mode)" {
+    direction: down
+    style.fill: "#FFEBEE"
+    style.stroke: "#F44336"
+    style.stroke-width: 2
+    kernel_stack: {
+      shape: rectangle
+      label: "Kernel Stack (Ring 0)"
+      width: 280
+      stack_frame: {
+        shape: sql_table
+        label: "SS:ESP = 0x10:0x8FFF0 (from TSS)"
+        eip_row: "EIP | 0x08048F2A"
+        cs_row: "CS  | 0x1B (Ring 3)"
+        flags: "EFLAGS | 0x202 (IF=1)"
+        esp_row: "ESP | 0xBFFFF000"
+        ss_row: "SS  | 0x23 (Ring 3)"
+        free: "... free space ..."
+        note: "↑ CPU pushed these 5 values"
+      }
+    }
+    kernel_code: {
+      label: "ISR Entry (Ring 0)"
+      code: |'c
+        ; Kernel handler executing
+        pusha           ; save regs
+        push ds, es...  ; save segs
+        mov ax, 0x10    ; kernel DS
+        mov ds, ax
+        call handler    ; C function
+        ; ... eventually iret
+      '|
+      width: 280
+    }
+    cpu_state_after: {
+      shape: class
+      label: "CPU State (After)"
+      CS: "0x08 (Ring 0)"
+      SS: "0x10 (Ring 0)"
+      ESP: "0x8FFF0"
+      CPL: "0 (Current Privilege)"
+    }
+  }
+}
+before.user_stack -> hardware.step1: "triggers\ninterrupt" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+  style.animated: true
+}
+hardware.step4 -> after.kernel_stack: "pushes 20 bytes\nonto kernel stack" {
+  style.stroke: "#F44336"
+  style.stroke-width: 2
+  style.animated: true
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  tss_box: "TSS (Task State Segment)" {
+    direction: right
+    style.fill: "#E1BEE7"
+    style.stroke: "#7B1FA2"
+    tss_struct: {
+      shape: sql_table
+      label: "struct tss_t (104 bytes)"
+      f0: "0x00 | link | _pad"
+      f1: "0x04 | ESP0 | ← CRITICAL"
+      f2: "0x08 | SS0  | ← CRITICAL"
+      f3: "0x0C | ESP1 | (unused)"
+      f4: "0x10 | SS1  | (unused)"
+      f5: "0x14 | ESP2 | (unused)"
+      f6: "0x18 | SS2  | (unused)"
+      f7: "0x1C | CR3  | (not used)"
+      f8: "... | EIP..EDI |"
+      f9: "... | seg regs  |"
+      note: "Only SS0:ESP0 matter for\nsoftware context switching"
+    }
+    tss_values: {
+      shape: sql_table
+      label: "Our TSS Values"
+      ss0: "SS0  = 0x10"
+      esp0: "ESP0 = 0x90000"
+      note: "(updated per context switch)"
+    }
+  }
+  iret_box: "iret (Return to User)" {
+    direction: down
+    style.fill: "#B3E5FC"
+    style.stroke: "#0288D1"
+    iret_label: {
+      label: "iret instruction"
+      style.bold: true
+    }
+    iret_code: {
+      code: |'asm
+        ; At end of ISR:
+        popa            ; restore regs
+        pop ds, es...   ; restore segs
+        add esp, 8      ; skip err+vec
+        iret            ; MAGIC!
+        ; iret pops from stack:
+        ; EIP  <- [esp+0]
+        ; CS   <- [esp+4]
+        ; EFLAGS <- [esp+8]
+        ; ESP  <- [esp+12] (if CPL change)
+        ; SS   <- [esp+16] (if CPL change)
+      '|
+      width: 300
+    }
+    iret_result: {
+      label: "Result: Back to Ring 3!"
+      style.fill: "#C8E6C9"
+    }
+    iret_label -> iret_code -> iret_result: {style.stroke: transparent}
+  }
+  gdt_box: "Segment Selectors" {
+    direction: down
+    style.fill: "#F3E5F5"
+    style.stroke: "#7B1FA2"
+    selector_table: {
+      shape: sql_table
+      label: "Selector Format"
+      fmt: "Bits | Field"
+      bits: "15-3 | Index into GDT"
+      ti: "2    | TI (0=GDT, 1=LDT)"
+      rpl: "1-0  | RPL (0=Ring0, 3=Ring3)"
+    }
+    values_table: {
+      shape: sql_table
+      label: "Our Selectors"
+      kcs: "0x08 | Kernel CS (Ring 0)"
+      kds: "0x10 | Kernel DS (Ring 0)"
+      ucs: "0x1B | User CS (Ring 3)"
+      uds: "0x23 | User DS (Ring 3)"
+      tss: "0x28 | TSS (Ring 0)"
+    }
+  }
+}
+row1.hardware -> row2.tss_box: "CPU reads\nESP0, SS0" {
+  style.stroke: "#7B1FA2"
+  style.stroke-dash: 4
+}
+row2.iret_box -> row1.before.user_code: "iret returns\nhere" {
+  style.stroke: "#0288D1"
+  style.stroke-dash: 4
+  style.animated: true
+}
+legend: {
+  near: bottom-right
+  style.fill: "#FAFAFA"
+  style.stroke: "#BDBDBD"
+  title: {
+    label: "Key Insight"
+    style.bold: true
+    style.underline: true
+  }
+  content: |md
+    The TSS exists ONLY to provide
+    SS0:ESP0 for ring transitions.
+    Without it, the CPU would push
+    to the user stack — a security
+    disaster (user code controls it).
+    iret reverses the process:
+    pops EIP, CS, EFLAGS, then
+    ESP, SS (detecting CPL change).
+  |
+}
+timing: {
+  near: bottom-left
+  style.fill: "#FFF8E1"
+  style.stroke: "#FFC107"
+  title: {
+    label: "Timing (approx)"
+    style.bold: true
+  }
+  content: |md
+    • TSS read: ~5 cycles (cached)
+    • Stack switch: ~10 cycles
+    • Push 5 values: ~15 cycles
+    • Total: ~30-50 cycles
+    iret return: ~20-30 cycles
+  |
+}

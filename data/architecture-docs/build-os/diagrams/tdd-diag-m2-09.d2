@@ -1,0 +1,220 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    header: "#7C3AED"
+    data: "#2563EB"
+    free: "#059669"
+    padding: "#6B7280"
+    pointer: "#D97706"
+    error: "#DC2626"
+  }
+}
+
+title: |md
+  # Circular Keyboard Buffer (Ring Buffer)
+  **Architecture Specification v1.0.2**
+  *sizeof=264 bytes (256B Data + 8B Pointers)*
+| {near: top-center}
+
+# 1. Memory Layout Details
+# ---------------------------------------------------------
+Buffer_Memory: {
+  style.stroke-width: 2
+  grid-rows: 2
+  vertical-gap: 20
+
+  Buffer_Region: {
+    label: "Physical Memory Layout (0x0000 - 0x00FF)"
+    grid-columns: 1
+    
+    Data_Visual: {
+      grid-columns: 8
+      grid-gap: 0
+      
+      # Visualizing the 256-byte array in chunks
+      m0: "0x00\n[Data]" {style.fill: "#DBEAFE"; width: 80; height: 60}
+      m1: "0x01\n[Data]" {style.fill: "#DBEAFE"; width: 80; height: 60}
+      m2: "0x02\n[Free]" {style.fill: "#D1FAE5"; width: 80; height: 60}
+      m3: "..." {style.fill: "#F3F4F6"; width: 80; height: 60}
+      m4: "0xFD\n[Free]" {style.fill: "#D1FAE5"; width: 80; height: 60}
+      m5: "0xFE\n[Data]" {style.fill: "#DBEAFE"; width: 80; height: 60}
+      m6: "0xFF\n[Data]" {style.fill: "#DBEAFE"; width: 80; height: 60}
+      
+      wrap: "WRAP" {
+        style: {
+          fill: "#FEF3C7"
+          stroke: "#D97706"
+          stroke-dash: 3
+          stroke-width: 2
+        }
+        width: 80
+        height: 60
+      }
+    }
+  }
+
+  Control_Block: {
+    label: "Control Structure (volatile uint32_t)"
+    grid-columns: 2
+    
+    read_ptr: "read_pos\nOffset: +256B" {
+      shape: hexagon
+      style.fill: "#FFEDD5"
+      style.stroke: "#D97706"
+    }
+    write_ptr: "write_pos\nOffset: +260B" {
+      shape: hexagon
+      style.fill: "#FFEDD5"
+      style.stroke: "#D97706"
+    }
+  }
+}
+
+# 2. Algorithm State Transitions
+# ---------------------------------------------------------
+Buffer_States: {
+  label: "FSM: Buffer Capacity Lifecycle"
+  style.fill: "#F9FAFB"
+  
+  start: ● {style.fill: black}
+  
+  EMPTY: {
+    label: "STATE: EMPTY\nInv: read == write"
+    style.fill: "#DCFCE7"
+    style.stroke: "#059669"
+  }
+  
+  PARTIAL: {
+    label: "STATE: PARTIAL\nInv: read != write && !Full"
+    style.fill: "#DBEAFE"
+    style.stroke: "#2563EB"
+  }
+  
+  FULL: {
+    label: "STATE: FULL\nInv: (write+1)%256 == read"
+    style.fill: "#FEE2E2"
+    style.stroke: "#DC2626"
+  }
+
+  start -> EMPTY
+  EMPTY -> PARTIAL: "put(c)\n[write++]"
+  PARTIAL -> PARTIAL: "put(c) | get()"
+  PARTIAL -> FULL: "put(c)\n[if next == read]"
+  FULL -> PARTIAL: "get()\n[read++]"
+  PARTIAL -> EMPTY: "get()\n[if read == write]"
+  
+  # Error/Illegal Paths
+  FULL -> FULL: "put(c)\nILLEGAL" {
+    style: {
+      stroke: "#DC2626"
+      stroke-dash: 3
+    }
+  }
+}
+
+# 3. Method Implementations (Logic Flow)
+# ---------------------------------------------------------
+Operations: {
+  grid-columns: 2
+  horizontal-gap: 50
+
+  Put_Op: {
+    label: "Method: buffer_put(char c)"
+    style.fill: "#F5F3FF"
+    
+    entry: ● {style.fill: "#7C3AED"}
+    calc: "next = (write + 1) & 0xFF"
+    check: "is next == read?" {shape: diamond}
+    store: "buffer[write] = c"
+    inc: "write = next"
+    drop: "EVENT: OVERFLOW\nSilent Drop" {
+      style.fill: "#FEE2E2"
+      style.stroke: "#DC2626"
+    }
+    exit: ● {style.double-border: true}
+
+    entry -> calc -> check
+    check -> drop: "TRUE"
+    check -> store: "FALSE"
+    store -> inc -> exit
+    drop -> exit
+  }
+
+  Get_Op: {
+    label: "Method: buffer_get()"
+    style.fill: "#ECFDF5"
+    
+    entry: ● {style.fill: "#059669"}
+    check: "is read == write?" {shape: diamond}
+    wait: "BLOCK: hlt\n(Wait for ISR)" {
+      style.fill: "#DBEAFE"
+      style.stroke-dash: 3
+    }
+    read: "data = buffer[read]"
+    inc: "read = (read + 1) & 0xFF"
+    ret: "return data"
+    
+    entry -> check
+    check -> wait: "TRUE"
+    wait -> check: "Interrupt"
+    check -> read: "FALSE"
+    read -> inc -> ret
+  }
+}
+
+# 4. Concurrency & Performance Analysis
+# ---------------------------------------------------------
+Analysis: {
+  grid-columns: 2
+  
+  Safety: |md
+    ### Thread Safety (Lockless)
+    - **Single-Producer (ISR):** Only updates `write_pos`.
+    - **Single-Consumer (Main):** Only updates `read_pos`.
+    - **Memory Barriers:** `volatile` keyword ensures hardware/compiler ordering.
+    - **Atomic Access:** Pointer updates are 32-bit aligned.
+  | {
+    style.fill: "#EFF6FF"
+    style.stroke: "#3B82F6"
+  }
+
+  Efficiency: |md
+    ### Performance Specs
+    - **Complexity:** O(1) for all operations.
+    - **Cache Line Alignment:** Buffer occupies 4 cache lines (64B each).
+    - **Usable Capacity:** 255 bytes (1 slot reserved to distinguish Empty vs Full).
+    - **Modulo Optimization:** Uses `& 0xFF` instead of `% 256` for speed.
+  | {
+    style.fill: "#FDF4FF"
+    style.stroke: "#A855F7"
+  }
+}
+
+# 5. Logical Connections
+# ---------------------------------------------------------
+Operations.Put_Op.store -> Buffer_Memory.Buffer_Region.Data_Visual: "Writes to Data[write]" {
+  style.stroke: "#7C3AED"
+  style.stroke-dash: 3
+}
+
+Operations.Get_Op.read -> Buffer_Memory.Buffer_Region.Data_Visual: "Reads from Data[read]" {
+  style.stroke: "#059669"
+  style.stroke-dash: 3
+}
+
+Buffer_States.FULL -> Operations.Put_Op.drop: "Triggers drop path" {
+  style.stroke: "#DC2626"
+}
+
+# Global Legend / Metadata
+Legend: {
+  near: bottom-right
+  
+  ptr: "Pointer/Index" {style.fill: "#FFEDD5"; style.stroke: "#D97706"}
+  dat: "Occupied Slot" {style.fill: "#DBEAFE"; style.stroke: "#2563EB"}
+  fre: "Free Slot" {style.fill: "#D1FAE5"; style.stroke: "#059669"}
+}

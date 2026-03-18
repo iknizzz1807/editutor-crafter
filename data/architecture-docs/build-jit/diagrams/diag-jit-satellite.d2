@@ -1,0 +1,495 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+classes: {
+  input: {
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2196F3"
+      stroke-width: 2
+    }
+  }
+  runtime: {
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#FF9800"
+      stroke-width: 2
+    }
+  }
+  compiler: {
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#4CAF50"
+      stroke-width: 2
+    }
+  }
+  memory: {
+    style: {
+      fill: "#FCE4EC"
+      stroke: "#E91E63"
+      stroke-width: 2
+    }
+  }
+  profile: {
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#9C27B0"
+      stroke-width: 2
+    }
+  }
+}
+title: |md
+  # JIT Compiler Architecture
+  **Satellite Map — All Components & Data Flow**
+| {near: top-center}
+# ═══════════════════════════════════════════════════════════════
+# ROW 1: INPUT LAYER
+# ═══════════════════════════════════════════════════════════════
+row_input: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  bytecode_input: {
+    direction: down
+    class: input
+    label: "Bytecode Input"
+    bytecode_stream: {
+      shape: queue
+      label: "Bytecode\nStream"
+      width: 120
+    }
+    func_metadata: {
+      shape: sql_table
+      label: "Function Metadata"
+      f0: "func_id | int"
+      f1: "arg_count | int"
+      f2: "local_count | int"
+      f3: "bytecode_len | size_t"
+    }
+  }
+}
+# ═══════════════════════════════════════════════════════════════
+# ROW 2: EXECUTION LAYER (Interpreter + Profiler)
+# ═══════════════════════════════════════════════════════════════
+row_exec: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  interpreter: {
+    direction: down
+    class: runtime
+    label: "Interpreter\n(Tier 0)"
+    dispatch_loop: {
+      shape: class
+      label: "Dispatch Loop"
+      -pc: "uint8_t*"
+      -stack: "int64_t[]"
+      -locals: "int64_t[]"
+      -stack_top: "int"
+      +run(frame): "int64_t"
+    }
+    interp_state: {
+      shape: sql_table
+      label: "InterpreterFrame"
+      f0: "0x00 | uint8_t* | pc"
+      f1: "0x08 | int64_t* | operand_stack"
+      f2: "0x10 | int64_t* | local_vars"
+      f3: "0x18 | int | stack_top"
+      total: "32 bytes"
+    }
+  }
+  profiler: {
+    direction: down
+    class: profile
+    label: "Profiler"
+    invocation_counter: {
+      shape: class
+      label: "InvocationCounter"
+      -counters: "int32_t[]"
+      -threshold: "int32_t"
+      +decrement(func_id): "bool"
+      +is_hot(func_id): "bool"
+    }
+    hot_check: {
+      label: "Hot Check"
+      width: 200
+      code: |'c
+        if (--counter[func_id] == 0) {
+          trigger_jit_compilation(func_id);
+        }
+      '|
+    }
+    deopt_profile: {
+      shape: sql_table
+      label: "DeoptProfile"
+      f0: "func_id | int"
+      f1: "deopt_count | int"
+      f2: "is_blacklisted | bool"
+      f3: "guard_failures[] | int"
+    }
+  }
+}
+# ═══════════════════════════════════════════════════════════════
+# ROW 3: COMPILATION LAYER
+# ═══════════════════════════════════════════════════════════════
+row_compile: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  reg_allocator: {
+    direction: down
+    class: compiler
+    label: "Register Allocator"
+    ra_state: {
+      shape: class
+      label: "RegAllocator"
+      -free_regs: "Reg[8]"
+      -free_count: "int"
+      -vregs: "VReg[64]"
+      -vreg_count: "int"
+      +alloc(): "Reg"
+      +spill(vreg): "void"
+      +reload(vreg): "Reg"
+    }
+    vreg_entry: {
+      shape: sql_table
+      label: "VReg Entry"
+      f0: "0x00 | Reg | reg"
+      f1: "0x04 | int | spill_slot"
+      f2: "0x08 | bool | live"
+      total: "12 bytes"
+    }
+    virtual_stack: {
+      shape: class
+      label: "VirtualStack"
+      -entries: "StackEntry[256]"
+      -depth: "int"
+      +push(vreg): "void"
+      +pop(): "StackEntry"
+      +peek(off): "StackEntry*"
+    }
+  }
+  code_emitter: {
+    direction: down
+    class: compiler
+    label: "Code Emitter"
+    emitter_struct: {
+      shape: class
+      label: "CodeEmitter"
+      -buffer: "uint8_t*"
+      -cursor: "uint8_t*"
+      -capacity: "size_t"
+      -used: "size_t"
+      +emit_byte(b): "void"
+      +emit_uint32(v): "void"
+      +emit_rex(w,r,x,b): "void"
+      +emit_modrm(mod,reg,rm): "void"
+    }
+    encoding_helpers: {
+      shape: class
+      label: "Encoding Functions"
+      +emit_mov_r64_r64(dst, src): "void"
+      +emit_add_r64_r64(dst, src): "void"
+      +emit_imul_r64_r64(dst, src): "void"
+      +emit_idiv_r64(divisor): "void"
+      +emit_ret(): "void"
+    }
+    x86_encoding: {
+      shape: sql_table
+      label: "x86-64 Instruction Format"
+      f0: "0 | [legacy_prefixes] | 0-4 bytes"
+      f1: "1 | [REX prefix] | 0-1 byte"
+      f2: "2 | opcode | 1-3 bytes"
+      f3: "3 | [ModR/M] | 0-1 byte"
+      f4: "4 | [SIB] | 0-1 byte"
+      f5: "5 | [displacement] | 0-4 bytes"
+      f6: "6 | [immediate] | 0-8 bytes"
+    }
+  }
+  optimizer: {
+    direction: down
+    class: compiler
+    label: "Optimizer"
+    opt_passes: {
+      shape: class
+      label: "OptimizationPasses"
+      +constant_folding(): "void"
+      +strength_reduction(): "void"
+      +dead_code_elim(): "void"
+      +inline_expansion(): "void"
+    }
+    const_fold_example: {
+      label: "Constant Folding"
+      width: 280
+      code: |'c
+        // PUSH 10; PUSH 20; ADD
+        // Before: emit mov + add
+        // After:  emit mov rax, 30
+      '|
+    }
+    strength_red: {
+      label: "Strength Reduction"
+      width: 280
+      code: |'c
+        // x * 8  -> shl x, 3
+        // x / 2  -> shr x, 1  (unsigned)
+        // x % 2  -> and x, 1
+      '|
+    }
+  }
+}
+# ═══════════════════════════════════════════════════════════════
+# ROW 4: ABI + DEOPT LAYER
+# ═══════════════════════════════════════════════════════════════
+row_abi: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  abi_layer: {
+    direction: down
+    class: runtime
+    label: "ABI Layer\n(System V AMD64)"
+    prologue: {
+      shape: class
+      label: "Prologue Generator"
+      +emit_push_rbp(): "void"
+      +emit_mov_rbp_rsp(): "void"
+      +emit_save_callee_saved(n): "void"
+      +emit_sub_rsp(space): "void"
+    }
+    epilogue: {
+      shape: class
+      label: "Epilogue Generator"
+      +emit_add_rsp(space): "void"
+      +emit_restore_callee_saved(n): "void"
+      +emit_pop_rbp(): "void"
+      +emit_ret(): "void"
+    }
+    arg_passing: {
+      shape: sql_table
+      label: "Argument Registers"
+      a0: "arg 1 | rdi"
+      a1: "arg 2 | rsi"
+      a2: "arg 3 | rdx"
+      a3: "arg 4 | rcx"
+      a4: "arg 5 | r8"
+      a5: "arg 6 | r9"
+      a6: "arg 7+ | stack"
+    }
+    stack_frame: {
+      shape: sql_table
+      label: "Stack Frame Layout"
+      f0: "+0 | rbp | saved frame ptr"
+      f1: "+8 | ret addr | from caller"
+      f2: "+16 | arg7+ | stack args"
+      f3: "-8 | callee saved | rbx, r12-r15"
+      f4: "-N | locals | rbp-N"
+    }
+  }
+  deoptimizer: {
+    direction: down
+    class: profile
+    label: "Deoptimizer"
+    guard_emitter: {
+      shape: class
+      label: "GuardEmitter"
+      -entries: "DeoptEntry[]"
+      -entry_count: "int"
+      +emit_type_guard(reg, tag): "int"
+      +emit_null_guard(reg): "int"
+      +emit_bounds_guard(idx, len): "int"
+      +snapshot_state(): "void"
+    }
+    deopt_entry: {
+      shape: sql_table
+      label: "DeoptEntry (Side Table)"
+      f0: "jit_address | uint8_t*"
+      f1: "bytecode_offset | uint32_t"
+      f2: "guard_type | GuardType"
+      f3: "mapping_count | int"
+      f4: "value_mappings[] | ValueMap"
+    }
+    state_mapper: {
+      shape: class
+      label: "StateMapper"
+      +reconstruct_frame(entry, regs, rbp): "InterpFrame*"
+      +map_register_to_stack(reg, slot): "void"
+      +map_spill_to_local(offset, slot): "void"
+    }
+    deopt_stub: {
+      label: "Deopt Stub (Generated)"
+      width: 300
+      code: |'asm
+        push rax; push rbx; push rcx
+        push rdx; push rsi; push rdi
+        mov rdi, ENTRY_ID
+        mov rsi, rsp
+        call deoptimize
+        ; longjmp to interpreter
+      '|
+    }
+  }
+}
+# ═══════════════════════════════════════════════════════════════
+# ROW 5: MEMORY LAYER
+# ═══════════════════════════════════════════════════════════════
+row_memory: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  exec_memory: {
+    direction: down
+    class: memory
+    label: "Executable Memory\n(Code Cache)"
+    mmap_flow: {
+      shape: class
+      label: "Memory Lifecycle"
+      +mmap(RW): "void*"
+      +emit_code(): "void"
+      +mprotect(RX): "void"
+      +clear_cache(): "void"
+      +execute(): "int64_t"
+    }
+    w_x_lifecycle: {
+      label: "W^X Protocol"
+      width: 320
+      code: |'c
+        // Phase 1: Allocate RW
+        void* code = mmap(NULL, 4096,
+          PROT_READ | PROT_WRITE, ...);
+        // Phase 2: Emit code
+        emit_mov_r64_imm32(e, RAX, 42);
+        emit_ret(e);
+        // Phase 3: Make RX
+        mprotect(code, 4096, PROT_READ | PROT_EXEC);
+        __builtin___clear_cache(code, code+4096);
+        // Phase 4: Execute
+        int64_t result = ((int64_t(*)())code)();
+      '|
+    }
+    code_cache: {
+      shape: sql_table
+      label: "CodeCache Structure"
+      f0: "base | uint8_t*"
+      f1: "capacity | size_t"
+      f2: "used | size_t"
+      f3: "entries | CacheEntry[]"
+    }
+  }
+  dispatch_table: {
+    direction: down
+    class: memory
+    label: "Dispatch Table"
+    dispatch_entry: {
+      shape: sql_table
+      label: "DispatchEntry"
+      f0: "interpreter_entry | void*"
+      f1: "jit_entry | void*"
+      f2: "is_valid | bool"
+      f3: "deopt_table | DeoptTable*"
+    }
+    call_path: {
+      label: "Call Dispatch"
+      width: 320
+      code: |'c
+        DispatchEntry* e = &dispatch[func_id];
+        if (e->is_valid && e->jit_entry) {
+          return ((JitFunc)e->jit_entry)(args...);
+        } else {
+          return interpret_function(func_id, args...);
+        }
+      '|
+    }
+  }
+}
+# ═══════════════════════════════════════════════════════════════
+# CONNECTIONS: DATA FLOW (solid lines)
+# ═══════════════════════════════════════════════════════════════
+row_input.bytecode_input -> row_exec.interpreter: "bytecode"
+row_exec.interpreter.dispatch_loop -> row_exec.profiler.invocation_counter: "check hot"
+row_exec.profiler.invocation_counter -> row_compile.reg_allocator: "trigger compile" {
+  style.stroke: "#9C27B0"
+  style.stroke-width: 2
+}
+row_compile.reg_allocator -> row_compile.code_emitter: "reg assignments"
+row_compile.optimizer -> row_compile.code_emitter: "optimized IR"
+row_compile.code_emitter -> row_abi.abi_layer: "raw bytes"
+row_abi.abi_layer -> row_abi.deoptimizer: "insert guards"
+row_abi.deoptimizer -> row_memory.exec_memory: "final code"
+row_memory.exec_memory -> row_memory.dispatch_table: "jit_entry ptr"
+row_memory.dispatch_table -> row_exec.interpreter: "call path"
+# ═══════════════════════════════════════════════════════════════
+# CONNECTIONS: DEOPT FLOW (dashed lines)
+# ═══════════════════════════════════════════════════════════════
+row_abi.deoptimizer -> row_exec.interpreter: "deopt resume" {
+  style.stroke-dash: 4
+  style.stroke: "#E91E63"
+}
+row_abi.deoptimizer -> row_exec.profiler.deopt_profile: "record failure" {
+  style.stroke-dash: 4
+  style.stroke: "#9C27B0"
+}
+row_exec.profiler.deopt_profile -> row_memory.dispatch_table: "blacklist" {
+  style.stroke-dash: 4
+  style.stroke: "#F44336"
+}
+# ═══════════════════════════════════════════════════════════════
+# LEGEND
+# ═══════════════════════════════════════════════════════════════
+legend: {
+  near: bottom-right
+  title: "Legend"
+  input_layer: {
+    class: input
+    label: "Input"
+    width: 80
+  }
+  runtime_layer: {
+    class: runtime
+    label: "Runtime"
+    width: 80
+  }
+  compiler_layer: {
+    class: compiler
+    label: "Compiler"
+    width: 80
+  }
+  memory_layer: {
+    class: memory
+    label: "Memory"
+    width: 80
+  }
+  profile_layer: {
+    class: profile
+    label: "Profile"
+    width: 80
+  }
+}
+legend_layout: {
+  near: bottom-right
+  direction: right
+  style.stroke: transparent
+  l1: "→ data flow"
+  l2: "⇢ deopt path" {
+    style.stroke-dash: 4
+    style.stroke: "#E91E63"
+  }
+  l3: "● hot trigger" {
+    style.stroke: "#9C27B0"
+    style.stroke-width: 2
+  }
+}
+milestone_markers: {
+  near: bottom-center
+  direction: right
+  style.stroke: transparent
+  m1: "M1: Exec Mem"
+  m2: "M2: Translate"
+  m3: "M3: ABI"
+  m4: "M4: Tiered"
+  m5: "M5: Deopt"
+}

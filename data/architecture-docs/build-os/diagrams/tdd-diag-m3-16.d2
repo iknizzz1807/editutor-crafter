@@ -1,0 +1,247 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- CLASSES FOR CONSISTENCY ---
+classes: {
+  process_box: {
+    style: {
+      fill: "#E8F4E8"
+      stroke: "#4A90D2"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  running_process: {
+    style: {
+      fill: "#4CAF50"
+      stroke: "#2E7B4E"
+      font-color: "white"
+      bold: true
+      shadow: true
+    }
+  }
+  ready_process: {
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1976D2"
+      font-color: "#0D47A1"
+    }
+  }
+  kernel_internal: {
+    style: {
+      fill: "#F3F4F6"
+      stroke: "#374151"
+      stroke-dash: 3
+    }
+  }
+  hardware_component: {
+    style: {
+      fill: "#FEF3C7"
+      stroke: "#D97706"
+      stroke-width: 2
+    }
+  }
+}
+
+# --- HEADER ---
+header: "OS Kernel: Preemptive Round-Robin Scheduling Logic" {
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+
+# --- HARDWARE LAYER ---
+hardware: "Hardware Execution Layer" {
+  timer_chip: "PIT / APIC Timer" {
+    shape: square
+    class: hardware_component
+    tooltip: "Generates IRQ0 every 1-10ms"
+  }
+  
+  cpu_core: "CPU Execution Context" {
+    style.fill: "#F9FAFB"
+    style.double-border: true
+    
+    registers: "Active Register Set" {
+      shape: sql_table
+      EIP: "Instruction Pointer"
+      ESP: "Stack Pointer"
+      CR3: "Page Dir Base (PDBR)"
+      EFLAGS: "System Flags"
+      GPRs: "EAX, EBX, ECX, EDX, ESI, EDI"
+    }
+  }
+}
+
+# --- KERNEL SCHEDULER LAYER ---
+kernel: "Kernel Space (Ring 0 Memory)" {
+  style.fill: "#F0FDF4"
+  style.stroke: "#166534"
+  
+  interrupt_handler: "IRQ0 Handler (ASM Stub)" {
+    class: kernel_internal
+    step1: "Save Caller-Saved Regs"
+    step2: "Call scheduler_tick()"
+    step1 -> step2
+  }
+
+  scheduler_logic: "scheduler_tick() (C Code)" {
+    class: process_box
+    decrement: "current->time_slice--"
+    check: "if (slice <= 0)?"
+    pick_next: "Select Next Task from Ready Queue"
+    
+    decrement -> check -> pick_next
+  }
+
+  context_switch: "switch_to(old, new)" {
+    class: process_box
+    style.fill: "#FFF7ED"
+    
+    op_pushad: "pushad (Save GPRs to old stack)"
+    op_save_esp: "old->k_esp = CPU.ESP"
+    op_load_esp: "CPU.ESP = new->k_esp"
+    op_switch_cr3: "Update CR3 (TLB Flush)"
+    op_update_tss: "TSS.ESP0 = new->k_stack_top"
+    op_popad: "popad (Restore GPRs from new stack)"
+    
+    op_pushad -> op_save_esp -> op_load_esp -> op_switch_cr3 -> op_update_tss -> op_popad
+  }
+}
+
+# --- KERNEL DATA STRUCTURES ---
+data_structures: "System Control Structures" {
+  ready_queue: "Ready Queue (FIFO)" {
+    shape: cylinder
+    style.fill: "#FEF9C3"
+    style.stroke: "#CA8A04"
+  }
+
+  pcb_mem: "Process Control Block (sizeof=64B)" {
+    shape: sql_table
+    style.fill: "#F3E8FF"
+    style.stroke: "#7E22CE"
+    
+    0x00: "k_esp" {constraint: "uint32_t"}
+    0x04: "cr3_phys" {constraint: "uint32_t"}
+    0x08: "pid" {constraint: "uint16_t"}
+    0x0A: "state" {constraint: "uint8_t"}
+    0x0B: "priority" {constraint: "uint8_t"}
+    0x0C: "time_slice" {constraint: "uint32_t"}
+    0x10: "next_pcb_ptr" {constraint: "void*"}
+    0x14: "padding" {style.fill: "#D1D5DB"}
+  }
+}
+
+# --- USER SPACE PROCESSES ---
+processes: "User Space Environment" {
+  proc_a: "Process A (PID 101)" {
+    class: running_process
+    tooltip: "Quantum Expired -> Transition to Ready"
+  }
+  proc_b: "Process B (PID 102)" {
+    class: ready_process
+    tooltip: "Head of Queue -> Transition to Running"
+  }
+  proc_c: "Process C (PID 103)" {
+    class: ready_process
+  }
+}
+
+# --- CONTROL FLOW LOGIC ---
+
+# 1. Hardware Trigger
+hardware.timer_chip -> kernel.interrupt_handler: "Hardware IRQ0" {
+  style: {
+    stroke: "#3498DB"
+    stroke-width: 4
+    animated: true
+  }
+}
+
+# 2. Kernel Flow
+kernel.interrupt_handler -> kernel.scheduler_logic: "Interrupt Dispatch"
+kernel.scheduler_logic.pick_next -> data_structures.ready_queue: "Dequeue Head"
+kernel.scheduler_logic -> kernel.context_switch: "Trigger Switch" {
+  style.stroke: "#D97706"
+  style.stroke-width: 2
+}
+
+# 3. Memory & Register Mutations
+kernel.context_switch.op_save_esp -> processes.proc_a: "Serialize Stack" {
+  style.stroke: "#EF4444"
+  source-arrowhead: circle
+}
+
+kernel.context_switch.op_load_esp -> processes.proc_b: "Load new ESP" {
+  style.stroke: "#10B981"
+  style.animated: true
+}
+
+kernel.context_switch.op_switch_cr3 -> hardware.cpu_core.registers.CR3: "Reload PDBR" {
+  style.stroke: "#F59E0B"
+  style.stroke-dash: 3
+}
+
+# 4. Process State Linkages
+data_structures.ready_queue -> processes.proc_b: "Next to Run"
+data_structures.ready_queue -> processes.proc_c
+
+# --- DOCUMENTATION ---
+explanation: |md
+  ### Round-Robin Implementation Detail
+  
+  **1. Interrupt Entry**:
+  The Timer (PIT) triggers IRQ0. Hardware pushes `SS:ESP`, `EFLAGS`, `CS:EIP` onto the current kernel stack. 
+  The ASM handler saves remaining registers (`pushad`).
+
+  **2. Scheduling Decision**:
+  `scheduler_tick()` determines the current process has exhausted its quantum.
+  It moves `Proc A` from **Running** to **Ready** and selects `Proc B`.
+
+  **3. Context Switch Mechanics**:
+  - `switch_to` is called with `(&pcb_a, &pcb_b)`.
+  - **Save Phase**: Current `ESP` is stored in `pcb_a->k_esp`.
+  - **Swap Phase**: CPU `ESP` is updated to `pcb_b->k_esp`.
+  - **Address Space**: `CR3` is reloaded if address spaces differ, forcing a TLB flush.
+  - **Task State**: `TSS.ESP0` is updated so future interrupts land on `Proc B`'s kernel stack.
+  - **Restore Phase**: `popad` and `iretd` return execution to `Proc B` at its last known `EIP`.
+| {
+  near: bottom-center
+  style.stroke: "#4A90D2"
+  style.fill: "#F8FAFC"
+  style.font-size: 14
+}
+
+# --- LEGEND ---
+legend: "Technical Legend" {
+  near: bottom-right
+  
+  L1: "Interrupt Signal" {
+    style.stroke: "#3498DB"
+    style.stroke-width: 3
+  }
+  L2: "Scheduler Logic" {
+    style.stroke: "#166534"
+    style.stroke-width: 2
+  }
+  L3: "Register/Stack Update" {
+    style.stroke: "#F59E0B"
+    style.stroke-width: 2
+  }
+  
+  S1: "State: Running" {
+    class: running_process
+  }
+  S2: "State: Ready" {
+    class: ready_process
+  }
+}

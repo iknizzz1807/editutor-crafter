@@ -1,0 +1,104 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+  }
+}
+
+title: {
+  shape: rectangle
+  label: |md
+    # Deoptimization Execution Flow
+    **Standard: Intel CPU Manual / System Blueprint**
+    *Logic: Guard Failure → State Reconstruction → Interpreter Resume*
+  |
+  style: {
+    stroke-width: 0
+    fill: transparent
+  }
+}
+
+deopt_process: {
+  shape: sequence_diagram
+
+  JIT_Code: "JIT Code (x86_64)"
+  Guard_Check: "Guard Interface"
+  Deopt_Stub: "Deopt Stub (bridge.S)"
+  Deopt_Table: "Side Table (metadata.bin)"
+  Interpreter: "Interpreter Loop"
+
+  JIT_Code.fast -> Guard_Check.fast: "0x48 0x83 0xe0 0x07 | test rax, TAG_MASK"
+  
+  Guard_Check."Assumption Check"
+  
+  Guard_Check.fast -> Deopt_Stub.entry: "0x0f 0x85 | jnz deopt_entry" {
+    style.stroke: red
+    style.animated: true
+  }
+
+  group Phase 1: Context Preservation {
+    Deopt_Stub.entry -> Deopt_Stub.save: "pushfq | Save Flags"
+    Deopt_Stub.save -> Deopt_Stub.save: "push rax, rbx, rcx, rdx | GPRs"
+    Deopt_Stub.save -> Deopt_Stub.save: "push rsi, rdi, rbp, r8-r11"
+  }
+
+  group Phase 2: Metadata Retrieval {
+    Deopt_Stub.save -> Deopt_Table.lookup: "lookup_metadata(RIP)"
+    Deopt_Table."Offset: 0x140 | ID: 42"
+    Deopt_Table.lookup -> Deopt_Table.lookup: "parse bytecode_pc"
+    Deopt_Table.lookup -> Deopt_Table.lookup: "parse slot_map[N]"
+    Deopt_Table.lookup -> Deopt_Stub.recon: "return DeoptDescriptor"
+  }
+
+  group Phase 3: Stack Reconstruction {
+    Deopt_Stub.recon -> Deopt_Stub.recon: "map REG_RAX -> stack[0]"
+    Deopt_Stub.recon -> Deopt_Stub.recon: "map REG_RBX -> stack[1]"
+    Deopt_Stub.recon -> Deopt_Stub.recon: "map SPILL_0x18 -> local[2]"
+    Deopt_Stub.recon -> Interpreter.resume: "switch_stack_pointer(new_rsp)"
+  }
+
+  group Phase 4: Fallback Execution {
+    Interpreter."PC = 0xAF (Bytecode)"
+    Interpreter.resume -> Interpreter.resume: "load_frame_state()"
+    Interpreter.resume -> Interpreter.resume: "re-enter dispatch_loop()"
+  }
+
+  # Annotations for implementation clarity
+  JIT_Code."Hot path failure detected"
+  Deopt_Stub."Bridge: Assembly to C++ Transition"
+  Deopt_Table."Binary-encoded mapping table"
+  Interpreter."Safe, slow execution resumes"
+}
+
+# Documentation / Engineering Notes
+notes: {
+  near: bottom-center
+  direction: right
+  style.stroke: transparent
+  
+  memory_layout: {
+    shape: sql_table
+    label: "DeoptDescriptor Structure"
+    f1: "0x00 | uint32_t | bytecode_offset"
+    f2: "0x04 | uint16_t | num_slots"
+    f3: "0x06 | uint16_t | flags (is_inline)"
+    f4: "0x08 | SlotMap*  | mappings_ptr"
+    sz: "Total: 16 bytes"
+  }
+
+  register_state: {
+    shape: code
+    label: "Deopt Stub Entry (ASM)"
+    code: |'nasm
+    deopt_entry:
+      push rbp
+      mov rbp, rsp
+      sub rsp, 0x80  ; Spill space
+      mov [rsp + 0x00], rax
+      call reconstruct_frame
+    '|
+  }
+}
+
+deopt_process.Deopt_Stub -> notes.memory_layout: "Uses" {style.stroke-dash: 5}

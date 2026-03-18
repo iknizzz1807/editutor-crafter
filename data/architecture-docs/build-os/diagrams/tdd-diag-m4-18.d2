@@ -1,0 +1,286 @@
+layout-engine: elk
+theme-id: 4
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- HEADER: TECHNICAL SPECIFICATION ---
+title: |md
+  # Context Switch Timing Breakdown
+  **Architecture:** x86-32 (Protected Mode)
+  **Performance Targets:** 500-1500 cycles (~0.5-1.5 μs @ 1.0 GHz)
+  **OS Kernel:** Preemptive Monolithic (e.g., Linux 2.4 style)
+  **Frame Size:** 68 Bytes Total (Interrupt + GPRs + Segments)
+| {near: top-center}
+
+direction: right
+
+classes: {
+  phase: {
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2E86AB"
+      stroke-width: 2
+      border-radius: 8
+      shadow: true
+    }
+  }
+  timing_box: {
+    width: 240
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#E65100"
+      stroke-width: 1
+      font: mono
+      font-size: 14
+      bold: true
+      border-radius: 4
+    }
+  }
+  total_summary_class: {
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+      stroke-width: 3
+      font: mono
+      bold: true
+      double-border: true
+    }
+  }
+  arrow_phase: {
+    style: {
+      stroke: "#2E86AB"
+      stroke-width: 4
+      animated: true
+    }
+  }
+  cache_line_marker: {
+    style: {
+      stroke: "#B0BEC5"
+      stroke-dash: 5
+      stroke-width: 1
+    }
+  }
+  high_latency: {
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#C62828"
+      bold: true
+    }
+  }
+}
+
+# --- STAGE 1: HARDWARE INTERRUPT ---
+isr_entry: {
+  class: phase
+  header: "ISR ENTRY (IRQ0)"
+  logic: |md
+    **Hardware Logic (Microcode):**
+    1. Check CPL vs DPL
+    2. Push `SS`, `ESP` (if privilege change)
+    3. Push `EFLAGS`, `CS`, `EIP`
+    4. Fetch IDT[32] Gate Descriptor
+  |
+  cost: "T1: 50-80 cycles" { class: timing_box }
+}
+
+# --- STAGE 2: CPU STATE PRESERVATION ---
+save_regs: {
+  class: phase
+  header: "SAVE CPU STATE"
+  logic: |md
+    **Software Assembly Stub:**
+    - `pushad`: (EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI)
+    - `push ds, es, fs, gs`
+    - `mov eax, KERNEL_DS`
+    - `mov ds, eax; mov es, eax`
+  |
+  cost: "T2: 20-30 cycles" { class: timing_box }
+}
+
+# --- STAGE 3: SCHEDULER EXECUTION ---
+scheduler: {
+  class: phase
+  header: "SCHEDULER LOGIC"
+  logic: |md
+    **Kernel C Code:** `schedule()`
+    - Decr `current->time_slice`
+    - Check `TASK_RUNNING` queue
+    - **Pick `next_task`** (O(1) or O(log N))
+    - Logic path: `preempt_schedule_irq`
+  |
+  cost: "T3: 100-400 cycles" { class: timing_box }
+}
+
+# --- STAGE 4: PCB CONTEXT SWAP ---
+asm_switch: {
+  class: phase
+  header: "ASM STACK SWITCH"
+  logic: |md
+    **Atomic Swap:** `switch_to(prev, next)`
+    - `mov [prev->esp], esp` 
+    - **`mov esp, [next->esp]`**
+    - `mov [TSS->esp0], next_kstack_top`
+    - Update `current` pointer (TLS)
+  |
+  cost: "T4: 30-50 cycles" { 
+    class: timing_box
+    style.stroke-width: 4
+  }
+}
+
+# --- STAGE 5: MMU/PAGING OVERHEAD ---
+cr3_load: {
+  class: [phase; high_latency]
+  header: "MMU / TLB FLUSH"
+  logic: |md
+    **Privileged:** `mov cr3, pdir_phys`
+    - **Global TLB Invalidation** (non-G bits)
+    - Pipeline Stall (Serializing instruction)
+    - Page Directory Cache Misses (Cold L1/L2)
+  |
+  cost: "T5: 150-600 cycles" { 
+    class: timing_box 
+    style.fill: "#FFEBEE"
+    style.stroke: "#C62828"
+  }
+}
+
+# --- STAGE 6: RESTORE NEW STATE ---
+restore: {
+  class: phase
+  header: "RESTORE CPU STATE"
+  logic: |md
+    **Software Assembly Stub:**
+    - `pop gs, fs, es, ds`
+    - `popad` (Restore GP registers)
+    - `clts` (Clear Task Switched bit in CR0)
+  |
+  cost: "T6: 20-30 cycles" { class: timing_box }
+}
+
+# --- STAGE 7: RESUME EXECUTION ---
+iret_phase: {
+  class: phase
+  header: "IRET (RING 3)"
+  logic: |md
+    **Instruction:** `iret`
+    - Pop `EIP`, `CS`, `EFLAGS`
+    - Pop `ESP`, `SS` (User Stack restore)
+    - Return to CPL=3
+    - Pipeline serializing event
+  |
+  cost: "T7: 20-40 cycles" { class: timing_box }
+}
+
+# --- STACK FRAME VISUALIZATION (Memory Layout) ---
+# pcb_layout moved to constant 'near' for ELK compliance
+pcb_layout: "PCB / Stack Frame Layout" {
+  shape: sql_table
+  style.fill: "#F3E5F5"
+  0x00: "Kernel ESP" {constraint: "4 bytes (offset 0)"}
+  0x04: "Process ID" {constraint: "4 bytes (offset 4)"}
+  0x08: "State (RUNNING/SLEEP)" {constraint: "4 bytes (offset 8)"}
+  0x0C: "Page Directory (CR3)" {constraint: "4 bytes (offset 12)"}
+  0x10: "Time Slice" {constraint: "4 bytes (offset 16)"}
+  0x14: "Pending Signals" {constraint: "8 bytes (offset 20)"}
+  "---": "PADDING" {style.stroke-dash: 1}
+  0x40: "L1 Cache Boundary" {style.stroke: red; style.stroke-dash: 5}
+  
+  near: bottom-left
+}
+
+# --- TOTALS SUMMARY ---
+total_summary: {
+  class: total_summary_class
+  label: "SYSTEM SUMMARY METRICS"
+  breakdown: |md
+    ### Context Switch Performance
+    - **Min Cost (Thread Switch):** ~240 cycles
+    - **Avg Cost (Process Switch):** ~850 cycles
+    - **Max Cost (Heavy TLB churn):** ~1500+ cycles
+    
+    *Latency = Σ(T1...T7) + Cache Refill Latency*
+    *Note: TLB Flush accounts for >50% of cost*
+  |
+}
+
+# --- FLOW CONNECTIONS ---
+isr_entry -> save_regs: "IRQ 0x20" {class: arrow_phase}
+save_regs -> scheduler: "p->state = READY" {class: arrow_phase}
+scheduler -> asm_switch: "next = select()" {class: arrow_phase}
+asm_switch -> cr3_load: "if (prev->mm != next->mm)" {class: arrow_phase}
+cr3_load -> restore: "Address Space Active" {class: arrow_phase}
+restore -> iret_phase: "Stack Prepared" {class: arrow_phase}
+iret_phase -> total_summary: "Context Switched" {
+  style: {
+    stroke: "#2E7D32"
+    stroke-width: 3
+    stroke-dash: 2
+  }
+}
+
+# --- LEGEND ---
+# Using constant near for ELK compliance
+legend: {
+  near: bottom-right
+  
+  fast_path: "Fast Path (L1/TLB Hit)" {
+    style: {
+      fill: "#E8F4FD"
+      stroke: "#2E86AB"
+    }
+  }
+  
+  slow_path: "Slow Path (TLB/L2 Miss)" {
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#C62828"
+    }
+  }
+  
+  cache_marker: "64B Cache Line Marker" {
+    style.stroke-dash: 5
+    style.stroke: "#B0BEC5"
+  }
+}
+
+# --- CACHE LINE VISUALS ---
+# Static 'near' positioning for ELK
+L1_Line_1: {
+  label: "L1 Cache Line Boundary (64B Offset)"
+  height: 2
+  width: 1000
+  style.stroke-dash: 5
+  style.stroke: "#B0BEC5"
+  near: top-left
+}
+
+# Engineering Note on Stack Alignment
+stack_spec: |md
+  ### Stack Alignment Detail (ESP)
+  - Must be 16-byte aligned for SSE/AVX
+  - Interrupt Frame: 20 bytes
+  - Reg Frame: 32 bytes (pushad)
+  - Seg Frame: 16 bytes (ds, es, fs, gs)
+  - **Total Required Frame: 68 bytes**
+| {
+  near: top-left
+  style.font-size: 11
+  style.fill: "#FAFAFA"
+}
+
+# Visualizing Cache Miss Latency
+latency_viz: {
+  label: "TLB/Cache Penalty Gradient"
+  style: {
+    fill: "linear-gradient(to right, #E8F4FD, #FFEBEE)"
+    stroke: "#B0BEC5"
+    stroke-dash: 3
+  }
+  near: bottom-center
+}

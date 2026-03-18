@@ -1,0 +1,426 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Kernel Heap Allocator Design
+  Linked-list allocator with block splitting and coalescing
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  heap_state: {
+    direction: down
+    label: "Heap State"
+    header_struct: {
+      shape: class
+      label: "block_header_t (16 bytes)"
+      +size: "uint32_t"
+      +free: "uint8_t"
+      +magic: "uint8_t"
+      +_pad: "uint16_t"
+      +next: "block_header_t*"
+    }
+    magic_vals: {
+      label: "Magic Bytes"
+      shape: sql_table
+      alloc: "0xA1 | ALLOCATED"
+      free: "0xF1 | FREE"
+    }
+  }
+  heap_layout: {
+    direction: down
+    label: "Heap Memory Layout"
+    mem_block: {
+      label: "Heap Region (KHEAP_START)"
+      width: 500
+      block1: {
+        direction: right
+        label: ""
+        style.fill: "#E8F5E9"
+        style.stroke: "#4CAF50"
+        h1: {
+          shape: sql_table
+          label: "Header"
+          sz: "0x00 | 16 | size"
+          fr: "0x04 | 1  | free"
+          mg: "0x05 | F1 | magic"
+          nx: "0x08 | ptr| next"
+        }
+        d1: {
+          label: "Data\n(4080 bytes)"
+          width: 150
+          style.fill: "#C8E6C9"
+        }
+      }
+      block2: {
+        direction: right
+        label: ""
+        style.fill: "#FFEBEE"
+        style.stroke: "#F44336"
+        h2: {
+          shape: sql_table
+          label: "Header"
+          sz: "0x00 | 16 | size"
+          fr: "0x04 | 0  | free"
+          mg: "0x05 | A1 | magic"
+          nx: "0x08 | ptr| next"
+        }
+        d2: {
+          label: "Data\n(100 bytes)"
+          width: 80
+          style.fill: "#FFCDD2"
+        }
+      }
+      block3: {
+        direction: right
+        label: ""
+        style.fill: "#E8F5E9"
+        style.stroke: "#4CAF50"
+        h3: {
+          shape: sql_table
+          label: "Header"
+          sz: "0x00 | 16 | size"
+          fr: "0x04 | 1  | free"
+          mg: "0x05 | F1 | magic"
+          nx: "0x08 | NULL"
+        }
+        d3: {
+          label: "Data\n(3960 bytes)"
+          width: 140
+          style.fill: "#C8E6C9"
+        }
+      }
+    }
+    legend: {
+      direction: right
+      free_leg: {
+        label: "FREE block"
+        style.fill: "#E8F5E9"
+        style.stroke: "#4CAF50"
+      }
+      used_leg: {
+        label: "ALLOCATED block"
+        style.fill: "#FFEBEE"
+        style.stroke: "#F44336"
+      }
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  kmalloc_flow: {
+    direction: down
+    label: "kmalloc(size) Algorithm"
+    m_step1: {
+      label: "1. Align & Minimum"
+      width: 320
+      code: |'c
+        size = ALIGN8(size);
+        if (size < 8) size = 8;
+      '|
+    }
+    m_step2: {
+      label: "2. Find Free Block"
+      width: 320
+      code: |'c
+        block = find_free_block(size);
+        if (!block) {
+          expand_heap(size);
+          block = find_free_block(size);
+        }
+      '|
+    }
+    m_step3: {
+      label: "3. Split If Large Enough"
+      width: 320
+      code: |'c
+        if (block->size >= size + 24) {
+          // Split block
+          new_block = block + size + 16;
+          new_block->size = block->size 
+                          - size - 16;
+          new_block->free = 1;
+          new_block->magic = 0xF1;
+          block->size = size;
+        }
+      '|
+    }
+    m_step4: {
+      label: "4. Mark Allocated & Return"
+      width: 320
+      code: |'c
+        block->free = 0;
+        block->magic = 0xA1;
+        return (void*)(block + 1);
+      '|
+    }
+    m_step1 -> m_step2 -> m_step3 -> m_step4
+  }
+  kfree_flow: {
+    direction: down
+    label: "kfree(ptr) Algorithm"
+    f_step1: {
+      label: "1. Get Block Header"
+      width: 320
+      code: |'c
+        block_header_t *block = 
+          (block_header_t*)ptr - 1;
+      '|
+    }
+    f_step2: {
+      label: "2. Validate Magic"
+      width: 320
+      code: |'c
+        if (block->magic != 0xA1) {
+          // Double-free or corruption
+          return;
+        }
+      '|
+    }
+    f_step3: {
+      label: "3. Mark Free"
+      width: 320
+      code: |'c
+        block->free = 1;
+        block->magic = 0xF1;
+      '|
+    }
+    f_step4: {
+      label: "4. Add to Free List"
+      width: 320
+      code: |'c
+        block->next = free_list;
+        free_list = block;
+        // TODO: coalesce neighbors
+      '|
+    }
+    f_step1 -> f_step2 -> f_step3 -> f_step4
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  split_example: {
+    direction: down
+    label: "Block Split Example"
+    before: {
+      label: "Before: Free block (4080 bytes)"
+      width: 480
+      b_header: {
+        shape: sql_table
+        label: "Header"
+        sz: "size | 4080"
+        fr: "free | 1"
+        mg: "magic| 0xF1"
+      }
+      b_data: {
+        label: "Free Data Area"
+        width: 400
+        style.fill: "#C8E6C9"
+      }
+      b_header -> b_data
+    }
+    split_arrow: {
+      label: "kmalloc(100)"
+      shape: diamond
+    }
+    after: {
+      label: "After: Split into allocated + free"
+      width: 480
+      a1_header: {
+        shape: sql_table
+        label: "Allocated"
+        sz: "size | 104"
+        fr: "free | 0"
+        mg: "magic| 0xA1"
+      }
+      a1_data: {
+        label: "User Data\n(104 bytes)"
+        width: 80
+        style.fill: "#FFCDD2"
+      }
+      a2_header: {
+        shape: sql_table
+        label: "Free"
+        sz: "size | 3960"
+        fr: "free | 1"
+        mg: "magic| 0xF1"
+      }
+      a2_data: {
+        label: "Free Data"
+        width: 250
+        style.fill: "#C8E6C9"
+      }
+      a1_header -> a1_data
+      a1_data -> a2_header: "next"
+      a2_header -> a2_data
+    }
+    before -> split_arrow -> after
+  }
+  coalesce_example: {
+    direction: down
+    label: "Coalescing Example (Future Enhancement)"
+    c_before: {
+      label: "Before: Adjacent free blocks"
+      width: 450
+      c1: {
+        direction: right
+        label: ""
+        c1h: {
+          shape: sql_table
+          label: "Free"
+          sz: "size|1000"
+          mg: "magic|F1"
+        }
+        c1d: {
+          label: ""
+          width: 100
+          style.fill: "#C8E6C9"
+        }
+      }
+      c2: {
+        direction: right
+        label: ""
+        c2h: {
+          shape: sql_table
+          label: "Free"
+          sz: "size|2000"
+          mg: "magic|F1"
+        }
+        c2d: {
+          label: ""
+          width: 150
+          style.fill: "#C8E6C9"
+        }
+      }
+      c1 -> c2
+    }
+    c_arrow: {
+      label: "coalesce()"
+      shape: diamond
+    }
+    c_after: {
+      label: "After: Merged single block"
+      width: 450
+      cm: {
+        direction: right
+        label: ""
+        cmh: {
+          shape: sql_table
+          label: "Free"
+          sz: "size|3016"
+          mg: "magic|F1"
+        }
+        cmd: {
+          label: "Combined Free Area"
+          width: 280
+          style.fill: "#C8E6C9"
+        }
+      }
+    }
+    c_before -> c_arrow -> c_after
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  free_list: {
+    direction: down
+    label: "Free List Structure"
+    fl_diagram: {
+      label: "free_list → [Block A] → [Block B] → [Block C] → NULL"
+      width: 600
+      head: {
+        label: "free_list\n(global)"
+        shape: circle
+      }
+      block_a: {
+        label: "Block A\nsize: 4080"
+        shape: rectangle
+        style.fill: "#C8E6C9"
+      }
+      block_b: {
+        label: "Block B\nsize: 3960"
+        shape: rectangle
+        style.fill: "#C8E6C9"
+      }
+      block_c: {
+        label: "Block C\nsize: 2000"
+        shape: rectangle
+        style.fill: "#C8E6C9"
+      }
+      null: {
+        label: "NULL"
+        shape: circle
+        style.fill: "#E0E0E0"
+      }
+      head -> block_a: "ptr"
+      block_a -> block_b: "next"
+      block_b -> block_c: "next"
+      block_c -> null: "next"
+    }
+    note: |md
+      **Note:** Free list is LIFO for O(1) insertion.
+      This can cause fragmentation but is simple.
+      Production allocators use address-ordered lists
+      for better coalescing.
+    | {
+      shape: rectangle
+      style.fill: "#FFF3E0"
+      width: 400
+    }
+  }
+  addr_calc: {
+    direction: down
+    label: "Address Calculations"
+    calc_box: {
+      label: ""
+      width: 400
+      align_macro: {
+        label: "Alignment Macro"
+        code: |'c
+          #define ALIGN8(x) (((x) + 7) & ~7)
+          // Example: ALIGN8(100) = 104
+          // Example: ALIGN8(8)   = 8
+        '|
+      }
+      ptr_math: {
+        label: "Pointer Arithmetic"
+        code: |'c
+          // kmalloc returns pointer after header
+          void *kmalloc(uint32_t size) {
+            ...
+            return (void*)((uint8_t*)block 
+                         + sizeof(block_header_t));
+          }
+          // kfree finds header before pointer
+          void kfree(void *ptr) {
+            block_header_t *block = 
+              (block_header_t*)((uint8_t*)ptr 
+                              - sizeof(block_header_t));
+          }
+        '|
+      }
+      split_math: {
+        label: "Split Threshold"
+        code: |'c
+          // Only split if remainder is useful
+          // Need space for: header + at least 8 bytes data
+          if (block->size >= size 
+              + sizeof(block_header_t) + 8) {
+            // Perform split
+          }
+        '|
+      }
+    }
+  }
+}

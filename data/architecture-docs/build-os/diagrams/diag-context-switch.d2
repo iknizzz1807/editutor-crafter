@@ -1,0 +1,208 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Context Switch Assembly Flow
+  `context_switch(old_pcb, new_pcb)` — saves current state, loads next process
+| {near: top-center}
+legend: {
+  near: bottom-right
+  label: "Legend"
+  regs: "Registers" {
+    shape: rectangle
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+  }
+  mem: "Memory (PCB)" {
+    shape: rectangle
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+  }
+  hw: "Hardware" {
+    shape: rectangle
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+  }
+}
+step1: {
+  label: "1. Function Prologue"
+  width: 420
+  code: |'nasm
+    context_switch:
+        push ebp
+        mov ebp, esp
+        push edi
+        push esi
+        push ebx
+        ; [ebp+8]  = old_pcb (may be NULL)
+        ; [ebp+12] = new_pcb
+  '|
+}
+step2: {
+  label: "2. Save Old Process State"
+  width: 500
+  code: |'nasm
+    mov eax, [ebp+8]        ; old_pcb pointer
+    test eax, eax
+    jz .load_new            ; skip if NULL (first switch)
+    ; Save callee-saved registers to PCB
+    mov [eax+12], ebx       ; pcb.ebx
+    mov [eax+24], esi       ; pcb.esi
+    mov [eax+28], edi       ; pcb.edi
+    mov [eax+32], ebp       ; pcb.ebp
+    ; Save ESP (after saved registers)
+    lea ecx, [ebp+12]
+    mov [eax+36], ecx       ; pcb.esp
+    ; Save return address as EIP
+    mov ecx, [ebp+4]
+    mov [eax+40], ecx       ; pcb.eip
+    ; Save EFLAGS
+    pushfd
+    pop ecx
+    mov [eax+44], ecx       ; pcb.eflags
+  '|
+}
+pcb_old: {
+  shape: sql_table
+  label: "struct process (old_pcb)"
+  f_ebx: "0x0C | uint32_t | ebx"
+  f_esi: "0x18 | uint32_t | esi"
+  f_edi: "0x1C | uint32_t | edi"
+  f_ebp: "0x20 | uint32_t | ebp"
+  f_esp: "0x24 | uint32_t | esp    ← saved!"
+  f_eip: "0x28 | uint32_t | eip    ← saved!"
+  f_efl: "0x2C | uint32_t | eflags ← saved!"
+  f_pd: "0x30 | uint32_t | page_directory"
+  f_kstk: "0x34 | uint32_t | kernel_stack"
+}
+step3: {
+  label: "3. Switch Page Directory (CR3)"
+  width: 480
+  code: |'nasm
+  .load_new:
+    mov edx, [ebp+12]       ; new_pcb pointer
+    test edx, edx
+    jz .panic               ; can't switch to NULL!
+    ; Check if page directory differs
+    mov ecx, [edx+48]       ; pcb.page_directory
+    test ecx, ecx
+    jz .skip_cr3            ; 0 = use kernel PD
+    ; Switch address space!
+    mov cr3, ecx            ; TLB flushed!
+  .skip_cr3:
+  '|
+}
+step4: {
+  label: "4. Update TSS.ESP0"
+  width: 420
+  code: |'nasm
+    ; Set kernel stack for ring transitions
+    mov ecx, [edx+52]       ; pcb.kernel_stack
+    mov [tss_esp0_ptr], ecx ; TSS.ESP0 = new stack
+    ; Now user→kernel traps use new process's stack
+  '|
+}
+tss_struct: {
+  shape: sql_table
+  label: "TSS (104 bytes)"
+  f_link: "0x00 | uint16_t | link"
+  f_esp0: "0x04 | uint32_t | esp0  ← UPDATED!"
+  f_ss0: "0x08 | uint16_t | ss0 = 0x10"
+  f_esp1: "0x0A | uint32_t | esp1 (unused)"
+  f_ss1: "0x0E | uint16_t | ss1 (unused)"
+  f_esp2: "0x10 | uint32_t | esp2 (unused)"
+  f_ss2: "0x14 | uint16_t | ss2 (unused)"
+  f_cr3: "0x18 | uint32_t | cr3 (unused)"
+  note: "... remaining fields ..."
+}
+step5: {
+  label: "5. Restore New Process State"
+  width: 480
+  code: |'nasm
+    ; Restore callee-saved from new PCB
+    mov ebx, [edx+12]       ; pcb.ebx
+    mov esi, [edx+24]       ; pcb.esi
+    mov edi, [edx+28]       ; pcb.edi
+    mov ebp, [edx+32]       ; pcb.ebp
+    ; Restore EFLAGS (interrupts may be re-enabled)
+    push dword [edx+44]
+    popfd
+  '|
+}
+pcb_new: {
+  shape: sql_table
+  label: "struct process (new_pcb)"
+  f_ebx2: "0x0C | uint32_t | ebx → restored"
+  f_esi2: "0x18 | uint32_t | esi → restored"
+  f_edi2: "0x1C | uint32_t | edi → restored"
+  f_ebp2: "0x20 | uint32_t | ebp → restored"
+  f_esp2: "0x24 | uint32_t | esp (used below)"
+  f_eip2: "0x28 | uint32_t | eip (return target)"
+  f_efl2: "0x2C | uint32_t | eflags → restored"
+  f_pd2: "0x30 | uint32_t | page_directory"
+  f_kstk2: "0x34 | uint32_t | kernel_stack"
+}
+step6: {
+  label: "6. Switch Stacks & Resume"
+  width: 420
+  code: |'nasm
+    ; Switch to new process's stack!
+    mov esp, [edx+36]       ; pcb.esp
+    ; "Return" to new process's EIP
+    ret                     ; pops [esp] → eip
+    ; CPU now executes at new_pcb.eip
+    ; Process has no idea it was ever paused!
+  '|
+}
+panic: {
+  label: ".panic (no process)"
+  width: 300
+  code: |'nasm
+    cli
+  .halt_loop:
+    hlt
+    jmp .halt_loop
+  '|
+  style.fill: "#FFEBEE"
+  style.stroke: "#F44336"
+}
+flow_note: {
+  label: "Key Insight"
+  width: 380
+  note: |md
+    The `ret` instruction does NOT return to the
+    caller — it jumps to `new_pcb.eip` because we
+    switched `esp` to point at the saved EIP in
+    the new process's stack frame.
+  |
+  style.fill: "#FFF8E1"
+  style.stroke: "#FFC107"
+}
+step1 -> step2: "save old"
+step2 -> pcb_old: "writes" {
+  style.stroke: "#4CAF50"
+  style.stroke-dash: 3
+}
+step2 -> step3: "load new PCB"
+step3 -> step4: "CR3 updated"
+step4 -> tss_struct: "writes ESP0" {
+  style.stroke: "#FF9800"
+  style.stroke-dash: 3
+}
+step4 -> step5: "TSS ready"
+step5 -> pcb_new: "reads" {
+  style.stroke: "#2196F3"
+  style.stroke-dash: 3
+}
+step5 -> step6: "restore regs"
+step6 -> flow_note: "magic!" {
+  style.stroke: "#9C27B0"
+}
+step3 -> panic: "NULL pcb" {
+  style.stroke: "#F44336"
+  style.stroke-dash: 4
+}

@@ -1,0 +1,231 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: "Page Fault Handler Decision Tree"
+  near: top-center
+  shape: text
+  style: {
+    font-size: 32
+    bold: true
+  }
+}
+row_entry: "" {
+  direction: right
+  style: { stroke: transparent; fill: transparent }
+  entry: {
+    label: "INT 14\nPage Fault"
+    shape: oval
+    style: { fill: "#FF6B6B"; font-color: white; stroke: "#C0392B" }
+  }
+  entry -> read_cr2
+}
+read_cr2: {
+  label: "Read CR2 Register"
+  width: 280
+  code: |'c
+    uint32_t fault_addr;
+    __asm__ volatile (
+      "mov %%cr2, %0" 
+      : "=r"(fault_addr)
+    );
+  '|
+  style: { fill: "#E8F4FD"; stroke: "#3498DB" }
+}
+read_cr2 -> decode_error: "fault_addr\n0x%08x"
+decode_error: {
+  label: "Decode Error Code"
+  width: 320
+  code: |'c
+    uint32_t err = regs->err_code;
+    bool present = err & 0x01;  // P bit
+    bool write   = err & 0x02;  // W bit
+    bool user    = err & 0x04;  // U bit
+    bool reserved= err & 0x08;  // R bit
+    bool fetch   = err & 0x10;  // I bit
+  '|
+  style: { fill: "#E8F4FD"; stroke: "#3498DB" }
+}
+decode_error -> check_present
+check_present: {
+  label: "P bit = 0?"
+  shape: diamond
+  style: { fill: "#F39C12"; font-color: white }
+}
+check_present -> not_present: "Yes"
+check_present -> check_user: "No\n(protection)"
+not_present: {
+  label: "Page Not Present"
+  shape: rectangle
+  style: { fill: "#9B59B6"; font-color: white }
+}
+not_present -> check_vaddr_valid
+check_vaddr_valid: {
+  label: "Valid Virtual\nAddress?"
+  shape: diamond
+  style: { fill: "#F39C12"; font-color: white }
+}
+check_vaddr_valid -> demand_page: "Yes"
+check_vaddr_valid -> segfault: "No"
+demand_page: {
+  label: "Demand Paging\n(Allocation)"
+  width: 260
+  style: { fill: "#27AE60"; font-color: white }
+  code: |'c
+    void *frame = pmm_alloc_frame();
+    vmm_map_page(fault_addr, frame, 
+      PAGE_PRESENT | PAGE_WRITABLE 
+      | PAGE_USER);
+    // Zero the page
+    memset((void*)fault_addr, 0, 4096);
+    return; // Resume process
+  '|
+}
+segfault: {
+  label: "SEGFAULT"
+  shape: hexagon
+  style: { fill: "#E74C3C"; font-color: white; bold: true }
+  note: |md
+    Invalid memory access
+    Kill process, signal SIGSEGV
+  |
+  width: 200
+}
+check_user: {
+  label: "U bit = 1?"
+  shape: diamond
+  style: { fill: "#F39C12"; font-color: white }
+}
+check_user -> user_access: "Yes"
+check_user -> kernel_access: "No"
+user_access: {
+  label: "User Mode\nAccess"
+  shape: rectangle
+  style: { fill: "#3498DB"; font-color: white }
+}
+kernel_access: {
+  label: "Kernel Mode\nAccess"
+  shape: rectangle
+  style: { fill: "#34495E"; font-color: white }
+}
+user_access -> check_page_type
+kernel_access -> check_kernel_fault
+check_page_type: {
+  label: "Page Is\nUser-Accessible?"
+  shape: diamond
+  style: { fill: "#F39C12"; font-color: white }
+}
+check_page_type -> check_write: "Yes"
+check_page_type -> prot_fault_user: "No"
+prot_fault_user: {
+  label: "Protection Fault\n(User tried supervisor page)"
+  shape: rectangle
+  style: { fill: "#E74C3C"; font-color: white }
+}
+prot_fault_user -> segfault
+check_write: {
+  label: "W bit = 1?\n(Write attempt)"
+  shape: diamond
+  style: { fill: "#F39C12"; font-color: white }
+}
+check_write -> check_writable: "Yes"
+check_write -> read_ok: "No\n(Read)"
+check_writable: {
+  label: "Page Is\nWritable?"
+  shape: diamond
+  style: { fill: "#F39C12"; font-color: white }
+}
+check_writable -> cow: "No\n(COW)"
+check_writable -> write_ok: "Yes"
+cow: {
+  label: "Copy-on-Write"
+  width: 280
+  style: { fill: "#27AE60"; font-color: white }
+  code: |'c
+    // Allocate new frame
+    void *new_frame = pmm_alloc_frame();
+    // Copy old page content
+    memcpy(new_frame, old_frame, 4096);
+    // Map with write permission
+    vmm_map_page(fault_addr, new_frame,
+      PAGE_PRESENT | PAGE_WRITABLE 
+      | PAGE_USER);
+    return; // Resume
+  '|
+}
+read_ok: {
+  label: "Read OK\nResume Process"
+  shape: oval
+  style: { fill: "#27AE60"; font-color: white }
+}
+write_ok: {
+  label: "Write OK\nResume Process"
+  shape: oval
+  style: { fill: "#27AE60"; font-color: white }
+}
+check_kernel_fault: {
+  label: "Kernel\nFault Type?"
+  shape: diamond
+  style: { fill: "#F39C12"; font-color: white }
+}
+check_kernel_fault -> cow_kernel: "COW"
+check_kernel_fault -> kernel_panic: "Bug"
+cow_kernel: {
+  label: "Kernel COW\n(Fork, etc.)"
+  shape: rectangle
+  style: { fill: "#27AE60"; font-color: white }
+}
+cow_kernel -> cow
+kernel_panic: {
+  label: "KERNEL PANIC"
+  shape: hexagon
+  style: { fill: "#C0392B"; font-color: white; bold: true }
+  note: |md
+    Kernel accessed invalid memory
+    Halt system, dump registers
+  |
+  width: 220
+}
+legend: {
+  near: bottom-right
+  label: "Error Code Bits"
+  shape: sql_table
+  f0: "Bit 0 (P) | 0=Not Present | 1=Protection"
+  f1: "Bit 1 (W) | 0=Read | 1=Write"
+  f2: "Bit 2 (U) | 0=Kernel | 1=User"
+  f3: "Bit 3 (R) | Reserved bits set"
+  f4: "Bit 4 (I) | Instruction Fetch (NX)"
+}
+legend2: {
+  near: bottom-left
+  label: "Common Causes"
+  shape: sql_table
+  c0: "NULL pointer | 0x00000000"
+  c1: "Wild pointer | Random address"
+  c2: "Use-after-free | Dangling pointer"
+  c3: "Stack overflow | Grows into guard"
+  c4: "Uninitialized ptr | Garbage value"
+}
+legend3: {
+  near: bottom-center
+  label: "Handler Responses"
+  shape: sql_table
+  r0: "Demand Page | Allocate + map frame"
+  r1: "Copy-on-Write | Clone page on write"
+  r2: "Swap In | Load from disk"
+  r3: "SIGSEGV | Kill user process"
+  r4: "PANIC | Halt kernel"
+}
+cow -> read_ok
+demand_page -> read_ok
+read_ok -> resume
+write_ok -> resume
+resume: {
+  label: "iret\nResume Process"
+  shape: oval
+  style: { fill: "#27AE60"; font-color: white; stroke: "#1E8449"; stroke-width: 3 }
+}

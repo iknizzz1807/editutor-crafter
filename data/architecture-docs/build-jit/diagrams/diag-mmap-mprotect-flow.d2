@@ -1,0 +1,232 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Memory Allocation and Protection Flow
+  JIT Code Buffer Lifecycle with Error Handling
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  phase1: ALLOCATE {
+    direction: down
+    style.fill: "#E8F5E9"
+    style.stroke: "#4CAF50"
+    start: {
+      shape: oval
+      label: "Start"
+    }
+    mmap_call: {
+      label: "mmap(NULL, size,\nPROT_READ | PROT_WRITE,\nMAP_PRIVATE | MAP_ANONYMOUS)"
+      width: 280
+      code: |'c
+        void* code = mmap(
+          NULL, 4096,
+          PROT_READ | PROT_WRITE,
+          MAP_PRIVATE | MAP_ANONYMOUS,
+          -1, 0
+        );
+      '|
+    }
+    mmap_check: {
+      shape: diamond
+      label: "code == MAP_FAILED?"
+      width: 180
+    }
+    mmap_error: {
+      shape: parallelogram
+      label: "perror(\"mmap\");\nexit(1)"
+      style.fill: "#FFCDD2"
+      style.stroke: "#F44336"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  phase2: EMIT {
+    direction: down
+    style.fill: "#E3F2FD"
+    style.stroke: "#2196F3"
+    emit_label: {
+      label: "Write Mode\n(PROT_READ | PROT_WRITE)"
+      shape: hexagon
+      style.fill: "#BBDEFB"
+    }
+    emit_bytes: {
+      label: "Emit x86-64 Instructions"
+      code: |'c
+        uint8_t* cursor = code;
+        *cursor++ = 0x48;  // REX.W
+        *cursor++ = 0xB8;  // mov rax, imm32
+        *(uint32_t*)cursor = 42;
+        cursor += 4;
+        *cursor++ = 0xC3;  // ret
+      '|
+      width: 260
+    }
+    bytes_written: {
+      shape: sql_table
+      label: "Code Buffer (jit_emitter.c)"
+      offset: "0x00 | 0x48 | REX.W prefix"
+      op1: "0x01 | 0xB8 | mov rax, imm32"
+      imm: "0x02-0x05 | 0x2A000000 | imm32 = 42"
+      ret: "0x06 | 0xC3 | ret"
+      total: "Total: 7 bytes"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  phase3: PROTECT {
+    direction: down
+    style.fill: "#FFF3E0"
+    style.stroke: "#FF9800"
+    cache_flush: {
+      label: "__builtin___clear_cache(\n  code, cursor)"
+      width: 240
+      note: "Required on ARM, no-op on x86"
+    }
+    mprotect_call: {
+      label: "mprotect(code, size,\nPROT_READ | PROT_EXEC)"
+      width: 260
+      code: |'c
+        if (mprotect(code, size,
+            PROT_READ | PROT_EXEC) != 0) {
+          perror("mprotect");
+          munmap(code, size);
+          return NULL;
+        }
+      '|
+    }
+    mprotect_check: {
+      shape: diamond
+      label: "mprotect\nfailed?"
+      width: 120
+    }
+    mprotect_error: {
+      shape: parallelogram
+      label: "perror(\"mprotect\");\nmunmap(code, size);\nreturn NULL"
+      style.fill: "#FFCDD2"
+      style.stroke: "#F44336"
+    }
+    exec_mode: {
+      label: "Execute Mode\n(PROT_READ | PROT_EXEC)"
+      shape: hexagon
+      style.fill: "#FFE0B2"
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  phase4: EXECUTE {
+    direction: down
+    style.fill: "#F3E5F5"
+    style.stroke: "#9C27B0"
+    cast_func: {
+      label: "Cast to Function Pointer"
+      code: |'c
+        typedef int64_t (*JitFunc)(void);
+        JitFunc func = (JitFunc)code;
+      '|
+      width: 220
+    }
+    call_func: {
+      label: "Call JIT-Compiled Code"
+      code: |'c
+        int64_t result = func();
+        printf("Result: %ld\n", result);
+        // Output: Result: 42
+      '|
+      width: 240
+    }
+    cpu_exec: {
+      label: "CPU Executes\nNative Instructions"
+      shape: cylinder
+      style.fill: "#E1BEE7"
+    }
+  }
+}
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  phase5: CLEANUP {
+    direction: down
+    style.fill: "#ECEFF1"
+    style.stroke: "#607D8B"
+    munmap_call: {
+      label: "munmap(code, size)"
+      code: |'c
+        munmap(code, size);
+        // Release memory back to OS
+      '|
+      width: 220
+    }
+    end: {
+      shape: oval
+      label: "End"
+    }
+  }
+}
+legend: {
+  near: bottom-right
+  label: "Permission States"
+  style.fill: "#FAFAFA"
+  style.stroke: "#BDBDBD"
+  rw: {
+    label: "RW: Read + Write"
+    style.fill: "#E8F5E9"
+  }
+  rx: {
+    label: "RX: Read + Execute"
+    style.fill: "#F3E5F5"
+  }
+  wx_forbidden: {
+    label: "W+X: Forbidden (W^X)"
+    style.fill: "#FFCDD2"
+    style.stroke: "#F44336"
+    style.stroke-dash: 3
+  }
+}
+error_note: {
+  near: bottom-left
+  label: |md
+    ### Error Handling Paths
+    - **mmap failure**: Out of memory, RLIMIT_AS exceeded
+    - **mprotect failure**: Invalid address, permission denied by seccomp
+    - **SIGSEGV on call**: Page not executable (mprotect not called)
+    - **SIGBUS on call**: Misaligned access, device error
+  |
+  style.fill: "#FFF8E1"
+  style.stroke: "#FFC107"
+}
+connections: {
+  phase1.start -> phase1.mmap_call: "1"
+  phase1.mmap_call -> phase1.mmap_check: "2"
+  phase1.mmap_check -> phase2.emit_label: "No (success)" {style.stroke: "#4CAF50"}
+  phase1.mmap_check -> phase1.mmap_error: "Yes (fail)" {style.stroke: "#F44336"; style.stroke-dash: 4}
+  phase2.emit_label -> phase2.emit_bytes: "3"
+  phase2.emit_bytes -> phase2.bytes_written: "4"
+  phase2.bytes_written -> phase3.cache_flush: "5"
+  phase3.cache_flush -> phase3.mprotect_call: "6"
+  phase3.mprotect_call -> phase3.mprotect_check: "7"
+  phase3.mprotect_check -> phase3.exec_mode: "No (success)" {style.stroke: "#4CAF50"}
+  phase3.mprotect_check -> phase3.mprotect_error: "Yes (fail)" {style.stroke: "#F44336"; style.stroke-dash: 4}
+  phase3.mprotect_error -> phase5.munmap_call: "cleanup" {style.stroke: "#9E9E9E"; style.stroke-dash: 4}
+  phase3.exec_mode -> phase4.cast_func: "8"
+  phase4.cast_func -> phase4.call_func: "9"
+  phase4.call_func -> phase4.cpu_exec: "10"
+  phase4.cpu_exec -> phase5.munmap_call: "11"
+  phase5.munmap_call -> phase5.end: "12"
+}

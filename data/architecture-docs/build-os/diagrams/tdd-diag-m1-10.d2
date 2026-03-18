@@ -1,0 +1,162 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# === BOOTLOADER TO KERNEL HANDOFF SEQUENCE ===
+handoff_sequence: {
+  shape: sequence_diagram
+  
+  # === PARTICIPANTS ===
+  BIOS: BIOS Firmware {
+    shape: person
+    tooltip: "Motherboard ROM / UEFI CSM"
+  }
+  boot_asm: "boot.asm\n(Real Mode)" {
+    style.fill: "#fce7c6"
+    style.stroke: "#f6c889"
+  }
+  a20_asm: "a20.asm\n(A20 Gate)" {
+    style.fill: "#fce7c6"
+  }
+  load_kernel: "load_kernel.asm\n(Disk I/O)" {
+    style.fill: "#fce7c6"
+  }
+  gdt_asm: "gdt.asm\n(Segmentation)" {
+    style.fill: "#fce7c6"
+  }
+  cr0_pe: "CR0.PE Switch" {
+    shape: diamond
+    style.fill: "#f6c889"
+  }
+  far_jump: "Far Jump\n(Pipeline Flush)" {
+    style.fill: "#f9d8a7"
+  }
+  entry_asm: "entry.asm\n(Protected Mode)" {
+    style.fill: "#f1a64f"
+  }
+  bss_zero: "BSS Zeroing" {
+    style.fill: "#f1a64f"
+  }
+  kernel_main: "kernel_main()\n(C Entry)" {
+    style.fill: "#ed800c"
+    style.bold: true
+  }
+
+  # === PHASE 1: BIOS HANDOFF ===
+  BIOS -> boot_asm: "JMP 0000:7C00" {
+    tooltip: "BIOS loads 512 bytes to 0x7C00 and jumps"
+  }
+
+  BIOS.BIOS_note: ||md
+    ### BIOS Exit State (Intel Manual Vol 3)
+    - **DL:** Boot drive index (0x80 = HDD)
+    - **CS:IP:** 0x0000:0x7C00 (Entry point)
+    - **Mode:** 16-bit Real Mode
+    - **A20:** Usually disabled
+    - **Stack:** Undefined (Must be set immediately)
+  ||
+
+  # === PHASE 2: INITIALIZATION ===
+  boot_asm -> boot_asm: "Setup Segments & Stack"
+  boot_asm.boot_init_note: ||md
+    **Init Sequence:**
+    1. `cli`: Disable interrupts
+    2. `xor ax, ax`: Clear registers
+    3. `mov ds, ax`: DS = 0x0000
+    4. `mov es, ax`: ES = 0x0000
+    5. `mov ss, ax`: SS = 0x0000
+    6. `mov sp, 0x7C00`: Stack below bootloader
+  ||
+
+  # === PHASE 3: A20 LINE ===
+  boot_asm -> a20_asm: "call enable_a20"
+  a20_asm -> a20_asm: "Method: Fast A20 (Port 0x92)"
+  a20_asm -> a20_asm: "Verify: Memory Wraparound Test"
+  a20_asm -> boot_asm: "Success (AX=1)"
+
+  # === PHASE 4: LOAD KERNEL ===
+  boot_asm -> load_kernel: "call read_disk"
+  load_kernel -> load_kernel: "INT 13h / AH=42h (LBA Read)"
+  load_kernel.load_kernel_note: ||md
+    **Disk Address Packet (16 Bytes):**
+    - `0x00`: Size (16)
+    - `0x02`: Sectors (64)
+    - `0x04`: Buffer Offset (0x0000)
+    - `0x06`: Buffer Segment (0x1000)
+    - `0x08`: LBA Start (2)
+  ||
+  load_kernel -> boot_asm: "CF=0 (Carry Clear)"
+
+  # === PHASE 5: GDT ===
+  boot_asm -> gdt_asm: "call setup_gdt"
+  gdt_asm -> gdt_asm: "lgdt [gdt_descriptor]"
+  gdt_asm.gdt_desc_note: ||md
+    **GDT Entry Structure (8 bytes each):**
+    | Offset | Name | Base | Limit | Type |
+    |--------|------|------|-------|------|
+    | 0x00 | NULL | - | - | - |
+    | 0x08 | CODE | 0x0 | 0xFFFFF | 0x9A |
+    | 0x10 | DATA | 0x0 | 0xFFFFF | 0x92 |
+  ||
+
+  # === PHASE 6: MODE SWITCH ===
+  boot_asm -> cr0_pe: "Set CR0.PE=1"
+  cr0_pe.cr0_pe_note: ||md
+    **CPU Internal Change:**
+    - Instruction decoding shifts to 32-bit (partially)
+    - Segmentation logic changes to Selector:Descriptor
+    - **CRITICAL:** Immediate far jump required to flush pipeline
+  ||
+
+  # === PHASE 7: FAR JUMP ===
+  cr0_pe -> far_jump: "JMP 0x08:prot_mode"
+  far_jump -> entry_asm: "Transition to [BITS 32]"
+
+  # === PHASE 8: 32-BIT PREP ===
+  entry_asm -> entry_asm: "Reload Segments (DS/ES/FS/GS/SS = 0x10)"
+  entry_asm -> entry_asm: "Set ESP = 0x90000"
+
+  # === PHASE 9: BSS ZEROING ===
+  entry_asm -> bss_zero: "Zero .bss Section"
+  bss_zero.bss_note: ||md
+    **rep stosb:**
+    - EDI = `__bss_start`
+    - ECX = `__bss_size`
+    - EAX = 0
+  ||
+
+  # === PHASE 10: FINAL HANDOFF ===
+  bss_zero -> kernel_main: "call kernel_main"
+  kernel_main.final_note: ||md
+    **Execution Context at kernel_main:**
+    - **EIP:** kernel_main address
+    - **ESP:** 0x90000 (Top of kernel stack)
+    - **Privilege:** Ring 0
+    - **Interrupts:** Disabled (IF=0)
+    - **Paging:** Disabled (CR0.PG=0)
+  ||
+
+  # === ERROR HANDLING ===
+  kernel_main -> entry_asm: "RETURN (CRITICAL FAILURE)" {
+    style.stroke: red
+    style.stroke-dash: 5
+  }
+  entry_asm -> entry_asm: "cli; hlt; jmp $" {
+    style.stroke: red
+  }
+
+  # === SUMMARY STATE TABLE ===
+  kernel_main.reg_summary: ||md
+    ## Register Handoff Matrix
+    | Register | Real Mode (boot.asm) | Protected Mode (kernel_main) |
+    |----------|----------------------|-----------------------------|
+    | **CS**   | 0x0000               | 0x08 (Code Segment)         |
+    | **DS**   | 0x0000               | 0x10 (Data Segment)         |
+    | **ESP**  | 0x7C00               | 0x90000                     |
+    | **CR0**  | 0x00000010           | 0x00000011 (PE set)         |
+    | **A20**  | Disabled             | Enabled                     |
+  ||
+}

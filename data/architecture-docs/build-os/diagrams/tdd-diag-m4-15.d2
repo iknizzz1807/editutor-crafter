@@ -1,0 +1,269 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 0
+    sketch: false
+    pad: 20
+  }
+}
+
+title: "Intel x86 Technical Specification: Timer Interrupt to Context Switch Path" {
+  shape: text
+  near: top-center
+  style: {
+    font-size: 32
+    bold: true
+    font-color: "#212121"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# HARDWARE SUBSYSTEMS
+# -----------------------------------------------------------------------------
+
+subsystems: {
+  pit: "PIT 8254 (Programmable Interval Timer)" {
+    tooltip: "Generates periodic IRQ0"
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+      stroke-width: 2
+    }
+    
+    specs: ||md
+      ### Counter 0 Configuration
+      - **Port:** 0x40
+      - **Mode:** 3 (Square Wave)
+      - **Binary:** Yes
+      - **Initial Count:** 11931 (100Hz)
+    ||
+
+    channel0: "OUT 0 (IRQ0 Line)" {
+      shape: circle
+      style.fill: "#4CAF50"
+    }
+  }
+
+  pic: "PIC 8259A (Priority Interrupt Controller)" {
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1565C0"
+      stroke-width: 2
+    }
+    master: "Master Controller" {
+      ports: "0x20 (CMD), 0x21 (DATA)"
+      irr: "Interrupt Request Reg"
+      isr: "In-Service Register"
+      imr: "Interrupt Mask Reg"
+    }
+    mapping: "Vector Base: 0x20 (32)" {
+      style.stroke-dash: 3
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# CPU CORE EXECUTION UNIT
+# -----------------------------------------------------------------------------
+
+cpu: "Intel x86 CPU (Ring 3 -> Ring 0 Transition)" {
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#7B1FA2"
+    stroke-width: 2
+  }
+  
+  eflags: "Check EFLAGS.IF == 1" {
+    shape: oval
+    style: {
+      fill: "#E1BEE7"
+      bold: true
+      stroke-width: 2
+    }
+  }
+
+  microcode: "CPU Interrupt Entry Microcode" {
+    step1: "1. Complete Current Instruction"
+    step2: "2. Fetch Vector 32 from PIC"
+    step3: "3. Consult IDTR for Table Base"
+    step4: "4. Load IDT Entry [32]"
+    step5: "5. Privilege Check (CPL vs DPL)"
+    step6: "6. Switch to Kernel Stack (TSS.ESP0)"
+    step7: "7. Push HW Context (SS, ESP, EFLAGS, CS, EIP)"
+    step8: "8. Clear EFLAGS.IF (Atomic Disable)"
+    step9: "9. Far JMP to IDT[32].Offset"
+    
+    style.stroke-dash: 2
+  }
+}
+
+# -----------------------------------------------------------------------------
+# MEMORY STRUCTURES
+# -----------------------------------------------------------------------------
+
+memory_layouts: {
+  idt: "Interrupt Descriptor Table (IDT)" {
+    style: {
+      fill: "#E0F7FA"
+      stroke: "#00838F"
+    }
+    entry32: "IDT[32]: Timer Gate" {
+      shape: sql_table
+      style.fill: "#B2EBF2"
+      offset_0_15: "Offset 0..15" | "0xDEAD"
+      selector: "Segment Selector" | "0x0008 (Kernel Code)"
+      flags: "P=1, DPL=0, Type=E (Int Gate)"
+      offset_16_31: "Offset 16..31" | "0xBEEF"
+    }
+  }
+
+  stack_frame: "Post-Interrupt Kernel Stack Layout" {
+    shape: sql_table
+    style: {
+      fill: "#FCE4EC"
+      stroke: "#AD1457"
+    }
+    header: "ESP Offset" | "Field" | "Source"
+    off44: "0x44" | "SS" | "Hardware"
+    off40: "0x40" | "ESP" | "Hardware"
+    off3C: "0x3C" | "EFLAGS" | "Hardware"
+    off38: "0x38" | "CS" | "Hardware"
+    off34: "0x34" | "EIP" | "Hardware"
+    off30: "0x30" | "Err Code (Dummy)" | "ASM Stub"
+    off2C: "0x2C" | "Int Vector (32)" | "ASM Stub"
+    off28: "0x28" | "EAX" | "PUSHA"
+    off24: "0x24" | "ECX" | "PUSHA"
+    padding: "---" | "Cache Line Boundary (64B)" | "---" {
+      style.stroke-dash: 5
+      style.fill: "#EEEEEE"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# SOFTWARE LAYERS
+# -----------------------------------------------------------------------------
+
+kernel_space: {
+  isr_logic: "Low-Level Entry (interrupt.asm)" {
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#E65100"
+    }
+    
+    stub: ||go
+      isr32:
+        cli            // Redundant but safe
+        push 0         // Error code
+        push 32        // Vector
+        jmp common_isr
+
+      common_isr:
+        pusha          // Save GPRs
+        push ds        // Save Segments
+        push es
+        mov ax, 0x10   // Kernel Data
+        mov ds, ax
+        mov es, ax
+        push esp       // Pointer to registers_t
+        call irq_handler
+    ||
+  }
+
+  c_logic: "Kernel IRQ Dispatch (irq.c)" {
+    style: {
+      fill: "#E8EAF6"
+      stroke: "#3F51B5"
+    }
+    handler: ||go
+      void irq_handler(registers_t *r) {
+        if (irq_routines[r->int_no])
+          irq_routines[r->int_no](r);
+        
+        // Signal End of Interrupt
+        if (r->int_no >= 40) outb(0xA0, 0x20);
+        outb(0x20, 0x20);
+      }
+    ||
+  }
+
+  scheduler: "Process Scheduler (sched.c)" {
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#6A1B9A"
+    }
+    
+    tick: ||go
+      void timer_callback(registers_t *r) {
+        ticks++;
+        if (current_task->quantum-- <= 0) {
+          schedule();
+        }
+      }
+    ||
+
+    switch: "Context Switch Logic" {
+      shape: sql_table
+      op1: "1. Update TSS" | "tss.esp0 = next->kstack_top"
+      op2: "2. Swap Stacks" | "switch_context(&curr->esp, next->esp)"
+      op3: "3. Page Directory" | "mov cr3, next->pdir_phys"
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# FLOW CONNECTIONS (Numbered Sequence)
+# -----------------------------------------------------------------------------
+
+subsystems.pit.channel0 -> subsystems.pic.master: "1. Assert IRQ0"
+subsystems.pic.master -> cpu.eflags: "2. Assert INTR Pin" {
+  style: {
+    stroke: "#D32F2F"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+cpu.eflags -> cpu.microcode: "3. IF==1?"
+cpu.microcode -> memory_layouts.idt.entry32: "4. Vector Lookup (32)"
+memory_layouts.idt.entry32 -> kernel_space.isr_logic: "5. CS:EIP Transfer"
+
+kernel_space.isr_logic -> memory_layouts.stack_frame: "6. State Save" {
+  style.stroke: "#EF6C00"
+}
+
+kernel_space.isr_logic -> kernel_space.c_logic: "7. Call C Handler"
+kernel_space.c_logic -> kernel_space.scheduler.tick: "8. Invoke Callback"
+kernel_space.scheduler.tick -> kernel_space.scheduler.switch: "9. Trigger Swap"
+
+# -----------------------------------------------------------------------------
+# ANNOTATIONS
+# -----------------------------------------------------------------------------
+
+analysis: {
+  label: ||md
+    ### Context Switch Performance Target
+    | Phase | Action | Cycles |
+    | :--- | :--- | :--- |
+    | Hardware | Logic Gates -> Microcode Start | ~150 |
+    | CPU Switch | Ring 3 -> Ring 0 Stack Swap | ~120 |
+    | ISR Entry | `pusha` + Segment Reload | ~60 |
+    | Scheduler | Task Selection (O(1)) | ~200 |
+    | Context | ESP Swap + CR3 (TLB Flush) | ~180 |
+    | **Total** | **Preemption Latency** | **~710** |
+  ||
+  near: bottom-center
+  style: {
+    fill: "#FFFDE7"
+    stroke: "#FBC02D"
+    stroke-width: 2
+  }
+}
+
+legend: {
+  near: bottom-right
+  hw: Hardware Layer { style.fill: "#E8F5E9" }
+  mem: Memory Struct { style.fill: "#E0F7FA" }
+  kern: C Logic { style.fill: "#E8EAF6" }
+  asm: Assembly { style.fill: "#FFF3E0" }
+}

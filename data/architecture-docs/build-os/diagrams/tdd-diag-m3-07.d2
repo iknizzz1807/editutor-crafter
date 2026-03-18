@@ -1,0 +1,267 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    pad: 40
+  }
+  colors: {
+    pd_color: "#D1C4E9"
+    pt_color: "#BBDEFB"
+    off_color: "#C8E6C9"
+    header: "#303F9F"
+    step_bg: "#F5F5F5"
+    decision_bg: "#FFF9C4"
+    error_bg: "#FFCDD2"
+    success_bg: "#C8E6C9"
+    border: "#212121"
+  }
+}
+
+# --- PAGE ARCHITECTURE SPECIFICATION (32-BIT x86) ---
+memory_spec: {
+  label: "Intel x86 Paging Architecture (Non-PAE)"
+  near: top-right
+  style: {
+    stroke: "#333333"
+    stroke-width: 2
+    fill: "#FFFFFF"
+    shadow: true
+  }
+
+  address_layout: {
+    grid-columns: 3
+    grid-gap: 0
+    width: 600
+
+    pd_idx: "PAGE DIRECTORY INDEX\n(10 bits)" {
+      style: {
+        fill: ${colors.pd_color}
+        stroke: "#311B92"
+        bold: true
+      }
+      tooltip: "Bits [31:22] | Selects 1 of 1024 Page Tables"
+    }
+    pt_idx: "PAGE TABLE INDEX\n(10 bits)" {
+      style: {
+        fill: ${colors.pt_color}
+        stroke: "#0D47A1"
+        bold: true
+      }
+      tooltip: "Bits [21:12] | Selects 1 of 1024 Page Frame Entries"
+    }
+    page_off: "OFFSET\n(12 bits)" {
+      style: {
+        fill: ${colors.off_color}
+        stroke: "#1B5E20"
+        bold: true
+      }
+      tooltip: "Bits [11:0] | 4KB Page Offset"
+    }
+  }
+
+  pde_format: {
+    label: "Page Directory Entry (4 Bytes)"
+    grid-columns: 4
+    style.stroke-dash: 2
+    
+    base: "Table Base Addr [31:12]" { style.fill: "#E1BEE7" }
+    avail: "AVL" { style.fill: "#EEEEEE" }
+    flags: "G|PS|0|A|PCD|PWT|U/S|R/W|P" { style.fill: "#B2DFDB" }
+    reserved: "0" { style.fill: "#BDBDBD" }
+  }
+
+  translation_logic: |md
+    ### Address Calculation
+    1. `PDE_ADDR = CR3 + (PD_IDX << 2)`
+    2. `PTE_ADDR = (PDE & ~0xFFF) + (PT_IDX << 2)`
+    3. `PHYS_ADDR = (PTE & ~0xFFF) + OFFSET`
+  |
+}
+
+# --- ALGORITHM: vmm_map_page ---
+
+title: {
+  label: |md
+    # VMM Mapping Algorithm
+    **Subroutine:** `vmm_map_page(pdir, virt, phys, flags)`
+  |
+  near: top-center
+  style.stroke-width: 0
+  style.fill: transparent
+}
+
+START: "" {
+  shape: circle
+  width: 20
+  height: 20
+  style.fill: "#000000"
+}
+
+step1: {
+  label: |md
+    **1. ALIGNMENT**
+    `virt &= ~0xFFF`
+    `phys &= ~0xFFF`
+    *Force 4KB page boundaries*
+  |
+  style.fill: ${colors.step_bg}
+}
+
+step2: {
+  label: |md
+    **2. CALCULATE INDICES**
+    `pdi = virt >> 22`
+    `pti = (virt >> 12) & 0x3FF`
+  |
+  style.fill: ${colors.step_bg}
+}
+
+check_pde: {
+  label: "PDE Present?\n(Bit 0 == 1)"
+  shape: diamond
+  style.fill: ${colors.decision_bg}
+}
+
+# Sub-process for creating missing tables
+alloc_pt: {
+  label: "Fault Handler: Allocate Page Table"
+  style: {
+    stroke-dash: 4
+    fill: "#FAFAFA"
+  }
+
+  pmm_call: {
+    label: |md
+      **3a. PMM Alloc**
+      `pt = pmm_alloc()`
+    |
+    style.fill: ${colors.step_bg}
+  }
+
+  check_oom: {
+    label: "Valid?"
+    shape: diamond
+    style.fill: ${colors.decision_bg}
+  }
+
+  init_pt: {
+    label: |md
+      **3b. Initialization**
+      `memset(pt, 0, 4096)`
+    |
+    style.fill: ${colors.step_bg}
+  }
+
+  set_pde: {
+    label: |md
+      **3c. Link PDE**
+      `PDIR[pdi] = pt | P | W | U`
+    |
+    style.fill: "#E1F5FE"
+  }
+}
+
+resolve_pt: {
+  label: |md
+    **3d. Fetch PT Base**
+    `pt_addr = PDIR[pdi] & ~0xFFF`
+  |
+  style.fill: ${colors.step_bg}
+}
+
+commit_pte: {
+  label: |md
+    **4. COMMIT PTE**
+    `PT[pti] = phys | flags | PRESENT`
+    *Write final translation entry*
+  |
+  style: {
+    fill: "#FFF9C4"
+    stroke: "#FBC02D"
+    stroke-width: 3
+  }
+}
+
+tlb_flush: {
+  label: |md
+    **5. TLB INVALIDATION**
+    `asm("invlpg (%0)" :: "r"(virt))`
+    *Sync Hardware MMU Cache*
+  |
+  style.fill: ${colors.step_bg}
+}
+
+error_state: "FATAL: OOM" {
+  style: {
+    fill: ${colors.error_bg}
+    stroke: "#B71C1C"
+    font-color: "#B71C1C"
+    bold: true
+  }
+}
+
+SUCCESS: "RETURN 0" {
+  style: {
+    fill: ${colors.success_bg}
+    double-border: true
+    bold: true
+  }
+}
+
+END: "" {
+  shape: circle
+  width: 20
+  height: 20
+  style.fill: "#000000"
+}
+
+# --- CONTROL FLOW ---
+
+START -> step1
+step1 -> step2
+step2 -> check_pde
+
+check_pde -> alloc_pt.pmm_call: "NO (P=0)" {
+  style.stroke-dash: 3
+}
+check_pde -> resolve_pt: "YES (P=1)"
+
+alloc_pt.pmm_call -> alloc_pt.check_oom
+alloc_pt.check_oom -> error_state: "OOM" {
+  style.stroke: "#B71C1C"
+}
+alloc_pt.check_oom -> alloc_pt.init_pt: "OK"
+alloc_pt.init_pt -> alloc_pt.set_pde
+alloc_pt.set_pde -> resolve_pt
+
+resolve_pt -> commit_pte
+commit_pte -> tlb_flush
+tlb_flush -> SUCCESS
+SUCCESS -> END
+
+error_state -> END: "ERR -1" {
+  style.stroke: "#B71C1C"
+}
+
+# --- LEGEND ---
+legend: {
+  near: bottom-left
+  label: "Implementation Guide"
+  style.fill: "#EEEEEE"
+  
+  l1: "CR3: PDBR (Physical Page Directory Base Register)"
+  l2: "invlpg: Required for coherence on same-address updates"
+  l3: "P/W/U: Present, Writable, User bits (Standard x86)"
+  
+  st: "Memory/IO Operation" {
+    style.fill: ${colors.step_bg}
+  }
+  br: "Branching Logic" {
+    shape: diamond
+    style.fill: ${colors.decision_bg}
+  }
+  cr: "Critical Path/Commit" {
+    style.fill: "#FFF9C4"
+    stroke: "#FBC02D"
+  }
+}

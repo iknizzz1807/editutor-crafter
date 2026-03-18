@@ -1,0 +1,256 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Protected Mode Entry State Machine
+  Critical sequence for x86 mode transition
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  real_mode: {
+    shape: oval
+    label: "REAL MODE\n(16-bit)"
+    style: {
+      fill: "#FFE4B5"
+      stroke: "#CD853F"
+      stroke-width: 2
+    }
+    state_desc: |md
+      **Valid:**
+      • 16-bit registers (AX, BX...)
+      • Segment:offset addressing
+      • 1MB addressable memory
+      • BIOS interrupts (INT 10h, etc.)
+      **Invalid:**
+      • 32-bit registers
+      • Memory above 1MB
+      • Page tables
+      • Privilege separation
+    |
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  gdt_loaded: {
+    shape: oval
+    label: "GDT LOADED\n(transitional)"
+    style: {
+      fill: "#98FB98"
+      stroke: "#228B22"
+      stroke-width: 2
+    }
+    state_desc2: |md
+      **Valid:**
+      • GDT defined in memory
+      • GDTR points to GDT
+      • Still in real mode!
+      **Invalid:**
+      • Cannot use GDT selectors yet
+      • Still 16-bit operations
+      • CR0.PE = 0
+    |
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  pe_set: {
+    shape: diamond
+    label: "CR0.PE = 1\n(DANGER ZONE)"
+    style: {
+      fill: "#FFB6C1"
+      stroke: "#DC143C"
+      stroke-width: 3
+    }
+    state_desc3: |md
+      **WARNING: Hybrid State!**
+      • Paging bit set in CR0
+      • CS still has real-mode value
+      • Pipeline has 16-bit instructions
+      **CRITICAL:**
+      Must far jump IMMEDIATELY!
+      Any delay = undefined behavior
+    |
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  cs_flushed: {
+    shape: oval
+    label: "CS FLUSHED\n(32-bit partial)"
+    style: {
+      fill: "#87CEEB"
+      stroke: "#4169E1"
+      stroke-width: 2
+    }
+    state_desc4: |md
+      **Valid:**
+      • CS = 0x08 (kernel code sel)
+      • 32-bit instruction fetch
+      • GDT lookup for CS base/limit
+      **Invalid:**
+      • DS/ES/SS still real-mode
+      • Cannot safely access data
+      • Interrupts dangerous (IDT?)
+    |
+  }
+}
+row5: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  protected_mode: {
+    shape: oval
+    label: "PROTECTED MODE\n(32-bit complete)"
+    style: {
+      fill: "#90EE90"
+      stroke: "#006400"
+      stroke-width: 3
+      shadow: true
+    }
+    state_desc5: |md
+      **Valid:**
+      • All seg regs = 0x10
+      • 32-bit EAX, EBX, ECX...
+      • Full 4GB address space
+      • Memory protection active
+      **Ready for:**
+      • IDT setup
+      • Paging enable
+      • Kernel C code
+    |
+  }
+}
+trans1: {
+  real_mode -> gdt_loaded: "lgdt [gdt_desc]"
+  trans1_desc: {
+    label: "Action: Load GDTR"
+    width: 200
+    code: |'asm
+      lgdt [gdt_descriptor]
+      ; GDTR = limit + base
+      ; No mode change yet!
+    '|
+  }
+}
+trans2: {
+  gdt_loaded -> pe_set: "mov cr0, eax  # set bit 0"
+  trans2_desc: {
+    label: "Action: Enable Protection"
+    width: 200
+    code: |'asm
+      mov eax, cr0
+      or eax, 1        ; PE bit
+      mov cr0, eax     ; DANGER!
+    '|
+    style.fill: "#FFE4E1"
+  }
+}
+trans3: {
+  pe_set -> cs_flushed: "jmp 0x08:protected_entry"
+  trans3_desc: {
+    label: "Action: Far Jump (CRITICAL!)"
+    width: 220
+    code: |'asm
+      ; Must be IMMEDIATELY after
+      ; setting CR0.PE
+      jmp 0x08:protected_mode_entry
+    '|
+    style: {
+      stroke: "#DC143C"
+      stroke-width: 2
+      fill: "#FFD700"
+    }
+  }
+}
+trans4: {
+  cs_flushed -> protected_mode: "mov ds/es/ss, 0x10"
+  trans4_desc: {
+    label: "Action: Load Data Segments"
+    width: 200
+    code: |'asm
+      mov ax, 0x10    ; kernel data
+      mov ds, ax
+      mov es, ax
+      mov ss, ax
+      mov esp, 0x90000
+    '|
+  }
+}
+legend: {
+  near: bottom-right
+  label: "State Machine Legend"
+  safe: "Safe transitional state" {
+    shape: oval
+    style.fill: "#98FB98"
+  }
+  danger: "Critical timing constraint" {
+    shape: diamond
+    style.fill: "#FFB6C1"
+  }
+  complete: "Fully operational" {
+    shape: oval
+    style.fill: "#90EE90"
+    style.shadow: true
+  }
+}
+failure_paths: {
+  label: "Common Failure Paths"
+  style.fill: "#FFF0F5"
+  fail1: {
+    label: "Skip far jump"
+    code: |'asm
+      mov cr0, eax    ; PE=1
+      ; ... other code ...
+      ; TRIPLE FAULT!
+      ; CPU tries 16-bit fetch
+      ; with 32-bit CS settings
+    '|
+    width: 250
+    result: "Triple Fault → Reset"
+    result.style.font-color: red
+  }
+  fail2: {
+    label: "Wrong CS selector"
+    code: |'asm
+      jmp 0x00:entry  ; NULL selector
+      ; GPF immediately!
+    '|
+    width: 250
+    result2: "General Protection Fault"
+    result2.style.font-color: red
+  }
+  fail3: {
+    label: "Forgot lgdt"
+    code: |'asm
+      ; Skip GDT load...
+      mov cr0, eax
+      jmp 0x08:entry  ; garbage in GDTR
+    '|
+    width: 250
+    result3: "Undefined Behavior"
+    result3.style.font-color: red
+  }
+}
+timing_note: {
+  near: bottom-center
+  label: "Timing Constraints"
+  timing: |md
+    **Maximum safe delay after CR0.PE=1:** 0 instructions
+    The far jump MUST be the very next instruction after setting CR0.PE.
+    The CPU is in an inconsistent state: paging logic is active but CS
+    still contains a real-mode value. Any instruction fetch or memory
+    access before the far jump has undefined behavior.
+  |
+}

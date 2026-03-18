@@ -1,0 +1,251 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# =============================================================================
+# HEADER
+# =============================================================================
+title: |md
+  # OS Kernel Keyboard Input Data Flow
+  ## Hardware Interrupt → IRQ → IDT → ISR → Driver → Circular Buffer → User API
+| {
+  near: top-center
+  shape: text
+}
+
+# =============================================================================
+# HARDWARE LAYER
+# =============================================================================
+Hardware: {
+  style.fill: "#E8E8E8"
+  style.stroke: "#666666"
+
+  Keyboard: "Physical Keyboard" {
+    shape: rectangle
+    style.fill: "#F5F5F5"
+    tooltip: "Mechanical switch generates scancode"
+  }
+
+  8042: "PS/2 Controller (i8042)" {
+    shape: rectangle
+    style.fill: "#FFE4B5"
+    tooltip: "Translates key matrix to scancodes"
+  }
+
+  Port60: "I/O Port 0x60" {
+    shape: hexagon
+    style.fill: "#98FB98"
+    tooltip: "Data Register for Scancodes"
+  }
+
+  IRQ1: "IRQ1 Signal" {
+    shape: diamond
+    style.fill: "#FFB6C1"
+  }
+
+  Keyboard -> 8042: "Key Press"
+  8042 -> Port60: "Move Scancode\n(e.g., 0x1E)"
+  8042 -> IRQ1: "Assert Line"
+}
+
+# =============================================================================
+# INTERRUPT ROUTING (PIC)
+# =============================================================================
+PIC_Layer: "PIC Layer (Interrupt Routing)" {
+  style.fill: "#E6E6FA"
+
+  PIC8259: "8259A Master PIC" {
+    style.fill: "#DDA0DD"
+    label: |md
+      **Master PIC**
+      - Remapped base: 0x20
+      - Unmasked IRQ: 1
+    |
+  }
+
+  Vector: "Vector 33 (0x21)" {
+    shape: circle
+    style.fill: "#87CEEB"
+  }
+
+  Hardware.IRQ1 -> PIC8259: "Pin INTR1"
+  PIC8259 -> Vector: "Remap IRQ1\nto 0x20 + 1"
+}
+
+# =============================================================================
+# CPU & KERNEL ENTRY
+# =============================================================================
+CPU_Entry: "CPU & IDT Entry Layer" {
+  style.fill: "#FFFACD"
+
+  IDT: "IDT Descriptor [Entry 33]" {
+    shape: sql_table
+    style.fill: "#FFF8DC"
+    # Key: Type {constraint: Description}
+    Offset_0_15: "uint16_t" {constraint: "Offset Low (ISR Address bits 0-15)"}
+    Selector: "0x0008" {constraint: "Code Segment Selector (Kernel)"}
+    Reserved: "uint8_t" {constraint: "Zero / IST"}
+    Flags: "0x8E" {constraint: "P=1, DPL=0, S=0, Type=0xE (32-bit Int Gate)"}
+    Offset_16_31: "uint16_t" {constraint: "Offset High (ISR Address bits 16-31)"}
+  }
+
+  KernelStack: "Kernel Stack Frame (SS:ESP)" {
+    shape: sql_table
+    style.fill: "#F0FFF0"
+    EFLAGS: "uint32_t" {constraint: "CPU Status Flags"}
+    CS: "0x0008" {constraint: "Return Code Segment"}
+    EIP: "uint32_t" {constraint: "Return Instruction Pointer"}
+    Error: "0x0000" {constraint: "Dummy Error Code"}
+    Vector: "33" {constraint: "Interrupt Vector Number"}
+  }
+
+  PIC_Layer.Vector -> IDT: "CPU IDTR Lookup"
+  IDT -> KernelStack: "Hardware Context Push"
+}
+
+# =============================================================================
+# INTERRUPT SERVICE ROUTINE (ASM)
+# =============================================================================
+ISR_Layer: "ISR Layer (Assembly Stubs)" {
+  style.fill: "#F0F8FF"
+
+  AssemblyStub: "isr_common_stub" {
+    shape: class
+    style.fill: "#E0FFFF"
+    pushall: "pusha (Save GPRs)"
+    push_ds: "push ds, es, fs, gs"
+    load_ds: "mov ax, 0x10; mov ds, ax"
+    call_c: "call keyboard_handler(regs*)"
+    pop_all: "pop all; iret"
+  }
+
+  CPU_Entry.KernelStack -> AssemblyStub: "Jump to ISR33 Target"
+}
+
+# =============================================================================
+# KEYBOARD DRIVER (C)
+# =============================================================================
+Driver_Layer: "Keyboard Driver (C)" {
+  style.fill: "#F5F5DC"
+
+  Handler: "keyboard_handler(regs*)" {
+    shape: class
+    style.fill: "#FAFAD2"
+    Step1: "scancode = inb(0x60)"
+    Step2: "Update modifiers (Shift/Caps)"
+    Step3: "Translate Scancode to ASCII"
+    Step4: "buffer_put(ascii)"
+    Step5: "PIC_send_EOI(1)"
+  }
+
+  LayoutTable: "Translation Tables (US-QWERTY)" {
+    shape: sql_table
+    style.fill: "#FAFAD2"
+    "0x1E": "'a'" {constraint: "Standard"}
+    "0x1E + Shift": "'A'" {constraint: "Modifier Active"}
+    "0x30": "'b'" {constraint: "Standard"}
+  }
+
+  ModifierState: "keyboard_state_t" {
+    style.fill: "#FFE4E1"
+    label: |md
+      **Global Driver State**
+      - shift_held: bool
+      - caps_lock: bool
+      - control_held: bool
+    |
+  }
+
+  AssemblyStub -> Handler: "Pass CPU registers_t*"
+  Handler -> Hardware.Port60: "inb(0x60)"
+  Handler -> LayoutTable: "Lookup"
+  Handler -> ModifierState: "Sync State"
+}
+
+# =============================================================================
+# BUFFER & API
+# =============================================================================
+API_Layer: "Buffer & API Layer" {
+  style.fill: "#E0FFFF"
+
+  CircBuffer: "Circular Char Buffer" {
+    shape: sql_table
+    style.fill: "#B0E0E6"
+    "char data[256]": "uint8_t[]" {constraint: "Raw ASCII Queue"}
+    read_ptr: "uint32_t" {constraint: "Head"}
+    write_ptr: "uint32_t" {constraint: "Tail"}
+  }
+
+  API: "keyboard.c API" {
+    shape: class
+    style.fill: "#98FB98"
+    + keyboard_getchar(): "char (blocking)"
+    + keyboard_try_getchar(): "char (non-blocking)"
+    + keyboard_has_char(): "bool"
+  }
+
+  Driver_Layer.Handler -> CircBuffer: "buffer_put(ascii)"
+  CircBuffer -> API: "Internal Dequeue"
+}
+
+# =============================================================================
+# CONSUMER
+# =============================================================================
+UserApp: "Kernel Shell / App" {
+  shape: person
+  style.fill: "#D1FFBD"
+}
+
+API_Layer.API -> UserApp: "Return ASCII char"
+
+# =============================================================================
+# STYLING & FLOW ARROWS
+# =============================================================================
+(Hardware.8042 -> Hardware.Port60): {
+  style.stroke: "#CC8800"
+  style.stroke-width: 2
+}
+
+(Driver_Layer.Handler -> API_Layer.CircBuffer): {
+  label: "ASCII Write"
+  style.stroke: "#0000FF"
+  style.stroke-width: 3
+  style.animated: true
+}
+
+(API_Layer.API -> UserApp): {
+  label: "syscall: getchar()"
+  style.stroke: "#006400"
+  style.stroke-width: 2
+}
+
+# EOI Return Path
+Handler -> PIC_Layer.PIC8259: "OUT 0x20, 0x20 (EOI)" {
+  style.stroke: "#DC143C"
+  style.stroke-dash: 5
+}
+
+# Annotations
+Annotations: {
+  near: bottom-right
+  transform_1: |md
+    ### Data Transformations
+    1. **Key Event** -> Scancode (0x1E)
+    2. **IRQ1** -> Vector 33 (Remapped via PIC)
+    3. **Scancode** -> ASCII ('a') via Driver Table
+    4. **ASCII** -> Ring Buffer -> User Process
+  | {
+    shape: text
+  }
+}
+
+# Final Styling
+***.style.font: mono
+***.style.border-radius: 4
+Driver_Layer.Handler.style.bold: true
+API_Layer.CircBuffer.style.stroke: "#008B8B"
+PIC_Layer.Vector.style.font-color: white
+PIC_Layer.Vector.style.bold: true

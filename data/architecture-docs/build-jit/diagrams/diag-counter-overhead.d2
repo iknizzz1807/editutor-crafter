@@ -1,0 +1,346 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: "Profiling Counter Overhead Analysis" {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  before: "NAIVE APPROACH (Too Slow)" {
+    style: {
+      fill: "#FFE4E1"
+      stroke: "#DC143C"
+      stroke-width: 2
+    }
+    naive_desc: |md
+      **Problem:** Two memory accesses per call
+      Every function call requires:
+      1. Load counter from memory
+      2. Add 1 to counter
+      3. Store counter back to memory
+      4. Compare against threshold
+    | {
+      style.fill: transparent
+      style.stroke: transparent
+    }
+    naive_code: {
+      label: "C Code (interp_dispatch.c:247)"
+      width: 380
+      code: |'c
+        case OP_CALL: {
+          int func_id = *pc++;
+          function_counters[func_id]++;  // LOAD + ADD + STORE
+          if (function_counters[func_id] > HOT_THRESHOLD) {
+            jit_compile_function(func_id);
+          }
+          // ... call the function
+        }
+      '|
+    }
+    naive_asm: {
+      label: "x86-64 Assembly (3 memory ops)"
+      width: 380
+      code: |'asm
+        ; function_counters[func_id]++
+        mov    eax, [rdi + func_id*4]   ; LOAD: ~100 cycles if miss
+        add    eax, 1                    ; ADD: 1 cycle
+        mov    [rdi + func_id*4], eax   ; STORE: ~100 cycles if miss
+        ; if (counter > HOT_THRESHOLD)
+        cmp    eax, 1000                 ; CMP: 1 cycle
+        jg     compile_function          ; BRANCH: 1-2 cycles
+      '|
+    }
+    naive_cycles: {
+      shape: sql_table
+      label: "Cycle Analysis (Naive)"
+      op1: "mov (load) | L1 hit | ~4 cycles"
+      op2: "mov (load) | L3 miss | ~40 cycles"
+      op3: "mov (load) | RAM miss | ~150 cycles"
+      op4: "add | ALU | 1 cycle"
+      op5: "mov (store) | Write-back | ~4-150 cycles"
+      op6: "cmp + jg | Predicted | 1-2 cycles"
+      total1: "Total (L1 hit) | ~12 cycles"
+      total2: "Total (RAM miss) | ~300+ cycles"
+    }
+    naive_verdict: {
+      shape: callout
+      label: "❌ Too slow for hot paths"
+      style: {
+        fill: "#FFB6C1"
+        stroke: "#DC143C"
+        font-color: "#8B0000"
+        bold: true
+      }
+    }
+  }
+  after: "OPTIMIZED APPROACH (Preferred)" {
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#228B22"
+      stroke-width: 2
+    }
+    opt_desc: |md
+      **Solution:** Decrement-and-branch-on-zero
+      Invert the comparison:
+      - Start counter at HOT_THRESHOLD
+      - Decrement each call
+      - Branch only when counter hits zero
+      The branch is highly predictable!
+    | {
+      style.fill: transparent
+      style.stroke: transparent
+    }
+    opt_code: {
+      label: "C Code (interp_dispatch.c:247)"
+      width: 380
+      code: |'c
+        case OP_CALL: {
+          int func_id = *pc++;
+          // Single decrement + branch
+          if (--function_counters[func_id] == 0) {
+            // Counter hit zero — this function is hot
+            jit_compile_function(func_id);
+          }
+          // ... call the function
+        }
+      '|
+    }
+    opt_asm: {
+      label: "x86-64 Assembly (1 memory op)"
+      width: 380
+      code: |'asm
+        ; if (--function_counters[func_id] == 0)
+        dec    dword [rdi + func_id*4]   ; DEC: 1 instruction
+        jnz    skip_compile              ; JNZ: highly predictable
+        ; ... compilation code ...
+      skip_compile:
+      '|
+    }
+    opt_cycles: {
+      shape: sql_table
+      label: "Cycle Analysis (Optimized)"
+      op1: "dec [mem] | L1 hit | ~4 cycles"
+      op2: "dec [mem] | L3 miss | ~40 cycles"
+      op3: "jnz (predicted) | Taken | 0 cycles"
+      op4: "jnz (mispredicted) | Rare | ~15 cycles"
+      total1: "Total (predicted) | ~1-4 cycles"
+      total2: "Mispredict rate | Cold funcs | ~99.9%"
+    }
+    opt_verdict: {
+      shape: callout
+      label: "✅ ~10x faster on hot paths"
+      style: {
+        fill: "#90EE90"
+        stroke: "#228B22"
+        font-color: "#006400"
+        bold: true
+      }
+    }
+  }
+}
+arrow_label: "TRANSFORMATION" {
+  shape: text
+  near: center-right
+  style: {
+    font-size: 18
+    bold: true
+    font-color: "#4169E1"
+  }
+}
+before -> after: "Optimization" {
+  style: {
+    stroke: "#4169E1"
+    stroke-width: 3
+    animated: true
+  }
+}
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  comparison: "WHY THE BRANCH IS FREE" {
+    style: {
+      fill: "#F0F8FF"
+      stroke: "#4169E1"
+      stroke-width: 2
+    }
+    branch_theory: {
+      label: "Branch Prediction Mathematics"
+      width: 400
+      code: |'text
+        For a function with HOT_THRESHOLD = 1000:
+        Calls 1-999:   counter = 1000 → 1
+                       jnz is ALWAYS taken (counter ≠ 0)
+                       CPU learns: "this branch is taken"
+                       Prediction accuracy: ~99.9%
+        Call 1000:     counter = 0
+                       jnz is NOT taken (counter = 0)
+                       CPU mispredicts once (cost: ~15 cycles)
+                       Then triggers compilation
+        Subsequent:    JIT code used directly
+                       No more counter checks!
+        Total overhead: 999 calls × 1 cycle + 1 mispredict × 15 cycles
+                       = ~1014 cycles for 1000 calls
+                       = ~1 cycle per call average
+      '|
+    }
+    predictor: "Modern CPU Branch Predictor" {
+      style.fill: "#E6E6FA"
+      predictor_desc: |md
+        **How branch prediction works:**
+        Modern CPUs use sophisticated predictors:
+        - **Two-level adaptive**: Tracks history of each branch
+        - **Tournament predictor**: Chooses best of multiple algorithms
+        - **Perceptron-based**: Neural network prediction (modern Intel)
+        For our decrement-and-branch:
+        - Pattern: TTTTTTTTT...TNT (999 taken, 1 not-taken)
+        - Predictor learns after ~3-5 iterations
+        - Accuracy approaches 99.9%+
+      | {
+        style.fill: transparent
+        style.stroke: transparent
+      }
+    }
+  }
+  memory_hierarchy: "MEMORY ACCESS PATTERNS" {
+    style: {
+      fill: "#FFF8DC"
+      stroke: "#DAA520"
+      stroke-width: 2
+    }
+    cache_layout: {
+      shape: sql_table
+      label: "Cache Hierarchy Impact"
+      level1: "L1 Data Cache | 32 KB | ~4 cycles | 90%+ hit rate"
+      level2: "L2 Cache | 256 KB | ~12 cycles | 95%+ hit rate"
+      level3: "L3 Cache | 8 MB | ~40 cycles | Shared across cores"
+      level4: "Main Memory | GBs | ~150 cycles | Throughput limited"
+      note: "Counter in L1 | After warmup | ~4 cycle access"
+    }
+    access_pattern: {
+      label: "Counter Access Pattern"
+      width: 400
+      code: |'text
+        Hot function (called 1M times):
+        Call #1:      Counter in RAM → L3 → L2 → L1 (150 cycles)
+        Calls #2-1000: Counter in L1 (4 cycles each)
+        Call #1000:   Trigger JIT, counter never accessed again
+        Total memory cost:
+          1 × 150 cycles (cold miss)
+        + 999 × 4 cycles (L1 hits)
+        = 4,146 cycles for first 1000 calls
+        = 4.1 cycles per call (amortized)
+        After JIT: 0 cycles (no counter access)
+      '|
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  benchmark: "BENCHMARK RESULTS" {
+    style: {
+      fill: "#F5F5F5"
+      stroke: "#696969"
+      stroke-width: 2
+    }
+    benchmark_table: {
+      shape: sql_table
+      label: "Overhead Comparison (10M function calls)"
+      header1: "Implementation | Total Overhead | Per-Call | Speedup"
+      naive_l1: "Naive (L1 hits) | ~120M cycles | 12 cycles | 1.0x (baseline)"
+      naive_miss: "Naive (L3 misses) | ~400M cycles | 40 cycles | 0.3x"
+      opt_predicted: "Dec+Branch (predicted) | ~10M cycles | 1 cycle | 12x"
+      opt_mixed: "Dec+Branch (realistic) | ~15M cycles | 1.5 cycles | 8x"
+      after_jit: "After JIT compilation | 0 cycles | 0 cycles | ∞x"
+    }
+    conclusion: {
+      shape: callout
+      label: "Key Insight: The branch is 'free' because it's highly predictable. The CPU executes it in parallel with other work."
+      style: {
+        fill: "#87CEEB"
+        stroke: "#4169E1"
+        font-color: "#191970"
+      }
+    }
+  }
+  implementation: "IMPLEMENTATION DETAILS" {
+    style: {
+      fill: "#FFFAF0"
+      stroke: "#CD853F"
+      stroke-width: 2
+    }
+    impl_code: {
+      label: "Production-Ready Counter (counter.h)"
+      width: 420
+      code: |'c
+        #define HOT_THRESHOLD 1000
+        #define MAX_DEOPT_BEFORE_BLACKLIST 3
+        typedef struct {
+            int32_t invocation_counter;  // Signed for overflow detect
+            void* jit_entry;              // NULL until compiled
+            bool is_compiling;            // Prevent reentrancy
+            bool is_blacklisted;          // Too many deopts
+        } Function;
+        static inline bool should_compile(Function* f) {
+            // Fast path: already compiled or blacklisted
+            if (f->jit_entry != NULL || f->is_blacklisted) {
+                return false;
+            }
+            // Decrement and check (single instruction)
+            // Returns true only when counter hits zero
+            return __sync_sub_and_fetch(&f->invocation_counter, 1) == 0;
+        }
+        // In dispatch loop:
+        if (should_compile(func)) {
+            jit_compile_function(func);
+        }
+      '|
+    }
+    impl_note: |md
+      **Why `int32_t` instead of `uint32_t`?**
+      - Detects overflow (2B+ calls without compilation)
+      - `__sync_sub_and_fetch` is atomic for thread safety
+      - Signed comparison handles edge cases correctly
+    | {
+      style.fill: transparent
+      style.stroke: transparent
+    }
+  }
+}
+legend: {
+  near: bottom-center
+  style: {
+    fill: "#FFFFFF"
+    stroke: "#000000"
+    stroke-width: 1
+  }
+  legend_title: "Legend"
+  legend_items: {
+    shape: sql_table
+    label: ""
+    item1: "🔴 Red | Naive/Slow approach"
+    item2: "🟢 Green | Optimized approach"
+    item3: "🔵 Blue | Branch prediction"
+    item4: "🟡 Yellow | Memory hierarchy"
+  }
+}

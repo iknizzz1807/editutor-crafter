@@ -1,0 +1,252 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- STYLES & CLASSES ---
+classes: {
+  memory_block: {
+    style: {
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  header: {
+    style: {
+      fill: "#B5AFF6"
+      bold: true
+    }
+  }
+  logic_gate: {
+    shape: diamond
+    style: {
+      fill: "#FFE7C5"
+    }
+  }
+  cache_aligned: {
+    tooltip: "Aligned to 64-byte cache line"
+    style.stroke-dash: 5
+  }
+}
+
+# --- MILESTONE 1: MEMORY ARCHITECTURE ---
+
+MemoryLayout: "Stack & CCB Memory Mapping" {
+  stack_frame: {
+    grid-columns: 1
+    
+    guard_page: "Guard Page\n(4096 Bytes)" {
+      tooltip: "PROT_NONE - Hardware-level overflow protection"
+      style: {
+        fill: "#FFCCCC"
+        stroke: red
+        stroke-dash: 3
+        stroke-width: 4
+      }
+    }
+    
+    usable_stack: "Execution Context Stack\n(61,440 Bytes)" {
+      style.fill: "#E1D4F0"
+      
+      offsets: {
+        shape: sql_table
+        "Offset [Hex]": "Field Description [Type]"
+        "0x0000": "Stack Bottom (Limit) [u8; 0]"
+        "0x0008 - 0xEFEE": "Dynamic Frames / Locals [Mixed]"
+        "0xEFF0": "Saved RBP [u64]"
+        "0xEFF8": "Initial Return Addr (coroutine_exit) [ptr]"
+        "0xF000": "Initial RIP (entry_point) [ptr]"
+        "0xF008": "Stack Top (Initial RSP) [ptr]"
+      }
+    }
+  }
+}
+
+CCB: "Coroutine Control Block (CCB)\nsizeof=64 bytes (1 cache line)" {
+  shape: class
+  class: cache_aligned
+  style.fill: "#B5AFF6"
+  
+  # Structural fields
+  id: "u64 (Unique ID)"
+  state: "u8 (CoroutineState Enum)"
+  
+  # Register Context (Switching Set)
+  regs_rbx: "u64"
+  regs_rbp: "u64"
+  regs_r12_r15: "[u64; 4]"
+  
+  # Pointers
+  rsp: "*mut u8 (Stack Pointer)"
+  rip: "*const u8 (Inst Pointer)"
+  stack_base: "*mut u8"
+  stack_size: "usize"
+  
+  # Metadata
+  entry: "Option<Box<dyn FnOnce>>"
+}
+
+# --- MILESTONE 2: SCHEDULER & WORK-STEALING ---
+
+SchedulerArch: "M:N Work-Stealing Scheduler" {
+  GlobalQueue: "Global Injector Queue\n(Thread-Safe Locked)" {
+    shape: queue
+    style.fill: "#ACE1AF"
+  }
+  
+  Workers: {
+    direction: right
+    
+    Worker0: "Worker Thread 0 (Pinned to Core 0)" {
+      LocalQueue: "Local Deque (Chase-Lev)\nLIFO for Owner / FIFO for Stealers" {
+        shape: queue
+        style.fill: "#B5AFF6"
+      }
+      Processor: "Current Stack context" {
+        shape: person
+        style.fill: "#E1D4F0"
+      }
+    }
+    
+    Worker1: "Worker Thread 1 (Pinned to Core 1)" {
+      LocalQueue: "Local Deque (Chase-Lev)" {
+        shape: queue
+        style.fill: "#B5AFF6"
+      }
+      Processor: "Current Stack context" {
+        shape: person
+        style.fill: "#E1D4F0"
+      }
+    }
+  }
+}
+
+StealingLogic: "Algorithm: Work Stealing State" {
+  shape: sequence_diagram
+  
+  Worker: "Idle Worker (Self)"
+  Victim: "Target Worker (Random)"
+  Global: "Global Injector"
+  
+  Worker -> Worker: "1. Try Pop Local LIFO (Low Latency)"
+  Worker -> Global: "2. If Empty: Pop 32 from Global FIFO"
+  Global -> Worker: "Transfer task batch"
+  
+  alt Still Empty {
+    Worker -> Victim: "3. Steal Half (FIFO Order)"
+    Victim -> Worker: "Atomic Deque Transfer"
+  }
+}
+
+# --- MILESTONE 3: ASYNC PREEMPTION ---
+
+Preemption: "Signal-Based Async Preemption" {
+  direction: right
+  
+  TimerThread: "Kernel Timer / Monitor" {
+    shape: circle
+    style: {
+      fill: "#FFD700"
+      stroke: "#DAA520"
+      stroke-width: 3
+    }
+  }
+  
+  SignalFlow: {
+    Signal: "SIGURG (Unix Signal)" {
+      shape: parallelogram
+      style.fill: "#FF8C00"
+    }
+    WorkerThread: "Interrupted Instruction Flow"
+    Flag: "PREEMPT_PENDING\n(AtomicBool)" {
+      style.fill: "#FFCCCC"
+    }
+
+    TimerThread -> Signal: "Interval Expired"
+    Signal -> WorkerThread: "tgkill(tid, SIGURG)"
+    WorkerThread -> Flag: "Handler sets pending=true"
+  }
+  
+  CheckLoop: "Runtime Safe-point" {
+    shape: rectangle
+    style.font: mono
+    label: |md
+      rust
+      // Polled by generated code or loop headers
+      #[inline(always)]
+      fn yield_if_preempted() {
+          if FLAG.load(Relaxed) {
+              context_switch_to_scheduler();
+          }
+      }
+      
+    |
+  }
+}
+
+# --- MILESTONE 4: REACTOR & ASYNC I/O ---
+
+ReactorPattern: "I/O Reactor Integration (epoll/kqueue)" {
+  direction: down
+  
+  UserCoro: "Coroutine (Task)"
+  SyscallProxy: "Socket Wrapper"
+  Reactor: "Reactor Instance\n(Edge-Triggered epoll)"
+  Scheduler: "M:N Scheduler"
+  
+  UserCoro -> SyscallProxy: "async_read(buf)"
+  SyscallProxy -> Reactor: "EAGAIN -> Register(fd, READ, Token)"
+  SyscallProxy -> UserCoro: "Yield(Pending)"
+  
+  Reactor -> Scheduler: "epoll_wait() -> Event(Token)"
+  Scheduler -> UserCoro: "Schedule(Ready)"
+}
+
+# --- MILESTONE 5: SYNC PRIMITIVES ---
+
+AsyncMutex: "AsyncMutex<T> Struct Layout" {
+  shape: sql_table
+  style.fill: "#E1D4F0"
+  
+  "Byte Offset": "Member [Size / Alignment]"
+  "0x00": "state: AtomicU8 (0=Free, 1=Locked) [1B]"
+  "0x01": "padding [7B]"
+  "0x08": "waiters: Mutex<VecDeque<Waker>> [32B]"
+  "0x28": "padding [8B]"
+  "0x30": "data: UnsafeCell<T> [sizeof(T)]"
+}
+
+# --- CONNECTIONS & TOPOLOGY ---
+
+SchedulerArch.GlobalQueue -> SchedulerArch.Workers.Worker0.LocalQueue: "Task Injection"
+SchedulerArch.Workers.Worker0.Processor -> CCB: "Maps CCB registers to HW"
+CCB -> MemoryLayout.stack_frame: "RSP points to"
+StealingLogic -> SchedulerArch: "Implements logic for"
+
+# --- DOCUMENTATION OVERLAY ---
+
+Info: |md
+  ### Runtime Technical Specifications
+  
+  **1. Context Switching**
+  - Mechanism: Hand-rolled assembly `jmp` to saved RSP/RIP.
+  - Latency: ~12-15ns on x86_64.
+  - Floating Point: Deferred save (lazy) for performance.
+
+  **2. Resource Management**
+  - Default Stack: 64KB (Virtual Memory) / 4KB (Physical Commit).
+  - Memory Overhead: ~64.1KB per coroutine instance.
+  
+  **3. Scheduling**
+  - Policy: Non-cooperative (Preemptive) + Work Stealing.
+  - Victim Selection: Xorshift PRNG for victim index.
+| {
+  near: bottom-right
+}
+
+style: {
+  fill: "#F6F9FC"
+}

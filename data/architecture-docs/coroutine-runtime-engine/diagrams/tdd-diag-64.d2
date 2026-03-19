@@ -1,0 +1,294 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# 1. MEMORY LAYOUT SPECIFICATIONS
+memory_layout: {
+  label: "Coroutine Memory Layout & Control Blocks"
+  
+  stack_layout: {
+    label: "Coroutine Stack Segment (64KB Total)"
+    
+    # Base layout using a grid-like stack representation
+    # OFFSETS | REGION | SIZE / METADATA
+    
+    guard_low: "0x0000 | PAGE_GUARD | 4KB" {
+      style: {
+        fill: gray
+        stroke-dash: 5
+        opacity: 0.6
+      }
+    }
+    
+    growth_space: "0x1000 | STACK_GROWTH_ZONE | 4KB" {
+      style: {
+        fill: "#DEE1EB"
+        fill-pattern: lines
+      }
+    }
+    
+    stack_ptr_marker: "0x2000 | RSP (CURRENT TOP) | 8B" {
+      style: {
+        fill: orange
+        bold: true
+        stroke-width: 4
+      }
+    }
+    
+    user_frames: "0x2008 | USER_STACK_FRAMES | 52KB" {
+      style: {
+        fill: "#B6DDF6"
+      }
+    }
+    
+    context_save: "0xEEB8 | REGISTER_SAVE_AREA | 64B" {
+      label: "0xEEB8 | CALLEE_SAVED_REGISTERS | 64B"
+      style: {
+        fill: purple
+        font-color: white
+      }
+    }
+    
+    # Page boundary marker
+    guard_high: "0xF000 | PAGE_GUARD | 4KB" {
+      style: {
+        fill: gray
+        stroke-dash: 5
+        opacity: 0.6
+      }
+    }
+    
+    guard_low -> growth_space -> stack_ptr_marker -> user_frames -> context_save -> guard_high
+  }
+
+  ccb_layout: "Coroutine Control Block (sizeof=112B)" {
+    shape: sql_table
+    style: {
+      stroke: "#333"
+      stroke-width: 2
+    }
+    
+    "0x00": "coro_id (uint64)" { constraint: PK }
+    "0x08": "state (uint8)" { style.fill: "#B6DDF6" }
+    "0x09": "padding (7 bytes)" { style.fill: gray }
+    "0x10": "stack_base_ptr (void*)" { style.fill: orange }
+    "0x18": "stack_limit_ptr (void*)"
+    "0x20": "rsp_save (uint64)" { 
+      style: {
+        fill: orange
+        bold: true 
+      }
+    }
+    "0x28": "entry_point (fn_ptr)" { style.fill: "#ACE1AF" }
+    "0x30": "priority (uint32)"
+    "0x34": "last_cpu_id (uint32)"
+    "0x38": "wait_object (void*)"
+    "0x40": "vtable (8 bytes)" { style.stroke-dash: 3 }
+  }
+}
+
+# 2. SCHEDULER ARCHITECTURE
+runtime_architecture: {
+  label: "M:N Work-Stealing Runtime Architecture"
+  
+  global_scheduler: {
+    shape: package
+    style.fill: "#F3F4F6"
+    
+    injector: "Global Injector Queue" {
+      shape: queue
+      style.fill: "#DEE1EB"
+    }
+    
+    monitor: "Health & Preemption Monitor" {
+      shape: diamond
+      style.fill: "#FFE7CB"
+    }
+  }
+
+  processors: {
+    p0: "Processor 0 (P0)" {
+      local_dq: "Local RunQueue (Lock-free Deque)" {
+        shape: queue
+        style.fill: "#C7F1FF"
+        style.multiple: true
+      }
+      executor: "Worker Thread (OS LWP)" {
+        shape: person
+        current_task: "Active CCB" {
+          style.fill: "#ACE1AF"
+          style.double-border: true
+        }
+      }
+    }
+    
+    p1: "Processor 1 (P1)" {
+      local_dq: "Local RunQueue (Lock-free Deque)" {
+        shape: queue
+        style.fill: "#C7F1FF"
+        style.multiple: true
+      }
+      executor: "Worker Thread (OS LWP)" {
+        shape: person
+        current_task: "Active CCB" {
+          style.fill: "#ACE1AF"
+          style.double-border: true
+        }
+      }
+    }
+  }
+
+  global_scheduler.injector -> processors.p0.local_dq: "Schedule Task"
+  global_scheduler.injector -> processors.p1.local_dq: "Schedule Task"
+  
+  processors.p0.local_dq <-> processors.p1.local_dq: "Work Stealing" {
+    style: {
+      stroke-dash: 4
+      animated: true
+      stroke: blue
+    }
+  }
+}
+
+# 3. CONTEXT SWITCH LOGIC (ASM IMPLEMENTATION)
+context_switch_logic: {
+  label: "Low-Level Context Switch Implementation"
+  
+  asm_block: |'asm
+; void context_switch(Context *from, Context *to)
+; rdi = from_context (ptr to save area)
+; rsi = to_context   (ptr to load area)
+
+context_switch:
+    ; 1. SAVE CURRENT CONTEXT
+    mov [rdi + 0x00], rbx
+    mov [rdi + 0x08], rbp
+    mov [rdi + 0x10], r12
+    mov [rdi + 0x18], r13
+    mov [rdi + 0x20], r14
+    mov [rdi + 0x28], r15
+    mov [rdi + 0x30], rsp      ; Save stack pointer
+    
+    ; 2. LOAD TARGET CONTEXT
+    mov rbx, [rsi + 0x00]
+    mov rbp, [rsi + 0x08]
+    mov r12, [rsi + 0x10]
+    mov r13, [rsi + 0x18]
+    mov r14, [rsi + 0x20]
+    mov r15, [rsi + 0x28]
+    mov rsp, [rsi + 0x30]      ; Switch to new stack
+    
+    ; 3. RETURN TO TARGET PC
+    ret                        ; Pops return address from NEW stack
+  '| {
+    style.font: mono
+  }
+}
+
+# 4. STATE TRANSITIONS
+coroutine_lifecycle: {
+  label: "Coroutine Lifecycle State Machine"
+  
+  entry: "" { shape: circle; style.fill: black }
+  
+  Idle: {
+    label: "IDLE\n(Allocated)"
+    tooltip: "CCB initialized, stack allocated."
+  }
+  
+  Ready: {
+    label: "READY\n(Queued)"
+    style.fill: "#B6DDF6"
+    tooltip: "In local or global runqueue."
+  }
+  
+  Running: {
+    label: "RUNNING\n(On-CPU)"
+    style.stroke: green
+    style.stroke-width: 4
+    tooltip: "Context loaded into registers."
+  }
+  
+  Suspended: {
+    label: "SUSPENDED\n(Blocked/Yielded)"
+    style.fill: "#FFE7CB"
+    tooltip: "Waiting for I/O or Mutex."
+  }
+  
+  Finalized: {
+    label: "FINISHED"
+    shape: circle
+    style.fill: "#D1D5DB"
+    style.double-border: true
+  }
+  
+  Panic: {
+    label: "PANIC"
+    style.fill: "#FE7070"
+    style.font-color: white
+  }
+
+  entry -> Idle: "spawn()"
+  Idle -> Ready: "enqueue()"
+  Ready -> Running: "dispatch (context_switch)"
+  Running -> Ready: "preempt (time slice end)"
+  Running -> Suspended: "block / yield"
+  Suspended -> Ready: "event_ready"
+  Running -> Finalized: "return"
+  Running -> Panic: "exception"
+  
+  # Illegal transitions
+  Ready -> Panic: "ILLEGAL" {
+    style: {
+      stroke: red
+      stroke-dash: 3
+    }
+  }
+}
+
+# 5. EXECUTION SEQUENCE
+execution_flow: {
+  shape: sequence_diagram
+  label: "M:N Execution and Context Switch Sequence"
+  
+  User: { shape: person }
+  Scheduler: "Runtime Scheduler"
+  Worker: "P[n] Worker"
+  CCB: "Coroutine (CCB)"
+  
+  User -> Scheduler: spawn(task_fn)
+  Scheduler -> Scheduler: allocate_ccb()
+  Scheduler -> Worker: push_local(ccb)
+  
+  Worker -> Worker: find_work()
+  Worker -> CCB: context_switch_to() {
+    style.bold: true
+  }
+  
+  CCB -> CCB: execute_user_code()
+  
+  Worker <- CCB: yield_to_scheduler()
+  Worker -> Scheduler: reschedule(ccb)
+}
+
+# 6. REGISTER CLASSIFICATION TABLE (FIXED BLOCK STRING)
+register_spec: |'md
+### x86-64 Context Switch Register Preservation Requirements
+
+| Register | Classification | Requirement | Role in Runtime |
+| :--- | :--- | :--- | :--- |
+| `rbx` | Callee-Saved | MUST SAVE | General Purpose / Data |
+| `rsp` | Callee-Saved | MUST SAVE | Current Stack Pointer |
+| `rbp` | Callee-Saved | MUST SAVE | Frame Pointer (for Debugging) |
+| `r12-r15` | Callee-Saved | MUST SAVE | Local Variables / Scratch |
+| `rip` | PC | Implicit | Loaded via `ret` instruction |
+| `rax` | Caller-Saved | Volatile | Return Value (Discarded on switch) |
+| `rdi / rsi` | Caller-Saved | Volatile | Function Arguments |
+
+**Note:** All volatile registers are assumed dirty upon return from context switch.
+'| {
+  near: context_switch_logic
+}

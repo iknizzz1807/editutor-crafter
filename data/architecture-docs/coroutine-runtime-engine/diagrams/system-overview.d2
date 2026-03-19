@@ -1,0 +1,204 @@
+direction: down
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+
+# ROW 1: CORE PRIMITIVES
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  layer_core: {
+    direction: down
+    label: "CORE COROUTINE ENGINE  [cre-m1]"
+
+    context_struct: {
+      shape: sql_table
+      label: "struct Context (context.rs)  [cre-m1]"
+      regs: "[usize; 8] | rbx, rbp, r12-r15, rip, rsp"
+      fpu_state: "[u8; 512] | FXSAVE area"
+      sz: "Total: 576 bytes"
+    }
+
+    stack_struct: {
+      shape: sql_table
+      label: "struct Stack (stack.rs)  [cre-m1]"
+      ptr: "*mut u8 | Base pointer"
+      len: "usize | 64KB Default"
+      guard_size: "usize | 4KB PROT_NONE"
+      sz: "Total: 24 bytes"
+    }
+
+    coroutine_module: {
+      shape: class
+      label: "Coroutine (coroutine.rs)  [cre-m1]"
+      -id: "u64"
+      -state: "CoroutineState"
+      -stack: "Stack"
+      -context: "Context"
+      +new(entry): "Self"
+      +resume(): "bool | true if yielded"
+      +yield_now(): "()"
+    }
+
+    state_enum: {
+      shape: sql_table
+      label: "enum CoroutineState"
+      Runnable: "0x00"
+      Running: "0x01"
+      Waiting: "0x02"
+      Finished: "0x03"
+    }
+  }
+}
+
+# ROW 2: SCHEDULING & EXECUTION
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  layer_sched: {
+    direction: down
+    label: "WORK-STEALING SCHEDULER  [cre-m2]"
+
+    ws_queue: {
+      shape: class
+      label: "WorkStealingQueue (chase_lev.rs)  [cre-m2]"
+      -top: "AtomicIsize"
+      -bottom: "AtomicIsize"
+      -buffer: "AtomicPtr<Buffer>"
+      +push(item): "() | LIFO"
+      +pop(): "Option<T> | LIFO"
+      +steal(): "Option<T> | FIFO"
+    }
+
+    scheduler_node: {
+      shape: class
+      label: "Scheduler (scheduler.rs)  [cre-m2]"
+      -global: "Arc<GlobalQueue>"
+      -locals: "Vec<Arc<WSQueue>>"
+      +spawn(f): "()"
+      +run_worker(id): "!"
+      +find_task(): "Option<Coroutine>"
+    }
+
+    global_injector: {
+      shape: sql_table
+      label: "struct GlobalQueue (global.rs) [cre-m2]"
+      queue: "Mutex<VecDeque<Coroutine>>"
+      condvar: "Condvar"
+      note: "MPSC Injector"
+    }
+  }
+
+  layer_preempt: {
+    direction: down
+    label: "PREEMPTION CONTROL  [cre-m3]"
+
+    preempt_flag: {
+      shape: sql_table
+      label: "PreemptionFlag (flag.rs) [cre-m3]"
+      flag: "AtomicBool | 1 byte"
+      _pad: "[u8; 63] | cache alignment"
+      sz: "Total: 64 bytes (1 cache line)"
+    }
+
+    timer_manager: {
+      shape: class
+      label: "PreemptTimer (timer.rs) [cre-m3]"
+      -signal_id: "i32 | SIGALRM/SIGUSR1"
+      -interval: "Duration | 10ms"
+      +start(): "()"
+      +stop(): "()"
+    }
+  }
+}
+
+# ROW 3: ASYNC I/O & SYSTEM
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  layer_io: {
+    direction: down
+    label: "ASYNC I/O SUBSYSTEM  [cre-m4]"
+
+    reactor_core: {
+      shape: class
+      label: "Reactor (reactor.rs) [cre-m4]"
+      -epoll_fd: "RawFd"
+      -wakers: "Mutex<Map<Fd, Waker>>"
+      +poll(timeout): "io::Result<usize>"
+      +register(fd, ev, waker): "()"
+    }
+
+    tcp_stream: {
+      shape: class
+      label: "AsyncTcpStream (tcp.rs) [cre-m4]"
+      -inner: "TcpStream"
+      -token: "u64"
+      +read(buf): "Poll<Result<usize>>"
+      +write(buf): "Poll<Result<usize>>"
+    }
+
+    timer_wheel: {
+      shape: sql_table
+      label: "TimerWheel (wheel.rs) [cre-m4]"
+      slots: "Vec<VecDeque<TimerEntry>>"
+      cur_tick: "u64"
+      resolution: "1ms"
+    }
+  }
+
+  layer_sync: {
+    direction: down
+    label: "SYNC PRIMITIVES  [cre-m5]"
+
+    async_mutex: {
+      shape: class
+      label: "AsyncMutex<T> (mutex.rs) [cre-m5]"
+      -locked: "AtomicBool"
+      -waiters: "Mutex<VecDeque<Waker>>"
+      -data: "UnsafeCell<T>"
+      +lock(): "Future<MutexGuard>"
+      +try_lock(): "Option<MutexGuard>"
+    }
+
+    mpsc_channel: {
+      shape: class
+      label: "Channel (mpsc.rs) [cre-m5]"
+      -buffer: "SegQueue<T>"
+      -rx_waker: "AtomicWaker"
+      +send(val): "Result<(), Error>"
+      +recv(): "Future<T>"
+    }
+  }
+}
+
+# RELATIONSHIPS
+row1.layer_core.coroutine_module -> row1.layer_core.context_struct: "owns | 576B"
+row1.layer_core.coroutine_module -> row1.layer_core.stack_struct: "points | 64KB"
+row2.layer_sched.scheduler_node -> row1.layer_core.coroutine_module: "executes"
+row2.layer_sched.ws_queue -> row2.layer_sched.scheduler_node: "local work"
+row2.layer_preempt.preempt_flag -> row1.layer_core.coroutine_module: "checked at yield"
+row3.layer_io.reactor_core -> row2.layer_sched.scheduler_node: "wakes worker"
+row3.layer_io.tcp_stream -> row3.layer_io.reactor_core: "registers events"
+row3.layer_sync.async_mutex -> row1.layer_core.coroutine_module: "yields on block"
+
+# MILESTONE INDEX
+milestone_index: {
+  shape: sql_table
+  label: "Runtime Milestone Index"
+  m1: "cre-m1 | Assembly Context Switching & Stack allocation"
+  m2: "cre-m2 | Work-Stealing Multi-threaded Scheduler"
+  m3: "cre-m3 | Signal-based User-space Preemption"
+  m4: "cre-m4 | Epoll Reactor & Async Networking"
+  m5: "cre-m5 | Async-aware Synchronization Primitives"
+}

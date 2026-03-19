@@ -1,0 +1,254 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  label: "Interesting Orders: Sort Order Propagation"
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  without_interesting: {
+    direction: down
+    label: "Without Interesting Order Tracking"
+    scan1: {
+      label: "SeqScan: orders"
+      width: 200
+      code: |'python
+        # No sort order
+        output_order: None
+        rows: 1,000,000
+      '|
+    }
+    hash_join1: {
+      label: "HashJoin"
+      width: 200
+      code: |'python
+        # Destroys any input order
+        output_order: None
+        build: customers
+        probe: orders
+      '|
+    }
+    final_sort1: {
+      label: "Sort: ORDER BY"
+      width: 200
+      code: |'python
+        sort_keys: [(customer_id, ASC)]
+        cost: 1M × log₂(1M) × 0.01
+             = 199,314 units
+      '|
+      style: {
+        fill: "#FFE4E1"
+        stroke: "#CD5C5C"
+        stroke-width: 2
+      }
+    }
+    scan1 -> hash_join1: "1M rows"
+    hash_join1 -> final_sort1: "500K rows"
+  }
+  arrow: {
+    label: "→"
+    shape: text
+    style: {
+      font-size: 40
+      font-color: "#4CAF50"
+    }
+  }
+  with_interesting: {
+    direction: down
+    label: "With Interesting Order Tracking"
+    index_scan: {
+      label: "IndexScan: orders"
+      width: 200
+      code: |'python
+        # Index provides order!
+        output_order: [(customer_id, ASC)]
+        index: idx_orders_cust
+        rows: 1,000,000
+      '|
+      style: {
+        fill: "#E8F5E9"
+        stroke: "#4CAF50"
+        stroke-width: 2
+      }
+    }
+    merge_join: {
+      label: "SortMergeJoin"
+      width: 200
+      code: |'python
+        # Preserves input order
+        output_order: [(customer_id, ASC)]
+        # No sort needed!
+        merge_cost: 1M × 0.01
+                  = 10,000 units
+      '|
+      style: {
+        fill: "#E8F5E9"
+        stroke: "#4CAF50"
+        stroke-width: 2
+      }
+    }
+    result: {
+      label: "Result (No Sort!)"
+      width: 200
+      code: |'python
+        # Order already satisfied
+        # Sort operator ELIMINATED
+        # SAVES: 199,314 cost units
+      '|
+      style: {
+        fill: "#C8E6C9"
+        stroke: "#2E7D32"
+        stroke-width: 3
+      }
+    }
+    index_scan -> merge_join: "1M rows\n(sorted)"
+    merge_join -> result: "500K rows\n(sorted)"
+  }
+}
+legend: {
+  near: bottom-center
+  direction: right
+  interesting_box: {
+    label: "Interesting Order"
+    shape: rectangle
+    width: 150
+    style: {
+      fill: "#FFF9C4"
+      stroke: "#F9A825"
+      stroke-dash: 3
+    }
+    code: |'python
+      # Tracked during optimization
+      {
+        columns: [(customer_id, ASC)],
+        reason: "ORDER BY",
+        benefit: 199314.0  # cost saved
+      }
+    '|
+  }
+  provides_box: {
+    label: "Provides Order"
+    shape: rectangle
+    width: 150
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#4CAF50"
+    }
+    code: |'python
+      # Operators that preserve order:
+      # - IndexScan (index order)
+      # - SortMergeJoin (left order)
+      # - Sort (explicit)
+    '|
+  }
+}
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  near: bottom-center
+  tracking_flow: {
+    direction: down
+    label: "How Interesting Orders Work"
+    step1: {
+      label: "1. Detect Requirements"
+      width: 350
+      code: |'python
+        # Query has ORDER BY
+        SELECT * FROM orders o
+        JOIN customers c ON o.cust_id = c.id
+        ORDER BY o.customer_id
+        # Interesting order identified:
+        interesting = InterestingOrder(
+          columns=[("customer_id", "ASC")],
+          reason="ORDER BY",
+          benefit=sort_cost_estimate
+        )
+      '|
+    }
+    step2: {
+      label: "2. Propagate Through DP"
+      width: 350
+      code: |'python
+        # During join ordering:
+        for entry in dp_table[subset]:
+          if entry.output_order == interesting.columns:
+            # This plan satisfies requirement!
+            # Add bonus to avoid disqualification
+            entry.effective_cost *= 0.8
+      '|
+    }
+    step3: {
+      label: "3. Avoid Redundant Sort"
+      width: 350
+      code: |'python
+        # Final plan generation:
+        if plan.output_order satisfies required_order:
+          # No sort needed - already ordered
+          return plan  # Skip Sort operator
+        else:
+          # Must add sort
+          return Sort(plan, required_order)
+      '|
+    }
+    step1 -> step2: "register"
+    step2 -> step3: "apply"
+  }
+}
+cost_comparison: {
+  near: bottom-right
+  label: "Cost Comparison"
+  without_cost: {
+    label: "Without Tracking"
+    shape: rectangle
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#E53935"
+    }
+    code: |'python
+      SeqScan:     10,000
+      HashJoin:    20,000
+      Sort:       199,314  # Required!
+      ────────────────────
+      TOTAL:      229,314
+    '|
+  }
+  with_cost: {
+    label: "With Tracking"
+    shape: rectangle
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#43A047"
+    }
+    code: |'python
+      IndexScan:   12,000
+      MergeJoin:   15,000
+      Sort:             0  # Eliminated!
+      ────────────────────
+      TOTAL:       27,000
+      SAVINGS:     202,314 (88%)
+    '|
+  }
+}
+without_interesting -> arrow
+arrow -> with_interesting
+step1.style.fill: "#FFF8E1"
+step2.style.fill: "#FFF8E1"
+step3.style.fill: "#FFF8E1"

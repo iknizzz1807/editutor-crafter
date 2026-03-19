@@ -1,0 +1,291 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+classes: {
+  step_box: {
+    shape: rectangle
+    style: {
+      stroke-width: 2
+      border-radius: 4
+      font-size: 14
+      bold: true
+    }
+  }
+  code_block: {
+    shape: code
+    style: {
+      fill: "#1E293B"
+      font-color: "#F8FAFC"
+      font: mono
+      font-size: 11
+      stroke-width: 0
+      shadow: true
+    }
+  }
+  decision: {
+    shape: diamond
+    width: 150
+    height: 150
+    style: {
+      fill: "#FFF9C4"
+      stroke: "#FBC02D"
+      stroke-width: 2
+      font-size: 12
+    }
+  }
+  note_text: {
+    shape: text
+    style: {
+      font-size: 11
+      italic: true
+      font-color: "#475569"
+    }
+  }
+}
+
+title: {
+  label: "MPSC Channel Send Algorithm (TDD Implementation Spec)"
+  near: top-center
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 1: DISCONNECTION CHECK
+# -----------------------------------------------------------------------------
+step1_container: {
+  style: {
+    stroke-width: 1
+    stroke: "#CBD5E1"
+    fill: "#F8FAFC"
+    stroke-dash: 2
+  }
+  
+  logic: Check Disconnection {
+    class: step_box
+    style.fill: "#E3F2FC"
+    style.stroke: "#0288D1"
+  }
+
+  code: |go
+  // Check if receiver dropped
+  // Atomic load of flag
+  if inner.receiver_dropped
+      .load(Ordering::Relaxed) {
+    return Err(SendError(value))
+  }
+  | {
+    class: code_block
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 2: LOCKING
+# -----------------------------------------------------------------------------
+step2_container: {
+  style: {
+    stroke-width: 1
+    stroke: "#CBD5E1"
+    fill: "#F8FAFC"
+    stroke-dash: 2
+  }
+
+  logic: Lock Queue Mutex {
+    class: step_box
+    style.fill: "#BBDEFB"
+    style.stroke: "#1976D2"
+  }
+
+  code: |go
+  // Acquire MPSC queue lock
+  // Blocking or Async Mutex
+  queue := inner.queue.lock().unwrap()
+  | {
+    class: code_block
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 3: CAPACITY DECISION
+# -----------------------------------------------------------------------------
+step3: {
+  class: decision
+  label: "queue.len() <\ncapacity?"
+}
+
+# -----------------------------------------------------------------------------
+# STEP 4A: BACKPRESSURE PATH
+# -----------------------------------------------------------------------------
+step4a_container: {
+  style: {
+    stroke-width: 1
+    stroke: "#FCA5A5"
+    fill: "#FEF2F2"
+    stroke-dash: 2
+  }
+
+  logic: Queue Full {
+    class: step_box
+    style.fill: "#FFCDD2"
+    style.stroke: "#D32F2F"
+  }
+
+  note: "Action: Add to waiters\nState: Suspend Coroutine" {
+    class: note_text
+  }
+
+  code: |go
+  // Add current waker to waiters
+  inner.send_waiters.lock().unwrap()
+      .push_back(waker)
+  // Yield until space available
+  yield_now()
+  | {
+    class: code_block
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 4B: PUSH PATH
+# -----------------------------------------------------------------------------
+step4b_container: {
+  style: {
+    stroke-width: 1
+    stroke: "#86EFAC"
+    fill: "#F0FDF4"
+    stroke-dash: 2
+  }
+
+  logic: Push Message {
+    class: step_box
+    style.fill: "#C8E6C9"
+    style.stroke: "#388E3C"
+  }
+
+  code: |go
+  // Push value to back of queue
+  // Complexity: O(1)
+  queue.push_back(value)
+  | {
+    class: code_block
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STEP 5: NOTIFICATION
+# -----------------------------------------------------------------------------
+step5_container: {
+  style: {
+    stroke-width: 1
+    stroke: "#5EEAD4"
+    fill: "#F0FDFA"
+    stroke-dash: 2
+  }
+
+  logic: Notify Receiver {
+    class: step_box
+    style.fill: "#B2DFDB"
+    style.stroke: "#00796B"
+  }
+
+  code: |go
+  // Wake a waiting receiver
+  if waiter := inner.recv_waiters
+      .lock().unwrap().pop_front() {
+      waiter.wake()
+  }
+  return Ok(())
+  | {
+    class: code_block
+  }
+}
+
+# -----------------------------------------------------------------------------
+# FLOW CONNECTIONS (Point-to-Point for logic blocks)
+# -----------------------------------------------------------------------------
+step1_container.logic -> step2_container.logic: "Entry Passed" {
+  style.stroke-width: 2
+}
+
+step2_container.logic -> step3: "Lock acquired" {
+  style.stroke-width: 2
+}
+
+step3 -> step4a_container.logic: "No (Capacity Reached)" {
+  style: {
+    stroke: "#D32F2F"
+    font-color: "#D32F2F"
+    bold: true
+  }
+}
+
+step3 -> step4b_container.logic: "Yes (Available)" {
+  style: {
+    stroke: "#388E3C"
+    font-color: "#388E3C"
+    bold: true
+  }
+}
+
+step4a_container.logic -> step3: "Retry after\nwakeup" {
+  style: {
+    stroke-dash: 4
+    stroke: "#E53935"
+    animated: true
+  }
+}
+
+step4b_container.logic -> step5_container.logic: "Push Success" {
+  style.stroke-width: 2
+}
+
+step5_container.logic -> step1_container.logic: "Complete Cycle" {
+  style: {
+    stroke: "#2E7D32"
+    stroke-width: 3
+    stroke-dash: 5
+  }
+}
+
+# -----------------------------------------------------------------------------
+# LEGEND & DATA STRUCTURES
+# -----------------------------------------------------------------------------
+meta: {
+  near: bottom-right
+  
+  channel_struct: |md
+  ### Shared State (Inner)
+  - `receiver_dropped`: `AtomicBool`
+  - `queue`: `Mutex<VecDeque<T>>`
+  - `send_waiters`: `Mutex<VecDeque<Waker>>`
+  - `recv_waiters`: `Mutex<VecDeque<Waker>>`
+  - `capacity`: `usize`
+  |
+  
+  legend: {
+    shape: rectangle
+    style: {
+      fill: "#F1F5F9"
+      stroke: "#94A3B8"
+      stroke-width: 1
+      double-border: true
+    }
+    label: "Color Guide:\nBlue = Flow control\nYellow = Logic Decision\nRed = Blocking/Wait\nGreen = Mutating Action"
+  }
+}
+
+# Layout hint for ELK
+step1_container.logic -> step1_container.code: {style.stroke-width: 0; source-arrowhead: none}
+step2_container.logic -> step2_container.code: {style.stroke-width: 0; source-arrowhead: none}
+step4a_container.logic -> step4a_container.code: {style.stroke-width: 0; source-arrowhead: none}
+step4b_container.logic -> step4b_container.code: {style.stroke-width: 0; source-arrowhead: none}
+step5_container.logic -> step5_container.code: {style.stroke-width: 0; source-arrowhead: none}

@@ -1,0 +1,283 @@
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+  colors: {
+    header: "#9B59B6"
+    data: "#3498DB"
+    free: "#2ECC71"
+    padding: "#95A5A6"
+    pointer: "#E67E22"
+    cache_line: "#E74C3C"
+    page_boundary: "#2C3E50"
+    text_main: "#2C3E50"
+  }
+}
+
+# =============================================================================
+# MODULE 1: MEMORY LAYOUT (BYTE-LEVEL SPECIFICATION)
+# Exact byte offsets and field sizes for DPTableEntry (128B)
+# =============================================================================
+
+Memory_Specs: {
+  title: |md
+    # Query Optimizer Memory Layout
+    ## Structure: `DPTableEntry` (alignas 64)
+  |
+  title.near: top-center
+
+  DPTable_Buffer: {
+    shape: sql_table
+    style.stroke: ${colors.page_boundary}
+    style.stroke-width: 4
+    
+    # Offsets are keys, Field descriptions are values
+    "0x00": "table_mask (uint32_t)" {constraint: "HEADER (16B)"}
+    "0x04": "join_order_hash (uint32_t)" {constraint: "HEADER"}
+    "0x08": "estimated_cost (float32)" {constraint: "HEADER"}
+    "0x0C": "num_tables (uint16_t)" {constraint: "HEADER"}
+    "0x0E": "flags (uint8_t)" {constraint: "HEADER"}
+    "0x0F": "padding_1 (uint8_t)" {constraint: "HEADER"}
+    
+    "0x10": "best_plan_ptr (PlanNode*)" {constraint: "PLAN_DATA (48B)"}
+    "0x18": "row_estimate (uint64_t)" {constraint: "PLAN_DATA"}
+    "0x20": "selectivity (float32)" {constraint: "PLAN_DATA"}
+    "0x24": "access_path_id (uint32_t)" {constraint: "PLAN_DATA"}
+    "0x28": "join_type_enum (uint32_t)" {constraint: "PLAN_DATA"}
+    "0x2C": "table_order[8] (uint8_t x 8)" {constraint: "PLAN_DATA"}
+    "0x34": "alignment_gap (12B)" {constraint: "PLAN_DATA"}
+    
+    "0x40": "--------------------------------" {constraint: "64B CACHE LINE"}
+    
+    "0x41": "left_child (DPTableEntry*)" {constraint: "GRAPH (32B)"}
+    "0x49": "right_child (DPTableEntry*)" {constraint: "GRAPH"}
+    "0x51": "parent (DPTableEntry*)" {constraint: "GRAPH"}
+    "0x59": "next_bucket (DPTableEntry*)" {constraint: "GRAPH"}
+    
+    "0x61": "alignment_padding (uint8_t[31])" {constraint: "PAD (32B)"}
+    "0x7F": "END_OF_STRUCT" {constraint: "BOUNDARY"}
+  }
+
+  Legend: |md
+    ### Optimization Characteristics
+    - **Total Size**: 128 Bytes
+    - **Cache Alignment**: Hits exactly 2 lines (64B each).
+    - **DP Phase**: Left/Right children are accessed together to minimize TLB misses.
+  |
+  Legend.near: bottom-right
+}
+
+# =============================================================================
+# MODULE 2: ARCHITECTURE (UML CLASS & OWNERSHIP)
+# =============================================================================
+
+Architecture: {
+  style.fill: "#F8F9FA"
+
+  Optimizer_Core: {
+    QueryOptimizer: {
+      shape: class
+      style.fill: "#E74C3C"
+      "+ optimize(logical_plan: Plan): PhysicalPlan"
+      "+ estimate_cost(plan: Plan): float"
+      "- validator: PlanValidator"
+    }
+
+    DPOptimizer: {
+      shape: class
+      style.fill: "#3498DB"
+      "- dp_table: Map<uint64_t, DPTableEntry*>"
+      "- pruning_threshold: float"
+      "+ optimize_join_order(tables: List<Table>): Plan"
+    }
+
+    CardinalityEstimator: {
+      shape: class
+      style.fill: "#3498DB"
+      "+ estimate_cardinality(node: PlanNode): uint64"
+      "- histogram_cache: LRUCache<Table, Histogram>"
+    }
+  }
+
+  Data_Provider: {
+    StatisticsCatalog: {
+      shape: class
+      style.fill: "#2ECC71"
+      "+ get_table_stats(name: string): TableStats"
+      "+ get_index_selectivity(idx: string): float"
+    }
+  }
+
+  # Ownership and Reference mappings
+  Optimizer_Core.QueryOptimizer -> Optimizer_Core.DPOptimizer: "owns (1:1)" {
+    style.stroke-width: 4
+  }
+  Optimizer_Core.QueryOptimizer -> Optimizer_Core.CardinalityEstimator: "owns (1:1)" {
+    style.stroke-width: 4
+  }
+  
+  Optimizer_Core.DPOptimizer -> Data_Provider.StatisticsCatalog: "reads" {
+    style.stroke-dash: 3
+  }
+  Optimizer_Core.CardinalityEstimator -> Data_Provider.StatisticsCatalog: "reads" {
+    style.stroke-dash: 3
+  }
+}
+
+# =============================================================================
+# MODULE 3: ALGORITHM STATE (DYNAMIC PROGRAMMING TRANSITIONS)
+# =============================================================================
+
+Algorithm_Steps: {
+  grid-columns: 3
+  grid-gap: 50
+  
+  Step_K1: {
+    label: "Step 1: Base Relations (n=1)"
+    A: "Scan(A)\nCost: 100" { style.fill: ${colors.free} }
+    B: "Scan(B)\nCost: 200" { style.fill: ${colors.free} }
+    C: "Scan(C)\nCost: 150" { style.fill: ${colors.free} }
+  }
+
+  Step_K2: {
+    label: "Step 2: Join Subsets (n=2)"
+    AB: "HashJoin(A,B)\nCost: 350" { style.fill: "#F1C40F" }
+    AC: "NestedLoop(A,C)\nCost: 240" {
+      style.fill: ${colors.free}
+      style.bold: true
+      style.stroke: "#D35400"
+      style.stroke-width: 3
+    }
+    BC: "MergeJoin(B,C)\nCost: 400" { style.fill: "#F1C40F" }
+  }
+
+  Step_K3: {
+    label: "Step 3: Final Join (n=3)"
+    ABC: "HashJoin((A,C), B)\nCost: 420" {
+      style.fill: "#E74C3C"
+      style.double-border: true
+      style.shadow: true
+    }
+  }
+
+  # Logical flow between algorithm phases
+  Step_K1 -> Step_K2: "Combinatorial expansion"
+  Step_K2 -> Step_K3: "Pruning: (A,C) chosen as cheapest sub-plan"
+}
+
+# =============================================================================
+# MODULE 4: SEQUENCE DIAGRAM (CALL FLOW & TIMING)
+# =============================================================================
+
+Optimization_Sequence: {
+  shape: sequence_diagram
+  
+  User: {shape: person}
+  Manager: QueryOptimizer
+  Stats: StatisticsCatalog
+  Engine: DPOptimizer
+  
+  User -> Manager: "optimize(LogicalPlan)"
+  Manager -> Stats: "fetch_metadata(TableNames)"
+  Stats -> Manager: "return TableStats[]"
+  
+  Manager -> Engine: "find_best_order(Stats)"
+  
+  lock: Engine: "Enumerate Phase" {
+    Engine -> Engine: "enumerate_subsets()"
+    Engine -> Engine: "cost_and_prune()"
+  }
+  
+  Engine -> Manager: "return PhysicalPlanTree"
+  Manager -> User: "ExecutablePlan"
+
+  Manager.note: "T=0.0ms: Entry"
+  Stats.note: "T=0.5ms: Stats Ready"
+  Engine.note: "T=2.2ms: DP Converged"
+}
+
+# =============================================================================
+# MODULE 5: STATE MACHINE (OPTIMIZER LIFECYCLE)
+# =============================================================================
+
+Optimizer_FSM: {
+  IDLE: {
+    shape: circle
+    style.fill: "#3498DB"
+    label: "● IDLE"
+  }
+  
+  INITIALIZING: {
+    style.fill: "#2ECC71"
+    label: "LOADING STATS"
+  }
+  
+  DP_PHASE: {
+    label: "PLAN ENUMERATION"
+    style.fill: "#F1C40F"
+  }
+  
+  COMPLETE: {
+    style.double-border: true
+    label: "PLAN_READY"
+  }
+  
+  FAILURE: {
+    style.fill: "#E74C3C"
+    label: "OPTIMIZER_ERROR"
+  }
+
+  IDLE -> INITIALIZING: "API Call: optimize()"
+  INITIALIZING -> DP_PHASE: "Metadata Loaded"
+  INITIALIZING -> FAILURE: "Missing Catalog Data"
+  
+  DP_PHASE -> DP_PHASE: "k < N (Iteration)"
+  DP_PHASE -> COMPLETE: "Cheapest Plan Found"
+  DP_PHASE -> FAILURE: "OOM / Search Overflow"
+  
+  COMPLETE -> IDLE: "Plan Dispatched"
+
+  # Illegal Transitions (indicated in red dashed)
+  COMPLETE -> DP_PHASE: "ILLEGAL: Plan Locked" {
+    style: {
+      stroke: "#C0392B"
+      stroke-dash: 5
+      animated: true
+    }
+  }
+}
+
+# Global Style Polish
+***.style.font: mono
+(*** -> ***)[*]: {
+  style.stroke-width: 2
+}
+
+# Apply color mapping to specific memory regions in Module 1 table
+Memory_Specs.DPTable_Buffer: {
+  "0x00".style.fill: ${colors.header}
+  "0x04".style.fill: ${colors.header}
+  "0x08".style.fill: ${colors.header}
+  "0x0C".style.fill: ${colors.header}
+  "0x0E".style.fill: ${colors.header}
+  "0x0F".style.fill: ${colors.header}
+  
+  "0x10".style.fill: ${colors.data}
+  "0x18".style.fill: ${colors.data}
+  "0x20".style.fill: ${colors.data}
+  "0x24".style.fill: ${colors.data}
+  "0x28".style.fill: ${colors.data}
+  "0x2C".style.fill: ${colors.data}
+  "0x34".style.fill: ${colors.data}
+  
+  "0x41".style.fill: ${colors.pointer}
+  "0x49".style.fill: ${colors.pointer}
+  "0x51".style.fill: ${colors.pointer}
+  "0x59".style.fill: ${colors.pointer}
+  
+  "0x61".style.fill: ${colors.padding}
+}

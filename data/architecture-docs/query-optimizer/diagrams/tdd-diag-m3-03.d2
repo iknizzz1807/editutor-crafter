@@ -1,0 +1,320 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+classes: {
+  operator: {
+    shape: hexagon
+    width: 280
+    height: 120
+    style: {
+      font-size: 14
+      bold: true
+      stroke-width: 2
+    }
+  }
+  scan_operator: {
+    shape: cylinder
+    width: 200
+    height: 100
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#FF9800"
+      stroke-width: 2
+    }
+  }
+  projection: {
+    shape: diamond
+    width: 220
+    height: 130
+    style: {
+      fill: "#E8F5E9"
+      bold: true
+      stroke: "#2E7D32"
+      stroke-width: 2
+    }
+  }
+  column_set: {
+    shape: rectangle
+    style: {
+      fill: "#F1F8E9"
+      font-size: 12
+      stroke-dash: 2
+      border-radius: 4
+    }
+  }
+  flow_arrow: {
+    style: {
+      stroke: "#1976D2"
+      stroke-width: 2
+    }
+  }
+  insert_arrow: {
+    style: {
+      stroke: "#4CAF50"
+      stroke-width: 3
+      stroke-dash: 4
+      animated: true
+    }
+  }
+}
+
+# ===== TITLE & METADATA =====
+title: |md
+  # Projection Pruning: Column Tracking & Insertion
+  *TDD-03: Query Optimizer Implementation Spec*
+  **Version:** 1.0.4 | **Status:** Implementation Grade
+|
+title.shape: text
+title.near: top-center
+title.style.font-size: 24
+
+# ===== LEGEND =====
+legend: {
+  near: top-right
+  required_flow: "Required Columns (↑ up)" {
+    style.stroke: "#1976D2"
+    style.stroke-width: 2
+  }
+  inserted_proj: "Inserted Projection" {
+    shape: diamond
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+  }
+  original_op: "Original Operator" {
+    shape: hexagon
+  }
+  scan_op: "Physical Scan" {
+    shape: cylinder
+    style.fill: "#FFF3E0"
+  }
+}
+
+# ===== ORIGINAL PLAN (BEFORE PRUNING) =====
+original_plan: {
+  label: "STEP 1: Original Logical Plan (Inefficient)"
+  style: {
+    stroke-dash: 3
+    stroke: "#9E9E9E"
+    fill: "#FAFAFA"
+  }
+
+  orig_agg: "LogicalAggregate\n(GROUP BY dept_id, SUM(salary))" {
+    class: operator
+    tooltip: "Reads all columns passed from Filter"
+  }
+  orig_filter: "LogicalFilter\n(salary > 50000)" {
+    class: operator
+    tooltip: "Filters rows but retains full schema width"
+  }
+  orig_join: "LogicalJoin\n(emp.dept_id = dept.id)" {
+    class: operator
+  }
+  orig_emp: "LogicalScan\nemployees" {
+    class: scan_operator
+  }
+  orig_dept: "LogicalScan\ndepartments" {
+    class: scan_operator
+  }
+
+  orig_agg -> orig_filter: "Full row width\n(20 cols)" {class: flow_arrow}
+  orig_filter -> orig_join: "Filtered rows\n(20 cols)" {class: flow_arrow}
+  orig_join -> orig_emp: "emp.* (12 cols)" {class: flow_arrow}
+  orig_join -> orig_dept: "dept.* (8 cols)" {class: flow_arrow}
+}
+
+# ===== COLUMN TRACKING ANALYSIS =====
+column_tracking: {
+  label: "STEP 2: Requirement Analysis (Bottom-Up Propagation)"
+  style.fill: "#E3F2FD"
+
+  phase1: {
+    label: "Phase 1: Initial SELECT Requirements"
+    sql_expr: |sql
+      -- Target Query
+      SELECT dept_id, SUM(salary)
+      FROM employees e
+      JOIN departments d ON e.dept_id = d.id
+      WHERE salary > 50000
+      GROUP BY dept_id
+    |
+    sql_expr.shape: code
+    
+    initial_set: {
+      class: column_set
+      label: "Initial Required Set"
+      c1: "0x00: dept_id (INT)"
+      c2: "0x04: salary (DECIMAL)"
+    }
+  }
+
+  phase2: {
+    label: "Phase 2: Propagation Logic"
+    agg_req: "Aggregate Requirements" {
+      class: column_set
+      group_col: "dept_id [Required by GROUP BY]"
+      agg_col: "salary [Required by SUM]"
+    }
+    filter_req: "Filter Requirements" {
+      class: column_set
+      predicate: "salary [Required for Predicate]"
+      pass: "dept_id [Required for Ancestor]"
+    }
+    join_req: "Join Requirements" {
+      class: column_set
+      left: "dept_id, salary [For Filter/Agg]"
+      right: "id [Join Key Only]"
+    }
+    
+    agg_req -> filter_req: "REQ_UP"
+    filter_req -> join_req: "REQ_UP"
+  }
+}
+
+# ===== PRUNED PLAN (AFTER) =====
+pruned_plan: {
+  label: "STEP 3: Final Optimized Plan (Projection Pruning)"
+  style: {
+    stroke: "#4CAF50"
+    stroke-width: 3
+    fill: "#E8F5E9"
+  }
+
+  agg: "LogicalAggregate\nOutput: {dept_id, sum}" {
+    class: operator
+    style.fill: "#BBDEFB"
+  }
+
+  filter: "LogicalFilter\nsalary > 50000" {
+    class: operator
+  }
+
+  join: "LogicalJoin\nON: emp.dept_id = dept.id" {
+    class: operator
+  }
+
+  proj_emp: "LogicalProject (NEW)\nSchema: {dept_id, salary}" {
+    class: projection
+    style.stroke: "#4CAF50"
+    tooltip: "Sizeof: 12 bytes (Int + Decimal)"
+  }
+
+  proj_dept: "LogicalProject (NEW)\nSchema: {id}" {
+    class: projection
+    style.stroke: "#4CAF50"
+    tooltip: "Sizeof: 4 bytes (Int)"
+  }
+
+  scan_emp: "LogicalScan\nemployees" {
+    class: scan_operator
+  }
+  scan_dept: "LogicalScan\ndepartments" {
+    class: scan_operator
+  }
+
+  agg -> filter: "✓ {dept_id, salary}" {class: flow_arrow}
+  filter -> join: "✓ {dept_id, salary}" {class: flow_arrow}
+  
+  join -> proj_emp: "✓ {dept_id, salary}\n(Left Branch)" {
+    class: flow_arrow
+  }
+  join -> proj_dept: "✓ {id}\n(Right Branch)" {
+    class: flow_arrow
+  }
+  
+  proj_emp -> scan_emp: "PRUNED\n12 -> 2 cols" {
+    class: insert_arrow
+  }
+  proj_dept -> scan_dept: "PRUNED\n8 -> 1 col" {
+    class: insert_arrow
+  }
+}
+
+# ===== ALGORITHM DETAIL =====
+algorithm_detail: {
+  label: "Algorithm Implementation Logic (Golang)"
+  near: bottom-left
+  style.fill: "#FFFDE7"
+  style.stroke: "#FBC02D"
+  
+  logic: |go
+  // Core Optimization Loop: DFS Bottom-Up
+  func PruneColumns(node Operator, required ColumnSet) Operator {
+      // 1. Union required cols with operator's own expressions
+      required.Add(node.UsedColumns())
+      
+      // 2. Recurse through children to determine their needs
+      for i, child := range node.Children() {
+          childReq := node.RequiredFromChild(i, required)
+          newNode := PruneColumns(child, childReq)
+          
+          // 3. Schema Pruning Logic
+          // Check if child produces more columns than we need
+          if newNode.Schema().Size() > childReq.Size() {
+              // Insert LogicalProject to drop unused columns early
+              prunedChild := NewLogicalProject(newNode, childReq)
+              node.SetChild(i, prunedChild)
+          } else {
+              node.SetChild(i, newNode)
+          }
+      }
+      return node
+  }
+  |
+}
+
+# ===== COLUMN TRANSFORMATION FLOW =====
+column_flow: {
+  label: "Column Set Evolution (Transformation Pipeline)"
+  direction: right
+  style.fill: "#F3E5F5"
+  style.stroke: "#9C27B0"
+  
+  root_set: "Final Output Schema\n{dept_id, sum}" {
+    class: column_set
+  }
+  
+  agg_set: "Internal Pipeline\n{dept_id, salary}" {
+    class: column_set
+  }
+  
+  join_sets: {
+    label: "Physical Leaf Access Requirements"
+    left_part: "Emp Branch: {dept_id, salary}" {
+      shape: rectangle
+      style.fill: "#FFFFFF"
+    }
+    right_part: "Dept Branch: {id}" {
+      shape: rectangle
+      style.fill: "#FFFFFF"
+    }
+  }
+  
+  root_set -> agg_set: "Unwrap SUM()"
+  agg_set -> join_sets: "Propagate to Join Inputs"
+}
+
+# ===== INTER-COMPONENT MAPPINGS =====
+original_plan -> column_tracking: "1. ANALYZE PHASE" {
+  style: {
+    stroke: "#9E9E9E"
+    stroke-dash: 5
+    stroke-width: 2
+  }
+}
+column_tracking -> pruned_plan: "2. TRANSFORM PHASE" {
+  style: {
+    stroke: "#4CAF50"
+    stroke-width: 2
+  }
+}
+pruned_plan -> column_flow: "3. VALIDATE FLOW" {
+  style: {
+    stroke: "#1976D2"
+    stroke-dash: 3
+    stroke-width: 1
+  }
+}

@@ -1,0 +1,405 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GLOBAL STYLES & CLASSES
+# ═══════════════════════════════════════════════════════════════════════════════
+classes: {
+  logical_node: {
+    shape: class
+    style: {
+      stroke-width: 2
+      border-radius: 4
+      shadow: true
+      font-size: 16
+    }
+  }
+  requirement_tag: {
+    shape: capsule
+    style: {
+      font-size: 12
+      bold: true
+    }
+  }
+  metadata_box: {
+    style: {
+      fill: "#F5F5F5"
+      stroke: "#9E9E9E"
+      stroke-dash: 3
+    }
+  }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HEADERS & ANNOTATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+title: {
+  label: "ORDER BY Column Preservation"
+  near: top-center
+  shape: text
+  style: {
+    font-size: 34
+    bold: true
+    underline: true
+    font-color: "#1A237E"
+  }
+}
+
+subtitle: {
+  label: "ProjectionPruningRule — Sort Column Tracking & Invisible Key Retention"
+  near: top-center
+  shape: text
+  style: {
+    font-size: 20
+    italic: true
+    font-color: "#303F9F"
+  }
+}
+
+flow_indicator: {
+  label: "OPTIMIZATION PIPELINE FLOW"
+  near: top-left
+  shape: text
+  style: {
+    bold: true
+    font-color: "#D32F2F"
+    font-size: 14
+  }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 1: QUERY SCENARIO
+# ═══════════════════════════════════════════════════════════════════════════════
+query_scenario: {
+  label: "1. Input Query Context"
+  style.fill: "#FAFAFA"
+  style.border-radius: 8
+  
+  sql_query: {
+    shape: code
+    language: sql
+    label: |sql
+      -- Target Query
+      SELECT name, email
+      FROM users
+      WHERE active = true
+      ORDER BY created_at DESC;
+    |
+  }
+  
+  analysis: {
+    grid-columns: 1
+    select_list: {
+      label: "Visible Output: {name, email}"
+      style.fill: "#E8F5E9"
+    }
+    hidden_needs: {
+      label: "Hidden Sort Requirement: {created_at}"
+      style.fill: "#FFEBEE"
+      style.stroke: "#D32F2F"
+      style.bold: true
+    }
+  }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 2: INITIAL LOGICAL PLAN
+# ═══════════════════════════════════════════════════════════════════════════════
+initial_plan: {
+  label: "2. Unoptimized Logical Plan (Full Schema)"
+  
+  plan_root: {
+    class: logical_node
+    label: "LogicalProject"
+    style.fill: "#E3F2FD"
+    expressions: "col(name), col(email)"
+    output_schema: "Tuple[String, String]"
+    sizeof: "sizeof=128 bytes (Header + 2 Expr)"
+  }
+  
+  plan_sort: {
+    class: logical_node
+    label: "LogicalSort"
+    style.fill: "#FFF3E0"
+    sort_keys: "DESC(col(created_at))"
+    preserves_order: "true"
+    sizeof: "sizeof=96 bytes (Header + KeyRef)"
+  }
+  
+  plan_filter: {
+    class: logical_node
+    label: "LogicalFilter"
+    style.fill: "#F3E5F5"
+    predicate: "BinaryExpr(col(active) == true)"
+    sizeof: "sizeof=80 bytes"
+  }
+  
+  plan_scan: {
+    class: logical_node
+    label: "LogicalScan (users)"
+    style.fill: "#ECEFF1"
+    base_table: "users_heap"
+    available_cols: "[id, name, email, created_at, active]"
+    sizeof: "sizeof=256 bytes (Full Descriptor)"
+  }
+  
+  plan_root -> plan_sort: "Stream: [id, name, email, created_at, active]"
+  plan_sort -> plan_filter: "Predicated stream"
+  plan_filter -> plan_scan: "Raw table fetch"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 3: REQUIREMENT COLLECTION ALGORITHM
+# ═══════════════════════════════════════════════════════════════════════════════
+optimizer_logic: {
+  label: "3. Requirement Collection (DFS Traversal)"
+  
+  algorithm: {
+    shape: code
+    language: python
+    label: |python
+      def collect_requirements(node, req_set):
+          """
+          Recursive identification of columns that must 
+          survive the Pruning Rule.
+          """
+          if isinstance(node, Project):
+              # Add columns required for final output
+              req_set.update(node.project_indices)
+          
+          elif isinstance(node, Sort):
+              # CRITICAL: Even if not projected, Sort keys
+              # must be retained for the PhysicalSort stage.
+              for key in node.sort_expressions:
+                  req_set.add(key.column_id)
+                  
+          elif isinstance(node, Filter):
+              # Columns used in WHERE clauses
+              extract_cols(node.predicate, req_set)
+              
+          for child in node.children:
+              collect_requirements(child, req_set)
+    |
+  }
+  
+  logic_note: {
+    shape: text
+    label: |md
+      ### Sort Preservation Logic
+      The optimizer identifies `created_at` as a **Required Reference** because the `LogicalSort` node's metadata depends on it, regardless of the `LogicalProject` definition downstream.
+    |
+    style.font-size: 14
+  }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 4: DATA STRUCTURES
+# ═══════════════════════════════════════════════════════════════════════════════
+column_usage_tracking: {
+  label: "4. Internal ColumnUsage State"
+  
+  required_set: {
+    label: "Required Column Bitmask (Vector<bool>)"
+    grid-columns: 5
+    grid-gap: 10
+    
+    col_id: "0 (Drop)" {
+      label: "Idx: 0\n[id]\n0"
+      style.fill: "#BDBDBD"
+    }
+    col_name: "1 (Keep)" {
+      label: "Idx: 1\n[name]\n1"
+      style.fill: "#81C784"
+    }
+    col_email: "1 (Keep)" {
+      label: "Idx: 2\n[email]\n1"
+      style.fill: "#81C784"
+    }
+    col_created: "1 (Keep)" {
+      label: "Idx: 3\n[created_at]\n1"
+      style.fill: "#E57373"
+      tooltip: "Preserved by Sort dependency"
+      style.stroke: red
+      style.stroke-width: 2
+    }
+    col_active: "1 (Keep)" {
+      label: "Idx: 4\n[active]\n1"
+      style.fill: "#81C784"
+    }
+  }
+  
+  union_op: {
+    label: "Requirement Accumulation (Bitwise OR)"
+    
+    proj_req: "Project Requirements {1, 2}"
+    sort_req: "Sort Requirements {3}"
+    filt_req: "Filter Requirements {4}"
+    
+    proj_req -> res
+    sort_req -> res: "FORCE_KEEP" { 
+      style: {
+        stroke: red
+        bold: true 
+      }
+    }
+    filt_req -> res
+    
+    res: {
+      label: "Final RequiredSet: {1, 2, 3, 4}"
+      style.stroke-width: 4
+      style.fill: "#FFF9C4"
+    }
+  }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 5: PRUNED OPTIMIZED PLAN
+# ═══════════════════════════════════════════════════════════════════════════════
+pruned_plan: {
+  label: "5. Pruned Logical Plan (Final Output)"
+  
+  p_root: {
+    class: logical_node
+    label: "LogicalProject"
+    style.fill: "#BBDEFB"
+    schema: "[name: str, email: str]"
+    sizeof: "sizeof=128 bytes"
+  }
+  
+  p_sort: {
+    class: logical_node
+    label: "LogicalSort"
+    style.fill: "#FFE0B2"
+    style.stroke: "#E65100"
+    style.stroke-width: 4
+    keys: "created_at (DESC)"
+    internal: "STILL ACCESSIBLE"
+    sizeof: "sizeof=96 bytes"
+  }
+  
+  p_filter: {
+    class: logical_node
+    label: "LogicalFilter"
+    style.fill: "#E1BEE7"
+    expr: "active == true"
+    sizeof: "sizeof=80 bytes"
+  }
+  
+  p_scan: {
+    class: logical_node
+    label: "LogicalScan (users)"
+    style.fill: "#C8E6C9"
+    style.stroke: "#2E7D32"
+    style.stroke-width: 3
+    pruned_cols: "[name, email, created_at, active]"
+    skipped_cols: "[id]"
+    sizeof: "sizeof=192 bytes (Narrowed)"
+  }
+  
+  p_root -> p_sort -> p_filter -> p_scan
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 6: LIFECYCLE STATE MACHINE
+# ═══════════════════════════════════════════════════════════════════════════════
+lifecycle: {
+  label: "Column Lifecycle: created_at"
+  
+  S1: ● PARSED {
+    style.fill: "#E0E0E0"
+  }
+  S2: ANALYZED {
+    style.fill: "#BBDEFB"
+  }
+  S3: MARKED_REQUIRED {
+    style.fill: "#FFF59D"
+    style.bold: true
+    style.stroke: orange
+  }
+  S4: SCAN_PROJECTION {
+    style.fill: "#A5D6A7"
+  }
+  
+  S1 -> S2: "Binder identifies expression"
+  S2 -> S3: "ProjectionPruningRule visits Sort"
+  S3 -> S4: "Scan limited to RequiredSet"
+  
+  error_state: "ILLEGAL: Drop created_at" {
+    style.fill: red
+    style.font-color: white
+    shape: octagon
+  }
+
+  S4 -> error_state: "CRITICAL FAILURE" {
+    style.stroke: red
+    style.stroke-dash: 5
+    style.font-color: red
+  }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 7: ARCHITECTURAL PRINCIPLES
+# ═══════════════════════════════════════════════════════════════════════════════
+architecture_notes: {
+  label: "Implementation Principles"
+  
+  principle_1: {
+    label: "Metadata Integrity"
+    style.fill: "#FFF3E0"
+    content: {
+      shape: text
+      label: |md
+        **Hidden Column Preservation**
+        Relational algebra allows projection to remove columns, but physical execution often requires 'hidden' columns for sorting, joining, or partitioning. Pruning must be 'Sort-Aware'.
+      |
+    }
+  }
+  
+  principle_2: {
+    label: "Physical Mapping"
+    style.fill: "#E8F5E9"
+    content: {
+      shape: text
+      label: |md
+        **Scan Narrowing**
+        The `LogicalScan` node is updated with a `ColumnProjection` bitmask derived from the `RequiredSet`. This minimizes I/O at the storage layer.
+      |
+    }
+  }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONNECTIONS BETWEEN SECTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+query_scenario -> initial_plan: "1. AST to Logic Mapping" { style.stroke-dash: 5 }
+initial_plan -> optimizer_logic: "2. Rule Application Strategy"
+optimizer_logic -> column_usage_tracking: "3. Dependency Collection"
+column_usage_tracking -> pruned_plan: "4. Plan Tree Mutation"
+pruned_plan -> lifecycle: "5. Constraint Validation"
+lifecycle -> architecture_notes: "6. Design Governance"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LEGEND
+# ═══════════════════════════════════════════════════════════════════════════════
+legend: {
+  near: bottom-right
+  keep: {
+    label: "Keep Column"
+    style.fill: "#81C784"
+  }
+  drop: {
+    label: "Drop Column"
+    style.fill: "#BDBDBD"
+  }
+  preserved: {
+    label: "Sort-Preserved"
+    style.fill: "#E57373"
+    style.stroke: red
+  }
+}

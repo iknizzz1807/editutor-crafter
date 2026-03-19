@@ -1,0 +1,270 @@
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    theme-id: 4
+    sketch: false
+    pad: 20
+  }
+}
+
+classes: {
+  plan-node: {
+    shape: rectangle
+    style: {
+      stroke-width: 2
+      shadow: true
+      border-radius: 4
+    }
+  }
+  cost-flow-edge: {
+    style: {
+      stroke: "#DC2626"
+      stroke-width: 3
+      stroke-dash: 4
+      animated: true
+    }
+  }
+  structural-edge: {
+    style: {
+      stroke: "#F97316"
+      stroke-width: 1
+      stroke-dash: 0
+    }
+  }
+}
+
+title: |md
+  # Plan Tree Cost Accumulation
+  ## Recursive Post-Order Traversal Implementation Spec
+  *Engineers: Reference this for total_cost field calculation logic.*
+| {
+  near: top-center
+  style.stroke-width: 0
+}
+
+# -----------------------------------------------------------------------------
+# 1. Memory Layout (Intel Manual Quality)
+# -----------------------------------------------------------------------------
+Memory_Map: {
+  label: "PlanNode Struct Memory Layout (Physical View)"
+  
+  header: {
+    label: "0x00: Header / VTable | 8B"
+    width: 400; height: 40
+    style.fill: "#D8B4FE" # Purple
+  }
+  startup: {
+    label: "0x08: startup_cost (float64) | 8B"
+    width: 400; height: 40
+    style.fill: "#93C5FD" # Blue
+  }
+  total: {
+    label: "0x10: total_cost (float64) | 8B"
+    width: 400; height: 40
+    style.fill: "#93C5FD" # Blue
+  }
+  rows: {
+    label: "0x18: plan_rows (float64) | 8B"
+    width: 400; height: 40
+    style.fill: "#93C5FD" # Blue
+  }
+  field_group: {
+    grid-columns: 2
+    width_field: {
+      label: "0x20: width (int32) | 4B"
+      width: 200; height: 40
+      style.fill: "#93C5FD" # Blue
+    }
+    padding: {
+      label: "0x24: PADDING | 4B"
+      width: 200; height: 40
+      style.fill: "#E5E7EB" # Gray
+    }
+  }
+  left_ptr: {
+    label: "0x28: left_child (*PlanNode) | 8B"
+    width: 400; height: 40
+    style.fill: "#FDBA74" # Orange
+  }
+  right_ptr: {
+    label: "0x30: right_child (*PlanNode) | 8B"
+    width: 400; height: 40
+    style.fill: "#FDBA74" # Orange
+  }
+  target_list: {
+    label: "0x38: target_list (*List) | 8B"
+    width: 400; height: 40
+    style.fill: "#FDBA74" # Orange
+  }
+
+  header -> startup -> total -> rows -> field_group -> left_ptr -> right_ptr -> target_list
+
+  annotation: |md
+    ### Memory Constraints
+    - **Total Size:** 64 Bytes
+    - **Alignment:** 8-byte boundaries
+    - **Cache Line:** Fits exactly in 1x L1 Cache Line (64B)
+    - **Growth:** Fixed size per node
+  | {
+    near: right-center
+    shape: text
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 2. Query Plan Tree & Data Flow
+# -----------------------------------------------------------------------------
+tree: {
+  label: "Query Plan Tree: Recursive Execution"
+  style: {
+    stroke: "#7C3AED"
+    stroke-width: 3
+    fill: "#F9FAFB"
+  }
+
+  root: {
+    label: "HashJoin\n(Inner Join)"
+    class: plan-node
+    style.fill: "#FCE7F3"
+    
+    metrics: "total_cost: 2847.5\nrows: 1000" {
+      tooltip: "Sum of child costs + local hash work"
+      style.font-color: "#DC2626"
+      style.bold: true
+    }
+  }
+
+  left_branch: {
+    filter_orders: "Filter\n(status = 'pending')" {
+      class: plan-node
+      style.fill: "#FEF3C7"
+    }
+
+    scan_orders: "SeqScan\n(orders)" {
+      class: plan-node
+      style.fill: "#DBEAFE"
+    }
+    
+    # Structural Edge (Top-Down)
+    filter_orders -> scan_orders: "child_ptr" {
+      class: structural-edge
+    }
+  }
+
+  right_branch: {
+    filter_customers: "Filter\n(active = true)" {
+      class: plan-node
+      style.fill: "#FEF3C7"
+    }
+
+    scan_customers: "IndexScan\n(pk_cust)" {
+      class: plan-node
+      style.fill: "#DBEAFE"
+    }
+    
+    # Structural Edge (Top-Down)
+    filter_customers -> scan_customers: "child_ptr" {
+      class: structural-edge
+    }
+  }
+
+  # Parent-Child Structural Pointers (Top-Down)
+  root -> left_branch.filter_orders: "left_child" { class: structural-edge }
+  root -> right_branch.filter_customers: "right_child" { class: structural-edge }
+
+  # -----------------------------------------------------------------------------
+  # 4. Logical Connections (Data Flow / Cost Accumulation - Bottom-Up)
+  # -----------------------------------------------------------------------------
+  
+  # Left branch accumulation
+  left_branch.scan_orders -> left_branch.filter_orders: "800.0 → 1200.0" {
+    class: cost-flow-edge
+  }
+  left_branch.filter_orders -> root: "1200.0 → 2847.5" {
+    class: cost-flow-edge
+  }
+
+  # Right branch accumulation
+  right_branch.scan_customers -> right_branch.filter_customers: "750.0 → 950.0" {
+    class: cost-flow-edge
+  }
+  right_branch.filter_customers -> root: "950.0 → 2847.5" {
+    class: cost-flow-edge
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 3. Accumulation Process & Implementation
+# -----------------------------------------------------------------------------
+process_logic: {
+  label: "Post-Order Cost Accumulation Logic"
+  
+  phases: {
+    grid-columns: 4
+    p1: "1. DFS RECURSION\nReach bottom of tree" { style.fill: "#ECFDF5" }
+    p2: "2. LEAF COSTING\nInitial tuple scan cost" { style.fill: "#ECFDF5" }
+    p3: "3. UPWARD BUBBLE\nParent = sum(children)" { style.fill: "#ECFDF5" }
+    p4: "4. ADD OP COST\nInclude CPU/Sort/Hash" { style.fill: "#ECFDF5" }
+    
+    p1 -> p2 -> p3 -> p4
+  }
+
+  pseudocode: |python
+  def estimate_total_plan_cost(node: PlanNode) -> float:
+      """Recursive Post-Order Accumulation"""
+      # 1. Base case: leaf node (e.g. SeqScan)
+      if not node.left and not node.right:
+          node.total_cost = compute_local_op_cost(node)
+          return node.total_cost
+      
+      # 2. Recurse down to children first
+      accumulated_child_cost = 0.0
+      if node.left:
+          accumulated_child_cost += estimate_total_plan_cost(node.left)
+      if node.right:
+          accumulated_child_cost += estimate_total_plan_cost(node.right)
+          
+      # 3. Apply formula: Total = (Sum of Children) + Local Work
+      node.total_cost = accumulated_child_cost + compute_local_op_cost(node)
+      return node.total_cost
+  | {
+    style.font-size: 14
+    style.stroke: "#10B981"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 5. Visual Markers & Legend
+# -----------------------------------------------------------------------------
+legend: {
+  near: bottom-right
+  
+  L1: "Leaf (Scan)" { style.fill: "#DBEAFE" }
+  L2: "Unary (Filter)" { style.fill: "#FEF3C7" }
+  L3: "Binary (Join)" { style.fill: "#FCE7F3" }
+  L4: "Accumulation Flow" { 
+    style: {
+      stroke: "#DC2626"
+      stroke-width: 3
+      stroke-dash: 4
+    }
+  }
+  L5: "Structural Pointer" {
+    style: {
+      stroke: "#F97316"
+      stroke-width: 1
+    }
+  }
+}
+
+# Execution Order Markers
+marker1: "①" { shape: circle; style.fill: "#3B82F6"; style.font-color: white; near: tree.left_branch.scan_orders }
+marker2: "②" { shape: circle; style.fill: "#3B82F6"; style.font-color: white; near: tree.right_branch.scan_customers }
+marker3: "③" { shape: circle; style.fill: "#3B82F6"; style.font-color: white; near: tree.left_branch.filter_orders }
+marker4: "④" { shape: circle; style.fill: "#3B82F6"; style.font-color: white; near: tree.right_branch.filter_customers }
+marker5: "⑤" { shape: circle; style.fill: "#F97316"; style.font-color: white; near: tree.root }
+
+process_logic.phases -> process_logic.pseudocode: "Spec Mapping" {
+  style.stroke-dash: 5
+}

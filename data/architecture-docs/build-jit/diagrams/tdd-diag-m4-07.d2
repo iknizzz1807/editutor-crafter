@@ -1,0 +1,236 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- ALGORITHM STATE DIAGRAM: CODE CACHE ALLOCATION ---
+
+step_1: "STEP 1: CAPACITY CHECK" {
+  grid-columns: 2
+  before: {
+    label: "BEFORE: Check used + size <= capacity"
+    cache_struct: {
+      shape: sql_table
+      buffer: "uint8_t*"
+      capacity: "4096 bytes"
+      used: "4000 bytes"
+      req_size: "100 bytes"
+    }
+  }
+  after: {
+    label: "AFTER: Condition Fails (Overflow)"
+    cache_struct: {
+      shape: sql_table
+      buffer: "uint8_t*"
+      capacity: "4096 bytes"
+      used: "4000 bytes"
+      req_size: "100 bytes"
+      status: "**ALLOC_FAILURE**" {
+        style: {
+          font-color: "#FF5252"
+          bold: true
+          stroke: "#FF5252"
+        }
+      }
+    }
+    note: |'md
+      **Arithmetic Logic:**
+      `4000 + 100 > 4096`
+      Result: **OOM**
+      Action: Trigger delay.
+    '| {style.stroke: "#FF5252"}
+  }
+  before -> after: "size > remaining" {
+    style.stroke: "#FF5252"
+    style.bold: true
+  }
+}
+
+step_2: "STEP 2: 16-BYTE ALIGNMENT" {
+  grid-columns: 2
+  before: {
+    label: "BEFORE: Raw size requested"
+    logic: {
+      shape: sql_table
+      request: "25 bytes"
+      formula: "(size + 15) & ~15"
+    }
+  }
+  after: {
+    label: "AFTER: Aligned for instruction fetch"
+    logic: {
+      shape: sql_table
+      request: "25 bytes"
+      aligned: "**32 bytes**" {
+        style: {
+          font-color: "#FF5252"
+          bold: true
+        }
+      }
+      padding: "**7 bytes**" {
+        style: {
+          font-color: "#808080"
+          italic: true
+        }
+      }
+    }
+  }
+  before -> after: "apply bitmask 0xFFF0"
+}
+
+step_3: "STEP 3: SNAPSHOT CURRENT CURSOR" {
+  grid-columns: 2
+  before: {
+    label: "BEFORE: used pointer at current boundary"
+    mem: {
+      "0x00": "Data Section" {style.fill: "#BBDEFB"}
+      "0x100": "Used Cursor (Current)" {style.fill: "#FFA500"}
+      "0x108": "Free Memory" {style.fill: "#C8E6C9"}
+    }
+  }
+  after: {
+    label: "AFTER: Result pointer fixed to entry start"
+    mem: {
+      "0x00": "Data Section" {style.fill: "#BBDEFB"}
+      "0x100": "**result_ptr = 0x100**" {
+        style: {
+          fill: "#FFA500"
+          bold: true
+          stroke: "#E65100"
+          stroke-width: 3
+        }
+      }
+      "0x108": "Free Memory" {style.fill: "#C8E6C9"}
+    }
+  }
+  before -> after: "lock & capture"
+}
+
+step_4: "STEP 4: ADVANCE CURSOR (BUMP)" {
+  grid-columns: 2
+  before: {
+    label: "BEFORE: Cursor at 0x100"
+    cache: {
+      shape: sql_table
+      used: "0x100"
+      aligned_size: "0x20"
+    }
+  }
+  after: {
+    label: "AFTER: Atomic increment"
+    cache: {
+      shape: sql_table
+      used: "**0x120**" {
+        style: {
+          font-color: "#FF5252"
+          bold: true
+        }
+      }
+      aligned_size: "0x20"
+    }
+  }
+  before -> after: "atomic used += 32"
+}
+
+# --- GLOBAL MEMORY LAYOUT VISUALIZATION ---
+
+code_cache_layout: "CODE_CACHE Memory Layout (Post-Alloc)" {
+  style.stroke-width: 4
+  style.fill: "#F5F5F5"
+
+  header: "0x00: Header (Metadata)" {
+    tooltip: "Offs: 0x00 | Size: 64B"
+    style.fill: "#A020F0" # Header Purple
+    style.font-color: "#FFFFFF"
+  }
+  
+  func_0: "0x40: JIT Code: func_0" {
+    tooltip: "Offs: 0x40 | Size: 128B"
+    style.fill: "#BBDEFB" # Data Blue
+  }
+  
+  padding: "0xC0: Alignment Padding (Gray)" {
+    tooltip: "Offs: 0xC0 | Size: 16B"
+    style.fill: "#BDBDBD" # Padding Gray
+    style.stroke-dash: 3
+  }
+  
+  func_1: "0xD0: JIT Code: func_1 (New)" {
+    tooltip: "Offs: 0xD0 | Size: 32B"
+    style.fill: "#2196F3" # Data Blue
+    style.stroke: "#FF5252"
+    style.stroke-width: 5
+    style.bold: true
+  }
+  
+  free_space: "0xF0: Free Memory (Green)" {
+    tooltip: "Offs: 0xF0 | Size: 3856B"
+    style.fill: "#C8E6C9" # Free Green
+  }
+  
+  cursor_ref: "cache->used_ptr" {
+    shape: circle
+    style.fill: "#FF9800" # Pointer Orange
+    style.stroke-width: 2
+  }
+  
+  cursor_ref -> func_1: "Points to Next Free (0xF0)" {
+    style: {
+      stroke: "#FF9800"
+      stroke-width: 3
+      stroke-dash: 2
+    }
+  }
+}
+
+# --- ANNOTATIONS (FIXED FOR ELK ENGINE) ---
+
+boundaries: {
+  near: bottom-right
+  p0: "PAGE_START: 0x0000" {shape: text; style.bold: true}
+  p1: "PAGE_END: 0x1000" {shape: text; style.bold: true}
+  cache_line_0: "--- CACHE LINE (64B) ---" {shape: text; style.stroke-dash: 2}
+}
+
+implementation_details: |'md
+  ### Code Cache Implementation Specification
+  
+  | Constraint | Value | Logic |
+  | :--- | :--- | :--- |
+  | **Alignment** | 16-byte | `(x + 15) & ~15` |
+  | **Page Boundary** | 4096B | `PROT_READ | PROT_EXEC` |
+  | **Concurrency** | Atomic | `CAS` on `used` cursor |
+  | **Growth** | Upward | Bump-allocation strategy |
+
+  **Invariant:**
+  `addr % 16 == 0` is maintained for all `result_ptr`.
+'| {
+  near: top-right
+  style.font-size: 14
+}
+
+# --- STYLING AND CONNECTORS ---
+
+step_1 -> step_2 -> step_3 -> step_4: "Success Path" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 3
+}
+
+step_1.after -> global_error: "Return NULL" {
+  style.stroke: "#FF5252"
+  style.stroke-dash: 5
+}
+
+global_error: "ALLOC_FAILED (SIGBUS/OOM)" {
+  shape: diamond
+  style.fill: "#FF5252"
+  style.font-color: "#FFFFFF"
+}
+
+# Layout constraints for ELK (Force sequencing)
+code_cache_layout.header -> code_cache_layout.func_0 -> code_cache_layout.padding -> code_cache_layout.func_1 -> code_cache_layout.free_space: {
+  style.stroke-width: 0
+}

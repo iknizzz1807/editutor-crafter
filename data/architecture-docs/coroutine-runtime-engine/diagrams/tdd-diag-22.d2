@@ -1,0 +1,254 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 30
+  }
+  colors: {
+    threadA: "#E8F5E9"
+    threadB: "#FFF3E0"
+    queueA: "#C8E6C9"
+    queueB: "#FFE0B2"
+    steal: "#FF5722"
+    balanced: "#E3F2FD"
+    ptr: "#FF9800"
+    header: "#673AB7"
+    barrier: "#ECEFF1"
+  }
+}
+
+title: {
+  shape: text
+  near: top-center
+  label: |md
+    # Work-Stealing Runtime: Load Balancing Algorithm
+    ### SPEC: Chase-Lev Deque Implementation (LIFO Local / FIFO Steal)
+    **Objective**: Lock-free task distribution with O(1) local access and amortized remote overhead.
+  |
+}
+
+direction: down
+
+# ============== STATE 1: MAXIMAL IMBALANCE ==============
+before_container: {
+  label: "STATE 1: INITIAL IMBALANCE (Thread B Starvation)"
+  direction: right
+  style: {
+    stroke: "#333333"
+    stroke-width: 2
+    fill: "#F5F5F5"
+    shadow: true
+  }
+  
+  thread_a_before: {
+    label: "Execution Core A (Victim)"
+    icon: person
+    style.fill: "${colors.threadA}"
+    style.stroke: "#4CAF50"
+    style.stroke-width: 3
+    
+    memory_layout: {
+      shape: sql_table
+      label: "Shared Deque (Task Buffer)"
+      style.fill: "${colors.header}"
+      
+      t_ptr: "0x0000" {constraint: "TOP (Atomic Ptr: 0)"; style.stroke: "${colors.ptr}"}
+      task_1: "0x0008" {constraint: "Task #1 [FIFO HEAD]"; style.fill: "#FFCC80"}
+      task_2: "0x0048" {constraint: "Task #2 [64B Align]"; style.fill: "#FFE0B2"}
+      dots: "..." {style.stroke: gray; style.stroke-dash: 2}
+      task_99: "0x1848" {constraint: "Task #99"}
+      task_100: "0x1888" {constraint: "Task #100 [LIFO TAIL]"; style.fill: "#81C784"}
+      b_ptr: "0x18C8" {constraint: "BOTTOM (Atomic Ptr: 100)"; style.stroke: "${colors.ptr}"}
+    }
+    
+    instr_a: {
+      shape: text
+      label: |md
+        **Instruction Stream (A)**
+        1. `B = load_relaxed(bottom)`
+        2. `store_relaxed(bottom, B - 1)`
+        3. `T = load_seqcst(top)`
+        4. **Hot-Path**: `pop_bottom()`
+      |
+    }
+  }
+
+  thread_b_before: {
+    label: "Execution Core B (Thief)"
+    icon: person
+    style.fill: "${colors.threadB}"
+    style.stroke: "#FF9800"
+    style.stroke-width: 3
+    style.stroke-dash: 4
+    
+    local_state: {
+      label: "L1 Deque (Private)"
+      style.fill: "${colors.queueB}"
+      
+      status: "EMPTY" {
+        style: {
+          font-color: red
+          bold: true
+          fill: white
+        }
+      }
+    }
+    
+    instr_b: {
+      shape: text
+      label: |md
+        **Instruction Stream (B)**
+        1. `check_local_queue() -> NULL`
+        2. `select_victim(RNG) -> Thread_A`
+        3. `atomic_fence(SeqCst)`
+        4. **Action**: `begin_steal(A)`
+      |
+    }
+  }
+}
+
+# ============== STATE 2: ATOMIC BATCH STEAL ==============
+steal_operation: {
+  label: "STATE 2: BATCH STEAL & POINTER ROTATION"
+  direction: right
+  style.fill: "#FFFDE7"
+  style.stroke: "${colors.steal}"
+  style.stroke-width: 3
+  
+  memory_bus: {
+    direction: right
+    
+    victim_registers: {
+      shape: sql_table
+      label: "Victim Atomic State"
+      t_val: "TOP" {constraint: "0 -> 50 (CAS)"}
+      b_val: "BOTTOM" {constraint: "100 (Unchanged)"}
+    }
+    
+    logic_core: {
+      shape: diamond
+      label: "Atomic CAS\n(Top, T, T + N)"
+      style.fill: "#FFAB91"
+    }
+    
+    transfer_buffer: {
+      label: "Stolen Tasks [0..50]"
+      style.stroke: "${colors.ptr}"
+      style.stroke-dash: 5
+      style.multiple: true
+      style.fill: "#FFE0B2"
+    }
+  }
+  
+  implementation: {
+    shape: code
+    label: |rust
+      // Thread B (Thief) atomic half-steal logic
+      fn batch_steal(v: &Deque) -> Result<usize, Error> {
+          let t = v.top.load(Acquire);
+          fence(SeqCst);
+          let b = v.bottom.load(Acquire);
+          let n = (b - t) / 2; // Split load half
+          if n <= 0 { return Err(Empty); }
+          
+          v.top.compare_exchange(t, t + n, 
+              SeqCst, Relaxed).map(|_| n)
+      }
+    |
+  }
+}
+
+# ============== STATE 3: LOAD BALANCED ==============
+after_container: {
+  label: "STATE 3: STABLE STATE (Workload Equilibrium)"
+  direction: right
+  style: {
+    stroke: "#2196F3"
+    stroke-width: 2
+    fill: "#E3F2FD"
+    shadow: true
+  }
+  
+  thread_a_after: {
+    label: "Thread A (Processing 51..100)"
+    style.fill: "${colors.balanced}"
+    style.stroke: "#2196F3"
+    
+    deque_a: {
+      shape: sql_table
+      label: "Victim Deque"
+      top: "TOP" {constraint: "50"}
+      work: "Tasks Remaining" {constraint: "50 Units (LIFO)"; style.fill: "#90CAF9"}
+      bot: "BOTTOM" {constraint: "100"}
+    }
+  }
+  
+  thread_b_after: {
+    label: "Thread B (Processing 1..50)"
+    style.fill: "${colors.balanced}"
+    style.stroke: "#2196F3"
+    
+    deque_b: {
+      shape: sql_table
+      label: "Thief Deque"
+      top: "TOP" {constraint: "0"}
+      work: "Tasks Stolen" {constraint: "50 Units (FIFO)"; style.fill: "#FFCC80"}
+      bot: "BOTTOM" {constraint: "50"}
+    }
+  }
+}
+
+# ============== ANNOTATIONS & LEGEND ==============
+
+algorithm_summary: {
+  shape: text
+  near: bottom-left
+  label: |md
+    ### Memory Invariants
+    1. **Cache Locality**: Owner pops from `BOTTOM` (LIFO), maximizing L1 cache hits on stack-like task patterns.
+    2. **Contention Control**: Thieves steal from `TOP` (FIFO). This minimizes conflicts between Owner and Thief unless only 1 task remains.
+    3. **The `SeqCst` Fence**: Essential to prevent the CPU from reordering the `BOTTOM` load before the `TOP` check, which could lead to double-consuming a task.
+  |
+}
+
+metrics_table: {
+  shape: text
+  near: bottom-right
+  label: |md
+    | Operation | CPU Cycles | Complexity | Ordering |
+    | :--- | :--- | :--- | :--- |
+    | `push_bottom` | ~12 | O(1) | Relaxed |
+    | `pop_bottom` | ~15 | O(1) | Acq/Rel |
+    | `steal_top` | ~180 | O(N) | SeqCst CAS |
+  |
+}
+
+legend: {
+  label: "System Legend"
+  near: bottom-center
+  
+  lifo_local: "Local Tasks (LIFO)" { style.fill: "#81C784" }
+  fifo_stolen: "Stolen Tasks (FIFO)" { style.fill: "#FFCC80" }
+  ptr_marker: "Atomic Index" { style.stroke: "${colors.ptr}"; style.stroke-width: 2 }
+  steady_core: "Balanced Processor" { style.fill: "#BBDEFB" }
+}
+
+# ============== RELATIONSHIPS ==============
+
+before_container.thread_b_before -> steal_operation: "Load Imbalance\nDetected" {
+  style.stroke: "${colors.steal}"
+  style.stroke-width: 2
+  style.animated: true
+}
+
+steal_operation -> after_container: "Atomic Index Update\nACK" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+}
+
+# Explicit styling for atomic pointers in tables
+after_container.thread_a_after.deque_a.top.style.font-color: red
+after_container.thread_a_after.deque_a.bot.style.font-color: blue
+after_container.thread_b_after.deque_b.top.style.font-color: red
+after_container.thread_b_after.deque_b.bot.style.font-color: blue

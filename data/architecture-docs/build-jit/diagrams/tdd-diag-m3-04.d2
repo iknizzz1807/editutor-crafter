@@ -1,0 +1,207 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    sketch: false
+    pad: 20
+  }
+}
+
+# CLASSES FOR ARCHITECTURAL CONSISTENCY
+classes: {
+  state_base: {
+    style: {
+      stroke-width: 2
+      border-radius: 8
+      font: mono
+    }
+  }
+  aligned: {
+    label: "rsp % 16 == 0"
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+    }
+  }
+  misaligned: {
+    label: "rsp % 16 == 8"
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#C62828"
+    }
+  }
+  decision: {
+    shape: diamond
+    style: {
+      fill: "#FFF9C4"
+      stroke: "#FBC02D"
+    }
+  }
+  instruction_label: {
+    style: {
+      font-size: 12
+      italic: true
+      font-color: "#546E7A"
+    }
+  }
+}
+
+# STATE MACHINE: JIT STACK ALIGNMENT TRACKER
+stack_alignment_tracker: {
+  label: "Stack Alignment State Machine (System V AMD64 ABI)"
+
+  # Entrance
+  initial: "" {
+    shape: circle
+    style.fill: "#212121"
+  }
+
+  caller: "Caller Scope" {
+    class: [state_base; aligned]
+    tooltip: "Stack must be 16-byte aligned before CALL"
+  }
+
+  post_call: "Post-CALL (RA Pushed)" {
+    class: [state_base; misaligned]
+    tooltip: "Hardware pushed 8-byte RIP. Stack is misaligned."
+  }
+
+  prologue_base: "Prologue: Save RBP" {
+    class: [state_base; aligned]
+    tooltip: "push rbp (8 bytes) restores 16-byte alignment."
+  }
+
+  save_registers: "Register Save Loop" {
+    class: state_base
+    label: "Saving N GPRs\n(rsp % 16 = (N*8) % 16)"
+    style: {
+      multiple: true
+      fill: "#E8EAF6"
+      stroke: "#3F51B5"
+    }
+  }
+
+  check_alignment: "Align Needed?" {
+    class: decision
+  }
+
+  apply_padding: "Padding: SUB rsp, 8" {
+    class: [state_base; aligned]
+    style.stroke-dash: 3
+  }
+
+  aligned_ready: "Function Body Entry" {
+    class: [state_base; aligned]
+    style: {
+      stroke-width: 4
+      double-border: true
+    }
+  }
+
+  # Transitions with Exact Instruction Opcodes
+  initial -> caller
+  
+  caller -> post_call: "E8 <rel32> (CALL)" {
+    style: {
+      animated: true
+      stroke: "#1976D2"
+      bold: true
+    }
+  }
+
+  post_call -> prologue_base: "55 (push rbp)" {
+    label: "Δrsp: -8"
+  }
+
+  prologue_base -> save_registers: "53 / 41 54 (push rbx/r12...)" {
+    label: "Δrsp: -(N * 8)"
+  }
+
+  save_registers -> check_alignment: "Verify N"
+
+  check_alignment -> apply_padding: "Guard: N is ODD" {
+    label: "N % 2 != 0"
+  }
+
+  check_alignment -> aligned_ready: "Guard: N is EVEN" {
+    label: "N % 2 == 0"
+  }
+
+  apply_padding -> aligned_ready: "48 83 EC 08"
+}
+
+# ABI SPECIFICATION DOCUMENTATION
+abi_rules: |md
+  ### System V AMD64 ABI Requirements
+  1. **Alignment:** The stack pointer `%rsp` must be 16-byte aligned before any `CALL`.
+  2. **Call Mechanism:** The `CALL` instruction pushes the 8-byte return address.
+  3. **Leaf Functions:** May violate alignment if they do not call other functions or use SSE.
+  
+  **Red Zone:** 128 bytes below `%rsp` are reserved for scratch use by the function.
+| {
+  near: stack_alignment_tracker
+  style.font-size: 14
+}
+
+# MEMORY LAYOUT AT FUNCTION ENTRY
+implementation_details: {
+  near: bottom-center
+
+  stack_memory: {
+    shape: sql_table
+    label: "Memory Map (N=1 Saved Reg Example)"
+    
+    "00": "Return Address (RIP)" {constraint: "8B"}
+    "08": "Saved RBP" {constraint: "8B"}
+    "16": "Saved RBX (Data)" {constraint: "8B"}
+    "24": "Alignment Padding" {constraint: "8B"}
+    "32": "Local Variable 0" {constraint: "8B"}
+
+    # SQL Table Styling: 
+    # fill = Header
+    # stroke = Body background (D2 convention)
+    style: {
+      fill: "#673AB7" # Purple Header
+      stroke: "#BBDEFB" # Light Blue Data Area
+      font-color: "#FFFFFF"
+    }
+  }
+
+  trace_table: ||md
+    ### rsp % 16 Trace (N=1)
+    | Step | Opcode | Δrsp | Modulo |
+    | :--- | :--- | :--- | :--- |
+    | **Caller** | - | 0 | **0** |
+    | **CALL** | `E8` | -8 | 8 |
+    | **Entry** | `55` | -8 | **0** |
+    | **Save** | `53` | -8 | 8 |
+    | **Align** | `83 EC 08` | -8 | **0** |
+  ||
+}
+
+# LEGEND
+legend: {
+  near: top-right
+  
+  aligned_box: Aligned (0) {
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+    }
+  }
+  misaligned_box: Misaligned (8) {
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#C62828"
+    }
+  }
+}
+
+# GLOBAL STYLES
+***.style.font: mono
+***.style.font-size: 13
+
+# ANNOTATIONS FOR IMPLEMENTATION
+stack_alignment_tracker.save_registers.tooltip: "Registers rbx, rbp, r12, r13, r14, r15 are callee-saved."
+stack_alignment_tracker.apply_padding.label: "Fix Alignment"

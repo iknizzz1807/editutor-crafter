@@ -1,0 +1,247 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 40
+  }
+}
+
+direction: right
+
+title: |'md
+# Intel-Grade Spec: Preemption Flag State Machine
+**Component:** User-mode Coroutine Scheduler (UMCS)
+**Object:** `atomic<bool> preempt_flag`
+**Memory Alignment:** 64-bit aligned, Cache-line isolated (false sharing mitigation)
+'| {
+  near: top-center
+  shape: text
+}
+
+# -----------------------------------------------------------------------------
+# MEMORY LAYOUT DEFINITION
+# -----------------------------------------------------------------------------
+Memory_Layout: {
+  label: "Struct: ThreadControlBlock (Flag Offset)"
+  shape: sql_table
+  style: {
+    fill: "#F3F4F6"
+    stroke: "#374151"
+    stroke-width: 2
+  }
+
+  0x00: "u8 FlagValue" {
+    constraint: "Atomic [Set/Clear]"
+    style.fill: "#B6DDF6" # Data=Blue
+  }
+  0x01: "u8 Padding[7]" {
+    constraint: "Alignment"
+    style.fill: "#E5E7EB" # Padding=Gray
+  }
+  0x08: "u64 StackPtr" {
+    constraint: "Context"
+    style.fill: "#B6DDF6"
+  }
+  0x10: "u8 CacheLinePadding[48]" {
+    constraint: "64B Boundary"
+    style.fill: "#E5E7EB"
+  }
+  
+  footer: "sizeof=64 bytes (cache line isolated)" {
+    shape: text
+    style.italic: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STATE MACHINE NODES
+# -----------------------------------------------------------------------------
+states: {
+  Initial: ● {
+    style.fill: "#1F2937"
+  }
+
+  Clear: {
+    label: "CLEAR\n(RUNNING)"
+    shape: circle
+    style: {
+      fill: "#DCFCE7" # Green
+      stroke: "#166534"
+      stroke-width: 4
+      bold: true
+    }
+    tooltip: "Flag is FALSE. Coroutine has CPU affinity."
+  }
+
+  Set: {
+    label: "SET\n(PENDING)"
+    shape: circle
+    style: {
+      fill: "#FEE2E2" # Red
+      stroke: "#991B1B"
+      stroke-width: 4
+      bold: true
+    }
+    tooltip: "Flag is TRUE. Set by SIGUSR1 or Monitor Thread."
+  }
+
+  Checked: {
+    label: "CHECKED\n(TRAPPED)"
+    shape: circle
+    style: {
+      fill: "#FEF9C3" # Yellow
+      stroke: "#854D0E"
+      stroke-width: 4
+    }
+    tooltip: "Safe-point hit. Transitioning to save-state."
+  }
+
+  Cleared: {
+    label: "YIELDED\n(SUSPENDED)"
+    shape: circle
+    style: {
+      fill: "#DBEAFE" # Blue
+      stroke: "#1E40AF"
+      stroke-width: 4
+    }
+    tooltip: "State saved. Control returned to Scheduler."
+  }
+}
+
+# -----------------------------------------------------------------------------
+# TRANSITIONS
+# -----------------------------------------------------------------------------
+states.Initial -> states.Clear: "Spawn Thread [0]" {
+  style.stroke: "#374151"
+}
+
+states.Clear -> states.Set: "ASYNC INTERRUPT [1]\nSIGUSR1 / Timer Fire" {
+  style: {
+    stroke: "#B91C1C" # Signal=Red
+    stroke-width: 5
+    animated: true
+  }
+}
+
+states.Set -> states.Checked: "SAFE-POINT [2]\ncheck_preempt() == true" {
+  style: {
+    stroke: "#D97706" # Pointer/Transition=Orange
+    stroke-width: 3
+  }
+}
+
+states.Checked -> states.Cleared: "SAVE CONTEXT [3]\npush registers" {
+  style: {
+    stroke: "#2563EB"
+    stroke-width: 3
+  }
+}
+
+states.Cleared -> states.Clear: "RESUME [4]\npop registers" {
+  style: {
+    stroke: "#059669" # Success=Green
+    stroke-width: 3
+  }
+}
+
+# Illegal Transitions
+states.Clear -> states.Checked: "ILLEGAL" {
+  style: {
+    stroke: "#B91C1C"
+    stroke-dash: 5
+    opacity: 0.5
+  }
+}
+
+# Self-loops for Fast Path
+states.Clear -> states.Clear: "FAST PATH\nload(relaxed) == 0\n(3 cycles)" {
+  style: {
+    stroke: "#059669"
+    stroke-dash: 2
+    opacity: 0.4
+  }
+}
+
+# -----------------------------------------------------------------------------
+# CODE BLOCKS & SPECIFICATION
+# -----------------------------------------------------------------------------
+
+Signal_Handler_Spec: |'md
+### [1] Kernel/Signal Handler
+**Context:** Non-deterministic Async
+c
+void signal_handler(int sig) {
+    // Atomic store with relaxed ordering
+    // to avoid expensive memory barriers
+    // on high-frequency timer interrupts.
+    atomic_store_relaxed(&tcb->preempt_flag, 1);
+}
+
+'| {
+  near: top-right
+  style: {
+    fill: "#FFF1F2"
+    stroke: "#BE123C"
+    font: mono
+  }
+}
+
+Safe_Point_Spec: |'md
+### [2] Coroutine Safe-point
+**Context:** Synchronous (Injected by Compiler)
+rust
+#[inline(always)]
+fn check_preempt() {
+    if unsafe { PREEMPT_FLAG.load(Relaxed) } {
+        // Slow path: perform full yield
+        do_preempt_yield();
+    }
+}
+
+'| {
+  near: center-right
+  style: {
+    fill: "#FEFCE8"
+    stroke: "#A16207"
+    font: mono
+  }
+}
+
+# -----------------------------------------------------------------------------
+# PERFORMANCE & TIMING TABLES
+# -----------------------------------------------------------------------------
+Timing_Metadata: |'md
+## Performance Metadata
+| Phase | Action | Cycles (x86_64) |
+| :--- | :--- | :--- |
+| **Check** | atomic_load | 3 - 7 |
+| **Trap** | branch_miss | 15 - 20 |
+| **Yield** | context_swap | 150 - 300 |
+| **Total** | Overhead | < 0.2% |
+'| {
+  near: bottom-left
+  style: {
+    fill: "#F9FAFB"
+    stroke: "#D1D5DB"
+    border-radius: 8
+  }
+}
+
+Legend: {
+  near: bottom-right
+  style: {
+    fill: "#FFFFFF"
+    stroke: "#000000"
+    stroke-width: 1
+    border-radius: 4
+  }
+  
+  l1: "━━▶ Hardware/Signal" { shape: text; style.font-color: "#B91C1C" }
+  l2: "━━▶ Software Transition" { shape: text; style.font-color: "#2563EB" }
+  l3: "╌╌▶ Illegal Path" { shape: text; style.font-color: "#B91C1C" }
+}
+
+# Spatial alignment for ELK
+Memory_Layout -> states.Clear: "Flag Reference" {
+  style.stroke-dash: 3
+}

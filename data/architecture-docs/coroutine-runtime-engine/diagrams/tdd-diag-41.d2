@@ -1,0 +1,284 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+classes: {
+  # --- Architecture Entities ---
+  thread: {
+    shape: rectangle
+    style: {
+      stroke: "#2E86AB"
+      stroke-width: 2
+      border-radius: 8
+    }
+  }
+  main-thread: {
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#E65100"
+      stroke-width: 3
+      border-radius: 8
+    }
+  }
+  channel: {
+    shape: parallelogram
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+      stroke-width: 2
+    }
+  }
+  worker: {
+    shape: rectangle
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#388E3C"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  syscall: {
+    shape: diamond
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#C62828"
+      stroke-width: 2
+    }
+  }
+  coroutine: {
+    shape: hexagon
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1565C0"
+      stroke-width: 2
+    }
+  }
+  waker: {
+    shape: circle
+    style: {
+      fill: "#FFF8E1"
+      stroke: "#F57F17"
+      stroke-width: 2
+    }
+  }
+  # --- Connection Styling ---
+  arrow-normal: {
+    style: {
+      stroke: "#37474F"
+      stroke-width: 2
+    }
+  }
+  arrow-async: {
+    style: {
+      stroke: "#1565C0"
+      stroke-width: 2
+      stroke-dash: 4
+    }
+  }
+  arrow-wake: {
+    style: {
+      stroke: "#F57F17"
+      stroke-width: 2
+    }
+  }
+  blocking-path: {
+    style: {
+      stroke: "#C62828"
+      stroke-width: 4
+      animated: true
+    }
+  }
+}
+
+# --- Global Header ---
+title: |md
+  # File I/O Thread Pool Architecture
+  **Subsystem: Async-Runtime-IO (Non-Epoll Path)**
+  *Offloading blocking Linux syscalls to maintain Reactor responsiveness.*
+|
+title.near: top-center
+
+# --- Components ---
+
+main_thread: "Main Event Loop / Reactor" {
+  class: [main-thread; thread]
+  tooltip: "sizeof=128B (Scheduler State)"
+  
+  coroutine_a: "Coroutine A\n(fd=3, offset=0)" {
+    class: coroutine
+    style.fill: "#BBDEFB"
+  }
+  coroutine_b: "Coroutine B\n(fd=12, offset=4096)" {
+    class: coroutine
+    style.fill: "#BBDEFB"
+  }
+  coroutine_c: "Coroutine C\n(fd=7, offset=1024)" {
+    class: coroutine
+    style.fill: "#BBDEFB"
+  }
+}
+
+submit_queue: "MPSC Task Queue (Memory Offset: 0x7F00)" {
+  class: channel
+  
+  FileOp_Read: "Read Request Memory Layout" {
+    shape: sql_table
+    OpCode: "0x01 (uint32)" {constraint: "+0x00"}
+    FD: "int32" {constraint: "+0x08"}
+    Offset: "int64" {constraint: "+0x10"}
+    Size: "size_t" {constraint: "+0x18"}
+    Waker: "*void" {constraint: "+0x20"}
+  }
+}
+
+worker_pool: "Worker Pool (N=CPU_CORES)" {
+  style: {
+    fill: "#F1F8E9"
+    stroke: "#2E7D32"
+    stroke-width: 2
+    stroke-dash: 6
+    border-radius: 12
+  }
+
+  worker_0: "Worker Thread 0" {
+    class: [worker; thread]
+    syscall_read: "pread()" {
+      class: syscall
+      tooltip: "Blocking Syscall 0x11"
+    }
+  }
+
+  worker_1: "Worker Thread 1" {
+    class: [worker; thread]
+    syscall_write: "pwrite()" {
+      class: syscall
+    }
+  }
+
+  worker_n: "Worker Thread N" {
+    class: worker
+    style.fill: "#C8E6C9"
+    style.stroke-dash: 4
+  }
+}
+
+result_channels: "One-Shot Result Channels\n(SPSC per Op)" {
+  class: channel
+  style.fill: "#FCE4EC"
+  style.stroke: "#AD1457"
+  
+  slot_a: "Result A: [Success, 4096B]"
+  slot_b: "Result B: [Pending...]"
+}
+
+waker_dispatch: "Waker Registry" {
+  style: {
+    fill: "#FFFDE7"
+    stroke: "#FBC02D"
+    border-radius: 8
+  }
+  waker_a: "Waker A" { class: waker }
+  waker_b: "Waker B" { class: waker }
+}
+
+run_queue: "Scheduler Run Queue\n(Priority FIFO)" {
+  shape: rectangle
+  style: {
+    fill: "#E1F5FE"
+    stroke: "#0288D1"
+    stroke-width: 2
+    double-border: true
+  }
+  task_list: "Next: [Coroutine A] -> [Coroutine D] -> [NULL]"
+}
+
+file_system: "Linux Kernel / VFS\n(Disk I/O)" {
+  shape: cylinder
+  style: {
+    fill: "#ECEFF1"
+    stroke: "#455A64"
+    stroke-width: 3
+  }
+}
+
+# --- Interactions & Call Sequence ---
+
+main_thread.coroutine_a -> submit_queue.FileOp_Read: "1. Push FileOp\nyield (Suspended)" {
+  class: arrow-async
+}
+
+submit_queue.FileOp_Read -> worker_pool.worker_0: "2. Pop Task" {
+  class: arrow-normal
+}
+
+worker_pool.worker_0.syscall_read -> file_system: "3. pread(fd, buf, ...)\n[BLOCKING]" {
+  class: [arrow-normal; blocking-path]
+}
+
+file_system -> worker_pool.worker_0.syscall_read: "4. Data DMA to Userland" {
+  style.stroke: "#388E3C"
+  style.stroke-width: 2
+}
+
+worker_pool.worker_0 -> result_channels.slot_a: "5. Write Result" {
+  class: arrow-normal
+}
+
+worker_pool.worker_0 -> waker_dispatch.waker_a: "6. wake()" {
+  class: arrow-wake
+  style.animated: true
+}
+
+waker_dispatch.waker_a -> run_queue: "7. Mark Runnable" {
+  class: arrow-wake
+}
+
+run_queue -> main_thread.coroutine_a: "8. Dispatch Resume" {
+  class: arrow-async
+  style.stroke: "#1565C0"
+}
+
+# --- Documentation & Legend ---
+
+legend: {
+  style.fill: "#FAFAFA"
+  style.stroke: "#BDBDBD"
+  
+  key1: "Blocking Call (Kernel Wait)" {
+    shape: diamond
+    style.fill: "#FFEBEE"
+    style.stroke: "#C62828"
+  }
+  key2: "Async Yield / Resumption" {
+    shape: rectangle
+    style.stroke: "#1565C0"
+    style.stroke-dash: 4
+  }
+  key3: "Waker Signal (Resume Loop)" {
+    shape: circle
+    style.fill: "#FFF8E1"
+    style.stroke: "#F57F17"
+  }
+}
+legend.near: bottom-right
+
+explanation: |md
+  ### Architectural Rationale
+  Regular files in Linux do not support `epoll` or non-blocking I/O in the same way sockets do. Even with `O_NONBLOCK`, a `read()` on a local filesystem can block the thread if data is not in the page cache.
+  
+  **Data Structure: FileOp (64B Cache-Aligned)**
+  - **Opcode (4B):** Discriminant for Read/Write/Sync/Stat.
+  - **FD (4B):** Target file descriptor.
+  - **Waker (8B):** Raw pointer to the coroutine's waker implementation.
+  - **Result Chan (8B):** SPSC channel address for data return.
+  
+  **Runtime Safety:**
+  Worker threads use `pread` and `pwrite` to ensure thread-safe operations on shared FDs without requiring global file offset locks.
+|
+explanation.near: bottom-center
+explanation.shape: rectangle
+explanation.style.font-size: 14

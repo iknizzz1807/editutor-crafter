@@ -1,0 +1,235 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# --- GLOBAL STYLES & CLASSES ---
+classes: {
+  header: {
+    style: {
+      fill: "#d1c4e9"
+      bold: true
+      font-size: 18
+      stroke-width: 2
+    }
+  }
+  data_slot: {
+    style: {
+      fill: "#bbdefb"
+      font: mono
+      stroke: "#1976d2"
+    }
+  }
+  pointer: {
+    style: {
+      stroke: "#fb8c00"
+      stroke-width: 3
+      animated: true
+    }
+  }
+  fail_node: {
+    style: {
+      fill: "#ffcdd2"
+      stroke: "#b71c1c"
+      stroke-width: 4
+      font-color: "#b71c1c"
+      bold: true
+    }
+  }
+  metadata_label: {
+    style: {
+      font-size: 12
+      italic: true
+      font-color: "#424242"
+    }
+  }
+}
+
+title: |md
+  # JIT DEOPTIMIZATION CASE STUDY
+  ## Expression: (a + b) * c
+  **Scenario:** Speculative Integer Addition followed by Type Guard Failure
+| {near: top-center}
+
+# --- 1. SOURCE BYTECODE (IR) ---
+bytecode_stream: {
+  label: "1. SOURCE BYTECODE (IR)"
+  class: header
+  
+  table: {
+    shape: sql_table
+    "Offset" : "Instruction"
+    00: "LOAD_LOCAL 0 (a)"
+    01: "LOAD_LOCAL 1 (b)"
+    02: "ADD (INT SPECULATIVE)"
+    03: "LOAD_LOCAL 2 (c)"
+    04: "**MUL (RESUME PC)**" {
+      style: {
+        fill: "#ffebee"
+        font-color: red
+        bold: true
+      }
+    }
+    05: "RET"
+  }
+  
+  annotation: "PC points here after deopt" {
+    shape: text
+    class: metadata_label
+  }
+}
+
+# --- 2. JIT NATIVE CPU STATE ---
+jit_state: {
+  label: "2. JIT NATIVE CPU STATE (AT FAILURE)"
+  class: header
+
+  registers: {
+    shape: sql_table
+    "Reg" : "Current Value / Role"
+    rax: "0x0000000F (a+b Result)" {style.fill: "#c8e6c9"}
+    rbx: "0x00000002 (c Value)" {style.fill: "#c8e6c9"}
+    rcx: "0x00007f00 (Heap Base)"
+    rdx: "0x00000000 (Scratch)"
+    rip: "0x7f0012a4 (Native IP)" {
+      style: {
+        stroke: red
+        stroke-width: 2
+      }
+    }
+  }
+
+  guard_fail: "GUARD FAILURE: 'c' is not Integer!" {
+    class: fail_node
+    shape: oval
+  }
+}
+
+# --- 3. DEOPT METADATA ---
+side_table: {
+  label: "3. DEOPT METADATA (SIDE TABLE)"
+  class: header
+  
+  mapping: {
+    shape: sql_table
+    "Field" : "Mapping Logic"
+    resume_pc: "0x04 (MUL)" {style.bold: true}
+    stack_depth: "2 Entries to restore"
+    map_0: "Register rax -> VMStack[0]" {style.font-color: "#fb8c00"}
+    map_1: "Register rbx -> VMStack[1]" {style.font-color: "#fb8c00"}
+    locals: "Keep from Register File"
+  }
+  
+  logic_note: "Metadata generated during JIT-compile time" {
+    shape: text
+    class: metadata_label
+  }
+}
+
+# --- 4. RECONSTRUCTED INTERPRETER STATE ---
+interpreter_frame: {
+  label: "4. RECONSTRUCTED INTERPRETER STATE"
+  class: header
+
+  stack: {
+    shape: sql_table
+    "offset | size" : "Value (Memory Layout)"
+    "0x10 | 8B": "**0x00000002 (c)**" {
+      style: {
+        font-color: "#b71c1c"
+        bold: true
+        fill: "#fff9c4"
+      }
+    }
+    "0x08 | 8B": "**0x0000000F (a+b)**" {
+      style: {
+        font-color: "#b71c1c"
+        bold: true
+        fill: "#fff9c4"
+      }
+    }
+    "0x00 | 8B": "[Bottom of Stack / Prev Frame]" {style.fill: "#eeeeee"}
+  }
+
+  metadata: {
+    shape: sql_table
+    "Field" : "Value"
+    pc: "0x04 (MUL)" {style.fill: "#e1f5fe"}
+    sp: "0x10 (Stack Top)" {style.fill: "#e1f5fe"}
+    fp: "0x00 (Base)"
+  }
+}
+
+# --- DATA FLOW & TRANSITION CONNECTIONS ---
+
+# Register Spill to Side Table Logic
+jit_state.registers.rax -> side_table.mapping.map_0: "Extract Intermediate" {class: pointer}
+jit_state.registers.rbx -> side_table.mapping.map_1: "Extract Operand" {class: pointer}
+
+# Side Table to Interpreter Stack Reconstruction
+side_table.mapping.map_0 -> interpreter_frame.stack."0x08 | 8B": "PUSH (a+b)" {
+  class: pointer
+  style.stroke: "#e65100"
+}
+side_table.mapping.map_1 -> interpreter_frame.stack."0x10 | 8B": "PUSH (c)" {
+  class: pointer
+  style.stroke: "#e65100"
+}
+
+# Program Counter Synchronization
+bytecode_stream.table.04 -> side_table.mapping.resume_pc: "Find Resume Point" {
+  style: {
+    stroke-dash: 5
+    stroke: "#757575"
+  }
+}
+side_table.mapping.resume_pc -> interpreter_frame.metadata.pc: "Sync PC for Interp" {class: pointer}
+
+# Guard Failure Trigger
+jit_state.guard_fail -> side_table: "INVOKE DEOPT STUB" {
+  style: {
+    stroke: "#b71c1c"
+    stroke-width: 3
+  }
+}
+
+# --- ANNOTATIONS & DOCUMENTATION ---
+explanation: |md
+  ### The Mapping Challenge
+  During high-speed native execution of `(a+b)*c`, intermediate results (like `a+b`) 
+  often exist solely in CPU registers (e.g., **RAX**). The virtual "Value Stack" 
+  is optimized away.
+  
+  **Deoptimization Sequence:**
+  1. **Detection:** The JIT-emitted type guard finds that `c` is a double, not an int.
+  2. **Lookup:** The runtime uses the current native IP to find the corresponding 
+     **Side Table** entry.
+  3. **Restoration:** The **Deopt Stub** reads the mapping metadata to determine that 
+     `rax` must be written to stack slot 0 and `rbx` to stack slot 1.
+  4. **Resume:** The Interpreter is initialized with the reconstructed frame. 
+     Execution resumes at Bytecode Offset `0x04` (the `MUL` instruction), which 
+     can now handle non-integer types via slow-path dispatch.
+| {
+  near: bottom-right
+  style: {
+    stroke: "#64b5f6"
+    fill: "#f1f8e9"
+  }
+}
+
+# Legend / Key
+legend: {
+  near: bottom-left
+  p: "Data Pointer" {
+    class: pointer
+  }
+  f: "Control Flow Sync" {
+    style.stroke-dash: 5
+  }
+  err: "Failure Point" {
+    class: fail_node
+  }
+}

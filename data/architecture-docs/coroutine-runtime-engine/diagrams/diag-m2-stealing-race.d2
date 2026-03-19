@@ -1,0 +1,397 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Work-Stealing Race Conditions
+  **The Problem: Owner and Thief Race for the Last Item**
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  scenario: {
+    direction: down
+    label: "Race Condition Scenario"
+    initial_state: {
+      label: "Initial Queue State"
+      width: 380
+      queue_viz: {
+        shape: sql_table
+        label: "Chase-Lev Queue"
+        col1: "Index"
+        col2: "Item"
+        col3: "Status"
+        row0: "0 (top) | Task A | ← Thief target"
+        row1: "1 | Task B | available"
+        row2: "2 (bottom-1) | Task C | ← Owner target"
+        row3: "3 (bottom) | empty | "
+        note: "top=0, bottom=3 (2 items)"
+      }
+    }
+    owner_thread: {
+      label: "Owner Thread"
+      width: 340
+      owner_code: |'c
+        // Owner: pop() from bottom
+        let b = bottom.load(Relaxed) - 1;  // b = 2
+        bottom.store(b, Relaxed);          // tentatively reserve
+        fence(SeqCst);  // Critical ordering!
+        let t = top.load(Relaxed);         // t = 0
+        if t <= b {
+          // Queue not empty, try take
+          let task = buffer[b];            // Task C
+          if t == b {
+            // LAST ITEM - race possible!
+            if CAS(&top, t, t+1).is_ok() {
+              return task;  // Won race
+            } else {
+              // Lost to thief
+              return None;
+            }
+          }
+        }
+      '|
+    }
+    thief_thread: {
+      label: "Thief Thread"
+      width: 340
+      thief_code: |'c
+        // Thief: steal() from top
+        let t = top.load(Acquire);         // t = 0
+        fence(SeqCst);                     // Synchronize
+        let b = bottom.load(Acquire);      // b = 3 (or 2?)
+        if t >= b {
+          return None;  // Queue empty
+        }
+        let task = buffer[t];              // Task A
+        if CAS(&top, t, t+1).is_ok() {
+          return task;  // Won race
+        } else {
+          return None;  // Lost to owner/other thief
+        }
+      '|
+    }
+  }
+  contention_visual: {
+    direction: down
+    label: "When Only One Item Remains"
+    race_state: {
+      label: "Race Condition State"
+      width: 380
+      race_queue: {
+        shape: sql_table
+        label: "Queue (Single Item)"
+        col1: "Index"
+        col2: "Item"
+        col3: "Status"
+        row0: "0 (top) | Task A | CONTESTED!"
+        row1: "1 | empty | "
+        note: "top=0, bottom=1 (1 item)"
+      }
+    }
+    race_arrow: {
+      label: "Both Threads Target Same Item!"
+      width: 380
+      owner_arrow: "Owner → Task A (from bottom)"
+      thief_arrow: "Thief → Task A (from top)"
+      conflict: "💥 COLLISION!"
+      style.fill: "#FFE4E1"
+      style.stroke: "#DC143C"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  cas_resolution: {
+    direction: down
+    label: "CAS Resolution: Only One Wins"
+    cas_explanation: {
+      label: "Atomic Compare-And-Swap"
+      width: 420
+      cas_desc: |md
+        **CAS(&top, expected, new)** atomically:
+        1. Reads current value of `top`
+        2. If `top == expected`, sets `top = new`
+        3. Returns success/failure
+        **Key property**: Only ONE thread's CAS succeeds.
+        Hardware guarantees atomicity.
+      |
+    }
+    cas_timeline: {
+      label: "Resolution Timeline"
+      shape: sequence_diagram
+      Owner
+      Thief
+      "top (atomic)"
+      race: {
+        Owner -> "top (atomic)": load top=0
+        Thief -> "top (atomic)": load top=0
+        Owner -> "top (atomic)": CAS(0, 1)
+        "top (atomic)" -> Owner: ✅ SUCCESS
+        Thief -> "top (atomic)": CAS(0, 1)
+        "top (atomic)" -> Thief: ❌ FAIL (top=1)
+        Thief: "Lost race, retry later"
+      }
+    }
+  }
+  cas_loop: {
+    direction: down
+    label: "CAS Loop: Handling Contention"
+    loop_code: {
+      label: "Retry Pattern"
+      width: 420
+      code: |'c
+        fn steal_with_retry(&self) -> Option<T> {
+          loop {
+            let t = self.top.load(Acquire);
+            fence(SeqCst);
+            let b = self.bottom.load(Acquire);
+            if t >= b {
+              return None;  // Empty
+            }
+            let task = unsafe { ptr::read(buffer.at(t)) };
+            // The critical CAS
+            match self.top.compare_exchange(
+              t,           // expected
+              t + 1,       // new value
+              Release,     // success ordering
+              Relaxed,     // failure ordering
+            ) {
+              Ok(_) => return Some(task),  // Won!
+              Err(_) => {
+                // Lost race - retry
+                // Task we read is "leaked" but OK
+                // for pointer/Box types
+                continue;
+              }
+            }
+          }
+        }
+      '|
+    }
+    loop_note: {
+      label: "Why Retry Works"
+      width: 420
+      note: |md
+        **Lost the race? Try again!**
+        1. CAS failure means someone else took an item
+        2. Queue state has changed
+        3. Re-read `top` and `bottom`
+        4. Try again with fresh state
+        **Contention is temporary**: After a few
+        retries, either we succeed or queue is empty.
+      |
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  random_stealing: {
+    direction: down
+    label: "Why Random Stealing Reduces Contention"
+    problem: {
+      label: "Deterministic Stealing Problem"
+      width: 420
+      problem_desc: |md
+        **Round-robin stealing** creates hotspots:
+        All idle workers → steal from worker 0
+        All hit same `top` atomic → cache line bouncing
+        Serialized CAS operations → poor scaling
+      |
+      problem_diag: {
+        label: "Contention Hotspot"
+        width: 420
+        workers: {
+          shape: sql_table
+          label: "Steal Attempts"
+          col1: "Victim"
+          col2: "Thieves"
+          col3: "Contention"
+          w0: "Worker 0 | W1, W2, W3, W4 | 🔥🔥🔥 HIGH"
+          w1: "Worker 1 | (none) | low"
+          w2: "Worker 2 | (none) | low"
+          w3: "Worker 3 | (none) | low"
+        }
+      }
+      style.fill: "#FFE4E1"
+    }
+    solution: {
+      label: "Random Victim Selection"
+      width: 420
+      solution_desc: |md
+        **Random stealing** distributes load:
+        Each thief picks random victim
+        Contention spreads across all queues
+        CAS operations proceed in parallel
+      |
+      solution_diag: {
+        label: "Distributed Contention"
+        width: 420
+        rand_workers: {
+          shape: sql_table
+          label: "Random Steal Distribution"
+          col1: "Victim"
+          col2: "Thieves"
+          col3: "Contention"
+          w0: "Worker 0 | W2 | low"
+          w1: "Worker 1 | W4 | low"
+          w2: "Worker 2 | W1 | low"
+          w3: "Worker 3 | W3 | low"
+        }
+      }
+      style.fill: "#E8F5E9"
+    }
+  }
+  prng: {
+    direction: down
+    label: "Fast Per-Thread PRNG"
+    prng_code: {
+      label: "Linear Congruential Generator"
+      width: 420
+      code: |'c
+        // Per-thread state (no sharing!)
+        thread_local! {
+          static RNG: Cell<u64> = Cell::new(SEED);
+        }
+        fn random_victim(num_workers: usize) -> usize {
+          RNG.with(|rng| {
+            let mut state = rng.get();
+            // LCG formula (fast, good distribution)
+            state = state.wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+            rng.set(state);
+            (state as usize) % num_workers
+          })
+        }
+        // Properties:
+        // - ~2-5 cycles per call
+        // - No atomic operations
+        // - Each thread has own state
+        // - Good enough for load balancing
+      '|
+    }
+    prng_props: {
+      label: "PRNG Requirements"
+      width: 420
+      props: {
+        shape: sql_table
+        label: "PRNG Properties"
+        col1: "Property"
+        col2: "Requirement"
+        col3: "Why"
+        p0: "Speed | < 10 cycles | Called on every steal"
+        p1: "Per-thread | No sharing | Avoid cache contention"
+        p2: "Distribution | Uniform-ish | Spread load evenly"
+        p3: "Crypto quality | NOT needed | Just load balancing"
+      }
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.fill: transparent
+  style.stroke: transparent
+  memory_ordering: {
+    direction: down
+    label: "Memory Ordering: The Invisible Battleground"
+    ordering_explanation: {
+      label: "Why Ordering Matters"
+      width: 420
+      order_desc: |md
+        **Without proper ordering, races corrupt data:**
+        1. Thief reads `top` before owner writes `bottom`
+        2. Thief sees stale queue size
+        3. Thief tries to steal non-existent item
+        4. **Undefined behavior!**
+        **SeqCst fence ensures:**
+        - All prior writes are visible
+        - All subsequent reads see latest values
+        - Global ordering of operations
+      |
+    }
+    ordering_table: {
+      label: "Ordering in Chase-Lev Queue"
+      width: 420
+      order_ops: {
+        shape: sql_table
+        label: "Operation Orderings"
+        col1: "Operation"
+        col2: "Ordering"
+        col3: "Purpose"
+        op0: "push: write task | Relaxed | Local, not published"
+        op1: "push: fence before bottom | Release | Task visible before index"
+        op2: "push: store bottom | Relaxed | Publish new bottom"
+        op3: "pop: store bottom-1 | Relaxed | Tentative reserve"
+        op4: "pop: fence before top | SeqCst | See thief's updates"
+        op5: "steal: load top | Acquire | See owner's updates"
+        op6: "steal: fence | SeqCst | Prevent reordering"
+        op7: "steal: CAS top | Release | Publish our claim"
+      }
+    }
+  }
+  summary: {
+    direction: down
+    label: "Key Takeaways"
+    takeaway_box: {
+      label: "Race Condition Handling Summary"
+      width: 420
+      takeaways: |md
+        **1. CAS is the arbiter**
+           - Only one thread wins
+           - Hardware guarantees atomicity
+           - Losers retry with fresh state
+        **2. Random stealing reduces contention**
+           - Spreads CAS operations across queues
+           - Each queue's `top` is a potential hotspot
+           - Random selection minimizes collisions
+        **3. Memory ordering is critical**
+           - SeqCst fences at synchronization points
+           - Acquire/Release for data visibility
+           - Wrong ordering = subtle, rare bugs
+        **4. Retry is cheap**
+           - CAS failure is rare in practice
+           - Retry cost is ~10-20 cycles
+           - Better than blocking/locking
+      |
+    }
+    perf_nums: {
+      label: "Performance Characteristics"
+      width: 420
+      perf: {
+        shape: sql_table
+        label: "Operation Costs"
+        col1: "Operation"
+        col2: "Cost (cycles)"
+        col3: "Notes"
+        p0: "Uncontended pop | 5-15 | Fast path, mostly local"
+        p1: "Uncontended steal | 20-40 | Atomic load + CAS"
+        p2: "Contended CAS fail | 30-50 | Retry loop"
+        p3: "Cache miss on top | 100-200 | Cross-core access"
+        p4: "Random victim select | 2-5 | LCG PRNG"
+      }
+    }
+  }
+}
+legend: {
+  near: bottom-right
+  label: "Legend"
+  width: 280
+  leg: |md
+    **Colors:**
+    🔴 Red = contention/danger
+    🟢 Green = success/resolution
+    🟡 Yellow = caution/waiting
+    **Symbols:**
+    ✅ CAS success
+    ❌ CAS failure (retry)
+    🔥 High contention
+  |
+}

@@ -1,0 +1,160 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# TITLE AND CONTEXT
+# -----------------------------------------------------------------------------------------
+title: |md
+  # JIT→Interpreter Trampoline Architecture
+  ## System V AMD64 ABI Compliant State Marshaling
+  **Implementation Spec v1.0.9**
+| {near: top-center}
+
+# -----------------------------------------------------------------------------------------
+# MEMORY LAYOUT: INTERPRETER FRAME ON STACK
+# -----------------------------------------------------------------------------------------
+InterpFrameStack: {
+  label: "Stack Frame Layout during Trampoline Execution (Total Size: 208+ Bytes)"
+  
+  header: "High Addresses (Higher Stack)" {
+    style.stroke-dash: 3
+    style.fill: purple
+  }
+
+  caller_frame: "0x00: Caller Context\n[8B] Return Address\n[8B] Saved RBP" {
+    style.fill: purple
+    style.font-color: white
+  }
+
+  saved_regs: "0x10: Saved JIT Machine State (128 bytes)\nVolatile + Non-Volatile General Purpose Registers\nRAX, RBX, RCX, RDX, RSI, RDI, R8-R15" {
+    style.fill: blue
+    style.font-color: white
+  }
+
+  frame_struct: "0x90: InterpFrame Structure (VM Context)\nsizeof=64 bytes (Cache Line Aligned)" {
+    style.fill: "#e1d5e7"
+    style.stroke-width: 4
+    
+    f00: "0x00 [8B] bytecode_ptr (uint8_t*)" {style.fill: orange}
+    f08: "0x08 [8B] pc (uint8_t*)" {style.fill: orange}
+    f10: "0x10 [8B] operand_stack (int64_t*)" {style.fill: orange}
+    f18: "0x18 [4B] stack_top (int32_t)" {style.fill: blue}
+    f1c: "0x1c [4B] padding (unused)" {style.fill: gray}
+    f20: "0x20 [8B] locals (int64_t*)" {style.fill: orange}
+    f28: "0x28 [4B] local_count (int32_t)" {style.fill: blue}
+    f2c: "0x2c [20B] flags/internal_state" {style.fill: blue}
+  }
+
+  padding: "0xD0: Alignment Padding (8 bytes)\nForce 16-byte RSP alignment for SSE/AVX" {
+    style.fill: gray
+  }
+  
+  footer: "Low Addresses (Current RSP)" {
+    style.stroke-dash: 3
+    style.fill: purple
+  }
+
+  header -> caller_frame -> saved_regs -> frame_struct -> padding -> footer
+}
+
+# -----------------------------------------------------------------------------------------
+# EXECUTION FLOW: SEQUENCE OF TRAMPOLINE OPERATIONS
+# -----------------------------------------------------------------------------------------
+ExecutionFlow: {
+  shape: sequence_diagram
+  
+  jit: "JIT Native Code\n(Caller)"
+  tramp: "Trampoline\n(Bridge)"
+  interp: "C Interpreter Loop\n(Callee)"
+
+  jit -> tramp: "call interp_func(args...)\n(args: RDI, RSI, RDX)" {
+    style.bold: true
+  }
+
+  tramp -> tramp: "Save Context ▼\npush rbp; mov rbp, rsp\npush rax ... push r15"
+
+  tramp -> tramp: "Allocate VM Frame\nsub rsp, 64"
+
+  tramp -> tramp: "Marshal Native -> VM\nmov [rsp+locals], rdi\nmov [rsp+locals+8], rsi" {
+    style.stroke: orange
+  }
+
+  tramp -> interp: "call interpreter_loop(InterpFrame *f)" {
+    style.stroke: red
+    style.stroke-width: 3
+    style.animated: true
+  }
+
+  interp -> interp: "Dispatch Loop\nwhile(op = *pc++) { ... }"
+
+  interp -> tramp: "return status_code\n(rax = 0 for OK)"
+
+  tramp -> tramp: "Sync VM Stack -> Native RAX\nmov rax, [rsp+stack_top_ptr]" {
+    style.stroke: green
+    style.bold: true
+  }
+
+  tramp -> tramp: "Restore Context ▲\nadd rsp, 64\npop r15 ... pop rax"
+
+  tramp -> jit: "ret (Native Result in RAX)"
+}
+
+# -----------------------------------------------------------------------------------------
+# REGISTER TRANSFORMATION MAP
+# -----------------------------------------------------------------------------------------
+RegMap: {
+  label: "State Marshaling Logic"
+
+  ABI_REGS: {
+    shape: sql_table
+    rdi: "Arg 0 (Native)"
+    rsi: "Arg 1 (Native)"
+    rdx: "Arg 2 (Native)"
+    rax: "Return (Hardware)"
+  }
+
+  VM_STATE: {
+    shape: sql_table
+    local_0: "frame->locals[0]"
+    local_1: "frame->locals[1]"
+    local_2: "frame->locals[2]"
+    stack_0: "frame->stack[0]"
+  }
+
+  ABI_REGS.rdi -> VM_STATE.local_0: "Marshaling Step 4" {style.stroke: orange; style.stroke-width: 2}
+  ABI_REGS.rsi -> VM_STATE.local_1: "Marshaling Step 4" {style.stroke: orange; style.stroke-width: 2}
+  ABI_REGS.rdx -> VM_STATE.local_2: "Marshaling Step 4" {style.stroke: orange; style.stroke-width: 2}
+  VM_STATE.stack_0 -> ABI_REGS.rax: "Extraction Step 8" {style.stroke: green; style.stroke-width: 3}
+}
+
+# -----------------------------------------------------------------------------------------
+# STYLING AND ANNOTATIONS
+# -----------------------------------------------------------------------------------------
+InterpFrameStack.frame_struct.*.style.font: mono
+ExecutionFlow.*.style.font: mono
+
+# Fixing the elk 'near' error by using a constant position
+ImplementationNotes: |md
+  ### Implementation Technical Specs
+  - **Memory Alignment**: Stack MUST be 16-byte aligned before `call interpreter_loop`. Failure leads to `#GP` on XMM move instructions in C code.
+  - **Volatile Registers**: Standard System V AMD64 ABI identifies RAX, RCX, RDX, RSI, RDI, R8-R11 as volatile. The trampoline saves ALL to allow JIT to assume transparent transition.
+  - **Frame Persistence**: The `InterpFrame` exists only on the stack for the duration of the call. Heap allocation is avoided for performance.
+  - **Exception Path**: If an interrupt occurs, the `saved_regs` block is used to reconstruct the register set for the debugger.
+| {
+  near: top-right
+}
+
+# Global Glob styles for technical fidelity
+***: {
+  &shape: sql_table
+  style.fill: "#f8f9fa"
+}
+
+(InterpFrameStack -> InterpFrameStack): {
+  style.stroke: "#444444"
+}

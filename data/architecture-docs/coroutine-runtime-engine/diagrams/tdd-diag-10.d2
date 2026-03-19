@@ -1,0 +1,102 @@
+shape: sequence_diagram
+scheduler: Scheduler {
+  style.fill: "#E8F5E9"
+  style.stroke: "#2E7D32"
+}
+signal_handler: Signal Handler\n(SIGUSR1) {
+  style.fill: "#FFCDD2"
+  style.stroke: "#C62828"
+}
+coroutine: Coroutine {
+  style.fill: "#E3F2FD"
+  style.stroke: "#1565C0"
+}
+thread: Worker Thread {
+  style.fill: "#FFF3E0"
+  style.stroke: "#EF6C00"
+}
+timer: Timer\n(10ms interval) {
+  style.fill: "#F3E5F5"
+  style.stroke: "#7B1FA2"
+}
+stack: Stack Memory\n(64KB + guard) {
+  style.fill: "#FAFAFA"
+  style.stroke: "#424242"
+}
+guard_page: Guard Page\n(PROT_NONE) {
+  style.fill: "#FFEBEE"
+  style.stroke: "#B71C1C"
+  style.stroke-dash: 4
+}
+sigaction: sigaction\nstruct {
+  style.fill: "#ECEFF1"
+  style.stroke: "#455A64"
+}
+"1. Setup" : {
+  thread -> sigaction: sigaction(SIGUSR1,\npreempt_handler, ...)
+  sigaction -> thread: handler installed
+  thread -> timer: timer_create(CLOCK_MONOTONIC,\nSIGEV_THREAD_ID)
+  timer -> thread: timer_id
+  thread -> timer: timer_settime(10ms)
+  timer -> thread: timer armed
+}
+"2. Coroutine Execution" : {
+  thread -> coroutine: resume(coroutine)
+  coroutine.state: Running
+  coroutine -> stack: executes on stack
+  note: |md
+    Coroutine runs CPU-bound loop
+    checking preemption flag periodically
+  |
+}
+"3. Stack Overflow Event" : {
+  coroutine.deep_recursion: |md
+    deep_recurse(depth=100)
+    → big_local[1024] on stack
+    → stack grows toward guard
+  |
+  coroutine.deep_recursion -> guard_page: write past stack limit
+  guard_page -> thread: SIGSEGV\n(page fault)
+}
+"4. Signal Handler Execution" : {
+  thread -> signal_handler: kernel delivers SIGSEGV
+  signal_handler.context_save: |md
+    saves: RIP, RSP, RFLAGS
+    on: current stack (signal frame)
+  |
+  signal_handler -> signal_handler: check fault_addr
+  signal_handler.fault_check: |md
+    fault_addr in [stack_bottom, guard_top]?
+    → YES: stack overflow
+    → NO: re-raise SIGSEGV
+  |
+  signal_handler.overflow_detected: |md
+    Coroutine ID: 42
+    Stack base: 0x7F0000000000
+    Fault addr: 0x7F0000000F00 (in guard)
+  |
+}
+"5. State Update & Abort" : {
+  signal_handler -> coroutine: state = Panicked
+  signal_handler -> thread: log error message
+  signal_handler -> thread: abort()
+  note: |md
+    Process terminates with:
+    "Stack overflow in coroutine 42"
+    Stack trace printed
+  |
+}
+"6. Normal Preemption Flow" : {
+  timer -> signal_handler: SIGUSR1 (10ms elapsed)
+  signal_handler -> signal_handler: PREEMPTION_FLAG = true
+  signal_handler -> thread: return (async-signal-safe)
+  thread -> coroutine: continues execution
+  coroutine.check: yield_if_preempted()
+  coroutine.check -> coroutine.check: flag == true?
+  coroutine.check -> thread: yield_now()
+  thread -> scheduler: coroutine yielded
+  scheduler -> scheduler: schedule next coroutine
+  coroutine.state: Runnable
+}
+thread -> thread: teardown_preemption_timer()
+thread -> timer: timer_delete(timer_id)

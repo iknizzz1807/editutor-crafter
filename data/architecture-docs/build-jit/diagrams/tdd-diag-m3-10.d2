@@ -1,0 +1,176 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+# SATELLITE MAP REFERENCE: BRIDGE-03 (Interpreter -> JIT Trampoline Architecture)
+# Intel Manual Quality Specification for Cross-ABI Marshalling
+
+interpreter_context: "Interpreter Execution Context" {
+  interp_frame: "struct InterpFrame (Memory Layout)" {
+    shape: sql_table
+    style: {
+      fill: "#e1d5e7"
+      stroke: "#9673a6"
+      stroke-width: 2
+    }
+    # Offset | Field | ABI Mapping / Size
+    "0x00": "bytecode_ptr" {constraint: "uint8_t* [8B]"}
+    "0x08": "pc" {constraint: "uint8_t* [8B]"}
+    "0x10": "operand_stack" {constraint: "int64_t* [8B]"}
+    "0x18": "stack_top" {constraint: "int32_t [4B]"}
+    "0x1C": "stack_capacity" {constraint: "int32_t [4B]"}
+    "0x20": "locals" {constraint: "int64_t* [8B]"}
+    "0x28": "local_count" {constraint: "int32_t [4B]"}
+    "0x30": "caller_ptr" {constraint: "InterpFrame* [8B]"}
+  }
+
+  operand_stack_mem: "VM Virtual Stack (Data Segment)" {
+    shape: sql_table
+    style.fill: "#dae8fc"
+    "Stack[N]": "Arg 6 (Top) [Offset: Base + (top-1)*8]"
+    "Stack[N-1]": "Arg 5"
+    "Stack[N-2]": "Arg 4"
+    "Stack[N-3]": "Arg 3"
+    "Stack[N-4]": "Arg 2"
+    "Stack[N-5]": "Arg 1 (Bottom) [Offset: Base]"
+  }
+}
+
+trampoline_logic: "JIT Trampoline (x86_64 Machine Code)" {
+  style.fill: "#f5f5f5"
+  style.stroke: "#333333"
+  style.stroke-width: 2
+  
+  entry: "1. PROLOGUE & CONTEXT PRESERVATION" {
+    "push_rbp": "push rbp"
+    "mov_rbp": "mov rbp, rsp"
+    "save_frame": "push rdi" {
+      tooltip: "Preserve InterpFrame* (Passed in RDI) for Result Commit phase"
+    }
+  }
+
+  marshalling: "2. ARGUMENT MARSHALLING (ABI ADAPTATION)" {
+    "read_top": "mov rax, [rdi + 0x18]" { tooltip: "Fetch current VM stack_top" }
+    "read_base": "mov rsi, [rdi + 0x10]" { tooltip: "Fetch VM operand_stack memory base" }
+    
+    pop_logic: "Register Population (System V ABI)" {
+      "pop_r9": "dec rax; mov r9, [rsi + rax*8]" { tooltip: "Arg 6 -> R9" }
+      "pop_r8": "dec rax; mov r8, [rsi + rax*8]" { tooltip: "Arg 5 -> R8" }
+      "pop_rcx": "dec rax; mov rcx, [rsi + rax*8]" { tooltip: "Arg 4 -> RCX" }
+      "pop_rdx": "dec rax; mov rdx, [rsi + rax*8]" { tooltip: "Arg 3 -> RDX" }
+      "pop_rsi": "dec rax; mov rsi, [rsi + rax*8]" { tooltip: "Arg 2 -> RSI" }
+      "pop_rdi": "dec rax; mov rdi, [rsi + rax*8]" { tooltip: "Arg 1 -> RDI" }
+    }
+    "update_top": "mov [rdi + 0x18], rax" { tooltip: "Update VM stack pointer state" }
+  }
+
+  execution: "3. NATIVE CONTROL TRANSFER" {
+    "load_jit_addr": "mov rax, JIT_FUNC_ADDR"
+    "call_native": "call rax" { 
+      style.stroke: "#ca052b"
+      style.stroke-width: 3
+      style.bold: true
+      tooltip: "Branch to compiled native instructions" 
+    }
+  }
+
+  commit: "4. EPILOGUE & RESULT SYNC" {
+    "restore_rdi": "pop rdi" { tooltip: "Recover original InterpFrame* from stack" }
+    "get_top": "mov rcx, [rdi + 0x18]" { tooltip: "Locate commit slot" }
+    "get_base": "mov rsi, [rdi + 0x10]" { tooltip: "Target VM stack memory" }
+    "write_rax": "mov [rsi + rcx*8], rax" { tooltip: "Store RAX native result into VM stack" }
+    "final_sync": "inc rcx; mov [rdi + 0x18], rcx" { tooltip: "VM stack_top++ to finalize push" }
+  }
+
+  return_block: "5. RETURN" {
+    "leave_op": "leave"
+    "ret_op": "ret"
+  }
+}
+
+hardware_state: "CPU State (Physical Execution)" {
+  style.fill: "#fff2cc"
+  registers: "AMD64 Register File" {
+    shape: sql_table
+    "RDI": "Arg 1 / Local Ptr"
+    "RSI": "Arg 2"
+    "RDX": "Arg 3"
+    "RCX": "Arg 4"
+    "R8": "Arg 5"
+    "R9": "Arg 6"
+    "RAX": "Result Channel / JMP Target"
+  }
+}
+
+jit_native_code: "JIT Compiled Native Function" {
+  shape: parallelogram
+  style.fill: "#d5e8d4"
+  style.stroke: "#82b366"
+  label: "Native AMD64 Machine Instructions\n(JIT Compiled Stream)"
+}
+
+# --- CRITICAL CALL SEQUENCE CONNECTIONS ---
+
+# 1. RDI Initialization (Control Flow Start)
+interpreter_context.interp_frame -> trampoline_logic.entry: "RDI = InterpFrame*" {
+  style.stroke: orange
+  style.stroke-width: 4
+}
+
+# 2. Marshalling Data Flow (Stack -> Registers)
+trampoline_logic.marshalling.pop_logic -> interpreter_context.operand_stack_mem: "Read VM Stack Slots" {
+  style.stroke-dash: 5
+  style.opacity: 0.6
+}
+trampoline_logic.marshalling.pop_logic -> hardware_state.registers: "Populate GPRs" {
+  style.stroke: blue
+  style.stroke-width: 2
+}
+
+# 3. Control Transfer (Jump to Native)
+trampoline_logic.execution.call_native -> jit_native_code: "Native Call" {
+  style.animated: true
+  style.stroke: red
+  style.stroke-width: 3
+}
+
+# 4. Result Propagation (Native -> RAX)
+jit_native_code -> hardware_state.registers."RAX": "Set Native Return" {
+  style.stroke: green
+  style.stroke-width: 2
+}
+
+# 5. Result Storage (RAX -> VM Stack)
+hardware_state.registers."RAX" -> trampoline_logic.commit.write_rax: "Capture Result" {
+  style.stroke: "#2b5b3f"
+}
+trampoline_logic.commit.write_rax -> interpreter_context.operand_stack_mem: "Commit to VM Slot" {
+  style.stroke: green
+  style.stroke-width: 3
+}
+
+# --- DOCUMENTATION SPECIFICATION ---
+
+explanation: |md
+  ### Interp -> JIT Bridge Design Specification
+  **Operational Invariants:**
+  1. **Stack Ownership**: The Trampoline acts as a protocol bridge, manually decrementing the VM `stack_top` and populating physical registers to satisfy the **System V AMD64 ABI**.
+  2. **Context Persistence**: The `InterpFrame*` is pushed onto the physical stack (`rsp`) immediately upon entry, as `rdi` is volatile and overwritten during the marshalling sequence.
+  3. **Data Integrity**: The native result in `rax` is committed to the VM stack *before* the VM dispatch loop resumes, ensuring side-effect transparency.
+  4. **Register Constraints**: System V allows 6 GPR arguments. Additional arguments (Arg 7+) would require RSP-relative stack adjustments, omitted in this implementation.
+| {
+  near: bottom-center
+  style.font-size: 14
+}
+
+# Visual Polish & Architectural Grouping
+interpreter_context.style.stroke-dash: 5
+hardware_state.style.double-border: true
+jit_native_code.style.shadow: true
+trampoline_logic.marshalling.pop_logic.style.stroke: blue
+trampoline_logic.marshalling.pop_logic.style.stroke-width: 2

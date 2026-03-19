@@ -1,0 +1,230 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# HEADER & METADATA
+# -----------------------------------------------------------------------------------------
+header: {
+  title: |md
+    # Scheduler Worker State Machine
+    Worker thread lifecycle in M:N work-stealing scheduler
+  |
+  style.stroke: transparent
+  style.fill: transparent
+}
+header.near: top-center
+
+edge_labels: {
+  shape: sql_table
+  label: "Transition Guards (scheduler.rs)"
+  g1: "0x01 | local_queue.len() > 0 | pop & run"
+  g2: "0x02 | local_queue.is_empty() | try steal"
+  g3: "0x03 | steal() returns Some(task) | run stolen"
+  g4: "0x04 | steal() returns None | spin/park"
+  g5: "0x05 | spin_count > MAX_SPIN | park thread"
+  g6: "0x06 | work_available.notify() | wake thread"
+  g7: "0x07 | shutting_down.load(Acquire) | exit loop"
+}
+edge_labels.near: top-right
+
+# -----------------------------------------------------------------------------------------
+# CORE STATE EVOLUTION
+# -----------------------------------------------------------------------------------------
+scheduler_core: {
+  direction: down
+  style.stroke: transparent
+  style.fill: transparent
+
+  states: {
+    direction: down
+    init: "Init" {
+      shape: oval
+      style.fill: "#E8E8E8"
+      style.stroke: "#666666"
+    }
+    
+    processing_group: "" {
+      direction: right
+      style.stroke: transparent
+      style.fill: transparent
+      
+      running: "Running" {
+        shape: rectangle
+        style.fill: "#90EE90"
+        style.stroke: "#228B22"
+        style.stroke-width: 3
+      }
+      
+      stealing: "Stealing" {
+        shape: rectangle
+        style.fill: "#FFD700"
+        style.stroke: "#B8860B"
+        style.stroke-width: 3
+      }
+    }
+
+    parking_group: "" {
+      direction: right
+      style.stroke: transparent
+      style.fill: transparent
+
+      parking: "Parking" {
+        shape: diamond
+        style.fill: "#FFA500"
+        style.stroke: "#CC8400"
+      }
+
+      parked: "Parked" {
+        shape: oval
+        style.fill: "#87CEEB"
+        style.stroke: "#4682B4"
+      }
+    }
+
+    shutdown: "Shutdown" {
+      shape: oval
+      style.fill: "#FF6B6B"
+      style.stroke: "#CC0000"
+    }
+  }
+
+  # Transitions
+  states.init -> states.processing_group.running: "spawn | T1"
+  
+  states.processing_group.running -> states.processing_group.running: "G1 | LIFO Pop" {
+    style.stroke: "#228B22"
+    style.stroke-width: 2
+  }
+  
+  states.processing_group.running -> states.processing_group.stealing: "G2 | Queue Empty" {
+    style.stroke: "#B8860B"
+  }
+  
+  states.processing_group.stealing -> states.processing_group.running: "G3 | Steal Success" {
+    style.stroke: "#228B22"
+  }
+  
+  states.processing_group.stealing -> states.parking_group.parking: "G4 | Steal Fail" {
+    style.stroke: "#CC8400"
+  }
+  
+  states.parking_group.parking -> states.parking_group.parked: "G5 | Spin Over" {
+    style.stroke: "#4682B4"
+  }
+  
+  states.parking_group.parking -> states.processing_group.running: "Found Work" {
+    style.stroke: "#228B22"
+    style.stroke-dash: 3
+  }
+  
+  states.parking_group.parked -> states.processing_group.running: "G6 | Wake" {
+    style.stroke: "#228B22"
+    style.stroke-width: 2
+  }
+  
+  states.processing_group.running -> states.shutdown: "G7 | Terminate" {
+    style.stroke: "#CC0000"
+    style.stroke-dash: 5
+  }
+  
+  states.parking_group.parked -> states.shutdown: "G7 | Terminate" {
+    style.stroke: "#CC0000"
+    style.stroke-dash: 5
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# DETAILED SPECIFICATIONS (Replaces floating near nodes)
+# -----------------------------------------------------------------------------------------
+technical_docs: {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  running_desc: {
+    label: "Running Logic"
+    width: 280
+    code: |'rust
+      // Pop from local queue (LIFO)
+      if let Some(task) = local.pop() {
+          task.run();
+          if task.is_runnable() {
+              local.push(task);
+          }
+      }
+    '|
+  }
+
+  stealing_desc: {
+    label: "Stealing Logic"
+    width: 280
+    code: |'rust
+      // Half-stealing strategy
+      let victim = random_victim();
+      let n = victim.queue.len();
+      if n > 0 {
+          victim.queue.steal_half(&mut self.local);
+          return Success;
+      }
+    '|
+  }
+
+  parked_desc: {
+    label: "Parked Logic"
+    width: 280
+    code: |'rust
+      // Condvar wait
+      let lock = mutex.lock();
+      while !work_ready() {
+          condvar.wait(&mut lock);
+      }
+    '|
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# FOOTER ELEMENTS
+# -----------------------------------------------------------------------------------------
+spin_strategy: {
+  label: "Idle Strategy (parking.rs)"
+  width: 320
+  content: |md
+    **Spin → Yield → Sleep**
+    1. **Spin**: 1000 iterations `cpu_relax()`
+    2. **Yield**: `std::thread::yield_now()`
+    3. **Sleep**: `Condvar::wait_timeout(10ms)`
+    
+    *Balances tail latency vs CPU overhead.*
+  |
+}
+spin_strategy.near: bottom-left
+
+legend: {
+  label: "Legend: Path Semantics"
+  direction: down
+  green: "Success / Hot Path" {
+    style.fill: "#90EE90"
+    shape: rectangle
+  }
+  yellow: "Work Stealing" {
+    style.fill: "#FFD700"
+    shape: rectangle
+  }
+  blue: "IO / Wait / Park" {
+    style.fill: "#87CEEB"
+    shape: rectangle
+  }
+  red: "Cleanup / Shutdown" {
+    style.fill: "#FF6B6B"
+    shape: rectangle
+  }
+}
+legend.near: bottom-right
+
+# Connect Core to Docs for layout grouping
+scheduler_core -> technical_docs: {style.stroke: transparent}

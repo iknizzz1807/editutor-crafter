@@ -1,0 +1,287 @@
+direction: down
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 3
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# ROW 1: EXECUTION RUNTIME & MEMORY MANAGEMENT
+# ---------------------------------------------------------------------------------------
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  layer_runtime: {
+    label: "JIT RUNTIME ENGINE (M4)"
+    
+    tiered_vm: {
+      shape: sql_table
+      label: "struct TieredVM (jit_tiered.h) [M4]"
+      functions: "Function* | ptr to table"
+      function_count: "int32 | active funcs"
+      code_cache: "CodeCache* | memory pool"
+      hot_threshold: "int32 | default 1000"
+      total_jit_calls: "uint64 | stats"
+      compiled_count: "int32 | stats"
+      sz: "Total: ~64 bytes"
+    }
+
+    function_meta: {
+      shape: sql_table
+      label: "struct Function (jit_tiered.h) [M4]"
+      bytecode: "uint8_t* | shared ptr"
+      invocation_counter: "int32 | counts to 0"
+      jit_entry: "void* | native entry"
+      is_compiling: "bool | reentrancy guard"
+      is_blacklisted: "bool | deopt guard"
+      sz: "Total: 64 bytes"
+    }
+  }
+
+  layer_memory: {
+    label: "EXECUTABLE MEMORY (M1, M4)"
+    
+    code_cache: {
+      shape: sql_table
+      label: "struct CodeCache (jit_cache.h) [M4]"
+      buffer: "uint8_t* | mmap base"
+      capacity: "size_t | 4MB default"
+      used: "size_t | bump pointer"
+      entries: "CodeCacheEntry* | metadata"
+      prot_state: "int | 0:RW, 1:RX"
+      sz: "Total: 48 bytes"
+    }
+
+    emitter: {
+      shape: sql_table
+      label: "struct CodeEmitter (jit_emitter.h) [M1]"
+      buffer: "uint8_t* | thread-local buf"
+      cursor: "uint8_t* | write head"
+      capacity: "size_t | page-aligned"
+      used: "size_t | byte count"
+      prot_state: "int | W^X state"
+      sz: "Total: 32 bytes"
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# ROW 2: COMPILATION & TRANSLATION CORE
+# ---------------------------------------------------------------------------------------
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  layer_translator: {
+    label: "TRANSLATION PIPELINE (M2)"
+    
+    expr_compiler: {
+      shape: class
+      label: "JitExprCompiler (jit_expr.c) [M2]"
+      +jitexpr_create(emitter): "JitExprCompiler*"
+      +jitexpr_compile(jit, bc, len): "bool"
+      -translate_add(jit): "void"
+      -translate_div_signed(jit): "void"
+      -translate_cmp_eq(jit): "void"
+      -materialize_entry(jit, entry): "Reg"
+    }
+
+    opt_pipeline: {
+      shape: class
+      label: "OptimizationPipeline (jit_opt.c) [M4]"
+      +opt_pipeline_run(p, bc_in, bc_out): "bool"
+      -opt_const_fold(ctx): "bool"
+      -opt_dead_store(ctx): "bool"
+      -opt_strength_reduction(ctx): "bool"
+    }
+  }
+
+  layer_analysis: {
+    label: "STATE TRACKING (M2)"
+    
+    reg_allocator: {
+      shape: sql_table
+      label: "struct RegAllocator (jit_regalloc.h) [M2]"
+      vregs: "VReg[1024] | virtual pool"
+      vreg_count: "int | active indices"
+      free_regs: "Reg[16] | physical stack"
+      free_count: "int | stack depth"
+      next_spill_slot: "int | frame offset"
+      sz: "Policy: Linear Scan"
+    }
+
+    vstack: {
+      shape: sql_table
+      label: "struct VirtualStack (jit_vstack.h) [M2]"
+      entries: "VirtualStackEntry[256]"
+      depth: "int | current top"
+      max_depth: "int | frame sizing"
+      sz: "Scale: ~2KB"
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# ROW 3: ABI COMPLIANCE & FRAME MANAGEMENT
+# ---------------------------------------------------------------------------------------
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  layer_abi: {
+    label: "ABI & FUNCTIONS (M3)"
+    
+    func_compiler: {
+      shape: class
+      label: "FunctionCompiler (jit_function.c) [M3]"
+      +func_create(e, args, locals): "fc*"
+      +func_emit_prologue(fc): "void"
+      +func_emit_call(fc, target, args): "vreg"
+      +func_emit_return(fc, ret_vreg): "void"
+      -emit_prologue(e, frame): "void"
+      -emit_epilogue(e, frame): "void"
+    }
+
+    frame_layout: {
+      shape: sql_table
+      label: "struct FrameLayout (jit_frame.h) [M3]"
+      arg_count: "int32 | signature"
+      local_count: "int32 | slots"
+      total_frame_size: "int32 | bytes"
+      padding_bytes: "int32 | for 16B align"
+      callee_saved_count: "int32 | 0 to 5"
+      sz: "Invariant: rsp % 16 == 0"
+    }
+  }
+
+  layer_interop: {
+    label: "TRAMPOLINES (M3)"
+    
+    trampoline_factory: {
+      shape: class
+      label: "Trampoline (jit_trampoline.c) [M3]"
+      +jit_to_interp(e, func, argc): "Trampoline*"
+      +interp_to_jit(e, jit_func): "Trampoline*"
+      -marshal_args_to_frame(e, argc): "void"
+      -marshal_result_to_rax(e): "void"
+    }
+
+    interp_frame: {
+      shape: sql_table
+      label: "struct InterpFrame (jit_trampoline.h) [M3]"
+      bytecode: "uint8_t* | code ptr"
+      pc: "uint8_t* | active insn"
+      operand_stack: "int64[256]"
+      locals: "int64[256]"
+      operand_stack_top: "int32"
+      sz: "Scale: ~4KB"
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# ROW 4: SPECULATION, GUARDS & DEOPTIMIZATION
+# ---------------------------------------------------------------------------------------
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  layer_safety: {
+    label: "DEOPTIMIZATION SAFETY (M5)"
+    
+    guard_emitter: {
+      shape: class
+      label: "GuardEmitter (jit_guard.c) [M5]"
+      +guard_emit_type(ge, reg, tag): "int32"
+      +guard_emit_bounds(ge, idx, len): "int32"
+      +guard_emitter_link_stubs(ge, base): "bool"
+      -snapshot_state(st, entry): "void"
+    }
+
+    deopt_logic: {
+      shape: class
+      label: "Deoptimization (jit_reconstruct.c) [M5]"
+      +deoptimize(guard_id, regs, rbp): "void"
+      -deopt_reconstruct_state(entry, regs): "InterpFrame*"
+      -record_guard_failure(func, guard): "void"
+    }
+  }
+
+  layer_tables: {
+    label: "METADATA & DEFERRED FREE (M5)"
+    
+    deopt_table: {
+      shape: sql_table
+      label: "struct DeoptTable (jit_deopt.h) [M5]"
+      entries: "DeoptEntry[256]"
+      entry_count: "int32"
+      stub_code: "uint8_t* | stub base"
+      jit_code_start: "uint8_t*"
+      sz: "Side Table: ~15% code size"
+    }
+
+    zombie_list: {
+      shape: sql_table
+      label: "struct ZombieCode (jit_zombie.h) [M5]"
+      code_ptr: "void* | invalidated code"
+      code_size: "size_t"
+      invalidation_time: "uint64"
+      next: "ZombieCode* | list"
+      sz: "GC Safe-point scanning"
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# CONNECTIONS
+# ---------------------------------------------------------------------------------------
+
+row1.layer_runtime.tiered_vm -> row1.layer_runtime.function_meta: "Function[N]"
+row1.layer_runtime.tiered_vm -> row1.layer_memory.code_cache: "allocates in"
+row1.layer_runtime.function_meta -> row3.layer_abi.func_compiler: "compiled by"
+
+row2.layer_translator.expr_compiler -> row1.layer_memory.emitter: "emits to"
+row2.layer_translator.expr_compiler -> row2.layer_analysis.reg_allocator: "spills via"
+row2.layer_translator.expr_compiler -> row2.layer_analysis.vstack: "abstractly interprets"
+
+row3.layer_abi.func_compiler -> row3.layer_abi.frame_layout: "defines"
+row3.layer_abi.func_compiler -> row2.layer_translator.expr_compiler: "wraps body"
+row3.layer_interop.trampoline_factory -> row3.layer_interop.interp_frame: "marshals to"
+
+row4.layer_safety.guard_emitter -> row4.layer_tables.deopt_table: "records to"
+row4.layer_safety.guard_emitter -> row4.layer_tables.zombie_list: "invalidates to"
+row4.layer_safety.deopt_logic -> row3.layer_interop.interp_frame: "reconstructs"
+row4.layer_safety.deopt_logic -> row4.layer_tables.deopt_table: "looks up metadata"
+
+# ---------------------------------------------------------------------------------------
+# ANNOTATIONS & INDEX
+# ---------------------------------------------------------------------------------------
+
+arch_scales: {
+  shape: callout
+  label: "Architecture Constraints"
+  m1: "W^X: Pages never RW and RX"
+  m3: "ABI: 16-byte rsp alignment"
+  m4: "Hot Path: 1000 call threshold"
+  m5: "Deopt: Fallback to interpreter"
+}
+
+milestone_index: {
+  shape: sql_table
+  label: "Milestone Index"
+  m1: "M1 | build-jit-m1 | Memory & Emitter"
+  m2: "M2 | build-jit-m2 | Expression JIT"
+  m3: "M3 | build-jit-m3 | ABI & Functions"
+  m4: "M4 | build-jit-m4 | Tiered Compilation"
+  m5: "M5 | build-jit-m5 | Deoptimization"
+}
+
+arch_scales.near: top-right
+milestone_index.near: bottom-center

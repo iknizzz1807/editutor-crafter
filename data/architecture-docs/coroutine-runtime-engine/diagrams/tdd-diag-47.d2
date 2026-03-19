@@ -1,0 +1,264 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # io_uring vs epoll: Architecture Comparison
+  ### Technical Implementation Spec: Syscall Overhead & Memory Ring Buffers
+| {
+  near: top-center
+  style.bold: true
+}
+
+direction: right
+
+epoll_column: {
+  label: "epoll Model (Readiness Notification)"
+  style: {
+    fill: "#E8F4FD"
+    stroke: "#2196F3"
+    stroke-width: 2
+  }
+
+  epoll_title: "Logic: Level/Edge Triggered Monitoring" {
+    style: {
+      fill: "#BBDEFB"
+      stroke: "#1976D2"
+      bold: true
+    }
+  }
+
+  epoll_flow: {
+    epoll_flow_title: "Event Flow" {
+      shape: text
+      style.bold: true
+      style.font-size: 14
+    }
+    
+    epoll_user: "User Space\nApplication Thread" {
+      style.fill: "#C8E6C9"
+      shape: rectangle
+    }
+    
+    epoll_kernel: "Kernel\nEvent Poll Set" {
+      style.fill: "#FFCDD2"
+      shape: rectangle
+    }
+    
+    epoll_fd: "File Descriptor\n(socket, pipe)" {
+      style.fill: "#FFF9C4"
+      shape: rectangle
+    }
+
+    epoll_user -> epoll_kernel: "1. epoll_ctl(ADD)\nregister interest" {
+      style.stroke: "#1976D2"
+      style.stroke-width: 2
+    }
+    epoll_kernel -> epoll_fd: "2. Monitor fd\n(wait for readiness)" {
+      style.stroke: "#388E3C"
+      style.stroke-dash: 3
+    }
+    epoll_fd -> epoll_kernel: "3. fd becomes ready\n(data available)" {
+      style.stroke: "#D32F2F"
+      style.stroke-width: 2
+      style.animated: true
+    }
+    epoll_kernel -> epoll_user: "4. epoll_wait returns\n'fd X is readable'" {
+      style.stroke: "#7B1FA2"
+      style.stroke-width: 2
+    }
+    epoll_user -> epoll_kernel: "5. read(fd, buf)\nsyscall per operation" {
+      style.stroke: "#F57C00"
+      style.stroke-width: 2
+    }
+  }
+
+  epoll_notes: |md
+    **Implementation Details:**
+    - **Context Switches:** High. At least 2 per I/O (wait + read).
+    - **Data Transfer:** Requires copy from kernel to user buffer during `read()`.
+    - **Blockage:** File I/O is problematic as epoll doesn't support regular files (always "ready").
+  | {
+    shape: text
+    style.font-size: 12
+  }
+}
+
+vs_divider: |md
+  # VS
+| {
+  shape: text
+  style: {
+    font-size: 32
+    bold: true
+    fill: transparent
+  }
+}
+
+iouring_column: {
+  label: "io_uring Model (Async I/O)"
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#9C27B0"
+    stroke-width: 2
+  }
+
+  iouring_title: "Submission/Completion Queues" {
+    style: {
+      fill: "#E1BEE7"
+      stroke: "#7B1FA2"
+      bold: true
+    }
+  }
+
+  iouring_flow: {
+    iouring_flow_title: "Ring Buffer Flow (Shared Memory)" {
+      shape: text
+      style.bold: true
+      style.font-size: 14
+    }
+
+    sq_ring: "Submission Queue (SQ)\n[Circular Buffer]" {
+      style.fill: "#B2DFDB"
+      shape: hexagon
+    }
+    
+    cq_ring: "Completion Queue (CQ)\n[Circular Buffer]" {
+      style.fill: "#FFCCBC"
+      shape: hexagon
+    }
+
+    iouring_kernel: "Kernel\n(io_uring kworker)" {
+      style.fill: "#FFCDD2"
+      shape: rectangle
+    }
+    
+    iouring_storage: "Storage/Network" {
+      style.fill: "#FFF9C4"
+      shape: cylinder
+    }
+
+    sq_ring -> iouring_kernel: "1. Consumer picks SQE\n(Zero Syscall if IORING_SETUP_SQPOLL)" {
+      style.stroke: "#00796B"
+      style.stroke-width: 2
+    }
+    iouring_kernel -> iouring_storage: "2. Perform Async I/O" {
+      style.stroke: "#388E3C"
+      style.stroke-dash: 3
+    }
+    iouring_storage -> iouring_kernel: "3. DMA / Interrupt" {
+      style.stroke: "#D32F2F"
+      style.stroke-width: 2
+      style.animated: true
+    }
+    iouring_kernel -> cq_ring: "4. Producer posts CQE" {
+      style.stroke: "#E64A19"
+      style.stroke-width: 2
+    }
+    cq_ring -> sq_ring: "5. User processes CQE\n& recycles SQE slot" {
+      style.stroke: "#7B1FA2"
+      style.stroke-dash: 5
+    }
+  }
+
+  ring_memory_layout: {
+    label: "Memory Map (Intel/x86_64 Layout)"
+    
+    sqe_struct: "SQE (Submission Queue Entry) - 64 Bytes" {
+      shape: sql_table
+      style.fill: "#E8F5E9"
+      
+      "0x00": "__u8  opcode" {constraint: "byte 0"}
+      "0x01": "__u8  flags" {constraint: "byte 1"}
+      "0x02": "__u16 ioprio" {constraint: "bytes 2-3"}
+      "0x04": "__s32 fd" {constraint: "bytes 4-7"}
+      "0x08": "__u64 off / addr2" {constraint: "bytes 8-15"}
+      "0x10": "__u64 addr / spl" {constraint: "bytes 16-23"}
+      "0x18": "__u32 len" {constraint: "bytes 24-27"}
+      "0x1C": "... padding / union" {style.fill: "#CFD8DC"}
+    }
+
+    cqe_struct: "CQE (Completion Queue Entry) - 16 Bytes" {
+      shape: sql_table
+      style.fill: "#FFF3E0"
+      
+      "0x00": "__u64 user_data" {constraint: "bytes 0-7"}
+      "0x08": "__s32 res (result)" {constraint: "bytes 8-11"}
+      "0x0C": "__u32 flags" {constraint: "bytes 12-15"}
+    }
+
+    ring_pointers: {
+      head: "Head Pointer" {style.fill: "#FFA726"}
+      tail: "Tail Pointer" {style.fill: "#FB8C00"}
+      head -> _.sqe_struct: "Kernel consumes"
+      tail -> _.sqe_struct: "User produces"
+    }
+  }
+
+  iouring_notes: |md
+    **Implementation Details:**
+    - **Shared Memory:** User and Kernel map same physical pages for SQ/CQ.
+    - **Memory Barriers:** Required to sync head/tail without locks.
+    - **IORING_SETUP_SQPOLL:** Enables true zero-syscall I/O by offloading submission to a kernel thread.
+  | {
+    shape: text
+    style.font-size: 12
+  }
+}
+
+comparison_matrix: {
+  label: "Performance & Capability Matrix"
+  grid-columns: 3
+  grid-gap: 0
+  style.fill: "#FAFAFA"
+  
+  # Row 1: Headers
+  c1r1: "Metric" {style: {bold: true; fill: "#EEEEEE"}}
+  c2r1: "epoll" {style: {bold: true; fill: "#EEEEEE"}}
+  c3r1: "io_uring" {style: {bold: true; fill: "#EEEEEE"}}
+
+  # Row 2
+  c1r2: "Syscalls" {style.bold: true}
+  c2r2: "N Syscalls per N Ops"
+  c3r2: "0-1 Syscall per N Ops"
+  
+  # Row 3
+  c1r3: "File I/O" {style.bold: true}
+  c2r3: "Synchronous / Blocking"
+  c3r3: "Fully Asynchronous"
+  
+  # Row 4
+  c1r4: "Copying" {style.bold: true}
+  c2r4: "Kernel ↔ User Buffer Copy"
+  c3r4: "Zero-Copy (Registered Buffers)"
+  
+  # Row 5
+  c1r5: "Ordering" {style.bold: true}
+  c2r5: "Non-deterministic"
+  c3r5: "Linked SQEs (IOSQE_IO_LINK)"
+  
+  # Row 6
+  c1r6: "Kernel Support" {style.bold: true}
+  c2r6: "Linux 2.6+"
+  c3r6: "Linux 5.1+ (5.10+ recommended)"
+}
+
+footer_note: |md
+  **Architectural Summary:** io_uring represents the transition from *Readiness Notification* (Reactive) to *Completion Queues* (Proactive). 
+  It eliminates the syscall tax by leveraging shared memory rings and asynchronous kernel workers.
+| {
+  near: bottom-center
+  shape: text
+  style.font-size: 14
+  style.italic: true
+}
+
+# High-level comparison link
+epoll_column.epoll_flow.epoll_user -> iouring_column.iouring_flow.sq_ring: "Migration Path: Batching" {
+  style.stroke: orange
+  style.stroke-dash: 5
+}

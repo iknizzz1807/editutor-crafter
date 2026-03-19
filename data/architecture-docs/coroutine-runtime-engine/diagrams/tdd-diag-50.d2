@@ -1,0 +1,275 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    sketch: false
+    pad: 30
+  }
+}
+
+title: |md
+  # AsyncMutex Lock Algorithm (TDD Implementation Spec)
+  **Atomic Transition Sequence & Memory Layout Invariants**
+| {near: top-center}
+
+# ---------------------------------------------------------------------------------------
+# GLOBAL CLASSES & STYLING
+# ---------------------------------------------------------------------------------------
+classes: {
+  state_header: {
+    style: {
+      fill: "#673AB7"
+      font-color: white
+      bold: true
+      font-size: 18
+    }
+  }
+  atomic_op: {
+    shape: rectangle
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1E88E5"
+      stroke-width: 2
+      double-border: true
+    }
+  }
+  decision: {
+    shape: diamond
+    style: {
+      fill: "#FFF9C4"
+      stroke: "#FBC02D"
+      stroke-width: 2
+    }
+  }
+  blocking_action: {
+    shape: rectangle
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#E53935"
+      stroke-width: 2
+    }
+  }
+  yield_state: {
+    shape: rectangle
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#8E24AA"
+      stroke-width: 2
+      stroke-dash: 3
+    }
+  }
+  memory_box: {
+    shape: sql_table
+    style: {
+      fill: "#F5F5F5"
+      stroke: "#757575"
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# ALGORITHM IMPLEMENTATION WORKFLOW
+# ---------------------------------------------------------------------------------------
+Algorithm: {
+  Start: "01. Entry: lock()" {
+    class: atomic_op
+  }
+
+  TryCAS: "02. Atomic CAS\n(state: 0 -> 1)" {
+    class: atomic_op
+  }
+
+  CASResult: "03. CAS Successful?" {
+    class: decision
+  }
+
+  ReturnGuard: "04. Acquire Success\nReturn AsyncMutexGuard" {
+    shape: parallelogram
+    style: {
+      fill: "#C8E6C9"
+      stroke: "#2E7D32"
+      bold: true
+    }
+  }
+
+  LockHeld: "05. Lock Contention\nEnter Slow Path" {
+    class: blocking_action
+  }
+
+  CreateWaker: "06. Alloc Arc<Waker>\nCapture Context" {
+    class: atomic_op
+  }
+
+  AcquireWaiters: "07. Lock Waiters Mutex\nstd::sync::Mutex" {
+    class: atomic_op
+  }
+
+  DoubleCheck: "08. Double-Check CAS\n(Avoid Race)" {
+    class: atomic_op
+  }
+
+  CheckResult: "09. Lock Free now?" {
+    class: decision
+  }
+
+  Enqueue: "10. Push Waker\nto FIFO Queue" {
+    class: atomic_op
+  }
+
+  DropWaiters: "11. Release Mutex\nUnlock Waiters" {
+    class: atomic_op
+  }
+
+  SetBlocked: "12. Set Coroutine\nState = Blocked" {
+    class: blocking_action
+  }
+
+  Yield: "13. yield_now()\nContext Switch" {
+    class: yield_state
+  }
+
+  Wakeup: "14. Resumed\n(via Waker::wake)" {
+    class: yield_state
+  }
+
+  LoopBack: "15. Retry" {
+    shape: circle
+  }
+
+  # Logic Flow Sequence
+  Start -> TryCAS
+  TryCAS -> CASResult
+  CASResult -> ReturnGuard: "Yes"
+  CASResult -> LockHeld: "No"
+  
+  LockHeld -> CreateWaker
+  CreateWaker -> AcquireWaiters
+  AcquireWaiters -> DoubleCheck
+  DoubleCheck -> CheckResult
+  
+  CheckResult -> DropWaiters: "Yes"
+  DropWaiters -> ReturnGuard
+  
+  CheckResult -> Enqueue: "No"
+  Enqueue -> DropWaiters
+  DropWaiters -> SetBlocked
+  SetBlocked -> Yield
+  
+  Yield -> Wakeup: "Scheduler Signal"
+  Wakeup -> LoopBack
+  LoopBack -> TryCAS
+}
+
+# ---------------------------------------------------------------------------------------
+# DATA STRUCTURE MEMORY LAYOUT
+# ---------------------------------------------------------------------------------------
+MemoryModel: {
+  near: Algorithm.Yield
+  
+  AsyncMutex: {
+    shape: sql_table
+    style.fill: "#673AB7" # Purple Header
+    header: "Struct: AsyncMutex<T>"
+    
+    # Offsets | Field : Type | Metadata
+    "0x00": "state: AtomicBool" {
+      constraint: "4 bytes (aligned)"
+      style.fill: "#BBDEFB" # Blue Data
+    }
+    "0x04": "waiters: Mutex<VecDeque<Waker>>" {
+      constraint: "24 bytes"
+      style.fill: "#BBDEFB" # Blue Data
+    }
+    "0x1C": "padding: [u8; 4]" {
+      constraint: "4 bytes"
+      style.fill: "#E0E0E0" # Gray Padding
+    }
+    "0x20": "data: UnsafeCell<T>" {
+      constraint: "sizeof(T)"
+      style.fill: "#C8E6C9" # Green (Managed Data)
+    }
+  }
+  
+  Annotation: |md
+    ### Memory Invariants
+    - **Header Alignment**: Structure is 64-byte cache-line aligned to prevent false sharing.
+    - **Byte 0 (State)**: 
+        - `0x00`: Unlocked.
+        - `0x01`: Locked.
+    - **Waiters Queue**: 
+        - Pointer to a `std::collections::VecDeque`.
+        - Capacity is heap-allocated; Mutex guards internal vector pointers.
+    - **Yield Invariant**: Coroutine stack must be saved before Step 13.
+  |
+}
+
+# ---------------------------------------------------------------------------------------
+# ENGINEERING ANNOTATIONS
+# ---------------------------------------------------------------------------------------
+Annotations: {
+  FastPath: |md
+    ### Fast Path Optimization
+    - Utilizes a single atomic `compare_exchange` (Acquire/Release ordering).
+    - **No Contention Path**: CAS succeeds immediately; no context switch required.
+    - **Performance**: O(1) cycles + Cache Coherency traffic.
+  | {
+    near: Algorithm.CASResult
+    style.stroke: "#4CAF50"
+  }
+
+  WaitersNote: |md
+    ### Waiter Queue Definition
+    rust
+    type WaiterQueue = std::sync::Mutex<
+        std::collections::VecDeque<
+            std::sync::Arc<CoroutineWaker>
+        >
+    >;
+    
+    - **Ordering**: Strict FIFO to prevent starvation.
+    - **Synchronization**: Uses `std::sync::Mutex` as the slow-path arbiter.
+  | {
+    near: Algorithm.Enqueue
+    style.stroke: "#2196F3"
+  }
+
+  RaceCondition: |md
+    ### Double-Check (Barrier) Pattern
+    Prevents the **"Lost Wakeup"** race condition:
+    1. Lock attempt fails (CAS 0).
+    2. Synchronize on `waiters` mutex.
+    3. **Critical**: Re-check lock state (CAS 1) while holding the mutex.
+    4. If free now: Release mutex and return success.
+    5. If still held: Enqueue waker, release mutex, and yield.
+  | {
+    near: Algorithm.DoubleCheck
+    style.stroke: "#FF9800"
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# CROSS-COMPONENT REFERENCES & DYNAMICS
+# ---------------------------------------------------------------------------------------
+# Guard represents access to the data region
+Algorithm.ReturnGuard -> MemoryModel.AsyncMutex."0x20": "Access UnsafeCell<T>" {
+  style.stroke: "#FF9800" # Orange Pointer
+  style.stroke-dash: 5
+  style.stroke-width: 2
+}
+
+# Animation of the blocking path
+(Algorithm.Yield -> Algorithm.Wakeup)[0].style.animated: true
+(Algorithm.Wakeup -> Algorithm.LoopBack)[0].style.animated: true
+
+# Highlight the retry loop
+(Algorithm.LoopBack -> Algorithm.TryCAS)[0].style.stroke: "#E91E63"
+(Algorithm.LoopBack -> Algorithm.TryCAS)[0].style.stroke-width: 4
+(Algorithm.LoopBack -> Algorithm.TryCAS)[0].style.animated: true
+
+# Metadata Footer
+Footer: |md
+  **sizeof(AsyncMutex<T>)** = 32 bytes + sizeof(T)
+  **Layout Engine**: ELK (Direction: Down)
+| {
+  near: MemoryModel
+}

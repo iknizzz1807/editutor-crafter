@@ -1,0 +1,158 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# End-to-End Speculate-Deopt-Resume Sequence
+# ---------------------------------------------------------------------------------------
+# This diagram traces the transition from interpreted bytecode to specialized native code,
+# followed by an optimistic type-guard failure and the subsequent state reconstruction.
+
+spec_seq: {
+  shape: sequence_diagram
+
+  harness: Test Harness {
+    shape: person
+  }
+  vm: Tiered VM Runtime {
+    style: {
+      fill: "#f5f5f5"
+      stroke-width: 2
+    }
+  }
+  jit: JIT Compiler {
+    style.fill: "#fff2cc"
+  }
+  native: Native Code (x86-64) {
+    style.fill: "#e1d5e7"
+    style.double-border: true
+  }
+  stub: Deopt Stub {
+    style.fill: "#f8cecc"
+    style.stroke: "#b85450"
+  }
+  interp: Interpreter {
+    style.fill: "#dae8fc"
+  }
+
+  # --- PHASE 1: WARMUP ---
+  warmup_block: "Warmup Phase (Iteration 1..1000)" {
+    harness -> vm: "execute(func_id, [Int(10), Int(20)])" {
+      tooltip: "Invocation Counter = 1000"
+    }
+    vm.t1 -> interp.t1: "interpret_bytecode(bc_ptr, args)"
+    interp.t1 -> vm.t1: "30"
+    vm -> harness: "30"
+    
+    harness."Loop: 999 iterations of profiling and counting"
+  }
+
+  # --- PHASE 2: COMPILATION ---
+  compile_block: "Optimization Phase (Threshold Reached)" {
+    harness -> vm: "execute(func_id, [Int(10), Int(20)])"
+    vm.t2 -> jit.t2: "compile_speculative(func_id, profile=[Type:Integer])"
+    
+    jit.t2 -> native: "emit_prologue()"
+    jit.t2 -> native: "emit_type_guard(rdi, TAG_INT)" {
+      tooltip: "Guard 0: Speculate RDI is Integer"
+    }
+    jit.t2 -> native: "emit_type_guard(rsi, TAG_INT)"
+    jit.t2 -> native: "emit_add_r64_r64(rax, rdi, rsi)"
+    jit.t2 -> native: "emit_epilogue()"
+    
+    jit.t2 -> vm.t2: "native_fptr"
+    vm.t2 -> native.t2: "call(Int(10), Int(20))"
+    native.t2 -> vm.t2: "30"
+    vm -> harness: "30"
+  }
+
+  # --- PHASE 3: DEOPTIMIZATION TRIGGER ---
+  deopt_block: "Deoptimization Phase (Type Mismatch)" {
+    harness -> vm: "execute(func_id, [String('abc'), Int(1)])"
+    vm.t3 -> native.t3: "call(String('abc'), Int(1))"
+    
+    native.t3 -> native.t3: "test rdi, TAG_INT_MASK" {
+      tooltip: "Check failed: rdi is TAG_STRING"
+    }
+
+    # Red path indicating failure
+    native.t3 -> stub.t3: "▼ TRIGGER DEOPT (jnz .Ldeopt_0)" {
+      style: {
+        stroke: red
+        stroke-width: 4
+        animated: true
+      }
+    }
+
+    stub.t3 -> stub.t3: "push_all_registers()" {
+      tooltip: "rax...r15 saved to SavedRegisters struct on stack"
+    }
+
+    stub.t3 -> vm.t3: "deoptimize(guard_id=0, regs_ptr=rsp, fp=rbp)" {
+      style.stroke: red
+      style.bold: true
+    }
+
+    vm.t3 -> vm.t3: "lookup_deopt_entry(func_id, guard_id)"
+    vm.t3 -> vm.t3: "reconstruct_vm_state(DeoptEntry, SavedRegs)" {
+      tooltip: |md
+        1. Restore Locals from spilled slots
+        2. Restore Operand Stack from registers
+        3. Map JIT PC -> Bytecode PC
+      |
+    }
+
+    vm.t3 -> interp.t3: "longjmp(landing_pad, frame)" {
+      style.stroke-dash: 5
+      style.stroke: orange
+      label: "▲ RESUME IN INTERPRETER"
+    }
+
+    interp.t3 -> interp.t3: "op_add(String('abc'), Int(1))" {
+      tooltip: "Interpreter handles dynamic string concatenation"
+    }
+
+    interp.t3 -> harness: "result('abc1')" {
+      style.font-color: green
+      style.bold: true
+    }
+  }
+
+  vm.counter -> vm.counter: "blacklist_function(func_id)" {
+    tooltip: "Increment fail count. If > threshold, disable JIT for this function."
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# Legend and System Annotations
+# ---------------------------------------------------------------------------------------
+legend: {
+  near: bottom-center
+  
+  jit_pfx: "Native Code: Purple Blocks" {
+    style.fill: "#e1d5e7"
+  }
+  interp_pfx: "Bytecode VM: Blue Blocks" {
+    style.fill: "#dae8fc"
+  }
+  deopt_pfx: "Deoptimization Flow: Red Arrows" {
+    style.font-color: red
+    style.bold: true
+  }
+  
+  note: |md
+    ### Implementation Invariants
+    - **Registers**: RDI/RSI used for calling convention.
+    - **Stack**: Stub must preserve *all* volatile and non-volatile regs.
+    - **PC Mapping**: JIT must provide side-table for every guard point.
+  |
+}
+
+# Styling for global sequence lifelines
+(spec_seq.** -> spec_seq.**)[*]: {
+  style.font-size: 14
+}

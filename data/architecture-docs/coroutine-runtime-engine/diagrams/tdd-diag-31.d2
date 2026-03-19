@@ -1,0 +1,340 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  shape: text
+  label: |md
+    # Unsafe Preemption Points
+    **Technical Specification: Coroutine Runtime Engine v1.2**
+    *Code locations where preemption must be deferred to prevent corruption, deadlock, or UB*
+  |
+  near: top-center
+}
+
+# === HEAP OPERATIONS ===
+heap_ops: Heap Operations {
+  style.fill: "#E6E6FA" # Purple Header per instructions
+  style.stroke: "#4B0082"
+  style.stroke-width: 2
+
+  malloc: "malloc()" {
+    shape: rectangle
+    style.fill: "#B0C4DE" # Data Blue
+    tooltip: |md
+      **CRITICAL SECTION: MEMORY ALLOCATION**
+      - Modifies free list pointers (linked list manipulation)
+      - Updates arena metadata (size headers)
+      - May split/coalesce blocks
+      - Internal spinlocks held (global heap lock)
+      - **Invariants:** Heap consistency during pointer swaps
+    |
+  }
+
+  free: "free()" {
+    shape: rectangle
+    style.fill: "#B0C4DE"
+    tooltip: |md
+      **CRITICAL SECTION: MEMORY DEALLOCATION**
+      - Modifies free list pointers
+      - May coalesce adjacent blocks
+      - Updates allocation bitmap
+      - Internal spinlocks held
+      - **Risk:** Interruption leads to orphaned blocks
+    |
+  }
+
+  realloc: "realloc()" {
+    shape: rectangle
+    style.fill: "#B0C4DE"
+    tooltip: |md
+      **CRITICAL SECTION: BUFFER RESIZING**
+      - May malloc new + memcpy (non-atomic transition)
+      - May shrink in-place
+      - Pointer identity change in progress
+      - **Constraint:** Block must remain pinned during copy
+    |
+  }
+}
+
+# === LOCK OPERATIONS ===
+lock_ops: Lock Operations {
+  style.fill: "#FFF8DC"
+  style.stroke: "#B8860B"
+  style.stroke-width: 2
+
+  mutex_lock: "mutex_lock()" {
+    shape: rectangle
+    style.fill: "#FFE4B5"
+    tooltip: |md
+      **DEADLOCK RISK: LOCK ACQUISITION**
+      - Atomic CAS on lock word (Transition: 0 -> 1)
+      - May update wait queue (Thread registration)
+      - `FUTEX_WAIT` if contended
+      - Lock state in flux during registration
+    |
+  }
+
+  mutex_unlock: "mutex_unlock()" {
+    shape: rectangle
+    style.fill: "#FFE4B5"
+    tooltip: |md
+      **DEADLOCK RISK: LOCK RELEASE**
+      - Atomic store/clear (Transition: 1 -> 0)
+      - May wake waiters (Kernel interaction)
+      - `FUTEX_WAKE` syscall execution
+    |
+  }
+
+  spinlock: "spinlock_acquire()" {
+    shape: rectangle
+    style.fill: "#FFE4B5"
+    tooltip: |md
+      **SPINNING: BUSY WAIT LOOP**
+      - Tight CAS loop (Busy wait)
+      - No safe yield point defined within the loop
+      - Preemption defeats purpose of low-latency locking
+    |
+  }
+}
+
+# === MID-EXPRESSION ===
+expression_ops: Mid-Expression {
+  style.fill: "#DCDCDC" # Padding Gray
+  style.stroke: "#696969"
+  style.stroke-width: 2
+
+  partial_compute: "Partial Computation" {
+    shape: rectangle
+    style.fill: "#B0C4DE"
+    tooltip: |md
+      **REGISTER CORRUPTION**
+      `result = a + b * c / d`
+      - `b * c` computed and stored in volatile register `rax`
+      - Floating point division in progress in `xmm0`
+      - Partial result not yet committed to memory
+      - Resuming after preemption with stale/clobbered registers
+    |
+  }
+
+  struct_update: "Struct Update" {
+    shape: rectangle
+    style.fill: "#B0C4DE"
+    tooltip: |md
+      **INCONSISTENT STATE**
+      c
+      struct.x = new_val;
+      // PREEMPT HERE = TORN UPDATE
+      struct.y = new_val;
+      
+      - Structural invariant temporarily broken
+      - Concurrent reader sees partial/corrupt update
+    |
+  }
+
+  bitwise: "Bitwise Operation" {
+    shape: rectangle
+    style.fill: "#B0C4DE"
+    tooltip: |'md
+      **BIT CORRUPTION**
+      `bitmap |= (1 << bit)`
+      - Assembly level: `LOAD` -> `OR` -> `STORE`
+      - Non-atomic sequence without `LOCK` prefix
+    '|
+  }
+}
+
+# === FFI BOUNDARY ===
+ffi_ops: FFI Boundary {
+  style.fill: "#E0FFFF"
+  style.stroke: "#008B8B"
+  style.stroke-width: 2
+
+  c_library: "C Library Call" {
+    shape: rectangle
+    style.fill: "#AFEEEE"
+    tooltip: |md
+      **UNKNOWN STATE: EXTERNAL CONTEXT**
+      - External library lacks coroutine awareness
+      - May hold internal static locks
+      - TLS (Thread Local Storage) usage unknown
+    |
+  }
+
+  syscall: "Syscall Wrapper" {
+    shape: rectangle
+    style.fill: "#AFEEEE"
+    tooltip: |md
+      **KERNEL BOUNDARY**
+      - CPU Registers saved for kernel entry
+      - `errno` transition in progress
+      - Signal mask may be temporarily altered
+    |
+  }
+
+  callback: "Foreign Callback" {
+    shape: rectangle
+    style.fill: "#AFEEEE"
+    tooltip: |md
+      **FFI RE-ENTRANCY**
+      - Stack may be C-allocated (non-segmented)
+      - Cannot yield across foreign frames
+      - Exception handling propagation undefined
+    |
+  }
+}
+
+# === SIGNAL HANDLER ===
+signal_ops: Signal Handler {
+  style.fill: "#FFE4E1"
+  style.stroke: "#8B0000"
+  style.stroke-width: 2
+
+  handler: "Signal Handler Body" {
+    shape: rectangle
+    style.fill: "#FFB6C1"
+    tooltip: |md
+      **ASYNC CONTEXT: KERNEL INTERRUPTION**
+      - Thread already interrupted by kernel
+      - Reentrant-unsafe by default
+      - Only async-signal-safe ops allowed
+    |
+  }
+}
+
+# === CONSEQUENCES ===
+consequences: Preemption Consequences {
+  style.fill: "#F5F5F5"
+  style.stroke: "#696969"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+
+  corruption: "Memory Corruption" {
+    shape: diamond
+    style.fill: "#FF6B6B"
+    style.font-color: white
+    tooltip: |md
+      **HEAP METADATA CORRUPTED**
+      - Use-after-free
+      - Double-free
+      - Memory leaks
+    |
+  }
+
+  deadlock: "Deadlock" {
+    shape: diamond
+    style.fill: "#FF6B6B"
+    style.font-color: white
+    tooltip: |md
+      **LOCK HOLDER PREEMPTED**
+      - Other waiters blocked indefinitely
+      - Priority inversion
+      - System hang
+    |
+  }
+
+  ub: "Undefined Behavior" {
+    shape: diamond
+    style.fill: "#FF6B6B"
+    style.font-color: white
+    tooltip: |md
+      **INCOHERENT LOGIC**
+      - Torn reads/writes
+      - Logic errors
+      - Silent data corruption
+      - Race conditions
+    |
+  }
+}
+
+# === SAFE POINTS ===
+safe_points: Safe Preemption Points {
+  style.fill: "#F0FFF0"
+  style.stroke: "#006400"
+  style.stroke-width: 2
+
+  func_entry: "Function Entry" {
+    shape: rectangle
+    style.fill: "#90EE90" # Green for Safe
+    tooltip: |md
+      ✅ **SAFE POINT**
+      - Stack frame established
+      - Registers spilled to stack
+      - Caller-saved registers handled
+    |
+  }
+
+  loop_iter: "Loop Iteration" {
+    shape: rectangle
+    style.fill: "#90EE90"
+    tooltip: |md
+      ✅ **SAFE POINT**
+      - Iteration complete
+      - Invariants restored
+      - Back-edge check location
+    |
+  }
+
+  after_yield: "Explicit Yield" {
+    shape: rectangle
+    style.fill: "#90EE90"
+    tooltip: |md
+      ✅ **SAFE POINT**
+      - State explicitly saved by programmer
+      - Handshake with scheduler complete
+    |
+  }
+}
+
+# === CONNECTIONS ===
+heap_ops -> consequences.corruption: "Causes Metadata Corruption" {
+  style.stroke: red
+  style.stroke-width: 2
+}
+lock_ops -> consequences.deadlock: "Causes System Hang" {
+  style.stroke: red
+  style.stroke-width: 2
+}
+expression_ops -> consequences.ub: "Causes Register/Logic UB" {
+  style.stroke: red
+  style.stroke-width: 2
+}
+ffi_ops -> consequences.ub: "Causes Boundary Inconsistency" {
+  style.stroke: red
+  style.stroke-width: 2
+}
+signal_ops -> consequences.corruption: "Causes Reentrancy Race" {
+  style.stroke: red
+  style.stroke-width: 2
+}
+
+# === LEGEND ===
+legend: Legend {
+  near: bottom-right
+  style.fill: white
+  style.stroke: black
+  
+  unsafe_box: "Unsafe Operation" {
+    shape: rectangle
+    style.fill: "#B0C4DE"
+    style.stroke: "#8B0000"
+  }
+  safe_box: "Safe Point" {
+    shape: rectangle
+    style.fill: "#98FB98"
+    style.stroke: "#006400"
+  }
+  conseq_box: "Risk Outcome" {
+    shape: diamond
+    style.fill: "#FF6B6B"
+    style.font-color: white
+  }
+  
+  unsafe_box -> conseq_box: "Leads to Risk" {
+    style.stroke: red
+  }
+}

@@ -1,0 +1,188 @@
+layout-engine: elk
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 50
+  }
+}
+
+# --- INTEL MANUAL QUALITY STYLE DEFINITIONS ---
+# Header=Purple, Data=Blue, Free=Green, Padding=Gray, Pointers=Orange
+classes: {
+  struct: {
+    shape: class
+    style: {
+      stroke-width: 2
+      border-radius: 4
+      shadow: true
+      font: mono
+    }
+  }
+  header_purple: {
+    style: {
+      fill: "#e1d5e7"
+      stroke: "#9673a6"
+      font-color: "#311041"
+      bold: true
+    }
+  }
+  data_blue: {
+    style: {
+      fill: "#dae8fc"
+      stroke: "#6c8ebf"
+      font-color: "#003366"
+    }
+  }
+  logic_yellow: {
+    style: {
+      fill: "#fff2cc"
+      stroke: "#d6b656"
+      font-color: "#664400"
+    }
+  }
+  ptr_orange: {
+    style: {
+      stroke: "#d79b00"
+      stroke-width: 3
+      animated: true
+    }
+  }
+  hex_offset: {
+    style: {
+      font: mono
+      italic: true
+    }
+  }
+}
+
+# --- MODULE: VIRTUAL MACHINE CORE ---
+
+TieredVM: {
+  class: [struct; header_purple]
+  label: "TieredVM Main Context\n(Total sizeof: 128 Bytes)"
+  
+  "0x00: functions": "Function** [8B]"
+  "0x08: code_cache": "CodeCache* [8B]"
+  "0x10: hot_threshold": "int32_t [4B]"
+  "0x14: compiled_count": "int32_t [4B]"
+  "0x18: total_interp_calls": "uint64_t [8B]"
+  "0x20: total_jit_calls": "uint64_t [8B]"
+  "0x28: opt_pipeline": "OptimizationPipeline* [8B]"
+  "0x30: interpreter": "Interpreter [32B] (Inline Struct)"
+
+  "vm_create()": "TieredVM*"
+  "vm_register_function(uint8_t* bc, size_t len)": "int32_t"
+  "vm_call(int32_t id, int64_t* args, int n)": "int64_t"
+}
+
+Function: {
+  class: [struct; header_purple]
+  label: "Function Metadata Descriptor\n(sizeof: 64 Bytes | Cache Line Aligned)"
+  
+  "0x00: bytecode": "uint8_t* [8B]"
+  "0x08: bytecode_len": "size_t [8B]"
+  "0x10: invocation_counter": "int32_t [4B]"
+  "0x14: jit_entry": "void* [8B] (fptr)"
+  "0x1C: is_compiling": "bool [1B]"
+  "0x1D: is_blacklisted": "bool [1B]"
+  "0x1E: padding": "uint8_t[2] [2B]"
+  "0x20: func_id": "int32_t [4B]"
+
+  "maybe_compile(Function* f)": "void"
+  "reset_counter(Function* f)": "void"
+}
+
+CodeCache: {
+  class: [struct; header_purple]
+  label: "JIT Code Cache Manager\n(sizeof: 48 Bytes)"
+  
+  "0x00: buffer": "uint8_t* [8B] (mmap'd RX)"
+  "0x08: capacity": "size_t [8B]"
+  "0x10: used": "size_t [8B]"
+  "0x18: prot_state": "int [4B] (PROT_READ|PROT_EXEC)"
+
+  "cache_alloc(size_t size)": "void*"
+  "cache_finalize()": "bool"
+  "cache_flush()": "void"
+}
+
+Interpreter: {
+  class: [struct; data_blue]
+  label: "Interpreter Execution State\n(sizeof: 32 Bytes)"
+  
+  "0x00: dispatch_table": "void** [8B] (Label Addresses)"
+  "0x08: stack_base": "int64_t* [8B]"
+  "0x10: stack_ptr": "int64_t* [8B]"
+  "0x18: pc": "uint8_t* [8B] (Prog Counter)"
+  
+  "interpret_bytecode(uint8_t* bc, size_t len)": "int64_t"
+}
+
+OptimizationPipeline: {
+  class: [struct; data_blue]
+  label: "Optimization JIT Pipeline\n(sizeof: 72 Bytes)"
+  
+  "0x00: passes": "OptimizationPass[8] [64B]"
+  "0x40: enabled": "bool [1B]"
+  "0x41: level": "uint8_t [1B] (O0-O3)"
+  
+  "opt_pipeline_run(Function* f)": "bool"
+  "emit_x86_64(IR* ir)": "void*"
+}
+
+# --- OWNERSHIP & REFERENCES ---
+
+TieredVM -> Interpreter: "composition: inline memory" {class: ptr_orange}
+TieredVM -> CodeCache: "owns: heap reference" {class: ptr_orange}
+TieredVM -> Function: "manages: function lookup table" {class: ptr_orange}
+TieredVM -> OptimizationPipeline: "delegates to" {class: ptr_orange}
+
+Function -.-> CodeCache: "jit_entry points to RX buffer" {style.stroke-dash: 5; stroke: orange}
+Function -.-> Interpreter: "fallback if jit_entry == NULL" {style.stroke-dash: 5; stroke: blue}
+
+# --- CONTROL FLOW LOGIC ---
+
+DispatchLogic: {
+  label: "VM Dispatch Runtime Decision Matrix"
+  style.fill: "#fff2cc"
+  style.stroke: "#d6b656"
+  style.border-radius: 10
+
+  Entry: "Entry: vm_call(id)" {shape: circle}
+  CheckJit: "if (f->jit_entry != NULL)" {shape: diamond; class: logic_gate}
+  ExecNative: "CALL f->jit_entry\n(Native Speed Path)" {style.fill: "#d5e8d4"; style.bold: true}
+  CheckHot: "if (--f->counter == 0)" {shape: diamond; class: logic_gate}
+  TriggerJIT: "Background Compilation\nQueue OptimizationPipeline" {style.fill: "#f8cecc"; style.bold: true}
+  ExecInterp: "Interpreter::run(f->bytecode)\n(Slow Path / Hot Detection)" {style.fill: "#dae8fc"}
+
+  Entry -> CheckJit
+  CheckJit -> ExecNative: "TRUE"
+  CheckJit -> CheckHot: "FALSE"
+  CheckHot -> TriggerJIT: "TRUE"
+  CheckHot -> ExecInterp: "FALSE"
+  TriggerJIT -> ExecInterp: "Yield to interpreter"
+}
+
+# --- TECHNICAL INVARIANTS ---
+
+ImplementationNotes: |md
+  ### VM Implementation Specs
+  1.  **Instruction Alignment**: CodeCache allocations must be 16-byte aligned for SSE/AVX dispatch compatibility.
+  2.  **Memory Protection**: 
+      *   Phase 1: `PROT_READ | PROT_WRITE` (Emission)
+      *   Phase 2: `PROT_READ | PROT_EXEC` (Finalization) via `mprotect(2)`.
+  3.  **Atomic Counters**: `invocation_counter` is decremented using `LOCK XADD` or `atomic_fetch_sub` to prevent race-induced over-compilation.
+  4.  **Tail Calls**: Interpreter utilizes computed-goto (`&&label`) dispatch table for zero-overhead instruction steering.
+|
+
+# Apply styling to the Markdown block
+ImplementationNotes.near: top-right
+ImplementationNotes.width: 420
+ImplementationNotes.style: {
+  font-size: 14
+  stroke: "#9673a6"
+  fill: "#f5f5f5"
+  double-border: true
+}

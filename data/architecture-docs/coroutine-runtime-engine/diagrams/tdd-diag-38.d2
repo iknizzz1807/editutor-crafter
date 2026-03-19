@@ -1,0 +1,191 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  colors: {
+    coro: "#E4DBFE"
+    reactor: "#C7F1FF"
+    kernel: "#DEE1EB"
+    scheduler: "#B5AFF6"
+    changed: "#FF6B6B"
+    arrow: "#6C757D"
+    success: "#51CF66"
+    warning: "#FFD43B"
+  }
+}
+
+direction: right
+
+title: |md
+  # epoll Event Flow & Coroutine Runtime Architecture
+  ### Implementation Spec: Non-blocking I/O State Machine
+  *Flow: Coroutine read() → EAGAIN → Reactor registration → Yield → epoll_wait → Wake → Resume*
+| {near: top-center}
+
+# Lifecycle and Message Sequence
+timeline: {
+  shape: sequence_diagram
+  
+  # Participants with technical role annotations
+  Coroutine: Coroutine (User Space) {
+    style.fill: ${colors.coro}
+    tooltip: "Green thread with private stack and instruction pointer."
+  }
+  AsyncTcpStream: AsyncTcpStream {
+    style.fill: ${colors.coro}
+    tooltip: "Non-blocking wrapper around standard libc socket."
+  }
+  Reactor: Reactor (Event Loop) {
+    style.fill: ${colors.reactor}
+    tooltip: "Manages registration and mapping of tokens to wakers."
+  }
+  Epoll: Kernel (epoll) {
+    style.fill: ${colors.kernel}
+    tooltip: "Linux kernel event notification subsystem."
+  }
+  Scheduler: Scheduler {
+    style.fill: ${colors.scheduler}
+    tooltip: "Coordinates coroutine execution and task queuing."
+  }
+
+  # 1. Initial Read Attempt
+  initial_io: {
+    label: "Phase 1: Initial Speculative Read"
+    Coroutine -> AsyncTcpStream: "read(&mut buffer)"
+    AsyncTcpStream -> AsyncTcpStream: "libc::read(fd, buf, len)\nO_NONBLOCK active"
+    AsyncTcpStream -> Coroutine: "Err(EAGAIN / WouldBlock)"
+  }
+
+  # 2. Reactor Registration
+  registration: {
+    label: "Phase 2: Registry & epoll_ctl"
+    Coroutine -> AsyncTcpStream: "Poll::Pending (await)"
+    AsyncTcpStream -> Reactor: "register(fd, EPOLLIN, waker_id: 0x2A)"
+    Reactor -> Epoll: "epoll_ctl(efd, EPOLL_CTL_ADD, fd, &event)\nevent.data.u64 = 0x2A"
+    Epoll -> Reactor: "0 (Success)"
+    Reactor -> AsyncTcpStream: "Token(0x2A)"
+  }
+
+  # 3. Coroutine yield
+  yield_phase: {
+    label: "Phase 3: Context Switch & Yield"
+    AsyncTcpStream -> Coroutine: "Pending"
+    Coroutine -> Coroutine: "state = Blocked\nsave_registers(stack_ptr)"
+    Coroutine -> Scheduler: "yield_now(token: 0x2A)\nlongjmp(scheduler_ctx)"
+    Scheduler -> Scheduler: "Find next runnable coro\nUpdate task_queue"
+  }
+
+  # 4. Kernel waits for data
+  kernel_poll: {
+    label: "Phase 4: Kernel epoll_wait"
+    Scheduler -> Scheduler: "Process other tasks..."
+    Scheduler -> Reactor: "poll(timeout = -1)"
+    Reactor -> Epoll: "epoll_wait(efd, events, max_events, timeout)"
+    
+    # Corrected Note: Attached directly to actor scope to fix 'near' error
+    Epoll.stack_info: ||md
+      **Kernel-side Event Detection**
+      1. NIC triggers DMA write to `sk_receive_queue`.
+      2. TCP stack acknowledges and marks socket `sk_state` readable.
+      3. epoll checks `rdy_list`.
+    ||
+  }
+
+  # 5. Data arrives & Event notification
+  event_return: {
+    label: "Phase 5: Event Fulfillment"
+    Epoll -> Reactor: "events[0] = { data: 0x2A, events: EPOLLIN }"
+    Reactor -> Reactor: "waker = wakers.remove(0x2A)\nLookup future reference"
+  }
+
+  # 6. Wake coroutine
+  wake_phase: {
+    label: "Phase 6: Runtime Wakeup"
+    Reactor -> Reactor: "waker.wake()\nMark coro as Runnable"
+    Reactor -> Scheduler: "enqueue(task_id: 42)"
+    Scheduler -> Scheduler: "Add to Global/Local Run Queue"
+  }
+
+  # 7. Resume and retry
+  completion: {
+    label: "Phase 7: Resume & Retry"
+    Scheduler -> Coroutine: "resume(stack_ptr)\nRestore registers"
+    Coroutine -> Coroutine: "Re-execute read() loop"
+    Coroutine -> AsyncTcpStream: "read(&mut buffer)"
+    
+    AsyncTcpStream -> Reactor: "deregister(fd, 0x2A)"
+    Reactor -> Epoll: "epoll_ctl(EPOLL_CTL_DEL, fd)"
+    
+    AsyncTcpStream -> AsyncTcpStream: "libc::read(fd, buf, len)\nBytes available!"
+    AsyncTcpStream -> Coroutine: "Ok(N bytes)"
+    Coroutine -> Coroutine: "Status = Finished"
+  }
+}
+
+# Documentation & Specifications
+docs: {
+  near: bottom-center
+
+  legend: {
+    label: "Coroutine State Invariants"
+    style.fill: "#f8f9fa"
+    
+    Runnable: {
+      shape: circle
+      style.fill: "#51CF66"
+      style.bold: true
+    }
+    Running: {
+      shape: circle
+      style.fill: "#339AF0"
+      style.bold: true
+    }
+    Blocked: {
+      shape: circle
+      style.fill: "#FF6B6B"
+      style.bold: true
+    }
+    
+    Runnable -> Running: "Scheduler pop"
+    Running -> Blocked: "I/O Pending (EAGAIN)"
+    Blocked -> Runnable: "Reactor event trigger"
+    Running -> Runnable: "Time slice expired"
+  }
+
+  memory: {
+    label: "Memory Synchronization & Ordering"
+    content: ||md
+      ### Synchronization Barriers
+      1. **Registration**: `Release` fence required when storing the waker pointer to ensure the coroutine state is visible to the Reactor.
+      2. **Notification**: `epoll_wait` acts as a memory barrier for the kernel, ensuring data written to userspace buffers by DMA is visible.
+      3. **Wake**: `AtomicBool` store on the `woken` flag using `Release` semantics.
+      4. **Resume**: `Acquire` load on the `woken` flag ensures visibility of data retrieved by the Reactor.
+    ||
+  }
+
+  performance: {
+    label: "Latency & Throughput Profile"
+    content: ||md
+      | Component | Operation | Overhead |
+      | :--- | :--- | :--- |
+      | **User-Kernel** | `epoll_ctl` | ~1.2µs |
+      | **Context Switch** | Coroutine Yield | ~15-25ns |
+      | **System Call** | `epoll_wait` | ~0.8µs |
+      | **Runtime** | Waker Lookup (O(1)) | ~40ns |
+      | **Total Sync I/O** | 100% blocking | ~5000µs |
+      | **Total Async I/O** | Event-driven | **~25µs** |
+    ||
+  }
+}
+
+# Style Globs
+***.style.font: mono
+(*** -> ***)[*].style.stroke: ${colors.arrow}
+(*** -> ***)[*].style.font-size: 14
+
+# Final Visual Layout Hints
+docs.legend.width: 300
+docs.memory.width: 450
+docs.performance.width: 450

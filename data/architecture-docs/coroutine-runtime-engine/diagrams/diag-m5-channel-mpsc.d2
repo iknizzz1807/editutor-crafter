@@ -1,0 +1,447 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: MPSC Channel Internals {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 32
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  producers: {
+    direction: down
+    label: "Producers (Multiple)"
+    p1: {
+      shape: class
+      label: "Producer 1"
+      +id: "u64"
+      +state: "Running"
+      send(value): "Result<(), SendError>"
+    }
+    p2: {
+      shape: class
+      label: "Producer 2"
+      +id: "u64"
+      +state: "Running"
+      send(value): "Result<(), SendError>"
+    }
+    pn: {
+      shape: class
+      label: "Producer N"
+      style.stroke-dash: 4
+      +id: "u64"
+      +state: "Running"
+      send(value): "Result<(), SendError>"
+    }
+  }
+  send_ops: {
+    direction: down
+    label: "Lock-Free Send Path"
+    step1: {
+      label: "1. Allocate Node"
+      width: 340
+      code: |'rust
+        let node = Box::into_raw(Box::new(Node {
+            data: Some(value),
+            next: AtomicPtr::null(),
+        }));
+      '|
+    }
+    step2: {
+      label: "2. Atomic Swap Tail"
+      width: 340
+      code: |'rust
+        // All producers race to swap tail
+        let prev = tail.swap(node, AcqRel);
+      '|
+    }
+    step3: {
+      label: "3. Link Previous to New"
+      width: 340
+      code: |'rust
+        // Link old tail to new node
+        (*prev).next.store(node, Release);
+      '|
+    }
+    note: {
+      width: 300
+      label: |md
+        **Key Insight**: No mutex needed!
+        Atomic swap serializes all producers.
+        Link step may be delayed but is safe.
+      |
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  channel_core: {
+    direction: down
+    label: "ChannelInner<T>"
+    channel_state: {
+      shape: sql_table
+      label: "ChannelInner (channel.rs)"
+      f0: "0x00 | AtomicPtr<Node<T>> | tail"
+      f1: "0x08 | *mut Node<T>       | head (receiver)"
+      f2: "0x10 | AtomicUsize        | capacity"
+      f3: "0x18 | AtomicUsize        | sender_count"
+      f4: "0x20 | AtomicBool         | receiver_dropped"
+      f5: "0x28 | Mutex<VecDeque>    | recv_waiters"
+      f6: "0x30 | Mutex<VecDeque>    | send_waiters"
+      sz: "Total: ~56 bytes + waiters"
+    }
+    lock_free_queue: {
+      direction: down
+      label: "Lock-Free MPSC Queue"
+      queue_visual: {
+        direction: right
+        label: ""
+        head_ptr: {
+          label: "head →"
+          shape: rectangle
+          width: 60
+        }
+        node_a: {
+          shape: rectangle
+          label: "Node\n[data: T]\n[next: →]"
+          style.fill: "#E8F5E9"
+        }
+        node_b: {
+          shape: rectangle
+          label: "Node\n[data: T]\n[next: →]"
+          style.fill: "#E8F5E9"
+        }
+        node_c: {
+          shape: rectangle
+          label: "Node\n[data: T]\n[next: null]"
+          style.fill: "#E8F5E9"
+        }
+        tail_ptr: {
+          label: "← tail\n(atomic)"
+          shape: rectangle
+          width: 80
+          style.fill: "#FFF3E0"
+        }
+        head_ptr -> node_a: "ptr"
+        node_a -> node_b: "next"
+        node_b -> node_c: "next"
+        tail_ptr -> node_c: "atomic ptr"
+      }
+    }
+    atomic_ops: {
+      label: "Atomic Operations"
+      send_seq: {
+        label: "Send Sequence"
+        width: 360
+        code: |'rust
+          // Step 1: Create node
+          let node = Box::into_raw(Box::new(Node {
+              data: Some(value),
+              next: AtomicPtr::new(null_mut()),
+          }));
+          // Step 2: Atomic swap (serializes producers)
+          let prev = self.tail.swap(node, AcqRel);
+          // Step 3: Link (may be delayed, still safe)
+          (*prev).next.store(node, Release);
+          // Step 4: Wake receiver if waiting
+          if let Some(w) = recv_waiters.pop_front() {
+              w.wake();
+          }
+        '|
+      }
+      recv_seq: {
+        label: "Receive Sequence"
+        width: 360
+        code: |'rust
+          // Step 1: Check head->next
+          let next = (*head).next.load(Acquire);
+          if next.is_null() {
+              // Queue empty - register waiter, yield
+              recv_waiters.push_back(waker);
+              yield_now();
+              // Retry after wake
+          }
+          // Step 2: Move head forward
+          let data = (*next).data.take();
+          *head = next;  // New sentinel
+          // Step 3: Wake sender if capacity available
+          if let Some(w) = send_waiters.pop_front() {
+              w.wake();
+          }
+        '|
+      }
+    }
+  }
+  receiver: {
+    direction: down
+    label: "Single Consumer"
+    recv_coro: {
+      shape: class
+      label: "Receiver Coroutine"
+      +id: "u64"
+      +state: "Runnable | Blocked"
+      recv(): "Result<T, RecvError>"
+      try_recv(): "Result<T, TryRecvError>"
+    }
+    recv_states: {
+      label: "Receiver State Machine"
+      shape: oval
+      style.fill: "#E3F2FD"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  bounded_flow: {
+    direction: down
+    label: "Bounded Channel Flow"
+    bounded_check: {
+      label: "Capacity Check (Bounded)"
+      width: 380
+      code: |'rust
+        // Before send on bounded channel
+        if queue.len() >= capacity {
+            // Block sender
+            send_waiters.push_back(waker.clone());
+            yield_now();  // Coroutine yields
+            // After wake: retry send
+        }
+      '|
+    }
+    capacity_box: {
+      direction: right
+      label: ""
+      slot1: {
+        label: "[msg]"
+        shape: rectangle
+        width: 50
+        style.fill: "#C8E6C9"
+      }
+      slot2: {
+        label: "[msg]"
+        shape: rectangle
+        width: 50
+        style.fill: "#C8E6C9"
+      }
+      slot3: {
+        label: "[msg]"
+        shape: rectangle
+        width: 50
+        style.fill: "#C8E6C9"
+      }
+      slot4: {
+        label: "[ ]"
+        shape: rectangle
+        width: 50
+        style.fill: "#FFCDD2"
+      }
+      cap_label: {
+        label: "capacity=4, len=3"
+        shape: text
+      }
+    }
+    backpressure: {
+      label: "Backpressure Mechanism"
+      width: 380
+      code: |'rust
+        // Sender blocks when full
+        // Receiver wakes sender on recv:
+        let item = queue.pop_front();
+        if let Some(w) = send_waiters.pop_front() {
+            w.wake();  // Unblock one sender
+        }
+      '|
+    }
+  }
+  wake_mechanism: {
+    direction: down
+    label: "Wake Mechanism"
+    waker_struct: {
+      shape: sql_table
+      label: "CoroutineWaker (sync.rs)"
+      f0: "0x00 | AtomicBool | woken"
+      f1: "0x08 | Mutex<*mut> | coroutine"
+      f2: "0x10 | Weak<Scheduler> | scheduler"
+      sz: "Total: 24 bytes"
+    }
+    wake_flow: {
+      label: "Wake on Send"
+      width: 360
+      code: |'rust
+        // In send(), after successful enqueue:
+        let waiter = recv_waiters.lock()
+            .unwrap().pop_front();
+        if let Some(w) = waiter {
+            // Mark coroutine as Runnable
+            w.wake();  // Atomic + schedule
+        }
+      '|
+    }
+    wait_flow: {
+      label: "Wait on Empty Recv"
+      width: 360
+      code: |'rust
+        // In recv(), when queue empty:
+        let waker = Arc::new(CoroutineWaker::new());
+        recv_waiters.lock().unwrap()
+            .push_back(waker.clone());
+        coroutine.state = Blocked;
+        yield_now();  // Scheduler runs others
+      '|
+    }
+  }
+  drop_handling: {
+    direction: down
+    label: "Drop Detection"
+    sender_drop: {
+      label: "Sender Drop"
+      width: 340
+      code: |'rust
+        impl<T> Drop for Sender<T> {
+            fn drop(&mut self) {
+                // Decrement sender count
+                let prev = sender_count
+                    .fetch_sub(1, Release);
+                if prev == 1 {
+                    // Last sender - wake receivers
+                    // so they detect closure
+                    wake_all_receivers();
+                }
+            }
+        }
+      '|
+    }
+    receiver_drop: {
+      label: "Receiver Drop"
+      width: 340
+      code: |'rust
+        impl<T> Drop for Receiver<T> {
+            fn drop(&mut self) {
+                // Signal senders to fail
+                receiver_dropped.store(true, Release);
+                // Wake all blocked senders
+                wake_all_senders();
+            }
+        }
+      '|
+    }
+    error_states: {
+      shape: sql_table
+      label: "Error States"
+      disconnected: "RecvError / SendError | Other end dropped"
+      empty: "TryRecvError::Empty | No messages, would block"
+      full: "TrySendError::Full | Bounded, at capacity"
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style: {
+    fill: transparent
+    stroke: transparent
+  }
+  memory_layout: {
+    direction: down
+    label: "Memory Layout"
+    node_struct: {
+      shape: sql_table
+      label: "struct Node<T> (heap)"
+      f0: "0x00 | Option<T> | data"
+      f1: "0x08+ | AtomicPtr<Node<T>> | next"
+      sz: "Size: 16+ bytes (depends on T)"
+    }
+    heap_diagram: {
+      direction: right
+      label: "Heap Node Chain"
+      n1: {
+        shape: rectangle
+        label: "Node\n┌─────────┐\n│data: Msg1│\n│next: ────┼─→\n└─────────┘"
+        style.fill: "#E8F5E9"
+      }
+      n2: {
+        shape: rectangle
+        label: "Node\n┌─────────┐\n│data: Msg2│\n│next: ────┼─→\n└─────────┘"
+        style.fill: "#E8F5E9"
+      }
+      n3: {
+        shape: rectangle
+        label: "Node\n┌─────────┐\n│data: Msg3│\n│next: null│\n└─────────┘"
+        style.fill: "#E8F5E9"
+      }
+      n1 -> n2 -> n3
+    }
+  }
+  ordering: {
+    direction: down
+    label: "Memory Ordering"
+    ordering_table: {
+      shape: sql_table
+      label: "Atomic Ordering Used"
+      swap_op: "tail.swap() | AcqRel | Serializes all producers"
+      store_op: "next.store() | Release | Publishes node to consumer"
+      load_op: "next.load() | Acquire | Sees producer's writes"
+      cnt_op: "sender_count | Release/Acquire | Detect last sender"
+    }
+    ordering_note: {
+      label: |md
+        **Acquire-Release Semantics**
+        - `AcqRel` on swap: both acquire previous
+          state and release our node
+        - `Release` on next.store: ensures data
+          is visible before next pointer
+        - `Acquire` on next.load: sees the data
+          that was written before release
+      |
+      width: 320
+    }
+  }
+  perf_notes: {
+    direction: down
+    label: "Performance Characteristics"
+    perf_table: {
+      shape: sql_table
+      label: "Operation Costs"
+      uncontended_send: "Send (uncontended) | ~20-50 ns | 1 atomic swap + 1 store"
+      contended_send: "Send (contended) | ~50-200 ns | Cache line bounce on tail"
+      recv_avail: "Recv (data available) | ~20-50 ns | Load + pointer update"
+      recv_empty: "Recv (empty, blocks) | ~100-500 ns | Yield + wake overhead"
+    }
+    cache_note: {
+      label: |md
+        **Cache Behavior**
+        - `tail` is hot: all producers write it
+        - Causes cache line bouncing under contention
+        - Mitigation: batch sends, or use per-producer buffers
+        - Receiver reads `head->next`, usually cache-local
+      |
+      width: 320
+    }
+  }
+}
+producers.p1 -> send_ops.step1: "value"
+producers.p2 -> send_ops.step1: "value"
+send_ops.step3 -> channel_core.lock_free_queue.queue_visual.node_c: "CAS tail"
+channel_core.lock_free_queue.queue_visual -> receiver.recv_coro: "pop"
+receiver.recv_states -> channel_core.atomic_ops.recv_seq: "empty?"
+bounded_flow.slot4 -> bounded_flow.backpressure: "full?"
+wake_mechanism.waker_struct -> receiver.recv_states: "wake"

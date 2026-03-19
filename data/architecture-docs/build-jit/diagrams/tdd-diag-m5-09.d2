@@ -1,0 +1,260 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    layout-engine: elk
+    pad: 50
+  }
+  colors: {
+    header: "#d4b5ff"
+    data: "#b5d4ff"
+    modified: "#ffb5b5"
+    padding: "#cccccc"
+    pointer: "#ffe5b5"
+    critical: "#ff0000"
+  }
+}
+
+# --- GLOBAL STYLES & CLASSES ---
+classes: {
+  step_container: {
+    style: {
+      stroke-width: 2
+      border-radius: 12
+      fill: "#ffffff"
+      shadow: true
+    }
+  }
+  header: {
+    style: {
+      fill: ${colors.header}
+      bold: true
+      font-size: 18
+    }
+  }
+  data_block: {
+    style: {
+      fill: ${colors.data}
+    }
+  }
+  modified_cell: {
+    style: {
+      fill: ${colors.modified}
+      stroke: ${colors.critical}
+      stroke-width: 2
+      bold: true
+    }
+  }
+  pointer_ref: {
+    style: {
+      fill: ${colors.pointer}
+      font: mono
+    }
+  }
+  padding_gray: {
+    style: {
+      fill: ${colors.padding}
+      opacity: 0.6
+    }
+  }
+}
+
+# --- HEADER ANNOTATION ---
+Header_Label: {
+  label: ||md
+    # STATE RECONSTRUCTION ALGORITHM (DEOPTIMIZATION)
+    **Target Architectural Design Document**
+    *Version: 1.0.4 | Layout: Intel-Standard Reference*
+  ||
+  style: {
+    stroke-width: 0
+    fill: transparent
+    font-size: 14
+  }
+}
+
+# --- ALGORITHM STEPS ---
+
+Step_01: {
+  class: step_container
+  label: "STEP 1: ENTRY LOOKUP (JIT-TO-BC MAPPING)"
+  
+  Lookup_Input: {
+    shape: sql_table
+    label: "Machine Context"
+    rip: "0x7fff1234 (RIP)" { class: pointer_ref }
+    dt_base: "DeoptTable* (Base)" { class: pointer_ref }
+  }
+  
+  Logic: ||md
+    ### Interval Search
+    Perform binary search on `dt_base->entries`.
+    Find `E` where:
+    `E.jit_start <= rip < E.jit_end`
+    
+    **Constraint:**
+    Mapping must exist for current instruction
+    boundary to ensure atomic resume.
+  ||
+  
+  Result: {
+    shape: sql_table
+    entry_ptr: "DeoptEntry* (E)" { class: modified_cell }
+    bytecode_pc: "uint32_t (BC_OFF)" { class: modified_cell }
+  }
+  
+  Lookup_Input.rip -> Logic: "Binary Search"
+  Logic -> Result.entry_ptr: "Locate Mapping"
+}
+
+Step_02: {
+  class: step_container
+  label: "STEP 2: FRAME ALLOCATION & MEMORY LAYOUT"
+  
+  Memory_Layout: {
+    shape: sql_table
+    label: "InterpFrame (sizeof=32B)"
+    "Offset": "Field Content (Size)" {style.underline: true}
+    "0x00": "bytecode_ptr (8B)" {class: data_block}
+    "0x08": "current_pc (8B)" {class: modified_cell}
+    "0x10": "stack_top (4B)" {class: data_block}
+    "0x14": "padding (4B)" {class: padding_gray}
+    "0x18": "locals_ptr (8B)" {class: data_block}
+  }
+  
+  Metadata: ||md
+    ### 32-byte Alignment
+    1. Calculate Resume Addr:
+       `target = bc_base + E.BC_OFF`
+    2. Link to caller: `frame.prev = rbp`
+    3. Initialize locals pointer.
+  ||
+  
+  Step_01.Result.bytecode_pc -> Memory_Layout."0x08": "Calculate & Store"
+}
+
+Step_03: {
+  class: step_container
+  label: "STEP 3: REGISTER SPILL EXTRACTION"
+  
+  JIT_Context: {
+    Registers: {
+      shape: sql_table
+      label: "CPU Register Set"
+      rax: "0x0000002A (42)"
+      rbx: "0x00000001 (T)"
+    }
+    Spill_Slots: {
+      shape: sql_table
+      label: "Stack Spills (RBP-)"
+      "-0x08": "0x64 (Const)"
+      "-0x10": "0x00 (Null)"
+    }
+  }
+  
+  Mapping_Engine: ||md
+    ### Value Reconstruction
+    Iterate `E.value_mappings`:
+    - `Map[Local_0] = Reg(rax)`
+    - `Map[Operand_0] = Spill(-0x08)`
+    
+    *Handles Byte-swapping if VM 
+    and Host endianness differ.*
+  ||
+  
+  JIT_Context -> Mapping_Engine: "Read Bits"
+  Mapping_Engine -> Step_02.Memory_Layout."0x18": "Map to Locals"
+}
+
+Step_04: {
+  class: step_container
+  label: "STEP 4: OPERAND STACK PERMUTATION"
+  
+  Buffer: {
+    shape: sql_table
+    label: "Unsorted Operand Buffer"
+    idx_1: "Order: 1 | Val: 0xA"
+    idx_0: "Order: 0 | Val: 0x14"
+  }
+  
+  Permute: "In-place Reordering" {
+    style: {
+      stroke: ${colors.critical}
+      stroke-width: 3
+      fill: "#fff0f0"
+    }
+  }
+  
+  Stack_Final: {
+    shape: sql_table
+    label: "Physical Operand Stack"
+    slot_0: "Val: 20 (Bottom)" { class: modified_cell }
+    slot_1: "Val: 10 (Top)" { class: modified_cell }
+  }
+  
+  Buffer -> Permute: "Sort by Offset"
+  Permute -> Stack_Final: "Finalize Order"
+}
+
+Step_05: {
+  class: step_container
+  label: "STEP 5: CONTROL FLOW HANDOVER"
+  
+  Interpreter_State: {
+    shape: sql_table
+    label: "RESTORED VM STATE"
+    pc: "resume_addr" { class: pointer_ref }
+    fp: "frame_ptr" { class: pointer_ref }
+    sp: "stack_ptr" { class: data_block }
+  }
+  
+  Jump_Logic: ||md
+    ### ASM Trampoline
+    1. Load `vm->fp` with frame address
+    2. Set `rip` to `interpreter_loop`
+    3. `longjmp` or `return` to dispatcher
+  ||
+  
+  Interpreter_State -> Jump_Logic: "Resume Interpreting"
+}
+
+# --- GLOBAL CONNECTORS ---
+
+Step_01 -> Step_02: "Success"
+Step_02 -> Step_03: "Frame Ready"
+Step_03 -> Step_04: "Slots Mapped"
+Step_04 -> Step_05: "Stack Integrity Validated"
+
+# --- LEGEND & CACHE ANNOTATIONS ---
+
+Legend: {
+  near: Step_05
+  style: {
+    stroke-dash: 5
+    fill: "#fcfcfc"
+  }
+  H: "Header / Meta" { class: header }
+  D: "Data Payload" { class: data_block }
+  M: "Modified/Created" { class: modified_cell }
+  P: "Pointer/Addr" { class: pointer_ref }
+  X: "Padding (64B Align)" { class: padding_gray }
+}
+
+Cache_Boundary: "--- 64B Cache Line Alignment Boundary ---" {
+  shape: text
+  style: {
+    stroke-dash: 5
+    font-color: gray
+    font-size: 10
+  }
+}
+
+Step_02.Memory_Layout -> Cache_Boundary: {
+  style: {
+    stroke-dash: 5
+    stroke: "#dddddd"
+  }
+}
+
+Header_Label.near: Step_01
+Legend.near: Step_05.Jump_Logic

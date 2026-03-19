@@ -1,0 +1,264 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# --- GLOBAL CLASSES: INTEL MANUAL QUALITY SPEC ---
+classes: {
+  step_container: {
+    style: {
+      stroke-width: 2
+      border-radius: 8
+      fill: "#ffffff"
+    }
+  }
+  instruction_block: {
+    style: {
+      fill: "#f8f9fa"
+      font: mono
+      stroke: "#dee2e6"
+      stroke-width: 1
+    }
+  }
+  stack_header: {
+    style: {
+      fill: "#f3e5f5"
+      stroke: "#7b1fa2"
+      bold: true
+    }
+  }
+  stack_data: {
+    style: {
+      fill: "#e3f2fd"
+      stroke: "#1976d2"
+    }
+  }
+  stack_active: {
+    style: {
+      fill: "#ffebee"
+      stroke: "#c62828"
+      stroke-width: 3
+    }
+  }
+  pointer_edge: {
+    style: {
+      stroke: "#ef6c00"
+      stroke-width: 3
+      animated: true
+    }
+  }
+  register_box: {
+    style: {
+      fill: "#fff9c4"
+      stroke: "#fbc02d"
+      bold: true
+      font: mono
+    }
+  }
+}
+
+# --- ALGORITHM STEPS ---
+
+step1: "1.0 Save Native Context (Prologue)" {
+  class: step_container
+  
+  emission_log: |'md
+### Register Persistence (GPRs)
+*Push sequence ensures full recovery of machine state.*
+
+| Offset | Opcode | Instruction |
+| :--- | :--- | :--- |
+| `0x00` | `50` | `push rax` |
+| `0x08` | `53` | `push rbx` |
+| `...` | `...` | `...` |
+| `0x68` | `41 57` | **`push r15`** |
+'|
+  emission_log.class: instruction_block
+
+  stack_viz: "Memory Layout (Post-Push)" {
+    shape: sql_table
+    style.stroke-dash: 0
+    
+    header: "Previous Frame Metadata" {
+      constraint: "Offset"
+      type: "Field Size"
+    }
+    prev_ret: "Return Address" {
+      constraint: "rbp + 16"
+      type: "8B"
+    }
+    prev_rbp: "Saved RBP" {
+      constraint: "rbp + 8"
+      type: "8B"
+    }
+    
+    context_block: "GPR SAVED CONTEXT (112B)" {
+      constraint: "rsp + 0"
+      type: "Cache Line 1-2"
+    }
+    
+    rax_slot: "rax" { constraint: "rsp + 104"; type: "8B" }
+    rbx_slot: "rbx" { constraint: "rsp + 96"; type: "8B" }
+    dots: "..." { constraint: "---"; type: "---" }
+    r15_slot: "**r15 (Top of Stack)**" { 
+      constraint: "rsp + 0"
+      type: "8B"
+    }
+  }
+
+  # Move row styles outside the table definition to avoid "columns cannot have children" error
+  stack_viz.prev_ret.style.fill: "#eeeeee"
+  stack_viz.prev_rbp.style.fill: "#eeeeee"
+  stack_viz.context_block.style.fill: "#e3f2fd"
+  stack_viz.context_block.style.stroke-dash: 5
+  stack_viz.r15_slot.style.fill: "#ffebee"
+  stack_viz.r15_slot.style.font-color: "#c62828"
+
+  rsp_ptr: "rsp_reg" {
+    label: "RSP"
+    shape: circle
+    style.fill: "#ef6c00"
+    style.font-color: white
+  }
+  
+  rsp_ptr -> stack_viz.r15_slot: "Points to r15" { class: pointer_edge }
+}
+
+step2: "2.0 Load Deopt Metadata" {
+  class: step_container
+  
+  asm: |'nasm
+; Load Entry ID into 1st Arg Register (SysV ABI)
+; ID 42 identifies the specific deopt point in the JIT log
+mov edi, 0x0000002A  
+'|
+  asm.class: instruction_block
+
+  regs: {
+    grid-columns: 2
+    rdi_reg: "rdi" { 
+      label: "rdi: **0x0000002A**"
+      class: register_box
+      style.font-color: "#c62828"
+      style.stroke: "#c62828"
+    }
+    logic_note: "Arg 1: Deopt ID" { 
+      style.fill: "#fff9c4"
+      style.stroke-dash: 2
+    }
+  }
+}
+
+step3: "3.0 Reference Machine State" {
+  class: step_container
+  
+  asm: |'nasm
+; SysV Arg 2: Pointer to saved GPR block
+; Current RSP points to the R15 slot (start of 112B block)
+mov rsi, rsp
+'|
+  asm.class: instruction_block
+
+  regs: {
+    grid-columns: 2
+    rsi_reg: "rsi" { 
+      label: "rsi: **[SavedRegsPtr]**"
+      class: register_box
+      style.fill: "#ffe0b2"
+      style.stroke: "#c62828"
+      style.font-color: "#c62828"
+    }
+    logic_note: "Arg 2: Context Ptr" { 
+      style.fill: "#fff9c4"
+      style.stroke-dash: 2
+    }
+  }
+}
+
+step4: "4.0 Capture JIT Frame Base" {
+  class: step_container
+  
+  asm: |'nasm
+; SysV Arg 3: Current frame pointer
+; Allows Runtime to crawl JIT-generated frames
+mov rdx, rbp
+'|
+  asm.class: instruction_block
+
+  regs: {
+    grid-columns: 2
+    rdx_reg: "rdx" { 
+      label: "rdx: **[JIT RBP]**"
+      class: register_box
+      style.fill: "#c8e6c9"
+      style.stroke: "#c62828"
+      style.font-color: "#c62828"
+    }
+    logic_note: "Arg 3: Frame Ptr" { 
+      style.fill: "#fff9c4"
+      style.stroke-dash: 2
+    }
+  }
+}
+
+step5: "5.0 C-Runtime Control Transfer" {
+  class: step_container
+  
+  asm: |'nasm
+; Absolute call to runtime C++ function
+; Never returns to this stub
+mov rax, 0x7FFF12345678
+call rax
+'|
+  asm.class: instruction_block
+
+  sequence: {
+    shape: sequence_diagram
+    
+    stub: Deopt Stub { style.fill: "#f3e5f5" }
+    runtime: C++ Runtime { style.fill: "#e3f2fd" }
+    interpreter: Bytecode Interpreter { style.fill: "#fff9c4" }
+
+    stub -> runtime: deoptimize(id, gprs, rbp) {
+      label: "Call runtime logic"
+    }
+    runtime -> runtime: "Frame Reconstruction"
+    runtime -> interpreter: "longjmp to Bytecode PC" {
+      style.stroke: "#d32f2f"
+      style.stroke-dash: 4
+      style.animated: true
+    }
+  }
+}
+
+# --- CONTROL FLOW ---
+step1 -> step2: "Context Saved"
+step2 -> step3: "ID Loaded"
+step3 -> step4: "RSP Captured"
+step4 -> step5: "RBP Captured"
+
+# --- SYSTEM INVARIANTS ---
+invariants: |'md
+### Stub Invariants & ABI Mapping
+1.  **Stack Alignment**: Caller ensures 16B alignment. Stub pushes 14 QWORDs (112B).
+2.  **Terminality**: `deoptimize()` is a non-returning function.
+3.  **Memory Ownership**: The 112B block is allocated on stack but managed by runtime.
+'|
+invariants.near: step5
+invariants.style.stroke: "#d32f2f"
+invariants.style.stroke-width: 2
+
+# --- GLOBAL STYLES ---
+step1.style.stroke: "#7b1fa2"
+step5.style.stroke: "#d32f2f"
+step5.style.stroke-width: 4
+
+# Cross-Step Pointer Reference
+(step3.regs.rsi_reg -> step1.stack_viz.r15_slot): "Captures RSP" {
+  class: pointer_edge
+  style.stroke-dash: 5
+}

@@ -1,0 +1,197 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  reactor: {
+    direction: down
+    label: "Reactor (reactor.c)"
+    style.fill: "#E8F4FD"
+    epoll_instance: {
+      shape: class
+      label: "epoll state"
+      -epoll_fd: "int"
+      -wakers: "HashMap<Token, Waker>"
+    }
+    epoll_wait: {
+      label: "epoll_wait()"
+      width: 320
+      code: |'c
+        // Blocks until ≥1 fd ready
+        // Returns array of ready events
+        n = epoll_wait(epoll_fd, events, 
+                       MAX_EVENTS, timeout_ms);
+      '|
+    }
+    dispatch: {
+      label: "Dispatch Wakeups"
+      width: 320
+      code: |'c
+        for (i = 0; i < n; i++) {
+          token = events[i].u64;
+          waker = wakers.get(token);
+          waker->wake();  // Mark coroutine Runnable
+        }
+      '|
+    }
+    epoll_instance -> epoll_wait: "poll"
+    epoll_wait -> dispatch: "events[]"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  scheduler: {
+    direction: down
+    label: "Scheduler (scheduler.c)"
+    style.fill: "#F0FFF0"
+    runqueue: {
+      shape: queue
+      label: "Run Queue"
+    }
+    worker_loop: {
+      label: "Worker Loop"
+      width: 340
+      code: |'c
+        while ((coro = find_work()) != NULL) {
+          coro->state = RUNNING;
+          switch_to(&sched_ctx, &coro->ctx);
+          // Coroutine yielded — check state
+          if (coro->state == BLOCKED) {
+            // Waiting for I/O, reactor will wake
+          }
+        }
+        // No work — call reactor.poll()
+      '|
+    }
+    runqueue -> worker_loop: "dequeue"
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  coroutines: {
+    direction: down
+    label: "Coroutines"
+    style.fill: "#FFF8E7"
+    coro_running: {
+      label: "Running Coroutine"
+      width: 340
+      code: |'c
+        // Coroutine executing user code
+        async fn handle_client(stream) {
+          let data = stream.read(&buf).await;
+          //  ^^^^ YIELDS HERE if EAGAIN
+          process(data);
+          stream.write(&response).await;
+          //  ^^^^ YIELDS HERE if buffer full
+        }
+      '|
+    }
+    coro_blocked: {
+      label: "Blocked Coroutine"
+      shape: sql_table
+      f0: "state | BLOCKED"
+      f1: "waiting_on | fd=42, EPOLLIN"
+      f2: "waker | Arc<Waker>"
+      sz: "stack: 64KB (cold in cache)"
+    }
+    coro_running -> coro_blocked: "yield on EAGAIN\nawait returns" {
+      style.stroke: "#E74C3C"
+      style.stroke-dash: 4
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  kernel: {
+    direction: down
+    label: "Kernel"
+    style.fill: "#F5F5F5"
+    style.stroke-dash: 3
+    socket_buffers: {
+      shape: cylinder
+      label: "Socket Buffers"
+    }
+    ready_list: {
+      label: "Ready FD List"
+      shape: hexagon
+    }
+    socket_buffers -> ready_list: "data arrives\nNIC → DMA → TCP" {
+      style.stroke: "#27AE60"
+      style.animated: true
+    }
+  }
+}
+# Main cycle arrows
+row1.reactor.epoll_wait -> row2.scheduler.worker_loop: "wake wakers\n(coros → Runnable)" {
+  label: "events ready"
+  style.stroke: "#27AE60"
+  style.stroke-width: 3
+}
+row2.scheduler.worker_loop -> row3.coroutines.coro_running: "resume\ncoroutine" {
+  label: "switch_to()"
+  style.stroke: "#3498DB"
+  style.stroke-width: 2
+}
+row3.coroutines.coro_blocked -> row1.reactor.epoll_instance: "register interest\nEPOLL_CTL_ADD" {
+  label: "fd + token"
+  style.stroke: "#9B59B6"
+  style.stroke-dash: 4
+}
+row4.kernel.ready_list -> row1.reactor.epoll_wait: "epoll_wait returns" {
+  label: "ready fds"
+  style.stroke: "#27AE60"
+  style.stroke-width: 2
+}
+# When no runnable coroutines
+row2.scheduler.worker_loop -> row1.reactor.epoll_wait: "no work → poll()" {
+  style.stroke: "#7F8C8D"
+  style.stroke-dash: 4
+}
+# Legend
+legend: {
+  near: bottom-right
+  style.fill: transparent
+  style.stroke: "#BDC3C7"
+  l1: "Block → Wake" {
+    shape: text
+    style.font-color: "#27AE60"
+  }
+  l2: "Yield → Block" {
+    shape: text
+    style.font-color: "#E74C3C"
+  }
+  l3: "Resume Coroutine" {
+    shape: text
+    style.font-color: "#3498DB"
+  }
+  l4: "Register Interest" {
+    shape: text
+    style.font-color: "#9B59B6"
+  }
+}
+# Cycle annotation
+cycle_note: {
+  near: top-right
+  label: |md
+    **Reactor Cycle:**
+    1. epoll_wait blocks (no work)
+    2. Event arrives → wake coroutine
+    3. Scheduler runs coroutine
+    4. Coroutine yields on I/O
+    5. Register interest, repeat
+  |
+  style.fill: "#FEF9E7"
+  style.stroke: "#F39C12"
+}

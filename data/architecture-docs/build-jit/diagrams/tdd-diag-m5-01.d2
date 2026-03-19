@@ -1,0 +1,176 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# DEOPTIMIZATION SYSTEM ARCHITECTURE
+# Implementation-grade layout for VM state reconstruction and safe fallback
+
+jit_executable_memory: "JIT Executable Memory (RX)" {
+  style: {
+    fill: "#f1f1f1"
+    stroke: "#333333"
+    stroke-width: 2
+  }
+
+  jit_function: "JIT'd Native Function" {
+    shape: sql_table
+    header: "Native Code Section"
+    prologue: "0x00: push rbp; mov rbp, rsp"
+    fast_path: "0x04: ... optimized logic ..."
+    guard_instr: "0x1A: test eax, TAG_INT; jnz <stub_addr>" {
+      style.fill: "#ffcccc"
+      style.bold: true
+    }
+    epilogue: "0x80: leave; ret"
+  }
+
+  deopt_stubs: "Deoptimization Stubs" {
+    style.fill: "#fff4dd"
+    stub_n: "Stub for Guard N" {
+      shape: sql_table
+      save_regs: "0x00: push rax...r15 (112 bytes)"
+      set_id: "0x70: mov rdi, entry_id"
+      set_regs: "0x75: lea rsi, [rsp]"
+      set_fp: "0x79: mov rdx, rbp"
+      align_stack: "0x7C: and rsp, -16"
+      call_runtime: "0x80: call deoptimize" {
+        style.stroke: "#ff0000"
+      }
+    }
+  }
+}
+
+c_runtime: "C Runtime Handler" {
+  style.fill: "#e1f5fe"
+  
+  deoptimize_fn: "deoptimize(id, regs, fp)" {
+    shape: rectangle
+    |'md
+    ### Handler Logic
+    1. Lookup `DeoptEntry` by ID
+    2. Invoke `StateReconstructor`
+    3. Update `DeoptProfile` failure counts
+    4. Call `zombie_add()` if blacklisted
+    5. `longjmp()` to interpreter pad
+    '|
+  }
+
+  state_reconstructor: "State Reconstructor" {
+    shape: rectangle
+    |'md
+    ### reconstruct_state()
+    - **Input**: SavedRegs, FramePtr, SideTable
+    - **Action**: Sort mappings by target stack index
+    - **Output**: Malloc'd `InterpFrame`
+    '|
+  }
+}
+
+metadata_heap: "Metadata Side Tables (Heap)" {
+  style.fill: "#f3e5f5"
+
+  deopt_table: "DeoptTable" {
+    shape: sql_table
+    func_id: "int32"
+    entry_count: "int32"
+    entries: "DeoptEntry[]"
+    bytecode_ptr: "uint8_t*"
+  }
+
+  deopt_entry: "DeoptEntry [id=N]" {
+    shape: sql_table
+    style.fill: "#ffffff"
+    pc_offset: "0x00: bytecode_pc_resume" {style.font-color: purple}
+    stack_depth: "0x04: operand_stack_depth"
+    local_count: "0x08: local_var_count"
+    mapping_ptr: "0x10: ValueMapping[]" {style.font-color: orange}
+  }
+
+  value_mapping: "ValueMapping (sizeof=24)" {
+    shape: sql_table
+    style.fill: "#ffffff"
+    source: "0x00: Type [REG|SPILL|CONST]" {style.fill: "#e3f2fd"}
+    loc: "0x04: Source Index/Offset"
+    target: "0x08: Target [STACK|LOCAL]" {style.fill: "#e8f5e9"}
+    target_idx: "0x0C: Target Slot Index"
+    order: "0x10: Sort Order (Stack)"
+  }
+}
+
+interpreter: "Interpreter Execution" {
+  style.fill: "#fffde7"
+  
+  landing_pad: "setjmp(deopt_jmp_buf)" {
+    shape: circle
+    label: "●"
+  }
+
+  interp_loop: "Interpreter Dispatch Loop" {
+    shape: rectangle
+    |'md
+    c
+    while(pc < end) {
+      op = *pc++;
+      dispatch(op);
+    }
+    
+    '|
+  }
+}
+
+# --- CONNECTIONS ---
+
+jit_function.guard_instr -> deopt_stubs.stub_n : "1. Speculation Failure (jmp)" {
+  style: {
+    stroke: red
+    stroke-width: 2
+    animated: true
+  }
+}
+
+deopt_stubs.stub_n -> c_runtime.deoptimize_fn : "2. Transfer to C (call)" {
+  style.stroke: blue
+}
+
+c_runtime.deoptimize_fn -> metadata_heap.deopt_table : "3. Entry Lookup" {
+  style.stroke-dash: 5
+}
+
+metadata_heap.deopt_table -> metadata_heap.deopt_entry : "owns"
+
+c_runtime.deoptimize_fn -> c_runtime.state_reconstructor : "4. Delegate"
+
+c_runtime.state_reconstructor -> metadata_heap.deopt_entry : "5. Read Mappings" {
+  style.stroke-dash: 5
+}
+
+metadata_heap.deopt_entry -> metadata_heap.value_mapping : "defines"
+
+c_runtime.state_reconstructor -> interpreter.interp_loop : "6. Materialize InterpFrame" {
+  style.stroke: orange
+}
+
+c_runtime.deoptimize_fn -> interpreter.landing_pad : "7. Safe Fallback (longjmp)" {
+  style: {
+    stroke: green
+    stroke-width: 2
+    animated: true
+  }
+}
+
+interpreter.landing_pad -> interpreter.interp_loop : "Resume execution"
+
+# Annotations
+annotations: {
+  near: top-center
+  label: |'md
+  ## Deoptimization System Invariants
+  - **Atomic Persistence**: Deopt Table must remain live as long as JIT code is reachable.
+  - **Stack Consistency**: `SavedRegisters` must include callee-saved regs (r12-r15) to restore local variable state.
+  - **Memory Safety**: `mprotect` does not cover Side Tables; they reside in standard malloc heap.
+  '|
+}

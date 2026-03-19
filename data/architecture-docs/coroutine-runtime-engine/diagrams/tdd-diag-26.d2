@@ -1,0 +1,285 @@
+layout-engine: elk
+theme-id: 4
+
+title: "Async I/O Integration Architecture" {
+  near: top-center
+  shape: text
+  style: {
+    font-size: 32
+    bold: true
+    underline: true
+  }
+}
+
+legend: {
+  near: bottom-right
+  shape: rectangle
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#64748b"
+    stroke-width: 1
+    border-radius: 8
+  }
+  label: |md
+    ### Architecture Legend
+    - **Reactor**: Epoll-based event dispatcher (C/C++ runtime level)
+    - **Scheduler**: M:N Work-stealing engine (Chase-Lev deques)
+    - **Coroutines**: Stackful units with 64KB allocated stacks
+    - **Async Sockets**: Non-blocking descriptors (O_NONBLOCK)
+    - **File Pool**: Off-thread blocking operations (POSIX AIO sim)
+    - **Timer Wheel**: Hierarchical timing slots for O(1) scheduling
+  |
+}
+
+# --- Core Component: Reactor ---
+Reactor: {
+  shape: rectangle
+  label: "Reactor Engine\n(Event Demultiplexer)"
+  style: {
+    fill: "#e0f2fe"
+    stroke: "#0891b2"
+    stroke-width: 4
+    border-radius: 8
+    shadow: true
+  }
+  
+  epoll_instance: {
+    label: "epoll_fd (Kernel)"
+    shape: rectangle
+    style: {
+      fill: "#bae6fd"
+      stroke-dash: 2
+    }
+  }
+  
+  waker_map: {
+    label: "Interest Registry\n[Token → Waker]"
+    shape: rectangle
+    style: {
+      fill: "#bae6fd"
+      stroke-dash: 2
+    }
+  }
+  
+  epoll_instance -> waker_map: "Event Dispatch" {
+    style: {
+      stroke: "#0891b2"
+      stroke-width: 2
+    }
+  }
+}
+
+# --- Core Component: Scheduler ---
+Scheduler: {
+  shape: rectangle
+  label: "Global Scheduler\n(Work-Stealing Engine)"
+  style: {
+    fill: "#dcfce7"
+    stroke: "#15803d"
+    stroke-width: 4
+    border-radius: 8
+    shadow: true
+  }
+  
+  local_queues: {
+    label: "Per-Core Local Deques\n(LIFO/FIFO)"
+    shape: rectangle
+    style.fill: "#bbf7d0"
+  }
+  
+  global_queue: {
+    label: "Global Injector Queue"
+    shape: rectangle
+    style.fill: "#bbf7d0"
+  }
+  
+  local_queues <-> global_queue: "Work Balancing" {
+    style.stroke: "#15803d"
+  }
+}
+
+# --- Core Component: Coroutine Definition ---
+Coroutine: {
+  shape: rectangle
+  label: "Stackful Coroutine"
+  style: {
+    fill: "#fef3c7"
+    stroke: "#92400e"
+    stroke-width: 4
+    border-radius: 8
+  }
+  
+  context: {
+    label: "CPU Register Set\n(RIP, RSP, RBX...)"
+    shape: rectangle
+    style.fill: "#fde68a"
+  }
+  
+  stack: {
+    label: "Private Stack Memory\n(Offset 0x0 - 0xFFFF)"
+    shape: rectangle
+    style.fill: "#fde68a"
+  }
+  
+  context -> stack: "points to"
+}
+
+# --- I/O Layer: Async Sockets ---
+AsyncSocket: {
+  shape: rectangle
+  label: "Network Stack\n(Async Sockets)"
+  style: {
+    fill: "#dbeafe"
+    stroke: "#1e40af"
+    stroke-width: 4
+    border-radius: 8
+  }
+  
+  connect_op: "TCP Connect\n(EINPROGRESS)" {
+    shape: rectangle
+    style.fill: "#bfdbfe"
+  }
+  
+  read_op: "Stream Read\n(EAGAIN)" {
+    shape: rectangle
+    style.fill: "#bfdbfe"
+  }
+  
+  write_op: "Stream Write\n(EAGAIN)" {
+    shape: rectangle
+    style.fill: "#bfdbfe"
+  }
+  
+  connect_op -> read_op -> write_op: "State Machine"
+}
+
+# --- I/O Layer: File/Disk Pool ---
+FilePool: {
+  shape: rectangle
+  label: "Blocking I/O Thread Pool\n(Disk/Filesystem)"
+  style: {
+    fill: "#fef9c3"
+    stroke: "#b45309"
+    stroke-width: 4
+    border-radius: 8
+  }
+  
+  worker_1: "Thread 1\npread()" { style.fill: "#fed7aa" }
+  worker_2: "Thread 2\npwrite()" { style.fill: "#fed7aa" }
+  worker_3: "Thread 3\nfsync()" { style.fill: "#fed7aa" }
+}
+
+# --- Timing: Timer Wheel ---
+TimerWheel: {
+  shape: rectangle
+  label: "Hierarchical Timer Wheel"
+  style: {
+    fill: "#f3e8ff"
+    stroke: "#7c3aed"
+    stroke-width: 4
+    border-radius: 8
+  }
+  
+  slot_0: "Tick 0" { shape: square; style.fill: "#e9d5ff" }
+  slot_1: "Tick 1" { shape: square; style.fill: "#e9d5ff" }
+  slot_n: "Tick N" { shape: square; style.fill: "#e9d5ff" }
+  
+  slot_0 -> slot_1 -> slot_n: "O(1) Advance"
+}
+
+# --- Algorithm State: Sequence Diagram ---
+coroutine_blocks: {
+  shape: sequence_diagram
+  label: "Runtime Wakeup & Resume Sequence"
+  
+  participant_coro: Coroutine
+  participant_reactor: Reactor
+  participant_sched: Scheduler
+  
+  participant_coro -> participant_reactor: "1. syscall read() -> EAGAIN" {
+    style.stroke: "#92400e"
+  }
+  participant_reactor -> participant_coro: "2. register(fd, EPOLLIN, waker)" {
+    style.stroke: "#0891b2"
+  }
+  participant_coro -> participant_sched: "3. yield_now(Waiting)" {
+    style.stroke: "#92400e"
+    style.stroke-dash: 3
+  }
+  
+  participant_sched -> participant_sched: "4. schedule_next()\n(Execute other Coros)" {
+    style.stroke: "#15803d"
+  }
+  
+  participant_reactor -> participant_reactor: "5. epoll_wait() -> FD_READY" {
+    style.stroke: "#0891b2"
+  }
+  
+  participant_reactor -> participant_sched: "6. waker.wake(id)" {
+    style: {
+      stroke: "#0891b2"
+      bold: true
+    }
+  }
+  
+  participant_sched -> participant_coro: "7. resume(id)\n(Context Switch)" {
+    style.stroke: "#15803d"
+    style.stroke-width: 3
+  }
+  
+  participant_coro -> participant_reactor: "8. read() -> success" {
+    style.stroke: "#16a34a"
+  }
+}
+
+# --- High-Level Component Connections ---
+Scheduler -> Reactor: "Poll when idle" {
+  style: {
+    stroke-dash: 4
+    animated: true
+  }
+}
+
+Reactor -> Scheduler: "Wakers ready" {
+  style: {
+    stroke: "#15803d"
+    stroke-width: 3
+  }
+}
+
+Coroutine -> FilePool: "Offload blocking op" {
+  style: {
+    stroke: "#b45309"
+    stroke-dash: 2
+  }
+}
+
+FilePool -> Scheduler: "Notify completion" {
+  style.stroke: "#b45309"
+}
+
+TimerWheel -> Scheduler: "Timeout trigger" {
+  style.stroke: "#7c3aed"
+}
+
+# --- Spatial Layout Definitions ---
+# Error Fix: changed 'center' to 'top-center'
+Reactor: { near: top-left }
+Scheduler: { near: top-right }
+AsyncSocket: { near: top-center }
+
+Coroutine: { near: center-left }
+FilePool: { near: center-right }
+
+TimerWheel: { near: bottom-center }
+coroutine_blocks: { near: bottom-left }
+
+# Positioning group for sequence diagram container
+coroutine_blocks_group: {
+  label: "Interaction Protocol"
+  style: {
+    stroke: "#64748b"
+    stroke-dash: 5
+    fill: transparent
+  }
+}

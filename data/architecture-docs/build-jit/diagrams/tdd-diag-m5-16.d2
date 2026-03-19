@@ -1,0 +1,145 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+safe_invalidation_sequence: {
+  shape: sequence_diagram
+
+  # --- Participant Definitions ---
+  BM: BlacklistManager {
+    shape: person
+    tooltip: "Monitors guard failure thresholds and orchestrates invalidation"
+    style.fill: "#E1BEE7"
+  }
+  
+  DT: DispatchTable {
+    tooltip: "Primary indirection table: FunctionID -> NativeEntry (PC-relative)"
+    style.fill: "#C5CAE9"
+    style.stroke-width: 4
+  }
+  
+  ZL: ZombieList {
+    tooltip: "Concurrent lock-free queue for deferred code reclamation"
+    style.fill: "#FFF9C4"
+    style.double-border: true
+  }
+  
+  GC: GCProcessor {
+    tooltip: "Background collector thread performing safepoint stack scanning"
+    style.fill: "#C8E6C9"
+  }
+  
+  Stack: CPUStack {
+    tooltip: "Per-thread active frames containing RIP return addresses"
+    style.fill: "#FFCCBC"
+  }
+  
+  OS: OperatingSystem {
+    tooltip: "Kernel VMM Interface for physical page management"
+    style.fill: "#CFD8DC"
+    style.stroke: "#B71C1C"
+  }
+
+  # --- PHASE 1: IMMEDIATE INVALIDATION (ATOMIC) ---
+  
+  Phase1: "Phase 1: Immediate Invalidation (Atomic)" {
+    BM -> BM: detect_threshold_reached(id: uint32) {
+      note: "Condition: failures >= 3"
+    }
+    
+    BM -> DT: invalidate_entry(func_id) {
+      style.stroke: "#2196F3"
+      style.stroke-width: 2
+    }
+    
+    DT -> DT: atomic_cas(jit_entry, NULL) {
+      note: "▼ Lock Acquire: Global Indirection Lock\nIndirection[id] = NULL\n▲ Lock Release"
+    }
+    
+    BM -> ZL: push_zombie(ptr: void*, sz: size_t) {
+      style.stroke: "#FF9800"
+      note: "Enqueued: Metadata + RefCount=0"
+    }
+  }
+
+  # --- EXECUTION GAP (CONCURRENCY) ---
+  
+  RaceGap: "Race Condition Tolerance Gap" {
+    Stack -> Stack: execute_interpreter_code() {
+      note: "In-flight threads finish; new calls use NULL -> Redirect to Interpreter"
+    }
+  }
+
+  # --- PHASE 2: SAFE RECLAMATION (SAFEPOINT) ---
+  
+  Phase2: "Phase 2: Periodic Reclamation (Safepoint)" {
+    GC -> GC: trigger_sweep_event()
+    
+    GC -> ZL: poll_pending_zombies() {
+      style.stroke: "#2196F3"
+    }
+    ZL -> GC: metadata_vec<code_ptr, size_t>
+    
+    GC -> GC: request_safepoint() {
+      note: "Block mutator thread allocation"
+    }
+    
+    GC.t1 -> Stack.t1: scan_return_pointers() {
+      style.stroke: "#4CAF50"
+      style.stroke-dash: 3
+    }
+    
+    Stack.t1 -> Stack.t1: walk_frames(rip_capture) {
+      note: "Validate no RIP exists in range [ptr, ptr+sz]"
+    }
+    
+    Stack.t1 -> GC.t1: scan_result(is_safe: bool)
+    
+    GC -> OS: munmap(addr: code_ptr, len: size) {
+      style.stroke: "#F44336"
+      style.bold: true
+      note: "VMM: Free physical frames\nTLB: Shootdown sent to all cores"
+    }
+    
+    OS -> GC: ret: 0 (OK)
+    
+    GC -> ZL: commit_removal(zombie_id) {
+      style.stroke: "#2196F3"
+    }
+    
+    GC -> GC: resume_mutators() {
+      note: "Exit Safepoint"
+    }
+  }
+}
+
+# --- Technical Specification Annotation ---
+annotation: {
+  shape: text
+  near: bottom-center
+  label: |md
+    ### Safe Invalidation Invariants (JIT Core v4.2)
+    
+    | Requirement | Mechanism | Failure Mode |
+    | :--- | :--- | :--- |
+    | **Visibility** | Atomic CAS (DT) | Use-after-free (UAF) |
+    | **Quiescence** | Stack Scanning (GC) | Re-entering freed pages |
+    | **Concurrency** | Lock-Free Queue (ZL) | Thread contention on free |
+    | **Consistency** | Safepoint Barrier | Corrupt stack frame walking |
+
+    **Timing Note:** The "Execution Gap" is non-deterministic. The GC processor must wait at least 
+    two full scheduling quanta before attempting a sweep to allow non-safepoint threads 
+    to transition out of native code.
+  |
+}
+
+# Ensure styles apply to absolute paths
+safe_invalidation_sequence.Phase1.style.stroke: "#2196F3"
+safe_invalidation_sequence.Phase2.style.stroke: "#4CAF50"
+
+# Explicit layout overrides for clarity
+safe_invalidation_sequence.ZL.style.stroke-dash: 0
+safe_invalidation_sequence.DT.style.stroke: "#3F51B5"

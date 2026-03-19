@@ -1,0 +1,408 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Chase-Lev Work-Stealing Queue Internals
+  **Single-Producer, Multiple-Consumer (SPMC) Deque**
+| {near: top-center}
+legend_box: {
+  legend: |md
+    **Memory Ordering Requirements:**
+    - `fence(Release)` before storing `bottom` (push)
+    - `fence(SeqCst)` between bottom write and top read (pop)
+    - `fence(SeqCst)` between top read and bottom read (steal)
+  |
+}
+legend_box.near: bottom-right
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  conceptual: {
+    direction: down
+    label: "Conceptual View"
+    owner_ops: {
+      label: "Owner Thread Operations"
+      push: {
+        label: "push(item)"
+        code: |'rust
+          // Reserve slot, write data, publish
+          let b = bottom.load(Relaxed);
+          buffer[b] = item;
+          fence(Release);        // ← Critical!
+          bottom.store(b + 1, Relaxed);
+        '|
+        width: 320
+      }
+      pop: {
+        label: "pop() -> Option<T>"
+        code: |'rust
+          let b = bottom.load(Relaxed) - 1;
+          bottom.store(b, Relaxed);
+          fence(SeqCst);         // ← Critical!
+          let t = top.load(Relaxed);
+          if t <= b { /* item available */ }
+        '|
+        width: 320
+      }
+    }
+    thief_ops: {
+      label: "Thief Thread Operations"
+      steal: {
+        label: "steal() -> Option<T>"
+        code: |'rust
+          let t = top.load(Acquire);
+          fence(SeqCst);         // ← Critical!
+          let b = bottom.load(Acquire);
+          if t >= b { return None; }
+          // CAS to claim item
+          top.compare_exchange(t, t+1, ...)
+        '|
+        width: 320
+      }
+    }
+  }
+  buffer_view: {
+    direction: down
+    label: "Circular Buffer State"
+    buffer_struct: {
+      shape: class
+      label: "WorkStealingQueue<T>"
+      -buffer: "AtomicPtr<Buffer<T>>"
+      -bottom: "AtomicIsize"
+      -top: "AtomicIsize"
+      +push(item: T): "void"
+      +pop(): "Option<T>"
+      +steal(): "Option<T>"
+      +len(): "usize"
+    }
+    buffer_layout: {
+      label: "Circular Buffer (capacity=8)"
+      width: 520
+      slot_row: {
+        direction: right
+        slot0: {
+          label: "[0]"
+          shape: rectangle
+          width: 60
+          height: 50
+        }
+        slot1: {
+          label: "[1]"
+          shape: rectangle
+          width: 60
+          height: 50
+        }
+        slot2: {
+          label: "[2]"
+          shape: rectangle
+          width: 60
+          height: 50
+        }
+        slot3: {
+          label: "[3]"
+          shape: rectangle
+          width: 60
+          height: 50
+        }
+        slot4: {
+          label: "[4]"
+          shape: rectangle
+          width: 60
+          height: 50
+        }
+        slot5: {
+          label: "[5]"
+          shape: rectangle
+          width: 60
+          height: 50
+        }
+        slot6: {
+          label: "[6]"
+          shape: rectangle
+          width: 60
+          height: 50
+        }
+        slot7: {
+          label: "[7]"
+          shape: rectangle
+          width: 60
+          height: 50
+        }
+      }
+      top_ptr: {
+        label: "top = 2"
+        shape: diamond
+        style.fill: "#88DCF7"
+      }
+      bottom_ptr: {
+        label: "bottom = 5"
+        shape: diamond
+        style.fill: "#E4DBFE"
+      }
+    }
+    buffer_layout.top_ptr -> buffer_layout.slot_row.slot2: "steal here"
+    buffer_layout.bottom_ptr -> buffer_layout.slot_row.slot5: "push/pop here"
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  memory_layout: {
+    direction: down
+    label: "Memory Layout & Cache Considerations"
+    cache_line: {
+      shape: sql_table
+      label: "struct WorkStealingQueue (cache-line analysis)"
+      f0: "0x00 | AtomicIsize  | bottom    | CL0 (owner writes)"
+      f1: "0x08 | [u8; 56]     | _pad1     | Padding to CL1"
+      f2: "0x40 | AtomicIsize  | top       | CL1 (thieves CAS)"
+      f3: "0x48 | [u8; 56]     | _pad2     | Padding to CL2"
+      f4: "0x80 | AtomicPtr    | buffer    | CL2 (rarely changes)"
+      sz: "Total: 72 bytes + buffer"
+    }
+    pad_note: {
+      label: |md
+        **Why Padding?**
+        Without padding, `bottom` and `top` share a cache line.
+        Owner writes `bottom`, thieves write `top` → cache bouncing.
+        Padding ensures each atomic is on its own cache line.
+      |
+      width: 320
+    }
+  }
+  ordering: {
+    direction: down
+    label: "Happens-Before Relationships"
+    push_order: {
+      label: "Push: Establishing Visibility"
+      width: 400
+      code: |'rust
+        // 1. Write data to buffer slot
+        ptr::write(buffer.at(b), task);
+        // 2. Release fence ensures write completes
+        //    before bottom is published
+        atomic::fence(Release);
+        // 3. Publish new bottom (thieves can now see task)
+        bottom.store(b + 1, Relaxed);
+      '|
+    }
+    steal_order: {
+      label: "Steal: Observing Consistent State"
+      width: 400
+      code: |'rust
+        // 1. Load top first (what we'll try to claim)
+        let t = top.load(Acquire);
+        // 2. SeqCst fence ensures we see top BEFORE bottom
+        //    Prevents: seeing new bottom with old top
+        atomic::fence(SeqCst);
+        // 3. Load bottom (owner's view of queue size)
+        let b = bottom.load(Acquire);
+        // 4. If t < b, queue is non-empty
+        //    The task at [t] was written before bottom was stored
+      '|
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  race_diagram: {
+    direction: down
+    label: "The Critical Race: Last Item"
+    scenario: {
+      label: "When bottom == top + 1 (one item left)"
+      width: 450
+      timeline: {
+        direction: right
+        owner: {
+          direction: down
+          label: "Owner (pop)"
+          o1: "b = bottom - 1"
+          o2: "bottom = b"
+          o3: "fence(SeqCst)"
+          o4: "t = top"
+          o5: "if t == b: CAS(top, t, t+1)"
+        }
+        thief: {
+          direction: down
+          label: "Thief (steal)"
+          t1: "t = top"
+          t2: "fence(SeqCst)"
+          t3: "b = bottom"
+          t4: "if t < b: CAS(top, t, t+1)"
+        }
+      }
+      race_outcome: {
+        label: "Race Resolution"
+        code: |'rust
+          // Both try to CAS top from t to t+1
+          // Only one succeeds (atomic guarantee)
+          if owner_cas_succeeds {
+              // Owner took the last item
+              // Thief's CAS fails, returns None
+          } else {
+              // Thief took the item
+              // Owner restores bottom and returns None
+              bottom.store(b + 1, Relaxed);
+          }
+        '|
+        width: 420
+      }
+    }
+  }
+  lifo_fifo: {
+    direction: down
+    label: "LIFO vs FIFO: Why the Asymmetry?"
+    lifo_box: {
+      label: "Owner Pop: LIFO (Last In, First Out)"
+      code: |'rust
+        // Pop from bottom - most recently pushed
+        let b = self.bottom.load(Relaxed) - 1;
+        let task = buffer[b];  // Cache HOT!
+      '|
+      width: 380
+      style.fill: "#E4DBFE"
+      lifo_reason: {
+        label: |md
+          **Why LIFO?** Cache locality!
+          The most recently pushed task's data is
+          hottest in L1/L2 cache. Running it next
+          maximizes cache hits.
+        |
+        width: 380
+      }
+    }
+    fifo_box: {
+      label: "Thief Steal: FIFO (First In, First Out)"
+      code: |'rust
+        // Steal from top - oldest waiting task
+        let t = self.top.load(Acquire);
+        let task = buffer[t];  // May be cache COLD
+      '|
+      width: 380
+      style.fill: "#88DCF7"
+      fifo_reason: {
+        label: |md
+          **Why FIFO?** Fairness!
+          The oldest task has been waiting longest.
+          Stealing it minimizes unfairness and
+          prevents starvation of old tasks.
+        |
+        width: 380
+      }
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  growth: {
+    direction: down
+    label: "Buffer Growth Strategy"
+    grow_code: {
+      label: "Growing the Circular Buffer"
+      width: 450
+      code: |'rust
+        fn push(&self, task: T) {
+            let b = self.bottom.load(Relaxed);
+            let t = self.top.load(Acquire);
+            let buffer = self.buffer.load(Relaxed);
+            // Check if buffer is full
+            if b - t >= (*buffer).capacity() {
+                // Double the capacity (up to MAX)
+                let new_cap = min(capacity * 2, MAX_CAPACITY);
+                let new_buffer = allocate(new_cap);
+                // Copy existing elements
+                for i in t..b {
+                    new_buffer[i] = buffer[i];
+                }
+                // Swap buffer pointer
+                // (Old buffer freed later - hazard pointers)
+                self.buffer.store(new_buffer, Release);
+            }
+            // ... continue with push
+        }
+      '|
+    }
+    grow_note: {
+      label: |md
+        **Memory Safety During Growth**
+        Thieves might still be reading the old buffer
+        when we swap pointers. Solutions:
+        1. **Hazard pointers**: Track which buffers
+           are in use, defer freeing
+        2. **Epoch-based reclamation**: Global epoch
+           counter, free buffers when all threads
+           have advanced past the growth epoch
+        3. **Never free**: Accept memory leak (simple
+           but wasteful for long-running programs)
+      |
+      width: 380
+    }
+  }
+  invariants: {
+    direction: down
+    label: "Queue Invariants"
+    inv_list: {
+      shape: sql_table
+      label: "Maintained Invariants"
+      i1: "bottom >= top | always (logical ordering)"
+      i2: "len = bottom - top | number of items"
+      i3: "Empty when | bottom == top"
+      i4: "Owner has exclusive | access to [top, bottom)"
+      i5: "Thieves only modify | top via CAS"
+    }
+    inv_explain: {
+      label: |md
+        **Why These Invariants Matter**
+        The queue is "mostly lock-free" because:
+        - Owner's push/pop are mostly non-atomic
+          (single-threaded access to bottom)
+        - Only contention point is CAS on top
+          when queue has 1 item
+        - SeqCst fences ensure all threads see
+          consistent state at critical points
+        **Performance implication:**
+        Uncontended operations are ~5-10 cycles.
+        Contended (last-item race) is ~50-100 cycles.
+      |
+      width: 380
+    }
+  }
+}
+buffer_layout.slot_row.slot0.style.fill: "#DEE1EB"
+buffer_layout.slot_row.slot1.style.fill: "#DEE1EB"
+buffer_layout.slot_row.slot2.style.fill: "#88DCF7"
+buffer_layout.slot_row.slot3.style.fill: "#E4DBFE"
+buffer_layout.slot_row.slot4.style.fill: "#E4DBFE"
+buffer_layout.slot_row.slot5.style.fill: "#F6C889"
+buffer_layout.slot_row.slot6.style.fill: "#DEE1EB"
+buffer_layout.slot_row.slot7.style.fill: "#DEE1EB"
+buffer_layout.slot2: "[2] ← top (steal)"
+buffer_layout.slot3: "[3] task C"
+buffer_layout.slot4: "[4] task D"
+buffer_layout.slot5: "[5] ← bottom (push/pop)"
+conceptual.owner_ops.push.style.stroke: "#E4DBFE"
+conceptual.owner_ops.push.style.stroke-width: 3
+conceptual.owner_ops.pop.style.stroke: "#E4DBFE"
+conceptual.owner_ops.pop.style.stroke-width: 3
+conceptual.thief_ops.steal.style.stroke: "#88DCF7"
+conceptual.thief_ops.steal.style.stroke-width: 3
+race_diagram.scenario.timeline.owner.o5.style.fill: "#E4DBFE"
+race_diagram.scenario.timeline.thief.t4.style.fill: "#88DCF7"
+race_diagram.scenario.timeline.owner.o1 -> race_diagram.scenario.timeline.owner.o2
+race_diagram.scenario.timeline.owner.o2 -> race_diagram.scenario.timeline.owner.o3
+race_diagram.scenario.timeline.owner.o3 -> race_diagram.scenario.timeline.owner.o4
+race_diagram.scenario.timeline.owner.o4 -> race_diagram.scenario.timeline.owner.o5
+race_diagram.scenario.timeline.thief.t1 -> race_diagram.scenario.timeline.thief.t2
+race_diagram.scenario.timeline.thief.t2 -> race_diagram.scenario.timeline.thief.t3
+race_diagram.scenario.timeline.thief.t3 -> race_diagram.scenario.timeline.thief.t4
+race_diagram.scenario.timeline.owner.o3 -- race_diagram.scenario.timeline.thief.t2: "SeqCst synchronizes" {style.stroke-dash: 4}

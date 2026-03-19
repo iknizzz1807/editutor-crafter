@@ -1,0 +1,168 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# JIT OPTIMIZATION PIPELINE: IR TRANSFORMATION STAGE
+# This diagram defines the exact byte-level transformations during the JIT optimization passes.
+# Engineers should use this to verify opcode mappings and stack depth invariants.
+
+pipeline: {
+  label: "JIT Optimization Pipeline (IR Transformation)"
+  style: {
+    stroke-width: 0
+    fill: transparent
+  }
+
+  input_ir: "Input Bytecode (Raw/Unoptimized)" {
+    shape: sql_table
+    # Header format: Offset | Opcode | Value | Stack Effect
+    00: "0x01 (PUSH_I32) | imm=10 | [10]"
+    05: "0x01 (PUSH_I32) | imm=20 | [10, 20]"
+    10: "0x10 (I32_ADD)  | -      | [30]"
+    11: "0x51 (STORE_L)  | idx=0  | []"
+    13: "0x01 (PUSH_I32) | imm=5  | [5]"
+    18: "0x51 (STORE_L)  | idx=0  | []"
+    20: "0x01 (PUSH_I32) | imm=8  | [8]"
+    25: "0x12 (I32_MUL)  | -      | [loc0 * 8]"
+    26: "0x50 (RET_L)    | idx=0  | []"
+    
+    style: {
+      fill: "#e1f5fe"
+      stroke: "#01579b"
+      stroke-width: 2
+    }
+  }
+
+  pass_1: "Pass 1: Constant Folding" {
+    description: |md
+      ### Logic: Static operand evaluation
+      - Identify sequences where all inputs are literals.
+      - **Pattern:** `I32_PUSH(a); I32_PUSH(b); I32_ADD` → `I32_PUSH(a+b)`
+      - Reductions: 2 instructions removed.
+    |
+    ir_state: {
+      shape: sql_table
+      00: "0x01 (PUSH_I32) | **imm=30** | [30]" {style: {font-color: red; bold: true}}
+      05: "-- (FOLDED) -- | N/A | -" {style: {stroke-dash: 3; font-color: gray}}
+      10: "-- (FOLDED) -- | N/A | -" {style: {stroke-dash: 3; font-color: gray}}
+      11: "0x51 (STORE_L)  | idx=0 | []"
+      13: "0x01 (PUSH_I32) | imm=5 | [5]"
+      18: "0x51 (STORE_L)  | idx=0 | []"
+      20: "0x01 (PUSH_I32) | imm=8 | [8]"
+      25: "0x12 (I32_MUL)  | -     | [loc0 * 8]"
+      26: "0x50 (RET_L)    | idx=0 | []"
+    }
+    
+    style: {
+      fill: "#f3e5f5"
+      stroke: "#4a148c"
+      stroke-width: 2
+    }
+  }
+
+  pass_2: "Pass 2: Dead Store Elimination (DSE)" {
+    description: |md
+      ### Logic: Liveness Analysis
+      - Detect local slot overwrites without intermediate loads.
+      - `STORE loc(0)` @ 11 is redundant because `STORE loc(0)` @ 18 occurs before any `LOAD loc(0)`.
+    |
+    ir_state: {
+      shape: sql_table
+      00: "0x01 (PUSH_I32) | imm=30 | [30]"
+      11: "**0x90 (NOP)**    | -     | -" {style: {font-color: red; bold: true}}
+      12: "**0x90 (NOP)**    | -     | -" {style: {font-color: red; bold: true}}
+      13: "0x01 (PUSH_I32) | imm=5  | [5]"
+      18: "0x51 (STORE_L)  | idx=0  | []"
+      20: "0x01 (PUSH_I32) | imm=8  | [8]"
+      25: "0x12 (I32_MUL)  | -      | [loc0 * 8]"
+      26: "0x50 (RET_L)    | idx=0  | []"
+    }
+    
+    style: {
+      fill: "#e8f5e9"
+      stroke: "#1b5e20"
+      stroke-width: 2
+    }
+  }
+
+  pass_3: "Pass 3: Strength Reduction" {
+    description: |md
+      ### Logic: ALU Optimization
+      - Multiplications by powers of 2 (2^n) → bitwise left shifts (SHL n).
+      - **Logic:** `val * 8` → `val << 3`
+    |
+    ir_state: {
+      shape: sql_table
+      00: "0x01 (PUSH_I32) | imm=30 | [30]"
+      13: "0x01 (PUSH_I32) | imm=5  | [5]"
+      18: "0x51 (STORE_L)  | idx=0  | []"
+      20: "0x01 (PUSH_I32) | **imm=3** | [3]" {style: {font-color: red; bold: true}}
+      25: "**0x22 (I32_SHL)** | -     | [loc0 << 3]" {style: {font-color: red; bold: true}}
+      26: "0x50 (RET_L)    | idx=0 | []"
+    }
+    
+    style: {
+      fill: "#fff3e0"
+      stroke: "#e65100"
+      stroke-width: 2
+    }
+  }
+
+  output_ir: "Optimized Binary Image" {
+    shape: sql_table
+    00: "0x01 0x1E | PUSH_I32 30"
+    02: "0x01 0x05 | PUSH_I32 5"
+    04: "0x51 0x00 | STORE_L 0"
+    06: "0x01 0x03 | PUSH_I32 3"
+    08: "0x22      | SHL"
+    09: "0x50 0x00 | RET_L 0"
+    
+    style: {
+      fill: "#e1f5fe"
+      stroke: "#01579b"
+      stroke-width: 4
+      shadow: true
+    }
+  }
+
+  input_ir -> pass_1: "Stream Parse"
+  pass_1 -> pass_2: "Folded IR"
+  pass_2 -> pass_3: "Pruned IR"
+  pass_3 -> output_ir: "Codegen"
+}
+
+annotation: |md
+  ### Implementation Notes for Engineers
+  - **Memory:** Single-pass streaming using `OptContext` stack-allocated buffers.
+  - **Complexity:** O(N) linear scan for each pass.
+  - **Invariant:** Stack balance must be validated post-pass.
+  - **NOP Stripping:** The final serialization phase removes `0x90` markers.
+| {
+  near: top-left
+}
+
+legend: {
+  near: bottom-right
+  title: "Visual Indicators"
+  m: "Optimized/Modified Row (Red Text)" {
+    style: {
+      font-color: red
+      bold: true
+    }
+  }
+  n: "Redundant/Dead Code (Dashed/Gray)" {
+    style: {
+      stroke-dash: 3
+      font-color: gray
+    }
+  }
+  p: "Final Serialization (Thick Border)" {
+    style: {
+      stroke-width: 4
+    }
+  }
+}

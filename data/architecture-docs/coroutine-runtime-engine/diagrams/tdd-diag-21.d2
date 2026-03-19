@@ -1,0 +1,288 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+  colors: {
+    success: "#4CAF50"
+    decision: "#2196F3"
+    action: "#FF9800"
+    wait: "#9C27B0"
+    bg: "#FAFAFA"
+    error: "#F44336"
+    hot_path: "#D32F2F"
+    text_main: "#212121"
+    border_dim: "#BDBDBD"
+    header: "#673AB7"
+    data: "#03A9F4"
+    padding: "#BDBDBD"
+    pointer: "#FF9800"
+  }
+}
+
+title: |md
+  # find_work Priority Sequence (Implementation Grade)
+  **Worker Thread Decision Tree for Locating Runnable Coroutines**
+  ---
+  *Architectural Specification: CRA-RT-04.2 (Work Stealing Strategy)*
+  *Targeting: Cache Locality & Minimal Atomic Contention*
+| {
+  near: top-center
+  style: {
+    font-size: 18
+    font-color: ${colors.text_main}
+  }
+}
+
+direction: down
+
+# -----------------------------------------------------------------------------
+# NODES DEFINITION
+# -----------------------------------------------------------------------------
+
+# Entry point
+start: {
+  shape: circle
+  style.fill: ${colors.success}
+  style.stroke: "#2E7D32"
+  style.font-color: white
+  style.bold: true
+  label: "ENTRY:\nfind_work()\n[Reg: RDI=worker_ptr]"
+}
+
+# Step 1: Local Queue (LIFO)
+local_check: {
+  shape: diamond
+  style.fill: ${colors.decision}
+  style.stroke: "#1565C0"
+  style.font-color: white
+  label: "1. LOCAL RUNQUEUE\nIs local_stack.top > 0?\n(Non-Atomic Load)"
+}
+
+local_found: {
+  shape: rectangle
+  style.fill: ${colors.success}
+  style.stroke: "#2E7D32"
+  style.font-color: white
+  style.double-border: true
+  style.bold: true
+  label: "RETURN Task (LIFO)\nRegisters: RAX=ptr\nInvariants: L1-Cached / Hot"
+}
+
+# Step 2: Global Queue (FIFO)
+global_check: {
+  shape: diamond
+  style.fill: ${colors.decision}
+  style.stroke: "#1565C0"
+  style.font-color: white
+  label: "2. GLOBAL QUEUE\nGlobal.Lock.TryLock()\n&& Global.Len > 0"
+}
+
+global_found: {
+  shape: rectangle
+  style.fill: ${colors.success}
+  style.stroke: "#2E7D32"
+  style.font-color: white
+  label: "RETURN 1st Task\nRAX=ptr; Local.Push(Batch)\nInvariants: Batch=min(Global, 32)"
+}
+
+# Step 3: Steal Loop (Load Balance)
+steal_check: {
+  shape: diamond
+  style.fill: ${colors.decision}
+  style.stroke: "#1565C0"
+  style.font-color: white
+  label: "3. WORK STEALING\nSelect Random Victim\nCAS(Victim.Tail, val, val-1)"
+}
+
+steal_found: {
+  shape: rectangle
+  style.fill: ${colors.success}
+  style.stroke: "#2E7D32"
+  style.font-color: white
+  label: "RETURN Stolen Task\nRAX=ptr\nInvariants: Steal 1/2 workload"
+}
+
+# Step 4: Iteration Check
+all_empty: {
+  shape: diamond
+  style.fill: ${colors.decision}
+  style.stroke: "#1565C0"
+  style.font-color: white
+  label: "Iteration Limit\nExhausted?\n(iter_count >= K)"
+}
+
+# Progressive Backoff Container
+backoff: {
+  style: {
+    stroke-dash: 5
+    stroke: ${colors.border_dim}
+    fill: "#F5F5F5"
+  }
+  
+  spin_phase: {
+    shape: rectangle
+    style.fill: ${colors.wait}
+    style.stroke: "#4A148C"
+    style.font-color: white
+    label: "SPIN PHASE\nREP PAUSE (32 cycles)\nLow Latency / High Power"
+  }
+
+  yield_phase: {
+    shape: rectangle
+    style.fill: ${colors.wait}
+    style.stroke: "#4A148C"
+    style.font-color: white
+    label: "YIELD PHASE\nsched_yield()\nOS Context Switch Penalty"
+  }
+
+  sleep_phase: {
+    shape: rectangle
+    style.fill: ${colors.wait}
+    style.stroke: "#4A148C"
+    style.font-color: white
+    label: "PARKING PHASE\nfutex_wait(&cond)\nThread Suspended"
+  }
+}
+
+# Final Terminal Checks
+shutdown_check: {
+  shape: diamond
+  style.fill: ${colors.action}
+  style.stroke: "#E65100"
+  style.font-color: white
+  label: "SHUTDOWN SIGNAL?\n(Atomic Load term_flag)"
+}
+
+exit_node: {
+  shape: circle
+  style.fill: ${colors.error}
+  style.stroke: "#B71C1C"
+  style.font-color: white
+  label: "EXIT\nThread Term"
+}
+
+retry_loop: {
+  shape: rectangle
+  label: "INCREMENT ITER_COUNT\nRESEED RNG"
+  style: {
+    font-color: "#444"
+    stroke-dash: 3
+    fill: "#EEEEEE"
+    font-size: 11
+  }
+}
+
+# -----------------------------------------------------------------------------
+# CONNECTIONS & LOGIC FLOW
+# -----------------------------------------------------------------------------
+
+start -> local_check: "Enter [t=0ns]"
+
+local_check -> local_found: "Item Pop Success\n(Thread-Local Only)" {
+  style.stroke: ${colors.hot_path}
+  style.stroke-width: 5
+}
+local_check -> global_check: "Local Empty"
+
+global_check -> global_found: "Mutex Acquired\n(Tasks > 0)"
+global_check -> steal_check: "Lock Contention\nOR Global Empty"
+
+steal_check -> steal_found: "Victim Found\nCAS Success"
+steal_check -> all_empty: "Victim Empty\n(Probe Failure)"
+
+all_empty -> backoff.spin_phase: "iter < 100"
+all_empty -> backoff.yield_phase: "100 <= iter < 500"
+all_empty -> backoff.sleep_phase: "iter >= 500"
+
+backoff.spin_phase -> retry_loop
+backoff.yield_phase -> retry_loop
+backoff.sleep_phase -> shutdown_check: "Wake Event (Futex)"
+
+shutdown_check -> exit_node: "SIG_TERM == 1"
+shutdown_check -> retry_loop: "SIG_TERM == 0"
+
+retry_loop -> local_check: "Loop RESTART" {
+  style.animated: true
+}
+
+# -----------------------------------------------------------------------------
+# ANNOTATIONS & LEGEND
+# -----------------------------------------------------------------------------
+
+priority_note: |'md
+  ## PRIORITY HIERARCHY
+  1. **Local LIFO (Hot Path)**
+     - ~15-20ns latency
+     - Primary cache affinity
+  2. **Global FIFO (Cold Path)**
+     - ~200-500ns latency
+     - Mutex contention bottleneck
+  3. **Work Stealing (Balance Phase)**
+     - ~100ns per victim probe
+     - Cross-core cache line bounce
+'| {
+  near: top-right
+  shape: text
+  style.font-size: 13
+}
+
+perf_metrics: |'md
+  ## LATENCY TARGETS
+  - **Fast-Path Pop**: < 25ns
+  - **Victim Probe**: ~120ns
+  - **OS Yield**: ~2,500ns
+  - **Futex Sleep**: ~12,000ns (Wakeup)
+'| {
+  near: center-right
+  shape: text
+  style.font-size: 13
+}
+
+# Fixed Memory Layout Block using constant positioning
+struct_info: |'md
+  ### WorkerState Layout (Memory)
+  | Offset | Field | Type | Cache Line |
+  |:---|:---|:---|:---|
+  | 0x00 | local_q | ring_buffer | Line 0 |
+  | 0x40 | padding | [64]byte | Line 1 |
+  | 0x80 | rng_seed | u64 | Line 2 |
+  | 0x88 | iter_cnt | u32 | Line 2 |
+  | 0x8C | term_flg | atomic_bool | Line 2 |
+'| {
+  near: bottom-left
+  shape: rectangle
+  style: {
+    fill: "#E3F2FD"
+    stroke: "#1E88E5"
+    font-size: 12
+  }
+}
+
+legend: {
+  near: bottom-right
+  style.fill: ${colors.bg}
+  style.stroke: ${colors.border_dim}
+  style.border-radius: 4
+  
+  l_title: "**LEGEND**" { shape: text }
+  l_dec: "Execution Decision" {
+    shape: diamond
+    style.fill: ${colors.decision}
+  }
+  l_ret: "Return Success" {
+    shape: rectangle
+    style.fill: ${colors.success}
+    style.double-border: true
+  }
+  l_hot: "CRITICAL HOT PATH" {
+    shape: rectangle
+    style.stroke: ${colors.hot_path}
+    style.stroke-width: 4
+  }
+  l_wait: "Backoff / Idle" {
+    shape: rectangle
+    style.fill: ${colors.wait}
+  }
+}

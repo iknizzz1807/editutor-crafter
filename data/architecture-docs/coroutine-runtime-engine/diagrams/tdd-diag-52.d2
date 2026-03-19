@@ -1,0 +1,278 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    theme-id: 4
+    layout-engine: elk
+  }
+}
+
+title: |'md
+  # Async Primitives & Coroutine Lifecycle
+  ## Technical Implementation Specification
+'| {
+  near: top-center
+  shape: rectangle
+  style: {
+    stroke-width: 0
+    font-size: 24
+    bold: true
+    fill: transparent
+  }
+}
+
+# 1. AsyncMutexGuard Lifecycle & Mutex Contention Loop
+# Implementation Detail: Uses AtomicU32 for state (0=Unlocked, 1=Locked, 2=Contended)
+async_mutex_lifecycle: {
+  label: "AsyncMutexGuard Lifecycle (State Machine)"
+  
+  locked: "Mutex Locked" {
+    shape: rectangle
+    style.fill: "#FCA5A5"
+    tooltip: "Invariants: Owner set, Atomic state = 1"
+  }
+  
+  retry_loop: "Loop: Retry Acquisition" {
+    shape: diamond
+    style.fill: "#FEF3C7"
+    tooltip: "Atomic CAS operation target"
+  }
+  
+  suspended: "Coroutine Suspended" {
+    shape: rectangle
+    style.fill: "#CBD5E1"
+    style.stroke-dash: 5
+    tooltip: "Pushed to Mutex wait_queue"
+  }
+  
+  resumed: "Coroutine Resumed" {
+    shape: rectangle
+    style.fill: "#BAE6FD"
+    tooltip: "Popped from wait_queue by Unlocker"
+  }
+  
+  acquired: "Mutex Acquired (Guard Created)" {
+    shape: rectangle
+    style.fill: "#BBF7D0"
+    style.double-border: true
+    tooltip: "RAII Guard instantiated on stack"
+  }
+
+  locked -> retry_loop: "lock() called"
+  retry_loop -> suspended: "compare_exchange (CAS) fails" {
+    style.stroke: red
+    label: "Contention"
+  }
+  suspended -> resumed: "Woken by previous owner" {
+    style.stroke-dash: 3
+  }
+  resumed -> retry_loop: "Retry acquisition"
+  retry_loop -> acquired: "compare_exchange (CAS) success" {
+    style.stroke: green
+    label: "Lock Won"
+  }
+  acquired -> locked: "Critical Section"
+  locked -> released: "Guard Drop (Release lock)" {
+    style.stroke: "#EF4444"
+    target-arrowhead: * {
+      shape: circle
+    }
+  }
+}
+
+# 2. CoroutineWaker State Machine
+# Critical for avoiding lost-wakeup bugs in async runtimes
+coroutine_waker: {
+  label: "CoroutineWaker Internals"
+  
+  start: "●" {shape: circle}
+  set_state: "Set State (Pending)" {
+    shape: rectangle
+    style.fill: "#E0E7FF"
+  }
+  wake_state: "Wake State (Signaled)" {
+    shape: rectangle
+    style.fill: "#DCFCE7"
+  }
+  
+  is_woken_check: "is_woken?" {
+    shape: diamond
+  }
+  
+  result_yes: "Return (Ready)" {
+    style.stroke: green
+    style.stroke-width: 2
+  }
+  result_no: "Yield / Block" {
+    style.stroke: red
+    style.stroke-dash: 3
+  }
+
+  start -> set_state: "new()"
+  start -> wake_state: "external signal"
+  set_state -> is_woken_check: "poll()"
+  is_woken_check -> result_yes: "Yes (Atomic swap)"
+  is_woken_check -> result_no: "No"
+}
+
+# 3. MPSC Channel State Machine
+# Multi-Producer Single-Consumer Unbounded/Bounded implementation
+mpsc_channel: {
+  label: "MPSC Channel Lifecycle"
+  
+  open_init: "Open (Sender/Receiver Alive)" {
+    shape: rectangle
+  }
+  
+  empty: "Empty" {
+    style.fill: "#F1F5F9"
+    tooltip: "Consumer blocks on recv()"
+  }
+  non_empty: "Non-Empty" {
+    style.fill: "#DBEAFE"
+  }
+  full: "Full" {
+    style.fill: "#FEE2E2"
+    tooltip: "Producers block if bounded"
+  }
+  closed: "Closed" {
+    style.fill: "#334155"
+    style.font-color: white
+    tooltip: "Illegal to send(); recv() returns remaining then Error"
+  }
+
+  open_init -> empty
+  empty -> non_empty: "send()"
+  non_empty -> non_empty: "send() / recv()"
+  non_empty -> full: "send() [at capacity]"
+  full -> non_empty: "recv()"
+  full -> full: "send() [yields]" {
+    style.stroke-dash: 3
+  }
+  
+  empty -> closed: "receiver dropped"
+  non_empty -> closed: "all senders dropped"
+  full -> closed: "receiver dropped" {
+    style.stroke: red
+    label: "Broken Pipe"
+  }
+}
+
+# 4. Scheduler Shutdown Sequence
+shutdown_sequence: {
+  label: "Scheduler Shutdown State Machine"
+  
+  running: "Running" {shape: rectangle}
+  draining: "Draining State" {
+    shape: rectangle
+    style.fill: "#FFEDD5"
+    tooltip: "Waiting for runnable coroutines to complete"
+  }
+  
+  success: "Success (Clean)" {
+    style.fill: "#DCFCE7"
+  }
+  timeout: "Timeout (Forced)" {
+    style.fill: "#FEE2E2"
+    style.font-color: "#B91C1C"
+  }
+  exited: "Exited (Terminated)" {
+    shape: circle
+    style.double-border: true
+  }
+
+  running -> draining: "SIGTERM / shutdown()"
+  draining -> success: "all coroutines complete"
+  draining -> timeout: "timeout_ms reached"
+  success -> exited: "join worker threads"
+  timeout -> exited: "terminate & join"
+}
+
+# 5. Memory & Performance Specifications (Reference Data)
+# FIXED: Using |' ... '| to handle nested Markdown pipes correctly
+technical_specs: |'md
+  ### Performance Targets
+  | Operation | Target | Measurement |
+  |-----------|--------|-------------|
+  | Mutex lock (uncontended) | < 50 ns | 1M cycles |
+  | Mutex lock (contended) | < 500 ns | 10 coroutines |
+  | Channel send | < 100 ns | 1M pairs |
+  | Spawn throughput | > 500K/sec | 100K spawns |
+  | Memory / Coroutine | 64KB + 200B | Stack + Struct |
+
+  ### Syscall Inventory
+  | Syscall | Context | Frequency |
+  |---------|---------|-----------|
+  | `futex` | Condvar Wake | Rare (Idle) |
+  | `mmap` | Stack Alloc | Once / Spawn |
+  | `mprotect` | Guard Pages | Once / Spawn |
+  | `timer_settime` | Preemption | Once / Worker |
+'| {
+  near: bottom-center
+  shape: rectangle
+  style: {
+    fill: "#F8FAFC"
+    stroke: "#475569"
+    border-radius: 8
+  }
+}
+
+# Layout Connections
+async_mutex_lifecycle -> technical_specs: "Performance Metrics"
+mpsc_channel -> technical_specs: "Throughput Targets"
+shutdown_sequence -> technical_specs: "Graceful Shutdown Limit"
+
+# Styling Global
+***: {
+  style: {
+    font: mono
+  }
+}
+
+# Memory Layout Visualization (Internal Manual Detail)
+# Rule #1: Exact byte offsets and cache line alignment
+coroutine_memory_layout: {
+  label: "Coroutine Memory Mapping (64.2 KB total)"
+  direction: right
+  
+  header: "Memory Segment Map" {
+    grid-columns: 1
+    
+    guard: "Guard Page (PROT_NONE)" {
+      label: "0x0000 | Guard Page | 4096B"
+      style: {
+        fill: "#9CA3AF"
+        opacity: 0.5
+        stroke-dash: 2
+        bold: true
+      }
+    }
+    
+    stack: "Stack Space (PROT_READ|PROT_WRITE)" {
+      label: "0x1000 | Coroutine Stack (Grows Down) | 65536B"
+      style.fill: "#93C5FD"
+    }
+    
+    cache_line_sep: "" {
+      shape: text
+      label: "---------------- L1 Cache Line Boundary (64B) ----------------"
+      style.font-color: "#64748B"
+    }
+    
+    control: "Control Block (TCB)" {
+      label: "0x11000 | TCB (Context + State) | 200B"
+      style.fill: "#C084FC"
+      style.stroke: "#7E22CE"
+      tooltip: "Contains registers: RSP, RIP, RBP, RBX, R12-R15"
+    }
+    
+    padding: "Alignment Padding" {
+      label: "0x110C8 | Padding | 56B"
+      style.fill: "#E2E8F0"
+    }
+  }
+  
+  guard -> stack: "Stack Overflow Trap" {style.stroke: red}
+  stack -> control: "Context Switch target"
+}
+
+coroutine_memory_layout.near: center-right

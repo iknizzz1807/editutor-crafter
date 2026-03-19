@@ -1,0 +1,319 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Async Condition Variable Pattern
+  Coroutine-aware wait/signal with yield-based blocking
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  condvar: {
+    direction: down
+    label: "AsyncCondvar (condvar.rs)"
+    condvar_struct: {
+      shape: sql_table
+      label: "struct AsyncCondvar"
+      f0: "0x00 | Mutex<VecDeque<...>> | waiters"
+      f1: "0x08 | AtomicUsize       | waiter_count"
+      note: "Wait queue protected by internal mutex"
+    }
+    waiters_queue: {
+      label: "Wait Queue State"
+      direction: right
+      empty: {
+        label: "Empty"
+        shape: queue
+        style.fill: "#E8E8E8"
+      }
+      has_waiters: {
+        label: "Has Waiters"
+        shape: queue
+        style.fill: "#FFF9C9"
+        w1: {label: "W1"; shape: circle; style.fill: "#C7F1FF"}
+        w2: {label: "W2"; shape: circle; style.fill: "#C7F1FF"}
+        w3: {label: "W3"; shape: circle; style.fill: "#C7F1FF"}
+        w1 -> w2 -> w3
+      }
+    }
+  }
+  mutex_section: {
+    direction: down
+    label: "Paired AsyncMutex"
+    mutex_struct: {
+      shape: class
+      label: "AsyncMutex<T>"
+      -locked: "AtomicBool"
+      -data: "UnsafeCell<T>"
+      -waiters: "Mutex<VecDeque<...>>"
+      +lock(): "AsyncMutexGuard<'_, T>"
+    }
+    guard_struct: {
+      shape: class
+      label: "AsyncMutexGuard<'a, T>"
+      -mutex: "&'a AsyncMutex<T>"
+      +deref(): "&T"
+      +deref_mut(): "&mut T"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  wait_flow: {
+    direction: down
+    label: "wait(guard) Flow"
+    wait_step1: {
+      label: "1. Create Waker"
+      width: 320
+      code: |'rust
+        let waker = Arc::new(CoroutineWaker::new());
+      '|
+    }
+    wait_step2: {
+      label: "2. Add to Wait Queue"
+      width: 320
+      code: |'rust
+        self.waiters.lock().unwrap()
+            .push_back(Arc::clone(&waker));
+      '|
+    }
+    wait_step3: {
+      label: "3. Drop Guard (Release Mutex)"
+      width: 320
+      code: |'rust
+        let mutex = guard.mutex;
+        drop(guard);  // Releases lock
+      '|
+      style.stroke: "#FE7070"
+    }
+    wait_step4: {
+      label: "4. Yield Until Woken"
+      width: 320
+      code: |'rust
+        waker.await;  // Coroutine suspends here
+      '|
+      style.fill: "#E4DBFE"
+    }
+    wait_step5: {
+      label: "5. Re-acquire Mutex"
+      width: 320
+      code: |'rust
+        mutex.lock().await  // Returns new guard
+      '|
+      style.fill: "#ACE1AF"
+    }
+    wait_step1 -> wait_step2 -> wait_step3 -> wait_step4 -> wait_step5
+  }
+  signal_flow: {
+    direction: down
+    label: "notify_one() / notify_all() Flow"
+    signal_one: {
+      label: "notify_one()"
+      width: 340
+      one_code: {
+        label: "Wake Single Waiter"
+        code: |'rust
+          if let Some(waker) = self.waiters
+              .lock().unwrap().pop_front() 
+          {
+              waker.wake();  // Schedule coroutine
+          }
+        '|
+      }
+      one_arrow: {
+        label: "FIFO Order"
+        style.stroke: "#3D9069"
+      }
+    }
+    signal_all: {
+      label: "notify_all()"
+      width: 340
+      style.fill: "#FFF9C9"
+      all_code: {
+        label: "Wake All Waiters"
+        code: |'rust
+          let waiters: Vec<_> = self.waiters
+              .lock().unwrap().drain(..).collect();
+          for waker in waiters {
+              waker.wake();  // All become Runnable
+          }
+        '|
+      }
+    }
+    signal_one -> signal_all
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  timeline: {
+    direction: down
+    label: "Producer-Consumer Timeline"
+    producer: {
+      label: "Producer Coroutine"
+      shape: sequence_diagram
+      p_lock: "lock(mutex)"
+      p_check: "queue full?"
+      p_wait: "wait(not_full, guard)"
+      p_push: "push(item)"
+      p_notify: "notify_one(not_empty)"
+      p_lock -> p_check
+      p_check -> p_wait: "yes"
+      p_check -> p_push: "no"
+      p_wait -> p_push
+      p_push -> p_notify
+    }
+    consumer: {
+      label: "Consumer Coroutine"
+      shape: sequence_diagram
+      c_lock: "lock(mutex)"
+      c_check: "queue empty?"
+      c_wait: "wait(not_empty, guard)"
+      c_pop: "pop(item)"
+      c_notify: "notify_one(not_full)"
+      c_lock -> c_check
+      c_check -> c_wait: "yes"
+      c_check -> c_pop: "no"
+      c_wait -> c_pop
+      c_pop -> c_notify
+    }
+    producer.p_notify -> consumer.c_wait: "wakes"
+    consumer.c_notify -> producer.p_wait: "wakes"
+  }
+  waker_detail: {
+    direction: down
+    label: "CoroutineWaker Details"
+    waker_struct: {
+      shape: sql_table
+      label: "struct CoroutineWaker"
+      f0: "0x00 | AtomicBool     | woken"
+      f1: "0x08 | Mutex<*mut>    | coroutine"
+      f2: "0x10 | Weak<Scheduler>| scheduler"
+    }
+    waker_methods: {
+      shape: class
+      label: "impl CoroutineWaker"
+      +is_woken(): "bool"
+      +set_coroutine(ptr): "void"
+      +wake(): "void"
+      +await(): "void"
+    }
+    wake_impl: {
+      label: "wake() Implementation"
+      code: |'rust
+        fn wake(&self) {
+          // Only wake once
+          if self.woken.swap(true, AcqRel) {
+            return;
+          }
+          if let Some(ptr) = self.coroutine.lock().take() {
+            unsafe {
+              (*ptr).state = Runnable;
+              if let Some(sched) = self.scheduler.upgrade() {
+                sched.spawn_existing(&mut *ptr);
+              }
+            }
+          }
+        }
+      '|
+      width: 380
+    }
+    waker_struct -> waker_methods -> wake_impl
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  spurious: {
+    label: "Spurious Wakeup Handling"
+    direction: down
+    wrong: {
+      label: "WRONG - Assumes condition true"
+      style.fill: "#FFE0E0"
+      code: |'rust
+        let guard = condvar.wait(guard).await;
+        // BUG: condition might be false!
+        process_item(&guard);
+      '|
+      width: 360
+    }
+    correct: {
+      label: "CORRECT - Loop checks condition"
+      style.fill: "#E0FFE0"
+      code: |'rust
+        let guard = mutex.lock().await;
+        while !condition_met(&guard) {
+          guard = condvar.wait(guard).await;
+        }
+        // Now condition is definitely true
+        process_item(&guard);
+      '|
+      width: 360
+    }
+    wrong -> correct: "Fix with loop"
+  }
+  state_diagram: {
+    label: "Wait State Transitions"
+    direction: down
+    runnable: {
+      label: "Runnable"
+      shape: circle
+      style.fill: "#ACE1AF"
+    }
+    blocked: {
+      label: "Blocked"
+      shape: circle
+      style.fill: "#FFF9C9"
+    }
+    running: {
+      label: "Running"
+      shape: circle
+      style.fill: "#C7F1FF"
+    }
+    runnable -> running: "scheduled"
+    running -> blocked: "wait() yields"
+    blocked -> runnable: "notify_one/all()"
+    running -> runnable: "yield_now()"
+  }
+}
+legend: {
+  near: bottom-right
+  label: "Legend"
+  direction: right
+  yield_node: {
+    label: "Yield Point"
+    shape: rectangle
+    style.fill: "#E4DBFE"
+  }
+  release_node: {
+    label: "Mutex Release"
+    shape: rectangle
+    style.stroke: "#FE7070"
+  }
+  acquire_node: {
+    label: "Mutex Acquire"
+    shape: rectangle
+    style.fill: "#ACE1AF"
+  }
+  wait_queue: {
+    label: "Wait Queue"
+    shape: queue
+    style.fill: "#FFF9C9"
+  }
+}
+condvar_struct -> waiters_queue
+mutex_struct -> guard_struct
+wait_flow -> signal_flow
+producer -> consumer
+waker_struct -> waker_methods
+wrong -> correct
+runnable -> running -> blocked -> runnable

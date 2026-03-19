@@ -1,0 +1,239 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# JIT CODE REGION (RX MEMORY)
+# Structure: [Offset] | [Field Name] | [Size]
+jit_code_buffer: {
+  label: "JIT Code Buffer (RX Memory)\nLocation: 0x7f0000000000\nsizeof=4096 bytes (page aligned)"
+  tooltip: "Executable memory region containing generated machine code."
+  style: {
+    stroke-width: 4 # BOLD LINE = Page Boundary (4096B)
+    fill: "#f8f9fa"
+    stroke: black
+    double-border: true
+  }
+
+  prologue: "0x0000 | Function Prologue | 16 Bytes" {
+    tooltip: "nasm\npush rbp\nmov rbp, rsp\nsub rsp, 32"
+    shape: rectangle
+    style.fill: "#e1d5e7" # Purple (Header)
+  }
+
+  # --- GUARD 1 BLOCK ---
+  guard_1: "0x0010 | GUARD 1: Type Speculation | 11 Bytes" {
+    style: {
+      fill: "#fff2cc" # Yellow (Check)
+      stroke-dash: 2
+    }
+    asm: |'md
+    nasm
+    0x1007: test rdi, 0x7      ; TAG_MASK (Check if Integer)
+    0x100B: jnz  stub_1_rel32  ; Branch to Deopt Stub 1
+    
+    '|
+  }
+
+  fast_path_1: "0x001B | Speculative Fast Path (Integer Add) | 32 Bytes" {
+    tooltip: "Native integer addition without boxing checks"
+    style.fill: "#dae8fc" # Blue (Data/Logic)
+  }
+
+  # --- CACHE LINE BOUNDARY (64B) ---
+  cache_line_boundary: "---------------- 0x0040 | 64B CACHE LINE BOUNDARY | L1D HIT LIMIT ----------------" {
+    shape: rectangle
+    style: {
+      stroke: "#808080"
+      stroke-dash: 5 # DASHED = Cache line (64B)
+      stroke-width: 1
+      fill: transparent
+      font-color: "#808080"
+      font-size: 10
+    }
+  }
+
+  # --- GUARD 2 BLOCK ---
+  guard_2: "0x0040 | GUARD 2: Bounds Speculation | 6 Bytes" {
+    style: {
+      fill: "#fff2cc"
+      stroke-dash: 2
+    }
+    asm: |'md
+    nasm
+    0x1015: cmp rsi, r8        ; index vs array_length
+    0x1018: jae stub_2_rel32   ; Branch to Deopt Stub 2
+    
+    '|
+  }
+
+  fast_path_2: "0x0046 | Speculative Fast Path (Array Load) | 48 Bytes" {
+    tooltip: "mov rax, [rdx + rsi*8]"
+    style.fill: "#dae8fc"
+  }
+
+  padding: "0x0076 | Instruction Padding / NOP-Sled | 138 Bytes" {
+    style: {
+      fill: "#e0e0e0" # Gray (Padding)
+      stroke-dash: 3
+    }
+  }
+
+  epilogue: "0x0100 | Function Epilogue | 8 Bytes" {
+    tooltip: "leave\nret"
+    style.fill: "#e1d5e7" # Purple (Header)
+  }
+
+  # Control Flow Logic
+  prologue -> guard_1: "Fetch"
+  guard_1 -> fast_path_1: "PASS (Fall-through)" {
+    style: {
+      stroke: "#28a745" # Green
+      stroke-width: 3
+    }
+  }
+  fast_path_1 -> guard_2: "Next Instr"
+  guard_2 -> fast_path_2: "PASS (Fall-through)" {
+    style: {
+      stroke: "#28a745"
+      stroke-width: 3
+    }
+  }
+  fast_path_2 -> epilogue: "Return"
+}
+
+# DEOPTIMIZATION STUBS (RX MEMORY)
+deopt_stubs: {
+  label: "Deopt Stub Table (RX Memory)\nRecovery Logic"
+  style: {
+    fill: "#fff5f5"
+    stroke: "#c82333"
+    stroke-width: 2
+  }
+
+  stub_1: "STUB 1: Type Mismatch Fallback" {
+    style.fill: "#f8cecc" # Red-tinted (Error/Fallback)
+    asm: |'md
+    nasm
+    push_all_regs              ; Snapshot state
+    mov rdi, 0                 ; GuardID=0
+    mov rsi, rsp               ; Register context
+    call runtime_deoptimize    ; Switch to Interpreter
+    
+    '|
+  }
+
+  stub_2: "STUB 2: Bounds Check Fallback" {
+    style.fill: "#f8cecc"
+    asm: |'md
+    nasm
+    push_all_regs
+    mov rdi, 1                 ; GuardID=1
+    mov rsi, rsp
+    call runtime_deoptimize
+    
+    '|
+  }
+}
+
+# SIDE TABLES (READ-ONLY METADATA)
+side_tables: {
+  label: "JIT Metadata (Read-Only Table)"
+  shape: sql_table
+  style.fill: "#e3f2fd"
+  
+  deopt_map: {
+    shape: sql_table
+    id: GuardID {constraint: PK}
+    jit_pc: JIT_Offset {constraint: UNQ}
+    bytecode_pc: Bytecode_PC
+    reg_map: Register_Mapping
+    
+    0: "0x1007" | "12" | "rdi:arg0, rax:result"
+    1: "0x1015" | "24" | "rsi:idx, rdx:arr"
+  }
+}
+
+# CROSS-REGION CONNECTIONS
+jit_code_buffer.guard_1 -> deopt_stubs.stub_1: "FAIL: Type Check (JNZ)" {
+  style: {
+    stroke: "#dc3545" # Red
+    stroke-width: 2
+    animated: true
+  }
+}
+
+jit_code_buffer.guard_2 -> deopt_stubs.stub_2: "FAIL: OOB (JAE)" {
+  style: {
+    stroke: "#dc3545"
+    stroke-width: 2
+    animated: true
+  }
+}
+
+# Mapping References
+side_tables.deopt_map.0 -> jit_code_buffer.guard_1: "Registers for ID 0" {
+  style: {
+    stroke: "#ff9900" # Orange (Reference)
+    stroke-dash: 5
+  }
+}
+
+side_tables.deopt_map.1 -> jit_code_buffer.guard_2: "Registers for ID 1" {
+  style: {
+    stroke: "#ff9900"
+    stroke-dash: 5
+  }
+}
+
+# INTERPRETER RESUMPTION
+interpreter: "Baseline Interpreter\n(Software Fallback)" {
+  shape: cylinder
+  style.fill: "#ffffff"
+  style.stroke-width: 2
+}
+
+deopt_stubs.stub_1 -> interpreter: "Resume at PC 12" {
+  source-arrowhead: diamond
+  style: {
+    stroke: "#ea6b66"
+    stroke-width: 2
+    stroke-dash: 2
+  }
+}
+
+deopt_stubs.stub_2 -> interpreter: "Resume at PC 24" {
+  source-arrowhead: diamond
+  style: {
+    stroke: "#ea6b66"
+    stroke-width: 2
+    stroke-dash: 2
+  }
+}
+
+# LEGEND
+legend: {
+  near: bottom-right
+  fast_path: "Speculative Fast Path" {
+    style.fill: "#dae8fc"
+  }
+  deopt: "Recovery Stub" {
+    style.fill: "#f8cecc"
+  }
+  guard: "Condition Check" {
+    style.fill: "#fff2cc"
+  }
+  meta: "Side Table (RO)" {
+    style.fill: "#e3f2fd"
+    style.stroke: "#ff9900"
+  }
+  page_edge: "Page Boundary (4KB)" {
+    style.stroke-width: 4
+  }
+  cache_edge: "Cache Boundary (64B)" {
+    style.stroke-dash: 5
+  }
+}

@@ -1,0 +1,234 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: right
+
+title: |'md
+  # Chase-Lev Deque: Owner Pop Algorithm
+  Implementation-grade state transition and concurrency logic.
+'| {
+  near: top-center
+  style.font-size: 24
+}
+
+# -----------------------------------------------------------------------------
+# STEP 1: LOAD & RESERVE
+# -----------------------------------------------------------------------------
+step1: {
+  label: "Step 1: Reservation"
+  style.stroke: "#2196F3"
+  style.stroke-width: 4
+  
+  content: {
+    shape: sql_table
+    "Register RAX": "b (Bottom Index)"
+    "Memory [bottom]": "**b - 1**" {style.font-color: red}
+  }
+
+  code: |'md
+    asm
+    mov rax, [bottom]     ; Read current bottom
+    dec rax               ; Decrement (b-1)
+    mov [bottom], rax     ; Tentative store
+    
+  '|
+
+  note: |'md
+    **Invariants:**
+    1. We claim the slot *before* checking if it's valid.
+    2. Thieves see a smaller queue immediately.
+  '| {style.fill: "#E3F2FD"}
+}
+
+# -----------------------------------------------------------------------------
+# STEP 2: MEMORY FENCE
+# -----------------------------------------------------------------------------
+step2: {
+  label: "Step 2: SeqCst Fence"
+  style.stroke: "#FF9800"
+  style.stroke-width: 4
+
+  content: |'md
+    ### mfence / xchg
+    Prevents reordering of:
+    - **Store** [bottom] (Step 1)
+    - **Load** [top] (Step 3)
+  '|
+
+  code: |'md
+    asm
+    mfence                ; Ensure visibility
+    
+  '|
+}
+
+# -----------------------------------------------------------------------------
+# STEP 3: LOAD TOP
+# -----------------------------------------------------------------------------
+step3: {
+  label: "Step 3: Conflict Check"
+  style.stroke: "#4CAF50"
+  style.stroke-width: 4
+
+  content: {
+    shape: sql_table
+    "Register RCX": "t (Top Index)"
+    "Comparison": "t vs b-1"
+  }
+
+  code: |'md
+    asm
+    mov rcx, [top]        ; Read thief index
+    
+  '|
+}
+
+# -----------------------------------------------------------------------------
+# DECISION LOGIC
+# -----------------------------------------------------------------------------
+decision: {
+  shape: diamond
+  label: "t vs (b-1)"
+  style.fill: "#F3E5F5"
+}
+
+# -----------------------------------------------------------------------------
+# OUTCOME: EMPTY
+# -----------------------------------------------------------------------------
+outcome_empty: {
+  label: "EMPTY CASE (t > b-1)"
+  style.fill: "#FFEBEE"
+  style.stroke: "#B71C1C"
+
+  code: |'md
+    asm
+    mov rax, [bottom]
+    inc rax
+    mov [bottom], rax     ; Restore bottom
+    xor rax, rax          ; return NULL
+    ret
+    
+  '|
+  
+  diag: |'md
+    **State:**
+    - Bottom restored to original value.
+    - No synchronization needed with thieves.
+  '|
+}
+
+# -----------------------------------------------------------------------------
+# OUTCOME: SINGLE ITEM RACE
+# -----------------------------------------------------------------------------
+outcome_race: {
+  label: "RACE CASE (t == b-1)"
+  style.fill: "#FFF8E1"
+  style.stroke: "#FBC02D"
+
+  code: |'md
+    asm
+    mov rdi, [buffer + b*8] ; Read object
+    mov rax, rcx            ; expected t
+    lea rdx, [rcx + 1]      ; new t+1
+    lock cmpxchg [top], rdx ; CAS(top, t, t+1)
+    jnz .lost_race
+    ; ... success ...
+    
+  '|
+
+  cas_viz: {
+    shape: rectangle
+    label: "Atomic CAS Detail"
+    style.stroke-dash: 3
+    "Input": "t"
+    "Target": "t + 1"
+    "Constraint": "Lock Prefix Required"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# OUTCOME: MULTI-ITEM (SAFE)
+# -----------------------------------------------------------------------------
+outcome_safe: {
+  label: "SAFE CASE (t < b-1)"
+  style.fill: "#E8F5E9"
+  style.stroke: "#2E7D32"
+
+  code: |'md
+    asm
+    mov rax, [buffer + b*8] ; Extract item
+    ret                     ; Success
+    
+  '|
+  
+  diag: |'md
+    **Logic:**
+    Thieves are at index `t`. 
+    Owner is at `b-1`.
+    Since `t < b-1`, no overlap is possible.
+  '|
+}
+
+# -----------------------------------------------------------------------------
+# MEMORY LAYOUT VISUALIZATION
+# -----------------------------------------------------------------------------
+memory_viz: {
+  label: "Physical Buffer Layout"
+  style.fill: "#F5F5F5"
+  
+  buffer: {
+    direction: right
+    slot0: "Data [0]" {style.fill: "#CFD8DC"}
+    slot1: "Data [1]" {style.fill: "#CFD8DC"}
+    slot2: "Top [t]" {style.fill: "#C8E6C9"; style.stroke: "#2E7D32"; style.stroke-width: 3}
+    slot3: "Work [t+1]" {style.fill: "#BBDEFB"}
+    slot4: "Bottom [b-1]" {style.fill: "#FFCDD2"; style.stroke: "#C62828"; style.stroke-width: 3}
+    slot5: "Empty" {style.fill: "#FAFAFA"}
+  }
+
+  legend: |'md
+    - **Green Slot**: Thief-side (Top)
+    - **Red Slot**: Owner-side (Bottom)
+    - **Blue Slots**: Valid work items
+  '|
+}
+
+# -----------------------------------------------------------------------------
+# PERFORMANCE TARGETS (FIXED BLOCK STRING)
+# -----------------------------------------------------------------------------
+timing: {
+  label: "Performance Metrics"
+  style.fill: "#ECEFF1"
+  style.stroke: "#607D8B"
+  
+  # Using the advanced block string delimiter |'md ... '| to avoid 
+  # collision with markdown table pipes.
+  metrics: |'md
+    | Path             | Cycles | Instruction Overhead |
+    |------------------|--------|----------------------|
+    | Empty            | ~12    | 2 Loads, 2 Stores    |
+    | Multi-Item Safe  | ~15    | 1 Fence, 2 Loads     |
+    | Last Item (Win)  | ~35    | 1 Fence, 1 CAS       |
+    | Last Item (Lose) | ~25    | 1 Fence, 1 CAS (fail)|
+    
+    *Target Latency: < 25ns on modern x86_64*
+  '|
+}
+
+# -----------------------------------------------------------------------------
+# CONNECTIONS
+# -----------------------------------------------------------------------------
+step1 -> step2: "Store visible"
+step2 -> step3: "Fence strict"
+step3 -> decision: "b, t loaded"
+
+decision -> outcome_empty: "t > b-1"
+decision -> outcome_race: "t == b-1"
+decision -> outcome_safe: "t < b-1"
+
+outcome_race -> memory_viz: "Sync Points" {style.stroke-dash: 5}
+outcome_safe -> timing: "Critical Path" {style.stroke: "#4CAF50"}

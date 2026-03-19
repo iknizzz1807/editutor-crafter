@@ -1,0 +1,401 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # Context Switch Assembly Annotated
+  x86-64 System V ABI — Line-by-line breakdown
+| {near: top-center}
+legend: {
+  near: bottom-right
+  style.fill: "#f5f5f5"
+  style.stroke: "#ccc"
+  label: "Legend"
+  callee: "Callee-saved: rbx, rbp, r12-r15"
+  caller: "Caller-saved: rax, rcx, rdx, rsi, rdi, r8-r11"
+  special: "Special: rsp (stack), rip (instruction)"
+}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  context_struct: {
+    direction: down
+    label: "Context Struct Layout"
+    struct_layout: {
+      shape: sql_table
+      label: "struct Context (64 bytes)"
+      f0: "0x00 | uint64 | regs[0] (rbx)"
+      f1: "0x08 | uint64 | regs[1] (rbp)"
+      f2: "0x10 | uint64 | regs[2] (r12)"
+      f3: "0x18 | uint64 | regs[3] (r13)"
+      f4: "0x20 | uint64 | regs[4] (r14)"
+      f5: "0x28 | uint64 | regs[5] (r15)"
+      f6: "0x30 | uint64 | rsp"
+      f7: "0x38 | uint64 | rip"
+      f0.style.fill: "#e8f4e8"
+      f1.style.fill: "#e8f4e8"
+      f2.style.fill: "#e8f4e8"
+      f3.style.fill: "#e8f4e8"
+      f4.style.fill: "#e8f4e8"
+      f5.style.fill: "#e8f4e8"
+      f6.style.fill: "#fff3cd"
+      f7.style.fill: "#cce5ff"
+    }
+    note: |md
+      **Green** = Callee-saved registers  
+      **Yellow** = Stack pointer  
+      **Blue** = Instruction pointer
+    |
+  }
+  save_section: {
+    direction: down
+    label: "SAVE CURRENT CONTEXT"
+    style.fill: "#ffebee"
+    style.stroke: "#c62828"
+    step1: {
+      width: 420
+      label: "Entry Point"
+      code: |'asm
+        .global context_switch
+        // void context_switch(Context *from, Context *to)
+        // rdi = from (save here), rsi = to (load from)
+      context_switch:
+      '|
+    }
+    step2: {
+      width: 420
+      label: "Save Callee-Saved Registers"
+      code: |'asm
+        mov     [rdi + 0],  rbx     // rbx → from->regs[0]
+        mov     [rdi + 8],  rbp     // rbp → from->regs[1]
+        mov     [rdi + 16], r12     // r12 → from->regs[2]
+        mov     [rdi + 24], r13     // r13 → from->regs[3]
+        mov     [rdi + 32], r14     // r14 → from->regs[4]
+        mov     [rdi + 40], r15     // r15 → from->regs[5]
+      '|
+      annotation: |md
+        **Purpose**: Save all callee-saved registers  
+        **Why**: ABI requires these be preserved across calls  
+        **Cost**: ~2 cycles each (store to L1 cache)
+      |
+    }
+    step3: {
+      width: 420
+      label: "Save Stack Pointer"
+      code: |'asm
+        mov     [rdi + 48], rsp     // rsp → from->rsp
+      '|
+      annotation: |md
+        **Purpose**: Save current stack position  
+        **Critical**: Without this, we can't restore the stack  
+        **Note**: rsp currently points to return address
+      |
+    }
+    step4: {
+      width: 420
+      label: "Save Instruction Pointer"
+      code: |'asm
+        mov     rax, [rsp]           // Load return address
+        mov     [rdi + 56], rax      // rip → from->rip
+      '|
+      annotation: |md
+        **Purpose**: Capture where to resume later  
+        **Trick**: Return address was pushed by CALL  
+        **Result**: When we "return" to this, we resume here
+      |
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  load_section: {
+    direction: down
+    label: "LOAD NEW CONTEXT"
+    style.fill: "#e8f5e9"
+    style.stroke: "#2e7d32"
+    step5: {
+      width: 420
+      label: "Load Callee-Saved Registers"
+      code: |'asm
+        mov     rbx, [rsi + 0]       // from->regs[0] → rbx
+        mov     rbp, [rsi + 8]       // from->regs[1] → rbp
+        mov     r12, [rsi + 16]      // from->regs[2] → r12
+        mov     r13, [rsi + 24]      // from->regs[3] → r13
+        mov     r14, [rsi + 32]      // from->regs[4] → r14
+        mov     r15, [rsi + 40]      // from->regs[5] → r15
+      '|
+      annotation: |md
+        **Purpose**: Restore target coroutine's registers  
+        **Effect**: We're now "wearing" the target's state  
+        **Cost**: ~2 cycles each (load from L1 cache)
+      |
+    }
+    step6: {
+      width: 420
+      label: "Load Stack Pointer"
+      code: |'asm
+        mov     rsp, [rsi + 48]      // to->rsp → rsp
+      '|
+      annotation: |md
+        **Purpose**: Switch to target coroutine's stack  
+        **Critical**: Old stack is now inaccessible  
+        **Invariant**: rsp must be 16-byte aligned - 8
+      |
+    }
+    step7: {
+      width: 420
+      label: "Jump to Target Coroutine"
+      code: |'asm
+        mov     rax, [rsi + 56]      // to->rip → rax
+        jmp     rax                  // "Return" to target
+      '|
+      annotation: |md
+        **Purpose**: Transfer control to target coroutine  
+        **Effect**: Like a function return, but to arbitrary address  
+        **Result**: We're now running the target coroutine
+      |
+    }
+  }
+  control_flow: {
+    direction: down
+    label: "Control Flow"
+    style.fill: "#e3f2fd"
+    style.stroke: "#1565c0"
+    flow_diagram: {
+      direction: down
+      caller: {
+        shape: rectangle
+        label: "Caller\n(scheduler.run_worker)"
+        style.fill: "#bbdefb"
+      }
+      switch_point: {
+        shape: diamond
+        label: "context_switch()"
+        style.fill: "#fff9c4"
+      }
+      save_label: {
+        shape: rectangle
+        label: "SAVE PHASE\n(from context)"
+        style.fill: "#ffcdd2"
+      }
+      load_label: {
+        shape: rectangle
+        label: "LOAD PHASE\n(to context)"
+        style.fill: "#c8e6c9"
+      }
+      target: {
+        shape: rectangle
+        label: "Target Coroutine\n(resumes here)"
+        style.fill: "#bbdefb"
+      }
+      caller -> switch_point: "call"
+      switch_point -> save_label: "rdi = from"
+      switch_point -> load_label: "rsi = to"
+      save_label -> load_label: "jmp rax"
+      load_label -> target: "resumes"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  timing: {
+    direction: down
+    label: "Timing Analysis"
+    style.fill: "#fafafa"
+    timing_table: {
+      shape: sql_table
+      label: "Instruction Costs (approximate)"
+      op1: "Operation | Cycles | Notes"
+      op2: "mov [mem], reg | 2-4 | Store (L1 hit)"
+      op3: "mov reg, [mem] | 2-4 | Load (L1 hit)"
+      op4: "mov rax, [rsp] | 1-2 | Load from stack (hot)"
+      op5: "jmp reg | 1-2 | Indirect jump"
+      op6: "Total (save) | ~15-25 | 6 stores + 2 loads"
+      op7: "Total (load) | ~15-25 | 6 loads + 1 jump"
+      op8: "Full switch | ~30-50 | ~10-50 nanoseconds"
+      op1.style.fill: "#e0e0e0"
+      op1.style.bold: true
+    }
+  }
+  invariants: {
+    direction: down
+    label: "Critical Invariants"
+    style.fill: "#fff8e1"
+    style.stroke: "#ff8f00"
+    inv1: {
+      label: "Stack Alignment"
+      code: |'asm
+        // At function entry (after CALL):
+        // rsp % 16 == 8  (return address pushed)
+        // When we jmp to target's rip:
+        // Target expects rsp % 16 == 8
+      '|
+      width: 380
+    }
+    inv2: {
+      label: "Register Safety"
+      code: |'asm
+        // Caller-saved (clobbered freely):
+        // rax, rcx, rdx, rsi, rdi, r8-r11
+        // Callee-saved (MUST preserve):
+        // rbx, rbp, r12, r13, r14, r15
+      '|
+      width: 380
+    }
+    inv3: {
+      label: "Memory Ordering"
+      code: |'asm
+        // No explicit fences needed:
+        // - Single-threaded per coroutine
+        // - Context switch is a synchronization point
+        // - Compiler barriers via asm!() macro
+      '|
+      width: 380
+    }
+  }
+  rust_wrapper: {
+    direction: down
+    label: "Rust FFI Wrapper"
+    style.fill: "#fce4ec"
+    rust_code: {
+      label: "context_switch.rs"
+      code: |'rust
+        extern "C" {
+            /// Assembly context switch
+            /// # Safety
+            /// - from/to must point to valid Context
+            /// - Stack pointers must be aligned
+            fn context_switch(
+                from: *mut Context,
+                to: *mut Context
+            );
+        }
+        impl Context {
+            pub unsafe fn switch_to(
+                &mut self,
+                target: &mut Context
+            ) {
+                context_switch(
+                    self as *mut Context,
+                    target as *mut Context
+                );
+                // When we return here, we've been
+                // resumed by another switch_to
+            }
+        }
+      '|
+      width: 400
+    }
+  }
+}
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  pitfalls: {
+    direction: down
+    label: "Common Pitfalls"
+    style.fill: "#ffebee"
+    style.stroke: "#c62828"
+    pitfall1: {
+      label: "❌ Forgetting callee-saved register"
+      code: |'asm
+        // WRONG: Only saved 5 of 6 registers
+        mov [rdi+0], rbx
+        mov [rdi+8], rbp
+        // Forgot r12!
+        mov [rdi+16], r13  // Actually saved to wrong slot
+      '|
+      width: 380
+      result: "Coroutine resumes with corrupted r12"
+    }
+    pitfall2: {
+      label: "❌ Stack misalignment"
+      code: |'asm
+        // WRONG: Stack not aligned for target
+        mov rsp, [rsi+48]
+        // If rsp % 16 != 8, first CALL will crash
+        // when it uses SSE instructions
+      '|
+      width: 380
+      result: "SIGSEGV in printf, memcpy, any SSE code"
+    }
+    pitfall3: {
+      label: "❌ Using wrong offsets"
+      code: |'rust
+        // WRONG: Rust struct has different layout
+        struct Context {
+            regs: [usize; 6],  // offset 0-47
+            rsp: *mut u8,      // offset 48
+            rip: *const u8,    // offset 56
+        }
+        // Must match assembly exactly!
+      '|
+      width: 380
+      result: "Loading garbage into registers"
+    }
+  }
+  full_assembly: {
+    direction: down
+    label: "Complete Assembly Listing"
+    style.fill: "#263238"
+    code_block: {
+      code: |'asm
+        # context_switch.S - x86-64 coroutine context switch
+        #
+        # void context_switch(Context *from, Context *to);
+        #
+        # Context layout (must match Rust):
+        #   0x00-0x2F: regs[6] (rbx, rbp, r12-r15)
+        #   0x30:       rsp
+        #   0x38:       rip
+        #
+        # Arguments:
+        #   rdi = from (current context to save)
+        #   rsi = to   (target context to load)
+            .global context_switch
+            .type context_switch, @function
+        context_switch:
+            # === SAVE CURRENT CONTEXT ===
+            # Save callee-saved registers (ABI requirement)
+            mov     [rdi + 0],  rbx
+            mov     [rdi + 8],  rbp
+            mov     [rdi + 16], r12
+            mov     [rdi + 24], r13
+            mov     [rdi + 32], r14
+            mov     [rdi + 40], r15
+            # Save stack pointer
+            mov     [rdi + 48], rsp
+            # Save instruction pointer (return address)
+            mov     rax, [rsp]
+            mov     [rdi + 56], rax
+            # === LOAD NEW CONTEXT ===
+            # Restore callee-saved registers
+            mov     rbx, [rsi + 0]
+            mov     rbp, [rsi + 8]
+            mov     r12, [rsi + 16]
+            mov     r13, [rsi + 24]
+            mov     r14, [rsi + 32]
+            mov     r15, [rsi + 40]
+            # Restore stack pointer
+            mov     rsp, [rsi + 48]
+            # Jump to saved instruction pointer
+            mov     rax, [rsi + 56]
+            jmp     rax
+            .size context_switch, .-context_switch
+      '|
+      width: 480
+      style.fill: "#263238"
+      style.font-color: "#eceff1"
+      style.font: mono
+    }
+  }
+}

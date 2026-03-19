@@ -1,0 +1,174 @@
+layout-engine: elk
+theme-id: 4
+
+# --- GLOBAL CLASSES ---
+classes: {
+  register_op: {
+    style: {
+      fill: "#e1f5fe"
+      stroke: "#01579b"
+      stroke-width: 2
+      border-radius: 4
+      font-size: 12
+    }
+  }
+  vm_logic: {
+    style: {
+      fill: "#fff3e0"
+      stroke: "#e65100"
+      stroke-width: 3
+      double-border: true
+    }
+  }
+  memory_layout: {
+    shape: sql_table
+    style: {
+      stroke: "#37474f"
+      fill: "#eceff1"
+      font: mono
+    }
+  }
+  stack_growth: {
+    style: {
+      stroke-dash: 5
+      opacity: 0.6
+    }
+  }
+}
+
+# --- MEMORY LAYOUT DEFINITION ---
+# This allows the engineer to see exactly what "InterpFrame" looks like in bytes.
+interp_frame_layout: {
+  label: "STRUCT: InterpFrame (Layout at RSP)"
+  class: memory_layout
+  near: top-right
+
+  0x00: "Return Address (to Stub)" {constraint: "8 bytes"}
+  0x08: "Saved RBP (Caller Frame)" {constraint: "8 bytes"}
+  0x10: "Bytecode Pointer (PC)" {constraint: "8 bytes"}
+  0x18: "Operand Stack Pointer" {constraint: "8 bytes"}
+  0x20: "Locals Array Base" {constraint: "8 bytes"}
+  0x28: "Constants Pool Ref" {constraint: "8 bytes"}
+  0x30: "Local Slot 0 (RDI)" {constraint: "8 bytes"}
+  0x38: "Local Slot 1 (RSI)" {constraint: "8 bytes"}
+  0x40: "... padding ..." {style.fill: "#cfd8dc"}
+  
+  "sizeof": "64 bytes (Cache Line Aligned)" {style.bold: true}
+}
+
+# --- CORE SEQUENCE DIAGRAM ---
+trampoline_sequence: {
+  shape: sequence_diagram
+  
+  # Actor Definitions with Metadata
+  jit: "JIT Native Code" {
+    tooltip: "RX Memory Region"
+    style.fill: "#c8e6c9"
+  }
+  stub: "Trampoline Stub" {
+    tooltip: "Bridge Code (ASM)"
+    style.fill: "#bbdefb"
+  }
+  frame: "Stack: InterpFrame" {
+    tooltip: "Thread-Local Storage"
+    style.fill: "#cfd8dc"
+  }
+  vm: "Interpreter Loop" {
+    tooltip: "C++ Dispatcher"
+    style.fill: "#ffe0b2"
+  }
+
+  # --- START OF EXECUTION ---
+  jit -> stub: "call jit_to_interp_stub(rdi, rsi, ...)" {
+    style.bold: true
+  }
+
+  # Context Saving
+  stub.save_context: "Save GPR State (System V ABI)"
+  stub.save_context -> stub.save_context: "push rax, rbx, rcx, rdx, rsi, rdi, r8-r15" {
+    class: register_op
+  }
+
+  # Stack Management
+  group: "Allocation Phase" {
+    stub -> frame: "sub rsp, sizeof(InterpFrame)"
+    stub -> frame: "setup_metadata(bytecode_ptr, pc)" {
+      tooltip: "Initialize PC and Stack Pointers"
+    }
+    stub -> frame: "marshal_args(rdi..r9 -> locals[0..n])" {
+      tooltip: "Move ABI registers to VM local slots"
+    }
+  }
+
+  # Transition to VM
+  stub -> vm: "call interpreter_loop(rdi = &frame)" {
+    style: {
+      stroke: "#01579b"
+      stroke-width: 4
+      animated: true
+    }
+  }
+
+  # VM Execution Loop
+  group: "VM Execution (Turing Complete Loop)" {
+    vm.execution: "fetch_decode_execute()"
+    vm.execution -> vm.execution: "Loop until OP_HALT" {
+      class: vm_logic
+    }
+    vm -> frame: "Update Stack/PC Pointers" {
+      style.stroke-dash: 3
+    }
+  }
+
+  # Transition Back
+  vm -> stub: "return (success/error code)" {
+    style.stroke: "#01579b"
+  }
+
+  # Result Extraction & Cleanup
+  group: "Deallocation & Restoration" {
+    stub -> frame: "mov rax, [rdi + off_op_stack_top]" {
+      tooltip: "Extract VM Result to native RAX"
+    }
+    stub -> frame: "add rsp, sizeof(InterpFrame)"
+    
+    stub.restore_context: "Restore GPR State"
+    stub.restore_context -> stub.restore_context: "pop r15..r8, rdi..rax" {
+      class: register_op
+    }
+  }
+
+  stub -> jit: "ret (Native RAX)" {
+    style: {
+      bold: true
+      stroke-width: 3
+    }
+  }
+}
+
+# --- ANNOTATIONS AND LEGEND ---
+legend: {
+  near: bottom-left
+  
+  details: |md
+    ### Trampoline Design Specification
+    - **Invariants:**
+      - `RSP % 16 == 0` before calling `interpreter_loop` (C ABI compliance).
+      - All callee-saved registers (RBX, RBP, R12-R15) must be identical before `ret`.
+    - **Performance:**
+      - Context switch overhead: ~24 cycles (register spills/fills).
+      - Memory: Stack-allocated frame ensures cache locality with current CPU thread context.
+    - **Error Handling:**
+      - VM exceptions are trapped in the loop and converted to numeric status codes in RAX.
+  |
+}
+
+# --- STYLING GLOBALS ---
+***: {
+  &shape: sequence_diagram
+  style.stroke-width: 2
+}
+
+(*** -> ***)[*]: {
+  style.font-size: 13
+}

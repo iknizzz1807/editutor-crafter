@@ -1,0 +1,281 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: |md
+  # File I/O Thread Pool Architecture
+  **Why regular file I/O needs a thread pool on Linux**
+| {near: top-center}
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  problem: {
+    direction: down
+    label: "The Problem"
+    disk: {
+      label: "Disk File\n(/data/file.txt)"
+      shape: cylinder
+      style.fill: "#E8E8E8"
+      style.stroke: "#666666"
+    }
+    syscall_note: {
+      label: |md
+        **O_NONBLOCK doesn't work for disk files!**
+        c
+        // Setting nonblocking on a regular file
+        fcntl(fd, F_SETFL, O_NONBLOCK);
+        // Still BLOCKS - kernel ignores flag
+        read(fd, buf, 4096);  // ← Thread sleeps
+        
+        The kernel has no way to "notify later" —  
+        data is either on disk or it isn't.
+      |
+      width: 320
+    }
+    disk -> syscall_note: "read() always\nblocks thread"
+  }
+  naive: {
+    direction: down
+    label: "Naive: Coroutine Blocks Thread"
+    bad_coro: {
+      label: "Coroutine A"
+      shape: rectangle
+      style.fill: "#FFB3B3"
+      style.stroke: "#CC0000"
+    }
+    blocked_thread: {
+      label: "Worker Thread"
+      shape: rectangle
+      style.fill: "#FFB3B3"
+      style.stroke: "#CC0000"
+      style.stroke-dash: 3
+    }
+    starving: {
+      label: "99 other coroutines\nSTARVED"
+      shape: rectangle
+      style.fill: "#FFE0B3"
+      style.stroke: "#CC6600"
+      style.stroke-dash: 3
+    }
+    bad_coro -> blocked_thread: "file.read()"
+    blocked_thread -> starving: "thread blocked\nno scheduling"
+  }
+}
+row1.problem -> row1.naive: "Causes"
+divider: "" {
+  style.fill: "#333"
+  height: 2
+}
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  solution: {
+    direction: down
+    label: "Solution: Thread Pool for Blocking File I/O"
+    pool: {
+      label: "Blocking I/O Thread Pool"
+      style.fill: "#E8F5E9"
+      style.stroke: "#2E7D32"
+      thread1: {
+        label: "Pool Thread 1"
+        shape: rectangle
+        style.fill: "#C8E6C9"
+      }
+      thread2: {
+        label: "Pool Thread 2"
+        shape: rectangle
+        style.fill: "#C8E6C9"
+      }
+      threadN: {
+        label: "Pool Thread N"
+        shape: rectangle
+        style.fill: "#C8E6C9"
+        style.multiple: true
+      }
+      thread1.direction: down
+      thread2.direction: down
+      threadN.direction: down
+    }
+    queue: {
+      label: "FileOp Queue"
+      shape: queue
+      style.fill: "#FFF9C4"
+      style.stroke: "#F9A825"
+    }
+    pool.thread1 -> queue
+    pool.thread2 -> queue
+    pool.threadN -> queue
+  }
+  flow: {
+    direction: down
+    label: "Non-Blocking Flow"
+    step1: {
+      label: "1. Coroutine submits op"
+      code: |'rust
+        let data = file_pool
+          .read(fd, offset, 4096)
+          .await;  // Yields here
+      '|
+      width: 280
+      style.fill: "#E3F2FD"
+    }
+    step2: {
+      label: "2. Pool thread executes blocking read"
+      code: |'c
+        // Pool thread (blocking OK)
+        n = pread(fd, buf, 4096, offset);
+        // Thread blocks, but it's
+        // dedicated to this purpose
+      '|
+      width: 280
+      style.fill: "#E8F5E9"
+    }
+    step3: {
+      label: "3. Completion wakes coroutine"
+      code: |'rust
+        // Pool thread:
+        result_sender.send(Ok(buf));
+        waker.wake();  // Coroutine → Runnable
+      '|
+      width: 280
+      style.fill: "#F3E5F5"
+    }
+    step1 -> step2: "Op submitted\ncoroutine yields"
+    step2 -> step3: "Read completes\nwaker triggered"
+  }
+}
+row2.solution -> row2.flow: "Enables"
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  timeline: {
+    direction: down
+    label: "Timeline: Thread Pool vs Blocking"
+    labels: {
+      direction: right
+      l1: "Time →"
+      l2: ""
+      l3: ""
+      style.fill: transparent
+      style.stroke: transparent
+    }
+    blocking_row: {
+      direction: right
+      label: "Blocking:"
+      style.fill: transparent
+      b1: {
+        label: "Coroutine\nreads file"
+        style.fill: "#FFB3B3"
+        width: 120
+      }
+      b2: {
+        label: "THREAD\nBLOCKED"
+        style.fill: "#FF6B6B"
+        width: 180
+        style.stroke: "#CC0000"
+        style.bold: true
+      }
+      b3: {
+        label: "Resume"
+        style.fill: "#FFB3B3"
+        width: 80
+      }
+      b1 -> b2 -> b3
+    }
+    pool_row: {
+      direction: right
+      label: "Pool:"
+      style.fill: transparent
+      p1: {
+        label: "Submit\nyield"
+        style.fill: "#A5D6A7"
+        width: 80
+      }
+      p2: {
+        label: "Other\ncoro 1"
+        style.fill: "#90CAF9"
+        width: 80
+      }
+      p3: {
+        label: "Other\ncoro 2"
+        style.fill: "#90CAF9"
+        width: 80
+      }
+      p4: {
+        label: "Other\ncoro 3"
+        style.fill: "#90CAF9"
+        width: 80
+      }
+      p5: {
+        label: "Woken\nresume"
+        style.fill: "#A5D6A7"
+        width: 80
+      }
+      p1 -> p2 -> p3 -> p4 -> p5
+    }
+    pool_thread_row: {
+      direction: right
+      label: "Pool Thread:"
+      style.fill: transparent
+      pt1: {
+        label: "Waiting"
+        style.fill: "#E0E0E0"
+        width: 80
+      }
+      pt2: {
+        label: "pread()\nBLOCKS"
+        style.fill: "#FFCC80"
+        width: 160
+      }
+      pt3: {
+        label: "Wake\ncoro"
+        style.fill: "#C8E6C9"
+        width: 80
+      }
+      pt1 -> pt2 -> pt3
+    }
+    labels -> blocking_row -> pool_row -> pool_thread_row
+  }
+  comparison: {
+    direction: down
+    label: "Comparison"
+    comp_table: {
+      shape: sql_table
+      label: "Thread Pool vs io_uring"
+      row1: "Aspect | Thread Pool | io_uring"
+      row2: "Platform | All platforms | Linux 5.1+ only"
+      row3: "Complexity | Simple | Complex (rings, CQEs)"
+      row4: "Latency | Higher (context switch) | Lower (kernel direct)"
+      row5: "File I/O | ✓ Works | ✓ Works natively"
+      row6: "Zero-copy | ✗ No | ✓ Possible"
+    }
+  }
+}
+row3.timeline -> row3.comparison: "Trade-offs"
+legend: {
+  near: bottom-right
+  label: "Legend"
+  style.fill: "#F5F5F5"
+  style.stroke: "#999999"
+  l1: {
+    label: "Coroutine yields\n(thread stays productive)"
+    shape: rectangle
+    style.fill: "#A5D6A7"
+  }
+  l2: {
+    label: "Thread blocks\n(wasted resource)"
+    shape: rectangle
+    style.fill: "#FF6B6B"
+  }
+  l3: {
+    label: "Other coroutines\nrun during wait"
+    shape: rectangle
+    style.fill: "#90CAF9"
+  }
+}

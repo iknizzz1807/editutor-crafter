@@ -1,0 +1,200 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+# -----------------------------------------------------------------------------
+# DISPATCH TABLE UPDATE SEQUENCE
+# Implementation Grade Specification for Hot-Path Atomicity
+# -----------------------------------------------------------------------------
+
+dispatch_sequence: {
+  shape: sequence_diagram
+
+  # Participants / Actors
+  compiler: "JIT Compiler Backend\n(Tier-2 Optimization)" {
+    shape: person
+    style.fill: "#E4DBFE"
+  }
+  
+  function_struct: "Function Metadata Struct\n(Shared Memory)" {
+    style.fill: "#DEE1EB"
+    tooltip: "Struct layout: [mutex_t lock (40B) | void* jit_entry (8B) | uint32_t call_count (4B)]"
+  }
+  
+  runtime: "VM Runtime / Dispatcher\n(Interpreter Loop)" {
+    style.fill: "#C7F1FF"
+  }
+  
+  worker: "Worker Thread\n(Execution Context)" {
+    shape: person
+    style.fill: "#88DCF7"
+  }
+
+  # Phase 1: Preparation
+  compiler -> compiler: "codegen_complete(native_ptr)"
+  compiler."Machine code emitted to RX buffer\n(mprotect called)" {
+    style.font-size: 11
+  }
+
+  # Phase 2: Atomic Update (Critical Section)
+  compiler -> function_struct: "pthread_mutex_lock(&func->lock) ▼" {
+    style: {
+      stroke: "#ca052b"
+      stroke-width: 4
+      bold: true
+    }
+  }
+
+  compiler -> function_struct: "atomic_store_release(&func->jit_entry, native_ptr)" {
+    style: {
+      stroke: "#167c3c"
+      stroke-width: 4
+    }
+  }
+  
+  function_struct."MEMORY_BARRIER_RELEASE\nEnsures all previous writes to code buffer\nare visible to other cores before pointer update" {
+    style: {
+      stroke: "#000000"
+      stroke-dash: 3
+      font-size: 11
+    }
+  }
+
+  compiler -> function_struct: "pthread_mutex_unlock(&func->lock) ▲" {
+    style: {
+      stroke: "#ca052b"
+      stroke-width: 4
+      bold: true
+    }
+  }
+
+  # Phase 3: Runtime Dispatch
+  # Note: This occurs asynchronously in a separate thread context
+  worker -> runtime: "vm_call(func_id, args)" {
+    style.animated: true
+  }
+
+  runtime -> function_struct: "atomic_load_acquire(&func->jit_entry)" {
+    style.stroke-width: 2
+  }
+  
+  runtime."MEMORY_BARRIER_ACQUIRE\nPrevents speculative reads of code buffer\nbefore the jit_entry pointer is verified" {
+    style: {
+      stroke: "#000000"
+      stroke-dash: 3
+      font-size: 11
+    }
+  }
+
+  function_struct -> runtime: "return native_ptr" {
+    style.stroke-dash: 3
+  }
+
+  # Phase 4: Optimized Execution
+  runtime -> worker: "jmp native_ptr (Tier-2 JIT PATH)" {
+    style: {
+      stroke: "#167c3c"
+      stroke-width: 5
+      bold: true
+    }
+  }
+  worker."Bypass interpreter loop\nNative execution begins" {
+    style.font-color: "#167c3c"
+    style.bold: true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# TECHNICAL SPECIFICATION OVERLAY
+# -----------------------------------------------------------------------------
+
+annotation: |md
+  ### Atomicity and Cache Coherency Requirements
+  
+  1.  **Double-Compile Hazard**: The `mutex` protection in `compiler` ensures that concurrent optimization requests for the same function do not lead to redundant codegen or race conditions on the entry pointer.
+  2.  **Memory Ordering (Release/Acquire)**:
+      *   `Store-Release`: Guarantees that the instructions written to `native_ptr` by the `Compiler` are committed to memory/global-observation before the `jit_entry` pointer becomes non-null.
+      *   `Load-Acquire`: Guarantees that the `Worker` does not read instructions from the code buffer until it has successfully read the updated `jit_entry`.
+  3.  **Instruction Cache (ICache) Invalidation**: 
+      *   On **x86**, `atomic_store` is usually sufficient for cross-modifying code due to strong TSO.
+      *   On **ARM/AArch64**, the `Compiler` **must** execute `ISB` (Instruction Synchronization Barrier) and `DSB` (Data Synchronization Barrier) or call `__clear_cache()` before unlocking.
+| {
+  near: bottom-center
+  style: {
+    stroke: "#DEE1EB"
+    stroke-width: 2
+    fill: "#F8F9FA"
+    font-size: 14
+    border-radius: 4
+  }
+}
+
+# -----------------------------------------------------------------------------
+# FIELD LAYOUT: Function Metadata Struct (64B Alignment)
+# -----------------------------------------------------------------------------
+
+memory_layout: {
+  near: top-right
+  shape: sql_table
+  style.fill: "#F1F1F1"
+  
+  header: "Function Metadata (Offset View)" {
+    style.fill: "#DEE1EB"
+  }
+  
+  row_0: "0x00 | mutex_t lock | size: 40B" {
+    style.fill: purple
+    style.font-color: white
+  }
+  row_1: "0x28 | void* jit_entry | size: 8B" {
+    style.fill: blue
+    style.font-color: white
+  }
+  row_2: "0x30 | uint32_t call_count | size: 4B" {
+    style.fill: green
+    style.font-color: white
+  }
+  row_3: "0x34 | padding (align 64) | size: 12B" {
+    style.fill: gray
+    style.font-color: white
+  }
+}
+
+# -----------------------------------------------------------------------------
+# VISUAL LEGEND
+# -----------------------------------------------------------------------------
+
+legend: {
+  near: bottom-right
+  
+  lock_op: "Lock Operation (Critical Section)" {
+    style.stroke: "#ca052b"
+    style.stroke-width: 4
+    style.bold: true
+  }
+  
+  jit_path: "JIT Execution Path (Optimized)" {
+    style.stroke: "#167c3c"
+    style.stroke-width: 4
+    style.bold: true
+  }
+  
+  barrier_op: "Memory Barrier / Hardware Fence" {
+    style.stroke-dash: 3
+    style.stroke: "#000000"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STYLING GLOBALS
+# -----------------------------------------------------------------------------
+
+***.style.font: mono
+(*** -> ***)[*]: {
+  style.font-size: 13
+}

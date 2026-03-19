@@ -1,0 +1,233 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 40
+  }
+}
+
+title: ||md
+  # AsyncMutex vs std::sync::Mutex
+  **Side-by-side comparison of blocking vs yielding behavior in Coroutine Runtimes**
+|| {near: top-center}
+
+direction: right
+
+# ============================================
+# LEFT: std::sync::Mutex (Blocking Thread)
+# ============================================
+std_mutex_section: {
+  label: "std::sync::Mutex (BLOCKS KERNEL THREAD)"
+  style: {
+    fill: "#FDF2F2"
+    stroke: "#F44336"
+    stroke-width: 2
+  }
+
+  thread_a_worker: "OS Thread A (Worker)" {
+    shape: rectangle
+    style: {
+      fill: "#E1F5FE"
+      stroke: "#0288D1"
+      stroke-width: 2
+      double-border: true
+    }
+
+    # Internal state of the thread
+    execution_stack: {
+      grid-columns: 1
+      grid-gap: 5
+      
+      c1: "Coroutine 1: mutex.lock()" {
+        style.fill: "#4CAF50"
+        style.font-color: white
+      }
+      
+      syscall: "SYSCALL: futex(WAIT)" {
+        style: {
+          fill: "#D32F2F"
+          font-color: white
+          bold: true
+        }
+      }
+      
+      blocked_state: "THREAD STATE: TASK_UNINTERRUPTIBLE" {
+        style: {
+          fill: "#757575"
+          font-color: white
+          italic: true
+        }
+      }
+
+      c1 -> syscall: "Traps to Kernel"
+      syscall -> blocked_state: "OS unschedules thread"
+    }
+
+    starvation_zone: "99 OTHER COROUTINES FROZEN" {
+      style: {
+        fill: "#FFCDD2"
+        stroke: "#F44336"
+        stroke-dash: 3
+      }
+    }
+  }
+
+  thread_b_holder: "OS Thread B (Holder)" {
+    shape: rectangle
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#EF6C00"
+    }
+    
+    work: "Holding Lock" {
+      style.fill: "#FF9800"
+    }
+    unlock: "mutex.unlock() -> futex(WAKE)" {
+      style.fill: "#8BC34A"
+    }
+    
+    work -> unlock: "10ms work"
+  }
+
+  # Connection showing kernel intervention
+  thread_b_holder.unlock -> thread_a_worker.execution_stack.blocked_state: "Kernel wakes Thread A" {
+    style: {
+      stroke: "#F44336"
+      stroke-width: 2
+      animated: true
+    }
+  }
+
+  std_impact: ||md
+    ### ❌ Thread-Level Blocking
+    - **Context Switch:** ~1,500ns (Kernel)
+    - **Side Effect:** Stop-the-world for all tasks on this thread.
+    - **Efficiency:** Low. OS doesn't know about coroutines.
+  || {
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#C62828"
+      border-radius: 8
+    }
+  }
+}
+
+# ============================================
+# CENTER: Comparison Table
+# ============================================
+comparison: {
+  shape: rectangle
+  width: 500
+  label: ||md
+    ## Comparative Analysis
+    | Metric | OS Mutex (std) | Async Mutex |
+    | :--- | :--- | :--- |
+    | **Wait Type** | Sleep (Kernel) | Yield (User-space) |
+    | **Unit Blocked** | Kernel Thread | Coroutine Task |
+    | **Switch Cost** | ~1.5 μs (Syscall) | ~40 ns (Pointer swap) |
+    | **M:N Safety** | ❌ Poor (Starvation) | ✅ Native |
+    | **Executor** | OS Scheduler | Runtime Scheduler |
+  ||
+  style: {
+    fill: "#F5F5F5"
+    stroke: "#424242"
+    stroke-width: 2
+    shadow: true
+  }
+}
+
+# ============================================
+# RIGHT: AsyncMutex (Yielding Coroutine)
+# ============================================
+async_mutex_section: {
+  label: "AsyncMutex (YIELDS TO RUNTIME)"
+  style: {
+    fill: "#F1F8E9"
+    stroke: "#4CAF50"
+    stroke-width: 2
+  }
+
+  thread_a_worker: "OS Thread A (Worker)" {
+    shape: rectangle
+    style: {
+      fill: "#E1F5FE"
+      stroke: "#0288D1"
+      stroke-width: 2
+      double-border: true
+    }
+
+    scheduler: "Runtime Scheduler (User-space)" {
+      style.fill: "#BBDEFB"
+      style.bold: true
+    }
+
+    # The coroutine yields, freeing the thread
+    timeline: {
+      direction: down
+      
+      c1_wait: "Coroutine 1: .await" {
+        style.fill: "#2196F3"
+        style.font-color: white
+      }
+      
+      yield: "PUSH to WaitQueue\nCALL next_task()" {
+        style.fill: "#673AB7"
+        style.font-color: white
+      }
+      
+      c2_exec: "Coroutine 2: Running" {
+        style.fill: "#4CAF50"
+        style.font-color: white
+      }
+      
+      c1_wait -> yield: "No lock"
+      yield -> c2_exec: "Thread keeps moving"
+    }
+    
+    scheduler -> timeline: "Polls tasks"
+  }
+
+  wait_queue: "Mutex Waiter Queue" {
+    shape: cylinder
+    style.fill: "#CFD8DC"
+    c1_handle: "Coroutine 1 Handle"
+  }
+
+  async_impact: ||md
+    ### ✅ Task-Level Yielding
+    - **Context Switch:** ~50ns (User-space)
+    - **Side Effect:** Thread A remains 100% utilized.
+    - **Efficiency:** High. Cooperative multitasking.
+  || {
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+      border-radius: 8
+    }
+  }
+
+  # Connection showing user-space notification
+  thread_a_worker.timeline.c1_wait -> wait_queue.c1_handle: "Registration"
+}
+
+# ============================================
+# CONNECTIONS & SUMMARY
+# ============================================
+std_mutex_section -> comparison: "High Latency" {style.stroke: "#F44336"}
+comparison -> async_mutex_section: "High Throughput" {style.stroke: "#4CAF50"}
+
+summary: ||md
+  ### Architectural Decision
+  In **M:N scheduling** (M tasks on N threads), blocking a thread via `std::sync::Mutex` creates a 
+  **Head-of-Line Blocking** issue where one slow I/O or contended lock freezes unrelated tasks. 
+  **AsyncMutex** integrates with the runtime's reactor/executor to ensure the thread is 
+  repurposed immediately upon a lock conflict.
+|| {
+  near: bottom-center
+  style: {
+    fill: "#FFF9C4"
+    stroke: "#FBC02D"
+    font-size: 16
+  }
+}

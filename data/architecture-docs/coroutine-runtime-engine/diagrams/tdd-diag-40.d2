@@ -1,0 +1,214 @@
+direction: right
+title: |md
+  # Technical Specification: Non-blocking Read Algorithm
+  **Context:** Asynchronous I/O Runtime (Reactor/Executor Pattern)
+  **Objective:** Minimize thread blocking by yielding control to the scheduler on `EAGAIN`.
+| {near: top-center}
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+classes: {
+  step: {
+    shape: rectangle
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1976D2"
+      stroke-width: 2
+      font-size: 14
+      border-radius: 4
+    }
+  }
+  decision: {
+    shape: diamond
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#F57C00"
+      stroke-width: 2
+      font-size: 13
+    }
+  }
+  io_op: {
+    shape: rectangle
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#388E3C"
+      stroke-width: 2
+      bold: true
+    }
+  }
+  yield_op: {
+    shape: rectangle
+    style: {
+      fill: "#FCE4EC"
+      stroke: "#C2185B"
+      stroke-width: 2
+      double-border: true
+    }
+  }
+  return_op: {
+    shape: rectangle
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+      stroke-width: 2
+      font-size: 14
+    }
+  }
+}
+
+Start: ● {
+  shape: circle
+  style.fill: "#4CAF50"
+  style.stroke: "#2E7D32"
+  style.font-color: white
+  width: 40
+}
+
+Step1_TryRead: "① Call syscall: read(fd, buf, len)\nFlags: O_NONBLOCK" {
+  class: io_op
+  tooltip: "Attempts to drain the kernel RX buffer into user-space 'buf'."
+}
+
+Step2_CheckResult: "Result (rax)?" {
+  class: decision
+  width: 160
+}
+
+Step3_ReturnBytes: "Return: Poll::Ready(Ok(n))\nUpdate Cursor: pos += n" {
+  class: return_op
+  style.font-color: "#2E7D32"
+}
+
+Step4_CheckEAGAIN: "Error Code\n(errno)?" {
+  class: decision
+  width: 140
+}
+
+Step5_ReturnError: "Return: Poll::Ready(Err(e))\nUnrecoverable" {
+  class: return_op
+  style.fill: "#FFEBEE"
+  style.stroke: "#D32F2F"
+  style.font-color: "#B71C1C"
+}
+
+Step6_CreateWaker: "② Instantiate Waker\nRef: Arc<WakerInner>" {
+  class: step
+  tooltip: "Contains state for unparking the specific task."
+}
+
+Step7_Register: "③ Reactor Registration\nreactor.register(fd, EPOLLIN, waker)" {
+  class: io_op
+  style.stroke-dash: 2
+}
+
+Step8_SetCoroutine: "④ Update Task Context\ncoro.state = **0x02 (BLOCKED)**\npending_wakers.push(waker)" {
+  class: step
+}
+
+Step9_Yield: "⑤ Context Switch (Yield)\nasm: swapcontext(&executor, &sched)" {
+  class: yield_op
+}
+
+Step10_Waiting: "Wait: Blocked on I/O\nInterest: EPOLLIN" {
+  shape: oval
+  style: {
+    fill: "#FFF8E1"
+    stroke: "#FFA000"
+    stroke-dash: 6
+    stroke-width: 3
+  }
+}
+
+Step11_Resume: "⑥ Awake: Event Dispatched\nEvent: { fd: N, events: 0x01 }" {
+  class: step
+  style.fill: "#C8E6C9"
+}
+
+Step12_Deregister: "⑦ Clear Reactor Interest\nreactor.deregister(fd)" {
+  class: io_op
+}
+
+Step13_LoopBack: "Retry\n(Loopback)" {
+  shape: circle
+  style.fill: "#2196F3"
+  style.font-color: white
+  width: 60
+}
+
+# Logic Flow
+Start -> Step1_TryRead
+Step1_TryRead -> Step2_CheckResult
+Step2_CheckResult -> Step3_ReturnBytes: "rax > 0"
+Step2_CheckResult -> Step4_CheckEAGAIN: "rax < 0"
+
+Step4_CheckEAGAIN -> Step5_ReturnError: "e != EAGAIN"
+Step4_CheckEAGAIN -> Step6_CreateWaker: "e == EAGAIN\n(11)"
+
+Step6_CreateWaker -> Step7_Register
+Step7_Register -> Step8_SetCoroutine
+Step8_SetCoroutine -> Step9_Yield
+Step9_Yield -> Step10_Waiting: "Scheduler\nSuspends Stack"
+Step10_Waiting -> Step11_Resume: "Kernel Notify\nNIC IRQ -> poll"
+Step11_Resume -> Step12_Deregister
+Step12_Deregister -> Step13_LoopBack
+Step13_LoopBack -> Step1_TryRead
+
+# Engineering Documentation Blocks
+# Fixed: "near" targets changed from objects to constant positions for ELK compatibility
+Annotation_State_Machine: |md
+  ### Task State Transitions
+  - **RUNNING** (0x01): Currently on CPU.
+  - **BLOCKED** (0x02): Registered in Reactor.
+  - **READY** (0x03): In Executor run-queue.
+| {
+  near: top-right
+  style.font-size: 10
+}
+
+Annotation_Epoll_Internals: |md
+  ### Kernel Event Propagation
+  1. Packet arrives at NIC → NIC raises **Hard IRQ**.
+  2. CPU executes **Soft IRQ** → TCP Stack validates Checksum/Seq.
+  3. Packet copied to `sk_receive_queue`.
+  4. `sock_def_readable` triggers → `ep_poll_callback`.
+  5. **epoll_wait** in Reactor thread returns with `fd`.
+| {
+  near: center-left
+  shape: rectangle
+  style: {
+    fill: "#E8EAF6"
+    stroke: "#3F51B5"
+    stroke-dash: 2
+    font-size: 9
+  }
+}
+
+Legend: {
+  near: bottom-right
+  shape: rectangle
+  style: {
+    fill: white
+    stroke: "#9E9E9E"
+    stroke-dash: 2
+  }
+  title: "Component Type Legend"
+  
+  IO: "I/O Ops (Syscalls)" { class: io_op; width: 140 }
+  Decision: "Conditional Branch" { class: decision; width: 140 }
+  Context: "State Update" { class: step; width: 140 }
+  Control: "Yield/Park" { class: yield_op; width: 140 }
+  Exit: "Terminal State" { class: return_op; width: 140 }
+}
+
+# Metadata
+footer: "Non-blocking Read State Machine | Engineer: Technical Design Artist | Spec v1.4.2" {
+  near: bottom-center
+  style.font-size: 10
+  style.italic: true
+}

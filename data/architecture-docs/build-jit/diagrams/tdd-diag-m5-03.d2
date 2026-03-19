@@ -1,0 +1,147 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    pad: 20
+  }
+}
+
+# GUARD TYPE ENCODINGS AND INSTRUCTION LAYOUTS
+# Engineering specification for runtime code emission
+# Reference: Intel SDM Vol 2A/2B
+
+guards: "Speculative Guard Binary Layouts" {
+  style: {
+    stroke-width: 4
+    stroke: "#6e41ab"
+    fill: "#f3f0f7"
+  }
+
+  type_guard: "Guard Type: Type Check (Integer)" {
+    shape: sql_table
+    style: {
+      fill: "#f8faff"
+      stroke: "#6e41ab"
+    }
+    
+    # Header Row
+    "Instruction Sequence": "TEST r/m64, imm32; JNZ rel32" {
+      style.fill: "#6e41ab"
+      style.font-color: white
+      style.bold: true
+    }
+    
+    # Byte Offsets and Fields
+    0x00: "REX.W (0x48)" {constraint: "1 Byte"; style.fill: "#6e41ab"; style.font-color: white}
+    0x01: "Opcode: TEST (0xF7 /0)" {constraint: "1 Byte"; style.fill: "#6e41ab"; style.font-color: white}
+    0x02: "ModR/M: 11 000 000 (0xC0)" {constraint: "1 Byte"; style.fill: "#6e41ab"; style.font-color: white}
+    0x03: "Immediate: TAG_MASK (0x...)" {constraint: "4 Bytes"; style.fill: "#3b82f6"; style.font-color: white}
+    0x07: "Opcode: JNZ (0x0F 0x85)" {constraint: "2 Bytes"; style.fill: "#6e41ab"; style.font-color: white}
+    0x09: "Rel32: Offset to Deopt Stub" {constraint: "4 Bytes"; style.fill: "#f59e0b"; style.font-color: white}
+    
+    # Metadata Row
+    "Total Size": "13 Bytes (sizeof=13)" {
+      style.italic: true
+      style.font-size: 11
+    }
+  }
+
+  bounds_guard: "Guard Type: Array Bounds Check" {
+    shape: sql_table
+    style: {
+      fill: "#f8faff"
+      stroke: "#6e41ab"
+    }
+    
+    "Instruction Sequence": "CMP r/m64, r64; JAE rel32" {
+      style.fill: "#6e41ab"
+      style.font-color: white
+      style.bold: true
+    }
+    
+    0x00: "REX.WRB (0x4D)" {constraint: "1 Byte"; style.fill: "#6e41ab"; style.font-color: white}
+    0x01: "Opcode: CMP (0x39)" {constraint: "1 Byte"; style.fill: "#6e41ab"; style.font-color: white}
+    0x02: "ModR/M: index_reg, len_reg" {constraint: "1 Byte"; style.fill: "#6e41ab"; style.font-color: white}
+    0x03: "Opcode: JAE (0x0F 0x83)" {constraint: "2 Bytes"; style.fill: "#6e41ab"; style.font-color: white}
+    0x05: "Rel32: Offset to Deopt Stub" {constraint: "4 Bytes"; style.fill: "#f59e0b"; style.font-color: white}
+    
+    "Total Size": "9 Bytes (sizeof=9)" {
+      style.italic: true
+      style.font-size: 11
+    }
+  }
+
+  null_guard: "Guard Type: Null Pointer Check" {
+    shape: sql_table
+    style: {
+      fill: "#f8faff"
+      stroke: "#6e41ab"
+    }
+    
+    "Instruction Sequence": "TEST r/m64, r64; JZ rel32" {
+      style.fill: "#6e41ab"
+      style.font-color: white
+      style.bold: true
+    }
+    
+    0x00: "REX.W (0x48)" {constraint: "1 Byte"; style.fill: "#6e41ab"; style.font-color: white}
+    0x01: "Opcode: TEST (0x85)" {constraint: "1 Byte"; style.fill: "#6e41ab"; style.font-color: white}
+    0x02: "ModR/M: reg, reg (0xC0 for rax)" {constraint: "1 Byte"; style.fill: "#6e41ab"; style.font-color: white}
+    0x03: "Opcode: JZ (0x0F 0x84)" {constraint: "2 Bytes"; style.fill: "#6e41ab"; style.font-color: white}
+    0x05: "Rel32: Offset to Deopt Stub" {constraint: "4 Bytes"; style.fill: "#f59e0b"; style.font-color: white}
+    
+    "Total Size": "9 Bytes (sizeof=9)" {
+      style.italic: true
+      style.font-size: 11
+    }
+  }
+}
+
+# Fix: Use |'md ... '| block to protect internal pipe characters from D2 parser
+encoding_logic: |'md
+### Guard Encoding Logic Engineering Specification
+
+| Guard Type | Condition Assumption | Hardware Logic | Branch Trigger (Deopt) |
+| :--- | :--- | :--- | :--- |
+| **Type** | Tag == Expected | `TEST reg, mask` | `JNZ` (Zero bit not set) |
+| **Bounds** | Index < Length | `CMP idx, len` | `JAE` (Above or Equal) |
+| **Null** | Pointer != 0 | `TEST reg, reg` | `JZ` (Zero bit set) |
+| **Overflow** | Result fits 64b | `ADD/SUB/IMUL` | `JO` (Overflow bit set) |
+| **Float** | IsFinite(v) | `UCOMISD xmm, xmm` | `JP/JB` (Parity/Below) |
+| **Class** | Object->Class == C | `CMP [reg + off], C` | `JNE` (Not Equal) |
+| **String** | IsString(v) | `TEST tag, STR_BIT` | `JZ` (Bit not set) |
+| **Boolean** | IsBool(v) | `TEST tag, BOOL_BIT` | `JZ` (Bit not set) |
+| **Length** | Len > 0 | `TEST len, len` | `JZ` (Zero length) |
+| **Capacity** | Cap >= Size | `CMP cap, size` | `JB` (Below) |
+| **Map** | MapId == Target | `CMP [reg + map], ID`| `JNE` (Not Equal) |
+| **Identity** | Ptr1 == Ptr2 | `CMP ptr1, ptr2` | `JNE` (Not Equal) |
+| **Integer** | IsInt32(v) | `TEST tag, INT_BIT` | `JZ` (Bit not set) |
+| **BigInt** | IsBigInt(v) | `TEST tag, BI_BIT` | `JZ` (Bit not set) |
+| **Function** | IsCallable(v) | `TEST flags, CL_BIT` | `JZ` (Bit not set) |
+| **Range** | Min <= v <= Max | `CMP v, Min; JL; CMP v, Max; JG` | `JL/JG` |
+| **Bitwise** | v == (v\|0) | `CVTTSD2SI r32; PXOR` | `JNE` (Not Int32) |
+| **Owner** | ThreadId == Own| `CMP [reg+tid], cur_tid`| `JNE` (Not Owner) |
+| **Atomic** | IsAtomic(v) | `TEST flags, AT_BIT` | `JZ` (Not Atomic) |
+| **Final** | IsFinal(v) | `TEST flags, FN_BIT` | `JZ` (Not Final) |
+| **Pointer** | (v & 7) == 0 | `TEST reg, 7` | `JNZ` (Not ptr) |
+| **Smi** | (v & 1) == 0 | `TEST reg, 1` | `JNZ` (Not SMI) |
+| **HeapObj** | (v & 1) == 1 | `TEST reg, 1` | `JZ` (Not HeapObj) |
+| **NaN** | v != v | `UCOMISD xmm, xmm` | `JNP` (Not NaN) |
+| **Finite** | \|v\| < Inf | `CMP reg, INF_MASK` | `JE` (Is Inf) |
+| **SafeInt** | \|v\| <= 2^53-1| `CALL safe_chk` | `TEST eax; JZ` |
+| **Byte** | 0 <= v <= 255 | `CMP reg, 255` | `JA` (Above 255) |
+'|
+
+encoding_logic.near: center-right
+encoding_logic.style.stroke: "#6e41ab"
+encoding_logic.style.stroke-width: 2
+
+# Legend for Engineering Reference
+legend: {
+  near: bottom-center
+  label: "Instruction Byte Legend"
+  p: "Purple: Instruction Header / Opcodes" { style.fill: "#6e41ab"; style.font-color: white }
+  b: "Blue: Immediate Data / Mask Constants" { style.fill: "#3b82f6"; style.font-color: white }
+  o: "Orange: Rel32 Jump Target (Deoptimization)" { style.fill: "#f59e0b"; style.font-color: white }
+}

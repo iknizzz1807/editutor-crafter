@@ -1,0 +1,343 @@
+direction: down
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: {
+  shape: rectangle
+  label: |'md
+    # Timer Wheel for Coroutine Sleep
+    **O(1) insertion, O(1) per-tick processing**
+  '|
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+}
+
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  wheel: {
+    direction: down
+    label: "Hierarchical Timing Wheel (TimerWheel struct)"
+    
+    config: {
+      shape: rectangle
+      label: |'md
+        **Configuration**
+        - `num_slots: 64`
+        - `slot_duration: 1ms`
+        - `max_duration: 64ms`
+        - `base: Instant::now()`
+      '|
+    }
+
+    slots_header: "Slots (Circular Buffer)"
+    
+    slots: {
+      grid-columns: 8
+      grid-gap: 4
+      s0: "0\n1ms" {style.fill: "#E8F5E9"}
+      s1: "1\n2ms" {style.fill: "#C8E6C9"}
+      s2: "2\n3ms" {style.fill: "#A5D6A7"}
+      s3: "3\n4ms" {style.fill: "#81C784"}
+      s4: "4\n5ms" {style.fill: "#66BB6A"}
+      s5: "5\n6ms" {style.fill: "#4CAF50"}
+      s6: "6\n7ms" {style.fill: "#43A047"}
+      s7: "7\n8ms" {style.fill: "#388E3C"}
+      s8: "8" {style.fill: "#E0E0E0"}
+      s9: "9" {style.fill: "#E0E0E0"}
+      s10: "..." {style.fill: "#BDBDBD"}
+      s11: "63" {style.fill: "#E0E0E0"; style.stroke-dash: 3}
+    }
+
+    current: "current_slot: 0 (advances each tick)"
+
+    bucket_example: {
+      shape: sql_table
+      label: "Slot 3 (4ms) Contents"
+      t1: "Type | Deadline | Pointer"
+      e1: "TimerEntry | T+3ms | Arc<Waker>"
+      e2: "TimerEntry | T+4ms | Arc<Waker>"
+      e3: "TimerEntry | T+4ms | Arc<Waker>"
+    }
+
+    slot0_mem: {
+      shape: sql_table
+      label: "struct Slot (Memory Layout)"
+      f0: "0x00 | Instant   | base_time"
+      f1: "0x08 | usize     | current_slot"
+      f2: "0x10 | Duration  | slot_duration"
+      sz: "Total: 24 bytes"
+    }
+  }
+
+  overflow: {
+    direction: down
+    label: "Overflow Handling"
+    
+    overflow_desc: {
+      shape: rectangle
+      label: |'md
+        **Timers exceeding wheel range**
+        When `duration > 64ms`:
+        1. Place in last slot (63)
+        2. On tick, check deadline
+        3. If not expired, refile to correct slot
+      '|
+    }
+
+    cascade_api: {
+      shape: class
+      label: "Wheel Controller API"
+      +add_timer(d, w): "Token"
+      +tick(): "Vec<Waker>"
+      -refile(entry): "void"
+      +time_to_next(): "Option<Duration>"
+    }
+
+    levels: {
+      shape: sql_table
+      label: "Multi-Level Strategy"
+      l1: "Level 1 | 64 slots × 1ms | 0-64ms"
+      l2: "Level 2 | 64 slots × 64ms | 0-4s"
+      l3: "Level 3 | 64 slots × 4s | 0-256s"
+      note: "Cascading resolution logic"
+    }
+  }
+}
+
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  flow: {
+    direction: down
+    label: "Timer Logic (implementation.rs)"
+    
+    add_flow: {
+      label: "T1: Insertion Logic"
+      width: 380
+      code: |'rust
+        let deadline = Instant::now() + duration;
+        let delay = deadline.saturating_duration_since(base);
+        let offset = (delay / slot_duration) as usize;
+        let target = (current + offset) % NUM_SLOTS;
+        slots[target].push_back(TimerEntry { deadline, waker });
+      '|
+    }
+
+    tick_flow: {
+      label: "T2: Tick Processing"
+      width: 380
+      code: |'rust
+        let now = Instant::now();
+        let expired: Vec<Arc<Waker>> = slots[current]
+            .drain(..)
+            .filter(|e| e.deadline <= now)
+            .map(|e| e.waker).collect();
+        current = (current + 1) % NUM_SLOTS;
+        base = now;
+        expired
+      '|
+    }
+  }
+
+  integration: {
+    direction: down
+    label: "Reactor & User Interface"
+    
+    reactor_poll: {
+      label: "Reactor Poll Integration"
+      width: 400
+      code: |'rust
+        let timeout = wheel.time_to_next()
+            .unwrap_or(Duration::from_millis(10));
+        let n = epoll_wait(epoll_fd, events, timeout)?;
+        let woken = timer_wheel.tick();
+        for waker in woken {
+            waker.wake(); // Resume coroutine
+        }
+      '|
+    }
+
+    sleep_impl: {
+      label: "User API: sleep(dur)"
+      width: 400
+      code: |'rust
+        pub async fn sleep(duration: Duration) {
+            let waker = Arc::new(CoroutineWaker::new());
+            WHEEL.lock().add_timer(duration, waker.clone());
+            waker.await; // Suspension point
+        }
+      '|
+    }
+  }
+}
+
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  complexity: {
+    direction: down
+    label: "Performance Characteristics"
+    
+    ops: {
+      shape: sql_table
+      label: "Operation Analysis"
+      op_add: "Add    | O(1) | Direct index"
+      op_tick: "Tick   | O(1) | Single slot drain"
+      op_canc: "Cancel | O(n) | Deque scan"
+      op_next: "Next   | O(k) | Find first non-empty"
+    }
+
+    comparison: {
+      shape: sql_table
+      label: "vs Alternative Algos"
+      alt1: "Min-Heap    | O(log N) insert/tick"
+      alt2: "Sorted List | O(N) insert | O(1) tick"
+      alt3: "T-Wheel     | O(1) insert | O(1) tick ✓"
+    }
+  }
+
+  struct_def: {
+    direction: down
+    label: "Memory Definitions"
+    
+    timer_entry: {
+      shape: sql_table
+      label: "struct TimerEntry (16B)"
+      f0: "0x00 | Instant | deadline"
+      f1: "0x08 | Arc<W> | waker"
+    }
+
+    timer_wheel_class: {
+      shape: class
+      label: "TimerWheel<T>"
+      -slots: "VecDeque<Entry>[]"
+      -num_slots: "usize"
+      -slot_duration: "Duration"
+      -base: "Instant"
+      +tick(): "Vec<Waker>"
+      +add_timer(d, w): "void"
+    }
+  }
+
+  thread_local: {
+    direction: down
+    label: "Local Runtime Setup"
+    
+    tls_code: {
+      width: 380
+      code: |'rust
+        thread_local! {
+            static WHEEL: RefCell<TimerWheel> = 
+                RefCell::new(TimerWheel::new(64, 1ms));
+        }
+      '|
+    }
+
+    config_note: {
+      shape: rectangle
+      label: |'md
+        **Tuning Matrix**
+        | Slots | Res | Range | Mem |
+        |-------|-----|-------|-----|
+        | 64 | 1ms | 64ms | 8KB |
+        | 256 | 1ms | 256ms| 32KB|
+        | 64 | 10ms| 640ms| 8KB |
+      '|
+    }
+  }
+}
+
+row4: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+
+  hierarchical: {
+    direction: down
+    label: "Hierarchical Cascade (Extended Range)"
+    
+    levels_row: {
+      direction: right
+      style.stroke: transparent
+      style.fill: transparent
+
+      l1: {
+        shape: hexagon
+        label: "L1: Milliseconds\n64ms range"
+        style.fill: "#E3F2FD"
+      }
+      l2: {
+        shape: hexagon
+        label: "L2: Seconds\n4s range"
+        style.fill: "#BBDEFB"
+      }
+      l3: {
+        shape: hexagon
+        label: "L3: Minutes\n256s range"
+        style.fill: "#90CAF9"
+      }
+    }
+
+    cascade_desc: {
+      shape: rectangle
+      label: |'md
+        **Cascading Logic**
+        When L1 completes a full rotation (64ms):
+        - Advance L2 by one slot.
+        - Drain timers from the active L2 slot.
+        - Refile L2 timers into precise L1 slots.
+      '|
+    }
+  }
+
+  pitfalls: {
+    direction: down
+    label: "Engineering Guardrails"
+    
+    p1: {
+      label: "Avoid Drift: Use Absolute"
+      width: 360
+      code: |'rust
+        // BAD: sleep(100) -> work -> loop
+        // GOOD: sleep_until(target)
+        target += Duration::from_millis(100);
+      '|
+    }
+
+    p2: {
+      label: "Range Overflow Guard"
+      width: 360
+      code: |'rust
+        if dur > WHEEL_MAX {
+            // Push to overflow list or 
+            // Hierarchical Wheel Level N
+        }
+      '|
+    }
+  }
+}
+
+legend: {
+  near: bottom-right
+  color1: "Green = Active Timer Slots" {style.font-color: "#2E7D32"}
+  color2: "Gray = Idle Slots" {style.font-color: "#757575"}
+}
+
+wheel.slots.s0 -> wheel.current: "current_ptr" {style.stroke-dash: 3; style.stroke: "#4CAF50"}
+row2.integration.reactor_poll -> row2.integration.sleep_impl: "poll -> resume" {style.stroke: "#1976D2"}
+row4.hierarchical.levels_row.l2 -> row4.hierarchical.levels_row.l1: "refile" {style.stroke-dash: 4}
+row4.hierarchical.levels_row.l3 -> row4.hierarchical.levels_row.l2: "refile" {style.stroke-dash: 4}

@@ -1,0 +1,285 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Chase-Lev Work-Stealing Queue
+  ### Single-Producer Multi-Consumer (SPMC) Non-blocking Deque
+  *Intel Manual Quality Technical Specification*
+| {near: top-center}
+
+direction: right
+
+# ============================================
+# UNIVERSAL CLASSES
+# ============================================
+classes: {
+  slot: {
+    shape: rectangle
+    width: 100
+    height: 60
+    style: {
+      stroke: "#666"
+      stroke-width: 2
+      font: mono
+      font-size: 14
+    }
+  }
+  slot_filled: {
+    shape: rectangle
+    width: 100
+    height: 60
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1976D2"
+      stroke-width: 2
+      font: mono
+      font-size: 14
+      font-color: "#0D47A1"
+    }
+  }
+  slot_hot: {
+    shape: rectangle
+    width: 100
+    height: 60
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#D32F2F"
+      stroke-width: 4
+      font: mono
+      font-size: 14
+      font-color: "#B71C1C"
+      bold: true
+      shadow: true
+    }
+  }
+  pointer_label: {
+    shape: text
+    style: {
+      font: mono
+      font-size: 14
+      bold: true
+    }
+  }
+  state_container: {
+    style: {
+      stroke-width: 4
+      border-radius: 10
+      fill: "#FCFCFC"
+    }
+  }
+}
+
+# ============================================
+# STATE 1: Empty Queue
+# ============================================
+empty_state: "STATE 1: Empty Queue" {
+  class: state_container
+  
+  buffer: {
+    grid-columns: 8
+    grid-gap: 0
+    e0.class: slot; e1.class: slot; e2.class: slot; e3.class: slot
+    e4.class: slot; e5.class: slot; e6.class: slot; e7.class: slot
+    e0.label: "[0]"; e1.label: "[1]"; e2.label: "[2]"; e3.label: "[3]"
+    e4.label: "[4]"; e5.label: "[5]"; e6.label: "[6]"; e7.label: "[7]"
+  }
+  
+  indices: {
+    t_ptr: "TOP = 0" {
+      class: pointer_label
+      style.font-color: "#D32F2F"
+    }
+    b_ptr: "BOTTOM = 0" {
+      class: pointer_label
+      style.font-color: "#2E7D32"
+    }
+  }
+  
+  indices.t_ptr -> buffer.e0: { 
+    style.stroke: "#D32F2F"; style.stroke-width: 3 
+    source-arrowhead: circle
+  }
+  indices.b_ptr -> buffer.e0: { 
+    style.stroke: "#2E7D32"; style.stroke-width: 3; style.stroke-dash: 2 
+    source-arrowhead: diamond
+  }
+
+  note: |md
+    **Invariant:** `bottom >= top`
+    **Size:** `0` (bottom - top)
+    - **Owner:** Pushing increments `bottom`.
+    - **Thieves:** Stealing attempts to increment `top` via CAS.
+  |
+}
+
+# ============================================
+# STATE 2: Partially Filled
+# ============================================
+partial_state: "STATE 2: Active (bottom > top)" {
+  class: state_container
+  
+  buffer: {
+    grid-columns: 8
+    grid-gap: 0
+    p0.class: slot_filled; p1.class: slot_filled; p2.class: slot_filled
+    p3.class: slot; p4.class: slot; p5.class: slot; p6.class: slot; p7.class: slot
+    p0.label: "Task A"; p1.label: "Task B"; p2.label: "Task C"
+    p3.label: "[3]"; p4.label: "[4]"; p5.label: "[5]"; p6.label: "[6]"; p7.label: "[7]"
+  }
+  
+  ptrs: {
+    t_ptr: "TOP=0\n(Steal Point)" {
+      class: pointer_label
+      style.font-color: "#D32F2F"
+    }
+    b_ptr: "BOTTOM=3\n(Push/Pop Point)" {
+      class: pointer_label
+      style.font-color: "#2E7D32"
+    }
+  }
+  
+  ptrs.t_ptr -> buffer.p0: { 
+    label: "FIFO (Thieves)"
+    style.stroke: "#D32F2F"
+    style.stroke-width: 4
+  }
+  ptrs.b_ptr -> buffer.p3: { 
+    label: "LIFO (Owner)"
+    style.stroke: "#2E7D32"
+    style.stroke-width: 4
+  }
+  
+  logic: |md
+    **Data Range:** Elements at `[top, bottom-1]`
+    **Owner (Producer):**
+    - `push()`: Write to `[3]`, StoreStore Barrier, `bottom = 4`
+    - `pop()`: `bottom = 2`, LoadLoad/LoadStore, read `Task C`
+    **Thief (Consumer):**
+    - `steal()`: Read `Task A`, `CAS(top, 0, 1)`
+  |
+}
+
+# ============================================
+# STATE 3: Race Condition (The "Hot" Item)
+# ============================================
+race_state: "STATE 3: Race (bottom == top + 1)" {
+  class: state_container
+  style.fill: "#FFFDE7"
+  style.stroke: "#FBC02D"
+  
+  buffer: {
+    grid-columns: 8
+    grid-gap: 0
+    s0.class: slot_hot; s1.class: slot; s2.class: slot; s3.class: slot
+    s4.class: slot; s5.class: slot; s6.class: slot; s7.class: slot
+    s0.label: "LAST ITEM"
+  }
+  
+  race_ptrs: {
+    t_ptr: "TOP=0" { class: pointer_label; style.font-color: red }
+    b_ptr: "BOTTOM=1" { class: pointer_label; style.font-color: green }
+  }
+  
+  race_ptrs.t_ptr -> buffer.s0
+  race_ptrs.b_ptr -> buffer.s1
+  
+  warning: |md
+    ### ⚠️ CRITICAL CONCURRENCY
+    Exactly one item remains. Both `pop()` (owner) and `steal()` (thief) compete.
+    1. **Thief Protocol:** Atomic read `top`, read `bottom`, read `data`, then `CAS(top, t, t+1)`.
+    2. **Owner Protocol:** `bottom--`. If `top == bottom`, perform `CAS(top, t, t+1)` to claim or reset.
+    3. **Barrier:** `SeqCst` fence required between `bottom--` and `top` read.
+  |
+}
+
+# ============================================
+# MEMORY BARRIER & OPERATION SEQUENCES
+# ============================================
+operations: "Atomic Operation Protocol" {
+  style.fill: "#F1F8E9"
+  
+  push_seq: {
+    shape: sequence_diagram
+    owner: "OwnerThread"
+    q: "CL_Queue"
+    owner -> q: "data = task"
+    q -> q: "StoreStore Barrier (Release)"
+    owner -> q: "bottom = b + 1"
+    style.stroke: "#2E7D32"
+  }
+  
+  steal_seq: {
+    shape: sequence_diagram
+    thief: "ThiefThread"
+    q: "CL_Queue"
+    thief -> q: "t = top.load(Acquire)"
+    q -> q: "SeqCst / LoadLoad Barrier"
+    thief -> q: "b = bottom.load(Acquire)"
+    thief -> q: "if t < b: CAS(top, t, t+1)"
+    style.stroke: "#D32F2F"
+  }
+}
+
+# ============================================
+# HARDWARE OPTIMIZATION: CACHE LAYOUT
+# ============================================
+cache_layout: "Memory Layout: False Sharing Prevention" {
+  style.fill: "#ECEFF1"
+  
+  cl0: "Cache Line 0 (Offset 0x00)" {
+    style.stroke: "#1976D2"; style.stroke-width: 2
+    grid-columns: 2
+    b_val: "bottom: AtomicIsize\nOffset: +0\nSize: 8B" { style.fill: "#BBDEFB" }
+    pad1: "Padding: [u8; 56]\n(Prevent Interference)" { style.fill: "#CFD8DC"; style.font-color: "#78909C" }
+  }
+  
+  cl1: "Cache Line 1 (Offset 0x40)" {
+    style.stroke: "#D32F2F"; style.stroke-width: 2
+    grid-columns: 2
+    t_val: "top: AtomicIsize\nOffset: +64\nSize: 8B" { style.fill: "#FFCDD2" }
+    pad2: "Padding: [u8; 56]\n(Stop Cache Bouncing)" { style.fill: "#CFD8DC"; style.font-color: "#78909C" }
+  }
+  
+  cl2: "Cache Line 2 (Offset 0x80)" {
+    style.stroke: "#388E3C"; style.stroke-width: 2
+    grid-columns: 1
+    buf_ptr: "buffer: *mut Array\nOffset: +128\nSize: 8B" { style.fill: "#C8E6C9" }
+  }
+  
+  note: |md
+    **Technical Detail:**
+    - **Owner Write:** Only modifies `bottom`. Stays in L1/L2 cache locally.
+    - **Thief Contention:** Compete for `top` only.
+    - **Padding:** Ensures `top` and `bottom` reside on different 64-byte lines.
+  |
+}
+
+# ============================================
+# TRANSITIONS
+# ============================================
+empty_state -> partial_state: "Producer push()" {
+  style.stroke: "#2E7D32"; style.stroke-width: 3; style.animated: true
+}
+
+partial_state -> race_state: "Thieves steal(N-1)" {
+  style.stroke: "#D32F2F"; style.stroke-width: 2
+}
+
+race_state -> empty_state: "CAS Claimed" {
+  style.stroke: "#1976D2"; style.stroke-dash: 5
+}
+
+# ============================================
+# LEGEND (FIXED VERSION)
+# ============================================
+legend: {
+  near: bottom-right
+  # Keys renamed to avoid conflict with reserved style keywords like 'filled'
+  filled_task_legend: "Filled Task" { class: slot_filled }
+  race_contention_legend: "Race Contention" { class: slot_hot }
+  empty_slot_legend: "Empty Slot" { class: slot }
+}

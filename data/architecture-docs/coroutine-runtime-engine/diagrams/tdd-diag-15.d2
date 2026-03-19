@@ -1,0 +1,270 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    pad: 20
+  }
+}
+
+title: {
+  label: |md
+    # Chase-Lev Work-Stealing Queue Memory Layout
+    **Total Size: 136 bytes (3 cache lines spanned)**
+    *Memory Model: SC-DRF / C++11 Atomic*
+  |
+  near: top-center
+}
+
+# --- MEMORY MAP ---
+memory_layout: {
+  grid-columns: 3
+  grid-gap: 40
+
+  # --- CACHE LINE 0: OWNER DOMAIN ---
+  cl0: {
+    label: "L1 Cache Line 0 (0x00 - 0x3F)"
+    style: {
+      stroke: "#2196F3"
+      stroke-width: 4
+      stroke-dash: 5
+    }
+
+    grid-rows: 3
+    grid-columns: 1
+    grid-gap: 0
+    
+    header: {
+      label: "OWNER DOMAIN (L1 Exclusive)"
+      style: {
+        fill: "#E1BEE7" 
+        stroke: "#7B1FA2"
+        bold: true
+      }
+    }
+
+    bottom_field: {
+      label: |md
+        **Offset 0x00** | Size: 8B
+        `bottom: AtomicIsize`
+        *Modified by OWNER only*
+        - push: increment
+        - pop: decrement
+      |
+      style: {
+        fill: "#BBDEFB"
+        stroke: "#1976D2"
+        stroke-width: 2
+      }
+    }
+
+    padding_1: {
+      label: |md
+        **Offset 0x08** | Size: 56B
+        `_pad1: [u8; 56]`
+        *Isolation Barrier*
+      |
+      style: {
+        fill: "#F5F5F5"
+        stroke: "#9E9E9E"
+        stroke-dash: 3
+        font-color: "#757575"
+      }
+    }
+  }
+
+  # --- CACHE LINE 1: SHARED DOMAIN ---
+  cl1: {
+    label: "L1 Cache Line 1 (0x40 - 0x7F)"
+    style: {
+      stroke: "#FF9800"
+      stroke-width: 4
+      stroke-dash: 5
+    }
+
+    grid-rows: 3
+    grid-columns: 1
+    grid-gap: 0
+
+    header: {
+      label: "THIEF/SHARED DOMAIN"
+      style: {
+        fill: "#E1BEE7"
+        stroke: "#7B1FA2"
+        bold: true
+      }
+    }
+
+    top_field: {
+      label: |md
+        **Offset 0x40** | Size: 8B
+        `top: AtomicIsize`
+        *Contended via CAS*
+        - pop: read/CAS
+        - steal: read/CAS
+      |
+      style: {
+        fill: "#BBDEFB"
+        stroke: "#1976D2"
+        stroke-width: 2
+      }
+    }
+
+    padding_2: {
+      label: |md
+        **Offset 0x48** | Size: 56B
+        `_pad2: [u8; 56]`
+        *Isolation Barrier*
+      |
+      style: {
+        fill: "#F5F5F5"
+        stroke: "#9E9E9E"
+        stroke-dash: 3
+        font-color: "#757575"
+      }
+    }
+  }
+
+  # --- CACHE LINE 2: METADATA ---
+  cl2: {
+    label: "L1 Cache Line 2 (0x80 - 0x87)"
+    style: {
+      stroke: "#43A047"
+      stroke-width: 2
+    }
+
+    grid-rows: 3
+    grid-columns: 1
+    grid-gap: 0
+
+    header: {
+      label: "METADATA DOMAIN"
+      style: {
+        fill: "#E1BEE7"
+        stroke: "#7B1FA2"
+        bold: true
+      }
+    }
+
+    buffer_ptr: {
+      label: |md
+        **Offset 0x80** | Size: 8B
+        `buffer: AtomicPtr<Buffer<T>>`
+      |
+      style: {
+        fill: "#FFE0B2"
+        stroke: "#FB8C00"
+        stroke-width: 2
+      }
+    }
+
+    heap_block: {
+      label: |md
+        ### Heap Allocated Circular Buffer
+        rust
+        struct Buffer<T> {
+            cap: usize,
+            data: [UnsafeCell<T>; cap]
+        }
+        
+      |
+      style: {
+        fill: "#C8E6C9"
+        stroke: "#43A047"
+        font-size: 11
+      }
+    }
+  }
+}
+
+# --- EXPLANATORY ANNOTATIONS ---
+
+design_notes: {
+  near: top-right
+  label: |md
+    ### Cache Line Isolation
+    The 56-byte padding blocks ensure `bottom` (CL0) and `top` (CL1) never share a cache line.
+    
+    - **Owner** writes to `bottom`.
+    - **Thieves** read/CAS `top`.
+    - **Result:** No "Ping-pong" cache invalidation on owner's fast path during pop.
+  |
+  style: {
+    fill: "#FFF9C4"
+    stroke: "#FBC02D"
+    border-radius: 8
+  }
+}
+
+algorithm_ops: {
+  near: bottom-center
+  grid-columns: 3
+  grid-gap: 20
+  
+  push_op: {
+    label: |md
+      #### push(item)
+      1. Load `b = bottom` (Relaxed)
+      2. Store `buffer[b] = item`
+      3. `Atomic::store(bottom, b+1, Release)`
+    |
+    style: { fill: "#E3F2FD"; stroke: "#1976D2" }
+  }
+
+  pop_op: {
+    label: |md
+      #### pop()
+      1. `b = bottom - 1`
+      2. `store(bottom, b, Relaxed)`
+      3. `fence(SeqCst)`
+      4. `t = top` (Relaxed)
+      5. If `t < b`: success
+      6. If `t == b`: `CAS(top, t, t+1)`
+    |
+    style: { fill: "#FFF3E0"; stroke: "#FB8C00" }
+  }
+
+  steal_op: {
+    label: |md
+      #### steal()
+      1. `t = top` (Acquire)
+      2. `fence(SeqCst)`
+      3. `b = bottom` (Acquire)
+      4. If `t < b`: `CAS(top, t, t+1)`
+    |
+    style: { fill: "#FFEBEE"; stroke: "#D32F2F" }
+  }
+}
+
+# --- LEGEND ---
+legend: {
+  near: bottom-left
+  grid-rows: 5
+  grid-gap: 4
+  
+  h: Header { style.fill: "#E1BEE7" }
+  d: Atomic State { style.fill: "#BBDEFB" }
+  p: Padding (Gray) { style.fill: "#F5F5F5"; style.stroke-dash: 3 }
+  ptr: Pointer { style.fill: "#FFE0B2" }
+  hp: Heap Block { style.fill: "#C8E6C9" }
+}
+
+# --- CONNECTIONS ---
+
+# Conflict line between hot fields
+memory_layout.cl0.bottom_field -> memory_layout.cl1.top_field: "False Sharing Barrier" {
+  style: {
+    stroke: red
+    stroke-width: 2
+    stroke-dash: 5
+  }
+}
+
+# Pointer reference
+memory_layout.cl2.buffer_ptr -> memory_layout.cl2.heap_block: "dereferences to" {
+  style: {
+    stroke: "#FB8C00"
+    stroke-width: 2
+    target-arrowhead: triangle
+  }
+}

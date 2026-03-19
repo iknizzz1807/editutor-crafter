@@ -1,0 +1,235 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+direction: right
+
+title: |'md
+# Chase-Lev Work-Stealing Queue: Push Operation
+## Technical Specification & Memory Ordering Analysis
+'| {
+  near: top-center
+  style.stroke-width: 0
+}
+
+# -----------------------------------------------------------------------------
+# STEP DEFINITIONS
+# -----------------------------------------------------------------------------
+
+step1: {
+  label: "STEP 1: Load Bottom Pointer"
+  shape: rectangle
+  style: {
+    fill: "#E8F4FD"
+    stroke: "#2196F3"
+    stroke-width: 2
+  }
+  content: |'md
+  **Implementation (Rust):**
+  rust
+  let b = self.bottom.load(Ordering::Relaxed);
+  
+  **Logic:** 
+  Only the owner thread modifies `bottom`. A `Relaxed` load is sufficient as there are no data races on this specific write from the perspective of the owner.
+  '|
+}
+
+step2: {
+  label: "STEP 2: Load Top Pointer"
+  shape: rectangle
+  style: {
+    fill: "#E8F4FD"
+    stroke: "#2196F3"
+    stroke-width: 2
+  }
+  content: |'md
+  **Implementation (Rust):**
+  rust
+  let t = self.top.load(Ordering::Acquire);
+  
+  **Logic:** 
+  The `Acquire` ordering is mandatory here to synchronize with any thieves that successfully executed a `CAS` on `top`. It ensures we see the most up-to-date head of the queue.
+  '|
+}
+
+step3: {
+  label: "STEP 3: Capacity Check"
+  shape: diamond
+  style: {
+    fill: "#FFF3E0"
+    stroke: "#FF9800"
+    stroke-width: 2
+  }
+  content: |'md
+  **Predicate:**
+  `if (b - t) >= buffer.capacity()`
+  
+  *Calculates effective size and compares to circular buffer boundary.*
+  '|
+}
+
+step4: {
+  label: "STEP 4: Buffer Growth (Cold Path)"
+  shape: rectangle
+  style: {
+    fill: "#FFEBEE"
+    stroke: "#F44336"
+    stroke-width: 2
+  }
+  content: |'md
+  **Procedure:**
+  1. Allocate `new_cap = old_cap * 2`.
+  2. Map old elements `[t, b)` to `new_buffer`.
+  3. Atomic swap of buffer pointer.
+  4. Deallocate old buffer (deferred).
+  '|
+}
+
+step5: {
+  label: "STEP 5: Write Element to Slot"
+  shape: rectangle
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#4CAF50"
+    stroke-width: 2
+  }
+  content: |'md
+  **Memory Layout:**
+  `ptr::write(buffer.at(b), item);`
+  
+  Offset calculation: `b & (capacity - 1)`
+  
+  **Internal State:**
+  - `buffer[b]` is now initialized.
+  - `bottom` is still at `b`.
+  '|
+}
+
+step6: {
+  label: "STEP 6: Release Memory Barrier"
+  shape: rectangle
+  style: {
+    fill: "#F3E5F5"
+    stroke: "#9C27B0"
+    stroke-width: 4
+    bold: true
+  }
+  content: |'md
+  **CRITICAL BARRIER:**
+  rust
+  atomic::fence(Ordering::Release);
+  
+  **Invariants:**
+  Prevents the processor/compiler from reordering the element write (Step 5) *after* the bottom increment (Step 7). 
+  Thieves must not see the new index until data is valid.
+  '|
+}
+
+step7: {
+  label: "STEP 7: Commit & Publish"
+  shape: rectangle
+  style: {
+    fill: "#E8F5E9"
+    stroke: "#4CAF50"
+    stroke-width: 2
+  }
+  content: |'md
+  **Update:**
+  rust
+  self.bottom.store(b + 1, Ordering::Relaxed);
+  
+  **Logic:**
+  Increments the producer index. Because of the `Release` fence in Step 6, this store "publishes" the new item to all threads.
+  '|
+}
+
+# -----------------------------------------------------------------------------
+# FLOW & CONNECTIONS
+# -----------------------------------------------------------------------------
+
+step1 -> step2: "Acquire Indices"
+step2 -> step3: "Calculate Size"
+
+step3 -> step4: "TRUE: Overflow" {
+  style: {
+    stroke: "#F44336"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+step3 -> step5: "FALSE: Capacity OK" {
+  style: {
+    stroke: "#4CAF50"
+    stroke-width: 3
+  }
+}
+
+step4 -> step5: "New Buffer Ready"
+step5 -> step6: "Data Written"
+step6 -> step7: "Order Fixed"
+step7 -> finish: "Push Success"
+
+finish: Push Complete {
+  shape: circle
+  style.fill: "#4CAF50"
+  style.font-color: white
+}
+
+# -----------------------------------------------------------------------------
+# ANALYSIS PANELS
+# -----------------------------------------------------------------------------
+
+MemoryAnalysis: {
+  label: "Memory Ordering Matrix"
+  near: bottom-left
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#9E9E9E"
+    stroke-dash: 3
+  }
+  table: |'md
+| Operation | Ordering | Justification |
+| :--- | :--- | :--- |
+| Load Bottom | Relaxed | Owned by current thread; no external race. |
+| Load Top | Acquire | Sync with Thief CAS (Release). |
+| Element Write | Plain | Non-atomic write protected by Release fence. |
+| Sync Fence | Release | Ensure Write visibility before Index update. |
+| Store Bottom | Relaxed | Standard increment; ordering provided by fence. |
+'|
+}
+
+QueueVisual: {
+  label: "Buffer State Visualization"
+  near: bottom-right
+  style: {
+    fill: "#FAFAFA"
+    stroke: "#9E9E9E"
+  }
+  diagram: |'md
+  **Array Layout (Modulo Capacity):**
+  text
+  [ t ] -> [   ] -> [   ] -> [ b ]
+    |                         |
+  (Head)                   (Next Slot)
+  
+  Post-Push:
+  [ t ] -> [   ] -> [   ] -> [Item] -> [b+1]
+    |                                    |
+  (Head remains)                   (Bottom moves)
+  
+  '|
+}
+
+# -----------------------------------------------------------------------------
+# GLOBAL STYLING
+# -----------------------------------------------------------------------------
+
+(step3 -> step4)[0].source-arrowhead: 1
+(step3 -> step5)[0].source-arrowhead: 1
+
+***.style.font: mono
+***.style.border-radius: 4

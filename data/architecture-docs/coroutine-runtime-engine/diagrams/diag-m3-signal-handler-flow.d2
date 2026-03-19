@@ -1,0 +1,282 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+title: {
+  near: top-center
+  label: Signal Handler Execution Flow — Timer → Preemption
+  shape: text
+  style: {
+    font-size: 28
+    bold: true
+    underline: true
+  }
+}
+row1: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  phase1: {
+    direction: down
+    label: "PHASE 1: Timer Interrupt"
+    hw_timer: {
+      label: "Hardware Timer"
+      shape: rectangle
+      width: 200
+      style.fill: "#FFE4B5"
+      desc: "APIC fires at 10ms interval"
+    }
+    cpu_state: {
+      label: "CPU at Interrupt"
+      shape: rectangle
+      width: 200
+      code: |'c
+        // Coroutine mid-execution
+        result += compute(i);
+        // <- INTERRUPT HERE
+        store_buffer(result);
+      '|
+      style.fill: "#FFE4E4"
+    }
+    kernel_vec: {
+      label: "Kernel Vector"
+      shape: rectangle
+      width: 200
+      desc: "CPU pushes RIP, RFLAGS, CS\nto current stack (coroutine's)"
+      style.fill: "#E4E4FF"
+    }
+  }
+  phase2: {
+    direction: down
+    label: "PHASE 2: Signal Handler"
+    signal_entry: {
+      label: "preempt_signal_handler()"
+      shape: rectangle
+      width: 220
+      code: |'c
+        // Async-signal-safe ONLY
+        // No malloc, no printf!
+        PREEMPTION_FLAG.store(true, Release);
+        return;  // Resume interrupted code
+      '|
+      style.fill: "#E4FFE4"
+    }
+    state_saved: {
+      label: "State on Stack"
+      shape: sql_table
+      label: "Signal Frame (kernel-saved)"
+      rip: "0x00 | reg | return address"
+      rflags: "0x08 | reg | CPU flags"
+      cs: "0x10 | reg | code segment"
+      siginfo: "0x18 | ptr | signal info"
+      ucontext: "0x20 | ptr | full register state"
+      total: "Total: ~1KB on coroutine stack"
+    }
+    flag_set: {
+      label: "PREEMPTION_FLAG"
+      shape: rectangle
+      width: 220
+      code: |'c
+        static ATOMIC_BOOL: false
+        // Handler sets to true
+        // Coroutine polls at safe points
+      '|
+      style.fill: "#FFFACD"
+    }
+  }
+}
+row2: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  phase3: {
+    direction: down
+    label: "PHASE 3: Coroutine Resumes"
+    resume_exec: {
+      label: "Coroutine Continues"
+      shape: rectangle
+      width: 200
+      code: |'c
+        // Signal handler returned
+        // Execution resumes here
+        result += compute(i);
+        store_buffer(result);
+      '|
+      style.fill: "#FFE4E4"
+    }
+    safe_point: {
+      label: "Safe Point Check"
+      shape: diamond
+      width: 180
+      style.fill: "#E0FFFF"
+    }
+    flag_check: {
+      label: "Check PREEMPTION_FLAG"
+      shape: rectangle
+      width: 200
+      code: |'c
+        if (PREEMPTION_FLAG.load(Relaxed)) {
+          // True: timer fired
+          clear_preemption();
+          yield_now();  // -> scheduler
+        }
+      '|
+      style.fill: "#FFFACD"
+    }
+  }
+  phase4: {
+    direction: down
+    label: "PHASE 4: Yield to Scheduler"
+    yield_call: {
+      label: "yield_now()"
+      shape: rectangle
+      width: 200
+      code: |'c
+        // Coroutine self-suspends
+        coro.state = Runnable;
+        context_switch(&coro.ctx, &scheduler.ctx);
+      '|
+      style.fill: "#E4FFE4"
+    }
+    ctx_save: {
+      label: "Context Save"
+      shape: sql_table
+      label: "Coroutine Context (saved)"
+      rbx: "0x00 | reg | callee-saved"
+      rbp: "0x08 | reg | frame pointer"
+      r12: "0x10 | reg | callee-saved"
+      r13: "0x18 | reg | callee-saved"
+      r14: "0x20 | reg | callee-saved"
+      r15: "0x28 | reg | callee-saved"
+      rsp: "0x30 | ptr | stack pointer"
+      rip: "0x38 | ptr | resume address"
+      total: "Total: 64 bytes (1 cache line)"
+    }
+    scheduler: {
+      label: "Scheduler Resumes"
+      shape: rectangle
+      width: 200
+      code: |'c
+        // Back in scheduler context
+        enqueue(coro);  // Re-queue
+        next = find_work();
+        resume(next);
+      '|
+      style.fill: "#D4D4FF"
+    }
+  }
+}
+row3: "" {
+  direction: right
+  style: {
+    stroke: transparent
+    fill: transparent
+  }
+  timeline: {
+    direction: down
+    label: "Timeline (Nanoseconds)"
+    t0: {
+      label: "t=0"
+      shape: circle
+      desc: "Timer fires"
+      style.fill: "#FFE4B5"
+    }
+    t1: {
+      label: "t=50ns"
+      shape: circle
+      desc: "Signal handler completes"
+      style.fill: "#E4FFE4"
+    }
+    t2: {
+      label: "t=50-500ns"
+      shape: circle
+      desc: "Coroutine runs until safe point"
+      style.fill: "#FFE4E4"
+    }
+    t3: {
+      label: "t=100-500ns"
+      shape: circle
+      desc: "Context switch to scheduler"
+      style.fill: "#D4D4FF"
+    }
+  }
+  key_insight: {
+    direction: down
+    label: "Key Insight: Split Between Interrupt and Switch"
+    width: 400
+    split1: {
+      label: "Interrupt (Immediate)"
+      shape: rectangle
+      width: 380
+      desc: "Signal handler runs in ~50ns. Does NOT switch contexts. Only sets flag. Coroutine state remains intact on its stack."
+      style.fill: "#E4FFE4"
+    }
+    split2: {
+      label: "Switch (Deferred)"
+      shape: rectangle
+      width: 380
+      desc: "Actual context switch happens at safe point. Coroutine is at well-defined state. No partial register writes, no mid-operation corruption."
+      style.fill: "#D4D4FF"
+    }
+    why_split: {
+      label: "Why Split?"
+      shape: rectangle
+      width: 380
+      desc: "Signal handlers are severely restricted (async-signal-safe only). Cannot allocate, cannot lock mutexes, cannot safely switch contexts. Deferring the switch to safe point avoids all these dangers."
+      style.fill: "#FFFACD"
+    }
+  }
+}
+# Flow arrows
+hw_timer -> kernel_vec: "IRQ"
+kernel_vec -> signal_entry: "vector to handler"
+signal_entry -> flag_set: "atomic store"
+signal_entry -> resume_exec: "return from signal"
+resume_exec -> safe_point: "continue execution"
+safe_point -> flag_check: "poll flag"
+flag_check -> yield_call: "flag=true"
+yield_call -> ctx_save: "save registers"
+ctx_save -> scheduler: "jump to scheduler"
+# Timeline annotations
+t0 -> t1: "50ns"
+t1 -> t2: "0-450ns"
+t2 -> t3: "50-400ns"
+# Cross-reference
+flag_set -> flag_check: "flag visible here" {
+  style.stroke-dash: 4
+  style.stroke: "#888888"
+}
+# Legend
+legend: {
+  near: bottom-right
+  label: "Legend"
+  shape: rectangle
+  style.fill: "#F5F5F5"
+  hw: "Hardware/Kernel" {
+    shape: rectangle
+    style.fill: "#FFE4B5"
+  }
+  coro: "Coroutine Code" {
+    shape: rectangle
+    style.fill: "#FFE4E4"
+  }
+  handler: "Signal Handler" {
+    shape: rectangle
+    style.fill: "#E4FFE4"
+  }
+  sched: "Scheduler" {
+    shape: rectangle
+    style.fill: "#D4D4FF"
+  }
+  flag: "Shared Flag" {
+    shape: rectangle
+    style.fill: "#FFFACD"
+  }
+}

@@ -1,0 +1,339 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: |md
+  # Entry Trampoline Flow: `coroutine_entry`
+  Implementation Detail for Coroutine Runtime Engine
+|
+title.near: top-center
+
+direction: down
+
+classes: {
+  entry_node: {
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#2E7D32"
+      stroke-width: 3
+      font: mono
+      bold: true
+    }
+  }
+  parameter: {
+    shape: parallelogram
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#E65100"
+      stroke-dash: 3
+      font: mono
+    }
+  }
+  step_box: {
+    shape: rectangle
+    style: {
+      fill: "#C8E6C9"
+      stroke: "#388E3C"
+      bold: true
+    }
+  }
+  critical_op: {
+    shape: rectangle
+    style: {
+      fill: "#BBDEFB"
+      stroke: "#1976D2"
+      stroke-width: 3
+      bold: true
+    }
+  }
+  state_oval: {
+    shape: oval
+    style: {
+      fill: "#FFECB3"
+      stroke: "#FFA000"
+    }
+  }
+  code_block: {
+    shape: code
+    style: {
+      stroke: "#BDBDBD"
+      font: mono
+    }
+  }
+}
+
+# ============================================
+# PHASE 1: Trampoline Entry
+# ============================================
+Phase1: "Trampoline Entry" {
+  entry_point: "coroutine_entry\n(asm-trampoline)" {
+    class: entry_node
+  }
+  coroutine_ptr: "rdi = coroutine_ptr\n(*mut Coroutine)" {
+    class: parameter
+  }
+  entry_point -> coroutine_ptr
+}
+
+# ============================================
+# PHASE 2: State Transition
+# ============================================
+Phase2: "State Transition" {
+  direction: right
+  state_before: "state = Runnable" {
+    class: state_oval
+  }
+  step1: "Step 1: Set State\nto Running" {
+    class: step_box
+  }
+  state_after: "state = Running" {
+    class: state_oval
+    style.fill: "#A5D6A7"
+    style.bold: true
+  }
+  state_before -> step1 -> state_after
+
+  code_set_state: {
+    label: |rust
+    unsafe {
+      let coroutine = &mut *coroutine_ptr;
+      coroutine.state = CoroutineState::Running;
+    }
+    |
+    class: code_block
+  }
+}
+
+# ============================================
+# PHASE 3: Context Setup
+# ============================================
+Phase3: "Thread-Local Setup" {
+  direction: right
+  step2: "Step 2: Set Thread-Local" {
+    class: step_box
+  }
+  tls_storage: "Thread-Local Storage" {
+    shape: cylinder
+    style.fill: "#E1BEE7"
+    current: "CURRENT_COROUTINE = coroutine_ptr"
+    sched: "SCHEDULER_CONTEXT = scheduler_ctx"
+  }
+  step2 -> tls_storage
+
+  code_set_tls: {
+    label: |rust
+    CURRENT_COROUTINE.with(|c| {
+      c.set(coroutine_ptr)
+    });
+    |
+    class: code_block
+  }
+}
+
+# ============================================
+# PHASE 4: Ownership Transfer
+# ============================================
+Phase4: "Take Entry Closure" {
+  direction: right
+  step3: "Step 3: Take Closure" {
+    class: step_box
+  }
+  entry_option: "entry: Option<\nBox<dyn FnOnce>\n>" {
+    style.fill: "#FFF9C4"
+  }
+  entry_taken: "entry.take()\n→ Some(closure)" {
+    class: step_box
+    style.fill: "#DCEDC8"
+  }
+  entry_option -> step3 -> entry_taken
+
+  code_take_closure: {
+    label: |rust
+    if let Some(entry) = coroutine.entry.take() {
+        // Closure ownership moved to stack
+    }
+    |
+    class: code_block
+  }
+}
+
+# ============================================
+# PHASE 5: Execution
+# ============================================
+Phase5: Execution {
+  step4: "Step 4: catch_unwind" {
+    class: critical_op
+  }
+  catch_unwind_ctx: "AssertUnwindSafe Scope" {
+    style.stroke-dash: 4
+    user_closure: "User Closure\nF(&mut Coroutine)" {
+      style.fill: "#FFF8E1"
+      style.border-radius: 6
+    }
+  }
+  step4 -> catch_unwind_ctx.user_closure
+
+  code_execute: {
+    label: |rust
+    let result = std::panic::catch_unwind(
+      std::panic::AssertUnwindSafe(|| {
+        entry(coroutine);
+      })
+    );
+    |
+    class: code_block
+  }
+}
+
+# ============================================
+# PHASE 6: Result Handling
+# ============================================
+Phase6: "Handling & Final State" {
+  direction: right
+  result_check: "Result Check" {
+    shape: diamond
+    style.fill: "#F3E5F5"
+  }
+  
+  success: "Ok(())" {
+    class: state_oval
+    style.fill: "#C8E6C9"
+  }
+  
+  failure: "Err(panic)" {
+    class: state_oval
+    style.fill: "#FFCDD2"
+  }
+
+  final_finished: "state = Finished" {
+    class: step_box
+    style.fill: "#81C784"
+  }
+
+  final_panicked: "state = Panicked" {
+    class: step_box
+    style.fill: "#EF9A9A"
+  }
+
+  result_check -> success: "normal"
+  result_check -> failure: "panic"
+  success -> final_finished
+  failure -> final_panicked
+
+  code_final: {
+    label: |rust
+    match result {
+      Ok(_) => coro.state = Finished,
+      Err(_) => coro.state = Panicked,
+    }
+    |
+    class: code_block
+  }
+}
+
+# ============================================
+# PHASE 7: Exit & Cleanup
+# ============================================
+Phase7: "Cleanup & Yield" {
+  step5: "Step 5: Clear TLS" {
+    class: step_box
+  }
+  clear_tls: "CURRENT_COROUTINE = null" {
+    style.fill: "#FFECB3"
+  }
+  
+  step6: "Step 6: Yield" {
+    class: critical_op
+    style.fill: "#B3E5FC"
+  }
+  
+  no_sched_check: "Is Scheduler Present?" {
+    shape: diamond
+  }
+  
+  yield_to_sched: "context.switch_to\n(scheduler_ctx)" {
+    style.fill: "#E1BEE7"
+    style.font: mono
+  }
+  
+  abort: "std::process::abort()" {
+    shape: octagon
+    style.fill: "#FFCDD2"
+    style.stroke: "#B71C1C"
+  }
+
+  step5 -> clear_tls -> step6 -> no_sched_check
+  no_sched_check -> yield_to_sched: "Yes"
+  no_sched_check -> abort: "No"
+
+  code_yield: {
+    label: |rust
+    let s_ctx = SCHED_CTX.with(|c| c.get());
+    if !s_ctx.is_null() {
+        coro.ctx.switch_to(&mut *s_ctx);
+    }
+    |
+    class: code_block
+  }
+}
+
+# ============================================
+# Main Connection Flow
+# ============================================
+Phase1 -> Phase2
+Phase2 -> Phase3
+Phase3 -> Phase4
+Phase4 -> Phase5
+Phase5 -> Phase6
+Phase6 -> Phase7
+
+# ============================================
+# State Summary Diagram
+# ============================================
+State_Transitions: {
+  label: "Coroutine Lifecycle State Machine"
+  style.stroke-dash: 2
+  
+  start: "●" { shape: circle }
+  
+  start -> Runnable: "Create"
+  Runnable -> Running: "resume()" {
+    style.stroke: "#2E7D32"
+    style.stroke-width: 2
+  }
+  Running -> Finished: "Ok(())"
+  Running -> Panicked: "Panic" {
+    style.stroke: red
+  }
+  
+  Runnable: { shape: circle; style.fill: "#FFF9C4" }
+  Running: { shape: circle; style.fill: "#A5D6A7" }
+  Finished: { shape: circle; style.fill: "#81C784" }
+  Panicked: { shape: circle; style.fill: "#EF9A9A" }
+}
+
+# ============================================
+# Legend
+# ============================================
+legend: {
+  shape: sticky_note
+  label: |md
+    ### Legend
+    - **Green**: State Mutation Step
+    - **Blue**: Critical Context Switch
+    - **Purple**: Memory/TLS Operation
+    - **Red**: Terminal Error Path
+  |
+}
+legend.near: bottom-right
+
+# Fix positions for readability
+Phase2.code_set_state.near: top-right
+Phase3.code_set_tls.near: top-right
+Phase4.code_take_closure.near: top-right
+Phase5.code_execute.near: top-right
+Phase6.code_final.near: top-right
+Phase7.code_yield.near: top-right

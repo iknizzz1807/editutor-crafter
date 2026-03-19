@@ -1,0 +1,212 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+    center: true
+  }
+}
+
+title: |md
+  # Counter Overhead Analysis
+  ## Profiling Logic: Naive vs. Optimized (Intel x86_64 Manual Quality)
+| {near: top-center}
+
+# --- MEMORY LAYOUT REPRESENTATION ---
+memory_map: "Counter Storage: [counter_addr]" {
+  shape: sql_table
+  style: {
+    stroke: "#555555"
+    fill: "#f8f9fa"
+  }
+  # Header
+  0x3F8: "Padding" {constraint: "8 bytes (Gray)"; style.fill: "#cccccc"}
+  # Data field
+  0x400: "perf_counter" {constraint: "uint32 (4 bytes)"; style.fill: "#b3d1ff"}
+  0x404: "Padding" {constraint: "4 bytes (Gray)"; style.fill: "#cccccc"}
+  # Cache Boundary
+  0x440: "Next Cache Line" {constraint: "64B Boundary"; style.stroke-dash: 5; style.bold: true}
+}
+memory_map.near: center-left
+
+# --- NAIVE IMPLEMENTATION ---
+naive_impl: "Naive Strategy: Up-Counter (Load-Modify-Store)" {
+  style: {
+    stroke: "#555555"
+    fill: "#f8f9fa"
+    stroke-dash: 5
+    stroke-width: 2
+  }
+
+  pipeline: {
+    grid-columns: 1
+    vertical-gap: 20
+    
+    step1: "1. Load Counter" {
+      label: |md
+        **1. Load Counter**
+        `mov eax, [0x400]`
+        *State: **EAX = 0x03E7 (999)***
+        *Latency: 4 Cycles (L1)*
+      |
+      style.fill: "#e7f3ff"
+      style.stroke: "#007bff"
+    }
+
+    step2: "2. Increment" {
+      label: |md
+        **2. Increment**
+        `inc eax`
+        *State: **EAX = 0x03E8 (1000)***
+        *Latency: 1 Cycle*
+      |
+      style.fill: "#fff3cd"
+      style.stroke: "#ffc107"
+      style.font-color: red
+      style.bold: true
+    }
+
+    step3: "3. Store Back" {
+      label: |md
+        **3. Store Back**
+        `mov [0x400], eax`
+        *State: **Mem[0x400] = 1000***
+        *Latency: 4 Cycles*
+      |
+      style.fill: "#e7f3ff"
+      style.stroke: "#007bff"
+    }
+
+    step4: "4. Compare" {
+      label: |md
+        **4. Compare**
+        `cmp eax, 1000`
+        *Flags: **ZF=1, SF=0***
+        *Latency: 1 Cycle*
+      |
+      style.fill: "#fff3cd"
+      style.stroke: "#ffc107"
+    }
+
+    step5: "5. Conditional Branch" {
+      label: |md
+        **5. Conditional Branch**
+        `jge trigger_jit`
+        *Action: **RIP = JIT_ENTRY***
+        *Cost: 15 Cycles (Mispredict)*
+      |
+      style.fill: "#f8d7da"
+      style.stroke: "#dc3545"
+    }
+
+    step1 -> step2 -> step3 -> step4 -> step5
+  }
+
+  stats: {
+    label: |md
+      ### Naive Performance
+      - **Instruction Count:** 5
+      - **Memory Ops:** 2 (Load + Store)
+      - **Register Usage:** EAX (Clobbered)
+      - **RMW Safety:** No (Requires LOCK prefix)
+    |
+    style.stroke-width: 1
+    style.fill: "#ffffff"
+  }
+}
+
+# --- OPTIMIZED IMPLEMENTATION ---
+optimized_impl: "Optimized Strategy: Down-Counter (Decrement-Branch)" {
+  style: {
+    stroke: "#28a745"
+    fill: "#f8fff9"
+    stroke-width: 4
+  }
+
+  pipeline: {
+    grid-columns: 1
+    vertical-gap: 20
+
+    step1: "1. Atomic Decrement" {
+      label: |md
+        **1. Atomic Decrement**
+        `dec dword [0x400]`
+        *State: **Mem[0x400] = 0***
+        *Flags: **ZF=1***
+        *Latency: 3 Cycles (RMW)*
+      |
+      style.fill: "#d4edda"
+      style.stroke: "#28a745"
+      style.bold: true
+    }
+
+    step2: "2. Jump if Not Zero" {
+      label: |md
+        **2. Jump if Not Zero**
+        `jnz skip_jit`
+        *Action: **Fall through to JIT***
+        *Latency: 0 Cycles (Predictor)*
+      |
+      style.fill: "#d1ecf1"
+      style.stroke: "#17a2b8"
+    }
+
+    step1 -> step2
+  }
+
+  predictor_analysis: {
+    shape: parallelogram
+    label: |md
+      **Branch Predictor Impact:**
+      - Iterations 1-999: "Taken"
+      - Iteration 1000: "Not Taken"
+      - **Accuracy: 99.9%**
+    |
+    style.fill: "#e2e3e5"
+    style.stroke: "#6c757d"
+  }
+
+  pipeline.step2 -> predictor_analysis
+
+  stats: {
+    label: |md
+      ### Optimized Performance
+      - **Instruction Count:** 2
+      - **Memory Ops:** 1 (Single RMW)
+      - **Register Usage:** None (Preserves GPRs)
+      - **RMW Safety:** In-place update
+    |
+    style.stroke-width: 1
+    style.fill: "#ffffff"
+  }
+}
+
+comparison_matrix: {
+  label: |'md
+| Metric | Naive Path | Optimized Path | Improvement |
+| :--- | :--- | :--- | :--- |
+| **Instruction Count** | 5 | 2 | 2.5x |
+| **Memory Traffic** | 2 Ops | 1 Op | 2.0x |
+| **Register Usage** | EAX (Volatile) | None | Absolute |
+| **Branch Cost** | Unstable | Highly Stable | ~99.9% Acc |
+| **Throughput** | ~0.05 IPC | ~0.5 IPC | 10x |
+  '|
+  near: bottom-center
+  style.font: mono
+}
+
+# --- CONNECTORS ---
+naive_impl.pipeline.step3 -> optimized_impl.pipeline.step1: "Optimization: Fuse ops into RMW" {
+  style: {
+    stroke: "#dc3545"
+    stroke-width: 3
+    animated: true
+  }
+}
+
+legend: {
+  near: center-right
+  m: "Memory (Load/Store)" { style.fill: "#e7f3ff" }
+  a: "ALU (Compute)" { style.fill: "#fff3cd" }
+  b: "Branch (Control)" { style.fill: "#f8d7da" }
+  o: "Success Path" { style.fill: "#d4edda"; style.stroke-width: 3 }
+}

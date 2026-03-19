@@ -1,0 +1,185 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 40
+  }
+}
+
+# --- Participants: Logic & Architectural Types ---
+jit: "Native JIT Code\n(x86-64 ELF Executable)" {
+  shape: person
+  tooltip: "High-performance optimized machine code"
+}
+
+stub: "Deopt Stub\n(ASM Trampoline)" {
+  tooltip: "sizeof=112 bytes (Context-save trampoline)"
+  style: {
+    fill: "#fce4ec"
+    stroke: "#c2185b"
+    stroke-width: 2
+  }
+}
+
+runtime: "C++ Runtime\n(v8::internal::Deoptimizer)" {
+  style: {
+    fill: "#e1f5fe"
+    stroke: "#0288d1"
+    stroke-width: 3
+  }
+}
+
+table: "Side Table\n(DeoptimizationData)" {
+  shape: cylinder
+  style: {
+    fill: "#f3e5f5"
+    stroke: "#7b1fa2"
+  }
+}
+
+recon: "State Reconstructor\n(Frame Logic)" {
+  style: {
+    fill: "#e8f5e9"
+    stroke: "#388e3c"
+  }
+}
+
+interp: "Interpreter Loop\n(setjmp Landing Pad)" {
+  style: {
+    fill: "#fff3e0"
+    stroke: "#f57c00"
+    stroke-width: 2
+  }
+}
+
+# --- Sequence Definition: Execution Flow ---
+DeoptProcess: {
+  shape: sequence_diagram
+  
+  # Explicit actor ordering
+  jit; stub; runtime; table; recon; interp
+
+  jit -> stub: "1. Guard Fail (JNZ/JZ)" {
+    style: {
+      stroke: red
+      stroke-width: 3
+      animated: true
+    }
+  }
+
+  stub."2. Save Hardware State ▼\nRegisters pushed to SavedRegisters[112B]"
+
+  stub -> runtime: "3. call deoptimize(guard_id, regs_ptr, rbp)" {
+    source-arrowhead: triangle
+    style.stroke-width: 2
+  }
+
+  runtime -> table: "4. lookup_entry(guard_id)" {
+    style.stroke-dash: 3
+  }
+  table -> runtime: "Return DeoptEntry {pc, stack_depth}"
+
+  runtime -> recon: "5. reconstruct_frame(entry, regs, rbp)" {
+    style.stroke: blue
+    style.stroke-width: 2
+  }
+
+  recon."6. Map JIT Regs to Stack Slots\nO(N) mapping from metadata"
+
+  recon -> runtime: "Return VirtualFrame*"
+
+  runtime."7. Atomic Invalidate\nIncrement deopt_count; mark Code object for GC"
+
+  runtime -> interp: "8. longjmp(deopt_jmp_buf, 1)" {
+    style: {
+      stroke: "#d32f2f"
+      stroke-width: 3
+      animated: true
+    }
+  }
+
+  interp."9. Resume Execution ▲\nPC = entry->bytecode_pc"
+}
+
+# --- Memory Layout Details (Intel Manual Quality) ---
+# Using constant positioning for ELK compatibility
+RegisterLayout: {
+  near: top-right
+  shape: sql_table
+  style: {
+    fill: "#f1f8e9"
+    stroke: "#33691e"
+    stroke-width: 2
+  }
+  header: "SavedRegisters Struct (Total 112B)"
+  
+  "0x00": "RAX (Accumulator / Return)" {constraint: "8B"; style.fill: "#bbdefb"}
+  "0x08": "RBX (Base Register)" {constraint: "8B"; style.fill: "#bbdefb"}
+  "0x10": "RCX (Counter Register)" {constraint: "8B"; style.fill: "#bbdefb"}
+  "0x18": "RDX (Data Register)" {constraint: "8B"; style.fill: "#bbdefb"}
+  "0x20": "RSI (Source Index)" {constraint: "8B"; style.fill: "#bbdefb"}
+  "0x28": "RDI (Destination Index)" {constraint: "8B"; style.fill: "#bbdefb"}
+  "0x30": "RBP (Base / Frame Pointer)" {constraint: "8B"; style.fill: "#ffe0b2"}
+  "0x38": "RSP (Stack Pointer)" {constraint: "8B"; style.fill: "#ffe0b2"}
+  
+  # Cache line marker (64B boundary)
+  "---": "----------------------------------------" {constraint: "CACHE LINE 1 (64B)"; style.stroke-dash: 5}
+  
+  "0x40": "R8 - R15 (Upper GPRs)" {constraint: "64B"; style.fill: "#bbdefb"}
+  "0x80": "Padding / Alignment" {constraint: "8B"; style.fill: "#eeeeee"}
+}
+
+# --- Detailed Implementation Specs ---
+ImplementationDetails: |md
+  ### Phase 1: Context Capture (Trampoline)
+  - **Atomicity**: The ASM stub must perform a full GPR spill before entering the C ABI environment.
+  - **Memory Mapping**: Offset `0x30` (RBP) and `0x38` (RSP) are critical for frame reconstruction.
+  
+  ### Phase 2: Frame Reconstruction
+  - **Metadata**: `DeoptimizationData` provides the mapping between JIT-allocated registers and original bytecode virtual registers.
+  - **Stack Surgery**: The runtime modifies the physical stack, effectively replacing the optimized frame with multiple unoptimized interpreter frames.
+  
+  ### Critical Path Metrics
+  - **Execution Latency**: ~100μs overhead per deopt.
+  - **Memory Overhead**: Each JIT code object maintains a 4KB side-table for deopt metadata.
+| {
+  near: bottom-right
+}
+
+# --- Legend and Markers ---
+Legend: {
+  near: bottom-left
+  
+  save_op: "▼ Context Save Phase (Stack Growth)" {
+    shape: text
+    style.font-color: "#c2185b"
+    style.bold: true
+  }
+  
+  restore_op: "▲ State Restore Phase (Frame Pop)" {
+    shape: text
+    style.font-color: "#f57c00"
+    style.bold: true
+  }
+  
+  error_path: "Fatal Execution Path" {
+    style.stroke: red
+    style.stroke-width: 2
+  }
+}
+
+# --- Post-Processing Styling for Depth ---
+(DeoptProcess -> DeoptProcess)[*]: {
+  style.font-size: 14
+}
+
+# Highlighting the Red Path
+(DeoptProcess.jit -> DeoptProcess.stub)[0].style.stroke: red
+(DeoptProcess.runtime -> DeoptProcess.interp)[0].style.stroke: "#d32f2f"
+
+# Node-specific depth styling
+DeoptProcess.stub.style.double-border: true
+DeoptProcess.runtime.style.shadow: true
+DeoptProcess.table.style.fill: "#f3e5f5"
+DeoptProcess.recon.style.stroke-dash: 0

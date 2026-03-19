@@ -1,0 +1,199 @@
+layout-engine: elk
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+  # Technical Design Artist Palette
+  colors: {
+    header: "#673AB7"
+    data: "#BBDEFB"
+    free: "#C8E6C9"
+    padding: "#EEEEEE"
+    pointer: "#FFB74D"
+    highlight: "#D32F2F"
+    border: "#455A64"
+  }
+}
+
+title: |md
+  # Initial Stack Frame Setup
+  `Context::new()` configures the stack for the first coroutine context switch.
+  **ABI Requirement:** (rsp + 8) must be 16-byte aligned before `call`.
+| {near: top-center}
+
+direction: right
+
+# Memory Layout: Detailed Byte-Aligned View
+stack_memory: {
+  label: "Memory Layout (High to Low Addresses)"
+  grid-columns: 3
+  grid-gap: 0
+  
+  # Row 1: Headers
+  h1: "Offset" { style: { fill: "${colors.header}"; font-color: white; bold: true } }
+  h2: "Content (8-byte segments)" { style: { fill: "${colors.header}"; font-color: white; bold: true } }
+  h3: "Size" { style: { fill: "${colors.header}"; font-color: white; bold: true } }
+
+  # Row 2: High Address / Red Zone
+  off_0: "0x00 (stack_top)" { style.fill: "${colors.padding}" }
+  red_zone: "Red Zone / Unused" { 
+    style: { fill: "${colors.padding}"; font-color: "#9E9E9E"; stroke-dash: 2 }
+  }
+  sz_0: "N/A"
+
+  # Row 3: Return Address Slot
+  off_8: "-0x08 (0x...F8)" { style.fill: "#E3F2FD" }
+  exit_addr: "coroutine_exit_shim (RIP)" { 
+    style: { fill: "${colors.data}"; stroke: "#1976D2"; bold: true } 
+  }
+  sz_8: "8 Bytes"
+
+  # Row 4: Argument Slot
+  off_16: "-0x10 (0x...F0)" { style.fill: "#E8F5E9" }
+  coro_ptr: "coroutine_ptr (Context Arg)" { 
+    style: { fill: "${colors.free}"; stroke: "#2E7D32"; bold: true } 
+  }
+  sz_16: "8 Bytes"
+
+  # Row 5: RSP Target
+  off_rsp: "RSP →" { 
+    style: { fill: "#FFEBEE"; font-color: "${colors.highlight}"; bold: true } 
+  }
+  rsp_base: "Stack Base (Initial Alignment)" { 
+    style: { fill: "${colors.padding}"; stroke: "${colors.border}"; stroke-dash: 5 } 
+  }
+  sz_rsp: "0 Bytes"
+}
+
+# Stack Direction Indicator
+growth: {
+  shape: text
+  label: ||md
+    ### ⬇ Stack Grows DOWN
+    Lower Addresses
+  ||
+}
+# FIX: 'near' must point to the container 'stack_memory', not the grid cell 'off_rsp'
+growth.near: stack_memory
+
+# ABI and Alignment Constraints block
+alignment_spec: {
+  label: "System V ABI Compliance"
+  style.fill: "#FFF9C4"
+  content: |md
+    - **Initial Alignment:** `stack_top` must be 16-byte aligned.
+    - **Frame Layout:** 
+      - `[rsp]` contains 1st Arg for shim.
+      - `[rsp + 8]` contains Return RIP.
+    - **Switch Invariant:** After `jmp`, the stack appears as if a `call` just occurred.
+    - **Calculation:** `rsp = stack_top - 16`.
+  |
+}
+alignment_spec.near: stack_memory
+
+# State Transition: Algorithm Steps
+initialization_sequence: {
+  label: "Context Initialization Algorithm"
+  
+  step1: "1. Allocation" {
+    tooltip: "Allocate N bytes for stack"
+    style.fill: "#E1F5FE"
+  }
+  step2: "2. Pointer Calc" {
+    tooltip: "rsp = base + size - 16"
+    style.fill: "#E1F5FE"
+  }
+  step3: "3. Metadata Store" {
+    tooltip: "Write Coro Ptr and Exit Shim to stack"
+    style.fill: "#E1F5FE"
+    style.bold: true
+  }
+  step4: "4. Reg Set: R12" {
+    tooltip: "Store coro_ptr in R12 (callee-saved)"
+    style.fill: "#FFF3E0"
+  }
+  step5: "5. Reg Set: RIP" {
+    tooltip: "Set RIP to entry_shim"
+    style.fill: "#FFF3E0"
+  }
+  
+  step1 -> step2 -> step3 -> step4 -> step5: {
+    style: { stroke: "#1976D2"; stroke-width: 2 }
+  }
+}
+
+# Implementation: Architecture Context Struct
+context_struct: {
+  shape: class
+  label: "Context Layout (Memory)"
+  style.fill: "#F3E5F5"
+  
+  # Registers are stored at the base of the struct for context switching
+  "registers[0] (RBX)": "usize"
+  "registers[1] (RBP)": "usize"
+  "registers[2] (R12)": "usize = coro_ptr"
+  "registers[3] (R13)": "usize"
+  "registers[4] (R14)": "usize"
+  "registers[5] (R15)": "usize"
+  "stack_ptr (RSP)": "*mut u8 = stack_top - 16"
+  "instr_ptr (RIP)": "*const u8 = entry_shim"
+  
+  # Method signature
+  "+ new(stack: Stack, entry: Fn)": "Self"
+}
+context_struct.near: initialization_sequence
+
+# Logic Block: Assembly Entry Shim
+entry_shim_asm: {
+  label: "coroutine_entry_shim (Assembly)"
+  style.fill: "#E0F2F1"
+  content: |md
+    assembly
+    # Entry Point for new Coroutines
+    coroutine_entry_shim:
+        # R12 was loaded from context during switch
+        mov rdi, r12      # Move coro_ptr to 1st arg (sysV)
+        xor rbp, rbp      # Zero RBP to terminate stack trace
+        call rust_entry   # Transfer to Rust-land
+        # Should never return here; if so, trigger exit
+        ret
+    
+  |
+}
+
+# Final Resulting State - Uses ||md to avoid Markdown table pipe conflict
+register_summary: {
+  label: "Post-Switch CPU State"
+  content: ||md
+    | Register | Value | Note |
+    | :--- | :--- | :--- |
+    | **RSP** | `0x...F0` | Aligned to 16B |
+    | **RIP** | `&shim` | First instruction |
+    | **RDI** | `coro_ptr` | Initialized via R12 |
+    | **[RSP]** | `coro_ptr` | Metadata slot |
+    | **[RSP+8]** | `&exit` | Return Address |
+  ||
+}
+register_summary.near: entry_shim_asm
+
+# Internal Relationships and Fixed Connections
+# Note: Connections between grid cells are rendered as straight lines.
+stack_memory.off_rsp -> stack_memory.rsp_base: "RSP Points Here" {
+  style: { stroke: "${colors.highlight}"; stroke-width: 2; stroke-dash: 3 }
+}
+
+# Memory flow indicators (Using connections between cells)
+stack_memory.off_8 -> stack_memory.exit_addr: {
+  style: { stroke: "#1976D2"; opacity: 0.2; stroke-width: 1 }
+}
+stack_memory.off_16 -> stack_memory.coro_ptr: {
+  style: { stroke: "#2E7D32"; opacity: 0.2; stroke-width: 1 }
+}
+
+context_struct -> initialization_sequence: "Configured by"
+initialization_sequence -> entry_shim_asm: "Dispatches to"
+entry_shim_asm -> register_summary: "Establishes"
+
+# Global Overrides
+***.style.font: mono

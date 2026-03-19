@@ -1,0 +1,164 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# ARCHITECTURAL DESIGN: SYSTEM V AMD64 ABI STACK ALIGNMENT VERIFICATION (MILESTONE 3)
+# ---------------------------------------------------------------------------------------
+
+Printf_Alignment_Verification: {
+  shape: sequence_diagram
+  label: "System V AMD64 ABI Stack Alignment Sequence"
+
+  # Participants: Exact Types and Architectural Roles
+  TestHarness: "JIT Test Harness\n(C Host Code)" {
+    shape: person
+    style: {
+      fill: "#f5f5f5"
+      stroke: "#333333"
+      stroke-width: 2
+    }
+  }
+
+  Comp: "FunctionCompiler\n(Milestone 3)" {
+    shape: rectangle
+    style: {
+      fill: "#e1d5e7" # Purple: Logic/Header
+      stroke: "#9673a6"
+      stroke-width: 2
+    }
+  }
+
+  Emitter: "CodeEmitter\n(Milestone 1)" {
+    shape: rectangle
+    style: {
+      fill: "#dae8fc" # Blue: Data/Operations
+      stroke: "#6c8ebf"
+      stroke-width: 2
+    }
+  }
+
+  CPU: "x86-64 CPU\n(Execution Context)" {
+    shape: cylinder
+    style: {
+      fill: "#fff2cc" # Orange: Pointers/State
+      stroke: "#d6b656"
+      stroke-width: 2
+    }
+  }
+
+  Printf: "glibc :: printf\n(Variadic External)" {
+    shape: rectangle
+    style: {
+      fill: "#f8cecc" # Red: Error/External Boundary
+      stroke: "#b85450"
+      stroke-width: 2
+    }
+  }
+
+  # ---------------------------------------------------------
+  # PHASE 1: COMPILATION & EMISSION (STATIC TIME)
+  # ---------------------------------------------------------
+
+  TestHarness -> Comp: "func_create(arg_count=0, locals=0, callee_saved=3)" {
+    tooltip: "Target: int64_t (*jit_fn)(void)"
+  }
+  
+  Comp."Alignment Strategy": "1. 16-byte boundary req.\n2. Account for Return Addr (8B)\n3. Account for RBP (8B)\n4. Account for CSRs (24B)"
+
+  Comp -> Emitter: "emit_prologue(callee_saved_count=3, padding=8)"
+  
+  Emitter."Alignment Calc": "Padding Calculation:\n(1 [RBP] + 3 [Regs]) * 8 = 32\n32 % 16 == 0 -> Align with 8B pad\nto fix entry offset (8B)"
+
+  # Instruction Emission with Stack Trace
+  group "Emission Log": {
+    Emitter.t1 -> Emitter.t1: "write(0x55) : push rbp (rsp-8)"
+    Emitter.t2 -> Emitter.t2: "write(0x48, 0x89, 0xE5) : mov rbp, rsp"
+    Emitter.t3 -> Emitter.t3: "write(0x53, 0x41, 0x54, 0x41, 0x55) : push rbx, r12, r13 (rsp-24)"
+    Emitter.t4 -> Emitter.t4: "write(0x48, 0x83, 0xEC, 0x08) : sub rsp, 8 (Manual Alignment Padding)"
+  }
+
+  Comp -> Emitter: "emit_mov_r64_imm64(REG_RDI, &fmt_string)"
+  Comp -> Emitter: "emit_mov_r64_imm32(REG_RSI, 42)"
+  Comp -> Emitter: "emit_xor_r64_r64(REG_RAX, REG_RAX)"
+  
+  Emitter."ABI Note": "ABI Requirement: AL = 0\n(Zero vector args passed)"
+
+  Comp -> Emitter: "emit_call(printf_addr)"
+  
+  TestHarness <- Comp: "return int64_t (*jit_fn)(void)"
+
+  # ---------------------------------------------------------
+  # PHASE 2: EXECUTION & VERIFICATION (RUNTIME)
+  # ---------------------------------------------------------
+
+  TestHarness -> CPU: "INVOKE jit_fn()" {
+    style.stroke: "#ffa500"
+    style.stroke-width: 4
+  }
+
+  CPU.t5 -> CPU.t5: "Execute Generated Prologue"
+  
+  CPU."Stack Status": "Verified: RSP is 16-byte aligned\n(rsp & 0xF == 0)" {
+    style.bold: true
+    style.font-color: "#007F00"
+  }
+
+  CPU -> Printf: "call printf(rdi, rsi)" {
+    style: {
+      stroke: "#0000FF"
+      stroke-width: 3
+      animated: true
+    }
+  }
+
+  Printf."SSE Op": "movaps [rsp+32], xmm0"
+  
+  Printf."Alignment Check": "SSE Hardware Check:\nmovaps requires 16B alignment.\nStatus: PASS (Aligned)" {
+    style.stroke: "#007F00"
+  }
+
+  Printf -> TestHarness: "stdout: 'Result: 42'"
+  Printf -> CPU: "ret"
+
+  CPU -> TestHarness: "return 0 (Success)" {
+    style: {
+      stroke: "#007F00"
+      stroke-width: 3
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------------------
+# DOCUMENTATION OVERLAY: BYTE-LEVEL STACK LAYOUT
+# ---------------------------------------------------------------------------------------
+
+Alignment_Summary: |md
+  ### Architectural Compliance: System V AMD64 ABI
+  
+  | Byte Offset | Stack Content | Alignment (16B) |
+  | :--- | :--- | :--- |
+  | `+08` | Return Address (from C Host) | `rsp % 16 != 0` |
+  | `+00` | Saved `rbp` (Prologue) | **`rsp % 16 == 0`** |
+  | `-08` | Saved `rbx` (CSR 1) | `rsp % 16 != 0` |
+  | `-16` | Saved `r12` (CSR 2) | `rsp % 16 == 0` |
+  | `-24` | Saved `r13` (CSR 3) | `rsp % 16 != 0` |
+  | `-32` | **Padding (8 Bytes)** | **`rsp % 16 == 0`** |
+
+  **Verification Logic**:
+  The `printf` function from `glibc` internally utilizes SSE instructions (`movaps`, `movdqa`) which trigger a **#GP (General Protection Fault)** if the stack pointer is not 16-byte aligned. The successful execution and output of "Result: 42" verifies that the `sub rsp, 8` instruction correctly balanced the 3 callee-saved registers.
+|
+
+Alignment_Summary.shape: rectangle
+Alignment_Summary.near: bottom-center
+Alignment_Summary.style: {
+  stroke: "#9673a6"
+  fill: "#fdfdfd"
+  double-border: true
+  stroke-width: 2
+  font-size: 14
+}

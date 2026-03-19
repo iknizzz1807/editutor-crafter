@@ -1,0 +1,272 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+# -----------------------------------------------------------------------------
+# STYLING & CLASSES (Intel Manual Grade)
+# -----------------------------------------------------------------------------
+classes: {
+  coroutine: {
+    shape: rectangle
+    style: {
+      fill: "#E3F2FD"
+      stroke: "#1976D2"
+      stroke-width: 2
+      border-radius: 4
+    }
+  }
+  mutex: {
+    shape: diamond
+    style: {
+      fill: "#FFF3E0"
+      stroke: "#F57C00"
+      stroke-width: 2
+    }
+  }
+  problem: {
+    style: {
+      fill: "#FFEBEE"
+      stroke: "#D32F2F"
+      stroke-width: 3
+      font-color: "#B71C1C"
+      bold: true
+    }
+  }
+  solution: {
+    style: {
+      fill: "#E8F5E9"
+      stroke: "#388E3C"
+      stroke-width: 3
+      font-color: "#1B5E20"
+      bold: true
+    }
+  }
+  timer: {
+    shape: circle
+    style: {
+      fill: "#FFECB3"
+      stroke: "#FF8F00"
+      stroke-width: 2
+    }
+  }
+  check: {
+    shape: diamond
+    style: {
+      fill: "#B3E5FC"
+      stroke: "#0277BD"
+      stroke-width: 2
+    }
+  }
+  code_block: {
+    shape: code
+    style: {
+      stroke: "#455A64"
+      stroke-width: 1
+      fill: "#F5F7F9"
+      font: mono
+    }
+  }
+  header_style: {
+    shape: rectangle
+    style: {
+      fill: "#F3E5F5"
+      stroke: "#7B1FA2"
+      stroke-width: 2
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# HEADER
+# -----------------------------------------------------------------------------
+header: {
+  class: header_style
+  title: |md
+    # Technical Design: Lock-Aware Preemption
+    **Subsystem:** Coroutine Runtime / Scheduler
+    **Invariant:** No coroutine shall be preempted while holding a spinlock/mutex.
+    **Implementation:** Thread-Local Storage (TLS) Counter + Deferred Yield.
+  |
+  near: top-center
+}
+
+# -----------------------------------------------------------------------------
+# SECTION 1: THE FAILURE MODE (TIMELINE)
+# -----------------------------------------------------------------------------
+problem_scenario: {
+  label: "❌ FAILURE MODE: Priority Inversion / Deadlock"
+  
+  timeline: {
+    t1: {
+      label: "T=0: Lock Acquired"
+      coro_a: "Coroutine A" { class: coroutine }
+      lock_m: "Mutex M: LOCKED" { class: mutex }
+      coro_a -> lock_m: "Acquire"
+    }
+    
+    t2: {
+      label: "T=5: Interrupt"
+      timer: "Timer Interrupt\nSIGUSR1" { class: timer }
+      coro_a_state: "A: PREEMPT_PENDING=1" { style.stroke: red; style.stroke-dash: 2 }
+      timer -> coro_a_state: "Signal Trigger"
+    }
+    
+    t3: {
+      label: "T=10: Preemption"
+      action: "Scheduler yields A\nwhile M is HELD" { class: problem }
+    }
+    
+    t4: {
+      label: "T=15: Blocked Waiters"
+      coro_b: "Coroutine B" { class: coroutine }
+      coro_c: "Coroutine C" { class: coroutine }
+      coro_b -> t1.lock_m: "lock(M) -> Sleep" { style.stroke: red }
+      coro_c -> t1.lock_m: "lock(M) -> Sleep" { style.stroke: red }
+    }
+    
+    t5: {
+      label: "T=20: Deadlock"
+      deadlock_alert: "CRITICAL FAILURE\nDEADLOCK: A cannot release M\nbecause A is unscheduled" { 
+        class: problem
+        shape: diamond 
+      }
+    }
+
+    t1 -> t2 -> t3 -> t4 -> t5: { style.stroke: "#D32F2F"; style.stroke-width: 4 }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# SECTION 2: IMPLEMENTATION DETAILS
+# -----------------------------------------------------------------------------
+implementation: {
+  label: "⚙️ IMPLEMENTATION: Thread-Local Tracking"
+  
+  tls_layout: {
+    label: "Memory Layout: Thread Control Block (TCB)"
+    shape: sql_table
+    0x00: "Thread ID" { constraint: "u64 [8B]" }
+    0x08: "Stack Pointer" { constraint: "ptr [8B]" }
+    0x10: "LOCKS_HELD_COUNT" { 
+      constraint: "u32 [4B]"
+      style.fill: "#C8E6C9"
+      style.bold: true 
+    }
+    0x14: "PREEMPT_PENDING" { constraint: "u8 [1B]" }
+    0x15: "Padding" { constraint: "3B"; style.fill: gray }
+    0x18: "TLS_BASE" { constraint: "ptr [8B]" }
+    
+    style.stroke: orange
+    style.stroke-width: 2
+  }
+
+  code_logic: {
+    label: "Tracking Logic (RAII Guard Implementation)"
+    class: code_block
+    src: |'rust
+    // sizeof = 16 bytes
+    pub struct LockGuard<'a, T> {
+        mutex: &'a Mutex<T>,
+    }
+
+    impl<'a, T> LockGuard<'a, T> {
+        pub fn new(m: &'a Mutex<T>) -> Self {
+            // INC counter BEFORE hardware acquire
+            let tcb = get_tcb();
+            tcb.locks_held += 1; 
+            
+            m.raw_lock();
+            Self { mutex: m }
+        }
+    }
+
+    impl<'a, T> Drop for LockGuard<'a, T> {
+        fn drop(&mut self) {
+            self.mutex.raw_unlock();
+            
+            // DEC counter AFTER hardware release
+            let tcb = get_tcb();
+            tcb.locks_held -= 1;
+            
+            // Check for deferred preemption
+            if tcb.locks_held == 0 && tcb.preempt_pending > 0 {
+                tcb.preempt_pending = 0;
+                yield_now(); // Execution safe-point
+            }
+        }
+    }
+    '|
+  }
+}
+
+# -----------------------------------------------------------------------------
+# SECTION 3: DECISION LOGIC
+# -----------------------------------------------------------------------------
+scheduler_logic: {
+  label: "🧠 SCHEDULER: yield_if_preempted()"
+  
+  start: "Check Preemption Flag" { shape: circle }
+  is_set: "preempt_pending > 0?" { class: check }
+  check_locks: "tcb.locks_held > 0?" { class: check }
+  
+  defer: "DEFER PREEMPTION\nMark PENDING and Return" { class: solution }
+  yield: "YIELD\nExecute Context Switch" { class: coroutine }
+  end_exec: "Continue Execution" { shape: circle }
+
+  start -> is_set
+  is_set -> check_locks: "TRUE"
+  is_set -> end_exec: "FALSE"
+  
+  check_locks -> defer: "TRUE (Lock Held)" { 
+    style: { stroke: "#388E3C"; stroke-width: 3 }
+  }
+  check_locks -> yield: "FALSE (Safe)"
+  
+  defer -> end_exec
+}
+
+# -----------------------------------------------------------------------------
+# SECTION 4: CORRECT BEHAVIOR
+# -----------------------------------------------------------------------------
+resolved_scenario: {
+  label: "✅ CORRECT BEHAVIOR: Deferred Preemption"
+  
+  correct_timeline: {
+    s1: "A holds Mutex M\nTCB.locks_held = 1" { class: coroutine }
+    s2: "Timer Signal Detected" { class: timer }
+    s3: "Scheduler: locks_held > 0\nRESULT: DEFER YIELD" { class: solution }
+    s4: "A executes to completion\nDrop(Guard) -> locks_held = 0" { class: coroutine }
+    s5: "Post-Lock Yield Triggered" { class: solution }
+    s6: "Context Switch Success\nB acquires M safely" { class: solution; shape: diamond }
+
+    s1 -> s2 -> s3 -> s4 -> s5 -> s6: { style.stroke: "#388E3C"; style.stroke-width: 4; style.animated: true }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# FOOTER / INVARIANTS
+# -----------------------------------------------------------------------------
+invariants_box: {
+  label: "📋 DESIGN INVARIANTS"
+  content: |'md
+  1. **Atomic Critical Sections:** Logic between `lock()` and `unlock()` is atomic relative to the thread scheduler.
+  2. **Wait Boundedness:** Max deferral latency $\Delta T$ is equal to $max(CritSectionDuration)$.
+  3. **Re-entrancy:** The `locks_held` counter supports nested locks (recursive mutexes).
+  4. **Strict Ordering:** Decrement of `locks_held` MUST occur after `raw_unlock` to prevent race conditions.
+  '|
+  style: {
+    fill: "#FFF9C4"
+    stroke: "#FBC02D"
+    stroke-width: 2
+  }
+  near: bottom-center
+}
+
+# Structural Flow
+problem_scenario -> implementation: "Proposed Fix" { style.stroke-dash: 5 }
+implementation -> scheduler_logic: "Logic Flow" { style.stroke-dash: 5 }
+scheduler_logic -> resolved_scenario: "Verified Behavior" { style.stroke-dash: 5 }

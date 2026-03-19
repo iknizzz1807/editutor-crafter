@@ -1,0 +1,197 @@
+direction: right
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 6
+    pad: 40
+  }
+}
+
+# JIT BLACKLISTING STATE MACHINE
+# Specification: Milestone 5 - Deoptimization Guards and Safe Fallback
+# Version: 1.0.5 (Implementation-Grade Refined)
+
+# -----------------------------------------------------------------------------------------
+# Memory Layout: FunctionProfile Struct (Intel-Manual Quality Layout)
+# -----------------------------------------------------------------------------------------
+
+FunctionProfile: {
+  shape: sql_table
+  label: "struct FunctionProfile (sizeof=32 bytes)"
+  style: {
+    fill: "#f8fafc"
+    stroke: "#475569"
+    stroke-width: 2
+  }
+
+  0x00: "native_entry_point" {type: "uintptr (8B)"; constraint: "Pointer"}
+  0x08: "flags" {type: "uint8 (1B)"; constraint: "is_blacklisted @ bit 0"}
+  0x09: "padding" {type: "uint8[3]"; constraint: "Alignment Padding"}
+  0x0C: "deopt_count" {type: "uint32 (4B)"; constraint: "Threshold=3"}
+  0x10: "type_feedback_ptr" {type: "uintptr (8B)"; constraint: "FeedbackVector*"}
+  0x18: "invocation_count" {type: "uint32 (4B)"; constraint: "Tier-up trigger"}
+  0x1C: "reserved" {type: "uint8[4]"; constraint: "Padding"}
+}
+
+# -----------------------------------------------------------------------------------------
+# State Definitions
+# -----------------------------------------------------------------------------------------
+
+states: {
+  START: {
+    shape: circle
+    label: ""
+    width: 20
+    height: 20
+    style: {
+      fill: black
+      stroke-width: 0
+    }
+  }
+
+  ACTIVE: "ACTIVE STATE\n(Speculative JIT Enabled)" {
+    tooltip: "Function is eligible for tiered compilation and speculative optimization."
+    style: {
+      stroke-width: 2
+      border-radius: 8
+      fill: "#f0f9ff"
+    }
+    definition: |md
+      ### Execution Context (Tier-2)
+      - **Runtime Mode:** Native Machine Code Execution
+      - **Speculation:** Enabled (Type feedback/Inlining/Devirtualization)
+      
+      **Invariants:**
+      - `profile->is_blacklisted == 0x00` (Byte 0x08)
+      - `profile->deopt_count < 0x03` (Byte 0x0C)
+      
+      **Memory Layout:**
+      - Native code segment: `RX` (Read-Execute)
+      - Guard branches: Patched for polymorphic call-sites
+    |
+  }
+
+  BLACKLISTED: "BLACKLISTED STATE\n(Forced Interpretation)" {
+    style: {
+      fill: "#fee2e2"
+      stroke: "#dc2626"
+      stroke-width: 4
+      double-border: true
+      border-radius: 8
+    }
+    definition: |md
+      ### Execution Context (Tier-0)
+      - **Runtime Mode:** Bytecode Interpretation (Slow Path)
+      - **Speculation:** Disabled (Forced de-optimization)
+      
+      **Invariants:**
+      - `profile->is_blacklisted == 0x01` (Terminal bit set)
+      - `jit_metadata->entry_point == 0x0`
+      
+      **Memory Layout:**
+      - Native code moved to `ZOMBIE_LIST` via `zombie_add()`
+      - Call-sites rewritten to `VMP_INTERP_ENTRY`
+    |
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# Transition Logic
+# -----------------------------------------------------------------------------------------
+
+states.START -> states.ACTIVE: "1. [t] vm_register_function()\n[a] init_deopt_counter(0)" {
+  style: {
+    stroke-width: 2
+  }
+}
+
+states.ACTIVE -> states.ACTIVE: "2. [t] Guard Instruction Failure\n[g] deopt_count < 3\n[a] deopt_record_failure(); jump(interpreter_entry)" {
+  tooltip: "Transient speculation failure. Resume in Tier-0. Function remains JIT-eligible."
+  style: {
+    stroke-dash: 0
+    stroke-width: 1
+  }
+}
+
+states.ACTIVE -> states.BLACKLISTED: "3. [t] Guard Instruction Failure\n[g] deopt_count >= 3\n[a] set_blacklisted_bit(); zombie_add(jit_entry)" {
+  style: {
+    stroke: "#dc2626"
+    stroke-width: 4
+    animated: true
+  }
+  label: {
+    style: {
+      font-color: "#dc2626"
+      bold: true
+    }
+  }
+  tooltip: "Critical instability detected. Function removed from JIT pipeline permanently."
+}
+
+states.BLACKLISTED -> states.ACTIVE: "4. ILLEGAL TRANSITION" {
+  style: {
+    stroke: "#dc2626"
+    stroke-dash: 5
+    opacity: 0.4
+  }
+  label: {
+    style: {
+      font-color: "#dc2626"
+      italic: true
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# Implementation Details & Constraints
+# -----------------------------------------------------------------------------------------
+
+IMPLEMENTATION_DETAILS: |md
+  ## JIT Subsystem: Transition Logic (M5.1)
+  
+  ### 1. Re-Compilation Strategy
+  After a non-terminal deopt (Transition 2), the Tiered VM tracks the "heat" of the function.
+  If the `invocation_counter` reaches threshold again, the compiler re-evaluates the
+  speculative assumptions based on the updated `TypeFeedbackVector`.
+  
+  ### 2. Zombie List (GC Safety)
+  When transitioning to `BLACKLISTED` (Transition 3), the native code cannot be 
+  immediately freed because it may be present in other thread stacks (On-Stack Replacement).
+  The `zombie_add()` syscall moves the pointer to a deferred-free list processed
+  during the next Safepoint.
+  
+  ### 3. Blacklist Trap
+  The `is_blacklisted` bit is a terminal flag. Once set, the code generator for 
+  call-sites will emit a direct jump to the bytecode interpreter, skipping the
+  JIT-entry-point check logic entirely to reduce overhead.
+| 
+
+IMPLEMENTATION_DETAILS.near: bottom-center
+IMPLEMENTATION_DETAILS.style: {
+  stroke: "#4a5568"
+  fill: "#f7fafc"
+  border-radius: 4
+}
+IMPLEMENTATION_DETAILS.width: 800
+
+LEGEND: {
+  shape: package
+  label: "Notation Spec (Intel-M)"
+  
+  info: |md
+    - **t:** Triggering Event (Internal/External)
+    - **g:** Guard Condition (Must be true for transition)
+    - **a:** Side-effect Action on State/Memory
+  |
+}
+
+LEGEND.near: top-right
+LEGEND.style: {
+  stroke-dash: 3
+  fill: white
+}
+
+# Layout constraints for technical consistency
+states.ACTIVE.width: 320
+states.BLACKLISTED.width: 320
+FunctionProfile.near: bottom-left

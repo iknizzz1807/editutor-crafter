@@ -5739,6 +5739,16 @@ Build a production-grade M:N user-space scheduler and coroutine runtime implemen
 <!-- TDD_MOD_ID: cre-m1 -->
 # Technical Design Document: Stackful Coroutines
 ## Module Charter
+
+![Coroutine Lifecycle](./diagrams/tdd-diag-05.svg)
+![Context Structure](./diagrams/tdd-diag-06.svg)
+![Stack Layout with Guard Page](./diagrams/tdd-diag-07.svg)
+![Memory Layout](./diagrams/diag-memory-layout-coroutines.svg)
+![Yield Implementation](./diagrams/tdd-diag-10.svg)
+![Resume Flow](./diagrams/tdd-diag-11.svg)
+![Panic Handling](./diagrams/tdd-diag-12.svg)
+![Thread-Local Storage](./diagrams/tdd-diag-18.svg)
+
 This module implements the **fundamental execution primitive** for the coroutine runtime: a stackful coroutine with its own dedicated execution stack, capable of being suspended at any point and resumed later with all local state preserved. Each coroutine allocates a 64KB stack with a guard page for overflow detection, maintains a 64-byte Context struct for CPU register state, and transitions through Runnable/Running/Finished/Panicked states. The module provides yield/resume semantics via assembly-level context switching on x86-64, following the System V ABI for register preservation. This module does NOT implement scheduling, preemption, I/O integration, or synchronization primitives—those are separate modules that consume this primitive. The invariant that must always hold: a coroutine's Context accurately reflects the CPU state at the yield point, and resuming from that Context is indistinguishable from never having yielded.
 ---
 ## File Structure
@@ -7182,6 +7192,17 @@ This module does not persist state. On crash:
 
 <!-- TDD_MOD_ID: cre-m2 -->
 # Technical Design Document: Work-Stealing Scheduler
+
+## Module Diagrams
+![Work-Stealing Queue Architecture](./diagrams/tdd-diag-m2-01.svg)
+![Chase-Lev Deque Operations](./diagrams/tdd-diag-m2-02.svg)
+![Scheduler Load Balancing](./diagrams/tdd-diag-m2-03.svg)
+![Thread Pool Architecture](./diagrams/tdd-diag-20.svg)
+![Task Spawn Flow](./diagrams/tdd-diag-21.svg)
+![Steal Algorithm](./diagrams/tdd-diag-23.svg)
+![Wake Affinity](./diagrams/tdd-diag-25.svg)
+![Load Balancing Metrics](./diagrams/tdd-diag-26.svg)
+
 ## Module Charter
 This module implements the **M:N scheduler** that multiplexes thousands of coroutines onto a configurable pool of kernel threads using work-stealing for automatic load balancing. Each worker thread maintains a lock-free Chase-Lev deque for local coroutine storage (LIFO for pops to maximize cache locality), with a global mutex-protected queue for new coroutines and overflow. Idle workers steal from randomly-selected victims (FIFO from the victim's queue end for fairness), achieving provably optimal expected time complexity O(T₁/P + T∞) for fork-join parallelism. The module targets >70% scaling efficiency up to CPU core count, with lock-free local queue operations under 20ns and steal operations under 50ns. This module does NOT implement preemption (separate module), async I/O integration (separate module), or synchronization primitives (separate module). The invariant that must always hold: every runnable coroutine is either in exactly one run queue (local or global) or is currently executing, never in multiple queues simultaneously, and no worker thread blocks while runnable work exists anywhere in the system.
 ---
@@ -8718,6 +8739,15 @@ PASS: All targets met
 
 <!-- TDD_MOD_ID: cre-m3 -->
 # Technical Design Document: Preemptive Scheduling
+
+## Module Diagrams
+![Timer Wheel Architecture](./diagrams/tdd-diag-m3-01.svg)
+![Signal Handling Flow](./diagrams/tdd-diag-m3-02.svg)
+![Preemption Flag Check](./diagrams/tdd-diag-m3-03.svg)
+![Timer Wheel Details](./diagrams/tdd-diag-33.svg)
+![Signal Safety](./diagrams/tdd-diag-34.svg)
+![Latency Measurement](./diagrams/tdd-diag-36.svg)
+
 ## Module Charter
 This module implements **timer-based preemptive scheduling** to ensure fairness across all runnable coroutines, preventing a single CPU-bound coroutine from starving others on the same thread. A per-thread timer (configured via `timer_create` with `SIGEV_THREAD_ID`) fires at configurable intervals (default 10ms) and sets a thread-local atomic preemption flag from a signal handler. Coroutines cooperatively check this flag at safe points (function entry, explicit yield calls, loop iterations) via `yield_if_preempted()`, which yields to the scheduler if preemption was requested. The module achieves bounded latency with <1% runtime overhead through careful async-signal-safe handler design and cache-line-padded atomic flag placement. This module does NOT implement the scheduler itself, context switching, or async I/O—those are separate modules that integrate with preemption checking. The invariant that must always hold: the preemption flag is only set by the signal handler and only cleared by the coroutine execution path, never simultaneously modified by multiple threads, and a coroutine that checks the flag after it's set will yield before continuing execution.
 ---
@@ -9874,6 +9904,12 @@ pub fn defer_preemption() -> DeferPreemptionGuard {
 
 <!-- TDD_MOD_ID: cre-m4 -->
 # Technical Design Document: Async I/O Integration
+
+## Module Diagrams
+![Epoll Reactor Architecture](./diagrams/tdd-diag-m4-01.svg)
+![Waker Mechanism](./diagrams/tdd-diag-m4-02.svg)
+![Timer Wheel](./diagrams/tdd-diag-m4-03.svg)
+
 ## Module Charter
 This module implements the **reactor pattern** to bridge the coroutine scheduler with the operating system's async I/O capabilities, enabling thousands of concurrent I/O operations without blocking worker threads. The reactor manages an epoll instance (Linux) that monitors file descriptors for readiness, dispatches events to registered wakers, and wakes blocked coroutines when their I/O completes. Socket operations use non-blocking I/O with epoll for true async behavior, while file I/O is offloaded to a thread pool since Linux doesn't support async file operations through epoll. A timer wheel provides O(1) sleep() implementation integrated with the reactor's poll timeout. This module does NOT implement the scheduler itself, context switching, or synchronization primitives—those are separate modules that register I/O interest with this reactor. The invariant that must always hold: every blocked coroutine is either registered with the reactor (waiting for fd event), waiting in the timer wheel (waiting for time), or in the file I/O pool's pending queue—never in multiple places simultaneously, and every registered interest has exactly one waker that will be called exactly once on completion.
 ---
@@ -11208,6 +11244,12 @@ Async I/O Benchmarks:
 
 <!-- TDD_MOD_ID: cre-m5 -->
 # Technical Design Document: Synchronization Primitives & Polish
+
+## Module Diagrams
+![Mutex Implementation](./diagrams/tdd-diag-m5-01.svg)
+![Channel Design](./diagrams/tdd-diag-m5-02.svg)
+![WaitGroup](./diagrams/tdd-diag-m5-03.svg)
+
 ## Module Charter
 This module implements **coroutine-aware synchronization primitives** that yield instead of blocking kernel threads, enabling safe coordination between coroutines without defeating the M:N scheduler. The AsyncMutex uses atomic CAS for fast-path acquisition with a mutex-protected wait queue for contention, yielding waiters instead of calling futex. AsyncCondvar provides wait(guard).await that atomically releases the mutex and yields, with notify_one/notify_all for wakeup. MPSC channels offer bounded send/recv with yield on full/empty, detecting sender/receiver drop via atomic counters. AsyncSemaphore limits concurrency with permit-based acquisition. DeadlockDetector builds a wait-for graph and detects cycles before blocking. RuntimeStats provides lock-free atomic counters for monitoring. Graceful shutdown drains coroutines before exit. This module does NOT implement the scheduler, context switching, or I/O—those are separate modules that consume these primitives. The invariant that must always hold: no synchronization primitive ever blocks a kernel thread—all waiting is done via coroutine yield, and every blocked coroutine has exactly one waker registered that will be called exactly once when the condition is satisfied.
 ---

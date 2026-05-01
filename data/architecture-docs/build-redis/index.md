@@ -4109,6 +4109,11 @@ Implement a high-performance, single-threaded in-memory key-value store supporti
 
 ## Module Charter
 
+![TCP Server Architecture](./diagrams/tdd-diag-m1-arch.svg)
+![Client State Machine](./diagrams/tdd-diag-m1-state.svg)
+![RESP Data Types](./diagrams/tdd-diag-m1-data.svg)
+![RESP Serialization](./diagrams/tdd-diag-m1-serial.svg)
+
 This module implements the foundational transport layer and wire protocol for the Redis clone. It establishes a listening TCP socket on a configurable port, accepts multiple client connections, parses the RESP (Redis Serialization Protocol) wire format from incoming byte streams, and executes two commands (PING and ECHO) as validation endpoints. This module does NOT implement event-driven I/O multiplexing (Milestone 2), concurrent command processing, or any data storage commands—those build on this foundation. The upstream dependency is the raw network stack; downstream the event loop will multiplex connections, and the command dispatcher will route to storage handlers. The critical invariant: every connected client must be tracked and properly cleaned up on disconnect to prevent file descriptor exhaustion.
 
 ---
@@ -4218,6 +4223,11 @@ typedef struct Client {
 # Single-Threaded Event Loop — Technical Design Document
 
 ## Module Charter
+
+![Event Loop Architecture](./diagrams/tdd-diag-m2-arch.svg)
+![Event Loop Flow](./diagrams/tdd-diag-m2-flow.svg)
+![Memory Layout](./diagrams/tdd-diag-m2-mem.svg)
+![Client State Machine](./diagrams/tdd-diag-m2-state.svg)
 
 This module replaces the blocking, thread-per-client connection model from Milestone 1 with a single-threaded event loop using epoll (Linux) or kqueue (macOS/BSD) for I/O multiplexing. The event loop waits for I/O events (clients becoming readable or writable) and time events (timers firing), processes them sequentially, and returns to waiting state. This module does NOT implement the full command dispatcher, data storage, or persistence—those build on this foundation. The upstream dependency is the TCP server and client connection management from Milestone 1; downstream the command dispatcher will route requests to handlers, and the key-value store will provide storage. The critical invariant: every I/O operation in the event loop must be non-blocking—blocking I/O blocks all clients simultaneously.
 
@@ -5127,6 +5137,10 @@ For this implementation, we target Linux with epoll as the primary platform, but
 # Core Commands (GET/SET/DEL) — Technical Design Document
 
 ## Module Charter
+
+![Command Dispatcher Architecture](./diagrams/tdd-diag-m3-dispatch.svg)
+![SDS String](./diagrams/tdd-diag-m3-sds.svg)
+![Hash Set Operation](./diagrams/tdd-diag-m3-set.svg)
 
 This module implements the core key-value storage layer for the Redis clone, providing O(1) GET, SET, DEL, INCR, and DECR operations via an in-memory hash table with binary-safe string support. It extends the event loop foundation from Milestone 2 by integrating the command dispatcher with the hash table storage engine, enabling the first persistent data operations in the system. This module does NOT implement expiration (Milestone 4), compound data structures (Milestone 5), or persistence (Milestones 6-7)—those build on this foundation. The upstream dependency is the command dispatcher from Milestone 2 which passes parsed arguments; downstream expiration will add TTL fields, and persistence will serialize this hash table. The critical invariant: every key stored must support binary-safe operations (embedded nulls, raw bytes), and every operation must be atomic by virtue of the single-threaded event loop.
 
@@ -6496,6 +6510,9 @@ Never free object directly; always use decrRefCount.
 
 ## Module Charter
 
+![Active Expiration](./diagrams/tdd-diag-m4-active.svg)
+![Timestamp Format](./diagrams/tdd-diag-m4-timestamp.svg)
+
 This module implements key expiration (TTL) functionality for the Redis clone, enabling time-based key eviction with two complementary strategies: lazy deletion (checking expiration on every key access) and active deletion (probabilistic background sampling via time events). It extends the RedisObject structure from Milestone 3 to store absolute expiration timestamps, integrates with the event loop from Milestone 2 for time-based callbacks, and adds the EXPIRE, PEXPIRE, TTL, PTTL, PERSIST, and EXAT/PEXAT commands. This module does NOT implement memory-based eviction (LRU/LFU), key space warnings, or the maxmemory directive—those are Milestone-independent configuration options. The upstream dependency is the RedisObject type system and command dispatcher from Milestone 3; downstream there are no dependencies—the expiration system is complete when built. The critical invariant: expiration MUST use absolute timestamps (not relative TTL), enabling correct handling of clock adjustments and monotonic time sources.
 
 ---
@@ -6838,6 +6855,13 @@ int expireCheckKey(redisServer* server, sds key) {
 # Data Structures (List, Set, Hash) — Technical Design Document
 
 ## Module Charter
+
+![Data Structure Architecture](./diagrams/tdd-diag-m5-arch.svg)
+![Hash Implementation](./diagrams/tdd-diag-m5-hash.svg)
+![List Implementation](./diagrams/tdd-diag-m5-list.svg)
+![LRANGE Operation](./diagrams/tdd-diag-m5-lrange.svg)
+![Set Implementation](./diagrams/tdd-diag-m5-set.svg)
+![Type System](./diagrams/tdd-diag-m5-type.svg)
 
 This module implements Redis's three core compound data structures—lists (doubly-linked), sets (hash-based), and hashes (nested hash tables)—extending the simple string key-value storage from Milestone 3 to support multi-element containers with type-tagged keys. It provides O(1) operations for the core use cases (LPUSH, RPUSH, LPOP, RPOP, SADD, SISMEMBER, HSET, HGET) while correctly handling type mismatches via WRONGTYPE errors, negative index arithmetic for LRANGE, and empty collection semantics. This module does NOT implement sorted sets (ZSET), stream data types, or bitmap operations—those are beyond Redis's core compound types. The upstream dependency is the RedisObject type system and command dispatcher from Milestone 3; downstream persistence (Milestones 6-7) will serialize these data structures, and pub/sub (Milestone 8) operates orthogonally. The critical invariant: every key in the database has a type tag, and operations on keys with mismatched types return WRONGTYPE without modifying data.
 
@@ -8203,6 +8227,10 @@ Use `memcmp()` or custom comparison, not `strcmp()`.
 
 ## Module Charter
 
+![Persistence Architecture](./diagrams/tdd-diag-m6-arch.svg)
+![Auto Save](./diagrams/tdd-diag-m6-auto.svg)
+![RDB Save Process](./diagrams/tdd-diag-m6-save.svg)
+
 This module implements point-in-time snapshot persistence for the Redis clone, enabling the database to survive restarts by serializing all in-memory key-value pairs to a custom binary RDB format. The module provides two operational modes: SAVE (synchronous, blocks event loop) and BGSAVE (asynchronous, forks child process leveraging copy-on-write semantics for non-blocking operation). It includes automatic save triggers based on configurable change thresholds (e.g., "save after 900 seconds if at least 1 key changed"). The critical invariant: expired keys must NOT be written to RDB snapshots; only keys with unexpired TTL or no expiration are persisted. This module does NOT implement AOF logging (Milestone 7), key eviction policies, or replication—those build on this foundation or operate orthogonally. The upstream dependency is the RedisObject type system from Milestones 3-5 with expiration fields; downstream the server startup sequence loads RDB files before accepting client connections.
 
 ---
@@ -9474,6 +9502,12 @@ uint64_t crc64(const uint8_t* data, size_t len) {
 
 ## Module Charter
 
+![AOF Architecture](./diagrams/tdd-diag-m7-arch.svg)
+![AOF Flow](./diagrams/tdd-diag-m7-flow.svg)
+![FSYNC Strategies](./diagrams/tdd-diag-m7-fsync.svg)
+![AOF Recovery](./diagrams/tdd-diag-m7-recovery.svg)
+![AOF Rewrite](./diagrams/tdd-diag-m7-rewrite.svg)
+
 This module implements Append-Only File (AOF) logging for write durability, providing more granular persistence than RDB snapshots by logging every write command to an append-only file that can be replayed on startup to reconstruct database state. It supports three configurable fsync policies (always, everysec, no) offering different durability/performance tradeoffs, and implements BGREWRITEAOF for log compaction using fork-based background rewriting without blocking the event loop. This module does NOT implement replication AOF, key eviction policies, or automatic rewrite triggers based on AOF size growth. The upstream dependency is the command execution layer from Milestones 3-5 that must call AOF append on every successful write; downstream it integrates with the server startup sequence to load AOF files with higher priority than RDB (M6) when both exist. The critical invariant: during BGREWRITEAOF, new write commands must be appended to both the rewrite buffer and the main AOF file to prevent data loss, and this dual-write must complete before switching from old to new AOF file.
 
 ## File Structure
@@ -9995,6 +10029,12 @@ int aofReplay(redisServer* server, const char* filename) {
 # Pub/Sub — Technical Design Document
 
 ## Module Charter
+
+![Pub/Sub Architecture](./diagrams/tdd-diag-m8-arch.svg)
+![Channel Communication](./diagrams/tdd-diag-m8-channel.svg)
+![Pattern Matching](./diagrams/tdd-diag-m8-pattern.svg)
+![Publish Flow](./diagrams/tdd-diag-m8-publish.svg)
+![Pub/Sub State Machine](./diagrams/tdd-diag-m8-state.svg)
 
 This module implements publish/subscribe messaging for the Redis clone, enabling one-to-many message broadcasting across client connections. It provides channel-based subscriptions (SUBSCRIBE/UNSUBSCRIBE), glob-pattern subscriptions (PSUBSCRIBE/PUNSUBSCRIBE), message broadcasting (PUBLISH), and proper state management enforcing that subscribed clients can only issue subscription commands. The critical invariant: every client disconnection must clean up all subscriptions to prevent memory leaks, and publish operations must handle slow subscribers via output buffer limits without blocking fast subscribers.
 
@@ -11259,6 +11299,12 @@ message\r\n
 
 ## Module Charter
 
+![Transaction Architecture](./diagrams/tdd-diag-m9-arch.svg)
+![Transaction Execution](./diagrams/tdd-diag-m9-exec.svg)
+![Memory Layout](./diagrams/tdd-diag-m9-mem.svg)
+![Transaction Queue](./diagrams/tdd-diag-m9-queue.svg)
+![WATCH Mechanism](./diagrams/tdd-diag-m9-watch.svg)
+
 This module implements Redis-style transaction support for the clone, providing atomic execution of multiple commands via MULTI/EXEC command queuing and optimistic locking via WATCH-based key modification detection. The module extends the client structure to track transaction state (queued commands, watched keys), modifies the command dispatcher to queue commands instead of executing them in transaction mode, and implements WATCH registry management checked on every write operation. This module does NOT implement transaction rollback (Redis has no rollback), pipeline mode (which is different from transactions), or Lua script transactions—those are beyond the scope. The upstream dependency is the command dispatcher from Milestones 3-5 and the event loop from Milestone 2; downstream there are no dependencies—transactions operate orthogonally to other features. The critical invariant: single-threaded event loop guarantees no interleaving between commands from different clients, making every transaction atomic at the command level without explicit locking.
 
 ## File Structure
@@ -12450,6 +12496,15 @@ Important: WATCH does NOT prevent the watching client from making changes. It on
 # Cluster Mode (Hash Slot Sharding) — Technical Design Document
 
 ## Module Charter
+
+![Cluster Architecture](./diagrams/tdd-diag-m10-arch.svg)
+![Cluster Architecture Fixed](./diagrams/tdd-diag-m10-arch-fixed.svg)
+![Gossip Protocol](./diagrams/tdd-diag-m10-gossip.svg)
+![Slot Migration](./diagrams/tdd-diag-m10-migration.svg)
+![Hash Tags](./diagrams/tdd-diag-m10-tag.svg)
+![MOVED/ASK](./diagrams/d10-moved-ask.svg)
+![Gossip Protocol](./diagrams/d10-gossip-protocol.svg)
+![Slot Migration](./diagrams/d10-migration.svg)
 
 This module implements horizontal scaling for the Redis clone via hash slot-based sharding across multiple nodes, enabling distribution of keys across a cluster of independent Redis instances. It provides O(1) deterministic key-to-slot mapping using CRC16, MOVED/ASK redirect handling for client-side routing, gossip protocol for cluster topology propagation, hash tag support for multi-key operations on the same slot, and slot migration for online cluster rebalancing. This module does NOT implement replica failover, cluster discovery via DNS/SRV records, or client retry logic beyond redirect handling—those are client-side concerns. The upstream dependency is the core key-value storage and command dispatcher from Milestones 3-9; downstream the cluster-aware client libraries handle redirect responses. The critical invariant: every key must map to exactly one slot, which maps to exactly one primary node at any given time, ensuring consistency without coordination.
 

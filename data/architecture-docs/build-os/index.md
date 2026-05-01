@@ -5277,6 +5277,12 @@ A 32-bit x86 operating system kernel that boots from bare metal, transitions thr
 ![Memory Layout & Boot Sector](./diagrams/tdd-diag-m1-01.svg)
 ![GDT & Segment Descriptors](./diagrams/tdd-diag-m1-02.svg)
 ![Kernel Load from Disk](./diagrams/tdd-diag-m1-03.svg)
+![Protected Mode Transition](./diagrams/tdd-diag-m1-06.svg)
+![Kernel Entry Point](./diagrams/tdd-diag-m1-07.svg)
+![BSS Section Layout](./diagrams/tdd-diag-m1-08.svg)
+![Stack Initialization](./diagrams/tdd-diag-m1-09.svg)
+![VGA Text Mode](./diagrams/tdd-diag-m1-11.svg)
+![Serial Port Init](./diagrams/tdd-diag-m1-12.svg)
 
 **Module ID:** `build-os-m1`
 ---
@@ -6101,6 +6107,7 @@ clean:
 ![IDT Structure](./diagrams/tdd-diag-m2-01.svg)
 ![PIC Remapping](./diagrams/tdd-diag-m2-02.svg)
 ![Interrupt Handling Flow](./diagrams/tdd-diag-m2-03.svg)
+![Timer Interrupt](./diagrams/tdd-diag-m2-13.svg)
 ![Keyboard Driver](./diagrams/tdd-diag-m2-04.svg)
 
 **Module ID:** `build-os-m2`
@@ -7236,6 +7243,7 @@ kernel/main.o: kernel/main.c kernel/idt.h kernel/interrupts.h \
 ![Physical Memory Manager](./diagrams/tdd-diag-m3-01.svg)
 ![Page Tables](./diagrams/tdd-diag-m3-02.svg)
 ![Virtual Address Translation](./diagrams/tdd-diag-m3-03.svg)
+![Page Frame Allocation](./diagrams/tdd-diag-m3-16.svg)
 
 **Module ID:** `build-os-m3`
 ---
@@ -8553,6 +8561,15 @@ _kernel_end = .;
 
 <!-- TDD_MOD_ID: build-os-m4 -->
 # Technical Design Document: Processes and Preemptive Scheduling
+
+## Module Diagrams
+![Process Control Block](./diagrams/tdd-diag-m4-01.svg)
+![Context Switch Assembly](./diagrams/tdd-diag-m4-02.svg)
+![Scheduler Algorithm](./diagrams/tdd-diag-m4-03.svg)
+![Process States](./diagrams/tdd-diag-m4-16.svg)
+![System Call Interface](./diagrams/tdd-diag-m4-17.svg)
+![TSS Structure](./diagrams/tdd-diag-m4-18.svg)
+
 **Module ID:** `build-os-m4`
 ---
 ## Module Charter

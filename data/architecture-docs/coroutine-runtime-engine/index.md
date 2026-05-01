@@ -5717,6 +5717,23 @@ The coroutine runtime is complete. The universe is running.
 
 Build a production-grade M:N user-space scheduler and coroutine runtime implementing stackful coroutines with custom stacks, a work-stealing scheduler for linear scalability, preemptive scheduling for fairness, async I/O integration with epoll/kqueue, and coroutine-aware synchronization primitives. The runtime bridges the gap between hardware threads (4-128 cores) and software concurrency demands (thousands of concurrent tasks), achieving context switches in ~20-50ns vs ~1-2μs for kernel threads, enabling efficient handling of 10,000+ concurrent connections.
 
+## Technical Design Overview
+
+### Module 1: Stackful Coroutines
+![Coroutine Context Structure](./diagrams/tdd-diag-m1-01.svg)
+![Stack Memory Layout](./diagrams/tdd-diag-m1-02.svg)
+![Context Switch Assembly](./diagrams/tdd-diag-m1-03.svg)
+
+### Module 2: Work-Stealing Scheduler
+![Scheduler Architecture](./diagrams/tdd-diag-m2-01.svg)
+![Work Queue Design](./diagrams/tdd-diag-m2-02.svg)
+
+### Module 3: Preemptive Scheduling
+![Timer Wheel](./diagrams/tdd-diag-m3-01.svg)
+![Signal Handling](./diagrams/tdd-diag-m3-02.svg)
+
+### Module 4: Async I/O Integration
+![Epoll Integration](./diagrams/tdd-diag-m4-01.svg)
 
 
 <!-- TDD_MOD_ID: cre-m1 -->

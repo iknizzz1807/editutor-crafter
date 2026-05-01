@@ -4891,6 +4891,14 @@ You have completed this milestone when you can:
 
 A cost-based query optimizer that transforms SQL ASTs into optimal physical execution plans. The system separates logical optimization (algebraic rewrites) from physical optimization (operator selection and join ordering), using statistics-driven cost estimation to navigate the exponential search space of possible plans. The optimizer implements the Selinger dynamic programming algorithm for join ordering, with fallback to greedy heuristics for large queries, while tracking interesting orders to minimize redundant sorting operations.
 
+## TDD Diagrams Overview
+
+### Module 1: Plan Representation & Statistics
+![PlanNode Polymorphic Dispatch](./diagrams/tdd-diag-m1-08.svg)
+![Plan Tree Transformation Types](./diagrams/tdd-diag-m1-09.svg)
+![Statistics Collection Pipeline](./diagrams/tdd-diag-m1-10.svg)
+![Histogram Binning Algorithm](./diagrams/tdd-diag-m1-11.svg)
+![Statistics Serialization Format](./diagrams/tdd-diag-m1-12.svg)
 
 
 <!-- TDD_MOD_ID: query-optimizer-m1 -->
@@ -6636,6 +6644,14 @@ print("✓ ANALYZE command working")
 
 <!-- TDD_MOD_ID: query-optimizer-m2 -->
 # Technical Design Specification: Cost Estimation & Selectivity
+
+## Module Diagrams
+![Cost Model Architecture](./diagrams/tdd-diag-m2-07.svg)
+![Selectivity Estimation Pipeline](./diagrams/tdd-diag-m2-08.svg)
+![Histogram Interpolation Algorithm](./diagrams/tdd-diag-m2-10.svg)
+![Cost Formula Components](./diagrams/tdd-diag-m2-11.svg)
+![Join Cardinality Estimation](./diagrams/tdd-diag-m2-12.svg)
+
 ## Module Charter
 This module provides the **cost model** that estimates execution expense and the **selectivity estimators** that predict how many rows match predicates. The cost model combines I/O cost (pages read) and CPU cost (tuples processed) into a single abstract cost unit, configurable via weights. Selectivity estimation uses histograms and distinct value counts to predict predicate matches, with explicit acknowledgment of the independence assumption's limitations.
 The module does NOT perform plan transformation, join ordering, or physical operator selection. It only **measures** plan quality—it's the ruler, not the carpenter. Upstream dependencies are the statistics module (Milestone 1) providing `TableStatistics` and `ColumnHistogram`, and the plan module providing `PlanNode` trees. Downstream consumers are the logical optimizer (Milestone 3) which uses costs to validate transformations, and the join ordering module (Milestone 4) which uses costs to compare alternative plans.
@@ -8713,6 +8729,12 @@ if hist:
 
 <!-- TDD_MOD_ID: query-optimizer-m3 -->
 # Technical Design Specification: Rule-Based Logical Optimization
+
+## Module Diagrams
+![Rule-Based Optimization Pipeline](./diagrams/tdd-diag-m3-10.svg)
+![Predicate Pushdown Transformation](./diagrams/tdd-diag-m3-11.svg)
+![Constant Folding Algorithm](./diagrams/tdd-diag-m3-12.svg)
+
 ## Module Charter
 This module provides **rule-based logical optimization** that transforms query plan trees into semantically equivalent but cheaper forms through systematic rewrite rules. The optimizer applies transformations like predicate pushdown (moving filters toward data sources), projection pruning (removing unused columns), constant folding (evaluating compile-time expressions), and redundant predicate elimination (removing duplicate conditions). These transformations are applied iteratively until a **fixed point** is reached—when no rule can further improve the plan.
 The module does NOT perform cost estimation, join ordering, or physical operator selection. It only **rewrites** logical plans—it's the algebraic simplifier, not the cost-based search engine. Upstream dependencies are the plan module (Milestone 1) providing `PlanNode` trees and logical operator classes, and optionally the statistics module for cost-based decisions within rules. Downstream consumers are the join ordering module (Milestone 4) which receives simplified logical plans with reduced intermediate result sizes.
@@ -11880,6 +11902,15 @@ print(f"Iterations: {max(e['iteration'] for e in log.entries)}")
 
 <!-- TDD_MOD_ID: query-optimizer-m4 -->
 # Technical Design Specification: Join Ordering & Physical Plan Selection
+
+## Module Diagrams
+![DP State Machine](./diagrams/tdd-diag-m4-11.svg)
+![Join Enumeration Algorithm](./diagrams/tdd-diag-m4-12.svg)
+![Physical Operator Selection](./diagrams/tdd-diag-m4-13.svg)
+![Interesting Order Tracking](./diagrams/tdd-diag-m4-14.svg)
+![Cross Product Penalty](./diagrams/tdd-diag-m4-15.svg)
+![Plan Cost Annotation](./diagrams/tdd-diag-m4-16.svg)
+
 ## Module Charter
 This module implements **cost-based join ordering** using the Selinger dynamic programming algorithm—the core optimization that made relational databases practical. Given a logical plan with N tables to join, it enumerates all 2^N - 1 subsets, memoizes optimal subplans for each subset, and combines them to find the globally cheapest join order. The module also selects physical operators (SeqScan vs IndexScan, HashJoin vs SortMergeJoin vs NestedLoopJoin) based on cost estimates and tracks "interesting orders" to avoid redundant sorts.
 The module does NOT perform logical optimization (predicate pushdown, projection pruning), cost estimation (delegated to Milestone 2), or query execution. Upstream dependencies are the logical optimizer (Milestone 3) providing simplified logical plans, the statistics module (Milestone 1) providing table/column statistics, and the cost estimator (Milestone 2) providing cost calculations. Downstream consumers are the query executor which receives complete physical plans with cost annotations.

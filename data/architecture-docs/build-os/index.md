@@ -5260,10 +5260,24 @@ You've just built the foundation for all concurrent programming — the illusion
 
 A 32-bit x86 operating system kernel that boots from bare metal, transitions through real mode to protected mode, handles hardware interrupts and CPU exceptions, manages physical and virtual memory through page tables, and implements preemptive multitasking with process isolation and system calls. The kernel demonstrates the complete software stack from firmware handoff to user-mode process execution, revealing how hardware constraints (cache lines, TLB entries, interrupt latency) shape every design decision.
 
+## Technical Design Overview
+
+### Module 1: Bootloader & Kernel Entry
+![Boot Sector Memory Layout](./diagrams/tdd-diag-m1-01.svg)
+![GDT Structure](./diagrams/tdd-diag-m1-02.svg)
+![Kernel Load Sequence](./diagrams/tdd-diag-m1-03.svg)
+![Real to Protected Mode Transition](./diagrams/tdd-diag-m1-04.svg)
+![BSS Initialization](./diagrams/tdd-diag-m1-05.svg)
 
 
 <!-- TDD_MOD_ID: build-os-m1 -->
 # Technical Design Document: Bootloader, GDT, and Kernel Entry
+
+## Module Diagrams
+![Memory Layout & Boot Sector](./diagrams/tdd-diag-m1-01.svg)
+![GDT & Segment Descriptors](./diagrams/tdd-diag-m1-02.svg)
+![Kernel Load from Disk](./diagrams/tdd-diag-m1-03.svg)
+
 **Module ID:** `build-os-m1`
 ---
 ## Module Charter
@@ -6082,6 +6096,13 @@ clean:
 
 <!-- TDD_MOD_ID: build-os-m2 -->
 # Technical Design Document: Interrupts, Exceptions, and Keyboard
+
+## Module Diagrams
+![IDT Structure](./diagrams/tdd-diag-m2-01.svg)
+![PIC Remapping](./diagrams/tdd-diag-m2-02.svg)
+![Interrupt Handling Flow](./diagrams/tdd-diag-m2-03.svg)
+![Keyboard Driver](./diagrams/tdd-diag-m2-04.svg)
+
 **Module ID:** `build-os-m2`
 ---
 ## Module Charter
@@ -7209,7 +7230,13 @@ kernel/main.o: kernel/main.c kernel/idt.h kernel/interrupts.h \
 
 
 <!-- TDD_MOD_ID: build-os-m3 -->
-# Technical Design Document: Physical and Virtual Memory Management
+# Technical Design Document: Physical & Virtual Memory Management
+
+## Module Diagrams
+![Physical Memory Manager](./diagrams/tdd-diag-m3-01.svg)
+![Page Tables](./diagrams/tdd-diag-m3-02.svg)
+![Virtual Address Translation](./diagrams/tdd-diag-m3-03.svg)
+
 **Module ID:** `build-os-m3`
 ---
 ## Module Charter

@@ -251,6 +251,12 @@ This is not a pathological case. It is the default case under real network condi
 
 The solution: a **state machine** that reads into a per-client buffer and extracts complete frames before attempting to parse them.
 
+![RESP Wire Protocol Format](./diagrams/d1-resp-format.svg)
+
+![Client Read Buffer Management](./diagrams/d1-client-buffer.svg)
+
+![RESP Parser State Machine](./diagrams/d1-parse-state-machine.svg)
+
 This is the first architectural decision of your Redis. Every byte handling pattern flows from this decision. Let it guide everything that follows.
 
 ---
@@ -335,6 +341,12 @@ This is the real revelation: **Redis is single-threaded because it's lock-free, 
 
 
 ![Event Loop Architecture](./diagrams/d2-event-loop-flow.svg)
+
+![epoll/kqueue Data Structures](./diagrams/d2-epoll-structure.svg)
+
+![Non-blocking Socket Behavior](./diagrams/d2-nonblocking-io.svg)
+
+![Time Event Scheduling](./diagrams/d2-time-events.svg)
 
 
 The event loop is a controlled infinite loop that drives your entire server. It follows a predictable pattern:
@@ -513,6 +525,10 @@ This is critical: `sds` lets you store and retrieve `"\x89PNG\r\n\x1a\n"` (raw P
 
 Every command in Redis follows the same pattern: **parse → validate → dispatch → execute → respond**. You implement this with a function pointer table for O(1) lookup:
 
+![Command Dispatch Flow](./diagrams/d3-command-dispatch.svg)
+
+![SET Command Options (NX/XX/EX/PX)](./diagrams/d3-set-options.svg)
+
 ```c
 typedef struct RedisCommand {
     const char* name;
@@ -627,6 +643,10 @@ The key insight: Your expiration data lives in the same RedisObject structure yo
 
 
 ![Lazy Expiration Flow](./diagrams/d4-lazy-expire.svg)
+
+![Active Expiration Algorithm](./diagrams/d4-active-expire.svg)
+
+![Expiration Timestamp Storage](./diagrams/d4-expiry-storage.svg)
 
 
 Lazy expiration is the simplest form: when a client tries to access a key, check if it's expired before returning the value. If expired, delete it and return null (for strings) or a type error (for other types).
@@ -3686,6 +3706,9 @@ Your Pub/Sub system is now complete. It decouples publishers from subscribers, h
 
 ![MULTI/EXEC Transaction Flow](./diagrams/d9-transaction-flow.svg)
 
+![Partial Transaction Failure](./diagrams/d9-partial-exec.svg)
+
+![WATCH Optimistic Locking](./diagrams/d9-watch-mechanism.svg)
 
 ---
 
@@ -4054,6 +4077,31 @@ uint16_t crc16(const char* buf, size_t len) {
 
 Implement a high-performance, single-threaded in-memory key-value store supporting RESP protocol, multiple data structures, dual persistence (RDB snapshots and AOF logging), pub/sub messaging, transactions, and hash slot sharding for horizontal scaling.
 
+## Technical Design Overview
+
+### TCP Server Module Diagrams
+![TCP Server Architecture](./diagrams/tdd-diag-m1-arch.svg)
+![Client Connection Flow](./diagrams/tdd-diag-m1-flow.svg)
+![RESP Parser State Machine](./diagrams/tdd-diag-m1-parser.svg)
+
+### Event Loop Module Diagrams
+![Event Loop Architecture](./diagrams/tdd-diag-m2-arch.svg)
+![Epoll Edge-Triggered Algorithm](./diagrams/tdd-diag-m2-algo.svg)
+
+### Command Module Diagrams
+![Core Engine Architecture](./diagrams/tdd-diag-m3-arch.svg)
+![Hash Table Structure](./diagrams/tdd-diag-m3-hash.svg)
+
+### Expiration Module Diagrams
+![Expiration System Architecture](./diagrams/tdd-diag-m4-arch.svg)
+![Lazy Expiration Flow](./diagrams/tdd-diag-m4-lazy.svg)
+
+### Persistence Module Diagrams
+![RDB Binary File Format](./diagrams/tdd-diag-m6-format.svg)
+![Fork with Copy-on-Write](./diagrams/tdd-diag-m6-cow.svg)
+
+### Cluster Module Diagrams
+![Hash Slot Distribution](./diagrams/tdd-diag-m10-slots.svg)
 
 
 <!-- TDD_MOD_ID: build-redis-m1 -->

@@ -1,0 +1,245 @@
+# BGREWRITEAOF Flow - Milestone 7
+
+vars: {
+  d2-config: {
+    theme-id: 6
+    layout-engine: elk
+  }
+}
+
+direction: right
+
+title: |md
+  # BGREWRITEAOF Flow
+| {near: top-center}
+
+# Client triggering BGREWRITEAOF
+Client: Redis Client {
+  style.fill: "#E8F4FD"
+  style.stroke: "#1E88E5"
+  shape: person
+}
+
+Client -> Server: "BGREWRITEAOF" {
+  style.stroke: "#4CAF50"
+  style.stroke-width: 2
+  label.near: top-center
+}
+
+# Server process
+Server: Redis Server Process {
+  style.fill: "#E3F2FD"
+  style.stroke: "#1565C0"
+}
+
+Server:check_bgsave: Check BGSAVE/BGREWRITEAOF in progress {
+  shape: diamond
+  style.fill: yellow
+}
+
+Client -> Server:check_bgsave: Check {
+  style.stroke-dash: 3
+}
+
+# Decision point
+Server:check_bgsave -> Server:already_running: "Already running" {
+  style.stroke: red
+  style.stroke-dash: 5
+}
+
+Server:check_bgsave -> Server:fork: "Not running" {
+  style.stroke: green
+}
+
+# Fork process
+Server:fork: fork() child process {
+  shape: circle
+  style.fill: "#FFF3E0"
+  style.stroke: "#FF9800"
+}
+
+Server:fork -> Child: Create child process {
+  style.stroke: "#FF9800"
+  style.stroke-width: 2
+  label.near: top-center
+}
+
+# Child process actions
+Child: Child Process (BGREWRITEAOF) {
+  style.fill: "#F3E5F5"
+  style.stroke: "#9C27B0"
+  label: Child Process
+}
+
+# Close parent file descriptors in child
+Child:close_parent_fds: Close parent sockets {
+  shape: diamond
+  style.fill: "#E8EAF6"
+}
+
+Child:close_parent_fds -> Child:snapshot: Close server socket, epoll fd
+
+# Snapshot database (read-only access)
+Child:snapshot: Read database snapshot {
+  shape: diamond
+  style.fill: "#E8F5E9"
+  style.stroke: "#43A047"
+  label: "Read current DB\n(read-only via COW)"
+}
+
+Child:close_parent_fds -> Child:snapshot: Snapshot {
+  style.stroke: "#43A047"
+}
+
+# Write compact AOF
+Child:write_compact: Write compact AOF {
+  shape: diamond
+  style.fill: "#E1F5FE"
+  style.stroke: "#0288D1"
+  label: "Write compact\nAOF (SET commands)"
+}
+
+Child:snapshot -> Child:write_compact: Iterate keys {
+  style.stroke: "#0288D1"
+}
+
+# Inner loop for each key
+Child:write_compact -> Child:write_key_1: "Write key N" {
+  style.stroke-dash: 3
+}
+
+Child:write_key_1 -> Child:write_key_2: "Write key N+1" {
+  style.stroke-dash: 3
+}
+
+Child:write_key_2 -> Child:write_key_N: "... write all keys" {
+  style.stroke-dash: 3
+}
+
+Child:write_key_N -> Child:write_compact: Complete {
+  style.stroke-dash: 3
+}
+
+# Append rewrite buffer (commands during rewrite)
+Child:append_buffer: Append rewrite buffer {
+  shape: diamond
+  style.fill: "#FFF8E1"
+  style.stroke: "#FFA000"
+  label: "Append rewrite\nbuffer (new cmds during rewrite)"
+}
+
+Child:write_compact -> Child:append_buffer: All commands {
+  style.stroke: "#FFA000"
+}
+
+# Flush and rename
+Child:flush_rename: Flush + atomic rename {
+  shape: diamond
+  style.fill: "#E8F5E9"
+  style.stroke: "#43A047"
+  label: "fsync + rename\n(temp -> final)"
+}
+
+Child:append_buffer -> Child:flush_rename: Finalize {
+  style.stroke: "#43A047"
+}
+
+# Exit child
+Child:flush_rename -> Child:exit: _exit(0) {
+  style.stroke: "#4CAF50"
+}
+
+# Server response to client after fork returns immediately
+Server:fork -> Client: "+OK" {
+  style.stroke: "#4CAF50"
+  label: "Immediately\nreturns"
+  label.near: top-center
+}
+
+# Server monitors child
+Server:monitor: Monitor child status {
+  shape: diamond
+  style.fill: "#ECEFF1"
+}
+
+Server:monitor -> Server:wait_child: waitpid() {
+  style.stroke-dash: 3
+}
+
+Server:wait_child -> Server:wait_child: "Polling..." {
+  style.stroke-dash: 5
+}
+
+# When child completes
+Server:wait_child -> Server:child_complete: Child exits {
+  style.stroke: "#4CAF50"
+  label.near: top-center
+}
+
+Server:child_complete -> Server:update_time: Update timestamps {
+  style.stroke: "#757575"
+}
+
+Server:child_complete -> Server:finalize: Complete {
+  style.stroke: "#757575"
+}
+
+# Error handling path
+Server:fork -> Server:fork_error: fork() failed {
+  style.stroke: red
+  style.stroke-dash: 5
+}
+
+Server:fork_error -> Client: "-ERR fork failed" {
+  style.stroke: red
+}
+
+# Annotations explaining COW
+Cow_note: |md
+  # Copy-on-Write (COW)
+  - Child inherits read-only copy of parent memory
+  - Parent modifications create copies (COW)
+  - Child sees consistent snapshot as of fork()
+  - No locks needed during entire operation
+| {
+  shape: text
+  style.font-size: 14
+  style.fill: white
+  near: top-center
+}
+
+Rewrite_buffer_note: |md
+  # Rewrite Buffer Purpose
+  - NEW write commands during rewrite must go to BOTH:
+    1. Original AOF file (for durability)
+    2. Rewrite buffer (for new AOF)
+  - After rewrite: append buffer to new AOF
+  - This prevents data loss during migration
+| {
+  shape: text
+  style.font-size: 12
+  style.fill: "#FFFDE7"
+  near: bottom-center
+}
+
+# Style all nodes
+***.style.font-size: 14
+***.style.border-radius: 4
+
+# Key color legend
+nodes: Legend {
+  shape: sql_table
+  label: "Legend"
+  
+  Client_node: Client
+  server: Server
+  process: Process
+  decision: Decision
+  annotation: Annotation
+  
+  Client_node.style.fill: "#E8F4FD"
+  server.style.fill: "#E3F2FD"
+  process.style.fill: "#F3E5F5"
+  decision.style.fill: yellow
+  annotation.style.fill: white
+}

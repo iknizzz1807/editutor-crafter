@@ -1,0 +1,195 @@
+direction: down
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 4
+  }
+}
+
+title: "MULTI/EXEC Transaction Flow" {
+  near: top-center
+  shape: text
+  style.font-size: 28
+  style.bold: true
+}
+
+row1: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  client_state: {
+    label: "Client Transaction State"
+    direction: down
+    
+    state_none: "TRANSACTION_STATE_NONE" {
+      shape: circle
+      style.fill: "#E8F5E9"
+    }
+    state_multi: "TRANSACTION_STATE_MULTI" {
+      shape: circle
+      style.fill: "#FFF3E0"
+    }
+    state_exec: "TRANSACTION_STATE_EXEC" {
+      shape: circle
+      style.fill: "#E3F2FD"
+    }
+    
+    state_none -> state_multi: "MULTI"
+    state_multi -> state_exec: "EXEC"
+    state_exec -> state_none: "Complete"
+  }
+  
+  command_flow: {
+    label: "Command Execution Path"
+    direction: down
+    
+    dispatcher: {
+      shape: class
+      label: "command_dispatch()"
+      -client: "Client*"
+      -argc: "int"
+      -argv: "sds*"
+      +dispatch(c, argc, argv): "void"
+    }
+    
+    queue_path: {
+      shape: class
+      label: "queue_command()"
+      -client: "Client*"
+      -cmd: "RedisCommand*"
+      +queue(c, cmd, argc, argv): "void"
+    }
+    
+    exec_path: {
+      shape: class
+      label: "exec_command()"
+      -client: "Client*"
+      +execute_queued(c): "void"
+    }
+    
+    dispatcher -> queue_path: "txn_state == MULTI"
+    dispatcher -> exec_path: "EXEC"
+  }
+}
+
+arrow1: "" {
+  source: row1.client_state.state_multi
+  target: row1.command_flow.queue_path
+  label: "Queue Mode"
+  style.stroke: orange
+}
+
+row2: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  queued_commands: {
+    shape: sql_table
+    label: "QueuedCommand Array"
+    f0: "[0] | SET | key | value"
+    f1: "[1] | INCR | counter"
+    f2: "[2] | DEL | old_key"
+    f3: "...  | ...  | ..."
+    f4: "[n] | GET | result"
+  }
+  
+  watch_keys: {
+    shape: sql_table
+    label: "WatchedKey Array"
+    f0: "[0] | key: \"user:1\" | version: 42"
+    f1: "[1] | key: \"counter\" | version: 100"
+  }
+}
+
+row2.queued_commands -> row2.watch_keys: "WATCH sets version"
+
+row3: "" {
+  direction: right
+  style.stroke: transparent
+  style.fill: transparent
+  
+  exec_flow: {
+    label: "EXEC Execution Flow"
+    direction: down
+    
+    step1: {
+      label: "Step 1: Check WATCH"
+      width: 200
+      code: |'c
+    // Check if any watched key changed
+    for (key in client.watched_keys) {
+      if (key.version != current_version) {
+        // Key was modified - discard transaction
+        return nil
+      }
+    }
+      '|
+    }
+    
+    step2: {
+      label: "Step 2: Execute All"
+      width: 200
+      code: |'c
+    results = []
+    for (cmd in client.queued_commands) {
+      result = execute(cmd)
+      results.append(result)
+    }
+    return results  // Array response
+      '|
+    }
+    
+    step3: {
+      label: "Step 3: Clear Queue"
+      width: 200
+      code: |'c
+    client.queued_commands = nil
+    client.txn_state = NONE
+    client.watched_keys = nil
+      '|
+    }
+    
+    step1 -> step2: "All keys unchanged"
+    step1 -> step3: "Keys changed (discard)"
+    step2 -> step3: "Complete"
+  }
+  
+  response_format: {
+    shape: sql_table
+    label: "EXEC Response Format"
+    f0: "*5 | Array of 5 results"
+    f1: "+OK | SET result"
+    f2: ":42 | INCR result"
+    f3: ":1 | DEL result"
+    f4: '$5 | GET result = "hello"'
+  }
+}
+
+row2.queued_commands -> row3.exec_flow.step1: "Execute in order"
+
+row3.exec_flow.step2 -> row3.response_format: "Returns array"
+
+legend: {
+  near: bottom-center
+  direction: right
+  
+  success: "Success" {
+    shape: text
+    style.fill: "#E8F5E9"
+    style.font-color: green
+  }
+  
+  queued: "QUEUED Response" {
+    shape: text
+    style.fill: "#FFF3E0"
+    style.font-color: orange
+  }
+  
+  error: "Error in Array" {
+    shape: text
+    style.fill: "#FFEBEE"
+    style.font-color: red
+  }
+}

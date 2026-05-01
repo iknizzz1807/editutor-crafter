@@ -114,6 +114,7 @@ print(">>> Instructions loaded", flush=True)
 ENABLE_SYSTEM_DIAGRAM = os.getenv("ENABLE_SYSTEM_DIAGRAM", "false").lower() == "true"
 USE_1M = os.getenv("USE_1M", "false").lower() == "true"
 ENGINEERING_DOCS_MODE = os.getenv("ENGINEERING_DOCS_MODE", "false").lower() == "true"
+USE_OPENCODE = os.getenv("USE_OPENCODE", "false").lower() == "true"
 MAX_SYSTEM_DIAGRAM_ITERATIONS = 10
 
 # --- LLM SETUP ---
@@ -127,16 +128,18 @@ LLM_PROVIDER = None
 LLM = None
 LLM_FALLBACK = None  # Gemini local-proxy, used for diagram retries when main provider is claude-cli
 USE_ANTHROPIC = False
+USE_OPENCODE = False
 
 
 def init_llm_provider():
     """Initialize LLM provider based on environment variables or command line flags."""
-    global LLM_PROVIDER, LLM, LLM_FALLBACK, CLAUDE_MODEL, USE_ANTHROPIC, MISTRAL_MODEL
+    global LLM_PROVIDER, LLM, LLM_FALLBACK, CLAUDE_MODEL, USE_ANTHROPIC, MISTRAL_MODEL, USE_OPENCODE, OPENCODE_MODEL
     print(">>> Initializing LLM provider...", flush=True)
 
     USE_ANTHROPIC = os.getenv("USE_ANTHROPIC", "false").lower() == "true"
     USE_CLAUDE_CLI = os.getenv("USE_CLAUDE_CLI", "false").lower() == "true"
     USE_MISTRAL = os.getenv("USE_MISTRAL", "false").lower() == "true"
+    USE_OPENCODE = os.getenv("USE_OPENCODE", "false").lower() == "true"
     USE_MIXED_CLAUDE_GEMINI = (
         os.getenv("USE_MIXED_CLAUDE_GEMINI", "false").lower() == "true"
     )
@@ -207,6 +210,9 @@ def init_llm_provider():
         )
         LLM_PROVIDER = "anthropic"
         print(f">>> Provider: ANTHROPIC ({ANTHROPIC_MODEL})", flush=True)
+    elif USE_OPENCODE:
+        LLM_PROVIDER = "opencode"
+        print(f">>> Provider: OPENCODE", flush=True)
     else:
         print(">>> Setting up local proxy (Gemini)...", flush=True)
         LLM = ChatOpenAI(
@@ -408,6 +414,58 @@ def invoke_claude_cli(
     raise Exception("Claude CLI failed")
 
 
+def invoke_opencode(
+    messages, node_label="unknown", project_id=None, max_retries=3, model_override=None
+):
+    system_prompt = "You are a specialized technical content engine. Output ONLY the requested Markdown or JSON. NO conversational text, NO preambles (e.g. 'Here is the...', 'I will now...'), NO acknowledgments. If writing a milestone, start directly with the content."
+    user_prompt = ""
+    for msg in messages:
+        if isinstance(msg, SystemMessage):
+            system_prompt += "\n" + str(msg.content)
+        elif isinstance(msg, HumanMessage):
+            user_prompt = str(msg.content)
+
+    # Prepend system prompt to user prompt since opencode run doesn't have --system-prompt flag
+    full_prompt = f"System: {system_prompt}\n\nUser: {user_prompt}"
+
+    log_llm_interaction(project_id, node_label, "opencode", messages)
+
+    for attempt in range(max_retries):
+        try:
+            cmd = ["opencode", "run"]
+            result = subprocess.run(
+                cmd, input=full_prompt, capture_output=True, text=True, timeout=1200
+            )
+            if result.returncode == 0:
+                content = result.stdout.strip()
+
+                log_llm_interaction(
+                    project_id,
+                    node_label,
+                    "opencode",
+                    messages,
+                    response_text=content,
+                )
+
+                class MockResponse:
+                    def __init__(self, content):
+                        self.content = content
+
+                return MockResponse(content)
+
+            err_msg = f"Attempt {attempt + 1} failed with return code {result.returncode}. Stderr: {result.stderr}"
+            log_llm_interaction(
+                project_id, node_label, "opencode", messages, error=err_msg
+            )
+            time.sleep((attempt + 1) * 20)
+        except Exception as e:
+            log_llm_interaction(
+                project_id, node_label, "opencode", messages, error=str(e)
+            )
+            time.sleep((attempt + 1) * 20)
+    raise Exception("Opencode failed")
+
+
 def safe_invoke(
     messages,
     node_label="unknown",
@@ -418,6 +476,25 @@ def safe_invoke(
     model_override=None,
 ):
     # When running claude-cli, use Gemini fallback if provider_override="local-proxy", else claude-cli
+    if LLM_PROVIDER == "claude-cli":
+        if provider_override == "local-proxy" and LLM_FALLBACK is not None:
+            log_llm_interaction(
+                project_id, node_label, "local-proxy (fallback)", messages
+            )
+            kwargs = invoke_kwargs or {}
+            if "timeout" not in kwargs:
+                kwargs["timeout"] = 1200
+            return LLM_FALLBACK.invoke(messages, **kwargs)
+        return invoke_claude_cli(
+            messages, node_label, project_id, max_retries, model_override=model_override
+        )
+
+    if LLM_PROVIDER == "opencode":
+        # Use native opencode invoke (no provider_override works for opencode)
+        return invoke_opencode(
+            messages, node_label, project_id, max_retries, model_override=model_override
+        )
+
     if LLM_PROVIDER == "claude-cli":
         if provider_override == "local-proxy" and LLM_FALLBACK is not None:
             log_llm_interaction(
@@ -564,13 +641,14 @@ Include every milestone from YAML — 1:1 mapping.
 Explicitly list 'prerequisites' (assumed known vs. must teach first).
 Plan diagrams generously — every concept that benefits from visualization should have one. Minimum 2 per milestone, but add as many as the complexity demands. Diagrams are cheap; confusion is not.
 For each milestone: misconception, reveal, cascade (3-5 connections, 1+ cross-domain).
-"""
+    """
     invoke_args = {}
     if LLM_PROVIDER in [
         "local-proxy",
         "mistral",
         "mixed-claude-gemini",
         "mixed-heavy-claude",
+        "opencode",
     ]:
         invoke_args["response_format"] = {"type": "json_object"}
 
@@ -766,7 +844,7 @@ def writer_node(state: GraphState):
                 state["accumulated_md"] = before + after
 
     print(f"  [Agent: Educator] Writing Atlas Node: {ms_title}...")
-    is_claude = LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini")
+    is_claude = LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini", "opencode")
 
     full_yaml_meta = yaml.dump(
         state["meta"], allow_unicode=True, default_flow_style=False
@@ -1136,7 +1214,8 @@ Output ONLY the corrected D2 code."""
 def tdd_planner_node(state: GraphState):
     if state.get("tdd_blueprint"):
         return {"status": "tdd_writing", "phase": "tdd"}
-    is_claude = LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini")
+    # is_claude = True means use provider_override="claude-cli", False means use LLM_PROVIDER's native invoke
+    is_claude = LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini") and LLM_PROVIDER not in ("opencode",)
     print(f"  [Agent: TDD Orchestrator] Planning TDD...")
     full_yaml_meta = yaml.dump(
         state["meta"], allow_unicode=True, default_flow_style=False
@@ -1280,7 +1359,7 @@ End with [[CRITERIA_JSON: {{"module_id": "{mod_id}", "criteria": [...]}} ]]
         [HumanMessage(content=prompt)],
         node_label=f"TDD Writer (Mod: {mod_name})",
         project_id=state["project_id"],
-        provider_override="claude-cli" if LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini") else None,
+        provider_override="claude-cli" if LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini", "opencode") else None,
     )
     raw_content = str(res.content).strip()
 
@@ -1478,7 +1557,7 @@ REQUIREMENTS:
 
 Output ONLY valid D2 code. No markdown fences, no explanations."""
 
-    is_claude = LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini")
+    is_claude = LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini", "opencode")
     res = safe_invoke(
         [HumanMessage(content=prompt)],
         node_label="System Diagram Writer",
@@ -1718,7 +1797,7 @@ No other text outside these blocks."""
         [HumanMessage(content=prompt)],
         node_label="Explainer",
         project_id=state["project_id"],
-        provider_override="claude-cli" if LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini") else None,
+        provider_override="claude-cli" if LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini", "opencode") else None,
     )
 
     # Parse explanations
@@ -1777,7 +1856,7 @@ TASK: Output ONLY the Project Charter markdown. Start directly with `# 🎯 Proj
         [HumanMessage(content=prompt)],
         node_label="Project Charter",
         project_id=state["project_id"],
-        provider_override="claude-cli" if LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini") else None,
+        provider_override="claude-cli" if LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini", "opencode") else None,
     )
     charter_md = strip_code_fence(str(res.content))
     print(f"  [Agent: Project Charter] Generated {len(charter_md)} chars")
@@ -1817,7 +1896,7 @@ Rules:
         [HumanMessage(content=prompt)],
         node_label="Engineering Overview",
         project_id=state["project_id"],
-        provider_override="claude-cli" if LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini") else None,
+        provider_override="claude-cli" if LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini", "opencode") else None,
     )
     overview_md = strip_code_fence(str(res.content))
     print(f"  [Agent: Engineering Overview] Generated {len(overview_md)} chars")
@@ -1848,7 +1927,7 @@ TASK: Output ONLY the project structure markdown (no preamble, no conversation).
         [HumanMessage(content=prompt)],
         node_label="Project Structure",
         project_id=state["project_id"],
-        provider_override="claude-cli" if LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini") else None,
+        provider_override="claude-cli" if LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini", "opencode") else None,
     )
     structure_md = str(res.content).strip()
     print(f"  [Agent: Project Structure] Generated {len(structure_md)} chars")
@@ -1861,7 +1940,7 @@ def bibliographer_node(state: GraphState):
     res = safe_invoke(
         [HumanMessage(content=prompt)],
         node_label="Bibliographer",
-        provider_override="claude-cli" if LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini") else None,
+        provider_override="claude-cli" if LLM_PROVIDER in ("mixed-heavy-claude", "claude-cli", "claude-artist-gemini", "opencode") else None,
     )
     return {"external_reading": str(res.content).strip(), "status": "done"}
 
@@ -2214,6 +2293,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable system overview diagram generation (uses Gemini local proxy)",
     )
+    parser.add_argument(
+        "--opencode",
+        action="store_true",
+        help="Use opencode run for all nodes",
+    )
     args = parser.parse_args()
 
     if args.claude_cli:
@@ -2234,6 +2318,9 @@ if __name__ == "__main__":
         os.environ["USE_ARCHITECT_CLAUDE"] = "true"
     if args.claude_artist_gemini:
         os.environ["USE_CLAUDE_ARTIST_GEMINI"] = "true"
+    if args.opencode:
+        os.environ["USE_OPENCODE"] = "true"
+        print(">>> Opencode: ENABLED", flush=True)
 
     if args.anthropic_model:
         os.environ["ANTHROPIC_MODEL"] = args.anthropic_model

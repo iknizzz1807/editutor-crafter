@@ -1,0 +1,215 @@
+vars: {
+  d2-config: {
+    theme-id: 4
+    layout-engine: elk
+  }
+}
+
+# Transaction Architecture Diagram
+# Milestone 9: MULTI/EXEC Transactions
+
+title: |md
+  # Transaction Architecture
+  Client State, Queued Commands & Watch Registry
+|
+
+direction: right
+
+# ================================================================================
+# CLIENT TRANSACTION STATE (Left Side - Client Context)
+# ================================================================================
+
+ClientTransactionState: "Client Transaction State" {
+  shape: sql_table
+  
+  txn_state: int | DEFAULT=0 | TXN_NONE=0, TXN_MULTI=1, TXN_EXEC=2
+  queued_commands: QueuedCommand* | POINTER to array
+  queued_count: size_t | COUNT of queued commands
+  queued_capacity: size_t | ALLOCATED array size
+  watched_keys: WatchedKey* | POINTER to array  
+  watched_count: size_t | COUNT of watched keys
+  watched_capacity: size_t | ALLOCATED array size
+  txn_response: sds | ACCUMULATED EXEC response
+  txn_aborted: int | BOOLEAN flag
+}
+
+# Queued Command Structure (nested in Client)
+QueuedCommand: "QueuedCommand Array Element" {
+  shape: sql_table
+  
+  full_command: sds | RESP encoded string
+  argv: sds* | PARSED arguments array
+  argc: int | ARGUMENT count
+  cmd: RedisCommand* | COMMAND struct pointer
+  flags: uint64_t | COMMAND flags (WRITE/READ)
+}
+
+# Watched Key Structure (nested in Client)
+WatchedKey: "WatchedKey Array Element" {
+  shape: sql_table
+  
+  key: sds | KEY being watched
+  version: uint64_t | VERSION for conflict detection
+  watched_at: time_t | WHEN watched
+}
+
+# ================================================================================
+# WATCH REGISTRY (Right Side - Global State)
+# ================================================================================
+
+WatchRegistry: "Global Watch Registry" {
+  shape: sql_table
+  
+  watched_keys: dict* | MAP: key → client list
+  total_watched_keys: size_t | UNIQUE keys
+  total_watchers: size_t | CLIENT-KEY relationships
+}
+
+# Registry dictionary entry structure
+WatchRegistryDict: "Key → Client Mapping" {
+  shape: sql_table
+  
+  key_name: sds | WATCHED key name
+  watching_clients: list* | LIST of Client pointers
+}
+
+# ================================================================================
+# RELATIONSHIPS
+# ================================================================================
+
+# Client points to its watched keys array
+ClientTransactionState.watched_keys -> WatchedKey: "1..* watched keys" {
+  source-arrowhead.shape: cf-many
+  target-arrowhead.shape: cf-one
+}
+
+# Client points to queued commands array
+ClientTransactionState.queued_commands -> QueuedCommand: "1..* queued" {
+  source-arrowhead.shape: cf-many  
+  target-arrowhead.shape: cf-one
+}
+
+# Registry points to dictionary
+WatchRegistry.watched_keys -> WatchRegistryDict: "key lookup" {
+  source-arrowhead.shape: cf-one
+  target-arrowhead.shape: cf-many
+}
+
+# ================================================================================
+# COMMAND FLOW ANNOTATIONS
+# ================================================================================
+
+CommandFlow: |md
+  **Transaction Command Flow:**
+  
+  1. MULTI → txn_state = TRANSACTION_MULTI
+  2. Commands → queued_commands[] (NOT executed)
+  3. WATCH → adds to watched_keys + registry
+  4. EXEC → checks watched_keys version
+     - If modified: txn_aborted = 1, return nil
+     - If OK: execute all queued commands
+  5. DISCARD → free queued, clear watches
+| {
+  shape: text
+  near: bottom-center
+}
+
+# ================================================================================
+# KEY VERSION TRACKING (Separate concept)
+# ================================================================================
+
+KeyVersionTracking: "Key Version Map (Server)" {
+  shape: sql_table
+  
+  key: sds | KEY name
+  version: uint64_t | INCREMENTED on write
+  last_modified: time_t | TIMESTAMP
+}
+
+# Show relationship between registry and version
+WatchRegistryDict -> KeyVersionTracking: "version check" {
+  style.stroke-dash: 3
+}
+
+# ================================================================================
+# STYLING
+# ================================================================================
+
+# Style the main structures
+ClientTransactionState: {
+  style.fill: "#E1D5E7"
+  style.stroke: "#9673A6"
+}
+
+QueuedCommand: {
+  style.fill: "#DEEBF7"
+  style.stroke: "#6BA2D6"
+}
+
+WatchedKey: {
+  style.fill: "#DEEBF7"
+  style.stroke: "#6BA2D6"
+}
+
+WatchRegistry: {
+  style.fill: "#FFF2CC"
+  style.stroke: "#D6B656"
+}
+
+WatchRegistryDict: {
+  style.fill: "#FFF2CC"
+  style.stroke: "#D6B656"
+}
+
+KeyVersionTracking: {
+  style.fill: "#E6F3E6"
+  style.stroke: "#7BA05B"
+}
+
+# Connections styling
+(ClientTransactionState -> QueuedCommand)[*]: {
+  style.stroke: "#6BA2D6"
+  style.stroke-width: 2
+}
+
+(ClientTransactionState -> WatchedKey)[*]: {
+  style.stroke: "#6BA2D6"
+  style.stroke-width: 2
+}
+
+(WatchRegistry -> WatchRegistryDict)[*]: {
+  style.stroke: "#D6B656"
+  style.stroke-width: 2
+}
+
+(WatchRegistryDict -> KeyVersionTracking)[*]: {
+  style.stroke: "#7BA05B"
+  style.stroke-dash: 3
+}
+
+# Add legend annotations
+Legend: |md
+  **Legend:**
+  
+  **Client Transaction State:**
+  - Stores txn_state, queued commands array, watched keys array
+  
+  **QueuedCommand:**
+  - Full RESP string + parsed args + command pointer
+  
+  **WatchedKey:**
+  - Key name + version for conflict detection
+  
+  **Watch Registry (Global):**
+  - Maps keys → list of watching clients
+  - O(1) lookup when key is modified
+  
+  **Key Version Map:**
+  - Per-key version counter
+  - Increments on every write
+  - WATCH failure = version mismatch
+| {
+  shape: text
+  near: top-right
+  style.font-size: 12
+}
